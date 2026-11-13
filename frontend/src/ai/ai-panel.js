@@ -1974,7 +1974,8 @@ export function createAIPanel(options) {
     function alignWindowToTurn(session, start) {
         if (start <= 0) return 0;
         for (let i = start; i >= 0; i--) {
-            if (session.messages[i].role === 'user' && !session.messages[i].systemNote) return i;
+            // 与 groupTurns 同一套边界判定：窗口起点不落在截图附加这类中途注入消息上。
+            if (isTurnBoundaryMessage(session.messages[i])) return i;
         }
         return 0;
     }
@@ -2227,19 +2228,32 @@ export function createAIPanel(options) {
         updateComposerTakeover();
     }
 
+    // 是否是「用户发起回合」的边界消息。回合进行中注入的 user 消息（截图自动附加、
+    // 轮次提醒、模型切换留痕）不是新回合：重放分组时并入当前组作为过程内容，否则
+    // 一个回合被切成多个组，以 tool 结尾的中间组会被折叠条误标成「未完成」。
+    function isTurnBoundaryMessage(message) {
+        if (!message || message.role !== 'user') return false;
+        if (message.systemNote) return false;
+        // 截图附加消息（app_control screenshot / browser_screenshot 工具中途插入）：
+        // 带 app 标识与图片且没有 turnStartedAt；应用入口真正发起的回合由 send 设置它。
+        if (message.app && Array.isArray(message.images) && message.images.length && !message.turnStartedAt) return false;
+        return true;
+    }
+
     function groupTurns(session, startIndex = 0, endIndex = session.messages.length) {
         const groups = [];
         let current = null;
         for (let i = Math.max(0, startIndex); i < endIndex; i++) {
             const message = session.messages[i];
-            if (!current || message.role === 'user') {
+            if (!current || isTurnBoundaryMessage(message)) {
+                const boundary = isTurnBoundaryMessage(message);
                 current = {
-                    user: message.role === 'user' ? message : null,
+                    user: boundary ? message : null,
                     startIndex: i,
                     items: [],
                 };
                 groups.push(current);
-                if (message.role === 'user') continue;
+                if (boundary) continue;
             }
             current.items.push({message, index: i});
         }
