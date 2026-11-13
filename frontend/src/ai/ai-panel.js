@@ -4182,21 +4182,26 @@ export function createAIPanel(options) {
 
     // ExecuteScript 返回 {result:{value:"<json>"}}；把脚本结果对象解出来
     function browserEvalObject(raw) {
+        // WebView2 ExecuteScript 的返回就是「脚本结果值的 JSON 序列化」——不是 CDP
+        // Runtime.evaluate 的 {result:{value}} 包装（CallCDP 通道已禁用，见
+        // browser_windows.go BrowserEval 上方注释）。此前按 CDP 形态解包导致
+        // 恒为 undefined：browser_evaluate 的 .slice、browser_click 的「点击失败」
+        // browser_snapshot 的 reading 'title' 都是这一个根因（2026-11-14）。
+        // 脚本若 return JSON.stringify(...) 会得到二次编码的字符串，这里再解一层。
         let outer;
         try {
             outer = JSON.parse(raw);
         } catch (e) {
             throw new Error('脚本结果解析失败（外层）');
         }
-        const value = outer && outer.result ? outer.result.value : undefined;
-        if (typeof value === 'string') {
+        if (typeof outer === 'string') {
             try {
-                return JSON.parse(value);
+                return JSON.parse(outer);
             } catch (e) {
-                return value;
+                return outer;
             }
         }
-        return value;
+        return outer;
     }
 
     function browserSnapshotText(page) {

@@ -453,7 +453,10 @@ func (a *App) BrowserNavigate(id string, url string) error {
 	var taskErr error
 	jobErr := browserHostRun(func() {
 		inst := browserGet(id)
-		if inst == nil || inst.chromium == nil {
+		// webview 在 browserCreateOnHost 里晚于 chromium 赋值（355/376 行），
+		// 异步创建窗口期调导航会对 nil 解引用 panic——首次导航必崩、重试即过
+		// 的初始化竞态（2026-11-14）。守卫与 BrowserGoBack 对齐查 webview。
+		if inst == nil || inst.webview == nil || inst.chromium == nil {
 			taskErr = fmt.Errorf("浏览器标签页不存在或未就绪：%s", id)
 			return
 		}

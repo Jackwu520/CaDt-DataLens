@@ -477,7 +477,7 @@ func TestAIOpenAIMessages(t *testing.T) {
 			{Id: "call_1", Name: "read_file", Arguments: `{"path":"a"}`},
 		}},
 		{Role: "tool", ToolCallId: "call_1", Content: "body"},
-	})
+	}, true)
 	if err != nil {
 		t.Fatalf("aiOpenAIMessages: %v", err)
 	}
@@ -492,6 +492,11 @@ func TestAIOpenAIMessages(t *testing.T) {
 	function := calls[0]["function"].(map[string]any)
 	if calls[0]["id"] != "call_1" || function["name"] != "read_file" || function["arguments"] != `{"path":"a"}` {
 		t.Fatalf("call = %#v", calls[0])
+	}
+	// deepseek 思考模型逐条校验：passReasoning=true 时 assistant 必须带
+	// reasoning_content 字段，空串也必须写（缺失即网关 400，d5ad6ac）。
+	if v, ok := assistant["reasoning_content"]; !ok || v != "" {
+		t.Fatalf("assistant reasoning_content = %#v（应为空串字段）", v)
 	}
 	if out[3]["tool_call_id"] != "call_1" || out[3]["content"] != "body" {
 		t.Fatalf("tool msg = %#v", out[3])
@@ -528,7 +533,7 @@ func TestAIOpenAIUserImages(t *testing.T) {
 		Role:    "user",
 		Content: "看看这张图",
 		Images:  []AIImagePart{{Mime: "image/jpeg", Data: data}},
-	}})
+	}}, false)
 	if err != nil {
 		t.Fatalf("aiOpenAIMessages: %v", err)
 	}
