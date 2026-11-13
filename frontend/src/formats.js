@@ -426,6 +426,7 @@ const fileNameAceModes = {
     gemfile: 'ruby', rakefile: 'ruby',
     '.gitignore': 'gitignore', '.gitattributes': 'gitignore', '.gitmodules': 'gitignore', '.dockerignore': 'gitignore',
     '.editorconfig': 'ini', '.env': 'ini',
+    '.npmrc': 'ini', '.gitconfig': 'ini', '.npmignore': 'gitignore',
     '.babelrc': 'json', '.prettierrc': 'json', '.eslintrc': 'json',
 };
 
@@ -448,4 +449,8 @@ const knownFileNames = new Set([
     'dockerfile', 'makefile', 'gnumakefile', 'cmakelists.txt', 'jenkinsfile', 'gemfile', 'rakefile',
     '.gitignore', '.gitattributes', '.gitmodules', '.dockerignore', '.editorconfig', '.env',
     '.babelrc', '.prettierrc', '.eslintrc',
+    // 仓库元信息约定名（无扩展名）：保证文件树可直接打开，按代码视图呈现
+    'license', 'licence', 'unlicense', 'copying', 'copying.lesser', 'notice', 'patents',
+    'authors', 'contributors', 'contributing', 'changelog', 'codeowners', 'security', 'maintainers',
+    '.npmrc', '.npmignore', '.gitconfig',
 ]);

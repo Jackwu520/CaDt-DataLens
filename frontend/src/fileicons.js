@@ -56,6 +56,7 @@ const ICONS = {
     docker: badge(label('D', 7.4, 11.1)),
     make: badge(label('MK', 5.1)),
     cmake: badge(label('CM', 5.1)),
+    license: badge(label('§', 7.2, 11.1)),
 };
 
 // 补充图标：vscode-icons / material-icon-theme（均 MIT License）中未包含在生成子集里的常用类型
@@ -113,6 +114,10 @@ const BASENAMES = {
     makefile: 'make',
     gnumakefile: 'make',
     'cmakelists.txt': 'cmake',
+    license: 'license', licence: 'license', unlicense: 'license',
+    copying: 'license', 'copying.lesser': 'license', notice: 'license', patents: 'license',
+    changelog: 'log',
+    '.npmrc': 'ini', '.gitconfig': 'ini',
 };
 
 // ===== 图标主题体系 =====
