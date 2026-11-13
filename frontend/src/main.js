@@ -51,6 +51,7 @@ import {createModeSwitch} from './mode-switch.js';
 import {createTitlebarPopovers} from './titlebar-popovers.js';
 import {createSettingsUI} from './settings-ui.js';
 import {createWritingUI} from './writing-ui.js';
+import {createEditorMenus} from './editor-menus.js';
 import {createExplorerOps} from './explorer-ops.js';
 import {createEditorGroups} from './editor-groups.js';
 
@@ -1615,6 +1616,62 @@ function newFileTypeMenuItems(action) {
 }
 
 // ---- 资源管理器域操作（explorer-ops.js） ----
+// ---- 编辑器右键菜单域（editor-menus.js） ----
+const editorMenus = createEditorMenus({
+    get aiEditorReferenceMenuItems() { return aiEditorReferenceMenuItems; },
+    get applySettings() { return applySettings; },
+    get backend() { return backend; },
+    get closeFolder() { return closeFolder; },
+    get closeReadingForEditor() { return closeReadingForEditor; },
+    get copyText() { return copyText; },
+    get createContextMenu() { return createContextMenu; },
+    get createPalette() { return createPalette; },
+    get createReadingMode() { return createReadingMode; },
+    get ctxMenu() { return ctxMenu; },
+    set ctxMenu(v) { ctxMenu = v; },
+    get currentMode() { return currentMode; },
+    get defaultFolderDir() { return defaultFolderDir; },
+    get doRedo() { return doRedo; },
+    get doUndo() { return doUndo; },
+    get docs() { return docs; },
+    get editor() { return editor; },
+    get els() { return els; },
+    get file() { return file; },
+    get flash() { return flash; },
+    get formatDocument() { return formatDocument; },
+    get isDialogOpen() { return isDialogOpen; },
+    get jumpToPosition() { return jumpToPosition; },
+    get newDocument() { return newDocument; },
+    get openDialog() { return openDialog; },
+    get openFindBar() { return openFindBar; },
+    get openFolderDialog() { return openFolderDialog; },
+    get openPath() { return openPath; },
+    get openSettings() { return openSettings; },
+    get palette() { return palette; },
+    set palette(v) { palette = v; },
+    get paletteActions() { return paletteActions; },
+    get readingMode() { return readingMode; },
+    set readingMode(v) { readingMode = v; },
+    get requestReload() { return requestReload; },
+    get settings() { return settings; },
+    get showImageMenu() { return showImageMenu; },
+    get showInFolder() { return showInFolder; },
+    get showMdPreviewMenu() { return showMdPreviewMenu; },
+    get showSvgMenu() { return showSvgMenu; },
+    get textArea() { return textArea; },
+    get workspaceFolder() { return workspaceFolder; },
+});
+const selectedText = (...a) => editorMenus.selectedText(...a);
+const ctxCopy = (...a) => editorMenus.ctxCopy(...a);
+const ctxCut = (...a) => editorMenus.ctxCut(...a);
+const ctxPaste = (...a) => editorMenus.ctxPaste(...a);
+const ctxSelectAll = (...a) => editorMenus.ctxSelectAll(...a);
+const ctxFind = (...a) => editorMenus.ctxFind(...a);
+const ctxFold = (...a) => editorMenus.ctxFold(...a);
+const showEditorMenu = (...a) => editorMenus.showEditorMenu(...a);
+const showBlankMenu = (...a) => editorMenus.showBlankMenu(...a);
+const initContextMenus = (...a) => editorMenus.initContextMenus(...a);
+
 const explorerOps = createExplorerOps({
     get AI_REFERENCE_ICON_HTML() { return AI_REFERENCE_ICON_HTML; },
     get actRel() { return actRel; },
@@ -1674,226 +1731,12 @@ const relativePathFrom = (...a) => explorerOps.relativePathFrom(...a);
 const copyPathMenuItems = (...a) => explorerOps.copyPathMenuItems(...a);
 const showExplorerMenu = (...a) => explorerOps.showExplorerMenu(...a);
 
-function selectedText() {
-    if (!editor) return '';
-    if ((currentMode === 'code' || currentMode === 'split') && editor.aceEditor) return editor.aceEditor.getSelectedText();
-    if (currentMode === 'text') {
-        const ta = textArea();
-        if (ta) return ta.value.slice(ta.selectionStart, ta.selectionEnd);
-    }
-    return '';
-}
-
-async function ctxCopy() {
-    const text = selectedText();
-    if (text) await copyText(text, '所选内容');
-}
-
-async function ctxCut() {
-    if (!editor || file.binary || file.large) return;
-    if (currentMode === 'code' && editor.aceEditor) {
-        const ace = editor.aceEditor;
-        const text = ace.getSelectedText();
-        if (!text) return;
-        if (!(await copyText(text, '所选内容'))) return;
-        ace.session.replace(ace.getSelectionRange(), '');
-        ace.focus();
-    } else if (currentMode === 'text') {
-        const ta = textArea();
-        if (!ta) return;
-        const start = ta.selectionStart;
-        const end = ta.selectionEnd;
-        if (start === end) return;
-        if (!(await copyText(ta.value.slice(start, end), '所选内容'))) return;
-        ta.setRangeText('', start, end, 'end');
-        ta.dispatchEvent(new Event('input', {bubbles: true}));
-        ta.focus();
-    }
-}
-
-async function ctxPaste() {
-    if (!editor || file.binary || file.large) return;
-    if (!backend.GetClipboardText) return;
-    let text = '';
-    try {
-        text = await backend.GetClipboardText();
-    } catch (e) {
-        flash('读取剪贴板失败：' + e, true);
-        return;
-    }
-    if (!text) return;
-    if (currentMode === 'code' && editor.aceEditor) {
-        editor.aceEditor.focus();
-        editor.aceEditor.insert(text);
-    } else if (currentMode === 'text') {
-        const ta = textArea();
-        if (!ta) return;
-        ta.focus();
-        ta.setRangeText(text, ta.selectionStart, ta.selectionEnd, 'end');
-        ta.dispatchEvent(new Event('input', {bubbles: true}));
-    }
-}
-
-function ctxSelectAll() {
-    if (currentMode === 'code' && editor && editor.aceEditor) {
-        editor.aceEditor.focus();
-        editor.aceEditor.selectAll();
-    } else if (currentMode === 'text') {
-        const ta = textArea();
-        if (ta) {
-            ta.focus();
-            ta.select();
-        }
-    }
-}
-
-function ctxFind() {
-    openFindBar();
-}
-
-function ctxFold(command) {
-    if (currentMode === 'code' && editor && editor.aceEditor) {
-        editor.aceEditor.execCommand(command);
-    }
-}
-
-function showEditorMenu(x, y) {
-    if (!ctxMenu || !file) return;
-    const code = currentMode === 'code' && !!editor && !!editor.aceEditor;
-    const text = currentMode === 'text';
-    const editable = code || text;
-    const readonly = !!file.binary || !!file.large || !!settings.readOnlyMode;
-    const hasPath = !!file.path;
-    const referenceItems = aiEditorReferenceMenuItems();
-    ctxMenu.open([
-        {label: '撤销', shortcut: 'Ctrl+Z', icon: 'E7A7', disabled: readonly, action: doUndo},
-        {label: '重做', shortcut: 'Ctrl+Y', icon: 'E7A6', disabled: readonly, action: doRedo},
-        {sep: true},
-        {label: '剪切', shortcut: 'Ctrl+X', icon: 'E8C6', disabled: !editable || readonly, action: ctxCut},
-        {label: '复制', shortcut: 'Ctrl+C', icon: 'E8C8', disabled: !editable, action: ctxCopy},
-        {label: '粘贴', shortcut: 'Ctrl+V', icon: 'E77F', disabled: !editable || readonly, action: ctxPaste},
-        {label: '全选', shortcut: 'Ctrl+A', icon: 'E8B3', disabled: !editable, action: ctxSelectAll},
-        {sep: true},
-        {label: '查找…', shortcut: 'Ctrl+F', icon: 'E721', disabled: !editable, action: ctxFind},
-        {label: '格式化', shortcut: 'Ctrl+Alt+L', disabled: !file || readonly || !!file.format.rawOnly, action: formatDocument},
-        {label: '重新加载', icon: 'E72C', disabled: !hasPath, action: requestReload},
-        {sep: true},
-        {
-            label: '折叠',
-            icon: 'E70D',
-            disabled: !code,
-            submenu: [
-                {label: '折叠当前', action: () => ctxFold('fold')},
-                {label: '展开当前', action: () => ctxFold('unfold')},
-                {sep: true},
-                {label: '全部折叠', action: () => ctxFold('foldall')},
-                {label: '全部展开', action: () => ctxFold('unfoldall')},
-            ],
-        },
-        {sep: true},
-        ...referenceItems,
-        ...(referenceItems.length ? [{sep: true}] : []),
-        {label: '复制文件路径', icon: 'E8C8', disabled: !hasPath, action: () => copyText(file.path, '路径')},
-        {label: '打开文件位置', icon: 'E8B7', disabled: !hasPath, action: showInFolder},
-    ], x, y);
-}
-
-function showBlankMenu(x, y) {
-    if (!ctxMenu) return;
-    const items = [
-        {label: '新建', shortcut: 'Ctrl+N', icon: 'E710', action: newDocument},
-        {label: '打开文件…', shortcut: 'Ctrl+O', icon: 'E8E5', action: openDialog},
-        {label: '打开文件夹…', icon: 'E8B7', action: openFolderDialog},
-    ];
-    if (workspaceFolder) items.push({label: '关闭文件夹', icon: 'E8BB', action: closeFolder});
-    items.push({sep: true}, {label: '设置…', shortcut: 'Ctrl+,', icon: 'E713', action: () => openSettings('general')});
-    ctxMenu.open(items, x, y);
-}
 
 // closeReadingForEditor 退出阅读模式再打开编辑器（阅读模式不进标签页）
 function closeReadingForEditor() {
     if (readingMode && readingMode.isActive()) readingMode.close();
 }
 
-function initContextMenus() {
-    ctxMenu = createContextMenu();
-    palette = createPalette({mask: els.paletteMask, input: els.paletteInput, list: els.paletteList, getActions: paletteActions});
-    // ---- 阅读模式（docs/finished-plans/reading-mode.md）：视图容器 + 控制器，只读 ----
-    const readingContainer = document.getElementById('reading-view');
-    if (readingContainer) {
-        readingMode = createReadingMode({
-            container: readingContainer,
-            getBackend: () => backend,
-            getSetting: (key, dflt) => {
-                const v = settings[key];
-                return v === undefined ? dflt : v;
-            },
-            setSetting: (key, value) => {
-                settings[key] = value;
-                applySettings();
-            },
-            getWorkspace: () => workspaceFolder || '',
-            isDarkTheme: () => /dark|darcula|night/i.test(String(settings.theme)),
-            isDialogOpen,
-            openInEditor: (path, line) => {
-                closeReadingForEditor();
-                openPath(path);
-                if (line && line > 0) {
-                    setTimeout(() => {
-                        try {
-                            jumpToPosition(line, 1);
-                        } catch (e) {}
-                    }, 250);
-                }
-            },
-            showFlash: (msg) => flash(msg),
-            chooseDirectory: async () => {
-                try {
-                    return await backend.OpenFolderDialog(defaultFolderDir());
-                } catch (e) {
-                    return '';
-                }
-            },
-            showInFolder: (path) => backend.ShowInFolder(path).catch(() => {}),
-        });
-    }
-    if (!els.mainPane) return;
-    els.mainPane.addEventListener('contextmenu', (e) => {
-        if (e.target.closest && e.target.closest('.ctx-menu')) return;
-        if (!file) {
-            e.preventDefault();
-            e.stopPropagation();
-            showBlankMenu(e.clientX, e.clientY);
-            return;
-        }
-        // Markdown 预览区（完整预览或分屏右栏）：专用右键菜单
-        const paneEl = e.target.closest && e.target.closest('.jsoneditor-pane');
-        const pd = paneEl ? docs.find((d) => d.pane === paneEl) : null;
-        if (pd && pd.previewBody && e.target.closest && e.target.closest('.md-preview-view')) {
-            e.preventDefault();
-            e.stopPropagation();
-            showMdPreviewMenu(pd, e.clientX, e.clientY);
-            return;
-        }
-        if (pd && pd.svgRenderEl && e.target.closest && e.target.closest('.svg-render-view')) {
-            e.preventDefault();
-            e.stopPropagation();
-            showSvgMenu(pd, e.clientX, e.clientY);
-            return;
-        }
-        if (pd && pd.imageEl && e.target.closest && e.target.closest('.image-preview-view')) {
-            e.preventDefault();
-            e.stopPropagation();
-            showImageMenu(pd, e.clientX, e.clientY);
-            return;
-        }
-        if (currentMode === 'tree' || currentMode === 'table' || currentMode === 'preview' ||
-            currentMode === 'image' || currentMode === 'binary') return;
-        e.preventDefault();
-        e.stopPropagation();
-        showEditorMenu(e.clientX, e.clientY);
-    });
-}
 
 function findDocByPath(path) {
     const key = String(path || '').replace(/\\/g, '/').toLowerCase();
