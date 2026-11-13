@@ -5431,6 +5431,7 @@ function initAIPanel() {
     if (rt) {
         for (const eventName of ['ai-chunk', 'ai-think', 'ai-toolcall', 'ai-done', 'ai-error']) {
             rt.EventsOn(eventName, (payload) => {
+                console.error('[BRIDGE]', eventName, payload && payload.id);
                 if (aiPanel) aiPanel.handleEvent(eventName, payload);
             });
         }

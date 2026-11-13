@@ -7484,6 +7484,7 @@ export function createAIPanel(options) {
     }
 
     function handleEvent(name, payload) {
+        console.error('[HANDLE]', name, payload && payload.id);
         if (classifierJob && payload && payload.id === classifierJob.id) {
             const job = classifierJob;
             if (name === 'ai-chunk' && payload.delta) job.buffer += payload.delta;
@@ -10877,6 +10878,7 @@ export function createAIPanel(options) {
     const handleSubEvent = (...args) => subagentsMod.handleSubEvent(...args);
     const finalizeSubAgent = (...args) => subagentsMod.finalizeSubAgent(...args);
     const stopSubAgentsOf = (...args) => subagentsMod.stopSubAgentsOf(...args);
+    const subAgents = subagentsMod.subAgents;
     const bgJobSnapshot = (...args) => subagentsMod.bgJobSnapshot(...args);
     const notifyBgListeners = (...args) => subagentsMod.notifyBgListeners(...args);
     const bridgeStopBgJob = (...args) => subagentsMod.bridgeStopBgJob(...args);
