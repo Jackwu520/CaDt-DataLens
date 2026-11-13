@@ -898,7 +898,8 @@ func aiForbiddenHeader(name string) bool {
 }
 
 func aiBuildOpenAIBody(cfg AIConfig, messages []AIMessage, tools []AIToolDef) (map[string]any, error) {
-	converted, err := aiOpenAIMessages(messages)
+	passReasoning := strings.Contains(strings.ToLower(cfg.Model), "deepseek")
+	converted, err := aiOpenAIMessages(messages, passReasoning)
 	if err != nil {
 		return nil, err
 	}
@@ -954,7 +955,7 @@ func aiBuildAnthropicBody(cfg AIConfig, messages []AIMessage, tools []AIToolDef)
 	return body, nil
 }
 
-func aiOpenAIMessages(messages []AIMessage) ([]map[string]any, error) {
+func aiOpenAIMessages(messages []AIMessage, passReasoning bool) ([]map[string]any, error) {
 	out := make([]map[string]any, 0, len(messages))
 	for i, m := range messages {
 		role := strings.ToLower(strings.TrimSpace(m.Role))
@@ -1001,6 +1002,12 @@ func aiOpenAIMessages(messages []AIMessage) ([]map[string]any, error) {
 					})
 				}
 				obj["tool_calls"] = calls
+			}
+			// deepseek 系思考模型要求多轮回传 reasoning_content（缺失时网关 400：
+			// "The reasoning_content in the thinking mode must be passed back"）。
+			// 其他 OpenAI 兼容端点可能拒收未知字段，故按模型名门控。
+			if passReasoning && strings.TrimSpace(m.Thinking) != "" {
+				obj["reasoning_content"] = m.Thinking
 			}
 			out = append(out, obj)
 		case "tool":
