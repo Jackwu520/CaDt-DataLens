@@ -5612,7 +5612,9 @@ html[data-theme="whitey"] {
     flex: 1;
     min-height: 0;
     overflow: auto;
-    padding: 10px 11px 14px;
+    /* 上下间距不放在容器 padding 上：overlay 滚动条的轨道只覆盖 content box，
+       padding 会露出上下两段空隙（轨道不贴满消息区高度）。改用首尾子元素 margin。 */
+    padding: 0 11px;
     display: flex;
     flex-direction: column;
     gap: 10px;
@@ -5620,6 +5622,8 @@ html[data-theme="whitey"] {
     user-select: text;
     scrollbar-color: var(--scroll-thumb) transparent;
 }
+.ai-messages > :first-child { margin-top: 10px; }
+.ai-messages > :last-child { margin-bottom: 14px; }
 .ai-load-earlier { align-self: stretch; flex: none; display: flex; justify-content: center; }
 .ai-load-earlier-btn {
     max-width: 100%;
