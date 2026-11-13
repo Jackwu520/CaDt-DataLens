@@ -246,6 +246,8 @@ export function buildSessionMeta(session) {
         logFile: textOf(session && session.logFile),
         logSavedAt: Number(session && session.logSavedAt) || 0,
         todos: Array.isArray(session && session.todos) ? session.todos : [],
+        // 本会话任务提醒（AI reminder_* 工具 / 面板弹层维护；跟随会话存储，会话删了提醒也没了）
+        reminders: Array.isArray(session && session.reminders) ? session.reminders : [],
         changes: Array.isArray(session && session.changes) ? session.changes : [],
         approvedPaths: Array.isArray(session && session.approvedPaths) ? session.approvedPaths : [],
         summary,

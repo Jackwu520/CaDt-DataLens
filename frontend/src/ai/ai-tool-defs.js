@@ -108,6 +108,46 @@ export const AI_TOOL_DEFS = {
             },
         },
     },
+    reminder_add: {
+        name: 'reminder_add',
+        description: '给当前会话添加一条「任务提醒」（标题 + 可选说明，最多 5 条）。用于防止上下文过长遗漏事情：用户交代了稍后要做的事、或你把长任务拆步后怕丢步骤时添加。提醒清单每轮对话开始都会注入给你；完成一条后记得用 reminder_update 标记 done 或删除。不写工作区文件，无需审批。',
+        parameters: {
+            type: 'object',
+            properties: {
+                title: {type: 'string', description: '提醒标题（≤80 字，一句话说清要做什么）'},
+                detail: {type: 'string', description: '补充说明（≤300 字，可省略）'},
+            },
+            required: ['title'],
+        },
+    },
+    reminder_list: {
+        name: 'reminder_list',
+        description: '列出当前会话的全部任务提醒（id、标题、说明与状态）。',
+        parameters: {type: 'object', properties: {}},
+    },
+    reminder_update: {
+        name: 'reminder_update',
+        description: '更新一条任务提醒：标记完成 / 重新打开，或改标题与说明。id 先用 reminder_list 获取。',
+        parameters: {
+            type: 'object',
+            properties: {
+                id: {type: 'string', description: '提醒 id'},
+                status: {type: 'string', enum: ['open', 'done'], description: 'open=进行中，done=已完成（done 后不再注入上下文）'},
+                title: {type: 'string', description: '新标题（可省略）'},
+                detail: {type: 'string', description: '新说明（可省略；空串 = 清空）'},
+            },
+            required: ['id'],
+        },
+    },
+    reminder_remove: {
+        name: 'reminder_remove',
+        description: '删除一条任务提醒（按 id，先用 reminder_list 获取）。上限已满时先删旧的再加新的。',
+        parameters: {
+            type: 'object',
+            properties: {id: {type: 'string', description: '提醒 id'}},
+            required: ['id'],
+        },
+    },
     write_worklog: {
         name: 'write_worklog',
         description: '在工作区 .cadt/logs/ 追加一条工作日志（时间自动记录，格式为「标题 + 一句话摘要」）。完成一个任务、修一个问题、做出一个关键决定后调用一次，帮用户和后续会话快速回顾做过什么。只记录标题与摘要，不要写正文、代码片段、密钥或敏感信息。日志文件只能通过本工具追加：不允许也不必用 write_file / edit_file / read_file 修改 .cadt/logs/ 下的任何文件，完整历史请用 list_dir / read_file 之外的方式提示用户自行打开查看。所有范围档均可用，无需审批。',
@@ -510,11 +550,14 @@ export function createAIToolDefs(ctx) {
             AI_TOOL_DEFS.env_list,
             AI_TOOL_DEFS.plan_mode,
             AI_TOOL_DEFS.schedule_list,
+            AI_TOOL_DEFS.reminder_list,
         ];
         if (appControlOn()) list.push(AI_TOOL_DEFS.app_control);
         // 工作日志：应用管理的追加式通道（只进 .cadt/logs/，不经工作区写审批），自动审批下直接放行
+        // 任务提醒：只改会话自身状态（session.reminders），不碰工作区文件，自动审批下直接放行
         if (!planMode) list.push(AI_TOOL_DEFS.memory_write, AI_TOOL_DEFS.preference_write, AI_TOOL_DEFS.preference_remove, AI_TOOL_DEFS.env_create,
-            AI_TOOL_DEFS.schedule_create, AI_TOOL_DEFS.schedule_delete, AI_TOOL_DEFS.schedule_toggle, AI_TOOL_DEFS.write_worklog);
+            AI_TOOL_DEFS.schedule_create, AI_TOOL_DEFS.schedule_delete, AI_TOOL_DEFS.schedule_toggle, AI_TOOL_DEFS.write_worklog,
+            AI_TOOL_DEFS.reminder_add, AI_TOOL_DEFS.reminder_update, AI_TOOL_DEFS.reminder_remove);
         // 浏览器：read 档起可浏览（导航/快照/截图），写权限档起可操作页面，full 档可执行任意脚本
         list.push(
             AI_TOOL_DEFS.browser_navigate, AI_TOOL_DEFS.browser_back, AI_TOOL_DEFS.browser_forward,
