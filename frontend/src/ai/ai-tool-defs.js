@@ -330,7 +330,7 @@ export const AI_TOOL_DEFS = {
             properties: {
                 name: {type: 'string', description: '子代理名称（2–16 字，如「依赖调查」「方案 B 审查」）'},
                 task: {type: 'string', description: '交给子代理的完整任务说明（目标 + 关注点 + 期望的结论形式）'},
-                maxRounds: {type: 'integer', description: '轮次上限 3–15，默认 15；轻量调查建议 5'},
+                maxRounds: {type: 'integer', description: '轮次上限 3–30，默认 15。预算用尽会强制收尾（按当前进度总结，质量下降），宁可给足；很轻量的调查 5–8 轮通常够'},
             },
             required: ['name', 'task'],
         },

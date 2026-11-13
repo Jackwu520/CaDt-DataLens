@@ -654,7 +654,7 @@ export function createAISubagents(ctx) {
         const name = aiTextOf(input.name).trim() || '子代理';
         const task = aiTextOf(input.task).trim();
         if (!task) throw new Error('task 不能为空');
-        const maxRounds = aiClampInt(input.maxRounds, 3, 15, AI_SUB_ROUNDS_DEFAULT);
+        const maxRounds = aiClampInt(input.maxRounds, 3, 30, AI_SUB_ROUNDS_DEFAULT);
         const parentDepth = aiClampInt(ctx && ctx.agentDepth, 0, AI_SUB_DEPTH_MAX, 0);
         const depth = parentDepth + 1;
         const maxDepth = subAgentMaxDepth();
@@ -743,6 +743,7 @@ export function createAISubagents(ctx) {
             renderTimer: 0,
             finished: false,
             stopped: false,
+            wrapUp: false,
             toolCalls: new Map(),
             profileCfg: configForProfile(profile, entry),
             systemPrompt: subSystemPromptFor(depth),
@@ -773,12 +774,20 @@ export function createAISubagents(ctx) {
             finalizeSubAgent(sub, s.stopped ? 'stopped' : sub.state);
             return;
         }
-        if (s.roundNo >= sub.maxRounds) {
-            finalizeSubAgent(sub, 'done', '达到轮次上限 ' + sub.maxRounds + '，按当前探索结果收尾');
-            return;
-        }
-        if (sub.session.messages.length > AI_SUB_MESSAGES_MAX) {
-            finalizeSubAgent(sub, 'done', '达到消息上限，按当前探索结果收尾');
+        if (!s.wrapUp && (s.roundNo >= sub.maxRounds || sub.session.messages.length > AI_SUB_MESSAGES_MAX)) {
+            // 预算用尽不再直接收尾：先跑一轮「无工具强制总结」——探索成果不能扔，
+            // 占位符只会让主代理拿不到任何可用结论（2026-11-14 实测）。
+            // 收尾轮不带工具（模型只能输出文本），roundId 继续递增保唯一。
+            s.wrapUp = true;
+            sub.session.messages.push({
+                role: 'user',
+                content: '轮次预算已用尽。不要再探索、不要调用任何工具：立即基于上面已完成的探索输出最终结论——要点 + 证据（path:line）。这是你返回给主代理的唯一结果。',
+                ts: Date.now(),
+            });
+            const wrapAssistant = newAssistantMessage(sub.profile || profileOf(parentSessionOfSub(sub)), sub.entry || entryOf(parentSessionOfSub(sub)));
+            sub.session.messages.push(wrapAssistant);
+            s.assistant = wrapAssistant;
+            runSubRound(sub);
             return;
         }
         s.roundNo += 1;
@@ -931,9 +940,27 @@ export function createAISubagents(ctx) {
                 break;
             }
             case 'ai-error':
+                if (s.wrapUp) {
+                    // 收尾总结请求自身失败（如 60 条消息的上下文超窗）：
+                    // 回退为转录摘录，不让探索成果跟着一起丢。
+                    finalizeSubAgent(sub, 'done', subDigestOf(sub)
+                        + '\n（收尾总结请求失败：' + (payload.message || '请求失败') + '）');
+                    break;
+                }
                 finalizeSubAgent(sub, 'error', payload.message || '请求失败');
                 break;
         }
+    }
+
+    // 收尾兜底：从转录拼探索记录摘录（tool 条目已在推送时截到 600 字）
+    function subDigestOf(sub) {
+        const list = subAgentTranscripts.get(sub.key) || [];
+        const lines = [];
+        for (const entry of list) {
+            if (entry.role === 'tool') lines.push('- ' + entry.name + ': ' + String(entry.text || '').trim());
+        }
+        if (!lines.length) return '达到轮次上限，无可用探索记录';
+        return '（未完成收尾总结，以下为探索记录摘录）\n' + lines.slice(-12).join('\n');
     }
 
     function finalizeSubAgent(sub, state, note) {
@@ -960,6 +987,7 @@ export function createAISubagents(ctx) {
             summary = String(s.assistant.content || '').trim();
         }
         if (state === 'error' && !summary) summary = '子代理执行失败';
+        if (!summary && s.wrapUp) summary = subDigestOf(sub);
         if (state === 'stopped') summary = summary ? '（用户停止）' + summary : '（用户停止）';
         summary = summary.trim();
         if (summary.length > AI_SUB_SUMMARY_MAX) summary = summary.slice(0, AI_SUB_SUMMARY_MAX) + '\n…（子代理结果已截断）';
