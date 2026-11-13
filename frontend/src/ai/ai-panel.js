@@ -121,6 +121,7 @@ import {createAIComposer} from './ai-composer.js';
 import {createAIToolCards} from './ai-tool-cards.js';
 import {createAITakeover} from './ai-takeover.js';
 import {createAIManageDialogs} from './ai-manage-dialogs.js';
+import {createAISettingsDialog} from './ai-settings-dialog.js';
 import {createAISubagents} from './ai-subagents.js';
 
 
