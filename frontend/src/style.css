@@ -5829,6 +5829,30 @@ html[data-theme="whitey"] {
     white-space: pre-wrap;
     overflow-wrap: anywhere;
 }
+/* 用户超长消息默认折叠：只露出开头一段，尾部渐隐；展开按钮贴在气泡内底部 */
+.ai-user-text.foldable.folded {
+    max-height: 9em;
+    overflow: hidden;
+    -webkit-mask-image: linear-gradient(to bottom, #000 72%, transparent 100%);
+    mask-image: linear-gradient(to bottom, #000 72%, transparent 100%);
+}
+.ai-user-fold-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-top: 5px;
+    padding: 1px 4px;
+    border: none;
+    background: none;
+    color: var(--accent);
+    font: inherit;
+    font-size: 11px;
+    line-height: 1.4;
+    cursor: pointer;
+    border-radius: 4px;
+}
+.ai-user-fold-btn:hover { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.ai-user-fold-btn svg { width: 12px; height: 12px; display: block; transition: transform .15s ease; }
 .ai-user-foot {
     display: flex;
     align-items: center;
