@@ -144,7 +144,7 @@ test('ACTIVITY_DOMAINS 覆盖全部动作大类', () => {
 // 静态断言（方案 §8）：每个 P0/P1 action 在触发点代码里都有字面量调用。
 test('每个操作事件都有触发点', () => {
     const dir = new URL('./', import.meta.url);
-    const files = ['main.js', 'ai/ai-panel.js', 'mode-switch.js', 'settings-ui.js', 'writing-ui.js', 'editor-groups.js', 'terminal-ui.js', 'bridge-ui.js', 'quick-switch.js', 'menu-bar.js', 'session-restore.js', 'app-actions.js', 'properties-ui.js', 'update-check.js'];
+    const files = ['main.js', 'ai/ai-panel.js', 'mode-switch.js', 'settings-ui.js', 'writing-ui.js', 'editor-groups.js', 'terminal-ui.js', 'bridge-ui.js', 'quick-switch.js', 'menu-bar.js', 'session-restore.js', 'app-actions.js', 'properties-ui.js', 'update-check.js', 'explorer-ops.js'];
     const src = files.map((f) => readFileSync(new URL(f, dir), 'utf8')).join('\n');
     const required = [
         'file.open', 'file.save', 'file.saveAs', 'file.create', 'file.delete', 'file.rename', 'file.move', 'file.format',

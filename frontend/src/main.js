@@ -51,6 +51,7 @@ import {createModeSwitch} from './mode-switch.js';
 import {createTitlebarPopovers} from './titlebar-popovers.js';
 import {createSettingsUI} from './settings-ui.js';
 import {createWritingUI} from './writing-ui.js';
+import {createExplorerOps} from './explorer-ops.js';
 import {createEditorGroups} from './editor-groups.js';
 
 window.addEventListener('error', (e) => {
@@ -1613,584 +1614,65 @@ function newFileTypeMenuItems(action) {
     ];
 }
 
-function remapPathValue(path, oldPath, newPath) {
-    if (!path) return path;
-    const target = String(path).replace(/\\/g, '/');
-    const oldNorm = String(oldPath || '').replace(/\\/g, '/').replace(/\/+$/, '');
-    if (!oldNorm) return path;
-    const lowerTarget = target.toLowerCase();
-    const lowerOld = oldNorm.toLowerCase();
-    if (lowerTarget === lowerOld) return newPath;
-    if (!lowerTarget.startsWith(lowerOld + '/')) return path;
-    return String(newPath).replace(/\\/g, '/').replace(/\/+$/, '') + target.slice(oldNorm.length);
-}
-
-function parentFolderOf(path) {
-    const text = String(path || '').replace(/\\/g, '/').replace(/\/+$/, '');
-    const index = text.lastIndexOf('/');
-    if (index < 0) return '';
-    let dir = text.slice(0, index);
-    if (/^[a-z]:$/i.test(dir)) dir += '/';
-    return dir;
-}
-
-function samePathValue(a, b) {
-    const left = String(a || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
-    const right = String(b || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
-    return !!left && left === right;
-}
-
-function pathWithinValue(root, target) {
-    const base = String(root || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
-    const child = String(target || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
-    return !!base && (child === base || child.startsWith(base + '/'));
-}
-
-function clipboardItems(targets) {
-    const list = Array.isArray(targets) ? targets : (targets ? [targets] : []);
-    const out = [];
-    for (const item of list) {
-        if (!item || !item.path) continue;
-        if (out.some((entry) => samePathValue(entry.path, item.path))) continue;
-        out.push({path: item.path, name: item.name || baseNameOf(item.path), isDir: !!item.isDir});
-    }
-    return out;
-}
-
-function setFileClipboard(targets, cut) {
-    const all = clipboardItems(targets);
-    const items = all.filter((item) =>
-        !all.some((other) =>
-            other.isDir && !samePathValue(other.path, item.path) && pathWithinValue(other.path, item.path)));
-    if (!items.length) return;
-    const same = fileClipboard && fileClipboard.cut === !!cut &&
-        fileClipboard.items.length === items.length &&
-        items.every((item) => fileClipboard.items.some((old) => samePathValue(old.path, item.path)));
-    if (same) {
-        if (explorer) explorer.setCutPaths(cut ? items.map((item) => item.path) : []);
-        return;
-    }
-    fileClipboard = {items, cut: !!cut};
-    if (explorer) explorer.setCutPaths(cut ? items.map((item) => item.path) : []);
-    flash(items.length === 1
-        ? (cut ? '已剪切：' : '已复制：') + items[0].name
-        : (cut ? '已剪切 ' : '已复制 ') + items.length + ' 项');
-}
-
-function applyMovedPath(oldPath, newPath) {
-    let activeChanged = false;
-    let rootChanged = false;
-    for (const doc of docs) {
-        if (!doc.path) continue;
-        const next = remapPathValue(doc.path, oldPath, newPath);
-        if (next === doc.path) continue;
-        doc.path = next;
-        doc.name = baseNameOf(next);
-        if (doc === file) activeChanged = true;
-    }
-    if (workspaceFolder) {
-        const next = remapPathValue(workspaceFolder, oldPath, newPath);
-        if (next !== workspaceFolder) {
-            workspaceFolder = next;
-            rootChanged = true;
-        }
-    }
-    for (const entry of closedTabs) {
-        if (entry.path) entry.path = remapPathValue(entry.path, oldPath, newPath);
-    }
-    if (activeChanged && file) {
-        setFilename(file.name, file.path);
-        renderBreadcrumb(file.path);
-        updateWindowTitle();
-    }
-    renderTabs();
-    return {activeChanged, rootChanged};
-}
-
-async function runPasteItems(clip, destDir, names) {
-    if (!clip || !clip.items.length) throw new Error('剪贴板中没有文件');
-    if (!backend.CopyEntry || !backend.MoveEntry) throw new Error('当前版本不支持粘贴');
-    const cut = !!clip.cut;
-    const results = [];
-    const errors = [];
-    for (const item of clip.items) {
-        const name = (names && names[item.path]) || item.name;
-        try {
-            const newPath = cut
-                ? await backend.MoveEntry(item.path, destDir, name)
-                : await backend.CopyEntry(item.path, destDir, name);
-            results.push({...item, newPath});
-        } catch (e) {
-            errors.push({item, error: (e && e.message) || String(e)});
-        }
-    }
-    let activeChanged = false;
-    let rootChanged = false;
-    if (cut && results.length) {
-        for (const result of results) {
-            const flags = applyMovedPath(result.path, result.newPath);
-            activeChanged = activeChanged || flags.activeChanged;
-            rootChanged = rootChanged || flags.rootChanged;
-            if (explorer) explorer.removePath(result.path);
-            activityLog.log('file.move', destDir, {from: actRel(result.path), count: results.length});
-        }
-        const moved = new Set(results.map((result) => result.path));
-        const remaining = clip.items.filter((item) => !moved.has(item.path));
-        if (remaining.length) {
-            fileClipboard = {items: remaining, cut: true};
-            if (explorer) explorer.setCutPaths(remaining.map((item) => item.path));
-        } else {
-            fileClipboard = null;
-            if (explorer) explorer.setCutPaths([]);
-        }
-    }
-    if (rootChanged && explorer) explorer.setRoot(workspaceFolder);
-    if (rootChanged) renderWorkspaceCrumbs();
-    if (explorer && results.length) {
-        await explorer.refreshDir(destDir);
-        explorer.selectPaths(results.map((result) => ({
-            path: result.newPath,
-            name: baseNameOf(result.newPath),
-            isDir: result.isDir,
-        })));
-        if (activeChanged && file) explorer.setActive(file.path);
-    }
-    return {
-        okCount: results.length,
-        failCount: errors.length,
-        firstError: errors.length ? errors[0].error : '',
-        results,
-    };
-}
-
-async function moveEntriesByDrag(items, destDir) {
-    if (settings.readOnlyMode) {
-        flash('只读模式下不能移动文件', true);
-        return;
-    }
-    if (!backend.MoveEntry) {
-        flash('当前版本不支持移动文件', true);
-        return;
-    }
-    const all = clipboardItems(items);
-    // 选中的父目录和子项同时拖动时只移动父目录
-    const unique = all.filter((item) =>
-        !all.some((other) => other.isDir && !samePathValue(other.path, item.path) && pathWithinValue(other.path, item.path)));
-    const movable = unique.filter((item) =>
-        !samePathValue(item.path, destDir) &&
-        !(item.isDir && pathWithinValue(item.path, destDir)) &&
-        !samePathValue(parentFolderOf(item.path), destDir));
-    if (!movable.length) {
-        flash('文件已在该目录中', true);
-        return;
-    }
-    const results = [];
-    const errors = [];
-    for (const item of movable) {
-        try {
-            const newPath = await backend.MoveEntry(item.path, destDir, item.name);
-            results.push({...item, newPath});
-            activityLog.log('file.move', destDir, {from: actRel(item.path), count: movable.length});
-        } catch (e) {
-            errors.push({item, error: (e && e.message) || String(e)});
-        }
-    }
-    let activeChanged = false;
-    let rootChanged = false;
-    for (const result of results) {
-        const flags = applyMovedPath(result.path, result.newPath);
-        activeChanged = activeChanged || flags.activeChanged;
-        rootChanged = rootChanged || flags.rootChanged;
-        if (explorer) explorer.removePath(result.path);
-    }
-    if (rootChanged && explorer) explorer.setRoot(workspaceFolder);
-    if (explorer && results.length) {
-        await explorer.refreshDir(destDir);
-        explorer.selectPaths(results.map((result) => ({
-            path: result.newPath,
-            name: baseNameOf(result.newPath),
-            isDir: result.isDir,
-        })));
-        if (activeChanged && file) explorer.setActive(file.path);
-    }
-    if (errors.length) {
-        const ok = results.length ? '已移动 ' + results.length + ' 项，' : '';
-        flash(ok + errors.length + ' 项失败：' + errors[0].error, true);
-    } else {
-        flash(results.length === 1 ? '已移动：' + baseNameOf(results[0].newPath) : '已移动 ' + results.length + ' 项');
-    }
-}
-
-async function pasteFileClipboard(targetInfo) {
-    if (!fileClipboard || !fileClipboard.items.length) {
-        flash('剪贴板中没有文件', true);
-        return;
-    }
-    if (settings.readOnlyMode) {
-        flash('只读模式下不能粘贴', true);
-        return;
-    }
-    const clip = fileClipboard;
-    const destDir = targetInfo && targetInfo.isDir ? targetInfo.path : parentFolderOf(targetInfo && targetInfo.path);
-    if (!destDir) {
-        flash('无法确定粘贴目录', true);
-        return;
-    }
-    const items = clip.items.filter((item) => {
-        if (item.isDir && pathWithinValue(item.path, destDir)) return false;
-        if (clip.cut && samePathValue(parentFolderOf(item.path), destDir)) return false;
-        return true;
-    });
-    if (!items.length) {
-        flash(clip.cut ? '源文件已经在该目录中' : '不能粘贴到文件夹自身或其子目录', true);
-        return;
-    }
-    const skipped = clip.items.length - items.length;
-    if (items.length === 1 && clip.items.length === 1) {
-        const item = items[0];
-        let suggested;
-        try {
-            suggested = await backend.SuggestCopyName(destDir, item.name, item.isDir);
-        } catch (e) {
-            flash('粘贴失败：' + e, true);
-            return;
-        }
-        if (suggested === item.name) {
-            try {
-                const result = await runPasteItems({items, cut: clip.cut}, destDir);
-                if (result.failCount) flash('粘贴失败：' + result.firstError, true);
-                else flash((clip.cut ? '已移动：' : '已粘贴：') + item.name);
-            } catch (e) {
-                flash('粘贴失败：' + e, true);
-            }
-            return;
-        }
-        openNameDialog({
-            title: clip.cut ? '移动' : '粘贴',
-            label: '新名称',
-            value: suggested,
-            selectStem: !item.isDir,
-            okLabel: clip.cut ? '移动' : '粘贴',
-            onSubmit: async (name) => {
-                const result = await runPasteItems({items, cut: clip.cut}, destDir, {[item.path]: name});
-                if (result.failCount) throw new Error(result.firstError);
-            },
-        });
-        return;
-    }
-    const names = {};
-    let renamed = 0;
-    for (const item of items) {
-        try {
-            const suggested = await backend.SuggestCopyName(destDir, item.name, item.isDir);
-            if (suggested !== item.name) {
-                names[item.path] = suggested;
-                renamed++;
-            }
-        } catch (e) {
-            flash('粘贴失败：' + e, true);
-            return;
-        }
-    }
-    try {
-        const result = await runPasteItems({items, cut: clip.cut}, destDir, names);
-        if (result.failCount) {
-            flash('已粘贴 ' + result.okCount + ' 项，' + result.failCount + ' 项失败：' + result.firstError, true);
-        } else {
-            flash((clip.cut ? '已移动 ' : '已粘贴 ') + result.okCount + ' 项' +
-                (renamed ? '（' + renamed + ' 项自动重命名）' : '') +
-                (skipped ? '，跳过 ' + skipped + ' 项' : ''));
-        }
-    } catch (e) {
-        flash('粘贴失败：' + e, true);
-    }
-}
-
-function openCreateEntryDialog(dirPath, isDir, suggestedName, title) {
-    openNameDialog({
-        title: title || (isDir ? '新建文件夹' : '新建文件'),
-        label: isDir ? '文件夹名称' : '文件名',
-        value: suggestedName || '',
-        placeholder: isDir ? '例如：config' : '例如：data.json',
-        selectStem: !isDir,
-        okLabel: '创建',
-        onSubmit: async (name) => {
-            if (!backend.CreateEntry) throw new Error('当前版本不支持新建');
-            const target = await backend.CreateEntry(dirPath, name, isDir);
-            if (explorer) {
-                await explorer.refreshDir(dirPath);
-                explorer.selectPath(target, isDir);
-            }
-            if (isDir) {
-                flash('已新建文件夹：' + name.trim());
-            } else {
-                await openPath(target);
-            }
-        },
-    });
-}
-
-function newFileMenuItems(dirPath) {
-    return [
-        {label: '文件…', icon: 'E7C3', action: () => openCreateEntryDialog(dirPath, false, '', '新建文件')},
-        {label: '目录…', icon: 'E8B7', action: () => openCreateEntryDialog(dirPath, true, '新建文件夹', '新建文件夹')},
-        {sep: true},
-        ...newFileTypeMenuItems((type) => openCreateEntryDialog(dirPath, false, type.name, '新建 ' + type.label)),
-    ];
-}
-
-function applyRenamedPath(oldPath, newPath) {
-    let activeChanged = false;
-    for (const doc of docs) {
-        if (!doc.path) continue;
-        const next = remapPathValue(doc.path, oldPath, newPath);
-        if (next === doc.path) continue;
-        doc.path = next;
-        doc.name = baseNameOf(next);
-        if (doc === file) activeChanged = true;
-    }
-    if (workspaceFolder) {
-        const next = remapPathValue(workspaceFolder, oldPath, newPath);
-        if (next !== workspaceFolder) {
-            workspaceFolder = next;
-            renderWorkspaceCrumbs();
-        }
-    }
-    for (const entry of closedTabs) {
-        if (entry.path) entry.path = remapPathValue(entry.path, oldPath, newPath);
-    }
-    if (fileClipboard) {
-        for (const item of fileClipboard.items) {
-            const next = remapPathValue(item.path, oldPath, newPath);
-            if (next === item.path) continue;
-            item.path = next;
-            item.name = baseNameOf(next);
-        }
-    }
-    if (explorer) {
-        explorer.pathRenamed(oldPath, newPath);
-        if (fileClipboard && fileClipboard.cut) explorer.setCutPaths(fileClipboard.items.map((item) => item.path));
-        if (activeChanged && file) explorer.setActive(file.path);
-    }
-    if (activeChanged && file) {
-        setFilename(file.name, file.path);
-        renderBreadcrumb(file.path);
-        updateWindowTitle();
-    }
-    renderTabs();
-    flash('已重命名为：' + baseNameOf(newPath));
-}
-
-function deleteExplorerEntries(targets) {
-    const list = clipboardItems(targets);
-    if (!list.length) return;
-    if (!backend.DeleteEntry) {
-        flash('当前版本不支持删除', true);
-        return;
-    }
-    if (settings.readOnlyMode) {
-        flash('只读模式下不能删除', true);
-        return;
-    }
-    const rootPath = explorer && explorer.getRoot ? explorer.getRoot() : '';
-    const deletable = list.filter((item) => !(rootPath && samePathValue(rootPath, item.path)));
-    if (!deletable.length) {
-        flash('不能删除文件树的根目录', true);
-        return;
-    }
-    const openDocs = docs.filter((doc) => doc.path && deletable.some((item) =>
-        item.isDir ? pathWithinValue(item.path, doc.path) : samePathValue(item.path, doc.path)));
-    const dirty = openDocs.some((doc) => doc.dirty);
-    const what = deletable.length === 1 ? '“' + deletable[0].name + '”' : '选中的 ' + deletable.length + ' 个项目';
-    const message = dirty
-        ? what + '已打开且有未保存的修改，删除后这些修改会一并丢失。\n确定移到回收站吗？'
-        : what + '将被移到回收站，确定继续吗？';
-    openCloseConfirm(message, async () => {
-        const deleted = [];
-        const failures = [];
-        for (const item of deletable) {
-            try {
-                await backend.DeleteEntry(item.path);
-                deleted.push(item);
-            } catch (e) {
-                failures.push(item.name + '：' + ((e && e.message) || e));
-            }
-        }
-        if (deleted.length) {
-            for (const doc of docs.slice()) {
-                if (!doc.path) continue;
-                if (deleted.some((item) =>
-                    item.isDir ? pathWithinValue(item.path, doc.path) : samePathValue(item.path, doc.path))) {
-                    closeDocNow(doc, false);
-                }
-            }
-            closedTabs = closedTabs.filter((entry) => !deleted.some((item) =>
-                item.isDir ? pathWithinValue(item.path, entry.path) : samePathValue(item.path, entry.path)));
-            if (fileClipboard && fileClipboard.cut) {
-                fileClipboard.items = fileClipboard.items.filter((item) => !deleted.some((target) =>
-                    target.isDir ? pathWithinValue(target.path, item.path) : samePathValue(target.path, item.path)));
-                if (!fileClipboard.items.length) fileClipboard = null;
-            }
-            if (explorer) {
-                for (const item of deleted) explorer.removePath(item.path);
-                explorer.setCutPaths(fileClipboard && fileClipboard.cut ? fileClipboard.items.map((item) => item.path) : []);
-                explorer.refresh();
-            }
-            // 操作留痕：逐项记录（回收站可撤销，故记路径而非仅计数）。
-            for (const item of deleted) {
-                activityLog.log('file.delete', item.path, {count: deleted.length, toRecycle: true});
-            }
-        }
-        if (failures.length) {
-            flash('删除失败：' + failures[0] + (failures.length > 1 ? '（另有 ' + (failures.length - 1) + ' 项失败）' : ''), true);
-        } else {
-            flash(deleted.length > 1 ? '已删除 ' + deleted.length + ' 个项目' : '已删除：' + deleted[0].name);
-        }
-    }, '删除', '删除');
-}
-
-function openRenameEntryDialog(info) {
-    openNameDialog({
-        title: info.isDir ? '重命名文件夹' : '重命名文件',
-        label: '新名称',
-        value: info.name,
-        selectStem: !info.isDir,
-        okLabel: '重命名',
-        onSubmit: async (name) => {
-            if (!backend.RenameEntry) throw new Error('当前版本不支持重命名');
-            const newPath = await backend.RenameEntry(info.path, name);
-            if (newPath && newPath !== info.path) {
-                applyRenamedPath(info.path, newPath);
-                activityLog.log('file.rename', newPath, {from: actRel(info.path)});
-            }
-        },
-    });
-}
-
-function relativePathFrom(path, root) {
-    if (!path || !root) return '';
-    const target = String(path).replace(/\\/g, '/');
-    const base = String(root).replace(/\\/g, '/').replace(/\/+$/, '');
-    if (!base) return '';
-    const lowerTarget = target.toLowerCase();
-    const lowerBase = base.toLowerCase();
-    if (lowerTarget === lowerBase) return '.';
-    if (!lowerTarget.startsWith(lowerBase + '/')) return '';
-    return target.slice(base.length + 1);
-}
-
-function copyPathMenuItems(targets) {
-    const list = clipboardItems(targets);
-    const root = workspaceFolder || (explorer && explorer.getRoot ? explorer.getRoot() : '');
-    const absolute = list.map((item) => item.path).join('\r\n');
-    const relativeParts = list.map((item) => relativePathFrom(item.path, root));
-    const relative = relativeParts.every(Boolean) ? relativeParts.join('\r\n') : '';
-    const names = list.map((item) => item.name).join('\r\n');
-    return [
-        {label: '绝对路径', disabled: !absolute, action: () => copyText(absolute, '绝对路径')},
-        {label: '相对路径', disabled: !relative, action: () => copyText(relative, '相对路径')},
-        {sep: true},
-        {label: '文件名', disabled: !names, action: () => copyText(names, '文件名')},
-    ];
-}
-
-function showExplorerMenu(info, x, y, node) {
-    if (!ctxMenu || !info) return;
-    const isDir = !!info.isDir;
-    const selected = explorer ? explorer.getSelection() : [];
-    const targets = selected.length ? selected : [{path: info.path, name: info.name, isDir}];
-    const rootPath = explorer && explorer.getRoot ? explorer.getRoot() : '';
-    const deletable = targets.filter((item) => !(rootPath && samePathValue(rootPath, item.path)));
-    const items = [];
-    if (isDir) {
-        items.push({
-            label: '新建',
-            icon: 'E710',
-            disabled: !!settings.readOnlyMode,
-            submenu: newFileMenuItems(info.path),
-        });
-        items.push({label: '作为书籍阅读', icon: 'E8A5', action: () => readingMode && readingMode.openBook(info.path)});
-    } else {
-        items.push({label: '打开', icon: 'E8E5', action: () => openPath(info.path)});
-        items.push({label: '在新窗口中打开', icon: 'E8A7', action: () => openInNewWindows([info.path])});
-        if (readingMode && /\.(md|markdown|mdx|txt|docx|epub)$/i.test(info.name || '')) {
-            items.push({label: '阅读此文件', icon: 'E8A5', action: () => readingMode.openSingleFile(info.path)});
-        }
-        items.push({
-            label: '在 AI 中询问此文件',
-            iconHtml: AI_REFERENCE_ICON_HTML,
-            action: () => askAIAboutPath(info.path),
-        });
-        items.push(...aiReferenceFileMenuItems({path: info.path, name: info.name}));
-        if (gitStateCache.map.get(info.path.replace(/\\/g, '/'))) {
-            items.push({label: 'Git：查看差异', icon: 'E8D3', action: () => showGitDiff(info.path)});
-        }
-        const compareTargets = selected.filter((item) => item && item.path && !item.isDir);
-        if (compareTargets.length === 2) {
-            items.push({
-                label: '比较这两个文件…',
-                icon: 'E8A5',
-                action: () => openDiffDialog(compareTargets[0].path, compareTargets[1].path),
-            });
-        }
-    }
-    items.push({sep: true});
-    items.push({label: '复制', shortcut: 'Ctrl+C', icon: 'E8C8', action: () => setFileClipboard(targets, false)});
-    items.push({
-        label: '剪切',
-        shortcut: 'Ctrl+X',
-        icon: 'E8C6',
-        disabled: !!settings.readOnlyMode,
-        action: () => setFileClipboard(targets, true),
-    });
-    items.push({
-        label: '粘贴',
-        shortcut: 'Ctrl+V',
-        icon: 'E77F',
-        disabled: !!settings.readOnlyMode || !fileClipboard || !fileClipboard.items.length,
-        action: () => pasteFileClipboard(info),
-    });
-    items.push({sep: true});
-    if (isDir) {
-        items.push({
-            label: node && node.expanded ? '收起目录' : '展开目录',
-            icon: 'E70D',
-            disabled: !node,
-            action: () => explorer && explorer.toggleNode(node),
-        });
-        items.push({label: '设为文件树根目录', icon: 'E8B7', action: () => openFolderWorkspace(info.path)});
-        items.push({
-            label: '结构化目录',
-            iconHtml: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 4.5h14M5.5 8.5h11.5M8 12.5h9M10.5 16.5h6.5" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>',
-            submenu: [
-                {label: '复制', icon: 'E8C8', action: () => copyStructuredDir(info.path)},
-                {label: '导出…', icon: 'E74E', action: () => exportStructuredDir(info.path)},
-            ],
-        });
-        items.push({sep: true});
-    }
-    items.push({
-        label: '重命名…',
-        icon: 'E8AC',
-        disabled: !!settings.readOnlyMode || targets.length !== 1,
-        action: () => openRenameEntryDialog(info),
-    });
-    items.push({
-        label: '删除',
-        shortcut: 'Delete',
-        icon: 'E74D',
-        danger: true,
-        disabled: !!settings.readOnlyMode || !deletable.length,
-        action: () => deleteExplorerEntries(targets),
-    });
-    items.push({label: '复制路径', icon: 'E8C8', submenu: copyPathMenuItems(targets)});
-    items.push({label: '在文件管理器中显示', icon: 'E8B7', action: () => showPathInFolder(info.path)});
-    items.push({sep: true});
-    items.push({label: '刷新', icon: 'E72C', action: () => explorer && explorer.refresh()});
-    items.push({sep: true});
-    items.push({label: '属性…', icon: 'E946', action: () => showFileProperties(info.path)});
-    ctxMenu.open(items, x, y);
-}
+// ---- 资源管理器域操作（explorer-ops.js） ----
+const explorerOps = createExplorerOps({
+    get AI_REFERENCE_ICON_HTML() { return AI_REFERENCE_ICON_HTML; },
+    get actRel() { return actRel; },
+    get activityLog() { return activityLog; },
+    get askAIAboutPath() { return askAIAboutPath; },
+    get backend() { return backend; },
+    get baseNameOf() { return baseNameOf; },
+    get closeDocNow() { return closeDocNow; },
+    get closedTabs() { return closedTabs; },
+    set closedTabs(v) { closedTabs = v; },
+    get copyStructuredDir() { return copyStructuredDir; },
+    get copyText() { return copyText; },
+    get ctxMenu() { return ctxMenu; },
+    get docs() { return docs; },
+    get explorer() { return explorer; },
+    get exportStructuredDir() { return exportStructuredDir; },
+    get file() { return file; },
+    get fileClipboard() { return fileClipboard; },
+    set fileClipboard(v) { fileClipboard = v; },
+    get flash() { return flash; },
+    get gitStateCache() { return gitStateCache; },
+    get openCloseConfirm() { return openCloseConfirm; },
+    get openDiffDialog() { return openDiffDialog; },
+    get openFolderWorkspace() { return openFolderWorkspace; },
+    get openInNewWindows() { return openInNewWindows; },
+    get openNameDialog() { return openNameDialog; },
+    get openPath() { return openPath; },
+    get readingMode() { return readingMode; },
+    get renderBreadcrumb() { return renderBreadcrumb; },
+    get renderTabs() { return renderTabs; },
+    get renderWorkspaceCrumbs() { return renderWorkspaceCrumbs; },
+    get setFilename() { return setFilename; },
+    get settings() { return settings; },
+    get showFileProperties() { return showFileProperties; },
+    get showGitDiff() { return showGitDiff; },
+    get showPathInFolder() { return showPathInFolder; },
+    get updateWindowTitle() { return updateWindowTitle; },
+    get workspaceFolder() { return workspaceFolder; },
+    set workspaceFolder(v) { workspaceFolder = v; },
+});
+const remapPathValue = (...a) => explorerOps.remapPathValue(...a);
+const parentFolderOf = (...a) => explorerOps.parentFolderOf(...a);
+const samePathValue = (...a) => explorerOps.samePathValue(...a);
+const pathWithinValue = (...a) => explorerOps.pathWithinValue(...a);
+const clipboardItems = (...a) => explorerOps.clipboardItems(...a);
+const setFileClipboard = (...a) => explorerOps.setFileClipboard(...a);
+const applyMovedPath = (...a) => explorerOps.applyMovedPath(...a);
+const runPasteItems = (...a) => explorerOps.runPasteItems(...a);
+const moveEntriesByDrag = (...a) => explorerOps.moveEntriesByDrag(...a);
+const pasteFileClipboard = (...a) => explorerOps.pasteFileClipboard(...a);
+const openCreateEntryDialog = (...a) => explorerOps.openCreateEntryDialog(...a);
+const newFileMenuItems = (...a) => explorerOps.newFileMenuItems(...a);
+const applyRenamedPath = (...a) => explorerOps.applyRenamedPath(...a);
+const deleteExplorerEntries = (...a) => explorerOps.deleteExplorerEntries(...a);
+const openRenameEntryDialog = (...a) => explorerOps.openRenameEntryDialog(...a);
+const relativePathFrom = (...a) => explorerOps.relativePathFrom(...a);
+const copyPathMenuItems = (...a) => explorerOps.copyPathMenuItems(...a);
+const showExplorerMenu = (...a) => explorerOps.showExplorerMenu(...a);
 
 function selectedText() {
     if (!editor) return '';
