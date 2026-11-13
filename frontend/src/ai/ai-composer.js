@@ -551,6 +551,8 @@ export function createAIComposer(ctx) {
         currentQueueItems,
         captureComposerMessage,
         editQueuedMessage,
+        handleInputPaste,
+        attachCurrentFile,
         getAttachments: () => attachments,
         setAttachments: (value) => { attachments = value; },
     };

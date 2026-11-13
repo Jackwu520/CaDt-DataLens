@@ -986,6 +986,8 @@ export function createAITakeover(ctx) {
     }
     return {
         requestPatchApproval,
+        planApprovalMessage,
+        planApprovalKey,
         renderPatchTakeover,
         renderPatchApprovalBody,
         renderApprovalTakeover,

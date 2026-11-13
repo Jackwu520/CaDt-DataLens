@@ -1909,5 +1909,13 @@ export function createAISettingsDialog(ctx) {
         exportAIConfig,
         importAIConfig,
         bindSettingsPane,
+        isPathApproved,
+        addCommandApprovalRule,
+        matchCommandApproval,
+        projectRulesPath,
+        ensureProjectRules,
+        refreshChatSettings,
+        refreshMemoryPath,
+        providerLabelFor,
     };
 }

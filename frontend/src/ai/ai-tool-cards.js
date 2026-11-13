@@ -821,5 +821,8 @@ export function createAIToolCards(ctx) {
         updateAssistantElement,
         toolMeta,
         acceptPlan,
+        askStateLabel,
+        askResultText,
+        enhanceAICodeBlocks,
     };
 }

@@ -668,6 +668,7 @@ export function createAISessionList(ctx) {
         renderSessionList,
         showSessionMenu,
         showSessionListMenu,
+        clearSessionUnread,
         onSearchInput,
         cancelSessionSearch,
     };

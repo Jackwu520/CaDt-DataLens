@@ -1004,6 +1004,8 @@ export function createAISubagents(ctx) {
         hideChipsPop, positionChipsPop, agentStateBadge, agentStatusIcon, bgJobFirstLine, taskSnippet,
         openBgTermInContent, renderChipsPop, toggleChipsPop,
         agentBlock, agentToolRow, renderAgentLiveMessages, renderAgentFinished, renderAgentView,
-        parentSessionOfSub, runSubAgent, runSubRound, handleSubEvent, finalizeSubAgent, stopSubAgentsOf,
+        parentSessionOfSub, runSubAgent, runSubRound, handleSubEvent, finalizeSubAgent, stopSubAgentsOf, initHud,
+        subAgents, subAgentTranscripts, subAgentQueue,
+        bgJobSnapshot, notifyBgListeners, bridgeStopBgJob,
     };
 }

@@ -446,5 +446,6 @@ export function createAIManageDialogs(ctx) {
                 ' tokens，估算），建议压缩';
         }
     }
-    return {showPromptDialog, showMemoryDialog, createAppSkill, showSkillsDialog, updateCtxBanner};
+    return {showPromptDialog, showMemoryDialog, createAppSkill, showSkillsDialog, updateCtxBanner,
+        showArchivedDialog, estimateMessageTokens, estimateApiMessagesTokens, estimateCurrentTokens};
 }

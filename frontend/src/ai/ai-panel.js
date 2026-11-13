@@ -1845,13 +1845,14 @@ export function createAIPanel(options) {
     const renderSessionList = () => sessionListMod.renderSessionList();
     const showSessionMenu = (...args) => sessionListMod.showSessionMenu(...args);
     const showSessionListMenu = (...args) => sessionListMod.showSessionListMenu(...args);
+    const clearSessionUnread = (...args) => sessionListMod.clearSessionUnread(...args);
 
     // AI 设置页（阶段 3 拆出：ai-settings-dialog.js；config 经 getConfig 读，sessions 写经 setSessions）
     const settingsMod = createAISettingsDialog({
         el, panel, opt, settings, saveSettings, flash, askConfirm, backend, readTextFile,
         isOpen, currentSession, persistSessions, saveAIConfig,
         renderMessages, updateContextCount, updateSendState, updateComposerState, queueLogSave,
-        renderModelChip, renderProfileSelect, renderSessionList, sessionActivity, sessionTitleById,
+        renderModelChip, renderProfileSelect, renderSessionList, sessionActivity, sessionTitleById: (...args) => sessionTitleById(...args),
         newSession, open, switchSession, compactOf, streamOf, sendAppMessage,
         activeProfile, appControlOn, defaultModelEntry, defaultProfile, normalizeProfile,
         configForProfile, promptById, emptyState, dialogButton, openAIDialog, closeAIDialog,
@@ -1899,6 +1900,15 @@ export function createAIPanel(options) {
     const exportAIConfig = (...args) => settingsMod.exportAIConfig(...args);
     const importAIConfig = (...args) => settingsMod.importAIConfig(...args);
     const bindSettingsPane = (...args) => settingsMod.bindSettingsPane(...args);
+    // 以下函数随 O 区段被卷入设置模块（阶段 2 遗留的权限规则/偏好基建），别名回接
+    const isPathApproved = (...args) => settingsMod.isPathApproved(...args);
+    const addCommandApprovalRule = (...args) => settingsMod.addCommandApprovalRule(...args);
+    const matchCommandApproval = (...args) => settingsMod.matchCommandApproval(...args);
+    const projectRulesPath = (...args) => settingsMod.projectRulesPath(...args);
+    const ensureProjectRules = (...args) => settingsMod.ensureProjectRules(...args);
+    const refreshChatSettings = (...args) => settingsMod.refreshChatSettings(...args);
+    const refreshMemoryPath = (...args) => settingsMod.refreshMemoryPath(...args);
+    const providerLabelFor = (...args) => settingsMod.providerLabelFor(...args);
 
 
     // 定时任务域（阶段 3 拆出：ai-schedule.js；sessions 模块内只读，经 getSessions 访问）
@@ -9545,6 +9555,10 @@ export function createAIPanel(options) {
     const createAppSkill = (...args) => dialogsMod.createAppSkill(...args);
     const showSkillsDialog = (...args) => dialogsMod.showSkillsDialog(...args);
     const updateCtxBanner = (...args) => dialogsMod.updateCtxBanner(...args);
+    const showArchivedDialog = (...args) => dialogsMod.showArchivedDialog(...args);
+    const estimateMessageTokens = (...args) => dialogsMod.estimateMessageTokens(...args);
+    const estimateApiMessagesTokens = (...args) => dialogsMod.estimateApiMessagesTokens(...args);
+    const estimateCurrentTokens = (...args) => dialogsMod.estimateCurrentTokens(...args);
 
     function compactTranscript(session) {
         const parts = [];
@@ -10626,6 +10640,8 @@ export function createAIPanel(options) {
     const renderAskTakeover = (...args) => takeoverMod.renderAskTakeover(...args);
     const renderPlanTakeover = (...args) => takeoverMod.renderPlanTakeover(...args);
     const updateComposerTakeover = (...args) => takeoverMod.updateComposerTakeover(...args);
+    const planApprovalMessage = (...args) => takeoverMod.planApprovalMessage(...args);
+    const planApprovalKey = (...args) => takeoverMod.planApprovalKey(...args);
 
     // 输入区与附件域（阶段 3 拆出：ai-composer.js；attachments/queueSeq 随域迁入，attachSeq 经 nextAttachSeq 取号）
     const composerMod = createAIComposer({
@@ -10676,6 +10692,8 @@ export function createAIPanel(options) {
     const currentQueueItems = (...args) => composerMod.currentQueueItems(...args);
     const captureComposerMessage = (...args) => composerMod.captureComposerMessage(...args);
     const editQueuedMessage = (...args) => composerMod.editQueuedMessage(...args);
+    const handleInputPaste = (...args) => composerMod.handleInputPaste(...args);
+    const attachCurrentFile = (...args) => composerMod.attachCurrentFile(...args);
     const getAttachments = () => composerMod.getAttachments();
     const setAttachments = (value) => composerMod.setAttachments(value);
 
@@ -10858,6 +10876,9 @@ export function createAIPanel(options) {
     const handleSubEvent = (...args) => subagentsMod.handleSubEvent(...args);
     const finalizeSubAgent = (...args) => subagentsMod.finalizeSubAgent(...args);
     const stopSubAgentsOf = (...args) => subagentsMod.stopSubAgentsOf(...args);
+    const bgJobSnapshot = (...args) => subagentsMod.bgJobSnapshot(...args);
+    const notifyBgListeners = (...args) => subagentsMod.notifyBgListeners(...args);
+    const bridgeStopBgJob = (...args) => subagentsMod.bridgeStopBgJob(...args);
 
     // 工具卡 / 审批卡渲染（阶段 3 拆出：ai-tool-cards.js；构造置于 init 之前（init 的渲染路径会触达工具卡与 HUD 别名））
     const toolCardsMod = createAIToolCards({
@@ -10903,6 +10924,9 @@ export function createAIPanel(options) {
     // toolMeta / acceptPlan：随工具卡提取段带入的相邻函数（接管区审批卡与计划批准在用）
     const toolMeta = (...args) => toolCardsMod.toolMeta(...args);
     const acceptPlan = (...args) => toolCardsMod.acceptPlan(...args);
+    const askStateLabel = (...args) => toolCardsMod.askStateLabel(...args);
+    const askResultText = (...args) => toolCardsMod.askResultText(...args);
+    const enhanceAICodeBlocks = (...args) => toolCardsMod.enhanceAICodeBlocks(...args);
 
     init();
     whenConfigReady();
