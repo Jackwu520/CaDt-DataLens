@@ -33,8 +33,19 @@ CaDt-DataLens 是一个面向 Windows 的轻量级多格式数据查看与编辑
 - `*_test.go`：与同名源文件对应的单元测试
 
 ### 前端 `frontend/`
-- `src/main.js`：组合根与核心枢纽（标签页核心状态、命令面板、菜单注册表、初始化接线，约 7,400 行）。域逻辑已拆到下面的模块，每个都是「factory + 显式依赖注入」——依赖一律经 `deps` 延迟求值（main.js 传 getter），不依赖声明顺序；改动某域时先找到对应模块，不要往 main.js 回填
-- `src/editor-groups.js`：编辑器组/分栏（二叉分割树）、标签页渲染、各预览视图（Markdown/SVG/图片/CSV 表格/SQL/补丁）、标签右键菜单、书签、面包屑（从 main.js 拆出的最大模块）
+- `src/main.js`：组合根与核心枢纽（标签页核心状态、命令面板、菜单注册表、初始化接线，约 4,400 行）。域逻辑已拆到下面的模块，每个都是「factory + 显式依赖注入」——依赖一律经 `deps` 延迟求值（main.js 传 getter），不依赖声明顺序；改动某域时先找到对应模块，不要往 main.js 回填
+- `src/dev/mock-backend.js`：vite dev 浏览器调试用的 mock 后端（mockBackend/mockRt/样例数据，场景由 URL 参数驱动）。main.js 在 `!hasWails` 时**动态 import**，生产包不含此模块；改 mock 场景只动这里
+- `src/editor-groups.js`：编辑器组/分栏（二叉分割树）、标签页渲染与 chrome、DnD、面包屑、createDocEditor 分发、文档生命周期（从 main.js 拆出的域编排核心）；预览视图与 Ace 钩子等已拆到下列兄弟模块（统一模式：`createEditor<域>(deps)`，deps 与 editor-groups 共用 main.js 的 getter 集经 Object.create 委托）
+- `src/editor-ace-hooks.js`：Ace 会话钩子（applyAceMode 模式切换/只读锁、折叠行内预览 hover、多光标、光标位置联动、python token 染色）
+- `src/editor-csv-view.js`：CSV/TSV 表格视图族（虚拟滚动、列统计、冻结列宽、单元格编辑、缩放、tableHistory）
+- `src/editor-split-preview.js`：分屏与预览视图族（Markdown 预览+分屏双向滚动同步、HTML 预览、SVG 渲染、图片/二进制/纯文本视图及各 enter/show/hide 分发器）
+- `src/editor-sql-view.js`：大文件只读 SQL 查询视图
+- `src/editor-browser-tab.js`：浏览器使用标签页（内嵌 WebView2、视口菜单、显隐同步）
+- `src/editor-doc-extras.js`：AI 写入徽标、横幅、JSON 折叠预览、行书签、视图状态记忆、Git 行级标记、树视图右键菜单
+- `src/editor-export-menus.js`：Markdown 块级渲染与选区反向取源、SVG→PNG 导出、svg/image/md 预览右键菜单、标签页右键菜单
+- `src/explorer-ops.js`：资源管理器域操作（路径改码、文件剪贴板、新建/重命名/删除对话框与右键菜单）
+- `src/editor-menus.js`：编辑器右键菜单（选区采集、AI 联动入口、阅读模式控制器创建）
+- `src/structure-panel.js`：结构面板控制器（解析 Worker + 缓存、面板 wiring、来源切换、导出菜单）；面板 UI 工厂在 `structure.js` 的 `createStructurePanel`
 - `src/writing-ui.js`：写作模式 + 格式渲染/语言定义（LANG_DEFS、markdown 渲染管线、mermaid、字数统计、goto、自动保存）
 - `src/settings-ui.js`：设置页（elsSettings/elsDialogs、applySettings、主题、全屏/置顶、只读锁、对话框族、操作留痕接线）
 - `src/terminal-ui.js`：内置终端、底部面板 dock、运行控制器接线
@@ -106,7 +117,7 @@ CaDt-DataLens 是一个面向 Windows 的轻量级多格式数据查看与编辑
 - 文件大小硬限制（`app.go`）：>10 MB 只读、>100 MB 拒绝打开、图片预览 32 MB、二进制 hex 1 MB。放宽限制前先确认性能。
 
 ### 前端侧
-- `main.js` 是组合根（约 7,400 行）：改动前先按域找到对应模块（editor-groups / writing-ui / settings-ui / terminal-ui / bridge-ui 等），不要把域逻辑回填进 main.js；新域一律新建模块。
+- `main.js` 是组合根（约 4,400 行）：改动前先按域找到对应模块（editor-groups / writing-ui / settings-ui / terminal-ui / bridge-ui / explorer-ops / structure-panel 等），不要把域逻辑回填进 main.js；新域一律新建模块（从 main.js 拆出的模块需要 deps 重写裸标识符，参考 explorer-ops 先例）。
 - 域模块的约定是「factory + 显式依赖注入」：`export function createXxx(deps)`，依赖一律 `deps.X` 延迟求值，main.js 侧传 getter（`get X() { return X; }`）——不依赖声明顺序、不拍 let 快照。新增域照此办理，不要在模块顶层 import main.js 的绑定。
 - 格式相关逻辑放 `formats.js`，结构解析放 `structure.js`，不要往 `main.js` 里塞新的格式分支。
 - Markdown 渲染链：markdown-it → DOMPurify → hljs / KaTeX / mermaid；涉安全的改动（sanitize、外链、内嵌 HTML）必须保守，**原始 HTML 不执行是硬要求**。

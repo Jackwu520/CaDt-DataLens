@@ -1,10 +1,21 @@
 # 前端拆分第二阶段：editor-groups.js + main.js 残余大段
 
-> 状态：未开工（2026-11-14 调研成文）
+> 状态：**全部实施完成（阶段 E1–E5 + M1–M4，9 批）**（2026-11-14 归档）
+> 实施记录：
+> - E1 `editor-ace-hooks.js`（f7c8b03）：Ace 钩子族 446 行，editor-groups 5,130 → 4,714
+> - E2 `editor-csv-view.js`（6c53c17）：CSV 表格族 1,012 行，→ 3,741
+> - E3 `editor-split-preview.js`（f5650ea）：分屏预览族 906 行，→ 2,913
+> - E4 `editor-browser-tab.js` + `editor-sql-view.js`（585fe74）：321 + 250 行，→ 2,404；修正记录：抽取切片曾误吞紧邻的树菜单族（82 行）与补丁胶水族（33 行），全文件裸引用扫描捕获后移回
+> - E5 `editor-doc-extras.js` + `editor-export-menus.js`（2223ad8）：579 + 389 行，editor-groups 终态 **1,520 行**（-70%）
+> - M1 `dev/mock-backend.js`（918ab97）：mock 后端 2,250 行改**动态 import**，main.js -2,235 行 → 5,238；生产主包零 mock（独立 65KB 懒加载 chunk）；mock 场景 ?csv / ?text 经内置浏览器实测
+> - M2 `explorer-ops.js`（676779e）：608 行，→ 4,720；**main.js 拆出必须 tokenizer 重写裸标识符 → deps.X**（重写器三坑：of-in 非声明上下文 / import 绑定进 topLevel / 对象简写位展开 key: deps.X）
+> - M3 `editor-menus.js`（1473a32）：237 行，→ 4,563；对象简写位 `isDialogOpen,` 曾展开为非法语法致 rollup 失败，git reset 回 M2 态重做
+> - M4 `structure-panel.js`（b0b7b2b）：266 行，main.js 终态 **4,376 行**（-41%）；工厂改名 createStructurePanelController 避让 structure.js 既有工厂
+> - 每批独立提交 + npm test 170 项 + vite/wails build + 定向冒烟；方法论沉淀 `.cadt/memory/frontend-module-refactor-audit.md`
 > 决策依据：structure-cleanup 归档后按文件行数规范复盘——>3000 行的 3 个文件里 editor-groups.js 完全未动；main.js 仍有 dev mock 等大段可拆。作者拍板先出本方案（不派子代理）。
 > 前置阅读：`docs/finished-plans/structure-cleanup.md`（抽取模式先例）、`.cadt/memory/frontend-module-refactor-audit.md`（验证方法论）
 > 范围：两个文件的域拆分；**不含** style.css（另议）、Go 侧（已记录取舍）、ai-panel.js（交子代理消息化方案消化）
-> 原则：函数体逐字搬移；每批独立提交、独立验证、可单独 revert；0 新依赖
+> 原则：函数体逐字搬移（main.js 系需 deps 重写）；每批独立提交、独立验证、可单独 revert；0 新依赖
 
 ## 1. 现状锚点（2026-11-14 实测）
 
