@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func newTestSessionIndex(t *testing.T) (*sql.DB, bool) {
@@ -209,5 +210,151 @@ func TestAppSessionSearchEndToEnd(t *testing.T) {
 		if hit.SessionID == "s1" {
 			t.Fatalf("删除后不应再命中：%+v", hit)
 		}
+	}
+}
+
+// 全局搜索接入：详细 = 全文；简要 = 用户消息 + 每轮最后一条 assistant；
+// 两种模式都只搜未归档会话，工具消息不参与简要模式。
+func TestScopedSessionSearchBriefAndFull(t *testing.T) {
+	db, trigram := newTestSessionIndex(t)
+	raw := strings.Join([]string{
+		`{"v":1,"t":"header","id":"s1"}`,
+		`{"v":1,"t":"msg","mid":"m1","m":{"role":"user","content":"帮我分析日志里的慢查询","ts":1}}`,
+		`{"v":1,"t":"msg","mid":"m2","m":{"role":"assistant","content":"中间结论：索引缺失","ts":2}}`,
+		`{"v":1,"t":"msg","mid":"m3","m":{"role":"assistant","content":"最终结论：慢查询来自缺索引","ts":3}}`,
+		`{"v":1,"t":"msg","mid":"m4","m":{"role":"tool","name":"read_file","arguments":"慢查询","content":"工具输出","ts":4}}`,
+		`{"v":1,"t":"msg","mid":"m5","m":{"role":"user","content":"慢查询修好了吗","ts":5}}`,
+		`{"v":1,"t":"msg","mid":"m6","m":{"role":"assistant","content":"已修复并验证","ts":6}}`,
+	}, "\n") + "\n"
+	if _, err := db.Exec(`INSERT INTO sessions(id, title, workspace, updated_at) VALUES('s1','慢查询会话','',1)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := indexSessionLog(db, "s1", raw); err != nil {
+		t.Fatal(err)
+	}
+	// 简要：user 两条都命中；assistant 只留每轮最后一条（m3 / m6），中间的 m2 与工具消息不出现
+	deadline := time.Now().Add(3 * time.Second)
+	result, err := searchScopedSessionIndex(db, trigram, "慢查询", 50, true, deadline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mids []string
+	for _, hit := range result.Hits {
+		if hit.Kind == "message" {
+			mids = append(mids, hit.Mid)
+		}
+	}
+	if strings.Join(mids, ",") != "m1,m3,m5" {
+		t.Fatalf("简要模式应命中 m1/m3/m5，实际 %v（trigram=%v）", mids, trigram)
+	}
+	for _, hit := range result.Hits {
+		if hit.Role == "tool" {
+			t.Fatalf("简要模式不应命中工具消息：%+v", hit)
+		}
+	}
+	// 标题也算命中
+	foundTitle := false
+	for _, hit := range result.Hits {
+		if hit.Kind == "title" && hit.SessionID == "s1" {
+			foundTitle = true
+		}
+	}
+	if !foundTitle {
+		t.Fatalf("标题命中缺失：%+v", result.Hits)
+	}
+
+	// 详细：中间 assistant m2 与工具消息也可命中
+	result, err = searchScopedSessionIndex(db, trigram, "索引缺失", 50, false, deadline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundM2 := false
+	for _, hit := range result.Hits {
+		if hit.Kind == "message" && hit.Mid == "m2" {
+			foundM2 = true
+		}
+	}
+	if !foundM2 {
+		t.Fatalf("详细模式应能命中中间 assistant 消息 m2：%+v", result.Hits)
+	}
+}
+
+// 简要模式的轮判定跨会话复位：每个会话各自的最后一条 assistant 独立计算；
+// 会话收尾（扫描结束）时最后一轮的最后一条 assistant 也要参与判定。
+func TestScopedSessionSearchBriefPerSessionRounds(t *testing.T) {
+	db, trigram := newTestSessionIndex(t)
+	for _, id := range []string{"sa", "sb"} {
+		raw := strings.Join([]string{
+			`{"v":1,"t":"header","id":"` + id + `"}`,
+			`{"v":1,"t":"msg","mid":"` + id + `-u1","m":{"role":"user","content":"关键词在第一轮","ts":1}}`,
+			`{"v":1,"t":"msg","mid":"` + id + `-a1","m":{"role":"assistant","content":"第一轮回复含关键词","ts":2}}`,
+			`{"v":1,"t":"msg","mid":"` + id + `-a2","m":{"role":"assistant","content":"第二轮总结也含关键词","ts":3}}`,
+		}, "\n") + "\n"
+		if _, err := db.Exec(`INSERT INTO sessions(id, title, workspace, updated_at) VALUES('` + id + `','` + id + `','',1)`); err != nil {
+			t.Fatal(err)
+		}
+		if err := indexSessionLog(db, id, raw); err != nil {
+			t.Fatal(err)
+		}
+	}
+	result, err := searchScopedSessionIndex(db, trigram, "关键词", 50, true, time.Now().Add(3*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mids := make([]string, 0)
+	for _, hit := range result.Hits {
+		if hit.Kind == "message" {
+			mids = append(mids, hit.Mid)
+		}
+	}
+	// 每个会话只有一轮：user 命中 + 该轮最后一条 assistant（a2）命中；a1 被最后的 a2 覆盖不出现
+	if strings.Join(mids, ",") != "sa-u1,sa-a2,sb-u1,sb-a2" {
+		t.Fatalf("跨会话轮判定应各自独立：%v", mids)
+	}
+}
+
+// 归档会话整体排除（archived_at > 0 的会话连标题都不出）。
+func TestScopedSessionSearchExcludesArchivedSessions(t *testing.T) {
+	db, trigram := newTestSessionIndex(t)
+	raw := `{"v":1,"t":"header","id":"s1"}` + "\n" +
+		`{"v":1,"t":"msg","mid":"m1","m":{"role":"user","content":"目标内容在这里","ts":1}}` + "\n"
+	if _, err := db.Exec(`INSERT INTO sessions(id, title, workspace, updated_at, archived_at) VALUES('s1','归档会话','',1,123)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := indexSessionLog(db, "s1", raw); err != nil {
+		t.Fatal(err)
+	}
+	for _, brief := range []bool{true, false} {
+		result, err := searchScopedSessionIndex(db, trigram, "目标内容", 50, brief, time.Now().Add(3*time.Second))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(result.Hits) != 0 {
+			t.Fatalf("归档会话不应命中（brief=%v）：%+v", brief, result.Hits)
+		}
+	}
+}
+
+// 结果条数预算：命中超限时置 Truncated。
+func TestScopedSessionSearchLimitBudget(t *testing.T) {
+	db, trigram := newTestSessionIndex(t)
+	raw := strings.Builder{}
+	raw.WriteString(`{"v":1,"t":"header","id":"s1"}` + "\n")
+	for i := 0; i < 8; i++ {
+		line := `{"v":1,"t":"msg","mid":"u` + string(rune('0'+i)) + `","m":{"role":"user","content":"预算词 ` + string(rune('0'+i)) + `","ts":` + string(rune('0'+i)) + `}}` + "\n"
+		raw.WriteString(line)
+	}
+	if _, err := db.Exec(`INSERT INTO sessions(id, title, workspace, updated_at) VALUES('s1','预算','',1)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := indexSessionLog(db, "s1", raw.String()); err != nil {
+		t.Fatal(err)
+	}
+	result, err := searchScopedSessionIndex(db, trigram, "预算词", 3, true, time.Now().Add(3*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Hits) != 3 || !result.Truncated {
+		t.Fatalf("limit=3 时应恰好 3 条且 Truncated=true：%d 条，%+v", len(result.Hits), result)
 	}
 }

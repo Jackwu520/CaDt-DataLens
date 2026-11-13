@@ -3261,11 +3261,24 @@ const globalSearch = createGlobalSearch({
     get flash() { return flash; },
     get focusFindEditor() { return focusFindEditor; },
     get openPaths() { return openPaths; },
+    get openAISessionHit() { return openAISessionHit; },
     get switchMode() { return switchMode; },
     get waitUntil() { return waitUntil; },
     get workspaceFolder() { return workspaceFolder; },
 });
 const {isGlobalSearchOpen, openGlobalSearch} = globalSearch;
+
+// 全局搜索「搜索 AI 会话」命中跳转：打开 AI 面板 → 切到该会话 → 按 mid 定位消息并高亮。
+// mid 在面板里找不到时（索引滞后）退回按 liveIndex 兜底，找不到就只切会话。
+async function openAISessionHit(hit) {
+    if (!aiPanel || !aiPanel.bridgeSwitchSession) throw new Error('AI 面板未初始化');
+    aiPanel.open(true);
+    aiPanel.bridgeSwitchSession(hit.sessionId);
+    if (hit.mid && typeof aiPanel.bridgeLocateMessage === 'function') {
+        const located = aiPanel.bridgeLocateMessage(hit.mid, hit.liveIndex);
+        if (!located) flash('已打开会话「' + (hit.title || '') + '」，未能定位到该消息（会话可能在此期间有变更）');
+    }
+}
 const jsonQuery = createJsonQuery({
     get copyText() { return copyText; },
     get docs() { return docs; },

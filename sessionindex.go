@@ -30,6 +30,7 @@ type AISessionSearchHit struct {
 	LiveIndex int    `json:"liveIndex"`
 	Snippet   string `json:"snippet"`
 	Kind      string `json:"kind"`
+	Ts        int64  `json:"ts,omitempty"`
 }
 
 type AISessionIndexStats struct {
@@ -577,6 +578,294 @@ func (a *App) AISessionSearch(query string, limit int) ([]AISessionSearchHit, er
 		return nil, err
 	}
 	return searchSessionIndex(db, aiIndexTrigram, q, limit)
+}
+
+// ---------- 全局搜索接入：仅未归档会话，详细 / 简要两档（global-search 面板用） ----------
+
+const (
+	aiScopedSearchMaxLimit   = 100
+	aiScopedSearchBriefScan  = int64(32) << 20 // 简要模式逐行扫描的总字节上限，封顶内存
+	aiScopedSearchSyncBudget = 1500 * time.Millisecond
+	aiScopedSearchTimeBudget = 3 * time.Second // 整次搜索的墙钟上限
+)
+
+// AISessionScopedSearchResult 全局搜索「搜索 AI 会话」的结果集；
+// Truncated 表示因条数 / 字节 / 时长预算提前截断。
+type AISessionScopedSearchResult struct {
+	Hits      []AISessionSearchHit `json:"hits"`
+	Truncated bool                 `json:"truncated"`
+	Brief     bool                 `json:"brief"`
+}
+
+// syncSessionIndexBudgeted 带时长预算的脏会话重建：超过预算就停下，
+// 剩下的会话等下次搜索继续（dirty 标记仍在）。
+func syncSessionIndexBudgeted(db *sql.DB, store *aiSessionStore, maxWait time.Duration) error {
+	deadline := time.Now().Add(maxWait)
+	metas, err := store.list()
+	if err != nil {
+		return err
+	}
+	seen := make(map[string]bool, len(metas))
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	for _, raw := range metas {
+		var meta aiIndexMeta
+		if json.Unmarshal([]byte(raw), &meta) != nil || meta.ID == "" {
+			continue
+		}
+		seen[meta.ID] = true
+		if _, err := tx.Exec(`INSERT INTO sessions(id, title, workspace, updated_at, archived_at, message_count, archived_count, dirty, indexed_at)
+			VALUES(?,?,?,?,?,?,?,1,0)
+			ON CONFLICT(id) DO UPDATE SET
+				title=excluded.title, workspace=excluded.workspace, updated_at=excluded.updated_at,
+				archived_at=excluded.archived_at`,
+			meta.ID, meta.Title, meta.Workspace, meta.UpdatedAt, meta.ArchivedAt, meta.MessageCount, meta.ArchivedCount); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+	}
+	rows, err := tx.Query(`SELECT id FROM sessions`)
+	if err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	stale := make([]string, 0)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			_ = tx.Rollback()
+			return err
+		}
+		if !seen[id] {
+			stale = append(stale, id)
+		}
+	}
+	rows.Close()
+	for _, id := range stale {
+		if _, err := tx.Exec(`DELETE FROM messages WHERE session_id=?`, id); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+		if _, err := tx.Exec(`DELETE FROM sessions WHERE id=?`, id); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+
+	rows, err = db.Query(`SELECT id FROM sessions WHERE dirty=1 ORDER BY updated_at DESC`)
+	if err != nil {
+		return err
+	}
+	dirtyIDs := make([]string, 0)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		dirtyIDs = append(dirtyIDs, id)
+	}
+	rows.Close()
+	for _, id := range dirtyIDs {
+		if time.Now().After(deadline) {
+			return nil
+		}
+		raw, err := store.read(id)
+		if err != nil {
+			continue
+		}
+		if err := indexSessionLog(db, id, raw); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// briefSessionSearchHit 简要模式的流式游标：只保留「当前轮的最后一条 assistant」，
+// 轮结束（下一条 user / 换会话 / 扫描结束）时才判定它是否命中。
+type briefSessionWalk struct {
+	sessionID string
+	title     string
+	// 当前轮最后一条 assistant（最后出现者胜出）
+	hasAssistant bool
+	mid          string
+	liveIndex    int
+	ts           int64
+	text         string
+}
+
+func (w *briefSessionWalk) flush(query string, out *[]AISessionSearchHit, limit int) {
+	if !w.hasAssistant || len(*out) >= limit {
+		w.hasAssistant = false
+		return
+	}
+	if strings.Contains(strings.ToLower(w.text), query) {
+		*out = append(*out, AISessionSearchHit{
+			SessionID: w.sessionID, Title: w.title, Role: "assistant",
+			Mid: w.mid, LiveIndex: w.liveIndex, Ts: w.ts,
+			Snippet: makeSearchSnippet(w.text, query, 60), Kind: "message",
+		})
+	}
+	w.hasAssistant = false
+}
+
+// searchScopedSessionIndex 核心实现：
+//   - brief=false（详细）：标题 + 全部 live 消息全文（FTS/LIKE，与侧栏会话搜索同源）；
+//   - brief=true（简要）：标题 + 每条 user 消息 + 每轮最后一条 assistant 消息（作为该轮总结），
+//     流式扫描带硬预算（总字节 / 墙钟 / 结果条数），超限置 Truncated。
+// 两种模式都只搜未归档会话（archived_at = 0）与未压缩的 live 消息（live_index >= 0）。
+func searchScopedSessionIndex(db *sql.DB, trigram bool, query string, limit int, brief bool, deadline time.Time) (AISessionScopedSearchResult, error) {
+	result := AISessionScopedSearchResult{Hits: make([]AISessionSearchHit, 0, 16), Brief: brief}
+	lowerQuery := strings.ToLower(query)
+
+	// 标题命中
+	rows, err := db.Query(`SELECT id, title FROM sessions WHERE archived_at=0 AND instr(lower(title), lower(?)) > 0 ORDER BY updated_at DESC LIMIT ?`, query, limit)
+	if err != nil {
+		return result, err
+	}
+	for rows.Next() {
+		var id, title string
+		if err := rows.Scan(&id, &title); err != nil {
+			rows.Close()
+			return result, err
+		}
+		result.Hits = append(result.Hits, AISessionSearchHit{SessionID: id, Title: title, LiveIndex: -1, Kind: "title"})
+	}
+	rows.Close()
+	if len(result.Hits) >= limit || time.Now().After(deadline) {
+		result.Truncated = len(result.Hits) >= limit
+		return result, nil
+	}
+
+	if !brief {
+		// 详细：复用既有全文检索链路，加未归档过滤
+		useFTS := trigram && utf8.RuneCountInString(query) >= 3
+		var rows *sql.Rows
+		if useFTS {
+			match := `"` + strings.ReplaceAll(query, `"`, `""`) + `"`
+			rows, err = db.Query(`SELECT m.session_id, s.title, m.role, m.name, m.mid, m.live_index, m.ts,
+				snippet(ai_messages_fts, 0, char(1), char(2), '…', 32)
+				FROM ai_messages_fts
+				JOIN messages m ON m.rowid = ai_messages_fts.rowid
+				JOIN sessions s ON s.id = m.session_id
+				WHERE ai_messages_fts MATCH ? AND m.live_index >= 0 AND s.archived_at = 0
+				ORDER BY bm25(ai_messages_fts) LIMIT ?`, match, limit-len(result.Hits))
+		} else {
+			rows, err = db.Query(`SELECT m.session_id, s.title, m.role, m.name, m.mid, m.live_index, m.ts, m.text
+				FROM messages m JOIN sessions s ON s.id = m.session_id
+				WHERE m.live_index >= 0 AND s.archived_at = 0 AND instr(lower(m.text), lower(?)) > 0
+				ORDER BY s.updated_at DESC, m.live_index DESC LIMIT ?`, query, limit-len(result.Hits))
+		}
+		if err != nil {
+			return result, err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var hit AISessionSearchHit
+			var ts int64
+			var text string
+			if err := rows.Scan(&hit.SessionID, &hit.Title, &hit.Role, &hit.Name, &hit.Mid, &hit.LiveIndex, &ts, &text); err != nil {
+				return result, err
+			}
+			hit.Ts = ts
+			if !useFTS {
+				text = makeSearchSnippet(text, query, 60)
+			}
+			hit.Snippet = text
+			hit.Kind = "message"
+			result.Hits = append(result.Hits, hit)
+		}
+		if err := rows.Err(); err != nil {
+			return result, err
+		}
+		result.Truncated = false
+		return result, nil
+	}
+
+	// 简要：流式扫描未归档会话的 live 消息（按会话 + live_index 顺序），
+	// 只保留 user 消息与每轮最后一条 assistant。
+	rows, err = db.Query(`SELECT m.session_id, s.title, m.role, m.mid, m.live_index, m.ts, m.text
+		FROM messages m JOIN sessions s ON s.id = m.session_id
+		WHERE m.live_index >= 0 AND s.archived_at = 0
+		ORDER BY m.session_id, m.live_index`)
+	if err != nil {
+		return result, err
+	}
+	defer rows.Close()
+	var walk briefSessionWalk
+	scanned := int64(0)
+	for rows.Next() {
+		if len(result.Hits) >= limit || time.Now().After(deadline) || scanned > aiScopedSearchBriefScan {
+			result.Truncated = true
+			break
+		}
+		var sessionID, title, role, mid, text string
+		var liveIndex, ts int64
+		if err := rows.Scan(&sessionID, &title, &role, &mid, &liveIndex, &ts, &text); err != nil {
+			return result, err
+		}
+		scanned += int64(len(text))
+		if walk.sessionID != sessionID {
+			walk.flush(lowerQuery, &result.Hits, limit)
+			walk = briefSessionWalk{sessionID: sessionID, title: title}
+		}
+		switch role {
+		case "user":
+			walk.flush(lowerQuery, &result.Hits, limit)
+			if len(result.Hits) < limit && strings.Contains(strings.ToLower(text), lowerQuery) {
+				result.Hits = append(result.Hits, AISessionSearchHit{
+					SessionID: sessionID, Title: title, Role: role,
+					Mid: mid, LiveIndex: int(liveIndex), Ts: ts,
+					Snippet: makeSearchSnippet(text, query, 60), Kind: "message",
+				})
+			}
+		case "assistant":
+			walk.hasAssistant = true
+			walk.mid = mid
+			walk.liveIndex = int(liveIndex)
+			walk.ts = ts
+			walk.text = text
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return result, err
+	}
+	walk.flush(lowerQuery, &result.Hits, limit)
+	result.Truncated = len(result.Hits) >= limit || scanned > aiScopedSearchBriefScan || time.Now().After(deadline)
+	return result, nil
+}
+
+// AISessionSearchScoped 全局搜索的 AI 会话通道：只搜未归档会话；
+// brief=true 时只搜用户消息 + 每轮最后一条 assistant（简要），false 为全文（详细）。
+// 硬预算：结果 ≤100 条、简要扫描 ≤32MB、脏索引重建 ≤1.5s、整次 ≤3s。
+func (a *App) AISessionSearchScoped(query string, limit int, brief bool) (AISessionScopedSearchResult, error) {
+	q := strings.TrimSpace(query)
+	result := AISessionScopedSearchResult{Hits: []AISessionSearchHit{}, Brief: brief}
+	if q == "" {
+		return result, nil
+	}
+	if limit <= 0 || limit > aiScopedSearchMaxLimit {
+		limit = 30
+	}
+	db, err := aiIndexDatabase()
+	if err != nil {
+		return result, err
+	}
+	store, err := defaultAISessionStore()
+	if err != nil {
+		return result, err
+	}
+	deadline := time.Now().Add(aiScopedSearchTimeBudget)
+	if err := syncSessionIndexBudgeted(db, store, aiScopedSearchSyncBudget); err != nil {
+		return result, err
+	}
+	return searchScopedSessionIndex(db, aiIndexTrigram, q, limit, brief, deadline)
 }
 
 func resetSessionIndexFiles() {
