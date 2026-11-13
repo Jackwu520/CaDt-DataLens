@@ -27,10 +27,15 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 
 ## 未发布
 
-### 内部结构（docs/unfinished-plans/structure-cleanup.md 实施记录）
+### AI 助手
+
+- 新增 **write_file 陈旧缓冲防护**（并发会话覆盖丢码防线）：AI 会话用 `write_file` 整体覆盖已存在的文件前，会校验本会话是否读过该文件、以及读取后磁盘是否又被修改（会话级读取指纹 + Go `SaveFileChecked` 落盘校验双保险）——本会话没读过的文件、或读取后已被其他会话 / 外部程序改动的文件会被拒绝写入并提示先 `read_file` 重读（局部修改建议改用 `edit_file`），不再静默覆盖他人改动。新建文件与内部流（记忆写入等）不受影响。
+
+### 内部结构（docs/finished-plans/structure-cleanup.md 实施记录）
 
 - **main.js 单体拆分**：21,188 行 → 7,447 行（-65%），组合根（标签页核心、命令面板、菜单注册表、初始化接线）保留在 `main.js`，其余按域拆成独立模块——`cursor-themes`（系统光标）、`terminal-ui`（内置终端与底部面板）、`bridge-ui`（进程桥/虚拟文档/浏览器标签/git 面板）、`settings-ui`（设置/主题/对话框/字数统计/留痕接线）、`writing-ui`（写作模式 + 格式渲染 + 语言定义）、`editor-groups`（编辑器组/分栏/标签/各预览视图，5,125 行）、`titlebar-popovers`（项目选择 + Git 分支弹层）、`menu-bar`（IDEA 式菜单条）、`mode-switch`（模式切换外壳）、`activity-pane`（设置页操作记录）、`properties-ui`（属性对话框）、`session-restore`（会话持久化）、`app-actions`（退出/最近打开/拖放复制）、`app-links`（外链/内置文档）、`update-check`（更新检查）、`format-convert`（格式互转）、`find-bar`（查找替换）、`global-search`（工作区搜索）、`json-query`（JSONPath）、`diff-dialog`（双文件对比）、`schema-panel`（Schema 校验）、`quick-switch`（快速切换器）。拆分采用「factory + 显式依赖注入」：依赖一律经 `deps` 延迟求值（调用方传 getter），不依赖声明顺序、不拍 let 快照；函数体原样搬移。每批拆分后 `npm test`（161 项）与 `npm run build` 验证通过。
 - **AI 面板常量外移**：`ai-panel.js` 闭包前的 832 行常量与纯辅助函数（存储键、容量上限、时间/字数/图片估算等）拆到 `src/ai/ai-constants.js`；`createAIPanel` 闭包骨架保持原样。
+- **ai-panel.js 按域拆分**：18,023 行 → 11,040 行（-39%），闭包内按域抽成 17 个兄弟模块（统一模式：`createAI<域>(ctx)` 工厂 + ctx 注入，重赋值状态经 getter/setter 访问器，互引经惰性转发箭头解环；函数体逐字搬移）——`ai-tool-defs`（工具定义表）、`ai-session-list`（侧栏列表/分组/搜索）、`ai-composer`（输入区与附件）、`ai-tool-cards`（工具卡/审批卡渲染）、`ai-takeover`（输入区接管卡）、`ai-todos`、`ai-changes-ui`（变更记录）、`ai-schedule`（定时任务）、`ai-git-ui`（Git 快捷操作）、`ai-slash`（斜杠命令）、`ai-message-queue`（消息排队/插话）、`ai-manage-dialogs`（提示词/记忆/技能对话框）、`ai-settings-dialog`（设置页）、`ai-subagents`（子代理运行时 + HUD）。留守核心：`executeTool`、回合流程、会话持久化、消息渲染、三形态、init。每批独立提交，配三类静态扫描（ctx 键一致性 / return 键 / 裸引用与反向悬空）+ `npm test`（170 项）+ 构建验证；扫描共捕获 15 处「构建不报、运行才炸」的真实缺陷，另修复 `sessionHasLiveBgJob` 重复定义。
 - **仓库卫生**：`.gitignore` 补齐 `*.exe~` 与 `/nul` 规则，清掉根目录残留的 27 MB 旧 exe 映像。
 - **ai-* 归目录**：8 个 `ai-*` 前端模块与测试迁入 `src/ai/`（沿用 `reading/` 先例）；顺带把此前从未被执行的 `ai-permissions.test.mjs` 纳入测试脚本（150 → 161 项）。
 
