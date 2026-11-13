@@ -7448,6 +7448,30 @@ html[data-theme="whitey"] {
 .ai-todos-chev { flex: none; width: 14px; height: 14px; display: grid; place-items: center; color: var(--muted); }
 .ai-todos-chev svg { width: 12px; height: 12px; display: block; transition: transform .15s ease; }
 #ai-todos.collapsed .ai-todos-chev svg { transform: rotate(-180deg); }
+/* 收起态头部：进行中任务小字贴在展开 icon 左侧（过长截断），统计让位 */
+#ai-todos.collapsed .ai-todos-sum { flex: none; }
+.ai-todos-current {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 10.5px;
+    color: var(--accent);
+}
+.ai-todos-cur-toggle {
+    flex: none;
+    width: 16px;
+    height: 16px;
+    display: grid;
+    place-items: center;
+    color: var(--muted);
+    cursor: pointer;
+    border-radius: 3px;
+}
+.ai-todos-cur-toggle:hover { background: var(--hover); color: var(--text); }
+.ai-todos-cur-toggle.off { opacity: .45; }
+.ai-todos-cur-toggle svg { width: 12px; height: 12px; display: block; }
 .ai-todos-body {
     display: flex;
     flex-direction: column;

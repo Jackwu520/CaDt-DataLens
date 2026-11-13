@@ -8,6 +8,23 @@ export function createAITodos(ctx) {
     const currentSession = ctx.currentSession;
     const positionOverlays = ctx.positionOverlays;
 
+    // 收起态「进行中任务」小字开关：存 localStorage（默认开），不进设置页。
+    const TODO_CURRENT_BADGE_KEY = 'datalens-ai-todos-current-badge';
+
+    function currentBadgeEnabled() {
+        try {
+            return localStorage.getItem(TODO_CURRENT_BADGE_KEY) !== '0';
+        } catch (e) {
+            return true;
+        }
+    }
+
+    function setCurrentBadgeEnabled(on) {
+        try {
+            localStorage.setItem(TODO_CURRENT_BADGE_KEY, on ? '1' : '0');
+        } catch (e) {}
+    }
+
     function todoStateOf(session) {
         let state = todoStates.get(session.id);
         if (!state) {
@@ -58,7 +75,32 @@ export function createAITodos(ctx) {
         const chev = document.createElement('span');
         chev.className = 'ai-todos-chev';
         chev.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 6.5L8 10l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>';
-        head.append(ico, label, sum, chev);
+        head.append(ico, label, sum);
+        // 收起态：在展开 icon 左侧用小字显示进行中的任务标题（过长由 CSS 截断）。
+        // 头部本身是 button，开关只能用 span role=button 承载，避免 button 嵌套。
+        const badgeOn = currentBadgeEnabled();
+        const currentTodo = list.find((todo) => todo.status === 'in_progress');
+        if (state.collapsed && currentTodo && badgeOn) {
+            const cur = document.createElement('span');
+            cur.className = 'ai-todos-current';
+            cur.textContent = currentTodo.content;
+            cur.title = '进行中：' + currentTodo.content;
+            head.appendChild(cur);
+        }
+        const curToggle = document.createElement('span');
+        curToggle.className = 'ai-todos-cur-toggle' + (badgeOn ? '' : ' off');
+        curToggle.setAttribute('role', 'button');
+        curToggle.setAttribute('aria-label', '收起时显示进行中的任务');
+        curToggle.title = '收起时显示进行中的任务（' + (badgeOn ? '已开启，点击关闭' : '已关闭，点击开启') + '）';
+        curToggle.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.1 8c1.5-2.6 3.5-3.9 5.9-3.9s4.4 1.3 5.9 3.9c-1.5 2.6-3.5 3.9-5.9 3.9S3.6 10.6 2.1 8z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><circle cx="8" cy="8" r="2.1" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>';
+        curToggle.addEventListener('click', (e) => {
+            // 不触发头部的折叠/展开
+            e.stopPropagation();
+            setCurrentBadgeEnabled(!currentBadgeEnabled());
+            renderTodos();
+        });
+        head.appendChild(curToggle);
+        head.appendChild(chev);
         head.title = state.collapsed ? '展开任务清单' : '收起任务清单';
         head.addEventListener('click', () => {
             state.collapsed = !state.collapsed;
