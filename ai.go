@@ -1022,8 +1022,10 @@ func aiOpenAIMessages(messages []AIMessage, passReasoning bool) ([]map[string]an
 			}
 			// deepseek 系思考模型要求多轮回传 reasoning_content（缺失时网关 400：
 			// "The reasoning_content in the thinking mode must be passed back"）。
+			// 网关逐条校验（2026-11-14 重放 4xx 转储实测）：tools 在场且 assistant
+			// 为末条（续写形态）或带 tool_calls 时字段必须存在，空串也必须写。
 			// 其他 OpenAI 兼容端点可能拒收未知字段，故按模型名门控。
-			if passReasoning && strings.TrimSpace(m.Thinking) != "" {
+			if passReasoning {
 				obj["reasoning_content"] = m.Thinking
 			}
 			out = append(out, obj)

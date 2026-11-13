@@ -917,6 +917,13 @@ export function createAISubagents(ctx) {
                     });
                 s.toolCalls.clear();
                 if (payload.finishReason === 'tool' && calls.length) {
+                    // 写回 assistant 消息（镜像主路径）：buildApiMessages 只带
+                    // 「assistant 自带 toolCalls 且有配对 tool 响应」的轮次，不写回
+                    // 会把 tool 结果整条丢出历史，下一轮请求还会落进
+                    // 「assistant 末条续写」形态，触发网关 reasoning_content 校验
+                    // 400（2026-11-14 实测）。
+                    s.assistant.toolCalls = calls;
+                    s.assistant.status = 'done';
                     runSubToolRound(sub, calls, argErrors);
                     return;
                 }
