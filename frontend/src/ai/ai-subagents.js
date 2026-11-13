@@ -43,8 +43,11 @@ export function createAISubagents(ctx) {
     const AI_SUB_LIMIT_DEFAULT = 20;
     const AI_SUB_LIMIT_MAX = 20;
     const AI_SUB_DEPTH_MAX = 20;
-    const AI_SUB_ROUNDS_DEFAULT = 15;
-    const AI_SUB_MESSAGES_MAX = 60;
+    // 主对话没有逐轮硬上限（靠 auto-compact 控体量）；子代理暂无压缩机制，
+    // 硬上限是唯一闸门——按重型只读探索/规划的真实体量放宽（1M 窗口模型
+    // 数百条消息仍远未满），撞顶时由强制收尾轮产出结论（见 runSubRound）。
+    const AI_SUB_ROUNDS_DEFAULT = 50;
+    const AI_SUB_MESSAGES_MAX = 400;
     const AI_SUB_SUMMARY_MAX = 8000;
     const AI_SUB_SYSTEM_PROMPT = [
         '你是主代理派出的只读子代理：独立完成任务后输出最终结论，不与用户直接交互。',
@@ -654,7 +657,7 @@ export function createAISubagents(ctx) {
         const name = aiTextOf(input.name).trim() || '子代理';
         const task = aiTextOf(input.task).trim();
         if (!task) throw new Error('task 不能为空');
-        const maxRounds = aiClampInt(input.maxRounds, 3, 30, AI_SUB_ROUNDS_DEFAULT);
+        const maxRounds = aiClampInt(input.maxRounds, 3, 200, AI_SUB_ROUNDS_DEFAULT);
         const parentDepth = aiClampInt(ctx && ctx.agentDepth, 0, AI_SUB_DEPTH_MAX, 0);
         const depth = parentDepth + 1;
         const maxDepth = subAgentMaxDepth();
