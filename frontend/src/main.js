@@ -51,6 +51,7 @@ import {createModeSwitch} from './mode-switch.js';
 import {createTitlebarPopovers} from './titlebar-popovers.js';
 import {createSettingsUI} from './settings-ui.js';
 import {createWritingUI} from './writing-ui.js';
+import {createStructurePanelController} from './structure-panel.js';
 import {createEditorMenus} from './editor-menus.js';
 import {createExplorerOps} from './explorer-ops.js';
 import {createEditorGroups} from './editor-groups.js';
@@ -1617,6 +1618,54 @@ function newFileTypeMenuItems(action) {
 
 // ---- 资源管理器域操作（explorer-ops.js） ----
 // ---- 编辑器右键菜单域（editor-menus.js） ----
+// ---- 结构面板域（structure-panel.js） ----
+const structurePanelCtrl = createStructurePanelController({
+    get STRUCTURE_CACHE_LIMIT() { return STRUCTURE_CACHE_LIMIT; },
+    get aiPanel() { return aiPanel; },
+    get applySidebarUI() { return applySidebarUI; },
+    get copyStructureTree() { return copyStructureTree; },
+    get createStructurePanel() { return createStructurePanel; },
+    get ctxMenu() { return ctxMenu; },
+    get currentMode() { return currentMode; },
+    get currentSidebarView() { return currentSidebarView; },
+    get els() { return els; },
+    set els(v) { els = v; },
+    get exportStructureTree() { return exportStructureTree; },
+    get file() { return file; },
+    get iconSvg() { return iconSvg; },
+    get parseStructure() { return parseStructure; },
+    get selectLineInDoc() { return selectLineInDoc; },
+    get settings() { return settings; },
+    set settings(v) { settings = v; },
+    get settingsKey() { return settingsKey; },
+    get structureCache() { return structureCache; },
+    get structurePanel() { return structurePanel; },
+    set structurePanel(v) { structurePanel = v; },
+    get structureRefreshTimer() { return structureRefreshTimer; },
+    set structureRefreshTimer(v) { structureRefreshTimer = v; },
+    get structureWorker() { return structureWorker; },
+    set structureWorker(v) { structureWorker = v; },
+    get structureWorkerBroken() { return structureWorkerBroken; },
+    set structureWorkerBroken(v) { structureWorkerBroken = v; },
+    get structureWorkerPending() { return structureWorkerPending; },
+    get structureWorkerSeq() { return structureWorkerSeq; },
+});
+const structureTextForDoc = (...a) => structurePanel.structureTextForDoc(...a);
+const jumpToStructureNode = (...a) => structurePanel.jumpToStructureNode(...a);
+const getStructureWorker = (...a) => structurePanel.getStructureWorker(...a);
+const rememberStructureResult = (...a) => structurePanel.rememberStructureResult(...a);
+const parseStructureCached = (...a) => structurePanel.parseStructureCached(...a);
+const scheduleStructureRefresh = (...a) => structurePanel.scheduleStructureRefresh(...a);
+const initStructurePanel = (...a) => structurePanel.initStructurePanel(...a);
+const structureSources = (...a) => structurePanel.structureSources(...a);
+const structureOutlineSnapshot = (...a) => structurePanel.structureOutlineSnapshot(...a);
+const syncStructureChrome = (...a) => structurePanel.syncStructureChrome(...a);
+const refreshStructureSources = (...a) => structurePanel.refreshStructureSources(...a);
+const toggleStructureSource = (...a) => structurePanel.toggleStructureSource(...a);
+const structureTreeText = (...a) => structurePanel.structureTreeText(...a);
+const showStructureExportMenu = (...a) => structurePanel.showStructureExportMenu(...a);
+const toggleStructureExportLineNums = (...a) => structurePanel.toggleStructureExportLineNums(...a);
+
 const editorMenus = createEditorMenus({
     get aiEditorReferenceMenuItems() { return aiEditorReferenceMenuItems; },
     get applySettings() { return applySettings; },
@@ -1880,106 +1929,6 @@ async function selectLineInDoc(doc, line, column = 0) {
 
 // 结构视图读取的源文本：树视图用打开时的原文（行号与源文件一致），
 // 代码/文本/预览用编辑器当前内容，SVG 渲染视图用进入渲染前保存的原文。
-function structureTextForDoc(doc) {
-    if (!doc || doc.binary) return '';
-    if (doc === file && doc.editor) {
-        if (currentMode === 'render') {
-            return doc._svgSrcText || doc.rawText || doc.text || '';
-        }
-        if (currentMode === 'tree' && doc.format && !doc.format.rawOnly) {
-            return doc.rawText != null ? doc.rawText : (doc.text || '');
-        }
-        if (currentMode === 'table' && doc.pane) {
-            const textarea = doc.pane.querySelector('textarea.jsoneditor-text');
-            if (textarea) return textarea.value;
-        }
-        return doc.editor.getText() || '';
-    }
-    return doc.rawText != null ? doc.rawText : (doc.text || doc.content || '');
-}
-
-async function jumpToStructureNode(node) {
-    if (!file || !node || file.binary) return;
-    const line = Math.max(1, Number(node.line) || 1);
-    const column = Math.max(1, Number(node.column) || 1);
-    await selectLineInDoc(file, line, column);
-    if (structurePanel) structurePanel.setCursor(line);
-}
-
-function getStructureWorker() {
-    if (structureWorkerBroken) return null;
-    if (structureWorker) return structureWorker;
-    try {
-        structureWorker = new Worker(new URL('./structure-worker.js', import.meta.url), {type: 'module'});
-        structureWorker.onmessage = (event) => {
-            const data = event.data || {};
-            const pending = structureWorkerPending.get(data.id);
-            if (!pending) return;
-            structureWorkerPending.delete(data.id);
-            if (data.ok) {
-                pending.resolve(data.result);
-            } else {
-                pending.reject(new Error(data.error || '结构解析失败'));
-            }
-        };
-        structureWorker.onerror = () => {
-            structureWorkerBroken = true;
-            structureWorker = null;
-            for (const pending of structureWorkerPending.values()) {
-                pending.reject(new Error('结构解析 Worker 不可用'));
-            }
-            structureWorkerPending.clear();
-        };
-    } catch (e) {
-        structureWorkerBroken = true;
-        structureWorker = null;
-    }
-    return structureWorker;
-}
-
-function rememberStructureResult(key, parsed) {
-    structureCache.set(key, parsed);
-    while (structureCache.size > STRUCTURE_CACHE_LIMIT) {
-        structureCache.delete(structureCache.keys().next().value);
-    }
-    return parsed;
-}
-
-// 同一文档同一修订只解析一次；解析在 Worker 里做，切标签命中缓存
-function parseStructureCached(name, text, doc) {
-    const key = (doc && doc.id ? doc.id : '') + ':' + ((doc && doc.structureRev) || 0) + ':' + text.length;
-    const cached = structureCache.get(key);
-    if (cached) return Promise.resolve(cached);
-    const worker = getStructureWorker();
-    if (!worker) return Promise.resolve(rememberStructureResult(key, parseStructure(name, text)));
-    return new Promise((resolve) => {
-        const id = ++structureWorkerSeq;
-        structureWorkerPending.set(id, {
-            resolve: (parsed) => resolve(rememberStructureResult(key, parsed)),
-            reject: () => {
-                const workerNow = structureWorker;
-                structureWorkerBroken = true;
-                structureWorker = null;
-                try {
-                    if (workerNow) workerNow.terminate();
-                } catch (e) {}
-                resolve(rememberStructureResult(key, parseStructure(name, text)));
-            },
-        });
-        worker.postMessage({id, name, text});
-    });
-}
-
-function scheduleStructureRefresh(doc) {
-    if (!structurePanel || !settings.showSidebar || currentSidebarView() !== 'structure') return;
-    if (doc && file && doc !== file) return;
-    clearTimeout(structureRefreshTimer);
-    structureRefreshTimer = setTimeout(() => {
-        structureRefreshTimer = 0;
-        if (!structurePanel || !settings.showSidebar || currentSidebarView() !== 'structure') return;
-        structurePanel.refresh();
-    }, 500);
-}
 
 async function openTargets(targets) {
     const list = Array.isArray(targets) ? targets : [];
@@ -2617,144 +2566,6 @@ function initExplorer() {
     });
 }
 
-function initStructurePanel() {
-    if (!els.structureBody) return;
-    structurePanel = createStructurePanel({
-        body: els.structureBody,
-        refreshBtn: els.structureRefresh,
-        collapseBtn: els.structureCollapse,
-        getText: (doc) => structureTextForDoc(doc),
-        getCursorLine: () => {
-            try {
-                return file && file.editor && file.editor.aceEditor
-                    ? file.editor.aceEditor.getCursorPosition().row + 1 : 0;
-            } catch (e) {
-                return 0;
-            }
-        },
-        onJump: (node) => jumpToStructureNode(node),
-        parseAsync: (name, text, doc) => parseStructureCached(name, text, doc),
-        onSessionJump: (index) => {
-            if (aiPanel && typeof aiPanel.bridgeJumpToMessage === 'function') aiPanel.bridgeJumpToMessage(index);
-        },
-    });
-    if (els.structureExport) {
-        els.structureExport.innerHTML = '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 4.5h14M5.5 8.5h11.5M8 12.5h9M10.5 16.5h6.5" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>';
-        els.structureExport.addEventListener('click', () => showStructureExportMenu());
-    }
-    if (els.structureSource) {
-        els.structureSource.innerHTML = iconSvg('file', 14);
-        els.structureSource.addEventListener('click', toggleStructureSource);
-    }
-    // 会话结构模式下「刷新」要重新向 AI 面板取一次快照（面板内部的 refresh 只重渲染已有数据）
-    if (els.structureRefresh) {
-        els.structureRefresh.addEventListener('click', () => {
-            if (structurePanel && structurePanel.getSource() === 'session') refreshStructureSources();
-        });
-    }
-    structurePanel.setSource(settings.structureSource);
-    structurePanel.setDoc(file);
-    applySidebarUI();
-    refreshStructureSources();
-}
-
-// ---- 结构面板的两个来源：文件结构 / 会话结构（用户消息定位条） ----
-// 内容区只有文件            → 只显示文件结构
-// 内容区只有 AI 助手        → 只显示当前会话的结构（全屏，或停靠且没打开文件时 AI 占满内容区）
-// 两者都在                  → 默认文件结构，面板头部图标可在两者间切换（偏好存 settings）
-function structureSources() {
-    const aiOpen = !!(aiPanel && aiPanel.isOpen && aiPanel.isOpen());
-    const aiMode = aiPanel && aiPanel.getMode ? aiPanel.getMode() : '';
-    // 悬浮窗在另一个窗口里，本窗口内容区没有 AI，也就没有可定位的会话结构
-    const aiVisible = aiOpen && aiMode !== 'float';
-    const hasFile = !!file;
-    const aiOnly = aiVisible && (aiMode === 'fullscreen' || !hasFile);
-    return {file: hasFile && !aiOnly, session: aiVisible};
-}
-
-function structureOutlineSnapshot() {
-    try {
-        if (aiPanel && typeof aiPanel.bridgeSessionOutline === 'function') return aiPanel.bridgeSessionOutline();
-    } catch (e) {}
-    return null;
-}
-
-function syncStructureChrome(effective, sources) {
-    const sessionMode = effective === 'session';
-    if (els.structureTitle) els.structureTitle.textContent = sessionMode ? '会话结构' : '结构';
-    if (els.structureSource) {
-        const both = sources.file && sources.session;
-        els.structureSource.classList.toggle('hidden', !both);
-        els.structureSource.classList.toggle('active', sessionMode);
-        els.structureSource.innerHTML = iconSvg(sessionMode ? 'feedback' : 'file', 14);
-        els.structureSource.setAttribute('aria-pressed', String(sessionMode));
-        els.structureSource.title = sessionMode
-            ? '当前：会话结构（点击切到文件结构）'
-            : '当前：文件结构（点击切到会话结构）';
-    }
-    // 复制/导出与「全部折叠」只对文件结构有意义
-    if (els.structureExport) els.structureExport.classList.toggle('hidden', sessionMode);
-    if (els.structureCollapse) els.structureCollapse.classList.toggle('hidden', sessionMode);
-    if (els.structureRefresh) els.structureRefresh.title = sessionMode ? '刷新会话结构' : '刷新结构';
-}
-
-function refreshStructureSources() {
-    if (!structurePanel) return '';
-    const src = structureSources();
-    const effective = structurePanel.setSources(src);
-    structurePanel.setSessionOutline(src.session ? structureOutlineSnapshot() : null);
-    syncStructureChrome(effective, src);
-    return effective;
-}
-
-function toggleStructureSource() {
-    if (!structurePanel) return;
-    const next = structurePanel.getSource() === 'session' ? 'file' : 'session';
-    settings.structureSource = next;
-    try { localStorage.setItem(settingsKey, JSON.stringify(settings)); } catch (e) {}
-    const effective = structurePanel.setSource(next);
-    syncStructureChrome(effective, structureSources());
-}
-
-// 结构面板的结构化复制 / 导出：文本格式与「结构化目录」一致
-function structureTreeText(format) {
-    try {
-        return structurePanel && typeof structurePanel.structureText === 'function'
-            ? String(structurePanel.structureText(format, settings.structureExportLineNums) || '') : '';
-    } catch (e) {
-        return '';
-    }
-}
-
-function showStructureExportMenu() {
-    if (!ctxMenu) return;
-    const has = !!structureTreeText();
-    const copyItems = [
-        {label: '树形结构', action: () => copyStructureTree('tree')},
-        {label: '缩进列表', action: () => copyStructureTree('indent')},
-        {label: 'Markdown 列表', action: () => copyStructureTree('markdown')},
-        {label: 'Mermaid 大纲', action: () => copyStructureTree('mermaid')},
-    ];
-    const exportItems = [
-        {label: '树形结构', action: () => exportStructureTree('tree')},
-        {label: '缩进列表', action: () => exportStructureTree('indent')},
-        {label: 'Markdown 列表', action: () => exportStructureTree('markdown')},
-        {label: 'Mermaid 大纲', action: () => exportStructureTree('mermaid')},
-    ];
-    const r = els.structureExport.getBoundingClientRect();
-    ctxMenu.open([
-        {label: '复制为', icon: 'E8C8', disabled: !has, submenu: copyItems},
-        {label: '导出为…', icon: 'E74E', disabled: !has, submenu: exportItems},
-        {sep: true},
-        {label: '附带行号', checked: settings.structureExportLineNums, action: toggleStructureExportLineNums},
-    ], r.left, r.bottom + 4);
-}
-
-function toggleStructureExportLineNums() {
-    settings.structureExportLineNums = !settings.structureExportLineNums;
-    try { localStorage.setItem(settingsKey, JSON.stringify(settings)); } catch (e) {}
-    showStructureExportMenu();
-}
 
 async function copyStructureTree(format) {
     const text = structureTreeText(format);
