@@ -240,9 +240,9 @@ function applyDockView() {
         deps.els.abDebug.classList.toggle('active', debugOpen);
         deps.els.abDebug.setAttribute('aria-pressed', String(debugOpen));
     }
-    if (deps.els.abRun) {
-        deps.els.abRun.classList.toggle('active', runOpen);
-        deps.els.abRun.setAttribute('aria-pressed', String(runOpen));
+    if (deps.els.tbRun) {
+        deps.els.tbRun.classList.toggle('active', runOpen);
+        deps.els.tbRun.setAttribute('aria-pressed', String(runOpen));
     }
     if (termOpen) fitActiveTerm();
 }

@@ -5452,6 +5452,26 @@ html[data-theme="whitey"] {
 #tb-ai:focus { outline: none; }
 #tb-ai svg { width: 16px; height: 16px; display: block; }
 
+/* 顶部工具栏运行入口（AI 入口右侧，窗口控制按钮左侧） */
+#tb-run {
+    width: 30px;
+    height: 26px;
+    display: grid;
+    place-items: center;
+    padding: 0;
+    border: none;
+    border-radius: 4px;
+    background: none;
+    color: var(--muted);
+    cursor: pointer;
+    flex: none;
+}
+#tb-run:hover { background: var(--hover); color: var(--text); }
+#tb-run.active { background: var(--accent-weak); color: var(--accent); }
+#tb-run:focus { outline: none; }
+#tb-run svg { width: 15px; height: 15px; display: block; }
+#tb-run:disabled { opacity: .4; cursor: default; background: none; color: var(--muted); }
+
 /* ===== AI 助手面板 ===== */
 #ai-panel {
     --ai-chat-font: 13px;

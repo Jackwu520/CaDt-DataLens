@@ -97,6 +97,9 @@ function showEditorMenu(x, y) {
     const readonly = !!deps.file.binary || !!deps.file.large || !!deps.settings.readOnlyMode;
     const hasPath = !!deps.file.path;
     const referenceItems = deps.aiEditorReferenceMenuItems();
+    // 代码视图下提供运行入口，可用状态与标题栏 ▶ / 工具菜单一致
+    const runSupported = !!deps.runController && !readonly &&
+        deps.runController.isSupported({name: deps.file.name, path: deps.file.path});
     deps.ctxMenu.open([
         {label: '撤销', shortcut: 'Ctrl+Z', icon: 'E7A7', disabled: readonly, action: deps.doUndo},
         {label: '重做', shortcut: 'Ctrl+Y', icon: 'E7A6', disabled: readonly, action: deps.doRedo},
@@ -109,6 +112,7 @@ function showEditorMenu(x, y) {
         {label: '查找…', shortcut: 'Ctrl+F', icon: 'E721', disabled: !editable, action: ctxFind},
         {label: '格式化', shortcut: 'Ctrl+Alt+L', disabled: !deps.file || readonly || !!deps.file.format.rawOnly, action: deps.formatDocument},
         {label: '重新加载', icon: 'E72C', disabled: !hasPath, action: deps.requestReload},
+        ...(code ? [{sep: true}, {label: '运行', shortcut: 'F5', icon: 'E768', disabled: !runSupported, action: () => deps.runController.run()}] : []),
         {sep: true},
         {
             label: '折叠',

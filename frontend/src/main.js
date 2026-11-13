@@ -354,7 +354,7 @@ const els = {
     abSearch: document.getElementById('ab-search'),
     abMore: document.getElementById('ab-more'),
     abTerminal: document.getElementById('ab-terminal'),
-    abRun: document.getElementById('ab-run'),
+    tbRun: document.getElementById('tb-run'),
     abDebug: document.getElementById('ab-debug'),
     abGit: document.getElementById('ab-git'),
     abAi: document.getElementById('ab-ai'),
@@ -1703,6 +1703,7 @@ const editorMenus = createEditorMenus({
     get readingMode() { return readingMode; },
     set readingMode(v) { readingMode = v; },
     get requestReload() { return requestReload; },
+    get runController() { return runController; },
     get settings() { return settings; },
     get showImageMenu() { return showImageMenu; },
     get showInFolder() { return showInFolder; },
@@ -2165,13 +2166,13 @@ function syncWorkspaceWatcher() {
     } catch (e) {}
 }
 
-// 活动栏 ▶ 与工具菜单保持一致的可用状态（菜单是在打开时算的，按钮要随文件切换实时同步）
+// 标题栏 ▶ 与工具菜单保持一致的可用状态（菜单是在打开时算的，按钮要随文件切换实时同步）
 function syncRunButtonState() {
-    if (!els.abRun) return;
+    if (!els.tbRun) return;
     const supported = !!file && !file.binary && !file.large &&
         !!RECIPES[extOf(file.name || file.path)] && !settings.readOnlyMode;
-    els.abRun.disabled = !supported;
-    els.abRun.title = supported || !file ? '运行当前文件 (F5)'
+    els.tbRun.disabled = !supported;
+    els.tbRun.title = supported || !file ? '运行当前文件 (F5)'
         : settings.readOnlyMode ? '只读模式下不执行代码'
             : '当前文件不支持运行';
 }
@@ -2186,7 +2187,7 @@ function initActivityBar() {
         if (findTarget()) openFindBar();
         else openGlobalSearch();
     });
-    if (els.abRun) els.abRun.addEventListener('click', () => runController.run());
+    if (els.tbRun) els.tbRun.addEventListener('click', () => runController.run());
     if (els.abTerminal) els.abTerminal.addEventListener('click', () => toggleDockView('terminal'));
     if (els.abDebug) els.abDebug.addEventListener('click', () => toggleDockView('debug'));
     if (els.abGit) els.abGit.addEventListener('click', () => toggleSidebarView('git'));
