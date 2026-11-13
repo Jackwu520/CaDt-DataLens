@@ -5481,6 +5481,38 @@ html[data-theme="whitey"] {
 }
 #top-row.ai-dock-fill #ai-panel.ai-dock .ai-resize-l { display: none; }
 #top-row.ai-dock-fill.ai-left #ai-panel.ai-dock .ai-resize-r { display: none; }
+
+/* 编辑区收起条：手动把内容区位置让给 AI 助手（标签页保留），点击切换收起/展开 */
+#editor-collapse-strip {
+    flex: none;
+    width: 14px;
+    padding: 0;
+    border: none;
+    border-left: 1px solid var(--border);
+    background: none;
+    color: var(--muted);
+    cursor: pointer;
+    display: grid;
+    place-items: center;
+}
+#editor-collapse-strip:hover { background: var(--hover); color: var(--text); }
+#editor-collapse-strip:focus { outline: none; }
+#editor-collapse-strip svg { width: 13px; height: 13px; display: block; }
+#top-row.ai-editor-collapsed #editor-collapse-strip svg { transform: rotate(180deg); }
+/* AI 面板停靠左侧时收起条排到最右，箭头方向随布局翻转 */
+#top-row.ai-left #editor-collapse-strip { order: 3; border-left: none; border-right: 1px solid var(--border); }
+#top-row.ai-left #editor-collapse-strip svg { transform: rotate(180deg); }
+#top-row.ai-left.ai-editor-collapsed #editor-collapse-strip svg { transform: none; }
+/* 收起态：编辑区隐藏，AI 停靠面板占满（与 ai-dock-fill 同款约束） */
+#top-row.ai-editor-collapsed #main-pane { display: none; }
+#top-row.ai-editor-collapsed #ai-panel.ai-dock {
+    flex: 1 1 0;
+    width: auto !important;
+    min-width: 0;
+    max-width: none;
+}
+#top-row.ai-editor-collapsed #ai-panel.ai-dock .ai-resize-l { display: none; }
+#top-row.ai-editor-collapsed.ai-left #ai-panel.ai-dock .ai-resize-r { display: none; }
 #ai-panel.ai-snap,
 #ai-panel.ai-float {
     position: absolute;

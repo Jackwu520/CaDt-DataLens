@@ -355,6 +355,7 @@ const els = {
     abMore: document.getElementById('ab-more'),
     abTerminal: document.getElementById('ab-terminal'),
     tbRun: document.getElementById('tb-run'),
+    editorCollapseStrip: document.getElementById('editor-collapse-strip'),
     abDebug: document.getElementById('ab-debug'),
     abGit: document.getElementById('ab-git'),
     abAi: document.getElementById('ab-ai'),
@@ -2189,6 +2190,7 @@ function initActivityBar() {
         else openGlobalSearch();
     });
     if (els.tbRun) els.tbRun.addEventListener('click', () => runController.run());
+    if (els.editorCollapseStrip) els.editorCollapseStrip.addEventListener('click', () => setEditorCollapsed(!editorCollapsedFlag));
     if (els.abTerminal) els.abTerminal.addEventListener('click', () => toggleDockView('terminal'));
     if (els.abDebug) els.abDebug.addEventListener('click', () => toggleDockView('debug'));
     if (els.abGit) els.abGit.addEventListener('click', () => toggleSidebarView('git'));
@@ -2207,6 +2209,39 @@ function initActivityBar() {
 function toggleAIPanel(force) {
     if (!aiPanel) initAIPanel();
     if (aiPanel) aiPanel.toggle(force);
+}
+
+// 编辑区收起：把内容区位置让给 AI 助手（标签页保留），收起条可随时恢复。
+// 会话态不持久化——AI 面板是惰性初始化，重启后未打开则自然回到展开态。
+let editorCollapsedFlag = false;
+function setEditorCollapsed(next) {
+    const target = !!next;
+    if (target) {
+        if (!aiPanel) initAIPanel();
+        if (!aiPanel) { flash('AI 面板不可用', true); return; }
+        if (aiPanel.isOpen && !aiPanel.isOpen()) aiPanel.open(true);
+    }
+    editorCollapsedFlag = target;
+    const topRow = document.getElementById('top-row');
+    if (topRow) topRow.classList.toggle('ai-editor-collapsed', target);
+    if (els.editorCollapseStrip) {
+        els.editorCollapseStrip.setAttribute('aria-pressed', String(target));
+        els.editorCollapseStrip.title = target ? '展开编辑区' : '收起编辑区（标签页保留，位置让给 AI 助手）';
+    }
+    updateAiWidthWidget();
+    if (editor && editor.resize) {
+        try { editor.resize(); } catch (e) {}
+    }
+    try { if (terminalUI.open) fitActiveTerm(); } catch (e) {}
+}
+// AI 面板关闭时自动还原编辑区，避免内容区只剩侧边栏
+if (els.editorCollapseStrip) {
+    const aiPanelEl = document.getElementById('ai-panel');
+    if (aiPanelEl) {
+        new MutationObserver(() => {
+            if (editorCollapsedFlag && aiPanelEl.classList.contains('hidden')) setEditorCollapsed(false);
+        }).observe(aiPanelEl, {attributes: true, attributeFilter: ['class']});
+    }
 }
 
 function askAIAboutPath(path) {
@@ -3615,6 +3650,7 @@ function menuItems(kind) {
                         {label: '悬浮（独立窗口）', action: () => setAIPanelMode('float')},
                     ],
                 },
+                {label: '收起编辑区（标签页保留）', checked: editorCollapsedFlag, action: () => setEditorCollapsed(!editorCollapsedFlag)},
             );
             return items;
         }
