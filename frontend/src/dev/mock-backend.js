@@ -1,0 +1,2250 @@
+// dev/mock-backend.js：vite dev 浏览器调试用的 mock 后端（动态 import，不进生产包）。
+// 模拟 Wails 桥（window.go.main.App）、窗口运行时（mockRt）与全部后端接口；
+// mock 场景由 URL 参数驱动（?jsonl ?csv ?text ?image ?large ?invalid ?multi ?empty ?gbk ?ai* …）。
+// 由 main.js 在 !hasWails 时动态加载；生产环境永不触碰本模块。
+const mockScenario = new URLSearchParams(location.search);
+
+const sampleJson = `{
+  "name": "时空纪元",
+  "version": "1.0.0",
+  "enabled": true,
+  "count": 42,
+  "nothing": null,
+  "tags": ["模组", "网易", "JSON"],
+  "author": {"name": "CandySweet", "role": "owner"},
+  "items": [{"id": "spacetime:cable", "count": 64}, {"id": "spacetime:machine", "count": 1}]
+}`;
+
+const sampleYaml = `name: 时空纪元
+version: 1.0.0
+enabled: true
+tags:
+  - 模组
+  - 网易
+author:
+  name: CandySweet
+  role: owner
+`;
+
+const sampleXml = `<?xml version="1.0" encoding="UTF-8"?>
+<mod name="时空纪元" version="1.0.0">
+  <items>
+    <item id="spacetime:cable" count="64"/>
+    <item id="spacetime:machine" count="1"/>
+  </items>
+</mod>
+`;
+
+const sampleCsv = `id,name,count
+spacetime:cable,线缆,64
+spacetime:machine,机器,1
+`;
+
+const sampleText = `# 时空纪元 开发笔记
+
+- 电缆：每格每日 4 件
+- 机器：2.10+ 运行时配方
+`;
+
+// 写作模式主场景是纯文本（默认落在 text 视图），mock 里单独给一个 .txt
+const sampleNovelTxt = `第一章 山雨欲来
+
+少年推开柴门，山风扑面而来。
+
+他望着远处的群山，忽然想起师父说过的话。
+
+第二章 夜行
+
+月色如水，照在青石板上。
+`;
+
+const sampleToml = `title = "时空纪元"
+version = "1.0.0"
+enabled = true
+
+[server]
+host = "127.0.0.1"
+port = 8080
+tags = ["模组", "网易"]
+
+[limits]
+maxPlayers = 16
+`;
+const sampleIni = `; 示例配置
+[general]
+name=时空纪元
+version=1.0.0
+enabled=true
+
+[server]
+host=127.0.0.1
+port=8080
+`;
+const sampleJsonl = `{"id":"spacetime:cable","name":"线缆","count":64,"tags":["物流","能源"]}
+{"id":"spacetime:machine","name":"机器","count":1,"meta":{"tier":2,"multiblock":true}}
+{"id":"spacetime:tank","name":"储罐","count":4,"meta":{"tier":1,"capacity":8000}}
+`;
+
+const sampleGoMod = `module candysweet.example/datalens-samples
+
+go 1.22
+
+require (
+\tgithub.com/pkg/errors v0.9.1
+\tgolang.org/x/text v0.14.0
+)
+
+require github.com/google/uuid v1.6.0 // indirect
+
+replace golang.org/x/text => "golang.org/x/text" v0.13.0
+
+exclude github.com/pkg/errors v0.8.1
+`;
+
+const sampleGoSum = `github.com/google/uuid v1.6.0 h1:GHsaKmPqE5XjG0dJXuXY9X2cQ8vY0McZn2PQ3XW9sL4=
+github.com/google/uuid v1.6.0/go.mod h1:UHvbB7d8MzUiGb3ZPQTb5s68v2mMB6dWX0OcdSFvnlM=
+github.com/pkg/errors v0.9.1 h1:FEBLx1zS214owpjy7qsBeixbURkuhQAwrK5UwLGTqv4=
+github.com/pkg/errors v0.9.1/go.mod h1:bwawxfHBFNV+G2So6ik+0qS4yXaDcB7MSkZKcHbnS8k=
+`;
+
+const samplePy = `#!/usr/bin/env python3
+"""CaDt-DataLens Python 示例。"""
+
+from pathlib import Path
+
+
+def merge_blocks(left: int, right: int) -> int:
+    return left * 60 + right
+
+
+def summarize(path: Path) -> dict:
+    text = path.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    return {
+        "name": path.stem,
+        "lines": len(lines),
+        "chars": len(text),
+        "preview": lines[:3],
+    }
+
+
+if __name__ == "__main__":
+    print(merge_blocks(3, 7))
+    print(summarize(Path(__file__)))
+    sum(1, 2)
+`;
+
+const sampleAgentsMd = [
+    '# 星轨工坊 (Starrail Workshop)',
+    '',
+    '## 0. 你手上只有这一个仓库',
+    '',
+    '- 先读 README',
+    '',
+    '## 1. 必读（按任务挑，但前两行必读）',
+    '',
+    '```bash',
+    '# 这是代码块里的注释，不应出现在结构里',
+    'git status',
+    '```',
+    '',
+    '### 1.1 子标题',
+    '',
+    '## 2. 硬规则（违反即返工）',
+    '',
+    '## 3. 常见任务从哪进',
+    '',
+    '## 4. 提交前必须过',
+    '',
+    '## 5. 分支、提交、协作',
+    '',
+    '## 6. 当前状态（截至 2026-10-26，改之前先知道）',
+].join('\n');
+
+const sampleHtml = `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CaDt-DataLens</title>
+  <link rel="icon" href="/favicon.svg">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+</head>
+<body>
+  <div id="app"></div>
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
+`;
+
+const sampleJs = `import {readFileSync} from 'node:fs';
+
+export class MachineBase {
+  static LIMIT = 3;
+  #secret = 1;
+
+  constructor(system, dimension) {
+    this.system = system;
+  }
+
+  get(key, defaultValue = null) {
+    return this.system.get(key, defaultValue);
+  }
+
+  async load() {
+    const parse = (text) => JSON.parse(text);
+    return parse('{}');
+  }
+}
+
+export function beGet(data, key, defaultVal = null) {
+  return data.get(key, defaultVal);
+}
+
+const formatText = (value) => String(value);
+export const LEVEL_COMP_CACHE = new Map();
+`;
+
+const sampleGo = `package main
+
+type MachineBase struct {
+    ID string
+    Name string
+}
+
+type Handler interface {
+    Handle(key string) error
+}
+
+func (m *MachineBase) Get(key string) string {
+    return m.ID
+}
+
+func beGet(data map[string]string) string {
+    return data["x"]
+}
+
+const LEVEL_CACHE = "x"
+`;
+
+const sampleMachinePy = `#!/usr/bin/env python3
+"""机器结构示例。"""
+STALE_CLOCK_KEYS = {"a", "b"}
+_LEVEL_COMP_CACHE = {}
+
+class MachineBase(object):
+    """机器基类。"""
+    LIMIT = 3
+
+    def __init__(self, system, dimension, pos, block):
+        self.system = system
+
+    @staticmethod
+    def fix_stale_clock(data, now):
+        return data
+
+    def data(self):
+        return {"x": 1}
+
+def be_get(data, key, default=None):
+    return data.get(key, default)
+
+async def fetch(url: str) -> dict:
+    return {}
+`;
+
+const mockDir = 'mock://samples/';
+const mockHex = '00000000  89 50 4e 47 0d 0a 1a 0a  00 00 00 0d 49 48 44 52  |.PNG........IHDR|';
+const mockImageDataUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAUAAAAC0CAIAAABqhmJGAAAFjUlEQVR42u3dS0jU+wLA8d84MyTOpmUGRZALD4ExdKiF0CJ6bjwJQQWRVJyKmlUrF+VkT6KzyejdQiuTooVBYkJUKwOppANigtCDCFq0qLB8ztzFXOaGo3O4J7r3lJ/Paob/7zH68zv/mZWR3/7IhqJ6zy6a7lJpPFp87vDYxHSXknv67Gtf+37jviUB+GEJGAQMCBgQMAgYEDAgYEDAIGBAwICAQcCAgAEBAwIGAQMCBgQMCBgEDAgYEDAIGBAwIGBAwCBgQMCAgAEBg4ABAQMCBgEDAgYEDAgYBAwIGBAwCBgQMCBgQMAgYEDAgIABAcPPJPYjvuhffv/z+y2e3NP3f/mh7PtP2Lf/UpU7MCBg4Kf8CJ032PKrI+TbVdQ9dgcGBAwIGAQMCBgQMCBgEDAgYEDAIGBAwICAAQGDgAEBAwIGBAwCBgQMCBgEDAgYEDAgYBAwIGBAwMAP/s/NvoeVK1euXr36y5cvw8PDFy9efP/+feGY1tbWwcHBbDYbi8Xu3bv38OHDEML69evb29v/ctgkhbNyWlpa6urqHAcC/i9UVVVVV1fv379/dHQ0mUymUqnGxsbCYePj4+l0OoQwa9as+vr6kZGRR48e1dbWTkpxymGTliqcBQL+m2pqatra2kZHR0MIvb29S5cujUajc+fO3blzZyKRuH///p07d74ePzIycvXq1W3bts2fP7+0tPTAgQOHDx8uXDY/7M2bN18vtXHjxtys5ubm6bbISSQSO3bsmD17diwWu3LlyuDgYO4ufffu3crKykQicfPmzZ6ennXr1q1YsSKbzba2tj579syB+g48s8ybN+/Fixf5pxcuXJiYmFi7du3169cbGhpqamoKp7x69aq8vPzGjRvDw8NT1vv1sElL5WcV3yKEsHXr1s7OzkOHDjU1Ne3atevf776x2KdPn9Lp9MmTJ7dv3x5C2LBhQ0NDw6lTp5YvX+403YFn3vtZyRTvaNeuXauurl6yZElZWVnh1Wg0Oj4+nn+6efPmysrKjo6Onp6ewmHTLVV8ixDC4sWL58yZk3tcWlpaUlKSyWQikciDBw9CCO/evctNfPr0aSqV6urqOn36tNN0B55x3r59u2DBgtzjSCSSSqVCCPv27QshdHZ2ZjKZwikVFRWvX7/OP21ra0un05PqzQ+bbqniW+T6P3LkSDqdPnjw4Llz53LDxsfHh4aGcgOy2WwI4cyZMx0dHWvWrNm7d6/TFPCM09XVtWnTpng8HkKorq7OPVi4cGF3d3c8Hs89nfTVdMuWLbdv384FH4lEplw2P6xwqdysIlvkPH/+fNmyZSGEZDJZW1v7dbR5ZWVljY2NAwMDTU1NyWTSafoIPeN0d3eXl5efOHHi48ePHz58uHz5cq7qo0ePvnz5cmhoKB6Pj42NxWKxxsbGbDYbjUbb29v7+vpCCP39/fX19cePH//PL7dgWOFSuVlTbpH/Rj0wMNDc3Lx79+5Vq1ZlMpnz589P+eI/f/785MmTY8eOlZSU3Lp1y2nOBJHf/sgWH9F7dtF0l0rj0eJzh8cmpruU3NP3t/fNzx1s+dUR8u0q6h7nHvRfqvrf/z1/S0c+QoPvwICAAQGDgAEBAwIGBAwCBgQMCBgEDAgYEDAgYBAwIGBAwICAQcCAgAEBg4ABAQMCBgQMAgYEDAgYEDAIGBAwIGAQMCBgQMCAgOEnFPuhX31F3WNHiDswIGDAR+i/1H+pqviA4bGJ6S4l9/QVn9t7dtF0l0rjUfvO5H3dgQEBAwIGAQMCBgQMAgYEDAgYEDAIGBAwIGAQMCBgQMCAgEHAgIABAQMCBgEDAgYEDAIGBAwIGBAwCBgQMCBgQMAgYEDAgIBBwICAAQEDAgYBAwIGBAwIGAQMCBgQMAgYEDDwXf0LSiE2qQDYwMoAAAAASUVORK5CYII=';
+const mockFiles = {
+    yaml: {name: 'sample.yaml', content: sampleYaml},
+    xml: {name: 'sample.xml', content: sampleXml},
+    svg: {name: 'diagram.svg', content: '<svg xmlns="http://www.w3.org/2000/svg" width="240" height="120"><rect width="240" height="120" rx="10" fill="#4f8cff"/><circle cx="52" cy="60" r="26" fill="#ffb648"/><text x="96" y="68" fill="#fff" font-family="sans-serif" font-size="20">SVG OK</text></svg>'},
+    csv: {name: 'sample.csv', content: sampleCsv},
+    text: {name: 'notes.md', content: sampleText},
+    txt: {name: 'novel.txt', content: sampleNovelTxt},
+    json: {name: 'sample.json', content: sampleJson},
+    jsonl: {name: 'sample.jsonl', content: sampleJsonl},
+    toml: {name: 'sample.toml', content: sampleToml},
+    ini: {name: 'sample.ini', content: sampleIni},
+    gomod: {name: 'go.mod', content: sampleGoMod},
+    gosum: {name: 'go.sum', content: sampleGoSum},
+    bak: {name: 'sample.bak', content: sampleJson},
+    py: {name: 'sample.py', content: samplePy},
+    md: {name: 'AGENTS.md', content: sampleAgentsMd},
+    html: {name: 'index.html', content: sampleHtml},
+    js: {name: 'app.js', content: sampleJs},
+    go: {name: 'server.go', content: sampleGo},
+    machine: {name: 'machine.py', content: sampleMachinePy},
+    brokensvg: {name: 'broken.svg', content: '{ not a svg {'},
+    aiMemory: {name: 'MEMORY.md', content: '# 记忆索引\n\n- 用户偏好：回答尽量简洁，先给结论（user-preferences.md）\n- 项目事实：这是一个用于演示 AI 面板的 mock 工作区。\n'},
+    aiPreferences: {name: 'user-preferences.md', content: '# 用户偏好\n\n- 喜欢简洁表格，先结论后细节。\n'},
+    aiSkill: {name: 'SKILL.md', content: '---\nname: demo-skill\ndescription: 演示技能：回答先给结论\n---\n\n# Demo Skill\n\n回答时先给结论，再列要点。\n'},
+    workspaceSkill: {name: 'workspace-skill.md', content: '---\nname: workspace-skill\ndescription: 工作区技能：回答附示例\n---\n\n# Workspace Skill\n\n回答时附一个最小示例。\n'},
+    workspaceAgentsSkill: {name: 'workspace-agents-skill.md', content: '---\nname: workspace-agents-skill\ndescription: 工作区通用技能：来自 <工作区>/.agents/skills\n---\n\n# Workspace Agents Skill\n\n来自工作区通用目录的示例技能。\n'},
+    userAgentsSkill: {name: 'agents-skill.md', content: '---\nname: agents-skill\ndescription: 用户通用技能：来自 ~/.agents/skills\n---\n\n# User Agents Skill\n\n来自用户主目录通用技能目录的示例技能。\n'},
+};
+const mockTree = {
+    'mock://samples': [
+        {name: 'cache', path: 'mock://samples/cache', isDir: true},
+        {name: 'config', path: 'mock://samples/config', isDir: true},
+        {name: 'images', path: 'mock://samples/images', isDir: true},
+        {name: 'empty-dir', path: 'mock://samples/empty-dir', isDir: true},
+        {name: 'AGENTS.md', path: 'mock://samples/AGENTS.md', isDir: false},
+        {name: 'notes.md', path: 'mock://samples/notes.md', isDir: false},
+        {name: 'index.html', path: 'mock://samples/index.html', isDir: false},
+        {name: 'app.js', path: 'mock://samples/app.js', isDir: false},
+        {name: 'server.go', path: 'mock://samples/server.go', isDir: false},
+        {name: 'machine.py', path: 'mock://samples/machine.py', isDir: false},
+        {name: 'sample.csv', path: 'mock://samples/sample.csv', isDir: false},
+        {name: 'sample.json', path: 'mock://samples/sample.json', isDir: false},
+        {name: 'diagram.svg', path: 'mock://samples/diagram.svg', isDir: false},
+        {name: 'broken.svg', path: 'mock://samples/broken.svg', isDir: false},
+        {name: 'sample.jsonl', path: 'mock://samples/sample.jsonl', isDir: false},
+        {name: 'sample.py', path: 'mock://samples/sample.py', isDir: false},
+        {name: 'sample.ini', path: 'mock://samples/sample.ini', isDir: false},
+        {name: 'sample.png', path: 'mock://samples/sample.png', isDir: false},
+        {name: 'sample.xml', path: 'mock://samples/sample.xml', isDir: false},
+        {name: 'sample.yaml', path: 'mock://samples/sample.yaml', isDir: false},
+        {name: 'secrets.bin', path: 'mock://samples/secrets.bin', isDir: false},
+    ],
+    'mock://samples/empty-dir': [],
+    'mock://samples/cache': [
+        {name: 'data-001.bin', path: 'mock://samples/cache/data-001.bin', isDir: false},
+        {name: 'data-002.bin', path: 'mock://samples/cache/data-002.bin', isDir: false},
+    ],
+    'mock://samples/config': [
+        {name: 'deep_well.json', path: 'mock://samples/config/deep_well.json', isDir: false},
+        {name: 'nested.yaml', path: 'mock://samples/config/nested.yaml', isDir: false},
+        {name: 'readme.txt', path: 'mock://samples/config/readme.txt', isDir: false},
+    ],
+    'mock://samples/images': [
+        {name: 'logo.png', path: 'mock://samples/images/logo.png', isDir: false},
+        {name: 'preview.jpg', path: 'mock://samples/images/preview.jpg', isDir: false},
+    ],
+    'mock://samples/.cadt': [
+        {name: 'memory', path: 'mock://samples/.cadt/memory', isDir: true},
+        {name: 'skills', path: 'mock://samples/.cadt/skills', isDir: true},
+    ],
+    'mock://samples/.cadt/memory': [
+        {name: 'MEMORY.md', path: 'mock://samples/.cadt/memory/MEMORY.md', isDir: false},
+        {name: 'user-preferences.md', path: 'mock://samples/.cadt/memory/user-preferences.md', isDir: false},
+    ],
+    'mock://samples/.cadt/skills': [
+        {name: 'demo-skill', path: 'mock://samples/.cadt/skills/demo-skill', isDir: true},
+        {name: 'workspace-skill.md', path: 'mock://samples/.cadt/skills/workspace-skill.md', isDir: false},
+    ],
+    'mock://samples/.cadt/skills/demo-skill': [
+        {name: 'SKILL.md', path: 'mock://samples/.cadt/skills/demo-skill/SKILL.md', isDir: false},
+    ],
+    'mock://samples/.agents/skills': [
+        {name: 'demo-skill', path: 'mock://samples/.agents/skills/demo-skill', isDir: true},
+        {name: 'workspace-agents-skill.md', path: 'mock://samples/.agents/skills/workspace-agents-skill.md', isDir: false},
+    ],
+    'mock://samples/.agents/skills/demo-skill': [
+        {name: 'SKILL.md', path: 'mock://samples/.agents/skills/demo-skill/SKILL.md', isDir: false},
+    ],
+    'mock://home/.agents/skills': [
+        {name: 'demo-skill', path: 'mock://home/.agents/skills/demo-skill', isDir: true},
+        {name: 'agents-skill.md', path: 'mock://home/.agents/skills/agents-skill.md', isDir: false},
+    ],
+    'mock://home/.agents/skills/demo-skill': [
+        {name: 'SKILL.md', path: 'mock://home/.agents/skills/demo-skill/SKILL.md', isDir: false},
+    ],
+    'mock://appdata/CandySweet/CaDt-DataLens': [
+        {name: 'ai-memory', path: 'mock://appdata/CandySweet/CaDt-DataLens/ai-memory', isDir: true},
+        {name: 'ai-skills', path: 'mock://appdata/CandySweet/CaDt-DataLens/ai-skills', isDir: true},
+    ],
+    'mock://appdata/CandySweet/CaDt-DataLens/ai-memory': [
+        {name: 'MEMORY.md', path: 'mock://appdata/CandySweet/CaDt-DataLens/ai-memory/MEMORY.md', isDir: false},
+        {name: 'user-preferences.md', path: 'mock://appdata/CandySweet/CaDt-DataLens/ai-memory/user-preferences.md', isDir: false},
+    ],
+    'mock://appdata/CandySweet/CaDt-DataLens/ai-skills': [
+        {name: 'demo-skill', path: 'mock://appdata/CandySweet/CaDt-DataLens/ai-skills/demo-skill', isDir: true},
+    ],
+    'mock://appdata/CandySweet/CaDt-DataLens/ai-skills/demo-skill': [
+        {name: 'SKILL.md', path: 'mock://appdata/CandySweet/CaDt-DataLens/ai-skills/demo-skill/SKILL.md', isDir: false},
+    ],
+};
+
+function mockFindEntry(path) {
+    for (const entries of Object.values(mockTree)) {
+        const index = entries.findIndex((entry) => entry.path === path);
+        if (index >= 0) return {entries, index, entry: entries[index]};
+    }
+    return null;
+}
+
+function mockPasteNode(entry, destDir, name) {
+    const target = destDir + '/' + name;
+    mockTree[destDir].push({name, path: target, isDir: !!entry.isDir});
+    if (entry.isDir) {
+        mockTree[target] = [];
+        for (const child of (mockTree[entry.path] || []).slice()) {
+            mockPasteNode(child, target, child.name);
+        }
+    } else if (window.__mockCreated && window.__mockCreated[entry.path]) {
+        window.__mockCreated[target] = true;
+    }
+    return target;
+}
+
+function mockDropPath(path) {
+    const found = mockFindEntry(path);
+    if (found) found.entries.splice(found.index, 1);
+    for (const key of Object.keys(mockTree)) {
+        if (key === path || key.startsWith(path + '/')) delete mockTree[key];
+    }
+    if (window.__mockCreated) {
+        for (const key of Object.keys(window.__mockCreated)) {
+            if (key === path || key.startsWith(path + '/')) {
+                delete window.__mockCreated[key];
+            }
+        }
+    }
+}
+
+const mockAISessions = new Map();
+const mockAISessionImages = new Map();
+let mockAIConfigText = '';
+
+const mockBackend = {
+    async AIConfigRead() {
+        return mockAIConfigText;
+    },
+    async AIConfigWrite(data) {
+        mockAIConfigText = String(data || '');
+        return null;
+    },
+    async AISessionStoreRoot() {
+        return 'mock://appdata/CandySweet/CaDt-DataLens/ai-sessions';
+    },
+    async AISessionList() {
+        return Array.from(mockAISessions.values()).map((item) => item.meta);
+    },
+    async AISessionRead(id) {
+        const item = mockAISessions.get(String(id));
+        return item ? item.log : '';
+    },
+    async AISessionAppend(id, lines) {
+        const key = String(id);
+        const item = mockAISessions.get(key) || {meta: '{}', log: ''};
+        item.log += lines;
+        mockAISessions.set(key, item);
+        return null;
+    },
+    async AISessionRewrite(id, content) {
+        const key = String(id);
+        const item = mockAISessions.get(key) || {meta: '{}', log: ''};
+        item.log = content;
+        mockAISessions.set(key, item);
+        return null;
+    },
+    async AISessionWriteMeta(id, data) {
+        const key = String(id);
+        const item = mockAISessions.get(key) || {meta: '{}', log: ''};
+        item.meta = data;
+        mockAISessions.set(key, item);
+        return null;
+    },
+    async AISessionSaveImage(id, name, dataURL) {
+        mockAISessionImages.set(String(id) + '/' + name, dataURL);
+        return 'images/' + name;
+    },
+    async AISessionReadImage(id, name) {
+        return mockAISessionImages.get(String(id) + '/' + name) || '';
+    },
+    async AISessionDelete(id) {
+        mockAISessions.delete(String(id));
+        return null;
+    },
+    async AISessionDeleteAll() {
+        mockAISessions.clear();
+        return null;
+    },
+    async GetStartupFiles() {
+        if (mockScenario.has('empty')) return [];
+        if (mockScenario.has('wsdir')) return [];
+        if (mockScenario.has('gbk')) return [mockDir + 'sample-gbk.json'];
+        if (mockScenario.has('image')) return [mockDir + 'sample.png'];
+        if (mockScenario.has('large')) return [mockDir + 'large.json'];
+        if (mockScenario.has('invalid')) return [mockDir + 'invalid.json'];
+        if (mockScenario.has('bigcsv')) return [mockDir + 'big.csv'];
+        for (const key of ['yaml', 'xml', 'svg', 'brokensvg', 'csv', 'text', 'txt', 'jsonl', 'toml', 'ini', 'gomod', 'gosum', 'bak', 'py', 'md', 'html', 'js', 'go', 'machine']) {
+            if (mockScenario.has(key)) return [mockDir + mockFiles[key].name];
+        }
+        return [mockDir + 'sample.json'];
+    },
+    async GetStartupTargets() {
+        if (mockScenario.has('line')) return [{path: mockDir + 'sample.json', line: 5, column: 3}];
+        if (mockScenario.has('wsdir')) return [{path: mockScenario.get('wsdir') || mockDir.slice(0, -1), line: 0, column: 0}];
+        const files = await this.GetStartupFiles();
+        return files.map((path) => ({path, line: 0, column: 0}));
+    },
+    async GetStartupAISession() {
+        return window.__mockStartupAISession || mockScenario.get('aisession') || '';
+    },
+    async OpenFile(path, enc) {
+        window.__mockLastOpenEnc = enc;
+        const dirKey = String(path || '').replace(/\/+$/, '');
+        if (mockTree[dirKey]) {
+            return {path: dirKey, name: dirKey.split('/').pop(), isDir: true};
+        }
+        const base = path.split('/').pop();
+        if (base === 'big.csv') {
+            if (!window.__mockBigCsv) {
+                const rows = ['id,name,count'];
+                for (let i = 1; i <= 5000; i++) rows.push(i + ',name-' + i + ',' + (i % 97));
+                window.__mockBigCsv = rows.join('\n');
+            }
+            const content = window.__mockBigCsv;
+            return {path, name: base, content, size: content.length, eol: 'lf', hasBom: false, large: false, enc: 'utf-8'};
+        }
+        if (window.__mockWrites && Object.prototype.hasOwnProperty.call(window.__mockWrites, path)) {
+            const content = String(window.__mockWrites[path] || '');
+            return {path, name: base, content, size: content.length, eol: 'lf', hasBom: false, large: false, enc: 'utf-8'};
+        }
+        if (path.includes('new-file') || path.includes('missing')) {
+            throw new Error('The system cannot find the file specified.');
+        }
+        if (base === 'AGENTS.md' &&
+            !(window.__mockWrites && Object.prototype.hasOwnProperty.call(window.__mockWrites, path)) &&
+            !(window.__mockCreated && window.__mockCreated[path])) {
+            throw new Error('The system cannot find the file specified.');
+        }
+        if (window.__mockCreated && window.__mockCreated[path]) {
+            return {path, name: base, content: '', size: 0, eol: 'lf', hasBom: false, large: false, enc: 'utf-8'};
+        }
+        if (base.toLowerCase().endsWith('.png')) {
+            return {path, name: base, content: mockHex, size: 16, eol: 'lf', hasBom: false, large: false, enc: 'binary', binary: true, image: true};
+        }
+        const fileEnc = path.includes('gbk') ? 'gbk' : 'utf-8';
+        const ext = (base.split('.').pop() || '').toLowerCase();
+        const byExt = ['yaml', 'yml'].includes(ext) ? 'yaml'
+            : ['xml', 'svg'].includes(ext) ? 'xml'
+                : ['csv', 'tsv'].includes(ext) ? 'csv'
+                    : ['jsonl', 'ndjson'].includes(ext) ? 'jsonl'
+                        : ext === 'toml' ? 'toml'
+                            : ['ini', 'properties', 'cfg'].includes(ext) ? 'ini'
+                                : ['md', 'txt', 'log'].includes(ext) ? 'text' : 'json';
+        const key = Object.keys(mockFiles).find(k => mockFiles[k].name === base) || byExt;
+        let content = mockFiles[key].content;
+        let large = false;
+        if (path.includes('large')) large = true;
+        if (path.includes('invalid')) content = '{ "broken": [1, 2, ';
+        return {
+            path, name: base, content,
+            size: content.length, eol: 'lf', hasBom: false, large, enc: fileEnc,
+        };
+    },
+    // ---- 阅读模式（浏览器 mock：内存里造一本书，字段名与 Go 的 json tag 一致） ----
+    async ScanReadingRoot(root) {
+        const base = String(root || 'mock://books').replace(/[\\/]+$/, '');
+        const file = (name, words, title) => ({
+            rel: name, name, ext: name.split('.').pop().toLowerCase(), size: words * 3,
+            modTime: 0, encoding: 'utf-8', words,
+            headings: title ? [{offset: 1, level: 1, title, words}] : [],
+        });
+        return {
+            root: base, title: '演示书籍', author: '甜澄', intro: '', profile: 'file',
+            confidence: 1, warnings: [], scanMs: 1,
+            files: [
+                file('01-山雨欲来.txt', 800, '第一章 山雨欲来'),
+                file('02-夜行.txt', 600, '第二章 夜行'),
+                file('03-番外篇.txt', 300, '番外篇 旧梦'),
+            ],
+        };
+    },
+    async PrepareReadingEpub(path) {
+        return {
+            id: 'mock-epub', path, title: '演示 EPUB', author: '甜澄',
+            cacheDir: '', token: '', modTime: 0,
+            chapters: [
+                {index: 0, href: 'ch1.xhtml', title: '第一章 山雨欲来', words: 800},
+                {index: 1, href: 'ch2.xhtml', title: '第二章 夜行', words: 600},
+            ],
+        };
+    },
+    async ReadReadingEpubChapter(id, index) {
+        return {index: Number(index) || 0, title: '演示章节', html: '<p>这是 EPUB 演示章节的正文。</p>', words: 12};
+    },
+    async ParseReadingDocx() {
+        return {
+            title: '演示 DOCX',
+            author: '甜澄',
+            blocks: [
+                {kind: 'heading', level: 1, text: '第一章 山雨欲来'},
+                {kind: 'p', text: '少年推开柴门，山风扑面而来。'},
+                {kind: 'heading', level: 1, text: '第二章 夜行'},
+                {kind: 'p', text: '月色如水，照在青石板上。'},
+            ],
+        };
+    },
+    async SearchReadingBook(requestID, root, query) {
+        const q = String(query || '');
+        const hits = q ? [
+            {rel: '01-山雨欲来.txt', offset: 3, before: '少年推开', match: q, after: '，山风扑面而来。', unitOffset: 1, unitTitle: '第一章 山雨欲来'},
+            {rel: '02-夜行.txt', offset: 3, before: '月色如水，照在', match: q, after: '上。', unitOffset: 1, unitTitle: '第二章 夜行'},
+        ] : [];
+        return {hits, filesScanned: 3, filesTotal: 3, truncated: false, elapsedMs: 1};
+    },
+    async CancelReadingSearch() { return null; },
+    async SuggestReadingBooks() {
+        return [{root: 'mock://books/demo', name: '演示书籍', bookFiles: 3, namedFiles: 3, bytes: 5100, estWords: 1700, score: 1}];
+    },
+    // ---- 其余后端能力：给中性返回，避免浏览器 dev 下调用到 undefined ----
+    async SQLImport(path, kind, enc, text) {
+        return {id: 'mock-sql', kind, rows: 2, columns: ['id', 'name'], bytes: String(text || '').length, elapsedMs: 1, truncated: false};
+    },
+    async SQLQuery() {
+        return {
+            columns: ['id', 'name'],
+            rows: [['1', 'alpha'], ['2', 'beta']],
+            nulls: [[false, false], [false, false]],
+            truncated: false, elapsedMs: 1, message: '',
+        };
+    },
+    async SQLClose() { return null; },
+    async TermShells() { return [{id: 'bash', name: 'Git Bash'}]; },
+    async DetectToolchain() { return {envs: []}; },
+    async PrepareRun(spec) {
+        return {sourcePath: (spec && spec.srcPath) || 'mock://run/main.py', workDir: 'mock://run', tempDir: '', tempCopy: !!(spec && spec.content)};
+    },
+    async RunExec(id, exe, args) {
+        setTimeout(() => {
+            if (rt && rt.EventsEmit) {
+                rt.EventsEmit('run-out', {id, stream: 'out', data: '模拟运行输出：' + exe + ' ' + (args || []).join(' ') + '\n'});
+                rt.EventsEmit('run-exit', {id, code: 0, durationMs: 12});
+            }
+        }, 30);
+        return null;
+    },
+    async RunStop() { return null; },
+    async RunInput() { return null; },
+    async RunEndInput() { return null; },
+    async ResolveRunShell() { return {path: 'mock-shell', name: 'Mock Shell'}; },
+    async CleanupRunTemp() { return null; },
+    async CleanupRunTempStale() { return 0; },
+    async DetectRunProject() { return {root: '', kind: 'Mock', marker: '', commands: [], note: '浏览器 mock 环境没有项目探测'}; },
+    async ListLangPackages() { return {packages: [], exists: true}; },
+    async GitLineMarksFor() { return []; },
+    async GetSystemCursors() { return {}; },
+    async RegisterPreviewRoot() { return null; },
+    async ExportStructureText() { return null; },
+    async DebugConsoleRead(offset) {
+        const all = window.__mockDebugEntries || [];
+        return all.slice(Number(offset) || 0);
+    },
+    async WatchWorkspace() { return null; },
+    async UnwatchWorkspace() { return null; },
+    async GetConvertRequest() { return null; },
+    async FinishConvert() { return null; },
+    async IsAIFloatWindow() { return false; },
+    async IsDebugConsoleWindow() { return false; },
+    async OpenDebugConsoleWindow() { return null; },
+    async AITouchStream() { return null; },
+    async AISessionSearch() { return []; },
+    async AISessionIndexStats() { return {exists: true, sessions: 0, messages: 0, dirty: 0, bytes: 0, trigram: false}; },
+    async AISessionReindex() { return 0; },
+    async GetPathInfo(path) {
+        const base = String(path || '').split('/').pop();
+        const isDir = !!mockTree[String(path || '').replace(/\/+$/, '')];
+        return {
+            path,
+            name: base,
+            isDir,
+            size: isDir ? 0 : (mockFiles.base || mockFiles.json).content.length,
+            modified: Date.now() - 3600 * 1000,
+            readOnly: false,
+        };
+    },
+    async OpenFilesDialog() {
+        if (mockScenario.has('multi')) return [mockDir + 'sample.json', mockDir + 'sample.yaml'];
+        return [mockDir + 'sample.json'];
+    },
+    async OpenFolderDialog() { return 'mock://samples'; },
+    async StructureDir(dir) {
+        const norm = String(dir || '').replace(/\/+$/, '');
+        const ignored = new Set(['.git', '__pycache__']);
+        const lines = [norm.split('/').pop() || norm];
+        const walk = (path, prefix) => {
+            const entries = (mockTree[path] || []).filter((entry) => !ignored.has(entry.name)).slice();
+            entries.sort((a, b) => {
+                if (!!a.isDir !== !!b.isDir) return a.isDir ? -1 : 1;
+                return a.name.localeCompare(b.name, 'zh-CN', {numeric: true, sensitivity: 'base'});
+            });
+            entries.forEach((entry, index) => {
+                const last = index === entries.length - 1;
+                lines.push(prefix + (last ? '└── ' : '├── ') + entry.name);
+                if (entry.isDir) walk(entry.path, prefix + (last ? '    ' : '│   '));
+            });
+        };
+        walk(norm, '');
+        window.__mockStructuredDir = lines.join('\n');
+        return window.__mockStructuredDir;
+    },
+    async ExportStructureDir(dir) {
+        const text = await this.StructureDir(dir);
+        const name = (String(dir || '').replace(/\/+$/, '').split('/').pop() || '目录') + '-目录结构.txt';
+        // 浏览器 mock 没有系统保存对话框，用 prompt 模拟选择路径（测试可通过 __mockExportPath 指定）
+        let path;
+        if (window.__mockExportPath !== undefined) path = window.__mockExportPath;
+        else path = window.prompt('导出结构化目录到（模拟路径）', 'mock://' + name);
+        if (path == null || !String(path).trim()) return '';
+        path = String(path).trim();
+        await this.SaveFile(path, text, 'lf', false, 'utf-8');
+        return path;
+    },
+    async ReadDir(path, limit) {
+        const key = String(path || '').replace(/\/+$/, '');
+        let entries = mockTree[key];
+        if (!entries) throw new Error('目录不存在');
+        if (mockScenario.has('many') && key === 'mock://samples') {
+            const many = Array.from({length: 240}, (_, i) => {
+                const name = 'data-' + String(i + 1).padStart(3, '0') + '.json';
+                return {name, path: 'mock://samples/' + name, isDir: false};
+            });
+            entries = entries.concat(many);
+        }
+        const cap = limit > 0 ? limit : 1000;
+        return {entries: entries.slice(0, cap), truncated: entries.length > cap, mtime: 0};
+    },
+    async DirMtime(path) {
+        const key = String(path || '').replace(/\/+$/, '');
+        if (!mockTree[key]) throw new Error('目录不存在');
+        return 0;
+    },
+    async CreateEntry(dir, name, isDir) {
+        const key = String(dir || '').replace(/\/+$/, '');
+        const entries = mockTree[key];
+        if (!entries) throw new Error('目录不存在');
+        const clean = String(name || '').trim();
+        if (!clean) throw new Error('名称不能为空');
+        if (/[\\/]/.test(clean)) throw new Error('名称不能包含路径分隔符');
+        if (entries.some((e) => e.name.toLowerCase() === clean.toLowerCase())) throw new Error('“' + clean + '”已存在');
+        const path = key + '/' + clean;
+        entries.push({name: clean, path, isDir: !!isDir});
+        if (isDir) mockTree[path] = [];
+        else (window.__mockCreated || (window.__mockCreated = {}))[path] = true;
+        return path;
+    },
+    async RenameEntry(path, newName) {
+        const clean = String(newName || '').trim();
+        if (!clean) throw new Error('名称不能为空');
+        if (/[\\/]/.test(clean)) throw new Error('名称不能包含路径分隔符');
+        const slash = path.lastIndexOf('/');
+        const parent = path.slice(0, slash);
+        const entries = mockTree[parent];
+        if (!entries) throw new Error('目录不存在');
+        const index = entries.findIndex((e) => e.path === path);
+        if (index < 0) throw new Error('文件不存在');
+        if (entries[index].name === clean) return path;
+        if (entries.some((e) => e.path !== path && e.name.toLowerCase() === clean.toLowerCase())) {
+            throw new Error('“' + clean + '”已存在');
+        }
+        const target = parent + '/' + clean;
+        const wasDir = entries[index].isDir;
+        entries[index] = {name: clean, path: target, isDir: wasDir};
+        if (wasDir) {
+            const moved = {};
+            for (const [key, value] of Object.entries(mockTree)) {
+                if (key !== path && !key.startsWith(path + '/')) continue;
+                moved[target + key.slice(path.length)] = value.map((entry) => ({
+                    ...entry,
+                    path: target + entry.path.slice(path.length),
+                }));
+                delete mockTree[key];
+            }
+            Object.assign(mockTree, moved);
+        }
+        if (window.__mockCreated && window.__mockCreated[path]) {
+            window.__mockCreated[target] = true;
+            delete window.__mockCreated[path];
+        }
+        return target;
+    },
+    async SuggestCopyName(dir, name, isDir) {
+        const key = String(dir || '').replace(/\/+$/, '');
+        const entries = mockTree[key];
+        if (!entries) throw new Error('目录不存在');
+        if (!entries.some((e) => e.name.toLowerCase() === String(name).toLowerCase())) return name;
+        let stem = name;
+        let ext = '';
+        if (!isDir) {
+            const dot = name.lastIndexOf('.');
+            if (dot > 0) {
+                stem = name.slice(0, dot);
+                ext = name.slice(dot);
+            }
+        }
+        for (let i = 1; i <= 500; i++) {
+            const candidate = stem + (i === 1 ? ' - 副本' : ' - 副本 ' + i) + ext;
+            if (!entries.some((e) => e.name.toLowerCase() === candidate.toLowerCase())) return candidate;
+        }
+        throw new Error('无法生成可用的名称');
+    },
+    async CopyEntry(src, destDir, name) {
+        const key = String(destDir || '').replace(/\/+$/, '');
+        if (!mockTree[key]) throw new Error('目录不存在');
+        const found = mockFindEntry(src);
+        if (!found) throw new Error('源文件不存在');
+        if (mockTree[key].some((e) => e.name.toLowerCase() === String(name).toLowerCase())) throw new Error('“' + name + '”已存在');
+        return mockPasteNode(found.entry, key, name);
+    },
+    async MoveEntry(src, destDir, name) {
+        const key = String(destDir || '').replace(/\/+$/, '');
+        if (!mockTree[key]) throw new Error('目录不存在');
+        const found = mockFindEntry(src);
+        if (!found) throw new Error('源文件不存在');
+        if (mockTree[key].some((e) => e.name.toLowerCase() === String(name).toLowerCase())) throw new Error('“' + name + '”已存在');
+        const target = mockPasteNode(found.entry, key, name);
+        mockDropPath(src);
+        return target;
+    },
+    async DeleteEntry(path) {
+        const key = String(path || '').replace(/\/+$/, '');
+        if (!mockFindEntry(key)) throw new Error('文件不存在');
+        mockDropPath(key);
+    },
+    async SearchWorkspace(root, query, caseSensitive, maxResults) {
+        const text = String(query == null ? '' : query);
+        const limit = Math.max(1, Math.min(Number(maxResults) || 400, 1000));
+        const hits = [];
+        if (!text) return {hits, truncated: false, files: 0};
+        const needle = caseSensitive ? text : text.toLowerCase();
+        let files = 0;
+        for (const item of Object.values(mockFiles)) {
+            files++;
+            const lines = String(item.content || '').split('\n');
+            for (let i = 0; i < lines.length && hits.length < limit; i++) {
+                const line = lines[i].replace(/\r$/, '');
+                if (!line) continue;
+                const hay = caseSensitive ? line : line.toLowerCase();
+                let from = 0;
+                while (hits.length < limit) {
+                    const idx = hay.indexOf(needle, from);
+                    if (idx < 0) break;
+                    hits.push({
+                        path: mockDir + item.name,
+                        name: item.name,
+                        dir: 'samples',
+                        line: i + 1,
+                        column: idx + 1,
+                        length: text.length,
+                        preview: line,
+                        matchStart: idx,
+                        matchEnd: idx + text.length,
+                    });
+                    from = idx + Math.max(1, needle.length);
+                }
+            }
+        }
+        return {hits, truncated: hits.length >= limit, files};
+    },
+    async ReadImageDataURL() { return mockImageDataUrl; },
+    async SaveFileDialog(name) { return 'mock://' + (window.__mockSaveDialogName || name); },
+    async ShowSaveFileDialog(title, defaultName) {
+        return 'mock://' + (window.__mockExportName || defaultName || 'export.json');
+    },
+    async ShowOpenFileDialog(title, filter) {
+        return window.__mockOpenDialogPath || 'mock://import-ai-config.json';
+    },
+    async ExportDebugConsoleLog(defaultName, content) {
+        const path = 'mock://' + (window.__mockExportName || defaultName || 'debug-console.log');
+        window.__mockWrites = window.__mockWrites || {};
+        window.__mockWrites[path] = String(content == null ? '' : content);
+        window.__mockSaves = (window.__mockSaves || []).concat([{path, content, eol: 'lf', hasBom: false, enc: 'utf-8'}]);
+        window.__mockLastSavePath = path;
+        return path;
+    },
+    async SaveFile(path, content, eol, hasBom, enc) {
+        window.__mockLastSaveEnc = enc;
+        window.__mockLastSavePath = path;
+        window.__mockSaves = (window.__mockSaves || []).concat([{path, content, eol, hasBom, enc}]);
+        window.__mockWrites = window.__mockWrites || {};
+        window.__mockWrites[path] = String(content == null ? '' : content);
+        try {
+            const idx = String(path).lastIndexOf('/');
+            const dir = idx > 0 ? String(path).slice(0, idx) : '';
+            const name = idx > 0 ? String(path).slice(idx + 1) : String(path);
+            if (dir && mockTree[dir] && !mockTree[dir].some((entry) => entry.name === name)) {
+                mockTree[dir].push({name, path, isDir: false});
+            }
+        } catch (e) {}
+        localStorage.setItem('datalens-mock-save', content);
+        console.info('[mock] SaveFile', path, content.length, 'chars', enc);
+    },
+    async SetDirty(flag) { console.info('[mock] SetDirty', flag); },
+    async SetWindowBg(r, g, b) { window.__mockWindowBg = [r, g, b]; },
+    async GetOpenMode() {
+        if (!window.__mockOpenMode) window.__mockOpenMode = 'tab';
+        return window.__mockOpenMode;
+    },
+    async SetOpenMode(mode) { window.__mockOpenMode = mode; },
+    async GetIntegrationStatus() {
+        if (!window.__mockIntegration) {
+            window.__mockIntegration = {fileAssoc: false, contextMenu: false};
+        }
+        return {
+            executable: 'D:\\Tools\\CaDt-DataLens.exe',
+            pathRegistered: !!(window.__mockIntegration && window.__mockIntegration.pathCmd),
+            fileAssoc: !!window.__mockIntegration.fileAssoc,
+            contextMenu: !!window.__mockIntegration.contextMenu,
+        };
+    },
+    async SetPathRegistered(enabled) {
+        if (!window.__mockIntegration) {
+            window.__mockIntegration = {fileAssoc: false, contextMenu: false};
+        }
+        window.__mockIntegration.pathCmd = !!enabled;
+    },
+    async SetFileAssociation(enabled) {
+        if (!window.__mockIntegration) {
+            window.__mockIntegration = {fileAssoc: false, contextMenu: false};
+        }
+        window.__mockIntegration.fileAssoc = !!enabled;
+    },
+    async SetContextMenu(enabled) {
+        if (!window.__mockIntegration) {
+            window.__mockIntegration = {fileAssoc: false, contextMenu: false};
+        }
+        window.__mockIntegration.contextMenu = !!enabled;
+    },
+    async GetAgentSkillStatus() {
+        if (!window.__mockSkill) {
+            window.__mockSkill = {registered: false};
+        }
+        return {
+            home: 'C:\\Users\\demo',
+            targets: [
+                {dir: 'C:\\Users\\demo\\.agents\\skills', registered: !!window.__mockSkill.registered},
+                {dir: 'C:\\Users\\demo\\.claude\\skills', registered: !!window.__mockSkill.registered},
+            ],
+        };
+    },
+    async SetAgentSkill(enabled) {
+        if (!window.__mockSkill) {
+            window.__mockSkill = {registered: false};
+        }
+        window.__mockSkill.registered = !!enabled;
+    },
+    async TermCreate(cols, rows, shell, cwd) {
+        window.__mockTermSeq = (window.__mockTermSeq || 0) + 1;
+        const id = 'term-' + window.__mockTermSeq;
+        const usedShell = shell || 'pwsh';
+        setTimeout(() => {
+            if (rt && rt.EventsEmit) {
+                rt.EventsEmit('term-out', {id, data: 'CaDt-DataLens 模拟终端（开发预览）\r\nPS ' + (cwd || 'C:\\') + '> '});
+            }
+        }, 200);
+        return {id, shell: usedShell};
+    },
+    async TermWrite(id, data) {
+        if (rt && rt.EventsEmit && data && !data.includes('\r')) {
+            rt.EventsEmit('term-out', {id, data});
+        }
+    },
+    async TermResize() {},
+    async TermClose() {},
+    async RunCommandSync(exe, args, cwd, timeoutMs) {
+        return {code: 0, stdout: '[mock] ' + exe + ' ' + (args || []).join(' ') + (cwd ? ' (cwd ' + cwd + ')' : ''), stderr: ''};
+    },
+    async GetEnvVars() {
+        if (!window.__mockEnvVars) {
+            window.__mockEnvVars = {
+                encrypted: true,
+                supported: true,
+                vars: [{name: 'DEMO_API_KEY', value: 'sk-demo-123', description: '演示密钥（mock）', enabled: true}],
+            };
+        }
+        return JSON.parse(JSON.stringify(window.__mockEnvVars));
+    },
+    async SetEnvVars(vars) {
+        if (!window.__mockEnvVars) window.__mockEnvVars = {encrypted: true, vars: []};
+        window.__mockEnvVars.vars = JSON.parse(JSON.stringify(vars || []));
+        return null;
+    },
+    async SetEnvVarEncrypted(on) {
+        if (!window.__mockEnvVars) window.__mockEnvVars = {encrypted: false, vars: []};
+        window.__mockEnvVars.encrypted = !!on;
+        return null;
+    },
+    async AIRunShellCommand(command, cwd, timeoutMs) {
+        (window.__mockShellLog || (window.__mockShellLog = [])).push({command, cwd, timeoutMs});
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        return {
+            shell: 'Git Bash',
+            exe: 'C:/Program Files/Git/bin/bash.exe',
+            code: 0,
+            stdout: '[mock] ' + command + (cwd ? '\n(cwd ' + cwd + ')' : ''),
+            stderr: '',
+            timedOut: false,
+            durationMs: 200,
+        };
+    },
+    async AICommandStart(command, cwd) {
+        const jobs = window.__mockBgJobs || (window.__mockBgJobs = new Map());
+        const id = 'bg-mock-' + nextMockBgSeq();
+        const job = {id, state: 'running', code: null, output: [], startedAtMs: Date.now()};
+        jobs.set(id, job);
+        const emit = (name, data) => {
+            if (rt && rt.EventsEmit) rt.EventsEmit(name, data);
+        };
+        setTimeout(() => {
+            const line = '[mock] $ ' + command + (cwd ? '  (cwd ' + cwd + ')' : '');
+            job.output.push(line);
+            emit('cmd-out', {id, stream: 'out', data: line});
+        }, 60);
+        for (let i = 1; i <= 3; i++) {
+            setTimeout(() => {
+                if (job.state !== 'running') return;
+                const line = '[mock] line ' + i + ' / ' + command;
+                job.output.push(line);
+                emit('cmd-out', {id, stream: 'out', data: line});
+            }, 60 + i * 220);
+        }
+        setTimeout(() => {
+            if (job.state !== 'running') return;
+            job.state = 'exited';
+            job.code = 0;
+            emit('cmd-exit', {id, code: '0'});
+        }, 950);
+        return {jobId: id, shell: 'Git Bash'};
+    },
+    async AICommandStatus(jobId, since) {
+        const jobs = window.__mockBgJobs || (window.__mockBgJobs = new Map());
+        const job = jobs.get(jobId);
+        if (!job) {
+            return {jobId, state: 'notfound', code: -1, durationMs: 0, output: '', cursor: 0, truncated: false, startedAtMs: 0};
+        }
+        const text = job.output.length ? job.output.join('\n') + '\n' : '';
+        const cursor = text.length;
+        return {
+            jobId,
+            state: job.state,
+            code: job.code == null ? -1 : job.code,
+            durationMs: Math.max(0, Date.now() - job.startedAtMs),
+            output: since < cursor ? text.slice(since) : '',
+            cursor,
+            truncated: false,
+            startedAtMs: job.startedAtMs,
+        };
+    },
+    async AICommandStop(jobId) {
+        const jobs = window.__mockBgJobs || (window.__mockBgJobs = new Map());
+        const job = jobs.get(jobId);
+        if (!job) {
+            return {jobId, state: 'notfound', code: -1, durationMs: 0, output: '', cursor: 0, truncated: false, startedAtMs: 0};
+        }
+        if (job.state === 'running') {
+            job.state = 'exited';
+            job.code = -1;
+            if (rt && rt.EventsEmit) rt.EventsEmit('cmd-exit', {id: jobId, code: '-1'});
+        }
+        return this.AICommandStatus(jobId, 0);
+    },
+    async AIScheduleList() {
+        return [...(window.__mockSchedules || (window.__mockSchedules = new Map())).values()]
+            .sort((a, b) => (a.nextRunAt || 0) - (b.nextRunAt || 0));
+    },
+    async AIScheduleCreate(input) {
+        const store = window.__mockSchedules || (window.__mockSchedules = new Map());
+        const kind = String(input.kind || 'once');
+        const now = Date.now();
+        const schedule = {
+            id: 'sch-mock-' + nextMockSchedSeq(),
+            name: String(input.name || '').trim() || String(input.prompt || '').trim().slice(0, 30) || '未命名任务',
+            kind,
+            at: String(input.at || ''),
+            intervalMinutes: Number(input.intervalMinutes) || 0,
+            cron: String(input.cron || ''),
+            prompt: String(input.prompt || ''),
+            sessionId: String(input.sessionId || ''),
+            scope: ['chat', 'read', 'edit'].includes(input.scope) ? input.scope : 'chat',
+            enabled: true,
+            createdAt: now,
+            lastRunAt: 0,
+            nextRunAt: kind === 'once'
+                ? (input.at ? Date.parse(input.at) || now + 60000 : now + (Number(input.delayMinutes) || 1) * 60000)
+                : (kind === 'interval' ? now + (Number(input.intervalMinutes) || 1) * 60000 : now + 60000),
+            runCount: 0,
+            maxRuns: kind === 'once' ? 1 : (Number(input.maxRuns) || 0),
+            lastResult: '',
+        };
+        store.set(schedule.id, schedule);
+        if (rt && rt.EventsEmit) rt.EventsEmit('schedules-changed', {changed: true});
+        return JSON.parse(JSON.stringify(schedule));
+    },
+    async AIScheduleUpdate(id, input) {
+        const store = window.__mockSchedules || (window.__mockSchedules = new Map());
+        const schedule = store.get(id);
+        if (!schedule) throw new Error('定时任务不存在：' + id);
+        Object.assign(schedule, {
+            name: String(input.name || '').trim() || schedule.name,
+            kind: String(input.kind || schedule.kind),
+            at: String(input.at || ''),
+            intervalMinutes: Number(input.intervalMinutes) || 0,
+            cron: String(input.cron || ''),
+            prompt: String(input.prompt || schedule.prompt),
+            scope: ['chat', 'read', 'edit'].includes(input.scope) ? input.scope : schedule.scope,
+            maxRuns: Number(input.maxRuns) || 0,
+            nextRunAt: Date.now() + 60000,
+        });
+        if (rt && rt.EventsEmit) rt.EventsEmit('schedules-changed', {changed: true});
+        return JSON.parse(JSON.stringify(schedule));
+    },
+    async AIScheduleDelete(id) {
+        const store = window.__mockSchedules || (window.__mockSchedules = new Map());
+        if (!store.delete(id)) throw new Error('定时任务不存在：' + id);
+        if (rt && rt.EventsEmit) rt.EventsEmit('schedules-changed', {changed: true});
+        return null;
+    },
+    async AIScheduleToggle(id, enabled) {
+        const store = window.__mockSchedules || (window.__mockSchedules = new Map());
+        const schedule = store.get(id);
+        if (!schedule) throw new Error('定时任务不存在：' + id);
+        schedule.enabled = enabled !== false;
+        if (schedule.enabled) schedule.nextRunAt = Date.now() + 60000;
+        if (rt && rt.EventsEmit) rt.EventsEmit('schedules-changed', {changed: true});
+        return JSON.parse(JSON.stringify(schedule));
+    },
+    async AIScheduleSetResult(id, ok, note) {
+        const store = window.__mockSchedules || (window.__mockSchedules = new Map());
+        const schedule = store.get(id);
+        if (schedule) schedule.lastResult = (ok ? '执行成功' : '执行失败') + (note ? '：' + note : '');
+        return null;
+    },
+    async StartCommand(id, exe, args) {
+        setTimeout(() => {
+            if (rt && rt.EventsEmit) {
+                rt.EventsEmit('cmd-out', {id, stream: 'out', data: '[mock] ' + exe + ' ' + (args || []).join(' ')});
+                rt.EventsEmit('cmd-exit', {id, code: '0'});
+            }
+        }, 150);
+        return null;
+    },
+    async StopCommand() {},
+    async BrowserOpen(id, url, profileKey) {
+        if (!window.__mockBrowserTabs) window.__mockBrowserTabs = new Map();
+        if (window.__mockBrowserTabs.size >= 4) throw new Error('浏览器标签页最多同时 4 个');
+        const title = (url && url !== 'about:blank') ? '[mock] ' + url.replace(/^https?:\/\//, '') : '[mock] 新标签页';
+        window.__mockBrowserTabs.set(id, {id, url: url || 'about:blank', title});
+        return {id, url: url || 'about:blank', title};
+    },
+    async BrowserNavigate(id, url) {
+        const tab = window.__mockBrowserTabs && window.__mockBrowserTabs.get(id);
+        if (!tab) throw new Error('浏览器标签页不存在');
+        tab.url = url;
+        tab.title = '[mock] ' + url.replace(/^https?:\/\//, '');
+        return null;
+    },
+    async BrowserGoBack(id) { return null; },
+    async BrowserGoForward(id) { return null; },
+    async BrowserReload(id) { return null; },
+    async BrowserStop(id) { return null; },
+    async BrowserState(id) {
+        const tab = window.__mockBrowserTabs && window.__mockBrowserTabs.get(id);
+        if (!tab) throw new Error('浏览器标签页不存在');
+        return {id, url: tab.url, title: tab.title, canGoBack: false, canGoForward: false, loading: false};
+    },
+    async BrowserEval(id, script) {
+        return JSON.stringify({result: {value: '[mock eval] ' + String(script).slice(0, 60)}});
+    },
+    async BrowserCallCDP(id, method, paramsJSON) {
+        throw new Error('CDP 通道暂不可用（' + method + '）');
+    },
+    async BrowserCaptureScreenshot(id) {
+        const tab = window.__mockBrowserTabs && window.__mockBrowserTabs.get(id);
+        window.__mockShotUrl = tab ? tab.url : id;
+        return 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+    },
+    async BrowserSetBounds(id, x, y, w, h) {
+        if (!window.__mockBrowserBounds) window.__mockBrowserBounds = new Map();
+        window.__mockBrowserBounds.set(id, {x, y, w, h});
+        if (w > 0 && h > 0) {
+            if (!window.__mockBrowserVisible) window.__mockBrowserVisible = new Map();
+            window.__mockBrowserVisible.set(id, true);
+        }
+        return null;
+    },
+    async BrowserSetVisible(id, visible) {
+        if (!window.__mockBrowserVisible) window.__mockBrowserVisible = new Map();
+        window.__mockBrowserVisible.set(id, !!visible);
+        return null;
+    },
+    async BrowserFocus(id) { return null; },
+    async BrowserClose(id) {
+        if (window.__mockBrowserTabs) window.__mockBrowserTabs.delete(id);
+        return null;
+    },
+    async GitStatusFor(dir) {
+        if (!mockScenario.has('gitmock')) {
+            return {available: false, reason: 'mock 无 git', entries: []};
+        }
+        return {
+            available: true,
+            root: dir,
+            branch: window.__mockBranch || 'mock/main',
+            entries: [
+                {path: dir + '\\sample.json', state: 'modified'},
+                {path: dir + '\\sample.yaml', state: 'added'},
+                {path: dir + '\\sample.toml', state: 'deleted'},
+                {path: dir + '\\sample.ini', state: 'conflict'},
+                {path: dir + '\\config\\nested.yaml', state: 'modified'},
+                {path: dir + '\\新文件.md', state: 'untracked'},
+                {path: dir + '\\secrets.bin', state: 'ignored'},
+                {path: dir + '\\cache', state: 'ignored'},
+            ],
+        };
+    },
+    async GitBranchesFor(dir, includeRemote) {
+        window.__mockBranchCalls = (window.__mockBranchCalls || []).concat([{includeRemote: !!includeRemote}]);
+        if (!mockScenario.has('gitmock')) {
+            return {available: false, reason: 'mock 无 git', recent: [], local: [], remote: [], tags: []};
+        }
+        const current = window.__mockBranch || 'mock/main';
+        return {
+            available: true,
+            root: dir,
+            current,
+            recent: ['mock/feature', 'hotfix/1.0.1'],
+            local: [
+                {name: 'hotfix/1.0.1', current: current === 'hotfix/1.0.1', upstream: 'origin/hotfix/1.0.1', ahead: 0, behind: 3},
+                {name: 'mock/feature', current: current === 'mock/feature', upstream: 'origin/mock/feature', ahead: 2, behind: 1},
+                {name: 'mock/main', current: current === 'mock/main', upstream: 'origin/mock/main', ahead: 0, behind: 0},
+                {name: 'feature/api', current: current === 'feature/api', upstream: 'origin/feature/api', ahead: 1, behind: 0},
+                {name: 'feature/ui', current: current === 'feature/ui', upstream: 'origin/feature/ui', ahead: 0, behind: 0},
+            ],
+            remote: includeRemote ? [
+                {name: 'origin/mock/main', current: false},
+                {name: 'origin/mock/feature', current: false},
+                {name: 'origin/feature/api', current: false},
+                {name: 'origin/release/2.0', current: false},
+            ] : [],
+            tags: ['v1.0.0', 'v1.0.1', 'v1.1.0'],
+        };
+    },
+    async GitCheckoutBranch(dir, name, remote) {
+        const branch = remote ? name.replace(/^[^/]+\//, '') : name;
+        window.__mockBranch = branch;
+        return {success: true, output: '[mock] switched to ' + branch, branch};
+    },
+    async GitCreateBranch(dir, name) {
+        window.__mockBranch = name;
+        return {success: true, output: '[mock] created ' + name, branch: name};
+    },
+    async GitCheckoutRefFor(dir, ref) {
+        return {success: true, output: '[mock] checkout ' + ref, branch: ref};
+    },
+    async GitPullFor(dir) {
+        return {success: true, output: '[mock] Already up to date.'};
+    },
+    async GitPushFor(dir) {
+        return {success: true, output: '[mock] Everything up-to-date'};
+    },
+    async GitFetchFor(dir) {
+        return {success: true, output: '[mock] fetched'};
+    },
+    async GitCloneRepository(url, target) {
+        return {success: true, output: '[mock] cloned ' + url, path: target};
+    },
+    async GitRollbackFor(dir, paths, untracked) {
+        return null;
+    },
+    async GitFileHistoryFor(dir, path, limit) {
+        return '[mock] a1b2c3d | 2026-11-08 12:00 | CandySweet | 提交 ' + path;
+    },
+    async GitRecentLogFor(dir, limit) {
+        return '[mock] a1b2c3d | 2026-11-08 12:00 | CandySweet | 提交一';
+    },
+    async GitCommitChanges(dir, message, paths, amend, push) {
+        return {success: true, output: '[mock] ' + (amend ? '修正提交' : '提交') + ' ' + (paths || []).length + ' 个文件' + (push ? ' 并推送' : '')};
+    },
+    async GitDiffFor(dir, path) {
+        return {
+            hasChanges: true,
+            diff: 'diff --git a/' + path + ' b/' + path + '\n--- a/' + path + '\n+++ b/' + path + '\n@@ -1 +1 @@\n-旧内容\n+新内容（mock）\n',
+        };
+    },
+    async ReadImageAsDataURL(path) {
+        return 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAFklEQVR42mNkYPjPgAyYGBgYmRgAHPoBG0gGtMUAAAAASUVORK5CYII=';
+    },
+    async GetAppVersion() {
+        return 'v1.0.0';
+    },
+    async CheckForUpdates() {
+        if (mockScenario.has('updateerror')) throw new Error('模拟网络错误');
+        if (mockScenario.has('updatenorelease')) {
+            return {currentVersion: 'v1.0.0', hasUpdate: false, status: 'no-release', pageUrl: 'https://gitee.com/candysweet-cdt/CaDt-DataLens/releases'};
+        }
+        if (mockScenario.has('updatenone')) {
+            return {currentVersion: 'v1.0.0', latestVersion: 'v1.0.0', hasUpdate: false, status: 'ok', pageUrl: 'https://gitee.com/candysweet-cdt/CaDt-DataLens/releases'};
+        }
+        return {
+            currentVersion: 'v1.0.0',
+            latestVersion: 'v1.1.0',
+            hasUpdate: true,
+            status: 'ok',
+            title: 'CaDt-DataLens 1.1.0',
+            notes: '## 本次更新\n\n- 新增检查更新与帮助菜单\n- 优化文件属性对话框\n- 修复若干问题',
+            pageUrl: 'https://gitee.com/candysweet-cdt/CaDt-DataLens/releases',
+            downloadUrl: 'https://gitee.com/candysweet-cdt/CaDt-DataLens/releases',
+            downloadName: 'CaDt-DataLens-amd64-installer.exe',
+            publishedAt: '2026-11-20T10:00:00+08:00',
+        };
+    },
+    async OpenDevTools() {
+        window.__mockDevTools = true;
+    },
+    async GetPlugins() {
+        const st = window.__mockPlugins || (window.__mockPlugins = {present: true, disabled: {}, mode: 'portable'});
+        if (!st.present) return [];
+        return [{
+            id: 'demo-format',
+            name: '演示插件',
+            version: '1.0.0',
+            author: 'CandySweet',
+            description: '注册 .bak 为 JSON 查看，并演示工具命令与主题',
+            dir: 'C:\\plugins\\demo-format',
+            entry: 'main.js',
+            extensions: ['bak'],
+            homepage: 'https://gitee.com/cadt-datalens-plugins',
+            repository: 'https://gitee.com/cadt-datalens-plugins/bak-json',
+            license: 'MIT',
+            keywords: ['示例', 'json'],
+            minAppVersion: '1.0.0',
+            iconData: 'data:image/svg+xml;utf8,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><rect width="16" height="16" rx="3" fill="#ef86aa"/></svg>'),
+            enabled: !st.disabled['demo-format'],
+            entryOk: true,
+        }];
+    },
+    async GetPluginsDir() {
+        return 'C:\\plugins';
+    },
+    async OpenPluginsDir() {
+        window.__mockOpenPluginsDir = (window.__mockOpenPluginsDir || 0) + 1;
+    },
+    async GetPluginsPathMode() {
+        return (window.__mockPlugins || {}).mode || 'portable';
+    },
+    async SetPluginsPathMode(mode) {
+        const st = window.__mockPlugins || (window.__mockPlugins = {present: true, disabled: {}, mode: 'portable'});
+        st.mode = mode === 'appdata' ? 'appdata' : 'portable';
+    },
+    async AddPluginFromFolder() {
+        const st = window.__mockPlugins || (window.__mockPlugins = {present: true, disabled: {}, mode: 'portable'});
+        st.present = true;
+        delete st.disabled['demo-format'];
+        const list = await this.GetPlugins();
+        return list[0];
+    },
+    async ImportPluginFromZip() {
+        return this.AddPluginFromFolder();
+    },
+    async InstallPluginFromUrl(rawUrl) {
+        const st = window.__mockPlugins || (window.__mockPlugins = {present: true, disabled: {}, mode: 'portable'});
+        st.present = true;
+        delete st.disabled['demo-format'];
+        const list = await this.GetPlugins();
+        return list[0];
+    },
+    async DeletePlugin(id) {
+        const st = window.__mockPlugins || (window.__mockPlugins = {present: true, disabled: {}, mode: 'portable'});
+        if (id === 'demo-format') st.present = false;
+    },
+    async SetPluginEnabled(id, enabled) {
+        const st = window.__mockPlugins || (window.__mockPlugins = {present: true, disabled: {}, mode: 'portable'});
+        if (enabled) delete st.disabled[id];
+        else st.disabled[id] = true;
+    },
+    async GetPluginSources() {
+        const st = window.__mockPlugins || (window.__mockPlugins = {present: true, disabled: {}, mode: 'portable'});
+        if (!st.present || st.disabled['demo-format']) return [];
+        return [{
+            id: 'demo-format',
+            name: '演示插件',
+            version: '1.0.0',
+            dir: 'C:\\plugins\\demo-format',
+            code: [
+                "cadt.registerFormat({",
+                "  id: 'demo-bak-json',",
+                "  name: 'JSON 备份',",
+                "  extensions: ['bak'],",
+                "  parse: (text) => JSON.parse(text),",
+                "  stringify: (value) => JSON.stringify(value, null, 2),",
+                "});",
+                "cadt.addCommand({",
+                "  id: 'char-count',",
+                "  label: '统计当前文件字符数',",
+                "  run() {",
+                "    const f = cadt.getActiveFile();",
+                "    const t = cadt.getActiveText();",
+                "    cadt.flash((f ? f.name : '无文件') + ' 共 ' + (t ? t.length : 0) + ' 字符');",
+                "  },",
+                "});",
+                "cadt.addTheme({",
+                "  id: 'plugin-demo',",
+                "  name: '演示主题',",
+                "  bg: '#241f31',",
+                "  accent: '#c58af9',",
+                "  css: 'html[data-theme=\"plugin-demo\"] { --bg: #241f31; --text: #e8e3f2; --muted: #9d94b8; --border: #3a3350; --hover: #2e2842; --accent: #c58af9; --on-accent: #1b1626; }',",
+                "});",
+            ].join('\n'),
+        }];
+    },
+    async GetPluginMarket() {
+        if (window.__mockMarketError) throw new Error(window.__mockMarketError);
+        const items = [
+            {
+                id: 'bak-json',
+                name: 'JSON 备份查看',
+                version: '1.0.0',
+                author: 'CandySweet',
+                description: '把 .bak 文件按 JSON 解析；解析失败时自动退回文本视图，并附演示命令与主题',
+                repo: 'cadt-datalens-plugins/bak-json',
+                url: 'https://gitee.com/cadt-datalens-plugins/bak-json',
+                updatedAt: '2026-11-08T20:34:34+08:00',
+                stars: 2,
+                minAppVersion: '1.0.0',
+                manifestOk: true,
+                installed: true,
+                installedVersion: '0.9.0',
+            },
+            {
+                id: 'git-flow',
+                name: 'Git 工作流',
+                version: '1.0.0',
+                author: 'CandySweet',
+                description: '变更列表 / 历史 / 文件历史 / 差异 / 分支，只读查询',
+                repo: 'cadt-datalens-plugins/git-flow',
+                url: 'https://gitee.com/cadt-datalens-plugins/git-flow',
+                updatedAt: '2026-11-08T20:34:34+08:00',
+                stars: 0,
+                manifestOk: true,
+                installed: false,
+            },
+        ];
+        if (mockScenario.has('marketmany')) {
+            for (let i = 1; i <= 3; i += 1) {
+                items.push({...items[0], id: 'bak-json-' + i, name: 'JSON 备份查看 ' + i});
+            }
+        }
+        return items;
+    },
+    async ReadPluginAsset(pluginId, relPath) {
+        if (!relPath) throw new Error('资产路径为空');
+        window.__mockPluginAssets = (window.__mockPluginAssets || []).concat([pluginId + ':' + relPath]);
+        return mockImageDataUrl;
+    },
+    async OpenNewWindow() { window.__mockNewWindow = (window.__mockNewWindow || 0) + 1; },
+    async UpdatePluginFromUrl(id, url) {
+        window.__mockUpdated = (window.__mockUpdated || []).concat([[id, url]]);
+        return {id, name: 'JSON 备份查看', version: '1.0.0'};
+    },
+    async OpenInNewWindows(paths) { window.__mockNewWindows = (window.__mockNewWindows || []).concat([paths]); },
+    async OpenDirInNewWindow(dir) { window.__mockNewWindowDir = dir; window.__mockNewWindows = (window.__mockNewWindows || []).concat([[dir]]); },
+    async OpenWorkspaceForConversation(dir, sessionId) {
+        window.__mockSoftSwitch = {dir, sessionId: sessionId || ''};
+        window.__mockNewWindows = (window.__mockNewWindows || []).concat([[dir]]);
+    },
+    async ShowInFolder(path) { window.__mockShowInFolder = path; },
+    async LogFrontend(level, message) { (window.__mockLogs = window.__mockLogs || []).push(level + ': ' + message); },
+    async GetDeveloperMode() { return !!window.__mockDevMode; },
+    async SetDeveloperMode(on) { window.__mockDevMode = !!on; },
+    async GetLogPath() { return 'C:\\Users\\admin\\AppData\\Roaming\\CandySweet\\CaDt-DataLens\\logs\\2026-11-09_13-00-00.txt'; },
+    async OpenLogDir() { window.__mockOpenLogDir = (window.__mockOpenLogDir || 0) + 1; },
+    async CopyText(text) { window.__mockCopied = text; window.__mockClipboard = text; },
+    async SaveDataURL(path) { window.__mockSaved = path; return path; },
+    async CopyFileTo(srcPath) { return srcPath; },
+    async GetClipboardText() { return window.__mockClipboard || ''; },
+    // mock：浏览器调试时没有系统剪贴板图片，用 window.__mockClipboardImage 模拟 data URL。
+    async GetClipboardImage() { return window.__mockClipboardImage || ''; },
+    async ForceClose() { window.__mockForceClosed = (window.__mockForceClosed || 0) + 1; },
+    async WebSearch(query, maxResults) {
+        window.__mockWebSearch = {query, maxResults};
+        return {
+            query,
+            engine: 'bing',
+            endpoint: 'https://www.bing.com/search?format=rss&q=' + encodeURIComponent(query),
+            results: [
+                {
+                    title: 'Wails v2 发布 | Wails 框架',
+                    url: 'https://wails.io/zh-Hans/blog/wails-v2-released/',
+                    snippet: 'Wails v2 正式发布：用 Go 与 Web 前端构建桌面应用，内置原生窗口与单文件打包。',
+                    published: 'Sat, 12 Sep 2026 17:27:00 GMT',
+                },
+                {
+                    title: 'The Wails Project | Wails',
+                    url: 'https://wails.io/zh-Hans/',
+                    snippet: 'Wails v2 turns what used to be tedious and painful into a delightfully simple process.',
+                    published: 'Mon, 26 Oct 2026 03:20:00 GMT',
+                },
+            ].slice(0, maxResults || 8),
+        };
+    },
+    async WebFetch(url, maxChars) {
+        window.__mockWebFetch = {url, maxChars};
+        return {
+            url,
+            finalUrl: url,
+            status: 200,
+            contentType: 'text/html',
+            charset: 'utf-8',
+            title: 'Wails v2 发布 | Wails 框架',
+            text: 'Wails v2 正式发布\n\nWails v2 允许使用 Go 和任意前端技术栈构建桌面应用。\n它内置原生窗口、WebView2 与单一可执行文件打包。\n\n（mock 页面正文）',
+            links: [
+                {text: '快速开始', url: 'https://wails.io/zh-Hans/docs/gettingstarted/installation'},
+                {text: 'GitHub 仓库', url: 'https://github.com/wailsapp/wails'},
+            ],
+            truncated: false,
+            bytes: 2048,
+        };
+    },
+    async AISendChat(sessionId, cfg, messages, tools, retryMax) {
+        const run = {stopped: false, timers: []};
+        window.__mockAiRuns = window.__mockAiRuns || new Map();
+        window.__mockAiRuns.set(sessionId, run);
+        const emit = (name, payload) => {
+            if (typeof window.__mockAiEmit !== 'function') return;
+            try { window.__mockAiEmit(name, payload); } catch (e) {}
+        };
+        const last = (messages || []).filter((m) => m.role === 'user').pop();
+        const prompt = last ? String(last.content || '') : '';
+        window.__mockAiLastCfg = cfg;
+        window.__mockAiLastMessages = messages;
+        window.__mockAiLastTools = tools;
+        const systemMessage = (messages || []).find((message) => message.role === 'system');
+        window.__mockAiSystemLog = (window.__mockAiSystemLog || []).concat([systemMessage ? systemMessage.content : '']);
+        window.__mockAiToolsLog = (window.__mockAiToolsLog || []).concat([(tools || []).map((tool) => tool.name)]);
+        if (mockScenario.has('aierr')) {
+            run.timers.push(setTimeout(() => {
+                if (run.stopped) return;
+                emit('ai-error', {
+                    id: sessionId,
+                    message: '模拟错误：API Key 无效（地址栏加 ?aierr）',
+                });
+                (window.__mockAiRuns || new Map()).delete(sessionId);
+            }, 120));
+            return null;
+        }
+        const slow = mockScenario.has('aislow') ? 180 : 24;
+        const retryLead = mockScenario.has('airetry');
+        const leadDelay = retryLead ? 2000 : 0;
+        const reasoningText = mockScenario.has('aithink') ? '先读取用户的问题，再给出简洁回答。' : '';
+        let content = '这是浏览器 mock 回复：已收到「' + prompt.slice(0, 60) + '」。\n\n';
+        content += '在地址栏加 `?aithink` 可预览思考链，`?aierr` 预览错误，`?aislow` 测试停止按钮。';
+        const thinkChunks = reasoningText ? reasoningText.match(/[^\n]{1,4}/g) || [] : [];
+        const contentChunks = content.match(/[^\n]{1,8}|[\n]{1,2}/g) || [];
+        let delay = 30 + leadDelay;
+        const schedule = (fn, ms) => {
+            const timer = setTimeout(() => {
+                if (run.stopped) return;
+                fn();
+            }, ms);
+            run.timers.push(timer);
+        };
+        if (retryLead) {
+            schedule(() => emit('ai-retry', {id: sessionId, attempt: 1, max: 5, delayMs: 1500, reason: 'HTTP 429'}), 60);
+        }
+        if (mockScenario.has('aibrowser')) {
+            const lastMsg = (messages || [])[messages.length - 1];
+            const isToolRound = !!(lastMsg && lastMsg.role === 'tool');
+            const emitToolcall = (name, args) => {
+                const argChunks = args.match(/.{1,16}/gs) || [];
+                argChunks.forEach((chunk, i) => {
+                    schedule(() => emit('ai-toolcall', {
+                        id: sessionId,
+                        index: 0,
+                        callId: i === 0 ? 'call_mock_browser' : '',
+                        name: i === 0 ? name : '',
+                        argsDelta: chunk,
+                    }), 60 + i * 40);
+                });
+                schedule(() => emit('ai-done', {id: sessionId, finishReason: 'tool'}), 90 + argChunks.length * 40 + 50);
+            };
+            const hasBrowserTool = (messages || []).some((m) => m.role === 'tool' && /^browser_/.test(m.name || ''));
+            if (!isToolRound && !hasBrowserTool) {
+                schedule(() => emit('ai-chunk', {id: sessionId, delta: '我来打开页面并截图。' + String.fromCharCode(10) + String.fromCharCode(10)}), 20);
+                emitToolcall('browser_navigate', '{"url": "https://mock.example.com"}');
+                return null;
+            }
+            // 按最后一个工具名推进（中间可能插入带图 user 消息，不能用最后一条消息判断）
+            const lastTool = [...(messages || [])].reverse().find((m) => m.role === 'tool');
+            const prevName = lastTool ? lastTool.name : '';
+            if (prevName === 'browser_navigate') {
+                emitToolcall('browser_snapshot', '{}');
+                return null;
+            }
+            if (prevName === 'browser_snapshot') {
+                emitToolcall('browser_screenshot', '{}');
+                return null;
+            }
+            const finalText = '浏览器链路完成：' + String.fromCharCode(10, 10, 96, 96, 96) + String(lastMsg.content || '').slice(0, 200) + String.fromCharCode(96, 96, 96, 10) + 'mock browser 链路结束。';
+            const finalChunks = finalText.match(/[^\n]{1,8}|[\n]{1,2}/g) || [];
+            let finalDelay = 30;
+            finalChunks.forEach((chunk, i) => {
+                schedule(() => emit('ai-chunk', {id: sessionId, delta: chunk}), finalDelay + i * slow);
+            });
+            finalDelay += finalChunks.length * slow;
+            schedule(() => {
+                emit('ai-done', {id: sessionId, finishReason: 'stop', usage: {promptTokens: 32, completionTokens: 48, totalTokens: 80, cachedTokens: 0}});
+                (window.__mockAiRuns || new Map()).delete(sessionId);
+            }, finalDelay + 40);
+            return null;
+        }
+        if (mockScenario.has('aicreateenv')) {
+            // 只有「最后一条消息是工具结果」才算工具回传轮，避免历史 tool 消息造成误判
+            const lastMsg = (messages || [])[messages.length - 1];
+            const isToolRound = !!(lastMsg && lastMsg.role === 'tool');
+            if (!isToolRound) {
+                const wantList = /env_list|列出环境变量|有哪些变量/.test(prompt);
+                const args = wantList ? '{}' : '{"name": "USER_SECRET_TOKEN", "description": "AI 请求创建的演示变量（mock 场景）"}';
+                const argChunks = args.match(/.{1,16}/gs) || [];
+                schedule(() => emit('ai-chunk', {id: sessionId, delta: wantList ? '我列一下已配置的环境变量。\n\n' : '我来帮你创建一个环境变量。\n\n'}), 20);
+                argChunks.forEach((chunk, i) => {
+                    schedule(() => emit('ai-toolcall', {
+                        id: sessionId,
+                        index: 0,
+                        callId: i === 0 ? 'call_mock_env_1' : '',
+                        name: i === 0 ? (wantList ? 'env_list' : 'env_create') : '',
+                        argsDelta: chunk,
+                    }), 70 + i * 50);
+                });
+                schedule(() => emit('ai-done', {id: sessionId, finishReason: 'tool'}), 90 + argChunks.length * 50 + 60);
+                return null;
+            }
+            const finalText = 'env 工具返回：\n\n```\n' + String(lastMsg.content || '') + '\n```\n\nmock env 工具链路完成。';
+            const finalChunks = finalText.match(/[^\n]{1,8}|[\n]{1,2}/g) || [];
+            let finalDelay = 30;
+            finalChunks.forEach((chunk, i) => {
+                schedule(() => emit('ai-chunk', {id: sessionId, delta: chunk}), finalDelay + i * slow);
+            });
+            finalDelay += finalChunks.length * slow;
+            schedule(() => {
+                emit('ai-done', {
+                    id: sessionId,
+                    finishReason: 'stop',
+                    usage: {promptTokens: 24, completionTokens: 40, totalTokens: 64, cachedTokens: 0},
+                });
+                (window.__mockAiRuns || new Map()).delete(sessionId);
+            }, finalDelay + 40);
+            return null;
+        }
+        if (mockScenario.has('aiweb')) {
+            const toolMessages = (messages || []).filter((message) => message.role === 'tool');
+            const emitToolcall = (name, args) => {
+                const argChunks = args.match(/.{1,16}/gs) || [];
+                argChunks.forEach((chunk, i) => {
+                    schedule(() => emit('ai-toolcall', {
+                        id: sessionId,
+                        index: 0,
+                        callId: i === 0 ? 'call_mock_web_' + name : '',
+                        name: i === 0 ? name : '',
+                        argsDelta: chunk,
+                    }), 70 + i * 40);
+                });
+                schedule(() => emit('ai-done', {id: sessionId, finishReason: 'tool'}), 90 + argChunks.length * 40 + 50);
+            };
+            if (!toolMessages.length) {
+                schedule(() => emit('ai-chunk', {id: sessionId, delta: '我先联网查一下 Wails v2 的资料。\n\n'}), 20);
+                emitToolcall('web_search', JSON.stringify({query: 'Wails v2 发布时间', maxResults: 3}));
+                return null;
+            }
+            const lastTool = toolMessages[toolMessages.length - 1];
+            if (lastTool.name === 'web_search') {
+                emitToolcall('web_fetch', JSON.stringify({url: 'https://wails.io/zh-Hans/blog/wails-v2-released/', maxChars: 4000}));
+                return null;
+            }
+            const finalText = [
+                '查到了：Wails v2 于 2022 年 9 月正式发布，支持 Go + Web 前端构建桌面应用。',
+                '',
+                '来源：',
+                '- [Wails v2 发布 | Wails 框架](https://wails.io/zh-Hans/blog/wails-v2-released/)',
+                '- [The Wails Project](https://wails.io/zh-Hans/)',
+                '',
+                '（mock 联网检索链路结束）',
+            ].join('\n');
+            const finalChunks = finalText.match(/[^\n]{1,8}|[\n]{1,2}/g) || [];
+            let finalDelay = 30;
+            finalChunks.forEach((chunk, i) => {
+                schedule(() => emit('ai-chunk', {id: sessionId, delta: chunk}), finalDelay + i * slow);
+            });
+            finalDelay += finalChunks.length * slow;
+            schedule(() => {
+                emit('ai-done', {id: sessionId, finishReason: 'stop'});
+                (window.__mockAiRuns || new Map()).delete(sessionId);
+            }, finalDelay + 40);
+            return null;
+        }
+        if (mockScenario.has('aitool')) {
+            const toolMessages = (messages || []).filter((message) => message.role === 'tool');
+            if (!toolMessages.length) {
+                schedule(() => emit('ai-chunk', {id: sessionId, delta: '我先查看一下目录。\n\n'}), 20);
+                const argChunks = ['{"pa', 'th": "."}'];
+                argChunks.forEach((chunk, i) => {
+                    schedule(() => emit('ai-toolcall', {
+                        id: sessionId,
+                        index: 0,
+                        callId: i === 0 ? 'call_mock_1' : '',
+                        name: i === 0 ? 'list_dir' : '',
+                        argsDelta: chunk,
+                    }), 70 + i * 50);
+                });
+                schedule(() => emit('ai-done', {id: sessionId, finishReason: 'tool'}), 210);
+                return null;
+            }
+            const lastTool = toolMessages[toolMessages.length - 1];
+            const summary = String(lastTool.content || '').split('\n').slice(0, 8).join('\n');
+            const finalText = '工具返回结果：\n\n```\n' + summary + '\n```\n\n这是 mock 工具链路的最终回复。';
+            const finalChunks = finalText.match(/[^\n]{1,8}|[\n]{1,2}/g) || [];
+            let finalDelay = 30;
+            finalChunks.forEach((chunk, i) => {
+                schedule(() => emit('ai-chunk', {id: sessionId, delta: chunk}), finalDelay + i * slow);
+            });
+            finalDelay += finalChunks.length * slow;
+            schedule(() => {
+                const promptTokens = Math.ceil(prompt.length / 4);
+                const completionTokens = Math.ceil(finalText.length / 4);
+                emit('ai-done', {
+                    id: sessionId,
+                    finishReason: 'stop',
+                    usage: {
+                        promptTokens, completionTokens, totalTokens: promptTokens + completionTokens,
+                        cachedTokens: Math.ceil(promptTokens * 0.75),
+                    },
+                });
+                (window.__mockAiRuns || new Map()).delete(sessionId);
+            }, finalDelay + 40);
+            return null;
+        }
+        if (mockScenario.has('airun')) {
+            const toolMessages = (messages || []).filter((message) => message.role === 'tool');
+            if (!toolMessages.length) {
+                // ?airun&aithink：模拟「只有思考链、没有正文」的工具轮（回归：工具执行期间思考链不能消失）
+                if (mockScenario.has('aithink')) {
+                    const think = '先确认仓库状态，再执行命令。';
+                    const thinkChunks = think.match(/[^\n]{1,3}/g) || [];
+                    thinkChunks.forEach((chunk, i) => schedule(() => emit('ai-think', {id: sessionId, delta: chunk}), 20 + i * slow));
+                    const base = 20 + thinkChunks.length * slow;
+                    schedule(() => emit('ai-toolcall', {
+                        id: sessionId,
+                        index: 0,
+                        callId: 'call_mock_runcmd',
+                        name: 'run_command',
+                        argsDelta: JSON.stringify({command: 'git status --short'}),
+                    }), base + 50);
+                    schedule(() => emit('ai-done', {id: sessionId, finishReason: 'tool'}), base + 160);
+                    return null;
+                }
+                schedule(() => emit('ai-chunk', {id: sessionId, delta: '我先执行一条命令确认环境。\n\n'}), 20);
+                schedule(() => emit('ai-toolcall', {
+                    id: sessionId,
+                    index: 0,
+                    callId: 'call_mock_runcmd',
+                    name: 'run_command',
+                    argsDelta: JSON.stringify({command: 'git status --short'}),
+                }), 70);
+                schedule(() => emit('ai-done', {id: sessionId, finishReason: 'tool'}), 180);
+                return null;
+            }
+            const lastTool = toolMessages[toolMessages.length - 1];
+            const finalText = '命令输出：\n\n```\n' + String(lastTool.content || '').slice(0, 400) + '\n```\n\n（mock run_command 链路结束）';
+            const finalChunks = finalText.match(/[^\n]{1,8}|[\n]{1,2}/g) || [];
+            let finalDelay = 30;
+            finalChunks.forEach((chunk, i) => {
+                schedule(() => emit('ai-chunk', {id: sessionId, delta: chunk}), finalDelay + i * slow);
+            });
+            finalDelay += finalChunks.length * slow;
+            schedule(() => {
+                emit('ai-done', {id: sessionId, finishReason: 'stop'});
+                (window.__mockAiRuns || new Map()).delete(sessionId);
+            }, finalDelay + 40);
+            return null;
+        }
+        if (mockScenario.has('aibg')) {
+            const toolMessages = (messages || []).filter((message) => message.role === 'tool');
+            if (!toolMessages.length) {
+                schedule(() => emit('ai-chunk', {id: sessionId, delta: '我在后台启动一个耗时命令。\n\n'}), 20);
+                schedule(() => emit('ai-toolcall', {
+                    id: sessionId,
+                    index: 0,
+                    callId: 'call_mock_bgcmd',
+                    name: 'background_command',
+                    argsDelta: JSON.stringify({command: 'npm run build'}),
+                }), 70);
+                schedule(() => emit('ai-done', {id: sessionId, finishReason: 'tool'}), 180);
+                return null;
+            }
+            if (toolMessages.length === 1) {
+                const jobId = (String(toolMessages[toolMessages.length - 1].content || '').match(/jobId=([\w-]+)/) || [])[1] || 'bg-mock-1';
+                schedule(() => emit('ai-toolcall', {
+                    id: sessionId,
+                    index: 0,
+                    callId: 'call_mock_bgcheck',
+                    name: 'check_command',
+                    argsDelta: JSON.stringify({jobId}),
+                }), 70);
+                schedule(() => emit('ai-done', {id: sessionId, finishReason: 'tool'}), 180);
+                return null;
+            }
+            const lastTool = toolMessages[toolMessages.length - 1];
+            const finalText = '后台命令已结束：\n\n```\n' + String(lastTool.content || '').slice(0, 400) + '\n```\n\n（mock background_command 链路结束）';
+            const finalChunks = finalText.match(/[^\n]{1,8}|[\n]{1,2}/g) || [];
+            let finalDelay = 30;
+            finalChunks.forEach((chunk, i) => {
+                schedule(() => emit('ai-chunk', {id: sessionId, delta: chunk}), finalDelay + i * slow);
+            });
+            finalDelay += finalChunks.length * slow;
+            schedule(() => {
+                emit('ai-done', {id: sessionId, finishReason: 'stop'});
+                (window.__mockAiRuns || new Map()).delete(sessionId);
+            }, finalDelay + 40);
+            return null;
+        }
+        if (mockScenario.has('aispawn')) {
+            const isSub = String(sessionId).startsWith('sub-');
+            if (isSub) {
+                // 子代理第一轮直接给结论（不发起工具调用）
+                schedule(() => emit('ai-chunk', {id: sessionId, delta: '探索完成：工作区包含 sample.json（时空纪元 v1.0.0，2 个数据项），结构完好，无异常字段。'}), 40);
+                schedule(() => emit('ai-done', {id: sessionId, finishReason: 'stop'}), 160);
+                return null;
+            }
+            const toolMessages = (messages || []).filter((message) => message.role === 'tool');
+            if (!toolMessages.length) {
+                schedule(() => emit('ai-chunk', {id: sessionId, delta: '我派一个子代理去做只读探索。\n\n'}), 20);
+                schedule(() => emit('ai-toolcall', {
+                    id: sessionId,
+                    index: 0,
+                    callId: 'call_mock_spawn',
+                    name: 'spawn_agent',
+                    argsDelta: JSON.stringify({name: '探索员', task: '查看工作区数据文件并总结内容', maxRounds: 5}),
+                }), 70);
+                schedule(() => emit('ai-done', {id: sessionId, finishReason: 'tool'}), 180);
+                return null;
+            }
+            const lastTool = toolMessages[toolMessages.length - 1];
+            const finalText = '子代理返回：\n\n' + String(lastTool.content || '').slice(0, 400) + '\n\n（mock spawn_agent 链路结束）';
+            const finalChunks = finalText.match(/[^\n]{1,8}|[\n]{1,2}/g) || [];
+            let finalDelay = 30;
+            finalChunks.forEach((chunk, i) => {
+                schedule(() => emit('ai-chunk', {id: sessionId, delta: chunk}), finalDelay + i * slow);
+            });
+            finalDelay += finalChunks.length * slow;
+            schedule(() => {
+                emit('ai-done', {id: sessionId, finishReason: 'stop'});
+                (window.__mockAiRuns || new Map()).delete(sessionId);
+            }, finalDelay + 40);
+            return null;
+        }
+        if (mockScenario.has('airunseq')) {
+            const toolMessages = (messages || []).filter((message) => message.role === 'tool');
+            const steps = ['git status --short', 'git status --porcelain'];
+            if (toolMessages.length < steps.length) {
+                const index = toolMessages.length;
+                schedule(() => emit('ai-chunk', {id: sessionId, delta: index ? '再执行一条同类命令。\n\n' : '先执行一条命令。\n\n'}), 20);
+                schedule(() => emit('ai-toolcall', {
+                    id: sessionId,
+                    index: 0,
+                    callId: 'call_mock_runcmd_seq_' + index,
+                    name: 'run_command',
+                    argsDelta: JSON.stringify({command: steps[index]}),
+                }), 70);
+                schedule(() => emit('ai-done', {id: sessionId, finishReason: 'tool'}), 180);
+                return null;
+            }
+            const lastTool = toolMessages[toolMessages.length - 1];
+            const finalText = '两条命令都已执行：\n\n```\n' + String(lastTool.content || '').slice(0, 400) + '\n```\n\n（mock 命令放行链路结束）';
+            const finalChunks = finalText.match(/[^\n]{1,8}|[\n]{1,2}/g) || [];
+            let finalDelay = 30;
+            finalChunks.forEach((chunk, i) => {
+                schedule(() => emit('ai-chunk', {id: sessionId, delta: chunk}), finalDelay + i * slow);
+            });
+            finalDelay += finalChunks.length * slow;
+            schedule(() => {
+                emit('ai-done', {id: sessionId, finishReason: 'stop'});
+                (window.__mockAiRuns || new Map()).delete(sessionId);
+            }, finalDelay + 40);
+            return null;
+        }
+        if (mockScenario.has('airunpower')) {
+            const toolMessages = (messages || []).filter((message) => message.role === 'tool');
+            const steps = [
+                'powershell -NoProfile -Command "Get-Process"',
+                'powershell -NoProfile -Command "Get-Date"',
+                'powershell -NoProfile -Command "Get-Process"',
+            ];
+            if (toolMessages.length < steps.length) {
+                const index = toolMessages.length;
+                schedule(() => emit('ai-chunk', {id: sessionId, delta: '执行第 ' + (index + 1) + ' 条 PowerShell 命令。\n\n'}), 20);
+                schedule(() => emit('ai-toolcall', {
+                    id: sessionId,
+                    index: 0,
+                    callId: 'call_mock_runcmd_power_' + index,
+                    name: 'run_command',
+                    argsDelta: JSON.stringify({command: steps[index]}),
+                }), 70);
+                schedule(() => emit('ai-done', {id: sessionId, finishReason: 'tool'}), 180);
+                return null;
+            }
+            const lastTool = toolMessages[toolMessages.length - 1];
+            const finalText = 'PowerShell 命令已执行：\n\n```\n' + String(lastTool.content || '').slice(0, 400) + '\n```\n\n（mock 精确命令放行链路结束）';
+            const finalChunks = finalText.match(/[^\n]{1,8}|[\n]{1,2}/g) || [];
+            let finalDelay = 30;
+            finalChunks.forEach((chunk, i) => {
+                schedule(() => emit('ai-chunk', {id: sessionId, delta: chunk}), finalDelay + i * slow);
+            });
+            finalDelay += finalChunks.length * slow;
+            schedule(() => {
+                emit('ai-done', {id: sessionId, finishReason: 'stop'});
+                (window.__mockAiRuns || new Map()).delete(sessionId);
+            }, finalDelay + 40);
+            return null;
+        }
+        if (mockScenario.has('aiask')) {
+            const toolMessages = (messages || []).filter((message) => message.role === 'tool');
+            if (!toolMessages.length) {
+                schedule(() => emit('ai-chunk', {id: sessionId, delta: '我需要你确认一下方案。\n\n'}), 20);
+                schedule(() => emit('ai-toolcall', {
+                    id: sessionId,
+                    index: 0,
+                    callId: 'call_mock_ask',
+                    name: 'ask_user',
+                    argsDelta: JSON.stringify({
+                        questions: [
+                            {
+                                id: 'merge',
+                                header: '合并方式',
+                                question: '这次要采用哪种合并策略？',
+                                options: [
+                                    {label: '按文件合并', description: '逐文件对比后合并，最稳', recommended: true},
+                                    {label: '整目录覆盖', description: '用新目录整体替换旧目录'},
+                                ],
+                            },
+                            {
+                                id: 'checks',
+                                header: '验证',
+                                question: '除了主流程，还要跑哪些检查？',
+                                multiSelect: true,
+                                options: [
+                                    {label: '单元测试', recommended: true},
+                                    {label: '构建验证', recommended: true},
+                                    {label: '不做额外检查'},
+                                ],
+                            },
+                            {
+                                id: 'extra',
+                                header: '补充',
+                                question: '还有别的约束吗？',
+                                allow_custom: true,
+                                options: [],
+                            },
+                        ],
+                    }),
+                }), 70);
+                schedule(() => emit('ai-done', {id: sessionId, finishReason: 'tool'}), 180);
+                return null;
+            }
+            const lastTool = toolMessages[toolMessages.length - 1];
+            const finalText = '已收到回答：' + String(lastTool.content || '').slice(0, 300) + '\n\n（mock ask_user 链路结束）';
+            const finalChunks = finalText.match(/[^\n]{1,8}|[\n]{1,2}/g) || [];
+            let finalDelay = 30;
+            finalChunks.forEach((chunk, i) => {
+                schedule(() => emit('ai-chunk', {id: sessionId, delta: chunk}), finalDelay + i * slow);
+            });
+            finalDelay += finalChunks.length * slow;
+            schedule(() => {
+                emit('ai-done', {id: sessionId, finishReason: 'stop'});
+                (window.__mockAiRuns || new Map()).delete(sessionId);
+            }, finalDelay + 40);
+            return null;
+        }
+        if (mockScenario.has('aibigwrite')) {
+            const toolMessages = (messages || []).filter((message) => message.role === 'tool');
+            if (!toolMessages.length) {
+                const lines = [];
+                for (let i = 1; i <= 80; i += 1) lines.push('- 第 ' + i + ' 行：mock 大 diff 演示内容');
+                schedule(() => emit('ai-toolcall', {
+                    id: sessionId,
+                    index: 0,
+                    callId: 'call_mock_bigwrite',
+                    name: 'write_file',
+                    argsDelta: JSON.stringify({
+                        path: 'big-diff.md',
+                        content: '# Mock 大文件\n\n' + lines.join('\n') + '\n',
+                    }),
+                }), 70);
+                schedule(() => emit('ai-done', {id: sessionId, finishReason: 'tool'}), 180);
+                return null;
+            }
+            const finalText = '大 diff 写入结果：' + String(toolMessages[toolMessages.length - 1].content || '').slice(0, 200) + '\n\n（mock 大 diff 链路结束）';
+            const finalChunks = finalText.match(/[^\n]{1,8}|[\n]{1,2}/g) || [];
+            let finalDelay = 30;
+            finalChunks.forEach((chunk, i) => {
+                schedule(() => emit('ai-chunk', {id: sessionId, delta: chunk}), finalDelay + i * slow);
+            });
+            finalDelay += finalChunks.length * slow;
+            schedule(() => {
+                emit('ai-done', {id: sessionId, finishReason: 'stop'});
+                (window.__mockAiRuns || new Map()).delete(sessionId);
+            }, finalDelay + 40);
+            return null;
+        }
+        if (mockScenario.has('aipref')) {
+            const userCount = (messages || []).filter((message) => message.role === 'user').length;
+            const toolMessages = (messages || []).filter((message) => message.role === 'tool');
+            const lastTool = toolMessages[toolMessages.length - 1];
+            const lastContent = String((lastTool && lastTool.content) || '');
+            const emitTool = (callId, name, args) => {
+                schedule(() => emit('ai-toolcall', {
+                    id: sessionId,
+                    index: 0,
+                    callId,
+                    name,
+                    argsDelta: JSON.stringify(args),
+                }), 70);
+                schedule(() => emit('ai-done', {id: sessionId, finishReason: 'tool'}), 180);
+            };
+            if (!toolMessages.length) {
+                schedule(() => emit('ai-chunk', {id: sessionId, delta: '我先把这条偏好记下来。\n\n'}), 20);
+                emitTool('call_mock_pref_write', 'preference_write', {text: '演示偏好：回答尽量简洁'});
+                return null;
+            }
+            if (lastContent.startsWith('已记录用户偏好') || lastContent.startsWith('已更新用户偏好')) {
+                emitTool('call_mock_pref_list', 'preference_list', {});
+                return null;
+            }
+            if (lastContent.startsWith('用户偏好（共')) {
+                const match = lastContent.match(/\[(pref-[^\]]+)\]/);
+                if (match && userCount < 2 && !lastContent.includes('更新版')) {
+                    emitTool('call_mock_pref_edit', 'preference_write', {
+                        id: match[1],
+                        text: '演示偏好：回答尽量简洁（更新版）',
+                    });
+                    return null;
+                }
+                if (match && userCount >= 2) {
+                    emitTool('call_mock_pref_remove', 'preference_remove', {id: match[1]});
+                    return null;
+                }
+            }
+            const finalText = '偏好工具结果：' + lastContent.slice(0, 300) + '\n\n（mock 用户偏好链路结束）';
+            const finalChunks = finalText.match(/[^\n]{1,8}|[\n]{1,2}/g) || [];
+            let finalDelay = 30;
+            finalChunks.forEach((chunk, i) => {
+                schedule(() => emit('ai-chunk', {id: sessionId, delta: chunk}), finalDelay + i * slow);
+            });
+            finalDelay += finalChunks.length * slow;
+            schedule(() => {
+                emit('ai-done', {id: sessionId, finishReason: 'stop'});
+                (window.__mockAiRuns || new Map()).delete(sessionId);
+            }, finalDelay + 40);
+            return null;
+        }
+        if (mockScenario.has('aiwrite') || mockScenario.has('aiedit') || mockScenario.has('aitodo')) {
+            const toolMessages = (messages || []).filter((message) => message.role === 'tool');
+            const emitToolCall = (callId, name, args, doneDelay) => {
+                schedule(() => emit('ai-chunk', {id: sessionId, delta: '我先执行工具操作。\n\n'}), 20);
+                schedule(() => emit('ai-toolcall', {
+                    id: sessionId,
+                    index: 0,
+                    callId,
+                    name,
+                    argsDelta: args,
+                }), 70);
+                schedule(() => emit('ai-done', {id: sessionId, finishReason: 'tool'}), doneDelay || 180);
+            };
+            if (mockScenario.has('aiwrite')) {
+                if (!toolMessages.length) {
+                    emitToolCall('call_mock_write', 'write_file', JSON.stringify({
+                        path: 'new-file.md',
+                        content: '# AI 写入演示\n\n- 第一行\n- 第二行\n- 第三行\n',
+                    }));
+                    return null;
+                }
+            } else if (mockScenario.has('aiedit')) {
+                if (!toolMessages.length) {
+                    emitToolCall('call_mock_edit', 'edit_file', JSON.stringify({
+                        path: 'notes.md',
+                        oldString: '- 电缆：每格每日 4 件',
+                        newString: '- 电缆：每格每日 6 件（AI 修改）',
+                    }));
+                    return null;
+                }
+            } else if (mockScenario.has('aitodo')) {
+                if (!toolMessages.length) {
+                    emitToolCall('call_mock_todo1', 'todo_write', JSON.stringify({
+                        todos: [
+                            {content: '读取项目说明', status: 'completed'},
+                            {content: '修改配置', status: 'in_progress'},
+                            {content: '验证结果', status: 'pending'},
+                        ],
+                    }));
+                    return null;
+                }
+                if (toolMessages.length === 1) {
+                    emitToolCall('call_mock_todo2', 'todo_write', JSON.stringify({
+                        todos: [
+                            {content: '读取项目说明', status: 'completed'},
+                            {content: '修改配置', status: 'completed'},
+                            {content: '验证结果', status: 'completed'},
+                        ],
+                    }));
+                    return null;
+                }
+            }
+            const lastTool = toolMessages[toolMessages.length - 1];
+            const finalText = '工具结果：' + String((lastTool && lastTool.content) || '').slice(0, 300) + '\n\n（mock 写操作链路结束）';
+            const finalChunks = finalText.match(/[^\n]{1,8}|[\n]{1,2}/g) || [];
+            let finalDelay = 30;
+            finalChunks.forEach((chunk, i) => {
+                schedule(() => emit('ai-chunk', {id: sessionId, delta: chunk}), finalDelay + i * slow);
+            });
+            finalDelay += finalChunks.length * slow;
+            schedule(() => {
+                emit('ai-done', {id: sessionId, finishReason: 'stop'});
+                (window.__mockAiRuns || new Map()).delete(sessionId);
+            }, finalDelay + 40);
+            return null;
+        }
+        if (mockScenario.has('aiskill') || mockScenario.has('aimem')) {
+            const toolMessages = (messages || []).filter((message) => message.role === 'tool');
+            if (!toolMessages.length) {
+                const isSkill = mockScenario.has('aiskill');
+                const toolName = isSkill ? 'skill_use' : 'memory_write';
+                const args = JSON.stringify(isSkill
+                    ? {name: 'demo-skill'}
+                    : {name: 'test-note.md', content: '# 测试记忆\n\n- 用户喜欢胶囊表格。'});
+                schedule(() => emit('ai-chunk', {id: sessionId, delta: '我先调用工具处理一下。\n\n'}), 20);
+                schedule(() => emit('ai-toolcall', {
+                    id: sessionId,
+                    index: 0,
+                    callId: 'call_mock_2',
+                    name: toolName,
+                    argsDelta: args,
+                }), 80);
+                schedule(() => emit('ai-done', {id: sessionId, finishReason: 'tool'}), 200);
+                return null;
+            }
+            const lastTool = toolMessages[toolMessages.length - 1];
+            const finalText = '工具结果：' + String(lastTool.content || '').slice(0, 300) + '\n\n（mock 工具链路结束）';
+            const finalChunks = finalText.match(/[^\n]{1,8}|[\n]{1,2}/g) || [];
+            let finalDelay = 30;
+            finalChunks.forEach((chunk, i) => {
+                schedule(() => emit('ai-chunk', {id: sessionId, delta: chunk}), finalDelay + i * slow);
+            });
+            finalDelay += finalChunks.length * slow;
+            schedule(() => {
+                emit('ai-done', {id: sessionId, finishReason: 'stop'});
+                (window.__mockAiRuns || new Map()).delete(sessionId);
+            }, finalDelay + 40);
+            return null;
+        }
+        if (thinkChunks.length) {
+            thinkChunks.forEach((chunk, i) => {
+                schedule(() => emit('ai-think', {id: sessionId, delta: chunk}), delay + i * slow * 0.6);
+            });
+            delay += thinkChunks.length * slow * 0.6;
+        }
+        contentChunks.forEach((chunk, i) => {
+            schedule(() => emit('ai-chunk', {id: sessionId, delta: chunk}), delay + i * slow);
+        });
+        delay += contentChunks.length * slow;
+        schedule(() => {
+            const promptTokens = Math.ceil(prompt.length / 4);
+            const completionTokens = Math.ceil(content.length / 4);
+            emit('ai-done', {
+                id: sessionId,
+                finishReason: 'stop',
+                usage: {
+                    promptTokens, completionTokens, totalTokens: promptTokens + completionTokens,
+                    cachedTokens: Math.ceil(promptTokens * 0.75),
+                },
+            });
+            (window.__mockAiRuns || new Map()).delete(sessionId);
+        }, delay + 40);
+        return null;
+    },
+    async AIStop(sessionId) {
+        const map = window.__mockAiRuns || new Map();
+        for (const [id, run] of map) {
+            if (id === sessionId || id.startsWith(sessionId + '#')) {
+                run.stopped = true;
+                run.timers.forEach((timer) => clearTimeout(timer));
+                map.delete(id);
+                if (typeof window.__mockAiEmit === 'function') {
+                    try { window.__mockAiEmit('ai-done', {id, finishReason: 'stopped'}); } catch (e) {}
+                }
+            }
+        }
+    },
+    async NotifyAttention(beep) { window.__mockNotify = (window.__mockNotify || []).concat([!!beep]); },
+    async NotifySystemToast(title, body, silent) {
+        window.__mockSystemToast = (window.__mockSystemToast || []).concat([{title, body, silent: !!silent}]);
+    },
+    async AITestConnection(cfg) { window.__mockAiTestCfg = cfg; return '连接成功（mock）'; },
+    async AIListModels(cfg) { window.__mockAiModelsCfg = cfg; return ['deepseek-chat', 'deepseek-reasoner', 'deepseek-flash']; },
+    async AIAppDir() { return 'mock://appdata/CandySweet/CaDt-DataLens'; },
+    async AIHomeDir() { return window.__mockHomeDir || 'mock://home'; },
+    async AIBuiltinSkillsDir() { return window.__mockBuiltinSkillsDir || ''; },
+    async AIExePath() { return window.__mockExePath || 'mock://bin/datalens.exe'; },
+    async OpenAIFloatWindow(root) { window.__mockAIFloatRoot = root; return null; },
+    async OpenSettingsInMainWindow(pane) { window.__mockOpenSettingsInMain = pane; return null; },
+    async ConsumeStartupSettings() { const pane = window.__mockStartupSettings || ''; window.__mockStartupSettings = ''; return pane; },
+    async AIEnsureDir(path) {
+        window.__mockLastEnsureDir = path;
+        const key = String(path || '').replace(/\/+$/, '');
+        if (!key) return null;
+        const match = key.match(/^([a-z]+:\/\/)(.*)$/i);
+        const prefix = match ? match[1] : '';
+        const rest = match ? match[2] : key;
+        let cur = prefix;
+        let prev = '';
+        for (const part of rest.split('/')) {
+            if (!part) continue;
+            cur += (cur && !cur.endsWith('/') ? '/' : '') + part;
+            if (!mockTree[cur]) mockTree[cur] = [];
+            if (prev && mockTree[prev] && !mockTree[prev].some((entry) => entry.name === part && entry.isDir)) {
+                mockTree[prev].push({name: part, path: cur, isDir: true});
+            }
+            prev = cur;
+        }
+        return null;
+    },
+    async CheckEncoding(content, enc) {
+        if (enc === 'utf-8' || enc === 'gbk' || enc === 'gb18030') return true;
+        if (enc === 'us-ascii') return !/[^\x00-\x7f]/.test(content);
+        if (enc === 'iso-8859-1') return !/[^\x00-\xff]/.test(content);
+        return true;
+    },
+};
+
+
+
+const mockRt = {
+    _max: false,
+    _calls: [],
+    _events: {},
+    EventsOn(name, cb) {
+        (this._events[name] = this._events[name] || []).push(cb);
+    },
+    EventsEmit(name, data) {
+        (this._events[name] || []).slice().forEach((cb) => cb(data));
+    },
+    async WindowIsMaximised() { return this._max; },
+    WindowToggleMaximise() { this._max = !this._max; this._calls.push('toggle:' + this._max); },
+    WindowMinimise() { this._calls.push('min'); },
+    WindowUnminimise() { this._calls.push('unmin'); },
+    WindowClose() { this._calls.push('close'); },
+    Quit() { this._calls.push('quit'); },
+    WindowSetTitle(title) { this._title = title; this._calls.push('title:' + title); },
+    WindowSetAlwaysOnTop(b) { window.__mockAlwaysOnTop = !!b; this._topmost = !!b; this._calls.push('topmost:' + !!b); },
+    WindowFullscreen() { this._fs = true; this._calls.push('fs:on'); },
+    WindowUnfullscreen() { this._fs = false; this._calls.push('fs:off'); },
+    async WindowIsFullscreen() { return !!this._fs; },
+    BrowserOpenURL(url) { window.__mockOpenUrl = url; this._calls.push('url:' + url); },
+    EventsOn() {},
+};
+// 调试/测试用：暴露 mock 运行时（仅 mock 场景存在）
+window.__mockRt = mockRt;
+
+export {mockBackend, mockRt};
