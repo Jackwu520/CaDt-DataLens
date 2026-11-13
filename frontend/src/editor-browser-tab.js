@@ -297,10 +297,10 @@ function updateBrowserTitle(doc, title) {
     if (!title || title === 'about:blank') return;
     if (doc.name !== title) {
         doc.name = title;
-        renderTabs();
+        deps.renderTabs();
     }
     if (doc === deps.file) {
-        setFilename(doc.name, '');
+        deps.setFilename(doc.name, '');
         deps.updateWindowTitle();
     }
 }

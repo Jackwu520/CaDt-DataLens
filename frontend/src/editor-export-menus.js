@@ -86,7 +86,7 @@ function showSvgMenu(doc, x, y) {
         {sep: true},
         ...deps.aiReferenceFileMenuItems(doc),
         {label: '复制文件路径', icon: 'E8C8', disabled: !doc.path, action: () => deps.copyText(doc.path, '路径')},
-        {label: '打开文件位置', icon: 'E8B7', disabled: !doc.path, action: () => showPathInFolder(doc.path)},
+        {label: '打开文件位置', icon: 'E8B7', disabled: !doc.path, action: () => deps.showPathInFolder(doc.path)},
     ];
     deps.ctxMenu.open(items, x, y);
 }
@@ -123,7 +123,7 @@ function showImageMenu(doc, x, y) {
         {sep: true},
         ...deps.aiReferenceFileMenuItems(doc),
         {label: '复制文件路径', icon: 'E8C8', disabled: !doc.path, action: () => deps.copyText(doc.path, '路径')},
-        {label: '打开文件位置', icon: 'E8B7', disabled: !doc.path, action: () => showPathInFolder(doc.path)},
+        {label: '打开文件位置', icon: 'E8B7', disabled: !doc.path, action: () => deps.showPathInFolder(doc.path)},
     ];
     deps.ctxMenu.open(items, x, y);
 }
@@ -163,44 +163,44 @@ function showMdPreviewMenu(doc, x, y) {
                 action: () => {
                     deps.settings.mdPreviewWidth = value;
                     deps.applySettings();
-                    updateStatus();
+                    deps.updateStatus();
                 },
             })),
         });
-        items.push({label: '刷新预览', icon: 'E72C', action: () => renderMarkdownPreview(doc)});
+        items.push({label: '刷新预览', icon: 'E72C', action: () => deps.renderMarkdownPreview(doc)});
     }
     items.push({sep: true});
     items.push(...deps.aiReferenceFileMenuItems(doc));
     items.push({label: '复制文件路径', icon: 'E8C8', disabled: !doc.path, action: () => deps.copyText(doc.path, '路径')});
-    items.push({label: '打开文件位置', icon: 'E8B7', disabled: !doc.path, action: () => showPathInFolder(doc.path)});
+    items.push({label: '打开文件位置', icon: 'E8B7', disabled: !doc.path, action: () => deps.showPathInFolder(doc.path)});
     deps.ctxMenu.open(items, x, y);
 }
 
 function showTabMenu(doc, x, y) {
     if (!deps.ctxMenu || !doc) return;
-    const g0 = groupOfDoc(doc.id);
-    const gdocs = g0 ? groupDocs(g0) : deps.docs.slice();
+    const g0 = deps.groupOfDoc(doc.id);
+    const gdocs = g0 ? deps.groupDocs(g0) : deps.docs.slice();
     const idx = gdocs.indexOf(doc);
     const others = gdocs.filter((d) => d !== doc);
     const left = gdocs.slice(0, Math.max(0, idx));
     const clean = gdocs.filter((d) => !d.dirty);
     const hasPath = !!doc.path;
     deps.ctxMenu.open([
-        {label: '关闭', shortcut: 'Ctrl+W / Shift+点击', icon: 'E8BB', action: () => requestCloseDoc(doc)},
-        {label: '关闭其他标签页', disabled: !others.length, action: () => closeDocsWithConfirm(others)},
-        {label: '关闭所有标签页', action: () => closeDocsWithConfirm(gdocs.slice(), '关闭所有标签页将丢弃未保存的修改。')},
-        {label: '关闭左侧标签页', disabled: !left.length, action: () => closeDocsWithConfirm(left)},
-        {label: '关闭未修改标签页', disabled: !clean.length, action: () => closeDocsWithConfirm(clean)},
+        {label: '关闭', shortcut: 'Ctrl+W / Shift+点击', icon: 'E8BB', action: () => deps.requestCloseDoc(doc)},
+        {label: '关闭其他标签页', disabled: !others.length, action: () => deps.closeDocsWithConfirm(others)},
+        {label: '关闭所有标签页', action: () => deps.closeDocsWithConfirm(gdocs.slice(), '关闭所有标签页将丢弃未保存的修改。')},
+        {label: '关闭左侧标签页', disabled: !left.length, action: () => deps.closeDocsWithConfirm(left)},
+        {label: '关闭未修改标签页', disabled: !clean.length, action: () => deps.closeDocsWithConfirm(clean)},
         {sep: true},
         {label: '复制文件路径', icon: 'E8C8', disabled: !hasPath, action: () => deps.copyText(doc.path, '路径')},
         {label: '复制文件名', icon: 'E8C8', action: () => deps.copyText(doc.name, '文件名')},
-        {label: '打开文件位置', icon: 'E8B7', disabled: !hasPath, action: () => showPathInFolder(doc.path)},
+        {label: '打开文件位置', icon: 'E8B7', disabled: !hasPath, action: () => deps.showPathInFolder(doc.path)},
         {label: '与另一个标签页比较…', icon: 'E8A5', disabled: gdocs.filter((d) => d.path && !d.binary).length < 2, action: () => deps.openDiffDialog(doc.path)},
         ...deps.aiReferenceFileMenuItems(doc),
         {label: '在 AI 中询问此文件', iconHtml: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3.2l1.1 3.1 3.1 1.1-3.1 1.1L10 11.6 8.9 8.5 5.8 7.4l3.1-1.1z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M15.2 12.3l.6 1.7 1.7.6-1.7.6-.6 1.7-.6-1.7-1.7-.6 1.7-.6z" fill="currentColor"/></svg>', disabled: !hasPath, action: () => deps.askAIAboutPath(doc.path)},
         {sep: true},
         {label: '在新窗口中打开', shortcut: 'Shift+F4', icon: 'E8A7', disabled: !hasPath, action: () => deps.openInNewWindows([doc.path])},
-        {label: '重新打开关闭的标签页', shortcut: 'Ctrl+Shift+T', icon: 'E7A7', disabled: !deps.closedTabs.length, action: reopenClosedTab},
+        {label: '重新打开关闭的标签页', shortcut: 'Ctrl+Shift+T', icon: 'E7A7', disabled: !deps.closedTabs.length, action: deps.reopenClosedTab},
     ], x, y);
 }
 

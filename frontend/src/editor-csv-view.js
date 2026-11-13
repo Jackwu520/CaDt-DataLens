@@ -325,7 +325,7 @@ function zoomCsvTable(doc, deltaY) {
         doc.csvVisibleEnd = -1;
         renderCsvVirtualRows(doc, true);
     }
-    updateStatus();
+    deps.updateStatus();
 }
 
 const CSV_VIRTUAL_THRESHOLD = 300;
@@ -859,7 +859,7 @@ function applyCsvTableText(doc, text) {
     } finally {
         doc.loading = loading;
     }
-    markDocDirty(doc);
+    deps.markDocDirty(doc);
 }
 
 function commitCsvCell(doc, td) {
@@ -873,7 +873,7 @@ function commitCsvCell(doc, td) {
     td.textContent = value;
     td.title = value;
     if (value === before) {
-        markDocDirty(doc);
+        deps.markDocDirty(doc);
         return;
     }
     row[colIndex] = value;
@@ -948,7 +948,7 @@ function enterCsvTable(doc) {
         doc.tableUndo = [];
         doc.tableRedo = [];
         showCsvTableView(doc);
-        updateStatus();
+        deps.updateStatus();
         deps.updateSearchState();
     } catch (e) {
         deps.flash('切换表格视图失败：' + e.message, true);
@@ -966,7 +966,7 @@ function leaveCsvTable(doc, mode) {
         try {
             doc.editor.setMode('text');
         } catch (e) {}
-        updateStatus();
+        deps.updateStatus();
         deps.updateSearchState();
         return;
     }
@@ -987,7 +987,7 @@ function leaveCsvTable(doc, mode) {
         hideCsvTableView(doc);
         doc.mode = 'tree';
         deps.currentMode = 'tree';
-        updateStatus();
+        deps.updateStatus();
         deps.updateSearchState();
     } catch (e) {
         deps.flash('切换树视图失败：' + e.message, true);

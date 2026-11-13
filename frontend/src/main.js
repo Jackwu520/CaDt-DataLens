@@ -3,7 +3,7 @@ import './style.css';
 import './reading.css';
 import DOMPurify from 'dompurify';
 import hljs from 'highlight.js/lib/common';
-import {aceModeFor, detectFormat, formats, isKnownCodeFileName, isSupportedFile, pluginFormats} from './formats.js';
+import {detectFormat, formats, isSupportedFile, pluginFormats} from './formats.js';
 import {createExplorer} from './explorer.js';
 import {createStructurePanel, parseStructure} from './structure.js';
 import {createContextMenu} from './contextmenu.js';
@@ -15,18 +15,18 @@ import {createPalette} from './palette.js';
 import {createAIPanel} from './ai/ai-panel.js';
 import {createReadingMode} from './reading/reading.js';
 import {repairJson} from './jsonrepair.js';
-import {createFileIcon, fileIconSpec} from './fileicons.js';
-import {createRunController, splitRunArgs, RECIPES, extOf, SELF_TEST} from './run.js';
-import {buildJsonLineMap, queryJsonPath} from './jsonpath.js';
-import {semanticDiff, semanticEntryText, unifiedDiff} from './diff.js';
+import {fileIconSpec} from './fileicons.js';
+import {RECIPES, extOf, SELF_TEST} from './run.js';
+import {queryJsonPath} from './jsonpath.js';
+import {unifiedDiff} from './diff.js';
 import {validateJsonSchema} from './jsonschema.js';
-import {getPluginCommands, initPluginRuntime, loadPlugins} from './plugins.js';
+import {getPluginCommands, loadPlugins} from './plugins.js';
 import {createMarkdownRenderer} from './markdown.js';
 import {
     showPatchView, hidePatchView, disposePatchView, refreshPatchView,
     patchViewSnapshot, setPatchTargetRoot, repreviewPatchView,
 } from './patch-view.js';
-import {WRITING_FONTS, WRITING_PAPERS, formatWritingText, genName, SCENE_SEPARATOR} from './writing.js';
+import {WRITING_FONTS, WRITING_PAPERS, SCENE_SEPARATOR} from './writing.js';
 import changelogText from '../../CHANGELOG.md?raw';
 import termsText from '../../docs/legal/terms.md?raw';
 import privacyText from '../../docs/legal/privacy.md?raw';
@@ -73,7 +73,7 @@ let rt = window.runtime;
 if (hasWails) {
     backend = window.go.main.App;
 } else {
-    // vite dev 浏览器调试：动态加载 mock 后端（不进生产包）
+    // vite dev 浏览器调试：动态加载 mock 后端（不进入口 bundle，独立懒加载 chunk）
     const mock = await import('./dev/mock-backend.js');
     backend = mock.mockBackend;
     if (mockScenario.has('winctl')) rt = mock.mockRt;
@@ -1561,7 +1561,7 @@ const editorGroupsMod = createEditorGroups({
     get viewOptionsFor() { return viewOptionsFor; },
     get workspaceFolder() { return workspaceFolder; },
 });
-const {activateDoc, addDocToFocusedGroup, applyAceMode, applyCsvTableZoom, applyImageZoom, browserViewportLabel, closeDocNow, closeDocsWithConfirm, closeSqlView, createDoc, createDocEditor, createGroup, dismissBanner, doRedo, doUndo, editorGroups, enterBinaryView, enterCsvTable, enterImageView, enterMarkdownPreview, enterSplitView, enterSqlView, enterSvgRender, enterTextView, exitSplitView, expandAllWithGuard, flushCsvCellEditor, focusedGroupId, groupDocs, setFocusedGroupId, setSplitRoot, groupOfDoc, handleAIWorkspaceFileChanged, handleExternalDocChanges, hideBanner, hideSvgRender, hookCodeFoldPreviews, hookMultiCursor, humanizeCounts, initCodeFoldHover, jumpBookmark, leaveCsvTable, leaveMarkdownPreview, markDocDirty, mdSyncScrollFromAce, moveTabInGroup, patchViewContext, refreshPatchMarkers, rememberDocView, renderBookmarks, renderBreadcrumb, renderCsvTableView, renderEditorLayout, renderMarkdownPreview, renderTabs, reopenClosedTab, requestCloseDoc, revertDocToSaved, scheduleGitGutter, setBrowserViewport, setFilename, showBanner, showImageMenu, showMdPreviewMenu, showPathInFolder, showSvgMenu, splitRoot, syncAllBrowserTabs, syncBrowserTab, textArea, toggleBookmark, toggleFocusedNode, updateAiWriteBadge, updateBrowserTitle, updateCodeFoldPreviews, updateDocChrome, updateStatus, zoomCsvTable, zoomImageBy, zoomSvgRenderBy} = editorGroupsMod;
+const {activateDoc, addDocToFocusedGroup, applyAceMode, applyCsvTableZoom, applyImageZoom, browserViewportLabel, closeDocNow, closeDocsWithConfirm, closeSqlView, createDoc, createDocEditor, createGroup, dismissBanner, doRedo, doUndo,  enterBinaryView, enterCsvTable, enterImageView, enterMarkdownPreview, enterSplitView, enterSqlView, enterSvgRender, enterTextView, exitSplitView, expandAllWithGuard, flushCsvCellEditor,  groupDocs, setFocusedGroupId, setSplitRoot, groupOfDoc, handleAIWorkspaceFileChanged, handleExternalDocChanges, hideBanner, hideSvgRender, hookCodeFoldPreviews, hookMultiCursor, humanizeCounts, initCodeFoldHover, jumpBookmark, leaveCsvTable, leaveMarkdownPreview, markDocDirty, mdSyncScrollFromAce, moveTabInGroup, patchViewContext, refreshPatchMarkers, rememberDocView, renderBookmarks, renderBreadcrumb, renderCsvTableView, renderEditorLayout, renderMarkdownPreview, renderTabs, reopenClosedTab, requestCloseDoc, revertDocToSaved, scheduleGitGutter, setBrowserViewport, setFilename, showBanner, showImageMenu, showMdPreviewMenu, showPathInFolder, showSvgMenu,  syncAllBrowserTabs, syncBrowserTab, textArea, toggleBookmark, toggleFocusedNode, updateAiWriteBadge, updateBrowserTitle, updateCodeFoldPreviews, updateDocChrome, updateStatus, zoomCsvTable, zoomImageBy, zoomSvgRenderBy} = editorGroupsMod;
 const NEW_FILE_TYPES = [
     {label: 'JSON 文件', name: '新建文件.json'},
     {label: '文本文件', name: '新建文件.txt'},
@@ -1649,6 +1649,7 @@ const structurePanelCtrl = createStructurePanelController({
     set structureWorkerBroken(v) { structureWorkerBroken = v; },
     get structureWorkerPending() { return structureWorkerPending; },
     get structureWorkerSeq() { return structureWorkerSeq; },
+            set structureWorkerSeq(v) { structureWorkerSeq = v; },
 });
 const structureTextForDoc = (...a) => structurePanelCtrl.structureTextForDoc(...a);
 const jumpToStructureNode = (...a) => structurePanelCtrl.jumpToStructureNode(...a);
@@ -3344,11 +3345,11 @@ const sessionRestore = createSessionRestore({
     get createGroup() { return createGroup; },
     get currentMode() { return currentMode; },
     get docs() { return docs; },
-    get editorGroups() { return editorGroups; },
+    get editorGroups() { return editorGroupsMod.editorGroups; },
     get file() { return file; },
     get findDocByPath() { return findDocByPath; },
     get flash() { return flash; },
-    get focusedGroupId() { return focusedGroupId; },
+    get focusedGroupId() { return editorGroupsMod.focusedGroupId; },
     get groupDocs() { return groupDocs; },
     get groupOfDoc() { return groupOfDoc; },
     get logFrontend() { return logFrontend; },
@@ -3356,7 +3357,7 @@ const sessionRestore = createSessionRestore({
     get openPathsHere() { return openPathsHere; },
     get rememberDocView() { return rememberDocView; },
     get renderEditorLayout() { return renderEditorLayout; },
-    get splitRoot() { return splitRoot; },
+    get splitRoot() { return editorGroupsMod.splitRoot; },
     get switchMode() { return switchMode; },
     get workspaceFolder() { return workspaceFolder; },
 });

@@ -81,7 +81,7 @@ function enterMarkdownPreview(doc) {
         doc.mode = 'preview';
         deps.currentMode = 'preview';
         showMarkdownPreview(doc);
-        updateStatus();
+        deps.updateStatus();
         deps.updateSearchState();
     } catch (e) {
         deps.flash('切换预览失败：' + e.message, true);
@@ -106,8 +106,8 @@ function leaveMarkdownPreview(doc, mode) {
     }
     // 预览底层编辑器本来就是 code 模式，setMode('code') 不会触发 onModeChange，
     // 必须显式应用 Markdown 等语法模式（否则残留 jsoneditor 默认 JSON 模式）
-    if (doc === deps.file && mode === 'code') applyAceMode(true);
-    updateStatus();
+    if (doc === deps.file && mode === 'code') deps.applyAceMode(true);
+    deps.updateStatus();
     deps.updateSearchState();
 }
 
@@ -473,9 +473,9 @@ function enterSplitView(doc) {
             hookSplitScrollSync(doc);
             hookPreviewScrollSync(doc);
         }
-        applyAceMode(true);
-        showBanner(doc, doc.parseError);
-        updateStatus();
+        deps.applyAceMode(true);
+        deps.showBanner(doc, doc.parseError);
+        deps.updateStatus();
         deps.updateSearchState();
     } catch (e) {
         deps.flash('打开分屏失败：' + e.message, true);
@@ -511,7 +511,7 @@ function exitSplitView(doc) {
     if (doc.editor && doc.editor.aceEditor) {
         try { doc.editor.aceEditor.resize(); } catch (e) {}
     }
-    syncTabViewTools();
+    deps.syncTabViewTools();
 }
 
 function createImageView(doc) {
@@ -537,7 +537,7 @@ function createImageView(doc) {
         img.hidden = false;
         status.classList.add('hidden');
         applyImageZoom(doc);
-        if (doc === deps.file) updateStatus();
+        if (doc === deps.file) deps.updateStatus();
     });
     img.addEventListener('error', () => {
         img.hidden = true;
@@ -626,7 +626,7 @@ function applyImageZoom(doc) {
             doc.imageScroll.scrollHeight > doc.imageScroll.clientHeight + 1;
         doc.imageScroll.classList.toggle('can-pan', canPan);
     });
-    if (doc === deps.file) updateStatus();
+    if (doc === deps.file) deps.updateStatus();
 }
 
 function zoomImageBy(doc, deltaY) {
@@ -699,7 +699,7 @@ function applySvgZoom(doc) {
             scroll.scrollTop = Math.max(0, centerY * ratio - height / 2);
         });
     }
-    if (doc === deps.file) updateStatus();
+    if (doc === deps.file) deps.updateStatus();
 }
 
 function zoomSvgRenderBy(doc, deltaY) {
@@ -755,8 +755,8 @@ function enterSvgRender(doc) {
         doc.mode = 'render';
         deps.currentMode = 'render';
         showSvgRender(doc);
-        showBanner(doc, doc.parseError);
-        updateStatus();
+        deps.showBanner(doc, doc.parseError);
+        deps.updateStatus();
         deps.updateSearchState();
     } finally {
         doc.loading = false;
@@ -810,8 +810,8 @@ function enterImageView(doc) {
         doc.mode = 'image';
         deps.currentMode = 'image';
         showImageView(doc);
-        showBanner(doc, doc.parseError);
-        updateStatus();
+        deps.showBanner(doc, doc.parseError);
+        deps.updateStatus();
         deps.updateSearchState();
     } finally {
         doc.loading = false;
@@ -833,9 +833,9 @@ function enterBinaryView(doc) {
         doc.loading = loading;
     }
     if (doc.pane) doc.pane.classList.add('active');
-    applyAceMode();
-    showBanner(doc, doc.parseError);
-    updateStatus();
+    deps.applyAceMode();
+    deps.showBanner(doc, doc.parseError);
+    deps.updateStatus();
     deps.updateSearchState();
     try {
         if (doc.editor.aceEditor) doc.editor.aceEditor.resize();
@@ -852,8 +852,8 @@ function enterTextView(doc) {
         doc.mode = 'text';
         deps.currentMode = 'text';
         if (doc.pane) doc.pane.classList.add('active');
-        showBanner(doc, doc.parseError);
-        updateStatus();
+        deps.showBanner(doc, doc.parseError);
+        deps.updateStatus();
         deps.updateSearchState();
     } catch (e) {
         deps.flash('切换文本视图失败：' + e.message, true);

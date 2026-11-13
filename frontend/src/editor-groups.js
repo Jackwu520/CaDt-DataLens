@@ -15,7 +15,6 @@ import {createEditorExportMenus} from './editor-export-menus.js';
 import {createFileIcon, fileIconSpec} from './fileicons.js';
 import {formats, detectFormat, isKnownCodeFileName} from './formats.js';
 import {showPatchView, disposePatchView} from './patch-view.js';
-import {copyImageBlobToClipboard} from './image-clipboard.js';
 
 export function createEditorGroups(deps) {
 
@@ -83,7 +82,10 @@ const enterBinaryView = (...a) => splitPreview.enterBinaryView(...a);
 const enterTextView = (...a) => splitPreview.enterTextView(...a);
 
 // ---- 浏览器标签域（editor-browser-tab.js） ----
-const browserTab = createEditorBrowserTab(deps);
+const browserTabDeps = Object.create(deps);
+browserTabDeps.renderTabs = (...a) => renderTabs(...a);
+browserTabDeps.setFilename = (...a) => setFilename(...a);
+const browserTab = createEditorBrowserTab(browserTabDeps);
 const createBrowserView = (...a) => browserTab.createBrowserView(...a);
 const syncBrowserTab = (...a) => browserTab.syncBrowserTab(...a);
 const syncAllBrowserTabs = (...a) => browserTab.syncAllBrowserTabs(...a);
@@ -1516,5 +1518,5 @@ function reopenClosedTab() {
     function setFocusedGroupId(v) { focusedGroupId = v; }
     function setSplitRoot(v) { splitRoot = v; }
 
-    return {activateDoc, setFocusedGroupId, setSplitRoot, addDocToFocusedGroup, applyAceMode, applyCsvTableZoom, applyImageZoom, browserViewportLabel, closeDocNow, closeDocsWithConfirm, closeSqlView, createDoc, createDocEditor, createGroup, dismissBanner, doRedo, doUndo, editorGroups, enterBinaryView, enterCsvTable, enterImageView, enterMarkdownPreview, enterSplitView, enterSqlView, enterSvgRender, enterTextView, exitSplitView, expandAllWithGuard, flushCsvCellEditor, focusedGroupId, groupDocs, groupOfDoc, handleAIWorkspaceFileChanged, handleExternalDocChanges, hideBanner, hideSvgRender, hookCodeFoldPreviews, hookMultiCursor, humanizeCounts, initCodeFoldHover, jumpBookmark, leaveCsvTable, leaveMarkdownPreview, markDocDirty, mdSyncScrollFromAce, moveTabInGroup, patchViewContext, refreshPatchMarkers, rememberDocView, renderBookmarks, renderBreadcrumb, renderCsvTableView, renderEditorLayout, renderMarkdownPreview, renderTabs, reopenClosedTab, requestCloseDoc, revertDocToSaved, scheduleGitGutter, setBrowserViewport, setFilename, showBanner, showImageMenu, showMdPreviewMenu, showPathInFolder, showSvgMenu, splitRoot, syncAllBrowserTabs, syncBrowserTab, textArea, toggleBookmark, toggleFocusedNode, updateAiWriteBadge, updateBrowserTitle, updateCodeFoldPreviews, updateDocChrome, updateStatus, zoomCsvTable, zoomImageBy, zoomSvgRenderBy};
+    return {activateDoc, setFocusedGroupId, setSplitRoot, addDocToFocusedGroup, applyAceMode, applyCsvTableZoom, applyImageZoom, browserViewportLabel, closeDocNow, closeDocsWithConfirm, closeSqlView, createDoc, createDocEditor, createGroup, dismissBanner, doRedo, doUndo, get editorGroups() { return editorGroups; }, enterBinaryView, enterCsvTable, enterImageView, enterMarkdownPreview, enterSplitView, enterSqlView, enterSvgRender, enterTextView, exitSplitView, expandAllWithGuard, flushCsvCellEditor, get focusedGroupId() { return focusedGroupId; }, groupDocs, groupOfDoc, handleAIWorkspaceFileChanged, handleExternalDocChanges, hideBanner, hideSvgRender, hookCodeFoldPreviews, hookMultiCursor, humanizeCounts, initCodeFoldHover, jumpBookmark, leaveCsvTable, leaveMarkdownPreview, markDocDirty, mdSyncScrollFromAce, moveTabInGroup, patchViewContext, refreshPatchMarkers, rememberDocView, renderBookmarks, renderBreadcrumb, renderCsvTableView, renderEditorLayout, renderMarkdownPreview, renderTabs, reopenClosedTab, requestCloseDoc, revertDocToSaved, scheduleGitGutter, setBrowserViewport, setFilename, showBanner, showImageMenu, showMdPreviewMenu, showPathInFolder, showSvgMenu, get splitRoot() { return splitRoot; }, syncAllBrowserTabs, syncBrowserTab, textArea, toggleBookmark, toggleFocusedNode, updateAiWriteBadge, updateBrowserTitle, updateCodeFoldPreviews, updateDocChrome, updateStatus, zoomCsvTable, zoomImageBy, zoomSvgRenderBy};
 }

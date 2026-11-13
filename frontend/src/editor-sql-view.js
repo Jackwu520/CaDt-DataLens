@@ -216,12 +216,12 @@ function disposeSqlDoc(doc) {
 // 关闭时直接移除覆盖层，底层视图原样恢复，无需重新解析。
 function enterSqlView(doc) {
     if (!doc || !deps.isSqlSupportedDoc(doc) || !doc.editor) return;
-    if (doc.splitActive) exitSplitView(doc);
+    if (doc.splitActive) deps.exitSplitView(doc);
     doc.sqlSourceMode = deps.currentMode;
     doc.pane.classList.add('sql-active');
     doc.sqlActive = true;
     createSqlView(doc);
-    updateStatus();
+    deps.updateStatus();
     deps.updateSearchState();
     if (!doc.sqlInfo) importSqlDoc(doc, false);
     else if (doc.dirty) sqlSetStatus(doc, '文件有未保存修改；点「重新导入」可生效', false);
@@ -234,7 +234,7 @@ function closeSqlView(doc) {
     if (!doc || !doc.sqlActive || !doc.pane) return;
     doc.pane.classList.remove('sql-active');
     doc.sqlActive = false;
-    updateStatus();
+    deps.updateStatus();
     deps.updateSearchState();
 }
 
