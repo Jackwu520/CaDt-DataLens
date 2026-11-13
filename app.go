@@ -1346,16 +1346,24 @@ func (a *App) ShowInFolder(path string) error {
 	if err != nil {
 		return fmt.Errorf("路径不存在：%s", path)
 	}
-	args := []string{path}
-	if !info.IsDir() {
-		args = []string{"/select,", path}
-	}
-	cmd := exec.Command("explorer.exe", args...)
+	cmd := exec.Command("explorer.exe", explorerArgs(path, info.IsDir())...)
 	if err := cmd.Start(); err != nil {
 		return err
 	}
 	_ = cmd.Process.Release()
 	return nil
+}
+
+// explorerArgs 构造 ShowInFolder 传给 explorer.exe 的参数。
+// 路径必须先经 filepath.Clean 归一成 Windows 原生分隔符：前端（AI 日志目录等）传来的
+// 路径是正斜杠形式，explorer.exe 的命令行解析把 / 开头的段当开关处理，
+// 解析失败时不会报错，而是回退打开「文档」文件夹。
+func explorerArgs(path string, isDir bool) []string {
+	cleaned := filepath.Clean(path)
+	if isDir {
+		return []string{cleaned}
+	}
+	return []string{"/select,", cleaned}
 }
 
 func (a *App) CopyText(text string) error {
