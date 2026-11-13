@@ -1,8 +1,8 @@
 # 子代理消息化：从阻塞等待到消息通知模型（实施计划）
 
-> 状态：未开工（2026-11-14 调研成文）
-> 决策依据：用户 2026-11-14 要求将 spawn_agent 从阻塞模型改造为消息通知模型，给出 7 条原语；参考实现 deepseek-harness（下称 dsh）
-> 范围：`frontend/src/ai/` 的子代理域与主回合注入；不改 Go 流式协议、不改后台终端与定时任务
+> 状态：未开工（2026-11-14 调研成文；同日增补「侧边对话」评估 §4.9/阶段 F、「子代理压缩」评估 §4.10/阶段 G、「ai-panel.js 拆分边界」§4.11）
+> 决策依据：用户 2026-11-14 要求将 spawn_agent 从阻塞模型改造为消息通知模型，给出 7 条原语；参考实现 deepseek-harness（下称 dsh）。同日确认「侧边对话」取「两者都要」形态（用户支线对话 + 子代理对话视图，统一旁路会话基建）
+> 范围：`frontend/src/ai/` 的子代理域、主回合注入与侧边对话（§4.9）；不改 Go 流式协议、不改后台终端与定时任务
 
 ## 1. 背景与问题
 
@@ -21,6 +21,7 @@
 - `AIStop(sessionId)`（`ai.go:303`）按「精确 id 或 `id#` 前缀」取消所有流，所以 `AIStop(sub.id)` 能停掉子代理任意轮次。
 - `subAgentQueue`（`ai-subagents.js:61`）已声明并导出但**无任何使用者**（死代码），本方案将其改造为真正的收件箱。
 - 子代理工具集 `subToolsForScope(depth)` 不含 `ask_user`；子代理系统提示明确「不要反问用户（你没有提问渠道）」。
+- 子代理无压缩机制（`ai-subagents.js:46` 模块注释自述）；`sub.session.summary` 字段存在但恒 null；消息数超 `AI_SUB_MESSAGES_MAX`（400，`ai-subagents.js:50`）时置 `wrapUp` 强制跑一轮无工具总结轮收尾（785-797），收尾请求失败回退转录摘录（946-951）。
 
 ### 1.2 问题
 
@@ -47,11 +48,14 @@
 3. 完成通知复用「应用消息卡片」（`ai-app-message.js`）交互模式与主对话排队/插话（`ai-message-queue.js`）的语义模型。
 4. HUD（智能体团队弹层/详情视图）展示并发子代理的运行态、排队消息数、等待回答等状态。
 5. 每阶段可独立提交、独立验证、独立回滚；0 新依赖。
+6. **侧边对话**（2026-11-14 增补，§4.9）：用户支线对话（普通会话 + `sideOf` 元数据）与子代理对话视图（agentView 输入行）统一在旁路会话基建（`startSessionTurn` / `sessionAgentNotices` / 子收件箱 / 交互语言）上。
+7. **子代理压缩**（2026-11-14 增补，§4.10）：auto-compact（轮边界估算超阈触发，复用 `config.autoCompact`/阈值，零新设置）+ 手动压缩（主代理 `agent_compact` 工具 + agentView 按钮）；摘要经 `buildApiMessages` 对 `sub.session.summary` 的既有判断零改动注入。
 
 ### 非目标（明确排除）
 
 - **不动后台终端**（`background_command` / bgJobIndex / 终端标签页）与**定时任务**（`ai-schedule.js`）——它们与子代理消息化只共享「通知注入」这一实现机制，不卷入彼此改动。
-- 不做子代理转录磁盘持久化；不做应用重启后的子代理恢复（与现状一致：转录在内存，summary 持久化在父会话 JSONL）。
+- 不做子代理转录磁盘持久化；不做应用重启后的子代理恢复（与现状一致：转录在内存，summary 持久化在父会话 JSONL）。（用户支线对话是普通持久化会话，不受此条约束——见 §4.9.1）
+- 不整体拆分 ai-panel.js 留守核心（submitText/startRound/executeTool/streams 等）；本方案只搬走自己域内的存量并承接新增能力，边界与净账见 §4.11。
 - 不做 dsh 式名字树（`lead`/`reviewer/checker` 路径名）与跨分支消息：保持「父 ↔ 直接子」直线通信，引用用 agentId。
 - 不做多窗口协同（子代理只活在创建它的窗口内存里）。
 - 不做 dsh 式外部后端（codex / claude-code / ACP / 出进程）。
@@ -136,6 +140,7 @@
 │                     └─ background: 注册即返回 agentId      │
 │  agent_send(agentId, message, urgent) ─► 子收件箱           │
 │  agent_stop(agentId) ─► 停止 + 返回转录摘要                 │
+│  agent_compact(agentId) ─► 轮边界/立即压缩（§4.10）         │
 │  wait_agent(agentId|any, timeoutSec) ─► 阻塞收单条结论      │
 └──────────────────────────────────────────────────────────┘
         ▲ 注入（复用「应用消息卡片」）          │ 事件 ai-chunk/…（payload.id=subId#…）
@@ -174,7 +179,7 @@ sub.inbox = {
 
 **消费点**（唯一）：`runSubRound(sub)` 开头、`buildApiMessages` 之前——
 
-1. `sub.inbox` 两个列表非空 → 按序 push 成 `role:'user'` 消息（`content` 带 `「主代理消息：」` 前缀，`notice:true` 标记），step 列表在前、turn 列表在后；清空列表。
+1. `sub.inbox` 两个列表非空 → 按序 push 成 `role:'user'` 消息（`content` 带 `「主代理消息：」` 前缀，`notice:true` 标记），step 列表在前、turn 列表在后；清空列表。（F3 起按来源区分前缀：主代理消息 / 用户插话，见 §4.9.4）
 2. 嵌套子代理派单期间收到消息：同样在下一轮边界消费（子代理的工具轮结束回到 runSubRound 时）。
 
 **投递**：
@@ -240,9 +245,10 @@ async function startSessionTurn(session, text, extra) {
 agent_send:  { name: 'agent_send',  description: '向后台子代理发消息：默认排队（它下一轮可见）；urgent=true 插队（打断当前模型调用、下一步最前注入）。对已完成的子代理发消息会唤醒它继续工作；带 askId 时是对子代理提问的回答。', parameters: { agentId, message, urgent?, askId? }, required: ['agentId','message'] }
 agent_stop:  { name: 'agent_stop',  description: '停止一个后台子代理并收集其过程记录（当前进度 + 最终输出）。已完成/失败的子代理返回历史摘要。', parameters: { agentId }, required: ['agentId'] }
 wait_agent:  { name: 'wait_agent',  description: '阻塞等待后台子代理结束并直接返回其结论（agentId 省略时等任一运行中的子代理）。timeoutSec 0–600，默认 120；超时返回当前状态快照。', parameters: { agentId?, timeoutSec? } }
+agent_compact: { name: 'agent_compact', description: '压缩后台子代理的上下文：运行中的子代理在下一轮边界执行；已完成的子代理立即压缩（之后 agent_send 唤醒将以精简上下文继续）。返回压缩前后规模与摘要预览。', parameters: { agentId }, required: ['agentId'] }
 ```
 
-`toolsForScope`（`ai-tool-defs.js:484-506`）在含 `spawn_agent` 的档位同步加入三件套；子代理的工具集不含它们（子不控子，保持只读边界；递归派单仍走 spawn_agent）。
+`toolsForScope`（`ai-tool-defs.js:484-506`）在含 `spawn_agent` 的档位同步加入三件套（C2 落地）；`agent_compact` 于 G3 加入成四件套；子代理的工具集不含它们（子不控子，保持只读边界；递归派单仍走 spawn_agent）。
 
 ### 4.6 UI：HUD 与卡片
 
@@ -267,21 +273,146 @@ wait_agent:  { name: 'wait_agent',  description: '阻塞等待后台子代理结
 
 - 子代理系统提示（`AI_SUB_SYSTEM_PROMPT`）在可提问模式下追加：「你可以在关键决策点用 ask_user 向主代理提问（由主代理决定答案或转询用户）；等待回答期间你的轮次暂停，超时后请自行决定并继续。」
 
+### 4.9 侧边对话：用户向旁路会话（2026-11-14 增补）
+
+> 形态确认为「两者都要」：用户支线对话 + 子代理对话视图。结论：**统一在运行时基建与交互语言上，不统一在存储形态上**——支线对话是普通持久化会话（`sideOf` 元数据），子代理侧边视图是 agentView 覆盖层增强（转录仍内存态）。以下行号为 2026-11-14 调查快照。
+
+#### 4.9.1 底座选型：支线对话 = 真 AI 会话，不是子代理
+
+| 代码事实 | 推论 |
+|---|---|
+| 多会话并发流是显式设计：`streams` 按会话隔离（`ai-panel.js:1502-1504` 注释「每个会话一条独立的流……互不打断」）、事件按 roundId 遍历路由（7531-7540）、后台会话照常入列、切回全量重建（2196-2219） | 母会话流式时支线正常收发，**流基建零改动** |
+| 持久化一会话一目录 meta+JSONL（`sessionstore.go:14-19`）；加字段仅 4 处：`normalizeSession`（`ai-panel.js:1129-1167`）、`buildSessionMeta`（`ai-session-store.js:223-253`，metaSignature 自动覆盖新字段）、列表渲染、创建者 | `sideOf` 成本极低，用户数据跨重启保留 |
+| `sub.session` 不入 `sessions`、不持久化（`ai-subagents.js:751`）；`subAgentTranscripts` 200 条上限、tool 截 600 字 / assistant 截 2000 字（101-109、837、901-906）；重启只留摘要 | 拿子代理当支线底座须把持久化硬塞进子代理域（违反 §2 非目标），且截断会真实丢失用户对话 |
+| HUD `agentView` 是面板内覆盖层、无 composer（`style.css:8985-8992`、`ai-subagents.js:515-552`） | 子代理侧的「会话式体验」是**增强项**（加输入行），不是现成能力 |
+
+且子代理机器（depth/限额/收件箱/冷唤醒）对支线是纯包袱：支线的发送方就是用户，收件箱=输入框。
+
+#### 4.9.2 「统一旁路会话基建」的实在含义
+
+统一的是四条管道 + 一套交互语言，每条都有 ≥2 个消费者：
+
+| 管道 | 既有消费者 | 侧边对话侧消费者 |
+|---|---|---|
+| `startSessionTurn`（§4.4，A 阶段） | 定时任务注入（现走 switchSession + 忙等重试，`ai-schedule.js:328-335`）、后台通知唤醒（B） | 带回主对话的空闲唤醒（F2） |
+| `sessionAgentNotices` 注入通道 + app 卡片（B） | 子代理完成/失败/提问通知（B/D） | 「支线结论」卡片（F2） |
+| 子收件箱 step/turn + steer/queue（C） | 主代理 `agent_send`、`stopSubAgentsOf`（C） | agentView 用户插话（F3） |
+| 交互语言：Enter 排队 / Ctrl+Enter 插队 / 未读标记 / 停止保留收件箱 | 主 composer（`ai-composer.js:460-467`）与 message-queue | agentView 输入行沿用同一语义（F3） |
+
+#### 4.9.3 形态一：用户支线对话
+
+- **创建**：头部「⋯」菜单与 assistant 消息操作条（复用 branch 入口位置，`ai-panel.js:2983-2986`、8866）各加「新建支线对话 / 侧边追问」→ `createSessionData` + `sideOf = 母会话.id`（scope 默认 read，同现状）→ persist → 切过去。**不复制母会话历史**——与 `branchSessionAt`（8735-8783，全量分叉）明确区分：分支=独立重演历史，支线=轻关联旁路。
+- **引用**：从消息行发起时往新会话 composer 草稿预填 markdown 引用块（`> 引用自「母标题」：`+ 截断文本）；写入 drafts 表（8873-8897）后切换，`loadComposerDraft` 即恢复；附件/图片照常。
+- **工具与权限：零新代码**——支线就是普通会话，scope 默认 `'read'`，用户按现有权限四档自行升级；即「子代理只读哲学」的会话版。
+- **带回主对话**：支线 assistant 消息操作条加「带回主对话」→ `deliverAgentNotice(母会话, {kind:'sidechat', label:'支线结论 · ' + title, content: 截断结论})`。B 阶段的 `deliverAgentNotice` 签名从一开始就定为 `(session, {kind,label,content})` 通用形，子代理结算与支线带回共用一条管道；母会话空闲 → `startSessionTurn` 唤醒新轮，忙 → notices 下轮边界注入；母会话已删除 → flash 兜底。注入不切走用户当前查看的会话（§4.4 原则），母会话以未读标记提示。
+- **列表呈现**：组内紧跟母会话 + 「支线」徽标 + 缩进 class（`renderItem` ai-session-list.js:368-446、组内排序 `buildWorkspaceGroups` 448-471）；「提升为独立会话」= 清 `sideOf`；母会话删除后徽标回落为普通会话。
+- sideOf 不嵌套；支线内可再 spawn 子代理（普通会话能力，depth 从 0 起算）。
+
+#### 4.9.4 形态二：子代理对话视图（agentView 增强）
+
+- **输入行**：agentView footer 加一行输入（活跃子代理，或 done 且可续的记录）：Enter → `queueSubAgentMessage(sub, text, {from:'user'})`（排队，下轮消费）；Ctrl+Enter → `steerSubAgent`（插队）；对 done 记录输入即冷唤醒入口（复用 C 阶段，baseRound+1）；error/stopped 记录禁用并显示原因。消息带 `from:'user'`，§4.3 消费前缀据此区分「主代理消息：」/「用户插话：」。
+- **与 C4 分工**：停止按钮、收件箱预览、waiting 状态在 C4 落；F3 只加输入行与来源区分。
+- **渲染不重构**：agentView 维持简化渲染（`agentBlock`/`agentToolRow`）；主渲染器虽字段兼容（`renderToolMessage` 按字段分支），整面替换收益低，明确不做。
+- 转录**仍不持久化**：agentView 是子代理的侧边视图，不是会话列表新条目（§2 非目标不变；重启后落「仅保留状态与结论摘要」分支）。
+
+#### 4.9.5 与七原语的关系
+
+侧边对话是**用户向**补充：不新增模型原语、不动 `AI_TOOL_DEFS` 与工具守则；与原语 6（子提问通知主）共享注入管道，与原语 3/4（排队/插队）共享收件箱语义。
+
+### 4.10 子代理压缩：auto-compact + 手动压缩（2026-11-14 增补）
+
+> 现状：子代理无压缩机制（`ai-subagents.js:46` 模块注释自述）；消息数超 `AI_SUB_MESSAGES_MAX`（400）置 `wrapUp` 强制收尾轮兜底。主对话「无逐轮硬上限、靠 auto-compact 控量」的能力子代理没有——本节补齐，wrapUp 保留为最终兜底。以下主会话压缩事实均为 2026-11-14 调查快照（行号同前约定）。
+
+#### 4.10.1 主会话压缩机制的可复用面（调查结论）
+
+| 机制 | 事实 | 子代理侧结论 |
+|---|---|---|
+| 摘要注入 | `buildApiMessages` 对 `session.summary` 是通用形状判断（`ai-panel.js:3300-3305`，第二条 system `<conversation_summary>`），`sub.session.summary` 字段已有（恒 null） | **零改动生效**：赋值 `{text:…}` 即注入 |
+| 压缩请求 | `compactTranscript`（9564-9586）只读 messages、会话无关；system = `AI_COMPACT_SYSTEM_PROMPT`（保留偏好/决定/事实/路径/未完成，≤800 字）；工具数组传空 | 提示词与转录组装**原样复用** |
+| 截断落账 | `finishCompact`（9705-9742）：cutoff = 保留最近 6 条且回退锚定 user 轮（9720-9721）；summary 形状 `{text, upTo, createdAt, trigger, before}`；磁盘归档先于内存裁剪（9729） | 抽出纯函数内核（G1）；子侧跳过磁盘归档/渲染/队列冲刷；`subAgentTranscripts` 是展示层、独立于 messages——**详情视图全程可看，展示与上下文分离** |
+| 事件路由 | 全局单 `oneShot`（`ai-panel.js:406`），`handleEvent` 最优先匹配（7503-7522）；`startCompact` 守卫含**全局** `anyStreaming()`（9600） | **不能复用全局 oneShot**：后台子代理压缩时父会话常在流式，全局锁互相卡死 → 新增 `subCompacts` Map（subId → oneShot 形状）；路由分支插在 oneShot 之后、**subAgents 分支之前**——否则 `payload.id.split('#')[0]` 命中 `handleSubEvent`，其只认当轮 roundId（`ai-subagents.js:870`）而静默丢弃压缩事件 |
+| roundId | `session.id + '#compact-' + ts + '-' + seq`（9626），不占 round 命名空间 | 同构：`sub.id + '#compact-…'`；`AIStop(sub.id)` 前缀匹配天然覆盖取消压缩 |
+| 触发与阈值 | `maybeAutoCompact` 仅在 finishStream 尾部且要求全局空闲；`config.autoCompact` + `autoCompactThreshold`（默认 0.8）+ `autoCompactCount` 连续 2 次上限、成功轮清零 | 子侧触发点改在 `runSubRound` 轮边界（本就串行空闲）；开关与阈值**复用 config，零新设置**；连续 2 次上限镜像为 per-sub 计数 |
+| usage 记账 | 压缩调用不读 `payload.usage`、不入账 | 保持同等粒度 |
+
+#### 4.10.2 auto-compact（子代理）
+
+- **检查点**：`runSubRound` 开头、创建 assistant 与 `buildApiMessages` 之前（与收件箱消费同一边界；顺序=先消费收件箱再判定压缩，避免把刚到的指令压进摘要）：`s.wrapUp` 已置或 `roundNo >= maxRounds` 时跳过；`config.autoCompact` 开启且 `estimateApiMessagesTokens(buildApiMessages(sub.session, null, s.systemPrompt))` ≥ `contextWindowOf(entry) × config.autoCompactThreshold` → 压缩（子工具集固定小集合，工具开销并入估算常数）。
+- **执行**：置 `sub.compacting = true`（HUD 详情视图 meta 显示「压缩中」）→ `subCompacts.set(sub.id, …)` → `AISendChat(sub.id + '#compact-…', flow.profileCfg, 压缩消息, [], retryMax)`；成功 → 内核应用 summary + 裁剪 messages；失败 → 清注册走普通 ai-error 路径，连续失败由计数收敛到 wrapUp。完成后 `sub.compacting = false`，继续本轮。
+- **防循环**：per-sub 连续压缩计数，一轮正常完成（未触发压缩）即清零；≥2 次后不再自动压缩，交 `AI_SUB_MESSAGES_MAX` wrapUp 收尾——与主会话 `autoCompactCount` 语义一致。
+- **与既有预算的关系**：压缩只扩消息容量，不动 `maxRounds`（真实预算）与 400 条 wrapUp 兜底；`subAgentTranscripts`、结算 summary、wait_agent 语义（压缩中未终态）均不受影响。
+
+#### 4.10.3 手动压缩（两个发起方）
+
+1. **主代理**：新工具 `agent_compact(agentId)`（§4.5，G3 起成四件套）：
+   - 运行中 → 置 `sub.compactRequested`，下一轮边界执行（不打断在飞工作），返回「已请求压缩，将在当前工具轮结束后执行」；
+   - done 且可续的 records → 立即压缩（不开轮），返回前后估算与摘要前 200 字；之后 `agent_send` 冷唤醒天然以瘦身上下文续跑（与 §4.3 协同）；
+   - error/stopped 记录 → 拒绝「已终止，无需压缩」。
+2. **用户**：agentView footer「压缩」按钮（与 F3 输入行同区域）走同一 `requestSubCompact(sub)` 入口；按钮态跟随 compacting/可续状态。
+3. **不通知父会话**：压缩不是结算，不发 notice；模型经工具结果得知，用户经 HUD 得知。
+
+#### 4.10.4 互斥与停止语义
+
+- **用户停止**：`stopSubAgent` 在压缩中 → `AIStop(sub.id)` 前缀取消压缩流 → subCompacts 清理 → finalize('stopped')（对齐主会话「压缩中点停止 = cancelOneShot」，`ai-panel.js:7654-7657`）。
+- **压缩中收到 urgent（steer）→ 降级为排队**：不置 steerKick、不 AIStop（避免丢摘要），压缩完成后下一边界消费——`steerSubAgent` 入口加 compacting 判断。
+- **主会话 oneShot 与 subCompacts 完全独立**：父压缩不阻塞子压缩，反之亦然；`startCompact` 的全局 `anyStreaming` 守卫不适用于子（后台子代理定义上与父并发），子侧守卫只有「本 sub 空闲或在轮边界」。
+- **父会话压缩中（compactOf(parent)）收到子结算通知** → 走 §4.4 时机 2 队列，不受影响。
+
+### 4.11 ai-panel.js 拆分边界：本方案负责的部分（2026-11-14 增补）
+
+> 决策：「ai-panel.js——交给消息化方案消化（子代理运行时/消息队列/旁路会话还会拿走几千行），现在硬拆留守核心边际收益最低」。本节把「消化」落成可验收的边界：**不整体拆 panel，施工即搬迁**——凡本方案触及的域逻辑与新增能力一律落模块，panel 只留薄接线；行号同前为 2026-11-14 快照（panel 现 11071 行）。
+
+#### 4.11.1 存量清单：本方案域在 panel 的剩余部分
+
+| 域 | panel 存量（file:line） | 处置 | 归宿 |
+|---|---|---|---|
+| 消息队列尾巴 | `messageQueue`/`interjectPending` 所有权在 panel（466-467），flush 调用点散布（8929、9741、7311-7315） | 所有权移入队列模块（panel 经模块 API 访问），flush 调用点收敛 | ai-message-queue.js（随 A1 顺带） |
+| spawn 执行 | executeTool 的 spawn_agent case（6386 附近，阻塞等待与结果拼装） | B 拆 mode 后 case 变薄（转发 startSubAgent/wait） | 逻辑进 ai-subagents.js |
+| agent meta 恢复 | normalizeSession 的 `m.agent` 逻辑（1054-1068） | 移为 ai-subagents 导出的 normalizeAgentMeta，normalizeSession 转调 | ai-subagents.js |
+| 死别名 | `subAgentLimit`/`subAgentMaxDepth`（10836-10837，无调用者） | 删除 | — |
+| 压缩内核 | `compactTranscript`（9564-9586）+ finishCompact 的 cutoff/summary/裁剪段（9714-9733） | G1 抽出；主压缩 UI 守卫与 oneShot 生命周期**留守**（主会话域，不属本方案） | ai-compact.js（新） |
+| 事件路由/停止链路 | handleEvent 子代理分支（7524-7529）+ G2 的 subCompacts 分支；stopGeneration 内 stopSubAgentsOf 调用 | **保留**——路由与停止是 panel 职责，薄分支转调模块 | panel 留守 |
+
+#### 4.11.2 新增能力的归宿（施工即搬迁）
+
+| 能力（阶段） | 归宿 | panel 只留 |
+|---|---|---|
+| `startSessionTurn` 内核（A） | **panel 内参数化抽取，不新建模块**：内核与 streams/oneShot/persist/startRound 等闭包状态深度耦合（约 12 项依赖），独立模块的注入面大于收益；消费者（notices/支线/定时任务）经 ctx 拿函数即可，与 ai-schedule 调 sendAppMessage 同模式 | 函数本体（~110 行） |
+| notices 通道 + `deliverAgentNotice` + `buildSettlementNotice` + 消费 fold + 唤醒（B） | **ai-agent-notices.js（新）**，~200 行 | handleToolRound/finishStream 各一个薄调用点 |
+| 收件箱/冷唤醒/steerKick/统一停止/`settledPromise` + agent_send / agent_stop / agent_compact / wait_agent 执行体（C/D/E/G3） | **ai-subagents.js**（1015 → 约 1700+ 行） | executeTool 薄 case（每个 ~8 行）+ 路由分支 |
+| 子压缩执行体 + subCompacts（G2） | **ai-subagents.js** | 路由薄分支 |
+| 支线对话动作域（创建/引用/带回/提升）（F） | **ai-sidechat.js（新）**，~200 行；sideOf 渲染改造进 ai-session-list.js；agentView 输入行在 ai-subagents.js | 菜单/操作条接线 + 消息操作条分发一行 |
+| agentView「压缩」按钮（G3） | **ai-subagents.js**（HUD 本在其中） | 无 |
+
+#### 4.11.3 净账（诚实口径）
+
+- 存量摘出 ≈ **-200 行**：压缩内核 ~120-150 + 队列所有权 ~20 + agent meta ~15 + spawn case 变薄 ~30 + 死别名 2。
+- 新增能力 ~1000+ 行（notices ~200、子代理运行时增量 ~500、sidechat ~200、子压缩 ~150）**全部落在模块**——panel 对照「直接写进 panel」的写法少增同量，这是本方案对 panel 的主要价值。
+- panel 绝对规模预计 11071 → ~10900（±100）。「几千行」的构成 = 新增能力不进 panel + 历史已拆走的 ai-subagents.js / ai-message-queue.js；**本方案对 panel 现有存量的硬拆到此为止**，与「硬拆留守核心边际收益最低」一致。
+
+#### 4.11.4 验收
+
+1. 阶段结束时 grep 验证：ai-panel.js 不含 inbox / subCompacts / notices 队列 / sidechat 的实现体（只允许 ctx 转发与薄 case）；
+2. 新模块满足「factory + 显式依赖注入、`deps.X` 惰性求值」约定（AGENTS.md 前端侧），测试与源码同目录；
+3. §9 的 A1/B2/C2/F1–F3/G1–G3 完成定义包含归宿检查（对照 §4.11.2 表）。
+
 ## 5. 阶段划分
 
-> 原则：每批独立提交、独立验证、可独立回滚；批内文件互不跨域。
+> 原则：每批独立提交、独立验证、可独立回滚；批内文件互不跨域。新增域逻辑一律落模块、panel 只留薄接线（归宿表见 §4.11.2，「施工即搬迁」）。
 
 ### 阶段 A：注入内核（纯重构，无行为变化）
 
-- 从 `submitText` 抽出 `startSessionTurn(session, text, extra)`（`ai-panel.js`），`submitText` 转调；`sendAppMessage`、排队冲刷路径回归验证。
+- 从 `submitText` 抽出 `startSessionTurn(session, text, extra)`（`ai-panel.js` 内参数化，不新建模块——§4.11.2），`submitText` 转调；`sendAppMessage`、排队冲刷路径回归验证。
+- 随 A1 顺带：`messageQueue`/`interjectPending` 所有权移入 ai-message-queue.js，flush 调用点收敛（§4.11.1）。
 - `ai-app-message.js`：`APP_MESSAGE_ICONS` 注册 `subagent`；`detectAppMessage` 增加前缀识别。
 - `ai-subagents.js`：删除死代码 `subAgentQueue`（或改为本方案的 inbox 结构占位）。
 - 验证：`npm test`（既有 111 用例）+ 手工回归「定时任务注入 / 排队插话 / 后台会话完成通知」。
 
 ### 阶段 B：后台派单 + 完成/失败通知（原语 1、7、5）
 
-- `ai-subagents.js`：`runSubAgent` 拆 `startSubAgent`（建记录、入 `subAgents`、启动首轮）与阻塞等待；新增 `subAgentRecords`、`deliverAgentNotice`、`finalizeSubAgent` 改造（终态入 records、done/error 发通知、blocking 模式不发避免双份）。
-- `ai-panel.js`：`handleEvent` 子路由兜底查 records；`spawn_agent` case 支持 mode；`handleToolRound` 工具循环后消费 `sessionAgentNotices`；`finishStream` 后唤醒（`startSessionTurn`）。
+- `ai-subagents.js`：`runSubAgent` 拆 `startSubAgent`（建记录、入 `subAgents`、启动首轮）与阻塞等待；新增 `subAgentRecords`、`finalizeSubAgent` 改造（终态入 records、done/error 发通知、blocking 模式不发避免双份）。
+- `ai-agent-notices.js`（新）：notices 通道、`deliverAgentNotice`（签名 `(session, {kind,label,content})` 通用形）、`buildSettlementNotice`、消费 fold 与空闲唤醒（§4.11.2）。
+- `ai-panel.js`：`handleEvent` 子路由兜底查 records；`spawn_agent` case 支持 mode（薄 case）；`handleToolRound` 工具循环后、`finishStream` 后各接一个 notices 薄调用点。
 - `ai-tool-defs.js`：spawn_agent 增 `mode`。
 - 验证：单测（通知文案组装、notices 消费 fold——放 `ai-subagents.test.mjs`，纯函数拆出 `buildSettlementNotice`）；手工：后台派单 → 主代理继续干活 → 完成通知卡片出现并自动续轮；失败场景同。
 
@@ -305,6 +436,24 @@ wait_agent:  { name: 'wait_agent',  description: '阻塞等待后台子代理结
 - `CHANGELOG.md`、`README.md` 对应小节。
 - 验证：并行 3 子代理 + wait_agent 汇总；全量 `go test ./...`（确认零 Go 改动）+ `npm test` + `vite build` + `wails build`。
 
+### 阶段 F：侧边对话（用户向旁路会话；§4.9）
+
+> F1 无前置依赖，可与阶段 A 并行；F2 依赖 B（注入管道）、F3 依赖 C（收件箱），默认排在 E 后整批落地，也可随依赖就绪穿插。模块归宿：动作域 ai-sidechat.js（新）、列表渲染 ai-session-list.js、agentView 输入行 ai-subagents.js（§4.11.2）。
+
+- F1：`sideOf` 元数据（normalizeSession / buildSessionMeta / 创建者）+ 列表缩进与徽标 + 创建入口（头部菜单 + 消息操作条）+ 引用预填（含单测：sideOf 归一化、组内排序 fold）。
+- F2：「带回主对话」（`deliverAgentNotice` 泛化 + 空闲唤醒 / 忙排队注入 + 母会话缺失兜底）。
+- F3：agentView 输入行（排队 / 插队 / 冷唤醒入口 / 「用户插话：」前缀区分）（含单测：from 区分与禁用态）。
+- F4：「提升为独立会话」、母会话删除兜底、CHANGELOG/README 补记、回归（§6 第 11–13 条）。
+
+### 阶段 G：子代理压缩（§4.10）
+
+> G1 无前置依赖，可与阶段 A 并行；G2 依赖 G1；G3 的 agentView 按钮建议排在 F3 后（同 footer 区域），工具面可与 C2 同批评审。
+
+- G1：抽压缩应用内核（cutoff 计算 + summary 形状 + messages 裁剪，从 `finishCompact` 逐字搬移参数化；磁盘归档/渲染/队列冲刷留在外面）+ 主压缩路径回归（含单测：cutoff 锚定 user 轮、summary 形状）。
+- G2：`subCompacts` 注册表 + `handleEvent` 路由分支（先于 subAgents）+ `runSubRound` 轮边界触发 + 连续计数 wrapUp 兜底 + HUD「压缩中」（含单测：阈值触发、防循环收敛、压缩事件不被 handleSubEvent 吞）。
+- G3：`agent_compact` 工具（AI_TOOL_DEFS / toolsForScope / 执行 case）+ agentView「压缩」按钮 + steer 降级与停止互斥（含单测）。
+- G4：spawn 工具守则补 `agent_compact` 说明；CHANGELOG/README。
+
 ## 6. 验证清单（整体验收）
 
 1. 单一后台子代理：派出 → 主代理同回合继续 read_file → 子完成通知卡片 → 主代理引用结论收尾。
@@ -317,6 +466,12 @@ wait_agent:  { name: 'wait_agent',  description: '阻塞等待后台子代理结
 8. 冷唤醒：对已完成（done）子代理 agent_send → baseRound+1 续轮，事件路由正确（`subId#2-1`）。
 9. 会话重放/重启：通知卡片、spawn meta、HUD 兜底扫描全部照旧渲染；records 丢失不报错（详情视图落「重启后仅保留状态与结论摘要」分支）。
 10. 回归：blocking 默认行为与现状逐字节一致（同任务对比工具结果文本格式）；定时任务注入、排队插话、压缩期间注入不受影响。
+11. 支线对话：母会话流式中开支线 → 两条流并存互不打断 → 支线正常收发（默认只读档、可带附件）→ 列表缩进/徽标正确 → 重启后支线完整保留（普通持久化会话）。
+12. 带回：支线结论「带回主对话」→ 母会话空闲时唤醒新轮（app 卡片「支线结论」）；忙时下轮边界注入；母会话已删除时兜底提示不崩；用户视图不被切走、母会话出未读标记。
+13. 子代理视图插话：agentView Enter 排队 / Ctrl+Enter 插队 → 子转录出现「用户插话：」→ 对 done 子代理输入触发冷唤醒（`subId#2-1` 路由正确）→ 失败记录输入禁用并显示原因。
+14. 自动压缩：长探索任务使子代理轮边界估算超阈 → HUD「压缩中」→ 完成后上下文出现第二条 system `<conversation_summary>`（抓包/日志确认）→ 后续轮继续 → 连续 2 次后不再压缩、由 wrapUp 收尾。
+15. 手动压缩：`agent_compact` 对运行中子代理返回「已请求、下一轮边界执行」；对 done 记录立即压缩并返回前后估算与摘要预览，随后 `agent_send` 冷唤醒以精简上下文续跑；agentView「压缩」按钮同链路；error/stopped 记录拒绝。
+16. 压缩互斥：压缩中 `agent_stop`/用户停止 → 压缩取消 + 终态落账；压缩中 urgent 消息降级排队（摘要不丢）；父会话压缩与子代理压缩并行互不阻塞。
 
 ## 7. 风险与回滚
 
@@ -329,16 +484,28 @@ wait_agent:  { name: 'wait_agent',  description: '阻塞等待后台子代理结
 | 冷唤醒持有过期 session 引用（父会话已删除/归档） | 唤醒前校验 `sessionById(parentSessionId)` 与 archivedAt；失败则回「该会话已不可用」 | 不可续即拒绝，无副作用 |
 | 事件串味（records 兜底查到不该接的 id） | records 只存终态、不接事件；路由保持 subAgents 优先、命中即 return（现状） | 兜底查询只在 B 阶段需要，可整体摘除 |
 | 阶段 A 重构伤及 submitText 主路径 | 抽取为逐字搬移 + 差异最小（session 参数化）；回归清单第 10 条 | 单提交单回滚 |
+| 支线结论带回被主代理当新指令跑偏 | 带回是用户主动动作（语义等同用户指令），app 卡片 + label 标明「支线结论」 | 退化为「回填母会话草稿、不自动发送」 |
+| 母会话与支线双流并发的速率/成本 | 并发流是既有显式设计（streams 按会话隔离，`ai-panel.js:1502-1504`）；支线默认只读档降低工具开销 | 支线随时可归档/提升，无专属机制需回滚 |
+| 母会话删除后 sideOf 悬空 | 渲染兜底按普通会话；「提升为独立会话」清 sideOf | 纯元数据，无副作用 |
+| agentView 输入行与简化渲染互相干扰 | 输入行是独立 footer，不触碰消息渲染区 | 摘掉输入行即回 C4 状态 |
+| 子代理压缩事件被 handleSubEvent 静默吞掉 | 路由顺序固定：subCompacts 分支先于 subAgents 分支（payload.id 精确匹配 compact id）；单测覆盖 | 分支单点，可摘 |
+| 压缩循环（压缩后仍超阈） | 连续计数 ≥2 停止自动压缩，wrapUp 兜底（镜像 autoCompactCount 语义） | 关 config.autoCompact 即关自动路径 |
+| 阻塞模式下压缩延长父等待 | 仅轮边界触发、单次 AI 调用；wait_agent 有超时快照 | agent_compact 返回进度文案 |
+| 压缩中 steer 打断丢摘要 | 压缩中 urgent 降级排队，不置 steerKick | 压缩完成后再消费 |
+| 摘要质量差丢关键线索 | 复用 AI_COMPACT_SYSTEM_PROMPT（保留决定/事实/路径/未完成）；详情视图转录全程可看（展示与上下文分离） | done 记录可冷唤醒重派 |
 
 ## 8. 明确不做（再次强调）
 
 - 后台终端（`background_command` 作业、终端内容区标签页）不在本次改动面内；子代理 HUD 与终端 chips 的现有关系（同弹层不同 tab）维持不变。
 - 定时任务（`ai-schedule.js`）不改；它只是阶段 A 注入内核的既有消费者之一，回归覆盖即可。
 - 不把子代理会话搬进 SQLite、不做会话索引、不改 `sessionstore*`。
+- 支线对话不实时共享母会话上下文（引用/快照制，不做自动同步）；sideOf 不嵌套（不做支线的支线）。
+- 不把子代理转录物化为持久会话或塞进会话列表；agentView 输入行不引入第二套持久化。
+- 子代理压缩摘要随 `sub.session`/records 内存态保留，不落盘、不进父会话 JSONL；不给压缩加新设置项（复用 `config.autoCompact` / `autoCompactThreshold`）。
 
 ## 9. 任务清单
 
-- [ ] A1 抽 `startSessionTurn` 内核 + 回归
+- [ ] A1 抽 `startSessionTurn` 内核 + 队列所有权迁移 + 回归
 - [ ] A2 app-message 子代理 kind/前缀
 - [ ] A3 清理 subAgentQueue 死代码
 - [ ] B1 subAgentRecords + 终态保留 + 通知文案函数（含单测）
@@ -352,3 +519,11 @@ wait_agent:  { name: 'wait_agent',  description: '阻塞等待后台子代理结
 - [ ] D2 agent_send askId 回答链路
 - [ ] E1 wait_agent
 - [ ] E2 系统提示 / CHANGELOG / README / 方案状态更新
+- [ ] F1 支线会话 sideOf 元数据 + 列表呈现 + 创建入口/引用预填（含单测）
+- [ ] F2 带回主对话（deliverAgentNotice 泛化 + 唤醒/排队注入 + 兜底）
+- [ ] F3 agentView 输入行（排队/插队/冷唤醒入口/from 前缀区分）（含单测）
+- [ ] F4 提升为独立会话 + 删除兜底 + 文档与回归
+- [ ] G1 抽压缩应用内核 + 主压缩路径回归（含单测）
+- [ ] G2 subCompacts + 轮边界 auto-compact + 防循环 + HUD「压缩中」（含单测）
+- [ ] G3 agent_compact 工具 + agentView 压缩按钮 + steer/停止互斥（含单测）
+- [ ] G4 工具守则 / CHANGELOG / README
