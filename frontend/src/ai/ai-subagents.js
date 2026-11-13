@@ -758,8 +758,12 @@ export function createAISubagents(ctx) {
         notifyBackgroundActivity();
         persistSessions();
         refreshToolWrap(parentSession, toolMessage);
+        // 先挂 resolve 再启动子代理轮：runSubRound 的同步失败路径（请求抛错/轮次上限/
+        // 消息越限/索引丢失）会立刻 finalizeSubAgent，若此时 resolve 尚未挂上，主代理的
+        // await 会永远悬挂（实测：子代理失败后主代理卡死无反馈）。见 2026-11-14 修复。
+        const outcomePromise = new Promise((resolve) => { sub.resolve = resolve; });
         runSubRound(sub);
-        const outcome = await new Promise((resolve) => { sub.resolve = resolve; });
+        const outcome = await outcomePromise;
         return outcome.text;
     }
 
@@ -792,7 +796,7 @@ export function createAISubagents(ctx) {
         }
         const apiMessages = buildApiMessages(sub.session, index, s.systemPrompt);
         try {
-            const request = backend.AISendChat(s.roundId, s.profileCfg, apiMessages, subToolsForScope(sub.depth), config.retryMax);
+            const request = backend.AISendChat(s.roundId, s.profileCfg, apiMessages, subToolsForScope(sub.depth), getConfig().retryMax);
             if (request && typeof request.then === 'function') {
                 request.catch((e) => finalizeSubAgent(sub, 'error', (e && e.message) || String(e || '请求失败')));
             }

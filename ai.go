@@ -444,7 +444,6 @@ func (a *App) aiEmit(event string, payload any) {
 	if a == nil || a.ctx == nil {
 		return
 	}
-	writeAppLog("info", "AIEMIT %s", event)
 	runtime.EventsEmit(a.ctx, event, payload)
 }
 

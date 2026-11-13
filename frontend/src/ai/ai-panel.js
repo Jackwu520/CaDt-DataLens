@@ -7484,7 +7484,6 @@ export function createAIPanel(options) {
     }
 
     function handleEvent(name, payload) {
-        console.error('[HANDLE]', name, payload && payload.id);
         if (classifierJob && payload && payload.id === classifierJob.id) {
             const job = classifierJob;
             if (name === 'ai-chunk' && payload.delta) job.buffer += payload.delta;
