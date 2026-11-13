@@ -687,11 +687,7 @@ func aiStreamResponse(ctx context.Context, cancel context.CancelCauseFunc, id st
 			_ = resp.Body.Close()
 			client.CloseIdleConnections()
 			if attempt >= retryMax {
-				// 调试转储：4xx 时把完整请求体落到日志目录，定位网关校验的真实规则
-				dumpPath := filepath.Join(appLogsDir(), fmt.Sprintf("ai-last-4xx-request-%d.json", time.Now().UnixMilli()))
-				_ = os.WriteFile(dumpPath, body, 0o600)
-				writeAppLog("info", "AI 4xx 请求体转储：%s", dumpPath)
-				return errors.New(aiStatusErrorText(resp.StatusCode, body))
+				return errors.New(aiStatusErrorBodyText(resp.StatusCode, body))
 			}
 			delay := aiRetryDelay(attempt, resp.Header.Get("Retry-After"))
 			emit(aiEventRetry, aiRetryPayload{Id: id, Attempt: attempt + 1, Max: retryMax, DelayMs: int(delay.Milliseconds()), Reason: reason})
@@ -703,9 +699,26 @@ func aiStreamResponse(ctx context.Context, cancel context.CancelCauseFunc, id st
 			continue
 		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			// 非 2xx：读错误体（含网关校验详情），并把完整请求体转储到日志目录——
+			// 定位「reasoning_content 必须回传」这类载荷校验问题的真实规则。
+			errBody, _ := io.ReadAll(io.LimitReader(resp.Body, aiErrorBodyLimit))
 			defer resp.Body.Close()
 			defer client.CloseIdleConnections()
-			return errors.New(aiStatusErrorText(resp))
+			var dumpPayload map[string]any
+			var dumpErr error
+			if aiProviderOf(cfg) == aiProviderAnthropic {
+				dumpPayload, dumpErr = aiBuildAnthropicBody(cfg, messages, tools)
+			} else {
+				dumpPayload, dumpErr = aiBuildOpenAIBody(cfg, messages, tools)
+			}
+			if dumpErr == nil {
+				if bodyBytes, merr := json.Marshal(dumpPayload); merr == nil {
+					dumpPath := filepath.Join(appLogsDir(), fmt.Sprintf("ai-last-4xx-request-%d.json", time.Now().UnixMilli()))
+					_ = os.WriteFile(dumpPath, bodyBytes, 0o600)
+					writeAppLog("info", "AI 4xx 请求体转储：%s（messages=%d tools=%d）", dumpPath, len(messages), len(tools))
+				}
+			}
+			return errors.New(aiStatusErrorBodyText(resp.StatusCode, errBody))
 		}
 		contentType := strings.ToLower(resp.Header.Get("Content-Type"))
 		if contentType != "" && !strings.Contains(contentType, "text/event-stream") && !strings.Contains(contentType, "text/plain") {
@@ -1010,8 +1023,7 @@ func aiOpenAIMessages(messages []AIMessage, passReasoning bool) ([]map[string]an
 			// deepseek 系思考模型要求多轮回传 reasoning_content（缺失时网关 400：
 			// "The reasoning_content in the thinking mode must be passed back"）。
 			// 其他 OpenAI 兼容端点可能拒收未知字段，故按模型名门控。
-			// 注意：网关要求逐条携带——空串也必须写字段，缺字段即 400（2026-11-14 实测）。
-			if passReasoning {
+			if passReasoning && strings.TrimSpace(m.Thinking) != "" {
 				obj["reasoning_content"] = m.Thinking
 			}
 			out = append(out, obj)
