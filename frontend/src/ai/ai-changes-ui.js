@@ -1,0 +1,277 @@
+// ai-changes-ui.js：变更记录 UI（按钮徽标 / 弹层 / 轮尾文件改动汇总卡 / 审阅虚拟 diff）。
+// 从 ai-panel.js 拆出（docs/unfinished-plans/structure-cleanup.md 阶段 3），函数体逐字搬移。
+// 依赖（opts 常量、const Map、面板函数）均引用稳定，经 ctx 注入。
+import {aiFormatTime, aiTextOf} from './ai-constants.js';
+
+export function createAIChangesUI(ctx) {
+    const changesSummaryFold = ctx.changesSummaryFold;
+    const el = ctx.el;
+    const panel = ctx.panel;
+    const currentSession = ctx.currentSession;
+    const openPath = ctx.openPath;
+    const openVirtualDoc = ctx.openVirtualDoc;
+    const getScopeRoot = ctx.getScopeRoot;
+    const backend = ctx.backend;
+    const flash = ctx.flash;
+
+    function updateChangesUI() {
+        if (!el.changesBtn) return;
+        const session = currentSession();
+        const count = session && Array.isArray(session.changes) ? session.changes.length : 0;
+        if (el.changesCount) el.changesCount.textContent = String(count);
+        el.changesBtn.classList.toggle('hidden', count === 0);
+        el.changesBtn.title = count ? '本会话变更记录（' + count + '）' : '本会话暂无变更';
+        if (!count) hideChangesPopover();
+        else if (el.changesPop && !el.changesPop.classList.contains('hidden')) renderChangesPopover();
+    }
+
+    function renderChangesPopover() {
+        if (!el.changesPop) return;
+        const session = currentSession();
+        el.changesPop.innerHTML = '';
+        if (!session || !session.changes.length) {
+            el.changesPop.classList.add('hidden');
+            return;
+        }
+        const title = document.createElement('div');
+        title.className = 'ai-pop-title';
+        title.textContent = '变更记录（' + session.changes.length + '）';
+        el.changesPop.appendChild(title);
+        const list = document.createElement('div');
+        list.className = 'ai-pop-list';
+        for (const change of session.changes.slice().reverse()) {
+            const row = document.createElement('button');
+            row.type = 'button';
+            row.className = 'ai-change-row';
+            row.title = '打开 ' + change.path;
+            const path = document.createElement('span');
+            path.className = 'ai-change-path';
+            path.textContent = change.relPath || change.path;
+            const stat = document.createElement('span');
+            stat.className = 'ai-change-stat';
+            const add = document.createElement('span');
+            add.className = 'add';
+            add.textContent = '+' + change.added;
+            const del = document.createElement('span');
+            del.className = 'del';
+            del.textContent = '−' + change.removed;
+            stat.append(add, del);
+            const time = document.createElement('span');
+            time.className = 'ai-change-time';
+            time.textContent = aiFormatTime(change.time);
+            row.append(path, stat, time);
+            row.addEventListener('click', () => {
+                hideChangesPopover();
+                try {
+                    openPath(change.path);
+                } catch (e) {}
+            });
+            list.appendChild(row);
+        }
+        el.changesPop.appendChild(list);
+    }
+
+    function showChangesPopover() {
+        if (!el.changesPop || !el.changesBtn) return;
+        renderChangesPopover();
+        if (!currentSession() || !currentSession().changes.length) return;
+        el.changesPop.classList.remove('hidden');
+        const panelRect = panel.getBoundingClientRect();
+        const btnRect = el.changesBtn.getBoundingClientRect();
+        const width = 260;
+        let left = btnRect.right - panelRect.left - width;
+        left = Math.max(8, Math.min(left, panel.clientWidth - width - 8));
+        el.changesPop.style.left = left + 'px';
+        el.changesPop.style.top = (btnRect.bottom - panelRect.top + 6) + 'px';
+    }
+
+    function hideChangesPopover() {
+        if (el.changesPop) el.changesPop.classList.add('hidden');
+    }
+
+    // ---------- 每轮文件改动汇总卡（Qoder 风格） ----------
+
+    const AI_CHANGES_SUMMARY_VISIBLE = 3;
+
+    // 轮次结束（finishStream）时聚合本轮新增的 recordChange 记录，追加汇总卡消息。
+    // 用「轮开始时的 changes 快照」做切分，而不是比较时间戳：审批/写入耗时长、
+    // 系统时钟回拨或跨轮复用时，时间窗会把本轮记录整段过滤掉，卡片就静默消失。
+    function changesSnapshot(session) {
+        const list = Array.isArray(session && session.changes) ? session.changes : [];
+        const last = list.length ? list[list.length - 1] : null;
+        return {index: list.length, time: Number(last && last.time) || 0};
+    }
+
+    function appendChangesSummary(session, mark) {
+        if (!session) return;
+        const list = Array.isArray(session.changes) ? session.changes : [];
+        const index = Math.max(0, Math.round(Number(mark && mark.index) || 0));
+        const since = Number(mark && mark.time) || 0;
+        // 索引可用时按位置切分（最准）；记录被上限裁剪过时退回按时间切分。
+        let start = 0;
+        let useIndex = false;
+        if (index > 0 && index <= list.length) {
+            const boundary = list[index - 1];
+            // 校验边界记录没被裁剪挪位：时间对得上才认索引。
+            if (!since || (boundary && Number(boundary.time) === since)) {
+                start = index;
+                useIndex = true;
+            }
+        }
+        const merged = new Map();
+        for (let i = start; i < list.length; i++) {
+            const change = list[i];
+            if (!change) continue;
+            if (!useIndex && since && Number(change.time) <= since) continue;
+            const relPath = aiTextOf(change.relPath) || aiTextOf(change.path);
+            if (!relPath) continue;
+            const prev = merged.get(relPath) || {relPath, path: aiTextOf(change.path), added: 0, removed: 0};
+            prev.added += Math.max(0, Math.round(Number(change.added) || 0));
+            prev.removed += Math.max(0, Math.round(Number(change.removed) || 0));
+            merged.set(relPath, prev);
+        }
+        const files = [...merged.values()];
+        if (!files.length) return;
+        session.messages.push({
+            role: 'assistant',
+            kind: 'changes-summary',
+            content: '',
+            status: 'done',
+            ts: Date.now(),
+            changes: {files},
+        });
+    }
+
+    // 只返回卡片本身：外层 .ai-msg 壳由调用方提供（轮尾 / 消息渲染各一处），
+    // 避免重放时套两层 .ai-msg 导致缩进与宽度和其它消息不一致。
+    function renderChangesSummaryCard(message, session) {
+        const changes = (message.changes && Array.isArray(message.changes.files)) ? message.changes.files : [];
+        const card = document.createElement('div');
+        card.className = 'ai-changes-card';
+        const totalAdded = changes.reduce((sum, file) => sum + file.added, 0);
+        const totalRemoved = changes.reduce((sum, file) => sum + file.removed, 0);
+        const head = document.createElement('div');
+        head.className = 'ai-changes-card-head';
+        const icon = document.createElement('span');
+        icon.className = 'ai-changes-card-icon';
+        icon.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M9.5 1.5H4a.8.8 0 0 0-.8.8v11.4a.8.8 0 0 0 .8.8h8a.8.8 0 0 0 .8-.8V4.8L9.5 1.5z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M6 8.2h4M6 10.6h4M6 5.8h2" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>';
+        const title = document.createElement('span');
+        title.className = 'ai-changes-card-title';
+        title.textContent = '已编辑 ' + changes.length + ' 个文件';
+        const stat = document.createElement('span');
+        stat.className = 'ai-changes-card-stat';
+        const add = document.createElement('span');
+        add.className = 'add';
+        add.textContent = '+' + totalAdded;
+        const del = document.createElement('span');
+        del.className = 'del';
+        del.textContent = '−' + totalRemoved;
+        stat.append(add, del);
+        const reviewBtn = document.createElement('button');
+        reviewBtn.type = 'button';
+        reviewBtn.className = 'dlg-btn ai-changes-card-review';
+        reviewBtn.textContent = '审阅';
+        reviewBtn.addEventListener('click', () => reviewChangesSummary(changes));
+        head.append(icon, title, stat, reviewBtn);
+        card.appendChild(head);
+        // 超过 3 个文件默认折叠，靠「再显示 N 个文件」展开
+        // 折叠状态按会话隔离：不同会话的汇总卡可能共用同一个消息序号
+        const foldKey = 'changes:' + ((session && session.id) || '') + ':' + (message._mid || message.ts || changes.length);
+        const expanded = changesSummaryFold.has(foldKey) ? changesSummaryFold.get(foldKey) : false;
+        const list = document.createElement('div');
+        list.className = 'ai-changes-card-list';
+        const visible = expanded ? changes.length : Math.min(AI_CHANGES_SUMMARY_VISIBLE, changes.length);
+        for (const file of changes.slice(0, visible)) {
+            const row = document.createElement('button');
+            row.type = 'button';
+            row.className = 'ai-changes-card-row';
+            const name = document.createElement('span');
+            name.className = 'ai-changes-card-path';
+            name.textContent = file.relPath;
+            name.title = file.relPath;
+            const nums = document.createElement('span');
+            nums.className = 'ai-changes-card-nums';
+            const fAdd = document.createElement('span');
+            fAdd.className = 'add';
+            fAdd.textContent = '+' + file.added;
+            const fDel = document.createElement('span');
+            fDel.className = 'del';
+            fDel.textContent = '−' + file.removed;
+            nums.append(fAdd, fDel);
+            row.append(name, nums);
+            row.addEventListener('click', () => openPath(file.path || file.relPath));
+            list.appendChild(row);
+        }
+        card.appendChild(list);
+        if (changes.length > AI_CHANGES_SUMMARY_VISIBLE) {
+            const more = document.createElement('button');
+            more.type = 'button';
+            more.className = 'ai-changes-card-more';
+            more.textContent = expanded ? '收起' : '再显示 ' + (changes.length - AI_CHANGES_SUMMARY_VISIBLE) + ' 个文件';
+            more.addEventListener('click', () => {
+                const next = !expanded;
+                changesSummaryFold.set(foldKey, next);
+                const cardHost = card.parentNode;
+                const fresh = renderChangesSummaryCard(message, session);
+                if (cardHost) cardHost.replaceChild(fresh, card);
+            });
+            card.appendChild(more);
+        }
+        return card;
+    }
+
+    // 轮尾/重放共用的外壳：保证两种渲染路径的层叠与缩进完全一致。
+    function changesSummaryBlock(message, session) {
+        const wrap = document.createElement('div');
+        wrap.className = 'ai-msg assistant';
+        if (session) wrap.dataset.session = session.id;
+        wrap.appendChild(renderChangesSummaryCard(message, session));
+        return wrap;
+    }
+
+    // 「审阅」：逐文件取 Git 差异拼成一份虚拟 diff 文档；无 Git 或无差异的文件注明后打开文件
+    async function reviewChangesSummary(changes) {
+        if (!openVirtualDoc) {
+            for (const file of changes) openPath(file.path || file.relPath);
+            return;
+        }
+        const root = getScopeRoot();
+        const parts = [];
+        let anyDiff = false;
+        for (const file of changes.slice(0, 20)) {
+            const header = 'diff — ' + file.relPath + '  (+' + file.added + ' −' + file.removed + ')';
+            let body = '';
+            try {
+                const result = root && backend.GitDiffFor
+                    ? await backend.GitDiffFor(root, file.relPath)
+                    : null;
+                if (result && result.diff && String(result.diff).trim()) {
+                    body = String(result.diff).trim();
+                    anyDiff = true;
+                }
+            } catch (e) {
+                body = '（获取 Git 差异失败：' + ((e && e.message) || e) + '）';
+            }
+            if (!body) body = '（无 Git 差异：文件未被 Git 跟踪或内容与 HEAD 一致）';
+            parts.push(header, body, '');
+        }
+        if (!anyDiff) {
+            for (const file of changes) openPath(file.path || file.relPath);
+            flash('没有可对比的 Git 差异，已直接打开本轮编辑的文件');
+            return;
+        }
+        openVirtualDoc('本轮改动审阅 — ' + changes.length + ' 个文件.diff', parts.join('\n'));
+    }
+
+    return {
+        updateChangesUI,
+        renderChangesPopover,
+        showChangesPopover,
+        hideChangesPopover,
+        changesSnapshot,
+        appendChangesSummary,
+        renderChangesSummaryCard,
+        changesSummaryBlock,
+        reviewChangesSummary,
+    };
+}

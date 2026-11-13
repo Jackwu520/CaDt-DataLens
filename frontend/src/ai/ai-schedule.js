@@ -1,0 +1,350 @@
+// ai-schedule.js：定时任务域（设置页任务列表/编辑器 + sched-fire 触发执行与多窗口认领）。
+// 从 ai-panel.js 拆出（docs/unfinished-plans/structure-cleanup.md 阶段 3），函数体逐字搬移；
+// sessions 为重赋值 let 且模块内只读，经 getSessions() 访问。
+import {iconSvg} from '../icons.js';
+import {describeAISchedule, aiFormatLocalMs, aiClampInt, aiTextOf} from './ai-constants.js';
+
+export function createAISchedule(ctx) {
+    const opt = ctx.opt;
+    const el = ctx.el;
+    const backend = ctx.backend;
+    const flash = ctx.flash;
+    const askConfirm = ctx.askConfirm;
+    const openAIDialog = ctx.openAIDialog;
+    const closeAIDialog = ctx.closeAIDialog;
+    const sessionTitleById = ctx.sessionTitleById;
+    const sessionActivity = ctx.sessionActivity;
+    const currentSession = ctx.currentSession;
+    const getSessions = ctx.getSessions;
+    const open = ctx.open;
+    const newSession = ctx.newSession;
+    const persistSessions = ctx.persistSessions;
+    const renderSessionList = ctx.renderSessionList;
+    const switchSession = ctx.switchSession;
+    const streamOf = ctx.streamOf;
+    const compactOf = ctx.compactOf;
+    const sendAppMessage = ctx.sendAppMessage;
+
+    // ---- 设置 → AI → 定时任务 ----
+
+    function renderScheduleSettings() {
+        if (!opt.schedules) return;
+        if (!backend.AIScheduleList) {
+            opt.schedules.innerHTML = '';
+            const empty = document.createElement('span');
+            empty.className = 'ai-pref-empty';
+            empty.textContent = '（当前版本不支持定时任务）';
+            opt.schedules.appendChild(empty);
+            return;
+        }
+        Promise.resolve(backend.AIScheduleList()).then((list) => {
+            if (!opt.schedules) return;
+            opt.schedules.innerHTML = '';
+            if (!list || !list.length) {
+                const empty = document.createElement('span');
+                empty.className = 'ai-pref-empty';
+                empty.textContent = '（暂无任务；可让 AI 用 schedule_create 创建，或点下方「新建任务」）';
+                opt.schedules.appendChild(empty);
+                return;
+            }
+            for (const s of list) {
+                opt.schedules.appendChild(renderScheduleRow(s));
+            }
+        }).catch((e) => {
+            if (opt.schedules) opt.schedules.textContent = '加载失败：' + ((e && e.message) || e);
+        });
+    }
+
+    function renderScheduleRow(s) {
+        const row = document.createElement('div');
+        row.className = 'ai-sched-row' + (s.enabled ? '' : ' disabled');
+        const main = document.createElement('div');
+        main.className = 'ai-sched-main';
+        const name = document.createElement('span');
+        name.className = 'ai-sched-name';
+        name.textContent = s.name;
+        name.title = s.prompt;
+        const badge = document.createElement('span');
+        badge.className = 'ai-sched-badge' + (s.enabled ? ' on' : '');
+        badge.textContent = s.enabled ? '启用' : '停用';
+        const desc = document.createElement('span');
+        desc.className = 'ai-sched-desc';
+        desc.textContent = describeAISchedule(s) +
+            ' · 权限 ' + s.scope +
+            (s.sessionId ? ' · 唤醒会话「' + (sessionTitleById(s.sessionId) || s.sessionId.slice(0, 8)) + '」' : ' · 每次新建会话') +
+            (s.lastResult ? ' · 最近：' + s.lastResult : '');
+        main.append(name, badge, desc);
+        const actions = document.createElement('div');
+        actions.className = 'ai-sched-actions';
+        const toggle = document.createElement('button');
+        toggle.type = 'button';
+        toggle.className = 'ai-pref-btn';
+        toggle.title = s.enabled ? '停用' : '启用';
+        toggle.innerHTML = iconSvg(s.enabled ? 'pause' : 'play', 12);
+        toggle.addEventListener('click', () => {
+            Promise.resolve(backend.AIScheduleToggle(s.id, !s.enabled)).then(() => {
+                renderScheduleSettings();
+                flash((s.enabled ? '已停用：' : '已启用：') + s.name);
+            }).catch((e) => flash('操作失败：' + ((e && e.message) || e), true));
+        });
+        const edit = document.createElement('button');
+        edit.type = 'button';
+        edit.className = 'ai-pref-btn';
+        edit.title = '编辑';
+        edit.innerHTML = iconSvg('rename', 12);
+        edit.addEventListener('click', () => openScheduleEditor(s));
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.className = 'ai-pref-btn';
+        remove.title = '删除';
+        remove.innerHTML = iconSvg('close', 12);
+        remove.addEventListener('click', () => {
+            askConfirm('删除定时任务「' + s.name + '」？', () => {
+                Promise.resolve(backend.AIScheduleDelete(s.id)).then(() => {
+                    renderScheduleSettings();
+                    flash('已删除定时任务：' + s.name);
+                }).catch((e) => flash('删除失败：' + ((e && e.message) || e), true));
+            });
+        });
+        actions.append(toggle, edit, remove);
+        row.append(main, actions);
+        return row;
+    }
+
+    function openScheduleEditor(existing) {
+        if (!el.dialog || !backend.AIScheduleCreate) return;
+        const isEdit = !!existing;
+        const node = (tag, cls) => {
+            const n = document.createElement(tag);
+            if (cls) n.className = cls;
+            return n;
+        };
+        const row = (labelText, inputNode) => {
+            const r = node('div', 'ai-sched-field');
+            const label = node('label');
+            label.textContent = labelText;
+            r.append(label, inputNode);
+            return r;
+        };
+        const name = node('input', 'ai-settings-input');
+        name.type = 'text';
+        name.placeholder = '省略则取指令前 30 字';
+        const kind = node('select', 'ai-settings-input');
+        for (const [v, label] of [['once', '单次（once）'], ['interval', '固定间隔（interval）'], ['cron', 'cron 表达式']]) {
+            const option = node('option');
+            option.value = v;
+            option.textContent = label;
+            kind.appendChild(option);
+        }
+        const valueInput = node('input', 'ai-settings-input');
+        const valueLabel = node('label');
+        const valueRow = node('div', 'ai-sched-field');
+        valueRow.append(valueLabel, valueInput);
+        const prompt = node('textarea', 'ai-settings-input');
+        prompt.rows = 4;
+        prompt.placeholder = '到点注入给 AI 的指令，例如：检查构建进度并汇报';
+        const scope = node('select', 'ai-settings-input');
+        for (const [v, label] of [['chat', 'chat（纯对话）'], ['read', 'read（只读访问）'], ['edit', 'edit（每次询问）']]) {
+            const option = node('option');
+            option.value = v;
+            option.textContent = label;
+            scope.appendChild(option);
+        }
+        // 目标会话：默认唤醒当前会话；也可选每次新建（docs/unfinished-plans/ai-head-agents-terminal.md 同期的定时任务修正）
+        const targetSel = node('select', 'ai-settings-input');
+        const fillTargetOptions = () => {
+            targetSel.textContent = '';
+            const fresh = node('option');
+            fresh.value = '';
+            fresh.textContent = '每次新建会话';
+            targetSel.appendChild(fresh);
+            const recent = getSessions().slice()
+                .sort((a, b) => sessionActivity(b) - sessionActivity(a))
+                .slice(0, 30);
+            for (const s of recent) {
+                const opt = node('option');
+                opt.value = s.id;
+                opt.textContent = '唤醒会话：' + (s.title || '新会话') + (s.archivedAt ? '（已归档）' : '');
+                targetSel.appendChild(opt);
+            }
+        };
+        fillTargetOptions();
+        const maxRuns = node('input', 'ai-settings-input');
+        maxRuns.type = 'number';
+        maxRuns.min = '0';
+        maxRuns.placeholder = '0 = 不限';
+        const syncKind = () => {
+            const v = kind.value;
+            if (v === 'once') {
+                valueLabel.textContent = '触发时间（本地，如 2026-11-13 09:00）';
+                valueInput.placeholder = '留空则用「N 分钟后」';
+            } else if (v === 'interval') {
+                valueLabel.textContent = '循环间隔（分钟，1–525600）';
+                valueInput.placeholder = '如 10 = 每 10 分钟';
+            } else {
+                valueLabel.textContent = 'cron 表达式（分 时 日 月 周）';
+                valueInput.placeholder = '如 0 9 * * 1-5';
+            }
+        };
+        kind.addEventListener('change', syncKind);
+        syncKind();
+        if (isEdit) {
+            name.value = existing.name || '';
+            kind.value = existing.kind || 'once';
+            syncKind();
+            if (existing.kind === 'interval') valueInput.value = String(existing.intervalMinutes || '');
+            else if (existing.kind === 'cron') valueInput.value = existing.cron || '';
+            else valueInput.value = existing.at ? aiFormatLocalMs(existing.nextRunAt || existing.lastRunAt) : '';
+            prompt.value = existing.prompt || '';
+            scope.value = ['chat', 'read', 'edit'].includes(existing.scope) ? existing.scope : 'chat';
+            maxRuns.value = String(existing.maxRuns || 0);
+        }
+        // 目标会话预选：编辑 = 已绑定会话；新建 = 当前会话；不在最近 30 个列表时补选项兜底
+        const preselectId = isEdit ? (existing.sessionId || '') : (currentSession() ? currentSession().id : '');
+        if (preselectId && targetSel.value !== preselectId) {
+            const opt = node('option');
+            opt.value = preselectId;
+            opt.textContent = '唤醒会话：' + (sessionTitleById(preselectId) || preselectId.slice(0, 8));
+            targetSel.appendChild(opt);
+        }
+        if (preselectId) targetSel.value = preselectId;
+        const cancelBtn = node('button', 'dlg-btn');
+        cancelBtn.type = 'button';
+        cancelBtn.textContent = '取消';
+        cancelBtn.addEventListener('click', closeAIDialog);
+        const save = node('button', 'dlg-btn primary');
+        save.type = 'button';
+        save.textContent = isEdit ? '保存' : '创建';
+        save.addEventListener('click', () => {
+            const v = valueInput.value.trim();
+            const input = {
+                name: name.value.trim(),
+                kind: kind.value,
+                prompt: prompt.value.trim(),
+                sessionId: targetSel.value,
+                scope: scope.value,
+                maxRuns: aiClampInt(maxRuns.value, 0, 1000000, 0),
+            };
+            if (kind.value === 'once') {
+                input.at = v;
+                if (!v) {
+                    flash('请填写触发时间', true);
+                    return;
+                }
+            } else if (kind.value === 'interval') {
+                input.intervalMinutes = aiClampInt(v, 0, 525600, 0);
+                if (input.intervalMinutes <= 0) {
+                    flash('请填写循环间隔（分钟）', true);
+                    return;
+                }
+            } else {
+                input.cron = v;
+                if (!v) {
+                    flash('请填写 cron 表达式', true);
+                    return;
+                }
+            }
+            const call = isEdit
+                ? backend.AIScheduleUpdate(existing.id, input)
+                : backend.AIScheduleCreate(input);
+            Promise.resolve(call).then(() => {
+                closeAIDialog();
+                renderScheduleSettings();
+                flash((isEdit ? '已保存定时任务：' : '已创建定时任务：') + (input.name || '（未命名）'));
+            }).catch((e) => flash('保存失败：' + ((e && e.message) || e), true));
+        });
+        const body = node('div', 'ai-sched-editor');
+        body.append(
+            row('名称', name),
+            row('类型', kind),
+            valueRow,
+            row('触发指令', prompt),
+            row('目标会话', targetSel),
+            row('权限档（新建会话时生效）', scope),
+            row('最多触发次数', maxRuns),
+        );
+        if (valueLabel.parentElement !== valueRow) valueRow.insertBefore(valueLabel, valueInput);
+        openAIDialog(isEdit ? '编辑定时任务' : '新建定时任务', [body], [cancelBtn, save]);
+    }
+    // ---- 定时任务触发（sched-fire）----
+    // 多窗口去重：广播会被所有窗口收到。指定目标会话的任务只由持有该会话的窗口执行，
+    // 无人认领则 700ms 后由第一个收到的窗口报告失败；新建会话类任务优先由聚焦窗口执行，
+    // 其余窗口让路 250ms 后先到先得（localStorage 标记）。
+
+    function aiDelay(ms) {
+        return new Promise((resolve) => setTimeout(resolve, ms));
+    }
+
+    async function handleScheduleFire(fire) {
+        if (!fire || !fire.scheduleId) return;
+        const key = 'datalens-sched-fire-' + fire.scheduleId + '-' + (fire.runNo || 0);
+        const claimed = () => {
+            if (localStorage.getItem(key)) return false;
+            try {
+                localStorage.setItem(key, String(Date.now()));
+            } catch (e) {}
+            return true;
+        };
+        const prompt = aiTextOf(fire.prompt);
+        const prefix = '[定时任务 · ' + (aiTextOf(fire.name) || fire.scheduleId) + ']';
+        const target = fire.sessionId ? getSessions().find((s) => s.id === fire.sessionId) : null;
+        if (fire.sessionId && !target) {
+            // 本窗口不持有目标会话：等可能的持有窗口认领，无人认领则报告失败
+            setTimeout(() => {
+                if (localStorage.getItem(key) || !claimed()) return;
+                flash('定时任务「' + (aiTextOf(fire.name) || fire.scheduleId) + '」的目标会话不存在', true);
+                if (backend.AIScheduleSetResult) {
+                    Promise.resolve(backend.AIScheduleSetResult(fire.scheduleId, false, '目标会话不存在')).catch(() => {});
+                }
+            }, 700);
+            return;
+        }
+        if (!document.hasFocus()) {
+            await aiDelay(250);
+            if (localStorage.getItem(key)) return;
+        }
+        if (!claimed()) return;
+        await runScheduledTurn(fire, target, prefix, prompt);
+    }
+
+    async function runScheduledTurn(fire, target, prefix, prompt) {
+        const name = aiTextOf(fire.name) || fire.scheduleId;
+        try {
+            open(true);
+            let session = target;
+            if (!session) {
+                newSession();
+                session = currentSession();
+                if (!session) throw new Error('无法创建会话');
+                if (fire.scope === 'read' || fire.scope === 'edit') session.scope = fire.scope;
+            }
+            if (session.archivedAt) {
+                // 绑定会话被归档：自动取消归档再唤醒（否则 submitText 会拒绝注入）
+                session.archivedAt = 0;
+                persistSessions();
+                renderSessionList();
+                flash('定时任务目标会话已归档，已自动取消归档：' + (session.title || '新会话'));
+            }
+            if (currentSession() !== session) switchSession(session.id);
+            if (currentSession() !== session) {
+                // 软切换（目标会话属于其他工作区）不会切换：注入会落到错误的会话，明确失败
+                throw new Error('目标会话属于其他工作区，请到对应工作区的窗口处理');
+            }
+            // 窗口正在生成时延迟重试，避免打断当前轮次（最多约 30 秒）
+            for (let i = 0; i < 10 && (streamOf(session.id) || compactOf(session.id)); i++) await aiDelay(3000);
+            if (streamOf(session.id) || compactOf(session.id)) throw new Error('当前会话正在生成，未能注入');
+            const sent = await sendAppMessage({kind: 'schedule', label: '定时任务 · ' + name, content: prefix + '\n' + prompt});
+            if (!sent) throw new Error('消息未能发送（无可用配置或面板正忙）');
+            flash('定时任务「' + name + '」已触发（第 ' + (fire.runNo || 1) + ' 次）');
+            if (backend.AIScheduleSetResult) {
+                Promise.resolve(backend.AIScheduleSetResult(fire.scheduleId, true, '第 ' + (fire.runNo || 1) + ' 次触发已注入会话')).catch(() => {});
+            }
+        } catch (e) {
+            flash('定时任务「' + name + '」触发失败：' + ((e && e.message) || e), true);
+            if (backend.AIScheduleSetResult) {
+                Promise.resolve(backend.AIScheduleSetResult(fire.scheduleId, false, String((e && e.message) || e))).catch(() => {});
+            }
+        }
+    }
+    return {renderScheduleSettings, renderScheduleRow, openScheduleEditor, aiDelay, handleScheduleFire, runScheduledTurn};
+}
