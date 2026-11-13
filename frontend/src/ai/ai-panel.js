@@ -10781,10 +10781,6 @@ export function createAIPanel(options) {
         return actions;
     }
 
-    init();
-    whenConfigReady();
-    whenSessionsReady();
-
     // 子代理域（阶段 3 拆出：ai-subagents.js；hudReady/chipsPopKind 经访问器，注册表经 ctx 注入）
     const subagentsMod = createAISubagents({
         el,
@@ -10862,9 +10858,8 @@ export function createAIPanel(options) {
     const handleSubEvent = (...args) => subagentsMod.handleSubEvent(...args);
     const finalizeSubAgent = (...args) => subagentsMod.finalizeSubAgent(...args);
     const stopSubAgentsOf = (...args) => subagentsMod.stopSubAgentsOf(...args);
-    subagentsMod.initHud();
 
-    // 工具卡 / 审批卡渲染（阶段 3 拆出：ai-tool-cards.js；构造置于 return 前以避开 subAgentTranscripts 的 TDZ）
+    // 工具卡 / 审批卡渲染（阶段 3 拆出：ai-tool-cards.js；构造置于 init 之前（init 的渲染路径会触达工具卡与 HUD 别名））
     const toolCardsMod = createAIToolCards({
         copyText,
         flash,
@@ -10908,6 +10903,13 @@ export function createAIPanel(options) {
     // toolMeta / acceptPlan：随工具卡提取段带入的相邻函数（接管区审批卡与计划批准在用）
     const toolMeta = (...args) => toolCardsMod.toolMeta(...args);
     const acceptPlan = (...args) => toolCardsMod.acceptPlan(...args);
+
+    init();
+    whenConfigReady();
+    whenSessionsReady();
+    subagentsMod.initHud();
+
+
 
     return {
         toggle,
