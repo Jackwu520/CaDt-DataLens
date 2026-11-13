@@ -1,0 +1,446 @@
+// editor-ace-hooks.js：从 editor-groups.js 拆出的域模块（factory + 显式依赖注入）。
+// Ace 会话钩子：模式切换（applyAceMode）、折叠行内预览（JetBrains 式）、
+// 多光标、光标位置联动、python token 染色。
+//
+// deps 与 editor-groups 共用同一对象（main.js 传入的 getter 集），延迟求值。
+import hljs from 'highlight.js/lib/common';
+import {aceModeFor} from './formats.js';
+
+export function createEditorAceHooks(deps) {
+
+function applyAceMode(force) {
+    if (!force && (deps.currentMode !== 'code' && deps.currentMode !== 'binary')) return;
+    if (!deps.editor || !deps.editor.aceEditor) return;
+    const want = aceModeFor(deps.file && deps.file.name, deps.file && deps.file.format);
+    try {
+        if (deps.editor.aceEditor.session.getMode().$id !== want) {
+            deps.editor.aceEditor.session.setMode(want);
+        }
+        const container = deps.editor.aceEditor.container;
+        for (const cls of Array.from(container.classList)) {
+            if (cls.startsWith('ace-mode-')) container.classList.remove(cls);
+        }
+        container.classList.add('ace-mode-' + want.split('/').pop());
+        const pureJson = !!(deps.file && deps.file.format && deps.file.format.id === 'json' && /\.json$/i.test(deps.file.name || ''));
+        deps.editor.aceEditor.session.setUseWorker(pureJson);
+        // 关闭 worker 后旧 JSON 校验注解不会自动消失（切到 Markdown 等模式仍留红叉）
+        if (!pureJson) {
+            try { deps.editor.aceEditor.session.clearAnnotations(); } catch (e) {}
+        }
+        deps.editor.aceEditor.setReadOnly(!!(deps.file && (deps.file.large || deps.file.binary)) || !!deps.settings.readOnlyMode);
+        deps.editor.aceEditor.setFontSize(deps.settings.editorFont);
+        deps.editor.aceEditor.session.setUseWrapMode(!!deps.settings.codeWrap);
+        if (deps.file && deps.file.format) {
+            const fs = deps.getFormatSettings(deps.file.format.id);
+            const tab = fs.indent === 'tab';
+            deps.editor.aceEditor.session.setUseSoftTabs(!tab);
+            deps.editor.aceEditor.session.setTabSize(tab ? 4 : Number(fs.indent));
+        }
+        deps.editor.aceEditor.setDisplayIndentGuides(!!deps.settings.codeGuides);
+        deps.editor.aceEditor.setHighlightIndentGuides(!!deps.settings.codeGuides);
+        hookCodeFoldPreviews(deps.editor.aceEditor);
+        hookMultiCursor(deps.editor.aceEditor);
+        hookPythonTokenClasses(deps.editor.aceEditor);
+        hookCursorTracking(deps.editor.aceEditor);
+        updateCodeFoldPreviews(deps.editor.aceEditor);
+    } catch (e) {
+        console.warn('ace mode switch failed', e);
+    }
+}
+
+const codeFoldLanguages = {
+    json: 'json', json5: 'json', jsonl: 'json',
+    yaml: 'yaml', xml: 'xml', html: 'xml', css: 'css',
+    javascript: 'javascript', typescript: 'typescript',
+    markdown: 'markdown', python: 'python', sh: 'bash', bash: 'bash',
+    batchfile: 'dos', powershell: 'powershell', golang: 'go', go: 'go',
+    java: 'java', kotlin: 'kotlin', lua: 'lua', sql: 'sql',
+    toml: 'ini', ini: 'ini', properties: 'ini', text: 'plaintext',
+};
+
+let codeFoldHoverEl = null;
+let codeFoldHoverGutter = null;
+let codeFoldHoverCode = null;
+let codeFoldHoverShowTimer = 0;
+let codeFoldHoverHideTimer = 0;
+let codeFoldHoverTarget = null;
+
+function ensureCodeFoldHover() {
+    if (codeFoldHoverEl) return codeFoldHoverEl;
+    codeFoldHoverEl = document.createElement('div');
+    codeFoldHoverEl.id = 'code-fold-hover';
+    codeFoldHoverEl.className = 'hidden';
+    codeFoldHoverGutter = document.createElement('pre');
+    codeFoldHoverGutter.className = 'code-fold-gutter';
+    codeFoldHoverCode = document.createElement('pre');
+    codeFoldHoverCode.className = 'code-fold-code';
+    codeFoldHoverEl.append(codeFoldHoverGutter, codeFoldHoverCode);
+    codeFoldHoverEl.addEventListener('mouseenter', () => {
+        clearTimeout(codeFoldHoverHideTimer);
+    });
+    codeFoldHoverEl.addEventListener('mouseleave', () => {
+        codeFoldHoverHideTimer = setTimeout(hideCodeFoldHover, 120);
+    });
+    document.body.appendChild(codeFoldHoverEl);
+    return codeFoldHoverEl;
+}
+
+function hideCodeFoldHover() {
+    clearTimeout(codeFoldHoverShowTimer);
+    clearTimeout(codeFoldHoverHideTimer);
+    codeFoldHoverTarget = null;
+    if (codeFoldHoverEl) codeFoldHoverEl.classList.add('hidden');
+}
+
+function codeFoldLineFromEvent(e) {
+    const target = e.target;
+    if (!target || !target.closest) return null;
+    const line = target.closest('.ace_line');
+    if (!line || !line.querySelector('.ace_fold')) return null;
+    const ace = deps.editor && deps.editor.aceEditor;
+    if (!ace || !ace.container.contains(line)) return null;
+    return line;
+}
+
+function codeFoldForLine(lineEl) {
+    const ace = deps.editor && deps.editor.aceEditor;
+    if (!ace || !lineEl || !ace.container.contains(lineEl)) return null;
+    let row = null;
+    try {
+        const rect = lineEl.getBoundingClientRect();
+        const position = ace.renderer.screenToTextCoordinates(rect.left + 1, rect.top + rect.height / 2);
+        row = position.row;
+    } catch (e) {
+        return null;
+    }
+    const folds = ace.session.getAllFolds();
+    const starts = folds.filter((fold) => fold.range && fold.range.start && fold.range.start.row === row);
+    if (starts.length) {
+        starts.sort((left, right) => right.range.end.row - left.range.end.row);
+        return {ace, fold: starts[0]};
+    }
+    const containing = folds.find((fold) => fold.range && row >= fold.range.start.row && row <= fold.range.end.row);
+    return containing ? {ace, fold: containing} : null;
+}
+
+function codeFoldLanguage(session) {
+    const id = session && session.getMode ? String(session.getMode().$id || '').split('/').pop() : '';
+    return codeFoldLanguages[id] || 'plaintext';
+}
+
+function clipCodeFoldPreview(text, max) {
+    const compact = String(text || '').replace(/\s+/g, ' ').trim();
+    return compact.length > max ? compact.slice(0, max) : compact;
+}
+
+function codeFoldDisplayWidth(text) {
+    let width = 0;
+    for (const ch of String(text)) {
+        width += /[\u1100-\u115F\u2E80-\uA4CF\uAC00-\uD7A3\uF900-\uFAFF\uFE30-\uFE4F\uFF00-\uFF60\uFFE0-\uFFE6]/.test(ch) ? 2 : 1;
+    }
+    return width;
+}
+
+function clipCodeFoldText(text, maxWidth) {
+    const raw = String(text == null ? '' : text);
+    if (codeFoldDisplayWidth(raw) <= maxWidth) return raw;
+    let out = '';
+    let width = 0;
+    for (const ch of raw) {
+        const chWidth = codeFoldDisplayWidth(ch);
+        if (width + chWidth > maxWidth) break;
+        out += ch;
+        width += chWidth;
+    }
+    return out + (raw.startsWith('"') ? '"' : '');
+}
+
+function codeFoldPreviewFor(ace, fold) {
+    // JetBrains 风格：折叠后把块内容压成一行内联显示，括号保留在外面
+    const inner = (ace.session.getTextRange(fold.range) || '').trim();
+    if (!inner) return '';
+    const flat = inner.replace(/\s+/g, ' ');
+    const clipped = clipCodeFoldText(flat, 120);
+    return clipped === flat ? flat : clipped + ' …';
+}
+
+function updateCodeFoldPreviews(ace) {
+    if (!ace || !ace.session || !ace.session.getAllFolds) return;
+    const folds = ace.session.getAllFolds();
+    if (!folds.length) return;
+    let changed = false;
+    for (const fold of folds) {
+        let preview = '';
+        try {
+            preview = codeFoldPreviewFor(ace, fold);
+        } catch (e) {
+            continue;
+        }
+        if (fold.placeholder !== preview) {
+            fold.placeholder = preview;
+            changed = true;
+        }
+    }
+    if (changed) {
+        try {
+            ace.renderer.updateFull(true);
+        } catch (e) {
+            ace.renderer.updateFull();
+        }
+    }
+}
+
+function hookCodeFoldPreviews(ace) {
+    if (!ace || ace._foldPreviewHooked) return;
+    ace._foldPreviewHooked = true;
+    const schedule = () => {
+        clearTimeout(ace._foldPreviewTimer);
+        ace._foldPreviewTimer = setTimeout(() => {
+            ace._foldPreviewTimer = 0;
+            updateCodeFoldPreviews(ace);
+        }, 40);
+    };
+    ace.session.on('changeFold', () => updateCodeFoldPreviews(ace));
+    ace.session.on('change', schedule);
+}
+
+// 多光标：Alt+单击添加光标；中键拖动建立列光标/矩形选区；普通单击回到单光标
+function hookMultiCursor(ace) {
+    if (!ace || ace._multiCursorHooked || !ace.container) return;
+    ace._multiCursorHooked = true;
+    try { ace.setOption('enableMultiselect', true); } catch (e) {}
+
+    const pointAt = (e) => {
+        try { return ace.renderer.screenToTextCoordinates(e.clientX, e.clientY); } catch (err) { return null; }
+    };
+    const rangeFor = (start, end) => {
+        const range = ace.selection.getRange().clone();
+        range.start = {row: start.row, column: start.column};
+        range.end = {row: end.row, column: end.column};
+        range.cursor = range.end;
+        return range;
+    };
+    const refresh = () => {
+        ace.renderer.updateCursor();
+        ace.renderer.updateBackMarkers();
+    };
+    const applyRanges = (ranges) => {
+        if (!ranges || !ranges.length) return;
+        ace.selection.toSingleRange(ranges[0]);
+        for (let i = 1; i < ranges.length; i++) ace.selection.addRange(ranges[i], true);
+        refresh();
+    };
+
+    let drag = null;
+    const onDragMove = (e) => {
+        if (!drag) return;
+        e.preventDefault();
+        const end = pointAt(e);
+        if (!end) return;
+        const from = ace.session.documentToScreenPosition(drag.start);
+        const to = ace.session.documentToScreenPosition(end);
+        let ranges = [];
+        try { ranges = ace.selection.rectangularRangeBlock(from, to) || []; } catch (err) {}
+        applyRanges(ranges);
+        ace.renderer.scrollCursorIntoView(end, 0.15);
+    };
+    const onDragEnd = (e) => {
+        if (!drag) return;
+        drag = null;
+        e.preventDefault();
+        e.stopPropagation();
+        window.removeEventListener('mousemove', onDragMove, true);
+        window.removeEventListener('mouseup', onDragEnd, true);
+    };
+
+    ace.container.addEventListener('mousedown', (e) => {
+        if (e.target.closest && e.target.closest('.ace_gutter')) return;
+        const altAdd = e.button === 0 && e.altKey && !e.ctrlKey && !e.shiftKey && !e.metaKey;
+        const middle = e.button === 1;
+        if (!altAdd && !middle) return;
+        const pos = pointAt(e);
+        if (!pos) return;
+        e.preventDefault();
+        e.stopPropagation();
+        ace.focus();
+        if (altAdd) {
+            ace.selection.addRange(rangeFor(pos, pos));
+            refresh();
+            return;
+        }
+        ace.selection.toSingleRange(rangeFor(pos, pos));
+        drag = {start: pos};
+        refresh();
+        window.addEventListener('mousemove', onDragMove, true);
+        window.addEventListener('mouseup', onDragEnd, true);
+    }, true);
+    ace.container.addEventListener('auxclick', (e) => {
+        if (e.button === 1) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+    }, true);
+}
+
+function hookCursorTracking(ace) {
+    if (!ace || ace._cursorTracked) return;
+    ace._cursorTracked = true;
+    const update = () => {
+        if (deps.file && deps.currentMode === 'code' && deps.file.editor && deps.file.editor.aceEditor === ace) {
+            deps.updateCursorPosition();
+            if (deps.structurePanel) deps.structurePanel.setCursor(ace.getCursorPosition().row + 1);
+        }
+    };
+    try {
+        ace.selection.on('changeCursor', update);
+        ace.on('focus', update);
+    } catch (e) {}
+}
+
+function applyPythonTokenClasses(ace) {
+    if (!ace || !ace.container || !ace.container.classList.contains('ace-mode-python')) return;
+    const layer = ace.container.querySelector('.ace_text-layer');
+    if (!layer) return;
+    for (const el of layer.querySelectorAll('.py-kwarg, .py-builtin, .py-doc')) el.classList.remove('py-kwarg', 'py-builtin', 'py-doc');
+    for (const line of layer.querySelectorAll('.ace_line')) {
+        const spans = [...line.children];
+        let depth = 0;
+        let isDefinition = false;
+        for (const span of spans) {
+            if (span.classList.contains('ace_keyword') && /^(def|class)$/.test(span.textContent || '')) isDefinition = true;
+        }
+        if (isDefinition) continue;
+        // 双下划线预定义名（__name__/__file__…）→ 内置名紫色（PyCharm PY.BUILTIN_NAME）
+        for (const span of spans) {
+            if (span.classList.contains('ace_identifier') && /^__\w+__$/.test((span.textContent || '').trim())) {
+                span.classList.add('py-builtin');
+            }
+        }
+        // 整行都是字符串 → 三引号 docstring（PyCharm 文档字符串：弱绿斜体）
+        const nonEmpty = spans.filter((sp) => (sp.textContent || '').trim());
+        if (nonEmpty.length && nonEmpty.every((sp) => sp.classList.contains('ace_string'))) {
+            for (const sp of nonEmpty) sp.classList.add('py-doc');
+        }
+        for (let i = 0; i < spans.length; i++) {
+            const span = spans[i];
+            const text = span.textContent || '';
+            for (const ch of text) {
+                if (ch === '(') depth++;
+                else if (ch === ')') depth = Math.max(0, depth - 1);
+            }
+            if (depth <= 0 || !span.classList.contains('ace_identifier')) continue;
+            const next = spans[i + 1];
+            if (next && next.classList.contains('ace_keyword') && next.classList.contains('ace_operator') && next.textContent === '=') {
+                span.classList.add('py-kwarg');
+            }
+        }
+    }
+}
+
+function hookPythonTokenClasses(ace) {
+    if (!ace || ace._pythonTokenHooked) return;
+    const layer = ace.container && ace.container.querySelector('.ace_text-layer');
+    if (!layer) return;
+    ace._pythonTokenHooked = true;
+    let timer = 0;
+    const schedule = () => {
+        clearTimeout(timer);
+        timer = setTimeout(() => {
+            timer = 0;
+            applyPythonTokenClasses(ace);
+        }, 30);
+    };
+    new MutationObserver(schedule).observe(layer, {childList: true, subtree: true});
+    try {
+        ace.renderer.on('afterRender', schedule);
+    } catch (e) {}
+    schedule();
+}
+
+function showCodeFoldHover(lineEl) {
+    const found = codeFoldForLine(lineEl);
+    if (!found) return;
+    const {ace, fold} = found;
+    const start = fold.range.start.row;
+    const end = fold.range.end.row;
+    let lines = ace.session.getLines(start, end);
+    const truncated = lines.length > 200;
+    if (truncated) lines = lines.slice(0, 200);
+    let text = lines.join('\n');
+    if (truncated) text += '\n…';
+    const gutterText = Array.from({length: lines.length}, (_, index) => String(start + 1 + index)).join('\n');
+    ensureCodeFoldHover();
+    codeFoldHoverGutter.textContent = gutterText;
+    const language = codeFoldLanguage(ace.session);
+    let highlighted = '';
+    try {
+        if (hljs.getLanguage(language)) highlighted = hljs.highlight(text, {language}).value;
+    } catch (e) {}
+    if (highlighted) codeFoldHoverCode.innerHTML = highlighted;
+    else codeFoldHoverCode.textContent = text;
+    codeFoldHoverEl.scrollTop = 0;
+    codeFoldHoverEl.scrollLeft = 0;
+    codeFoldHoverEl.style.visibility = 'hidden';
+    codeFoldHoverEl.style.left = '0px';
+    codeFoldHoverEl.style.top = '0px';
+    codeFoldHoverEl.classList.remove('hidden');
+    const width = codeFoldHoverEl.offsetWidth;
+    const height = codeFoldHoverEl.offsetHeight;
+    const rect = lineEl.getBoundingClientRect();
+    const margin = 8;
+    let left = Math.min(rect.left, window.innerWidth - width - margin);
+    left = Math.max(margin, left);
+    let top = rect.bottom + 4;
+    if (top + height > window.innerHeight - margin) top = rect.top - height - 4;
+    top = Math.max(margin, top);
+    codeFoldHoverEl.style.left = left + 'px';
+    codeFoldHoverEl.style.top = top + 'px';
+    codeFoldHoverEl.style.visibility = '';
+    codeFoldHoverTarget = lineEl;
+}
+
+function initCodeFoldHover() {
+    if (!deps.els.editor) return;
+    ensureCodeFoldHover();
+    deps.els.editor.addEventListener('mouseover', (e) => {
+        const line = codeFoldLineFromEvent(e);
+        if (!line || line === codeFoldHoverTarget) return;
+        if (!codeFoldForLine(line)) return;
+        codeFoldHoverTarget = line;
+        clearTimeout(codeFoldHoverShowTimer);
+        clearTimeout(codeFoldHoverHideTimer);
+        if (codeFoldHoverEl) codeFoldHoverEl.classList.add('hidden');
+        codeFoldHoverShowTimer = setTimeout(() => showCodeFoldHover(line), 280);
+    });
+    deps.els.editor.addEventListener('mouseout', (e) => {
+        const line = codeFoldLineFromEvent(e);
+        const related = e.relatedTarget;
+        if (related && ((line && line.contains(related)) || (codeFoldHoverEl && codeFoldHoverEl.contains(related)))) return;
+        if (!codeFoldHoverTarget) return;
+        if (line && line !== codeFoldHoverTarget) return;
+        clearTimeout(codeFoldHoverShowTimer);
+        codeFoldHoverHideTimer = setTimeout(hideCodeFoldHover, 140);
+    });
+    document.addEventListener('pointerdown', (e) => {
+        if (codeFoldHoverEl && e.target && codeFoldHoverEl.contains(e.target)) return;
+        hideCodeFoldHover();
+    }, true);
+    window.addEventListener('scroll', (e) => {
+        if (codeFoldHoverEl && e.target && codeFoldHoverEl.contains(e.target)) return;
+        hideCodeFoldHover();
+    }, true);
+    window.addEventListener('resize', hideCodeFoldHover);
+    window.addEventListener('blur', hideCodeFoldHover);
+}
+
+    return {
+        applyAceMode,
+        hookCodeFoldPreviews,
+        hookMultiCursor,
+        hookCursorTracking,
+        hookPythonTokenClasses,
+        updateCodeFoldPreviews,
+        initCodeFoldHover,
+        hideCodeFoldHover,
+    };
+}
