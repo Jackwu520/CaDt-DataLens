@@ -588,6 +588,17 @@
                             </div>
                         </div>
                         <div class="fmt-hint hint-indent">系统提示词与逐项注入开关已移至左侧「上下文注入」页。</div>
+                        <div class="settings-section-title">新会话</div>
+                        <div class="popover-row">
+                            <span class="popover-label">默认读写权限</span>
+                            <select id="ai-opt-default-scope" class="opt-select">
+                                <option value="read">只读访问</option>
+                                <option value="edit">每次询问</option>
+                                <option value="auto">自动审批</option>
+                                <option value="full">完全权限</option>
+                            </select>
+                        </div>
+                        <div class="fmt-hint hint-indent">仅对新建会话生效；已有会话保持各自的权限档，可随时在输入框下方切换。</div>
                         <div class="settings-section-title">写操作审批</div>
                         <div class="fmt-hint hint-indent">「总是允许此文件」的授权清单；移除后恢复逐次审批。</div>
                         <div class="popover-row">

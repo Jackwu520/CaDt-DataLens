@@ -8,6 +8,7 @@ import {
     evaluatePermissionRules,
     formatRuleLines,
     matchPermissionRule,
+    normalizeDefaultScope,
     normalizePermissionRules,
     parseRuleLines,
     resolveClassifierProfileId,
@@ -151,4 +152,23 @@ test('classifierModelOptionLabel：与模型菜单一致的「model · 配置名
     assert.equal(classifierModelOptionLabel({id: 'p3', name: 'claude', model: 'claude'}), 'claude', '同名时只显示一次');
     assert.equal(classifierModelOptionLabel(null), '');
     assert.equal(classifierModelOptionLabel({}), '');
+});
+
+test('normalizeDefaultScope：非法 / 缺省回退只读访问，合法档位原样保留', () => {
+    const cases = [
+        ['read', 'read'],
+        ['edit', 'edit'],
+        ['auto', 'auto'],
+        ['full', 'full'],
+        [' full ', 'full'],
+        ['', 'read'],
+        [null, 'read'],
+        [undefined, 'read'],
+        [42, 'read'],
+        ['chat', 'read'],
+        ['write', 'read'],
+    ];
+    for (const [raw, want] of cases) {
+        assert.equal(normalizeDefaultScope(raw), want, 'input=' + String(raw));
+    }
 });

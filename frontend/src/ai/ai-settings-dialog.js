@@ -12,7 +12,7 @@ import {
 } from './ai-config-model.js';
 import {
     PERMISSION_VERSION, countPermissionRules, emptyPermissionRules, formatRuleLines,
-    normalizePermissionRules, parseRuleLines, webRuleSubject, writeRuleSubject,
+    normalizeDefaultScope, normalizePermissionRules, parseRuleLines, webRuleSubject, writeRuleSubject,
 } from './ai-permissions.js';
 import {matchCommandRule, commandFamilySignature, commandText} from './ai-command-rules.js';
 
@@ -776,6 +776,7 @@ export function createAISettingsDialog(ctx) {
         if (opt.assistantCard) opt.assistantCard.checked = settings.aiAssistantCard === true;
         if (opt.inlineWidgets) opt.inlineWidgets.checked = settings.aiInlineWidgets !== false;
         if (opt.autoTitle) opt.autoTitle.checked = getConfig().autoTitle !== false;
+        if (opt.defaultScope) opt.defaultScope.value = normalizeDefaultScope(getConfig().defaultScope);
         if (opt.logEnabled) opt.logEnabled.checked = getConfig().logEnabled !== false;
         if (opt.appControl) opt.appControl.checked = appControlOn();
         if (opt.notifyInApp) opt.notifyInApp.checked = getConfig().notifyInApp === true;
@@ -1156,6 +1157,7 @@ export function createAISettingsDialog(ctx) {
                 createdAt: pref.createdAt,
             })),
             memoryMode: getConfig().memoryMode,
+            defaultScope: getConfig().defaultScope,
             approvedPaths: getConfig().approvedPaths,
             disabledSkills: getConfig().disabledSkills,
             autoCompactThreshold: getConfig().autoCompactThreshold,
@@ -1256,6 +1258,7 @@ export function createAISettingsDialog(ctx) {
                 });
             }
             if (data.memoryMode === 'app' || data.memoryMode === 'workspace') getConfig().memoryMode = data.memoryMode;
+            getConfig().defaultScope = normalizeDefaultScope(data.defaultScope);
             if (Number.isFinite(Number(data.autoCompactThreshold))) {
                 getConfig().autoCompactThreshold = aiClamp(Number(data.autoCompactThreshold), 0.5, 0.95);
             }
@@ -1555,6 +1558,13 @@ export function createAISettingsDialog(ctx) {
             saveAIConfig();
             setSettingsStatus(getConfig().logEnabled ? '已开启自动对话日志' : '已关闭自动对话日志', 'ok');
             if (getConfig().logEnabled) queueLogSave(currentSession());
+        });
+        if (opt.defaultScope) opt.defaultScope.addEventListener('change', () => {
+            getConfig().defaultScope = normalizeDefaultScope(opt.defaultScope.value);
+            opt.defaultScope.value = getConfig().defaultScope;
+            saveAIConfig();
+            const labels = {read: '只读访问', edit: '每次询问', auto: '自动审批', full: '完全权限'};
+            setSettingsStatus('新会话默认权限档：' + (labels[getConfig().defaultScope] || getConfig().defaultScope), 'ok');
         });
         const bindNotifyToggle = (node, key, label) => {
             if (!node) return;

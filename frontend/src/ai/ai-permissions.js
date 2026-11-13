@@ -2,6 +2,7 @@
 // 规则文件：<工作区>/.cadt/permissions.json，结构
 //   {version:1, command:{allow:[],ask:[],deny:[]}, write:{...}, web:{...}}
 // 设置页用行语法编辑：一行一条 Bash(...) / Write(...) / Web(...)，空行与 # 注释忽略。
+import {AI_SCOPES} from './ai-constants.js';
 
 export const PERMISSION_VERSION = 1;
 export const PERMISSION_KINDS = ['command', 'write', 'web'];
@@ -254,4 +255,13 @@ export function decidePermission(input) {
         if (classifierEnabled) return {decision: 'classify', source: 'classifier'};
     }
     return {decision: 'ask', source: 'scope'};
+}
+
+// ---------- 新会话默认权限档 ----------
+
+// 新会话默认权限档（设置 → AI）：只接受现有权限档集合内的值，
+// 非法 / 缺省回退 'read'（只读访问，历史默认行为）。
+export function normalizeDefaultScope(raw) {
+    const value = String(raw == null ? '' : raw).trim();
+    return AI_SCOPES.includes(value) ? value : 'read';
 }
