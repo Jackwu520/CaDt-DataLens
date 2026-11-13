@@ -687,7 +687,11 @@ func aiStreamResponse(ctx context.Context, cancel context.CancelCauseFunc, id st
 			_ = resp.Body.Close()
 			client.CloseIdleConnections()
 			if attempt >= retryMax {
-				return errors.New(aiStatusErrorBodyText(resp.StatusCode, body))
+				// 调试转储：4xx 时把完整请求体落到日志目录，定位网关校验的真实规则
+				dumpPath := filepath.Join(appLogsDir(), fmt.Sprintf("ai-last-4xx-request-%d.json", time.Now().UnixMilli()))
+				_ = os.WriteFile(dumpPath, body, 0o600)
+				writeAppLog("info", "AI 4xx 请求体转储：%s", dumpPath)
+				return errors.New(aiStatusErrorText(resp.StatusCode, body))
 			}
 			delay := aiRetryDelay(attempt, resp.Header.Get("Retry-After"))
 			emit(aiEventRetry, aiRetryPayload{Id: id, Attempt: attempt + 1, Max: retryMax, DelayMs: int(delay.Milliseconds()), Reason: reason})
@@ -1006,7 +1010,8 @@ func aiOpenAIMessages(messages []AIMessage, passReasoning bool) ([]map[string]an
 			// deepseek 系思考模型要求多轮回传 reasoning_content（缺失时网关 400：
 			// "The reasoning_content in the thinking mode must be passed back"）。
 			// 其他 OpenAI 兼容端点可能拒收未知字段，故按模型名门控。
-			if passReasoning && strings.TrimSpace(m.Thinking) != "" {
+			// 注意：网关要求逐条携带——空串也必须写字段，缺字段即 400（2026-11-14 实测）。
+			if passReasoning {
 				obj["reasoning_content"] = m.Thinking
 			}
 			out = append(out, obj)
