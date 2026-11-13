@@ -1909,6 +1909,7 @@ export function createAIPanel(options) {
     const refreshChatSettings = (...args) => settingsMod.refreshChatSettings(...args);
     const refreshMemoryPath = (...args) => settingsMod.refreshMemoryPath(...args);
     const providerLabelFor = (...args) => settingsMod.providerLabelFor(...args);
+    const commandApprovalRules = settingsMod.commandApprovalRules;
 
 
     // 定时任务域（阶段 3 拆出：ai-schedule.js；sessions 模块内只读，经 getSessions 访问）

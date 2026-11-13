@@ -1917,5 +1917,6 @@ export function createAISettingsDialog(ctx) {
         refreshChatSettings,
         refreshMemoryPath,
         providerLabelFor,
+        commandApprovalRules,
     };
 }
