@@ -37,8 +37,8 @@ function renderMarkdownPreview(doc, opts = {}) {
     if (!doc || !doc.editor || !doc.previewBody) return;
     const scrollTop = doc.previewScroll ? doc.previewScroll.scrollTop : 0;
     try {
-        const patched = !!(opts.incremental && patchMarkdownPreview(doc));
-        if (!patched) doc.previewBody.innerHTML = renderMarkdownBlocksHtml(doc.editor.getText());
+        const patched = !!(opts.incremental && deps.patchMarkdownPreview(doc));
+        if (!patched) doc.previewBody.innerHTML = deps.renderMarkdownBlocksHtml(doc.editor.getText());
         deps.resolveMarkdownImages(doc);
     } catch (e) {
         doc.previewBody.textContent = 'Markdown 渲染失败：' + e.message;
