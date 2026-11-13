@@ -1819,7 +1819,8 @@ export function createAIPanel(options) {
         renderMessages,
         renderModelChip,
         sessionById,
-        sessionHasLiveBgJob,
+        // 惰性转发：sessionHasLiveBgJob 别名随子代理域构造于本模块之后
+        sessionHasLiveBgJob: (...args) => sessionHasLiveBgJob(...args),
         switchSession,
         updateHeadHud: (...args) => updateHeadHud(...args),
         toggleSessionPin,
@@ -9836,7 +9837,8 @@ export function createAIPanel(options) {
         el,
         slashState,
         positionOverlays,
-        resizeInput,
+        // 惰性转发：两别名随输入区域构造于本模块之后
+        resizeInput: (...args) => resizeInput(...args),
         updateSendState,
         contextSummaryText,
         startCompact,
@@ -9846,7 +9848,7 @@ export function createAIPanel(options) {
         exportSession,
         showMemoryDialog,
         openSettings,
-        attachSkillByName,
+        attachSkillByName: (...args) => attachSkillByName(...args),
         showSkillsDialog,
         handlePlanCommand,
         runInitAgentsMd,
