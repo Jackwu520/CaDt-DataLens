@@ -74,6 +74,12 @@ import {
     AI_TODO_LIMIT,
     AI_PREF_LIMIT,
     AI_PREF_TEXT_LIMIT,
+    AI_SESSION_HISTORY_SNIPPET,
+    AI_SESSION_HISTORY_OUTPUT,
+    AI_SESSION_HISTORY_SCAN_MAX,
+    AI_REMINDER_LIMIT,
+    AI_REMINDER_TITLE_MAX,
+    AI_REMINDER_DETAIL_MAX,
     AI_INJECT_OPTION_MAP,
     AI_IMAGE_LIMIT,
     AI_IMAGE_MAX_INPUT_BYTES,
@@ -5560,6 +5566,90 @@ export function createAIPanel(options) {
         return lines.join('\n');
     }
 
+    // ---------- session_history：查询本会话原始历史（上下文压缩后找回早期内容） ----------
+
+    // sessionHistoryMessageText 拼一条消息的可搜索文本：正文优先；无正文时退回工具名与参数摘要。
+    function sessionHistoryMessageText(message) {
+        const content = aiTextOf(message && message.content);
+        if (content.trim()) return content;
+        if (message && message.role === 'tool') return aiTextOf(message.name);
+        if (message && Array.isArray(message.toolCalls)) {
+            return message.toolCalls.map((call) => aiTextOf(call && call.name)).join(' ');
+        }
+        return '';
+    }
+
+    // runSessionHistoryQuery 数据源优先磁盘 JSONL（唯一真源，含已归档消息），
+    // 读取失败退回内存会话（archived + messages 同源）。硬预算：扫描 ≤2000 条、
+    // 单条摘要 ≤600 字、总输出 ≤48KB，超限截断并在结果里注明。
+    async function runSessionHistoryQuery(session, input) {
+        const query = aiTextOf(input && input.query).trim().toLowerCase();
+        const from = Math.max(0, Math.round(Number(input && input.from) || 0));
+        const limit = aiClampInt(input && input.limit, 1, 50, 20);
+        let messages = null;
+        let source = '内存会话';
+        if (sessionUseDisk() && backend.AISessionRead) {
+            try {
+                const raw = await backend.AISessionRead(session.id) || '';
+                const replay = replaySessionLog(raw);
+                if (replay.archived.length || replay.messages.length) {
+                    messages = replay.archived.concat(replay.messages);
+                    source = '磁盘 JSONL';
+                }
+            } catch (e) { /* 落盘读取失败时退回内存会话 */ }
+        }
+        if (!messages) {
+            messages = (session.archived || []).concat(session.messages || []);
+        }
+        if (messages.length > AI_SESSION_HISTORY_SCAN_MAX) {
+            messages = messages.slice(0, AI_SESSION_HISTORY_SCAN_MAX);
+        }
+        const archivedCount = Array.isArray(session.archived) ? session.archived.length : (source === '磁盘 JSONL' ? undefined : 0);
+        const matched = [];
+        for (let i = 0; i < messages.length; i++) {
+            const message = messages[i];
+            const text = sessionHistoryMessageText(message);
+            if (!text) continue;
+            if (query && !text.toLowerCase().includes(query)) continue;
+            matched.push({index: i, message, text});
+        }
+        if (!matched.length) {
+            return '会话「' + (session.title || '') + '」共 ' + messages.length + ' 条原始消息' +
+                (query ? '，没有匹配「' + query + '」的内容。' : '（无正文消息）。');
+        }
+        const lines = ['会话「' + (session.title || '') + '」原始历史（' + source +
+            '）：共 ' + messages.length + ' 条，匹配 ' + matched.length + ' 条' +
+            '，显示第 ' + Math.min(from + 1, matched.length) + '–' + Math.min(from + limit, matched.length) + ' 条：', ''];
+        let outputChars = lines.join('\n').length;
+        let shown = 0;
+        let truncated = false;
+        for (let i = from; i < matched.length && shown < limit; i++, shown++) {
+            const item = matched[i];
+            const role = item.message.role === 'user' ? '用户'
+                : (item.message.role === 'assistant' ? 'AI'
+                    : (item.message.role === 'tool' ? '工具:' + (item.message.name || '') : item.message.role));
+            const time = item.message.ts ? new Date(Number(item.message.ts)).toLocaleString() : '';
+            let snippet = aiTextOf(item.text);
+            if (snippet.length > AI_SESSION_HISTORY_SNIPPET) {
+                snippet = snippet.slice(0, AI_SESSION_HISTORY_SNIPPET) + '…（已截断）';
+            }
+            const block = '[#' + item.index + ' ' + role + (time ? ' ' + time : '') + ']\n' + snippet;
+            if (outputChars + block.length > AI_SESSION_HISTORY_OUTPUT && shown > 0) {
+                truncated = true;
+                break;
+            }
+            lines.push(block, '');
+            outputChars += block.length + 2;
+        }
+        const nextFrom = from + shown;
+        if (truncated) lines.push('…（输出达到上限，已停止）');
+        if (nextFrom < matched.length) {
+            lines.push('…还有 ' + (matched.length - nextFrom) + ' 条命中：用 from=' + nextFrom + ' 继续翻页。');
+        }
+        if (archivedCount > 0) lines.push('（其中前 ' + archivedCount + ' 条已被上下文压缩归档，不在当前上下文里。）');
+        return lines.join('\n');
+    }
+
     async function executeTool(name, args, ctx) {
         const input = args && typeof args === 'object' ? args : {};
         switch (name) {
@@ -5752,6 +5842,10 @@ export function createAIPanel(options) {
                 return '技能：' + skill.name + '（' + skillSourceLabel(skill.source) + '）' +
                     (baseDir ? '\n技能目录：' + baseDir : '') +
                     '\n\n' + skill.content + '\n\n请遵循该技能指令。';
+            }
+            case 'session_history': {
+                if (!ctx || !ctx.session) throw new Error('缺少会话上下文');
+                return await runSessionHistoryQuery(ctx.session, input);
             }
             case 'ask_user': {
                 return await runAskQuestion(input, ctx);

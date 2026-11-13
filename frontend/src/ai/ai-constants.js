@@ -30,6 +30,14 @@ export const AI_WRITE_SCOPES = ['edit', 'auto', 'full'];
 export const AI_TODO_LIMIT = 50;
 export const AI_PREF_LIMIT = 100;
 export const AI_PREF_TEXT_LIMIT = 500;
+// session_history（查询本会话原始历史）：单条摘要 / 总输出 / 扫描条数的硬上限
+export const AI_SESSION_HISTORY_SNIPPET = 600;
+export const AI_SESSION_HISTORY_OUTPUT = 48 * 1024;
+export const AI_SESSION_HISTORY_SCAN_MAX = 2000;
+// reminders（本会话任务提醒）：清单条数上限，超限明确报错
+export const AI_REMINDER_LIMIT = 5;
+export const AI_REMINDER_TITLE_MAX = 80;
+export const AI_REMINDER_DETAIL_MAX = 300;
 export const AI_INJECT_OPTION_MAP = {
     injectRoot: 'aiInjectRoot',
     injectActive: 'aiInjectActiveFile',

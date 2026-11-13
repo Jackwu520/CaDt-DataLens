@@ -96,6 +96,18 @@ export const AI_TOOL_DEFS = {
             required: ['name'],
         },
     },
+    session_history: {
+        name: 'session_history',
+        description: '查询本会话的原始历史消息（含被上下文压缩归档、当前上下文里看不到的早期消息）。上下文压缩后发现早期内容丢失、或需要确认「之前说过什么 / 之前的工具结果」时使用：可按关键词搜索，也可按序号分页浏览。返回「[#序号 角色 时间] 内容摘要」，序号可作为 from 参数继续翻页。只读工具，所有范围档均可用。',
+        parameters: {
+            type: 'object',
+            properties: {
+                query: {type: 'string', description: '关键词（不区分大小写，匹配消息正文）；省略 = 不筛选，按序号顺序列出'},
+                from: {type: 'integer', description: '起始序号（0 起，用于翻页跳过前面的结果），默认 0'},
+                limit: {type: 'integer', description: '最多返回多少条消息摘要（1–50，默认 20）'},
+            },
+        },
+    },
     write_worklog: {
         name: 'write_worklog',
         description: '在工作区 .cadt/logs/ 追加一条工作日志（时间自动记录，格式为「标题 + 一句话摘要」）。完成一个任务、修一个问题、做出一个关键决定后调用一次，帮用户和后续会话快速回顾做过什么。只记录标题与摘要，不要写正文、代码片段、密钥或敏感信息。日志文件只能通过本工具追加：不允许也不必用 write_file / edit_file / read_file 修改 .cadt/logs/ 下的任何文件，完整历史请用 list_dir / read_file 之外的方式提示用户自行打开查看。所有范围档均可用，无需审批。',
@@ -492,6 +504,7 @@ export function createAIToolDefs(ctx) {
             AI_TOOL_DEFS.memory_list,
             AI_TOOL_DEFS.memory_read,
             AI_TOOL_DEFS.preference_list,
+            AI_TOOL_DEFS.session_history,
             AI_TOOL_DEFS.skill_use,
             AI_TOOL_DEFS.ask_user,
             AI_TOOL_DEFS.env_list,
