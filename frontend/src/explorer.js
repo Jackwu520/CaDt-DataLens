@@ -56,8 +56,13 @@ export function createExplorer(options) {
         body, titleEl, refreshBtn, listBtn, treeBtn, filterBtn, onToggleFilter,
         readDir, dirMtime, openPath, openFolder, openFileDialog, isSupported,
         onModeChange, onContextMenu, onMove, onExternalDrop, canDrag,
-        listLimit = 200, readLimit = 1000, listReadLimit = 5000,
+        readLimit = 1000, listReadLimit = 5000,
     } = options;
+    // 文件列表（扁平视图）扫描上限：递归扫描时防止大仓库拖垮界面
+    const LIST_RENDER_CAP = 2000;   // DOM 最多渲染的行数，超出用过滤缩小范围
+    const LIST_DIR_LIMIT = 400;     // 最多遍历的目录数
+    const LIST_DEPTH_LIMIT = 12;    // 嵌套深度上限
+    const LIST_SKIP_DIRS = new Set(['.git', 'node_modules', '.svn', '.hg', '__pycache__', '.idea', '.vs', '.cadt']);
     let mode = 'tree';
     let visible = false;
     let explicitRoot = null;
@@ -70,6 +75,7 @@ export function createExplorer(options) {
     let treeSeq = 0;
     let revealSeq = 0;
     let listState = {root: null, entries: [], tooMany: false, error: '', loading: false, loaded: false, token: 0, dirMtime: 0};
+    let listRevealPending = false;
     let autoRefreshSeconds = -1;
     let autoRefreshTimer = 0;
     let autoRefreshBusy = false;
@@ -88,6 +94,8 @@ export function createExplorer(options) {
     }
 
     function listRootPath() {
+        // 打开了工作区就扫工作区下所有文件（含嵌套）；只开了单个文件则扫其所在目录及子文件夹
+        if (explicitRoot) return explicitRoot;
         return activePath ? parentPath(activePath) : null;
     }
 
@@ -602,6 +610,53 @@ export function createExplorer(options) {
         renderTree(true);
     }
 
+    // 递归扫描 root 下所有受支持文件（BFS，带目录数/深度/条目数硬上限）。
+    // 根目录读取失败视为整体失败（抛出），子目录失败跳过（无权限等）。
+    async function scanListEntries(root, token) {
+        const files = [];
+        let truncated = false;
+        let visited = 0;
+        let rootMtime = 0;
+        const queue = [{path: root, depth: 0}];
+        while (queue.length) {
+            if (token !== listState.token) return null;
+            if (visited >= LIST_DIR_LIMIT || files.length >= listReadLimit) {
+                truncated = true;
+                break;
+            }
+            const {path: dir, depth} = queue.shift();
+            visited++;
+            let result;
+            try {
+                result = await readDir(dir, readLimit);
+            } catch (e) {
+                if (samePath(dir, root)) throw e;
+                continue;
+            }
+            if (token !== listState.token) return null;
+            if (samePath(dir, root)) rootMtime = (result && result.mtime) || 0;
+            if (result && result.truncated) truncated = true;
+            for (const entry of (result && result.entries) || []) {
+                if (entry.isDir) {
+                    if (depth + 1 >= LIST_DEPTH_LIMIT) {
+                        truncated = true;
+                        continue;
+                    }
+                    if (LIST_SKIP_DIRS.has(String(entry.name || '').toLowerCase())) continue;
+                    queue.push({path: entry.path, depth: depth + 1});
+                } else if (canList(entry.name)) {
+                    files.push(entry);
+                    if (files.length >= listReadLimit) {
+                        truncated = true;
+                        break;
+                    }
+                }
+            }
+        }
+        files.sort(compareEntries);
+        return {files, truncated, mtime: rootMtime};
+    }
+
     async function loadList(force) {
         const root = listRootPath();
         if (!root) {
@@ -618,14 +673,11 @@ export function createExplorer(options) {
         renderList();
         try {
             if (typeof readDir !== 'function') throw new Error('后端不支持目录读取');
-            const result = await readDir(root, listReadLimit);
-            if (token !== listState.token) return;
-            const files = ((result && result.entries) || [])
-                .filter((entry) => !entry.isDir && canList(entry.name))
-                .sort(compareEntries);
-            listState.entries = files;
-            listState.tooMany = !!(result && result.truncated) || files.length > listLimit;
-            listState.dirMtime = (result && result.mtime) || 0;
+            const scan = await scanListEntries(root, token);
+            if (!scan || token !== listState.token) return;
+            listState.entries = scan.files;
+            listState.tooMany = scan.truncated;
+            listState.dirMtime = scan.mtime;
             listState.error = '';
         } catch (e) {
             if (token !== listState.token) return;
@@ -686,24 +738,33 @@ export function createExplorer(options) {
             body.appendChild(emptyState('正在读取目录…'));
         } else if (listState.error) {
             body.appendChild(emptyState('无法读取目录：' + listState.error));
-        } else if (listState.tooMany) {
-            body.appendChild(emptyState('文件数量过多，请使用文件树视图', '切换到文件树', () => setMode('tree')));
         } else if (!listState.entries.length) {
             body.appendChild(emptyState('此目录没有可用的数据文件'));
         } else {
-            const frag = document.createDocumentFragment();
             const entries = filterText
                 ? listState.entries.filter((entry) => String(entry.name || '').toLowerCase().includes(filterText))
                 : listState.entries;
-            for (const entry of entries) frag.appendChild(listRow(entry));
-            if (!entries.length) body.appendChild(emptyState('没有匹配的文件'));
+            const cap = Math.min(entries.length, LIST_RENDER_CAP);
+            const frag = document.createDocumentFragment();
+            for (let i = 0; i < cap; i++) frag.appendChild(listRow(entries[i]));
+            if (!cap) body.appendChild(emptyState('没有匹配的文件'));
             body.appendChild(frag);
+            // 截断提示放在尾部，不弹错误态：列表按扫描上限递归，超限靠过滤缩小范围
+            if (cap < entries.length) {
+                body.appendChild(statusRow('仅显示前 ' + cap + ' / ' + entries.length + ' 项，可用上方过滤缩小范围'));
+            } else if (listState.tooMany) {
+                body.appendChild(statusRow('已扫描 ' + entries.length + ' 个文件（超出扫描上限，结果可能不完整）'));
+            }
             body.scrollTop = prevTop;
             updateSelectionBoundaries();
             if (focused) {
                 const row = body.querySelector('.sb-row.anchor') || body.querySelector('.sb-row.selected');
                 if (row) row.focus({preventScroll: true});
             }
+        }
+        // 只有切换根/切换文件等主动动作才把当前文件滚进视野；静默刷新一律保持滚动位置
+        if (listRevealPending) {
+            listRevealPending = false;
             scrollToActive();
         }
         updateTitle();
@@ -721,6 +782,7 @@ export function createExplorer(options) {
         if (changed && notify && typeof onModeChange === 'function') onModeChange(mode);
         if (!visible) return;
         if (mode === 'list') {
+            listRevealPending = true;
             loadList(false);
         } else {
             ensureTree();
@@ -740,6 +802,7 @@ export function createExplorer(options) {
             return;
         }
         if (mode === 'list') {
+            listRevealPending = true;
             loadList(false);
         } else {
             ensureTree();
@@ -770,6 +833,7 @@ export function createExplorer(options) {
         activePath = path || null;
         if (!visible) return;
         if (mode === 'list') {
+            listRevealPending = true;
             const root = listRootPath();
             if (selection.length) {
                 selection = selection.filter((item) => root && samePath(parentPath(item.path), root));
@@ -947,9 +1011,9 @@ export function createExplorer(options) {
             if (mode !== 'list' || !samePath(root, listRootPath()) || listState.loading) return;
         }
         const token = listState.token;
-        let result;
+        let scan;
         try {
-            result = await readDir(root, listReadLimit);
+            scan = await scanListEntries(root, token);
         } catch (e) {
             if (token !== listState.token || mode !== 'list' || !samePath(root, listRootPath()) || listState.loading) return;
             const message = String((e && e.message) || e);
@@ -960,11 +1024,9 @@ export function createExplorer(options) {
             }
             return;
         }
-        if (token !== listState.token || mode !== 'list' || !samePath(root, listRootPath()) || listState.loading) return;
-        const files = ((result && result.entries) || [])
-            .filter((entry) => !entry.isDir && canList(entry.name))
-            .sort(compareEntries);
-        const tooMany = !!(result && result.truncated) || files.length > listLimit;
+        if (!scan || token !== listState.token || mode !== 'list' || !samePath(root, listRootPath()) || listState.loading) return;
+        const files = scan.files;
+        const tooMany = scan.truncated;
         const previous = listState.entries;
         let changed = !!listState.error || tooMany !== listState.tooMany ||
             files.length !== previous.length ||
@@ -972,7 +1034,7 @@ export function createExplorer(options) {
         listState.root = root;
         listState.entries = files;
         listState.tooMany = tooMany;
-        listState.dirMtime = (result && result.mtime) || 0;
+        listState.dirMtime = scan.mtime;
         listState.error = '';
         listState.loaded = true;
         if (changed) {
@@ -1006,7 +1068,8 @@ export function createExplorer(options) {
             const hasChanges = externalDirs.size || externalOverflow;
             externalDirs.clear();
             externalOverflow = false;
-            if (hasChanges && mode === 'list' && visible && listState.root) await loadList(true);
+            // 差量刷新：内容没变就不重渲染，避免列表闪烁与滚动位置丢失
+            if (hasChanges && mode === 'list' && visible && listState.root) await refreshListSilently();
             return;
         }
         if (externalOverflow) {
@@ -1027,7 +1090,8 @@ export function createExplorer(options) {
             if (node && node.isDir) nodes.push(node);
         }
         const listRoot = mode === 'list' ? listRootPath() : null;
-        const listHit = !!listRoot && [...externalDirs].some((dir) => isWithin(dir, listRoot) || isWithin(listRoot, dir));
+        // 只关心扫描范围内（含嵌套）的变化；父目录的事件不再触发整个列表重载
+        const listHit = !!listRoot && [...externalDirs].some((dir) => isWithin(listRoot, dir));
         externalDirs.clear();
         let changed = false;
         await Promise.all(nodes.map(async (node) => {
@@ -1042,7 +1106,7 @@ export function createExplorer(options) {
             }
         }));
         if (listHit && visible && mode === 'list') {
-            await loadList(true);
+            await refreshListSilently();
         }
         if (changed && visible && mode === 'tree') renderTree();
     }
@@ -1063,6 +1127,8 @@ export function createExplorer(options) {
         const base = String(payload.root || '').replace(/\\/g, '/').replace(/\/+$/, '');
         for (const rel of payload.paths || []) {
             const full = base + '/' + String(rel || '').replace(/\\/g, '/').replace(/^\/+/, '');
+            // 跳过扫描黑名单目录（.git / node_modules 等）里的事件，避免无关写入引发整表刷新
+            if (String(full).toLowerCase().split('/').some((seg) => LIST_SKIP_DIRS.has(seg))) continue;
             externalDirs.add(parentPath(full));
         }
         if (externalDirs.size) scheduleExternalRefresh();

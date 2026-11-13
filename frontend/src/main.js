@@ -2146,6 +2146,7 @@ function setSidebarMode(mode) {
     settings.showSidebar = true;
     applySettings();
     if (explorer) explorer.setMode(mode, false);
+    syncWorkspaceWatcher();
     applySidebarUI();
 }
 
@@ -2531,6 +2532,8 @@ function initExplorer() {
         onModeChange: (mode) => {
             settings.sidebarMode = mode;
             applySettings();
+            // 列表/树根不同，文件监听根要跟着切（列表模式根=工作区或单文件目录）
+            syncWorkspaceWatcher();
         },
     });
     explorer.setMode(settings.sidebarMode, false);
