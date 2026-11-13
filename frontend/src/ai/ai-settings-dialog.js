@@ -778,6 +778,7 @@ export function createAISettingsDialog(ctx) {
         if (opt.autoTitle) opt.autoTitle.checked = getConfig().autoTitle !== false;
         if (opt.defaultScope) opt.defaultScope.value = normalizeDefaultScope(getConfig().defaultScope);
         if (opt.logEnabled) opt.logEnabled.checked = getConfig().logEnabled !== false;
+        if (opt.worklog) opt.worklog.checked = getConfig().worklogEnabled !== false;
         if (opt.appControl) opt.appControl.checked = appControlOn();
         if (opt.notifyInApp) opt.notifyInApp.checked = getConfig().notifyInApp === true;
         if (opt.notifySystem) opt.notifySystem.checked = getConfig().notifySystem === true;
@@ -1167,6 +1168,7 @@ export function createAISettingsDialog(ctx) {
             autoClassifierModel: getConfig().autoClassifierModel || '',
             outputLanguage: getConfig().outputLanguage || 'zh',
             logEnabled: getConfig().logEnabled !== false,
+            worklogEnabled: getConfig().worklogEnabled !== false,
             subAgentMax: getConfig().subAgentMax,
             subAgentMaxDepth: getConfig().subAgentMaxDepth,
             notifyInApp: getConfig().notifyInApp === true,
@@ -1269,6 +1271,7 @@ export function createAISettingsDialog(ctx) {
                 aiTextOf(data.autoClassifierModel), getConfig().profiles);
             if (['zh', 'en', 'auto'].includes(data.outputLanguage)) getConfig().outputLanguage = data.outputLanguage;
             if (typeof data.logEnabled === 'boolean') getConfig().logEnabled = data.logEnabled;
+            if (typeof data.worklogEnabled === 'boolean') getConfig().worklogEnabled = data.worklogEnabled;
             getConfig().subAgentMax = aiClampInt(data.subAgentMax, 1, 20, getConfig().subAgentMax);
             getConfig().subAgentMaxDepth = aiClampInt(data.subAgentMaxDepth, 0, 20, getConfig().subAgentMaxDepth);
             for (const key of ['notifyInApp', 'notifySystem', 'notifyFinish', 'notifyError', 'notifyAsk', 'notifySound']) {
@@ -1558,6 +1561,11 @@ export function createAISettingsDialog(ctx) {
             saveAIConfig();
             setSettingsStatus(getConfig().logEnabled ? '已开启自动对话日志' : '已关闭自动对话日志', 'ok');
             if (getConfig().logEnabled) queueLogSave(currentSession());
+        });
+        if (opt.worklog) opt.worklog.addEventListener('change', () => {
+            getConfig().worklogEnabled = !!opt.worklog.checked;
+            saveAIConfig();
+            setSettingsStatus('AI 工作日志：' + (opt.worklog.checked ? '已开启' : '已关闭（write_worklog 工具停用）'), 'ok');
         });
         if (opt.defaultScope) opt.defaultScope.addEventListener('change', () => {
             getConfig().defaultScope = normalizeDefaultScope(opt.defaultScope.value);

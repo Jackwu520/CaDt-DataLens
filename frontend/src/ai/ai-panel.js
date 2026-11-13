@@ -347,6 +347,7 @@ export function createAIPanel(options) {
         autoTitle: document.getElementById('ai-opt-auto-title'),
         defaultScope: document.getElementById('ai-opt-default-scope'),
         logEnabled: document.getElementById('ai-opt-log-enabled'),
+        worklog: document.getElementById('ai-opt-worklog'),
         appControl: document.getElementById('ai-opt-app-control'),
         notifyInApp: document.getElementById('ai-opt-notify-inapp'),
         notifySystem: document.getElementById('ai-opt-notify-system'),
@@ -548,6 +549,8 @@ export function createAIPanel(options) {
             autoTitle: stored.autoTitle !== false,
             outputLanguage: ['zh', 'en', 'auto'].includes(stored.outputLanguage) ? stored.outputLanguage : 'zh',
             logEnabled: stored.logEnabled !== false,
+            // AI 工作日志（write_worklog 工具，写入工作区 .cadt/logs/）；默认开启
+            worklogEnabled: stored.worklogEnabled !== false,
             appControlEnabled: stored.appControlEnabled !== false,
             retryMax: aiClampInt(stored.retryMax, 0, 10, 5),
             // 子代理总数（含递归派出的全部层级，不含主代理）；递归层级 0 = 不设限

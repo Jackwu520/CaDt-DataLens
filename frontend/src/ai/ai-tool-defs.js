@@ -96,6 +96,18 @@ export const AI_TOOL_DEFS = {
             required: ['name'],
         },
     },
+    write_worklog: {
+        name: 'write_worklog',
+        description: '在工作区 .cadt/logs/ 追加一条工作日志（时间自动记录，格式为「标题 + 一句话摘要」）。完成一个任务、修一个问题、做出一个关键决定后调用一次，帮用户和后续会话快速回顾做过什么。只记录标题与摘要，不要写正文、代码片段、密钥或敏感信息。日志文件只能通过本工具追加：不允许也不必用 write_file / edit_file / read_file 修改 .cadt/logs/ 下的任何文件，完整历史请用 list_dir / read_file 之外的方式提示用户自行打开查看。所有范围档均可用，无需审批。',
+        parameters: {
+            type: 'object',
+            properties: {
+                title: {type: 'string', description: '一句话标题（≤120 字符，如「修复全局搜索跳转定位」）'},
+                summary: {type: 'string', description: '一句话摘要（≤500 字符，说明做了什么、结果如何；可省略）'},
+            },
+            required: ['title'],
+        },
+    },
     plan_mode: {
         name: 'plan_mode',
         description: '进入或退出计划模式。复杂的多步实现类任务可先进入计划模式（只读探索并输出计划，用户批准后再执行）。计划模式下完成计划后：先输出完整计划等待用户批准，不要自行退出后直接执行。切换从下一轮对话生效。',
@@ -487,8 +499,9 @@ export function createAIToolDefs(ctx) {
             AI_TOOL_DEFS.schedule_list,
         ];
         if (appControlOn()) list.push(AI_TOOL_DEFS.app_control);
+        // 工作日志：应用管理的追加式通道（只进 .cadt/logs/，不经工作区写审批），自动审批下直接放行
         if (!planMode) list.push(AI_TOOL_DEFS.memory_write, AI_TOOL_DEFS.preference_write, AI_TOOL_DEFS.preference_remove, AI_TOOL_DEFS.env_create,
-            AI_TOOL_DEFS.schedule_create, AI_TOOL_DEFS.schedule_delete, AI_TOOL_DEFS.schedule_toggle);
+            AI_TOOL_DEFS.schedule_create, AI_TOOL_DEFS.schedule_delete, AI_TOOL_DEFS.schedule_toggle, AI_TOOL_DEFS.write_worklog);
         // 浏览器：read 档起可浏览（导航/快照/截图），写权限档起可操作页面，full 档可执行任意脚本
         list.push(
             AI_TOOL_DEFS.browser_navigate, AI_TOOL_DEFS.browser_back, AI_TOOL_DEFS.browser_forward,

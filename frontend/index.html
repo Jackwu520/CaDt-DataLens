@@ -691,6 +691,14 @@
                             </div>
                         </div>
                         <div class="fmt-hint hint-indent">不含 API Key；粘贴的图片保存在 ai-logs/images/ 子目录并在日志中引用。</div>
+                        <div class="settings-section-title">工作日志</div>
+                        <div class="popover-row">
+                            <label class="popover-label">
+                                <input type="checkbox" id="ai-opt-worklog">
+                                允许 AI 记录工作日志（write_worklog）
+                            </label>
+                        </div>
+                        <div class="fmt-hint hint-indent">追加写入工作区 .cadt/logs/（根索引每月一行 → 月索引每条一行 → 日期文件存正文）；只记标题与一句话摘要，不含正文与敏感信息。</div>
                         <div class="settings-section-title">应用操作</div>
                         <div class="popover-row">
                             <label class="popover-label">
