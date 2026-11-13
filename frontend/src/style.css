@@ -8522,7 +8522,8 @@ body.ai-float-window .ai-resize { display: none !important; }
 /* 悬浮窗专用头部按钮（全屏 / 收起），仅独立窗口显示 */
 .ai-float-only { display: none !important; }
 body.ai-float-window .ai-float-only { display: inline-flex !important; }
-/* 悬浮窗收起：只保留头部标题栏，窗口高度同步缩到标题栏高度 */
+/* 悬浮窗收起：只保留头部标题栏，窗口高度同步缩到标题栏高度。
+   .ai-dialog 不在隐藏列表里：关闭确认等模态框收起态也必须可见。 */
 body.ai-float-window.ai-float-collapsed #ai-messages,
 body.ai-float-window.ai-float-collapsed .ai-composer,
 body.ai-float-window.ai-float-collapsed .ai-stats-wrap,
@@ -8531,7 +8532,6 @@ body.ai-float-window.ai-float-collapsed #ai-ctx-banner,
 body.ai-float-window.ai-float-collapsed #ai-slash,
 body.ai-float-window.ai-float-collapsed #ai-agent-view,
 body.ai-float-window.ai-float-collapsed #ai-scroll-btn,
-body.ai-float-window.ai-float-collapsed .ai-dialog,
 body.ai-float-window.ai-float-collapsed .ai-popover { display: none !important; }
 
 #ai-opt-thinking-group.hidden { display: none; }

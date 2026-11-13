@@ -10307,21 +10307,41 @@ export function createAIPanel(options) {
     // ---------- 绑定面板交互 ----------
 
 
+    // 悬浮窗强制退出：优先 ForceClose（后端置 forceClose 后 Quit，不受 dirty/aiRunning
+    // 的 beforeClose 拦截影响）；绑定不可用时退回 runtime.Quit 兜底。
+    function forceQuitFloatWindow() {
+        try {
+            if (backend.ForceClose) {
+                backend.ForceClose();
+                return;
+            }
+        } catch (e) {}
+        try {
+            if (window.runtime && window.runtime.Quit) window.runtime.Quit();
+        } catch (e) {}
+    }
+
     function bindPanelInteractions() {
         for (const button of [activityButton, toolbarButton]) {
             if (button) button.addEventListener('click', () => toggle());
         }
         if (el.close) el.close.addEventListener('click', () => {
             if (floatWindow) {
-                try {
-                    if (window.runtime && window.runtime.Quit) {
-                        window.runtime.Quit();
-                        return;
-                    }
-                } catch (e) {}
-                try {
-                    if (backend.ForceClose) backend.ForceClose();
-                } catch (e) {}
+                // 悬浮窗关闭不走 runtime.Quit：它会经过 Go 的 beforeClose，AI 运行中会被
+                // 静默拦下（只 emit confirm-close 再弹主对话框，收起态下还看不见），窗口
+                // 就像空壳一样点不动。这里自行判定：空闲直接 ForceClose；有进行中的回合
+                // 先弹面板内确认框，用户裁定后再 ForceClose。
+                if (!(streams.size > 0 || !!oneShot) || !el.dialog) {
+                    forceQuitFloatWindow();
+                    return;
+                }
+                const body = dialogNode('div', 'ai-note', 'AI 会话正在进行中，关闭窗口会中断当前任务。');
+                const ok = dialogButton('中断并关闭', 'dlg-btn primary', () => {
+                    closeAIDialog();
+                    forceQuitFloatWindow();
+                });
+                const cancel = dialogButton('取消', 'dlg-btn', () => closeAIDialog());
+                openAIDialog('关闭悬浮窗', [body], [cancel, ok]);
                 return;
             }
             open(false);
