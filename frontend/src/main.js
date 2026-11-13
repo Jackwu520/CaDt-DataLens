@@ -4177,10 +4177,29 @@ if (rt) {
             openPaths(paths);
         }, false);
     }
-    rt.EventsOn('confirm-close', () => {
+    rt.EventsOn('confirm-close', (reasons) => {
         flushCsvCellEditor();
+        const r = reasons || {};
+        if (r.aiRunning) {
+            openCloseConfirm(
+                r.dirty ? '有未保存的修改，且 AI 会话正在进行中；关闭后将丢弃修改并中断任务。'
+                    : 'AI 会话正在进行中，关闭窗口会中断当前任务。',
+                () => { if (backend.ForceClose) backend.ForceClose(); },
+                '中断并关闭', '关闭');
+            return;
+        }
         openCloseConfirm();
     });
+    // AI 回合状态同步给后端（Go 侧 beforeClose 据此决定是否弹关窗确认）
+    let aiRunningLast = false;
+    setInterval(() => {
+        try {
+            const running = !!(aiPanel && aiPanel.hasActiveTurn && aiPanel.hasActiveTurn());
+            if (running === aiRunningLast) return;
+            aiRunningLast = running;
+            if (backend.SetAIRunning) backend.SetAIRunning(running);
+        } catch (e) {}
+    }, 800);
     rt.EventsOn('browser-nav', (data) => {
         const doc = docs.find((d) => d.id === (data && data.id));
         if (!doc) return;

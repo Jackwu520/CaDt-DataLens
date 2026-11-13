@@ -5682,6 +5682,19 @@ export function createAIPanel(options) {
                 await backend.SaveFile(aiJoinPath(mem.dir, name), content, 'lf', false, 'utf-8');
                 return '已写入记忆 ' + name + '（' + content.length + ' 字符，' + mem.mode + '）';
             }
+            case 'write_worklog': {
+                // AI 工作日志：只写标题 + 一句话摘要，正文与敏感信息一律不落盘（Go 侧再做一次清洗）。
+                if (config.worklogEnabled === false) {
+                    throw new Error('工作日志已被用户关闭（设置 → AI 助手 → 工作日志）');
+                }
+                if (!backend.AIWorklogAppend) throw new Error('当前版本不支持工作日志');
+                const worklogRoot = aiProjectRoot() || getScopeRoot();
+                if (!worklogRoot) throw new Error('当前没有工作区，无法写工作日志');
+                const worklogTitle = aiTextOf(input.title).trim();
+                if (!worklogTitle) throw new Error('日志标题为空');
+                const worklogDay = await backend.AIWorklogAppend(worklogRoot, worklogTitle, aiTextOf(input.summary).trim());
+                return '已记录工作日志：' + worklogDay + '（索引见 .cadt/logs/INDEX.md）';
+            }
             case 'preference_list': {
                 const prefs = config.preferences || [];
                 if (!prefs.length) return '用户偏好为空（可用 preference_write 新增）。';
@@ -10987,6 +11000,8 @@ export function createAIPanel(options) {
         referenceSelection,
         paletteActions,
         getMode: () => mode,
+        // 是否有会话正在生成/压缩（关窗二次确认依据，main.js 轮询后经 SetAIRunning 同步给 Go）
+        hasActiveTurn: () => streams.size > 0 || !!oneShot,
         refreshDockFill,
         refreshSessionList: () => renderSessionList(),
         refreshGitEntry,

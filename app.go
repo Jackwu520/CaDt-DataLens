@@ -41,6 +41,7 @@ type App struct {
 	startupAISession    string
 	dirty               bool
 	forceClose          bool
+	aiRunning           bool
 	watchMu             sync.Mutex
 	watchRoot           string
 	watchStop           chan struct{}
@@ -1139,6 +1140,11 @@ func (a *App) SetDirty(dirty bool) {
 	a.dirty = dirty
 }
 
+// SetAIRunning：前端在 AI 回合开始/结束时同步（关窗二次确认依据，见 beforeClose）。
+func (a *App) SetAIRunning(running bool) {
+	a.aiRunning = running
+}
+
 type appConfig struct {
 	OpenMode        string   `json:"openMode"`
 	PluginsPathMode string   `json:"pluginsPathMode,omitempty"`
@@ -1419,17 +1425,18 @@ func (a *App) SetWindowBg(r, g, b int) {
 }
 
 func (a *App) beforeClose(ctx context.Context) bool {
-	if !a.dirty || a.forceClose {
+	if a.forceClose || (!a.dirty && !a.aiRunning) {
 		a.stopWorkspaceWatch()
 		return false
 	}
-	runtime.EventsEmit(ctx, "confirm-close")
+	runtime.EventsEmit(ctx, "confirm-close", map[string]bool{"dirty": a.dirty, "aiRunning": a.aiRunning})
 	return true
 }
 
 func (a *App) ForceClose() {
 	a.forceClose = true
 	a.dirty = false
+	a.aiRunning = false
 	a.stopWorkspaceWatch()
 	runtime.Quit(a.ctx)
 }
