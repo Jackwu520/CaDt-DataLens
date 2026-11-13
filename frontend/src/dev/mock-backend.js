@@ -254,6 +254,14 @@ async def fetch(url: str) -> dict:
 `;
 
 const mockDir = 'mock://samples/';
+
+// AI 计时器 mock 的内存注册表（仅 dev 浏览器场景）
+const mockTimerStore = new Map();
+function mockTimerList() {
+    return [...mockTimerStore.values()].map((info) => ({
+        id: info.id, mode: info.mode, label: info.label, startMs: info.startMs, endMs: info.endMs,
+    }));
+}
 const mockHex = '00000000  89 50 4e 47 0d 0a 1a 0a  00 00 00 0d 49 48 44 52  |.PNG........IHDR|';
 const mockImageDataUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAUAAAAC0CAIAAABqhmJGAAAFjUlEQVR42u3dS0jU+wLA8d84MyTOpmUGRZALD4ExdKiF0CJ6bjwJQQWRVJyKmlUrF+VkT6KzyejdQiuTooVBYkJUKwOppANigtCDCFq0qLB8ztzFXOaGo3O4J7r3lJ/Paob/7zH68zv/mZWR3/7IhqJ6zy6a7lJpPFp87vDYxHSXknv67Gtf+37jviUB+GEJGAQMCBgQMAgYEDAgYEDAIGBAwICAQcCAgAEBAwIGAQMCBgQMCBgEDAgYEDAIGBAwIGBAwCBgQMCAgAEBg4ABAQMCBgEDAgYEDAgYBAwIGBAwCBgQMCBgQMAgYEDAgIABAcPPJPYjvuhffv/z+y2e3NP3f/mh7PtP2Lf/UpU7MCBg4Kf8CJ032PKrI+TbVdQ9dgcGBAwIGAQMCBgQMCBgEDAgYEDAIGBAwICAAQGDgAEBAwIGBAwCBgQMCBgEDAgYEDAgYBAwIGBAwMAP/s/NvoeVK1euXr36y5cvw8PDFy9efP/+feGY1tbWwcHBbDYbi8Xu3bv38OHDEML69evb29v/ctgkhbNyWlpa6urqHAcC/i9UVVVVV1fv379/dHQ0mUymUqnGxsbCYePj4+l0OoQwa9as+vr6kZGRR48e1dbWTkpxymGTliqcBQL+m2pqatra2kZHR0MIvb29S5cujUajc+fO3blzZyKRuH///p07d74ePzIycvXq1W3bts2fP7+0tPTAgQOHDx8uXDY/7M2bN18vtXHjxtys5ubm6bbISSQSO3bsmD17diwWu3LlyuDgYO4ufffu3crKykQicfPmzZ6ennXr1q1YsSKbzba2tj579syB+g48s8ybN+/Fixf5pxcuXJiYmFi7du3169cbGhpqamoKp7x69aq8vPzGjRvDw8NT1vv1sElL5WcV3yKEsHXr1s7OzkOHDjU1Ne3atevf776x2KdPn9Lp9MmTJ7dv3x5C2LBhQ0NDw6lTp5YvX+403YFn3vtZyRTvaNeuXauurl6yZElZWVnh1Wg0Oj4+nn+6efPmysrKjo6Onp6ewmHTLVV8ixDC4sWL58yZk3tcWlpaUlKSyWQikciDBw9CCO/evctNfPr0aSqV6urqOn36tNN0B55x3r59u2DBgtzjSCSSSqVCCPv27QshdHZ2ZjKZwikVFRWvX7/OP21ra0un05PqzQ+bbqniW+T6P3LkSDqdPnjw4Llz53LDxsfHh4aGcgOy2WwI4cyZMx0dHWvWrNm7d6/TFPCM09XVtWnTpng8HkKorq7OPVi4cGF3d3c8Hs89nfTVdMuWLbdv384FH4lEplw2P6xwqdysIlvkPH/+fNmyZSGEZDJZW1v7dbR5ZWVljY2NAwMDTU1NyWTSafoIPeN0d3eXl5efOHHi48ePHz58uHz5cq7qo0ePvnz5cmhoKB6Pj42NxWKxxsbGbDYbjUbb29v7+vpCCP39/fX19cePH//PL7dgWOFSuVlTbpH/Rj0wMNDc3Lx79+5Vq1ZlMpnz589P+eI/f/785MmTY8eOlZSU3Lp1y2nOBJHf/sgWH9F7dtF0l0rj0eJzh8cmpruU3NP3t/fNzx1s+dUR8u0q6h7nHvRfqvrf/z1/S0c+QoPvwICAAQGDgAEBAwIGBAwCBgQMCBgEDAgYEDAgYBAwIGBAwICAQcCAgAEBg4ABAQMCBgQMAgYEDAgYEDAIGBAwIGAQMCBgQMCAgOEnFPuhX31F3WNHiDswIGDAR+i/1H+pqviA4bGJ6S4l9/QVn9t7dtF0l0rjUfvO5H3dgQEBAwIGAQMCBgQMAgYEDAgYEDAIGBAwIGAQMCBgQMCAgEHAgIABAQMCBgEDAgYEDAIGBAwIGBAwCBgQMCBgQMAgYEDAgIBBwICAAQEDAgYBAwIGBAwIGAQMCBgQMAgYEDDwXf0LSiE2qQDYwMoAAAAASUVORK5CYII=';
 const mockFiles = {
@@ -663,6 +671,41 @@ const mockBackend = {
         return [mockDir + 'sample.json'];
     },
     async OpenFolderDialog() { return 'mock://samples'; },
+    // ---- AI 计时器 mock（类一-11）：内存计时 + 到点广播，供浏览器端验证胶囊与唤醒链路 ----
+    async StartTimer(mode, seconds, label) {
+        if (mockTimerStore.size >= 5) throw new Error('最多同时运行 5 个计时器，请先停止部分计时器');
+        const info = {
+            id: 't-' + Math.random().toString(36).slice(2, 10),
+            mode: mode === 'countup' ? 'countup' : 'countdown',
+            label: String(label || '').slice(0, 60),
+            startMs: Date.now(),
+            endMs: 0,
+        };
+        if (info.mode === 'countdown') {
+            info.endMs = info.startMs + Math.max(1, Math.round(Number(seconds) || 0)) * 1000;
+            info._h = setTimeout(() => {
+                mockTimerStore.delete(info.id);
+                mockRt.EventsEmit('ai-timer-fired', {id: info.id, mode: info.mode, label: info.label, startMs: info.startMs, endMs: info.endMs});
+            }, Math.max(1, Math.round(Number(seconds) || 0)) * 1000);
+        }
+        mockTimerStore.set(info.id, info);
+        return {list: mockTimerList(), created: {...info, _h: undefined}};
+    },
+    async StopTimer(id) {
+        const info = mockTimerStore.get(id);
+        const found = !!info;
+        if (found) {
+            if (info._h) clearTimeout(info._h);
+            mockTimerStore.delete(info.id);
+            setTimeout(() => mockRt.EventsEmit('ai-timer-stopped', {id: info.id, mode: info.mode, label: info.label, startMs: info.startMs, endMs: info.endMs}), 0);
+        }
+        return {
+            list: mockTimerList(),
+            stopped: info ? {id: info.id, mode: info.mode, label: info.label, startMs: info.startMs, endMs: info.endMs} : {id: String(id || ''), mode: '', label: '', startMs: 0, endMs: 0},
+            found,
+        };
+    },
+    async ListTimers() { return mockTimerList(); },
     async StructureDir(dir) {
         const norm = String(dir || '').replace(/\/+$/, '');
         const ignored = new Set(['.git', '__pycache__']);

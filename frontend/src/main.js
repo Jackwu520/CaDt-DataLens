@@ -2507,6 +2507,17 @@ function initAIPanel() {
                 try { aiPanel.handleScheduleFire(payload); } catch (e) {}
             }
         });
+        // AI 计时器：到点/停止事件（多窗口都会收到，胶囊只在启动窗口注册过）
+        rt.EventsOn('ai-timer-fired', (info) => {
+            if (aiPanel && typeof aiPanel.handleTimerEvent === 'function') {
+                try { aiPanel.handleTimerEvent('ai-timer-fired', info); } catch (e) {}
+            }
+        });
+        rt.EventsOn('ai-timer-stopped', (info) => {
+            if (aiPanel && typeof aiPanel.handleTimerEvent === 'function') {
+                try { aiPanel.handleTimerEvent('ai-timer-stopped', info); } catch (e) {}
+            }
+        });
         rt.EventsOn('schedules-changed', () => {
             const activePane = document.querySelector('.settings-pane[data-pane="schedules"]:not(.hidden)');
             if (activePane && aiPanel && typeof aiPanel.refreshScheduleSettings === 'function') {

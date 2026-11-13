@@ -124,6 +124,7 @@ import {createAIGitUi} from './ai-git-ui.js';
 import {createAISlash} from './ai-slash.js';
 import {createAIMessageQueue} from './ai-message-queue.js';
 import {createAISchedule} from './ai-schedule.js';
+import {createAITimer} from './ai-timer.js';
 import {createAISessionList} from './ai-session-list.js';
 import {createAIComposer} from './ai-composer.js';
 import {createAIToolCards} from './ai-tool-cards.js';
@@ -2018,6 +2019,54 @@ export function createAIPanel(options) {
     const openScheduleEditor = (...args) => scheduleMod.openScheduleEditor(...args);
     const aiDelay = (...args) => scheduleMod.aiDelay(...args);
     const handleScheduleFire = (...args) => scheduleMod.handleScheduleFire(...args);
+
+    // 计时器（类一-11）：Go 侧计时 + 胶囊 UI；到点经系统消息唤醒启动它的会话
+    const timerMod = createAITimer({
+        getBackend: () => backend,
+        getSessionId: () => {
+            const session = currentSession();
+            return session ? session.id : '';
+        },
+        onFire: (payload) => {
+            Promise.resolve(wakeSessionByTimer(payload)).catch(() => {});
+        },
+    });
+    timerMod.syncFromBackend();
+
+    // 计时器到点：向启动它的会话注入系统消息并唤醒一轮（与定时任务同一投递通道）
+    async function wakeSessionByTimer(payload) {
+        const label = String((payload && payload.label) || '计时器');
+        const sessionId = String((payload && payload.sessionId) || '');
+        const session = getSessions().find((s) => s.id === sessionId);
+        if (!session) return; // 会话已删除或不在本窗口：静默丢弃
+        try {
+            open(true);
+            if (session.archivedAt) {
+                // 绑定会话被归档：自动取消归档再唤醒（与定时任务一致）
+                session.archivedAt = 0;
+                persistSessions();
+                renderSessionList();
+            }
+            if (currentSession() !== session) switchSession(session.id);
+            if (currentSession() !== session) return; // 目标会话属于其他工作区，注入会落到错误的会话
+            // 窗口正在生成时延迟重试，避免打断当前轮次（最多约 30 秒）
+            for (let i = 0; i < 10 && (streamOf(session.id) || compactOf(session.id)); i++) await aiDelay(3000);
+            if (streamOf(session.id) || compactOf(session.id)) {
+                flash('计时器「' + label + '」到点，但会话正忙未能唤醒', true);
+                return;
+            }
+            const seconds = Math.max(1, Math.round(Number(payload && payload.endMs && payload.startMs ? (payload.endMs - payload.startMs) / 1000 : 0)));
+            const desc = seconds >= 60 && seconds % 60 === 0 ? (seconds / 60) + ' 分钟' : seconds + ' 秒';
+            await sendAppMessage({
+                kind: 'timer',
+                label: '计时器 · ' + label,
+                content: '[计时器到点 · ' + label + ']\n设定为 ' + desc + ' 的倒计时已结束。请继续处理之前等待的事项；若已无可继续的步骤，简短告知用户计时结束即可。',
+            });
+            flash('计时器「' + label + '」已到点并唤醒');
+        } catch (e) {
+            flash('计时器「' + label + '」唤醒失败：' + ((e && e.message) || e), true);
+        }
+    }
 
     function emptyState(kind) {
         const box = document.createElement('div');
@@ -5888,6 +5937,29 @@ export function createAIPanel(options) {
                 persistSessions();
                 syncRemindersUI(ctx.session);
                 return '已删除任务提醒 [' + removed.id + ']：' + removed.title;
+            }
+            // ---------- 计时器（start_timer/stop_timer）：Go 侧计时，到点系统消息唤醒 ----------
+            case 'start_timer': {
+                const mode = input.mode === 'countup' ? 'countup' : 'countdown';
+                const seconds = Math.max(0, Math.round(Number(input.seconds) || 0));
+                const label = aiTextOf(input.label).trim().slice(0, 60);
+                if (!label) throw new Error('计时目的（label）不能为空');
+                if (mode === 'countdown' && seconds < 1) throw new Error('倒计时必须提供大于 0 的秒数（seconds）');
+                const created = await timerMod.start(mode, seconds, label);
+                if (mode === 'countdown') {
+                    const total = Math.round((created.endMs - created.startMs) / 1000);
+                    const desc = total >= 60 && total % 60 === 0 ? (total / 60) + ' 分钟' : total + ' 秒';
+                    return '已启动倒计时「' + created.label + '」（' + desc + '）。到点会自动以系统消息唤醒你继续本会话，期间无需轮询等待，可以先做其他事或结束本轮。';
+                }
+                return '已启动正计时「' + created.label + '」。需要结果时用 stop_timer 停止并读取已计时长。';
+            }
+            case 'stop_timer': {
+                const stopped = await timerMod.stop(aiTextOf(input.id).trim());
+                if (stopped.mode === 'countup') {
+                    const elapsed = Math.max(0, Math.round((Date.now() - stopped.startMs) / 1000));
+                    return '已停止正计时「' + stopped.label + '」，已计时长 ' + Math.floor(elapsed / 60) + ' 分 ' + (elapsed % 60) + ' 秒。';
+                }
+                return '已停止倒计时「' + stopped.label + '」。';
             }
             case 'preference_list': {
                 const prefs = config.preferences || [];
@@ -11245,6 +11317,12 @@ export function createAIPanel(options) {
         },
         handleEvent,
         handleScheduleFire,
+        // 计时器事件（ai-timer-fired / ai-timer-stopped）：main.js 从 Go 侧广播转发进来
+        handleTimerEvent: (name, info) => {
+            if (!timerMod) return;
+            if (name === 'ai-timer-fired') timerMod.onFired(info);
+            else if (name === 'ai-timer-stopped') timerMod.onStopped(info);
+        },
         refreshScheduleSettings: renderScheduleSettings,
         refreshContext,
         closeModelEditor,

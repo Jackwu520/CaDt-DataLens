@@ -148,6 +148,29 @@ export const AI_TOOL_DEFS = {
             required: ['id'],
         },
     },
+    start_timer: {
+        name: 'start_timer',
+        description: '启动一个计时器（面板顶部会显示胶囊，用户可点击停止）。两种用法：mode=countdown 倒计时（seconds 必填），到点后应用会自动以系统消息唤醒你继续当前会话的任务——适合「等待构建/安装/下载完成」这类不知道要多久的事，不要用 sleep 命令或反复轮询空等；mode=countup 正计时，从启动开始计时，到停止时才上报已计时长。计时器不跨应用重启：重启后全部消失，超过 24 小时的等待请改用定时任务（schedule_create）。',
+        parameters: {
+            type: 'object',
+            properties: {
+                mode: {type: 'string', enum: ['countdown', 'countup'], description: 'countdown=倒计时（到点自动唤醒），countup=正计时（停止时上报时长）'},
+                seconds: {type: 'integer', description: '倒计时秒数（countdown 必填，1–86400；countup 忽略）。分钟数换算成秒传入，如 5 分钟传 300'},
+                label: {type: 'string', description: '计时目的（≤60 字，如「等待构建完成」），显示在胶囊上'},
+            },
+            required: ['mode', 'label'],
+        },
+    },
+    stop_timer: {
+        name: 'stop_timer',
+        description: '停止一个运行中的计时器。id 用 start_timer 返回的值；省略 id 且当前只有一个运行中的计时器时直接停止它。停止正计时会返回已计时长，可用于向用户报告耗时。',
+        parameters: {
+            type: 'object',
+            properties: {
+                id: {type: 'string', description: '计时器 id；省略且只有一个运行中的计时器时停止它'},
+            },
+        },
+    },
     write_worklog: {
         name: 'write_worklog',
         description: '在工作区 .cadt/logs/ 追加一条工作日志（时间自动记录，格式为「标题 + 一句话摘要」）。完成一个任务、修一个问题、做出一个关键决定后调用一次，帮用户和后续会话快速回顾做过什么。只记录标题与摘要，不要写正文、代码片段、密钥或敏感信息。日志文件只能通过本工具追加：不允许也不必用 write_file / edit_file / read_file 修改 .cadt/logs/ 下的任何文件，完整历史请用 list_dir / read_file 之外的方式提示用户自行打开查看。所有范围档均可用，无需审批。',
@@ -551,6 +574,9 @@ export function createAIToolDefs(ctx) {
             AI_TOOL_DEFS.plan_mode,
             AI_TOOL_DEFS.schedule_list,
             AI_TOOL_DEFS.reminder_list,
+            // 计时器：纯会话态（不碰工作区文件、不产生进程），到点经系统消息唤醒，所有范围档可用
+            AI_TOOL_DEFS.start_timer,
+            AI_TOOL_DEFS.stop_timer,
         ];
         if (appControlOn()) list.push(AI_TOOL_DEFS.app_control);
         // 工作日志：应用管理的追加式通道（只进 .cadt/logs/，不经工作区写审批），自动审批下直接放行

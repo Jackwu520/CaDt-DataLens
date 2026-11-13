@@ -42,6 +42,8 @@ type App struct {
 	dirty               bool
 	forceClose          bool
 	aiRunning           bool
+	aiTimersMu          sync.Mutex
+	aiTimers            *aiTimerRegistry
 	watchMu             sync.Mutex
 	watchRoot           string
 	watchStop           chan struct{}
