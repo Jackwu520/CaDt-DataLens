@@ -116,6 +116,8 @@ import {createAIGitUi} from './ai-git-ui.js';
 import {createAISlash} from './ai-slash.js';
 import {createAIMessageQueue} from './ai-message-queue.js';
 import {createAISchedule} from './ai-schedule.js';
+import {createAISessionList} from './ai-session-list.js';
+import {createAIComposer} from './ai-composer.js';
 
 
 export function createAIPanel(options) {
@@ -421,11 +423,6 @@ export function createAIPanel(options) {
     const thinkScrollFollow = new WeakMap();
     // 消息懒加载：每会话记录当前渲染窗口起点；首屏至少覆盖约 1M tokens 上下文，上滑触顶再往前补。
     const renderWindows = new Map();
-    let sessionSearchQuery = '';
-    let sessionSearchHits = [];
-    let sessionSearchTimer = 0;
-    let sessionSearchSeq = 0;
-    let sessionSearchLoading = false;
     const AI_RENDER_INITIAL_TOKENS = 1000000;
     const AI_RENDER_STEP_TOKENS = 250000;
     // 已压缩会话在消息流顶部常驻一张摘要卡：压缩本身不再"凭空消失"，
@@ -434,7 +431,6 @@ export function createAIPanel(options) {
     let loadingEarlier = false;
     let processTicker = 0;
     let pendingEdit = null;
-    let attachments = [];
     let attachSeq = 0;
     let appDirPromise = null;
     let memoryFallbackNotified = false;
@@ -467,22 +463,8 @@ export function createAIPanel(options) {
     const bgJobCursors = new Map();
     const AI_BG_LIVE_MAX_LINES = 200;
     const AI_BG_LIVE_MAX_CHARS = 8192;
-    let archivedExpanded = false;
-    const collapsedWorkspaceGroups = new Set();
-    // 每个工作区分组一次只渲染最近 AI_SESSION_GROUP_PAGE 条会话，点分组底部的「···」再追加一页。
-    // key = 列表类型 + 工作区 key，进行中与已归档互不影响；只是渲染层的展开状态，不动会话数据。
-    const AI_SESSION_GROUP_PAGE = 10;
-    const workspaceGroupVisibleCounts = new Map();
-    // 会话条目右侧状态图标的悬浮提示
-    const SESSION_STATUS_TITLE = {
-        running: '会话运行中',
-        pending: '待确认：需要你审批或回答',
-        done: '会话已完成，尚未查看',
-        error: '会话出错，尚未查看',
-    };
     let dismissedPlanApproval = '';
     const messageQueue = [];
-    let queueSeq = 0;
     const interjectPending = new Set();  // sessionId：该会话有一条「插话」待优先发送
     let archiveOverflowAt = 0;
     let autoCompactCount = new Map();
@@ -1787,591 +1769,6 @@ export function createAIPanel(options) {
         }
     }
 
-    // 配置切换走「模型列表」卡片；旧的 <select id="ai-opt-profile"> 已从 HTML 移除
-    function renderProfileSelect() {
-        renderModelChip();
-    }
-
-    function sessionActivity(session) {
-        const last = session.messages[session.messages.length - 1];
-        return Number(last && last.ts) || Number(session.updatedAt) || Number(session.createdAt) || 0;
-    }
-
-    function searchSessionHitsLocal(query) {
-        const q = aiTextOf(query).trim().toLowerCase();
-        if (!q) return [];
-        const hits = [];
-        const maxTotal = 30;
-        const perSession = 4;
-        let scanned = 0;
-        const ordered = sessions.slice().sort((a, b) => sessionActivity(b) - sessionActivity(a));
-        for (const session of ordered) {
-            if (hits.length >= maxTotal || scanned > 2000) break;
-            let count = 0;
-            const titleText = aiTextOf(session.title);
-            if (titleText.toLowerCase().includes(q)) {
-                hits.push({session, index: -1, role: '', name: '', titleHit: true, before: '', match: titleText, after: ''});
-                count++;
-            }
-            const list = session.messages || [];
-            for (let i = list.length - 1; i >= 0 && count < perSession && hits.length < maxTotal; i--) {
-                if (++scanned > 2000) break;
-                const message = list[i];
-                if (!message) continue;
-                const rawHaystack = [message.content, message.reasoning, message.name, message.arguments]
-                    .map((part) => aiTextOf(part)).filter(Boolean).join('\n');
-                if (!rawHaystack) continue;
-                // 单条上限防止超长工具输出把搜索拖死；超过后只搜前 200k 字符。
-                const haystack = rawHaystack.length > 200000 ? rawHaystack.slice(0, 200000) : rawHaystack;
-                const pos = haystack.toLowerCase().indexOf(q);
-                if (pos < 0) continue;
-                const start = Math.max(0, pos - 36);
-                const end = Math.min(haystack.length, pos + q.length + 54);
-                hits.push({
-                    session,
-                    index: i,
-                    mid: aiTextOf(message._mid),
-                    role: message.role,
-                    name: aiTextOf(message.name),
-                    before: haystack.slice(start, pos).replace(/\s+/g, ' '),
-                    match: haystack.slice(pos, pos + q.length),
-                    after: haystack.slice(pos + q.length, end).replace(/\s+/g, ' '),
-                });
-                count++;
-            }
-        }
-        return hits;
-    }
-
-    function sessionHitFromGo(raw) {
-        const snippet = aiTextOf(raw && raw.snippet);
-        let before = snippet;
-        let match = '';
-        let after = '';
-        const start = snippet.indexOf('\u0001');
-        const end = start >= 0 ? snippet.indexOf('\u0002', start + 1) : -1;
-        if (start >= 0 && end > start) {
-            before = snippet.slice(0, start);
-            match = snippet.slice(start + 1, end);
-            after = snippet.slice(end + 1);
-        }
-        const liveIndex = Number(raw && raw.liveIndex);
-        return {
-            sessionId: aiTextOf(raw && raw.sessionId),
-            title: aiTextOf(raw && raw.title),
-            role: aiTextOf(raw && raw.role),
-            name: aiTextOf(raw && raw.name),
-            mid: aiTextOf(raw && raw.mid),
-            index: Number.isInteger(liveIndex) ? liveIndex : -1,
-            titleHit: aiTextOf(raw && raw.kind) === 'title' || liveIndex < 0,
-            before,
-            match,
-            after,
-        };
-    }
-
-    // 优先走 Go 的 SQLite 索引；索引不可用时退回内存线性扫描。
-    async function runSessionSearch(rawQuery) {
-        const query = aiTextOf(rawQuery).trim();
-        const seq = ++sessionSearchSeq;
-        sessionSearchQuery = query;
-        if (!query) {
-            sessionSearchHits = [];
-            sessionSearchLoading = false;
-            renderSessionList();
-            return;
-        }
-        sessionSearchLoading = true;
-        sessionSearchHits = [];
-        renderSessionList();
-        let hits = null;
-        if (backend.AISessionSearch && sessionUseDisk()) {
-            try {
-                const list = await backend.AISessionSearch(query, 30);
-                if (seq !== sessionSearchSeq) return;
-                hits = (Array.isArray(list) ? list : []).map(sessionHitFromGo).filter((hit) => hit.sessionId);
-            } catch (e) {
-                hits = null;
-            }
-        }
-        if (seq !== sessionSearchSeq) return;
-        if (!hits) {
-            hits = searchSessionHitsLocal(query).map((hit) => ({
-                sessionId: hit.session ? hit.session.id : '',
-                title: hit.session ? hit.session.title : '',
-                role: hit.role,
-                name: hit.name,
-                mid: hit.mid || '',
-                index: hit.index,
-                titleHit: !!hit.titleHit,
-                before: hit.before,
-                match: hit.match,
-                after: hit.after,
-            })).filter((hit) => hit.sessionId);
-        }
-        sessionSearchHits = hits;
-        sessionSearchLoading = false;
-        renderSessionList();
-    }
-
-    function renderSessionSearchHits(scrollTop) {
-        sessionListEl.innerHTML = '';
-        const count = document.createElement('div');
-        count.className = 'ai-session-search-count';
-        count.textContent = sessionSearchLoading ? '搜索中…' : ('搜索结果 · ' + sessionSearchHits.length + ' 条');
-        sessionListEl.appendChild(count);
-        if (sessionSearchLoading) {
-            sessionListEl.scrollTop = scrollTop || 0;
-            return;
-        }
-        if (!sessionSearchHits.length) {
-            const empty = document.createElement('div');
-            empty.className = 'ai-session-empty';
-            empty.textContent = '没有匹配的会话内容';
-            sessionListEl.appendChild(empty);
-            return;
-        }
-        for (const hit of sessionSearchHits) {
-            const item = document.createElement('div');
-            item.className = 'ai-session-hit';
-            const head = document.createElement('div');
-            head.className = 'ai-session-hit-head';
-            const role = document.createElement('span');
-            role.textContent = hit.titleHit
-                ? '标题'
-                : (hit.role === 'user' ? '你' : (hit.role === 'assistant' ? 'AI' : '工具' + (hit.name ? ' · ' + hit.name : '')));
-            const title = document.createElement('span');
-            title.className = 'ai-session-hit-title';
-            title.textContent = hit.title || '新会话';
-            head.append(role, title);
-            const snippet = document.createElement('div');
-            snippet.className = 'ai-session-hit-snippet';
-            if (hit.titleHit) {
-                snippet.textContent = '会话标题匹配';
-            } else {
-                snippet.append(document.createTextNode(hit.before));
-                const mark = document.createElement('mark');
-                mark.textContent = hit.match;
-                snippet.append(mark, document.createTextNode(hit.after));
-            }
-            item.append(head, snippet);
-            item.addEventListener('click', () => {
-                const target = sessionById(hit.sessionId);
-                if (!target) return;
-                ensureOpen();
-                switchSession(target.id);
-                let targetIndex = hit.index;
-                if (hit.mid) {
-                    const found = (target.messages || []).findIndex((message) => message && message._mid === hit.mid);
-                    if (found < 0) return; // 消息已被压缩/删除，停在会话即可
-                    targetIndex = found;
-                }
-                if (targetIndex >= 0 && !hit.titleHit) jumpToMessage(target, targetIndex);
-            });
-            sessionListEl.appendChild(item);
-        }
-        sessionListEl.scrollTop = scrollTop || 0;
-    }
-
-    function jumpToMessage(session, index) {
-        if (!session || index < 0 || index >= (session.messages || []).length) return;
-        stickBottom = false;
-        renderWindows.set(session.id, {start: Math.max(0, index - 3), len: session.messages.length});
-        if (currentSession() === session) renderMessages(true);
-        setTimeout(() => {
-            if (!el.messages) return;
-            const node = el.messages.querySelector('.ai-msg[data-ai-idx="' + index + '"]');
-            if (!node) return;
-            node.scrollIntoView({block: 'center'});
-            node.classList.add('ai-msg-jump');
-            setTimeout(() => node.classList.remove('ai-msg-jump'), 1600);
-        }, 80);
-    }
-
-    // ---------- 会话条目状态 ----------
-    // 会话条目右侧：未悬浮时显示状态图标，悬浮时换成「⋯」会话操作。
-    // pending（等审批 / 等回答 / 计划待批准）优先于 running，因为它是需要用户动手的那一个。
-    function sessionNeedsAttention(session) {
-        if (!session) return false;
-        for (const message of session.messages || []) {
-            if (!message) continue;
-            if (message.approval && message.approval.state === 'pending') return true;
-            if (message.ask && message.ask.state === 'pending') return true;
-            if (message.envAsk && message.envAsk.state === 'pending') return true;
-        }
-        // 计划模式：最后一条是待批准的计划（用户还没批准 / 放弃）
-        if (session.planMode && session.messages.length) {
-            const last = session.messages[session.messages.length - 1];
-            if (last && last.role === 'assistant' && last.planMode && last.status === 'done' && String(last.content || '').trim()) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    function sessionEntryStatus(session, archived) {
-        if (!session || archived || session.archivedAt) return '';
-        if (sessionNeedsAttention(session)) return 'pending';
-        if (streams.has(session.id)) return 'running';
-        // 后台命令可能比本轮活得更久：即使没有流，作业还在跑也要在列表上标出来
-        if (sessionHasLiveBgJob(session.id)) return 'running';
-        // 后台命令可能比本轮活得更久：即使没有流，作业还在跑也要在列表上标出来
-        if (sessionHasLiveBgJob(session.id)) return 'running';
-        if (session.unread === 'done' || session.unread === 'error') {
-            // 正在看这个会话（面板打开且就是当前会话）时没有「未查看」可言：磁盘重读、
-            // 另一窗口写入都可能把未读标记带回来，显示出来就是用户盯着的条目上挂绿点，
-            // 得再点一次才会消失。这里直接不显示。
-            if (isOpen() && currentSession() === session) return '';
-            return session.unread;
-        }
-        return '';
-    }
-
-    // 后台结束的会话标一个「未查看」；落盘进 meta，重启后仍然保留。
-    function setSessionUnread(session, kind) {
-        if (!session || session.archivedAt) return;
-        // 面板开着且正看着这个会话：用户当场就看到了结果，不该留未读标记。
-        if (isOpen() && currentSession() === session) {
-            if (session.unread) {
-                session.unread = '';
-                persistSessions();
-            }
-            return;
-        }
-        const next = kind === 'error' ? 'error' : 'done';
-        if (session.unread === next) return;
-        session.unread = next;
-        persistSessions();
-    }
-
-    function clearSessionUnread(session) {
-        if (!session || !session.unread) return;
-        session.unread = '';
-        persistSessions();
-    }
-
-    function renderSessionList() {
-        // 头部身份（会话标题）与 chips 角标跟随会话列表刷新点（改名/切换/自动标题都会走到这里）
-        updateHeadHud();
-        if (!sessionListEl) return;
-        const scrollTop = sessionListEl.scrollTop;
-        sessionListEl.innerHTML = '';
-        const current = currentSession();
-        if (sessionSearchQuery) {
-            renderSessionSearchHits(scrollTop);
-            return;
-        }
-        const ordered = sessions.slice().sort((a, b) => sessionActivity(b) - sessionActivity(a));
-        if (!ordered.length) {
-            const empty = document.createElement('div');
-            empty.className = 'ai-session-empty';
-            const text = document.createElement('div');
-            text.textContent = '还没有会话';
-            const button = document.createElement('button');
-            button.type = 'button';
-            button.className = 'dlg-btn';
-            button.textContent = '新建会话';
-            button.addEventListener('click', () => {
-                ensureOpen();
-                newSession();
-            });
-            empty.append(text, button);
-            sessionListEl.appendChild(empty);
-            return;
-        }
-
-        const renderItem = (session, archived) => {
-            const item = document.createElement('div');
-            item.className = 'ai-session-item' + (current && current.id === session.id ? ' active' : '') + (archived ? ' archived' : '');
-            item.dataset.aiSessionId = session.id;
-            item.tabIndex = 0;
-            item.setAttribute('role', 'button');
-            const main = document.createElement('div');
-            main.className = 'ai-session-main';
-            const titleRow = document.createElement('div');
-            titleRow.className = 'ai-session-title-row';
-            if (session.pinned && !archived) {
-                const pin = document.createElement('span');
-                pin.className = 'ai-session-pin';
-                pin.innerHTML = iconSvg('pin', 11);
-                pin.title = '已置顶';
-                titleRow.appendChild(pin);
-            }
-            const title = document.createElement('div');
-            title.className = 'ai-session-title';
-            title.textContent = session.title || '新会话';
-            title.title = session.title || '新会话';
-            titleRow.appendChild(title);
-            const meta = document.createElement('div');
-            meta.className = 'ai-session-meta';
-            meta.textContent = (archived ? '已归档 · ' : '') + session.messages.length + ' 条消息 · ' + aiFormatSessionTime(sessionActivity(session));
-            main.append(titleRow, meta);
-            // 右侧：未悬浮显示状态（运行中 / 待确认 / 已完成未查看），悬浮换成「⋯」会话操作。
-            const side = document.createElement('div');
-            side.className = 'ai-session-side';
-            const statusKind = sessionEntryStatus(session, archived);
-            if (statusKind) {
-                const badge = document.createElement('span');
-                badge.className = 'ai-session-status ' + statusKind;
-                if (statusKind === 'running') {
-                    const spinner = document.createElement('span');
-                    spinner.className = 'ai-session-status-spin';
-                    badge.appendChild(spinner);
-                } else if (statusKind === 'pending') {
-                    badge.innerHTML = iconSvg('info', 13);
-                } else {
-                    const dot = document.createElement('span');
-                    dot.className = 'ai-session-status-dot';
-                    badge.appendChild(dot);
-                }
-                badge.title = SESSION_STATUS_TITLE[statusKind] || '';
-                badge.setAttribute('role', 'img');
-                badge.setAttribute('aria-label', badge.title);
-                side.appendChild(badge);
-            }
-            const more = document.createElement('button');
-            more.type = 'button';
-            more.className = 'ai-session-more';
-            more.title = '会话操作';
-            more.innerHTML = iconSvg('more', 13);
-            more.addEventListener('click', (e) => {
-                e.stopPropagation();
-                const rect = more.getBoundingClientRect();
-                showSessionMenu(session, rect.left, rect.bottom + 4);
-            });
-            side.appendChild(more);
-            item.append(main, side);
-            item.addEventListener('click', () => {
-                ensureOpen();
-                clearSessionUnread(session);
-                if (!current || current.id !== session.id) switchSession(session.id);
-            });
-            item.addEventListener('keydown', (e) => {
-                if (e.target !== item) return;
-                if (e.key !== 'Enter' && e.key !== ' ') return;
-                e.preventDefault();
-                ensureOpen();
-                switchSession(session.id);
-            });
-            item.addEventListener('contextmenu', (e) => {
-                e.preventDefault();
-                showSessionMenu(session, e.clientX, e.clientY);
-            });
-            sessionListEl.appendChild(item);
-        };
-
-        const buildWorkspaceGroups = (list) => {
-            const groups = [];
-            const byKey = new Map();
-            const currentKey = aiWorkspaceKey(currentWorkspacePath());
-            for (const session of list) {
-                const path = sessionWorkspacePath(session);
-                const key = aiWorkspaceKey(path) || '';
-                let group = byKey.get(key);
-                if (!group) {
-                    group = {key, path, sessions: [], latest: 0, current: !!key && key === currentKey};
-                    byKey.set(key, group);
-                    groups.push(group);
-                }
-                group.sessions.push(session);
-                group.latest = Math.max(group.latest, sessionActivity(session));
-            }
-            // 当前工作区排最前；其余按最近活动时间倒序；未关联工作区的放最后。
-            groups.sort((a, b) => {
-                if (a.current !== b.current) return a.current ? -1 : 1;
-                if (!!a.key !== !!b.key) return a.key ? -1 : 1;
-                return b.latest - a.latest;
-            });
-            return groups;
-        };
-
-        const renderWorkspaceGroups = (list, archived, collapsible) => {
-            const groups = buildWorkspaceGroups(list);
-            const showHeaders = groups.length > 1 || !!(groups[0] && groups[0].path);
-            for (const group of groups) {
-                if (showHeaders) {
-                    const collapsed = collapsible && collapsedWorkspaceGroups.has(group.key);
-                    // 用 div 承载：头部内含两个真实 button，避免 button 嵌套 button 的非法结构。
-                    const head = document.createElement('div');
-                    head.className = 'ai-session-group-head' + (group.current ? ' current' : '') + (collapsed ? '' : ' expanded');
-                    head.title = group.path || '未关联工作区';
-                    if (collapsible) {
-                        head.tabIndex = 0;
-                        head.setAttribute('role', 'button');
-                        head.setAttribute('aria-expanded', String(!collapsed));
-                    }
-                    const chev = document.createElement('span');
-                    chev.className = 'ai-session-group-chev';
-                    chev.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>';
-                    const icon = document.createElement('span');
-                    icon.className = 'ai-session-group-icon';
-                    icon.innerHTML = iconSvg(group.path ? 'folder' : 'circle', 12);
-                    const name = document.createElement('span');
-                    name.className = 'ai-session-group-name';
-                    name.textContent = group.path ? aiWorkspaceName(group.path) : '未关联工作区';
-                    // 分组头右侧不再显示会话数：悬浮时才出现「新建会话 / 会话操作」两个图标。
-                    const actions = document.createElement('span');
-                    actions.className = 'ai-session-group-actions';
-                    const add = document.createElement('button');
-                    add.type = 'button';
-                    add.className = 'ai-session-group-action';
-                    add.title = '新建会话';
-                    add.setAttribute('aria-label', '新建会话');
-                    add.innerHTML = iconSvg('plus', 12);
-                    add.addEventListener('click', (e) => {
-                        e.stopPropagation();
-                        collapsedWorkspaceGroups.delete(group.key);
-                        ensureOpen();
-                        newSessionInWorkspace(group);
-                        renderSessionList();
-                    });
-                    const menu = document.createElement('button');
-                    menu.type = 'button';
-                    menu.className = 'ai-session-group-action';
-                    menu.title = '会话操作';
-                    menu.setAttribute('aria-label', '会话操作');
-                    menu.innerHTML = iconSvg('more', 12);
-                    menu.addEventListener('click', (e) => {
-                        e.stopPropagation();
-                        const rect = menu.getBoundingClientRect();
-                        showSessionListMenu(rect.left, rect.bottom + 4);
-                    });
-                    actions.append(add, menu);
-                    head.append(chev, icon, name, actions);
-                    if (collapsible) {
-                        const toggle = () => {
-                            if (collapsedWorkspaceGroups.has(group.key)) collapsedWorkspaceGroups.delete(group.key);
-                            else collapsedWorkspaceGroups.add(group.key);
-                            renderSessionList();
-                        };
-                        head.addEventListener('click', toggle);
-                        head.addEventListener('keydown', (e) => {
-                            if (e.target !== head || (e.key !== 'Enter' && e.key !== ' ')) return;
-                            e.preventDefault();
-                            toggle();
-                        });
-                    } else {
-                        chev.style.visibility = 'hidden';
-                    }
-                    sessionListEl.appendChild(head);
-                    if (collapsed) continue;
-                }
-                const pageKey = (archived ? 'archived:' : 'active:') + group.key;
-                const total = group.sessions.length;
-                let visible = Math.min(workspaceGroupVisibleCounts.get(pageKey) || AI_SESSION_GROUP_PAGE, total);
-                // 当前会话即使排在分页之外也保持可见，避免切换后高亮条目凭空消失。
-                if (current) {
-                    const activeIndex = group.sessions.findIndex((session) => session.id === current.id);
-                    if (activeIndex >= visible) visible = Math.min(total, activeIndex + 1);
-                }
-                for (const session of group.sessions.slice(0, visible)) renderItem(session, archived);
-                if (visible < total) {
-                    const remaining = total - visible;
-                    const more = document.createElement('button');
-                    more.type = 'button';
-                    more.className = 'ai-session-group-more';
-                    more.innerHTML = iconSvg('more', 14);
-                    more.title = '还有 ' + remaining + ' 条会话，点击再显示 ' + Math.min(AI_SESSION_GROUP_PAGE, remaining) + ' 条';
-                    more.setAttribute('aria-label', more.title);
-                    more.addEventListener('click', () => {
-                        workspaceGroupVisibleCounts.set(pageKey, Math.min(total, visible + AI_SESSION_GROUP_PAGE));
-                        renderSessionList();
-                    });
-                    sessionListEl.appendChild(more);
-                }
-            }
-        };
-
-        const activeList = ordered.filter((session) => !session.archivedAt);
-        const archivedList = ordered.filter((session) => session.archivedAt);
-        // 置顶会话固定在列表最上方（不受工作区分组与时间排序影响）
-        const pinnedList = activeList.filter((session) => session.pinned);
-        if (pinnedList.length) {
-            const pinHead = document.createElement('div');
-            pinHead.className = 'ai-session-pin-head';
-            const pinIcon = document.createElement('span');
-            pinIcon.innerHTML = iconSvg('pin', 11);
-            const pinLabel = document.createElement('span');
-            pinLabel.textContent = '置顶 ' + pinnedList.length;
-            pinHead.append(pinIcon, pinLabel);
-            sessionListEl.appendChild(pinHead);
-            for (const session of pinnedList) renderItem(session, false);
-        }
-        const restActive = activeList.filter((session) => !session.pinned);
-        if (!restActive.length) {
-            if (!pinnedList.length) {
-                const empty = document.createElement('div');
-                empty.className = 'ai-session-archive-empty';
-                empty.textContent = '没有进行中的会话';
-                sessionListEl.appendChild(empty);
-            }
-        } else {
-            renderWorkspaceGroups(restActive, false, true);
-        }
-        if (archivedList.length) {
-            const head = document.createElement('button');
-            head.type = 'button';
-            head.className = 'ai-session-arch-head' + (archivedExpanded ? ' expanded' : '');
-            head.setAttribute('aria-expanded', String(archivedExpanded));
-            const chev = document.createElement('span');
-            chev.className = 'ai-session-arch-chev';
-            chev.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>';
-            const label = document.createElement('span');
-            label.textContent = '已归档 ' + archivedList.length;
-            head.append(chev, label);
-            head.addEventListener('click', () => {
-                archivedExpanded = !archivedExpanded;
-                renderSessionList();
-            });
-            sessionListEl.appendChild(head);
-            if (archivedExpanded) {
-                renderWorkspaceGroups(archivedList, true, false);
-            }
-        }
-        sessionListEl.scrollTop = scrollTop;
-    }
-
-    function showSessionMenu(session, x, y) {
-        if (!showContextMenu) return;
-        showContextMenu([
-            {label: '新建会话', action: () => { ensureOpen(); newSession(); }},
-            {sep: true},
-            {label: session.pinned ? '取消置顶' : '置顶会话', disabled: !!session.archivedAt, action: () => toggleSessionPin(session)},
-            {label: '重命名会话…', action: () => renameSession(session)},
-            {label: '导出会话…', action: () => exportSession(session)},
-            {label: '会话数据诊断…', action: () => showSessionDiagnostics(session)},
-            {label: session.archivedAt ? '取消归档' : '归档会话', action: () => archiveSession(session, !session.archivedAt)},
-            {sep: true},
-            {label: '删除会话', danger: true, action: () => deleteSession(session)},
-        ], x, y);
-    }
-
-    function showSessionListMenu(x, y) {
-        if (!showContextMenu) return;
-        // 不传坐标时按面板头部的「⋯」定位；工作区分组头复用同一菜单，按被点的图标定位。
-        let left = x;
-        let top = y;
-        if (typeof left !== 'number' || typeof top !== 'number') {
-            if (!sessionMoreBtn) return;
-            const rect = sessionMoreBtn.getBoundingClientRect();
-            left = rect.left;
-            top = rect.bottom + 4;
-        }
-        const session = currentSession();
-        showContextMenu([
-            {label: '新建会话', action: () => { ensureOpen(); newSession(); }},
-            {sep: true},
-            {label: session && session.pinned ? '取消置顶当前会话' : '置顶当前会话', disabled: !session || !!(session && session.archivedAt), action: () => toggleSessionPin(session)},
-            {label: '重命名当前会话…', disabled: !session, action: () => renameSession(session)},
-            {label: '导出当前会话…', disabled: !session, action: () => exportSession(session)},
-            {label: '会话数据诊断…', disabled: !session, action: () => showSessionDiagnostics(session)},
-            {label: session && session.archivedAt ? '取消归档当前会话' : '归档当前会话', disabled: !session, action: () => archiveSession(session, !(session && session.archivedAt))},
-            {sep: true},
-            {label: '删除当前会话', danger: true, disabled: !session, action: () => deleteSession(session)},
-            {sep: true},
-            {label: '打开对话日志目录', action: openAILogDir},
-        ], left, top);
-    }
 
     // ---------- Todolist / 变更记录 / 授权清单 ----------
 
@@ -2403,6 +1800,51 @@ export function createAIPanel(options) {
     const appendChangesSummary = (session, mark) => changesMod.appendChangesSummary(session, mark);
     const renderChangesSummaryCard = (message, session) => changesMod.renderChangesSummaryCard(message, session);
     const changesSummaryBlock = (message, session) => changesMod.changesSummaryBlock(message, session);
+
+    // 会话列表域（阶段 3 拆出：ai-session-list.js；sessions 只读经 getSessions，stickBottom 经 setStickBottom）
+    const sessionListMod = createAISessionList({
+        el,
+        sessionListEl,
+        sessionMoreBtn,
+        renderWindows,
+        streams,
+        backend,
+        aiWorkspaceKey,
+        aiWorkspaceName,
+        sessionWorkspacePath,
+        sessionUseDisk,
+        currentSession,
+        currentWorkspacePath,
+        isOpen,
+        ensureOpen,
+        persistSessions,
+        renderMessages,
+        renderModelChip,
+        sessionById,
+        sessionHasLiveBgJob,
+        switchSession,
+        updateHeadHud,
+        toggleSessionPin,
+        renameSession,
+        exportSession,
+        showSessionDiagnostics,
+        archiveSession,
+        deleteSession,
+        newSession,
+        newSessionInWorkspace,
+        openAILogDir,
+        showContextMenu,
+        getSessions: () => sessions,
+        setStickBottom: (value) => { stickBottom = value; },
+    });
+    const renderProfileSelect = () => sessionListMod.renderProfileSelect();
+    const sessionActivity = (...args) => sessionListMod.sessionActivity(...args);
+    const runSessionSearch = (...args) => sessionListMod.runSessionSearch(...args);
+    const renderSessionSearchHits = (...args) => sessionListMod.renderSessionSearchHits(...args);
+    const setSessionUnread = (...args) => sessionListMod.setSessionUnread(...args);
+    const renderSessionList = () => sessionListMod.renderSessionList();
+    const showSessionMenu = (...args) => sessionListMod.showSessionMenu(...args);
+    const showSessionListMenu = (...args) => sessionListMod.showSessionListMenu(...args);
 
     function renderApprovedSettings() {
         if (!opt.approved) return;
@@ -5049,7 +4491,7 @@ export function createAIPanel(options) {
     async function contextSummaryText() {
         const session = currentSession();
         const profile = profileOf(session);
-        const bundle = await assembleSystemContext(session, attachments);
+        const bundle = await assembleSystemContext(session, getAttachments());
         rememberPrompt(session && session.id, bundle);
         const apiMessages = buildApiMessages(session, null, bundle.text);
         let chars = 0;
@@ -5112,8 +4554,8 @@ export function createAIPanel(options) {
             const session = currentSession();
             const messages = buildApiMessages(session, null, promptTextOf(session && session.id));
             const chars = messages.reduce((sum, message) => sum + aiTextOf(message.content).length, 0);
-            const extra = attachments.reduce((sum, item) => sum + aiTextOf(item.content).length, 0);
-            const imageCount = aiImageStats(messages).count + attachments.filter((item) => item.kind === 'image').length;
+            const extra = getAttachments().reduce((sum, item) => sum + aiTextOf(item.content).length, 0);
+            const imageCount = aiImageStats(messages).count + getAttachments().filter((item) => item.kind === 'image').length;
             el.contextCount.textContent = '上下文约 ' + (chars + extra) + ' 字符' + (imageCount ? ' · 图片 ' + imageCount + ' 张' : '');
         }
         updateCtxBanner();
@@ -5133,7 +4575,7 @@ export function createAIPanel(options) {
         const running = promptJobs.get(sessionId);
         if (running) return running;
         const job = Promise.resolve()
-            .then(() => assembleSystemContext(session, attachments))
+            .then(() => assembleSystemContext(session, getAttachments()))
             .then((bundle) => {
                 if (streamOf(sessionId) || compactOf(sessionId)) return;
                 rememberPrompt(sessionId, bundle);
@@ -5412,7 +4854,7 @@ export function createAIPanel(options) {
         let systemText = promptTextOf(session.id);
         if (refreshSystem) {
             try {
-                const bundle = await assembleSystemContext(session, attachments);
+                const bundle = await assembleSystemContext(session, getAttachments());
                 rememberPrompt(session.id, bundle);
                 systemText = bundle.text;
             } catch (e) {}
@@ -5430,7 +4872,7 @@ export function createAIPanel(options) {
             if (index === 0 && message.role === 'system') systemTokens += tokens;
             else messageTokens += tokens;
         });
-        for (const item of attachments) {
+        for (const item of getAttachments()) {
             messageTokens += item.kind === 'image' ? aiEstimateImageTokens(item) : aiEstimateTokens(aiTextOf(item.content));
         }
         const toolTokens = toolsTokenEstimate(session);
@@ -8635,7 +8077,7 @@ export function createAIPanel(options) {
         const archived = !!(session && session.archivedAt);
         const loadFailed = !!(session && session._loadError);
         const hasText = !!(el.input && el.input.value.trim());
-        const hasImages = attachments.some((item) => item.kind === 'image');
+        const hasImages = getAttachments().some((item) => item.kind === 'image');
         const imageEntry = hasImages ? entryOf(currentSession()) : null;
         const imageBlocked = !!imageEntry && imageEntry.modalities && imageEntry.modalities.image === false;
         el.send.disabled = !hasProfile || busy || archived || loadFailed || imageBlocked || (!hasText && !hasImages);
@@ -8722,8 +8164,8 @@ export function createAIPanel(options) {
 
     async function submitText(text, truncateAt, extra) {
         const value = String(text == null ? '' : text).trim();
-        const imageAttachments = attachments.filter((item) => item.kind === 'image').map(aiNormalizeImage).filter(Boolean);
-        const textAttachments = attachments.filter((item) => item.kind !== 'image');
+        const imageAttachments = getAttachments().filter((item) => item.kind === 'image').map(aiNormalizeImage).filter(Boolean);
+        const textAttachments = getAttachments().filter((item) => item.kind !== 'image');
         if (!value && !imageAttachments.length) return false;
         if (value.length > AI_CHAT_INPUT_LIMIT) {
             flash('消息过长（上限 ' + AI_CHAT_INPUT_LIMIT + ' 字符）', true);
@@ -8851,7 +8293,7 @@ export function createAIPanel(options) {
             noteForSession(session.id, '上下文注入失败：' + ((e && e.message) || e), true);
         }
         rememberPrompt(session.id, bundle);
-        attachments = [];
+        setAttachments([]);
         attachSeq = 0;
         renderAttachments();
         updateContextCount();
@@ -10300,343 +9742,6 @@ export function createAIPanel(options) {
     const refreshGitEntry = () => gitUiMod.refreshGitEntry();
     const showGitMenu = () => gitUiMod.showGitMenu();
 
-    function renderAttachments() {
-        if (!el.attach) return;
-        el.attach.innerHTML = '';
-        el.attach.classList.toggle('hidden', !attachments.length);
-        for (const item of attachments) {
-            const chip = document.createElement('span');
-            const remove = document.createElement('button');
-            remove.type = 'button';
-            remove.className = 'ai-chip-remove';
-            remove.title = '移除';
-            remove.textContent = '×';
-            remove.addEventListener('click', () => {
-                attachments = attachments.filter((current) => current.id !== item.id);
-                renderAttachments();
-                updateContextCount();
-            });
-            if (item.kind === 'image') {
-                chip.className = 'ai-chip ai-chip-image';
-                chip.title = item.name + (item.width && item.height ? ' · ' + item.width + '×' + item.height : '');
-                const img = document.createElement('img');
-                img.className = 'ai-chip-img';
-                img.src = aiImageSrc(item);
-                img.alt = item.name || '图片';
-                img.draggable = false;
-                img.addEventListener('click', () => showImagePreview(item));
-                chip.append(img, remove);
-            } else {
-                chip.className = 'ai-chip';
-                const label = document.createElement('span');
-                label.className = 'ai-chip-label';
-                let prefix = '文件 · ';
-                if (item.kind === 'skill') prefix = '技能 · ';
-                else if (item.kind === 'selection') prefix = '选中 · ';
-                else if (item.kind === 'reference') prefix = '引用 · ';
-                else if (item.kind === 'selection_reference') prefix = '引用选区 · ';
-                label.textContent = prefix + item.label;
-                label.title = item.kind === 'selection_reference'
-                    ? (item.path || '') + ' · ' + (item.start && item.start.line ? item.start.line + ':' + item.start.column : '') +
-                        '–' + (item.end && item.end.line ? item.end.line + ':' + item.end.column : '')
-                    : (item.path || item.label);
-                chip.append(label, remove);
-            }
-            el.attach.appendChild(chip);
-        }
-        updateContextCount();
-        updateSendState();
-    }
-
-    function addAttachment(item) {
-        if (!item) return false;
-        if (item.kind === 'image') {
-            // 模型条目未勾选图像输入时拒绝附加（粘贴 / 拖拽 / 文件对话框统一走这里）
-            const entry = entryOf(currentSession());
-            if (entry && entry.modalities && entry.modalities.image === false) {
-                flash('当前模型（' + (entry.model || '未命名') + '）未勾选图像输入，可在模型设置中开启', true);
-                return false;
-            }
-            if (!item.data) return false;
-            if (attachments.filter((current) => current.kind === 'image').length >= AI_IMAGE_LIMIT) {
-                flash('每条消息最多附加 ' + AI_IMAGE_LIMIT + ' 张图片', true);
-                return false;
-            }
-            const currentBytes = attachments
-                .filter((current) => current.kind === 'image')
-                .reduce((sum, current) => sum + sessionImageBytes([current]), 0);
-            if (currentBytes + item.data.length > AI_IMAGE_MESSAGE_BUDGET) {
-                flash('图片总量超过上限，请减少图片或先发送当前消息', true);
-                return false;
-            }
-            item.id = 'att-' + (++attachSeq);
-            attachments.push(item);
-            renderAttachments();
-            el.input && el.input.focus();
-            return true;
-        }
-        const isReference = item.kind === 'reference' || item.kind === 'selection_reference';
-        if (isReference) {
-            if (!item.path) return false;
-            const duplicate = attachments.some((current) => {
-                if (current.kind !== item.kind || current.path !== item.path) return false;
-                if (item.kind !== 'selection_reference') return true;
-                const a = item.start || {};
-                const b = item.end || {};
-                const x = current.start || {};
-                const y = current.end || {};
-                return a.line === x.line && a.column === x.column && b.line === y.line && b.column === y.column;
-            });
-            if (duplicate) {
-                flash('该引用已在输入区');
-                return false;
-            }
-            item.id = 'att-' + (++attachSeq);
-            attachments.push(item);
-            renderAttachments();
-            el.input && el.input.focus();
-            return true;
-        }
-        if (!item.content) return false;
-        if (item.content.length > 64 << 10) {
-            item.content = item.content.slice(0, 64 << 10) + '\n…（已截断到 64KB）';
-        }
-        const total = attachments.reduce((sum, current) => sum + aiTextOf(current.content).length, 0);
-        if (total + item.content.length > 256 << 10) {
-            flash('附加内容总量超过 256KB，请减少文件或选区', true);
-            return false;
-        }
-        const duplicate = attachments.some((current) => {
-            if (item.kind === 'skill' && current.kind === 'skill') {
-                return current.label === item.label;
-            }
-            if (item.kind === 'selection' && current.kind === 'selection') {
-                return current.content === item.content;
-            }
-            if (item.kind === 'file' && current.kind === 'file') {
-                return !!item.path && current.path === item.path;
-            }
-            return false;
-        });
-        if (duplicate) {
-            flash('该内容已经附加');
-            return false;
-        }
-        item.id = 'att-' + (++attachSeq);
-        attachments.push(item);
-        renderAttachments();
-        el.input && el.input.focus();
-        return true;
-    }
-
-    function loadImageElement(file) {
-        return new Promise((resolve, reject) => {
-            const url = URL.createObjectURL(file);
-            const img = new Image();
-            img.onload = () => {
-                URL.revokeObjectURL(url);
-                resolve(img);
-            };
-            img.onerror = () => {
-                URL.revokeObjectURL(url);
-                reject(new Error('无法读取图片'));
-            };
-            img.src = url;
-        });
-    }
-
-    async function prepareImageAttachment(file) {
-        if (!file) throw new Error('没有图片数据');
-        if (file.size > AI_IMAGE_MAX_INPUT_BYTES) throw new Error('图片超过 12MB');
-        let source = file;
-        let width = 0;
-        let height = 0;
-        if (typeof createImageBitmap === 'function') {
-            source = await createImageBitmap(file);
-            width = source.width;
-            height = source.height;
-        } else {
-            source = await loadImageElement(file);
-            width = source.naturalWidth || source.width;
-            height = source.naturalHeight || source.height;
-        }
-        const scale = Math.min(1, AI_IMAGE_MAX_DIM / Math.max(width || 1, height || 1));
-        const outWidth = Math.max(1, Math.round(width * scale));
-        const outHeight = Math.max(1, Math.round(height * scale));
-        const canvas = document.createElement('canvas');
-        canvas.width = outWidth;
-        canvas.height = outHeight;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) throw new Error('无法创建图片画布');
-        ctx.drawImage(source, 0, 0, outWidth, outHeight);
-        if (source && typeof source.close === 'function') source.close();
-        let mime = 'image/png';
-        let dataUrl = canvas.toDataURL('image/png');
-        if (dataUrl.length > AI_IMAGE_MAX_BASE64) {
-            let quality = 0.86;
-            mime = 'image/jpeg';
-            dataUrl = canvas.toDataURL(mime, quality);
-            while (dataUrl.length > AI_IMAGE_MAX_BASE64 && quality > 0.45) {
-                quality -= 0.1;
-                dataUrl = canvas.toDataURL(mime, quality);
-            }
-        }
-        if (dataUrl.length > AI_IMAGE_MAX_BASE64) throw new Error('压缩后图片仍然过大');
-        const comma = dataUrl.indexOf(',');
-        if (comma < 0) throw new Error('图片编码失败');
-        return {
-            mime,
-            data: dataUrl.slice(comma + 1),
-            width: outWidth,
-            height: outHeight,
-            bytes: Math.round((dataUrl.length - comma - 1) * 3 / 4),
-            name: (file.name && file.name !== 'image.png') ? file.name : '粘贴的图片',
-        };
-    }
-
-    async function handleInputPaste(e) {
-        const data = e.clipboardData;
-        if (!data || !data.items) return;
-        const files = [];
-        for (const item of data.items) {
-            if (item && item.kind === 'file' && String(item.type || '').startsWith('image/')) {
-                const file = item.getAsFile();
-                if (file) files.push(file);
-            }
-        }
-        if (!files.length) return;
-        const text = data.getData('text/plain');
-        if (!text) e.preventDefault();
-        const room = AI_IMAGE_LIMIT - attachments.filter((item) => item.kind === 'image').length;
-        if (room <= 0) {
-            flash('每条消息最多附加 ' + AI_IMAGE_LIMIT + ' 张图片', true);
-            return;
-        }
-        for (const file of files.slice(0, room)) {
-            try {
-                const prepared = await prepareImageAttachment(file);
-                prepared.kind = 'image';
-                prepared.label = prepared.name;
-                addAttachment(prepared);
-            } catch (err) {
-                flash('图片处理失败：' + ((err && err.message) || err), true);
-            }
-        }
-        if (files.length > room) flash('超出图片数量上限，已附加 ' + room + ' 张', true);
-    }
-
-    async function attachPath(path, opts) {
-        if (!path) return false;
-        try {
-            const read = await readTextFile(path, 64 << 10);
-            const name = (read.data && read.data.name) || String(path).split(/[\\/]/).pop();
-            return addAttachment({kind: 'file', label: name, path, content: read.text});
-        } catch (e) {
-            flash('附加文件失败：' + ((e && e.message) || e), true);
-            return false;
-        }
-    }
-
-    async function attachCurrentFile() {
-        const context = getWorkspaceContext() || {};
-        const path = context.activeFile && context.activeFile.path;
-        if (!path) {
-            flash('当前没有打开的文件', true);
-            return false;
-        }
-        return attachPath(path, {focus: true});
-    }
-
-    function attachSelection() {
-        const selection = getSelection ? getSelection() : null;
-        if (!selection || !aiTextOf(selection.text).trim()) {
-            flash('当前没有选中的内容', true);
-            return false;
-        }
-        return addAttachment({
-            kind: 'selection',
-            label: selection.name || '选中内容',
-            path: selection.path || '',
-            content: selection.text,
-        });
-    }
-
-    function referencePath(path, name) {
-        const target = aiTextOf(path).trim();
-        if (!target) {
-            flash('当前文件没有可引用的绝对路径', true);
-            return false;
-        }
-        const label = aiTextOf(name).trim() || target.split(/[\\/]/).pop() || target;
-        return addAttachment({kind: 'reference', label, path: target});
-    }
-
-    function referenceSelection() {
-        const selection = getSelection ? getSelection() : null;
-        if (!selection || !aiTextOf(selection.path).trim()) {
-            flash('当前没有可引用的选区或文件路径', true);
-            return false;
-        }
-        const range = selection.selection;
-        if (!range || !range.start || !range.end) {
-            flash('当前选区缺少行列信息', true);
-            return false;
-        }
-        return addAttachment({
-            kind: 'selection_reference',
-            label: selection.name || '选中内容',
-            path: selection.path,
-            start: range.start,
-            end: range.end,
-        });
-    }
-
-    async function attachFilesDialog() {
-        if (!pickFiles) {
-            flash('当前版本不支持选择附加文件', true);
-            return;
-        }
-        let paths;
-        try {
-            paths = await pickFiles();
-        } catch (e) {
-            flash('选择文件失败：' + ((e && e.message) || e), true);
-            return;
-        }
-        if (!paths || !paths.length) return;
-        for (const path of paths) {
-            await attachPath(path);
-        }
-    }
-
-    async function showSkillPicker() {
-        let skills;
-        try {
-            skills = await listSkills(true);
-        } catch (e) {
-            showNote('读取技能失败：' + ((e && e.message) || e), true);
-            return;
-        }
-        if (!skills.length) {
-            showNote('未找到技能。技能目录：工作区 .cadt/skills、.agents/skills，应用数据 ai-skills，用户 ~/.agents/skills，内置 builtin-skills。', true);
-            return;
-        }
-        if (!showContextMenu) {
-            return;
-        }
-        const rect = el.attachSkill ? el.attachSkill.getBoundingClientRect() : {right: 200, bottom: 200};
-        showContextMenu(skills.map((skill) => ({
-            label: skill.name + ' — ' + skill.description,
-            action: () => {
-                addAttachment({
-                    kind: 'skill',
-                    label: skill.name,
-                    path: skill.path,
-                    content: skill.content,
-                });
-            },
-        })), rect.right + 4, rect.bottom + 4);
-    }
 
     function refreshContext() {
         updateScopeUI();
@@ -10825,7 +9930,7 @@ export function createAIPanel(options) {
         const userText = userMessage.content;
         const images = attachmentsFromImages(userMessage.images);
         session.messages = session.messages.slice(0, userIndex);
-        attachments = images;
+        setAttachments(images);
         renderAttachments();
         persistSessions();
         submitText(userText, userIndex);
@@ -10932,7 +10037,7 @@ export function createAIPanel(options) {
         const message = session.messages[userIndex];
         if (!el.input) return;
         el.input.value = message.content;
-        attachments = attachmentsFromImages(message.images);
+        setAttachments(attachmentsFromImages(message.images));
         renderAttachments();
         pendingEdit = {index: userIndex, sessionId: session.id};
         resizeInput();
@@ -11017,7 +10122,7 @@ export function createAIPanel(options) {
     function saveComposerDraft(sessionId) {
         if (!sessionId) return;
         const text = el.input ? String(el.input.value || '') : '';
-        const items = attachments.slice();
+        const items = getAttachments().slice();
         if (!text.trim() && !items.length) {
             drafts.delete(sessionId);
             return;
@@ -11027,7 +10132,7 @@ export function createAIPanel(options) {
 
     function loadComposerDraft(sessionId) {
         const draft = sessionId ? drafts.get(sessionId) : null;
-        attachments = draft ? draft.attachments.slice() : [];
+        setAttachments(draft ? draft.getAttachments().slice() : []);
         if (el.input) el.input.value = draft ? draft.text : '';
         resizeInput();
         renderAttachments();
@@ -11712,7 +10817,7 @@ export function createAIPanel(options) {
         ];
         openAIDialog('会话提示词', [selectRow, textRow, status], footer);
         try {
-            const bundle = await assembleSystemContext(session, attachments);
+            const bundle = await assembleSystemContext(session, getAttachments());
             status.textContent = injectionStatusText(bundle.meta);
         } catch (e) {
             status.textContent = '注入状态统计失败：' + ((e && e.message) || e);
@@ -11850,22 +10955,6 @@ export function createAIPanel(options) {
         await reload();
     }
 
-    async function attachSkillByName(name) {
-        let skills;
-        try {
-            skills = await listSkills(true);
-        } catch (e) {
-            showNote('读取技能失败：' + ((e && e.message) || e), true);
-            return;
-        }
-        const target = skills.find((skill) => skill.name.toLowerCase() === String(name || '').toLowerCase());
-        if (!target) {
-            showNote('未找到技能：' + name, true);
-            return;
-        }
-        addAttachment({kind: 'skill', label: target.name, path: target.path, content: target.content});
-        showNote('已加载技能：' + target.name + '（随下一轮发送）');
-    }
 
     async function createAppSkill(name, description) {
         const app = aiNormalizePath(await getAIAppDir());
@@ -12053,7 +11142,7 @@ export function createAIPanel(options) {
         const session = currentSession();
         const messages = buildApiMessages(session, null, promptTextOf(session && session.id));
         let tokens = estimateApiMessagesTokens(messages);
-        for (const item of attachments) {
+        for (const item of getAttachments()) {
             tokens += item.kind === 'image' ? aiEstimateImageTokens(item) : aiEstimateTokens(aiTextOf(item.content));
         }
         tokens += toolsTokenEstimate(session);
@@ -14024,84 +13113,6 @@ export function createAIPanel(options) {
 
     // ---------- 绑定面板交互 ----------
 
-    function resizeInput() {
-        if (!el.input) return;
-        el.input.style.height = 'auto';
-        const height = Math.min(180, Math.max(44, el.input.scrollHeight));
-        el.input.style.height = height + 'px';
-    }
-
-    function submitFromComposer() {
-        if (!el.input) return;
-        const text = el.input.value;
-        const trimmed = text.trim();
-        if (!trimmed && !attachments.some((item) => item.kind === 'image')) return;
-        if (trimmed.startsWith('/')) {
-            handleSlashText(trimmed);
-            return;
-        }
-        // 只有本会话在生成 / 压缩时才并入排队；别的会话在跑不影响本会话直接发送。
-        if (syncStreamView() || compactOf((currentSession() || {}).id)) {
-            enqueueComposerMessage();
-            return;
-        }
-        submitText(text);
-    }
-
-    function handleComposerKey(e) {
-        if (e.isComposing || e.keyCode === 229) return;
-        if (slashState.open) {
-            if (e.key === 'ArrowDown') {
-                e.preventDefault();
-                slashState.index = Math.min(slashState.items.length - 1, slashState.index + 1);
-                updateSlash();
-                return;
-            }
-            if (e.key === 'ArrowUp') {
-                e.preventDefault();
-                slashState.index = Math.max(0, slashState.index - 1);
-                updateSlash();
-                return;
-            }
-            if (e.key === 'Tab') {
-                e.preventDefault();
-                const command = slashState.items[slashState.index];
-                if (command && el.input) {
-                    el.input.value = command.name;
-                    updateSlash();
-                    const end = el.input.value.length;
-                    el.input.setSelectionRange(end, end);
-                }
-                return;
-            }
-            if (e.key === 'Enter') {
-                e.preventDefault();
-                runSlashCommand(slashState.items[slashState.index]);
-                return;
-            }
-            if (e.key === 'Escape') {
-                e.preventDefault();
-                hideSlash();
-                return;
-            }
-        }
-        if (e.key !== 'Enter') return;
-        if (syncStreamView() || compactOf((currentSession() || {}).id)) {
-            if (e.shiftKey || e.altKey) return;
-            e.preventDefault();
-            if (e.ctrlKey || e.metaKey) {
-                interjectComposerMessage();
-            } else {
-                enqueueComposerMessage();
-            }
-            return;
-        }
-        const ctrlEnter = settings.aiSendKey === 'ctrl-enter';
-        const shouldSend = ctrlEnter ? (e.ctrlKey || e.metaKey) : (!e.shiftKey && !e.altKey);
-        if (!shouldSend) return;
-        e.preventDefault();
-        submitFromComposer();
-    }
 
     function bindPanelInteractions() {
         for (const button of [activityButton, toolbarButton]) {
@@ -14145,17 +13156,12 @@ export function createAIPanel(options) {
         });
         if (sessionMoreBtn) sessionMoreBtn.addEventListener('click', () => showSessionListMenu());
         if (sessionSearchEl) {
-            sessionSearchEl.addEventListener('input', () => {
-                clearTimeout(sessionSearchTimer);
-                sessionSearchTimer = setTimeout(() => {
-                    runSessionSearch(sessionSearchEl.value);
-                }, 180);
-            });
+            // 搜索计时器与序号状态已随会话列表域迁入 ai-session-list.js
+            sessionSearchEl.addEventListener('input', () => sessionListMod.onSearchInput(sessionSearchEl.value));
             sessionSearchEl.addEventListener('keydown', (e) => {
                 if (e.key !== 'Escape') return;
                 sessionSearchEl.value = '';
-                sessionSearchSeq++;
-                runSessionSearch('');
+                sessionListMod.cancelSessionSearch();
                 e.preventDefault();
             });
         }
@@ -15368,67 +14374,58 @@ export function createAIPanel(options) {
         if (stickBottom) scrollToBottom(false);
     }
 
-    function currentQueueItems() {
-        const session = currentSession();
-        return session ? messageQueue.filter((item) => item.sessionId === session.id) : [];
-    }
 
-    function captureComposerMessage() {
-        if (!el.input) return null;
-        const text = String(el.input.value || '').trim();
-        const items = attachments.slice();
-        if (!text && !items.some((item) => item.kind === 'image')) return null;
-        const session = currentSession();
-        if (!session) return null;
-        const item = {
-            id: ++queueSeq,
-            sessionId: session.id,
-            text,
-            attachments: items,
-            ts: Date.now(),
-        };
-        el.input.value = '';
-        resizeInput();
-        attachments = [];
-        renderAttachments();
-        hideSlash();
-        updateSendState();
-        return item;
-    }
-
-    function editQueuedMessage(item) {
-        if (!item || !el.input) return;
-        const index = messageQueue.indexOf(item);
-        if (index < 0) return;
-        const session = currentSession();
-        if (!session) return;
-        const draftText = String(el.input.value || '').trim();
-        const draftAttachments = attachments.slice();
-        let queuedDraft = false;
-        if (draftText || draftAttachments.length) {
-            messageQueue.push({
-                id: ++queueSeq,
-                sessionId: session.id,
-                text: draftText,
-                attachments: draftAttachments,
-                ts: Date.now(),
-            });
-            el.input.value = '';
-            attachments = [];
-            renderAttachments();
-            queuedDraft = true;
-        }
-        const currentIndex = messageQueue.indexOf(item);
-        if (currentIndex >= 0) messageQueue.splice(currentIndex, 1);
-        el.input.value = item.text || '';
-        attachments = (item.attachments || []).map((att) => ({...att}));
-        renderAttachments();
-        resizeInput();
-        updateSendState();
-        renderMessageQueue();
-        el.input.focus();
-        flash(queuedDraft ? '已取回待编辑消息；输入区原有内容已放回排队' : '已取回待编辑消息，可修改后重新排队或插话');
-    }
+    // 输入区与附件域（阶段 3 拆出：ai-composer.js；attachments/queueSeq 随域迁入，attachSeq 经 nextAttachSeq 取号）
+    const composerMod = createAIComposer({
+        el,
+        compactOf,
+        currentSession,
+        flash,
+        getSelection,
+        getWorkspaceContext,
+        listSkills,
+        pickFiles,
+        readTextFile,
+        settings,
+        showContextMenu,
+        showImagePreview,
+        showNote,
+        syncStreamView,
+        updateContextCount,
+        updateSendState,
+        updateSlash,
+        hideSlash,
+        runSlashCommand,
+        handleSlashText,
+        // 惰性转发：queueMod 构造于本模块之后（composer 提交流与队列互引）
+        enqueueComposerMessage: (...args) => queueMod.enqueueComposerMessage(...args),
+        interjectComposerMessage: (...args) => queueMod.interjectComposerMessage(...args),
+        renderMessageQueue: (...args) => queueMod.renderMessageQueue(...args),
+        entryOf,
+        sessionImageBytes,
+        messageQueue,
+        slashState,
+        submitText,
+        nextAttachSeq: () => ++attachSeq,
+    });
+    const renderAttachments = () => composerMod.renderAttachments();
+    const addAttachment = (...args) => composerMod.addAttachment(...args);
+    const prepareImageAttachment = (...args) => composerMod.prepareImageAttachment(...args);
+    const attachPath = (...args) => composerMod.attachPath(...args);
+    const attachSelection = (...args) => composerMod.attachSelection(...args);
+    const referencePath = (...args) => composerMod.referencePath(...args);
+    const referenceSelection = (...args) => composerMod.referenceSelection(...args);
+    const attachFilesDialog = (...args) => composerMod.attachFilesDialog(...args);
+    const showSkillPicker = (...args) => composerMod.showSkillPicker(...args);
+    const attachSkillByName = (...args) => composerMod.attachSkillByName(...args);
+    const resizeInput = (...args) => composerMod.resizeInput(...args);
+    const submitFromComposer = (...args) => composerMod.submitFromComposer(...args);
+    const handleComposerKey = (...args) => composerMod.handleComposerKey(...args);
+    const currentQueueItems = (...args) => composerMod.currentQueueItems(...args);
+    const captureComposerMessage = (...args) => composerMod.captureComposerMessage(...args);
+    const editQueuedMessage = (...args) => composerMod.editQueuedMessage(...args);
+    const getAttachments = () => composerMod.getAttachments();
+    const setAttachments = (value) => composerMod.setAttachments(value);
 
     // 消息排队 / 插话（阶段 3 拆出：ai-message-queue.js；attachments / dismissedPlanApproval / stream 经访问器读写）
     const queueMod = createAIMessageQueue({
@@ -15454,8 +14451,8 @@ export function createAIPanel(options) {
         submitText,
         updateSendState,
         currentPendingAskEntry,
-        getAttachments: () => attachments,
-        setAttachments: (value) => { attachments = value; },
+        getAttachments: () => composerMod.getAttachments(),
+        setAttachments: (value) => composerMod.setAttachments(value),
         getDismissedPlanApproval: () => dismissedPlanApproval,
         setDismissedPlanApproval: (value) => { dismissedPlanApproval = value; },
         getStream: () => stream,
