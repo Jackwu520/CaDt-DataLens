@@ -108,6 +108,7 @@ import {
     aiImageStats,
     aiSafeFileStem,
 } from './ai-constants.js';
+import {recordRead, recordWrite, checkWriteFresh} from './ai-write-guard.js';
 
 
 export function createAIPanel(options) {
@@ -6508,7 +6509,7 @@ export function createAIPanel(options) {
         },
         write_file: {
             name: 'write_file',
-            description: '创建新文件或整体覆盖工作区内的文本文件。写操作会先显示 diff；「每次询问」档由用户审批，「自动审批」/「完全权限」直接应用。需写权限档。',
+            description: '创建新文件或整体覆盖工作区内的文本文件。覆盖已存在文件前必须先 read_file 当前内容：本会话未读过的文件、或读取后已被外部修改的文件会被拒绝写入（防止覆盖其他会话的改动）。写操作会先显示 diff；「每次询问」档由用户审批，「自动审批」/「完全权限」直接应用。需写权限档。',
             parameters: {
                 type: 'object',
                 properties: {
@@ -8278,7 +8279,22 @@ export function createAIPanel(options) {
                 // 新文件可能位于尚不存在的目录（如 .cadt/）：SaveFile 只写文件、不建父目录。
                 try { await backend.AIEnsureDir(aiPathDir(info.path)); } catch (e) {}
             }
-            await backend.SaveFile(info.path, info.content, info.eol || '', !!info.hasBom, info.enc || 'utf-8');
+            if (typeof backend.SaveFileChecked === 'function') {
+                // 与编辑器保存同一道防线（app.go SaveFileChecked）：读取到落盘的瞬间若磁盘被
+                // 其他会话/外部程序改过（expectMtime 不一致）→ 拒绝覆盖，绝不静默清掉他人改动。
+                // 会话级陈旧性闸门在 write_file case（ai-write-guard.js），这里是最后一道竞态兜底。
+                const result = await backend.SaveFileChecked(
+                    info.path, info.content, info.eol || '', !!info.hasBom, info.enc || 'utf-8', info.expectMtime || '');
+                if (result && (result.conflict || result.deleted)) {
+                    throw new Error(result.deleted
+                        ? '文件已被外部删除，写入取消：' + info.relPath + '（如需重建请重新发起写入）'
+                        : '落盘前检测到文件刚被外部修改，写入取消：' + info.relPath + '（请 read_file 重读后再试）');
+                }
+                // 回写指纹：同会话对该文件的后续写入不需重读
+                recordWrite(session, info.path, result && result.mtime);
+            } else {
+                await backend.SaveFile(info.path, info.content, info.eol || '', !!info.hasBom, info.enc || 'utf-8');
+            }
         } catch (e) {
             if (toolMessage.approval) {
                 toolMessage.approval.state = 'failed';
@@ -8358,6 +8374,8 @@ export function createAIPanel(options) {
                 const path = aiResolveScopePath(input.path, ctx && ctx.session);
                 const offset = Math.max(0, Math.round(Number(input.offset) || 0));
                 const read = await readTextFile(path, null);
+                // 记录读取时磁盘指纹：write_file 陈旧性防护的基线（见 ai-write-guard.js）
+                recordRead(ctx && ctx.session, path, read.data && read.data.mtime, read.data && read.data.size);
                 let text = read.text;
                 if (offset > 0) text = text.slice(Math.min(offset, text.length));
                 if (text.length > 64 << 10) text = text.slice(0, 64 << 10) + '\n…（已截断，最多 64KB）';
@@ -8871,6 +8889,15 @@ export function createAIPanel(options) {
                 const existing = await readOptionalText(path);
                 const oldText = existing.exists ? existing.text : '';
                 if (existing.exists && oldText === content) return '文件内容未变化：' + relPath;
+                if (existing.exists) {
+                    // 陈旧缓冲防护：本会话没读过、或读取后文件已被外部修改 → 拒绝整体覆盖
+                    const fresh = checkWriteFresh(ctx.session, path, {
+                        exists: true,
+                        mtime: existing.data && existing.data.mtime,
+                        size: existing.data && existing.data.size,
+                    }, relPath);
+                    if (!fresh.ok) throw new Error(fresh.message);
+                }
                 const ops = computeLineDiff(oldText, content);
                 const stats = diffStats(ops);
                 const preview = buildDiffPreview(ops);
@@ -8882,6 +8909,7 @@ export function createAIPanel(options) {
                     eol: existing.exists ? existing.data.eol : '',
                     hasBom: existing.exists ? !!existing.data.hasBom : false,
                     enc: existing.exists ? existing.data.enc : 'utf-8',
+                    expectMtime: existing.exists ? (existing.data && existing.data.mtime) || '' : '',
                     newFile: !existing.exists,
                     added: stats.added,
                     removed: stats.removed,
@@ -8926,6 +8954,8 @@ export function createAIPanel(options) {
                     eol: existing.data.eol,
                     hasBom: !!existing.data.hasBom,
                     enc: existing.data.enc,
+                    // 不设会话级闸门（执行时已重读盘）；expectMtime 仅做落盘竞态兜底
+                    expectMtime: (existing.data && existing.data.mtime) || '',
                     newFile: false,
                     added: stats.added,
                     removed: stats.removed,
@@ -9203,7 +9233,7 @@ export function createAIPanel(options) {
         {
             title: '文件写入（先读后改，走审批）',
             items: [
-                {tools: ['write_file'], text: '新建文件或整体重写'},
+                {tools: ['write_file'], text: '新建文件或整体重写；覆盖前必须先 read_file，文件被外部修改后写入会被拒绝'},
                 {tools: ['edit_file'], text: '最小替换；oldString 必须逐字一致且唯一'},
             ],
         },
@@ -9352,7 +9382,7 @@ export function createAIPanel(options) {
                 ...(planMode ? [] : [
                     '- 修改文件前必须先 read_file 确认内容；不要凭记忆构造 oldString。',
                     '- edit_file 的 oldString 必须逐字复制且只出现一次；多处命中时请扩大上下文使其唯一，未命中时重新读取文件。',
-                    '- write_file 用于新建文件或整体覆盖；不要修改 .git 等版本库内部文件。',
+                    '- write_file 用于新建文件或整体覆盖；覆盖已存在文件前必须先 read_file（本会话没读过、或读取后文件已被外部修改时会拒绝写入，防止覆盖其他会话的改动）；不要修改 .git 等版本库内部文件。',
                     '- run_command 用于测试、构建、git 查看等一次性命令；不要运行交互式或长驻命令，必要时用 timeoutMs 控制超时。每条命令都在独立进程中执行、工作目录由 cwd 参数决定，cd 不会保留；不要用 cd / pwd / echo %CD% 探测目录，需要换目录直接传 cwd。',
                     '- 长驻 / 耗时命令（构建、watch、本地服务器、长测试）用 background_command 启动并立即返回，之后用 check_command 轮询增量输出、结束或汇报结果；不要用 run_command 跑长任务，也不要反复 check_command 空等。',
                 ]),
