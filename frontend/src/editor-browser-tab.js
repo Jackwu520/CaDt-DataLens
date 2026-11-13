@@ -281,7 +281,13 @@ function syncBrowserTab(doc) {
             deps.backend.BrowserSetVisible(doc.id, false).catch(() => {});
             return;
         }
-        if (last && last.visible && last.x === rect.x && last.y === rect.y && last.w === rect.w && last.h === rect.h) return;
+        if (last && last.visible && last.x === rect.x && last.y === rect.y && last.w === rect.w && last.h === rect.h) {
+            // 状态没变就不重调 SetBounds；但主 WebView 重建/重排控件窗口会重新
+            // 抢占子窗口 z 顶盖住内嵌控件（用户看是黑屏，点一下才恢复）——
+            // z 序幂等自检很便宜（Go 侧一次 GetWindow 扫描，已在顶则零副作用）。
+            if (deps.backend.BrowserEnsureZ) deps.backend.BrowserEnsureZ(doc.id).catch(() => {});
+            return;
+        }
         doc.browserApplied = {visible: true, x: rect.x, y: rect.y, w: rect.w, h: rect.h};
         deps.backend.BrowserSetBounds(doc.id, rect.x, rect.y, rect.w, rect.h).catch(() => {});
     }, 0);

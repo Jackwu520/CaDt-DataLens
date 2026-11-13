@@ -44,6 +44,7 @@ var (
 	procBrowserGetClassNameW             = browserUser32.NewProc("GetClassNameW")
 	procBrowserSetWindowPos              = browserUser32.NewProc("SetWindowPos")
 	procBrowserGetWindow                 = browserUser32.NewProc("GetWindow")
+	procBrowserIsWindowVisible           = browserUser32.NewProc("IsWindowVisible")
 
 	browserOle32Host          = syscall.NewLazyDLL("ole32.dll")
 	procBrowserCoInitializeEx = browserOle32Host.NewProc("CoInitializeEx")
@@ -287,6 +288,33 @@ func browserRaiseControl(inst *browserInstance) {
 	}
 	procBrowserSetWindowPos.Call(inst.hwndCtl, browserHwndTop, 0, 0, 0, 0,
 		browserSwpNoMove|browserSwpNoSize|browserSwpNoActivate)
+}
+
+// BrowserEnsureZ z 序幂等自检：主 WebView 重建/重排控件窗口时会重新抢占子窗口
+// z 顶，把内嵌控件盖回下面——用户看到内容区「黑屏」，点一下（触发重新同步）
+// 才恢复（2026-11-14 实测）。前端 250ms 兜底轮询无条件调用本方法；控件已在
+// z 顶（或上方只有隐藏兄弟）时零副作用。
+func (a *App) BrowserEnsureZ(id string) error {
+	jobErr := browserHostRun(func() {
+		inst := browserGet(id)
+		if inst == nil || inst.hwndCtl == 0 || !inst.visible {
+			return
+		}
+		// 沿 GW_HWNDNEXT 向上找：只要上方还有可见兄弟（主界面控件），就提顶。
+		for h := inst.hwndCtl; h != 0; {
+			r, _, _ := procBrowserGetWindow.Call(h, 2) // GW_HWNDNEXT
+			if r == 0 {
+				return // 已是最顶
+			}
+			h = r
+			vis, _, _ := procBrowserIsWindowVisible.Call(h)
+			if vis != 0 {
+				browserRaiseControl(inst)
+				return
+			}
+		}
+	})
+	return jobErr
 }
 
 // browserParentHWND 返回 WebView2 控件的宿主父窗口（生产 = Wails 主窗口；测试可替换）。
