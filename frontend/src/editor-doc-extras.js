@@ -1,58 +1,11 @@
 // editor-doc-extras.js：从 editor-groups.js 拆出的域模块（factory + 显式依赖注入）。
-// 文档周边杂项域：AI 写入徽标、横幅、JSON 折叠预览、行书签、视图状态记忆、
+// 文档周边杂项域：横幅、JSON 折叠预览、行书签、视图状态记忆、
 // Git 行级标记、树视图右键菜单。
 //
 // deps 经 Object.create 委托继承 editor-groups 的 getter 集，另接核心函数
 // groupDocs / groupOfDoc / updateStatus / closeDocsWithConfirm / requestCloseDoc /
 // showPathInFolder / reopenClosedTab / renderMarkdownPreview / syncTabViewTools 的转发箭头。
 export function createEditorDocExtras(deps) {
-
-const AI_WRITE_LABELS = {pending: '待确认', running: '写入中', done: '已修改', failed: '写入失败', denied: '被规则阻止'};
-const AI_WRITE_TRANSIENT = new Set(['done', 'failed', 'denied']);
-const AI_WRITE_HIDE_MS = 5000;
-let aiWriteHideTimer = 0;
-
-function hideAiWriteBadge() {
-    if (aiWriteHideTimer) { clearTimeout(aiWriteHideTimer); aiWriteHideTimer = 0; }
-    if (!deps.els.stAiWrite) return;
-    deps.els.stAiWrite.style.display = 'none';
-    deps.els.stAiWrite.classList.remove('pending', 'running', 'done', 'failed', 'denied');
-}
-
-function updateAiWriteBadge(payload) {
-    const el = deps.els.stAiWrite;
-    if (!el) return;
-    if (aiWriteHideTimer) { clearTimeout(aiWriteHideTimer); aiWriteHideTimer = 0; }
-    const state = payload && AI_WRITE_LABELS[payload.state] ? payload.state : 'idle';
-    if (state === 'idle') {
-        // 本轮结束不立刻抹掉「已修改」提示，交给瞬时态的自动隐藏计时器
-        if (AI_WRITE_TRANSIENT.has(currentAiWriteState())) return;
-        hideAiWriteBadge();
-        return;
-    }
-    const label = AI_WRITE_LABELS[state];
-    el.classList.remove('pending', 'running', 'done', 'failed', 'denied');
-    el.classList.add(state);
-    el.style.display = '';
-    if (deps.els.stAwState) deps.els.stAwState.textContent = label;
-    if (deps.els.stAwPath) deps.els.stAwPath.textContent = deps.baseNameOf(payload.relPath || payload.path);
-    if (deps.els.stAwAdd) deps.els.stAwAdd.textContent = payload.added > 0 ? '+' + payload.added : '';
-    if (deps.els.stAwDel) deps.els.stAwDel.textContent = payload.removed > 0 ? '−' + payload.removed : '';
-    const counts = (payload.added || payload.removed) ? '（+' + (payload.added || 0) + ' −' + (payload.removed || 0) + '）' : '';
-    el.title = label + counts + '\n' + (payload.path || payload.relPath || '');
-    if (AI_WRITE_TRANSIENT.has(state)) {
-        aiWriteHideTimer = setTimeout(() => { aiWriteHideTimer = 0; hideAiWriteBadge(); }, AI_WRITE_HIDE_MS);
-    }
-}
-
-function currentAiWriteState() {
-    const el = deps.els.stAiWrite;
-    if (!el || el.style.display === 'none') return '';
-    for (const state of Object.keys(AI_WRITE_LABELS)) {
-        if (el.classList.contains(state)) return state;
-    }
-    return '';
-}
 
 function hideBanner() {
     deps.els.banner.classList.add('hidden');
@@ -568,7 +521,6 @@ function setupTreeContextMenu(doc) {
 }
 
     return {
-        updateAiWriteBadge, hideAiWriteBadge, currentAiWriteState,
         hideBanner, dismissBanner, showBanner,
         foldDomCount, foldValueAtPath, foldRowPaths, foldPrimitive, clipFoldText, foldObjectSpec, foldSpan, renderFoldPreview, humanizeCounts,
         bookmarkRowsForDoc, renderBookmarks, toggleBookmark, jumpBookmark,

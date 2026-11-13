@@ -298,12 +298,6 @@ const els = {
     stEnc: document.getElementById('st-enc'),
     stMessage: document.getElementById('st-message'),
     stDirty: document.getElementById('st-dirty'),
-    stAiWrite: document.getElementById('st-ai-write'),
-    stAwIcon: document.querySelector('#st-ai-write .st-aw-icon'),
-    stAwState: document.querySelector('#st-ai-write .st-aw-state'),
-    stAwPath: document.querySelector('#st-ai-write .st-aw-path'),
-    stAwAdd: document.querySelector('#st-ai-write .add'),
-    stAwDel: document.querySelector('#st-ai-write .del'),
     stCount: document.getElementById('st-count'),
     breadcrumb: document.getElementById('breadcrumb'),
     findBar: document.getElementById('find-bar'),
@@ -1562,7 +1556,7 @@ const editorGroupsMod = createEditorGroups({
     get viewOptionsFor() { return viewOptionsFor; },
     get workspaceFolder() { return workspaceFolder; },
 });
-const {activateDoc, addDocToFocusedGroup, applyAceMode, applyCsvTableZoom, applyImageZoom, browserViewportLabel, closeDocNow, closeDocsWithConfirm, closeSqlView, createDoc, createDocEditor, createGroup, dismissBanner, doRedo, doUndo,  enterBinaryView, enterCsvTable, enterImageView, enterMarkdownPreview, enterSplitView, enterSqlView, enterSvgRender, enterTextView, exitSplitView, expandAllWithGuard, flushCsvCellEditor,  groupDocs, setFocusedGroupId, setSplitRoot, groupOfDoc, handleAIWorkspaceFileChanged, handleExternalDocChanges, hideBanner, hideSvgRender, hookCodeFoldPreviews, hookMultiCursor, humanizeCounts, initCodeFoldHover, jumpBookmark, leaveCsvTable, leaveMarkdownPreview, markDocDirty, mdSyncScrollFromAce, moveTabInGroup, patchViewContext, refreshPatchMarkers, rememberDocView, renderBookmarks, renderBreadcrumb, renderCsvTableView, renderEditorLayout, renderMarkdownPreview, renderTabs, reopenClosedTab, requestCloseDoc, revertDocToSaved, scheduleGitGutter, setBrowserViewport, setFilename, showBanner, showImageMenu, showMdPreviewMenu, showPathInFolder, showSvgMenu,  syncAllBrowserTabs, syncBrowserTab, textArea, toggleBookmark, toggleFocusedNode, updateAiWriteBadge, updateBrowserTitle, updateCodeFoldPreviews, updateDocChrome, updateStatus, zoomCsvTable, zoomImageBy, zoomSvgRenderBy} = editorGroupsMod;
+const {activateDoc, addDocToFocusedGroup, applyAceMode, applyCsvTableZoom, applyImageZoom, browserViewportLabel, closeDocNow, closeDocsWithConfirm, closeSqlView, createDoc, createDocEditor, createGroup, dismissBanner, doRedo, doUndo,  enterBinaryView, enterCsvTable, enterImageView, enterMarkdownPreview, enterSplitView, enterSqlView, enterSvgRender, enterTextView, exitSplitView, expandAllWithGuard, flushCsvCellEditor,  groupDocs, setFocusedGroupId, setSplitRoot, groupOfDoc, handleAIWorkspaceFileChanged, handleExternalDocChanges, hideBanner, hideSvgRender, hookCodeFoldPreviews, hookMultiCursor, humanizeCounts, initCodeFoldHover, jumpBookmark, leaveCsvTable, leaveMarkdownPreview, markDocDirty, mdSyncScrollFromAce, moveTabInGroup, patchViewContext, refreshPatchMarkers, rememberDocView, renderBookmarks, renderBreadcrumb, renderCsvTableView, renderEditorLayout, renderMarkdownPreview, renderTabs, reopenClosedTab, requestCloseDoc, revertDocToSaved, scheduleGitGutter, setBrowserViewport, setFilename, showBanner, showImageMenu, showMdPreviewMenu, showPathInFolder, showSvgMenu,  syncAllBrowserTabs, syncBrowserTab, textArea, toggleBookmark, toggleFocusedNode, updateBrowserTitle, updateCodeFoldPreviews, updateDocChrome, updateStatus, zoomCsvTable, zoomImageBy, zoomSvgRenderBy} = editorGroupsMod;
 const NEW_FILE_TYPES = [
     {label: 'JSON 文件', name: '新建文件.json'},
     {label: '文本文件', name: '新建文件.txt'},
@@ -2498,12 +2492,6 @@ function initAIPanel() {
         onPanelStateChange: () => refreshStructureSources(),
     });
     window.__lens.aiPanel = aiPanel;
-    // 状态栏「AI 写入」徽标：订阅面板的写操作事件（事件驱动，不轮询磁盘）
-    if (typeof aiPanel.onWriteStatus === 'function') {
-        // 图标走统一注册表：与工具卡里 edit_file 用的是同一枚铅笔，不在 HTML 里手写路径
-        if (els.stAwIcon) els.stAwIcon.innerHTML = iconSvg('rename', 12);
-        aiPanel.onWriteStatus((payload) => updateAiWriteBadge(payload));
-    }
     window.__mockAiEmit = (name, payload) => {
         if (aiPanel) aiPanel.handleEvent(name, payload);
     };
