@@ -18,6 +18,8 @@ CaDt-DataLens 是一个面向 Windows 的轻量级多格式数据查看与编辑
 - `sessionstore*.go` / `sessionlock*.go`：AI 会话磁盘存储（追加式 JSONL、每会话 meta、原子替换、fsync 回滚、跨进程写锁、回收站删除）
 - `aiconfig*.go`：AI 配置 `ai-config.json` 的原子读写（0600）
 - `sessionindex*.go`：AI 会话 SQLite **派生**搜索索引（modernc pure Go，JSONL 为唯一真源）
+- `timer.go`：AI 计时工具的 Go 侧计时器（纯内存不持久化，倒计时 `time.AfterFunc` 到点 EventsEmit `ai-timer-fired`；注册表回调化便于测试；上限 5 个 / 单个 24h）
+- `ai_worklog.go`：AI 工作日志（工作区 `.cadt/logs/` 三层：根 INDEX.md 每月一行 → `{YYYY}/{MM}/INDEX.md` 每条一行 → 当日 md 正文；追加式 + 跨进程锁；只存标题 + 一句话摘要）
 - `activity.go`：操作留痕（追加式 JSONL、按月分文件滚动分段、跨进程写锁、保留清理；只存操作摘要，不存正文与密钥）
 - `sqlview*.go`：CSV/TSV/JSONL 的只读 SQL 查询（导入临时 SQLite，不修改原文件）
 - `patch.go` / `patch_app.go` / `patch_cli.go` / `patch_platform_*.go`：`.patch` 解析、严格匹配、两阶段应用（atomic / partial）、字节级备份与撤销、索引与 WAL；`patch_app.go` 只是 Wails 薄包装，`patch_cli.go` 提供 `--check-patch` / `--apply-patch` / `--revert-patch`（不启动窗口）。核心逻辑是不依赖 App 的自由函数，CLI 与界面共用
@@ -41,7 +43,7 @@ CaDt-DataLens 是一个面向 Windows 的轻量级多格式数据查看与编辑
 - `src/editor-split-preview.js`：分屏与预览视图族（Markdown 预览+分屏双向滚动同步、HTML 预览、SVG 渲染、图片/二进制/纯文本视图及各 enter/show/hide 分发器）
 - `src/editor-sql-view.js`：大文件只读 SQL 查询视图
 - `src/editor-browser-tab.js`：浏览器使用标签页（内嵌 WebView2、视口菜单、显隐同步）
-- `src/editor-doc-extras.js`：AI 写入徽标、横幅、JSON 折叠预览、行书签、视图状态记忆、Git 行级标记、树视图右键菜单
+- `src/editor-doc-extras.js`：横幅、JSON 折叠预览、行书签、视图状态记忆、Git 行级标记、树视图右键菜单
 - `src/editor-export-menus.js`：Markdown 块级渲染与选区反向取源、SVG→PNG 导出、svg/image/md 预览右键菜单、标签页右键菜单
 - `src/explorer-ops.js`：资源管理器域操作（路径改码、文件剪贴板、新建/重命名/删除对话框与右键菜单）
 - `src/editor-menus.js`：编辑器右键菜单（选区采集、AI 联动入口、阅读模式控制器创建）
@@ -70,11 +72,11 @@ CaDt-DataLens 是一个面向 Windows 的轻量级多格式数据查看与编辑
 - `src/formats.js`：格式驱动层（parse / stringify 双向转换，插件格式也走这里）
 - `src/structure.js`：17 种语言的结构/大纲解析（纯函数，无 DOM 依赖）
 - `src/session-outline.js`：结构面板的「会话结构」渲染（用户消息定位条）。数据与跳转由 `ai/ai-panel.js` 的 `bridgeSessionOutline` / `bridgeJumpToMessage` 提供，这里只画行与处理点击/键盘
-- `src/explorer.js`：文件树（惰性加载 + 内存缓存 + 自动刷新）
+- `src/explorer.js`：文件树（惰性加载 + 内存缓存 + 自动刷新）与文件列表（扁平视图：工作区/单文件目录递归扫描，带目录数/深度/条目硬上限与截断提示；差量刷新防闪烁）
 - `src/run.js`：运行代码（扩展名 → 运行配方、命令模板 / 自检脚本 / 项目确认、stdin、dirty 决策、输出面板与 ANSI / `path:line:col` 跳转、AI 分析提示词）；`src/run.test.mjs` 覆盖纯函数
 - `src/patch-view.js`：补丁视图（文件卡 / hunk / 模式切换 / 应用 / 撤销），只做渲染，解析与写入全走 Go
 - `src/palette.js`、`src/contextmenu.js`、`src/icons.js`、`src/fileicons*.js`、`src/plugins.js`、`src/jsonrepair.js`、`src/debugconsole.js`
-- `src/ai/`：AI 助手，按域拆为兄弟模块（统一模式：`createAI<域>(ctx)` 工厂 + ctx 注入，重赋值状态经 getter/setter 访问器，互引经惰性转发箭头；测试与源码同目录）。`ai-panel.js`（约 1.1 万行核心编排：`executeTool`、回合流程、会话持久化、消息渲染、三形态、init）；数据/常量类：`ai-constants.js`（常量与纯辅助函数）、`ai-session-store.js`（JSONL 编解码/重放 + 磁盘适配）、`ai-config-model.js`、`ai-permissions.js`、`ai-command-rules.js`、`ai-git.js`、`ai-app-message.js`、`ai-tool-args.js`、`ai-tool-defs.js`（工具定义表与权限档清单）；UI 域类：`ai-write-guard.js`（write_file 陈旧缓冲防护：会话级读取指纹 + SaveFileChecked 落盘校验，并发会话覆盖丢码防线——覆盖已存在文件前必须先 read_file）、`ai-session-list.js`（侧栏列表/分组/搜索）、`ai-composer.js`（输入区与附件）、`ai-tool-cards.js`（工具卡/审批卡渲染）、`ai-takeover.js`（输入区接管卡）、`ai-todos.js`、`ai-changes-ui.js`（变更记录）、`ai-schedule.js`（定时任务）、`ai-git-ui.js`（Git 快捷操作）、`ai-slash.js`（斜杠命令）、`ai-message-queue.js`（消息排队/插话）、`ai-manage-dialogs.js`（提示词/记忆/技能对话框）、`ai-settings-dialog.js`（设置页）、`ai-subagents.js`（子代理运行时 + HUD）
+- `src/ai/`：AI 助手，按域拆为兄弟模块（统一模式：`createAI<域>(ctx)` 工厂 + ctx 注入，重赋值状态经 getter/setter 访问器，互引经惰性转发箭头；测试与源码同目录）。`ai-panel.js`（约 1.1 万行核心编排：`executeTool`、回合流程、会话持久化、消息渲染、三形态、init）；数据/常量类：`ai-constants.js`（常量与纯辅助函数）、`ai-session-store.js`（JSONL 编解码/重放 + 磁盘适配）、`ai-config-model.js`、`ai-permissions.js`、`ai-command-rules.js`、`ai-git.js`、`ai-app-message.js`、`ai-tool-args.js`、`ai-tool-defs.js`（工具定义表与权限档清单）；UI 域类：`ai-write-guard.js`（write_file 陈旧缓冲防护：会话级读取指纹 + SaveFileChecked 落盘校验，并发会话覆盖丢码防线——覆盖已存在文件前必须先 read_file）、`ai-session-list.js`（侧栏列表/分组/搜索）、`ai-composer.js`（输入区与附件）、`ai-tool-cards.js`（工具卡/审批卡渲染）、`ai-takeover.js`（输入区接管卡）、`ai-todos.js`、`ai-changes-ui.js`（变更记录）、`ai-schedule.js`（定时任务）、`ai-reminders.js`（任务提醒：reminder_* 工具 + 标题栏铃铛弹层，每轮 `<task_reminders>` 注入）、`ai-timer.js`（AI 计时器胶囊：Go 侧计时，到点经系统消息唤醒对应会话）、`ai-git-ui.js`（Git 快捷操作）、`ai-slash.js`（斜杠命令）、`ai-message-queue.js`（消息排队/插话）、`ai-manage-dialogs.js`（提示词/记忆/技能对话框）、`ai-settings-dialog.js`（设置页）、`ai-subagents.js`（子代理运行时 + HUD）
 - `src/activity-log.js`：操作留痕前端服务（脱敏 sanitizer、攒批 ≤200ms/20 条调 `ActivityAppend`；开关与保留月数在设置 → 操作记录）
 - `src/markdown.js`：共享 Markdown 渲染/sanitize（main.js 与阅读模式共用，规则单一来源）
 - `src/widget.js`：AI 回答里 `svg` / `html` 围栏的可视化卡片（Shadow DOM 承载 + DOMPurify 清洗，样式隔离、主题变量继承；`<style>` 先抽出单独清洗再注入 shadow，外链 `url()` / `@import` 与 `position:fixed` 会被处理；只有 AI 面板传 `env.aiWidgets` 时启用）。配套内置技能 `inline-visual`（对话内卡片）与 `answer-me-with-html`（多面板页面），规则改动要同步这两个技能
