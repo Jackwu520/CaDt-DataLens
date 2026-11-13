@@ -1650,21 +1650,21 @@ const structurePanelCtrl = createStructurePanelController({
     get structureWorkerPending() { return structureWorkerPending; },
     get structureWorkerSeq() { return structureWorkerSeq; },
 });
-const structureTextForDoc = (...a) => structurePanel.structureTextForDoc(...a);
-const jumpToStructureNode = (...a) => structurePanel.jumpToStructureNode(...a);
-const getStructureWorker = (...a) => structurePanel.getStructureWorker(...a);
-const rememberStructureResult = (...a) => structurePanel.rememberStructureResult(...a);
-const parseStructureCached = (...a) => structurePanel.parseStructureCached(...a);
-const scheduleStructureRefresh = (...a) => structurePanel.scheduleStructureRefresh(...a);
-const initStructurePanel = (...a) => structurePanel.initStructurePanel(...a);
-const structureSources = (...a) => structurePanel.structureSources(...a);
-const structureOutlineSnapshot = (...a) => structurePanel.structureOutlineSnapshot(...a);
-const syncStructureChrome = (...a) => structurePanel.syncStructureChrome(...a);
-const refreshStructureSources = (...a) => structurePanel.refreshStructureSources(...a);
-const toggleStructureSource = (...a) => structurePanel.toggleStructureSource(...a);
-const structureTreeText = (...a) => structurePanel.structureTreeText(...a);
-const showStructureExportMenu = (...a) => structurePanel.showStructureExportMenu(...a);
-const toggleStructureExportLineNums = (...a) => structurePanel.toggleStructureExportLineNums(...a);
+const structureTextForDoc = (...a) => structurePanelCtrl.structureTextForDoc(...a);
+const jumpToStructureNode = (...a) => structurePanelCtrl.jumpToStructureNode(...a);
+const getStructureWorker = (...a) => structurePanelCtrl.getStructureWorker(...a);
+const rememberStructureResult = (...a) => structurePanelCtrl.rememberStructureResult(...a);
+const parseStructureCached = (...a) => structurePanelCtrl.parseStructureCached(...a);
+const scheduleStructureRefresh = (...a) => structurePanelCtrl.scheduleStructureRefresh(...a);
+const initStructurePanel = (...a) => structurePanelCtrl.initStructurePanel(...a);
+const structureSources = (...a) => structurePanelCtrl.structureSources(...a);
+const structureOutlineSnapshot = (...a) => structurePanelCtrl.structureOutlineSnapshot(...a);
+const syncStructureChrome = (...a) => structurePanelCtrl.syncStructureChrome(...a);
+const refreshStructureSources = (...a) => structurePanelCtrl.refreshStructureSources(...a);
+const toggleStructureSource = (...a) => structurePanelCtrl.toggleStructureSource(...a);
+const structureTreeText = (...a) => structurePanelCtrl.structureTreeText(...a);
+const showStructureExportMenu = (...a) => structurePanelCtrl.showStructureExportMenu(...a);
+const toggleStructureExportLineNums = (...a) => structurePanelCtrl.toggleStructureExportLineNums(...a);
 
 const editorMenus = createEditorMenus({
     get aiEditorReferenceMenuItems() { return aiEditorReferenceMenuItems; },
