@@ -9,7 +9,7 @@ import {RECIPES, SELF_TEST} from './run.js';
 import {initPluginRuntime, loadPlugins} from './plugins.js';
 import {iconSvg} from './icons.js';
 import {aceModeFor, formats} from './formats.js';
-import {createMarkdownRenderer} from './markdown.js';
+import {createMarkdownRenderer, decodeMermaidSource, encodeMermaidSource} from './markdown.js';
 
 export function createWritingUI(deps) {
 
@@ -1855,9 +1855,10 @@ const sharedMarkdown = createMarkdownRenderer({
 markdownRenderer = sharedMarkdown.markdownRenderer;
 const renderMarkdownHtml = sharedMarkdown.renderMarkdownHtml;
 
-// renderMermaidPlaceholder mermaid 图表占位：渲染后异步替换为 SVG
+// renderMermaidPlaceholder mermaid 图表占位：渲染后异步替换为 SVG。
+// 源码存 base64（见 markdown.js 编解码注释），明文换行会被 DOMPurify 3.4.x 剥属性。
 function renderMermaidPlaceholder(text) {
-    return '<div class="md-mermaid" data-src="' + markdownRenderer.utils.escapeHtml(text) + '"></div>';
+    return '<div class="md-mermaid" data-src="' + encodeMermaidSource(text) + '"></div>';
 }
 
 let mermaidScriptLoading = false;
@@ -1899,9 +1900,16 @@ async function renderMermaidBlocks(root) {
         window.mermaid.initialize({startOnLoad: false, securityLevel: 'strict', theme: mermaidThemeForCurrent()});
     } catch (e) {}
     for (const block of blocks) {
-        const msrc = block.dataset.src || '';
-        if (!msrc.trim()) continue;
         block.dataset.rendered = '1';
+        let msrc = '';
+        try {
+            msrc = decodeMermaidSource(block.dataset.src || '');
+        } catch (e) {
+            block.classList.add('md-mermaid-error');
+            block.textContent = 'mermaid 源码解码失败';
+            continue;
+        }
+        if (!msrc.trim()) continue;
         try {
             const {svg} = await window.mermaid.render('mmd-' + Math.random().toString(36).slice(2), msrc);
             // mermaid strict 已自净化，这里再过一遍 DOMPurify（SVG 档）兜底；

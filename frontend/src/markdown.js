@@ -8,6 +8,24 @@ import hljs from 'highlight.js/lib/common';
 import markdownItKatex from '@vscode/markdown-it-katex';
 import {buildWidgetPlaceholder, widgetLangOf} from './widget.js';
 
+// ---- mermaid 占位源码编解码（UTF-8 安全 base64） ----
+// DOMPurify 3.4.x 会整体丢弃属性值含换行的属性（mXSS 加固），而 mermaid 源码必含换行：
+// 明文存 data-src 会被 sanitize 静默剥掉，占位永远空白且无报错。base64 值不含换行可存活，
+// 渲染端（writing-ui.renderMermaidBlocks）解码后交给 mermaid.render。
+export function encodeMermaidSource(text) {
+    const bytes = new TextEncoder().encode(String(text || ''));
+    let bin = '';
+    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+    return btoa(bin);
+}
+
+export function decodeMermaidSource(encoded) {
+    const bin = atob(String(encoded || ''));
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return new TextDecoder().decode(bytes);
+}
+
 // createMarkdownRenderer 创建渲染器。
 // deps.mdLineNumbers(): boolean —— 代码块是否带行号（实时读取设置）
 // deps.mermaidPlaceholder(text): string —— mermaid 围栏占位 HTML（mermaid 归 main.js 管）
