@@ -3561,36 +3561,6 @@ html.tree-guides .sb-children { border-left: 1px solid var(--border); }
 }
 #st-message.error { color: var(--red); }
 #st-dirty { color: var(--orange); }
-/* 状态栏「AI 写入」徽标：由 ai-panel 写操作事件驱动，只显示最近一次写入 */
-#st-ai-write {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    padding: 1px 6px;
-    border-radius: 3px;
-    background: var(--accent-weak);
-    color: var(--text);
-    font-variant-numeric: tabular-nums;
-    white-space: nowrap;
-    min-width: 0;
-}
-#st-ai-write .st-aw-icon { display: inline-flex; }
-#st-ai-write .st-aw-icon svg { display: block; }
-#st-ai-write .st-aw-state { color: var(--accent); }
-#st-ai-write .st-aw-path {
-    color: var(--muted);
-    max-width: 24vw;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-#st-ai-write .add { color: var(--green); }
-#st-ai-write .del { color: var(--red); }
-#st-ai-write .add:empty,
-#st-ai-write .del:empty { display: none; }
-#st-ai-write.pending { background: transparent; }
-#st-ai-write.pending .st-aw-state { color: var(--orange); }
-#st-ai-write.failed { background: transparent; }
-#st-ai-write.failed .st-aw-state { color: var(--red); }
 .st-zoom {
     padding: 1px 4px;
     border: none;

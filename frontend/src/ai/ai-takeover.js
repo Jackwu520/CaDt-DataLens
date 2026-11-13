@@ -18,9 +18,6 @@ export function createAITakeover(ctx) {
     const currentPendingApprovalEntry = ctx.currentPendingApprovalEntry;
     const currentPendingAskEntry = ctx.currentPendingAskEntry;
     const currentPendingEnvEntry = ctx.currentPendingEnvEntry;
-    const emitWriteStatus = ctx.emitWriteStatus;
-    const liveWriteEntry = ctx.liveWriteEntry;
-    const writeStatusPayload = ctx.writeStatusPayload;
     const refreshToolWrap = ctx.refreshToolWrap;
     const projectRulesPath = ctx.projectRulesPath;
     const lastAssistantIndex = ctx.lastAssistantIndex;
@@ -72,12 +69,6 @@ export function createAITakeover(ctx) {
         pendingApprovals.set(key, entry);
         updateComposerTakeover(true);
         renderSessionList();
-        // 状态栏徽标：补丁待确认（多文件，数字取计划合计；relPath 为补丁摘要）
-        const patchPending = liveWriteEntry(session, {relPath: approval.relPath, path: approval.root});
-        emitWriteStatus(writeStatusPayload('pending', patchPending, {
-            added: Math.max(0, Math.round(Number(preview.added) || 0)),
-            removed: Math.max(0, Math.round(Number(preview.removed) || 0)),
-        }), session && session.id);
         return new Promise((resolve) => {
             entry.resolve = resolve;
         });
