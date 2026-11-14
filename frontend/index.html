@@ -264,7 +264,7 @@
                 </div>
                 <div class="snav-section">设置</div>
                 <button type="button" class="snav-item active" data-pane="general"><span class="snav-ic" data-icon="gear"></span><span>通用设置</span></button>
-                <button type="button" class="snav-item" data-pane="editor-tabs"><span class="snav-ic" data-icon="doc"></span><span>编辑器标签页</span></button>
+                <button type="button" class="snav-item" data-pane="editor-tabs"><span class="snav-ic" data-icon="doc"></span><span>编辑器与写作</span></button>
                 <div id="snav-ai" class="snav-group expanded">
                     <button type="button" class="snav-item snav-parent" aria-expanded="true">
                         <span class="snav-chev" aria-hidden="true"></span>
@@ -365,6 +365,33 @@
                             </div>
                         </div>
 
+                    </div>
+                    <div class="settings-pane hidden" data-pane="editor-tabs">
+                        <div class="set-group-title">标签页</div>
+                        <div class="set-card">
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">关闭按钮显示<button type="button" class="info-tip" data-tip="「不显示」时仍可用 Shift+点击、中键点击或右键菜单关闭标签页。" aria-label="关闭按钮说明">i</button></div></div>
+                                <div class="set-control">
+                                    <select id="opt-tab-close" class="opt-select">
+                                        <option value="always">所有标签页</option>
+                                        <option value="hover">悬停或活动时</option>
+                                        <option value="none">不显示</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">Shift+点击关闭</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="opt-shiftclick-close"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">双击关闭</div><div class="set-desc">有未保存修改时先确认</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="opt-dblclick-close"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                </div>
+                            </div>
+                        </div>
                         <div class="set-group-title">字体</div>
                         <div class="set-card">
                             <div class="set-row">
@@ -546,33 +573,6 @@
                                 <div class="set-main"><div class="set-title">每日目标（字）</div><div class="set-desc">0 表示关闭；达标后在状态栏提示</div></div>
                                 <div class="set-control">
                                     <input type="number" id="opt-writing-goal" class="opt-goal-input" min="0" step="100" value="0">
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="settings-pane hidden" data-pane="editor-tabs">
-                        <div class="set-group-title">编辑器标签页</div>
-                        <div class="set-card">
-                            <div class="set-row">
-                                <div class="set-main"><div class="set-title">关闭按钮显示<button type="button" class="info-tip" data-tip="「不显示」时仍可用 Shift+点击、中键点击或右键菜单关闭标签页。" aria-label="关闭按钮说明">i</button></div></div>
-                                <div class="set-control">
-                                    <select id="opt-tab-close" class="opt-select">
-                                        <option value="always">所有标签页</option>
-                                        <option value="hover">悬停或活动时</option>
-                                        <option value="none">不显示</option>
-                                    </select>
-                                </div>
-                            </div>
-                            <div class="set-row">
-                                <div class="set-main"><div class="set-title">Shift+点击关闭</div></div>
-                                <div class="set-control">
-                                    <label class="set-switch"><input type="checkbox" id="opt-shiftclick-close"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
-                                </div>
-                            </div>
-                            <div class="set-row">
-                                <div class="set-main"><div class="set-title">双击关闭</div><div class="set-desc">有未保存修改时先确认</div></div>
-                                <div class="set-control">
-                                    <label class="set-switch"><input type="checkbox" id="opt-dblclick-close"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
                                 </div>
                             </div>
                         </div>
