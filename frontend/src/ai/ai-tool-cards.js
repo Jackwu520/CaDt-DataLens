@@ -19,20 +19,26 @@ function decodePartialJsonString(frag) {
 }
 
 // 流式工具卡的增量解析：路径（可能未闭合）拆成 文件名 / 目录，附已接收体积，
-// write_file 另带 content-so-far（可能未闭合的字符串字面量，解码后供 ± 行数估算）。
+// write_file 另带 content-so-far；edit_file 另带 old_string（**闭合才算完整**，open 收尾引号匹配）
+// 与 new_string-so-far（未闭合匹配，闭不闭合都能取到值）——供流式 ± 行数估算。
 // 模块级导出纯函数，ai-tool-cards.test.mjs 覆盖。
 export function liveToolParts(args) {
     const raw = String(args || '');
     const size = raw.length >= 1024 ? (raw.length / 1024).toFixed(1) + ' KB' : raw.length + ' B';
-    const parts = {path: '', dir: '', name: '', size, content: null};
+    const parts = {path: '', dir: '', name: '', size, content: null, oldString: null, newString: null};
     const pathMatch = raw.match(/"path"\s*:\s*"((?:[^"\\]|\\.)*)/);
-    if (!pathMatch) return parts;
-    parts.path = decodePartialJsonString(pathMatch[1]);
-    const idx = Math.max(parts.path.lastIndexOf('/'), parts.path.lastIndexOf('\\'));
-    parts.name = idx >= 0 ? parts.path.slice(idx + 1) : parts.path;
-    parts.dir = idx >= 0 ? parts.path.slice(0, idx) : '';
+    if (pathMatch) {
+        parts.path = decodePartialJsonString(pathMatch[1]);
+        const idx = Math.max(parts.path.lastIndexOf('/'), parts.path.lastIndexOf('\\'));
+        parts.name = idx >= 0 ? parts.path.slice(idx + 1) : parts.path;
+        parts.dir = idx >= 0 ? parts.path.slice(0, idx) : '';
+    }
     const contentMatch = raw.match(/"content"\s*:\s*"((?:[^"\\]|\\.)*)/);
     if (contentMatch) parts.content = decodePartialJsonString(contentMatch[1]);
+    const oldMatch = raw.match(/"old_string"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+    if (oldMatch) parts.oldString = decodePartialJsonString(oldMatch[1]);
+    const newMatch = raw.match(/"new_string"\s*:\s*"((?:[^"\\]|\\.)*)/);
+    if (newMatch) parts.newString = decodePartialJsonString(newMatch[1]);
     return parts;
 }
 
@@ -728,35 +734,49 @@ export function createAIToolCards(ctx) {
         }
     }
 
-    // write_file 流式 ± 行数：content-so-far 与基线（磁盘旧文本；不存在即新文件=空串）做行级 diff。
-    // 基线每条调用异步取一次缓存；每个流帧都重算（computeLineDiff 自带行数/单元格上限兜底），
-    // 内容没长 ≥256B 就复用上次结果，避免大文件每 80ms 跑一次 LCS。键 = 工具调用序号。
+    // 流式 ± 行数：write_file 用 content-so-far 对磁盘旧文本（基线每条调用异步取一次）diff；
+    // edit_file 用 new_string-so-far 对已接收完整的 old_string diff——流式期间数字会随接收
+    // 收敛到真实 ±（old 未到齐时不算）。每帧重算（computeLineDiff 自带上限兜底），
+    // 进度没长 ≥256B 就复用上次结果，避免大内容每 80ms 跑一次 LCS。键 = 工具调用序号。
     const liveBaseTexts = new Map();
     const liveStatsCache = new Map();
     let liveTurnMessage = null; // 换轮即清缓存：调用序号跨轮复用，基线不能串轮
-    function liveWriteStats(key, name, parts) {
-        if (name !== 'write_file' || parts.content === null || !parts.path) return null;
-        let base = liveBaseTexts.get(key);
-        if (base === undefined) {
-            liveBaseTexts.set(key, null); // pending 标记：基线还没读到
-            const fetch = ctx.readOptionalText
-                ? ctx.readOptionalText(parts.path)
-                : Promise.resolve({exists: false, text: ''});
-            fetch.then((r) => liveBaseTexts.set(key, {exists: !!r.exists, text: r.text || ''}))
-                .catch(() => liveBaseTexts.set(key, {exists: false, text: ''}));
+    function liveDiffStats(key, name, parts) {
+        let baseText = null;
+        let progress = -1;
+        if (name === 'write_file') {
+            if (parts.content === null || !parts.path) return null;
+            let base = liveBaseTexts.get(key);
+            if (base === undefined) {
+                liveBaseTexts.set(key, null); // pending 标记：基线还没读到
+                const fetch = ctx.readOptionalText
+                    ? ctx.readOptionalText(parts.path)
+                    : Promise.resolve({exists: false, text: ''});
+                fetch.then((r) => liveBaseTexts.set(key, {exists: !!r.exists, text: r.text || ''}))
+                    .catch(() => liveBaseTexts.set(key, {exists: false, text: ''}));
+                return null;
+            }
+            if (base === null) return null;
+            baseText = base.exists ? base.text : '';
+            progress = parts.content.length;
+        } else if (name === 'edit_file') {
+            // old_string 带闭合引号匹配才算接收完整；new_string 未闭合匹配到多少算多少
+            if (parts.oldString === null || parts.newString === null) return null;
+            baseText = parts.oldString;
+            progress = parts.newString.length;
+        } else {
             return null;
         }
-        if (base === null) return null;
         const cached = liveStatsCache.get(key);
-        if (cached && cached.len <= parts.content.length && parts.content.length - cached.len < 256) return cached;
-        const ops = ctx.computeLineDiff(base.exists ? base.text : '', parts.content);
+        if (cached && cached.len <= progress && progress - cached.len < 256) return cached;
+        const ops = ctx.computeLineDiff(baseText, name === 'write_file' ? parts.content : parts.newString);
         let added = 0;
         let removed = 0;
         for (const op of ops) {
             if (op.t === '+') added++;
             else if (op.t === '-') removed++;
         }
-        const stats = {len: parts.content.length, added, removed};
+        const stats = {len: progress, added, removed};
         liveStatsCache.set(key, stats);
         return stats;
     }
@@ -791,7 +811,7 @@ export function createAIToolCards(ctx) {
                 dir.title = parts.dir;
                 row.appendChild(dir);
             }
-            const stats = liveWriteStats(call.key, call.name, parts);
+            const stats = liveDiffStats(call.key, call.name, parts);
             if (stats) {
                 const add = document.createElement('span');
                 add.className = 'ai-tool-stat add';

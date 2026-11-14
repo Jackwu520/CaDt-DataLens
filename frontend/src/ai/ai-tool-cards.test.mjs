@@ -55,3 +55,20 @@ test('liveToolParts：content 中途截断在转义序列上不抛异常', () =>
     const tricky = liveToolParts('{"path":"a.md","content":"x\\u00e9\\u0');
     assert.ok(typeof tricky.content === 'string');
 });
+
+test('liveToolParts：edit_file 的 old_string（闭合才算完整）与 new_string-so-far', () => {
+    // old_string 已闭合、new_string 还在流式接收
+    const streaming = liveToolParts('{"path":"a.js","old_string":"const a = 1;\nconst b = 2;","new_string":"const a = 1;\nconst b = 2;\nconst c = 3;');
+    assert.equal(streaming.oldString, 'const a = 1;\nconst b = 2;');
+    assert.equal(streaming.newString, 'const a = 1;\nconst b = 2;\nconst c = 3;');
+    // 两个都闭合（new_string 未闭合正则照样能取完整值）
+    const done = liveToolParts('{"path":"a.js","old_string":"x","new_string":"y"}');
+    assert.equal(done.oldString, 'x');
+    assert.equal(done.newString, 'y');
+    // old_string 尚未闭合 → null（不产出 ± 统计的信号）
+    const oldStreaming = liveToolParts('{"path":"a.js","old_string":"const a =');
+    assert.equal(oldStreaming.oldString, null);
+    assert.equal(oldStreaming.newString, null);
+    // 无 edit 字段的工具不受影响
+    assert.equal(liveToolParts('{"command":"git status"}').oldString, null);
+});
