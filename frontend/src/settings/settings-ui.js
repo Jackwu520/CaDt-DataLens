@@ -1,11 +1,13 @@
-// settings-ui.js：从 main.js 拆出的域模块（factory + 显式依赖注入）。
-// 操作留痕（docs/unfinished-plans/operation-audit-log.md）
-// 只记状态改变类操作摘要；文件正文/剪贴板/密钥永不落盘，开关在设置 → 操作记录。
+// settings-ui.js：设置页核心（theme/字体/缩进/只读锁/applySettings/设置搜索/集成状态/字数统计）。
+// 操作留痕（docs/unfinished-plans/operation-audit-log.md）——只记状态改变类摘要，正文/剪贴板/密钥永不落盘。
 //
-// 依赖一律经 deps 延迟求值（调用方传 getter），不在创建期解构：
-// 这样既不依赖 main.js 的声明顺序，也不会把 let 状态拍成快照。
+// 依赖一律经 deps 延迟求值（调用方传 getter），不在创建期解构。
+// 对话框族、行式下拉、设置搜索已拆到同目录兄弟模块，经 Object.create 委托同一 deps。
 import {createActivityLog} from '../core/activity-log.js';
 import {iconSvg} from '../core/icons.js';
+import {createSettingsDialogs} from './settings-dialogs.js';
+import {createSettingsSearch} from './settings-search.js';
+import {createSettingsSelect} from './settings-select.js';
 
 export function createSettingsUI(deps) {
 
@@ -519,176 +521,9 @@ function applySettings() {
     else deps.cancelAutoSave();
 }
 
-function openDialogEl(dlg, options) {
-    const keepSettings = !!(options && options.keepSettings) &&
-        dlg !== elsDialogs.settings &&
-        !elsDialogs.settings.classList.contains('hidden');
-    elsDialogs.mask.classList.remove('hidden');
-    if (!keepSettings) elsDialogs.settings.classList.add('hidden');
-    for (const other of [elsDialogs.confirm, elsDialogs.conflict, elsDialogs.runDirty, elsDialogs.runConfirm, elsDialogs.name, elsDialogs.goto, elsDialogs.props, elsDialogs.update, elsDialogs.writing, elsDialogs.writingName]) {
-        if (other !== dlg) other.classList.add('hidden');
-    }
-    dlg.dataset.parentSettings = keepSettings ? '1' : '';
-    dlg.style.left = '';
-    dlg.style.top = '';
-    dlg.style.transform = '';
-    dlg.classList.remove('hidden');
-    deps.syncAllBrowserTabs();
-}
-
-function closeTopDialog() {
-    if (!elsDialogs.settings.classList.contains('hidden')) {
-            for (const dlg of [elsDialogs.confirm, elsDialogs.conflict, elsDialogs.runDirty, elsDialogs.runConfirm, elsDialogs.name, elsDialogs.goto, elsDialogs.props, elsDialogs.update, elsDialogs.writing, elsDialogs.writingName]) {
-            if (dlg.classList.contains('hidden') || dlg.dataset.parentSettings !== '1') continue;
-            dlg.classList.add('hidden');
-            if (dlg === elsDialogs.confirm) confirmAction = null;
-            if (dlg === elsDialogs.conflict) finishSaveConflict('cancel');
-            if (dlg === elsDialogs.name) {
-                nameSubmit = null;
-                nameBusy = false;
-            }
-            deps.syncAllBrowserTabs();
-            return;
-        }
-    }
-    closeDialogs();
-}
-
-function closeDialogs() {
-    if (deps.aiPanel && typeof deps.aiPanel.closeModelEditor === 'function') {
-        try { deps.aiPanel.closeModelEditor(false); } catch (e) {}
-    }
-    elsDialogs.mask.classList.add('hidden');
-    elsDialogs.settings.classList.add('hidden');
-    elsDialogs.confirm.classList.add('hidden');
-    if (saveConflictResolve) finishSaveConflict('cancel');
-    elsDialogs.conflict.classList.add('hidden');
-    elsDialogs.name.classList.add('hidden');
-    elsDialogs.goto.classList.add('hidden');
-    elsDialogs.props.classList.add('hidden');
-    elsDialogs.update.classList.add('hidden');
-    elsDialogs.writing.classList.add('hidden');
-    elsDialogs.writingName.classList.add('hidden');
-    confirmAction = null;
-    deps.syncAllBrowserTabs();
-    nameSubmit = null;
-    nameBusy = false;
-}
-
-// ---- 自定义下拉：把设置页的原生 select 增强为行式下拉（参考图形态：触发器 + 圆角面板 + 选中✓）。
-// 原生 select 隐藏但保留为真源（value / disabled 可读写），点击项更新 value 并派发 change——
-// 既有接线全部零改动；options 动态增删由 MutationObserver 自动重建（模型/字体/模板下拉）。
-// 这同时绕开了 WebView2 原生 select 弹层的不可控外观与偶发定位问题。
-
-function setSelectCloseAll(except) {
-    document.querySelectorAll('.set-select.open').forEach((wrap) => {
-        if (wrap !== except) {
-            wrap.classList.remove('open');
-            const sel = wrap.querySelector('.set-select-native');
-            if (sel) sel.dataset.ssOpen = '';
-        }
-    });
-}
-
-function setSelectRender(sel, wrap) {
-    const btn = wrap.querySelector('.set-select-btn');
-    const pop = wrap.querySelector('.set-select-pop');
-    const label = sel.options[sel.selectedIndex] ? sel.options[sel.selectedIndex].text : '';
-    btn.querySelector('.ss-label').textContent = label;
-    pop.innerHTML = '';
-    [...sel.options].forEach((option) => {
-        const item = document.createElement('button');
-        item.type = 'button';
-        item.className = 'ss-opt' + (option.selected ? ' selected' : '');
-        item.dataset.value = option.value;
-        const text = document.createElement('span');
-        text.className = 'ss-label';
-        text.textContent = option.text;
-        item.append(text);
-        if (option.selected && deps.iconSvg) {
-            const check = document.createElement('span');
-            check.className = 'ss-check';
-            check.innerHTML = deps.iconSvg('check', 12);
-            item.append(check);
-        }
-        item.addEventListener('click', () => {
-            if (sel.value !== option.value) {
-                sel.value = option.value;
-                sel.dispatchEvent(new Event('change', {bubbles: true}));
-            }
-            wrap.classList.remove('open');
-            sel.dataset.ssOpen = '';
-        });
-        pop.append(item);
-    });
-}
-
-function enhanceSetSelects() {
-    document.querySelectorAll('.settings-pane select.opt-select').forEach((sel) => {
-        if (sel.dataset.setSelect === '1') return;
-        sel.dataset.setSelect = '1';
-        sel.classList.add('set-select-native');
-        const wrap = document.createElement('div');
-        wrap.className = 'set-select';
-        const btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = 'set-select-btn';
-        btn.innerHTML = '<span class="ss-label"></span><span class="ss-chev"></span>';
-        const pop = document.createElement('div');
-        pop.className = 'set-select-pop';
-        sel.after(wrap);
-        wrap.append(btn, pop);
-        if (deps.iconSvg) btn.querySelector('.ss-chev').innerHTML = deps.iconSvg('chevron-down', 12);
-
-        const render = () => setSelectRender(sel, wrap);
-        const toggle = () => {
-            const opening = !wrap.classList.contains('open');
-            setSelectCloseAll();
-            if (opening) {
-                render();
-                // 下方空间不足时向上弹
-                const rect = wrap.getBoundingClientRect();
-                pop.classList.toggle('up', rect.bottom + 240 > window.innerHeight && rect.top > 240);
-                wrap.classList.add('open');
-                sel.dataset.ssOpen = '1';
-            }
-        };
-        btn.addEventListener('click', toggle);
-        btn.addEventListener('keydown', (e) => {
-            // 键盘：↑↓ 直接改选中项（同步派发 change），Enter/Esc 开合与关闭
-            if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-                e.preventDefault();
-                const delta = e.key === 'ArrowDown' ? 1 : -1;
-                const next = Math.min(sel.options.length - 1, Math.max(0, sel.selectedIndex + delta));
-                if (next !== sel.selectedIndex) {
-                    sel.selectedIndex = next;
-                    render();
-                    sel.dispatchEvent(new Event('change', {bubbles: true}));
-                }
-            } else if (e.key === 'Escape') {
-                wrap.classList.remove('open');
-                sel.dataset.ssOpen = '';
-            }
-        });
-        // options 动态增删（模型 / 字体 / 模板下拉）自动重建
-        new MutationObserver(render).observe(sel, {childList: true});
-        sel.addEventListener('change', () => {
-            if (!wrap.classList.contains('open')) render();
-        });
-        render();
-    });
-    // 外点关闭（与 info-tip 委托并列）
-    if (!window.__setSelectDelegated) {
-        window.__setSelectDelegated = true;
-        document.addEventListener('click', (e) => {
-            if (e.target && e.target.closest && e.target.closest('.set-select')) return;
-            setSelectCloseAll();
-        });
-    }
-}
 
 function selectSettingsPane(pane) {
-    resetSettingsSearch();
+    searchMod.resetSettingsSearch();
     document.querySelectorAll('.snav-item').forEach((b) => b.classList.toggle('active', b.dataset.pane === pane));
     document.querySelectorAll('.settings-pane').forEach((p) => p.classList.toggle('hidden', p.dataset.pane !== pane));
     // ⓘ 说明气泡：触屏点击开合（hover / 键盘聚焦由 CSS 负责）；点气泡外的任意位置收起
@@ -751,10 +586,10 @@ function selectSettingsPane(pane) {
 }
 
 function openSettings(pane = 'general', preset) {
-    openDialogEl(elsDialogs.settings);
-    resetSettingsSearch();
+    dlgMod.openDialogEl(elsDialogs.settings);
+    searchMod.resetSettingsSearch();
     selectSettingsPane(pane);
-    enhanceSetSelects();
+    selMod.enhanceSetSelects();
     // 插件市场搜索预设（端侧分类器状态行的「下载语义模型」跳转带 onnx 关键词进来）
     if (pane === 'plugins' && preset) {
         const search = document.getElementById('plugin-market-search');
@@ -784,110 +619,6 @@ function openSettings(pane = 'general', preset) {
         }
     }
     if (pane === 'integration') syncIntegrationStatus();
-}
-
-// ---- 设置搜索：左栏顶部搜索框，跨面板检索设置项并跳转 ----
-
-function buildSettingsSearchIndex() {
-    const entries = [];
-    const navLabels = {};
-    document.querySelectorAll('.snav-item[data-pane]').forEach((b) => {
-        navLabels[b.dataset.pane] = (b.textContent || '').trim();
-    });
-    for (const paneEl of document.querySelectorAll('.settings-pane')) {
-        const pane = paneEl.dataset.pane;
-        // 动态面板（数据格式 / 编程语言子页）打开前没有内容，跳过，用下面的静态条目兜底
-        if (paneEl.classList.contains('hidden') && (pane.startsWith('fmt-') || pane.startsWith('lang-'))) continue;
-        for (const row of paneEl.querySelectorAll('.set-row, .popover-row, .fmt-pane-title, .fmt-pane-sub, .settings-section-title')) {
-            let text = (row.textContent || '').replace(/\s+/g, ' ').trim();
-            // ⓘ 气泡里的长说明也参与检索（data-tip 不在 textContent 里）
-            const tip = row.querySelector ? row.querySelector('.info-tip[data-tip]') : null;
-            if (tip) text = (text + ' ' + tip.dataset.tip).replace(/\s+/g, ' ').trim();
-            if (text) entries.push({pane, text, el: row});
-        }
-    }
-    for (const f of deps.allFormatDefs()) {
-        entries.push({pane: 'fmt-' + f.id, text: f.name + '：编码 / 缩进 / 保存换行 / 默认视图', el: null});
-    }
-    for (const l of deps.LANG_DEFS) {
-        entries.push({pane: 'lang-' + l.id, text: l.name + '：环境检测（路径 / 版本）', el: null});
-        for (const t of l.tools || []) {
-            entries.push({pane: 'lang-' + l.id, text: l.name + ' · ' + t.name, el: null});
-        }
-    }
-    return {entries, navLabels};
-}
-
-function renderSettingsSearch(query) {
-    const box = elsSettings.settingsSearchResults;
-    if (!box) return;
-    const q = String(query || '').trim().toLowerCase();
-    if (!q) {
-        box.classList.add('hidden');
-        box.textContent = '';
-        return;
-    }
-    const {entries, navLabels} = buildSettingsSearchIndex();
-    const hits = [];
-    for (const e of entries) {
-        const hay = (navLabels[e.pane] || '') + ' ' + e.text;
-        if (hay.toLowerCase().includes(q)) hits.push(e);
-        if (hits.length >= 12) break;
-    }
-    box.textContent = '';
-    if (!hits.length) {
-        const empty = document.createElement('div');
-        empty.className = 'settings-search-empty';
-        empty.textContent = '没有匹配的设置';
-        box.appendChild(empty);
-    } else {
-        for (const hit of hits) {
-            const row = document.createElement('button');
-            row.type = 'button';
-            row.className = 'settings-search-item';
-            const nav = document.createElement('span');
-            nav.className = 'settings-search-nav';
-            nav.textContent = navLabels[hit.pane] || hit.pane;
-            const text = document.createElement('span');
-            text.className = 'settings-search-text';
-            text.textContent = hit.text.length > 64 ? hit.text.slice(0, 64) + '…' : hit.text;
-            row.append(nav, text);
-            row.addEventListener('click', () => {
-                box.classList.add('hidden');
-                selectSettingsPane(hit.pane);
-                if (hit.el && hit.el.isConnected) {
-                    hit.el.scrollIntoView({block: 'center'});
-                    hit.el.classList.add('settings-hit');
-                    setTimeout(() => hit.el.classList.remove('settings-hit'), 1600);
-                }
-            });
-            box.appendChild(row);
-        }
-    }
-    box.classList.remove('hidden');
-}
-
-function resetSettingsSearch() {
-    if (elsSettings.settingsSearch) elsSettings.settingsSearch.value = '';
-    if (elsSettings.settingsSearchResults) {
-        elsSettings.settingsSearchResults.classList.add('hidden');
-        elsSettings.settingsSearchResults.textContent = '';
-    }
-}
-
-if (elsSettings.settingsSearch) {
-    elsSettings.settingsSearch.addEventListener('input', () => renderSettingsSearch(elsSettings.settingsSearch.value));
-    elsSettings.settingsSearch.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape') {
-            e.stopPropagation();
-            e.preventDefault();
-            resetSettingsSearch();
-            elsSettings.settingsSearch.blur();
-        } else if (e.key === 'Enter') {
-            const first = elsSettings.settingsSearchResults.querySelector('.settings-search-item');
-            if (first) first.click();
-        }
-    });
 }
 
 
@@ -948,96 +679,6 @@ async function applyIntegration(kind, checkbox, label) {
     }
 }
 
-function openAbout() {
-    openSettings('about');
-}
-
-let confirmAction = null;
-// 保存冲突对话框的 Promise resolver：关闭对话框（按钮 / Esc / 遮罩）一律按取消处理
-let saveConflictResolve = null;
-
-function finishSaveConflict(choice) {
-    const resolve = saveConflictResolve;
-    saveConflictResolve = null;
-    elsDialogs.conflict.classList.add('hidden');
-    if (!elsDialogs.mask.classList.contains('hidden')) closeTopDialog();
-    if (resolve) resolve(choice);
-}
-
-function openSaveConflictDialog(doc, deleted) {
-    return new Promise((resolve) => {
-        saveConflictResolve = resolve;
-        const name = (doc && (doc.name || doc.path)) || '文件';
-        elsDialogs.conflictText.textContent = deleted
-            ? '「' + name + '」已在磁盘上被删除或移动，但编辑器里还有未保存的修改。'
-            : '「' + name + '」已被其他程序修改，但编辑器里还有未保存的修改。请选择如何处理：';
-        elsDialogs.conflictReload.disabled = !!deleted;
-        openDialogEl(elsDialogs.conflict);
-    });
-}
-
-elsDialogs.conflictReload.addEventListener('click', () => finishSaveConflict('reload'));
-elsDialogs.conflictOverwrite.addEventListener('click', () => finishSaveConflict('overwrite'));
-elsDialogs.conflictCancel.addEventListener('click', () => finishSaveConflict('cancel'));
-let nameSubmit = null;
-let nameBusy = false;
-
-function openNameDialog(options) {
-    const opts = options || {};
-    elsDialogs.nameTitle.textContent = opts.title || '名称';
-    elsDialogs.nameLabel.textContent = opts.label || '名称';
-    elsDialogs.nameInput.value = opts.value || '';
-    elsDialogs.nameInput.placeholder = opts.placeholder || '';
-    elsDialogs.nameError.textContent = '';
-    elsDialogs.nameError.classList.add('hidden');
-    elsDialogs.nameOk.textContent = opts.okLabel || '确定';
-    nameSubmit = opts.onSubmit || null;
-    nameBusy = false;
-    openDialogEl(elsDialogs.name, {keepSettings: true});
-    setTimeout(() => {
-        const input = elsDialogs.nameInput;
-        input.focus();
-        const dot = input.value.lastIndexOf('.');
-        if (opts.selectStem && dot > 0) input.setSelectionRange(0, dot);
-        else input.select();
-    }, 0);
-}
-
-function nameDialogError(message) {
-    elsDialogs.nameError.textContent = String(message || '');
-    elsDialogs.nameError.classList.remove('hidden');
-}
-
-async function submitNameDialog() {
-    if (!nameSubmit || nameBusy) return;
-    const value = elsDialogs.nameInput.value;
-    nameBusy = true;
-    elsDialogs.nameOk.disabled = true;
-    elsDialogs.nameError.classList.add('hidden');
-    try {
-        await nameSubmit(value);
-        nameBusy = false;
-        elsDialogs.nameOk.disabled = false;
-        closeTopDialog();
-    } catch (e) {
-        nameDialogError((e && e.message) || e);
-        nameBusy = false;
-        elsDialogs.nameOk.disabled = false;
-    }
-}
-
-elsDialogs.nameOk.addEventListener('click', submitNameDialog);
-document.getElementById('btn-name-cancel').addEventListener('click', closeTopDialog);
-elsDialogs.nameInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') {
-        e.preventDefault();
-        submitNameDialog();
-    } else if (e.key === 'Escape') {
-        e.preventDefault();
-        e.stopPropagation();
-        closeTopDialog();
-    }
-});
 
 function cursorPositionForDoc() {
     if (!deps.file) return null;
@@ -1098,8 +739,21 @@ function scheduleWordCount() {
 }
 
 
-    function getConfirmAction() { return confirmAction; }
-    function setConfirmAction(v) { confirmAction = v; }
 
-    return {actRel, activityLog, applyIntegration, applyReadOnlyToDoc, applySettings, closeDialogs, closeTopDialog, countWords, currentTheme, cursorPositionForDoc, elsDialogs, elsSettings, getConfirmAction, getFormatSettings, installReadOnlyGuards, openDialogEl, openNameDialog, openSaveConflictDialog, openSettings, rtFullscreen, scheduleWordCount, selectSettingsPane, setConfirmAction, setTheme, syncIntegrationStatus, syncedOpenMode, toggleAlwaysOnTop, toggleCodeWrap, toggleFullscreen, updateLockButton, updateWordCount};
+// 三个兄弟模块：对话框族 / 行式下拉 / 设置搜索。经 Object.create 委托原 deps（getter 惰性），只补宿主能力
+const dlgDeps = Object.create(deps);
+dlgDeps.elsDialogs = elsDialogs;
+dlgDeps.openSettings = openSettings;
+const dlgMod = createSettingsDialogs(dlgDeps);
+
+const selMod = createSettingsSelect(deps);
+
+const searchDeps = Object.create(deps);
+searchDeps.selectSettingsPane = selectSettingsPane;
+const searchMod = createSettingsSearch(searchDeps);
+
+    return {
+        ...dlgMod, ...selMod, ...searchMod,
+        actRel, activityLog, applyIntegration, applyReadOnlyToDoc, applySettings, countWords, currentTheme, cursorPositionForDoc, elsDialogs, elsSettings, getFormatSettings, installReadOnlyGuards, openSettings, rtFullscreen, scheduleWordCount, selectSettingsPane, setTheme, syncIntegrationStatus, syncedOpenMode, toggleAlwaysOnTop, toggleCodeWrap, toggleFullscreen, updateLockButton, updateWordCount,
+    };
 }
