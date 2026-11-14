@@ -401,6 +401,7 @@ export function createAIPanel(options) {
         approvedClear: document.getElementById('ai-opt-approved-clear'),
         permissionClassifier: document.getElementById('ai-opt-auto-classifier'),
         permissionClassifierModel: document.getElementById('ai-opt-classifier-model'),
+        chipSchedules: panel.querySelector('#ai-chip-schedules'),
         localLinear: document.getElementById('ai-opt-local-linear'),
         localSemantic: document.getElementById('ai-opt-local-semantic'),
         localRefresh: document.getElementById('ai-opt-local-refresh'),
@@ -2067,6 +2068,14 @@ export function createAIPanel(options) {
         streamOf,
         compactOf,
         sendAppMessage,
+        // 头部定时任务胶囊与弹层（kind=schedules，与计时器胶囊同机制）
+        chipSchedules: el.chipSchedules,
+        togglePop: (chip) => toggleChipsPop('schedules', chip),
+        hideChipsPop: () => hideChipsPop(),
+        openSettings,
+        onSchedulesChanged: () => {
+            if (chipsPopKind === 'schedules') renderChipsPop('schedules');
+        },
     });
     const renderScheduleSettings = () => scheduleMod.renderScheduleSettings();
     const openScheduleEditor = (...args) => scheduleMod.openScheduleEditor(...args);
@@ -2096,6 +2105,8 @@ export function createAIPanel(options) {
         },
     });
     timerMod.syncFromBackend();
+    // 头部定时任务胶囊初查（无启用任务时保持隐藏）
+    scheduleMod.renderChip();
 
     // 端侧命令分类器：内置线性模型（懒加载权重）+ 插件分类器聚合、失败熔断、个性化学习。
     // 纯离线；只产出危险概率，判定在 approveCommandForRun 按严格度阈值完成。
@@ -11455,11 +11466,11 @@ export function createAIPanel(options) {
         bgUpdateListeners,
         getChipsPopKind: () => chipsPopKind,
         setChipsPopKind: (value) => { chipsPopKind = value; },
-        // 计时器弹层（kind=timers）由计时器域提供内容，这里只做转发
+        // 计时器 / 定时任务弹层（kind=timers / schedules）由各自域提供内容，这里只做转发
         renderChipsPopExtra: (kind, host) => {
-            if (kind !== 'timers') return false;
-            timerMod.renderPop(host);
-            return true;
+            if (kind === 'timers') { timerMod.renderPop(host); return true; }
+            if (kind === 'schedules') { scheduleMod.renderSchedulePop(host); return true; }
+            return false;
         },
         getConfig: () => config,
     });
@@ -11586,7 +11597,10 @@ export function createAIPanel(options) {
             refreshMemoryPath();
         },
         handleEvent,
-        handleScheduleFire,
+        // 触发执行后刷新头部定时任务胶囊（once 任务触发后停用、lastResult 更新）
+        handleScheduleFire: (fire) => {
+            Promise.resolve(handleScheduleFire(fire)).catch(() => {}).then(() => scheduleMod.renderChip());
+        },
         // 计时器事件（ai-timer-fired / ai-timer-stopped）：main.js 从 Go 侧广播转发进来
         handleTimerEvent: (name, info) => {
             if (!timerMod) return;

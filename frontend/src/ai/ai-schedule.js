@@ -29,6 +29,8 @@ export function createAISchedule(ctx) {
 
     function renderScheduleSettings() {
         if (!opt.schedules) return;
+        // 设置页渲染顺带刷新头部胶囊与弹层缓存（CRUD 工具与手动操作都汇到这条路径）
+        refreshSchedulesUI();
         if (!backend.AIScheduleList) {
             opt.schedules.innerHTML = '';
             const empty = document.createElement('span');
@@ -53,6 +55,123 @@ export function createAISchedule(ctx) {
         }).catch((e) => {
             if (opt.schedules) opt.schedules.textContent = '加载失败：' + ((e && e.message) || e);
         });
+    }
+
+    // ---- 头部定时任务胶囊与弹层（kind=schedules，与计时器胶囊同机制） ----
+    // 定时任务是应用级资产（触发可唤醒绑定的会话，也可每次新建会话），胶囊显示应用内启用数，
+    // 不按会话过滤；列表缓存一份供弹层同步渲染（避免异步填充把弹层定位撑偏）。
+    let scheduleListCache = [];
+
+    function chipEl() {
+        return ctx.chipSchedules || null;
+    }
+
+    function refreshSchedulesUI() {
+        if (!backend.AIScheduleList) return;
+        Promise.resolve(backend.AIScheduleList()).then((list) => {
+            scheduleListCache = Array.isArray(list) ? list : [];
+            const chip = chipEl();
+            if (chip) {
+                const enabled = scheduleListCache.filter((s) => s && s.enabled);
+                chip.classList.toggle('hidden', !enabled.length);
+                const countEl = chip.querySelector('.ai-chip-count');
+                if (countEl) {
+                    countEl.textContent = String(enabled.length);
+                    countEl.classList.toggle('hidden', !enabled.length);
+                }
+                const iconEl = chip.querySelector('.ai-chip-icon');
+                if (iconEl && !iconEl.dataset.ready) {
+                    iconEl.dataset.ready = '1';
+                    iconEl.innerHTML = iconSvg('clock', 12);
+                }
+                chip.title = enabled.length
+                    ? enabled.map((s) => s.name).join('、') + ' · 点击查看详情 / 编辑'
+                    : '定时任务（应用运行期间的计划触发）';
+            }
+            // 弹层开着时原位重渲染（重新定位）
+            if (typeof ctx.onSchedulesChanged === 'function') ctx.onSchedulesChanged();
+        }).catch(() => {
+            // 列表读取失败：胶囊回退隐藏（设置页打开时已有错误呈现）
+            const chip = chipEl();
+            if (chip) chip.classList.add('hidden');
+        });
+    }
+
+    function renderChip() {
+        refreshSchedulesUI();
+    }
+
+    // 弹层：行点击进编辑器，底部「新建任务…」与「全部管理…」
+    function renderSchedulePop(host) {
+        if (!host) return;
+        host.textContent = '';
+        const title = document.createElement('div');
+        title.className = 'ai-chips-pop-title';
+        title.textContent = '定时任务';
+        host.appendChild(title);
+        const sorted = scheduleListCache.slice().sort((a, b) => ((b.enabled === true) - (a.enabled === true)));
+        for (const s of sorted) {
+            const row = document.createElement('button');
+            row.type = 'button';
+            row.className = 'ai-chips-row';
+            const badge = document.createElement('span');
+            badge.className = 'ai-sched-badge' + (s.enabled ? ' on' : '');
+            badge.textContent = s.enabled ? '启用' : '停用';
+            const main = document.createElement('span');
+            main.className = 'ai-chips-main';
+            const nameSpan = document.createElement('span');
+            nameSpan.className = 'ai-chips-name';
+            nameSpan.textContent = s.name || s.id;
+            const subSpan = document.createElement('span');
+            subSpan.className = 'ai-chips-sub';
+            subSpan.textContent = describeAISchedule(s);
+            main.append(nameSpan, subSpan);
+            row.append(badge, main);
+            row.title = '点击编辑该任务';
+            row.addEventListener('click', () => {
+                if (typeof ctx.hideChipsPop === 'function') ctx.hideChipsPop();
+                openScheduleEditor(s);
+            });
+            host.appendChild(row);
+        }
+        if (!sorted.length) {
+            const empty = document.createElement('div');
+            empty.className = 'ai-chips-empty';
+            empty.textContent = '暂无定时任务，可让 AI 用 schedule_create 创建，或点下方「新建任务…」';
+            host.appendChild(empty);
+        }
+        const addBtn = document.createElement('button');
+        addBtn.type = 'button';
+        addBtn.className = 'ai-chips-row ai-timer-back';
+        const addIco = document.createElement('span');
+        addIco.className = 'ai-chips-go';
+        addIco.innerHTML = iconSvg('plus', 12);
+        const addLabel = document.createElement('span');
+        addLabel.className = 'ai-chips-name';
+        addLabel.textContent = '新建任务…';
+        addBtn.append(addIco, addLabel);
+        addBtn.addEventListener('click', () => {
+            if (typeof ctx.hideChipsPop === 'function') ctx.hideChipsPop();
+            openScheduleEditor(null);
+        });
+        host.appendChild(addBtn);
+        const manageBtn = document.createElement('button');
+        manageBtn.type = 'button';
+        manageBtn.className = 'ai-chips-row ai-timer-back';
+        const manageIco = document.createElement('span');
+        manageIco.className = 'ai-chips-go';
+        manageIco.innerHTML = iconSvg('chevron-right', 12);
+        const manageLabel = document.createElement('span');
+        manageLabel.className = 'ai-chips-name';
+        manageLabel.textContent = '全部管理（设置）…';
+        manageBtn.append(manageIco, manageLabel);
+        manageBtn.addEventListener('click', () => {
+            if (typeof ctx.hideChipsPop === 'function') ctx.hideChipsPop();
+            if (typeof ctx.openSettings === 'function') ctx.openSettings('schedules');
+        });
+        host.appendChild(manageBtn);
+        // 弹层打开即拉最新列表（缓存是上次刷新的快照）
+        refreshSchedulesUI();
     }
 
     function renderScheduleRow(s) {
@@ -346,5 +465,5 @@ export function createAISchedule(ctx) {
             }
         }
     }
-    return {renderScheduleSettings, renderScheduleRow, openScheduleEditor, aiDelay, handleScheduleFire, runScheduledTurn};
+    return {renderScheduleSettings, renderScheduleRow, renderSchedulePop, renderChip, openScheduleEditor, aiDelay, handleScheduleFire, runScheduledTurn};
 }
