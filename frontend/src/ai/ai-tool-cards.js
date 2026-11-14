@@ -749,7 +749,14 @@ export function createAIToolCards(ctx) {
         if (isCommand) {
             card.classList.add('collapsed');
         }
-        if (!isRead && message.status !== 'running' && message.status !== 'error') card.classList.add('collapsed');
+        // 文件写入/编辑卡全程折叠（running 也不展开）：running 展开显示「执行中…」body、
+        // 完成瞬间折起——卡高度突变把消息区与旁边布局顶得一跳（用户看到的就是这个闪，
+        // 不是 spinner）。error 仍默认展开便于看失败原因；状态在头部徽标上始终可见。
+        const fileToolCard = message.name === 'write_file' || message.name === 'edit_file';
+        if (fileToolCard) {
+            card.classList.add('collapsed');
+        }
+        if (!isRead && !fileToolCard && message.status !== 'running' && message.status !== 'error') card.classList.add('collapsed');
         // 用户手动展开/收起过的卡片以偏好为准，覆盖上面的默认折叠规则。
         if (!isRead && message.toolCallId) {
             const storedFold = toolFoldState.get(message.toolCallId);
