@@ -119,6 +119,23 @@ cadt.addTheme({
 
 `css` 是追加进页面的样式表，选择器用 `html[data-theme="<id>"]` 覆盖 `--*` 设计变量即可；建议完整提供 `--bg/--text/--muted/--border/--hover/--accent/--on-accent`。
 
+### `cadt.registerCommandClassifier(spec)`
+
+注册端侧命令风险分类器（自动审批链使用，需应用 ≥ 1.2.0）。端侧分类器只产出危险概率、**无 deny 权**：`score ≥ 严格度阈值` 一律转人工，多个启用的分类器全部执行、保守合并取最高分；分类器抛异常跳过继续，连续 5 次失败本会话内自动停用。
+
+```js
+cadt.registerCommandClassifier({
+    id: 'onnx-semantics',        // 插件内唯一，^[a-z0-9][a-z0-9-]{0,63}$
+    label: '语义分类器（ONNX）',  // 审批卡 / 权限记录里显示
+    classify(command, ctx) {     // 可返回 Promise
+        // ctx: {cwd, toolName, strictness, threshold, sessionId}
+        return {score: 0.02, reason: '只读查询'};   // score = 危险概率 [0,1]
+    },
+});
+```
+
+完整示例见 [`examples/command-classifier-onnx/`](examples/command-classifier-onnx/)（接线演示 + 上架指引）。
+
 ### 命令执行（进程桥）
 
 ```js
@@ -161,6 +178,16 @@ cadt.openVirtualDoc('Git 差异 — main.diff', patchText);  // 扩展名决定�
 - 默认（便携）：`<exe 目录>\plugins\<插件 id>\`，跟程序走，复制目录即可带走。
 - 可选（应用数据）：`%APPDATA%\CandySweet\CaDt-DataLens\plugins\<插件 id>\`。
 - 在 设置 → 插件 里切换目录模式；切换后列表按新目录展示，已安装插件不会自动迁移。
+
+## 发布到插件市场
+
+插件市场 = Gitee 组织 [`cadt-datalens-plugins`](https://gitee.com/cadt-datalens-plugins) 的公开仓库（Gitee API v5 org repos 列出，仓库根 `plugin.json` 提供元数据）：
+
+1. 在组织下建公开仓库（仓库名建议与插件 `id` 一致），推送插件内容到**仓库根**（清单 + 入口 + 资产，不要包子目录）；
+2. `plugin.json` 里 `homepage` / `repository` 指向仓库地址，`minAppVersion` 锁定依赖的应用 API 版本；
+3. 推送后市场列表自动出现，无需登记；更新插件 = 推新版本 tag / 提交并更新清单 `version`。
+
+参考：[`examples/command-classifier-onnx/README.md`](examples/command-classifier-onnx/README.md) 的上架指引一节。
 
 ## 安全说明
 

@@ -1,0 +1,10 @@
+{
+    "id": "text-classifier-mini-int8",
+    "format": "onnx",
+    "quant": "int8",
+    "sizeMB": 42,
+    "maxTokens": 128,
+    "inputs": ["command", "cwd"],
+    "outputs": ["score"],
+    "note": "二期载荷占位：本文件仅演示 readAsset 加载路径，真实 ONNX 权重在二期放入本目录并在此登记哈希与版本。"
+}
