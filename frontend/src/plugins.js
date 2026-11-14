@@ -186,6 +186,7 @@ export async function loadPlugins(backend) {
     lastLoadErrors = [];
     host.onPluginsChanged();
     if (!backend || typeof backend.GetPluginSources !== 'function') {
+        console.info('[plugins] 跳过加载：宿主无 GetPluginSources 绑定');
         return [];
     }
     let sources = [];
@@ -193,6 +194,7 @@ export async function loadPlugins(backend) {
         sources = (await backend.GetPluginSources()) || [];
     } catch (e) {
         lastLoadErrors = [`读取插件失败：${e}`];
+        console.info('[plugins] 读取插件源失败：' + lastLoadErrors[0]);
         return [...lastLoadErrors];
     }
     const errors = [];
@@ -206,6 +208,11 @@ export async function loadPlugins(backend) {
         }
     }
     lastLoadErrors = [...errors];
+    // 诊断行：插件加载是静默失败高发区（源被 Go 侧跳过 / 入口早期 return 都不报错），
+    // 进 F12 调试控制台与 jsonl，排查「分类器未注册」类问题从这里看起
+    console.info('[plugins] 加载完成：源 ' + sources.length + ' 个（' +
+        sources.map((s) => s.id).join('、') + '）· 命令分类器 ' + commandClassifiers.size +
+        ' 个 · 错误 ' + errors.length + (errors.length ? '：' + errors.join('；') : ''));
     host.onPluginsChanged();
     return errors;
 }
