@@ -12,8 +12,8 @@ import {
     replaySessionLog,
     serializeSessionMessage,
     buildSessionMeta,
-    createSessionDiskStore,
 } from './ai-session-store.js';
+import {createSessionDiskStore} from './ai-session-disk.js';
 
 function logOf(...events) {
     return encodeSessionLines(events);

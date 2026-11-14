@@ -6,7 +6,8 @@ import {copyImageUrlToClipboard} from '../core/image-clipboard.js';
 import {createImageLightbox} from '../shell/image-lightbox.js';
 import {createFileIcon} from '../core/fileicons.js';
 import {buildSessionOutlineItems} from './session-outline.js';
-import {createSessionDiskStore, replaySessionLog} from './ai-session-store.js';
+import {createSessionDiskStore} from './ai-session-disk.js';
+import {replaySessionLog} from './ai-session-store.js';
 import {
     analyzeDangerousCommand,
     analyzeReadOnlyCommand,
