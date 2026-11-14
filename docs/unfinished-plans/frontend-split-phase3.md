@@ -1,6 +1,10 @@
 # 前端拆分第三阶段：目录归位 + 多域混装文件解耦
 
-> 状态：未开工（2026-11-14 初版；同日二次评估增补 §0 目录约定与 4 个新候选，批次重排为「目录分组」）
+> 状态：**进行中**（2026-11-14 初版；同日二次评估增补 §0 目录约定与 4 个新候选，批次重排为「目录分组」）
+> 实施记录（2026-11-14 22:10 起，四项决策全按推荐：11 目录 / 先 Z / 可选批次都纳入 / S2 拆两次）：
+> - Z 目录归位 `3cb7ca0`：64 文件 git mv + 106 行 import 重写，顶层只剩 main.js；npm test 234/234、双构建通过
+> - A1 `d71ee73`：ai-session-store 750 → 255（+ ai-session-disk 512）
+> - R1 `4077cbf`：bridge-ui 632 → 203（+ terminal-view 212 / git 177 / cli-convert 77）
 > 前置阅读：`docs/finished-plans/frontend-split-phase2.md`（两阶段实施记录与教训）、`.cadt/memory/frontend-module-refactor-audit.md`（验证方法论：tokenizer 重写、三类扫描、对照验证、退出码纪律）
 > 范围：阶段 Z 目录归位 + 11 个「多域混装 / 内聚但体量逼近红线」文件的解耦；**不动** ai-panel.js（交子代理消息化方案）、main.js 组合根、editor-groups.js 编排核心
 > 目标：把「未来拆分会很痛」的文件在低耦合期提前解耦（预防性拆分），不是追行数指标；同时终结 src/ 顶层平铺
