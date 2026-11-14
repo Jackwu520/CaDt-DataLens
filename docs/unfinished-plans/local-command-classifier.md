@@ -88,6 +88,7 @@ cadt.registerCommandClassifier({
     - 危险侧：malbash（恶意 bash 脚本语料）、ShellCore 论文的 IoT 命令类目学、Cowrie 蜜罐攻击者命令序列 → 用于**查漏危险模式清单**；
     - Agent 安全基准（R-Judge / Agent Security Bench / AgentHarm）：标签语义最近但标注单位是交互记录而非单条命令，且为评测基准（训练用途许可存疑）、分布偏注入攻击；
     - **根因**：我们的标签是「策略性 auto-approve 判定」（只读/幂等/不写盘，`git push --force` 良性但必须 ask），与「恶意/良性」语义不同构——训练集必须自建；公开语料的正确用法是当词表与模式清单参考。真正的策略对齐语料来自 §7 个性化回路（用户裁定 = 最正确的标签源）。
+    - **实测 eval（2026-11-14，`scripts/eval-public-corpus.mjs`，只评不训）**：SEA 50 用户 856 条唯一裸命令——宽松档放行 82.5%、标准档 13.3%；标准档被打扰的高分词与策略灰色动词（mkdir/chmod/killall/install）高度重合（无参数裸动词按策略本就该转人工），剩余为未知词保守（fail-closed 方向正确）。Cowrie 蜜罐真实攻击流量中位 score 1.0，破坏性子集三档 100% 拦截；malbash 恶意脚本的三档 100% 拦截，且数据外泄类 `curl -F f=@file`（不在参照规则集内）模型独立判险 0.99+。eval 还反哺了两处语料修正：`ls 2>/dev/null`（0.94→0.014，良性惯用法被裸设备词面拉高）与 `cat README.md`（文件名词面被危险侧共享稀释，词表按只读/中性/受害者三表分离）；金丝雀清单随之固化进训练门槛（`CANARIES` 导出，训练器与单测同一份）。
 - **文件清单（实施落定）**：`src/ai/ai-local-classifier.js`（特征化/推理/阈值判定/SGD/运行时工厂）、`local-classifier-weights.mjs`（量化权重，生成产物）、`ai-local-classifier.test.mjs`、`scripts/classifier-corpus.mjs`（模板参数化语料，训练 930 / 验证 576 条）、`scripts/train-local-classifier.mjs`（SGD 60 epoch + int8 量化 + 硬指标门槛，不达标拒绝产出）。
 
 ## 7. 个性化后训练（方案 A 扩展，M1）
