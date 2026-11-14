@@ -9758,3 +9758,31 @@ body.bgterm-dragging { cursor: row-resize; user-select: none; }
 .set-row-top > input:not([type]) { display: block; width: 100%; }
 .settings-content textarea.ai-settings-textarea { min-height: 96px; font-family: var(--editor-font-family); font-size: 12px; line-height: 1.6; }
 .settings-content input.run-template-input { height: 30px; padding: 4px 10px; font-family: 'JetBrains Mono', Consolas, monospace; font-size: 11.5px; }
+
+/* ===== MCP 服务器设置（ai-mcp-settings.js）===== */
+.ai-mcp-server-row { display: flex; align-items: center; gap: 8px; padding: 4px 8px; }
+.ai-mcp-lamp { width: 8px; height: 8px; border-radius: 50%; flex: none; cursor: pointer; }
+.ai-mcp-lamp-ok { background: #2fa35f; }
+.ai-mcp-lamp-warn { background: #d9a019; }
+.ai-mcp-lamp-err { background: #d54442; }
+.ai-mcp-lamp-idle { background: var(--muted); }
+.ai-mcp-server-name { font-weight: 600; }
+.ai-mcp-server-tools { color: var(--muted); font-size: 12px; }
+.ai-mcp-inline-label { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--muted); }
+.ai-mcp-diag { padding: 2px 8px 8px 24px; }
+.ai-mcp-probe-result { font-size: 12px; color: var(--muted); margin-left: 8px; }
+.ai-mcp-editor { border-top: 1px solid var(--border); padding-top: 6px; margin-top: 4px; }
+.ai-mcp-editor-actions { padding: 4px 8px; display: flex; gap: 6px; }
+.ai-mcp-env-row { display: flex; gap: 6px; margin-bottom: 4px; }
+.ai-mcp-env-row .ai-mcp-env-key { width: 40%; }
+.ai-mcp-env-row .ai-mcp-env-val { flex: 1; }
+.ai-mcp-tool-row { display: flex; align-items: center; gap: 8px; padding: 3px 8px; font-size: 12.5px; }
+.ai-mcp-tool-name { font-weight: 600; white-space: nowrap; }
+.ai-mcp-tool-desc { color: var(--muted); font-size: 12px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ai-mcp-tool-tokens { color: var(--muted); font-size: 11px; flex: none; }
+.ai-mcp-badge { display: inline-block; font-size: 10px; line-height: 1.4; padding: 0 4px; border-radius: 3px; margin-left: 4px; vertical-align: middle; }
+.ai-mcp-badge-warn { background: rgba(217, 160, 25, .18); color: #d9a019; }
+.ai-mcp-badge-stale { background: rgba(213, 68, 66, .18); color: #d54442; }
+.ai-mcp-stale .ai-mcp-tool-name { text-decoration: line-through wavy rgba(213, 68, 66, .6); }
+.ai-mcp-tools-head { padding: 6px 8px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.ai-mcp-tools-list { max-height: 260px; overflow: auto; border-top: 1px solid var(--border); }

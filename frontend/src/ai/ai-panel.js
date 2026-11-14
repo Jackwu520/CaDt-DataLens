@@ -138,6 +138,7 @@ import {createAIManageDialogs} from './ai-manage-dialogs.js';
 import {createAISettingsDialog} from './ai-settings-dialog.js';
 import {createAISubagents} from './ai-subagents.js';
 import {createAIMcp} from './ai-mcp.js';
+import {createAIMcpSettings} from './ai-mcp-settings.js';
 import {
     escapeXmlText, normalizePersona, personaSegments, resolveAssistantName,
 } from './ai-persona.js';
@@ -4568,6 +4569,14 @@ export function createAIPanel(options) {
     // 工具定义表与权限档工具清单（阶段 3 拆出：ai-tool-defs.js）
     // MCP 客户端前端逻辑层（ai-mcp.js）：registry 只被 Go 的整代快照替换（§5.4）
     const mcpMod = createAIMcp({backend, flash});
+    // MCP 设置页（ai-mcp-settings.js）：配置读写走 Go，状态走 mcpMod 快照
+    const mcpSettingsMod = createAIMcpSettings({
+        backend,
+        flash,
+        confirmAction: askConfirm,
+        getMcpState: () => mcpMod.getState(),
+        onChanged: () => Promise.resolve(mcpMod.refresh()).catch(() => {}), // 尽力而为：保存后拉一次新配置的快照
+    });
     const toolDefsMod = createAIToolDefs({appControlOn, mcpToolDefs: () => mcpMod.mcpToolDefs()});
     const toolsForScope = (scope, planMode) => toolDefsMod.toolsForScope(scope, planMode);
 
@@ -11867,6 +11876,7 @@ export function createAIPanel(options) {
             renderPresetSelect();
             renderModelList();
             refreshMemoryPath();
+            mcpSettingsMod.render();
         },
         handleEvent,
         // localClassifierMod 不再进 return（红队链C）：经 main.js 的 window.__lens.aiPanel
@@ -11882,9 +11892,10 @@ export function createAIPanel(options) {
             if (name === 'ai-timer-fired') timerMod.onFired(info);
             else if (name === 'ai-timer-stopped') timerMod.onStopped(info);
         },
-        // MCP 事件（mcp-tools-changed / mcp-status-changed，都携带全量快照）：整表替换
+        // MCP 事件（mcp-tools-changed / mcp-status-changed，都携带全量快照）：整表替换 + 设置页状态灯刷新
         handleMcpEvent: (snapshot) => {
             mcpMod.applySnapshot(snapshot);
+            mcpSettingsMod.renderAll();
         },
         // 计时器注册表（调试 / 插件作者可经 window.__lens.aiPanel.timerMod 驱动）
         timerMod,

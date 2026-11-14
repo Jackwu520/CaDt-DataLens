@@ -771,6 +771,24 @@
                             </div>
                         </div>
 
+                        <div class="set-group-title">MCP 服务器</div>
+                        <div class="set-card">
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">MCP 客户端<button type="button" class="info-tip" data-tip="连接本机 MCP 服务器（stdio），把远端工具并入 AI 工具表。服务器命令在本机执行，等同于你自己运行它；子进程环境自动过滤疑似密钥变量。不配置则零开销。" aria-label="MCP 客户端说明">i</button></div><div class="set-desc">把外部工具并入 AI 工具表；不配置则零开销</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="ai-opt-mcp-enabled"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">服务器</div><div class="set-desc">工具勾选决定 AI 能看到哪些远端工具，默认全不勾</div></div>
+                                <div class="set-control">
+                                    <button type="button" id="ai-opt-mcp-add" class="dlg-btn">添加服务器</button>
+                                </div>
+                            </div>
+                            <div id="ai-opt-mcp-list"></div>
+                            <div id="ai-opt-mcp-editor" class="hidden"></div>
+                        </div>
+
                         <div class="set-group-title">子代理</div>
                         <div class="set-card">
                             <div class="set-row">
