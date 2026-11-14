@@ -5450,7 +5450,7 @@ html[data-theme="whitey"] {
 /* 底部堆叠区（上下文警告条 / 任务清单 / 输入区 / 统计行）整体绝对定位贴底：
    消息区因此占满面板全高，滚动条轨道随之占满；消息内容用 padding-bottom
    （ai-panel 里按堆叠区实际高度 ResizeObserver 设置）兜底，末条消息不被遮挡。
-   整块铺与面板同色的底、顶边一条细分隔线：消息从其下方滚过被遮住，
+   整块铺与面板同色的底：消息从其下方滚过被直接盖住（dsh 式无边界遮挡，不加分割线），
    任务清单 / 输入区 / 统计行不再各自呈半透明悬浮卡片 */
 .ai-bottom-stack {
     position: absolute;
@@ -5463,7 +5463,6 @@ html[data-theme="whitey"] {
     flex: none;
     max-height: 82vh;
     background: var(--bg);
-    border-top: 1px solid var(--border);
     pointer-events: none;
 }
 .ai-bottom-stack > * { pointer-events: auto; }
