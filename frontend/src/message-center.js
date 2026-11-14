@@ -169,7 +169,7 @@ export function createMessageCenter(ctx) {
         if (!messages.length) {
             const empty = document.createElement('div');
             empty.className = 'msg-center-empty';
-            empty.textContent = '暂无消息——AI 可用 notify_send 工具发消息；任务完成 / 版本更新等也会进入这里';
+            empty.textContent = '暂无消息';
             host.appendChild(empty);
             return;
         }

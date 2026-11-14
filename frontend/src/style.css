@@ -2964,7 +2964,6 @@ aside[data-sidebar-view="chats"] #ai-sessions-panel { display: flex; flex: 1; mi
 .ai-session-action-btn:hover svg { color: var(--accent); }
 /* 自动化对话框（设置面板同款模态）：任务按对话分组 + 行级启停/编辑/删除 */
 .ai-automation-body { display: flex; flex-direction: column; gap: 2px; }
-.ai-automation-hint { padding: 2px 4px 8px; color: var(--muted); font-size: 11px; line-height: 1.5; }
 .ai-automation-group { margin: 8px 4px 2px; color: var(--muted); font-size: 10.5px; font-weight: 600; }
 .ai-automation-empty {
     padding: 22px 10px;

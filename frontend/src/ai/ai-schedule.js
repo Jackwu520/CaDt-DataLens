@@ -147,7 +147,7 @@ export function createAISchedule(ctx) {
         if (!sorted.length) {
             const empty = document.createElement('div');
             empty.className = 'ai-chips-empty';
-            empty.textContent = '本会话暂无定时任务——可让 AI 用 schedule_create 创建（默认绑定本会话），或点下方「新建任务…」；其他会话的任务在「自动化」对话框查看';
+            empty.textContent = '本会话暂无定时任务';
             host.appendChild(empty);
         }
         const addBtn = document.createElement('button');
@@ -489,10 +489,6 @@ export function createAISchedule(ctx) {
         body.className = 'ai-automation-body';
         const build = (list) => {
             body.textContent = '';
-            const hint = document.createElement('div');
-            hint.className = 'ai-automation-hint';
-            hint.textContent = '定时任务在应用运行期间按计划触发；绑定会话的任务到点唤醒该对话，未绑定的每次新建会话。';
-            body.appendChild(hint);
             const tasks = Array.isArray(list) ? list : [];
             const localGroups = new Map(); // sessionId → tasks（保持首次出现顺序）
             let unbound = [];
@@ -529,7 +525,7 @@ export function createAISchedule(ctx) {
             if (foreign) {
                 const note = document.createElement('div');
                 note.className = 'ai-automation-group';
-                note.textContent = '另有 ' + foreign + ' 个任务属于其他工作区或已失效的会话——「全部管理（设置）」里可见';
+                note.textContent = '另有 ' + foreign + ' 个任务在其他工作区 / 已失效的会话';
                 body.appendChild(note);
             }
             if (!localGroups.size && !unbound.length) {
