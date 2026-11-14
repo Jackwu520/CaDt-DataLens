@@ -111,6 +111,17 @@ export function selectSemanticClassifiers(list, setting) {
     return all.filter((item) => item.id === setting);
 }
 
+// 三层（线性 / 语义 / 云端 AI）放行结论是否存在**分歧**（纯函数，ai-local-classifier.test.mjs 覆盖）。
+// 用户裁定的唯一学习点：结论不一致时，用户的允许 / 拒绝是在裁决「谁对谁错」，值得学；
+// 一致时（如写文件场景端侧与云端都转人工）用户允许只是执行预期行为，回流会把一次性授权学成永久放行。
+export function hasVerdictDisagreement(verdicts) {
+    if (!verdicts || typeof verdicts !== 'object') return false;
+    const values = [verdicts.linear, verdicts.plugin, verdicts.cloud]
+        .filter((v) => v === 'allow' || v === 'ask');
+    if (values.length < 2) return false;
+    return values.some((v) => v !== values[0]);
+}
+
 // ---------- 个性化学习的命令族归一 ----------
 
 // 只对「动作明确、参数可变」的可执行文件做族归一，让一次裁定能迁移到同族变体。
@@ -431,7 +442,8 @@ export function createAILocalClassifier(ctx) {
         if (ctx.getBackend && typeof ctx.getBackend().AIEnsureDir === 'function') {
             await ctx.getBackend().AIEnsureDir(dir);
         }
-        const text = state.samples.map((s) => JSON.stringify({command: s.command, y: s.y, at: s.at})).join('\n');
+        // source：蒸馏来源（cloud / plugin）；旧版样本无该字段 → user（历史上的用户裁定）
+        const text = state.samples.map((s) => JSON.stringify({command: s.command, y: s.y, at: s.at, source: s.source || 'user'})).join('\n');
         await ctx.getBackend().SaveFile(dir + '/samples.jsonl', text ? text + '\n' : '', 'lf', false, 'utf-8');
     }
 
@@ -476,8 +488,12 @@ export function createAILocalClassifier(ctx) {
 
     // 个性化回流：分类器转人工的审批卡经用户裁定后投喂一条样本。
     // 只学显式裁定（批准 → y=0，拒绝 → y=1）；开关关闭时直接忽略。
-    async function recordDecision(command, approved) {
+    // 蒸馏式自学习（meta.source 标来源）：端侧只学**大模型的判定**——云端 AI 分类器的结论、
+    // 语义插件的结论（线性向语义看齐）；用户的允许 / 拒绝不回流（审批是一次性授权语境，
+    // 「这次确实要写」的批准回流会变成以后每次都放行）。
+    async function recordDecision(command, approved, meta) {
         if (ctx.getConfig().localClassifierPersonalize !== true) return false;
+        const source = String((meta && meta.source) || 'cloud').slice(0, 20);
         const sanitized = lcSanitizeCommand(command, SAMPLE_TEXT_LIMIT);
         if (!sanitized) return false;
         const key = sanitized.toLowerCase();
@@ -493,13 +509,13 @@ export function createAILocalClassifier(ctx) {
         if (approved && (LC_LEARN_DENY.test(learnText) || LC_LEARN_DENY_FLAGS.test(learnText))) {
             if (!state.dangerSkipNotified && ctx.flash) {
                 state.dangerSkipNotified = true;
-                ctx.flash('破坏性命令的批准只对本次生效，不会训练成自动放行', false);
+                ctx.flash('破坏性命令只对本次生效，不会训练成自动放行', false);
             }
             return false;
         }
         const y = approved ? 0 : 1;
         state.seenCommands.add(key);
-        state.samples.push({command: sanitized, y, at: Date.now()});
+        state.samples.push({command: sanitized, y, at: Date.now(), source});
         if (state.samples.length > SAMPLE_LIMIT) {
             const dropped = state.samples.splice(0, state.samples.length - SAMPLE_LIMIT);
             for (const item of dropped) state.seenCommands.delete(item.command.toLowerCase());
@@ -652,6 +668,16 @@ export function createAILocalClassifier(ctx) {
             if (r.score > best.score) best = r;
         }
         const verdict = judgeLocalClassifier(best.score, strictness);
+        // 各层结论：线性 / 语义插件分别按各自分数对照阈值（供分歧裁决学习与判定区展示）
+        const verdictOf = (score) => (score >= verdict.threshold ? 'ask' : 'allow');
+        const linearResult = results.find((r) => r.id === 'builtin-linear');
+        const pluginResult = results.find((r) => r.id !== 'builtin-linear');
+        // 蒸馏（线性学语义）：最佳判定来自语义插件、且线性模型在参与时，线性向它的结论学习。
+        // 用户的允许 / 拒绝只在**三层结论分歧**时作为裁决信号回流（见 hasVerdictDisagreement）。
+        if (cfg.localClassifierPersonalize === true && best.id !== 'builtin-linear'
+            && linearResult) {
+            Promise.resolve(recordDecision(command, verdict.allow, {source: 'plugin'})).catch(() => {});
+        }
         return {
             allow: verdict.allow,
             score: best.score,
@@ -661,6 +687,10 @@ export function createAILocalClassifier(ctx) {
             sourceId: best.id,
             reason: best.reason,
             classifierCount: results.length,
+            verdicts: {
+                linear: linearResult ? verdictOf(linearResult.score) : null,
+                plugin: pluginResult ? verdictOf(pluginResult.score) : null,
+            },
         };
     }
 

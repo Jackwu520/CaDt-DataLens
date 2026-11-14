@@ -11,6 +11,7 @@ import {
     lcScore,
     lcSgdStep,
     lcWeightsDelta,
+    hasVerdictDisagreement,
     selectSemanticClassifiers,
 } from './ai-local-classifier.js';
 import {
@@ -314,6 +315,28 @@ test('recordDecision：开关关闭不回流；开启后单样本 SGD 生效且�
     assert.ok(status.trainedAt > 0);
 });
 
+test('recordDecision：蒸馏来源标记进样本（cloud / plugin），用户裁定不再是学习来源', async () => {
+    const {createAILocalClassifier} = await import('./ai-local-classifier.js');
+    const saved = [];
+    const config = {localClassifierEnabled: true, localClassifierStrictness: 'standard', localClassifierPersonalize: true};
+    const mod = createAILocalClassifier(createTestCtx(config, {
+        getBackend: () => ({
+            AIEnsureDir: async () => {},
+            SaveFile: async (path, content) => {
+                saved.push({path, content});
+            },
+        }),
+    }));
+    await mod.ensureLoaded();
+    await mod.recordDecision('helm diff upgrade prod ./chart', true, {source: 'cloud'});
+    await mod.recordDecision('kubectl logs web-1 -n default', false, {source: 'plugin'});
+    const samplesWrite = saved.filter((s) => s.path.endsWith('samples.jsonl')).pop();
+    assert.ok(samplesWrite, '样本应落盘');
+    assert.ok(samplesWrite.content.includes('"source":"cloud"'), '云端蒸馏来源应写入样本');
+    assert.ok(samplesWrite.content.includes('"source":"plugin"'), '语义插件蒸馏来源应写入样本');
+    assert.ok(!samplesWrite.content.includes('"source":"user"'), '用户裁定不应再作为学习来源出现');
+});
+
 test('recordDecision：秘密不落样本（脱敏后再存）', async () => {
     const {createAILocalClassifier} = await import('./ai-local-classifier.js');
     const saved = [];
@@ -477,4 +500,19 @@ test('selectSemanticClassifiers：语义模型位三态选择', () => {
     assert.equal(selectSemanticClassifiers(plugins, 'x:gone').length, 0);
     // 非数组输入兜底
     assert.equal(selectSemanticClassifiers(null, '').length, 0);
+});
+
+test('hasVerdictDisagreement：三层结论不一致才是用户学习点', () => {
+    // 一致（如写文件场景：端侧与云端都转人工）→ 不是学习点
+    assert.equal(hasVerdictDisagreement({linear: 'ask', cloud: 'ask'}), false);
+    assert.equal(hasVerdictDisagreement({linear: 'allow', plugin: 'allow'}), false);
+    // 分歧 → 学习点
+    assert.equal(hasVerdictDisagreement({linear: 'allow', cloud: 'ask'}), true);
+    assert.equal(hasVerdictDisagreement({linear: 'ask', plugin: 'allow', cloud: 'ask'}), true);
+    assert.equal(hasVerdictDisagreement({plugin: 'ask', cloud: 'allow'}), true);
+    // 参与层不足两层 / 异常输入 → 不是学习点
+    assert.equal(hasVerdictDisagreement({linear: 'ask'}), false);
+    assert.equal(hasVerdictDisagreement({linear: null, plugin: null, cloud: null}), false);
+    assert.equal(hasVerdictDisagreement(null), false);
+    assert.equal(hasVerdictDisagreement({linear: 'bogus', cloud: 'ask'}), false);
 });

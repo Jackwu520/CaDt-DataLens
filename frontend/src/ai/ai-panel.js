@@ -28,7 +28,7 @@ import {
     webRuleSubject,
     writeRuleSubject,
 } from './ai-permissions.js';
-import {createAILocalClassifier} from './ai-local-classifier.js';
+import {createAILocalClassifier, hasVerdictDisagreement} from './ai-local-classifier.js';
 import {parseClassifierVerdict} from './ai-classifier-verdict.js';
 import {GIT_ACTIONS, buildGitActionPrompt} from './ai-git.js';
 import {createAIReminders, normalizeReminders, remindersForPrompt, reminderAddBlocked} from './ai-reminders.js';
@@ -616,7 +616,8 @@ export function createAIPanel(options) {
             // 语义模型位：'' = 全部已装（默认）；'off' = 关闭；否则为指定分类器的 fullId（插件id:分类器id）
             localClassifierSemantic: typeof stored.localClassifierSemantic === 'string' ? stored.localClassifierSemantic : '',
             localClassifierStrictness: normalizeLocalClassifierStrictness(stored.localClassifierStrictness),
-            // 个性化后训练：从审批卡的用户显式裁定学习（批准 → y=0，拒绝 → y=1）
+            // 个性化蒸馏学习：端侧只学大模型的判定（云端 AI 分类器结论 / 语义插件结论）；
+            // 用户的允许 / 拒绝不回流——审批是一次性授权语境，回流会把临时授权学成永久放行
             localClassifierPersonalize: stored.localClassifierPersonalize !== false,
             // 应用内完成 toast 默认关（作者反馈：太烦人）；未发版，旧存量值直接忽略
             notifyInApp: false,
@@ -4967,6 +4968,8 @@ export function createAIPanel(options) {
                             score: local.score,
                             threshold: local.threshold,
                             aiReason: verdict.reason || '',
+                            aiVerdict: 'ask',
+                            verdicts: local.verdicts || {},
                         },
                         askSource: 'local-classifier',
                         classifyScore: local.score,
@@ -4983,6 +4986,7 @@ export function createAIPanel(options) {
                         engine: localEngineOf(local),
                         score: local.score,
                         threshold: local.threshold,
+                        verdicts: local.verdicts || {},
                     },
                     askSource: 'local-classifier',
                     classifyScore: local.score,
@@ -5003,7 +5007,7 @@ export function createAIPanel(options) {
                 cwd,
                 tool: toolName || 'run_command',
                 classifyNote: verdict.reason,
-                classifyInfo: {aiReason: verdict.reason || ''},
+                classifyInfo: {aiReason: verdict.reason || '', aiVerdict: 'ask'},
             });
         }
         if (decision.decision === 'allow') {
@@ -5059,15 +5063,22 @@ export function createAIPanel(options) {
         return local && local.sourceId === 'builtin-linear' ? '线性' : aiTextOf((local && local.sourceLabel) || '插件');
     }
 
-    // 审批卡的结构化判定信息（classifyInfo）：引擎 / 分数 / 阈值 / AI 复核理由。
+    // 审批卡的结构化判定信息（classifyInfo）：引擎 / 分数 / 阈值 / AI 复核理由与结论 / 各层结论。
     // classifyNote 字符串继续保留（日志与旧会话兼容）；没有结构化字段的旧数据渲染回退拼接文案。
     function normalizeClassifyInfo(raw) {
         if (!raw || typeof raw !== 'object') return null;
+        const verdictValue = (v) => (v === 'allow' || v === 'ask' ? v : null);
+        const rawVerdicts = raw.verdicts && typeof raw.verdicts === 'object' ? raw.verdicts : {};
         return {
             engine: aiTextOf(raw.engine),
             score: Math.min(1, Math.max(0, Number(raw.score) || 0)),
             threshold: Math.max(0, Number(raw.threshold) || 0),
             aiReason: aiTextOf(raw.aiReason),
+            aiVerdict: verdictValue(raw.aiVerdict) || '',
+            verdicts: {
+                linear: verdictValue(rawVerdicts.linear) || null,
+                plugin: verdictValue(rawVerdicts.plugin) || null,
+            },
         };
     }
 
@@ -5253,7 +5264,7 @@ export function createAIPanel(options) {
             singleUse: info.singleUse === true || !!danger,
             classifyNote: aiTextOf(info.classifyNote),
             classifyInfo: normalizeClassifyInfo(info.classifyInfo),
-            // 端侧分类器转人工的来源标记：个性化学习只回流这类审批卡的用户显式裁定
+            // 端侧分类器转人工的来源标记（审计与导出用；用户裁定已不再回流学习）
             askSource: aiTextOf(info.askSource),
             classifyScore: Number(info.classifyScore) || 0,
         };
@@ -5344,10 +5355,21 @@ export function createAIPanel(options) {
                 : approval.command)
             : (approval.relPath || approval.path || '');
         logPermission(auditKind, auditSubject, approved ? 'allow' : 'deny', 'user', approvalAuditRule(approval));
-        // 个性化回流（方案 §7.1）：只学端侧分类器转人工审批卡上的用户显式裁定
-        if (approval.kind === 'command' && approval.askSource === 'local-classifier') {
-            Promise.resolve(localClassifierMod.recordDecision(approval.command, approved))
-                .catch((e) => flash('分类器学习失败：' + ((e && e.message) || e), true));
+        // 用户裁定的唯一学习点 = **三层结论分歧**（线性 / 语义 / 云端 AI 放行结论不一致）：
+        // 此时不一致的是模型之间，用户的允许 / 拒绝是在裁决「谁对谁错」，值得回流；
+        // 结论一致时（如写文件场景端侧与云端都转人工，用户允许只是执行预期行为）不学——
+        // 否则一次性授权会被学成永久放行。模型蒸馏路径不变（云端结论 / 语义结论随时可学）。
+        if (approval.kind === 'command' && config.localClassifierPersonalize === true && localClassifierMod) {
+            const info = approval.classifyInfo || {};
+            const verdicts = {
+                linear: (info.verdicts && info.verdicts.linear) || null,
+                plugin: (info.verdicts && info.verdicts.plugin) || null,
+                cloud: info.aiVerdict || null,
+            };
+            if (hasVerdictDisagreement(verdicts)) {
+                Promise.resolve(localClassifierMod.recordDecision(approval.command, approved, {source: 'user'}))
+                    .catch((e) => flash('分类器学习失败：' + ((e && e.message) || e), true));
+            }
         }
         persistApprovalMutation(entry.session, toolMessage);
         refreshToolWrap(entry.session, toolMessage);
@@ -8039,6 +8061,15 @@ export function createAIPanel(options) {
                     console.info('[classifier] 空输出 finish=' + finish + ' thinkChars=' + job.think.length);
                 }
                 resolveClassifierJob(job, verdict);
+                // 云端蒸馏：端侧向大模型的判定学习（开启个性化学习且线性模型参与时）。
+                // 只学模型结论，不学用户的允许 / 拒绝——审批是一次性授权语境，回流会把
+                // 临时授权学成永久放行（用户 2026-11-14 设计修正）。
+                if (config.localClassifierPersonalize === true
+                    && config.localClassifierEnabled === true && config.localClassifierLinear !== 'off'
+                    && job.command) {
+                    Promise.resolve(localClassifierMod.recordDecision(job.command, verdict.allow, {source: 'cloud'}))
+                        .catch(() => {});
+                }
             }
             else if (name === 'ai-error') resolveClassifierJob(job, {allow: false, reason: '分类器请求失败'});
             return;
