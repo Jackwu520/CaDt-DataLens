@@ -605,6 +605,30 @@ export function createAIToolCards(ctx) {
             del.className = 'ai-tool-stat del';
             del.textContent = '−' + approval.removed;
             head.append(add, del);
+        } else if (message.name === 'edit_file' && message.status === 'running') {
+            // 执行中（审批/落盘前）approval 还没挂：edit_file 参数此时已完整，
+            // old_string → new_string 直接精确算 ±，不必等审批走完
+            try {
+                const input = JSON.parse(message.arguments || '{}');
+                if (typeof input.old_string === 'string' && typeof input.new_string === 'string') {
+                    const ops = ctx.computeLineDiff(input.old_string, input.new_string);
+                    let added = 0;
+                    let removed = 0;
+                    for (const op of ops) {
+                        if (op.t === '+') added++;
+                        else if (op.t === '-') removed++;
+                    }
+                    if (added || removed) {
+                        const add = document.createElement('span');
+                        add.className = 'ai-tool-stat add';
+                        add.textContent = '+' + added;
+                        const del = document.createElement('span');
+                        del.className = 'ai-tool-stat del';
+                        del.textContent = '−' + removed;
+                        head.append(add, del);
+                    }
+                }
+            } catch (e) {}
         }
         const state = document.createElement('span');
         state.className = 'ai-tool-state';

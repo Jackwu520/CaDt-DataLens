@@ -36,6 +36,8 @@ import {createAIReminders, normalizeReminders, remindersForPrompt, reminderAddBl
 import {enhanceWidgets} from '../core/widget.js';
 import {normalizeAppMessage, appMessageIcon, detectAppMessage} from './ai-app-message.js';
 import {inspectToolArguments, safeToolArguments} from './ai-tool-args.js';
+import {patchErrorParts} from './ai-patch-error.js';
+import {patchAllowApply, lastUserTextOf} from './ai-patch-policy.js';
 import {
     CONTEXT_WINDOW_MAX,
     CONTEXT_WINDOW_MIN,
@@ -6556,11 +6558,8 @@ export function createAIPanel(options) {
                 if (!root) {
                     return patchErrorText('PATCH_PATH_DENIED', '当前没有工作区范围：请先打开文件夹再生成补丁', '', false);
                 }
-                // 完全权限档：用户没明确要补丁时引导回直写（不弹卡、不写盘）
-                const scope = currentScopeOf(ctx.session);
-                if (scope === 'full' && !patchExplicitlyRequested(ctx.session)) {
-                    return patchErrorText('PATCH_NOT_REQUESTED', '当前是「完全权限」档，用户没有要求补丁', '请直接用 edit_file / write_file；确实需要补丁时先问用户一句再提交。', false);
-                }
+                // 完全权限档不再拦补丁：补丁是可分享/可转交的交付物，与"直接改"并不冲突。
+                // 默认仍优先 edit_file / write_file，但需要留一份可审阅、可分享的 patch 时随时可以出。
                 // 熔断：同一补丁连续失败 3 次就停手
                 const hash = patchHashOf(patchText);
                 const attempt = patchAttempts.get(hash) || {count: 0, lastCode: ''};
@@ -6575,10 +6574,18 @@ export function createAIPanel(options) {
                     preview = await backend.PatchSave(root, summary, patchText);
                 } catch (e) {
                     const msg = String((e && e.message) || e);
-                    attempt.count += 1;
-                    attempt.lastCode = 'PATCH_PARSE';
+                    // 还原后端错误码：确定性失败（空补丁/越界/超限）标 retryable=no，
+                    // 也不计入「同一补丁连续失败」的熔断计数——否则模型会照着"可重试"白试一轮
+                    const info = patchErrorParts(msg);
+                    attempt.lastCode = info.code;
+                    if (info.retryable) attempt.count += 1;
                     patchAttempts.set(hash, attempt);
-                    return patchErrorText('PATCH_PARSE', '补丁无法解析或路径不合法', msg, true);
+                    return patchErrorText(
+                        info.code,
+                        info.code === 'PATCH_PARSE' ? '补丁无法解析或路径不合法' : info.text,
+                        info.code === 'PATCH_PARSE' ? msg : '',
+                        info.retryable,
+                    );
                 }
                 const okFiles = (preview.files || []).filter((f) => f.status === 'ok');
                 // 内容与库里已有补丁完全一致时后端直接复用（不新建文件）；告诉模型，
@@ -6596,9 +6603,13 @@ export function createAIPanel(options) {
                         '建议重新 read_file 目标文件后重写对应 hunk；' + (preview.patchPath ? '补丁文件：' + preview.patchPath : ''),
                         true);
                 }
-                const allowApply = input.apply !== false;
+                const allowApply = patchAllowApply(input, currentScopeOf(ctx.session), lastUserTextOf(ctx.session && ctx.session.messages));
                 if (!allowApply) {
-                    return '已生成补丁 ' + (preview.patchPath || '') + '（' + (preview.files || []).length + ' 文件 +' + preview.added + ' −' + preview.removed + '）' + reusedNote + '\n'
+                    // 完全权限档默认走到这里：只产出可分享的 .patch，不弹审批卡打断流程
+                    const fullNote = input.apply === false
+                        ? ''
+                        : '（完全权限档：只产出文件、未弹审批卡；要当场应用就说「应用这个补丁」，或直接打开补丁视图点应用）';
+                    return '已生成补丁 ' + (preview.patchPath || '') + '（' + (preview.files || []).length + ' 文件 +' + preview.added + ' −' + preview.removed + '）' + reusedNote + fullNote + '\n'
                         + '预检：' + okFiles.length + ' 个文件可应用。用户可打开该文件在补丁视图中应用。';
                 }
                 const decision = await requestPatchApproval(ctx.session, ctx.toolMessage, preview, allowApply);
@@ -7549,8 +7560,25 @@ export function createAIPanel(options) {
         return sessions.find((session) => session.id === id) || null;
     }
 
-    function refreshToolWrap(session, toolMessage) {
-        if (!session || !isOpen() || currentSession() !== session) return;
+    // 工具循环增量挂卡：新工具消息只 append 自己的卡，不全量重建消息区——
+    // renderMessages 的全量重建会把前面所有工具卡的 spinner 动画重启
+    // （AI 连续跑工具时当前执行中的卡疯狂闪烁）。
+    function appendToolCard(session, toolMessage) {
+        if (!isOpen() || currentSession() !== session || !el.messages) return;
+        const index = session.messages.indexOf(toolMessage);
+        if (index < 0) return;
+        const wrap = document.createElement('div');
+        wrap.className = 'ai-msg tool';
+        wrap.dataset.aiIdx = String(index);
+        renderToolMessage(wrap, toolMessage);
+        el.messages.appendChild(wrap);
+        notifyStructure();
+        scheduleOutlineSync();
+        if (stickBottom) scrollToBottom(false);
+        else updateScrollButton();
+    }
+
+    function refreshToolWrap(session, toolMessage) {        if (!session || !isOpen() || currentSession() !== session) return;
         const index = session.messages.indexOf(toolMessage);
         const wrap = el.messages.querySelector('.ai-msg.tool[data-ai-idx="' + index + '"]');
         if (!wrap) {
@@ -8006,7 +8034,7 @@ export function createAIPanel(options) {
                 ts: Date.now(),
             };
             session.messages.push(toolMessage);
-            if (isOpen() && currentSession() === session) renderMessages(true);
+            if (isOpen() && currentSession() === session) appendToolCard(session, toolMessage);
             // 参数彻底无法修复：不执行工具，把错误作为工具结果回给模型，让它重新发起调用。
             const invalidArgs = argErrors && argErrors.get(call.id);
             if (invalidArgs) {
@@ -11324,18 +11352,6 @@ export function createAIPanel(options) {
         }
         if (res.message) lines.push(res.message);
         return lines.join('\n');
-    }
-
-    function patchExplicitlyRequested(session) {
-        if (!session) return false;
-        for (let i = session.messages.length - 1; i >= 0; i -= 1) {
-            const m = session.messages[i];
-            if (m && m.role === 'user') {
-                const text = aiTextOf(m.content);
-                return /补丁|patch|\.diff|diff\s*文件|别直接改|不要改文件|先给我看|我要能应用|要能撤销|转给同事/i.test(text);
-            }
-        }
-        return false;
     }
 
     // 输入区接管卡（阶段 3 拆出：ai-takeover.js；approvalTakeover* / dismissedPlanApproval / stickBottom 经访问器读写）
