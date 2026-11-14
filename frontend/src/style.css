@@ -5449,7 +5449,9 @@ html[data-theme="whitey"] {
 }
 /* 底部堆叠区（上下文警告条 / 任务清单 / 输入区 / 统计行）整体绝对定位贴底：
    消息区因此占满面板全高，滚动条轨道随之占满；消息内容用 padding-bottom
-   （ai-panel 里按堆叠区实际高度 ResizeObserver 设置）兜底，末条消息不被遮挡 */
+   （ai-panel 里按堆叠区实际高度 ResizeObserver 设置）兜底，末条消息不被遮挡。
+   整块铺与面板同色的底、顶边一条细分隔线：消息从其下方滚过被遮住，
+   任务清单 / 输入区 / 统计行不再各自呈半透明悬浮卡片 */
 .ai-bottom-stack {
     position: absolute;
     left: 0;
@@ -5460,6 +5462,8 @@ html[data-theme="whitey"] {
     flex-direction: column;
     flex: none;
     max-height: 82vh;
+    background: var(--bg);
+    border-top: 1px solid var(--border);
     pointer-events: none;
 }
 .ai-bottom-stack > * { pointer-events: auto; }
@@ -5637,13 +5641,10 @@ html[data-theme="whitey"] {
 .ai-mode-seg button.active { color: var(--accent); background: var(--accent-weak); }
 .ai-mode-seg button svg { width: 14px; height: 14px; display: block; }
 
+/* 任务清单融入底部同色堆叠区：只保留行本身，不再套卡片底 / 描边（悬浮感） */
 #ai-todos {
     flex: none;
-    margin: 0 10px 8px;
-    border: 1px solid var(--border);
-    border-radius: 9px;
-    background: var(--panel2);
-    overflow: hidden;
+    margin: 6px 10px 8px;
 }
 #ai-todos.hidden { display: none; }
 
@@ -6527,9 +6528,8 @@ html[data-theme="whitey"] {
     max-height: min(66%, 620px);
     border: 1px solid var(--border);
     border-radius: 12px;
-    background: color-mix(in srgb, var(--panel) 94%, transparent);
-    box-shadow: 0 3px 10px color-mix(in srgb, var(--shadow) 45%, transparent);
-    backdrop-filter: blur(8px);
+    /* 底色由 .ai-bottom-stack 统一铺：去掉半透明底 / 阴影 / 毛玻璃，只留描边标识输入框 */
+    background: none;
     overflow: hidden;
 }
 .ai-composer.ai-takeover-active > :not(#ai-takeover) { display: none; }
@@ -7501,7 +7501,6 @@ html[data-theme="whitey"] {
 .ai-chip-btn.hidden { display: none; }
 .ai-chip-btn span { color: var(--accent); font-variant-numeric: tabular-nums; }
 
-#ai-todos { margin-top: 6px; }
 .ai-todos-head {
     display: flex;
     align-items: center;
@@ -8610,6 +8609,7 @@ body.ai-float-window .ai-float-only { display: inline-flex !important; }
 /* 悬浮窗收起：只保留头部标题栏，窗口高度同步缩到标题栏高度。
    .ai-dialog 不在隐藏列表里：关闭确认等模态框收起态也必须可见。 */
 body.ai-float-window.ai-float-collapsed #ai-messages,
+body.ai-float-window.ai-float-collapsed .ai-bottom-stack,
 body.ai-float-window.ai-float-collapsed .ai-composer,
 body.ai-float-window.ai-float-collapsed .ai-stats-wrap,
 body.ai-float-window.ai-float-collapsed #ai-todos,
