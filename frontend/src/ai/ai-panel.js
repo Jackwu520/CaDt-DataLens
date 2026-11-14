@@ -298,7 +298,9 @@ export function createAIPanel(options) {
     let chipsPopKind = '';
 
     const sessionListEl = document.getElementById('ai-session-list');
-    const sessionNewBtn = document.getElementById('ai-session-new');
+    // 会话侧栏顶部操作区（标题栏的 [+] 已并入）：新建会话 / 自动化
+    const sessionActionNewBtn = document.getElementById('ai-session-action-new');
+    const sessionActionAutoBtn = document.getElementById('ai-session-action-auto');
     const sessionMoreBtn = document.getElementById('ai-session-more');
     const sessionSearchEl = document.getElementById('ai-session-search');
 
@@ -10930,9 +10932,13 @@ export function createAIPanel(options) {
         if (el.floatCollapse) el.floatCollapse.addEventListener('click', () => setFloatCollapsed(!floatCollapsed));
         if (el.newBtn) el.newBtn.addEventListener('click', () => newSession());
         if (el.gitBtn) el.gitBtn.addEventListener('click', showGitMenu);
-        if (sessionNewBtn) sessionNewBtn.addEventListener('click', () => {
+        if (sessionActionNewBtn) sessionActionNewBtn.addEventListener('click', () => {
             ensureOpen();
             newSession();
+        });
+        if (sessionActionAutoBtn) sessionActionAutoBtn.addEventListener('click', () => {
+            ensureOpen();
+            scheduleMod.openAutomationPop(sessionActionAutoBtn);
         });
         if (sessionMoreBtn) sessionMoreBtn.addEventListener('click', () => showSessionListMenu());
         if (sessionSearchEl) {

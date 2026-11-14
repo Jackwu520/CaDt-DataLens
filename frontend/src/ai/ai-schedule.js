@@ -465,5 +465,135 @@ export function createAISchedule(ctx) {
             }
         }
     }
-    return {renderScheduleSettings, renderScheduleRow, renderSchedulePop, renderChip, openScheduleEditor, aiDelay, handleScheduleFire, runScheduledTurn};
+
+    // ---- 自动化弹层（会话侧栏「自动化」按钮）：全部定时任务按对话分组一览 + 创建入口 ----
+    // 独立浮层挂 body（fixed 定位），开着的弹层再点一次按钮 = 收起；点外面 / Esc 关闭。
+    let automationPop = null;
+    let automationDismiss = null;
+
+    function closeAutomationPop() {
+        if (!automationPop) return;
+        automationPop.remove();
+        automationPop = null;
+        if (automationDismiss) {
+            document.removeEventListener('pointerdown', automationDismiss, true);
+            document.removeEventListener('keydown', automationDismiss, true);
+            automationDismiss = null;
+        }
+    }
+
+    function automationRow(s) {
+        const row = document.createElement('button');
+        row.type = 'button';
+        row.className = 'ai-chips-row';
+        const badge = document.createElement('span');
+        badge.className = 'ai-sched-badge' + (s.enabled ? ' on' : '');
+        badge.textContent = s.enabled ? '启用' : '停用';
+        const main = document.createElement('span');
+        main.className = 'ai-chips-main';
+        const nameSpan = document.createElement('span');
+        nameSpan.className = 'ai-chips-name';
+        nameSpan.textContent = s.name || s.id;
+        const subSpan = document.createElement('span');
+        subSpan.className = 'ai-chips-sub';
+        subSpan.textContent = describeAISchedule(s);
+        main.append(nameSpan, subSpan);
+        row.append(badge, main);
+        row.title = '点击编辑该任务';
+        row.addEventListener('click', () => {
+            closeAutomationPop();
+            openScheduleEditor(s);
+        });
+        return row;
+    }
+
+    function openAutomationPop(anchor) {
+        if (automationPop) {
+            closeAutomationPop();
+            return;
+        }
+        const pop = document.createElement('div');
+        pop.className = 'ai-automation-pop';
+        const head = document.createElement('div');
+        head.className = 'ai-automation-head';
+        const title = document.createElement('span');
+        title.className = 'ai-automation-title';
+        title.textContent = '自动化';
+        const sub = document.createElement('span');
+        sub.className = 'ai-automation-sub';
+        sub.textContent = '定时任务在应用运行期间触发';
+        const add = document.createElement('button');
+        add.type = 'button';
+        add.className = 'ai-automation-add';
+        add.textContent = '新建任务…';
+        add.addEventListener('click', () => {
+            closeAutomationPop();
+            openScheduleEditor(null);
+        });
+        head.append(title, sub, add);
+        pop.appendChild(head);
+        // 按对话分组：绑定会话的任务归到该会话标题下，未绑定的归「每次新建会话」
+        const buildList = (list) => {
+            const groups = new Map();
+            for (const s of (Array.isArray(list) ? list : [])) {
+                const key = s.sessionId || '';
+                if (!groups.has(key)) groups.set(key, []);
+                groups.get(key).push(s);
+            }
+            for (const [sessionId, tasks] of groups) {
+                const groupTitle = document.createElement('div');
+                groupTitle.className = 'ai-automation-group';
+                groupTitle.textContent = sessionId
+                    ? '会话「' + (sessionTitleById(sessionId) || sessionId.slice(0, 8)) + '」'
+                    : '每次新建会话';
+                pop.appendChild(groupTitle);
+                for (const s of tasks) pop.appendChild(automationRow(s));
+            }
+            if (!groups.size) {
+                const empty = document.createElement('div');
+                empty.className = 'ai-automation-empty';
+                const hint = document.createElement('span');
+                hint.textContent = '还没有定时任务';
+                empty.appendChild(hint);
+                const create = document.createElement('button');
+                create.type = 'button';
+                create.className = 'ai-automation-add';
+                create.textContent = '创建定时任务…';
+                create.addEventListener('click', () => {
+                    closeAutomationPop();
+                    openScheduleEditor(null);
+                });
+                empty.appendChild(create);
+                pop.appendChild(empty);
+            }
+        };
+        buildList(scheduleListCache);
+        document.body.appendChild(pop);
+        // 定位：按钮下方，右缘不出窗、底缘不够就上提
+        const rect = anchor.getBoundingClientRect();
+        const place = () => {
+            pop.style.left = Math.max(8, Math.min(rect.left, window.innerWidth - pop.offsetWidth - 12)) + 'px';
+            pop.style.top = Math.max(8, Math.min(rect.bottom + 6, window.innerHeight - pop.offsetHeight - 12)) + 'px';
+        };
+        place();
+        automationDismiss = (e) => {
+            if (e.key === 'Escape' || (e.type === 'pointerdown' && !pop.contains(e.target) && !anchor.contains(e.target))) {
+                closeAutomationPop();
+            }
+        };
+        document.addEventListener('pointerdown', automationDismiss, true);
+        document.addEventListener('keydown', automationDismiss, true);
+        automationPop = pop;
+        // 打开即拉最新列表（缓存只是快照）；更新后原位重建内容并重新定位
+        if (!backend.AIScheduleList) return;
+        Promise.resolve(backend.AIScheduleList()).then((list) => {
+            scheduleListCache = Array.isArray(list) ? list : [];
+            if (!automationPop) return;
+            for (const node of [...pop.querySelectorAll('.ai-automation-group, .ai-chips-row, .ai-automation-empty')]) node.remove();
+            buildList(scheduleListCache);
+            place();
+        }).catch(() => {});
+    }
+
+    return {renderScheduleSettings, renderScheduleRow, renderSchedulePop, renderChip, openScheduleEditor, openAutomationPop, aiDelay, handleScheduleFire, runScheduledTurn};
 }

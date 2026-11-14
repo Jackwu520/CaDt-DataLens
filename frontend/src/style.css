@@ -2941,7 +2941,66 @@ aside[data-sidebar-view="chats"] #ai-sessions-panel { display: flex; flex: 1; mi
     border-radius: 5px;
     cursor: pointer;
 }
-.ai-session-search { padding: 0 7px 6px; }
+.ai-session-search { padding: 0 7px 0; }
+/* 会话侧栏顶部操作区：新建会话 / 自动化，一行一个（标题栏的 [+] 已并入这里） */
+.ai-session-actions { display: flex; flex-direction: column; gap: 4px; padding: 6px 7px; }
+.ai-session-action-btn {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    width: 100%;
+    box-sizing: border-box;
+    padding: 6px 10px;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    background: var(--panel2);
+    color: var(--text);
+    font: inherit;
+    font-size: 12px;
+    text-align: left;
+    cursor: pointer;
+}
+.ai-session-action-btn:hover { border-color: var(--accent); }
+.ai-session-action-btn svg { flex: none; width: 13px; height: 13px; display: block; color: var(--muted); }
+.ai-session-action-btn:hover svg { color: var(--accent); }
+/* 自动化弹层：定时任务按对话分组一览 + 创建入口 */
+.ai-automation-pop {
+    position: fixed;
+    z-index: 90;
+    width: 340px;
+    max-width: calc(100vw - 16px);
+    max-height: min(62vh, 460px);
+    overflow: auto;
+    padding: 8px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, .4);
+}
+.ai-automation-head { display: flex; align-items: center; gap: 8px; padding: 2px 4px 8px; }
+.ai-automation-title { font-weight: 600; font-size: 12.5px; }
+.ai-automation-sub { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 10.5px; }
+.ai-automation-add {
+    flex: none;
+    padding: 3px 10px;
+    border: 1px solid var(--accent);
+    border-radius: 6px;
+    background: var(--accent);
+    color: var(--on-accent);
+    font: inherit;
+    font-size: 11px;
+    cursor: pointer;
+}
+.ai-automation-group { margin: 6px 4px 2px; color: var(--muted); font-size: 10.5px; font-weight: 600; }
+.ai-automation-empty {
+    padding: 22px 10px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    color: var(--muted);
+    font-size: 11.5px;
+}
 .ai-session-search-input {
     width: 100%;
     box-sizing: border-box;
