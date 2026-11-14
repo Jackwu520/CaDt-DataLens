@@ -80,6 +80,10 @@ export function createAISettingsDialog(ctx) {
     const getPluginLoadErrors = typeof ctx.getPluginLoadErrors === 'function' ? ctx.getPluginLoadErrors : null;
     // 重新扫描插件源并重放注册（端侧模型「刷新」按钮）
     const refreshPlugins = typeof ctx.refreshPlugins === 'function' ? ctx.refreshPlugins : null;
+    // 插件注册表可能在异步加载中变化（启动加载 / 市场装完 / 刷新）：loadPlugins 完成时广播
+    // cadt-plugins-loaded，端侧模型位与状态行原位刷新——避免「装了插件下拉里没有、要手动刷新」
+    window.addEventListener('cadt-plugins-loaded', renderLocalClassifierSettings);
+    let semanticAutoRecheckDone = false; // 注册表空时的自动补扫，每会话一次（见 renderLocalClassifierSettings）
     const getSkillsCache = ctx.getSkillsCache;
     const getPermissionAudit = ctx.getPermissionAudit;
     const setMemoryFallbackNotified = ctx.setMemoryFallbackNotified;
@@ -288,6 +292,15 @@ export function createAISettingsDialog(ctx) {
         if (opt.localClassifierStrictness) opt.localClassifierStrictness.value = normalizeLocalClassifierStrictness(getConfig().localClassifierStrictness);
         if (opt.localClassifierPersonalize) opt.localClassifierPersonalize.checked = getConfig().localClassifierPersonalize === true;
         renderLocalClassifierStatus();
+        // 时序兜底（实测事故：启动加载早已完成但注册表是空的，手动点刷新才出来）：
+        // 渲染时注册表空且无加载错误 → 自动补一次重扫；每次会话只补一次防循环，
+        // 完成后经 cadt-plugins-loaded 事件回填下拉与状态行
+        const pluginsNow = typeof getPluginCommandClassifiers === 'function' ? getPluginCommandClassifiers() : [];
+        const loadErrorsNow = getPluginLoadErrors ? getPluginLoadErrors() : [];
+        if (!pluginsNow.length && !loadErrorsNow.length && !semanticAutoRecheckDone && refreshPlugins) {
+            semanticAutoRecheckDone = true;
+            Promise.resolve(refreshPlugins()).catch(() => {}); // loadPlugins 自己收集错误，完成后事件回填
+        }
     }
 
     // 语义模型下拉：全部已装（默认）/ 各已注册分类器 / 关闭；当前值被卸载时补一条「未找到」保显示

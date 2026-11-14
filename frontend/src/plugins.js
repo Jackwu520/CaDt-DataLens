@@ -175,6 +175,12 @@ function apiFor(plugin) {
 }
 
 // 清空上一轮注册并按当前启用列表重新执行插件代码；返回错误信息数组。
+// 插件注册表状态变化广播：loadPlugins 每次完成（含清空 / 跳过 / 失败路径）都派发，
+// 订阅方（如端侧模型设置的下拉与状态行）据此原位刷新，不必各自轮询
+function notifyPluginsLoaded() {
+    try { window.dispatchEvent(new CustomEvent('cadt-plugins-loaded')); } catch (e) {}
+}
+
 export async function loadPlugins(backend) {
     unregisterAllPluginFormats();
     for (const style of themeStyles.values()) {
@@ -187,6 +193,7 @@ export async function loadPlugins(backend) {
     host.onPluginsChanged();
     if (!backend || typeof backend.GetPluginSources !== 'function') {
         console.info('[plugins] 跳过加载：宿主无 GetPluginSources 绑定');
+        notifyPluginsLoaded();
         return [];
     }
     let sources = [];
@@ -195,6 +202,7 @@ export async function loadPlugins(backend) {
     } catch (e) {
         lastLoadErrors = [`读取插件失败：${e}`];
         console.info('[plugins] 读取插件源失败：' + lastLoadErrors[0]);
+        notifyPluginsLoaded();
         return [...lastLoadErrors];
     }
     const errors = [];
@@ -214,5 +222,6 @@ export async function loadPlugins(backend) {
         sources.map((s) => s.id).join('、') + '）· 命令分类器 ' + commandClassifiers.size +
         ' 个 · 错误 ' + errors.length + (errors.length ? '：' + errors.join('；') : ''));
     host.onPluginsChanged();
+    notifyPluginsLoaded();
     return errors;
 }
