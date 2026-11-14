@@ -180,5 +180,14 @@ if (deps.backend.GetSystemCursors) {
     }).catch(() => {});
 }
 
+// 拖拽结束事件丢失（鼠标在窗外松手、pointer capture 失败等）会把 body.cursor-ew/ns
+// 卡死在全局——普通区域继承 body 光标整个变成左右/上下箭头。全局兜底清理：
+// 抬起 / 取消 / 失焦任一发生都撤掉拖拽标记；各拖拽流程自己的收尾照旧（幂等无害）。
+for (const dragEndEvt of ['pointerup', 'pointercancel', 'mouseup', 'blur']) {
+    window.addEventListener(dragEndEvt, () => {
+        document.body.classList.remove('cursor-ew', 'cursor-ns');
+    });
+}
+
     return {setDragCursor};
 }
