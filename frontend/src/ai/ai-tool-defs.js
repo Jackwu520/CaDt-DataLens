@@ -615,6 +615,11 @@ export function createAIToolDefs(ctx) {
         // 子代理：写权限档与计划模式可用（子代理只读探索正是计划模式的刚需）
         if (AI_WRITE_SCOPES.includes(scope) || planMode) list.push(AI_TOOL_DEFS.spawn_agent);
         if (scope === 'full' && !planMode) list.push(AI_TOOL_DEFS.browser_evaluate);
+        // MCP：写权限档及以上注入（能力未知，只读档不该拿到）；计划模式不注入（外部副作用不可控）。
+        // getter 只读缓存整代快照（ai-mcp.js），组装路径上不塞 RPC
+        if (ctx.mcpToolDefs && AI_WRITE_SCOPES.includes(scope) && !planMode) {
+            list.push(...ctx.mcpToolDefs());
+        }
         return list;
     }
     return {toolsForScope};

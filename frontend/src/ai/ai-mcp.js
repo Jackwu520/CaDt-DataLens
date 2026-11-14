@@ -1,0 +1,109 @@
+// ai-mcp.js：MCP 客户端前端逻辑层——工具注册表（整代快照替换）、MCP 工具 → 工具定义转换、
+// tools/call 转发。设置页 UI 在 ai-mcp-settings.js；Go 侧世代/重连在 mcp_manager.go。
+// 硬约束（§5.4）：registry 只被整代快照替换，绝不增量合并——「要么全有要么全无」。
+import {aiEstimateTokens} from './ai-constants.js';
+
+export function createAIMcp(ctx) {
+    const backend = (ctx && ctx.backend) || {};
+
+    let enabled = false;
+    let servers = []; // [{name, state, reason, toolCount, tools, staleTools, lastError, attempt, maxAttempt, nextRetryAt}]
+
+    // applySnapshot 整表替换当前注册表。两个事件（tools-changed / status-changed）
+    // 都携带全量快照，前端不做增量合并——原子性由 Go 侧世代保证，这里只做整表接管。
+    function applySnapshot(snapshot) {
+        if (!snapshot || typeof snapshot !== 'object') return; // 畸形载荷：保留现状，不清空
+        enabled = snapshot.enabled === true;
+        const list = Array.isArray(snapshot.servers) ? snapshot.servers : [];
+        servers = list.map((server) => ({
+            name: String(server.name || ''),
+            state: String(server.state || 'closed'),
+            reason: String(server.reason || ''),
+            toolCount: Math.max(0, Math.round(Number(server.toolCount) || 0)),
+            tools: Array.isArray(server.tools) ? server.tools : [],
+            staleTools: Array.isArray(server.staleTools) ? server.staleTools : [],
+            lastError: String(server.lastError || ''),
+            attempt: Math.max(0, Math.round(Number(server.attempt) || 0)),
+            maxAttempt: Math.max(0, Math.round(Number(server.maxAttempt) || 0)),
+            nextRetryAt: Math.max(0, Math.round(Number(server.nextRetryAt) || 0)),
+        }));
+    }
+
+    // sanitizeSchema：远端 schema 不可信。null / 缺 type / 顶层非 object 一律降级为宽松
+    // object，保证请求层不会因非法 schema 被模型 API 拒绝。
+    function sanitizeSchema(schema) {
+        if (!schema || typeof schema !== 'object' || Array.isArray(schema)) {
+            return {type: 'object', properties: {}, required: []};
+        }
+        const out = {type: 'object', properties: {}};
+        const props = schema.properties;
+        if (props && typeof props === 'object' && !Array.isArray(props)) out.properties = props;
+        out.required = Array.isArray(schema.required)
+            ? schema.required.filter((item) => typeof item === 'string')
+            : [];
+        if (schema.additionalProperties !== undefined) {
+            out.additionalProperties = schema.additionalProperties;
+        }
+        return out;
+    }
+
+    // mcpToolToDef：MCP 快照工具 → 工具定义表形态 {name, description, parameters}。
+    function mcpToolToDef(tool) {
+        const def = {
+            name: String((tool && tool.publicName) || ''),
+            description: String((tool && tool.description) || ''),
+            parameters: sanitizeSchema(tool && tool.inputSchema),
+        };
+        if (tool && tool.rawName) def.mcpRawName = String(tool.rawName);
+        if (tool && tool.server) def.mcpServer = String(tool.server);
+        if (tool && tool.openWorld) def.mcpOpenWorld = true;
+        return def;
+    }
+
+    // mcpToolDefs：注入 toolsForScope 的同步读取口（组装路径上不塞 RPC，只读缓存）。
+    function mcpToolDefs() {
+        if (!enabled) return [];
+        const out = [];
+        for (const server of servers) {
+            if (!server.tools.length) continue;
+            out.push(...server.tools.map(mcpToolToDef)); // server.tools 整代替换：要么全有要么全无
+        }
+        return out;
+    }
+
+    // toolTokenEstimate：单工具 schema+描述的 token 估算（工具勾选面板展示用）。
+    function toolTokenEstimate(tool) {
+        return aiEstimateTokens(JSON.stringify(mcpToolToDef(tool)));
+    }
+
+    // callTool：公开名直通 Go 路由（查表发原始名，公开名绝不发给 server）。
+    // isError 是 server 侧业务失败：不当异常，文本原样返回由模型自行收敛。
+    async function callTool(name, args) {
+        if (typeof backend.MCPCallTool !== 'function') {
+            throw new Error('MCP 客户端不可用（后端未提供 MCPCallTool）');
+        }
+        const payload = JSON.stringify(args && typeof args === 'object' ? args : {});
+        const result = await backend.MCPCallTool(name, payload);
+        if (result && typeof result.text === 'string') return result.text;
+        return String((result && result.text) || '');
+    }
+
+    // refresh 兜底拉取：初始化/会话恢复后先拉一次，防错过启动早期事件；
+    // Go 侧 MCPSnapshot 会触发惰性启动。失败不阻塞（旧后端 / MCP 未启用时 registry 留空）。
+    async function refresh() {
+        if (typeof backend.MCPSnapshot !== 'function') return;
+        applySnapshot(await backend.MCPSnapshot());
+    }
+
+    return {
+        applySnapshot,
+        mcpToolDefs,
+        mcpToolToDef,
+        sanitizeSchema,
+        toolTokenEstimate,
+        callTool,
+        refresh,
+        // 状态读取口（设置页 / 诊断）：返回快照副本，调用方不得直接改内部状态
+        getState: () => ({enabled, servers: servers.map((server) => Object.assign({}, server))}),
+    };
+}

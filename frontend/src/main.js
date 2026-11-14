@@ -2569,6 +2569,17 @@ function initAIPanel() {
                 try { aiPanel.refreshScheduleSettings(); } catch (e) {}
             }
         });
+        // MCP 客户端：Go 侧世代/状态事件都推全量快照，面板整表替换（ai-mcp.js §5.4）
+        rt.EventsOn('mcp-tools-changed', (snapshot) => {
+            if (aiPanel && typeof aiPanel.handleMcpEvent === 'function') {
+                try { aiPanel.handleMcpEvent(snapshot); } catch (e) {}
+            }
+        });
+        rt.EventsOn('mcp-status-changed', (snapshot) => {
+            if (aiPanel && typeof aiPanel.handleMcpEvent === 'function') {
+                try { aiPanel.handleMcpEvent(snapshot); } catch (e) {}
+            }
+        });
     }
 }
 

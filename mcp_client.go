@@ -237,8 +237,8 @@ func (c *mcpClient) onNotification(msg *rpcMessage) {
 }
 
 type mcpCallResult struct {
-	Text    string
-	IsError bool
+	Text    string `json:"text"`
+	IsError bool   `json:"isError"`
 }
 
 // callTool 转发一次工具调用（只发原始名，公开名绝不发给 server）。
