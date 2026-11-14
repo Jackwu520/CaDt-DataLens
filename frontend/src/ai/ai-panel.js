@@ -373,6 +373,7 @@ export function createAIPanel(options) {
         chatFontCode: document.getElementById('ai-opt-chatfont-code'),
         showThinking: document.getElementById('ai-opt-show-thinking'),
         showUsage: document.getElementById('ai-opt-show-usage'),
+        turnMetaAll: document.getElementById('ai-opt-turn-meta-all'),
         assistantCard: document.getElementById('ai-opt-assistant-card'),
         inlineWidgets: document.getElementById('ai-opt-inline-widgets'),
         autoTitle: document.getElementById('ai-opt-auto-title'),
@@ -2994,6 +2995,22 @@ export function createAIPanel(options) {
         wrap.appendChild(row);
     }
 
+    // 回复头「AI 模型 时间」信息行的稀疏显示判定（默认关）：只在**轮次开头**（上一条
+    // 非工具消息不是 AI 回复——用户消息 / 系统注记等）与**模型切换**时显示；连续工具轮
+    // 的中间回复全部隐藏，时间跳变不算节点（连续对话隔几分钟很正常）。设置
+    // 「每条回复都显示 AI 信息行」开启后恢复全显。
+    function shouldShowTurnMeta(session, index, message) {
+        if (settings.aiShowEveryTurnMeta === true) return true;
+        const messages = (session && session.messages) || [];
+        for (let i = index - 1; i >= 0; i -= 1) {
+            const prev = messages[i];
+            if (!prev || prev.role === 'tool') continue;
+            if (prev.role !== 'assistant') return true;
+            return aiTextOf(prev.model) !== aiTextOf(message.model);
+        }
+        return true;
+    }
+
     function renderMessage(message, index, session, parent, options) {
         const wrap = document.createElement('div');
         wrap.className = 'ai-msg ' + message.role;
@@ -3016,9 +3033,13 @@ export function createAIPanel(options) {
         } else if (message.role === 'assistant') {
             if (message.status === 'error') wrap.classList.add('error');
             if (message.status === 'streaming') wrap.classList.add('streaming');
-            const meta = document.createElement('div');
-            meta.className = 'ai-msg-meta';
-            wrap.appendChild(meta);
+            // 回复头「AI 模型 时间」信息行稀疏显示（默认关）：连续工具轮的中间回复隐藏，
+            // 只在轮次开头与模型切换时出现；设置「每条回复都显示 AI 信息行」恢复全显
+            if (shouldShowTurnMeta(session, index, message)) {
+                const meta = document.createElement('div');
+                meta.className = 'ai-msg-meta';
+                wrap.appendChild(meta);
+            }
             const bubble = document.createElement('div');
             bubble.className = 'ai-bubble';
             const md = document.createElement('div');
@@ -6557,6 +6578,35 @@ export function createAIPanel(options) {
                 const root = getScopeRoot();
                 if (!root) {
                     return patchErrorText('PATCH_PATH_DENIED', '当前没有工作区范围：请先打开文件夹再生成补丁', '', false);
+                }
+                // 计划模式（或显式 dry_run）：只预检不落地——不生成 .patch、不写索引、不弹审批卡。
+                // 计划模式的契约是「零副作用」，而 PatchSave 会写 .cadt/patches；这里改走
+                // PatchPreviewText（仅内存计划 + 预检结果），批准计划后再真正出补丁。
+                const dryRun = input.dry_run === true || !!(ctx.session && ctx.session.planMode === true);
+                if (dryRun) {
+                    if (!backend.PatchPreviewText) {
+                        return patchErrorText('PATCH_BACKEND', '当前版本不支持补丁预检，请重启应用', '', false);
+                    }
+                    let preview;
+                    try {
+                        preview = await backend.PatchPreviewText(patchText, root);
+                    } catch (e) {
+                        const info = patchErrorParts(String((e && e.message) || e));
+                        return patchErrorText(info.code,
+                            info.code === 'PATCH_PARSE' ? '补丁无法解析或路径不合法' : info.text,
+                            info.code === 'PATCH_PARSE' ? String((e && e.message) || e) : '',
+                            info.retryable);
+                    }
+                    const files = preview.files || [];
+                    const okFiles = files.filter((f) => f.status === 'ok');
+                    const lines = ['【patch:preview】dry_run=yes files=' + files.length + ' applicable=' + okFiles.length
+                        + ' added=' + (preview.added || 0) + ' removed=' + (preview.removed || 0)];
+                    for (const f of files) {
+                        lines.push((f.status === 'ok' ? '可应用' : '不可应用') + '：' + (f.relPath || '(路径未知)')
+                            + (f.reason ? '（' + f.reason + '）' : ''));
+                    }
+                    lines.push('计划模式下只做预检：没有生成 .patch、没有写 .cadt/patches、没有改动任何文件；批准计划后再出补丁。');
+                    return lines.join('\n');
                 }
                 // 完全权限档不再拦补丁：补丁是可分享/可转交的交付物，与"直接改"并不冲突。
                 // 默认仍优先 edit_file / write_file，但需要留一份可审阅、可分享的 patch 时随时可以出。

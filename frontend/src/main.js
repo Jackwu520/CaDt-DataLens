@@ -1185,6 +1185,7 @@ const defaultSettings = {
     aiChatFontCjk: 'follow',
     aiChatCodeFont: 'follow',
     aiShowThinking: true,
+    aiShowEveryTurnMeta: false,
     aiShowUsage: true,
     aiAssistantCard: false,
     aiInlineWidgets: true,
