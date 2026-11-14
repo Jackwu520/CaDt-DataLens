@@ -1,6 +1,6 @@
 # 端侧命令分类器（内置线性模型 + 市场语义插件）
 
-状态：**方案评估完成，未开工**。作者拍板的方向已固化为本文档的「已定决策」。
+状态：**M1（核心）与 M2（插件骨架）已实施（2026-11-14），M3（ONNX 推理）二期未开工**。实施落定项见 §6/§8/§11 的「实施落定」注记。
 
 ## 1. 背景与目标
 
@@ -80,15 +80,15 @@ cadt.registerCommandClassifier({
   - **模板参数化生成**（非死样本）：路径/参数/flag 顺序/大小写/引号风格随机化、`cd x &&` 前缀与 `| tee` 后缀扰动；训练/验证按固定种子 80/20 切分，**验证集用不同随机源的未见变体**（测泛化不测背诵）；
   - `scripts/train-local-classifier.mjs`：纯 Node SGD（零依赖，~80 行）——30 epoch、lr 0.1 起步 ×0.85/epoch 衰减、单样本梯度 `g = p − y`、L2 正则拉向 0；
   - **调参硬指标是误放率 ≈ 0**（fail-closed：宁可误拦不可误放），其次危险召回 ≥ 0.97、准确率仅作参考——三档严格度阈值 T 实质是验证集 ROC 上的三个工作点；
-  - **int8 量化导出**：`scale = max|w|/127`，只存非零维稀疏 int8（≈3–8 KB）+ 特征配置（n-gram 长度、哈希种子、维度数）随权重文件存储，保证训练/推理对齐 → `frontend/src/ai/local-classifier-weights.mjs`；
-  - 验证子集固化进单测（`ai-local-classifier.test.mjs`）：高危样本 score ≥ 0.5、安全样本 ≤ 0.1、三档阈值判定表驱动；
+  - **int8 量化导出**：`scale = max|w|/127`。实施落定：采用**密集 int8 → base64** 存储（8192 维 ≈ 11.8 KB，比稀疏文本更小且解析更快）+ 特征配置（n-gram 长度、哈希种子、维度数）随权重文件存储，保证训练/推理对齐（训练脚本直接 import 前端同一特征实现）→ `frontend/src/ai/local-classifier-weights.mjs`（生成产物，勿手改，懒加载独立 chunk）；
+  - 验证子集固化进单测（`ai-local-classifier.test.mjs`）：危险金丝雀 ≥0.5 且宽松档必拦、安全金丝雀标准档放行、灰色标准档转人工、三档阈值判定表驱动；
   - **已知弱点与自愈**：`echo "rm -rf …"` 类引用文本会误报险（线性 n-gram 无法理解引用语义）→ 转人工后用户批准，个性化 SGD 将首词 echo 相关维度拉向安全（§7），基线保下限、个性化补真实分布；
   - **公开语料盘点（调研结论）**：无语义对齐的现成训练集，可作参考不可直接训练——
     - 正常侧：Schonlau/SEA 数据集（50+ 用户 UNIX 命令序列，masquerade 检测经典基准）只有裸命令名、标签是会话级冒充；GitHub dotfiles / shell history 集合同样只有正常侧 → 用于**扩充生成器模板词表**；
     - 危险侧：malbash（恶意 bash 脚本语料）、ShellCore 论文的 IoT 命令类目学、Cowrie 蜜罐攻击者命令序列 → 用于**查漏危险模式清单**；
     - Agent 安全基准（R-Judge / Agent Security Bench / AgentHarm）：标签语义最近但标注单位是交互记录而非单条命令，且为评测基准（训练用途许可存疑）、分布偏注入攻击；
     - **根因**：我们的标签是「策略性 auto-approve 判定」（只读/幂等/不写盘，`git push --force` 良性但必须 ask），与「恶意/良性」语义不同构——训练集必须自建；公开语料的正确用法是当词表与模式清单参考。真正的策略对齐语料来自 §7 个性化回路（用户裁定 = 最正确的标签源）。
-- **文件清单**：`src/ai/ai-local-classifier.js`（推理 + 阈值判定）、`local-classifier-weights.mjs`（量化权重）、`ai-local-classifier.test.mjs`、`scripts/classifier-corpus.mjs`、`scripts/train-local-classifier.mjs`。
+- **文件清单（实施落定）**：`src/ai/ai-local-classifier.js`（特征化/推理/阈值判定/SGD/运行时工厂）、`local-classifier-weights.mjs`（量化权重，生成产物）、`ai-local-classifier.test.mjs`、`scripts/classifier-corpus.mjs`（模板参数化语料，训练 930 / 验证 576 条）、`scripts/train-local-classifier.mjs`（SGD 60 epoch + int8 量化 + 硬指标门槛，不达标拒绝产出）。
 
 ## 7. 个性化后训练（方案 A 扩展，M1）
 
@@ -145,6 +145,7 @@ cadt.registerCommandClassifier({
   2. 推理必须 Worker 化（插件当前跑主线程，0.1–1s 推理会卡 UI）——插件系统是否提供 Worker 帮助 API 待定，否则插件自建 Worker（blob URL）；
   3. 模型下载策略：市场包直带（仓库体积大）vs 首启按需下载到插件目录（需校验哈希）。
 - 首期交付：插件骨架 + `registerCommandClassifier` 接线演示（用线性打分模拟）+ README 与上架指引，推理部分标注「二期」。
+- **实施落定（2026-11-14）**：骨架在 `docs/plugins/examples/command-classifier-onnx/`（`/plugins/` 目录被 .gitignore 排除，样例走 docs/examples）；词表打分演示 + `readAsset('model/manifest.json')` 元数据加载演示 + 状态命令；上架指引（Gitee org 仓库根 `plugin.json`）写入其 README 与 `docs/plugins/README.md`（含 `registerCommandClassifier` API 文档与市场发布章节）。
 
 ## 9. 决策链接线（M1）
 
@@ -167,9 +168,9 @@ cadt.registerCommandClassifier({
 
 ## 11. 实施步骤
 
-- **M1（核心，约 1.5 天）**：`registerCommandClassifier` 插件 API + 内置线性分类器（语料 / 训练 / 量化 / 单测）+ 决策链接线 + 严格度配置与设置 UI + **个性化后训练（SGD 更新 / 重置 / 清空 / 导出 / 状态行）** + mock 场景浏览器冒烟（模拟审批链看来源标注与三档分布、批准回流学习）。
-- **M2（插件包，约半天）**：B 插件骨架（manifest / 入口 / readAsset 加载演示 / README）+ 上架指引；作者推 Gitee org。
-- **M3（二期）**：B 的 ONNX 推理落地（运行时加载验证、Worker 化、模型选型实测）。
+- **M1（核心，约 1.5 天）**：`registerCommandClassifier` 插件 API + 内置线性分类器（语料 / 训练 / 量化 / 单测）+ 决策链接线 + 严格度配置与设置 UI + **个性化后训练（SGD 更新 / 重置 / 清空 / 导出 / 状态行）** + mock 场景浏览器冒烟（模拟审批链看来源标注与三档分布、批准回流学习）。✅ 已完成（2026-11-14）：训练硬指标三档误放 0 / 安全标准档放行率 0.96；mock 冒烟覆盖三档判定、测试框、个性化回流 / 重置 / 清空 / 导出、`classifyAll` 聚合。
+- **M2（插件包，约半天）**：B 插件骨架（manifest / 入口 / readAsset 加载演示 / README）+ 上架指引；作者推 Gitee org。✅ 已完成（2026-11-14，`docs/plugins/examples/command-classifier-onnx/`）。
+- **M3（二期）**：B 的 ONNX 推理落地（运行时加载验证、Worker 化、模型选型实测）。未开工。
 
 ## 12. 验收清单
 
