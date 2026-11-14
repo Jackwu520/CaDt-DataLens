@@ -7,6 +7,8 @@
 > - R1 `4077cbf`：bridge-ui 632 → 203（+ terminal-view 212 / git 177 / cli-convert 77）
 > - R2 `5541c35`：terminal-ui 853 → 414（+ run-ui 214 / terminal-sessions 268；顺带去掉返回面重复键）
 > - H1 `a46977a`：titlebar-popovers 856 → 57（+ project 185 / git-branch 641）
+> - S1 `6825aa7`：settings-ui 1105 → 759（+ dialogs 158 / select 119 / search 112）
+> - 另：前端归位四条 misfit + AGENTS.md 按目录重写（`7813ad6`）；Go 侧评估与同包拆文件见 `go-layout.md`（patch/ai/app 三大文件已拆）
 > 前置阅读：`docs/finished-plans/frontend-split-phase2.md`（两阶段实施记录与教训）、`.cadt/memory/frontend-module-refactor-audit.md`（验证方法论：tokenizer 重写、三类扫描、对照验证、退出码纪律）
 > 范围：阶段 Z 目录归位 + 11 个「多域混装 / 内聚但体量逼近红线」文件的解耦；**不动** ai-panel.js（交子代理消息化方案）、main.js 组合根、editor-groups.js 编排核心
 > 目标：把「未来拆分会很痛」的文件在低耦合期提前解耦（预防性拆分），不是追行数指标；同时终结 src/ 顶层平铺
