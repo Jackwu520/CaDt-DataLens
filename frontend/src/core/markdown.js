@@ -6,7 +6,7 @@ import MarkdownIt from 'markdown-it';
 import DOMPurify from 'dompurify';
 import hljs from 'highlight.js/lib/common';
 import markdownItKatex from '@vscode/markdown-it-katex';
-import {buildWidgetPlaceholder, widgetLangOf} from './widget.js';
+import {buildWidgetPlaceholder, widgetKindOf} from './widget.js';
 
 // ---- mermaid 占位源码编解码（UTF-8 安全 base64） ----
 // DOMPurify 3.4.x 会整体丢弃属性值含换行的属性（mXSS 加固），而 mermaid 源码必含换行：
@@ -60,14 +60,14 @@ export function createMarkdownRenderer(deps) {
             : self.renderToken(tokens, idx, options);
     };
 
-    // env.aiWidgets 由 AI 面板注入：只有它被显式打开时，svg / html 围栏才渲染成可视化卡片。
+    // env.aiWidgets 由 AI 面板注入：只有它被显式打开时，svg / html / mermaid / echarts 围栏才渲染成可视化卡片。
     // 主界面 Markdown 预览与阅读模式不传该开关，行为保持不变；info 里写 no-widget 可强制保留源码。
     function renderMarkdownCodeBlock(text, info, env) {
         const code = String(text || '').replace(/\n$/, '');
         const infoText = String(info || '').trim();
-        const widgetLang = env && env.aiWidgets ? widgetLangOf(infoText) : '';
-        if (widgetLang && !/\bno-widget\b/i.test(infoText)) {
-            return buildWidgetPlaceholder(code, widgetLang);
+        const widgetInfo = env && env.aiWidgets ? widgetKindOf(infoText) : null;
+        if (widgetInfo && !/\bno-widget\b/i.test(infoText)) {
+            return buildWidgetPlaceholder(code, widgetInfo.lang, widgetInfo.kind);
         }
         if (infoText.toLowerCase() === 'mermaid' && mermaidPlaceholder) {
             return mermaidPlaceholder(code);

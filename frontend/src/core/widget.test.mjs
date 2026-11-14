@@ -9,18 +9,38 @@ import {
     extractWidgetCss,
     sanitizeWidgetCss,
     widgetCacheKey,
+    widgetKindOf,
     widgetLangOf,
 } from './widget.js';
 
-test('widgetLangOf 只认 svg / html / htm', () => {
+test('widgetLangOf 只认 svg / html / htm / mermaid / echarts（chart 是 echarts 别名）', () => {
     assert.equal(widgetLangOf('svg'), 'svg');
     assert.equal(widgetLangOf('HTML'), 'html');
     assert.equal(widgetLangOf('htm'), 'htm');
     assert.equal(widgetLangOf('html title="demo"'), 'html');
-    assert.equal(widgetLangOf('  mermaid '), '');
+    assert.equal(widgetLangOf('  mermaid '), 'mermaid');
+    assert.equal(widgetLangOf('echarts'), 'echarts');
+    assert.equal(widgetLangOf('chart'), 'echarts');
+    assert.equal(widgetLangOf('Chart kind=chart'), 'echarts');
     assert.equal(widgetLangOf('javascript'), '');
     assert.equal(widgetLangOf(''), '');
     assert.equal(widgetLangOf(null), '');
+});
+
+test('widgetKindOf 解析语言与 kind 修饰（显式 kind 优先，未知 kind 回退默认）', () => {
+    assert.deepEqual(widgetKindOf('svg'), {lang: 'svg', kind: 'diagram'});
+    assert.deepEqual(widgetKindOf('mermaid'), {lang: 'mermaid', kind: 'diagram'});
+    assert.deepEqual(widgetKindOf('echarts'), {lang: 'echarts', kind: 'chart'});
+    assert.deepEqual(widgetKindOf('chart'), {lang: 'echarts', kind: 'chart'});
+    assert.deepEqual(widgetKindOf('html'), {lang: 'html', kind: 'card'});
+    assert.deepEqual(widgetKindOf('html kind=mockup'), {lang: 'html', kind: 'mockup'});
+    assert.deepEqual(widgetKindOf('html kind=diagram'), {lang: 'html', kind: 'diagram'});
+    assert.deepEqual(widgetKindOf('svg kind=notakind'), {lang: 'svg', kind: 'diagram'});
+    assert.deepEqual(widgetKindOf('HTML KIND=MOCKUP'), {lang: 'html', kind: 'mockup'});
+    assert.deepEqual(widgetKindOf('html title="demo"'), {lang: 'html', kind: 'card'});
+    assert.equal(widgetKindOf('python'), null);
+    assert.equal(widgetKindOf(''), null);
+    assert.equal(widgetKindOf(null), null);
 });
 
 test('escapeWidgetText 转义完整实体集', () => {
@@ -51,6 +71,21 @@ test('buildWidgetPlaceholder 未知语言回退为 html', () => {
     const html = buildWidgetPlaceholder('<b>x</b>', 'py');
     assert.match(html, /data-widget-lang="html"/);
     assert.match(html, /language-html/);
+});
+
+test('buildWidgetPlaceholder 带 kind 标记，未传 kind 时按语言推导', () => {
+    const chart = buildWidgetPlaceholder('{"series":[]}', 'echarts', 'chart');
+    assert.match(chart, /data-widget-lang="echarts"/);
+    assert.match(chart, /data-widget-kind="chart"/);
+    assert.match(chart, /language-echarts/);
+    const diagram = buildWidgetPlaceholder('flowchart TD', 'mermaid');
+    assert.match(diagram, /data-widget-kind="diagram"/);
+    const mockup = buildWidgetPlaceholder('<div/>', 'html', 'mockup');
+    assert.match(mockup, /data-widget-kind="mockup"/);
+    // 未知 kind 回退默认，不出现在属性里
+    const bad = buildWidgetPlaceholder('<div/>', 'html', 'interactive');
+    assert.match(bad, /data-widget-kind="card"/);
+    assert.ok(!bad.includes('interactive'));
 });
 
 test('extractWidgetCss 抽出 style 并从正文移除', () => {

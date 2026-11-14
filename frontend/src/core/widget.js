@@ -9,15 +9,40 @@
 import DOMPurify from 'dompurify';
 import {SHADOW_STYLE, VISUAL_BUDGET} from './visual-spec.js';
 
-const WIDGET_LANGS = new Set(['svg', 'html', 'htm']);
+const WIDGET_LANGS = new Set(['svg', 'html', 'htm', 'mermaid', 'echarts', 'chart']);
 // 限额与 Shadow 基础样式来自 core/visual-spec.js（规范单一来源，代码与提示词共用一份预算）。
 const MAX_WIDGET_CHARS = VISUAL_BUDGET.maxWidgetChars;
 const MAX_WIDGETS_PER_MESSAGE = VISUAL_BUDGET.maxPerMessage;
 const MAX_WIDGET_CSS_CHARS = VISUAL_BUDGET.maxCssChars;
 
+// kind 分类（方案 §3.1）：只影响卡片标签、规范段落与无障碍描述，不是新引擎。
+// chart 是 echarts 的兼容别名；显式 kind= 修饰优先于按语言推导的默认形态。
+export const WIDGET_KINDS = new Set(['diagram', 'chart', 'mockup', 'card']);
+const KIND_LABELS = {diagram: '图示', chart: '图表', mockup: '示意', card: '卡片'};
+const LANG_LABELS = {svg: 'SVG', html: 'HTML', mermaid: 'Mermaid', echarts: 'ECharts'};
+const LANG_DEFAULT_KIND = {svg: 'diagram', mermaid: 'diagram', echarts: 'chart', html: 'card'};
+
+// 语言归一化：chart 是 echarts 的兼容别名；不在集合里返回空串。
+function normalizeWidgetLang(lang) {
+    const l = String(lang || '').toLowerCase();
+    if (!WIDGET_LANGS.has(l)) return '';
+    return l === 'chart' ? 'echarts' : l;
+}
+
 export function widgetLangOf(info) {
-    const lang = String(info || '').trim().split(/\s+/)[0].toLowerCase();
-    return WIDGET_LANGS.has(lang) ? lang : '';
+    return normalizeWidgetLang(String(info || '').trim().split(/\s+/)[0]);
+}
+
+// widgetKindOf 解析围栏信息里的语言与 kind 修饰，返回 {lang, kind}；不是可视化围栏返回 null。
+// 围栏信息示例：`svg`、`html kind=mockup`、`mermaid`、`echarts`、`chart`（= echarts）。
+export function widgetKindOf(info) {
+    const text = String(info || '').trim();
+    if (!text) return null;
+    const lang = widgetLangOf(text);
+    if (!lang) return null;
+    const m = text.match(/\bkind=([A-Za-z-]+)/i);
+    const kind = m && WIDGET_KINDS.has(m[1].toLowerCase()) ? m[1].toLowerCase() : LANG_DEFAULT_KIND[lang];
+    return {lang, kind};
 }
 
 export function escapeWidgetText(text) {
@@ -39,13 +64,13 @@ export function widgetCacheKey(lang, code) {
 
 // 占位 HTML：由 markdown.js 的 fence 规则插入，增强阶段再从 .ai-widget-src 读回源码。
 // 源码放在 pre/code 里（已转义），即使增强失败也能看到原始内容。
-export function buildWidgetPlaceholder(code, lang) {
+export function buildWidgetPlaceholder(code, lang, kind) {
     const text = String(code || '');
-    const safeLang = WIDGET_LANGS.has(lang) ? lang : 'html';
-    const label = safeLang === 'svg' ? 'svg' : 'html';
-    return '<div class="ai-widget" data-widget-lang="' + safeLang + '" data-widget-key="' +
-        widgetCacheKey(safeLang, text) + '">' +
-        '<div class="ai-widget-src" hidden><pre><code class="language-' + label + '">' +
+    const safeLang = normalizeWidgetLang(lang) || 'html';
+    const safeKind = WIDGET_KINDS.has(kind) ? kind : (LANG_DEFAULT_KIND[safeLang] || 'card');
+    return '<div class="ai-widget" data-widget-lang="' + safeLang + '" data-widget-kind="' + safeKind +
+        '" data-widget-key="' + widgetCacheKey(safeLang, text) + '">' +
+        '<div class="ai-widget-src" hidden><pre><code class="language-' + safeLang + '">' +
         escapeWidgetText(text) + '</code></pre></div></div>\n';
 }
 
@@ -137,7 +162,7 @@ function mountShadow(host, code, lang, opts) {
     shadow.addEventListener('submit', (event) => event.preventDefault(), true);
 }
 
-function mountCard(node, lang, code, opts) {
+function mountCard(node, lang, kind, code, opts) {
     node.dataset.widgetReady = '1';
     const srcPanel = node.querySelector('.ai-widget-src');
 
@@ -145,10 +170,10 @@ function mountCard(node, lang, code, opts) {
     bar.className = 'ai-widget-bar';
     const tag = document.createElement('span');
     tag.className = 'ai-widget-tag';
-    tag.textContent = lang === 'svg' ? 'SVG' : 'HTML';
+    tag.textContent = LANG_LABELS[lang] || String(lang).toUpperCase();
     const label = document.createElement('span');
     label.className = 'ai-widget-label';
-    label.textContent = '可视化';
+    label.textContent = KIND_LABELS[kind] || '可视化';
     const actions = document.createElement('div');
     actions.className = 'ai-widget-actions';
 
@@ -159,7 +184,7 @@ function mountCard(node, lang, code, opts) {
         node.classList.toggle('show-src', show);
     });
     const copyButton = widgetButton('复制', '复制源码', () => {
-        if (typeof opts.copyText === 'function') opts.copyText(code, lang === 'svg' ? 'SVG' : 'HTML');
+        if (typeof opts.copyText === 'function') opts.copyText(code, LANG_LABELS[lang] || String(lang).toUpperCase());
     });
     actions.append(srcButton, copyButton);
     bar.append(tag, label, actions);
@@ -181,6 +206,7 @@ export function enhanceWidgets(root, opts = {}) {
     nodes.forEach((node, index) => {
         if (node.dataset.widgetReady === '1') return;
         const lang = node.getAttribute('data-widget-lang') || 'html';
+        const kind = node.getAttribute('data-widget-kind') || LANG_DEFAULT_KIND[lang] || 'card';
         const src = node.querySelector('.ai-widget-src code');
         const code = src ? (src.textContent || '') : '';
         if (!code.trim()) return;
@@ -197,7 +223,7 @@ export function enhanceWidgets(root, opts = {}) {
             return;
         }
         node.classList.remove('ai-widget-pending');
-        mountCard(node, lang, code, opts);
+        mountCard(node, lang, kind, code, opts);
         mounted++;
     });
     return mounted;
