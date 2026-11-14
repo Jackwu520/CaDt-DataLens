@@ -750,11 +750,19 @@ function selectSettingsPane(pane) {
     }
 }
 
-function openSettings(pane = 'general') {
+function openSettings(pane = 'general', preset) {
     openDialogEl(elsDialogs.settings);
     resetSettingsSearch();
     selectSettingsPane(pane);
     enhanceSetSelects();
+    // 插件市场搜索预设（端侧分类器状态行的「下载语义模型」跳转带 onnx 关键词进来）
+    if (pane === 'plugins' && preset) {
+        const search = document.getElementById('plugin-market-search');
+        if (search) {
+            search.value = preset;
+            search.dispatchEvent(new Event('input', {bubbles: true}));
+        }
+    }
     // 左栏逐项图标：按 data-icon 用 iconSvg 填充（唯一图标来源，只填一次）
     if (deps.iconSvg) {
         document.querySelectorAll('.snav-ic[data-icon]').forEach((el) => {

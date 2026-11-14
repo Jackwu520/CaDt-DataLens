@@ -2355,14 +2355,14 @@ function initAIPanel() {
         openExternal: openExternalUrl,
         confirm: openCloseConfirm,
         nameDialog: openNameDialog,
-        openSettings: (pane) => {
+        openSettings: (pane, preset) => {
             if (window.__aiFloatWindow && backend.OpenSettingsInMainWindow) {
                 Promise.resolve(backend.OpenSettingsInMainWindow(pane || 'models'))
                     .then(() => flash('已在主窗口打开设置'))
                     .catch((e) => flash('打开主窗口设置失败：' + ((e && e.message) || e), true));
                 return;
             }
-            openSettings(pane);
+            openSettings(pane, preset);
         },
         setDragCursor,
         openVirtualDoc: (...args) => openVirtualDoc(...args),

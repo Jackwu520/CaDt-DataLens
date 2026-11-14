@@ -75,6 +75,7 @@ export function createAISettingsDialog(ctx) {
     const setSessions = ctx.setSessions;
     // 端侧命令分类器（ai-panel 构造，getter 惰性触达）与插件分类器列表
     const localClassifier = ctx.localClassifier;
+    const openSettings = ctx.openSettings;
     const getPluginCommandClassifiers = ctx.getPluginCommandClassifiers;
     const getSkillsCache = ctx.getSkillsCache;
     const getPermissionAudit = ctx.getPermissionAudit;
@@ -288,7 +289,13 @@ export function createAISettingsDialog(ctx) {
     function renderLocalClassifierStatus() {
         if (!opt.localClassifierStatus) return;
         const plugins = typeof getPluginCommandClassifiers === 'function' ? getPluginCommandClassifiers() : [];
-        const pluginPart = plugins.length ? '插件：' + plugins.map((p) => p.label || p.id).join('、') : '';
+        const semanticReady = plugins.length > 0;
+        // 语义模型跳转口：未安装语义分类器插件时显示，一键带 onnx 关键词跳插件市场搜索
+        if (opt.localClassifierMarket) {
+            opt.localClassifierMarket.classList.toggle('hidden', semanticReady);
+            opt.localClassifierMarket.onclick = () => openSettings('plugins', 'onnx');
+        }
+        const pluginPart = plugins.length ? '插件：' + plugins.map((p) => p.label || p.id).join('、') : (semanticReady ? '' : '语义模型未安装');
         if (getConfig().localClassifierEnabled !== true) {
             opt.localClassifierStatus.textContent = pluginPart || '未启用';
             return;

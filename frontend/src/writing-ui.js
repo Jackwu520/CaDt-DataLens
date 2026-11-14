@@ -1031,6 +1031,20 @@ function setupPluginsSettings() {
         renderPluginsPane();
     });
     const marketRefresh = document.getElementById('plugin-market-refresh');
+    const marketSearch = document.getElementById('plugin-market-search');
+    if (marketSearch && !marketSearch.dataset.bound) {
+        marketSearch.dataset.bound = '1';
+        marketSearch.addEventListener('input', () => {
+            const listEl = document.getElementById('plugin-market-list');
+            const keyword = (marketSearch.value || '').trim().toLowerCase();
+            const items = (pluginMarketCache && pluginMarketCache.items) || [];
+            if (!listEl) return;
+            if (!keyword) { if (items.length) renderPluginMarketList(listEl, items); return; }
+            const filtered = items.filter((m) => [m.name, m.id, m.description, m.author, m.repo]
+                .some((v) => String(v || '').toLowerCase().includes(keyword)));
+            renderPluginMarketList(listEl, filtered);
+        });
+    }
     if (marketRefresh) {
         marketRefresh.addEventListener('click', () => renderPluginMarket(true));
     }
@@ -1259,11 +1273,17 @@ async function renderPluginMarket(force) {
 }
 
 function renderPluginMarketList(listEl, items) {
+    const searchEl = document.getElementById('plugin-market-search');
+    const keyword = searchEl ? (searchEl.value || '').trim().toLowerCase() : '';
+    if (keyword) {
+        items = items.filter((m) => [m.name, m.id, m.description, m.author, m.repo]
+            .some((v) => String(v || '').toLowerCase().includes(keyword)));
+    }
     listEl.textContent = '';
     if (!items.length) {
         const empty = document.createElement('div');
         empty.className = 'plugin-empty';
-        empty.textContent = '插件市场暂无公开插件。';
+        empty.textContent = keyword ? '没有匹配「' + keyword + '」的插件。' : '插件市场暂无公开插件。';
         listEl.appendChild(empty);
         fitPluginListBox(listEl);
         return;

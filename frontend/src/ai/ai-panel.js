@@ -398,6 +398,7 @@ export function createAIPanel(options) {
         localClassifierStrictness: document.getElementById('ai-opt-local-strictness'),
         localClassifierPersonalize: document.getElementById('ai-opt-local-personalize'),
         localClassifierStatus: document.getElementById('ai-opt-local-status'),
+        localClassifierMarket: document.getElementById('ai-opt-local-market'),
         localClassifierTest: document.getElementById('ai-opt-local-test'),
         localClassifierTestResult: document.getElementById('ai-opt-local-test-result'),
         localClassifierReset: document.getElementById('ai-opt-local-reset'),
@@ -598,7 +599,7 @@ export function createAIPanel(options) {
             localClassifierEnabled: stored.localClassifierEnabled !== false,
             localClassifierStrictness: normalizeLocalClassifierStrictness(stored.localClassifierStrictness),
             // 个性化后训练：从审批卡的用户显式裁定学习（批准 → y=0，拒绝 → y=1）
-            localClassifierPersonalize: stored.localClassifierPersonalize === true,
+            localClassifierPersonalize: stored.localClassifierPersonalize !== false,
             // 应用内完成 toast 默认关（作者反馈：太烦人）；未发版，旧存量值直接忽略
             notifyInApp: false,
             notifySystem: stored.notifySystem === true,
@@ -1963,6 +1964,7 @@ export function createAIPanel(options) {
         getConfig: () => config,
         // 端侧分类器（本模块构造于设置对话框之后，经 getter 惰性触达）
         localClassifier: () => localClassifierMod,
+        openSettings,
         getPluginCommandClassifiers,
         setSessions: (value) => { sessions = value; },
         getSkillsCache: () => skillsCache,
@@ -8309,6 +8311,7 @@ export function createAIPanel(options) {
             danger: value === 'full',
             // 分类器开启时在「自动审批」旁标注 AI 胶囊，提示该档位会额外请求模型判定
             ...(value === 'auto' && config.autoClassifier === true ? {badge: 'AI'} : {}),
+            ...(value === 'auto' && config.localClassifierEnabled === true ? {badgeIcon: 'zap'} : {}),
             action: () => setScope(value),
         }));
         showContextMenu(items, rect.left, rect.top - 280);

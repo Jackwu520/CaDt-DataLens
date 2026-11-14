@@ -97,12 +97,13 @@ export function createContextMenu() {
         placeSubmenu(panel, anchor);
     }
 
-    // 胶囊徽标（如权限菜单「自动审批」旁的 AI 标识）：item.badge 为短文本。
+    // 胶囊徽标（如权限菜单「自动审批」旁的 AI 标识）：item.badge 为短文本，
+    // item.badgeIcon 为纯图标徽标（无文字）；两者可并存并排渲染。
     function renderBadge(item) {
-        if (!item.badge) return null;
+        if (!item.badge && !item.badgeIcon) return null;
         const badge = el('span', 'mi-badge');
-        badge.innerHTML = iconSvg('sparkles', 9);
-        badge.appendChild(el('span', 'mi-badge-text', String(item.badge)));
+        badge.innerHTML = iconSvg(item.badgeIcon || 'sparkles', 9);
+        if (item.badge) badge.appendChild(el('span', 'mi-badge-text', String(item.badge)));
         return badge;
     }
 
