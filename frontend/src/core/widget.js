@@ -7,34 +7,13 @@
 //   再放进 Shadow DOM：样式不外泄、主界面不受影响，脚本也不会执行。
 // - 卡片内的链接由外层拦截后交给系统浏览器，其它导航一律阻止。
 import DOMPurify from 'dompurify';
+import {SHADOW_STYLE, VISUAL_BUDGET} from './visual-spec.js';
 
 const WIDGET_LANGS = new Set(['svg', 'html', 'htm']);
-// 单块源码上限：超出只保留源码，避免一段超大 HTML 卡住渲染进程。
-const MAX_WIDGET_CHARS = 200 * 1024;
-// 单条消息上限：防止模型一次输出几十张图把长会话拖慢。
-const MAX_WIDGETS_PER_MESSAGE = 8;
-// 单块 CSS 上限：样式是附带的，正常卡片远小于这个量级。
-const MAX_WIDGET_CSS_CHARS = 24 * 1024;
-
-// Shadow DOM 内的基础排版。主题自定义属性（--bg / --panel / --text …）会穿透 shadow 边界继承，
-// 这里再把常见的 --color-* 命名映射过去，让模型按通用命名写的图也能拿到当前主题色。
-const SHADOW_STYLE = [
-    ':host{display:block;color:var(--text,#1f2328);',
-    'font:13px/1.6 var(--ui-font,system-ui,"Segoe UI",sans-serif);',
-    '--color-text-primary:var(--text,#1f2328);',
-    '--color-text-secondary:var(--muted,#6b7280);',
-    '--color-background-primary:var(--panel2,#fff);',
-    '--color-background-secondary:var(--panel,#f4f6f8);',
-    '--color-background-tertiary:var(--bg,#eef1f5);',
-    '--color-border-tertiary:var(--border,rgba(0,0,0,.14));',
-    '--color-border-secondary:var(--border,rgba(0,0,0,.24));',
-    '--color-accent:var(--accent,#4f8cff);}',
-    '*,*::before,*::after{box-sizing:border-box}',
-    'img,svg,canvas{max-width:100%}',
-    'svg{height:auto;max-height:520px}',
-    'table{border-collapse:collapse}',
-    'a{color:var(--accent,#4f8cff)}',
-].join('');
+// 限额与 Shadow 基础样式来自 core/visual-spec.js（规范单一来源，代码与提示词共用一份预算）。
+const MAX_WIDGET_CHARS = VISUAL_BUDGET.maxWidgetChars;
+const MAX_WIDGETS_PER_MESSAGE = VISUAL_BUDGET.maxPerMessage;
+const MAX_WIDGET_CSS_CHARS = VISUAL_BUDGET.maxCssChars;
 
 export function widgetLangOf(info) {
     const lang = String(info || '').trim().split(/\s+/)[0].toLowerCase();
