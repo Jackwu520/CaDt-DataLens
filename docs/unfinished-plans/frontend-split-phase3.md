@@ -5,6 +5,8 @@
 > - Z 目录归位 `3cb7ca0`：64 文件 git mv + 106 行 import 重写，顶层只剩 main.js；npm test 234/234、双构建通过
 > - A1 `d71ee73`：ai-session-store 750 → 255（+ ai-session-disk 512）
 > - R1 `4077cbf`：bridge-ui 632 → 203（+ terminal-view 212 / git 177 / cli-convert 77）
+> - R2 `5541c35`：terminal-ui 853 → 414（+ run-ui 214 / terminal-sessions 268；顺带去掉返回面重复键）
+> - H1 `a46977a`：titlebar-popovers 856 → 57（+ project 185 / git-branch 641）
 > 前置阅读：`docs/finished-plans/frontend-split-phase2.md`（两阶段实施记录与教训）、`.cadt/memory/frontend-module-refactor-audit.md`（验证方法论：tokenizer 重写、三类扫描、对照验证、退出码纪律）
 > 范围：阶段 Z 目录归位 + 11 个「多域混装 / 内聚但体量逼近红线」文件的解耦；**不动** ai-panel.js（交子代理消息化方案）、main.js 组合根、editor-groups.js 编排核心
 > 目标：把「未来拆分会很痛」的文件在低耦合期提前解耦（预防性拆分），不是追行数指标；同时终结 src/ 顶层平铺
