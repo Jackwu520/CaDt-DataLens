@@ -106,8 +106,11 @@ export function createAITimer(ctx) {
     async function start(mode, seconds, label) {
         const backend = ctx.getBackend();
         if (!backend || typeof backend.StartTimer !== 'function') throw new Error('当前版本不支持计时工具');
-        const [list, created] = await backend.StartTimer(mode === 'countup' ? 'countup' : 'countdown',
+        // Go 返回 AITimerStartResult {list, created}
+        const result = await backend.StartTimer(mode === 'countup' ? 'countup' : 'countdown',
             Math.max(0, Math.round(Number(seconds) || 0)), String(label || '').slice(0, 60));
+        const list = (result && result.list) || [];
+        const created = (result && result.created) || {};
         sessions.set(created.id, ctx.getSessionId ? ctx.getSessionId() : '');
         sync(list);
         return created;
@@ -119,10 +122,12 @@ export function createAITimer(ctx) {
         if (!backend || typeof backend.StopTimer !== 'function') throw new Error('当前版本不支持计时工具');
         const target = id || onlyRunningId();
         if (!target) throw new Error(timers.size ? '有多个计时器在运行，请指定 id（start_timer 返回值里有）' : '没有运行中的计时器');
-        const [list, stopped] = await backend.StopTimer(target);
-        sessions.delete(stopped.id);
-        sync(list);
-        return stopped;
+        // Go 返回 AITimerStopResult {list, stopped, found}
+        const result = await backend.StopTimer(target);
+        if (!result || !result.found) throw new Error('计时器不存在：' + target);
+        sessions.delete(result.stopped.id);
+        sync(result.list || []);
+        return result.stopped;
     }
 
     function onlyRunningId() {

@@ -2285,7 +2285,6 @@ const mockRt = {
     WindowUnfullscreen() { this._fs = false; this._calls.push('fs:off'); },
     async WindowIsFullscreen() { return !!this._fs; },
     BrowserOpenURL(url) { window.__mockOpenUrl = url; this._calls.push('url:' + url); },
-    EventsOn() {},
 };
 // 调试/测试用：暴露 mock 运行时（仅 mock 场景存在）
 window.__mockRt = mockRt;

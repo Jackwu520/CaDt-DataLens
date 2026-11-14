@@ -11323,6 +11323,8 @@ export function createAIPanel(options) {
             if (name === 'ai-timer-fired') timerMod.onFired(info);
             else if (name === 'ai-timer-stopped') timerMod.onStopped(info);
         },
+        // 计时器注册表（调试 / 插件作者可经 window.__lens.aiPanel.timerMod 驱动）
+        timerMod,
         refreshScheduleSettings: renderScheduleSettings,
         refreshContext,
         closeModelEditor,
