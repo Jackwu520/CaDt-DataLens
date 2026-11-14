@@ -5,6 +5,73 @@ import {iconSvg} from '../icons.js';
 import {AI_WRITE_SCOPES, aiClampInt, aiNowId} from './ai-constants.js';
 import {collectCommandFamilies, commandFamilySignature} from './ai-command-rules.js';
 
+// 审批卡判定区的行描述（纯函数，ai-takeover.test.mjs 覆盖）：
+// info = {engine: '线性'|'语义'|插件短名, score, threshold, aiReason}。
+// 端侧引擎行只在 engine 有值时输出（分数按危险度着色：≥0.7 红，否则黄）；
+// AI 复核行只在 aiReason 非空时输出。旧会话没有结构化字段时调用方回退拼接文案。
+export function classifyVerdictRows(info) {
+    const rows = [];
+    if (info && info.engine) {
+        const score = Math.min(1, Math.max(0, Number(info.score) || 0));
+        const threshold = Math.max(0, Number(info.threshold) || 0);
+        rows.push({
+            chip: '端侧·' + String(info.engine),
+            score,
+            threshold,
+            hot: score >= 0.7,
+        });
+    }
+    const aiReason = info && info.aiReason ? String(info.aiReason) : '';
+    if (aiReason) rows.push({chip: 'AI 复核', reason: aiReason});
+    return rows;
+}
+
+// 判定区 DOM：行描述 → 来源 chip / 风险条（蓝刻度=阈值）/ 分数阈值 / 转人工箭头 / AI 复核理由
+function buildClassifyVerdict(info) {
+    const box = document.createElement('div');
+    box.className = 'ai-classify';
+    for (const row of classifyVerdictRows(info)) {
+        const line = document.createElement('div');
+        line.className = 'ai-classify-row';
+        const chip = document.createElement('span');
+        chip.className = 'ai-classify-chip ' + (row.reason ? 'remote' : 'local');
+        chip.textContent = row.chip;
+        line.appendChild(chip);
+        if (row.reason) {
+            const why = document.createElement('span');
+            why.className = 'ai-classify-why';
+            why.textContent = row.reason;
+            line.appendChild(why);
+        } else {
+            const meter = document.createElement('span');
+            meter.className = 'ai-classify-meter';
+            const fill = document.createElement('i');
+            fill.className = 'fill' + (row.hot ? '' : ' mid');
+            fill.style.width = Math.round(row.score * 100) + '%';
+            const tick = document.createElement('i');
+            tick.className = 'tick';
+            tick.style.left = Math.min(100, Math.round(row.threshold * 100)) + '%';
+            meter.append(fill, tick);
+            const num = document.createElement('span');
+            num.className = 'ai-classify-num';
+            const score = document.createElement('b');
+            score.className = row.hot ? 'hot' : 'mid';
+            score.textContent = row.score.toFixed(2);
+            num.appendChild(score);
+            num.append(' ≥ 阈值 ' + row.threshold.toFixed(2));
+            const arrow = document.createElement('span');
+            arrow.className = 'ai-classify-arrow';
+            arrow.append('→ ');
+            const hard = document.createElement('b');
+            hard.textContent = '转人工';
+            arrow.appendChild(hard);
+            line.append(meter, num, arrow);
+        }
+        box.appendChild(line);
+    }
+    return box;
+}
+
 export function createAITakeover(ctx) {
     const el = ctx.el;
     const flash = ctx.flash;
@@ -434,20 +501,26 @@ export function createAITakeover(ctx) {
             line.className = 'ai-command-line ai-command-line-fill';
             line.textContent = approval.command || '';
             body.appendChild(line);
-            const note = document.createElement('div');
-            note.className = 'ai-approval-more';
-            note.textContent = toolMessage.name === 'web_fetch'
-                ? '将向该地址发起网络请求；域名规则可在 .cadt/permissions.json 的 Web(...) 中预先配置。'
-                : (approval.danger || approval.singleUse
-                    ? '命令将在工作目录中执行；危险命令不提供「本会话 / 本项目允许」。'
-                    : (approval.classifyNote
-                        ? (approval.askSource === 'local-classifier'
-                            ? '端侧分类器转人工：' + approval.classifyNote
-                            : '分类器建议人工确认：' + approval.classifyNote)
-                        : (commandFamily
-                            ? '命令将在工作目录中执行；同类命令授权可保存到本会话或本项目，且不含管道、重定向或命令串联。'
-                            : '命令将在工作目录中执行；授权仅本次对话。')));
-            body.appendChild(note);
+            if (approval.classifyInfo && !(approval.danger || approval.singleUse)) {
+                // 结构化判定区（2026-11-14 提案）：端侧引擎行 + AI 复核行，取代拼接文案；
+                // 旧会话恢复的审批对象没有该字段，走下方 classifyNote 纯文本回退
+                body.appendChild(buildClassifyVerdict(approval.classifyInfo));
+            } else {
+                const note = document.createElement('div');
+                note.className = 'ai-approval-more';
+                note.textContent = toolMessage.name === 'web_fetch'
+                    ? '将向该地址发起网络请求；域名规则可在 .cadt/permissions.json 的 Web(...) 中预先配置。'
+                    : (approval.danger || approval.singleUse
+                        ? '命令将在工作目录中执行；危险命令不提供「本会话 / 本项目允许」。'
+                        : (approval.classifyNote
+                            ? (approval.askSource === 'local-classifier'
+                                ? '端侧分类器转人工：' + approval.classifyNote
+                                : '分类器建议人工确认：' + approval.classifyNote)
+                            : (commandFamily
+                                ? '命令将在工作目录中执行；同类命令授权可保存到本会话或本项目，且不含管道、重定向或命令串联。'
+                                : '命令将在工作目录中执行；授权仅本次对话。')));
+                body.appendChild(note);
+            }
         } else if (approval.diff && approval.diff.length) {
             renderDiffInto(body, approval);
             if (approval.truncated) {

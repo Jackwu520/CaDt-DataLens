@@ -6648,6 +6648,7 @@ html[data-theme="whitey"] {
 }
 .ai-approval-takeover-body > .ai-approval-warn,
 .ai-approval-takeover-body > .ai-approval-more { flex: none; }
+.ai-approval-takeover-body > .ai-classify { flex: none; }
 .ai-approval-takeover-body > .ai-diff {
     flex: 1 1 auto;
     min-height: 48px;
@@ -7812,6 +7813,34 @@ html[data-theme="whitey"] {
 .ai-diff-sign { flex: none; width: 12px; opacity: .8; }
 .ai-diff-text { white-space: pre; }
 .ai-approval-more { margin-top: 3px; color: var(--muted); font-size: 10px; }
+/* 审批卡判定区：端侧引擎行（chip + 风险条 + 分数阈值 + 转人工）与 AI 复核行（chip + 理由），
+   2026-11-14 提案落地——取代「端侧×3」的拼接文案 */
+.ai-classify { margin-top: 6px; display: flex; flex-direction: column; gap: 4px; }
+.ai-classify-row { display: flex; align-items: center; gap: 7px; min-height: 17px; font-size: 10.5px; color: var(--muted); min-width: 0; }
+.ai-classify-chip {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    padding: 1px 7px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: .2px;
+    white-space: nowrap;
+}
+.ai-classify-chip.local { background: var(--accent-weak); color: #82aefe; }
+.ai-classify-chip.remote { background: transparent; border: 1px solid var(--border); color: var(--muted); font-weight: 500; }
+.ai-classify-why { min-width: 0; overflow-wrap: anywhere; }
+.ai-classify-meter { flex: none; position: relative; width: 58px; height: 4px; border-radius: 2px; background: var(--border); }
+.ai-classify-meter .fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 2px; background: var(--red); }
+.ai-classify-meter .fill.mid { background: var(--warn); }
+.ai-classify-meter .tick { position: absolute; top: -2.5px; bottom: -2.5px; width: 1.5px; background: var(--accent); border-radius: 1px; }
+.ai-classify-num { flex: none; font-variant-numeric: tabular-nums; color: var(--text); }
+.ai-classify-num b { font-weight: 600; }
+.ai-classify-num b.hot { color: var(--red); }
+.ai-classify-num b.mid { color: var(--warn); }
+.ai-classify-arrow { flex: none; color: var(--muted); }
+.ai-classify-arrow b { color: var(--orange); font-weight: 600; }
 .ai-command-cwd {
     flex: 0 1 auto;
     min-width: 0;

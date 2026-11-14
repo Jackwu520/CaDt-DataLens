@@ -888,6 +888,7 @@ export function createAIPanel(options) {
             classifyNote: aiTextOf(raw.classifyNote),
             askSource: aiTextOf(raw.askSource),
             classifyScore: Math.min(1, Math.max(0, Number(raw.classifyScore) || 0)),
+            classifyInfo: normalizeClassifyInfo(raw.classifyInfo),
             denyRule: aiTextOf(raw.denyRule),
         };
     }
@@ -4923,6 +4924,12 @@ export function createAIPanel(options) {
                         cwd,
                         tool: toolName || 'run_command',
                         classifyNote: '端侧 ' + localSummary + '；AI 分类器复核未放行：' + (verdict.reason || ''),
+                        classifyInfo: {
+                            engine: localEngineOf(local),
+                            score: local.score,
+                            threshold: local.threshold,
+                            aiReason: verdict.reason || '',
+                        },
                         askSource: 'local-classifier',
                         classifyScore: local.score,
                     });
@@ -4934,6 +4941,11 @@ export function createAIPanel(options) {
                     cwd,
                     tool: toolName || 'run_command',
                     classifyNote: localSummary,
+                    classifyInfo: {
+                        engine: localEngineOf(local),
+                        score: local.score,
+                        threshold: local.threshold,
+                    },
                     askSource: 'local-classifier',
                     classifyScore: local.score,
                 });
@@ -4953,6 +4965,7 @@ export function createAIPanel(options) {
                 cwd,
                 tool: toolName || 'run_command',
                 classifyNote: verdict.reason,
+                classifyInfo: {aiReason: verdict.reason || ''},
             });
         }
         if (decision.decision === 'allow') {
@@ -5002,6 +5015,23 @@ export function createAIPanel(options) {
     const classifierQueue = [];
     const classifierCache = new Map();
     const classifierInflight = new Map(); // key -> job：同一命令重复请求合并成一次模型调用
+
+    // 判定区 chip 文案：内置线性 → 「线性」；插件分类器 → 其注册短名（「端侧·」前缀由渲染层拼）
+    function localEngineOf(local) {
+        return local && local.sourceId === 'builtin-linear' ? '线性' : aiTextOf((local && local.sourceLabel) || '插件');
+    }
+
+    // 审批卡的结构化判定信息（classifyInfo）：引擎 / 分数 / 阈值 / AI 复核理由。
+    // classifyNote 字符串继续保留（日志与旧会话兼容）；没有结构化字段的旧数据渲染回退拼接文案。
+    function normalizeClassifyInfo(raw) {
+        if (!raw || typeof raw !== 'object') return null;
+        return {
+            engine: aiTextOf(raw.engine),
+            score: Math.min(1, Math.max(0, Number(raw.score) || 0)),
+            threshold: Math.max(0, Number(raw.threshold) || 0),
+            aiReason: aiTextOf(raw.aiReason),
+        };
+    }
 
     // 判定解析在 ai-classifier-verdict.js：括号配对扫描取全部顶层对象、从后往前试解析、
     // 短答复纯文本兜底、失败带片段便于排障。放在独立模块里也给这个已超线的文件减负。
@@ -5181,6 +5211,7 @@ export function createAIPanel(options) {
             danger,
             singleUse: info.singleUse === true || !!danger,
             classifyNote: aiTextOf(info.classifyNote),
+            classifyInfo: normalizeClassifyInfo(info.classifyInfo),
             // 端侧分类器转人工的来源标记：个性化学习只回流这类审批卡的用户显式裁定
             askSource: aiTextOf(info.askSource),
             classifyScore: Number(info.classifyScore) || 0,
