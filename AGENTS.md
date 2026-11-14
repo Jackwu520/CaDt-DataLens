@@ -12,9 +12,11 @@ CaDt-DataLens 是一个面向 Windows 的轻量级多格式数据查看与编辑
 
 ### Go 后端（仓库根）
 - `main.go`：Wails 启动配置、窗口选项、`//go:embed all:frontend/dist` 资源内嵌、单实例锁
-- `app.go`：核心后端——文件读写、编码检测、剪贴板、系统操作、命令行目标解析；`const appVersion` 在 `app.go:33`
-- `appdata.go` / `logging.go` / `pathinfo.go`：应用数据目录、日志、路径信息
-- `ai.go` / `ai_float.go` / `ai_proxy_*.go` / `ai_command_windows.go`：AI 助手与浮窗、代理
+- `app_core.go`：App 结构与生命周期（startup/domReady/单实例）、命令行目标与启动参数解析；`const appVersion` 在 `app_core.go:35`
+- `app_file.go` / `app_fs.go` / `app_window.go`：文件读写与编码（opensave/外部修改校验/图片判定）· 目录与条目操作（列举/增删改移/落盘/对话框）· 脏标记/应用配置/多窗口与资源管理器定位
+- `appdata.go` / `logging.go` / `app_pathinfo.go`：应用数据目录、日志、路径信息
+- `ai_types.go` / `ai_chat.go` / `ai_http.go` / `ai_sse.go` / `ai_validate.go` / `ai_stream.go`：AI 后端——类型与载荷 · Wails 入口（发消息/停止/看门狗/连通性/目录）· 双协议 URL/头/体与重试 · SSE 解码与 HTTP 客户端/代理 · 参数校验 · 增量合并缓冲
+- `ai_float.go` / `ai_proxy_*.go` / `ai_command_windows.go`：AI 浮窗、代理、命令执行
 - `sessionstore*.go` / `sessionlock*.go`：AI 会话磁盘存储（追加式 JSONL、每会话 meta、原子替换、fsync 回滚、跨进程写锁、回收站删除）
 - `aiconfig*.go`：AI 配置 `ai-config.json` 的原子读写（0600）
 - `sessionindex*.go`：AI 会话 SQLite **派生**搜索索引（modernc pure Go，JSONL 为唯一真源）
@@ -22,7 +24,8 @@ CaDt-DataLens 是一个面向 Windows 的轻量级多格式数据查看与编辑
 - `ai_worklog.go`：AI 工作日志（工作区 `.cadt/logs/` 三层：根 INDEX.md 每月一行 → `{YYYY}/{MM}/INDEX.md` 每条一行 → 当日 md 正文；追加式 + 跨进程锁；只存标题 + 一句话摘要）
 - `activity.go`：操作留痕（追加式 JSONL、按月分文件滚动分段、跨进程写锁、保留清理；只存操作摘要，不存正文与密钥）
 - `sqlview*.go`：CSV/TSV/JSONL 的只读 SQL 查询（导入临时 SQLite，不修改原文件）
-- `patch.go` / `patch_app.go` / `patch_cli.go` / `patch_platform_*.go`：`.patch` 解析、严格匹配、两阶段应用（atomic / partial）、字节级备份与撤销、索引与 WAL；`patch_app.go` 只是 Wails 薄包装，`patch_cli.go` 提供 `--check-patch` / `--apply-patch` / `--revert-patch`（不启动窗口）。核心逻辑是不依赖 App 的自由函数，CLI 与界面共用
+- `patch_types.go` / `patch_parse.go` / `patch_match.go` / `patch_plan.go` / `patch_write.go`：`.patch` 类型与错误 · 解析（含 git 引号路径）· 严格匹配与 hunks · 计划构建与 `.cadt/patches` 索引 · 两阶段写入（atomic / partial）与字节快照撤销
+- `patch_app.go` / `patch_cli.go` / `patch_platform_*.go`：Wails 薄包装 · CLI 的 `--check-patch` / `--apply-patch` / `--revert-patch`（不启动窗口）· 平台差异。核心逻辑是不依赖 App 的自由函数，CLI 与界面共用
 - `browser*.go` / `devtools_*.go`：内嵌浏览器、开发者工具
 - `search.go`：工作区内容搜索（有 `searchBudget`、`searchMaxFileSize` 等硬预算）
 - `structuredir.go`：结构化目录导出
@@ -31,10 +34,8 @@ CaDt-DataLens 是一个面向 Windows 的轻量级多格式数据查看与编辑
 - `delete*.go`、`envvars*.go`、`terminal_windows.go`、`toolchain_windows.go`、`integration_windows.go`、`installer_cli_windows.go`、`notify_windows.go`、`cursors*`、`windowicon*`：Windows 能力与注册表集成
 - `run.go` / `run_shells_*.go`：运行代码（`PrepareRun` 临时副本与工作目录、`RunExec` 流式执行 + GBK 解码 + PATH 前置、stdin 队列 `RunInput` / `RunEndInput`、`RunStop`、临时目录清理）；配方与语言知识在前端 `src/run.js`，Go 侧只负责起进程
 - `run_project.go`：项目感知运行（`DetectRunProject` 只读探测项目标记与候选命令，遇 `.git` / 用户主目录停止）；执行仍走 `RunExec`，确认在前端
-- `dialogs.go`、`commands.go`、`preview_assets.go`、`debugconsole.go`
+- `app_dialogs.go` / `app_commands.go` / `app_preview_assets.go` / `app_debugconsole.go`：对话框、命令注册、预览资源、调试控制台
 - `*_test.go`：与同名源文件对应的单元测试
-
-> **Go 侧没有"目录分组"这回事**：一个目录就是一个包，`package main` 只能在仓库根（`//go:embed all:frontend/dist` 与 `frontend/wailsjs/go/main/` 都以根目录为前提）。所以 Go 的分类靠**文件名前缀 + 同包拆文件**；拆包与 `internal/patch` 试点评估见 `docs/unfinished-plans/go-layout.md`。
 
 > **Go 侧没有"目录分组"这回事**：一个目录就是一个包，`package main` 只能在仓库根（`//go:embed all:frontend/dist` 与 `frontend/wailsjs/go/main/` 都以根目录为前提）。所以 Go 的分类靠**文件名前缀 + 同包拆文件**；拆包与 `internal/patch` 试点评估见 `docs/unfinished-plans/go-layout.md`。
 
