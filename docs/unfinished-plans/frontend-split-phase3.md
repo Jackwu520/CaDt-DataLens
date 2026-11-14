@@ -9,6 +9,7 @@
 > - H1 `a46977a`：titlebar-popovers 856 → 57（+ project 185 / git-branch 641）
 > - S1 `6825aa7`：settings-ui 1105 → 759（+ dialogs 158 / select 119 / search 112）
 > - S2a `9cc481f`：writing-ui 2943 → 1922（+ writing-mode 613 / foot-menus 339 / markdown-mermaid 123）；壳暂留四个设置 pane，S2b 再拆
+> - S2b `73a856a` + `544462c`：writing-ui 1922 → 322（+ settings-pane-run 238 / plugins 587 / envvars 270 / lang 574，落在 settings/）；**S2 全完成，writing-ui 从 2943 降到 322**
 > - 另：前端归位四条 misfit + AGENTS.md 按目录重写（`7813ad6`）；Go 侧评估与同包拆文件见 `go-layout.md`（patch/ai/app 三大文件已拆）
 > 前置阅读：`docs/finished-plans/frontend-split-phase2.md`（两阶段实施记录与教训）、`.cadt/memory/frontend-module-refactor-audit.md`（验证方法论：tokenizer 重写、三类扫描、对照验证、退出码纪律）
 > 范围：阶段 Z 目录归位 + 11 个「多域混装 / 内聚但体量逼近红线」文件的解耦；**不动** ai-panel.js（交子代理消息化方案）、main.js 组合根、editor-groups.js 编排核心
