@@ -1909,6 +1909,9 @@ export function createAIPanel(options) {
         getScopeRoot,
         backend,
         flash,
+        askConfirm,
+        // 轮尾汇总卡的「撤销」：回滚本轮编辑的文件到 HEAD（main.js 的 gitRollbackPaths）
+        rollbackGitPaths: (...args) => opts.rollbackGitPaths(...args),
     });
     const updateChangesUI = () => changesMod.updateChangesUI();
     const showChangesPopover = () => changesMod.showChangesPopover();

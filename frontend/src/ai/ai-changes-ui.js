@@ -13,6 +13,40 @@ export function createAIChangesUI(ctx) {
     const getScopeRoot = ctx.getScopeRoot;
     const backend = ctx.backend;
     const flash = ctx.flash;
+    const askConfirm = typeof ctx.askConfirm === 'function' ? ctx.askConfirm : null;
+    // 回滚到 HEAD（bridge-ui 的 gitRollbackPaths：tracked→checkout，未跟踪→删文件）
+    const rollbackGitPaths = typeof ctx.rollbackGitPaths === 'function' ? ctx.rollbackGitPaths : null;
+
+    // 撤销本轮编辑的文件：未跟踪（AI 新建的）文件走删除，已跟踪的 checkout 回 HEAD。
+    // root 无 Git / 状态查询失败时按「已跟踪」处理（回滚会报错并 flash，不静默）。
+    async function rollbackChangeFiles(files) {
+        if (!rollbackGitPaths) return;
+        const root = getScopeRoot();
+        let untrackedSet = null;
+        try {
+            const status = root && backend.GitStatusFor ? await backend.GitStatusFor(root) : null;
+            if (status && status.available) {
+                untrackedSet = new Set((status.entries || [])
+                    .filter((entry) => entry.state === 'untracked')
+                    .map((entry) => String(entry.path || '').replace(/\\/g, '/')));
+            }
+        } catch (e) {}
+        const paths = files.map((file) => String(file.path || file.relPath || '').replace(/\\/g, '/'));
+        const untracked = untrackedSet ? paths.filter((p) => untrackedSet.has(p)) : [];
+        const tracked = paths.filter((p) => !untracked.includes(p));
+        const deleted = untracked.filter((p) => untrackedSet && untrackedSet.has(p));
+        const detail = [
+            tracked.length ? '回滚 ' + tracked.length + ' 个已跟踪文件' : '',
+            deleted.length ? '删除 ' + deleted.length + ' 个新建文件' : '',
+        ].filter(Boolean).join('，');
+        const target = files.length === 1 ? (files[0].relPath || files[0].path || '') : (files.length + ' 个文件');
+        const run = () => Promise.resolve(rollbackGitPaths(paths, untracked)).catch(() => {});
+        if (askConfirm) {
+            askConfirm((detail ? detail + '：' : '回滚 ') + target + '？', run);
+        } else {
+            run();
+        }
+    }
 
     function updateChangesUI() {
         if (!el.changesBtn) return;
@@ -173,6 +207,15 @@ export function createAIChangesUI(ctx) {
         reviewBtn.textContent = '审阅';
         reviewBtn.addEventListener('click', () => reviewChangesSummary(changes));
         head.append(icon, title, stat, reviewBtn);
+        // 全部撤销：整轮回滚到 HEAD（新建文件删除；已跟踪 checkout）
+        if (rollbackGitPaths) {
+            const rollbackAllBtn = document.createElement('button');
+            rollbackAllBtn.type = 'button';
+            rollbackAllBtn.className = 'dlg-btn ai-changes-card-review';
+            rollbackAllBtn.textContent = '全部撤销';
+            rollbackAllBtn.addEventListener('click', () => rollbackChangeFiles(changes));
+            head.appendChild(rollbackAllBtn);
+        }
         card.appendChild(head);
         // 超过 3 个文件默认折叠，靠「再显示 N 个文件」展开
         // 折叠状态按会话隔离：不同会话的汇总卡可能共用同一个消息序号
@@ -199,6 +242,20 @@ export function createAIChangesUI(ctx) {
             fDel.textContent = '−' + file.removed;
             nums.append(fAdd, fDel);
             row.append(name, nums);
+            if (rollbackGitPaths) {
+                // 行尾「撤销」：回滚该文件到 HEAD（AI 新建文件则删除）。span 承载避免按钮嵌套
+                const undo = document.createElement('span');
+                undo.className = 'ai-changes-card-undo';
+                undo.setAttribute('role', 'button');
+                undo.setAttribute('aria-label', '撤销对 ' + file.relPath + ' 的修改');
+                undo.textContent = '撤销';
+                undo.title = '回滚该文件到 HEAD（AI 新建的文件将被删除）';
+                undo.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    rollbackChangeFiles([file]);
+                });
+                row.appendChild(undo);
+            }
             row.addEventListener('click', () => openPath(file.path || file.relPath));
             list.appendChild(row);
         }
@@ -229,38 +286,46 @@ export function createAIChangesUI(ctx) {
         return wrap;
     }
 
-    // 「审阅」：逐文件取 Git 差异拼成一份虚拟 diff 文档；无 Git 或无差异的文件注明后打开文件
+    // 「审阅」：逐文件取 Git 差异拼成一份**只读审阅文档**（markdown + ```diff 围栏，hljs 高亮）。
+    // 不再打开 .diff（会走补丁视图，出现「应用」按钮与预检爆红——这只是已应用的改动快照）；
+    // 撤销走汇总卡文件行的「撤销」按钮（gitRollbackPaths）。
     async function reviewChangesSummary(changes) {
         if (!openVirtualDoc) {
             for (const file of changes) openPath(file.path || file.relPath);
             return;
         }
         const root = getScopeRoot();
-        const parts = [];
-        let anyDiff = false;
+        const totalAdded = changes.reduce((sum, file) => sum + file.added, 0);
+        const totalRemoved = changes.reduce((sum, file) => sum + file.removed, 0);
+        const lines = [
+            '# 本轮改动审阅',
+            '',
+            changes.length + ' 个文件，+' + totalAdded + ' −' + totalRemoved + '。快照只读；要撤销请用汇总卡文件行的「撤销」。',
+            '',
+        ];
         for (const file of changes.slice(0, 20)) {
-            const header = 'diff — ' + file.relPath + '  (+' + file.added + ' −' + file.removed + ')';
+            lines.push('## ' + file.relPath + '  （+' + file.added + ' −' + file.removed + '）', '');
             let body = '';
             try {
                 const result = root && backend.GitDiffFor
                     ? await backend.GitDiffFor(root, file.relPath)
                     : null;
-                if (result && result.diff && String(result.diff).trim()) {
-                    body = String(result.diff).trim();
-                    anyDiff = true;
-                }
+                if (result && result.diff && String(result.diff).trim()) body = String(result.diff).trim();
             } catch (e) {
                 body = '（获取 Git 差异失败：' + ((e && e.message) || e) + '）';
             }
             if (!body) body = '（无 Git 差异：文件未被 Git 跟踪或内容与 HEAD 一致）';
-            parts.push(header, body, '');
+            // 围栏长度避开正文里出现的 ```（diff 内容可能包含任意文本）
+            const fenceRun = (() => {
+                let longest = 3;
+                for (const match of String(body).matchAll(/`{3,}/g)) {
+                    longest = Math.max(longest, match[0].length + 1);
+                }
+                return '`'.repeat(longest);
+            })();
+            lines.push(fenceRun + 'diff', body, fenceRun, '');
         }
-        if (!anyDiff) {
-            for (const file of changes) openPath(file.path || file.relPath);
-            flash('没有可对比的 Git 差异，已直接打开本轮编辑的文件');
-            return;
-        }
-        openVirtualDoc('本轮改动审阅 — ' + changes.length + ' 个文件.diff', parts.join('\n'));
+        openVirtualDoc('本轮改动审阅 — ' + changes.length + ' 个文件.md', lines.join('\n'));
     }
 
     return {

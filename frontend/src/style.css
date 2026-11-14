@@ -8528,6 +8528,21 @@ body.console-only > :not(.dbg-console) { display: none !important; }
 .ai-changes-card-nums { flex: none; display: inline-flex; gap: 7px; font-variant-numeric: tabular-nums; font-size: 11px; }
 .ai-changes-card-nums .add { color: var(--green); }
 .ai-changes-card-nums .del { color: var(--red); }
+/* 行尾「撤销」：回滚该文件到 HEAD（hover 才显形，避免每行常驻按钮的喧闹） */
+.ai-changes-card-undo {
+    flex: none;
+    padding: 0 6px;
+    border: none;
+    border-radius: 4px;
+    background: none;
+    color: var(--muted);
+    font: inherit;
+    font-size: 10.5px;
+    cursor: pointer;
+    opacity: 0;
+}
+.ai-changes-card-row:hover .ai-changes-card-undo { opacity: 1; }
+.ai-changes-card-undo:hover { color: var(--red); background: color-mix(in srgb, var(--red) 12%, transparent); }
 .ai-changes-card-more {
     padding: 5px 12px;
     border: none;
