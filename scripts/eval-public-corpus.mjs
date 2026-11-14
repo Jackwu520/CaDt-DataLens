@@ -8,7 +8,7 @@
 // 「破坏性子集」（明确的破坏/持久化/提权模式）的漏放，正常侧只看误打扰率。结论进方案文档 §6。
 //
 // 运行：node scripts/eval-public-corpus.mjs
-import {readdirSync, readFileSync, existsSync} from 'node:fs';
+import {readdirSync, readFileSync, existsSync, statSync} from 'node:fs';
 import {join, dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {lcDequantize, lcExtractDims, lcScore, LC_FEATURES} from '../frontend/src/ai/ai-local-classifier.js';
@@ -41,7 +41,7 @@ const DESTRUCTIVE_PATTERNS = [
     /\bmklink\b|\bnet\s+user\b/i,
     /\breg\s+(add|delete|edit)\b/i,
     /\b(setx|bcdedit|bootrec)\b/i,
-    /\b(curl|wget|curl.exe|wget.exe)\b[^|;&]*\|\s*(sh|bash|zsh|pwsh|powershell|iex)\b/i,
+    /\b(curl|wget|curl\.exe|wget\.exe)\b[^|;&]*\|\s*(sh|bash|zsh|pwsh|powershell|iex)\b/i,
     /\b(iex|invoke-expression)\b/i,
     /\bnc\b\s+-e|\bncat\b\s+-e/i,
     /\bssh-keygen\b|\bssh-copy-id\b/i,
@@ -50,6 +50,27 @@ const DESTRUCTIVE_PATTERNS = [
     /\bgit\s+(reset\s+--hard|clean\s+-[a-z]*f)/i,
     /\bapt(-get)?\s+(install|remove|purge)\b/i,
     /\b(npm|pip|yum|dnf)\s+(install|uninstall|remove)\b/i,
+    // Windows 特有（LOLBAS / 恶意 PowerShell 侧）
+    /-encodedcommand|-enc\b/i,
+    /downloadstring|downloadfile|downloaddata/i,
+    /\bset-executionpolicy\b/i,
+    /start-process[^|;&]*-verb\s+runas/i,
+    /\bnet\s+localgroup\b/i,
+    /\brundll32\b|\bregsvr32\b|\bmshta\b/i,
+    /\bcertutil\b[^|;&]*(-urlcache|-decode)/i,
+    /\bbitsadmin\b[^|;&]*\/(transfer|create)/i,
+    /\bmsiexec\b[^|;&]*\/i\s+(http|https)/i,
+    /\bwevtutil\s+cl\b/i,
+    /\bfsutil\b/i,
+    /\bnetsh\s+advfirewall\b/i,
+    /\bnew-service\b/i,
+    /\badd-type\b|\[system\.reflection\.assembly\]::load/i,
+    /set-mppreference|add-mppreference|removemppreference|remove-mppreference/i,
+    /\breg\s+save\b/i,
+    /\bsc\s+create\b/i,
+    /\bwmic\s+process\s+call\s+create\b/i,
+    /\binvoke-command\b|\benter-pssession\b/i,
+    /\badd-pssnapin\b/i,
 ];
 
 function isDestructive(command) {
@@ -112,12 +133,59 @@ function loadMalbash() {
     return {source: 'malbash（恶意 bash 脚本提取）', kind: 'attack', commands};
 }
 
+// LOLBAS（Windows 白利用）：yml 的 Commands → Command 字段即滥用技法命令，攻击侧。
+function loadLolbas() {
+    const commands = [];
+    const base = join(ROOT, 'LOLBAS-master');
+    if (!existsSync(base)) return {source: 'LOLBAS（Windows 白利用）', kind: 'attack', commands};
+    const walk = (dir) => {
+        for (const name of readdirSync(dir)) {
+            const path = join(dir, name);
+            const stat = statSync(path);
+            if (stat.isDirectory()) {
+                if (name !== '.github' && name !== 'Archive-Old-Version') walk(path);
+                continue;
+            }
+            if (!name.endsWith('.yml')) continue;
+            const text = readFileSync(path, 'utf8');
+            // 提取 "Command: xxx" 行（yml 列表缩进各异，宽松匹配）
+            for (const line of text.split('\n')) {
+                const match = line.match(/^\s*-?\s*Command:\s*(.+)$/);
+                if (!match) continue;
+                const command = match[1].trim().replace(/^['"]|['"]$/g, '');
+                if (command && command.length <= 2000 && !command.startsWith('>')) commands.push(command);
+            }
+        }
+    };
+    walk(base);
+    return {source: 'LOLBAS（Windows 白利用命令）', kind: 'attack', commands};
+}
+
+// 恶意 PowerShell 数据集（MalwareBazaar 抽样）：.ps1 逐行取命令形态行，攻击侧。
+function loadPowerShell() {
+    const commands = [];
+    const dir = join(ROOT, 'powershell');
+    if (!existsSync(dir)) return {source: '恶意 PowerShell（MalwareBazaar 抽样）', kind: 'attack', commands};
+    for (const name of readdirSync(dir)) {
+        if (!name.endsWith('.ps1')) continue;
+        for (const line of readFileSync(join(dir, name), 'utf8').split('\n')) {
+            let command = line.trim();
+            if (!command || command.startsWith('#') || command.startsWith('<#')) continue;
+            // 只取命令形态行：含空格且以字母/数字/路径开头（排除纯字符串/花括号片段）
+            if (!/^[a-z0-9$@(\[."/\\]/i.test(command)) continue;
+            if (command.length > 2000) command = command.slice(0, 2000);
+            commands.push(command);
+        }
+    }
+    return {source: '恶意 PowerShell（MalwareBazaar 抽样）', kind: 'attack', commands};
+}
+
 // ---------- 评估 ----------
 
 function main() {
     const weights = lcDequantize(LOCAL_CLASSIFIER_WEIGHTS, LOCAL_CLASSIFIER_QUANT.scale, LC_FEATURES.dims);
     const scoreOf = (command) => lcScore(lcExtractDims(command, LC_FEATURES), weights, LOCAL_CLASSIFIER_BIAS);
-    const sources = [loadSea(), loadCowrie(), loadMalbash()].filter((s) => s.commands.length);
+    const sources = [loadSea(), loadCowrie(), loadMalbash(), loadLolbas(), loadPowerShell()].filter((s) => s.commands.length);
 
     console.log('端侧线性分类器 · 公开语料 eval（只评不训，' + Object.values(LOCAL_CLASSIFIER_THRESHOLDS).join('/') + ' 阈值）');
     for (const src of sources) {
