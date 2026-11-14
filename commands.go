@@ -99,6 +99,11 @@ func commandWorkDir(cwd string) (string, error) {
 
 // RunCommandSync 同步执行一个命令并收集输出；非零退出码不是错误（通过 Code 返回）。
 func (a *App) RunCommandSync(exe string, args []string, cwd string, timeoutMs int) (*CommandResult, error) {
+	return a.runCommandSyncRegistered("", exe, args, cwd, timeoutMs)
+}
+
+// runCommandSyncRegistered：runId 非空时把取消函数注册进 runningCancels（可被 stopRunningCommand 杀掉）。
+func (a *App) runCommandSyncRegistered(id, exe string, args []string, cwd string, timeoutMs int) (*CommandResult, error) {
 	if err := normalizeCommandArgs(exe, args); err != nil {
 		return nil, err
 	}
@@ -111,6 +116,20 @@ func (a *App) RunCommandSync(exe string, args []string, cwd string, timeoutMs in
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutMs)*time.Millisecond)
 	defer cancel()
+	if id != "" {
+		runningMu.Lock()
+		if _, exists := runningCancels[id]; exists {
+			runningMu.Unlock()
+			return nil, fmt.Errorf("命令 id %q 已在运行", id)
+		}
+		runningCancels[id] = cancel
+		runningMu.Unlock()
+		defer func() {
+			runningMu.Lock()
+			delete(runningCancels, id)
+			runningMu.Unlock()
+		}()
+	}
 	cmd := exec.CommandContext(ctx, exe, args...)
 	applyCommandCancel(cmd)
 	cmd.Dir = dir
@@ -124,6 +143,10 @@ func (a *App) RunCommandSync(exe string, args []string, cwd string, timeoutMs in
 	if ctx.Err() == context.DeadlineExceeded {
 		return res, fmt.Errorf("命令超时（%d ms）", timeoutMs)
 	}
+	if ctx.Err() != nil && ctx.Err() != context.DeadlineExceeded {
+		// 被用户停止（AIStopShellRun）：返回明确错误供前端标注「用户已停止」
+		return res, fmt.Errorf("命令已被用户停止")
+	}
 	if exitErr, ok := runErr.(*exec.ExitError); ok {
 		res.Code = exitErr.ExitCode()
 		return res, nil
@@ -132,6 +155,11 @@ func (a *App) RunCommandSync(exe string, args []string, cwd string, timeoutMs in
 		return nil, runErr
 	}
 	return res, nil
+}
+
+// AIStopShellRun 停止一次 run_command 的同步执行（按前端生成的 runId 杀进程树）；不存在时静默成功。
+func (a *App) AIStopShellRun(id string) {
+	stopRunningCommand(strings.TrimSpace(id))
 }
 
 var (

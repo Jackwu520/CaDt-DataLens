@@ -3183,6 +3183,7 @@ export function createAIPanel(options) {
             const command = approval.kind === 'command';
             if (approval.state === 'pending') return '等待审批…';
             if (approval.state === 'approved') {
+                if (message.interrupted) return '已停止';
                 if (message.status === 'running') return command ? '执行中…' : '应用中…';
                 return command ? '已执行' : '已应用';
             }
@@ -5054,6 +5055,7 @@ export function createAIPanel(options) {
     // 每个请求带发起会话：用户手动停止生成时，只撤销该会话的分类请求（排队中 / 在飞）。
     let classifierJob = null;
     let classifierSeq = 0;
+    let aiShellRunSeq = 0; // run_command 的 runId 兜底序号（toolCallId 缺失时用）
     const classifierQueue = [];
     const classifierCache = new Map();
     const classifierInflight = new Map(); // key -> job：同一命令重复请求合并成一次模型调用
@@ -5341,7 +5343,8 @@ export function createAIPanel(options) {
                 if (added) flash('已加入项目权限规则：Write(' + writeRuleSubject(approval.relPath) + ')');
             }).catch((e) => flash('项目权限规则保存失败：' + ((e && e.message) || e), true));
         }
-        toolMessage.status = 'running';
+        // 放弃 / 拒绝不是「执行中」：状态落 cancelled（此前无条件 running，卡片会转圈 + 已放弃同框）
+        toolMessage.status = approved ? 'running' : 'cancelled';
         toolMessage.content = approval.kind === 'command'
             ? (approved ? '正在执行命令…' : '用户取消了本次命令')
             : (approved ? '正在应用更改…' : '用户放弃了本次更改');
@@ -6722,11 +6725,17 @@ export function createAIPanel(options) {
                 }
                 ctx.toolMessage.status = 'running';
                 ctx.toolMessage.content = '执行中…';
+                // runId 注册到 Go 取消注册表：用户停止会话时按 id 杀进程树（AIStopShellRun）
+                ctx.toolMessage.runId = (ctx.session.id || 'session') + '#shell-' + (ctx.toolMessage.toolCallId || (++aiShellRunSeq));
                 refreshToolWrap(ctx.session, ctx.toolMessage);
                 let result;
                 try {
-                    result = await backend.AIRunShellCommand(command, cwd, timeoutMs);
+                    result = await backend.AIRunShellCommand(command, cwd, timeoutMs, ctx.toolMessage.runId);
                 } catch (e) {
+                    if (ctx.toolMessage.interrupted) {
+                        // 用户已停止：进程已被 AIStopShellRun 杀掉，卡片保持终止态，不再标注失败细节
+                        return '用户已停止生成，命令已终止。';
+                    }
                     const approval = ctx.toolMessage.approval;
                     if (approval && approval.kind === 'command') {
                         approval.state = 'failed';
@@ -6734,6 +6743,10 @@ export function createAIPanel(options) {
                         persistApprovalMutation(ctx.session, ctx.toolMessage);
                     }
                     throw e;
+                }
+                if (ctx.toolMessage.interrupted) {
+                    // 进程在停止后才自然结束：输出丢弃，卡片保持终止态
+                    return '用户已停止生成，命令输出已丢弃。';
                 }
                 const clip = (text) => {
                     const value = aiTextOf(text).replace(/\r\n/g, '\n').trimEnd();
@@ -8234,6 +8247,26 @@ export function createAIPanel(options) {
         }
     }
 
+    // 终止一个会话里所有运行中的工具卡：run_command 按 runId 杀进程（AIStopShellRun），
+    // 其余标 error + interrupted（spawn_agent 由 stopSubAgentsOf 管理、后台命令有意跨会话存活，均跳过）。
+    function stopRunningToolMessages(sessionId, reason) {
+        const session = sessionById(sessionId);
+        if (!session) return;
+        for (const message of session.messages) {
+            if (message.role !== 'tool' || message.status !== 'running') continue;
+            if (message.name === 'spawn_agent' || message.name === 'background_command') continue;
+            if (message.runId && backend.AIStopShellRun) {
+                try { backend.AIStopShellRun(message.runId); } catch (e) {}
+            }
+            message.status = 'error';
+            message.error = reason || '用户已停止';
+            message.content = reason || '用户已停止';
+            message.interrupted = true;
+            refreshToolWrap(session, message);
+        }
+        persistSessions();
+    }
+
     function stopGeneration(target) {
         const current = target || syncStreamView();
         if (!current) {
@@ -8252,6 +8285,9 @@ export function createAIPanel(options) {
         try {
             if (backend.AIStop) backend.AIStop(sessionId);
         } catch (e) {}
+        // 运行中的工具卡立即终止（不等命令自然跑完）：run_command 按 runId 杀进程树，
+        // 其余标「中断」——此前只在兜底循环里处理且被流守卫挡住，命令卡会一直转圈显示运行中
+        stopRunningToolMessages(sessionId, '用户已停止生成');
         // 后端若没有及时回 ai-done，兜底结束，避免界面一直卡在“生成中”。
         setTimeout(() => {
             if (streams.get(sessionId) !== current) return;

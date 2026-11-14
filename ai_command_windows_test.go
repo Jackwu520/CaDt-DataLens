@@ -31,7 +31,7 @@ func TestAIShellPriority(t *testing.T) {
 
 func TestAIRunShellCommandEcho(t *testing.T) {
 	app := &App{}
-	res, err := app.AIRunShellCommand("echo CADT_AI_CMD_OK_9137", "", 20000)
+	res, err := app.AIRunShellCommand("echo CADT_AI_CMD_OK_9137", "", 20000, "")
 	if err != nil {
 		t.Fatalf("执行失败: %v", err)
 	}
@@ -48,12 +48,34 @@ func TestAIRunShellCommandEcho(t *testing.T) {
 
 func TestAIRunShellCommandValidation(t *testing.T) {
 	app := &App{}
-	if _, err := app.AIRunShellCommand("   ", "", 0); err == nil {
+	if _, err := app.AIRunShellCommand("   ", "", 0, ""); err == nil {
 		t.Fatal("空命令应被拒绝")
 	}
-	if _, err := app.AIRunShellCommand("echo hi", `C:\__cadt_missing_dir__`, 0); err == nil {
+	if _, err := app.AIRunShellCommand("echo hi", `C:\__cadt_missing_dir__`, 0, ""); err == nil {
 		t.Fatal("不存在的 cwd 应被拒绝")
 	}
+}
+
+// runId 注册与停止：占位 runId 注册后能被 AIStopShellRun 杀掉，返回「已被用户停止」。
+func TestAIRunShellCommandStopByRunID(t *testing.T) {
+	app := &App{}
+	done := make(chan error, 1)
+	go func() {
+		_, err := app.AIRunShellCommand("ping -n 30 127.0.0.1", "", 60000, "test-run-stop-1")
+		done <- err
+	}()
+	time.Sleep(300 * time.Millisecond)
+	app.AIStopShellRun("test-run-stop-1")
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "已被用户停止") {
+			t.Fatalf("停止后应返回「已被用户停止」错误，实际: %v", err)
+		}
+	case <-time.After(5000 * time.Millisecond):
+		t.Fatal("停止后命令应在 5 秒内返回")
+	}
+	// 重复停止：静默成功
+	app.AIStopShellRun("test-run-stop-1")
 }
 
 func TestAICommandStartStatusStop(t *testing.T) {

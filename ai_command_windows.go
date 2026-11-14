@@ -80,7 +80,9 @@ func (a *App) AICommandStart(command, cwd string) (*AICommandJobStart, error) {
 }
 
 // AIRunShellCommand 执行一条 AI 发起的 shell 命令；超时不算错误（TimedOut=true + 已捕获输出）。
-func (a *App) AIRunShellCommand(command, cwd string, timeoutMs int) (*AIShellCommandResult, error) {
+// runId 非空时注册进取消注册表：用户停止会话可经 AIStopShellRun 杀掉进程，
+// 不再只能等命令跑完/超时（此前停止后工具卡会一直转圈到自然结束）。
+func (a *App) AIRunShellCommand(command, cwd string, timeoutMs int, runId string) (*AIShellCommandResult, error) {
 	command = strings.TrimSpace(command)
 	if command == "" {
 		return nil, fmt.Errorf("命令不能为空")
@@ -99,7 +101,7 @@ func (a *App) AIRunShellCommand(command, cwd string, timeoutMs int) (*AIShellCom
 	}
 	shellName, exe, args := aiShellInvocation(command)
 	started := time.Now()
-	raw, err := a.RunCommandSync(exe, args, cwd, timeoutMs)
+	raw, err := a.runCommandSyncRegistered(strings.TrimSpace(runId), exe, args, cwd, timeoutMs)
 	out := &AIShellCommandResult{
 		Shell:      shellName,
 		Exe:        exe,
@@ -111,6 +113,10 @@ func (a *App) AIRunShellCommand(command, cwd string, timeoutMs int) (*AIShellCom
 		out.Stderr = raw.Stderr
 	}
 	if err != nil {
+		// 用户停止：明确返回错误（前端据此把工具卡标「已停止」），不能当成超时成功
+		if strings.Contains(err.Error(), "已被用户停止") {
+			return nil, err
+		}
 		if raw != nil {
 			out.TimedOut = true
 			return out, nil
