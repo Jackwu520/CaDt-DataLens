@@ -150,6 +150,8 @@ const SAFE_TEMPLATES = [
     (r) => 'Get-WinEvent ' + pick(r, ['-LogName Application -MaxEvents 5', '-LogName System -MaxEvents 10']),
     (r) => pick(r, ['netstat -ano', 'netstat -r', 'driverquery', 'tasklist /svc']),
     (r) => pick(r, ['Get-Process | Select-Object -First 5', 'Get-ChildItem -Recurse -Depth 1 ' + pick(r, DIRS)]),
+    // 裸命令（无参数单 token）：特征极少的常见良性形态，配 bare 桶压制 bias 基线误拦
+    (r) => pick(r, ['pwd', 'ls', 'cd', 'whoami', 'hostname', 'date', 'cls', 'clear', 'dir', 'tree', 'df', 'id', 'w', 'free', 'uptime', 'groups', 'node', 'python', 'git', 'npm']),
 ];
 
 // ---------- 危险类（label 1）：破坏性 / 系统修改 / 不可回滚 / 代码执行 ----------
@@ -158,6 +160,7 @@ const DANGEROUS_TEMPLATES = [
     (r) => casing(r, 'rm ' + pick(r, ['-rf', '-fr', '-r -f', '-r -f --'])) + ' ' + q(r, pick(r, [...DIRS, '/', '~', '.', '/*', '/etc', '/usr'])),
     (r) => casing(r, pick(r, ['del', 'erase']) + ' ' + pick(r, ['/f /s /q', '/s /q', '/f /q']) + ' ' + q(r, chance(r, 0.4) ? '*.*' : pick(r, VICTIM_FILES))),
     (r) => casing(r, pick(r, ['rmdir', 'rd']) + ' /s /q ' + q(r, pick(r, DIRS))),
+    (r) => casing(r, pick(r, ['rd /s /q ', 'rmdir /s /q ']) + q(r, pick(r, DIRS))),
     (r) => casing(r, 'Remove-Item ' + pick(r, ['-Recurse -Force', '-r -fo', '-Recurse -Force -Confirm:$false']) + ' ' + q(r, pick(r, [...DIRS, '/']))),
     (r) => 'dd ' + pick(r, ['if=/dev/zero', 'if=/dev/random', 'if=/dev/urandom']) + ' of=' + pick(r, DEVS) + pick(r, ['', ' bs=1M', ' bs=4M count=100']),
     (r) => pick(r, ['mkfs.ext4', 'mkfs.ntfs', 'mkfs.vfat', 'mkfs.xfs']) + pick(r, [' --force', ' -F', '']) + ' ' + pick(r, DEVS),
@@ -187,6 +190,7 @@ const DANGEROUS_TEMPLATES = [
     (r) => 'mv ' + q(r, pick(r, DIRS)) + ' /dev/null',
     (r) => pick(r, ['truncate -s 0 ' + q(r, pick(r, VICTIM_FILES)), 'shred -n 3 -z ' + q(r, pick(r, VICTIM_FILES)), 'wipefs -a ' + pick(r, DEVS), 'cp /dev/null ' + q(r, pick(r, VICTIM_FILES))]),
     (r) => pick(r, ['cp /dev/null ' + pick(r, VICTIM_FILES), 'cp /dev/null ' + q(r, pick(r, VICTIM_FILES)), 'truncate -s 0 ' + q(r, pick(r, VICTIM_FILES)), 'shred -zuf ' + q(r, pick(r, VICTIM_FILES)), 'cp NUL ' + q(r, pick(r, VICTIM_FILES))]),
+    (r) => pick(r, ['cp /dev/null ' + pick(r, VICTIM_FILES), 'cp /dev/null ' + q(r, pick(r, VICTIM_FILES)), 'truncate -s 0 ' + pick(r, VICTIM_FILES)]),
     (r) => pick(r, ['fdisk ' + pick(r, DEVS), 'parted ' + pick(r, DEVS) + ' mklabel gpt', 'sfdisk ' + pick(r, DEVS)]),
     (r) => casing(r, 'sc ' + pick(r, ['delete ' + pick(r, SVCS), 'config ' + pick(r, SVCS) + ' start= disabled', 'stop ' + pick(r, SVCS)])),
     (r) => casing(r, 'schtasks ' + pick(r, ['/delete /tn ' + pick(r, SVCS) + ' /f', '/create /tn ' + pick(r, SVCS) + ' /tr cmd.exe /sc minute /mo 1 /f'])),
@@ -199,6 +203,7 @@ const DANGEROUS_TEMPLATES = [
     (r) => pick(r, ['vssadmin delete shadows /all /quiet', 'wmic shadowcopy delete']),
     (r) => casing(r, 'net user ' + pick(r, ['admin Passw0rd! /add', 'administrator /active:yes', 'guest /active:yes'])),
     (r) => 'echo ' + pick(r, ['x', '0', 'data']) + ' > ' + pick(r, [...DEVS, '\\\\.\\PHYSICALDRIVE2']),
+    (r) => pick(r, ['echo 0 > ', 'echo data > ', 'echo x > ', 'dd < ']) + pick(r, DEVS),
     (r) => 'wmic ' + pick(r, ['process call terminate', 'useraccount delete', 'qfe uninstall /norestart']),
     (r) => 'powershell Set-MpPreference -DisableRealtimeMonitoring ' + pick(r, ['$true', '1']),
     (r) => 'reg add ' + pick(r, REGKEYS) + ' /v ' + pick(r, ['Debugger', 'AutoRun', 'Shell']) + ' /d ' + pick(r, ['calc.exe', 'cmd.exe', 'powershell.exe']) + ' /f',
@@ -251,6 +256,7 @@ const GRAY_TEMPLATES = [
     (r) => pick(r, ['Enable-PSRemoting -Force', 'winget upgrade --all', 'choco upgrade all -y']),
     (r) => 'netsh interface ip set dns name="' + pick(r, ['Ethernet', 'Wi-Fi']) + '" static ' + pick(r, ['192.168.1.1', '8.8.8.8']),
     (r) => pick(r, ['attrib -r ' + q(r, pick(r, FILES)), 'icacls ' + q(r, pick(r, DIRS)) + ' /grant Everyone:F']),
+    (r) => pick(r, ['attrib -r ' + q(r, pick(r, FILES)), 'attrib -r ' + pick(r, FILES)]),
 ];
 
 // ---------- 金丝雀（出厂权重验收集）----------
@@ -286,6 +292,8 @@ export const CANARIES = {
         'grep -rn error logs',
         'tasklist',
         'ipconfig /all',
+        'pwd',
+        'ls',
     ],
     gray: [
         'npm install lodash',

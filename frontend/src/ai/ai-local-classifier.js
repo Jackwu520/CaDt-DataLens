@@ -51,6 +51,9 @@ export function lcExtractDims(command, cfg) {
     // 首词对（git status / npm install 这类两词组合是判定主信号，
     // 单靠字符 n-gram 会被同前缀的近邻命令族稀释，如 git stash ↔ git status）
     if (tokens[0] && tokens[1]) buckets.push('p:' + tokens[0] + ' ' + tokens[1]);
+    // 裸命令桶：无任何参数/路径的单 token 命令（pwd / ls / cd）——
+    // 这类命令特征极少、score 逼近 bias 基线，靠桶让裸命令类先验单独成维（公开语料 eval 发现 pwd/ls 误拦）
+    if (tokens.length === 1) buckets.push('bare');
     if (/\|\s*(sh|bash|zsh|ksh|pwsh|powershell)\b/.test(text)) buckets.push('pipe:sh');
     // 管道落地系统/磁盘工具（echo x | diskpart 形态——词面全是安全词，靠桶兜住）
     if (/\|\s*(diskpart|reg|regedit|sc|bcdedit|bootrec|format|mkfs\S*|dd|fdisk|sfdisk|parted|wipefs|shred|cipher|sdelete|vssadmin)\b/.test(text)) buckets.push('pipe:danger');
