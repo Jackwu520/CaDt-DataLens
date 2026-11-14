@@ -1,5 +1,7 @@
 // 设置 → 运行：语言运行配置（增删改/模板）、自检与首次运行确认。
 // 从 writing-ui.js 拆出；deps.LANG_DEFS 与 deps.flash 由宿主注入。
+import {RECIPES, SELF_TEST} from '../terminal/run.js';
+
 export function createSettingsPaneRun(deps) {
 
 function renderRunProfiles() {

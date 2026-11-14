@@ -2,6 +2,9 @@
 // 从 writing-ui.js 拆出；deps.flash / openCloseConfirm / setupFormatSettings / setupLanguageSettings 由宿主注入。
 import {iconSvg} from '../core/icons.js';
 
+import {formats} from '../core/formats.js';
+import {initPluginRuntime, loadPlugins} from '../shell/plugins.js';
+
 export function createSettingsPanePlugins(deps) {
 
 function refreshPluginUI() {
@@ -27,7 +30,7 @@ function refreshPluginUI() {
 }
 
 initPluginRuntime({
-    flash,
+    flash: deps.flash,
     getActiveFile: () => deps.file ? {path: deps.file.path || '', name: deps.file.name || '', size: deps.file.size || 0, formatId: deps.file.format ? deps.file.format.id : null} : null,
     getActiveText: () => {
         if (!deps.file) return null;

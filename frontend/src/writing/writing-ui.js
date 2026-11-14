@@ -35,8 +35,6 @@ const LANG_DEFS = [
     {id: 'lua', name: 'Lua', tools: [{id: 'lua', name: 'Lua'}]},
 ];
 
-langMod.setupFormatSettings();
-langMod.setupLanguageSettings();
 // 命名运行配置：存的是「参数 + 命令模板 + 语言」预设，选中时载入到当前语言，
 // 不是运行时的另一套分支——面板里看到的仍然是这次真正会用的值。
 
@@ -297,6 +295,9 @@ langDeps.INDENTS = INDENTS;
 langDeps.EOLS = EOLS;
 langDeps.makeSelect = fmMod.makeSelect;
 const langMod = createSettingsPaneLang(langDeps);
+// 这两份 pane 在初始化时就要建好交互（原文件里是紧跟函数定义执行的顶层调用）
+langMod.setupFormatSettings();
+langMod.setupLanguageSettings();
 
 const runDeps = Object.create(deps);
 runDeps.flash = flash;
