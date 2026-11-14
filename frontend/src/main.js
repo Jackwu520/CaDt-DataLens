@@ -44,6 +44,7 @@ import {createSchemaPanel} from './schema-panel.js';
 import {createDiffDialog} from './diff-dialog.js';
 import {createJsonQuery} from './json-query.js';
 import {createGlobalSearch} from './global-search.js';
+import {createMessageCenter} from './message-center.js';
 import {createFindBar} from './find-bar.js';
 import {createActivityPane} from './activity-pane.js';
 import {createMenuBar} from './menu-bar.js';
@@ -2305,6 +2306,19 @@ function setAIPanelMode(mode) {
     if (aiPanel) aiPanel.setMode(mode);
 }
 
+// 消息中心：状态栏【消息】入口 + 浮层面板 + 持久化队列（AI notify_send / 任务完成 / 版本更新都进这里）。
+// toast 点击与消息行点击跳转到对应 AI 会话（面板懒初始化，闭包到调用时才解引用）。
+const messageCenter = createMessageCenter({
+    focusSession: (sessionId) => {
+        if (!sessionId) return;
+        if (!aiPanel) initAIPanel();
+        if (!aiPanel) return;
+        aiPanel.open();
+        try { aiPanel.switchSession(sessionId); } catch (e) {}
+    },
+});
+window.__lens.messageCenter = messageCenter;
+
 function initAIPanel() {
     if (aiPanel) return;
     const panelEl = els.aiPanel || document.getElementById('ai-panel');
@@ -3469,6 +3483,8 @@ const updateCheck = createUpdateCheck({
     get renderMarkdownHtml() { return renderMarkdownHtml; },
     get settings() { return settings; },
     get updateStatus() { return updateStatus; },
+    // 发现新版本进消息中心（message-center.js）
+    get addMessage() { return (...args) => messageCenter.add(...args); },
 });
 const {autoCheckUpdateOnStart, checkForUpdates} = updateCheck;
 const formatConvert = createFormatConvert({

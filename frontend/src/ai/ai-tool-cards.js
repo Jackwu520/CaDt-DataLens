@@ -399,6 +399,7 @@ export function createAIToolCards(ctx) {
             case 'ask_user': return {verb: '提问', icon: 'info'};
             case 'app_control': return {verb: '应用操作', icon: 'gear'};
             case 'todo_write': return {verb: '任务', icon: 'check'};
+            case 'notify_send': return {verb: '消息', icon: 'bell'};
             case 'env_list': return {verb: '环境变量', icon: 'shield'};
             case 'env_create': return {verb: '新建变量', icon: 'shield-plus'};
             case 'browser_navigate': return {verb: '打开网页', icon: 'browser'};

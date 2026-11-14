@@ -6134,6 +6134,17 @@ export function createAIPanel(options) {
                 return '已记录工作日志：' + worklogDay + '（索引见 .cadt/logs/INDEX.md）';
             }
             // ---------- 任务提醒（reminder_*）：只改会话自身状态，不碰工作区文件 ----------
+            case 'notify_send': {
+                const title = aiTextOf(input.title).trim().slice(0, 80);
+                if (!title) throw new Error('消息标题为空');
+                const body = aiTextOf(input.body).trim().slice(0, 500);
+                const toast = input.toast === true;
+                if (typeof opts.addMessage !== 'function') throw new Error('当前版本不支持消息中心');
+                opts.addMessage({kind: 'ai', title, body, sessionId: ctx.session ? ctx.session.id : ''}, {toast});
+                return toast
+                    ? '消息已弹出并送入状态栏【消息】中心：' + title
+                    : '消息已送入状态栏【消息】中心：' + title;
+            }
             case 'reminder_add': {
                 if (!ctx || !ctx.session) throw new Error('缺少会话上下文');
                 const title = aiTextOf(input.title).trim().slice(0, AI_REMINDER_TITLE_MAX);
@@ -7711,12 +7722,6 @@ export function createAIPanel(options) {
         finishStream(current);
     }
 
-    const TOAST_ICONS = {
-        success: '<svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><circle cx="8" cy="8" r="5.7" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M5.4 8.2l1.8 1.8 3.4-3.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-        error: '<svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><circle cx="8" cy="8" r="5.7" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M6 6l4 4M10 6l-4 4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>',
-        ask: '<svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><circle cx="8" cy="8" r="5.7" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M6.3 6.3a1.8 1.8 0 1 1 2.4 1.7c-.5.2-.7.6-.7 1.1v.5" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><circle cx="8" cy="11.6" r=".75" fill="currentColor"/></svg>',
-    };
-
     function appToastPreview(text, max) {
         const clean = String(text || '')
             .replace(/```[\s\S]*?```/g, ' [代码] ')
@@ -7726,59 +7731,21 @@ export function createAIPanel(options) {
         return clean.length > max ? clean.slice(0, max) + '…' : clean;
     }
 
-    function showAppToast(options) {
-        const host = document.getElementById('app-toasts');
-        if (!host) return;
-        const kind = options.kind || 'info';
-        const toast = document.createElement('div');
-        toast.className = 'app-toast ' + kind;
-        const icon = document.createElement('span');
-        icon.className = 'app-toast-icon';
-        icon.innerHTML = TOAST_ICONS[kind === 'success' ? 'success' : (kind === 'error' ? 'error' : 'ask')];
-        const main = document.createElement('div');
-        main.className = 'app-toast-main';
-        const title = document.createElement('div');
-        title.className = 'app-toast-title';
-        title.textContent = options.title || '';
-        const body = document.createElement('div');
-        body.className = 'app-toast-body';
-        body.textContent = options.body || '';
-        main.append(title, body);
-        const close = document.createElement('button');
-        close.type = 'button';
-        close.className = 'app-toast-close';
-        close.title = '关闭通知';
-        close.textContent = '×';
-        toast.append(icon, main, close);
-        let timer = 0;
-        const dismiss = () => {
-            if (timer) clearTimeout(timer);
-            timer = 0;
-            toast.classList.remove('show');
-            setTimeout(() => toast.remove(), 180);
-        };
-        close.addEventListener('click', (e) => {
-            e.stopPropagation();
-            dismiss();
-        });
-        toast.addEventListener('click', () => {
-            if (options.sessionId && sessions.some((session) => session.id === options.sessionId)) {
-                ensureOpen();
-                switchSession(options.sessionId);
-            }
-            dismiss();
-        });
-        host.appendChild(toast);
-        while (host.children.length > 3) host.firstElementChild.remove();
-        requestAnimationFrame(() => toast.classList.add('show'));
-        timer = setTimeout(dismiss, 9000);
-    }
-
     function notifyDesktop(options) {
         const inApp = config.notifyInApp === true;
         const system = config.notifySystem === true;
+        // 任务完成等通知集成为消息形态：始终进消息中心；右下角 toast 仅在开启应用内提示时弹出
+        // （弹完消失，消息仍在列表——message-center.js 负责渲染与持久化）
+        if (typeof opts.addMessage === 'function') {
+            const kind = options.kind === 'error' ? 'error' : (options.kind === 'success' ? 'success' : 'info');
+            opts.addMessage({
+                kind,
+                title: options.title || 'CaDt-DataLens',
+                body: options.body || '',
+                sessionId: options.sessionId || '',
+            }, {toast: inApp});
+        }
         if (!inApp && !system) return;
-        if (inApp) showAppToast(options);
         if (system && backend.NotifySystemToast) {
             try {
                 backend.NotifySystemToast(options.title || 'CaDt-DataLens', options.body || '', config.notifySound === false);

@@ -108,6 +108,19 @@ export const AI_TOOL_DEFS = {
             },
         },
     },
+    notify_send: {
+        name: 'notify_send',
+        description: '向应用的状态栏【消息】中心发一条消息（长任务的阶段性汇报、需要用户稍后处理的事项、任务完成通知等）。消息永久保留在消息中心列表；toast=true 时额外在右下角弹出提示框（适合只有此刻需要注意的事项）。不写工作区文件，无需审批，所有范围档均可用。阶段性汇报优先用它而不是反复发系统提醒。',
+        parameters: {
+            type: 'object',
+            properties: {
+                title: {type: 'string', description: '消息标题（≤80 字，一句话说清事项）'},
+                body: {type: 'string', description: '消息正文（≤500 字，补充细节；可省略）'},
+                toast: {type: 'boolean', description: '是否额外右下角弹出提示框（默认 false，仅进消息列表；阶段性节点汇报建议 true）'},
+            },
+            required: ['title'],
+        },
+    },
     reminder_add: {
         name: 'reminder_add',
         description: '给当前会话添加一条「任务提醒」（标题 + 可选说明，未完成的最多 5 条；已完成的保留作历史、不占名额，标 done 即释放名额）。用于防止上下文过长遗漏事情：用户交代了稍后要做的事、或你把长任务拆步后怕丢步骤时添加。提醒清单每轮对话开始都会注入给你；完成一条后记得用 reminder_update 标记 done 或删除。不写工作区文件，无需审批。',
@@ -584,6 +597,8 @@ export function createAIToolDefs(ctx) {
         if (!planMode) list.push(AI_TOOL_DEFS.memory_write, AI_TOOL_DEFS.preference_write, AI_TOOL_DEFS.preference_remove, AI_TOOL_DEFS.env_create,
             AI_TOOL_DEFS.schedule_create, AI_TOOL_DEFS.schedule_delete, AI_TOOL_DEFS.schedule_toggle, AI_TOOL_DEFS.write_worklog,
             AI_TOOL_DEFS.reminder_add, AI_TOOL_DEFS.reminder_update, AI_TOOL_DEFS.reminder_remove);
+        // notify_send：往状态栏【消息】中心发消息（不碰工作区文件、不产生进程），所有范围档与计划模式均可用
+        list.push(AI_TOOL_DEFS.notify_send);
         // 浏览器：read 档起可浏览（导航/快照/截图），写权限档起可操作页面，full 档可执行任意脚本
         list.push(
             AI_TOOL_DEFS.browser_navigate, AI_TOOL_DEFS.browser_back, AI_TOOL_DEFS.browser_forward,

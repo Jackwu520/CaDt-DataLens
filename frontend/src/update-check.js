@@ -97,6 +97,14 @@ async function autoCheckUpdateOnStart() {
         } else {
             setUpdateStatus('发现新版本 ' + info.latestVersion, {onClick: () => openUpdateDialogWith(info)});
             deps.flash('发现新版本 ' + info.latestVersion + '，点击右下角查看');
+            // 版本更新进消息中心（弹一条 toast，消息常驻列表）
+            if (typeof deps.addMessage === 'function') {
+                deps.addMessage({
+                    kind: 'update',
+                    title: '发现新版本 ' + info.latestVersion,
+                    body: '当前 ' + info.currentVersion + (info.publishedAt ? '，发布于 ' + String(info.publishedAt).slice(0, 10) : '') + '。点击状态栏「发现新版本」查看详情与下载。',
+                }, {toast: true});
+            }
         }
     } catch (e) {
         setUpdateStatus('检查更新失败', {muted: true, autoHide: 4000});
