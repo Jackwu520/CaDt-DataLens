@@ -666,11 +666,13 @@ export function createAITakeover(ctx) {
         title.className = 'ai-takeover-title';
         title.textContent = 'AI 提问' + (multi ? ' · ' + ask.questions.length + ' 个问题' : '');
         head.append(icon, title);
-        if (ask.deadline) {
+        // 有倒计时用倒计时文案；wait（无 deadline）时也可能有"已忽略 N 秒"的提示
+        const countdownText = askCountdownText(ask);
+        if (countdownText) {
             const countdown = document.createElement('span');
             countdown.className = 'ai-ask-countdown';
             countdown.dataset.askKey = key;
-            countdown.textContent = askCountdownText(ask);
+            countdown.textContent = countdownText;
             head.appendChild(countdown);
         }
         const body = document.createElement('div');

@@ -92,21 +92,121 @@ export function lcDequantize(b64, scale, dims) {
     return out;
 }
 
-// 按 shell 命令分隔符切段：换行 / ; / && / || / |（红队 P0：多命令链的 benign 前缀
-// 会稀释危险段信号、&& 被语料装饰学成安全信号——切段逐段打分取 max 是根因级修复，
-// 且与「整条训练」自洽：危险段命中训练学到的正权 gram，benign 段命中负权，max 取危险段）
+// 按 shell 命令分隔符切段：换行 / ; / && / || / | / 单个 &（后台执行）
+// （红队 P0：多命令链的 benign 前缀会稀释危险段信号、&& 被语料装饰学成安全信号——
+// 切段逐段打分取 max 是根因级修复，且与「整条训练」自洽：危险段命中训练学到的正权 gram，
+// benign 段命中负权，max 取危险段。
+// 单个 & 必须单独处理：`git status & history -c` 曾两模型全档放行；用 lookbehind 排除
+// `2>&1` 这类重定向（>& 不是命令分隔符），否则会把一条命令切成无意义的碎片。）
 export function lcSegment(command) {
-    return String(command || '').split(/\r?\n|&&|\|\||;|\|/).map((seg) => seg.trim()).filter(Boolean);
+    return String(command || '').split(/\r?\n|&&|\|\||;|\||(?<![>&])&/).map((seg) => seg.trim()).filter(Boolean);
+}
+
+// ---------- 个性化学习的命令族归一 ----------
+
+// 只对「动作明确、参数可变」的可执行文件做族归一，让一次裁定能迁移到同族变体。
+// 刻意排除解释器（node / python / bash…）：脚本内容差异太大，族归一等于把风险概化成一句命令。
+const LC_FAMILY_EXES = new Set([
+    'git', 'npm', 'pnpm', 'yarn', 'go', 'cargo', 'dotnet', 'gh',
+    'docker', 'kubectl', 'pip', 'pip3', 'flutter', 'mvn', 'gradle',
+]);
+// 危险动词与破坏性开关出现时不做族归一——避免「批准一次 rm 变体」把整个 rm 族压成安全。
+const LC_FAMILY_DANGER = /(^|\s)(rm|rd|rmdir|del|erase|format|diskpart|mkfs\S*|dd|shutdown|robocopy|cipher|sdelete|vssadmin|reg|regedit|bcdedit|bootrec|remove-item|eval|invoke-expression)(\s|$)/i;
+const LC_FAMILY_DANGER_FLAGS = /--hard\b|--force\b|--force-with-lease\b|--mirror\b|--delete\b|(^|\s)-[a-z]*[rf][a-z]*(\s|$)|\/s\b|-recurse\b|-encodedcommand\b/i;
+// 子命令带脚本/目标名时并入族签名：npm run build 与 npm run deploy 是两种语义，不能合并。
+const LC_FAMILY_SUB_WITH_ARG = new Set(['run', 'x', 'exec', 'worktree']);
+
+/**
+ * 命令 → 命令族签名（如 `git push`、`npm run build`）；不满足条件返回空串（不参与族归一）。
+ */
+export function lcFamilyCommand(command) {
+    const text = String(command || '').normalize('NFKC').toLowerCase().replace(/\s+/g, ' ').trim();
+    if (!text) return '';
+    if (LC_FAMILY_DANGER.test(text) || LC_FAMILY_DANGER_FLAGS.test(text)) return '';
+    // 复合 / 重定向 / 命令替换一段一个语义，族签名会失真
+    if (/[;&|><`]|\$\(/.test(text)) return '';
+    const tokens = text.split(' ').filter(Boolean);
+    let cursor = 0;
+    // 跳过前置环境变量赋值（FOO=bar git status）
+    while (cursor < tokens.length && /^[a-z_][a-z0-9_]*=/.test(tokens[cursor])) cursor += 1;
+    const exe = String(tokens[cursor] || '').replace(/^.*[\\/]/, '').replace(/\.exe$/, '');
+    if (!LC_FAMILY_EXES.has(exe)) return '';
+    let subIndex = cursor + 1;
+    while (subIndex < tokens.length && tokens[subIndex].startsWith('-')) subIndex += 1;
+    const sub = String(tokens[subIndex] || '').replace(/[^\w:.-]/g, '');
+    // 裸命令（git / npm）不成族：避免「批准一次裸命令」把整个可执行文件的风险概化
+    if (!sub) return '';
+    const family = exe + ' ' + sub;
+    if (!LC_FAMILY_SUB_WITH_ARG.has(sub)) return family;
+    const arg = String(tokens[subIndex + 1] || '').replace(/[^\w:.-]/g, '');
+    return arg ? family + ' ' + arg : family;
+}
+
+/**
+ * 命令族特征（族归一命中时；否则空数组）。
+ * 迁移效果靠「原文特征 + 族特征额外重放 N 次」叠加：实测（真实出厂权重、单次 y=0、lr 0.03、l2 0.01）
+ * 只学原文时同族变体 0.985→0.945，族特征再重放 3 次到 0.858，异族（npm run build）几乎不动。
+ * 注意：把族特征简单并进样本特征集是无效的——lcExtractDims 已有 w:/c:/p: 结构桶，
+ * 族信息本就在里面，必须靠额外重放加大族维度的步长。
+ * 训练（recordDecision）与批量重训（scheduleRetrain）必须共用同一口径，不能分叉。
+ */
+export function lcFamilyDims(command, cfg) {
+    const family = lcFamilyCommand(command);
+    return family ? lcExtractDims(family, cfg) : [];
+}
+
+// 族特征额外重放次数（相对原文那次 SGD 的倍数）
+const LC_FAMILY_BOOST = 3;
+
+// ---------- 个性化学习的破坏性护栏 ----------
+// 个性化只学「重复打扰」的非破坏性命令；破坏性命令的批准是**单次授权**，不能固化成常态
+// 放行——同动词/同开关的命令字符 n-gram 高度重合：实测批准 100 条 `rm -rf ./build-N`
+// （出厂 0.9680）会把 `rm -rf /` 从 0.8775 拉到 0.2108，300 条即跌破 standard 阈值。
+const LC_LEARN_DENY = /(^|\s)(rm|rd|rmdir|del|erase|format|diskpart|mkfs\S*|dd|shutdown|robocopy|cipher|sdelete|vssadmin|reg|regedit|bcdedit|bootrec|remove-item|stop-process|kill|taskkill|takeown|icacls|cacls|attrib|chmod|chown|schtasks|crontab|wmic|bitsadmin|certutil|mshta|rundll32|regsvr32|eval|invoke-expression)(\s|$)/i;
+const LC_LEARN_DENY_FLAGS = /--hard\b|--force\b|--force-with-lease\b|--mirror\b|--delete\b|-recurse\b|-delete\b|-encodedcommand\b|(^|\s)-[a-z]*(?:[rf]|force)[a-z]*(\s|$)/i;
+
+// 个性化 bias 的漂移上界（相对出厂）。上下都夹：往负漂整体拉低危险分（放行变松），
+// 往正漂整体抬高（误报变多）。破坏性护栏已挡住主要族，这条是全局兜底。
+const LC_BIAS_FLOOR = 0.3;
+
+/**
+ * 个性化 bias 偏移夹取（±floor）。单步更新与批量重训共用，避免两条路径漂移不一致。
+ */
+export function lcClampBiasDelta(delta, floor) {
+    const f = Number(floor) > 0 ? Number(floor) : LC_BIAS_FLOOR;
+    const value = Number(delta) || 0;
+    return Math.max(-f, Math.min(f, value));
 }
 
 // 命令级打分：切段逐段推理取 max（训练仍为整条样本，段级 gram 权重与训练自洽）
+// 单段超过 LC_TEXT_LIMIT 时 lcExtractDims 会静默截断丢尾（尾部载荷对模型不可见）——
+// fail-closed 直接给 1 转人工，与语义侧「单段超 62 token → fail-closed」同一原则。
 export function lcScoreCommand(command, weights, bias, cfg) {
     const segs = lcSegment(command);
     if (!segs.length) segs.push(String(command || '').trim());
     let best = 0;
     for (const seg of segs) {
+        if (seg.length > LC_TEXT_LIMIT) return 1;
         const score = lcScore(lcExtractDims(seg, cfg), weights, bias);
         if (score > best) best = score;
+    }
+    return best;
+}
+
+// 学习口径与推理对齐：取「当前判定分数最高的一段」作为学习样本。
+// 推理是逐段取 max，只有最高分段决定 allow/ask；整条学习会把危险段与良性段揉成一个
+// 不存在的命令，既学不到真正的危险信号，又会把 benign 前缀的负权摊到危险段上。
+export function lcLearnSegment(command, weights, bias, cfg) {
+    const segs = lcSegment(command);
+    if (!segs.length) return String(command || '').trim();
+    let best = segs[0];
+    let bestScore = -Infinity;
+    for (const seg of segs) {
+        const score = lcScore(lcExtractDims(seg, cfg), weights, bias);
+        if (score > bestScore) {
+            bestScore = score;
+            best = seg;
+        }
     }
     return best;
 }
@@ -131,13 +231,19 @@ export function lcSgdStep(dims, weights, factory, bias, y, lr, l2) {
 }
 
 // 多 epoch 批量重训：从出厂权重重放全部样本（个性化重训入口）。样本顺序固定，可复现。
+// 样本可带 familyDims：族特征在每次遍历里额外重放 opts.familyBoost 次（默认 0，向后兼容）。
 export function lcRetrain(samples, factory, bias, opts) {
     const weights = factory.slice();
     let currentBias = bias;
+    const boost = Math.max(0, Number(opts && opts.familyBoost) || 0);
     let lr = opts.lr;
     for (let epoch = 0; epoch < opts.epochs; epoch += 1) {
         for (const sample of samples) {
             currentBias = lcSgdStep(sample.dims, weights, factory, currentBias, sample.y, lr, opts.l2).bias;
+            if (!boost || !Array.isArray(sample.familyDims) || !sample.familyDims.length) continue;
+            for (let i = 0; i < boost; i += 1) {
+                currentBias = lcSgdStep(sample.familyDims, weights, factory, currentBias, sample.y, lr, opts.l2).bias;
+            }
         }
         lr *= opts.decay;
     }
@@ -198,7 +304,7 @@ export function createAILocalClassifier(ctx) {
     const RETRAIN_DELAY_MS = 3000;  // 批量重训去抖（近似空闲时执行）
     const PERSONAL_LR = 0.03;       // 单样本更新学习率（小步）
     const PERSONAL_L2 = 0.01;       // L2 锚定出厂的强度
-    const RETRAIN_OPTS = {epochs: 8, lr: 0.02, l2: 0.01, decay: 0.9};
+    const RETRAIN_OPTS = {epochs: 8, lr: 0.02, l2: 0.01, decay: 0.9, familyBoost: LC_FAMILY_BOOST};
     const LC_DIR = 'local-classifier';
 
     const state = {
@@ -217,6 +323,7 @@ export function createAILocalClassifier(ctx) {
         disabled: new Set(),   // 本会话熔断停用（连续失败 N 次）
         seenCommands: new Set(), // 样本去重：单命令至多 1 次更新（防漂移护栏 #3）
         dirtySamples: 0,       // 距上次批量重训新增样本数
+        dangerSkipNotified: false, // 破坏性批准拒学的一次性提示（每次会话只提醒一次）
         retrainTimer: 0,
         saveChain: Promise.resolve(), // 存储写链（读改写串行，避免并发覆盖）
     };
@@ -243,7 +350,8 @@ export function createAILocalClassifier(ctx) {
             if (data && typeof data === 'object') {
                 if (data.factoryVersion === state.factoryVersion && data.delta && typeof data.delta === 'object') {
                     state.delta = data.delta;
-                    state.biasDelta = Number(data.biasDelta) || 0;
+                    // 旧版本可能存了超出护栏的偏移，加载时收敛到当前上界
+                    state.biasDelta = lcClampBiasDelta(data.biasDelta);
                 }
                 state.trainedAt = Number(data.trainedAt) || 0;
             }
@@ -334,13 +442,21 @@ export function createAILocalClassifier(ctx) {
             if (ctx.getConfig().localClassifierPersonalize !== true || !state.samples.length) return;
             try {
                 await ensureLoaded();
-                const replay = state.samples.map((s) => ({
-                    dims: lcExtractDims(s.command, state.featureCfg),
-                    y: s.y,
-                }));
+                const replay = [];
+                for (const s of state.samples) {
+                    // 与 recordDecision 同一口径：取「决定判定」的最高分段，而非整条命令
+                    const text = lcLearnSegment(s.command, state.factory, state.bias, state.featureCfg);
+                    // 历史样本可能含旧版本学进来的破坏性批准样本（y=0），重训时一并剔除
+                    if (s.y === 0 && (LC_LEARN_DENY.test(text) || LC_LEARN_DENY_FLAGS.test(text))) continue;
+                    replay.push({
+                        dims: lcExtractDims(text, state.featureCfg),
+                        familyDims: lcFamilyDims(text, state.featureCfg),
+                        y: s.y,
+                    });
+                }
                 const result = lcRetrain(replay, state.factory, state.bias, RETRAIN_OPTS);
                 state.active = result.weights;
-                state.biasDelta = result.bias - state.bias;
+                state.biasDelta = lcClampBiasDelta(result.bias - state.bias);
                 state.delta = lcWeightsDelta(state.active, state.factory);
                 state.trainedAt = Date.now();
                 state.dirtySamples = 0;
@@ -362,6 +478,16 @@ export function createAILocalClassifier(ctx) {
         } catch (e) {
             return false;
         }
+        // 学习口径与推理对齐：推理逐段取 max，只有「决定判定」的那一段该被学习
+        const learnText = lcLearnSegment(sanitized, state.active, state.bias + state.biasDelta, state.featureCfg);
+        // 破坏性命令的批准是单次授权，不进语料——否则同族变体会被字符 n-gram 迁移成安全
+        if (approved && (LC_LEARN_DENY.test(learnText) || LC_LEARN_DENY_FLAGS.test(learnText))) {
+            if (!state.dangerSkipNotified && ctx.flash) {
+                state.dangerSkipNotified = true;
+                ctx.flash('破坏性命令的批准只对本次生效，不会训练成自动放行', false);
+            }
+            return false;
+        }
         const y = approved ? 0 : 1;
         state.seenCommands.add(key);
         state.samples.push({command: sanitized, y, at: Date.now()});
@@ -370,10 +496,15 @@ export function createAILocalClassifier(ctx) {
             for (const item of dropped) state.seenCommands.delete(item.command.toLowerCase());
         }
         state.sampleCount = state.samples.length;
-        // 单样本实时更新（一步 SGD），批量重训随后收敛
-        const dims = lcExtractDims(sanitized, state.featureCfg);
-        const updated = lcSgdStep(dims, state.active, state.factory, state.bias + state.biasDelta, y, PERSONAL_LR, PERSONAL_L2);
-        state.biasDelta = updated.bias - state.bias;
+        // 单样本实时更新（一步 SGD），批量重训随后收敛；
+        // 族归一命中时对族特征额外重放 N 次，裁定才可能迁移到同族参数变体
+        const dims = lcExtractDims(learnText, state.featureCfg);
+        const familyDims = lcFamilyDims(learnText, state.featureCfg);
+        let nextBias = lcSgdStep(dims, state.active, state.factory, state.bias + state.biasDelta, y, PERSONAL_LR, PERSONAL_L2).bias;
+        for (let i = 0; i < LC_FAMILY_BOOST && familyDims.length; i += 1) {
+            nextBias = lcSgdStep(familyDims, state.active, state.factory, nextBias, y, PERSONAL_LR, PERSONAL_L2).bias;
+        }
+        state.biasDelta = lcClampBiasDelta(nextBias - state.bias);
         state.delta = lcWeightsDelta(state.active, state.factory);
         state.trainedAt = Date.now();
         state.dirtySamples += 1;

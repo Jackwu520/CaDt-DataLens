@@ -395,3 +395,65 @@ test('红队 P1：NFKC 全角化危险命令不再绕过', async () => {
     const score = lcScoreCommand('ｒｍ　－ｒｆ　／', weights, LOCAL_CLASSIFIER_BIAS, LOCAL_CLASSIFIER_FEATURES);
     assert.ok(score >= LOCAL_CLASSIFIER_THRESHOLDS.standard, '全角化 rm -rf 应转人工：' + score.toFixed(3));
 });
+
+// ---------- 个性化学习：命令族归一 ----------
+
+test('lcFamilyCommand：参数不同的同族命令折叠成同一签名', async () => {
+    const {lcFamilyCommand} = await import('./ai-local-classifier.js');
+    const cases = [
+        ['git push --dry-run origin master', 'git push'],
+        ['git push --dry-run gitee master', 'git push'],
+        ['git status --short', 'git status'],
+        ['FOO=1 git log --oneline -5', 'git log'],
+        ['npm run build', 'npm run build'],
+        ['npm run deploy', 'npm run deploy'],
+        ['go test ./...', 'go test'],
+        // 以下都不做族归一（裸命令 / 危险动词 / 破坏性开关 / 解释器 / 复合命令 / 重定向）
+        ['git', ''],
+        ['rm -rf /tmp/x', ''],
+        ['git reset --hard', ''],
+        ['git push --force origin main', ''],
+        ['git clean -f', ''],
+        ['node -e "console.log(1)"', ''],
+        ['echo ok && git status', ''],
+        ['git status > out.txt', ''],
+        ['', ''],
+    ];
+    for (const [input, expected] of cases) {
+        assert.equal(lcFamilyCommand(input), expected, '族归一：' + input);
+    }
+});
+
+test('lcFamilyDims：族签名特征，危险命令与解释器不产出', async () => {
+    const {lcExtractDims, lcFamilyDims} = await import('./ai-local-classifier.js');
+    assert.deepEqual(
+        lcFamilyDims('git push --dry-run origin master', LC_FEATURES),
+        lcExtractDims('git push', LC_FEATURES));
+    assert.deepEqual(lcFamilyDims('rm -rf /tmp/x', LC_FEATURES), []);
+    assert.deepEqual(lcFamilyDims('node -e "console.log(1)"', LC_FEATURES), []);
+    assert.deepEqual(lcFamilyDims('', LC_FEATURES), []);
+});
+
+test('学习迁移：族特征额外重放让同族变体降得更多，异族几乎不动', async () => {
+    const {lcExtractDims, lcFamilyDims, lcRetrain, lcScoreCommand} = await import('./ai-local-classifier.js');
+    const weights0 = lcDequantize(LOCAL_CLASSIFIER_WEIGHTS, LOCAL_CLASSIFIER_QUANT.scale, LOCAL_CLASSIFIER_FEATURES.dims);
+    const opts = {epochs: 1, lr: 0.03, l2: 0.01, decay: 1};
+    const target = 'git push --dry-run origin master';
+    const rawTrain = lcRetrain(
+        [{dims: lcExtractDims(target, LC_FEATURES), y: 0}], weights0, LOCAL_CLASSIFIER_BIAS, opts);
+    const boostTrain = lcRetrain(
+        [{dims: lcExtractDims(target, LC_FEATURES), familyDims: lcFamilyDims(target, LC_FEATURES), y: 0}],
+        weights0, LOCAL_CLASSIFIER_BIAS, Object.assign({}, opts, {familyBoost: 3}));
+    const scoreOf = (command, trained) => lcScoreCommand(command, trained.weights, trained.bias, LC_FEATURES);
+    for (const variant of ['git push --dry-run gitee master', 'git push --dry-run origin main']) {
+        const raw = scoreOf(variant, rawTrain);
+        const boosted = scoreOf(variant, boostTrain);
+        assert.ok(boosted < raw, '族重放后应更低：' + variant + ' ' + boosted.toFixed(4) + ' < ' + raw.toFixed(4));
+    }
+    for (const other of ['git status --short', 'npm run build']) {
+        const raw = scoreOf(other, rawTrain);
+        const boosted = scoreOf(other, boostTrain);
+        assert.ok(Math.abs(boosted - raw) < 0.01,
+            '异族不应明显变化：' + other + ' ' + boosted.toFixed(4) + ' vs ' + raw.toFixed(4));
+    }
+});

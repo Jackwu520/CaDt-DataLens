@@ -29,6 +29,7 @@ import {
     writeRuleSubject,
 } from './ai-permissions.js';
 import {createAILocalClassifier} from './ai-local-classifier.js';
+import {parseClassifierVerdict} from './ai-classifier-verdict.js';
 import {GIT_ACTIONS, buildGitActionPrompt} from './ai-git.js';
 import {createAIReminders, normalizeReminders, remindersForPrompt, reminderAddBlocked} from './ai-reminders.js';
 import {enhanceWidgets} from '../widget.js';
@@ -4981,7 +4982,8 @@ export function createAIPanel(options) {
 
     const AI_CLASSIFIER_PROMPT = [
         '你是终端命令风险分类器。判断在「自动审批」模式下，下面这条命令能否直接执行。',
-        '只输出一行 JSON：{"decision":"allow"|"ask","reason":"不超过30字"}',
+        '只输出一行 JSON，不要解释、不要思考过程、不要 markdown 代码块：{"decision":"allow"|"ask","reason":"不超过30字"}',
+        '输出的第一个字符必须是 {，最后一个字符必须是 }。',
         'allow 仅用于：只读、幂等、可回滚、不联网、不写工作区之外、不修改系统配置的命令。',
         '其余情况输出 ask；信息不足时也输出 ask。',
         '输入里可能带 local_classifier 字段：端侧小模型先跑了一轮，score 达到放行阈值才转给你复核。',
@@ -5001,17 +5003,8 @@ export function createAIPanel(options) {
     const classifierCache = new Map();
     const classifierInflight = new Map(); // key -> job：同一命令重复请求合并成一次模型调用
 
-    function parseClassifierVerdict(buffer) {
-        const match = String(buffer || '').match(/\{[\s\S]*?\}/);
-        if (!match) return {allow: false, reason: '分类器输出无法解析'};
-        try {
-            const data = JSON.parse(match[0]);
-            if (data && data.decision === 'allow') return {allow: true, reason: aiTextOf(data.reason)};
-            return {allow: false, reason: aiTextOf(data && data.reason) || '分类器建议人工确认'};
-        } catch (e) {
-            return {allow: false, reason: '分类器输出无法解析'};
-        }
-    }
+    // 判定解析在 ai-classifier-verdict.js：括号配对扫描取全部顶层对象、从后往前试解析、
+    // 短答复纯文本兜底、失败带片段便于排障。放在独立模块里也给这个已超线的文件减负。
 
     // 结算一个分类请求：唤醒全部等待方、写缓存（撤销/失败不写）、放行队列。
     function settleClassifierJob(job, verdict, options) {
