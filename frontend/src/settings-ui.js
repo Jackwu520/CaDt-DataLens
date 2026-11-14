@@ -642,6 +642,15 @@ function openSettings(pane = 'general') {
     openDialogEl(elsDialogs.settings);
     resetSettingsSearch();
     selectSettingsPane(pane);
+    // 左栏逐项图标：按 data-icon 用 iconSvg 填充（唯一图标来源，只填一次）
+    if (deps.iconSvg) {
+        document.querySelectorAll('.snav-ic[data-icon]').forEach((el) => {
+            if (!el.dataset.done) {
+                el.innerHTML = deps.iconSvg(el.dataset.icon, 13);
+                el.dataset.done = '1';
+            }
+        });
+    }
     // 横幅配图按打开时刻刷新：设置页可能跨过白天/夜间边界一直开着
     syncAboutBannerByTime();
     deps.refreshDeveloperMode();

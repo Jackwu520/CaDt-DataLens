@@ -1369,6 +1369,7 @@ const settingsUI = createSettingsUI({
     get explorer() { return explorer; },
     get file() { return file; },
     get flash() { return flash; },
+    get iconSvg() { return iconSvg; },
     get initAIPanel() { return initAIPanel; },
     get LANG_DEFS() { return LANG_DEFS; },
     get LOCK_ICON() { return LOCK_ICON; },

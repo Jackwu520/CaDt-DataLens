@@ -262,46 +262,53 @@
                     <input id="settings-search" class="settings-search" type="text" placeholder="搜索设置…" spellcheck="false" autocomplete="off">
                     <div id="settings-search-results" class="settings-search-results hidden"></div>
                 </div>
-                <button type="button" class="snav-item active" data-pane="general">通用设置</button>
-                <button type="button" class="snav-item" data-pane="editor-tabs">编辑器标签页</button>
+                <div class="snav-section">设置</div>
+                <button type="button" class="snav-item active" data-pane="general"><span class="snav-ic" data-icon="gear"></span><span>通用设置</span></button>
+                <button type="button" class="snav-item" data-pane="editor-tabs"><span class="snav-ic" data-icon="doc"></span><span>编辑器标签页</span></button>
                 <div id="snav-ai" class="snav-group expanded">
                     <button type="button" class="snav-item snav-parent" aria-expanded="true">
                         <span class="snav-chev" aria-hidden="true"></span>
+                        <span class="snav-ic" data-icon="sparkles"></span>
                         <span>AI</span>
                     </button>
                     <div class="snav-children">
-                        <button type="button" class="snav-item snav-child" data-pane="models">模型</button>
-                        <button type="button" class="snav-item snav-child" data-pane="ai">AI 助手</button>
-                        <button type="button" class="snav-item snav-child" data-pane="context">上下文注入</button>
-                        <button type="button" class="snav-item snav-child" data-pane="preferences">用户偏好</button>
-                        <button type="button" class="snav-item snav-child" data-pane="schedules">定时任务</button>
-                        <button type="button" class="snav-item snav-child" data-pane="permissions">权限</button>
+                        <button type="button" class="snav-item snav-child" data-pane="models"><span class="snav-ic" data-icon="zap"></span><span>模型</span></button>
+                        <button type="button" class="snav-item snav-child" data-pane="ai"><span class="snav-ic" data-icon="sparkles"></span><span>AI 助手</span></button>
+                        <button type="button" class="snav-item snav-child" data-pane="context"><span class="snav-ic" data-icon="paste"></span><span>上下文注入</span></button>
+                        <button type="button" class="snav-item snav-child" data-pane="preferences"><span class="snav-ic" data-icon="star"></span><span>用户偏好</span></button>
+                        <button type="button" class="snav-item snav-child" data-pane="schedules"><span class="snav-ic" data-icon="clock"></span><span>定时任务</span></button>
+                        <button type="button" class="snav-item snav-child" data-pane="permissions"><span class="snav-ic" data-icon="shield"></span><span>权限</span></button>
                     </div>
                 </div>
                 <div id="snav-formats" class="snav-group expanded">
                     <button type="button" class="snav-item snav-parent" aria-expanded="true">
                         <span class="snav-chev" aria-hidden="true"></span>
+                        <span class="snav-ic" data-icon="doc"></span>
                         <span>数据格式</span>
                     </button>
                     <div class="snav-children">
-                        <button type="button" class="snav-item snav-child" data-pane="formats">通用数据格式</button>
+                        <button type="button" class="snav-item snav-child" data-pane="formats"><span class="snav-ic" data-icon="doc"></span><span>通用数据格式</span></button>
                     </div>
                 </div>
                 <div id="snav-langs" class="snav-group expanded">
                     <button type="button" class="snav-item snav-parent" aria-expanded="true">
                         <span class="snav-chev" aria-hidden="true"></span>
+                        <span class="snav-ic" data-icon="code"></span>
                         <span>编程语言</span>
                     </button>
                     <div class="snav-children" id="snav-lang-children"></div>
                 </div>
-                    <button type="button" class="snav-item" data-pane="run">运行</button>
-                    <button type="button" class="snav-item" data-pane="shortcuts">快捷键</button>
-                    <button type="button" class="snav-item" data-pane="integration">系统集成</button>
-                    <button type="button" class="snav-item" data-pane="envvars">环境变量</button>
-                    <button type="button" class="snav-item" data-pane="plugins">插件</button>
-                    <button type="button" class="snav-item" data-pane="developer">开发者</button>
-                    <button type="button" class="snav-item" data-pane="activity">操作记录</button>
-                    <button type="button" class="snav-item" data-pane="about">关于我们</button>
+                <div class="snav-section">功能</div>
+                <button type="button" class="snav-item" data-pane="run"><span class="snav-ic" data-icon="play"></span><span>运行</span></button>
+                <button type="button" class="snav-item" data-pane="shortcuts"><span class="snav-ic" data-icon="keyboard"></span><span>快捷键</span></button>
+                <button type="button" class="snav-item" data-pane="integration"><span class="snav-ic" data-icon="export"></span><span>系统集成</span></button>
+                <button type="button" class="snav-item" data-pane="envvars"><span class="snav-ic" data-icon="code"></span><span>环境变量</span></button>
+                <button type="button" class="snav-item" data-pane="plugins"><span class="snav-ic" data-icon="download"></span><span>插件</span></button>
+                <div class="snav-section">诊断</div>
+                <button type="button" class="snav-item" data-pane="developer"><span class="snav-ic" data-icon="terminal"></span><span>开发者</span></button>
+                <button type="button" class="snav-item" data-pane="activity"><span class="snav-ic" data-icon="history"></span><span>操作记录</span></button>
+                <div class="snav-section">其他</div>
+                <button type="button" class="snav-item" data-pane="about"><span class="snav-ic" data-icon="info"></span><span>关于我们</span></button>
                 </div>
                 <div class="settings-content">
                     <div class="settings-pane" data-pane="general">
