@@ -31,6 +31,8 @@ type App struct {
 	aiRunning           bool
 	aiTimersMu          sync.Mutex
 	aiTimers            *aiTimerRegistry
+	muMCP               sync.Mutex
+	mcp                 *mcpManager
 	watchMu             sync.Mutex
 	watchRoot           string
 	watchStop           chan struct{}
@@ -87,6 +89,10 @@ func (a *App) startup(ctx context.Context) {
 	}
 	// AI 定时任务调度器：主窗口与 AI 悬浮窗进程各自扫描，执行去重由前端裁决
 	a.startAISchedule()
+	// MCP 客户端：仅主窗口进程初始化（浮窗/调试控制台不拉 MCP 子进程，避免同机双实例）
+	if !a.IsAIFloatWindow() && !a.IsDebugConsoleWindow() {
+		a.initMCPManager()
+	}
 	if a.IsAIFloatWindow() {
 		runtime.WindowSetTitle(ctx, "AI 助手 · CaDt-DataLens")
 	}

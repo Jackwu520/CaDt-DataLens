@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 )
@@ -72,6 +73,8 @@ type mcpClient struct {
 	stderrLog *mcpRingBuffer
 
 	onToolsChanged func() // notifications/tools/list_changed 回调（manager 接线）
+	onLost         func(reason string) // 进程意外退出 / 读取异常结束（主动 close 时不触发）
+	closing        atomic.Bool         // 主动关闭标记：区分「我们关的」和「server 自己死了」
 
 	mu           sync.Mutex
 	status       mcpStatus
@@ -123,6 +126,9 @@ func (c *mcpClient) connect(ctx context.Context) error {
 		if err := c.conn.serve(stdout); err != nil {
 			writeAppLog("warn", "MCP %s 连接读取结束：%v", c.name, err)
 		}
+		if !c.closing.Load() && c.onLost != nil {
+			c.onLost("stdout 读取结束（server 可能已退出）")
+		}
 		c.conn.shutdown() // EOF / 协议错乱 / 读错误都唤醒所有 pending
 	}()
 	go func() {
@@ -131,6 +137,9 @@ func (c *mcpClient) connect(ctx context.Context) error {
 	go func() {
 		c.waitErr = cmd.Wait() // Wait 只此一处；waitDone 关闭后 waitErr 可见
 		close(c.waitDone)
+		if !c.closing.Load() && c.onLost != nil {
+			c.onLost("server 进程退出")
+		}
 	}()
 
 	// 握手 + 工具清单共用启动预算
@@ -274,8 +283,16 @@ func (c *mcpClient) callTool(ctx context.Context, rawName string, args json.RawM
 	return mcpCallResult{Text: mcpTruncateText(b.String(), mcpResultMaxBytes), IsError: resp.IsError}, nil
 }
 
-// mcpTruncateText 按字节截断但不截断 UTF-8 码点。
+// mcpTruncateText 按字节截断但不截断 UTF-8 码点，并注明截断。
 func mcpTruncateText(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return mcpTruncateUTF8(s, max) + "\n…（结果超过 256 KB 已截断）"
+}
+
+// mcpTruncateUTF8 按字节上限截断字符串，回退到码点边界。
+func mcpTruncateUTF8(s string, max int) string {
 	if len(s) <= max {
 		return s
 	}
@@ -283,12 +300,13 @@ func mcpTruncateText(s string, max int) string {
 	for len(cut) > 0 && !utf8.ValidString(cut) {
 		cut = cut[:len(cut)-1]
 	}
-	return cut + "\n…（结果超过 256 KB 已截断）"
+	return cut
 }
 
 // close 关闭连接并终止进程。先走优雅路径（stdin EOF），超预算再强制杀整棵树。
 // CloseConfirmed=false 是硬信号：调用方必须阻止重连与替换连接。
 func (c *mcpClient) close() mcpCloseResult {
+	c.closing.Store(true)
 	if c.stdin != nil {
 		_ = c.stdin.Close() // 触发 server 优雅退出（EOF）；可能已关，忽略错误
 	}

@@ -18,7 +18,7 @@ const (
 	aiErrorTextLimit      = 500
 	aiDefaultMaxTokens    = 4096
 	aiMaxExtraHeaders     = 8
-	aiMaxToolDefs         = 64
+	aiMaxToolDefs         = 128
 	aiMaxModels           = 500
 	aiMaxImagesPerMessage = 6
 	aiMaxImageBase64      = 8 << 20

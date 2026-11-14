@@ -306,6 +306,7 @@ func (a *App) SetWindowBg(r, g, b int) {
 
 func (a *App) beforeClose(ctx context.Context) bool {
 	if a.forceClose || (!a.dirty && !a.aiRunning) {
+		a.mcpCloseAll() // MCP 子进程全量关闭（总预算 8s，超时靠 taskkill 兜底）
 		a.stopWorkspaceWatch()
 		return false
 	}
@@ -317,6 +318,7 @@ func (a *App) ForceClose() {
 	a.forceClose = true
 	a.dirty = false
 	a.aiRunning = false
+	a.mcpCloseAll()
 	a.stopWorkspaceWatch()
 	runtime.Quit(a.ctx)
 }

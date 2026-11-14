@@ -47,7 +47,13 @@ type MCPServerConfig struct {
 
 type MCPConfig struct {
 	Version    int                        `json:"version"`
+	Enabled    *bool                      `json:"enabled,omitempty"` // 客户端总开关：缺省 = 启用；关闭时工具全部移除、进程全部停止
 	MCPServers map[string]MCPServerConfig `json:"mcpServers"`
+}
+
+// mcpConfigEnabled：总开关缺省视为启用。没有 server 时本就零进程，默认开无副作用。
+func mcpConfigEnabled(cfg MCPConfig) bool {
+	return cfg.Enabled == nil || *cfg.Enabled
 }
 
 func mcpConfigFilePath() string {
