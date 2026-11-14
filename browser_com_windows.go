@@ -443,3 +443,61 @@ func wvCaptureScreenshot(wv *edge.ICoreWebView2, timeout time.Duration) (string,
 	}
 	return base64.StdEncoding.EncodeToString(png), nil
 }
+
+// ---- 抓图前的「等一帧」与空白帧兜底 ----
+
+const (
+	// browserCapturePaintScript 等两组 rAF：Show() 之后 webview 会先交出一个空白帧，
+	// 立刻 CapturePreview 拿到的就是整幅白图（2026-11-15 实测：首张空白，隔几秒再抓正常）。
+	// 双 rAF 落在「第一帧已提交」之后，比固定 sleep 稳，也不白等。
+	browserCapturePaintScript = `new Promise(function (resolve) {
+  if (typeof requestAnimationFrame !== 'function') { resolve(1); return; }
+  requestAnimationFrame(function () { requestAnimationFrame(function () { resolve(1); }); });
+})`
+	// browserCapturePaintTimeout 等帧上限：页面被暂停（后台标签）时 rAF 不回调，
+	// 超时即继续抓图——这一小段等待不能变成新的 30s 卡死点。
+	browserCapturePaintTimeout = 600 * time.Millisecond
+	// browserCaptureBlankB64 空白帧判据：整幅单色 PNG 压缩后极小（实测 480x320 空白 < 1 KB），
+	// 带内容的页面 base64 远超此值。只用长度判断，不引入 image/png 解码器的体积。
+	browserCaptureBlankB64 = 2048
+	// browserCaptureAttempts 抓图尝试次数（首抓 + 至多两次重试）
+	browserCaptureAttempts = 3
+)
+
+// wvWaitForPaint 尽力等一次「页面已合成一帧」；失败或超时都直接返回，不影响后续抓图。
+// 必须在宿主线程调用（ExecuteScript 的完成回调要靠宿主泵）。
+func wvWaitForPaint(wv *edge.ICoreWebView2, timeout time.Duration) {
+	handler, err := wvCallExecScriptStart(wv, browserCapturePaintScript)
+	if err != nil {
+		return
+	}
+	_, _ = handler.waitPump(timeout)
+}
+
+// browserCaptureLooksBlank 判断一次抓图是否可疑为空白帧（整幅单色时 base64 极短）。
+func browserCaptureLooksBlank(b64 string) bool {
+	return len(b64) < browserCaptureBlankB64
+}
+
+// browserCaptureWithRetry 抓图并在拿到可疑空白帧时重试：合成未就绪的空白帧是暂态，
+// 等一帧再抓通常就好。真·空白页（about:blank）会走满 attempts 次，所以不报错、只多等
+// 一两帧；抓图本身出错则立刻返回，不重试（错误信息比空图更可信）。
+func browserCaptureWithRetry(capture func() (string, error), waitFrame func(), attempts int) (string, error) {
+	if attempts < 1 {
+		attempts = 1
+	}
+	var shot string
+	var err error
+	for i := 0; i < attempts; i++ {
+		if i > 0 && waitFrame != nil {
+			waitFrame()
+		}
+		if shot, err = capture(); err != nil {
+			return shot, err
+		}
+		if !browserCaptureLooksBlank(shot) {
+			return shot, nil
+		}
+	}
+	return shot, nil
+}

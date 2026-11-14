@@ -257,6 +257,9 @@ const (
 	browserSwpNoSize     = 0x0001
 	browserSwpNoMove     = 0x0002
 	browserSwpNoActivate = 0x0010
+	// GetWindow 方向：GW_HWNDPREV 往 z 序**上方**、GW_HWNDNEXT 往**下方**。
+	// z 序自检找「谁压在我上面」只能用 PREV（上一版用了 NEXT，方向反了）。
+	browserGwHwndPrev = 3
 )
 
 var browserChildHwnds []uintptr
@@ -291,24 +294,26 @@ func browserRaiseControl(inst *browserInstance) {
 }
 
 // BrowserEnsureZ z 序幂等自检：主 WebView 重建/重排控件窗口时会重新抢占子窗口
-// z 顶，把内嵌控件盖回下面——用户看到内容区「黑屏」，点一下（触发重新同步）
-// 才恢复（2026-11-14 实测）。前端 250ms 兜底轮询无条件调用本方法；控件已在
-// z 顶（或上方只有隐藏兄弟）时零副作用。
+// z 顶，把内嵌控件盖回下面——用户看到内容区「黑屏」，点一下（触发重新同步 /
+// 一次 SetBounds）才恢复（2026-11-14 实测）。前端 250ms 兜底轮询无条件调用本方法；
+// 控件已在 z 顶（或上方只有隐藏兄弟）时零副作用。
 func (a *App) BrowserEnsureZ(id string) error {
 	jobErr := browserHostRun(func() {
 		inst := browserGet(id)
 		if inst == nil || inst.hwndCtl == 0 || !inst.visible {
 			return
 		}
-		// 沿 GW_HWNDNEXT 向上找：只要上方还有可见兄弟（主界面控件），就提顶。
-		for h := inst.hwndCtl; h != 0; {
-			r, _, _ := procBrowserGetWindow.Call(h, 2) // GW_HWNDNEXT
-			if r == 0 {
-				return // 已是最顶
+		// 沿 GW_HWNDPREV 往 z 序**上方**找：上方还有可见兄弟（主 WebView 抢回了 z 顶）
+		// 才提顶。方向必须是 PREV——GW_HWNDNEXT 是往下方走，控件被压到最底时
+		// GetWindow 立刻返回 0，上一版据此判成「已在最顶」，自愈其实一次都没提过顶
+		// （2026-11-15 复查：症状复发即此故）。
+		for h := inst.hwndCtl; ; {
+			above, _, _ := procBrowserGetWindow.Call(h, browserGwHwndPrev)
+			if above == 0 {
+				return // 上方没有兄弟：已经在最顶
 			}
-			h = r
-			vis, _, _ := procBrowserIsWindowVisible.Call(h)
-			if vis != 0 {
+			h = above
+			if vis, _, _ := procBrowserIsWindowVisible.Call(h); vis != 0 {
 				browserRaiseControl(inst)
 				return
 			}
@@ -661,8 +666,13 @@ func (a *App) BrowserCaptureScreenshot(id string) (string, error) {
 		if !wasVisible && inst.chromium != nil {
 			_ = inst.chromium.Show()
 			defer func() { _ = inst.chromium.Hide() }()
+			// Show() 之后的第一帧还没提交，此时抓图会拿到整幅白图——先等它合成一帧再抓
+			wvWaitForPaint(inst.webview, browserCapturePaintTimeout)
 		}
-		result, taskErr = wvCaptureScreenshot(inst.webview, browserCDPTimeout)
+		result, taskErr = browserCaptureWithRetry(
+			func() (string, error) { return wvCaptureScreenshot(inst.webview, browserCDPTimeout) },
+			func() { wvWaitForPaint(inst.webview, browserCapturePaintTimeout) },
+			browserCaptureAttempts)
 		if taskErr != nil && !wasVisible {
 			taskErr = fmt.Errorf("%w（抓图前该标签页为隐藏态，已临时显示后重试；标签页=%s）", taskErr, id)
 		}
