@@ -143,6 +143,19 @@ function commandExecutable(token) {
     return String(token || '').replace(/^.*[\\/]/, '').replace(/\.exe$/i, '').toLowerCase();
 }
 
+// 穿透前置环境变量赋值与包装器，找到真正要执行的 exe（红队 F3）：
+// `env FLOOD=x python3 -c "…"` 的 tokens[0] 是 env，解释器内联代码检测曾对它完全失明。
+function resolveExe(tokens) {
+    for (let i = 0; i < tokens.length; i += 1) {
+        const token = tokens[i];
+        if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(token)) continue;
+        const exe = commandExecutable(token);
+        if (exe === 'env' || exe === 'nice' || exe === 'nohup' || exe === 'command' || exe === 'time') continue;
+        return {exe, index: i};
+    }
+    return {exe: '', index: 0};
+}
+
 function argBlocked(arg, prefixes) {
     const value = String(arg || '').toLowerCase();
     return prefixes.some((prefix) => {
@@ -414,6 +427,15 @@ export const DANGER_LABELS = {
     'del-force': '强制/递归删除文件',
     'disk-destructive': '磁盘或分区破坏性操作',
     'shutdown': '关机 / 重启',
+    'download-exec': '下载并执行外部代码',
+    'persistence': '创建计划任务 / 服务持久化',
+    'security-disable': '关闭系统安全防护',
+    'forensics-clear': '清除日志 / 快照等痕迹',
+    'credential-dump': '转储进程内存凭据',
+    'registry-destructive': '删除注册表键值',
+    'fs-wipe': '覆写清零磁盘数据',
+    'privilege-grant': '添加用户 / 提权到管理员组',
+    'find-delete': '批量删除文件（find -delete）',
     'git-reset-hard': '丢弃全部未提交修改（reset --hard）',
     'git-clean-force': '强制清理未跟踪文件（clean -f）',
     'git-push-force': '强制推送或删除远端分支',
@@ -425,6 +447,47 @@ export const DANGER_LABELS = {
     'robocopy-mirror': '镜像目录（会删除目标端多余文件）',
     'interpreter-inline-code': '解释器内联代码执行（-e / -c / -Command）',
 };
+
+// 原文级危险模式：所有命令都扫，不依赖分段成功（红队 F3）。
+// `curl … | sh` 会被 splitCommandSegments 切成两段，段级检测互相看不见管道关系；
+// 重定向 / 命令替换无法分段时更只能靠这里。命中即单次确认，误拦代价低（点一次允许）。
+const RAW_DANGER_RULES = [
+    [/\bmsiexec\b[^\n]*\/i\s+https?:/i, 'download-exec'],
+    [/\bmshta\b\s+(https?:|\\\\)/i, 'download-exec'],
+    [/\bregsvr32\b[^\n]*\/i\s*:?\s*https?:/i, 'download-exec'],
+    [/\bschtasks\b[^\n]*\/create\b/i, 'persistence'],
+    [/\bsc(\.exe)?\s+config\b[^\n]*binpath\b/i, 'persistence'],
+    [/\bnet\s+(localgroup|user)\b[^\n]*\/add\b/i, 'privilege-grant'],
+    [/\breg(\.exe)?\s+delete\b/i, 'registry-destructive'],
+    [/\bregedit\b[^\n]*\/(import|restore)\b/i, 'registry-destructive'],
+    [/\bwevtutil\b\s+cl\b/i, 'forensics-clear'],
+    [/\bvssadmin\b[^\n]*delete\b/i, 'forensics-clear'],
+    [/\bfsutil\b[^\n]*deletejournal\b/i, 'forensics-clear'],
+    [/\bcipher\b\s+\/w:/i, 'fs-wipe'],
+    [/\bset-mppreference\b[^\n]*-disablerealtimemonitoring\b/i, 'security-disable'],
+    [/\b(add|set)-mppreference\b[^\n]*-exclusion(path|process|extension|ipaddress)?\b/i, 'security-disable'],
+    [/\brundll32\b[^\n]*comsvcs\.dll[^\n]*minidump\b/i, 'credential-dump'],
+    [/\bfind\s+[^;&|\n]*-delete\b/i, 'find-delete'],
+];
+
+// 下载器 / 执行壳（管道落地检测用）
+const DOWNLOAD_EXES = new Set(['curl', 'wget', 'certutil', 'bitsadmin', 'iwr', 'invoke-webrequest', 'invoke-restmethod', 'ftp', 'tftp']);
+const SHELL_EXES = new Set(['sh', 'bash', 'zsh', 'ksh', 'dash', 'fish', 'powershell', 'pwsh', 'python', 'python3']);
+// 管道落地正则：用于命令替换子串（引号内的 | 让分段器看不见跨段关系）
+const RAW_PIPE_EXEC = /\b(curl|wget|certutil|bitsadmin|iwr|invoke-webrequest|invoke-restmethod|ftp|tftp)\b[^|;&\n]*\|\s*(sh|bash|zsh|ksh|dash|fish|powershell|pwsh|python3?)\b/i;
+
+// 真管道 / 顺序链的下载执行：分段成功时 `curl … | sh` 的 | 已把下载器与执行壳
+// 切成相邻段（红队 F3：段级检测互相看不见管道关系）——按段间首词关系检测。
+// && 顺序链同样命中（下载后执行语义一致）。
+function pipelineDownloadExec(segments) {
+    for (let i = 0; i + 1 < segments.length; i += 1) {
+        const a = commandTokens(segments[i]);
+        const b = commandTokens(segments[i + 1]);
+        if (!a || !b) continue;
+        if (DOWNLOAD_EXES.has(resolveExe(a).exe) && SHELL_EXES.has(resolveExe(b).exe)) return true;
+    }
+    return false;
+}
 
 function gitSegmentDangerRule(args) {
     const sub = args.find((arg) => !arg.startsWith('-'));
@@ -465,12 +528,27 @@ function gitSegmentDangerRule(args) {
     }
 }
 
+// 包装器（nice -n 5 bash -c …）带参时 resolveExe 穿不干净：按「段内任一 token 是
+// 解释器且后面跟内联标志」兜底扫描。引号内容是单个 token（commandTokens 引号成组），
+// `git commit -m "node -e demo"` 这类示例文本不会误中。
+function segmentHasInlineCode(tokens) {
+    for (let i = 0; i < tokens.length - 1; i += 1) {
+        const exe = commandExecutable(tokens[i]);
+        if (!INTERPRETER_EXES.has(exe)) continue;
+        const rest = tokens.slice(i + 1);
+        if (isInterpreterInlineCode(exe, rest, shortFlagSet(rest))) return true;
+    }
+    return false;
+}
+
 function segmentDangerRule(tokens) {
-    const exe = commandExecutable(tokens[0]);
-    const args = tokens.slice(1);
+    // 穿透前置赋值 / env / nice 等包装（红队 F3：env python3 -c 曾全档放行）
+    const resolved = resolveExe(tokens);
+    const exe = resolved.exe;
+    const args = tokens.slice(resolved.index + 1);
     const lowerArgs = args.map((arg) => String(arg).toLowerCase());
     const flags = shortFlagSet(args);
-    if (isInterpreterInlineCode(exe, args, flags)) return 'interpreter-inline-code';
+    if (isInterpreterInlineCode(exe, args, flags) || segmentHasInlineCode(tokens)) return 'interpreter-inline-code';
     if (exe === 'rm') {
         const recursive = flags.has('r') || flags.has('--recursive');
         const force = flags.has('f') || flags.has('--force');
@@ -482,7 +560,9 @@ function segmentDangerRule(tokens) {
     if (exe === 'del' || exe === 'erase') {
         return lowerArgs.includes('/s') ? 'del-force' : '';
     }
-    if (exe === 'format' || exe === 'diskpart' || exe === 'dd' || exe.startsWith('mkfs')) {
+    if (exe === 'format' || exe === 'diskpart' || exe === 'dd' || exe.startsWith('mkfs')
+        // PowerShell 磁盘 cmdlet（红队 F3：Format-Volume 等带连字符，不在经典清单里）
+        || exe === 'format-volume' || exe === 'clear-disk' || exe === 'remove-partition' || exe === 'initialize-disk') {
         return 'disk-destructive';
     }
     if (exe === 'shutdown') return 'shutdown';
@@ -495,6 +575,12 @@ function segmentDangerRule(tokens) {
         const force = lowerArgs.includes('-force') || lowerArgs.includes('-fo');
         return recurse && force ? 'rm-recursive-force' : '';
     }
+    if (exe === 'set-mppreference' || exe === 'add-mppreference') return 'security-disable';
+    if (exe === 'schtasks') return 'persistence';
+    if (exe === 'wevtutil' && lowerArgs.includes('cl')) return 'forensics-clear';
+    if (exe === 'vssadmin' && lowerArgs.includes('delete')) return 'forensics-clear';
+    if (exe === 'cipher' && lowerArgs.some((arg) => arg.startsWith('/w'))) return 'fs-wipe';
+    if (exe === 'find' && lowerArgs.includes('-delete')) return 'find-delete';
     if (exe === 'git') {
         const sub = args.find((arg) => !arg.startsWith('-'));
         if (!sub) return '';
@@ -516,18 +602,49 @@ export function analyzeDangerousCommand(command) {
             const ruleId = segmentDangerRule(tokens);
             if (ruleId) return {dangerous: true, ruleId, label: DANGER_LABELS[ruleId] || ruleId, segment};
         }
-        return {dangerous: false, ruleId: '', label: ''};
     }
-    // 分段失败时不能让危险命令漏标：对最常见的破坏操作做一次原文扫描。
+    // 真管道 / 顺序链的下载执行按段间关系检测（见 pipelineDownloadExec）
+    if (split && pipelineDownloadExec(split.segments)) {
+        return {dangerous: true, ruleId: 'download-exec', label: DANGER_LABELS['download-exec'], segment: commandText(command)};
+    }
+    // 原文级模式对所有命令都扫（红队 F3）：分段成功时 curl … | sh 也会被切成
+    // 两个互不可见的段；重定向 / 命令替换无法分段时更只能靠这里。
+    // 纯 echo/printf 回显段跳过——打印示例代码/文档是常见操作（对照实测曾误拦
+    // echo "curl -s … | sh"）；含命令替换的段不跳，替换内容会真执行。
+    const scanSegments = split ? split.segments : [commandText(command)];
+    for (const segment of scanSegments) {
+        if (split && !/[$(`]/.test(segment)) {
+            const tokens = commandTokens(segment);
+            const exe = tokens ? resolveExe(tokens).exe : '';
+            if (exe === 'echo' || exe === 'printf') continue;
+        }
+        // 命令替换内容真执行（双引号内 $( 同样）：对 $( 起的子串扫管道落地——
+        // 引号内的 | 让分段器看不见跨段关系（实测 echo "$(curl x | sh)" 曾漏标）
+        const sub = segment.includes('$(') ? segment.slice(segment.indexOf('$(')) : '';
+        if (sub && RAW_PIPE_EXEC.test(sub)) {
+            return {dangerous: true, ruleId: 'download-exec', label: DANGER_LABELS['download-exec'], segment};
+        }
+        for (const [pattern, ruleId] of RAW_DANGER_RULES) {
+            if (pattern.test(segment)) return {dangerous: true, ruleId, label: DANGER_LABELS[ruleId] || ruleId, segment};
+        }
+    }
     const text = commandText(command);
-    const rawRules = [
-        [/\brm\s+(?:-[a-z]*r[a-z]*f|-[a-z]*f[a-z]*r|--recursive[^\n]*--force|--force[^\n]*--recursive)\b/i, 'rm-recursive-force'],
-        [/\bgit\s+reset\s+[^\n]*--hard\b/i, 'git-reset-hard'],
-        [/\bgit\s+clean\s+[^\n]*(?:-[a-z]*f|--force)\b/i, 'git-clean-force'],
-        [/\bgit\s+push\s+[^\n]*(?:--force|--mirror|--delete|\s-f(?:\s|$)|\+[^\s]+:)/i, 'git-push-force'],
-    ];
-    for (const [pattern, ruleId] of rawRules) {
-        if (pattern.test(text)) return {dangerous: true, ruleId, label: DANGER_LABELS[ruleId] || ruleId, segment: text};
+    if (!split) {
+        // 分段失败时不能让危险命令漏标：对最常见的破坏操作做一次原文扫描。
+        // 含命令替换的管道落地（echo "$(curl x | sh)"）：替换内容真执行，全文扫描
+        const pipeExec = /\b(curl|wget|certutil|bitsadmin|iwr|invoke-webrequest|invoke-restmethod|ftp|tftp)\b[^|;&\n]*\|\s*(sh|bash|zsh|ksh|dash|fish|powershell|pwsh|python3?)\b/i;
+        if (pipeExec.test(text)) {
+            return {dangerous: true, ruleId: 'download-exec', label: DANGER_LABELS['download-exec'], segment: text};
+        }
+        const rawRules = [
+            [/\brm\s+(?:-[a-z]*r[a-z]*f|-[a-z]*f[a-z]*r|--recursive[^\n]*--force|--force[^\n]*--recursive)\b/i, 'rm-recursive-force'],
+            [/\bgit\s+reset\s+[^\n]*--hard\b/i, 'git-reset-hard'],
+            [/\bgit\s+clean\s+[^\n]*(?:-[a-z]*f|--force)\b/i, 'git-clean-force'],
+            [/\bgit\s+push\s+[^\n]*(?:--force|--mirror|--delete|\s-f(?:\s|$)|\+[^\s]+:)/i, 'git-push-force'],
+        ];
+        for (const [pattern, ruleId] of rawRules) {
+            if (pattern.test(text)) return {dangerous: true, ruleId, label: DANGER_LABELS[ruleId] || ruleId, segment: text};
+        }
     }
     return {dangerous: false, ruleId: '', label: ''};
 }

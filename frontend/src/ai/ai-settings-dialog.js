@@ -672,7 +672,7 @@ export function createAISettingsDialog(ctx) {
         if (opt.localClassifierReset) opt.localClassifierReset.addEventListener('click', () => {
             const mod = typeof localClassifier === 'function' ? localClassifier() : null;
             if (!mod) return;
-            askConfirm('重置端侧分类器？丢弃个性化修正，回到出厂权重（学习样本保留，可重训）。', () => {
+            askConfirm('重置端侧分类器？丢弃个性化修正，回到出厂权重。学习样本保留并会自动重训——若样本已被污染，权重会回弹到接近重置前；彻底清除请用「清空学习数据」。', () => {
                 mod.resetToFactory().then(() => {
                     permMod.renderLocalClassifierStatus();
                     setSettingsStatus('端侧分类器已重置回出厂权重', 'ok');

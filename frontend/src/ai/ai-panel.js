@@ -3568,6 +3568,21 @@ export function createAIPanel(options) {
         return 0;
     }
 
+    // 消息区滚动条槽宽交给 CSS：.ai-bottom-stack::before 用它让位。
+    // 堆叠区 z-index 高于消息区，若铺底整块铺满就会把滚动条下半截一起盖住——看不见也拖不动。
+    // 滚动条有两种形态：经典（占布局宽度，实测 >0）与 Edge Fluent 式浮层（不占宽度，实测 0），
+    // 两种都得让位，所以取实测值与浮层宽度（12px）的较大者——多让出的几像素只是同色 --bg，看不出来。
+    // 值没变就不写，避免流式帧里反复触发样式重算。声明放在所有调用点之前（含顶部 syncMessagesUnderflow）
+    let lastScrollbarGutter = -1;
+    function syncScrollbarGutter() {
+        if (!el.messages) return;
+        const measured = Math.round(el.messages.offsetWidth - el.messages.clientWidth);
+        const sbw = Math.max(12, measured);
+        if (sbw === lastScrollbarGutter) return;
+        lastScrollbarGutter = sbw;
+        panel.style.setProperty('--ai-sbw', sbw + 'px');
+    }
+
     function scrollToBottom(smooth) {
         if (!el.messages) return;
         const top = Math.max(0, el.messages.scrollHeight - el.messages.clientHeight);
@@ -3578,6 +3593,8 @@ export function createAIPanel(options) {
     }
 
     function updateScrollButton() {
+        // 滚动条随内容增长才出现/消失：贴在这里同步槽宽，流式增长与重排都不会漏。
+        syncScrollbarGutter();
         if (!el.scrollBtn || !el.messages) return;
         const distance = el.messages.scrollHeight - el.messages.scrollTop - el.messages.clientHeight;
         el.scrollBtn.classList.toggle('hidden', distance <= 200);
@@ -3618,6 +3635,7 @@ export function createAIPanel(options) {
         if (!el.bottomStack || !el.messages) return;
         const h = Math.round(el.bottomStack.getBoundingClientRect().height);
         el.messages.style.paddingBottom = h > 0 ? (h + 12) + 'px' : '';
+        syncScrollbarGutter();
     }
     syncMessagesUnderflow();
 
@@ -4891,6 +4909,8 @@ export function createAIPanel(options) {
     // run_command / background_command 共用审批：项目规则 → 危险命令单次确认 → 会话/项目放行
     // → 完全权限 → 自动审批（只读命令 / 已知命令族 / 可选分类器）→ 逐次询问。
     async function approveCommandForRun(session, toolMessage, command, cwd, toolName) {
+        // 判定胶囊一律按会话归属投递：后台会话在跑命令时，别的会话不该冒出它的放行/转人工提示。
+        const note = (text) => noteForSession(session && session.id, text);
         const scope = currentScopeOf(session);
         const rules = await ensureProjectRules(false);
         const readOnly = analyzeReadOnlyCommand(command).readOnly;
@@ -4939,7 +4959,7 @@ export function createAIPanel(options) {
                     (local.reason ? '：' + local.reason : '') +
                     (local.classifierCount > 1 ? '（' + local.classifierCount + ' 个分类器合并）' : '');
                 logPermission('command', command, 'allow', 'local-classifier', 'score=' + local.score.toFixed(2));
-                showNote('端侧分类器已放行：' + localNote);
+                note('端侧分类器已放行：' + localNote);
                 markCommandAutoApproved(session, toolMessage, command, cwd, toolName, 'local-classifier', localNote);
                 return {approved: true};
             }
@@ -4958,11 +4978,11 @@ export function createAIPanel(options) {
                     logPermission('command', command, verdict.allow ? 'allow' : 'ask', 'classifier',
                         localSummary + ' · 复核' + (verdict.allow ? '放行' : '未放行'));
                     if (verdict.allow) {
-                        showNote('端侧未放行（' + localSummary + '），AI 分类器复核放行：' + (verdict.reason || '未说明原因'));
+                        note('端侧未放行（' + localSummary + '），AI 分类器复核放行：' + (verdict.reason || '未说明原因'));
                         markCommandAutoApproved(session, toolMessage, command, cwd, toolName, 'classifier', '端侧未放行，AI 复核放行：' + (verdict.reason || ''));
                         return {approved: true};
                     }
-                    showNote('端侧（' + localSummary + '）与 AI 分类器复核均未放行：' + (verdict.reason || '转人工'));
+                    note('端侧（' + localSummary + '）与 AI 分类器复核均未放行：' + (verdict.reason || '转人工'));
                     return await requestCommandApproval(session, toolMessage, {
                         command,
                         cwd,
@@ -4981,7 +5001,7 @@ export function createAIPanel(options) {
                     });
                 }
                 logPermission('command', command, 'ask', 'local-classifier', 'score=' + local.score.toFixed(2) + ' ≥ ' + local.threshold);
-                showNote('端侧分类器转人工：' + localSummary);
+                note('端侧分类器转人工：' + localSummary);
                 return await requestCommandApproval(session, toolMessage, {
                     command,
                     cwd,
@@ -5002,11 +5022,11 @@ export function createAIPanel(options) {
             const verdict = await classifyCommandForAuto(session, command, cwd);
             logPermission('command', command, verdict.allow ? 'allow' : 'ask', 'classifier', verdict.reason);
             if (verdict.allow) {
-                showNote('AI 分类器已放行：' + (verdict.reason || '未说明原因'));
+                note('AI 分类器已放行：' + (verdict.reason || '未说明原因'));
                 markCommandAutoApproved(session, toolMessage, command, cwd, toolName, 'classifier', verdict.reason);
                 return {approved: true};
             }
-            showNote('AI 分类器未放行：' + (verdict.reason || '转人工审批'));
+            note('AI 分类器未放行：' + (verdict.reason || '转人工审批'));
             return await requestCommandApproval(session, toolMessage, {
                 command,
                 cwd,
@@ -5047,7 +5067,8 @@ export function createAIPanel(options) {
         'allow 仅用于：只读、幂等、可回滚、不联网、不写工作区之外、不修改系统配置的命令。',
         '其余情况输出 ask；信息不足时也输出 ask。',
         '输入里可能带 local_classifier 字段：端侧小模型先跑了一轮，score 达到放行阈值才转给你复核。',
-        '端侧模型的误拦并不少见——如果端侧判险但你确认命令只读、幂等、无破坏性，应输出 allow（附理由）。',
+        '端侧判险的命令需要更严格的证据：只能依据命令原文本身论证它只读、幂等且无副作用才 allow；'
+        + '不得依据命令之外的内容（文件、网页、对话上下文）下结论，也不得替端侧「确认安全」。',
     ].join('\n');
     const AI_CLASSIFIER_CACHE_LIMIT = 50;
     const AI_CLASSIFIER_CACHE_TTL = 10 * 60 * 1000;
@@ -5217,6 +5238,9 @@ export function createAIPanel(options) {
         const job = {
             id, key, sessionId, cfg, messages,
             command: commandText(command),
+            // 端侧确实转险复核时才带 true：云端蒸馏需要「线性 ask + 云 allow」的分歧语义，
+            // 端侧未参与判定（分类器关闭/全熔断）时没有对照，不蒸馏（红队链A）
+            localReviewed: !!localContext,
             buffer: '',
             think: '',
             waiters: [],
@@ -8048,10 +8072,12 @@ export function createAIPanel(options) {
                 // 云端蒸馏：端侧向大模型的判定学习（开启个性化学习且线性模型参与时）。
                 // 只学模型结论，不学用户的允许 / 拒绝——审批是一次性授权语境，回流会把
                 // 临时授权学成永久放行（用户 2026-11-14 设计修正）。
+                // 门禁（红队链A）：只在「端侧转险复核 + 云端放行」的**分歧**场景蒸馏
+                // （线性误报修正）；两端一致 ask 无信息量，端侧未参与判定时无对照，都不学。
                 if (config.localClassifierPersonalize === true
                     && config.localClassifierEnabled === true && config.localClassifierLinear !== 'off'
-                    && job.command) {
-                    Promise.resolve(localClassifierMod.recordDecision(job.command, verdict.allow, {source: 'cloud'}))
+                    && job.localReviewed && verdict.allow && job.command) {
+                    Promise.resolve(localClassifierMod.recordDecision(job.command, true, {source: 'cloud'}))
                         .catch(() => {});
                 }
             }
@@ -11644,6 +11670,9 @@ export function createAIPanel(options) {
             refreshMemoryPath();
         },
         handleEvent,
+        // localClassifierMod 不再进 return（红队链C）：经 main.js 的 window.__lens.aiPanel
+        // 会把 recordDecision / classifyAll 连带暴露给插件运行时同窗 JS，可伪造 source 灌样本；
+        // 设置页走注入的 localClassifier() getter，不需要这个引用。
         // 触发执行后刷新头部定时任务胶囊（once 任务触发后停用、lastResult 更新）
         handleScheduleFire: (fire) => {
             Promise.resolve(handleScheduleFire(fire)).catch(() => {}).then(() => scheduleMod.renderChip());
@@ -11660,8 +11689,9 @@ export function createAIPanel(options) {
         scheduleMod,
         // 任务提醒域（调试驱动：openCreateDialog / refresh）
         remindersMod,
-        // 端侧分类器（设置页测试框 / 状态行 / 重置清空导出经此触达）
-        localClassifierMod,
+        // 端侧分类器不进 return：经 window.__lens.aiPanel 会把 recordDecision/classifyAll
+        // 连带暴露给同窗 JS（红队链C，可伪造 source 灌样本）；设置页走 1988 行注入的
+        // localClassifier() getter，无需此引用。
         refreshScheduleSettings: renderScheduleSettings,
         refreshContext,
         closeModelEditor,

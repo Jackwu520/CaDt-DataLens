@@ -34,10 +34,16 @@ export function lcHash(text, seed) {
 // 命令 → 去重特征维度列表（升序，保证同命令特征顺序稳定、SGD 可复现）。
 // 字符 3/5-gram + 结构桶（首词 / 子命令 / 管道落地 shell / 重定向 / 设备路径 /
 // 子 shell 求值 / 链式调用 / base64 编码载荷），桶以带前缀的字符串进同一哈希空间。
+// 归一化口径唯一来源：NFKC 兼容分解（全角字符折叠为半角，红队发现全角化危险命令绕过，
+// 线性/语义双修）→ 小写 → 空白折叠 → trim。推理 / 长度检查 / 学习 / 族归一共用，
+// 任何一侧单独改都会造成 train/serve skew（红队链F教训）。
+export function lcNormalize(text) {
+    return String(text || '').normalize('NFKC').toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
 export function lcExtractDims(command, cfg) {
     const c = cfg || LC_FEATURES;
-    // NFKC 兼容分解：全角字符折叠为半角（红队发现全角化危险命令绕过，线性/语义双修）
-    const text = String(command || '').normalize('NFKC').toLowerCase().replace(/\s+/g, ' ').trim().slice(0, LC_TEXT_LIMIT);
+    const text = lcNormalize(command).slice(0, LC_TEXT_LIMIT);
     if (!text) return [];
     const set = new Set();
     for (const n of c.ngrams) {
@@ -98,8 +104,71 @@ export function lcDequantize(b64, scale, dims) {
 // benign 段命中负权，max 取危险段。
 // 单个 & 必须单独处理：`git status & history -c` 曾两模型全档放行；用 lookbehind 排除
 // `2>&1` 这类重定向（>& 不是命令分隔符），否则会把一条命令切成无意义的碎片。）
+// 提取命令替换（$() / 反引号 / 进程替换 <()）内的命令文本，递归处理嵌套。
+// 红队 F1：`echo "<良性洪泛>" "$(rm -rf /)"` 无分隔符，内层危险命令与洪泛同段，
+// 字符 n-gram 被数百个负权 gram 淹没到 0.02 级自动放行——内层命令必须切出来
+// 以自身口径独立参与 max 打分。引号内的括号按引号串跳过，避免干扰配对。
+function lcExtractSubcommands(text) {
+    const out = [];
+    const n = text.length;
+    let i = 0;
+    while (i < n) {
+        const ch = text[i];
+        if ((ch === '$' || ch === '<') && text[i + 1] === '(') {
+            let depth = 1;
+            let j = i + 2;
+            while (j < n && depth > 0) {
+                const c = text[j];
+                if (c === '(') depth += 1;
+                else if (c === ')') depth -= 1;
+                else if (c === '\'' || c === '"') {
+                    const quote = c;
+                    j += 1;
+                    while (j < n && text[j] !== quote) j += 1;
+                }
+                j += 1;
+            }
+            if (depth === 0) {
+                const inner = text.slice(i + 2, j - 1);
+                if (inner.trim()) {
+                    out.push(...lcExtractSubcommands(inner));
+                    out.push(inner);
+                }
+                i = j;
+                continue;
+            }
+            i += 2;
+            continue;
+        }
+        if (ch === '`') {
+            const close = text.indexOf('`', i + 1);
+            if (close > i) {
+                const inner = text.slice(i + 1, close);
+                if (inner.trim()) {
+                    out.push(...lcExtractSubcommands(inner));
+                    out.push(inner);
+                }
+                i = close + 1;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    return out;
+}
+
 export function lcSegment(command) {
-    return String(command || '').split(/\r?\n|&&|\|\||;|\||(?<![>&])&/).map((seg) => seg.trim()).filter(Boolean);
+    const segs = String(command || '').split(/\r?\n|&&|\|\||;|\||(?<![>&])&/).map((seg) => seg.trim()).filter(Boolean);
+    // 命令替换 / 反引号 / 进程替换内容作为独立段参与 max（红队 F1，见 lcExtractSubcommands）；
+    // 外层段保留——subshell:eval 桶等外层结构信号仍在外层段口径里
+    const subs = [];
+    for (const seg of segs) {
+        for (const sub of lcExtractSubcommands(seg)) {
+            const text = sub.trim();
+            if (text) subs.push(text);
+        }
+    }
+    return segs.concat(subs);
 }
 
 // 语义模型位选择：'' = 全部已装（默认，保守合并取 max）；'off' = 全关；否则只取指定 fullId。
@@ -140,7 +209,7 @@ const LC_FAMILY_SUB_WITH_ARG = new Set(['run', 'x', 'exec', 'worktree']);
  * 命令 → 命令族签名（如 `git push`、`npm run build`）；不满足条件返回空串（不参与族归一）。
  */
 export function lcFamilyCommand(command) {
-    const text = String(command || '').normalize('NFKC').toLowerCase().replace(/\s+/g, ' ').trim();
+    const text = lcNormalize(command);
     if (!text) return '';
     if (LC_FAMILY_DANGER.test(text) || LC_FAMILY_DANGER_FLAGS.test(text)) return '';
     // 复合 / 重定向 / 命令替换一段一个语义，族签名会失真
@@ -184,6 +253,17 @@ const LC_FAMILY_BOOST = 3;
 // （出厂 0.9680）会把 `rm -rf /` 从 0.8775 拉到 0.2108，300 条即跌破 standard 阈值。
 const LC_LEARN_DENY = /(^|\s)(rm|rd|rmdir|del|erase|format|diskpart|mkfs\S*|dd|shutdown|robocopy|cipher|sdelete|vssadmin|reg|regedit|bcdedit|bootrec|remove-item|stop-process|kill|taskkill|takeown|icacls|cacls|attrib|chmod|chown|schtasks|crontab|wmic|bitsadmin|certutil|mshta|rundll32|regsvr32|eval|invoke-expression)(\s|$)/i;
 const LC_LEARN_DENY_FLAGS = /--hard\b|--force\b|--force-with-lease\b|--mirror\b|--delete\b|-recurse\b|-delete\b|-encodedcommand\b|(^|\s)-[a-z]*(?:[rf]|force)[a-z]*(\s|$)/i;
+// 下载执行 / 解释器内联（红队链A实测：curl|sh 族没有「破坏动词」，上面的词表对其失明——
+// 蒸馏一次即把「执行外部未知代码」学成放行。管道落地 shell 与解释器内联代码一律拒学。
+const LC_LEARN_DENY_PIPE_SH = /\|\s*(sh|bash|zsh|ksh|fish|dash|powershell|pwsh|python3?)\b/i;
+const LC_LEARN_DENY_INLINE = /\b(sh|bash|zsh|ksh|dash|fish)\s+-[a-z]*c\b|\bpython3?\s+-c\b|\bnode\s+(-e|-p|--eval)\b|\bperl\s+-e\b|\bruby\s+-e\b|\bphp\s+-r\b|\b(powershell|pwsh)\s+(-c|-command|-enc|-ec|encodedcommand)\b|\biex\b/i;
+
+// 破坏性 / 不可固化放行的命令判定（学习护栏唯一入口，recordDecision 与批量重训共用）。
+// 批准是一次性授权：任何来源的「放行」样本都不许把这些命令学成自动放行。
+function lcLearnDenied(text) {
+    return LC_LEARN_DENY.test(text) || LC_LEARN_DENY_FLAGS.test(text)
+        || LC_LEARN_DENY_PIPE_SH.test(text) || LC_LEARN_DENY_INLINE.test(text);
+}
 
 // 个性化 bias 的漂移上界（相对出厂）。上下都夹：往负漂整体拉低危险分（放行变松），
 // 往正漂整体抬高（误报变多）。破坏性护栏已挡住主要族，这条是全局兜底。
@@ -206,7 +286,10 @@ export function lcScoreCommand(command, weights, bias, cfg) {
     if (!segs.length) segs.push(String(command || '').trim());
     let best = 0;
     for (const seg of segs) {
-        if (seg.length > LC_TEXT_LIMIT) return 1;
+        // fail-closed 用归一化后口径（与特征窗口 slice(0, LC_TEXT_LIMIT) 一致）：
+        // NFKC 膨胀字符（如 U+FDFA 1→18 字符）会骗过原始长度的检查，
+        // 把危险尾部整体推出特征窗口（红队 F2 实测 149 字符 payload 过检）
+        if (lcNormalize(seg).length > LC_TEXT_LIMIT) return 1;
         const score = lcScore(lcExtractDims(seg, cfg), weights, bias);
         if (score > best) best = score;
     }
@@ -319,11 +402,13 @@ export function createAILocalClassifier(ctx) {
     // - getPluginClassifiers(): 插件注册的分类器列表 [{id, label, classify}]
     // - flash(message, isErr): 用户可见提示
     const SAMPLE_LIMIT = 500;       // samples.jsonl 环形上限（防历史包袱无限增长）
-    const SAMPLE_TEXT_LIMIT = 300;
+    const SAMPLE_TEXT_LIMIT = 2000; // 学习/落盘口径 = 推理窗口 LC_TEXT_LIMIT（红队 F6：300 字截断曾把危险动词剥出护栏视野）
+    const LEARN_DAILY_LIMIT = 50;   // 单来源每日学习配额（红队链B/链E：蒸馏通道曾被零节流投毒固化后门）
     const RETRAIN_EVERY = 20;       // 每新增 N 条样本触发一次批量重训
     const RETRAIN_DELAY_MS = 3000;  // 批量重训去抖（近似空闲时执行）
     const PERSONAL_LR = 0.03;       // 单样本更新学习率（小步）
     const PERSONAL_L2 = 0.01;       // L2 锚定出厂的强度
+    const CLASSIFY_TIMEOUT_MS = 3000; // 单分类器调用超时（红队 F5：插件挂起曾永久阻塞审批链）
     const RETRAIN_OPTS = {epochs: 8, lr: 0.02, l2: 0.01, decay: 0.9, familyBoost: LC_FAMILY_BOOST};
     const LC_DIR = 'local-classifier';
 
@@ -346,6 +431,7 @@ export function createAILocalClassifier(ctx) {
         dangerSkipNotified: false, // 破坏性批准拒学的一次性提示（每次会话只提醒一次）
         retrainTimer: 0,
         saveChain: Promise.resolve(), // 存储写链（读改写串行，避免并发覆盖）
+        learnQuota: new Map(), // source → {day, count}：单来源每日学习配额（防蒸馏投毒）
     };
 
     async function storageDir() {
@@ -377,7 +463,7 @@ export function createAILocalClassifier(ctx) {
             }
         } catch (e) {}
         try {
-            const read = await ctx.readTextFile(dir + '/samples.jsonl', 2 << 20);
+            const read = await ctx.readTextFile(dir + '/samples.jsonl', 8 << 20);
             for (const line of read.text.split('\n')) {
                 const text = line.trim();
                 if (!text) continue;
@@ -465,10 +551,10 @@ export function createAILocalClassifier(ctx) {
                 await ensureLoaded();
                 const replay = [];
                 for (const s of state.samples) {
+                    // 与 recordDecision 同口径：护栏查全量原文（分段口径会漏管道落地壳）
+                    if (s.y === 0 && lcLearnDenied(s.command)) continue;
                     // 与 recordDecision 同一口径：取「决定判定」的最高分段，而非整条命令
                     const text = lcLearnSegment(s.command, state.factory, state.bias, state.featureCfg);
-                    // 历史样本可能含旧版本学进来的破坏性批准样本（y=0），重训时一并剔除
-                    if (s.y === 0 && (LC_LEARN_DENY.test(text) || LC_LEARN_DENY_FLAGS.test(text))) continue;
                     replay.push({
                         dims: lcExtractDims(text, state.featureCfg),
                         familyDims: lcFamilyDims(text, state.featureCfg),
@@ -494,19 +580,32 @@ export function createAILocalClassifier(ctx) {
     async function recordDecision(command, approved, meta) {
         if (ctx.getConfig().localClassifierPersonalize !== true) return false;
         const source = String((meta && meta.source) || 'cloud').slice(0, 20);
+        // 学习口径与推理窗口一致（2000，红队 F6）：此前 300 字截断会让洪泛前缀把
+        // 危险动词剥出护栏词表视野，且前缀相同的逃逸变体去重 key 碰撞被误吞
         const sanitized = lcSanitizeCommand(command, SAMPLE_TEXT_LIMIT);
         if (!sanitized) return false;
+        // 去重 key 用全文
         const key = sanitized.toLowerCase();
         if (state.seenCommands.has(key)) return false; // 单命令至多 1 次更新
+        // 单来源每日配额（红队链B/链E 纵深）：换变体绕过去重也刷不穿配额
+        const day = Math.floor(Date.now() / 86400000);
+        let quota = state.learnQuota.get(source);
+        if (!quota || quota.day !== day) {
+            quota = {day, count: 0};
+            state.learnQuota.set(source, quota);
+        }
+        if (quota.count >= LEARN_DAILY_LIMIT) return false;
         try {
             await ensureLoaded();
         } catch (e) {
             return false;
         }
-        // 学习口径与推理对齐：推理逐段取 max，只有「决定判定」的那一段该被学习
+        // 学习口径与推理对齐：推理逐段取 max，只有「决定判定」的最高分段该被学习
         const learnText = lcLearnSegment(sanitized, state.active, state.bias + state.biasDelta, state.featureCfg);
-        // 破坏性命令的批准是单次授权，不进语料——否则同族变体会被字符 n-gram 迁移成安全
-        if (approved && (LC_LEARN_DENY.test(learnText) || LC_LEARN_DENY_FLAGS.test(learnText))) {
+        // 破坏性命令的批准是单次授权，不进语料——否则同族变体会被字符 n-gram 迁移成安全。
+        // 护栏查**全量 sanitized** 而非最高分段（红队 F6 实测：curl|sh 被切段后最高分段只剩
+        // 下载器半截，管道落地壳在另一段里，分段口径护栏失明）
+        if (approved && lcLearnDenied(sanitized)) {
             if (!state.dangerSkipNotified && ctx.flash) {
                 state.dangerSkipNotified = true;
                 ctx.flash('破坏性命令只对本次生效，不会训练成自动放行', false);
@@ -514,6 +613,7 @@ export function createAILocalClassifier(ctx) {
             return false;
         }
         const y = approved ? 0 : 1;
+        quota.count += 1;
         state.seenCommands.add(key);
         state.samples.push({command: sanitized, y, at: Date.now(), source});
         if (state.samples.length > SAMPLE_LIMIT) {
@@ -604,11 +704,21 @@ export function createAILocalClassifier(ctx) {
         return dest;
     }
 
+    // 分类器调用超时包装（红队 F5：插件挂起曾永久阻塞审批链——await 无超时）。
+    // 超时按失败计数进熔断；被弃的原 promise 无法取消，结果丢弃即可。
+    function lcWithTimeout(promise, ms) {
+        let timer = 0;
+        const timeout = new Promise((resolve, reject) => {
+            timer = setTimeout(() => reject(new Error('分类器超时（' + ms + 'ms）')), ms);
+        });
+        return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+    }
+
     // 单个分类器执行（内置或插件）：异常计数 + 连续失败熔断（本会话内停用）。
     async function classifyOne(id, label, fn, command, info) {
         if (state.disabled.has(id)) return null;
         try {
-            const result = await fn(command, info);
+            const result = await lcWithTimeout(Promise.resolve().then(() => fn(command, info)), CLASSIFY_TIMEOUT_MS);
             state.failures.delete(id);
             if (!result || typeof result !== 'object' || !Number.isFinite(Number(result.score))) {
                 throw new Error('分类器输出缺少 score');
@@ -663,6 +773,13 @@ export function createAILocalClassifier(ctx) {
             if (one) results.push(one);
         }
         if (!results.length) return null;
+        // 红队 F4：配置了语义插件但拿不到它的票（抛错 / 超时）时，线性单独 allow 不是
+        // 「保守合并」——降级转人工；插件已被熔断视为该环境无可用插件，恢复线性直通，
+        // 否则坏插件会让用户所有命令永久卡人工。
+        const pluginItems = list.filter((item) => item.id !== 'builtin-linear');
+        const pluginAlive = results.some((r) => r.id !== 'builtin-linear');
+        const degraded = pluginItems.length > 0 && !pluginAlive
+            && !pluginItems.every((item) => state.disabled.has(item.id));
         let best = results[0];
         for (const r of results) {
             if (r.score > best.score) best = r;
@@ -672,14 +789,17 @@ export function createAILocalClassifier(ctx) {
         const verdictOf = (score) => (score >= verdict.threshold ? 'ask' : 'allow');
         const linearResult = results.find((r) => r.id === 'builtin-linear');
         const pluginResult = results.find((r) => r.id !== 'builtin-linear');
-        // 蒸馏（线性学语义）：最佳判定来自语义插件、且线性模型在参与时，线性向它的结论学习。
-        // 用户的允许 / 拒绝只在**三层结论分歧**时作为裁决信号回流（见 hasVerdictDisagreement）。
+        // 蒸馏（线性学语义）：只在**结论分歧**时学——线性误拦（线性 ask、插件 allow）向插件
+        // 看齐学 y=0，线性漏报（线性 allow、插件 ask）学 y=1。两模型同判时蒸馏没有信息量，
+        // 是纯 bias 负漂（红队链B实测：恒低分插件 + 同判 allow 蒸馏 60 条即可把线性洗成全放行）。
+        const bestAsk = !verdict.allow;
+        const linearAsk = linearResult ? linearResult.score >= verdict.threshold : false;
         if (cfg.localClassifierPersonalize === true && best.id !== 'builtin-linear'
-            && linearResult) {
+            && linearResult && linearAsk !== bestAsk) {
             Promise.resolve(recordDecision(command, verdict.allow, {source: 'plugin'})).catch(() => {});
         }
         return {
-            allow: verdict.allow,
+            allow: degraded ? false : verdict.allow,
             score: best.score,
             threshold: verdict.threshold,
             strictness,
@@ -687,6 +807,7 @@ export function createAILocalClassifier(ctx) {
             sourceId: best.id,
             reason: best.reason,
             classifierCount: results.length,
+            degraded: degraded || undefined,
             verdicts: {
                 linear: linearResult ? verdictOf(linearResult.score) : null,
                 plugin: pluginResult ? verdictOf(pluginResult.score) : null,
