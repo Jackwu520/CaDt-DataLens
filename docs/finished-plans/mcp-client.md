@@ -1,6 +1,9 @@
 # MCP 客户端接入方案（第二版）
 
-> 状态：**提案（未实施）** · 初版 2026-11-13 · 第二版 2026-11-13（参考 `deepseek-harness` 的 dsh 实现重写）· 第三版 2026-11-14（对齐拆分后的模块结构，补 Go↔前端同步通道与前端模块边界）
+> 状态：**已实施（P0–P3 全部完成，2026-11-15）** · 初版 2026-11-13 · 第二版 2026-11-13（参考 `deepseek-harness` 的 dsh 实现重写）· 第三版 2026-11-14（对齐拆分后的模块结构）· 实施归档 2026-11-15
+>
+> 实施落地（提交 80cf6e5 / 9de9315 / 6c4435b / 937a243 / ddfff53）：Go 侧 `mcp_config.go` / `mcp_rpc.go` / `mcp_client.go` / `mcp_env.go` / `mcp_name.go` / `mcp_generation.go` / `mcp_manager.go` / `mcp_app.go` / `mcp_proc_windows.go`+`mcp_proc_other.go`；前端 `ai/ai-mcp.js`（逻辑层）+ `ai/ai-mcp-settings.js`（设置页）+ `ai-tool-defs.js` / `ai-panel.js` / `main.js` 接线。与方案的主要差异：① 环境清洗 `mcp_env.go` 提前到 P0（client 依赖）；② 工具目录不走静态 `AI_TOOL_GROUPS` 分组（MCP 工具名是运行时数据，`toolCatalogText` 动态列出）；③ 留痕走前端 activity-log 服务（尊重用户开关与攒批），Go 侧不直写；④ Wails 薄包装单独成 `mcp_app.go`（仿 patch_app.go 约定）；⑤ MCP 客户端仅主窗口进程初始化（浮窗 / 调试控制台不拉子进程，避免双实例）。假 server 测试用 go test 二进制自调用（`MCP_FAKE_SERVER` 开关）。
+>
 > 范围：内置 AI 助手作为 MCP **客户端**连接外部 MCP 服务器（stdio），把远端工具并入现有工具表。
 > 不在范围：把本应用暴露成 MCP **服务器**、Streamable HTTP 传输、sampling、roots、elicitation、resources 订阅、**prompts**（§15.2 已否决）。
 > 参考实现：`D:\OraSkyC\Project\OpenSource\deepseek-harness`（下称 dsh）的 `packages/mcp/{mcp-client,mcp-manager,mcp-resources}`，共约 2855 行 TypeScript。
