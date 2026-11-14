@@ -9555,8 +9555,6 @@ export function createAIPanel(options) {
         timerMod.render();
         // 头部弹层（智能体团队 / 后台终端）是「上个会话的」列表：切会话就收起来
         if (chipsPopKind) hideChipsPop();
-        // 头部弹层（智能体团队 / 后台终端）是「上个会话的」列表：切会话就收起来
-        if (chipsPopKind) hideChipsPop();
         refreshSystemPromptEstimate(true);
         setTimeout(() => flushMessageQueue(id), 0);
     }
