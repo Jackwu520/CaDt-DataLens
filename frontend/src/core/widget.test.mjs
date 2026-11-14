@@ -7,6 +7,7 @@ import {
     buildWidgetPlaceholder,
     escapeWidgetText,
     extractWidgetCss,
+    preserveLocalImageSrc,
     sanitizeWidgetCss,
     widgetCacheKey,
     widgetKindOf,
@@ -126,4 +127,18 @@ test('sanitizeWidgetCss 阻断外链资源与执行型写法', () => {
 test('sanitizeWidgetCss 拦掉试图闭合 style 标签的内容', () => {
     const css = sanitizeWidgetCss('.a{color:red}</style><div>injected</div>');
     assert.ok(!css.includes('</style>'));
+});
+
+test('preserveLocalImageSrc 给本地图片补 data-ai-src，外链不动', () => {
+    const html = preserveLocalImageSrc(
+        '<img src="C:\\data\\a.png" alt="a"><img src="https://x/b.png"><img src="data:image/png;base64,AA"><img>',
+    );
+    assert.match(html, /data-ai-src="C:\\data\\a\.png"/, '本地路径要抄到 data-ai-src');
+    assert.equal((html.match(/data-ai-src/g) || []).length, 1, '只补一个');
+    assert.ok(html.includes('src="https://x/b.png"'), '外链原样保留');
+    assert.ok(html.includes('src="data:image/png;base64,AA"'), 'data: 原样保留');
+    assert.equal(preserveLocalImageSrc('<div>无图片</div>'), '<div>无图片</div>');
+    // src 里的引号必须转义，不能截断属性
+    const quoted = preserveLocalImageSrc("<img src=\"a'b.png\">");
+    assert.match(quoted, /data-ai-src="a&#39;b\.png"/);
 });

@@ -52,6 +52,8 @@ export function liveToolSummary(args) {
 export function createAIToolCards(ctx) {
     const copyText = ctx.copyText;
     const flash = ctx.flash;
+    // 可视化卡片「另存为」用：AIEnsureDir + SaveFileChecked 落盘 .cadt/answers/
+    const backend = ctx.backend || null;
     const renderMarkdown = ctx.renderMarkdown;
     const renderMermaidBlocks = ctx.renderMermaidBlocks;
     const openExternal = ctx.openExternal;
@@ -86,6 +88,25 @@ export function createAIToolCards(ctx) {
     const toolFoldState = ctx.toolFoldState;
     const subAgentTranscripts = ctx.subAgentTranscripts;
     const setDismissedPlanApproval = ctx.setDismissedPlanApproval;
+
+    // saveWidgetAs 可视化卡片「另存为」：用户主动动作，不走 write_file 审批链。
+    // 写工作区 .cadt/answers/<slug>.<ext>（父目录自动创建）；与 answer-me-with-html 落盘区共用。
+    async function saveWidgetAs(payload) {
+        const root = getScopeRoot();
+        if (!root) {
+            flash('没有打开的工作区，无法另存为', true);
+            return;
+        }
+        if (!backend || !backend.AIEnsureDir || !backend.SaveFileChecked) {
+            flash('当前环境不支持另存为', true);
+            return;
+        }
+        const dir = root.replace(/[\\/]+$/, '') + '/.cadt/answers';
+        const path = dir + '/card-' + Date.now().toString(36) + '.' + (payload.ext || 'html');
+        await backend.AIEnsureDir(dir);
+        await backend.SaveFileChecked(path, payload.content || '', '\n', false, 'utf-8', '');
+        flash('已保存：' + path);
+    }
 
     function renderCommandApprovalBody(container, message, approval) {
         if (approval.state === 'pending') {
@@ -1021,8 +1042,14 @@ export function createAIToolCards(ctx) {
                 md.innerHTML = renderMarkdown(message.content);
                 enhanceAICodeBlocks(md);
                 resolveAIImages(md);
-                // svg / html 围栏 → 可视化卡片；流式期间只占位，整轮结束后再挂载
-                enhanceWidgets(md, {streaming: !!streaming, copyText, openExternal});
+                // svg / html / mermaid / echarts 围栏 → 可视化卡片；流式期间只占位，整轮结束后再挂载
+                enhanceWidgets(md, {
+                    streaming: !!streaming,
+                    copyText,
+                    openExternal,
+                    saveAs: saveWidgetAs,
+                    resolveImages: resolveAIImages,
+                });
             } else if (streaming) {
                 // 三个点占位只建一次：每帧 innerHTML 重写会重建节点、CSS 动画跟着重启（打字点闪烁）
                 if (!md.querySelector('.ai-typing')) {

@@ -33,7 +33,6 @@ import {createAILocalClassifier, hasVerdictDisagreement} from './ai-local-classi
 import {parseClassifierVerdict} from './ai-classifier-verdict.js';
 import {GIT_ACTIONS, buildGitActionPrompt} from './ai-git.js';
 import {createAIReminders, normalizeReminders, remindersForPrompt, reminderAddBlocked} from './ai-reminders.js';
-import {enhanceWidgets} from '../core/widget.js';
 import {normalizeAppMessage, appMessageIcon, detectAppMessage} from './ai-app-message.js';
 import {inspectToolArguments, safeToolArguments} from './ai-tool-args.js';
 import {patchErrorParts} from './ai-patch-error.js';
@@ -11778,6 +11777,7 @@ export function createAIPanel(options) {
     const toolCardsMod = createAIToolCards({
         copyText,
         flash,
+        backend,
         renderMarkdown,
         renderMermaidBlocks,
         openExternal,

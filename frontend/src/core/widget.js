@@ -113,6 +113,19 @@ export function extractWidgetCss(code) {
     return {code: body, css: sanitizeWidgetCss(styles.join('\n'))};
 }
 
+// html 卡片的本地图片：DOMPurify 的 URI 白名单会剥掉盘符 src（原始 HTML 不执行是硬要求），
+// 清洗前把本地 src 抄一份到 data-ai-src（data-* 属性默认放行且不做 URI 校验），挂载后由外层
+// resolveImages 经后端 ReadImageAsDataURL 换成 data URL。只加属性不重排 DOM，正则足够且无脚本面。
+export function preserveLocalImageSrc(code) {
+    let text = String(code || '');
+    if (!/<img\b[\s>]/i.test(text)) return text;
+    return text.replace(/(<img\b[^>]*?\bsrc\s*=\s*)("[^"]*"|'[^']*')/gi, (match, head, attr) => {
+        const src = attr.slice(1, -1);
+        if (/^(https?:|data:|blob:)/i.test(src)) return match;
+        return head + attr + ' data-ai-src="' + escapeWidgetText(src) + '"';
+    });
+}
+
 export function sanitizeWidgetHtml(code, lang) {
     let source = String(code || '');
     // 裸 SVG 片段补命名空间与默认视口，否则部分渲染路径会得到 0 尺寸。
@@ -151,8 +164,9 @@ function ensureShadow(host) {
 // fillShadow 只负责填充内容；主题重渲染（异步卡片）会重复调用，不改监听器。
 function fillShadow(host, code, lang) {
     const shadow = ensureShadow(host);
-    // svg 内的 <style> 同样抽出来统一清洗，避免两套路径行为不一致。
-    const extracted = extractWidgetCss(code);
+    // html 卡片先抄本地图片 src 到 data-ai-src（见 preserveLocalImageSrc 注释）；
+    // svg / 引擎产物不处理（SSR 输出不含外链 img）。
+    const extracted = extractWidgetCss(lang === 'html' ? preserveLocalImageSrc(code) : code);
     shadow.innerHTML = '<style>' + SHADOW_STYLE + extracted.css + '</style>' +
         sanitizeWidgetHtml(extracted.code, lang);
 }
@@ -202,6 +216,18 @@ function mountCard(node, lang, kind, code, opts) {
         if (typeof opts.copyText === 'function') opts.copyText(code, LANG_LABELS[lang] || String(lang).toUpperCase());
     });
     actions.append(srcButton, copyButton);
+    // 另存为：异步卡片导出渲染后的 SVG（源码只是文本 / JSON，离线打不开），svg / html 卡导源码。
+    if (typeof opts.saveAs === 'function') {
+        const saveButton = widgetButton('另存为', '保存到工作区 .cadt/answers/', () => {
+            const isAsync = !!ASYNC_RENDERERS[lang];
+            const ext = (isAsync || lang === 'svg') ? 'svg' : 'html';
+            const content = isAsync ? (asyncSvg.get(node) || code) : code;
+            Promise.resolve(opts.saveAs({lang, kind, ext, content})).catch((e) => {
+                // 尽力而为：实现侧已 flash 提示，这里兜住避免 unhandled rejection
+            });
+        });
+        actions.append(saveButton);
+    }
     bar.append(tag, label, actions);
 
     const body = document.createElement('div');
@@ -213,6 +239,8 @@ function mountCard(node, lang, kind, code, opts) {
         return;
     }
     mountShadow(body, code, lang, opts);
+    // html 卡片里抄到 data-ai-src 的本地图片：由外层实现（复用 AI 消息的图片解析）换成 data URL。
+    if (typeof opts.resolveImages === 'function' && body.shadowRoot) opts.resolveImages(body.shadowRoot);
 }
 
 // ---- 异步渲染引擎（mermaid / echarts；阶段 6 增 graph / wordcloud） ----
@@ -223,6 +251,19 @@ const ASYNC_RENDERERS = {
 };
 const asyncCards = new Set(); // 已挂载的异步卡片节点，主题切换时逐个重渲染
 const asyncOpts = new Map();  // node → enhanceWidgets opts（重渲染时复用 openExternal 等）
+const asyncSvg = new Map();   // node → 最近一次渲染的 SVG（另存为导出用）
+
+// 消息整段重渲染会销毁旧节点：三张登记表以 node 为键，断连节点在下次 enhanceWidgets 清掉，
+// 避免长会话里持有已销毁 DOM。
+function sweepAsyncMaps() {
+    for (const node of Array.from(asyncCards)) {
+        if (!node.isConnected) {
+            asyncCards.delete(node);
+            asyncOpts.delete(node);
+            asyncSvg.delete(node);
+        }
+    }
+}
 
 function currentThemeId() {
     return document.documentElement.dataset.theme || '';
@@ -257,6 +298,10 @@ async function mountAsyncCard(node, body, lang, code, opts) {
         }
         body.innerHTML = '';
         mountShadow(body, svg, 'svg', asyncOpts.get(node) || opts);
+        asyncSvg.set(node, svg);
+        if (typeof asyncOpts.get(node)?.resolveImages === 'function' && body.shadowRoot) {
+            asyncOpts.get(node).resolveImages(body.shadowRoot);
+        }
     } catch (e) {
         if (!node.isConnected) {
             asyncCards.delete(node);
@@ -294,6 +339,7 @@ async function rerenderAsyncCards() {
                 continue;
             }
             fillShadow(body, svg, 'svg');
+            asyncSvg.set(node, svg);
         } catch (e) {
             // 尽力而为路径：重渲染失败保留旧图（旧主题色好过空白），不打断用户。
         }
@@ -305,6 +351,7 @@ async function rerenderAsyncCards() {
 // 此时建卡片会被反复销毁重建（闪烁且浪费）。返回实际挂载的数量。
 export function enhanceWidgets(root, opts = {}) {
     if (!root || typeof root.querySelectorAll !== 'function') return 0;
+    sweepAsyncMaps();
     const nodes = root.querySelectorAll('.ai-widget[data-widget-lang]');
     let mounted = 0;
     nodes.forEach((node, index) => {
