@@ -1977,7 +1977,8 @@ function renderWorkspaceCrumbs() {
     els.wsProjectName.textContent = name;
     els.wsProject.title = workspaceFolder;
     els.wsProjectBadge.textContent = projectBadgeText(name);
-    const branch = (gitStateCache.available && gitStateCache.branch) || '';
+    let branch = '';
+    try { branch = (gitStateCache.available && gitStateCache.branch) || ''; } catch (e) {}
     els.wsBranch.classList.toggle('hidden', !branch);
     els.wsBranchName.textContent = branch;
     els.wsBranch.title = branch ? '当前 Git 分支：' + branch + '（点击查看更多）' : '';
@@ -3984,7 +3985,10 @@ window.addEventListener('keydown', (e) => {
         return;
     }
     const key = e.key.toLowerCase();
-    if (!isDialogOpen() && gitStateCache.available && !isPlainTextEntryTarget()) {
+    // gitStateCache 在模块底部才从 bridgeUI 解构绑定；面板/求值早期到达的按键事件读它会 TDZ——按无仓库处理（同 getGitRepo 先例）
+    let gitAvailableEarly = false;
+    try { gitAvailableEarly = !!gitStateCache.available; } catch (e) {}
+    if (!isDialogOpen() && gitAvailableEarly && !isPlainTextEntryTarget()) {
         if (e.ctrlKey && !e.altKey && !e.shiftKey && key === 'k') {
             e.preventDefault();
             e.stopPropagation();

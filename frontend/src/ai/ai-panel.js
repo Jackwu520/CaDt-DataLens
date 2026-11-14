@@ -2077,6 +2077,11 @@ export function createAIPanel(options) {
         // 会话归属判定：自动化弹层只展示本工作区会话的任务（跨工作区的折叠成提示行）
         isSessionLocal: (session) => !session || !session.workspace
             || aiWorkspaceKey(session.workspace) === aiWorkspaceKey(currentWorkspacePath()),
+        // 胶囊 = 当前会话口径（与计时胶囊一致）
+        getSessionId: () => {
+            const session = currentSession();
+            return session ? session.id : '';
+        },
         onSchedulesChanged: () => {
             if (chipsPopKind === 'schedules') renderChipsPop('schedules');
         },
@@ -11615,6 +11620,8 @@ export function createAIPanel(options) {
         },
         // 计时器注册表（调试 / 插件作者可经 window.__lens.aiPanel.timerMod 驱动）
         timerMod,
+        // 定时任务域（调试驱动：renderChip / openAutomationDialog / renderScheduleSettings）
+        scheduleMod,
         // 任务提醒域（调试驱动：openCreateDialog / refresh）
         remindersMod,
         // 端侧分类器（设置页测试框 / 状态行 / 重置清空导出经此触达）

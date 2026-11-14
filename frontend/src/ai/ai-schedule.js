@@ -66,30 +66,38 @@ export function createAISchedule(ctx) {
         return ctx.chipSchedules || null;
     }
 
-    function refreshSchedulesUI() {
+    // 胶囊 = 当前会话口径（与计时胶囊一致）：只显示/统计绑定当前会话的启用任务；
+    // 其他会话与未绑定任务在「自动化」对话框与设置页可见。
+    function currentSessionTasks() {
+        const sid = typeof ctx.getSessionId === 'function' ? ctx.getSessionId() : '';
+        return scheduleListCache.filter((s) => s && s.enabled && s.sessionId && s.sessionId === sid);
+    }
+
+    function refreshSchedulesUI(onReady) {
         if (!backend.AIScheduleList) return;
         Promise.resolve(backend.AIScheduleList()).then((list) => {
             scheduleListCache = Array.isArray(list) ? list : [];
             const chip = chipEl();
             if (chip) {
-                const enabled = scheduleListCache.filter((s) => s && s.enabled);
-                chip.classList.toggle('hidden', !enabled.length);
+                const mine = currentSessionTasks();
+                chip.classList.toggle('hidden', !mine.length);
                 const countEl = chip.querySelector('.ai-chip-count');
                 if (countEl) {
-                    countEl.textContent = String(enabled.length);
-                    countEl.classList.toggle('hidden', !enabled.length);
+                    countEl.textContent = String(mine.length);
+                    countEl.classList.toggle('hidden', !mine.length);
                 }
                 const iconEl = chip.querySelector('.ai-chip-icon');
                 if (iconEl && !iconEl.dataset.ready) {
                     iconEl.dataset.ready = '1';
                     iconEl.innerHTML = iconSvg('clock', 12);
                 }
-                chip.title = enabled.length
-                    ? enabled.map((s) => s.name).join('、') + ' · 点击查看详情 / 编辑'
-                    : '定时任务（应用运行期间的计划触发）';
+                chip.title = mine.length
+                    ? mine.map((s) => s.name).join('、') + ' · 点击查看详情 / 编辑'
+                    : '定时任务（本会话绑定的计划触发）';
             }
             // 弹层开着时原位重渲染（重新定位）
             if (typeof ctx.onSchedulesChanged === 'function') ctx.onSchedulesChanged();
+            if (typeof onReady === 'function') onReady(scheduleListCache);
         }).catch(() => {
             // 列表读取失败：胶囊回退隐藏（设置页打开时已有错误呈现）
             const chip = chipEl();
@@ -101,15 +109,17 @@ export function createAISchedule(ctx) {
         refreshSchedulesUI();
     }
 
-    // 弹层：行点击进编辑器，底部「新建任务…」与「全部管理…」
+    // 弹层（胶囊点开）：只列绑定**当前会话**的启用任务（与胶囊口径一致）；
+    // 其他任务在「自动化」对话框与设置页。行点击进编辑器，底部新建与全部管理入口。
     function renderSchedulePop(host) {
         if (!host) return;
         host.textContent = '';
         const title = document.createElement('div');
         title.className = 'ai-chips-pop-title';
-        title.textContent = '定时任务';
+        title.textContent = '本会话的定时任务';
         host.appendChild(title);
-        const sorted = scheduleListCache.slice().sort((a, b) => ((b.enabled === true) - (a.enabled === true)));
+        refreshSchedulesUI();
+        const sorted = currentSessionTasks();
         for (const s of sorted) {
             const row = document.createElement('button');
             row.type = 'button';
@@ -137,7 +147,7 @@ export function createAISchedule(ctx) {
         if (!sorted.length) {
             const empty = document.createElement('div');
             empty.className = 'ai-chips-empty';
-            empty.textContent = '暂无定时任务，可让 AI 用 schedule_create 创建，或点下方「新建任务…」';
+            empty.textContent = '本会话暂无定时任务——可让 AI 用 schedule_create 创建（默认绑定本会话），或点下方「新建任务…」；其他会话的任务在「自动化」对话框查看';
             host.appendChild(empty);
         }
         const addBtn = document.createElement('button');
@@ -470,7 +480,7 @@ export function createAISchedule(ctx) {
 
     // ---- 自动化对话框（会话侧栏「自动化」按钮）：设置面板同款模态，任务按对话分组 + 全套操作 ----
     // 行操作（启停 / 编辑 / 删除）复用设置页的 renderScheduleRow，变化后原位重建本对话框。
-    function renderAutomationDialog() {
+    function openAutomationDialog() {
         if (!backend.AIScheduleList || !backend.AIScheduleCreate) {
             flash('当前版本不支持定时任务');
             return;
@@ -506,7 +516,7 @@ export function createAISchedule(ctx) {
                 groupTitle.className = 'ai-automation-group';
                 groupTitle.textContent = title;
                 body.appendChild(groupTitle);
-                for (const s of rows) body.appendChild(renderScheduleRow(s, renderAutomationDialog));
+                for (const s of rows) body.appendChild(renderScheduleRow(s, openAutomationDialog));
             };
             // 组间按会话最近活动排序（最近用过的对话靠上）
             const orderedSessions = [...localGroups.keys()].map((id) => getSessions().find((x) => x.id === id))
@@ -532,14 +542,11 @@ export function createAISchedule(ctx) {
             }
         };
         build(scheduleListCache);
-        const refresh = () => {
-            Promise.resolve(backend.AIScheduleList()).then((list) => {
-                scheduleListCache = Array.isArray(list) ? list : [];
-                // 对话框仍开着才原位重建（用户可能已切到编辑器）
-                if (body.isConnected) build(scheduleListCache);
-            }).catch(() => {});
-        };
-        refresh();
+        // 统一刷新：走 refreshSchedulesUI（缓存 / 头部胶囊 / chips 弹层一起更新），
+        // 完成后对话框仍开着才原位重建（用户可能已切到编辑器）
+        refreshSchedulesUI((list) => {
+            if (body.isConnected) build(list);
+        });
         const foot = [
             dialogButton('全部管理（设置）…', 'dlg-btn', () => { closeAIDialog(); if (typeof ctx.openSettings === 'function') ctx.openSettings('schedules'); }),
             dialogButton('新建任务…', 'dlg-btn primary', () => openScheduleEditor(null)),
