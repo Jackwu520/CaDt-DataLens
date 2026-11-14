@@ -1,4 +1,4 @@
-// AI 回答里的可视化卡片（svg / html / mermaid / echarts 围栏代码块）。
+// AI 回答里的可视化卡片（svg / html / mermaid / echarts / graph / wordcloud 围栏代码块）。
 // mermaid / echarts 走异步引擎：动态 import 渲染模块、vendor 按需加载，产物仍是静态 SVG，
 // 之后与 svg 卡片走同一条 sanitize → Shadow DOM 管线；主题切换（data-theme）触发重渲染。
 //
@@ -11,7 +11,7 @@
 import DOMPurify from 'dompurify';
 import {SHADOW_STYLE, VISUAL_BUDGET} from './visual-spec.js';
 
-const WIDGET_LANGS = new Set(['svg', 'html', 'htm', 'mermaid', 'echarts', 'chart']);
+const WIDGET_LANGS = new Set(['svg', 'html', 'htm', 'mermaid', 'echarts', 'chart', 'graph', 'wordcloud']);
 // 限额与 Shadow 基础样式来自 core/visual-spec.js（规范单一来源，代码与提示词共用一份预算）。
 const MAX_WIDGET_CHARS = VISUAL_BUDGET.maxWidgetChars;
 const MAX_WIDGETS_PER_MESSAGE = VISUAL_BUDGET.maxPerMessage;
@@ -21,8 +21,8 @@ const MAX_WIDGET_CSS_CHARS = VISUAL_BUDGET.maxCssChars;
 // chart 是 echarts 的兼容别名；显式 kind= 修饰优先于按语言推导的默认形态。
 export const WIDGET_KINDS = new Set(['diagram', 'chart', 'mockup', 'card']);
 const KIND_LABELS = {diagram: '图示', chart: '图表', mockup: '示意', card: '卡片'};
-const LANG_LABELS = {svg: 'SVG', html: 'HTML', mermaid: 'Mermaid', echarts: 'ECharts'};
-const LANG_DEFAULT_KIND = {svg: 'diagram', mermaid: 'diagram', echarts: 'chart', html: 'card'};
+const LANG_LABELS = {svg: 'SVG', html: 'HTML', mermaid: 'Mermaid', echarts: 'ECharts', graph: 'Graph', wordcloud: 'WordCloud'};
+const LANG_DEFAULT_KIND = {svg: 'diagram', mermaid: 'diagram', echarts: 'chart', graph: 'diagram', wordcloud: 'chart', html: 'card'};
 
 // 语言归一化：chart 是 echarts 的兼容别名；不在集合里返回空串。
 function normalizeWidgetLang(lang) {
@@ -243,11 +243,13 @@ function mountCard(node, lang, kind, code, opts) {
     if (typeof opts.resolveImages === 'function' && body.shadowRoot) opts.resolveImages(body.shadowRoot);
 }
 
-// ---- 异步渲染引擎（mermaid / echarts；阶段 6 增 graph / wordcloud） ----
+// ---- 异步渲染引擎（mermaid / echarts / graph / wordcloud） ----
 // 引擎模块动态 import：卡片首次挂载该类语言才加载，vendor 脚本随之按需注入，不进 Vite 主包。
 const ASYNC_RENDERERS = {
     mermaid: () => import('./mermaid-render.js').then((m) => m.renderMermaidToSvg),
     echarts: () => import('./chart-render.js').then((m) => m.renderEchartsToSvg),
+    graph: () => import('./layout-render.js').then((m) => m.renderGraphToSvg),
+    wordcloud: () => import('./wordcloud-render.js').then((m) => m.renderWordCloudToSvg),
 };
 const asyncCards = new Set(); // 已挂载的异步卡片节点，主题切换时逐个重渲染
 const asyncOpts = new Map();  // node → enhanceWidgets opts（重渲染时复用 openExternal 等）

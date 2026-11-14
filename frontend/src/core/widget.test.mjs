@@ -23,6 +23,8 @@ test('widgetLangOf 只认 svg / html / htm / mermaid / echarts（chart 是 echar
     assert.equal(widgetLangOf('echarts'), 'echarts');
     assert.equal(widgetLangOf('chart'), 'echarts');
     assert.equal(widgetLangOf('Chart kind=chart'), 'echarts');
+    assert.equal(widgetLangOf('graph'), 'graph');
+    assert.equal(widgetLangOf('wordcloud'), 'wordcloud');
     assert.equal(widgetLangOf('javascript'), '');
     assert.equal(widgetLangOf(''), '');
     assert.equal(widgetLangOf(null), '');
@@ -34,6 +36,8 @@ test('widgetKindOf 解析语言与 kind 修饰（显式 kind 优先，未知 kin
     assert.deepEqual(widgetKindOf('echarts'), {lang: 'echarts', kind: 'chart'});
     assert.deepEqual(widgetKindOf('chart'), {lang: 'echarts', kind: 'chart'});
     assert.deepEqual(widgetKindOf('html'), {lang: 'html', kind: 'card'});
+    assert.deepEqual(widgetKindOf('graph'), {lang: 'graph', kind: 'diagram'});
+    assert.deepEqual(widgetKindOf('wordcloud'), {lang: 'wordcloud', kind: 'chart'});
     assert.deepEqual(widgetKindOf('html kind=mockup'), {lang: 'html', kind: 'mockup'});
     assert.deepEqual(widgetKindOf('html kind=diagram'), {lang: 'html', kind: 'diagram'});
     assert.deepEqual(widgetKindOf('svg kind=notakind'), {lang: 'svg', kind: 'diagram'});

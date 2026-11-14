@@ -287,8 +287,42 @@ const ECHARTS_TEMPLATE = [
     '- 静态 SVG 没有 tooltip / dataZoom 等交互，不要写交互配置。',
 ].join('\n');
 
+
+// graph / wordcloud 提示词节（阶段 6）：模型只给数据，布局交给引擎，坐标不进上下文。
+const GRAPH_TEMPLATE = [
+    '## 12. 关系图自动布局（```graph 围栏，只给节点和边，坐标交给引擎）',
+    '',
+    '不想手排坐标的架构图 / 依赖图 / 调用图用它：',
+    '',
+    '```graph',
+    '{',
+    '  "nodes": [{"id": "ui", "label": "前端"}, {"id": "go", "label": "Go 后端"}, {"id": "db", "label": "SQLite"}],',
+    '  "edges": [{"from": "ui", "to": "go"}, {"from": "go", "to": "db"}],',
+    '  "algorithm": "layered"',
+    '}',
+    '```',
+    '',
+    '- algorithm 可选 layered（分层，默认）/ force（力导向）/ stress。',
+    '- 节点 ≤150、边 ≤300；节点 id 唯一，edges 的 from / to 必须是已有 id（不存在的边会被丢弃）。',
+    '- label 一行 ≤8 字为宜；不用写坐标，布局失败会自动退简单分层兜底。',
+].join('\n');
+
+const WORDCLOUD_TEMPLATE = [
+    '## 13. 词云（```wordcloud 围栏，词频数据）',
+    '',
+    '```wordcloud',
+    '{"words": [{"text": "解析", "value": 30}, {"text": "缓存", "value": 18}, {"text": "虚拟滚动", "value": 9}]}',
+    '```',
+    '',
+    '- words ≤120；value 是权重（正数，缺省 1），权重决定字号与颜色深浅。',
+    '- 适合主题词、日志关键词、tag 概览；停用词自己先过滤掉再给。',
+].join('\n');
+
+// 组装：inline-visual 一份文本承载全部图型规范（mermaid 速查 + echarts 模板 + graph + 词云）。
 export const VISUAL_RULES = {
-    inlineVisual: [INLINE_VISUAL_BASE, MERMAID_SHEET, ECHARTS_TEMPLATE].join('\n\n'),
+    inlineVisual: [INLINE_VISUAL_BASE, MERMAID_SHEET, ECHARTS_TEMPLATE, GRAPH_TEMPLATE, WORDCLOUD_TEMPLATE].join('\n\n'),
     mermaidSheet: MERMAID_SHEET,
     echartsTemplate: ECHARTS_TEMPLATE,
+    graphTemplate: GRAPH_TEMPLATE,
+    wordcloudTemplate: WORDCLOUD_TEMPLATE,
 };
