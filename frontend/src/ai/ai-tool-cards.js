@@ -6,21 +6,41 @@ import {createFileIcon} from '../fileicons.js';
 import {enhanceWidgets} from '../widget.js';
 import {aiFormatTime, aiTextOf} from './ai-constants.js';
 
-// 流式工具卡的增量摘要：从（可能还没闭合的）参数 JSON 里捞路径，附已接收体积。
+// 解码可能未闭合的 JSON 字符串字面量：截掉不完整转义、补收尾引号再 parse；
+// parse 仍失败（如截断的 \uXX）就退回手写替换。仅显示用，无需严格。
+function decodePartialJsonString(frag) {
+    const s = String(frag || '').replace(/\\+$/, '');
+    try {
+        return JSON.parse('"' + s + '"');
+    } catch (e) {
+        return s.replace(/\\n/g, '\n').replace(/\\r/g, '\r').replace(/\\t/g, '\t')
+            .replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+    }
+}
+
+// 流式工具卡的增量解析：路径（可能未闭合）拆成 文件名 / 目录，附已接收体积，
+// write_file 另带 content-so-far（可能未闭合的字符串字面量，解码后供 ± 行数估算）。
 // 模块级导出纯函数，ai-tool-cards.test.mjs 覆盖。
-export function liveToolSummary(args) {
+export function liveToolParts(args) {
     const raw = String(args || '');
     const size = raw.length >= 1024 ? (raw.length / 1024).toFixed(1) + ' KB' : raw.length + ' B';
-    const match = raw.match(/"path"\s*:\s*"((?:[^"\\]|\\.)*)/);
-    if (!match) return '参数接收中 ' + size;
-    let path = match[1];
-    try {
-        path = JSON.parse('"' + path + '"');
-    } catch (e) {
-        // 未闭合的转义序列解不了 JSON：直接用原文（仅显示用，无需严格解码）
-        path = match[1];
-    }
-    return path + ' · 参数接收中 ' + size;
+    const parts = {path: '', dir: '', name: '', size, content: null};
+    const pathMatch = raw.match(/"path"\s*:\s*"((?:[^"\\]|\\.)*)/);
+    if (!pathMatch) return parts;
+    parts.path = decodePartialJsonString(pathMatch[1]);
+    const idx = Math.max(parts.path.lastIndexOf('/'), parts.path.lastIndexOf('\\'));
+    parts.name = idx >= 0 ? parts.path.slice(idx + 1) : parts.path;
+    parts.dir = idx >= 0 ? parts.path.slice(0, idx) : '';
+    const contentMatch = raw.match(/"content"\s*:\s*"((?:[^"\\]|\\.)*)/);
+    if (contentMatch) parts.content = decodePartialJsonString(contentMatch[1]);
+    return parts;
+}
+
+// 旧版摘要文案（liveToolParts 的字符串形态），保留给测试与可能的复用。
+export function liveToolSummary(args) {
+    const parts = liveToolParts(args);
+    if (!parts.path) return '参数接收中 ' + parts.size;
+    return parts.path + ' · 参数接收中 ' + parts.size;
 }
 
 export function createAIToolCards(ctx) {
@@ -708,6 +728,87 @@ export function createAIToolCards(ctx) {
         }
     }
 
+    // write_file 流式 ± 行数：content-so-far 与基线（磁盘旧文本；不存在即新文件=空串）做行级 diff。
+    // 基线每条调用异步取一次缓存；每个流帧都重算（computeLineDiff 自带行数/单元格上限兜底），
+    // 内容没长 ≥256B 就复用上次结果，避免大文件每 80ms 跑一次 LCS。键 = 工具调用序号。
+    const liveBaseTexts = new Map();
+    const liveStatsCache = new Map();
+    let liveTurnMessage = null; // 换轮即清缓存：调用序号跨轮复用，基线不能串轮
+    function liveWriteStats(key, name, parts) {
+        if (name !== 'write_file' || parts.content === null || !parts.path) return null;
+        let base = liveBaseTexts.get(key);
+        if (base === undefined) {
+            liveBaseTexts.set(key, null); // pending 标记：基线还没读到
+            const fetch = ctx.readOptionalText
+                ? ctx.readOptionalText(parts.path)
+                : Promise.resolve({exists: false, text: ''});
+            fetch.then((r) => liveBaseTexts.set(key, {exists: !!r.exists, text: r.text || ''}))
+                .catch(() => liveBaseTexts.set(key, {exists: false, text: ''}));
+            return null;
+        }
+        if (base === null) return null;
+        const cached = liveStatsCache.get(key);
+        if (cached && cached.len <= parts.content.length && parts.content.length - cached.len < 256) return cached;
+        const ops = ctx.computeLineDiff(base.exists ? base.text : '', parts.content);
+        let added = 0;
+        let removed = 0;
+        for (const op of ops) {
+            if (op.t === '+') added++;
+            else if (op.t === '-') removed++;
+        }
+        const stats = {len: parts.content.length, added, removed};
+        liveStatsCache.set(key, stats);
+        return stats;
+    }
+
+    // 流式占位行：与真实工具卡头部同款结构（加载图标 / 动词 / 文件图标 / 文件名 / 目录 / ±统计 / 右侧状态），
+    // 整轮结束后由真实工具卡接替。
+    function liveToolRow(call) {
+        const meta = toolMeta(call.name);
+        const parts = liveToolParts(call.arguments);
+        const row = document.createElement('div');
+        row.className = 'ai-live-tool';
+        const spinner = document.createElement('span');
+        spinner.className = 'ai-tool-spinner';
+        const icon = document.createElement('span');
+        icon.className = 'ai-tool-icon';
+        icon.innerHTML = iconSvg(meta.icon || 'gear', 13);
+        const verb = document.createElement('span');
+        verb.className = 'ai-tool-verb';
+        verb.textContent = meta.verb || call.name;
+        row.append(spinner, icon, verb);
+        if (parts.path) {
+            if (parts.name) row.appendChild(createFileIcon(parts.name, 'ai-tool-fileicon'));
+            const primary = document.createElement('span');
+            primary.className = 'ai-tool-primary';
+            primary.textContent = parts.name || parts.path;
+            primary.title = parts.path;
+            row.appendChild(primary);
+            if (parts.dir) {
+                const dir = document.createElement('span');
+                dir.className = 'ai-tool-dir';
+                dir.textContent = parts.dir;
+                dir.title = parts.dir;
+                row.appendChild(dir);
+            }
+            const stats = liveWriteStats(call.key, call.name, parts);
+            if (stats) {
+                const add = document.createElement('span');
+                add.className = 'ai-tool-stat add';
+                add.textContent = '+' + stats.added;
+                const del = document.createElement('span');
+                del.className = 'ai-tool-stat del';
+                del.textContent = '−' + stats.removed;
+                row.append(add, del);
+            }
+        }
+        const state = document.createElement('span');
+        state.className = 'ai-tool-state';
+        state.textContent = '接收中 ' + parts.size;
+        row.appendChild(state);
+        return row;
+    }
+
     function updateAssistantElement(wrap, message, streaming, options) {
         if (!wrap) return;
         const hideThinking = !!(options && options.hideThinking);
@@ -803,23 +904,15 @@ export function createAIToolCards(ctx) {
             if (staleLive) staleLive.remove();
             const live = (streaming && options && Array.isArray(options.liveTools)) ? options.liveTools : null;
             if (live && live.length) {
+                if (message !== liveTurnMessage) {
+                    liveTurnMessage = message;
+                    liveBaseTexts.clear();
+                    liveStatsCache.clear();
+                }
                 const box = document.createElement('div');
                 box.className = 'ai-live-tools';
                 for (const call of live) {
-                    const meta = toolMeta(call.name);
-                    const row = document.createElement('div');
-                    row.className = 'ai-live-tool';
-                    const ico = document.createElement('span');
-                    ico.className = 'ai-live-tool-ico';
-                    ico.innerHTML = iconSvg(meta.icon || 'gear', 12);
-                    const name = document.createElement('span');
-                    name.className = 'ai-live-tool-name';
-                    name.textContent = meta.verb || call.name;
-                    const detail = document.createElement('span');
-                    detail.className = 'ai-live-tool-detail';
-                    detail.textContent = liveToolSummary(call.arguments);
-                    row.append(ico, name, detail);
-                    box.appendChild(row);
+                    box.appendChild(liveToolRow(call));
                 }
                 bubble.appendChild(box);
             }

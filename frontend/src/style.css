@@ -7134,7 +7134,7 @@ html[data-theme="whitey"] {
     white-space: pre-wrap;
     overflow-wrap: anywhere;
 }
-/* 流式中的工具调用占位：参数还在增量接收时先亮卡，避免写大文件时对话看着像卡住 */
+/* 流式中的工具调用占位：与真实工具卡同款外观（实线边框卡片行），内部复用 .ai-tool-* 头部样式 */
 .ai-live-tools {
     margin-top: 6px;
     display: flex;
@@ -7145,17 +7145,15 @@ html[data-theme="whitey"] {
     display: flex;
     align-items: center;
     gap: 6px;
-    padding: 3px 8px;
-    border: 1px dashed var(--border);
-    border-radius: 5px;
-    font-size: 11px;
+    padding: 5px 9px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--panel2);
+    font-size: 11.5px;
     color: var(--muted);
     min-width: 0;
 }
-.ai-live-tool-ico { flex: none; display: grid; place-items: center; color: var(--accent); }
-.ai-live-tool-ico svg { width: 12px; height: 12px; display: block; }
-.ai-live-tool-name { flex: none; color: var(--text); }
-.ai-live-tool-detail { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.ai-live-tool .ai-tool-state { color: var(--accent); }
 
 /* AI：范围切换与附加 chips */
 .ai-scope-row { display: flex; align-items: center; gap: 8px; min-width: 0; }

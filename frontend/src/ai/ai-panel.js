@@ -7248,6 +7248,19 @@ export function createAIPanel(options) {
 
     // ---------- 流式对话 ----------
 
+    // 「发送 / 停止」按钮显隐：空闲显示发送；生成中若输入区已有内容（文字 / 图片），
+    // 保持「发送」——点击排队、Ctrl+点击 插话；输入区为空才切回「停止」（要停止先清空输入）。
+    function syncSendStopButtons(busy) {
+        const hasContent = !!(el.input && el.input.value.trim())
+            || getAttachments().some((item) => item.kind === 'image');
+        const showStop = busy && !hasContent;
+        if (el.stop) el.stop.classList.toggle('hidden', !showStop);
+        if (el.send) el.send.classList.toggle('hidden', showStop);
+        if (el.send) el.send.title = (busy && hasContent)
+            ? '排队发送；Ctrl+点击 = 插话（停止当前回复并立即发送）'
+            : '发送';
+    }
+
     // composer 的「发送 / 停止」始终只看当前查看会话自己的流：
     // 别的会话在生成不影响这里（每个会话一条独立流），因此无需外部传入 active。
     function setStreamingUI() {
@@ -7255,11 +7268,10 @@ export function createAIPanel(options) {
         const viewing = currentSession();
         const compact = compactOf(viewing && viewing.id);
         const busy = !!stream || !!compact;
-        if (el.stop) el.stop.classList.toggle('hidden', !busy);
-        if (el.send) el.send.classList.toggle('hidden', busy);
+        syncSendStopButtons(busy);
         if (el.input) {
             el.input.placeholder = busy
-                ? '输入消息：Enter 排队，Ctrl+Enter 插话'
+                ? '输入消息：Enter/点击发送 排队，Ctrl+点击发送 插话'
                 : '发消息或粘贴图片；/ 调用指令，@ 提及文件';
         }
         updateSendState();
@@ -7267,7 +7279,7 @@ export function createAIPanel(options) {
         if (stream) {
             // 提示本轮实际使用的模型；对话中切换模型要到下一条消息才生效
             const running = (stream.profileCfg && stream.profileCfg.model) || (entryOf(currentSession()) || {}).model || '';
-            if (el.hint) el.hint.textContent = '生成中 · Enter 排队 · Ctrl+Enter 插话' + (running ? ' · ' + running : '');
+            if (el.hint) el.hint.textContent = '生成中 · Enter/点击发送排队 · Ctrl+Enter/Ctrl+点击发送 插话' + (running ? ' · ' + running : '');
         } else if (compact) {
             if (el.hint) el.hint.textContent = '正在压缩上下文…';
         }
@@ -7287,9 +7299,8 @@ export function createAIPanel(options) {
         const hasImages = getAttachments().some((item) => item.kind === 'image');
         const imageEntry = hasImages ? entryOf(currentSession()) : null;
         const imageBlocked = !!imageEntry && imageEntry.modalities && imageEntry.modalities.image === false;
-        el.send.disabled = !hasProfile || busy || archived || loadFailed || imageBlocked || (!hasText && !hasImages);
-        if (el.stop) el.stop.classList.toggle('hidden', !busy);
-        if (el.send) el.send.classList.toggle('hidden', busy);
+        el.send.disabled = !hasProfile || archived || loadFailed || imageBlocked || (!hasText && !hasImages);
+        syncSendStopButtons(busy);
         if (!busy && el.hint) {
             // 本会话空闲但别的会话在跑：给出提示，但发送按钮仍然是「发送」
             const others = streams.size;
@@ -7313,10 +7324,11 @@ export function createAIPanel(options) {
             if (index < 0) return;
             let wrap = el.messages.querySelector('.ai-msg.assistant[data-ai-idx="' + index + '"]');
             if (!wrap) return;
-            // 流式中的工具调用占位（name 已到、参数还在增量接收）随帧一起更新
+            // 流式中的工具调用占位（name 已到、参数还在增量接收）随帧一起更新；
+            // key = toolCalls 的序号，供占位行缓存 ± 统计与旧文件基线
             const liveTools = [];
-            for (const call of s.toolCalls.values()) {
-                if (call.name) liveTools.push({name: call.name, arguments: call.arguments});
+            for (const [key, call] of s.toolCalls.entries()) {
+                if (call.name) liveTools.push({key, name: call.name, arguments: call.arguments});
             }
             updateAssistantElement(wrap, s.assistant, true, liveTools.length ? {liveTools} : undefined);
             positionOverlays();
@@ -10960,7 +10972,7 @@ export function createAIPanel(options) {
                 }, 150);
             });
         }
-        if (el.send) el.send.addEventListener('click', submitFromComposer);
+        if (el.send) el.send.addEventListener('click', (e) => submitFromComposer(e));
         // 注意：不能直接传函数引用，click 会把 MouseEvent 当第一个参数（会被当成要停止的流）
         if (el.stop) el.stop.addEventListener('click', () => stopGeneration());
         panel.querySelectorAll('.ai-resize').forEach((handle) => {
@@ -11464,6 +11476,8 @@ export function createAIPanel(options) {
         approvalTraceNote,
         renderMessageQueue,
         updateComposerTakeover: (...args) => takeoverMod.updateComposerTakeover(...args),
+        readOptionalText,
+        computeLineDiff,
         thinkFoldState,
         toolFoldState,
         subAgentTranscripts: subagentsMod.subAgentTranscripts,

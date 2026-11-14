@@ -401,7 +401,8 @@ export function createAIComposer(ctx) {
         el.input.style.height = height + 'px';
     }
 
-    function submitFromComposer() {
+    // ev：点击事件可带 Ctrl/Meta——生成中点发送按钮 = 排队，按住 Ctrl 点 = 插话（与 Ctrl+Enter 同路）。
+    function submitFromComposer(ev) {
         if (!el.input) return;
         const text = el.input.value;
         const trimmed = text.trim();
@@ -412,7 +413,12 @@ export function createAIComposer(ctx) {
         }
         // 只有本会话在生成 / 压缩时才并入排队；别的会话在跑不影响本会话直接发送。
         if (syncStreamView() || compactOf((currentSession() || {}).id)) {
-            enqueueComposerMessage();
+            const interject = !!(ev && (ev.ctrlKey || ev.metaKey));
+            if (interject) {
+                interjectComposerMessage();
+            } else {
+                enqueueComposerMessage();
+            }
             return;
         }
         submitText(text);
