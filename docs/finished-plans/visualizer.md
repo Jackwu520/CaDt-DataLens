@@ -1,6 +1,6 @@
 # 统一可视化能力（Visualizer）实施计划
 
-> 状态：**方案已定 + 二次复核完成（2026-11-14），待实施**（仍未开工；复核修订已并入正文，摘要见 §11）
+> 状态：**已全部实施（阶段 1–6，2026-11-15），存档**（实施记录与偏差见 §12；提交序列 b45b4be → 7ee4be8 → 7d8be00 → 2533263 → 5977c09 → 3b57684）
 > 范围：AI 回答内的可视化（对话内卡片 + 落盘页面），不含主界面 Markdown 预览与阅读模式
 > 首轮交付：阶段 1–6 全部，含卡片「另存为」、图表引擎、ELK 布局与词云
 > 已定决策：围栏驱动 / 不做 `visualize` 工具 / 另存为纳入首轮 / **≤5 MB 依赖可接受，能力优先** / **ELK.js 与词云确认纳入**（见 §7）
@@ -447,3 +447,20 @@ chart.dispose();
 
 - 工作树存在与本案无关的未提交改动（`frontend/src/ai/ai-permissions.js` 修改、`frontend/src/ai/ai-local-classifier.js` 未跟踪），各阶段提交时必须避开。
 - 提交粒度按 §4：每阶段一个 conventional commit、中文描述，可独立 revert。
+
+## 12. 实施记录（2026-11-15，阶段 1–6 全部落地）
+
+提交序列（每阶段独立可回滚）：`b45b4be` 阶段 1 规范抽离 → `7ee4be8` 阶段 2 kind 路由与统一外壳 → `7d8be00` 阶段 3 图表引擎（mermaid + ECharts SSR + vendor echarts）→ `2533263` 阶段 4 另存为与本地图片解析 → `5977c09` 阶段 3 样式补提 → `3b57684` 阶段 6 ELK 与词云 →（本提交）阶段 5 文档同步与归档。
+
+与方案的偏差（均已在实施中验证）：
+
+1. **规范与引擎放 `src/core/` 而非 `src/ai/`**：目录归位后 `widget.js` 借驻 core（`markdown.js` 依赖它），core→ai 动态导入会成反向依赖；引擎与规范放 core 与 widget 同目录，未来 §10.2 应用自出图（editor 域）可直接复用。`AGENTS.md` 已按此登记。
+2. **mermaid 模块独立于 `editor/markdown-mermaid.js`**：目录归位后主界面 mermaid 已有共享模块，但其 API 绑定编辑器 deps（`currentTheme` 等），跨域引用违反域隔离；AI 卡片侧按方案默认自含加载器，共用同一份 vendor。
+3. **`ai-panel.js` 死导入确认并清理**：`enhanceWidgets` 真实调用点在 `ai-tool-cards.js`（阶段 3 拆出后一直如此），阶段 4 顺手删除。
+4. **`d3-cloud@2` 的 build 产物是 ES module**（方案未提及）：`<script>` 加载直接语法失败，改 `@vite-ignore` 动态 import；字面量路径会被 Rollup 当构建期依赖解析导致 `npm run build` 失败（实测），运行时拼接 URL 后通过。
+5. **echarts-wordcloud SSR 兼容性**：按方案备了双路——运行时检查 SSR 产物含 `<text>`，不满足退 d3-cloud 自拼；两条路的坐标/拼装纯函数都有测试。
+6. **另存为 slug** 取 `card-<base36 时间戳>`（方案未定格式）；产物形态按 §11.3 第 5 条执行（svg/html 卡导源码、异步卡导渲染后 SVG）。
+7. **体积逐字节复核**：echarts 1,121,883 B / elk 1,646,241 B / wordcloud 16,552 B / d3-cloud 35,269 B，与 §11.2 完全一致；许可证 elkjs EPL-2.0 全文、wordcloud ISC、d3-cloud BSD-3-Clause。
+8. **测试边界**：引擎测试只测纯函数（校验 / 主题注入 / 布局兜底 / SVG 拼装 / 降级边界）——Node 无 DOM 与 `window.echarts`，SSR 真实链路由浏览器冒烟覆盖；全量 `npm test`（313+ 例）与 `npm run build` 每阶段全绿。
+
+遗留（需浏览器人工冒烟）：§6 冒烟清单中的真实出图项（四种异步卡片、主题切换重渲染、流式不闪烁、SSR 缓存命中、词云 SSR 兼容路径实测）需在 `wails dev` 里过一遍；工具驱动切换的触发信号见 §9.3，未变。
