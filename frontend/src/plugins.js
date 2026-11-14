@@ -37,6 +37,14 @@ export function getPluginCommandClassifiers() {
     return [...commandClassifiers.values()];
 }
 
+// 最近一次 loadPlugins 的加载错误（每个插件一条「名称：原因」），供诊断 UI 区分
+// 「插件未安装」与「已安装但加载失败」——端侧分类器状态行据此不再误报「未安装」。
+let lastLoadErrors = [];
+
+export function getPluginLoadErrors() {
+    return [...lastLoadErrors];
+}
+
 function pluginError(plugin, message) {
     return new Error(`[${plugin.name || plugin.id}] ${message}`);
 }
@@ -175,6 +183,7 @@ export async function loadPlugins(backend) {
     themeStyles.clear();
     commands = [];
     commandClassifiers.clear();
+    lastLoadErrors = [];
     host.onPluginsChanged();
     if (!backend || typeof backend.GetPluginSources !== 'function') {
         return [];
@@ -183,7 +192,8 @@ export async function loadPlugins(backend) {
     try {
         sources = (await backend.GetPluginSources()) || [];
     } catch (e) {
-        return [`读取插件失败：${e}`];
+        lastLoadErrors = [`读取插件失败：${e}`];
+        return [...lastLoadErrors];
     }
     const errors = [];
     for (const source of sources) {
@@ -195,6 +205,7 @@ export async function loadPlugins(backend) {
             errors.push(message);
         }
     }
+    lastLoadErrors = [...errors];
     host.onPluginsChanged();
     return errors;
 }

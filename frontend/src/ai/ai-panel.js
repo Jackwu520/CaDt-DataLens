@@ -195,6 +195,10 @@ export function createAIPanel(options) {
     const getPluginCommandClassifiers = typeof opts.getPluginCommandClassifiers === 'function'
         ? opts.getPluginCommandClassifiers
         : () => [];
+    // 插件加载错误（状态行区分「未安装」与「加载失败」）
+    const getPluginLoadErrors = typeof opts.getPluginLoadErrors === 'function'
+        ? opts.getPluginLoadErrors
+        : () => [];
 
     function logActivity(action, target, detail, extra = {}) {
         if (!activity) return;
@@ -1966,6 +1970,7 @@ export function createAIPanel(options) {
         localClassifier: () => localClassifierMod,
         openSettings,
         getPluginCommandClassifiers,
+        getPluginLoadErrors,
         setSessions: (value) => { sessions = value; },
         getSkillsCache: () => skillsCache,
         getPermissionAudit: () => permissionAudit,

@@ -77,6 +77,7 @@ export function createAISettingsDialog(ctx) {
     const localClassifier = ctx.localClassifier;
     const openSettings = ctx.openSettings;
     const getPluginCommandClassifiers = ctx.getPluginCommandClassifiers;
+    const getPluginLoadErrors = typeof ctx.getPluginLoadErrors === 'function' ? ctx.getPluginLoadErrors : null;
     const getSkillsCache = ctx.getSkillsCache;
     const getPermissionAudit = ctx.getPermissionAudit;
     const setMemoryFallbackNotified = ctx.setMemoryFallbackNotified;
@@ -290,12 +291,16 @@ export function createAISettingsDialog(ctx) {
         if (!opt.localClassifierStatus) return;
         const plugins = typeof getPluginCommandClassifiers === 'function' ? getPluginCommandClassifiers() : [];
         const semanticReady = plugins.length > 0;
+        // 插件已安装但加载失败时如实显示原因，不误报「未安装」
+        const loadErrors = getPluginLoadErrors ? getPluginLoadErrors() : [];
         // 语义模型跳转口：未安装语义分类器插件时显示，一键带 onnx 关键词跳插件市场搜索
         if (opt.localClassifierMarket) {
             opt.localClassifierMarket.classList.toggle('hidden', semanticReady);
             opt.localClassifierMarket.onclick = () => openSettings('plugins', 'onnx');
         }
-        const pluginPart = plugins.length ? '插件：' + plugins.map((p) => p.label || p.id).join('、') : (semanticReady ? '' : '语义模型未安装');
+        const pluginPart = plugins.length
+            ? '插件：' + plugins.map((p) => p.label || p.id).join('、')
+            : (loadErrors.length ? '插件加载失败：' + loadErrors[0] : '语义模型未安装');
         if (getConfig().localClassifierEnabled !== true) {
             opt.localClassifierStatus.textContent = pluginPart || '未启用';
             return;

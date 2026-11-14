@@ -20,7 +20,7 @@ import {RECIPES, extOf, SELF_TEST} from './run.js';
 import {queryJsonPath} from './jsonpath.js';
 import {unifiedDiff} from './diff.js';
 import {validateJsonSchema} from './jsonschema.js';
-import {getPluginCommands, getPluginCommandClassifiers, loadPlugins} from './plugins.js';
+import {getPluginCommands, getPluginCommandClassifiers, getPluginLoadErrors, loadPlugins} from './plugins.js';
 import {createMarkdownRenderer} from './markdown.js';
 import {
     showPatchView, hidePatchView, disposePatchView, refreshPatchView,
@@ -2319,6 +2319,7 @@ function initAIPanel() {
         activity: activityLog,
         // 插件注册的命令分类器（plugins.js 域状态，端侧分类器聚合时读取）
         getPluginCommandClassifiers,
+        getPluginLoadErrors,
         openTermTab: (...args) => openBgTermTab(...args),
         runAppAction,
         hostAppActions: () => APP_ACTIONS,
