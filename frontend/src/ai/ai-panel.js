@@ -6096,10 +6096,75 @@ export function createAIPanel(options) {
         return lines.join('\n');
     }
 
+    // MCP 工具执行（§10.2/§15.4）：审批走与 write_file 同源的判定链（归入写权限档），
+    // 调用后留痕只记结构不记值（顶层键名 + 字节数 + 8 位 hash）——MCP 参数里出现
+    // token/密码/连接串是常态，不记值是硬线；需要原文走会话 JSONL（留痕是索引，会话是真源）。
+    async function executeMcpTool(name, input, ctx) {
+        const session = ctx && ctx.session;
+        const scope = currentScopeOf(session);
+        const rules = await ensureProjectRules(false);
+        const decision = decidePermission({
+            scope,
+            kind: 'write',
+            rules,
+            subject: name,
+            sessionAllow: !!(session && matchCommandRule(commandRulesFor(session), name, 'MCP 工具')),
+        });
+        logPermission('write', name, decision.decision, decision.source, decision.rule);
+        if (decision.decision === 'deny') {
+            return '项目权限规则禁止调用：' + name + '（规则 ' + decision.rule + '）';
+        }
+        if (decision.decision === 'ask') {
+            if (!session || !ctx.toolMessage) throw new Error('MCP 工具缺少会话上下文，无法请求审批');
+            const argsPreview = JSON.stringify(input || {}).slice(0, 2048);
+            const answer = await requestCommandApproval(session, ctx.toolMessage, {
+                command: name + (argsPreview === '{}' ? '' : ' ' + argsPreview),
+                cwd: 'MCP 工具',
+                tool: 'run_command',
+            });
+            if (!answer.approved) {
+                return answer.cancelled
+                    ? '用户已停止生成，未调用 MCP 工具。'
+                    : '用户未允许调用：' + name;
+            }
+        }
+        const startedAt = Date.now();
+        const route = mcpMod.routeInfo(name);
+        try {
+            const text = await mcpMod.callTool(name, input);
+            mcpLogActivity(route, name, input, 'ok', Date.now() - startedAt);
+            return text;
+        } catch (e) {
+            mcpLogActivity(route, name, input, 'error', Date.now() - startedAt);
+            throw e;
+        }
+    }
+
+    function mcpLogActivity(route, name, input, status, ms) {
+        if (!activity) return;
+        const keys = input && typeof input === 'object' ? Object.keys(input).sort() : [];
+        let bytes = 0;
+        let hash = '';
+        try {
+            const raw = JSON.stringify(input || {});
+            bytes = raw.length;
+            // FNV-1a 8 位 hex：仅用于事后比对「是不是同一个调用」，不接触原文
+            let h = 0x811c9dc5;
+            for (let i = 0; i < raw.length; i++) {
+                h ^= raw.charCodeAt(i);
+                h = Math.imul(h, 0x01000193) >>> 0;
+            }
+            hash = h.toString(16).padStart(8, '0');
+        } catch (e) {}
+        activity.log('mcp.tool', (route ? route.server + '/' + route.rawName : name), {
+            keys, bytes, hash, openWorld: !!(route && route.openWorld), status, ms,
+        }, {actor: 'ai', noRel: true});
+    }
+
     async function executeTool(name, args, ctx) {
         const input = args && typeof args === 'object' ? args : {};
-        // MCP 转发：公开名 mcp__ 前缀直通 Go 路由（查表发原始名），零侵入现有 switch
-        if (name.startsWith('mcp__')) return mcpMod.callTool(name, input);
+        // MCP 转发：公开名 mcp__ 前缀走审批判定后直通 Go 路由（查表发原始名），零侵入现有 switch
+        if (name.startsWith('mcp__')) return executeMcpTool(name, input, ctx);
         switch (name) {
             case 'list_dir': {
                 const rel = aiTextOf(input.path).trim() || '.';

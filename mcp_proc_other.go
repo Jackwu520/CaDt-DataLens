@@ -13,3 +13,7 @@ func mcpKillTree(cmd *exec.Cmd) error {
 	}
 	return nil
 }
+
+func mcpAttachJob(cmd *exec.Cmd) (func(), error) {
+	return nil, nil
+}

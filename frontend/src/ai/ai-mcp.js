@@ -76,6 +76,17 @@ export function createAIMcp(ctx) {
         return aiEstimateTokens(JSON.stringify(mcpToolToDef(tool)));
     }
 
+    // routeInfo：公开名 → 路由信息（server / 原始名 / openWorld），留痕用。
+    function routeInfo(publicName) {
+        for (const server of servers) {
+            const tool = server.tools.find((t) => t.publicName === publicName);
+            if (tool) {
+                return {server: server.name, rawName: String(tool.rawName || ''), openWorld: tool.openWorld === true};
+            }
+        }
+        return null;
+    }
+
     // callTool：公开名直通 Go 路由（查表发原始名，公开名绝不发给 server）。
     // isError 是 server 侧业务失败：不当异常，文本原样返回由模型自行收敛。
     async function callTool(name, args) {
@@ -101,6 +112,7 @@ export function createAIMcp(ctx) {
         mcpToolToDef,
         sanitizeSchema,
         toolTokenEstimate,
+        routeInfo,
         callTool,
         refresh,
         // 状态读取口（设置页 / 诊断）：返回快照副本，调用方不得直接改内部状态

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"strings"
 	"sync"
 	"time"
 )
@@ -284,7 +285,7 @@ func (m *mcpManager) connectGeneration(name string) {
 	}
 	if err != nil {
 		entry.connecting = false
-		m.scheduleReconnectLocked(entry, err.Error())
+		m.scheduleReconnectLocked(entry, mcpRedactSecrets(cfg.Env, err.Error()))
 		m.emitStatusLocked()
 		m.mu.Unlock()
 		client.close()
@@ -428,7 +429,7 @@ func (m *mcpManager) onLost(name string, client *mcpClient, reason string) {
 		entry.setStatusLocked(func(s *mcpStatus) {
 			s.State = "failed"
 			s.Reason = "unclosed-generation"
-			s.LastError = reason + "；" + cr.CleanupError
+			s.LastError = mcpRedactSecrets(entry.cfg.Env, reason + "；" + cr.CleanupError)
 		})
 		m.emitStatusLocked()
 		m.mu.Unlock()
@@ -513,16 +514,38 @@ func (m *mcpManager) stopEntry(entry *mcpServerEntry) {
 	}
 }
 
+// mcpRedactSecrets 失败路径脱敏（§10.4）：把该 server 配置 env 的值（长度 ≥ 8）从文本里替换掉。
+// 只用于诊断/错误文本；成功结果不脱敏——那是模型真正要用的内容，乱替换会破坏功能。
+func mcpRedactSecrets(env map[string]string, text string) string {
+	for _, value := range env {
+		if len(value) >= 8 && strings.Contains(text, value) {
+			text = strings.ReplaceAll(text, value, "[redacted]")
+		}
+	}
+	return text
+}
+
+// routeFor 公开名 → 路由信息（server / 原始名 / openWorld），前端留痕用。
+func (m *mcpManager) routeFor(publicName string) (mcpRoute, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	route, ok := m.routes[publicName]
+	return route, ok
+}
+
 // callTool 按公开名查表路由（绝不字符串反解），转发到对应 server 的原始名。
+// 失败路径文本经 env 值脱敏（args 可能把密钥带进错误回显）。
 func (m *mcpManager) callTool(publicName string, args json.RawMessage) (mcpCallResult, error) {
 	m.mu.Lock()
 	route, ok := m.routes[publicName]
 	var client *mcpClient
+	var env map[string]string
 	state := ""
 	if ok {
 		if entry := m.servers[route.Server]; entry != nil {
 			client = entry.client
 			state = entry.status.State
+			env = entry.cfg.Env
 		}
 	}
 	m.mu.Unlock()
@@ -535,7 +558,11 @@ func (m *mcpManager) callTool(publicName string, args json.RawMessage) (mcpCallR
 		}
 		return mcpCallResult{}, fmt.Errorf("MCP server %s 未连接", route.Server)
 	}
-	return client.callTool(context.Background(), route.Raw, args)
+	result, err := client.callTool(context.Background(), route.Raw, args)
+	if err != nil {
+		return mcpCallResult{}, fmt.Errorf("%s", mcpRedactSecrets(env, err.Error()))
+	}
+	return result, nil
 }
 
 type mcpSnapshotServer struct {

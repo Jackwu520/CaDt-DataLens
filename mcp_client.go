@@ -66,6 +66,7 @@ type mcpClient struct {
 	procCancel context.CancelFunc
 	cmd        *exec.Cmd
 	stdin      io.WriteCloser
+	jobClose   func() // Job Object 句柄释放（KILL_ON_JOB_CLOSE：关句柄 = 内核杀整组）
 	waitDone   chan struct{} // cmd.Wait 返回后关闭，waitErr 随之可见
 	waitErr    error
 
@@ -120,6 +121,11 @@ func (c *mcpClient) connect(ctx context.Context) error {
 	c.cmd = cmd
 	c.stdin = stdin
 	c.stderrLog = &mcpRingBuffer{limit: mcpStderrRingMax}
+	if closeJob, jobErr := mcpAttachJob(cmd); jobErr != nil {
+		writeAppLog("warn", "MCP %s Job Object 附加失败（taskkill 兜底仍在）：%v", c.name, jobErr)
+	} else {
+		c.jobClose = closeJob
+	}
 
 	c.conn = newRPCConn(stdin, c.onNotification)
 	go func() {
@@ -316,9 +322,11 @@ func (c *mcpClient) close() mcpCloseResult {
 	select {
 	case <-c.waitDone:
 		c.shutdownAll()
+		c.releaseJob()
 		return mcpCloseResult{CloseConfirmed: true}
 	case <-time.After(c.cfg.closeTimeout()):
-		c.procCancel() // 超预算：cmd.Cancel → 杀整棵树，WaitDelay 兜底管道
+		c.procCancel()  // 超预算：cmd.Cancel → 杀整棵树，WaitDelay 兜底管道
+		c.releaseJob()  // 内核兜底：句柄关闭即杀整组（覆盖 taskkill 失败/孤儿场景）
 		select {
 		case <-c.waitDone:
 			c.shutdownAll()
@@ -326,6 +334,13 @@ func (c *mcpClient) close() mcpCloseResult {
 		case <-time.After(mcpCloseForceWait):
 			return mcpCloseResult{CloseConfirmed: false, CleanupError: "进程在关闭预算内未退出且未能强制终止"}
 		}
+	}
+}
+
+func (c *mcpClient) releaseJob() {
+	if c.jobClose != nil {
+		c.jobClose()
+		c.jobClose = nil
 	}
 }
 
