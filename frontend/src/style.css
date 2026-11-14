@@ -4263,8 +4263,8 @@ a.jsoneditor-poweredBy { display: none !important; }
 
 /* settings dialog layout */
 .dialog-settings {
-    width: 780px;
-    height: 580px;
+    width: min(1060px, calc(100vw - 60px));
+    height: min(680px, calc(100vh - 60px));
     max-height: calc(100vh - 40px);
     display: flex;
     flex-direction: column;
@@ -4274,7 +4274,7 @@ a.jsoneditor-poweredBy { display: none !important; }
 .settings-layout { display: flex; flex: 1; min-height: 0; }
 .dialog-settings .settings-layout { min-height: 0; }
 .settings-nav {
-    width: 156px;
+    width: 232px;
     flex: none;
     padding: 10px 8px;
     border-right: 1px solid var(--border);
