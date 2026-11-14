@@ -5643,7 +5643,7 @@ html[data-theme="whitey"] {
 /* 任务清单：底栏上的卡片形态（边框/底/圆角与输入框一致）——展开任务列表时不显裸 */
 #ai-todos {
     flex: none;
-    margin: 6px 10px 8px;
+    margin: 0 10px 8px;
     border: 1px solid var(--border);
     border-radius: 9px;
     background: var(--panel2);
