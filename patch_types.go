@@ -124,6 +124,8 @@ type PatchPreview struct {
 	CreatedAt   int64          `json:"createdAt"`
 	DefaultMode string         `json:"defaultMode"`
 	External    bool           `json:"external,omitempty"`
+	// Reused 表示这次提交的补丁内容与库里已有补丁完全一致，复用了旧补丁（未新建文件）
+	Reused bool `json:"reused,omitempty"`
 	// 当前根下目标文件普遍缺失时，就近探测到的高命中率目录（仅建议，不自动切换）
 	SuggestedRoot   string `json:"suggestedRoot,omitempty"`
 	SuggestedHits   int    `json:"suggestedHits,omitempty"`

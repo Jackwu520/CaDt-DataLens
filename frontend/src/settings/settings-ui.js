@@ -571,6 +571,12 @@ function selectSettingsPane(pane) {
     else if (pane === 'run') deps.renderRunPane();
     else if (pane === 'envvars') deps.renderEnvVarsPane();
     else if (pane === 'activity') deps.renderActivityPane();
+    else if (pane === 'developer') {
+        // 补丁库：进面板时拉一次最近补丁（顺带触发 Go 侧滞留 applying 的自愈）
+        if (deps.patchesPane && typeof deps.patchesPane.refreshPatchStore === 'function') {
+            try { deps.patchesPane.refreshPatchStore(); } catch (e) {}
+        }
+    }
     if (pane === 'ai' || pane === 'models' || pane === 'context' || pane === 'preferences') {
         if (!deps.aiPanel) deps.initAIPanel();
         if (deps.aiPanel && typeof deps.aiPanel.refreshSettings === 'function') {
@@ -583,13 +589,15 @@ function selectSettingsPane(pane) {
             try { deps.aiPanel.refreshScheduleSettings(); } catch (e) {}
         }
     }
+    // 动态面板（格式总览 / 格式子页 / 运行 / AI 设置）每次重建都会生成新的 select，
+    // 渲染完再增强一次，避免它们退回原生外观。
+    selMod.enhanceSetSelects();
 }
 
 function openSettings(pane = 'general', preset) {
     dlgMod.openDialogEl(elsDialogs.settings);
     searchMod.resetSettingsSearch();
     selectSettingsPane(pane);
-    selMod.enhanceSetSelects();
     // 插件市场搜索预设（端侧分类器状态行的「下载语义模型」跳转带 onnx 关键词进来）
     if (pane === 'plugins' && preset) {
         const search = document.getElementById('plugin-market-search');

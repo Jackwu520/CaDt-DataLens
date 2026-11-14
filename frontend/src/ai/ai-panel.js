@@ -6572,6 +6572,11 @@ export function createAIPanel(options) {
                     return patchErrorText('PATCH_PARSE', '补丁无法解析或路径不合法', msg, true);
                 }
                 const okFiles = (preview.files || []).filter((f) => f.status === 'ok');
+                // 内容与库里已有补丁完全一致时后端直接复用（不新建文件）；告诉模型，
+                // 免得它以为每次重试都产出了新补丁
+                const reusedNote = preview.reused
+                    ? '（内容与已有补丁 ' + (preview.patchId || '') + ' 完全相同，已复用该补丁，未新建文件）'
+                    : '';
                 if (!okFiles.length) {
                     const first = (preview.files || []).find((f) => f.reason) || {};
                     attempt.count += 1;
@@ -6584,7 +6589,7 @@ export function createAIPanel(options) {
                 }
                 const allowApply = input.apply !== false;
                 if (!allowApply) {
-                    return '已生成补丁 ' + (preview.patchPath || '') + '（' + (preview.files || []).length + ' 文件 +' + preview.added + ' −' + preview.removed + '）\n'
+                    return '已生成补丁 ' + (preview.patchPath || '') + '（' + (preview.files || []).length + ' 文件 +' + preview.added + ' −' + preview.removed + '）' + reusedNote + '\n'
                         + '预检：' + okFiles.length + ' 个文件可应用。用户可打开该文件在补丁视图中应用。';
                 }
                 const decision = await requestPatchApproval(ctx.session, ctx.toolMessage, preview, allowApply);
@@ -6632,7 +6637,7 @@ export function createAIPanel(options) {
                     attempt.lastCode = result.code || 'PATCH_HUNK_CONFLICT';
                     patchAttempts.set(hash, attempt);
                 }
-                return patchResultText(result);
+                return (reusedNote ? reusedNote + '\n' : '') + patchResultText(result);
             }
             case 'write_file': {
                 if (!ctx || !ctx.session || !ctx.toolMessage) throw new Error('写操作缺少会话上下文');

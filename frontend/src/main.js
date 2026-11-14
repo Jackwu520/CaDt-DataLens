@@ -47,6 +47,7 @@ import {createGlobalSearch} from './explorer/global-search.js';
 import {createMessageCenter} from './shell/message-center.js';
 import {createFindBar} from './editor/find-bar.js';
 import {createActivityPane} from './settings/activity-pane.js';
+import {createSettingsPanePatches} from './settings/settings-pane-patches.js';
 import {createMenuBar} from './shell/menu-bar.js';
 import {createModeSwitch} from './shell/mode-switch.js';
 import {createTitlebarPopovers} from './shell/titlebar-popovers.js';
@@ -348,6 +349,7 @@ const els = {
     abFiles: document.getElementById('ab-files'),
     abStructure: document.getElementById('ab-structure'),
     abSearch: document.getElementById('ab-search'),
+    abBrowser: document.getElementById('ab-browser'),
     abMore: document.getElementById('ab-more'),
     abTerminal: document.getElementById('ab-terminal'),
     tbRun: document.getElementById('tb-run'),
@@ -1376,6 +1378,7 @@ const settingsUI = createSettingsUI({
     get LANG_DEFS() { return LANG_DEFS; },
     get LOCK_ICON() { return LOCK_ICON; },
     get readingMode() { return readingMode; },
+    get patchesPane() { return settingsPanePatches; },
     get refreshDeveloperMode() { return refreshDeveloperMode; },
     get refreshLogPath() { return refreshLogPath; },
     get relativePathFrom() { return relativePathFrom; },
@@ -2188,6 +2191,8 @@ function initActivityBar() {
         else openGlobalSearch();
     });
     if (els.tbRun) els.tbRun.addEventListener('click', () => runController.run());
+    // 新建浏览器标签页：活动栏是「一次性动作」而非面板开关，故无 aria-pressed
+    if (els.abBrowser) els.abBrowser.addEventListener('click', () => openBrowserTab('about:blank'));
     if (els.editorCollapseStrip) els.editorCollapseStrip.addEventListener('click', () => setEditorCollapsed(!editorCollapsedFlag));
     if (els.abTerminal) els.abTerminal.addEventListener('click', () => toggleDockView('terminal'));
     if (els.abDebug) els.abDebug.addEventListener('click', () => toggleDockView('debug'));
@@ -3115,6 +3120,13 @@ const activityPane = createActivityPane({
     get settings() { return settings; },
 });
 const {renderActivityPane} = activityPane;
+// 补丁库（设置 → 开发者）：最近补丁列表 + 删除（Go 侧 PatchDelete 负责回收文件与摘索引）
+const settingsPanePatches = createSettingsPanePatches({
+    get backend() { return backend; },
+    get flash() { return flash; },
+    get openCloseConfirm() { return openCloseConfirm; },
+    get root() { return workspaceFolder || ''; },
+});
 const debugConsoleBtn = document.getElementById('opt-debug-console');
 if (debugConsoleBtn) debugConsoleBtn.addEventListener('click', () => toggleDockView('debug'));
 elsSettings.openMode.addEventListener('change', () => {
@@ -3561,6 +3573,8 @@ function menuItems(kind) {
             return [
                 {label: '新建', shortcut: 'Ctrl+N', icon: 'E710', submenu: newDocumentMenuItems()},
                 {label: '新建窗口', shortcut: 'Ctrl+Shift+N', icon: 'E8A7', action: openNewWindow},
+                {label: '新建浏览器标签页', shortcut: 'Ctrl+Alt+B', icon: 'browser', action: () => openBrowserTab('about:blank')},
+                {label: '打开我的浏览器（保留登录）', icon: 'browser', action: () => openBrowserTab('about:blank', '', {personal: true})},
                 {sep: true},
                 {label: '打开…', shortcut: 'Ctrl+O', icon: 'E8E5', action: openDialog},
                 {label: '打开文件夹…', icon: 'E8B7', action: openFolderDialog},
@@ -4111,6 +4125,11 @@ window.addEventListener('keydown', (e) => {
         e.preventDefault();
         e.stopPropagation();
         formatDocument();
+    } else if (e.ctrlKey && e.altKey && !e.shiftKey && (key === 'b' || e.code === 'KeyB')) {
+        // 新建浏览器标签页（与活动栏图标、文件菜单同一入口）
+        e.preventDefault();
+        e.stopPropagation();
+        openBrowserTab('about:blank');
     } else if (e.ctrlKey && e.shiftKey && key === 's') {
         e.preventDefault();
         e.stopPropagation();

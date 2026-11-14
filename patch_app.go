@@ -94,20 +94,29 @@ func (a *App) PatchSave(root, summary, text string) (*PatchPreview, error) {
 	if err := os.MkdirAll(store, 0o755); err != nil {
 		return nil, &patchError{Code: patchErrNoBackup, Msg: "无法创建补丁目录", Detail: err.Error()}
 	}
+	body := normalizePatchBody(text)
+	// 内容复用：同一 root 下已有内容完全相同的补丁时直接复用，不再新建文件。
+	// 以前每次重试（预检冲突后重写 hunk）都落一份新 .patch，3 次重试就是 4 个重复补丁。
+	if old := findPatchBySHA(store, root, patchTextSHA(body)); old != nil {
+		return a.previewExistingPatch(old, root, doc)
+	}
 	id := newPatchRunID("")
 	slug := slugifyPatchSummary(summary)
 	patchPath := uniquePatchPath(store, slug)
-	body := text
-	if !strings.HasSuffix(body, "\n") {
-		body += "\n"
-	}
 	if err := os.WriteFile(patchPath, []byte(body), 0o644); err != nil {
 		return nil, &patchError{Code: patchErrApplyIO, Msg: "写入补丁文件失败", Detail: err.Error()}
 	}
 
 	plan, err := buildPatchPlan(doc, root, id, summary, patchPath, patchPlanOptions{})
 	if err != nil {
+		// 预检就失败的补丁不留档：刚写下的文件立刻删掉，避免失败重试堆积垃圾
+		_ = os.Remove(patchPath)
 		return nil, err
+	}
+	// 空补丁（+0/−0，也没有新增文件）没有任何价值，同样不落盘、不入索引
+	if plan.Added == 0 && plan.Removed == 0 && !planHasAddedFile(plan) {
+		_ = os.Remove(patchPath)
+		return nil, newPatchError(patchErrEmpty, "补丁没有任何改动（+0/−0）：未保存，请确认 hunk 是否写对")
 	}
 	// 记录基线（此刻的磁盘内容就是"生成时"的版本）
 	files := map[string]string{}
@@ -135,6 +144,29 @@ func fileNames(plan *patchPlan) []string {
 		out = append(out, f.RelPath)
 	}
 	return out
+}
+
+// planHasAddedFile 补丁里是否有新建文件（+0/−0 但新建空文件时 Added/Removed 也可能是 0）。
+func planHasAddedFile(plan *patchPlan) bool {
+	for _, f := range plan.Files {
+		if f != nil && f.Kind == "add" {
+			return true
+		}
+	}
+	return false
+}
+
+// previewExistingPatch 复用已存在的同内容补丁：重新预检并返回预览，不新建文件、不改索引。
+// 返回的预览带 reused=true，调用方据此提示「内容与已有补丁相同，已复用」。
+func (a *App) previewExistingPatch(old *patchIndexEntry, root string, doc *patchDoc) (*PatchPreview, error) {
+	plan, err := buildPatchPlan(doc, root, old.ID, old.Summary, old.PatchPath, patchPlanOptions{})
+	if err != nil {
+		return nil, err
+	}
+	putPatchPlan(plan)
+	preview := plan.toPreview()
+	preview.Reused = true
+	return preview, nil
 }
 
 // PatchPreviewFile 打开任意 .patch（外部补丁）：自动解析路径层级、带基线校验。
@@ -272,8 +304,10 @@ func (a *App) PatchRevert(patchID, root, onConflict string) (*PatchRevertResult,
 	return revertPatchByID(root, patchID, onConflict)
 }
 
-// PatchList 最近补丁列表（按时间倒序）。
+// PatchList 最近补丁列表（按时间倒序）。顺带做一次自愈：上次应用中途被打断、
+// 只留下 applying 没有终态的补丁会被收敛成 failed，列表不再永远显示「应用中」。
 func (a *App) PatchList(root string, limit int) ([]PatchMeta, error) {
+	reconcilePatchStore(root)
 	store := patchStoreRoot(root)
 	list := collectPatchMetas(store)
 	if limit > 0 && len(list) > limit {
@@ -282,17 +316,59 @@ func (a *App) PatchList(root string, limit int) ([]PatchMeta, error) {
 	return list, nil
 }
 
-// PatchDelete 删除补丁记录及其备份（文件进回收站）。
+// PatchDelete 删除补丁记录：补丁文件、备份、manifest、meta 一并送回收站，
+// 并从 index.jsonl 摘掉该 id 的全部历史行（proposed/applying/applied…）。
+// 已应用的补丁删除后无法再撤销，由界面二次确认。
 func (a *App) PatchDelete(id, root string) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return newPatchError(patchErrBackend, "缺少补丁 id")
+	}
 	store := patchStoreRoot(root)
 	if store == "" {
 		return newPatchError(patchErrNoBackup, "找不到补丁存储目录")
 	}
-	backup := filepath.Join(store, "backup", id)
-	if _, err := os.Stat(backup); err == nil {
-		_ = movePathToRecycleBin(backup)
+	release, lockErr := patchLockFor(root)
+	if lockErr != nil {
+		return newPatchError(patchErrBusy, "另一个窗口正在处理补丁，请稍后再试")
 	}
-	_ = os.Remove(filepath.Join(store, "manifest", id+".json"))
+	defer release()
+
+	entries := readPatchIndex(store)
+	patchPath := ""
+	for _, e := range entries {
+		if e.ID == id && e.PatchPath != "" {
+			patchPath = e.PatchPath
+		}
+	}
+	// 先算内容 sha：meta/<sha>.json 可能被同内容的其它补丁共享，不能盲删
+	sha := ""
+	if patchPath != "" {
+		if raw, err := os.ReadFile(patchPath); err == nil {
+			sha = patchTextSHA(normalizePatchBody(string(raw)))
+		}
+	}
+	// 先摘索引再回收文件：宁可留下孤儿文件，也绝不留下指向不存在文件的幽灵记录
+	if _, err := prunePatchIndex(store, id); err != nil {
+		return &patchError{Code: patchErrApplyIO, Msg: "补丁索引清理失败", Detail: err.Error()}
+	}
+	targets := []string{
+		filepath.Join(store, "backup", id),
+		filepath.Join(store, "manifest", id+".json"),
+	}
+	if patchPath != "" {
+		targets = append(targets, patchPath)
+	}
+	for _, path := range targets {
+		if _, err := os.Stat(path); err != nil {
+			continue
+		}
+		if err := patchRecycle(path); err != nil {
+			// 文件回收失败不影响索引已清理的结果，记日志便于手工处理
+			writeAppLog("WARN", "补丁文件回收失败（%s）：%v", path, err)
+		}
+	}
+	removePatchMetaIfUnused(store, sha)
 	return nil
 }
 
