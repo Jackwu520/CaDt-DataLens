@@ -2220,6 +2220,7 @@ function setEditorCollapsed(next) {
     if (topRow) topRow.classList.toggle('ai-editor-collapsed', target);
     if (els.editorCollapseStrip) {
         els.editorCollapseStrip.setAttribute('aria-pressed', String(target));
+        els.editorCollapseStrip.classList.toggle('active', target);
         els.editorCollapseStrip.title = target ? '展开编辑区' : '收起编辑区（标签页保留，位置让给 AI 助手）';
     }
     updateAiWidthWidget();
@@ -2315,6 +2316,8 @@ function initAIPanel() {
         fonts: {latin: uiFonts, cjk: cjkFonts, mono: editorFonts},
         saveSettings: applySettings,
         activity: activityLog,
+        // 插件注册的命令分类器（plugins.js 域状态，端侧分类器聚合时读取）
+        getPluginCommandClassifiers,
         openTermTab: (...args) => openBgTermTab(...args),
         runAppAction,
         hostAppActions: () => APP_ACTIONS,

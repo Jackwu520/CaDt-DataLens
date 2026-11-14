@@ -22,11 +22,13 @@ import {
     emptyPermissionRules,
     formatRuleLines,
     normalizeDefaultScope,
+    normalizeLocalClassifierStrictness,
     normalizePermissionRules,
     parseRuleLines,
     webRuleSubject,
     writeRuleSubject,
 } from './ai-permissions.js';
+import {createAILocalClassifier} from './ai-local-classifier.js';
 import {GIT_ACTIONS, buildGitActionPrompt} from './ai-git.js';
 import {createAIReminders, normalizeReminders, remindersForPrompt, reminderAddBlocked} from './ai-reminders.js';
 import {enhanceWidgets} from '../widget.js';
@@ -187,6 +189,10 @@ export function createAIPanel(options) {
     const toolbarButton = opts.toolbarButton || null;
     // 操作留痕服务（main.js 传入）：AI 审批/工具/会话动作落盘（activity-log.js）。
     const activity = opts.activity && typeof opts.activity.log === 'function' ? opts.activity : null;
+    // 插件命令分类器列表（main.js 传入，plugins.js 域不反向 import）
+    const getPluginCommandClassifiers = typeof opts.getPluginCommandClassifiers === 'function'
+        ? opts.getPluginCommandClassifiers
+        : () => [];
 
     function logActivity(action, target, detail, extra = {}) {
         if (!activity) return;
@@ -384,6 +390,15 @@ export function createAIPanel(options) {
         approvedClear: document.getElementById('ai-opt-approved-clear'),
         permissionClassifier: document.getElementById('ai-opt-auto-classifier'),
         permissionClassifierModel: document.getElementById('ai-opt-classifier-model'),
+        localClassifier: document.getElementById('ai-opt-local-classifier'),
+        localClassifierStrictness: document.getElementById('ai-opt-local-strictness'),
+        localClassifierPersonalize: document.getElementById('ai-opt-local-personalize'),
+        localClassifierStatus: document.getElementById('ai-opt-local-status'),
+        localClassifierTest: document.getElementById('ai-opt-local-test'),
+        localClassifierTestResult: document.getElementById('ai-opt-local-test-result'),
+        localClassifierReset: document.getElementById('ai-opt-local-reset'),
+        localClassifierClear: document.getElementById('ai-opt-local-clear'),
+        localClassifierExport: document.getElementById('ai-opt-local-export'),
         permissionsAllow: document.getElementById('ai-opt-perm-allow'),
         permissionsAsk: document.getElementById('ai-opt-perm-ask'),
         permissionsDeny: document.getElementById('ai-opt-perm-deny'),
@@ -574,6 +589,11 @@ export function createAIPanel(options) {
             autoClassifier: stored.autoClassifier === true,
             // 自动审批分类器的请求模型：'账号id|模型id'；空串 = 跟随当前模型
             autoClassifierModel: aiTextOf(stored.autoClassifierModel),
+            // 端侧命令分类器（内置线性模型，离线毫秒级；docs/unfinished-plans/local-command-classifier.md）
+            localClassifierEnabled: stored.localClassifierEnabled === true,
+            localClassifierStrictness: normalizeLocalClassifierStrictness(stored.localClassifierStrictness),
+            // 个性化后训练：从审批卡的用户显式裁定学习（批准 → y=0，拒绝 → y=1）
+            localClassifierPersonalize: stored.localClassifierPersonalize === true,
             // 应用内完成 toast 默认关（作者反馈：太烦人）；未发版，旧存量值直接忽略
             notifyInApp: false,
             notifySystem: stored.notifySystem === true,
@@ -855,6 +875,8 @@ export function createAIPanel(options) {
                 : null,
             singleUse: !!raw.singleUse,
             classifyNote: aiTextOf(raw.classifyNote),
+            askSource: aiTextOf(raw.askSource),
+            classifyScore: Math.min(1, Math.max(0, Number(raw.classifyScore) || 0)),
             denyRule: aiTextOf(raw.denyRule),
         };
     }
@@ -1931,6 +1953,9 @@ export function createAIPanel(options) {
         getSessions: () => sessions,
         updateCtxBanner: (...args) => updateCtxBanner(...args),
         getConfig: () => config,
+        // 端侧分类器（本模块构造于设置对话框之后，经 getter 惰性触达）
+        localClassifier: () => localClassifierMod,
+        getPluginCommandClassifiers,
         setSessions: (value) => { sessions = value; },
         getSkillsCache: () => skillsCache,
         getPermissionAudit: () => permissionAudit,
@@ -2032,6 +2057,17 @@ export function createAIPanel(options) {
         },
     });
     timerMod.syncFromBackend();
+
+    // 端侧命令分类器：内置线性模型（懒加载权重）+ 插件分类器聚合、失败熔断、个性化学习。
+    // 纯离线；只产出危险概率，判定在 approveCommandForRun 按严格度阈值完成。
+    const localClassifierMod = createAILocalClassifier({
+        getBackend: () => backend,
+        getAIAppDir,
+        readTextFile,
+        getConfig: () => config,
+        getPluginClassifiers: getPluginCommandClassifiers,
+        flash,
+    });
 
     // 计时器到点：向启动它的会话注入系统消息并唤醒一轮（与定时任务同一投递通道）
     async function wakeSessionByTimer(payload) {
@@ -4805,6 +4841,35 @@ export function createAIPanel(options) {
             return {approved: false, denied: true, rule: decision.rule};
         }
         if (decision.decision === 'classify') {
+            // 端侧分类器先行（内置线性模型 + 插件注册项）：离线毫秒级，产出危险概率，
+            // 按严格度阈值统一判 allow/ask。无可用分类器（未启用/加载失败/全部熔断）→ 回退远程。
+            const local = await localClassifierMod.classifyAll(command, {
+                cwd,
+                toolName: toolName || 'run_command',
+                sessionId: (session && session.id) || '',
+            });
+            if (local) {
+                const localNote = local.sourceLabel + ' score=' + local.score.toFixed(2) +
+                    (local.reason ? '：' + local.reason : '') +
+                    (local.classifierCount > 1 ? '（' + local.classifierCount + ' 个分类器合并）' : '');
+                if (local.allow) {
+                    logPermission('command', command, 'allow', 'local-classifier', 'score=' + local.score.toFixed(2));
+                    showNote('端侧分类器已放行：' + localNote);
+                    markCommandAutoApproved(session, toolMessage, command, cwd, toolName, 'local-classifier', localNote);
+                    return {approved: true};
+                }
+                // 端侧判险：直接转人工，不再消耗远程分类器调用（链路顺序固定：端侧先行）
+                logPermission('command', command, 'ask', 'local-classifier', 'score=' + local.score.toFixed(2) + ' ≥ ' + local.threshold);
+                showNote('端侧分类器转人工：' + localNote);
+                return await requestCommandApproval(session, toolMessage, {
+                    command,
+                    cwd,
+                    tool: toolName || 'run_command',
+                    classifyNote: localNote,
+                    askSource: 'local-classifier',
+                    classifyScore: local.score,
+                });
+            }
             toolMessage.content = '等待 AI 分类器判定…';
             refreshToolWrap(session, toolMessage);
             const verdict = await classifyCommandForAuto(session, command, cwd);
@@ -4839,6 +4904,7 @@ export function createAIPanel(options) {
         readonly: '自动审批已放行（只读命令）',
         family: '自动审批已放行（已知命令族）',
         classifier: '自动审批已放行（AI 分类器）',
+        'local-classifier': '自动审批已放行（端侧分类器）',
         session: '已按本会话授权，正在执行…',
         project: '已按项目权限规则放行，正在执行…',
         full: '完全权限，直接执行…',
@@ -5015,9 +5081,10 @@ export function createAIPanel(options) {
         };
         toolMessage.status = 'running';
         let text = COMMAND_AUTO_LABELS[source] || '自动审批已放行，正在执行…';
-        if (source === 'classifier') {
+        if (source === 'classifier' || source === 'local-classifier') {
             const reason = aiTextOf(detail).replace(/\s+/g, ' ').slice(0, 80);
-            text = reason ? '自动审批已放行（AI 分类器：' + reason + '）' : '自动审批已放行（AI 分类器）';
+            const label = source === 'classifier' ? 'AI 分类器' : '端侧分类器';
+            text = reason ? '自动审批已放行（' + label + '：' + reason + '）' : '自动审批已放行（' + label + '）';
         }
         toolMessage.content = text;
         // 消息可能已被排队中的持久化任务以「未审批」状态落盘：标记重写，保住放行来源。
@@ -5039,6 +5106,9 @@ export function createAIPanel(options) {
             danger,
             singleUse: info.singleUse === true || !!danger,
             classifyNote: aiTextOf(info.classifyNote),
+            // 端侧分类器转人工的来源标记：个性化学习只回流这类审批卡的用户显式裁定
+            askSource: aiTextOf(info.askSource),
+            classifyScore: Number(info.classifyScore) || 0,
         };
         toolMessage.approval = approval;
         toolMessage.status = 'pending';
@@ -5127,6 +5197,11 @@ export function createAIPanel(options) {
                 : approval.command)
             : (approval.relPath || approval.path || '');
         logPermission(auditKind, auditSubject, approved ? 'allow' : 'deny', 'user');
+        // 个性化回流（方案 §7.1）：只学端侧分类器转人工审批卡上的用户显式裁定
+        if (approval.kind === 'command' && approval.askSource === 'local-classifier') {
+            Promise.resolve(localClassifierMod.recordDecision(approval.command, approved))
+                .catch((e) => flash('分类器学习失败：' + ((e && e.message) || e), true));
+        }
         persistApprovalMutation(entry.session, toolMessage);
         refreshToolWrap(entry.session, toolMessage);
         entry.resolve({approved: !!approved, remember: remember || ''});
@@ -11325,6 +11400,8 @@ export function createAIPanel(options) {
         },
         // 计时器注册表（调试 / 插件作者可经 window.__lens.aiPanel.timerMod 驱动）
         timerMod,
+        // 端侧分类器（设置页测试框 / 状态行 / 重置清空导出经此触达）
+        localClassifierMod,
         refreshScheduleSettings: renderScheduleSettings,
         refreshContext,
         closeModelEditor,

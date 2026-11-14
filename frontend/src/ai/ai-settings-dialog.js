@@ -12,7 +12,8 @@ import {
 } from './ai-config-model.js';
 import {
     PERMISSION_VERSION, countPermissionRules, emptyPermissionRules, formatRuleLines,
-    normalizeDefaultScope, normalizePermissionRules, parseRuleLines, webRuleSubject, writeRuleSubject,
+    normalizeDefaultScope, normalizeLocalClassifierStrictness, normalizePermissionRules,
+    parseRuleLines, webRuleSubject, writeRuleSubject,
 } from './ai-permissions.js';
 import {matchCommandRule, commandFamilySignature, commandText} from './ai-command-rules.js';
 
@@ -72,6 +73,9 @@ export function createAISettingsDialog(ctx) {
     const switchProfile = ctx.switchProfile;
     const getConfig = ctx.getConfig;
     const setSessions = ctx.setSessions;
+    // 端侧命令分类器（ai-panel 构造，getter 惰性触达）与插件分类器列表
+    const localClassifier = ctx.localClassifier;
+    const getPluginCommandClassifiers = ctx.getPluginCommandClassifiers;
     const getSkillsCache = ctx.getSkillsCache;
     const getPermissionAudit = ctx.getPermissionAudit;
     const setMemoryFallbackNotified = ctx.setMemoryFallbackNotified;
@@ -133,6 +137,7 @@ export function createAISettingsDialog(ctx) {
         readonly: '只读命令',
         family: '已知命令族',
         classifier: 'AI 分类器',
+        'local-classifier': '端侧分类器',
         session: '本会话授权',
         project: '项目规则',
         full: '完全权限',
@@ -267,6 +272,70 @@ export function createAISettingsDialog(ctx) {
         if (select.value !== wanted) select.value = wanted;
     }
 
+    // 端侧分类器设置区（docs/unfinished-plans/local-command-classifier.md §5/§7）：
+    // 开关、严格度、个性化、测试框（不产生审批记录）、重置 / 清空 / 导出。
+    let localClassifierTestTimer = 0;
+    const LOCAL_CLASSIFIER_STRICTNESS_NAMES = {loose: '宽松', standard: '标准', strict: '严格'};
+
+    function renderLocalClassifierSettings() {
+        if (!opt.localClassifier) return;
+        opt.localClassifier.checked = getConfig().localClassifierEnabled === true;
+        if (opt.localClassifierStrictness) opt.localClassifierStrictness.value = normalizeLocalClassifierStrictness(getConfig().localClassifierStrictness);
+        if (opt.localClassifierPersonalize) opt.localClassifierPersonalize.checked = getConfig().localClassifierPersonalize === true;
+        renderLocalClassifierStatus();
+    }
+
+    function renderLocalClassifierStatus() {
+        if (!opt.localClassifierStatus) return;
+        const plugins = typeof getPluginCommandClassifiers === 'function' ? getPluginCommandClassifiers() : [];
+        const pluginPart = plugins.length ? '插件：' + plugins.map((p) => p.label || p.id).join('、') : '';
+        if (getConfig().localClassifierEnabled !== true) {
+            opt.localClassifierStatus.textContent = pluginPart || '未启用';
+            return;
+        }
+        const mod = typeof localClassifier === 'function' ? localClassifier() : null;
+        if (!mod) {
+            opt.localClassifierStatus.textContent = pluginPart || '不可用';
+            return;
+        }
+        mod.ensureLoaded().then(() => {
+            const st = mod.getStatus();
+            const bits = ['出厂 ' + (st.factoryVersion || '—')];
+            if (getConfig().localClassifierPersonalize === true) {
+                bits.push('样本 ' + st.sampleCount);
+                bits.push('delta ' + st.deltaDims + ' 维');
+                if (st.trainedAt) bits.push('最近学习 ' + new Date(st.trainedAt).toLocaleString());
+            }
+            if (st.disabled.length) bits.push('已熔断：' + st.disabled.join('、'));
+            if (pluginPart) bits.push(pluginPart);
+            opt.localClassifierStatus.textContent = bits.join(' · ');
+        }).catch(() => {
+            opt.localClassifierStatus.textContent = '权重加载失败';
+        });
+    }
+
+    function runLocalClassifierTest() {
+        if (!opt.localClassifierTestResult) return;
+        const command = (opt.localClassifierTest.value || '').trim();
+        if (!command) {
+            opt.localClassifierTestResult.textContent = '';
+            return;
+        }
+        if (getConfig().localClassifierEnabled !== true) {
+            opt.localClassifierTestResult.textContent = '端侧分类器未启用';
+            return;
+        }
+        const mod = typeof localClassifier === 'function' ? localClassifier() : null;
+        if (!mod) return;
+        mod.scoreText(command).then((r) => {
+            opt.localClassifierTestResult.textContent = 'score=' + r.score.toFixed(2) + ' → '
+                + (r.verdict.allow ? '放行' : '转人工') + '（' + LOCAL_CLASSIFIER_STRICTNESS_NAMES[normalizeLocalClassifierStrictness(getConfig().localClassifierStrictness)]
+                + ' 阈值 ' + r.verdict.threshold + (r.deltaDims ? ' · delta ' + r.deltaDims + ' 维' : '') + '）';
+        }).catch((e) => {
+            opt.localClassifierTestResult.textContent = '打分失败：' + ((e && e.message) || e);
+        });
+    }
+
     function renderPermissionSettings() {
         if (opt.permissionsPath) {
             const path = projectRulesPath();
@@ -275,6 +344,7 @@ export function createAISettingsDialog(ctx) {
         }
         if (opt.permissionClassifier) opt.permissionClassifier.checked = getConfig().autoClassifier === true;
         renderClassifierModelOptions();
+        renderLocalClassifierSettings();
         if (opt.permissionsSession) {
             opt.permissionsSession.innerHTML = '';
             const session = currentSession();
@@ -1659,6 +1729,61 @@ export function createAISettingsDialog(ctx) {
             const entry = selected ? modelEntryOf(selected, wanted.slice(sep + 1)) : null;
             const label = selected && entry ? (modelRefLabel(selected, entry) || wanted) : '当前模型';
             setSettingsStatus('自动审批分类器模型：' + label, 'ok');
+        });
+        if (opt.localClassifier) opt.localClassifier.addEventListener('change', () => {
+            getConfig().localClassifierEnabled = !!opt.localClassifier.checked;
+            saveAIConfig();
+            renderLocalClassifierStatus();
+            setSettingsStatus(getConfig().localClassifierEnabled
+                ? '端侧分类器：已启用（自动审批档先行离线判定）'
+                : '端侧分类器：已关闭', 'ok');
+        });
+        if (opt.localClassifierStrictness) opt.localClassifierStrictness.addEventListener('change', () => {
+            getConfig().localClassifierStrictness = normalizeLocalClassifierStrictness(opt.localClassifierStrictness.value);
+            saveAIConfig();
+            setSettingsStatus('端侧分类器严格度：' + LOCAL_CLASSIFIER_STRICTNESS_NAMES[getConfig().localClassifierStrictness], 'ok');
+        });
+        if (opt.localClassifierPersonalize) opt.localClassifierPersonalize.addEventListener('change', () => {
+            getConfig().localClassifierPersonalize = !!opt.localClassifierPersonalize.checked;
+            saveAIConfig();
+            renderLocalClassifierStatus();
+            setSettingsStatus(getConfig().localClassifierPersonalize
+                ? '个性化学习：已开启（学习你在端侧审批卡上的裁定）'
+                : '个性化学习：已关闭', 'ok');
+        });
+        if (opt.localClassifierTest) opt.localClassifierTest.addEventListener('input', () => {
+            if (localClassifierTestTimer) clearTimeout(localClassifierTestTimer);
+            localClassifierTestTimer = setTimeout(runLocalClassifierTest, 250);
+        });
+        if (opt.localClassifierReset) opt.localClassifierReset.addEventListener('click', () => {
+            const mod = typeof localClassifier === 'function' ? localClassifier() : null;
+            if (!mod) return;
+            askConfirm('重置端侧分类器？丢弃个性化修正，回到出厂权重（学习样本保留，可重训）。', () => {
+                mod.resetToFactory().then(() => {
+                    renderLocalClassifierStatus();
+                    setSettingsStatus('端侧分类器已重置回出厂权重', 'ok');
+                }).catch((e) => setSettingsStatus('重置失败：' + ((e && e.message) || e), 'error'));
+            }, '重置', '重置分类器');
+        });
+        if (opt.localClassifierClear) opt.localClassifierClear.addEventListener('click', () => {
+            const mod = typeof localClassifier === 'function' ? localClassifier() : null;
+            if (!mod) return;
+            askConfirm('清空端侧分类器的全部学习数据（样本 + 个性化修正）？该操作不可撤销。', () => {
+                mod.clearLearningData().then(() => {
+                    renderLocalClassifierStatus();
+                    setSettingsStatus('已清空端侧分类器学习数据', 'ok');
+                }).catch((e) => setSettingsStatus('清空失败：' + ((e && e.message) || e), 'error'));
+            }, '清空', '清空学习数据');
+        });
+        if (opt.localClassifierExport) opt.localClassifierExport.addEventListener('click', () => {
+            const mod = typeof localClassifier === 'function' ? localClassifier() : null;
+            if (!mod) return;
+            mod.exportData().then((dest) => {
+                if (dest) {
+                    setSettingsStatus('已导出：' + dest, 'ok');
+                    flash('分类器数据已导出到 ' + dest);
+                }
+            }).catch((e) => setSettingsStatus('导出失败：' + ((e && e.message) || e), 'error'));
         });
         if (opt.permissionsSave) opt.permissionsSave.addEventListener('click', () => {
             const allow = parseRuleLines(opt.permissionsAllow ? opt.permissionsAllow.value : '', 'allow');

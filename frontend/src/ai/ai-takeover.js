@@ -441,7 +441,9 @@ export function createAITakeover(ctx) {
                 : (approval.danger || approval.singleUse
                     ? '命令将在工作目录中执行；危险命令不提供「本会话 / 本项目允许」。'
                     : (approval.classifyNote
-                        ? '分类器建议人工确认：' + approval.classifyNote
+                        ? (approval.askSource === 'local-classifier'
+                            ? '端侧分类器转人工：' + approval.classifyNote
+                            : '分类器建议人工确认：' + approval.classifyNote)
                         : (commandFamily
                             ? '命令将在工作目录中执行；同类命令授权可保存到本会话或本项目，且不含管道、重定向或命令串联。'
                             : '命令将在工作目录中执行；授权仅本次对话。')));

@@ -14,6 +14,10 @@ const host = {
 
 let commands = [];
 const themeStyles = new Map();
+// 命令风险分类器（docs/unfinished-plans/local-command-classifier.md §4）：
+// 插件可注册 {id, label, classify(command, ctx) → {score, reason}}（可返回 Promise）。
+// score = 危险概率 [0,1]；无 deny 权——判定统一由 AI 面板按严格度阈值转 allow/ask。
+const commandClassifiers = new Map();
 
 export function initPluginRuntime(hooks) {
     Object.assign(host, hooks || {});
@@ -27,6 +31,10 @@ const iconThemes = {};
 
 export function getPluginIconThemes() {
     return iconThemes;
+}
+
+export function getPluginCommandClassifiers() {
+    return [...commandClassifiers.values()];
 }
 
 function pluginError(plugin, message) {
@@ -102,6 +110,31 @@ function apiFor(plugin) {
             themeStyles.set(id, style);
             host.addPluginTheme({id, name: String(spec.name || id), bg: spec.bg || '#1e1f24', accent: spec.accent || '#4f8cff'});
         },
+        // 注册命令风险分类器：{id, label, classify(command, ctx) → {score, reason}}
+        // ctx: {cwd, toolName, strictness, threshold, sessionId}；score = 危险概率 [0,1]，
+        // 分类器只产出概率（无 deny 权），allow/ask 由核心按严格度阈值统一判定。
+        registerCommandClassifier(spec) {
+            if (!spec || typeof spec !== 'object') {
+                throw pluginError(plugin, 'registerCommandClassifier 需要一个分类器对象');
+            }
+            const id = String(spec.id || '').trim();
+            if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(id)) {
+                throw pluginError(plugin, `分类器 id 无效：${JSON.stringify(spec.id)}`);
+            }
+            if (typeof spec.classify !== 'function') {
+                throw pluginError(plugin, '分类器缺少 classify 函数');
+            }
+            const fullId = `${plugin.id}:${id}`;
+            if (commandClassifiers.has(fullId)) {
+                throw pluginError(plugin, `分类器 ${id} 已注册`);
+            }
+            commandClassifiers.set(fullId, {
+                id: fullId,
+                pluginId: plugin.id,
+                label: String(spec.label || id).trim().slice(0, 40),
+                classify: spec.classify,
+            });
+        },
         getActiveFile() {
             return host.getActiveFile();
         },
@@ -141,6 +174,7 @@ export async function loadPlugins(backend) {
     }
     themeStyles.clear();
     commands = [];
+    commandClassifiers.clear();
     host.onPluginsChanged();
     if (!backend || typeof backend.GetPluginSources !== 'function') {
         return [];
