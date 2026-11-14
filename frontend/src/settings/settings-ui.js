@@ -750,6 +750,7 @@ const selMod = createSettingsSelect(deps);
 
 const searchDeps = Object.create(deps);
 searchDeps.selectSettingsPane = selectSettingsPane;
+searchDeps.elsSettings = elsSettings;
 const searchMod = createSettingsSearch(searchDeps);
 
     return {

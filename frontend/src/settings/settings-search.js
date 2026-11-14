@@ -35,7 +35,7 @@ function buildSettingsSearchIndex() {
 }
 
 function renderSettingsSearch(query) {
-    const box = elsSettings.settingsSearchResults;
+    const box = deps.elsSettings.settingsSearchResults;
     if (!box) return;
     const q = String(query || '').trim().toLowerCase();
     if (!q) {
@@ -84,23 +84,23 @@ function renderSettingsSearch(query) {
 }
 
 function resetSettingsSearch() {
-    if (elsSettings.settingsSearch) elsSettings.settingsSearch.value = '';
-    if (elsSettings.settingsSearchResults) {
-        elsSettings.settingsSearchResults.classList.add('hidden');
-        elsSettings.settingsSearchResults.textContent = '';
+    if (deps.elsSettings.settingsSearch) deps.elsSettings.settingsSearch.value = '';
+    if (deps.elsSettings.settingsSearchResults) {
+        deps.elsSettings.settingsSearchResults.classList.add('hidden');
+        deps.elsSettings.settingsSearchResults.textContent = '';
     }
 }
 
-if (elsSettings.settingsSearch) {
-    elsSettings.settingsSearch.addEventListener('input', () => renderSettingsSearch(elsSettings.settingsSearch.value));
-    elsSettings.settingsSearch.addEventListener('keydown', (e) => {
+if (deps.elsSettings.settingsSearch) {
+    deps.elsSettings.settingsSearch.addEventListener('input', () => renderSettingsSearch(deps.elsSettings.settingsSearch.value));
+    deps.elsSettings.settingsSearch.addEventListener('keydown', (e) => {
         if (e.key === 'Escape') {
             e.stopPropagation();
             e.preventDefault();
             resetSettingsSearch();
-            elsSettings.settingsSearch.blur();
+            deps.elsSettings.settingsSearch.blur();
         } else if (e.key === 'Enter') {
-            const first = elsSettings.settingsSearchResults.querySelector('.settings-search-item');
+            const first = deps.elsSettings.settingsSearchResults.querySelector('.settings-search-item');
             if (first) first.click();
         }
     });
