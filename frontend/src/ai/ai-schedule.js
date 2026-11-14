@@ -532,28 +532,56 @@ export function createAISchedule(ctx) {
         });
         head.append(title, sub, add);
         pop.appendChild(head);
-        // 按对话分组：绑定会话的任务归到该会话标题下，未绑定的归「每次新建会话」
+        // 按对话分组（会话隔离）：只展示本工作区会话的任务与未绑定任务；
+        // 绑定到其他工作区 / 已失效会话的任务折叠成提示行（设置页全部管理里仍可见）
         const buildList = (list) => {
-            const groups = new Map();
-            for (const s of (Array.isArray(list) ? list : [])) {
-                const key = s.sessionId || '';
-                if (!groups.has(key)) groups.set(key, []);
-                groups.get(key).push(s);
+            const tasks = Array.isArray(list) ? list : [];
+            const localGroups = new Map(); // sessionId → tasks（保持首次出现顺序）
+            let unbound = [];
+            let foreign = 0;
+            for (const s of tasks) {
+                if (!s.sessionId) {
+                    unbound.push(s);
+                    continue;
+                }
+                const session = getSessions().find((x) => x.id === s.sessionId);
+                const local = session && (typeof ctx.isSessionLocal !== 'function' || ctx.isSessionLocal(session));
+                if (!local) {
+                    foreign += 1;
+                    continue;
+                }
+                if (!localGroups.has(s.sessionId)) localGroups.set(s.sessionId, []);
+                localGroups.get(s.sessionId).push(s);
             }
-            for (const [sessionId, tasks] of groups) {
+            // 组间按会话最近活动排序（最近用过的对话靠上）
+            const orderedSessions = [...localGroups.keys()].map((id) => getSessions().find((x) => x.id === id))
+                .filter(Boolean)
+                .sort((a, b) => sessionActivity(b) - sessionActivity(a));
+            for (const session of orderedSessions) {
                 const groupTitle = document.createElement('div');
                 groupTitle.className = 'ai-automation-group';
-                groupTitle.textContent = sessionId
-                    ? '会话「' + (sessionTitleById(sessionId) || sessionId.slice(0, 8)) + '」'
-                    : '每次新建会话';
+                groupTitle.textContent = '会话「' + (session.title || '新会话') + '」';
                 pop.appendChild(groupTitle);
-                for (const s of tasks) pop.appendChild(automationRow(s));
+                for (const s of localGroups.get(session.id)) pop.appendChild(automationRow(s));
             }
-            if (!groups.size) {
+            if (unbound.length) {
+                const groupTitle = document.createElement('div');
+                groupTitle.className = 'ai-automation-group';
+                groupTitle.textContent = '每次新建会话';
+                pop.appendChild(groupTitle);
+                for (const s of unbound) pop.appendChild(automationRow(s));
+            }
+            if (foreign) {
+                const note = document.createElement('div');
+                note.className = 'ai-automation-group';
+                note.textContent = '另有 ' + foreign + ' 个任务属于其他工作区或已失效的会话——「全部管理（设置）」里可见';
+                pop.appendChild(note);
+            }
+            if (!localGroups.size && !unbound.length) {
                 const empty = document.createElement('div');
                 empty.className = 'ai-automation-empty';
                 const hint = document.createElement('span');
-                hint.textContent = '还没有定时任务';
+                hint.textContent = foreign ? '本工作区还没有定时任务' : '还没有定时任务';
                 empty.appendChild(hint);
                 const create = document.createElement('button');
                 create.type = 'button';

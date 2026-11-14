@@ -14,14 +14,16 @@ const globalSearch = {
     index: -1,
     root: '',
     previousFocus: null,
-    // 「搜索 AI 会话」扩展：默认不勾选；勾选后按 详细 / 简要 两档检索未归档会话
+    // 搜索范围分类（各自勾选，跨开关记忆上次选择）：
+    // 工作区文件 = SearchWorkspace 文本；AI 会话 = AISessionSearchScoped（简要 / 详细两档）
+    filesEnabled: true,
     aiEnabled: false,
     aiMode: 'brief',
     aiControlsBound: false,
 };
 
-// AI 会话搜索的控件行与样式：自带注入（不动 index.html / style.css），
-// 复用 gs- 系布局变量，勾选后才可用模式切换（简要 / 详细）。
+// 搜索范围控件行与样式：自带注入（不动 index.html / style.css），
+// 复用 gs- 系布局变量，勾选「AI 会话」后才可用模式切换（简要 / 详细）。
 function ensureAISearchControls() {
     if (globalSearch.aiControlsBound) return;
     const panel = deps.els.gsInput ? deps.els.gsInput.closest('#gs-panel') : null;
@@ -43,17 +45,28 @@ function ensureAISearchControls() {
     }
     const row = document.createElement('div');
     row.className = 'gs-ai-row';
-    const label = document.createElement('label');
-    const box = document.createElement('input');
-    box.type = 'checkbox';
-    box.id = 'gs-ai-enabled';
-    box.checked = globalSearch.aiEnabled;
-    box.addEventListener('change', () => {
-        globalSearch.aiEnabled = box.checked;
-        if (modeSel) modeSel.disabled = !box.checked;
+    // 分类勾选：工作区文件（默认勾选）/ AI 会话（默认不勾）
+    const filesLabel = document.createElement('label');
+    const filesBox = document.createElement('input');
+    filesBox.type = 'checkbox';
+    filesBox.id = 'gs-files-enabled';
+    filesBox.checked = globalSearch.filesEnabled;
+    filesBox.addEventListener('change', () => {
+        globalSearch.filesEnabled = filesBox.checked;
         scheduleGlobalSearch();
     });
-    label.append(box, document.createTextNode('搜索 AI 会话'));
+    filesLabel.append(filesBox, document.createTextNode('工作区文件'));
+    const aiLabel = document.createElement('label');
+    const aiBox = document.createElement('input');
+    aiBox.type = 'checkbox';
+    aiBox.id = 'gs-ai-enabled';
+    aiBox.checked = globalSearch.aiEnabled;
+    aiBox.addEventListener('change', () => {
+        globalSearch.aiEnabled = aiBox.checked;
+        if (modeSel) modeSel.disabled = !aiBox.checked;
+        scheduleGlobalSearch();
+    });
+    aiLabel.append(aiBox, document.createTextNode('AI 会话'));
     const modeSel = document.createElement('select');
     modeSel.className = 'gs-ai-mode';
     modeSel.id = 'gs-ai-mode';
@@ -69,7 +82,7 @@ function ensureAISearchControls() {
         globalSearch.aiMode = modeSel.value === 'full' ? 'full' : 'brief';
         scheduleGlobalSearch();
     });
-    row.append(label, modeSel);
+    row.append(filesLabel, aiLabel, modeSel);
     searchRow.parentElement.insertBefore(row, searchRow.nextSibling);
     globalSearch.aiControlsBound = true;
 }
@@ -84,13 +97,18 @@ function globalSearchRoot() {
     return '';
 }
 
-function openGlobalSearch() {
+// opts.aiOnly：只勾选「AI 会话」打开（AI 面板头部搜索入口用）；不传 = 保持上次分类选择
+function openGlobalSearch(opts) {
     if (globalSearch.open) {
         deps.els.gsInput.focus();
         deps.els.gsInput.select();
         return;
     }
-    const root = globalSearchRoot();
+    if (opts && opts.aiOnly) {
+        globalSearch.aiEnabled = true;
+        globalSearch.filesEnabled = false;
+    }
+    const root = globalSearch.root;
     globalSearch.open = true;
     globalSearch.root = root;
     globalSearch.previousFocus = document.activeElement;
@@ -99,13 +117,34 @@ function openGlobalSearch() {
     deps.els.gsRoot.textContent = root;
     deps.els.gsInput.value = '';
     deps.els.gsCount.textContent = '';
-    // 没打开工作区时仍可进面板：勾选「搜索 AI 会话」后可检索会话历史
-    showGlobalSearchEmpty(root
-        ? '输入内容，在打开的工作区中搜索文本'
-        : '未打开工作区——可勾选「搜索 AI 会话」在 AI 会话历史里搜索');
+    // 没打开工作区时仍可进面板：勾选「AI 会话」后可检索会话历史
+    showGlobalSearchEmpty(globalSearchEmptyHint());
     ensureAISearchControls();
+    syncScopeControls();
     deps.els.gsMask.classList.remove('hidden');
     deps.els.gsInput.focus();
+}
+
+// 空态提示按当前分类组合出文案
+function globalSearchEmptyHint() {
+    if (!globalSearch.filesEnabled && !globalSearch.aiEnabled) {
+        return '未选择搜索范围——请勾选上方分类';
+    }
+    if (!globalSearch.root && !globalSearch.aiEnabled) {
+        return '未打开工作区——可勾选「AI 会话」在 AI 会话历史里搜索';
+    }
+    if (!globalSearch.filesEnabled) return '在 AI 会话历史中搜索（仅此分类）';
+    return '输入内容，在打开的工作区中搜索文本';
+}
+
+// 控件行与状态同步（打开 / aiOnly 预设后调用）
+function syncScopeControls() {
+    const filesBox = document.getElementById('gs-files-enabled');
+    const aiBox = document.getElementById('gs-ai-enabled');
+    const modeSel = document.getElementById('gs-ai-mode');
+    if (filesBox) filesBox.checked = globalSearch.filesEnabled;
+    if (aiBox) aiBox.checked = globalSearch.aiEnabled;
+    if (modeSel) modeSel.disabled = !globalSearch.aiEnabled;
 }
 
 function closeGlobalSearch() {
@@ -144,15 +183,18 @@ async function runGlobalSearch() {
     globalSearch.index = -1;
     if (!query.trim()) {
         deps.els.gsCount.textContent = '';
-        showGlobalSearchEmpty(globalSearch.root
-            ? '输入内容，在打开的工作区中搜索文本'
-            : '未打开工作区——可勾选「搜索 AI 会话」在 AI 会话历史里搜索');
+        showGlobalSearchEmpty(globalSearchEmptyHint());
+        return;
+    }
+    if (!globalSearch.filesEnabled && !globalSearch.aiEnabled) {
+        deps.els.gsCount.textContent = '';
+        showGlobalSearchEmpty('未选择搜索范围——请勾选上方分类');
         return;
     }
     deps.els.gsCount.textContent = '搜索中…';
-    const root = globalSearch.root;
+    const root = globalSearch.filesEnabled ? globalSearch.root : '';
     const aiEnabled = globalSearch.aiEnabled && !!deps.backend.AISessionSearchScoped;
-    // 工作区与会话检索并行发起；无工作区时只搜会话
+    // 各分类按勾选并行发起；工作区未打开或未勾选时只搜会话
     const workspaceTask = root
         ? deps.backend.SearchWorkspace(root, query, false, 400).catch((e) => ({error: e}))
         : Promise.resolve({hits: []});

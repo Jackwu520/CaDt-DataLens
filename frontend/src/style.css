@@ -2941,7 +2941,6 @@ aside[data-sidebar-view="chats"] #ai-sessions-panel { display: flex; flex: 1; mi
     border-radius: 5px;
     cursor: pointer;
 }
-.ai-session-search { padding: 0 7px 0; }
 /* 会话侧栏顶部操作区：新建会话 / 自动化，一行一个（标题栏的 [+] 已并入这里） */
 .ai-session-actions { display: flex; flex-direction: column; gap: 4px; padding: 6px 7px; }
 .ai-session-action-btn {
@@ -3001,49 +3000,7 @@ aside[data-sidebar-view="chats"] #ai-sessions-panel { display: flex; flex: 1; mi
     color: var(--muted);
     font-size: 11.5px;
 }
-.ai-session-search-input {
-    width: 100%;
-    box-sizing: border-box;
-    padding: 4px 8px;
-    border: 1px solid var(--border);
-    border-radius: 5px;
-    background: var(--panel2);
-    color: var(--text);
-    font: inherit;
-    font-size: 11.5px;
-    outline: none;
-}
-.ai-session-search-input:focus { border-color: var(--accent); }
-.ai-session-search-input::placeholder { color: var(--muted); }
-.ai-session-search-count { padding: 5px 8px 2px; color: var(--muted); font-size: 10.5px; }
-.ai-session-hit {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    padding: 6px 8px;
-    border-radius: 5px;
-    cursor: pointer;
-}
-.ai-session-hit:hover { background: var(--hover); }
-.ai-session-hit-head { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 10px; }
-.ai-session-hit-title {
-    overflow: hidden;
-    color: var(--text);
-    font-size: 11.5px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-.ai-session-hit-snippet {
-    display: -webkit-box;
-    overflow: hidden;
-    color: var(--muted);
-    font-size: 10.5px;
-    line-height: 1.45;
-    word-break: break-word;
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 2;
-}
-.ai-session-hit-snippet mark { padding: 0 1px; border-radius: 2px; background: var(--accent-weak); color: var(--text); }
+/* 会话搜索框及其结果样式已删：搜索入口并入 AI 面板头部放大镜 → 全局搜索「AI 会话」分类 */
 .ai-msg-jump { box-shadow: 0 0 0 2px var(--accent); border-radius: 6px; transition: box-shadow .3s ease; }
 .ai-diagnostic-pre {
     max-height: 52vh;

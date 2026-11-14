@@ -40,12 +40,7 @@ export function createAISessionList(ctx) {
     const getSessions = ctx.getSessions;
     const setStickBottom = ctx.setStickBottom;
 
-    // —— 随域迁入的列表 / 搜索状态（原 ai-panel.js 闭包级）——
-    let sessionSearchQuery = '';
-    let sessionSearchHits = [];
-    let sessionSearchTimer = 0;
-    let sessionSearchSeq = 0;
-    let sessionSearchLoading = false;
+    // —— 随域迁入的列表状态（原 ai-panel.js 闭包级）；会话搜索框已删（并入全局搜索的「AI 会话」分类）——
     let archivedExpanded = false;
     const collapsedWorkspaceGroups = new Set();
     // 每个工作区分组一次只渲染最近 AI_SESSION_GROUP_PAGE 条会话，点分组底部的「···」再追加一页。
@@ -60,18 +55,6 @@ export function createAISessionList(ctx) {
         error: '会话出错，尚未查看',
     };
 
-    // 搜索框输入 / Escape 由 bindPanelInteractions 委托进来（计时器与序号状态在本模块）
-    function onSearchInput(value) {
-        clearTimeout(sessionSearchTimer);
-        sessionSearchTimer = setTimeout(() => {
-            runSessionSearch(value);
-        }, 180);
-    }
-    function cancelSessionSearch() {
-        sessionSearchSeq++;
-        runSessionSearch('');
-    }
-
     // 配置切换走「模型列表」卡片；旧的 <select id="ai-opt-profile"> 已从 HTML 移除
     function renderProfileSelect() {
         renderModelChip();
@@ -80,182 +63,6 @@ export function createAISessionList(ctx) {
     function sessionActivity(session) {
         const last = session.messages[session.messages.length - 1];
         return Number(last && last.ts) || Number(session.updatedAt) || Number(session.createdAt) || 0;
-    }
-
-    function searchSessionHitsLocal(query) {
-        const q = aiTextOf(query).trim().toLowerCase();
-        if (!q) return [];
-        const hits = [];
-        const maxTotal = 30;
-        const perSession = 4;
-        let scanned = 0;
-        const ordered = getSessions().slice().sort((a, b) => sessionActivity(b) - sessionActivity(a));
-        for (const session of ordered) {
-            if (hits.length >= maxTotal || scanned > 2000) break;
-            let count = 0;
-            const titleText = aiTextOf(session.title);
-            if (titleText.toLowerCase().includes(q)) {
-                hits.push({session, index: -1, role: '', name: '', titleHit: true, before: '', match: titleText, after: ''});
-                count++;
-            }
-            const list = session.messages || [];
-            for (let i = list.length - 1; i >= 0 && count < perSession && hits.length < maxTotal; i--) {
-                if (++scanned > 2000) break;
-                const message = list[i];
-                if (!message) continue;
-                const rawHaystack = [message.content, message.reasoning, message.name, message.arguments]
-                    .map((part) => aiTextOf(part)).filter(Boolean).join('\n');
-                if (!rawHaystack) continue;
-                // 单条上限防止超长工具输出把搜索拖死；超过后只搜前 200k 字符。
-                const haystack = rawHaystack.length > 200000 ? rawHaystack.slice(0, 200000) : rawHaystack;
-                const pos = haystack.toLowerCase().indexOf(q);
-                if (pos < 0) continue;
-                const start = Math.max(0, pos - 36);
-                const end = Math.min(haystack.length, pos + q.length + 54);
-                hits.push({
-                    session,
-                    index: i,
-                    mid: aiTextOf(message._mid),
-                    role: message.role,
-                    name: aiTextOf(message.name),
-                    before: haystack.slice(start, pos).replace(/\s+/g, ' '),
-                    match: haystack.slice(pos, pos + q.length),
-                    after: haystack.slice(pos + q.length, end).replace(/\s+/g, ' '),
-                });
-                count++;
-            }
-        }
-        return hits;
-    }
-
-    function sessionHitFromGo(raw) {
-        const snippet = aiTextOf(raw && raw.snippet);
-        let before = snippet;
-        let match = '';
-        let after = '';
-        const start = snippet.indexOf('\u0001');
-        const end = start >= 0 ? snippet.indexOf('\u0002', start + 1) : -1;
-        if (start >= 0 && end > start) {
-            before = snippet.slice(0, start);
-            match = snippet.slice(start + 1, end);
-            after = snippet.slice(end + 1);
-        }
-        const liveIndex = Number(raw && raw.liveIndex);
-        return {
-            sessionId: aiTextOf(raw && raw.sessionId),
-            title: aiTextOf(raw && raw.title),
-            role: aiTextOf(raw && raw.role),
-            name: aiTextOf(raw && raw.name),
-            mid: aiTextOf(raw && raw.mid),
-            index: Number.isInteger(liveIndex) ? liveIndex : -1,
-            titleHit: aiTextOf(raw && raw.kind) === 'title' || liveIndex < 0,
-            before,
-            match,
-            after,
-        };
-    }
-
-    // 优先走 Go 的 SQLite 索引；索引不可用时退回内存线性扫描。
-    async function runSessionSearch(rawQuery) {
-        const query = aiTextOf(rawQuery).trim();
-        const seq = ++sessionSearchSeq;
-        sessionSearchQuery = query;
-        if (!query) {
-            sessionSearchHits = [];
-            sessionSearchLoading = false;
-            renderSessionList();
-            return;
-        }
-        sessionSearchLoading = true;
-        sessionSearchHits = [];
-        renderSessionList();
-        let hits = null;
-        if (backend.AISessionSearch && sessionUseDisk()) {
-            try {
-                const list = await backend.AISessionSearch(query, 30);
-                if (seq !== sessionSearchSeq) return;
-                hits = (Array.isArray(list) ? list : []).map(sessionHitFromGo).filter((hit) => hit.sessionId);
-            } catch (e) {
-                hits = null;
-            }
-        }
-        if (seq !== sessionSearchSeq) return;
-        if (!hits) {
-            hits = searchSessionHitsLocal(query).map((hit) => ({
-                sessionId: hit.session ? hit.session.id : '',
-                title: hit.session ? hit.session.title : '',
-                role: hit.role,
-                name: hit.name,
-                mid: hit.mid || '',
-                index: hit.index,
-                titleHit: !!hit.titleHit,
-                before: hit.before,
-                match: hit.match,
-                after: hit.after,
-            })).filter((hit) => hit.sessionId);
-        }
-        sessionSearchHits = hits;
-        sessionSearchLoading = false;
-        renderSessionList();
-    }
-
-    function renderSessionSearchHits(scrollTop) {
-        sessionListEl.innerHTML = '';
-        const count = document.createElement('div');
-        count.className = 'ai-session-search-count';
-        count.textContent = sessionSearchLoading ? '搜索中…' : ('搜索结果 · ' + sessionSearchHits.length + ' 条');
-        sessionListEl.appendChild(count);
-        if (sessionSearchLoading) {
-            sessionListEl.scrollTop = scrollTop || 0;
-            return;
-        }
-        if (!sessionSearchHits.length) {
-            const empty = document.createElement('div');
-            empty.className = 'ai-session-empty';
-            empty.textContent = '没有匹配的会话内容';
-            sessionListEl.appendChild(empty);
-            return;
-        }
-        for (const hit of sessionSearchHits) {
-            const item = document.createElement('div');
-            item.className = 'ai-session-hit';
-            const head = document.createElement('div');
-            head.className = 'ai-session-hit-head';
-            const role = document.createElement('span');
-            role.textContent = hit.titleHit
-                ? '标题'
-                : (hit.role === 'user' ? '你' : (hit.role === 'assistant' ? 'AI' : '工具' + (hit.name ? ' · ' + hit.name : '')));
-            const title = document.createElement('span');
-            title.className = 'ai-session-hit-title';
-            title.textContent = hit.title || '新会话';
-            head.append(role, title);
-            const snippet = document.createElement('div');
-            snippet.className = 'ai-session-hit-snippet';
-            if (hit.titleHit) {
-                snippet.textContent = '会话标题匹配';
-            } else {
-                snippet.append(document.createTextNode(hit.before));
-                const mark = document.createElement('mark');
-                mark.textContent = hit.match;
-                snippet.append(mark, document.createTextNode(hit.after));
-            }
-            item.append(head, snippet);
-            item.addEventListener('click', () => {
-                const target = sessionById(hit.sessionId);
-                if (!target) return;
-                ensureOpen();
-                switchSession(target.id);
-                let targetIndex = hit.index;
-                if (hit.mid) {
-                    const found = (target.messages || []).findIndex((message) => message && message._mid === hit.mid);
-                    if (found < 0) return; // 消息已被压缩/删除，停在会话即可
-                    targetIndex = found;
-                }
-                if (targetIndex >= 0 && !hit.titleHit) jumpToMessage(target, targetIndex);
-            });
-            sessionListEl.appendChild(item);
-        }
-        sessionListEl.scrollTop = scrollTop || 0;
     }
 
     function jumpToMessage(session, index) {
@@ -342,10 +149,6 @@ export function createAISessionList(ctx) {
         const scrollTop = sessionListEl.scrollTop;
         sessionListEl.innerHTML = '';
         const current = currentSession();
-        if (sessionSearchQuery) {
-            renderSessionSearchHits(scrollTop);
-            return;
-        }
         const ordered = getSessions().slice().sort((a, b) => sessionActivity(b) - sessionActivity(a));
         if (!ordered.length) {
             const empty = document.createElement('div');
@@ -660,16 +463,10 @@ export function createAISessionList(ctx) {
     return {
         renderProfileSelect,
         sessionActivity,
-        searchSessionHitsLocal,
-        sessionHitFromGo,
-        runSessionSearch,
-        renderSessionSearchHits,
         setSessionUnread,
         renderSessionList,
         showSessionMenu,
         showSessionListMenu,
         clearSessionUnread,
-        onSearchInput,
-        cancelSessionSearch,
     };
 }

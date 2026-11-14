@@ -216,6 +216,8 @@ export function createAIPanel(options) {
         chipAgents: panel.querySelector('#ai-chip-agents'),
         chipTerms: panel.querySelector('#ai-chip-terms'),
         chipTimers: panel.querySelector('#ai-chip-timers'),
+        chipSchedules: panel.querySelector('#ai-chip-schedules'),
+        headSearch: panel.querySelector('#ai-head-search'),
         chipsPop: panel.querySelector('#ai-chips-pop'),
         agentView: panel.querySelector('#ai-agent-view'),
         close: panel.querySelector('#ai-close'),
@@ -302,7 +304,6 @@ export function createAIPanel(options) {
     const sessionActionNewBtn = document.getElementById('ai-session-action-new');
     const sessionActionAutoBtn = document.getElementById('ai-session-action-auto');
     const sessionMoreBtn = document.getElementById('ai-session-more');
-    const sessionSearchEl = document.getElementById('ai-session-search');
 
     const opt = {
         modelList: document.getElementById('ai-model-list'),
@@ -403,7 +404,6 @@ export function createAIPanel(options) {
         approvedClear: document.getElementById('ai-opt-approved-clear'),
         permissionClassifier: document.getElementById('ai-opt-auto-classifier'),
         permissionClassifierModel: document.getElementById('ai-opt-classifier-model'),
-        chipSchedules: panel.querySelector('#ai-chip-schedules'),
         localLinear: document.getElementById('ai-opt-local-linear'),
         localSemantic: document.getElementById('ai-opt-local-semantic'),
         localRefresh: document.getElementById('ai-opt-local-refresh'),
@@ -1956,8 +1956,6 @@ export function createAIPanel(options) {
     });
     const renderProfileSelect = () => sessionListMod.renderProfileSelect();
     const sessionActivity = (...args) => sessionListMod.sessionActivity(...args);
-    const runSessionSearch = (...args) => sessionListMod.runSessionSearch(...args);
-    const renderSessionSearchHits = (...args) => sessionListMod.renderSessionSearchHits(...args);
     const setSessionUnread = (...args) => sessionListMod.setSessionUnread(...args);
     const renderSessionList = () => sessionListMod.renderSessionList();
     const showSessionMenu = (...args) => sessionListMod.showSessionMenu(...args);
@@ -2075,6 +2073,9 @@ export function createAIPanel(options) {
         togglePop: (chip) => toggleChipsPop('schedules', chip),
         hideChipsPop: () => hideChipsPop(),
         openSettings,
+        // 会话归属判定：自动化弹层只展示本工作区会话的任务（跨工作区的折叠成提示行）
+        isSessionLocal: (session) => !session || !session.workspace
+            || aiWorkspaceKey(session.workspace) === aiWorkspaceKey(currentWorkspacePath()),
         onSchedulesChanged: () => {
             if (chipsPopKind === 'schedules') renderChipsPop('schedules');
         },
@@ -10517,6 +10518,9 @@ export function createAIPanel(options) {
 
     function showNote(text, isError) {
         if (!el.messages) return;
+        // 用户已上滚阅读时不强制拉底（判定胶囊/系统提示出现不该劫持滚动位置）：
+        // 仅当原本贴底附近才跟随滚动，否则保持原位，末条提示让滚动按钮提示即可
+        const nearBottom = el.messages.scrollHeight - el.messages.scrollTop - el.messages.clientHeight < 80;
         const empty = el.messages.querySelector('.ai-empty');
         if (empty) empty.remove();
         const note = document.createElement('div');
@@ -10528,7 +10532,7 @@ export function createAIPanel(options) {
             const first = el.messages.querySelector('.ai-note');
             if (first) first.remove();
         }
-        scrollToBottom(true);
+        if (nearBottom) scrollToBottom(true);
     }
 
     // ---------- 显示方式与几何 ----------
@@ -10941,16 +10945,11 @@ export function createAIPanel(options) {
             scheduleMod.openAutomationPop(sessionActionAutoBtn);
         });
         if (sessionMoreBtn) sessionMoreBtn.addEventListener('click', () => showSessionListMenu());
-        if (sessionSearchEl) {
-            // 搜索计时器与序号状态已随会话列表域迁入 ai-session-list.js
-            sessionSearchEl.addEventListener('input', () => sessionListMod.onSearchInput(sessionSearchEl.value));
-            sessionSearchEl.addEventListener('keydown', (e) => {
-                if (e.key !== 'Escape') return;
-                sessionSearchEl.value = '';
-                sessionListMod.cancelSessionSearch();
-                e.preventDefault();
-            });
-        }
+        // 会话搜索框已删：搜索入口在头部放大镜（开全局搜索并只勾选「AI 会话」分类）
+        if (el.headSearch) el.headSearch.addEventListener('click', () => {
+            ensureOpen();
+            if (typeof opts.onHeadSearch === 'function') opts.onHeadSearch();
+        });
         if (el.moreBtn) el.moreBtn.addEventListener('click', showMoreMenu);
         if (el.attachBtn) el.attachBtn.addEventListener('click', showAttachMenu);
         if (el.permission) el.permission.addEventListener('click', showPermissionMenu);

@@ -2314,6 +2314,8 @@ function initAIPanel() {
         overlayParent: document.getElementById('main-pane'),
         backend,
         settings,
+        // 头部放大镜：开全局搜索并只勾选「AI 会话」分类（会话搜索框已并入这里）
+        onHeadSearch: () => openGlobalSearch({aiOnly: true}),
         fonts: {latin: uiFonts, cjk: cjkFonts, mono: editorFonts},
         saveSettings: applySettings,
         activity: activityLog,
