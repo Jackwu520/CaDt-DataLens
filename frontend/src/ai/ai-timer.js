@@ -540,5 +540,7 @@ export function createAITimer(ctx) {
         chip.addEventListener('click', () => ctx.togglePop(chip));
     }
 
-    return {start, stop, sync, syncFromBackend, onFired, onStopped, renderPop, openCreateDialog, closeCreateDialog};
+    // render 必须导出：ai-panel 的 switchSession 会调它按目标会话重绘头部胶囊
+    // （漏导出会让每次切会话抛 "timerMod.render is not a function"，定时任务跨会话唤醒随之失败）。
+    return {start, stop, sync, syncFromBackend, onFired, onStopped, render, renderPop, openCreateDialog, closeCreateDialog};
 }

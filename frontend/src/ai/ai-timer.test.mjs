@@ -1,7 +1,7 @@
 // ai-timer 纯函数测试：计时器的会话隔离（显示过滤 + 会话内上限计数）。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {filterTimersForSession, countSessionTimers} from './ai-timer.js';
+import {filterTimersForSession, countSessionTimers, createAITimer} from './ai-timer.js';
 
 function makeTimers(entries) {
     const timers = new Map();
@@ -45,4 +45,22 @@ test('countSessionTimers：会话内上限只数归属自己的运行中计时�
     assert.equal(countSessionTimers(makeTimers([]), sessionIdOf, 'a'), 0);
     assert.equal(countSessionTimers(null, sessionIdOf, 'a'), 0);
     assert.equal(filterTimersForSession(null, sessionIdOf, 'a').length, 0);
+});
+
+// 导出面回归：ai-panel 是按名字调用工厂返回值的，漏导出不会在构建期报错，
+// 只在运行时炸（例：switchSession 调 timerMod.render() → "render is not a function"，
+// 顺带让「切会话后才能投递」的定时任务唤醒全部失败）。这里逐个校验调用点用到的成员。
+test('createAITimer：导出 ai-panel 依赖的全部 API', () => {
+    const api = createAITimer({
+        getBackend: () => null,
+        getSessionId: () => '',
+        getChip: () => null,
+    });
+    const required = [
+        'start', 'stop', 'sync', 'syncFromBackend', 'onFired', 'onStopped',
+        'render', 'renderPop', 'openCreateDialog', 'closeCreateDialog',
+    ];
+    for (const name of required) {
+        assert.equal(typeof api[name], 'function', '缺少导出：' + name);
+    }
 });

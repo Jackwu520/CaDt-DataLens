@@ -190,6 +190,11 @@ test('危险命令：单次确认清单', () => {
         ['robocopy a b /mir', 'robocopy-mirror'],
         ['cd src && rm -rf build', 'rm-recursive-force'],
         ['rm -rf build > log.txt', 'rm-recursive-force'],
+        ['node -e "1"', 'interpreter-inline-code'],
+        ['node --eval "1"', 'interpreter-inline-code'],
+        ['python -c "print(1)"', 'interpreter-inline-code'],
+        ['bash -lc "rm -rf /"', 'interpreter-inline-code'],
+        ['powershell -Command "Get-Process"', 'interpreter-inline-code'],
     ];
     for (const [command, ruleId] of cases) {
         assert.equal(analyzeDangerousCommand(command).dangerous, true, command);
@@ -207,6 +212,13 @@ test('危险命令：普通删除与只读操作不误报', () => {
         'git clean -n',
         'git reset --soft HEAD~1',
         'ls -la',
+        'node script.js',
+        'python app.py',
+        'bash -x build.sh',
+        'node --version',
+        'powershell -NoProfile -File x.ps1',
+        'php -S localhost:8000',
+        'git commit -m "node -e demo"',
     ];
     for (const command of cases) {
         assert.equal(analyzeDangerousCommand(command).dangerous, false, command);

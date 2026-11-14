@@ -361,6 +361,53 @@ export function analyzeReadOnlyCommand(command) {
     return {readOnly: true};
 }
 
+// 解释器 + 内联代码（node -e / python -c / bash -c / powershell -Command …）：
+// 代码作为 argv 传入，绕过了 argv 级的只读与危险分析（bash -c "rm -rf /" 在分段里看不到 rm），
+// 端侧线性模型对这类也给极低分（实测 node -e 在 0.03–0.06，低于 0.15 阈值直接放行）。
+// 因此一律走危险规则做单次确认：不经分类器、不长期放行。
+// 短标志按字母判定（bash -lc 同样命中），长选项与子命令按整词判定。
+// cmd /c 刻意不在清单内：它常被工具链用来包一层单命令，拦了误伤远大于收益。
+const INLINE_CODE_SHORT_FLAGS = {
+    node: ['e', 'p'],
+    nodejs: ['e', 'p'],
+    bun: ['e'],
+    python: ['c'],
+    python2: ['c'],
+    python3: ['c'],
+    py: ['c'],
+    perl: ['e'],
+    ruby: ['e'],
+    php: ['r'],
+    bash: ['c'],
+    sh: ['c'],
+    zsh: ['c'],
+    dash: ['c'],
+    ksh: ['c'],
+    fish: ['c'],
+};
+
+const INLINE_CODE_WORDS = {
+    node: ['--eval', '--print'],
+    nodejs: ['--eval', '--print'],
+    bun: ['--eval'],
+    deno: ['eval'],
+};
+
+// PowerShell 的长参数是单横线写法，不能按短选项拆字母（-command 会被拆出 c）。
+const POWERSHELL_INLINE_WORDS = ['-c', '-command', '-encodedcommand', '-enc', '-ec'];
+
+function isInterpreterInlineCode(exe, args, flags) {
+    if (!exe) return false;
+    if (exe === 'powershell' || exe === 'pwsh') {
+        return args.some((arg) => POWERSHELL_INLINE_WORDS.includes(String(arg).toLowerCase()));
+    }
+    const words = INLINE_CODE_WORDS[exe];
+    if (words && args.some((arg) => words.includes(String(arg).toLowerCase()))) return true;
+    const letters = INLINE_CODE_SHORT_FLAGS[exe];
+    if (!letters) return false;
+    return letters.some((ch) => flags.has(ch));
+}
+
 export const DANGER_LABELS = {
     'rm-recursive-force': '递归强制删除文件',
     'rmdir-recursive': '递归删除目录',
@@ -376,6 +423,7 @@ export const DANGER_LABELS = {
     'git-branch-force-delete': '强制删除分支',
     'git-update-ref-delete': '删除 Git 引用（update-ref -d）',
     'robocopy-mirror': '镜像目录（会删除目标端多余文件）',
+    'interpreter-inline-code': '解释器内联代码执行（-e / -c / -Command）',
 };
 
 function gitSegmentDangerRule(args) {
@@ -422,6 +470,7 @@ function segmentDangerRule(tokens) {
     const args = tokens.slice(1);
     const lowerArgs = args.map((arg) => String(arg).toLowerCase());
     const flags = shortFlagSet(args);
+    if (isInterpreterInlineCode(exe, args, flags)) return 'interpreter-inline-code';
     if (exe === 'rm') {
         const recursive = flags.has('r') || flags.has('--recursive');
         const force = flags.has('f') || flags.has('--force');

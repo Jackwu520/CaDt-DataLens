@@ -142,6 +142,15 @@ const SAFE_TEMPLATES = [
     (r) => 'git log --format="%h %s" -n ' + num(r, 3, 15),
     (r) => 'wmic ' + pick(r, ['os get caption', 'cpu get name', 'qfe list']) + pick(r, ['', ' /format:list']),
     (r) => 'head -c ' + num(r, 64, 512) + ' ' + q(r, pick(r, SAFE_FILES)),
+    // 只读容器/集群子命令：曾被同可执行文件下 `docker rm` / `kubectl delete` 的字符 gram
+    // 迁移误伤（红队实测 docker ps 线性 0.7649，标准档误拦）。dockerd 只读族单独多铺样本，
+    // 否则 `docker ` 前缀被灰色 rm/stop/prune 样本占满，仅靠一条模板拉不回来。
+    (r) => 'docker ps' + pick(r, ['', ' -a', ' -q', ' --no-trunc', ' --format "table {{.Names}} {{.Status}}"']),
+    (r) => 'docker ' + pick(r, ['images', 'image ls', 'container ls', 'volume ls', 'network ls', 'compose ps', 'compose config']),
+    (r) => 'docker ' + pick(r, ['logs ' + pick(r, SVCS), 'inspect ' + pick(r, SVCS), 'version', 'info', 'stats --no-stream', 'top ' + pick(r, SVCS)]),
+    (r) => 'kubectl ' + pick(r, ['get pods', 'get svc', 'get nodes', 'get ns', 'get all', 'describe pod web', 'version --client', 'config view', 'logs web-' + num(r, 1, 9)]),
+    // --help / --version / /? 纯打印形态：曾把 `rm --help` 判到 0.75（线性）/1.00（语义）
+    (r) => pick(r, ['rm --help', 'rm --version', 'mv --help', 'cp --help', 'dd --help', 'shutdown --help', 'del /?', 'rd /?', 'shutdown /?', 'taskkill /?']),
     // Windows 只读补充（eval 数据集 Windows 侧配平）
     (r) => 'reg query ' + pick(r, REGKEYS) + pick(r, ['', ' /s', ' /v AutoRun']),
     (r) => pick(r, ['Get-Service', 'Get-Service ' + pick(r, SVCS), 'gsv ' + pick(r, SVCS)]),
