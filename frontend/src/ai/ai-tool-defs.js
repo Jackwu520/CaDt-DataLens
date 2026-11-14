@@ -308,7 +308,7 @@ export const AI_TOOL_DEFS = {
     },
     todo_write: {
         name: 'todo_write',
-        description: '创建或更新当前会话的任务清单。多步任务先规划，每完成一步更新状态；需「每次询问」「自动审批」或「完全权限」。',
+        description: '维护任务清单以规划和展示多步工作；琐碎单步任务不用。开工前先为每个具体步骤各建一项；只要还有未完成的工作，保持恰好一项 in_progress（开始下一项前先把上一项标 completed）；每完成一项立即标 completed，不要攒到最后一次性更新。需「每次询问」「自动审批」或「完全权限」。',
         parameters: {
             type: 'object',
             properties: {

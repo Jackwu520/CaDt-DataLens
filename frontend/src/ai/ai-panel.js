@@ -6758,8 +6758,14 @@ export function createAIPanel(options) {
                 }
                 persistSessions();
                 if (isOpen() && currentSession() === session) renderTodos();
-                const done = list.filter((todo) => todo.status === 'completed').length;
-                return '已更新任务清单：' + list.length + ' 项（' + done + ' 项已完成）';
+                // 写入反馈带三分计数（dsh 同款）：模型每次写完都知道清单全貌，及时纠偏；
+                // 多个 in_progress 时温和提醒（并行子代理场景合法，不做硬拒）
+                const doing = list.filter((todo) => todo.status === 'in_progress').length;
+                const pending = list.length - done - doing;
+                let note = '任务清单已更新：' + pending + ' 项待处理、' + doing + ' 项进行中、' + done + ' 项已完成。';
+                if (doing > 1) note += '注意：多个任务同时 in_progress——串行工作应只保留一个，其余先标 pending 或 completed。';
+                if (done === list.length) note += '清单已全部完成。';
+                return note;
             }
             case 'run_command': {
                 if (!ctx || !ctx.session || !ctx.toolMessage) throw new Error('命令执行缺少会话上下文');
@@ -7285,6 +7291,28 @@ export function createAIPanel(options) {
             }
         }
 
+        // 任务清单现状注入（dsh 式节奏提醒）：AI 每轮开工都知道清单全貌与更新节奏，
+        // 治「过程中长期不更新、最后才一口气更新」——状态在轮上下文里，隔轮也不遗忘
+        {
+            const todos = Array.isArray(session.todos) ? session.todos : [];
+            const doingList = todos.filter((t) => t.status === 'in_progress');
+            const pendingCount = todos.filter((t) => t.status === 'pending').length;
+            const doneCount = todos.length - doingList.length - pendingCount;
+            if (doingList.length || pendingCount) {
+                const doingText = doingList.length
+                    ? doingList.length + ' 项进行中（' + doingList.map((t) => aiTextOf(t.content).slice(0, 50)).join('、') + '）'
+                    : '';
+                parts.push([
+                    '<task_todos>',
+                    '当前任务清单共 ' + todos.length + ' 项：' + doneCount + ' 项已完成' +
+                        (doingText ? '、' + doingText : '') + '、' + pendingCount + ' 项待处理。',
+                    '节奏：开始一项前先把它标 in_progress；完成一项立即标 completed；全部完成后无需清理清单。',
+                    '</task_todos>',
+                ].join('\n'));
+                meta.taskTodos = {count: todos.length, doing: doingList.length, pending: pendingCount};
+            }
+        }
+
         if (settings.aiInjectSkills !== false) {
             try {
                 const skills = await listSkills();
@@ -7605,6 +7633,13 @@ export function createAIPanel(options) {
         flushModelSwitchNote(session);
 
         const turnStartedAt = Date.now();
+        // 上一轮清单已全部完成：新轮开工即收走（dsh 的 turn/start 语义）——
+        // 不指望 AI 清理，旧清单也不跨轮挂在底部
+        if (Array.isArray(session.todos) && session.todos.length && session.todos.every((t) => t.status === 'completed')) {
+            session.todos = [];
+            persistSessions();
+            if (currentSession() === session) renderTodos();
+        }
         const userMessage = {
             role: 'user',
             content: value,
