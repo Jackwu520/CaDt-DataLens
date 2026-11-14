@@ -77,8 +77,12 @@ cadt.registerCommandClassifier({
 - **模型**：逻辑回归单层，权重 **int8 量化**（scale + offset 存储），单条推理 ≈ 1ms，权重文件预算 **≤ 200 KB**（8192 维 int8 ≈ 8 KB + 偏置 + 词表外参数，实际以训练产出为准）。
 - **语料与训练**（可复现入库）：
   - `scripts/classifier-corpus.mjs`：合成语料生成器——安全 ~250 条（git status/log/diff、ls、cat、head/tail、node -v、pip list、grep、find -name…）、危险 ~250 条（rm -rf/-fr 变体、del /f /s、rmdir /s、dd、mkfs、format、reg add、`curl | sh`、`wget | bash`、powershell -enc、taskkill /f、shutdown、磁盘设备写入…）、灰色 ~80 条（install / push / kill 等改环境类，标高险 → ask）；
-  - `scripts/train-local-classifier.mjs`：Node 内 SGD 训练 + 留出验证集（输出准确率 / 危险召回 / 误放率指标）+ int8 量化导出 → `frontend/src/ai/local-classifier-weights.mjs`；
-  - 验证子集固化进单测（`ai-local-classifier.test.mjs`）：高危样本 score ≥ 0.5、安全样本 ≤ 0.1、三档阈值判定表驱动。
+  - **模板参数化生成**（非死样本）：路径/参数/flag 顺序/大小写/引号风格随机化、`cd x &&` 前缀与 `| tee` 后缀扰动；训练/验证按固定种子 80/20 切分，**验证集用不同随机源的未见变体**（测泛化不测背诵）；
+  - `scripts/train-local-classifier.mjs`：纯 Node SGD（零依赖，~80 行）——30 epoch、lr 0.1 起步 ×0.85/epoch 衰减、单样本梯度 `g = p − y`、L2 正则拉向 0；
+  - **调参硬指标是误放率 ≈ 0**（fail-closed：宁可误拦不可误放），其次危险召回 ≥ 0.97、准确率仅作参考——三档严格度阈值 T 实质是验证集 ROC 上的三个工作点；
+  - **int8 量化导出**：`scale = max|w|/127`，只存非零维稀疏 int8（≈3–8 KB）+ 特征配置（n-gram 长度、哈希种子、维度数）随权重文件存储，保证训练/推理对齐 → `frontend/src/ai/local-classifier-weights.mjs`；
+  - 验证子集固化进单测（`ai-local-classifier.test.mjs`）：高危样本 score ≥ 0.5、安全样本 ≤ 0.1、三档阈值判定表驱动；
+  - **已知弱点与自愈**：`echo "rm -rf …"` 类引用文本会误报险（线性 n-gram 无法理解引用语义）→ 转人工后用户批准，个性化 SGD 将首词 echo 相关维度拉向安全（§7），基线保下限、个性化补真实分布。
 - **文件清单**：`src/ai/ai-local-classifier.js`（推理 + 阈值判定）、`local-classifier-weights.mjs`（量化权重）、`ai-local-classifier.test.mjs`、`scripts/classifier-corpus.mjs`、`scripts/train-local-classifier.mjs`。
 
 ## 7. 个性化后训练（方案 A 扩展，M1）
