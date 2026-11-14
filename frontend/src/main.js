@@ -20,7 +20,7 @@ import {RECIPES, extOf, SELF_TEST} from './run.js';
 import {queryJsonPath} from './jsonpath.js';
 import {unifiedDiff} from './diff.js';
 import {validateJsonSchema} from './jsonschema.js';
-import {getPluginCommands, loadPlugins} from './plugins.js';
+import {getPluginCommands, getPluginCommandClassifiers, loadPlugins} from './plugins.js';
 import {createMarkdownRenderer} from './markdown.js';
 import {
     showPatchView, hidePatchView, disposePatchView, refreshPatchView,
