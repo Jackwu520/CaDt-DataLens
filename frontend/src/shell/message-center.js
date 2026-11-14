@@ -3,7 +3,8 @@
 // 版本更新等系统事件。右下角 toast 只是消息的「可选弹出形态」——弹完消失后消息仍在列表里
 // （localStorage 持久化，上限 100 条，超出淘汰最旧）。
 // ctx: {
-//   focusSession(sessionId)  toast 点击跳转到对应 AI 会话（main.js 传懒箭头）
+//   focusSession(sessionId)        toast 点击跳转到对应 AI 会话（main.js 传懒箭头）
+//   runAction(actionId, item)      带 actionId 的消息被点击时分派动作（如打开更新对话框）
 // }
 export function createMessageCenter(ctx) {
     const KEY = 'datalens-message-center';
@@ -61,7 +62,8 @@ export function createMessageCenter(ctx) {
         if (pop && pop.isConnected) renderPanel(pop);
     }
 
-    // 新增消息：msg = {kind: 'ai'|'success'|'error'|'update'|'info', title, body, sessionId?}；
+    // 新增消息：msg = {kind: 'ai'|'success'|'error'|'update'|'info', title, body, sessionId?, actionId?}；
+    // actionId 是可持久化的动作标识（点击消息时分派给 ctx.runAction，如 'open-update-dialog'）；
     // opts.toast = true 时右下角弹出提示框（弹完消息仍在列表）。
     function add(msg, opts) {
         const item = {
@@ -71,6 +73,7 @@ export function createMessageCenter(ctx) {
             title: String((msg && msg.title) || '').slice(0, 120) || '消息',
             body: String((msg && msg.body) || '').slice(0, 2000),
             sessionId: String((msg && msg.sessionId) || ''),
+            actionId: String((msg && msg.actionId) || ''),
             read: false,
         };
         messages.unshift(item);
@@ -139,7 +142,11 @@ export function createMessageCenter(ctx) {
             dismiss();
         });
         toast.addEventListener('click', () => {
-            if (item.sessionId && typeof ctx.focusSession === 'function') ctx.focusSession(item.sessionId);
+            if (item.actionId && typeof ctx.runAction === 'function') {
+                ctx.runAction(item.actionId, item);
+            } else if (item.sessionId && typeof ctx.focusSession === 'function') {
+                ctx.focusSession(item.sessionId);
+            }
             dismiss();
         });
         host.appendChild(toast);
@@ -204,7 +211,11 @@ export function createMessageCenter(ctx) {
                     persist();
                     refreshBadge();
                 }
-                if (item.sessionId && typeof ctx.focusSession === 'function') ctx.focusSession(item.sessionId);
+                if (item.actionId && typeof ctx.runAction === 'function') {
+                    ctx.runAction(item.actionId, item);
+                } else if (item.sessionId && typeof ctx.focusSession === 'function') {
+                    ctx.focusSession(item.sessionId);
+                }
                 closePanel();
             });
             host.appendChild(row);

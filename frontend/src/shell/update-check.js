@@ -59,54 +59,28 @@ function renderUpdateResult(info) {
     }
 }
 
-// ---- 启动时自动检查更新（可在设置关闭），结果展示在右下角状态栏 ----
-const SPINNER_HTML = '<svg class="spin-icon" viewBox="0 0 12 12" aria-hidden="true"><circle cx="6" cy="6" r="4.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-dasharray="20 9" stroke-linecap="round"/></svg>';
-let updateStatusTimer = 0;
-
-function setUpdateStatus(html, opts = {}) {
-    if (!deps.els.stUpdate) return;
-    clearTimeout(updateStatusTimer);
-    deps.els.stUpdate.innerHTML = html;
-    deps.els.stUpdate.style.display = html ? '' : 'none';
-    deps.els.stUpdate.onclick = opts.onClick || null;
-    deps.els.stUpdate.classList.toggle('muted', !!opts.muted);
-    if (opts.autoHide) {
-        updateStatusTimer = setTimeout(() => {
-            deps.els.stUpdate.style.display = 'none';
-        }, opts.autoHide);
-    }
-}
-
-function openUpdateDialogWith(info) {
-    openUpdateDialog();
-    renderUpdateResult(info);
-}
-
+// ---- 启动时自动检查更新（可在设置关闭）——结果只走消息中心（toast + 常驻列表），
+// 不再占用底部状态栏：状态栏是工作区信息位，消息类内容一律进消息中心。
 async function autoCheckUpdateOnStart() {
     if (!deps.backend.CheckForUpdates || deps.settings.autoCheckUpdate === false) return;
     if (updateChecking) return;
     updateChecking = true;
-    setUpdateStatus(SPINNER_HTML + ' 检查更新…');
     try {
         const info = await deps.backend.CheckForUpdates();
         if (!info) throw new Error('未返回更新信息');
-        if (info.status === 'no-release') {
-            setUpdateStatus('仓库尚未发布版本', {muted: true, autoHide: 4000});
-        } else if (!info.hasUpdate) {
-            setUpdateStatus('已是最新版本 ' + info.currentVersion, {muted: true, autoHide: 4000});
-        } else {
-            setUpdateStatus('发现新版本 ' + info.latestVersion, {onClick: () => openUpdateDialogWith(info)});
-                        // 版本更新进消息中心（弹一条 toast，消息常驻列表）
+        if (info.hasUpdate && info.status !== 'no-release') {
+            // 版本更新进消息中心（弹一条 toast，消息常驻列表，点击本条打开更新对话框）
             if (typeof deps.addMessage === 'function') {
                 deps.addMessage({
                     kind: 'update',
                     title: '发现新版本 ' + info.latestVersion,
-                    body: '当前 ' + info.currentVersion + (info.publishedAt ? '，发布于 ' + String(info.publishedAt).slice(0, 10) : '') + '。点击状态栏「发现新版本」查看详情与下载。',
+                    body: '当前 ' + info.currentVersion + (info.publishedAt ? '，发布于 ' + String(info.publishedAt).slice(0, 10) : '') + '。点击本条通知查看详情与下载。',
+                    actionId: 'open-update-dialog',
                 }, {toast: true});
             }
         }
+        // 已是最新 / 未发布版本 / 检查失败：静默（失败记调试日志）
     } catch (e) {
-        setUpdateStatus('检查更新失败', {muted: true, autoHide: 4000});
         deps.logFrontend('error', '自动检查更新失败：' + e);
     } finally {
         updateChecking = false;

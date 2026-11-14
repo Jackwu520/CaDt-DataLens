@@ -2847,26 +2847,6 @@ aside[data-sidebar-view="chats"] > .sb-head,
 aside[data-sidebar-view="chats"] > #sb-body,
 aside[data-sidebar-view="chats"] > #sb-filter-row { display: none; }
 
-/* 状态栏更新检查 */
-.st-update {
-    font-size: 11px;
-    color: var(--muted);
-    white-space: nowrap;
-    cursor: default;
-}
-.st-update.muted { color: var(--ace-gutter); }
-.st-update[onclick] { cursor: pointer; color: var(--accent); }
-.spin-icon {
-    width: 11px;
-    height: 11px;
-    display: inline-block;
-    vertical-align: -1px;
-    animation: st-update-spin 0.9s linear infinite;
-}
-@keyframes st-update-spin {
-    to { transform: rotate(360deg); }
-}
-
 /* 状态栏字数统计 */
 .st-count {
     font-size: 11px;

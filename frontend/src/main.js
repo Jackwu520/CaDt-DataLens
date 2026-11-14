@@ -294,14 +294,13 @@ const els = {
     stZoom: document.getElementById('st-zoom'),
     stMdWidth: document.getElementById('st-md-width'),
     stAiWidth: document.getElementById('st-ai-width'),
-    stUpdate: document.getElementById('st-update'),
+    stCount: document.getElementById('st-count'),
     stWriting: document.getElementById('st-writing'),
     stPos: document.getElementById('st-pos'),
     stEol: document.getElementById('st-eol'),
     stEnc: document.getElementById('st-enc'),
     stMessage: document.getElementById('st-message'),
     stDirty: document.getElementById('st-dirty'),
-    stCount: document.getElementById('st-count'),
     breadcrumb: document.getElementById('breadcrumb'),
     findBar: document.getElementById('find-bar'),
     findInput: document.getElementById('find-input'),
@@ -2313,7 +2312,7 @@ function setAIPanelMode(mode) {
 }
 
 // 消息中心：状态栏【消息】入口 + 浮层面板 + 持久化队列（AI notify_send / 任务完成 / 版本更新都进这里）。
-// toast 点击与消息行点击跳转到对应 AI 会话（面板懒初始化，闭包到调用时才解引用）。
+// toast 点击与消息行点击：带 actionId 的分派动作（如打开更新对话框），否则跳转到对应 AI 会话。
 const messageCenter = createMessageCenter({
     focusSession: (sessionId) => {
         if (!sessionId) return;
@@ -2321,6 +2320,12 @@ const messageCenter = createMessageCenter({
         if (!aiPanel) return;
         aiPanel.open();
         try { aiPanel.switchSession(sessionId); } catch (e) {}
+    },
+    runAction: (actionId) => {
+        if (actionId === 'open-update-dialog') {
+            // 重新检查并打开更新对话框（结果比消息里的快照新鲜）
+            if (updateCheck) updateCheck.checkForUpdates();
+        }
     },
 });
 window.__lens.messageCenter = messageCenter;
@@ -3489,7 +3494,6 @@ const updateCheck = createUpdateCheck({
     get appReleasesUrl() { return appReleasesUrl; },
     get backend() { return backend; },
     get closeDialogs() { return closeDialogs; },
-    get els() { return els; },
     get elsDialogs() { return elsDialogs; },
     get flash() { return flash; },
     get logFrontend() { return logFrontend; },
