@@ -9063,6 +9063,8 @@ html[data-writing="on"][data-writing-paper="dim"] .jsoneditor textarea.jsonedito
     box-sizing: border-box;
 }
 .ai-chip-count.hidden { display: none; }
+/* 胶囊本体也吃 hidden：计时胶囊无计时器时隐藏（此前只给 count/time 定义了规则，胶囊漏了） */
+.ai-chip.hidden { display: none; }
 .ai-chip-live { border-color: var(--accent); color: var(--accent); }
 .ai-chip-live .ai-chip-icon svg { animation: ai-todo-spin 1.2s linear infinite; }
 .ai-head-compact .ai-chip-label { display: none; }
