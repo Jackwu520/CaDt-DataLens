@@ -2339,6 +2339,8 @@ function initAIPanel() {
         onHeadSearch: () => openGlobalSearch({aiOnly: true}),
         // 汇总卡「撤销」：回滚本轮编辑的文件到 HEAD（Git checkout / 删除新建文件）
         rollbackGitPaths: (paths, untracked) => gitRollbackPaths(paths, untracked),
+        // AI 工具卡超链接：打开文件并跳到指定行（read_file 卡用）
+        openTargets,
         fonts: {latin: uiFonts, cjk: cjkFonts, mono: editorFonts},
         saveSettings: applySettings,
         activity: activityLog,

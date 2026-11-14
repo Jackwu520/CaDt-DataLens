@@ -55,6 +55,8 @@ export function createAIToolCards(ctx) {
     const renderMarkdown = ctx.renderMarkdown;
     const renderMermaidBlocks = ctx.renderMermaidBlocks;
     const openExternal = ctx.openExternal;
+    // 打开文件并跳行（main.js 的 openTargets，经 ai-panel 透传）：read_file 卡路径超链接用
+    const openTargets = typeof ctx.openTargets === 'function' ? ctx.openTargets : null;
     const settings = ctx.settings;
     const getScopeRoot = ctx.getScopeRoot;
     const currentSession = ctx.currentSession;
@@ -532,6 +534,8 @@ export function createAIToolCards(ctx) {
         const approval = message.approval;
         const envAsk = message.envAsk;
         const isCommand = message.name === 'run_command' || message.name === 'background_command';
+        // 读取卡：不做展开，路径名即超链接（点击在标签页打开并跳到读取起始行）
+        const isRead = message.name === 'read_file';
         const agentRunning = message.name === 'spawn_agent' && message.agent && message.agent.state === 'running';
         const bgRunning = message.name === 'background_command' && message.bg && message.bg.state === 'running';
         card.className = 'ai-tool-card ' + (agentRunning || bgRunning ? 'running' : (message.status || 'done')) + (approval ? ' has-approval' : '') + (envAsk ? ' has-approval' : '') + (isCommand ? ' command' : '') + (message.name === 'spawn_agent' ? ' agent' : '') + (message.interrupted ? ' interrupted' : '');
@@ -559,6 +563,7 @@ export function createAIToolCards(ctx) {
             head.appendChild(spinner);
         }
         head.append(chev, icon, verb);
+        if (isRead) chev.remove(); // 无展开功能，折叠箭头不出现
         if (toolFileVerb(message) && info.primary && info.primary !== '—') {
             head.appendChild(createFileIcon(info.primary, 'ai-tool-fileicon'));
         }
@@ -567,6 +572,22 @@ export function createAIToolCards(ctx) {
             primary.className = 'ai-tool-primary';
             primary.textContent = info.primary;
             primary.title = info.primary;
+            if (isRead) {
+                // 路径名即超链接：点击在标签页打开，读取带 offset 时跳到对应行
+                primary.classList.add('ai-tool-link');
+                primary.title = '点击打开文件' + (Number(message.targetLine) > 1 ? '（跳到读取起始行）' : '');
+                primary.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    let target = message.targetPath;
+                    if (!target) {
+                        // 历史会话恢复的旧卡没挂绝对路径：工作区根 + 卡头相对路径兜底
+                        const rel = (info.dir ? info.dir + '/' : '') + info.primary;
+                        const root = String(getScopeRoot() || '').replace(/\/+$/, '');
+                        target = root ? root + '/' + rel : rel;
+                    }
+                    openTargets([{path: target, line: Number(message.targetLine) || 1, column: 0}]);
+                });
+            }
             head.appendChild(primary);
         }
         if (info.dir) {
@@ -589,11 +610,13 @@ export function createAIToolCards(ctx) {
         state.className = 'ai-tool-state';
         state.textContent = toolStateText(message);
         head.append(state);
-        head.addEventListener('click', () => {
-            card.dataset.userToggled = '1';
-            card.classList.toggle('collapsed');
-            if (message.toolCallId) toolFoldState.set(message.toolCallId, card.classList.contains('collapsed'));
-        });
+        if (!isRead) {
+            head.addEventListener('click', () => {
+                card.dataset.userToggled = '1';
+                card.classList.toggle('collapsed');
+                if (message.toolCallId) toolFoldState.set(message.toolCallId, card.classList.contains('collapsed'));
+            });
+        }
         const body = document.createElement('div');
         body.className = 'ai-tool-body';
         if (message.name === 'spawn_agent' && message.agent) {
@@ -690,18 +713,21 @@ export function createAIToolCards(ctx) {
                 live.textContent = message.bgLog || '（等待输出…）';
                 body.appendChild(live);
             }
+        } else if (isRead) {
+            // 读取卡不做展开：内容不渲染，路径超链接即全部交互
         } else {
             body.textContent = message.content || (message.status === 'running' ? '执行中…' : '（无输出）');
         }
-        card.append(head, body);
+        if (isRead) card.appendChild(head);
+        else card.append(head, body);
         if ((approval && approval.state === 'pending') || (envAsk && envAsk.state === 'pending')) return;
         // 终端命令默认只显示一行摘要（命令 + 状态），点击展开完整输出。
         if (isCommand) {
             card.classList.add('collapsed');
         }
-        if (message.status !== 'running' && message.status !== 'error') card.classList.add('collapsed');
+        if (!isRead && message.status !== 'running' && message.status !== 'error') card.classList.add('collapsed');
         // 用户手动展开/收起过的卡片以偏好为准，覆盖上面的默认折叠规则。
-        if (message.toolCallId) {
+        if (!isRead && message.toolCallId) {
             const storedFold = toolFoldState.get(message.toolCallId);
             if (storedFold !== undefined) card.classList.toggle('collapsed', storedFold);
         }

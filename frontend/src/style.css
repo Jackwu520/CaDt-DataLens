@@ -7539,6 +7539,8 @@ html[data-theme="whitey"] {
     text-overflow: ellipsis;
     white-space: nowrap;
 }
+.ai-tool-link { cursor: pointer; }
+.ai-tool-link:hover { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
 .ai-tool-dir { flex: none; max-width: 30%; color: var(--muted); font-size: 10.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ai-tool-stat { flex: none; font-variant-numeric: tabular-nums; }
 .ai-tool-stat.add { color: var(--green); }

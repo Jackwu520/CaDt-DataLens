@@ -173,6 +173,8 @@ export function createAIPanel(options) {
     const pickFiles = typeof opts.pickFiles === 'function' ? opts.pickFiles : null;
     const showContextMenu = typeof opts.showContextMenu === 'function' ? opts.showContextMenu : null;
     const openPath = typeof opts.openPath === 'function' ? opts.openPath : () => {};
+    // 打开文件并跳行（main.js 的 openTargets）：read_file 卡路径超链接用
+    const openTargets = typeof opts.openTargets === 'function' ? opts.openTargets : null;
     // 虚拟只读文档（main.js 提供）：汇总卡「审阅」用它打开拼接后的 diff
     const openVirtualDoc = typeof opts.openVirtualDoc === 'function' ? opts.openVirtualDoc : null;
     const isFileDirty = typeof opts.isFileDirty === 'function' ? opts.isFileDirty : () => false;
@@ -6042,6 +6044,13 @@ export function createAIPanel(options) {
                 const read = await readTextFile(path, null);
                 // 记录读取时磁盘指纹：write_file 陈旧性防护的基线（见 ai-write-guard.js）
                 recordRead(ctx && ctx.session, path, read.data && read.data.mtime, read.data && read.data.size);
+                // 卡片路径超链接的跳转行：offset 是字符偏移，换算成 1-based 行号挂到工具卡
+                if (ctx && ctx.toolMessage) {
+                    ctx.toolMessage.targetPath = path;
+                    ctx.toolMessage.targetLine = offset > 0
+                        ? (read.text.slice(0, offset).match(/\n/g) || []).length + 1
+                        : 1;
+                }
                 let text = read.text;
                 if (offset > 0) text = text.slice(Math.min(offset, text.length));
                 if (text.length > 64 << 10) text = text.slice(0, 64 << 10) + '\n…（已截断，最多 64KB）';
@@ -11608,6 +11617,7 @@ export function createAIPanel(options) {
         renderMarkdown,
         renderMermaidBlocks,
         openExternal,
+        openTargets,
         settings,
         getScopeRoot,
         currentSession,
