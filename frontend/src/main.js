@@ -8,7 +8,7 @@ import {createExplorer} from './explorer/explorer.js';
 import {createStructurePanel, parseStructure} from './editor/structure.js';
 import {createContextMenu} from './shell/contextmenu.js';
 import {copyImageBlobToClipboard} from './core/image-clipboard.js';
-import {createDebugConsole} from './shell/debugconsole.js';
+import {createDebugConsole} from './terminal/debugconsole.js';
 import {createActivityLog} from './core/activity-log.js';
 import {iconSvg, renderMenuIcon} from './core/icons.js';
 import {createPalette} from './shell/palette.js';
@@ -20,7 +20,7 @@ import {RECIPES, extOf, SELF_TEST} from './terminal/run.js';
 import {queryJsonPath} from './core/jsonpath.js';
 import {unifiedDiff} from './core/diff.js';
 import {validateJsonSchema} from './core/jsonschema.js';
-import {getPluginCommands, getPluginCommandClassifiers, getPluginLoadErrors, loadPlugins} from './core/plugins.js';
+import {getPluginCommands, getPluginCommandClassifiers, getPluginLoadErrors, loadPlugins} from './shell/plugins.js';
 import {createMarkdownRenderer} from './core/markdown.js';
 import {
     showPatchView, hidePatchView, disposePatchView, refreshPatchView,
@@ -41,7 +41,7 @@ import {createSessionRestore} from './shell/session-restore.js';
 import {createAppActions} from './shell/app-actions.js';
 import {createQuickSwitch} from './shell/quick-switch.js';
 import {createSchemaPanel} from './editor/schema-panel.js';
-import {createDiffDialog} from './explorer/diff-dialog.js';
+import {createDiffDialog} from './editor/diff-dialog.js';
 import {createJsonQuery} from './editor/json-query.js';
 import {createGlobalSearch} from './explorer/global-search.js';
 import {createMessageCenter} from './shell/message-center.js';

@@ -6,7 +6,7 @@
 import DOMPurify from 'dompurify';
 import {WRITING_FONTS, formatWritingText, genName, SCENE_SEPARATOR} from '../core/writing.js';
 import {RECIPES, SELF_TEST} from '../terminal/run.js';
-import {initPluginRuntime, loadPlugins} from '../core/plugins.js';
+import {initPluginRuntime, loadPlugins} from '../shell/plugins.js';
 import {iconSvg} from '../core/icons.js';
 import {aceModeFor, formats} from '../core/formats.js';
 import {createMarkdownRenderer, decodeMermaidSource, encodeMermaidSource} from '../core/markdown.js';

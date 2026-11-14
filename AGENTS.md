@@ -34,53 +34,32 @@ CaDt-DataLens 是一个面向 Windows 的轻量级多格式数据查看与编辑
 - `dialogs.go`、`commands.go`、`preview_assets.go`、`debugconsole.go`
 - `*_test.go`：与同名源文件对应的单元测试
 
+> **Go 侧没有"目录分组"这回事**：一个目录就是一个包，`package main` 只能在仓库根（`//go:embed all:frontend/dist` 与 `frontend/wailsjs/go/main/` 都以根目录为前提）。所以 Go 的分类靠**文件名前缀 + 同包拆文件**；拆包与 `internal/patch` 试点评估见 `docs/unfinished-plans/go-layout.md`。
+
+> **Go 侧没有"目录分组"这回事**：一个目录就是一个包，`package main` 只能在仓库根（`//go:embed all:frontend/dist` 与 `frontend/wailsjs/go/main/` 都以根目录为前提）。所以 Go 的分类靠**文件名前缀 + 同包拆文件**；拆包与 `internal/patch` 试点评估见 `docs/unfinished-plans/go-layout.md`。
+
 ### 前端 `frontend/`
-- `src/main.js`：组合根与核心枢纽（标签页核心状态、命令面板、菜单注册表、初始化接线，约 4,400 行）。域逻辑已拆到下面的模块，每个都是「factory + 显式依赖注入」——依赖一律经 `deps` 延迟求值（main.js 传 getter），不依赖声明顺序；改动某域时先找到对应模块，不要往 main.js 回填
-- `src/dev/mock-backend.js`：vite dev 浏览器调试用的 mock 后端（mockBackend/mockRt/样例数据，场景由 URL 参数驱动）。main.js 在 `!hasWails` 时**动态 import**，生产包不含此模块；改 mock 场景只动这里
-- `src/editor-groups.js`：编辑器组/分栏（二叉分割树）、标签页渲染与 chrome、DnD、面包屑、createDocEditor 分发、文档生命周期（从 main.js 拆出的域编排核心）；预览视图与 Ace 钩子等已拆到下列兄弟模块（统一模式：`createEditor<域>(deps)`，deps 与 editor-groups 共用 main.js 的 getter 集经 Object.create 委托）
-- `src/editor-ace-hooks.js`：Ace 会话钩子（applyAceMode 模式切换/只读锁、折叠行内预览 hover、多光标、光标位置联动、python token 染色）
-- `src/editor-csv-view.js`：CSV/TSV 表格视图族（虚拟滚动、列统计、冻结列宽、单元格编辑、缩放、tableHistory）
-- `src/editor-split-preview.js`：分屏与预览视图族（Markdown 预览+分屏双向滚动同步、HTML 预览、SVG 渲染、图片/二进制/纯文本视图及各 enter/show/hide 分发器）
-- `src/editor-sql-view.js`：大文件只读 SQL 查询视图
-- `src/editor-browser-tab.js`：浏览器使用标签页（内嵌 WebView2、视口菜单、显隐同步）
-- `src/editor-doc-extras.js`：横幅、JSON 折叠预览、行书签、视图状态记忆、Git 行级标记、树视图右键菜单
-- `src/editor-export-menus.js`：Markdown 块级渲染与选区反向取源、SVG→PNG 导出、svg/image/md 预览右键菜单、标签页右键菜单
-- `src/explorer-ops.js`：资源管理器域操作（路径改码、文件剪贴板、新建/重命名/删除对话框与右键菜单）
-- `src/editor-menus.js`：编辑器右键菜单（选区采集、AI 联动入口、阅读模式控制器创建）
-- `src/structure-panel.js`：结构面板控制器（解析 Worker + 缓存、面板 wiring、来源切换、导出菜单）；面板 UI 工厂在 `structure.js` 的 `createStructurePanel`
-- `src/writing-ui.js`：写作模式 + 格式渲染/语言定义（LANG_DEFS、markdown 渲染管线、mermaid、字数统计、goto、自动保存）
-- `src/settings-ui.js`：设置页（elsSettings/elsDialogs、applySettings、主题、全屏/置顶、只读锁、对话框族、操作留痕接线）
-- `src/terminal-ui.js`：内置终端、底部面板 dock、运行控制器接线
-- `src/bridge-ui.js`：进程桥/虚拟文档/浏览器标签/git 面板数据/后台作业视图
-- `src/titlebar-popovers.js`：标题栏项目选择与 Git 分支弹层（IDEA 式）
-- `src/menu-bar.js`：IDEA 新 UI 菜单条（三横唤出）
-- `src/mode-switch.js`：switchMode 外壳（留痕）与 applySwitchMode
-- `src/session-restore.js`：标签页/分组/分屏布局持久化与恢复、文档视图记忆
-- `src/app-actions.js`：退出、最近打开、外部拖放复制
-- `src/app-links.js`：外链打开、内置文档（更新日志/协议）、开发者工具
-- `src/update-check.js`：更新检查（对话框 + 启动静默检查 + 状态栏）
-- `src/format-convert.js`：格式互转 + JSON 修复
-- `src/find-bar.js`：查找替换条（Ace + 纯文本双路径）
-- `src/global-search.js`：工作区全局搜索
-- `src/json-query.js`：JSONPath 查询栏
-- `src/diff-dialog.js`：双文件对比对话框
-- `src/schema-panel.js`：JSON Schema 校验面板
-- `src/quick-switch.js`：快速切换器（Ctrl+`）
-- `src/activity-pane.js`：设置页「操作记录」面板
-- `src/properties-ui.js`：文件/路径属性对话框、从磁盘全部重新加载
-- `src/cursor-themes.js`：Win11 系统光标主题（注册表读取 + 内置候选）
-- `src/formats.js`：格式驱动层（parse / stringify 双向转换，插件格式也走这里）
-- `src/structure.js`：17 种语言的结构/大纲解析（纯函数，无 DOM 依赖）
-- `src/session-outline.js`：结构面板的「会话结构」渲染（用户消息定位条）。数据与跳转由 `ai/ai-panel.js` 的 `bridgeSessionOutline` / `bridgeJumpToMessage` 提供，这里只画行与处理点击/键盘
-- `src/explorer.js`：文件树（惰性加载 + 内存缓存 + 自动刷新）与文件列表（扁平视图：工作区/单文件目录递归扫描，带目录数/深度/条目硬上限与截断提示；差量刷新防闪烁）
-- `src/run.js`：运行代码（扩展名 → 运行配方、命令模板 / 自检脚本 / 项目确认、stdin、dirty 决策、输出面板与 ANSI / `path:line:col` 跳转、AI 分析提示词）；`src/run.test.mjs` 覆盖纯函数
-- `src/patch-view.js`：补丁视图（文件卡 / hunk / 模式切换 / 应用 / 撤销），只做渲染，解析与写入全走 Go
-- `src/palette.js`、`src/contextmenu.js`、`src/icons.js`、`src/fileicons*.js`、`src/plugins.js`、`src/jsonrepair.js`、`src/debugconsole.js`
-- `src/ai/`：AI 助手，按域拆为兄弟模块（统一模式：`createAI<域>(ctx)` 工厂 + ctx 注入，重赋值状态经 getter/setter 访问器，互引经惰性转发箭头；测试与源码同目录）。`ai-panel.js`（约 1.1 万行核心编排：`executeTool`、回合流程、会话持久化、消息渲染、三形态、init）；数据/常量类：`ai-constants.js`（常量与纯辅助函数）、`ai-session-store.js`（JSONL 编解码/重放 + 磁盘适配）、`ai-config-model.js`、`ai-permissions.js`、`ai-command-rules.js`、`ai-git.js`、`ai-app-message.js`、`ai-tool-args.js`、`ai-tool-defs.js`（工具定义表与权限档清单）；UI 域类：`ai-write-guard.js`（write_file 陈旧缓冲防护：会话级读取指纹 + SaveFileChecked 落盘校验，并发会话覆盖丢码防线——覆盖已存在文件前必须先 read_file）、`ai-session-list.js`（侧栏列表/分组/搜索）、`ai-composer.js`（输入区与附件）、`ai-tool-cards.js`（工具卡/审批卡渲染）、`ai-takeover.js`（输入区接管卡）、`ai-todos.js`、`ai-changes-ui.js`（变更记录）、`ai-schedule.js`（定时任务）、`ai-reminders.js`（任务提醒：reminder_* 工具 + 标题栏铃铛弹层，每轮 `<task_reminders>` 注入；上限只数未完成条目，纯函数可单测）、`ai-timer.js`（AI 计时器：头部单胶囊 + chips-pop 弹层列表/详情，行尾 x 停止；消息框 + 可手动创建倒计时/正计时；Go 侧计时，到点经系统消息唤醒对应会话）、`ai-git-ui.js`（Git 快捷操作）、`ai-slash.js`（斜杠命令）、`ai-message-queue.js`（消息排队/插话）、`ai-manage-dialogs.js`（提示词/记忆/技能对话框）、`ai-settings-dialog.js`（设置页）、`ai-subagents.js`（子代理运行时 + HUD）、`ai-local-classifier.js`（端侧命令分类器：int8 线性模型推理 / 严格度阈值判定 / 插件分类器聚合与失败熔断 / 个性化 SGD 存储与导出；权重 `local-classifier-weights.mjs` 由 `scripts/train-local-classifier.mjs` 生成、勿手改；方案 `docs/unfinished-plans/local-command-classifier.md`）
-- `src/activity-log.js`：操作留痕前端服务（脱敏 sanitizer、攒批 ≤200ms/20 条调 `ActivityAppend`；开关与保留月数在设置 → 操作记录）
-- `src/markdown.js`：共享 Markdown 渲染/sanitize（main.js 与阅读模式共用，规则单一来源）
-- `src/widget.js`：AI 回答里 `svg` / `html` 围栏的可视化卡片（Shadow DOM 承载 + DOMPurify 清洗，样式隔离、主题变量继承；`<style>` 先抽出单独清洗再注入 shadow，外链 `url()` / `@import` 与 `position:fixed` 会被处理；只有 AI 面板传 `env.aiWidgets` 时启用）。配套内置技能 `inline-visual`（对话内卡片）与 `answer-me-with-html`（多面板页面），规则改动要同步这两个技能
-- `src/reading/`：阅读模式（`reading.js` 控制器、`reading-model.js` 纯函数 TOC/排序/进度/joinSoftLines、`reading-state.js` localStorage 进度/书签/统计、`reading-view.js` 书架/详情/目录 DOM、`reading-render.js` md/txt/docx/epub 渲染 + LRU、`reading-search.js` 章内/全书查找、`reading-tts.js` 朗读）；Go 侧对应 `reading*.go`；方案见 `docs/finished-plans/reading-mode.md`；**只读，禁止调用写接口**
+> 2026-11-14 目录归位：`src/` 顶层只留 `main.js`，其余按域进目录。**Go 的目录即包，前端的目录只是分组**——新增模块直接放进对应域目录，不要往顶层加文件。
+
+- `src/main.js`：组合根与核心枢纽（标签页核心状态、命令面板、菜单注册表、初始化接线，约 4,400 行）。域逻辑已拆到下列目录，每个模块都是「factory + 显式依赖注入」——依赖一律经 `deps` 延迟求值（main.js 传 getter），不依赖声明顺序；改动某域时先找到对应模块，不要往 main.js 回填
+- `src/core/`：跨域共享的纯逻辑与无状态工具
+  - `formats.js` 格式驱动层（parse / stringify，插件格式也走这里）· `markdown.js` 共享 Markdown 渲染/sanitize（规则单一来源）· `diff.js` 行级与结构化 diff · `jsonpath.js`/`jsonrepair.js`/`jsonschema.js` JSON 工具 · `icons.js`/`fileicons*.js` 图标 · `image-clipboard.js` · `writing.js` 写作纯函数 · `activity-log.js` 操作留痕前端服务（脱敏 sanitizer、攒批 ≤200ms/20 条调 `ActivityAppend`）
+  - `widget.js`：AI 回答里 `svg`/`html` 围栏的可视化卡片（Shadow DOM + DOMPurify；只有 AI 面板传 `env.aiWidgets` 时启用）。**借驻 core**：`markdown.js` 依赖它，挪进 `ai/` 会形成 core→ai 反向依赖；配套技能 `inline-visual`/`answer-me-with-html` 要同步规则
+- `src/editor/`：编辑器内核（统一模式 `createEditor<域>(deps)`，deps 与 editor-groups 共用 main.js 的 getter 集经 Object.create 委托）
+  - `editor-groups.js` 编辑器组/分栏（二叉分割树）、标签页 chrome、DnD、面包屑、createDocEditor 分发、文档生命周期 · `editor-ace-hooks.js` Ace 会话钩子 · `editor-csv-view.js` CSV/TSV 表格族 · `editor-split-preview.js` 分屏与预览视图族 · `editor-sql-view.js` 大文件 SQL 视图 · `editor-browser-tab.js` 浏览器标签页 · `editor-doc-extras.js` 横幅/折叠预览/书签/视图记忆/git gutter · `editor-export-menus.js` md 块渲染/SVG 导出/右键菜单 · `editor-menus.js` 编辑器右键菜单
+  - `structure.js` 17 种语言结构解析（纯函数）· `structure-panel.js` 结构面板控制器（Worker + 缓存 + 导出）· `structure-worker.js` 解析 Worker（`new URL('./structure-worker.js', import.meta.url)`，**必须与 structure-panel 同目录**）
+  - `patch-view.js` 补丁视图（只渲染，解析与写入走 Go）· `find-bar.js` 查找替换 · `json-query.js` JSONPath 查询栏 · `schema-panel.js` Schema 校验面板 · `format-convert.js` 格式互转 + JSON 修复 · `diff-dialog.js` 双文件对比对话框
+- `src/explorer/`：资源管理器与工作区检索
+  - `explorer.js` 文件树（惰性加载 + 缓存 + 自动刷新）与扁平列表视图（带目录数/深度/条目硬上限）· `explorer-ops.js` 路径改码/文件剪贴板/新建重命名删除 · `global-search.js` 工作区全局搜索
+- `src/shell/`：窗口外壳与应用级动作
+  - `menu-bar.js` IDEA 新 UI 菜单条 · `titlebar-popovers.js` 标题栏弹层壳（定位工具 + 图标）· `titlebar-project.js` 项目弹层/克隆 · `titlebar-git-branch.js` Git 分支弹层 · `mode-switch.js` 模式切换（含留痕）· `palette.js` 命令面板 · `quick-switch.js` 快速切换器 · `contextmenu.js` 右键菜单 · `app-actions.js` 退出/最近打开 · `app-links.js` 外链与内置文档 · `update-check.js` 更新检查 · `properties-ui.js` 属性对话框 · `cursor-themes.js` 系统光标主题 · `session-restore.js` 布局持久化 · `image-lightbox.js` 图片灯箱 · `message-center.js` 状态栏消息中心 · `plugins.js` 插件运行时（加载插件 JS、`cadt.*` API、格式/命令/主题注册生命周期）
+- `src/settings/`：设置页（`settings-ui.js` 核心 + `activity-pane.js` 操作记录面板）
+- `src/writing/`：写作模式（`writing-ui.js`，仍混装四个设置 pane，拆分见 `docs/unfinished-plans/frontend-split-phase3.md` 的 S2）
+- `src/bridge/`：`bridge-ui.js` 进程桥/虚拟文档/浏览器标签 + 启动编排 IIFE；`bridge-terminal-view.js` 后台终端视图 · `bridge-git.js` git 浅集成 · `bridge-cli-convert.js` `--convert` 转换
+- `src/terminal/`：`terminal-ui.js` 终端面板/dock/侧栏 git 面板 · `terminal-sessions.js` 会话管理 · `run.js` 运行配方与输出渲染（纯函数，`run.test.mjs`）· `run-ui.js` F5 接线 · `debugconsole.js` 调试控制台（底部面板一档）
+- `src/ai/`：AI 助手，按域拆为兄弟模块（统一模式：`createAI<域>(ctx)` 工厂 + ctx 注入，重赋值状态经 getter/setter 访问器，互引经惰性转发箭头；测试与源码同目录）。`ai-panel.js`（约 1.1 万行核心编排：`executeTool`、回合流程、会话持久化、消息渲染、三形态、init）；数据/常量类：`ai-constants.js`、`ai-session-store.js`（JSONL 编解码/重放）、`ai-session-disk.js`（磁盘适配）、`ai-config-model.js`、`ai-permissions.js`、`ai-command-rules.js`、`ai-git.js`、`ai-app-message.js`、`ai-tool-args.js`、`ai-tool-defs.js`、`session-outline.js`（结构面板的会话定位条）；UI 域类：`ai-write-guard.js`（write_file 陈旧缓冲防护：覆盖已存在文件前必须先 read_file）、`ai-session-list.js`、`ai-composer.js`、`ai-tool-cards.js`、`ai-takeover.js`、`ai-todos.js`、`ai-changes-ui.js`、`ai-schedule.js`、`ai-reminders.js`（reminder_* 工具 + 标题栏铃铛，每轮 `<task_reminders>` 注入）、`ai-timer.js`（头部胶囊 + 弹层；Go 侧计时，到点唤醒会话）、`ai-git-ui.js`、`ai-slash.js`、`ai-message-queue.js`、`ai-manage-dialogs.js`、`ai-settings-dialog.js`、`ai-subagents.js`、`ai-classifier-verdict.js`、`ai-local-classifier.js`（端侧命令分类器：int8 推理/严格度/插件分类器聚合/个性化；权重 `local-classifier-weights.mjs` 由 `scripts/train-local-classifier.mjs` 生成、勿手改）
+- `src/reading/`：阅读模式（`reading.js` 控制器、`reading-model.js` 纯函数 TOC/排序/进度、`reading-state.js` localStorage、`reading-view.js` 书架/详情/目录 DOM、`reading-render.js` md/txt/docx/epub + LRU、`reading-search.js` 查找、`reading-tts.js` 朗读）；Go 侧对应 `reading*.go`；方案见 `docs/finished-plans/reading-mode.md`；**只读，禁止调用写接口**
+- `src/dev/mock-backend.js`：vite dev 浏览器调试用的 mock 后端，main.js 在 `!hasWails` 时**动态 import**，生产包不含此模块；改 mock 场景只动这里
 - `src/style.css`：布局、主题、Ace/jsoneditor 样式；`src/reading.css`：阅读模式样式（`.rd-` 前缀）
 - `index.html`：窗口结构、菜单、设置对话框
 - `public/vendor/`：jsoneditor、mermaid 等第三方资源；`public/fonts/`：Inter / JetBrains Mono / Fira Code（OFL）

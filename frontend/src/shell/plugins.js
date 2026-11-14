@@ -1,6 +1,6 @@
 // 插件运行时：加载插件 JS、提供 cadt.* API、管理格式/命令/主题的注册生命周期。
 // 与 main.js 通过 initPluginRuntime(hooks) 单向注入，避免循环依赖。
-import {registerPluginFormat, unregisterAllPluginFormats} from './formats.js';
+import {registerPluginFormat, unregisterAllPluginFormats} from '../core/formats.js';
 
 const host = {
     flash: () => {},
