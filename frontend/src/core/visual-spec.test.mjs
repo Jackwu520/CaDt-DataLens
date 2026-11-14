@@ -71,6 +71,16 @@ test('VISUAL_RULES.inlineVisual 保留规范正文锚点', () => {
     assert.ok(text.includes('prefers-color-scheme'));
 });
 
+test('VISUAL_RULES.inlineVisual 含 mermaid 速查与 echarts 模板（阶段 3）', () => {
+    const text = VISUAL_RULES.inlineVisual;
+    assert.ok(text.includes('## 10. mermaid 声明式图速查'));
+    assert.ok(text.includes('xychart-beta'));
+    assert.ok(text.includes('sankey-beta'));
+    assert.ok(text.includes('## 11. echarts 声明式图表'));
+    assert.ok(text.includes('禁止 formatter / rich 字段'));
+    assert.ok(text.includes('/ mermaid / echarts；写成其它语言'));
+});
+
 test('VISUAL_ROUTING 覆盖画图决策的主出口', () => {
     assert.ok(Array.isArray(VISUAL_ROUTING) && VISUAL_ROUTING.length >= 8);
     for (const row of VISUAL_ROUTING) {

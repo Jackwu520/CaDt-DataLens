@@ -1,4 +1,6 @@
-// AI 回答里的 SVG / HTML 可视化卡片（语言标记为 svg / html 的围栏代码块）。
+// AI 回答里的可视化卡片（svg / html / mermaid / echarts 围栏代码块）。
+// mermaid / echarts 走异步引擎：动态 import 渲染模块、vendor 按需加载，产物仍是静态 SVG，
+// 之后与 svg 卡片走同一条 sanitize → Shadow DOM 管线；主题切换（data-theme）触发重渲染。
 //
 // 安全边界（不可放松）：
 // - 只有 AI 消息显式标注 svg / html 的围栏才会变成卡片；普通 Markdown 内嵌 HTML 仍由
@@ -142,24 +144,37 @@ function widgetButton(label, title, onClick) {
     return button;
 }
 
-function mountShadow(host, code, lang, opts) {
-    let shadow = host.shadowRoot;
-    if (!shadow) shadow = host.attachShadow({mode: 'open'});
+function ensureShadow(host) {
+    return host.shadowRoot || host.attachShadow({mode: 'open'});
+}
+
+// fillShadow 只负责填充内容；主题重渲染（异步卡片）会重复调用，不改监听器。
+function fillShadow(host, code, lang) {
+    const shadow = ensureShadow(host);
     // svg 内的 <style> 同样抽出来统一清洗，避免两套路径行为不一致。
     const extracted = extractWidgetCss(code);
     shadow.innerHTML = '<style>' + SHADOW_STYLE + extracted.css + '</style>' +
         sanitizeWidgetHtml(extracted.code, lang);
+}
+
+function mountShadow(host, code, lang, opts) {
+    const shadow = ensureShadow(host);
     // 链接交给系统浏览器；其余导航（相对路径、javascript:、表单）一律拦下。
-    shadow.addEventListener('click', (event) => {
-        const link = event.target && event.target.closest ? event.target.closest('a[href]') : null;
-        if (!link) return;
-        event.preventDefault();
-        const href = String(link.getAttribute('href') || '').trim();
-        if (/^(https?:\/\/|mailto:)/i.test(href) && typeof opts.openExternal === 'function') {
-            opts.openExternal(href);
-        }
-    }, true);
-    shadow.addEventListener('submit', (event) => event.preventDefault(), true);
+    // 主题重渲染会重复进入，守卫只绑一次。
+    if (!host.dataset.shadowGuards) {
+        host.dataset.shadowGuards = '1';
+        shadow.addEventListener('click', (event) => {
+            const link = event.target && event.target.closest ? event.target.closest('a[href]') : null;
+            if (!link) return;
+            event.preventDefault();
+            const href = String(link.getAttribute('href') || '').trim();
+            if (/^(https?:\/\/|mailto:)/i.test(href) && typeof opts.openExternal === 'function') {
+                opts.openExternal(href);
+            }
+        }, true);
+        shadow.addEventListener('submit', (event) => event.preventDefault(), true);
+    }
+    fillShadow(host, code, lang);
 }
 
 function mountCard(node, lang, kind, code, opts) {
@@ -193,7 +208,96 @@ function mountCard(node, lang, kind, code, opts) {
     body.className = 'ai-widget-body';
     node.insertBefore(bar, node.firstChild);
     node.insertBefore(body, srcPanel || null);
+    if (ASYNC_RENDERERS[lang]) {
+        mountAsyncCard(node, body, lang, code, opts);
+        return;
+    }
     mountShadow(body, code, lang, opts);
+}
+
+// ---- 异步渲染引擎（mermaid / echarts；阶段 6 增 graph / wordcloud） ----
+// 引擎模块动态 import：卡片首次挂载该类语言才加载，vendor 脚本随之按需注入，不进 Vite 主包。
+const ASYNC_RENDERERS = {
+    mermaid: () => import('./mermaid-render.js').then((m) => m.renderMermaidToSvg),
+    echarts: () => import('./chart-render.js').then((m) => m.renderEchartsToSvg),
+};
+const asyncCards = new Set(); // 已挂载的异步卡片节点，主题切换时逐个重渲染
+const asyncOpts = new Map();  // node → enhanceWidgets opts（重渲染时复用 openExternal 等）
+
+function currentThemeId() {
+    return document.documentElement.dataset.theme || '';
+}
+
+let themeObserver = null;
+// 主题切换走 documentElement 的 data-theme 属性（settings-ui 切主题的唯一出口），懒注册监听；
+// 异步引擎产物是具体色值的静态 SVG，主题换了必须重新渲染（缓存按主题区分，旧主题条目自然淘汰）。
+function ensureThemeObserver() {
+    if (themeObserver || typeof MutationObserver === 'undefined') return;
+    themeObserver = new MutationObserver(() => rerenderAsyncCards());
+    themeObserver.observe(document.documentElement, {attributes: true, attributeFilter: ['data-theme']});
+}
+
+async function renderAsyncCard(lang, code) {
+    const render = await ASYNC_RENDERERS[lang]();
+    return render(code, currentThemeId());
+}
+
+async function mountAsyncCard(node, body, lang, code, opts) {
+    asyncCards.add(node);
+    asyncOpts.set(node, opts);
+    ensureThemeObserver();
+    body.innerHTML = '<div class="ai-widget-loading">正在渲染可视化…</div>';
+    try {
+        const svg = await renderAsyncCard(lang, code);
+        // 消息整段重渲染会销毁重建卡片节点：任务完成时节点已不在文档里就丢弃（不挂孤儿）。
+        if (!node.isConnected) {
+            asyncCards.delete(node);
+            asyncOpts.delete(node);
+            return;
+        }
+        body.innerHTML = '';
+        mountShadow(body, svg, 'svg', asyncOpts.get(node) || opts);
+    } catch (e) {
+        if (!node.isConnected) {
+            asyncCards.delete(node);
+            asyncOpts.delete(node);
+            return;
+        }
+        // 失败降级：放出源码，与超限卡片的处理一致。
+        body.innerHTML = '';
+        node.classList.add('ai-widget-error');
+        const srcPanel = node.querySelector('.ai-widget-src');
+        if (srcPanel) srcPanel.hidden = false;
+        const msg = document.createElement('div');
+        msg.className = 'ai-widget-error-text';
+        msg.textContent = '渲染失败，已显示源码：' + ((e && e.message) || e);
+        body.appendChild(msg);
+    }
+}
+
+async function rerenderAsyncCards() {
+    for (const node of Array.from(asyncCards)) {
+        if (!node.isConnected) {
+            asyncCards.delete(node);
+            asyncOpts.delete(node);
+            continue;
+        }
+        const lang = node.getAttribute('data-widget-lang');
+        const body = node.querySelector('.ai-widget-body');
+        if (!ASYNC_RENDERERS[lang] || !body) continue;
+        const code = node.querySelector('.ai-widget-src code');
+        try {
+            const svg = await renderAsyncCard(lang, code ? (code.textContent || '') : '');
+            if (!node.isConnected) {
+                asyncCards.delete(node);
+                asyncOpts.delete(node);
+                continue;
+            }
+            fillShadow(body, svg, 'svg');
+        } catch (e) {
+            // 尽力而为路径：重渲染失败保留旧图（旧主题色好过空白），不打断用户。
+        }
+    }
 }
 
 // 把 markdown 渲染出的 .ai-widget 占位升级成卡片。

@@ -106,8 +106,7 @@ export const VISUAL_ROUTING = [
 // 提示词规范文本（单一来源）：ai-constants 的技能 content 从这里拼装。
 // inline-visual 正文自 ai-constants.js 原文逐句搬运（阶段 1 纯重构，字节级一致由测试保证）；
 // 阶段 3 在此追加 mermaid 图型速查与 echarts 模板。
-export const VISUAL_RULES = {
-    inlineVisual: [
+const INLINE_VISUAL_BASE = [
     '# 内联可视化（inline-visual）',
     '',
     '能画就别只写。回答里用 ```svg 或 ```html 围栏，应用会把代码块渲染成卡片；用户看到的是图，不是代码。',
@@ -131,7 +130,7 @@ export const VISUAL_RULES = {
     '',
     '## 3. 围栏怎么写',
     '',
-    '- 语言标记只认 svg / html（htm 也行）；写成其它语言就是普通代码块。',
+    '- 语言标记只认 svg / html（htm 也行）/ mermaid / echarts；写成其它语言就是普通代码块。',
     '- 一个围栏 = 一张卡片；一条回答最多 3 张，只留最关键的（单条上限 8 张，单块上限 200 KB）。',
     '- 卡片在整轮回答结束后挂载，流式期间显示「正在生成可视化」；不要为此把一张图拆成多段输出。',
     '- 想让它保持代码形态：围栏信息里加 no-widget，如 ```html no-widget。',
@@ -231,5 +230,65 @@ export const VISUAL_RULES = {
     '- 把整段解释塞进节点 → 拆成「图 + 正文」。',
     '- 一条回答贴五张卡片 → 只保留最关键的一张。',
     '- 写死浅色配色 → 用户在深色主题下几乎看不清；一律用变量。',
-    ].join('\n'),
+    ].join('\n');
+
+// mermaid 图型速查（阶段 3）：零新增字节，把内置 19 种图型写进规范，
+// 让模型优先用声明式语法而不是手算坐标（完整清单见方案 §10.1）。
+const MERMAID_SHEET = [
+    '## 10. mermaid 声明式图速查（```mermaid 围栏，优先于手写 SVG，坐标交给引擎）',
+    '',
+    '- 结构 / 关系：flowchart、classDiagram、erDiagram、architecture-beta、block-beta、C4Context、requirementDiagram',
+    '- 时序 / 状态：sequenceDiagram、stateDiagram-v2、gantt、timeline、gitGraph、journey',
+    '- 层级 / 发散：mindmap、quadrantChart、packet-beta、sankey-beta',
+    '- 数据：xychart-beta（柱 / 线）、pie',
+    '',
+    '示例（柱状图）：',
+    '```mermaid',
+    'xychart-beta',
+    '    title "各格式解析耗时（示意）"',
+    '    x-axis [json, yaml, csv, toml]',
+    '    y-axis "毫秒" 0 --> 120',
+    '    bar [80, 35, 62, 21]',
+    '```',
+    '',
+    '示例（流程图，箭头与分支交给语法而不是坐标）：',
+    '```mermaid',
+    'flowchart LR',
+    '    A[读取文件] --> B{编码检测}',
+    '    B -- GBK --> C[转码]',
+    '    B -- UTF-8 --> D[直接解析]',
+    '    C --> E[渲染]',
+    '    D --> E',
+    '```',
+].join('\n');
+
+// echarts 模板与硬边界（阶段 3）：option 是纯 JSON 数据，应用侧 SSR 出静态 SVG。
+const ECHARTS_TEMPLATE = [
+    '## 11. echarts 声明式图表（```echarts 围栏，option 写成纯 JSON，应用负责渲染与主题）',
+    '',
+    '多维数据 / 精确数值 / mermaid 覆盖不了的图型（桑基、热力、treemap、sunburst、雷达、箱线等）用它：',
+    '',
+    '```echarts',
+    '{',
+    '  "xAxis": {"type": "category", "data": ["JSON", "YAML", "CSV", "TOML"]},',
+    '  "yAxis": {"type": "value"},',
+    '  "series": [{"type": "bar", "data": [120, 90, 150, 60]}]',
+    '}',
+    '```',
+    '',
+    '```echarts',
+    '{"series": [{"type": "pie", "data": [{"name": "A", "value": 10}, {"name": "B", "value": 7}]}]}',
+    '```',
+    '',
+    '硬边界：',
+    '- 只写纯 JSON：不要函数、不要注释、不要尾逗号；禁止 formatter / rich 字段（会被整体拒绝并降级显示源码）。',
+    '- 不要写 animation 与配色：应用强制关闭动画并注入当前主题色；确需强调可写 var(--text) 这类应用变量，应用会替换成具体色值。',
+    '- 不要外链图片与 url() 资源；单块不超过 200 KB，超限降级为源码。',
+    '- 静态 SVG 没有 tooltip / dataZoom 等交互，不要写交互配置。',
+].join('\n');
+
+export const VISUAL_RULES = {
+    inlineVisual: [INLINE_VISUAL_BASE, MERMAID_SHEET, ECHARTS_TEMPLATE].join('\n\n'),
+    mermaidSheet: MERMAID_SHEET,
+    echartsTemplate: ECHARTS_TEMPLATE,
 };
