@@ -128,10 +128,10 @@ function openGlobalSearch(opts) {
 // 空态提示按当前分类组合出文案
 function globalSearchEmptyHint() {
     if (!globalSearch.filesEnabled && !globalSearch.aiEnabled) {
-        return '未选择搜索范围——请勾选上方分类';
+        return '未选择搜索范围';
     }
     if (!globalSearch.root && !globalSearch.aiEnabled) {
-        return '未打开工作区——可勾选「AI 会话」在 AI 会话历史里搜索';
+        return '未打开工作区——可勾选「AI 会话」搜索会话历史';
     }
     if (!globalSearch.filesEnabled) return '在 AI 会话历史中搜索（仅此分类）';
     return '输入内容，在打开的工作区中搜索文本';
@@ -188,7 +188,7 @@ async function runGlobalSearch() {
     }
     if (!globalSearch.filesEnabled && !globalSearch.aiEnabled) {
         deps.els.gsCount.textContent = '';
-        showGlobalSearchEmpty('未选择搜索范围——请勾选上方分类');
+        showGlobalSearchEmpty('未选择搜索范围');
         return;
     }
     deps.els.gsCount.textContent = '搜索中…';

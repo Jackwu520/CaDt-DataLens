@@ -146,7 +146,7 @@ export function renderBookshelf(container, data) {
     const detected = el('div', 'rd-shelf-section');
     detected.appendChild(el('h3', '', '当前工作区检测到 ' + (data.suggestions || []).length + ' 本书'));
     if (!data.suggestions || !data.suggestions.length) {
-        detected.appendChild(el('p', 'rd-shelf-empty', '没有找到可阅读的目录。把小说/资料整理到一个目录里，再在这里打开。'));
+        detected.appendChild(el('p', 'rd-shelf-empty', '没有找到可阅读的目录'));
     }
     for (const s of data.suggestions || []) {
         const card = el('button', 'rd-book-card');
@@ -353,7 +353,7 @@ export function scrollTocToActive(container) {
 export function renderBookmarks(container, data) {
     container.textContent = '';
     if (!data.bookmarks.length) {
-        container.appendChild(el('p', 'rd-toc-empty', '还没有书签。Ctrl+D 或顶栏按钮添加。'));
+        container.appendChild(el('p', 'rd-toc-empty', '还没有书签（Ctrl+D 添加）。'));
         return;
     }
     const list = el('div', 'rd-bm-list');

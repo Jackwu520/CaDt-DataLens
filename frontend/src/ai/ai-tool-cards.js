@@ -1023,7 +1023,7 @@ export function createAIToolCards(ctx) {
     async function acceptPlan(session, message, families) {
         if (!session || streamOf(session.id) || !session.planMode || !message || !message.planMode) return;
         if (currentScopeOf(session) === 'read') {
-            flash('当前为「只读访问」，执行阶段无法修改文件；请先在下方切换权限', true);
+            flash('当前为「只读访问」，执行阶段无法修改文件', true);
             return;
         }
         const cwd = getScopeRoot() || '';

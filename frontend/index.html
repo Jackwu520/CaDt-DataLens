@@ -399,7 +399,7 @@
                                 <div class="set-control"><select id="opt-ui-font" class="opt-select"></select></div>
                             </div>
                             <div class="set-row">
-                                <div class="set-main"><div class="set-title">界面中文字体</div><div class="set-desc">界面中文可单独选择</div></div>
+                                <div class="set-main"><div class="set-title">界面中文字体</div></div>
                                 <div class="set-control"><select id="opt-ui-cjk-font" class="opt-select"></select></div>
                             </div>
                             <div class="set-row">
@@ -581,7 +581,7 @@
                         <div class="set-group-title">模型</div>
                         <div class="set-card">
                             <div class="set-row">
-                                <div class="set-main"><div class="set-title">账号管理</div><div class="set-desc">每个账号（API Key）可配置多个模型；API Key 只保存在本机，不写入日志。点击卡片「编辑」打开账号与模型列表。</div></div>
+                                <div class="set-main"><div class="set-title">账号管理</div><div class="set-desc">每个账号（API Key）可配置多个模型；API Key 只保存在本机，不写入日志。</div></div>
                                 <div class="set-control">
                                     <button type="button" id="ai-model-create" class="dlg-btn primary">新建账号</button>
                                 </div>
@@ -1015,7 +1015,7 @@
                                 </div>
                             </div>
                             <div class="set-row">
-                                <div class="set-main"><div class="set-title">AI 分类器复核<button type="button" class="info-tip" data-tip="开启后对规则、只读、命令族都没接住的命令额外请求一次模型判定，失败、超时或信息不足都回退为人工审批；判定结果按命令缓存 10 分钟。与「端侧分类器」结合时：端侧放行不请求模型，端侧判险的命令会把端侧结果（score / 阈值）注入提示词交本模型二次复核，复核放行即直接执行。每次触发都会在消息流推送系统提示（判定中 / 放行原因 / 转人工），工具卡同步显示「等待 AI 分类器判定…」。分类器默认请求当前会话使用的模型，可在下方「复核模型」里固定为指定模型。" aria-label="AI 分类器说明">i</button></div><div class="set-desc">规则无法判定时由大模型判定；与端侧分类器结合时负责二次复核</div></div>
+                                <div class="set-main"><div class="set-title">AI 分类器复核<button type="button" class="info-tip" data-tip="开启后对规则、只读、命令族都没接住的命令额外请求一次模型判定，失败、超时或信息不足都回退为人工审批；判定结果按命令缓存 10 分钟。与「端侧分类器」结合时：端侧放行不请求模型，端侧判险的命令会把端侧结果（score / 阈值）注入提示词交本模型二次复核，复核放行即直接执行。每次触发都会在消息流推送系统提示（判定中 / 放行原因 / 转人工），工具卡同步显示「等待 AI 分类器判定…」。分类器默认请求当前会话使用的模型；可用「复核模型」固定为指定模型。" aria-label="AI 分类器说明">i</button></div><div class="set-desc">规则无法判定时由大模型判定；与端侧分类器结合时负责二次复核</div></div>
                                 <div class="set-control">
                                     <label class="set-switch"><input type="checkbox" id="ai-opt-auto-classifier"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
                                 </div>
@@ -1062,7 +1062,7 @@
                                 </div>
                             </div>
                             <div class="set-row">
-                                <div class="set-main"><div class="set-title">个性化学习<button type="button" class="info-tip" data-tip="两类学习点：① 蒸馏——端侧模型只学**大模型的判定**（云端 AI 分类器的结论、语义插件的结论，线性向语义看齐）；② 分歧裁决——仅当线性 / 语义 / 云端 AI 的放行结论**不一致**时，你在审批卡上的允许 / 拒绝才作为裁决信号回流（此时不一致的是模型之间，你的裁定解决「谁对谁错」）。结论一致时用户操作不学习：审批是一次性授权语境，「这次确实要写」的批准学进去会变成以后每次都放行。秘密打码后存于应用数据 local-classifier/（环形上限 500），SGD + L2 锚定出厂权重防漂移。学习状态、重置 / 清空 / 导出见下方操作区。" aria-label="个性化学习说明">i</button></div><div class="set-desc">学大模型的判定（云端 / 语义）+ 三层结论分歧时的用户裁决；结论一致时你的操作不学习（数据仅存本机）</div></div>
+                                <div class="set-main"><div class="set-title">个性化学习<button type="button" class="info-tip" data-tip="两类学习点：① 蒸馏——端侧模型只学**大模型的判定**（云端 AI 分类器的结论、语义插件的结论，线性向语义看齐）；② 分歧裁决——仅当线性 / 语义 / 云端 AI 的放行结论**不一致**时，你在审批卡上的允许 / 拒绝才作为裁决信号回流（此时不一致的是模型之间，你的裁定解决「谁对谁错」）。结论一致时用户操作不学习：审批是一次性授权语境，「这次确实要写」的批准学进去会变成以后每次都放行。秘密打码后存于应用数据 local-classifier/（环形上限 500），SGD + L2 锚定出厂权重防漂移。" aria-label="个性化学习说明">i</button></div><div class="set-desc">学大模型的判定（云端 / 语义）+ 三层结论分歧时的用户裁决；结论一致时你的操作不学习（数据仅存本机）</div></div>
                                 <div class="set-control">
                                     <label class="set-switch"><input type="checkbox" id="ai-opt-local-personalize"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
                                 </div>
@@ -1174,7 +1174,7 @@
                         <div class="set-group-title">运行</div>
                         <div class="set-card">
                             <div class="set-row">
-                                <div class="set-main"><div class="set-title">工作目录<button type="button" class="info-tip" data-tip="默认选文件所在目录，方便直接读旁边的数据文件。运行面板顶部可填「运行参数」：空格分隔、含空格用引号包起来，按语言记住并随运行标签回显；参数只传给程序，不会进入编译命令。" aria-label="工作目录说明">i</button></div><div class="set-desc">脚本里的相对路径按此目录解析</div></div>
+                                <div class="set-main"><div class="set-title">工作目录<button type="button" class="info-tip" data-tip="默认选文件所在目录，方便直接读旁边的数据文件。" aria-label="工作目录说明">i</button></div><div class="set-desc">脚本里的相对路径按此目录解析</div></div>
                                 <div class="set-control">
                                     <select id="run-cwd" class="opt-select">
                                         <option value="file">文件所在目录（推荐）</option>
@@ -2264,7 +2264,7 @@
                 <div class="run-input-bar hidden" id="run-input-bar">
                     <span class="run-input-label">stdin</span>
                     <input id="run-stdin-input" class="run-stdin" type="text" spellcheck="false" autocomplete="off"
-                           placeholder="给程序发送一行输入，回车发送" title="输入会写给正在运行的进程；不读 stdin 的程序请点 EOF 或直接停止">
+                           placeholder="发送输入到程序…" title="输入会写给正在运行的进程；不读 stdin 的程序请点 EOF 或直接停止">
                     <button type="button" id="run-stdin-send" class="dlg-btn">发送</button>
                     <button type="button" id="run-stdin-eof" class="dlg-btn" title="关闭输入端（发送 EOF），让按行读到结尾才结束的程序正常退出">EOF</button>
                 </div>
@@ -2288,7 +2288,7 @@
             <span id="st-enc"></span>
             <span id="st-update" class="st-update" style="display:none"></span>
             <span id="st-count" class="st-count"></span>
-            <button type="button" id="st-writing" class="st-zoom" title="码字统计（点击查看详情）" style="display:none"></button>
+            <button type="button" id="st-writing" class="st-zoom" title="码字统计" style="display:none"></button>
             <button type="button" id="st-md-width" class="st-zoom" title="Markdown 预览宽度"></button>
             <button type="button" id="st-ai-width" class="st-zoom" title="AI 全屏内容宽度" style="display:none"></button>
             <button type="button" id="st-zoom" class="st-zoom" title="缩放比例"></button>

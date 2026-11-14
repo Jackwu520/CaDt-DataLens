@@ -60,7 +60,7 @@ function openDiffDialog(pathA, pathB) {
     elsD.semanticList.classList.add('hidden');
     elsD.semanticList.textContent = '';
     elsD.output.textContent = '';
-    elsD.summary.textContent = pathA || pathB ? '正在比较…' : '选择两个文件后点击“比较”';
+    elsD.summary.textContent = pathA || pathB ? '正在比较…' : '选择两个文件';
     if (pathA || pathB) runDiffCompare();
 }
 

@@ -274,7 +274,7 @@ function jumpBookmark(delta) {
     }
     const rows = bookmarkRowsForDoc(deps.file);
     if (!rows.length) {
-        deps.flash('当前文件还没有书签（F11 在光标行添加）', true);
+        deps.flash('当前文件还没有书签（F11 添加）', true);
         return;
     }
     const cur = ace.getCursorPosition().row;

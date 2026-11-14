@@ -96,8 +96,7 @@ async function autoCheckUpdateOnStart() {
             setUpdateStatus('已是最新版本 ' + info.currentVersion, {muted: true, autoHide: 4000});
         } else {
             setUpdateStatus('发现新版本 ' + info.latestVersion, {onClick: () => openUpdateDialogWith(info)});
-            deps.flash('发现新版本 ' + info.latestVersion + '，点击右下角查看');
-            // 版本更新进消息中心（弹一条 toast，消息常驻列表）
+                        // 版本更新进消息中心（弹一条 toast，消息常驻列表）
             if (typeof deps.addMessage === 'function') {
                 deps.addMessage({
                     kind: 'update',

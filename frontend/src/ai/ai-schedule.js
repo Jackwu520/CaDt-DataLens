@@ -45,7 +45,7 @@ export function createAISchedule(ctx) {
             if (!list || !list.length) {
                 const empty = document.createElement('span');
                 empty.className = 'ai-pref-empty';
-                empty.textContent = '（暂无任务；可让 AI 用 schedule_create 创建，或点下方「新建任务」）';
+                empty.textContent = '（暂无任务）';
                 opt.schedules.appendChild(empty);
                 return;
             }
@@ -92,7 +92,7 @@ export function createAISchedule(ctx) {
                     iconEl.innerHTML = iconSvg('clock', 12);
                 }
                 chip.title = mine.length
-                    ? mine.map((s) => s.name).join('、') + ' · 点击查看详情 / 编辑'
+                    ? mine.map((s) => s.name).join('、')
                     : '定时任务（本会话绑定的计划触发）';
             }
             // 弹层开着时原位重渲染（重新定位）
@@ -137,8 +137,7 @@ export function createAISchedule(ctx) {
             subSpan.textContent = describeAISchedule(s);
             main.append(nameSpan, subSpan);
             row.append(badge, main);
-            row.title = '点击编辑该任务';
-            row.addEventListener('click', () => {
+                        row.addEventListener('click', () => {
                 if (typeof ctx.hideChipsPop === 'function') ctx.hideChipsPop();
                 openScheduleEditor(s);
             });

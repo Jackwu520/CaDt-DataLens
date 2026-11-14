@@ -542,7 +542,7 @@ export function createAIComposer(ctx) {
         updateSendState();
         renderMessageQueue();
         el.input.focus();
-        flash(queuedDraft ? '已取回待编辑消息；输入区原有内容已放回排队' : '已取回待编辑消息，可修改后重新排队或插话');
+        flash(queuedDraft ? '已取回待编辑消息；输入区原有内容已放回排队' : '已取回待编辑消息');
     }
     return {
         renderAttachments,

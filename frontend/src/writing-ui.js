@@ -1104,7 +1104,7 @@ async function renderPluginsPane() {
         if (!plugins || !plugins.length) {
             const empty = document.createElement('div');
             empty.className = 'plugin-empty';
-            empty.textContent = '暂无插件。点「添加插件」选择包含 plugin.json 的文件夹，或导入 .zip 插件包；插件可注册新的文件格式、工具菜单命令和主题。';
+            empty.textContent = '暂无插件';
             listEl.appendChild(empty);
             fitPluginListBox(listEl);
             return;

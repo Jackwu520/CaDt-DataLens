@@ -396,7 +396,7 @@ export function createAISubagents(ctx) {
             const empty = document.createElement('div');
             empty.className = 'ai-chips-empty';
             empty.textContent = kind === 'agents'
-                ? '暂无共享任务，可以通过对话创建'
+                ? '暂无共享任务'
                 : '暂无后台命令';
             el.chipsPop.appendChild(empty);
         }

@@ -140,7 +140,7 @@ export function createAISlash(ctx) {
                     try { el.input.setSelectionRange(prompt.length, prompt.length); } catch (e) {}
                     updateSendState();
                 }
-                showNote('已填入提示词，可修改后发送。');
+                showNote('已填入提示词。');
                 break;
             }
             case '/diff': {
@@ -154,7 +154,7 @@ export function createAISlash(ctx) {
                     try { el.input.setSelectionRange(prompt.length, prompt.length); } catch (e) {}
                     updateSendState();
                 }
-                showNote('已填入提示词，可修改后发送。');
+                showNote('已填入提示词。');
                 break;
             }
             default:

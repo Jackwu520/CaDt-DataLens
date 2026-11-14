@@ -202,7 +202,7 @@ export function createAIManageDialogs(ctx) {
                 }
                 const meta = [];
                 if (Number.isFinite(size)) meta.push(size + ' 字节');
-                main.appendChild(dialogNode('div', 'ai-mgr-meta', meta.join(' · ') || '点击「打开」查看内容'));
+                main.appendChild(dialogNode('div', 'ai-mgr-meta', meta.join(' · ')));
                 const actions = dialogNode('div', 'ai-mgr-actions');
                 actions.appendChild(dialogButton('打开', 'dlg-btn', () => openPath(entry.path)));
                 actions.appendChild(dialogButton('删除', 'dlg-btn', () => {
@@ -317,7 +317,7 @@ export function createAIManageDialogs(ctx) {
                 return;
             }
             if (!skills.length) {
-                list.appendChild(dialogNode('div', 'ai-mgr-empty', '还没有技能。可在下方新建，或把 SKILL.md 放进技能目录。'));
+                list.appendChild(dialogNode('div', 'ai-mgr-empty', '还没有技能。把 SKILL.md 放进技能目录即可。'));
                 return;
             }
             list.classList.add('ai-skills-list');
@@ -359,8 +359,7 @@ export function createAIManageDialogs(ctx) {
                 head.type = 'button';
                 head.className = 'ai-mgr-group' + (builtinGroup ? ' ai-mgr-group-builtin' : '');
                 head.setAttribute('aria-expanded', String(!collapsed));
-                head.title = '点击折叠 / 展开该分组';
-                head.appendChild(dialogNode('span', 'ai-mgr-group-arrow', ''));
+                                head.appendChild(dialogNode('span', 'ai-mgr-group-arrow', ''));
                 head.appendChild(dialogNode('span', 'ai-mgr-group-title', title));
                 head.appendChild(dialogNode('span', 'ai-mgr-group-count', items.length + ' 个'));
                 if (note) head.appendChild(dialogNode('span', 'ai-mgr-group-note', note));

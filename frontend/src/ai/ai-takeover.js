@@ -163,7 +163,7 @@ export function createAITakeover(ctx) {
             barIcon.innerHTML = iconSvg('diff', 13);
             const barText = document.createElement('span');
             barText.className = 'ai-takeover-bar-text';
-            barText.textContent = '补丁待审批 · ' + (approval.summary || '未命名') + '（点击展开）';
+            barText.textContent = '补丁待审批 · ' + (approval.summary || '未命名');
             const barStat = document.createElement('span');
             barStat.className = 'ai-approval-stat';
             barStat.append(el0('span', 'add', '+' + (preview.added || 0)), el0('span', 'del', '−' + (preview.removed || 0)));
@@ -403,8 +403,8 @@ export function createAITakeover(ctx) {
             const barText = document.createElement('span');
             barText.className = 'ai-takeover-bar-text';
             barText.textContent = isCommand
-                ? '命令待审批（已收起，点击展开）'
-                : '更改待审批 · ' + (approval.relPath || approval.path || '') + '（点击展开）';
+                ? '命令待审批'
+                : '更改待审批 · ' + (approval.relPath || approval.path || '');
             const barStat = document.createElement('span');
             barStat.className = 'ai-approval-stat';
             if (!isCommand) {
@@ -1008,7 +1008,7 @@ export function createAITakeover(ctx) {
             updateComposerTakeover(true);
             renderMessageQueue();
             if (el.input) el.input.focus();
-            flash('输入补充意见后发送，AI 会继续完善计划');
+            flash('已按你的意见继续规划');
         });
         const accept = document.createElement('button');
         accept.type = 'button';

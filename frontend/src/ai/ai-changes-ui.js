@@ -300,7 +300,7 @@ export function createAIChangesUI(ctx) {
         const lines = [
             '# 本轮改动审阅',
             '',
-            changes.length + ' 个文件，+' + totalAdded + ' −' + totalRemoved + '。快照只读；要撤销请用汇总卡文件行的「撤销」。',
+            changes.length + ' 个文件，+' + totalAdded + ' −' + totalRemoved + '。快照只读。',
             '',
         ];
         for (const file of changes.slice(0, 20)) {

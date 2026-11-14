@@ -2176,7 +2176,7 @@ export function createAIPanel(options) {
             const title = document.createElement('strong');
             title.textContent = '尚未配置 AI';
             const text = document.createElement('span');
-            text.textContent = '在「设置 → 模型」中填写 Base URL、API Key 与模型后即可开始对话。';
+            text.textContent = '未配置模型';
             const button = document.createElement('button');
             button.type = 'button';
             button.className = 'dlg-btn primary';
@@ -2187,7 +2187,7 @@ export function createAIPanel(options) {
             const title = document.createElement('strong');
             title.textContent = '开始新的对话';
             const text = document.createElement('span');
-            text.textContent = '直接输入问题，或输入 / 查看斜杠命令。';
+            text.textContent = '输入问题开始对话';
             box.append(title, text);
         }
         return box;
@@ -2339,7 +2339,7 @@ export function createAIPanel(options) {
         const btn = document.createElement('button');
         btn.type = 'button';
         btn.className = 'ai-load-earlier-btn';
-        btn.textContent = '↑ 上方还有 ' + start + ' 条更早消息，点击或上滑加载';
+        btn.textContent = '↑ 上方还有 ' + start + ' 条更早消息';
         btn.addEventListener('click', () => loadEarlierMessages());
         row.appendChild(btn);
         el.messages.appendChild(row);
@@ -2371,7 +2371,7 @@ export function createAIPanel(options) {
                 if (newStart <= 0) row.remove();
                 else {
                     const btn = row.querySelector('.ai-load-earlier-btn');
-                    if (btn) btn.textContent = '↑ 上方还有 ' + newStart + ' 条更早消息，点击或上滑加载';
+                    if (btn) btn.textContent = '↑ 上方还有 ' + newStart + ' 条更早消息';
                 }
             }
             // 保持视口内容不动：新增内容在顶部，补偿对应高度。
@@ -3767,7 +3767,7 @@ export function createAIPanel(options) {
             lines.push('已压缩：摘要 ' + session.summary.text.length + ' 字符，归档 ' +
                 ((session.archived || []).length) + ' 条（归档不发送；命令面板「AI： 查看已归档消息」或导出 Markdown 可查看）。');
         }
-        if (percent >= 80) lines.push('提示：上下文接近窗口上限，可考虑新建会话。');
+        if (percent >= 80) lines.push('上下文接近窗口上限。');
         return lines.join('\n');
     }
 
@@ -7429,7 +7429,7 @@ export function createAIPanel(options) {
                 ? '会话正文读取失败，已禁止追加；可清空该会话或检查 ai-sessions 目录'
                 : (archived ? '会话已归档，取消归档后可继续'
                     : (imageBlocked ? '当前模型未勾选图像输入：请移除图片或在模型设置中开启'
-                        : (hasProfile ? (others ? '其他会话正在生成（' + others + ' 个）· Enter 发送到本会话' : '') : '未配置 AI，请先在设置中配置')));
+                        : (hasProfile ? (others ? '其他会话正在生成（' + others + ' 个）· Enter 发送到本会话' : '') : '未配置 AI')));
         }
     }
 
@@ -8760,7 +8760,7 @@ export function createAIPanel(options) {
                 empty.className = 'ai-model-picker-empty';
                 empty.textContent = query
                     ? '没有匹配「' + search.value.trim() + '」的模型'
-                    : '还没有模型，点击下方「模型设置…」添加';
+                    : '还没有模型';
                 listBox.appendChild(empty);
             }
             navIndex = -1;

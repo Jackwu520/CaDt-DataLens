@@ -146,7 +146,7 @@ export function createAITimer(ctx) {
             parts.push((info.mode === 'countdown' ? '倒计时「' : '正计时「') + (info.label || '')
                 + '」' + (info.mode === 'countdown' ? '剩 ' : '已计 ') + liveTime(info));
         }
-        return parts.join('；') + '；点击查看详情 / 停止';
+        return parts.join('；');
     }
 
     function ensureChipChrome(chip) {
@@ -257,7 +257,6 @@ export function createAITimer(ctx) {
                 stop(item.id).catch(() => {});
             });
             row.append(badge, main, stopBtn);
-            row.title = '点击查看详情';
             row.addEventListener('click', () => {
                 detailId = item.id;
                 refreshPop();
@@ -267,7 +266,7 @@ export function createAITimer(ctx) {
         if (!list.length) {
             const empty = document.createElement('div');
             empty.className = 'ai-chips-empty';
-            empty.textContent = '本会话暂无计时器，可让 AI 用 start_timer 启动，或在消息框「+」→ 计时器手动创建';
+            empty.textContent = '本会话暂无计时器';
             host.appendChild(empty);
         }
     }

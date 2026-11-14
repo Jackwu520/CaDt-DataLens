@@ -247,7 +247,7 @@ export function createAISettingsDialog(ctx) {
         if (!total) {
             const empty = document.createElement('span');
             empty.className = 'ai-approved-empty';
-            empty.textContent = '（没有项目规则；可在下方添加，或从「最近审批」一键成规则）';
+            empty.textContent = '（没有项目规则）';
             opt.permissionTable.appendChild(empty);
         }
     }
@@ -1001,7 +1001,7 @@ export function createAISettingsDialog(ctx) {
         if (!getConfig().profiles.length) {
             const empty = document.createElement('div');
             empty.className = 'ai-model-empty';
-            empty.textContent = '还没有模型账号。点击下方「新建账号」，或选择一个预设后添加。';
+            empty.textContent = '还没有模型账号';
             opt.modelList.appendChild(empty);
             return;
         }

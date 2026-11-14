@@ -345,7 +345,7 @@ export function createExplorer(options) {
         const prevTop = body.scrollTop;
         body.textContent = '';
         if (!tree) {
-            body.appendChild(emptyState('打开文件或文件夹后在此浏览', '打开文件夹…', () => {
+            body.appendChild(emptyState('未打开工作区', '打开文件夹…', () => {
                 if (typeof openFolder === 'function') openFolder();
             }));
             updateTitle();
@@ -731,7 +731,7 @@ export function createExplorer(options) {
         const prevTop = body.scrollTop;
         body.textContent = '';
         if (!listState.root) {
-            body.appendChild(emptyState('打开文件后显示所在目录', '打开文件…', () => {
+            body.appendChild(emptyState('未打开文件', '打开文件…', () => {
                 if (typeof openFileDialog === 'function') openFileDialog();
             }));
         } else if (listState.loading) {
