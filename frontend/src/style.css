@@ -2962,23 +2962,19 @@ aside[data-sidebar-view="chats"] #ai-sessions-panel { display: flex; flex: 1; mi
 .ai-session-action-btn:hover { border-color: var(--accent); }
 .ai-session-action-btn svg { flex: none; width: 13px; height: 13px; display: block; color: var(--muted); }
 .ai-session-action-btn:hover svg { color: var(--accent); }
-/* 自动化弹层：定时任务按对话分组一览 + 创建入口 */
-.ai-automation-pop {
-    position: fixed;
-    z-index: 90;
-    width: 340px;
-    max-width: calc(100vw - 16px);
-    max-height: min(62vh, 460px);
-    overflow: auto;
-    padding: 8px;
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    box-shadow: 0 10px 30px rgba(0, 0, 0, .4);
+/* 自动化对话框（设置面板同款模态）：任务按对话分组 + 行级启停/编辑/删除 */
+.ai-automation-body { display: flex; flex-direction: column; gap: 2px; }
+.ai-automation-hint { padding: 2px 4px 8px; color: var(--muted); font-size: 11px; line-height: 1.5; }
+.ai-automation-group { margin: 8px 4px 2px; color: var(--muted); font-size: 10.5px; font-weight: 600; }
+.ai-automation-empty {
+    padding: 22px 10px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    color: var(--muted);
+    font-size: 11.5px;
 }
-.ai-automation-head { display: flex; align-items: center; gap: 8px; padding: 2px 4px 8px; }
-.ai-automation-title { font-weight: 600; font-size: 12.5px; }
-.ai-automation-sub { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 10.5px; }
 .ai-automation-add {
     flex: none;
     padding: 3px 10px;
@@ -2989,16 +2985,6 @@ aside[data-sidebar-view="chats"] #ai-sessions-panel { display: flex; flex: 1; mi
     font: inherit;
     font-size: 11px;
     cursor: pointer;
-}
-.ai-automation-group { margin: 6px 4px 2px; color: var(--muted); font-size: 10.5px; font-weight: 600; }
-.ai-automation-empty {
-    padding: 22px 10px;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 10px;
-    color: var(--muted);
-    font-size: 11.5px;
 }
 /* 会话搜索框及其结果样式已删：搜索入口并入 AI 面板头部放大镜 → 全局搜索「AI 会话」分类 */
 .ai-msg-jump { box-shadow: 0 0 0 2px var(--accent); border-radius: 6px; transition: box-shadow .3s ease; }

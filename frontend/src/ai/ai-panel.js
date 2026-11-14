@@ -2056,6 +2056,7 @@ export function createAIPanel(options) {
         askConfirm,
         openAIDialog,
         closeAIDialog,
+        dialogButton,
         sessionTitleById: (...args) => sessionTitleById(...args),
         sessionActivity,
         currentSession,
@@ -10942,7 +10943,7 @@ export function createAIPanel(options) {
         });
         if (sessionActionAutoBtn) sessionActionAutoBtn.addEventListener('click', () => {
             ensureOpen();
-            scheduleMod.openAutomationPop(sessionActionAutoBtn);
+            scheduleMod.openAutomationDialog();
         });
         if (sessionMoreBtn) sessionMoreBtn.addEventListener('click', () => showSessionListMenu());
         // 会话搜索框已删：搜索入口在头部放大镜（开全局搜索并只勾选「AI 会话」分类）

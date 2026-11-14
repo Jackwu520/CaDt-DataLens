@@ -174,7 +174,9 @@ export function createAISchedule(ctx) {
         refreshSchedulesUI();
     }
 
-    function renderScheduleRow(s) {
+    // onChange：可选的「任务数据变化后」回调（自动化对话框传入以原位重建）；缺省只刷设置列表
+    function renderScheduleRow(s, onChange) {
+        const afterChange = () => { renderScheduleSettings(); if (typeof onChange === 'function') onChange(); };
         const row = document.createElement('div');
         row.className = 'ai-sched-row' + (s.enabled ? '' : ' disabled');
         const main = document.createElement('div');
@@ -202,7 +204,7 @@ export function createAISchedule(ctx) {
         toggle.innerHTML = iconSvg(s.enabled ? 'pause' : 'play', 12);
         toggle.addEventListener('click', () => {
             Promise.resolve(backend.AIScheduleToggle(s.id, !s.enabled)).then(() => {
-                renderScheduleSettings();
+                afterChange();
                 flash((s.enabled ? '已停用：' : '已启用：') + s.name);
             }).catch((e) => flash('操作失败：' + ((e && e.message) || e), true));
         });
@@ -220,7 +222,7 @@ export function createAISchedule(ctx) {
         remove.addEventListener('click', () => {
             askConfirm('删除定时任务「' + s.name + '」？', () => {
                 Promise.resolve(backend.AIScheduleDelete(s.id)).then(() => {
-                    renderScheduleSettings();
+                    afterChange();
                     flash('已删除定时任务：' + s.name);
                 }).catch((e) => flash('删除失败：' + ((e && e.message) || e), true));
             });
@@ -466,75 +468,21 @@ export function createAISchedule(ctx) {
         }
     }
 
-    // ---- 自动化弹层（会话侧栏「自动化」按钮）：全部定时任务按对话分组一览 + 创建入口 ----
-    // 独立浮层挂 body（fixed 定位），开着的弹层再点一次按钮 = 收起；点外面 / Esc 关闭。
-    let automationPop = null;
-    let automationDismiss = null;
-
-    function closeAutomationPop() {
-        if (!automationPop) return;
-        automationPop.remove();
-        automationPop = null;
-        if (automationDismiss) {
-            document.removeEventListener('pointerdown', automationDismiss, true);
-            document.removeEventListener('keydown', automationDismiss, true);
-            automationDismiss = null;
-        }
-    }
-
-    function automationRow(s) {
-        const row = document.createElement('button');
-        row.type = 'button';
-        row.className = 'ai-chips-row';
-        const badge = document.createElement('span');
-        badge.className = 'ai-sched-badge' + (s.enabled ? ' on' : '');
-        badge.textContent = s.enabled ? '启用' : '停用';
-        const main = document.createElement('span');
-        main.className = 'ai-chips-main';
-        const nameSpan = document.createElement('span');
-        nameSpan.className = 'ai-chips-name';
-        nameSpan.textContent = s.name || s.id;
-        const subSpan = document.createElement('span');
-        subSpan.className = 'ai-chips-sub';
-        subSpan.textContent = describeAISchedule(s);
-        main.append(nameSpan, subSpan);
-        row.append(badge, main);
-        row.title = '点击编辑该任务';
-        row.addEventListener('click', () => {
-            closeAutomationPop();
-            openScheduleEditor(s);
-        });
-        return row;
-    }
-
-    function openAutomationPop(anchor) {
-        if (automationPop) {
-            closeAutomationPop();
+    // ---- 自动化对话框（会话侧栏「自动化」按钮）：设置面板同款模态，任务按对话分组 + 全套操作 ----
+    // 行操作（启停 / 编辑 / 删除）复用设置页的 renderScheduleRow，变化后原位重建本对话框。
+    function renderAutomationDialog() {
+        if (!backend.AIScheduleList || !backend.AIScheduleCreate) {
+            flash('当前版本不支持定时任务');
             return;
         }
-        const pop = document.createElement('div');
-        pop.className = 'ai-automation-pop';
-        const head = document.createElement('div');
-        head.className = 'ai-automation-head';
-        const title = document.createElement('span');
-        title.className = 'ai-automation-title';
-        title.textContent = '自动化';
-        const sub = document.createElement('span');
-        sub.className = 'ai-automation-sub';
-        sub.textContent = '定时任务在应用运行期间触发';
-        const add = document.createElement('button');
-        add.type = 'button';
-        add.className = 'ai-automation-add';
-        add.textContent = '新建任务…';
-        add.addEventListener('click', () => {
-            closeAutomationPop();
-            openScheduleEditor(null);
-        });
-        head.append(title, sub, add);
-        pop.appendChild(head);
-        // 按对话分组（会话隔离）：只展示本工作区会话的任务与未绑定任务；
-        // 绑定到其他工作区 / 已失效会话的任务折叠成提示行（设置页全部管理里仍可见）
-        const buildList = (list) => {
+        const body = document.createElement('div');
+        body.className = 'ai-automation-body';
+        const build = (list) => {
+            body.textContent = '';
+            const hint = document.createElement('div');
+            hint.className = 'ai-automation-hint';
+            hint.textContent = '定时任务在应用运行期间按计划触发；绑定会话的任务到点唤醒该对话，未绑定的每次新建会话。';
+            body.appendChild(hint);
             const tasks = Array.isArray(list) ? list : [];
             const localGroups = new Map(); // sessionId → tasks（保持首次出现顺序）
             let unbound = [];
@@ -553,75 +501,52 @@ export function createAISchedule(ctx) {
                 if (!localGroups.has(s.sessionId)) localGroups.set(s.sessionId, []);
                 localGroups.get(s.sessionId).push(s);
             }
+            const addGroup = (title, rows) => {
+                const groupTitle = document.createElement('div');
+                groupTitle.className = 'ai-automation-group';
+                groupTitle.textContent = title;
+                body.appendChild(groupTitle);
+                for (const s of rows) body.appendChild(renderScheduleRow(s, renderAutomationDialog));
+            };
             // 组间按会话最近活动排序（最近用过的对话靠上）
             const orderedSessions = [...localGroups.keys()].map((id) => getSessions().find((x) => x.id === id))
                 .filter(Boolean)
                 .sort((a, b) => sessionActivity(b) - sessionActivity(a));
             for (const session of orderedSessions) {
-                const groupTitle = document.createElement('div');
-                groupTitle.className = 'ai-automation-group';
-                groupTitle.textContent = '会话「' + (session.title || '新会话') + '」';
-                pop.appendChild(groupTitle);
-                for (const s of localGroups.get(session.id)) pop.appendChild(automationRow(s));
+                addGroup('会话「' + (session.title || '新会话') + '」', localGroups.get(session.id));
             }
-            if (unbound.length) {
-                const groupTitle = document.createElement('div');
-                groupTitle.className = 'ai-automation-group';
-                groupTitle.textContent = '每次新建会话';
-                pop.appendChild(groupTitle);
-                for (const s of unbound) pop.appendChild(automationRow(s));
-            }
+            if (unbound.length) addGroup('每次新建会话', unbound);
             if (foreign) {
                 const note = document.createElement('div');
                 note.className = 'ai-automation-group';
                 note.textContent = '另有 ' + foreign + ' 个任务属于其他工作区或已失效的会话——「全部管理（设置）」里可见';
-                pop.appendChild(note);
+                body.appendChild(note);
             }
             if (!localGroups.size && !unbound.length) {
                 const empty = document.createElement('div');
                 empty.className = 'ai-automation-empty';
-                const hint = document.createElement('span');
-                hint.textContent = foreign ? '本工作区还没有定时任务' : '还没有定时任务';
-                empty.appendChild(hint);
-                const create = document.createElement('button');
-                create.type = 'button';
-                create.className = 'ai-automation-add';
-                create.textContent = '创建定时任务…';
-                create.addEventListener('click', () => {
-                    closeAutomationPop();
-                    openScheduleEditor(null);
-                });
-                empty.appendChild(create);
-                pop.appendChild(empty);
+                const span = document.createElement('span');
+                span.textContent = foreign ? '本工作区还没有定时任务' : '还没有定时任务';
+                empty.appendChild(span);
+                body.appendChild(empty);
             }
         };
-        buildList(scheduleListCache);
-        document.body.appendChild(pop);
-        // 定位：按钮下方，右缘不出窗、底缘不够就上提
-        const rect = anchor.getBoundingClientRect();
-        const place = () => {
-            pop.style.left = Math.max(8, Math.min(rect.left, window.innerWidth - pop.offsetWidth - 12)) + 'px';
-            pop.style.top = Math.max(8, Math.min(rect.bottom + 6, window.innerHeight - pop.offsetHeight - 12)) + 'px';
+        build(scheduleListCache);
+        const refresh = () => {
+            Promise.resolve(backend.AIScheduleList()).then((list) => {
+                scheduleListCache = Array.isArray(list) ? list : [];
+                // 对话框仍开着才原位重建（用户可能已切到编辑器）
+                if (body.isConnected) build(scheduleListCache);
+            }).catch(() => {});
         };
-        place();
-        automationDismiss = (e) => {
-            if (e.key === 'Escape' || (e.type === 'pointerdown' && !pop.contains(e.target) && !anchor.contains(e.target))) {
-                closeAutomationPop();
-            }
-        };
-        document.addEventListener('pointerdown', automationDismiss, true);
-        document.addEventListener('keydown', automationDismiss, true);
-        automationPop = pop;
-        // 打开即拉最新列表（缓存只是快照）；更新后原位重建内容并重新定位
-        if (!backend.AIScheduleList) return;
-        Promise.resolve(backend.AIScheduleList()).then((list) => {
-            scheduleListCache = Array.isArray(list) ? list : [];
-            if (!automationPop) return;
-            for (const node of [...pop.querySelectorAll('.ai-automation-group, .ai-chips-row, .ai-automation-empty')]) node.remove();
-            buildList(scheduleListCache);
-            place();
-        }).catch(() => {});
+        refresh();
+        const foot = [
+            dialogButton('全部管理（设置）…', 'dlg-btn', () => { closeAIDialog(); if (typeof ctx.openSettings === 'function') ctx.openSettings('schedules'); }),
+            dialogButton('新建任务…', 'dlg-btn primary', () => openScheduleEditor(null)),
+            dialogButton('关闭', 'dlg-btn', closeAIDialog),
+        ];
+        openAIDialog('自动化 · 定时任务', [body], foot);
     }
 
-    return {renderScheduleSettings, renderScheduleRow, renderSchedulePop, renderChip, openScheduleEditor, openAutomationPop, aiDelay, handleScheduleFire, runScheduledTurn};
+    return {renderScheduleSettings, renderScheduleRow, renderSchedulePop, renderChip, openScheduleEditor, openAutomationDialog, aiDelay, handleScheduleFire, runScheduledTurn};
 }

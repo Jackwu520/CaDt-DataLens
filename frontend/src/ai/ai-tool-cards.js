@@ -782,12 +782,14 @@ export function createAIToolCards(ctx) {
     }
 
     // 流式占位行：与真实工具卡头部同款结构（加载图标 / 动词 / 文件图标 / 文件名 / 目录 / ±统计 / 右侧状态），
-    // 整轮结束后由真实工具卡接替。
-    function liveToolRow(call) {
+    // 整轮结束后由真实工具卡接替。行按调用 key 复用（updateLiveTools 原位更新文本），
+    // 避免每个流帧整行重建导致 spinner 动画重启 / hover 丢失的疯狂闪烁。
+    function buildLiveRow(call, parts, stats, shape) {
         const meta = toolMeta(call.name);
-        const parts = liveToolParts(call.arguments);
         const row = document.createElement('div');
         row.className = 'ai-live-tool';
+        row.dataset.liveKey = String(call.key);
+        row.dataset.shape = shape;
         const spinner = document.createElement('span');
         spinner.className = 'ai-tool-spinner';
         const icon = document.createElement('span');
@@ -811,7 +813,6 @@ export function createAIToolCards(ctx) {
                 dir.title = parts.dir;
                 row.appendChild(dir);
             }
-            const stats = liveDiffStats(call.key, call.name, parts);
             if (stats) {
                 const add = document.createElement('span');
                 add.className = 'ai-tool-stat add';
@@ -827,6 +828,68 @@ export function createAIToolCards(ctx) {
         state.textContent = '接收中 ' + parts.size;
         row.appendChild(state);
         return row;
+    }
+
+    function setTextIfChanged(el, text) {
+        if (el && el.textContent !== text) el.textContent = text;
+    }
+
+    // 原位更新一行：结构形态（有无 path / 有无 ±统计）变了才整行重建，其余只改文本
+    function updateLiveRow(row, call, parts, stats) {
+        const meta = toolMeta(call.name);
+        setTextIfChanged(row.querySelector('.ai-tool-verb'), meta.verb || call.name);
+        if (parts.path) {
+            if (parts.name) {
+                const fileIcon = row.querySelector('.ai-tool-fileicon');
+                if (fileIcon) {
+                    const fresh = createFileIcon(parts.name, 'ai-tool-fileicon');
+                    if (fileIcon.innerHTML !== fresh.innerHTML) fileIcon.innerHTML = fresh.innerHTML;
+                }
+            }
+            const primary = row.querySelector('.ai-tool-primary');
+            setTextIfChanged(primary, parts.name || parts.path);
+            if (primary) primary.title = parts.path;
+            const dir = row.querySelector('.ai-tool-dir');
+            setTextIfChanged(dir, parts.dir);
+            if (dir) dir.title = parts.dir;
+            if (stats) {
+                setTextIfChanged(row.querySelector('.ai-tool-stat.add'), '+' + stats.added);
+                setTextIfChanged(row.querySelector('.ai-tool-stat.del'), '−' + stats.removed);
+            }
+        }
+        setTextIfChanged(row.querySelector('.ai-tool-state'), '接收中 ' + parts.size);
+    }
+
+    // 占位区增量更新：按 key 复用行、按 live 顺序就位、消失的行移除；
+    // 形态（path 是否已收到 / ±统计是否可算）变化才重建那一行。
+    function updateLiveTools(box, live) {
+        const existing = new Map();
+        for (const row of [...box.querySelectorAll('.ai-live-tool')]) {
+            existing.set(row.dataset.liveKey, row);
+        }
+        const seen = new Set();
+        for (const call of live) {
+            const key = String(call.key);
+            seen.add(key);
+            const parts = liveToolParts(call.arguments);
+            const stats = liveDiffStats(call.key, call.name, parts);
+            const shape = (parts.path ? 'p' : '-') + (stats ? 's' : '-');
+            let row = existing.get(key);
+            if (row && row.dataset.shape !== shape) {
+                row.remove();
+                row = null;
+            }
+            if (!row) {
+                row = buildLiveRow(call, parts, stats, shape);
+            } else {
+                updateLiveRow(row, call, parts, stats);
+            }
+            row.dataset.shape = shape;
+            box.appendChild(row); // 移动既有节点到正确顺序，不重建
+        }
+        for (const [key, row] of existing) {
+            if (!seen.has(key)) row.remove();
+        }
     }
 
     function updateAssistantElement(wrap, message, streaming, options) {
@@ -923,18 +986,24 @@ export function createAIToolCards(ctx) {
             const staleLive = bubble.querySelector('.ai-live-tools');
             if (staleLive) staleLive.remove();
             const live = (streaming && options && Array.isArray(options.liveTools)) ? options.liveTools : null;
-            if (live && live.length) {
+            let box = bubble.querySelector('.ai-live-tools');
+            if (!live || !live.length) {
+                if (box) box.remove();
+            } else {
+                // 换轮清缓存并重建占位区（调用 key 跨轮复用，基线不能串轮）
                 if (message !== liveTurnMessage) {
                     liveTurnMessage = message;
                     liveBaseTexts.clear();
                     liveStatsCache.clear();
+                    if (box) box.remove();
+                    box = null;
                 }
-                const box = document.createElement('div');
-                box.className = 'ai-live-tools';
-                for (const call of live) {
-                    box.appendChild(liveToolRow(call));
+                if (!box) {
+                    box = document.createElement('div');
+                    box.className = 'ai-live-tools';
+                    bubble.appendChild(box);
                 }
-                bubble.appendChild(box);
+                updateLiveTools(box, live);
             }
             // 非流式渲染完成后补渲染 mermaid 占位（AI 回复里的 ```mermaid 围栏，报告 §1.3.3）
             if (!streaming && typeof renderMermaidBlocks === 'function') {
