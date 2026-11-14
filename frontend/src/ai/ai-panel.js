@@ -3035,10 +3035,18 @@ export function createAIPanel(options) {
             if (message.status === 'streaming') wrap.classList.add('streaming');
             // 回复头「AI 模型 时间」信息行稀疏显示（默认关）：连续工具轮的中间回复隐藏，
             // 只在轮次开头与模型切换时出现；设置「每条回复都显示 AI 信息行」恢复全显
-            if (shouldShowTurnMeta(session, index, message)) {
+            const sparseMeta = !shouldShowTurnMeta(session, index, message);
+            if (!sparseMeta) {
                 const meta = document.createElement('div');
                 meta.className = 'ai-msg-meta';
                 wrap.appendChild(meta);
+            }
+            // 连续工具轮的空回复（无正文无思考、非流式非错误）整条压没——信息行没了但
+            // 空 wrap 还占一格 gap，视觉上「不显示了还隔这么远」；display:none 后只剩
+            // 工具卡之间的标准间距。流式期间正常渲染（内容到达即显示）。
+            if (sparseMeta && message.status !== 'streaming' && message.status !== 'error'
+                && !aiTextOf(message.content) && !aiTextOf(message.reasoning)) {
+                wrap.classList.add('turn-blank');
             }
             const bubble = document.createElement('div');
             bubble.className = 'ai-bubble';

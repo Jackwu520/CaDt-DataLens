@@ -6050,6 +6050,8 @@ html[data-theme="whitey"] {
     white-space: pre-wrap;
     overflow-wrap: anywhere;
 }
+/* 稀疏信息行的中间轮空回复：整条压没（连续工具轮只剩工具卡之间的标准间距） */
+.ai-msg.assistant.turn-blank { display: none; }
 .ai-msg.assistant {
     align-self: stretch;
     padding: 2px 0 0;
