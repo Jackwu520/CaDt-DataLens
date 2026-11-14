@@ -4881,7 +4881,7 @@ export function createAIPanel(options) {
             return {approved: false, denied: true, rule: decision.rule};
         }
         if (decision.decision === 'classify') {
-            // 端侧分类器先行（语义插件优先、内置线性兜底，二选一）：离线毫秒级，产出危险概率，
+            // 端侧分类器先行（线性与语义插件同时生效、保守合并取 max）：离线毫秒级，产出危险概率，
             // 按严格度阈值统一判 allow/ask。无可用分类器（未启用/加载失败/全部熔断）→ 回退远程。
             const local = await localClassifierMod.classifyAll(command, {
                 cwd,

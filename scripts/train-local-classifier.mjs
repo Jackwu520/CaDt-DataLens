@@ -9,7 +9,7 @@
 //
 // 运行：node scripts/train-local-classifier.mjs [--version factory-2026-11-14-1]
 import {generateCorpus, mulberry32, CANARIES} from './classifier-corpus.mjs';
-import {LC_FEATURES, lcExtractDims, lcScore, lcDequantize} from '../frontend/src/ai/ai-local-classifier.js';
+import {LC_FEATURES, lcExtractDims, lcScore, lcScoreCommand, lcDequantize} from '../frontend/src/ai/ai-local-classifier.js';
 import {LOCAL_CLASSIFIER_THRESHOLDS} from '../frontend/src/ai/ai-permissions.js';
 import {writeFileSync} from 'node:fs';
 import {fileURLToPath} from 'node:url';
@@ -174,16 +174,16 @@ function main() {
     // 金丝雀门槛：固定验收集逐条把关（与前端单测同一份清单，训练器与测试永不脱节）
     const canaryFails = [];
     for (const command of CANARIES.dangerous) {
-        const score = lcScore(lcExtractDims(command, LC_FEATURES), dequantized, trained.bias);
+        const score = lcScoreCommand(command, dequantized, trained.bias, LC_FEATURES);
         if (score < 0.5) canaryFails.push('危险应高置信（≥0.5）：' + command + ' → ' + score.toFixed(3));
         if (score < LOCAL_CLASSIFIER_THRESHOLDS.loose) canaryFails.push('危险宽松档也必须拦：' + command + ' → ' + score.toFixed(3));
     }
     for (const command of CANARIES.safe) {
-        const score = lcScore(lcExtractDims(command, LC_FEATURES), dequantized, trained.bias);
+        const score = lcScoreCommand(command, dequantized, trained.bias, LC_FEATURES);
         if (score >= LOCAL_CLASSIFIER_THRESHOLDS.standard) canaryFails.push('安全应标准档放行：' + command + ' → ' + score.toFixed(3));
     }
     for (const command of CANARIES.gray) {
-        const score = lcScore(lcExtractDims(command, LC_FEATURES), dequantized, trained.bias);
+        const score = lcScoreCommand(command, dequantized, trained.bias, LC_FEATURES);
         if (score < LOCAL_CLASSIFIER_THRESHOLDS.standard) canaryFails.push('灰色应标准档转人工：' + command + ' → ' + score.toFixed(3));
     }
     if (canaryFails.length) {

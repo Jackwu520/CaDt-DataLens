@@ -36,7 +36,8 @@ export function lcHash(text, seed) {
 // 子 shell 求值 / 链式调用 / base64 编码载荷），桶以带前缀的字符串进同一哈希空间。
 export function lcExtractDims(command, cfg) {
     const c = cfg || LC_FEATURES;
-    const text = String(command || '').toLowerCase().replace(/\s+/g, ' ').trim().slice(0, LC_TEXT_LIMIT);
+    // NFKC 兼容分解：全角字符折叠为半角（红队发现全角化危险命令绕过，线性/语义双修）
+    const text = String(command || '').normalize('NFKC').toLowerCase().replace(/\s+/g, ' ').trim().slice(0, LC_TEXT_LIMIT);
     if (!text) return [];
     const set = new Set();
     for (const n of c.ngrams) {
@@ -89,6 +90,25 @@ export function lcDequantize(b64, scale, dims) {
         out[i] = (bytes[i] < 128 ? bytes[i] : bytes[i] - 256) * s;
     }
     return out;
+}
+
+// 按 shell 命令分隔符切段：换行 / ; / && / || / |（红队 P0：多命令链的 benign 前缀
+// 会稀释危险段信号、&& 被语料装饰学成安全信号——切段逐段打分取 max 是根因级修复，
+// 且与「整条训练」自洽：危险段命中训练学到的正权 gram，benign 段命中负权，max 取危险段）
+export function lcSegment(command) {
+    return String(command || '').split(/\r?\n|&&|\|\||;|\|/).map((seg) => seg.trim()).filter(Boolean);
+}
+
+// 命令级打分：切段逐段推理取 max（训练仍为整条样本，段级 gram 权重与训练自洽）
+export function lcScoreCommand(command, weights, bias, cfg) {
+    const segs = lcSegment(command);
+    if (!segs.length) segs.push(String(command || '').trim());
+    let best = 0;
+    for (const seg of segs) {
+        const score = lcScore(lcExtractDims(seg, cfg), weights, bias);
+        if (score > best) best = score;
+    }
+    return best;
 }
 
 // 危险概率：σ(bias + Σ w·x)。x 为 0/1 出现特征（dims 数组）。
@@ -470,7 +490,7 @@ export function createAILocalClassifier(ctx) {
                 fn: async (cmd) => {
                     await ensureLoaded();
                     const dims = lcExtractDims(cmd, state.featureCfg);
-                    return {score: lcScore(dims, state.active, state.bias + state.biasDelta), reason: '线性模型判定'};
+                    return {score: lcScoreCommand(cmd, state.active, state.bias + state.biasDelta, state.featureCfg), reason: '线性模型判定'};
                 },
             });
         }
@@ -508,8 +528,7 @@ export function createAILocalClassifier(ctx) {
     async function scoreText(command) {
         await ensureLoaded();
         const cfg = ctx.getConfig ? ctx.getConfig() : {};
-        const dims = lcExtractDims(command, state.featureCfg);
-        const score = lcScore(dims, state.active, state.bias + state.biasDelta);
+        const score = lcScoreCommand(command, state.active, state.bias + state.biasDelta, state.featureCfg);
         const verdict = judgeLocalClassifier(score, cfg.localClassifierStrictness);
         return {score, verdict, deltaDims: Object.keys(state.delta).length};
     }
