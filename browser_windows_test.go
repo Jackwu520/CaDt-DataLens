@@ -155,6 +155,23 @@ func TestBrowserEmbedAndCDP(t *testing.T) {
 		t.Fatalf("screenshot payload too short: %d", len(shot))
 	}
 
+	// 隐藏态截图回归：WebView2 在隐藏时暂停渲染，CapturePreview 的完成回调不会来
+	// （工具侧表现为「CapturePreview 超时（30s）」）。切到 AI 面板后浏览器标签即处于隐藏态，
+	// 此时 browser_screenshot 必须仍然可用。
+	if err := app.BrowserSetVisible("t-browser", false); err != nil {
+		t.Fatalf("BrowserSetVisible(false): %v", err)
+	}
+	hiddenShot, err := app.BrowserCaptureScreenshot("t-browser")
+	if err != nil {
+		t.Fatalf("隐藏态 BrowserCaptureScreenshot: %v", err)
+	}
+	if len(hiddenShot) < 100 {
+		t.Fatalf("hidden screenshot payload too short: %d", len(hiddenShot))
+	}
+	if err := app.BrowserSetVisible("t-browser", true); err != nil {
+		t.Fatalf("BrowserSetVisible(true): %v", err)
+	}
+
 	// BrowserState
 	state, err := app.BrowserState("t-browser")
 	if err != nil {

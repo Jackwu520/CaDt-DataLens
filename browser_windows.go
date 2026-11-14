@@ -644,6 +644,10 @@ func (a *App) BrowserCallCDP(id string, method string, paramsJSON string) (strin
 }
 
 // BrowserCaptureScreenshot 抓取当前页面为 PNG，返回 base64。
+//
+// 隐藏态的 WebView2 会暂停渲染，CapturePreview 的完成回调永远不来（实测卡满 30s 超时）——
+// 而 browser_screenshot 恰好最常发生在「用户切到 AI 面板」之后，这时标签页正是隐藏的。
+// 所以抓图前临时 Show 一下（不 Focus、不 Raise、不改边界），抓完立即还原 Hide。
 func (a *App) BrowserCaptureScreenshot(id string) (string, error) {
 	var result string
 	var taskErr error
@@ -653,7 +657,15 @@ func (a *App) BrowserCaptureScreenshot(id string) (string, error) {
 			taskErr = browserWrapErr(id, nil)
 			return
 		}
+		wasVisible := inst.visible
+		if !wasVisible && inst.chromium != nil {
+			_ = inst.chromium.Show()
+			defer func() { _ = inst.chromium.Hide() }()
+		}
 		result, taskErr = wvCaptureScreenshot(inst.webview, browserCDPTimeout)
+		if taskErr != nil && !wasVisible {
+			taskErr = fmt.Errorf("%w（抓图前该标签页为隐藏态，已临时显示后重试；标签页=%s）", taskErr, id)
+		}
 	})
 	if jobErr != nil {
 		return "", jobErr
