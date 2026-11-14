@@ -4,12 +4,12 @@
 // 依赖一律经 deps 延迟求值（调用方传 getter），不在创建期解构：
 // 这样既不依赖 main.js 的声明顺序，也不会把 let 状态拍成快照。
 import DOMPurify from 'dompurify';
-import {WRITING_FONTS, formatWritingText, genName, SCENE_SEPARATOR} from './writing.js';
-import {RECIPES, SELF_TEST} from './run.js';
-import {initPluginRuntime, loadPlugins} from './plugins.js';
-import {iconSvg} from './icons.js';
-import {aceModeFor, formats} from './formats.js';
-import {createMarkdownRenderer, decodeMermaidSource, encodeMermaidSource} from './markdown.js';
+import {WRITING_FONTS, formatWritingText, genName, SCENE_SEPARATOR} from '../core/writing.js';
+import {RECIPES, SELF_TEST} from '../terminal/run.js';
+import {initPluginRuntime, loadPlugins} from '../core/plugins.js';
+import {iconSvg} from '../core/icons.js';
+import {aceModeFor, formats} from '../core/formats.js';
+import {createMarkdownRenderer, decodeMermaidSource, encodeMermaidSource} from '../core/markdown.js';
 
 export function createWritingUI(deps) {
 

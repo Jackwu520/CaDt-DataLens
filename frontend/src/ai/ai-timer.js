@@ -14,7 +14,7 @@
 // - onTimersChanged(): 计时器集合/视图变化通知（弹层开着时由 ai-panel 原位刷新）
 // - flash(msg, isErr): 用户可见提示（创建成功 / 校验失败）
 // - onFire(payload): 到点回调（payload 含 sessionId），由 ai-panel 注入并触发新一轮
-import {iconSvg} from '../icons.js';
+import {iconSvg} from '../core/icons.js';
 
 // 计时器会话隔离（纯函数，ai-timer.test.mjs 覆盖）。
 // 显示与上限都按会话隔离：胶囊 / 弹层 / 数量角标只算「归属当前会话」的计时器；

@@ -7,7 +7,7 @@
 // 用法（main.js）：
 //   const dc = createDebugConsole({mount: document.getElementById('debug-view'), relay, onDetach, onClose});
 //   console[level] 补丁里调用 dc.push(level, args)
-import {iconSvg} from './icons.js';
+import {iconSvg} from '../core/icons.js';
 
 const MAX_ENTRIES = 600;       // 缓冲条数上限
 const MAX_TEXT = 4000;         // 单条文本长度上限

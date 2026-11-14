@@ -1,9 +1,9 @@
 // ai-tool-cards.js：工具卡 / 审批卡渲染（命令审批、写审批、Env、Ask 卡、diff 预览、工具消息壳、助手消息更新）。
 // 从 ai-panel.js 拆出（docs/unfinished-plans/structure-cleanup.md 阶段 3），函数体逐字搬移。
 // 折叠状态 Map 与转录 Map 经 ctx 注入（引用稳定）；dismissedPlanApproval 经 setDismissedPlanApproval 写。
-import {iconSvg} from '../icons.js';
-import {createFileIcon} from '../fileicons.js';
-import {enhanceWidgets} from '../widget.js';
+import {iconSvg} from '../core/icons.js';
+import {createFileIcon} from '../core/fileicons.js';
+import {enhanceWidgets} from '../core/widget.js';
 import {aiFormatTime, aiTextOf} from './ai-constants.js';
 
 // 解码可能未闭合的 JSON 字符串字面量：截掉不完整转义、补收尾引号再 parse；

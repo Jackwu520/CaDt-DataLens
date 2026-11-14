@@ -2,7 +2,7 @@
 // 从 ai-panel.js 拆出（docs/unfinished-plans/structure-cleanup.md 阶段 3），函数体逐字搬移；
 // sessions 为重赋值 let 且模块内只读（经 getSessions()），stickBottom 经 setStickBottom 写。
 // 列表分组状态与搜索状态为域私有，随域迁入本模块。
-import {iconSvg} from '../icons.js';
+import {iconSvg} from '../core/icons.js';
 import {aiTextOf, aiFormatSessionTime} from './ai-constants.js';
 
 export function createAISessionList(ctx) {

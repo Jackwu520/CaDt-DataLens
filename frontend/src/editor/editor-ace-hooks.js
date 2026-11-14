@@ -4,7 +4,7 @@
 //
 // deps 与 editor-groups 共用同一对象（main.js 传入的 getter 集），延迟求值。
 import hljs from 'highlight.js/lib/common';
-import {aceModeFor} from './formats.js';
+import {aceModeFor} from '../core/formats.js';
 
 export function createEditorAceHooks(deps) {
 

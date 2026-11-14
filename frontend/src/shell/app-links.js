@@ -2,9 +2,9 @@
 //
 // 依赖一律经 deps 延迟求值（调用方传 getter），不在创建期解构：
 // 这样既不依赖 main.js 的声明顺序，也不会把 let 状态拍成快照。
-import changelogText from '../../CHANGELOG.md?raw';
-import termsText from '../../docs/legal/terms.md?raw';
-import privacyText from '../../docs/legal/privacy.md?raw';
+import changelogText from '../../../CHANGELOG.md?raw';
+import termsText from '../../../docs/legal/terms.md?raw';
+import privacyText from '../../../docs/legal/privacy.md?raw';
 
 export function createAppLinks(deps) {
 

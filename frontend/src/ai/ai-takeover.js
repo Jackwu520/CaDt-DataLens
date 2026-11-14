@@ -1,7 +1,7 @@
 // ai-takeover.js：输入区接管卡（补丁审批 / 工具审批 / Env / Ask / 计划批准 + 计数徽标与折叠）。
 // 从 ai-panel.js 拆出（docs/unfinished-plans/structure-cleanup.md 阶段 3），函数体逐字搬移。
 // approvalTakeoverKey/Collapsed、dismissedPlanApproval、stickBottom 经访问器读写（核心域他处亦写）。
-import {iconSvg} from '../icons.js';
+import {iconSvg} from '../core/icons.js';
 import {AI_WRITE_SCOPES, aiClampInt, aiNowId} from './ai-constants.js';
 import {collectCommandFamilies, commandFamilySignature} from './ai-command-rules.js';
 

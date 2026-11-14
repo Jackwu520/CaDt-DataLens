@@ -1,7 +1,7 @@
 // ai-message-queue.js：AI 面板消息排队 / 插话（流式生成中 Enter 排队、Ctrl+Enter 插话、结束后冲刷）。
 // 从 ai-panel.js 拆出（docs/unfinished-plans/structure-cleanup.md 阶段 3），函数体逐字搬移；
 // 仅 attachments / dismissedPlanApproval 两个重赋值 let 改经 ctx 访问器读写。
-import {iconSvg} from '../icons.js';
+import {iconSvg} from '../core/icons.js';
 
 export function createAIMessageQueue(ctx) {
     const el = ctx.el;

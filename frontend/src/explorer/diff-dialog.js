@@ -3,8 +3,8 @@
 //
 // 依赖一律经 deps 延迟求值（调用方传 getter），不在创建期解构：
 // 这样既不依赖 main.js 的声明顺序，也不会把 let 状态拍成快照。
-import {detectFormat} from './formats.js';
-import {unifiedDiff, semanticDiff, semanticEntryText} from './diff.js';
+import {detectFormat} from '../core/formats.js';
+import {unifiedDiff, semanticDiff, semanticEntryText} from '../core/diff.js';
 
 export function createDiffDialog(deps) {
 

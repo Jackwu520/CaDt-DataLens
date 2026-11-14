@@ -37,7 +37,7 @@ function baseName(path) {
     return i >= 0 ? s.slice(i + 1) : s;
 }
 
-import {createFileIcon} from './fileicons.js';
+import {createFileIcon} from '../core/fileicons.js';
 
 function compareEntries(a, b) {
     if (!!a.isDir !== !!b.isDir) return a.isDir ? -1 : 1;

@@ -1,4 +1,4 @@
-import {iconSvg, renderMenuIcon} from './icons.js';
+import {iconSvg, renderMenuIcon} from '../core/icons.js';
 
 function el(tag, className, text) {
     const node = document.createElement(tag);

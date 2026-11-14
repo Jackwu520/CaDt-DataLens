@@ -4,7 +4,7 @@
 // 依赖一律经 deps 延迟求值（调用方传 getter），不在创建期解构：
 // 这样既不依赖 main.js 的声明顺序，也不会把 let 状态拍成快照。
 import DOMPurify from 'dompurify';
-import {iconSvg} from './icons.js';
+import {iconSvg} from '../core/icons.js';
 import {createEditorAceHooks} from './editor-ace-hooks.js';
 import {createEditorCsvView} from './editor-csv-view.js';
 import {createEditorSplitPreview} from './editor-split-preview.js';
@@ -12,8 +12,8 @@ import {createEditorBrowserTab} from './editor-browser-tab.js';
 import {createEditorSqlView} from './editor-sql-view.js';
 import {createEditorDocExtras} from './editor-doc-extras.js';
 import {createEditorExportMenus} from './editor-export-menus.js';
-import {createFileIcon, fileIconSpec} from './fileicons.js';
-import {formats, detectFormat, isKnownCodeFileName} from './formats.js';
+import {createFileIcon, fileIconSpec} from '../core/fileicons.js';
+import {formats, detectFormat, isKnownCodeFileName} from '../core/formats.js';
 import {showPatchView, disposePatchView} from './patch-view.js';
 
 export function createEditorGroups(deps) {

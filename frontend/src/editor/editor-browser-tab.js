@@ -3,7 +3,7 @@
 // 弹层显隐同步、标题回写。
 //
 // deps 经 Object.create 委托继承 editor-groups 的 getter 集。
-import {iconSvg} from './icons.js';
+import {iconSvg} from '../core/icons.js';
 
 export function createEditorBrowserTab(deps) {
 

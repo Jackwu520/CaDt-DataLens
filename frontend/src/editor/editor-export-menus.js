@@ -6,7 +6,7 @@
 // renderMarkdownPreview（分屏预览域）与核心函数 updateStatus / closeDocsWithConfirm /
 // requestCloseDoc / showPathInFolder / reopenClosedTab / groupDocs / groupOfDoc 的转发箭头。
 import DOMPurify from 'dompurify';
-import {copyImageBlobToClipboard} from './image-clipboard.js';
+import {copyImageBlobToClipboard} from '../core/image-clipboard.js';
 
 export function createEditorExportMenus(deps) {
 

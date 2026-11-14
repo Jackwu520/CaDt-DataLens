@@ -1,4 +1,4 @@
-import {iconSvg} from './icons.js';
+import {iconSvg} from '../core/icons.js';
 
 // 容器内图片查看层：铺满宿主容器（不越出该面板），把图片放大到整个内容区。
 // 关闭：Esc / 点击空白 / 右上角按钮；滚轮缩放、拖拽平移、双击在「适应区域」与 100% 间切换。

@@ -6,7 +6,7 @@ import {
     buildBookModel, flattenChapters, locateUnit, computeProgress,
     normalizeBookKey, flattenTreePreorder,
 } from './reading-model.js';
-import {createContextMenu} from '../contextmenu.js';
+import {createContextMenu} from '../shell/contextmenu.js';
 import {createReadingState} from './reading-state.js';
 import {createReadingRender} from './reading-render.js';
 import {createReadingSearch} from './reading-search.js';

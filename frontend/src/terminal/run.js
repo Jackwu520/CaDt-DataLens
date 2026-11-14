@@ -8,7 +8,7 @@
 //   - exec 参数数组，不经 shell 拼接；只有 .bat/.cmd/.sh/.ps1 才交给解释器；
 //   - V1 不接管 stdin，交互式程序会拿到 EOF（报错而非卡住）。
 
-import {iconSvg} from './icons.js';
+import {iconSvg} from '../core/icons.js';
 
 const MAX_LINES = 5000; // 单次运行保留的输出行数，超出从头丢
 const MAX_SESSIONS = 4; // 面板保留的运行标签数

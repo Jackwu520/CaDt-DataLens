@@ -3,7 +3,7 @@
 // docx 块 → HTML；epub 经 DOMParser 清洗后套用阅读排版。LRU 缓存。
 
 import DOMPurify from 'dompurify';
-import {createMarkdownRenderer} from '../markdown.js';
+import {createMarkdownRenderer} from '../core/markdown.js';
 import {joinSoftLines, stripFrontMatter, unitIdOf} from './reading-model.js';
 
 const CACHE_MAX_BYTES = 8 << 20;

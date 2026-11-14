@@ -1,7 +1,7 @@
 // ai-schedule.js：定时任务域（设置页任务列表/编辑器 + sched-fire 触发执行与多窗口认领）。
 // 从 ai-panel.js 拆出（docs/unfinished-plans/structure-cleanup.md 阶段 3），函数体逐字搬移；
 // sessions 为重赋值 let 且模块内只读，经 getSessions() 访问。
-import {iconSvg} from '../icons.js';
+import {iconSvg} from '../core/icons.js';
 import {describeAISchedule, aiFormatLocalMs, aiClampInt, aiTextOf} from './ai-constants.js';
 
 export function createAISchedule(ctx) {
