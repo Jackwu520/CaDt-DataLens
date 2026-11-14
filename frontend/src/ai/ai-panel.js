@@ -594,7 +594,8 @@ export function createAIPanel(options) {
             // 自动审批分类器的请求模型：'账号id|模型id'；空串 = 跟随当前模型
             autoClassifierModel: aiTextOf(stored.autoClassifierModel),
             // 端侧命令分类器（内置线性模型，离线毫秒级；docs/unfinished-plans/local-command-classifier.md）
-            localClassifierEnabled: stored.localClassifierEnabled === true,
+            // 默认启用（作者拍板）；用户显式关闭（false）保留
+            localClassifierEnabled: stored.localClassifierEnabled !== false,
             localClassifierStrictness: normalizeLocalClassifierStrictness(stored.localClassifierStrictness),
             // 个性化后训练：从审批卡的用户显式裁定学习（批准 → y=0，拒绝 → y=1）
             localClassifierPersonalize: stored.localClassifierPersonalize === true,
@@ -4873,31 +4874,58 @@ export function createAIPanel(options) {
             return {approved: false, denied: true, rule: decision.rule};
         }
         if (decision.decision === 'classify') {
-            // 端侧分类器先行（内置线性模型 + 插件注册项）：离线毫秒级，产出危险概率，
+            // 端侧分类器先行（语义插件优先、内置线性兜底，二选一）：离线毫秒级，产出危险概率，
             // 按严格度阈值统一判 allow/ask。无可用分类器（未启用/加载失败/全部熔断）→ 回退远程。
             const local = await localClassifierMod.classifyAll(command, {
                 cwd,
                 toolName: toolName || 'run_command',
                 sessionId: (session && session.id) || '',
             });
-            if (local) {
+            if (local && local.allow) {
                 const localNote = local.sourceLabel + ' score=' + local.score.toFixed(2) +
                     (local.reason ? '：' + local.reason : '') +
                     (local.classifierCount > 1 ? '（' + local.classifierCount + ' 个分类器合并）' : '');
-                if (local.allow) {
-                    logPermission('command', command, 'allow', 'local-classifier', 'score=' + local.score.toFixed(2));
-                    showNote('端侧分类器已放行：' + localNote);
-                    markCommandAutoApproved(session, toolMessage, command, cwd, toolName, 'local-classifier', localNote);
-                    return {approved: true};
+                logPermission('command', command, 'allow', 'local-classifier', 'score=' + local.score.toFixed(2));
+                showNote('端侧分类器已放行：' + localNote);
+                markCommandAutoApproved(session, toolMessage, command, cwd, toolName, 'local-classifier', localNote);
+                return {approved: true};
+            }
+            if (local) {
+                // 端侧未放行：远程分类器启用时交大模型二次判定（提示词注入端侧结果供参考）；
+                // 远程未启用 → 直接转人工（fail-closed）。
+                const localSummary = local.sourceLabel + ' score=' + local.score.toFixed(2) + ' ≥ 阈值 ' + local.threshold +
+                    (local.reason ? '（' + local.reason + '）' : '');
+                if (config.autoClassifier === true) {
+                    const verdict = await classifyCommandForAuto(session, command, cwd, {
+                        source: local.sourceLabel,
+                        score: local.score,
+                        threshold: local.threshold,
+                        reason: local.reason,
+                    });
+                    logPermission('command', command, verdict.allow ? 'allow' : 'ask', 'classifier',
+                        '端侧 ' + localSummary + ' · 复核' + (verdict.allow ? '放行' : '未放行'));
+                    if (verdict.allow) {
+                        showNote('端侧未放行（' + localSummary + '），AI 分类器复核放行：' + (verdict.reason || '未说明原因'));
+                        markCommandAutoApproved(session, toolMessage, command, cwd, toolName, 'classifier', '端侧未放行，AI 复核放行：' + (verdict.reason || ''));
+                        return {approved: true};
+                    }
+                    showNote('端侧（' + localSummary + '）与 AI 分类器复核均未放行：' + (verdict.reason || '转人工'));
+                    return await requestCommandApproval(session, toolMessage, {
+                        command,
+                        cwd,
+                        tool: toolName || 'run_command',
+                        classifyNote: '端侧 ' + localSummary + '；AI 分类器复核未放行：' + (verdict.reason || ''),
+                        askSource: 'local-classifier',
+                        classifyScore: local.score,
+                    });
                 }
-                // 端侧判险：直接转人工，不再消耗远程分类器调用（链路顺序固定：端侧先行）
                 logPermission('command', command, 'ask', 'local-classifier', 'score=' + local.score.toFixed(2) + ' ≥ ' + local.threshold);
-                showNote('端侧分类器转人工：' + localNote);
+                showNote('端侧分类器转人工：' + localSummary);
                 return await requestCommandApproval(session, toolMessage, {
                     command,
                     cwd,
                     tool: toolName || 'run_command',
-                    classifyNote: localNote,
+                    classifyNote: localSummary,
                     askSource: 'local-classifier',
                     classifyScore: local.score,
                 });
@@ -4949,6 +4977,8 @@ export function createAIPanel(options) {
         '只输出一行 JSON：{"decision":"allow"|"ask","reason":"不超过30字"}',
         'allow 仅用于：只读、幂等、可回滚、不联网、不写工作区之外、不修改系统配置的命令。',
         '其余情况输出 ask；信息不足时也输出 ask。',
+        '输入里可能带 local_classifier 字段：端侧小模型先跑了一轮，score 达到放行阈值才转给你复核。',
+        '端侧模型的误拦并不少见——如果端侧判险但你确认命令只读、幂等、无破坏性，应输出 allow（附理由）。',
     ].join('\n');
     const AI_CLASSIFIER_CACHE_LIMIT = 50;
     const AI_CLASSIFIER_CACHE_TTL = 10 * 60 * 1000;
@@ -5057,7 +5087,9 @@ export function createAIPanel(options) {
         return {account: profileOf(session), entry: entryOf(session)};
     }
 
-    function classifyCommandForAuto(session, command, cwd) {
+    // localContext：端侧分类器未放行时的复核场景（作者拍板的「端侧 + 大模型结合」），
+    // 把端侧结果（来源 / score / 阈值 / 理由）注入提示词，供大模型参考后做二次判定。
+    function classifyCommandForAuto(session, command, cwd, localContext) {
         const fallback = {allow: false, reason: '分类器不可用'};
         if (config.autoClassifier !== true || !backend.AISendChat) return Promise.resolve(fallback);
         const modelRef = classifierModelRef(session);
@@ -5076,13 +5108,24 @@ export function createAIPanel(options) {
             thinking: false,
             reasoningEffort: '',
         });
+        const userPayload = {
+            command: commandText(command).slice(0, 2000),
+            cwd: aiDisplayPath(cwd, getScopeRoot()),
+            workspace: aiDisplayRootLabel(getScopeRoot()),
+        };
+        if (localContext) {
+            // 端侧结果注入：score 已达阈值才到这里复核；注明「非最终判定」，避免模型盲从
+            userPayload.local_classifier = {
+                source: aiTextOf(localContext.source),
+                score: Number(Number(localContext.score).toFixed(3)),
+                threshold: Number(localContext.threshold),
+                note: '端侧模型判险（非最终判定），请独立复核',
+            };
+            if (localContext.reason) userPayload.local_classifier.reason = aiTextOf(localContext.reason).slice(0, 80);
+        }
         const messages = [
             {role: 'system', content: AI_CLASSIFIER_PROMPT},
-            {role: 'user', content: JSON.stringify({
-                command: commandText(command).slice(0, 2000),
-                cwd: aiDisplayPath(cwd, getScopeRoot()),
-                workspace: aiDisplayRootLabel(getScopeRoot()),
-            })},
+            {role: 'user', content: JSON.stringify(userPayload)},
         ];
         const job = {
             id, key, sessionId, cfg, messages,

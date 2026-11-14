@@ -448,8 +448,9 @@ export function createAILocalClassifier(ctx) {
         }
     }
 
-    // 聚合所有启用的分类器：内置线性模型（localClassifierEnabled）+ 插件注册项。
-    // 保守合并取 max(score)，按严格度阈值统一判 allow/ask。
+    // 聚合所有启用的端侧分类器：内置线性模型（localClassifierEnabled）+ 插件注册项，
+    // **同时生效、保守合并取 max(score)**——任一分类器判险即转人工（fail-closed）。
+    // 线性对良性命令的保守误拦由两层机制兜住：大模型复核（ai-panel，端侧未放行时）与个性化学习。
     // 无任何可用分类器（未启用 / 权重加载失败 / 全部熔断）返回 null，调用方回退远程分类器或人工。
     async function classifyAll(command, info) {
         const cfg = ctx.getConfig ? ctx.getConfig() : {};

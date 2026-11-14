@@ -950,7 +950,7 @@
                                 规则无法判定时由 AI 分类器判断
                             </label>
                         </div>
-                        <div class="fmt-hint hint-indent">关闭（默认）：未命中只读 / 命令族 / 规则时直接弹审批。开启后额外请求一次模型判定，失败、超时或信息不足都回退为人工审批；判定结果按命令缓存 10 分钟。每次触发都会在消息流推送系统提示（判定中 / 放行原因 / 转人工），工具卡同步显示「等待 AI 分类器判定…」。分类器默认请求当前会话使用的模型，可在下方「高级配置」里固定为指定模型。</div>
+                        <div class="fmt-hint hint-indent">关闭（默认）：未命中只读 / 命令族 / 规则时直接弹审批。开启后额外请求一次模型判定，失败、超时或信息不足都回退为人工审批；判定结果按命令缓存 10 分钟。与「端侧分类器」结合时：端侧放行不请求模型，端侧判险的命令会把端侧结果（score / 阈值）注入提示词交本模型二次复核，复核放行即直接执行。每次触发都会在消息流推送系统提示（判定中 / 放行原因 / 转人工），工具卡同步显示「等待 AI 分类器判定…」。分类器默认请求当前会话使用的模型，可在下方「高级配置」里固定为指定模型。</div>
                         <details class="ai-perm-advanced">
                             <summary>高级配置</summary>
                             <div class="popover-row">
@@ -962,7 +962,7 @@
                                 <span class="popover-label">端侧分类器</span>
                                 <label class="popover-label">
                                     <input type="checkbox" id="ai-opt-local-classifier">
-                                    启用内置线性模型（离线）
+                                    启用端侧分类器（默认开；安装语义插件后自动并行生效）
                                 </label>
                                 <select id="ai-opt-local-strictness" class="opt-select" title="严格度：危险概率阈值，低于放行、达到转人工">
                                     <option value="loose">宽松</option>
@@ -989,7 +989,7 @@
                                 <button type="button" id="ai-opt-local-clear" class="dlg-btn">清空学习数据</button>
                                 <button type="button" id="ai-opt-local-export" class="dlg-btn">导出分类器数据</button>
                             </div>
-                            <div class="fmt-hint hint-indent">端侧分类器在自动审批档对规则、只读与命令族都没接住的命令先行离线判定：危险概率低于严格度阈值直接放行（来源标「端侧分类器」），达到阈值转人工且不再请求远程模型；插件也可经 registerCommandClassifier 注册分类器，多个分类器取最高分。个性化只学习你在端侧审批卡上的显式裁定，存于应用数据 local-classifier/，可重置或导出。</div>
+                            <div class="fmt-hint hint-indent">端侧分类器默认开启，在自动审批档对规则、只读与命令族都没接住的命令先行离线判定：危险概率低于严格度阈值直接放行（来源标「端侧分类器」），达到阈值转人工——若同时开启了远程「AI 分类器」，会把端侧结果（score / 阈值）注入提示词交大模型二次判定，复核放行则直接执行。插件可经 registerCommandClassifier 注册分类器（如语义模型），与内置线性模型同时生效、取最高分。个性化只学习你在端侧审批卡上的显式裁定，存于应用数据 local-classifier/，可重置或导出。</div>
                         </details>
                         <div class="settings-section-title">项目规则</div>
                         <div class="fmt-hint hint-indent">表格里可直接增删规则；判定顺序 deny → ask → allow。<code>Bash(git status:*)</code> 的 <code>:*</code> 为前缀，<code>Write(docs/**)</code> 的 <code>*</code> 为通配，<code>Web(domain:example.com)</code> 匹配域名。</div>
