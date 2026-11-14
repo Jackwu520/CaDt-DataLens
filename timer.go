@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	aiTimerMaxActive  = 5             // 同时运行的计时器上限，防止滥用
+	aiTimerMaxActive  = 30            // 应用内同时运行的计时器总上限（会话内 5 个由前端按会话归属判定，done 不计入）
 	aiTimerMaxSeconds = 24 * 60 * 60  // 单个计时时长上限：24 小时（更长的等待应改用定时任务）
 )
 

@@ -9493,6 +9493,8 @@ export function createAIPanel(options) {
         // 状态栏写入徽标也切到目标会话自己的（后台会话的写入不在这里闪）
         // 任务提醒徽标随目标会话刷新
         syncRemindersUI(target);
+        // 计时胶囊按目标会话重新过滤（显示与上限都是会话隔离的）
+        timerMod.render();
         // 头部弹层（智能体团队 / 后台终端）是「上个会话的」列表：切会话就收起来
         if (chipsPopKind) hideChipsPop();
         // 头部弹层（智能体团队 / 后台终端）是「上个会话的」列表：切会话就收起来

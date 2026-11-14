@@ -16,6 +16,34 @@
 // - onFire(payload): 到点回调（payload 含 sessionId），由 ai-panel 注入并触发新一轮
 import {iconSvg} from '../icons.js';
 
+// 计时器会话隔离（纯函数，ai-timer.test.mjs 覆盖）。
+// 显示与上限都按会话隔离：胶囊 / 弹层 / 数量角标只算「归属当前会话」的计时器；
+// 归属不明（跨窗同步来的外部计时器，本实例没记过归属）保持可见可停，避免另一窗口
+// 关闭后计时器在本窗口失联。done（到点 / 停止）的计时器已从注册表移除，天然不计入。
+export function filterTimersForSession(timers, sessionIdOf, currentSessionId) {
+    const out = [];
+    if (timers && typeof timers.values === 'function') {
+        for (const info of timers.values()) {
+            const owner = sessionIdOf(info.id);
+            if (!owner || owner === currentSessionId) out.push(info);
+        }
+    }
+    return out;
+}
+
+// 会话内上限计数：只数归属当前会话的运行中计时器（不含归属不明的跨窗计时器）。
+export function countSessionTimers(timers, sessionIdOf, currentSessionId) {
+    let n = 0;
+    if (timers && typeof timers.keys === 'function') {
+        for (const id of timers.keys()) {
+            if (sessionIdOf(id) === currentSessionId) n += 1;
+        }
+    }
+    return n;
+}
+
+const AI_TIMER_SESSION_MAX = 5; // 单会话同时运行上限（应用总上限 30 在 Go 侧 aiTimerMaxActive）
+
 export function createAITimer(ctx) {
     const timers = new Map();   // id → AITimerInfo
     const sessions = new Map(); // id → 启动时的会话 id（Go 侧不感知会话）
@@ -23,6 +51,12 @@ export function createAITimer(ctx) {
     let tickTimer = 0;
     let detailId = '';          // 弹层当前展示的详情计时器 id（空 = 列表视图）
     let createBox = null;       // 「+」菜单弹出的创建小对话框（同时只一个）
+
+    // 当前会话可见的计时器（显示隔离的统一口径，见文件头 filterTimersForSession 注释）
+    function visibleTimers() {
+        const sid = ctx.getSessionId ? ctx.getSessionId() : '';
+        return filterTimersForSession(timers, (id) => sessions.get(id) || '', sid);
+    }
 
     function ensureStyle() {
         if (styleInjected) return;
@@ -91,16 +125,16 @@ export function createAITimer(ctx) {
             : fmtDuration((Date.now() - info.startMs) / 1000);
     }
 
-    // 胶囊聚焦的计时器：优先「最快到点的倒计时」，没有倒计时时取最新启动的正计时
+    // 胶囊聚焦的计时器（仅当前会话可见集）：优先「最快到点的倒计时」，没有倒计时时取最新启动的正计时
     function focusTimer() {
         let soonest = null;
-        for (const info of timers.values()) {
+        for (const info of visibleTimers()) {
             if (info.mode !== 'countdown') continue;
             if (!soonest || info.endMs < soonest.endMs) soonest = info;
         }
         if (soonest) return soonest;
         let latest = null;
-        for (const info of timers.values()) {
+        for (const info of visibleTimers()) {
             if (!latest || (info.startMs || 0) > (latest.startMs || 0)) latest = info;
         }
         return latest;
@@ -108,7 +142,7 @@ export function createAITimer(ctx) {
 
     function chipTitle() {
         const parts = [];
-        for (const info of timers.values()) {
+        for (const info of visibleTimers()) {
             parts.push((info.mode === 'countdown' ? '倒计时「' : '正计时「') + (info.label || '')
                 + '」' + (info.mode === 'countdown' ? '剩 ' : '已计 ') + liveTime(info));
         }
@@ -141,14 +175,15 @@ export function createAITimer(ctx) {
         if (!chip) return;
         ensureStyle();
         ensureChipChrome(chip);
-        // 无计时器时不显示胶囊；存在任意计时器才亮出（数量角标 + 最近倒计时走秒）
-        chip.classList.toggle('hidden', !timers.size);
+        // 会话隔离：只显示/统计当前会话的计时器（其他会话的照常在跑并到点唤醒自己，只是不在这里显示）
+        const visible = visibleTimers();
+        chip.classList.toggle('hidden', !visible.length);
         const countEl = chip.querySelector('.ai-chip-count');
         if (countEl) {
-            countEl.textContent = String(timers.size);
-            countEl.classList.toggle('hidden', !timers.size);
+            countEl.textContent = String(visible.length);
+            countEl.classList.toggle('hidden', !visible.length);
         }
-        if (timers.size) {
+        if (visible.length) {
             updateChipTime(chip);
             chip.title = chipTitle();
         }
@@ -189,7 +224,7 @@ export function createAITimer(ctx) {
         title.className = 'ai-chips-pop-title';
         title.textContent = '计时器';
         host.appendChild(title);
-        const list = [...timers.values()].sort((a, b) => {
+        const list = visibleTimers().sort((a, b) => {
             if ((a.mode === 'countdown') !== (b.mode === 'countdown')) return a.mode === 'countdown' ? -1 : 1;
             return a.mode === 'countdown' ? (a.endMs - b.endMs) : ((b.startMs || 0) - (a.startMs || 0));
         });
@@ -232,7 +267,7 @@ export function createAITimer(ctx) {
         if (!list.length) {
             const empty = document.createElement('div');
             empty.className = 'ai-chips-empty';
-            empty.textContent = '暂无计时器，可让 AI 用 start_timer 启动，或在消息框「+」→ 计时器手动创建';
+            empty.textContent = '本会话暂无计时器，可让 AI 用 start_timer 启动，或在消息框「+」→ 计时器手动创建';
             host.appendChild(empty);
         }
     }
@@ -437,7 +472,12 @@ export function createAITimer(ctx) {
     async function start(mode, seconds, label) {
         const backend = ctx.getBackend();
         if (!backend || typeof backend.StartTimer !== 'function') throw new Error('当前版本不支持计时工具');
-        // Go 返回 AITimerStartResult {list, created}
+        // 会话内上限（done 不计入——注册表里只有运行中的）：AI 工具与手动创建同走这里
+        const sid = ctx.getSessionId ? ctx.getSessionId() : '';
+        if (countSessionTimers(timers, (id) => sessions.get(id) || '', sid) >= AI_TIMER_SESSION_MAX) {
+            throw new Error('本会话运行中的计时器已达上限（' + AI_TIMER_SESSION_MAX + ' 个），请先停止部分计时器');
+        }
+        // Go 返回 AITimerStartResult {list, created}；应用总上限（30）由 Go 侧 aiTimerMaxActive 把关
         const result = await backend.StartTimer(mode === 'countup' ? 'countup' : 'countdown',
             Math.max(0, Math.round(Number(seconds) || 0)), String(label || '').slice(0, 60));
         const list = (result && result.list) || [];
