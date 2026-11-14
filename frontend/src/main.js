@@ -2349,6 +2349,8 @@ function initAIPanel() {
         copyText,
         // AI 消息里的 svg / html 围栏按设置渲染成内联可视化卡片；其它 Markdown 视图不传该开关
         renderMarkdown: (text) => renderMarkdownHtml(text, {aiWidgets: settings.aiInlineWidgets !== false}),
+        // AI 回答里的 ```mermaid 围栏占位渲染（功能验证报告 §1.3.3：原来占位无人渲染，图直接消失）
+        renderMermaidBlocks,
         openExternal: openExternalUrl,
         confirm: openCloseConfirm,
         nameDialog: openNameDialog,

@@ -44,11 +44,38 @@ test('remindersForPrompt：只返回未完成条目', () => {
     assert.deepEqual(remindersForPrompt({}), []);
 });
 
-test('reminderAddBlocked：未满返回 null，满了给出明确报错', () => {
+test('reminderAddBlocked：上限只数未完成条目（标 done 释放名额）', () => {
     const list = [];
     for (let i = 0; i < AI_REMINDER_LIMIT; i++) list.push({id: 'r' + i, title: '任务 ' + i, status: 'open'});
     assert.equal(reminderAddBlocked(list.slice(0, AI_REMINDER_LIMIT - 1)), null);
     const blocked = reminderAddBlocked(list);
-    assert.match(blocked, /上限（5 条）/);
+    assert.match(blocked, /未完成 5 条/);
     assert.match(blocked, /reminder_remove|reminder_update/);
+    // 方案 A（报告 §4.3.1）：5 条里 2 条 done → 只剩 3 条未完成，可以继续添加
+    const withDone = list.map((item, i) => (i < 2 ? Object.assign({}, item, {status: 'done'}) : item));
+    assert.equal(reminderAddBlocked(withDone), null);
+});
+
+test('normalizeReminders：open 超限截断；done 保留作历史但只留最近上限条', () => {
+    // 4 open + 2 done → 全部保留（done 不挤占 open 名额）
+    const mixed = [
+        {id: 'd1', title: '历史一', status: 'done', createdAt: 1},
+        {id: 'o1', title: '进行一', status: 'open', createdAt: 2},
+        {id: 'o2', title: '进行二', status: 'open', createdAt: 3},
+        {id: 'o3', title: '进行三', status: 'open', createdAt: 4},
+        {id: 'o4', title: '进行四', status: 'open', createdAt: 5},
+        {id: 'd2', title: '历史二', status: 'done', createdAt: 6},
+    ];
+    const kept = normalizeReminders(mixed);
+    assert.equal(kept.length, 6);
+    assert.deepEqual(kept.map((item) => item.id), ['d1', 'o1', 'o2', 'o3', 'o4', 'd2']);
+    // 7 条 done → 只留最近 5 条，最旧的先淘汰
+    const doneHeavy = [];
+    for (let i = 0; i < AI_REMINDER_LIMIT + 2; i++) {
+        doneHeavy.push({id: 'd' + i, title: '历史 ' + i, status: 'done', createdAt: i + 1});
+    }
+    const trimmed = normalizeReminders(doneHeavy);
+    assert.equal(trimmed.length, AI_REMINDER_LIMIT);
+    assert.equal(trimmed[0].id, 'd2');
+    assert.equal(trimmed[trimmed.length - 1].id, 'd' + (AI_REMINDER_LIMIT + 1));
 });

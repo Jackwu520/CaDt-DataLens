@@ -7,27 +7,43 @@ import {aiTextOf, AI_REMINDER_LIMIT, AI_REMINDER_TITLE_MAX, AI_REMINDER_DETAIL_M
 
 // ---------- 纯函数（可单测） ----------
 
-// normalizeReminders 归一并截断到上限：只保留合法条目，id 缺失时补齐，非法状态归 open。
+// normalizeReminders 归一并截断：只保留合法条目，id 缺失时补齐，非法状态归 open。
+// 方案 A（功能验证报告 §4.3.1）：上限只约束未完成条目（open ≤ 5，标 done 即释放名额），
+// 已完成条目保留作历史但只留最近 AI_REMINDER_LIMIT 条（先淘汰最旧的 done），防止历史无限膨胀。
 export function normalizeReminders(raw) {
-    const out = [];
     const list = Array.isArray(raw) ? raw : [];
     const seen = new Set();
+    const valid = [];
     for (const item of list) {
         if (!item || typeof item !== 'object') continue;
         const title = aiTextOf(item.title).trim().slice(0, AI_REMINDER_TITLE_MAX);
         if (!title) continue;
         const detail = aiTextOf(item.detail).trim().slice(0, AI_REMINDER_DETAIL_MAX);
-        let id = aiTextOf(item.id).trim().slice(0, 64) || 'rem-' + Date.now().toString(36) + '-' + (out.length + 1);
+        let id = aiTextOf(item.id).trim().slice(0, 64) || 'rem-' + Date.now().toString(36) + '-' + (valid.length + 1);
         while (seen.has(id)) id += '-x';
         seen.add(id);
-        out.push({
+        valid.push({
             id,
             title,
             detail,
             status: item.status === 'done' ? 'done' : 'open',
             createdAt: Number(item.createdAt) || Date.now(),
         });
-        if (out.length >= AI_REMINDER_LIMIT) break;
+    }
+    const doneCount = valid.filter((item) => item.status === 'done').length;
+    const doneBudget = Math.min(doneCount, AI_REMINDER_LIMIT); // 只留最近的 done
+    let doneSeen = 0;
+    let openKept = 0;
+    const out = [];
+    for (const item of valid) {
+        if (item.status === 'done') {
+            doneSeen++;
+            if (doneSeen <= doneCount - doneBudget) continue; // 淘汰最旧的 done
+        } else {
+            if (openKept >= AI_REMINDER_LIMIT) continue; // 遗留数据超限：按序截断
+            openKept++;
+        }
+        out.push(item);
     }
     return out;
 }
@@ -40,10 +56,11 @@ export function remindersForPrompt(session) {
 }
 
 // reminderAddBlocked 超上限时的明确报错文案；null 表示可以添加。
+// 上限只数未完成条目（与徽标 openCount 同口径）：标 done 即释放名额，报错建议的路径真实可用。
 export function reminderAddBlocked(list) {
-    const count = Array.isArray(list) ? list.filter(Boolean).length : 0;
-    if (count < AI_REMINDER_LIMIT) return null;
-    return '任务提醒已达上限（' + AI_REMINDER_LIMIT + ' 条）。请先用 reminder_remove 删除已完成或不再需要的条目，或用 reminder_update 把完成的条目标记 done 后再添加。';
+    const open = Array.isArray(list) ? list.filter((item) => item && item.status !== 'done').length : 0;
+    if (open < AI_REMINDER_LIMIT) return null;
+    return '任务提醒已达上限（未完成 ' + AI_REMINDER_LIMIT + ' 条）。请先用 reminder_remove 删除不再需要的条目，或用 reminder_update 把已完成的条目标记 done（完成即释放名额）后再添加。';
 }
 
 // ---------- UI ----------
@@ -179,7 +196,8 @@ export function createAIReminders(ctx) {
         title.textContent = '任务提醒';
         const count = document.createElement('span');
         count.className = 'ai-rem-count';
-        count.textContent = session ? (list.length + '/' + AI_REMINDER_LIMIT) : '';
+        // 口径与徽标/上限一致：只数未完成（已完成保留作历史，不占名额）
+        count.textContent = session ? (openCount() + '/' + AI_REMINDER_LIMIT) : '';
         head.append(title, count);
         remPop.appendChild(head);
         if (!session) {
@@ -257,7 +275,7 @@ export function createAIReminders(ctx) {
         foot.className = 'ai-rem-add-foot';
         const hint = document.createElement('span');
         hint.className = 'ai-rem-add-hint';
-        hint.textContent = '最多 ' + AI_REMINDER_LIMIT + ' 条';
+        hint.textContent = '最多 ' + AI_REMINDER_LIMIT + ' 条未完成';
         const addBtn = document.createElement('button');
         addBtn.type = 'button';
         addBtn.className = 'dlg-btn ai-rem-add-btn';

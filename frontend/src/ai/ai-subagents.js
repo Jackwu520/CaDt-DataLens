@@ -323,6 +323,8 @@ export function createAISubagents(ctx) {
     function renderChipsPop(kind) {
         if (!el.chipsPop) return;
         el.chipsPop.textContent = '';
+        // 其它域的弹层内容（如计时器）：经 ctx 注入的钩子接管，返回 true 表示已渲染
+        if (typeof ctx.renderChipsPopExtra === 'function' && ctx.renderChipsPopExtra(kind, el.chipsPop)) return;
         const title = document.createElement('div');
         title.className = 'ai-chips-pop-title';
         title.textContent = kind === 'agents' ? '智能体团队' : '后台终端';

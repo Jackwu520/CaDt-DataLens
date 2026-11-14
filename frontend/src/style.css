@@ -7125,6 +7125,28 @@ html[data-theme="whitey"] {
     white-space: pre-wrap;
     overflow-wrap: anywhere;
 }
+/* 流式中的工具调用占位：参数还在增量接收时先亮卡，避免写大文件时对话看着像卡住 */
+.ai-live-tools {
+    margin-top: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+.ai-live-tool {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 8px;
+    border: 1px dashed var(--border);
+    border-radius: 5px;
+    font-size: 11px;
+    color: var(--muted);
+    min-width: 0;
+}
+.ai-live-tool-ico { flex: none; display: grid; place-items: center; color: var(--accent); }
+.ai-live-tool-ico svg { width: 12px; height: 12px; display: block; }
+.ai-live-tool-name { flex: none; color: var(--text); }
+.ai-live-tool-detail { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
 
 /* AI：范围切换与附加 chips */
 .ai-scope-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
@@ -7503,10 +7525,11 @@ html[data-theme="whitey"] {
 .ai-todos-chev { flex: none; width: 14px; height: 14px; display: grid; place-items: center; color: var(--muted); }
 .ai-todos-chev svg { width: 12px; height: 12px; display: block; transition: transform .15s ease; }
 #ai-todos.collapsed .ai-todos-chev svg { transform: rotate(-180deg); }
-/* 收起态头部：进行中任务小字贴在展开 icon 左侧（过长截断），统计让位 */
-#ai-todos.collapsed .ai-todos-sum { flex: none; }
+/* 收起态头部：sum 始终 flex:1 占位撑开，进行中任务小字与眼睛/箭头贴在最右侧；
+   当前任务过长按比例截断（max-width），无当前任务时图标也保持在最右（报告图 2/图 3） */
 .ai-todos-current {
-    flex: 1 1 auto;
+    flex: none;
+    max-width: 55%;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;

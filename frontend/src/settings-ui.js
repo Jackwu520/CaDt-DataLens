@@ -236,8 +236,10 @@ function setTheme(id) {
     if (!deps.themes.some((t) => t.id === id)) return;
     deps.settings.theme = id;
     applySettings();
-    if (deps.file && deps.currentMode === 'preview' && doc && false) {}
-    if (deps.file && deps.currentMode === 'preview') deps.renderMarkdownPreview(deps.file);
+    // 主题切换后必须重绘预览：mermaid 出的 SVG 颜色是渲染时写死的，不重绘会把深色图表贴在浅色界面上。
+    // （原先这里有一行 `&& doc && false` 的残留判断，preview 下会先抛 ReferenceError 把重绘掐掉。）
+    // 分屏视图 currentMode 是 'code' 但右侧预览同样挂着 mermaid 图，一并重绘（报告 §1.3.2）。
+    if (deps.file && (deps.currentMode === 'preview' || deps.file.splitActive)) deps.renderMarkdownPreview(deps.file);
     deps.flash('主题：' + currentTheme().name);
 }
 

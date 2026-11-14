@@ -110,7 +110,7 @@ export const AI_TOOL_DEFS = {
     },
     reminder_add: {
         name: 'reminder_add',
-        description: '给当前会话添加一条「任务提醒」（标题 + 可选说明，最多 5 条）。用于防止上下文过长遗漏事情：用户交代了稍后要做的事、或你把长任务拆步后怕丢步骤时添加。提醒清单每轮对话开始都会注入给你；完成一条后记得用 reminder_update 标记 done 或删除。不写工作区文件，无需审批。',
+        description: '给当前会话添加一条「任务提醒」（标题 + 可选说明，未完成的最多 5 条；已完成的保留作历史、不占名额，标 done 即释放名额）。用于防止上下文过长遗漏事情：用户交代了稍后要做的事、或你把长任务拆步后怕丢步骤时添加。提醒清单每轮对话开始都会注入给你；完成一条后记得用 reminder_update 标记 done 或删除。不写工作区文件，无需审批。',
         parameters: {
             type: 'object',
             properties: {

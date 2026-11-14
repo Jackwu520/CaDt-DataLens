@@ -6,10 +6,28 @@ import {createFileIcon} from '../fileicons.js';
 import {enhanceWidgets} from '../widget.js';
 import {aiFormatTime, aiTextOf} from './ai-constants.js';
 
+// 流式工具卡的增量摘要：从（可能还没闭合的）参数 JSON 里捞路径，附已接收体积。
+// 模块级导出纯函数，ai-tool-cards.test.mjs 覆盖。
+export function liveToolSummary(args) {
+    const raw = String(args || '');
+    const size = raw.length >= 1024 ? (raw.length / 1024).toFixed(1) + ' KB' : raw.length + ' B';
+    const match = raw.match(/"path"\s*:\s*"((?:[^"\\]|\\.)*)/);
+    if (!match) return '参数接收中 ' + size;
+    let path = match[1];
+    try {
+        path = JSON.parse('"' + path + '"');
+    } catch (e) {
+        // 未闭合的转义序列解不了 JSON：直接用原文（仅显示用，无需严格解码）
+        path = match[1];
+    }
+    return path + ' · 参数接收中 ' + size;
+}
+
 export function createAIToolCards(ctx) {
     const copyText = ctx.copyText;
     const flash = ctx.flash;
     const renderMarkdown = ctx.renderMarkdown;
+    const renderMermaidBlocks = ctx.renderMermaidBlocks;
     const openExternal = ctx.openExternal;
     const settings = ctx.settings;
     const getScopeRoot = ctx.getScopeRoot;
@@ -775,6 +793,42 @@ export function createAIToolCards(ctx) {
                 error.className = 'ai-error-box';
                 error.textContent = message.error;
                 wrap.querySelector('.ai-bubble').appendChild(error);
+            }
+        }
+        // 流式工具调用占位：name 已到、参数还在增量接收时先亮卡（写大文件不再像卡住），
+        // 整轮结束后由真实工具卡接替（非流式渲染时移除残留占位）
+        const bubble = wrap.querySelector('.ai-bubble');
+        if (bubble) {
+            const staleLive = bubble.querySelector('.ai-live-tools');
+            if (staleLive) staleLive.remove();
+            const live = (streaming && options && Array.isArray(options.liveTools)) ? options.liveTools : null;
+            if (live && live.length) {
+                const box = document.createElement('div');
+                box.className = 'ai-live-tools';
+                for (const call of live) {
+                    const meta = toolMeta(call.name);
+                    const row = document.createElement('div');
+                    row.className = 'ai-live-tool';
+                    const ico = document.createElement('span');
+                    ico.className = 'ai-live-tool-ico';
+                    ico.innerHTML = iconSvg(meta.icon || 'gear', 12);
+                    const name = document.createElement('span');
+                    name.className = 'ai-live-tool-name';
+                    name.textContent = meta.verb || call.name;
+                    const detail = document.createElement('span');
+                    detail.className = 'ai-live-tool-detail';
+                    detail.textContent = liveToolSummary(call.arguments);
+                    row.append(ico, name, detail);
+                    box.appendChild(row);
+                }
+                bubble.appendChild(box);
+            }
+            // 非流式渲染完成后补渲染 mermaid 占位（AI 回复里的 ```mermaid 围栏，报告 §1.3.3）
+            if (!streaming && typeof renderMermaidBlocks === 'function') {
+                const mdEl = bubble.querySelector('.ai-md');
+                if (mdEl && mdEl.querySelector('.md-mermaid')) {
+                    renderMermaidBlocks(mdEl).catch(() => {}); // 渲染失败静默：writing-ui 内部已按块兜底
+                }
             }
         }
         wrap.classList.toggle('error', message.status === 'error');

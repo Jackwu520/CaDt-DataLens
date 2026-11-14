@@ -1886,7 +1886,8 @@ function ensureMermaidScript() {
 
 function mermaidThemeForCurrent() {
     const id = deps.currentTheme().id;
-    return /dark|darcula/.test(id) ? 'dark' : 'neutral';
+    // night 背景是深色（#16181f），必须落到 dark（功能验证报告 §1.4.1：误判 neutral 导致图表配色脱节）
+    return /dark|darcula|night/.test(id) ? 'dark' : 'neutral';
 }
 
 async function renderMermaidBlocks(root) {

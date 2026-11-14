@@ -150,6 +150,9 @@ export function createAIPanel(options) {
     const renderMarkdown = typeof opts.renderMarkdown === 'function'
         ? opts.renderMarkdown
         : (text) => '<pre>' + String(text || '').replace(/[&<>]/g, (c) => ({'&': '&amp;', '<': '&lt;', '>': '&gt;'}[c])) + '</pre>';
+    // mermaid 渲染（main.js 由 writing-ui 提供）：AI 回复里的 ```mermaid 占位渲染成图，
+    // 为空时占位保持原样（退化成不可见图块，与功能验证报告 §1.3.3 一致的兜底）
+    const renderMermaidBlocks = typeof opts.renderMermaidBlocks === 'function' ? opts.renderMermaidBlocks : null;
     const askConfirm = typeof opts.confirm === 'function'
         ? opts.confirm
         : (message, action) => { if (window.confirm(message)) action(); };
@@ -206,6 +209,7 @@ export function createAIPanel(options) {
         headTitle: panel.querySelector('#ai-session-title'),
         chipAgents: panel.querySelector('#ai-chip-agents'),
         chipTerms: panel.querySelector('#ai-chip-terms'),
+        chipTimers: panel.querySelector('#ai-chip-timers'),
         chipsPop: panel.querySelector('#ai-chips-pop'),
         agentView: panel.querySelector('#ai-agent-view'),
         close: panel.querySelector('#ai-close'),
@@ -958,6 +962,9 @@ export function createAIPanel(options) {
                 ? raw.timeoutAction
                 : 'recommended',
             timeoutCustom: !!raw.timeoutCustom,
+            // timeoutAction=wait 会忽略 timeoutSec；恢复历史时保留这个事实，
+            // 否则面板不再提示"已忽略 N 秒"，用户会以为当初没设超时
+            ignoredSec: Math.max(0, Number(raw.ignoredSec) || 0),
         };
     }
 
@@ -2045,15 +2052,26 @@ export function createAIPanel(options) {
     const aiDelay = (...args) => scheduleMod.aiDelay(...args);
     const handleScheduleFire = (...args) => scheduleMod.handleScheduleFire(...args);
 
-    // 计时器（类一-11）：Go 侧计时 + 胶囊 UI；到点经系统消息唤醒启动它的会话
+    // 计时器（类一-11）：Go 侧计时 + 头部单胶囊（点开弹层列表）；到点经系统消息唤醒启动它的会话
     const timerMod = createAITimer({
         getBackend: () => backend,
         getSessionId: () => {
             const session = currentSession();
             return session ? session.id : '';
         },
+        getChip: () => el.chipTimers,
+        flash,
+        // 弹层复用 chips-pop 机制（kind=timers），内容经 renderChipsPopExtra 钩子由本域提供
+        togglePop: (chip) => toggleChipsPop('timers', chip),
+        onTimersChanged: () => {
+            if (chipsPopKind === 'timers') renderChipsPop('timers');
+        },
         onFire: (payload) => {
-            Promise.resolve(wakeSessionByTimer(payload)).catch(() => {});
+            // 不能空 catch：唤醒链路的异常必须可见，否则用户只看到胶囊消失、没有任何提示
+            // （track 过一次真实事故：getSessions 未定义被这里吞掉，到点永远静默无反应）。
+            Promise.resolve(wakeSessionByTimer(payload)).catch((e) => {
+                flash('计时器「' + String((payload && payload.label) || '计时器') + '」唤醒失败：' + ((e && e.message) || e), true);
+            });
         },
     });
     timerMod.syncFromBackend();
@@ -2073,7 +2091,9 @@ export function createAIPanel(options) {
     async function wakeSessionByTimer(payload) {
         const label = String((payload && payload.label) || '计时器');
         const sessionId = String((payload && payload.sessionId) || '');
-        const session = getSessions().find((s) => s.id === sessionId);
+        // 本文件里会话列表就是 sessions（getSessions 只是给域模块的 ctx 访问器，此处不可用；
+        // 早期写成 getSessions() 会抛 ReferenceError，被 onFire 的 catch 吞掉 → 到点静默无反应）
+        const session = sessions.find((s) => s.id === sessionId);
         if (!session) return; // 会话已删除或不在本窗口：静默丢弃
         try {
             open(true);
@@ -5322,7 +5342,12 @@ export function createAIPanel(options) {
     }
 
     function askCountdownText(ask) {
-        if (!ask || ask.state !== 'pending' || !ask.deadline) return '';
+        if (!ask || ask.state !== 'pending') return '';
+        if (!ask.deadline) {
+            // timeoutAction=wait（或显式 0 秒）没有倒计时。若这次还传了秒数，
+            // 必须说清它没生效：wait 会把 timeoutSec 静默忽略，否则用户只看到"没设超时"。
+            return ask.ignoredSec > 0 ? '本次不限时（已忽略 ' + ask.ignoredSec + ' 秒超时）' : '';
+        }
         const left = Math.max(0, Math.ceil((ask.deadline - Date.now()) / 1000));
         if (!left) return '';
         const action = askTimeoutActionOf(ask);
@@ -5536,6 +5561,8 @@ export function createAIPanel(options) {
             timeoutSec,
             timeoutAction,
             timeoutCustom: custom,
+            // wait 时不启动计时器：记住被忽略的秒数，面板据此提示"本次不限时"
+            ignoredSec: useTimer ? 0 : timeoutSec,
         };
         const toolMessage = ctx.toolMessage;
         toolMessage.ask = ask;
@@ -6021,12 +6048,13 @@ export function createAIPanel(options) {
                 if (!label) throw new Error('计时目的（label）不能为空');
                 if (mode === 'countdown' && seconds < 1) throw new Error('倒计时必须提供大于 0 的秒数（seconds）');
                 const created = await timerMod.start(mode, seconds, label);
+                // 返回值必须带 id：stop_timer 在多计时器并存时按 id 停止（功能验证报告 §2.3.2）
                 if (mode === 'countdown') {
                     const total = Math.round((created.endMs - created.startMs) / 1000);
                     const desc = total >= 60 && total % 60 === 0 ? (total / 60) + ' 分钟' : total + ' 秒';
-                    return '已启动倒计时「' + created.label + '」（' + desc + '）。到点会自动以系统消息唤醒你继续本会话，期间无需轮询等待，可以先做其他事或结束本轮。';
+                    return '已启动倒计时「' + created.label + '」（' + desc + '）。到点会自动以系统消息唤醒你继续本会话，期间无需轮询等待，可以先做其他事或结束本轮。[id: ' + created.id + ']';
                 }
-                return '已启动正计时「' + created.label + '」。需要结果时用 stop_timer 停止并读取已计时长。';
+                return '已启动正计时「' + created.label + '」。需要结果时用 stop_timer 停止并读取已计时长。[id: ' + created.id + ']';
             }
             case 'stop_timer': {
                 const stopped = await timerMod.stop(aiTextOf(input.id).trim());
@@ -7230,7 +7258,12 @@ export function createAIPanel(options) {
             if (index < 0) return;
             let wrap = el.messages.querySelector('.ai-msg.assistant[data-ai-idx="' + index + '"]');
             if (!wrap) return;
-            updateAssistantElement(wrap, s.assistant, true);
+            // 流式中的工具调用占位（name 已到、参数还在增量接收）随帧一起更新
+            const liveTools = [];
+            for (const call of s.toolCalls.values()) {
+                if (call.name) liveTools.push({name: call.name, arguments: call.arguments});
+            }
+            updateAssistantElement(wrap, s.assistant, true, liveTools.length ? {liveTools} : undefined);
             positionOverlays();
             if (stickBottom) scrollToBottom(false);
             else updateScrollButton();
@@ -7941,6 +7974,8 @@ export function createAIPanel(options) {
                 if (payload.callId) call.id = payload.callId;
                 if (payload.name) call.name = payload.name;
                 if (payload.argsDelta) call.arguments += payload.argsDelta;
+                // 流式期间就把工具调用亮出来（写大文件时不再像卡住，参数增量可见）
+                if (call.name) scheduleStreamRender(current);
                 break;
             }
             case 'ai-done': {
@@ -8800,6 +8835,11 @@ export function createAIPanel(options) {
             {label: '选中内容', action: () => attachSelection()},
             {label: '附加文件…', action: () => attachFilesDialog()},
             {label: '技能…', action: () => showSkillPicker()},
+            // 手动创建计时器：与 AI 的 start_timer 同一条 Go 侧计时链路
+            {label: '计时器', submenu: [
+                {label: '倒计时…', action: () => timerMod.openCreateDialog('countdown')},
+                {label: '正计时…', action: () => timerMod.openCreateDialog('countup')},
+            ]},
             {sep: true},
             {label: '指令', submenu: [
                 {label: '压缩上下文', action: () => startCompact()},
@@ -11269,6 +11309,12 @@ export function createAIPanel(options) {
         bgUpdateListeners,
         getChipsPopKind: () => chipsPopKind,
         setChipsPopKind: (value) => { chipsPopKind = value; },
+        // 计时器弹层（kind=timers）由计时器域提供内容，这里只做转发
+        renderChipsPopExtra: (kind, host) => {
+            if (kind !== 'timers') return false;
+            timerMod.renderPop(host);
+            return true;
+        },
         getConfig: () => config,
     });
     const subAgentLimit = (...args) => subagentsMod.subAgentLimit(...args);
@@ -11325,6 +11371,7 @@ export function createAIPanel(options) {
         copyText,
         flash,
         renderMarkdown,
+        renderMermaidBlocks,
         openExternal,
         settings,
         getScopeRoot,
