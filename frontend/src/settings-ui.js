@@ -393,6 +393,13 @@ function applyReadOnlyMode() {
     else if (deps.settings.autoSave && deps.dirty) deps.scheduleAutoSave();
 }
 
+// 关于页横幅随系统时间切换：白天（6–18 点）用 light 版配图，夜间（其余时段）用 dark 版。
+// 只影响「关于」页顶部的横幅配图，不改变应用主题；打开设置 / 换肤 / 启动时刷新。
+function syncAboutBannerByTime() {
+    const hour = new Date().getHours();
+    document.documentElement.classList.toggle('about-night', hour >= 18 || hour < 6);
+}
+
 function applySettings() {
     const mdWidth = String(deps.settings.mdPreviewWidth || '0');
     document.documentElement.style.setProperty('--md-preview-max', mdWidth === '0' ? 'none' : mdWidth + 'px');
@@ -402,6 +409,7 @@ function applySettings() {
     deps.updateAiWidthWidget();
     document.documentElement.classList.toggle('keycol-natural', !deps.settings.fixedKeys);
     document.documentElement.classList.toggle('tree-guides', !!deps.settings.treeGuides);
+    syncAboutBannerByTime();
     applyTheme();
     if (typeof deps.syncTerminalTheme === 'function') {
         try {
@@ -623,6 +631,8 @@ function openSettings(pane = 'general') {
     openDialogEl(elsDialogs.settings);
     resetSettingsSearch();
     selectSettingsPane(pane);
+    // 横幅配图按打开时刻刷新：设置页可能跨过白天/夜间边界一直开着
+    syncAboutBannerByTime();
     deps.refreshDeveloperMode();
     deps.refreshLogPath();
     if (pane === 'about') {

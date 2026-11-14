@@ -1983,19 +1983,12 @@ select,
     height: auto;
     border-radius: 10px;
 }
-.about-banner-img.is-dark { display: block; }
-html[data-theme="light"] .about-banner-img.is-dark,
-html[data-theme="idea-light"] .about-banner-img.is-dark,
-html[data-theme="github"] .about-banner-img.is-dark,
-html[data-theme="newsprint"] .about-banner-img.is-dark,
-html[data-theme="pixyll"] .about-banner-img.is-dark,
-html[data-theme="whitey"] .about-banner-img.is-dark { display: none; }
-html[data-theme="light"] .about-banner-img.is-light,
-html[data-theme="idea-light"] .about-banner-img.is-light,
-html[data-theme="github"] .about-banner-img.is-light,
-html[data-theme="newsprint"] .about-banner-img.is-light,
-html[data-theme="pixyll"] .about-banner-img.is-light,
-html[data-theme="whitey"] .about-banner-img.is-light { display: block; }
+/* 横幅配图随系统时间切换（settings-ui 的 syncAboutBannerByTime 挂 html.about-night）：
+   白天（6–18 点）light 版、夜间 dark 版，不再跟随应用主题 */
+html:not(.about-night) .about-banner-img.is-dark,
+html.about-night .about-banner-img.is-light { display: none; }
+html:not(.about-night) .about-banner-img.is-light,
+html.about-night .about-banner-img.is-dark { display: block; }
 .about-lockup { width: 240px; height: auto; margin: 16px 0 8px; }
 .dialog-footer {
     display: flex;
