@@ -305,808 +305,946 @@
                 </div>
                 <div class="settings-content">
                     <div class="settings-pane" data-pane="general">
-                        <div class="popover-row">
-                            <label class="popover-label">
-                                <input type="checkbox" id="opt-fixed-keys" checked>
-                                固定键列（对齐冒号与值）
-                            </label>
+                        <div class="set-group-title">通用</div>
+                        <div class="set-card">
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">固定键列</div><div class="set-desc">对齐冒号与值</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="opt-fixed-keys" checked><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">自动保存</div><div class="set-desc">停止输入 1 秒后保存</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="opt-auto-save"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">多文件打开</div></div>
+                                <div class="set-control">
+                                    <select id="opt-open-mode" class="opt-select">
+                                        <option value="tab">单窗口标签页</option>
+                                        <option value="window">多窗口</option>
+                                    </select>
+                                    <button type="button" class="info-tip" data-tip="多窗口模式：新打开的文件使用独立窗口。单窗口模式：在标签栏中以标签页打开。" aria-label="多文件打开说明">i</button>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">显示顶部提示条</div><div class="set-desc">大文件、二进制、解析失败等提示</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="opt-show-banners" checked><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                    <button type="button" class="info-tip" data-tip="关闭后不显示大文件、二进制、解析失败等提示；也可以点提示条右侧的关闭按钮只关闭当前提示。" aria-label="显示顶部提示条说明">i</button>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">文件图标主题</div></div>
+                                <div class="set-control">
+                                    <select id="opt-icon-theme" class="opt-select">
+                                        <option value="opensource">开源图标集（vscode-icons）</option>
+                                        <option value="mono">文字缩写 + 底板</option>
+                                        <option value="plain">无特殊图标</option>
+                                    </select>
+                                    <button type="button" class="info-tip" data-tip="开源图标集缺失的类型自动回退到文字缩写图标；插件可通过 cadt.registerIconTheme 注册自定义主题。" aria-label="文件图标主题说明">i</button>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">窗口置顶</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="opt-always-on-top"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">启动时自动检查更新</div><div class="set-desc">后台检查一次，结果在状态栏显示</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="opt-auto-update"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                    <button type="button" class="info-tip" data-tip="默认开启；每次启动在后台检查一次，结果在右下角状态栏短暂显示，发现新版本会一直保留并可点击查看。" aria-label="自动检查更新说明">i</button>
+                                </div>
+                            </div>
                         </div>
-                        <div class="popover-row">
-                            <label class="popover-label">
-                                <input type="checkbox" id="opt-auto-save">
-                                自动保存（停止输入 1 秒后）
-                            </label>
+
+                        <div class="set-group-title">字体</div>
+                        <div class="set-card">
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">界面字体</div><div class="set-desc">拉丁字母与数字</div></div>
+                                <div class="set-control"><select id="opt-ui-font" class="opt-select"></select></div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">界面中文字体</div><div class="set-desc">界面中文可单独选择</div></div>
+                                <div class="set-control"><select id="opt-ui-cjk-font" class="opt-select"></select></div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">编辑器字体</div></div>
+                                <div class="set-control"><select id="opt-editor-font" class="opt-select"></select></div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">编辑器中文字体</div></div>
+                                <div class="set-control"><select id="opt-editor-cjk-font" class="opt-select"></select></div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">编辑器字号</div></div>
+                                <div class="set-control">
+                                    <input type="range" id="opt-font-size" min="9" max="24" step="1" value="13">
+                                    <span id="opt-font-size-val" class="popover-value">13</span>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">文件树字号</div><div class="set-desc">只影响左侧文件列表 / 目录树</div></div>
+                                <div class="set-control">
+                                    <input type="range" id="opt-sidebar-font" min="10" max="20" step="0.5" value="12.5">
+                                    <span id="opt-sidebar-font-val" class="popover-value">12.5</span>
+                                </div>
+                            </div>
+                            <div class="font-preview" aria-hidden="true">
+                                <span class="fp-ui">界面：糖果超甜@CandySweet · CaDt-DataLens 2026</span>
+                                <span class="fp-editor">编辑器：{"name": "糖果超甜", "count": 42, "ok": true}</span>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-desc">字体与字号设置即时生效。</div></div>
+                            </div>
                         </div>
-                        <div class="popover-row">
-                            <span class="popover-label">多文件打开</span>
-                            <select id="opt-open-mode" class="opt-select">
-                                <option value="tab">单窗口标签页</option>
-                                <option value="window">多窗口</option>
-                            </select>
+
+                        <div class="set-group-title">文件树与代码视图</div>
+                        <div class="set-card">
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">树视图展开</div><div class="set-desc">打开文件进入树视图时的默认状态</div></div>
+                                <div class="set-control">
+                                    <select id="opt-tree-expand" class="opt-select">
+                                        <option value="expand">默认全展开</option>
+                                        <option value="collapse">默认全部收起</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">键列宽度</div></div>
+                                <div class="set-control">
+                                    <input type="range" id="opt-key-width" min="100" max="320" step="10" value="160">
+                                    <span id="opt-key-width-val" class="popover-value">160</span>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">文件树缩进参考线</div><div class="set-desc">目录层级左侧对齐线</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="opt-tree-guides"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">文件树显示项数</div><div class="set-desc">展开的对象 / 数组显示「N 项」</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="opt-tree-counts"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">文件树自动刷新</div><div class="set-desc">切回应用时立即同步；后台不轮询</div></div>
+                                <div class="set-control">
+                                    <select id="opt-tree-refresh" class="opt-select">
+                                        <option value="0">关闭</option>
+                                        <option value="1">1 秒</option>
+                                        <option value="2">2 秒</option>
+                                        <option value="3" selected>3 秒</option>
+                                        <option value="5">5 秒</option>
+                                        <option value="10">10 秒</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">代码视图缩进参考线</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="opt-code-guides"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">代码视图自动换行</div><div class="set-desc">默认长行横向滚动，仅影响代码视图</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="opt-code-wrap"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                </div>
+                            </div>
                         </div>
-                        <div class="fmt-hint">多窗口模式下新打开的文件使用独立窗口；单窗口模式在标签栏中打开。</div>
-                        <div class="popover-row">
-                            <label class="popover-label">
-                                <input type="checkbox" id="opt-show-banners" checked>
-                                显示顶部提示条
-                            </label>
+
+                        <div class="set-group-title">Markdown 与写作模式</div>
+                        <div class="set-card">
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">Markdown 代码块行号</div><div class="set-desc">仅影响 Markdown 预览中的代码块</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="opt-md-line-numbers"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">Markdown 分屏滚动同步</div><div class="set-desc">源码与预览滚动互相跟随</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="opt-md-scroll-sync" checked><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">Markdown 预览宽度</div><div class="set-desc">仅影响完整预览视图的阅读列宽</div></div>
+                                <div class="set-control">
+                                    <select id="opt-md-preview-width" class="opt-select">
+                                        <option value="720">720px</option>
+                                        <option value="860">860px</option>
+                                        <option value="920">920px</option>
+                                        <option value="1100">1100px</option>
+                                        <option value="1300">1300px</option>
+                                        <option value="0">跟随窗口宽度（默认）</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">写作模式</div><div class="set-desc">中文排版 · 专注 · 码字统计</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="opt-writing-mode"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                    <button type="button" class="info-tip" data-tip="仅对纯文本与 Markdown 的源码视图生效：楷体排版、隐藏行号、打字机滚动、段落聚焦；打开其他类型文件自动退避。" aria-label="写作模式说明">i</button>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">写作字体</div></div>
+                                <div class="set-control">
+                                    <select id="opt-writing-font" class="opt-select">
+                                        <option value="kaiti">楷体</option>
+                                        <option value="simsun">宋体</option>
+                                        <option value="fangsong">仿宋</option>
+                                        <option value="follow">跟随编辑器字体</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">写作字号</div></div>
+                                <div class="set-control">
+                                    <input type="range" id="opt-writing-size" min="12" max="22" step="1" value="16">
+                                    <span id="opt-writing-size-val" class="popover-value">16</span>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">纸色滤镜</div></div>
+                                <div class="set-control">
+                                    <select id="opt-writing-paper" class="opt-select">
+                                        <option value="off">无</option>
+                                        <option value="sepia">暖黄护眼</option>
+                                        <option value="dim">调暗</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">写作模式显示行号</div><div class="set-desc">默认隐藏；书签与 Git 行标始终保留</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="opt-writing-line-numbers"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">打字机滚动</div><div class="set-desc">光标行保持垂直居中</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="opt-writing-typewriter" checked><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">段落聚焦</div><div class="set-desc">非当前段落淡出</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="opt-writing-focus" checked><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">每日目标（字）</div><div class="set-desc">0 表示关闭；达标后在状态栏提示</div></div>
+                                <div class="set-control">
+                                    <input type="number" id="opt-writing-goal" class="opt-goal-input" min="0" step="100" value="0">
+                                </div>
+                            </div>
                         </div>
-                        <div class="fmt-hint hint-indent">关闭后不显示大文件、二进制、解析失败等提示；也可以点提示条右侧的关闭按钮只关闭当前提示。</div>
-                        <div class="popover-row">
-                            <span class="popover-label">文件图标主题</span>
-                            <select id="opt-icon-theme" class="opt-select">
-                                <option value="opensource">开源图标集（vscode-icons）</option>
-                                <option value="mono">文字缩写 + 底板</option>
-                                <option value="plain">无特殊图标</option>
-                            </select>
-                        </div>
-                        <div class="fmt-hint hint-indent">开源图标集缺失的类型自动回退到文字缩写图标；插件可通过 cadt.registerIconTheme 注册自定义主题。</div>
-                        <div class="popover-row">
-                            <span class="popover-label">树视图展开</span>
-                            <select id="opt-tree-expand" class="opt-select">
-                                <option value="expand">默认全展开</option>
-                                <option value="collapse">默认全部收起</option>
-                            </select>
-                        </div>
-                        <div class="fmt-hint hint-indent">打开文件进入树视图时的默认展开状态。</div>
-                        <div class="popover-row">
-                            <span class="popover-label">键列宽度</span>
-                            <input type="range" id="opt-key-width" min="100" max="320" step="10" value="160">
-                            <span id="opt-key-width-val" class="popover-value">160</span>
-                        </div>
-                        <div class="popover-row">
-                            <span class="popover-label">界面字体</span>
-                            <select id="opt-ui-font" class="opt-select"></select>
-                        </div>
-                        <div class="popover-row">
-                            <span class="popover-label">界面中文字体</span>
-                            <select id="opt-ui-cjk-font" class="opt-select"></select>
-                        </div>
-                        <div class="popover-row">
-                            <span class="popover-label">编辑器字体</span>
-                            <select id="opt-editor-font" class="opt-select"></select>
-                        </div>
-                        <div class="popover-row">
-                            <span class="popover-label">编辑器中文字体</span>
-                            <select id="opt-editor-cjk-font" class="opt-select"></select>
-                        </div>
-                        <div class="popover-row">
-                            <span class="popover-label">编辑器字号</span>
-                            <input type="range" id="opt-font-size" min="9" max="24" step="1" value="13">
-                            <span id="opt-font-size-val" class="popover-value">13</span>
-                        </div>
-                        <div class="popover-row">
-                            <span class="popover-label">文件树字号</span>
-                            <input type="range" id="opt-sidebar-font" min="10" max="20" step="0.5" value="12.5">
-                            <span id="opt-sidebar-font-val" class="popover-value">12.5</span>
-                        </div>
-                        <div class="popover-row">
-                            <label class="popover-label">
-                                <input type="checkbox" id="opt-tree-guides">
-                                文件树显示缩进参考线
-                            </label>
-                        </div>
-                        <div class="fmt-hint hint-indent">默认关闭；开启后在目录层级左侧显示对齐线。</div>
-                        <div class="popover-row">
-                            <label class="popover-label">
-                                <input type="checkbox" id="opt-tree-counts">
-                                文件树显示对象/数组项数
-                            </label>
-                        </div>
-                        <div class="fmt-hint hint-indent">默认关闭；开启后展开的对象/数组会显示「N 项」。</div>
-                        <div class="popover-row">
-                            <span class="popover-label">文件树自动刷新</span>
-                            <select id="opt-tree-refresh" class="opt-select">
-                                <option value="0">关闭</option>
-                                <option value="1">1 秒</option>
-                                <option value="2">2 秒</option>
-                                <option value="3" selected>3 秒</option>
-                                <option value="5">5 秒</option>
-                                <option value="10">10 秒</option>
-                            </select>
-                        </div>
-                        <div class="fmt-hint hint-indent">切回应用时立即同步；最小化或后台时不轮询。</div>
-                        <div class="popover-row">
-                            <label class="popover-label">
-                                <input type="checkbox" id="opt-code-guides">
-                                代码视图显示缩进参考线
-                            </label>
-                        </div>
-                        <div class="fmt-hint hint-indent">默认关闭；开启后在代码缩进层级左侧显示对齐线。</div>
-                        <div class="popover-row">
-                            <label class="popover-label">
-                                <input type="checkbox" id="opt-code-wrap">
-                                代码视图自动换行
-                            </label>
-                        </div>
-                        <div class="fmt-hint hint-indent">默认关闭，长行横向滚动；开启后按窗口宽度换行，仅影响代码视图。</div>
-                        <div class="popover-row">
-                            <label class="popover-label">
-                                <input type="checkbox" id="opt-always-on-top">
-                                窗口置顶
-                            </label>
-                        </div>
-                        <div class="fmt-hint hint-indent">开启后窗口始终保持在其他窗口之上。</div>
-                        <div class="popover-row">
-                            <label class="popover-label">
-                                <input type="checkbox" id="opt-auto-update">
-                                启动时自动检查更新
-                            </label>
-                        </div>
-                        <div class="fmt-hint hint-indent">默认开启；每次启动在后台检查一次，结果在右下角状态栏短暂显示，发现新版本会一直保留并可点击查看。</div>
-                        <div class="popover-row">
-                            <label class="popover-label">
-                                <input type="checkbox" id="opt-md-line-numbers">
-                                Markdown 代码块显示行号
-                            </label>
-                        </div>
-                        <div class="fmt-hint hint-indent">默认关闭；仅影响 Markdown 预览中的代码块。</div>
-                        <div class="popover-row">
-                            <label class="popover-label">
-                                <input type="checkbox" id="opt-md-scroll-sync">
-                                Markdown 分屏滚动同步
-                            </label>
-                        </div>
-                        <div class="fmt-hint hint-indent">默认开启；分屏预览时左侧源码与右侧预览滚动互相同步跟随。</div>
-                        <div class="popover-row">
-                            <span class="popover-label">Markdown 预览宽度</span>
-                            <select id="opt-md-preview-width" class="opt-select">
-                                <option value="720">720px</option>
-                                <option value="860">860px</option>
-                                <option value="920">920px</option>
-                                <option value="1100">1100px</option>
-                                <option value="1300">1300px</option>
-                                <option value="0">跟随窗口宽度（默认）</option>
-                            </select>
-                        </div>
-                        <div class="fmt-hint hint-indent">仅影响完整预览视图的阅读列宽；分屏预览的右栏始终占满可用宽度。</div>
-                        <div class="settings-section-title">写作模式</div>
-                        <div class="popover-row">
-                            <label class="popover-label">
-                                <input type="checkbox" id="opt-writing-mode">
-                                写作模式（中文排版 · 专注 · 码字统计）
-                            </label>
-                        </div>
-                        <div class="fmt-hint hint-indent">仅对纯文本与 Markdown 的源码视图生效：楷体排版、隐藏行号、打字机滚动、段落聚焦；打开其他类型文件自动退避。</div>
-                        <div class="popover-row">
-                            <span class="popover-label">写作字体</span>
-                            <select id="opt-writing-font" class="opt-select">
-                                <option value="kaiti">楷体</option>
-                                <option value="simsun">宋体</option>
-                                <option value="fangsong">仿宋</option>
-                                <option value="follow">跟随编辑器字体</option>
-                            </select>
-                        </div>
-                        <div class="popover-row">
-                            <span class="popover-label">写作字号</span>
-                            <input type="range" id="opt-writing-size" min="12" max="22" step="1" value="16">
-                            <span id="opt-writing-size-val" class="popover-value">16</span>
-                        </div>
-                        <div class="popover-row">
-                            <span class="popover-label">纸色滤镜</span>
-                            <select id="opt-writing-paper" class="opt-select">
-                                <option value="off">无</option>
-                                <option value="sepia">暖黄护眼</option>
-                                <option value="dim">调暗</option>
-                            </select>
-                        </div>
-                        <div class="popover-row">
-                            <label class="popover-label">
-                                <input type="checkbox" id="opt-writing-line-numbers">
-                                写作模式显示行号
-                            </label>
-                        </div>
-                        <div class="fmt-hint hint-indent">默认隐藏行号；书签与 Git 行标始终保留在行号栏。</div>
-                        <div class="popover-row">
-                            <label class="popover-label">
-                                <input type="checkbox" id="opt-writing-typewriter" checked>
-                                打字机滚动（光标行保持垂直居中）
-                            </label>
-                        </div>
-                        <div class="popover-row">
-                            <label class="popover-label">
-                                <input type="checkbox" id="opt-writing-focus" checked>
-                                段落聚焦（非当前段落淡出）
-                            </label>
-                        </div>
-                        <div class="popover-row">
-                            <span class="popover-label">每日目标（字）</span>
-                            <input type="number" id="opt-writing-goal" class="opt-goal-input" min="0" step="100" value="0">
-                        </div>
-                        <div class="fmt-hint hint-indent">0 表示关闭。达标后在状态栏统计中提示；点击状态栏「今日/本次」可查看码字统计详情。</div>
-                        <div class="font-preview" aria-hidden="true">
-                            <span class="fp-ui">界面：糖果超甜@CandySweet · CaDt-DataLens 2026</span>
-                            <span class="fp-editor">编辑器：{"name": "糖果超甜", "count": 42, "ok": true}</span>
-                        </div>
-                        <div class="fmt-hint">字体与字号设置即时生效；文件树字号只影响左侧文件列表/目录树。中文字体可单独选择，拉丁字母与数字仍使用主字体。</div>
                     </div>
                     <div class="settings-pane hidden" data-pane="editor-tabs">
-                        <div class="fmt-pane-title">编辑器标签页</div>
-                        <div class="fmt-pane-sub">标签页关闭方式与工具区行为</div>
-                        <div class="popover-row">
-                            <span class="popover-label">关闭按钮显示</span>
-                            <select id="opt-tab-close" class="opt-select">
-                                <option value="always">所有标签页</option>
-                                <option value="hover">悬停或活动时</option>
-                                <option value="none">不显示</option>
-                            </select>
+                        <div class="set-group-title">编辑器标签页</div>
+                        <div class="set-card">
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">关闭按钮显示</div></div>
+                                <div class="set-control">
+                                    <select id="opt-tab-close" class="opt-select">
+                                        <option value="always">所有标签页</option>
+                                        <option value="hover">悬停或活动时</option>
+                                        <option value="none">不显示</option>
+                                    </select>
+                                    <button type="button" class="info-tip" data-tip="「不显示」时仍可用 Shift+点击、中键点击或右键菜单关闭标签页。" aria-label="关闭按钮说明">i</button>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">Shift+点击关闭</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="opt-shiftclick-close"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">双击关闭</div><div class="set-desc">有未保存修改时先确认</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="opt-dblclick-close"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                </div>
+                            </div>
                         </div>
-                        <div class="fmt-hint hint-indent">「不显示」时仍可用 Shift+点击、中键点击或右键菜单关闭标签页。</div>
-                        <div class="popover-row">
-                            <label class="popover-label">
-                                <input type="checkbox" id="opt-shiftclick-close">
-                                Shift+点击标签页关闭
-                            </label>
-                        </div>
-                        <div class="popover-row">
-                            <label class="popover-label">
-                                <input type="checkbox" id="opt-dblclick-close">
-                                双击标签页关闭
-                            </label>
-                        </div>
-                        <div class="fmt-hint hint-indent">默认关闭；开启后双击标签页即尝试关闭（有未保存修改时先确认）。</div>
                     </div>
                     <div class="settings-pane hidden" data-pane="models">
-                        <div class="fmt-pane-title">模型</div>
-                        <div class="fmt-pane-sub">每个账号（API Key）可配置多个模型，模型条目各自设置窗口与输入能力；API Key 只保存在本机，不写入日志。</div>
-                        <div class="settings-section-title">模型账号</div>
-                        <div class="ai-model-toolbar">
-                            <button type="button" id="ai-model-create" class="dlg-btn primary">新建账号</button>
-                            <span class="ai-model-toolbar-label">预设</span>
-                            <select id="ai-opt-preset" class="opt-select"></select>
-                            <button type="button" id="ai-opt-preset-add" class="dlg-btn">添加预设</button>
+                        <div class="set-group-title">模型</div>
+                        <div class="set-card">
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">账号管理</div><div class="set-desc">每个账号（API Key）可配置多个模型；API Key 只保存在本机，不写入日志。点击卡片「编辑」打开账号与模型列表。</div></div>
+                                <div class="set-control">
+                                    <button type="button" id="ai-model-create" class="dlg-btn primary">新建账号</button>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">预设</div><div class="set-desc">常用厂商的快捷模板</div></div>
+                                <div class="set-control">
+                                    <select id="ai-opt-preset" class="opt-select"></select>
+                                    <button type="button" id="ai-opt-preset-add" class="dlg-btn">添加预设</button>
+                                </div>
+                            </div>
                         </div>
                         <div id="ai-model-list" class="ai-model-list"></div>
-                        <div class="fmt-hint hint-indent">点击卡片「编辑」打开账号与模型列表；新建和编辑使用独立弹层，保存后生效。</div>
                     </div>
                     <div class="settings-pane hidden" data-pane="ai">
-                        <div class="fmt-pane-title">AI 助手</div>
-                        <div class="fmt-pane-sub">记忆、写审批与聊天行为</div>
-                        <div class="settings-section-title">上下文与记忆</div>
-                        <div class="popover-row">
-                            <span class="popover-label">记忆模式</span>
-                            <select id="ai-opt-memory-mode" class="opt-select">
-                                <option value="workspace">跟随工作区（.cadt/memory）</option>
-                                <option value="app">应用数据目录（ai-memory）</option>
-                            </select>
-                        </div>
-                        <div class="fmt-hint hint-indent" id="ai-opt-memory-path">记忆目录：—</div>
-                        <div class="popover-row">
-                            <span class="popover-label">压缩提示阈值</span>
-                            <input id="ai-opt-threshold" class="ai-settings-input" type="number" min="0.5" max="0.95" step="0.05">
-                            <span class="popover-value">占比</span>
-                        </div>
-                        <div class="popover-row">
-                            <span class="popover-label">自动压缩</span>
-                            <label class="popover-label">
-                                <input type="checkbox" id="ai-opt-autocompact">
-                                达到阈值时自动压缩上下文
-                            </label>
-                        </div>
-                        <div class="popover-row">
-                            <span class="popover-label">管理</span>
-                            <div class="ai-settings-key">
-                                <button type="button" id="ai-opt-open-memory" class="dlg-btn">记忆管理…</button>
-                                <button type="button" id="ai-opt-open-skills" class="dlg-btn">技能管理…</button>
+                        <div class="set-group-title">上下文与记忆</div>
+                        <div class="set-card">
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">记忆模式</div><div class="set-desc" id="ai-opt-memory-path">记忆目录：—</div></div>
+                                <div class="set-control">
+                                    <select id="ai-opt-memory-mode" class="opt-select">
+                                        <option value="workspace">跟随工作区（.cadt/memory）</option>
+                                        <option value="app">应用数据目录（ai-memory）</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">压缩提示阈值</div><div class="set-desc">上下文占用达到该占比时提示</div></div>
+                                <div class="set-control">
+                                    <input id="ai-opt-threshold" class="ai-settings-input" type="number" min="0.5" max="0.95" step="0.05">
+                                    <span class="popover-value">占比</span>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">自动压缩</div><div class="set-desc">达到阈值时自动压缩上下文</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="ai-opt-autocompact"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">记忆与技能</div><div class="set-desc">系统提示词与逐项注入开关在「上下文注入」页</div></div>
+                                <div class="set-control">
+                                    <button type="button" id="ai-opt-open-memory" class="dlg-btn">记忆管理…</button>
+                                    <button type="button" id="ai-opt-open-skills" class="dlg-btn">技能管理…</button>
+                                </div>
                             </div>
                         </div>
-                        <div class="fmt-hint hint-indent">系统提示词与逐项注入开关已移至左侧「上下文注入」页。</div>
-                        <div class="settings-section-title">新会话</div>
-                        <div class="popover-row">
-                            <span class="popover-label">默认读写权限</span>
-                            <select id="ai-opt-default-scope" class="opt-select">
-                                <option value="read">只读访问</option>
-                                <option value="edit">每次询问</option>
-                                <option value="auto">自动审批</option>
-                                <option value="full">完全权限</option>
-                            </select>
-                        </div>
-                        <div class="fmt-hint hint-indent">仅对新建会话生效；已有会话保持各自的权限档，可随时在输入框下方切换。</div>
-                        <div class="settings-section-title">写操作审批</div>
-                        <div class="fmt-hint hint-indent">「总是允许此文件」的授权清单；移除后恢复逐次审批。</div>
-                        <div class="popover-row">
-                            <span class="popover-label">已授权</span>
-                            <div id="ai-opt-approved" class="ai-approved-list"></div>
-                        </div>
-                        <div class="popover-row">
-                            <span class="popover-label"></span>
-                            <button type="button" id="ai-opt-approved-clear" class="dlg-btn">清除全部授权</button>
-                        </div>
-                        <div class="settings-section-title">聊天行为</div>
-                        <div class="popover-row">
-                            <span class="popover-label">发送快捷键</span>
-                            <select id="ai-opt-sendkey" class="opt-select">
-                                <option value="enter">Enter 发送 / Shift+Enter 换行</option>
-                                <option value="ctrl-enter">Ctrl+Enter 发送 / Enter 换行</option>
-                            </select>
-                        </div>
-                        <div class="popover-row">
-                            <span class="popover-label">默认输出语言</span>
-                            <select id="ai-opt-output-lang" class="opt-select">
-                                <option value="zh">中文（简体）</option>
-                                <option value="en">English</option>
-                                <option value="auto">跟随用户输入</option>
-                            </select>
-                        </div>
-                        <div class="fmt-hint hint-indent">控制 AI 回复语言，不改变代码、命令与路径；下一轮对话生效。</div>
-                        <div class="popover-row">
-                            <label class="popover-label">
-                                <input type="checkbox" id="ai-opt-auto-title">
-                                首轮自动生成会话标题
-                            </label>
-                        </div>
-                        <div class="fmt-hint hint-indent">首次回复后额外请求一次模型，用首条消息生成短标题；失败保留原标题。</div>
-                        <div class="popover-row">
-                            <span class="popover-label">聊天字号</span>
-                            <input type="range" id="ai-opt-chatfont" min="10" max="32" step="1" value="13">
-                            <input type="number" id="ai-opt-chatfont-val" class="ai-settings-input ai-font-size-num" min="10" max="32" step="1" value="13">
-                        </div>
-                        <div class="popover-row">
-                            <span class="popover-label">英文字体</span>
-                            <select id="ai-opt-chatfont-en" class="opt-select"></select>
-                        </div>
-                        <div class="popover-row">
-                            <span class="popover-label">中文字体</span>
-                            <select id="ai-opt-chatfont-cjk" class="opt-select"></select>
-                        </div>
-                        <div class="popover-row">
-                            <span class="popover-label">代码字体</span>
-                            <select id="ai-opt-chatfont-code" class="opt-select"></select>
-                        </div>
-                        <div class="fmt-hint hint-indent">Ctrl + 滚轮可快速调整 AI 字号；字体仅作用于 AI 对话与代码块。</div>
-                        <div class="popover-row">
-                            <label class="popover-label">
-                                <input type="checkbox" id="ai-opt-show-thinking">
-                                显示思考过程
-                            </label>
-                        </div>
-                        <div class="popover-row">
-                            <label class="popover-label">
-                                <input type="checkbox" id="ai-opt-show-usage">
-                                显示 Token 用量
-                            </label>
-                        </div>
-                        <div class="popover-row">
-                            <label class="popover-label">
-                                <input type="checkbox" id="ai-opt-assistant-card">
-                                AI 回复显示卡片边框
-                            </label>
-                        </div>
-                        <div class="popover-row">
-                            <label class="popover-label">
-                                <input type="checkbox" id="ai-opt-inline-widgets">
-                                渲染回答中的 SVG / HTML 图
-                            </label>
-                        </div>
-                        <div class="fmt-hint hint-indent">标注 svg / html 的代码块会显示为可视化卡片（可切换源码、复制、点链接）；关闭后按普通代码块显示。</div>
-                        <div class="settings-section-title">对话日志</div>
-                        <div class="popover-row">
-                            <label class="popover-label">
-                                <input type="checkbox" id="ai-opt-log-enabled">
-                                每轮自动保存对话日志（Markdown）
-                            </label>
-                        </div>
-                        <div class="popover-row">
-                            <span class="popover-label">日志目录</span>
-                            <div class="ai-settings-key">
-                                <span id="ai-opt-log-path" class="fmt-hint"></span>
-                                <button type="button" id="ai-opt-open-logs" class="dlg-btn">打开目录</button>
+
+                        <div class="set-group-title">新会话</div>
+                        <div class="set-card">
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">默认读写权限</div><div class="set-desc">仅对新建会话生效；已有会话保持各自档位</div></div>
+                                <div class="set-control">
+                                    <select id="ai-opt-default-scope" class="opt-select">
+                                        <option value="read">只读访问</option>
+                                        <option value="edit">每次询问</option>
+                                        <option value="auto">自动审批</option>
+                                        <option value="full">完全权限</option>
+                                    </select>
+                                </div>
                             </div>
                         </div>
-                        <div class="fmt-hint hint-indent">不含 API Key；粘贴的图片保存在 ai-logs/images/ 子目录并在日志中引用。</div>
-                        <div class="settings-section-title">工作日志</div>
-                        <div class="popover-row">
-                            <label class="popover-label">
-                                <input type="checkbox" id="ai-opt-worklog">
-                                允许 AI 记录工作日志（write_worklog）
-                            </label>
-                        </div>
-                        <div class="fmt-hint hint-indent">追加写入工作区 .cadt/logs/（根索引每月一行 → 月索引每条一行 → 日期文件存正文）；只记标题与一句话摘要，不含正文与敏感信息。</div>
-                        <div class="settings-section-title">应用操作</div>
-                        <div class="popover-row">
-                            <label class="popover-label">
-                                <input type="checkbox" id="ai-opt-app-control">
-                                允许 AI 使用应用操作（app_control）
-                            </label>
-                        </div>
-                        <div class="fmt-hint hint-indent">关闭后 AI 无法查看或调用该工具（标签页 / 视图 / 主题 / 设置 / 模拟键盘输入等），cadt-ui 技能同时隐藏。</div>
-                        <div class="settings-section-title">子代理</div>
-                        <div class="popover-row">
-                            <span class="popover-label">子代理总数上限</span>
-                            <input type="number" id="ai-opt-subagent-max" class="ai-settings-input ai-font-size-num" min="1" max="20" step="1" value="20">
-                        </div>
-                        <div class="popover-row">
-                            <span class="popover-label">递归层级</span>
-                            <input type="number" id="ai-opt-subagent-depth" class="ai-settings-input ai-font-size-num" min="0" max="20" step="1" value="0">
-                        </div>
-                        <div class="fmt-hint hint-indent">上限统计所有层级正在运行的子代理（含子代理递归派出的），不含主代理；达到上限后主代理等待空位，子代理再派会被拒绝。层级 0 = 不设限，1–20 = 最多再往下派几层。</div>
-                        <div class="settings-section-title">通知</div>
-                        <div class="popover-row">
-                            <label class="popover-label">
-                                <input type="checkbox" id="ai-opt-notify-inapp">
-                                应用内通知（右下角 Toast）
-                            </label>
-                        </div>
-                        <div class="popover-row">
-                            <label class="popover-label">
-                                <input type="checkbox" id="ai-opt-notify-system">
-                                Windows 系统通知（Toast）
-                            </label>
-                        </div>
-                        <div class="popover-row">
-                            <label class="popover-label">
-                                <input type="checkbox" id="ai-opt-notify-finish">
-                                任务完成时通知
-                            </label>
-                        </div>
-                        <div class="popover-row">
-                            <label class="popover-label">
-                                <input type="checkbox" id="ai-opt-notify-error">
-                                任务失败时通知
-                            </label>
-                        </div>
-                        <div class="popover-row">
-                            <label class="popover-label">
-                                <input type="checkbox" id="ai-opt-notify-ask">
-                                AI 提问时通知
-                            </label>
-                        </div>
-                        <div class="popover-row">
-                            <label class="popover-label">
-                                <input type="checkbox" id="ai-opt-notify-sound">
-                                窗口失焦时任务栏闪烁并播放提示音
-                            </label>
-                        </div>
-                        <div class="settings-section-title">AskQuestion</div>
-                        <div class="popover-row">
-                            <span class="popover-label">超时时长</span>
-                            <select id="ai-opt-ask-timeout" class="opt-select">
-                                <option value="0">不超时（一直等待）</option>
-                                <option value="30">30 秒</option>
-                                <option value="60">1 分钟</option>
-                                <option value="300">5 分钟</option>
-                                <option value="600">10 分钟</option>
-                                <option value="1800">30 分钟</option>
-                            </select>
-                        </div>
-                        <div class="popover-row">
-                            <span class="popover-label">超时未回答</span>
-                            <select id="ai-opt-ask-action" class="opt-select">
-                                <option value="recommended">按 AI 推荐项继续</option>
-                                <option value="wait">继续阻塞等待</option>
-                                <option value="abort">直接停止本轮</option>
-                                <option value="ai_decide">交给 AI 决定并继续</option>
-                            </select>
-                        </div>
-                        <div class="fmt-hint hint-indent">仅对 ask_user 提问生效；选择“不超时”或“继续阻塞等待”时不会自动继续。</div>
-                        <div class="settings-section-title">失败重试</div>
-                        <div class="popover-row">
-                            <span class="popover-label">重试次数</span>
-                            <select id="ai-opt-retry-max" class="opt-select">
-                                <option value="0">不重试</option>
-                                <option value="1">1 次</option>
-                                <option value="2">2 次</option>
-                                <option value="3">3 次</option>
-                                <option value="4">4 次</option>
-                                <option value="5">5 次（默认）</option>
-                                <option value="6">6 次</option>
-                                <option value="7">7 次</option>
-                                <option value="8">8 次</option>
-                                <option value="9">9 次</option>
-                                <option value="10">10 次</option>
-                            </select>
-                        </div>
-                        <div class="fmt-hint hint-indent">请求失败（429 限流 / 5xx / 网络错误）时按指数退避自动重试：1s → 2s → 4s → … 上限 30s；接口返回 Retry-After 时优先遵循。4xx 参数/鉴权错误不重试。</div>
-                        <div class="fmt-hint hint-indent">系统提示词模板已移至左侧「上下文注入」页。</div>
-                        <div class="settings-section-title">配置迁移</div>
-                        <div class="popover-row">
-                            <label class="popover-label">
-                                <input type="checkbox" id="ai-opt-export-keys">
-                                导出时包含 API Key
-                            </label>
-                        </div>
-                        <div class="popover-row">
-                            <span class="popover-label"></span>
-                            <div class="ai-settings-key">
-                                <button type="button" id="ai-opt-export" class="dlg-btn">导出配置…</button>
-                                <button type="button" id="ai-opt-import" class="dlg-btn">导入配置…</button>
-                                <button type="button" id="ai-opt-clear-sessions" class="dlg-btn">清空全部会话</button>
+
+                        <div class="set-group-title">写操作审批</div>
+                        <div class="set-card">
+                            <div class="set-row-top">
+                                <div class="set-main"><div class="set-title">已授权文件</div><div class="set-desc">「总是允许此文件」的授权清单；移除后恢复逐次审批</div></div>
+                                <div id="ai-opt-approved" class="ai-approved-list"></div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">清除授权</div></div>
+                                <div class="set-control">
+                                    <button type="button" id="ai-opt-approved-clear" class="dlg-btn">清除全部授权</button>
+                                </div>
                             </div>
                         </div>
-                        <div class="fmt-hint hint-indent">导入按 id 合并配置与模板；默认不含 API Key。</div>
+
+                        <div class="set-group-title">聊天行为</div>
+                        <div class="set-card">
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">发送快捷键</div></div>
+                                <div class="set-control">
+                                    <select id="ai-opt-sendkey" class="opt-select">
+                                        <option value="enter">Enter 发送 / Shift+Enter 换行</option>
+                                        <option value="ctrl-enter">Ctrl+Enter 发送 / Enter 换行</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">默认输出语言</div><div class="set-desc">不改变代码、命令与路径；下一轮生效</div></div>
+                                <div class="set-control">
+                                    <select id="ai-opt-output-lang" class="opt-select">
+                                        <option value="zh">中文（简体）</option>
+                                        <option value="en">English</option>
+                                        <option value="auto">跟随用户输入</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">自动生成会话标题</div><div class="set-desc">首次回复后用首条消息生成短标题</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="ai-opt-auto-title"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">聊天字号</div><div class="set-desc">Ctrl + 滚轮可快速调整</div></div>
+                                <div class="set-control">
+                                    <input type="range" id="ai-opt-chatfont" min="10" max="32" step="1" value="13">
+                                    <input type="number" id="ai-opt-chatfont-val" class="ai-settings-input ai-font-size-num" min="10" max="32" step="1" value="13">
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">英文字体</div></div>
+                                <div class="set-control"><select id="ai-opt-chatfont-en" class="opt-select"></select></div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">中文字体</div></div>
+                                <div class="set-control"><select id="ai-opt-chatfont-cjk" class="opt-select"></select></div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">代码字体</div><div class="set-desc">字体仅作用于 AI 对话与代码块</div></div>
+                                <div class="set-control"><select id="ai-opt-chatfont-code" class="opt-select"></select></div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">显示思考过程</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="ai-opt-show-thinking"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">显示 Token 用量</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="ai-opt-show-usage"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">回复卡片边框</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="ai-opt-assistant-card"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">渲染回答中的 SVG / HTML 图</div><div class="set-desc">关闭后按普通代码块显示</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="ai-opt-inline-widgets"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                    <button type="button" class="info-tip" data-tip="标注 svg / html 的代码块会显示为可视化卡片（可切换源码、复制、点链接）；样式隔离、经 DOMPurify 清洗，只有 AI 面板开启此功能时渲染。" aria-label="可视化卡片说明">i</button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="set-group-title">对话日志</div>
+                        <div class="set-card">
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">每轮自动保存对话日志</div><div class="set-desc">Markdown 格式，不含 API Key</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="ai-opt-log-enabled"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">日志目录</div><div class="set-desc">粘贴的图片保存在 ai-logs/images/ 子目录</div></div>
+                                <div class="set-control">
+                                    <span id="ai-opt-log-path" class="set-desc"></span>
+                                    <button type="button" id="ai-opt-open-logs" class="dlg-btn">打开目录</button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="set-group-title">AI 工具权限</div>
+                        <div class="set-card">
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">工作日志</div><div class="set-desc">允许 AI 使用 write_worklog 记录工作日志</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="ai-opt-worklog"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                    <button type="button" class="info-tip" data-tip="追加写入工作区 .cadt/logs/（根索引每月一行 → 月索引每条一行 → 日期文件存正文）；只记标题与一句话摘要，不含正文与敏感信息。" aria-label="工作日志说明">i</button>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">应用操作</div><div class="set-desc">允许 AI 使用 app_control 操作应用</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="ai-opt-app-control"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                    <button type="button" class="info-tip" data-tip="标签页 / 视图 / 主题 / 设置 / 模拟键盘输入等；关闭后 AI 无法查看或调用该工具，cadt-ui 技能同时隐藏。" aria-label="应用操作说明">i</button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="set-group-title">子代理</div>
+                        <div class="set-card">
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">子代理总数上限</div><div class="set-desc">统计所有层级的运行中子代理，不含主代理</div></div>
+                                <div class="set-control">
+                                    <input type="number" id="ai-opt-subagent-max" class="ai-settings-input ai-font-size-num" min="1" max="20" step="1" value="20">
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">递归层级</div><div class="set-desc">0 = 不设限；达到上限后等待空位</div></div>
+                                <div class="set-control">
+                                    <input type="number" id="ai-opt-subagent-depth" class="ai-settings-input ai-font-size-num" min="0" max="20" step="1" value="0">
+                                    <button type="button" class="info-tip" data-tip="上限统计所有层级正在运行的子代理（含子代理递归派出的），不含主代理；达到上限后主代理等待空位，子代理再派会被拒绝。层级 1–20 = 最多再往下派几层。" aria-label="递归层级说明">i</button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="set-group-title">通知</div>
+                        <div class="set-card">
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">应用内通知</div><div class="set-desc">右下角 Toast</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="ai-opt-notify-inapp"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">Windows 系统通知</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="ai-opt-notify-system"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">任务完成时通知</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="ai-opt-notify-finish"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">任务失败时通知</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="ai-opt-notify-error"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">AI 提问时通知</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="ai-opt-notify-ask"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">窗口失焦提示</div><div class="set-desc">任务栏闪烁并播放提示音</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="ai-opt-notify-sound"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="set-group-title">AskQuestion 与重试</div>
+                        <div class="set-card">
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">提问超时时长</div><div class="set-desc">仅对 ask_user 提问生效</div></div>
+                                <div class="set-control">
+                                    <select id="ai-opt-ask-timeout" class="opt-select">
+                                        <option value="0">不超时（一直等待）</option>
+                                        <option value="30">30 秒</option>
+                                        <option value="60">1 分钟</option>
+                                        <option value="300">5 分钟</option>
+                                        <option value="600">10 分钟</option>
+                                        <option value="1800">30 分钟</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">超时未回答</div><div class="set-desc">选择「不超时」或「继续等待」时不自动继续</div></div>
+                                <div class="set-control">
+                                    <select id="ai-opt-ask-action" class="opt-select">
+                                        <option value="recommended">按 AI 推荐项继续</option>
+                                        <option value="wait">继续阻塞等待</option>
+                                        <option value="abort">直接停止本轮</option>
+                                        <option value="ai_decide">交给 AI 决定并继续</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">失败重试次数</div><div class="set-desc">按指数退避自动重试</div></div>
+                                <div class="set-control">
+                                    <select id="ai-opt-retry-max" class="opt-select">
+                                        <option value="0">不重试</option>
+                                        <option value="1">1 次</option>
+                                        <option value="2">2 次</option>
+                                        <option value="3">3 次</option>
+                                        <option value="4">4 次</option>
+                                        <option value="5">5 次（默认）</option>
+                                        <option value="6">6 次</option>
+                                        <option value="7">7 次</option>
+                                        <option value="8">8 次</option>
+                                        <option value="9">9 次</option>
+                                        <option value="10">10 次</option>
+                                    </select>
+                                    <button type="button" class="info-tip" data-tip="请求失败（429 限流 / 5xx / 网络错误）时按指数退避自动重试：1s → 2s → 4s → … 上限 30s；接口返回 Retry-After 时优先遵循。4xx 参数 / 鉴权错误不重试。" aria-label="失败重试说明">i</button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="set-group-title">配置迁移</div>
+                        <div class="set-card">
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">导出时包含 API Key</div><div class="set-desc">导出按 id 合并配置与模板；默认不含 API Key</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="ai-opt-export-keys"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">导入 / 导出 / 清空</div></div>
+                                <div class="set-control">
+                                    <button type="button" id="ai-opt-export" class="dlg-btn">导出配置…</button>
+                                    <button type="button" id="ai-opt-import" class="dlg-btn">导入配置…</button>
+                                    <button type="button" id="ai-opt-clear-sessions" class="dlg-btn">清空全部会话</button>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                     <div class="settings-pane hidden" data-pane="context">
-                        <div class="fmt-pane-title">上下文注入</div>
-                        <div class="fmt-pane-sub">系统提示词始终发送；以下内容按项控制，修改后下一轮对话生效。</div>
-                        <div class="settings-section-title">系统提示词</div>
-                        <div class="popover-row">
-                            <span class="popover-label">模板</span>
-                            <div class="ai-settings-key">
-                                <select id="ai-opt-prompt" class="opt-select"></select>
-                                <button type="button" id="ai-opt-prompt-default" class="dlg-btn">设为默认</button>
+                        <div class="set-group-title">系统提示词</div>
+                        <div class="set-card">
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">模板</div><div class="set-desc">全局默认提示词；会话内可在面板「提示词」里临时覆盖。系统提示词始终发送</div></div>
+                                <div class="set-control">
+                                    <select id="ai-opt-prompt" class="opt-select"></select>
+                                    <button type="button" id="ai-opt-prompt-default" class="dlg-btn">设为默认</button>
+                                </div>
+                            </div>
+                            <div class="set-row-top">
+                                <textarea id="ai-opt-prompt-text" class="ai-settings-input ai-settings-textarea" rows="5" spellcheck="false"></textarea>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">模板操作</div><div class="set-desc">内置模板不可删除</div></div>
+                                <div class="set-control">
+                                    <button type="button" id="ai-opt-prompt-save" class="dlg-btn">保存模板</button>
+                                    <button type="button" id="ai-opt-prompt-new" class="dlg-btn">另存为新模板</button>
+                                    <button type="button" id="ai-opt-prompt-del" class="dlg-btn">删除模板</button>
+                                </div>
                             </div>
                         </div>
-                        <div class="popover-row">
-                            <span class="popover-label"></span>
-                            <textarea id="ai-opt-prompt-text" class="ai-settings-input ai-settings-textarea" rows="5" spellcheck="false"></textarea>
-                        </div>
-                        <div class="popover-row">
-                            <span class="popover-label"></span>
-                            <div class="ai-settings-key">
-                                <button type="button" id="ai-opt-prompt-save" class="dlg-btn">保存模板</button>
-                                <button type="button" id="ai-opt-prompt-new" class="dlg-btn">另存为新模板</button>
-                                <button type="button" id="ai-opt-prompt-del" class="dlg-btn">删除模板</button>
+
+                        <div class="set-group-title">工作区上下文</div>
+                        <div class="set-card">
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">范围根</div><div class="set-desc">工作区名</div></div>
+                                <div class="set-control"><label class="set-switch"><input type="checkbox" id="ai-opt-inject-root"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label></div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">当前活动文件</div><div class="set-desc">路径 / 视图 / 未保存状态</div></div>
+                                <div class="set-control"><label class="set-switch"><input type="checkbox" id="ai-opt-inject-active"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label></div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">光标行列与选区</div></div>
+                                <div class="set-control"><label class="set-switch"><input type="checkbox" id="ai-opt-inject-caret"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label></div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">可见行范围</div></div>
+                                <div class="set-control"><label class="set-switch"><input type="checkbox" id="ai-opt-inject-viewport"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label></div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">已打开文件列表</div><div class="set-desc">最多 20 条；路径按范围根转相对路径，工作区外只留文件名</div></div>
+                                <div class="set-control"><label class="set-switch"><input type="checkbox" id="ai-opt-inject-openfiles"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label></div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-desc">以下注入项修改后下一轮对话生效；路径不发送用户名与盘符。</div></div>
                             </div>
                         </div>
-                        <div class="fmt-hint hint-indent">模板作为全局默认提示词；会话内可在面板「提示词」里临时覆盖。内置模板不可删除；系统提示词本身始终发送。</div>
-                        <div class="settings-section-title">工作区上下文</div>
-                        <div class="popover-row">
-                            <label class="popover-label">
-                                <input type="checkbox" id="ai-opt-inject-root">
-                                范围根（工作区名）
-                            </label>
+
+                        <div class="set-group-title">项目与记忆</div>
+                        <div class="set-card">
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">AGENTS.md 全文</div><div class="set-desc">≤ 64KB</div></div>
+                                <div class="set-control"><label class="set-switch"><input type="checkbox" id="ai-opt-inject-agents"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label></div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">MEMORY.md 索引</div><div class="set-desc">≤ 8KB</div></div>
+                                <div class="set-control"><label class="set-switch"><input type="checkbox" id="ai-opt-inject-memory"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label></div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">技能索引</div></div>
+                                <div class="set-control"><label class="set-switch"><input type="checkbox" id="ai-opt-inject-skills"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label></div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">用户偏好</div><div class="set-desc">&lt;user_preferences&gt; 块</div></div>
+                                <div class="set-control"><label class="set-switch"><input type="checkbox" id="ai-opt-inject-prefs"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label></div>
+                            </div>
                         </div>
-                        <div class="popover-row">
-                            <label class="popover-label">
-                                <input type="checkbox" id="ai-opt-inject-active">
-                                当前活动文件（路径 / 视图 / 未保存状态）
-                            </label>
+
+                        <div class="set-group-title">环境变量</div>
+                        <div class="set-card">
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">注入环境变量名列表</div><div class="set-desc">只发送名称与描述，变量值永远不会发送给模型</div></div>
+                                <div class="set-control"><label class="set-switch"><input type="checkbox" id="ai-opt-inject-envvars"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label></div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-desc">read_file / get_content 等工具返回的正文由 AI 主动调用产生，不走注入开关；能否调用由当前权限档决定。</div></div>
+                            </div>
                         </div>
-                        <div class="popover-row">
-                            <label class="popover-label">
-                                <input type="checkbox" id="ai-opt-inject-caret">
-                                光标行列与选区
-                            </label>
-                        </div>
-                        <div class="popover-row">
-                            <label class="popover-label">
-                                <input type="checkbox" id="ai-opt-inject-viewport">
-                                可见行范围
-                            </label>
-                        </div>
-                        <div class="popover-row">
-                            <label class="popover-label">
-                                <input type="checkbox" id="ai-opt-inject-openfiles">
-                                已打开文件列表（最多 20 条）
-                            </label>
-                        </div>
-                        <div class="fmt-hint hint-indent">路径按范围根转相对路径；工作区外只留文件名，不发送用户名与盘符。</div>
-                        <div class="settings-section-title">项目与记忆</div>
-                        <div class="popover-row">
-                            <label class="popover-label">
-                                <input type="checkbox" id="ai-opt-inject-agents">
-                                注入 AGENTS.md 全文（≤64KB）
-                            </label>
-                        </div>
-                        <div class="popover-row">
-                            <label class="popover-label">
-                                <input type="checkbox" id="ai-opt-inject-memory">
-                                注入 MEMORY.md 索引（≤8KB）
-                            </label>
-                        </div>
-                        <div class="popover-row">
-                            <label class="popover-label">
-                                <input type="checkbox" id="ai-opt-inject-skills">
-                                注入技能索引
-                            </label>
-                        </div>
-                        <div class="popover-row">
-                            <label class="popover-label">
-                                <input type="checkbox" id="ai-opt-inject-prefs">
-                                注入用户偏好（&lt;user_preferences&gt;）
-                            </label>
-                        </div>
-                        <div class="settings-section-title">环境变量</div>
-                        <div class="popover-row">
-                            <label class="popover-label">
-                                <input type="checkbox" id="ai-opt-inject-envvars">
-                                注入环境变量名列表（不含值）
-                            </label>
-                        </div>
-                        <div class="fmt-hint hint-indent">只发送名称与描述，变量值永远不会发送给模型。</div>
-                        <div class="settings-section-title">工具结果</div>
-                        <div class="fmt-hint">read_file / get_content 等工具返回的正文由 AI 主动调用产生，不走注入开关；能否调用由当前权限档决定。</div>
                     </div>
                     <div class="settings-pane hidden" data-pane="preferences">
-                        <div class="fmt-pane-title">用户偏好</div>
-                        <div class="fmt-pane-sub">长期生效的偏好会注入每轮对话的系统上下文；AI 也能通过 preference_list / preference_write / preference_remove 工具读取、新增、修改与删除。</div>
-                        <div class="settings-section-title">全部偏好</div>
-                        <div class="popover-row">
-                            <span class="popover-label">筛选</span>
-                            <input id="ai-opt-pref-filter" class="ai-settings-input" type="text" placeholder="搜索偏好内容…" spellcheck="false" autocomplete="off">
-                            <span class="popover-value" id="ai-opt-pref-count">0 条</span>
-                        </div>
-                        <div id="ai-opt-prefs" class="ai-pref-list standalone"></div>
-                        <div class="popover-row">
-                            <span class="popover-label"></span>
-                            <div class="ai-settings-key">
-                                <button type="button" id="ai-opt-pref-add" class="dlg-btn">添加偏好…</button>
+                        <div class="set-group-title">用户偏好</div>
+                        <div class="set-card">
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">筛选</div></div>
+                                <div class="set-control">
+                                    <input id="ai-opt-pref-filter" class="ai-settings-input" type="text" placeholder="搜索偏好内容…" spellcheck="false" autocomplete="off">
+                                    <span class="popover-value" id="ai-opt-pref-count">0 条</span>
+                                </div>
+                            </div>
+                            <div class="set-row-top">
+                                <div id="ai-opt-prefs" class="ai-pref-list standalone"></div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">添加偏好</div><div class="set-desc">每条一句话（≤500 字），最多 100 条；「你 / AI」标出来源</div></div>
+                                <div class="set-control">
+                                    <button type="button" id="ai-opt-pref-add" class="dlg-btn">添加偏好…</button>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-desc">长期生效的偏好会注入每轮对话的系统上下文；AI 也能通过 preference_list / preference_write / preference_remove 工具读取、新增、修改与删除。偏好随 AI 配置一起导出 / 导入。</div></div>
                             </div>
                         </div>
-                        <div class="fmt-hint">每条一句话（≤500 字），最多 100 条；「你 / AI」标出来源。偏好随 AI 配置一起导出 / 导入，也会被 AI 的 preference_* 工具即时更新。</div>
                     </div>
                     <div class="settings-pane hidden" data-pane="schedules">
-                        <div class="fmt-pane-title">定时任务</div>
-                        <div class="fmt-pane-sub">让 AI 在指定时间自动触发对话：单次（once）/ 固定间隔（interval）/ cron。任务仅在应用运行期间有效；关闭窗口后挂起，重开后不错过的时间不补跑。触发会消耗 token，AI 也可通过 schedule_* 工具管理。</div>
-                        <div class="settings-section-title">全部任务</div>
-                        <div id="ai-opt-schedules" class="ai-sched-list"></div>
-                        <div class="popover-row">
-                            <span class="popover-label"></span>
-                            <div class="ai-settings-key">
-                                <button type="button" id="ai-opt-schedule-add" class="dlg-btn">新建任务…</button>
+                        <div class="set-group-title">定时任务</div>
+                        <div class="set-card">
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">说明</div><div class="set-desc">单次（once）/ 固定间隔（interval）/ cron；仅在应用运行期间有效，关闭窗口后挂起、重开后不错过的时间不补跑；触发会消耗 token，AI 也可通过 schedule_* 工具管理</div></div>
+                            </div>
+                            <div class="set-row-top">
+                                <div id="ai-opt-schedules" class="ai-sched-list"></div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">新建任务</div><div class="set-desc">scope（触发轮次权限）仅对「每次新建会话」的任务生效；edit 档任务触发时若无人处理写审批会一直挂起，建议触发时保持在电脑前</div></div>
+                                <div class="set-control">
+                                    <button type="button" id="ai-opt-schedule-add" class="dlg-btn">新建任务…</button>
+                                </div>
                             </div>
                         </div>
-                        <div class="fmt-hint">scope（触发轮次权限）仅对「每次新建会话」的任务生效；edit 档任务触发时若无人处理写审批会一直挂起，建议触发时保持在电脑前。</div>
                     </div>
                     <div class="settings-pane hidden" data-pane="permissions">
-                        <div class="fmt-pane-title">权限</div>
-                        <div class="fmt-pane-sub">自动审批的判定顺序、项目级规则与最近审批记录。规则会写入工作区 <code>.cadt/permissions.json</code>，可随仓库共享。</div>
-                        <div class="settings-section-title">模式与判定顺序</div>
-                        <div class="fmt-hint">任何档位都先看项目 <b>deny</b> 规则；危险命令（rm -rf、git reset --hard、git clean -f、强推、丢弃工作区等）在非完全权限档一律单次确认，不提供长期放行。「自动审批」档：只读命令与已知命令族直接执行，工作区写入自动应用（未保存修改与风险路径除外），其余命令逐条审批。</div>
-                        <div class="settings-section-title">自动审批分类器</div>
-                        <div class="popover-row">
-                            <label class="popover-label">
-                                <input type="checkbox" id="ai-opt-auto-classifier">
-                                规则无法判定时由 AI 分类器判断
-                            </label>
-                        </div>
-                        <div class="fmt-hint hint-indent">关闭（默认）：未命中只读 / 命令族 / 规则时直接弹审批。开启后额外请求一次模型判定，失败、超时或信息不足都回退为人工审批；判定结果按命令缓存 10 分钟。与「端侧分类器」结合时：端侧放行不请求模型，端侧判险的命令会把端侧结果（score / 阈值）注入提示词交本模型二次复核，复核放行即直接执行。每次触发都会在消息流推送系统提示（判定中 / 放行原因 / 转人工），工具卡同步显示「等待 AI 分类器判定…」。分类器默认请求当前会话使用的模型，可在下方「高级配置」里固定为指定模型。</div>
-                        <details class="ai-perm-advanced">
-                            <summary>高级配置</summary>
-                            <div class="popover-row">
-                                <span class="popover-label">分类器模型</span>
-                                <select id="ai-opt-classifier-model" class="opt-select"></select>
+                        <div class="set-group-title">模式与判定顺序</div>
+                        <div class="set-card">
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">判定顺序</div><div class="set-desc">任何档位都先看项目 deny 规则；危险命令在非完全权限档一律单次确认</div></div>
+                                <div class="set-control">
+                                    <button type="button" class="info-tip" data-tip="判定顺序：项目 deny → 危险命令（rm -rf、git reset --hard、git clean -f、强推、丢弃工作区等，单次确认、不提供长期放行）→ 项目 ask → 会话/项目 allow → 完全权限 → 自动审批档细则（只读命令与已知命令族直接执行，工作区写入自动应用（未保存修改与风险路径除外），其余命令走分类器或逐条审批）。规则写入工作区 .cadt/permissions.json，可随仓库共享。" aria-label="判定顺序说明">i</button>
+                                </div>
                             </div>
-                            <div class="fmt-hint hint-indent">从模型配置列表中选择分类器专用的请求模型（含该配置的 provider / 地址 / 密钥 / 代理）。默认「跟随当前模型」；所选配置被删除后自动回退为跟随当前模型。只读命令、已知命令族与规则命中的命令不会触发分类器请求。</div>
-                            <div class="popover-row">
-                                <span class="popover-label">端侧分类器</span>
-                                <label class="popover-label">
-                                    <input type="checkbox" id="ai-opt-local-classifier">
-                                    启用端侧分类器（默认开；安装语义插件后自动并行生效）
-                                </label>
-                                <select id="ai-opt-local-strictness" class="opt-select" title="严格度：危险概率阈值，低于放行、达到转人工">
-                                    <option value="loose">宽松</option>
-                                    <option value="standard">标准</option>
-                                    <option value="strict">严格</option>
-                                </select>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">AI 分类器复核</div><div class="set-desc">规则无法判定时由大模型判定；与端侧分类器结合时负责二次复核</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="ai-opt-auto-classifier"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                    <button type="button" class="info-tip" data-tip="开启后对规则、只读、命令族都没接住的命令额外请求一次模型判定，失败、超时或信息不足都回退为人工审批；判定结果按命令缓存 10 分钟。与「端侧分类器」结合时：端侧放行不请求模型，端侧判险的命令会把端侧结果（score / 阈值）注入提示词交本模型二次复核，复核放行即直接执行。每次触发都会在消息流推送系统提示（判定中 / 放行原因 / 转人工），工具卡同步显示「等待 AI 分类器判定…」。分类器默认请求当前会话使用的模型，可在下方「复核模型」里固定为指定模型。" aria-label="AI 分类器说明">i</button>
+                                </div>
                             </div>
-                            <div class="popover-row">
-                                <span class="popover-label">个性化学习</span>
-                                <label class="popover-label">
-                                    <input type="checkbox" id="ai-opt-local-personalize">
-                                    从端侧审批卡的批准 / 拒绝学习（数据仅存本机）
-                                </label>
-                                <span id="ai-opt-local-status" class="ai-approved-path"></span>
-                            </div>
-                            <div class="popover-row">
-                                <span class="popover-label">测试命令</span>
-                                <input id="ai-opt-local-test" class="ai-settings-input" type="text" spellcheck="false" autocomplete="off" placeholder="贴一条命令看 score 与判定，不产生审批记录">
-                                <span id="ai-opt-local-test-result" class="ai-approved-path"></span>
-                            </div>
-                            <div class="popover-row">
-                                <span class="popover-label"></span>
-                                <button type="button" id="ai-opt-local-reset" class="dlg-btn">重置分类器</button>
-                                <button type="button" id="ai-opt-local-clear" class="dlg-btn">清空学习数据</button>
-                                <button type="button" id="ai-opt-local-export" class="dlg-btn">导出分类器数据</button>
-                            </div>
-                            <div class="fmt-hint hint-indent">端侧分类器默认开启，在自动审批档对规则、只读与命令族都没接住的命令先行离线判定：危险概率低于严格度阈值直接放行（来源标「端侧分类器」），达到阈值转人工——若同时开启了远程「AI 分类器」，会把端侧结果（score / 阈值）注入提示词交大模型二次判定，复核放行则直接执行。插件可经 registerCommandClassifier 注册分类器（如语义模型），与内置线性模型同时生效、取最高分。个性化只学习你在端侧审批卡上的显式裁定，存于应用数据 local-classifier/，可重置或导出。</div>
-                        </details>
-                        <div class="settings-section-title">项目规则</div>
-                        <div class="fmt-hint hint-indent">表格里可直接增删规则；判定顺序 deny → ask → allow。<code>Bash(git status:*)</code> 的 <code>:*</code> 为前缀，<code>Write(docs/**)</code> 的 <code>*</code> 为通配，<code>Web(domain:example.com)</code> 匹配域名。</div>
-                        <div id="ai-opt-perm-table" class="ai-perm-table"></div>
-                        <div class="ai-perm-add">
-                            <select id="ai-opt-perm-add-kind" class="opt-select">
-                                <option value="command">Bash</option>
-                                <option value="write">Write</option>
-                                <option value="web">Web</option>
-                            </select>
-                            <select id="ai-opt-perm-add-behavior" class="opt-select">
-                                <option value="deny">deny</option>
-                                <option value="ask">ask</option>
-                                <option value="allow">allow</option>
-                            </select>
-                            <input id="ai-opt-perm-add-pattern" class="ai-settings-input" type="text" spellcheck="false" autocomplete="off" placeholder="如 git status:* / docs/** / domain:example.com">
-                            <button type="button" id="ai-opt-perm-add-btn" class="dlg-btn">添加</button>
-                        </div>
-                        <details class="ai-perm-advanced">
-                            <summary>高级：文本编辑</summary>
-                            <div class="fmt-hint hint-indent">一行一条，<code>#</code> 开头为注释；保存后与表格同步。</div>
-                            <div class="ai-perm-grid">
-                                <label class="ai-perm-field">允许 allow
-                                    <textarea id="ai-opt-perm-allow" class="ai-settings-input" spellcheck="false" placeholder="Bash(git status:*)"></textarea>
-                                </label>
-                                <label class="ai-perm-field">询问 ask
-                                    <textarea id="ai-opt-perm-ask" class="ai-settings-input" spellcheck="false" placeholder="Bash(npm install:*)"></textarea>
-                                </label>
-                                <label class="ai-perm-field">拒绝 deny
-                                    <textarea id="ai-opt-perm-deny" class="ai-settings-input" spellcheck="false" placeholder="Bash(git push --force:*)"></textarea>
-                                </label>
-                            </div>
-                        </details>
-                        <div class="popover-row">
-                            <span class="popover-label">规则文件</span>
-                            <span id="ai-opt-perm-path" class="ai-approved-path">—</span>
-                        </div>
-                        <div class="popover-row">
-                            <span class="popover-label"></span>
-                            <div class="ai-settings-key">
-                                <button type="button" id="ai-opt-perm-save" class="dlg-btn primary">保存文本规则</button>
-                                <button type="button" id="ai-opt-perm-reload" class="dlg-btn">重新加载</button>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">复核模型</div><div class="set-desc">默认跟随当前模型；所选配置被删除后自动回退</div></div>
+                                <div class="set-control">
+                                    <select id="ai-opt-classifier-model" class="opt-select"></select>
+                                    <button type="button" class="info-tip" data-tip="从模型配置列表中选择分类器专用的请求模型（含该配置的 provider / 地址 / 密钥 / 代理）。只读命令、已知命令族与规则命中的命令不会触发分类器请求。" aria-label="复核模型说明">i</button>
+                                </div>
                             </div>
                         </div>
-                        <div class="settings-section-title">本会话授权</div>
-                        <div id="ai-opt-perm-session" class="ai-approved-list ai-perm-list-box"></div>
-                        <div class="popover-row">
-                            <span class="popover-label"></span>
-                            <button type="button" id="ai-opt-perm-session-clear" class="dlg-btn">清除本会话授权</button>
+
+                        <div class="set-group-title">端侧分类器（默认开启）</div>
+                        <div class="set-card">
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">启用端侧分类器</div><div class="set-desc">离线先行判定；安装语义插件后与线性模型并行、取最高分</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="ai-opt-local-classifier"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                    <button type="button" class="info-tip" data-tip="在自动审批档对规则、只读与命令族都没接住的命令先行离线判定：危险概率低于严格度阈值直接放行（来源标「端侧分类器」），达到阈值转人工——若同时开启了远程「AI 分类器」，会把端侧结果（score / 阈值）注入提示词交大模型二次复核，复核放行则直接执行。线性模型对良性命令偏保守，误拦的命令由大模型复核放行，批准过的命令族经个性化学习后下次直接放行。" aria-label="端侧分类器说明">i</button>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">严格度</div><div class="set-desc">危险概率阈值：低于放行、达到转人工</div></div>
+                                <div class="set-control">
+                                    <select id="ai-opt-local-strictness" class="opt-select">
+                                        <option value="loose">宽松</option>
+                                        <option value="standard">标准</option>
+                                        <option value="strict">严格</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">个性化学习</div><div class="set-desc">从端侧审批卡的批准 / 拒绝学习（数据仅存本机）</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="ai-opt-local-personalize"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                    <button type="button" class="info-tip" data-tip="只学习你在端侧审批卡上的显式裁定，秘密打码后存于应用数据 local-classifier/（环形上限 500），SGD + L2 锚定出厂权重防漂移。学习状态、重置 / 清空 / 导出见下方操作区。" aria-label="个性化学习说明">i</button>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">学习状态</div></div>
+                                <div class="set-control">
+                                    <span id="ai-opt-local-status" class="set-desc"></span>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">测试命令</div><div class="set-desc">贴一条命令看 score 与判定，不产生审批记录</div></div>
+                                <div class="set-control">
+                                    <input id="ai-opt-local-test" class="ai-settings-input" type="text" spellcheck="false" autocomplete="off" placeholder="如 git status / rm -rf /tmp/x">
+                                </div>
+                            </div>
+                            <div class="set-row-top">
+                                <div class="set-main"><div class="set-desc" id="ai-opt-local-test-result"></div></div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">学习数据操作</div><div class="set-desc">重置回出厂权重；清空不可撤销；导出含版本 + 修正 + 脱敏样本</div></div>
+                                <div class="set-control">
+                                    <button type="button" id="ai-opt-local-reset" class="dlg-btn">重置分类器</button>
+                                    <button type="button" id="ai-opt-local-clear" class="dlg-btn">清空学习数据</button>
+                                    <button type="button" id="ai-opt-local-export" class="dlg-btn">导出分类器数据</button>
+                                </div>
+                            </div>
                         </div>
-                        <div class="settings-section-title">最近审批</div>
-                        <div id="ai-opt-perm-log" class="ai-approved-list ai-perm-log ai-perm-list-box"></div>
+
+                        <div class="set-group-title">项目规则</div>
+                        <div class="set-card">
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">规则语法</div><div class="set-desc">表格可直接增删；判定顺序 deny → ask → allow</div></div>
+                                <div class="set-control">
+                                    <button type="button" class="info-tip" data-tip="Bash(git status:*) 的 :* 为前缀匹配；Write(docs/**) 的 * 为通配；Web(domain:example.com) 匹配域名。规则写入工作区 .cadt/permissions.json，可随仓库共享。" aria-label="规则语法说明">i</button>
+                                </div>
+                            </div>
+                            <div class="set-row-top">
+                                <div id="ai-opt-perm-table" class="ai-perm-table"></div>
+                                <div class="ai-perm-add">
+                                    <select id="ai-opt-perm-add-kind" class="opt-select">
+                                        <option value="command">Bash</option>
+                                        <option value="write">Write</option>
+                                        <option value="web">Web</option>
+                                    </select>
+                                    <select id="ai-opt-perm-add-behavior" class="opt-select">
+                                        <option value="deny">deny</option>
+                                        <option value="ask">ask</option>
+                                        <option value="allow">allow</option>
+                                    </select>
+                                    <input id="ai-opt-perm-add-pattern" class="ai-settings-input" type="text" spellcheck="false" autocomplete="off" placeholder="如 git status:* / docs/** / domain:example.com">
+                                    <button type="button" id="ai-opt-perm-add-btn" class="dlg-btn">添加</button>
+                                </div>
+                            </div>
+                            <div class="set-row-top">
+                                <details class="ai-perm-advanced">
+                                    <summary>高级：文本编辑</summary>
+                                    <div class="fmt-hint hint-indent">一行一条，<code>#</code> 开头为注释；保存后与表格同步。</div>
+                                    <div class="ai-perm-grid">
+                                        <label class="ai-perm-field">允许 allow
+                                            <textarea id="ai-opt-perm-allow" class="ai-settings-input" spellcheck="false" placeholder="Bash(git status:*)"></textarea>
+                                        </label>
+                                        <label class="ai-perm-field">询问 ask
+                                            <textarea id="ai-opt-perm-ask" class="ai-settings-input" spellcheck="false" placeholder="Bash(npm install:*)"></textarea>
+                                        </label>
+                                        <label class="ai-perm-field">拒绝 deny
+                                            <textarea id="ai-opt-perm-deny" class="ai-settings-input" spellcheck="false" placeholder="Bash(git push --force:*)"></textarea>
+                                        </label>
+                                    </div>
+                                </details>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">规则文件</div><div class="set-desc" id="ai-opt-perm-path">—</div></div>
+                                <div class="set-control">
+                                    <button type="button" id="ai-opt-perm-save" class="dlg-btn primary">保存文本规则</button>
+                                    <button type="button" id="ai-opt-perm-reload" class="dlg-btn">重新加载</button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="set-group-title">会话与审批记录</div>
+                        <div class="set-card">
+                            <div class="set-row-top">
+                                <div class="set-main"><div class="set-title">本会话授权</div><div class="set-desc">审批卡里的「本会话允许」出现在这里</div></div>
+                                <div id="ai-opt-perm-session" class="ai-approved-list ai-perm-list-box"></div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">清除会话授权</div></div>
+                                <div class="set-control">
+                                    <button type="button" id="ai-opt-perm-session-clear" class="dlg-btn">清除本会话授权</button>
+                                </div>
+                            </div>
+                            <div class="set-row-top">
+                                <div class="set-main"><div class="set-title">最近审批</div></div>
+                                <div id="ai-opt-perm-log" class="ai-approved-list ai-perm-log ai-perm-list-box"></div>
+                            </div>
+                        </div>
                     </div>
                     <div class="settings-pane hidden" data-pane="formats">
-                        <div class="fmt-pane-title">通用数据格式</div>
-                        <div class="fmt-pane-sub">所有格式的编码、缩进、保存换行与默认视图总览</div>
-                        <div class="fmt-table" id="fmt-table"></div>
-                        <div class="fmt-hint">编码「自动」= UTF-8 有效时用 UTF-8，否则回退 GBK；编码/缩进/换行对之后打开或保存的文件生效，默认视图对当前同类文件立即生效。</div>
+                        <div class="set-group-title">通用数据格式</div>
+                        <div class="set-card">
+                            <div class="set-row-top">
+                                <div class="set-main"><div class="set-title">格式总览</div><div class="set-desc">所有格式的编码、缩进、保存换行与默认视图；编码「自动」= UTF-8 有效时用 UTF-8，否则回退 GBK。编码 / 缩进 / 换行对之后打开或保存的文件生效，默认视图对当前同类文件立即生效。</div></div>
+                                <div class="fmt-table" id="fmt-table"></div>
+                            </div>
+                        </div>
                     </div>
                     <div class="settings-pane hidden" data-pane="run">
-                        <div class="fmt-pane-title">运行</div>
-                        <div class="fmt-pane-sub">把当前文件交给本机已检测到的解释器 / 编译器执行，输出显示在底部「运行」面板</div>
-                        <div class="popover-row">
-                            <span class="popover-label">工作目录</span>
-                            <select id="run-cwd" class="opt-select">
-                                <option value="file">文件所在目录（推荐）</option>
-                                <option value="workspace">工作区根目录</option>
-                            </select>
+                        <div class="set-group-title">运行</div>
+                        <div class="set-card">
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">工作目录</div><div class="set-desc">脚本里的相对路径按此目录解析</div></div>
+                                <div class="set-control">
+                                    <select id="run-cwd" class="opt-select">
+                                        <option value="file">文件所在目录（推荐）</option>
+                                        <option value="workspace">工作区根目录</option>
+                                    </select>
+                                    <button type="button" class="info-tip" data-tip="默认选文件所在目录，方便直接读旁边的数据文件。运行面板顶部可填「运行参数」：空格分隔、含空格用引号包起来，按语言记住并随运行标签回显；参数只传给程序，不会进入编译命令。" aria-label="工作目录说明">i</button>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">有未保存修改时</div><div class="set-desc">决定运行前对当前文件的处理方式</div></div>
+                                <div class="set-control">
+                                    <select id="run-dirty-mode" class="opt-select">
+                                        <option value="ask">每次询问</option>
+                                        <option value="save">总是保存后运行</option>
+                                        <option value="temp">总是用临时副本运行</option>
+                                    </select>
+                                    <button type="button" class="info-tip" data-tip="临时副本不会改动磁盘文件，但同目录依赖（import / require / 相对路径读取）可能不可用。" aria-label="未保存修改说明">i</button>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">首次运行确认</div><div class="set-desc" id="run-confirm-hint">已确认的语言不会再弹提示。</div></div>
+                                <div class="set-control">
+                                    <button type="button" id="run-confirm-reset" class="dlg-btn">重新对每种语言提示一次</button>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">临时目录</div><div class="set-desc" id="run-temp-hint">—</div></div>
+                                <div class="set-control">
+                                    <button type="button" id="run-open-temp" class="dlg-btn">打开</button>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-desc">已支持：Python、Node.js / TypeScript、Go、Java、C、C++、Rust、PHP、Ruby、Lua、Shell / Batch / PowerShell。临时目录里超过 7 天的编译产物与临时副本会自动清理。运行中出现 stdin 输入条，可逐行发送输入或点 EOF 结束；同时最多 3 个任务。项目运行（Ctrl+F5）只执行探测出的固定命令，不会自动安装依赖或修改项目文件。</div></div>
+                            </div>
                         </div>
-                        <div class="fmt-hint hint-indent">脚本里写 <code>open('data.csv')</code> 这类相对路径时按此目录解析；默认选文件所在目录，方便直接读旁边的数据文件。</div>
-                        <div class="fmt-hint hint-indent">运行面板顶部可填「运行参数」：空格分隔、含空格用引号包起来，按语言记住并随运行标签回显；参数只传给程序，不会进入编译命令。</div>
-                        <div class="settings-section-title">命令模板（可选，按语言覆盖默认命令）</div>
-                        <div class="popover-row">
-                            <span class="popover-label">适用语言</span>
-                            <select id="run-template-lang" class="opt-select"></select>
+
+                        <div class="set-group-title">命令模板（可选，按语言覆盖默认命令）</div>
+                        <div class="set-card">
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">适用语言</div></div>
+                                <div class="set-control">
+                                    <select id="run-template-lang" class="opt-select"></select>
+                                </div>
+                            </div>
+                            <div class="set-row-top">
+                                <input id="run-template-input" class="run-template-input" type="text" spellcheck="false" autocomplete="off"
+                                       placeholder="留空使用默认命令，例如：$TOOL -u $FILE $ARGS">
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">模板占位符</div><div class="set-desc">完整命令行（首个词为可执行文件），按空格分词后逐项替换，不经 shell</div></div>
+                                <div class="set-control">
+                                    <button type="button" class="info-tip" data-tip="占位符：$TOOL 扫描到的解释器 / 编译器、$FILE 源文件、$DIR 工作目录、$BASE 文件名、$STEM 主文件名、$EXT 扩展名、$OUT 编译产物、$ARGS 运行参数。按空格分词后逐项替换，不经 shell；含空格的路径请用引号包住占位符。编译型的编译步骤仍用默认配方。" aria-label="模板占位符说明">i</button>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">验证运行环境</div><div class="set-desc">临时目录里跑最小脚本验证工具链，不改动用户文件</div></div>
+                                <div class="set-control">
+                                    <select id="run-selftest-lang" class="opt-select"></select>
+                                    <button type="button" id="run-selftest" class="dlg-btn">运行自检脚本</button>
+                                </div>
+                            </div>
                         </div>
-                        <div class="popover-row">
-                            <input id="run-template-input" class="run-template-input" type="text" spellcheck="false" autocomplete="off"
-                                   placeholder="留空使用默认命令，例如：$TOOL -u $FILE $ARGS">
+
+                        <div class="set-group-title">运行配置（多套参数预设）</div>
+                        <div class="set-card">
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">保存当前配置</div><div class="set-desc">记录运行参数、命令模板与语言；在面板顶部下拉一键载入</div></div>
+                                <div class="set-control">
+                                    <input id="run-profile-name" class="run-template-input" type="text" spellcheck="false" autocomplete="off" placeholder="配置名称，例如：读大 CSV">
+                                    <button type="button" id="run-profile-save" class="dlg-btn">保存当前配置</button>
+                                </div>
+                            </div>
+                            <div class="set-row-top">
+                                <div id="run-profile-list" class="run-profile-list"></div>
+                            </div>
                         </div>
-                        <div class="fmt-hint hint-indent">
-                            模板是完整命令行（首个词为可执行文件）。占位符：<code>$TOOL</code> 扫描到的解释器 / 编译器、<code>$FILE</code> 源文件、<code>$DIR</code> 工作目录、<code>$BASE</code> 文件名、<code>$STEM</code> 主文件名、<code>$EXT</code> 扩展名、<code>$OUT</code> 编译产物、<code>$ARGS</code> 运行参数。按空格分词后逐项替换，不经 shell；含空格的路径请用引号包住占位符。编译型的编译步骤仍用默认配方。
-                        </div>
-                        <div class="popover-row">
-                            <span class="popover-label">验证运行环境</span>
-                            <select id="run-selftest-lang" class="opt-select"></select>
-                            <button type="button" id="run-selftest" class="dlg-btn">运行自检脚本</button>
-                        </div>
-                        <div class="fmt-hint hint-indent">自检在临时目录里跑一段只打印一行标记的最小脚本，验证该语言的工具链能否真正编译 / 执行文件；不改动任何用户文件，结果在底部「运行」面板。</div>
-                        <div class="settings-section-title">运行配置（多套参数预设）</div>
-                        <div class="popover-row">
-                            <input id="run-profile-name" class="run-template-input" type="text" spellcheck="false" autocomplete="off" placeholder="配置名称，例如：读大 CSV">
-                            <button type="button" id="run-profile-save" class="dlg-btn">保存当前配置</button>
-                        </div>
-                        <div class="fmt-hint hint-indent">保存时记下运行面板里的参数、当前语言的命令模板与语言；之后在面板顶部下拉里一键载入。配置只存预设，不改变默认设置。</div>
-                        <div id="run-profile-list" class="run-profile-list"></div>
-                        <div class="popover-row">
-                            <span class="popover-label">有未保存修改时</span>
-                            <select id="run-dirty-mode" class="opt-select">
-                                <option value="ask">每次询问</option>
-                                <option value="save">总是保存后运行</option>
-                                <option value="temp">总是用临时副本运行</option>
-                            </select>
-                        </div>
-                        <div class="fmt-hint hint-indent">临时副本不会改动磁盘文件，但同目录依赖（import / require / 相对路径读取）可能不可用。</div>
-                        <div class="popover-row">
-                            <span class="popover-label">首次运行确认</span>
-                            <button type="button" id="run-confirm-reset" class="dlg-btn">重新对每种语言提示一次</button>
-                        </div>
-                        <div class="fmt-hint hint-indent" id="run-confirm-hint">已确认的语言不会再弹提示。</div>
-                        <div class="popover-row">
-                            <span class="popover-label">临时目录</span>
-                            <button type="button" id="run-open-temp" class="dlg-btn">打开</button>
-                        </div>
-                        <div class="fmt-hint hint-indent" id="run-temp-hint">—</div>
-                        <div class="fmt-hint">已支持：Python、Node.js / TypeScript、Go、Java、C、C++、Rust、PHP、Ruby、Lua、Shell / Batch / PowerShell。临时目录里超过 7 天的编译产物与临时副本会自动清理。</div>
-                        <div class="fmt-hint">运行中出现 stdin 输入条，可逐行发送输入或点 EOF 结束；同时最多 3 个任务，长驻服务请用「停止」结束。项目运行（Ctrl+F5）只执行探测出的固定命令，不会自动安装依赖或修改项目文件。</div>
                     </div>
                     <div class="settings-pane hidden" data-pane="shortcuts">
                         <div class="popover-shortcuts">
@@ -1155,172 +1293,205 @@
                         </div>
                     </div>
                     <div class="settings-pane hidden" data-pane="integration">
-                        <div class="popover-row">
-                            <label class="popover-label">
-                                <input type="checkbox" id="opt-file-assoc">
-                                注册文件关联（写入当前用户注册表）
-                            </label>
+                        <div class="set-group-title">系统集成</div>
+                        <div class="set-card">
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">注册文件关联</div><div class="set-desc">JSON / YAML / XML / CSV / 纯文本加入「打开方式」</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="opt-file-assoc"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                    <button type="button" class="info-tip" data-tip="写入当前用户注册表；不会改动系统默认程序，默认应用仍需在 Windows 设置里确认一次。" aria-label="文件关联说明">i</button>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">注册资源管理器右键菜单</div><div class="set-desc">文件、文件夹与空白处的「用 CaDt-DataLens 打开」</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="opt-context-menu"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                    <button type="button" class="info-tip" data-tip="Windows 11 可能显示在「显示更多选项」中。" aria-label="右键菜单说明">i</button>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">注册全局 Agent Skill</div><div class="set-desc">写入 <span id="opt-skill-dirs">~/.agents/skills、~/.claude/skills</span> 技能目录</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="opt-agent-skill"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                    <button type="button" class="info-tip" data-tip="把使用说明写入常用的 agent 全局技能目录，让 AI agent 学会调用本程序打开和定位文件。" aria-label="Agent Skill 说明">i</button>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">注册 datalens 命令</div><div class="set-desc">加入用户 PATH，任意目录命令行可用</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="opt-path-cmd"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                    <button type="button" class="info-tip" data-tip="把程序所在目录加入用户 PATH；之后在任意目录的命令行输入 datalens，软件就以该目录为工作区打开。仅对新开的命令行窗口生效，已有窗口需重开。" aria-label="datalens 命令说明">i</button>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">当前程序</div></div>
+                                <div class="set-control">
+                                    <span id="opt-exe-path" class="opt-path">—</span>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-desc">只写入 HKCU，无需管理员权限；程序移动位置后重新勾选即可更新路径。</div>
+                                    <button type="button" id="opt-refresh-integration" class="dlg-btn">刷新状态</button></div>
+                            </div>
                         </div>
-                        <div class="fmt-hint hint-indent">把 JSON / JSONC / JSON5、YAML、XML、CSV、纯文本等格式加入“打开方式”。不会改动系统默认程序；默认应用仍需在 Windows 设置里确认一次。</div>
-                        <div class="popover-row">
-                            <label class="popover-label">
-                                <input type="checkbox" id="opt-context-menu">
-                                注册资源管理器右键菜单
-                            </label>
-                        </div>
-                        <div class="fmt-hint hint-indent">为文件、文件夹和文件夹空白处添加“用 CaDt-DataLens 打开”。Windows 11 可能显示在“显示更多选项”中。</div>
-                        <div class="popover-row">
-                            <label class="popover-label">
-                                <input type="checkbox" id="opt-agent-skill">
-                                注册全局 Agent Skill
-                            </label>
-                        </div>
-                        <div class="fmt-hint hint-indent">把使用说明写入常用的 agent 全局技能目录，让 AI agent 学会调用本程序打开和定位文件（<span id="opt-skill-dirs">~/.agents/skills、~/.claude/skills</span>）。</div>
-                        <div class="popover-row">
-                            <label class="popover-label">
-                                <input type="checkbox" id="opt-path-cmd">
-                                注册 datalens 命令（加入用户 PATH）
-                            </label>
-                        </div>
-                        <div class="fmt-hint hint-indent">把程序所在目录加入用户 PATH；之后在任意目录的命令行输入 datalens，软件就以该目录为工作区打开。仅对新开的命令行窗口生效，已有窗口需重开。</div>
-                        <div class="popover-row">
-                            <span class="popover-label">当前程序</span>
-                            <span id="opt-exe-path" class="opt-path">—</span>
-                        </div>
-                        <div class="dialog-footer" style="justify-content:flex-start; margin-top:10px;">
-                            <button type="button" id="opt-refresh-integration" class="dlg-btn">刷新状态</button>
-                        </div>
-                        <div class="fmt-hint">只写入 HKCU，无需管理员权限；程序移动位置后重新勾选即可更新路径。</div>
                     </div>
                     <div class="settings-pane hidden" data-pane="envvars">
-                        <div class="fmt-pane-title">环境变量</div>
-                        <div class="fmt-pane-sub">私密变量的本机配置：值只注入终端与命令，AI 永远拿不到</div>
-                        <div class="envvar-toolbar">
-                            <button type="button" id="envvar-add" class="dlg-btn primary">新增变量…</button>
+                        <div class="set-group-title">环境变量</div>
+                        <div class="set-card">
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">新增变量</div><div class="set-desc">私密变量的本机配置：值只注入终端与命令，AI 永远拿不到</div></div>
+                                <div class="set-control">
+                                    <button type="button" id="envvar-add" class="dlg-btn primary">新增变量…</button>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">存储方式</div></div>
+                                <div class="set-control">
+                                    <select id="envvar-encrypted" class="opt-select">
+                                        <option value="plain">明文 JSON（可手动备份编辑）</option>
+                                        <option value="encrypted">DPAPI 加密（仅本机可解）</option>
+                                    </select>
+                                    <button type="button" class="info-tip" data-tip="变量注入到之后新开的内置终端会话与命令桥子进程（AI 命令、插件命令），写在继承环境之后、同名时覆盖系统值；已打开的终端不受影响。AI 助手只看得到变量名与描述：env_list 列出名称，env_create 由 AI 提供名称与描述、值由你在弹窗中亲自填写。" aria-label="存储方式说明">i</button>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-desc" id="envvar-storage-hint">—</div></div>
+                            </div>
+                            <div class="set-row-top">
+                                <div class="envvar-list-box">
+                                    <div class="envvar-list" id="envvar-list"></div>
+                                </div>
+                            </div>
                         </div>
-                        <div class="envvar-list-box">
-                            <div class="envvar-list" id="envvar-list"></div>
-                        </div>
-                        <div class="popover-row">
-                            <span class="popover-label">存储方式</span>
-                            <select id="envvar-encrypted" class="opt-select">
-                                <option value="plain">明文 JSON（可手动备份编辑）</option>
-                                <option value="encrypted">DPAPI 加密（仅本机可解）</option>
-                            </select>
-                        </div>
-                        <div class="fmt-hint hint-indent" id="envvar-storage-hint">—</div>
-                        <div class="fmt-hint">变量注入到之后新开的内置终端会话与命令桥子进程（AI 命令、插件命令），写在继承环境之后、同名时覆盖系统值；已打开的终端不受影响。</div>
-                        <div class="fmt-hint">AI 助手只看得到变量名与描述：env_list 列出名称，env_create 由 AI 提供名称与描述、值由你在弹窗中亲自填写。</div>
                     </div>
                     <div class="settings-pane hidden" data-pane="plugins">
-                        <div class="fmt-pane-title">插件</div>
-                        <div class="fmt-pane-sub">扩展新的文件格式、工具菜单命令与主题</div>
-                        <div class="plugin-section-title">已安装</div>
-                        <div class="plugin-toolbar">
-                            <button type="button" id="plugin-add" class="dlg-btn">添加插件…</button>
-                            <button type="button" id="plugin-import" class="dlg-btn">导入插件(.zip)…</button>
-                            <button type="button" id="plugin-clone" class="dlg-btn">从仓库地址…</button>
-                            <button type="button" id="plugin-open-dir" class="dlg-btn">打开插件目录</button>
-                        </div>
-                        <div class="popover-row">
-                            <span class="popover-label">插件目录</span>
-                            <select id="plugin-path-mode" class="opt-select">
-                                <option value="portable">程序目录（exe 旁 plugins）</option>
-                                <option value="appdata">应用数据目录（%APPDATA%）</option>
-                            </select>
-                        </div>
-                        <div class="fmt-hint hint-indent" id="plugin-dir-line">插件目录：—</div>
-                        <div class="fmt-hint hint-indent plugin-trust-hint">
-                            <span class="plugin-trust-icon" aria-hidden="true"></span>
-                            <span>插件代码以与应用相同的权限运行（可读写本机文件、执行命令），仅安装你信任的来源。</span>
-                        </div>
-                        <div class="plugin-list-box">
-                            <div class="plugin-list" id="plugin-list"></div>
-                        </div>
-                        <div class="plugin-market">
-                            <div class="plugin-market-head">
-                                <span class="plugin-market-title">插件市场</span>
-                                <a class="plugin-link plugin-market-src" id="plugin-market-source"
-                                   href="https://gitee.com/organizations/cadt-datalens-plugins/projects"
-                                   data-url="https://gitee.com/organizations/cadt-datalens-plugins/projects"
-                                   target="_blank" rel="noopener">Gitee · CaDt-DataLens 插件市场</a>
-                                <button type="button" id="plugin-market-refresh" class="dlg-btn">刷新</button>
+                        <div class="set-group-title">插件</div>
+                        <div class="set-card">
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">安装来源</div><div class="set-desc">扩展新的文件格式、工具菜单命令与主题；之后打开的文件生效</div></div>
+                                <div class="set-control">
+                                    <button type="button" id="plugin-add" class="dlg-btn">添加插件…</button>
+                                    <button type="button" id="plugin-import" class="dlg-btn">导入(.zip)…</button>
+                                    <button type="button" id="plugin-clone" class="dlg-btn">从仓库地址…</button>
+                                </div>
                             </div>
-                            <div class="plugin-list-box">
-                                <div class="plugin-list" id="plugin-market-list"></div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">插件目录</div><div class="set-desc" id="plugin-dir-line">插件目录：—</div></div>
+                                <div class="set-control">
+                                    <select id="plugin-path-mode" class="opt-select">
+                                        <option value="portable">程序目录（exe 旁 plugins）</option>
+                                        <option value="appdata">应用数据目录（%APPDATA%）</option>
+                                    </select>
+                                    <button type="button" id="plugin-open-dir" class="dlg-btn">打开目录</button>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-desc plugin-trust-hint"><span class="plugin-trust-icon" aria-hidden="true"></span>插件代码以与应用相同的权限运行（可读写本机文件、执行命令），仅安装你信任的来源。</div></div>
+                            </div>
+                            <div class="set-row-top">
+                                <div class="plugin-list-box">
+                                    <div class="plugin-list" id="plugin-list"></div>
+                                </div>
                             </div>
                         </div>
-                        <div class="fmt-hint">插件在之后打开的文件上生效，已打开的文件不受影响；插件代码会在界面内运行，请只安装可信来源的插件。</div>
+                        <div class="set-group-title">插件市场</div>
+                        <div class="set-card">
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">来源</div><div class="set-desc">Gitee 组织公开仓库，推送即上架</div></div>
+                                <div class="set-control">
+                                    <a class="plugin-link plugin-market-src" id="plugin-market-source"
+                                       href="https://gitee.com/organizations/cadt-datalens-plugins/projects"
+                                       data-url="https://gitee.com/organizations/cadt-datalens-plugins/projects"
+                                       target="_blank" rel="noopener">Gitee · CaDt-DataLens 插件市场</a>
+                                    <button type="button" id="plugin-market-refresh" class="dlg-btn">刷新</button>
+                                </div>
+                            </div>
+                            <div class="set-row-top">
+                                <div class="plugin-list-box">
+                                    <div class="plugin-list" id="plugin-market-list"></div>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                     <div class="settings-pane hidden" data-pane="developer">
-                        <div class="fmt-pane-title">开发者</div>
-                        <div class="fmt-pane-sub">调试、日志与诊断工具</div>
-                        <div class="settings-section-title">日志</div>
-                        <div class="popover-row">
-                            <label class="popover-label">
-                                <input type="checkbox" id="opt-developer-mode">
-                                开发者模式（记录调试日志）
-                            </label>
+                        <div class="set-group-title">日志</div>
+                        <div class="set-card">
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">开发者模式</div><div class="set-desc">额外记录调试信息；错误和警告始终写入运行日志</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="opt-developer-mode"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">运行日志</div><div class="set-desc" id="opt-log-path">日志文件：—</div></div>
+                                <div class="set-control">
+                                    <button type="button" id="opt-open-logs" class="dlg-btn">打开日志目录</button>
+                                </div>
+                            </div>
                         </div>
-                        <div class="fmt-hint hint-indent">开启后额外记录调试信息；错误和警告始终写入运行日志。</div>
-                        <div class="popover-row">
-                            <span class="popover-label">运行日志</span>
-                            <button type="button" id="opt-open-logs" class="dlg-btn">打开日志目录</button>
+                        <div class="set-group-title">调试控制台</div>
+                        <div class="set-card">
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">打开调试控制台</div><div class="set-desc">底部面板显示（与终端共用容器，可切换）；面板右上角按钮可在独立窗口打开</div></div>
+                                <div class="set-control">
+                                    <button type="button" id="opt-debug-console" class="dlg-btn">打开 (F12)</button>
+                                </div>
+                            </div>
                         </div>
-                        <div class="fmt-hint hint-indent" id="opt-log-path">日志文件：—</div>
-                        <div class="settings-section-title">调试控制台</div>
-                        <div class="popover-row">
-                            <span class="popover-label">调试控制台</span>
-                            <button type="button" id="opt-debug-console" class="dlg-btn">打开调试控制台 (F12)</button>
-                        </div>
-                        <div class="fmt-hint hint-indent">在底部面板中显示（与终端共用容器，可来回切换），实时输出调试、信息、警告与错误；面板右上角按钮可在独立窗口中打开。</div>
                     </div>
                     <div class="settings-pane hidden" data-pane="activity">
-                        <div class="fmt-pane-title">操作记录</div>
-                        <div class="fmt-pane-sub">谁在什么时候做了什么（本机存储，可导出与清空）</div>
-                        <div class="popover-row">
-                            <label class="popover-label">
-                                <input type="checkbox" id="opt-activity-log" checked>
-                                启用操作记录
-                            </label>
+                        <div class="set-group-title">操作记录</div>
+                        <div class="set-card">
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">启用操作记录</div><div class="set-desc">谁在什么时候做了什么；只记操作摘要，不记文件内容与密钥</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="opt-activity-log" checked><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                    <button type="button" class="info-tip" data-tip="日志只存本机应用数据目录（activity/*.jsonl，按月分文件），可导出与清空。" aria-label="操作记录说明">i</button>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">保留月数</div></div>
+                                <div class="set-control">
+                                    <input type="number" id="opt-activity-retention" class="ai-settings-input ai-font-size-num" min="1" max="60" step="1" value="12">
+                                    <button type="button" id="opt-open-activity" class="dlg-btn">打开记录目录</button>
+                                    <button type="button" id="opt-export-activity-json" class="dlg-btn">导出 JSON</button>
+                                    <button type="button" id="opt-export-activity-csv" class="dlg-btn">导出 CSV</button>
+                                    <button type="button" id="opt-clear-activity" class="dlg-btn">清空…</button>
+                                </div>
+                            </div>
                         </div>
-                        <div class="fmt-hint hint-indent">仅记录操作与设置变更，不记录文件内容与密钥；日志只存本机应用数据目录（activity/*.jsonl，按月分文件）。</div>
-                        <div class="popover-row">
-                            <span class="popover-label">保留月数</span>
-                            <input type="number" id="opt-activity-retention" class="ai-settings-input ai-font-size-num" min="1" max="60" step="1" value="12">
-                            <button type="button" id="opt-open-activity" class="dlg-btn">打开记录目录</button>
-                            <button type="button" id="opt-export-activity-json" class="dlg-btn">导出 JSON</button>
-                            <button type="button" id="opt-export-activity-csv" class="dlg-btn">导出 CSV</button>
-                            <button type="button" id="opt-clear-activity" class="dlg-btn">清空…</button>
+                        <div class="set-group-title">记录</div>
+                        <div class="set-card">
+                            <div class="set-row-top">
+                                <div class="activity-filters">
+                                    <select id="activity-filter-domain" class="opt-select">
+                                        <option value="">全部动作</option>
+                                        <option value="file">文件</option>
+                                        <option value="tab">标签页</option>
+                                        <option value="workspace">工作区</option>
+                                        <option value="view">视图</option>
+                                        <option value="settings">设置</option>
+                                        <option value="plugin">插件</option>
+                                        <option value="ai">AI</option>
+                                        <option value="app">应用</option>
+                                        <option value="activity">记录管理</option>
+                                    </select>
+                                    <select id="activity-filter-actor" class="opt-select">
+                                        <option value="">全部来源</option>
+                                        <option value="user">用户</option>
+                                        <option value="ai">AI</option>
+                                        <option value="system">系统</option>
+                                    </select>
+                                    <input type="text" id="activity-filter-keyword" class="activity-filter-input" placeholder="关键字（动作 / 对象 / 详情）">
+                                    <button type="button" id="activity-refresh" class="dlg-btn">刷新</button>
+                                </div>
+                                <div class="plugin-list-box activity-list-box">
+                                    <div class="activity-list" id="activity-list"></div>
+                                </div>
+                                <div class="set-desc" id="activity-list-status">—</div>
+                                <button type="button" id="activity-more" class="dlg-btn hidden">加载更早记录</button>
+                            </div>
                         </div>
-                        <div class="settings-section-title">记录</div>
-                        <div class="activity-filters">
-                            <select id="activity-filter-domain" class="opt-select">
-                                <option value="">全部动作</option>
-                                <option value="file">文件</option>
-                                <option value="tab">标签页</option>
-                                <option value="workspace">工作区</option>
-                                <option value="view">视图</option>
-                                <option value="settings">设置</option>
-                                <option value="plugin">插件</option>
-                                <option value="ai">AI</option>
-                                <option value="app">应用</option>
-                                <option value="activity">记录管理</option>
-                            </select>
-                            <select id="activity-filter-actor" class="opt-select">
-                                <option value="">全部来源</option>
-                                <option value="user">用户</option>
-                                <option value="ai">AI</option>
-                                <option value="system">系统</option>
-                            </select>
-                            <input type="text" id="activity-filter-keyword" class="activity-filter-input" placeholder="关键字（动作 / 对象 / 详情）">
-                            <button type="button" id="activity-refresh" class="dlg-btn">刷新</button>
-                        </div>
-                        <div class="plugin-list-box activity-list-box">
-                            <div class="activity-list" id="activity-list"></div>
-                        </div>
-                        <div class="fmt-hint" id="activity-list-status">—</div>
-                        <button type="button" id="activity-more" class="dlg-btn hidden">加载更早记录</button>
                     </div>
                     <div class="settings-pane hidden" data-pane="about">
                         <div class="about-body">

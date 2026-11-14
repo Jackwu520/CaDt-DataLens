@@ -9432,3 +9432,35 @@ body.bgterm-dragging { cursor: row-resize; user-select: none; }
 /* 整行底色由 Ace marker 提供（见 main.js refreshPatchMarkers） */
 .ace_marker-layer .dl-diff-add-line { position: absolute; background: color-mix(in srgb, var(--green) 12%, transparent); }
 .ace_marker-layer .dl-diff-del-line { position: absolute; background: color-mix(in srgb, var(--red) 12%, transparent); }
+
+/* ============ 设置页行式布局组件（重构：标题 + 一句话说明 + 右侧控件；长说明收进 ⓘ 气泡） ============ */
+.set-group-title { font-size: 12.5px; font-weight: 600; color: var(--muted); margin: 18px 2px 8px; }
+.settings-pane > .set-group-title:first-child { margin-top: 2px; }
+.set-card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 2px 14px; margin-bottom: 14px; }
+.set-row { display: flex; align-items: center; gap: 16px; padding: 11px 0; min-height: 42px; }
+.set-row + .set-row { border-top: 1px solid var(--border); }
+.set-main { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 8px; }
+.set-title { font-size: 13px; font-weight: 600; color: var(--text); flex: none; }
+.set-desc { font-size: 12px; color: var(--muted); line-height: 1.55; min-width: 0; flex: 1; }
+.set-row-top { display: block; padding: 11px 0; }
+.set-row-top + .set-row-top { border-top: 1px solid var(--border); }
+.set-row-top .set-main { margin-bottom: 8px; }
+.set-control { flex: none; display: flex; align-items: center; gap: 8px; max-width: 55%; }
+.set-control .opt-select { width: 190px; }
+.set-control .ai-settings-input { width: 210px; }
+.set-control .popover-value { min-width: 40px; text-align: right; }
+
+/* 开关：checkbox 的右置视觉（读取逻辑不变，仍是 input.checked） */
+.set-switch { position: relative; display: inline-flex; flex: none; cursor: pointer; }
+.set-switch input { position: absolute; opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; }
+.set-switch-track { display: block; width: 34px; height: 20px; border-radius: 10px; background: var(--panel2); border: 1px solid var(--border); transition: background .15s, border-color .15s; }
+.set-switch-thumb { position: absolute; top: 3px; left: 3px; width: 14px; height: 14px; border-radius: 50%; background: var(--muted); transition: left .15s, background .15s; }
+.set-switch input:checked ~ .set-switch-track { background: var(--accent); border-color: var(--accent); }
+.set-switch input:checked ~ .set-switch-thumb { left: 17px; background: var(--on-accent); }
+.set-switch input:focus-visible ~ .set-switch-track { outline: 1px solid var(--accent); outline-offset: 1px; }
+
+/* ⓘ 说明气泡：悬浮 / 键盘聚焦 / 点击（触屏）均展开，点击收起 */
+.info-tip { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 15px; height: 15px; border-radius: 50%; border: 1px solid var(--border); color: var(--muted); background: transparent; font-size: 10px; font-weight: 600; line-height: 1; cursor: help; padding: 0; flex: none; vertical-align: middle; user-select: none; }
+.info-tip:hover, .info-tip:focus-visible, .info-tip.tip-open { color: var(--text); border-color: var(--muted); }
+.info-tip::after { content: attr(data-tip); position: absolute; left: -10px; top: calc(100% + 8px); width: 340px; max-width: 72vw; background: var(--panel2); color: var(--text); font-size: 12px; font-weight: 400; line-height: 1.65; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border); box-shadow: 0 8px 28px rgba(0, 0, 0, .28); white-space: normal; text-align: left; opacity: 0; visibility: hidden; transition: opacity .12s ease; z-index: 60; pointer-events: none; }
+.info-tip:hover::after, .info-tip:focus-visible::after, .info-tip.tip-open::after { opacity: 1; visibility: visible; }

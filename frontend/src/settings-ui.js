@@ -579,6 +579,17 @@ function selectSettingsPane(pane) {
     resetSettingsSearch();
     document.querySelectorAll('.snav-item').forEach((b) => b.classList.toggle('active', b.dataset.pane === pane));
     document.querySelectorAll('.settings-pane').forEach((p) => p.classList.toggle('hidden', p.dataset.pane !== pane));
+    // ⓘ 说明气泡：触屏点击开合（hover / 键盘聚焦由 CSS 负责）；点气泡外的任意位置收起
+    if (!window.__setTipDelegated) {
+        window.__setTipDelegated = true;
+        document.addEventListener('click', (e) => {
+            const tip = e.target && e.target.closest ? e.target.closest('.info-tip') : null;
+            document.querySelectorAll('.info-tip.tip-open').forEach((open) => {
+                if (open !== tip) open.classList.remove('tip-open');
+            });
+            if (tip) tip.classList.toggle('tip-open');
+        });
+    }
     const group = document.getElementById('snav-formats');
     if (group) {
         const inFormats = pane === 'formats' || String(pane).startsWith('fmt-');
@@ -657,8 +668,11 @@ function buildSettingsSearchIndex() {
         const pane = paneEl.dataset.pane;
         // 动态面板（数据格式 / 编程语言子页）打开前没有内容，跳过，用下面的静态条目兜底
         if (paneEl.classList.contains('hidden') && (pane.startsWith('fmt-') || pane.startsWith('lang-'))) continue;
-        for (const row of paneEl.querySelectorAll('.popover-row, .fmt-pane-title, .fmt-pane-sub, .settings-section-title')) {
-            const text = (row.textContent || '').replace(/\s+/g, ' ').trim();
+        for (const row of paneEl.querySelectorAll('.set-row, .popover-row, .fmt-pane-title, .fmt-pane-sub, .settings-section-title')) {
+            let text = (row.textContent || '').replace(/\s+/g, ' ').trim();
+            // ⓘ 气泡里的长说明也参与检索（data-tip 不在 textContent 里）
+            const tip = row.querySelector ? row.querySelector('.info-tip[data-tip]') : null;
+            if (tip) text = (text + ' ' + tip.dataset.tip).replace(/\s+/g, ' ').trim();
             if (text) entries.push({pane, text, el: row});
         }
     }
