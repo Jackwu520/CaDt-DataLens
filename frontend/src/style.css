@@ -9472,3 +9472,26 @@ body.bgterm-dragging { cursor: row-resize; user-select: none; }
 .snav-item > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .snav-ic { display: inline-flex; width: 13px; height: 13px; color: var(--muted); flex: none; align-items: center; justify-content: center; }
 .snav-item:hover .snav-ic, .snav-item.active .snav-ic { color: inherit; }
+
+/* ============ set-control 多控件行的挤压修复 ============ */
+.set-control { flex-wrap: wrap; row-gap: 8px; }
+.set-control .dlg-btn { white-space: nowrap; flex: none; }
+.set-control input[type="number"] { width: 72px; flex: none; }
+.set-control input.ai-font-size-num { width: 64px; }
+
+/* ============ 自定义下拉（替代原生 select 弹层）：隐藏原生保留真源，change 照常派发 ============ */
+.set-select { position: relative; display: inline-flex; }
+.set-select-native { display: none !important; }
+.set-select-btn { display: inline-flex; align-items: center; justify-content: space-between; gap: 10px; min-width: 190px; max-width: 300px; padding: 5px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel2); color: var(--text); font: inherit; font-size: 12.5px; cursor: default; }
+.set-select-btn:hover { border-color: var(--muted); }
+.set-select-btn .ss-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.set-select-btn .ss-chev { display: inline-flex; color: var(--muted); transition: transform .12s ease; flex: none; }
+.set-select.open .ss-chev { transform: rotate(180deg); }
+.set-select-pop { position: absolute; left: 0; top: calc(100% + 6px); min-width: 100%; max-width: 340px; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 10px 32px rgba(0, 0, 0, .32); padding: 5px; display: none; z-index: 70; }
+.set-select-pop.up { top: auto; bottom: calc(100% + 6px); }
+.set-select.open .set-select-pop { display: block; }
+.ss-opt { display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 10px; border: none; border-radius: 6px; background: none; color: var(--text); font: inherit; font-size: 12.5px; text-align: left; cursor: default; }
+.ss-opt:hover, .ss-opt.ss-focus { background: var(--hover); }
+.ss-opt.selected { background: var(--hover); font-weight: 600; }
+.ss-opt .ss-check { display: none; margin-left: auto; color: var(--accent); flex: none; }
+.ss-opt.selected .ss-check { display: inline-flex; }
