@@ -82,7 +82,12 @@ cadt.registerCommandClassifier({
   - **调参硬指标是误放率 ≈ 0**（fail-closed：宁可误拦不可误放），其次危险召回 ≥ 0.97、准确率仅作参考——三档严格度阈值 T 实质是验证集 ROC 上的三个工作点；
   - **int8 量化导出**：`scale = max|w|/127`，只存非零维稀疏 int8（≈3–8 KB）+ 特征配置（n-gram 长度、哈希种子、维度数）随权重文件存储，保证训练/推理对齐 → `frontend/src/ai/local-classifier-weights.mjs`；
   - 验证子集固化进单测（`ai-local-classifier.test.mjs`）：高危样本 score ≥ 0.5、安全样本 ≤ 0.1、三档阈值判定表驱动；
-  - **已知弱点与自愈**：`echo "rm -rf …"` 类引用文本会误报险（线性 n-gram 无法理解引用语义）→ 转人工后用户批准，个性化 SGD 将首词 echo 相关维度拉向安全（§7），基线保下限、个性化补真实分布。
+  - **已知弱点与自愈**：`echo "rm -rf …"` 类引用文本会误报险（线性 n-gram 无法理解引用语义）→ 转人工后用户批准，个性化 SGD 将首词 echo 相关维度拉向安全（§7），基线保下限、个性化补真实分布；
+  - **公开语料盘点（调研结论）**：无语义对齐的现成训练集，可作参考不可直接训练——
+    - 正常侧：Schonlau/SEA 数据集（50+ 用户 UNIX 命令序列，masquerade 检测经典基准）只有裸命令名、标签是会话级冒充；GitHub dotfiles / shell history 集合同样只有正常侧 → 用于**扩充生成器模板词表**；
+    - 危险侧：malbash（恶意 bash 脚本语料）、ShellCore 论文的 IoT 命令类目学、Cowrie 蜜罐攻击者命令序列 → 用于**查漏危险模式清单**；
+    - Agent 安全基准（R-Judge / Agent Security Bench / AgentHarm）：标签语义最近但标注单位是交互记录而非单条命令，且为评测基准（训练用途许可存疑）、分布偏注入攻击；
+    - **根因**：我们的标签是「策略性 auto-approve 判定」（只读/幂等/不写盘，`git push --force` 良性但必须 ask），与「恶意/良性」语义不同构——训练集必须自建；公开语料的正确用法是当词表与模式清单参考。真正的策略对齐语料来自 §7 个性化回路（用户裁定 = 最正确的标签源）。
 - **文件清单**：`src/ai/ai-local-classifier.js`（推理 + 阈值判定）、`local-classifier-weights.mjs`（量化权重）、`ai-local-classifier.test.mjs`、`scripts/classifier-corpus.mjs`、`scripts/train-local-classifier.mjs`。
 
 ## 7. 个性化后训练（方案 A 扩展，M1）
