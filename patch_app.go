@@ -186,13 +186,44 @@ func (a *App) PatchPreviewFile(path, root string) (*PatchPreview, error) {
 	return plan.toPreview(), nil
 }
 
+// PatchPreviewText 直接从补丁文本预览，用于虚拟 diff 文档（AI 审阅拼接 / Git 差异拼接）：
+// 这类文档 path 为空、内容即补丁文本，没有盘上的补丁文件，不落盘、不写索引；
+// 计划标记 External，与文件路径预览共用同一套预检/应用流（重预检走计划内的 rawText）。
+func (a *App) PatchPreviewText(text, root string) (*PatchPreview, error) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil, newPatchError(patchErrEmpty, "补丁内容为空")
+	}
+	if len(text) > patchMaxTextBytes {
+		return nil, newPatchError(patchErrLimit, "补丁超过 2 MB，请拆分成多个补丁")
+	}
+	doc, err := parsePatchText(text)
+	if err != nil {
+		return nil, err
+	}
+	// 与 PatchPreviewFile 同款：拼接文本的 a/ 前缀层级未知，走自动探测
+	plan, perr := buildPatchPlan(doc, root, "", "审阅", "", patchPlanOptions{External: true, StripLevel: -1})
+	if perr != nil {
+		return nil, perr
+	}
+	plan.rawText = text
+	putPatchPlan(plan)
+	return plan.toPreview(), nil
+}
+
 // PatchRepreview 用同一份补丁按新选项重新预检（勾选变化 / 允许位移 / 忽略空白）。
 func (a *App) PatchRepreview(planID string, allowOffset, ignoreWhitespace bool) (*PatchPreview, error) {
 	old := getPatchPlan(planID)
 	if old == nil {
 		return nil, newPatchError(patchErrBackend, "预览已过期，请重新打开补丁")
 	}
-	text, err := readPatchFileText(old.PatchPath, patchMaxTextBytes)
+	// 文本补丁（虚拟 diff 文档）没有盘上文件，直接用计划里缓存的原文
+	text, err := func() (string, error) {
+		if old.rawText != "" {
+			return old.rawText, nil
+		}
+		return readPatchFileText(old.PatchPath, patchMaxTextBytes)
+	}()
 	if err != nil {
 		return nil, err
 	}

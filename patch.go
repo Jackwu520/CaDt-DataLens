@@ -662,6 +662,10 @@ type patchPlan struct {
 	Removed   int
 	External  bool
 
+	// rawText 非空表示这是「文本补丁」计划（虚拟 diff 文档：审阅 / Git 差异拼接），
+	// 没有盘上的补丁文件；PatchRepreview 直接用这份文本，不走 readPatchFileText。
+	rawText string
+
 	SuggestedRoot   string
 	SuggestedHits   int
 	SuggestedNeeded int

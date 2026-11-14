@@ -105,6 +105,14 @@ async function loadPreview(doc, ctx, options) {
         let plan;
         if (canRepreview) {
             plan = await ctx.backend.PatchRepreview(st.plan.planId, st.allowOffset, st.ignoreWhitespace);
+        } else if (!doc.path && String(doc.content || '').trim() && /\.(diff|patch)$/i.test(doc.name || '')) {
+            // 虚拟 diff 文档（AI 审阅 / Git 差异拼接）：path 为空、内容即补丁文本，
+            // 走文本预览（不落盘），否则会掉进「缺少补丁文件路径」
+            const root = st.root || ctx.getRoot();
+            plan = await ctx.backend.PatchPreviewText(String(doc.content), root);
+            if (st.ignoreWhitespace || st.allowOffset) {
+                plan = await ctx.backend.PatchRepreview(plan.planId, st.allowOffset, st.ignoreWhitespace);
+            }
         } else {
             const root = st.root || ctx.getRoot();
             plan = await ctx.backend.PatchPreviewFile(doc.path, root);

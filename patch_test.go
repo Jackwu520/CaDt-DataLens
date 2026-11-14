@@ -531,3 +531,56 @@ func TestSlugifyPatchSummary(t *testing.T) {
 		}
 	}
 }
+
+// ===== 虚拟 diff 文档（审阅 / Git 差异拼接）=====
+
+// 虚拟审阅文档没有盘上补丁文件：PatchPreviewText 直接吃拼接文本，
+// 多段 diff 之间夹的自定义标题行 / 空行 / 说明行应被忽略；重预检走计划内缓存的原文。
+func TestPatchPreviewTextVirtual(t *testing.T) {
+	root := t.TempDir()
+	writePatchTestFile(t, root, "a.txt", "a\nb\nc\n")
+	writePatchTestFile(t, root, filepath.Join("dir", "b.txt"), "1\n2\n3\n")
+	text := "diff — a.txt  (+1 −1)\n" +
+		simplePatch("a.txt") +
+		"\ndiff — dir/b.txt  (+1 −1)（无 Git 差异的文件会注明）\n" +
+		"--- a/dir/b.txt\n+++ b/dir/b.txt\n@@ -1,3 +1,3 @@\n 1\n-2\n+2（改）\n 3\n" +
+		"\n"
+	app := &App{}
+	preview, err := app.PatchPreviewText(text, root)
+	if err != nil {
+		t.Fatalf("PatchPreviewText: %v", err)
+	}
+	if len(preview.Files) != 2 {
+		t.Fatalf("文件数 = %d，期望 2", len(preview.Files))
+	}
+	if preview.Added != 2 || preview.Removed != 2 {
+		t.Fatalf("统计 = +%d -%d，期望 +2 -2", preview.Added, preview.Removed)
+	}
+	if !preview.External {
+		t.Fatalf("虚拟文本补丁应标记 External")
+	}
+	if preview.PlanID == "" {
+		t.Fatalf("planId 为空，无法重预检 / 应用")
+	}
+	// 重预检：文本补丁没有盘上文件，应走计划内缓存的 rawText
+	replan, err := app.PatchRepreview(preview.PlanID, false, true)
+	if err != nil {
+		t.Fatalf("PatchRepreview: %v", err)
+	}
+	if len(replan.Files) != 2 {
+		t.Fatalf("重预检文件数 = %d，期望 2", len(replan.Files))
+	}
+	// 忽略空白开关传了 true：行为等价（本例无空白差异），状态应全部 ok
+	for _, f := range replan.Files {
+		if f.Status != "ok" {
+			t.Fatalf("%s 状态 = %s，期望 ok", f.RelPath, f.Status)
+		}
+	}
+}
+
+func TestPatchPreviewTextEmpty(t *testing.T) {
+	app := &App{}
+	if _, err := app.PatchPreviewText("   \n", t.TempDir()); err == nil {
+		t.Fatalf("空文本应报错")
+	}
+}
