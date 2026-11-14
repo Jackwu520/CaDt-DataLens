@@ -12,7 +12,7 @@
 
 ### 0.1 现状：src/ 顶层平铺 64 个文件
 
-`frontend/src/` 只有三个域目录（`ai/` 27 个、`reading/` 7 个、`dev/` 1 个），**其余 57 个 `.js` 全部平铺在顶层**。本阶段初版要新增 10 个模块，二次评估后增至 23 个 —— 继续平铺会得到 80 个同级文件，「按文件名猜归属」彻底失效（`writing-ui.js` 里装着四个设置 pane，就是平铺化的典型症状）。
+`frontend/src/` 只有三个域目录（`ai/` 27 个、`reading/` 7 个、`dev/` 1 个），**其余 58 个 `.js` 全部平铺在顶层**。本阶段初版要新增 10 个模块，二次评估后增至 25 个 —— 继续平铺会得到 83 个同级文件，「按文件名猜归属」彻底失效（`writing-ui.js` 里装着四个设置 pane，就是平铺化的典型症状）。
 
 因此本阶段**先做一次纯机械归位（阶段 Z），再按目录分组拆分**。归位本身就是零逻辑改动的一次性动作，单独成批、单独 revert；拆分产生的所有新文件直接落进目标目录，不做二次搬运。
 
@@ -38,7 +38,7 @@ frontend/src/
 ├─ shell/                         窗口外壳与应用级动作
 │    menu-bar · titlebar-popovers · mode-switch · palette · quick-switch
 │    contextmenu · app-actions · app-links · update-check · properties-ui
-│    cursor-themes · session-restore · image-lightbox · debugconsole
+│    cursor-themes · session-restore · image-lightbox · debugconsole · message-center
 ├─ settings/                      设置域（pane 渲染器天然属于这里）
 │    settings-ui · activity-pane + settings-pane-*（本阶段从 writing-ui 拆出）
 ├─ writing/                       写作模式
@@ -49,7 +49,7 @@ frontend/src/
      terminal-ui + terminal-sessions + run + run-ui（后三个本阶段拆出）
 ```
 
-规模：顶层 `57 个 .js` → `1 个`（main.js）；11 个域目录，除 `ai/`（29）、`editor/`（17）外每个 2–14 个文件。
+规模：顶层 `58 个 .js` → `1 个`（main.js）；11 个域目录，除 `ai/`（29）、`editor/`（17）、`shell/`（15）外每个 2–14 个文件。
 
 **可选裁剪**：若嫌目录数偏多，`writing/`（仅 2 个文件）可并入 `editor/`，`core/` 可散回各域 —— 但 `settings/` 与 `bridge/`、`terminal/` 建议保留，它们各自对应一个已存在的 Wails 域职责。本方案按 11 目录写。
 
@@ -58,7 +58,7 @@ frontend/src/
 - 需改写的 import：`main.js` 46 处、顶层文件互引 95 处、`ai/` 指向父目录 18 处、`reading/` 2 处 —— 合计约 160 行，全部是 `'./x.js'` → `'./<dir>/x.js'` 或 `'../x.js'` 的机械替换。
 - 三个非纯路径的坑：
   1. `structure-panel.js:39` 用 `new URL('./structure-worker.js', import.meta.url)` 起 worker —— worker 必须与被移动的宿主**同目录**（两者都进 `editor/`，相对路径原样保留）。
-  2. `frontend/package.json` 的 test script 是**硬编码路径列表**（20 个），12 个顶层测试文件要逐条改；目录归位后 `npm test` 全绿才算过。
+  2. `frontend/package.json` 的 test script 是**硬编码路径列表**（23 个），其中 7 个顶层测试文件要逐条改；目录归位后 `npm test` 全绿才算过。
   3. `main.js` 第 1–3 行的 `import 'katex/dist/katex.min.css'` / `'./style.css'` / `'./reading.css'` —— css 与 index.html 不动，只改 js 路径。
 - 用 `git mv` 保留 rename 识别（`git log --follow` 不断代）；提交信息 `refactor(frontend): 目录归位（零逻辑改动）`。
 - **归位必须与拆分分开提交**：否则 revert 一个拆分批会把整个目录结构一起带走。
@@ -66,22 +66,25 @@ frontend/src/
 
 ---
 
-## 1. 现状锚点（按目录分类，2026-11-14 实测行数）
+## 1. 现状锚点（按目录分类）
+
+> 行数复核时点：**2026-11-14 22:10**（开工前）。相比 13:10 首测，当日大批功能提交使四个目标文件增长：`settings-ui` +154、`ai-settings-dialog` +68、`ai-takeover` +73、`writing-ui` +20，并新增顶层 `message-center.js`(261)。§1 的行数已按新值更新，**§4 批次表里的行号区间是旧锚点，动手前必须重新 grep**（见 §3 规则 7）。
 
 ### 1.1 `settings/` + `writing/`：设置域被劈成两半（本阶段最大发现）
 
 | 文件 | 行数 | 混装内容 |
 | --- | --- | --- |
-| `src/settings-ui.js` | 951 | 设置核心（主题/字体/缩进/只读锁/applySettings）+ 对话框族 + 集成状态 + 字数统计 |
-| `src/writing-ui.js` | 2923 | 写作模式 + 字数统计 + goto/命名对话框 + `LANG_DEFS` + **运行配置 pane** + **插件 pane/市场** + **环境变量 pane** + **格式/语言/工具链 pane** + 编码/视图/EOL 缩放弹出层 + markdown/mermaid 渲染管线 + 脏标记/自动保存/窗口标题 |
+| `src/settings-ui.js` | 1105 | 设置核心（主题/字体/缩进/只读锁/`applySettings` 403–521）+ **行式下拉增强（578–689）** + `selectSettingsPane`(690)/`openSettings`(753) + **设置搜索（789–893）** + 集成状态（894–950）+ 对话框族（522–568、951–1041）+ 字数统计（1042–1105） |
+| `src/writing-ui.js` | 2943 | 写作模式 + 字数统计 + goto/命名对话框 + `LANG_DEFS` + **运行配置 pane** + **插件 pane/市场** + **环境变量 pane** + **格式/语言/工具链 pane** + 编码/视图/EOL 缩放弹出层 + markdown/mermaid 渲染管线 + 脏标记/自动保存/窗口标题 |
 
-证据：`settings-ui.js:602–606` 的 `selectSettingsPane` 正是通过 deps 调用 `writing-ui` 的 `renderFormatPane` / `renderLangPane` / `renderPluginsPane` / `renderRunPane` / `renderEnvVarsPane` —— 设置页的 pane 宿主在 settings-ui，pane 渲染器却在 writing-ui，且 `writing-ui` 的返回面有 **50 个成员**被 `main.js:1464` 整体解构。这是全仓库最严重的「名字与内容不符」，也是唯一一个 >2900 行却从未排进任何拆分阶段的文件（phase 2 只列了 editor-groups 与 main.js）。
+证据：`settings-ui.js:690` 的 `selectSettingsPane` 正是通过 deps 调用 `writing-ui` 的 `renderFormatPane` / `renderLangPane` / `renderPluginsPane` / `renderRunPane` / `renderEnvVarsPane` —— 设置页的 pane 宿主在 settings-ui，pane 渲染器却在 writing-ui，且 `writing-ui` 的返回面有 **50 个成员**被 `main.js` 整体解构。这是全仓库最严重的「名字与内容不符」，也是唯一一个 >2900 行却从未排进任何拆分阶段的文件（phase 2 只列了 editor-groups 与 main.js）。
 
 ### 1.2 `shell/`
 
 | 文件 | 行数 | 混装内容 |
 | --- | --- | --- |
 | `src/titlebar-popovers.js` | 856 | 项目选择弹层（1–220）+ **Git 分支弹层（221–855，含克隆/推送/更新项目流程）** |
+| `src/message-center.js` | 261 | 状态栏消息中心（本轮新增，单域内聚，本阶段只随目录归位搬进 `shell/`，不拆） |
 
 ### 1.3 `bridge/` + `terminal/`
 
@@ -94,8 +97,8 @@ frontend/src/
 
 | 文件 | 行数 | 混装内容 |
 | --- | --- | --- |
-| `src/ai/ai-settings-dialog.js` | 2065 | 权限 pane（审批规则/项目级规则/端侧分类器，100–460、573–706）+ 偏好 pane（461–572）+ 模型/账号 pane（733–1207）+ 配置导入导出（1208–1386）+ **单体事件绑定器 `bindSettingsPane`（1399–2027，约 630 行）** |
-| `src/ai/ai-takeover.js` | 993 | 接管卡三族：补丁卡（47–304）+ 审批/计划卡 + **ask 卡（554–851）** + 分发器 |
+| `src/ai/ai-settings-dialog.js` | 2133 | 端侧分类器设置区（288–391）+ 权限 pane（392–513、项目级规则 669–820）+ 偏好 pane（514–668）+ 模型/账号 pane（998–1260）+ 配置导入导出（1261–1451）+ **单体事件绑定器 `bindSettingsPane`（1452–2080，约 630 行）** |
+| `src/ai/ai-takeover.js` | 1066 | 纯函数 `classifyVerdictRows`(12–74) + 补丁卡（114–371）+ 审批卡（379–628）+ **ask 卡（629–928，含 plan 辅助）** + 计划卡（929–1022）+ 分发器（1023–1066） |
 | `src/ai/ai-subagents.js` | 1055 | 子代理运行时（`runSubAgent`/`runSubRound`/`runSubToolRound`/`handleSubEvent`/`finalizeSubAgent`）+ **头部 HUD 与 chips 弹层（125–424）** + 子代理详情视图 + 后台命令桥 |
 | `src/ai/ai-session-store.js` | 750 | 编解码纯函数（1–256）+ **磁盘适配（257–750）** |
 
@@ -117,16 +120,16 @@ frontend/src/
 
 | 目录 | 文件 | 行数 | 判定 | 理由 |
 | --- | --- | --- | --- | --- |
-| `writing/`+`settings/` | `writing-ui.js` | 2923 | **纳入（必做）** | 6 个子域、返回面 50 成员、设置 pane 与宿主分居两文件；>2900 行却从未被规划过 |
-| `ai/` | `ai-settings-dialog.js` | 2065 | **纳入（建议）** | 4 个 pane + 630 行单体绑定器；与 ai-panel 的主对话框逻辑已剥离，边界清晰 |
+| `writing/`+`settings/` | `writing-ui.js` | 2943 | **纳入（必做）** | 6 个子域、返回面 50 成员、设置 pane 与宿主分居两文件；>2900 行却从未被规划过 |
+| `ai/` | `ai-settings-dialog.js` | 2133 | **纳入（建议）** | 4 个 pane + 630 行单体绑定器；与 ai-panel 的主对话框逻辑已剥离，边界清晰 |
 | `shell/` | `titlebar-popovers.js` | 856 | 纳入（原 B4） | 两个弹层各自成域，几乎零共享状态（只共享定位工具） |
 | `bridge/` | `bridge-ui.js` | 632 | 纳入（原 B1） | 4 个子域 + 启动编排 IIFE 混杂 |
 | `terminal/` | `terminal-ui.js` | 853 | 纳入（原 B3） | 运行接线与终端会话管理互不相干 |
-| `ai/` | `ai-takeover.js` | 993 | 纳入（原 B6） | 三族卡片 + 分发器，卡渲染可独立 |
+| `ai/` | `ai-takeover.js` | 1066 | 纳入（原 B6） | 三族卡片 + 分发器，卡渲染可独立 |
 | `ai/` | `ai-session-store.js` | 750 | 纳入（原 B2） | 纯函数 / 磁盘适配一刀切，最无痛 |
 | `ai/` | `ai-subagents.js` | 1055 | **纳入（可选）** | 头部 HUD（125–424，约 300 行）与子代理运行时无耦合，可剥；剩余 750 行内聚良好 |
 | `explorer/` | `explorer.js` | 1352 | **纳入（可选）** | 树/列表两套渲染引擎 + 刷新引擎，列表视图（约 300 行）与树弱耦合，可剥 |
-| `settings/` | `settings-ui.js` | 951 | 纳入（原 B5） | 对话框族与设置核心混装；**无分节注释**，需先跑依赖扫描 |
+| `settings/` | `settings-ui.js` | 1105 | 纳入（原 B5） | 设置核心 + 行式下拉/搜索/对话框三族混装；**无分节注释**，需先跑依赖扫描 |
 | `editor/` | `editor-csv-view.js` | 1012 | **暂缓** | phase 2 刚拆出（E2），二次拆分抖动收益比低 |
 | `editor/` | `editor-split-preview.js` | 906 | **暂缓** | 同上（E3），且分屏状态机是全仓最纠缠处 |
 | `ai/` | `ai-tool-cards.js` | 882 | **暂缓** | phase 2 刚拆出且有在途改动；未破 900 |
@@ -144,8 +147,8 @@ frontend/src/
 4. **每批固定验证序**：模块自洽扫描（未知标识符只剩关键字/对象键）→ deps 键一致性（模块内 `deps.X` ⊆ 构造块）→ return 键 vs 调用方 → `npm test` → `npm run build` → `wails build -devtools` → 定向冒烟。**构建/测试命令不许接 grep/tail 管道核对退出码**（M3 带病提交的教训）。
 5. **块尾发现只允许从已知函数名前向扫描收尾 `}`**；`git checkout` 恢复后先统一 `\n`（CRLF 陷阱）。
 6. **命名先 grep 防撞**（phase 2 的 createStructurePanel 教训）；工厂改名要同步构造行/import/转发模板三处。
-7. **行号一律以 grep 重定位为准**：本文所有区间是 2026-11-14 的锚点，`settings-ui.js`(951 vs 文档 949)、`ai-takeover.js`(993 vs 989)、`writing-ui.js` 均有在途改动，动手前重跑 `wc -l` + grep。
-8. **开工前查工作树洁净度**：目标文件若有未提交改动，先等落地（当前 `settings-ui.js`、`writing-ui.js`、`ai-takeover.js`、`ai-subagents.js` 均为 `M` 状态，改动量都很小，预计很快提交）。
+7. **行号一律以 grep 重定位为准**：§4 的区间是 13:10 首测锚点，22:10 复核时四个文件已因功能提交漂移（`settings-ui` 1105、`ai-settings-dialog` 2133、`ai-takeover` 1066、`writing-ui` 2943），动手前重跑 `wc -l` + grep 定位每个函数的首尾。
+8. **开工前查工作树洁净度**：目标文件若有未提交改动，先等落地（2026-11-14 22:10 复核时工作树已清空，仅剩 `datalens.exe.running-old` 构建残留）。
 
 ---
 
@@ -195,37 +198,39 @@ frontend/src/
 
 ### 4.3 组 `settings/` + `writing/`
 
-#### S1 `settings/settings-ui.js`（951 → 约 600，原 B5）
+#### S1 `settings/settings-ui.js`（1105 → 约 750，原 B5）
 
 | 新模块 | 搬移内容 | ≈行 |
 | --- | --- | --- |
-| `settings/settings-dialogs.js` | 对话框族：`openDialogEl`/`closeTopDialog`/`closeDialogs`（512–568）+ `openAbout`/保存冲突（795–829）+ 命名对话框（829–885） | ~350 |
+| `settings/settings-dialogs.js` | 对话框族：`openDialogEl`/`closeTopDialog`/`closeDialogs`（522–568）+ 关于/保存冲突/命名对话框（`openAbout` 951–1041） | ~140 |
+| `settings/settings-select.js` | 行式下拉增强（`setSelectCloseAll`/`setSelectRender`/`enhanceSetSelects`，578–689）—— 把原生 select 换成行式面板，含 MutationObserver 重建 | ~112 |
+| `settings/settings-search.js` | 设置搜索（`buildSettingsSearchIndex`/`renderSettingsSearch`/`resetSettingsSearch`，789–893） | ~105 |
 
-留守：设置核心（主题/字体/缩进/只读锁/applySettings）、设置搜索、集成状态、字数统计。
-**该文件没有分节注释** —— 动手前先列「对话框族 ↔ 设置核心」依赖清单（`selectSettingsPane`/`openSettings` 与对话框族的交互是唯一风险点）。
-冒烟：设置各 pane 打开/保存、设置搜索跳转、只读锁、关于、保存冲突对话框、命名对话框（新建/重命名）。
+留守（约 750）：设置核心（字体下拉 125–202、主题 218–245、代码换行/参考线、置顶/全屏、只读锁 320–396、`applySettings` 403–521）、`selectSettingsPane`(690)/`openSettings`(753)、集成状态（894–950）、字数统计（1042–1105）。
+**该文件没有分节注释** —— 面板序号已在 §1.1 按函数名给出，动手前先跑 deps 扫描确认三族与核心的交叉引用（`selectSettingsPane`/`openSettings` 与对话框族的交互是唯一风险点）。
+冒烟：设置各 pane 打开/保存、设置搜索跳转、行式下拉（字体/模型/模板三类动态 options）、只读锁、关于、保存冲突对话框、命名对话框（新建/重命名）。
 
-#### S2 `writing/writing-ui.js`（2923 → 约 200，新增，**最大的一批，拆两次提交**）
+#### S2 `writing/writing-ui.js`（2943 → 约 120，新增，**最大的一批，拆两次提交**）
 
-**S2a：写作模式与渲染管线**（→ 约 1700）
-
-| 新模块 | 搬移内容 | ≈行 |
-| --- | --- | --- |
-| `writing/writing-mode.js` | 写作模式核心（`writingActive`～`writingFocusParagraph`，14–209）+ 字数统计/写作统计对话框/目标（210–332）+ 写作格式/名称/插入（333–420）+ 光标位置与 goto 对话框（421–618，含 `openCloseConfirm`） | ~600 |
-| `editor/markdown-mermaid.js` | 共享 markdown 渲染器构造（1851–1859）+ mermaid 占位/脚本注入/主题/块渲染（1860–1931）+ 图片解析（1932–1963） | ~150 |
-| `editor/foot-menus.js` | 编码/视图/EOL 弹出层（`FOOT_WIDGETS`/`popTitle`/`popItem`/`toggleBom`/`convertEncoding`/`renderEncodingMenu`/`renderViewMenu`/缩放菜单/`openFootPopover`，1977–2293）+ 其依赖的显示常量（1688–1803） | ~430 |
-
-**S2b：四个设置 pane**（→ 约 200 的壳）
+**S2a：写作模式与渲染管线**（→ 约 1300）
 
 | 新模块 | 搬移内容 | ≈行 |
 | --- | --- | --- |
-| `settings/settings-pane-run.js` | 运行配置 pane（`renderRunProfiles`～`setupRunSettings`/`renderRunPane`，636–838） | ~200 |
-| `settings/settings-pane-plugins.js` | 插件 pane + 插件市场（`refreshPluginUI`～`renderPluginMarketList`，867–1424） | ~560 |
-| `settings/settings-pane-envvars.js` | 环境变量 pane（1425–1687） | ~260 |
-| `settings/settings-pane-lang.js` | 格式/语言/工具链 pane（`setupFormatSettings`～`fmtSize`，2294–2867） | ~570 |
+| `writing/writing-mode.js` | 写作模式核心（`writingActive`～`writingFocusParagraph`，24–236）+ 字数统计/写作统计对话框/目标（237–332）+ 写作格式/名称/插入（339–420）+ 光标位置与 goto 对话框（421–618，含 `openCloseConfirm`） | ~595 |
+| `editor/foot-menus.js` | 编码/视图/EOL 弹出层（`makeSelect` 1984、`footPopover` 1997、`openFootPopover` 2258–2313 全段）+ 其依赖的显示常量（1708–1868，编码表/视图表/`TEXT_MODE_NAMES`/`editorLocale`） | ~490 |
+| `editor/markdown-mermaid.js` | 共享 markdown 渲染器构造（1871–1879）+ mermaid 占位/脚本注入/主题/块渲染（1880–1951）+ 图片解析（1952–1978） | ~107 |
 
-留守（约 200）：`LANG_DEFS`(619–635) + 视图/编码常量 + 脏标记/自动保存/窗口标题（2868–2923） + **50 个成员的转发面**（`main.js:1464` 整体解构，必须同名转发，调用方零改动）。
-风险：pane 渲染器的宿主是 `settings-ui.js:602–606` 的 `selectSettingsPane` —— 新模块经壳转发被 settings-ui 调用，**不得反向 import settings-ui**。`writing-ui.js` 的模块级 `let` 与顶层 DOM 常量（`footPopover` 在模块顶层 `getElementById`）必须随域迁入对应工厂，否则拆完就是隐式全局。
+**S2b：四个设置 pane**（→ 约 120 的壳）
+
+| 新模块 | 搬移内容 | ≈行 |
+| --- | --- | --- |
+| `settings/settings-pane-run.js` | 运行配置 pane（`renderRunProfiles` 636～`renderRunPane` 862） | ~227 |
+| `settings/settings-pane-plugins.js` | 插件 pane + 插件市场（`refreshPluginUI` 867～`marketDate` 1444：插件列表/错误/版本比较/市场 TTL 与列表/图表框） | ~578 |
+| `settings/settings-pane-envvars.js` | 环境变量 pane（`ENVVAR_NAME_RULE` 1445～`setupEnvVarsSettings` 1707） | ~263 |
+| `settings/settings-pane-lang.js` | 格式/语言/工具链 pane（`setupFormatSettings` 2314～`fmtSize` 2887） | ~574 |
+
+留守（约 120）：`LANG_DEFS`(619–635) + 脏标记/自动保存/窗口标题（2888–2943） + **50 个成员的转发面**（`main.js` 整体解构，必须同名转发，调用方零改动）。
+风险：pane 渲染器的宿主是 `settings-ui.js:690` 的 `selectSettingsPane` —— 新模块经壳转发被 settings-ui 调用，**不得反向 import settings-ui**。`writing-ui.js` 的模块级 `let` 与顶层 DOM 常量（`footPopover` 在 1997 行模块顶层 `getElementById`）必须随域迁入对应工厂，否则拆完就是隐式全局。
 冒烟：写作模式开关（typewriter/焦点段落/字数/目标）、goto 与命名对话框、md 预览与 mermaid 出图、底部编码/EOL/视图/缩放弹出层、设置页 5 个 pane（run/plugins/market/envvars/fmt/lang）、插件安装与错误提示、自动保存与脏标记。
 
 ### 4.4 组 `ai/`
@@ -239,27 +244,28 @@ frontend/src/
 编解码/重放（1–256）与**全部现有测试零改动** —— 全阶段最无痛的一刀。`ai-panel.js:9` 的 import 拆成两行，全仓库仅此一处调用方。
 冒烟：新建/切换会话、流式落盘、重启恢复、归档、回收站删除、跨进程写锁（两个窗口同会话）。
 
-#### A2 `ai/ai-takeover.js`（993 → 约 460，原 B6）
+#### A2 `ai/ai-takeover.js`（1066 → 约 500，原 B6）
 
 | 新模块 | 搬移内容 | ≈行 |
 | --- | --- | --- |
-| `ai/ai-patch-card.js` | 补丁审批卡：`requestPatchApproval` + `renderPatchTakeover`（47–304） | ~260 |
-| `ai/ai-ask-cards.js` | 提问卡：`renderEnvAskTakeover` + `renderAskTakeover`（554–851） | ~270 |
+| `ai/ai-patch-card.js` | 补丁审批卡：`requestPatchApproval`(114) + `renderPatchTakeover`(144–314) + `renderPatchApprovalBody`(315–371) | ~258 |
+| `ai/ai-ask-cards.js` | 提问卡：`renderEnvAskTakeover`(629–691) + plan 辅助（692–722）+ `renderAskTakeover`(723–928) | ~300 |
 
-留守：命令审批卡 + 计划审批 + `updateComposerTakeover` 分发器 + `el0` 等工具。**分发器留守**：卡模块化后分发器经转发调用，禁止把按 kind 分发逻辑拆走。
-冒烟：补丁审批卡（应用/部分应用/撤销/拒绝）、命令审批卡、计划审批卡、ask 提问（选项/自定义/取消/超时降级）、环境变量询问卡。
+留守（约 500）：纯函数 `classifyVerdictRows`(12–74) + 审批卡（379–628）+ 计划卡（929–1022）+ `updateComposerTakeover` 分发器（1023–1066）+ `el0`。**分发器留守**：卡模块化后分发器经转发调用，禁止把按 kind 分发逻辑拆走；`classifyVerdictRows` 有独立测试（`ai-takeover.test.mjs`），不得跨文件搬散。
+冒烟：补丁审批卡（应用/部分应用/撤销/拒绝）、命令审批卡（含判定区结构化渲染：端侧引擎行 + AI 复核行）、计划审批卡、ask 提问（选项/自定义/取消/超时降级）、环境变量询问卡。
 
-#### A3 `ai/ai-settings-dialog.js`（2065 → 约 700，新增）
+#### A3 `ai/ai-settings-dialog.js`（2133 → 约 950，新增）
 
 | 新模块 | 搬移内容 | ≈行 |
 | --- | --- | --- |
-| `ai/ai-permission-settings.js` | 权限 pane：审批规则渲染/删除、项目级规则表与 `.cadt/permissions.json` 串行读写（100–460 + 573–706）、端侧分类器设置区（275–338） | ~550 |
-| `ai/ai-model-settings.js` | 模型/账号 pane：模型列表、编辑器、条目 strip、字段写入口（733–1207） | ~475 |
-| `ai/ai-settings-io.js` | 配置导入/导出（1208–1386） | ~180 |
+| `ai/ai-permission-settings.js` | 权限 pane：端侧分类器设置区（288–391）、审批规则渲染/删除（392–513）、项目级规则表与 `.cadt/permissions.json` 串行读写 + 审批记录（669–820） | ~580 |
+| `ai/ai-preference-settings.js` | 偏好 pane（514–668）：偏好列表、编辑/新增、偏好文本提交 | ~155 |
+| `ai/ai-model-settings.js` | 模型/账号 pane：模型列表、编辑器、条目 strip、字段写入口（998–1260） | ~263 |
+| `ai/ai-settings-io.js` | 配置导入/导出（1261–1451） | ~190 |
 
-留守（约 700）：偏好 pane、`refreshSettingsPane`/`refreshChatSettings`/`refreshPromptSettings` 分发器、**`bindSettingsPane` 单体绑定器（1399–2027）**。
-风险点：绑定器是 630 行的单体事件绑定，与三个 pane 的渲染函数交叉引用 —— 绑定器留宿主，三模块只暴露 render/handler，经 `ctx` 惰性箭头互调；**不要试图按区块切绑定器**（比 phase 2 的 E3 更容易踩空）。
-冒烟：设置页切 pane（模型/权限/偏好/提示词/记忆）、审批与项目级规则增删、分类器开关与测试框、模型增删改与激活、配置导入导出。
+留守（约 950）：`refreshSettingsPane`/`refreshChatSettings`/`refreshPromptSettings` 等分发器（821–997）+ **`bindSettingsPane` 单体绑定器（1452–2080，约 630 行）**。
+风险点：绑定器是 630 行的单体事件绑定，与四个 pane 的渲染函数交叉引用 —— 绑定器留宿主，四模块只暴露 render/handler，经 `ctx` 惰性箭头互调；**不要试图按区块切绑定器**（比 phase 2 的 E3 更容易踩空）。宿主终态约 950 行，仍在 1000 红线内但接近，若绑定器继续膨胀需另立方案。
+冒烟：设置页切 pane（模型/权限/偏好/提示词/记忆）、审批与项目级规则增删、分类器开关与测试框、偏好增删改、模型增删改与激活、配置导入导出。
 
 #### A4 `ai/ai-subagents.js`（1055 → 约 750，可选）
 
@@ -290,29 +296,29 @@ frontend/src/
 | 目录 | 文件 | 现状 | 终态 |
 | --- | --- | --- | --- |
 | 顶层 | `main.js` | 4453 | 4453（组合根，不动） |
-| `writing/` | `writing-ui.js` | 2923 | ~200（壳：常量 + 脏标记 + 50 成员转发） |
-| `settings/` | `settings-ui.js` | 951 | ~600（+ settings-dialogs 350） |
-| `settings/` | — | — | + settings-pane-run 200 / -plugins 560 / -envvars 260 / -lang 570 |
-| `writing/` | — | — | + writing-mode 600 |
-| `editor/` | — | — | + markdown-mermaid 150 / foot-menus 430 |
+| `writing/` | `writing-ui.js` | 2943 | ~120（壳：常量 + 脏标记 + 50 成员转发） |
+| `settings/` | `settings-ui.js` | 1105 | ~750（+ dialogs 140 / select 112 / search 105） |
+| `settings/` | — | — | + settings-pane-run 227 / -plugins 578 / -envvars 263 / -lang 574 |
+| `writing/` | — | — | + writing-mode 595 |
+| `editor/` | — | — | + foot-menus 490 / markdown-mermaid 107 |
 | `bridge/` | `bridge-ui.js` | 632 | ~210（+ terminal-view 205 / git 170 / cli-convert 50） |
 | `terminal/` | `terminal-ui.js` | 853 | ~277（+ run-ui 290 / terminal-sessions 286） |
-| `shell/` | `titlebar-popovers.js` | 856 | ~50（+ project 220 / git-branch 635） |
+| `shell/` | `titlebar-popovers.js` | 856 | ~50（+ project 220 / git-branch 635；另迁入 message-center 261 不拆） |
 | `ai/` | `ai-session-store.js` | 750 | ~257（+ ai-session-disk 493） |
-| `ai/` | `ai-takeover.js` | 993 | ~460（+ patch-card 260 / ask-cards 270） |
-| `ai/` | `ai-settings-dialog.js` | 2065 | ~700（+ permission 550 / model 475 / io 180） |
+| `ai/` | `ai-takeover.js` | 1066 | ~500（+ patch-card 258 / ask-cards 300） |
+| `ai/` | `ai-settings-dialog.js` | 2133 | ~950（+ permission 580 / preference 155 / model 263 / io 190） |
 | `ai/` | `ai-subagents.js` | 1055 | ~750（+ head-hud 300）〔可选〕 |
 | `explorer/` | `explorer.js` | 1352 | ~1050（+ explorer-list 300）〔可选〕 |
 
-新增**23 个模块**（必做 21 + 可选 2；阶段 Z 不产新文件），全部 <700 行；`src/` 顶层文件数 57 → 1；无文件超过 1000 行（`writing-ui` 2923 与 `ai-settings-dialog` 2065 两处历史遗留清零）。
-整体体量：必做批次从目标文件扣减约 **7,270 行**（writing-ui −2,723、ai-settings-dialog −1,365、titlebar −806、terminal −576、takeover −533、session-store −493、bridge −422、settings-ui −351）。
+新增**25 个模块**（必做 23 + 可选 2；阶段 Z 不产新文件），最大单块 635 行（`titlebar-git-branch`）；`src/` 顶层文件数 58 → 1；拆分后无文件超过 1000 行（`writing-ui` 2943 与 `ai-settings-dialog` 2133 两处历史遗留清零，后者宿主 950 已贴近红线）。
+整体体量：必做批次从目标文件扣减约 **8,100 行**（writing-ui −2,823、ai-settings-dialog −1,183、titlebar −806、terminal −576、takeover −566、session-store −493、bridge −422、settings-ui −355）。
 
 ---
 
 ## 6. 风险与回滚
 
-- **Z 是全局风险最高的动作**（约 160 行路径替换 + 56 个文件 `git mv`）：必须零逻辑改动、单独提交、单独 revert；必须先等在途改动提交。会同时改 `frontend/package.json`（test 路径）。
-- **S2 是拆分风险最高的一批**：2923 行、6 个子域、50 成员返回面、模块级 let 与顶层 DOM 常量。拆两次提交（S2a/S2b），任一不过即 revert 该子批。
+- **Z 是全局风险最高的动作**（约 160 行路径替换 + 57 个文件 `git mv`）：必须零逻辑改动、单独提交、单独 revert。会同时改 `frontend/package.json`（test 路径）。
+- **S2 是拆分风险最高的一批**：2943 行、6 个子域、50 成员返回面、模块级 let 与顶层 DOM 常量。拆两次提交（S2a/S2b），任一不过即 revert 该子批。
 - **A3 的 `bindSettingsPane` 不可切**：630 行单体绑定器，切了就是 phase 2 的 E4 误吞重演。绑定器留宿主、pane 只出 render/handler。
 - **R1 的启动编排 IIFE 是全场最高风险**：任何搬移不得触碰该段；冒烟必须含冷启动（工作区恢复、启动会话、启动设置、更新检查）。
 - **B5/S1 依赖清单先行**：settings-ui 无分节注释，先跑 deps 扫描再动手；单批可 revert。
