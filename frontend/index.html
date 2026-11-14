@@ -1028,12 +1028,27 @@
                             </div>
                         </div>
 
-                        <div class="set-group-title">端侧分类器（默认开启）</div>
+                        <div class="set-group-title">端侧分类器</div>
                         <div class="set-card">
                             <div class="set-row">
-                                <div class="set-main"><div class="set-title">启用端侧分类器<button type="button" class="info-tip" data-tip="在自动审批档对规则、只读与命令族都没接住的命令先行离线判定：危险概率低于严格度阈值直接放行（来源标「端侧分类器」），达到阈值转人工——若同时开启了远程「AI 分类器」，会把端侧结果（score / 阈值）注入提示词交大模型二次复核，复核放行则直接执行。线性模型对良性命令偏保守，误拦的命令由大模型复核放行，批准过的命令族经个性化学习后下次直接放行。" aria-label="端侧分类器说明">i</button></div><div class="set-desc">离线先行判定；安装语义插件后与线性模型并行、取最高分</div></div>
+                                <div class="set-main"><div class="set-title">端侧模型<button type="button" class="info-tip" data-tip="在自动审批档对规则、只读与命令族都没接住的命令先行离线判定：危险概率低于严格度阈值直接放行（来源标「端侧分类器」），达到阈值转人工——若同时开启了远程「AI 分类器」，会把端侧结果（score / 阈值）注入提示词交大模型二次复核，复核放行则直接执行。线性与语义两个模型位可分别关闭，两个都关即整体停用；语义模型来自已安装的分类器插件，「刷新」重新扫描插件与注册状态。线性对良性命令偏保守的误拦由大模型复核放行，批准过的命令族经个性化学习后下次直接放行。" aria-label="端侧模型说明">i</button></div><div class="set-desc">离线先行判定；线性与语义模型可分别启用或关闭</div></div>
                                 <div class="set-control">
-                                    <label class="set-switch"><input type="checkbox" id="ai-opt-local-classifier"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                    <button type="button" id="ai-opt-local-refresh" class="dlg-btn">刷新</button>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">线性模型</div><div class="set-desc">内置 n-gram 线性模型，毫秒级离线判定</div></div>
+                                <div class="set-control">
+                                    <select id="ai-opt-local-linear" class="opt-select">
+                                        <option value="builtin">内置线性模型（默认）</option>
+                                        <option value="off">关闭</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">语义模型</div><div class="set-desc">来自已安装的分类器插件；默认全部生效</div></div>
+                                <div class="set-control">
+                                    <select id="ai-opt-local-semantic" class="opt-select"></select>
                                 </div>
                             </div>
                             <div class="set-row">

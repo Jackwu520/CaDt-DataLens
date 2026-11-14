@@ -2320,6 +2320,7 @@ function initAIPanel() {
         // 插件注册的命令分类器（plugins.js 域状态，端侧分类器聚合时读取）
         getPluginCommandClassifiers,
         getPluginLoadErrors,
+        refreshPlugins: () => loadPlugins(backend),
         openTermTab: (...args) => openBgTermTab(...args),
         runAppAction,
         hostAppActions: () => APP_ACTIONS,

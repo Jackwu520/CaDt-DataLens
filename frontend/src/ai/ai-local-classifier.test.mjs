@@ -11,6 +11,7 @@ import {
     lcScore,
     lcSgdStep,
     lcWeightsDelta,
+    selectSemanticClassifiers,
 } from './ai-local-classifier.js';
 import {
     LOCAL_CLASSIFIER_THRESHOLDS,
@@ -456,4 +457,24 @@ test('学习迁移：族特征额外重放让同族变体降得更多，异族�
         assert.ok(Math.abs(boosted - raw) < 0.01,
             '异族不应明显变化：' + other + ' ' + boosted.toFixed(4) + ' vs ' + raw.toFixed(4));
     }
+});
+
+test('selectSemanticClassifiers：语义模型位三态选择', () => {
+    const plugins = [
+        {id: 'a:one', label: '模型一', classify: () => {}},
+        {id: 'b:two', label: '模型二', classify: () => {}},
+        {id: 'c:bad', label: '坏项'},   // 缺 classify：视为非法项过滤
+    ];
+    // 默认（''）：全部合法项
+    assert.equal(selectSemanticClassifiers(plugins, '').length, 2);
+    // 关闭
+    assert.equal(selectSemanticClassifiers(plugins, 'off').length, 0);
+    // 指定 fullId：只取那一个
+    const picked = selectSemanticClassifiers(plugins, 'b:two');
+    assert.equal(picked.length, 1);
+    assert.equal(picked[0].id, 'b:two');
+    // 指定了不存在的 id：空（状态行显示「未找到」）
+    assert.equal(selectSemanticClassifiers(plugins, 'x:gone').length, 0);
+    // 非数组输入兜底
+    assert.equal(selectSemanticClassifiers(null, '').length, 0);
 });

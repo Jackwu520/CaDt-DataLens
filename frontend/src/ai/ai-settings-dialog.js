@@ -78,6 +78,8 @@ export function createAISettingsDialog(ctx) {
     const openSettings = ctx.openSettings;
     const getPluginCommandClassifiers = ctx.getPluginCommandClassifiers;
     const getPluginLoadErrors = typeof ctx.getPluginLoadErrors === 'function' ? ctx.getPluginLoadErrors : null;
+    // 重新扫描插件源并重放注册（端侧模型「刷新」按钮）
+    const refreshPlugins = typeof ctx.refreshPlugins === 'function' ? ctx.refreshPlugins : null;
     const getSkillsCache = ctx.getSkillsCache;
     const getPermissionAudit = ctx.getPermissionAudit;
     const setMemoryFallbackNotified = ctx.setMemoryFallbackNotified;
@@ -280,27 +282,53 @@ export function createAISettingsDialog(ctx) {
     const LOCAL_CLASSIFIER_STRICTNESS_NAMES = {loose: '宽松', standard: '标准', strict: '严格'};
 
     function renderLocalClassifierSettings() {
-        if (!opt.localClassifier) return;
-        opt.localClassifier.checked = getConfig().localClassifierEnabled === true;
+        if (!opt.localClassifierStatus) return;
+        if (opt.localLinear) opt.localLinear.value = getConfig().localClassifierLinear === 'off' ? 'off' : 'builtin';
+        renderSemanticModelOptions();
         if (opt.localClassifierStrictness) opt.localClassifierStrictness.value = normalizeLocalClassifierStrictness(getConfig().localClassifierStrictness);
         if (opt.localClassifierPersonalize) opt.localClassifierPersonalize.checked = getConfig().localClassifierPersonalize === true;
         renderLocalClassifierStatus();
     }
 
+    // 语义模型下拉：全部已装（默认）/ 各已注册分类器 / 关闭；当前值被卸载时补一条「未找到」保显示
+    function renderSemanticModelOptions() {
+        if (!opt.localSemantic) return;
+        const plugins = typeof getPluginCommandClassifiers === 'function' ? getPluginCommandClassifiers() : [];
+        const wanted = getConfig().localClassifierSemantic || '';
+        opt.localSemantic.innerHTML = '';
+        const add = (value, text) => {
+            const option = document.createElement('option');
+            option.value = value;
+            option.textContent = text;
+            opt.localSemantic.appendChild(option);
+        };
+        add('', '全部已装（默认）');
+        for (const item of plugins) add(item.id, item.label || item.id);
+        add('off', '关闭');
+        if (wanted && wanted !== 'off' && !plugins.some((item) => item.id === wanted)) add(wanted, wanted + '（未找到）');
+        opt.localSemantic.value = wanted;
+    }
+
     function renderLocalClassifierStatus() {
         if (!opt.localClassifierStatus) return;
         const plugins = typeof getPluginCommandClassifiers === 'function' ? getPluginCommandClassifiers() : [];
-        const semanticReady = plugins.length > 0;
+        const semanticSetting = getConfig().localClassifierSemantic || '';
+        // 语义模型位按当前选择过滤：关闭 / 指定一个 / 全部
+        const visibleSemantic = semanticSetting === 'off'
+            ? []
+            : (semanticSetting ? plugins.filter((item) => item.id === semanticSetting) : plugins);
         // 插件已安装但加载失败时如实显示原因，不误报「未安装」
         const loadErrors = getPluginLoadErrors ? getPluginLoadErrors() : [];
-        // 语义模型跳转口：未安装语义分类器插件时显示，一键带 onnx 关键词跳插件市场搜索
+        // 语义模型跳转口：语义模型位无可用模型时显示，一键带 onnx 关键词跳插件市场搜索
         if (opt.localClassifierMarket) {
-            opt.localClassifierMarket.classList.toggle('hidden', semanticReady);
+            opt.localClassifierMarket.classList.toggle('hidden', visibleSemantic.length > 0);
             opt.localClassifierMarket.onclick = () => openSettings('plugins', 'onnx');
         }
-        const pluginPart = plugins.length
-            ? '插件：' + plugins.map((p) => p.label || p.id).join('、')
-            : (loadErrors.length ? '插件加载失败：' + loadErrors[0] : '语义模型未安装');
+        let pluginPart;
+        if (semanticSetting === 'off') pluginPart = '语义模型已关闭';
+        else if (visibleSemantic.length) pluginPart = '插件：' + visibleSemantic.map((p) => p.label || p.id).join('、');
+        else if (semanticSetting) pluginPart = '语义模型未找到（' + semanticSetting + '）';
+        else pluginPart = loadErrors.length ? '插件加载失败：' + loadErrors[0] : '语义模型未安装';
         if (getConfig().localClassifierEnabled !== true) {
             opt.localClassifierStatus.textContent = pluginPart || '未启用';
             return;
@@ -312,7 +340,7 @@ export function createAISettingsDialog(ctx) {
         }
         mod.ensureLoaded().then(() => {
             const st = mod.getStatus();
-            const bits = ['出厂 ' + (st.factoryVersion || '—')];
+            const bits = [getConfig().localClassifierLinear === 'off' ? '线性已关闭' : '出厂 ' + (st.factoryVersion || '—')];
             if (getConfig().localClassifierPersonalize === true) {
                 bits.push('样本 ' + st.sampleCount);
                 bits.push('delta ' + st.deltaDims + ' 维');
@@ -1742,13 +1770,28 @@ export function createAISettingsDialog(ctx) {
             const label = selected && entry ? (modelRefLabel(selected, entry) || wanted) : '当前模型';
             setSettingsStatus('自动审批分类器模型：' + label, 'ok');
         });
-        if (opt.localClassifier) opt.localClassifier.addEventListener('change', () => {
-            getConfig().localClassifierEnabled = !!opt.localClassifier.checked;
+        if (opt.localLinear) opt.localLinear.addEventListener('change', () => {
+            getConfig().localClassifierLinear = opt.localLinear.value === 'off' ? 'off' : 'builtin';
             saveAIConfig();
             renderLocalClassifierStatus();
-            setSettingsStatus(getConfig().localClassifierEnabled
-                ? '端侧分类器：已启用（自动审批档先行离线判定）'
-                : '端侧分类器：已关闭', 'ok');
+            setSettingsStatus(getConfig().localClassifierLinear === 'off' ? '线性模型：已关闭' : '线性模型：内置线性模型', 'ok');
+        });
+        if (opt.localSemantic) opt.localSemantic.addEventListener('change', () => {
+            getConfig().localClassifierSemantic = opt.localSemantic.value;
+            saveAIConfig();
+            renderLocalClassifierStatus();
+            const picked = opt.localSemantic.options[opt.localSemantic.selectedIndex];
+            setSettingsStatus('语义模型：' + ((picked && picked.textContent) || opt.localSemantic.value), 'ok');
+        });
+        if (opt.localRefresh) opt.localRefresh.addEventListener('click', async () => {
+            if (!refreshPlugins) return;
+            try {
+                await refreshPlugins();
+            } catch (e) {
+                // loadPlugins 自己收集错误到状态行，这里不中断刷新后的重渲染
+            }
+            renderLocalClassifierSettings();
+            setSettingsStatus('已重新扫描插件与模型注册状态', 'ok');
         });
         if (opt.localClassifierStrictness) opt.localClassifierStrictness.addEventListener('change', () => {
             getConfig().localClassifierStrictness = normalizeLocalClassifierStrictness(opt.localClassifierStrictness.value);

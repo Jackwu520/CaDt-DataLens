@@ -102,6 +102,15 @@ export function lcSegment(command) {
     return String(command || '').split(/\r?\n|&&|\|\||;|\||(?<![>&])&/).map((seg) => seg.trim()).filter(Boolean);
 }
 
+// 语义模型位选择：'' = 全部已装（默认，保守合并取 max）；'off' = 全关；否则只取指定 fullId。
+// 纯函数（过滤合法分类器），测试见 ai-local-classifier.test.mjs。
+export function selectSemanticClassifiers(list, setting) {
+    const all = Array.isArray(list) ? list.filter((item) => item && typeof item.classify === 'function') : [];
+    if (setting === 'off') return [];
+    if (!setting) return all;
+    return all.filter((item) => item.id === setting);
+}
+
 // ---------- 个性化学习的命令族归一 ----------
 
 // 只对「动作明确、参数可变」的可执行文件做族归一，让一次裁定能迁移到同族变体。
@@ -602,10 +611,12 @@ export function createAILocalClassifier(ctx) {
         }
     }
 
-    // 聚合所有启用的端侧分类器：内置线性模型（localClassifierEnabled）+ 插件注册项，
+    // 聚合所有启用的端侧分类器：内置线性模型 + 插件注册项，
     // **同时生效、保守合并取 max(score)**——任一分类器判险即转人工（fail-closed）。
+    // 模型位独立开关：线性 = localClassifierLinear（'off' 关闭），语义 = localClassifierSemantic
+    // （'' 全部已装 / 'off' 关闭 / 指定 fullId 只取那一个）；总开关 localClassifierEnabled 保留为迁移兼容。
     // 线性对良性命令的保守误拦由两层机制兜住：大模型复核（ai-panel，端侧未放行时）与个性化学习。
-    // 无任何可用分类器（未启用 / 权重加载失败 / 全部熔断）返回 null，调用方回退远程分类器或人工。
+    // 无任何可用分类器（未启用 / 全部关闭 / 权重加载失败 / 全部熔断）返回 null，调用方回退远程分类器或人工。
     async function classifyAll(command, info) {
         const cfg = ctx.getConfig ? ctx.getConfig() : {};
         const strictness = normalizeLocalClassifierStrictness(cfg.localClassifierStrictness);
@@ -614,7 +625,7 @@ export function createAILocalClassifier(ctx) {
             threshold: localClassifierThreshold(strictness),
         });
         const list = [];
-        if (cfg.localClassifierEnabled === true) {
+        if (cfg.localClassifierEnabled === true && cfg.localClassifierLinear !== 'off') {
             list.push({
                 id: 'builtin-linear',
                 label: '端侧分类器',
@@ -625,11 +636,9 @@ export function createAILocalClassifier(ctx) {
                 },
             });
         }
-        const plugins = ctx.getPluginClassifiers ? (ctx.getPluginClassifiers() || []) : [];
-        for (const plugin of plugins) {
-            if (plugin && typeof plugin.classify === 'function') {
-                list.push({id: 'plugin:' + plugin.id, label: plugin.label || plugin.id, fn: plugin.classify});
-            }
+        const semanticSetting = typeof cfg.localClassifierSemantic === 'string' ? cfg.localClassifierSemantic : '';
+        for (const item of selectSemanticClassifiers(ctx.getPluginClassifiers ? (ctx.getPluginClassifiers() || []) : [], semanticSetting)) {
+            list.push({id: 'plugin:' + item.id, label: item.label || item.id, fn: item.classify});
         }
         if (!list.length) return null;
         const results = [];

@@ -200,6 +200,8 @@ export function createAIPanel(options) {
     const getPluginLoadErrors = typeof opts.getPluginLoadErrors === 'function'
         ? opts.getPluginLoadErrors
         : () => [];
+    // 重新扫描插件源并重放注册（设置页「刷新」按钮用）
+    const refreshPlugins = typeof opts.refreshPlugins === 'function' ? opts.refreshPlugins : null;
 
     function logActivity(action, target, detail, extra = {}) {
         if (!activity) return;
@@ -399,7 +401,9 @@ export function createAIPanel(options) {
         approvedClear: document.getElementById('ai-opt-approved-clear'),
         permissionClassifier: document.getElementById('ai-opt-auto-classifier'),
         permissionClassifierModel: document.getElementById('ai-opt-classifier-model'),
-        localClassifier: document.getElementById('ai-opt-local-classifier'),
+        localLinear: document.getElementById('ai-opt-local-linear'),
+        localSemantic: document.getElementById('ai-opt-local-semantic'),
+        localRefresh: document.getElementById('ai-opt-local-refresh'),
         localClassifierStrictness: document.getElementById('ai-opt-local-strictness'),
         localClassifierPersonalize: document.getElementById('ai-opt-local-personalize'),
         localClassifierStatus: document.getElementById('ai-opt-local-status'),
@@ -600,8 +604,14 @@ export function createAIPanel(options) {
             // 自动审批分类器的请求模型：'账号id|模型id'；空串 = 跟随当前模型
             autoClassifierModel: aiTextOf(stored.autoClassifierModel),
             // 端侧命令分类器（内置线性模型，离线毫秒级；docs/unfinished-plans/local-command-classifier.md）
-            // 默认启用（作者拍板）；用户显式关闭（false）保留
+            // 默认启用（作者拍板）。总开关保留为迁移兼容：旧配置显式 false 时迁移为「线性关闭」
+            // （新 UI 没有总开关位，用户经线性/语义两个模型位重新开启），新配置直接用两个模型位
             localClassifierEnabled: stored.localClassifierEnabled !== false,
+            localClassifierLinear: stored.localClassifierLinear
+                ? (stored.localClassifierLinear === 'off' ? 'off' : 'builtin')
+                : (stored.localClassifierEnabled === false ? 'off' : 'builtin'),
+            // 语义模型位：'' = 全部已装（默认）；'off' = 关闭；否则为指定分类器的 fullId（插件id:分类器id）
+            localClassifierSemantic: typeof stored.localClassifierSemantic === 'string' ? stored.localClassifierSemantic : '',
             localClassifierStrictness: normalizeLocalClassifierStrictness(stored.localClassifierStrictness),
             // 个性化后训练：从审批卡的用户显式裁定学习（批准 → y=0，拒绝 → y=1）
             localClassifierPersonalize: stored.localClassifierPersonalize !== false,
@@ -1973,6 +1983,7 @@ export function createAIPanel(options) {
         openSettings,
         getPluginCommandClassifiers,
         getPluginLoadErrors,
+        refreshPlugins,
         setSessions: (value) => { sessions = value; },
         getSkillsCache: () => skillsCache,
         getPermissionAudit: () => permissionAudit,
