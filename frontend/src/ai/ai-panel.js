@@ -4609,6 +4609,13 @@ export function createAIPanel(options) {
         renderPermissionSettings();
     }
 
+    // 用户裁定的留痕要带审批卡上下文（端侧 score / 远程复核结论）：否则「拒绝」这条最重要的
+    // 个性化学习信号在留痕里完全不可追溯——分不清是模型判险、解析失败还是别的规则接住。
+    function approvalAuditRule(approval) {
+        if (!approval || !approval.classifyNote) return '';
+        return aiTextOf(approval.classifyNote).replace(/\s+/g, ' ').slice(0, 160);
+    }
+
     function diffLinesOf(text) {
         const normalized = aiTextOf(text).replace(/\r\n/g, '\n').replace(/\r/g, '\n');
         if (!normalized) return [];
@@ -4923,7 +4930,7 @@ export function createAIPanel(options) {
                         reason: local.reason,
                     });
                     logPermission('command', command, verdict.allow ? 'allow' : 'ask', 'classifier',
-                        '端侧 ' + localSummary + ' · 复核' + (verdict.allow ? '放行' : '未放行'));
+                        localSummary + ' · 复核' + (verdict.allow ? '放行' : '未放行'));
                     if (verdict.allow) {
                         showNote('端侧未放行（' + localSummary + '），AI 分类器复核放行：' + (verdict.reason || '未说明原因'));
                         markCommandAutoApproved(session, toolMessage, command, cwd, toolName, 'classifier', '端侧未放行，AI 复核放行：' + (verdict.reason || ''));
@@ -5144,7 +5151,9 @@ export function createAIPanel(options) {
         const sessionId = (session && session.id) || '';
         const id = (sessionId || 'session') + '#classifier-' + (++classifierSeq);
         const cfg = Object.assign(configForModel(modelRef.account, modelRef.entry), {
-            maxTokens: 120,
+            // 512 而非小预算：部分兼容网不认「关闭思考」参数时，思考链也烧不完预算，
+            // 正文仍能产出（JSON 判定本身 <60 token）
+            maxTokens: 512,
             temperature: 0,
             thinking: false,
             reasoningEffort: '',
@@ -5172,6 +5181,7 @@ export function createAIPanel(options) {
             id, key, sessionId, cfg, messages,
             command: commandText(command),
             buffer: '',
+            think: '',
             waiters: [],
             timer: 0,
             settled: false,
@@ -5313,7 +5323,7 @@ export function createAIPanel(options) {
                 ? (webRuleSubject(approval.command) || approval.command)
                 : approval.command)
             : (approval.relPath || approval.path || '');
-        logPermission(auditKind, auditSubject, approved ? 'allow' : 'deny', 'user');
+        logPermission(auditKind, auditSubject, approved ? 'allow' : 'deny', 'user', approvalAuditRule(approval));
         // 个性化回流（方案 §7.1）：只学端侧分类器转人工审批卡上的用户显式裁定
         if (approval.kind === 'command' && approval.askSource === 'local-classifier') {
             Promise.resolve(localClassifierMod.recordDecision(approval.command, approved))
@@ -7997,7 +8007,19 @@ export function createAIPanel(options) {
         if (classifierJob && payload && payload.id === classifierJob.id) {
             const job = classifierJob;
             if (name === 'ai-chunk' && payload.delta) job.buffer += payload.delta;
-            else if (name === 'ai-done') resolveClassifierJob(job, parseClassifierVerdict(job.buffer));
+            else if (name === 'ai-think' && payload.delta) job.think += payload.delta;
+            else if (name === 'ai-done') {
+                const verdict = parseClassifierVerdict(job.buffer);
+                if (!job.buffer) {
+                    // 空输出诊断：思考模型把预算烧在 reasoning_content 上是主因（finish=length 实锤）
+                    const finish = aiTextOf(payload.finishReason) || 'unknown';
+                    verdict.reason = job.think
+                        ? '分类器输出为空：模型思考 ' + job.think.length + ' 字后预算耗尽（finish=' + finish + '），正文未产出'
+                        : '分类器输出为空（finish=' + finish + '）';
+                    console.info('[classifier] 空输出 finish=' + finish + ' thinkChars=' + job.think.length);
+                }
+                resolveClassifierJob(job, verdict);
+            }
             else if (name === 'ai-error') resolveClassifierJob(job, {allow: false, reason: '分类器请求失败'});
             return;
         }

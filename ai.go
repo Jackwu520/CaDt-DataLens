@@ -932,6 +932,19 @@ func aiBuildOpenAIBody(cfg AIConfig, messages []AIMessage, tools []AIToolDef) (m
 	if effort := strings.TrimSpace(cfg.ReasoningEffort); effort != "" {
 		body["reasoning_effort"] = effort
 	}
+	// 思考关闭提示：Thinking=false 时按模型名给会「默认开思考」的国产兼容网下发关闭参数——
+	// 不发的话思考模型（GLM-4.5+/5.x 等）会把 reasoning_content 烧掉 max_tokens、正文为空
+	// （小预算请求如命令分类器 120 tok 首当其冲，表现为「分类器输出为空」）。
+	// GLM（bigmodel）用 thinking.type；Qwen（DashScope 兼容模式）用 enable_thinking。
+	// 只对模型名明确的网关发：DeepSeek chat 本不思考、reasoner 关不掉，其他聚合网不发未知参数防 400。
+	if !cfg.Thinking {
+		lower := strings.ToLower(cfg.Model)
+		if strings.Contains(lower, "glm") {
+			body["thinking"] = map[string]any{"type": "disabled"}
+		} else if strings.Contains(lower, "qwen") || strings.Contains(lower, "qwq") {
+			body["enable_thinking"] = false
+		}
+	}
 	if len(tools) > 0 {
 		body["tools"] = aiOpenAITools(tools)
 	}
