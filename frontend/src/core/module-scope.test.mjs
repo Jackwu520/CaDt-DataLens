@@ -33,12 +33,15 @@ function code(text) {
         .replace(/`(?:[^`\\]|\\.)*`/g, '``');
 }
 
+// 宿主多为 factory：内部声明缩进 4 空格。旧版正则用行首 ^ 匹配，把整片 ctx 解包与
+// 内部函数声明全漏掉，导致扫描形同虚设（2026-11-15 拆 A3 时发现）。这里放到 0–4 空格，
+// 8 空格以上的函数内局部变量仍排除，避免 row/entry 这类通用名制造误报。
 function decls(text) {
     const src = code(text);
     const out = new Set();
-    for (const m of src.matchAll(/^(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)/gm)) out.add(m[1]);
-    for (const m of src.matchAll(/^(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)/gm)) out.add(m[1]);
-    for (const m of src.matchAll(/^(?:export\s+)?(?:const|let|var)\s*\{([^}]*)\}\s*=/gm)) {
+    for (const m of src.matchAll(/^ {0,4}(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)/gm)) out.add(m[1]);
+    for (const m of src.matchAll(/^ {0,4}(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)/gm)) out.add(m[1]);
+    for (const m of src.matchAll(/^ {0,4}(?:export\s+)?(?:const|let|var)\s*\{([^}]*)\}\s*=/gm)) {
         for (const id of m[1].match(/[A-Za-z_$][\w$]*/g) || []) out.add(id);
     }
     for (const m of text.matchAll(/import\s*\{([^}]*)\}\s*from/g)) {
@@ -48,6 +51,37 @@ function decls(text) {
         }
     }
     for (const m of text.matchAll(/import\s+([A-Za-z_$][\w$]*)\s+from/g)) out.add(m[1]);
+    return out;
+}
+
+
+// 形参与解构出来的本地名（模块内部常把 host 的同名顶层标识符当成本地参数，如 title/el/id）
+function params(text) {
+    const src = code(text);
+    const out = new Set();
+    const groups = [];
+    for (const m of src.matchAll(/\(([^()]*)\)\s*(?:=>|\{)/g)) groups.push(m[1]);
+    for (const m of src.matchAll(/function\s*[A-Za-z_$][\w$]*\s*\(([^()]*)\)/g)) groups.push(m[1]);
+    for (const m of src.matchAll(/for\s*\((?:const|let|var)\s+([^)]*)\)/g)) groups.push(m[1]);
+    for (const g of groups) {
+        for (const part of g.split(',')) {
+            const cleaned = part.replace(/[{}[\]=.\s]/g, ' ').trim();
+            for (const id of cleaned.match(/[A-Za-z_$][\w$]*/g) || []) out.add(id);
+        }
+    }
+    return out;
+}
+
+
+// 模块侧要连函数内局部声明一起算（8 空格缩进的 const id / const event 会遮蔽宿主同名顶层）
+function locals(text) {
+    const src = code(text);
+    const out = new Set();
+    for (const m of src.matchAll(/^\s*(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)/gm)) out.add(m[1]);
+    for (const m of src.matchAll(/^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)/gm)) out.add(m[1]);
+    for (const m of src.matchAll(/^\s*(?:export\s+)?(?:const|let|var)\s*\{([^}]*)\}\s*=/gm)) {
+        for (const id of m[1].match(/[A-Za-z_$][\w$]*/g) || []) out.add(id);
+    }
     return out;
 }
 
@@ -85,6 +119,17 @@ const HOSTS = [
         host: 'ai/ai-session-store.js',
         modules: ['ai/ai-session-disk.js'],
     },
+    {
+        // 四个子域与宿主共享同一个 ctx（模块内自取 const x = ctx.x），
+        // 宿主函数一律经 extras 注入，故宿主侧只剩 ctx 解包与 binder 两种符号
+        host: 'ai/ai-settings-dialog.js',
+        modules: [
+            'ai/ai-permission-settings.js',
+            'ai/ai-preference-settings.js',
+            'ai/ai-model-settings.js',
+            'ai/ai-settings-io.js',
+        ],
+    },
 ];
 
 test('拆出的模块不得裸用宿主定义/宿主 import 的符号', () => {
@@ -93,12 +138,15 @@ test('拆出的模块不得裸用宿主定义/宿主 import 的符号', () => {
         const hostNames = decls(read(host));
         for (const mod of modules) {
             const text = read(mod);
-            const own = decls(text);
+            const own = locals(text);
+            for (const name of decls(text)) own.add(name); // import 进来的名字
+            for (const name of params(text)) own.add(name);
             const body = code(text);
             for (const name of hostNames) {
                 if (own.has(name)) continue;
                 // 裸用：前面不是 . 与标识符字符；且不是对象键（后面紧跟 :）
-                const re = new RegExp('(?<![\\w$.])' + name + '\\b', 'g');
+                // 排除正则字面量里的 \\s / \\d 之类（前面是反斜杠）
+                const re = new RegExp('(?<![\\w$.\\\\])' + name + '\\b', 'g');
                 for (const m of body.matchAll(re)) {
                     const after = body.slice(m.index + name.length).trimStart();
                     if (after.startsWith(':')) continue; // 对象字面量的键
@@ -109,4 +157,41 @@ test('拆出的模块不得裸用宿主定义/宿主 import 的符号', () => {
         }
     }
     assert.deepEqual(problems, [], '跨模块符号泄漏：\n' + problems.join('\n'));
+});
+
+// 第二道：工厂构造期冒烟。
+// 静态扫描只能看「有没有裸用宿主符号」，看不出「模块 A 的初始化调用排在模块 A 构造之前」（TDZ）、
+// 「工厂返回面引用了已搬走的标识符」这类只有真正执行一遍才会炸的问题。
+// 这里用 Proxy 造一个「任何属性都是函数」的 ctx，把宿主工厂整体构造一次：
+// 构造期只解包与建子模块，不触 DOM，因此不需要真实页面。
+test('AI 设置域在 mock ctx 下可构造（捕获工厂执行期的 ReferenceError / TDZ）', async () => {
+    const g = globalThis;
+    const prevWindow = g.window;
+    const prevDocument = g.document;
+    const anyObj = new Proxy({}, {
+        get: (t, key) => (key === 'then' ? undefined : anyFn),
+        set: () => true,
+    });
+    const anyFn = new Proxy(function () {}, {
+        get: (t, key) => (key === 'then' ? undefined : anyFn),
+        apply: () => anyFn,
+        construct: () => anyObj,
+    });
+    g.window = {addEventListener() {}, removeEventListener() {}};
+    g.document = {getElementById: () => null, createElement: () => anyObj};
+    try {
+        const mod = await import(new URL('../ai/ai-settings-dialog.js', import.meta.url).href);
+        const api = mod.createAISettingsDialog(new Proxy({}, {get: () => anyFn}));
+        const required = [
+            'bindSettingsPane', 'refreshSettingsPane', 'refreshChatSettings', 'setSettingsStatus',
+            'renderPermissionSettings', 'renderProjectRuleTable', 'renderPreferenceSettings',
+            'renderModelList', 'openModelEditor', 'editorEntryOf', 'exportAIConfig', 'importAIConfig',
+            'isPathApproved', 'projectRulesPath', 'commandApprovalRules', 'addCommandApprovalRule',
+        ];
+        const missing = required.filter((key) => typeof api[key] === 'undefined');
+        assert.deepEqual(missing, [], '工厂返回面缺成员：' + missing.join(' '));
+    } finally {
+        g.window = prevWindow;
+        g.document = prevDocument;
+    }
 });
