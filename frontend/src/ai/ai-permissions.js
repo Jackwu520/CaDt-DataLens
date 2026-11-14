@@ -257,6 +257,32 @@ export function decidePermission(input) {
     return {decision: 'ask', source: 'scope'};
 }
 
+// ---------- 端侧命令分类器：严格度阈值 ----------
+
+// 严格度三档的 allow 阈值（危险概率 score < T 才放行）。三档共用同一语义：
+// 内置线性模型与插件分类器只产出 score，判定统一在这里做（docs/unfinished-plans/local-command-classifier.md §5）。
+export const LOCAL_CLASSIFIER_THRESHOLDS = {loose: 0.30, standard: 0.15, strict: 0.07};
+export const LOCAL_CLASSIFIER_STRICTNESS_LABELS = {loose: '宽松', standard: '标准', strict: '严格'};
+// 连续失败熔断阈值：分类器连续抛错 N 次后本会话内停用，避免每条命令都空等。
+export const LOCAL_CLASSIFIER_FAIL_LIMIT = 5;
+
+export function normalizeLocalClassifierStrictness(raw) {
+    const value = String(raw == null ? '' : raw).trim();
+    return Object.prototype.hasOwnProperty.call(LOCAL_CLASSIFIER_THRESHOLDS, value) ? value : 'standard';
+}
+
+export function localClassifierThreshold(strictness) {
+    return LOCAL_CLASSIFIER_THRESHOLDS[normalizeLocalClassifierStrictness(strictness)];
+}
+
+// score → allow/ask 判定。端侧模型无 deny 权：score ≥ T 一律转人工。
+export function judgeLocalClassifier(score, strictness) {
+    const threshold = localClassifierThreshold(strictness);
+    const value = Number(score);
+    const safe = Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : 1;
+    return {allow: safe < threshold, score: safe, threshold};
+}
+
 // ---------- 新会话默认权限档 ----------
 
 // 新会话默认权限档（设置 → AI）：只接受现有权限档集合内的值，
