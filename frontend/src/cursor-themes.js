@@ -16,6 +16,11 @@ let sysCursor = null;
 let cursorCssSize = 32;
 
 function setDragCursor(kind) {
+    // 诊断探针：间歇性「全局左右箭头」问题定位——记录谁设置 / 谁清除（进调试控制台与 jsonl）
+    if (kind || document.body.classList.contains('cursor-ew') || document.body.classList.contains('cursor-ns')) {
+        const stack = String(new Error().stack || '').split('\n').slice(2, 4).join(' ← ').trim();
+        console.info('[cursor] setDragCursor(' + (kind || 'null') + ') ' + stack);
+    }
     document.body.classList.toggle('cursor-ew', kind === 'ew');
     document.body.classList.toggle('cursor-ns', kind === 'ns');
 }
@@ -181,13 +186,19 @@ if (deps.backend.GetSystemCursors) {
 }
 
 // 拖拽结束事件丢失（鼠标在窗外松手、pointer capture 失败等）会把 body.cursor-ew/ns
-// 卡死在全局——普通区域继承 body 光标整个变成左右/上下箭头。全局兜底清理：
-// 抬起 / 取消 / 失焦任一发生都撤掉拖拽标记；各拖拽流程自己的收尾照旧（幂等无害）。
+// 卡死在全局——普通区域继承 body 光标整个变成左右/上下箭头。三层兜底：
+// ① 抬起 / 取消 / 失焦任一发生即撤标记（各拖拽流程自己的收尾照旧，幂等无害）；
+// ② 「无按键按下却带着拖拽标记」= 必然卡死，pointermove 一动立即自愈（拖拽中 buttons≠0 不误伤）；
 for (const dragEndEvt of ['pointerup', 'pointercancel', 'mouseup', 'blur']) {
     window.addEventListener(dragEndEvt, () => {
         document.body.classList.remove('cursor-ew', 'cursor-ns');
     });
 }
+window.addEventListener('pointermove', (e) => {
+    if (!e.buttons && (document.body.classList.contains('cursor-ew') || document.body.classList.contains('cursor-ns'))) {
+        document.body.classList.remove('cursor-ew', 'cursor-ns');
+    }
+});
 
     return {setDragCursor};
 }
