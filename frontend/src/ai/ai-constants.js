@@ -49,6 +49,8 @@ export const AI_INJECT_OPTION_MAP = {
     injectSkills: 'aiInjectSkills',
     injectPrefs: 'aiInjectPreferences',
     injectEnvVars: 'aiInjectEnvVars',
+    // 个性化（称呼 / 名字 / 风格 / 人设 / 长期指令）：总开关，关闭时四段全不注入（含 <identity>）
+    injectPersona: 'aiInjectPersona',
 };
 export const AI_IMAGE_LIMIT = 6;
 export const AI_IMAGE_MAX_INPUT_BYTES = 12 * 1024 * 1024;
@@ -164,7 +166,8 @@ export const AI_BUILTIN_SKILLS = [
             '| 单文件小改、用户只想改 | `edit_file`（少一层审批） |',
             '| 新建文件、整体重写 | `write_file` |',
             '| 跨多文件、要审批、要存档/转交、要能撤销 | `propose_patch` |',
-            '| **完全权限档 + 用户没提补丁** | 直接 `edit_file` / `write_file`，别提议补丁 |',
+            '| **完全权限档** | 默认直接 `edit_file` / `write_file`；需要留一份可审阅、可分享/转交的 diff 时同样可以出 `propose_patch`（补丁是交付物，不是危险操作）。该档位下默认**只产出 .patch 不弹审批卡**，用户要「应用」时才会弹 |',
+            '| **计划模式** | 只用 `propose_patch` 的 `dry_run` 形态做预检（逐文件能否应用），**不落盘、不写索引、不弹卡**；批准计划后再真正出补丁。要展示改动就在计划里贴 ```diff 代码块 |',
             '',
             '## 2. 生成前必做',
             '',
@@ -678,6 +681,7 @@ export const AI_COMMANDS = [
     {name: '/memory', desc: '打开记忆管理'},
     {name: '/schedule', desc: '打开定时任务管理（设置）'},
     {name: '/skill', desc: '打开技能管理'},
+    {name: '/persona', desc: '打开个性化设置（称呼 / 名字 / 回复风格 / 人设 / 长期指令）'},
     {name: '/plan', desc: '进入计划模式（/plan off 关闭，/plan 指令 直接开始规划）'},
     {name: '/init', desc: '生成 AGENTS.md 模板（走写审批）'},
     {name: '/patch', desc: '把改动做成 .patch 补丁待审批（可带需求）'},

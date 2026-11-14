@@ -138,6 +138,9 @@ import {createAITakeover} from './ai-takeover.js';
 import {createAIManageDialogs} from './ai-manage-dialogs.js';
 import {createAISettingsDialog} from './ai-settings-dialog.js';
 import {createAISubagents} from './ai-subagents.js';
+import {
+    normalizePersona, personaSegments, resolveAssistantName,
+} from './ai-persona.js';
 
 export function createAIPanel(options) {
     const opts = options || {};
@@ -364,6 +367,7 @@ export function createAIPanel(options) {
         injectSkills: document.getElementById('ai-opt-inject-skills'),
         injectPrefs: document.getElementById('ai-opt-inject-prefs'),
         injectEnvVars: document.getElementById('ai-opt-inject-envvars'),
+        injectPersona: document.getElementById('ai-opt-inject-persona'),
         sendKey: document.getElementById('ai-opt-sendkey'),
         outputLang: document.getElementById('ai-opt-output-lang'),
         chatFont: document.getElementById('ai-opt-chatfont'),
@@ -403,6 +407,7 @@ export function createAIPanel(options) {
         promptDel: document.getElementById('ai-opt-prompt-del'),
         promptDefault: document.getElementById('ai-opt-prompt-default'),
         exportKeys: document.getElementById('ai-opt-export-keys'),
+        exportPersona: document.getElementById('ai-opt-export-persona'),
         exportBtn: document.getElementById('ai-opt-export'),
         importBtn: document.getElementById('ai-opt-import'),
         clearSessions: document.getElementById('ai-opt-clear-sessions'),
@@ -636,6 +641,8 @@ export function createAIPanel(options) {
             askTimeoutAction: ['recommended', 'wait', 'abort', 'ai_decide'].includes(stored.askTimeoutAction)
                 ? stored.askTimeoutAction
                 : 'recommended',
+            // 个性化（身份命名 / 回复风格 / 人设 / 长期指令）：旧配置缺该字段即默认态，升级零迁移
+            persona: normalizePersona(stored.persona),
         };
         if (Array.isArray(stored.prompts)) {
             stored.prompts.forEach((raw, index) => {

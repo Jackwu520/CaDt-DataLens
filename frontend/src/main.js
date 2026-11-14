@@ -1201,6 +1201,8 @@ const defaultSettings = {
     aiInjectSkills: true,
     aiInjectPreferences: true,
     aiInjectEnvVars: true,
+    // 个性化（称呼 / 名字 / 风格 / 人设 / 长期指令）总开关；不进下方 fineInjectKeys 迁移列表
+    aiInjectPersona: true,
     writingMode: false,
     writingFont: 'kaiti',
     writingFontSize: 16,
@@ -1325,7 +1327,9 @@ settings.aiInlineWidgets = settings.aiInlineWidgets !== false;
 settings.aiMaxSessions = Math.min(500, Math.max(2, Number(settings.aiMaxSessions) || 50));
 settings.aiInjectContext = settings.aiInjectContext !== false;
 for (const key of ['aiInjectRoot', 'aiInjectActiveFile', 'aiInjectCaret', 'aiInjectViewport', 'aiInjectOpenFiles',
-    'aiInjectAgentsMd', 'aiInjectMemory', 'aiInjectSkills', 'aiInjectPreferences', 'aiInjectEnvVars']) {
+    'aiInjectAgentsMd', 'aiInjectMemory', 'aiInjectSkills', 'aiInjectPreferences', 'aiInjectEnvVars',
+    // 个性化总开关：名字是身份信息不是上下文注入，故意不进上面的 fineInjectKeys 迁移语义
+    'aiInjectPersona']) {
     settings[key] = settings[key] !== false;
 }
 // 阅读模式设置归一化（§14.1）

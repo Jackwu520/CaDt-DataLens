@@ -9,6 +9,9 @@ import {
 import {
     normalizeDefaultScope,
 } from './ai-permissions.js';
+import {
+    normalizePersona,
+} from './ai-persona.js';
 
 export function createAISettingsIO(ctx, extras) {
 
@@ -28,6 +31,8 @@ export function createAISettingsIO(ctx, extras) {
 
     function exportAIConfig() {
         const includeKeys = !!(opt.exportKeys && opt.exportKeys.checked);
+        // 个性化含用户称呼 / 长期指令 / 人设正文，属个人内容：默认不导出，显式勾选才带
+        const includePersona = !!(opt.exportPersona && opt.exportPersona.checked);
         const data = {
             version: 1,
             exportedAt: new Date().toISOString(),
@@ -71,6 +76,7 @@ export function createAISettingsIO(ctx, extras) {
             askTimeout: getConfig().askTimeout,
             askTimeoutAction: getConfig().askTimeoutAction,
         };
+        if (includePersona) data.persona = normalizePersona(getConfig().persona);
         const json = JSON.stringify(data, null, 2);
         const defaultName = 'cadt-ai-getConfig().json';
         const save = async () => {
@@ -171,6 +177,10 @@ export function createAISettingsIO(ctx, extras) {
             if (Number.isFinite(Number(data.askTimeout))) getConfig().askTimeout = aiClampInt(data.askTimeout, 0, 3600, 300);
             if (['recommended', 'wait', 'abort', 'ai_decide'].includes(data.askTimeoutAction)) {
                 getConfig().askTimeoutAction = data.askTimeoutAction;
+            }
+            // 个性化：字段级合并——导出时未勾选「含个性化设定」的旧文件不会冲掉本地设定
+            if (data.persona && typeof data.persona === 'object') {
+                getConfig().persona = normalizePersona(data.persona);
             }
             for (const pathValue of Array.isArray(data.approvedPaths) ? data.approvedPaths : []) {
                 extras.aiAddUnique(getConfig().approvedPaths, pathValue);

@@ -881,6 +881,12 @@
                                 </div>
                             </div>
                             <div class="set-row">
+                                <div class="set-main"><div class="set-title">导出时包含个性化设定</div><div class="set-desc">助手名、对你的称呼、长期指令、人设正文属于个人内容；默认不导出</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="ai-opt-export-persona"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                </div>
+                            </div>
+                            <div class="set-row">
                                 <div class="set-main"><div class="set-title">导入 / 导出 / 清空</div></div>
                                 <div class="set-control">
                                     <button type="button" id="ai-opt-export" class="dlg-btn">导出配置…</button>
@@ -968,6 +974,14 @@
                             </div>
                             <div class="set-row">
                                 <div class="set-main"><div class="set-desc">read_file / get_content 等工具返回的正文由 AI 主动调用产生，不走注入开关；能否调用由当前权限档决定。</div></div>
+                            </div>
+                        </div>
+
+                        <div class="set-group-title">个性化</div>
+                        <div class="set-card">
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">注入个性化设定</div><div class="set-desc">称呼 / 助手名 / 回复风格 / 人设 / 长期指令共四段；关闭后四段全不注入（含助手名）。设定本身在「个性化」页</div></div>
+                                <div class="set-control"><label class="set-switch"><input type="checkbox" id="ai-opt-inject-persona"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label></div>
                             </div>
                         </div>
                     </div>
