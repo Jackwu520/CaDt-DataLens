@@ -4,7 +4,7 @@
 // 纯逻辑（归一化 / 双语名字 / 段生成 / 转义）在 ai-persona.js，本文件只管界面与落盘。
 import {
     AI_PERSONA_NAME_DEFAULTS, AI_PERSONA_TANGERINE, PERSONA_INSTRUCTION_MAX, PERSONA_LABEL_MAX,
-    PERSONA_NAME_MAX, PERSONA_TEXT_MAX, normalizePersona, resolveAssistantName,
+    PERSONA_NAME_MAX, PERSONA_TEXT_MAX, normalizePersona,
 } from './ai-persona.js';
 
 // 摘要预览上限：与 <memory> 注入量级对齐（8 KiB），超出只显示开头。
