@@ -5403,7 +5403,7 @@ html[data-theme="whitey"] {
 .dbg-console.hide-warn .lvl-warn,
 .dbg-console.hide-error .lvl-error { display: none; }
 
-/* 顶部工具栏 AI 入口（最右侧，窗口控制按钮左侧） */
+/* 顶部工具栏 AI 入口（运行、编辑区收起之后，窗口控制按钮左侧） */
 #tb-ai {
     width: 30px;
     height: 26px;
@@ -5422,7 +5422,7 @@ html[data-theme="whitey"] {
 #tb-ai:focus { outline: none; }
 #tb-ai svg { width: 16px; height: 16px; display: block; }
 
-/* 顶部工具栏运行入口（AI 入口右侧，窗口控制按钮左侧） */
+/* 顶部工具栏运行入口（最左侧，编辑区收起与 AI 入口之前） */
 #tb-run {
     width: 30px;
     height: 26px;
@@ -5482,27 +5482,26 @@ html[data-theme="whitey"] {
 #top-row.ai-dock-fill #ai-panel.ai-dock .ai-resize-l { display: none; }
 #top-row.ai-dock-fill.ai-left #ai-panel.ai-dock .ai-resize-r { display: none; }
 
-/* 编辑区收起条：手动把内容区位置让给 AI 助手（标签页保留），点击切换收起/展开 */
+/* 标题栏编辑区收起按钮（运行与 AI 入口之间）：把内容区位置让给 AI 助手（标签页保留），点击切换收起/展开 */
 #editor-collapse-strip {
-    flex: none;
-    width: 14px;
+    width: 30px;
+    height: 26px;
+    display: grid;
+    place-items: center;
     padding: 0;
     border: none;
-    border-left: 1px solid var(--border);
+    border-radius: 4px;
     background: none;
     color: var(--muted);
     cursor: pointer;
-    display: grid;
-    place-items: center;
+    flex: none;
 }
 #editor-collapse-strip:hover { background: var(--hover); color: var(--text); }
 #editor-collapse-strip:focus { outline: none; }
-#editor-collapse-strip svg { width: 13px; height: 13px; display: block; }
-#top-row.ai-editor-collapsed #editor-collapse-strip svg { transform: rotate(180deg); }
-/* AI 面板停靠左侧时收起条排到最右，箭头方向随布局翻转 */
-#top-row.ai-left #editor-collapse-strip { order: 3; border-left: none; border-right: 1px solid var(--border); }
-#top-row.ai-left #editor-collapse-strip svg { transform: rotate(180deg); }
-#top-row.ai-left.ai-editor-collapsed #editor-collapse-strip svg { transform: none; }
+#editor-collapse-strip.active { background: var(--accent-weak); color: var(--accent); }
+#editor-collapse-strip svg { width: 14px; height: 14px; display: block; }
+/* 收起态箭头翻转（用按钮自身 aria-pressed 判定，按钮在标题栏不在 top-row 内） */
+#editor-collapse-strip[aria-pressed="true"] svg { transform: rotate(180deg); }
 /* 收起态：编辑区隐藏，AI 停靠面板占满（与 ai-dock-fill 同款约束） */
 #top-row.ai-editor-collapsed #main-pane { display: none; }
 #top-row.ai-editor-collapsed #ai-panel.ai-dock {
