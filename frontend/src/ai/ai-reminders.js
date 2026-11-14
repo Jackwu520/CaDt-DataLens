@@ -106,6 +106,12 @@ const REMINDER_STYLE = `
 .ai-rem-add-foot { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
 .ai-rem-add-hint { font-size: 10px; opacity: .55; }
 .ai-rem-add-btn { flex: none; }
+.ai-rem-btn.hidden { display: none; }
+.ai-rem-create { position: absolute; z-index: 60; width: 250px; padding: 10px; display: flex; flex-direction: column; gap: 6px; background: var(--panel2); border: 1px solid var(--border, rgba(128,128,128,.4)); border-radius: 9px; box-shadow: 0 8px 24px rgba(0,0,0,.35); }
+.ai-rem-create-title { font-size: 12px; font-weight: 600; }
+.ai-rem-create input { width: 100%; box-sizing: border-box; font-size: 12px; padding: 4px 6px; border-radius: 6px; border: 1px solid var(--border, rgba(128,128,128,.4)); background: var(--input, transparent); color: inherit; }
+.ai-rem-create-err { font-size: 10.5px; color: var(--red, #e5534b); min-height: 13px; }
+.ai-rem-create-foot { display: flex; justify-content: flex-end; gap: 6px; }
 `;
 
 export function createAIReminders(ctx) {
@@ -118,6 +124,7 @@ export function createAIReminders(ctx) {
     let remBadge = null;
     let remPop = null;
     let mounted = false;
+    let createBox = null; // 「+」菜单弹出的创建小对话框（同时只一个）
 
     function activeList() {
         const session = currentSession();
@@ -177,11 +184,126 @@ export function createAIReminders(ctx) {
             remBadge.classList.toggle('hidden', count === 0);
         }
         if (remBtn) {
-            remBtn.title = count
-                ? '任务提醒（' + count + ' 条未完成；AI 可用 reminder_* 工具维护）'
-                : '任务提醒（防止长对话遗漏；AI 可用 reminder_* 工具维护）';
+            // 无未完成条目时不显示铃铛；创建入口在消息框「+」→ 任务提醒
+            remBtn.classList.toggle('hidden', count === 0);
+            remBtn.title = '任务提醒（' + count + ' 条未完成；AI 可用 reminder_* 工具维护）';
         }
         if (remPop && !remPop.classList.contains('hidden')) renderPopover();
+    }
+
+    // addReminder 写入一条提醒：弹层底部表单与「+」菜单创建对话框共用这条路径。
+    // 成功返回 null（已持久化并刷新 UI），失败返回给用户看的错误文案。
+    function addReminder(title, detail) {
+        const session = currentSession();
+        if (!session) return '当前没有会话';
+        const blocked = reminderAddBlocked(activeList());
+        if (blocked) return blocked;
+        session.reminders = normalizeReminders(activeList().concat([{
+            id: 'rem-' + Date.now().toString(36),
+            title,
+            detail,
+            status: 'open',
+            createdAt: Date.now(),
+        }]));
+        persistSessions();
+        renderPopover();
+        refresh();
+        return null;
+    }
+
+    function closeCreateDialog() {
+        if (createBox) {
+            createBox.remove();
+            createBox = null;
+        }
+    }
+
+    // 「+」菜单的手动创建对话框：标题必填 + 简述可选，锚在 composer 上方
+    function openCreateDialog() {
+        const session = currentSession();
+        if (!session) {
+            flash('当前没有会话，无法添加任务提醒', true);
+            return;
+        }
+        closeCreateDialog();
+        const box = document.createElement('div');
+        box.className = 'ai-rem-create';
+        const title = document.createElement('div');
+        title.className = 'ai-rem-create-title';
+        title.textContent = '新建任务提醒';
+        const titleInput = document.createElement('input');
+        titleInput.type = 'text';
+        titleInput.maxLength = AI_REMINDER_TITLE_MAX;
+        titleInput.placeholder = '提醒标题（必填，≤' + AI_REMINDER_TITLE_MAX + ' 字）';
+        const detailInput = document.createElement('input');
+        detailInput.type = 'text';
+        detailInput.maxLength = AI_REMINDER_DETAIL_MAX;
+        detailInput.placeholder = '补充说明（可选，≤' + AI_REMINDER_DETAIL_MAX + ' 字）';
+        const errEl = document.createElement('div');
+        errEl.className = 'ai-rem-create-err';
+        const foot = document.createElement('div');
+        foot.className = 'ai-rem-create-foot';
+        const cancelBtn = document.createElement('button');
+        cancelBtn.type = 'button';
+        cancelBtn.className = 'dlg-btn';
+        cancelBtn.textContent = '取消';
+        const addBtn = document.createElement('button');
+        addBtn.type = 'button';
+        addBtn.className = 'dlg-btn';
+        addBtn.textContent = '添加';
+        foot.append(cancelBtn, addBtn);
+        box.append(title, titleInput, detailInput, foot, errEl);
+        panel.appendChild(box);
+        const composer = panel.querySelector('.ai-composer');
+        const panelRect = panel.getBoundingClientRect();
+        if (composer) {
+            const composerRect = composer.getBoundingClientRect();
+            box.style.bottom = Math.max(8, panelRect.bottom - composerRect.top + 8) + 'px';
+            let left = composerRect.left - panelRect.left;
+            left = Math.max(8, Math.min(left, panel.clientWidth - 258));
+            box.style.left = left + 'px';
+        } else {
+            box.style.bottom = '60px';
+            box.style.left = '12px';
+        }
+        createBox = box;
+        titleInput.focus();
+        const close = () => {
+            closeCreateDialog();
+            document.removeEventListener('mousedown', onOutside, true);
+        };
+        const onOutside = (e) => {
+            if (createBox && !createBox.contains(e.target)) close();
+        };
+        document.addEventListener('mousedown', onOutside, true);
+        cancelBtn.addEventListener('click', close);
+        const submit = () => {
+            const value = titleInput.value.trim();
+            if (!value) {
+                errEl.textContent = '提醒标题不能为空';
+                titleInput.focus();
+                return;
+            }
+            const err = addReminder(value, detailInput.value.trim());
+            if (err) {
+                errEl.textContent = err;
+                return;
+            }
+            close();
+            flash('任务提醒已添加（' + openCount() + ' 条未完成）');
+        };
+        addBtn.addEventListener('click', submit);
+        for (const input of [titleInput, detailInput]) {
+            input.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    submit();
+                } else if (e.key === 'Escape') {
+                    e.stopPropagation();
+                    close();
+                }
+            });
+        }
     }
 
     function renderPopover() {
@@ -286,23 +408,13 @@ export function createAIReminders(ctx) {
                 flash('提醒标题不能为空', true);
                 return;
             }
-            const blocked = reminderAddBlocked(activeList());
-            if (blocked) {
-                flash(blocked, true);
+            const err = addReminder(value, detailInput.value.trim());
+            if (err) {
+                flash(err, true);
                 return;
             }
-            session.reminders = normalizeReminders(activeList().concat([{
-                id: 'rem-' + Date.now().toString(36),
-                title: value,
-                detail: detailInput.value.trim(),
-                status: 'open',
-                createdAt: Date.now(),
-            }]));
             titleInput.value = '';
             detailInput.value = '';
-            persistSessions();
-            renderPopover();
-            refresh();
         };
         addBtn.addEventListener('click', submit);
         for (const input of [titleInput, detailInput]) {
@@ -343,5 +455,5 @@ export function createAIReminders(ctx) {
         hidePopover();
     });
 
-    return {mount, refresh, hidePopover};
+    return {mount, refresh, hidePopover, openCreateDialog, closeCreateDialog};
 }

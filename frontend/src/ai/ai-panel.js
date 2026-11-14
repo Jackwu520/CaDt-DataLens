@@ -8840,6 +8840,7 @@ export function createAIPanel(options) {
                 {label: '倒计时…', action: () => timerMod.openCreateDialog('countdown')},
                 {label: '正计时…', action: () => timerMod.openCreateDialog('countup')},
             ]},
+            {label: '任务提醒…', action: () => remindersMod.openCreateDialog()},
             {sep: true},
             {label: '指令', submenu: [
                 {label: '压缩上下文', action: () => startCompact()},
@@ -11447,6 +11448,8 @@ export function createAIPanel(options) {
         },
         // 计时器注册表（调试 / 插件作者可经 window.__lens.aiPanel.timerMod 驱动）
         timerMod,
+        // 任务提醒域（调试驱动：openCreateDialog / refresh）
+        remindersMod,
         // 端侧分类器（设置页测试框 / 状态行 / 重置清空导出经此触达）
         localClassifierMod,
         refreshScheduleSettings: renderScheduleSettings,
