@@ -6925,8 +6925,7 @@ html[data-theme="whitey"] {
     max-height: 180px;
     resize: none;
     padding: 6px 8px;
-    border: 1px solid var(--border);
-    border-radius: 5px;
+    border: none;
     background: transparent;
     color: var(--text);
     font: inherit;
@@ -6934,7 +6933,7 @@ html[data-theme="whitey"] {
     line-height: 1.5;
 }
 .ai-input::placeholder { color: var(--placeholder); }
-.ai-input:focus { outline: none; border-color: var(--accent); }
+.ai-input:focus { outline: none; }
 .ai-composer-bottom { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .ai-hint {
     min-width: 0;
