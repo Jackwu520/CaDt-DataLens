@@ -965,7 +965,10 @@ export function createAIToolCards(ctx) {
                 // svg / html 围栏 → 可视化卡片；流式期间只占位，整轮结束后再挂载
                 enhanceWidgets(md, {streaming: !!streaming, copyText, openExternal});
             } else if (streaming) {
-                md.innerHTML = '<div class="ai-typing"><span></span><span></span><span></span></div>';
+                // 三个点占位只建一次：每帧 innerHTML 重写会重建节点、CSS 动画跟着重启（打字点闪烁）
+                if (!md.querySelector('.ai-typing')) {
+                    md.innerHTML = '<div class="ai-typing"><span></span><span></span><span></span></div>';
+                }
             } else if (message.status === 'stopped') {
                 md.textContent = '（已停止生成）';
             } else {
@@ -984,8 +987,12 @@ export function createAIToolCards(ctx) {
         // 整轮结束后由真实工具卡接替（非流式渲染时移除残留占位）
         const bubble = wrap.querySelector('.ai-bubble');
         if (bubble) {
-            const staleLive = bubble.querySelector('.ai-live-tools');
-            if (staleLive) staleLive.remove();
+            // 非流式渲染（轮结束 / 历史回放）才清残留占位；流式期间绝不能每帧删——
+            // 占位区被删后 updateLiveTools 面对空盒子全量重建行，spinner 动画每帧重启（闪烁回归）
+            if (!streaming) {
+                const staleLive = bubble.querySelector('.ai-live-tools');
+                if (staleLive) staleLive.remove();
+            }
             const live = (streaming && options && Array.isArray(options.liveTools)) ? options.liveTools : null;
             let box = bubble.querySelector('.ai-live-tools');
             if (!live || !live.length) {
