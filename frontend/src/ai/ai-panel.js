@@ -139,7 +139,7 @@ import {createAIManageDialogs} from './ai-manage-dialogs.js';
 import {createAISettingsDialog} from './ai-settings-dialog.js';
 import {createAISubagents} from './ai-subagents.js';
 import {
-    normalizePersona, personaSegments, resolveAssistantName,
+    escapeXmlText, normalizePersona, personaSegments, resolveAssistantName,
 } from './ai-persona.js';
 
 export function createAIPanel(options) {
@@ -867,6 +867,15 @@ export function createAIPanel(options) {
             lastConfigLoadAt = Date.now();
             applyLoadedAIConfig();
         } catch (e) {}
+    }
+
+    // 浮窗是独立进程（ai_float.go 用 --new-window --ai-float 起 exe），配置各存一份内存。
+    // 主窗口「打开面板即重读」由 open() 的 reloadStoredAIState 分支覆盖，但那条路对浮窗硬短路，
+    // 所以这里给浮窗补一条：窗口重新聚焦时按 2s 节流重读磁盘配置（个性化设定 / 模型设置都跟着更新）。
+    if (floatWindow) {
+        window.addEventListener('focus', () => {
+            if (!anyStreaming()) reloadAIConfigFromDisk();
+        });
     }
 
     function inferApprovalActor(raw, state) {
@@ -2008,6 +2017,8 @@ export function createAIPanel(options) {
         setMemoryFallbackNotified: (value) => { memoryFallbackNotified = value; },
         // 惰性转发：三别名构造于本模块之后（对话框 / 定时任务互引）
         showMemoryDialog: (...args) => showMemoryDialog(...args),
+        // 操作留痕：个性化改动只记字段名，不记正文（activity 为空时各子域自行降级）
+        activity,
         showSkillsDialog: (...args) => showSkillsDialog(...args),
         openScheduleEditor: (...args) => openScheduleEditor(...args),
     });
@@ -7325,8 +7336,25 @@ export function createAIPanel(options) {
             env: {count: 0},
             workspace: {loaded: false, files: 0},
             attachments: {count: 0, chars: 0},
+            persona: {enabled: false, style: 'default', personaChars: 0, personaSource: '', instructionChars: 0},
             errors: [],
         };
+
+        // 个性化四段（身份 / 人设 / 回复风格 / 长期指令）：属「稳定」区，紧贴 base 之后、
+        // AGENTS.md 之前。总开关关闭时四段全不注入（含 <identity>）——一次短路，不逐段判。
+        if (settings.aiInjectPersona !== false) {
+            const personaPart = personaSegments(config.persona, config.outputLanguage);
+            for (const text of personaPart.segments) parts.push(text);
+            meta.persona = personaPart.meta;
+        } else {
+            meta.persona = {
+                enabled: false,
+                style: normalizePersona(config.persona).replyStyle,
+                personaChars: 0,
+                personaSource: '',
+                instructionChars: 0,
+            };
+        }
 
         if (settings.aiInjectAgentsMd !== false) {
             const project = aiProjectRoot();
@@ -7360,7 +7388,8 @@ export function createAIPanel(options) {
                 parts.push([
                     '<user_preferences>',
                     '以下为用户设定的长期偏好，在不违反任务目标与安全规则时优先遵循：',
-                    ...prefs.map((pref) => '- ' + pref.text),
+                    // 偏好可由模型自己写入，内容不可信来源不限于用户手输；与个性化段同一转义口径
+                    ...prefs.map((pref) => '- ' + escapeXmlText(pref.text).replace(/\n/g, ' ')),
                     '</user_preferences>',
                 ].join('\n'));
                 meta.preferences = {count: prefs.length};
@@ -10968,6 +10997,9 @@ export function createAIPanel(options) {
             if (!floatWindow) {
                 if (anyStreaming() || oneShot) renderSessionList();
                 else reloadStoredAIState();
+            } else if (!anyStreaming()) {
+                // 浮窗：只重读配置（不动会话），主窗口改完设定后切回来就能拿到新名字 / 新风格
+                reloadAIConfigFromDisk();
             }
             if (window.innerWidth < 900 && settings.showSidebar && typeof opts.collapseSidebar === 'function') {
                 opts.collapseSidebar();
