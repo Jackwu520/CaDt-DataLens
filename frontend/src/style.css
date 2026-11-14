@@ -6922,7 +6922,8 @@ html[data-theme="whitey"] {
     box-sizing: border-box;
     width: 100%;
     min-height: 44px;
-    max-height: 180px;
+    /* 上限 8 行（与 ai-composer resizeInput 同一口径）：行高 1.5 × 字号 × 8 + 上下内边距 12px */
+    max-height: calc(8 * 1.5em + 12px);
     resize: none;
     padding: 6px 8px;
     border: none;

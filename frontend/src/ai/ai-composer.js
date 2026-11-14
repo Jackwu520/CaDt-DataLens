@@ -394,11 +394,15 @@ export function createAIComposer(ctx) {
         showNote('已加载技能：' + target.name + '（随下一轮发送）');
     }
 
+    // 输入框随内容长高，上限 8 行：按当前字号行高与上下内边距动态算上限（字号可自定义），
+    // 到顶后 textarea 内部滚动；与 CSS 的 max-height: calc(8 * 1.5em + 12px) 保持同一口径
     function resizeInput() {
         if (!el.input) return;
         el.input.style.height = 'auto';
-        const height = Math.min(180, Math.max(44, el.input.scrollHeight));
-        el.input.style.height = height + 'px';
+        const cs = getComputedStyle(el.input);
+        const line = parseFloat(cs.lineHeight) || (parseFloat(cs.fontSize) || 13) * 1.5;
+        const max = Math.round(line * 8 + (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0));
+        el.input.style.height = Math.min(max, Math.max(44, el.input.scrollHeight)) + 'px';
     }
 
     // ev：点击事件可带 Ctrl/Meta——生成中点发送按钮 = 排队，按住 Ctrl 点 = 插话（与 Ctrl+Enter 同路）。
