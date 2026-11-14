@@ -14,10 +14,10 @@ import {createMarkdownRenderer, decodeMermaidSource, encodeMermaidSource} from '
 import {createWritingMode} from './writing-mode.js';
 import {createMarkdownMermaid} from '../editor/markdown-mermaid.js';
 import {createFootMenus} from '../editor/foot-menus.js';
-import {createSettingsPaneRun} from './settings-pane-run.js';
-import {createSettingsPanePlugins} from './settings-pane-plugins.js';
-import {createSettingsPaneEnvvars} from './settings-pane-envvars.js';
-import {createSettingsPaneLang} from './settings-pane-lang.js';
+import {createSettingsPaneRun} from '../settings/settings-pane-run.js';
+import {createSettingsPanePlugins} from '../settings/settings-pane-plugins.js';
+import {createSettingsPaneEnvvars} from '../settings/settings-pane-envvars.js';
+import {createSettingsPaneLang} from '../settings/settings-pane-lang.js';
 export function createWritingUI(deps) {
 
 
