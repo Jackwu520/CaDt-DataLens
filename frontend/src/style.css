@@ -4421,11 +4421,13 @@ a.jsoneditor-poweredBy { display: none !important; }
 .fmt-table { display: flex; flex-direction: column; gap: 6px; }
 .fmt-row {
     display: grid;
-    grid-template-columns: 70px repeat(4, 1fr);
+    grid-template-columns: minmax(96px, .9fr) repeat(4, minmax(0, 1fr));
     gap: 8px;
     align-items: center;
     font-size: 12px;
 }
+/* 长格式名（Java/Kotlin/C# 等）单行省略，避免把行高顶得参差不齐 */
+.fmt-row > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fmt-row.fmt-head { color: var(--muted); font-size: 11px; }
 .fmt-row select {
     width: 100%;
@@ -4467,7 +4469,8 @@ a.jsoneditor-poweredBy { display: none !important; }
 .settings-content select:focus { border-color: var(--accent); outline: none; }
 .settings-content select:disabled { opacity: 0.4; }
 .settings-content option { background: var(--bg); color: var(--text); }
-.settings-pane .popover-row select { width: 200px; flex: none; }
+/* 增强后触发器是 div，原来的标签选择器不再命中，这里把 wrap 一并算进来 */
+.settings-pane .popover-row :is(select, .set-select) { width: 200px; flex: none; }
 .plugin-toolbar { display: flex; gap: 8px; flex-wrap: wrap; }
 .plugin-trust-hint { display: flex; align-items: flex-start; gap: 6px; }
 .plugin-trust-icon { display: inline-flex; flex: none; margin-top: 1px; color: var(--warn, #d9a441); }
@@ -5535,7 +5538,10 @@ html[data-theme="whitey"] {
    消息区因此占满面板全高，滚动条轨道随之占满；消息内容用 padding-bottom
    （ai-panel 里按堆叠区实际高度 ResizeObserver 设置）兜底，末条消息不被遮挡。
    整块铺与面板同色的底：消息从其下方滚过被直接盖住（dsh 式无边界遮挡，不加分割线），
-   任务清单 / 输入区 / 统计行不再各自呈半透明悬浮卡片 */
+   任务清单 / 输入区 / 统计行不再各自呈半透明悬浮卡片。
+   铺底放在 ::before 而不是自身 background 上：本区 z-index 高于消息区，整块铺色会把
+   消息区滚动条的**下半截**一起盖掉（看不见也拖不动）。::before 右侧让出滚动条槽宽，
+   滚动条从顶到底完整可见；露出来的仍是消息区自己的 --bg，观感与整块铺色一致 */
 .ai-bottom-stack {
     position: absolute;
     left: 0;
@@ -5546,7 +5552,20 @@ html[data-theme="whitey"] {
     flex-direction: column;
     flex: none;
     max-height: 82vh;
+    background: none;
+    pointer-events: none;
+}
+.ai-bottom-stack::before {
+    content: '';
+    position: absolute;
+    /* 右侧让出滚动条槽宽：--ai-sbw 由 ai-panel 的 syncScrollbarGutter 实测后写在 #ai-panel 上
+       （浮层滚动条也至少让 12px）；未测到时按 12px 兜底 */
+    inset: 0 var(--ai-sbw, 12px) 0 0;
     background: var(--bg);
+    /* 必须在负层：伪元素是定位元素，默认会画在**静态子元素之上**——任务清单 / 上下文警告条
+       都是静态定位，铺底会整块盖住它们（表现为任务面板凭空消失）。
+       本区 z-index:25 自成层叠上下文，负层不会掉到消息区下面 */
+    z-index: -1;
     pointer-events: none;
 }
 .ai-bottom-stack > * { pointer-events: auto; }
@@ -6610,7 +6629,9 @@ html[data-theme="whitey"] {
     display: flex;
     flex-direction: column;
     gap: 6px;
-    margin: 0 10px 10px;
+    /* 右边距跟着滚动条槽宽走：本卡自身透明、底色靠 .ai-bottom-stack 的铺底，
+       右边缘若探进「让给滚动条」的那一条，滚动条会从卡片右侧透出来（像压在输入框上） */
+    margin: 0 var(--ai-sbw, 12px) 10px 10px;
     padding: 8px 10px 10px;
     max-height: min(66%, 620px);
     border: 1px solid var(--border);
@@ -8686,7 +8707,8 @@ body.console-only > :not(.dbg-console) { display: none !important; }
 #ai-panel.ai-dock .ai-composer,
 #ai-panel.ai-fullscreen .ai-composer {
     margin-left: max(10px, calc((100% - var(--ai-fullscreen-width, 100%)) / 2));
-    margin-right: max(10px, calc((100% - var(--ai-fullscreen-width, 100%)) / 2));
+    /* 右侧同样让开滚动条槽宽（见 .ai-composer 与 .ai-bottom-stack::before） */
+    margin-right: max(var(--ai-sbw, 12px), calc((100% - var(--ai-fullscreen-width, 100%)) / 2));
     padding-left: 10px;
     padding-right: 10px;
 }
@@ -9106,6 +9128,26 @@ html[data-writing="on"][data-writing-paper="dim"] .jsoneditor textarea.jsonedito
     white-space: nowrap;
 }
 .act-detail-btn { flex: none; padding: 1px 8px; font-size: 11px; }
+/* ===== 补丁库（设置 → 开发者）===== */
+.patch-store-list { display: flex; flex-direction: column; max-height: 260px; overflow: auto; }
+.patch-store-empty { padding: 12px 8px; color: var(--muted); font-size: 12px; text-align: center; }
+.patch-store-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 6px;
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+}
+.patch-store-row:last-child { border-bottom: none; }
+.ps-time { flex: none; color: var(--muted); font-variant-numeric: tabular-nums; font-size: 11px; }
+.ps-badge { flex: none; padding: 1px 7px; border-radius: 999px; font-size: 10.5px; line-height: 16px; white-space: nowrap; }
+.ps-badge-ok { background: color-mix(in srgb, var(--success, #3fb950) 18%, transparent); color: var(--success, #3fb950); }
+.ps-badge-warn { background: color-mix(in srgb, var(--warn, #d9a441) 20%, transparent); color: var(--warn, #d9a441); }
+.ps-badge-error { background: color-mix(in srgb, var(--danger, #f85149) 18%, transparent); color: var(--danger, #f85149); }
+.ps-badge-muted { background: color-mix(in srgb, var(--muted) 16%, transparent); color: var(--muted); }
+.ps-summary { flex: 1 1 auto; min-width: 0; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ps-del { flex: none; padding: 1px 8px; font-size: 11px; }
 .act-detail {
     flex-basis: 100%;
     margin: 2px 0 4px;
@@ -9610,19 +9652,93 @@ body.bgterm-dragging { cursor: row-resize; user-select: none; }
 .set-control input[type="number"] { width: 72px; flex: none; }
 .set-control input.ai-font-size-num { width: 64px; }
 
-/* ============ 自定义下拉（替代原生 select 弹层）：隐藏原生保留真源，change 照常派发 ============ */
-.set-select { position: relative; display: inline-flex; }
+/* ============ 自定义下拉（Portal 版）：浮层挂 body，绕开设置面板 overflow 裁剪 ============ */
+/* 原生 select 隐藏但保留为值真源；wrap 继承其布局类，宽度规则不变，change 照常派发 */
+.set-select { position: relative; display: inline-flex; min-width: 0; max-width: 100%; padding: 0; border: 0; background: none; }
 .set-select-native { display: none !important; }
-.set-select-btn { display: inline-flex; align-items: center; justify-content: space-between; gap: 10px; min-width: 190px; max-width: 300px; padding: 5px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel2); color: var(--text); font: inherit; font-size: 12.5px; cursor: default; }
-.set-select-btn:hover { border-color: var(--muted); }
+.set-select-btn {
+    display: inline-flex; align-items: center; justify-content: space-between; gap: 10px;
+    width: 100%; min-width: 0; max-width: none; box-sizing: border-box;
+    padding: 6px 10px; border: 1px solid var(--border); border-radius: 7px;
+    background: var(--panel2); color: var(--text); font: inherit; font-size: 12.5px;
+    line-height: 1.35; text-align: left; cursor: default;
+    transition: border-color .14s ease, box-shadow .14s ease, background-color .14s ease;
+}
+.set-select-btn:hover:not(:disabled) { border-color: color-mix(in srgb, var(--muted) 60%, var(--border)); background: color-mix(in srgb, var(--panel2) 88%, var(--hover)); }
+.set-select-btn:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent); }
+.set-select.open .set-select-btn { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent); }
+.set-select-btn:disabled { opacity: .45; cursor: not-allowed; }
+.set-select.is-disabled .ss-chev { opacity: .6; }
 .set-select-btn .ss-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.set-select-btn .ss-chev { display: inline-flex; color: var(--muted); transition: transform .12s ease; flex: none; }
+.set-select-btn .ss-chev { display: inline-flex; color: var(--muted); transition: transform .14s ease; flex: none; }
 .set-select.open .ss-chev { transform: rotate(180deg); }
-.set-select-pop { position: absolute; left: 0; top: calc(100% + 6px); min-width: 100%; max-width: 340px; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 10px 32px rgba(0, 0, 0, .32); padding: 5px; display: none; z-index: 70; }
-.set-select-pop.up { top: auto; bottom: calc(100% + 6px); }
-.set-select.open .set-select-pop { display: block; }
-.ss-opt { display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 10px; border: none; border-radius: 6px; background: none; color: var(--text); font: inherit; font-size: 12.5px; text-align: left; cursor: default; }
-.ss-opt:hover, .ss-opt.ss-focus { background: var(--hover); }
-.ss-opt.selected { background: var(--hover); font-weight: 600; }
+
+/* 全局唯一浮层：fixed + 高 z-index；尺寸与位置全部由 JS 按视口算出（向下/向上 + 限高 + 边界） */
+.set-select-pop {
+    position: fixed; left: 0; top: 0; box-sizing: border-box;
+    background: var(--panel2); border: 1px solid var(--border); border-radius: 10px;
+    box-shadow: 0 14px 36px var(--shadow-strong), 0 2px 8px rgba(0, 0, 0, .18);
+    padding: 5px; display: none; z-index: 1200; outline: none;
+    overscroll-behavior: contain; --wails-draggable: no-drag;
+}
+.set-select-pop.open { display: block; }
+.set-select-pop::-webkit-scrollbar { width: 8px; }
+.set-select-pop::-webkit-scrollbar-thumb { background: var(--border); border-radius: 8px; }
+.ss-opt {
+    display: flex; align-items: center; gap: 8px; width: 100%; box-sizing: border-box;
+    padding: 7px 10px; border: none; border-radius: 6px; background: none;
+    color: var(--text); font: inherit; font-size: 12.5px; line-height: 1.35;
+    text-align: left; cursor: default;
+}
+.ss-opt .ss-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ss-opt:disabled { opacity: .4; cursor: not-allowed; }
+.ss-opt:hover:not(:disabled), .ss-opt.ss-focus { background: var(--hover); }
+.ss-opt.selected { font-weight: 600; }
 .ss-opt .ss-check { display: none; margin-left: auto; color: var(--accent); flex: none; }
 .ss-opt.selected .ss-check { display: inline-flex; }
+.ss-group { padding: 7px 10px 3px; color: var(--muted); font-size: 10.5px; font-weight: 600; letter-spacing: .04em; }
+.ss-empty { padding: 10px; color: var(--muted); font-size: 12px; text-align: center; }
+
+/* 格式总览表格：下拉由增强器接管，触发器撑满网格列 */
+.fmt-row .set-select { width: 100%; min-width: 0; max-width: none; }
+.fmt-row .set-select-btn { width: 100%; min-width: 0; }
+
+/* ============ 设置页输入控件：统一现代化表单外观 ============ */
+.settings-content :is(input[type="text"], input[type="search"], input[type="password"], input[type="number"], input[type="url"], input[type="email"], input[type="tel"], input:not([type])),
+.settings-content textarea,
+.dlg-input {
+    box-sizing: border-box;
+    background-color: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    padding: 6px 10px;
+    font: inherit;
+    font-size: 12.5px;
+    line-height: 1.5;
+    outline: none;
+    transition: border-color .14s ease, box-shadow .14s ease, background-color .14s ease;
+}
+.settings-content :is(input[type="text"], input[type="search"], input[type="password"], input[type="number"], input[type="url"], input[type="email"], input[type="tel"], input:not([type])):hover:not(:disabled),
+.settings-content textarea:hover:not(:disabled),
+.dlg-input:hover:not(:disabled) { border-color: color-mix(in srgb, var(--muted) 60%, var(--border)); }
+.settings-content :is(input[type="text"], input[type="search"], input[type="password"], input[type="number"], input[type="url"], input[type="email"], input[type="tel"], input:not([type])):focus,
+.settings-content textarea:focus,
+.dlg-input:focus {
+    border-color: var(--accent);
+    background-color: var(--field-focus-bg, var(--bg));
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+.settings-content :is(input[type="text"], input[type="search"], input[type="password"], input[type="number"], input[type="url"], input[type="email"], input[type="tel"], input:not([type]))::placeholder,
+.settings-content textarea::placeholder,
+.dlg-input::placeholder { color: var(--muted); opacity: .82; }
+.settings-content :is(input[type="text"], input[type="search"], input[type="password"], input[type="number"], input[type="url"], input[type="email"], input[type="tel"], input:not([type])):disabled,
+.settings-content textarea:disabled,
+.dlg-input:disabled { opacity: .5; cursor: not-allowed; }
+.settings-content textarea, textarea.dlg-input { display: block; resize: vertical; min-height: 72px; }
+/* .set-row-top 是 block 容器，flex:1 对 textarea / input 无效，原来会塌成浏览器默认的 20 列宽 */
+.set-row-top > textarea,
+.set-row-top > input[type="text"],
+.set-row-top > input:not([type]) { display: block; width: 100%; }
+.settings-content textarea.ai-settings-textarea { min-height: 96px; font-family: var(--editor-font-family); font-size: 12px; line-height: 1.6; }
+.settings-content input.run-template-input { height: 30px; padding: 4px 10px; font-family: 'JetBrains Mono', Consolas, monospace; font-size: 11.5px; }

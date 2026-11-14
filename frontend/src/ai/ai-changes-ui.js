@@ -2,6 +2,7 @@
 // 从 ai-panel.js 拆出（docs/unfinished-plans/structure-cleanup.md 阶段 3），函数体逐字搬移。
 // 依赖（opts 常量、const Map、面板函数）均引用稳定，经 ctx 注入。
 import {aiFormatTime, aiTextOf} from './ai-constants.js';
+import {createFileIcon} from '../core/fileicons.js';
 
 export function createAIChangesUI(ctx) {
     const changesSummaryFold = ctx.changesSummaryFold;
@@ -93,7 +94,7 @@ export function createAIChangesUI(ctx) {
             const time = document.createElement('span');
             time.className = 'ai-change-time';
             time.textContent = aiFormatTime(change.time);
-            row.append(path, stat, time);
+            row.append(createFileIcon(change.relPath || change.path, 'ai-tool-fileicon'), path, stat, time);
             row.addEventListener('click', () => {
                 hideChangesPopover();
                 try {
@@ -241,7 +242,7 @@ export function createAIChangesUI(ctx) {
             fDel.className = 'del';
             fDel.textContent = '−' + file.removed;
             nums.append(fAdd, fDel);
-            row.append(name, nums);
+            row.append(createFileIcon(file.relPath, 'ai-tool-fileicon'), name, nums);
             if (rollbackGitPaths) {
                 // 行尾「撤销」：回滚该文件到 HEAD（AI 新建文件则删除）。span 承载避免按钮嵌套
                 const undo = document.createElement('span');

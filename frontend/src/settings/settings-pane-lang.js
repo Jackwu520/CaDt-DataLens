@@ -1,5 +1,7 @@
 // 设置 → 格式与语言：格式表、语言/工具链扫描与包管理、fmtSize 等格式化助手。
 // 从 writing-ui.js 拆出；视图模型（deps.LANG_DEFS/deps.ENCODINGS/deps.INDENTS/deps.EOLS/viewOptionsFor）与 makeSelect 由宿主注入。
+import {formats} from '../core/formats.js';
+
 export function createSettingsPaneLang(deps) {
 
 function setupFormatSettings() {
@@ -543,21 +545,29 @@ function renderFmtTable() {
         row.className = 'fmt-row';
         const name = document.createElement('span');
         name.textContent = f.name;
+        name.title = f.name; // 长名称单行省略后仍可悬停看全
         row.appendChild(name);
         const update = (key) => (value) => {
             deps.settings.formatSettings[f.id][key] = value;
             deps.applySettings();
         };
-        row.appendChild(deps.makeSelect(deps.ENCODINGS, fs.encoding, update('encoding')));
-        row.appendChild(deps.makeSelect(deps.INDENTS, fs.indent, update('indent')));
-        row.appendChild(deps.makeSelect(deps.EOLS, fs.eol, update('eol')));
+        // 挂 opt-select 布局类：增强后 wrap 会继承它，宽度与设置页其它下拉一致；
+        // aria-label 会传给自绘触发器，让每一列都读得出含义。
+        const decorate = (sel, label) => {
+            sel.classList.add('opt-select');
+            sel.setAttribute('aria-label', f.name + ' · ' + label);
+            return sel;
+        };
+        row.appendChild(decorate(deps.makeSelect(deps.ENCODINGS, fs.encoding, update('encoding')), '编码'));
+        row.appendChild(decorate(deps.makeSelect(deps.INDENTS, fs.indent, update('indent')), '缩进'));
+        row.appendChild(decorate(deps.makeSelect(deps.EOLS, fs.eol, update('eol')), '保存换行'));
         const viewSel = deps.makeSelect(deps.viewOptionsFor(f), fs.view, (value) => {
             deps.settings.formatSettings[f.id].view = value;
             deps.applySettings();
             if (deps.file && deps.file.format.id === f.id) deps.switchMode(value);
         });
         if (f.id === 'text') viewSel.disabled = true;
-        row.appendChild(viewSel);
+        row.appendChild(decorate(viewSel, '默认视图'));
         table.appendChild(row);
     }
 }
