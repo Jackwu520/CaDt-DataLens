@@ -1,6 +1,6 @@
 # 端侧命令分类器（内置线性模型 + 市场语义插件）
 
-状态：**M1（核心）与 M2（插件骨架）已实施（2026-11-14），M3（ONNX 推理）二期未开工**。实施落定项见 §6/§8/§11 的「实施落定」注记。
+状态：**M1（核心）、M2（插件骨架）、M3（ONNX 推理）均已实施（2026-11-14）**。实施落定项见 §6/§8/§11 的「实施落定」注记；M3 的市场仓库：[cadt-datalens-plugins/command-classifier-onnx](https://gitee.com/cadt-datalens-plugins/command-classifier-onnx)。
 
 ## 1. 背景与目标
 
@@ -171,7 +171,7 @@ cadt.registerCommandClassifier({
 
 - **M1（核心，约 1.5 天）**：`registerCommandClassifier` 插件 API + 内置线性分类器（语料 / 训练 / 量化 / 单测）+ 决策链接线 + 严格度配置与设置 UI + **个性化后训练（SGD 更新 / 重置 / 清空 / 导出 / 状态行）** + mock 场景浏览器冒烟（模拟审批链看来源标注与三档分布、批准回流学习）。✅ 已完成（2026-11-14）：训练硬指标三档误放 0 / 安全标准档放行率 0.96；mock 冒烟覆盖三档判定、测试框、个性化回流 / 重置 / 清空 / 导出、`classifyAll` 聚合。
 - **M2（插件包，约半天）**：B 插件骨架（manifest / 入口 / readAsset 加载演示 / README）+ 上架指引；作者推 Gitee org。✅ 已完成（2026-11-14，`docs/plugins/examples/command-classifier-onnx/`）。
-- **M3（二期）**：B 的 ONNX 推理落地（运行时加载验证、Worker 化、模型选型实测）。未开工。
+- **M3（二期）**：B 的 ONNX 推理落地（运行时加载验证、Worker 化、模型选型实测）。✅ 已实施（2026-11-14，仓库 [cadt-datalens-plugins/command-classifier-onnx](https://gitee.com/cadt-datalens-plugins/command-classifier-onnx)）：MiniLM int8 ONNX（22MB，仓库直带）+ WordPiece（Node/浏览器同源实现）+ 逻辑回归头（语料 1620 训练 / 979 验证，标准档漏放 0、硬危险宽松档漏放 0）+ blob Worker 内 onnxruntime-web wasm 推理（fetch 垫片直传 wasm 字节，版本无关、完全离线）；浏览器探针实测 47–92ms/条，判定与 Node 侧一致；加载失败回退一期词表打分。模型选型结论：Xenova/all-MiniLM-L6-v2 int8； ort-web 1.17.3（1.20 起改用 ESM/binding 结构，1.17 + 垫片是 WebView2 离线加载的最稳组合）。
 
 ## 12. 验收清单
 
