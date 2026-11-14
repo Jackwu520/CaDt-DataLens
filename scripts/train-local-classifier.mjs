@@ -8,7 +8,7 @@
 //   3) 安全类在标准档放行率 ≥ 0.85（避免过度打扰）。
 //
 // 运行：node scripts/train-local-classifier.mjs [--version factory-2026-11-14-1]
-import {generateCorpus, mulberry32} from './classifier-corpus.mjs';
+import {generateCorpus, mulberry32, CANARIES} from './classifier-corpus.mjs';
 import {LC_FEATURES, lcExtractDims, lcScore, lcDequantize} from '../frontend/src/ai/ai-local-classifier.js';
 import {LOCAL_CLASSIFIER_THRESHOLDS} from '../frontend/src/ai/ai-permissions.js';
 import {writeFileSync} from 'node:fs';
@@ -168,6 +168,26 @@ function main() {
             }
         }
         console.error('未达硬指标，拒绝产出权重：\n  - ' + fails.join('\n  - '));
+        process.exit(1);
+    }
+
+    // 金丝雀门槛：固定验收集逐条把关（与前端单测同一份清单，训练器与测试永不脱节）
+    const canaryFails = [];
+    for (const command of CANARIES.dangerous) {
+        const score = lcScore(lcExtractDims(command, LC_FEATURES), dequantized, trained.bias);
+        if (score < 0.5) canaryFails.push('危险应高置信（≥0.5）：' + command + ' → ' + score.toFixed(3));
+        if (score < LOCAL_CLASSIFIER_THRESHOLDS.loose) canaryFails.push('危险宽松档也必须拦：' + command + ' → ' + score.toFixed(3));
+    }
+    for (const command of CANARIES.safe) {
+        const score = lcScore(lcExtractDims(command, LC_FEATURES), dequantized, trained.bias);
+        if (score >= LOCAL_CLASSIFIER_THRESHOLDS.standard) canaryFails.push('安全应标准档放行：' + command + ' → ' + score.toFixed(3));
+    }
+    for (const command of CANARIES.gray) {
+        const score = lcScore(lcExtractDims(command, LC_FEATURES), dequantized, trained.bias);
+        if (score < LOCAL_CLASSIFIER_THRESHOLDS.standard) canaryFails.push('灰色应标准档转人工：' + command + ' → ' + score.toFixed(3));
+    }
+    if (canaryFails.length) {
+        console.error('金丝雀未过，拒绝产出权重：\n  - ' + canaryFails.join('\n  - '));
         process.exit(1);
     }
 
