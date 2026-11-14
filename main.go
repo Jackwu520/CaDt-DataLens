@@ -14,7 +14,22 @@ import (
 //go:embed all:frontend/dist
 var assets embed.FS
 
+// disableMiniMenu 禁用 Edge/WebView2 的「文本选中迷你菜单」（mini menu：Select All /
+// Paste / Find … 的白色横条，可编辑区域触发，不受应用主题控制也绕过 JS 的
+// contextmenu 接管）。用 WebView2 官方环境变量附加 Chromium feature 禁用，
+// 只追加不覆盖用户已有的附加参数；须在 WebView2 环境创建（wails.Run）之前设置。
+func disableMiniMenu() {
+	const disableFeatures = "--disable-features=msEdgeMiniMenu,msEdgeTextSelectionMenu"
+	const key = "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"
+	if prev := os.Getenv(key); prev != "" {
+		os.Setenv(key, prev+" "+disableFeatures)
+		return
+	}
+	os.Setenv(key, disableFeatures)
+}
+
 func main() {
+	disableMiniMenu()
 	if runInstallerCommand(os.Args[1:]) {
 		return
 	}
