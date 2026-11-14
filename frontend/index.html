@@ -274,6 +274,7 @@
                     <div class="snav-children">
                         <button type="button" class="snav-item snav-child" data-pane="models"><span class="snav-ic" data-icon="zap"></span><span>模型</span></button>
                         <button type="button" class="snav-item snav-child" data-pane="ai"><span class="snav-ic" data-icon="sparkles"></span><span>AI 助手</span></button>
+                        <button type="button" class="snav-item snav-child" data-pane="persona"><span class="snav-ic" data-icon="star"></span><span>个性化</span></button>
                         <button type="button" class="snav-item snav-child" data-pane="context"><span class="snav-ic" data-icon="paste"></span><span>上下文注入</span></button>
                         <button type="button" class="snav-item snav-child" data-pane="preferences"><span class="snav-ic" data-icon="star"></span><span>用户偏好</span></button>
                         <button type="button" class="snav-item snav-child" data-pane="schedules"><span class="snav-ic" data-icon="clock"></span><span>定时任务</span></button>
@@ -894,6 +895,93 @@
                                     <button type="button" id="ai-opt-clear-sessions" class="dlg-btn">清空全部会话</button>
                                 </div>
                             </div>
+                        </div>
+                    </div>
+                    <div class="settings-pane hidden" data-pane="persona">
+                        <div class="set-group-title">身份</div>
+                        <div class="set-card">
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">对你的称呼</div><div class="set-desc">助手怎么称呼你；留空则不臆造称呼</div></div>
+                                <div class="set-control">
+                                    <input id="ai-persona-user-label" class="ai-settings-input" type="text" maxlength="32" placeholder="暂无内容，点击编辑添加" spellcheck="false" autocomplete="off" aria-label="助手对你的称呼">
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">助手的名字</div><div class="set-desc" id="ai-persona-name-hint">留空即用默认名</div></div>
+                                <div class="set-control">
+                                    <input id="ai-persona-name" class="ai-settings-input" type="text" maxlength="32" placeholder="甜澄" spellcheck="false" autocomplete="off" aria-label="助手的名字">
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">回复风格</div><div class="set-desc">只影响语气，不改事实准确性与工具纪律；保存后从下一条消息起生效</div></div>
+                                <div class="set-control">
+                                    <select id="ai-persona-style" class="opt-select" aria-label="回复风格">
+                                        <option value="default">默认 · 不设定特定风格</option>
+                                        <option value="tangerine">甜澄 · 软软的粉色猫娘，话多、贪吃、路痴</option>
+                                        <option value="professional">专业严谨 · 清晰、准确、值得信赖</option>
+                                        <option value="friendly">亲和友善 · 温暖、平易近人、鼓励支持</option>
+                                        <option value="direct">直言不讳 · 简明扼要、不废话、直击要点</option>
+                                        <option value="imaginative">天马行空 · 富有想象力、善用比喻类比</option>
+                                        <option value="efficient">高效务实 · 最少文字、最大信息量</option>
+                                        <option value="snarky">毒舌吐槽 · 犀利吐槽、但绝不伤人</option>
+                                        <option value="socratic">启发引导 · 用提问引导思考、授人以渔</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="set-group-title">长期设定</div>
+                        <div class="set-card">
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">给助手的长期指令</div><div class="set-desc">每次对话都遵守；与「用户偏好」是两回事（偏好可由助手自行记录）</div></div>
+                                <div class="set-control">
+                                    <span class="popover-value" id="ai-persona-instructions-count">0 / 2048</span>
+                                </div>
+                            </div>
+                            <div class="set-row-top">
+                                <textarea id="ai-persona-instructions" class="ai-settings-input ai-settings-textarea" rows="4" maxlength="2048" spellcheck="false" placeholder="例如：回答先给结论；代码注释用中文；不确定时直说。" aria-label="给助手的长期指令"></textarea>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">人设设定</div><div class="set-desc">身份、性格、表达方式；<b>长期生效，与回复风格无关</b>。非空时优先于内置甜澄人设</div></div>
+                                <div class="set-control">
+                                    <span class="popover-value" id="ai-persona-text-count">0 / 4096</span>
+                                    <button type="button" id="ai-persona-text-load" class="dlg-btn">载入甜澄人设</button>
+                                    <button type="button" id="ai-persona-text-clear" class="dlg-btn">清空</button>
+                                </div>
+                            </div>
+                            <div class="set-row-top">
+                                <textarea id="ai-persona-text" class="ai-settings-input ai-settings-textarea" rows="8" maxlength="4096" spellcheck="false" placeholder="留空 = 不注入自定义人设（选「甜澄」风格时自动用内置人设）" aria-label="人设设定"></textarea>
+                            </div>
+                        </div>
+
+                        <div class="set-group-title">长期记忆</div>
+                        <div class="set-card">
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">记忆位置</div><div class="set-desc" id="ai-persona-memory-mode">读取中…</div></div>
+                                <div class="set-control">
+                                    <button type="button" id="ai-persona-memory-open" class="dlg-btn">打开记忆管理…</button>
+                                </div>
+                            </div>
+                            <div class="set-row-top">
+                                <pre id="ai-persona-memory-preview" class="ai-persona-memory">读取中…</pre>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-desc">这里只是预览与入口：写入仍落 .cadt/memory/MEMORY.md（或应用数据），不产生第二份记忆文件。</div></div>
+                            </div>
+                        </div>
+
+                        <div class="set-group-title">重置</div>
+                        <div class="set-card">
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">恢复默认</div><div class="set-desc">名字回「甜澄」、风格回「默认」，清空人设与长期指令；不动长期记忆与用户偏好</div></div>
+                                <div class="set-control">
+                                    <button type="button" id="ai-persona-reset" class="dlg-btn">恢复默认</button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="set-row">
+                            <div class="set-main"><div class="set-desc">保存后从下一条消息起生效，已渲染的历史消息保持不变；独立窗口（AI 浮窗）重新聚焦后读取新设定。</div></div>
                         </div>
                     </div>
                     <div class="settings-pane hidden" data-pane="context">

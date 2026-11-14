@@ -122,6 +122,9 @@ export function createAISlash(ctx) {
                 if (argText) await attachSkillByName(argText);
                 else await showSkillsDialog();
                 break;
+            case '/persona':
+                openSettings('persona');
+                break;
             case '/plan':
                 handlePlanCommand(argText);
                 break;

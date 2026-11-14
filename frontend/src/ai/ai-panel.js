@@ -449,6 +449,17 @@ export function createAIPanel(options) {
 
     let config = loadAIConfig();
     let sessions = loadAISessions();
+
+    // 个性化展示名：GUI 与注入共用同一解析（自定义名 > en > zh/auto）。
+    // 历史消息气泡保留渲染时的名字，不随改名重绘；空态 / 状态条 / 会话列表等即时更新。
+    function assistantName() {
+        return resolveAssistantName(config.persona, config.outputLanguage).name;
+    }
+
+    // 状态条与欢迎语里写死的是品牌名：改名时统一替换，默认名（甜澄）时逐字不变。
+    function personaText(text) {
+        return String(text).replace(/甜澄/g, assistantName());
+    }
     // 会话级「正在生成」注册表：每个会话各自一条流，切换会话不共享状态。
     // 后端 AISendChat 按 session.id#round 独立取消，天然支持多会话并发生成。
     // stream 只作为「当前查看会话的流」的镜像（由 syncStreamView 维护），
@@ -2019,6 +2030,8 @@ export function createAIPanel(options) {
         showMemoryDialog: (...args) => showMemoryDialog(...args),
         // 操作留痕：个性化改动只记字段名，不记正文（activity 为空时各子域自行降级）
         activity,
+        // 个性化页用：展示当前生效的助手名（与气泡 / 状态条同一解析）
+        assistantName,
         showSkillsDialog: (...args) => showSkillsDialog(...args),
         openScheduleEditor: (...args) => openScheduleEditor(...args),
     });
@@ -2211,7 +2224,8 @@ export function createAIPanel(options) {
             const title = document.createElement('strong');
             title.textContent = '开始新的对话';
             const text = document.createElement('span');
-            text.textContent = '输入问题开始对话';
+            // 空态副标题带助手名：克制、不随回复风格加梗（默认名时即「甜澄在这儿 · 输入问题开始对话」）
+            text.textContent = assistantName() + '在这儿 · 输入问题开始对话';
             box.append(title, text);
         }
         return box;
@@ -2461,7 +2475,7 @@ export function createAIPanel(options) {
             mascot.draggable = false;
             const label = document.createElement('span');
             label.className = 'ai-streaming-label';
-            label.textContent = '甜澄漫游中';
+            label.textContent = personaText('甜澄漫游中');
             const dots = document.createElement('span');
             dots.className = 'ai-process-dots';
             dots.innerHTML = '<i></i><i></i><i></i>';
@@ -2861,7 +2875,7 @@ export function createAIPanel(options) {
         }
         const started = Number(bar.dataset.phaseAt) || now;
         const phrases = AI_MASCOT_PHRASES[phase] || AI_MASCOT_PHRASES.wait;
-        const text = phrases[Math.floor(Math.max(0, now - started) / AI_MASCOT_PHRASE_ROTATE_MS) % phrases.length];
+        const text = personaText(phrases[Math.floor(Math.max(0, now - started) / AI_MASCOT_PHRASE_ROTATE_MS) % phrases.length]);
         if (label.textContent !== text) label.textContent = text;
     }
 
@@ -9268,6 +9282,7 @@ export function createAIPanel(options) {
             {sep: true},
             {label: '会话数据诊断…', icon: 'info', action: () => showSessionDiagnostics(currentSession())},
             {label: '对话日志目录…', icon: 'open-folder', action: openAILogDir},
+            {label: '个性化设置…', icon: 'star', action: () => openSettings('persona')},
             {label: '模型设置…', icon: 'gear', action: () => openSettings('models')},
         );
         showContextMenu(items, rect.left - 160, rect.bottom + 4);
@@ -11654,6 +11669,7 @@ export function createAIPanel(options) {
             {label: 'AI： 会话提示词…', action: () => { open(true); showPromptDialog(); }},
             {label: 'AI： 记忆管理…', action: () => { open(true); showMemoryDialog(); }},
             {label: 'AI： 技能管理…', action: () => { open(true); showSkillsDialog(); }},
+            {label: 'AI： 个性化设置（/persona）', action: () => { open(true); openSettings('persona'); }},
             {label: 'AI： 压缩上下文（/compact）', action: () => { open(true); startCompact(); }},
             {label: 'AI： 查看已归档消息', action: () => { open(true); showArchivedDialog(); }},
             {label: 'AI： 生成 AGENTS.md（/init）', action: () => { open(true); runInitAgentsMd(); }},
@@ -11795,6 +11811,8 @@ export function createAIPanel(options) {
         toolFoldState,
         subAgentTranscripts: subagentsMod.subAgentTranscripts,
         setDismissedPlanApproval: (value) => { dismissedPlanApproval = value; },
+        // 助手气泡头的角色标签：跟随个性化命名（默认名即「甜澄」），文本产物仍写 'AI'
+        assistantName,
     });
     const renderCommandApprovalBody = (...args) => toolCardsMod.renderCommandApprovalBody(...args);
     const renderApprovalBody = (...args) => toolCardsMod.renderApprovalBody(...args);

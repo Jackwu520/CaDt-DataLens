@@ -9,6 +9,7 @@ import {createAIModelSettings} from './ai-model-settings.js';
 import {createAIPermissionSettings} from './ai-permission-settings.js';
 import {createAIPreferenceSettings} from './ai-preference-settings.js';
 import {createAISettingsIO} from './ai-settings-io.js';
+import {createAIPersonalizationSettings} from './ai-personalization-ui.js';
 import {
     AI_INJECT_OPTION_MAP, AI_DEFAULT_SYSTEM_PROMPT, AI_PREF_LIMIT, AI_PREF_TEXT_LIMIT, AI_PRESETS,
     aiClamp, aiClampInt, aiNowId, aiTextOf,
@@ -159,7 +160,12 @@ export function createAISettingsDialog(ctx) {
     }
 
     // 编辑器当前正在编辑的模型条目：编辑器内选中的条目优先，其次激活条目。
+    // 个性化页的刷新入口：子域在本文件末尾才构造，这里用可变引用避开 TDZ，
+    // 也让 refreshSettingsPane 在「无模型账号提前返回」之前就能刷新该页。
+    let refreshPersonaPane = null;
+
     function refreshSettingsPane() {
+        if (refreshPersonaPane) refreshPersonaPane();
         const profile = activeProfile();
         const entry = modelMod.editorEntryOf(profile);
         renderProfileSelect();
@@ -962,9 +968,13 @@ export function createAISettingsDialog(ctx) {
         editorEntryOf: modelMod.editorEntryOf,
     });
     const permMod = createAIPermissionSettings(ctx, {});
+    // 个性化（称呼 / 名字 / 风格 / 人设 / 长期指令）：自管 DOM 与绑定，
+    // 首次 render 时幂等 bind，之后由 refreshSettingsPane / 导航点击驱动
+    const personaMod = createAIPersonalizationSettings(ctx, {setSettingsStatus});
+    refreshPersonaPane = personaMod.refreshPersonalizationPane;
 
     return {
-        ...permMod, ...prefMod, ...modelMod, ...ioMod,
+        ...permMod, ...prefMod, ...modelMod, ...ioMod, ...personaMod,
         setSettingsStatus, settingsFormDisabled, refreshThinkingVisibility, clampThinkingBudget, refreshSettingsPane, bindSettingsPane, refreshChatSettings, refreshMemoryPath,
     };
 }

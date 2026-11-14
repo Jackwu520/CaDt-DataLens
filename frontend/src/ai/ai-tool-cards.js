@@ -58,6 +58,8 @@ export function createAIToolCards(ctx) {
     // 打开文件并跳行（main.js 的 openTargets，经 ai-panel 透传）：read_file 卡路径超链接用
     const openTargets = typeof ctx.openTargets === 'function' ? ctx.openTargets : null;
     const settings = ctx.settings;
+    // 助手展示名（ai-panel 注入）：气泡角色标签跟随个性化命名，默认名时仍是「AI」行径不变
+    const assistantName = typeof ctx.assistantName === 'function' ? ctx.assistantName : () => 'AI';
     const getScopeRoot = ctx.getScopeRoot;
     const currentSession = ctx.currentSession;
     const currentScopeOf = ctx.currentScopeOf;
@@ -960,7 +962,7 @@ export function createAIToolCards(ctx) {
         if (meta) {
             meta.innerHTML = '';
             const who = document.createElement('span');
-            who.textContent = 'AI';
+            who.textContent = assistantName();
             const model = document.createElement('span');
             model.className = 'ai-model';
             model.textContent = message.model || '';

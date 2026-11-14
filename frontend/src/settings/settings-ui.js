@@ -557,7 +557,7 @@ function selectSettingsPane(pane) {
     }
     const aiGroup = document.getElementById('snav-ai');
     if (aiGroup) {
-        const inAI = pane === 'models' || pane === 'ai' || pane === 'context' || pane === 'preferences' || pane === 'schedules';
+        const inAI = pane === 'models' || pane === 'ai' || pane === 'persona' || pane === 'context' || pane === 'preferences' || pane === 'schedules';
         if (inAI && !aiGroup.classList.contains('expanded')) {
             aiGroup.classList.add('expanded');
             const parent = aiGroup.querySelector('.snav-parent');
@@ -577,7 +577,7 @@ function selectSettingsPane(pane) {
             try { deps.patchesPane.refreshPatchStore(); } catch (e) {}
         }
     }
-    if (pane === 'ai' || pane === 'models' || pane === 'context' || pane === 'preferences') {
+    if (pane === 'ai' || pane === 'models' || pane === 'persona' || pane === 'context' || pane === 'preferences') {
         if (!deps.aiPanel) deps.initAIPanel();
         if (deps.aiPanel && typeof deps.aiPanel.refreshSettings === 'function') {
             try { deps.aiPanel.refreshSettings(); } catch (e) {}

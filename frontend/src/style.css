@@ -8087,6 +8087,28 @@ html[data-theme="whitey"] {
     line-height: 1.5;
     padding: 5px 7px;
 }
+/* 个性化：长期记忆摘要预览（只读入口，不是编辑器） */
+.ai-persona-memory {
+    margin: 0;
+    padding: 10px 12px;
+    max-height: 220px;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-family: var(--editor-font-family);
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--muted);
+    background: var(--panel2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+}
+/* 个性化：字数提示与下拉同处一行时不被挤压 */
+#ai-persona-instructions-count,
+#ai-persona-text-count {
+    flex: none;
+    font-variant-numeric: tabular-nums;
+}
 .ai-ctx-banner {
     flex: none;
     display: flex;
