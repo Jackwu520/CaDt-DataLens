@@ -5447,6 +5447,22 @@ html[data-theme="whitey"] {
     background: var(--bg);
     color: var(--text);
 }
+/* 底部堆叠区（上下文警告条 / 任务清单 / 输入区 / 统计行）整体绝对定位贴底：
+   消息区因此占满面板全高，滚动条轨道随之占满；消息内容用 padding-bottom
+   （ai-panel 里按堆叠区实际高度 ResizeObserver 设置）兜底，末条消息不被遮挡 */
+.ai-bottom-stack {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 25;
+    display: flex;
+    flex-direction: column;
+    flex: none;
+    max-height: 82vh;
+    pointer-events: none;
+}
+.ai-bottom-stack > * { pointer-events: auto; }
 #ai-panel.hidden { display: none; }
 #ai-panel.ai-dock {
     flex: none;

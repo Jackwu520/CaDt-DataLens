@@ -135,7 +135,6 @@ import {createAIManageDialogs} from './ai-manage-dialogs.js';
 import {createAISettingsDialog} from './ai-settings-dialog.js';
 import {createAISubagents} from './ai-subagents.js';
 
-
 export function createAIPanel(options) {
     const opts = options || {};
     const panel = opts.panel;
@@ -224,6 +223,7 @@ export function createAIPanel(options) {
         floatFullscreen: panel.querySelector('#ai-float-fullscreen'),
         floatCollapse: panel.querySelector('#ai-float-collapse'),
         todos: panel.querySelector('#ai-todos'),
+        bottomStack: panel.querySelector('.ai-bottom-stack'),
         messages: panel.querySelector('#ai-messages'),
         scrollBtn: panel.querySelector('#ai-scroll-btn'),
         slash: panel.querySelector('#ai-slash'),
@@ -3537,6 +3537,7 @@ export function createAIPanel(options) {
     }
 
     function positionOverlays() {
+        syncMessagesUnderflow();
         if (!el.composer) return;
         const panelRect = panel.getBoundingClientRect();
         const composerRect = el.composer.getBoundingClientRect();
@@ -3559,8 +3560,19 @@ export function createAIPanel(options) {
             el.scrollBtn.style.left = center + 'px';
             el.scrollBtn.style.right = 'auto';
         }
-        if (openStatsPop) positionStatsPop(openStatsPop);
+            if (openStatsPop) positionStatsPop(openStatsPop);
     }
+
+    // 消息区占满面板全高（滚动条轨道随之占满），底部堆叠区浮在其上：
+    // 消息内容 padding-bottom 跟随堆叠区实际高度。刷新统一走 positionOverlays
+    // （todos/警告条渲染、会话切换、窗口缩放都会调它），打字增行走 input 事件。
+    // 不用 ResizeObserver：部分宿主（IAB 节流渲染帧）不派发 RO 回调。
+    function syncMessagesUnderflow() {
+        if (!el.bottomStack || !el.messages) return;
+        const h = Math.round(el.bottomStack.getBoundingClientRect().height);
+        el.messages.style.paddingBottom = h > 0 ? (h + 12) + 'px' : '';
+    }
+    syncMessagesUnderflow();
 
     // ---------- 上下文估算 ----------
 
@@ -11156,6 +11168,17 @@ export function createAIPanel(options) {
         submitText,
         nextAttachSeq: () => ++attachSeq,
     });
+    // 打字增行（composer 自动长高）不经过任何渲染路径：input 事件带一次刷新。
+    // defer 到本轮事件循环末尾——事件接线函数里的 resizeInput 监听注册得更晚，
+    // 同步调用会量到长高前的堆叠区；贴底时顺带把末条消息保持可见
+    if (el.input) {
+        el.input.addEventListener('input', () => {
+            setTimeout(() => {
+                positionOverlays();
+                if (stickBottom) scrollToBottom(false);
+            }, 0);
+        });
+    }
     const renderAttachments = () => composerMod.renderAttachments();
     const addAttachment = (...args) => composerMod.addAttachment(...args);
     const prepareImageAttachment = (...args) => composerMod.prepareImageAttachment(...args);
