@@ -320,31 +320,28 @@
                                 </div>
                             </div>
                             <div class="set-row">
-                                <div class="set-main"><div class="set-title">多文件打开</div></div>
+                                <div class="set-main"><div class="set-title">多文件打开<button type="button" class="info-tip" data-tip="多窗口模式：新打开的文件使用独立窗口。单窗口模式：在标签栏中以标签页打开。" aria-label="多文件打开说明">i</button></div></div>
                                 <div class="set-control">
                                     <select id="opt-open-mode" class="opt-select">
                                         <option value="tab">单窗口标签页</option>
                                         <option value="window">多窗口</option>
                                     </select>
-                                    <button type="button" class="info-tip" data-tip="多窗口模式：新打开的文件使用独立窗口。单窗口模式：在标签栏中以标签页打开。" aria-label="多文件打开说明">i</button>
                                 </div>
                             </div>
                             <div class="set-row">
-                                <div class="set-main"><div class="set-title">显示顶部提示条</div><div class="set-desc">大文件、二进制、解析失败等提示</div></div>
+                                <div class="set-main"><div class="set-title">显示顶部提示条<button type="button" class="info-tip" data-tip="关闭后不显示大文件、二进制、解析失败等提示；也可以点提示条右侧的关闭按钮只关闭当前提示。" aria-label="显示顶部提示条说明">i</button></div><div class="set-desc">大文件、二进制、解析失败等提示</div></div>
                                 <div class="set-control">
                                     <label class="set-switch"><input type="checkbox" id="opt-show-banners" checked><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
-                                    <button type="button" class="info-tip" data-tip="关闭后不显示大文件、二进制、解析失败等提示；也可以点提示条右侧的关闭按钮只关闭当前提示。" aria-label="显示顶部提示条说明">i</button>
                                 </div>
                             </div>
                             <div class="set-row">
-                                <div class="set-main"><div class="set-title">文件图标主题</div></div>
+                                <div class="set-main"><div class="set-title">文件图标主题<button type="button" class="info-tip" data-tip="开源图标集缺失的类型自动回退到文字缩写图标；插件可通过 cadt.registerIconTheme 注册自定义主题。" aria-label="文件图标主题说明">i</button></div></div>
                                 <div class="set-control">
                                     <select id="opt-icon-theme" class="opt-select">
                                         <option value="opensource">开源图标集（vscode-icons）</option>
                                         <option value="mono">文字缩写 + 底板</option>
                                         <option value="plain">无特殊图标</option>
                                     </select>
-                                    <button type="button" class="info-tip" data-tip="开源图标集缺失的类型自动回退到文字缩写图标；插件可通过 cadt.registerIconTheme 注册自定义主题。" aria-label="文件图标主题说明">i</button>
                                 </div>
                             </div>
                             <div class="set-row">
@@ -354,10 +351,9 @@
                                 </div>
                             </div>
                             <div class="set-row">
-                                <div class="set-main"><div class="set-title">启动时自动检查更新</div><div class="set-desc">后台检查一次，结果在状态栏显示</div></div>
+                                <div class="set-main"><div class="set-title">启动时自动检查更新<button type="button" class="info-tip" data-tip="默认开启；每次启动在后台检查一次，结果在右下角状态栏短暂显示，发现新版本会一直保留并可点击查看。" aria-label="自动检查更新说明">i</button></div><div class="set-desc">后台检查一次，结果在状态栏显示</div></div>
                                 <div class="set-control">
                                     <label class="set-switch"><input type="checkbox" id="opt-auto-update"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
-                                    <button type="button" class="info-tip" data-tip="默认开启；每次启动在后台检查一次，结果在右下角状态栏短暂显示，发现新版本会一直保留并可点击查看。" aria-label="自动检查更新说明">i</button>
                                 </div>
                             </div>
                         </div>
@@ -488,10 +484,9 @@
                                 </div>
                             </div>
                             <div class="set-row">
-                                <div class="set-main"><div class="set-title">写作模式</div><div class="set-desc">中文排版 · 专注 · 码字统计</div></div>
+                                <div class="set-main"><div class="set-title">写作模式<button type="button" class="info-tip" data-tip="仅对纯文本与 Markdown 的源码视图生效：楷体排版、隐藏行号、打字机滚动、段落聚焦；打开其他类型文件自动退避。" aria-label="写作模式说明">i</button></div><div class="set-desc">中文排版 · 专注 · 码字统计</div></div>
                                 <div class="set-control">
                                     <label class="set-switch"><input type="checkbox" id="opt-writing-mode"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
-                                    <button type="button" class="info-tip" data-tip="仅对纯文本与 Markdown 的源码视图生效：楷体排版、隐藏行号、打字机滚动、段落聚焦；打开其他类型文件自动退避。" aria-label="写作模式说明">i</button>
                                 </div>
                             </div>
                             <div class="set-row">
@@ -552,14 +547,13 @@
                         <div class="set-group-title">编辑器标签页</div>
                         <div class="set-card">
                             <div class="set-row">
-                                <div class="set-main"><div class="set-title">关闭按钮显示</div></div>
+                                <div class="set-main"><div class="set-title">关闭按钮显示<button type="button" class="info-tip" data-tip="「不显示」时仍可用 Shift+点击、中键点击或右键菜单关闭标签页。" aria-label="关闭按钮说明">i</button></div></div>
                                 <div class="set-control">
                                     <select id="opt-tab-close" class="opt-select">
                                         <option value="always">所有标签页</option>
                                         <option value="hover">悬停或活动时</option>
                                         <option value="none">不显示</option>
                                     </select>
-                                    <button type="button" class="info-tip" data-tip="「不显示」时仍可用 Shift+点击、中键点击或右键菜单关闭标签页。" aria-label="关闭按钮说明">i</button>
                                 </div>
                             </div>
                             <div class="set-row">
@@ -723,10 +717,9 @@
                                 </div>
                             </div>
                             <div class="set-row">
-                                <div class="set-main"><div class="set-title">渲染回答中的 SVG / HTML 图</div><div class="set-desc">关闭后按普通代码块显示</div></div>
+                                <div class="set-main"><div class="set-title">渲染回答中的 SVG / HTML 图<button type="button" class="info-tip" data-tip="标注 svg / html 的代码块会显示为可视化卡片（可切换源码、复制、点链接）；样式隔离、经 DOMPurify 清洗，只有 AI 面板开启此功能时渲染。" aria-label="可视化卡片说明">i</button></div><div class="set-desc">关闭后按普通代码块显示</div></div>
                                 <div class="set-control">
                                     <label class="set-switch"><input type="checkbox" id="ai-opt-inline-widgets"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
-                                    <button type="button" class="info-tip" data-tip="标注 svg / html 的代码块会显示为可视化卡片（可切换源码、复制、点链接）；样式隔离、经 DOMPurify 清洗，只有 AI 面板开启此功能时渲染。" aria-label="可视化卡片说明">i</button>
                                 </div>
                             </div>
                         </div>
@@ -751,17 +744,15 @@
                         <div class="set-group-title">AI 工具权限</div>
                         <div class="set-card">
                             <div class="set-row">
-                                <div class="set-main"><div class="set-title">工作日志</div><div class="set-desc">允许 AI 使用 write_worklog 记录工作日志</div></div>
+                                <div class="set-main"><div class="set-title">工作日志<button type="button" class="info-tip" data-tip="追加写入工作区 .cadt/logs/（根索引每月一行 → 月索引每条一行 → 日期文件存正文）；只记标题与一句话摘要，不含正文与敏感信息。" aria-label="工作日志说明">i</button></div><div class="set-desc">允许 AI 使用 write_worklog 记录工作日志</div></div>
                                 <div class="set-control">
                                     <label class="set-switch"><input type="checkbox" id="ai-opt-worklog"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
-                                    <button type="button" class="info-tip" data-tip="追加写入工作区 .cadt/logs/（根索引每月一行 → 月索引每条一行 → 日期文件存正文）；只记标题与一句话摘要，不含正文与敏感信息。" aria-label="工作日志说明">i</button>
                                 </div>
                             </div>
                             <div class="set-row">
-                                <div class="set-main"><div class="set-title">应用操作</div><div class="set-desc">允许 AI 使用 app_control 操作应用</div></div>
+                                <div class="set-main"><div class="set-title">应用操作<button type="button" class="info-tip" data-tip="标签页 / 视图 / 主题 / 设置 / 模拟键盘输入等；关闭后 AI 无法查看或调用该工具，cadt-ui 技能同时隐藏。" aria-label="应用操作说明">i</button></div><div class="set-desc">允许 AI 使用 app_control 操作应用</div></div>
                                 <div class="set-control">
                                     <label class="set-switch"><input type="checkbox" id="ai-opt-app-control"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
-                                    <button type="button" class="info-tip" data-tip="标签页 / 视图 / 主题 / 设置 / 模拟键盘输入等；关闭后 AI 无法查看或调用该工具，cadt-ui 技能同时隐藏。" aria-label="应用操作说明">i</button>
                                 </div>
                             </div>
                         </div>
@@ -775,10 +766,9 @@
                                 </div>
                             </div>
                             <div class="set-row">
-                                <div class="set-main"><div class="set-title">递归层级</div><div class="set-desc">0 = 不设限；达到上限后等待空位</div></div>
+                                <div class="set-main"><div class="set-title">递归层级<button type="button" class="info-tip" data-tip="上限统计所有层级正在运行的子代理（含子代理递归派出的），不含主代理；达到上限后主代理等待空位，子代理再派会被拒绝。层级 1–20 = 最多再往下派几层。" aria-label="递归层级说明">i</button></div><div class="set-desc">0 = 不设限；达到上限后等待空位</div></div>
                                 <div class="set-control">
                                     <input type="number" id="ai-opt-subagent-depth" class="ai-settings-input ai-font-size-num" min="0" max="20" step="1" value="0">
-                                    <button type="button" class="info-tip" data-tip="上限统计所有层级正在运行的子代理（含子代理递归派出的），不含主代理；达到上限后主代理等待空位，子代理再派会被拒绝。层级 1–20 = 最多再往下派几层。" aria-label="递归层级说明">i</button>
                                 </div>
                             </div>
                         </div>
@@ -850,7 +840,7 @@
                                 </div>
                             </div>
                             <div class="set-row">
-                                <div class="set-main"><div class="set-title">失败重试次数</div><div class="set-desc">按指数退避自动重试</div></div>
+                                <div class="set-main"><div class="set-title">失败重试次数<button type="button" class="info-tip" data-tip="请求失败（429 限流 / 5xx / 网络错误）时按指数退避自动重试：1s → 2s → 4s → … 上限 30s；接口返回 Retry-After 时优先遵循。4xx 参数 / 鉴权错误不重试。" aria-label="失败重试说明">i</button></div><div class="set-desc">按指数退避自动重试</div></div>
                                 <div class="set-control">
                                     <select id="ai-opt-retry-max" class="opt-select">
                                         <option value="0">不重试</option>
@@ -865,7 +855,6 @@
                                         <option value="9">9 次</option>
                                         <option value="10">10 次</option>
                                     </select>
-                                    <button type="button" class="info-tip" data-tip="请求失败（429 限流 / 5xx / 网络错误）时按指数退避自动重试：1s → 2s → 4s → … 上限 30s；接口返回 Retry-After 时优先遵循。4xx 参数 / 鉴权错误不重试。" aria-label="失败重试说明">i</button>
                                 </div>
                             </div>
                         </div>
@@ -1014,23 +1003,20 @@
                         <div class="set-group-title">模式与判定顺序</div>
                         <div class="set-card">
                             <div class="set-row">
-                                <div class="set-main"><div class="set-title">判定顺序</div><div class="set-desc">任何档位都先看项目 deny 规则；危险命令在非完全权限档一律单次确认</div></div>
+                                <div class="set-main"><div class="set-title">判定顺序<button type="button" class="info-tip" data-tip="判定顺序：项目 deny → 危险命令（rm -rf、git reset --hard、git clean -f、强推、丢弃工作区等，单次确认、不提供长期放行）→ 项目 ask → 会话/项目 allow → 完全权限 → 自动审批档细则（只读命令与已知命令族直接执行，工作区写入自动应用（未保存修改与风险路径除外），其余命令走分类器或逐条审批）。规则写入工作区 .cadt/permissions.json，可随仓库共享。" aria-label="判定顺序说明">i</button></div><div class="set-desc">任何档位都先看项目 deny 规则；危险命令在非完全权限档一律单次确认</div></div>
                                 <div class="set-control">
-                                    <button type="button" class="info-tip" data-tip="判定顺序：项目 deny → 危险命令（rm -rf、git reset --hard、git clean -f、强推、丢弃工作区等，单次确认、不提供长期放行）→ 项目 ask → 会话/项目 allow → 完全权限 → 自动审批档细则（只读命令与已知命令族直接执行，工作区写入自动应用（未保存修改与风险路径除外），其余命令走分类器或逐条审批）。规则写入工作区 .cadt/permissions.json，可随仓库共享。" aria-label="判定顺序说明">i</button>
                                 </div>
                             </div>
                             <div class="set-row">
-                                <div class="set-main"><div class="set-title">AI 分类器复核</div><div class="set-desc">规则无法判定时由大模型判定；与端侧分类器结合时负责二次复核</div></div>
+                                <div class="set-main"><div class="set-title">AI 分类器复核<button type="button" class="info-tip" data-tip="开启后对规则、只读、命令族都没接住的命令额外请求一次模型判定，失败、超时或信息不足都回退为人工审批；判定结果按命令缓存 10 分钟。与「端侧分类器」结合时：端侧放行不请求模型，端侧判险的命令会把端侧结果（score / 阈值）注入提示词交本模型二次复核，复核放行即直接执行。每次触发都会在消息流推送系统提示（判定中 / 放行原因 / 转人工），工具卡同步显示「等待 AI 分类器判定…」。分类器默认请求当前会话使用的模型，可在下方「复核模型」里固定为指定模型。" aria-label="AI 分类器说明">i</button></div><div class="set-desc">规则无法判定时由大模型判定；与端侧分类器结合时负责二次复核</div></div>
                                 <div class="set-control">
                                     <label class="set-switch"><input type="checkbox" id="ai-opt-auto-classifier"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
-                                    <button type="button" class="info-tip" data-tip="开启后对规则、只读、命令族都没接住的命令额外请求一次模型判定，失败、超时或信息不足都回退为人工审批；判定结果按命令缓存 10 分钟。与「端侧分类器」结合时：端侧放行不请求模型，端侧判险的命令会把端侧结果（score / 阈值）注入提示词交本模型二次复核，复核放行即直接执行。每次触发都会在消息流推送系统提示（判定中 / 放行原因 / 转人工），工具卡同步显示「等待 AI 分类器判定…」。分类器默认请求当前会话使用的模型，可在下方「复核模型」里固定为指定模型。" aria-label="AI 分类器说明">i</button>
                                 </div>
                             </div>
                             <div class="set-row">
-                                <div class="set-main"><div class="set-title">复核模型</div><div class="set-desc">默认跟随当前模型；所选配置被删除后自动回退</div></div>
+                                <div class="set-main"><div class="set-title">复核模型<button type="button" class="info-tip" data-tip="从模型配置列表中选择分类器专用的请求模型（含该配置的 provider / 地址 / 密钥 / 代理）。只读命令、已知命令族与规则命中的命令不会触发分类器请求。" aria-label="复核模型说明">i</button></div><div class="set-desc">默认跟随当前模型；所选配置被删除后自动回退</div></div>
                                 <div class="set-control">
                                     <select id="ai-opt-classifier-model" class="opt-select"></select>
-                                    <button type="button" class="info-tip" data-tip="从模型配置列表中选择分类器专用的请求模型（含该配置的 provider / 地址 / 密钥 / 代理）。只读命令、已知命令族与规则命中的命令不会触发分类器请求。" aria-label="复核模型说明">i</button>
                                 </div>
                             </div>
                         </div>
@@ -1038,10 +1024,9 @@
                         <div class="set-group-title">端侧分类器（默认开启）</div>
                         <div class="set-card">
                             <div class="set-row">
-                                <div class="set-main"><div class="set-title">启用端侧分类器</div><div class="set-desc">离线先行判定；安装语义插件后与线性模型并行、取最高分</div></div>
+                                <div class="set-main"><div class="set-title">启用端侧分类器<button type="button" class="info-tip" data-tip="在自动审批档对规则、只读与命令族都没接住的命令先行离线判定：危险概率低于严格度阈值直接放行（来源标「端侧分类器」），达到阈值转人工——若同时开启了远程「AI 分类器」，会把端侧结果（score / 阈值）注入提示词交大模型二次复核，复核放行则直接执行。线性模型对良性命令偏保守，误拦的命令由大模型复核放行，批准过的命令族经个性化学习后下次直接放行。" aria-label="端侧分类器说明">i</button></div><div class="set-desc">离线先行判定；安装语义插件后与线性模型并行、取最高分</div></div>
                                 <div class="set-control">
                                     <label class="set-switch"><input type="checkbox" id="ai-opt-local-classifier"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
-                                    <button type="button" class="info-tip" data-tip="在自动审批档对规则、只读与命令族都没接住的命令先行离线判定：危险概率低于严格度阈值直接放行（来源标「端侧分类器」），达到阈值转人工——若同时开启了远程「AI 分类器」，会把端侧结果（score / 阈值）注入提示词交大模型二次复核，复核放行则直接执行。线性模型对良性命令偏保守，误拦的命令由大模型复核放行，批准过的命令族经个性化学习后下次直接放行。" aria-label="端侧分类器说明">i</button>
                                 </div>
                             </div>
                             <div class="set-row">
@@ -1055,10 +1040,9 @@
                                 </div>
                             </div>
                             <div class="set-row">
-                                <div class="set-main"><div class="set-title">个性化学习</div><div class="set-desc">从端侧审批卡的批准 / 拒绝学习（数据仅存本机）</div></div>
+                                <div class="set-main"><div class="set-title">个性化学习<button type="button" class="info-tip" data-tip="只学习你在端侧审批卡上的显式裁定，秘密打码后存于应用数据 local-classifier/（环形上限 500），SGD + L2 锚定出厂权重防漂移。学习状态、重置 / 清空 / 导出见下方操作区。" aria-label="个性化学习说明">i</button></div><div class="set-desc">从端侧审批卡的批准 / 拒绝学习（数据仅存本机）</div></div>
                                 <div class="set-control">
                                     <label class="set-switch"><input type="checkbox" id="ai-opt-local-personalize"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
-                                    <button type="button" class="info-tip" data-tip="只学习你在端侧审批卡上的显式裁定，秘密打码后存于应用数据 local-classifier/（环形上限 500），SGD + L2 锚定出厂权重防漂移。学习状态、重置 / 清空 / 导出见下方操作区。" aria-label="个性化学习说明">i</button>
                                 </div>
                             </div>
                             <div class="set-row">
@@ -1089,9 +1073,8 @@
                         <div class="set-group-title">项目规则</div>
                         <div class="set-card">
                             <div class="set-row">
-                                <div class="set-main"><div class="set-title">规则语法</div><div class="set-desc">表格可直接增删；判定顺序 deny → ask → allow</div></div>
+                                <div class="set-main"><div class="set-title">规则语法<button type="button" class="info-tip" data-tip="Bash(git status:*) 的 :* 为前缀匹配；Write(docs/**) 的 * 为通配；Web(domain:example.com) 匹配域名。规则写入工作区 .cadt/permissions.json，可随仓库共享。" aria-label="规则语法说明">i</button></div><div class="set-desc">表格可直接增删；判定顺序 deny → ask → allow</div></div>
                                 <div class="set-control">
-                                    <button type="button" class="info-tip" data-tip="Bash(git status:*) 的 :* 为前缀匹配；Write(docs/**) 的 * 为通配；Web(domain:example.com) 匹配域名。规则写入工作区 .cadt/permissions.json，可随仓库共享。" aria-label="规则语法说明">i</button>
                                 </div>
                             </div>
                             <div class="set-row-top">
@@ -1168,24 +1151,22 @@
                         <div class="set-group-title">运行</div>
                         <div class="set-card">
                             <div class="set-row">
-                                <div class="set-main"><div class="set-title">工作目录</div><div class="set-desc">脚本里的相对路径按此目录解析</div></div>
+                                <div class="set-main"><div class="set-title">工作目录<button type="button" class="info-tip" data-tip="默认选文件所在目录，方便直接读旁边的数据文件。运行面板顶部可填「运行参数」：空格分隔、含空格用引号包起来，按语言记住并随运行标签回显；参数只传给程序，不会进入编译命令。" aria-label="工作目录说明">i</button></div><div class="set-desc">脚本里的相对路径按此目录解析</div></div>
                                 <div class="set-control">
                                     <select id="run-cwd" class="opt-select">
                                         <option value="file">文件所在目录（推荐）</option>
                                         <option value="workspace">工作区根目录</option>
                                     </select>
-                                    <button type="button" class="info-tip" data-tip="默认选文件所在目录，方便直接读旁边的数据文件。运行面板顶部可填「运行参数」：空格分隔、含空格用引号包起来，按语言记住并随运行标签回显；参数只传给程序，不会进入编译命令。" aria-label="工作目录说明">i</button>
                                 </div>
                             </div>
                             <div class="set-row">
-                                <div class="set-main"><div class="set-title">有未保存修改时</div><div class="set-desc">决定运行前对当前文件的处理方式</div></div>
+                                <div class="set-main"><div class="set-title">有未保存修改时<button type="button" class="info-tip" data-tip="临时副本不会改动磁盘文件，但同目录依赖（import / require / 相对路径读取）可能不可用。" aria-label="未保存修改说明">i</button></div><div class="set-desc">决定运行前对当前文件的处理方式</div></div>
                                 <div class="set-control">
                                     <select id="run-dirty-mode" class="opt-select">
                                         <option value="ask">每次询问</option>
                                         <option value="save">总是保存后运行</option>
                                         <option value="temp">总是用临时副本运行</option>
                                     </select>
-                                    <button type="button" class="info-tip" data-tip="临时副本不会改动磁盘文件，但同目录依赖（import / require / 相对路径读取）可能不可用。" aria-label="未保存修改说明">i</button>
                                 </div>
                             </div>
                             <div class="set-row">
@@ -1218,9 +1199,8 @@
                                        placeholder="留空使用默认命令，例如：$TOOL -u $FILE $ARGS">
                             </div>
                             <div class="set-row">
-                                <div class="set-main"><div class="set-title">模板占位符</div><div class="set-desc">完整命令行（首个词为可执行文件），按空格分词后逐项替换，不经 shell</div></div>
+                                <div class="set-main"><div class="set-title">模板占位符<button type="button" class="info-tip" data-tip="占位符：$TOOL 扫描到的解释器 / 编译器、$FILE 源文件、$DIR 工作目录、$BASE 文件名、$STEM 主文件名、$EXT 扩展名、$OUT 编译产物、$ARGS 运行参数。按空格分词后逐项替换，不经 shell；含空格的路径请用引号包住占位符。编译型的编译步骤仍用默认配方。" aria-label="模板占位符说明">i</button></div><div class="set-desc">完整命令行（首个词为可执行文件），按空格分词后逐项替换，不经 shell</div></div>
                                 <div class="set-control">
-                                    <button type="button" class="info-tip" data-tip="占位符：$TOOL 扫描到的解释器 / 编译器、$FILE 源文件、$DIR 工作目录、$BASE 文件名、$STEM 主文件名、$EXT 扩展名、$OUT 编译产物、$ARGS 运行参数。按空格分词后逐项替换，不经 shell；含空格的路径请用引号包住占位符。编译型的编译步骤仍用默认配方。" aria-label="模板占位符说明">i</button>
                                 </div>
                             </div>
                             <div class="set-row">
@@ -1296,31 +1276,27 @@
                         <div class="set-group-title">系统集成</div>
                         <div class="set-card">
                             <div class="set-row">
-                                <div class="set-main"><div class="set-title">注册文件关联</div><div class="set-desc">JSON / YAML / XML / CSV / 纯文本加入「打开方式」</div></div>
+                                <div class="set-main"><div class="set-title">注册文件关联<button type="button" class="info-tip" data-tip="写入当前用户注册表；不会改动系统默认程序，默认应用仍需在 Windows 设置里确认一次。" aria-label="文件关联说明">i</button></div><div class="set-desc">JSON / YAML / XML / CSV / 纯文本加入「打开方式」</div></div>
                                 <div class="set-control">
                                     <label class="set-switch"><input type="checkbox" id="opt-file-assoc"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
-                                    <button type="button" class="info-tip" data-tip="写入当前用户注册表；不会改动系统默认程序，默认应用仍需在 Windows 设置里确认一次。" aria-label="文件关联说明">i</button>
                                 </div>
                             </div>
                             <div class="set-row">
-                                <div class="set-main"><div class="set-title">注册资源管理器右键菜单</div><div class="set-desc">文件、文件夹与空白处的「用 CaDt-DataLens 打开」</div></div>
+                                <div class="set-main"><div class="set-title">注册资源管理器右键菜单<button type="button" class="info-tip" data-tip="Windows 11 可能显示在「显示更多选项」中。" aria-label="右键菜单说明">i</button></div><div class="set-desc">文件、文件夹与空白处的「用 CaDt-DataLens 打开」</div></div>
                                 <div class="set-control">
                                     <label class="set-switch"><input type="checkbox" id="opt-context-menu"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
-                                    <button type="button" class="info-tip" data-tip="Windows 11 可能显示在「显示更多选项」中。" aria-label="右键菜单说明">i</button>
                                 </div>
                             </div>
                             <div class="set-row">
-                                <div class="set-main"><div class="set-title">注册全局 Agent Skill</div><div class="set-desc">写入 <span id="opt-skill-dirs">~/.agents/skills、~/.claude/skills</span> 技能目录</div></div>
+                                <div class="set-main"><div class="set-title">注册全局 Agent Skill<button type="button" class="info-tip" data-tip="把使用说明写入常用的 agent 全局技能目录，让 AI agent 学会调用本程序打开和定位文件。" aria-label="Agent Skill 说明">i</button></div><div class="set-desc">写入 <span id="opt-skill-dirs">~/.agents/skills、~/.claude/skills</span> 技能目录</div></div>
                                 <div class="set-control">
                                     <label class="set-switch"><input type="checkbox" id="opt-agent-skill"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
-                                    <button type="button" class="info-tip" data-tip="把使用说明写入常用的 agent 全局技能目录，让 AI agent 学会调用本程序打开和定位文件。" aria-label="Agent Skill 说明">i</button>
                                 </div>
                             </div>
                             <div class="set-row">
-                                <div class="set-main"><div class="set-title">注册 datalens 命令</div><div class="set-desc">加入用户 PATH，任意目录命令行可用</div></div>
+                                <div class="set-main"><div class="set-title">注册 datalens 命令<button type="button" class="info-tip" data-tip="把程序所在目录加入用户 PATH；之后在任意目录的命令行输入 datalens，软件就以该目录为工作区打开。仅对新开的命令行窗口生效，已有窗口需重开。" aria-label="datalens 命令说明">i</button></div><div class="set-desc">加入用户 PATH，任意目录命令行可用</div></div>
                                 <div class="set-control">
                                     <label class="set-switch"><input type="checkbox" id="opt-path-cmd"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
-                                    <button type="button" class="info-tip" data-tip="把程序所在目录加入用户 PATH；之后在任意目录的命令行输入 datalens，软件就以该目录为工作区打开。仅对新开的命令行窗口生效，已有窗口需重开。" aria-label="datalens 命令说明">i</button>
                                 </div>
                             </div>
                             <div class="set-row">
@@ -1345,13 +1321,12 @@
                                 </div>
                             </div>
                             <div class="set-row">
-                                <div class="set-main"><div class="set-title">存储方式</div></div>
+                                <div class="set-main"><div class="set-title">存储方式<button type="button" class="info-tip" data-tip="变量注入到之后新开的内置终端会话与命令桥子进程（AI 命令、插件命令），写在继承环境之后、同名时覆盖系统值；已打开的终端不受影响。AI 助手只看得到变量名与描述：env_list 列出名称，env_create 由 AI 提供名称与描述、值由你在弹窗中亲自填写。" aria-label="存储方式说明">i</button></div></div>
                                 <div class="set-control">
                                     <select id="envvar-encrypted" class="opt-select">
                                         <option value="plain">明文 JSON（可手动备份编辑）</option>
                                         <option value="encrypted">DPAPI 加密（仅本机可解）</option>
                                     </select>
-                                    <button type="button" class="info-tip" data-tip="变量注入到之后新开的内置终端会话与命令桥子进程（AI 命令、插件命令），写在继承环境之后、同名时覆盖系统值；已打开的终端不受影响。AI 助手只看得到变量名与描述：env_list 列出名称，env_create 由 AI 提供名称与描述、值由你在弹窗中亲自填写。" aria-label="存储方式说明">i</button>
                                 </div>
                             </div>
                             <div class="set-row">
@@ -1443,10 +1418,9 @@
                         <div class="set-group-title">操作记录</div>
                         <div class="set-card">
                             <div class="set-row">
-                                <div class="set-main"><div class="set-title">启用操作记录</div><div class="set-desc">谁在什么时候做了什么；只记操作摘要，不记文件内容与密钥</div></div>
+                                <div class="set-main"><div class="set-title">启用操作记录<button type="button" class="info-tip" data-tip="日志只存本机应用数据目录（activity/*.jsonl，按月分文件），可导出与清空。" aria-label="操作记录说明">i</button></div><div class="set-desc">谁在什么时候做了什么；只记操作摘要，不记文件内容与密钥</div></div>
                                 <div class="set-control">
                                     <label class="set-switch"><input type="checkbox" id="opt-activity-log" checked><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
-                                    <button type="button" class="info-tip" data-tip="日志只存本机应用数据目录（activity/*.jsonl，按月分文件），可导出与清空。" aria-label="操作记录说明">i</button>
                                 </div>
                             </div>
                             <div class="set-row">

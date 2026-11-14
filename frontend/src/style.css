@@ -9439,9 +9439,9 @@ body.bgterm-dragging { cursor: row-resize; user-select: none; }
 .set-card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 2px 14px; margin-bottom: 14px; }
 .set-row { display: flex; align-items: center; gap: 16px; padding: 11px 0; min-height: 42px; }
 .set-row + .set-row { border-top: 1px solid var(--border); }
-.set-main { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 8px; }
-.set-title { font-size: 13px; font-weight: 600; color: var(--text); flex: none; }
-.set-desc { font-size: 12px; color: var(--muted); line-height: 1.55; min-width: 0; flex: 1; }
+.set-main { flex: 1; min-width: 0; }
+.set-title { font-size: 13px; font-weight: 600; color: var(--text); display: flex; align-items: center; gap: 6px; min-width: 0; }
+.set-desc { font-size: 12px; color: var(--muted); line-height: 1.55; margin-top: 3px; min-width: 0; }
 .set-row-top { display: block; padding: 11px 0; }
 .set-row-top + .set-row-top { border-top: 1px solid var(--border); }
 .set-row-top .set-main { margin-bottom: 8px; }
