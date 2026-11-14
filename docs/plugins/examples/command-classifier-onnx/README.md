@@ -12,7 +12,7 @@
 
 ## 本地测试
 
-1. 应用 ≥ 1.2.0（需含 `registerCommandClassifier` API）。
+1. 应用版本需含 `registerCommandClassifier` API（插件清单 minAppVersion 已按 1.0.0 标注）。
 2. 设置 → 插件 → 添加/导入 本目录（或把目录复制到 `<exe 目录>\plugins\command-classifier-onnx\`）。
 3. 设置 → AI 助手 → 权限 → 高级配置：启用「端侧分类器」，状态行应显示「插件：语义分类器（ONNX）」。
 4. 「测试命令」输入 `rm -rf /tmp/x`：来源应显示「语义分类器（ONNX）」、score≈0.9 → 转人工；输入 `git status`：score=0 → 放行（由内置模型判定）。
@@ -39,7 +39,7 @@ cadt.registerCommandClassifier({
 
 1. 在组织下建仓库 `command-classifier-onnx`（公开；仓库名建议与 `id` 一致）。
 2. 推送本目录内容到仓库根：`plugin.json` + `main.js` + `model/` + README（市场直接读根清单，不要包一层子目录）。
-3. `plugin.json` 里 `minAppVersion` 保持 `1.2.0`（`registerCommandClassifier` 首发的应用版本；上线时若版本号有变需同步）。
+3. `plugin.json` 里 `minAppVersion` 标注 `1.0.0`（作者拍板的最低应用版本；API 实际随哪一版发布以发版为准）。
 4. 二期发布 ONNX 权重时：权重直接进仓库（`model/*.onnx`，Git LFS 可选）或 README 指引首启按需下载 + 哈希校验（开放问题，见方案 §13）。
 5. 推送后应用市场列表自动出现（Gitee API v5 org repos），无需登记。
 
