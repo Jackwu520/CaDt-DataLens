@@ -73,8 +73,9 @@ let backend;
 let rt = window.runtime;
 if (hasWails) {
     backend = window.go.main.App;
-} else {
-    // vite dev 浏览器调试：动态加载 mock 后端（不进入口 bundle，独立懒加载 chunk）
+} else if (import.meta.env.DEV) {
+    // vite dev 浏览器调试：动态加载 mock 后端（生产构建里这个分支被静态求值为 false，
+    // chunk 不会产出，也就不会被 go:embed 打进 exe——dist 曾是 66 KB 的 mock-backend-*.js）
     const mock = await import('./dev/mock-backend.js');
     backend = mock.mockBackend;
     if (mockScenario.has('winctl')) rt = mock.mockRt;
