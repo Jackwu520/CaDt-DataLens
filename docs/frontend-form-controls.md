@@ -65,6 +65,8 @@ const prompt = createTextarea({id: 'foo-prompt', rows: 5, spellcheck: false});
 - 该测试扫描 `index.html` 与 `src/**/*.js`，任何新增裸用法都会让计数超过基线而失败。**BASELINE 只允许调小（迁移存量后），绝不允许调大。** 新增文件里出现裸用法同样失败。
 - 新增 UI 与提交前都跑 `npm test`（见 `AGENTS.md`「验证与提交」）。
 - 迁移存量优先从动态创建点下手：`ai/ai-panel.js`、`ai/ai-takeover.js`、`ai/ai-tool-cards.js`、`editor/patch-view.js`、`explorer/global-search.js`、`settings/settings-pane-envvars.js`、`settings/settings-pane-plugins.js`、`terminal/terminal-ui.js` 等；每迁一处把对应基线数字减一。
+- **首轮已迁移（2026-11-15）**：`ai/ai-manage-dialogs.js`（1 个 select、1 个 textarea、3 个 input）与 `explorer/global-search.js`（1 个 select）改用工厂，基线相应从 6→1、3→2。迁移时给 `createInput` 传 `className` 覆盖默认 `.dlg-input`，保持各域原有外观零变化。
+- **暂留一类**：带文字的紧凑行内复选框（技能列表、变量列表、全局搜索分类勾选等）与 34×20 的开关尺寸/语义不同，先按存量豁免；新 UI 仍一律用 `createSwitch`，不要新写裸 checkbox。这一轮单独处理（可能需要给工厂补紧凑变体）。
 
 ## 5. 易错点
 
@@ -72,3 +74,4 @@ const prompt = createTextarea({id: 'foo-prompt', rows: 5, spellcheck: false});
 - 不要在域模块里 `import main.js` 的绑定来造控件；`core/form-controls.js` 无 deps、不依赖声明顺序，可直接 import。
 - 不要手写 `innerHTML` 拼表单控件再事后补 class：字符串里的标签同样会被静态扫描抓到。
 - 设置页之外的下拉若需要浮层增强，走 `createSettingsSelect` 的接线，不要复制浮层 DOM。
+- **主副标题选项**：给 `<option>` 加 `data-subtitle`，`option.text` 写主标题（同时是触发器显示值），`settings-select.js` 会渲染成两行（`.ss-opt-rich` + `.ss-main` / `.ss-sub`）。没有该属性的选项保持单行，完全向后兼容；不要把「名字 · 描述」再拼进一个字符串里让它被截断。

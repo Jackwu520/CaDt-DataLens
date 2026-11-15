@@ -81,6 +81,10 @@ test('createInput / createTextarea 带封装 class 且透传常用属性与事�
     assert.equal(area.control.rows, 5);
     assert.equal(area.control.disabled, true);
     assert.equal(area.control.attrs['data-k'], 'v');
+
+    // 存量迁移时显式 className 覆盖默认值，保证各域原有外观零变化
+    const legacy = createInput({className: 'ai-settings-input'});
+    assert.equal(legacy.control.className, 'ai-settings-input');
 });
 
 // ---- 静态防线 ----
@@ -88,7 +92,7 @@ test('createInput / createTextarea 带封装 class 且透传常用属性与事�
 // 2026-11-15 存量快照。迁移一处就把对应数字减一；新增一处会让测试失败。
 const BASELINE = {
     'index.html': 20,
-    'src/ai/ai-manage-dialogs.js': 6,
+    'src/ai/ai-manage-dialogs.js': 1,
     'src/ai/ai-mcp-settings.js': 2,
     'src/ai/ai-panel.js': 2,
     'src/ai/ai-reminders.js': 4,
@@ -101,7 +105,7 @@ const BASELINE = {
     'src/editor/editor-sql-view.js': 2,
     'src/editor/foot-menus.js': 1,
     'src/editor/patch-view.js': 4,
-    'src/explorer/global-search.js': 3,
+    'src/explorer/global-search.js': 2,
     'src/reading/reading.js': 1,
     'src/settings/settings-pane-envvars.js': 1,
     'src/settings/settings-pane-lang.js': 3,

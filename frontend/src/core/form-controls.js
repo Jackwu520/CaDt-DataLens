@@ -24,7 +24,9 @@ function applyAttrs(control, o) {
 
 function applyCommon(control, o) {
     if (o.id) control.id = o.id;
-    if (o.className) control.className += (control.className ? ' ' : '') + o.className;
+    // className 是显式指定：覆盖默认封装 class，便于迁移存量时保持各域原有外观
+    // （例如 AI 设置用 .ai-settings-input 而不是叠加 .dlg-input）
+    if (o.className) control.className = o.className;
     if (o.value != null) control.value = String(o.value);
     if (o.placeholder != null) control.placeholder = String(o.placeholder);
     if (o.title != null) control.title = String(o.title);

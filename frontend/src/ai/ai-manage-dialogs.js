@@ -3,6 +3,7 @@
 // config 为重赋值 let（经 getConfig() 读）；memoryFallbackNotified 经访问器写；
 // 对话框基建（openAIDialog/closeAIDialog/dialogNode/dialogButton）留在面板闭包经 ctx 注入。
 import {aiClamp, aiEstimateTokens, aiEstimateImageTokens, aiImageStats, aiTextOf} from './ai-constants.js';
+import {createInput, createSelect, createTextarea} from '../core/form-controls.js';
 
 export function createAIManageDialogs(ctx) {
     const el = ctx.el;
@@ -46,8 +47,7 @@ export function createAIManageDialogs(ctx) {
         const session = currentSession();
         if (!session) return;
         const status = dialogNode('div', 'ai-dialog-hint', '注入状态：统计中…');
-        const select = document.createElement('select');
-        select.className = 'opt-select';
+        const {control: select} = createSelect();
         const currentOption = document.createElement('option');
         currentOption.value = '';
         currentOption.textContent = '（当前生效值）';
@@ -59,9 +59,10 @@ export function createAIManageDialogs(ctx) {
             select.appendChild(option);
         }
         select.value = promptById(session.promptTemplateId) ? session.promptTemplateId : '';
-        const textarea = document.createElement('textarea');
-        textarea.spellcheck = false;
-        textarea.value = effectiveSystemPrompt(session);
+        const {control: textarea} = createTextarea({
+            spellcheck: false,
+            value: effectiveSystemPrompt(session),
+        });
         select.addEventListener('change', () => {
             const prompt = promptById(select.value);
             textarea.value = prompt ? prompt.content : effectiveSystemPrompt(session);
@@ -153,10 +154,11 @@ export function createAIManageDialogs(ctx) {
         pathBox.style.whiteSpace = 'pre-wrap';
         const list = dialogNode('div', 'ai-mgr-list');
         const newRow = dialogNode('div', 'ai-dialog-field');
-        const nameInput = document.createElement('input');
-        nameInput.className = 'ai-settings-input';
-        nameInput.placeholder = '新文件名，如 user-preferences.md';
-        nameInput.spellcheck = false;
+        const {control: nameInput} = createInput({
+            className: 'ai-settings-input',
+            placeholder: '新文件名，如 user-preferences.md',
+            spellcheck: false,
+        });
         newRow.append(dialogNode('span', '', '新建文件'), nameInput,
             dialogButton('创建', 'dlg-btn', async () => {
                 const name = String(nameInput.value || '').trim();
@@ -270,14 +272,16 @@ export function createAIManageDialogs(ctx) {
         const list = dialogNode('div', 'ai-mgr-list ai-skills-list');
         const status = dialogNode('div', 'ai-dialog-hint', '技能来源（优先级从高到低）：工作区 .cadt/skills > 工作区 .agents/skills > 应用数据 ai-skills > 用户 ~/.agents/skills > 内置（随应用分发，版本更新后自动刷新）；同名时低 rank 覆盖高 rank。列表按「用户 / 自定义技能」与「内置技能」分组，点组名可折叠；组内滚动。');
         const newRow = dialogNode('div', 'ai-dialog-field');
-        const nameInput = document.createElement('input');
-        nameInput.className = 'ai-settings-input';
-        nameInput.placeholder = '技能名称';
-        nameInput.spellcheck = false;
-        const descInput = document.createElement('input');
-        descInput.className = 'ai-settings-input';
-        descInput.placeholder = '描述（一句话）';
-        descInput.spellcheck = false;
+        const {control: nameInput} = createInput({
+            className: 'ai-settings-input',
+            placeholder: '技能名称',
+            spellcheck: false,
+        });
+        const {control: descInput} = createInput({
+            className: 'ai-settings-input',
+            placeholder: '描述（一句话）',
+            spellcheck: false,
+        });
         newRow.append(dialogNode('span', '', '新建技能'), nameInput, descInput,
             dialogButton('创建', 'dlg-btn', async () => {
                 const name = String(nameInput.value || '').trim();

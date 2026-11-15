@@ -3,6 +3,7 @@
 // 依赖一律经 deps 延迟求值（调用方传 getter），不在创建期解构：
 // 这样既不依赖 main.js 的声明顺序，也不会把 let 状态拍成快照。
 import {fileIconSpec} from '../core/fileicons.js';
+import {createSelect} from '../core/form-controls.js';
 
 export function createGlobalSearch(deps) {
 
@@ -67,9 +68,7 @@ function ensureAISearchControls() {
         scheduleGlobalSearch();
     });
     aiLabel.append(aiBox, document.createTextNode('AI 会话'));
-    const modeSel = document.createElement('select');
-    modeSel.className = 'gs-ai-mode';
-    modeSel.id = 'gs-ai-mode';
+    const {control: modeSel} = createSelect({id: 'gs-ai-mode', className: 'gs-ai-mode'});
     modeSel.disabled = !globalSearch.aiEnabled;
     for (const [value, text] of [['brief', '简要（用户消息 + 每轮总结）'], ['full', '详细（全部消息）']]) {
         const option = document.createElement('option');
