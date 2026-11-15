@@ -48,6 +48,9 @@ export function createAISessionList(ctx) {
     // 支线对话动作（阶段 F）：面板经惰性转发注入，缺省时菜单项空操作不报错
     const openSideChat = typeof ctx.openSideChat === 'function' ? ctx.openSideChat : () => {};
     const promoteSideChat = typeof ctx.promoteSideChat === 'function' ? ctx.promoteSideChat : () => {};
+    // 会话信箱（阶段 H）：未消费条数与清空入口
+    const clearMailbox = typeof ctx.clearMailbox === 'function' ? ctx.clearMailbox : () => 0;
+    const pendingNoticeCount = typeof ctx.pendingNoticeCount === 'function' ? ctx.pendingNoticeCount : () => 0;
     const currentSession = ctx.currentSession;
     const currentWorkspacePath = ctx.currentWorkspacePath;
     const isOpen = ctx.isOpen;
@@ -480,6 +483,15 @@ export function createAISessionList(ctx) {
             {label: '会话数据诊断…', action: () => showSessionDiagnostics(session)},
             // 支线专用：清掉 sideOf，此后它就是独立会话（母会话删除也不影响）
             {label: '提升为独立会话', disabled: !side, action: () => promoteSideChat(session)},
+            // 信箱积压：跨会话/后台注入的消息还没被消费时给个清空口（防环治理的手动兜底）
+            (() => {
+                const pending = pendingNoticeCount(session.id);
+                return {
+                    label: '清空信箱' + (pending ? '（' + pending + ' 条）' : ''),
+                    disabled: !pending,
+                    action: () => { clearMailbox(session.id); },
+                };
+            })(),
             {label: session.archivedAt ? '取消归档' : '归档会话', action: () => archiveSession(session, !session.archivedAt)},
             {sep: true},
             {label: '删除会话', danger: true, action: () => deleteSession(session)},

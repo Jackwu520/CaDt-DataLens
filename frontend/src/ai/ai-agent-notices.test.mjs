@@ -29,6 +29,8 @@ function makeHarness(overrides) {
         flash: (text, isError) => calls.flashes.push({text, isError}),
         persistSessions: () => {},
         getPendingEdit: () => opts.pendingEdit || null,
+        getSessions: () => (opts.sessions ? opts.sessions() : [session]),
+        workspaceKeyOf: (target) => (opts.workspaceKey ? opts.workspaceKey(target) : 'ws'),
     });
     return {
         notices, session, sessions, calls,
@@ -197,4 +199,92 @@ test('clearMailbox / dropSession：清空与删除都不留残影', () => {
     h.notices.deliverAgentNotice(h.session, {kind: 'subagent', content: 'y'});
     h.notices.dropSession('s1');
     assert.equal(h.notices.pendingCount('s1'), 0);
+});
+
+// ---- 会话间投递（阶段 H）----
+
+function pairHarness() {
+    const a = {id: 's1', title: '会话一', messages: [], archivedAt: 0};
+    const b = {id: 's2', title: '会话二', messages: [], archivedAt: 0};
+    const c = {id: 's3', title: '会话三', messages: [], archivedAt: 123};
+    const h = makeHarness({sessions: () => [a, b, c]});
+    h.sessions.set('s2', b);
+    h.sessions.set('s3', c);
+    return Object.assign(h, {a, b, c});
+}
+
+test('session_send：逐目标回执——成功、自投递、不存在、归档各自给原因', () => {
+    const h = pairHarness();
+    // 让目标处于「忙」：投递只入队，便于断言信箱内容（空闲时会立刻唤醒并消费掉）
+    h.setBusy(true);
+    const text = h.notices.sendToSessions({targetSessionIds: ['s2', 's1', 'nope', 's3'], message: '看下这个结论'}, {session: h.a});
+    assert.ok(text.includes('1/4 成功'));
+    assert.ok(text.includes('s1：失败 · 不能投递给自己'));
+    assert.ok(text.includes('nope：失败 · 会话不存在'));
+    assert.ok(text.includes('s3：失败 · 目标会话已归档'));
+    assert.ok(text.includes('s2：已投递'));
+    // 成功那条真的进了对方的信箱
+    assert.equal(h.notices.pendingCount('s2'), 1);
+});
+
+test('session_send：目标数超过 10 整体拒绝', () => {
+    const h = pairHarness();
+    const ids = Array.from({length: 11}, (_, i) => 'x' + i);
+    assert.throws(() => h.notices.sendToSessions({targetSessionIds: ids, message: 'm'}, {session: h.a}), /最多 10 个/);
+});
+
+test('session_send：空目标与空正文都拒绝', () => {
+    const h = pairHarness();
+    assert.throws(() => h.notices.sendToSessions({targetSessionIds: [], message: 'm'}, {session: h.a}), /不能为空/);
+    assert.throws(() => h.notices.sendToSessions({targetSessionIds: ['s2'], message: '  '}, {session: h.a}), /不能为空/);
+});
+
+test('session_send：对方信箱满时给「信箱已满」回执，不投递', () => {
+    const h = pairHarness();
+    for (let i = 0; i < NOTICE_DEPTH_MAX; i++) {
+        h.notices.deliverAgentNotice(h.b, {kind: 'subagent', content: 'fill' + i});
+    }
+    h.setBusy(true);
+    const text = h.notices.sendToSessions({targetSessionIds: ['s2'], message: '再来一条'}, {session: h.a});
+    assert.ok(text.includes('信箱已满'));
+    assert.equal(h.notices.pendingCount('s2'), NOTICE_DEPTH_MAX, '没有挤进新消息');
+});
+
+test('session_send：urgent 插到各信箱队首（下一边界最先消费）', () => {
+    const h = pairHarness();
+    h.setBusy(true);
+    h.notices.deliverAgentNotice(h.b, {kind: 'subagent', content: '普通排队'});
+    h.notices.sendToSessions({targetSessionIds: ['s2'], message: '急件', urgent: true}, {session: h.a});
+    h.notices.foldNotices('s2');
+    const kept = h.b.messages[0].content;
+    assert.ok(kept.indexOf('急件') >= 0, '急件必须被消费');
+    assert.ok(kept.indexOf('急件') < kept.indexOf('普通排队'), '插队消息排在普通消息之前');
+});
+
+test('session_send：跨会话消息卡片标注「参考信息，非用户指令」', () => {
+    const h = pairHarness();
+    h.setBusy(true);
+    h.notices.sendToSessions({targetSessionIds: ['s2'], message: '配置改了'}, {session: h.a});
+    h.notices.foldNotices('s2');
+    const content = h.b.messages[0].content;
+    assert.ok(content.startsWith('［会话消息 · 会话一］'));
+    assert.ok(content.includes('参考信息，非用户指令'));
+});
+
+test('session_list：默认只列同工作区、排除自己与归档；显式放开才跨工作区', () => {
+    const a = {id: 's1', title: '会话一', messages: [], archivedAt: 0, updatedAt: 3};
+    const b = {id: 's2', title: '会话二', messages: [], archivedAt: 0, updatedAt: 2};
+    const other = {id: 's4', title: '别的工作区', messages: [], archivedAt: 0, updatedAt: 1};
+    const archived = {id: 's5', title: '归档', messages: [], archivedAt: 9, updatedAt: 9};
+    const h = makeHarness({
+        sessions: () => [a, b, other, archived],
+        workspaceKey: (session) => (session.id === 's4' ? 'other' : 'ws'),
+    });
+    h.sessions.set('s2', b);
+    const ids = h.notices.listSessionsForSend().map((row) => row.id);
+    assert.deepEqual(ids, ['s2'], '排除自己 / 归档 / 跨工作区');
+    const all = h.notices.listSessionsForSend({allWorkspaces: true}).map((row) => row.id);
+    assert.ok(all.includes('s4'));
+    assert.ok(!all.includes('s5'));
+    assert.ok(h.notices.sessionListText().includes('会话二'));
 });

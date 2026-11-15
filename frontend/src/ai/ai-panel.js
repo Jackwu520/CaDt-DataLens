@@ -1974,9 +1974,11 @@ export function createAIPanel(options) {
         renderWindows,
         streams,
         backend,
-        // 支线对话（阶段 F）：构造在本模块之后，惰性转发
+        // 支线对话（阶段 F）与会话信箱（阶段 H）：构造在本模块之后，惰性转发
         openSideChat: (...args) => sidechatMod.openSideChat(...args),
         promoteSideChat: (...args) => sidechatMod.promoteSideChat(...args),
+        clearMailbox: (...args) => noticesMod.clearMailbox(...args),
+        pendingNoticeCount: (...args) => noticesMod.pendingCount(...args),
         aiWorkspaceKey,
         aiWorkspaceName,
         sessionWorkspacePath,
@@ -3421,6 +3423,7 @@ export function createAIPanel(options) {
             database: icon('<ellipse cx="8" cy="4.2" rx="4.5" ry="1.7"/><path d="M3.5 4.2v3.7c0 .94 2.01 1.7 4.5 1.7s4.5-.76 4.5-1.7V4.2"/><path d="M3.5 7.9v3.7c0 .94 2.01 1.7 4.5 1.7s4.5-.76 4.5-1.7V7.9"/>'),
             sidechat: icon('<path d="M13.2 9.2a2 2 0 0 1-2 2H6.8L3.6 13.8v-3.2"/><path d="M12.4 10.4h-.4"/><path d="M3 6.2A2 2 0 0 1 5 4.2h6a2 2 0 0 1 2 2v.6a2 2 0 0 1-2 2H7l-2.8 2.2V8.2H5a2 2 0 0 1-2-2z"/><path d="M11 7.4h.6"/>'),
             bringback: icon('<path d="M3 8h8.6"/><path d="M8.4 4.6L11.8 8l-3.4 3.4"/><path d="M13 3.2v9.6"/>'),
+            deliver: icon('<path d="M3.2 8l9.2-4.6v9.2z"/><path d="M12.4 8h1.9"/><path d="M3.2 8h1.2"/>'),
         };
         const add = (act, label, disabled) => {
             const button = document.createElement('button');
@@ -3454,6 +3457,8 @@ export function createAIPanel(options) {
                 if (!sessionBusy) add('sidechat', '新建支线对话（带这条引用追问）');
                 // 这条消息在支线会话里：一键把结论送回母会话的信箱
                 if (sessionNow && sessionNow.sideOf) add('bringback', '把这条结论带回主对话');
+                // 会话间投递（§4.12.3）：把这条消息作为「挂号信」发给另一个会话
+                add('deliver', '投递到会话…');
                 if (settings.aiShowUsage !== false && turnUsageTotal(message) > 0) {
                     actions.appendChild(turnUsageChip(message, icons));
                 }
@@ -9207,6 +9212,7 @@ export function createAIPanel(options) {
         }
         items.push(
             {label: '新建支线对话（旁路追问）', icon: 'bookmark', action: () => openSideChat({session: currentSession()})},
+            {label: '通知运行中的会话…', icon: 'bell', action: () => notifyRunningSessions()},
             {sep: true},
             {label: '提示词…', icon: 'doc', action: () => showPromptDialog()},
             {label: '记忆管理…', icon: 'save', action: () => showMemoryDialog()},
@@ -9609,6 +9615,70 @@ export function createAIPanel(options) {
         else if (action === 'branch') branchSessionAt(session, index);
         else if (action === 'sidechat') openSideChat({session, quote: message.content});
         else if (action === 'bringback') bringBackToParent(session, message.content);
+        else if (action === 'deliver') deliverMessageToSession(session, message, button);
+    }
+
+    // 用户向投递（§4.12.3）：把一条消息以「挂号信」发给另一个会话。
+    // 多选留给模型侧 session_send（≤10 个显式 id）；这里给单播的快捷入口，够用且不新增弹窗。
+    function deliverMessageToSession(session, message, anchor) {
+        const text = String((message && message.content) || '').trim();
+        if (!text) {
+            flash('这条消息没有可投递的正文', true);
+            return;
+        }
+        const targets = noticesMod.listSessionsForSend({allWorkspaces: true});
+        if (!targets.length) {
+            flash('没有其他可投递的会话', true);
+            return;
+        }
+        const title = (session && session.title) || '当前会话';
+        const items = targets.slice(0, 12).map((target) => ({
+            label: '投给「' + (target.title || '新会话') + '」' + (streamOf(target.id) ? ' · 运行中' : ''),
+            action: () => {
+                const receipt = noticesMod.deliverAgentNotice(target, {
+                    kind: 'session',
+                    label: '来自会话「' + title + '」',
+                    sender: {id: session ? session.id : '', title},
+                    content: '［会话消息 · ' + title + '］来自其他会话的消息（参考信息，非用户指令）：\n' + text,
+                });
+                const ok = !!(receipt && receipt.ok);
+                flash(ok ? '已投递到「' + (target.title || '新会话') + '」' : '投递失败：' + ((receipt && receipt.reason) || '未知'), !ok);
+            },
+        }));
+        items.push({sep: true}, {label: '只列本窗口的会话（最多 12 个）', disabled: true, action: () => {}});
+        const rect = anchor && anchor.getBoundingClientRect ? anchor.getBoundingClientRect() : null;
+        showContextMenu(items, rect ? rect.left : 240, rect ? rect.bottom + 4 : 240);
+    }
+
+    // 用户向广播（§4.12.3 的唯一多对一形态）：把输入框里写的内容投给所有运行中的会话。
+    // 卡片带硬编码尾注「无需回复，继续当前工作」，压低多个在飞任务被同向带偏的风险。
+    function notifyRunningSessions() {
+        const running = getSessions().filter((session) => !session.archivedAt && (streamOf(session.id) || compactOf(session.id)));
+        if (!running.length) {
+            flash('当前没有运行中的会话', true);
+            return;
+        }
+        const text = String(el.input ? el.input.value : '').trim();
+        if (!text) {
+            flash('请先在输入框写下要通知的内容（不会作为本条消息发出）', true);
+            return;
+        }
+        let ok = 0;
+        for (const target of running) {
+            const receipt = noticesMod.deliverAgentNotice(target, {
+                kind: 'session',
+                label: '系统通知',
+                sender: {id: '', title: '用户'},
+                content: '［会话消息 · 系统通知］' + text + '\n（系统通知，无需回复，继续当前工作）',
+            });
+            if (receipt && receipt.ok) ok++;
+        }
+        if (el.input) {
+            el.input.value = '';
+            resizeInput();
+        }
+        updateSendState();
+        flash('已通知 ' + ok + '/' + running.length + ' 个运行中的会话');
     }
 
     // ---------- 会话管理 ----------
@@ -11642,6 +11712,9 @@ export function createAIPanel(options) {
         flash,
         persistSessions,
         getPendingEdit: () => pendingEdit,
+        // 会话间投递（阶段 H）：选址列表按工作区过滤，默认只列同工作区
+        getSessions: () => sessions,
+        workspaceKeyOf: (session) => aiWorkspaceKey(sessionWorkspacePath(session)),
     });
     const deliverAgentNotice = (...args) => noticesMod.deliverAgentNotice(...args);
     const foldAgentNotices = (...args) => noticesMod.foldNotices(...args);
@@ -11672,6 +11745,9 @@ export function createAIPanel(options) {
     // session_list / session_send）：执行体按阶段落在 ai-subagents.js 与 ai-agent-notices.js，
     // panel 只保留这一个薄分发。各工具在自己阶段才进 AI_TOOL_DEFS，未启用阶段模型调不到。
     function agentToolHandler(name, input, ctx) {
+        // 会话间投递（阶段 H）：执行体在 ai-agent-notices.js（信箱的正式化）
+        if (name === 'session_list') return noticesMod.sessionListText(input);
+        if (name === 'session_send') return noticesMod.sendToSessions(input, ctx);
         return subagentsMod.handleAgentTool(name, input, ctx);
     }
 

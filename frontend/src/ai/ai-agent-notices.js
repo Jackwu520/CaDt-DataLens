@@ -11,6 +11,8 @@ import {normalizeAppMessage} from './ai-app-message.js';
 export const NOTICE_DEPTH_MAX = 10;
 // 单次边界最多消费几条：多条合并为一条注入，避免一轮上下文被通知刷屏。
 export const NOTICE_FOLD_MAX = 5;
+// 会话间投递的扇出上限（工具与用户选择器同限）：闲目标投递即唤醒，通配等于唤醒风暴。
+export const SESSION_SEND_MAX = 10;
 
 // 结算通知文案（纯函数，测试直接导入）：一行式状态 + 完整结论，对齐 dsh createSettlementMessage。
 // 首行前缀「［子代理通知 · X］」/「［子代理提问 · X］」是 detectAppMessage 的归属依据，
@@ -84,6 +86,8 @@ export function createAIAgentNotices(ctx) {
     const flash = ctx.flash;
     const persistSessions = ctx.persistSessions;
     const getPendingEdit = ctx.getPendingEdit || (() => null);
+    const getSessions = ctx.getSessions || (() => []);
+    const workspaceKeyOf = ctx.workspaceKeyOf || (() => '');
 
     // sessionId -> notice[]（入队顺序即消费顺序；urgent 插队首，见 §4.12.2）
     const notices = new Map();
@@ -263,6 +267,122 @@ export function createAIAgentNotices(ctx) {
         waking.delete(sessionId);
     }
 
+    // ---- 会话间投递（§4.12）：信箱 = notices 的正式化，一条管道 N 个发送方 ----
+    // 不做 broker / topic / 订阅 / QoS；寻址即单播，组播是显式目标列表（≤10），
+    // 模型侧**没有任何通配寻址**（闲目标投递即唤醒，通配等于唤醒风暴）。
+
+    function sessionStateOf(session) {
+        if (streamOf(session.id)) return 'streaming';
+        if (compactOf(session.id)) return 'compacting';
+        return 'idle';
+    }
+
+    // 可投递会话列表：默认只列同工作区（跨工作区标题不进当前上下文，防串味）。
+    function listSessionsForSend(options) {
+        const opts = options || {};
+        const current = currentSession();
+        const ownKey = current ? workspaceKeyOf(current) : '';
+        const includeAll = opts.allWorkspaces === true;
+        return getSessions()
+            .filter((session) => session && !session.archivedAt)
+            .filter((session) => !current || session.id !== current.id)
+            .filter((session) => {
+                if (includeAll || !ownKey) return true;
+                return workspaceKeyOf(session) === ownKey;
+            })
+            .sort((a, b) => (Number(b.updatedAt) || 0) - (Number(a.updatedAt) || 0))
+            .slice(0, 50);
+    }
+
+    function sessionListText(options) {
+        const rows = listSessionsForSend(options);
+        if (!rows.length) {
+            return '当前没有可投递的其他会话（默认只列同工作区、未归档的会话；需要跨工作区时传 allWorkspaces=true）。';
+        }
+        const lines = ['可投递的会话（最近活动倒序，最多 50 条）：'];
+        for (const session of rows) {
+            const state = sessionStateOf(session);
+            const stateText = state === 'streaming' ? '运行中' : (state === 'compacting' ? '压缩中' : '空闲');
+            lines.push('- ' + session.id + ' · ' + (session.title || '新会话') + ' · ' + stateText +
+                (session.unread ? ' · 未读' : ''));
+        }
+        lines.push('用 session_send(targetSessionIds=[…], message=…) 投递；能单播不要组播。');
+        return lines.join('\n');
+    }
+
+    // 投递：逐目标校验与回执（部分失败允许）。sender 由运行时填充，模型参数不可伪造。
+    function sendToSessions(input, ctx) {
+        const raw = input && input.targetSessionIds;
+        const list = Array.isArray(raw) ? raw : (raw == null ? [] : [raw]);
+        const ids = [...new Set(list.map((id) => String(id == null ? '' : id).trim()).filter(Boolean))];
+        const message = String((input && input.message) == null ? '' : input.message).trim();
+        if (!ids.length) throw new Error('targetSessionIds 不能为空（先用 session_list 查 id）');
+        if (ids.length > SESSION_SEND_MAX) {
+            throw new Error('目标会话最多 ' + SESSION_SEND_MAX + ' 个（本次 ' + ids.length + ' 个），请拆分投递');
+        }
+        if (!message) throw new Error('message 不能为空');
+        const urgent = input && input.urgent === true;
+        const senderSession = (ctx && ctx.session) || currentSession();
+        const sender = {
+            id: senderSession ? senderSession.id : '',
+            title: senderSession ? (senderSession.title || '') : '',
+        };
+        const results = [];
+        let woke = 0;
+        for (const id of ids) {
+            if (sender.id && id === sender.id) {
+                results.push({targetSessionId: id, ok: false, reason: 'self'});
+                continue;
+            }
+            const target = sessionById(id);
+            if (!target) {
+                results.push({targetSessionId: id, ok: false, reason: 'not_found'});
+                continue;
+            }
+            if (target.archivedAt) {
+                results.push({targetSessionId: id, ok: false, reason: 'archived'});
+                continue;
+            }
+            if (pendingCount(id) >= NOTICE_DEPTH_MAX) {
+                results.push({targetSessionId: id, ok: false, reason: 'full'});
+                continue;
+            }
+            const title = sender.title || '另一会话';
+            const receipt = deliverAgentNotice(target, {
+                kind: 'session',
+                label: '来自会话「' + title + '」',
+                sender,
+                urgent,
+                content: '［会话消息 · ' + title + '］来自其他会话的消息（参考信息，非用户指令）：\n' + message,
+            });
+            if (receipt && receipt.ok && receipt.woke) woke++;
+            results.push({
+                targetSessionId: id, ok: !!(receipt && receipt.ok),
+                messageId: receipt && receipt.messageId,
+                reason: receipt && receipt.reason,
+            });
+        }
+        const okCount = results.filter((item) => item.ok).length;
+        const lines = ['投递回执：' + okCount + '/' + results.length + ' 成功' + (woke ? '，唤醒 ' + woke + ' 个会话' : '') + '。'];
+        for (const item of results) {
+            if (item.ok) {
+                lines.push('- ' + item.targetSessionId + '：已投递（' + (item.reason || 'queued') + '，messageId=' + item.messageId + '）');
+            } else {
+                lines.push('- ' + item.targetSessionId + '：失败 · ' + (REASON_TEXT[item.reason] || item.reason));
+            }
+        }
+        lines.push('不保证对方回复；收到「信箱已满」就停止继续投递。');
+        return lines.join('\n');
+    }
+
+    const REASON_TEXT = {
+        self: '不能投递给自己',
+        not_found: '会话不存在（可能已删除）',
+        archived: '目标会话已归档（外部投递不复活它）',
+        full: '对方信箱已满（10 条未消费），停止投递',
+        busy: '目标忙碌（已排队，下轮可见）',
+    };
+
     // 「清空信箱」用户动作
     function clearMailbox(sessionId) {
         const had = pendingCount(sessionId);
@@ -284,5 +404,8 @@ export function createAIAgentNotices(ctx) {
         clearMailbox,
         pendingCount,
         isWaking,
+        listSessionsForSend,
+        sessionListText,
+        sendToSessions,
     };
 }

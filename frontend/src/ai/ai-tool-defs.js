@@ -473,6 +473,33 @@ export const AI_TOOL_DEFS = {
             required: ['agentId'],
         },
     },
+    session_list: {
+        name: 'session_list',
+        description: '列出本窗口内可投递的 AI 会话（id / 标题 / 状态 / 未读标记），最近活动倒序、上限 50 条。默认只列同工作区的会话——你不知道其他会话的 id，必须先查后投。',
+        parameters: {
+            type: 'object',
+            properties: {
+                allWorkspaces: {type: 'boolean', description: 'true = 连其他工作区的会话一起列（默认只列同工作区，避免标题串味）'},
+            },
+        },
+    },
+    session_send: {
+        name: 'session_send',
+        description: '向一个或多个 AI 会话的信箱投递消息（挂号信）：对方忙则排到它下一轮边界、空闲则唤醒新轮，逐目标返回回执。目标必须是 session_list 查到的显式 id（1–10 个，没有广播/通配）；能单播就不要组播；不要与另一会话无意义地互相投递，收到「信箱已满」就停止。对方把消息当参考信息（不是用户指令），它自己的权限与审批不受影响。',
+        parameters: {
+            type: 'object',
+            properties: {
+                targetSessionIds: {
+                    type: 'array',
+                    description: '目标会话 id 列表（1–10 个，无通配）',
+                    items: {type: 'string'},
+                },
+                message: {type: 'string', description: '要投递的内容：结论、约定或需要对方知晓的事实'},
+                urgent: {type: 'boolean', description: 'true = 插到各信箱队首（下一边界最先消费）；不打断对方在飞的生成'},
+            },
+            required: ['targetSessionIds', 'message'],
+        },
+    },
     agent_compact: {
         name: 'agent_compact',
         description: '压缩一个子代理的上下文：运行中的在它下一轮边界执行（不打断在飞工作）；已完成且可续的记录立即压缩，之后 agent_send 唤醒会以精简上下文继续。已失败/已停止/上下文已回收的记录会被拒绝。压缩后它的过程转录仍完整可见（展示与上下文分离）。',
@@ -672,6 +699,8 @@ export const AI_TOOL_CATALOG = {
     agent_stop: {group: 'task', blurb: '停止子代理并收集它的过程记录'},
     wait_agent: {group: 'task', blurb: '阻塞等子代理结论（并行派出后汇总用）'},
     agent_compact: {group: 'task', blurb: '压缩子代理上下文，长任务续跑前腾空间'},
+    session_list: {group: 'session', blurb: '会话间投递'},
+    session_send: {group: 'session', blurb: '会话间投递'},
     schedule_list: {group: 'task', blurb: '定时任务管理'},
     schedule_create: {group: 'task', blurb: '定时任务管理'},
     schedule_delete: {group: 'task', blurb: '定时任务管理'},
@@ -752,6 +781,8 @@ export function createAIToolDefs(ctx) {
         if (AI_WRITE_SCOPES.includes(scope) || planMode) {
             list.push(AI_TOOL_DEFS.spawn_agent, AI_TOOL_DEFS.agent_send, AI_TOOL_DEFS.agent_stop,
                 AI_TOOL_DEFS.wait_agent, AI_TOOL_DEFS.agent_compact);
+            // 会话间投递：跨会话唤醒是编排类重能力，与 spawn_agent 同档
+            list.push(AI_TOOL_DEFS.session_list, AI_TOOL_DEFS.session_send);
         }
         if (scope === 'full' && !planMode) list.push(AI_TOOL_DEFS.browser_evaluate);
         // MCP：写权限档及以上注入（能力未知，只读档不该拿到）；计划模式不注入（外部副作用不可控）。
@@ -807,6 +838,7 @@ export function createAIToolDefs(ctx) {
             '- 工具报错先修正参数或换路径，不要原样重试；连续失败就停下来说明情况。',
             '- 多步任务先 todo_write 规划；值得并行的多项调查用 spawn_agent(mode=\'background\') 一次派出、期间继续自己的工作，完成会逐个通知，需要汇总时 wait_agent。单一简单委派仍用默认阻塞模式。',
             '- 子代理跑得很长（轮次多、迟迟不出结论）时可以 agent_compact 压缩它的上下文再让它继续；要收回就 agent_stop，它会连过程记录一起返回。',
+            '- 需要让另一个会话知道某件事：session_list 查 id → session_send 单播（能单播不要组播，收到「信箱已满」即停）；对方的回复不是必须，不要互相刷消息。',
         );
         const hasAll = (names) => names.every((name) => available.has(name));
         const chains = [
