@@ -623,6 +623,12 @@
                                 </div>
                             </div>
                             <div class="set-row">
+                                <div class="set-main"><div class="set-title">上下文实时瘦身</div><div class="set-desc">发送时剔除旧轮思考与过时的大文件/命令输出（保留最近 2 轮原文）</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="ai-opt-context-slim"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                </div>
+                            </div>
+                            <div class="set-row">
                                 <div class="set-main"><div class="set-title">记忆与技能</div><div class="set-desc">系统提示词与逐项注入开关在「上下文注入」页</div></div>
                                 <div class="set-control">
                                     <button type="button" id="ai-opt-open-memory" class="dlg-btn">记忆管理…</button>
@@ -722,12 +728,6 @@
                                 <div class="set-main"><div class="set-title">每条回复都显示 AI 信息行</div><div class="set-desc">默认只在轮次开头与模型切换时显示</div></div>
                                 <div class="set-control">
                                     <label class="set-switch"><input type="checkbox" id="ai-opt-turn-meta-all"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
-                                </div>
-                            </div>
-                            <div class="set-row">
-                                <div class="set-main"><div class="set-title">上下文实时瘦身</div><div class="set-desc">发送时剔除旧轮思考与过时的大文件/命令输出（保留最近 2 轮原文）</div></div>
-                                <div class="set-control">
-                                    <label class="set-switch"><input type="checkbox" id="ai-opt-context-slim"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
                                 </div>
                             </div>
                             <div class="set-row">
@@ -940,15 +940,15 @@
                                 <div class="set-main"><div class="set-title">回复风格</div><div class="set-desc">只影响语气，不改事实准确性与工具纪律；保存后从下一条消息起生效</div></div>
                                 <div class="set-control">
                                     <select id="ai-persona-style" class="opt-select" aria-label="回复风格">
-                                        <option value="default">默认 · 不设定特定风格</option>
-                                        <option value="tangerine">甜澄 · 软软的粉色猫娘，话多、贪吃、路痴</option>
-                                        <option value="professional">专业严谨 · 清晰、准确、值得信赖</option>
-                                        <option value="friendly">亲和友善 · 温暖、平易近人、鼓励支持</option>
-                                        <option value="direct">直言不讳 · 简明扼要、不废话、直击要点</option>
-                                        <option value="imaginative">天马行空 · 富有想象力、善用比喻类比</option>
-                                        <option value="efficient">高效务实 · 最少文字、最大信息量</option>
-                                        <option value="snarky">毒舌吐槽 · 犀利吐槽、但绝不伤人</option>
-                                        <option value="socratic">启发引导 · 用提问引导思考、授人以渔</option>
+                                        <option value="default" data-subtitle="不设定特定风格">默认</option>
+                                        <option value="tangerine" data-subtitle="软软的粉色猫娘，话多、贪吃、路痴">甜澄</option>
+                                        <option value="professional" data-subtitle="清晰、准确、值得信赖">专业严谨</option>
+                                        <option value="friendly" data-subtitle="温暖、平易近人、鼓励支持">亲和友善</option>
+                                        <option value="direct" data-subtitle="简明扼要、不废话、直击要点">直言不讳</option>
+                                        <option value="imaginative" data-subtitle="富有想象力、善用比喻类比">天马行空</option>
+                                        <option value="efficient" data-subtitle="最少文字、最大信息量">高效务实</option>
+                                        <option value="snarky" data-subtitle="犀利吐槽、但绝不伤人">毒舌吐槽</option>
+                                        <option value="socratic" data-subtitle="用提问引导思考、授人以渔">启发引导</option>
                                     </select>
                                 </div>
                             </div>
