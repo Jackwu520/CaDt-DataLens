@@ -1,4 +1,4 @@
-// command-classifier-onnx：端侧命令语义分类器插件（方案 B，docs/unfinished-plans/local-command-classifier.md §8）。
+// command-classifier-onnx：端侧命令语义分类器插件（方案 B，docs/finished-plans/local-command-classifier.md §8）。
 // 一期交付：registerCommandClassifier 接线演示（词表打分模拟语义模型接口形态）+ readAsset 模型元数据加载演示。
 // 二期计划：readAsset 加载 ONNX 模型 → blob URL 动态加载 onnxruntime-web → Worker 化推理（避免卡 UI）。
 (function () {

@@ -14,7 +14,7 @@ const host = {
 
 let commands = [];
 const themeStyles = new Map();
-// 命令风险分类器（docs/unfinished-plans/local-command-classifier.md §4）：
+// 命令风险分类器（docs/finished-plans/local-command-classifier.md §4）：
 // 插件可注册 {id, label, classify(command, ctx) → {score, reason}}（可返回 Promise）。
 // score = 危险概率 [0,1]；无 deny 权——判定统一由 AI 面板按严格度阈值转 allow/ask。
 const commandClassifiers = new Map();

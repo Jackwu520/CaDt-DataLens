@@ -220,7 +220,7 @@ let semanticAutoRecheckDone = false; // 注册表空时的自动补扫，每会�
         if (select.value !== wanted) select.value = wanted;
     }
 
-    // 端侧分类器设置区（docs/unfinished-plans/local-command-classifier.md §5/§7）：
+    // 端侧分类器设置区（docs/finished-plans/local-command-classifier.md §5/§7）：
     // 开关、严格度、个性化、测试框（不产生审批记录）、重置 / 清空 / 导出。
     let localClassifierTestTimer = 0;
     const LOCAL_CLASSIFIER_STRICTNESS_NAMES = {loose: '宽松', standard: '标准', strict: '严格'};

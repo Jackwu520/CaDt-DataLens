@@ -2,7 +2,7 @@
 
 **二期（真实 ONNX 推理）已发布**：完整实现与模型载荷在插件市场仓库 [cadt-datalens-plugins/command-classifier-onnx](https://gitee.com/cadt-datalens-plugins/command-classifier-onnx)（MiniLM int8 22MB + 逻辑回归头 + Worker 离线推理）。本目录保留**一期接线演示**（词表打分 + readAsset 演示），用于理解 `registerCommandClassifier` 契约的最小可用形态。
 
-端侧命令风险分类器（方案 B，[docs/unfinished-plans/local-command-classifier.md](../../../../docs/unfinished-plans/local-command-classifier.md) §8）：向自动审批链注册一个语义级分类器，与内置线性分类器（方案 A）**保守合并取最高分**——任一分类器判险即转人工，`deny` 权永远不下放给模型。
+端侧命令风险分类器（方案 B，[docs/finished-plans/local-command-classifier.md](../../../../docs/finished-plans/local-command-classifier.md) §8）：向自动审批链注册一个语义级分类器，与内置线性分类器（方案 A）**保守合并取最高分**——任一分类器判险即转人工，`deny` 权永远不下放给模型。
 
 ## 当前状态：一期（接线演示）
 

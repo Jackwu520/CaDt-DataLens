@@ -2,7 +2,7 @@
 // 标签 = 策略性 auto-approve 判定（方案 §6）：0 = 只读/幂等可自动放行；
 // 1 = 转人工（含「良性但必须 ask」的灰色类 install/push/kill 等）。
 // 与「恶意/良性」语义不同构——SEA / malbash / Cowrie 等公开语料只作词表与模式参考，
-// 训练集必须自建（docs/unfinished-plans/local-command-classifier.md §6 语料盘点）。
+// 训练集必须自建（docs/finished-plans/local-command-classifier.md §6 语料盘点）。
 //
 // 路径 / 参数 / flag 顺序 / 大小写 / 引号风格随机化，`cd x &&` 前缀与 `| tee` 后缀扰动；
 // 训练 / 验证用不同种子各生成一份（验证集 = 未见变体，测泛化不测背诵），训练脚本负责跨集合去重。

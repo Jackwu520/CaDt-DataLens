@@ -260,7 +260,7 @@ export function decidePermission(input) {
 // ---------- 端侧命令分类器：严格度阈值 ----------
 
 // 严格度三档的 allow 阈值（危险概率 score < T 才放行）。三档共用同一语义：
-// 内置线性模型与插件分类器只产出 score，判定统一在这里做（docs/unfinished-plans/local-command-classifier.md §5）。
+// 内置线性模型与插件分类器只产出 score，判定统一在这里做（docs/finished-plans/local-command-classifier.md §5）。
 export const LOCAL_CLASSIFIER_THRESHOLDS = {loose: 0.30, standard: 0.15, strict: 0.07};
 export const LOCAL_CLASSIFIER_STRICTNESS_LABELS = {loose: '宽松', standard: '标准', strict: '严格'};
 // 连续失败熔断阈值：分类器连续抛错 N 次后本会话内停用，避免每条命令都空等。

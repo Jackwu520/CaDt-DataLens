@@ -629,7 +629,7 @@ export function createAIPanel(options) {
             autoClassifier: stored.autoClassifier === true,
             // 自动审批分类器的请求模型：'账号id|模型id'；空串 = 跟随当前模型
             autoClassifierModel: aiTextOf(stored.autoClassifierModel),
-            // 端侧命令分类器（内置线性模型，离线毫秒级；docs/unfinished-plans/local-command-classifier.md）
+            // 端侧命令分类器（内置线性模型，离线毫秒级；docs/finished-plans/local-command-classifier.md）
             // 默认启用（作者拍板）。总开关保留为迁移兼容：旧配置显式 false 时迁移为「线性关闭」
             // （新 UI 没有总开关位，用户经线性/语义两个模型位重新开启），新配置直接用两个模型位
             localClassifierEnabled: stored.localClassifierEnabled !== false,

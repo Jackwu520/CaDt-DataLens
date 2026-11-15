@@ -1,6 +1,11 @@
 # 端侧命令分类器（内置线性模型 + 市场语义插件）
 
-状态：**M1（核心）、M2（插件骨架）、M3（ONNX 推理）均已实施（2026-11-14）**。实施落定项见 §6/§8/§11 的「实施落定」注记；M3 的市场仓库：[cadt-datalens-plugins/command-classifier-onnx](https://gitee.com/cadt-datalens-plugins/command-classifier-onnx)。
+状态：**M1（核心）、M2（插件骨架）、M3（ONNX 推理）均已实施（2026-11-14）**，2026-11-15 移入 `finished-plans/` 存档。实施落定项见 §6/§8/§11 的「实施落定」注记；M3 的市场仓库：[cadt-datalens-plugins/command-classifier-onnx](https://gitee.com/cadt-datalens-plugins/command-classifier-onnx)。
+
+> 归档注记：正文保留设计期原文，**不再随后续迭代回填**。以下几处是初稿口径，现行实现以代码与 CHANGELOG 为准：
+> - §5 / §10 / §12 的「默认关闭」→ 实施时作者改定**默认启用**（`localClassifierEnabled` 默认 true，见 §2 决策表）；个性化开关也默认开，但学习语义已从 §7 的「审批卡裁定直接回流」改为**蒸馏 + 分歧裁决**（用户允许/拒绝不再直接回流）。
+> - §13 开放问题 2 的「顺序互斥」→ 已被 §9 第 4 条改定取代：端侧判险时把来源 / score / 阈值注入提示词交大模型二次复核（远程分类器开启时），端侧放行仍直接执行、不消耗远程调用。
+> - 设置页已由「总开关 + 严格度」重构为**线性 / 语义两个模型位**；此后还有红队加固、3s 超时与熔断、族迁移等安全修复，以及语义插件 0.2.2 打包事故修复，均详见 CHANGELOG 的安全 / 改进条目。
 
 ## 1. 背景与目标
 

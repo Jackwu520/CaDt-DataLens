@@ -71,8 +71,8 @@ CaDt-DataLens 是一个面向 Windows 的轻量级多格式数据查看与编辑
 
 ### `docs/`
 - `packaging.md`（打包与发布）、`plugins/`、`skills/`、`samples/`、`screenshots/`、`icons/`、`legal/`
-- `finished-plans/`：已实施完的方案存档（`ai-panel.md`、`ai-panel-v2.md`、`ai-panel-v3.md`、`ai-head-agents-terminal.md`、`operation-audit-log.md`、`writing-mode.md`、`reading-mode.md`、`visualizer.md`）
-- `unfinished-plans/`：未开工/进行中的方案（目前：`session-messaging.md`、`frontend-split-phase3.md`、`mcp-client.md`、`local-command-classifier.md`）；`ai-patch-approval.md`、`run-code.md`、`visualizer.md` 已实施完并移入 `finished-plans/`
+- `finished-plans/`：已实施完的方案存档（`ai-panel.md`、`ai-panel-v2.md`、`ai-panel-v3.md`、`ai-head-agents-terminal.md`、`operation-audit-log.md`、`writing-mode.md`、`reading-mode.md`、`visualizer.md`、`mcp-client.md`、`ai-personalization.md`、`local-command-classifier.md` 等）
+- `unfinished-plans/`：未开工/进行中的方案（目前：`session-messaging.md`、`frontend-split-phase3.md`、`go-layout.md`）；全部实施后移入 `finished-plans/`
 - `icon-guidelines.md`
 - `reports/optimization-proposals.md`：体积与性能优化提案（含实测体积基线）
 
