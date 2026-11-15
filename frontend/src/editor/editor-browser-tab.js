@@ -277,8 +277,13 @@ function syncBrowserTab(doc) {
         // 轮询同步会反复进来：状态没变就别再跨进程调后端
         if (!visible) {
             if (last && !last.visible) return;
-            doc.browserApplied = {visible: false};
-            deps.backend.BrowserSetVisible(doc.id, false).catch(() => {});
+            const hidden = {visible: false};
+            doc.browserApplied = hidden;
+            deps.backend.BrowserSetVisible(doc.id, false).catch(() => {
+                // 后端失败也照样记成「已隐藏」的话就再无重试路径（原生窗口会一直压在
+                // 弹层/菜单上面）。撤回状态，下一轮 250ms 轮询重试。
+                if (doc.browserApplied === hidden) doc.browserApplied = null;
+            });
             return;
         }
         if (last && last.visible && last.x === rect.x && last.y === rect.y && last.w === rect.w && last.h === rect.h) {
@@ -288,8 +293,14 @@ function syncBrowserTab(doc) {
             if (deps.backend.BrowserEnsureZ) deps.backend.BrowserEnsureZ(doc.id).catch(() => {});
             return;
         }
-        doc.browserApplied = {visible: true, x: rect.x, y: rect.y, w: rect.w, h: rect.h};
-        deps.backend.BrowserSetBounds(doc.id, rect.x, rect.y, rect.w, rect.h).catch(() => {});
+        const applied = {visible: true, x: rect.x, y: rect.y, w: rect.w, h: rect.h};
+        doc.browserApplied = applied;
+        deps.backend.BrowserSetBounds(doc.id, rect.x, rect.y, rect.w, rect.h).catch(() => {
+            // 首次 Show/SetBounds 失败（宿主忙、看门狗超时）时若仍记成已应用，
+            // 后面轮询全部走「状态没变」分支 → 原生控件永远不显示，只能靠点一下
+            // 触发新矩形才恢复。撤回状态让轮询自愈。
+            if (doc.browserApplied === applied) doc.browserApplied = null;
+        });
     }, 0);
 }
 
