@@ -1,6 +1,6 @@
 //go:build windows
 
-package main
+package patch
 
 import (
 	"os"
@@ -94,7 +94,7 @@ func openExclusiveProbe(path string) error {
 
 // patchStdoutUsable 判断标准输出句柄是否可用：GUI 子系统进程从某些 shell 启动时，
 // STD_OUTPUT_HANDLE 可能指向一个 wFile 类型未知的句柄，写入会静默失败。
-func patchStdoutUsable() bool {
+func PatchStdoutUsable() bool {
 	h, err := windows.GetStdHandle(windows.STD_OUTPUT_HANDLE)
 	if err != nil || h == 0 || h == windows.InvalidHandle {
 		return false

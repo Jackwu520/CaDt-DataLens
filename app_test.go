@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"datalens/internal/chardec"
+
 	"golang.org/x/text/encoding/simplifiedchinese"
 	"golang.org/x/text/transform"
 )
@@ -172,7 +174,7 @@ func TestSaveFileEmptyPath(t *testing.T) {
 func TestGbkEncodeDecode(t *testing.T) {
 	app := NewApp()
 	path := filepath.Join(t.TempDir(), "gbk.json")
-	raw, err := encodeString("{\n  \"名字\": \"时空纪元\"\n}\n", "gbk")
+	raw, err := chardec.EncodeString("{\n  \"名字\": \"时空纪元\"\n}\n", "gbk")
 	if err != nil {
 		t.Fatal(err)
 	}

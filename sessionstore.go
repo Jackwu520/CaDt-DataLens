@@ -9,6 +9,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"datalens/internal/atomfile"
+	"datalens/internal/recycle"
 )
 
 // AI 会话磁盘存储：每个会话一个目录，正文为追加式 JSONL，元数据为原子替换的 meta.json。
@@ -40,7 +43,7 @@ type aiSessionFileLock struct {
 var aiSessionAppendMu sync.Mutex
 
 func newAISessionStore(root string) *aiSessionStore {
-	return &aiSessionStore{root: root, deleteFn: movePathToRecycleBin}
+	return &aiSessionStore{root: root, deleteFn: recycle.Move}
 }
 
 func defaultAISessionStore() (*aiSessionStore, error) {
@@ -418,7 +421,7 @@ func writeFileAtomicMode(path string, data []byte, mode os.FileMode) error {
 		os.Remove(tmp)
 		return err
 	}
-	if err := replaceFileAtomic(tmp, path); err != nil {
+	if err := atomfile.Replace(tmp, path); err != nil {
 		os.Remove(tmp)
 		return err
 	}

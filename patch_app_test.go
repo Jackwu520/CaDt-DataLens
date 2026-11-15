@@ -1,21 +1,23 @@
 package main
 
-// 补丁库生命周期测试：内容去重、空补丁/失败不留档、删除完整性（含共享 meta）、
-// applying 滞留自愈、索引裁剪保序。全部在 t.TempDir() 里跑，回收钩子替换成直接删除。
+// 补丁 App 层测试：走 App 方法验证参数整理与副作用（落盘 / 索引 / 回收）。
+// 引擎纯函数测试在 internal/patch；测试小助手跨包无法共享，与包内同名同实现。
 
 import (
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"datalens/internal/patch"
 )
 
 // useTempRecycle 把「删除进回收站」换成直接删除，避免测试往系统回收站丢东西。
 func useTempRecycle(t *testing.T) {
 	t.Helper()
-	old := patchRecycle
-	patchRecycle = func(path string) error { return os.RemoveAll(path) }
-	t.Cleanup(func() { patchRecycle = old })
+	old := patch.PatchRecycle
+	patch.PatchRecycle = func(path string) error { return os.RemoveAll(path) }
+	t.Cleanup(func() { patch.PatchRecycle = old })
 }
 
 func writeFileAt(t *testing.T, path, content string) {
@@ -56,36 +58,28 @@ func countPatchFiles(t *testing.T, store string) int {
 	return n
 }
 
-func TestNormalizePatchBody(t *testing.T) {
-	cases := []struct {
-		name string
-		in   string
-		want string
-	}{
-		{"去 BOM 与 CRLF", "\ufeffa\r\nb\r\n", "a\nb\n"},
-		{"补齐尾换行", "a\nb", "a\nb\n"},
-		{"去首尾空白", "\n\n  a  \n\n", "a\n"},
-		{"纯空白归零", "  \n\t\n", ""},
-		{"CR 单独出现也归一", "a\rb\r", "a\nb\n"},
+// writePatchTestFile / simplePatch 与 internal/patch/patch_test.go 同名同实现。
+func writePatchTestFile(t *testing.T, root, rel, content string) string {
+	t.Helper()
+	abs := filepath.Join(root, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+		t.Fatal(err)
 	}
-	for _, c := range cases {
-		if got := normalizePatchBody(c.in); got != c.want {
-			t.Fatalf("%s：normalizePatchBody(%q) = %q，预期 %q", c.name, c.in, got, c.want)
-		}
+	if err := os.WriteFile(abs, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	// 归一后内容相同 → sha 相同（去重判据）
-	if patchTextSHA(normalizePatchBody("a\r\nb")) != patchTextSHA(normalizePatchBody("a\nb\n")) {
-		t.Fatal("归一后 sha 应一致")
-	}
-	if patchTextSHA("") != "" {
-		t.Fatal("空正文的 sha 应为空串")
-	}
+	return abs
+}
+
+// 一个最小单 hunk 补丁：把 b 替换成 B
+func simplePatch(rel string) string {
+	return "--- a/" + rel + "\n+++ b/" + rel + "\n@@ -1,3 +1,3 @@\n a\n-b\n+B\n c\n"
 }
 
 func TestPatchSaveRejectsEmptyPatch(t *testing.T) {
 	useTempRecycle(t)
 	root := newPatchTestRoot(t)
-	store := patchStoreRoot(root)
+	store := patch.PatchStoreRoot(root)
 	a := &App{}
 	// 只有上下文行 → +0/−0，没有实际改动
 	empty := "--- a/a.txt\n+++ b/a.txt\n@@ -1,2 +1,2 @@\n one\n two\n"
@@ -93,13 +87,13 @@ func TestPatchSaveRejectsEmptyPatch(t *testing.T) {
 	if err == nil {
 		t.Fatal("空补丁应被拒绝")
 	}
-	if pe := patchErrorOf(err); pe == nil || pe.Code != patchErrEmpty {
-		t.Fatalf("错误码 = %+v，预期 %s", pe, patchErrEmpty)
+	if pe := patch.PatchErrorOf(err); pe == nil || pe.Code != patch.PatchErrEmpty {
+		t.Fatalf("错误码 = %+v，预期 %s", pe, patch.PatchErrEmpty)
 	}
 	if n := countPatchFiles(t, store); n != 0 {
 		t.Fatalf("空补丁不应留下文件，实际 %d 个 .patch", n)
 	}
-	if got := readPatchIndex(store); len(got) != 0 {
+	if got := patch.ReadPatchIndex(store); len(got) != 0 {
 		t.Fatalf("空补丁不应入索引，实际 %d 行", len(got))
 	}
 }
@@ -107,7 +101,7 @@ func TestPatchSaveRejectsEmptyPatch(t *testing.T) {
 func TestPatchSavePrecheckFailureLeavesNoFile(t *testing.T) {
 	useTempRecycle(t)
 	root := newPatchTestRoot(t)
-	store := patchStoreRoot(root)
+	store := patch.PatchStoreRoot(root)
 	a := &App{}
 	// 目标路径逃出工作区根 → 文件被拦，一个 hunk 都不可应用
 	escape := "--- a/../evil.txt\n+++ b/../evil.txt\n@@ -1,1 +1,1 @@\n-x\n+y\n"
@@ -115,9 +109,9 @@ func TestPatchSavePrecheckFailureLeavesNoFile(t *testing.T) {
 	if err == nil {
 		t.Fatal("越界路径应被拒绝")
 	}
-	pe := patchErrorOf(err)
-	if pe == nil || pe.Code != patchErrHunkConflict {
-		t.Fatalf("错误码 = %+v，预期 %s", pe, patchErrHunkConflict)
+	pe := patch.PatchErrorOf(err)
+	if pe == nil || pe.Code != patch.PatchErrHunkConflict {
+		t.Fatalf("错误码 = %+v，预期 %s", pe, patch.PatchErrHunkConflict)
 	}
 	if !strings.Contains(pe.Detail, "越界") {
 		t.Fatalf("原因应指出路径越界，实际 %q", pe.Detail)
@@ -130,19 +124,19 @@ func TestPatchSavePrecheckFailureLeavesNoFile(t *testing.T) {
 func TestPatchSaveNoApplicableHunksLeavesNoFile(t *testing.T) {
 	useTempRecycle(t)
 	root := newPatchTestRoot(t)
-	store := patchStoreRoot(root)
+	store := patch.PatchStoreRoot(root)
 	a := &App{}
 	// 上下文对不上（文件里是 one/two，补丁期望 x/y）→ 冲突，不可应用
 	conflict := "--- a/a.txt\n+++ b/a.txt\n@@ -1,2 +1,2 @@\n x\n-y\n+Y\n"
 	if _, err := a.PatchSave(root, "hunk 冲突", conflict); err == nil {
 		t.Fatal("hunk 冲突应被拒绝")
-	} else if pe := patchErrorOf(err); pe == nil || pe.Code != patchErrHunkConflict {
-		t.Fatalf("错误码 = %+v，预期 %s", pe, patchErrHunkConflict)
+	} else if pe := patch.PatchErrorOf(err); pe == nil || pe.Code != patch.PatchErrHunkConflict {
+		t.Fatalf("错误码 = %+v，预期 %s", pe, patch.PatchErrHunkConflict)
 	}
 	if n := countPatchFiles(t, store); n != 0 {
 		t.Fatalf("全冲突的补丁不应留档，实际 %d 个 .patch", n)
 	}
-	if got := readPatchIndex(store); len(got) != 0 {
+	if got := patch.ReadPatchIndex(store); len(got) != 0 {
 		t.Fatalf("不可应用的补丁不应入索引，实际 %d 行", len(got))
 	}
 	// 目标文件必须原样未动
@@ -154,7 +148,7 @@ func TestPatchSaveNoApplicableHunksLeavesNoFile(t *testing.T) {
 func TestPatchSaveDedupReusesExisting(t *testing.T) {
 	useTempRecycle(t)
 	root := newPatchTestRoot(t)
-	store := patchStoreRoot(root)
+	store := patch.PatchStoreRoot(root)
 	a := &App{}
 	text := patchForFile("a.txt")
 	first, err := a.PatchSave(root, "改 TWO", text)
@@ -179,7 +173,7 @@ func TestPatchSaveDedupReusesExisting(t *testing.T) {
 	if n := countPatchFiles(t, store); n != 1 {
 		t.Fatalf("复用不应新建补丁文件，实际 %d 个 .patch", n)
 	}
-	if ids := len(patchIndexLatest(readPatchIndex(store))); ids != 1 {
+	if ids := len(patch.PatchIndexLatest(patch.ReadPatchIndex(store))); ids != 1 {
 		t.Fatalf("索引里应只有 1 个补丁 id，实际 %d", ids)
 	}
 }
@@ -187,7 +181,7 @@ func TestPatchSaveDedupReusesExisting(t *testing.T) {
 func TestPatchDeleteRemovesEverything(t *testing.T) {
 	useTempRecycle(t)
 	root := newPatchTestRoot(t)
-	store := patchStoreRoot(root)
+	store := patch.PatchStoreRoot(root)
 	a := &App{}
 	preview, err := a.PatchSave(root, "改 TWO", patchForFile("a.txt"))
 	if err != nil {
@@ -200,7 +194,7 @@ func TestPatchDeleteRemovesEverything(t *testing.T) {
 	if err != nil {
 		t.Fatalf("读补丁: %v", err)
 	}
-	sha := patchTextSHA(normalizePatchBody(string(raw)))
+	sha := patch.PatchTextSHA(patch.NormalizePatchBody(string(raw)))
 	metaPath := filepath.Join(store, "meta", sha+".json")
 	if _, err := os.Stat(metaPath); err != nil {
 		t.Fatalf("meta 应存在：%v", err)
@@ -221,7 +215,7 @@ func TestPatchDeleteRemovesEverything(t *testing.T) {
 	if _, err := os.Stat(metaPath); !os.IsNotExist(err) {
 		t.Fatal("独占的 meta 应被删除")
 	}
-	entries := readPatchIndex(store)
+	entries := patch.ReadPatchIndex(store)
 	if len(entries) != 0 {
 		t.Fatalf("索引行应被摘干净，实际剩 %d 行", len(entries))
 	}
@@ -240,7 +234,7 @@ func TestPatchDeleteRemovesEverything(t *testing.T) {
 func TestPatchDeleteKeepsSharedMeta(t *testing.T) {
 	useTempRecycle(t)
 	root := newPatchTestRoot(t)
-	store := patchStoreRoot(root)
+	store := patch.PatchStoreRoot(root)
 	a := &App{}
 	keep, err := a.PatchSave(root, "保留的补丁", patchForFile("a.txt"))
 	if err != nil {
@@ -254,12 +248,12 @@ func TestPatchDeleteKeepsSharedMeta(t *testing.T) {
 	}
 	writeFileAt(t, dupPath, string(raw))
 	dupID := "20991111-000000-0001"
-	_ = appendPatchIndex(store, patchIndexEntry{
+	_ = patch.AppendPatchIndex(store, patch.PatchIndexEntry{
 		V: 1, ID: dupID, Summary: "重复的补丁", FileName: filepath.Base(dupPath),
 		CreatedAt: keep.CreatedAt, Root: root, Files: []string{"a.txt"},
 		Added: keep.Added, Removed: keep.Removed, Status: "proposed", PatchPath: dupPath,
 	})
-	sha := patchTextSHA(normalizePatchBody(string(raw)))
+	sha := patch.PatchTextSHA(patch.NormalizePatchBody(string(raw)))
 	metaPath := filepath.Join(store, "meta", sha+".json")
 	if _, err := os.Stat(metaPath); err != nil {
 		t.Fatalf("meta 应存在：%v", err)
@@ -291,7 +285,7 @@ func TestPatchPreviewTextWritesNothing(t *testing.T) {
 	// 计划模式的 dry_run 走 PatchPreviewText：必须完全不落地（不建 .cadt/patches、
 	// 不写索引、不生成 .patch），否则「计划模式零副作用」就不成立。
 	root := newPatchTestRoot(t)
-	store := patchStoreRoot(root)
+	store := patch.PatchStoreRoot(root)
 	a := &App{}
 	preview, err := a.PatchPreviewText(patchForFile("a.txt"), root)
 	if err != nil {
@@ -309,7 +303,7 @@ func TestPatchPreviewTextWritesNothing(t *testing.T) {
 	if n := countPatchFiles(t, store); n != 0 {
 		t.Fatalf("预检不应生成 .patch，实际 %d", n)
 	}
-	if got := readPatchIndex(store); len(got) != 0 {
+	if got := patch.ReadPatchIndex(store); len(got) != 0 {
 		t.Fatalf("预检不应写索引，实际 %d 行", len(got))
 	}
 	// 目标文件同样保持原样
@@ -318,67 +312,53 @@ func TestPatchPreviewTextWritesNothing(t *testing.T) {
 	}
 }
 
-func TestReconcilePatchStoreHealsApplying(t *testing.T) {
+// 虚拟审阅文档没有盘上补丁文件：PatchPreviewText 直接吃拼接文本，
+// 多段 diff 之间夹的自定义标题行 / 空行 / 说明行应被忽略；重预检走计划内缓存的原文。
+func TestPatchPreviewTextVirtual(t *testing.T) {
 	root := t.TempDir()
-	store := patchStoreRoot(root)
-	if err := os.MkdirAll(store, 0o755); err != nil {
-		t.Fatal(err)
+	writePatchTestFile(t, root, "a.txt", "a\nb\nc\n")
+	writePatchTestFile(t, root, filepath.Join("dir", "b.txt"), "1\n2\n3\n")
+	text := "diff — a.txt  (+1 −1)\n" +
+		simplePatch("a.txt") +
+		"\ndiff — dir/b.txt  (+1 −1)（无 Git 差异的文件会注明）\n" +
+		"--- a/dir/b.txt\n+++ b/dir/b.txt\n@@ -1,3 +1,3 @@\n 1\n-2\n+2（改）\n 3\n" +
+		"\n"
+	app := &App{}
+	preview, err := app.PatchPreviewText(text, root)
+	if err != nil {
+		t.Fatalf("PatchPreviewText: %v", err)
 	}
-	stuck := "20261113-200255-4321"
-	done := "20261113-200523-4253"
-	_ = appendPatchIndex(store, patchIndexEntry{V: 1, ID: stuck, Summary: "卡住的", Status: "proposed"})
-	_ = appendPatchIndex(store, patchIndexEntry{V: 1, ID: stuck, Summary: "卡住的", Status: "applying"})
-	_ = appendPatchIndex(store, patchIndexEntry{V: 1, ID: done, Summary: "完成的", Status: "applying"})
-	_ = appendPatchIndex(store, patchIndexEntry{V: 1, ID: done, Summary: "完成的", Status: "applied", AppliedAt: 1})
-
-	if healed := reconcilePatchStore(root); healed != 1 {
-		t.Fatalf("应自愈 1 个补丁，实际 %d", healed)
+	if len(preview.Files) != 2 {
+		t.Fatalf("文件数 = %d，期望 2", len(preview.Files))
 	}
-	latest := patchIndexLatest(readPatchIndex(store))
-	if latest[stuck].Status != patchStatusFailed {
-		t.Fatalf("滞留 applying 应收敛为 %s，实际 %s", patchStatusFailed, latest[stuck].Status)
+	if preview.Added != 2 || preview.Removed != 2 {
+		t.Fatalf("统计 = +%d -%d，期望 +2 -2", preview.Added, preview.Removed)
 	}
-	if latest[done].Status != "applied" {
-		t.Fatalf("正常收尾的补丁状态不应被改，实际 %s", latest[done].Status)
+	if !preview.External {
+		t.Fatalf("虚拟文本补丁应标记 External")
 	}
-	// 幂等：再跑一次不再追加
-	before := len(readPatchIndex(store))
-	if healed := reconcilePatchStore(root); healed != 0 {
-		t.Fatalf("二次自愈应为 0，实际 %d", healed)
+	if preview.PlanID == "" {
+		t.Fatalf("planId 为空，无法重预检 / 应用")
 	}
-	if after := len(readPatchIndex(store)); after != before {
-		t.Fatalf("二次自愈不应追加行：%d → %d", before, after)
+	// 重预检：文本补丁没有盘上文件，应走计划内缓存的 RawText
+	replan, err := app.PatchRepreview(preview.PlanID, false, true)
+	if err != nil {
+		t.Fatalf("PatchRepreview: %v", err)
+	}
+	if len(replan.Files) != 2 {
+		t.Fatalf("重预检文件数 = %d，期望 2", len(replan.Files))
+	}
+	// 忽略空白开关传了 true：行为等价（本例无空白差异），状态应全部 ok
+	for _, f := range replan.Files {
+		if f.Status != "ok" {
+			t.Fatalf("%s 状态 = %s，期望 ok", f.RelPath, f.Status)
+		}
 	}
 }
 
-func TestPrunePatchIndexKeepsOtherLines(t *testing.T) {
-	root := t.TempDir()
-	store := patchStoreRoot(root)
-	if err := os.MkdirAll(store, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	_ = appendPatchIndex(store, patchIndexEntry{V: 1, ID: "aaa", Summary: "A", Status: "proposed", Mode: "atomic"})
-	_ = appendPatchIndex(store, patchIndexEntry{V: 1, ID: "bbb", Summary: "B", Status: "applied", AppliedAt: 7})
-	_ = appendPatchIndex(store, patchIndexEntry{V: 1, ID: "aaa", Summary: "A", Status: "applied", AppliedAt: 9})
-	before := readPatchIndex(store)
-
-	removed, err := prunePatchIndex(store, "aaa")
-	if err != nil {
-		t.Fatalf("裁剪: %v", err)
-	}
-	if removed != 2 {
-		t.Fatalf("应删除 2 行，实际 %d", removed)
-	}
-	after := readPatchIndex(store)
-	if len(after) != 1 || after[0].ID != "bbb" {
-		t.Fatalf("只应留下 bbb，实际 %+v", after)
-	}
-	// 保留行逐字不变（包括 mode / appliedAt 等字段）
-	if after[0].Mode != before[1].Mode || after[0].AppliedAt != before[1].AppliedAt {
-		t.Fatalf("保留行字段被改动：%+v vs %+v", after[0], before[1])
-	}
-	// 幂等：再删一次没有任何改动
-	if removed, err := prunePatchIndex(store, "aaa"); err != nil || removed != 0 {
-		t.Fatalf("二次裁剪应无改动：removed=%d err=%v", removed, err)
+func TestPatchPreviewTextEmpty(t *testing.T) {
+	app := &App{}
+	if _, err := app.PatchPreviewText("   \n", t.TempDir()); err == nil {
+		t.Fatalf("空文本应报错")
 	}
 }

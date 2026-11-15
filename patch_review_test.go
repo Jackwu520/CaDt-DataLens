@@ -3,25 +3,24 @@ package main
 import (
 	"reflect"
 	"testing"
+
+	"datalens/internal/patch"
 )
 
 // 只读审阅解析：不生成计划、不读目标文件、不带任何预检状态。
+// 「不注册计划」的白盒断言在 internal/patch/patch_review_test.go。
 func TestPatchParseTextReviewSnapshot(t *testing.T) {
 	app := &App{}
 	// 目标文件在磁盘上根本不存在：纯解析不应该关心它
 	text := "diff --git a/src/a.txt b/src/a.txt\n" +
 		"--- a/src/a.txt\n+++ b/src/a.txt\n" +
 		"@@ -1,2 +1,3 @@\n keep\n-old\n+new\n+extra\n"
-	before := len(patchPlans)
 	out, err := app.PatchParseText(text)
 	if err != nil {
 		t.Fatalf("PatchParseText: %v", err)
 	}
 	if out.PlanID != "" || out.PatchID != "" || out.Root != "" || out.Applicable || out.DefaultMode != "" {
 		t.Fatalf("审阅解析不应带计划 / 应用语义：%+v", out)
-	}
-	if len(patchPlans) != before {
-		t.Fatalf("审阅解析不应注册计划（之前 %d，之后 %d）", before, len(patchPlans))
 	}
 	if out.Added != 2 || out.Removed != 1 {
 		t.Fatalf("统计 = +%d -%d，期望 +2 -1", out.Added, out.Removed)
@@ -46,7 +45,7 @@ func TestPatchParseTextReviewSnapshot(t *testing.T) {
 	if h.Header != "@@ -1,2 +1,3 @@" || h.OldStart != 1 || h.NewStart != 1 {
 		t.Fatalf("hunk 头 = %+v", h)
 	}
-	want := []PatchLineOut{
+	want := []patch.PatchLineOut{
 		{T: " ", Text: "keep", OldLine: 1, NewLine: 1},
 		{T: "-", Text: "old", OldLine: 2},
 		{T: "+", Text: "new", NewLine: 2},

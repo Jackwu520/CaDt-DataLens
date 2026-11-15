@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"datalens/internal/recycle"
 )
 
 // DeleteEntry 把文件或目录移到回收站；不存在或非法路径返回错误。
@@ -13,7 +15,7 @@ func (a *App) DeleteEntry(path string) error {
 }
 
 func deleteEntry(path string) error {
-	return deleteEntryWith(path, movePathToRecycleBin)
+	return deleteEntryWith(path, recycle.Move)
 }
 
 // deleteEntryWith 抽出删除前的路径校验，便于测试替换实际删除动作。

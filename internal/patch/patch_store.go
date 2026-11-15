@@ -1,4 +1,4 @@
-package main
+package patch
 
 // 补丁库维护：索引裁剪、内容去重、滞留状态自愈、删除回收。
 //
@@ -13,10 +13,12 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"datalens/internal/recycle"
 )
 
 // patchRecycle 删除补丁文件时的回收钩子：生产走回收站（可恢复），测试替换成直接删除。
-var patchRecycle = movePathToRecycleBin
+var PatchRecycle = recycle.Move
 
 // patchStatusFailed 应用未收尾（滞留 applying）收敛后的终态。
 const patchStatusFailed = "failed"
@@ -25,7 +27,7 @@ func patchIndexPath(store string) string { return filepath.Join(store, "index.js
 
 // normalizePatchBody 统一补丁正文：去 BOM、CRLF→LF、去首尾空白、补尾换行。
 // 落盘内容与内容 sha 都以它为准，去重和 meta 归属才能稳定比对。
-func normalizePatchBody(text string) string {
+func NormalizePatchBody(text string) string {
 	body := strings.TrimPrefix(text, "\ufeff")
 	body = strings.ReplaceAll(body, "\r\n", "\n")
 	body = strings.ReplaceAll(body, "\r", "\n")
@@ -40,16 +42,16 @@ func normalizePatchBody(text string) string {
 }
 
 // patchTextSHA 补丁正文的内容 sha（与 PatchSave 落盘内容一致）。
-func patchTextSHA(body string) string {
+func PatchTextSHA(body string) string {
 	if body == "" {
 		return ""
 	}
-	return sha256Hex([]byte(body))
+	return SHA256Hex([]byte(body))
 }
 
 // patchIndexLatest 按行序取每个 id 的最后一条（追加式索引里最后一行即最新状态）。
-func patchIndexLatest(entries []patchIndexEntry) map[string]patchIndexEntry {
-	out := make(map[string]patchIndexEntry, len(entries))
+func PatchIndexLatest(entries []PatchIndexEntry) map[string]PatchIndexEntry {
+	out := make(map[string]PatchIndexEntry, len(entries))
 	for _, e := range entries {
 		if e.ID == "" {
 			continue
@@ -61,7 +63,7 @@ func patchIndexLatest(entries []patchIndexEntry) map[string]patchIndexEntry {
 
 // prunePatchIndex 摘掉某个 id 的全部索引行，其它行逐字保留（原子替换）。
 // 只摘行、不动历史状态语义：删完这个 id 就彻底从「最近补丁」里消失。
-func prunePatchIndex(store, id string) (int, error) {
+func PrunePatchIndex(store, id string) (int, error) {
 	if store == "" || id == "" {
 		return 0, nil
 	}
@@ -82,7 +84,7 @@ func prunePatchIndex(store, id string) (int, error) {
 			kept = append(kept, line)
 			continue
 		}
-		var e patchIndexEntry
+		var e PatchIndexEntry
 		if json.Unmarshal([]byte(trimmed), &e) == nil && e.ID == id {
 			removed++
 			continue
@@ -120,11 +122,11 @@ func prunePatchIndex(store, id string) (int, error) {
 
 // findPatchBySHA 在同一 root 下找「内容 sha 相同且补丁文件仍在」的旧补丁。
 // 找到就复用，不再新建文件——以前每次重试都落一份新 .patch。
-func findPatchBySHA(store, root, sha string) *patchIndexEntry {
+func FindPatchBySHA(store, root, sha string) *PatchIndexEntry {
 	if store == "" || sha == "" {
 		return nil
 	}
-	latest := patchIndexLatest(readPatchIndex(store))
+	latest := PatchIndexLatest(ReadPatchIndex(store))
 	for _, e := range latest {
 		if e.PatchPath == "" {
 			continue
@@ -136,7 +138,7 @@ func findPatchBySHA(store, root, sha string) *patchIndexEntry {
 		if err != nil {
 			continue
 		}
-		if patchTextSHA(normalizePatchBody(string(raw))) != sha {
+		if PatchTextSHA(NormalizePatchBody(string(raw))) != sha {
 			continue
 		}
 		entry := e
@@ -155,11 +157,11 @@ func samePatchRoot(a, b string) bool {
 
 // removePatchMetaIfUnused 回收 meta/<sha>.json：仍有其它补丁用同一内容时保留（那份基线
 // 是它们预检/撤销的依据），例如内容相同的两个补丁共享同一个 sidecar。
-func removePatchMetaIfUnused(store, sha string) {
+func RemovePatchMetaIfUnused(store, sha string) {
 	if store == "" || sha == "" {
 		return
 	}
-	for _, e := range readPatchIndex(store) {
+	for _, e := range ReadPatchIndex(store) {
 		if e.PatchPath == "" {
 			continue
 		}
@@ -167,14 +169,14 @@ func removePatchMetaIfUnused(store, sha string) {
 		if err != nil {
 			continue
 		}
-		if patchTextSHA(normalizePatchBody(string(raw))) == sha {
+		if PatchTextSHA(NormalizePatchBody(string(raw))) == sha {
 			return
 		}
 	}
 	meta := filepath.Join(store, "meta", sha+".json")
 	if _, err := os.Stat(meta); err == nil {
-		if err := patchRecycle(meta); err != nil {
-			writeAppLog("WARN", "补丁元数据回收失败：%v", err)
+		if err := PatchRecycle(meta); err != nil {
+			logf("WARN", "补丁元数据回收失败：%v", err)
 		}
 	}
 }
@@ -182,35 +184,35 @@ func removePatchMetaIfUnused(store, sha string) {
 // reconcilePatchStore 自愈：最后一条状态是 applying（写入前 WAL，正常收尾会再追加
 // applied/partial/failed）却没有任何终态的补丁，说明上次应用中途被打断。追加一条
 // failed 终态，让列表不再永远显示「应用中」。幂等：自愈后再调用不会重复追加。
-func reconcilePatchStore(root string) int {
-	store := patchStoreRoot(root)
+func ReconcilePatchStore(root string) int {
+	store := PatchStoreRoot(root)
 	if store == "" {
 		return 0
 	}
-	entries := readPatchIndex(store)
+	entries := ReadPatchIndex(store)
 	if len(entries) == 0 {
 		return 0
 	}
 	healed := 0
-	for _, e := range patchIndexLatest(entries) {
+	for _, e := range PatchIndexLatest(entries) {
 		if e.Status != "applying" {
 			continue
 		}
 		e.Status = patchStatusFailed
 		e.AppliedAt = 0
-		if err := appendPatchIndex(store, e); err != nil {
+		if err := AppendPatchIndex(store, e); err != nil {
 			continue
 		}
 		healed++
 	}
 	if healed > 0 {
-		writeAppLog("WARN", "补丁库自愈：%d 个补丁上次应用未收尾，已标记为失败", healed)
+		logf("WARN", "补丁库自愈：%d 个补丁上次应用未收尾，已标记为失败", healed)
 	}
 	return healed
 }
 
 // patchLockFor 拿补丁工作区跨进程锁；root 为空（补丁存应用数据目录）时不加锁。
-func patchLockFor(root string) (func(), error) {
+func PatchLockFor(root string) (func(), error) {
 	if strings.TrimSpace(root) == "" {
 		return func() {}, nil
 	}

@@ -1,6 +1,6 @@
 //go:build !windows
 
-package main
+package patch
 
 import (
 	"os"
@@ -29,4 +29,4 @@ func openExclusiveProbe(path string) error {
 }
 
 // patchStdoutUsable 非 Windows 平台默认标准输出可用。
-func patchStdoutUsable() bool { return true }
+func PatchStdoutUsable() bool { return true }

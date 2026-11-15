@@ -1,4 +1,4 @@
-package main
+package patch
 
 import (
 	"os"
@@ -30,18 +30,18 @@ func readPatchTestFile(t *testing.T, root, rel string) string {
 	return string(b)
 }
 
-func mustParse(t *testing.T, text string) *patchDoc {
+func mustParse(t *testing.T, text string) *PatchDoc {
 	t.Helper()
-	doc, err := parsePatchText(text)
+	doc, err := ParsePatchText(text)
 	if err != nil {
 		t.Fatalf("解析失败：%v", err)
 	}
 	return doc
 }
 
-func mustPlan(t *testing.T, doc *patchDoc, root string, opts patchPlanOptions) *patchPlan {
+func mustPlan(t *testing.T, doc *PatchDoc, root string, opts PatchPlanOptions) *patchPlan {
 	t.Helper()
-	plan, err := buildPatchPlan(doc, root, "test-id", "测试补丁", filepath.Join(root, "t.patch"), opts)
+	plan, err := BuildPatchPlan(doc, root, "test-id", "测试补丁", filepath.Join(root, "t.patch"), opts)
 	if err != nil {
 		t.Fatalf("构建计划失败：%v", err)
 	}
@@ -84,18 +84,18 @@ func TestParsePatchErrors(t *testing.T) {
 		text string
 		code string
 	}{
-		{"空补丁", "", patchErrEmpty},
-		{"没有 hunk", "--- a/x\n+++ b/x\n", patchErrEmpty},
-		{"hunk 行数不符", "--- a/x\n+++ b/x\n@@ -1,5 +1,5 @@\n a\n-b\n+B\n", patchErrParse},
-		{"缺文件头", "@@ -1 +1 @@\n-a\n+b\n", patchErrParse},
+		{"空补丁", "", PatchErrEmpty},
+		{"没有 hunk", "--- a/x\n+++ b/x\n", PatchErrEmpty},
+		{"hunk 行数不符", "--- a/x\n+++ b/x\n@@ -1,5 +1,5 @@\n a\n-b\n+B\n", PatchErrParse},
+		{"缺文件头", "@@ -1 +1 @@\n-a\n+b\n", PatchErrParse},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			_, err := parsePatchText(c.text)
+			_, err := ParsePatchText(c.text)
 			if err == nil {
 				t.Fatal("期望报错，实际通过")
 			}
-			if pe := patchErrorOf(err); pe.Code != c.code {
+			if pe := PatchErrorOf(err); pe.Code != c.code {
 				t.Fatalf("错误码 = %s，期望 %s（%s）", pe.Code, c.code, pe.Msg)
 			}
 		})
@@ -134,12 +134,12 @@ func TestStripPatchPath(t *testing.T) {
 		{"a/x/y.txt", 1, "x/y.txt", ""},
 		{"b/x/y.txt", 1, "x/y.txt", ""},
 		{"x/y.txt", 0, "x/y.txt", ""},
-		{"/etc/passwd", 0, "", patchErrPathDenied},
-		{"..\\evil.txt", 0, "", patchErrPathDenied},
-		{"C:/windows/x.txt", 0, "", patchErrPathDenied},
-		{".GIT/config", 0, "", patchErrPathDenied},
-		{".cadt/permissions.json", 0, "", patchErrPathDenied},
-		{"x/trailing./y.txt", 0, "", patchErrPathDenied},
+		{"/etc/passwd", 0, "", PatchErrPathDenied},
+		{"..\\evil.txt", 0, "", PatchErrPathDenied},
+		{"C:/windows/x.txt", 0, "", PatchErrPathDenied},
+		{".GIT/config", 0, "", PatchErrPathDenied},
+		{".cadt/permissions.json", 0, "", PatchErrPathDenied},
+		{"x/trailing./y.txt", 0, "", PatchErrPathDenied},
 	}
 	for _, c := range cases {
 		got, err := stripPatchPath(c.raw, c.strip)
@@ -170,7 +170,7 @@ func TestUnquoteGitPath(t *testing.T) {
 func TestPlanOK(t *testing.T) {
 	root := t.TempDir()
 	writePatchTestFile(t, root, "x.txt", "a\nb\nc\n")
-	plan := mustPlan(t, mustParse(t, simplePatch("x.txt")), root, patchPlanOptions{})
+	plan := mustPlan(t, mustParse(t, simplePatch("x.txt")), root, PatchPlanOptions{})
 	f := fileStatusOf(plan, "x.txt")
 	if f == nil || f.Status != "ok" {
 		t.Fatalf("状态 = %+v", f)
@@ -186,7 +186,7 @@ func TestPlanOK(t *testing.T) {
 func TestPlanContextMismatch(t *testing.T) {
 	root := t.TempDir()
 	writePatchTestFile(t, root, "x.txt", "a\nXX\nc\n")
-	plan := mustPlan(t, mustParse(t, simplePatch("x.txt")), root, patchPlanOptions{})
+	plan := mustPlan(t, mustParse(t, simplePatch("x.txt")), root, PatchPlanOptions{})
 	f := fileStatusOf(plan, "x.txt")
 	if f.Status != "conflict" {
 		t.Fatalf("状态 = %s，期望 conflict（%s）", f.Status, f.Reason)
@@ -200,7 +200,7 @@ func TestPlanExactHeaderWins(t *testing.T) {
 	root := t.TempDir()
 	// 相同三行出现两次：@@ 行号是确定的，按头部精确应用（不算猜测）
 	writePatchTestFile(t, root, "x.txt", "a\nb\nc\n---\na\nb\nc\n")
-	plan := mustPlan(t, mustParse(t, simplePatch("x.txt")), root, patchPlanOptions{})
+	plan := mustPlan(t, mustParse(t, simplePatch("x.txt")), root, PatchPlanOptions{})
 	f := fileStatusOf(plan, "x.txt")
 	if f.Status != "ok" {
 		t.Fatalf("按行号精确匹配应可应用，实际 %s（%s）", f.Status, f.Reason)
@@ -214,7 +214,7 @@ func TestPlanAmbiguousOffsetRejected(t *testing.T) {
 	root := t.TempDir()
 	// 文件前面多了两行，靠上下文搜索会命中两处 → 必须拒绝而不是取第一个
 	writePatchTestFile(t, root, "x.txt", "n1\nn2\na\nb\nc\n---\na\nb\nc\n")
-	plan := mustPlan(t, mustParse(t, simplePatch("x.txt")), root, patchPlanOptions{AllowOffset: true})
+	plan := mustPlan(t, mustParse(t, simplePatch("x.txt")), root, PatchPlanOptions{AllowOffset: true})
 	f := fileStatusOf(plan, "x.txt")
 	if f.Status != "conflict" || !strings.Contains(f.Reason, "不唯一") {
 		t.Fatalf("位移不唯一应拒绝，实际 %s（%s）", f.Status, f.Reason)
@@ -226,11 +226,11 @@ func TestPlanOffsetRequiresOptIn(t *testing.T) {
 	writePatchTestFile(t, root, "x.txt", "NEW1\nNEW2\na\nb\nc\n")
 	doc := mustParse(t, simplePatch("x.txt"))
 
-	plan := mustPlan(t, doc, root, patchPlanOptions{})
+	plan := mustPlan(t, doc, root, PatchPlanOptions{})
 	if f := fileStatusOf(plan, "x.txt"); f.Status != "conflict" {
 		t.Fatalf("默认不应自动位移，实际 %s", f.Status)
 	}
-	plan = mustPlan(t, doc, root, patchPlanOptions{AllowOffset: true})
+	plan = mustPlan(t, doc, root, PatchPlanOptions{AllowOffset: true})
 	f := fileStatusOf(plan, "x.txt")
 	if f.Status != "ok" || f.Offset != 2 {
 		t.Fatalf("开启位移后应命中 +2，实际 %s offset=%d", f.Status, f.Offset)
@@ -240,7 +240,7 @@ func TestPlanOffsetRequiresOptIn(t *testing.T) {
 func TestPlanDriftByBaseHash(t *testing.T) {
 	root := t.TempDir()
 	writePatchTestFile(t, root, "x.txt", "a\nb\nc\n")
-	plan := mustPlan(t, mustParse(t, simplePatch("x.txt")), root, patchPlanOptions{
+	plan := mustPlan(t, mustParse(t, simplePatch("x.txt")), root, PatchPlanOptions{
 		BaseHashes: map[string]string{"x.txt": "deadbeef"},
 	})
 	f := fileStatusOf(plan, "x.txt")
@@ -254,7 +254,7 @@ func TestPlanAddAndDelete(t *testing.T) {
 	writePatchTestFile(t, root, "gone.txt", "bye\n")
 	add := "--- /dev/null\n+++ b/new.txt\n@@ -0,0 +1,2 @@\n+hello\n+world\n"
 	del := "--- a/gone.txt\n+++ /dev/null\n@@ -1 +0,0 @@\n-bye\n"
-	plan := mustPlan(t, mustParse(t, add+"diff --git a/gone.txt b/gone.txt\n"+del), root, patchPlanOptions{})
+	plan := mustPlan(t, mustParse(t, add+"diff --git a/gone.txt b/gone.txt\n"+del), root, PatchPlanOptions{})
 	if f := fileStatusOf(plan, "new.txt"); f == nil || f.Status != "ok" || f.Kind != "add" {
 		t.Fatalf("新增文件计划异常：%+v", f)
 	}
@@ -267,8 +267,8 @@ func TestPlanDuplicatePathRejected(t *testing.T) {
 	root := t.TempDir()
 	writePatchTestFile(t, root, "x.txt", "a\nb\nc\n")
 	text := simplePatch("x.txt") + simplePatch("x.txt")
-	_, err := buildPatchPlan(mustParse(t, text), root, "id", "s", "", patchPlanOptions{})
-	if err == nil || patchErrorOf(err).Code != patchErrPathDenied {
+	_, err := BuildPatchPlan(mustParse(t, text), root, "id", "s", "", PatchPlanOptions{})
+	if err == nil || PatchErrorOf(err).Code != PatchErrPathDenied {
 		t.Fatalf("重复路径应被拒，实际 %v", err)
 	}
 }
@@ -289,7 +289,7 @@ func TestPlanSuggestsBetterRoot(t *testing.T) {
 	doc := mustParse(t, text)
 	patchPath := filepath.Join(patchDir, "demo.patch")
 
-	plan, err := buildPatchPlan(doc, current, "id", "示例", patchPath, patchPlanOptions{External: true})
+	plan, err := BuildPatchPlan(doc, current, "id", "示例", patchPath, PatchPlanOptions{External: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -304,14 +304,14 @@ func TestPlanSuggestsBetterRoot(t *testing.T) {
 	}
 
 	// 目标匹配时不再建议；本应用生成的补丁（External=false）也不建议
-	plan, err = buildPatchPlan(doc, demo, "id", "示例", patchPath, patchPlanOptions{External: true})
+	plan, err = BuildPatchPlan(doc, demo, "id", "示例", patchPath, PatchPlanOptions{External: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if plan.SuggestedRoot != "" {
 		t.Fatalf("目标已匹配仍给出建议：%q", plan.SuggestedRoot)
 	}
-	plan, err = buildPatchPlan(doc, current, "id", "示例", patchPath, patchPlanOptions{})
+	plan, err = BuildPatchPlan(doc, current, "id", "示例", patchPath, PatchPlanOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -326,7 +326,7 @@ func TestPlanCRLFAndGBKPreserved(t *testing.T) {
 	if err := os.WriteFile(abs, []byte("a\r\nb\r\nc\r\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	plan := mustPlan(t, mustParse(t, simplePatch("crlf.txt")), root, patchPlanOptions{})
+	plan := mustPlan(t, mustParse(t, simplePatch("crlf.txt")), root, PatchPlanOptions{})
 	f := fileStatusOf(plan, "crlf.txt")
 	if f.Status != "ok" {
 		t.Fatalf("CRLF 文件应可应用，实际 %s（%s）", f.Status, f.Reason)
@@ -342,7 +342,7 @@ func TestPlanCRLFAndGBKPreserved(t *testing.T) {
 		t.Fatal(err)
 	}
 	patch := "--- a/gbk.txt\n+++ b/gbk.txt\n@@ -1,3 +1,3 @@\n a\n-b\n+B\n 中文\n"
-	plan2 := mustPlan(t, mustParse(t, patch), gbkRoot, patchPlanOptions{})
+	plan2 := mustPlan(t, mustParse(t, patch), gbkRoot, PatchPlanOptions{})
 	f2 := fileStatusOf(plan2, "gbk.txt")
 	if f2.Status != "ok" {
 		t.Fatalf("GBK 文件应可应用，实际 %s（%s）", f2.Status, f2.Reason)
@@ -357,8 +357,8 @@ func TestPlanCRLFAndGBKPreserved(t *testing.T) {
 func TestApplyAtomicSuccess(t *testing.T) {
 	root := t.TempDir()
 	writePatchTestFile(t, root, "x.txt", "a\nb\nc\n")
-	plan := mustPlan(t, mustParse(t, simplePatch("x.txt")), root, patchPlanOptions{})
-	res, err := applyPatchPlan(plan, nil, nil, "atomic")
+	plan := mustPlan(t, mustParse(t, simplePatch("x.txt")), root, PatchPlanOptions{})
+	res, err := ApplyPatchPlan(plan, nil, nil, "atomic")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -378,8 +378,8 @@ func TestApplyAtomicNoPartialWrite(t *testing.T) {
 	writePatchTestFile(t, root, "ok.txt", "a\nb\nc\n")
 	writePatchTestFile(t, root, "bad.txt", "a\nCHANGED\nc\n")
 	text := simplePatch("ok.txt") + "diff --git a/bad.txt b/bad.txt\n" + simplePatch("bad.txt")
-	plan := mustPlan(t, mustParse(t, text), root, patchPlanOptions{})
-	res, err := applyPatchPlan(plan, nil, nil, "atomic")
+	plan := mustPlan(t, mustParse(t, text), root, PatchPlanOptions{})
+	res, err := ApplyPatchPlan(plan, nil, nil, "atomic")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -396,8 +396,8 @@ func TestApplyPartialSkipsConflict(t *testing.T) {
 	writePatchTestFile(t, root, "ok.txt", "a\nb\nc\n")
 	writePatchTestFile(t, root, "bad.txt", "a\nCHANGED\nc\n")
 	text := simplePatch("ok.txt") + "diff --git a/bad.txt b/bad.txt\n" + simplePatch("bad.txt")
-	plan := mustPlan(t, mustParse(t, text), root, patchPlanOptions{})
-	res, err := applyPatchPlan(plan, nil, nil, "partial")
+	plan := mustPlan(t, mustParse(t, text), root, PatchPlanOptions{})
+	res, err := ApplyPatchPlan(plan, nil, nil, "partial")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -416,11 +416,11 @@ func TestApplyNoTrailingNewline(t *testing.T) {
 	root := t.TempDir()
 	writePatchTestFile(t, root, "x.txt", "a\nb")
 	patch := "--- a/x.txt\n+++ b/x.txt\n@@ -1,2 +1,2 @@\n a\n-b\n\\ No newline at end of file\n+B\n\\ No newline at end of file\n"
-	plan := mustPlan(t, mustParse(t, patch), root, patchPlanOptions{})
+	plan := mustPlan(t, mustParse(t, patch), root, PatchPlanOptions{})
 	if f := fileStatusOf(plan, "x.txt"); f.Status != "ok" {
 		t.Fatalf("状态 = %s（%s）", f.Status, f.Reason)
 	}
-	if _, err := applyPatchPlan(plan, nil, nil, "atomic"); err != nil {
+	if _, err := ApplyPatchPlan(plan, nil, nil, "atomic"); err != nil {
 		t.Fatal(err)
 	}
 	if got := readPatchTestFile(t, root, "x.txt"); got != "a\nB" {
@@ -431,8 +431,8 @@ func TestApplyNoTrailingNewline(t *testing.T) {
 func TestApplyAddCreatesFile(t *testing.T) {
 	root := t.TempDir()
 	add := "--- /dev/null\n+++ b/sub/new.txt\n@@ -0,0 +1,2 @@\n+hello\n+world\n"
-	plan := mustPlan(t, mustParse(t, add), root, patchPlanOptions{})
-	res, _ := applyPatchPlan(plan, nil, nil, "atomic")
+	plan := mustPlan(t, mustParse(t, add), root, PatchPlanOptions{})
+	res, _ := ApplyPatchPlan(plan, nil, nil, "atomic")
 	if !res.OK {
 		t.Fatalf("新增失败：%+v", res)
 	}
@@ -445,8 +445,8 @@ func TestApplyDeleteMovesToRecycle(t *testing.T) {
 	root := t.TempDir()
 	writePatchTestFile(t, root, "gone.txt", "bye\n")
 	del := "--- a/gone.txt\n+++ /dev/null\n@@ -1 +0,0 @@\n-bye\n"
-	plan := mustPlan(t, mustParse(t, del), root, patchPlanOptions{})
-	res, _ := applyPatchPlan(plan, nil, nil, "atomic")
+	plan := mustPlan(t, mustParse(t, del), root, PatchPlanOptions{})
+	res, _ := ApplyPatchPlan(plan, nil, nil, "atomic")
 	if !res.OK {
 		t.Fatalf("删除失败：%+v", res)
 	}
@@ -461,14 +461,14 @@ func TestRevertRestoresBytes(t *testing.T) {
 	root := t.TempDir()
 	original := "a\r\nb\r\nc\r\n"
 	writePatchTestFile(t, root, "x.txt", original)
-	plan := mustPlan(t, mustParse(t, simplePatch("x.txt")), root, patchPlanOptions{})
-	if res, _ := applyPatchPlan(plan, nil, nil, "atomic"); !res.OK {
+	plan := mustPlan(t, mustParse(t, simplePatch("x.txt")), root, PatchPlanOptions{})
+	if res, _ := ApplyPatchPlan(plan, nil, nil, "atomic"); !res.OK {
 		t.Fatalf("应用失败：%+v", res)
 	}
 	if got := readPatchTestFile(t, root, "x.txt"); got != "a\r\nB\r\nc\r\n" {
 		t.Fatalf("CRLF 未保持：%q", got)
 	}
-	rev, err := revertPatchByID(root, plan.PatchID, "abort")
+	rev, err := RevertPatchByID(root, plan.PatchID, "abort")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -483,16 +483,16 @@ func TestRevertRestoresBytes(t *testing.T) {
 func TestRevertConflictWhenModifiedAfterApply(t *testing.T) {
 	root := t.TempDir()
 	writePatchTestFile(t, root, "x.txt", "a\nb\nc\n")
-	plan := mustPlan(t, mustParse(t, simplePatch("x.txt")), root, patchPlanOptions{})
-	if res, _ := applyPatchPlan(plan, nil, nil, "atomic"); !res.OK {
+	plan := mustPlan(t, mustParse(t, simplePatch("x.txt")), root, PatchPlanOptions{})
+	if res, _ := ApplyPatchPlan(plan, nil, nil, "atomic"); !res.OK {
 		t.Fatalf("应用失败：%+v", res)
 	}
 	writePatchTestFile(t, root, "x.txt", "a\nB\nc\n手工又改了\n")
-	rev, _ := revertPatchByID(root, plan.PatchID, "abort")
-	if rev.OK || rev.Code != patchErrConcurrent {
+	rev, _ := RevertPatchByID(root, plan.PatchID, "abort")
+	if rev.OK || rev.Code != PatchErrConcurrent {
 		t.Fatalf("应因文件被再次修改而拒绝撤销，实际 %+v", rev)
 	}
-	rev2, _ := revertPatchByID(root, plan.PatchID, "stash")
+	rev2, _ := RevertPatchByID(root, plan.PatchID, "stash")
 	if !rev2.OK {
 		t.Fatalf("stash 模式应可撤销：%+v", rev2)
 	}
@@ -506,11 +506,11 @@ func TestRevertConflictWhenModifiedAfterApply(t *testing.T) {
 func TestPatchIndexRecordsApplied(t *testing.T) {
 	root := t.TempDir()
 	writePatchTestFile(t, root, "x.txt", "a\nb\nc\n")
-	plan := mustPlan(t, mustParse(t, simplePatch("x.txt")), root, patchPlanOptions{})
-	if res, _ := applyPatchPlan(plan, nil, nil, "atomic"); !res.OK {
+	plan := mustPlan(t, mustParse(t, simplePatch("x.txt")), root, PatchPlanOptions{})
+	if res, _ := ApplyPatchPlan(plan, nil, nil, "atomic"); !res.OK {
 		t.Fatalf("应用失败：%+v", res)
 	}
-	list := collectPatchMetas(patchStoreRoot(root))
+	list := CollectPatchMetas(PatchStoreRoot(root))
 	if len(list) == 0 || list[0].Status != "applied" {
 		t.Fatalf("索引未记录 applied：%+v", list)
 	}
@@ -526,61 +526,8 @@ func TestSlugifyPatchSummary(t *testing.T) {
 		"CON":               "CON-patch",
 	}
 	for in, want := range cases {
-		if got := slugifyPatchSummary(in); got != want {
+		if got := SlugifyPatchSummary(in); got != want {
 			t.Fatalf("%q → %q，期望 %q", in, got, want)
 		}
-	}
-}
-
-// ===== 虚拟 diff 文档（审阅 / Git 差异拼接）=====
-
-// 虚拟审阅文档没有盘上补丁文件：PatchPreviewText 直接吃拼接文本，
-// 多段 diff 之间夹的自定义标题行 / 空行 / 说明行应被忽略；重预检走计划内缓存的原文。
-func TestPatchPreviewTextVirtual(t *testing.T) {
-	root := t.TempDir()
-	writePatchTestFile(t, root, "a.txt", "a\nb\nc\n")
-	writePatchTestFile(t, root, filepath.Join("dir", "b.txt"), "1\n2\n3\n")
-	text := "diff — a.txt  (+1 −1)\n" +
-		simplePatch("a.txt") +
-		"\ndiff — dir/b.txt  (+1 −1)（无 Git 差异的文件会注明）\n" +
-		"--- a/dir/b.txt\n+++ b/dir/b.txt\n@@ -1,3 +1,3 @@\n 1\n-2\n+2（改）\n 3\n" +
-		"\n"
-	app := &App{}
-	preview, err := app.PatchPreviewText(text, root)
-	if err != nil {
-		t.Fatalf("PatchPreviewText: %v", err)
-	}
-	if len(preview.Files) != 2 {
-		t.Fatalf("文件数 = %d，期望 2", len(preview.Files))
-	}
-	if preview.Added != 2 || preview.Removed != 2 {
-		t.Fatalf("统计 = +%d -%d，期望 +2 -2", preview.Added, preview.Removed)
-	}
-	if !preview.External {
-		t.Fatalf("虚拟文本补丁应标记 External")
-	}
-	if preview.PlanID == "" {
-		t.Fatalf("planId 为空，无法重预检 / 应用")
-	}
-	// 重预检：文本补丁没有盘上文件，应走计划内缓存的 rawText
-	replan, err := app.PatchRepreview(preview.PlanID, false, true)
-	if err != nil {
-		t.Fatalf("PatchRepreview: %v", err)
-	}
-	if len(replan.Files) != 2 {
-		t.Fatalf("重预检文件数 = %d，期望 2", len(replan.Files))
-	}
-	// 忽略空白开关传了 true：行为等价（本例无空白差异），状态应全部 ok
-	for _, f := range replan.Files {
-		if f.Status != "ok" {
-			t.Fatalf("%s 状态 = %s，期望 ok", f.RelPath, f.Status)
-		}
-	}
-}
-
-func TestPatchPreviewTextEmpty(t *testing.T) {
-	app := &App{}
-	if _, err := app.PatchPreviewText("   \n", t.TempDir()); err == nil {
-		t.Fatalf("空文本应报错")
 	}
 }

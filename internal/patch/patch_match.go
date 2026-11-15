@@ -1,4 +1,4 @@
-package main
+package patch
 
 // 补丁匹配：读取目标文件、严格定位 hunk、校验位移一致性与上下文。
 
@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"datalens/internal/chardec"
 )
 
 // ===== 目标文件读取 =====
@@ -38,7 +40,7 @@ func readPatchTarget(abs string) (*patchTargetFile, error) {
 		if os.IsNotExist(err) {
 			return t, nil
 		}
-		return nil, &patchError{Code: patchErrFileLocked, Msg: "无法访问目标文件", Detail: err.Error()}
+		return nil, &PatchError{Code: PatchErrFileLocked, Msg: "无法访问目标文件", Detail: err.Error()}
 	}
 	if li.Mode()&os.ModeSymlink != 0 {
 		t.IsSymlink = true
@@ -51,11 +53,11 @@ func readPatchTarget(abs string) (*patchTargetFile, error) {
 		return t, nil
 	}
 	if li.Size() > patchMaxFileBytes {
-		return nil, newPatchError(patchErrLimit, "目标文件超过 10 MB，请手工处理")
+		return nil, NewPatchError(PatchErrLimit, "目标文件超过 10 MB，请手工处理")
 	}
 	raw, err := os.ReadFile(abs)
 	if err != nil {
-		return nil, &patchError{Code: patchErrFileLocked, Msg: "无法读取目标文件（可能被占用）", Detail: err.Error()}
+		return nil, &PatchError{Code: PatchErrFileLocked, Msg: "无法读取目标文件（可能被占用）", Detail: err.Error()}
 	}
 	hasBOM := bytes.HasPrefix(raw, []byte{0xEF, 0xBB, 0xBF})
 	body := raw
@@ -66,9 +68,9 @@ func readPatchTarget(abs string) (*patchTargetFile, error) {
 	if bytes.Contains(body, []byte("\r\n")) {
 		eol = "crlf"
 	}
-	text, enc, err := decodeBytes(body, "")
+	text, enc, err := chardec.DecodeBytes(body, "")
 	if err != nil {
-		return nil, &patchError{Code: patchErrApplyIO, Msg: "目标文件解码失败", Detail: err.Error()}
+		return nil, &PatchError{Code: PatchErrApplyIO, Msg: "目标文件解码失败", Detail: err.Error()}
 	}
 	text = strings.ReplaceAll(text, "\r\n", "\n")
 	text = strings.ReplaceAll(text, "\r", "\n")
@@ -80,7 +82,7 @@ func readPatchTarget(abs string) (*patchTargetFile, error) {
 	t.Text = text
 	t.Lines = lines
 	t.FinalNewline = finalNewline
-	t.Hash = sha256Hex(raw)
+	t.Hash = SHA256Hex(raw)
 	t.Mtime = li.ModTime().UnixNano()
 	t.Size = li.Size()
 	return t, nil
@@ -150,9 +152,9 @@ type patchPlan struct {
 	Removed   int
 	External  bool
 
-	// rawText 非空表示这是「文本补丁」计划（虚拟 diff 文档：审阅 / Git 差异拼接），
+	// RawText 非空表示这是「文本补丁」计划（虚拟 diff 文档：审阅 / Git 差异拼接），
 	// 没有盘上的补丁文件；PatchRepreview 直接用这份文本，不走 readPatchFileText。
-	rawText string
+	RawText string
 
 	SuggestedRoot   string
 	SuggestedHits   int
@@ -164,7 +166,7 @@ var (
 	patchPlans  = map[string]*patchPlan{}
 )
 
-func putPatchPlan(p *patchPlan) {
+func PutPatchPlan(p *patchPlan) {
 	patchPlanMu.Lock()
 	defer patchPlanMu.Unlock()
 	cut := time.Now().Add(-patchPlanTTL)
@@ -176,7 +178,7 @@ func putPatchPlan(p *patchPlan) {
 	patchPlans[p.PlanID] = p
 }
 
-func getPatchPlan(id string) *patchPlan {
+func GetPatchPlan(id string) *patchPlan {
 	patchPlanMu.Lock()
 	defer patchPlanMu.Unlock()
 	p := patchPlans[id]
@@ -190,7 +192,17 @@ func getPatchPlan(id string) *patchPlan {
 	return p
 }
 
-func (p *patchPlan) toPreview() *PatchPreview {
+// DeletePatchPlan 从计划注册表摘掉指定 planId（重预检换新计划后清理旧条目用）。
+func DeletePatchPlan(id string) {
+	if id == "" {
+		return
+	}
+	patchPlanMu.Lock()
+	delete(patchPlans, id)
+	patchPlanMu.Unlock()
+}
+
+func (p *patchPlan) ToPreview() *PatchPreview {
 	out := &PatchPreview{
 		PlanID:    p.PlanID,
 		PatchID:   p.PatchID,

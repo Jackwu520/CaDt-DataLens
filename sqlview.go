@@ -17,6 +17,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"datalens/internal/chardec"
+
 	_ "modernc.org/sqlite"
 )
 
@@ -227,7 +229,7 @@ func loadSQLSource(path, encoding, text string, useText bool) (string, int64, er
 	if len(raw) >= 3 && raw[0] == 0xEF && raw[1] == 0xBB && raw[2] == 0xBF {
 		raw = raw[3:]
 	}
-	decoded, _, err := decodeBytes(raw, encoding)
+	decoded, _, err := chardec.DecodeBytes(raw, encoding)
 	if err != nil {
 		return "", 0, err
 	}

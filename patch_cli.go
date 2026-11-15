@@ -15,6 +15,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"datalens/internal/patch"
 )
 
 type patchCLIOptions struct {
@@ -119,7 +121,7 @@ func parsePatchArgs(args []string) (*patchCLIOptions, bool, error) {
 // patchWriter 选一个真正能写的输出：GUI 子系统下 stdout 有时是坏句柄，
 // 这时退回 stderr，保证命令行不会"静默无输出"。
 func patchWriter() io.Writer {
-	if patchStdoutUsable() {
+	if patch.PatchStdoutUsable() {
 		return os.Stdout
 	}
 	return os.Stderr
@@ -174,31 +176,31 @@ func patchCLIApply(opts *patchCLIOptions) int {
 		fmt.Fprintf(os.Stderr, "无法解析目录：%v\n", err)
 		return 2
 	}
-	text, err := readPatchFileText(opts.PatchPath, patchMaxTextBytes)
+	text, err := readPatchFileText(opts.PatchPath, patch.PatchMaxTextBytes)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s\n", patchErrorText(err))
 		return 2
 	}
-	doc, err := parsePatchText(text)
+	doc, err := patch.ParsePatchText(text)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s\n", patchErrorText(err))
 		return 2
 	}
-	optsPlan := patchPlanOptions{
+	optsPlan := patch.PatchPlanOptions{
 		AllowOffset:      opts.AllowOffset,
 		IgnoreWhitespace: opts.IgnoreWS,
 		StripLevel:       -1,
 		External:         true,
 	}
-	if sc := loadPatchSidecar(patchStoreRoot(absRoot), sha256Hex([]byte(text))); sc != nil {
+	if sc := loadPatchSidecar(patch.PatchStoreRoot(absRoot), patch.SHA256Hex([]byte(text))); sc != nil {
 		optsPlan.BaseHashes = sc.Files
 	}
-	plan, perr := buildPatchPlan(doc, absRoot, newPatchRunID(""), filepath.Base(opts.PatchPath), opts.PatchPath, optsPlan)
+	plan, perr := patch.BuildPatchPlan(doc, absRoot, patch.NewPatchRunID(""), filepath.Base(opts.PatchPath), opts.PatchPath, optsPlan)
 	if perr != nil {
 		fmt.Fprintf(os.Stderr, "%s\n", patchErrorText(perr))
 		return 2
 	}
-	putPatchPlan(plan)
+	patch.PutPatchPlan(plan)
 
 	mode := "atomic"
 	if opts.Partial {
@@ -229,10 +231,10 @@ func patchCLIApply(opts *patchCLIOptions) int {
 		return 1
 	}
 
-	res, err := applyPatchPlan(plan, opts.Only, nil, mode)
+	res, err := patch.ApplyPatchPlan(plan, opts.Only, nil, mode)
 	if err != nil {
 		if opts.JSON {
-			report.Code = patchErrBackend
+			report.Code = patch.PatchErrBackend
 			report.Message = patchErrorText(err)
 			return patchCLIExit(report, 3)
 		}
@@ -250,7 +252,7 @@ func patchCLIApply(opts *patchCLIOptions) int {
 	report.Added = res.Added
 	report.Removed = res.Removed
 	// 用应用结果覆盖文件状态
-	statusByPath := map[string]PatchFileResult{}
+	statusByPath := map[string]patch.PatchFileResult{}
 	for _, f := range res.Files {
 		statusByPath[strings.ToLower(f.RelPath)] = f
 	}
@@ -264,7 +266,7 @@ func patchCLIApply(opts *patchCLIOptions) int {
 		}
 	}
 	code := 0
-	if res.Code == patchErrRollback {
+	if res.Code == patch.PatchErrRollback {
 		code = 5
 	} else if res.Applied == 0 || res.Skipped > 0 {
 		code = 1
@@ -298,7 +300,7 @@ func patchCLIRevert(opts *patchCLIOptions) int {
 		pout("撤销会还原该补丁应用前的文件内容。确认后加 --yes。\n")
 		return 4
 	}
-	res, err := revertPatchByID(root, opts.RevertID, opts.OnConflict)
+	res, err := patch.RevertPatchByID(root, opts.RevertID, opts.OnConflict)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s\n", patchErrorText(err))
 		return 3
@@ -317,7 +319,7 @@ func patchCLIRevert(opts *patchCLIOptions) int {
 	if res.OK {
 		return 0
 	}
-	if res.Code == patchErrConcurrent {
+	if res.Code == patch.PatchErrConcurrent {
 		return 1
 	}
 	return 3
@@ -345,7 +347,7 @@ func printPatchReport(r patchCLIReport, preview bool) {
 	}
 }
 
-func printPatchResult(r patchCLIReport, res *PatchApplyResult) {
+func printPatchResult(r patchCLIReport, res *patch.PatchApplyResult) {
 	if res.Applied > 0 {
 		pout("已应用 %d 个文件（+%d −%d）\n", res.Applied, res.Added, res.Removed)
 	}
@@ -369,7 +371,7 @@ func printPatchResult(r patchCLIReport, res *PatchApplyResult) {
 	if res.RevertID != "" && res.Applied > 0 {
 		pout("\n撤销：CaDt-DataLens.exe --revert-patch %s --dir \"%s\" --yes\n", res.RevertID, r.Root)
 	}
-	if res.Code == patchErrRollback {
+	if res.Code == patch.PatchErrRollback {
 		pout("\n⚠ 有文件未能恢复，请用备份手工覆盖：")
 		if res.BackupDir != "" {
 			pout("  备份目录：%s\n", res.BackupDir)
@@ -432,7 +434,7 @@ func patchErrorText(err error) string {
 	if err == nil {
 		return ""
 	}
-	pe := patchErrorOf(err)
+	pe := patch.PatchErrorOf(err)
 	if pe.Detail != "" {
 		return fmt.Sprintf("%s：%s\n  %s", pe.Code, pe.Msg, pe.Detail)
 	}

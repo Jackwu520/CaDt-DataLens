@@ -1,6 +1,8 @@
 //go:build windows
 
-package main
+// Package recycle：把文件移入系统回收站（Windows Shell 删除接口），非 Windows 直接删除。
+// 被 delete 域、补丁撤销与 AI 会话删除共用。
+package recycle
 
 import (
 	"fmt"
@@ -31,8 +33,8 @@ type shFileOpStructW struct {
 
 var shFileOperationW = windows.NewLazySystemDLL("shell32.dll").NewProc("SHFileOperationW")
 
-// movePathToRecycleBin 调用 Windows Shell 的删除接口，默认送回收站。
-func movePathToRecycleBin(path string) error {
+// Move 调用 Windows Shell 的删除接口，默认送回收站。
+func Move(path string) error {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return err

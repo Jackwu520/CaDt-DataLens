@@ -1,4 +1,4 @@
-package main
+package patch
 
 // 补丁解析：把 .patch/.diff 文本切成文件段与 hunk，含 git 风格引号路径解码。
 // 从 patch.go 拆出（同包），对外入口见 patch_app.go / patch_cli.go。
@@ -11,15 +11,15 @@ import (
 
 // ===== 解析 =====
 
-func parsePatchText(text string) (*patchDoc, error) {
+func ParsePatchText(text string) (*PatchDoc, error) {
 	text = strings.TrimPrefix(text, "\ufeff")
 	text = strings.ReplaceAll(text, "\r\n", "\n")
 	text = strings.ReplaceAll(text, "\r", "\n")
 	if strings.TrimSpace(text) == "" {
-		return nil, newPatchError(patchErrEmpty, "补丁内容为空")
+		return nil, NewPatchError(PatchErrEmpty, "补丁内容为空")
 	}
 	lines := strings.Split(text, "\n")
-	doc := &patchDoc{}
+	doc := &PatchDoc{}
 	cur := -1
 	var hunk *patchHunk
 
@@ -37,8 +37,8 @@ func parsePatchText(text string) (*patchDoc, error) {
 			}
 		}
 		if oldCount != hunk.OldCount || newCount != hunk.NewCount {
-			return &patchError{
-				Code:   patchErrParse,
+			return &PatchError{
+				Code:   PatchErrParse,
 				Msg:    fmt.Sprintf("hunk 行数与 @@ 头不一致（第 %d 行）", hunk.LineNo),
 				Detail: fmt.Sprintf("头部声明 -%d,%d +%d,%d，实际数出 -%d +%d", hunk.OldStart, hunk.OldCount, hunk.NewStart, hunk.NewCount, oldCount, newCount),
 			}
@@ -97,7 +97,7 @@ func parsePatchText(text string) (*patchDoc, error) {
 			}
 		case strings.HasPrefix(raw, "+++ "):
 			if cur < 0 {
-				return nil, &patchError{Code: patchErrParse, Msg: "+++ 之前没有对应的 ---", Detail: fmt.Sprintf("第 %d 行", lineNo)}
+				return nil, &PatchError{Code: PatchErrParse, Msg: "+++ 之前没有对应的 ---", Detail: fmt.Sprintf("第 %d 行", lineNo)}
 			}
 			newPath := strings.TrimSpace(raw[4:])
 			doc.Files[cur].RawNew = newPath
@@ -106,14 +106,14 @@ func parsePatchText(text string) (*patchDoc, error) {
 			}
 		case strings.HasPrefix(raw, "@@"):
 			if cur < 0 {
-				return nil, &patchError{Code: patchErrParse, Msg: "@@ 之前没有文件头", Detail: fmt.Sprintf("第 %d 行", lineNo)}
+				return nil, &PatchError{Code: PatchErrParse, Msg: "@@ 之前没有文件头", Detail: fmt.Sprintf("第 %d 行", lineNo)}
 			}
 			if err := finishHunk(); err != nil {
 				return nil, err
 			}
 			m := patchHunkRe.FindStringSubmatch(raw)
 			if m == nil {
-				return nil, &patchError{Code: patchErrParse, Msg: "无法解析 hunk 头", Detail: fmt.Sprintf("第 %d 行：%s", lineNo, raw)}
+				return nil, &PatchError{Code: PatchErrParse, Msg: "无法解析 hunk 头", Detail: fmt.Sprintf("第 %d 行：%s", lineNo, raw)}
 			}
 			oldStart := atoiSafe(m[1])
 			oldCount := 1
@@ -127,7 +127,7 @@ func parsePatchText(text string) (*patchDoc, error) {
 			}
 			hunk = &patchHunk{OldStart: oldStart, OldCount: oldCount, NewStart: newStart, NewCount: newCount, Header: raw, LineNo: lineNo}
 			if len(doc.Files[cur].Hunks) >= patchMaxHunks {
-				return nil, newPatchError(patchErrLimit, fmt.Sprintf("单文件 hunk 超过 %d 个", patchMaxHunks))
+				return nil, NewPatchError(PatchErrLimit, fmt.Sprintf("单文件 hunk 超过 %d 个", patchMaxHunks))
 			}
 		case hunk != nil && (strings.HasPrefix(raw, " ") || strings.HasPrefix(raw, "+") || strings.HasPrefix(raw, "-")):
 			noEOL := false
@@ -172,10 +172,10 @@ func parsePatchText(text string) (*patchDoc, error) {
 	}
 	doc.Files = kept
 	if len(doc.Files) == 0 {
-		return nil, newPatchError(patchErrEmpty, "补丁里没有任何文件改动（至少需要一个 @@ hunk）")
+		return nil, NewPatchError(PatchErrEmpty, "补丁里没有任何文件改动（至少需要一个 @@ hunk）")
 	}
 	if len(doc.Files) > patchMaxFiles {
-		return nil, newPatchError(patchErrLimit, fmt.Sprintf("文件数超过 %d 个", patchMaxFiles))
+		return nil, NewPatchError(PatchErrLimit, fmt.Sprintf("文件数超过 %d 个", patchMaxFiles))
 	}
 	for i := range doc.Files {
 		doc.Added += doc.Files[i].Added
@@ -258,7 +258,7 @@ func unquoteGitPath(s string) string {
 }
 
 // stripPatchPath 去掉前 n 级目录，并做安全校验；返回相对路径（正斜杠）。
-func stripPatchPath(raw string, strip int) (string, *patchError) {
+func stripPatchPath(raw string, strip int) (string, *PatchError) {
 	p := strings.TrimSpace(raw)
 	if p == "" || isDevNull(p) {
 		return "", nil
@@ -271,35 +271,35 @@ func stripPatchPath(raw string, strip int) (string, *patchError) {
 	parts := strings.Split(p, "/")
 	if strip > 0 {
 		if len(parts) <= strip {
-			return "", &patchError{Code: patchErrPathDenied, Msg: "路径层级超出实际深度", Detail: raw}
+			return "", &PatchError{Code: PatchErrPathDenied, Msg: "路径层级超出实际深度", Detail: raw}
 		}
 		parts = parts[strip:]
 	}
 	clean := strings.Join(parts, "/")
 	if clean == "" {
-		return "", &patchError{Code: patchErrPathDenied, Msg: "路径为空", Detail: raw}
+		return "", &PatchError{Code: PatchErrPathDenied, Msg: "路径为空", Detail: raw}
 	}
 	if strings.HasPrefix(clean, "/") || strings.Contains(clean, ":") {
-		return "", &patchError{Code: patchErrPathDenied, Msg: "不允许绝对路径或盘符", Detail: raw}
+		return "", &PatchError{Code: PatchErrPathDenied, Msg: "不允许绝对路径或盘符", Detail: raw}
 	}
 	for _, seg := range strings.Split(clean, "/") {
 		if seg == ".." {
-			return "", &patchError{Code: patchErrPathDenied, Msg: "不允许上跳目录", Detail: raw}
+			return "", &PatchError{Code: PatchErrPathDenied, Msg: "不允许上跳目录", Detail: raw}
 		}
 		if seg == "." || seg == "" {
-			return "", &patchError{Code: patchErrPathDenied, Msg: "路径含空段或 .", Detail: raw}
+			return "", &PatchError{Code: PatchErrPathDenied, Msg: "路径含空段或 .", Detail: raw}
 		}
 		if strings.HasSuffix(seg, " ") || strings.HasSuffix(seg, ".") {
-			return "", &patchError{Code: patchErrPathDenied, Msg: "路径段以空格或点结尾（Windows 非法）", Detail: raw}
+			return "", &PatchError{Code: PatchErrPathDenied, Msg: "路径段以空格或点结尾（Windows 非法）", Detail: raw}
 		}
 	}
 	lower := strings.ToLower(clean)
 	if lower == ".git" || strings.HasPrefix(lower, ".git/") {
-		return "", &patchError{Code: patchErrPathDenied, Msg: "不允许修改 .git 目录", Detail: raw}
+		return "", &PatchError{Code: PatchErrPathDenied, Msg: "不允许修改 .git 目录", Detail: raw}
 	}
 	if strings.HasPrefix(lower, ".cadt/patches/") || lower == ".cadt/patches" ||
 		lower == ".cadt/permissions.json" {
-		return "", &patchError{Code: patchErrPathDenied, Msg: "不允许修改补丁目录或权限配置", Detail: raw}
+		return "", &PatchError{Code: PatchErrPathDenied, Msg: "不允许修改补丁目录或权限配置", Detail: raw}
 	}
 	return clean, nil
 }

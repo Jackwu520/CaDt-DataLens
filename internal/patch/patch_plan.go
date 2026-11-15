@@ -1,4 +1,4 @@
-package main
+package patch
 
 // 计划构建与存储：把 hunk 落成可复核的计划，落盘到 .cadt/patches 索引。
 
@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"datalens/internal/chardec"
 )
 
 // ===== 计划构建 =====
@@ -175,7 +177,7 @@ func suggestPatchRoot(files []patchFile, root, patchPath string) (string, int, i
 	return bestRoot, bestHits, bestNeeded
 }
 
-func resolvePatchRootPath(root, rel string) (string, *patchError) {
+func resolvePatchRootPath(root, rel string) (string, *PatchError) {
 	abs := filepath.Join(root, filepath.FromSlash(rel))
 	abs = filepath.Clean(abs)
 	rootClean := filepath.Clean(root)
@@ -185,23 +187,23 @@ func resolvePatchRootPath(root, rel string) (string, *patchError) {
 		if realRoot, err2 := filepath.EvalSymlinks(rootClean); err2 == nil {
 			relReal, err3 := filepath.Rel(realRoot, realDir)
 			if err3 != nil || relReal == ".." || strings.HasPrefix(relReal, ".."+string(filepath.Separator)) {
-				return "", &patchError{Code: patchErrPathDenied, Msg: "路径解析后超出工作区", Detail: rel}
+				return "", &PatchError{Code: PatchErrPathDenied, Msg: "路径解析后超出工作区", Detail: rel}
 			}
 		}
 	}
 	return abs, nil
 }
 
-func buildPatchPlan(doc *patchDoc, root, patchID, summary, patchPath string, opts patchPlanOptions) (*patchPlan, error) {
+func BuildPatchPlan(doc *PatchDoc, root, patchID, summary, patchPath string, opts PatchPlanOptions) (*patchPlan, error) {
 	root = filepath.Clean(root)
 	if root == "" {
-		return nil, newPatchError(patchErrPathDenied, "缺少工作区根目录")
+		return nil, NewPatchError(PatchErrPathDenied, "缺少工作区根目录")
 	}
 	if info, err := os.Stat(root); err != nil || !info.IsDir() {
-		return nil, newPatchError(patchErrPathDenied, "工作区根目录不存在")
+		return nil, NewPatchError(PatchErrPathDenied, "工作区根目录不存在")
 	}
 	plan := &patchPlan{
-		PlanID:    newPatchRunID("plan"),
+		PlanID:    NewPatchRunID("plan"),
 		PatchID:   patchID,
 		Summary:   summary,
 		Root:      root,
@@ -241,7 +243,7 @@ func buildPatchPlan(doc *patchDoc, root, patchID, summary, patchPath string, opt
 			continue
 		}
 		if prev, ok := seenPath[strings.ToLower(r.rel)]; ok {
-			return nil, &patchError{Code: patchErrPathDenied, Msg: "同一路径在补丁中出现多次", Detail: fmt.Sprintf("%s（第 %d 与第 %d 个文件）", r.rel, prev+1, i+1)}
+			return nil, &PatchError{Code: PatchErrPathDenied, Msg: "同一路径在补丁中出现多次", Detail: fmt.Sprintf("%s（第 %d 与第 %d 个文件）", r.rel, prev+1, i+1)}
 		}
 		seenPath[strings.ToLower(r.rel)] = i
 	}
@@ -280,7 +282,7 @@ func buildPatchPlan(doc *patchDoc, root, patchID, summary, patchPath string, opt
 		target, err := readPatchTarget(abs)
 		if err != nil {
 			pf.Status = "blocked"
-			pf.Reason = patchErrorOf(err).Msg
+			pf.Reason = PatchErrorOf(err).Msg
 			plan.Files = append(plan.Files, pf)
 			continue
 		}
@@ -340,7 +342,7 @@ func buildPatchPlan(doc *patchDoc, root, patchID, summary, patchPath string, opt
 			}
 			text := joinPatchLines(hunkNewLinesAll(src.Hunks), true)
 			pf.ResultText = text
-			pf.ResultHash = sha256Hex(buildBytesOrNil(text, target))
+			pf.ResultHash = SHA256Hex(buildBytesOrNil(text, target))
 			plan.Files = append(plan.Files, pf)
 			continue
 		}
@@ -420,7 +422,7 @@ func buildPatchPlan(doc *patchDoc, root, patchID, summary, patchPath string, opt
 		}
 		finalNewline := resolveFinalNewline(target.FinalNewline, src.Hunks, target.Lines, offset, segs)
 		pf.ResultText = joinPatchLines(result, finalNewline)
-		pf.ResultHash = sha256Hex(buildBytesOrNil(pf.ResultText, target))
+		pf.ResultHash = SHA256Hex(buildBytesOrNil(pf.ResultText, target))
 		pf.Hunks = make([]patchHunkPlan, len(src.Hunks))
 		for hi := range src.Hunks {
 			at := src.Hunks[hi].OldStart - 1 + offset
@@ -460,7 +462,7 @@ func buildBytesOrNil(text string, t *patchTargetFile) []byte {
 	if t != nil && t.Exists {
 		enc, eol, bom = t.Enc, t.EOL, t.HasBOM
 	}
-	raw, err := buildSaveBytes(text, eol, bom, enc)
+	raw, err := chardec.BuildSaveBytes(text, eol, bom, enc)
 	if err != nil {
 		return []byte(text)
 	}
@@ -491,7 +493,7 @@ func resolveFinalNewline(orig bool, hunks []patchHunk, lines []string, offset in
 	return final
 }
 
-type patchPlanOptions struct {
+type PatchPlanOptions struct {
 	AllowOffset      bool
 	IgnoreWhitespace bool
 	BaseHashes       map[string]string // relPath -> 生成时内容哈希（外部补丁为空）
@@ -501,30 +503,46 @@ type patchPlanOptions struct {
 
 // ===== 存储与索引 =====
 
-func patchStoreRoot(root string) string {
+// 宿主注入：应用数据目录与诊断日志由 main 包 init 注入（patch_app.go），
+// 包内默认 nil 安全——CLI/测试环境不注入时走各自的安全分支。
+var (
+	AppDataDir func() string
+	Logf       func(level, format string, args ...any)
+)
+
+// logf 宿主日志钩子的 nil 安全包装；未注入时静默（CLI/测试环境）。
+func logf(level, format string, args ...any) {
+	if Logf != nil {
+		Logf(level, format, args...)
+	}
+}
+
+func PatchStoreRoot(root string) string {
 	if root != "" {
 		return filepath.Join(root, ".cadt", "patches")
 	}
-	if base := appDataRoot(); base != "" {
-		return filepath.Join(base, "patches")
+	if AppDataDir != nil {
+		if base := AppDataDir(); base != "" {
+			return filepath.Join(base, "patches")
+		}
 	}
 	return ""
 }
 
 func ensurePatchDirs(store string, id string) (string, string, error) {
 	if store == "" {
-		return "", "", newPatchError(patchErrNoBackup, "无法确定补丁存储目录")
+		return "", "", NewPatchError(PatchErrNoBackup, "无法确定补丁存储目录")
 	}
 	backup := filepath.Join(store, "backup", id)
 	for _, dir := range []string{store, filepath.Join(store, "manifest"), backup} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return "", "", &patchError{Code: patchErrNoBackup, Msg: "无法创建补丁目录", Detail: err.Error()}
+			return "", "", &PatchError{Code: PatchErrNoBackup, Msg: "无法创建补丁目录", Detail: err.Error()}
 		}
 	}
 	return backup, filepath.Join(store, "manifest", id+".json"), nil
 }
 
-func appendPatchIndex(store string, entry patchIndexEntry) error {
+func AppendPatchIndex(store string, entry PatchIndexEntry) error {
 	if store == "" {
 		return nil
 	}
@@ -546,7 +564,7 @@ func appendPatchIndex(store string, entry patchIndexEntry) error {
 	return f.Sync()
 }
 
-func readPatchIndex(store string) []patchIndexEntry {
+func ReadPatchIndex(store string) []PatchIndexEntry {
 	if store == "" {
 		return nil
 	}
@@ -554,13 +572,13 @@ func readPatchIndex(store string) []patchIndexEntry {
 	if err != nil {
 		return nil
 	}
-	var out []patchIndexEntry
+	var out []PatchIndexEntry
 	for _, line := range strings.Split(string(b), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
-		var e patchIndexEntry
+		var e PatchIndexEntry
 		if json.Unmarshal([]byte(line), &e) == nil && e.ID != "" {
 			out = append(out, e)
 		}
@@ -568,7 +586,7 @@ func readPatchIndex(store string) []patchIndexEntry {
 	return out
 }
 
-type patchIndexEntry struct {
+type PatchIndexEntry struct {
 	V          int      `json:"v"`
 	ID         string   `json:"id"`
 	Summary    string   `json:"summary"`
@@ -604,8 +622,8 @@ type patchManifestEntry struct {
 	Size       int64  `json:"size"`
 }
 
-func collectPatchMetas(store string) []PatchMeta {
-	entries := readPatchIndex(store)
+func CollectPatchMetas(store string) []PatchMeta {
+	entries := ReadPatchIndex(store)
 	byID := map[string]*PatchMeta{}
 	order := []string{}
 	for _, e := range entries {
@@ -636,4 +654,52 @@ func collectPatchMetas(store string) []PatchMeta {
 		out = append(out, *byID[order[i]])
 	}
 	return out
+}
+
+// FileNames 取计划内全部相对路径（入索引用）。
+func FileNames(plan *patchPlan) []string {
+	out := make([]string, 0, len(plan.Files))
+	for _, f := range plan.Files {
+		out = append(out, f.RelPath)
+	}
+	return out
+}
+
+// PlanHasAddedFile 补丁里是否有新建文件（+0/−0 但新建空文件时 Added/Removed 也可能是 0）。
+func PlanHasAddedFile(plan *patchPlan) bool {
+	for _, f := range plan.Files {
+		if f != nil && f.Kind == "add" {
+			return true
+		}
+	}
+	return false
+}
+
+// PlanHasApplicableFile 是否存在可直接应用的 hunk（status=ok）。
+// 全为 blocked/conflict/unsupported 时这份补丁必然要重写，不该落盘。
+func PlanHasApplicableFile(plan *patchPlan) bool {
+	for _, f := range plan.Files {
+		if f != nil && f.Status == "ok" {
+			return true
+		}
+	}
+	return false
+}
+
+// FirstPlanReason 取第一个失败文件的可读原因（附相对路径），给模型定位用。
+func FirstPlanReason(plan *patchPlan) string {
+	for _, f := range plan.Files {
+		if f == nil || f.Status == "ok" {
+			continue
+		}
+		rel := f.RelPath
+		if rel == "" {
+			rel = "(路径未知)"
+		}
+		if f.Reason != "" {
+			return rel + "：" + f.Reason
+		}
+		return rel + "：无法应用"
+	}
+	return ""
 }

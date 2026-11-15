@@ -20,6 +20,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"datalens/internal/chardec"
 )
 
 const (
@@ -145,7 +147,7 @@ func (a *App) WebFetch(rawURL string, maxChars int) (map[string]interface{}, err
 	if charset == "" {
 		charset = webSniffCharset(resp.Body)
 	}
-	body, usedEnc, decodeErr := decodeBytes(resp.Body, charset)
+	body, usedEnc, decodeErr := chardec.DecodeBytes(resp.Body, charset)
 	if decodeErr != nil || body == "" {
 		body = string(resp.Body)
 		usedEnc = "utf-8"

@@ -1,4 +1,4 @@
-package main
+package patch
 
 // 补丁（.patch / .diff）解析、匹配规划、两阶段应用与撤销。
 //
@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	patchMaxTextBytes = 2 << 20   // 外部 / CLI 补丁文本上限
+	PatchMaxTextBytes = 2 << 20   // 外部 / CLI 补丁文本上限
 	patchAIMaxBytes   = 256 << 10 // AI 单次提交上限（与 AI_WRITE_LIMIT 对齐）
 	patchMaxFiles     = 200
 	patchMaxHunks     = 500
@@ -32,46 +32,46 @@ const (
 
 // 错误码：给 UI 与模型共用，不要随意改名。
 const (
-	patchErrParse        = "PATCH_PARSE"
-	patchErrEmpty        = "PATCH_EMPTY"
-	patchErrLimit        = "PATCH_LIMIT"
-	patchErrPathDenied   = "PATCH_PATH_DENIED"
-	patchErrUnsupported  = "PATCH_UNSUPPORTED"
-	patchErrHunkConflict = "PATCH_HUNK_CONFLICT"
-	patchErrFileDrift    = "PATCH_FILE_DRIFT"
-	patchErrUserDenied   = "PATCH_USER_DENIED"
-	patchErrApplyIO      = "PATCH_APPLY_IO"
-	patchErrRollback     = "PATCH_ROLLBACK_FAILED"
-	patchErrBusy         = "PATCH_BUSY"
-	patchErrFileLocked   = "PATCH_FILE_LOCKED"
-	patchErrConcurrent   = "PATCH_CONCURRENT_MODIFIED"
-	patchErrNoBackup     = "PATCH_NO_BACKUP"
-	patchErrDiskFull     = "PATCH_DISK_FULL"
-	patchErrNotRequested = "PATCH_NOT_REQUESTED"
-	patchErrBackend      = "PATCH_BACKEND"
+	PatchErrParse        = "PATCH_PARSE"
+	PatchErrEmpty        = "PATCH_EMPTY"
+	PatchErrLimit        = "PATCH_LIMIT"
+	PatchErrPathDenied   = "PATCH_PATH_DENIED"
+	PatchErrUnsupported  = "PATCH_UNSUPPORTED"
+	PatchErrHunkConflict = "PATCH_HUNK_CONFLICT"
+	PatchErrFileDrift    = "PATCH_FILE_DRIFT"
+	PatchErrUserDenied   = "PATCH_USER_DENIED"
+	PatchErrApplyIO      = "PATCH_APPLY_IO"
+	PatchErrRollback     = "PATCH_ROLLBACK_FAILED"
+	PatchErrBusy         = "PATCH_BUSY"
+	PatchErrFileLocked   = "PATCH_FILE_LOCKED"
+	PatchErrConcurrent   = "PATCH_CONCURRENT_MODIFIED"
+	PatchErrNoBackup     = "PATCH_NO_BACKUP"
+	PatchErrDiskFull     = "PATCH_DISK_FULL"
+	PatchErrNotRequested = "PATCH_NOT_REQUESTED"
+	PatchErrBackend      = "PATCH_BACKEND"
 )
 
-type patchError struct {
+type PatchError struct {
 	Code   string `json:"code"`
 	Msg    string `json:"message"`
 	Detail string `json:"detail,omitempty"`
 }
 
-func (e *patchError) Error() string {
+func (e *PatchError) Error() string {
 	if e.Detail != "" {
 		return e.Code + ": " + e.Msg + "（" + e.Detail + "）"
 	}
 	return e.Code + ": " + e.Msg
 }
 
-func newPatchError(code, msg string) *patchError { return &patchError{Code: code, Msg: msg} }
+func NewPatchError(code, msg string) *PatchError { return &PatchError{Code: code, Msg: msg} }
 
-func patchErrorOf(err error) *patchError {
-	var pe *patchError
+func PatchErrorOf(err error) *PatchError {
+	var pe *PatchError
 	if errors.As(err, &pe) {
 		return pe
 	}
-	return &patchError{Code: patchErrBackend, Msg: err.Error()}
+	return &PatchError{Code: PatchErrBackend, Msg: err.Error()}
 }
 
 // ===== 对外结构（Wails 直接序列化给前端） =====
@@ -203,14 +203,14 @@ type patchFile struct {
 	Added, Removed int
 }
 
-type patchDoc struct {
+type PatchDoc struct {
 	Files          []patchFile
 	Added, Removed int
 }
 
 var patchHunkRe = regexp.MustCompile(`^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@`)
 
-func sha256Hex(b []byte) string {
+func SHA256Hex(b []byte) string {
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
 }

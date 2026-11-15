@@ -16,6 +16,8 @@ import (
 	"time"
 	"unicode/utf16"
 	"unicode/utf8"
+
+	"datalens/internal/chardec"
 )
 
 const (
@@ -208,7 +210,7 @@ func decodeReadingText(raw []byte) (string, string, error) {
 	if len(raw) >= 3 && raw[0] == 0xEF && raw[1] == 0xBB && raw[2] == 0xBF {
 		return string(raw[3:]), "utf-8", nil
 	}
-	return decodeBytes(raw, "")
+	return chardec.DecodeBytes(raw, "")
 }
 
 func decodeReadingUTF16(raw []byte, bigEndian bool) string {
