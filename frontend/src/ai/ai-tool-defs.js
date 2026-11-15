@@ -270,13 +270,14 @@ export const AI_TOOL_DEFS = {
     },
     propose_patch: {
         name: 'propose_patch',
-        description: '把一组改动写成标准 unified diff 补丁（.patch），交给用户审批后一键应用。适用于：用户要可存档/可转交的补丁、改动跨多个文件、需要先看后改。补丁落盘到 <工作区>/.cadt/patches/ 并显示审批卡；即使「自动审批」档也要用户点一次「应用」。路径相对工作区根，必须用 --- a/<路径> / +++ b/<路径> 头，上下文 3 行。失败会返回【patch:error】错误码与修复建议，按建议修正后可重试，最多 3 次。写补丁前先 skill_use patch-workflow。',
+        description: '把一组改动写成标准 unified diff 补丁（.patch），交给用户审批后一键应用。适用于：用户要可存档/可转交的补丁、改动跨多个文件、需要先看后改；**完全权限档也可用**——补丁是可分享的交付物，与直接改文件不冲突（默认仍优先 edit_file / write_file）。完全权限档下默认只落盘 .patch + 返回路径，不弹审批卡；用户明确说「应用」时才弹卡。**计划模式只做预检**（dry_run：逐文件能否应用，不落盘、不写索引、不弹卡）。同内容重复提交会复用已有补丁（不新建文件），空补丁（+0/−0）与一个文件都不可应用的补丁不落盘。路径相对工作区根，必须用 --- a/<路径> / +++ b/<路径> 头，上下文 3 行。失败会返回【patch:error】错误码（PATCH_EMPTY / PATCH_HUNK_CONFLICT / PATCH_PATH_DENIED …）与修复建议，retryable=no 的不要原样重试。写补丁前先 skill_use patch-workflow。',
         parameters: {
             type: 'object',
             properties: {
                 patch: {type: 'string', description: '完整 unified diff 文本，可含多个文件'},
                 summary: {type: 'string', description: '一句话说明改什么（用于文件名与审批卡标题）'},
                 apply: {type: 'boolean', description: '是否在审批卡上提供应用按钮；false 表示只产出文件'},
+                dry_run: {type: 'boolean', description: '只预检不落盘：返回逐文件能否应用，不生成 .patch、不写索引、不弹卡（计划模式自动启用）'},
             },
             required: ['patch', 'summary'],
         },
@@ -607,11 +608,14 @@ export function createAIToolDefs(ctx) {
         );
         if (AI_WRITE_SCOPES.includes(scope)) {
             list.push(AI_TOOL_DEFS.todo_write);
-            if (!planMode) list.push(AI_TOOL_DEFS.write_file, AI_TOOL_DEFS.edit_file, AI_TOOL_DEFS.propose_patch, AI_TOOL_DEFS.run_command,
+            if (!planMode) list.push(AI_TOOL_DEFS.write_file, AI_TOOL_DEFS.edit_file, AI_TOOL_DEFS.run_command,
                 AI_TOOL_DEFS.background_command, AI_TOOL_DEFS.check_command, AI_TOOL_DEFS.stop_command);
             if (!planMode) list.push(AI_TOOL_DEFS.browser_click, AI_TOOL_DEFS.browser_type, AI_TOOL_DEFS.browser_press_key,
                 AI_TOOL_DEFS.browser_resize);
         }
+        // 补丁：计划模式下只给「预检」形态（dry_run，不落盘、不弹卡），批准计划后再真正出补丁；
+        // 写权限档非计划模式保持原行为
+        if (AI_WRITE_SCOPES.includes(scope) || planMode) list.push(AI_TOOL_DEFS.propose_patch);
         // 子代理：写权限档与计划模式可用（子代理只读探索正是计划模式的刚需）
         if (AI_WRITE_SCOPES.includes(scope) || planMode) list.push(AI_TOOL_DEFS.spawn_agent);
         if (scope === 'full' && !planMode) list.push(AI_TOOL_DEFS.browser_evaluate);
