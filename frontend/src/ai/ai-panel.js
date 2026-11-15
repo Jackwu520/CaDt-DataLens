@@ -7767,7 +7767,10 @@ export function createAIPanel(options) {
         wrap.className = 'ai-msg tool';
         wrap.dataset.aiIdx = String(index);
         renderToolMessage(wrap, toolMessage);
-        el.messages.appendChild(wrap);
+        // 流式状态条（看板娘条）钉在消息区最底：新工具卡插到它之前，别把它顶上去
+        const bar = el.messages.querySelector('.ai-streaming-bar');
+        if (bar) el.messages.insertBefore(wrap, bar);
+        else el.messages.appendChild(wrap);
         notifyStructure();
         scheduleOutlineSync();
         if (stickBottom) scrollToBottom(false);
