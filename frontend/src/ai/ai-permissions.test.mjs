@@ -172,3 +172,68 @@ test('normalizeDefaultScope：非法 / 缺省回退只读访问，合法档位�
         assert.equal(normalizeDefaultScope(raw), want, 'input=' + String(raw));
     }
 });
+
+// ---------- read kind：工作区外读取的项目规则与决策 ----------
+
+test('read 规则：行语法解析、目录树 glob 匹配与序列化', () => {
+    const parsed = parseRuleLines([
+        'Read(D:/Novel/**)',
+        'Read(D:/Books/sub/**)',
+        'Bash(git status:*)',
+        'Read()',
+    ].join('\n'), 'allow');
+    assert.deepEqual(parsed.rules.read.allow, ['D:/Novel/**', 'D:/Books/sub/**']);
+    assert.equal(parsed.errors.length, 1);
+    assert.ok(parsed.errors[0].includes('规则内容为空'));
+    assert.ok(formatRuleLines(parsed.rules, 'allow').includes('Read(D:/Novel/**)'));
+
+    assert.equal(matchPermissionRule('read', 'D:/Novel/日记星辰/正文/番外0007.md', 'D:/Novel/**'), true);
+    assert.equal(matchPermissionRule('read', 'D:/Novel', 'D:/Novel/**'), true);
+    assert.equal(matchPermissionRule('read', 'D:/Novels/a.md', 'D:/Novel/**'), false);
+    assert.equal(matchPermissionRule('read', 'd:' + String.fromCharCode(92) + 'novel' + String.fromCharCode(92) + 'a.md', 'D:/Novel/**'), true);
+    // write 规则不串桶
+    assert.equal(matchPermissionRule('write', 'D:/Novel/a.md', 'D:/Novel/**'), true);
+    assert.equal(evaluatePermissionRules(parsed.rules, 'read', 'D:/Novel/x.md').decision, 'allow');
+});
+
+test('read 归一：非法条目忽略，规则桶完整初始化', () => {
+    const rules = normalizePermissionRules({read: {allow: ['D:/A/**', ' ', 42], deny: ['D:/B/**']}});
+    assert.deepEqual(rules.read.allow, ['D:/A/**']);
+    assert.deepEqual(rules.read.deny, ['D:/B/**']);
+    assert.deepEqual(rules.read.ask, []);
+    assert.deepEqual(emptyPermissionRules().read, {allow: [], ask: [], deny: []});
+});
+
+test('read 决策链：deny 优先、sessionAllow 次之、auto 直放、read/edit 转人工', () => {
+    const rules = {read: {allow: [], ask: [], deny: ['D:/secret/**']}};
+    assert.deepEqual(
+        decidePermission({scope: 'auto', kind: 'read', rules, subject: 'D:/secret/key.md'}),
+        {decision: 'deny', source: 'project', rule: 'D:/secret/**'},
+    );
+    assert.deepEqual(
+        decidePermission({scope: 'read', kind: 'read', rules: null, subject: 'D:/x.md', sessionAllow: true}),
+        {decision: 'allow', source: 'session'},
+    );
+    assert.deepEqual(
+        decidePermission({scope: 'auto', kind: 'read', rules: null, subject: 'D:/Novel/a.md'}),
+        {decision: 'allow', source: 'auto'},
+    );
+    assert.deepEqual(
+        decidePermission({scope: 'read', kind: 'read', rules: null, subject: 'D:/Novel/a.md'}),
+        {decision: 'ask', source: 'scope'},
+    );
+    assert.deepEqual(
+        decidePermission({scope: 'edit', kind: 'read', rules: null, subject: 'D:/Novel/a.md'}),
+        {decision: 'ask', source: 'scope'},
+    );
+    // 项目 allow 规则：read/edit 档也放行
+    assert.deepEqual(
+        decidePermission({scope: 'read', kind: 'read', rules: {read: {allow: ['D:/Novel/**'], ask: [], deny: []}}, subject: 'D:/Novel/a.md'}),
+        {decision: 'allow', source: 'project', rule: 'D:/Novel/**'},
+    );
+    // 项目 ask 规则压过 auto 档
+    assert.deepEqual(
+        decidePermission({scope: 'auto', kind: 'read', rules: {read: {allow: [], ask: ['D:/Watch/**'], deny: []}}, subject: 'D:/Watch/a.md'}),
+        {decision: 'ask', source: 'project', rule: 'D:/Watch/**'},
+    );
+});
