@@ -15,7 +15,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 )
 
 type patchCLIOptions struct {
@@ -217,7 +216,7 @@ func patchCLIApply(opts *patchCLIOptions) int {
 
 	if opts.Action == "check" || !opts.Yes {
 		if opts.JSON {
-			return patchCLIExit(report, boolToCode(report.Applicable == len(plan.Files)), true)
+			return patchCLIExit(report, boolToCode(report.Applicable == len(plan.Files)))
 		}
 		printPatchReport(report, !opts.Yes)
 		if !opts.Yes && opts.Action == "apply" {
@@ -235,7 +234,7 @@ func patchCLIApply(opts *patchCLIOptions) int {
 		if opts.JSON {
 			report.Code = patchErrBackend
 			report.Message = patchErrorText(err)
-			return patchCLIExit(report, 3, false)
+			return patchCLIExit(report, 3)
 		}
 		fmt.Fprintf(os.Stderr, "%s\n", patchErrorText(err))
 		return 3
@@ -271,7 +270,7 @@ func patchCLIApply(opts *patchCLIOptions) int {
 		code = 1
 	}
 	if opts.JSON {
-		return patchCLIExit(report, code, false)
+		return patchCLIExit(report, code)
 	}
 	printPatchResult(report, res)
 	return code
@@ -284,12 +283,9 @@ func boolToCode(ok bool) int {
 	return 1
 }
 
-func patchCLIExit(report patchCLIReport, code int, preview bool) int {
+func patchCLIExit(report patchCLIReport, code int) int {
 	b, _ := json.MarshalIndent(report, "", "  ")
 	pout("%s\n", string(b))
-	if code == 4 && !preview {
-		return 4
-	}
 	return code
 }
 
@@ -442,5 +438,3 @@ func patchErrorText(err error) string {
 	}
 	return fmt.Sprintf("%s：%s", pe.Code, pe.Msg)
 }
-
-var _ = time.Now

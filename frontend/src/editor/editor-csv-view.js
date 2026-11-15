@@ -738,23 +738,34 @@ function startCsvColumnResize(doc, colIndex, e) {
     e.stopPropagation();
     freezeCsvColumnWidths(doc);
     if (!doc.tableColWidths || !doc.tableColWidths[colIndex]) return;
-    try {
-        e.currentTarget.setPointerCapture(e.pointerId);
-    } catch (err) {}
+    // e.currentTarget 在事件派发结束后会被置空，先存下来给 cleanup 释放捕获用
+    const handle = e.currentTarget;
+    const pointerId = e.pointerId;
+    try { handle.setPointerCapture(pointerId); } catch (err) {}
     const startX = e.clientX;
     const startWidth = doc.tableColWidths[colIndex];
     const zoom = doc.tableZoom || 1;
+    let done = false;
     const onMove = (ev) => {
+        // 松手事件丢在窗口外 / 预览 iframe 时，无按键却还在拖拽 = 必然卡死，动一下即自愈
+        if (!ev.buttons) { cleanup(); return; }
         const next = Math.max(deps.CSV_COL_MIN_WIDTH, Math.round(startWidth + (ev.clientX - startX) / zoom));
         if (next === doc.tableColWidths[colIndex]) return;
         doc.tableColWidths[colIndex] = next;
         applyCsvColumnLayout(doc);
     };
     const cleanup = () => {
+        if (done) return;
+        done = true;
         window.removeEventListener('pointermove', onMove);
         window.removeEventListener('pointerup', cleanup);
         window.removeEventListener('pointercancel', cleanup);
         window.removeEventListener('blur', cleanup);
+        try {
+            if (handle && handle.hasPointerCapture && handle.hasPointerCapture(pointerId)) {
+                handle.releasePointerCapture(pointerId);
+            }
+        } catch (err) {}
         document.body.classList.remove('csv-col-resizing');
     };
     document.body.classList.add('csv-col-resizing');
