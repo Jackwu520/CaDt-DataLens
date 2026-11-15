@@ -56,6 +56,7 @@ export function createAISettingsIO(ctx, extras) {
             memoryMode: getConfig().memoryMode,
             defaultScope: getConfig().defaultScope,
             approvedPaths: getConfig().approvedPaths,
+            approvedReadRoots: getConfig().approvedReadRoots,
             disabledSkills: getConfig().disabledSkills,
             autoCompactThreshold: getConfig().autoCompactThreshold,
             autoCompact: getConfig().autoCompact,
@@ -184,6 +185,9 @@ export function createAISettingsIO(ctx, extras) {
             }
             for (const pathValue of Array.isArray(data.approvedPaths) ? data.approvedPaths : []) {
                 extras.aiAddUnique(getConfig().approvedPaths, pathValue);
+            }
+            for (const rootValue of Array.isArray(data.approvedReadRoots) ? data.approvedReadRoots : []) {
+                extras.aiAddUnique(getConfig().approvedReadRoots, rootValue);
             }
             for (const name of Array.isArray(data.disabledSkills) ? data.disabledSkills : []) {
                 extras.aiAddUnique(getConfig().disabledSkills, name);

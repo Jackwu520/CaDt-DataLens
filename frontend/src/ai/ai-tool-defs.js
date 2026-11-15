@@ -8,7 +8,7 @@ import {AI_WRITE_SCOPES} from './ai-constants.js';
 export const AI_TOOL_DEFS = {
     list_dir: {
         name: 'list_dir',
-        description: '列出工作区范围内的目录条目。path 为相对范围根的路径，默认当前范围根。',
+        description: '列出目录条目。path 为相对范围根的路径，默认当前范围根；工作区外目录的授权规则与 read_file 相同（用户点名直接列，否则 read/edit 档请求批准、auto/full 档直接列）。',
         parameters: {
             type: 'object',
             properties: {path: {type: 'string', description: '目录路径，默认 "."'}},
@@ -16,11 +16,11 @@ export const AI_TOOL_DEFS = {
     },
     read_file: {
         name: 'read_file',
-        description: '读取工作区范围内的文本文件，单次最多 64KB。offset 为起始字符偏移量，默认 0。',
+        description: '读取文本文件，单次最多 64KB。offset 为起始字符偏移量，默认 0。工作区外的绝对路径：用户在对话里明确给出过的可直接读；其余情况 read/edit 档会请求用户批准（批准过的目录之后免询问），auto/full 档可直接读；应用数据目录（含密钥）始终拒绝。',
         parameters: {
             type: 'object',
             properties: {
-                path: {type: 'string', description: '相对范围根的文件路径'},
+                path: {type: 'string', description: '相对范围根的文件路径，或已授权的工作区外绝对路径'},
                 offset: {type: 'integer', description: '起始字符偏移，默认 0'},
             },
             required: ['path'],
@@ -833,6 +833,7 @@ export function createAIToolDefs(ctx) {
             '- 先查后答：涉及文件、代码或数据时先读再下结论，不要凭记忆编造内容、行号或命令输出。',
             '- 并行读、串行写：互不依赖的只读调用可在同一轮一起发（多个文件、多个关键词）；有依赖时按结果顺序来。',
             '- 有专用工具就不要用 run_command 绕：列目录 / 读文件 / 搜索用 list_dir / read_file / search_text。',
+            '- 工作区外的文件：用户明确给过路径的直接读；没给过时 read/edit 档会请求批准（批准过的目录免询问）、auto/full 档可直接读。被拒绝的路径不要反复尝试。',
             '- 读文档用 web_fetch；要交互用内嵌浏览器；要操作或查看应用本身用 app_control。',
             '- 写文件前必须 read_file；改动尽量最小、可回滚；写完说明改了什么、怎么验证。',
             '- 工具报错先修正参数或换路径，不要原样重试；连续失败就停下来说明情况。',

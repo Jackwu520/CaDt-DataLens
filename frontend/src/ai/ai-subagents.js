@@ -1014,10 +1014,14 @@ export function createAISubagents(ctx) {
             // 否则 read_file 的绝对路径会被按「路径超出工作区范围」拒掉。
             scope: subAgentScopeOf(parentSession.scope),
             planMode: false,
-            messages: [{role: 'user', content: task, ts: Date.now(), turnStartedAt: Date.now()}],
+            // from:'agent'：派单 task 是主代理模型写的，不是用户输入——「用户点名路径」判定
+            // （ai-read-roots.js userNamedPath）据此排除，防止注入经派单文本伪造点名。
+            messages: [{role: 'user', content: task, ts: Date.now(), turnStartedAt: Date.now(), from: 'agent'}],
             todos: [],
             changes: [],
             approvedPaths: [],
+            // 已批准的工作区外读根：新建为空；判定时实时回查父会话（ai-panel.js 授权链），不快照复制
+            readRoots: [],
             summary: null,
             archived: [],
             round: 0,
