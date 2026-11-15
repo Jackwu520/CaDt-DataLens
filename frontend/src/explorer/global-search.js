@@ -108,7 +108,9 @@ function openGlobalSearch(opts) {
         globalSearch.aiEnabled = true;
         globalSearch.filesEnabled = false;
     }
-    const root = globalSearch.root;
+    // 每次打开都重新从宿主解析根目录：workspaceFolder 会随打开/关闭文件夹变化。
+    // 这里不能用 globalSearch.root 自赋值——那会让搜索范围恒为空，文件分类一个结果都搜不到。
+    const root = globalSearchRoot();
     globalSearch.open = true;
     globalSearch.root = root;
     globalSearch.previousFocus = document.activeElement;
