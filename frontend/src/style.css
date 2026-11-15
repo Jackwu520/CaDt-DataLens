@@ -9755,7 +9755,8 @@ html[data-writing="on"][data-writing-paper="dim"] .jsoneditor textarea.jsonedito
     border: 1px solid var(--border);
     border-left: 2px solid var(--accent);
     border-radius: 4px;
-    background: var(--panel2);
+    /* 带一点 accent 蓝调：纯 --panel2 在浅色下与卡片同色、在深色下成灰块，两头都糊 */
+    background: color-mix(in srgb, var(--accent) 5%, var(--panel2));
     font-size: 11px;
 }
 .ai-send-preview-label { display: block; font-size: 10px; color: var(--muted); margin-bottom: 2px; }
@@ -9832,8 +9833,8 @@ html[data-writing="on"][data-writing-paper="dim"] .jsoneditor textarea.jsonedito
     border-radius: 999px;
     font-size: 9.5px;
     line-height: 15px;
-    color: var(--muted);
-    background: color-mix(in srgb, var(--muted) 12%, transparent);
+    color: color-mix(in srgb, var(--muted) 62%, var(--text));
+    background: color-mix(in srgb, var(--muted) 14%, transparent);
 }
 .ai-send-state.streaming { color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
 .ai-send-state.compacting { color: var(--orange); background: color-mix(in srgb, var(--orange) 16%, transparent); }
