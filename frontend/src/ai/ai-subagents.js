@@ -4,10 +4,11 @@
 // agentViewState/agentViewTimer/hudReady/AGENT_STATE_LABEL 与 AI_SUB_* 常量随域迁入；chipsPopKind 经访问器读写。
 import {iconSvg} from '../core/icons.js';
 import {createTextarea} from '../core/form-controls.js';
-import {aiClampInt, aiNowId, aiTextOf} from './ai-constants.js';
+import {aiClampInt, aiNowId, aiTextOf, AI_COMPACT_SYSTEM_PROMPT} from './ai-constants.js';
 import {AI_TOOL_DEFS} from './ai-tool-defs.js';
 import {inspectToolArguments} from './ai-tool-args.js';
 import {buildSettlementNotice, buildAskNotice} from './ai-agent-notices.js';
+import {compactTranscriptOf, computeCompactCutoff, buildCompactSummary, applyCompactToSession, buildCompactMessages, compactThresholdOf, COMPACT_KEEP_TAIL} from './ai-compact.js';
 
 // 收件箱双队列的纯函数部分（导出供单测：消费顺序与来源前缀是「插队优先、主/用户可辨」的
 // 唯一依据，闭包里改动不易测，这里单独留出来）。
@@ -62,6 +63,9 @@ export function createAISubagents(ctx) {
     const getConfig = ctx.getConfig;
     const newAssistantMessage = ctx.newAssistantMessage;
     const getSessions = ctx.getSessions;
+    // 压缩判定需要「窗口大小」与「当前上下文估算」——与主会话同一口径，不另立一套
+    const contextWindowOf = ctx.contextWindowOf;
+    const estimateApiMessagesTokens = ctx.estimateApiMessagesTokens;
 
     // —— 随域迁入的子代理状态与限额常量（原 ai-panel.js 闭包级）——
     const AI_SUB_LIMIT_DEFAULT = 20;
@@ -92,6 +96,10 @@ export function createAISubagents(ctx) {
     // agentId -> 终态记录（含 sub.session / profile / entry 活引用）：冷唤醒、子代理压缩、
     // HUD 兜底都靠它。subAgents 仍只含运行中——事件路由先查 subAgents，records 只作兜底。
     const subAgentRecords = new Map();
+    // 子代理压缩流注册表：compactId -> {id, subId, buffer, startedAt, auto, live}。
+    // **不能复用全局 oneShot**（§4.10.1）：后台子代理压缩时父会话常在流式，全局锁会互相卡死。
+    const subCompacts = new Map();
+    let subCompactSeq = 0;
     // 收件箱（阶段 C 起启用）：排队 / 插队 / 提问挂起。这里先建结构，B 阶段不消费。
     function newSubInbox() {
         return {step: [], turn: [], ask: null};
@@ -249,6 +257,7 @@ export function createAISubagents(ctx) {
                 depth: sub.depth, state: 'running', startedAt: sub.startedAt,
                 mode: sub.mode || 'blocking', continuable: true,
                 inboxCount: unseenInboxCount(sub),
+                compacting: !!sub.compacting,
                 sessionTitle: sessionTitleOf(sub.parentSessionId)});
         }
         for (const [key, meta] of agentRegistry) {
@@ -404,6 +413,12 @@ export function createAISubagents(ctx) {
                     wait.textContent = '待处理 ' + agent.inboxCount;
                     wait.title = '收件箱里有 ' + agent.inboxCount + ' 条消息还没被消费（子代理下一轮边界会读）';
                     row.appendChild(wait);
+                }
+                if (agent.compacting) {
+                    const compacting = document.createElement('span');
+                    compacting.className = 'ai-agent-badge ai-agent-waiting';
+                    compacting.textContent = '压缩中';
+                    row.appendChild(compacting);
                 }
                 const main = document.createElement('span');
                 main.className = 'ai-chips-main';
@@ -622,6 +637,7 @@ export function createAISubagents(ctx) {
         nameSpan.title = view.name;
         head.append(back, nameSpan);
         if (meta) head.appendChild(agentStateBadge(meta.state));
+        const liveSub = view.subId ? subAgents.get(view.subId) : null;
         const metaLine = document.createElement('span');
         metaLine.className = 'ai-agent-view-meta';
         const bits = [];
@@ -629,11 +645,43 @@ export function createAISubagents(ctx) {
         if (meta && meta.ms) bits.push(Math.max(1, Math.round(meta.ms / 1000)) + 's');
         if (meta && meta.tokens) bits.push((meta.tokens / 1000).toFixed(1) + 'k tok');
         if (meta && meta.mode === 'background') bits.push('后台');
+        if (liveSub && liveSub.compacting) bits.push('压缩中');
         if (meta && meta.continuable === false) bits.push('上下文已回收');
         metaLine.textContent = bits.join(' · ');
         head.appendChild(metaLine);
+        // 手动压缩入口：运行中 → 请求在下一轮边界执行；done 可续记录 → 立即压缩
+        if (liveSub && liveSub.state === 'running' && !liveSub.compacting) {
+            const compactBtn = document.createElement('button');
+            compactBtn.type = 'button';
+            compactBtn.className = 'ai-icon-btn ai-agv-compact';
+            compactBtn.title = '压缩这个子代理的上下文（当前工具轮结束后执行）';
+            compactBtn.setAttribute('aria-label', '压缩上下文');
+            compactBtn.innerHTML = iconSvg('eraser', 13);
+            compactBtn.addEventListener('click', () => {
+                liveSub.compactRequested = true;
+                flash('已请求压缩：当前工具轮结束后执行');
+                renderAgentView();
+            });
+            head.appendChild(compactBtn);
+        } else if (!liveSub && view.subId) {
+            const record = subAgentRecords.get(view.subId);
+            const compactable = record && canReviveRecord(record).ok && !(record.session && record.session.summary);
+            if (compactable) {
+                const compactBtn = document.createElement('button');
+                compactBtn.type = 'button';
+                compactBtn.className = 'ai-icon-btn ai-agv-compact';
+                compactBtn.title = '立即压缩这个子代理的上下文（之后唤醒以精简上下文继续）';
+                compactBtn.setAttribute('aria-label', '压缩上下文');
+                compactBtn.innerHTML = iconSvg('eraser', 13);
+                compactBtn.addEventListener('click', () => {
+                    startSubCompact(record, {auto: false});
+                    flash('已发起压缩：完成后唤醒将以精简上下文继续');
+                    renderAgentView();
+                });
+                head.appendChild(compactBtn);
+            }
+        }
         // 后台子代理的结束时机独立于主回合：详情视图必须有手动停止入口（§4.6）
-        const liveSub = view.subId ? subAgents.get(view.subId) : null;
         if (liveSub && liveSub.state === 'running') {
             const stopBtn = document.createElement('button');
             stopBtn.type = 'button';
@@ -1021,6 +1069,9 @@ export function createAISubagents(ctx) {
         // 收件箱消费（唯一消费点，§4.3）：先消费再判定预算 / 压缩，避免刚到的指令被
         // 压进摘要；wrapUp 收尾轮不消费（残余随终态进 records，结算文案会标注）。
         if (!s.wrapUp) consumeSubInbox(sub);
+        // 轮边界压缩（§4.10.2）：顺序固定为「先消费收件箱再判压缩」，否则刚到的指令会被
+        // 压进摘要；预算已尽（wrapUp 在即）不再压缩，把剩余轮次留给收尾。
+        if (!s.wrapUp && s.roundNo < sub.maxRounds && maybeStartSubCompact(sub)) return;
         if (!s.wrapUp && (s.roundNo >= sub.maxRounds || sub.session.messages.length > AI_SUB_MESSAGES_MAX)) {
             // 预算用尽不再直接收尾：先跑一轮「无工具强制总结」——探索成果不能扔，
             // 占位符只会让主代理拿不到任何可用结论（2026-11-14 实测）。
@@ -1424,6 +1475,14 @@ export function createAISubagents(ctx) {
         sub.steerKick = false;
         // 挂起中的提问先落定：否则 ask_user 那个 await 会一直悬着（工具轮不算结束）
         settleSubAsk(sub, '', 'stopped');
+        // 压缩中停止：AIStop(sub.id) 的「精确 id 或 id# 前缀」匹配会连压缩流一起取消，
+        // 这里同步清注册表与标记，避免 compacting 永久卡住（§4.10.4）
+        for (const [compactId, job] of [...subCompacts]) {
+            if (job.subId !== sub.id) continue;
+            subCompacts.delete(compactId);
+        }
+        sub.compacting = false;
+        sub.compactRequested = false;
         sub.flow.stopped = true;
         try {
             if (backend.AIStop) backend.AIStop(sub.id);
@@ -1592,6 +1651,174 @@ export function createAISubagents(ctx) {
             '过程记录：\n' + subRunDigest(record.key);
     }
 
+    // ---- 子代理压缩（§4.10）：auto-compact 在轮边界触发；手动由 agent_compact 与详情视图发起 ----
+
+    function subContextTokens(sub) {
+        const s = sub.flow;
+        if (!s) return 0;
+        try {
+            return estimateApiMessagesTokens(buildApiMessages(sub.session, null, s.systemPrompt));
+        } catch (e) {
+            return 0;
+        }
+    }
+
+    // 轮边界判定（runSubRound 调用）。返回 true = 已发起压缩，本轮先不继续（压缩完成后续轮）。
+    function maybeStartSubCompact(sub) {
+        if (sub.compacting) return false;
+        const manual = sub.compactRequested === true;
+        if (!manual && getConfig().autoCompact !== true) return false;
+        if ((sub.session.messages || []).length <= COMPACT_KEEP_TAIL) {
+            sub.compactRequested = false;
+            return false;
+        }
+        if (manual) {
+            sub.compactRequested = false;
+            return startSubCompact(sub, {auto: false});
+        }
+        const windowSize = contextWindowOf(sub.session);
+        if (windowSize <= 0) return false;
+        const threshold = compactThresholdOf(getConfig());
+        const over = subContextTokens(sub) >= windowSize * threshold;
+        if (!over) {
+            // 这一轮没超阈：上次压缩起效了，连续计数清零（与主会话 autoCompactCount 同语义）
+            sub.compactStreak = 0;
+            return false;
+        }
+        // 连续 2 次仍超阈：不再自动压缩，交给 AI_SUB_MESSAGES_MAX / wrapUp 收尾兜底
+        if ((Number(sub.compactStreak) || 0) >= 2) return false;
+        return startSubCompact(sub, {auto: true});
+    }
+
+    // 发起压缩。target 可以是运行中的 sub，也可以是 done 记录的 record（两者的 session /
+    // profile / entry 形状一致）——后者用于「已完成子代理立即压缩，之后唤醒以精简上下文继续」。
+    function startSubCompact(target, opts) {
+        if (!target || !target.session) return false;
+        const live = subAgents.get(target.id) || null;
+        if (live && live.compacting) return false;
+        const profile = target.profile || (live ? live.profile : null);
+        if (!profile || !backend.AISendChat) return false;
+        const entry = target.entry || null;
+        const id = target.id + '#compact-' + Date.now() + '-' + (++subCompactSeq);
+        if (live) live.compacting = true;
+        subCompacts.set(id, {
+            id, subId: target.id, buffer: '', startedAt: Date.now(),
+            auto: !!(opts && opts.auto), live: !!live,
+        });
+        refreshHeadChips();
+        if (live) refreshAgentViewIfOpen(live.key);
+        const messages = buildCompactMessages(target.session, AI_COMPACT_SYSTEM_PROMPT, (opts && opts.instruction) || '');
+        const flowCfg = (live && live.flow && live.flow.profileCfg) || configForProfile(profile, entry);
+        try {
+            const req = backend.AISendChat(id, flowCfg, messages, [], getConfig().retryMax);
+            if (req && typeof req.then === 'function') {
+                req.catch((e) => failSubCompact(id, (e && e.message) || '压缩请求失败'));
+            }
+        } catch (e) {
+            failSubCompact(id, (e && e.message) || '压缩请求失败');
+        }
+        return true;
+    }
+
+    function failSubCompact(id, message) {
+        const job = subCompacts.get(id);
+        if (!job) return;
+        subCompacts.delete(id);
+        const sub = subAgents.get(job.subId) || null;
+        if (sub) {
+            sub.compacting = false;
+            sub.compactFails = (Number(sub.compactFails) || 0) + 1;
+            // 连续两次失败：别把预算耗在压缩上，置 wrapUp 让收尾轮产出结论
+            if (sub.compactFails >= 2 && sub.flow && !sub.flow.wrapUp) {
+                sub.flow.wrapUp = true;
+                sub.session.messages.push({
+                    role: 'user',
+                    content: '（压缩连续失败，改为尽快收尾：不要再探索，立即基于已完成的工作输出最终结论与证据。）',
+                    ts: Date.now(),
+                    systemNote: true,
+                });
+            }
+            refreshHeadChips();
+            refreshAgentViewIfOpen(sub.key);
+            if (sub.state === 'running') runSubRound(sub);
+        }
+        if (!job.auto && message) flash('子代理压缩失败：' + message, true);
+    }
+
+    // 压缩流事件（panel 的 handleEvent 在 subAgents 分支**之前**转到本函数，见 §4.10.1）：
+    // 压缩 roundId 是 subId#compact-…，落到 handleSubEvent 会因 roundId 不匹配被静默丢弃。
+    function handleSubCompactEvent(name, payload, job) {
+        if (!job) return;
+        if (name === 'ai-chunk' && payload && payload.delta) {
+            job.buffer += payload.delta;
+            return;
+        }
+        if (name === 'ai-error') {
+            failSubCompact(job.id, (payload && payload.message) || '压缩失败');
+            return;
+        }
+        if (name !== 'ai-done') return;
+        const text = String(job.buffer || '').trim();
+        if (!text) {
+            failSubCompact(job.id, '模型没有返回摘要');
+            return;
+        }
+        subCompacts.delete(job.id);
+        const sub = subAgents.get(job.subId) || null;
+        const record = subAgentRecords.get(job.subId) || null;
+        const session = (sub && sub.session) || (record && record.session) || null;
+        if (!session) return;
+        const cutoff = computeCompactCutoff(session.messages, COMPACT_KEEP_TAIL);
+        if (cutoff > 0) {
+            const summary = buildCompactSummary(text, cutoff,
+                {kind: job.auto ? 'auto' : 'manual', scope: 'subagent'}, session.messages.length);
+            // 零改动生效：buildApiMessages 对 session.summary 是通用形状判断，
+            // 下一条请求会自动带上第二条 system <conversation_summary>。
+            applyCompactToSession(session, summary, cutoff);
+        }
+        if (sub) {
+            sub.compacting = false;
+            sub.compactFails = 0;
+            sub.compactStreak = (Number(sub.compactStreak) || 0) + 1;
+            refreshHeadChips();
+            refreshAgentViewIfOpen(sub.key);
+            if (sub.state === 'running') runSubRound(sub);
+        } else if (record) {
+            refreshHeadChips();
+        }
+    }
+
+    // agent_compact 执行体：运行中 → 请求在下一轮边界执行；done 可续记录 → 立即压缩。
+    function compactSubAgentByInput(input) {
+        const agentId = aiTextOf(input && input.agentId).trim();
+        if (!agentId) throw new Error('agentId 不能为空');
+        const live = subAgents.get(agentId);
+        if (live) {
+            if (live.compacting) return '子代理「' + live.name + '」正在压缩上下文，本次请求已合并。';
+            live.compactRequested = true;
+            return '已请求压缩子代理「' + live.name + '」：将在当前工具轮结束后的轮边界执行（不打断在飞工作）。' +
+                '完成后它会以精简上下文继续；摘要与规模可在它的详情视图查看。';
+        }
+        const record = subAgentRecords.get(agentId);
+        if (!record) throw new Error('找不到子代理 ' + agentId + '（可能已被清理）');
+        const gate = canReviveRecord(record);
+        if (!gate.ok) {
+            throw new Error(gate.reason === 'terminated'
+                ? '子代理「' + record.name + '」已终止，无需压缩'
+                : '子代理「' + record.name + '」的上下文已回收（终态记录超出上限），无法压缩');
+        }
+        const count = (record.session && record.session.messages || []).length;
+        if (count <= COMPACT_KEEP_TAIL) {
+            return '子代理「' + record.name + '」当前只有 ' + count + ' 条消息（≤' + COMPACT_KEEP_TAIL + '），无需压缩。';
+        }
+        if (record.session.summary) {
+            return '子代理「' + record.name + '」的上下文已经是压缩后的（已保留摘要），无需再压。';
+        }
+        startSubCompact(record, {auto: false});
+        return '已发起压缩子代理「' + record.name + '」的上下文（压缩前 ' + count + ' 条消息）。' +
+            '完成后 agent_send 唤醒将以精简上下文继续；结果可在它的详情视图查看。';
+    }
+
     // wait_agent 执行体：阻塞等指定 / 任一子代理终态，直接返回它的结论（原语 1 的「汇总」
     // 最短路径）。轮询而非 await promise：等待期间必须能看见「用户停止了主回合」，
     // 否则停止后最长 600s 才有响应，形同悬挂（§7 风险表）。
@@ -1654,6 +1881,7 @@ export function createAISubagents(ctx) {
         if (name === 'agent_send') return sendToSubAgent(input, ctx);
         if (name === 'agent_stop') return stopSubAgentByInput(input);
         if (name === 'wait_agent') return waitForSubAgent(input, ctx);
+        if (name === 'agent_compact') return compactSubAgentByInput(input);
         throw new Error('工具「' + name + '」尚未启用');
     }
 
@@ -1771,6 +1999,8 @@ export function createAISubagents(ctx) {
         consumeSubInbox, queueSubAgentMessage, steerSubAgent, stopSubAgent, subRunDigest,
         reviveSubAgent, sendToSubAgent, stopSubAgentByInput, handleAgentTool, answerSubAsk,
         runSubAskQuestion, settleSubAsk, waitForSubAgent,
+        compactSubAgentByInput, maybeStartSubCompact, startSubCompact, handleSubCompactEvent,
+        subCompacts,
         subAgents, subAgentTranscripts, subAgentRecords,
         bgJobSnapshot, notifyBgListeners, bridgeStopBgJob,
     };

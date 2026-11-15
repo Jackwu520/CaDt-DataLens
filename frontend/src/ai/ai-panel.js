@@ -140,6 +140,7 @@ import {createAISettingsDialog} from './ai-settings-dialog.js';
 import {createAISubagents} from './ai-subagents.js';
 import {createAIAgentNotices} from './ai-agent-notices.js';
 import {createAISidechat} from './ai-sidechat.js';
+import {compactTranscriptOf, computeCompactCutoff, buildCompactSummary, applyCompactToSession, buildCompactMessages, compactThresholdOf, COMPACT_KEEP_TAIL} from './ai-compact.js';
 import {createAIMcp} from './ai-mcp.js';
 import {createAIMcpSettings} from './ai-mcp-settings.js';
 import {
@@ -8218,6 +8219,15 @@ export function createAIPanel(options) {
             }
             return;
         }
+        // 子代理压缩事件：**必须先于 subAgents 分支**（§4.10.1）。压缩 roundId 是
+        // `subId#compact-…`，落到 handleSubEvent 会因 roundId 不匹配被静默丢弃。
+        if (payload && payload.id) {
+            const compactJob = subCompacts.get(String(payload.id));
+            if (compactJob) {
+                handleSubCompactEvent(name, payload, compactJob);
+                return;
+            }
+        }
         // 子代理事件按轮次 id 前缀路由（子会话 id 独立，不查主 stream）
         if (payload && payload.id) {
             const sub = subAgents.get(String(payload.id).split('#')[0]);
@@ -10367,28 +10377,9 @@ export function createAIPanel(options) {
     const estimateApiMessagesTokens = (...args) => dialogsMod.estimateApiMessagesTokens(...args);
     const estimateCurrentTokens = (...args) => dialogsMod.estimateCurrentTokens(...args);
 
+    // 压缩转录与请求组装已归位 ai-compact.js（主会话与子代理共用一份）
     function compactTranscript(session) {
-        const parts = [];
-        if (session.summary && aiTextOf(session.summary.text).trim()) {
-            parts.push('此前摘要：\n' + aiTextOf(session.summary.text).trim());
-        }
-        for (const message of session.messages) {
-            if (!message) continue;
-            if (message.role === 'tool') {
-                if (aiTextOf(message.content).trim()) {
-                    parts.push('[工具 ' + (message.name || '') + ' 结果]\n' + aiTextOf(message.content).trim());
-                }
-                continue;
-            }
-            const text = aiTextOf(message.content).trim();
-            const imageCount = Array.isArray(message.images) ? message.images.length : 0;
-            if (!text && !imageCount) continue;
-            parts.push((message.role === 'user' ? '用户' : 'AI') + '：\n' + (text || '（仅图片）') +
-                (imageCount ? '\n（附图 ' + imageCount + ' 张）' : ''));
-        }
-        let transcript = parts.join('\n\n');
-        if (transcript.length > 120000) transcript = '…（较早内容已截断）\n\n' + transcript.slice(-120000);
-        return transcript;
+        return compactTranscriptOf(session);
     }
 
     // options.auto = true：自动压缩。不弹窗打断、用状态栏提示，且不要求用户在当前会话。
@@ -10434,7 +10425,7 @@ export function createAIPanel(options) {
         const instruction = aiTextOf(options && options.instruction).slice(0, 500);
         // 记下触发快照：压缩会砍掉几十上百条消息，事后必须能回答「凭什么压的」。
         const triggerWindow = contextWindowOf(session);
-        const triggerThreshold = aiClamp(Number(config.autoCompactThreshold) || 0.8, 0.5, 0.95);
+        const triggerThreshold = compactThresholdOf(config);
         const triggerEstimate = estimateCurrentTokens().tokens;
         const triggerEntry = entryOf(session);
         oneShot = {
@@ -10452,11 +10443,7 @@ export function createAIPanel(options) {
         notify(auto ? '上下文接近上限，正在自动压缩…' : '正在压缩上下文…（可点停止取消）');
         setStreamingUI(true);
         updateSendState();
-        const messages = [
-            {role: 'system', content: AI_COMPACT_SYSTEM_PROMPT},
-            {role: 'user', content: '请压缩以下对话记录：\n\n' + compactTranscript(session) +
-                (instruction ? '\n\n用户压缩指令（摘要须优先落实）：' + instruction : '')},
-        ];
+        const messages = buildCompactMessages(session, AI_COMPACT_SYSTEM_PROMPT, instruction);
         Promise.resolve(backend.AISendChat(id, configForProfile(profile, entryOf(session)), messages, [], config.retryMax)).catch((e) => {
             if (!oneShot || oneShot.id !== id) return;
             const message = (e && e.message) || String(e);
@@ -10489,7 +10476,7 @@ export function createAIPanel(options) {
         if (!profile) return false;
         const windowSize = contextWindowOf(target);
         if (windowSize <= 0) return false;
-        const threshold = aiClamp(Number(config.autoCompactThreshold) || 0.8, 0.5, 0.95);
+        const threshold = compactThresholdOf(config);
         const bundle = promptTextOf(target.id);
         const apiMessages = buildApiMessages(target, null, bundle);
         let tokens = estimateApiMessagesTokens(apiMessages);
@@ -10527,19 +10514,14 @@ export function createAIPanel(options) {
             else notifyDesktop({kind: 'error', title: '自动压缩失败', body: (session.title || '会话') + ' · 模型没有返回摘要', sessionId: session.id});
             return;
         }
-        let cutoff = Math.max(0, session.messages.length - 6);
-        while (cutoff > 0 && session.messages[cutoff] && session.messages[cutoff].role !== 'user') cutoff--;
+        // cutoff / summary 形状 / 裁剪内核在 ai-compact.js（子代理压缩共用同一份）
+        const cutoff = computeCompactCutoff(session.messages, COMPACT_KEEP_TAIL);
         const archived = session.messages.slice(0, cutoff);
-        const summary = {
-            text, upTo: cutoff, createdAt: Date.now(),
-            trigger: current.trigger || null,
-            before: {messages: archived.length + session.messages.length, archived: archived.length},
-        };
+        const summary = buildCompactSummary(text, cutoff, current.trigger, archived.length + session.messages.length);
         // 归档事件要在裁剪内存之前登记：内部捕获的是裁剪前的消息快照。
         if (sessionUseDisk()) sessionStore.archiveSession(session, cutoff, summary);
-        session.messages = session.messages.slice(cutoff);
+        applyCompactToSession(session, summary, cutoff);
         pushArchivedMessages(session, archived);
-        session.summary = summary;
         persistSessions();
         queueLogSave(session);
         if (isOpen() && currentSession() === session) renderMessages(true);
@@ -11731,6 +11713,8 @@ export function createAIPanel(options) {
             return false;
         },
         getConfig: () => config,
+        contextWindowOf,
+        estimateApiMessagesTokens: (...args) => estimateApiMessagesTokens(...args),
         // 结算通知走会话信箱（惰性：noticesMod 构造在上方，运行时才取值，无 TDZ 风险）
         getNotices: () => noticesMod,
     });
@@ -11784,6 +11768,8 @@ export function createAIPanel(options) {
     const pushSubAgentRecord = (...args) => subagentsMod.pushSubAgentRecord(...args);
     const unseenInboxCount = (...args) => subagentsMod.unseenInboxCount(...args);
     const dropSubAgentRecordsOf = (...args) => subagentsMod.dropSubAgentRecordsOf(...args);
+    const handleSubCompactEvent = (...args) => subagentsMod.handleSubCompactEvent(...args);
+    const subCompacts = subagentsMod.subCompacts;
     const bgJobSnapshot = (...args) => subagentsMod.bgJobSnapshot(...args);
     const notifyBgListeners = (...args) => subagentsMod.notifyBgListeners(...args);
     const bridgeStopBgJob = (...args) => subagentsMod.bridgeStopBgJob(...args);

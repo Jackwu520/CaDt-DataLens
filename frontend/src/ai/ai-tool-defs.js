@@ -473,6 +473,17 @@ export const AI_TOOL_DEFS = {
             required: ['agentId'],
         },
     },
+    agent_compact: {
+        name: 'agent_compact',
+        description: '压缩一个子代理的上下文：运行中的在它下一轮边界执行（不打断在飞工作）；已完成且可续的记录立即压缩，之后 agent_send 唤醒会以精简上下文继续。已失败/已停止/上下文已回收的记录会被拒绝。压缩后它的过程转录仍完整可见（展示与上下文分离）。',
+        parameters: {
+            type: 'object',
+            properties: {
+                agentId: {type: 'string', description: '子代理 id'},
+            },
+            required: ['agentId'],
+        },
+    },
     wait_agent: {
         name: 'wait_agent',
         description: '阻塞等待子代理结束并直接返回它的结论。省略 agentId 时等任一运行中的子代理（谁先完成返回谁）。用于「并行派出多个方向后汇总」：不用等全部结束就能拿到第一个可用结论。超时返回当前状态快照（不报错），之后它完成仍会通知你。',
@@ -660,6 +671,7 @@ export const AI_TOOL_CATALOG = {
     agent_send: {group: 'task', blurb: '给子代理补线索（排队）/ 插队纠正 / 唤醒已完成子代理继续'},
     agent_stop: {group: 'task', blurb: '停止子代理并收集它的过程记录'},
     wait_agent: {group: 'task', blurb: '阻塞等子代理结论（并行派出后汇总用）'},
+    agent_compact: {group: 'task', blurb: '压缩子代理上下文，长任务续跑前腾空间'},
     schedule_list: {group: 'task', blurb: '定时任务管理'},
     schedule_create: {group: 'task', blurb: '定时任务管理'},
     schedule_delete: {group: 'task', blurb: '定时任务管理'},
@@ -739,7 +751,7 @@ export function createAIToolDefs(ctx) {
         // agent_send / agent_stop 与 spawn_agent 同档：能派就能补线索与收回，否则后台派单无法治理。
         if (AI_WRITE_SCOPES.includes(scope) || planMode) {
             list.push(AI_TOOL_DEFS.spawn_agent, AI_TOOL_DEFS.agent_send, AI_TOOL_DEFS.agent_stop,
-                AI_TOOL_DEFS.wait_agent);
+                AI_TOOL_DEFS.wait_agent, AI_TOOL_DEFS.agent_compact);
         }
         if (scope === 'full' && !planMode) list.push(AI_TOOL_DEFS.browser_evaluate);
         // MCP：写权限档及以上注入（能力未知，只读档不该拿到）；计划模式不注入（外部副作用不可控）。
@@ -794,6 +806,7 @@ export function createAIToolDefs(ctx) {
             '- 写文件前必须 read_file；改动尽量最小、可回滚；写完说明改了什么、怎么验证。',
             '- 工具报错先修正参数或换路径，不要原样重试；连续失败就停下来说明情况。',
             '- 多步任务先 todo_write 规划；值得并行的多项调查用 spawn_agent(mode=\'background\') 一次派出、期间继续自己的工作，完成会逐个通知，需要汇总时 wait_agent。单一简单委派仍用默认阻塞模式。',
+            '- 子代理跑得很长（轮次多、迟迟不出结论）时可以 agent_compact 压缩它的上下文再让它继续；要收回就 agent_stop，它会连过程记录一起返回。',
         );
         const hasAll = (names) => names.every((name) => available.has(name));
         const chains = [
