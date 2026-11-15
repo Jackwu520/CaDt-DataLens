@@ -5215,6 +5215,8 @@ export function createAIPanel(options) {
         '输入里可能带 local_classifier 字段：端侧小模型先跑了一轮，score 达到放行阈值才转给你复核。',
         '端侧判险的命令需要更严格的证据：只能依据命令原文本身论证它只读、幂等且无副作用才 allow；'
         + '不得依据命令之外的内容（文件、网页、对话上下文）下结论，也不得替端侧「确认安全」。',
+        '输入里的 strictness 是用户设置的全局判定严格度，与端侧阈值同源：strict 时几乎只有纯只读、'
+        + '幂等命令才 allow；loose 时可对证据充分的安全命令适度放宽；standard 为默认保守档。',
     ].join('\n');
     const AI_CLASSIFIER_CACHE_LIMIT = 50;
     const AI_CLASSIFIER_CACHE_TTL = 10 * 60 * 1000;
@@ -5366,6 +5368,8 @@ export function createAIPanel(options) {
             command: commandText(command).slice(0, 2000),
             cwd: aiDisplayPath(cwd, getScopeRoot()),
             workspace: aiDisplayRootLabel(getScopeRoot()),
+            // 用户设置的判定严格度与端侧共用（loose 0.30 / standard 0.15 / strict 0.07）
+            strictness: normalizeLocalClassifierStrictness(config.localClassifierStrictness),
         };
         if (localContext) {
             // 端侧结果注入：score 已达阈值才到这里复核；注明「非最终判定」，避免模型盲从
