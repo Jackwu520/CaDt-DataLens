@@ -16,16 +16,20 @@ var assets embed.FS
 
 // disableMiniMenu 禁用 Edge/WebView2 的「文本选中迷你菜单」（mini menu：Select All /
 // Paste / Find … 的白色横条，可编辑区域触发，不受应用主题控制也绕过 JS 的
-// contextmenu 接管）。用 WebView2 官方环境变量附加 Chromium feature 禁用，
-// 只追加不覆盖用户已有的附加参数；须在 WebView2 环境创建（wails.Run）之前设置。
+// contextmenu 接管）。
+//
+// 注意：不能靠 WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS 环境变量——go-webview2 会在
+// init() 与每次创建环境时调 preventEnvAndRegistryOverrides() 把它清空，参数根本到不了
+// 浏览器进程。改走本地补丁的 COM/环境双通道注入点，见
+// third_party/go-webview2/webviewloader/app_browser_args.go。
+// 须在 WebView2 环境创建（wails.Run）之前调用。
+//
+// msWebOOUI / msPdfOOUI 是微软在 WebView2Feedback#2140 给出的官方 workaround；
+// 后两项是旧实现里的名字，保留以兼容不同 Edge 版本（未知 feature 会被忽略）。
+const miniMenuDisabledFeatures = "msWebOOUI,msPdfOOUI,msEdgeMiniMenu,msEdgeTextSelectionMenu"
+
 func disableMiniMenu() {
-	const disableFeatures = "--disable-features=msEdgeMiniMenu,msEdgeTextSelectionMenu"
-	const key = "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"
-	if prev := os.Getenv(key); prev != "" {
-		os.Setenv(key, prev+" "+disableFeatures)
-		return
-	}
-	os.Setenv(key, disableFeatures)
+	setWebViewExtraBrowserArguments("--disable-features=" + miniMenuDisabledFeatures)
 }
 
 func main() {
