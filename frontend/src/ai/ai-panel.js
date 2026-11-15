@@ -6940,6 +6940,10 @@ export function createAIPanel(options) {
                 // 写入反馈带三分计数（dsh 同款）：模型每次写完都知道清单全貌，及时纠偏；
                 // 多个 in_progress 时温和提醒（并行子代理场景合法，不做硬拒）
                 const doing = list.filter((todo) => todo.status === 'in_progress').length;
+                // done 必须在这里算出来：8f4bbd7 引入三分计数时漏了这行，
+                // 直接引用未定义的 done → 每次 todo_write 都抛 ReferenceError，
+                // 表现就是模型那边「工具总是失败」，清单永远不更新。
+                const done = list.filter((todo) => todo.status === 'completed').length;
                 const pending = list.length - done - doing;
                 let note = '任务清单已更新：' + pending + ' 项待处理、' + doing + ' 项进行中、' + done + ' 项已完成。';
                 if (doing > 1) note += '注意：多个任务同时 in_progress——串行工作应只保留一个，其余先标 pending 或 completed。';
@@ -8281,6 +8285,23 @@ export function createAIPanel(options) {
         if (streams.get(s.sessionId) !== s || s.stopped) {
             saveToolTiming();
             return;
+        }
+        // 轮末清单同步提醒（系统提示里的 <task_todos> 是轮开始快照，长工具链中模型对
+        // 被动提醒依从性低——在离行动点最近的地方（收尾请求前）再催一次；systemNote
+        // 会随 buildApiMessages 进入收尾请求）。本轮没跑工具不催、清单全完成不催。
+        const todosOpen = (session.todos || []).filter((t) => t.status !== 'completed');
+        if (todosOpen.length && session.messages.some((m) => m.role === 'tool' && (Number(m.ts) || 0) >= toolStartedAt)) {
+            const doingList = (session.todos || []).filter((t) => t.status === 'in_progress');
+            session.messages.push({
+                role: 'user',
+                content: '<task_todos_check>任务清单尚未与实际进度对齐：' +
+                    doingList.length + ' 项进行中、' + (todosOpen.length - doingList.length) + ' 项待处理。' +
+                    '已完成的步骤请立即 todo_write 标 completed，继续做的保持 in_progress；' +
+                    '不要在总结里口头说完成而清单没有更新。</task_todos_check>',
+                systemNote: true,
+                ts: Date.now(),
+            });
+            persistSessions();
         }
         // 轮次轻提醒统一在 startRound 注入；工具循环不再有硬性上限。
         const profile = profileOf(session);
