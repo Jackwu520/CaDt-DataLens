@@ -1,7 +1,7 @@
 // AI 设置 → 导入导出：配置导出（可选是否含密钥）与导入（合并/覆盖、旧格式兼容）。
 // 从 ai-settings-dialog.js 拆出；renderModelList / refreshPromptSettings / aiAddUnique 等由兄弟模块注入。
 import {
-    modelEntryOf, resolveModelRef,
+    findModelEntry, resolveModelId, resolveModelRef,
 } from './ai-config-model.js';
 import {
     AI_PREF_LIMIT, AI_PREF_TEXT_LIMIT, aiClamp, aiClampInt, aiNowId, aiTextOf,
@@ -221,8 +221,8 @@ export function createAISettingsIO(ctx, extras) {
             }
             const activeAccount = getConfig().profiles.find((profile) => profile.id === getConfig().activeProfileId);
             if (activeAccount) {
-                if (!modelEntryOf(activeAccount, getConfig().activeModelId)) {
-                    getConfig().activeModelId = modelEntryOf(activeAccount, activeAccount.lastModelId).id;
+                if (!findModelEntry(activeAccount, getConfig().activeModelId)) {
+                    getConfig().activeModelId = resolveModelId(activeAccount, activeAccount.lastModelId, '');
                 }
             } else {
                 getConfig().activeModelId = '';

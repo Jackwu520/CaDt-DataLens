@@ -30,7 +30,7 @@ func (a *App) BrowserCallCDP(id string, method string, paramsJSON string) (strin
 	return "", browserUnsupported()
 }
 
-func (a *App) BrowserSetBounds(id string, x int, y int, w int, h int) error {
+func (a *App) BrowserSetBounds(id string, x int, y int, w int, h int, rasterScale float64) error {
 	return browserUnsupported()
 }
 

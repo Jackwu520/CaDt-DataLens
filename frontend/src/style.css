@@ -217,6 +217,9 @@ html[data-theme="light"] {
 html[data-theme="light"] .ai-widget {
     box-shadow: 0 1px 3px rgba(15, 23, 42, 0.07);
 }
+html[data-theme="light"] .ai-code-card {
+    box-shadow: 0 1px 3px rgba(15, 23, 42, 0.07);
+}
 html[data-theme="light"] .ai-composer {
     background: var(--panel2);
     box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06);
@@ -679,6 +682,9 @@ select,
 .ctx-rich .mi-desc { color: var(--muted); font-size: 10.5px; line-height: 1.45; white-space: normal; }
 .ctx-rich .mi-check { flex: none; display: inline-flex; margin: 2px 0 0 4px; color: var(--accent); }
 .ctx-rich .mi-check svg { width: 14px; height: 14px; display: block; }
+/* 通用 hover 规则（.menu-item:hover .mi-icon:not([data-fi])）权重更高，会把危险项图标刷成 --text；
+   这里显式补 hover 态，保持「完全权限」的警告图标始终为红色 */
+.menu-item.ctx-rich.danger:hover .mi-icon,
 .ctx-rich.danger .mi-icon,
 .ctx-rich.danger .mi-desc,
 .ctx-rich.danger .mi-check { color: var(--red); }
@@ -4518,7 +4524,7 @@ a.jsoneditor-poweredBy { display: none !important; }
 }
 .envvar-enabled { flex: none; white-space: nowrap; }
 .envvar-del { flex: none; }
-.envvar-del.danger { color: var(--red); }
+/* 待确认态复用 .dlg-btn.danger（红底白字）；这里不能改 color，否则红字落在红底上不可见 */
 .envvar-empty { color: var(--muted); font-size: 12px; padding: 12px 6px; line-height: 1.7; }
 /* 内置终端面板：活动栏右侧整个宽度的下层横条（上层=侧边栏+内容区，左右侧边栏夹着它） */
 #body-col {
@@ -6181,28 +6187,89 @@ div.jsoneditor-tree textarea { user-select: text; }
 }
 
 .ai-md pre code { padding: 0; background: none; font-size: inherit; }
-.ai-code-wrap { position: relative; margin: 7px 0; }
-.ai-code-wrap pre { margin: 0; }
-.ai-code-copy {
-    position: absolute;
-    top: 6px;
-    right: 6px;
-    z-index: 1;
-    height: 20px;
-    padding: 0 7px;
+
+/* 代码块卡片（enhanceAICodeBlocks）：顶部信息条「左语言 / 右复制图标」+ 下方代码区。
+   条用消息区灰（--chat-bg）、代码区用卡片白（--panel2），与 .ai-widget 同构：
+   卡内再分一层，整块代码不至于平涂成一坨灰。代码区自己滚动，横向滚动条只落在卡内。 */
+.ai-code-card {
+    margin: 7px 0;
+    overflow: hidden;
     border: 1px solid var(--border);
-    border-radius: 4px;
+    border-radius: 7px;
     background: var(--panel2);
+}
+.ai-code-bar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    height: 26px;
+    padding: 0 4px 0 10px;
+    border-bottom: 1px solid var(--border);
+    background: var(--chat-bg);
+}
+.ai-code-lang {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
     color: var(--muted);
-    font: inherit;
-    font-size: 10.5px;
-    line-height: 18px;
-    cursor: pointer;
+    font-size: 11px;
+    line-height: 1.4;
+    text-overflow: ellipsis;
+    white-space: nowrap;
     user-select: none;
     -webkit-user-select: none;
-    opacity: 0.8;
 }
-.ai-code-copy:hover { color: var(--text); background: var(--hover); opacity: 1; }
+.ai-code-copy {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 20px;
+    padding: 0;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+    -webkit-user-select: none;
+    user-select: none;
+}
+.ai-code-copy:hover { color: var(--text); background: var(--hover); }
+.ai-code-copy:active { color: var(--text); background: var(--border); }
+/* 代码区：卡片负责边框与圆角，pre 只负责排版与滚动（复层边框会在圆角处露出双线） */
+.ai-code-body pre {
+    margin: 0;
+    padding: 9px 10px;
+    overflow: auto;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+}
+/* 开行号时 markdown 产出 .md-code-frame（gutter + 代码两列）：在卡内保留两列，
+   但边框与底色交给卡片，gutter 只留一条分隔线与浅字 */
+.ai-code-body .md-code-frame {
+    display: flex;
+    align-items: stretch;
+    overflow: hidden;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+}
+.ai-code-body .md-code-frame .md-code-gutter {
+    flex: none;
+    padding: 9px 8px 9px 10px;
+    border: 0;
+    border-right: 1px solid var(--border);
+    background: transparent;
+    color: var(--faint);
+    text-align: right;
+    white-space: pre;
+    overflow: hidden;
+    user-select: none;
+    -webkit-user-select: none;
+}
+.ai-code-body .md-code-frame .md-code-pre { flex: 1; min-width: 0; }
 
 /* AI 回答里的 SVG / HTML 可视化卡片（widget.js：内容在 Shadow DOM 内，样式不外泄） */
 .ai-widget {
@@ -6294,7 +6361,13 @@ div.jsoneditor-tree textarea { user-select: text; }
 }
 .ai-md a { color: var(--accent); text-decoration: none; }
 .ai-md a:hover { text-decoration: underline; }
-.ai-md img { max-width: 100%; border-radius: 6px; }
+/* 回复正文里的图片限高展示：生图/截图按面板宽铺满会吃掉整屏，细节靠点击进查看层看 */
+.ai-md img {
+    max-width: 100%;
+    max-height: 480px;
+    border-radius: 6px;
+    cursor: zoom-in;
+}
 .ai-md img.ai-img-broken {
     display: inline-block;
     min-width: 120px;
@@ -6305,6 +6378,7 @@ div.jsoneditor-tree textarea { user-select: text; }
     color: var(--muted);
     font-size: 11.5px;
     vertical-align: middle;
+    cursor: default;
 }
 .ai-md img.ai-img-broken::before { content: '🖼 图片无法加载（悬停查看原因）'; }
 .ai-md hr { margin: 10px 0; border: none; border-top: 1px solid var(--border); }
@@ -7450,6 +7524,8 @@ div.jsoneditor-tree textarea { user-select: text; }
 .ai-tool-stat { flex: none; font-variant-numeric: tabular-nums; }
 .ai-tool-stat.add { color: var(--green); }
 .ai-tool-stat.del { color: var(--red); }
+/* 卡片头上的来源/属性徽标：用 muted 半透明底，压不住 head:hover 的 --hover 纯色底 */
+.ai-tool-tag { flex: none; padding: 0 4px; border-radius: 3px; background: color-mix(in srgb, var(--muted) 18%, transparent); color: var(--muted); font-size: 9.5px; }
 .ai-tool-state { flex: none; margin-left: auto; font-size: 10px; }
 .ai-tool-card.running .ai-tool-state { color: var(--accent); }
 .ai-tool-card.error .ai-tool-state { color: var(--red); }
@@ -8086,7 +8162,8 @@ div.jsoneditor-tree textarea { user-select: text; }
     max-width: 560px;
     /* 内容密集的编辑器弹窗经 options.wide 加宽 */
 
-    max-height: 100%;
+    /* 超高弹窗（生图条目编辑器等）不到顶：留 10% 露出遮罩，视觉不至于撑满整个面板 */
+    max-height: 90%;
     min-height: 0;
     background: var(--panel);
     color: var(--text);
@@ -10343,6 +10420,36 @@ body.bgterm-dragging { cursor: row-resize; user-select: none; }
 #ai-catalog-url { width: 320px; }
 .set-control .popover-value { min-width: 40px; text-align: right; }
 
+/* 生图与视频条目列表（ai-gen-settings.js）：生图 / 视频分成两组，组内顺序即优先级顺序。
+   徽标 #n 让「谁先被 AI 选中」一眼可读，缺省那条单独高亮。 */
+.gen-prio {
+    flex: none;
+    padding: 1px 6px;
+    border-radius: 4px;
+    background: var(--hover);
+    color: var(--muted);
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: .01em;
+}
+.gen-prio.is-default { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
+.set-control .gen-move {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 0;
+    width: 26px;
+    height: 26px;
+    padding: 0;
+}
+.set-control .gen-move:disabled { opacity: .38; }
+/* 说明文字里的换行（请求体模板的正误示例）要按行读，别压成一行 */
+.set-desc.gen-desc-preline { white-space: pre-line; }
+/* 弹窗里块级行（多行输入独占一行）与普通行共用同一条分隔线，否则 textarea 那块上下断开 */
+.ai-dialog-body .set-row + .set-row-top,
+.ai-dialog-body .set-row-top + .set-row,
+.ai-dialog-body .set-row-top + .set-row-top { border-top: 1px solid var(--border); }
+
 /* 开关：checkbox 的右置视觉（读取逻辑不变，仍是 input.checked） */
 .set-switch { position: relative; display: inline-flex; flex: none; cursor: pointer; }
 .set-switch input { position: absolute; opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; }
@@ -10357,7 +10464,17 @@ body.bgterm-dragging { cursor: row-resize; user-select: none; }
 .info-tip { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 15px; height: 15px; border-radius: 50%; border: 1px solid var(--border); color: var(--muted); background: transparent; font-size: 10px; font-weight: 600; line-height: 1; cursor: help; padding: 0; flex: none; vertical-align: middle; user-select: none; }
 .info-tip:hover, .info-tip:focus-visible { color: var(--text); border-color: var(--muted); }
 /* 全局 tooltip（core/tooltip.js，data-tip 驱动）：与 info-tip 气泡同视觉，固定定位、视口钳制 */
-.app-tip { position: fixed; z-index: 400; max-width: 380px; padding: 8px 11px; border-radius: 8px; border: 1px solid var(--border); background: var(--panel2); color: var(--text); font-size: 12px; font-weight: 400; line-height: 1.6; white-space: pre-line; text-align: left; overflow-wrap: anywhere; box-shadow: 0 8px 28px rgba(0, 0, 0, .28); pointer-events: none; opacity: 0; transition: opacity .12s ease; }
+.app-tip {
+    position: fixed; z-index: 9999; /* 气泡永远在最上层：要压过 Portal 浮层（.set-select-pop 1200），否则挂在浮层内的截断提示看不见 */
+    max-width: 380px; padding: 8px 11px; border-radius: 8px;
+    /* 底色往文字色提一档，跟它压着的浮层/面板（--panel2）拉开层次，否则看起来像浮层里多出一行 */
+    background: color-mix(in srgb, var(--panel2) 86%, var(--text));
+    border: 1px solid color-mix(in srgb, var(--border) 70%, var(--text));
+    color: var(--text); font-size: 12px; font-weight: 400; line-height: 1.6;
+    white-space: pre-line; text-align: left; overflow-wrap: anywhere;
+    box-shadow: 0 10px 30px var(--shadow-strong), 0 2px 6px var(--shadow);
+    pointer-events: none; opacity: 0; transition: opacity .12s ease;
+}
 .app-tip.app-tip-on { opacity: 1; }
 
 /* ============ 设置左栏：小字分组标题 + 逐项图标 ============ */

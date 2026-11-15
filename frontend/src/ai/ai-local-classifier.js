@@ -733,6 +733,11 @@ export function createAILocalClassifier(ctx) {
             const count = (state.failures.get(id) || 0) + 1;
             state.failures.set(id, count);
             if (count >= LOCAL_CLASSIFIER_FAIL_LIMIT) state.disabled.add(id);
+            // 失败必须可见（2026-11-16：ONNX 模型被资产 mime 白名单拦掉后静默熔断，
+            // 调试控制台只有 degraded=yes 没有原因，排查无门）。落到 debug-console。
+            console.info('[classifier:local] ' + id + ' 失败 ' + count + '/' + LOCAL_CLASSIFIER_FAIL_LIMIT
+                + (count >= LOCAL_CLASSIFIER_FAIL_LIMIT ? '，本会话已熔断' : '')
+                + '：' + String((e && e.message) || e).slice(0, 200));
             return null;
         }
     }
@@ -812,6 +817,15 @@ export function createAILocalClassifier(ctx) {
                 linear: linearResult ? verdictOf(linearResult.score) : null,
                 plugin: pluginResult ? verdictOf(pluginResult.score) : null,
             },
+            // 调试探针：每层分类器的独立结果（id/label/score/reason/allow），
+            // 供 ai-panel 输出到调试控制台，排查「线性/语义/AI 三层判定分歧」。
+            layers: results.map((r) => ({
+                id: r.id,
+                label: r.label,
+                score: r.score,
+                reason: r.reason,
+                allow: verdictOf(r.score) === 'allow',
+            })),
         };
     }
 

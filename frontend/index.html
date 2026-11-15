@@ -281,11 +281,11 @@
                         <button type="button" class="snav-item snav-child" data-pane="models"><span class="snav-ic" data-icon="zap"></span><span>模型</span></button>
                         <button type="button" class="snav-item snav-child" data-pane="gen-models"><span class="snav-ic" data-icon="image"></span><span>生图与视频</span></button>
                         <button type="button" class="snav-item snav-child" data-pane="ai"><span class="snav-ic" data-icon="sparkles"></span><span>AI 助手</span></button>
+                        <button type="button" class="snav-item snav-child" data-pane="permissions"><span class="snav-ic" data-icon="shield"></span><span>权限</span></button>
                         <button type="button" class="snav-item snav-child" data-pane="persona"><span class="snav-ic" data-icon="star"></span><span>个性化</span></button>
                         <button type="button" class="snav-item snav-child" data-pane="context"><span class="snav-ic" data-icon="paste"></span><span>上下文注入</span></button>
-                        <button type="button" class="snav-item snav-child" data-pane="preferences"><span class="snav-ic" data-icon="star"></span><span>用户偏好</span></button>
+                        <button type="button" class="snav-item snav-child" data-pane="preferences"><span class="snav-ic" data-icon="list"></span><span>用户偏好</span></button>
                         <button type="button" class="snav-item snav-child" data-pane="schedules"><span class="snav-ic" data-icon="clock"></span><span>定时任务</span></button>
-                        <button type="button" class="snav-item snav-child" data-pane="permissions"><span class="snav-ic" data-icon="shield"></span><span>权限</span></button>
                     </div>
                 </div>
                 <div id="snav-formats" class="snav-group expanded">
@@ -307,11 +307,11 @@
                     <div class="snav-children" id="snav-lang-children"></div>
                 </div>
                 <div class="snav-section">功能</div>
-                <button type="button" class="snav-item" data-pane="run"><span class="snav-ic" data-icon="play"></span><span>运行</span></button>
                 <button type="button" class="snav-item" data-pane="shortcuts"><span class="snav-ic" data-icon="keyboard"></span><span>快捷键</span></button>
+                <button type="button" class="snav-item" data-pane="run"><span class="snav-ic" data-icon="play"></span><span>运行</span></button>
+                <button type="button" class="snav-item" data-pane="plugins"><span class="snav-ic" data-icon="download"></span><span>插件</span></button>
                 <button type="button" class="snav-item" data-pane="integration"><span class="snav-ic" data-icon="export"></span><span>系统集成</span></button>
                 <button type="button" class="snav-item" data-pane="envvars"><span class="snav-ic" data-icon="code"></span><span>环境变量</span></button>
-                <button type="button" class="snav-item" data-pane="plugins"><span class="snav-ic" data-icon="download"></span><span>插件</span></button>
                 <div class="snav-section">诊断</div>
                 <button type="button" class="snav-item" data-pane="developer"><span class="snav-ic" data-icon="terminal"></span><span>开发者</span></button>
                 <button type="button" class="snav-item" data-pane="activity"><span class="snav-ic" data-icon="history"></span><span>操作记录</span></button>
@@ -320,14 +320,8 @@
                 </div>
                 <div class="settings-content">
                     <div class="settings-pane" data-pane="general">
-                        <div class="set-group-title">通用</div>
+                        <div class="set-group-title">常规</div>
                         <div class="set-card">
-                            <div class="set-row">
-                                <div class="set-main"><div class="set-title">固定键列</div><div class="set-desc">对齐冒号与值</div></div>
-                                <div class="set-control">
-                                    <label class="set-switch"><input type="checkbox" id="opt-fixed-keys" checked><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
-                                </div>
-                            </div>
                             <div class="set-row">
                                 <div class="set-main"><div class="set-title">自动保存</div><div class="set-desc">停止输入 1 秒后保存</div></div>
                                 <div class="set-control">
@@ -350,6 +344,22 @@
                                 </div>
                             </div>
                             <div class="set-row">
+                                <div class="set-main"><div class="set-title">窗口置顶</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="opt-always-on-top"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">启动时自动检查更新<button type="button" class="info-tip" data-tip="默认开启；每次启动在后台检查一次，结果在右下角状态栏短暂显示，发现新版本会一直保留并可点击查看。" aria-label="自动检查更新说明">i</button></div><div class="set-desc">后台检查一次，结果在状态栏显示</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="opt-auto-update"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="set-group-title">外观</div>
+                        <div class="set-card">
+                            <div class="set-row">
                                 <div class="set-main"><div class="set-title">文件图标主题<button type="button" class="info-tip" data-tip="开源图标集缺失的类型自动回退到文字缩写图标；插件可通过 cadt.registerIconTheme 注册自定义主题。" aria-label="文件图标主题说明">i</button></div></div>
                                 <div class="set-control">
                                     <select id="opt-icon-theme" class="opt-select">
@@ -363,18 +373,6 @@
                                 <div class="set-main"><div class="set-title">代码主题<button type="button" class="info-tip" data-tip="编辑器配色方案，与软件主题相互独立：关键字、字符串、注释等 token 颜色 + 编辑器底色、行号槽、选区。界面其余部分仍跟随软件主题，深色界面搭浅色代码主题时编辑器区会完整变浅（对齐 IDEA 的分离模式）。默认「跟随软件主题」。" aria-label="代码主题说明">i</button></div><div class="set-desc">编辑器配色方案（token + 底色），不改界面配色</div></div>
                                 <div class="set-control">
                                     <select id="opt-code-style" class="opt-select"></select>
-                                </div>
-                            </div>
-                            <div class="set-row">
-                                <div class="set-main"><div class="set-title">窗口置顶</div></div>
-                                <div class="set-control">
-                                    <label class="set-switch"><input type="checkbox" id="opt-always-on-top"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
-                                </div>
-                            </div>
-                            <div class="set-row">
-                                <div class="set-main"><div class="set-title">启动时自动检查更新<button type="button" class="info-tip" data-tip="默认开启；每次启动在后台检查一次，结果在右下角状态栏短暂显示，发现新版本会一直保留并可点击查看。" aria-label="自动检查更新说明">i</button></div><div class="set-desc">后台检查一次，结果在状态栏显示</div></div>
-                                <div class="set-control">
-                                    <label class="set-switch"><input type="checkbox" id="opt-auto-update"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
                                 </div>
                             </div>
                         </div>
@@ -406,6 +404,7 @@
                                 </div>
                             </div>
                         </div>
+
                         <div class="set-group-title">字体</div>
                         <div class="set-card">
                             <div class="set-row">
@@ -459,6 +458,12 @@
                                 </div>
                             </div>
                             <div class="set-row">
+                                <div class="set-main"><div class="set-title">固定键列</div><div class="set-desc">对齐冒号与值</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="opt-fixed-keys" checked><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                </div>
+                            </div>
+                            <div class="set-row">
                                 <div class="set-main"><div class="set-title">键列宽度</div></div>
                                 <div class="set-control">
                                     <input type="range" id="opt-key-width" min="100" max="320" step="10" value="160">
@@ -504,44 +509,7 @@
                             </div>
                         </div>
 
-                        <div class="set-group-title">代码截图</div>
-                        <div class="set-card">
-                            <div class="set-row">
-                                <div class="set-main"><div class="set-title">带标题</div><div class="set-desc">图片顶部显示文件名与行号范围</div></div>
-                                <div class="set-control">
-                                    <label class="set-switch"><input type="checkbox" id="opt-code-shot-title"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
-                                </div>
-                            </div>
-                            <div class="set-row">
-                                <div class="set-main"><div class="set-title">显示行号</div></div>
-                                <div class="set-control">
-                                    <label class="set-switch"><input type="checkbox" id="opt-code-shot-line-numbers"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
-                                </div>
-                            </div>
-                            <div class="set-row">
-                                <div class="set-main"><div class="set-title">圆角</div></div>
-                                <div class="set-control">
-                                    <select id="opt-code-shot-radius" class="opt-select">
-                                        <option value="0">直角</option>
-                                        <option value="6">小圆角</option>
-                                        <option value="10">中圆角</option>
-                                        <option value="16">大圆角</option>
-                                    </select>
-                                </div>
-                            </div>
-                            <div class="set-row">
-                                <div class="set-main"><div class="set-title">输出倍率</div><div class="set-desc">导出图片的清晰度倍数</div></div>
-                                <div class="set-control">
-                                    <select id="opt-code-shot-scale" class="opt-select">
-                                        <option value="1">1×</option>
-                                        <option value="2">2×</option>
-                                        <option value="3">3×</option>
-                                    </select>
-                                </div>
-                            </div>
-                        </div>
-
-                        <div class="set-group-title">Markdown 与写作模式</div>
+                        <div class="set-group-title">Markdown 预览</div>
                         <div class="set-card">
                             <div class="set-row">
                                 <div class="set-main"><div class="set-title">Markdown 代码块行号</div><div class="set-desc">仅影响 Markdown 预览中的代码块</div></div>
@@ -568,6 +536,10 @@
                                     </select>
                                 </div>
                             </div>
+                        </div>
+
+                        <div class="set-group-title">写作模式</div>
+                        <div class="set-card">
                             <div class="set-row">
                                 <div class="set-main"><div class="set-title">写作模式<button type="button" class="info-tip" data-tip="仅对纯文本与 Markdown 的源码视图生效：楷体排版、隐藏行号、打字机滚动、段落聚焦；打开其他类型文件自动退避。" aria-label="写作模式说明">i</button></div><div class="set-desc">中文排版 · 专注 · 码字统计</div></div>
                                 <div class="set-control">
@@ -627,6 +599,43 @@
                                 </div>
                             </div>
                         </div>
+
+                        <div class="set-group-title">代码截图</div>
+                        <div class="set-card">
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">带标题</div><div class="set-desc">图片顶部显示文件名与行号范围</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="opt-code-shot-title"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">显示行号</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="opt-code-shot-line-numbers"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">圆角</div></div>
+                                <div class="set-control">
+                                    <select id="opt-code-shot-radius" class="opt-select">
+                                        <option value="0">直角</option>
+                                        <option value="6">小圆角</option>
+                                        <option value="10">中圆角</option>
+                                        <option value="16">大圆角</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">输出倍率</div><div class="set-desc">导出图片的清晰度倍数</div></div>
+                                <div class="set-control">
+                                    <select id="opt-code-shot-scale" class="opt-select">
+                                        <option value="1">1×</option>
+                                        <option value="2">2×</option>
+                                        <option value="3">3×</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                     <div class="settings-pane hidden" data-pane="models">
                         <div class="set-group-title">模型</div>
@@ -669,7 +678,7 @@
                             <div class="set-row">
                                 <div class="set-main">
                                     <div class="set-title">同步地址</div>
-                                    <div class="set-desc">指向 catalog.json 的 raw 地址；留空用内置默认（市场单文件仓库）</div>
+                                    <div class="set-desc">指向 catalog.json 的 raw 地址；留空用内置默认（cadt-datalens-data 组织的远端仓库）</div>
                                 </div>
                                 <div class="set-control">
                                     <input type="text" id="ai-catalog-url" class="ai-settings-input" spellcheck="false" autocomplete="off">
@@ -681,7 +690,7 @@
                         <div class="set-group-title">生图与视频模型</div>
                         <div class="set-card">
                             <div class="set-row">
-                                <div class="set-main"><div class="set-title">生成条目</div><div class="set-desc">AI 的 generate_image / generate_video 工具调用这些条目出图或生成视频；提示词发送到对应服务商并可能产生费用，密钥只保存在本机。</div></div>
+                                <div class="set-main"><div class="set-title">生成条目</div><div class="set-desc">AI 的 generate_image / generate_video 工具调用这些条目出图或生成视频；提示词发送到对应服务商并可能产生费用，密钥只保存在本机。条目按生图 / 视频分组，组内顺序就是 AI 未指定模型时的取用优先级。</div></div>
                                 <div class="set-control">
                                     <select id="ai-gen-preset" class="opt-select"></select>
                                     <button type="button" id="ai-gen-preset-add" class="dlg-btn">添加预设</button>
@@ -705,6 +714,7 @@
                                 </div>
                             </div>
                         </div>
+
                         <div class="set-group-title">上下文与记忆</div>
                         <div class="set-card">
                             <div class="set-row">
@@ -740,35 +750,6 @@
                                 <div class="set-control">
                                     <button type="button" id="ai-opt-open-memory" class="dlg-btn">记忆管理…</button>
                                     <button type="button" id="ai-opt-open-skills" class="dlg-btn">技能管理…</button>
-                                </div>
-                            </div>
-                        </div>
-
-                        <div class="set-group-title">新会话</div>
-                        <div class="set-card">
-                            <div class="set-row">
-                                <div class="set-main"><div class="set-title">默认读写权限</div><div class="set-desc">仅对新建会话生效；已有会话保持各自档位</div></div>
-                                <div class="set-control">
-                                    <select id="ai-opt-default-scope" class="opt-select">
-                                        <option value="read">只读访问</option>
-                                        <option value="edit">每次询问</option>
-                                        <option value="auto">自动审批</option>
-                                        <option value="full">完全权限</option>
-                                    </select>
-                                </div>
-                            </div>
-                        </div>
-
-                        <div class="set-group-title">写操作审批</div>
-                        <div class="set-card">
-                            <div class="set-row-top">
-                                <div class="set-main"><div class="set-title">已授权文件</div><div class="set-desc">「总是允许此文件」的授权清单；移除后恢复逐次审批</div></div>
-                                <div id="ai-opt-approved" class="ai-approved-list"></div>
-                            </div>
-                            <div class="set-row">
-                                <div class="set-main"><div class="set-title">清除授权</div></div>
-                                <div class="set-control">
-                                    <button type="button" id="ai-opt-approved-clear" class="dlg-btn">清除全部授权</button>
                                 </div>
                             </div>
                         </div>
@@ -874,18 +855,18 @@
                             </div>
                         </div>
 
-                        <div class="set-group-title">AI 工具权限</div>
+                        <div class="set-group-title">子代理</div>
                         <div class="set-card">
                             <div class="set-row">
-                                <div class="set-main"><div class="set-title">工作日志<button type="button" class="info-tip" data-tip="追加写入工作区 .cadt/logs/（根索引每月一行 → 月索引每条一行 → 日期文件存正文）；只记标题与一句话摘要，不含正文与敏感信息。" aria-label="工作日志说明">i</button></div><div class="set-desc">允许 AI 使用 write_worklog 记录工作日志</div></div>
+                                <div class="set-main"><div class="set-title">子代理总数上限</div><div class="set-desc">统计所有层级的运行中子代理，不含主代理</div></div>
                                 <div class="set-control">
-                                    <label class="set-switch"><input type="checkbox" id="ai-opt-worklog"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                    <input type="number" id="ai-opt-subagent-max" class="ai-settings-input ai-font-size-num" min="1" max="20" step="1" value="20">
                                 </div>
                             </div>
                             <div class="set-row">
-                                <div class="set-main"><div class="set-title">应用操作<button type="button" class="info-tip" data-tip="标签页 / 视图 / 主题 / 设置 / 模拟键盘输入等；关闭后 AI 无法查看或调用该工具，cadt-ui 技能同时隐藏。" aria-label="应用操作说明">i</button></div><div class="set-desc">允许 AI 使用 app_control 操作应用</div></div>
+                                <div class="set-main"><div class="set-title">递归层级<button type="button" class="info-tip" data-tip="上限统计所有层级正在运行的子代理（含子代理递归派出的），不含主代理；达到上限后主代理等待空位，子代理再派会被拒绝。层级 1–20 = 最多再往下派几层。" aria-label="递归层级说明">i</button></div><div class="set-desc">0 = 不设限；达到上限后等待空位</div></div>
                                 <div class="set-control">
-                                    <label class="set-switch"><input type="checkbox" id="ai-opt-app-control"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                    <input type="number" id="ai-opt-subagent-depth" class="ai-settings-input ai-font-size-num" min="0" max="20" step="1" value="0">
                                 </div>
                             </div>
                         </div>
@@ -908,26 +889,10 @@
                             <div id="ai-opt-mcp-editor" class="hidden"></div>
                         </div>
 
-                        <div class="set-group-title">子代理</div>
-                        <div class="set-card">
-                            <div class="set-row">
-                                <div class="set-main"><div class="set-title">子代理总数上限</div><div class="set-desc">统计所有层级的运行中子代理，不含主代理</div></div>
-                                <div class="set-control">
-                                    <input type="number" id="ai-opt-subagent-max" class="ai-settings-input ai-font-size-num" min="1" max="20" step="1" value="20">
-                                </div>
-                            </div>
-                            <div class="set-row">
-                                <div class="set-main"><div class="set-title">递归层级<button type="button" class="info-tip" data-tip="上限统计所有层级正在运行的子代理（含子代理递归派出的），不含主代理；达到上限后主代理等待空位，子代理再派会被拒绝。层级 1–20 = 最多再往下派几层。" aria-label="递归层级说明">i</button></div><div class="set-desc">0 = 不设限；达到上限后等待空位</div></div>
-                                <div class="set-control">
-                                    <input type="number" id="ai-opt-subagent-depth" class="ai-settings-input ai-font-size-num" min="0" max="20" step="1" value="0">
-                                </div>
-                            </div>
-                        </div>
-
                         <div class="set-group-title">通知</div>
                         <div class="set-card">
                             <div class="set-row">
-                                <div class="set-main"><div class="set-title">应用内通知<button type="button" class="info-tip" data-tip="任务完成等通知始终进入状态栏【消息】中心（锁图标右侧）；开启后额外在右下角弹出提示框——弹完消失，消息仍保留在列表。设置 → AI 助手 → 权限里 AI 也能用 notify_send 工具给你发消息。" aria-label="应用内通知说明">i</button></div><div class="set-desc">任务完成消息进消息中心；开启后额外右下角弹出</div></div>
+                                <div class="set-main"><div class="set-title">应用内通知<button type="button" class="info-tip" data-tip="任务完成等通知始终进入状态栏【消息】中心（锁图标右侧）；开启后额外在右下角弹出提示框——弹完消失，消息仍保留在列表。设置 → AI → 权限里 AI 也能用 notify_send 工具给你发消息。" aria-label="应用内通知说明">i</button></div><div class="set-desc">任务完成消息进消息中心；开启后额外右下角弹出</div></div>
                                 <div class="set-control">
                                     <label class="set-switch"><input type="checkbox" id="ai-opt-notify-inapp"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
                                 </div>
@@ -1191,6 +1156,14 @@
                             </div>
                         </div>
 
+                        <div class="set-group-title">个性化</div>
+                        <div class="set-card">
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">注入个性化设定</div><div class="set-desc">称呼 / 助手名 / 回复风格 / 人设 / 长期指令共四段；关闭后四段全不注入（含助手名）。设定本身在「个性化」页</div></div>
+                                <div class="set-control"><label class="set-switch"><input type="checkbox" id="ai-opt-inject-persona"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label></div>
+                            </div>
+                        </div>
+
                         <div class="set-group-title">环境变量</div>
                         <div class="set-card">
                             <div class="set-row">
@@ -1199,14 +1172,6 @@
                             </div>
                             <div class="set-row">
                                 <div class="set-main"><div class="set-desc">read_file / get_content 等工具返回的正文由 AI 主动调用产生，不走注入开关；能否调用由当前权限档决定。</div></div>
-                            </div>
-                        </div>
-
-                        <div class="set-group-title">个性化</div>
-                        <div class="set-card">
-                            <div class="set-row">
-                                <div class="set-main"><div class="set-title">注入个性化设定</div><div class="set-desc">称呼 / 助手名 / 回复风格 / 人设 / 长期指令共四段；关闭后四段全不注入（含助手名）。设定本身在「个性化」页</div></div>
-                                <div class="set-control"><label class="set-switch"><input type="checkbox" id="ai-opt-inject-persona"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label></div>
                             </div>
                         </div>
                     </div>
@@ -1270,6 +1235,119 @@
                                 <div class="set-control">
                                     <select id="ai-opt-classifier-model" class="opt-select"></select>
                                 </div>
+                            </div>
+                        </div>
+
+                        <div class="set-group-title">新会话</div>
+                        <div class="set-card">
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">默认读写权限</div><div class="set-desc">仅对新建会话生效；已有会话保持各自档位</div></div>
+                                <div class="set-control">
+                                    <select id="ai-opt-default-scope" class="opt-select">
+                                        <option value="read">只读访问</option>
+                                        <option value="edit">每次询问</option>
+                                        <option value="auto">自动审批</option>
+                                        <option value="full">完全权限</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="set-group-title">项目规则</div>
+                        <div class="set-card">
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">规则语法<button type="button" class="info-tip" data-tip="Bash(git status:*) 的 :* 为前缀匹配；Write(docs/**) 的 * 为通配；Web(domain:example.com) 匹配域名。规则写入工作区 .cadt/permissions.json，可随仓库共享。" aria-label="规则语法说明">i</button></div><div class="set-desc">表格可直接增删；判定顺序 deny → ask → allow</div></div>
+                                <div class="set-control">
+                                </div>
+                            </div>
+                            <div class="set-row-top">
+                                <div id="ai-opt-perm-table" class="ai-perm-table"></div>
+                                <div class="ai-perm-add">
+                                    <select id="ai-opt-perm-add-kind" class="opt-select">
+                                        <option value="command">Bash</option>
+                                        <option value="write">Write</option>
+                                        <option value="web">Web</option>
+                                    </select>
+                                    <select id="ai-opt-perm-add-behavior" class="opt-select">
+                                        <option value="deny">deny</option>
+                                        <option value="ask">ask</option>
+                                        <option value="allow">allow</option>
+                                    </select>
+                                    <input id="ai-opt-perm-add-pattern" class="ai-settings-input" type="text" spellcheck="false" autocomplete="off" placeholder="如 git status:* / docs/** / domain:example.com">
+                                    <button type="button" id="ai-opt-perm-add-btn" class="dlg-btn">添加</button>
+                                </div>
+                            </div>
+                            <div class="set-row-top">
+                                <details class="ai-perm-advanced">
+                                    <summary>高级：文本编辑</summary>
+                                    <div class="fmt-hint hint-indent">一行一条，<code>#</code> 开头为注释；保存后与表格同步。</div>
+                                    <div class="ai-perm-grid">
+                                        <label class="ai-perm-field">允许 allow
+                                            <textarea id="ai-opt-perm-allow" class="ai-settings-input" spellcheck="false" placeholder="Bash(git status:*)"></textarea>
+                                        </label>
+                                        <label class="ai-perm-field">询问 ask
+                                            <textarea id="ai-opt-perm-ask" class="ai-settings-input" spellcheck="false" placeholder="Bash(npm install:*)"></textarea>
+                                        </label>
+                                        <label class="ai-perm-field">拒绝 deny
+                                            <textarea id="ai-opt-perm-deny" class="ai-settings-input" spellcheck="false" placeholder="Bash(git push --force:*)"></textarea>
+                                        </label>
+                                    </div>
+                                </details>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">规则文件</div><div class="set-desc" id="ai-opt-perm-path">—</div></div>
+                                <div class="set-control">
+                                    <button type="button" id="ai-opt-perm-save" class="dlg-btn primary">保存文本规则</button>
+                                    <button type="button" id="ai-opt-perm-reload" class="dlg-btn">重新加载</button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="set-group-title">写操作审批</div>
+                        <div class="set-card">
+                            <div class="set-row-top">
+                                <div class="set-main"><div class="set-title">已授权文件</div><div class="set-desc">「总是允许此文件」的授权清单；移除后恢复逐次审批</div></div>
+                                <div id="ai-opt-approved" class="ai-approved-list"></div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">清除授权</div></div>
+                                <div class="set-control">
+                                    <button type="button" id="ai-opt-approved-clear" class="dlg-btn">清除全部授权</button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="set-group-title">AI 工具权限</div>
+                        <div class="set-card">
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">工作日志<button type="button" class="info-tip" data-tip="追加写入工作区 .cadt/logs/（根索引每月一行 → 月索引每条一行 → 日期文件存正文）；只记标题与一句话摘要，不含正文与敏感信息。" aria-label="工作日志说明">i</button></div><div class="set-desc">允许 AI 使用 write_worklog 记录工作日志</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="ai-opt-worklog"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">应用操作<button type="button" class="info-tip" data-tip="标签页 / 视图 / 主题 / 设置 / 模拟键盘输入等；关闭后 AI 无法查看或调用该工具，cadt-ui 技能同时隐藏。" aria-label="应用操作说明">i</button></div><div class="set-desc">允许 AI 使用 app_control 操作应用</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="ai-opt-app-control"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="set-group-title">会话与审批记录</div>
+                        <div class="set-card">
+                            <div class="set-row-top">
+                                <div class="set-main"><div class="set-title">本会话授权</div><div class="set-desc">审批卡里的「本会话允许」出现在这里</div></div>
+                                <div id="ai-opt-perm-session" class="ai-approved-list ai-perm-list-box"></div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">清除会话授权</div></div>
+                                <div class="set-control">
+                                    <button type="button" id="ai-opt-perm-session-clear" class="dlg-btn">清除本会话授权</button>
+                                </div>
+                            </div>
+                            <div class="set-row-top">
+                                <div class="set-main"><div class="set-title">最近审批</div></div>
+                                <div id="ai-opt-perm-log" class="ai-approved-list ai-perm-log ai-perm-list-box"></div>
                             </div>
                         </div>
 
@@ -1337,74 +1415,6 @@
                                 </div>
                             </div>
                         </div>
-
-                        <div class="set-group-title">项目规则</div>
-                        <div class="set-card">
-                            <div class="set-row">
-                                <div class="set-main"><div class="set-title">规则语法<button type="button" class="info-tip" data-tip="Bash(git status:*) 的 :* 为前缀匹配；Write(docs/**) 的 * 为通配；Web(domain:example.com) 匹配域名。规则写入工作区 .cadt/permissions.json，可随仓库共享。" aria-label="规则语法说明">i</button></div><div class="set-desc">表格可直接增删；判定顺序 deny → ask → allow</div></div>
-                                <div class="set-control">
-                                </div>
-                            </div>
-                            <div class="set-row-top">
-                                <div id="ai-opt-perm-table" class="ai-perm-table"></div>
-                                <div class="ai-perm-add">
-                                    <select id="ai-opt-perm-add-kind" class="opt-select">
-                                        <option value="command">Bash</option>
-                                        <option value="write">Write</option>
-                                        <option value="web">Web</option>
-                                    </select>
-                                    <select id="ai-opt-perm-add-behavior" class="opt-select">
-                                        <option value="deny">deny</option>
-                                        <option value="ask">ask</option>
-                                        <option value="allow">allow</option>
-                                    </select>
-                                    <input id="ai-opt-perm-add-pattern" class="ai-settings-input" type="text" spellcheck="false" autocomplete="off" placeholder="如 git status:* / docs/** / domain:example.com">
-                                    <button type="button" id="ai-opt-perm-add-btn" class="dlg-btn">添加</button>
-                                </div>
-                            </div>
-                            <div class="set-row-top">
-                                <details class="ai-perm-advanced">
-                                    <summary>高级：文本编辑</summary>
-                                    <div class="fmt-hint hint-indent">一行一条，<code>#</code> 开头为注释；保存后与表格同步。</div>
-                                    <div class="ai-perm-grid">
-                                        <label class="ai-perm-field">允许 allow
-                                            <textarea id="ai-opt-perm-allow" class="ai-settings-input" spellcheck="false" placeholder="Bash(git status:*)"></textarea>
-                                        </label>
-                                        <label class="ai-perm-field">询问 ask
-                                            <textarea id="ai-opt-perm-ask" class="ai-settings-input" spellcheck="false" placeholder="Bash(npm install:*)"></textarea>
-                                        </label>
-                                        <label class="ai-perm-field">拒绝 deny
-                                            <textarea id="ai-opt-perm-deny" class="ai-settings-input" spellcheck="false" placeholder="Bash(git push --force:*)"></textarea>
-                                        </label>
-                                    </div>
-                                </details>
-                            </div>
-                            <div class="set-row">
-                                <div class="set-main"><div class="set-title">规则文件</div><div class="set-desc" id="ai-opt-perm-path">—</div></div>
-                                <div class="set-control">
-                                    <button type="button" id="ai-opt-perm-save" class="dlg-btn primary">保存文本规则</button>
-                                    <button type="button" id="ai-opt-perm-reload" class="dlg-btn">重新加载</button>
-                                </div>
-                            </div>
-                        </div>
-
-                        <div class="set-group-title">会话与审批记录</div>
-                        <div class="set-card">
-                            <div class="set-row-top">
-                                <div class="set-main"><div class="set-title">本会话授权</div><div class="set-desc">审批卡里的「本会话允许」出现在这里</div></div>
-                                <div id="ai-opt-perm-session" class="ai-approved-list ai-perm-list-box"></div>
-                            </div>
-                            <div class="set-row">
-                                <div class="set-main"><div class="set-title">清除会话授权</div></div>
-                                <div class="set-control">
-                                    <button type="button" id="ai-opt-perm-session-clear" class="dlg-btn">清除本会话授权</button>
-                                </div>
-                            </div>
-                            <div class="set-row-top">
-                                <div class="set-main"><div class="set-title">最近审批</div></div>
-                                <div id="ai-opt-perm-log" class="ai-approved-list ai-perm-log ai-perm-list-box"></div>
-                            </div>
-                        </div>
                     </div>
                     <div class="settings-pane hidden" data-pane="formats">
                         <div class="set-group-title">通用数据格式</div>
@@ -1454,6 +1464,20 @@
                             </div>
                         </div>
 
+                        <div class="set-group-title">运行配置（多套参数预设）</div>
+                        <div class="set-card">
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">保存当前配置</div><div class="set-desc">记录运行参数、命令模板与语言；在面板顶部下拉一键载入</div></div>
+                                <div class="set-control">
+                                    <input id="run-profile-name" class="run-template-input" type="text" spellcheck="false" autocomplete="off" placeholder="配置名称，例如：读大 CSV">
+                                    <button type="button" id="run-profile-save" class="dlg-btn">保存当前配置</button>
+                                </div>
+                            </div>
+                            <div class="set-row-top">
+                                <div id="run-profile-list" class="run-profile-list"></div>
+                            </div>
+                        </div>
+
                         <div class="set-group-title">命令模板（可选，按语言覆盖默认命令）</div>
                         <div class="set-card">
                             <div class="set-row">
@@ -1477,20 +1501,6 @@
                                     <select id="run-selftest-lang" class="opt-select"></select>
                                     <button type="button" id="run-selftest" class="dlg-btn">运行自检脚本</button>
                                 </div>
-                            </div>
-                        </div>
-
-                        <div class="set-group-title">运行配置（多套参数预设）</div>
-                        <div class="set-card">
-                            <div class="set-row">
-                                <div class="set-main"><div class="set-title">保存当前配置</div><div class="set-desc">记录运行参数、命令模板与语言；在面板顶部下拉一键载入</div></div>
-                                <div class="set-control">
-                                    <input id="run-profile-name" class="run-template-input" type="text" spellcheck="false" autocomplete="off" placeholder="配置名称，例如：读大 CSV">
-                                    <button type="button" id="run-profile-save" class="dlg-btn">保存当前配置</button>
-                                </div>
-                            </div>
-                            <div class="set-row-top">
-                                <div id="run-profile-list" class="run-profile-list"></div>
                             </div>
                         </div>
                     </div>
@@ -1641,8 +1651,12 @@
                         <div class="set-group-title">插件市场</div>
                         <div class="set-card">
                             <div class="set-row">
-                                <div class="set-main"><div class="set-title">来源</div><div class="set-desc">Gitee 组织公开仓库，推送即上架</div></div>
+                                <div class="set-main"><div class="set-title">数据源</div><div class="set-desc" id="plugin-market-source-desc">Gitee 组织公开仓库，推送即上架</div></div>
                                 <div class="set-control">
+                                    <select id="plugin-market-source-mode" class="opt-select">
+                                        <option value="gitee">Gitee（默认）</option>
+                                        <option value="github">GitHub</option>
+                                    </select>
                                     <a class="plugin-link plugin-market-src" id="plugin-market-source"
                                        href="https://gitee.com/organizations/cadt-datalens-plugins/projects"
                                        data-url="https://gitee.com/organizations/cadt-datalens-plugins/projects"

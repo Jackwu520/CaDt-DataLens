@@ -64,6 +64,8 @@ const rawIcons = {
     'undo': '<path d="M12 12a4.7 4.7 0 0 0-3.8-7.6H3.8"/><path d="M6.4 1.8L3.5 4.4l2.9 2.6"/>',
     'file': '<path d="M4 2.4h4.6l2.6 2.6v8.2a.7.7 0 0 1-.7.7H4a.7.7 0 0 1-.7-.7V3.1c0-.4.3-.7.7-.7z"/><path d="M8.6 2.4V5h2.6"/>',
     'doc': '<path d="M4 2.4h4.6l2.6 2.6v8.2a.7.7 0 0 1-.7.7H4a.7.7 0 0 1-.7-.7V3.1c0-.4.3-.7.7-.7z"/><path d="M8.6 2.4V5h2.6"/><path d="M6 8.4h4M6 10.6h4"/>',
+    // 条目清单（设置导航「用户偏好」）：三个实心圆点 + 等长文本行
+    'list': '<circle cx="3.6" cy="4.2" r=".9" fill="currentColor" stroke="none"/><circle cx="3.6" cy="8" r=".9" fill="currentColor" stroke="none"/><circle cx="3.6" cy="11.8" r=".9" fill="currentColor" stroke="none"/><path d="M6.4 4.2h7M6.4 8h7M6.4 11.8h7"/>',
     'book': '<rect x="3.2" y="2.6" width="9.6" height="10.8" rx="0.8"/><path d="M5.6 2.6v10.8"/><path d="M8.2 5.4h2.9M8.2 8h2.9"/>',
     'book-open': '<path d="M8 3.6C6.7 2.7 5.1 2.2 3.4 2.2v9.2c1.7 0 3.3.5 4.6 1.4 1.3-.9 2.9-1.4 4.6-1.4V2.2c-1.7 0-3.3.5-4.6 1.4z"/><path d="M8 3.6v9.2"/>',
     'book-plus': '<rect x="3.2" y="2.6" width="9.6" height="10.8" rx="0.8"/><path d="M5.6 2.6v10.8"/><path d="M9 6.2v3.6M7.2 8h3.6"/>',

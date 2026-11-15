@@ -133,7 +133,9 @@ function setupPluginsSettings() {
         deps.openNameDialog({
             title: '从仓库地址安装插件',
             label: '仓库地址',
-            placeholder: 'https://gitee.com/cadt-datalens-plugins/git-flow',
+            placeholder: marketSourcePref === 'github'
+                ? 'https://github.com/cadt-datalens-plugins/git-flow'
+                : 'https://gitee.com/cadt-datalens-plugins/git-flow',
             okLabel: '安装',
             onSubmit: async (url) => {
                 if (!url || !url.trim()) throw new Error('仓库地址为空');
@@ -174,6 +176,23 @@ function setupPluginsSettings() {
         renderPluginsPane();
     });
     const marketRefresh = document.getElementById('plugin-market-refresh');
+    const sourceSel = document.getElementById('plugin-market-source-mode');
+    if (sourceSel) {
+        sourceSel.addEventListener('change', async () => {
+            const next = sourceSel.value === 'github' ? 'github' : 'gitee';
+            try {
+                await deps.backend.SetDataSource(next);
+                marketSourcePref = next;
+                applyMarketSourceUi();
+                pluginMarketCache = null;
+                await renderPluginMarket(true);
+                deps.flash('数据源已切换：' + marketSourceLabel(marketSourcePref));
+            } catch (e) {
+                sourceSel.value = marketSourcePref;
+                deps.flash('切换数据源失败：' + e, true);
+            }
+        });
+    }
     const marketSearch = document.getElementById('plugin-market-search');
     if (marketSearch && !marketSearch.dataset.bound) {
         marketSearch.dataset.bound = '1';
@@ -242,6 +261,7 @@ async function renderPluginsPane() {
         if (document.getElementById('plugin-dir-line')) {
             document.getElementById('plugin-dir-line').textContent = '插件目录：' + dir;
         }
+        await refreshMarketSource();
         renderPluginMarket(false);
         listEl.textContent = '';
         if (!plugins || !plugins.length) {
@@ -377,6 +397,45 @@ async function renderPluginsPane() {
 
 let pluginMarketCache = null;
 const PLUGIN_MARKET_TTL = 5 * 60 * 1000;
+// 数据源（gitee/github）：插件市场与模型配置表的远端来源，默认 Gitee。
+// 模块内另有 const marketSource（DOM 链接元素），本状态用 marketSourcePref 命名避免遮蔽。
+let marketSourcePref = 'gitee';
+
+function marketSourceLabel(source) {
+    return source === 'github' ? 'GitHub' : 'Gitee';
+}
+
+function applyMarketSourceUi() {
+    const sel = document.getElementById('plugin-market-source-mode');
+    if (sel) sel.value = marketSourcePref;
+    const org = 'cadt-datalens-plugins';
+    const url = marketSourcePref === 'github'
+        ? 'https://github.com/organizations/' + org + '/repositories'
+        : 'https://gitee.com/organizations/' + org + '/projects';
+    const link = document.getElementById('plugin-market-source');
+    if (link) {
+        link.href = url;
+        link.dataset.url = url;
+        link.textContent = marketSourceLabel(marketSourcePref) + ' · CaDt-DataLens 插件市场';
+    }
+    const desc = document.getElementById('plugin-market-source-desc');
+    if (desc) {
+        desc.textContent = marketSourcePref === 'github'
+            ? 'GitHub 组织公开仓库（Gitee 镜像），数据源同时影响插件市场与模型配置表'
+            : 'Gitee 组织公开仓库，推送即上架；数据源同时影响插件市场与模型配置表';
+    }
+}
+
+async function refreshMarketSource() {
+    if (deps.backend.GetDataSource) {
+        try {
+            marketSourcePref = (await deps.backend.GetDataSource()) === 'github' ? 'github' : 'gitee';
+        } catch (e) {
+            marketSourcePref = 'gitee';
+        }
+    }
+    applyMarketSourceUi();
+}
 
 async function renderPluginMarket(force) {
     const listEl = document.getElementById('plugin-market-list');

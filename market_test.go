@@ -6,6 +6,7 @@ import (
 )
 
 func TestMarketRepoIdentity(t *testing.T) {
+	t.Setenv("AppData", t.TempDir()) // 隔离真实配置，默认数据源 gitee
 	if got := marketRepoURL("cadt-datalens-plugins/bak-json"); got != "https://gitee.com/cadt-datalens-plugins/bak-json" {
 		t.Fatalf("marketRepoURL = %q", got)
 	}
@@ -17,6 +18,73 @@ func TestMarketRepoIdentity(t *testing.T) {
 	}
 	if got := marketRepoName("git-flow"); got != "git-flow" {
 		t.Fatalf("marketRepoName(no slash) = %q", got)
+	}
+}
+
+func TestMarketSourceNormalization(t *testing.T) {
+	for _, in := range []string{"", "Gitee", "GITEE", "gitee", "ftp", "github.com"} {
+		if got := normalizeMarketSource(in); got != marketSourceGitee {
+			t.Fatalf("normalizeMarketSource(%q) = %q, want gitee", in, got)
+		}
+	}
+	for _, in := range []string{"github", "GitHub"} {
+		if got := normalizeMarketSource(in); got != marketSourceGithub {
+			t.Fatalf("normalizeMarketSource(%q) = %q, want github", in, got)
+		}
+	}
+}
+
+func TestMarketSourceURLs(t *testing.T) {
+	gitee := "cadt-datalens-plugins/bak-json"
+	if got := marketReposPageURL(marketSourceGitee, 2); got != "https://gitee.com/api/v5/orgs/cadt-datalens-plugins/repos?type=public&sort=updated&direction=desc&per_page=100&page=2" {
+		t.Fatalf("gitee repos URL = %q", got)
+	}
+	if got := marketReposPageURL(marketSourceGithub, 2); got != "https://api.github.com/orgs/cadt-datalens-plugins/repos?sort=updated&direction=desc&per_page=100&page=2" {
+		t.Fatalf("github repos URL = %q", got)
+	}
+	if got := marketManifestURL(marketSourceGitee, gitee, "main"); got != "https://gitee.com/cadt-datalens-plugins/bak-json/raw/main/plugin.json" {
+		t.Fatalf("gitee manifest URL = %q", got)
+	}
+	if got := marketManifestURL(marketSourceGithub, gitee, "main"); got != "https://raw.githubusercontent.com/cadt-datalens-plugins/bak-json/main/plugin.json" {
+		t.Fatalf("github manifest URL = %q", got)
+	}
+	if got := marketRepoURLFor(marketSourceGithub, gitee+".git"); got != "https://github.com/cadt-datalens-plugins/bak-json" {
+		t.Fatalf("github repo URL = %q", got)
+	}
+	if got := marketRepoURLFor(marketSourceGitee, gitee); got != "https://gitee.com/cadt-datalens-plugins/bak-json" {
+		t.Fatalf("gitee repo URL = %q", got)
+	}
+	if got := marketDefaultBranch(marketSourceGithub); got != "main" {
+		t.Fatalf("github default branch = %q", got)
+	}
+	if got := marketDefaultBranch(marketSourceGitee); got != "master" {
+		t.Fatalf("gitee default branch = %q", got)
+	}
+}
+
+func TestDataSourceRoundTrip(t *testing.T) {
+	t.Setenv("AppData", t.TempDir())
+	app := NewApp()
+	if got := app.GetDataSource(); got != marketSourceGitee {
+		t.Fatalf("默认数据源 = %q, want gitee", got)
+	}
+	if err := app.SetDataSource("github"); err != nil {
+		t.Fatalf("SetDataSource(github): %v", err)
+	}
+	if got := app.GetDataSource(); got != marketSourceGithub {
+		t.Fatalf("切换后数据源 = %q, want github", got)
+	}
+	if err := app.SetDataSource("gitee"); err != nil {
+		t.Fatalf("SetDataSource(gitee): %v", err)
+	}
+	if got := app.GetDataSource(); got != marketSourceGitee {
+		t.Fatalf("切回后数据源 = %q, want gitee", got)
+	}
+	if err := app.SetDataSource("nope"); err != nil {
+		t.Fatalf("SetDataSource(nope): %v", err)
+	}
+	if got := app.GetDataSource(); got != marketSourceGitee {
+		t.Fatalf("非法值应归一为 gitee，got %q", got)
 	}
 }
 

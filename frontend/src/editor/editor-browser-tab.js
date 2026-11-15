@@ -66,8 +66,9 @@ function showBrowserMoreMenu(doc, anchor) {
 }
 
 // ---------- 浏览器视口尺寸（用户菜单或 AI browser_resize 工具控制） ----------
-// fit = 随标签页撑满（默认）；fixed = 固定宽高居中显示。.browser-surface 是唯一
-// 真源：ResizeObserver 会把新尺寸同步到原生 WebView2（syncBrowserTab）。
+// fit = 随标签页撑满（默认）；fixed = 固定逻辑视口，画面在区域内**等比缩放**显示
+// （DevTools 响应式模式的做法：控件摆进容器、栅格比例让页面保持设定宽高）。
+// .browser-surface 是唯一真源：ResizeObserver 会把新尺寸同步到原生 WebView2（syncBrowserTab）。
 
 const BROWSER_VIEWPORT_PRESETS = [
     {label: '1280 × 720（桌面）', width: 1280, height: 720},
@@ -75,6 +76,40 @@ const BROWSER_VIEWPORT_PRESETS = [
     {label: '375 × 812（iPhone）', width: 375, height: 812},
     {label: '768 × 1024（iPad）', width: 768, height: 1024},
 ];
+
+// 固定视口可用容器区域（CSS px）：.browser-view 去掉工具栏
+function browserViewportAvail(doc) {
+    const surface = doc.browserEl;
+    const view = surface && surface.parentElement;
+    if (!view || view.isConnected === false) return null;
+    const vr = view.getBoundingClientRect();
+    const toolbar = view.querySelector('.browser-toolbar');
+    const tbH = toolbar ? toolbar.getBoundingClientRect().height : 0;
+    const w = vr.width;
+    const h = vr.height - tbH;
+    if (!(w > 0) || !(h > 0)) return null;
+    return {w, h};
+}
+
+// contain 等比缩放系数（≤1）：视口多大逻辑尺寸不变，画面缩到放得下
+function browserViewportFitScale(doc) {
+    const vp = doc.browserViewport;
+    if (!vp || vp.mode !== 'fixed' || !(vp.width > 0) || !(vp.height > 0)) return 1;
+    const avail = browserViewportAvail(doc);
+    if (!avail) return 1;
+    return Math.min(1, avail.w / vp.width, avail.h / vp.height);
+}
+
+// 按当前可用区刷新 fixed 模式的 surface 内联尺寸（窗口改变时同步重算）
+function layoutFixedViewport(doc) {
+    const vp = doc.browserViewport;
+    if (!doc.browserEl || !vp || vp.mode !== 'fixed' || !(vp.width > 0) || !(vp.height > 0)) return;
+    const fit = browserViewportFitScale(doc);
+    const w = Math.max(1, Math.round(vp.width * fit)) + 'px';
+    const h = Math.max(1, Math.round(vp.height * fit)) + 'px';
+    if (doc.browserEl.style.width !== w) doc.browserEl.style.width = w;
+    if (doc.browserEl.style.height !== h) doc.browserEl.style.height = h;
+}
 
 // 解析「宽×高」文本（支持 × x * 与逗号分隔），非法返回 null
 function parseBrowserViewportText(text) {
@@ -98,10 +133,9 @@ function applyBrowserViewport(doc) {
         surface.style.margin = '';
     } else {
         surface.classList.add('browser-surface-fixed');
-        surface.style.width = Math.round(vp.width) + 'px';
-        surface.style.height = Math.round(vp.height) + 'px';
         surface.style.flex = 'none';
         surface.style.margin = 'auto';
+        layoutFixedViewport(doc);
     }
     updateBrowserViewportBtn(doc);
     syncBrowserTab(doc);
@@ -249,12 +283,18 @@ function browserSurfaceRect(doc) {
     const rect = browserSurfaceCssRect(doc);
     if (!rect) return null;
     const dpr = window.devicePixelRatio || 1;
-    return {
-        x: Math.round(rect.left * dpr),
-        y: Math.round(rect.top * dpr),
-        w: Math.round(rect.width * dpr),
-        h: Math.round(rect.height * dpr),
-    };
+    const x = Math.round(rect.left * dpr);
+    const y = Math.round(rect.top * dpr);
+    const physW = Math.round(rect.width * dpr);
+    const physH = Math.round(rect.height * dpr);
+    // 栅格比例：自适应=设备缩放比（CSS 视口=控件物理尺寸/dpr，与页面坐标严格一致）；
+    // 固定视口=缩放后控件反推，保证页面逻辑视口宽高恰是设定的尺寸
+    const vp = doc.browserViewport;
+    let scale = dpr;
+    if (vp && vp.mode === 'fixed' && vp.width > 0 && physW > 0) {
+        scale = physW / vp.width;
+    }
+    return {x, y, w: physW, h: physH, scale};
 }
 
 // WebView2 是独立 HWND，永远盖在主 WebView 之上。旧逻辑只要页面里「有」浮层就隐藏
@@ -414,6 +454,8 @@ function syncBrowserTab(doc) {
     setTimeout(() => {
         browserSyncPending = false;
         if (!deps.docs.includes(doc) || !doc.browserEl) return;
+        // 窗口/分栏尺寸变了：固定视口先按新可用区重算 contain 缩放，再取矩形
+        layoutFixedViewport(doc);
         const rect = browserSurfaceRect(doc);
         const cssRect = browserSurfaceCssRect(doc);
         const visible = !!rect && browserVisibleFor(doc, cssRect);
@@ -433,7 +475,7 @@ function syncBrowserTab(doc) {
             });
             return;
         }
-        if (last && last.visible && last.x === rect.x && last.y === rect.y && last.w === rect.w && last.h === rect.h) {
+        if (last && last.visible && last.x === rect.x && last.y === rect.y && last.w === rect.w && last.h === rect.h && last.scale === rect.scale) {
             // 状态没变就不重调 SetBounds；但主 WebView 重建/重排控件窗口会重新
             // 抢占子窗口 z 顶盖住内嵌控件（用户看是黑屏，点一下才恢复）——
             // z 序幂等自检很便宜（Go 侧一次 GetWindow 扫描，已在顶则零副作用）。
@@ -443,9 +485,9 @@ function syncBrowserTab(doc) {
                 doc.browserSnapshot.url !== (doc.browserUrl || ''));
             return;
         }
-        const applied = {visible: true, x: rect.x, y: rect.y, w: rect.w, h: rect.h};
+        const applied = {visible: true, x: rect.x, y: rect.y, w: rect.w, h: rect.h, scale: rect.scale};
         doc.browserApplied = applied;
-        deps.backend.BrowserSetBounds(doc.id, rect.x, rect.y, rect.w, rect.h).then(() => {
+        deps.backend.BrowserSetBounds(doc.id, rect.x, rect.y, rect.w, rect.h, rect.scale).then(() => {
             if (!deps.docs.includes(doc)) return;
             clearBrowserSnapshot(doc);      // 原生控件已 Show，撤掉定格帧
             browserSnapshotRefresh(doc, false); // 为下一次浮层备好新帧

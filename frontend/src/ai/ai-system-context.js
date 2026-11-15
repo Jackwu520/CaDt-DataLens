@@ -5,6 +5,7 @@
 import {AI_SCOPES, AI_WRITE_SCOPES, aiTextOf} from './ai-constants.js';
 import {escapeXmlText, normalizePersona, personaSegments} from './ai-persona.js';
 import {remindersForPrompt} from './ai-reminders.js';
+import {isReadableImagePath} from './ai-image-encode.js';
 
 export function createAISystemContext(ctx) {
     function workspaceRulesText(scope, planMode) {
@@ -312,7 +313,9 @@ export function createAISystemContext(ctx) {
                 if (ctx.settings.aiInjectActiveFile !== false) {
                     contextParts.push('当前活动文件：' + ctx.aiDisplayPath(active.path, root) +
                         (active.mode ? '（视图：' + active.mode + '）' : '') +
-                        (active.dirty ? '（未保存）' : ''));
+                        (active.dirty ? '（未保存）' : '') +
+                        // 用户开着图片问「这张图怎么样」是最常见的误判点：不提示的话模型会去截应用窗口
+                        (isReadableImagePath(active.path) ? '（图片文件：要看画面用 read_image，read_file 读二进制会报错）' : ''));
                 }
                 if (ctx.settings.aiInjectCaret !== false) {
                     if (active.cursor && active.cursor.line) {

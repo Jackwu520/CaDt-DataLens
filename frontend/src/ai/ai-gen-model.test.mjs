@@ -9,6 +9,8 @@ import {
     GEN_MODEL_PRESETS,
     GEN_PLACEHOLDERS,
     isAsyncGenModel,
+    mergeGenModelEntry,
+    moveGenModelWithinKind,
     normalizeGenHeaders,
     normalizeGenModel,
     normalizeGenModels,
@@ -76,6 +78,45 @@ test('defaultGenModelOf / genModelByRef：id 或名称精确匹配、类型与�
     assert.equal(genModelByRef(list, 'image', '不存在'), null, 'ref 没命中返回 null（调用方报错，不静默回落）');
     assert.equal(genModelByRef(list, 'image', '停用'), null, '停用条目不命中，也不回落');
     assert.equal(genModelByRef(list, 'image', '').id, 'g1', '空 ref 回缺省');
+});
+
+test('moveGenModelWithinKind：只在同类型槽位内换人，跨类型位置不动，边界原样返回', () => {
+    const list = [
+        {id: 'a', kind: 'image'},
+        {id: 'v1', kind: 'video'},
+        {id: 'b', kind: 'image'},
+        {id: 'v2', kind: 'video'},
+        {id: 'c', kind: 'image'},
+    ];
+    // a 下移：与 b 交换槽位，v1 仍在原位（夹在中间不动）
+    const down = moveGenModelWithinKind(list, 'a', 1);
+    assert.deepEqual(down.map((e) => e.id), ['b', 'v1', 'a', 'v2', 'c']);
+    // c 上移一位：与 b 交换，v2 不动
+    assert.deepEqual(moveGenModelWithinKind(list, 'c', -1).map((e) => e.id), ['a', 'v1', 'c', 'v2', 'b']);
+    // 视频组内独立排序：v2 上移到 v1 之前，生图条目位置全不变
+    assert.deepEqual(moveGenModelWithinKind(list, 'v2', -1).map((e) => e.id), ['a', 'v2', 'b', 'v1', 'c']);
+    // 边界 / 无效输入：返回原引用（调用方据此跳过落盘）
+    assert.equal(moveGenModelWithinKind(list, 'a', -1), list, '组首上移');
+    assert.equal(moveGenModelWithinKind(list, 'c', 1), list, '组尾下移');
+    assert.equal(moveGenModelWithinKind(list, 'nope', 1), list, '找不到条目');
+    assert.equal(moveGenModelWithinKind(list, 'a', 0), list, 'delta 为 0');
+    const empty = [];
+    assert.equal(moveGenModelWithinKind(empty, 'a', 1), empty);
+    assert.deepEqual(moveGenModelWithinKind(null, 'a', 1), []);
+    // 不修改入参
+    assert.deepEqual(list.map((e) => e.id), ['a', 'v1', 'b', 'v2', 'c']);
+});
+
+test('moveGenModelWithinKind + defaultGenModelOf：组内顺序即缺省优先级', () => {
+    const list = [
+        {id: 'a', kind: 'image', enabled: false},
+        {id: 'b', kind: 'image', enabled: true},
+        {id: 'v', kind: 'video', enabled: true},
+    ];
+    assert.equal(defaultGenModelOf(list, 'image').id, 'b', '停用条目不占优先级，取第一个启用的');
+    const moved = moveGenModelWithinKind(list, 'b', -1);
+    assert.deepEqual(moved.map((e) => e.id), ['b', 'a', 'v']);
+    assert.equal(defaultGenModelOf(moved, 'image').id, 'b');
 });
 
 test('isAsyncGenModel：submit/jobId/pollPath 三者齐备才算异步型', () => {
@@ -148,4 +189,32 @@ test('GEN_MODEL_PRESETS：预设条目可归一，模板渲染通过（预设即
             assert.equal(extractGenPath(sample, entry.resultPath).length, 1, preset.key + ' 的 resultPath 走得通');
         }
     }
+});
+
+test('mergeGenModelEntry：AI 来源合并——字段覆盖，apiKey 只取 existing，命中沿用其 id', () => {
+    const existing = {
+        id: 'gen-1', name: 'sensenova-u1.5-lite', kind: 'image', enabled: true,
+        baseURL: 'https://old.example.com', path: '/v1/images/generations',
+        apiKey: 'sk-user-secret', defaultSize: '1024x1024',
+    };
+    const merged = mergeGenModelEntry(existing, {
+        name: 'sensenova-u1.5-lite', kind: 'image',
+        baseURL: 'https://token.sensenova.cn', path: '/v1/images/generations',
+        defaultSize: '2048x2048',
+        // AI 试图塞密钥——必须被丢弃
+        apiKey: 'sk-from-ai',
+    }, () => 'gen-new');
+    assert.equal(merged.id, 'gen-1', '命中已有条目沿用其 id');
+    assert.equal(merged.baseURL, 'https://token.sensenova.cn', '其余字段被 incoming 覆盖');
+    assert.equal(merged.defaultSize, '2048x2048');
+    assert.equal(merged.apiKey, 'sk-user-secret', '密钥只取 existing：AI 写不进也冲不掉');
+    // 新建：密钥留空，id 由 idGen 生成
+    const fresh = mergeGenModelEntry(null, {name: 'new-entry', kind: 'video'}, () => 'gen-new2');
+    assert.equal(fresh.id, 'gen-new2');
+    assert.equal(fresh.apiKey, '', '新建条目密钥留空给用户');
+    assert.equal(fresh.kind, 'video');
+    // incoming 非对象的兜底
+    const junk = mergeGenModelEntry(existing, 'junk', () => 'gen-new3');
+    assert.equal(junk.apiKey, 'sk-user-secret');
+    assert.equal(junk.baseURL, 'https://old.example.com', '坏 incoming 不冲掉已有配置');
 });

@@ -91,6 +91,16 @@ export function planLiveRowOrder(current, desired) {
     return {moves, trim, final: kids};
 }
 
+// 工具卡「仍在运行」的唯一判定。`interrupted` 是终止态的最高优先级标记：停止时先落它，
+// 而 status 可能被迟到回来的审批 / 分类器回调改回 running（executeTool 里的早期放行路径），
+// 于是出现「头部已停止、正文写正在执行命令…、spinner 一直转」的自相矛盾卡片。
+// 头部状态（toolStateText）本来就先看 interrupted，渲染其余部分必须同一口径。
+// 导出供 ai-tool-cards.test.mjs 防回归。
+export function toolIsLive(message) {
+    if (!message || message.interrupted) return false;
+    return message.status === 'running';
+}
+
 export function createAIToolCards(ctx) {
     const copyText = ctx.copyText;
     const flash = ctx.flash;
@@ -195,7 +205,9 @@ export function createAIToolCards(ctx) {
         const result = document.createElement('div');
         result.className = 'ai-approval-result ' + approval.state;
         result.textContent = approval.state === 'approved'
-            ? (message.status === 'running' ? '正在执行命令…' : '命令已执行' + approvalTraceNote(approval))
+            ? (message.interrupted
+                ? '命令已中断'
+                : (toolIsLive(message) ? '正在执行命令…' : '命令已执行' + approvalTraceNote(approval)))
             : approval.state === 'denied'
                 ? '已放弃，命令未执行'
                 : (approval.state === 'failed'
@@ -301,7 +313,7 @@ export function createAIToolCards(ctx) {
             const result = document.createElement('div');
             result.className = 'ai-approval-result ' + approval.state;
             result.textContent = approval.state === 'approved'
-                ? (message.status === 'running' ? '正在应用更改…' : '已应用更改' + approvalTraceNote(approval))
+                ? (toolIsLive(message) ? '正在应用更改…' : '已应用更改' + approvalTraceNote(approval))
                 : approval.state === 'denied'
                     ? '已放弃，文件未修改'
                     : (approval.state === 'failed'
@@ -342,7 +354,7 @@ export function createAIToolCards(ctx) {
             const result = document.createElement('div');
             result.className = 'ai-approval-result ' + envAsk.state;
             result.textContent = envAsk.state === 'approved'
-                ? (message.status === 'running' ? '正在创建变量…' : '已创建环境变量 ' + envAsk.name)
+                ? (toolIsLive(message) ? '正在创建变量…' : '已创建环境变量 ' + envAsk.name)
                 : envAsk.state === 'failed'
                     ? '创建失败：' + (message.content || '保存失败')
                     : '已取消，未创建变量';
@@ -441,6 +453,7 @@ export function createAIToolCards(ctx) {
     function toolMeta(name, approval) {
         switch (name) {
             case 'read_file': return {verb: '读取', icon: 'eye'};
+            case 'read_image': return {verb: '看图', icon: 'image'};
             case 'list_dir': return {verb: '列目录', icon: 'folder'};
             case 'search_text': return {verb: '搜索', icon: 'search'};
             case 'web_search': return {verb: '联网搜索', icon: 'web-search'};
@@ -501,6 +514,8 @@ export function createAIToolCards(ctx) {
         const dir = base && path.length > base.length ? path.slice(0, path.length - base.length).replace(/[\\/]+$/, '') : '';
         switch (message.name) {
             case 'read_file': case 'write_file': case 'edit_file':
+                return {primary: base || path || '—', dir};
+            case 'read_image':
                 return {primary: base || path || '—', dir};
             case 'list_dir':
                 return {primary: aiTextOf(args.path).trim() || '.', dir: ''};
@@ -565,7 +580,8 @@ export function createAIToolCards(ctx) {
     }
 
     function toolFileVerb(message) {
-        return message.name === 'read_file' || message.name === 'write_file' || message.name === 'edit_file';
+        return message.name === 'read_file' || message.name === 'read_image' ||
+            message.name === 'write_file' || message.name === 'edit_file';
     }
 
     // diff 视图（带行号：− 行显示旧行号，+/空白行显示新行号）
@@ -613,9 +629,19 @@ export function createAIToolCards(ctx) {
         const isCommand = message.name === 'run_command' || message.name === 'background_command';
         // 读取卡：不做展开，路径名即超链接（点击在标签页打开并跳到读取起始行）
         const isRead = message.name === 'read_file';
+        // 看图卡保留展开正文（尺寸 / 字节数），路径同样可点开图片
+        const isImageRead = message.name === 'read_image';
+        // 内置技能卡：内容只注入模型上下文，不向用户展示（识别结果首行的来源标注「（内置）」，
+        // 该文案来自 ai-panel skillSourceLabel('builtin') 单一来源）；工作区/用户技能照常可展开
+        const isBuiltinSkill = message.name === 'skill_use' &&
+            /^技能：[^\n]*（内置）/.test(aiTextOf(message.content));
         const agentRunning = message.name === 'spawn_agent' && message.agent && message.agent.state === 'running';
         const bgRunning = message.name === 'background_command' && message.bg && message.bg.state === 'running';
-        card.className = 'ai-tool-card ' + (agentRunning || bgRunning ? 'running' : (message.status || 'done')) + (approval ? ' has-approval' : '') + (envAsk ? ' has-approval' : '') + (isCommand ? ' command' : '') + (message.name === 'spawn_agent' ? ' agent' : '') + (message.interrupted ? ' interrupted' : '');
+        // 同一条消息既要驱动 spinner / 「执行中…」文案，又要驱动卡片状态色：
+        // 统一走 toolIsLive（interrupted 优先），别再用裸 status === 'running'。
+        const live = toolIsLive(message);
+        const cardState = (agentRunning || bgRunning || live) ? 'running' : (message.interrupted ? 'done' : (message.status || 'done'));
+        card.className = 'ai-tool-card ' + cardState + (approval ? ' has-approval' : '') + (envAsk ? ' has-approval' : '') + (isCommand ? ' command' : '') + (message.name === 'spawn_agent' ? ' agent' : '') + (message.interrupted ? ' interrupted' : '');
         if ((approval && approval.state === 'pending') || (envAsk && envAsk.state === 'pending')) card.classList.add('approval-pending');
         wrap.appendChild(card);
         const head = document.createElement('button');
@@ -635,11 +661,11 @@ export function createAIToolCards(ctx) {
         verb.textContent = meta.verb;
         // 执行中：头部最前放旋转加载图标（替代旧 border-left 指示）
         // 相位以消息对象为键：refreshToolWrap / renderMessages 整卡重建后接着转，不回弹。
-        if (message.status === 'running') {
+        if (live) {
             head.appendChild(makeToolSpinner(cardSpinStart, message));
         }
         head.append(chev, icon, verb);
-        if (isRead) chev.remove(); // 无展开功能，折叠箭头不出现
+        if (isRead || isBuiltinSkill) chev.remove(); // 无展开功能，折叠箭头不出现
         if (toolFileVerb(message) && info.primary && info.primary !== '—') {
             head.appendChild(createFileIcon(info.primary, 'ai-tool-fileicon'));
         }
@@ -648,7 +674,7 @@ export function createAIToolCards(ctx) {
             primary.className = 'ai-tool-primary';
             primary.textContent = info.primary;
             primary.dataset.tip = info.primary;
-            if (isRead) {
+            if (isRead || isImageRead) {
                 // 路径名即超链接：点击在标签页打开，读取带 offset 时跳到对应行
                 primary.classList.add('ai-tool-link');
                 primary.dataset.tip = '点击打开文件' + (Number(message.targetLine) > 1 ? '（跳到读取起始行）' : '');
@@ -666,6 +692,13 @@ export function createAIToolCards(ctx) {
             }
             head.appendChild(primary);
         }
+        if (isBuiltinSkill) {
+            // 内置技能卡没有正文（内容只进模型上下文），徽标替代原来的 hover 说明
+            const tag = document.createElement('span');
+            tag.className = 'ai-tool-tag';
+            tag.textContent = '内置';
+            head.appendChild(tag);
+        }
         if (info.dir) {
             const dir = document.createElement('span');
             dir.className = 'ai-tool-dir';
@@ -681,7 +714,7 @@ export function createAIToolCards(ctx) {
             del.className = 'ai-tool-stat del';
             del.textContent = '−' + approval.removed;
             head.append(add, del);
-        } else if (message.name === 'edit_file' && message.status === 'running') {
+        } else if (message.name === 'edit_file' && live) {
             // 执行中（审批/落盘前）approval 还没挂：edit_file 参数此时已完整，
             // old_string → new_string 直接精确算 ±，不必等审批走完
             try {
@@ -710,7 +743,7 @@ export function createAIToolCards(ctx) {
         state.className = 'ai-tool-state';
         state.textContent = toolStateText(message);
         head.append(state);
-        if (!isRead) {
+        if (!isRead && !isBuiltinSkill) {
             head.addEventListener('click', () => {
                 card.dataset.userToggled = '1';
                 card.classList.toggle('collapsed');
@@ -811,7 +844,7 @@ export function createAIToolCards(ctx) {
             }
             const output = document.createElement('div');
             output.className = 'ai-cmd-output';
-            output.textContent = message.content || (message.status === 'running' ? '执行中…' : '（无输出）');
+            output.textContent = message.content || (live ? '执行中…' : '（无输出）');
             body.appendChild(output);
             // 后台命令：命令下方实时追加输出（cmd-out 广播驱动；重新渲染时从 bgLog 恢复）
             if (message.name === 'background_command') {
@@ -877,12 +910,14 @@ export function createAIToolCards(ctx) {
                 paths.textContent = gen.files.map((file) => file.path + '（' + file.mime + '，' + file.bytes + ' 字节）').join('\n');
                 body.appendChild(paths);
             }
+        } else if (isBuiltinSkill) {
+            // 内置技能卡：内容只注入模型上下文，不向用户展示（无 body，卡片头即全部）
         } else if (isRead) {
             // 读取卡不做展开：内容不渲染，路径超链接即全部交互
         } else {
-            body.textContent = message.content || (message.status === 'running' ? '执行中…' : '（无输出）');
+            body.textContent = message.content || (live ? '执行中…' : '（无输出）');
         }
-        if (isRead) card.appendChild(head);
+        if (isRead || isBuiltinSkill) card.appendChild(head);
         else card.append(head, body);
         if ((approval && approval.state === 'pending') || (envAsk && envAsk.state === 'pending')) return;
         // 终端命令默认只显示一行摘要（命令 + 状态），点击展开完整输出。
@@ -896,13 +931,13 @@ export function createAIToolCards(ctx) {
         if (fileToolCard) {
             card.classList.add('collapsed');
         }
-        if (!isRead && !fileToolCard && message.status !== 'running' && message.status !== 'error') card.classList.add('collapsed');
+        if (!isRead && !isBuiltinSkill && !fileToolCard && !live && message.status !== 'error') card.classList.add('collapsed');
         // 生成卡：进行中或已有产物时不默认折叠（缩略图是主要反馈）；用户手动折叠过的仍以其偏好为准
         if (message.gen && (message.gen.status === 'running' || (message.gen.files || []).length)) {
             card.classList.remove('collapsed');
         }
         // 用户手动展开/收起过的卡片以偏好为准，覆盖上面的默认折叠规则。
-        if (!isRead && message.toolCallId) {
+        if (!isRead && !isBuiltinSkill && message.toolCallId) {
             const storedFold = toolFoldState.get(message.toolCallId);
             if (storedFold !== undefined) card.classList.toggle('collapsed', storedFold);
         }
@@ -925,31 +960,62 @@ export function createAIToolCards(ctx) {
         });
     }
 
+    // 围栏语言：markdown.js 把 info 语言写成 code 的 language-<lang> 类；代码块没有围栏信息时为空。
+    function codeBlockLanguage(block) {
+        const code = block.querySelector('code');
+        const cls = (code && code.className ? code.className : '') + ' ' + (block.className || '');
+        const m = cls.match(/language-([A-Za-z0-9_+.#-]+)/);
+        return m ? m[1].toLowerCase() : '';
+    }
+
+    // 代码块卡片：顶部信息条（左语言 / 右复制图标）+ 下方代码区。
+    // 结构必须保持「条 + 体」两层——条高固定、体负责横向滚动，滚动条只在代码区出现。
     function enhanceAICodeBlocks(root) {
         if (!root) return;
         const blocks = [];
         root.querySelectorAll('.md-code-frame').forEach((frame) => blocks.push(frame));
         root.querySelectorAll('pre').forEach((pre) => {
-            // 可视化卡片的源码面板自带复制按钮，不再包一层 ai-code-wrap
+            // 可视化卡片的源码面板自带复制按钮，不再包一层代码卡片
             if (!pre.closest('.md-code-frame') && !pre.closest('.ai-widget')) blocks.push(pre);
         });
         for (const block of blocks) {
+            // 增量渲染可能对同一批节点重复走增强链，已包过的不再包第二层
+            if (block.parentNode && block.parentNode.classList.contains('ai-code-body')) continue;
             const code = block.querySelector('code') || block;
-            const wrap = document.createElement('div');
-            wrap.className = 'ai-code-wrap';
-            block.parentNode.insertBefore(wrap, block);
-            wrap.appendChild(block);
+            const card = document.createElement('div');
+            card.className = 'ai-code-card';
+            const bar = document.createElement('div');
+            bar.className = 'ai-code-bar';
+            const lang = document.createElement('span');
+            lang.className = 'ai-code-lang';
+            lang.textContent = codeBlockLanguage(block) || '文本';
             const button = document.createElement('button');
             button.type = 'button';
             button.className = 'ai-code-copy';
             button.dataset.tip = '复制代码';
-            button.textContent = '复制';
+            button.setAttribute('aria-label', '复制代码');
+            button.innerHTML = iconSvg('copy', 13);
             button.addEventListener('click', (e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                copyText(code.textContent || '', '代码');
+                Promise.resolve(copyText(code.textContent || '', '代码')).then((ok) => {
+                    if (ok === false || button.dataset.copied) return;
+                    // 图标按钮没有文字反馈，短暂换成勾号（1s 后由重渲染或定时器复原）
+                    button.dataset.copied = '1';
+                    button.innerHTML = iconSvg('check', 13);
+                    setTimeout(() => {
+                        if (!button.isConnected) return;
+                        delete button.dataset.copied;
+                        button.innerHTML = iconSvg('copy', 13);
+                    }, 1000);
+                }).catch(() => {});
             });
-            wrap.appendChild(button);
+            bar.append(lang, button);
+            const body = document.createElement('div');
+            body.className = 'ai-code-body';
+            block.parentNode.insertBefore(card, block);
+            body.appendChild(block);
+            card.append(bar, body);
         }
     }
 

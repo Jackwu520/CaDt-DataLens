@@ -148,8 +148,10 @@ func (e *Chromium) ShuttingDown() {
 }
 
 func (e *Chromium) errorCallback(err error) {
+	// 本地补丁（2026-11-16）：上游在这里回调后无条件 os.Exit(1)。本仓把内嵌 WebView2
+	// 跑在独立宿主线程上，页面 postMessage 非字符串等可恢复错误会走到这里，
+	// 直接退进程等于整个应用闪退。改为只通知回调方，由调用方隔离故障实例。
 	e.globalErrorCallback(err)
-	os.Exit(1)
 }
 
 func (e *Chromium) SetErrorCallback(callback func(error)) {
@@ -402,6 +404,9 @@ func (e *Chromium) MessageReceived(sender *ICoreWebView2, args *ICoreWebView2Web
 	message, err := args.TryGetWebMessageAsString()
 	if err != nil {
 		e.errorCallback(err)
+		// 本地补丁（2026-11-16）：非字符串消息取不到内容，继续往下会用空消息回显，
+		// 直接丢弃这条派发（上游在这里只记录、不返回）。
+		return 0
 	}
 
 	if HasCapability(e.webview2RuntimeVersion, GetAdditionalObjects) {

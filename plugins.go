@@ -28,7 +28,12 @@ const (
 	pluginZipMaxSize   = int64(64 << 20) // 解压总量上限 64 MB
 	pluginZipMaxFiles  = 1000
 	pluginIconMaxSize  = int64(128 << 10) // 图标上限 128 KB
-	pluginAssetMaxSize = int64(16 << 20)  // 单个资产上限 16 MB
+	pluginAssetMaxSize = int64(16 << 20)  // 图片资产上限 16 MB
+	// 数据/模型类资产上限 512 MB（作者拍板）：命令分类器 ONNX 插件的 model_quantized.onnx
+	// ≈ 22MB（2026-11-16：原 16MB 图片上限把模型挡在 readAsset 之外，语义层静默熔断退化
+	// 为线性层）；给足余量避免下次换更大的模型又触顶。zip 总量上限 64MB 由安装侧兜底，
+	// 大模型只能走「首启按需下载到插件目录」路线，不受此限约束。
+	pluginDataAssetMaxSize = int64(512 << 20)
 )
 
 var pluginAssetMimeTypes = map[string]string{
@@ -39,6 +44,23 @@ var pluginAssetMimeTypes = map[string]string{
 	".webp": "image/webp",
 	".bmp":  "image/bmp",
 	".svg":  "image/svg+xml",
+}
+
+// 数据/模型类资产（与图片共用 ReadPluginAsset 通道）：tokenizer.json / ort.min.js /
+// worker.js / model_quantized.onnx 等。扩展名进白名单才可读，防插件目录被当任意文件源。
+var pluginDataAssetMimeTypes = map[string]string{
+	".json": "application/json",
+	".js":   "text/javascript",
+	".mjs":  "text/javascript",
+	".wasm": "application/wasm",
+	".onnx": "application/octet-stream",
+	".bin":  "application/octet-stream",
+	".gguf": "application/octet-stream",
+	".txt":  "text/plain",
+	".md":   "text/markdown",
+	".csv":  "text/csv",
+	".yaml": "text/yaml",
+	".yml":  "text/yaml",
 }
 
 var (
@@ -208,8 +230,9 @@ func readPluginManifest(dir string) (*pluginManifest, error) {
 	return &m, nil
 }
 
-// ReadPluginAsset 读取插件目录内的图片资产并转为 data URL。
-// relPath 相对插件目录，仅支持图片格式，且不允许越出插件目录。
+// ReadPluginAsset 读取插件目录内的资产并转为 data URL。
+// relPath 相对插件目录，支持图片（16MB 上限）与数据/模型文件（48MB 上限），
+// 且不允许越出插件目录。
 func (a *App) ReadPluginAsset(id, relPath string) (string, error) {
 	id = strings.TrimSpace(id)
 	if !pluginIdPattern.MatchString(id) {
@@ -227,9 +250,15 @@ func (a *App) ReadPluginAsset(id, relPath string) (string, error) {
 			return "", fmt.Errorf("资产路径无效：%q", relPath)
 		}
 	}
-	mime, ok := pluginAssetMimeTypes[strings.ToLower(filepath.Ext(rel))]
+	ext := strings.ToLower(filepath.Ext(rel))
+	mime, ok := pluginAssetMimeTypes[ext]
+	maxSize := pluginAssetMaxSize
 	if !ok {
-		return "", fmt.Errorf("资产仅支持图片格式：%s", relPath)
+		mime, ok = pluginDataAssetMimeTypes[ext]
+		maxSize = pluginDataAssetMaxSize
+	}
+	if !ok {
+		return "", fmt.Errorf("资产仅支持图片或数据文件格式：%s", relPath)
 	}
 	root, err := pluginsRootFor(readAppConfig().PluginsPathMode)
 	if err != nil {
@@ -258,8 +287,8 @@ func (a *App) ReadPluginAsset(id, relPath string) (string, error) {
 	if err != nil || !info.Mode().IsRegular() {
 		return "", fmt.Errorf("资产不存在：%s", relPath)
 	}
-	if info.Size() > pluginAssetMaxSize {
-		return "", fmt.Errorf("资产过大（超过 %d MB）", pluginAssetMaxSize/(1<<20))
+	if info.Size() > maxSize {
+		return "", fmt.Errorf("资产过大（超过 %d MB）", maxSize/(1<<20))
 	}
 	raw, err := os.ReadFile(realTarget)
 	if err != nil {

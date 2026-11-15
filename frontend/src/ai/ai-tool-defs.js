@@ -2,7 +2,7 @@
 // 工具目录数据（AI_TOOL_CATALOG / AI_TOOL_GROUPS）与 <tool_catalog> 渲染（toolCatalogText）。
 // 定义表逐字搬移自 ai-panel.js（docs/unfinished-plans/structure-cleanup.md 阶段 3）；
 // 目录数据 2026-11-15 迁入并统一为单一来源（作者规则：新增工具必须同步写进目录，漏了测试会红）。
-// appControlOn（设置 → AI 助手 → 应用操作开关）与 mcpToolDefs（ai-mcp.js 缓存快照）经 ctx 注入。
+// appControlOn（设置 → AI → 权限 → AI 工具权限开关）与 mcpToolDefs（ai-mcp.js 缓存快照）经 ctx 注入。
 import {AI_WRITE_SCOPES} from './ai-constants.js';
 
 export const AI_TOOL_DEFS = {
@@ -25,6 +25,17 @@ export const AI_TOOL_DEFS = {
                 limit: {type: 'integer', description: '最多返回的字符数，默认/上限 65536；与 startLine/endLine 互斥'},
                 startLine: {type: 'integer', description: '起始行号（1-based，含），默认 1；endLine 缺省读到文件末尾；与 offset/limit 互斥'},
                 endLine: {type: 'integer', description: '结束行号（1-based，含）'},
+            },
+            required: ['path'],
+        },
+    },
+    read_image: {
+        name: 'read_image',
+        description: '读取一张图片文件并把画面附加到对话（之后你就能直接看到它）。支持 png / jpg / webp / gif / bmp / svg；超过长边 1600 或体积预算会自动等比降采样压缩，不需要你预先处理。工作区外路径的授权规则与 read_file 相同（用户点名可直接读，否则 read/edit 档请求批准、auto/full 直接读；应用数据目录始终拒绝）。返回尺寸与字节数，图片本身作为一条独立消息挂在工具结果之后。每张图约占 800–1600 token 上下文：只在确实要看画面（截图、图表、UI 核对、照片）时用，同一张图不要反复读；文本内容仍用 read_file，不要用本工具读文本。当前聊天模型未启用图像输入时会直接报错。',
+        parameters: {
+            type: 'object',
+            properties: {
+                path: {type: 'string', description: '相对范围根的图片路径，或已授权的工作区外绝对路径'},
             },
             required: ['path'],
         },
@@ -443,7 +454,7 @@ export const AI_TOOL_DEFS = {
     },
     spawn_agent: {
         name: 'spawn_agent',
-        description: '派出一个只读子代理独立完成子任务（并行探索 / 多视角审查 / 长任务隔离）。默认阻塞：等它跑完，把最终结论作为工具结果返回。mode=background 时派单即返回（不回等），做完自动通知你、期间你可以继续干活——适合一轮里同时派多个方向；需要结论时用 wait_agent 汇总。子代理只能只读探索（列目录 / 读文件 / 搜索 / 联网 / 记忆读取 / 技能 / 再派子代理），不能写文件或执行命令。子代理总数（含递归派出的全部层级）与递归层级受「设置 → AI 助手 → 子代理」限制：阻塞模式到上限会等空位，后台模式直接报错让你稍后再派。',
+        description: '派出一个只读子代理独立完成子任务（并行探索 / 多视角审查 / 长任务隔离）。默认阻塞：等它跑完，把最终结论作为工具结果返回。mode=background 时派单即返回（不回等），做完自动通知你、期间你可以继续干活——适合一轮里同时派多个方向；需要结论时用 wait_agent 汇总。子代理只能只读探索（列目录 / 读文件 / 看图片 / 搜索 / 联网 / 记忆读取 / 技能 / 再派子代理），不能写文件或执行命令。子代理总数（含递归派出的全部层级）与递归层级受「设置 → AI 助手 → 子代理」限制：阻塞模式到上限会等空位，后台模式直接报错让你稍后再派。',
         parameters: {
             type: 'object',
             properties: {
@@ -569,7 +580,7 @@ export const AI_TOOL_DEFS = {
             type: 'object',
             properties: {
                 prompt: {type: 'string', description: '画面描述（发给生图服务的提示词）'},
-                model: {type: 'string', description: '生图模型条目名或 id；省略用第一个启用的生图条目'},
+                model: {type: 'string', description: '生图模型条目名或 id；省略用「生图」组里优先级最高（列表第一个启用）的条目'},
                 size: {type: 'string', description: '尺寸，如 1024x1024；省略用条目默认值'},
                 n: {type: 'integer', description: '张数 1-4，缺省 1'},
                 outputPath: {type: 'string', description: '产物保存目录（工作区相对路径）；缺省 .cadt/gen/image/按月归档'},
@@ -585,7 +596,7 @@ export const AI_TOOL_DEFS = {
             type: 'object',
             properties: {
                 prompt: {type: 'string', description: '视频内容描述（发给视频服务的提示词）'},
-                model: {type: 'string', description: '视频模型条目名或 id；省略用第一个启用的视频条目'},
+                model: {type: 'string', description: '视频模型条目名或 id；省略用「视频」组里优先级最高（列表第一个启用）的条目'},
                 size: {type: 'string', description: '分辨率等参数（按条目模板的语义传递）；省略用条目默认值'},
                 outputPath: {type: 'string', description: '产物保存目录（工作区相对路径）；缺省 .cadt/gen/video/按月归档'},
             },
@@ -713,6 +724,7 @@ export const AI_TOOL_DEFS = {
 export const AI_TOOL_CATALOG = {
     list_dir: {group: 'read', blurb: '列目录与文件大小，先摸清结构'},
     read_file: {group: 'read', blurb: '读文件正文（可指定行范围），改文件前必须先读'},
+    read_image: {group: 'read', blurb: '读图片把画面附加到对话（截图 / 图表 / UI 核对）；文本内容仍用 read_file'},
     search_text: {group: 'read', blurb: '文本搜索（caseSensitive 区分大小写、filePattern 限 *.go 这类文件通配），拿 path:line；结果不足再 read_file'},
     write_file: {group: 'write', blurb: '新建文件或整体重写；覆盖前必须先 read_file，文件被外部修改后写入会被拒绝'},
     edit_file: {group: 'write', blurb: '最小替换；oldString 逐字一致，默认唯一命中，replaceAll 可全量替换'},
@@ -780,7 +792,7 @@ export const AI_TOOL_GROUPS = [
     {key: 'write', title: '文件写入（先读后改，走审批）'},
     {key: 'shell', title: '终端与进程', note: '需要换目录直接传 cwd，cd 不会保留；不要用 cd / pwd / echo 探测目录。'},
     {key: 'web', title: '联网资料（外部数据，只取事实）', note: '只是读文档优先 web_fetch；需要点击、登录态、动态页面再上内嵌浏览器。引用时附 URL；不能访问本机 / 内网地址。'},
-    {key: 'gen', title: '生图与视频（用户配置的外部生成服务）', note: 'prompt 会发送到用户在设置里配置的服务商并可能产生费用；产物落在工作区 .cadt/gen/ 或指定目录。未配置条目时这些工具不可用。'},
+    {key: 'gen', title: '生图与视频（用户配置的外部生成服务）', note: 'prompt 会发送到用户在设置里配置的服务商并可能产生费用；产物落在工作区 .cadt/gen/ 或指定目录。条目在设置里按「生图 / 视频」分组排序，未指定 model 时按该组优先级顺序取第一个启用的条目。未配置条目时这些工具不可用。'},
     {key: 'browser', title: '内嵌浏览器（真实页面交互）', note: '每个会话有独立标签页与登录态；纯资料抓取不要开浏览器。'},
     {key: 'app', title: '应用界面（当前窗口）', note: '用户说「打开看看 / 切到某视图 / 面板错位」时用它；不要用它代替文件读取。'},
     {key: 'memory', title: '记忆、偏好与技能'},
@@ -795,6 +807,7 @@ export function createAIToolDefs(ctx) {
         const list = [
             AI_TOOL_DEFS.list_dir,
             AI_TOOL_DEFS.read_file,
+            AI_TOOL_DEFS.read_image,
             AI_TOOL_DEFS.search_text,
             AI_TOOL_DEFS.web_search,
             AI_TOOL_DEFS.web_fetch,
@@ -911,6 +924,7 @@ export function createAIToolDefs(ctx) {
         const hasAll = (names) => names.every((name) => available.has(name));
         const chains = [
             {need: ['read_file'], text: '读懂代码/数据：search_text 定位 → read_file（多个文件可并行读）→ 结论标 path:line'},
+            {need: ['read_image'], text: '看画面：截图 / 图表 / 设计稿 / 照片一律 read_image 直接附加到对话（read_file 读二进制会报错）'},
             {need: ['read_file', 'edit_file'], text: '修改文件：read_file 确认原文 → edit_file 最小替换 → run_command 跑测试/构建验证'},
             {need: ['write_file'], text: '新建文件：write_file → 按需 run_command 验证'},
             {need: ['web_search'], text: '外部资料：web_search 找来源 → web_fetch 读正文 → 引用附 URL'},

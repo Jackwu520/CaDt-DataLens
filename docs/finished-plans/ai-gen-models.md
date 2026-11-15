@@ -92,6 +92,13 @@
 - 「测试连接」按钮：Go 新绑定 `AIGenModelTest(genCfgJSON, prompt)`——发一次最小请求（小尺寸/1 张），返回耗时与产物校验结果，仿 `AITestConnection`（ai_chat.go:126）。
 - 表单含：名称/类型/启用、连接（baseURL/path/proxy/timeout/apiKey/headers 键值表）、请求体模板（textarea）、输出（resultType/resultPath/errorPath）、缺省参数、异步段（kind=video 或勾选异步时展开：submitPath/jobIdPath/pollPath/statusPath/doneValue/failedValue/pollIntervalSec/maxPolls）。
 
+**实施补充（2026-11-16）：分组与优先级**
+
+- 列表按 `kind` 分成「生图 / 视频」两组渲染（组头报类型与条数），每组内条目带 `#n` 优先级徽标（第一个启用项标 `#1 缺省`），卡上的上移 / 下移调整组内顺序；空组给一条说明卡而不是整组消失，免得看不出还能配视频。
+- **优先级口径 = 同类型条目在 `genModels[]` 里的先后**：`defaultGenModelOf` 取第一个启用的条目，就是工具未传 `model` 时的选择。因此重排只允许在**同类型的槽位之间交换**（`moveGenModelWithinKind` 纯函数，另一组的相对顺序与所有条目的绝对位置都不动）——整体 splice 会把视频条目挪进生图之间，看着没变、视频组的缺省却被悄悄改掉。
+- 复制条目插在原件的下一位（副本优先级紧随其后），新建 / AI 代配（`set_gen_model`）仍追加到数组末尾即该组最后一位。
+- 编辑器里的两处多行输入（自定义请求头 / 请求体模板）改为独占一行的 `.set-row-top`：`.set-control` 的 210px 定宽会把 textarea 压成一条缝。弹窗里的三个 select（类型 / 代理 / 产物形态）在 `openAIDialog` 之后调 `ctx.enhanceSelect`（main.js → ai-panel → 设置 ctx 注入），与设置页共用同一套行式下拉浮层。
+
 ### 3.3 Go 执行通道：`ai_gen.go`（新）
 
 - **同步运行** `AIGenModelRun(reqId, genCfgJSON, paramsJSON)`：渲染模板 → `newAIHTTPClient` POST（`context.WithTimeout(timeoutSec)`，读体限长 32MB）→ `errorPath` 判错 → 提取产物（b64 解码 / url 下载，下载走同一 client，限长 220MB）→ 落盘 → 返回 `{files: [{path, bytes, mime, width?, height?}], elapsedMs}`。仿 `aiUsageQuery` 的超时与错误摘要风格。

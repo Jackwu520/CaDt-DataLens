@@ -1,6 +1,11 @@
 // ai-gen-settings.js：设置 → AI → 生图与视频模型 pane（条目列表 + 编辑器弹窗 + 测试连接）。
 // 编辑器用居中动态弹窗（openAIDialog 三件套，仿计时器创建对话框），表单控件一律走
 // core/form-controls.js 工厂（表单控件硬规范：禁止裸原生控件）。条目数据层在 ai-gen-model.js。
+//
+// 列表按类型分成「生图 / 视频」两组渲染，组内顺序即优先级顺序（ai-gen-model 的
+// defaultGenModelOf 取同类型第一个启用的条目）——数据仍是同一个 genModels[]，
+// 上移/下移只在同类型的槽位之间交换（moveGenModelWithinKind），不会打乱另一组。
+import {iconSvg} from '../core/icons.js';
 import {createInput, createSelect, createSwitch, createTextarea} from '../core/form-controls.js';
 import {aiNowId} from './ai-constants.js';
 import {
@@ -12,6 +17,7 @@ import {
     genHeaderMap,
     genJoinURL,
     isAsyncGenModel,
+    moveGenModelWithinKind,
     normalizeGenModel,
     renderGenJson,
 } from './ai-gen-model.js';
@@ -36,6 +42,11 @@ export function createAIGenSettings(ctx, extras) {
 
     // ---------- 列表 ----------
 
+    // 按类型分组的渲染顺序固定为 GEN_KINDS（生图在前、视频在后），与数据里的穿插顺序无关。
+    function kindGroupOf(list, kind) {
+        return list.filter((entry) => entry && entry.kind === kind);
+    }
+
     function renderGenList() {
         if (!listEl) return;
         listEl.innerHTML = '';
@@ -59,12 +70,71 @@ export function createAIGenSettings(ctx, extras) {
             listEl.appendChild(empty);
             return;
         }
-        for (const entry of list) {
-            listEl.appendChild(buildRow(entry));
+        for (const kind of GEN_KINDS) {
+            const group = kindGroupOf(list, kind);
+            listEl.appendChild(buildKindHead(kind, group.length));
+            if (!group.length) {
+                listEl.appendChild(buildKindEmpty(kind));
+                continue;
+            }
+            for (const entry of group) listEl.appendChild(buildRow(entry, group));
         }
     }
 
-    function buildRow(entry) {
+    // 组头只报类型与条数：优先级这件事由条目的 #n / 缺省徽标与上移下移按钮的提示自己说明，
+    // 每组再挂一句重复的说明只是噪声（顶部说明已经交代过「组内顺序即优先级」）。
+    function buildKindHead(kind, count) {
+        const head = document.createElement('div');
+        head.className = 'set-group-title';
+        head.textContent = (GEN_KIND_LABELS[kind] || kind) + (count ? ' · ' + count + ' 条' : '');
+        return head;
+    }
+
+    function buildKindEmpty(kind) {
+        const card = document.createElement('div');
+        card.className = 'set-card';
+        const row = document.createElement('div');
+        row.className = 'set-row';
+        const main = document.createElement('div');
+        main.className = 'set-main';
+        const desc = document.createElement('div');
+        desc.className = 'set-desc';
+        desc.textContent = kind === 'video'
+            ? '还没有视频条目：generate_video 需要一条启用且配了提交/轮询端点的条目。'
+            : '还没有生图条目：generate_image 需要一条启用的条目。';
+        main.appendChild(desc);
+        row.appendChild(main);
+        card.appendChild(row);
+        return card;
+    }
+
+    // 组内上移 / 下移：只改同类型的槽位顺序，另一组的相对顺序与所有条目的绝对位置都不受影响。
+    function moveEntry(entry, delta) {
+        const list = getConfig().genModels || [];
+        const next = moveGenModelWithinKind(list, entry.id, delta);
+        if (next === list) return;
+        getConfig().genModels = next;
+        saveAIConfig();
+        renderGenList();
+    }
+
+    function moveButton(label, icon, disabled, onClick) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'dlg-btn gen-move';
+        btn.dataset.tip = label;
+        btn.setAttribute('aria-label', label);
+        btn.innerHTML = iconSvg(icon, 12);
+        btn.disabled = !!disabled;
+        if (!disabled) btn.addEventListener('click', onClick);
+        return btn;
+    }
+
+    function buildRow(entry, group) {
+        const pos = group.indexOf(entry);
+        const enabledEntries = group.filter((item) => item.enabled !== false);
+        const isDefault = entry.enabled !== false && enabledEntries[0] === entry;
+
         const card = document.createElement('div');
         card.className = 'set-card';
         const row = document.createElement('div');
@@ -75,6 +145,13 @@ export function createAIGenSettings(ctx, extras) {
         title.className = 'set-title';
         title.textContent = (entry.name || '（未命名条目）') + ' · ' + (GEN_KIND_LABELS[entry.kind] || entry.kind);
         if (entry.enabled === false) title.textContent += '（停用）';
+        const badge = document.createElement('span');
+        badge.className = 'gen-prio' + (isDefault ? ' is-default' : '');
+        badge.textContent = '#' + (pos + 1) + (isDefault ? ' 缺省' : '');
+        badge.dataset.tip = isDefault
+            ? '本组优先级第 ' + (pos + 1) + '，且是当前缺省条目：AI 不指定模型时用它'
+            : '本组优先级第 ' + (pos + 1) + (entry.enabled === false ? '（已停用，不参与缺省解析）' : '');
+        title.appendChild(badge);
         const desc = document.createElement('div');
         desc.className = 'set-desc';
         const target = isAsyncGenModel(entry) ? '异步：' + entry.submitPath + ' → ' + entry.pollPath : (entry.path || '未配置路径');
@@ -82,6 +159,10 @@ export function createAIGenSettings(ctx, extras) {
         main.append(title, desc);
         const control = document.createElement('div');
         control.className = 'set-control';
+        control.append(
+            moveButton('上移一位（提高优先级）', 'chevron-up', pos <= 0, () => moveEntry(entry, -1)),
+            moveButton('下移一位（降低优先级）', 'chevron-down', pos >= group.length - 1, () => moveEntry(entry, 1)),
+        );
         const enabledSwitch = createSwitch({
             checked: entry.enabled !== false,
             title: '启用 / 停用（停用的条目不参与缺省解析，AI 工具不再选中它）',
@@ -103,7 +184,12 @@ export function createAIGenSettings(ctx, extras) {
         copyBtn.textContent = '复制';
         copyBtn.addEventListener('click', () => {
             const clone = normalizeGenModel({...entry, id: '', name: (entry.name || '条目') + ' 副本'}, () => aiNowId('gen-'));
-            getConfig().genModels = entries().concat([clone]);
+            // 副本紧跟在原件之后：复制出来的条目优先级就在原件下一位，不必再手动上移
+            const list = entries();
+            const index = list.findIndex((item) => item.id === entry.id);
+            const next = list.slice();
+            next.splice(index < 0 ? next.length : index + 1, 0, clone);
+            getConfig().genModels = next;
             saveAIConfig();
             renderGenList();
             setSettingsStatus('已复制生成条目：' + clone.name, 'ok');
@@ -152,6 +238,29 @@ export function createAIGenSettings(ctx, extras) {
         return row;
     }
 
+    // 多行输入独占一行：塞进 .set-control 会被 210px 定宽压成一条窄缝（还和标题挤在同一行），
+    // 请求头 / 请求体模板这种要逐行读的内容根本看不清。沿用设置页「标题一行 + 控件整行」的
+    // .set-row-top 结构（style.css 里 `.set-row-top > textarea` 负责撑满宽度）。
+    function fieldStack(title, desc, controlEl) {
+        const row = document.createElement('div');
+        row.className = 'set-row-top';
+        const main = document.createElement('div');
+        main.className = 'set-main';
+        const t = document.createElement('div');
+        t.className = 'set-title';
+        t.textContent = title;
+        main.appendChild(t);
+        if (desc) {
+            const d = document.createElement('div');
+            d.className = 'set-desc gen-desc-preline';
+            d.textContent = desc;
+            main.appendChild(d);
+        }
+        row.appendChild(main);
+        if (controlEl) row.appendChild(controlEl);
+        return row;
+    }
+
     function groupTitle(text) {
         const title = document.createElement('div');
         title.className = 'set-group-title';
@@ -185,11 +294,11 @@ export function createAIGenSettings(ctx, extras) {
         const baseURLCtl = createInput({value: base.baseURL, placeholder: 'https://api.siliconflow.cn 或 http://127.0.0.1:8188（本地服务）', spellcheck: false});
         const pathCtl = createInput({value: base.path, placeholder: '/v1/images/generations', spellcheck: false});
         const headersCtl = createTextarea({
-            value: headersToText(base.headers), rows: 3, spellcheck: false,
+            value: headersToText(base.headers), rows: 4, spellcheck: false,
             placeholder: '每行一条：Key: Value\nAuthorization: Bearer {{apiKey}}',
         });
         const bodyCtl = createTextarea({
-            value: base.bodyTemplate, rows: 6, spellcheck: false,
+            value: base.bodyTemplate, rows: 8, spellcheck: false,
             placeholder: '{"prompt":{{prompt}},"size":{{size}}}',
         });
         const resultTypeCtl = createSelect({
@@ -220,8 +329,8 @@ export function createAIGenSettings(ctx, extras) {
         body.appendChild(groupTitle('请求'));
         body.appendChild(fieldRow('服务地址 baseURL', '同步型/异步型共用的服务根地址', baseURLCtl.element));
         body.appendChild(fieldRow('生成端点 path', '同步型：直接生成接口；异步型：留空（走下方提交端点）', pathCtl.element));
-        body.appendChild(fieldRow('自定义请求头', '每行一条「Key: Value」；{{apiKey}} 会替换为上方密钥', headersCtl.element));
-        body.appendChild(fieldRow('请求体模板',
+        body.appendChild(fieldStack('自定义请求头', '每行一条「Key: Value」；{{apiKey}} 会替换为上方密钥', headersCtl.element));
+        body.appendChild(fieldStack('请求体模板',
             '占位符渲染为 JSON 字面量（字符串自动带引号转义），模板里不要手写引号：\n{"prompt":{{prompt}}} 是对的，"prompt":"{{prompt}}" 是错的',
             bodyCtl.element));
         body.appendChild(groupTitle('响应'));
@@ -272,6 +381,11 @@ export function createAIGenSettings(ctx, extras) {
         ctx.openAIDialog((genEditorState.editingId ? '编辑生成条目' : '新建生成条目') +
             (genEditorState.entry && genEditorState.entry.name ? ' · ' + genEditorState.entry.name : ''),
             [body], [testBtn, statusLine, cancelBtn, saveBtn], {top: true, wide: true});
+        // 弹窗里的三个下拉同样走设置页的行式下拉（enhanceSelect）：原生 select 会露出系统下拉，
+        // 跟自绘触发器混在一起像两套控件。必须在 openAIDialog 之后增强——wrap 要插进已入 DOM 的节点。
+        if (typeof ctx.enhanceSelect === 'function') {
+            for (const ctl of [kindCtl, proxyCtl, resultTypeCtl]) ctx.enhanceSelect(ctl.control);
+        }
     }
 
     function isProxyURL(value) {

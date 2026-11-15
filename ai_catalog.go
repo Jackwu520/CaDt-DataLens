@@ -14,8 +14,8 @@ import (
 	"time"
 )
 
-// 模型配置表（model catalog）：内置快照在前端 model-catalog.js，远端由市场单文件仓库的
-// catalog.json 提供。Go 侧只做三件事——拉取并挡掉明显垃圾、落到 appdata 缓存、把缓存读回前端；
+// 模型配置表（model catalog）：内置快照在前端 model-catalog.js，远端由 cadt-datalens-data/model-catalog
+// 仓库的 catalog.json 提供。Go 侧只做三件事——拉取并挡掉明显垃圾、落到 appdata 缓存、把缓存读回前端；
 // 字段归一与合并规则全在 model-catalog.js（单一来源），两边各写一份必然会漂。
 const modelCatalogFileMax = 2 << 20
 

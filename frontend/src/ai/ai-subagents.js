@@ -146,6 +146,9 @@ export function createAISubagents(ctx) {
     const profileOf = ctx.profileOf;
     const configForProfile = ctx.configForProfile;
     const executeTool = ctx.executeTool;
+    // read_image 把画面挂成独立 user 消息：必须在工具批次结束后落盘（批次中途 push 会拆开
+    // assistant(tool_calls) 与 tool 结果），与主循环共用面板那一份 flush。
+    const flushToolImages = typeof ctx.flushToolImages === 'function' ? ctx.flushToolImages : null;
     const buildApiMessages = ctx.buildApiMessages;
     const refreshToolWrap = ctx.refreshToolWrap;
     const renderSessionList = ctx.renderSessionList;
@@ -163,6 +166,11 @@ export function createAISubagents(ctx) {
     const getConfig = ctx.getConfig;
     const newAssistantMessage = ctx.newAssistantMessage;
     const getSessions = ctx.getSessions;
+    // 懒加载会话补正文（面板注入）：详情头部的状态兜底要用它——只补「所属会话」这一个，
+    // 绝不为了找一个 spawn_agent 记录去扫全部会话。
+    const ensureSessionLoaded = typeof ctx.ensureSessionLoaded === 'function'
+        ? ctx.ensureSessionLoaded
+        : () => Promise.resolve(true);
     // 操作留痕（ai-panel 闭包 helper）：子代理工具拒绝落盘；activity 为空时静默降级
     const logActivity = ctx.logActivity;
     // 压缩判定需要「窗口大小」与「当前上下文估算」——与主会话同一口径，不另立一套
@@ -183,7 +191,7 @@ export function createAISubagents(ctx) {
     const AI_SUB_RECORDS_MAX = 20;
     const AI_SUB_SYSTEM_PROMPT = [
         '你是主代理派出的只读子代理：独立完成任务后输出最终结论，不与用户直接交互。',
-        '约束：只做只读探索（列目录 / 读文件 / 搜索 / 联网检索 / 记忆读取 / 技能加载）；不要尝试修改文件或执行命令；不要直接向最终用户发问（后台模式可用 ask_user 问主代理，由主代理决定）。',
+        '约束：只做只读探索（列目录 / 读文件 / 看图片 / 搜索 / 联网检索 / 记忆读取 / 技能加载）；不要尝试修改文件或执行命令；不要直接向最终用户发问（后台模式可用 ask_user 问主代理，由主代理决定）。',
         '你的工具范围在派出时已固定，无法从会话内放宽：范围外工具会被直接拒绝——不要换参数或写法重试，在最终结论中说明该限制即可，由主代理决定如何处理。',
         'timer_list 是主会话计时器的只读共享时钟：可用来对齐时间基准（正计时已计时长 / 倒计时剩余），但不能启动、停止或打标记；读数只是调用瞬间的快照，不会阻塞等待，不要靠反复调用来「等 N 秒」。',
         // 投递契约（§4.8）：投递层不截断（阶段 B 移除了 8000 字符上限），结论的紧凑性靠这里自律。
@@ -240,7 +248,7 @@ export function createAISubagents(ctx) {
 
     function subToolsForScope(depth, mode) {
         const list = [
-            AI_TOOL_DEFS.list_dir, AI_TOOL_DEFS.read_file, AI_TOOL_DEFS.search_text,
+            AI_TOOL_DEFS.list_dir, AI_TOOL_DEFS.read_file, AI_TOOL_DEFS.read_image, AI_TOOL_DEFS.search_text,
             AI_TOOL_DEFS.web_search, AI_TOOL_DEFS.web_fetch,
             AI_TOOL_DEFS.memory_list, AI_TOOL_DEFS.memory_read,
             // 主会话计时器的只读快照：子代理与孙代理共用本表，只有读权（不能启动 / 停止 / 打标记）
@@ -554,7 +562,14 @@ export function createAISubagents(ctx) {
                 row.appendChild(go);
                 row.addEventListener('click', () => {
                     hideChipsPop();
-                    openAgentView({toolCallId: agent.toolCallId, subId: agent.subId || '', name: agent.name || '子代理'});
+                    openAgentView({
+                        toolCallId: agent.toolCallId,
+                        subId: agent.subId || '',
+                        name: agent.name || '子代理',
+                        // 详情头部要在这个会话的正文里找 spawn_agent 记录：带上它，就能精确补
+                        // 这一个会话（懒加载下别的会话可能只有 meta）
+                        sessionId: (currentSession() || {}).id || '',
+                    });
                 });
                 el.chipsPop.appendChild(row);
             }
@@ -864,13 +879,36 @@ export function createAISubagents(ctx) {
         }
         const meta = view && view.toolCallId ? agentRegistry.get(view.toolCallId) : null;
         if (meta) return meta;
+        // 内存正文兜底：先扫「打开详情时所在的那个会话」，再扫其余**已载体的**会话
+        //（懒加载占位没有正文，扫也扫不到；旧实现会白扫几十个空数组）
+        const owner = view && view.sessionId ? sessionById(view.sessionId) : null;
+        const order = [];
+        if (owner) order.push(owner);
         for (const session of getSessions()) {
+            if (session !== owner && !session._stub) order.push(session);
+        }
+        for (const session of order) {
             for (const m of session.messages) {
                 const key = (m.agent && m.agent.key) || m.toolCallId;
                 if (m.role === 'tool' && m.name === 'spawn_agent' && key === view.toolCallId && m.agent) return m.agent;
             }
         }
+        // 所属会话还是占位（启动后没点开过它）：只补这一个会话，补完重画一次头部。
+        // 一次单文件读，不会变成「为了一个徽标扫全部会话」。
+        if (owner && owner._stub) requestAgentRecordHydrate(view, owner);
         return null;
+    }
+
+    // 已发起过「补所属会话」的视图（key = subId / toolCallId），避免每次重画都读一次盘
+    const agentRecordHydrateTried = new Set();
+
+    function requestAgentRecordHydrate(view, session) {
+        const key = String((view && (view.subId || view.toolCallId)) || '');
+        if (!key || agentRecordHydrateTried.has(key)) return;
+        agentRecordHydrateTried.add(key);
+        Promise.resolve(ensureSessionLoaded(session))
+            .then((ok) => { if (ok) scheduleAgentViewRender(view); })
+            .catch(() => {});
     }
 
     // 头部每次重建（按钮随状态增删，代价很小）；正文与输入行是持久节点，正文内部再按块增量。
@@ -1080,6 +1118,8 @@ export function createAISubagents(ctx) {
             toolCallId: String((spec && spec.toolCallId) || ''),
             subId: String((spec && spec.subId) || ''),
             name: String((spec && spec.name) || '子代理'),
+            // 详情所在的会话：头部状态兜底要靠它的正文（懒加载下别的会话可能只有 meta）
+            sessionId: String((spec && spec.sessionId) || ''),
             timer: 0,
             head: null,
             body: null,
@@ -1114,6 +1154,7 @@ export function createAISubagents(ctx) {
             toolCallId: String((spec && spec.toolCallId) || ''),
             subId: String((spec && spec.subId) || ''),
             name: String((spec && spec.name) || '子代理'),
+            sessionId: String((spec && spec.sessionId) || ''),
         };
         if (!target.toolCallId && !target.subId) return;
         if (!isFloatWindow() && typeof openAgentTab === 'function') {
@@ -1471,9 +1512,14 @@ export function createAISubagents(ctx) {
             subTranscriptPush(sub, {role: 'tool', name: call.name, text: String(toolMessage.content || '').slice(0, 600)});
         }
         if (sub.state !== 'running' || s.stopped) {
+            // 停止时排队的图片也挂上：它们属于已完成的工具结果，丢掉会让转录与请求对不上
+            if (flushToolImages) flushToolImages(sub.session);
             finalizeSubAgent(sub, s.stopped ? 'stopped' : sub.state);
             return;
         }
+        // 工具批次结束才挂 read_image 的图片消息（批次中途 push 会拆开 assistant(tool_calls)
+        // 与 tool 结果，下一轮请求会被服务商拒收）。
+        if (flushToolImages) flushToolImages(sub.session);
         // 队列里的投递必须先消费成 user 消息、再 push 空的 assistant 续写目标。
         // 顺序反了（assistant 在前）时，runSubRound 用 buildApiMessages(sub.session,
         // indexOf(assistant)) 组装请求，只取 assistant 之前的历史，这条投递被整体排除，

@@ -42,6 +42,33 @@ export function optionLabelParts(option) {
     };
 }
 
+// tooltip 文本组装（纯函数）：spans 为 [{text, truncated}]，只保留被截断的片段、\n 分行
+// （全局 tooltip 气泡对 \n 走 pre-line 换行）。返回空串 = 没有截断，调用方应移除 data-tip。
+export function tipTextFromSpans(spans) {
+    const hit = (spans || []).filter((s) => s && s.truncated && s.text);
+    return hit.length ? hit.map((s) => String(s.text)).join('\n') : '';
+}
+
+// 截断判定容差：子像素取整误差不算截断
+const TIP_TOLERANCE = 1;
+
+// 按 selectors 顺序找第一个命中的片段组做截断检测，被截断才挂 data-tip（完整文本 \n 分行）。
+// 富选项先查 .ss-main/.ss-sub（各自独立截断），单行选项落到 .ss-label；全程无截断则移除。
+function syncTipFromSpans(el, selectors) {
+    for (const sel of selectors) {
+        const nodes = [...el.querySelectorAll(sel)];
+        if (!nodes.length) continue;
+        const text = tipTextFromSpans(nodes.map((n) => ({
+            text: n.textContent,
+            truncated: n.scrollWidth > n.clientWidth + TIP_TOLERANCE,
+        })));
+        if (text) el.dataset.tip = text;
+        else el.removeAttribute('data-tip');
+        return;
+    }
+    el.removeAttribute('data-tip');
+}
+
 export function createSettingsSelect(deps) {
 
 const POP_ID = 'set-select-pop';
@@ -157,6 +184,8 @@ function positionActive() {
     popEl.style.overflowY = natural > geo.height + 1 ? 'auto' : 'hidden';
     popEl.scrollTop = scroll; // 重定位不打断列表内部滚动位置
     popEl.classList.toggle('up', geo.up);
+    // 几何定稿后才检测截断（滚动条出现会再挤掉几像素宽度），被省略号截断的选项挂 data-tip
+    itemNodes().forEach((item) => syncTipFromSpans(item, ['.ss-main, .ss-sub', '.ss-label']));
 }
 
 function scheduleReposition() {
@@ -389,6 +418,15 @@ function enhanceSelect(sel) {
     const inst = {sel, wrap, btn, label: btn.querySelector('.ss-label'), observer: null};
     btn.addEventListener('click', () => openInstance(inst));
     btn.addEventListener('keydown', onBtnKeydown(inst));
+    // 触发器显示值被省略号截断时，hover / 键盘聚焦给完整 tooltip。
+    // mouseover 先于 document 上的委托监听（冒泡顺序），data-tip 挂好后气泡才读得到；
+    // 下拉展开期间不挂（列表即将出现，气泡反而挡视线）。无截断则移除，未截断的选项不弹气泡。
+    const syncBtnTip = () => {
+        if (btn.getAttribute('aria-expanded') === 'true') { btn.removeAttribute('data-tip'); return; }
+        syncTipFromSpans(btn, ['.ss-label']);
+    };
+    btn.addEventListener('mouseover', syncBtnTip);
+    btn.addEventListener('focus', syncBtnTip);
     sel.addEventListener('change', () => refresh(inst));
     inst.observer = new MutationObserver((records) => {
         refresh(inst);

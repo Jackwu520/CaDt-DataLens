@@ -1,7 +1,7 @@
-// settings-select 纯函数测试：浮层定位（向下 / 向上翻转、触底限高、视口边界）。
+// settings-select 纯函数测试：浮层定位（向下 / 向上翻转、触底限高、视口边界）+ 截断 tooltip 文本组装。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {SS_POP_LIMITS, computePopWidth, computePopGeometry, optionLabelParts} from './settings-select.js';
+import {SS_POP_LIMITS, computePopWidth, computePopGeometry, optionLabelParts, tipTextFromSpans} from './settings-select.js';
 
 test('optionLabelParts：data-subtitle 决定两行，普通选项仍是单行', () => {
     assert.deepEqual(optionLabelParts({text: '专业严谨', dataset: {subtitle: '清晰、准确、值得信赖'}}),
@@ -10,6 +10,27 @@ test('optionLabelParts：data-subtitle 决定两行，普通选项仍是单行',
         {title: '普通选项', subtitle: ''});
     assert.deepEqual(optionLabelParts({text: '无 dataset'}), {title: '无 dataset', subtitle: ''});
     assert.deepEqual(optionLabelParts(null), {title: '', subtitle: ''});
+});
+
+test('tipTextFromSpans：只保留被截断的片段并 \\n 分行，全未截断返回空串', () => {
+    // 单行选项：只有 label 一个片段
+    assert.equal(tipTextFromSpans([{text: 'sensenova-6.8-flash-li…', truncated: true}]),
+        'sensenova-6.8-flash-li…');
+    // 富选项：主截断副未截断 → 只出主；都截断 → 主\n副
+    assert.equal(tipTextFromSpans([
+        {text: 'deepseek-flash · Deepse…', truncated: true},
+        {text: '深度求索官方直连', truncated: false},
+    ]), 'deepseek-flash · Deepse…');
+    assert.equal(tipTextFromSpans([
+        {text: 'deepseek-v4-pro · Deep…', truncated: true},
+        {text: '适合复杂推理与长文写作', truncated: true},
+    ]), 'deepseek-v4-pro · Deep…\n适合复杂推理与长文写作');
+    // 没有任何截断 → 空串（调用方应移除 data-tip，不弹气泡）
+    assert.equal(tipTextFromSpans([{text: 'glm-5.3 · SenseNova', truncated: false}]), '');
+    assert.equal(tipTextFromSpans([]), '');
+    assert.equal(tipTextFromSpans(null), '');
+    // 空 text 的截断片段不参与组装
+    assert.equal(tipTextFromSpans([{text: '', truncated: true}]), '');
 });
 
 const {gap, edge, maxHeight} = SS_POP_LIMITS;

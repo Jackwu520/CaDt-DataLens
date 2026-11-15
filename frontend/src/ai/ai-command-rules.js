@@ -446,6 +446,7 @@ export const DANGER_LABELS = {
     'git-update-ref-delete': '删除 Git 引用（update-ref -d）',
     'robocopy-mirror': '镜像目录（会删除目标端多余文件）',
     'interpreter-inline-code': '解释器内联代码执行（-e / -c / -Command）',
+    'secret-env-exposure': '环境变量值泄漏（软件存储的密钥类变量）',
 };
 
 // 原文级危险模式：所有命令都扫，不依赖分段成功（红队 F3）。
@@ -647,6 +648,141 @@ export function analyzeDangerousCommand(command) {
         }
     }
     return {dangerous: false, ruleId: '', label: ''};
+}
+
+// ---------- 环境变量值泄漏（作者拍板口径，2026-11-16） ----------
+// AI 系统上下文明确告知模型「要用某个变量就在命令里引用 $名称 / %名称%」，而 env_list
+// 存的正是密钥类变量：`echo $OPENAI_API_KEY` 曾被只读白名单与 AI 分类器接连放行。
+// 口径：只硬拦**软件 env_list 存储（启用中）的变量名**——命令引用这些名字或整表 dump
+// 环境变量时强制人工审批：复用 dangerous 通道（decidePermission 在会话/项目授权与
+// 分类器之前直接 ask singleUse，端侧与 AI 分类器均无权放行；完全权限档用户自担）。
+// 没存在软件里的变量走正常流程，不拦。
+
+function envVarNamePattern(name) {
+    const esc = String(name).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    // bash $NAME / ${NAME}（含 ${NAME:-x}）· PowerShell $env:NAME / Env:NAME · cmd %NAME% / %NAME:…%
+    return new RegExp(
+        '\\$\\{?' + esc + '(?![A-Za-z0-9_])'
+        + '|\\benv:\\s*' + esc + '(?![A-Za-z0-9_])'
+        + '|%' + esc + '[:%]',
+        'i');
+}
+
+function isEnvAssignment(arg) {
+    return /^[A-Za-z_][A-Za-z0-9_]*=/.test(String(arg));
+}
+
+// 受管名字是否出现在文本里（大小写不敏感的整词包含）。
+function mentionsManagedName(text, names) {
+    const lower = String(text || '').toLowerCase();
+    return names.some((n) => lower.includes(n.toLowerCase()));
+}
+
+// 整表 dump：输出会包含全部环境变量值（名单非空时即命中）。
+// 注意不能用 resolveExe：它把 env 当包装器跳过，裸 env（后面没有真命令）在这里
+// 恰恰是 dump 本体。这里自带一个把 env 当终点的解析。
+function envDumpSegmentRule(tokens, names) {
+    let exe = '';
+    let cmdIdx = -1;
+    for (let i = 0; i < tokens.length; i += 1) {
+        const token = String(tokens[i]);
+        if (isEnvAssignment(token)) continue;
+        const candidate = commandExecutable(token);
+        if (candidate === 'nice' || candidate === 'nohup' || candidate === 'command' || candidate === 'time') continue;
+        exe = candidate;
+        cmdIdx = i;
+        break;
+    }
+    if (!exe) return '';
+    const args = tokens.slice(cmdIdx + 1);
+    // env 后面还有真命令（非赋值、非旗标）→ 只是在包装执行，dump 判定交给该命令自身。
+    const hasCommandArg = args.some((arg) => !isEnvAssignment(arg) && !String(arg).startsWith('-'));
+    const hasManagedArg = args.some((arg) => names.some((n) => String(arg).toLowerCase() === n.toLowerCase()));
+    if (exe === 'printenv') return (!args.length || hasManagedArg) ? 'printenv 打印环境变量值' : '';
+    if (exe === 'env' && !hasCommandArg) return 'env 无目标命令时打印全部环境变量';
+    // cmd 的 `set NAME` 会打印以 NAME 开头的全部变量值；bash 的同名形式无害，但分不清
+    // 目标 shell，按保守处理：参数里出现受管名字（或无参）即判。
+    if (exe === 'set' && (!args.length || args.some((arg) => !String(arg).startsWith('-') && hasManagedArg))) {
+        return 'set 打印 shell 变量';
+    }
+    if (exe === 'export' && !args.length) return 'export 无参数打印全部环境变量';
+    if ((exe === 'declare' || exe === 'typeset')
+        && (shortFlagSet(args).has('p') || shortFlagSet(args).has('x'))) {
+        return 'declare -p/-x 打印变量值';
+    }
+    // PowerShell Env: 驱动器整表（Get-ChildItem Env: / gci env: / ls env:…）；带具体名字的
+    // 形态（Env:NAME）已由名字级模式覆盖。
+    if (args.some((arg) => /^env:$/i.test(String(arg)))) return '列出全部环境变量（PowerShell Env: 驱动器）';
+    return '';
+}
+
+/**
+ * 环境变量值泄漏检测：managedNames 传软件 env_list 里启用中的变量名（只传名字）。
+ * 返回形状与 analyzeDangerousCommand 一致，命中时直接并入 dangerous 通道。
+ */
+export function analyzeEnvValueExposure(command, managedNames) {
+    const names = (Array.isArray(managedNames) ? managedNames : [])
+        .map((n) => String(n == null ? '' : n).trim())
+        .filter((n) => /^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(n));
+    const text = commandText(command);
+    if (!text || !names.length) return {dangerous: false};
+    // 名字级引用：整段原文扫，覆盖命令替换 / 重定向等无法分段的形态。
+    // 所有模式都要求展开语法前缀（$ / env: / %），纯提及变量名不拦。
+    for (const name of names) {
+        if (envVarNamePattern(name).test(text)) {
+            return {
+                dangerous: true,
+                ruleId: 'secret-env-exposure',
+                label: '命令引用了软件存储的环境变量 ' + name + '（可能回显其值）',
+                segment: text,
+            };
+        }
+    }
+    const split = splitCommandSegments(command, {keepCdCompound: true});
+    if (split) {
+        for (const segment of split.segments) {
+            const tokens = commandTokens(segment);
+            if (!tokens || !tokens.length) {
+                // 分词失败的段（引号内的命令替换分段器看不见，如 echo "$(printenv KEY)"）：
+                // 内容无法静态求值，出现受管名字或 env 读取即保守判泄漏。
+                if (mentionsManagedName(segment, names) || /\bprintenv\b/i.test(segment) || /\$env:/i.test(segment)) {
+                    return {
+                        dangerous: true,
+                        ruleId: 'secret-env-exposure',
+                        label: '命令含无法解析的子命令且涉及软件存储的环境变量（可能回显其值）',
+                        segment,
+                    };
+                }
+                continue;
+            }
+            const reason = envDumpSegmentRule(tokens, names);
+            if (reason) {
+                return {
+                    dangerous: true,
+                    ruleId: 'secret-env-exposure',
+                    label: reason + '，会输出软件存储的环境变量值',
+                    segment,
+                };
+            }
+        }
+    } else if (mentionsManagedName(text, names) || /\bprintenv\b/i.test(text) || /\$env:/i.test(text) || /\benv:\s*$/im.test(text)) {
+        // 无法分段（重定向 / 命令替换 / 多行）且涉及受管变量或环境读取：保守判定。
+        return {
+            dangerous: true,
+            ruleId: 'secret-env-exposure',
+            label: '命令无法静态解析且涉及软件存储的环境变量（可能输出其值）',
+            segment: text,
+        };
+    }
+    if (/\breg(\.exe)?\s+query\b[^\n]*\benvironment\b/i.test(text)) {
+        return {
+            dangerous: true,
+            ruleId: 'secret-env-exposure',
+            label: 'reg query Environment 会导出环境变量值',
+            segment: text,
+        };
+    }
+    return {dangerous: false};
 }
 
 /**

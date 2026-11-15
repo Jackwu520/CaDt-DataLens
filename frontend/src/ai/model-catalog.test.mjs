@@ -6,6 +6,7 @@ import test from 'node:test';
 import {
     BUILTIN_CATALOG,
     CATALOG_URL_DEFAULT,
+    CATALOG_URL_GITHUB,
     applyCatalogFields,
     canAutoFill,
     catalogSupport,
@@ -268,4 +269,36 @@ test('store：自动同步开关关闭时整段跳过', async () => {
     assert.equal(result.skipped, true);
     assert.equal(called, 0);
     assert.equal(store.status().autoSync, false);
+});
+
+test('store：默认同步地址跟随数据源，自定义地址优先', async () => {
+    let source = 'gitee';
+    const remoteJson = JSON.stringify({version: 'v1', models: [{id: 'deepseek-chat', contextWindow: 128000}]});
+    const seen = [];
+    const backend = {
+        async AIModelCatalogCached() { return {text: '', fetchedAt: 0}; },
+        async AIModelCatalogSync(url) {
+            seen.push(url);
+            return {text: remoteJson, fetchedAt: 1700000000};
+        },
+        async GetDataSource() { return source; },
+    };
+    const settings = {aiCatalogAutoSync: false};
+    const store = createModelCatalogStore({backend, getSettings: () => settings, now: () => 1700000000000});
+
+    await store.sync();
+    assert.equal(seen[0], CATALOG_URL_DEFAULT, '默认应走 Gitee 地址');
+
+    source = 'github';
+    await store.sync();
+    assert.equal(seen[1], CATALOG_URL_GITHUB, '数据源切到 GitHub 后默认地址跟随');
+
+    settings.aiCatalogURL = 'https://example.com/catalog.json';
+    await store.sync();
+    assert.equal(seen[2], 'https://example.com/catalog.json', '自定义地址优先于数据源默认');
+
+    delete settings.aiCatalogURL;
+    source = 'gitee';
+    await store.sync();
+    assert.equal(seen[3], CATALOG_URL_DEFAULT, '清掉后回落当前数据源默认');
 });

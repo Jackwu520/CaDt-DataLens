@@ -241,3 +241,96 @@ test('同步链路：不相交菜单不隐藏控件；相交浮层隐藏并显�
         else globalThis.window = prevWindow;
     }
 });
+
+// ---- 固定视口：contain 等比缩放，不再把控件铺出标签页区域 ----
+
+// 动态 surface 桩：矩形跟随内联宽高（模拟真实布局：fixed 尺寸 + margin:auto 居中）
+function fakeSurfaceIn(viewRect, toolbarH) {
+    const el = fakeEl(null);
+    el.classList = {add() {}, remove() {}};
+    el.parentElement = {
+        isConnected: true,
+        getBoundingClientRect: () => viewRect,
+        querySelector: (sel) => (sel === '.browser-toolbar'
+            ? {getBoundingClientRect: () => rect(0, 0, viewRect.width, toolbarH)}
+            : null),
+    };
+    el.getBoundingClientRect = () => {
+        const availW = viewRect.width;
+        const availH = viewRect.height - toolbarH;
+        const w = el.style.width ? parseFloat(el.style.width) : availW;
+        const h = el.style.height ? parseFloat(el.style.height) : availH;
+        const left = (availW - w) / 2;
+        const top = toolbarH + (availH - h) / 2;
+        return rect(left, top, left + w, top + h);
+    };
+    el.getClientRects = () => {
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0 ? [r] : [];
+    };
+    return el;
+}
+
+test('固定视口 1280×720 放进 900×564 区域：contain 缩放到 900×506，栅格比例按宽反推', async () => {
+    const prevDocument = globalThis.document;
+    const prevWindow = globalThis.window;
+    try {
+        const calls = [];
+        globalThis.document = fakeDom({popups: []});
+        globalThis.window = {devicePixelRatio: 1};
+        const surface = fakeSurfaceIn(rect(0, 0, 900, 600), 36);
+        globalThis.document.elementsFromPoint = () => [surface];
+        const doc = {id: 'b1', browser: true, browserEl: surface, browserUrl: 'https://example.com', browserViewport: {mode: 'fit'}};
+        const backend = {
+            BrowserSetBounds: async (...args) => { calls.push(args); },
+            BrowserSetVisible: async () => {},
+            BrowserSnapshot: async () => '',
+        };
+        const mod = moduleFor(doc, {backend});
+        mod.setBrowserViewport(doc, {mode: 'fixed', width: 1280, height: 720});
+        await nextTick();
+        assert.equal(calls.length, 1, '切换预设后恰好一次 SetBounds');
+        const [id, x, y, w, h, scale] = calls[0];
+        assert.equal(id, 'b1');
+        assert.equal(w, 900);
+        assert.equal(h, 506); // round(720 * min(900/1280, 564/720))
+        assert.ok(scale > 0.703 && scale < 0.704, `scale=${scale}`);
+        assert.ok(x >= 0 && y >= 36 && y + h <= 600, '控件矩形不得越出网页区域盖住工具栏/外部界面');
+        assert.equal(doc.browserApplied.scale, scale, '缩放系数纳入已应用缓存');
+    } finally {
+        if (prevDocument === undefined) delete globalThis.document;
+        else globalThis.document = prevDocument;
+        if (prevWindow === undefined) delete globalThis.window;
+        else globalThis.window = prevWindow;
+    }
+});
+
+test('自适应模式：栅格比例=设备缩放比（dpr=1.25）', async () => {
+    const prevDocument = globalThis.document;
+    const prevWindow = globalThis.window;
+    try {
+        const calls = [];
+        globalThis.document = fakeDom({popups: []});
+        globalThis.window = {devicePixelRatio: 1.25};
+        const surface = fakeSurfaceIn(rect(0, 0, 800, 600), 40);
+        globalThis.document.elementsFromPoint = () => [surface];
+        const doc = {id: 'b1', browser: true, browserEl: surface, browserUrl: 'https://example.com', browserViewport: {mode: 'fixed', width: 4000, height: 3000}};
+        const backend = {
+            BrowserSetBounds: async (...args) => { calls.push(args); },
+            BrowserSetVisible: async () => {},
+            BrowserSnapshot: async () => '',
+        };
+        const mod = moduleFor(doc, {backend});
+        mod.setBrowserViewport(doc, {mode: 'fit'});
+        await nextTick();
+        const [, , , w, h, scale] = calls[0];
+        assert.equal(w, 1000); // 800css * 1.25
+        assert.equal(h, 700);
+        assert.equal(scale, 1.25);
+    } finally {
+        if (prevDocument === undefined) delete globalThis.document;
+        else globalThis.document = prevDocument;
+        if (prevWindow === undefined) delete globalThis.window;
+        else globalThis.window = prevWindow;
+    }
+});

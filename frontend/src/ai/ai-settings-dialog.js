@@ -25,7 +25,7 @@ import {
     parseRuleLines, webRuleSubject, writeRuleSubject,
 } from './ai-permissions.js';
 import {matchCommandRule, commandFamilySignature, commandText} from './ai-command-rules.js';
-import {CATALOG_URL_DEFAULT, canAutoFill} from './model-catalog.js';
+import {canAutoFill} from './model-catalog.js';
 
 export function createAISettingsDialog(ctx) {
     const el = ctx.el;
@@ -568,7 +568,7 @@ export function createAISettingsDialog(ctx) {
             refreshCatalogStatus();
         });
         if (opt.catalogUrl) {
-            opt.catalogUrl.placeholder = CATALOG_URL_DEFAULT;
+            opt.catalogUrl.placeholder = modelCatalog.defaultUrl();
             opt.catalogUrl.addEventListener('change', () => {
                 const next = String(opt.catalogUrl.value || '').trim();
                 if (next && !/^https?:\/\//i.test(next)) {

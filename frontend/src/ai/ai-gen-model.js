@@ -99,6 +99,30 @@ export function defaultGenModelOf(list, kind) {
     return (Array.isArray(list) ? list : []).find((entry) => entry && entry.kind === kind && entry.enabled !== false) || null;
 }
 
+// 列表里的优先级顺序 = 同类型条目在 genModels[] 里的先后（defaultGenModelOf 取第一个启用的）。
+// 设置页把生图/视频分两组展示，组内的「上移 / 下移」因此只能交换**同类型的槽位**：
+// 若整体重排，把一个视频条目挪到两条生图之间会悄悄改掉视频组的顺序，用户看不见。
+// 返回新数组；找不到条目、delta 为 0 或已到组边界时原样返回同一个引用（调用方据此跳过落盘）。
+export function moveGenModelWithinKind(list, id, delta) {
+    const arr = Array.isArray(list) ? list : [];
+    const step = Math.sign(Number(delta) || 0);
+    const index = arr.findIndex((entry) => entry && entry.id === id);
+    if (index < 0 || !step) return arr;
+    const kind = arr[index].kind;
+    const slots = [];
+    arr.forEach((entry, i) => { if (entry && entry.kind === kind) slots.push(i); });
+    const pos = slots.indexOf(index);
+    const next = pos + step;
+    if (pos < 0 || next < 0 || next >= slots.length) return arr;
+    // slots 是「同类型条目占用的数组槽位」，order 是槽位的新排布：只在这几个槽位里换人。
+    const order = slots.slice();
+    order.splice(pos, 1);
+    order.splice(next, 0, index);
+    const out = arr.slice();
+    slots.forEach((slot, i) => { out[slot] = arr[order[i]]; });
+    return out;
+}
+
 // 工具参数 model 的解析：按 id 或名称精确匹配（同类型且启用）。ref 非空但没命中时返回 null
 //（调用方报错让模型改参数——静默回落会「要 A 花 B 的钱」）；空 ref 回落缺省条目。
 export function genModelByRef(list, kind, ref) {
@@ -106,6 +130,20 @@ export function genModelByRef(list, kind, ref) {
     if (!key) return defaultGenModelOf(list, kind);
     return (Array.isArray(list) ? list : []).find((entry) => entry && entry.kind === kind &&
         entry.enabled !== false && (entry.id.toLowerCase() === key || entry.name.toLowerCase() === key)) || null;
+}
+
+// AI / 外部来源的条目合并（set_gen_model 桥）：部分更新语义——incoming 的字段覆盖 existing，
+// 未传的字段沿用 existing（AI 可以只改一处而不重发全量）；唯独 apiKey 永远取 existing 的
+// ——AI 不可写密钥：新建留空给用户填，已填的不会被冲掉。existing 命中时沿用其 id。
+export function mergeGenModelEntry(existing, incoming, idGen) {
+    const source = incoming && typeof incoming === 'object' ? incoming : {};
+    const merged = normalizeGenModel({
+        ...(existing || {}),
+        ...source,
+        id: (existing && existing.id) || source.id || '',
+    }, idGen);
+    merged.apiKey = (existing && existing.apiKey) || '';
+    return merged;
 }
 
 // 该条目是否为异步型（配了提交端点即走 submit/poll 引擎）。

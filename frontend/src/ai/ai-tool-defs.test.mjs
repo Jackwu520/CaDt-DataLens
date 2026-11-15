@@ -134,3 +134,19 @@ test('计划模式仍保留只读探索与子代理', () => {
         assert.ok(list.includes(tool), '计划模式应保留 ' + tool);
     }
 });
+
+test('read_image：只读档与计划模式都下发，且必须登记目录', () => {
+    for (const scope of ['read', 'edit', 'auto', 'full']) {
+        for (const planMode of [false, true]) {
+            assert.ok(names(scope, planMode).includes('read_image'),
+                scope + ' / planMode=' + planMode + ' 应下发 read_image（只读能力，不该被档位挡住）');
+        }
+    }
+    const def = toolsForScope('read', false).find((tool) => tool.name === 'read_image');
+    assert.deepEqual(Object.keys(def.parameters.properties), ['path'], 'read_image 只接受 path');
+    assert.match(AI_TOOL_DEFS.read_image.description, /read_file/, '描述里要点明与 read_file 的分工');
+    assert.match(AI_TOOL_DEFS.read_image.description, /800–1600 token/, '描述里要写上下文成本');
+    assert.equal(AI_TOOL_CATALOG.read_image.group, 'read', 'read_image 属于只读组');
+    // 目录文案必须真的描述「看画面」，别退回成读文本
+    assert.match(AI_TOOL_CATALOG.read_image.blurb, /图片/);
+});

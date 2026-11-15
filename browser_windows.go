@@ -11,8 +11,10 @@ import (
 	"fmt"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unsafe"
@@ -234,6 +236,7 @@ type browserInstance struct {
 	profileKey string
 	chromium   *edge.Chromium
 	controller *edge.ICoreWebView2Controller
+	ctrl3      *edge.ICoreWebView2Controller3 // 栅格缩放用（QI 一次缓存，Close 时 Release）
 	webview    *edge.ICoreWebView2
 	hwndCtl    uintptr // WebView2 控件自己的 HWND（z 序调整用）
 	url        string
@@ -242,6 +245,8 @@ type browserInstance struct {
 	canGoFwd   bool
 	loading    bool
 	visible    bool
+	raster     float64 // 当前生效的 RasterizationScale（宿主线程读写）
+	dead       atomic.Bool // 内核错误后隔离：该实例不再接受操作，只等关闭
 	emit       func(event string, data interface{})
 }
 
@@ -328,7 +333,40 @@ var browserParentHWND = findWailsWindow
 func browserGet(id string) *browserInstance {
 	browserMu.Lock()
 	defer browserMu.Unlock()
+	inst := browserInstances[id]
+	if inst != nil && inst.dead.Load() {
+		return nil // 已隔离实例：按不存在报错，前端提示关标签页重开
+	}
+	return inst
+}
+
+// browserGetRaw 不做失效过滤：关闭路径要能触达 dead 实例，完成资源清理。
+func browserGetRaw(id string) *browserInstance {
+	browserMu.Lock()
+	defer browserMu.Unlock()
 	return browserInstances[id]
+}
+
+// browserKillInstance 隔离一个出错的内核实例：记日志 + 通知前端，进程存活。
+// 只在宿主线程（含 COM 回调上下文）调用。
+func browserKillInstance(inst *browserInstance, source string, err error) {
+	first := !inst.dead.Swap(true)
+	writeAppLog("ERROR", "browser-%s 内核错误（%s，实例已隔离，请关闭标签页后重开）：%v\n%s",
+		inst.id, source, err, debug.Stack())
+	if first && inst.emit != nil {
+		inst.emit("browser-error", map[string]interface{}{"id": inst.id})
+	}
+}
+
+// browserCallbackGuard 包住库回调入口：回调跑在 COM 派发帧上，Go panic 穿不过
+// 原生栈会直接击穿整个进程，这里兜住并隔离实例。
+func browserCallbackGuard(inst *browserInstance, name string, fn func()) {
+	defer func() {
+		if r := recover(); r != nil {
+			browserKillInstance(inst, name, fmt.Errorf("%v", r))
+		}
+	}()
+	fn()
 }
 
 // browserRefreshState 导航状态刷新（宿主线程调用），并向前端发 browser-nav 事件。
@@ -368,22 +406,27 @@ func browserNotifyLoading(inst *browserInstance) {
 // browserCreateOnHost 在宿主线程上创建实例（Embed 自带消息泵，同步等到 controller 就绪）。
 func browserCreateOnHost(inst *browserInstance, hwnd uintptr) error {
 	c := edge.NewChromium()
-	// 默认错误处理会 os.Exit(1)，必须替换成回调
+	// 库的 errorCallback 已本地补丁为「只回调、不退出」；这里把出错实例隔离掉，
+	// 绝不再 panic——panic 无法穿过 COM 回调的原生帧，以前表现为整个应用瞬间闪退
+	// （2026-11-16 定位：切视口预设 → 页面走 window.external/invoke →
+	// MessageReceived 解消息失败 → 回调里 panic → 进程直接没了）。
 	c.SetErrorCallback(func(err error) {
-		// 库的 errorCallback 在回调后无条件 os.Exit(1)；这里主动 panic 留下错误栈
-		// （同步路径会被 runBrowserJob recover，COM 回调线程则 crash 留栈——均好过静默退出）
-		panic(fmt.Errorf("browser-%s：%w", inst.id, err))
+		browserKillInstance(inst, "errorCallback", err)
 	})
 	c.DataPath = filepath.Join(appDataRoot(), "BrowserSessions", sanitizeBrowserProfileKey(inst.id+"_"+inst.profileKey))
 	c.NavigationCompletedCallback = func(sender *edge.ICoreWebView2, args *edge.ICoreWebView2NavigationCompletedEventArgs) {
-		inst.loading = false
-		browserRefreshState(inst)
+		browserCallbackGuard(inst, "NavigationCompleted", func() {
+			inst.loading = false
+			browserRefreshState(inst)
+		})
 	}
 	c.ProcessFailedCallback = func(sender *edge.ICoreWebView2, args *edge.ICoreWebView2ProcessFailedEventArgs) {
-		inst.loading = false
-		if inst.emit != nil {
-			inst.emit("browser-error", map[string]interface{}{"id": inst.id})
-		}
+		browserCallbackGuard(inst, "ProcessFailed", func() {
+			inst.loading = false
+			if inst.emit != nil {
+				inst.emit("browser-error", map[string]interface{}{"id": inst.id})
+			}
+		})
 	}
 	inst.chromium = c
 	before := browserWebviewChildren(hwnd)
@@ -468,14 +511,17 @@ func (a *App) BrowserOpen(id, url, profileKey string) (map[string]string, error)
 	jobErr := browserHostRun(func() {
 		createErr = browserCreateOnHost(inst, hwnd)
 	})
-	if jobErr != nil || createErr != nil {
+	if jobErr != nil || createErr != nil || inst.dead.Load() {
 		browserMu.Lock()
 		delete(browserInstances, id)
 		browserMu.Unlock()
 		if jobErr != nil {
 			return nil, jobErr
 		}
-		return nil, createErr
+		if createErr != nil {
+			return nil, createErr
+		}
+		return nil, fmt.Errorf("创建浏览器控件失败：内核错误（详情见运行日志）")
 	}
 	return map[string]string{"id": inst.id, "url": inst.url, "title": inst.title}, nil
 }
@@ -712,12 +758,17 @@ func (a *App) BrowserSnapshot(id string) (string, error) {
 	return result, jobErr
 }
 
-func (a *App) BrowserSetBounds(id string, x int, y int, w int, h int) error {
+// BrowserSetBounds 摆位并显示内嵌控件；x/y/w/h 为父窗口客户区物理像素。
+// rasterScale>0 时同步设置 RasterizationScale（CSS 像素 = 物理尺寸/该值）：
+// 自适应模式传设备缩放比，固定视口模式传「缩放比×适配系数」，让页面逻辑视口
+// 保持用户设定的宽高、画面等比缩进标签页区域，而不是把控件铺到区域外面
+// （2026-11-16 修复固定视口盖住其他界面）。
+func (a *App) BrowserSetBounds(id string, x int, y int, w int, h int, rasterScale float64) error {
 	var taskErr error
 	jobErr := browserHostRun(func() {
 		inst := browserGet(id)
 		if inst == nil {
-			taskErr = fmt.Errorf("浏览器标签页不存在：%s", id)
+			taskErr = fmt.Errorf("浏览器标签页不存在或未就绪：%s", id)
 			return
 		}
 		if inst.chromium == nil {
@@ -732,6 +783,7 @@ func (a *App) BrowserSetBounds(id string, x int, y int, w int, h int) error {
 		}
 		bounds := edge.Rect{Left: int32(x), Top: int32(y), Right: int32(x + w), Bottom: int32(y + h)}
 		inst.chromium.ResizeWithBounds(&bounds)
+		browserApplyRasterScale(inst, rasterScale)
 		if !inst.visible {
 			_ = inst.chromium.Show()
 			inst.visible = true
@@ -742,6 +794,31 @@ func (a *App) BrowserSetBounds(id string, x int, y int, w int, h int) error {
 		return jobErr
 	}
 	return taskErr
+}
+
+// browserApplyRasterScale 设置控件栅格缩放（宿主线程调用）。老 Runtime 拿不到
+// Controller3 或调用失败时只记一次日志，不影响摆位。
+func browserApplyRasterScale(inst *browserInstance, scale float64) {
+	if scale <= 0 || inst.raster == scale {
+		return
+	}
+	if inst.ctrl3 == nil {
+		if inst.controller == nil {
+			return
+		}
+		c3 := inst.controller.GetICoreWebView2Controller3()
+		if c3 == nil {
+			writeAppLog("WARN", "browser-%s：Runtime 不支持 RasterizationScale，固定视口按 1:1 摆位", inst.id)
+			inst.raster = scale // 记住期望值，避免每次摆位重复查询
+			return
+		}
+		inst.ctrl3 = c3
+	}
+	if err := inst.ctrl3.PutRasterizationScale(scale); err != nil {
+		writeAppLog("WARN", "browser-%s：设置栅格缩放 %.4f 失败：%v", inst.id, scale, err)
+		return
+	}
+	inst.raster = scale
 }
 
 func (a *App) BrowserSetVisible(id string, visible bool) error {
@@ -792,13 +869,18 @@ func (a *App) BrowserFocus(id string) error {
 
 func (a *App) BrowserClose(id string) error {
 	jobErr := browserHostRun(func() {
-		inst := browserGet(id)
+		inst := browserGetRaw(id) // 失效实例也要能关掉并清出注册表
 		if inst == nil {
 			return // 已不存在视为成功
 		}
 		if inst.chromium != nil {
 			inst.chromium.ShuttingDown()
 			_ = inst.chromium.Hide()
+		}
+		if inst.ctrl3 != nil {
+			// GetICoreWebView2Controller3 是 QI 出来的接口指针，库只导出 AddRef，这里按 IUnknown 约定归还
+			inst.ctrl3.Vtbl.Release.Call(uintptr(unsafe.Pointer(inst.ctrl3)))
+			inst.ctrl3 = nil
 		}
 		if inst.controller != nil {
 			if err := wvControllerClose(inst.controller); err != nil {

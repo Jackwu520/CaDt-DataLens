@@ -220,11 +220,13 @@ cadt.openVirtualDoc('Git 差异 — main.diff', patchText);  // 扩展名决定�
 
 ## 发布到插件市场
 
-插件市场 = Gitee 组织 [`cadt-datalens-plugins`](https://gitee.com/cadt-datalens-plugins) 的公开仓库（Gitee API v5 org repos 列出，仓库根 `plugin.json` 提供元数据）：
+插件市场默认 = Gitee 组织 [`cadt-datalens-plugins`](https://gitee.com/cadt-datalens-plugins) 的公开仓库（Gitee API v5 org repos 列出，仓库根 `plugin.json` 提供元数据）。GitHub 组织 [`cadt-datalens-plugins`](https://github.com/cadt-datalens-plugins) 是其**镜像**，两边仓库同名同内容；模型配置表仓库 [`cadt-datalens-data/model-catalog`](https://gitee.com/cadt-datalens-data/model-catalog) 同样在 GitHub 有镜像：
 
 1. 在组织下建公开仓库（仓库名建议与插件 `id` 一致），推送插件内容到**仓库根**（清单 + 入口 + 资产，不要包子目录）；
 2. `plugin.json` 里 `homepage` / `repository` 指向仓库地址，`minAppVersion` 锁定依赖的应用 API 版本；
-3. 推送后市场列表自动出现，无需登记；更新插件 = 推新版本 tag / 提交并更新清单 `version`。
+3. 推送后市场列表自动出现，无需登记；更新插件 = 推新版本 tag / 提交并更新清单 `version`；Gitee 与 GitHub 两侧需同步推送（镜像内容保持一致）。
+
+应用内可在 设置 → 插件 → 插件市场 切换「数据源」（默认 Gitee，可选 GitHub）：切换后市场列表、从仓库地址安装的示例地址与 AI 模型配置表的默认同步地址都会跟随所选源；自定义的模型配置表地址（设置 → AI → 模型 → 配置表）优先于数据源默认。
 
 参考：[`examples/command-classifier-onnx/README.md`](examples/command-classifier-onnx/README.md) 的上架指引一节。
 

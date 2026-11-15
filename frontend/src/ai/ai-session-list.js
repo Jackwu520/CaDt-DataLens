@@ -54,6 +54,12 @@ export function createAISessionList(ctx) {
     const stopSessionTurn = typeof ctx.stopSessionTurn === 'function' ? ctx.stopSessionTurn : () => {};
     const listFlash = typeof ctx.flash === 'function' ? ctx.flash : () => {};
     const currentSession = ctx.currentSession;
+    // 首次读盘未完成（磁盘模式的启动瞬间）：sessions 还是占位，不能当真实列表画出来
+    const sessionsPending = typeof ctx.sessionsPending === 'function' ? ctx.sessionsPending : () => false;
+    // 条数单一来源：懒加载占位（_stub）读 meta 里缓存的条数，已载体的会话现算
+    const messageCountOf = typeof ctx.messageCount === 'function'
+        ? ctx.messageCount
+        : ((session) => (session && session.messages ? session.messages.length : 0));
     const currentWorkspacePath = ctx.currentWorkspacePath;
     const isOpen = ctx.isOpen;
     const ensureOpen = ctx.ensureOpen;
@@ -98,6 +104,7 @@ export function createAISessionList(ctx) {
     }
 
     function sessionActivity(session) {
+        // 占位会话 messages 是 []，自然回落到 updatedAt（meta 里的最后写入时间）
         const last = session.messages[session.messages.length - 1];
         return Number(last && last.ts) || Number(session.updatedAt) || Number(session.createdAt) || 0;
     }
@@ -122,6 +129,9 @@ export function createAISessionList(ctx) {
     // pending（等审批 / 等回答 / 计划待批准）优先于 running，因为它是需要用户动手的那一个。
     function sessionNeedsAttention(session) {
         if (!session) return false;
+        // 占位会话没有正文：这里返回 false 只是「看不了」，真正要判断得等正文补上来
+        //（补水完成后 scheduleSessionListRefresh 会重画一次，徽标随之出现）
+        if (session._stub) return false;
         for (const message of session.messages || []) {
             if (!message) continue;
             if (message.approval && message.approval.state === 'pending') return true;
@@ -181,11 +191,22 @@ export function createAISessionList(ctx) {
 
     function renderSessionList() {
         // 头部身份（会话标题）与 chips 角标跟随会话列表刷新点（改名/切换/自动标题都会走到这里）
-        updateHeadHud();
+        // 读盘中不给——占位会话的「新会话」标题闪一下没有意义
+        if (!sessionsPending()) updateHeadHud();
         if (!sessionListEl) return;
         const scrollTop = sessionListEl.scrollTop;
         sessionListEl.innerHTML = '';
         const current = currentSession();
+        if (sessionsPending()) {
+            // 启动第一个几百毫秒：磁盘会话还在读，占位列表画出来只会闪一下再被替换
+            const loading = document.createElement('div');
+            loading.className = 'ai-session-empty';
+            const text = document.createElement('div');
+            text.textContent = '正在读取会话…';
+            loading.appendChild(text);
+            sessionListEl.appendChild(loading);
+            return;
+        }
         const ordered = orderSessionsWithSides(getSessions().slice().sort((a, b) => sessionActivity(b) - sessionActivity(a)));
         if (!ordered.length) {
             const empty = document.createElement('div');
@@ -245,7 +266,7 @@ export function createAISessionList(ctx) {
             }
             const meta = document.createElement('div');
             meta.className = 'ai-session-meta';
-            meta.textContent = (archived ? '已归档 · ' : '') + session.messages.length + ' 条消息 · ' + aiFormatSessionTime(sessionActivity(session));
+            meta.textContent = (archived ? '已归档 · ' : '') + messageCountOf(session) + ' 条消息 · ' + aiFormatSessionTime(sessionActivity(session));
             main.append(titleRow, meta);
             // 右侧：未悬浮显示状态（运行中 / 待确认 / 已完成未查看），悬浮换成「⋯」会话操作。
             const side = document.createElement('div');

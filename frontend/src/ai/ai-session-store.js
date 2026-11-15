@@ -249,8 +249,14 @@ export function buildSessionMeta(session) {
         pinned: !!(session && session.pinned),
         // 后台结束、用户尚未查看的会话：'' / 'done' / 'error'（列表右侧状态圆点用）
         unread: session && (session.unread === 'done' || session.unread === 'error') ? session.unread : '',
-        messageCount: Array.isArray(session && session.messages) ? session.messages.length : 0,
-        archivedCount: Array.isArray(session && session.archived) ? session.archived.length : 0,
+        // 懒加载占位（_stub）只有 meta、messages 是空数组：条数必须沿用缓存值，否则会把 0 写进
+        // meta.json，下次启动整个列表都变「0 条消息」。已载体的会话一律现算。
+        messageCount: session && session._stub
+            ? Math.max(0, Number(session._msgCount) || 0)
+            : (Array.isArray(session && session.messages) ? session.messages.length : 0),
+        archivedCount: session && session._stub
+            ? Math.max(0, Number(session._archivedCount) || 0)
+            : (Array.isArray(session && session.archived) ? session.archived.length : 0),
         logFile: textOf(session && session.logFile),
         logSavedAt: Number(session && session.logSavedAt) || 0,
         todos: Array.isArray(session && session.todos) ? session.todos : [],

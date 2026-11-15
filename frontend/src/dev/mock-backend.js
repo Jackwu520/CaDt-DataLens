@@ -1230,9 +1230,9 @@ const mockBackend = {
         // 前端定格帧：dev 桩没有原生 WebView2，给一张 1×1 占位图以便走通显隐链路
         return 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
     },
-    async BrowserSetBounds(id, x, y, w, h) {
+    async BrowserSetBounds(id, x, y, w, h, rasterScale) {
         if (!window.__mockBrowserBounds) window.__mockBrowserBounds = new Map();
-        window.__mockBrowserBounds.set(id, {x, y, w, h});
+        window.__mockBrowserBounds.set(id, {x, y, w, h, scale: rasterScale});
         if (w > 0 && h > 0) {
             if (!window.__mockBrowserVisible) window.__mockBrowserVisible = new Map();
             window.__mockBrowserVisible.set(id, true);
@@ -1400,8 +1400,15 @@ const mockBackend = {
         return (window.__mockPlugins || {}).mode || 'portable';
     },
     async SetPluginsPathMode(mode) {
-        const st = window.__mockPlugins || (window.__mockPlugins = {present: true, disabled: {}, mode: 'portable'});
+        const st = window.__mockPlugins || (window.__mockPlugins = {present: true, disabled: {}, mode: 'portable', source: 'gitee'});
         st.mode = mode === 'appdata' ? 'appdata' : 'portable';
+    },
+    async GetDataSource() {
+        return (window.__mockPlugins || {}).source === 'github' ? 'github' : 'gitee';
+    },
+    async SetDataSource(source) {
+        const st = window.__mockPlugins || (window.__mockPlugins = {present: true, disabled: {}, mode: 'portable', source: 'gitee'});
+        st.source = source === 'github' ? 'github' : 'gitee';
     },
     async AddPluginFromFolder() {
         const st = window.__mockPlugins || (window.__mockPlugins = {present: true, disabled: {}, mode: 'portable'});
@@ -1499,6 +1506,12 @@ const mockBackend = {
         if (mockScenario.has('marketmany')) {
             for (let i = 1; i <= 3; i += 1) {
                 items.push({...items[0], id: 'bak-json-' + i, name: 'JSON 备份查看 ' + i});
+            }
+        }
+        // 数据源为 GitHub 时，展示镜像地址（与真实后端 GetPluginMarket 行为一致）
+        if (this.GetDataSource && (await this.GetDataSource()) === 'github') {
+            for (const it of items) {
+                it.url = it.url.replace('https://gitee.com/', 'https://github.com/');
             }
         }
         return items;

@@ -193,6 +193,8 @@ export function createSessionDiskStore(options) {
         meta.updatedAt = session.updatedAt;
         await backend.AISessionWriteMeta(session.id, JSON.stringify(meta));
         session._metaSig = signature;
+        // 落过盘了：面板打开时的 meta 对账靠它区分「新建还没写完」和「别处删了」
+        session._unsaved = false;
     }
 
     // 增量持久化：按 _mid 找共同前缀，截断后追加新消息。
@@ -207,6 +209,15 @@ export function createSessionDiskStore(options) {
             requireBackend();
         } catch (e) {
             return Promise.reject(e);
+        }
+        // 懒加载占位会话（正文还没读上来）：内存里的 messages 是空的，走日志重写会把历史抹平。
+        // 只允许写 meta（标题 / 未读 / 置顶 / 待办 / 归档态都在里面）。
+        if (session._stub) {
+            return enqueue(session.id, async () => {
+                // 基线由 toStubs 按读盘时的 meta 记好：没真改过就不写（否则每次 persistSessions
+                // 都会给几十个占位各写一次 meta.json）
+                await writeMetaIfChanged(session, false);
+            });
         }
         if (pendingPersists.has(session.id)) return Promise.resolve();
         pendingPersists.add(session.id);
@@ -297,9 +308,19 @@ export function createSessionDiskStore(options) {
 
     // 归档必须先于调用方裁剪 messages 执行：这里捕获裁剪前的快照，
     // 保证被移动的消息先落进日志，再追加 archive 事件。
+    // 三个「整份重写日志」的入口（归档 / 清空 / 重写）绝不能作用在懒加载占位上：占位的
+    // messages 是空的，重写等于把历史抹平。对应 dsh 那条「根本没有 save 整个会话的 API」——
+    // 我们这边 rewrite 能力还在，所以把护栏钉在入口。调用方一律先 hydrateSession 再进来。
+    function requireBody(session) {
+        if (session && session._stub) {
+            throw new Error('会话正文尚未加载，禁止改写磁盘历史（' + session.id + '）');
+        }
+    }
+
     function archiveSession(session, keep, summary) {
         if (!session || !session.id) return;
         requireBackend();
+        requireBody(session);
         const snapshot = (Array.isArray(session.messages) ? session.messages : []).slice();
         const keepCount = Math.max(0, Math.min(snapshot.length, Number(keep) || 0));
         return enqueue(session.id, async () => {
@@ -376,6 +397,7 @@ export function createSessionDiskStore(options) {
     function resetSession(session) {
         if (!session || !session.id) return;
         requireBackend();
+        requireBody(session);
         return enqueue(session.id, async () => {
             const state = snapshotLogState(session);
             try {
@@ -398,6 +420,7 @@ export function createSessionDiskStore(options) {
     function rewriteSession(session) {
         if (!session || !session.id) return;
         requireBackend();
+        requireBody(session);
         return enqueue(session.id, async () => {
             const state = snapshotLogState(session);
             try {
@@ -412,6 +435,43 @@ export function createSessionDiskStore(options) {
         });
     }
 
+    // 启动读盘并发度：每个会话都要整份重放 JSONL（几十个会话、单个几 MB 时串行 await
+    // 叠加 Wails 往返能把面板空白拖到好几秒）。6 路足够摊平 IO，也不至于让 WebView
+    // 同时持有过多大字符串；结果按下标回填，顺序与原串行实现一致。
+    const LOAD_CONCURRENCY = 6;
+
+    async function loadOne(meta, normalizeSession) {
+        let replay = replaySessionLog('');
+        let loadError = '';
+        let bodyText = '';
+        try {
+            bodyText = await backend.AISessionRead(meta.id);
+            replay = replaySessionLog(bodyText);
+        } catch (e) {
+            loadError = (e && e.message) || String(e);
+        }
+        const combined = Object.assign({}, meta, {
+            messages: replay.messages,
+            archived: replay.archived,
+            summary: meta.summary && typeof meta.summary === 'object' ? meta.summary : replay.summary,
+        });
+        const session = normalizeSession ? normalizeSession(combined) : combined;
+        if (!session) return null;
+        // 归一化可能丢掉无效消息，_mids 必须按归一化后的消息顺序重建，否则索引错位会触发重复追加。
+        session._mids = (session.messages || []).map((message) => textOf(message && message._mid));
+        session._archivedMids = (session.archived || []).map((message) => textOf(message && message._mid));
+        // 刚读出来的消息就是磁盘状态，指纹按当前内容建立基线。
+        resetFingerprints(session, session.messages);
+        session._logMeta = {title: textOf(meta.title), workspace: textOf(meta.workspace)};
+        session._logCreated = !!replay.header;
+        session._needsRewrite = !!session._recovered || (session.messages || []).length !== replay.messages.length;
+        session.updatedAt = Number(meta.updatedAt) || Number(meta.createdAt) || 0;
+        session._loadError = loadError;
+        session._metaSig = metaSignature(buildSessionMeta(session));
+        await hydrateImages(session);
+        return session;
+    }
+
     async function loadAll(normalizeSession) {
         requireBackend();
         let metas = [];
@@ -420,46 +480,125 @@ export function createSessionDiskStore(options) {
         } catch (e) {
             throw e;
         }
-        const sessions = [];
-        for (const raw of metas || []) {
+        const loaded = new Array(metas.length).fill(null);
+        let cursor = 0;
+        async function worker() {
+            while (cursor < metas.length) {
+                const index = cursor++;
+                let meta = null;
+                try {
+                    meta = JSON.parse(metas[index]);
+                } catch (e) {
+                    continue;
+                }
+                if (!meta || !meta.id) continue;
+                // 单个会话读坏不影响整轮加载：与串行的 loadError 语义一致
+                try {
+                    loaded[index] = await loadOne(meta, normalizeSession);
+                } catch (e) {
+                    loaded[index] = null;
+                }
+            }
+        }
+        const workers = [];
+        const lanes = Math.min(LOAD_CONCURRENCY, metas.length);
+        for (let i = 0; i < lanes; i++) workers.push(worker());
+        await Promise.all(workers);
+        return loaded.filter(Boolean);
+    }
+
+    // ---------- 懒加载：先只要 meta，正文按需补 ----------
+    // 列表页只用到 meta（标题/时间/条数/未读/置顶/工作区/待办/摘要…），正文整份重放是启动
+    // 几十个会话时的主要开销。启动先 loadMetas 画列表，正文交给 hydrateSession 按需补。
+
+    async function loadMetas() {
+        requireBackend();
+        const raw = await backend.AISessionList();
+        const metas = [];
+        for (const item of raw || []) {
             let meta = null;
             try {
-                meta = JSON.parse(raw);
+                meta = JSON.parse(item);
             } catch (e) {
                 continue;
             }
-            if (!meta || !meta.id) continue;
-            let replay = replaySessionLog('');
-            let loadError = '';
-            let bodyText = '';
-            try {
-                bodyText = await backend.AISessionRead(meta.id);
-                replay = replaySessionLog(bodyText);
-            } catch (e) {
-                loadError = (e && e.message) || String(e);
-            }
-            const combined = Object.assign({}, meta, {
-                messages: replay.messages,
-                archived: replay.archived,
-                summary: meta.summary && typeof meta.summary === 'object' ? meta.summary : replay.summary,
-            });
-            const session = normalizeSession ? normalizeSession(combined) : combined;
-            if (!session) continue;
-            // 归一化可能丢掉无效消息，_mids 必须按归一化后的消息顺序重建，否则索引错位会触发重复追加。
-            session._mids = (session.messages || []).map((message) => textOf(message && message._mid));
-            session._archivedMids = (session.archived || []).map((message) => textOf(message && message._mid));
-            // 刚读出来的消息就是磁盘状态，指纹按当前内容建立基线。
-            resetFingerprints(session, session.messages);
-            session._logMeta = {title: textOf(meta.title), workspace: textOf(meta.workspace)};
-            session._logCreated = !!replay.header;
-            session._needsRewrite = !!session._recovered || (session.messages || []).length !== replay.messages.length;
-            session.updatedAt = Number(meta.updatedAt) || Number(meta.createdAt) || 0;
-            session._loadError = loadError;
-            session._metaSig = metaSignature(buildSessionMeta(session));
-            await hydrateImages(session);
-            sessions.push(session);
+            if (meta && meta.id) metas.push(meta);
         }
-        return sessions;
+        return metas;
+    }
+
+    // 把单个占位会话的正文就地补上：对象引用不变（列表、桥、通知里拿的都是同一个对象）。
+    // 失败时退化成「正文不可用」：清掉占位标记 + 打 _loadError（等于禁止写盘），由既有错误 UI 兜住。
+    // 把 meta 列表变成「占位会话」：只有列表字段，正文待 hydrateSession 补。
+    // normalizeSession 由调用方给（与启动读盘同一套字段归一），保证两条路径形状一致。
+    function toStubs(metas, normalizeSession) {
+        const out = [];
+        for (const meta of metas || []) {
+            const session = normalizeSession ? normalizeSession(meta, out.length) : Object.assign({}, meta);
+            if (!session) continue;
+            session._stub = true;
+            session._msgCount = Math.max(0, Number(meta.messageCount) || 0);
+            session._archivedCount = Math.max(0, Number(meta.archivedCount) || 0);
+            session._metaSig = metaSignature(buildSessionMeta(session));
+            out.push(session);
+        }
+        return out;
+    }
+
+    async function hydrateSession(session) {
+        if (!session || !session.id) return false;
+        if (!session._stub) return true;
+        requireBackend();
+        let replay = replaySessionLog('');
+        try {
+            const bodyText = await backend.AISessionRead(session.id);
+            replay = replaySessionLog(bodyText);
+        } catch (e) {
+            delete session._stub;
+            delete session._msgCount;
+            delete session._archivedCount;
+            session._loadError = (e && e.message) || String(e);
+            return false;
+        }
+        const normalize = typeof options.normalizeMessage === 'function' ? options.normalizeMessage : null;
+        const messages = normalize ? replay.messages.map(normalize).filter(Boolean) : replay.messages;
+        session.messages = messages;
+        session.archived = replay.archived || [];
+        if (!session.summary && replay.summary) session.summary = replay.summary;
+        session._recovered = messages.some((message) => message && message._recovered);
+        // 归一化可能丢掉无效消息，_mids 必须按归一化后的顺序重建，否则索引错位会重复追加。
+        session._mids = messages.map((message) => textOf(message && message._mid));
+        session._archivedMids = session.archived.map((message) => textOf(message && message._mid));
+        resetFingerprints(session, messages);
+        session._logMeta = {title: textOf(session.title), workspace: textOf(session.workspace)};
+        session._logCreated = !!replay.header;
+        session._needsRewrite = !!session._recovered || messages.length !== replay.messages.length;
+        session._metaSig = metaSignature(buildSessionMeta(session));
+        delete session._stub;
+        delete session._msgCount;
+        delete session._archivedCount;
+        await hydrateImages(session);
+        return true;
+    }
+
+    // 多个会话并发补水（启动的热会话用）。返回补成功的条数。
+    async function hydrateSessions(list) {
+        const targets = (list || []).filter((session) => session && session._stub);
+        let cursor = 0;
+        let done = 0;
+        async function worker() {
+            while (cursor < targets.length) {
+                const index = cursor++;
+                try {
+                    if (await hydrateSession(targets[index])) done++;
+                } catch (e) {}
+            }
+        }
+        const lanes = Math.min(LOAD_CONCURRENCY, targets.length);
+        const workers = [];
+        for (let i = 0; i < lanes; i++) workers.push(worker());
+        await Promise.all(workers);
+        return done;
     }
 
     async function hydrateImages(session) {
@@ -498,6 +637,10 @@ export function createSessionDiskStore(options) {
 
     return {
         loadAll,
+        loadMetas,
+        toStubs,
+        hydrateSession,
+        hydrateSessions,
         persistSession,
         invalidateMessage,
         archiveSession,

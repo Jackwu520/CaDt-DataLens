@@ -153,6 +153,7 @@ cadt.registerCommandClassifier({
   3. 模型下载策略：市场包直带（仓库体积大）vs 首启按需下载到插件目录（需校验哈希）。
 - 首期交付：插件骨架 + `registerCommandClassifier` 接线演示（用线性打分模拟）+ README 与上架指引，推理部分标注「二期」。
 - **实施落定（2026-11-14）**：骨架在 `docs/plugins/examples/command-classifier-onnx/`（`/plugins/` 目录被 .gitignore 排除，样例走 docs/examples）；词表打分演示 + `readAsset('model/manifest.json')` 元数据加载演示 + 状态命令；上架指引（Gitee org 仓库根 `plugin.json`）写入其 README 与 `docs/plugins/README.md`（含 `registerCommandClassifier` API 文档与市场发布章节）。
+- **readAsset 白名单事故（2026-11-16 修复）**：`ReadPluginAsset` 原本只认图片扩展名，ONNX 插件懒加载 `model_quantized.onnx`（21.9MB）首次分类即抛「资产仅支持图片格式」，且 16MB 资产上限也容不下模型；`classifyOne` 失败静默只熔断不落日志——调试控制台只有 `degraded=yes` 没有原因，语义层长期静默退化成线性层（插件加载日志「命令分类器 1 个 · 错误 0」是注册成功，不是推理成功，别被它误导）。修复：资产白名单扩充数据/模型类扩展名 + 分级上限（图片 16MB / 数据模型 512MB，作者拍板）；`classifyOne` 失败写 `[classifier:local]` 探针（次数 / 熔断 / 原因）。**教训：端侧层的三层判定（线性/语义/AI）任何一层失败都必须在调试控制台可见**。
 
 ## 9. 决策链接线（M1）
 
@@ -171,7 +172,8 @@ cadt.registerCommandClassifier({
 - 默认关闭；开启后所有判定进权限记录（来源、score、reason），可审计；
 - 分类器异常 / 低置信一律转人工（fail-open 到 ask，fail-closed 到规则）；
 - 权重文件随版本更新需重跑回归集（训练脚本入库保证可复现）；
-- 个性化数据全部本地（appdata），导出须经用户显式操作；样本脱敏后才落盘。
+- 个性化数据全部本地（appdata），导出须经用户显式操作；样本脱敏后才落盘；
+- **环境变量值泄漏硬拦截**（2026-11-16，作者拍板口径）：AI 系统上下文明示「要用变量就引用 $名称 / %名称%」，而 env_list 存的正是密钥类变量——`echo $OPENAI_API_KEY` 曾先被只读白名单放行；白名单收紧后 AI 分类器（概率模型，无密钥概念）又会放行。最终口径：**只硬拦软件 env_list 存储（启用中）的变量名**——`analyzeEnvValueExposure(command, names)`（`ai-command-rules.js`）检测名字级引用（`$NAME` / `${NAME}` / `$env:NAME` / `Env:NAME` / `%NAME%` / `printenv NAME`）与整表 dump（裸 `env` / `set` / `export` / `printenv` / `declare -p/-x` / `Get-ChildItem Env:` / `reg query … Environment`），命中后并入 dangerous 通道——decidePermission 在会话/项目授权与分类器**之前** ask singleUse，端侧与 AI 分类器均无权放行，完全权限档用户自担；审批卡走现有红条「高风险操作 + 只执行这一次」。**没存在软件里的变量走正常流程**（不无差别拦展开——echo 回显未存变量按原只读白名单/分类器流程）。实现细节：引号内的命令替换分段器看不见（`echo "$(printenv KEY)"`），分词失败的段保守判定（出现受管名字或 printenv 即拦）；裸 env 在 envDumpSegmentRule 里当终点而非包装器（resolveExe 会把它跳掉）。护栏：`ai-command-rules.test.mjs` 环境变量泄漏三例（21 例拦 / 12 例不拦 / 名单为空全不拦）。AI_CLASSIFIER_PROMPT 同步补一句「回显环境变量值输出 ask」作未存变量的概率防线。
 
 ## 11. 实施步骤
 
@@ -197,4 +199,5 @@ cadt.registerCommandClassifier({
 1. 严格度是否追加「自定义阈值」高级滑杆（首期只做三档）；
 2. 端侧放行后是否允许再跑远程分类器做双保险（首期：不跑，顺序互斥）；
 3. B 插件模型分发：市场包直带 vs 首启按需下载 + 哈希校验；
-4. 训练语料的持续扩充（用户反馈回流已由 §7 个性化覆盖；**导入他人导出的分类器数据**涉及信任链，暂不支持，待评估签名机制）。
+4. 训练语料的持续扩充（用户反馈回流已由 §7 个性化覆盖；**导入他人导出的分类器数据**涉及信任链，暂不支持，待评估签名机制）；
+5. **命令通道读敏感文件**（2026-11-16 提出）：`cat .env` / `cat <appdata>/ai-config.json` / `rg apiKey` 属只读白名单仍会直接放行，密钥同样进工具输出；`sensitiveReadDenyReason` 只护住 read_file 工具链，不护命令通道。需定敏感文件清单（`.env` / `id_rsa` / `*.pem` / `credentials*` / 应用数据目录等）与 basename 级匹配规则，误拦 `cat .env.example` 的口径待拍板，暂未实施。

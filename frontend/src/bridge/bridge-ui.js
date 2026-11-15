@@ -113,18 +113,21 @@ function openBrowserTab(url, profileKey, opts) {
     };
     // 个人浏览器关掉后立刻重开：上一个 WebView2 浏览器进程可能还没退干净、同一 user data
     // 目录短暂被占，补一次重试（约 0.8s），别让「记住登录」的入口动辄弹打开失败。
-    const open = (retryLeft) => {
-        deps.backend.BrowserOpen(doc.id, target, profileForOpen).then(onOpened).catch((e) => {
-            if (doc.browserPersist && retryLeft > 0 && deps.docs.includes(doc)) {
-                setTimeout(() => open(retryLeft - 1), 800);
-                return;
-            }
-            const stack = String((e && e.stack) || '').split(String.fromCharCode(10)).slice(0, 4).join(' | ');
-            deps.flash('浏览器标签页打开失败：' + ((e && e.message) || e) + ' @ ' + stack, true);
-            deps.closeDocNow(doc, false);
-        });
-    };
-    open(doc.browserPersist ? 1 : 0);
+    // browserOpenPromise：把创建完成暴露给等待方（AI 的 open_browser_tab 宿主动作）。
+    // 之前完全 fire-and-forget，AI 拿到 id 立刻 BrowserNavigate——两个绑定调用在 Go 侧
+    // 并发排队，导航任务先到就命中「不存在或未就绪」守卫，模型只能重试一次白烧 token
+    // （2026-11-16）。约定：promise resolve ⇒ Go 侧 BrowserOpen 已返回、webview 已就绪。
+    const runOpen = (retryLeft) => deps.backend.BrowserOpen(doc.id, target, profileForOpen).then(onOpened).catch((e) => {
+        if (doc.browserPersist && retryLeft > 0 && deps.docs.includes(doc)) {
+            return new Promise((resolve) => setTimeout(resolve, 800)).then(() => runOpen(retryLeft - 1));
+        }
+        const stack = String((e && e.stack) || '').split(String.fromCharCode(10)).slice(0, 4).join(' | ');
+        deps.flash('浏览器标签页打开失败：' + ((e && e.message) || e) + ' @ ' + stack, true);
+        deps.closeDocNow(doc, false);
+        throw e; // 等待方要拿到确定失败；fire-and-forget 侧另行兜底吞掉 rejection
+    });
+    doc.browserOpenPromise = runOpen(doc.browserPersist ? 1 : 0);
+    doc.browserOpenPromise.catch(() => {});
     return doc;
 }
 
@@ -227,7 +230,7 @@ function openBrowserTab(url, profileKey, opts) {
             if (session && (!session.workspace || deps.sessionPathKey(session.workspace) === deps.sessionPathKey(deps.workspaceFolder))) {
                 deps.aiPanel.open(true);
                 try {
-                    deps.aiPanel.bridgeSwitchSession(startupAISession);
+                    await deps.aiPanel.bridgeSwitchSession(startupAISession);
                 } catch (e) {}
             }
         }

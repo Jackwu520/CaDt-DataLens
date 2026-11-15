@@ -188,7 +188,9 @@ export function createAIMessageQueue(ctx) {
         renderAttachments();
         if (el.input) el.input.value = item.text || '';
         resizeInput();
-        const ok = await submitText(item.text || '');
+        // preserveScroll：冲刷可能发生在用户上翻阅读时（本轮结束的瞬间），不抢滚动位置；
+        // 用户本来贴底的话 stickBottom 仍为 true，keepScroll 渲染照常贴底跟随。
+        const ok = await submitText(item.text || '', null, {preserveScroll: true});
         if (!ok) {
             messageQueue.splice(Math.min(index, messageQueue.length), 0, item);
             if (el.input) el.input.value = '';

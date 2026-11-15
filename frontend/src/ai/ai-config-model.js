@@ -132,11 +132,28 @@ export function normalizeModelEntry(raw, idGen) {
 }
 
 // 取账号的激活模型条目：按 activeModelId 精确匹配，缺省退回首条目；无条目返回 null。
+// 注意这是「取一个可用条目」的语义——找不到会静默回落首条，**不要**用它做 id 有效性校验，
+// 否则 `if (!modelEntryOf(...))` 恒为假，兜底分支永远不执行。校验请用 findModelEntry。
 export function modelEntryOf(account, activeModelId) {
     const models = account && Array.isArray(account.models) ? account.models : [];
     if (!models.length) return null;
     const id = String(activeModelId || '');
     return models.find((entry) => entry && entry.id === id) || models[0];
+}
+
+// 严格按 id 精确匹配条目；找不到返回 null，绝不回落。用于校验一个 id 是否真的存在。
+export function findModelEntry(account, id) {
+    const models = account && Array.isArray(account.models) ? account.models : [];
+    const key = String(id || '');
+    return key ? (models.find((entry) => entry && entry.id === key) || null) : null;
+}
+
+// 解析出「保证落在该账号下」的模型 id：preferred 精确命中优先，其次 fallback，最后首条目；
+// 无条目返回 ''。配置归一化 / 导入 / 编辑器关停等兜底统一走它，避免把失效 id 写回配置。
+export function resolveModelId(account, preferred, fallback) {
+    const models = account && Array.isArray(account.models) ? account.models : [];
+    if (!models.length) return '';
+    return (findModelEntry(account, preferred) || findModelEntry(account, fallback) || models[0]).id;
 }
 
 // 确保 account.models 为归一化的非空数组；旧版单模型 profile 迁移为首条目，

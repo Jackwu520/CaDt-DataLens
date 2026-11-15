@@ -9,6 +9,7 @@ import {
     ctxLimitTiersFor,
     defaultModalities,
     effectiveContextWindow,
+    findModelEntry,
     formatTokenAmount,
     migrateAccountModels,
     modelEntryOf,
@@ -18,6 +19,7 @@ import {
     normalizeModelEntry,
     parseTokenAmount,
     reasoningLevelInfo,
+    resolveModelId,
     resolveModelRef,
 } from './ai-config-model.js';
 
@@ -301,4 +303,64 @@ test('ctxLimitTiersFor：只保留严格小于模型窗口的档位，≤最小�
     assert.deepEqual(ctxLimitTiersFor(384 * 1024), [262144], '窗口在档位之间时保留更小的档');
     assert.deepEqual(ctxLimitTiersFor(0), []);
     assert.deepEqual(ctxLimitTiersFor('bad'), []);
+});
+
+test('findModelEntry：严格按 id 命中，失效/空 id 返回 null（不做静默回落）', () => {
+    const account = {models: [{id: 'a', model: 'm1'}, {id: 'b', model: 'm2'}]};
+    assert.equal(findModelEntry(account, 'b').model, 'm2');
+    assert.equal(findModelEntry(account, 'a').model, 'm1');
+    assert.equal(findModelEntry(account, 'ghost'), null, '失效 id 必须返回 null，否则兜底恒真');
+    assert.equal(findModelEntry(account, ''), null);
+    assert.equal(findModelEntry(account, undefined), null);
+    assert.equal(findModelEntry(null, 'a'), null);
+    assert.equal(findModelEntry({}, 'a'), null);
+    // 对照：modelEntryOf 保留「取可用条目」的回落语义，不能拿它做校验
+    assert.equal(modelEntryOf(account, 'ghost').id, 'a');
+});
+
+test('resolveModelId：preferred → fallback → 首条目，失效 id 不写回', () => {
+    const account = {models: [{id: 'a'}, {id: 'b'}, {id: 'c'}], lastModelId: 'b'};
+    assert.equal(resolveModelId(account, 'c', 'b'), 'c', 'preferred 有效时优先');
+    assert.equal(resolveModelId(account, 'ghost', 'b'), 'b', 'preferred 失效回账号记住的条目');
+    assert.equal(resolveModelId(account, 'ghost', 'also-ghost'), 'a', '两者都失效回首条目');
+    assert.equal(resolveModelId(account, '', 'b'), 'b');
+    assert.equal(resolveModelId({models: []}, 'x', 'y'), '', '无条目返回空串');
+    assert.equal(resolveModelId(null, 'x', 'y'), '');
+});
+
+test('新会话模型继承接线：继承当前会话在用的模型，切会话同步窗口默认', () => {
+    const src = readFileSync(new URL('./ai-panel.js', import.meta.url), 'utf8');
+    const createBlock = /function createSessionData\(title\)[\s\S]*?ctxLimit:/.exec(src);
+    assert.ok(createBlock, 'createSessionData 应存在');
+    assert.match(createBlock[0], /profileId:\s*inherited\.profileId/, '新会话应继承继承出来的账号');
+    assert.match(createBlock[0], /modelId:\s*inherited\.modelId/, '新会话应继承继承出来的模型');
+    assert.doesNotMatch(createBlock[0], /profileId:\s*aiTextOf\(config\.activeProfileId\)/,
+        '不能只读窗口默认：config.active* 只是「上次显式切换」的结果，会与实际在用的模型脱节');
+    // 继承来源：当前会话实际生效的账号+条目，缺失才回落窗口默认
+    const inheritBlock = /function inheritModelRef\(\)[\s\S]*?\n    \}/.exec(src);
+    assert.ok(inheritBlock, 'inheritModelRef 应存在');
+    assert.match(inheritBlock[0], /sessionModelRef\(\)/, '继承来源必须是当前会话的模型引用');
+    assert.match(inheritBlock[0], /aiTextOf\(config\.activeProfileId\)/, '无会话时回落窗口默认账号');
+    assert.match(inheritBlock[0], /aiTextOf\(config\.activeModelId\)/, '无会话时回落窗口默认模型');
+    // 切会话把窗口默认同步成该会话的模型，否则下一次新建又拿到旧值
+    const syncBlock = /function syncActiveFromSession\(session\)[\s\S]*?\n    \}/.exec(src);
+    assert.ok(syncBlock, 'syncActiveFromSession 应存在');
+    assert.match(syncBlock[0], /sessionModelRef\(session\)/);
+    assert.match(syncBlock[0], /config\.activeProfileId = ref\.profile\.id/);
+    assert.match(syncBlock[0], /config\.activeModelId = ref\.entry\.id/);
+    assert.match(syncBlock[0], /pluginAI/, '插件虚拟账号不能写进窗口默认（落盘就是悬空 id）');
+    assert.match(src, /config\.activeSessionId = id;[\s\S]{0,400}?syncActiveFromSession\(target\);\s*\n\s*saveAIConfig\(\);/,
+        'switchSession 里必须在保存配置前同步窗口默认');
+    assert.match(src, /out\.activeModelId = resolveModelId\(activeAccount, out\.activeModelId, activeAccount\.lastModelId\)/,
+        '配置归一化的激活模型兜底必须走 resolveModelId');
+    assert.doesNotMatch(src, /if \(!modelEntryOf\([^)]*\)\)/, '不得再用恒假的 modelEntryOf 做校验');
+});
+
+test('设置页模型选择接线：chip 点击同步 lastModelId，兜底用严格查找', () => {
+    const src = readFileSync(new URL('./ai-model-settings.js', import.meta.url), 'utf8');
+    const chipBlock = /chip\.addEventListener\('click', \(\) => \{[\s\S]*?\}\);/.exec(src);
+    assert.ok(chipBlock, '条目 chip 点击处理应存在');
+    assert.match(chipBlock[0], /profile\.lastModelId = entry\.id/, '选条目必须同时写账号记忆');
+    assert.match(chipBlock[0], /activeModelId = entry\.id/, '选条目必须写窗口选择');
+    assert.doesNotMatch(src, /if \(!modelEntryOf\([^)]*\)\)/, '设置页不得再用恒假校验');
 });

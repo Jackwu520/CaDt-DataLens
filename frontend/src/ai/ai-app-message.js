@@ -8,6 +8,8 @@ export const APP_MESSAGE_ICONS = {
     schedule: 'clock',
     browser: 'camera',
     app: 'camera',
+    // read_image 读取的本地图片：同一张「应用消息」卡片，图标用图片，页脚走消息正文
+    'read-image': 'image',
     notice: 'info',
     update: 'refresh',
     plugin: 'agents',

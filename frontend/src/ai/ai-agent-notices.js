@@ -160,6 +160,8 @@ export function createAIAgentNotices(ctx) {
             app: noticeApp(batch),
             allowPendingEdit: false,
             truncateAt: null,
+            // 后台唤醒不抢用户滚动位置：贴底照常跟随，上翻阅读时保持原位（否则滚动条突然置底）
+            preserveScroll: true,
         });
         Promise.resolve(run).then((result) => {
             waking.delete(session.id);

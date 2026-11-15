@@ -1,8 +1,10 @@
 // AI 设置 → 模型：条目列表、编辑器状态机（新建/编辑/收起）、窗口与思考预算、导入条目、模型账号增删复制。
 // 从 ai-settings-dialog.js 拆出；modelEditorState / editorEntryOf 随模型域迁入，宿主经 extras 触达状态栏与整页刷新。
 import {
+    findModelEntry,
     formatTokenAmount,
     modelEntryOf,
+    resolveModelId,
 } from './ai-config-model.js';
 import {
     aiNowId,
@@ -103,11 +105,13 @@ export function createAIModelSettings(ctx, extras) {
         if (id && !profile) return;
         const previousActiveId = getConfig().activeProfileId;
         if (profile) {
+            // 编辑器打开的是该账号上次记住的条目，与「当前窗口选择」解耦；
+            // 用 resolveModelId 保证失效 id 回落到真实存在的条目。
             modelEditorState = {
                 isCreate: false,
                 editingId: profile.id,
                 previousActiveId,
-                entryId: modelEntryOf(profile, profile.lastModelId).id,
+                entryId: resolveModelId(profile, profile.lastModelId, ''),
                 snapshot: JSON.parse(JSON.stringify(profile)),
             };
         } else {
@@ -175,13 +179,13 @@ export function createAIModelSettings(ctx, extras) {
             if (profile) {
                 profile.name = name;
                 profile.models = entries;
-                if (!modelEntryOf(profile, profile.lastModelId)) profile.lastModelId = entries[0].id;
+                if (!findModelEntry(profile, profile.lastModelId)) profile.lastModelId = entries[0].id;
             }
             if (state.isCreate) getConfig().activeProfileId = profile ? profile.id : getConfig().activeProfileId;
             else getConfig().activeProfileId = state.previousActiveId || (profile ? profile.id : '');
             const activeAccount = getConfig().profiles.find((item) => item.id === getConfig().activeProfileId);
-            if (activeAccount && !modelEntryOf(activeAccount, getConfig().activeModelId)) {
-                getConfig().activeModelId = modelEntryOf(activeAccount, activeAccount.lastModelId).id;
+            if (activeAccount && !findModelEntry(activeAccount, getConfig().activeModelId)) {
+                getConfig().activeModelId = resolveModelId(activeAccount, activeAccount.lastModelId, '');
             }
             saveAIConfig();
             modelEditorState = null;
@@ -204,8 +208,8 @@ export function createAIModelSettings(ctx, extras) {
             getConfig().activeProfileId = state.previousActiveId || (editing ? editing.id : '');
         }
         const activeAccount = getConfig().profiles.find((item) => item.id === getConfig().activeProfileId);
-        if (activeAccount && !modelEntryOf(activeAccount, getConfig().activeModelId)) {
-            getConfig().activeModelId = modelEntryOf(activeAccount, activeAccount.lastModelId).id;
+        if (activeAccount && !findModelEntry(activeAccount, getConfig().activeModelId)) {
+            getConfig().activeModelId = resolveModelId(activeAccount, activeAccount.lastModelId, '');
         }
         modelEditorState = null;
         if (opt.modelEditor) opt.modelEditor.classList.add('hidden');
@@ -239,6 +243,9 @@ export function createAIModelSettings(ctx, extras) {
                 + ' · 输出 ' + (formatTokenAmount(entry.outputWindow) || '—');
             chip.addEventListener('click', () => {
                 if (modelEditorState) modelEditorState.entryId = entry.id;
+                // 两个字段必须一起写：activeModelId 是窗口选择，lastModelId 是账号记忆。
+                // 只写前者会让下次 switchProfile / openModelEditor 用 stale 的 lastModelId 覆盖回来。
+                profile.lastModelId = entry.id;
                 if (profile.id === getConfig().activeProfileId) getConfig().activeModelId = entry.id;
                 saveAIConfig();
                 extras.refreshSettingsPane();

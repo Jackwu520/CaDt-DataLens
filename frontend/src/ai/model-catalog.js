@@ -1,5 +1,5 @@
 // model-catalog.js：模型配置表——「模型 ID → 窗口 / 能力 / 推理支持」的单一来源。
-// 内置一份快照随 exe 走；远端（市场单文件仓库的 catalog.json）可在设置页手动同步，
+// 内置一份快照随 exe 走；远端（cadt-datalens-data/model-catalog 的 catalog.json）可在设置页手动同步，
 // 或超过 CATALOG_STALE_MS 后启动静默同步。合并规则：远端同 ID 覆盖内置、远端多出的追加；
 // 远端内容解析失败整份丢弃，绝不半份生效。
 //
@@ -10,8 +10,10 @@
 
 import {CONTEXT_WINDOW_MAX, CONTEXT_WINDOW_MIN, MODALITY_KEYS, OUTPUT_WINDOW_MAX, OUTPUT_WINDOW_MIN} from './ai-config-model.js';
 
-// 市场单文件仓库的默认地址（Gitee raw）；设置页可覆盖。
-export const CATALOG_URL_DEFAULT = 'https://gitee.com/candysweet-cdt/model-catalog/raw/main/catalog.json';
+// 远端单文件仓库的默认地址（Gitee raw，公开组织 cadt-datalens-data）；设置页可覆盖。
+export const CATALOG_URL_DEFAULT = 'https://gitee.com/cadt-datalens-data/model-catalog/raw/main/catalog.json';
+// GitHub 镜像的默认地址；「设置 → 插件 → 数据源」切到 GitHub 时走这条。
+export const CATALOG_URL_GITHUB = 'https://raw.githubusercontent.com/cadt-datalens-data/model-catalog/main/catalog.json';
 
 // 超过这个时长就认为缓存过期（自动同步只在过期时触发）。
 export const CATALOG_STALE_MS = 7 * 24 * 3600 * 1000;
@@ -21,7 +23,7 @@ export const CATALOG_STALE_MS = 7 * 24 * 3600 * 1000;
 //
 // 一致性要求：改这里必须同步更新 version，并跑一次
 //   node scripts/export-model-catalog.mjs > catalog.json
-// 把市场仓库（candysweet-cdt/model-catalog）那份一起提交，否则两边会漂。
+// 把远端仓库（cadt-datalens-data/model-catalog）那份一起提交，否则两边会漂。
 //
 // 出处（2026-11-15 核对）：
 //   DeepSeek  https://api-docs.deepseek.com/quick_start/pricing ＋ thinking_mode 指南
@@ -332,6 +334,16 @@ export function createModelCatalogStore(deps) {
     let autoTried = false;  // 自动同步每次启动只尝试一次，失败也不反复打网络
     let syncing = null;
     let mergedCache = null; // 合并结果缓存：match/support 每次按键都会调，别每次重建数组
+    let source = 'gitee';   // 数据源（gitee/github），随「设置 → 插件 → 数据源」刷新
+
+    async function refreshSource() {
+        if (typeof backend.GetDataSource !== 'function') return;
+        try {
+            source = (await backend.GetDataSource()) === 'github' ? 'github' : 'gitee';
+        } catch (e) {
+            source = 'gitee';
+        }
+    }
 
     function merged() {
         if (mergedCache) return mergedCache;
@@ -341,7 +353,8 @@ export function createModelCatalogStore(deps) {
 
     function url() {
         const custom = String(getSettings().aiCatalogURL || '').trim();
-        return /^https?:\/\//i.test(custom) ? custom : CATALOG_URL_DEFAULT;
+        if (/^https?:\/\//i.test(custom)) return custom;
+        return source === 'github' ? CATALOG_URL_GITHUB : CATALOG_URL_DEFAULT;
     }
 
     function autoSyncOn() {
@@ -372,6 +385,7 @@ export function createModelCatalogStore(deps) {
     async function load() {
         if (loaded) return merged();
         loaded = true;
+        await refreshSource();
         if (typeof backend.AIModelCatalogCached !== 'function') return merged();
         try {
             const cached = await backend.AIModelCatalogCached();
@@ -389,6 +403,7 @@ export function createModelCatalogStore(deps) {
         }
         syncing = (async () => {
             try {
+                await refreshSource();
                 const result = await backend.AIModelCatalogSync(url());
                 if (!result || !result.text) throw new Error('返回内容为空');
                 if (!adopt(result.text, result.fetchedAt)) throw new Error('返回内容不是合法的模型配置表');
@@ -431,6 +446,7 @@ export function createModelCatalogStore(deps) {
         load,
         sync,
         autoSync,
+        defaultUrl: url,
         match: (modelId) => matchCatalogModel(merged(), modelId),
         support: (modelId, field) => catalogSupport(merged(), modelId, field),
         fill: (entry, modelId) => fillEntryFromCatalog(merged(), entry, modelId),

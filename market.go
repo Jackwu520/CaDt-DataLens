@@ -14,9 +14,70 @@ import (
 
 const (
 	pluginMarketOrg       = "cadt-datalens-plugins"
-	pluginMarketReposAPI  = "https://gitee.com/api/v5/orgs/" + pluginMarketOrg + "/repos"
 	pluginMarketUserAgent = "CaDt-DataLens-PluginMarket/1.0"
+	// 数据源：Gitee 组织（默认）与 GitHub 镜像组织，两边仓库同名。
+	marketSourceGitee  = "gitee"
+	marketSourceGithub = "github"
 )
+
+// normalizeMarketSource 只认 gitee/github 两个值（大小写与空格不敏感），其余一律归一为默认的 gitee。
+func normalizeMarketSource(source string) string {
+	if strings.EqualFold(strings.TrimSpace(source), marketSourceGithub) {
+		return marketSourceGithub
+	}
+	return marketSourceGitee
+}
+
+// currentMarketSource 读应用配置，返回本次抓取应使用的数据源。
+func currentMarketSource() string {
+	return normalizeMarketSource(readAppConfig().DataSource)
+}
+
+func marketSourceLabel(source string) string {
+	if normalizeMarketSource(source) == marketSourceGithub {
+		return "GitHub"
+	}
+	return "Gitee"
+}
+
+// otherMarketSourceLabel 403 限流提示里给用户的备选源名。
+func otherMarketSourceLabel(source string) string {
+	if normalizeMarketSource(source) == marketSourceGithub {
+		return "Gitee"
+	}
+	return "GitHub"
+}
+
+func marketSiteHost(source string) string {
+	if normalizeMarketSource(source) == marketSourceGithub {
+		return "github.com"
+	}
+	return "gitee.com"
+}
+
+// marketReposPageURL 组织公开仓库列表接口；Gitee 走 v5 API，GitHub 走 REST。
+func marketReposPageURL(source string, page int) string {
+	if normalizeMarketSource(source) == marketSourceGithub {
+		return fmt.Sprintf("https://api.github.com/orgs/%s/repos?sort=updated&direction=desc&per_page=100&page=%d", pluginMarketOrg, page)
+	}
+	return fmt.Sprintf("https://gitee.com/api/v5/orgs/%s/repos?type=public&sort=updated&direction=desc&per_page=100&page=%d", pluginMarketOrg, page)
+}
+
+// marketManifestURL 仓库根 plugin.json 的 raw 地址。
+func marketManifestURL(source, fullName, branch string) string {
+	if normalizeMarketSource(source) == marketSourceGithub {
+		return fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/plugin.json", fullName, branch)
+	}
+	return fmt.Sprintf("https://gitee.com/%s/raw/%s/plugin.json", fullName, branch)
+}
+
+// marketDefaultBranch 接口没给 default_branch 时的兜底分支名。
+func marketDefaultBranch(source string) string {
+	if normalizeMarketSource(source) == marketSourceGithub {
+		return "main"
+	}
+	return "master"
+}
 
 var (
 	marketRepoPattern   = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
@@ -58,11 +119,12 @@ type marketManifest struct {
 	MinAppVersion string `json:"minAppVersion"`
 }
 
-// GetPluginMarket 列出 Gitee 组织里的公开插件仓库，并合并各仓库 plugin.json 的元数据。
+// GetPluginMarket 按当前数据源（Gitee/GitHub）列出组织里的公开插件仓库，并合并各仓库 plugin.json 的元数据。
 func (a *App) GetPluginMarket() ([]*MarketPlugin, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()
-	repos, err := fetchMarketRepos(ctx)
+	source := currentMarketSource()
+	repos, err := fetchMarketRepos(ctx, source)
 	if err != nil {
 		return nil, err
 	}
@@ -80,7 +142,7 @@ func (a *App) GetPluginMarket() ([]*MarketPlugin, error) {
 			Repo:        repo.FullName,
 			Name:        repo.Name,
 			Description: strings.TrimSpace(repo.Description),
-			Url:         marketRepoURL(repo.FullName),
+			Url:         marketRepoURLFor(source, repo.FullName),
 			UpdatedAt:   repo.UpdatedAt,
 			Stars:       repo.StargazersCount,
 		}
@@ -90,7 +152,7 @@ func (a *App) GetPluginMarket() ([]*MarketPlugin, error) {
 			defer wg.Done()
 			limit <- struct{}{}
 			defer func() { <-limit }()
-			if manifest, ok := fetchMarketManifest(ctx, repo); ok {
+			if manifest, ok := fetchMarketManifest(ctx, source, repo); ok {
 				applyMarketManifest(item, manifest)
 			}
 		}(item, repo)
@@ -102,10 +164,11 @@ func (a *App) GetPluginMarket() ([]*MarketPlugin, error) {
 	return items, nil
 }
 
-func fetchMarketRepos(ctx context.Context) ([]marketRepo, error) {
+func fetchMarketRepos(ctx context.Context, source string) ([]marketRepo, error) {
+	label := marketSourceLabel(source)
 	var repos []marketRepo
 	for page := 1; page <= 5; page++ {
-		url := fmt.Sprintf("%s?type=public&sort=updated&direction=desc&per_page=100&page=%d", pluginMarketReposAPI, page)
+		url := marketReposPageURL(source, page)
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 		if err != nil {
 			return nil, err
@@ -114,19 +177,22 @@ func fetchMarketRepos(ctx context.Context) ([]marketRepo, error) {
 		req.Header.Set("Accept", "application/json")
 		res, err := marketHTTPClient.Do(req)
 		if err != nil {
-			return nil, fmt.Errorf("连接 Gitee 失败：%w", err)
+			return nil, fmt.Errorf("连接 %s 失败：%w", label, err)
 		}
 		body, readErr := io.ReadAll(io.LimitReader(res.Body, 4<<20))
 		res.Body.Close()
 		if readErr != nil {
-			return nil, fmt.Errorf("读取 Gitee 响应失败：%w", readErr)
+			return nil, fmt.Errorf("读取 %s 响应失败：%w", label, readErr)
+		}
+		if res.StatusCode == http.StatusForbidden {
+			return nil, fmt.Errorf("%s 匿名接口限流（HTTP 403）：稍后点「刷新」重试，或在 设置 → 插件 把数据源切到 %s", label, otherMarketSourceLabel(source))
 		}
 		if res.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("Gitee 返回 HTTP %d", res.StatusCode)
+			return nil, fmt.Errorf("%s 返回 HTTP %d", label, res.StatusCode)
 		}
 		var batch []marketRepo
 		if err := json.Unmarshal(body, &batch); err != nil {
-			return nil, fmt.Errorf("Gitee 响应格式异常：%w", err)
+			return nil, fmt.Errorf("%s 响应格式异常：%w", label, err)
 		}
 		repos = append(repos, batch...)
 		if len(batch) < 100 {
@@ -136,18 +202,18 @@ func fetchMarketRepos(ctx context.Context) ([]marketRepo, error) {
 	return repos, nil
 }
 
-func fetchMarketManifest(ctx context.Context, repo marketRepo) (marketManifest, bool) {
+func fetchMarketManifest(ctx context.Context, source string, repo marketRepo) (marketManifest, bool) {
 	if !validMarketRepo(repo.FullName) {
 		return marketManifest{}, false
 	}
 	branch := strings.TrimSpace(repo.DefaultBranch)
 	if branch == "" {
-		branch = "master"
+		branch = marketDefaultBranch(source)
 	}
 	if !validMarketBranch(branch) {
 		return marketManifest{}, false
 	}
-	url := fmt.Sprintf("https://gitee.com/%s/raw/%s/plugin.json", repo.FullName, branch)
+	url := marketManifestURL(source, repo.FullName, branch)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return marketManifest{}, false
@@ -209,8 +275,13 @@ func markMarketInstalled(item *MarketPlugin, installed map[string]string) {
 	}
 }
 
+// marketRepoURL 当前数据源下的仓库主页地址。
 func marketRepoURL(fullName string) string {
-	return "https://gitee.com/" + strings.TrimSuffix(fullName, ".git")
+	return marketRepoURLFor(currentMarketSource(), fullName)
+}
+
+func marketRepoURLFor(source, fullName string) string {
+	return "https://" + marketSiteHost(source) + "/" + strings.TrimSuffix(fullName, ".git")
 }
 
 func marketRepoName(fullName string) string {

@@ -51,6 +51,39 @@ func TestReadPluginAsset(t *testing.T) {
 	if _, err := app.ReadPluginAsset("demo", `images\a.png`); err != nil {
 		t.Fatalf("反斜杠路径应可用：%v", err)
 	}
+	// 数据/模型类资产（ONNX 语义分类器插件依赖：readAsset 读模型/分词器/worker 脚本）
+	if err := os.MkdirAll(filepath.Join(dir, "model"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "model", "tokenizer.json"), []byte(`{"vocab":{}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "model", "model_quantized.onnx"), []byte("ONNX!"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dataAssets := []struct{ path, mime string }{
+		{"main.js", "text/javascript"},
+		{"model/tokenizer.json", "application/json"},
+		{"model/model_quantized.onnx", "application/octet-stream"},
+	}
+	for _, c := range dataAssets {
+		raw, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(c.path)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		gotData, err := app.ReadPluginAsset("demo", c.path)
+		if err != nil {
+			t.Fatalf("数据资产 %s 应可读：%v", c.path, err)
+		}
+		wantData := "data:" + c.mime + ";base64," + base64.StdEncoding.EncodeToString(raw)
+		if gotData != wantData {
+			t.Fatalf("数据资产 %s data URL 不匹配：got %q", c.path, gotData[:40])
+		}
+	}
+	// 未列入白名单的扩展名仍拒绝
+	if _, err := app.ReadPluginAsset("demo", "model/model.bin.exe"); err == nil {
+		t.Fatalf("未知扩展名应拒绝")
+	}
 
 	bad := []struct{ id, path string }{
 		{"../demo", "images/a.png"},
@@ -62,9 +95,9 @@ func TestReadPluginAsset(t *testing.T) {
 		{"demo", "C:/images/a.png"},
 		{"demo", "./images/a.png"},
 		{"demo", "images//a.png"},
-		{"demo", "main.js"},
 		{"demo", "images/missing.png"},
 		{"demo", "images"},
+		{"demo", "model/missing.onnx"},
 		{"missing", "images/a.png"},
 		{"nomanifest", "a.png"},
 	}
@@ -101,5 +134,26 @@ func TestReadPluginAssetRejectsOversize(t *testing.T) {
 	}
 	if _, err := app.ReadPluginAsset("big", "big.png"); err == nil || !strings.Contains(err.Error(), "过大") {
 		t.Fatalf("超大资产应被拒绝：%v", err)
+	}
+	// 分级上限：数据/模型类用独立大档（512MB，作者拍板）——16MB+1 的 onnx 应通过
+	// （真模型 22MB），pluginDataAssetMaxSize+1 才拒绝。
+	onnxBuf := make([]byte, pluginAssetMaxSize+1)
+	if err := os.WriteFile(filepath.Join(dir, "model.onnx"), onnxBuf, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.ReadPluginAsset("big", "model.onnx"); err != nil {
+		t.Fatalf("16MB+1 的 onnx 应通过（数据/模型大档）：%v", err)
+	}
+	bigOnnx, err := os.Create(filepath.Join(dir, "huge.onnx"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 稀疏文件（Truncate 撑大小、不实分配内存）：size 检查阶段就会拒绝，不会真读内容。
+	if err := bigOnnx.Truncate(pluginDataAssetMaxSize + 1); err != nil {
+		t.Fatal(err)
+	}
+	bigOnnx.Close()
+	if _, err := app.ReadPluginAsset("big", "huge.onnx"); err == nil || !strings.Contains(err.Error(), "过大") {
+		t.Fatalf("超过数据/模型档上限的模型应被拒绝：%v", err)
 	}
 }

@@ -52,3 +52,19 @@ export function pickOpenFileMatch(ref, openFiles) {
     }
     return '';
 }
+
+// 把 inline code 就地升级成文件引用（dataset + class + tooltip）。存在性校验仍由调用方做。
+// **不做 isConnected 判定**：整屏重放时 renderMessage 先建游离的 wrap、渲染完才 append，
+// 而 stat 结果缓存命中时这里是**同步**调用——曾经在「未挂载」分支直接 return，state 停在
+// pending 让该节点永不再试，表现就是「第一次进对话链接正常，切走再切回退化成普通代码」。
+// 换新节点也不怕：节点会随整块 innerHTML 一起丢弃，新节点自己会走一遍（缓存已命中）。
+export function applyFileRefChip(code, abs, ref) {
+    if (!code || !code.dataset) return;
+    code.dataset.aiRefState = 'file';
+    code.dataset.aiRefPath = String(abs || '');
+    code.dataset.aiRefLine = String((ref && ref.line) || 0);
+    code.dataset.aiRefCol = String((ref && ref.col) || 0);
+    if (code.classList && typeof code.classList.add === 'function') code.classList.add('ai-file-ref');
+    const at = ref && ref.line ? (' · 第 ' + ref.line + ' 行' + (ref.col ? ' 第 ' + ref.col + ' 列' : '')) : '';
+    code.dataset.tip = String(abs || '') + at;
+}

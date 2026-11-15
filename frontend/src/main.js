@@ -442,6 +442,7 @@ const APP_ACTIONS = [
     'open_browser_tab', 'close_browser_tab',
     'get_settings', 'get_editor', 'get_content', 'get_git', 'get_ai', 'get_explorer', 'get_plugins', 'get_terminal',
     'get_activity', 'get_patch', 'patch_set_root', 'patch_repreview',
+    'get_gen_models', 'set_gen_model', 'delete_gen_model',
 ];
 
 const APP_SCREENSHOT_AREAS = {
@@ -830,6 +831,10 @@ async function runAppAction(action, params, scope) {
         }
         case 'open_browser_tab': {
             const doc = openBrowserTab(p.url || 'about:blank', p.profileKey || '');
+            // 必须等 Go 侧 WebView2 创建完成再返回：否则 AI 拿到 id 立刻 BrowserNavigate，
+            // 两个绑定调用在 Go 侧并发排队，导航先到就报「浏览器标签页不存在或未就绪」，
+            // 模型只能重试一次，白烧一轮工具调用（2026-11-16）。失败会原样抛出。
+            if (doc && doc.browserOpenPromise) await doc.browserOpenPromise;
             return {browserTab: {id: doc.id, name: doc.name, url: doc.browserUrl}};
         }
         case 'close_browser_tab': {
@@ -956,9 +961,21 @@ async function runAppAction(action, params, scope) {
         }
         case 'ai_switch_session': {
             if (!aiPanel || !aiPanel.bridgeSwitchSession) throw new Error('AI 面板未初始化');
-            const session = aiPanel.bridgeSwitchSession(p.id);
+            const session = await aiPanel.bridgeSwitchSession(p.id);
             if (!session) throw new Error('找不到会话：' + p.id);
             return {switched: session};
+        }
+        case 'get_gen_models': {
+            if (!aiPanel || !aiPanel.bridgeGenModelsList) throw new Error('AI 面板未初始化');
+            return aiPanel.bridgeGenModelsList();
+        }
+        case 'set_gen_model': {
+            if (!aiPanel || !aiPanel.bridgeGenModelUpsert) throw new Error('AI 面板未初始化');
+            return aiPanel.bridgeGenModelUpsert(p.entry);
+        }
+        case 'delete_gen_model': {
+            if (!aiPanel || !aiPanel.bridgeGenModelDelete) throw new Error('AI 面板未初始化');
+            return aiPanel.bridgeGenModelDelete(p.ref);
         }
         case 'flash': {
             const message = String(p.message || '').trim();
@@ -2426,6 +2443,8 @@ function initAIPanel() {
         activity: activityLog,
         // 插件注册的命令分类器（plugins.js 域状态，端侧分类器聚合时读取）
         getPluginCommandClassifiers,
+        // 行式下拉增强器：设置页弹窗（生图条目编辑器）里的 select 也要同样的浮层
+        enhanceSelect: (sel) => settingsUI.enhanceSelect(sel),
         getPluginLoadErrors,
         refreshPlugins: () => loadPlugins(backend),
         openTermTab: (...args) => openBgTermTab(...args),
@@ -2445,6 +2464,8 @@ function initAIPanel() {
                     } catch (e) {}
                 }
                 const doc = openBrowserTab(url || 'about:blank', profileKey || '');
+                // 同 open_browser_tab 宿主动作：返回前等 webview 就绪，失败原样抛出
+                if (doc && doc.browserOpenPromise) await doc.browserOpenPromise;
                 return {id: doc.id, url: doc.browserUrl, title: doc.name};
             },
             closeTab: async (id) => {
@@ -3452,7 +3473,7 @@ const {isGlobalSearchOpen, openGlobalSearch} = globalSearch;
 async function openAISessionHit(hit) {
     if (!aiPanel || !aiPanel.bridgeSwitchSession) throw new Error('AI 面板未初始化');
     aiPanel.open(true);
-    aiPanel.bridgeSwitchSession(hit.sessionId);
+    await aiPanel.bridgeSwitchSession(hit.sessionId);
     if (hit.mid && typeof aiPanel.bridgeLocateMessage === 'function') {
         const located = aiPanel.bridgeLocateMessage(hit.mid, hit.liveIndex);
         if (!located) flash('已打开会话「' + (hit.title || '') + '」，未能定位到该消息（会话可能在此期间有变更）');

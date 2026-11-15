@@ -260,6 +260,9 @@ export const AI_BUILTIN_SKILLS = [
             '- open_settings {pane?}：打开设置弹窗，pane = general / editor-tabs / formats / integration / models / ai / context / plugins / shortcuts / developer / about 或 fmt-<格式> / lang-<语言>。',
             '- set_setting {key,value}：改受限白名单设置并即时生效（持久化）。可写键：autoSave, showSidebar, alwaysOnTop, codeWrap, codeGuides, treeGuides, treeCounts, mdLineNumbers, mdScrollSync, readOnlyMode, treeRefreshInterval(1/2/3/5/10), sidebarFont(10-20), editorFont(10-24), treeExpandDefault(expand/collapse), openMode(tab/window), theme, codeStyle(auto / jetbrains-dark / darcula / tokyo-night / jetbrains-light / github-light / shiki / newsprint / pixyll / whitey；只改代码配色与编辑器观感，不改界面), sidebarWidth(160-500), terminalHeight(120-480), aiPanelWidth(280-800), aiPanelSide(left/right)。未知键会报错并列出可用键。',
             '- ai_new_session {title?,message?}：新建 AI 会话（本面板），message 非空会立刻发送（真实触发一次模型调用）；当前会话还没发过消息时不会重复创建，而是复用并重命名该会话。ai_switch_session {id}：切换会话。',
+            '- get_gen_models：生图/视频生成条目列表（kind/enabled/baseURL/path/默认模型与尺寸/hasKey，不含密钥）与各类型缺省条目名。',
+            '- set_gen_model {entry}：新建/更新生成条目（按 name 或 id 匹配，**未传的字段沿用原值**；name 建议直接用服务商模型 id）。字段与示例见 cadt-gen-models 技能。apiKey 不可写：已填的保留，留空的留给用户填。',
+            '- delete_gen_model {ref}：删除生成条目（按 name 或 id）；已填 API Key 的条目不可由 AI 删除（让用户手动删）。',
             '- type_text {text,target?}：模拟键盘输入到焦点元素（或 target 选择器匹配的输入框），**仅完全权限档**；press_key {key,target?}：模拟按键（Enter/Escape/F3/单字符等，冒泡触发对话框确认、Esc 关闭、全局快捷键），**仅完全权限档**。',
             '- flash {message,isError?}：在状态栏显示一条提示；refresh_explorer：刷新文件树。',
             '',
@@ -269,6 +272,41 @@ export const AI_BUILTIN_SKILLS = [
             '- 不应用/撤销补丁：app_control 只读取补丁视图、换目标目录、重新预检；补丁应用走 propose_patch 审批卡或用户手动点「应用」，撤销由用户在补丁视图操作。',
             '- 不跨窗口：多窗口模式的新开窗口、其他窗口的状态都不可触达。',
             '- 鼠标点击不模拟；键盘模拟只有 type_text/press_key 且仅完全权限档。',
+            '- 生成条目的 API Key 不可读写：AI 代填配置时密钥永远留空（已填的保留），由用户在设置里填写。',
+        ].join('\n'),
+    },
+    {
+        name: 'cadt-gen-models',
+        description: '帮用户配置生图/视频生成条目（generate_image / generate_video 的服务商配置）：代填除 API Key 外的全部字段，密钥由用户在设置里填写',
+        content: [
+            '# 生成条目配置（cadt-gen-models）',
+            '',
+            '用户要接入生图/视频服务商时，用 app_control 的 get_gen_models / set_gen_model / delete_gen_model 代填配置（动作签名见 cadt-ui 技能）。**API Key 永远由用户自己填**——你写不了也读不了密钥。',
+            '',
+            '## 条目字段',
+            '',
+            '- name：条目名，**建议直接用服务商的模型 id**（generate_image 传 model=条目名 就能精准选中）。',
+            '- kind：image（生图）或 video（视频）。',
+            '- baseURL + path：服务根地址与生成端点。同步型（响应直接带产物）只填 path；任务型接口（提交→轮询）另填 submitPath / jobIdPath / pollPath（支持 {{jobId}}）/ statusPath / doneValue / failedValue / pollIntervalSec(2-30) / maxPolls(1-240)。',
+            '- headers：[{key,value}]，鉴权写 Authorization: Bearer {{apiKey}}——{{apiKey}} 会被替换为用户填的密钥。',
+            '- bodyTemplate：请求体模板。占位符渲染为 JSON 字面量（字符串自动带引号转义），**模板里不要手写引号**：{"prompt":{{prompt}}} 对，"prompt":"{{prompt}}" 错。可用占位符：prompt / model / size / n / seed / apiKey / jobId。',
+            '- resultType：b64（响应内嵌 base64，生成后直接解码落盘）或 url（响应给下载地址，生成后立即下载落盘，24h 限期无影响）；resultPath 如 data[*].url / data[*].b64_json（[*] 取多张）；errorPath 如 error.message，失败文案会回给 AI。',
+            '- defaultModel / defaultSize / defaultN(1-4)：工具未传参时的缺省值。',
+            '- enabled：停用的条目不参与缺省解析，generate_* 工具也不会下发（全部停用时工具消失）。',
+            '',
+            '## 工作流',
+            '',
+            '1. get_gen_models 防重名、了解已有条目。',
+            '2. 按服务商文档写 bodyTemplate。最常见形态（OpenAI 兼容同步生图）：path=/v1/images/generations，bodyTemplate={"model":{{model}},"prompt":{{prompt}},"size":{{size}},"n":{{n}},"response_format":"url"}，resultType=url，resultPath=data[*].url，errorPath=error.message。',
+            '3. set_gen_model 保存（部分更新语义：改一处不必重发全量）。',
+            '4. **创建/更新后必须提醒用户**：去 设置 → AI → 生图与视频 → 编辑 填 API Key，并逐字核对 baseURL 与服务商文档一致。',
+            '5. 用户填完 Key 之前不要发起 generate_image（会因缺密钥失败）。',
+            '',
+            '## 红线',
+            '',
+            '- 不写、不猜测、不占位 apiKey；已填密钥的条目更新时密钥自动保留，删除会被拒绝（让用户手动删）。',
+            '- baseURL 必须来自用户给出的服务商文档，不要编造域名；保存后明确提醒用户核对。',
+            '- 仅支持 n=1 的接口在模板里硬编码 "n":1，并在回复里说明分次调用。',
         ].join('\n'),
     },
     {
@@ -690,6 +728,14 @@ export function aiNormalizeImage(raw) {
 export function aiImageSrc(image) {
     if (!image || !image.data) return '';
     return 'data:' + image.mime + ';base64,' + image.data;
+}
+
+// aiImageFromSrc：aiImageSrc 的反向，让正文图片也能走全屏查看的复制/另存；外链图返回 null。
+export function aiImageFromSrc(src, name) {
+    const m = /^data:([^;,]+);base64,([\s\S]+)$/i.exec(String(src || '').trim());
+    if (!m) return null;
+    const mime = m[1].toLowerCase() === 'image/jpg' ? 'image/jpeg' : m[1].toLowerCase();
+    return {mime, data: m[2].replace(/\s+/g, ''), name: String(name || '').trim() || '图片'};
 }
 
 export function aiImageExt(mime) {

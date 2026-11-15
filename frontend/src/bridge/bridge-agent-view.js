@@ -45,6 +45,8 @@ function openAgentTab(spec) {
             toolCallId: String((spec && spec.toolCallId) || ''),
             subId: String((spec && spec.subId) || ''),
             name: String((spec && spec.name) || '子代理'),
+            // 详情所在的会话（头部状态兜底用它精确补正文，不扫全部会话）
+            sessionId: String((spec && spec.sessionId) || ''),
         },
         mode: 'agentview',
         treeAvailable: false,

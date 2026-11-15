@@ -3,6 +3,7 @@
 // attachments 与 queueSeq 为本域私有 let（attachments 经 getAttachments/setAttachments 供面板与消息队列访问）；
 // attachSeq 留在面板（executeTool /clear 会重置），经 nextAttachSeq() 取号。
 import {aiTextOf, aiImageSrc, AI_IMAGE_LIMIT, AI_IMAGE_MAX_BASE64, AI_IMAGE_MAX_DIM, AI_IMAGE_MAX_INPUT_BYTES, AI_IMAGE_MESSAGE_BUDGET} from './ai-constants.js';
+import {prepareImagePayload} from './ai-image-encode.js';
 import {AI_QUOTE_KIND, quoteChipLabel, quoteExcerpt} from './ai-quote.js';
 
 export function createAIComposer(ctx) {
@@ -177,69 +178,15 @@ export function createAIComposer(ctx) {
         return true;
     }
 
-    function loadImageElement(file) {
-        return new Promise((resolve, reject) => {
-            const url = URL.createObjectURL(file);
-            const img = new Image();
-            img.onload = () => {
-                URL.revokeObjectURL(url);
-                resolve(img);
-            };
-            img.onerror = () => {
-                URL.revokeObjectURL(url);
-                reject(new Error('无法读取图片'));
-            };
-            img.src = url;
+    // 降采样 / 压缩链在 ai-image-encode.js（与 read_image 工具共用单一实现），这里只补
+    // 「输入框口径」：体积上限、尺寸上限与默认名。
+    function prepareImageAttachment(file) {
+        return prepareImagePayload(file, {
+            maxInputBytes: AI_IMAGE_MAX_INPUT_BYTES,
+            maxDim: AI_IMAGE_MAX_DIM,
+            maxBase64: AI_IMAGE_MAX_BASE64,
+            name: (file && file.name && file.name !== 'image.png') ? file.name : '粘贴的图片',
         });
-    }
-
-    async function prepareImageAttachment(file) {
-        if (!file) throw new Error('没有图片数据');
-        if (file.size > AI_IMAGE_MAX_INPUT_BYTES) throw new Error('图片超过 12MB');
-        let source = file;
-        let width = 0;
-        let height = 0;
-        if (typeof createImageBitmap === 'function') {
-            source = await createImageBitmap(file);
-            width = source.width;
-            height = source.height;
-        } else {
-            source = await loadImageElement(file);
-            width = source.naturalWidth || source.width;
-            height = source.naturalHeight || source.height;
-        }
-        const scale = Math.min(1, AI_IMAGE_MAX_DIM / Math.max(width || 1, height || 1));
-        const outWidth = Math.max(1, Math.round(width * scale));
-        const outHeight = Math.max(1, Math.round(height * scale));
-        const canvas = document.createElement('canvas');
-        canvas.width = outWidth;
-        canvas.height = outHeight;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) throw new Error('无法创建图片画布');
-        ctx.drawImage(source, 0, 0, outWidth, outHeight);
-        if (source && typeof source.close === 'function') source.close();
-        let mime = 'image/png';
-        let dataUrl = canvas.toDataURL('image/png');
-        if (dataUrl.length > AI_IMAGE_MAX_BASE64) {
-            let quality = 0.86;
-            mime = 'image/jpeg';
-            dataUrl = canvas.toDataURL(mime, quality);
-            while (dataUrl.length > AI_IMAGE_MAX_BASE64 && quality > 0.45) {
-                quality -= 0.1;
-                dataUrl = canvas.toDataURL(mime, quality);
-            }
-        }
-        if (dataUrl.length > AI_IMAGE_MAX_BASE64) throw new Error('压缩后图片仍然过大');
-        const comma = dataUrl.indexOf(',');
-        if (comma < 0) throw new Error('图片编码失败');
-        return {
-            mime,
-            data: dataUrl.slice(comma + 1),
-            width: outWidth,
-            height: outHeight,
-            bytes: Math.round((dataUrl.length - comma - 1) * 3 / 4),
-            name: (file.name && file.name !== 'image.png') ? file.name : '粘贴的图片',
-        };
     }
 
     async function handleInputPaste(e) {
