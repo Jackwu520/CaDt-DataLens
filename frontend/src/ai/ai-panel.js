@@ -3734,6 +3734,20 @@ export function createAIPanel(options) {
         // Anthropic 同理）。停止生成、压缩截断、历史恢复都可能留下孤立 tool 消息——
         // 不跳过会让后续每一轮请求都被 HTTP 400 拒收。
         let pendingCalls = new Set();
+        // —— 实时瘦身（组装视角剔除，会话历史原样保留）——
+        // 轮起点 = 用户消息（非 systemNote）；保留最近 2 轮原文，更早的算「过时区」。
+        let recentStart = 0;
+        let userTurnsSeen = 0;
+        for (let i = limit - 1; i >= 0; i--) {
+            const m = session.messages[i];
+            if (m && m.role === 'user' && !m.systemNote) {
+                userTurnsSeen += 1;
+                if (userTurnsSeen === 3) {
+                    recentStart = i + 1;
+                    break;
+                }
+            }
+        }
         for (let i = 0; i < limit; i++) {
             const message = session.messages[i];
             if (!message) continue;
@@ -3743,15 +3757,35 @@ export function createAIPanel(options) {
             if (message.kind === 'model-switch') continue;
             // 瞬态注入块的旧条目：只发最新一条（见 lastTransient）
             if (message.dedupeKey && lastTransient.get(message.dedupeKey) !== i) continue;
+            // 轮次提醒注记（如「工具调用轮次已达 N」）：只在产生时随下一请求有效，
+            // 之后是纯噪音，历史里不再发
+            if (message.systemNote && !message.dedupeKey) continue;
             if (message.role === 'tool') {
                 if (message.status === 'running') continue;
                 if (!pendingCalls.has(message.toolCallId)) continue;
                 pendingCalls.delete(message.toolCallId);
+                let toolContent = message.content || '';
+                // 过时的大工具结果 stub 化：几轮之前的 read_file / web_fetch / 搜索 /
+                // 命令输出大概率已过时（文件已改、状态已变），全量躺着只烧上下文。
+                // 替换为带字数与重取提示的占位（模型需要时会重新读取/执行）。
+                if (i < recentStart && toolContent.length > 4096 &&
+                    (message.name === 'read_file' || message.name === 'web_fetch' ||
+                        message.name === 'run_command' || message.name === 'background_command' ||
+                        message.name === 'search_text')) {
+                    if (message.name === 'read_file' || message.name === 'web_fetch') {
+                        toolContent = '[内容已省略：此条 ' + message.name + ' 结果共 ' + toolContent.length +
+                            ' 字符，读取于较早轮次、大概率已过时。如需当前内容请重新读取。]';
+                    } else {
+                        // 命令 / 搜索输出尾部常是结论（测试结果、命中列表），保留尾部 300 字
+                        toolContent = '[输出已省略：原 ' + toolContent.length + ' 字符，仅保留尾部 ——\n…' +
+                            toolContent.slice(-300) + ']';
+                    }
+                }
                 messages.push({
                     role: 'tool',
                     toolCallId: message.toolCallId,
                     name: message.name || '',
-                    content: message.content || '',
+                    content: toolContent,
                 });
                 continue;
             }
@@ -3768,7 +3802,9 @@ export function createAIPanel(options) {
                 item.images = message.images.filter((image) => image && image.data)
                     .map((image) => ({mime: image.mime, data: image.data}));
             }
-            if (message.role === 'assistant' && message.reasoning) {
+            if (message.role === 'assistant' && message.reasoning && i >= recentStart) {
+                // 历史 reasoning 只保留最近 2 轮：思考只服务于当轮行动，旧轮的思考
+                // 重发动辄数千 token 且零价值（文件/状态早变了）
                 item.thinking = message.reasoning;
                 item.thinkingSignature = message.thinkingSignature || '';
             }
