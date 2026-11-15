@@ -9725,6 +9725,21 @@ body.bgterm-dragging { cursor: row-resize; user-select: none; }
 .ss-opt.selected { font-weight: 600; }
 .ss-opt .ss-check { display: none; margin-left: auto; color: var(--accent); flex: none; }
 .ss-opt.selected .ss-check { display: inline-flex; }
+/* 主副标题两行选项：option.text 是主标题，data-subtitle 是副标题。
+   没有 data-subtitle 的选项仍走上面的单行样式，完全向后兼容。 */
+.ss-opt-rich { padding: 8px 10px; }
+.ss-opt-rich .ss-label {
+    display: block; white-space: normal; overflow: visible; text-overflow: clip;
+}
+.ss-opt-rich .ss-main {
+    display: block; font-size: 12.5px; font-weight: 600; line-height: 1.4;
+}
+.ss-opt-rich .ss-sub {
+    display: block; margin-top: 2px;
+    color: var(--muted); font-size: 11px; font-weight: 400; line-height: 1.45;
+}
+.ss-opt-rich.selected { background: color-mix(in srgb, var(--hover) 75%, transparent); }
+.ss-opt-rich:hover:not(:disabled), .ss-opt-rich.ss-focus { background: var(--hover); }
 .ss-group { padding: 7px 10px 3px; color: var(--muted); font-size: 10.5px; font-weight: 600; letter-spacing: .04em; }
 .ss-empty { padding: 10px; color: var(--muted); font-size: 12px; text-align: center; }
 

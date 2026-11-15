@@ -32,6 +32,16 @@ export function computePopGeometry(rect, viewport, naturalHeight, limits = SS_PO
     return {width, height, left, top, up};
 }
 
+// 选项文本拆分：option.text 是主标题（也是触发器显示值），
+// data-subtitle 存在时浮层多渲染一行副标题。没有该属性的选项保持原来的单行样式。
+// 纯函数，便于单测；调用方只认这个约定，不猜任何分隔符。
+export function optionLabelParts(option) {
+    return {
+        title: option ? String(option.text || '') : '',
+        subtitle: option && option.dataset ? String(option.dataset.subtitle || '') : '',
+    };
+}
+
 export function createSettingsSelect(deps) {
 
 const POP_ID = 'set-select-pop';
@@ -64,7 +74,8 @@ function itemNodes() {
 
 function refresh(inst) {
     const sel = inst.sel;
-    inst.label.textContent = sel.options[sel.selectedIndex] ? sel.options[sel.selectedIndex].text : '';
+    inst.label.textContent = sel.options[sel.selectedIndex]
+        ? optionLabelParts(sel.options[sel.selectedIndex]).title : '';
     const disabled = !!sel.disabled;
     inst.btn.disabled = disabled;
     inst.wrap.classList.toggle('is-disabled', disabled);
@@ -96,9 +107,21 @@ function renderOptions(inst) {
         item.setAttribute('role', 'option');
         item.setAttribute('aria-selected', option.selected ? 'true' : 'false');
         item.disabled = !!option.disabled;
+        const {title, subtitle} = optionLabelParts(option);
         const text = document.createElement('span');
         text.className = 'ss-label';
-        text.textContent = option.text;
+        if (subtitle) {
+            item.classList.add('ss-opt-rich');
+            const main = document.createElement('span');
+            main.className = 'ss-main';
+            main.textContent = title;
+            const sub = document.createElement('span');
+            sub.className = 'ss-sub';
+            sub.textContent = subtitle;
+            text.append(main, sub);
+        } else {
+            text.textContent = title;
+        }
         item.appendChild(text);
         if (option.selected && deps.iconSvg) {
             const check = document.createElement('span');

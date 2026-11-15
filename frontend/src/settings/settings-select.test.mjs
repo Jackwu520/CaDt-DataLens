@@ -1,7 +1,16 @@
 // settings-select 纯函数测试：浮层定位（向下 / 向上翻转、触底限高、视口边界）。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {SS_POP_LIMITS, computePopWidth, computePopGeometry} from './settings-select.js';
+import {SS_POP_LIMITS, computePopWidth, computePopGeometry, optionLabelParts} from './settings-select.js';
+
+test('optionLabelParts：data-subtitle 决定两行，普通选项仍是单行', () => {
+    assert.deepEqual(optionLabelParts({text: '专业严谨', dataset: {subtitle: '清晰、准确、值得信赖'}}),
+        {title: '专业严谨', subtitle: '清晰、准确、值得信赖'});
+    assert.deepEqual(optionLabelParts({text: '普通选项', dataset: {}}),
+        {title: '普通选项', subtitle: ''});
+    assert.deepEqual(optionLabelParts({text: '无 dataset'}), {title: '无 dataset', subtitle: ''});
+    assert.deepEqual(optionLabelParts(null), {title: '', subtitle: ''});
+});
 
 const {gap, edge, maxHeight} = SS_POP_LIMITS;
 // 触发器在视口中部：{left: 100, top: 300, right: 300, bottom: 330, width: 200}
