@@ -2189,9 +2189,23 @@ export function createAIPanel(options) {
     // 广播回来的 ai-timer-stopped 不再重复投系统消息（用户手动停止才投）。
     const suppressCountupStopIds = new Set();
 
-    // wakeSessionByCountupStop 正计时被停止（手动）时给绑定会话投系统消息：
-    // AI 启动「盯耗时」的正计时后，用户停掉它 AI 就能拿到实际时长并接话分析——
-    // 补上 countup 与 countdown 一样的感知闭环（此前 countup 停止只清注册表，AI 全程无感知）。
+    // timerMarksText 计时器标记时间线（停止/到点投递用）：T+偏移 + 可选备注，分号连接。
+    function timerMarksText(info) {
+        const marks = Array.isArray(info && info.marks) ? info.marks : [];
+        if (!marks.length) return '';
+        const startMs = Number(info.startMs) || 0;
+        const pad = (n) => String(n).padStart(2, '0');
+        const offset = (mark) => {
+            const s = Math.max(0, Math.round(((Number(mark.atMs) || 0) - startMs) / 1000));
+            const hh = Math.floor(s / 3600);
+            return (hh > 0 ? hh + ':' : '') + pad(Math.floor((s % 3600) / 60)) + ':' + pad(s % 60);
+        };
+        return marks.map((mark) => 'T+' + offset(mark) + (mark.note ? ' ' + String(mark.note) : '')).join('；');
+    }
+
+    // wakeSessionByCountupStop 正计时被停止（用户手动 / 到点自动）时给绑定会话投系统消息：
+    // AI 启动「盯耗时」的正计时后，停止发生时 AI 就能拿到实际时长（与标记时间线）并接话分析——
+    // countup 与 countdown 一样的感知闭环。
     async function wakeSessionByCountupStop(sessionId, info) {
         const label = String((info && info.label) || '正计时');
         const session = sessions.find((s) => s.id === sessionId);
@@ -2204,12 +2218,16 @@ export function createAIPanel(options) {
             }
             const seconds = Math.max(0, Math.round(Number(info && info.startMs) ? (Date.now() - info.startMs) / 1000 : 0));
             const desc = seconds >= 60 && seconds % 60 === 0 ? (seconds / 60) + ' 分钟' : seconds + ' 秒';
+            const marksText = timerMarksText(info);
+            const stopKind = info && info.auto ? '（到点自动停止）' : '';
             await sendAppMessage({
                 kind: 'timer',
                 label: '正计时 · ' + label,
-                content: '[正计时已停止 · ' + label + ']\n已计时长 ' + desc + '。若此前在等待该事项的耗时结果，请基于时长继续分析或简短向用户确认；无需展开无关内容。',
+                content: '[正计时已停止' + stopKind + ' · ' + label + ']\n已计时长 ' + desc + '。' +
+                    (marksText ? '期间标记时间线：' + marksText + '。\n' : '') +
+                    '若此前在等待该事项的耗时结果，请基于时长与标记继续分析或简短向用户确认；无需展开无关内容。',
             });
-            flash('正计时「' + label + '」已停止，已计 ' + desc + '（已通知会话）');
+            flash('正计时「' + label + '」已停止' + stopKind + '，已计 ' + desc + '（已通知会话）');
         } catch (e) {
             flash('正计时「' + label + '」停止通知失败：' + ((e && e.message) || e), true);
         }
@@ -2240,10 +2258,13 @@ export function createAIPanel(options) {
             }
             const seconds = Math.max(1, Math.round(Number(payload && payload.endMs && payload.startMs ? (payload.endMs - payload.startMs) / 1000 : 0)));
             const desc = seconds >= 60 && seconds % 60 === 0 ? (seconds / 60) + ' 分钟' : seconds + ' 秒';
+            const marksText = timerMarksText(payload);
             await sendAppMessage({
                 kind: 'timer',
                 label: '计时器 · ' + label,
-                content: '[计时器到点 · ' + label + ']\n设定为 ' + desc + ' 的倒计时已结束。请继续处理之前等待的事项；若已无可继续的步骤，简短告知用户计时结束即可。',
+                content: '[计时器到点 · ' + label + ']\n设定为 ' + desc + ' 的倒计时已结束。' +
+                    (marksText ? '期间标记时间线：' + marksText + '。\n' : '') +
+                    '请继续处理之前等待的事项；若已无可继续的步骤，简短告知用户计时结束即可。',
             });
             flash('计时器「' + label + '」已到点并唤醒');
         } catch (e) {
@@ -6509,7 +6530,7 @@ export function createAIPanel(options) {
                     const desc = total >= 60 && total % 60 === 0 ? (total / 60) + ' 分钟' : total + ' 秒';
                     return '已启动倒计时「' + created.label + '」（' + desc + '）。到点会自动以系统消息唤醒你继续本会话，期间无需轮询等待，可以先做其他事或结束本轮。[id: ' + created.id + ']';
                 }
-                return '已启动正计时「' + created.label + '」。需要结果时用 stop_timer 停止并读取已计时长；用户手动停止时会以系统消息把时长告知你，无需轮询等待。[id: ' + created.id + ']';
+                return '已启动正计时「' + created.label + '」' + (created.autoStopMs ? '（' + new Date(created.autoStopMs).toLocaleTimeString() + ' 自动停止）' : '') + '。需要结果时用 stop_timer 停止并读取已计时长与标记时间线；用户手动停止或到点自动停止时会以系统消息告知，无需轮询等待。[id: ' + created.id + ']';
             }
             case 'stop_timer': {
                 const stopId = aiTextOf(input.id).trim();
@@ -6524,9 +6545,12 @@ export function createAIPanel(options) {
                 }
                 if (stopped.mode === 'countup') {
                     const elapsed = Math.max(0, Math.round((Date.now() - stopped.startMs) / 1000));
-                    return '已停止正计时「' + stopped.label + '」，已计时长 ' + Math.floor(elapsed / 60) + ' 分 ' + (elapsed % 60) + ' 秒。';
+                    const marksText = timerMarksText(stopped);
+                    return '已停止正计时「' + stopped.label + '」，已计时长 ' + Math.floor(elapsed / 60) + ' 分 ' + (elapsed % 60) + ' 秒。' +
+                        (marksText ? '\n期间标记时间线：' + marksText + '。' : '');
                 }
-                return '已停止倒计时「' + stopped.label + '」。';
+                const firedMarks = timerMarksText(stopped);
+                return '已停止倒计时「' + stopped.label + '」。' + (firedMarks ? '\n期间标记时间线：' + firedMarks + '。' : '');
             }
             case 'preference_list': {
                 const prefs = config.preferences || [];

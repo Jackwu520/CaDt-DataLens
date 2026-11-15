@@ -107,6 +107,8 @@ export function createAITimer(ctx) {
             '.ai-timer-detail-val { flex: 1; min-width: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }',
             '.ai-timer-detail-time { color: var(--accent); font-weight: 600; }',
             '.ai-timer-stop-btn { margin-top: 6px; align-self: flex-start; }',
+            '.ai-timer-mark-input { flex: 1; min-width: 0; font-size: 11px; }',
+            '.ai-timer-mark-btn { flex: none; }',
             '.ai-timer-create-err { font-size: 11px; color: var(--red); min-height: 14px; }',
         ].join('\n');
         document.head.appendChild(style);
@@ -138,6 +140,12 @@ export function createAITimer(ctx) {
         const d = new Date(ms);
         const pad = (n) => String(n).padStart(2, '0');
         return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+    }
+
+    // modeText 模式说明文案（详情视图用）：正计时区分「到点自动停止」兜底形态。
+    function modeText(info) {
+        if (info.mode === 'countdown') return '倒计时（到点自动唤醒 AI）';
+        return info.autoStopMs ? '正计时（停止时上报时长；到点自动停止）' : '正计时（停止时上报时长）';
     }
 
     // 胶囊时间位与弹层行的实时读数：倒计时显示剩余，正计时显示已计
@@ -334,15 +342,51 @@ export function createAITimer(ctx) {
             return el;
         };
         box.appendChild(rowOf('目的', textVal(info.label || (info.mode === 'countdown' ? '倒计时' : '正计时'))));
-        box.appendChild(rowOf('模式', textVal(info.mode === 'countdown' ? '倒计时（到点自动唤醒 AI）' : '正计时（停止时上报时长）')));
+        box.appendChild(rowOf('模式', textVal(modeText(info))));
         const timeEl = document.createElement('span');
         timeEl.className = 'ai-timer-detail-val ai-timer-detail-time';
         timeEl.dataset.timerId = info.id;
         timeEl.textContent = liveTime(info);
         box.appendChild(rowOf(info.mode === 'countdown' ? '剩余' : '已计', timeEl));
         if (info.mode === 'countdown') box.appendChild(rowOf('到点时刻', textVal(fmtClock(info.endMs))));
+        if (info.mode === 'countup' && info.autoStopMs) box.appendChild(rowOf('自动停止', textVal(fmtClock(info.autoStopMs))));
         box.appendChild(rowOf('启动时刻', textVal(fmtClock(info.startMs))));
+        // 时刻标记时间线（停止/到点时随系统消息一次性投给 AI，这里是已打的标记回显）
+        for (const mark of info.marks || []) {
+            const markVal = document.createElement('span');
+            markVal.className = 'ai-timer-detail-val';
+            const markText = document.createElement('span');
+            markText.className = 'ai-timer-detail-time';
+            markText.textContent = 'T+' + fmtDuration(Math.max(0, Math.round((mark.atMs - info.startMs) / 1000)));
+            markVal.appendChild(markText);
+            if (mark.note) markVal.appendChild(document.createTextNode(' ' + mark.note));
+            box.appendChild(rowOf('标记', markVal));
+        }
         box.appendChild(rowOf('id', textVal(info.id)));
+        // 打标行：可选备注 + 一键打标（攒批投递，不打断 AI）
+        const markRow = document.createElement('div');
+        markRow.className = 'ai-timer-detail-row';
+        const markInput = createInput({
+            placeholder: '标记备注（可选，如「开始报错」）',
+            maxLength: 200,
+            spellcheck: false,
+        });
+        markInput.element.classList.add('ai-timer-mark-input');
+        const markBtn = document.createElement('button');
+        markBtn.type = 'button';
+        markBtn.className = 'dlg-btn ai-timer-mark-btn';
+        markBtn.textContent = '打标记';
+        markBtn.addEventListener('click', () => {
+            markTimer(info.id, markInput.control.value).catch(() => {});
+        });
+        markInput.control.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                markTimer(info.id, markInput.control.value).catch(() => {});
+            }
+        });
+        markRow.append(markInput.element, markBtn);
+        box.appendChild(markRow);
         const stopBtn = document.createElement('button');
         stopBtn.type = 'button';
         stopBtn.className = 'dlg-btn ai-timer-stop-btn';
@@ -360,7 +404,7 @@ export function createAITimer(ctx) {
     }
 
     // 「+」菜单的创建对话框（居中弹窗）：倒计时选常用时长档位或自定义到点时刻，
-    // 正计时只填目的。Go 侧按 duration 计时，到点时刻在此换算成秒。
+    // 正计时填目的 + 可选「到点自动停止」时刻。Go 侧按 duration 计时，到点时刻在此换算成秒。
     function openCreateDialog(mode) {
         if (typeof ctx.openDialog !== 'function') {
             flash('当前版本不支持创建对话框', true);
@@ -379,6 +423,7 @@ export function createAITimer(ctx) {
 
         let presetSelect = null;
         let clockField = null;
+        let autoStopField = null;
         if (isCountdown) {
             // 到点时刻默认值：现在 + 10 分钟（取整到分钟）
             const def = new Date(Date.now() + 10 * 60 * 1000);
@@ -399,6 +444,18 @@ export function createAITimer(ctx) {
                     syncClockVisible();
                 },
             });
+        } else {
+            // 正计时：可选「到点自动停止」兜底（忘停不再无限挂着）；留空 = 一直计到手动停
+            const def = new Date(Date.now() + 30 * 60 * 1000);
+            const pad = (n) => String(n).padStart(2, '0');
+            autoStopField = createInput({
+                type: 'time',
+                value: '',
+                title: '到点自动停止（可选，留空 = 一直计到手动停止；已过时刻按明天算）',
+                placeholder: '到点自动停止（可选）',
+                onChange: () => {},
+            });
+            autoStopField.control.dataset.defClock = pad(def.getHours()) + ':' + pad(def.getMinutes());
         }
 
         const body = [];
@@ -406,6 +463,8 @@ export function createAITimer(ctx) {
         if (isCountdown) {
             body.push(presetSelect.element);
             body.push(clockField.element);
+        } else {
+            body.push(autoStopField.element);
         }
         body.push(errEl);
 
@@ -449,18 +508,28 @@ export function createAITimer(ctx) {
                     errEl.textContent = '到点时间须在 1 秒 – 24 小时内';
                     return;
                 }
+            } else if (autoStopField && autoStopField.control.value) {
+                // 正计时的到点自动停止（可选）：留空 = 一直计到手动停止
+                seconds = secondsUntilClock(autoStopField.control.value, Date.now());
+                if (seconds < 1 || seconds > 86400) {
+                    errEl.textContent = '自动停止时刻须在 1 秒 – 24 小时内';
+                    autoStopField.control.focus();
+                    return;
+                }
             }
             try {
                 const created = await start(isCountdown ? 'countdown' : 'countup', seconds, label);
                 close();
                 flash((isCountdown ? '倒计时「' : '正计时「') + created.label + '」已启动' +
-                    (isCountdown ? '，' + fmtClock(created.endMs) + ' 到点' : ''));
+                    (isCountdown ? '，' + fmtClock(created.endMs) + ' 到点'
+                        : (created.autoStopMs ? '，' + fmtClock(created.autoStopMs) + ' 自动停止' : '')));
             } catch (e) {
                 errEl.textContent = (e && e.message) || String(e);
             }
         };
         // Enter 提交 / Esc 关闭（绑在弹窗输入控件上，冒泡统一处理）
-        for (const control of [labelField.control, presetSelect ? presetSelect.control : null, clockField ? clockField.control : null].filter(Boolean)) {
+        for (const control of [labelField.control, presetSelect ? presetSelect.control : null,
+            clockField ? clockField.control : null, autoStopField ? autoStopField.control : null].filter(Boolean)) {
             control.addEventListener('keydown', (e) => {
                 if (e.key === 'Enter') {
                     e.preventDefault();
@@ -523,6 +592,21 @@ export function createAITimer(ctx) {
     function onlyRunningId() {
         const ids = [...timers.keys()];
         return ids.length === 1 ? ids[0] : '';
+    }
+
+    // markTimer 给运行中的计时器打时刻标记（可选备注）：攒在 Go 注册表里，
+    // 停止 / 到点时随事件一次性投递给绑定会话（逐针唤醒 AI 既贵又吵，攒批后给完整时间线）。
+    async function markTimer(id, note) {
+        const backend = ctx.getBackend();
+        if (!backend || typeof backend.MarkTimer !== 'function') throw new Error('当前版本不支持打标记');
+        const target = id || onlyRunningId();
+        if (!target) throw new Error(timers.size ? '有多个计时器在运行，请指定 id' : '没有运行中的计时器');
+        const info = await backend.MarkTimer(target, String(note || ''));
+        if (info && info.id) {
+            timers.set(info.id, info); // 回读的 info 带全部标记，详情视图原位刷新
+            render();
+        }
+        flash('已打标记，停止或到点时会随时间线一起发给 AI');
     }
 
     async function syncFromBackend() {

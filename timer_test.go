@@ -10,11 +10,18 @@ import (
 func newTestTimerRegistry() (*aiTimerRegistry, *[]AITimerInfo, *sync.Mutex) {
 	fired := &[]AITimerInfo{}
 	var mu sync.Mutex
-	reg := newAITimerRegistry(func(info AITimerInfo) {
-		mu.Lock()
-		*fired = append(*fired, info)
-		mu.Unlock()
-	})
+	reg := newAITimerRegistry(
+		func(info AITimerInfo) {
+			mu.Lock()
+			*fired = append(*fired, info)
+			mu.Unlock()
+		},
+		func(info AITimerInfo) {
+			mu.Lock()
+			*fired = append(*fired, info) // autoStop 与 fire 共用捕获通道（事件名在 App 层区分）
+			mu.Unlock()
+		},
+	)
 	return reg, fired, &mu
 }
 
@@ -166,4 +173,110 @@ func TestAITimerAfterFuncFires(t *testing.T) {
 	firedCount := len(*fired)
 	mu.Unlock()
 	t.Fatalf("3 秒内未收到到点回调（id=%s, 回调数=%d）", created.Created.Id, firedCount)
+}
+
+func TestAITimerMark(t *testing.T) {
+	reg, _, _ := newTestTimerRegistry()
+	created, _ := reg.start("countup", 0, "测耗时")
+	id := created.Created.Id
+	// 打两条标记（一针带备注、一针裸时刻）
+	info1, err := reg.mark(id, "阶段A完成")
+	if err != nil || len(info1.Marks) != 1 || info1.Marks[0].Note != "阶段A完成" {
+		t.Fatalf("第一条标记不符: err=%v info=%+v", err, info1)
+	}
+	info2, err := reg.mark(id, "  ")
+	if err != nil || len(info2.Marks) != 2 || info2.Marks[1].Note != "" {
+		t.Fatalf("空白备注应归一为空: err=%v info=%+v", err, info2)
+	}
+	if info2.Marks[1].AtMs < info2.Marks[0].AtMs {
+		t.Fatal("标记时刻应单调")
+	}
+	// 备注超长截断到 200 rune
+	long := strings.Repeat("汉", 300)
+	info3, err := reg.mark(id, long)
+	if err != nil {
+		t.Fatalf("超长备注不应报错: %v", err)
+	}
+	if got := []rune(info3.Marks[2].Note); len(got) != aiTimerMarkNoteMaxRunes {
+		t.Fatalf("备注应截断到 %d rune，实际 %d", aiTimerMarkNoteMaxRunes, len(got))
+	}
+	// 不存在的 id
+	if _, err := reg.mark("t-not-exist", "x"); err == nil {
+		t.Fatal("不存在的计时器打标应报错")
+	}
+	// 停止后标记随 Stopped 信息带走（前端据此投递时间线）
+	stopResult, _ := reg.stop(id)
+	if len(stopResult.Stopped.Marks) != 3 {
+		t.Fatalf("停止结果应携带全部标记: %+v", stopResult.Stopped)
+	}
+	// 标记数上限
+	reg2, _, _ := newTestTimerRegistry()
+	c2, _ := reg2.start("countup", 0, "洪泛")
+	var lastErr error
+	for i := 0; i < aiTimerMaxMarks+1; i++ {
+		_, lastErr = reg2.mark(c2.Created.Id, "")
+	}
+	if lastErr == nil {
+		t.Fatal("超过标记数上限应报错")
+	}
+}
+
+func TestAITimerCountupAutoStop(t *testing.T) {
+	reg, fired, mu := newTestTimerRegistry()
+	// 正计时 + 自动停止 1 秒：AfterFunc 到点从注册表移除并回调（Auto=true）
+	created, err := reg.start("countup", 1, "到点自动停")
+	if err != nil {
+		t.Fatalf("带自动停止的正计时应启动成功: %v", err)
+	}
+	if created.Created.AutoStopMs <= created.Created.StartMs {
+		t.Fatalf("AutoStopMs 应晚于 StartMs: %+v", created.Created)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		mu.Lock()
+		n := len(*fired)
+		mu.Unlock()
+		if n >= 1 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(*fired) != 1 {
+		t.Fatalf("到点应自动停止并回调一次，实际 %d", len(*fired))
+	}
+	info := (*fired)[0]
+	if !info.Auto || info.Mode != "countup" || info.Id != created.Created.Id {
+		t.Fatalf("自动停止事件应带 Auto=true: %+v", info)
+	}
+	if len(reg.list()) != 0 {
+		t.Fatalf("自动停止后应从注册表移除: %+v", reg.list())
+	}
+	// 手动 stop 的事件不带 Auto
+	reg2, fired2, mu2 := newTestTimerRegistry()
+	c2, _ := reg2.start("countup", 0, "手动停")
+	reg2.stop(c2.Created.Id)
+	mu2.Lock()
+	defer mu2.Unlock()
+	// 手动 stop 不走回调（事件由 App 层 StopTimer 发），捕获应为空
+	if len(*fired2) != 0 {
+		t.Fatalf("手动 stop 不应经回调通道: %+v", *fired2)
+	}
+}
+
+func TestAITimerCountupNoAutoStop(t *testing.T) {
+	reg, fired, mu := newTestTimerRegistry()
+	// seconds=0：不设自动停止，等 300ms 也不该回调
+	created, _ := reg.start("countup", 0, "一直计")
+	time.Sleep(300 * time.Millisecond)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(*fired) != 0 {
+		t.Fatalf("无自动停止的正计时不该到点回调: %+v", *fired)
+	}
+	if created.Created.AutoStopMs != 0 {
+		t.Fatalf("seconds=0 时 AutoStopMs 应为 0: %+v", created.Created)
+	}
+	reg.stop(created.Created.Id)
 }

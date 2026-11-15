@@ -163,12 +163,12 @@ export const AI_TOOL_DEFS = {
     },
     start_timer: {
         name: 'start_timer',
-        description: '启动一个计时器（面板顶部会显示胶囊，用户可点击停止）。两种用法：mode=countdown 倒计时（seconds 必填），到点后应用会自动以系统消息唤醒你继续当前会话的任务——适合「等待构建/安装/下载完成」这类不知道要多久的事，不要用 sleep 命令或反复轮询空等；mode=countup 正计时，从启动开始计时测实际耗时，停止时上报已计时长（你自己 stop_timer 停会随工具结果返回时长；用户手动停止也会以系统消息把时长告知你，无需轮询）——适合「记录某件事实际花了多久」。计时器不跨应用重启：重启后全部消失，超过 24 小时的等待请改用定时任务（schedule_create）。',
+        description: '启动一个计时器（面板顶部会显示胶囊，用户可点击停止、打时刻标记）。两种用法：mode=countdown 倒计时（seconds 必填），到点后应用会自动以系统消息唤醒你继续当前会话的任务——适合「等待构建/安装/下载完成」这类不知道要多久的事，不要用 sleep 命令或反复轮询空等；mode=countup 正计时，从启动开始计时测实际耗时，停止时上报已计时长与用户打的标记时间线（你自己 stop_timer 停会随工具结果返回；用户手动停止或到点自动停止也会以系统消息告知，无需轮询）——适合「记录某件事实际花了多久」。countup 的 seconds 可选传自动停止延迟秒数（0=不自动停，由用户手动停）。计时器不跨应用重启：重启后全部消失，超过 24 小时的等待请改用定时任务（schedule_create）。',
         parameters: {
             type: 'object',
             properties: {
-                mode: {type: 'string', enum: ['countdown', 'countup'], description: 'countdown=倒计时（到点自动唤醒），countup=正计时（停止时上报时长）'},
-                seconds: {type: 'integer', description: '倒计时秒数（countdown 必填，1–86400；countup 忽略）。分钟数换算成秒传入，如 5 分钟传 300'},
+                mode: {type: 'string', enum: ['countdown', 'countup'], description: 'countdown=倒计时（到点自动唤醒），countup=正计时（停止时上报时长与标记时间线）'},
+                seconds: {type: 'integer', description: 'countdown 必填（1–86400），到点自动唤醒；countup 可选，>0 = 到点自动停止的延迟秒数（兜底防忘停），0 或省略 = 一直计到手动停止'},
                 label: {type: 'string', description: '计时目的（≤60 字，如「等待构建完成」），显示在胶囊上'},
             },
             required: ['mode', 'label'],
@@ -176,7 +176,7 @@ export const AI_TOOL_DEFS = {
     },
     stop_timer: {
         name: 'stop_timer',
-        description: '停止一个运行中的计时器。id 用 start_timer 返回的值；省略 id 且当前只有一个运行中的计时器时直接停止它。停止正计时会返回已计时长，可用于向用户报告耗时（你自己停止的不会重复投系统消息；用户手动停止的会以系统消息通知你）。',
+        description: '停止一个运行中的计时器。id 用 start_timer 返回的值；省略 id 且当前只有一个运行中的计时器时直接停止它。停止正计时会返回已计时长与用户打的标记时间线（如「T+05:12 开始报错」），可用于向用户报告耗时；你自己停止的不会重复投系统消息，用户手动停止或到点自动停止的会以系统消息通知你。',
         parameters: {
             type: 'object',
             properties: {

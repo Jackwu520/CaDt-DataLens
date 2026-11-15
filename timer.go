@@ -9,6 +9,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -16,17 +17,29 @@ import (
 )
 
 const (
-	aiTimerMaxActive  = 30            // 应用内同时运行的计时器总上限（会话内 5 个由前端按会话归属判定，done 不计入）
-	aiTimerMaxSeconds = 24 * 60 * 60  // 单个计时时长上限：24 小时（更长的等待应改用定时任务）
+	aiTimerMaxActive        = 30           // 应用内同时运行的计时器总上限（会话内 5 个由前端按会话归属判定，done 不计入）
+	aiTimerMaxSeconds       = 24 * 60 * 60 // 单个计时时长上限：24 小时（更长的等待应改用定时任务）
+	aiTimerMaxMarks         = 20           // 单个计时器的标记数上限（防打标洪泛）
+	aiTimerMarkNoteMaxRunes = 200          // 单条标记备注的字符上限
 )
+
+// AITimerMark 运行期间打的时刻标记：攒在注册表里，停止 / 到点时随事件一次性投递给绑定会话
+// （打标是轻量动作，可能连打多针，逐针唤醒 AI 既贵又吵——攒批后给完整时间线）。
+type AITimerMark struct {
+	AtMs int64  `json:"atMs"`
+	Note string `json:"note,omitempty"` // 可选备注（如「开始报错」）
+}
 
 // AITimerInfo 计时器状态（JSON 字段与前端 ai-timer.js 对齐）。
 type AITimerInfo struct {
-	Id      string `json:"id"`
-	Mode    string `json:"mode"` // countdown=倒计时 countup=正计时
-	Label   string `json:"label"`
-	StartMs int64  `json:"startMs"`
-	EndMs   int64  `json:"endMs"` // 倒计时到点时间；正计时为 0
+	Id         string        `json:"id"`
+	Mode       string        `json:"mode"` // countdown=倒计时 countup=正计时
+	Label      string        `json:"label"`
+	StartMs    int64         `json:"startMs"`
+	EndMs      int64         `json:"endMs"`      // 倒计时到点时间；正计时为 0
+	AutoStopMs int64         `json:"autoStopMs"` // 正计时到点自动停止的时刻；0 = 一直计到手动停止
+	Marks      []AITimerMark `json:"marks,omitempty"`
+	Auto       bool          `json:"auto,omitempty"` // 仅出现在 ai-timer-stopped 事件里：true = 到点自动停止（非手动）
 }
 
 type aiTimerEntry struct {
@@ -47,17 +60,20 @@ type AITimerStopResult struct {
 	Found   bool          `json:"found"`
 }
 
-// aiTimerRegistry 计时器注册表；onFire 在倒计时到点时回调（App 侧发事件，测试侧捕获）。
+// aiTimerRegistry 计时器注册表；onFire 在倒计时到点时回调、onAutoStop 在正计时到点自动停止时
+// 回调（App 侧发事件，测试侧捕获）。
 type aiTimerRegistry struct {
-	mu     sync.Mutex
-	timers map[string]*aiTimerEntry
-	onFire func(AITimerInfo)
+	mu         sync.Mutex
+	timers     map[string]*aiTimerEntry
+	onFire     func(AITimerInfo)
+	onAutoStop func(AITimerInfo)
 }
 
-func newAITimerRegistry(onFire func(AITimerInfo)) *aiTimerRegistry {
+func newAITimerRegistry(onFire, onAutoStop func(AITimerInfo)) *aiTimerRegistry {
 	return &aiTimerRegistry{
-		timers: map[string]*aiTimerEntry{},
-		onFire: onFire,
+		timers:     map[string]*aiTimerEntry{},
+		onFire:     onFire,
+		onAutoStop: onAutoStop,
 	}
 }
 
@@ -108,6 +124,11 @@ func (r *aiTimerRegistry) start(mode string, seconds int, label string) (AITimer
 	if mode == "countdown" {
 		entry.info.EndMs = now + int64(seconds)*1000
 		entry.timer = time.AfterFunc(time.Duration(seconds)*time.Second, func() { r.fire(id) })
+	} else if seconds > 0 {
+		// 正计时：seconds > 0 表示到点自动停止（兜底防忘停）；0 = 一直计到手动停止。
+		// 到点自动停止时已计时长恒等于设定值，价值在「收尾 + 通知」而非时长本身。
+		entry.info.AutoStopMs = now + int64(seconds)*1000
+		entry.timer = time.AfterFunc(time.Duration(seconds)*time.Second, func() { r.autoStop(id) })
 	}
 	r.timers[id] = entry
 	return AITimerStartResult{List: r.listLocked(), Created: entry.info}, nil
@@ -155,16 +176,61 @@ func (r *aiTimerRegistry) fire(id string) {
 	}
 }
 
+// autoStop 正计时到点自动停止（AfterFunc 回调）：与手动 stop 同一注册表语义，
+// 经 onAutoStop 广播（事件带 Auto=true，前端据此区分文案）。
+func (r *aiTimerRegistry) autoStop(id string) {
+	r.mu.Lock()
+	entry, ok := r.timers[id]
+	if !ok {
+		r.mu.Unlock()
+		return
+	}
+	info := entry.info
+	info.Auto = true
+	delete(r.timers, id)
+	r.mu.Unlock()
+	if r.onAutoStop != nil {
+		r.onAutoStop(info)
+	}
+}
+
+// mark 给运行中的计时器打时刻标记（可选备注）：攒在注册表里，停止 / 到点时随事件投递。
+func (r *aiTimerRegistry) mark(id, note string) (AITimerInfo, error) {
+	if runes := []rune(strings.TrimSpace(note)); len(runes) > aiTimerMarkNoteMaxRunes {
+		note = string(runes[:aiTimerMarkNoteMaxRunes])
+	} else {
+		note = strings.TrimSpace(note)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	entry, ok := r.timers[id]
+	if !ok {
+		return AITimerInfo{}, fmt.Errorf("计时器不存在：%s", id)
+	}
+	if len(entry.info.Marks) >= aiTimerMaxMarks {
+		return AITimerInfo{}, fmt.Errorf("单个计时器最多 %d 条标记，请先停止它", aiTimerMaxMarks)
+	}
+	entry.info.Marks = append(entry.info.Marks, AITimerMark{AtMs: time.Now().UnixMilli(), Note: note})
+	return entry.info, nil
+}
+
 // aiTimersIf 惰性初始化注册表（NewApp 零值构造，字段按需创建）。
 func (a *App) aiTimersIf() *aiTimerRegistry {
 	a.aiTimersMu.Lock()
 	defer a.aiTimersMu.Unlock()
 	if a.aiTimers == nil {
-		a.aiTimers = newAITimerRegistry(func(info AITimerInfo) {
-			if a.ctx != nil {
-				runtime.EventsEmit(a.ctx, "ai-timer-fired", info)
-			}
-		})
+		a.aiTimers = newAITimerRegistry(
+			func(info AITimerInfo) {
+				if a.ctx != nil {
+					runtime.EventsEmit(a.ctx, "ai-timer-fired", info)
+				}
+			},
+			func(info AITimerInfo) {
+				if a.ctx != nil {
+					runtime.EventsEmit(a.ctx, "ai-timer-stopped", info) // Auto=true：正计时到点自动停止
+				}
+			},
+		)
 	}
 	return a.aiTimers
 }
@@ -192,4 +258,9 @@ func (a *App) ListTimers() ([]AITimerInfo, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.listLocked(), nil
+}
+
+// MarkTimer 给运行中的计时器打时刻标记（可选备注）：攒到停止 / 到点时随事件投递给绑定会话。
+func (a *App) MarkTimer(id string, note string) (AITimerInfo, error) {
+	return a.aiTimersIf().mark(id, note)
 }
