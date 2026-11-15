@@ -1090,6 +1090,7 @@ export function createAIPanel(options) {
             message.turnStartedAt = Number(raw.turnStartedAt) || 0;
             message.systemNote = raw.systemNote === true;
             message.silent = raw.silent === true;
+            message.dedupeKey = aiTextOf(raw.dedupeKey).slice(0, 40);
             if (raw.kind === 'model-switch') {
                 message.kind = 'model-switch';
                 if (raw.modelNote && typeof raw.modelNote === 'object') {
@@ -3721,6 +3722,14 @@ export function createAIPanel(options) {
             });
         }
         const limit = endIndex == null ? session.messages.length : endIndex;
+        // 瞬态注入块去重（实时压缩式剔除）：同类 dedupeKey 的注入只保留**最新一条**发
+        // 给模型——旧条目已过时（如清单状态早变了），重发既浪费上下文又可能用旧状态
+        // 误导模型。会话历史里照常保留（用户可查），只是组装请求时跳过。
+        const lastTransient = new Map();
+        for (let i = 0; i < limit; i++) {
+            const m = session.messages[i];
+            if (m && m.dedupeKey) lastTransient.set(m.dedupeKey, i);
+        }
         // tool 消息必须一对一响应最近一条已发送 assistant 的 tool_calls（OpenAI 校验，
         // Anthropic 同理）。停止生成、压缩截断、历史恢复都可能留下孤立 tool 消息——
         // 不跳过会让后续每一轮请求都被 HTTP 400 拒收。
@@ -3732,6 +3741,8 @@ export function createAIPanel(options) {
             if (message.kind === 'changes-summary') continue;
             // 模型切换记录只是对话里的可视注记，不进入模型上下文
             if (message.kind === 'model-switch') continue;
+            // 瞬态注入块的旧条目：只发最新一条（见 lastTransient）
+            if (message.dedupeKey && lastTransient.get(message.dedupeKey) !== i) continue;
             if (message.role === 'tool') {
                 if (message.status === 'running') continue;
                 if (!pendingCalls.has(message.toolCallId)) continue;
@@ -8304,6 +8315,7 @@ export function createAIPanel(options) {
                     '不要在总结里口头说完成而清单没有更新。</task_todos_check>',
                 systemNote: true,
                 silent: true, // 给模型的机械提醒，不在消息流里渲染（纯噪音）
+                dedupeKey: 'task_todos_check', // 瞬态注入：发请求时同类只保留最新一条
                 ts: Date.now(),
             });
             persistSessions();
