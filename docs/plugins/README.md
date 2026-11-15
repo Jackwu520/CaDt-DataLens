@@ -1,8 +1,8 @@
 # CaDt-DataLens 插件开发指南
 
-插件是一个**文件夹**：内含一份 `plugin.json` 清单和一个 JavaScript 入口文件。插件运行在界面（WebView）里，可以通过 `cadt.*` API 注册新的文件格式、工具菜单命令和主题。设置 → 插件 里可以添加、导入、启用/禁用和删除插件。
+插件是一个**文件夹**：内含一份 `plugin.json` 清单和一个 JavaScript 入口文件。插件运行在界面（WebView）里，可以通过 `cadt.*` API 注册新的文件格式、工具菜单命令、主题和 AI provider。设置 → 插件 里可以添加、导入、启用/禁用和删除插件。
 
-> **信任模型（重要）**：插件代码与主界面在同一个页面上下文执行，拥有与应用**相同的权限**——包括读写本机文件、执行命令、访问 AI 会话配置。应用对插件不做沙箱隔离，安装/导入插件前请确认来源可信；从仓库地址或插件市场安装时会弹确认框明示该风险。
+> **信任模型（重要）**：插件代码与主界面在同一个页面上下文执行，拥有与应用**相同的权限**——包括读写本机文件、执行命令、访问 AI 会话配置，以及注册 AI provider 后在每轮模型请求里注入请求头与请求体字段。应用对插件不做沙箱隔离，安装/导入插件前请确认来源可信；从仓库地址或插件市场安装时会弹确认框明示该风险。
 
 ## 快速开始
 
@@ -136,6 +136,45 @@ cadt.registerCommandClassifier({
 
 完整示例见 [`examples/command-classifier-onnx/`](examples/command-classifier-onnx/)（接线演示 + 上架指引）。
 
+### `cadt.registerAIProvider(spec)`
+
+注册一个 **AI provider**：它以「虚拟账号」出现在 设置 → AI 助手 → 模型账号 和模型选择器里，并可在本轮组装请求配置时注入动态请求头 / 请求体补丁。请求与 SSE 解码仍由应用（Go 侧）完成，代理、超时、重试、错误分类等既有能力全部保留。
+
+```js
+cadt.registerAIProvider({
+    id: 'local-demo',                 // 插件内唯一，^[a-z0-9][a-z0-9-]{0,63}$
+    name: '示例 · 本地服务',          // 账号显示名
+    account: {                        // 连接信息，注册时固定
+        provider: 'openai',           // openai（默认）| anthropic | responses
+        baseURL: 'http://127.0.0.1:8000/v1',
+        apiKey: '',
+        temperature: 0.7,
+        proxy: '',
+        extraHeaders: {},            // 静态请求头
+    },
+    models: [                         // 至少 1 条，最多 50 条
+        {model: 'demo-chat', contextWindow: 128000, outputWindow: 4096},
+    ],
+    prepare(ctx) {                    // 可选：每轮组装请求配置时调用一次
+        // ctx: {sessionId, accountId, providerId, model, baseURL}（不含密钥）
+        return {
+            extraHeaders: {'x-demo-session': ctx.sessionId.slice(0, 16)},
+            extraBody: {tool_choice: 'none'},
+        };
+    },
+});
+```
+
+规则与边界：
+
+- **虚拟账号只在内存里**：带 `pluginAI` 标记，保存配置时会被剔除，绝不写进 `ai-config.json` 或 localStorage 镜像；插件禁用 / 卸载 / 加载失败后账号随之消失。账号在设置页只读，改连接信息要改插件代码并重新加载。
+- `prepare(ctx)` 必须同步返回；抛异常只忽略本轮补丁，不中断对话。**拿不到 `apiKey`**，动态凭据请走 `extraHeaders` 补丁。
+- 补丁只放行 `extraHeaders` / `extraBody` 两个白名单字段，`baseURL` / `apiKey` / `model` 由 `account` 与所选模型决定。请求头合计 ≤ 8 条（动态头优先），请求体补丁 ≤ 32 字段 / 64 KiB。
+- `stream` 恒为 `true`（SSE 解码依赖），插件无法通过补丁关掉。协议支持三种：`openai`（`/chat/completions`）、`anthropic`（`/v1/messages`）、`responses`（`/responses`，也可在 设置 → AI 助手 → 模型账号 里手动选）。
+- `responses` 走 OpenAI Responses API：消息映射成 `input`（system → `instructions`、工具结果 → `function_call_output`、assistant 工具调用 → `function_call`），工具是扁平的 `{type,name,description,parameters}`；流事件解析 `output_text.delta` / `reasoning_text.delta` / `output_item.done` / `completed`。**依赖 data JSON 里的 `type` 字段**；工具参数取 `output_item.done` 的完整 `arguments`，不拼接 `function_call_arguments.delta` 增量。
+- 典型用途：按会话派生关联 ID、给特定网关补 `tool_choice` / 工具声明、注入租户标记等。不适合做协议级改写或出口 IP 轮换（代理应走 `account.proxy` 或系统代理）。
+- 完整可运行示例见 [`examples/ai-provider-demo/`](examples/ai-provider-demo/)。
+
 ### 命令执行（进程桥）
 
 ```js
@@ -191,8 +230,9 @@ cadt.openVirtualDoc('Git 差异 — main.diff', patchText);  // 扩展名决定�
 
 ## 安全说明
 
-插件代码运行在界面上下文中，能力等同于用户自己运行的脚本（可以调用应用的全部后端接口）。请只安装可信来源的插件；应用会在导入时校验清单格式、入口路径与压缩包结构（防路径穿越、限大小），但不做代码沙箱。
+插件代码运行在界面上下文中，能力等同于用户自己运行的脚本（可以调用应用的全部后端接口）。注册了 AI provider 的插件还能在每轮模型请求里注入任意请求头与请求体字段，等同于接管该账号的请求内容——只安装可信来源的插件。应用会在导入时校验清单格式、入口路径与压缩包结构（防路径穿越、限大小），并对补丁做白名单与体积限制，但不做代码沙箱。
 
 ## 完整示例
 
 见 [`examples/bak-json/`](examples/bak-json/)：把 `.bak` 文件按 JSON 解析，解析失败自动退回文本视图，并注册一个演示命令与主题。
+AI provider 的完整示例见 [`examples/ai-provider-demo/`](examples/ai-provider-demo/)：注册虚拟账号 + 每轮动态请求头 / 请求体补丁。

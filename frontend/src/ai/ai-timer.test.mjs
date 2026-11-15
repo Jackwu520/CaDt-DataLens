@@ -1,7 +1,7 @@
 // ai-timer 纯函数测试：计时器的会话隔离（显示过滤 + 会话内上限计数）。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {filterTimersForSession, countSessionTimers, secondsUntilClock, createAITimer} from './ai-timer.js';
+import {filterTimersForSession, countSessionTimers, snapshotTimersForTree, secondsUntilClock, createAITimer} from './ai-timer.js';
 
 function makeTimers(entries) {
     const timers = new Map();
@@ -47,6 +47,26 @@ test('countSessionTimers：会话内上限只数归属自己的运行中计时�
     assert.equal(filterTimersForSession(null, sessionIdOf, 'a').length, 0);
 });
 
+// timer_list 只读快照：只暴露会话链内、归属明确的计时器，并算好已计 / 剩余
+test('snapshotTimersForTree：按会话链过滤，归属不明与其它会话一律不外泄', () => {
+    const timers = makeTimers([
+        {id: 't1', mode: 'countup', label: '主代理正计时', startMs: 1000, marks: [{atMs: 2000}]},
+        {id: 't2', mode: 'countdown', label: '主代理倒计时', startMs: 1000, endMs: 31000},
+        {id: 'x1', mode: 'countup', label: '别的会话', startMs: 1000},
+        {id: 'x2', mode: 'countup', label: '跨窗归属不明', startMs: 1000},
+    ]);
+    const sessionIdOf = (id) => ({t1: 'root-a', t2: 'sub-parent', x1: 'sess-b'}[id] || '');
+    const snap = snapshotTimersForTree(timers, sessionIdOf, ['sub-1', 'sub-parent', 'root-a'], 11000);
+    assert.deepEqual(snap.map((t) => t.id), ['t1', 't2'], '只保留会话链上启动的两枚');
+    assert.equal(snap[0].elapsedMs, 10000);
+    assert.equal(snap[0].marks, 1);
+    assert.equal(snap[0].remainingMs, 0, '正计时没有剩余');
+    assert.equal(snap[1].remainingMs, 20000);
+    assert.equal(snap[1].mode, 'countdown');
+    assert.deepEqual(snapshotTimersForTree(timers, sessionIdOf, [], 11000), [], '会话链为空一律不暴露');
+    assert.deepEqual(snapshotTimersForTree(null, sessionIdOf, ['root-a'], 11000), []);
+});
+
 // 导出面回归：ai-panel 是按名字调用工厂返回值的，漏导出不会在构建期报错，
 // 只在运行时炸（例：switchSession 调 timerMod.render() → "render is not a function"，
 // 顺带让「切会话后才能投递」的定时任务唤醒全部失败）。这里逐个校验调用点用到的成员。
@@ -57,7 +77,7 @@ test('createAITimer：导出 ai-panel 依赖的全部 API', () => {
         getChip: () => null,
     });
     const required = [
-        'start', 'stop', 'sync', 'syncFromBackend', 'onFired', 'onStopped',
+        'start', 'stop', 'sync', 'syncFromBackend', 'snapshot', 'onFired', 'onStopped',
         'render', 'renderPop', 'openCreateDialog', 'closeCreateDialog',
     ];
     for (const name of required) {

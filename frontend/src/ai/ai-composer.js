@@ -3,6 +3,7 @@
 // attachments 与 queueSeq 为本域私有 let（attachments 经 getAttachments/setAttachments 供面板与消息队列访问）；
 // attachSeq 留在面板（executeTool /clear 会重置），经 nextAttachSeq() 取号。
 import {aiTextOf, aiImageSrc, AI_IMAGE_LIMIT, AI_IMAGE_MAX_BASE64, AI_IMAGE_MAX_DIM, AI_IMAGE_MAX_INPUT_BYTES, AI_IMAGE_MESSAGE_BUDGET} from './ai-constants.js';
+import {AI_QUOTE_KIND, quoteChipLabel, quoteExcerpt} from './ai-quote.js';
 
 export function createAIComposer(ctx) {
     const el = ctx.el;
@@ -49,7 +50,7 @@ export function createAIComposer(ctx) {
             const remove = document.createElement('button');
             remove.type = 'button';
             remove.className = 'ai-chip-remove';
-            remove.title = '移除';
+            remove.dataset.tip = '移除';
             remove.textContent = '×';
             remove.addEventListener('click', () => {
                 attachments = attachments.filter((current) => current.id !== item.id);
@@ -58,7 +59,7 @@ export function createAIComposer(ctx) {
             });
             if (item.kind === 'image') {
                 chip.className = 'ai-chip ai-chip-image';
-                chip.title = item.name + (item.width && item.height ? ' · ' + item.width + '×' + item.height : '');
+                chip.dataset.tip = item.name + (item.width && item.height ? ' · ' + item.width + '×' + item.height : '');
                 const img = document.createElement('img');
                 img.className = 'ai-chip-img';
                 img.src = aiImageSrc(item);
@@ -75,11 +76,14 @@ export function createAIComposer(ctx) {
                 else if (item.kind === 'selection') prefix = '选中 · ';
                 else if (item.kind === 'reference') prefix = '引用 · ';
                 else if (item.kind === 'selection_reference') prefix = '引用选区 · ';
+                else if (item.kind === AI_QUOTE_KIND) prefix = '回复引用 · ';
                 label.textContent = prefix + item.label;
-                label.title = item.kind === 'selection_reference'
-                    ? (item.path || '') + ' · ' + (item.start && item.start.line ? item.start.line + ':' + item.start.column : '') +
-                        '–' + (item.end && item.end.line ? item.end.line + ':' + item.end.column : '')
-                    : (item.path || item.label);
+                label.dataset.tip = item.kind === AI_QUOTE_KIND
+                    ? quoteExcerpt(item.content, 400)
+                    : (item.kind === 'selection_reference'
+                        ? (item.path || '') + ' · ' + (item.start && item.start.line ? item.start.line + ':' + item.start.column : '') +
+                            '–' + (item.end && item.end.line ? item.end.line + ':' + item.end.column : '')
+                        : (item.path || item.label));
                 chip.append(label, remove);
             }
             el.attach.appendChild(chip);
@@ -155,6 +159,10 @@ export function createAIComposer(ctx) {
             }
             if (item.kind === 'file' && current.kind === 'file') {
                 return !!item.path && current.path === item.path;
+            }
+            if (item.kind === AI_QUOTE_KIND && current.kind === AI_QUOTE_KIND) {
+                return current.source === item.source && current.index === item.index &&
+                    current.scope === item.scope && current.content === item.content;
             }
             return false;
         });
@@ -331,6 +339,27 @@ export function createAIComposer(ctx) {
         });
     }
 
+    // 对话引用：把 AI 回复（或用户消息）的整条 / 所选片段放进输入区附件条，
+    // 发送时由 submitText 拼成 user content 前缀的 <quote> 标记，不进 <attachments>。
+    function addMessageQuote(quote) {
+        const source = quote && quote.source === 'user' ? 'user' : 'assistant';
+        const index = Number(quote && quote.index) || 0;
+        const scope = quote && quote.scope === 'selection' ? 'selection' : 'message';
+        const content = aiTextOf(quote && quote.content);
+        if (!content.trim()) {
+            flash('这条消息没有可引用的正文', true);
+            return false;
+        }
+        return addAttachment({
+            kind: AI_QUOTE_KIND,
+            label: quoteChipLabel({source, index, scope}),
+            source,
+            index,
+            scope,
+            content,
+        });
+    }
+
     async function attachFilesDialog() {
         if (!pickFiles) {
             flash('当前版本不支持选择附加文件', true);
@@ -411,7 +440,7 @@ export function createAIComposer(ctx) {
         if (!el.input) return;
         const text = el.input.value;
         const trimmed = text.trim();
-        if (!trimmed && !attachments.some((item) => item.kind === 'image')) return;
+        if (!trimmed && !attachments.length) return;
         if (trimmed.startsWith('/')) {
             handleSlashText(trimmed);
             return;
@@ -493,7 +522,7 @@ export function createAIComposer(ctx) {
         if (!el.input) return null;
         const text = String(el.input.value || '').trim();
         const items = attachments.slice();
-        if (!text && !items.some((item) => item.kind === 'image')) return null;
+        if (!text && !items.length) return null;
         const session = currentSession();
         if (!session) return null;
         const item = {
@@ -552,6 +581,7 @@ export function createAIComposer(ctx) {
         attachSelection,
         referencePath,
         referenceSelection,
+        addMessageQuote,
         attachFilesDialog,
         showSkillPicker,
         attachSkillByName,

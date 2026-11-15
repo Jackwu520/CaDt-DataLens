@@ -151,7 +151,7 @@ export function createAIReminders(ctx) {
         remBtn.type = 'button';
         remBtn.id = 'ai-reminders-btn';
         remBtn.className = 'ai-icon-btn ai-rem-btn';
-        remBtn.title = '任务提醒（防止长对话遗漏；AI 可用 reminder_* 工具维护）';
+        remBtn.dataset.tip = '任务提醒（防止长对话遗漏；AI 可用 reminder_* 工具维护）';
         remBtn.setAttribute('aria-haspopup', 'true');
         remBtn.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.6a3.6 3.6 0 0 0-3.6 3.6c0 2.6-1 3.6-1.7 4.3h10.6c-.7-.7-1.7-1.7-1.7-4.3A3.6 3.6 0 0 0 8 2.6z" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round"/><path d="M6.6 12.6a1.5 1.5 0 0 0 2.8 0" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>';
         remBadge = document.createElement('span');
@@ -184,7 +184,7 @@ export function createAIReminders(ctx) {
         if (remBtn) {
             // 无未完成条目时不显示铃铛；创建入口在消息框「+」→ 任务提醒
             remBtn.classList.toggle('hidden', count === 0);
-            remBtn.title = '任务提醒（' + count + ' 条未完成；AI 可用 reminder_* 工具维护）';
+            remBtn.dataset.tip = '任务提醒（' + count + ' 条未完成；AI 可用 reminder_* 工具维护）';
         }
         if (remPop && !remPop.classList.contains('hidden')) renderPopover();
     }
@@ -309,13 +309,13 @@ export function createAIReminders(ctx) {
             const name = document.createElement('div');
             name.className = 'ai-rem-title';
             name.textContent = item.title;
-            name.title = item.title;
+            name.dataset.tip = item.title;
             main.appendChild(name);
             if (item.detail) {
                 const detail = document.createElement('div');
                 detail.className = 'ai-rem-detail';
                 detail.textContent = item.detail;
-                detail.title = item.detail;
+                detail.dataset.tip = item.detail;
                 main.appendChild(detail);
             }
             const status = document.createElement('span');
@@ -337,7 +337,7 @@ export function createAIReminders(ctx) {
             remove.type = 'button';
             remove.className = 'ai-rem-act';
             remove.textContent = '删除';
-            remove.title = '删除这条提醒';
+            remove.dataset.tip = '删除这条提醒';
             remove.addEventListener('click', () => {
                 session.reminders = activeList().filter((entry) => entry !== item);
                 persistSessions();

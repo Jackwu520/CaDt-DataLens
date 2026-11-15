@@ -66,7 +66,7 @@ export function createAIChangesUI(ctx) {
         const count = session && Array.isArray(session.changes) ? session.changes.length : 0;
         if (el.changesCount) el.changesCount.textContent = String(count);
         el.changesBtn.classList.toggle('hidden', count === 0);
-        el.changesBtn.title = count ? '本会话变更记录（' + count + '）' : '本会话暂无变更';
+        el.changesBtn.dataset.tip = count ? '本会话变更记录（' + count + '）' : '本会话暂无变更';
         if (!count) hideChangesPopover();
         else if (el.changesPop && !el.changesPop.classList.contains('hidden')) renderChangesPopover();
     }
@@ -89,7 +89,7 @@ export function createAIChangesUI(ctx) {
             const row = document.createElement('button');
             row.type = 'button';
             row.className = 'ai-change-row';
-            row.title = '打开 ' + change.path;
+            row.dataset.tip = '打开 ' + change.path;
             const path = document.createElement('span');
             path.className = 'ai-change-path';
             path.textContent = change.relPath || change.path;
@@ -243,7 +243,7 @@ export function createAIChangesUI(ctx) {
             const name = document.createElement('span');
             name.className = 'ai-changes-card-path';
             name.textContent = file.relPath;
-            name.title = file.relPath;
+            name.dataset.tip = file.relPath;
             const nums = document.createElement('span');
             nums.className = 'ai-changes-card-nums';
             const fAdd = document.createElement('span');
@@ -261,7 +261,7 @@ export function createAIChangesUI(ctx) {
                 undo.setAttribute('role', 'button');
                 undo.setAttribute('aria-label', '撤销对 ' + file.relPath + ' 的修改');
                 undo.textContent = '撤销';
-                undo.title = '回滚该文件到 HEAD（AI 新建的文件将被删除）';
+                undo.dataset.tip = '回滚该文件到 HEAD（AI 新建的文件将被删除）';
                 undo.addEventListener('click', (e) => {
                     e.stopPropagation();
                     rollbackChangeFiles([file]);

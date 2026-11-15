@@ -73,7 +73,7 @@ export function createSettingsPanePatches(deps) {
         const summary = document.createElement('span');
         summary.className = 'ps-summary';
         summary.textContent = patchRowTitle(meta);
-        summary.title = (meta.patchPath || '') || patchRowTitle(meta);
+        summary.dataset.tip = (meta.patchPath || '') || patchRowTitle(meta);
 
         const del = document.createElement('button');
         del.type = 'button';
@@ -99,7 +99,7 @@ export function createSettingsPanePatches(deps) {
                 try {
                     const dir = await deps.backend.PatchStoreDir(root);
                     pathEl.textContent = '存储目录：' + (dir || '—');
-                    pathEl.title = dir || '';
+                    pathEl.dataset.tip = dir || '';
                 } catch (e) {
                     pathEl.textContent = '存储目录：—';
                 }

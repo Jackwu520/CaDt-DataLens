@@ -6,6 +6,7 @@
 import {createActivityLog} from '../core/activity-log.js';
 import {iconSvg} from '../core/icons.js';
 import {isDocReadOnly} from '../core/readonly.js';
+import {CODE_SHOT_RADII, CODE_SHOT_SCALES} from '../core/code-shot.js';
 import {createSettingsDialogs} from './settings-dialogs.js';
 import {createSettingsSearch} from './settings-search.js';
 import {createSettingsSelect} from './settings-select.js';
@@ -80,6 +81,10 @@ const elsSettings = {
     codeGuides: document.getElementById('opt-code-guides'),
     alwaysOnTop: document.getElementById('opt-always-on-top'),
     codeWrap: document.getElementById('opt-code-wrap'),
+    codeShotTitle: document.getElementById('opt-code-shot-title'),
+    codeShotLineNumbers: document.getElementById('opt-code-shot-line-numbers'),
+    codeShotRadius: document.getElementById('opt-code-shot-radius'),
+    codeShotScale: document.getElementById('opt-code-shot-scale'),
     mdLineNumbers: document.getElementById('opt-md-line-numbers'),
     mdScrollSync: document.getElementById('opt-md-scroll-sync'),
     settingsSearch: document.getElementById('settings-search'),
@@ -153,6 +158,25 @@ if (elsSettings.codeStyle) {
     }
     csSel.addEventListener('change', () => setCodeStyle(csSel.value));
 }
+// 代码截图样式（渲染档位单一来源在 core/code-shot.js 的 CODE_SHOT_RADII / CODE_SHOT_SCALES）
+elsSettings.codeShotTitle.addEventListener('change', () => {
+    deps.settings.codeShotTitle = elsSettings.codeShotTitle.checked;
+    applySettings();
+});
+elsSettings.codeShotLineNumbers.addEventListener('change', () => {
+    deps.settings.codeShotLineNumbers = elsSettings.codeShotLineNumbers.checked;
+    applySettings();
+});
+elsSettings.codeShotRadius.addEventListener('change', () => {
+    const radius = Number(elsSettings.codeShotRadius.value);
+    deps.settings.codeShotRadius = CODE_SHOT_RADII.includes(radius) ? radius : 10;
+    applySettings();
+});
+elsSettings.codeShotScale.addEventListener('change', () => {
+    const scale = Number(elsSettings.codeShotScale.value);
+    deps.settings.codeShotScale = CODE_SHOT_SCALES.includes(scale) ? scale : 2;
+    applySettings();
+});
 fillFontSelect(elsSettings.uiFont, deps.uiFonts);
 fillFontSelect(elsSettings.uiCjkFont, deps.cjkFonts);
 fillFontSelect(elsSettings.editorFontFamily, deps.editorFonts);
@@ -279,7 +303,7 @@ function setCodeStyle(id) {
     // （那些只读 UI 语义变量，widget.js 的 MutationObserver 也只盯 data-theme），
     // 不改窗口底色，hljs / Ace 靠 CSS 变量自动生效，无需重新高亮。
     applySettings();
-    deps.flash('代码风格：' + currentCodeStyleName(deps.settings.theme, value));
+    deps.flash('代码主题：' + currentCodeStyleName(deps.settings.theme, value));
 }
 
 function setTheme(id) {
@@ -372,7 +396,7 @@ function updateLockButton() {
     if (deps.els.lock) {
         deps.els.lock.classList.toggle('locked', locked);
         deps.els.lock.setAttribute('aria-pressed', String(locked));
-        deps.els.lock.title = locked ? '解除只读锁定' : '只读锁定';
+        deps.els.lock.dataset.tip = locked ? '解除只读锁定' : '只读锁定';
         deps.els.lock.innerHTML = locked ? deps.LOCK_ICON : deps.UNLOCK_ICON;
     }
 }
@@ -506,6 +530,10 @@ function applySettings() {
     elsSettings.codeGuides.checked = !!deps.settings.codeGuides;
     elsSettings.alwaysOnTop.checked = !!deps.settings.alwaysOnTop;
     elsSettings.codeWrap.checked = !!deps.settings.codeWrap;
+    elsSettings.codeShotTitle.checked = !!deps.settings.codeShotTitle;
+    elsSettings.codeShotLineNumbers.checked = deps.settings.codeShotLineNumbers !== false;
+    elsSettings.codeShotRadius.value = String(CODE_SHOT_RADII.includes(Number(deps.settings.codeShotRadius)) ? Number(deps.settings.codeShotRadius) : 10);
+    elsSettings.codeShotScale.value = String(CODE_SHOT_SCALES.includes(Number(deps.settings.codeShotScale)) ? Number(deps.settings.codeShotScale) : 2);
     elsSettings.mdLineNumbers.checked = !!deps.settings.mdLineNumbers;
     elsSettings.mdScrollSync.checked = deps.settings.mdScrollSync !== false;
     elsSettings.mdPreviewWidth.value = String(deps.settings.mdPreviewWidth);
@@ -577,17 +605,6 @@ function selectSettingsPane(pane) {
     searchMod.resetSettingsSearch();
     document.querySelectorAll('.snav-item').forEach((b) => b.classList.toggle('active', b.dataset.pane === pane));
     document.querySelectorAll('.settings-pane').forEach((p) => p.classList.toggle('hidden', p.dataset.pane !== pane));
-    // ⓘ 说明气泡：触屏点击开合（hover / 键盘聚焦由 CSS 负责）；点气泡外的任意位置收起
-    if (!window.__setTipDelegated) {
-        window.__setTipDelegated = true;
-        document.addEventListener('click', (e) => {
-            const tip = e.target && e.target.closest ? e.target.closest('.info-tip') : null;
-            document.querySelectorAll('.info-tip.tip-open').forEach((open) => {
-                if (open !== tip) open.classList.remove('tip-open');
-            });
-            if (tip) tip.classList.toggle('tip-open');
-        });
-    }
     const group = document.getElementById('snav-formats');
     if (group) {
         const inFormats = pane === 'formats' || String(pane).startsWith('fmt-');
@@ -608,7 +625,7 @@ function selectSettingsPane(pane) {
     }
     const aiGroup = document.getElementById('snav-ai');
     if (aiGroup) {
-        const inAI = pane === 'models' || pane === 'ai' || pane === 'persona' || pane === 'context' || pane === 'preferences' || pane === 'schedules';
+        const inAI = pane === 'models' || pane === 'gen-models' || pane === 'ai' || pane === 'persona' || pane === 'context' || pane === 'preferences' || pane === 'schedules';
         if (inAI && !aiGroup.classList.contains('expanded')) {
             aiGroup.classList.add('expanded');
             const parent = aiGroup.querySelector('.snav-parent');
@@ -628,7 +645,7 @@ function selectSettingsPane(pane) {
             try { deps.patchesPane.refreshPatchStore(); } catch (e) {}
         }
     }
-    if (pane === 'ai' || pane === 'models' || pane === 'persona' || pane === 'context' || pane === 'preferences') {
+    if (pane === 'ai' || pane === 'models' || pane === 'gen-models' || pane === 'persona' || pane === 'context' || pane === 'preferences') {
         if (!deps.aiPanel) deps.initAIPanel();
         if (deps.aiPanel && typeof deps.aiPanel.refreshSettings === 'function') {
             try { deps.aiPanel.refreshSettings(); } catch (e) {}
@@ -692,7 +709,7 @@ async function syncIntegrationStatus() {
         elsSettings.fileAssoc.checked = !!status.fileAssoc;
         elsSettings.contextMenu.checked = !!status.contextMenu;
         elsSettings.exePath.textContent = status.executable || '—';
-        elsSettings.exePath.title = status.executable || '';
+        elsSettings.exePath.dataset.tip = status.executable || '';
     } catch (e) {
         deps.flash('读取系统集成状态失败：' + e, true);
     }
@@ -786,7 +803,7 @@ function updateWordCount() {
     }
     const total = countWords(deps.file.editor.getText());
     deps.els.stCount.textContent = sel > 0 ? ('选中 ' + sel + ' · 全文 ' + total + ' 字') : ('全文 ' + total + ' 字');
-    deps.els.stCount.title = '字数统计（CJK 字符数 + 英文单词数）';
+    deps.els.stCount.dataset.tip = '字数统计（CJK 字符数 + 英文单词数）';
 }
 
 function scheduleWordCount() {

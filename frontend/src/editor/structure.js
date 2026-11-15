@@ -1649,7 +1649,7 @@ export function createStructurePanel(options) {
         chev.className = 'sb-chev' + (hasKids && !collapsed.has(key) ? ' open' : '');
         if (hasKids) {
             chev.innerHTML = ICONS.chevron;
-            chev.title = collapsed.has(key) ? '展开' : '折叠';
+            chev.dataset.tip = collapsed.has(key) ? '展开' : '折叠';
         }
         row.appendChild(chev);
 
@@ -1658,7 +1658,7 @@ export function createStructurePanel(options) {
         } else {
             const icon = document.createElement('span');
             icon.className = 'st-icon st-kind-' + node.kind;
-            icon.title = KIND_NAME[node.kind] || node.kind;
+            icon.dataset.tip = KIND_NAME[node.kind] || node.kind;
             icon.textContent = KIND_GLYPH[node.kind] || '·';
             row.appendChild(icon);
         }
@@ -1675,7 +1675,7 @@ export function createStructurePanel(options) {
             const detail = document.createElement('span');
             detail.className = 'st-detail';
             detail.textContent = detailText;
-            detail.title = detailText;
+            detail.dataset.tip = detailText;
             row.appendChild(detail);
         }
 
@@ -1805,7 +1805,7 @@ export function createStructurePanel(options) {
         if (!collapseBtn) return;
         const expanded = hasExpandedContainer();
         collapseBtn.innerHTML = expanded ? ICONS.collapse : ICONS.expand;
-        collapseBtn.title = expanded ? '全部折叠' : '全部展开';
+        collapseBtn.dataset.tip = expanded ? '全部折叠' : '全部展开';
     }
 
     function setDoc(next) {

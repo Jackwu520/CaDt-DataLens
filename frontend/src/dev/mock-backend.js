@@ -207,6 +207,12 @@ export const LEVEL_COMP_CACHE = new Map();
 
 const sampleGo = `package main
 
+import (
+\t"strings"
+\t"testing"
+\t"time"
+)
+
 type MachineBase struct {
     ID string
     Name string
@@ -222,6 +228,25 @@ func (m *MachineBase) Get(key string) string {
 
 func beGet(data map[string]string) string {
     return data["x"]
+}
+
+func findGitBash() string {
+    return "Git Bash"
+}
+
+func TestToolchainPriority(t *testing.T) {
+    shell, exe := "Git Bash", "bash.exe"
+    args := []string{"echo", "hi"}
+    switch {
+    case findGitBash() != "":
+        if shell != "Git Bash" || !strings.Contains(strings.ToLower(exe), "bash") {
+            t.Fatalf("应优先 Git Bash, 实际 %s (%s)", shell, exe)
+        }
+        if len(args) < 3 || args[len(args)-1] != "echo hi" {
+            t.Fatalf("应优先 echo hi, 实际 %s (%d)", args, len(args))
+        }
+        time.Sleep(0)
+    }
 }
 
 const LEVEL_CACHE = "x"
@@ -1178,7 +1203,7 @@ const mockBackend = {
         const tab = window.__mockBrowserTabs && window.__mockBrowserTabs.get(id);
         if (!tab) throw new Error('浏览器标签页不存在');
         tab.url = url;
-        tab.title = '[mock] ' + url.replace(/^https?:\/\//, '');
+        tab.dataset.tip = '[mock] ' + url.replace(/^https?:\/\//, '');
         return null;
     },
     async BrowserGoBack(id) { return null; },
@@ -2229,7 +2254,24 @@ const mockBackend = {
         window.__mockSystemToast = (window.__mockSystemToast || []).concat([{title, body, silent: !!silent}]);
     },
     async AITestConnection(cfg) { window.__mockAiTestCfg = cfg; return '连接成功（mock）'; },
-    async AIListModels(cfg) { window.__mockAiModelsCfg = cfg; return ['deepseek-chat', 'deepseek-reasoner', 'deepseek-flash']; },
+    async AIListModels(cfg) { window.__mockAiModelsCfg = cfg; return ['deepseek-flash', 'deepseek-v4-pro', 'qwen3.7-plus', 'kimi-k3.1-pro']; },
+    // 模型配置表：mock 里不落盘，同步返回一份固定表，便于验证回填与提示行
+    async AIModelCatalogCached() { return {text: window.__mockModelCatalog || '', fetchedAt: window.__mockModelCatalogAt || 0}; },
+    async AIModelCatalogSync(url) {
+        window.__mockModelCatalogUrl = url;
+        const text = JSON.stringify({
+            version: 'mock-2026.11.15',
+            source: 'mock',
+            models: [
+                {id: 'deepseek-flash', vendor: 'deepseek', contextWindow: 1048576, outputWindow: 393216, modalities: {text: true, image: true}, reasoningEffort: true},
+                {id: 'deepseek-v4-pro', vendor: 'deepseek', contextWindow: 1048576, outputWindow: 393216, modalities: {text: true, image: false}, reasoningEffort: true},
+                {id: 'claude-sonnet-5-5', vendor: 'anthropic', contextWindow: 1048576, outputWindow: 131072, modalities: {text: true, image: true}, thinking: true, thinkingBudget: false},
+            ],
+        });
+        window.__mockModelCatalog = text;
+        window.__mockModelCatalogAt = Math.floor(Date.now() / 1000);
+        return {text, fetchedAt: window.__mockModelCatalogAt};
+    },
     async AIAppDir() { return 'mock://appdata/CandySweet/CaDt-DataLens'; },
     async AIHomeDir() { return window.__mockHomeDir || 'mock://home'; },
     async AIBuiltinSkillsDir() { return window.__mockBuiltinSkillsDir || ''; },

@@ -729,11 +729,11 @@ export function createRunController(deps) {
         const label = document.createElement('span');
         label.className = 'run-tab-label';
         label.textContent = title;
-        label.title = title;
+        label.dataset.tip = title;
         const close = document.createElement('span');
         close.className = 'run-tab-close';
         close.innerHTML = iconSvg('close', 11);
-        close.title = '关闭';
+        close.dataset.tip = '关闭';
         tab.append(label, close);
         tab.addEventListener('click', (e) => {
             if (e.target.closest('.run-tab-close')) {
@@ -885,7 +885,7 @@ export function createRunController(deps) {
                     link.type = 'button';
                     link.className = seg.cls + ' run-ref';
                     link.textContent = part.text;
-                    link.title = '跳到 ' + part.ref.path + ':' + part.ref.line;
+                    link.dataset.tip = '跳到 ' + part.ref.path + ':' + part.ref.line;
                     link.addEventListener('click', () => deps.openLocation(part.ref.path, part.ref.line, part.ref.col));
                     row.appendChild(link);
                 } else {
@@ -956,7 +956,7 @@ export function createRunController(deps) {
         }
         pendingProject = info;
         els.projectRoot.textContent = info.root || '';
-        els.projectRoot.title = info.root || '';
+        els.projectRoot.dataset.tip = info.root || '';
         els.projectNote.textContent = info.note || '';
         els.projectNote.classList.toggle('hidden', !info.note);
         els.projectCmd.textContent = '';
@@ -1104,7 +1104,7 @@ export function createRunController(deps) {
             aiBtn.type = 'button';
             aiBtn.className = 'run-btn';
             aiBtn.textContent = '发给 AI 分析';
-            aiBtn.title = '把输出尾部 200 行填进 AI 输入框，不会自动发送';
+            aiBtn.dataset.tip = '把输出尾部 200 行填进 AI 输入框，不会自动发送';
             aiBtn.addEventListener('click', () => askAI(session));
             els.status.appendChild(aiBtn);
         }

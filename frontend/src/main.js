@@ -4,10 +4,12 @@ import './reading.css';
 import DOMPurify from 'dompurify';
 import hljs from 'highlight.js/lib/common';
 import {detectFormat, formats, isSupportedFile, pluginFormats} from './core/formats.js';
+import {installTooltip} from './core/tooltip.js';
 import {createExplorer} from './explorer/explorer.js';
 import {createStructurePanel, parseStructure} from './editor/structure.js';
 import {createContextMenu} from './shell/contextmenu.js';
 import {copyImageBlobToClipboard} from './core/image-clipboard.js';
+import {CODE_SHOT_RADII, CODE_SHOT_SCALES} from './core/code-shot.js';
 import {createDebugConsole} from './terminal/debugconsole.js';
 import {createActivityLog} from './core/activity-log.js';
 import {iconSvg, renderMenuIcon} from './core/icons.js';
@@ -52,7 +54,7 @@ import {createMenuBar} from './shell/menu-bar.js';
 import {createModeSwitch} from './shell/mode-switch.js';
 import {createTitlebarPopovers} from './shell/titlebar-popovers.js';
 import {createSettingsUI} from './settings/settings-ui.js';
-import {CODE_STYLE_AUTO, CODE_STYLES} from './settings/code-styles.js';
+import {CODE_STYLE_AUTO, CODE_STYLES, migrateLegacyTheme} from './settings/code-styles.js';
 import {createWritingUI} from './writing/writing-ui.js';
 import {createStructurePanelController} from './editor/structure-panel.js';
 import {createEditorMenus} from './editor/editor-menus.js';
@@ -262,7 +264,7 @@ async function refreshLogPath() {
         const path = await backend.GetLogPath();
         if (elsSettings.logPath) {
             elsSettings.logPath.textContent = path ? '日志文件：' + path : '日志文件：—';
-            elsSettings.logPath.title = path || '';
+            elsSettings.logPath.dataset.tip = path || '';
         }
     } catch (e) {}
 }
@@ -1063,18 +1065,12 @@ let flashTimer = 0;
 let readingMode = null;
 
 const settingsKey = 'datalens-settings';
+// 软件主题只维护深色 / 浅色两套（2026-11-16 主题体系重构）；原其余九套降级为
+// 「代码主题」（settings.codeStyle / data-code-style 通道），老配置由
+// migrateLegacyTheme 迁移。插件可经 addTheme 追加主题（group: 'plugin'）。
 const themes = [
-    {id: 'dark', name: '深色', group: 'base', bg: '#1e1f24', accent: '#4f8cff'},
-    {id: 'light', name: '浅色', group: 'base', bg: '#ffffff', accent: '#2f6fd0'},
-    {id: 'darcula', name: 'Darcula', group: 'idea', bg: '#2b2b2b', accent: '#548af7'},
-    {id: 'idea-dark', name: 'IDEA Dark', group: 'idea', bg: '#1e1f22', accent: '#548af7'},
-    {id: 'idea-light', name: 'IDEA Light', group: 'idea', bg: '#ffffff', accent: '#3574f0'},
-    {id: 'github', name: 'Github', group: 'classic', bg: '#ffffff', accent: '#0969da'},
-    {id: 'newsprint', name: 'Newsprint', group: 'classic', bg: '#f7f2e7', accent: '#8a4b2f'},
-    {id: 'night', name: 'Night', group: 'classic', bg: '#16181f', accent: '#7aa2f7'},
-    {id: 'pixyll', name: 'Pixyll', group: 'classic', bg: '#fdfbf7', accent: '#c24266'},
-    {id: 'whitey', name: 'Whitey', group: 'classic', bg: '#ffffff', accent: '#2b6cb0'},
-    {id: 'harness', name: 'Harness', group: 'harness', bg: '#ffffff', accent: '#4176e6'},
+    {id: 'dark', name: '深色', group: 'base', bg: '#1e1f22', accent: '#548af7'},
+    {id: 'light', name: '浅色', group: 'base', bg: '#ffffff', accent: '#3574f0'},
 ];
 const uiFonts = [
     {id: 'inter', name: 'Inter', family: '"Inter"'},
@@ -1160,6 +1156,11 @@ const defaultSettings = {
     alwaysOnTop: false,
     editorFont: 13,
     codeWrap: false,
+    // 代码截图样式（档位单一来源 core/code-shot.js）
+    codeShotTitle: false,
+    codeShotLineNumbers: true,
+    codeShotRadius: 10,
+    codeShotScale: 2,
     mdLineNumbers: false,
     mdScrollSync: true,
     mdPreviewWidth: '0',
@@ -1199,6 +1200,8 @@ const defaultSettings = {
     aiShowUsage: true,
     aiAssistantCard: false,
     aiInlineWidgets: true,
+    // 任务清单默认展开（默认收起：只占一行进度摘要，设置页可改）
+    aiTodosDefaultExpanded: false,
     aiMaxSessions: 50,
     aiInjectContext: true,
     aiInjectRoot: true,
@@ -1255,7 +1258,14 @@ try {
         for (const key of fineInjectKeys) settings[key] = false;
     }
 } catch (e) {}
+// 2026-11-16 主题体系重构：旧版 9 套界面主题降级为代码主题 —— 迁移成 深色/浅色
+// UI 主题 + 对应代码主题（映射单一来源 code-styles.js，index.html 启动脚本有同表副本）；
 // 未知主题（可能是已卸载插件注册的）先保留，等插件加载后 CSS 生效
+const legacyThemeMigration = migrateLegacyTheme(settings.theme, settings.codeStyle);
+if (legacyThemeMigration) {
+    settings.theme = legacyThemeMigration.theme;
+    settings.codeStyle = legacyThemeMigration.codeStyle;
+}
 if (!uiFonts.some((f) => f.id === settings.uiFont)) settings.uiFont = 'inter';
 if (!editorFonts.some((f) => f.id === settings.editorFontFamily)) settings.editorFontFamily = 'jetbrains';
 if (!cjkFonts.some((f) => f.id === settings.uiCjkFont)) settings.uiCjkFont = 'auto';
@@ -1275,6 +1285,10 @@ if (![0, 1, 2, 3, 5, 10].includes(settings.treeRefreshInterval)) settings.treeRe
 settings.terminalHeight = Math.min(480, Math.max(120, Number(settings.terminalHeight) || 240));
 settings.sidebarWidth = Math.min(500, Math.max(160, Number(settings.sidebarWidth) || 264));
 settings.codeWrap = !!settings.codeWrap;
+settings.codeShotTitle = !!settings.codeShotTitle;
+settings.codeShotLineNumbers = settings.codeShotLineNumbers !== false;
+if (!CODE_SHOT_RADII.includes(settings.codeShotRadius)) settings.codeShotRadius = 10;
+if (!CODE_SHOT_SCALES.includes(settings.codeShotScale)) settings.codeShotScale = 2;
 settings.mdLineNumbers = !!settings.mdLineNumbers;
 settings.mdScrollSync = settings.mdScrollSync !== false;
 settings.writingMode = !!settings.writingMode;
@@ -1335,6 +1349,8 @@ settings.aiShowUsage = settings.aiShowUsage !== false;
 settings.aiAssistantCard = settings.aiAssistantCard === true;
 // AI 回答里把 svg / html 围栏渲染成可视化卡片（默认开；关闭后按普通代码块显示）
 settings.aiInlineWidgets = settings.aiInlineWidgets !== false;
+// 任务清单默认展开（默认关 = 收起成一行进度摘要）
+settings.aiTodosDefaultExpanded = settings.aiTodosDefaultExpanded === true;
 settings.aiMaxSessions = Math.min(500, Math.max(2, Number(settings.aiMaxSessions) || 50));
 settings.aiInjectContext = settings.aiInjectContext !== false;
 for (const key of ['aiInjectRoot', 'aiInjectActiveFile', 'aiInjectCaret', 'aiInjectViewport', 'aiInjectOpenFiles',
@@ -1495,7 +1511,6 @@ const editorGroupsMod = createEditorGroups({
     get applyReadOnlyToDoc() { return applyReadOnlyToDoc; },
     get applySettings() { return applySettings; },
     get applyWritingMode() { return applyWritingMode; },
-    get askAIAboutPath() { return askAIAboutPath; },
     get backend() { return backend; },
     get baseNameOf() { return baseNameOf; },
     get cancelAutoSave() { return cancelAutoSave; },
@@ -1504,6 +1519,8 @@ const editorGroupsMod = createEditorGroups({
     get closedTabs() { return closedTabs; },
     get closeFootPopover() { return closeFootPopover; },
     get copyText() { return copyText; },
+    get createAgentView() { return createAgentView; },
+    get createSideChatView() { return createSideChatView; },
     get createBgTermView() { return createBgTermView; },
     get CSV_COL_MIN_WIDTH() { return CSV_COL_MIN_WIDTH; },
     get CSV_ROW_NUM_WIDTH() { return CSV_ROW_NUM_WIDTH; },
@@ -1578,7 +1595,7 @@ const editorGroupsMod = createEditorGroups({
     get viewOptionsFor() { return viewOptionsFor; },
     get workspaceFolder() { return workspaceFolder; },
 });
-const {activateDoc, addDocToFocusedGroup, applyAceMode, applyCsvTableZoom, applyImageZoom, browserViewportLabel, closeDocNow, closeDocsWithConfirm, closeSqlView, createDoc, createDocEditor, createGroup, dismissBanner, doRedo, doUndo,  enterBinaryView, enterCsvTable, enterImageView, enterMarkdownPreview, enterSplitView, enterSqlView, enterSvgRender, enterTextView, exitSplitView, expandAllWithGuard, flushCsvCellEditor,  groupDocs, setFocusedGroupId, setSplitRoot, groupOfDoc, handleAIWorkspaceFileChanged, handleExternalDocChanges, hideBanner, hideSvgRender, hookCodeFoldPreviews, hookMultiCursor, humanizeCounts, initCodeFoldHover, jumpBookmark, leaveCsvTable, leaveMarkdownPreview, markDocDirty, mdSyncScrollFromAce, moveTabInGroup, patchViewContext, refreshPatchMarkers, rememberDocView, renderBookmarks, renderBreadcrumb, renderCsvTableView, renderEditorLayout, renderMarkdownPreview, renderTabs, reopenClosedTab, requestCloseDoc, revertDocToSaved, scheduleGitGutter, setBrowserViewport, setFilename, showBanner, showImageMenu, showMdPreviewMenu, showPathInFolder, showSvgMenu,  syncAllBrowserTabs, syncBrowserTab, syncTabReadOnly, textArea, toggleBookmark, toggleFocusedNode, updateBrowserTitle, updateCodeFoldPreviews, updateDocChrome, updateStatus, zoomCsvTable, zoomImageBy, zoomSvgRenderBy} = editorGroupsMod;
+const {activateDoc, addDocToFocusedGroup, applyAceMode, applyCsvTableZoom, applyImageZoom, browserViewportLabel, closeDocNow, closeDocsWithConfirm, closeSqlView, createDoc, createDocEditor, createGroup, dismissBanner, doRedo, doUndo,  enterBinaryView, enterCsvTable, enterImageView, enterMarkdownPreview, enterSplitView, enterSqlView, enterSvgRender, enterTextView, exitSplitView, expandAllWithGuard, flushCsvCellEditor,  groupDocs, setFocusedGroupId, setSplitRoot, groupOfDoc, handleAIWorkspaceFileChanged, handleExternalDocChanges, hideBanner, hideSvgRender, hookCodeFoldRanges, hookMultiCursor, humanizeCounts, initCodeFoldHover, jumpBookmark, leaveCsvTable, leaveMarkdownPreview, markDocDirty, mdSyncScrollFromAce, moveTabInGroup, patchViewContext, refreshPatchMarkers, rememberDocView, renderBookmarks, renderBreadcrumb, renderCsvTableView, renderEditorLayout, renderMarkdownPreview, renderTabs, reopenClosedTab, requestCloseDoc, revertDocToSaved, scheduleGitGutter, setBrowserViewport, setFilename, showBanner, showImageMenu, showMdPreviewMenu, showPathInFolder, showSvgMenu,  syncAllBrowserTabs, syncBrowserTab, syncTabReadOnly, textArea, toggleBookmark, toggleFocusedNode, updateBrowserTitle, updateDocChrome, updateStatus, zoomCsvTable, zoomImageBy, zoomSvgRenderBy} = editorGroupsMod;
 const NEW_FILE_TYPES = [
     {label: 'JSON 文件', name: '新建文件.json'},
     {label: '文本文件', name: '新建文件.txt'},
@@ -1741,10 +1758,9 @@ const showBlankMenu = (...a) => editorMenus.showBlankMenu(...a);
 const initContextMenus = (...a) => editorMenus.initContextMenus(...a);
 
 const explorerOps = createExplorerOps({
-    get AI_REFERENCE_ICON_HTML() { return AI_REFERENCE_ICON_HTML; },
     get actRel() { return actRel; },
     get activityLog() { return activityLog; },
-    get askAIAboutPath() { return askAIAboutPath; },
+    get aiReferenceFileMenuItems() { return aiReferenceFileMenuItems; },
     get backend() { return backend; },
     get baseNameOf() { return baseNameOf; },
     get closeDocNow() { return closeDocNow; },
@@ -2032,13 +2048,13 @@ function renderWorkspaceCrumbs() {
     if (!hasWorkspace) return;
     const name = baseNameOf(workspaceFolder) || workspaceFolder;
     els.wsProjectName.textContent = name;
-    els.wsProject.title = workspaceFolder;
+    els.wsProject.dataset.tip = workspaceFolder;
     els.wsProjectBadge.textContent = projectBadgeText(name);
     let branch = '';
     try { branch = (gitStateCache.available && gitStateCache.branch) || ''; } catch (e) {}
     els.wsBranch.classList.toggle('hidden', !branch);
     els.wsBranchName.textContent = branch;
-    els.wsBranch.title = branch ? '当前 Git 分支：' + branch + '（点击查看更多）' : '';
+    els.wsBranch.dataset.tip = branch ? '当前 Git 分支：' + branch + '（点击查看更多）' : '';
 }
 
 const titlebarPopovers = createTitlebarPopovers({
@@ -2228,7 +2244,7 @@ function syncRunButtonState() {
     const supported = !!file && !file.binary && !file.large &&
         !!RECIPES[extOf(file.name || file.path)] && !ro;
     els.tbRun.disabled = !supported;
-    els.tbRun.title = supported || !file ? '运行当前文件 (F5)'
+    els.tbRun.dataset.tip = supported || !file ? '运行当前文件 (F5)'
         : ro ? (isTabReadOnlyLocked(file) ? '本标签已只读，不执行代码' : '只读模式下不执行代码')
             : '当前文件不支持运行';
 }
@@ -2283,7 +2299,7 @@ function setEditorCollapsed(next) {
     if (els.editorCollapseStrip) {
         els.editorCollapseStrip.setAttribute('aria-pressed', String(target));
         els.editorCollapseStrip.classList.toggle('active', target);
-        els.editorCollapseStrip.title = target ? '展开编辑区' : '收起编辑区（标签页保留，位置让给 AI 助手）';
+        els.editorCollapseStrip.dataset.tip = target ? '展开编辑区' : '收起编辑区（标签页保留，位置让给 AI 助手）';
     }
     updateAiWidthWidget();
     if (editor && editor.resize) {
@@ -2301,12 +2317,17 @@ if (els.editorCollapseStrip) {
     }
 }
 
-function askAIAboutPath(path) {
+// AI 引用统一入口：打开面板（若关着）→ 只挂路径引用（<file_reference>，内容由模型自己 read_file）
+// → 聚焦输入框。资源管理器 / 标签页 / 编辑器右键的「引用该文件」都走这里；不读内容，大文件与二进制也能引用。
+function aiReferencePath(path, name) {
     if (!path) return;
     if (!aiPanel) initAIPanel();
-    if (!aiPanel) return;
+    if (!aiPanel || !aiPanel.referencePath) {
+        flash('AI 面板不可用', true);
+        return;
+    }
     aiPanel.open(true);
-    if (aiPanel.attachPath) aiPanel.attachPath(path, {focus: true});
+    aiPanel.referencePath(path, name || '');
 }
 
 // 运行面板「发给 AI 分析」：只预填输入框，发送与否由用户决定（不自动触发模型调用）
@@ -2321,23 +2342,19 @@ function openAIPanelWithDraft(text) {
 
 const AI_REFERENCE_ICON_HTML = '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3.2l1.1 3.1 3.1 1.1-3.1 1.1L10 11.6 8.9 8.5 5.8 7.4l3.1-1.1z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M15.2 12.3l.6 1.7 1.7.6-1.7.6-.6 1.7-.6-1.7-1.7-.6 1.7-.6z" fill="currentColor"/></svg>';
 
-function aiPanelOpenNow() {
-    return !!(aiPanel && aiPanel.isOpen && aiPanel.isOpen());
-}
-
+// 右键菜单的 AI 引用入口（引用该文件 / 引用选取）：不再要求面板已打开——
+// 点击时自动开面板；同一文件（标签页 / 资源管理器 / 编辑器右键）只有一个入口，不再并排两个 AI 项。
 function aiReferenceFileMenuItems(doc) {
-    if (!aiPanelOpenNow() || !doc || !doc.path) return [];
+    if (!doc || !doc.path) return [];
     return [{
         label: '引用该文件',
         iconHtml: AI_REFERENCE_ICON_HTML,
-        action: () => {
-            if (aiPanel && aiPanel.referencePath) aiPanel.referencePath(doc.path, doc.name || '');
-        },
+        action: () => aiReferencePath(doc.path, doc.name || ''),
     }];
 }
 
 function aiEditorReferenceMenuItems() {
-    if (!aiPanelOpenNow() || !file || !file.path) return [];
+    if (!file || !file.path) return [];
     const selected = selectedText();
     if (selected && selected.trim()) {
         const caret = appActionDocCaret(file);
@@ -2346,7 +2363,13 @@ function aiEditorReferenceMenuItems() {
                 label: '引用选取',
                 iconHtml: AI_REFERENCE_ICON_HTML,
                 action: () => {
-                    if (aiPanel && aiPanel.referenceSelection) aiPanel.referenceSelection();
+                    if (!aiPanel) initAIPanel();
+                    if (!aiPanel || !aiPanel.referenceSelection) {
+                        flash('AI 面板不可用', true);
+                        return;
+                    }
+                    aiPanel.open(true);
+                    aiPanel.referenceSelection();
                 },
             }];
         }
@@ -2354,9 +2377,7 @@ function aiEditorReferenceMenuItems() {
     return [{
         label: '引用该文件',
         iconHtml: AI_REFERENCE_ICON_HTML,
-        action: () => {
-            if (aiPanel && aiPanel.referencePath) aiPanel.referencePath(file.path, file.name || '');
-        },
+        action: () => aiReferencePath(file.path, file.name || ''),
     }];
 }
 
@@ -2408,6 +2429,10 @@ function initAIPanel() {
         getPluginLoadErrors,
         refreshPlugins: () => loadPlugins(backend),
         openTermTab: (...args) => openBgTermTab(...args),
+        // 子代理详情视图：在内容区标签页打开（不遮挡面板；悬浮窗由面板自己退回覆盖层）
+        openAgentTab: (...args) => openAgentTab(...args),
+        // 支线对话标签页：完整会话渲染在内容区，面板继续显示主对话
+        openSideChatTab: (...args) => openSideChatTab(...args),
         runAppAction,
         hostAppActions: () => APP_ACTIONS,
         browserHost: {
@@ -2590,7 +2615,9 @@ function initAIPanel() {
         if (aiPanel) aiPanel.handleEvent(name, payload);
     };
     if (rt) {
-        for (const eventName of ['ai-chunk', 'ai-think', 'ai-toolcall', 'ai-done', 'ai-error']) {
+        // 新增 Go 侧 aiEvent* 常量时必须同步加进这里，否则事件发出后前端无人接收
+        // （ai-retry 曾长期漏订阅，导致流式状态条的重试提示是死代码）。
+        for (const eventName of ['ai-chunk', 'ai-think', 'ai-toolcall', 'ai-done', 'ai-error', 'ai-retry', 'ai-param-adjust']) {
             rt.EventsOn(eventName, (payload) => {
                 if (aiPanel) aiPanel.handleEvent(eventName, payload);
             });
@@ -3313,7 +3340,7 @@ if (rt) {
     const syncMaxIcon = async () => {
         const maximised = await rt.WindowIsMaximised();
         maxBtn.innerHTML = iconSvg(maximised ? 'restore' : 'maximize', 12);
-        maxBtn.title = maximised ? '还原' : '最大化';
+        maxBtn.dataset.tip = maximised ? '还原' : '最大化';
         // Wails 运行时的边缘 resize 检测不判断最大化状态：无边框窗口最大化后
         // 鼠标靠近左右两侧仍会亮起调整宽度光标。最大化时直接关掉检测，
         // 还原（含 Win+方向键贴靠，经 resize 事件回到这里）再恢复。
@@ -3378,7 +3405,7 @@ const modeSwitch = createModeSwitch({
     get file() { return file; },
     get flash() { return flash; },
     get hideSvgRender() { return hideSvgRender; },
-    get hookCodeFoldPreviews() { return hookCodeFoldPreviews; },
+    get hookCodeFoldRanges() { return hookCodeFoldRanges; },
     get hookMultiCursor() { return hookMultiCursor; },
     get isSvgDoc() { return isSvgDoc; },
     get leaveCsvTable() { return leaveCsvTable; },
@@ -3386,7 +3413,6 @@ const modeSwitch = createModeSwitch({
     get patchViewContext() { return patchViewContext; },
     get refreshPatchMarkers() { return refreshPatchMarkers; },
     get scheduleGitGutter() { return scheduleGitGutter; },
-    get updateCodeFoldPreviews() { return updateCodeFoldPreviews; },
     get updateSearchState() { return updateSearchState; },
     get updateStatus() { return updateStatus; },
 });
@@ -3467,6 +3493,9 @@ const quickSwitchMod = createQuickSwitch({
     get applyAceMode() { return applyAceMode; },
     get applySettings() { return applySettings; },
     get closeAllMenus() { return closeAllMenus; },
+    get CODE_STYLES() { return CODE_STYLES; },
+    get CODE_STYLE_AUTO() { return CODE_STYLE_AUTO; },
+    get setCodeStyle() { return setCodeStyle; },
     get currentMode() { return currentMode; },
     get currentSidebarView() { return currentSidebarView; },
     get currentTheme() { return currentTheme; },
@@ -3803,7 +3832,7 @@ function menuItems(kind) {
                 });
                 prevCodeGroup = style.group;
             });
-            items.push({label: '代码风格', submenu: codeItems});
+            items.push({label: '代码主题', submenu: codeItems});
             return items;
         }
         case 'tools': {
@@ -3999,7 +4028,7 @@ document.addEventListener('click', (e) => {
 function updateSearchState() {
     if (els.abSearch) {
         els.abSearch.disabled = false;
-        els.abSearch.title = '内容搜索 (Ctrl+F)';
+        els.abSearch.dataset.tip = '内容搜索 (Ctrl+F)';
         els.abSearch.setAttribute('aria-label', '内容搜索');
     }
     if (!findState.open) return;
@@ -4539,6 +4568,7 @@ const {applyDockView, renderGitPanel, cmdExitHandlers, cmdOutHandlers, currentSi
 // —— 启动初始化：必须在 terminalMod 解构之后（applySettings 经 deps 触达
 //    terminal-ui 导出），也必须在 bridgeUI 工厂之前（保持原始执行顺序）——
 applySettings();
+installTooltip();
 initContextMenus();
 initExplorer();
 initStructurePanel();
@@ -4590,5 +4620,5 @@ const bridgeUI = createBridgeUI({
     get updateBrowserTitle() { return updateBrowserTitle; },
     get workspaceFolder() { return workspaceFolder; },
 });
-const {createBgTermView, gitGroupCollapsed, gitRootDir, gitStateCache, gitUncheckedFiles, notifyAIGitEntry, openBgTermTab, openBrowserTab, openVirtualDoc, refreshGitStatus, showGitDiff, showGitFileHistory, showGitRecentLog, gitRollbackPaths} = bridgeUI;
+const {createAgentView, createSideChatView, createBgTermView, gitGroupCollapsed, gitRootDir, gitStateCache, gitUncheckedFiles, notifyAIGitEntry, openAgentTab, openSideChatTab, openBgTermTab, openBrowserTab, openVirtualDoc, refreshGitStatus, showGitDiff, showGitFileHistory, showGitRecentLog, gitRollbackPaths} = bridgeUI;
 

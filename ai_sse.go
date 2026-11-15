@@ -103,6 +103,141 @@ func streamOpenAISSE(body io.Reader, id string, emit aiEmitter, touch func()) er
 	return nil
 }
 
+// responsesStreamEvent：只解析 Responses SSE 里会映射到 ai-* 事件的字段。
+// 网关普遍会在 data JSON 里带 type；event: 行即使存在也不影响，这里逐行只读 data:。
+type responsesStreamEvent struct {
+	Type  string `json:"type"`
+	Delta string `json:"delta"`
+	Item  *struct {
+		Type      string `json:"type"`
+		CallId    string `json:"call_id"`
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	} `json:"item"`
+	Response *struct {
+		Status string `json:"status"`
+		Error  *struct {
+			Message string `json:"message"`
+		} `json:"error"`
+		Usage *struct {
+			InputTokens  int `json:"input_tokens"`
+			OutputTokens int `json:"output_tokens"`
+			TotalTokens  int `json:"total_tokens"`
+			InputDetails *struct {
+				CachedTokens int `json:"cached_tokens"`
+			} `json:"input_tokens_details"`
+		} `json:"usage"`
+	} `json:"response"`
+	Error *struct {
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+func responsesEventError(ev responsesStreamEvent) string {
+	if ev.Error != nil && strings.TrimSpace(ev.Error.Message) != "" {
+		return strings.TrimSpace(ev.Error.Message)
+	}
+	if ev.Response != nil && ev.Response.Error != nil && strings.TrimSpace(ev.Response.Error.Message) != "" {
+		return strings.TrimSpace(ev.Response.Error.Message)
+	}
+	return ""
+}
+
+// streamResponsesSSE 把 Responses 事件流归一成现有的 ai-chunk / ai-think /
+// ai-toolcall / ai-done。工具调用取 output_item.done 里的完整 function_call
+// （arguments 已完整，无需拼接 function_call_arguments.delta）。
+func streamResponsesSSE(body io.Reader, id string, emit aiEmitter, touch func()) error {
+	scanner := bufio.NewScanner(body)
+	scanner.Buffer(make([]byte, 64<<10), 4<<20)
+
+	finishReason := "stop"
+	doneSent := false
+	var usage aiUsage
+	toolIndex := 0
+	emitDone := func() {
+		if doneSent {
+			return
+		}
+		doneSent = true
+		payload := aiDonePayload{Id: id, FinishReason: finishReason}
+		if usage.TotalTokens > 0 || usage.PromptTokens > 0 || usage.CompletionTokens > 0 || usage.CachedTokens > 0 {
+			payload.Usage = &usage
+		}
+		emit(aiEventDone, payload)
+	}
+
+	for scanner.Scan() {
+		touch()
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if data == "" {
+			continue
+		}
+		if data == "[DONE]" {
+			emitDone()
+			return nil
+		}
+		var ev responsesStreamEvent
+		if err := json.Unmarshal([]byte(data), &ev); err != nil {
+			return fmt.Errorf("解析 Responses 流式响应失败：%w", err)
+		}
+		if message := responsesEventError(ev); message != "" {
+			return errors.New(message)
+		}
+		switch ev.Type {
+		case "response.output_text.delta", "response.refusal.delta":
+			if ev.Delta != "" {
+				emit(aiEventChunk, aiChunkPayload{Id: id, Delta: ev.Delta})
+			}
+		case "response.reasoning_text.delta":
+			if ev.Delta != "" {
+				emit(aiEventThink, aiChunkPayload{Id: id, Delta: ev.Delta})
+			}
+		case "response.output_item.done":
+			item := ev.Item
+			if item == nil || item.Type != "function_call" {
+				continue
+			}
+			callId := item.CallId
+			if callId == "" {
+				callId = fmt.Sprintf("responses-call-%d", toolIndex)
+			}
+			emit(aiEventToolCall, aiToolCallPayload{
+				Id: id, Index: toolIndex, CallId: callId, Name: item.Name, ArgsDelta: item.Arguments,
+			})
+			toolIndex++
+		case "response.completed", "response.incomplete":
+			if ev.Response != nil && ev.Response.Usage != nil {
+				u := ev.Response.Usage
+				usage.PromptTokens = u.InputTokens
+				usage.CompletionTokens = u.OutputTokens
+				usage.TotalTokens = u.TotalTokens
+				if usage.TotalTokens <= 0 {
+					usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+				}
+				if u.InputDetails != nil {
+					usage.CachedTokens = u.InputDetails.CachedTokens
+				}
+			}
+			if ev.Type == "response.incomplete" {
+				finishReason = "length"
+			}
+			emitDone()
+			return nil
+		case "error", "response.failed":
+			return errors.New("Responses 流式响应失败（" + ev.Type + "）")
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+	emitDone()
+	return nil
+}
+
 func streamAnthropicSSE(body io.Reader, id string, emit aiEmitter, touch func()) error {
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 64<<10), 4<<20)

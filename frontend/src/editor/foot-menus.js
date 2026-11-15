@@ -63,7 +63,7 @@ function popItem(label, opts = {}) {
     if (opts.disabled) {
         row.disabled = true;
         row.style.opacity = '0.4';
-        row.title = opts.disabledTitle || '';
+        row.dataset.tip = opts.disabledTitle || '';
     } else if (opts.onClick) {
         row.addEventListener('click', opts.onClick);
     }
@@ -115,7 +115,7 @@ async function renderEncodingMenu() {
             const ok = await deps.backend.CheckEncoding(deps.file.content || '', enc);
             ic.innerHTML = iconSvg(ok ? 'check' : 'warn', 12);
             ic.className = 'enc-ic ' + (ok ? 'ok' : 'warn');
-            ic.title = ok ? '可无损表示当前内容' : '包含无法表示的字符，转换后可能丢失';
+            ic.dataset.tip = ok ? '可无损表示当前内容' : '包含无法表示的字符，转换后可能丢失';
         } catch (e) {}
     }
 }
@@ -201,7 +201,7 @@ function updateAiWidthWidget() {
     }
     const value = String(deps.settings.aiFullscreenWidth || 'auto');
     deps.els.stAiWidth.textContent = 'AI 宽度 · ' + aiFullscreenWidthLabel(value);
-    deps.els.stAiWidth.title = value === 'auto'
+    deps.els.stAiWidth.dataset.tip = value === 'auto'
         ? 'AI 内容宽度（停靠 / 全屏通用）：自动（< 920px 跟随，≥ 920px 最大 920px）'
         : 'AI 内容宽度（停靠 / 全屏通用）：' + (value === '0' ? '跟随' : value + 'px');
 }

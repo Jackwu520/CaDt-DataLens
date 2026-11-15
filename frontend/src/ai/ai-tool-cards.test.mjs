@@ -1,7 +1,8 @@
-// ai-tool-cards 纯函数测试：流式工具卡的增量摘要（liveToolSummary）。
+// ai-tool-cards 纯函数测试：流式工具卡的增量摘要（liveToolSummary）、占位行顺序对齐、spinner CSS 接线。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {liveToolSummary, liveToolParts} from './ai-tool-cards.js';
+import {readFileSync} from 'node:fs';
+import {liveToolSummary, liveToolParts, planLiveRowOrder} from './ai-tool-cards.js';
 
 test('liveToolSummary：能从未闭合的参数 JSON 里捞出 path 与已接收体积', () => {
     // write_file 流式中途：content 字符串尚未闭合，path 已完整
@@ -54,6 +55,38 @@ test('liveToolParts：content 中途截断在转义序列上不抛异常', () =>
     // content 值以 \u 截断：decode 截掉悬空反斜杠后仍可能 parse 失败 → 退回手写替换
     const tricky = liveToolParts('{"path":"a.md","content":"x\\u00e9\\u0');
     assert.ok(typeof tricky.content === 'string');
+});
+
+test('planLiveRowOrder：顺序不变时零 DOM 操作（spinner 不会每帧回弹）', () => {
+    const a = {id: 'a'}, b = {id: 'b'}, c = {id: 'c'};
+    const same = planLiveRowOrder([a, b], [a, b]);
+    assert.deepEqual(same.moves, [], '顺序没变却要移动节点 → 会重启 ::before 动画');
+    assert.equal(same.trim, 0);
+    assert.deepEqual(same.final, [a, b]);
+    // 追加新行：只动新位置，已有行保持原位
+    const add = planLiveRowOrder([a], [a, b]);
+    assert.deepEqual(add.moves, [1]);
+    assert.equal(add.trim, 0);
+    assert.deepEqual(add.final, [a, b]);
+    // 删除行：只裁尾部，不移动保留下来的行
+    const del = planLiveRowOrder([a, b], [b]);
+    assert.deepEqual(del.final, [b]);
+    assert.equal(del.trim, 1);
+    // 换序 / 反序：最小移动且最终顺序正确
+    const swap = planLiveRowOrder([a, b], [b, a]);
+    assert.deepEqual(swap.final, [b, a]);
+    assert.ok(swap.moves.length <= 1);
+    const rev = planLiveRowOrder([a, b, c], [c, b, a]);
+    assert.deepEqual(rev.final, [c, b, a]);
+    assert.equal(rev.trim, 0);
+});
+
+test('spinner 相位接线：CSS 周期与 JS 常量一致，且接受 --ai-spin-phase', () => {
+    const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+    const rule = css.match(/\.ai-tool-spinner::before\s*\{[^}]*\}/);
+    assert.ok(rule, '找不到 .ai-tool-spinner::before 规则');
+    assert.match(rule[0], /animation:\s*ai-todo-spin\s+0\.9s/, '周期须与 AI_SPIN_MS = 900 同步');
+    assert.match(rule[0], /animation-delay:\s*var\(--ai-spin-phase/, '负 delay 变量不能丢，否则重建仍会回弹');
 });
 
 test('liveToolParts：edit_file 的 old_string（闭合才算完整）与 new_string-so-far', () => {

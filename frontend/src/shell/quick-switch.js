@@ -57,6 +57,20 @@ function quickSwitchSubItems(level) {
             items.push({label: theme.name, checked: deps.settings.theme === theme.id, action: () => deps.setTheme(theme.id)});
             prevGroup = theme.group;
         }
+        // 代码主题（编辑器配色方案，token + 编辑器底色）：与主菜单「主题 → 代码主题」
+        // 同一份清单单一来源（code-styles.js），默认「跟随软件主题」。
+        items.push({sep: true});
+        items.push({
+            label: '跟随软件主题',
+            checked: (deps.settings.codeStyle || deps.CODE_STYLE_AUTO) === deps.CODE_STYLE_AUTO,
+            action: () => deps.setCodeStyle(deps.CODE_STYLE_AUTO),
+        });
+        prevGroup = '';
+        for (const style of deps.CODE_STYLES) {
+            if (prevGroup && style.group !== prevGroup) items.push({sep: true});
+            items.push({label: style.name, checked: deps.settings.codeStyle === style.id, action: () => deps.setCodeStyle(style.id)});
+            prevGroup = style.group;
+        }
         return items;
     }
     if (level === 'view') {

@@ -11,6 +11,10 @@ export const OUTPUT_WINDOW_MAX = 2097152; // 2M tokens
 export const THINKING_BUDGET_MIN = 1024;
 export const THINKING_BUDGET_MAX = 393215;
 
+// 「本次会话上下文上限」候选档位（模型选择器下拉可选的会话级窗口上限）。
+// 只列出 < 模型 contextWindow 的档位；模型窗口不大于最小档时整个设置不出现。
+export const CTX_LIMIT_TIERS = [262144, 524288, 1048576]; // 256K / 512K / 1M
+
 export const MODALITY_KEYS = ['text', 'image', 'video', 'audio'];
 export const MODALITY_LABELS = {text: '文本', image: '图像', video: '视频', audio: '音频'};
 
@@ -55,6 +59,44 @@ export function windowValue(value, min, max, fallback) {
     return clampNumber(value, min, max, fallback);
 }
 
+// 服务端参数校验给出 max_tokens 上界时，把模型条目的输出窗口收敛到该上界。
+// 只降不升（服务端上限比用户已设值还宽松时不动），返回是否改动。
+// 供 AI 面板在 Go 侧自动降档重试成功后回写配置，避免下一轮继续踩同一个 400。
+export function applyOutputWindowLimit(entry, limit) {
+    const raw = Math.round(Number(limit));
+    if (!entry || typeof entry !== 'object' || !Number.isFinite(raw) || raw <= 0) return false;
+    const cap = clampNumber(raw, OUTPUT_WINDOW_MIN, OUTPUT_WINDOW_MAX, 0);
+    const current = Math.round(Number(entry.outputWindow));
+    if (!Number.isFinite(current) || current <= cap) return false;
+    entry.outputWindow = cap;
+    // Anthropic 扩展思考要求 maxTokens > thinkingBudget：收敛后预算可能反过来越界。
+    const budget = Math.round(Number(entry.thinkingBudget));
+    if (Number.isFinite(budget) && budget >= cap) entry.thinkingBudget = Math.max(1, cap - 1);
+    return true;
+}
+
+// 会话上下文上限归一：支持数字与 K/M 字符串（读回旧 meta 时的容错）；
+// 非法 / ≤0 一律归 0（不设限），合法值 clamp 进窗口量级。
+export function normalizeCtxLimit(raw) {
+    const parsed = parseTokenAmount(raw);
+    return parsed != null ? Math.min(CONTEXT_WINDOW_MAX, parsed) : 0;
+}
+
+// 生效上下文窗口：会话上限只在低于模型窗口时收窄，永不放大；
+// 基线异常（≤0 / 非数字）时只信任上限（可能为 0，调用方自行兜底）。
+export function effectiveContextWindow(baseWindow, ctxLimit) {
+    const limit = normalizeCtxLimit(ctxLimit);
+    const base = Math.round(Number(baseWindow));
+    if (!Number.isFinite(base) || base <= 0) return limit;
+    return limit > 0 ? Math.min(limit, base) : base;
+}
+
+// 该模型窗口下可选择的档位（严格小于模型窗口的固定档）；空数组 = 隐藏整个设置。
+export function ctxLimitTiersFor(baseWindow) {
+    const base = Math.max(0, Math.round(Number(baseWindow)) || 0);
+    return CTX_LIMIT_TIERS.filter((tier) => tier < base);
+}
+
 export function defaultModalities() {
     // 默认勾选文本 + 图像；视频 / 音频留待模型与发送通道支持后再开。
     return {text: true, image: true, video: false, audio: false};
@@ -83,6 +125,9 @@ export function normalizeModelEntry(raw, idGen) {
         reasoningEffort: ['low', 'medium', 'high'].includes(source.reasoningEffort) ? source.reasoningEffort : '',
         thinking: source.thinking === true,
         thinkingBudget: clampNumber(source.thinkingBudget, THINKING_BUDGET_MIN, THINKING_BUDGET_MAX, 8000),
+        // 窗口/能力是否还归模型配置表管（model-catalog.js）：用户手改过任一被回填字段就置 false，
+        // 之后再换模型 ID 也不覆盖。存量条目视为手填，不会被配置表改动。
+        autoFilled: source.autoFilled === true,
     };
 }
 
@@ -131,9 +176,35 @@ export function migrateAccountModels(account, activeModelId, idGen) {
     return models;
 }
 
+// 模型条目的思考等级单一来源（模型选择器行内徽标 / 档位条 / chip 文案共用）：
+// 非 Anthropic 按 reasoningEffort 推导（空串 = 自动），Anthropic 按 thinking/thinkingBudget
+// 反推档位（沿用旧边界：≤2048 低、≤10000 中、其余高）。返回当前档位值、中文标签、
+// 该协议的候选档位表与徽标配色档（tone：auto=灰、low=蓝、mid=黄、high=紫红，
+// 驱动 style.css 的 --ai-lv-* 分色徽标）。
+export function reasoningLevelInfo(account, entry) {
+    const anthropic = !!(account && account.provider === 'anthropic');
+    const options = anthropic
+        ? [['off', '关'], ['low', '低'], ['medium', '中'], ['high', '高']]
+        : [['auto', '自动'], ['low', '低'], ['medium', '中'], ['high', '高']];
+    let value;
+    if (anthropic) {
+        if (!entry || entry.thinking !== true) {
+            value = 'off';
+        } else {
+            const budget = Number(entry.thinkingBudget) || 8000;
+            value = budget <= 2048 ? 'low' : (budget <= 10000 ? 'medium' : 'high');
+        }
+    } else {
+        value = entry && ['low', 'medium', 'high'].includes(entry.reasoningEffort) ? entry.reasoningEffort : 'auto';
+    }
+    const labels = {auto: '自动', off: '关', low: '低', medium: '中', high: '高'};
+    const tones = {auto: 'auto', off: 'auto', low: 'low', medium: 'mid', high: 'high'};
+    return {value, label: labels[value] || '自动', options, tone: tones[value] || 'auto'};
+}
+
 // 组装发请求用的 AIConfig：连接类字段取账号，模型类字段取条目。
 export function configForModel(account, entry) {
-    const provider = account && account.provider === 'anthropic' ? 'anthropic' : 'openai';
+    const provider = ['anthropic', 'responses'].includes(account && account.provider) ? account.provider : 'openai';
     return {
         provider,
         baseURL: account ? String(account.baseURL || '') : '',

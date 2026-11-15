@@ -94,7 +94,7 @@ export function createAISchedule(ctx) {
                     iconEl.dataset.ready = '1';
                     iconEl.innerHTML = iconSvg('clock', 12);
                 }
-                chip.title = mine.length
+                chip.dataset.tip = mine.length
                     ? mine.map((s) => s.name).join('、')
                     : '定时任务（本会话绑定的计划触发）';
             }
@@ -196,7 +196,7 @@ export function createAISchedule(ctx) {
         const name = document.createElement('span');
         name.className = 'ai-sched-name';
         name.textContent = s.name;
-        name.title = s.prompt;
+        name.dataset.tip = s.prompt;
         const badge = document.createElement('span');
         badge.className = 'ai-sched-badge' + (s.enabled ? ' on' : '');
         badge.textContent = s.enabled ? '启用' : '停用';
@@ -212,7 +212,7 @@ export function createAISchedule(ctx) {
         const toggle = document.createElement('button');
         toggle.type = 'button';
         toggle.className = 'ai-pref-btn';
-        toggle.title = s.enabled ? '停用' : '启用';
+        toggle.dataset.tip = s.enabled ? '停用' : '启用';
         toggle.innerHTML = iconSvg(s.enabled ? 'pause' : 'play', 12);
         toggle.addEventListener('click', () => {
             Promise.resolve(backend.AIScheduleToggle(s.id, !s.enabled)).then(() => {
@@ -223,13 +223,13 @@ export function createAISchedule(ctx) {
         const edit = document.createElement('button');
         edit.type = 'button';
         edit.className = 'ai-pref-btn';
-        edit.title = '编辑';
+        edit.dataset.tip = '编辑';
         edit.innerHTML = iconSvg('rename', 12);
         edit.addEventListener('click', () => openScheduleEditor(s));
         const remove = document.createElement('button');
         remove.type = 'button';
         remove.className = 'ai-pref-btn';
-        remove.title = '删除';
+        remove.dataset.tip = '删除';
         remove.innerHTML = iconSvg('close', 12);
         remove.addEventListener('click', () => {
             askConfirm('删除定时任务「' + s.name + '」？', () => {
@@ -244,7 +244,7 @@ export function createAISchedule(ctx) {
         return row;
     }
 
-    function openScheduleEditor(existing) {
+    function openScheduleEditor(existing, opts) {
         if (!el.dialog || !backend.AIScheduleCreate) return;
         const isEdit = !!existing;
         const node = (tag, cls) => {
@@ -397,7 +397,7 @@ export function createAISchedule(ctx) {
             row('最多触发次数', maxRuns),
         );
         if (valueLabel.parentElement !== valueRow) valueRow.insertBefore(valueLabel, valueInput);
-        openAIDialog(isEdit ? '编辑定时任务' : '新建定时任务', [body], [cancelBtn, save]);
+        openAIDialog(isEdit ? '编辑定时任务' : '新建定时任务', [body], [cancelBtn, save], opts && opts.top ? {top: true} : undefined);
     }
     // ---- 定时任务触发（sched-fire）----
     // 多窗口去重：广播会被所有窗口收到。指定目标会话的任务只由持有该会话的窗口执行，

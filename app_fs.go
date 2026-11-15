@@ -42,6 +42,7 @@ type DirEntry struct {
 type DirListing struct {
 	Entries   []DirEntry `json:"entries"`
 	Truncated bool       `json:"truncated"`
+	Total     int        `json:"total"`
 	Mtime     int64      `json:"mtime"`
 }
 
@@ -80,6 +81,7 @@ func (a *App) ReadDir(path string, limit int) (*DirListing, error) {
 	if limit <= 0 || limit > 5000 {
 		limit = 1000
 	}
+	total := len(entries)
 	truncated := false
 	if len(entries) > limit {
 		entries = entries[:limit]
@@ -100,7 +102,7 @@ func (a *App) ReadDir(path string, limit int) (*DirListing, error) {
 		}
 		out = append(out, item)
 	}
-	return &DirListing{Entries: out, Truncated: truncated, Mtime: info.ModTime().UnixMilli()}, nil
+	return &DirListing{Entries: out, Truncated: truncated, Total: total, Mtime: info.ModTime().UnixMilli()}, nil
 }
 
 var reservedEntryNames = map[string]bool{

@@ -101,7 +101,7 @@ function createBgTermView(doc) {
     // 中间分割线：拖拽调整上下比例
     const split = document.createElement('div');
     split.className = 'bgterm-split';
-    split.title = '拖动调整上下高度';
+    split.dataset.tip = '拖动调整上下高度';
 
     // 下栏：输出
     const out = document.createElement('pre');

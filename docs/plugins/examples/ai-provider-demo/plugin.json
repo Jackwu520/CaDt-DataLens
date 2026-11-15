@@ -1,0 +1,11 @@
+{
+    "id": "ai-provider-demo",
+    "name": "AI provider 示例（本地端点）",
+    "version": "1.0.0",
+    "author": "CaDt-DataLens",
+    "description": "演示用 cadt.registerAIProvider 注册虚拟模型账号，并在每轮请求注入动态请求头与请求体补丁",
+    "entry": "main.js",
+    "license": "MIT",
+    "keywords": ["ai", "provider", "示例"],
+    "minAppVersion": "1.0.0"
+}

@@ -131,7 +131,7 @@ function renderLangPane(id) {
             if (eff && eff.path && list.some((e) => e.path === eff.path)) sel.value = eff.path;
             if (env.pathOverride) {
                 sel.disabled = true;
-                sel.title = '手动指定路径时忽略此选择';
+                sel.dataset.tip = '手动指定路径时忽略此选择';
             }
             sel.addEventListener('change', () => {
                 env.selectedPath = sel.value;
@@ -173,7 +173,7 @@ function renderLangPane(id) {
             const pv = document.createElement('span');
             pv.className = 'env-status-val mono';
             pv.textContent = eff.path || '';
-            pv.title = eff.path || '';
+            pv.dataset.tip = eff.path || '';
             pRow.append(pk, pv);
             body.appendChild(pRow);
         } else {
@@ -208,7 +208,7 @@ function renderLangPane(id) {
         const browseBtn = document.createElement('button');
         browseBtn.type = 'button';
         browseBtn.className = 'env-browse';
-        browseBtn.title = '浏览…';
+        browseBtn.dataset.tip = '浏览…';
         browseBtn.textContent = '…';
         browseBtn.disabled = !!env.scanning;
         browseBtn.addEventListener('click', async () => {
@@ -496,7 +496,7 @@ function renderFormatPane(id) {
     title.textContent = f.name + ' 文件';
     // 扩展名列表太长很难看（纯文本有几十个），收进标题悬停提示
     const extensions = formats[id] && formats[id].extensions ? formats[id].extensions : [];
-    if (extensions.length) title.title = '扩展名：' + extensions.join('、');
+    if (extensions.length) title.dataset.tip = '扩展名：' + extensions.join('、');
     pane.append(title);
     const update = (key) => (value) => {
         deps.settings.formatSettings[id][key] = value;
@@ -545,7 +545,7 @@ function renderFmtTable() {
         row.className = 'fmt-row';
         const name = document.createElement('span');
         name.textContent = f.name;
-        name.title = f.name; // 长名称单行省略后仍可悬停看全
+        name.dataset.tip = f.name; // 长名称单行省略后仍可悬停看全
         row.appendChild(name);
         const update = (key) => (value) => {
             deps.settings.formatSettings[f.id][key] = value;

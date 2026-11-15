@@ -1,13 +1,14 @@
 // ai-sidechat.js：支线对话（用户向旁路会话）。
 // 形态：普通持久化会话 + `sideOf` 元数据（指向母会话），列表里紧跟母会话并带「支线」徽标。
-// 与「分支会话」（branchSessionAt）的区别：分支是全量分叉、独立重演历史；支线是**轻关联旁路**
-// ——不复制母会话历史，上下文靠用户主动引用带入（composer 预填 markdown 引用块），结论靠
-// 「带回主对话」送回母会话的信箱（复用 ai-agent-notices 的注入通道）。
+// 与「分支会话」（branchSessionAt）的区别：分支是在面板内换条路（切走当前会话）；支线是
+// **能与主对话并排的旁路**——历史用同一套深拷贝快照（forkMessages），但落在内容区标签页，
+// 面板继续显示主对话；结论靠「带回主对话」送回母会话的信箱（复用 ai-agent-notices 的注入通道）。
 // `sideOf` 不嵌套（§4.9.3）：从支线再开支线时归到同一个母会话，永远只有一层。
 import {aiTextOf} from './ai-constants.js';
+import {forkMessages, forkSettings} from './ai-session-fork.js';
 
-// 引用块：把源消息压成 markdown 引用。太长就截断——支线要的是「从这句话接着问」，
-// 不是把整段对话搬过去（搬历史是分支会话的事）。
+// 引用块：把源消息压成 markdown 引用。历史已经整段拷贝过来了，引用块只作为「从这句话
+// 接着问」的定位锚点，所以仍做截断——不重复搬一遍长文。
 export function sideChatQuote(title, text) {
     const body = String(text == null ? '' : text).trim();
     if (!body) return '';
@@ -52,18 +53,41 @@ export function createAISidechat(ctx) {
         }
         const child = createSessionData('支线 · ' + (owner.title || '新会话'));
         child.sideOf = owner.id;
-        // 支线默认只读（同子代理的只读哲学）：用户可在会话里按现有权限档自行升级
-        child.scope = 'read';
-        if (owner.workspace) child.workspace = owner.workspace;
+        // 配置与授权凭据继承母会话（权限档 / 模型 / 人设 / 提示词模板 / 已批准路径）。
+        // 以前强制 scope='read' 且不继承模型：支线等于换了个默认助手在问，母会话刚批过的
+        // 路径还要重批一遍。快照之后各自演化，不联动。
+        const inherited = forkSettings(owner);
+        // createSessionData 已按当前工作区填好 workspace，源为空时不要覆盖成空串
+        if (!inherited.workspace) delete inherited.workspace;
+        Object.assign(child, inherited);
+        // 历史快照：与「从这里分支」同一套深拷贝（opts.index 缺省 = 全量）。支线因此有
+        // 完整上下文，不再是「只带一句引用」的弱化版——旧行为让支线与分支难以区分。
+        const forked = forkMessages(owner, opts.index);
+        if (!forked.ok) {
+            flash('支线创建失败：历史快照无法深拷贝', true);
+            return null;
+        }
+        child.messages = forked.messages;
         const quote = sideChatQuote(owner.title, opts.quote);
         if (quote) setDraft(child.id, quote);
         getSessions().push(child);
         persistSessions();
         logActivity('ai.session', child.id, {op: 'create', title: child.title, sideOf: owner.id}, {actor: 'user', source: 'user'});
-        switchSession(child.id);
+        // 支线落在内容区的标签页，面板留在主对话——这是「支线不切走」的关键。
+        // 没有内容区可用（悬浮窗）时退回旧行为：切到支线会话本身。
+        const opened = typeof ctx.openSideChatTab === 'function'
+            ? ctx.openSideChatTab({
+                sessionId: child.id,
+                title: child.title,
+                ownerTitle: owner.title || '',
+                snapAt: Date.now(),
+            })
+            : null;
+        if (!opened) switchSession(child.id);
         renderSessionList();
-        flash('已新建支线对话（默认只读）：与「' + (owner.title || '母会话') +
-            '」互相独立，可用「带回主对话」把结论送回去');
+        flash(opened
+            ? '已新建支线对话：在内容区标签页打开，主对话仍在面板；结论可「带回主对话」'
+            : '已新建支线对话（继承母会话权限档）：可用「带回主对话」把结论送回去');
         return child;
     }
 

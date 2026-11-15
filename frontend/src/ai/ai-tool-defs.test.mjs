@@ -43,6 +43,23 @@ test('载荷纯净：toolsForScope 下发的 def 只含 name/description/paramet
     }
 });
 
+test('generate_*：配置了启用条目才下发，计划模式不注入，check_gen 随同', () => {
+    const on = createAIToolDefs({appControlOn: () => false, genModelsOn: () => true}).toolsForScope;
+    const off = createAIToolDefs({appControlOn: () => false, genModelsOn: () => false}).toolsForScope;
+    for (const scope of ['read', 'edit', 'auto', 'full']) {
+        const enabled = on(scope, false).map((t) => t.name);
+        for (const name of ['generate_image', 'generate_video', 'check_gen']) {
+            assert.ok(enabled.includes(name), scope + ' 档未下发 ' + name);
+        }
+        assert.deepEqual(off(scope, false).map((t) => t.name).filter((n) => n.startsWith('generate') || n === 'check_gen'),
+            [], '未配置条目时不应下发生成工具：' + scope);
+    }
+    const plan = on('read', true).map((t) => t.name);
+    assert.ok(!plan.includes('generate_image'), '计划模式不下发 generate_image');
+    assert.ok(!plan.includes('generate_video'), '计划模式不下发 generate_video');
+    assert.ok(!plan.includes('check_gen'), '计划模式不下发 check_gen');
+});
+
 test('toolCatalogText：按档位过滤、合并同文案相邻工具、含会话新组', () => {
     const catalogText = createAIToolDefs({appControlOn: () => false}).toolCatalogText;
     const read = catalogText('read', false);
@@ -96,6 +113,19 @@ test('非计划模式：写工具与 propose_patch 按档位下发', () => {
     for (const tool of ['write_file', 'edit_file', 'propose_patch']) {
         assert.ok(!readOnly.includes(tool), '只读档不应下发 ' + tool);
     }
+});
+
+test('timer_list：所有权限档与计划模式都下发只读时钟，且不接受任何参数', () => {
+    for (const scope of ['read', 'edit', 'auto', 'full']) {
+        for (const planMode of [false, true]) {
+            assert.ok(names(scope, planMode).includes('timer_list'), scope + ' / planMode=' + planMode + ' 应下发 timer_list');
+        }
+    }
+    const def = toolsForScope('read', false).find((t) => t.name === 'timer_list');
+    assert.deepEqual(Object.keys(def.parameters.properties), [], 'timer_list 是纯快照，不接受参数');
+    assert.match(AI_TOOL_DEFS.timer_list.description, /只读/);
+    assert.match(AI_TOOL_DEFS.timer_list.description, /不要靠反复调用/);
+    assert.ok(AI_TOOL_CATALOG.timer_list, '工具目录必须登记 timer_list');
 });
 
 test('计划模式仍保留只读探索与子代理', () => {

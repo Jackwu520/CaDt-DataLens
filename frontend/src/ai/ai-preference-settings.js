@@ -42,21 +42,21 @@ export function createAIPreferenceSettings(ctx, extras) {
                 const text = document.createElement('span');
                 text.className = 'ai-pref-text';
                 text.textContent = pref.text;
-                text.title = pref.text;
+                text.dataset.tip = pref.text;
                 const src = document.createElement('span');
                 src.className = 'ai-pref-src';
                 src.textContent = pref.source === 'ai' ? 'AI' : '你';
-                src.title = pref.source === 'ai' ? '由 AI 记录' : '由你添加';
+                src.dataset.tip = pref.source === 'ai' ? '由 AI 记录' : '由你添加';
                 const edit = document.createElement('button');
                 edit.type = 'button';
                 edit.className = 'ai-pref-btn';
-                edit.title = '编辑';
+                edit.dataset.tip = '编辑';
                 edit.textContent = '✎';
                 edit.addEventListener('click', () => editPreference(pref));
                 const remove = document.createElement('button');
                 remove.type = 'button';
                 remove.className = 'ai-pref-btn';
-                remove.title = '删除';
+                remove.dataset.tip = '删除';
                 remove.textContent = '×';
                 remove.addEventListener('click', () => {
                     getConfig().preferences = getConfig().preferences.filter((item) => item.id !== pref.id);

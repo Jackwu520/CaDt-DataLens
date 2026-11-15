@@ -1,11 +1,25 @@
 // editor-ace-hooks.js：从 editor-groups.js 拆出的域模块（factory + 显式依赖注入）。
-// Ace 会话钩子：模式切换（applyAceMode）、折叠行内预览（JetBrains 式）、
-// 多光标、光标位置联动、python token 染色。
+// Ace 会话钩子：模式切换（applyAceMode）、折叠范围调整（import 圆括号块折进括号，
+// 占位符保持 Ace 默认 "..."，块内容预览走悬停面板）、多光标、光标位置联动、python token 染色。
 //
 // deps 与 editor-groups 共用同一对象（main.js 传入的 getter 集），延迟求值。
 import hljs from 'highlight.js/lib/common';
 import {aceModeFor} from '../core/formats.js';
 import {isDocReadOnly} from '../core/readonly.js';
+
+// 折叠范围调整：Go 的 import ( ) 块把圆括号本体折进去，折叠后才显示 import ...。
+// 花括号块不动——Ace cstyle 范围起始在 { 之后、结束在 } 之前，配默认占位符正好渲染成 {...}。
+// getLine: (row) => string；range 原对象改动后返回。纯函数，导出供测试。
+export function adjustCodeFoldRange(getLine, range) {
+    if (!range || !range.start || !range.end || range.range) return range;
+    const startLine = String(getLine(range.start.row) || '');
+    if (startLine.charAt(range.start.column - 1) !== '(') return range;
+    if (!/^\s*import\b/.test(startLine.slice(0, range.start.column - 1))) return range;
+    range.start.column -= 1;
+    const endLine = String(getLine(range.end.row) || '');
+    if (endLine.charAt(range.end.column) === ')') range.end.column += 1;
+    return range;
+}
 
 export function createEditorAceHooks(deps) {
 
@@ -39,11 +53,10 @@ function applyAceMode(force) {
         }
         deps.editor.aceEditor.setDisplayIndentGuides(!!deps.settings.codeGuides);
         deps.editor.aceEditor.setHighlightIndentGuides(!!deps.settings.codeGuides);
-        hookCodeFoldPreviews(deps.editor.aceEditor);
+        hookCodeFoldRanges(deps.editor.aceEditor);
         hookMultiCursor(deps.editor.aceEditor);
         hookPythonTokenClasses(deps.editor.aceEditor);
         hookCursorTracking(deps.editor.aceEditor);
-        updateCodeFoldPreviews(deps.editor.aceEditor);
     } catch (e) {
         console.warn('ace mode switch failed', e);
     }
@@ -129,80 +142,17 @@ function codeFoldLanguage(session) {
     return codeFoldLanguages[id] || 'plaintext';
 }
 
-function clipCodeFoldPreview(text, max) {
-    const compact = String(text || '').replace(/\s+/g, ' ').trim();
-    return compact.length > max ? compact.slice(0, max) : compact;
-}
-
-function codeFoldDisplayWidth(text) {
-    let width = 0;
-    for (const ch of String(text)) {
-        width += /[\u1100-\u115F\u2E80-\uA4CF\uAC00-\uD7A3\uF900-\uFAFF\uFE30-\uFE4F\uFF00-\uFF60\uFFE0-\uFFE6]/.test(ch) ? 2 : 1;
-    }
-    return width;
-}
-
-function clipCodeFoldText(text, maxWidth) {
-    const raw = String(text == null ? '' : text);
-    if (codeFoldDisplayWidth(raw) <= maxWidth) return raw;
-    let out = '';
-    let width = 0;
-    for (const ch of raw) {
-        const chWidth = codeFoldDisplayWidth(ch);
-        if (width + chWidth > maxWidth) break;
-        out += ch;
-        width += chWidth;
-    }
-    return out + (raw.startsWith('"') ? '"' : '');
-}
-
-function codeFoldPreviewFor(ace, fold) {
-    // JetBrains 风格：折叠后把块内容压成一行内联显示，括号保留在外面
-    const inner = (ace.session.getTextRange(fold.range) || '').trim();
-    if (!inner) return '';
-    const flat = inner.replace(/\s+/g, ' ');
-    const clipped = clipCodeFoldText(flat, 120);
-    return clipped === flat ? flat : clipped + ' …';
-}
-
-function updateCodeFoldPreviews(ace) {
-    if (!ace || !ace.session || !ace.session.getAllFolds) return;
-    const folds = ace.session.getAllFolds();
-    if (!folds.length) return;
-    let changed = false;
-    for (const fold of folds) {
-        let preview = '';
-        try {
-            preview = codeFoldPreviewFor(ace, fold);
-        } catch (e) {
-            continue;
-        }
-        if (fold.placeholder !== preview) {
-            fold.placeholder = preview;
-            changed = true;
-        }
-    }
-    if (changed) {
-        try {
-            ace.renderer.updateFull(true);
-        } catch (e) {
-            ace.renderer.updateFull();
-        }
-    }
-}
-
-function hookCodeFoldPreviews(ace) {
-    if (!ace || ace._foldPreviewHooked) return;
-    ace._foldPreviewHooked = true;
-    const schedule = () => {
-        clearTimeout(ace._foldPreviewTimer);
-        ace._foldPreviewTimer = setTimeout(() => {
-            ace._foldPreviewTimer = 0;
-            updateCodeFoldPreviews(ace);
-        }, 40);
+// 包装 session.addFold，建折叠前先调整范围。addFold 是 EditSession 构造时赋的实例属性，
+// 不随 setMode 重绑，每个编辑器包一次即可覆盖全部建折路径（gutter 点击/foldAll/视图恢复）。
+function hookCodeFoldRanges(ace) {
+    if (!ace || ace._foldRangeHooked || typeof ace.session.addFold !== 'function') return;
+    ace._foldRangeHooked = true;
+    const session = ace.session;
+    const origAddFold = session.addFold;
+    session.addFold = function (placeholder, range) {
+        if (range && !range.range) adjustCodeFoldRange((row) => session.getLine(row), range);
+        return origAddFold.call(session, placeholder, range);
     };
-    ace.session.on('changeFold', () => updateCodeFoldPreviews(ace));
-    ace.session.on('change', schedule);
 }
 
 // 多光标：Alt+单击添加光标；中键拖动建立列光标/矩形选区；普通单击回到单光标
@@ -436,11 +386,10 @@ function initCodeFoldHover() {
 
     return {
         applyAceMode,
-        hookCodeFoldPreviews,
+        hookCodeFoldRanges,
         hookMultiCursor,
         hookCursorTracking,
         hookPythonTokenClasses,
-        updateCodeFoldPreviews,
         initCodeFoldHover,
         hideCodeFoldHover,
     };

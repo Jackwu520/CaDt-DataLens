@@ -125,7 +125,7 @@ function browserViewportLabel(doc) {
 function updateBrowserViewportBtn(doc) {
     if (!doc || !doc.browserViewportBtn) return;
     doc.browserViewportBtn.textContent = browserViewportLabel(doc);
-    doc.browserViewportBtn.title = '视口尺寸：' + browserViewportLabel(doc) + '（点击切换预设或自定义）';
+    doc.browserViewportBtn.dataset.tip = '视口尺寸：' + browserViewportLabel(doc) + '（点击切换预设或自定义）';
 }
 
 function showBrowserViewportMenu(doc, anchor) {
@@ -180,7 +180,7 @@ function createBrowserView(doc) {
         const b = document.createElement('button');
         b.type = 'button';
         b.className = 'browser-btn';
-        b.title = title;
+        b.dataset.tip = title;
         b.innerHTML = iconSvg(icon, 14);
         b.addEventListener('click', action);
         return b;

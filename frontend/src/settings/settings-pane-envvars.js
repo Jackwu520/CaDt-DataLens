@@ -57,7 +57,7 @@ function buildEnvVarRow(v) {
     const descEl = document.createElement('span');
     descEl.className = 'envvar-desc';
     descEl.textContent = v.description || '（无描述）';
-    descEl.title = v.description || '';
+    descEl.dataset.tip = v.description || '';
     const enabledLabel = document.createElement('label');
     enabledLabel.className = 'popover-label envvar-enabled';
     const cb = document.createElement('input');

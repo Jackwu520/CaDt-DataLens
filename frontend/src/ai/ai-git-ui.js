@@ -40,9 +40,9 @@ export function createAIGitUi(ctx) {
         };
         el.gitBtn.classList.toggle('hidden', !available);
         if (available) {
-            el.gitBtn.title = 'Git 操作' + (gitEntryState.branch ? '（' + gitEntryState.branch + '）' : '');
+            el.gitBtn.dataset.tip = 'Git 操作' + (gitEntryState.branch ? '（' + gitEntryState.branch + '）' : '');
         } else {
-            el.gitBtn.title = 'Git 操作';
+            el.gitBtn.dataset.tip = 'Git 操作';
         }
     }
 

@@ -73,6 +73,10 @@ type aiProviderKind int
 const (
 	aiProviderOpenAI aiProviderKind = iota
 	aiProviderAnthropic
+	// OpenAI Responses API（/v1/responses）：input/tools/SSE 事件形状都与
+	// chat/completions 不同，单独一套构造与解码，见 aiBuildResponsesBody /
+	// streamResponsesSSE。认证仍走 Bearer，与 OpenAI 兼容端点一致。
+	aiProviderResponses
 )
 
 // AISendChat 启动一轮流式对话。立即返回后由 goroutine 通过 ai-* 事件推送：

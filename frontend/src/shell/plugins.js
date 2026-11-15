@@ -1,6 +1,7 @@
 // 插件运行时：加载插件 JS、提供 cadt.* API、管理格式/命令/主题的注册生命周期。
 // 与 main.js 通过 initPluginRuntime(hooks) 单向注入，避免循环依赖。
 import {registerPluginFormat, unregisterAllPluginFormats} from '../core/formats.js';
+import {clearPluginAIProviders, getPluginAIProviders, registerPluginAIProvider} from './plugin-ai-providers.js';
 
 const host = {
     flash: () => {},
@@ -35,6 +36,10 @@ export function getPluginIconThemes() {
 
 export function getPluginCommandClassifiers() {
     return [...commandClassifiers.values()];
+}
+
+export function getPluginAIProviderList() {
+    return getPluginAIProviders();
 }
 
 // 最近一次 loadPlugins 的加载错误（每个插件一条「名称：原因」），供诊断 UI 区分
@@ -143,6 +148,12 @@ function apiFor(plugin) {
                 classify: spec.classify,
             });
         },
+        // 注册可插拔 AI provider：{id, name, account, models, prepare(ctx)}。
+        // 账号以虚拟 profile 进入模型选择器，prepare 在每轮组装请求配置时注入动态补丁。
+        // 详见 docs/plugins/README.md「注册 AI provider」。
+        registerAIProvider(spec) {
+            return registerPluginAIProvider(plugin.id, spec);
+        },
         getActiveFile() {
             return host.getActiveFile();
         },
@@ -183,6 +194,7 @@ function notifyPluginsLoaded() {
 
 export async function loadPlugins(backend) {
     unregisterAllPluginFormats();
+    clearPluginAIProviders();
     for (const style of themeStyles.values()) {
         style.remove();
     }
@@ -220,6 +232,7 @@ export async function loadPlugins(backend) {
     // 进 F12 调试控制台与 jsonl，排查「分类器未注册」类问题从这里看起
     console.info('[plugins] 加载完成：源 ' + sources.length + ' 个（' +
         sources.map((s) => s.id).join('、') + '）· 命令分类器 ' + commandClassifiers.size +
+        ' 个 · AI provider ' + getPluginAIProviders().length +
         ' 个 · 错误 ' + errors.length + (errors.length ? '：' + errors.join('；') : ''));
     host.onPluginsChanged();
     notifyPluginsLoaded();

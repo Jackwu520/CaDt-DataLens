@@ -193,7 +193,7 @@ function renderSqlResult(doc, result) {
             } else {
                 const value = rows[r][c] == null ? '' : String(rows[r][c]);
                 td.textContent = value;
-                if (value) td.title = value.length > 200 ? value.slice(0, 200) + '…' : value;
+                if (value) td.dataset.tip = value.length > 200 ? value.slice(0, 200) + '…' : value;
             }
             tr.appendChild(td);
         }

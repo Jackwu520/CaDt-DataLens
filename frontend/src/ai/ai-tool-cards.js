@@ -49,6 +49,48 @@ export function liveToolSummary(args) {
     return parts.path + ' · 参数接收中 ' + parts.size;
 }
 
+// spinner 的 CSS 动画绑在 ::before 上：节点一旦被 remove + insert（哪怕同一父节点同一位置），
+// 动画对象就会被替换、进度归零——这正是「转一点点又被弹回初始状态」的根因。实测 Chrome：
+// appendChild(已有子节点) 后旧动画 playState 变 idle、新动画 currentTime = 0。
+// 这里给每个 spinner 记一个稳定起始时刻，用负 animation-delay 继承全局相位，
+// 于是即便某条路径仍在重建 DOM，视觉上也是接着转而不是回弹。
+// WeakMap 以消息对象为键：跨轮自动隔离、消息回收即释放，不需要手动清理。
+const AI_SPIN_MS = 900; // 与 style.css .ai-tool-spinner::before 的 0.9s 保持一致
+const cardSpinStart = new WeakMap();
+const liveSpinStart = new WeakMap();
+function makeToolSpinner(reg, key) {
+    const el = document.createElement('span');
+    el.className = 'ai-tool-spinner';
+    const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+    let start = reg.get(key);
+    if (start === undefined) {
+        start = now;
+        reg.set(key, start);
+    }
+    const phase = ((now - start) % AI_SPIN_MS + AI_SPIN_MS) % AI_SPIN_MS;
+    if (phase >= 1) el.style.setProperty('--ai-spin-phase', '-' + Math.round(phase) + 'ms');
+    return el;
+}
+
+// 流式占位行的顺序对齐：只在顺序真的不同时返回最小的 insertBefore 操作。
+// 纯函数（无 DOM），供 ai-tool-cards.test.mjs 防回归；顺序不变必须返回空 moves，
+// 否则每 80ms 一次的 appendChild 会重启 spinner 动画。
+// 执行方式：先 row.remove() 再 box.insertBefore(row, box.children[i] || null)。
+export function planLiveRowOrder(current, desired) {
+    const kids = current.slice();
+    const moves = [];
+    for (let i = desired.length - 1; i >= 0; i--) {
+        if (kids[i] === desired[i]) continue;
+        const at = kids.indexOf(desired[i]);
+        if (at >= 0) kids.splice(at, 1);
+        kids.splice(i, 0, desired[i]);
+        moves.push(i);
+    }
+    const trim = Math.max(0, kids.length - desired.length);
+    if (trim) kids.splice(kids.length - trim, trim);
+    return {moves, trim, final: kids};
+}
+
 export function createAIToolCards(ctx) {
     const copyText = ctx.copyText;
     const flash = ctx.flash;
@@ -78,6 +120,8 @@ export function createAIToolCards(ctx) {
     const aiThinkKey = ctx.aiThinkKey;
     const aiThinkLabel = ctx.aiThinkLabel;
     const resolveAIImages = ctx.resolveAIImages;
+    // 文件引用链接（ai-panel 的 enhanceAIFileRefs）：inline code 里的工作区文件路径 → 可点击链接
+    const enhanceAIFileRefs = typeof ctx.enhanceAIFileRefs === 'function' ? ctx.enhanceAIFileRefs : null;
     const toggleThink = ctx.toggleThink;
     const toolArgsSummary = ctx.toolArgsSummary;
     const toolStateText = ctx.toolStateText;
@@ -123,7 +167,7 @@ export function createAIToolCards(ctx) {
             const cwd = document.createElement('span');
             cwd.className = 'ai-command-cwd';
             cwd.textContent = approval.cwd;
-            cwd.title = approval.cwd;
+            cwd.dataset.tip = approval.cwd;
             meta.appendChild(cwd);
         }
         container.appendChild(meta);
@@ -186,7 +230,7 @@ export function createAIToolCards(ctx) {
             const path = document.createElement('span');
             path.className = 'ai-approval-path';
             path.textContent = approval.relPath || approval.path;
-            path.title = approval.path || '';
+            path.dataset.tip = approval.path || '';
             const stat = document.createElement('span');
             stat.className = 'ai-approval-stat';
             const add = document.createElement('span');
@@ -401,6 +445,9 @@ export function createAIToolCards(ctx) {
             case 'search_text': return {verb: '搜索', icon: 'search'};
             case 'web_search': return {verb: '联网搜索', icon: 'web-search'};
             case 'web_fetch': return {verb: '读取网页', icon: 'globe'};
+            case 'generate_image': return {verb: '生成图片', icon: 'image'};
+            case 'generate_video': return {verb: '生成视频', icon: 'image'};
+            case 'check_gen': return {verb: '查询生成', icon: 'refresh'};
             case 'write_file': return {verb: (approval && approval.newFile) ? '新建' : '写入', icon: 'save'};
             case 'edit_file': return {verb: '编辑', icon: 'rename'};
             case 'propose_patch': return {verb: '补丁', icon: 'save'};
@@ -410,6 +457,7 @@ export function createAIToolCards(ctx) {
             case 'stop_command': return {verb: '停止作业', icon: 'close'};
             case 'schedule_create': return {verb: '创建定时任务', icon: 'clock'};
             case 'schedule_list': return {verb: '定时任务列表', icon: 'clock'};
+            case 'timer_list': return {verb: '计时器读数', icon: 'clock'};
             case 'schedule_delete': return {verb: '删除定时任务', icon: 'trash'};
             case 'schedule_toggle': return {verb: '启停定时任务', icon: 'refresh'};
             case 'spawn_agent': return {verb: '子代理', icon: 'agents'};
@@ -462,6 +510,10 @@ export function createAIToolCards(ctx) {
                 return {primary: aiTextOf(args.query).trim() || '—', dir: ''};
             case 'web_fetch':
                 return {primary: aiTextOf(args.url).trim() || '—', dir: ''};
+            case 'generate_image': case 'generate_video':
+                return {primary: aiTextOf(args.prompt).trim().slice(0, 60) || '—', dir: ''};
+            case 'check_gen':
+                return {primary: aiTextOf(args.jobId).trim() || '—', dir: ''};
             case 'browser_navigate':
                 return {primary: aiTextOf(args.url).trim() || '—', dir: ''};
             case 'browser_click': case 'browser_type':
@@ -487,6 +539,8 @@ export function createAIToolCards(ctx) {
                 return {primary: aiTextOf(args.name).trim() || aiTextOf(args.prompt).trim().slice(0, 40) || '—', dir: ''};
             case 'schedule_list':
                 return {primary: '定时任务', dir: ''};
+            case 'timer_list':
+                return {primary: '计时器', dir: ''};
             case 'schedule_delete': case 'schedule_toggle':
                 return {primary: aiTextOf(args.id).trim() || '—', dir: ''};
             case 'spawn_agent':
@@ -580,10 +634,9 @@ export function createAIToolCards(ctx) {
         verb.className = 'ai-tool-verb';
         verb.textContent = meta.verb;
         // 执行中：头部最前放旋转加载图标（替代旧 border-left 指示）
+        // 相位以消息对象为键：refreshToolWrap / renderMessages 整卡重建后接着转，不回弹。
         if (message.status === 'running') {
-            const spinner = document.createElement('span');
-            spinner.className = 'ai-tool-spinner';
-            head.appendChild(spinner);
+            head.appendChild(makeToolSpinner(cardSpinStart, message));
         }
         head.append(chev, icon, verb);
         if (isRead) chev.remove(); // 无展开功能，折叠箭头不出现
@@ -594,11 +647,11 @@ export function createAIToolCards(ctx) {
             const primary = document.createElement('span');
             primary.className = 'ai-tool-primary';
             primary.textContent = info.primary;
-            primary.title = info.primary;
+            primary.dataset.tip = info.primary;
             if (isRead) {
                 // 路径名即超链接：点击在标签页打开，读取带 offset 时跳到对应行
                 primary.classList.add('ai-tool-link');
-                primary.title = '点击打开文件' + (Number(message.targetLine) > 1 ? '（跳到读取起始行）' : '');
+                primary.dataset.tip = '点击打开文件' + (Number(message.targetLine) > 1 ? '（跳到读取起始行）' : '');
                 primary.addEventListener('click', (e) => {
                     e.stopPropagation();
                     let target = message.targetPath;
@@ -617,7 +670,7 @@ export function createAIToolCards(ctx) {
             const dir = document.createElement('span');
             dir.className = 'ai-tool-dir';
             dir.textContent = info.dir;
-            dir.title = info.dir;
+            dir.dataset.tip = info.dir;
             head.appendChild(dir);
         }
         if (approval && toolFileVerb(message) && message.name !== 'read_file' && (approval.added || approval.removed)) {
@@ -672,7 +725,7 @@ export function createAIToolCards(ctx) {
             const task = document.createElement('div');
             task.className = 'ai-agent-task';
             task.textContent = agent.task || '';
-            task.title = agent.task || '';
+            task.dataset.tip = agent.task || '';
             body.appendChild(task);
             // 后台派单：结束时机独立于主回合，卡片上明确「不阻塞、完成才通知」
             if (agent.state === 'running' && agent.mode === 'background') {
@@ -738,7 +791,7 @@ export function createAIToolCards(ctx) {
                 const cmdText = document.createElement('span');
                 cmdText.className = 'ai-cmd-text';
                 cmdText.textContent = command;
-                cmdText.title = command;
+                cmdText.dataset.tip = command;
                 cmdLine.append(dollar, cmdText);
                 if (command.length > 120 || /\n/.test(command)) {
                     cmdLine.classList.add('clamped');
@@ -767,6 +820,63 @@ export function createAIToolCards(ctx) {
                 live.textContent = message.bgLog || '（等待输出…）';
                 body.appendChild(live);
             }
+        } else if (message.gen) {
+            // 生成任务卡（generate_image / generate_video）：进度行 + 停止钮 + 图片缩略图条
+            const gen = message.gen;
+            const statusLine = document.createElement('div');
+            statusLine.className = 'ai-gen-status' + (gen.status === 'running' ? ' running' : '') + (gen.status === 'failed' ? ' failed' : '');
+            if (gen.status === 'running') statusLine.textContent = '生成中 · ' + (gen.progressText || '…');
+            else if (gen.status === 'failed') statusLine.textContent = '失败 · ' + (gen.error || '未知原因');
+            else if (gen.status === 'stopped') statusLine.textContent = '已停止';
+            else statusLine.textContent = '已完成';
+            body.appendChild(statusLine);
+            if (gen.status === 'running' && typeof ctx.genStopJob === 'function' && gen.jobId) {
+                const stopBtn = document.createElement('button');
+                stopBtn.type = 'button';
+                stopBtn.className = 'dlg-btn ai-gen-stop';
+                stopBtn.textContent = '停止生成';
+                stopBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    if (ctx.genStopJob(gen.jobId)) flash('已停止生成任务');
+                });
+                body.appendChild(stopBtn);
+            }
+            const imageFiles = (gen.files || []).filter((file) => file.mime && file.mime.startsWith('image/'));
+            if (imageFiles.length) {
+                const strip = document.createElement('div');
+                strip.className = 'ai-gen-thumbs';
+                for (const file of imageFiles) {
+                    const thumb = document.createElement('button');
+                    thumb.type = 'button';
+                    thumb.className = 'ai-gen-thumb';
+                    thumb.dataset.tip = file.path + '\n点击在标签页打开';
+                    const img = document.createElement('img');
+                    img.alt = '生成图';
+                    img.loading = 'lazy';
+                    thumb.append(img);
+                    const fileName = document.createElement('span');
+                    fileName.className = 'ai-gen-thumb-name';
+                    fileName.textContent = file.path.split(/[\\/]/).pop();
+                    thumb.appendChild(fileName);
+                    thumb.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        if (typeof ctx.openTargets === 'function') ctx.openTargets([{path: file.path, line: 1, column: 0}]);
+                    });
+                    strip.appendChild(thumb);
+                    // data URL 异步加载（ReadImageAsDataURL 32MB 上限内）；失败保持空占位框，路径可点击排查
+                    Promise.resolve(backend.ReadImageAsDataURL(file.path))
+                        .then((dataURL) => {
+                            img.src = dataURL || '';
+                        })
+                        .catch(() => {}); // 缩略图加载失败属尽力而为路径：空框 + 路径标签仍可点开排查
+                }
+                body.appendChild(strip);
+            } else if ((gen.files || []).length) {
+                const paths = document.createElement('div');
+                paths.className = 'ai-gen-files';
+                paths.textContent = gen.files.map((file) => file.path + '（' + file.mime + '，' + file.bytes + ' 字节）').join('\n');
+                body.appendChild(paths);
+            }
         } else if (isRead) {
             // 读取卡不做展开：内容不渲染，路径超链接即全部交互
         } else {
@@ -787,11 +897,32 @@ export function createAIToolCards(ctx) {
             card.classList.add('collapsed');
         }
         if (!isRead && !fileToolCard && message.status !== 'running' && message.status !== 'error') card.classList.add('collapsed');
+        // 生成卡：进行中或已有产物时不默认折叠（缩略图是主要反馈）；用户手动折叠过的仍以其偏好为准
+        if (message.gen && (message.gen.status === 'running' || (message.gen.files || []).length)) {
+            card.classList.remove('collapsed');
+        }
         // 用户手动展开/收起过的卡片以偏好为准，覆盖上面的默认折叠规则。
         if (!isRead && message.toolCallId) {
             const storedFold = toolFoldState.get(message.toolCallId);
             if (storedFold !== undefined) card.classList.toggle('collapsed', storedFold);
         }
+    }
+
+    // AI 正文的完整增强链：代码块复制钮 + 本地图片解析 + 可视化卡片（mermaid / echarts / svg /
+    // html / 关系图 / 词云）。主消息区与子代理详情标签页共用同一条——少走一步，围栏就只剩
+    // 一块源码占位（子代理视图历史遗留问题）。必须在 innerHTML 写入之后调用。
+    function enhanceAnswerBody(root, opts) {
+        if (!root) return 0;
+        const streaming = !!(opts && opts.streaming);
+        enhanceAICodeBlocks(root);
+        resolveAIImages(root);
+        return enhanceWidgets(root, {
+            streaming,
+            copyText,
+            openExternal,
+            saveAs: saveWidgetAs,
+            resolveImages: resolveAIImages,
+        });
     }
 
     function enhanceAICodeBlocks(root) {
@@ -811,7 +942,7 @@ export function createAIToolCards(ctx) {
             const button = document.createElement('button');
             button.type = 'button';
             button.className = 'ai-code-copy';
-            button.title = '复制代码';
+            button.dataset.tip = '复制代码';
             button.textContent = '复制';
             button.addEventListener('click', (e) => {
                 e.preventDefault();
@@ -872,14 +1003,15 @@ export function createAIToolCards(ctx) {
     // 流式占位行：与真实工具卡头部同款结构（加载图标 / 动词 / 文件图标 / 文件名 / 目录 / ±统计 / 右侧状态），
     // 整轮结束后由真实工具卡接替。行按调用 key 复用（updateLiveTools 原位更新文本），
     // 避免每个流帧整行重建导致 spinner 动画重启 / hover 丢失的疯狂闪烁。
-    function buildLiveRow(call, parts, stats, shape) {
+    // 注意：不只是「重建」，把已有节点 appendChild 回同一父节点同一位置同样会重启动画，
+    // 所以顺序不变时一个 DOM 写都不能做（见 planLiveRowOrder）。
+    function buildLiveRow(call, parts, stats, shape, spinReg) {
         const meta = toolMeta(call.name);
         const row = document.createElement('div');
         row.className = 'ai-live-tool';
         row.dataset.liveKey = String(call.key);
         row.dataset.shape = shape;
-        const spinner = document.createElement('span');
-        spinner.className = 'ai-tool-spinner';
+        const spinner = makeToolSpinner(spinReg, String(call.key));
         const icon = document.createElement('span');
         icon.className = 'ai-tool-icon';
         icon.innerHTML = iconSvg(meta.icon || 'gear', 13);
@@ -888,17 +1020,20 @@ export function createAIToolCards(ctx) {
         verb.textContent = meta.verb || call.name;
         row.append(spinner, icon, verb);
         if (parts.path) {
-            if (parts.name) row.appendChild(createFileIcon(parts.name, 'ai-tool-fileicon'));
+            if (parts.name) {
+                row.appendChild(createFileIcon(parts.name, 'ai-tool-fileicon'));
+                row.dataset.liveName = parts.name;
+            }
             const primary = document.createElement('span');
             primary.className = 'ai-tool-primary';
             primary.textContent = parts.name || parts.path;
-            primary.title = parts.path;
+            primary.dataset.tip = parts.path;
             row.appendChild(primary);
             if (parts.dir) {
                 const dir = document.createElement('span');
                 dir.className = 'ai-tool-dir';
                 dir.textContent = parts.dir;
-                dir.title = parts.dir;
+                dir.dataset.tip = parts.dir;
                 row.appendChild(dir);
             }
             if (stats) {
@@ -922,24 +1057,27 @@ export function createAIToolCards(ctx) {
         if (el && el.textContent !== text) el.textContent = text;
     }
 
-    // 原位更新一行：结构形态（有无 path / 有无 ±统计）变了才整行重建，其余只改文本
+    // 原位更新一行：结构形态（有无 path / 有无 ±统计）变了才整行重建，其余只改文本。
+    // 文件图标只在文件名变化时重建：createFileIcon 的 scopeSvgIds 每次生成唯一 id，
+    // 用 fresh.innerHTML 跟旧值比较会永远不等，等于每个流帧都重写图标 DOM。
     function updateLiveRow(row, call, parts, stats) {
         const meta = toolMeta(call.name);
         setTextIfChanged(row.querySelector('.ai-tool-verb'), meta.verb || call.name);
         if (parts.path) {
-            if (parts.name) {
-                const fileIcon = row.querySelector('.ai-tool-fileicon');
-                if (fileIcon) {
-                    const fresh = createFileIcon(parts.name, 'ai-tool-fileicon');
-                    if (fileIcon.innerHTML !== fresh.innerHTML) fileIcon.innerHTML = fresh.innerHTML;
-                }
+            const name = parts.name || parts.path;
+            const fileIcon = row.querySelector('.ai-tool-fileicon');
+            if (fileIcon && row.dataset.liveName !== name) {
+                const fresh = createFileIcon(name, 'ai-tool-fileicon');
+                fileIcon.className = fresh.className;
+                fileIcon.innerHTML = fresh.innerHTML;
             }
+            if (row.dataset.liveName !== name) row.dataset.liveName = name;
             const primary = row.querySelector('.ai-tool-primary');
             setTextIfChanged(primary, parts.name || parts.path);
-            if (primary) primary.title = parts.path;
+            if (primary) primary.dataset.tip = parts.path;
             const dir = row.querySelector('.ai-tool-dir');
             setTextIfChanged(dir, parts.dir);
-            if (dir) dir.title = parts.dir;
+            if (dir) dir.dataset.tip = parts.dir;
             if (stats) {
                 setTextIfChanged(row.querySelector('.ai-tool-stat.add'), '+' + stats.added);
                 setTextIfChanged(row.querySelector('.ai-tool-stat.del'), '−' + stats.removed);
@@ -950,12 +1088,18 @@ export function createAIToolCards(ctx) {
 
     // 占位区增量更新：按 key 复用行、按 live 顺序就位、消失的行移除；
     // 形态（path 是否已收到 / ±统计是否可算）变化才重建那一行。
-    function updateLiveTools(box, live) {
+    function updateLiveTools(box, live, message) {
         const existing = new Map();
         for (const row of [...box.querySelectorAll('.ai-live-tool')]) {
             existing.set(row.dataset.liveKey, row);
         }
+        let spinReg = liveSpinStart.get(message);
+        if (!spinReg) {
+            spinReg = new Map();
+            liveSpinStart.set(message, spinReg);
+        }
         const seen = new Set();
+        const desired = [];
         for (const call of live) {
             const key = String(call.key);
             seen.add(key);
@@ -968,15 +1112,26 @@ export function createAIToolCards(ctx) {
                 row = null;
             }
             if (!row) {
-                row = buildLiveRow(call, parts, stats, shape);
+                row = buildLiveRow(call, parts, stats, shape, spinReg);
             } else {
                 updateLiveRow(row, call, parts, stats);
             }
-            row.dataset.shape = shape;
-            box.appendChild(row); // 移动既有节点到正确顺序，不重建
+            desired.push(row);
         }
         for (const [key, row] of existing) {
             if (!seen.has(key)) row.remove();
+        }
+        // 顺序对齐：顺序不变时 moves 为空 → 零 DOM 写，spinner 动画不会每 80ms 重启。
+        // 旧实现无条件 box.appendChild(row)「移动」既有节点，实测会把 ::before 动画归零。
+        const plan = planLiveRowOrder(Array.from(box.children), desired);
+        for (const i of plan.moves) {
+            const row = desired[i];
+            row.remove();
+            box.insertBefore(row, box.children[i] || null);
+        }
+        for (let n = 0; n < plan.trim; n++) {
+            const last = box.lastElementChild;
+            if (last) last.remove();
         }
     }
 
@@ -988,17 +1143,23 @@ export function createAIToolCards(ctx) {
         if (!streaming) wrap.classList.remove('actions-visible');
         const meta = wrap.querySelector('.ai-msg-meta');
         if (meta) {
-            meta.innerHTML = '';
-            const who = document.createElement('span');
-            who.textContent = assistantName();
-            const model = document.createElement('span');
-            model.className = 'ai-model';
-            model.textContent = message.model || '';
-            const time = document.createElement('span');
-            time.textContent = aiFormatTime(message.ts);
-            meta.append(who);
-            if (model.textContent) meta.appendChild(model);
-            meta.appendChild(time);
+            // 流式每帧都会走到这里；名字 / 模型 / 时间没变就别清空重建整行
+            // （同类「无谓 DOM 重建」，会丢 hover 与选区）。
+            const metaSig = [assistantName(), message.model || '', aiFormatTime(message.ts)].join('\u0001');
+            if (meta.dataset.renderSig !== metaSig) {
+                meta.innerHTML = '';
+                const who = document.createElement('span');
+                who.textContent = assistantName();
+                const model = document.createElement('span');
+                model.className = 'ai-model';
+                model.textContent = message.model || '';
+                const time = document.createElement('span');
+                time.textContent = aiFormatTime(message.ts);
+                meta.append(who);
+                if (model.textContent) meta.appendChild(model);
+                meta.appendChild(time);
+                meta.dataset.renderSig = metaSig;
+            }
         }
 
         let think = wrap.querySelector('.ai-think');
@@ -1033,7 +1194,7 @@ export function createAIToolCards(ctx) {
             if (storedThink !== undefined) think.classList.toggle('collapsed', storedThink);
             else if (!streaming && !expandThinking) think.classList.add('collapsed');
             else think.classList.remove('collapsed');
-            if (head) head.title = '展开 / 收起思考过程';
+            if (head) head.dataset.tip = '展开 / 收起思考过程';
         } else if (think) {
             think.remove();
         }
@@ -1043,37 +1204,51 @@ export function createAIToolCards(ctx) {
         const md = wrap.querySelector('.ai-bubble .ai-md');
         if (md) {
             md.classList.toggle('error-text', message.status === 'error' && !message.content);
-            if (message.status === 'error' && !message.content) {
-                md.textContent = message.error ? ('请求失败：' + message.error) : '请求失败';
-            } else if (message.content) {
-                md.innerHTML = renderMarkdown(message.content);
-                enhanceAICodeBlocks(md);
-                resolveAIImages(md);
-                // svg / html / mermaid / echarts 围栏 → 可视化卡片；流式期间只占位，整轮结束后再挂载
-                enhanceWidgets(md, {
-                    streaming: !!streaming,
-                    copyText,
-                    openExternal,
-                    saveAs: saveWidgetAs,
-                    resolveImages: resolveAIImages,
-                });
-            } else if (streaming) {
-                // 三个点占位只建一次：每帧 innerHTML 重写会重建节点、CSS 动画跟着重启（打字点闪烁）
-                if (!md.querySelector('.ai-typing')) {
+            // 内容签名：流式只追加，长度 + 末尾片段即可识别变化；签名带 streaming，
+            // 保证轮结束（false）时重渲染一次，把可视化占位换成真实卡片。
+            // 工具参数接收帧里 content 往往不变，跳过整块 innerHTML 重写可避免
+            // 打字点 / 代码块复制钮 / 图片 / widget 每 80ms 重建一次。
+            const content = message.content || '';
+            const mdSig = content
+                ? (streaming ? 's' : 'd') + content.length + ':' + content.slice(-64)
+                : (message.status === 'error' && !content ? 'e:' + (message.error || '') :
+                    (streaming ? 't' : (message.status === 'stopped' ? 'stop' : 'empty')));
+            if (md.dataset.renderSig !== mdSig) {
+                md.dataset.renderSig = mdSig;
+                if (message.status === 'error' && !content) {
+                    md.textContent = message.error ? ('请求失败：' + message.error) : '请求失败';
+                } else if (content) {
+                    md.innerHTML = renderMarkdown(content);
+                    enhanceAICodeBlocks(md);
+                    resolveAIImages(md);
+                    if (enhanceAIFileRefs) enhanceAIFileRefs(md);
+                    // svg / html / mermaid / echarts 围栏 → 可视化卡片；流式期间只占位，整轮结束后再挂载
+                    enhanceWidgets(md, {
+                        streaming: !!streaming,
+                        copyText,
+                        openExternal,
+                        saveAs: saveWidgetAs,
+                        resolveImages: resolveAIImages,
+                    });
+                } else if (streaming) {
                     md.innerHTML = '<div class="ai-typing"><span></span><span></span><span></span></div>';
+                } else if (message.status === 'stopped') {
+                    md.textContent = '（已停止生成）';
+                } else {
+                    md.textContent = '';
                 }
-            } else if (message.status === 'stopped') {
-                md.textContent = '（已停止生成）';
-            } else {
-                md.textContent = '';
             }
-            const oldError = wrap.querySelector('.ai-error-box');
-            if (oldError) oldError.remove();
-            if (message.status === 'error' && message.error && message.content) {
-                const error = document.createElement('div');
-                error.className = 'ai-error-box';
-                error.textContent = message.error;
-                wrap.querySelector('.ai-bubble').appendChild(error);
+            // 错误条：只在文本变化时改，别每帧删了又建
+            let errorBox = wrap.querySelector('.ai-error-box');
+            if (message.status === 'error' && message.error && content) {
+                if (!errorBox) {
+                    errorBox = document.createElement('div');
+                    errorBox.className = 'ai-error-box';
+                    wrap.querySelector('.ai-bubble').appendChild(errorBox);
+                }
+                setTextIfChanged(errorBox, message.error);
+            } else if (errorBox) {
+                errorBox.remove();
             }
         }
         // 流式工具调用占位：name 已到、参数还在增量接收时先亮卡（写大文件不再像卡住），
@@ -1104,7 +1279,7 @@ export function createAIToolCards(ctx) {
                     box.className = 'ai-live-tools';
                     bubble.appendChild(box);
                 }
-                updateLiveTools(box, live);
+                updateLiveTools(box, live, message);
             }
             // 非流式渲染完成后补渲染 mermaid 占位（AI 回复里的 ```mermaid 围栏，报告 §1.3.3）
             if (!streaming && typeof renderMermaidBlocks === 'function') {
@@ -1161,5 +1336,6 @@ export function createAIToolCards(ctx) {
         askStateLabel,
         askResultText,
         enhanceAICodeBlocks,
+        enhanceAnswerBody,
     };
 }

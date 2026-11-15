@@ -135,7 +135,7 @@ function applySwitchMode(mode) {
         try {
             deps.editor.setMode(mode);
             deps.editor.setText(doc.rawText);
-            if (deps.editor.aceEditor) { deps.hookCodeFoldPreviews(deps.editor.aceEditor); deps.hookMultiCursor(deps.editor.aceEditor); deps.updateCodeFoldPreviews(deps.editor.aceEditor); }
+            if (deps.editor.aceEditor) { deps.hookCodeFoldRanges(deps.editor.aceEditor); deps.hookMultiCursor(deps.editor.aceEditor); }
         } catch (e) {
             console.warn('switch mode failed', e);
         } finally {

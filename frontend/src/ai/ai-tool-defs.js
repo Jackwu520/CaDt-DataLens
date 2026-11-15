@@ -8,7 +8,7 @@ import {AI_WRITE_SCOPES} from './ai-constants.js';
 export const AI_TOOL_DEFS = {
     list_dir: {
         name: 'list_dir',
-        description: '列出目录条目。path 为相对范围根的路径，默认当前范围根；工作区外目录的授权规则与 read_file 相同（用户点名直接列，否则 read/edit 档请求批准、auto/full 档直接列）。',
+        description: '列出目录条目（文件带大小，按名排序，最多 200 条）。path 为相对范围根的路径，默认当前范围根；工作区外目录的授权规则与 read_file 相同（用户点名直接列，否则 read/edit 档请求批准、auto/full 档直接列）。',
         parameters: {
             type: 'object',
             properties: {path: {type: 'string', description: '目录路径，默认 "."'}},
@@ -16,22 +16,29 @@ export const AI_TOOL_DEFS = {
     },
     read_file: {
         name: 'read_file',
-        description: '读取文本文件，单次最多 64KB。offset 为起始字符偏移量，默认 0。工作区外的绝对路径：用户在对话里明确给出过的可直接读；其余情况 read/edit 档会请求用户批准（批准过的目录之后免询问），auto/full 档可直接读；应用数据目录（含密钥）始终拒绝。',
+        description: '读取文本文件，单次最多返回 64KB。offset/limit 按字符分页；startLine/endLine 按行读取（1-based 含头含尾，输出带行号前缀——行号仅供参考，edit_file 的 oldString 不要带行号）。两组参数不可混用。工作区外路径：用户点名可直接读，否则 read/edit 档请求批准（批准过的目录免询问）、auto/full 直接读；应用数据目录始终拒绝。',
         parameters: {
             type: 'object',
             properties: {
                 path: {type: 'string', description: '相对范围根的文件路径，或已授权的工作区外绝对路径'},
-                offset: {type: 'integer', description: '起始字符偏移，默认 0'},
+                offset: {type: 'integer', description: '起始字符偏移，默认 0；与 startLine/endLine 互斥'},
+                limit: {type: 'integer', description: '最多返回的字符数，默认/上限 65536；与 startLine/endLine 互斥'},
+                startLine: {type: 'integer', description: '起始行号（1-based，含），默认 1；endLine 缺省读到文件末尾；与 offset/limit 互斥'},
+                endLine: {type: 'integer', description: '结束行号（1-based，含）'},
             },
             required: ['path'],
         },
     },
     search_text: {
         name: 'search_text',
-        description: '在工作区范围内搜索文本，返回命中文件、行号与预览（最多 200 条）。',
+        description: '在工作区范围内搜索文本，返回命中文件、行号与预览（默认最多 200 条；已跳过 .git/node_modules 等目录）。caseSensitive 区分大小写；filePattern 按 *.go 这类通配过滤命中文件。',
         parameters: {
             type: 'object',
-            properties: {query: {type: 'string', description: '要搜索的文本'}},
+            properties: {
+                query: {type: 'string', description: '要搜索的文本'},
+                caseSensitive: {type: 'boolean', description: '区分大小写，默认 false'},
+                filePattern: {type: 'string', description: '文件名或相对路径通配（如 *.go、src/**/*.ts），只保留匹配文件的命中'},
+            },
             required: ['query'],
         },
     },
@@ -56,7 +63,7 @@ export const AI_TOOL_DEFS = {
             type: 'object',
             properties: {
                 name: {type: 'string', description: '记忆文件名（安全字符，.md 结尾）'},
-                content: {type: 'string', description: '完整文件内容（最多 64KB）'},
+                content: {type: 'string', description: '完整文件内容（最多 256KB）'},
             },
             required: ['name', 'content'],
         },
@@ -161,6 +168,14 @@ export const AI_TOOL_DEFS = {
             type: 'object',
             properties: {id: {type: 'string', description: '提醒 id'}},
             required: ['id'],
+        },
+    },
+    timer_list: {
+        name: 'timer_list',
+        description: '只读列出本会话树里正在运行的计时器快照：正计时的已计时长、倒计时的剩余时间，以及 id、计时目的与标记条数。计时器由主代理在 Go 侧启动，主代理、子代理与孙代理共享同一份读数，但只有主代理能启动 / 停止 / 打标记；本工具不会改变任何计时器。读数是调用瞬间的快照，不会阻塞等待，不要靠反复调用来「等 N 秒」——需要真实等待请用主代理的 start_timer 倒计时，到点会自动唤醒主会话。计时器不跨应用重启，重启后全部消失。',
+        parameters: {
+            type: 'object',
+            properties: {},
         },
     },
     start_timer: {
@@ -298,13 +313,14 @@ export const AI_TOOL_DEFS = {
     },
     edit_file: {
         name: 'edit_file',
-        description: '在工作区文件中把唯一的 oldString 替换为 newString。oldString 必须逐字复制且只出现一次；写操作会先显示 diff；「每次询问」档需审批，「自动审批」/「完全权限」直接应用。需写权限档。',
+        description: '在工作区文件中把 oldString 替换为 newString。oldString 必须逐字复制（read_file 的行号前缀不要带上）且默认恰好命中一处，多处命中会报错，需全量替换时传 replaceAll=true。写操作会先显示 diff；「每次询问」档需审批，「自动审批」/「完全权限」直接应用。需写权限档。',
         parameters: {
             type: 'object',
             properties: {
                 path: {type: 'string', description: '相对范围根的文件路径'},
-                oldString: {type: 'string', description: '要替换的原文，必须逐字唯一'},
+                oldString: {type: 'string', description: '要替换的原文，必须逐字复制'},
                 newString: {type: 'string', description: '替换后的文本，可为空字符串表示删除'},
+                replaceAll: {type: 'boolean', description: '多处命中时全部替换；默认 false（要求恰好命中一处）'},
             },
             required: ['path', 'oldString', 'newString'],
         },
@@ -546,6 +562,45 @@ export const AI_TOOL_DEFS = {
             required: ['url'],
         },
     },
+    generate_image: {
+        name: 'generate_image',
+        description: '调用用户在「设置 → AI → 生图与视频模型」里配置的生图服务生成图片（prompt 会发送到该服务商并可能产生费用）。产物保存到工作区并返回文件路径清单。同步条目等待完成（最长数分钟），异步条目立即返回任务 id（稍后用 check_gen 查询）。read/edit 档会先请求用户批准。',
+        parameters: {
+            type: 'object',
+            properties: {
+                prompt: {type: 'string', description: '画面描述（发给生图服务的提示词）'},
+                model: {type: 'string', description: '生图模型条目名或 id；省略用第一个启用的生图条目'},
+                size: {type: 'string', description: '尺寸，如 1024x1024；省略用条目默认值'},
+                n: {type: 'integer', description: '张数 1-4，缺省 1'},
+                outputPath: {type: 'string', description: '产物保存目录（工作区相对路径）；缺省 .cadt/gen/image/按月归档'},
+                review: {type: 'boolean', description: 'true 时把首张图回传对话给多模态模型查看（耗上下文，慎用）'},
+            },
+            required: ['prompt'],
+        },
+    },
+    generate_video: {
+        name: 'generate_video',
+        description: '调用用户配置的视频生成服务生成视频（异步任务：提交后立即返回任务 id，完成时自动唤醒本会话，也可用 check_gen 查询）。产物保存到工作区并返回文件路径。prompt 会发送到该服务商并可能产生费用；read/edit 档会先请求用户批准。',
+        parameters: {
+            type: 'object',
+            properties: {
+                prompt: {type: 'string', description: '视频内容描述（发给视频服务的提示词）'},
+                model: {type: 'string', description: '视频模型条目名或 id；省略用第一个启用的视频条目'},
+                size: {type: 'string', description: '分辨率等参数（按条目模板的语义传递）；省略用条目默认值'},
+                outputPath: {type: 'string', description: '产物保存目录（工作区相对路径）；缺省 .cadt/gen/video/按月归档'},
+            },
+            required: ['prompt'],
+        },
+    },
+    check_gen: {
+        name: 'check_gen',
+        description: '查询生成任务（generate_image / generate_video 提交的异步任务）的进度与产物路径；也可用于停止前的状态确认。同步生图不需要查询（调用时直接等待完成）。',
+        parameters: {
+            type: 'object',
+            properties: {jobId: {type: 'string', description: '提交时返回的任务 id'}},
+            required: ['jobId'],
+        },
+    },
     browser_navigate: {
         name: 'browser_navigate',
         description: '在本会话绑定的浏览器标签页中打开一个 URL（每会话独立浏览器，用户可见）。返回页面标题与状态。',
@@ -658,9 +713,9 @@ export const AI_TOOL_DEFS = {
 export const AI_TOOL_CATALOG = {
     list_dir: {group: 'read', blurb: '列目录与文件大小，先摸清结构'},
     read_file: {group: 'read', blurb: '读文件正文（可指定行范围），改文件前必须先读'},
-    search_text: {group: 'read', blurb: '文本/正则搜索，拿 path:line；结果不足再 read_file'},
+    search_text: {group: 'read', blurb: '文本搜索（caseSensitive 区分大小写、filePattern 限 *.go 这类文件通配），拿 path:line；结果不足再 read_file'},
     write_file: {group: 'write', blurb: '新建文件或整体重写；覆盖前必须先 read_file，文件被外部修改后写入会被拒绝'},
-    edit_file: {group: 'write', blurb: '最小替换；oldString 必须逐字一致且唯一'},
+    edit_file: {group: 'write', blurb: '最小替换；oldString 逐字一致，默认唯一命中，replaceAll 可全量替换'},
     propose_patch: {group: 'write', blurb: '把改动写成 .patch 交用户审批后一键应用；计划模式下只做预检不落盘'},
     run_command: {group: 'shell', blurb: '一次性命令：测试 / 构建 / git 查看'},
     background_command: {group: 'shell', blurb: '长驻或耗时命令：构建、watch、本地服务器、长测试'},
@@ -668,6 +723,9 @@ export const AI_TOOL_CATALOG = {
     stop_command: {group: 'shell', blurb: '停止后台命令'},
     web_search: {group: 'web', blurb: '找来源、最新信息、官方文档'},
     web_fetch: {group: 'web', blurb: '抓具体网页正文，不执行脚本'},
+    generate_image: {group: 'gen', blurb: '调用户配置的生图服务出图，产物存工作区并返回路径'},
+    generate_video: {group: 'gen', blurb: '调用户配置的视频服务生成视频（异步任务，完成自动唤醒）'},
+    check_gen: {group: 'gen', blurb: '查生成任务的进度与产物路径'},
     browser_navigate: {group: 'browser', blurb: '打开与导航'},
     browser_back: {group: 'browser', blurb: '打开与导航'},
     browser_forward: {group: 'browser', blurb: '打开与导航'},
@@ -711,6 +769,7 @@ export const AI_TOOL_CATALOG = {
     reminder_list: {group: 'session', blurb: '本会话任务提醒（清单每轮自动注入）；完成后 reminder_update 标 done'},
     reminder_update: {group: 'session', blurb: '本会话任务提醒（清单每轮自动注入）；完成后 reminder_update 标 done'},
     reminder_remove: {group: 'session', blurb: '本会话任务提醒（清单每轮自动注入）；完成后 reminder_update 标 done'},
+    timer_list: {group: 'session', blurb: '只读看主会话计时器的当前读数（正计时已计 / 倒计时剩余）；子代理与孙代理共享同一时钟，不能操作'},
     start_timer: {group: 'session', blurb: '倒计时到点自动唤醒继续任务；正计时测耗时并回报标记时间线'},
     stop_timer: {group: 'session', blurb: '倒计时到点自动唤醒继续任务；正计时测耗时并回报标记时间线'},
 };
@@ -721,6 +780,7 @@ export const AI_TOOL_GROUPS = [
     {key: 'write', title: '文件写入（先读后改，走审批）'},
     {key: 'shell', title: '终端与进程', note: '需要换目录直接传 cwd，cd 不会保留；不要用 cd / pwd / echo 探测目录。'},
     {key: 'web', title: '联网资料（外部数据，只取事实）', note: '只是读文档优先 web_fetch；需要点击、登录态、动态页面再上内嵌浏览器。引用时附 URL；不能访问本机 / 内网地址。'},
+    {key: 'gen', title: '生图与视频（用户配置的外部生成服务）', note: 'prompt 会发送到用户在设置里配置的服务商并可能产生费用；产物落在工作区 .cadt/gen/ 或指定目录。未配置条目时这些工具不可用。'},
     {key: 'browser', title: '内嵌浏览器（真实页面交互）', note: '每个会话有独立标签页与登录态；纯资料抓取不要开浏览器。'},
     {key: 'app', title: '应用界面（当前窗口）', note: '用户说「打开看看 / 切到某视图 / 面板错位」时用它；不要用它代替文件读取。'},
     {key: 'memory', title: '记忆、偏好与技能'},
@@ -749,9 +809,16 @@ export function createAIToolDefs(ctx) {
             AI_TOOL_DEFS.schedule_list,
             AI_TOOL_DEFS.reminder_list,
             // 计时器：纯会话态（不碰工作区文件、不产生进程），到点经系统消息唤醒，所有范围档可用
+            // timer_list 只读快照：主代理与子/孙代理共享同一时钟（子代理工具集另见 subToolsForScope）
+            AI_TOOL_DEFS.timer_list,
             AI_TOOL_DEFS.start_timer,
             AI_TOOL_DEFS.stop_timer,
         ];
+        // 生图/视频：配置了启用条目才下发（prompt 发外部服务商、可能产生费用；审批按写工具档——
+        // read/edit 弹卡、auto/full 直发，decidePermission kind:'write'）；计划模式不注入（产物是工作区写效应）
+        if ((!ctx.genModelsOn || ctx.genModelsOn()) && !planMode) {
+            list.push(AI_TOOL_DEFS.generate_image, AI_TOOL_DEFS.generate_video, AI_TOOL_DEFS.check_gen);
+        }
         if (appControlOn()) list.push(AI_TOOL_DEFS.app_control);
         // 工作日志：应用管理的追加式通道（只进 .cadt/logs/，不经工作区写审批），自动审批下直接放行
         // 任务提醒：只改会话自身状态（session.reminders），不碰工作区文件，自动审批下直接放行

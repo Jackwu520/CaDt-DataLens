@@ -28,7 +28,7 @@ function el(tag, className, text) {
 function btn(className, text, title) {
     const b = el('button', className, text);
     b.type = 'button';
-    if (title) b.title = title;
+    if (title) b.dataset.tip = title;
     return b;
 }
 
@@ -158,7 +158,7 @@ export function renderBookshelf(container, data) {
             el('span', 'rd-book-meta', (s.bookFiles ?? s.books ?? 0) + ' 个文件 · 约 ' + fmtWords(s.estWords) + ' / 未读'),
         );
         card.append(cover, info);
-        card.title = s.root;
+        card.dataset.tip = s.root;
         card.addEventListener('click', () => data.onOpen({key: s.root, root: s.root, title: s.name}));
         detected.appendChild(card);
     }
@@ -291,7 +291,7 @@ export function renderToc(container, data) {
             if (node.words) {
                 label.appendChild(el('span', 'rd-toc-words', fmtWords(node.words)));
             }
-            label.title = node.words ? '约 ' + minutesFor(node.words) + ' 分钟' : node.title;
+            label.dataset.tip = node.words ? '约 ' + minutesFor(node.words) + ' 分钟' : node.title;
             label.addEventListener('click', () => {
                 if (data.onJump) data.onJump(node);
             });
@@ -529,7 +529,7 @@ export function renderStats(container, data) {
             const bar = el('div', 'rd-stats-bar');
             const fill = el('div', 'rd-stats-bar-fill');
             fill.style.height = Math.max(4, Math.round(sec / max * 100)) + '%';
-            fill.title = key + '：' + fmtTime(sec);
+            fill.dataset.tip = key + '：' + fmtTime(sec);
             bar.appendChild(fill);
             bar.appendChild(el('span', 'rd-stats-bar-label', String(d.getDate())));
             chart.appendChild(bar);

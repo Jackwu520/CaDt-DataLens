@@ -355,7 +355,7 @@ runTurn(session, userMsg):
 ## 11. Todolist
 
 - `todo_write(todos[{content, status: pending|in_progress|completed}])` → 面板顶部 `#ai-todos` 固定区。
-- 显示：○ 待办 / ▶ 进行中（高亮）/ ✓ 完成划线；进度 N/M；全部完成后 3 秒自动折叠为单行「任务 · 已全部完成 · N 项」（`ai-todos-label` + `ai-todos-sum`），点击标题栏展开/收起。
+- 显示：○ 待办 / ▶ 进行中（高亮）/ ✓ 完成划线；进度 N/M；全部完成后 3 秒自动折叠为单行「任务 · 已全部完成 · N 项」（`ai-todos-label` + `ai-todos-sum`），点击标题栏展开/收起。**默认就是收起态**（只占一行进度摘要，收起时可显示当前进行中的任务），设置 → AI 助手 → 对话 →「任务清单默认展开」可改成常驻展开（`settings.aiTodosDefaultExpanded`，切换后已有会话立即跟随）。
 - systemPrompt（可写档）注入守则：多步任务先 `todo_write` 规划、每步更新状态。
 - 随会话持久化、随会话切换恢复。
 

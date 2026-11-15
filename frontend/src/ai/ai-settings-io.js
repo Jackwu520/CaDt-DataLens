@@ -10,6 +10,9 @@ import {
     normalizeDefaultScope,
 } from './ai-permissions.js';
 import {
+    normalizeGenModel,
+} from './ai-gen-model.js';
+import {
     normalizePersona,
 } from './ai-persona.js';
 
@@ -39,6 +42,11 @@ export function createAISettingsIO(ctx, extras) {
             profiles: getConfig().profiles.map((profile) => ({
                 ...profile,
                 apiKey: includeKeys ? profile.apiKey : '',
+            })),
+            // 生成条目（生图/视频）：密钥与账号 apiKey 同一脱敏语义
+            genModels: (getConfig().genModels || []).map((entry) => ({
+                ...entry,
+                apiKey: includeKeys ? entry.apiKey : '',
             })),
             prompts: getConfig().prompts.map((prompt) => ({
                 id: prompt.id,
@@ -183,6 +191,22 @@ export function createAISettingsIO(ctx, extras) {
             if (data.persona && typeof data.persona === 'object') {
                 getConfig().persona = normalizePersona(data.persona);
             }
+            // 生成条目：按 id 合并（同 id 空密钥不覆盖本地，与账号语义一致）
+            let importedGenModels = 0;
+            for (const raw of Array.isArray(data.genModels) ? data.genModels : []) {
+                if (!raw || typeof raw !== 'object') continue;
+                const entry = normalizeGenModel(raw, () => aiNowId('gen-'));
+                const existing = (getConfig().genModels || []).find((item) => item.id === entry.id);
+                if (existing) {
+                    const keepKey = existing.apiKey;
+                    Object.assign(existing, entry);
+                    if (!entry.apiKey) existing.apiKey = keepKey;
+                } else {
+                    getConfig().genModels = (getConfig().genModels || []).concat([entry]);
+                }
+                importedGenModels++;
+            }
+            if (importedGenModels) extras.refreshSettingsPane();
             for (const pathValue of Array.isArray(data.approvedPaths) ? data.approvedPaths : []) {
                 extras.aiAddUnique(getConfig().approvedPaths, pathValue);
             }

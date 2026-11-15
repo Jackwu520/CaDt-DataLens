@@ -277,7 +277,7 @@ async function renderPluginsPane() {
             const license = document.createElement('span');
             license.className = 'plugin-license';
             license.textContent = p.license || '';
-            license.title = '许可证';
+            license.dataset.tip = '许可证';
             const enabledLabel = document.createElement('label');
             enabledLabel.className = 'popover-label plugin-enabled';
             const cb = document.createElement('input');
@@ -352,7 +352,7 @@ async function renderPluginsPane() {
                 link.textContent = label;
                 link.href = url;
                 link.dataset.url = url;
-                link.title = url;
+                link.dataset.tip = url;
                 link.addEventListener('click', (e) => {
                     e.preventDefault();
                     if (deps.rt && deps.rt.BrowserOpenURL) deps.rt.BrowserOpenURL(url);
@@ -453,7 +453,7 @@ function renderPluginMarketList(listEl, items) {
             update.type = 'button';
             update.className = 'dlg-btn primary plugin-market-action';
             update.textContent = '更新';
-            update.title = '当前 v' + installedVersion + ' → v' + m.version;
+            update.dataset.tip = '当前 v' + installedVersion + ' → v' + m.version;
             update.addEventListener('click', async () => {
                 update.disabled = true;
                 update.textContent = '更新中…';
@@ -540,7 +540,7 @@ function renderPluginMarketList(listEl, items) {
         link.textContent = '主页';
         link.href = m.url;
         link.dataset.url = m.url;
-        link.title = m.url;
+        link.dataset.tip = m.url;
         link.addEventListener('click', (e) => {
             e.preventDefault();
             if (deps.rt && deps.rt.BrowserOpenURL) deps.rt.BrowserOpenURL(m.url);

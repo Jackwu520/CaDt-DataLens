@@ -510,12 +510,7 @@ function showExplorerMenu(info, x, y, node) {
         if (deps.readingMode && /\.(md|markdown|mdx|txt|docx|epub)$/i.test(info.name || '')) {
             items.push({label: '阅读此文件', icon: 'E8A5', action: () => deps.readingMode.openSingleFile(info.path)});
         }
-        items.push({
-            label: '在 AI 中询问此文件',
-            iconHtml: deps.AI_REFERENCE_ICON_HTML,
-            action: () => deps.askAIAboutPath(info.path),
-        });
-        items.push(...aiReferenceFileMenuItems({path: info.path, name: info.name}));
+        items.push(...deps.aiReferenceFileMenuItems({path: info.path, name: info.name}));
         if (deps.gitStateCache.map.get(info.path.replace(/\\/g, '/'))) {
             items.push({label: 'Git：查看差异', icon: 'E8D3', action: () => deps.showGitDiff(info.path)});
         }

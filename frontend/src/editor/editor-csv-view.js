@@ -21,13 +21,13 @@ function createCsvTableView(doc) {
     const filterInput = document.createElement('input');
     filterInput.type = 'search';
     filterInput.placeholder = '筛选所有列…';
-    filterInput.title = '对所有列做子串筛选；只影响表格显示，不改文件内容';
+    filterInput.dataset.tip = '对所有列做子串筛选；只影响表格显示，不改文件内容';
     filterInput.spellcheck = false;
     const filterClear = document.createElement('button');
     filterClear.type = 'button';
     filterClear.className = 'csv-filter-clear';
     filterClear.textContent = '×';
-    filterClear.title = '清除筛选';
+    filterClear.dataset.tip = '清除筛选';
     filterWrap.append(filterInput, filterClear);
     const hint = document.createElement('span');
     hint.className = 'csv-table-hint';
@@ -38,7 +38,7 @@ function createCsvTableView(doc) {
     statsBtn.type = 'button';
     statsBtn.className = 'csv-stats-btn';
     statsBtn.textContent = '列统计';
-    statsBtn.title = '查看当前列统计（也可右键表头指定列）';
+    statsBtn.dataset.tip = '查看当前列统计（也可右键表头指定列）';
     bar.append(meta, filterWrap, statsBtn, hint);
     const scroll = document.createElement('div');
     scroll.className = 'csv-table-scroll';
@@ -252,7 +252,7 @@ function openCsvColumnStats(doc, col) {
     close.type = 'button';
     close.className = 'csv-stats-close';
     close.textContent = '×';
-    close.title = '关闭（Esc）';
+    close.dataset.tip = '关闭（Esc）';
     close.addEventListener('click', () => closeCsvColumnStats(doc));
     head.append(title, close);
     panel.appendChild(head);
@@ -449,7 +449,7 @@ function renderCsvVirtualRows(doc, force) {
             const td = slot.cells[col];
             const display = row[col] == null ? '' : String(row[col]);
             if (td.textContent !== display) td.textContent = display;
-            td.title = display;
+            td.dataset.tip = display;
             td.dataset.row = String(rowIndex);
             td.dataset.vpos = String(viewPos);
         }
@@ -542,7 +542,7 @@ function renderCsvTableView(doc, opts = {}) {
         const header = headers[col];
         const th = document.createElement('th');
         th.className = 'csv-col-head';
-        th.title = header + (doc.large ? '' : '（点击排序）');
+        th.dataset.tip = header + (doc.large ? '' : '（点击排序）');
         if (view.sortCol === col && view.sortDir !== 0) {
             th.dataset.sort = view.sortDir > 0 ? 'asc' : 'desc';
         }
@@ -551,7 +551,7 @@ function renderCsvTableView(doc, opts = {}) {
         label.textContent = header === '' ? '(空列名)' : header;
         const handle = document.createElement('span');
         handle.className = 'csv-col-resize';
-        handle.title = '拖动调整列宽';
+        handle.dataset.tip = '拖动调整列宽';
         handle.dataset.col = String(col);
         handle.addEventListener('pointerdown', (e) => startCsvColumnResize(doc, col, e));
         handle.addEventListener('click', (e) => e.stopPropagation());
@@ -655,7 +655,7 @@ function renderCsvTableView(doc, opts = {}) {
                 const value = row[col];
                 const display = value == null ? '' : String(value);
                 td.textContent = display;
-                td.title = display;
+                td.dataset.tip = display;
                 if (editable) {
                     td.contentEditable = 'plaintext-only';
                     td.spellcheck = false;
@@ -884,7 +884,7 @@ function commitCsvCell(doc, td) {
     const value = csvCellText(td);
     const before = row[colIndex] == null ? '' : String(row[colIndex]);
     td.textContent = value;
-    td.title = value;
+    td.dataset.tip = value;
     if (value === before) {
         deps.markDocDirty(doc);
         return;

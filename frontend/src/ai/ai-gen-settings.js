@@ -1,0 +1,444 @@
+// ai-gen-settings.js：设置 → AI → 生图与视频模型 pane（条目列表 + 编辑器弹窗 + 测试连接）。
+// 编辑器用居中动态弹窗（openAIDialog 三件套，仿计时器创建对话框），表单控件一律走
+// core/form-controls.js 工厂（表单控件硬规范：禁止裸原生控件）。条目数据层在 ai-gen-model.js。
+import {createInput, createSelect, createSwitch, createTextarea} from '../core/form-controls.js';
+import {aiNowId} from './ai-constants.js';
+import {
+    buildGenVars,
+    extractGenPath,
+    GEN_KINDS,
+    GEN_KIND_LABELS,
+    GEN_MODEL_PRESETS,
+    genHeaderMap,
+    genJoinURL,
+    isAsyncGenModel,
+    normalizeGenModel,
+    renderGenJson,
+} from './ai-gen-model.js';
+
+export function createAIGenSettings(ctx, extras) {
+
+    const getConfig = ctx.getConfig;
+    const saveAIConfig = ctx.saveAIConfig;
+    const backend = ctx.backend;
+    const askConfirm = ctx.askConfirm;
+    const setSettingsStatus = extras.setSettingsStatus;
+    const listEl = document.getElementById('ai-gen-list');
+    const presetSelect = document.getElementById('ai-gen-preset');
+
+    // 编辑器状态：editingId = null 表示新建；无临时插入 config 的中间态（保存才落）。
+    let genEditorState = null;  // {editingId, entry}
+    let genEditorControls = null; // 弹窗打开期间的控件表（collectDraft 读取）
+
+    function entries() {
+        return getConfig().genModels || [];
+    }
+
+    // ---------- 列表 ----------
+
+    function renderGenList() {
+        if (!listEl) return;
+        listEl.innerHTML = '';
+        const list = entries();
+        if (!list.length) {
+            const empty = document.createElement('div');
+            empty.className = 'set-card';
+            const row = document.createElement('div');
+            row.className = 'set-row';
+            const main = document.createElement('div');
+            main.className = 'set-main';
+            const title = document.createElement('div');
+            title.className = 'set-title';
+            title.textContent = '还没有生成条目';
+            const desc = document.createElement('div');
+            desc.className = 'set-desc';
+            desc.textContent = '用上方「添加预设」快速接入 OpenAI 兼容生图接口，或「新建条目」自定义模板。';
+            main.append(title, desc);
+            row.appendChild(main);
+            empty.appendChild(row);
+            listEl.appendChild(empty);
+            return;
+        }
+        for (const entry of list) {
+            listEl.appendChild(buildRow(entry));
+        }
+    }
+
+    function buildRow(entry) {
+        const card = document.createElement('div');
+        card.className = 'set-card';
+        const row = document.createElement('div');
+        row.className = 'set-row';
+        const main = document.createElement('div');
+        main.className = 'set-main';
+        const title = document.createElement('div');
+        title.className = 'set-title';
+        title.textContent = (entry.name || '（未命名条目）') + ' · ' + (GEN_KIND_LABELS[entry.kind] || entry.kind);
+        if (entry.enabled === false) title.textContent += '（停用）';
+        const desc = document.createElement('div');
+        desc.className = 'set-desc';
+        const target = isAsyncGenModel(entry) ? '异步：' + entry.submitPath + ' → ' + entry.pollPath : (entry.path || '未配置路径');
+        desc.textContent = (entry.baseURL || '') + (entry.baseURL && target ? '  ·  ' : '') + target;
+        main.append(title, desc);
+        const control = document.createElement('div');
+        control.className = 'set-control';
+        const enabledSwitch = createSwitch({
+            checked: entry.enabled !== false,
+            title: '启用 / 停用（停用的条目不参与缺省解析，AI 工具不再选中它）',
+            onChange: () => {
+                entry.enabled = enabledSwitch.control.checked;
+                saveAIConfig();
+                renderGenList();
+            },
+        });
+        control.appendChild(enabledSwitch.element);
+        const editBtn = document.createElement('button');
+        editBtn.type = 'button';
+        editBtn.className = 'dlg-btn';
+        editBtn.textContent = '编辑';
+        editBtn.addEventListener('click', () => openGenEditor(entry.id));
+        const copyBtn = document.createElement('button');
+        copyBtn.type = 'button';
+        copyBtn.className = 'dlg-btn';
+        copyBtn.textContent = '复制';
+        copyBtn.addEventListener('click', () => {
+            const clone = normalizeGenModel({...entry, id: '', name: (entry.name || '条目') + ' 副本'}, () => aiNowId('gen-'));
+            getConfig().genModels = entries().concat([clone]);
+            saveAIConfig();
+            renderGenList();
+            setSettingsStatus('已复制生成条目：' + clone.name, 'ok');
+        });
+        const delBtn = document.createElement('button');
+        delBtn.type = 'button';
+        delBtn.className = 'dlg-btn';
+        delBtn.textContent = '删除';
+        delBtn.addEventListener('click', () => {
+            askConfirm('删除生成条目「' + (entry.name || entry.id) + '」？', () => {
+                getConfig().genModels = entries().filter((item) => item.id !== entry.id);
+                saveAIConfig();
+                renderGenList();
+                setSettingsStatus('已删除生成条目', 'ok');
+            }, '删除', '删除条目');
+        });
+        control.append(editBtn, copyBtn, delBtn);
+        row.append(main, control);
+        card.appendChild(row);
+        return card;
+    }
+
+    // ---------- 编辑器弹窗 ----------
+
+    function fieldRow(title, desc, ...controlEls) {
+        const row = document.createElement('div');
+        row.className = 'set-row';
+        const main = document.createElement('div');
+        main.className = 'set-main';
+        const t = document.createElement('div');
+        t.className = 'set-title';
+        t.textContent = title;
+        main.appendChild(t);
+        if (desc) {
+            const d = document.createElement('div');
+            d.className = 'set-desc';
+            d.textContent = desc;
+            main.appendChild(d);
+        }
+        const box = document.createElement('div');
+        box.className = 'set-control';
+        for (const el of controlEls) {
+            if (el) box.appendChild(el);
+        }
+        row.append(main, box);
+        return row;
+    }
+
+    function groupTitle(text) {
+        const title = document.createElement('div');
+        title.className = 'set-group-title';
+        title.textContent = text;
+        return title;
+    }
+
+    function openGenEditor(entryId, presetEntry) {
+        const list = entries();
+        const current = entryId ? list.find((item) => item.id === entryId) : null;
+        const base = current ? {...current} : normalizeGenModel({...((presetEntry && presetEntry.entry) || {}), id: '', enabled: true}, () => aiNowId('gen-'));
+        genEditorState = {editingId: current ? current.id : null, entry: current ? {...current} : null};
+
+        const nameCtl = createInput({value: base.name, placeholder: '如 SiliconFlow Kolors', spellcheck: false});
+        const kindCtl = createSelect({
+            options: GEN_KINDS.map((kind) => ({value: kind, label: GEN_KIND_LABELS[kind] + '（' + (kind === 'image' ? 'image' : 'video') + '）'})),
+            value: base.kind,
+        });
+        const enabledCtl = createSwitch({checked: base.enabled !== false});
+        const keyCtl = createInput({value: base.apiKey, placeholder: '只保存在本机 ai-config.json，随请求头发出，不写日志', spellcheck: false, autocomplete: 'off'});
+        const proxyCtl = createSelect({
+            options: [{value: 'system', label: '系统代理'}, {value: 'direct', label: '直连'}, {value: 'custom', label: '自定义代理…'}],
+            value: base.proxy === 'direct' ? 'direct' : (isProxyURL(base.proxy) ? 'custom' : 'system'),
+        });
+        const proxyURLCtl = createInput({value: isProxyURL(base.proxy) ? base.proxy : '', placeholder: 'http://127.0.0.1:7890 或 socks5://…', spellcheck: false});
+        proxyURLCtl.element.style.display = proxyCtl.control.value === 'custom' ? '' : 'none';
+        proxyCtl.control.addEventListener('change', () => {
+            proxyURLCtl.element.style.display = proxyCtl.control.value === 'custom' ? '' : 'none';
+        });
+        const timeoutCtl = createInput({type: 'number', value: base.timeoutSec, min: 30, max: 300, step: 10});
+        const baseURLCtl = createInput({value: base.baseURL, placeholder: 'https://api.siliconflow.cn 或 http://127.0.0.1:8188（本地服务）', spellcheck: false});
+        const pathCtl = createInput({value: base.path, placeholder: '/v1/images/generations', spellcheck: false});
+        const headersCtl = createTextarea({
+            value: headersToText(base.headers), rows: 3, spellcheck: false,
+            placeholder: '每行一条：Key: Value\nAuthorization: Bearer {{apiKey}}',
+        });
+        const bodyCtl = createTextarea({
+            value: base.bodyTemplate, rows: 6, spellcheck: false,
+            placeholder: '{"prompt":{{prompt}},"size":{{size}}}',
+        });
+        const resultTypeCtl = createSelect({
+            options: [{value: 'b64', label: 'b64（响应内嵌 base64）'}, {value: 'url', label: 'url（响应给下载地址）'}],
+            value: base.resultType,
+        });
+        const resultPathCtl = createInput({value: base.resultPath, placeholder: 'data[*].b64_json', spellcheck: false});
+        const errorPathCtl = createInput({value: base.errorPath, placeholder: 'error.message', spellcheck: false});
+        const defaultModelCtl = createInput({value: base.defaultModel, placeholder: 'Kwai-Kolors/Kolors', spellcheck: false});
+        const defaultSizeCtl = createInput({value: base.defaultSize, placeholder: '1024x1024', spellcheck: false});
+        const defaultNCtl = createInput({type: 'number', value: base.defaultN, min: 1, max: 4, step: 1});
+        const submitPathCtl = createInput({value: base.submitPath, placeholder: '/v1/video/submit（留空 = 同步型条目）', spellcheck: false});
+        const jobIdPathCtl = createInput({value: base.jobIdPath, placeholder: 'output.task_id', spellcheck: false});
+        const pollPathCtl = createInput({value: base.pollPath, placeholder: '/v1/video/status?task_id={{jobId}}', spellcheck: false});
+        const statusPathCtl = createInput({value: base.statusPath, placeholder: 'output.task_status', spellcheck: false});
+        const doneValueCtl = createInput({value: base.doneValue, placeholder: 'SUCCESS', spellcheck: false});
+        const failedValueCtl = createInput({value: base.failedValue, placeholder: 'FAIL', spellcheck: false});
+        const pollIntervalCtl = createInput({type: 'number', value: base.pollIntervalSec, min: 2, max: 30, step: 1});
+        const maxPollsCtl = createInput({type: 'number', value: base.maxPolls, min: 1, max: 240, step: 1});
+
+        const body = document.createElement('div');
+        body.appendChild(groupTitle('基本信息'));
+        body.appendChild(fieldRow('名称', '', nameCtl.element));
+        body.appendChild(fieldRow('类型', '决定 generate_image 还是 generate_video 使用它，以及产物落盘目录', kindCtl.element, enabledCtl.element));
+        body.appendChild(fieldRow('API Key', '', keyCtl.element));
+        body.appendChild(fieldRow('代理', 'system 跟随系统；本地服务一般直连', proxyCtl.element, proxyURLCtl.element));
+        body.appendChild(fieldRow('单次请求超时（秒）', '', timeoutCtl.element));
+        body.appendChild(groupTitle('请求'));
+        body.appendChild(fieldRow('服务地址 baseURL', '同步型/异步型共用的服务根地址', baseURLCtl.element));
+        body.appendChild(fieldRow('生成端点 path', '同步型：直接生成接口；异步型：留空（走下方提交端点）', pathCtl.element));
+        body.appendChild(fieldRow('自定义请求头', '每行一条「Key: Value」；{{apiKey}} 会替换为上方密钥', headersCtl.element));
+        body.appendChild(fieldRow('请求体模板',
+            '占位符渲染为 JSON 字面量（字符串自动带引号转义），模板里不要手写引号：\n{"prompt":{{prompt}}} 是对的，"prompt":"{{prompt}}" 是错的',
+            bodyCtl.element));
+        body.appendChild(groupTitle('响应'));
+        body.appendChild(fieldRow('产物形态', '', resultTypeCtl.element));
+        body.appendChild(fieldRow('产物提取路径', '如 data[*].b64_json（[*] 取多张）；空路径取整个响应', resultPathCtl.element));
+        body.appendChild(fieldRow('错误提取路径', '服务端错误文案的位置，失败时回给 AI 自修', errorPathCtl.element));
+        body.appendChild(fieldRow('默认模型', '工具未传 model 时使用', defaultModelCtl.element));
+        body.appendChild(fieldRow('默认尺寸', '工具未传 size 时使用', defaultSizeCtl.element));
+        body.appendChild(fieldRow('默认张数', '1-4（仅生图）', defaultNCtl.element));
+        body.appendChild(groupTitle('异步任务（视频 / 任务型接口必填；留空提交路径即同步型）'));
+        body.appendChild(fieldRow('提交端点', '', submitPathCtl.element));
+        body.appendChild(fieldRow('任务 ID 提取路径', '从提交响应里取任务 id', jobIdPathCtl.element));
+        body.appendChild(fieldRow('轮询端点', '支持 {{jobId}} 占位', pollPathCtl.element));
+        body.appendChild(fieldRow('状态字段路径 / 完成值 / 失败值', '如 output.task_status · SUCCESS · FAIL', statusPathCtl.element, doneValueCtl.element, failedValueCtl.element));
+        body.appendChild(fieldRow('轮询间隔（秒）', '2-30', pollIntervalCtl.element));
+        body.appendChild(fieldRow('最大轮询次数', '超限判失败', maxPollsCtl.element));
+
+        const statusLine = document.createElement('div');
+        statusLine.className = 'set-desc';
+        statusLine.style.minHeight = '14px';
+
+        const testBtn = document.createElement('button');
+        testBtn.type = 'button';
+        testBtn.className = 'dlg-btn';
+        testBtn.textContent = '测试连接';
+        testBtn.addEventListener('click', () => {
+            testGenConnection(collectDraft(), statusLine, testBtn);
+        });
+
+        const cancelBtn = ctx.dialogButton('取消', 'dlg-btn', () => {
+            genEditorControls = null;
+            ctx.closeAIDialog();
+        });
+        const saveBtn = ctx.dialogButton('保存', 'dlg-btn primary', () => {
+            saveGenEditor(collectDraft(), statusLine);
+        });
+
+        genEditorControls = {
+            name: nameCtl, kind: kindCtl, enabled: enabledCtl, apiKey: keyCtl,
+            proxy: proxyCtl, proxyURL: proxyURLCtl, timeout: timeoutCtl,
+            baseURL: baseURLCtl, path: pathCtl, headers: headersCtl, body: bodyCtl,
+            resultType: resultTypeCtl, resultPath: resultPathCtl, errorPath: errorPathCtl,
+            defaultModel: defaultModelCtl, defaultSize: defaultSizeCtl, defaultN: defaultNCtl,
+            submitPath: submitPathCtl, jobIdPath: jobIdPathCtl, pollPath: pollPathCtl,
+            statusPath: statusPathCtl, doneValue: doneValueCtl, failedValue: failedValueCtl,
+            pollInterval: pollIntervalCtl, maxPolls: maxPollsCtl,
+        };
+        ctx.openAIDialog((genEditorState.editingId ? '编辑生成条目' : '新建生成条目') +
+            (genEditorState.entry && genEditorState.entry.name ? ' · ' + genEditorState.entry.name : ''),
+            [body], [testBtn, statusLine, cancelBtn, saveBtn], {top: true, wide: true});
+    }
+
+    function isProxyURL(value) {
+        return /^(https?|socks5):\/\//i.test(String(value || ''));
+    }
+
+    function headersToText(headers) {
+        return (headers || []).map((item) => item.key + ': ' + item.value).join('\n');
+    }
+
+    function collectDraft() {
+        const c = genEditorControls;
+        if (!c) throw new Error('编辑器未初始化');
+        return {
+            name: c.name.control.value,
+            kind: c.kind.control.value,
+            enabled: c.enabled.control.checked,
+            baseURL: c.baseURL.control.value,
+            path: c.path.control.value,
+            proxy: c.proxy.control.value,
+            proxyURL: c.proxyURL.control.value,
+            timeoutSec: Number(c.timeout.control.value) || 120,
+            apiKey: c.apiKey.control.value,
+            headers: c.headers.control.value,
+            bodyTemplate: c.body.control.value,
+            resultType: c.resultType.control.value,
+            resultPath: c.resultPath.control.value,
+            errorPath: c.errorPath.control.value,
+            defaultModel: c.defaultModel.control.value,
+            defaultSize: c.defaultSize.control.value,
+            defaultN: Number(c.defaultN.control.value) || 1,
+            submitPath: c.submitPath.control.value,
+            jobIdPath: c.jobIdPath.control.value,
+            pollPath: c.pollPath.control.value,
+            statusPath: c.statusPath.control.value,
+            doneValue: c.doneValue.control.value,
+            failedValue: c.failedValue.control.value,
+            pollIntervalSec: Number(c.pollInterval.control.value) || 5,
+            maxPolls: Number(c.maxPolls.control.value) || 60,
+        };
+    }
+
+    function saveGenEditor(draft, statusLine) {
+        try {
+            const entry = normalizeGenModel({
+                id: genEditorState.editingId || '',
+                name: draft.name,
+                kind: draft.kind,
+                enabled: draft.enabled,
+                baseURL: draft.baseURL,
+                path: draft.path,
+                proxy: draft.proxy === 'custom' ? (draft.proxyURL || 'system') : draft.proxy,
+                timeoutSec: draft.timeoutSec,
+                apiKey: draft.apiKey,
+                headers: draft.headers,
+                bodyTemplate: draft.bodyTemplate,
+                resultType: draft.resultType,
+                resultPath: draft.resultPath,
+                errorPath: draft.errorPath,
+                defaultModel: draft.defaultModel,
+                defaultSize: draft.defaultSize,
+                defaultN: draft.defaultN,
+                submitPath: draft.submitPath,
+                jobIdPath: draft.jobIdPath,
+                pollPath: draft.pollPath,
+                statusPath: draft.statusPath,
+                doneValue: draft.doneValue,
+                failedValue: draft.failedValue,
+                pollIntervalSec: draft.pollIntervalSec,
+                maxPolls: draft.maxPolls,
+            }, () => aiNowId('gen-'));
+            if (!entry.name) throw new Error('条目名称为空');
+            if (!entry.baseURL) throw new Error('服务地址（baseURL）为空');
+            const list = entries();
+            const index = genEditorState.editingId ? list.findIndex((item) => item.id === genEditorState.editingId) : -1;
+            if (index >= 0) list[index] = entry;
+            else list.push(entry);
+            getConfig().genModels = list;
+            saveAIConfig();
+            renderGenList();
+            ctx.closeAIDialog();
+            setSettingsStatus('已保存生成条目：' + (entry.name || entry.id), 'ok');
+        } catch (e) {
+            statusLine.textContent = '保存失败：' + ((e && e.message) || e);
+        }
+    }
+
+    async function testGenConnection(draft, statusLine, testBtn) {
+        statusLine.textContent = '测试中…';
+        testBtn.disabled = true;
+        try {
+            const entry = normalizeGenModel({
+                ...draft,
+                proxy: draft.proxy === 'custom' ? (draft.proxyURL || 'system') : draft.proxy,
+            }, () => aiNowId('gen-'));
+            if (!entry.baseURL) throw new Error('服务地址为空');
+            const useAsync = isAsyncGenModel(entry);
+            const url = genJoinURL(entry.baseURL, useAsync ? entry.submitPath : entry.path);
+            if (!url) throw new Error(useAsync ? '提交端点为空' : '生成端点为空');
+            const vars = buildGenVars(entry, {prompt: 'a small red circle on a white background'});
+            const resp = await backend.AIGenHTTPRequest(JSON.stringify({
+                url,
+                method: 'POST',
+                headers: genHeaderMap(entry, vars),
+                body: renderGenJson(entry.bodyTemplate, vars),
+                proxy: entry.proxy,
+                timeoutSec: entry.timeoutSec,
+                maxBytes: 8 << 20,
+            }));
+            if (resp && resp.error) throw new Error(resp.error);
+            let parsed = null;
+            try {
+                parsed = JSON.parse(resp && resp.body || '');
+            } catch (e) {
+                parsed = null;
+            }
+            if (parsed && entry.errorPath) {
+                const errors = extractGenPath(parsed, entry.errorPath);
+                if (errors.length && String(errors[0]).trim()) throw new Error('服务端返回错误：' + String(errors[0]).trim());
+            }
+            if (resp && resp.status >= 400) throw new Error('HTTP ' + resp.status + '：' + String(resp.body || '').slice(0, 200));
+            let hit = 0;
+            if (parsed && entry.resultPath) hit = extractGenPath(parsed, entry.resultPath).length;
+            statusLine.textContent = hit > 0
+                ? '测试通过：HTTP ' + resp.status + '，提取到 ' + hit + ' 个产物' + (useAsync ? '（任务型接口请再跑一次真实生成验证轮询）' : '')
+                : 'HTTP ' + resp.status + '，但产物提取路径未命中' + (useAsync ? '（任务型接口提交成功，轮询段请用真实生成验证）' : '——请检查 resultPath');
+        } catch (e) {
+            statusLine.textContent = '测试失败：' + ((e && e.message) || e);
+        } finally {
+            testBtn.disabled = false;
+        }
+    }
+
+    // ---------- 预设与新建 ----------
+
+    function renderGenPresetSelect() {
+        if (!presetSelect) return;
+        presetSelect.innerHTML = '';
+        for (const preset of GEN_MODEL_PRESETS) {
+            const item = document.createElement('option');
+            item.value = preset.key;
+            item.textContent = preset.name;
+            presetSelect.appendChild(item);
+        }
+    }
+
+    function bindGenPane() {
+        const createBtn = document.getElementById('ai-gen-create');
+        const presetAdd = document.getElementById('ai-gen-preset-add');
+        if (createBtn && !createBtn.dataset.bound) {
+            createBtn.dataset.bound = '1';
+            createBtn.addEventListener('click', () => openGenEditor(null, null));
+        }
+        if (presetAdd && !presetAdd.dataset.bound) {
+            presetAdd.dataset.bound = '1';
+            presetAdd.addEventListener('click', () => {
+                const preset = GEN_MODEL_PRESETS.find((item) => item.key === (presetSelect && presetSelect.value)) || GEN_MODEL_PRESETS[0];
+                openGenEditor(null, preset);
+            });
+        }
+        renderGenPresetSelect();
+        renderGenList();
+    }
+
+    return {
+        renderGenList,
+        bindGenPane,
+        openGenEditor,
+    };
+}

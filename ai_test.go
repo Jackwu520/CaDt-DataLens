@@ -449,6 +449,54 @@ func TestAIAnthropicBodyThinkingOmitsTemperature(t *testing.T) {
 	}
 }
 
+func TestClaudeRejectsFixedThinkingBudget(t *testing.T) {
+	cases := map[string]bool{
+		"claude-opus-5-5":            true,
+		"claude-sonnet-5-5":          true,
+		"claude-haiku-5-5":           true,
+		"claude-fable-5-2":           true,
+		"claude-sonnet-4-6":          true,
+		"claude-opus-4-8":            true,
+		"claude-sonnet-4-5":          false,
+		"claude-sonnet-4-5-20250929": false,
+		"claude-haiku-4-5":           false,
+		"claude-3-5-sonnet":          false, // 数字在前的老命名，不在新规则内
+		"deepseek-flash":             false, // 走 Anthropic 格式的第三方模型保持固定预算
+		"deepseek-v4-pro":            false,
+		"":                           false,
+	}
+	for model, want := range cases {
+		if got := claudeRejectsFixedThinkingBudget(model); got != want {
+			t.Fatalf("claudeRejectsFixedThinkingBudget(%q) = %v, want %v", model, got, want)
+		}
+	}
+}
+
+func TestAIAnthropicBodyAdaptiveThinkingForNewFamilies(t *testing.T) {
+	cfg := AIConfig{
+		Provider:       "anthropic",
+		Model:          "claude-sonnet-5-5",
+		Temperature:    0.7,
+		MaxTokens:      16000,
+		Thinking:       true,
+		ThinkingBudget: 8000,
+	}
+	body, err := aiBuildAnthropicBody(cfg, []AIMessage{{Role: "user", Content: "q"}}, nil)
+	if err != nil {
+		t.Fatalf("aiBuildAnthropicBody: %v", err)
+	}
+	thinking, ok := body["thinking"].(map[string]any)
+	if !ok || thinking["type"] != "adaptive" {
+		t.Fatalf("新家族应使用自适应思考：%#v", body["thinking"])
+	}
+	if _, bad := thinking["budget_tokens"]; bad {
+		t.Fatalf("新家族不接受固定预算：%#v", thinking)
+	}
+	if _, ok := body["temperature"]; ok {
+		t.Fatalf("开启思考时不应带 temperature：%#v", body)
+	}
+}
+
 func TestAIOpenAIBodyReasoningEffort(t *testing.T) {
 	cfg := AIConfig{Provider: "openai", Model: "deepseek-flash", Temperature: 0.2, MaxTokens: 100, ReasoningEffort: "high"}
 	body, err := aiBuildOpenAIBody(cfg, []AIMessage{{Role: "user", Content: "q"}}, nil)
@@ -913,7 +961,8 @@ func TestAIStreamRetry429Backoff(t *testing.T) {
 		t.Fatalf("ai-retry 事件数 = %d，想要 2", len(retries))
 	}
 	first, _ := retries[0].(aiRetryPayload)
-	if first.Attempt != 1 || first.Max != 5 || first.Reason != "HTTP 429" {
+	// 429 是配额类限流：有效次数 = retryMax + 3（分钟窗恢复预算）
+	if first.Attempt != 1 || first.Max != 8 || first.Reason != "HTTP 429" {
 		t.Fatalf("首个重试事件 = %#v", first)
 	}
 	if first.DelayMs != 0 {
@@ -945,11 +994,12 @@ func TestAIStreamRetryExhausted(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "HTTP 429") || !strings.Contains(err.Error(), "rate limited") {
 		t.Fatalf("error = %v", err)
 	}
-	if got := atomic.LoadInt32(&requestCount); got != 3 {
-		t.Fatalf("请求数 = %d，想要 3（首次 + 2 次重试）", got)
+	// 429 有效次数 = retryMax(2) + 3 次限流额外预算 = 5 次重试
+	if got := atomic.LoadInt32(&requestCount); got != 6 {
+		t.Fatalf("请求数 = %d，想要 6（首次 + 5 次重试）", got)
 	}
-	if retries := aiEventsNamed(events, aiEventRetry); len(retries) != 2 {
-		t.Fatalf("ai-retry 事件数 = %d，想要 2", len(retries))
+	if retries := aiEventsNamed(events, aiEventRetry); len(retries) != 5 {
+		t.Fatalf("ai-retry 事件数 = %d，想要 5", len(retries))
 	}
 }
 
@@ -976,6 +1026,132 @@ func TestAIStreamNoRetryOn400(t *testing.T) {
 	}
 }
 
+func TestAIMaxTokensLimitFromError(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want int
+	}{
+		{"SenseNova 原文", `field MaxTokens invalid, should be in [1, 131072]`, 131072},
+		{"JSON 错误体", `{"error":{"message":"field MaxTokens invalid, should be in [1, 131072]"}}`, 131072},
+		{"snake_case", `max_tokens should be in [1, 65536]`, 65536},
+		{"max_completion_tokens", `max_completion_tokens must be in [ 1 , 8192 ]`, 8192},
+		{"其它字段不误伤", `temperature should be in [0, 2]`, 0},
+		{"没有范围", `field MaxTokens invalid`, 0},
+		{"上下界反了", `MaxTokens should be in [131072, 1]`, 0},
+		{"空错误体", ``, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := aiMaxTokensLimitFromError([]byte(tc.body)); got != tc.want {
+				t.Fatalf("上界 = %d，想要 %d", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestAIStreamDowngradeMaxTokensOn400(t *testing.T) {
+	var requestCount int32
+	var seen []float64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := atomic.AddInt32(&requestCount, 1)
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		mt, _ := body["max_tokens"].(float64)
+		seen = append(seen, mt)
+		if n == 1 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = fmt.Fprint(w, `{"error":{"message":"field MaxTokens invalid, should be in [1, 131072]"}}`)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		writeSSEJSON(w, map[string]any{"choices": []any{map[string]any{
+			"delta": map[string]any{"content": "降档成功"}, "finish_reason": nil,
+		}}})
+		writeSSEJSON(w, map[string]any{"choices": []any{}, "usage": map[string]any{
+			"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5,
+		}})
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	// retryMax=0：参数型降档与 429/5xx 退避重试互不影响。
+	cfg := AIConfig{BaseURL: server.URL + "/v1", APIKey: "k", Model: "sensenova-6.8-flash",
+		MaxTokens: 134144, Proxy: "direct"}
+	events, err := runAIStreamForTestRetry(cfg, []AIMessage{{Role: "user", Content: "hi"}}, nil, 0)
+	if err != nil {
+		t.Fatalf("aiStreamResponse: %v", err)
+	}
+	if got := atomic.LoadInt32(&requestCount); got != 2 {
+		t.Fatalf("请求数 = %d，想要 2（超限 400 + 降档重试）", got)
+	}
+	if len(seen) != 2 || seen[0] != 134144 || seen[1] != 131072 {
+		t.Fatalf("max_tokens = %v，想要 [134144 131072]", seen)
+	}
+	adjusts := aiEventsNamed(events, aiEventParamAdjust)
+	if len(adjusts) != 1 {
+		t.Fatalf("ai-param-adjust 事件数 = %d，想要 1", len(adjusts))
+	}
+	payload, ok := adjusts[0].(aiParamAdjustPayload)
+	if !ok || payload.Model != cfg.Model || payload.Field != "maxTokens" ||
+		payload.Previous != 134144 || payload.Value != 131072 || !strings.Contains(payload.Message, "131072") {
+		t.Fatalf("降档事件 = %#v", adjusts[0])
+	}
+	if got := aiJoinedDelta(events, aiEventChunk); !strings.Contains(got, "降档成功") {
+		t.Fatalf("降档后正文缺失：%q", got)
+	}
+	if retries := aiEventsNamed(events, aiEventRetry); len(retries) != 0 {
+		t.Fatalf("参数降档不应产生退避重试事件，实际 %d 个", len(retries))
+	}
+}
+
+func TestAIStreamDowngradeOnlyOnce(t *testing.T) {
+	var requestCount int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&requestCount, 1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = fmt.Fprint(w, `{"error":{"message":"field MaxTokens invalid, should be in [1, 131072]"}}`)
+	}))
+	defer server.Close()
+
+	cfg := AIConfig{BaseURL: server.URL + "/v1", APIKey: "k", Model: "m", MaxTokens: 200000, Proxy: "direct"}
+	events, err := runAIStreamForTestRetry(cfg, []AIMessage{{Role: "user", Content: "hi"}}, nil, 5)
+	if err == nil || !strings.Contains(err.Error(), "HTTP 400") {
+		t.Fatalf("error = %v", err)
+	}
+	if got := atomic.LoadInt32(&requestCount); got != 2 {
+		t.Fatalf("请求数 = %d，想要 2（降档最多一次，不许循环）", got)
+	}
+	if adjusts := aiEventsNamed(events, aiEventParamAdjust); len(adjusts) != 1 {
+		t.Fatalf("降档事件数 = %d，想要 1", len(adjusts))
+	}
+}
+
+func TestAIStreamNoDowngradeWhenWithinLimit(t *testing.T) {
+	var requestCount int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&requestCount, 1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = fmt.Fprint(w, `{"error":{"message":"field MaxTokens invalid, should be in [1, 131072]"}}`)
+	}))
+	defer server.Close()
+
+	cfg := AIConfig{BaseURL: server.URL + "/v1", APIKey: "k", Model: "m", MaxTokens: 4096, Proxy: "direct"}
+	events, err := runAIStreamForTestRetry(cfg, []AIMessage{{Role: "user", Content: "hi"}}, nil, 5)
+	if err == nil || !strings.Contains(err.Error(), "HTTP 400") {
+		t.Fatalf("error = %v", err)
+	}
+	if got := atomic.LoadInt32(&requestCount); got != 1 {
+		t.Fatalf("未超限的 400 不应重试，请求数 = %d", got)
+	}
+	if adjusts := aiEventsNamed(events, aiEventParamAdjust); len(adjusts) != 0 {
+		t.Fatalf("未超限不应发降档事件，实际 %d 个", len(adjusts))
+	}
+}
+
 func TestAIRetryDelayExponential(t *testing.T) {
 	cases := map[int]time.Duration{
 		0: 1 * time.Second,
@@ -985,13 +1161,80 @@ func TestAIRetryDelayExponential(t *testing.T) {
 		9: 30 * time.Second,
 	}
 	for attempt, want := range cases {
-		got := aiRetryDelay(attempt, "")
+		got := aiRetryDelay(attempt, "", 0)
 		if got < want*85/100 || got > want*115/100 {
 			t.Fatalf("attempt %d：delay = %v，期望 %v ±15%%", attempt, got, want)
 		}
 	}
-	if d := aiRetryDelay(3, "7"); d != 7*time.Second {
+	if d := aiRetryDelay(3, "7", 0); d != 7*time.Second {
 		t.Fatalf("Retry-After 7 应生效，实际 %v", d)
+	}
+	// HTTP-date 形式的 Retry-After（约 90s 后）
+	header := time.Now().UTC().Add(90 * time.Second).Format(http.TimeFormat)
+	if d := aiRetryDelay(0, header, 429); d < 85*time.Second || d > 90*time.Second {
+		t.Fatalf("Retry-After HTTP-date 应换算成等待时长，实际 %v", d)
+	}
+	// 过去的 HTTP-date 立即重试
+	past := time.Now().UTC().Add(-time.Minute).Format(http.TimeFormat)
+	if d := aiRetryDelay(0, past, 429); d != 0 {
+		t.Fatalf("过期的 HTTP-date 应立即重试，实际 %v", d)
+	}
+}
+
+func TestAIRetryDelayRateLimit(t *testing.T) {
+	// 429（分钟窗配额）专用曲线：2s→4s→8s→16s→32s→60s 封顶
+	cases := map[int]time.Duration{
+		0: 2 * time.Second,
+		1: 4 * time.Second,
+		2: 8 * time.Second,
+		4: 32 * time.Second,
+		5: 60 * time.Second, // 64s 被上限压到 60s
+		9: 60 * time.Second,
+	}
+	for attempt, want := range cases {
+		got := aiRetryDelay(attempt, "", 429)
+		if got < want*85/100 || got > want*115/100 {
+			t.Fatalf("429 attempt %d：delay = %v，期望 %v ±15%%", attempt, got, want)
+		}
+	}
+}
+
+func TestAIRetryAttempts(t *testing.T) {
+	cases := []struct {
+		retryMax, code, want int
+	}{
+		{5, 429, 8}, // 限流额外预算 +3
+		{1, 429, 4},
+		{10, 429, 13},
+		{0, 429, 0}, // 用户显式关闭重试时不强加
+		{5, 500, 5}, // 5xx 按用户设置
+		{5, 0, 5},   // 网络错误按用户设置
+	}
+	for _, c := range cases {
+		if got := aiRetryAttempts(c.retryMax, c.code); got != c.want {
+			t.Fatalf("aiRetryAttempts(%d, %d) = %d，期望 %d", c.retryMax, c.code, got, c.want)
+		}
+	}
+}
+
+func TestAIRetryWaitTouchesWatchdog(t *testing.T) {
+	// 长等待必须分段喂看门狗：delay=100ms、每 30ms 一段 → touch 至少 2 次
+	previous := aiRetryTouchEvery
+	aiRetryTouchEvery = 30 * time.Millisecond
+	defer func() { aiRetryTouchEvery = previous }()
+	ctx := context.Background()
+	touches := 0
+	if !aiRetryWait(ctx, 100*time.Millisecond, func() { touches++ }) {
+		t.Fatalf("等待被意外取消")
+	}
+	if touches < 2 {
+		t.Fatalf("分段 touch 次数 = %d，期望 ≥2", touches)
+	}
+	// 用户取消时立即返回 false
+	ctx2, cancel := context.WithCancel(context.Background())
+	cancel()
+	if aiRetryWait(ctx2, time.Second, func() {}) {
+		t.Fatalf("已取消的 ctx 应返回 false")
 	}
 }
 

@@ -5,6 +5,8 @@
 // deps 由 main.js 显式传入（getter 延迟求值）；原裸标识符引用已重写为 deps.X，
 // 对象简写位展开为 key: deps.X。
 import {isDocReadOnly} from '../core/readonly.js';
+import {renderCodeShot, planCodeShot} from '../core/code-shot.js';
+import {copyImageBlobToClipboard} from '../core/image-clipboard.js';
 
 export function createEditorMenus(deps) {
 
@@ -91,9 +93,88 @@ function ctxFold(command) {
     }
 }
 
+// —— 代码截图：有选区取涉及的所有整行，无选区取全文；当前主题/代码风格所见即所得 ——
+function codeShotInfo() {
+    const ace = deps.editor && deps.editor.aceEditor;
+    if (!ace) return null;
+    const session = ace.session || (ace.getSession && ace.getSession());
+    if (!session) return null;
+    const selected = ace.getSelectedText ? String(ace.getSelectedText() || '') : '';
+    const plan = planCodeShot({
+        range: ace.getSelectionRange ? ace.getSelectionRange() : null,
+        hasSelection: !!selected,
+        lineCount: session.getLength(),
+    });
+    return {ace, selected, plan};
+}
+
+async function makeCodeShot() {
+    const info = codeShotInfo();
+    if (!info) throw new Error('当前没有可用的代码编辑器');
+    if (info.plan.error) throw new Error(info.plan.error);
+    const shot = deps.settings || {};
+    return renderCodeShot({
+        ace: info.ace,
+        name: (deps.file && deps.file.name) || '代码',
+        rangeLabel: info.selected
+            ? '第 ' + (info.plan.startRow + 1) + '–' + (info.plan.endRow + 1) + ' 行'
+            : '全文 ' + info.plan.lines + ' 行',
+        title: shot.codeShotTitle === true,
+        lineNumbers: shot.codeShotLineNumbers !== false,
+        radius: Number(shot.codeShotRadius),
+        scale: Number(shot.codeShotScale),
+        fontSize: info.ace.getFontSize ? (parseFloat(info.ace.getFontSize()) || 0) : 0,
+        lineHeight: (info.ace.renderer && Number(info.ace.renderer.lineHeight)) || 0,
+    });
+}
+
+function toggleCodeShotTitle() {
+    deps.settings.codeShotTitle = !deps.settings.codeShotTitle;
+    deps.applySettings();
+    deps.flash('代码截图标题：' + (deps.settings.codeShotTitle ? '开' : '关'));
+}
+
+async function copyCodeShot() {
+    try {
+        const blob = await makeCodeShot();
+        const ok = await copyImageBlobToClipboard(blob);
+        deps.flash(ok ? '已复制代码图片' : '剪贴板不支持图片', !ok);
+    } catch (e) {
+        deps.flash('复制失败：' + ((e && e.message) || e), true);
+    }
+}
+
+async function exportCodeShot() {
+    try {
+        const blob = await makeCodeShot();
+        const dataUrl = await new Promise((resolve) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = () => resolve('');
+            reader.readAsDataURL(blob);
+        });
+        if (!dataUrl) throw new Error('PNG 数据生成失败');
+        const raw = (deps.file && (deps.file.name || deps.file.path)) || '代码';
+        const stem = String(raw).split(/[\\/]/).pop().replace(/\.[^.]+$/, '') || '代码';
+        let dest = '';
+        try {
+            dest = await deps.backend.SaveFileDialog(stem + '.png');
+        } catch (e) {
+            return;
+        }
+        if (!dest) return;
+        await deps.backend.SaveDataURL(dest, dataUrl);
+        deps.flash('已导出 PNG：' + String(dest).split(/[\\/]/).pop());
+    } catch (e) {
+        deps.flash('导出失败：' + ((e && e.message) || e), true);
+    }
+}
+
 function showEditorMenu(x, y) {
     if (!deps.ctxMenu || !deps.file) return;
     const code = deps.currentMode === 'code' && !!deps.editor && !!deps.editor.aceEditor;
+    const canShot = (deps.currentMode === 'code' || deps.currentMode === 'split') &&
+        !!(deps.editor && deps.editor.aceEditor);
     const text = deps.currentMode === 'text';
     const editable = code || text;
     const readonly = isDocReadOnly(deps.file, deps.settings);
@@ -110,6 +191,16 @@ function showEditorMenu(x, y) {
         {label: '复制', shortcut: 'Ctrl+C', icon: 'E8C8', disabled: !editable, action: ctxCopy},
         {label: '粘贴', shortcut: 'Ctrl+V', icon: 'E77F', disabled: !editable || readonly, action: ctxPaste},
         {label: '全选', shortcut: 'Ctrl+A', icon: 'E8B3', disabled: !editable, action: ctxSelectAll},
+        ...(canShot ? [{
+            label: '代码截图',
+            icon: 'E74E',
+            submenu: [
+                {label: '带标题', checked: !!deps.settings.codeShotTitle, action: toggleCodeShotTitle},
+                {sep: true},
+                {label: '复制为图片', icon: 'E8C8', action: copyCodeShot},
+                {label: '导出为 PNG…', icon: 'E74E', action: exportCodeShot},
+            ],
+        }] : []),
         {sep: true},
         {label: '查找…', shortcut: 'Ctrl+F', icon: 'E721', disabled: !editable, action: ctxFind},
         {label: '格式化', shortcut: 'Ctrl+Alt+L', disabled: !deps.file || readonly || !!deps.file.format.rawOnly, action: deps.formatDocument},

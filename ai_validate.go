@@ -16,16 +16,22 @@ func aiProviderOf(cfg AIConfig) aiProviderKind {
 	switch strings.ToLower(strings.TrimSpace(cfg.Provider)) {
 	case "anthropic", "claude":
 		return aiProviderAnthropic
+	case "responses", "openai-responses":
+		return aiProviderResponses
 	default:
 		return aiProviderOpenAI
 	}
 }
 
 func aiProviderName(cfg AIConfig) string {
-	if aiProviderOf(cfg) == aiProviderAnthropic {
+	switch aiProviderOf(cfg) {
+	case aiProviderAnthropic:
 		return "anthropic"
+	case aiProviderResponses:
+		return "responses"
+	default:
+		return "openai"
 	}
-	return "openai"
 }
 
 func validateAIEndpoint(cfg AIConfig) error {
@@ -45,6 +51,18 @@ func validateAIEndpoint(cfg AIConfig) error {
 	}
 	if len(cfg.ExtraHeaders) > aiMaxExtraHeaders {
 		return fmt.Errorf("自定义请求头最多 %d 条", aiMaxExtraHeaders)
+	}
+	if len(cfg.ExtraBody) > aiMaxExtraBodyKeys {
+		return fmt.Errorf("请求体补丁最多 %d 个字段", aiMaxExtraBodyKeys)
+	}
+	if len(cfg.ExtraBody) > 0 {
+		encoded, err := json.Marshal(cfg.ExtraBody)
+		if err != nil {
+			return fmt.Errorf("请求体补丁不是合法 JSON：%w", err)
+		}
+		if len(encoded) > aiMaxExtraBodyBytes {
+			return fmt.Errorf("请求体补丁超过 %d 字节", aiMaxExtraBodyBytes)
+		}
 	}
 	for name, value := range cfg.ExtraHeaders {
 		name = strings.TrimSpace(name)

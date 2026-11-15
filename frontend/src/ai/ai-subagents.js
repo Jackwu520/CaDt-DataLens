@@ -1,7 +1,9 @@
-// ai-subagents.js：子代理域（spawn_agent 运行时 / HUD 头部角标与 chips 弹层 / 后台作业归类 / 卡片渲染）。
+// ai-subagents.js：子代理域（spawn_agent 运行时 / HUD 头部角标与 chips 弹层 / 后台作业归类 /
+// 详情视图的正文渲染与输入行）。详情视图挂在宿主给的根节点上：主窗口是内容区标签页
+// （bridge-agent-view.js），悬浮窗退回面板内覆盖层 #ai-agent-view。
 // 从 ai-panel.js 拆出（docs/unfinished-plans/structure-cleanup.md 阶段 3），函数体逐字搬移；
 // 顺手删除了 sessionHasLiveBgJob 的重复定义（原 10923/10933 两份逐字相同，后者覆盖前者，保留一份）。
-// agentViewState/agentViewTimer/hudReady/AGENT_STATE_LABEL 与 AI_SUB_* 常量随域迁入；chipsPopKind 经访问器读写。
+// hudReady/AGENT_STATE_LABEL 与 AI_SUB_* 常量随域迁入；chipsPopKind 经访问器读写。
 import {iconSvg} from '../core/icons.js';
 import {createTextarea} from '../core/form-controls.js';
 import {aiClampInt, aiNowId, aiTextOf, AI_COMPACT_SYSTEM_PROMPT} from './ai-constants.js';
@@ -32,6 +34,14 @@ export function canReviveRecord(record) {
     return {ok: true, reason: ''};
 }
 
+// 记录是否诞生于本次唤醒之前（陈旧）：冷唤醒给旧记录打 revivedAt，新一轮落账时
+// finishedAt 会超过它。wait_agent 只有确认不陈旧才允许把 record 当结论返回，
+// 否则会把上一轮的结果当成本轮结果交给主代理（2026-11-15 实测缺陷）。
+export function isStaleRecord(record) {
+    if (!record || !record.revivedAt) return false;
+    return (Number(record.finishedAt) || 0) < record.revivedAt;
+}
+
 // 子代理权限档：**继承父会话**，不写死 readonly。
 // 读的边界（工作区内 / 可访问工作区外）由权限档决定，而「只读」由工具白名单
 // （subToolsForScope）保证——子代理拿不到任何写工具，幻觉调用也会被 allowed 集合挡掉。
@@ -42,6 +52,81 @@ export function subAgentScopeOf(parentScope) {
     return SUB_SCOPES.includes(parentScope) ? parentScope : 'read';
 }
 
+// 工具主参数速览：优先取「点名到具体对象」的字段，避免把整段 JSON 塞进工具行标题。
+export function agentToolArgBrief(args) {
+    let parsed = null;
+    try {
+        parsed = typeof args === 'string' ? JSON.parse(args || '{}') : (args || null);
+    } catch (e) {
+        return '';
+    }
+    if (!parsed || typeof parsed !== 'object') return '';
+    for (const key of ['path', 'pattern', 'query', 'url', 'name', 'task', 'prompt', 'text']) {
+        const value = parsed[key];
+        if (typeof value !== 'string' || !value.trim()) continue;
+        const line = value.replace(/\s+/g, ' ').trim();
+        return line.length > 60 ? line.slice(0, 60) + '…' : line;
+    }
+    return '';
+}
+
+// 详情视图的块模型（导出供单测：块 key 与顺序是增量渲染「不重复、不丢块」的唯一依据）。
+// 运行态取子代理自己的消息数组，终态取内存转录——两者形状不同，但都收敛到同一组块。
+export function agentMessageBlocks(messages) {
+    const blocks = [];
+    (messages || []).forEach((m, index) => {
+        if (!m) return;
+        if (m.role === 'user') {
+            blocks.push({key: 'm' + index, kind: 'user', text: String(m.content || '')});
+        } else if (m.role === 'assistant') {
+            const text = String(m.content || '').trim();
+            // 思考与流式中间态不渲染，只看已落定的正文与工具
+            if (text) blocks.push({key: 'm' + index, kind: 'assistant', text});
+        } else if (m.role === 'tool') {
+            blocks.push({
+                key: 'm' + index, kind: 'tool', name: m.name,
+                arg: agentToolArgBrief(m.arguments),
+                text: String(m.content || ''), error: m.status === 'error',
+            });
+        }
+    });
+    return blocks;
+}
+
+export function agentTranscriptBlocks(transcript) {
+    const blocks = [];
+    (transcript || []).forEach((entry, index) => {
+        if (!entry) return;
+        if (entry.role === 'assistant') blocks.push({key: 't' + index, kind: 'assistant', text: String(entry.text || '')});
+        else if (entry.role === 'tool') blocks.push({key: 't' + index, kind: 'tool', name: entry.name, text: String(entry.text || '')});
+    });
+    return blocks;
+}
+
+// 终态记录的块：**沿用运行态那套消息块**（key 同样是 m<i>），末尾补一张结论摘要卡。
+// 为什么不能换成「摘要 + 转录」：done → 唤醒（agent_send / 用户插话）→ done 是子代理最常见的
+// 交互形态，两套模型交替会让块 key 从 m<i> 变成 t<i>，正文节点整批删除重建——滚动位置被钳走、
+// 图表卡片的 Shadow DOM 全毁，视图看起来就是「每来一条消息就跳回顶部」（2026-11-16 实测）。
+// 摘要是本轮 assistant 正文的拷贝时不再重复挂：重复会多出一块，收尾瞬间高度又抖一次。
+export function agentRecordBlocks(messages, summary) {
+    const blocks = agentMessageBlocks(messages);
+    const text = String(summary == null ? '' : summary).trim();
+    if (!text) return blocks;
+    const last = blocks.length ? blocks[blocks.length - 1] : null;
+    if (last && last.kind === 'assistant' && String(last.text || '').trim() === text) return blocks;
+    blocks.push({key: 'summary', kind: 'summary', text});
+    return blocks;
+}
+
+// 签名里带 streaming 标记：流式期间可视化卡片只占位，块落定后签名变化，
+// 再渲染一次把占位换成真实卡片（与主消息区的 renderSig/streaming 写法同源）。
+export function agentBlockSig(block, streaming) {
+    const text = String((block && block.text) || '');
+    return (block && block.kind) + '|' + (streaming ? 's' : 'd') + (block && block.error ? '!' : '') +
+        (block && block.arg ? '@' + block.arg : '') +
+        '|' + text.length + ':' + text.slice(-96);
+}
+
 export function createAISubagents(ctx) {
     const el = ctx.el;
     const panel = ctx.panel;
@@ -49,6 +134,11 @@ export function createAISubagents(ctx) {
     const flash = ctx.flash;
     const renderMarkdown = ctx.renderMarkdown;
     const openTermTab = ctx.openTermTab;
+    // 详情视图的宿主出口：主窗口在内容区开标签页（bridge-agent-view.js），悬浮窗退回面板覆盖层
+    const openAgentTab = typeof ctx.openAgentTab === 'function' ? ctx.openAgentTab : null;
+    const isFloatWindow = typeof ctx.isFloatWindow === 'function' ? ctx.isFloatWindow : () => false;
+    // 正文增强链（代码复制钮 / 本地图片 / mermaid·echarts·svg 可视化卡片）：与主消息区同一条
+    const enhanceAnswerBody = typeof ctx.enhanceAnswerBody === 'function' ? ctx.enhanceAnswerBody : null;
     const currentSession = ctx.currentSession;
     const persistSessions = ctx.persistSessions;
     const sessionById = ctx.sessionById;
@@ -73,6 +163,8 @@ export function createAISubagents(ctx) {
     const getConfig = ctx.getConfig;
     const newAssistantMessage = ctx.newAssistantMessage;
     const getSessions = ctx.getSessions;
+    // 操作留痕（ai-panel 闭包 helper）：子代理工具拒绝落盘；activity 为空时静默降级
+    const logActivity = ctx.logActivity;
     // 压缩判定需要「窗口大小」与「当前上下文估算」——与主会话同一口径，不另立一套
     const contextWindowOf = ctx.contextWindowOf;
     const estimateApiMessagesTokens = ctx.estimateApiMessagesTokens;
@@ -92,13 +184,17 @@ export function createAISubagents(ctx) {
     const AI_SUB_SYSTEM_PROMPT = [
         '你是主代理派出的只读子代理：独立完成任务后输出最终结论，不与用户直接交互。',
         '约束：只做只读探索（列目录 / 读文件 / 搜索 / 联网检索 / 记忆读取 / 技能加载）；不要尝试修改文件或执行命令；不要直接向最终用户发问（后台模式可用 ask_user 问主代理，由主代理决定）。',
+        '你的工具范围在派出时已固定，无法从会话内放宽：范围外工具会被直接拒绝——不要换参数或写法重试，在最终结论中说明该限制即可，由主代理决定如何处理。',
+        'timer_list 是主会话计时器的只读共享时钟：可用来对齐时间基准（正计时已计时长 / 倒计时剩余），但不能启动、停止或打标记；读数只是调用瞬间的快照，不会阻塞等待，不要靠反复调用来「等 N 秒」。',
         // 投递契约（§4.8）：投递层不截断（阶段 B 移除了 8000 字符上限），结论的紧凑性靠这里自律。
         '结果投递契约：主代理只会收到你的最终结论文本，看不到你的完整转录、工具输出或推理过程——最终结论必须自带结果与关键证据（path:line），不要指望父代理从过程记录里找信息。',
         '完成后输出一段结构化最终结论（要点 + 证据 path:line），它是你返回给主代理的唯一结果。',
     ].join('\n');
     let hudReady = false;             // HUD 块执行完才置真，之前的 renderSessionList 调用跳过
-    let agentViewState = null;        // 详情视图当前打开的子代理 {toolCallId, subId, name}
-    let agentViewTimer = 0;
+    // 详情视图挂载点：主窗口是内容区标签页、悬浮窗是面板内覆盖层。每个挂载点一个 view 对象，
+    // 同一子代理可同时开多处（标签页 + 悬浮窗），各自独立节流渲染。
+    const agentViews = new Set();
+    let overlayView = null;           // 悬浮窗覆盖层上的那个挂载点（最多一个）
     const AGENT_STATE_LABEL = {running: '运行中', done: '已完成', error: '失败', stopped: '已停止'};
 
     const subAgents = new Map();      // subId -> 子代理运行态
@@ -147,6 +243,8 @@ export function createAISubagents(ctx) {
             AI_TOOL_DEFS.list_dir, AI_TOOL_DEFS.read_file, AI_TOOL_DEFS.search_text,
             AI_TOOL_DEFS.web_search, AI_TOOL_DEFS.web_fetch,
             AI_TOOL_DEFS.memory_list, AI_TOOL_DEFS.memory_read,
+            // 主会话计时器的只读快照：子代理与孙代理共用本表，只有读权（不能启动 / 停止 / 打标记）
+            AI_TOOL_DEFS.timer_list,
             AI_TOOL_DEFS.skill_use, AI_TOOL_DEFS.env_list,
         ];
         // ask_user 只在后台模式挂载（§4.5 原语 6 的实现陷阱）：阻塞模式的父回合被 await
@@ -170,6 +268,9 @@ export function createAISubagents(ctx) {
         }
         list.push(entry);
         while (list.length > 200) list.shift();
+        // 工具行的出现/落定不经过 ai-chunk（长命令执行期间没有增量），详情视图得自己刷，
+        // 否则「正在跑的工具」要等下一次正文增量才出现。300ms 节流在 scheduleAgentViewRender 里。
+        refreshAgentViewIfOpen(sub.key);
     }
 
     function subThrottleRender(sub) {
@@ -178,8 +279,10 @@ export function createAISubagents(ctx) {
             sub.renderTimer = 0;
             const session = sessionById(sub.parentSessionId);
             if (session && sub.parentToolMessage) refreshToolWrap(session, sub.parentToolMessage);
-            // 子代理详情视图开着时同步实时刷新（docs/unfinished-plans/ai-head-agents-terminal.md）
-            if (agentViewState && agentViewState.subId === sub.id) scheduleAgentViewRender();
+            // 子代理详情视图开着时同步实时刷新（docs/finished-plans/ai-head-agents-terminal.md）
+            for (const view of agentViews) {
+                if (view.subId ? view.subId === sub.id : view.toolCallId === sub.key) scheduleAgentViewRender(view);
+            }
         }, 350);
     }
 
@@ -203,7 +306,7 @@ export function createAISubagents(ctx) {
         const session = currentSession();
         const title = session ? String(session.title || '').trim() : '';
         el.headTitle.textContent = title || 'AI 助手';
-        el.headTitle.title = title || 'AI 助手';
+        el.headTitle.dataset.tip = title || 'AI 助手';
     }
 
     function bgJobStateOf(entry) {
@@ -421,7 +524,7 @@ export function createAISubagents(ctx) {
                     const wait = document.createElement('span');
                     wait.className = 'ai-agent-badge ai-agent-waiting';
                     wait.textContent = '待处理 ' + agent.inboxCount;
-                    wait.title = '收件箱里有 ' + agent.inboxCount + ' 条消息还没被消费（子代理下一轮边界会读）';
+                    wait.dataset.tip = '收件箱里有 ' + agent.inboxCount + ' 条消息还没被消费（子代理下一轮边界会读）';
                     row.appendChild(wait);
                 }
                 if (agent.compacting) {
@@ -443,7 +546,7 @@ export function createAISubagents(ctx) {
                 if (agent.sessionTitle) bits.push('@ ' + agent.sessionTitle);
                 subSpan.textContent = bits.join(' · ');
                 main.append(nameSpan, subSpan);
-                main.title = (agent.task || '') + (agent.sessionTitle ? '（会话：' + agent.sessionTitle + '）' : '');
+                main.dataset.tip = (agent.task || '') + (agent.sessionTitle ? '（会话：' + agent.sessionTitle + '）' : '');
                 row.appendChild(main);
                 const go = document.createElement('span');
                 go.className = 'ai-chips-go';
@@ -470,7 +573,7 @@ export function createAISubagents(ctx) {
                 const main = document.createElement('span');
                 main.className = 'ai-chips-main';
                 main.textContent = bgJobFirstLine(entry.command);
-                main.title = entry.command || '';
+                main.dataset.tip = entry.command || '';
                 row.appendChild(main);
                 const go = document.createElement('span');
                 go.className = 'ai-chips-go';
@@ -513,7 +616,11 @@ export function createAISubagents(ctx) {
         }
     }
 
-    // ---- 子代理详情视图（替代面板消息区，返回按钮回到主代理） ----
+    // ---- 子代理详情视图（内容区标签页；悬浮窗退回面板内覆盖层） ----
+    // 视图不再占满 AI 面板：主窗口点开「智能体团队」的一行 → 内容区标签页（可与主对话并排、
+    // 输入框不被遮挡）；悬浮窗没有内容区，仍用 #ai-agent-view 覆盖层。
+    // 正文按「块 + 内容签名」增量渲染：子代理流式输出时只重写变化的块——整段重建会销毁
+    // mermaid / echarts / svg 卡片的 Shadow DOM，并把滚动位置拉回底部（实测每 300ms 一次）。
 
     function agentBlock(className, contentText, markdown) {
         const div = document.createElement('div');
@@ -523,71 +630,215 @@ export function createAISubagents(ctx) {
         return div;
     }
 
-    function agentToolRow(name, text, error) {
+    // 工具行：名称 + 输出。视图是只读速览，超长输出截断（完整输出在父会话的工具卡里）。
+    const AGV_TOOL_TEXT_MAX = 4000;
+
+    function agentToolRow(block) {
         const row = document.createElement('div');
-        row.className = 'ai-agv-tool' + (error ? ' error' : '');
+        row.className = 'ai-agv-tool';
         const label = document.createElement('span');
         label.className = 'ai-agv-tool-name';
-        label.textContent = (name || 'tool') + (error ? ' · 失败' : '');
         const pre = document.createElement('pre');
-        pre.textContent = String(text || '').slice(0, 600);
         row.append(label, pre);
+        fillAgentToolRow(row, block || {});
         return row;
     }
 
-    function renderAgentLiveMessages(sub, body) {
-        for (const m of sub.session.messages || []) {
-            if (m.role === 'user') {
-                body.appendChild(agentBlock('ai-agv-user', m.content, false));
-            } else if (m.role === 'assistant') {
-                const text = String(m.content || '').trim();
-                if (!text) continue; // 思考/流式中间态不渲染，只看已落定的正文与工具
-                body.appendChild(agentBlock('ai-agv-msg', text, true));
-            } else if (m.role === 'tool') {
-                body.appendChild(agentToolRow(m.name, m.content, m.status === 'error'));
-            }
+    function fillAgentToolRow(row, block) {
+        row.className = 'ai-agv-tool' + (block.error ? ' error' : '');
+        const label = row.querySelector('.ai-agv-tool-name');
+        if (label) {
+            const suffix = block.error ? ' · 失败' : '';
+            label.textContent = (block.name || 'tool') + (block.arg ? ' · ' + block.arg : '') + suffix;
+            label.dataset.tip = (block.name || 'tool') + (block.arg ? ' ' + block.arg : '');
         }
-        const tip = document.createElement('div');
-        tip.className = 'ai-agv-live-tip';
-        tip.textContent = '子代理运行中，视图实时更新';
-        body.appendChild(tip);
+        const pre = row.querySelector('pre');
+        if (!pre) return;
+        const raw = String(block.text || '');
+        const cut = raw.length > AGV_TOOL_TEXT_MAX;
+        pre.textContent = cut ? raw.slice(0, AGV_TOOL_TEXT_MAX) + '\n…（输出过长，已截断）' : raw;
+        pre.dataset.tip = cut ? '完整输出见父会话里这张工具卡' : '';
     }
 
-    function renderAgentFinished(toolCallId, meta, body) {
+    // 正文块模型：user / assistant / tool / summary / inbox / tip。
+    // key 稳定（消息下标、转录下标或固定名），内容签名变化才重写节点——增量渲染的唯一依据。
+    function agentInboxBlock(sub) {
+        const inbox = sub.inbox || {step: [], turn: [], ask: null};
+        const stepN = (inbox.step || []).length;
+        const turnN = (inbox.turn || []).length;
+        if (!stepN && !turnN && !inbox.ask) return null;
+        const lines = [...(inbox.step || []), ...(inbox.turn || [])].slice(0, 3).map((item) =>
+            (item.from === 'user' ? '用户：' : '主代理：') + String(item.text || '').slice(0, 90));
+        const ask = inbox.ask ? '等待主代理回答提问（askId=' + (inbox.ask.askId || '') + '）' : '';
+        return {
+            key: 'inbox',
+            kind: 'inbox',
+            title: '收件箱 · 排队 ' + turnN + ' 条 · 插队 ' + stepN + ' 条',
+            lines,
+            ask,
+            // 签名只认可见内容：条数变化而文本相同时不必重写
+            text: lines.join('\n') + '|' + ask,
+        };
+    }
+
+    function agentBlocksOf(view) {
+        const sub = view.subId ? subAgents.get(view.subId) : null;
+        if (sub) {
+            const blocks = agentMessageBlocks(sub.session && sub.session.messages);
+            const inbox = agentInboxBlock(sub);
+            if (inbox) blocks.push(inbox);
+            return {blocks, live: true, sub};
+        }
+        // 终态记录：会话还在内存（done 可续 / 本轮刚收尾）就继续用消息块，别切成「摘要 + 转录」。
+        // 两套模型交替 = 每次收尾/唤醒都整段换块，滚动位置与图表卡片全丢（见 agentRecordBlocks）。
+        const rec = view.subId ? subAgentRecords.get(view.subId) : null;
+        const recMessages = rec && rec.session ? rec.session.messages : null;
+        if (recMessages && recMessages.length) {
+            return {blocks: agentRecordBlocks(recMessages, rec.summary), live: false, sub: null};
+        }
+        // 退路：上下文已回收 / 应用重启后内存里没有会话，只剩摘要与转录
+        const meta = agentStatusMeta(view);
         const summary = meta && meta.summary ? String(meta.summary) : '';
-        if (summary) {
+        const transcript = view.toolCallId ? subAgentTranscripts.get(view.toolCallId) : null;
+        const blocks = [];
+        if (summary) blocks.push({key: 'summary', kind: 'summary', text: summary});
+        if (summary && transcript && transcript.length) {
+            blocks.push({key: 'transcript-label', kind: 'label', text: '过程转录'});
+        }
+        blocks.push(...agentTranscriptBlocks(transcript));
+        if (!blocks.length) {
+            blocks.push({key: 'empty', kind: 'tip', text: '应用重启后子代理只保留状态与结论摘要；本次没有可显示的转录。'});
+        }
+        return {blocks, live: false, sub: null};
+    }
+
+    function createAgentBlockNode(block) {
+        if (block.kind === 'assistant') return agentBlock('ai-agv-msg', '', true);
+        if (block.kind === 'user') return agentBlock('ai-agv-user', '', false);
+        if (block.kind === 'tip') return agentBlock('ai-agv-live-tip', '', false);
+        if (block.kind === 'label') return agentBlock('ai-agv-summary-title', '', false);
+        if (block.kind === 'tool') return agentToolRow(block);
+        if (block.kind === 'summary') {
             const wrap = document.createElement('div');
             wrap.className = 'ai-agv-summary';
             const title = document.createElement('div');
             title.className = 'ai-agv-summary-title';
             title.textContent = '最终结论';
-            wrap.appendChild(title);
-            wrap.appendChild(agentBlock('ai-agv-msg', summary, true));
-            body.appendChild(wrap);
+            const body = document.createElement('div');
+            body.className = 'ai-agv-msg';
+            wrap.append(title, body);
+            return wrap;
         }
-        const transcript = subAgentTranscripts.get(toolCallId);
-        if (transcript && transcript.length) {
-            if (summary) {
-                const sub2 = document.createElement('div');
-                sub2.className = 'ai-agv-summary-title';
-                sub2.textContent = '过程转录';
-                body.appendChild(sub2);
-            }
-            for (const entry of transcript) {
-                if (entry.role === 'assistant') body.appendChild(agentBlock('ai-agv-msg', entry.text, true));
-                else if (entry.role === 'tool') body.appendChild(agentToolRow(entry.name, entry.text, false));
-            }
+        // inbox：标题 + 逐条预览 + 提问挂起提示（与面板里的收件箱预览同款信息）
+        const box = document.createElement('div');
+        box.className = 'ai-agv-inbox';
+        const title = document.createElement('div');
+        title.className = 'ai-agv-inbox-title';
+        box.appendChild(title);
+        for (let i = 0; i < 3; i += 1) {
+            const line = document.createElement('div');
+            line.className = 'ai-agv-inbox-line';
+            line.hidden = true;
+            box.appendChild(line);
         }
-        if (!summary && !(transcript && transcript.length)) {
-            const empty = document.createElement('div');
-            empty.className = 'ai-agv-live-tip';
-            empty.textContent = '应用重启后子代理只保留状态与结论摘要；本次没有可显示的转录。';
-            body.appendChild(empty);
-        }
+        const ask = document.createElement('div');
+        ask.className = 'ai-agv-inbox-ask';
+        ask.hidden = true;
+        box.appendChild(ask);
+        return box;
     }
 
-    function agentStatusMeta(toolCallId) {
-        const view = agentViewState;
+    function fillAgentBlockNode(node, block, streaming) {
+        if (block.kind === 'tool') {
+            fillAgentToolRow(node, block);
+            return;
+        }
+        if (block.kind === 'inbox') {
+            const title = node.querySelector('.ai-agv-inbox-title');
+            if (title) title.textContent = block.title || '';
+            const lines = [...node.querySelectorAll('.ai-agv-inbox-line')];
+            lines.forEach((line, i) => {
+                const text = (block.lines || [])[i];
+                line.hidden = text == null;
+                line.textContent = text == null ? '' : text;
+            });
+            const ask = node.querySelector('.ai-agv-inbox-ask');
+            if (ask) {
+                ask.hidden = !block.ask;
+                ask.textContent = block.ask || '';
+            }
+            return;
+        }
+        if (block.kind === 'summary') {
+            const body = node.querySelector('.ai-agv-msg');
+            if (!body) return;
+            paintAgentMarkdown(body, block.text, streaming);
+            return;
+        }
+        if (block.kind === 'assistant') {
+            paintAgentMarkdown(node, block.text, streaming);
+            return;
+        }
+        node.textContent = block.text || '';
+    }
+
+    // 子代理正文与主消息区走同一条渲染链：Markdown → 代码块复制钮 → 本地图片 → 可视化卡片
+    // （mermaid / echarts / svg / html / 关系图 / 词云）。缺了增强链，围栏只会剩一块源码占位。
+    function paintAgentMarkdown(node, text, streaming) {
+        node.innerHTML = renderMarkdown(text || '');
+        if (enhanceAnswerBody) enhanceAnswerBody(node, {streaming: !!streaming});
+    }
+
+    function syncAgentBlocks(view, body, state) {
+        // 先把阅读位置记下来，再动 DOM：块被删 / 整段换模型时长内容会瞬间缩短，
+        // 浏览器会把 scrollTop 钳到新上限（内容短到一屏时直接钳成 0）。只在「原来就在底部」
+        // 时吸附是不够的——上翻读的时候也会被钳走，表现就是滚动条自己往顶部跑。
+        const prevTop = body.scrollTop;
+        // 标签页在后台（display:none）时布局盒为 0：此时任何 scrollTop 写入都会被压成 0，
+        // 等切回前台再看就「到顶了」。没有布局盒就只更新 DOM，不碰滚动。
+        const measurable = body.clientHeight > 0 && body.scrollHeight > 0;
+        // 首帧一律跟到底部：刚打开详情时正文常常一屏放不下（长派单提示词），此时 scrollTop=0
+        // 会被误算成「用户在上翻」，于是整轮都不再跟随——表现就是滚动条一直卡在顶部，
+        // 内容却还在下面长。落地之后才交由用户的真实位置决定。
+        const pinned = !view.scrollReady || !measurable || body.scrollHeight - prevTop - body.clientHeight < 60;
+        const blocks = state.blocks;
+        const seen = new Set();
+        let cursor = body.firstElementChild;
+        blocks.forEach((block, index) => {
+            seen.add(block.key);
+            let node = view.blockNodes.get(block.key);
+            if (!node) {
+                node = createAgentBlockNode(block);
+                node.dataset.agvKey = block.key;
+                view.blockNodes.set(block.key, node);
+            }
+            // 只在「最后一块且子代理仍在跑」时按生成中处理：可视化卡片先占位不建实例
+            const streaming = state.live && index === blocks.length - 1 && block.kind === 'assistant';
+            const sig = agentBlockSig(block, streaming);
+            if (node.dataset.agvSig !== sig) {
+                node.dataset.agvSig = sig;
+                fillAgentBlockNode(node, block, streaming);
+            }
+            // 块只追加，正常情况就地命中；万一乱序才搬一次（搬动会重置节点动画，别写成每帧都搬）
+            if (node !== cursor) body.insertBefore(node, cursor || null);
+            cursor = node.nextElementSibling;
+        });
+        for (const [key, node] of [...view.blockNodes]) {
+            if (seen.has(key)) continue;
+            view.blockNodes.delete(key);
+            node.remove();
+        }
+        if (!measurable) return;
+        if (pinned) {
+            body.scrollTop = body.scrollHeight;
+        } else if (body.scrollTop !== prevTop) {
+            // 上翻读时把位置还回去（超出新上限会自动钳到 max，不会凭空回到顶部）
+            body.scrollTop = prevTop;
+        }
+        view.scrollReady = true;
+    }
+
+    function agentStatusMeta(view) {
         const sub = view && view.subId ? subAgents.get(view.subId) : null;
         if (sub) {
             return {
@@ -611,41 +862,37 @@ export function createAISubagents(ctx) {
                 continuable: rec.continuable,
             };
         }
-        const meta = agentRegistry.get(toolCallId);
+        const meta = view && view.toolCallId ? agentRegistry.get(view.toolCallId) : null;
         if (meta) return meta;
         for (const session of getSessions()) {
             for (const m of session.messages) {
                 const key = (m.agent && m.agent.key) || m.toolCallId;
-                if (m.role === 'tool' && m.name === 'spawn_agent' && key === toolCallId && m.agent) return m.agent;
+                if (m.role === 'tool' && m.name === 'spawn_agent' && key === view.toolCallId && m.agent) return m.agent;
             }
         }
         return null;
     }
 
-    function renderAgentView() {
-        if (!agentViewState || !el.agentView) return;
-        const view = agentViewState;
-        // 只清头部与正文，**保留输入行**（子代理运行中详情视图每 300ms 重渲染，重建会让
-        // 用户正在打的字与焦点一起丢）。
-        for (const node of [...el.agentView.children]) {
-            if (node.classList && node.classList.contains('ai-agv-composer')) continue;
-            node.remove();
+    // 头部每次重建（按钮随状态增删，代价很小）；正文与输入行是持久节点，正文内部再按块增量。
+    function renderAgentHead(view, head) {
+        head.textContent = '';
+        const meta = agentStatusMeta(view);
+        // 覆盖层没有标签栏，需要一个回主代理的出口；标签页靠关标签即可
+        if (view.overlay) {
+            const back = document.createElement('button');
+            back.type = 'button';
+            back.className = 'ai-icon-btn';
+            back.dataset.tip = '返回主代理';
+            back.setAttribute('aria-label', '返回主代理');
+            back.innerHTML = iconSvg('back', 14);
+            back.addEventListener('click', closeAgentView);
+            head.appendChild(back);
         }
-        const meta = agentStatusMeta(view.toolCallId);
-        const head = document.createElement('div');
-        head.className = 'ai-agent-view-head';
-        const back = document.createElement('button');
-        back.type = 'button';
-        back.className = 'ai-icon-btn';
-        back.title = '返回主代理';
-        back.setAttribute('aria-label', '返回主代理');
-        back.innerHTML = iconSvg('back', 14);
-        back.addEventListener('click', closeAgentView);
         const nameSpan = document.createElement('span');
         nameSpan.className = 'ai-agent-view-name';
         nameSpan.textContent = view.name;
-        nameSpan.title = view.name;
-        head.append(back, nameSpan);
+        nameSpan.dataset.tip = view.name;
+        head.appendChild(nameSpan);
         if (meta) head.appendChild(agentStateBadge(meta.state));
         const liveSub = view.subId ? subAgents.get(view.subId) : null;
         const metaLine = document.createElement('span');
@@ -664,13 +911,13 @@ export function createAISubagents(ctx) {
             const compactBtn = document.createElement('button');
             compactBtn.type = 'button';
             compactBtn.className = 'ai-icon-btn ai-agv-compact';
-            compactBtn.title = '压缩这个子代理的上下文（当前工具轮结束后执行）';
+            compactBtn.dataset.tip = '压缩这个子代理的上下文（当前工具轮结束后执行）';
             compactBtn.setAttribute('aria-label', '压缩上下文');
             compactBtn.innerHTML = iconSvg('eraser', 13);
             compactBtn.addEventListener('click', () => {
                 liveSub.compactRequested = true;
                 flash('已请求压缩：当前工具轮结束后执行');
-                renderAgentView();
+                renderAgentView(view);
             });
             head.appendChild(compactBtn);
         } else if (!liveSub && view.subId) {
@@ -680,13 +927,13 @@ export function createAISubagents(ctx) {
                 const compactBtn = document.createElement('button');
                 compactBtn.type = 'button';
                 compactBtn.className = 'ai-icon-btn ai-agv-compact';
-                compactBtn.title = '立即压缩这个子代理的上下文（之后唤醒以精简上下文继续）';
+                compactBtn.dataset.tip = '立即压缩这个子代理的上下文（之后唤醒以精简上下文继续）';
                 compactBtn.setAttribute('aria-label', '压缩上下文');
                 compactBtn.innerHTML = iconSvg('eraser', 13);
                 compactBtn.addEventListener('click', () => {
                     startSubCompact(record, {auto: false});
                     flash('已发起压缩：完成后唤醒将以精简上下文继续');
-                    renderAgentView();
+                    renderAgentView(view);
                 });
                 head.appendChild(compactBtn);
             }
@@ -696,50 +943,60 @@ export function createAISubagents(ctx) {
             const stopBtn = document.createElement('button');
             stopBtn.type = 'button';
             stopBtn.className = 'ai-icon-btn ai-agv-stop';
-            stopBtn.title = '停止这个子代理（保留它的过程记录）';
+            stopBtn.dataset.tip = '停止这个子代理（保留它的过程记录）';
             stopBtn.setAttribute('aria-label', '停止子代理');
             stopBtn.innerHTML = iconSvg('pause', 13);
             stopBtn.addEventListener('click', () => {
                 stopSubAgent(liveSub, '用户在详情视图停止');
-                renderAgentView();
+                renderAgentView(view);
             });
             head.appendChild(stopBtn);
         }
-        el.agentView.appendChild(head);
+    }
 
-        const body = document.createElement('div');
-        body.className = 'ai-agent-view-body';
-        const sub = view.subId ? subAgents.get(view.subId) : null;
-        if (sub) renderAgentLiveMessages(sub, body);
-        else renderAgentFinished(view.toolCallId, meta, body);
-        if (sub) appendInboxPreview(sub, body);
-        el.agentView.appendChild(body);
-        body.scrollTop = body.scrollHeight;
-        // 输入行固定在底部（独立节点，重渲染不重建）
-        const composer = ensureAgentViewComposer(view);
-        if (composer && (composer.parentNode !== el.agentView || el.agentView.lastElementChild !== composer)) {
-            el.agentView.appendChild(composer);
+    function renderAgentView(view) {
+        if (!view || !view.root) return;
+        const root = view.root;
+        if (!view.head) {
+            view.head = document.createElement('div');
+            view.head.className = 'ai-agent-view-head';
         }
+        if (!view.body) {
+            view.body = document.createElement('div');
+            view.body.className = 'ai-agent-view-body';
+        }
+        renderAgentHead(view, view.head);
+        // 结构固定为「头部 → 正文 → 输入行」；正文节点常驻，内部按块增量更新
+        if (root.firstElementChild !== view.head) root.insertBefore(view.head, root.firstElementChild);
+        if (view.head.nextElementSibling !== view.body) root.insertBefore(view.body, view.head.nextElementSibling);
+        // 输入行先就位（独立节点，重渲染不重建——重建会丢焦点与草稿）。必须排在正文同步之前：
+        // 首帧吸附要按「已经扣掉输入行」的正文高度算，否则会差一截（实测 36~40px）停不到底。
+        const composer = ensureAgentViewComposer(view);
+        if (composer) {
+            if (root.lastElementChild !== composer) root.appendChild(composer);
+        } else {
+            const stale = root.querySelector('.ai-agv-composer');
+            if (stale) stale.remove();
+        }
+        syncAgentBlocks(view, view.body, agentBlocksOf(view));
     }
 
     // 子代理对话视图的输入行（F3）：Enter 排队 / Ctrl+Enter 插队；对已完成且可续的子代理
     // 输入即冷唤醒入口；失败/停止/上下文已回收的记录禁用并说明原因。
-    // 节点按 subId 缓存复用——运行中的详情视图每 300ms 重渲染，重建输入框会丢焦点与草稿。
-    let agentViewComposer = null;
-
+    // 节点挂在 view 上复用——运行中的详情视图每 300ms 重渲染，重建输入框会丢焦点与草稿。
     function ensureAgentViewComposer(view) {
         const key = view.subId || '';
         const live = key ? subAgents.get(key) : null;
         const record = !live && key ? subAgentRecords.get(key) : null;
         const target = live || record;
         if (!target) {
-            if (agentViewComposer && agentViewComposer.subId === key) agentViewComposer = null;
+            view.composer = null;
             return null;
         }
         const gate = live ? {ok: true, reason: ''} : canReviveRecord(record);
         const canType = gate.ok;
         const stateText = {running: '运行中', done: '已完成', error: '失败', stopped: '已停止'}[live ? 'running' : record.state] || '';
-        let wrap = agentViewComposer && agentViewComposer.subId === key ? agentViewComposer.el : null;
+        let wrap = view.composer && view.composer.subId === key ? view.composer.el : null;
         if (!wrap) {
             wrap = document.createElement('div');
             wrap.className = 'ai-agv-composer';
@@ -753,9 +1010,8 @@ export function createAISubagents(ctx) {
             const submit = (urgent) => {
                 const text = String(input.value || '').trim();
                 if (!text) return;
-                const current = agentViewState && agentViewState.subId ? subAgents.get(agentViewState.subId) : null;
-                const rec = !current && agentViewState && agentViewState.subId
-                    ? subAgentRecords.get(agentViewState.subId) : null;
+                const current = view.subId ? subAgents.get(view.subId) : null;
+                const rec = !current && view.subId ? subAgentRecords.get(view.subId) : null;
                 if (current) {
                     if (urgent) {
                         const r = steerSubAgent(current, text, {from: 'user'});
@@ -769,7 +1025,7 @@ export function createAISubagents(ctx) {
                     flash(revived ? '已唤醒子代理「' + revived.name + '」，消息已投递' : '唤醒失败：上下文不可用，请重新派单', !revived);
                 }
                 input.value = '';
-                renderAgentView();
+                renderAgentView(view);
             };
             input.addEventListener('keydown', (e) => {
                 if (e.key !== 'Enter' || e.shiftKey) return;
@@ -778,7 +1034,7 @@ export function createAISubagents(ctx) {
             });
             send.addEventListener('click', () => submit(false));
             wrap.append(input, send);
-            agentViewComposer = {subId: key, el: wrap};
+            view.composer = {subId: key, el: wrap};
         }
         // 状态可能变（running → done / 被停止）：每次渲染同步可用性与文案
         const input = wrap.querySelector('.ai-agv-input');
@@ -796,59 +1052,81 @@ export function createAISubagents(ctx) {
         return wrap;
     }
 
-    // 收件箱预览：让用户看见「已投递但还没被消费」的消息，而不是只有主代理自己知道。
-    function appendInboxPreview(sub, body) {
-        const inbox = sub.inbox || {step: [], turn: [], ask: null};
-        const stepN = (inbox.step || []).length;
-        const turnN = (inbox.turn || []).length;
-        if (!stepN && !turnN && !inbox.ask) return;
-        const box = document.createElement('div');
-        box.className = 'ai-agv-inbox';
-        const title = document.createElement('div');
-        title.className = 'ai-agv-inbox-title';
-        title.textContent = '收件箱 · 排队 ' + turnN + ' 条 · 插队 ' + stepN + ' 条';
-        box.appendChild(title);
-        for (const item of [...(inbox.step || []), ...(inbox.turn || [])].slice(0, 3)) {
-            const line = document.createElement('div');
-            line.className = 'ai-agv-inbox-line';
-            line.textContent = (item.from === 'user' ? '用户：' : '主代理：') + String(item.text || '').slice(0, 90);
-            box.appendChild(line);
-        }
-        if (inbox.ask) {
-            const wait = document.createElement('div');
-            wait.className = 'ai-agv-inbox-ask';
-            wait.textContent = '等待主代理回答提问（askId=' + (inbox.ask.askId || '') + '）';
-            box.appendChild(wait);
-        }
-        body.appendChild(box);
-    }
-
-    function scheduleAgentViewRender() {
-        if (agentViewTimer) return;
-        agentViewTimer = setTimeout(() => {
-            agentViewTimer = 0;
-            renderAgentView();
+    function scheduleAgentViewRender(view) {
+        if (!view || view.timer) return;
+        view.timer = setTimeout(() => {
+            view.timer = 0;
+            renderAgentView(view);
         }, 300);
     }
 
-    function refreshAgentViewIfOpen(toolCallId) {
-        if (agentViewState && agentViewState.toolCallId === toolCallId) scheduleAgentViewRender();
+    // 子代理状态事件带的是它的注册表 key（见 listAgentsForHud 的 toolCallId: sub.key）
+    function refreshAgentViewIfOpen(agentKey) {
+        if (!agentKey) return;
+        for (const view of agentViews) {
+            if (view.toolCallId === agentKey) scheduleAgentViewRender(view);
+        }
     }
 
+    // 挂载视图到任意宿主节点（内容区标签页 / 悬浮窗覆盖层）。同一节点重复挂载先清旧的，
+    // 同一子代理可以同时挂在多处，各自独立节流。
+    function mountAgentView(root, spec) {
+        if (!root) return null;
+        unmountAgentView(root);
+        root.textContent = '';
+        const view = {
+            root,
+            overlay: !!(spec && spec.overlay),
+            toolCallId: String((spec && spec.toolCallId) || ''),
+            subId: String((spec && spec.subId) || ''),
+            name: String((spec && spec.name) || '子代理'),
+            timer: 0,
+            head: null,
+            body: null,
+            composer: null,
+            blockNodes: new Map(),
+            // 首帧是否已落地（syncAgentBlocks 里决定「跟到底部」还是「尊重用户位置」）
+            scrollReady: false,
+        };
+        agentViews.add(view);
+        renderAgentView(view);
+        return view;
+    }
+
+    function unmountAgentView(root) {
+        let removed = false;
+        for (const view of [...agentViews]) {
+            if (view.root !== root) continue;
+            if (view.timer) {
+                clearTimeout(view.timer);
+                view.timer = 0;
+            }
+            agentViews.delete(view);
+            removed = true;
+        }
+        return removed;
+    }
+
+    // 详情视图入口：主窗口在内容区标签页打开（不遮挡面板，可与主对话并排看），
+    // 悬浮窗没有内容区，退回面板内覆盖层（原来的做法）。
     function openAgentView(spec) {
+        const target = {
+            toolCallId: String((spec && spec.toolCallId) || ''),
+            subId: String((spec && spec.subId) || ''),
+            name: String((spec && spec.name) || '子代理'),
+        };
+        if (!target.toolCallId && !target.subId) return;
+        if (!isFloatWindow() && typeof openAgentTab === 'function') {
+            if (openAgentTab(target)) return;
+        }
         if (!el.agentView) return;
-        agentViewState = {toolCallId: spec.toolCallId, subId: spec.subId || '', name: spec.name || '子代理'};
         el.agentView.classList.remove('hidden');
-        renderAgentView();
+        overlayView = mountAgentView(el.agentView, {...target, overlay: true});
     }
 
     function closeAgentView() {
-        agentViewState = null;
-        agentViewComposer = null;
-        if (agentViewTimer) {
-            clearTimeout(agentViewTimer);
-            agentViewTimer = 0;
-        }
+        if (overlayView) unmountAgentView(overlayView.root);
+        overlayView = null;
         if (el.agentView) {
             el.agentView.classList.add('hidden');
             el.agentView.textContent = '';
@@ -960,6 +1238,9 @@ export function createAISubagents(ctx) {
         // 子代理归属到「根会话」：头部智能体团队 / 后台终端按会话展示时，
         // 嵌套子代理派出的任务也算在最初那个会话名下。
         const rootSessionId = rootSessionIdOf(parentSession);
+        // 计时器只读共享用：派单时把「最初发起任务的主会话 id」逐层透传。
+        // 递归派单时 parentSessionId 会变成上一层子代理 id，支线会话里光靠 rootSessionId 会丢主会话。
+        const originSessionId = parentSession.originSessionId || parentSession.id;
         // 子代理继承「发起它的会话」的模型，而不是窗口默认
         const profile = profileOf(parentSession);
         const entry = entryOf(parentSession);
@@ -1006,8 +1287,12 @@ export function createAISubagents(ctx) {
             title: '',
             parentSessionId: parentSession.id,
             rootSessionId,
+            originSessionId,
             workspace: parentSession.workspace || '',
             profileId: parentSession.profileId,
+            // 继承母会话的「本次会话上下文上限」：省占用的意图覆盖整个会话活动
+            //（子代理 auto-compact 的窗口基数随 contextWindowOf 一并收窄）
+            ctxLimit: Number(parentSession.ctxLimit) || 0,
             systemPrompt: parentSession.systemPrompt || '',
             promptTemplateId: parentSession.promptTemplateId || '',
             // 权限档继承父会话（子代理不再无条件 readonly）：完全权限下才能读到工作区外，
@@ -1160,10 +1445,18 @@ export function createAISubagents(ctx) {
                 subTranscriptPush(sub, {role: 'tool', name: call.name, text: invalidArgs.slice(0, 600)});
                 continue;
             }
+            // 权限边界（dsh 同款语义）：范围外工具确定性拒绝、不进审批链路；模型侧文案
+            // 明确「不重试、上报父会话」，拒绝本身落操作留痕（不含工具输入）。
+            const allowed = new Set(subToolsForScope(sub.depth, sub.mode).map((tool) => tool.name));
+            if (!allowed.has(call.name)) {
+                toolMessage.status = 'error';
+                toolMessage.content = '工具 ' + call.name + ' 超出子代理只读范围（工具范围在派出时已固定，无法从会话内放宽）；不要重试，请在最终结论中说明该限制，由主代理决定如何处理。';
+                subTranscriptPush(sub, {role: 'tool', name: call.name, text: toolMessage.content.slice(0, 600)});
+                logActivity('ai.tool', call.name, {status: 'denied', ms: 0, depth: sub.depth});
+                continue;
+            }
             let result = null;
             try {
-                const allowed = new Set(subToolsForScope(sub.depth, sub.mode).map((tool) => tool.name));
-                if (!allowed.has(call.name)) throw new Error('子代理不允许工具：' + call.name);
                 const parsed = call.arguments ? JSON.parse(call.arguments) : {};
                 result = await executeTool(call.name, parsed, {session: sub.session, toolMessage, stream: s, agentDepth: sub.depth});
             } catch (e) {
@@ -1181,6 +1474,12 @@ export function createAISubagents(ctx) {
             finalizeSubAgent(sub, s.stopped ? 'stopped' : sub.state);
             return;
         }
+        // 队列里的投递必须先消费成 user 消息、再 push 空的 assistant 续写目标。
+        // 顺序反了（assistant 在前）时，runSubRound 用 buildApiMessages(sub.session,
+        // indexOf(assistant)) 组装请求，只取 assistant 之前的历史，这条投递被整体排除，
+        // 模型要再等一轮才看到（2026-11-16 实测：投递后仍按原任务多跑一轮）。
+        // wrapUp 收尾轮不消费（与 runSubRound 同口径，残余随终态进 records）。
+        if (!s.wrapUp) consumeSubInbox(sub);
         const assistant = newAssistantMessage(sub.profile || profileOf(parentSessionOfSub(sub)), sub.entry || entryOf(parentSessionOfSub(sub)));
         sub.session.messages.push(assistant);
         s.assistant = assistant;
@@ -1236,6 +1535,10 @@ export function createAISubagents(ctx) {
                     s.toolCalls.clear();
                     s.stopped = false;
                     if (s.assistant && s.assistant.status === 'streaming') s.assistant.status = 'done';
+                    // 插队消息先消费成 user 消息，再 push 空的 assistant——顺序反了会被
+                    // buildApiMessages 的 index 截断排除，插队指令要再等一轮才生效（同
+                    // runSubToolRound 的 2026-11-16 实测）。
+                    if (!s.wrapUp) consumeSubInbox(sub);
                     const nextAssistant = newAssistantMessage(
                         sub.profile || profileOf(parentSessionOfSub(sub)),
                         sub.entry || entryOf(parentSessionOfSub(sub)));
@@ -1528,6 +1831,9 @@ export function createAISubagents(ctx) {
     // 冷唤醒：对 done 且记录仍持有活引用的子代理继续派活（baseRound+1，事件路由照旧）。
     function reviveSubAgent(record, text, opts) {
         if (!record || record.continuable === false || !record.session || !record.profile) return null;
+        // 唤醒时间戳：新一轮落账前，wait_agent 靠它识别「手上这份是唤醒前的旧结论」，
+        // 不把上一轮结果当成本轮结果返回（2026-11-15 实测缺陷）。
+        record.revivedAt = Date.now();
         const parent = sessionById(record.parentSessionId);
         const toolMessage = parent
             ? parent.messages.find((m) => m.role === 'tool' && m.toolCallId === record.toolCallId) || null
@@ -1556,7 +1862,6 @@ export function createAISubagents(ctx) {
             inbox: newSubInbox(),
         };
         const assistant = newAssistantMessage(record.profile, record.entry);
-        sub.session.messages.push(assistant);
         sub.flow = {
             sessionId: sub.id,
             baseRound: (Number(record.baseRound) || 1) + 1,
@@ -1592,9 +1897,15 @@ export function createAISubagents(ctx) {
         notifyBackgroundActivity();
         persistSessions();
         if (toolMessage && parent) refreshToolWrap(parent, toolMessage);
-        // 消息入队再起轮：runSubRound 开头统一消费（与运行中排队走同一条路径）
+        // 投递消息必须先消费成 user 消息、再 push 空的 assistant 续写目标。
+        // 顺序反了（assistant 在前）时，runSubRound 用 buildApiMessages(sub.session,
+        // indexOf(assistant)) 组装请求，只会取到 assistant 之前的消息，这条投递被整体排除，
+        // 模型只能续写唤醒前的旧上下文，产出上一轮的答案（2026-11-16 实测：last=0、
+        // len≈上一轮长度）。runSubRound 开头的 consumeSubInbox 此时收件箱已空，是 no-op。
         queueSubAgentMessage(sub, text, {from: (opts && opts.from) || 'agent'});
         if (opts && opts.urgent) sub.inbox.step.unshift(sub.inbox.turn.pop());
+        consumeSubInbox(sub);
+        sub.session.messages.push(assistant);
         const outcomePromise = new Promise((resolve) => { sub.resolve = resolve; });
         sub.settled = outcomePromise;
         runSubRound(sub);
@@ -1858,15 +2169,18 @@ export function createAISubagents(ctx) {
         const owner = ctx && ctx.session ? rootSessionIdOf(ctx.session) : '';
         const belongs = (sessionId) => !owner || !sessionId || sessionId === owner;
         const live = agentId ? subAgents.get(agentId) : null;
-        if (agentId && !live) {
-            const record = subAgentRecords.get(agentId);
-            if (!record) throw new Error('找不到子代理 ' + agentId + '（可能已被清理）');
-            return '（该子代理此前已结束，无需等待）\n' + subSettledText(record);
+        const settledRecord = agentId ? subAgentRecords.get(agentId) : null;
+        // 冷唤醒后立刻 wait：live 可能已消失（唤醒轮很短），而手上这份 record 还是唤醒
+        // 前的旧结论。这种情况不能直接返回，转为「等新一轮落账」。
+        const waitingRevive = !!(agentId && !live && settledRecord && isStaleRecord(settledRecord));
+        if (agentId && !live && !waitingRevive) {
+            if (!settledRecord) throw new Error('找不到子代理 ' + agentId + '（可能已被清理）');
+            return '（该子代理此前已结束，无需等待）\n' + subSettledText(settledRecord);
         }
         const watched = agentId
-            ? [live]
+            ? [live].filter(Boolean)
             : [...subAgents.values()].filter((sub) => belongs(sub.rootSessionId || sub.parentSessionId));
-        if (!watched.length) {
+        if (!watched.length && !waitingRevive) {
             return '当前没有运行中的子代理可等待。可用 spawn_agent(mode=\'background\') 派出，或 agent_send 唤醒已完成的。';
         }
         const deadline = timeoutSec > 0 ? Date.now() + timeoutSec * 1000 : 0;
@@ -1874,9 +2188,19 @@ export function createAISubagents(ctx) {
         for (;;) {
             // 用户停止主回合：立即返回状态快照（不是等超时）
             if (stopSeen()) {
+                if (waitingRevive) {
+                    return '等待被用户停止。子代理「' + (settledRecord.name || '') + '」冷唤醒后的新一轮尚未落账；' +
+                        '可稍后再 wait_agent，或等它的完成通知。';
+                }
                 const alive = watched.filter((sub) => subAgents.has(sub.id));
                 return '等待被用户停止。' + (alive.length ? alive.map(subRunningSnapshot).join(' ') : '子代理均已结束。') +
                     '\n可稍后再 wait_agent，或让它们完成时通知你。';
+            }
+            // 冷唤醒等待：新一轮落账（finishedAt 超过 revivedAt）之后才允许返回结论，
+            // 否则返回的就是唤醒前那份旧结果（2026-11-15 实测缺陷）。
+            if (waitingRevive) {
+                const revived = subAgentRecords.get(agentId);
+                if (revived && !isStaleRecord(revived)) return subSettledText(revived);
             }
             for (const sub of watched) {
                 if (subAgents.has(sub.id)) continue;
@@ -1885,6 +2209,10 @@ export function createAISubagents(ctx) {
                 return '子代理「' + sub.name + '」已结束但记录不可用（可能被清理）。';
             }
             if (deadline && Date.now() >= deadline) {
+                if (waitingRevive) {
+                    return '等待超时（' + timeoutSec + 's）：子代理「' + (settledRecord.name || '') +
+                        '」冷唤醒后的新一轮尚未落账，未返回上一轮的旧结论。可稍后再 wait_agent，或等它的完成通知。';
+                }
                 return '等待超时（' + timeoutSec + 's）：' + watched.map(subRunningSnapshot).join(' ') +
                     '\n可继续 wait_agent，或先做别的——它完成时会通知你。';
             }
@@ -2009,7 +2337,8 @@ export function createAISubagents(ctx) {
         notifyBackgroundActivity, refreshHeadChips, updateHeadHud,
         hideChipsPop, positionChipsPop, agentStateBadge, agentStatusIcon, bgJobFirstLine, taskSnippet,
         openBgTermInContent, renderChipsPop, toggleChipsPop,
-        agentBlock, agentToolRow, renderAgentLiveMessages, renderAgentFinished, renderAgentView,
+        // 详情视图：openAgentView 由面板内部（chips 弹层）调用；mount/unmount 给内容区标签页用
+        openAgentView, mountAgentView, unmountAgentView, renderAgentView,
         parentSessionOfSub, runSubAgent, startSubAgent, runSubRound, handleSubEvent, finalizeSubAgent, stopSubAgentsOf, initHud,
         pushSubAgentRecord, unseenInboxCount, dropSubAgentRecordsOf,
         consumeSubInbox, queueSubAgentMessage, steerSubAgent, stopSubAgent, subRunDigest,

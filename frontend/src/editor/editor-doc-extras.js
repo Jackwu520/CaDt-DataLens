@@ -197,7 +197,7 @@ function humanizeCounts() {
             const text = deps.settings.treeCounts ? count + ' 项' : '';
             if (el.textContent !== text || el.querySelector('.jsoneditor-fold-preview')) el.textContent = text;
             el.dataset.foldSig = 'e:' + count + ':' + (deps.settings.treeCounts ? '1' : '0');
-            el.title = deps.settings.treeCounts ? (isObject ? '对象' : '数组') + '，共 ' + count + ' 项' : '';
+            el.dataset.tip = deps.settings.treeCounts ? (isObject ? '对象' : '数组') + '，共 ' + count + ' 项' : '';
         }
         el.classList.toggle('value-fold', collapsed);
         el.classList.toggle('value-count', !collapsed && !!deps.settings.treeCounts);
@@ -335,7 +335,8 @@ function applyDocView(doc, view) {
                 const start = Number(pair && pair[0]);
                 const end = Number(pair && pair[1]);
                 if (!(start >= 0) || !(end > start) || start >= lineCount) continue;
-                try { ace.session.addFold('', new Range(start, 0, Math.min(end, lineCount - 1), Infinity)); } catch (e) {}
+                // 占位符 "..."：恢复的折叠与手动折叠观感一致（此前 '' 配合旧的预览改写，现在会 invisible）
+                try { ace.session.addFold('...', new Range(start, 0, Math.min(end, lineCount - 1), Infinity)); } catch (e) {}
             }
         }
     } catch (e) {}

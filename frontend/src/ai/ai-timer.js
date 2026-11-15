@@ -74,6 +74,35 @@ export function countSessionTimers(timers, sessionIdOf, currentSessionId) {
     return n;
 }
 
+// timer_list 只读快照（纯函数，ai-timer.test.mjs 覆盖）。
+// 与 UI 的 filterTimersForSession 口径不同：UI 为避免跨窗计时器失联会放行「归属不明」的条目，
+// 但共享给子代理时必须严格按会话树过滤——归属不明（别的窗口同步来的）一律不外泄。
+// sessionIds 传入调用方所在会话链（自身 / 父 / 根），只暴露这条链上启动的计时器。
+export function snapshotTimersForTree(timers, sessionIdOf, sessionIds, nowMs) {
+    const out = [];
+    const allowed = new Set((Array.isArray(sessionIds) ? sessionIds : [sessionIds]).filter(Boolean));
+    if (!allowed.size || !timers || typeof timers.values !== 'function') return out;
+    const now = Number(nowMs) || Date.now();
+    for (const info of timers.values()) {
+        if (!info || !info.id) continue;
+        const owner = sessionIdOf(info.id);
+        if (!allowed.has(owner)) continue;
+        const countup = info.mode === 'countup';
+        out.push({
+            id: info.id,
+            mode: countup ? 'countup' : 'countdown',
+            label: info.label || '',
+            startMs: info.startMs || 0,
+            elapsedMs: Math.max(0, now - (info.startMs || 0)),
+            remainingMs: countup ? 0 : Math.max(0, (info.endMs || 0) - now),
+            autoStopMs: info.autoStopMs || 0,
+            marks: Array.isArray(info.marks) ? info.marks.length : 0,
+            owner,
+        });
+    }
+    return out;
+}
+
 export function createAITimer(ctx) {
     const timers = new Map();   // id → AITimerInfo
     const sessions = new Map(); // id → 启动时的会话 id（Go 侧不感知会话）
@@ -215,7 +244,7 @@ export function createAITimer(ctx) {
         }
         if (visible.length) {
             updateChipTime(chip);
-            chip.title = chipTitle();
+            chip.dataset.tip = chipTitle();
         }
         // 弹层开着时由 ai-panel 原位刷新（详情对象被停止时自动回到列表）
         refreshPop();
@@ -280,7 +309,7 @@ export function createAITimer(ctx) {
             stopBtn.className = 'ai-timer-stop';
             stopBtn.setAttribute('role', 'button');
             stopBtn.setAttribute('aria-label', '停止「' + (item.label || item.id) + '」');
-            stopBtn.title = '停止该计时器';
+            stopBtn.dataset.tip = '停止该计时器';
             stopBtn.innerHTML = iconSvg('close', 12);
             stopBtn.addEventListener('click', (e) => {
                 e.stopPropagation();
@@ -594,6 +623,12 @@ export function createAITimer(ctx) {
         return ids.length === 1 ? ids[0] : '';
     }
 
+    // snapshot 给 AI 工具 timer_list 的只读时钟：按调用方会话链过滤，只有读权。
+    // 子代理 / 孙代理经同一个 executeTool 调用它，看到的是主会话启动的那几枚计时器。
+    function snapshot(sessionIds) {
+        return snapshotTimersForTree(timers, (id) => sessions.get(id) || '', sessionIds, Date.now());
+    }
+
     // markTimer 给运行中的计时器打时刻标记（可选备注）：攒在 Go 注册表里，
     // 停止 / 到点时随事件一次性投递给绑定会话（逐针唤醒 AI 既贵又吵，攒批后给完整时间线）。
     async function markTimer(id, note) {
@@ -649,5 +684,5 @@ export function createAITimer(ctx) {
 
     // render 必须导出：ai-panel 的 switchSession 会调它按目标会话重绘头部胶囊
     // （漏导出会让每次切会话抛 "timerMod.render is not a function"，定时任务跨会话唤醒随之失败）。
-    return {start, stop, sync, syncFromBackend, onFired, onStopped, render, renderPop, openCreateDialog, closeCreateDialog};
+    return {start, stop, sync, syncFromBackend, snapshot, onFired, onStopped, render, renderPop, openCreateDialog, closeCreateDialog};
 }

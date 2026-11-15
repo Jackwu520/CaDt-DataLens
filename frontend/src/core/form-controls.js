@@ -29,7 +29,7 @@ function applyCommon(control, o) {
     if (o.className) control.className = o.className;
     if (o.value != null) control.value = String(o.value);
     if (o.placeholder != null) control.placeholder = String(o.placeholder);
-    if (o.title != null) control.title = String(o.title);
+    if (o.title != null) control.dataset.tip = String(o.title);
     if (o.disabled) control.disabled = true;
     if (o.spellcheck === false) control.spellcheck = false;
     if (o.autocomplete) control.autocomplete = o.autocomplete;
@@ -49,7 +49,7 @@ export function createSwitch(o = {}) {
     control.checked = !!o.checked;
     if (o.id) control.id = o.id;
     if (o.disabled) control.disabled = true;
-    if (o.title != null) element.title = String(o.title);
+    if (o.title != null) element.dataset.tip = String(o.title);
     if (typeof o.onChange === 'function') control.addEventListener('change', o.onChange);
     applyAttrs(control, o);
     const track = document.createElement('span');

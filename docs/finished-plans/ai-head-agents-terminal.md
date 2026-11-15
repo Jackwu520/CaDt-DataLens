@@ -67,12 +67,13 @@
 
 - 团队列表（按 toolCallId 去重）：运行中（`subAgents`，任意会话，标注所属会话）→ 本运行期注册表 `agentRegistry`（启动时登记、`finalizeSubAgent` 更新终态）→ 当前会话持久化 meta（重启后兜底，扫描 `name==='spawn_agent'` 的工具消息）。
 - 状态映射：running=运行中（accent）、done=已完成（绿）、error=失败（红）、stopped=已停止（灰）。
-- 行点击 → `openAgentView({subId?, toolCallId})`：`#ai-agent-view` 绝对定位覆盖消息区，头部 [back icon] [名称 + 状态徽标 + 轮次/耗时/tokens]；正文按可用数据渲染：
-  1. 运行中：实时渲染 `sub.session.messages`（用户任务 → assistant 正文（markdown）→ tool 卡片行），`subThrottleRender` 里联动刷新；
+- 行点击 → `openAgentView({subId?, toolCallId})`：**2026-11-15 起在主窗口以内容区标签页打开**（`bridge-agent-view.js`，标签图标同「智能体团队」、同一子代理复用同一标签；悬浮窗没有内容区，仍退回 `#ai-agent-view` 覆盖层）。视图头部 [返回（仅覆盖层）] [名称 + 状态徽标 + 轮次/耗时/tokens + 压缩/停止]；正文按可用数据渲染：
+  1. 运行中：实时渲染 `sub.session.messages`（用户任务 → assistant 正文（markdown + 可视化卡片）→ 工具行），`subThrottleRender` 里联动刷新；
   2. 已结束（本运行期）：`agentRegistry.summary` + `subAgentTranscripts` 转录；
   3. 重启后：仅 meta 摘要。
+- 正文用「块 + 内容签名」增量渲染（`agentMessageBlocks` / `agentBlockSig`，纯函数有单测）：块 key 稳定、内容不变就不写 DOM，避免整段重建销毁图表卡片与滚动位置；assistant 块走与主消息区同一条增强链 `enhanceAnswerBody`（代码复制钮 / 本地图片 / mermaid·echarts·svg 卡片）。
 - `finalizeSubAgent` 末尾调用 `refreshAgentViewIfOpen(toolCallId)`，结束后视图自动落到终态。
-- 返回按钮恢复消息流（`renderMessages()`）；期间主会话照常流式（返回即见）。
+- 覆盖层模式下返回按钮恢复消息流（`renderMessages()`）；期间主会话照常流式（返回即见）。标签页模式关标签只是 `bridgeUnmountAgentView`，子代理照常跑。
 
 ### 3.4 ai-panel 对外桥接（返回对象新增）
 
@@ -103,11 +104,11 @@
 - 弹层定位改为「chip 下方左对齐、超出面板右缘时收回到面板内」——chip 在头部左侧，按右对齐算会把弹层推出面板。
 - HUD 状态注册表（`agentRegistry` / `bgJobIndex` 等）声明提到闭包顶部，并加 `hudReady` 闸门：`renderSessionList` 的早期调用（构造期可能先于子代理段声明执行）跳过 HUD 更新，避免 TDZ。
 - 终端列表数据源 `bgJobIndex` 只含本运行期启动的作业（句柄不跨重启）；重启后弹层为空但给引导文案，会话卡片的历史输出不受影响。
-- 子代理详情视图是面板内绝对定位覆盖层（含 composer 一起被覆盖），返回按钮恢复；主会话流式渲染照常，返回即见。
+- ~~子代理详情视图是面板内绝对定位覆盖层（含 composer 一起被覆盖），返回按钮恢复~~ → **2026-11-15 改为主窗口内内容区标签页**（覆盖层仅留给悬浮窗，因为那里没有内容区）；标签页版本的可视化围栏、代码复制钮与图片解析和主消息区一致，正文按块增量渲染。
 - 结束态视图优先显示「最终结论」（meta.summary），其下跟过程转录（`subAgentTranscripts`，仅本运行期 done 的子代理保留）；error/stopped 的转录按既有行为丢弃，只显示状态与摘要。
 
 ## 6. 风险与回滚
 
-- 主消息流零改动：详情视图是覆盖层，返回即恢复；chips 只读聚合不写状态。
+- 主消息流零改动：详情视图是独立标签页（覆盖层仅悬浮窗），关标签即卸载；chips 只读聚合不写状态。
 - 后台作业索引仅在运行期有效：重启后弹层只列会话内持久化 meta 的子代理、终端列表为空（卡片仍可看历史输出）——与「作业句柄不跨重启」的既有事实一致。
 - 回滚：按 H4 → H3 → H2 反序摘除即可，无数据迁移。

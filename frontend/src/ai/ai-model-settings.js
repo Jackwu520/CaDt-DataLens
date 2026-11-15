@@ -1,6 +1,7 @@
 // AI 设置 → 模型：条目列表、编辑器状态机（新建/编辑/收起）、窗口与思考预算、导入条目、模型账号增删复制。
 // 从 ai-settings-dialog.js 拆出；modelEditorState / editorEntryOf 随模型域迁入，宿主经 extras 触达状态栏与整页刷新。
 import {
+    formatTokenAmount,
     modelEntryOf,
 } from './ai-config-model.js';
 import {
@@ -37,7 +38,8 @@ export function createAIModelSettings(ctx, extras) {
     }
 
     function providerLabelFor(profile) {
-        return profile && profile.provider === 'anthropic' ? 'Anthropic 原生' : 'OpenAI 兼容';
+        return profile && profile.provider === 'anthropic' ? 'Anthropic 原生'
+            : (profile && profile.provider === 'responses' ? 'OpenAI Responses' : 'OpenAI 兼容');
     }
 
     function renderModelList() {
@@ -126,6 +128,13 @@ export function createAIModelSettings(ctx, extras) {
         extras.refreshSettingsPane();
         renderModelList();
         if (opt.modelTitle) opt.modelTitle.textContent = modelEditorState.isCreate ? '新建模型账号' : '编辑模型账号';
+        // 密钥每次打开都回到掩码态，避免上次「显示」把明文留在下一次编辑里
+        if (opt.apiKey) opt.apiKey.type = 'password';
+        if (opt.keyToggle) {
+            opt.keyToggle.setAttribute('aria-pressed', 'false');
+            opt.keyToggle.setAttribute('aria-label', '显示密钥');
+            opt.keyToggle.dataset.tip = '显示密钥';
+        }
         if (opt.modelEditorMask) opt.modelEditorMask.classList.remove('hidden');
         opt.modelEditor.classList.remove('hidden');
         setTimeout(() => {
@@ -208,15 +217,16 @@ export function createAIModelSettings(ctx, extras) {
         updateComposerState();
     }
 
-    // 编辑器内的模型条目 strip（选中态 + 计数）；新增 / 删除条目
+    // 编辑器内的模型条目 strip（选中态 + 计数）；删除走 chip 内联 ×，账号只剩一个模型时不显示
     function renderModelEntries() {
         const profile = activeProfile();
-        if (opt.modelCount) opt.modelCount.textContent = String(profile && profile.models ? profile.models.length : 0);
+        const models = profile && Array.isArray(profile.models) ? profile.models : [];
+        if (opt.modelCount) opt.modelCount.textContent = String(models.length);
         if (!opt.modelEntries) return;
         opt.modelEntries.innerHTML = '';
         if (!profile) return;
         const current = editorEntryOf(profile);
-        for (const entry of profile.models) {
+        for (const entry of models) {
             const chip = document.createElement('button');
             chip.type = 'button';
             chip.className = 'ai-entry-chip' + (current && entry.id === current.id ? ' active' : '');
@@ -224,13 +234,36 @@ export function createAIModelSettings(ctx, extras) {
             name.className = 'ai-entry-chip-name';
             name.textContent = entry.model || '（未填写）';
             chip.appendChild(name);
-            chip.title = (entry.model || '（未填写）') + ' · 窗口 ' + (entry.contextWindow || 128000) + ' tokens';
+            chip.dataset.tip = (entry.model || '（未填写）')
+                + ' · 上下文 ' + (formatTokenAmount(entry.contextWindow) || '—')
+                + ' · 输出 ' + (formatTokenAmount(entry.outputWindow) || '—');
             chip.addEventListener('click', () => {
                 if (modelEditorState) modelEditorState.entryId = entry.id;
                 if (profile.id === getConfig().activeProfileId) getConfig().activeModelId = entry.id;
                 saveAIConfig();
                 extras.refreshSettingsPane();
             });
+            // chip 本身是 button，删除钮用 span+role 以免嵌套按钮（HTML 不允许）
+            if (models.length > 1) {
+                const remove = document.createElement('span');
+                remove.className = 'ai-entry-chip-x';
+                remove.setAttribute('role', 'button');
+                remove.setAttribute('tabindex', '0');
+                remove.setAttribute('aria-label', '删除模型 ' + (entry.model || '未填写'));
+                remove.dataset.tip = '删除该模型';
+                remove.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>';
+                remove.addEventListener('click', (event) => {
+                    event.stopPropagation();
+                    deleteEditorEntry(entry.id);
+                });
+                remove.addEventListener('keydown', (event) => {
+                    if (event.key !== 'Enter' && event.key !== ' ') return;
+                    event.preventDefault();
+                    event.stopPropagation();
+                    deleteEditorEntry(entry.id);
+                });
+                chip.appendChild(remove);
+            }
             opt.modelEntries.appendChild(chip);
         }
     }
@@ -251,16 +284,18 @@ export function createAIModelSettings(ctx, extras) {
         }
     }
 
-    function deleteEditorEntry() {
+    // 删除模型条目：chip 内联 × 传条目 id，独立按钮（无参）删当前选中条目
+    function deleteEditorEntry(entryId) {
         const profile = activeProfile();
         if (!profile || !profile.models) return;
         if (profile.models.length <= 1) {
             extras.setSettingsStatus('账号至少保留一个模型', 'error');
             return;
         }
-        const current = editorEntryOf(profile);
-        if (!current) return;
-        profile.models = profile.models.filter((entry) => entry.id !== current.id);
+        const wanted = typeof entryId === 'string' ? entryId : '';
+        const target = (wanted && profile.models.find((entry) => entry.id === wanted)) || editorEntryOf(profile);
+        if (!target) return;
+        profile.models = profile.models.filter((entry) => entry.id !== target.id);
         const next = profile.models[0];
         if (modelEditorState) modelEditorState.entryId = next.id;
         if (profile.id === getConfig().activeProfileId) getConfig().activeModelId = next.id;

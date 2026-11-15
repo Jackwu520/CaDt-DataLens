@@ -178,14 +178,14 @@ function syncStructureChrome(effective, sources) {
         deps.els.structureSource.classList.toggle('active', sessionMode);
         deps.els.structureSource.innerHTML = deps.iconSvg(sessionMode ? 'feedback' : 'file', 14);
         deps.els.structureSource.setAttribute('aria-pressed', String(sessionMode));
-        deps.els.structureSource.title = sessionMode
+        deps.els.structureSource.dataset.tip = sessionMode
             ? '当前：会话结构（点击切到文件结构）'
             : '当前：文件结构（点击切到会话结构）';
     }
     // 复制/导出与「全部折叠」只对文件结构有意义
     if (deps.els.structureExport) deps.els.structureExport.classList.toggle('hidden', sessionMode);
     if (deps.els.structureCollapse) deps.els.structureCollapse.classList.toggle('hidden', sessionMode);
-    if (deps.els.structureRefresh) deps.els.structureRefresh.title = sessionMode ? '刷新会话结构' : '刷新结构';
+    if (deps.els.structureRefresh) deps.els.structureRefresh.dataset.tip = sessionMode ? '刷新会话结构' : '刷新结构';
 }
 
 function refreshStructureSources() {

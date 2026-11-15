@@ -139,19 +139,19 @@ function addGitBranchRowItem(branch, remote, indent) {
             const ahead = document.createElement('span');
             ahead.className = 'gb-ahead';
             ahead.textContent = '↑' + branch.ahead;
-            ahead.title = '领先上游 ' + branch.ahead + ' 个提交';
+            ahead.dataset.tip = '领先上游 ' + branch.ahead + ' 个提交';
             meta.appendChild(ahead);
         }
         if (branch.behind > 0) {
             const behind = document.createElement('span');
             behind.className = 'gb-behind';
             behind.textContent = '↓' + branch.behind;
-            behind.title = '落后上游 ' + branch.behind + ' 个提交';
+            behind.dataset.tip = '落后上游 ' + branch.behind + ' 个提交';
             meta.appendChild(behind);
         }
     }
     if (meta.childNodes.length) btn.appendChild(meta);
-    btn.title = remote ? '签出远程分支 ' + branch.name + '（自动创建本地跟踪分支）' : '签出 ' + branch.name;
+    btn.dataset.tip = remote ? '签出远程分支 ' + branch.name + '（自动创建本地跟踪分支）' : '签出 ' + branch.name;
     addGitBranchRow(btn, () => gitPopCheckout(branch, remote));
 }
 
@@ -164,7 +164,7 @@ function addGitBranchTag(name) {
     label.className = 'gb-row-label';
     label.textContent = name;
     btn.append(ic, label);
-    btn.title = '签出标记 ' + name;
+    btn.dataset.tip = '签出标记 ' + name;
     addGitBranchRow(btn, () => gitPopCheckoutRefValue(name));
 }
 
@@ -564,7 +564,7 @@ function gitPopTogglePin() {
     if (deps.els.gbPin) {
         deps.els.gbPin.classList.toggle('active', gitBranchPopState.pinned);
         deps.els.gbPin.setAttribute('aria-pressed', String(gitBranchPopState.pinned));
-        deps.els.gbPin.title = gitBranchPopState.pinned ? '取消固定窗口' : '固定窗口（点击外部不关闭）';
+        deps.els.gbPin.dataset.tip = gitBranchPopState.pinned ? '取消固定窗口' : '固定窗口（点击外部不关闭）';
     }
 }
 

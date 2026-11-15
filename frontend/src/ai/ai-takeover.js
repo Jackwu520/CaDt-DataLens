@@ -188,7 +188,7 @@ export function createAITakeover(ctx) {
         const title = document.createElement('span');
         title.className = 'ai-takeover-title';
         title.textContent = '补丁审批 · ' + (approval.summary || '未命名');
-        title.title = (approval.summary || '') + (approval.root ? '（目标：' + approval.root + '）' : '');
+        title.dataset.tip = (approval.summary || '') + (approval.root ? '（目标：' + approval.root + '）' : '');
         const stat = document.createElement('span');
         stat.className = 'ai-takeover-stat';
         stat.append(
@@ -200,7 +200,7 @@ export function createAITakeover(ctx) {
         const collapse = document.createElement('button');
         collapse.type = 'button';
         collapse.className = 'ai-takeover-collapse';
-        collapse.title = '临时收起（审批保留，点击细条恢复）';
+        collapse.dataset.tip = '临时收起（审批保留，点击细条恢复）';
         collapse.innerHTML = AI_CHEVRON_SVG;
         collapse.addEventListener('click', () => {
             setApprovalTakeoverCollapsed(true);
@@ -241,7 +241,7 @@ export function createAITakeover(ctx) {
             if (f.kind === 'add') row.appendChild(el0('span', 'ai-patch-kind', '新建'));
             else if (f.kind === 'delete') row.appendChild(el0('span', 'ai-patch-kind danger', '删除'));
             row.append(statEl, badge);
-            if (f.reason) row.title = f.reason;
+            if (f.reason) row.dataset.tip = f.reason;
             list.appendChild(row);
             if (f.reason) {
                 const reason = document.createElement('div');
@@ -284,7 +284,7 @@ export function createAITakeover(ctx) {
         detail.className = 'dlg-btn';
         detail.textContent = '查看详情';
         detail.disabled = !approval.patchPath;
-        detail.title = approval.patchPath
+        detail.dataset.tip = approval.patchPath
             ? '在新标签页打开补丁视图：逐文件状态、逐行 diff，应用后可随时撤销\n' + approval.patchPath
             : '补丁文件路径缺失，无法打开详情';
         detail.addEventListener('click', () => {
@@ -332,7 +332,7 @@ export function createAITakeover(ctx) {
             const more = el0('div', 'ai-approval-more');
             const link = el0('button', 'patch-link', applied ? '在补丁视图中查看 / 撤销' : '在补丁视图中查看详情');
             link.type = 'button';
-            link.title = approval.patchPath;
+            link.dataset.tip = approval.patchPath;
             link.addEventListener('click', () => openPath(approval.patchPath));
             more.appendChild(link);
             container.appendChild(more);
@@ -445,13 +445,13 @@ export function createAITakeover(ctx) {
             const cwd = document.createElement('span');
             cwd.className = 'ai-command-cwd';
             cwd.textContent = approval.cwd || '终端命令';
-            cwd.title = approval.cwd || '';
+            cwd.dataset.tip = approval.cwd || '';
             head.appendChild(cwd);
         } else {
             const path = document.createElement('span');
             path.className = 'ai-takeover-path';
             path.textContent = approval.relPath || approval.path || '';
-            path.title = approval.path || '';
+            path.dataset.tip = approval.path || '';
             head.appendChild(path);
             if (!isRead) {
                 const stat = document.createElement('span');
@@ -476,7 +476,7 @@ export function createAITakeover(ctx) {
         const collapse = document.createElement('button');
         collapse.type = 'button';
         collapse.className = 'ai-takeover-collapse';
-        collapse.title = '临时收起（审批保留，点击细条恢复）';
+        collapse.dataset.tip = '临时收起（审批保留，点击细条恢复）';
         collapse.innerHTML = AI_CHEVRON_SVG;
         collapse.addEventListener('click', () => {
             setApprovalTakeoverCollapsed(true);
@@ -573,7 +573,7 @@ export function createAITakeover(ctx) {
             options.append(sessionLabel, alwaysLabel);
             if (projectRulesPath()) {
                 const projectLabel = document.createElement('label');
-                projectLabel.title = isRead
+                projectLabel.dataset.tip = isRead
                     ? '写入 .cadt/permissions.json：Read(' + (approval.rootDir || approval.path) + '/**)，随工作区共享'
                     : '写入 .cadt/permissions.json，随工作区共享';
                 projectFileBox = document.createElement('input');
@@ -585,7 +585,7 @@ export function createAITakeover(ctx) {
             foot.appendChild(options);
         } else if (!approval.danger && !approval.singleUse) {
             const exactLabel = document.createElement('label');
-            exactLabel.title = '相同命令 + 相同工作目录才自动执行；授权仅本次对话';
+            exactLabel.dataset.tip = '相同命令 + 相同工作目录才自动执行；授权仅本次对话';
             sessionBox = document.createElement('input');
             sessionBox.type = 'checkbox';
             sessionBox.dataset.aiCommandRemember = 'exact';
@@ -593,7 +593,7 @@ export function createAITakeover(ctx) {
             options.appendChild(exactLabel);
             if (commandFamily) {
                 const familyLabel = document.createElement('label');
-                familyLabel.title = '同类命令：' + commandFamily.signature + '（同目录；不含管道、重定向或命令串联）';
+                familyLabel.dataset.tip = '同类命令：' + commandFamily.signature + '（同目录；不含管道、重定向或命令串联）';
                 familyBox = document.createElement('input');
                 familyBox.type = 'checkbox';
                 familyBox.dataset.aiCommandRemember = 'family';
@@ -601,7 +601,7 @@ export function createAITakeover(ctx) {
                 options.appendChild(familyLabel);
                 if (projectRulesPath()) {
                     const projectLabel = document.createElement('label');
-                    projectLabel.title = '写入 .cadt/permissions.json：Bash(' + commandFamily.signature + ':*)';
+                    projectLabel.dataset.tip = '写入 .cadt/permissions.json：Bash(' + commandFamily.signature + ':*)';
                     projectFamilyBox = document.createElement('input');
                     projectFamilyBox.type = 'checkbox';
                     projectFamilyBox.dataset.aiCommandRemember = 'projectFamily';
@@ -791,7 +791,7 @@ export function createAITakeover(ctx) {
             const prev = document.createElement('button');
             prev.type = 'button';
             prev.className = 'ai-ask-page-btn';
-            prev.title = '上一个问题';
+            prev.dataset.tip = '上一个问题';
             prev.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10 3.5L5.5 8l4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
             prev.disabled = qi <= 0;
             prev.addEventListener('click', () => {
@@ -804,7 +804,7 @@ export function createAITakeover(ctx) {
             const next = document.createElement('button');
             next.type = 'button';
             next.className = 'ai-ask-page-btn';
-            next.title = '下一个问题';
+            next.dataset.tip = '下一个问题';
             next.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 3.5L10.5 8 6 12.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
             next.disabled = qi >= ask.questions.length - 1;
             next.addEventListener('click', () => {
@@ -909,7 +909,7 @@ export function createAITakeover(ctx) {
         skip.type = 'button';
         skip.className = 'dlg-btn';
         skip.textContent = '跳过';
-        skip.title = '不回答本轮提问，让 AI 继续';
+        skip.dataset.tip = '不回答本轮提问，让 AI 继续';
         skip.addEventListener('click', () => skipAsk(entry));
         const main = document.createElement('button');
         main.type = 'button';
@@ -1038,12 +1038,17 @@ export function createAITakeover(ctx) {
         el.takeover.appendChild(card);
     }
 
-    function updateComposerTakeover(force) {
-        if (!el.takeover || !el.composer) return;
-        const ask = currentPendingAskEntry();
-        const env = ask ? null : currentPendingEnvEntry();
-        const approvalEntry = (ask || env) ? null : currentPendingApprovalEntry();
-        const session = currentSession();
+    // takeoverHost / sessionOverride：内容区支线对话标签页的接管区（宿主不是面板）。
+    // 面板调用保持无参，行为不变；外部宿主时不碰 composer 类名与浮层定位。
+    function updateComposerTakeover(force, sessionOverride, takeoverHost) {
+        const host = takeoverHost || el.takeover;
+        if (!host) return;
+        if (!takeoverHost && !el.composer) return;
+        const sessionId = sessionOverride ? sessionOverride.id : '';
+        const ask = currentPendingAskEntry(sessionId);
+        const env = ask ? null : currentPendingEnvEntry(sessionId);
+        const approvalEntry = (ask || env) ? null : currentPendingApprovalEntry(sessionId);
+        const session = sessionOverride || currentSession();
         const plan = (ask || env || approvalEntry) ? null : planApprovalMessage(session);
         const planKey = plan ? planApprovalKey(session, plan) : '';
         let key = '';
@@ -1051,22 +1056,30 @@ export function createAITakeover(ctx) {
         else if (env) key = 'env:' + ((env.toolMessage && env.toolMessage.toolCallId) || '');
         else if (approvalEntry) key = 'approval:' + ((approvalEntry.toolMessage && approvalEntry.toolMessage.toolCallId) || '');
         else if (plan && getDismissedPlanApproval() !== planKey) key = 'plan:' + planKey;
-        if (!force && key && el.takeover.dataset.takeoverKey === key) return;
+        if (!force && key && host.dataset.takeoverKey === key) return;
         if (!key) {
-            el.takeover.dataset.takeoverKey = '';
-            el.takeover.classList.add('hidden');
-            el.takeover.textContent = '';
-            el.composer.classList.remove('ai-takeover-active');
-            positionOverlays();
+            host.dataset.takeoverKey = '';
+            host.classList.add('hidden');
+            host.textContent = '';
+            if (!takeoverHost && el.composer) el.composer.classList.remove('ai-takeover-active');
+            if (!takeoverHost) positionOverlays();
             return;
         }
-        el.takeover.dataset.takeoverKey = key;
-        el.takeover.classList.remove('hidden');
-        el.composer.classList.add('ai-takeover-active');
-        if (ask) renderAskTakeover(ask);
-        else if (env) renderEnvAskTakeover(env);
-        else if (approvalEntry) renderApprovalTakeover(approvalEntry);
-        else if (plan) renderPlanTakeover(session, plan);
+        host.dataset.takeoverKey = key;
+        host.classList.remove('hidden');
+        if (!takeoverHost && el.composer) el.composer.classList.add('ai-takeover-active');
+        // 三个渲染函数都写 el.takeover：外部宿主时临时换引用，try/finally 复位
+        const prevTakeover = el.takeover;
+        if (takeoverHost) el.takeover = host;
+        try {
+            if (ask) renderAskTakeover(ask);
+            else if (env) renderEnvAskTakeover(env);
+            else if (approvalEntry) renderApprovalTakeover(approvalEntry);
+            else if (plan) renderPlanTakeover(session, plan);
+        } finally {
+            if (takeoverHost) el.takeover = prevTakeover;
+        }
+        if (takeoverHost) return;
         positionOverlays();
         if (getStickBottom()) scrollToBottom(false);
     }

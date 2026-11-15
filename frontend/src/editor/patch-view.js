@@ -231,7 +231,7 @@ function render(doc, ctx) {
     const bar = el('div', 'patch-bar');
     const title = el('div', 'patch-title');
     title.appendChild(el('span', 'patch-name', doc.name || '补丁'));
-    if (plan && plan.patchPath) title.title = plan.patchPath;
+    if (plan && plan.patchPath) title.dataset.tip = plan.patchPath;
     const stats = el('span', 'patch-stats');
     if (plan) {
         stats.appendChild(el('span', 'patch-add', '+' + plan.added));
@@ -266,7 +266,7 @@ function render(doc, ctx) {
         const btnRevert = el('button', 'dlg-btn' + (st.confirmRevert ? ' danger' : ''), st.confirmRevert ? '确认撤销？' : '撤销');
         btnRevert.type = 'button';
         btnRevert.disabled = !revertable;
-        if (!revertable) btnRevert.title = '外部补丁没有本应用的应用记录，无法撤销';
+        if (!revertable) btnRevert.dataset.tip = '外部补丁没有本应用的应用记录，无法撤销';
         btnRevert.addEventListener('click', () => {
             if (!st.confirmRevert) {
                 // 两段式确认，避免误点；3 秒后自动回到普通态
@@ -301,7 +301,7 @@ function render(doc, ctx) {
         rootWrap.appendChild(el('span', 'patch-root-label', '目标：'));
         const rootBtn = el('button', 'patch-link patch-root', plan.root || '（未选择）');
         rootBtn.type = 'button';
-        rootBtn.title = '选择补丁要写入的目标文件夹';
+        rootBtn.dataset.tip = '选择补丁要写入的目标文件夹';
         rootBtn.addEventListener('click', () => chooseTargetRoot(doc, ctx, plan));
         rootWrap.appendChild(rootBtn);
         const btnRoot = el('button', 'patch-link', '更改…');
@@ -512,7 +512,7 @@ function renderRootSuggestion(doc, ctx, plan) {
     left.appendChild(el('span', 'patch-suggest-text', '目标目录可能不对：'));
     const pathBtn = el('button', 'patch-link patch-suggest-path', plan.suggestedRoot);
     pathBtn.type = 'button';
-    pathBtn.title = plan.suggestedRoot;
+    pathBtn.dataset.tip = plan.suggestedRoot;
     pathBtn.addEventListener('click', () => loadPreview(doc, ctx, {root: plan.suggestedRoot}));
     left.appendChild(pathBtn);
     box.appendChild(left);
@@ -546,7 +546,7 @@ function renderFile(doc, ctx, file, st, review) {
     const pathWrap = el('div', 'patch-file-path');
     const link = el('button', 'patch-link patch-path-link', file.relPath);
     link.type = 'button';
-    link.title = '在编辑器中打开该文件';
+    link.dataset.tip = '在编辑器中打开该文件';
     link.addEventListener('click', () => ctx.openPath(file.relPath));
     pathWrap.appendChild(link);
     if (file.kind === 'add') pathWrap.appendChild(el('span', 'patch-tag', '新建'));

@@ -44,6 +44,76 @@ function compareEntries(a, b) {
     return a.name.localeCompare(b.name, 'zh-CN', {numeric: true, sensitivity: 'base'});
 }
 
+// 目录子项差量合并：复用已有节点对象，只有「结构」变化才返回 true。
+// 纯内容修改（仅 mtime / size 变化）刻意不算变更 —— 文件树不需要为此重建 DOM，
+// 否则 AI 连续编辑 / 文件监听事件会让整棵树不停闪烁。
+export function mergeChildren(node, entries, truncated, dirMtimeValue) {
+    const previous = new Map((node.children || []).map((child) => [normalizePath(child.path), child]));
+    let changed = false;
+    const next = entries.map((entry) => {
+        const key = normalizePath(entry.path);
+        let child = previous.get(key);
+        if (child) {
+            previous.delete(key);
+            if (child.name !== entry.name) {
+                child.name = entry.name;
+                changed = true;
+            }
+            child.mtime = entry.mtime || 0;
+            child.size = entry.size || 0;
+            if (!!child.isDir !== !!entry.isDir) {
+                child.isDir = !!entry.isDir;
+                child.expanded = false;
+                child.children = [];
+                child.loaded = !child.isDir;
+                child.loading = false;
+                child.error = '';
+                child.truncated = false;
+                child.loadPromise = null;
+                child.refreshing = false;
+                child.dirMtime = 0;
+                changed = true;
+            }
+            return child;
+        }
+        changed = true;
+        return {
+            name: entry.name,
+            path: entry.path,
+            isDir: !!entry.isDir,
+            root: false,
+            expanded: false,
+            loaded: !entry.isDir,
+            loading: false,
+            error: '',
+            truncated: false,
+            mtime: entry.mtime || 0,
+            size: entry.size || 0,
+            dirMtime: 0,
+            children: [],
+            loadPromise: null,
+            refreshing: false,
+        };
+    });
+    next.sort(compareEntries);
+    if (!changed) {
+        if (next.length !== node.children.length) changed = true;
+        else if (next.some((child, index) => child !== node.children[index])) changed = true;
+    }
+    if (node.truncated !== !!truncated) changed = true;
+    if (node.error) changed = true;
+    node.children = next;
+    node.truncated = !!truncated;
+    node.dirMtime = dirMtimeValue || 0;
+    node.loaded = true;
+    node.error = '';
+    if (!next.length && node.expanded) {
+        node.expanded = false;
+        changed = true;
+    }
+    return changed;
+}
+
 function el(tag, className, text) {
     const node = document.createElement(tag);
     if (className) node.className = className;
@@ -204,7 +274,7 @@ export function createExplorer(options) {
             : el('span', 'sb-chev' + (node.isDir && node.expanded ? ' open' : ''));
         if (node.isDir && !emptyDir) {
             chev.innerHTML = ICONS.chevron;
-            chev.title = node.expanded ? '收起目录' : '展开目录';
+            chev.dataset.tip = node.expanded ? '收起目录' : '展开目录';
         }
         let icon;
         if (node.isDir) {
@@ -885,73 +955,6 @@ export function createExplorer(options) {
         for (const child of node.children || []) collectExpanded(child, out);
     }
 
-    function mergeChildren(node, entries, truncated, dirMtimeValue) {
-        const previous = new Map((node.children || []).map((child) => [normalizePath(child.path), child]));
-        let changed = false;
-        const next = entries.map((entry) => {
-            const key = normalizePath(entry.path);
-            let child = previous.get(key);
-            if (child) {
-                previous.delete(key);
-                if (child.name !== entry.name) {
-                    child.name = entry.name;
-                    changed = true;
-                }
-                child.mtime = entry.mtime || 0;
-                child.size = entry.size || 0;
-                if (!!child.isDir !== !!entry.isDir) {
-                    child.isDir = !!entry.isDir;
-                    child.expanded = false;
-                    child.children = [];
-                    child.loaded = !child.isDir;
-                    child.loading = false;
-                    child.error = '';
-                    child.truncated = false;
-                    child.loadPromise = null;
-                    child.refreshing = false;
-                    child.dirMtime = 0;
-                    changed = true;
-                }
-                return child;
-            }
-            changed = true;
-            return {
-                name: entry.name,
-                path: entry.path,
-                isDir: !!entry.isDir,
-                root: false,
-                expanded: false,
-                loaded: !entry.isDir,
-                loading: false,
-                error: '',
-                truncated: false,
-                mtime: entry.mtime || 0,
-                size: entry.size || 0,
-                dirMtime: 0,
-                children: [],
-                loadPromise: null,
-                refreshing: false,
-            };
-        });
-        next.sort(compareEntries);
-        if (!changed) {
-            if (next.length !== node.children.length) changed = true;
-            else if (next.some((child, index) => child !== node.children[index])) changed = true;
-        }
-        if (node.truncated !== !!truncated) changed = true;
-        if (node.error) changed = true;
-        node.children = next;
-        node.truncated = !!truncated;
-        node.dirMtime = dirMtimeValue || 0;
-        node.loaded = true;
-        node.error = '';
-        if (!next.length && node.expanded) {
-            node.expanded = false;
-            changed = true;
-        }
-        return changed;
-    }
-
     async function refreshNodeChildren(node, force) {
         if (!node || !node.isDir || node.loading || node.loadPromise || node.refreshing) return false;
         node.refreshing = true;
@@ -1132,6 +1135,19 @@ export function createExplorer(options) {
             externalDirs.add(parentPath(full));
         }
         if (externalDirs.size) scheduleExternalRefresh();
+    }
+
+    // 应用自身写盘（AI write_file / edit_file、补丁应用）后的轻量通知。
+    // 与后端文件监听共用 externalDirs 与 120ms 防抖：只把该文件所在目录标脏，
+    // 由 flushExternalChanges 做局部差量刷新。纯内容修改经 mergeChildren 判定为
+    // 「结构未变」→ 完全不 renderTree；新建/删除才重绘一次，且保留展开态与滚动位置。
+    // 切记不要在这里调全量刷新：那是「点击刷新按钮」的重建（整树清空 → 加载中
+    // → 逐级重载 → 抢滚动），连续编辑时看起来就是整棵文件树一直在闪。
+    function notifyFileChange(path) {
+        const full = String(path || '').replace(/\\/g, '/').replace(/\/+$/, '');
+        if (!full) return;
+        externalDirs.add(parentPath(full));
+        scheduleExternalRefresh();
     }
 
     async function runAutoRefresh() {
@@ -1336,6 +1352,7 @@ export function createExplorer(options) {
         refreshDir,
         pathRenamed,
         handleExternalChanges,
+        notifyFileChange,
         removePath,
         getSelection: () => selection.map((item) => ({...item})),
         getAnchor: () => {

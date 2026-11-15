@@ -2,12 +2,21 @@
 // 设计文档见 docs/finished-plans/ai-panel.md。
 import {iconSvg} from '../core/icons.js';
 import {createContextMenu} from '../shell/contextmenu.js';
+import {mergePluginAIRequest, pluginAIAccounts} from '../shell/plugin-ai-providers.js';
 import {copyImageUrlToClipboard} from '../core/image-clipboard.js';
 import {createImageLightbox} from '../shell/image-lightbox.js';
 import {createFileIcon} from '../core/fileicons.js';
 import {buildSessionOutlineItems} from './session-outline.js';
 import {createSessionDiskStore} from './ai-session-disk.js';
+import {createModelCatalogStore} from './model-catalog.js';
 import {replaySessionLog, isSilentInjection} from './ai-session-store.js';
+import {
+    globMatchPath,
+    humanSizeBytes,
+    locateEditTarget,
+    normalizeReadWindow,
+    readWindowOf,
+} from './ai-file-tools.js';
 import {redactScopePaths} from './ai-scope-redact.js';
 import {
     addReadRoot,
@@ -53,17 +62,29 @@ import {
     MODALITY_LABELS,
     OUTPUT_WINDOW_MAX,
     OUTPUT_WINDOW_MIN,
+    applyOutputWindowLimit,
     configForModel,
+    ctxLimitTiersFor,
+    effectiveContextWindow,
     formatTokenAmount,
     migrateAccountModels,
     modelEntryOf,
     modelRefLabel,
+    normalizeCtxLimit,
     normalizeModalities,
     normalizeModelEntry,
     parseTokenAmount,
+    reasoningLevelInfo,
     resolveModelRef,
     windowValue,
 } from './ai-config-model.js';
+import {
+    genModelByRef,
+    isAsyncGenModel,
+    normalizeGenModels,
+    normalizeGenSnapshot,
+} from './ai-gen-model.js';
+import {createAIGenJobs} from './ai-gen-jobs.js';
 import {
     AI_CONFIG_KEY,
     AI_SESSIONS_KEY,
@@ -142,6 +163,8 @@ import {createAISchedule} from './ai-schedule.js';
 import {createAITimer} from './ai-timer.js';
 import {createAISessionList} from './ai-session-list.js';
 import {createAIComposer} from './ai-composer.js';
+import {quoteMarkupFromAttachments, splitQuotePrefix, quoteExcerpt, quoteLabel, quoteChipLabel, AI_QUOTE_KIND} from './ai-quote.js';
+import {parseFileRef, pickOpenFileMatch} from './ai-file-refs.js';
 import {createAIToolCards} from './ai-tool-cards.js';
 import {createAITakeover} from './ai-takeover.js';
 import {createAIManageDialogs} from './ai-manage-dialogs.js';
@@ -149,6 +172,7 @@ import {createAISettingsDialog} from './ai-settings-dialog.js';
 import {createAISubagents} from './ai-subagents.js';
 import {createAIAgentNotices} from './ai-agent-notices.js';
 import {createAISidechat} from './ai-sidechat.js';
+import {forkMessages, forkSettings} from './ai-session-fork.js';
 import {createAISessionSend} from './ai-session-send.js';
 import {compactTranscriptOf, computeCompactCutoff, buildCompactSummary, applyCompactToSession, buildCompactMessages, compactThresholdOf, COMPACT_KEEP_TAIL} from './ai-compact.js';
 import {createAIMcp} from './ai-mcp.js';
@@ -166,6 +190,13 @@ export function createAIPanel(options) {
     const backend = opts.backend || {};
     const settings = opts.settings || {};
     const saveSettings = typeof opts.saveSettings === 'function' ? opts.saveSettings : () => {};
+    // 模型配置表（内置快照 + 远端缓存）：同步、过期判断、合并全在 model-catalog.js，
+    // 这里只持有实例，设置页与模型编辑器都经 ctx 拿它。
+    const modelCatalog = createModelCatalogStore({
+        backend,
+        getSettings: () => settings,
+        now: () => Date.now(),
+    });
     const flash = typeof opts.flash === 'function' ? opts.flash : () => {};
     const copyText = typeof opts.copyText === 'function' ? opts.copyText : async () => {};
     const renderMarkdown = typeof opts.renderMarkdown === 'function'
@@ -202,6 +233,11 @@ export function createAIPanel(options) {
     const runHostAppAction = typeof opts.runAppAction === 'function' ? opts.runAppAction : null;
     // 后台终端在内容区的标签页打开器（main.js 提供，docs/unfinished-plans/ai-head-agents-terminal.md）
     const openTermTab = typeof opts.openTermTab === 'function' ? opts.openTermTab : null;
+    // 子代理详情视图的宿主出口（main.js 的 openAgentTab）：在内容区标签页打开，不遮挡面板
+    const openAgentTab = typeof opts.openAgentTab === 'function' ? opts.openAgentTab : null;
+    // 支线对话的宿主出口（main.js 的 openSideChatTab）：完整会话渲染在内容区标签页，
+    // 面板继续显示主对话——这是「支线不切走」的实现基础
+    const openSideChatTab = typeof opts.openSideChatTab === 'function' ? opts.openSideChatTab : null;
     const browserHost = opts.browserHost || null;
     // 可视化卡片里的外链交给系统浏览器（main.js 注入，走 BrowserOpenURL）
     const openExternal = typeof opts.openExternal === 'function'
@@ -233,6 +269,11 @@ export function createAIPanel(options) {
         } catch (e) {}
     }
 
+    // 支线对话的标签页出口（createAISidechat 构造时才赋值）与会话切换订阅。
+    // 两者都提前声明：switchSession 在初始化路径里也可能被调用，用 const 放在后面会踩 TDZ。
+    let sideChatTabOutlet = null;
+    const sessionSwitchListeners = new Set();
+
     const el = {
         head: panel.querySelector('#ai-head'),
         headTitle: panel.querySelector('#ai-session-title'),
@@ -250,7 +291,6 @@ export function createAIPanel(options) {
         changesCount: panel.querySelector('#ai-changes-count'),
         moreBtn: panel.querySelector('#ai-more'),
         changesPop: panel.querySelector('#ai-changes-pop'),
-        modeSeg: panel.querySelector('#ai-mode-seg'),
         sideBtn: panel.querySelector('#ai-side-btn'),
         floatFullscreen: panel.querySelector('#ai-float-fullscreen'),
         floatCollapse: panel.querySelector('#ai-float-collapse'),
@@ -267,6 +307,7 @@ export function createAIPanel(options) {
         dialogBody: panel.querySelector('#ai-dialog-body'),
         dialogFoot: panel.querySelector('#ai-dialog-foot'),
         dialogClose: panel.querySelector('#ai-dialog-close'),
+        dialogCard: panel.querySelector('.ai-dialog-card'),
         composer: panel.querySelector('.ai-composer'),
         queue: panel.querySelector('#ai-queue'),
         takeover: panel.querySelector('#ai-takeover'),
@@ -349,18 +390,27 @@ export function createAIPanel(options) {
         keyToggle: document.getElementById('ai-opt-key-toggle'),
         modelEntries: document.getElementById('ai-opt-entries'),
         modelCount: document.getElementById('ai-opt-model-count'),
+        catalogNote: document.getElementById('ai-opt-catalog-note'),
+        catalogText: document.getElementById('ai-opt-catalog-text'),
+        catalogFill: document.getElementById('ai-opt-catalog-fill'),
+        catalogSync: document.getElementById('ai-catalog-sync'),
+        catalogAuto: document.getElementById('ai-catalog-auto'),
+        catalogUrl: document.getElementById('ai-catalog-url'),
+        catalogStatus: document.getElementById('ai-catalog-status'),
         entryAdd: document.getElementById('ai-opt-entry-add'),
-        entryDel: document.getElementById('ai-opt-entry-del'),
         modalities: document.getElementById('ai-opt-modalities'),
         model: document.getElementById('ai-opt-model'),
         models: document.getElementById('ai-opt-models'),
         temp: document.getElementById('ai-opt-temp'),
         tempVal: document.getElementById('ai-opt-temp-val'),
         maxTokens: document.getElementById('ai-opt-maxtokens'),
+        maxTokensHuman: document.getElementById('ai-opt-maxtokens-human'),
+        contextHuman: document.getElementById('ai-opt-context-human'),
         reasoningGroup: document.getElementById('ai-opt-reasoning-group'),
         reasoning: document.getElementById('ai-opt-reasoning'),
         thinkingGroup: document.getElementById('ai-opt-thinking-group'),
         thinking: document.getElementById('ai-opt-thinking'),
+        thinkingHint: document.getElementById('ai-opt-thinking-hint'),
         budget: document.getElementById('ai-opt-budget'),
         contextWindow: document.getElementById('ai-opt-context'),
         test: document.getElementById('ai-opt-test'),
@@ -388,6 +438,7 @@ export function createAIPanel(options) {
         injectPersona: document.getElementById('ai-opt-inject-persona'),
         sendKey: document.getElementById('ai-opt-sendkey'),
         outputLang: document.getElementById('ai-opt-output-lang'),
+        displayMode: document.getElementById('ai-opt-display-mode'),
         chatFont: document.getElementById('ai-opt-chatfont'),
         chatFontVal: document.getElementById('ai-opt-chatfont-val'),
         chatFontEn: document.getElementById('ai-opt-chatfont-en'),
@@ -399,6 +450,7 @@ export function createAIPanel(options) {
         contextSlim: document.getElementById('ai-opt-context-slim'),
         assistantCard: document.getElementById('ai-opt-assistant-card'),
         inlineWidgets: document.getElementById('ai-opt-inline-widgets'),
+        todosExpanded: document.getElementById('ai-opt-todos-expanded'),
         autoTitle: document.getElementById('ai-opt-auto-title'),
         defaultScope: document.getElementById('ai-opt-default-scope'),
         logEnabled: document.getElementById('ai-opt-log-enabled'),
@@ -563,7 +615,8 @@ export function createAIPanel(options) {
     // ---------- 配置与会话持久化 ----------
 
     function defaultModelEntry() {
-        return normalizeModelEntry({}, () => aiNowId('model-'));
+        // autoFilled=true：新条目还没被手改，填模型 ID 时允许配置表接管窗口/能力
+        return normalizeModelEntry({autoFilled: true}, () => aiNowId('model-'));
     }
 
     // 账号（profile）保存连接信息；模型条目放 models[]，每条有独立窗口/能力/推理配置。
@@ -595,7 +648,7 @@ export function createAIPanel(options) {
         const account = {
             id: aiTextOf(raw.id) || aiNowId('profile-'),
             name: aiTextOf(raw.name) || ('配置 ' + (index + 1)),
-            provider: raw.provider === 'anthropic' ? 'anthropic' : 'openai',
+            provider: ['anthropic', 'responses'].includes(raw.provider) ? raw.provider : 'openai',
             baseURL: aiTextOf(raw.baseURL),
             apiKey: aiTextOf(raw.apiKey),
             temperature: aiClamp(Number(raw.temperature) || 0, 0, 2),
@@ -675,6 +728,8 @@ export function createAIPanel(options) {
                 : 'recommended',
             // 个性化（身份命名 / 回复风格 / 人设 / 长期指令）：旧配置缺该字段即默认态，升级零迁移
             persona: normalizePersona(stored.persona),
+            // 生图/视频生成条目（generate_image / generate_video 工具的服务商配置）：同上零迁移
+            genModels: normalizeGenModels(stored.genModels, () => aiNowId('gen-')),
         };
         if (Array.isArray(stored.prompts)) {
             stored.prompts.forEach((raw, index) => {
@@ -753,6 +808,16 @@ export function createAIPanel(options) {
                 contextWindow: 1048576,
             }, 0));
         }
+        // 插件注册的 AI provider 以虚拟账号进入模型选择器；只存在于内存，
+        // saveAIConfig 会剔除它们，用户 ai-config.json 不会被写入插件数据。
+        {
+            const seenPluginIds = new Set(out.profiles.map((p) => p.id));
+            for (const account of pluginAIAccounts()) {
+                if (seenPluginIds.has(account.id)) continue;
+                out.profiles.push(account);
+                seenPluginIds.add(account.id);
+            }
+        }
         if (!out.profiles.some((p) => p.id === out.activeProfileId)) {
             out.activeProfileId = out.profiles.length ? out.profiles[0].id : '';
         }
@@ -811,7 +876,11 @@ export function createAIPanel(options) {
         syncActiveMirror();
         let text = '';
         try {
-            text = JSON.stringify(config);
+            // 插件虚拟账号只在内存里，绝不写进磁盘配置 / localStorage 镜像
+            const forSave = config.profiles.some((p) => p.pluginAI)
+                ? {...config, profiles: config.profiles.filter((p) => !p.pluginAI)}
+                : config;
+            text = JSON.stringify(forSave);
         } catch (e) {
             return;
         }
@@ -830,14 +899,46 @@ export function createAIPanel(options) {
             });
     }
 
+    // 插件启用/禁用后原位增删虚拟账号，不动用户已保存的配置。
+    function syncPluginAIAccounts() {
+        const keep = config.profiles.filter((p) => !p.pluginAI);
+        const seen = new Set(keep.map((p) => p.id));
+        for (const account of pluginAIAccounts()) {
+            if (seen.has(account.id)) continue;
+            keep.push(account);
+            seen.add(account.id);
+        }
+        const changed = keep.length !== config.profiles.length ||
+            keep.some((p, i) => p !== config.profiles[i]);
+        config.profiles = keep;
+        if (!keep.some((p) => p.id === config.activeProfileId)) {
+            const first = keep[0];
+            config.activeProfileId = first ? first.id : '';
+            config.activeModelId = first && first.models[0] ? first.models[0].id : '';
+        }
+        return changed;
+    }
+
     function applyLoadedAIConfig() {
+        syncPluginAIAccounts();
         refreshSettingsPane();
         refreshChatSettings();
         refreshPromptSettings();
         renderProfileSelect();
         updateComposerState();
         refreshSystemPromptEstimate(true);
+        // 模型配置表：先读磁盘缓存，过期才静默同步；拿到后刷新一次模型页（状态行 + 命中提示）
+        modelCatalog.autoSync().then(() => refreshSettingsPane()).catch(() => {});
     }
+
+    // 插件加载常晚于首次配置读取；注册表重建后按当前启用列表刷新虚拟账号。
+    // 磁盘配置尚未就绪时不动，bootstrapAIConfig 走到 applyLoadedAIConfig 会合并一次。
+    window.addEventListener('cadt-plugins-loaded', () => {
+        if (configUseDisk() && !configLoaded) return;
+        if (!syncPluginAIAccounts()) return;
+        renderProfileSelect();
+        updateComposerState();
+    });
 
     async function bootstrapAIConfig() {
         if (!configUseDisk()) {
@@ -1210,6 +1311,15 @@ export function createAIPanel(options) {
                     if (!message.bg.state || message.bg.state === 'stopped') message.bg.code = -1;
                 }
             }
+            // 生成任务快照（generate_image / generate_video）：轮询不跨重启，运行中收敛为失败。
+            if (raw.gen && typeof raw.gen === 'object') {
+                message.gen = normalizeGenSnapshot(raw.gen);
+                if (message.gen.status === 'running') {
+                    message._recovered = true;
+                    message.gen.status = 'failed';
+                    message.gen.error = message.gen.error || '应用重启，生成任务已丢失';
+                }
+            }
             if (raw.bgLog) message.bgLog = aiTextOf(raw.bgLog).slice(0, AI_BG_LIVE_MAX_CHARS);
             return message;
         }
@@ -1272,6 +1382,8 @@ export function createAIPanel(options) {
             profileId: aiTextOf(raw.profileId),
             // 会话级模型：账号 + 条目 id（未选择时回落到窗口默认）
             modelId: aiTextOf(raw.modelId),
+            // 本次会话上下文上限（模型选择器档位；0 = 不设限，生效值取 min(上限, 模型窗口)）
+            ctxLimit: normalizeCtxLimit(raw.ctxLimit),
             systemPrompt: aiTextOf(raw.systemPrompt),
             promptTemplateId: aiTextOf(raw.promptTemplateId),
             messages,
@@ -1315,6 +1427,7 @@ export function createAIPanel(options) {
             workspace: currentWorkspacePath(),
             profileId: '',
             modelId: '',
+            ctxLimit: 0,
             systemPrompt: '',
             promptTemplateId: '',
             messages: [],
@@ -1784,10 +1897,12 @@ export function createAIPanel(options) {
         return sessionModelRef(session).entry;
     }
 
-    // 会话自己的上下文窗口（预算 / 压缩估算用）。
+    // 会话自己的上下文窗口（预算 / 压缩估算用）：模型条目窗口被「本次会话上下文上限」
+    // 收窄（取 min，永不放大）。用量百分比 / auto-compact / 发送预检等消费方全部经此单点。
     function contextWindowOf(session) {
-        const entry = entryOf(session);
-        return (entry && entry.contextWindow) || 128000;
+        const target = session === undefined ? currentSession() : session;
+        const entry = entryOf(target);
+        return effectiveContextWindow((entry && entry.contextWindow) || 128000, target && target.ctxLimit);
     }
 
     // 把选择固定到会话上（发送时 / 手动切换模型时）。
@@ -1812,7 +1927,8 @@ export function createAIPanel(options) {
     }
 
     function providerLabel(profile) {
-        return profile && profile.provider === 'anthropic' ? 'Anthropic' : 'OpenAI 兼容';
+        return profile && profile.provider === 'anthropic' ? 'Anthropic'
+            : (profile && profile.provider === 'responses' ? 'Responses' : 'OpenAI 兼容');
     }
 
     function promptById(id) {
@@ -1832,11 +1948,20 @@ export function createAIPanel(options) {
     // 组装请求配置：连接字段取账号；模型字段取条目。激活账号用 activeModelId，
     // 其他账号（如分类器引用）用其 lastModelId 记住的条目。
     function configForProfile(profile, entry) {
-        if (!profile) return configForModel(null, null);
-        if (entry) return configForModel(profile, entry);
-        const isActive = profile.id === (activeProfile() && activeProfile().id);
-        const fallback = modelEntryOf(profile, isActive ? config.activeModelId : profile.lastModelId);
-        return configForModel(profile, fallback);
+        let cfg;
+        if (!profile) cfg = configForModel(null, null);
+        else if (entry) cfg = configForModel(profile, entry);
+        else {
+            const isActive = profile.id === (activeProfile() && activeProfile().id);
+            const fallback = modelEntryOf(profile, isActive ? config.activeModelId : profile.lastModelId);
+            cfg = configForModel(profile, fallback);
+        }
+        // 插件 provider 的每轮动态补丁（请求头 / 请求体）在这里统一合并；
+        // 普通账号原样返回，prepare 抛异常时插件模块内部降级忽略。
+        return mergePluginAIRequest(cfg, {
+            accountId: profile ? profile.id : '',
+            sessionId: config.activeSessionId || '',
+        });
     }
 
     function updateSessionTitleFromText(session, text) {
@@ -1940,6 +2065,20 @@ export function createAIPanel(options) {
         if (!isOpen()) open(true);
     }
 
+    // ---------- 会话视图宿主 ----------
+    // 会话内容视图可以同时被多个宿主渲染（AI 面板 / 内容区支线对话标签页）。所有
+    // 「这条渲染要不要落到 DOM 上」的判定都收敛到 hasHost()：渲染函数不再假设「面板
+    // 当前查看的会话就是唯一渲染目标」——旧守卫 `currentSession() !== session` 会让
+    // 面板显示母会话时吞掉支线标签页里的流式与工具卡更新。
+    // 当前只有面板一个宿主，本实现与旧守卫逐字节等价（isOpen + 会话相同）；支线标签
+    // 页接入时只需把本函数换成查 viewHosts 登记表，调用点不必再动。
+    function hasHost(sessionId) {
+        if (!sessionId) return false;
+        if (!isOpen()) return false;
+        const viewed = currentSession();
+        return !!viewed && viewed.id === sessionId;
+    }
+
     function updateEntryButtons() {
         const open = isOpen();
         for (const button of [activityButton, toolbarButton]) {
@@ -1958,6 +2097,7 @@ export function createAIPanel(options) {
         el,
         currentSession,
         positionOverlays,
+        settings,
     });
     const renderTodos = () => todosMod.renderTodos();
 
@@ -2043,6 +2183,7 @@ export function createAIPanel(options) {
     // AI 设置页（阶段 3 拆出：ai-settings-dialog.js；config 经 getConfig 读，sessions 写经 setSessions）
     const settingsMod = createAISettingsDialog({
         el, panel, opt, settings, saveSettings, flash, askConfirm, backend, readTextFile,
+        modelCatalog,
         isOpen, currentSession, persistSessions, saveAIConfig,
         renderMessages, updateContextCount, updateSendState, updateComposerState, queueLogSave,
         renderModelChip, renderProfileSelect, renderSessionList, sessionActivity, sessionTitleById: (...args) => sessionTitleById(...args),
@@ -2059,6 +2200,8 @@ export function createAIPanel(options) {
         clearMessageQueue: () => queueMod.clearAll(),
         getSessions: () => sessions,
         updateCtxBanner: (...args) => updateCtxBanner(...args),
+        // 设置页切「任务清单默认展开」后，让既有会话的收起态立即跟随
+        applyTodosCollapseDefault: () => todosMod.applyDefaultCollapse(),
         getConfig: () => config,
         // 端侧分类器（本模块构造于设置对话框之后，经 getter 惰性触达）
         localClassifier: () => localClassifierMod,
@@ -2078,6 +2221,8 @@ export function createAIPanel(options) {
         assistantName,
         showSkillsDialog: (...args) => showSkillsDialog(...args),
         openScheduleEditor: (...args) => openScheduleEditor(...args),
+        // 显示方式设置行：setMode 兼管 'float'（打开独立悬浮窗）
+        setMode: (...args) => setMode(...args),
     });
     const renderApprovedSettings = (...args) => settingsMod.renderApprovedSettings(...args);
     const renderProjectRuleTable = (...args) => settingsMod.renderProjectRuleTable(...args);
@@ -2214,6 +2359,23 @@ export function createAIPanel(options) {
     // 头部定时任务胶囊初查（无启用任务时保持隐藏）
     scheduleMod.renderChip();
 
+    // 生图/视频生成任务运行时（ai-gen-jobs.js）：模板渲染在纯函数层，Go 侧是哑通道。
+    // 工具卡刷新与完成唤醒经回调进本域（wakeSessionByGenDone 走 ai-agent-notices 信箱）。
+    const genJobsMod = createAIGenJobs({
+        getBackend: () => backend,
+        getConfig: () => config,
+        flash,
+        onJobUpdate: (job) => {
+            const owner = sessionById(job.sessionId);
+            if (owner && job.toolMessage) refreshToolWrap(owner, job.toolMessage);
+        },
+        onJobDone: (job) => {
+            Promise.resolve(wakeSessionByGenDone(job)).catch((e) => {
+                flash('生成任务通知失败：' + String((e && e.message) || e), true);
+            });
+        },
+    });
+
     // 端侧命令分类器：内置线性模型（懒加载权重）+ 插件分类器聚合、失败熔断、个性化学习。
     // 纯离线；只产出危险概率，判定在 approveCommandForRun 按严格度阈值完成。
     const localClassifierMod = createAILocalClassifier({
@@ -2315,6 +2477,47 @@ export function createAIPanel(options) {
         }
     }
 
+    // 生成任务完成/失败唤醒（异步 generate_image / generate_video）：对齐计时器到点的信箱投递。
+    function wakeSessionByGenDone(job) {
+        const sessionId = String((job && job.sessionId) || '');
+        const session = sessions.find((s) => s.id === sessionId);
+        if (!session) return; // 会话已删除或不在本窗口：静默丢弃
+        try {
+            if (session.archivedAt) {
+                // 归档会话自动恢复再唤醒（与计时器/定时任务一致）
+                session.archivedAt = 0;
+                persistSessions();
+                renderSessionList();
+            }
+            if (session.workspace && aiWorkspaceKey(session.workspace) !== aiWorkspaceKey(currentWorkspacePath())) {
+                flash('生成任务已结束，但目标会话属于其他工作区，请到对应窗口处理', true);
+                return;
+            }
+            const kindLabel = job.kind === 'video' ? '视频' : '图片';
+            let content;
+            if (job.status === 'done') {
+                const lines = (job.files || []).map((file) => '- ' + file.path + '（' + file.mime + '，' + file.bytes + ' 字节）').join('\n');
+                content = '[生成完成 · ' + kindLabel + ']\n「' + job.entryName + '」的任务已完成，产物：\n' + lines +
+                    '\n请把上述路径告知用户（可在回复中用 Markdown 图片语法引用），或继续后续步骤。';
+            } else {
+                content = '[生成失败 · ' + kindLabel + ']\n「' + job.entryName + '」的任务失败：' + (job.error || '未知原因') +
+                    '\n请向用户说明失败原因；如需重试请调整参数或检查生成条目配置。';
+            }
+            const receipt = deliverAgentNotice(session, {
+                kind: 'gen',
+                label: '生成任务 · ' + job.entryName,
+                content,
+            });
+            if (!receipt || !receipt.ok) {
+                flash('生成任务已结束但未能注入：' + ((receipt && receipt.reason) || '未知'), true);
+                return;
+            }
+            flash('生成任务已结束' + (receipt.woke ? '并唤醒会话' : '，已排入会话信箱'));
+        } catch (e) {
+            flash('生成任务唤醒失败：' + ((e && e.message) || e), true);
+        }
+    }
+
     function emptyState(kind) {
         const box = document.createElement('div');
         box.className = 'ai-empty';
@@ -2330,12 +2533,20 @@ export function createAIPanel(options) {
             button.addEventListener('click', () => openSettings('models'));
             box.append(title, text, button);
         } else {
+            // 看板娘默认形象（costume-midautumn，512px WebP 仅 20KB）。data-default-src
+            // 记录内置默认图，mascot-wardrobe 插件据此做点击换装与恢复。
+            const mascot = document.createElement('img');
+            mascot.className = 'ai-empty-mascot';
+            mascot.src = '/brand/mascot-empty.webp';
+            mascot.alt = '';
+            mascot.draggable = false;
+            mascot.dataset.defaultSrc = mascot.src;
             const title = document.createElement('strong');
             title.textContent = '开始新的对话';
             const text = document.createElement('span');
             // 空态副标题带助手名：克制、不随回复风格加梗（默认名时即「甜澄在这儿 · 输入问题开始对话」）
             text.textContent = assistantName() + '在这儿 · 输入问题开始对话';
-            box.append(title, text);
+            box.append(mascot, title, text);
         }
         return box;
     }
@@ -2477,7 +2688,7 @@ export function createAIPanel(options) {
             }
             card.appendChild(body);
         }
-        el.messages.appendChild(card);
+        msgHost().appendChild(card);
     }
 
     function renderLoadEarlier(start) {
@@ -2489,7 +2700,7 @@ export function createAIPanel(options) {
         btn.textContent = '↑ 上方还有 ' + start + ' 条更早消息';
         btn.addEventListener('click', () => loadEarlierMessages());
         row.appendChild(btn);
-        el.messages.appendChild(row);
+        msgHost().appendChild(row);
     }
 
     function loadEarlierMessages() {
@@ -2529,6 +2740,28 @@ export function createAIPanel(options) {
         updateScrollButton();
     }
 
+    // ---------- 渲染目标（多宿主） ----------
+    // 内容区「支线对话」标签页复用面板的渲染函数，但不能让它们写到面板的消息区里。
+    // 渲染期间把消息区容器与会话临时指向宿主，其余单例 UI（todos / 改动汇总 / 统计行 /
+    // 接管区 / 滚动钮 / 结构面板）一律跳过——那些属于面板外壳。
+    // 全量渲染是同步的，用 try/finally 复位；异步路径（流式增量）不走这里。
+    let renderTarget = null;
+    function msgHost() {
+        return (renderTarget && renderTarget.container) || el.messages;
+    }
+    function renderSessionOf() {
+        return (renderTarget && renderTarget.session) || currentSession();
+    }
+    function withRenderTarget(target, fn) {
+        const prev = renderTarget;
+        renderTarget = target || null;
+        try {
+            return fn();
+        } finally {
+            renderTarget = prev;
+        }
+    }
+
     function renderMessages(keepScroll) {
         renderMessagesInner(keepScroll);
         // 消息流变了：结构面板的会话大纲要跟着更新（新增轮次 / 切换会话 / 压缩 / 编辑重发）
@@ -2536,32 +2769,155 @@ export function createAIPanel(options) {
         scheduleOutlineSync();
     }
 
+    // 内容区「支线对话」标签页的渲染入口：宿主给容器，面板用自己的渲染函数画进去。
+    // 不调 renderMessages 外壳——那会顺手刷新面板的结构面板与大纲，跟这个会话无关。
+    function renderSideChatInto(root, sessionId) {
+        if (!root) return false;
+        const session = sessionById(sessionId);
+        if (!session) {
+            root.textContent = '这个对话已不存在（可能已被删除）';
+            root.classList.add('empty');
+            return false;
+        }
+        withRenderTarget({container: root, session}, () => renderMessagesInner(false));
+        return true;
+    }
+
+    // ---------- 支线对话标签页的桥（状态 / 发送 / 停止 / 胶囊 / 会话切换通知） ----------
+    // 标签页是「另一个视图」，但会话状态、流、审批登记表都在面板闭包里：这里只做薄转发，
+    // 不复制任何状态。失联态靠 sessionSwitchListeners 通知各标签页重新判定。
+
+    function sideChatState(sessionId) {
+        const session = sessionById(sessionId);
+        if (!session) return {ok: false, reason: 'gone'};
+        const ownerId = aiTextOf(session.sideOf).trim();
+        const owner = ownerId ? sessionById(ownerId) : null;
+        const viewing = currentSession();
+        return {
+            ok: true,
+            sessionId: session.id,
+            title: session.title || '支线对话',
+            ownerId,
+            ownerTitle: owner ? (owner.title || '主对话') : '',
+            ownerGone: !!ownerId && !owner,
+            // 无 sideOf（转正后的独立会话）不受「与母会话同场」约束，视为在位
+            inPlace: ownerId ? (!!owner && !!viewing && viewing.id === owner.id) : true,
+            streaming: !!streamOf(session.id),
+            scope: session.scope || 'read',
+            count: (session.messages || []).length,
+        };
+    }
+
+    async function sendSideChatMessage(sessionId, text) {
+        const session = sessionById(sessionId);
+        if (!session) return {ok: false, reason: 'gone'};
+        return await startSessionTurn(session, text, {});
+    }
+
+    function stopSideChatMessage(sessionId) {
+        const live = streamOf(sessionId);
+        if (!live) return {ok: false, reason: 'idle'};
+        stopGeneration(live);
+        return {ok: true};
+    }
+
+    function sideChatChipsOf(sessionId) {
+        const session = sessionById(sessionId);
+        let terms = 0;
+        if (session) {
+            for (const entry of bgJobIndex.values()) if (entry.session === session) terms++;
+        }
+        let timers = 0;
+        try {
+            const snap = timerMod.snapshot([sessionId]);
+            timers = Array.isArray(snap) ? snap.length : 0;
+        } catch (e) {}
+        return {agents: activeSubCount(), terms, timers};
+    }
+
+    // 胶囊点击：回到面板并展开对应的头部弹层（列表与定位都由面板那套负责）
+    function openSideChatChip(kind) {
+        ensureOpen();
+        const chip = kind === 'agents' ? el.chipAgents
+            : kind === 'terms' ? el.chipTerms
+                : kind === 'timers' ? el.chipTimers
+                    : el.chipSchedules;
+        if (!chip) return false;
+        toggleChipsPop(kind, chip);
+        return true;
+    }
+
+    // 失联横幅的两个动作：回到母会话 / 把支线转正（母会话已删除时的唯一出路）
+    function returnToSideChatOwner(sessionId) {
+        const session = sessionById(sessionId);
+        const ownerId = session ? aiTextOf(session.sideOf).trim() : '';
+        if (!ownerId) return false;
+        ensureOpen();
+        switchSession(ownerId);
+        return true;
+    }
+
+    function promoteSideChatFromTab(sessionId) {
+        const session = sessionById(sessionId);
+        if (!session) return false;
+        return promoteSideChat(session);
+    }
+
+    // 标签页里的接管区（写审批 / ask / env / 计划批准）：把面板那套渲染按会话画进宿主容器。
+    // 支线要「工具完整」，写文件审批就必须能在标签页里点，否则支线一遇到写操作就卡死。
+    function renderSideChatTakeover(root, sessionId) {
+        const session = sessionById(sessionId);
+        if (!root || !session) return false;
+        takeoverMod.updateComposerTakeover(false, session, root);
+        return true;
+    }
+
+    // 标签页里的消息点击代理：审批 / 环境变量 / 用量徽标（其余动作无响应，避免误伤母会话）
+    function sideChatClick(e, sessionId) {
+        const session = sessionById(sessionId);
+        if (!session) return;
+        const target = e.target;
+        if (!target || !target.closest) return;
+        if (!target.closest('[data-ai-approve],[data-ai-env],[data-ai-act="usage"]')) return;
+        handleMessageClick(e, session);
+    }
+
+    // 面板单例 UI 的收尾刷新：外部宿主渲染时跳过（宿主自己管滚动与状态条）
+    function finishRender(forPanel) {
+        if (!forPanel) return;
+        updateContextCount();
+        updateScrollButton();
+        updateComposerTakeover();
+    }
+
     function renderMessagesInner(keepScroll) {
-        if (!el.messages) return;
+        const host = msgHost();
+        if (!host) return;
+        const forPanel = !renderTarget;
         // 重绘会换掉消息节点，用量浮层的锚点随即失效
-        closeTurnUsagePop();
-        syncStreamView();
-        const session = currentSession();
+        if (forPanel) {
+            closeTurnUsagePop();
+            syncStreamView();
+        }
+        const session = renderSessionOf();
         // 全量重建会把 scrollTop 钳到 0；keepScroll=true 时记录并在重建后恢复，
         // 否则像切换计划模式这类重渲染会把当前对话弹到顶部。
-        const prevTop = el.messages.scrollTop;
-        el.messages.innerHTML = '';
+        const prevTop = host.scrollTop;
+        host.innerHTML = '';
         slashState.open = false;
-        renderTodos();
-        updateChangesUI();
+        if (forPanel) {
+            renderTodos();
+            updateChangesUI();
+        }
         if (!session) return;
         if (!profileOf(session) && !session.messages.length) {
-            el.messages.appendChild(emptyState('no-profile'));
-            updateContextCount();
-            updateScrollButton();
-            updateComposerTakeover();
+            host.appendChild(emptyState('no-profile'));
+            finishRender(forPanel);
             return;
         }
         if (!session.messages.length) {
-            el.messages.appendChild(emptyState('empty'));
-            updateContextCount();
-            updateScrollButton();
-            updateComposerTakeover();
+            host.appendChild(emptyState('empty'));
+            finishRender(forPanel);
             return;
         }
         const state = renderWindowState(session);
@@ -2592,13 +2948,20 @@ export function createAIPanel(options) {
             timer.className = 'ai-process-timer';
             timer.textContent = aiFormatLiveDuration(Math.max(0, Date.now() - (Number(live.startedAt) || 0)));
             bar.append(mascot, label, dots, timer);
-            el.messages.appendChild(bar);
-            ensureProcessTicker();
+            host.appendChild(bar);
+            // 走表针（进程中计时）只服务面板：外部宿主的流式条自己刷新，否则面板的
+            // ticker 会来清一条它这边根本不存在的 bar
+            if (forPanel) ensureProcessTicker();
+        }
+        if (!forPanel) {
+            // 外部宿主自己管滚动：保持原位 or 贴底，不碰面板的 stickBottom / 滚动钮
+            host.scrollTop = keepScroll ? prevTop : host.scrollHeight;
+            return;
         }
         if (!keepScroll || stickBottom) {
             scrollToBottom(false);
         } else {
-            el.messages.scrollTop = prevTop;
+            host.scrollTop = prevTop;
         }
         updateContextCount();
         updateScrollButton();
@@ -2726,15 +3089,22 @@ export function createAIPanel(options) {
         if (!body) return;
         bindThinkScroll(body);
         const st = aiThinkScrollState(body);
+        const text = (message && message.reasoning) || '';
+        // 同类防抖：工具参数接收帧里 reasoning 没变，别每 80ms 重写整块思考体
+        // （里面的代码块 / 图片 / 打字动画会被反复重建）。签名带 streaming，
+        // 轮结束时仍会重渲染一次以补上代码高亮等收尾增强。
+        const sig = (streaming ? 's' : 'd') + text.length + ':' + text.slice(-64);
+        if (body.dataset.renderSig === sig) return;
         const prevTop = body.scrollTop;
         body.classList.add('ai-md');
-        body.innerHTML = renderMarkdown((message && message.reasoning) || '');
+        body.innerHTML = renderMarkdown(text);
         if (!streaming) enhanceAICodeBlocks(body);
         resolveAIImages(body);
         // 流式中且仍处于跟随状态 → 贴底；用户上滑过就保留他看的位置。
         if (streaming && st.pinned) body.scrollTop = body.scrollHeight;
         else body.scrollTop = prevTop;
         st.expectedTop = body.scrollTop;
+        body.dataset.renderSig = sig;
     }
 
     // resolveAIImages 把 AI 消息 Markdown 里的本地图片引用换成后端读取的 data URL。
@@ -2762,7 +3132,7 @@ export function createAIPanel(options) {
                         readRootCoversAny(config.approvedReadRoots, raw));
                 if (!covered) {
                     img.classList.add('ai-img-broken');
-                    img.title = '图片无法加载：' + ((e && e.message) || e);
+                    img.dataset.tip = '图片无法加载：' + ((e && e.message) || e);
                     continue;
                 }
                 abs = aiNormalizePath(raw);
@@ -2772,11 +3142,74 @@ export function createAIPanel(options) {
                     img.src = url;
                 } else {
                     img.classList.add('ai-img-broken');
-                    img.title = '图片无法加载（格式不支持或超过 30MB）：' + abs;
+                    img.dataset.tip = '图片无法加载（格式不支持或超过 30MB）：' + abs;
                 }
             }).catch((e) => {
                 img.classList.add('ai-img-broken');
-                img.title = '图片无法加载：' + abs + ((e && e.message) ? '（' + e.message + '）' : '');
+                img.dataset.tip = '图片无法加载：' + abs + ((e && e.message) ? '（' + e.message + '）' : '');
+            });
+        }
+    }
+
+    // ---------- 文件引用链接 ----------
+    // enhanceAIFileRefs 把 AI 回复 inline code 里的文件引用升级成可点击的文件链接：
+    // 形状判定（parseFileRef，纯函数）→ 解析绝对路径（裸文件名先按已开标签页匹配，
+    // 其余走 aiResolveScopePath 工作区相对解析）→ GetPathInfo 校验真实存在（不存在的
+    // 保持普通 code，零误伤）→ 点击 openTargets 在编辑器打开并跳行。
+    // stat 结果按绝对路径缓存：流式期间每帧重渲染会重建 code 节点，缓存避免同一路径反复 stat。
+    const aiRefStatCache = new Map();
+
+    function markFileRefChip(code, abs, ref, ok) {
+        if (!ok) {
+            code.dataset.aiRefState = 'none';
+            return;
+        }
+        if (!code.isConnected) return;
+        code.dataset.aiRefState = 'file';
+        code.dataset.aiRefPath = abs;
+        code.dataset.aiRefLine = String(ref.line || 0);
+        code.dataset.aiRefCol = String(ref.col || 0);
+        code.classList.add('ai-file-ref');
+        const at = ref.line ? (' · 第 ' + ref.line + ' 行' + (ref.col ? ' 第 ' + ref.col + ' 列' : '')) : '';
+        code.dataset.tip = abs + at;
+    }
+
+    function enhanceAIFileRefs(scopeEl) {
+        if (!scopeEl) return;
+        for (const code of scopeEl.querySelectorAll('code')) {
+            if (code.closest('pre')) continue; // 围栏代码块不做文件引用
+            if (code.dataset.aiRefState) continue;
+            const ref = parseFileRef(code.textContent);
+            if (!ref) continue;
+            code.dataset.aiRefState = 'pending';
+            let abs = pickOpenFileMatch(ref, (getWorkspaceContext() || {}).openFiles);
+            if (!abs) {
+                try {
+                    abs = aiResolveScopePath(ref.path, currentSession());
+                } catch (e) {
+                    code.dataset.aiRefState = 'none';
+                    continue;
+                }
+            }
+            const cached = aiRefStatCache.get(abs);
+            if (cached !== undefined) {
+                markFileRefChip(code, abs, ref, cached);
+                continue;
+            }
+            if (!backend.GetPathInfo) {
+                code.dataset.aiRefState = 'none';
+                continue;
+            }
+            Promise.resolve(backend.GetPathInfo(abs)).then((info) => {
+                const ok = !!(info && !info.isDir);
+                if (aiRefStatCache.size > 512) aiRefStatCache.clear();
+                aiRefStatCache.set(abs, ok);
+                markFileRefChip(code, abs, ref, ok);
+            }).catch(() => {
+                // 尽力而为：stat 失败（不存在/越界/虚拟文档）保持普通 code 样式
+                if (aiRefStatCache.size > 512) aiRefStatCache.clear();
+                aiRefStatCache.set(abs, false);
+                code.dataset.aiRefState = 'none';
             });
         }
     }
@@ -2824,7 +3257,7 @@ export function createAIPanel(options) {
     }
 
     function renderTurn(group, session, isLastGroup, parent, extraOptions) {
-        const host = parent || el.messages;
+        const host = parent || msgHost();
         const turnOptions = extraOptions || {};
         if (group.user) renderMessage(group.user, group.startIndex, session, host, turnOptions);
         const finalItem = turnFinalItem(group);
@@ -3068,7 +3501,7 @@ export function createAIPanel(options) {
         img.className = 'ai-image-preview';
         img.src = aiImageSrc(image);
         img.alt = image.name || '图片';
-        img.title = '点击全屏查看（右键：复制 / 另存为）';
+        img.dataset.tip = '点击全屏查看（右键：复制 / 另存为）';
         img.addEventListener('click', () => showImageFullscreen(image));
         img.addEventListener('contextmenu', (e) => {
             e.preventDefault();
@@ -3106,7 +3539,7 @@ export function createAIPanel(options) {
                 const missing = document.createElement('div');
                 missing.className = 'ai-user-image-missing';
                 missing.textContent = '图片已归档';
-                missing.title = image.logFile;
+                missing.dataset.tip = image.logFile;
                 strip.appendChild(missing);
                 continue;
             }
@@ -3114,7 +3547,7 @@ export function createAIPanel(options) {
             img.className = imgClass;
             img.src = aiImageSrc(image);
             img.alt = image.name || '图片';
-            img.title = (image.name || '图片') + (image.width && image.height ? ' · ' + image.width + '×' + image.height : '');
+            img.dataset.tip = (image.name || '图片') + (image.width && image.height ? ' · ' + image.width + '×' + image.height : '');
             img.loading = 'lazy';
             img.addEventListener('click', () => showImagePreview(image));
             strip.appendChild(img);
@@ -3143,7 +3576,7 @@ export function createAIPanel(options) {
         if (note.account) tips.push('账号：' + note.account);
         if (note.effort) tips.push('推理等级：' + note.effort);
         tips.push('时间：' + aiFormatTime(message.ts));
-        info.title = tips.join('\n');
+        info.dataset.tip = tips.join('\n');
         row.append(text, info);
         wrap.appendChild(row);
     }
@@ -3220,15 +3653,36 @@ export function createAIPanel(options) {
             const bubble = document.createElement('div');
             bubble.className = 'ai-user-bubble' + (message.systemNote ? ' system-note' : '');
             appendUserImages(bubble, message.images);
-            if (message.content) {
+            // 引用块拆出来单独渲染：截断成单行摘要，title 悬浮看全文；消息正文只显示追问本身
+            const parsedQuote = splitQuotePrefix(message.content || '');
+            if (parsedQuote.quotes.length) {
+                const quoteBox = document.createElement('div');
+                quoteBox.className = 'ai-user-quote';
+                for (const quote of parsedQuote.quotes) {
+                    const row = document.createElement('div');
+                    row.className = 'ai-user-quote-row';
+                    const quoteLabelEl = document.createElement('span');
+                    quoteLabelEl.className = 'ai-user-quote-label';
+                    quoteLabelEl.textContent = quoteLabel(quote);
+                    const excerpt = document.createElement('span');
+                    excerpt.className = 'ai-user-quote-excerpt';
+                    excerpt.textContent = quoteExcerpt(quote.text);
+                    excerpt.dataset.tip = quote.text;
+                    row.append(quoteLabelEl, excerpt);
+                    quoteBox.appendChild(row);
+                }
+                bubble.appendChild(quoteBox);
+            }
+            const shownText = parsedQuote.quotes.length ? parsedQuote.body : (message.content || '');
+            if (shownText) {
                 const text = document.createElement('div');
                 text.className = 'ai-user-text';
-                text.textContent = message.content;
+                text.textContent = shownText;
                 bubble.appendChild(text);
                 // 超长消息默认折叠：只露出开头一段 + 渐隐，点「展开全文」看完整内容
                 //（展开后全文可选中复制）；手动展开/收起按消息 key 记住，重渲染不弹回。
-                if (isLongUserMessage(message.content)) {
-                    const foldKey = (session ? session.id : '') + ':' + (Number(message.ts) || 0) + ':' + message.content.length;
+                if (isLongUserMessage(shownText)) {
+                    const foldKey = (session ? session.id : '') + ':' + (Number(message.ts) || 0) + ':' + shownText.length;
                     text.classList.add('foldable');
                     text.classList.toggle('folded', !userFoldExpanded.has(foldKey));
                     const toggle = document.createElement('button');
@@ -3260,7 +3714,7 @@ export function createAIPanel(options) {
             wrap.appendChild(foot);
             appendActions(wrap, message, index, session, foot);
         }
-        (parent || el.messages).appendChild(wrap);
+        (parent || msgHost()).appendChild(wrap);
     }
 
     // 应用注入的消息（Git 快捷操作 / 定时任务）：全宽卡片 + 来源标识，不用用户胶囊；
@@ -3475,7 +3929,7 @@ export function createAIPanel(options) {
             button.type = 'button';
             button.className = 'ai-msg-action';
             button.dataset.aiAct = act;
-            button.title = label;
+            button.dataset.tip = label;
             button.setAttribute('aria-label', label);
             button.innerHTML = icons[act] || label;
             button.disabled = !!disabled;
@@ -3512,7 +3966,7 @@ export function createAIPanel(options) {
                     const duration = document.createElement('span');
                     duration.className = 'ai-msg-duration';
                     duration.textContent = clock;
-                    duration.title = '本轮耗时';
+                    duration.dataset.tip = '本轮耗时';
                     actions.appendChild(duration);
                 }
             }
@@ -3545,7 +3999,7 @@ export function createAIPanel(options) {
         button.type = 'button';
         button.className = 'ai-msg-usage';
         button.dataset.aiAct = 'usage';
-        button.title = '查看本轮用量明细';
+        button.dataset.tip = '查看本轮用量明细';
         button.setAttribute('aria-label', '本轮用量');
         const glyph = document.createElement('span');
         glyph.className = 'ai-msg-usage-icon';
@@ -3612,7 +4066,7 @@ export function createAIPanel(options) {
             const val = document.createElement('span');
             val.className = 'ai-turn-usage-value' + (mono ? ' num' : '');
             val.textContent = value;
-            val.title = value;
+            val.dataset.tip = value;
             line.append(name, val);
             rows.appendChild(line);
         };
@@ -4233,7 +4687,7 @@ export function createAIPanel(options) {
         setStatItem(el.statsTurns, totals.rounds + ' 轮 ' + totals.steps + ' 步');
         setStatItem(el.statsSpeed, totals.speed > 0 ? totals.speed + ' tok/s' : '');
         if (el.statsSpeed) {
-            el.statsSpeed.title = totals.speedKind === 'gen'
+            el.statsSpeed.dataset.tip = totals.speedKind === 'gen'
                 ? '生成速度：输出 tokens ÷（模型往返耗时 − 首 token 延迟）'
                 : (totals.speedKind === 'e2e'
                     ? '端到端吞吐：输出 tokens ÷ 模型往返耗时（含首 token 延迟）'
@@ -4249,7 +4703,7 @@ export function createAIPanel(options) {
         const pct = Math.max(0, Math.round(percent * 100));
         if (el.statsCtxPct) el.statsCtxPct.textContent = pct + '%';
         if (el.ctxRing) el.ctxRing.style.setProperty('--ctx-pct', String(Math.min(100, pct)));
-        if (el.ctxBtn) el.ctxBtn.title = '上下文约 ' + aiFormatCompactTokens(tokens) + ' / ' + aiFormatCompactTokens(windowSize) + ' tokens（估算）';
+        if (el.ctxBtn) el.ctxBtn.dataset.tip = '上下文约 ' + aiFormatCompactTokens(tokens) + ' / ' + aiFormatCompactTokens(windowSize) + ' tokens（估算）';
         if (openStatsPop === 'ctx') void renderCtxPopover(false);
         else if (openStatsPop === 'session') renderSessionPopover();
         else if (openStatsPop === 'token') renderTokenPopover();
@@ -4309,7 +4763,7 @@ export function createAIPanel(options) {
         if (el.sessionTps) {
             el.sessionTps.textContent = totals.speed > 0 ? totals.speed + ' tok/s' : '—';
             // gen = 纯生成速度（已扣除首 token 延迟）；e2e = 端到端吞吐（无流式时间戳时的兜底）
-            el.sessionTps.title = totals.speedKind === 'gen'
+            el.sessionTps.dataset.tip = totals.speedKind === 'gen'
                 ? '生成速度：输出 tokens ÷（模型往返耗时 − 首 token 延迟）'
                 : (totals.speedKind === 'e2e'
                     ? '端到端吞吐：输出 tokens ÷ 模型往返耗时（含首 token 延迟）'
@@ -4365,7 +4819,7 @@ export function createAIPanel(options) {
                 systemText = bundle.text;
             } catch (e) {}
         }
-        if (seq !== ctxPopSeq || currentSession() !== session || el.ctxPop.classList.contains('hidden')) return;
+        if (seq !== ctxPopSeq || !hasHost(session && session.id) || el.ctxPop.classList.contains('hidden')) return;
         const windowSize = contextWindowOf(session);
         const messages = buildApiMessages(session, null, systemText);
         let systemTokens = 0;
@@ -4385,7 +4839,12 @@ export function createAIPanel(options) {
         const total = systemTokens + messageTokens + toolTokens;
         const pct = windowSize > 0 ? Math.round(total / windowSize * 100) : 0;
         if (el.ctxPopPct) el.ctxPopPct.textContent = pct + '%';
-        if (el.ctxPopSize) el.ctxPopSize.textContent = '~' + aiFormatCompactTokens(total) + ' / ' + aiFormatCompactTokens(windowSize);
+        // 分母是生效窗口（可能被「本次会话上下文上限」收窄），收窄时标注来源
+        const baseWindow = (entryOf(session) && entryOf(session).contextWindow) || 128000;
+        if (el.ctxPopSize) {
+            el.ctxPopSize.textContent = '~' + aiFormatCompactTokens(total) + ' / ' + aiFormatCompactTokens(windowSize) +
+                (windowSize < baseWindow ? '（会话上限 ' + formatTokenAmount(windowSize) + '）' : '');
+        }
         const raw = [systemTokens, toolTokens, messageTokens].map((tokens) => windowSize > 0 ? tokens / windowSize * 100 : 0);
         const sum = raw.reduce((a, b) => a + b, 0);
         const scale = sum > 100 ? 100 / sum : 1;
@@ -4867,7 +5326,12 @@ export function createAIPanel(options) {
         getMcpState: () => mcpMod.getState(),
         onChanged: () => Promise.resolve(mcpMod.refresh()).catch(() => {}), // 尽力而为：保存后拉一次新配置的快照
     });
-    const toolDefsMod = createAIToolDefs({appControlOn, mcpToolDefs: () => mcpMod.mcpToolDefs()});
+    const toolDefsMod = createAIToolDefs({
+        appControlOn,
+        mcpToolDefs: () => mcpMod.mcpToolDefs(),
+        // 生图/视频：配置了启用条目才下发 generate_image / generate_video / check_gen
+        genModelsOn: () => (config.genModels || []).some((item) => item && item.enabled !== false),
+    });
     const toolsForScope = (scope, planMode) => toolDefsMod.toolsForScope(scope, planMode);
     // 系统提示词组装域（ai-system-context.js）：面板闭包状态经 getter 注入——config 是可变 let、
     // settings 属性可变，必须走活引用而不是值快照（splitRoot 教训）。
@@ -4889,6 +5353,8 @@ export function createAIPanel(options) {
         get currentScopeOf() { return currentScopeOf; },
         get getWorkspaceContext() { return getWorkspaceContext; },
         get getScopeRoot() { return getScopeRoot; },
+        // 支线定性块要显示主对话标题（<side_chat> 里点名「主对话：「X」」），按 id 查会话
+        get sessionById() { return sessionById; },
     });
     const assembleSystemContext = (session, attachmentList) => systemCtxMod.assembleSystemContext(session, attachmentList);
     const planModeBlock = () => systemCtxMod.planModeBlock();
@@ -5636,7 +6102,8 @@ export function createAIPanel(options) {
         if (inflight) return new Promise((resolve) => { inflight.waiters.push(resolve); });
         const sessionId = (session && session.id) || '';
         const id = (sessionId || 'session') + '#classifier-' + (++classifierSeq);
-        const cfg = Object.assign(configForModel(modelRef.account, modelRef.entry), {
+        // 走 configForProfile：插件 provider 的虚拟账号同样要拿到每轮动态补丁
+        const cfg = Object.assign(configForProfile(modelRef.account, modelRef.entry), {
             // 512 而非小预算：部分兼容网不认「关闭思考」参数时，思考链也烧不完预算，
             // 正文仍能产出（JSON 判定本身 <60 token）
             maxTokens: 512,
@@ -5986,7 +6453,7 @@ export function createAIPanel(options) {
     }
 
     function updateAskCountdown(entry) {
-        if (!entry || !isOpen() || currentSession() !== entry.session) return;
+        if (!entry || !hasHost(entry.session && entry.session.id)) return;
         const key = entry.toolMessage.toolCallId || entry.key;
         panel.querySelectorAll('.ai-ask-countdown').forEach((node) => {
             if (node.dataset.askKey === key) node.textContent = askCountdownText(entry.ask);
@@ -6510,6 +6977,121 @@ export function createAIPanel(options) {
         }
     }
 
+    // ---------- 生图/视频（generate_image / generate_video / check_gen，ai-gen-models.md §3.4） ----------
+    // 审批按写工具档：decidePermission kind:'write'（read/edit 弹卡、auto/full 直发），项目规则
+    // Write(generate_image) 形态可覆写；prompt 发往用户配置的服务商并可能产生费用。
+
+    function genKindLabel(kind) {
+        return kind === 'video' ? '视频' : '图片';
+    }
+
+    // review: true 时把首张生成图回传对话（browser_screenshot 同款注入链；仅多模态输入模型有意义）。
+    async function genReviewImages(session, files) {
+        const chatEntry = entryOf(session);
+        if (!chatEntry || !chatEntry.modalities || chatEntry.modalities.image !== true) {
+            return '当前聊天模型未启用图像输入，已跳过图片回传。';
+        }
+        const imageFile = (files || []).find((file) => file && file.mime && file.mime.startsWith('image/') && file.bytes <= 6 << 20);
+        if (!imageFile) return '没有适合回传的图片（超过 6MB 或非图片产物）。';
+        const dataURL = await backend.ReadImageAsDataURL(imageFile.path);
+        if (!dataURL || dataURL.indexOf('base64,') < 0) throw new Error('读取生成图片失败');
+        const normalized = aiNormalizeImage({mime: imageFile.mime, data: dataURL.slice(dataURL.indexOf('base64,') + 7), name: '生成图'});
+        if (!normalized) throw new Error('生成图片数据无法解析');
+        session.messages.push({
+            role: 'user',
+            content: '[生成图片（generate_image review 自动附加）]',
+            images: [normalized],
+            app: normalizeAppMessage({kind: 'app', label: '生成图片', icon: 'image'}),
+            ts: Date.now(),
+        });
+        persistSessions();
+        return '';
+    }
+
+    async function runGenerateTool(kind, input, ctx) {
+        const toolName = kind === 'video' ? 'generate_video' : 'generate_image';
+        const session = ctx && ctx.session;
+        const modelRef = aiTextOf(input.model);
+        const entry = genModelByRef(config.genModels, kind, modelRef);
+        if (!entry) {
+            throw new Error('没有可用的' + genKindLabel(kind) + '条目' +
+                (modelRef ? '：「' + modelRef + '」未找到或未启用' : '（请在 设置 → AI → 生图与视频模型 里配置）'));
+        }
+        const workspace = getScopeRoot();
+        if (!workspace) throw new Error('当前没有工作区，无法保存生成产物');
+        const rules = await ensureProjectRules(false);
+        const sessionRule = session
+            ? matchCommandRule(commandRulesFor(session), entry.baseURL, aiPathKey('生成请求'))
+            : null;
+        const decision = decidePermission({
+            scope: currentScopeOf(session),
+            kind: 'write',
+            rules,
+            subject: toolName,
+            sessionAllow: !!sessionRule,
+        });
+        logPermission('write', toolName, decision.decision, decision.source, decision.rule);
+        if (decision.decision === 'deny') {
+            throw new Error('项目权限规则禁止生成（规则 ' + decision.rule + '）');
+        }
+        if (decision.decision === 'ask') {
+            if (!session || !ctx.toolMessage) throw new Error('生成工具缺少会话上下文');
+            const brief = aiTextOf(input.prompt).slice(0, 120);
+            const answer = await requestCommandApproval(session, ctx.toolMessage, {
+                command: toolName + ' · ' + (entry.name || entry.id) + '：' + brief,
+                cwd: '生成请求',
+                tool: toolName,
+            });
+            if (!answer.approved) {
+                return answer.cancelled
+                    ? '用户已停止生成，未执行。'
+                    : '用户未允许' + genKindLabel(kind) + '生成：' + brief;
+            }
+        }
+        const params = {
+            prompt: aiTextOf(input.prompt),
+            model: entry.id,
+            size: aiTextOf(input.size),
+            n: input.n,
+            outputPath: aiTextOf(input.outputPath),
+        };
+        // 留痕：只记条目名与参数摘要（prompt 记长度不记原文），产物计数
+        if (activity) {
+            activity.log('ai', toolName, {
+                entry: entry.name || entry.id,
+                promptLen: params.prompt.length,
+                size: params.size || entry.defaultSize || '',
+                n: kind === 'image' ? Math.max(1, Math.round(Number(input.n) || entry.defaultN || 1)) : undefined,
+                output: params.outputPath || '',
+            }, {actor: 'ai', noRel: true});
+        }
+        // 异步型：提交即返回，完成经信箱唤醒本会话（wakeSessionByGenDone）
+        if (isAsyncGenModel(entry)) {
+            const jobId = await genJobsMod.submitJob(workspace, session.id, entry, params, ctx.toolMessage);
+            return '已提交' + genKindLabel(kind) + '生成任务（' + (entry.name || entry.id) + '）。\n任务 id：' + jobId +
+                '\n完成后会自动通知本会话；期间可用 check_gen(jobId="' + jobId + '") 查询进度。';
+        }
+        // 同步型：等待完成（Go 侧超时保护），产物落盘后返回清单
+        const files = await genJobsMod.runSync(workspace, entry, params);
+        if (ctx.toolMessage) {
+            ctx.toolMessage.gen = normalizeGenSnapshot({kind, entryName: entry.name || entry.id, status: 'done', files});
+            const owner = sessionById(session.id);
+            if (owner) refreshToolWrap(owner, ctx.toolMessage);
+        }
+        let reviewNote = '';
+        if (input.review === true && kind === 'image' && files.length) {
+            try {
+                reviewNote = await genReviewImages(session, files);
+            } catch (e) {
+                reviewNote = '图片回传失败：' + ((e && e.message) || e);
+            }
+        }
+        const lines = files.map((file) => '- ' + file.path + '（' + file.mime + '，' + file.bytes + ' 字节）').join('\n');
+        return '已生成 ' + files.length + ' 个产物（' + (entry.name || entry.id) + '）：\n' + lines +
+            (reviewNote ? '\n' + reviewNote : '') +
+            '\n可在回复中用 Markdown 图片语法（![](' + '相对路径)）向用户展示产物。';
+    }
+
     function mcpLogActivity(route, name, input, status, ms) {
         if (!activity) return;
         const keys = input && typeof input === 'object' ? Object.keys(input).sort() : [];
@@ -6545,41 +7127,63 @@ export function createAIPanel(options) {
                 const entries = (listing && listing.entries) || [];
                 const lines = ['目录：' + redactToolText(rel, ctx && ctx.session)];
                 for (const entry of entries) {
-                    lines.push((entry.isDir ? '[D] ' : '[F] ') + entry.name);
+                    const sizeText = entry.isDir ? '' : humanSizeBytes(entry.size);
+                    lines.push((entry.isDir ? '[D] ' : '[F] ') + entry.name + (sizeText ? '（' + sizeText + '）' : ''));
                 }
                 if (!entries.length) lines.push('（空目录）');
-                if (listing && listing.truncated) lines.push('…（条目过多已截断）');
+                if (listing && listing.truncated) {
+                    lines.push('…（条目过多已截断：共 ' + (listing.total != null ? listing.total : entries.length + '+') + ' 项，只列前 ' + entries.length + ' 项）');
+                }
                 return lines.join('\n');
             }
             case 'read_file': {
                 const resolved = await resolveReadPathWithApproval(ctx, 'read_file', input.path);
                 if (!resolved.ok) return resolved.message;
                 const path = resolved.path;
-                const offset = Math.max(0, Math.round(Number(input.offset) || 0));
                 const read = await readTextFile(path, null);
                 // 记录读取时磁盘指纹：write_file 陈旧性防护的基线（见 ai-write-guard.js）
                 recordRead(ctx && ctx.session, path, read.data && read.data.mtime, read.data && read.data.size);
-                // 卡片路径超链接的跳转行：offset 是字符偏移，换算成 1-based 行号挂到工具卡
+                const view = readWindowOf(read.text, normalizeReadWindow(input));
+                // 卡片路径超链接的跳转行：窗口起始行（1-based）挂到工具卡
                 if (ctx && ctx.toolMessage) {
                     ctx.toolMessage.targetPath = path;
-                    ctx.toolMessage.targetLine = offset > 0
-                        ? (read.text.slice(0, offset).match(/\n/g) || []).length + 1
-                        : 1;
+                    ctx.toolMessage.targetLine = view.targetLine;
                 }
-                let text = read.text;
-                if (offset > 0) text = text.slice(Math.min(offset, text.length));
-                if (text.length > 64 << 10) text = text.slice(0, 64 << 10) + '\n…（已截断，最多 64KB）';
-                return '文件：' + redactToolText(input.path || path, ctx && ctx.session) + '（' + read.data.size + ' 字节）\n\n' + text;
+                let head = '文件：' + redactToolText(input.path || path, ctx && ctx.session) + '（' + read.data.size + ' 字节';
+                if (view.startLine != null) head += '，行 ' + view.startLine + '-' + view.endLine + '，共 ' + view.totalLines + ' 行';
+                head += '）\n\n';
+                return head + view.text + (view.hint ? '\n' + view.hint : '');
             }
             case 'search_text': {
                 const query = aiTextOf(input.query).trim();
                 if (!query) throw new Error('搜索内容为空');
                 const root = getScopeRoot();
                 if (!root) throw new Error('当前没有工作区范围，请先打开文件或文件夹');
-                const result = await backend.SearchWorkspace(root, query, false, 200);
-                const hits = (result && result.hits) || [];
-                if (!hits.length) return '没有找到匹配：' + query;
+                const pattern = aiTextOf(input.filePattern).trim();
+                // 有文件过滤时把 Go 侧命中窗口放大到上限（1000），过滤后再截，避免先截 200 漏掉目标文件的命中
+                const result = await backend.SearchWorkspace(root, query, !!input.caseSensitive, pattern ? 1000 : 200);
+                let hits = (result && result.hits) || [];
+                let truncated = !!(result && result.truncated);
+                let filterNote = '';
                 const rootNorm = aiNormalizePath(root).replace(/\/+$/, '');
+                if (pattern) {
+                    const before = hits.length;
+                    hits = hits.filter((hit) => {
+                        const shown = aiNormalizePath(hit.path);
+                        const rel = rootNorm && shown.toLowerCase().startsWith(rootNorm.toLowerCase() + '/')
+                            ? shown.slice(rootNorm.length + 1)
+                            : shown;
+                        return globMatchPath(pattern, rel, hit.name);
+                    });
+                    filterNote = '按 "' + pattern + '" 过滤：命中 ' + hits.length + '（过滤前 ' + before + '）';
+                    if (hits.length > 200) {
+                        hits = hits.slice(0, 200);
+                        truncated = true;
+                    }
+                }
+                if (!hits.length) {
+                    return '没有找到匹配：' + query + (filterNote ? '（' + filterNote + '）' : '');
+                }
                 const lines = hits.map((hit) => {
                     let shown = aiNormalizePath(hit.path);
                     if (rootNorm && shown.toLowerCase().startsWith(rootNorm.toLowerCase() + '/')) {
@@ -6587,7 +7191,8 @@ export function createAIPanel(options) {
                     }
                     return shown + ':' + hit.line + ': ' + hit.preview;
                 });
-                if (result.truncated) lines.push('…（结果已截断）');
+                if (filterNote) lines.push('（' + filterNote + '）');
+                if (truncated) lines.push('…（结果已截断）');
                 return lines.join('\n');
             }
             case 'web_search': {
@@ -6637,6 +7242,28 @@ export function createAIPanel(options) {
                 const maxChars = webToolLimit(input.maxChars, 1000, 60000, 12000);
                 const result = await backend.WebFetch(target, maxChars);
                 return formatWebFetchOutput(result);
+            }
+            case 'generate_image': {
+                return await runGenerateTool('image', input, ctx);
+            }
+            case 'generate_video': {
+                return await runGenerateTool('video', input, ctx);
+            }
+            case 'check_gen': {
+                const hit = genJobsMod.checkJob(aiTextOf(input.jobId));
+                if (!hit) {
+                    return '未找到任务：' + aiTextOf(input.jobId) + '（应用重启后任务不保留；请核对 id 或直接告知用户无法追踪）。';
+                }
+                const s = hit.snapshot;
+                const statusText = {running: '进行中', done: '已完成', failed: '已失败', stopped: '已停止'}[s.status] || s.status;
+                let text = '任务 ' + s.jobId + '（' + s.entryName + ' · ' + genKindLabel(s.kind) + '）：' + statusText;
+                if (s.status === 'running') text += '\n进度：' + (s.progressText || '—');
+                if (s.error) text += '\n失败原因：' + s.error;
+                if (s.files && s.files.length) {
+                    text += '\n产物：\n' + s.files.map((file) => '- ' + file.path + '（' + file.mime + '，' + file.bytes + ' 字节）').join('\n');
+                }
+                if (s.status === 'running') text += '\n可稍后再次 check_gen 查询；完成后会自动通知本会话。';
+                return text;
             }
             case 'memory_list': {
                 const mem = await resolveMemoryDir();
@@ -6755,7 +7382,29 @@ export function createAIPanel(options) {
                 syncRemindersUI(ctx.session);
                 return '已删除任务提醒 [' + removed.id + ']：' + removed.title;
             }
-            // ---------- 计时器（start_timer/stop_timer）：Go 侧计时，到点系统消息唤醒 ----------
+            // ---------- 计时器（timer_list / start_timer / stop_timer）：Go 侧计时，到点系统消息唤醒 ----------
+            // timer_list：主代理与子/孙代理共享的只读时钟（按会话树过滤，只有读权）
+            case 'timer_list': {
+                const s = ctx && ctx.session ? ctx.session : null;
+                const sessionIds = s ? [s.id, s.parentSessionId, s.rootSessionId, s.originSessionId].filter(Boolean) : [];
+                const list = timerMod.snapshot(sessionIds);
+                if (!list.length) return '本会话树没有运行中的计时器（计时器不跨应用重启，重启后全部消失）。';
+                const clock = (ms) => {
+                    const total = Math.max(0, Math.round(Number(ms) / 1000));
+                    const m = Math.floor(total / 60);
+                    return m ? m + ' 分 ' + (total % 60) + ' 秒' : total + ' 秒';
+                };
+                const lines = ['运行中的计时器（只读快照 · ' + new Date().toLocaleTimeString() + '）：'];
+                for (const t of list) {
+                    const read = t.mode === 'countup'
+                        ? '已计 ' + clock(t.elapsedMs) + (t.autoStopMs ? '，' + new Date(t.autoStopMs).toLocaleTimeString() + ' 自动停止' : '')
+                        : '剩余 ' + clock(t.remainingMs);
+                    lines.push('- [' + t.id + '] ' + (t.mode === 'countup' ? '正计时' : '倒计时') + '「' + t.label + '」：' + read +
+                        (t.marks ? '，' + t.marks + ' 条时刻标记' : ''));
+                }
+                lines.push('（这是调用瞬间的读数，不会阻塞等待；子代理仅可读取，启动 / 停止 / 打标记由主代理操作。）');
+                return lines.join('\n');
+            }
             case 'start_timer': {
                 const mode = input.mode === 'countup' ? 'countup' : 'countdown';
                 const seconds = Math.max(0, Math.round(Number(input.seconds) || 0));
@@ -7269,24 +7918,14 @@ export function createAIPanel(options) {
                 const existing = await readOptionalText(path);
                 if (!existing.exists) throw new Error('文件不存在：' + relPath + '（新建文件请用 write_file）');
                 const text = existing.text;
-                let needle = oldString;
-                let replacement = newString;
-                let first = text.indexOf(needle);
-                if (first < 0 && text.includes('\r\n') && !oldString.includes('\r')) {
-                    // 模型常把 CRLF 文件里的 oldString 写成 LF；仅在精确匹配失败时按文件换行重试一次。
-                    needle = oldString.replace(/\r?\n/g, '\r\n');
-                    replacement = newString.replace(/\r?\n/g, '\r\n');
-                    first = text.indexOf(needle);
-                }
-                if (first < 0) throw new Error('未找到 oldString，请先 read_file 并逐字复制（注意缩进与换行）');
-                const second = text.indexOf(needle, first + needle.length);
-                if (second >= 0) throw new Error('oldString 多处命中（至少 2 处），请提供更长的唯一上下文');
-                const next = text.slice(0, first) + replacement + text.slice(first + needle.length);
+                const located = locateEditTarget(text, oldString, newString, !!input.replaceAll);
+                if (located.error) throw new Error(located.error);
+                const next = located.next;
                 if (next === text) return '文件内容未变化：' + relPath;
                 const ops = computeLineDiff(text, next);
                 const stats = diffStats(ops);
                 const preview = buildDiffPreview(ops);
-                return applyWorkspaceWrite(ctx.session, ctx.toolMessage, {
+                const msg = await applyWorkspaceWrite(ctx.session, ctx.toolMessage, {
                     tool: 'edit_file',
                     path,
                     relPath,
@@ -7302,6 +7941,7 @@ export function createAIPanel(options) {
                     truncated: preview.truncated,
                     diff: preview.lines,
                 });
+                return located.count > 1 ? msg + '（已替换 ' + located.count + ' 处）' : msg;
             }
             case 'todo_write': {
                 if (!ctx || !ctx.session) throw new Error('todo_write 缺少会话上下文');
@@ -7616,7 +8256,7 @@ export function createAIPanel(options) {
         const showStop = busy && !hasContent;
         if (el.stop) el.stop.classList.toggle('hidden', !showStop);
         if (el.send) el.send.classList.toggle('hidden', showStop);
-        if (el.send) el.send.title = (busy && hasContent)
+        if (el.send) el.send.dataset.tip = (busy && hasContent)
             ? '排队发送；Ctrl+点击 = 插话（停止当前回复并立即发送）'
             : '发送';
     }
@@ -7656,10 +8296,12 @@ export function createAIPanel(options) {
         const archived = !!(session && session.archivedAt);
         const loadFailed = !!(session && session._loadError);
         const hasText = !!(el.input && el.input.value.trim());
-        const hasImages = getAttachments().some((item) => item.kind === 'image');
+        const attachedItems = getAttachments();
+        const hasImages = attachedItems.some((item) => item.kind === 'image');
+        const hasTextAttachments = attachedItems.some((item) => item.kind !== 'image');
         const imageEntry = hasImages ? entryOf(currentSession()) : null;
         const imageBlocked = !!imageEntry && imageEntry.modalities && imageEntry.modalities.image === false;
-        el.send.disabled = !hasProfile || archived || loadFailed || imageBlocked || (!hasText && !hasImages);
+        el.send.disabled = !hasProfile || archived || loadFailed || imageBlocked || (!hasText && !hasImages && !hasTextAttachments);
         syncSendStopButtons(busy);
         if (!busy && el.hint) {
             // 本会话空闲但别的会话在跑：给出提示，但发送按钮仍然是「发送」
@@ -7725,7 +8367,7 @@ export function createAIPanel(options) {
     // renderMessages 的全量重建会把前面所有工具卡的 spinner 动画重启
     // （AI 连续跑工具时当前执行中的卡疯狂闪烁）。
     function appendToolCard(session, toolMessage) {
-        if (!isOpen() || currentSession() !== session || !el.messages) return;
+        if (!hasHost(session && session.id) || !el.messages) return;
         const index = session.messages.indexOf(toolMessage);
         if (index < 0) return;
         const wrap = document.createElement('div');
@@ -7742,7 +8384,7 @@ export function createAIPanel(options) {
         else updateScrollButton();
     }
 
-    function refreshToolWrap(session, toolMessage) {        if (!session || !isOpen() || currentSession() !== session) return;
+    function refreshToolWrap(session, toolMessage) {        if (!hasHost(session && session.id)) return;
         const index = session.messages.indexOf(toolMessage);
         const wrap = el.messages.querySelector('.ai-msg.tool[data-ai-idx="' + index + '"]');
         if (!wrap) {
@@ -7772,11 +8414,13 @@ export function createAIPanel(options) {
     // 返回 {ok, reason, run, ended}：reason 供调用方决定提示文案（内核不 flash 校验类错误）。
     async function startSessionTurn(session, text, options) {
         const opts = options || {};
-        const value = String(text == null ? '' : text).trim();
+        let value = String(text == null ? '' : text).trim();
         const source = opts.attachments || {};
         const imageAttachments = (source.images || []).map(aiNormalizeImage).filter(Boolean);
         const textAttachments = (source.texts || []).slice();
-        if (!value && !imageAttachments.length) return {ok: false, reason: 'empty'};
+        if (!value && !imageAttachments.length && !textAttachments.length) return {ok: false, reason: 'empty'};
+        // 纯文本附件 + 空输入：给一个极短占位，避免向 API 发送空 content（Anthropic 不接受空文本块）
+        if (!value && textAttachments.length) value = '（已附加引用/文件，见 <attachments>）';
         if (value.length > AI_CHAT_INPUT_LIMIT) return {ok: false, reason: 'too_long'};
         if (!session) return {ok: false, reason: 'no_session'};
         // 只有「本会话」在生成 / 压缩时才拒绝；别的会话在跑不影响这里（各自独立）。
@@ -7810,6 +8454,11 @@ export function createAIPanel(options) {
                 return {ok: false, reason: 'over_budget', tokens: previewTokens, windowSize};
             }
         } catch (e) {}
+        // 预检的 assembleSystemContext 是异步点：两次极快连发可能都通过了上面的忙检查（此时
+        // 双方都还没注册流），各自起轮后后者顶掉前者的流注册，落败方在下方守卫处退出——
+        // 它的 assistant 占位没人收尾，永远停在流式「…」。真正落消息前再查一次忙，
+        // 把这个窗口关死；队列冲刷对 busy 会自动重新入队，不会丢消息。
+        if (streamOf(session.id) || compactOf(session.id)) return {ok: false, reason: 'busy'};
 
         if (cut != null && cut >= 0) session.messages = session.messages.slice(0, cut);
         if (opts.allowPendingEdit) pendingEdit = null;
@@ -7871,6 +8520,9 @@ export function createAIPanel(options) {
             toolCalls: new Map(),
             tools: toolsForScope(scope, !!session.planMode),
             profileCfg: configForProfile(profile, entry),
+            // 本轮实际使用的模型条目（对象引用即 config.profiles 里的那条）：
+            // 服务端给出 max_tokens 上界时用它精确回写输出窗口，不靠模型名反查。
+            modelEntry: entry,
             systemPrompt: AI_DEFAULT_SYSTEM_PROMPT,
             baseSystemPrompt: AI_DEFAULT_SYSTEM_PROMPT,
             scope,
@@ -7902,7 +8554,16 @@ export function createAIPanel(options) {
         }
         rememberPrompt(session.id, bundle);
         if (viewed) updateContextCount();
-        if (streams.get(session.id) !== run || run.stopped) return {ok: true, run, ended: true};
+        if (streams.get(session.id) !== run || run.stopped) {
+            // 兜底不变量：被顶替 / 已停止的轮，占位 assistant 不能留在 'streaming'——
+            // 否则消息区的「…」永远转下去（忙复查在位时这条只是保险）。
+            if (run.assistant.status === 'streaming') {
+                run.assistant.status = 'stopped';
+                persistSessions();
+                if (isOpen() && currentSession() && currentSession().id === session.id) renderMessages();
+            }
+            return {ok: true, run, ended: true};
+        }
         run.baseSystemPrompt = bundle.text;
         run.systemPrompt = bundle.text;
         startRound(run);
@@ -7912,8 +8573,11 @@ export function createAIPanel(options) {
     // UI 路径：读输入区（正文 + 附件）→ 交内核起轮 → 清空输入区并刷新当前视图。
     // 会话 / 预算 / 后端校验全在内核里，这里只把失败原因翻成用户提示。
     async function submitText(text, truncateAt, extra) {
-        const value = String(text == null ? '' : text).trim();
+        let value = String(text == null ? '' : text).trim();
         const attached = getAttachments();
+        // 对话引用拼进 user content 前缀：随消息落盘、压缩不丢，且不重复注入 <attachments>。
+        const quoteMarkup = quoteMarkupFromAttachments(attached);
+        if (quoteMarkup) value = value ? quoteMarkup + '\n\n' + value : quoteMarkup;
         const session = currentSession();
         const result = await startSessionTurn(session, value, {
             truncateAt,
@@ -7921,7 +8585,7 @@ export function createAIPanel(options) {
             app: extra && extra.app,
             attachments: {
                 images: attached.filter((item) => item.kind === 'image'),
-                texts: attached.filter((item) => item.kind !== 'image'),
+                texts: attached.filter((item) => item.kind !== 'image' && item.kind !== 'message_quote'),
             },
             // 起轮成功、落盘之后立刻清输入区（与原实现同一时点）；附件要等系统提示组装完再清，
             // 因为 assembleSystemContext 会读它们。
@@ -8348,7 +9012,7 @@ export function createAIPanel(options) {
         const max = Math.max(1, Math.round(Number(payload && payload.max) || 1));
         const delayMs = Math.max(0, Number(payload && payload.delayMs) || 0);
         const reason = String((payload && payload.reason) || '').trim() || '请求失败';
-        note.title = reason + '，' + (delayMs / 1000).toFixed(1) + ' 秒后重试';
+        note.dataset.tip = reason + '，' + (delayMs / 1000).toFixed(1) + ' 秒后重试';
         note.dataset.reason = reason;
         const label = note.querySelector('.ai-retry-text') || document.createElement('span');
         label.className = 'ai-retry-text';
@@ -8356,7 +9020,43 @@ export function createAIPanel(options) {
         if (!label.parentNode) note.append(label);
     }
 
+    // 服务端参数校验给出上限时（如 max_tokens 超模型上限），Go 侧已自动收敛并重试一次；
+    // 这里给出可见提示，并把本轮实际使用的模型条目的输出窗口回写，避免下次继续触雷。
+    function handleParamAdjust(current, payload, onScreen) {
+        const message = String((payload && payload.message) || '').trim()
+            || '模型参数超出服务端上限，已自动调整并重试';
+        const model = String((payload && payload.model) || '').trim();
+        const entry = current && current.modelEntry;
+        const editorOpen = !!(el.modelEditor && !el.modelEditor.classList.contains('hidden'));
+        // 编辑器开着时用户可能有在途输入，别把旧值写回去覆盖编辑；条目被删掉同理。
+        const linked = entry && entry.model === model &&
+            config.profiles.some((p) => Array.isArray(p.models) && p.models.includes(entry));
+        const saved = !editorOpen && !!linked && applyOutputWindowLimit(entry, payload && payload.value);
+        if (saved) {
+            saveAIConfig();
+            refreshSettingsPane();
+            refreshChatSettings();
+        }
+        const text = saved
+            ? message + '；设置里该模型的「最大输出」已更新。'
+            : message + '（设置未改动，可在模型设置里手动调整「最大输出」）';
+        flash(text);
+        if (onScreen) showNote(text);
+    }
+
     function handleEvent(name, payload) {
+        // 降档事件若来自分类器 / 标题 / 子代理等非会话流，下面的 roundId 路由找不到宿主；
+        // 至少给一条状态栏提示（自动降档与重试已在 Go 侧完成，非会话流不回写配置）。
+        if (name === 'ai-param-adjust' && payload && payload.id) {
+            let routed = false;
+            for (const candidate of streams.values()) {
+                if (candidate.roundId === payload.id) { routed = true; break; }
+            }
+            if (!routed) {
+                flash(String(payload.message || '模型参数超出服务端上限，已自动调整并重试'));
+                return;
+            }
+        }
         if (classifierJob && payload && payload.id === classifierJob.id) {
             const job = classifierJob;
             if (name === 'ai-chunk' && payload.delta) job.buffer += payload.delta;
@@ -8448,6 +9148,10 @@ export function createAIPanel(options) {
         switch (name) {
             case 'ai-retry': {
                 if (onScreen) showRetryNote(payload);
+                break;
+            }
+            case 'ai-param-adjust': {
+                handleParamAdjust(current, payload, onScreen);
                 break;
             }
             case 'ai-chunk':
@@ -8643,7 +9347,7 @@ export function createAIPanel(options) {
             const scope = currentScope();
             el.permission.textContent = scopeLabel(scope);
             const root = getScopeRoot() || '';
-            el.permission.title = '权限：' + scopeLabel(scope) + '（' + scopeDescription(scope) + '）\n' + (root ? '范围根：' + root : '未打开工作区');
+            el.permission.dataset.tip = '权限：' + scopeLabel(scope) + '（' + scopeDescription(scope) + '）\n' + (root ? '范围根：' + root : '未打开工作区');
             el.permission.classList.toggle('active', scope === 'auto' || scope === 'full');
         }
         if (el.plan) {
@@ -8651,7 +9355,7 @@ export function createAIPanel(options) {
             el.plan.classList.toggle('active', plan);
             el.plan.setAttribute('aria-pressed', String(plan));
             el.plan.textContent = plan ? '计划 · 开' : '计划';
-            el.plan.title = plan
+            el.plan.dataset.tip = plan
                 ? '计划模式已开启：AI 只读探索并给出计划，批准后再执行'
                 : '计划模式：先只读探索并给出计划，批准后执行';
         }
@@ -8787,24 +9491,10 @@ export function createAIPanel(options) {
         showContextMenu(items, rect.left, rect.top - 280);
     }
 
-    function reasoningLevelOf(account, entry) {
-        if (!account || account.provider !== 'anthropic') return 'auto';
-        if (!entry || !entry.thinking) return 'off';
-        const budget = Number(entry.thinkingBudget) || 8000;
-        if (budget <= 2048) return 'low';
-        if (budget <= 10000) return 'medium';
-        return 'high';
-    }
-
-    function reasoningLabel(account, entry) {
-        if (!account || account.provider !== 'anthropic') return '自动';
-        return {off: '关', low: '低', medium: '中', high: '高'}[reasoningLevelOf(account, entry)] || '中';
-    }
-
+    // 思考等级推导统一走数据层 reasoningLevelInfo（单一来源：档位表 / 中文标签 / 徽标 tone）
     function effortLabel(account, entry) {
         if (!account) return '';
-        if (account.provider === 'anthropic') return reasoningLabel(account, entry);
-        return {low: '低', medium: '中', high: '高'}[(entry && entry.reasoningEffort)] || '自动';
+        return reasoningLevelInfo(account, entry).label;
     }
 
     const AI_CHEVRON_SVG = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 6.5L8 10l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>';
@@ -8816,12 +9506,16 @@ export function createAIPanel(options) {
         const profile = profileOf(currentSession());
         if (!profile) {
             el.modelChip.textContent = '选择模型';
-            el.modelChip.title = '未配置模型，点击打开设置';
+            el.modelChip.dataset.tip = '未配置模型，点击打开设置';
             return;
         }
         const entry = entryOf(currentSession());
         const model = (entry && entry.model) || profile.name || '未命名模型';
         const effort = effortLabel(profile, entry);
+        // 本次会话上下文上限生效中（低于模型窗口）时在等级旁挂一枚档位徽标
+        const session = currentSession();
+        const baseWindow = (entry && entry.contextWindow) || 128000;
+        const capActive = session && session.ctxLimit > 0 && session.ctxLimit < baseWindow ? session.ctxLimit : 0;
         el.modelChip.innerHTML = '';
         const icon = document.createElement('span');
         icon.className = 'ai-model-ico';
@@ -8835,8 +9529,16 @@ export function createAIPanel(options) {
         const chev = document.createElement('span');
         chev.className = 'ai-chip-chev';
         chev.innerHTML = AI_CHEVRON_SVG;
-        el.modelChip.append(icon, name, level, chev);
-        el.modelChip.title = '模型：' + model + '\n账号：' + profile.name + '\n推理等级：' + effort;
+        el.modelChip.append(icon, name, level);
+        if (capActive) {
+            const cap = document.createElement('span');
+            cap.className = 'ai-model-cap';
+            cap.textContent = formatTokenAmount(capActive);
+            el.modelChip.append(cap);
+        }
+        el.modelChip.append(chev);
+        el.modelChip.dataset.tip = '模型：' + model + '\n账号：' + profile.name + '\n推理等级：' + effort +
+            (capActive ? '\n本次会话上限：' + formatTokenAmount(capActive) + '（模型窗口 ' + formatTokenAmount(baseWindow) + '）' : '');
     }
 
     // 对话内切换模型 / 账号的留痕：切换只在下一条消息发出时生效，
@@ -8944,19 +9646,14 @@ export function createAIPanel(options) {
         flash('已切换模型：' + (entry.model || profile.name || '未命名'));
     }
 
-    function setReasoningLevel(level) {
-        const profile = profileOf(currentSession());
-        const entry = entryOf(currentSession());
+    // 写入指定模型条目的思考等级（模型选择器行内档位条点档）：
+    // 非 Anthropic 写 reasoningEffort；Anthropic 把档位换算成思考预算。
+    // 弹层内改档不关闭选择器，写完刷新配置、设置页与 chip；提示由调用方带模型名给出。
+    function setReasoningLevelFor(profile, entry, level) {
         if (!profile || !entry) return;
         if (profile.provider !== 'anthropic') {
             entry.reasoningEffort = ['low', 'medium', 'high'].includes(level) ? level : '';
-            saveAIConfig();
-            refreshSettingsPane();
-            renderModelChip();
-            flash('推理强度：' + effortLabel(profile, entry));
-            return;
-        }
-        if (level === 'off') {
+        } else if (level === 'off') {
             entry.thinking = false;
         } else {
             entry.thinking = true;
@@ -8966,7 +9663,28 @@ export function createAIPanel(options) {
         saveAIConfig();
         refreshSettingsPane();
         renderModelChip();
-        flash('推理等级：' + reasoningLabel(profile, entry));
+    }
+
+    // 本次会话上下文上限（模型选择器档位）：只写当前会话并随会话持久化，不动模型条目配置；
+    // 生效值 = min(上限, 模型窗口)（contextWindowOf 单点消费）。value = 0 恢复默认。
+    function applyCtxLimit(value) {
+        const session = currentSession();
+        if (!session) return;
+        const entry = entryOf(session);
+        const base = (entry && entry.contextWindow) || 128000;
+        session.ctxLimit = normalizeCtxLimit(value);
+        persistSessions();
+        renderModelChip();
+        renderStats();
+        updateCtxBanner();
+        const applied = effectiveContextWindow(base, session.ctxLimit);
+        if (applied < base) {
+            flash('本次会话上下文上限：' + formatTokenAmount(applied));
+            // 调低上限当场生效：占用已过阈值就不用等下一轮，直接尝试压缩（内部有流式/连压守卫）
+            maybeAutoCompact(session);
+        } else {
+            flash('本次会话上下文上限：默认（' + formatTokenAmount(base) + '）');
+        }
     }
 
     // ---------- 双层级模型选择器（搜索 + 按账号分组 + 推理等级） ----------
@@ -9021,15 +9739,21 @@ export function createAIPanel(options) {
         picker.className = 'ai-model-picker';
         modelPickerEl = picker;
 
+        const searchWrap = document.createElement('div');
+        searchWrap.className = 'ai-model-picker-searchwrap';
+        const searchIco = document.createElement('span');
+        searchIco.className = 'ai-model-picker-searchico';
+        searchIco.innerHTML = iconSvg('search', 13);
         const search = document.createElement('input');
         search.type = 'text';
         search.className = 'ai-model-picker-search';
         search.placeholder = '搜索模型…';
         search.spellcheck = false;
+        searchWrap.append(searchIco, search);
         const listBox = document.createElement('div');
         listBox.className = 'ai-model-picker-list';
-        const levelRow = document.createElement('div');
-        levelRow.className = 'ai-model-picker-levels';
+        const limitRow = document.createElement('div');
+        limitRow.className = 'ai-model-picker-limits';
         const foot = document.createElement('div');
         foot.className = 'ai-model-picker-foot';
         const settingsBtn = document.createElement('button');
@@ -9041,10 +9765,12 @@ export function createAIPanel(options) {
             openSettings('models');
         });
         foot.appendChild(settingsBtn);
-        picker.append(search, listBox, levelRow, foot);
+        picker.append(searchWrap, listBox, limitRow, foot);
 
         let flatItems = [];
         let navIndex = -1;
+        // 行内展开的思考等级档位条（accountId|entryId）；搜索重建列表时收起
+        let expandedKey = '';
 
         function renderList() {
             const query = search.value.trim().toLowerCase();
@@ -9077,20 +9803,35 @@ export function createAIPanel(options) {
                     const name = document.createElement('span');
                     name.className = 'ai-model-picker-name';
                     name.textContent = entry.model || '（未填写模型 ID）';
+                    // 思考等级徽标：每个模型条目自己的等级（分色见 --ai-lv-*），
+                    // 点击在行下展开档位条直接改该模型 —— 弹层不关，可连续配置多个
+                    const info = reasoningLevelInfo(account, entry);
+                    const effort = document.createElement('button');
+                    effort.type = 'button';
+                    effort.className = 'ai-model-picker-effort';
+                    effort.dataset.tone = info.tone;
+                    effort.textContent = info.label;
+                    effort.dataset.tip = '该模型的思考等级，点击修改';
+                    effort.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        toggleQuickBar(account, entry);
+                    });
                     const win = document.createElement('span');
                     win.className = 'ai-model-picker-win';
                     win.textContent = formatTokenAmount(entry.contextWindow || 128000);
                     const check = document.createElement('span');
                     check.className = 'ai-model-picker-check';
-                    check.textContent = isActive ? '✓' : '';
-                    item.append(name, win, check);
-                    item.title = (entry.model || '') + ' · 窗口 ' + (entry.contextWindow || 128000) + ' tokens · ' + (account.name || '');
+                    check.innerHTML = isActive ? iconSvg('check', 13) : '';
+                    item.append(name, effort, win, check);
+                    item.dataset.tip = (entry.model || '') + ' · 窗口 ' + (entry.contextWindow || 128000) + ' tokens · ' + (account.name || '');
                     item.addEventListener('click', () => {
                         closeModelPicker();
                         switchModel(account.id, entry.id);
                     });
                     flatItems.push(item);
                     group.appendChild(item);
+                    // 档位条是 item 的兄弟节点（按钮不能嵌套），展开态单开
+                    if (account.id + '|' + entry.id === expandedKey) group.appendChild(buildQuickBar(account, entry));
                 }
                 listBox.appendChild(group);
             }
@@ -9105,6 +9846,36 @@ export function createAIPanel(options) {
             navIndex = -1;
         }
 
+        // 展开 / 收起某模型行下的思考等级档位条（同弹层内只开一个）
+        function toggleQuickBar(account, entry) {
+            const key = account.id + '|' + entry.id;
+            expandedKey = expandedKey === key ? '' : key;
+            renderList();
+            const bar = expandedKey ? listBox.querySelector('.ai-model-picker-quick') : null;
+            if (bar && bar.scrollIntoView) bar.scrollIntoView({block: 'nearest'});
+        }
+
+        // 思考等级档位条：连体分段控件，点档写该模型条目（不关弹层、徽标即时刷新）
+        function buildQuickBar(account, entry) {
+            const info = reasoningLevelInfo(account, entry);
+            const bar = document.createElement('div');
+            bar.className = 'ai-model-picker-quick ai-model-picker-seggroup';
+            for (const [value, label] of info.options) {
+                const chip = document.createElement('button');
+                chip.type = 'button';
+                chip.className = 'ai-model-picker-seg' + (info.value === value ? ' active' : '');
+                chip.textContent = label;
+                chip.addEventListener('click', () => {
+                    setReasoningLevelFor(account, entry, value);
+                    flash('已更新 ' + (entry.model || '未命名模型') + ' 思考等级：' + reasoningLevelInfo(account, entry).label);
+                    expandedKey = account.id + '|' + entry.id;
+                    renderList();
+                });
+                bar.appendChild(chip);
+            }
+            return bar;
+        }
+
         function setNav(next) {
             if (!flatItems.length) return;
             navIndex = (next + flatItems.length) % flatItems.length;
@@ -9113,35 +9884,50 @@ export function createAIPanel(options) {
             if (target && target.scrollIntoView) target.scrollIntoView({block: 'nearest'});
         }
 
-        function renderLevels() {
-            const account = profileOf(currentSession());
-            const entry = entryOf(currentSession());
-            levelRow.innerHTML = '';
-            if (!account || !entry) return;
+        // 本次会话上下文上限（会话级，不动模型条目）：档位只列 < 模型窗口的固定档
+        //（CTX_LIMIT_TIERS），模型窗口不大于最小档（如上限就 256K 的模型）时整行隐藏。
+        // 思考等级已收进模型行的行内徽标 + 档位条，这里不再有全局推理等级行。
+        function renderLimits() {
+            const session = currentSession();
+            const entry = entryOf(session);
+            const base = (entry && entry.contextWindow) || 128000;
+            const tiers = ctxLimitTiersFor(base);
+            limitRow.innerHTML = '';
+            if (!session || !entry || !tiers.length) {
+                limitRow.style.display = 'none';
+                return;
+            }
+            limitRow.style.display = '';
             const lab = document.createElement('span');
-            lab.className = 'ai-model-picker-levels-label';
-            lab.textContent = '推理等级';
-            levelRow.appendChild(lab);
-            const current = account.provider === 'anthropic'
-                ? reasoningLevelOf(account, entry)
-                : (['low', 'medium', 'high'].includes(entry.reasoningEffort) ? entry.reasoningEffort : 'auto');
-            const levels = account.provider === 'anthropic'
-                ? [['off', '关'], ['low', '低'], ['medium', '中'], ['high', '高']]
-                : [['auto', '自动'], ['low', '低'], ['medium', '中'], ['high', '高']];
-            for (const [value, label] of levels) {
+            lab.className = 'ai-model-picker-limits-label';
+            lab.textContent = '上下文上限';
+            limitRow.appendChild(lab);
+            const seg = document.createElement('div');
+            seg.className = 'ai-model-picker-seggroup';
+            const currentEffective = effectiveContextWindow(base, session.ctxLimit);
+            const options = [[0, '默认']].concat(tiers.map((tier) => [tier, formatTokenAmount(tier)]));
+            for (const [value, label] of options) {
+                const effective = effectiveContextWindow(base, value);
                 const chip = document.createElement('button');
                 chip.type = 'button';
-                chip.className = 'ai-model-picker-level' + (current === value ? ' active' : '');
+                chip.className = 'ai-model-picker-seg' + (effective === currentEffective ? ' active' : '');
                 chip.textContent = label;
+                chip.dataset.tip = value === 0
+                    ? '不设限，按模型窗口 ' + formatTokenAmount(base) + ' 计算占用'
+                    : '本会话按 ' + formatTokenAmount(effective) + ' 计算占用与压缩';
                 chip.addEventListener('click', () => {
                     closeModelPicker();
-                    setReasoningLevel(value);
+                    applyCtxLimit(value);
                 });
-                levelRow.appendChild(chip);
+                seg.appendChild(chip);
             }
+            limitRow.appendChild(seg);
         }
 
-        search.addEventListener('input', renderList);
+        search.addEventListener('input', () => {
+            expandedKey = '';
+            renderList();
+        });
         search.addEventListener('keydown', (e) => {
             if (e.key === 'ArrowDown') {
                 e.preventDefault();
@@ -9170,7 +9956,7 @@ export function createAIPanel(options) {
         document.addEventListener('mousedown', onDocMouseDown, true);
 
         renderList();
-        renderLevels();
+        renderLimits();
         document.body.appendChild(picker);
         picker.style.visibility = 'hidden';
         const width = Math.min(360, window.innerWidth - 16);
@@ -9226,7 +10012,10 @@ export function createAIPanel(options) {
             const picked = boxes.filter((box) => box.checked).map((box) => box.value)
                 .filter((id) => !existing.has(id));
             for (const id of picked) {
-                profile.models.push(normalizeModelEntry({model: id}, () => aiNowId('model-')));
+                const entry = normalizeModelEntry({model: id, autoFilled: true}, () => aiNowId('model-'));
+                // 拉下来的 ID 直接在配置表里有的，顺手把窗口/能力填好——这是「智能填充」命中率最高的一步
+                modelCatalog.fill(entry, id);
+                profile.models.push(entry);
             }
             closeModelListPicker();
             saveAIConfig();
@@ -9359,22 +10148,22 @@ export function createAIPanel(options) {
         if (!el.attachBtn || !showContextMenu) return;
         const rect = el.attachBtn.getBoundingClientRect();
         showContextMenu([
-            {label: '当前文件', action: () => attachCurrentFile()},
-            {label: '选中内容', action: () => attachSelection()},
-            {label: '附加文件…', action: () => attachFilesDialog()},
-            {label: '技能…', action: () => showSkillPicker()},
+            {label: '当前文件', icon: 'doc', action: () => attachCurrentFile()},
+            {label: '选中内容', icon: 'select-all', action: () => attachSelection()},
+            {label: '附加文件…', icon: 'file', action: () => attachFilesDialog()},
+            {label: '技能…', icon: 'sparkles', action: () => showSkillPicker()},
             // 手动创建计时器：与 AI 的 start_timer 同一条 Go 侧计时链路
-            {label: '计时器', submenu: [
+            {label: '计时器', icon: 'clock', submenu: [
                 {label: '倒计时…', action: () => timerMod.openCreateDialog('countdown')},
                 {label: '正计时…', action: () => timerMod.openCreateDialog('countup')},
             ]},
-            {label: '任务提醒…', action: () => remindersMod.openCreateDialog()},
+            {label: '任务提醒…', icon: 'bell', action: () => remindersMod.openCreateDialog()},
             {sep: true},
             // 协作：投递 / 支线都在这里——不进输入框、不改当前会话，先选人再写内容
-            {label: '投递到会话…', action: () => openDeliverComposer()},
-            {label: '新建支线对话', action: () => openSideChat({session: currentSession()})},
+            {label: '投递到会话…', icon: 'forward', action: () => openDeliverComposer()},
+            {label: '新建支线对话', icon: 'bookmark', action: () => openSideChat({session: currentSession()})},
             {sep: true},
-            {label: '指令', submenu: [
+            {label: '指令', icon: 'terminal', submenu: [
                 {label: '压缩上下文', action: () => startCompact()},
                 {label: '初始化 AGENTS.md', action: () => runInitAgentsMd()},
                 {label: '提示词…', action: () => showPromptDialog()},
@@ -9395,17 +10184,29 @@ export function createAIPanel(options) {
             {label: '会话数据诊断…', icon: 'info', action: () => showSessionDiagnostics(currentSession())},
             {sep: true},
         ] : [];
-        // 头部宽度不足时显示方式与换侧按钮已收起，在菜单里补回同一组操作
-        const head = panel.querySelector('.ai-head-title-row');
-        if (!floatWindow && head && head.classList.contains('ai-head-compact')) {
+        // 显示方式收进二级菜单：头部不再常驻三形态切换按钮（默认停靠，调整走这里或设置页）
+        if (!floatWindow) {
             items.push(
-                {label: '显示方式：停靠分屏', icon: 'layout-dock', checked: mode === 'dock', action: () => setMode('dock')},
-                {label: '显示方式：全屏', icon: 'layout-fullscreen', checked: mode === 'fullscreen', action: () => setMode('fullscreen')},
-                {label: '在独立悬浮窗打开', icon: 'layout-float', action: () => setMode('float')},
-                {label: '换到另一侧', icon: 'swap-side', action: togglePanelSide},
-                {sep: true},
+                {label: '显示方式', icon: 'layout-dock', submenu: [
+                    {label: '停靠分屏（无文件时占满）', checked: mode === 'dock', action: () => setMode('dock')},
+                    {label: '全屏（仅覆盖文件内容区）', checked: mode === 'fullscreen', action: () => setMode('fullscreen')},
+                    {label: '在独立悬浮窗打开', action: () => setMode('float')},
+                ]},
             );
         }
+        // 头部宽度不足（浮窗最小宽 360 也会触发）时换侧按钮与 Git 入口都已收起，在菜单里补回
+        const head = panel.querySelector('.ai-head-title-row');
+        if (head && head.classList.contains('ai-head-compact')) {
+            if (!floatWindow) items.push({label: '换到另一侧', icon: 'swap-side', action: togglePanelSide});
+            // Git 快捷操作的唯一入口就是头部按钮，仅 Git 可用时补回（与按钮显隐条件一致）
+            if (el.gitBtn && !el.gitBtn.classList.contains('hidden')) {
+                items.push({label: 'Git 操作', icon: 'git', submenu: GIT_ACTIONS.map((a) => ({
+                    label: a.label,
+                    action: () => gitUiMod.runGitAction(a.id),
+                }))});
+            }
+        }
+        if (!floatWindow) items.push({sep: true});
         items.push(
             {label: '新建支线对话（旁路追问）', icon: 'bookmark', action: () => openSideChat({session: currentSession()})},
             {label: '通知运行中的会话…', icon: 'bell', action: () => notifyRunningSessions()},
@@ -9594,6 +10395,22 @@ export function createAIPanel(options) {
         if (selectedText.trim() && selectionInside) {
             items.push({label: '复制所选', shortcut: 'Ctrl+C', icon: 'E8C8', action: () => copyText(selectedText, '所选文本')});
         }
+        // 对话引用：与编辑器右键的「引用该文件 / 引用选取」（只给路径、让模型自己读）区分，
+        // 这里把消息正文/选区带进输入区附件条，发送时拼成 user content 前缀的 <quote>。
+        if (message && (message.role === 'assistant' || message.role === 'user')) {
+            const quoteOf = (text, scope) => addMessageQuote({
+                source: message.role, index, scope, content: text,
+            });
+            if (selectedText.trim() && selectionInside) {
+                items.push({label: '引用所选到输入框', icon: 'E8C8', action: () => quoteOf(selectedText, 'selection')});
+            }
+            items.push({
+                label: message.role === 'assistant' ? '引用整条回复' : '引用整条消息',
+                icon: 'E8C8',
+                disabled: !aiTextOf(message.content).trim(),
+                action: () => quoteOf(message.content || '', 'message'),
+            });
+        }
         if (codeText.trim()) {
             items.push({label: '复制代码', icon: 'E8C8', action: () => copyText(codeText, '代码')});
         }
@@ -9691,30 +10508,19 @@ export function createAIPanel(options) {
         const messages = source.messages || [];
         if (!Number.isInteger(index) || index < 0 || index >= messages.length) return;
         if (!messages[index] || messages[index].role !== 'assistant') return;
-        let copied;
-        try {
-            copied = JSON.parse(JSON.stringify(messages.slice(0, index + 1)));
-        } catch (e) {
-            flash('分支失败：' + ((e && e.message) || e), true);
+        // 快照与设置统一走 ai-session-fork（支线对话共用同一份）。顺带补上授权凭据：
+        // 以前只拷消息与四个设置，approvedPaths / readRoots / modelId 全丢——分叉出来的
+        // 会话第一次写文件要全部重新审批，模型也会回落到默认档。
+        const forked = forkMessages(source, index);
+        if (!forked.ok) {
+            flash('分支失败：消息快照无法深拷贝', true);
             return;
         }
-        // 纯 UI 注记（改动汇总卡）不带过去；万一残留生成态也按已完成处理
-        const branchMessages = copied
-            .filter((item) => item && item.kind !== 'changes-summary')
-            .map((item) => (item.status === 'streaming' ? Object.assign({}, item, {status: 'done'}) : item));
         const branch = createSessionData();
-        branch.title = (source.title || '会话') + ' · 分支';
-        branch.workspace = source.workspace || currentWorkspacePath();
-        branch.scope = source.scope || 'read';
-        branch.profileId = source.profileId || '';
-        branch.systemPrompt = source.systemPrompt || '';
-        branch.promptTemplateId = source.promptTemplateId || '';
-        if (source.summary) {
-            try {
-                branch.summary = JSON.parse(JSON.stringify(source.summary));
-            } catch (e) {}
-        }
-        branch.messages = branchMessages;
+        branch.dataset.tip = (source.title || '会话') + ' · 分支';
+        Object.assign(branch, forkSettings(source));
+        branch.workspace = branch.workspace || currentWorkspacePath();
+        branch.messages = forked.messages;
         branch.updatedAt = Date.now();
         saveComposerDraft(currentSession() && currentSession().id);
         pendingEdit = null;
@@ -9734,8 +10540,21 @@ export function createAIPanel(options) {
         if (userIndex < 0) return;
         const message = session.messages[userIndex];
         if (!el.input) return;
-        el.input.value = message.content;
+        const parsedQuote = splitQuotePrefix(message.content);
+        el.input.value = parsedQuote.quotes.length ? parsedQuote.body : message.content;
+        // 引用还原成附件条：编辑重发时不把 <quote> 标记原文暴露在输入框里。
+        // 走 addAttachment 让 chip 拿到稳定 id，否则移除按钮会连带删掉所有无 id 附件。
         setAttachments(attachmentsFromImages(message.images));
+        for (const quote of parsedQuote.quotes) {
+            addAttachment({
+                kind: AI_QUOTE_KIND,
+                label: quoteChipLabel(quote),
+                source: quote.source,
+                index: quote.index,
+                scope: quote.scope,
+                content: quote.text,
+            });
+        }
         renderAttachments();
         pendingEdit = {index: userIndex, sessionId: session.id};
         resizeInput();
@@ -9746,11 +10565,13 @@ export function createAIPanel(options) {
         el.input.setSelectionRange(end, end);
     }
 
-    function handleMessageClick(e) {
+    // sessionOverride：内容区支线对话标签页里的点击（宿主不是面板，不能用「当前会话」反查）。
+    // 无参调用 = 面板消息区，行为不变。
+    function handleMessageClick(e, sessionOverride) {
         const approveBtn = e.target.closest('[data-ai-approve]');
         if (approveBtn) {
             const wrap = approveBtn.closest('.ai-msg');
-            const session = currentSession();
+            const session = sessionOverride || currentSession();
             const index = wrap ? Number(wrap.dataset.aiIdx) : -1;
             const message = session && index >= 0 ? session.messages[index] : null;
             if (message) {
@@ -9767,7 +10588,7 @@ export function createAIPanel(options) {
         const envBtn = e.target.closest('[data-ai-env]');
         if (envBtn) {
             const wrap = envBtn.closest('.ai-msg');
-            const session = currentSession();
+            const session = sessionOverride || currentSession();
             const index = wrap ? Number(wrap.dataset.aiIdx) : -1;
             const message = session && index >= 0 ? session.messages[index] : null;
             if (message) {
@@ -9786,7 +10607,7 @@ export function createAIPanel(options) {
             e.stopPropagation();
             const usageWrap = usageChip.closest('.ai-msg');
             const usageIndex = usageWrap ? Number(usageWrap.dataset.aiIdx) : -1;
-            const usageSession = currentSession();
+            const usageSession = sessionOverride || currentSession();
             const usageMessage = usageSession && usageIndex >= 0 ? usageSession.messages[usageIndex] : null;
             if (usageMessage) {
                 if (turnUsagePop && turnUsageAnchor === usageChip) closeTurnUsagePop();
@@ -9799,7 +10620,7 @@ export function createAIPanel(options) {
         const wrap = button.closest('.ai-msg');
         if (!wrap) return;
         const index = Number(wrap.dataset.aiIdx);
-        const session = currentSession();
+        const session = sessionOverride || currentSession();
         const message = session && session.messages[index];
         if (!message) return;
         const action = button.dataset.aiAct;
@@ -9912,6 +10733,27 @@ export function createAIPanel(options) {
         // 软切换：目标会话属于另一个工作区，新窗口会带着该会话启动，本窗口保持原状态。
         if (sync === 'window') return;
         if (sync === 'assigned') persistSessions();
+        // 不变量：支线对话不在面板里显示。目标是支线时重定向为「切母会话 + 在内容区
+        // 开/激活支线标签页」——六个入口（列表、投递跳转、重启恢复、工具跳转、跨工作区
+        // 软切换之后、通知唤醒）全靠这一处收口；母会话已删除时清 sideOf 按普通会话继续。
+        // 没有标签页出口（悬浮窗）时不重定向：否则会切回母会话，用户就再也看不到这条支线。
+        const sideOfId = aiTextOf(target.sideOf).trim();
+        if (sideOfId && sideOfId !== id && sideChatTabOutlet) {
+            const owner = sessionById(sideOfId);
+            if (owner) {
+                if (sideChatTabOutlet) {
+                    sideChatTabOutlet({
+                        sessionId: target.id,
+                        title: target.title || '支线对话',
+                        ownerTitle: owner.title || '',
+                        snapAt: Number(target.createdAt) || Date.now(),
+                    });
+                }
+                return switchSession(owner.id);
+            }
+            target.sideOf = '';
+            persistSessions();
+        }
         const previous = currentSession();
         if (previous && previous.id !== id) saveComposerDraft(previous.id);
         config.activeSessionId = id;
@@ -9937,6 +10779,10 @@ export function createAIPanel(options) {
         if (chipsPopKind) hideChipsPop();
         refreshSystemPromptEstimate(true);
         setTimeout(() => flushMessageQueue(id), 0);
+        // 面板切了会话：支线标签页据此重新判定「在位 / 失联」
+        for (const cb of sessionSwitchListeners) {
+            try { cb(id); } catch (e) {}
+        }
     }
 
     function newSession() {
@@ -10504,6 +11350,8 @@ export function createAIPanel(options) {
         if (options && options.top) attachDialogTop();
         else if (dialogOnTop) detachDialogTop();
         el.dialog.classList.remove('ai-permission-dialog');
+        // 宽弹窗：内容密集的编辑器（生成条目等）在 560px 里太挤，调用方传 options.wide 加宽
+        if (el.dialogCard) el.dialogCard.classList.toggle('ai-dialog-card-wide', !!(options && options.wide));
         if (el.dialogTitle) el.dialogTitle.textContent = title || '';
         if (el.dialogBody) {
             el.dialogBody.innerHTML = '';
@@ -10520,6 +11368,7 @@ export function createAIPanel(options) {
         if (!el.dialog) return;
         el.dialog.classList.remove('ai-permission-dialog');
         el.dialog.classList.add('hidden');
+        if (el.dialogCard) el.dialogCard.classList.remove('ai-dialog-card-wide');
         if (el.dialogBody) el.dialogBody.innerHTML = '';
         if (el.dialogFoot) el.dialogFoot.innerHTML = '';
         detachDialogTop();
@@ -10984,7 +11833,6 @@ export function createAIPanel(options) {
             panel.classList.add('ai-dock');
         }
         refreshDockFill();
-        updateModeButtons();
         positionOverlays();
         notifyStructure();
         setTimeout(() => {
@@ -10992,13 +11840,6 @@ export function createAIPanel(options) {
             if (stickBottom) scrollToBottom(false);
             else updateScrollButton();
         }, 0);
-    }
-
-    function updateModeButtons() {
-        if (!el.modeSeg) return;
-        el.modeSeg.querySelectorAll('button').forEach((button) => {
-            button.classList.toggle('active', button.dataset.aiMode === mode);
-        });
     }
 
     function openFloatWindow() {
@@ -11041,7 +11882,7 @@ export function createAIPanel(options) {
             } else {
                 rt.WindowFullscreen();
             }
-            if (el.floatFullscreen) el.floatFullscreen.title = full ? '全屏（当前窗口）' : '退出全屏';
+            if (el.floatFullscreen) el.floatFullscreen.dataset.tip = full ? '全屏（当前窗口）' : '退出全屏';
         } catch (e) {}
     }
 
@@ -11062,7 +11903,7 @@ export function createAIPanel(options) {
             floatCollapsed = true;
             document.body.classList.add('ai-float-collapsed');
             if (el.floatCollapse) {
-                el.floatCollapse.title = '展开（恢复面板）';
+                el.floatCollapse.dataset.tip = '展开（恢复面板）';
                 const path = el.floatCollapse.querySelector('path');
                 if (path) path.setAttribute('d', 'M4.2 6 8 9.8 11.8 6');
             }
@@ -11073,7 +11914,7 @@ export function createAIPanel(options) {
         floatCollapsed = false;
         document.body.classList.remove('ai-float-collapsed');
         if (el.floatCollapse) {
-            el.floatCollapse.title = '收起（只保留标题栏）';
+            el.floatCollapse.dataset.tip = '收起（只保留标题栏）';
             const path = el.floatCollapse.querySelector('path');
             if (path) path.setAttribute('d', 'M4.2 10 8 6.2 11.8 10');
         }
@@ -11218,7 +12059,7 @@ export function createAIPanel(options) {
     function applyPanelSide() {
         if (dockParent) dockParent.classList.toggle('ai-left', panelSide() === 'left');
         if (el.sideBtn) {
-            el.sideBtn.title = panelSide() === 'left'
+            el.sideBtn.dataset.tip = panelSide() === 'left'
                 ? 'AI 面板在左侧，点击换到右侧'
                 : 'AI 面板在右侧，点击换到左侧';
         }
@@ -11259,6 +12100,7 @@ export function createAIPanel(options) {
         // 面板在右：向左拖变宽（-dx）；面板在左：向右拖变宽（+dx）。
         // 上限不写死：大屏分屏用 AI 面板常要拖到半屏宽（此前硬顶 640px 被卡）——
         // 给视口 60%，至少 640 保底小窗体验。
+        const delta = e.clientX - drag.startX;
         const maxWidth = Math.max(640, Math.round(window.innerWidth * 0.6));
         const width = panelSide() === 'left'
             ? aiClamp(drag.startWidth + delta, 280, maxWidth)
@@ -11332,12 +12174,6 @@ export function createAIPanel(options) {
             el.head.addEventListener('dblclick', (e) => {
                 if (floatWindow || e.target.closest('button, select, input, textarea')) return;
                 toggleFullscreen();
-            });
-        }
-        if (el.modeSeg) {
-            el.modeSeg.addEventListener('click', (e) => {
-                const button = e.target.closest('button[data-ai-mode]');
-                if (button) setMode(button.dataset.aiMode);
             });
         }
         if (el.sideBtn) el.sideBtn.addEventListener('click', togglePanelSide);
@@ -11422,6 +12258,12 @@ export function createAIPanel(options) {
         });
         if (el.messages) {
             el.messages.addEventListener('click', handleMessageClick);
+            // 文件引用芯片：点击在编辑器打开（带 :行:列 时同步跳行）
+            el.messages.addEventListener('click', (e) => {
+                const chip = e.target.closest && e.target.closest('.ai-file-ref[data-ai-ref-path]');
+                if (!chip || typeof openTargets !== 'function') return;
+                openTargets([{path: chip.dataset.aiRefPath, line: Number(chip.dataset.aiRefLine) || 0, column: Number(chip.dataset.aiRefCol) || 0}]);
+            });
             el.messages.addEventListener('contextmenu', (e) => {
                 e.preventDefault();
                 e.stopPropagation();
@@ -11562,8 +12404,15 @@ export function createAIPanel(options) {
 
     // ---------- 底部 composer 接管：提问 / 计划批准 ----------
 
-    function currentPendingAskEntry() {
-        const session = currentSession();
+    // 待办查找一律带会话：多宿主之后「待办属于哪个视图」必须由调用方指定，
+    // 否则支线标签页的接管区会显示母会话的待审批项——在 A 会话的视图里批准 B 会话
+    // 的写操作。无参调用 = 面板当前会话，与改动前逐字节等价。
+    function pendingSessionOf(sessionId) {
+        return sessionId ? sessionById(sessionId) : currentSession();
+    }
+
+    function currentPendingAskEntry(sessionId) {
+        const session = pendingSessionOf(sessionId);
         if (!session) return null;
         for (const entry of pendingAsks.values()) {
             if (entry.session === session && entry.ask && entry.ask.state === 'pending') return entry;
@@ -11571,8 +12420,8 @@ export function createAIPanel(options) {
         return null;
     }
 
-    function currentPendingEnvEntry() {
-        const session = currentSession();
+    function currentPendingEnvEntry(sessionId) {
+        const session = pendingSessionOf(sessionId);
         if (!session) return null;
         for (const entry of pendingEnvCreations.values()) {
             if (entry.session === session && entry.toolMessage && entry.toolMessage.envAsk && entry.toolMessage.envAsk.state === 'pending') return entry;
@@ -11580,8 +12429,8 @@ export function createAIPanel(options) {
         return null;
     }
 
-    function currentPendingApprovalEntry() {
-        const session = currentSession();
+    function currentPendingApprovalEntry(sessionId) {
+        const session = pendingSessionOf(sessionId);
         if (!session) return null;
         for (const entry of pendingApprovals.values()) {
             if (entry.session === session && entry.toolMessage && entry.approval && entry.approval.state === 'pending') return entry;
@@ -11737,6 +12586,7 @@ export function createAIPanel(options) {
     const attachSelection = (...args) => composerMod.attachSelection(...args);
     const referencePath = (...args) => composerMod.referencePath(...args);
     const referenceSelection = (...args) => composerMod.referenceSelection(...args);
+    const addMessageQuote = (...args) => composerMod.addMessageQuote(...args);
     const attachFilesDialog = (...args) => composerMod.attachFilesDialog(...args);
     const showSkillPicker = (...args) => composerMod.showSkillPicker(...args);
     const attachSkillByName = (...args) => composerMod.attachSkillByName(...args);
@@ -11817,7 +12667,6 @@ export function createAIPanel(options) {
         panel.classList.toggle('hidden', floatWindow ? false : !settings.aiPanelOpen);
         refreshDockFill();
         updateEntryButtons();
-        updateModeButtons();
         // MCP 工具清单兜底拉取：防错过启动早期事件；Go 侧 MCPSnapshot 会触发惰性启动。
         // 尽力而为路径：旧后端 / MCP 未启用时 registry 留空，失败不影响面板初始化。
         Promise.resolve(mcpMod.refresh()).catch(() => {});
@@ -11856,7 +12705,7 @@ export function createAIPanel(options) {
         return actions;
     }
 
-    // 会话信箱 / 后台注入通道（阶段 B：docs/unfinished-plans/session-messaging.md §4.4）。
+    // 会话信箱 / 后台注入通道（阶段 B：docs/finished-plans/session-messaging.md §4.4）。
     // 一条管道 N 个发送方：子代理结算与提问、支线带回、会话间投递、定时任务与计时器。
     // 三态投递（忙→排队 / 压缩中→排队 / 空闲→startSessionTurn 唤醒）都在模块内部，
     // panel 只保留三个消费点与工具执行处的薄调用。
@@ -11909,6 +12758,16 @@ export function createAIPanel(options) {
 
     // 支线对话域（阶段 F：普通持久化会话 + sideOf 元数据；动作在 ai-sidechat.js，
     // 列表缩进/徽标与排序在 ai-session-list.js，结论带回走上面的信箱通道）
+    // 支线对话的标签页出口（与子代理详情同一套判定）：全屏形态先回到停靠，否则标签页
+    // 会开在看不见的地方；悬浮窗没有内容区，置 null 让调用方退回面板内切换。
+    sideChatTabOutlet = !openSideChatTab || window.__aiFloatWindow ? null : (spec) => {
+        if (mode === 'fullscreen') {
+            setMode('dock');
+            flash('已切回停靠形态：支线对话在内容区标签页打开');
+        }
+        return openSideChatTab(spec);
+    };
+
     const sidechatMod = createAISidechat({
         getSessions: () => sessions,
         sessionById,
@@ -11921,6 +12780,8 @@ export function createAIPanel(options) {
         deliverAgentNotice,
         flash,
         logActivity,
+        // 在内容区标签页打开（返回 null 表示无内容区可用，调用方退回 switchSession）
+        openSideChatTab: (spec) => (sideChatTabOutlet ? sideChatTabOutlet(spec) : null),
     });
     const openSideChat = (...args) => sidechatMod.openSideChat(...args);
     const bringBackToParent = (...args) => sidechatMod.bringBackToParent(...args);
@@ -11944,6 +12805,19 @@ export function createAIPanel(options) {
         flash,
         renderMarkdown,
         openTermTab,
+        // 子代理详情落在内容区标签页：全屏形态下面板本身盖满内容区，标签页会开在看不见的
+        // 地方——先回到停靠形态（左内容区 + 右面板），这也正是「并排看子代理与主对话」要的布局。
+        openAgentTab: !openAgentTab || window.__aiFloatWindow ? null : (spec) => {
+            if (mode === 'fullscreen') {
+                setMode('dock');
+                flash('已切回停靠形态：子代理详情在内容区标签页打开');
+            }
+            return openAgentTab(spec);
+        },
+        // 悬浮窗没有内容区：详情视图退回面板内覆盖层（与改造前的表现一致）
+        isFloatWindow: () => !!window.__aiFloatWindow,
+        // 子代理正文与主消息区同一条增强链（代码复制钮 / 本地图片 / 可视化卡片）
+        enhanceAnswerBody: (...args) => toolCardsMod.enhanceAnswerBody(...args),
         currentSession,
         persistSessions,
         sessionById,
@@ -11961,6 +12835,7 @@ export function createAIPanel(options) {
         newAssistantMessage,
         getSessions: () => sessions,
         agentRegistry,
+        logActivity,
         bgJobIndex,
         bgJobLive,
         bgJobCursors,
@@ -12012,11 +12887,8 @@ export function createAIPanel(options) {
     const openBgTermInContent = (...args) => subagentsMod.openBgTermInContent(...args);
     const renderChipsPop = (...args) => subagentsMod.renderChipsPop(...args);
     const toggleChipsPop = (...args) => subagentsMod.toggleChipsPop(...args);
-    const agentBlock = (...args) => subagentsMod.agentBlock(...args);
-    const agentToolRow = (...args) => subagentsMod.agentToolRow(...args);
-    const renderAgentLiveMessages = (...args) => subagentsMod.renderAgentLiveMessages(...args);
-    const renderAgentFinished = (...args) => subagentsMod.renderAgentFinished(...args);
-    const renderAgentView = (...args) => subagentsMod.renderAgentView(...args);
+    const mountAgentView = (...args) => subagentsMod.mountAgentView(...args);
+    const unmountAgentView = (...args) => subagentsMod.unmountAgentView(...args);
     const parentSessionOfSub = (...args) => subagentsMod.parentSessionOfSub(...args);
     const runSubAgent = (...args) => subagentsMod.runSubAgent(...args);
     const startSubAgent = (...args) => subagentsMod.startSubAgent(...args);
@@ -12040,6 +12912,7 @@ export function createAIPanel(options) {
         copyText,
         flash,
         backend,
+        genStopJob: (jobId) => genJobsMod.stopJob(jobId),
         renderMarkdown,
         renderMermaidBlocks,
         openExternal,
@@ -12061,6 +12934,7 @@ export function createAIPanel(options) {
         aiThinkKey,
         aiThinkLabel,
         resolveAIImages,
+        enhanceAIFileRefs,
         toggleThink,
         toolArgsSummary,
         toolStateText,
@@ -12160,6 +13034,7 @@ export function createAIPanel(options) {
         attachSelection,
         referencePath,
         referenceSelection,
+        addMessageQuote,
         paletteActions,
         getMode: () => mode,
         // 是否有会话正在生成/压缩（关窗二次确认依据，main.js 轮询后经 SetAIRunning 同步给 Go）
@@ -12225,6 +13100,29 @@ export function createAIPanel(options) {
         },
         // 后台终端标签页（内容区）用的桥：快照 / 输出订阅 / 停止
         bridgeBgJob: (jobId) => bgJobSnapshot(String(jobId || '')),
+        // 子代理详情标签页（内容区）用的桥：挂载/卸载视图根节点。正文渲染留在面板内，
+        // 因为运行态、收件箱与插话输入行都在面板闭包里（标签页只提供容器与标签）。
+        bridgeMountAgentView: (root, spec) => mountAgentView(root, spec),
+        bridgeUnmountAgentView: (root) => unmountAgentView(root),
+        // 内容区「支线对话」标签页：把会话渲染进宿主容器（复用面板渲染函数，
+        // 面板单例 UI 在外渲染时跳过；滚动由宿主自己管）
+        bridgeRenderSideChat: (root, sessionId) => renderSideChatInto(root, sessionId),
+        // 支线标签页的状态与动作（薄转发，状态仍在面板闭包里）
+        bridgeSideChatState: (id) => sideChatState(id),
+        bridgeSideChatSend: (id, text) => sendSideChatMessage(id, text),
+        bridgeSideChatStop: (id) => stopSideChatMessage(id),
+        bridgeSideChatChips: (id) => sideChatChipsOf(id),
+        bridgeSideChatChip: (kind) => openSideChatChip(kind),
+        bridgeSideChatReturnToOwner: (id) => returnToSideChatOwner(id),
+        bridgeSideChatPromote: (id) => promoteSideChatFromTab(id),
+        bridgeSideChatTakeover: (root, id) => renderSideChatTakeover(root, id),
+        bridgeSideChatClick: (e, id) => sideChatClick(e, id),
+        // 面板切换会话（支线标签页据此判定在位 / 失联）；返回取消订阅
+        bridgeOnSessionSwitch: (cb) => {
+            if (typeof cb !== 'function') return () => {};
+            sessionSwitchListeners.add(cb);
+            return () => sessionSwitchListeners.delete(cb);
+        },
         bridgeOnBgUpdate: (cb) => {
             if (typeof cb !== 'function') return () => {};
             bgUpdateListeners.add(cb);

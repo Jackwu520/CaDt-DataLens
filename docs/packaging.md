@@ -206,7 +206,7 @@ signtool verify /pa /v build/bin/CaDt-DataLens-amd64-installer.exe
 
 ## 7. 发布前检查清单
 
-- [ ] `app.go` 的 `appVersion` 与 `wails.json` 的 `info.productVersion` 一致。
+- [ ] `app_core.go` 的 `appVersion` 与 `wails.json` 的 `info.productVersion` 一致。
 - [ ] `go test ./...` 通过。
 - [ ] `wails build` 产出的便携版能正常启动。
 - [ ] `scripts/build-installer.ps1` 成功，并打印 `Successfully verified`。

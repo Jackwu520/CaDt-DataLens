@@ -12,10 +12,11 @@ CaDt-DataLens 是一个面向 Windows 的轻量级多格式数据查看与编辑
 
 ### Go 后端（仓库根）
 - `main.go`：Wails 启动配置、窗口选项、`//go:embed all:frontend/dist` 资源内嵌、单实例锁
-- `app_core.go`：App 结构与生命周期（startup/domReady/单实例）、命令行目标与启动参数解析；`const appVersion` 在 `app_core.go:35`
+- `app_core.go`：App 结构与生命周期（startup/domReady/单实例）、命令行目标与启动参数解析；`const appVersion` 在 `app_core.go:22`
 - `app_file.go` / `app_fs.go` / `app_window.go`：文件读写与编码（opensave/外部修改校验/图片判定）· 目录与条目操作（列举/增删改移/落盘/对话框）· 脏标记/应用配置/多窗口与资源管理器定位
 - `appdata.go` / `logging.go` / `app_pathinfo.go`：应用数据目录、日志、路径信息
 - `ai_types.go` / `ai_chat.go` / `ai_http.go` / `ai_sse.go` / `ai_validate.go` / `ai_stream.go`：AI 后端——类型与载荷 · Wails 入口（发消息/停止/看门狗/连通性/目录）· 双协议 URL/头/体与重试 · SSE 解码与 HTTP 客户端/代理 · 参数校验 · 增量合并缓冲
+- `ai_gen.go`：生图/视频执行通道（哑通道两绑定：`AIGenHTTPRequest` 按前端渲染好的规格发同步 HTTP、`AIGenSaveProducts` 产物解码/下载 + 工作区路径校验落盘 `.cadt/gen/`；模板渲染/提取/轮询在前端 `ai-gen-model.js` / `ai-gen-jobs.js`，方案见 `docs/finished-plans/ai-gen-models.md`）
 - `ai_float.go` / `ai_proxy_*.go` / `ai_command_windows.go`：AI 浮窗、代理、命令执行
 - `sessionstore*.go` / `sessionlock*.go`：AI 会话磁盘存储（追加式 JSONL、每会话 meta、原子替换、fsync 回滚、跨进程写锁、回收站删除）
 - `aiconfig*.go`：AI 配置 `ai-config.json` 的原子读写（0600）
@@ -45,12 +46,12 @@ CaDt-DataLens 是一个面向 Windows 的轻量级多格式数据查看与编辑
 
 - `src/main.js`：组合根与核心枢纽（标签页核心状态、命令面板、菜单注册表、初始化接线，约 4,400 行）。域逻辑已拆到下列目录，每个模块都是「factory + 显式依赖注入」——依赖一律经 `deps` 延迟求值（main.js 传 getter），不依赖声明顺序；改动某域时先找到对应模块，不要往 main.js 回填
 - `src/core/`：跨域共享的纯逻辑与无状态工具
-  - `formats.js` 格式驱动层（parse / stringify，插件格式也走这里）· `markdown.js` 共享 Markdown 渲染/sanitize（规则单一来源）· `diff.js` 行级与结构化 diff · `jsonpath.js`/`jsonrepair.js`/`jsonschema.js` JSON 工具 · `icons.js`/`fileicons*.js` 图标 · `image-clipboard.js` · `writing.js` 写作纯函数 · `activity-log.js` 操作留痕前端服务（脱敏 sanitizer、攒批 ≤200ms/20 条调 `ActivityAppend`）· `readonly.js` 只读判定单一来源（全局锁 `settings.readOnlyMode` + 标签锁 `doc.readOnlyLocked` + 固定锁 `doc.readOnlyFixed`（审阅快照，不可解锁、不给解锁菜单）+ 大文件/二进制；新增编辑能力判定一律走它）
+  - `formats.js` 格式驱动层（parse / stringify，插件格式也走这里）· `markdown.js` 共享 Markdown 渲染/sanitize（规则单一来源）· `diff.js` 行级与结构化 diff · `jsonpath.js`/`jsonrepair.js`/`jsonschema.js` JSON 工具 · `icons.js`/`fileicons*.js` 图标 · `image-clipboard.js` · `writing.js` 写作纯函数 · `activity-log.js` 操作留痕前端服务（脱敏 sanitizer、攒批 ≤200ms/20 条调 `ActivityAppend`）· `readonly.js` 只读判定单一来源（全局锁 `settings.readOnlyMode` + 标签锁 `doc.readOnlyLocked` + 固定锁 `doc.readOnlyFixed`（审阅快照，不可解锁、不给解锁菜单）+ 大文件/二进制；新增编辑能力判定一律走它） · `tooltip.js` 全局 tooltip 运行时（`data-tip` 属性驱动替代原生 title：委托监听 mouseenter/focusin 显示、滚动/点击/Esc 隐藏，位置下方优先越界翻转；设置页 `.info-tip` 的 ⓘ 气泡已并入本运行时——`::after` 版本删除，触屏粗指针点击 ⓘ 切换气泡；全仓 `.title =` 赋值已改为 `.dataset.tip =`，`document.title` 与 iframe 的 title 除外）
   - `widget.js`：AI 回答里 `svg`/`html`/`mermaid`/`echarts`/`graph`/`wordcloud` 围栏的可视化卡片（Shadow DOM + DOMPurify；只有 AI 面板传 `env.aiWidgets` 时启用）。异步引擎卡片动态 import 下列渲染模块、vendor 按需加载，产物仍是静态 SVG 走同一条清洗管线；SSR 结果按内容+主题 LRU 缓存、`data-theme` MutationObserver 触发重渲染、断连登记表清扫（sweepAsyncMaps）；卡片带源码/复制/**另存为**（`.cadt/answers/`）。**借驻 core**：`markdown.js` 依赖它，挪进 `ai/` 会形成 core→ai 反向依赖；配套技能 `inline-visual`/`answer-me-with-html` 规则单一来源在 `visual-spec.js`
   - `visual-spec.js` 可视化规范单一来源（SHADOW_STYLE 别名表、尺寸/数量预算、inline-visual 技能全文、决策表、`resolveThemeColors` 计算样式读色）· `render-cache.js` 内容+主题 LRU
   - `mermaid-render.js`（mermaid 懒加载出图，与 editor/markdown-mermaid.js 共用 vendor、各自独立）· `chart-render.js`（ECharts option 纯 JSON 白名单校验 + SSR 静态 SVG：禁 formatter/rich/外链、强制关动画、实例用完即 dispose）· `layout-render.js`（```graph 关系图 ELK 布局，3s 超时弃实例、简单分层兜底）· `wordcloud-render.js`（词云：echarts-wordcloud SSR 优先，产物无 `<text>` 退 d3-cloud 自拼；d3-cloud@2 是 ES module，走 @vite-ignore 动态 import）
 - `src/editor/`：编辑器内核（统一模式 `createEditor<域>(deps)`，deps 与 editor-groups 共用 main.js 的 getter 集经 Object.create 委托）
-  - `editor-groups.js` 编辑器组/分栏（二叉分割树）、标签页 chrome、DnD、面包屑、createDocEditor 分发、文档生命周期 · `editor-ace-hooks.js` Ace 会话钩子 · `editor-csv-view.js` CSV/TSV 表格族 · `editor-split-preview.js` 分屏与预览视图族 · `editor-sql-view.js` 大文件 SQL 视图 · `editor-browser-tab.js` 浏览器标签页 · `editor-doc-extras.js` 横幅/折叠预览/书签/视图记忆/git gutter · `editor-export-menus.js` md 块渲染/SVG 导出/右键菜单 · `editor-menus.js` 编辑器右键菜单
+  - `editor-groups.js` 编辑器组/分栏（二叉分割树）、标签页 chrome、DnD、面包屑、createDocEditor 分发、文档生命周期 · `editor-ace-hooks.js` Ace 会话钩子（模式切换、折叠范围调整——import 圆括号块折进括号、折叠行悬停预览、多光标、python token 染色） · `editor-csv-view.js` CSV/TSV 表格族 · `editor-split-preview.js` 分屏与预览视图族 · `editor-sql-view.js` 大文件 SQL 视图 · `editor-browser-tab.js` 浏览器标签页 · `editor-doc-extras.js` 横幅/折叠预览/书签/视图记忆/git gutter · `editor-export-menus.js` md 块渲染/SVG 导出/右键菜单 · `editor-menus.js` 编辑器右键菜单
   - `structure.js` 17 种语言结构解析（纯函数）· `structure-panel.js` 结构面板控制器（Worker + 缓存 + 导出）· `structure-worker.js` 解析 Worker（`new URL('./structure-worker.js', import.meta.url)`，**必须与 structure-panel 同目录**）
   - `patch-view.js` 补丁视图（只渲染，解析与写入走 Go；`doc.patchReview` 为只读审阅分支：无预检/应用/撤销，走 `PatchParseText`）· `find-bar.js` 查找替换 · `json-query.js` JSONPath 查询栏 · `schema-panel.js` Schema 校验面板 · `format-convert.js` 格式互转 + JSON 修复 · `diff-dialog.js` 双文件对比对话框 · `foot-menus.js` 状态栏底部弹出层（编码/换行/视图/缩放宽度）· `markdown-mermaid.js` 共享 md 渲染器实例 + mermaid 出图
 - `src/explorer/`：资源管理器与工作区检索
@@ -59,9 +60,9 @@ CaDt-DataLens 是一个面向 Windows 的轻量级多格式数据查看与编辑
   - `menu-bar.js` IDEA 新 UI 菜单条 · `titlebar-popovers.js` 标题栏弹层壳（定位工具 + 图标）· `titlebar-project.js` 项目弹层/克隆 · `titlebar-git-branch.js` Git 分支弹层 · `mode-switch.js` 模式切换（含留痕）· `palette.js` 命令面板 · `quick-switch.js` 快速切换器 · `contextmenu.js` 右键菜单 · `app-actions.js` 退出/最近打开 · `app-links.js` 外链与内置文档 · `update-check.js` 更新检查 · `properties-ui.js` 属性对话框 · `cursor-themes.js` 系统光标主题 · `session-restore.js` 布局持久化 · `image-lightbox.js` 图片灯箱 · `message-center.js` 状态栏消息中心 · `plugins.js` 插件运行时（加载插件 JS、`cadt.*` API、格式/命令/主题注册生命周期）
 - `src/settings/`：设置页——`settings-ui.js` 核心（主题/字体/只读锁/`applySettings`/集成状态/字数统计）· `settings-dialogs.js` 对话框族（遮罩栈/关于/保存冲突/命名）· `settings-select.js` 行式下拉增强 · `settings-search.js` 设置搜索 · `activity-pane.js` 操作记录面板 · `settings-pane-run/plugins/envvars/lang.js` 四个 pane（运行配置 · 插件与市场 · 环境变量 · 格式与语言工具链）
 - `src/writing/`：`writing-mode.js` 写作模式（生效判定/chrome/字数/排版整理/起名器/goto）· `writing-ui.js` 壳（LANG_DEFS、视图与编码常量、`readonlyTipObserver`、`flash`/脏标记/自动保存，返回面 22 显式键 + 六模块 spread）
-- `src/bridge/`：`bridge-ui.js` 进程桥/虚拟文档/浏览器标签 + 启动编排 IIFE；`bridge-terminal-view.js` 后台终端视图 · `bridge-git.js` git 浅集成 · `bridge-cli-convert.js` `--convert` 转换
+- `src/bridge/`：`bridge-ui.js` 进程桥/虚拟文档/浏览器标签 + 启动编排 IIFE；`bridge-terminal-view.js` 后台终端视图 · `bridge-agent-view.js` 子代理详情标签页（正文渲染归 `ai/ai-subagents.js`，这里只管建标签页与挂载容器）· `bridge-git.js` git 浅集成 · `bridge-cli-convert.js` `--convert` 转换
 - `src/terminal/`：`terminal-ui.js` 终端面板/dock/侧栏 git 面板 · `terminal-sessions.js` 会话管理 · `run.js` 运行配方与输出渲染（纯函数，`run.test.mjs`）· `run-ui.js` F5 接线 · `debugconsole.js` 调试控制台（底部面板一档）
-- `src/ai/`：AI 助手，按域拆为兄弟模块（统一模式：`createAI<域>(ctx)` 工厂 + ctx 注入，重赋值状态经 getter/setter 访问器，互引经惰性转发箭头；测试与源码同目录）。`ai-panel.js`（约 1.2 万行核心编排：`executeTool`、回合流程、会话持久化、消息渲染、三形态、init）；`ai-system-context.js`（系统提示词组装域：`<workspace_rules>` 守则 / `<plan_mode>` / `<output_language>` / 附件块与 `assembleSystemContext` 按稳定→动态拼装，面板闭包状态经 ctx getter 注入）；数据/常量类：`ai-constants.js`、`ai-session-store.js`（JSONL 编解码/重放）、`ai-session-disk.js`（磁盘适配）、`ai-config-model.js`、`ai-permissions.js`、`ai-read-roots.js`（工作区外读取的授权判定纯函数：用户点名 `userNamedPath` / 已批准读根 / 应用数据目录硬拒；按档授权链 `resolveReadPathWithApproval` 在 ai-panel.js——read/edit 档弹审批卡、auto/full 直读、子代理不弹卡报回主代理）、`ai-command-rules.js`、`ai-git.js`、`ai-app-message.js`、`ai-tool-args.js`、`ai-tool-defs.js`（**工具声明单一来源**：定义表 `AI_TOOL_DEFS` + 权限档清单 `toolsForScope` + 工具目录数据 `AI_TOOL_CATALOG` / 组注册表 `AI_TOOL_GROUPS` 与 `<tool_catalog>` 渲染；目录独立成表不内联进 def——def 对象原样发给 API；作者规则 2026-11-15：**新增工具必须写进目录**，测试强制 def↔目录一一对应）、`session-outline.js`（结构面板的会话定位条）；UI 域类：`ai-write-guard.js`（write_file 陈旧缓冲防护：覆盖已存在文件前必须先 read_file）、`ai-session-list.js`、`ai-composer.js`、`ai-tool-cards.js`、`ai-takeover.js`、`ai-todos.js`、`ai-changes-ui.js`、`ai-schedule.js`、`ai-reminders.js`（reminder_* 工具 + 标题栏铃铛，每轮 `<task_reminders>` 注入）、`ai-timer.js`（头部胶囊 + 弹层；Go 侧计时，到点唤醒会话）、`ai-git-ui.js`、`ai-slash.js`、`ai-message-queue.js`、`ai-manage-dialogs.js`、`ai-settings-dialog.js`（设置页壳：ctx 解包 + 状态条 + 640 行 `bindSettingsPane` 绑定器）、`ai-permission-settings.js`（审批授权/会话与项目级规则/端侧分类器/审批记录）、`ai-preference-settings.js`（偏好清单/预设账号/系统提示词）、`ai-model-settings.js`（模型条目与编辑器状态机/窗口与思考预算）、`ai-settings-io.js`（配置导入导出）、`ai-subagents.js`（子代理运行时：`startSubAgent` 派单拆建/等两段、`subAgentRecords` 终态 LRU 20、`sub.inbox` 双队列收件箱（step 插队 / turn 排队，唯一消费点在 `runSubRound` 开头）、冷唤醒、`subCompacts` 压缩注册表 + 轮边界 auto-compact、HUD chips/详情视图（含停止与压缩按钮、收件箱预览））、`ai-agent-notices.js`（**会话信箱单一注入通道**：三态投递 忙→下轮边界 / 压缩中→排队 / 闲→`startSessionTurn` 唤醒，唤醒单飞、被拒内容退回队列；`buildSettlementNotice` / `buildAskNotice` 纯函数；会话间投递 `session_send` 守卫矩阵与逐目标回执）、`ai-sidechat.js`（支线对话动作域：`sideOf` 旁路会话的创建/引用预填/带回主对话/提升独立）、`ai-session-send.js`（会话投递的选择器 UI：搜索 + 多选 + 键盘 + 内容预览，`filterSessionRows` / `togglePicked` 纯函数可单测；传输走 ai-agent-notices 的 `deliverToSessions`）、`ai-compact.js`（压缩应用内核：cutoff 回退到 user 轮边界、summary 形状、messages 裁剪、压缩请求组装，主会话与子代理共用）、`ai-classifier-verdict.js`、`ai-local-classifier.js`（端侧命令分类器：int8 推理/严格度/插件分类器聚合/个性化；权重 `local-classifier-weights.mjs` 由 `scripts/train-local-classifier.mjs` 生成、勿手改）
+- `src/ai/`：AI 助手，按域拆为兄弟模块（统一模式：`createAI<域>(ctx)` 工厂 + ctx 注入，重赋值状态经 getter/setter 访问器，互引经惰性转发箭头；测试与源码同目录）。`ai-panel.js`（约 1.2 万行核心编排：`executeTool`、回合流程、会话持久化、消息渲染、三形态、init）；`ai-system-context.js`（系统提示词组装域：`<workspace_rules>` 守则 / `<plan_mode>` / `<output_language>` / 附件块与 `assembleSystemContext` 按稳定→动态拼装，面板闭包状态经 ctx getter 注入）；数据/常量类：`ai-constants.js`、`ai-session-store.js`（JSONL 编解码/重放）、`ai-session-disk.js`（磁盘适配）、`ai-config-model.js`、`ai-permissions.js`、`ai-read-roots.js`（工作区外读取的授权判定纯函数：用户点名 `userNamedPath` / 已批准读根 / 应用数据目录硬拒；按档授权链 `resolveReadPathWithApproval` 在 ai-panel.js——read/edit 档弹审批卡、auto/full 直读、子代理不弹卡报回主代理）、`ai-command-rules.js`、`ai-git.js`、`ai-app-message.js`、`ai-tool-args.js`、`ai-file-tools.js`（AI 文件工具纯函数：`read_file` 窗口切片（offset/limit 字符分页 + startLine/endLine 行号模式带前缀与续读提示）、`edit_file` 定位（默认唯一命中 / replaceAll 全量替换 + CRLF 兜底）、humanSizeBytes、globMatchPath；`executeTool` 的 list_dir/read_file/search_text/edit_file 调用，测试 `ai-file-tools.test.mjs`），`ai-gen-model.js`（生图/视频条目数据层：`genModels[]` 归一化 + 通用输入输出模板渲染（占位符一律 JSON 字面量）+ 响应提取点路径 + 预设表，纯函数可单测）、`ai-gen-jobs.js`（生成任务运行时：同步执行 / 异步 submit→poll→落盘 注册表、check/stop、完成经信箱唤醒会话；Go 侧是哑通道见 `ai_gen.go`）、`ai-tool-defs.js`（**工具声明单一来源**：定义表 `AI_TOOL_DEFS` + 权限档清单 `toolsForScope` + 工具目录数据 `AI_TOOL_CATALOG` / 组注册表 `AI_TOOL_GROUPS` 与 `<tool_catalog>` 渲染；目录独立成表不内联进 def——def 对象原样发给 API；作者规则 2026-11-15：**新增工具必须写进目录**，测试强制 def↔目录一一对应）、`session-outline.js`（结构面板的会话定位条）；UI 域类：`ai-write-guard.js`（write_file 陈旧缓冲防护：覆盖已存在文件前必须先 read_file）、`ai-session-list.js`、`ai-composer.js`、`ai-tool-cards.js`、`ai-takeover.js`、`ai-todos.js`、`ai-changes-ui.js`、`ai-schedule.js`、`ai-reminders.js`（reminder_* 工具 + 标题栏铃铛，每轮 `<task_reminders>` 注入）、`ai-timer.js`（头部胶囊 + 弹层；Go 侧计时，到点唤醒会话）、`ai-git-ui.js`、`ai-slash.js`、`ai-message-queue.js`、`ai-manage-dialogs.js`、`ai-settings-dialog.js`（设置页壳：ctx 解包 + 状态条 + 640 行 `bindSettingsPane` 绑定器）、`ai-permission-settings.js`（审批授权/会话与项目级规则/端侧分类器/审批记录）、`ai-preference-settings.js`（偏好清单/预设账号/系统提示词）、`ai-model-settings.js`（模型条目与编辑器状态机/窗口与思考预算）、`ai-gen-settings.js`（设置 → AI → 生图与视频 pane：条目列表/编辑器居中弹窗/测试连接）、`ai-settings-io.js`（配置导入导出）、`ai-subagents.js`（子代理运行时：`startSubAgent` 派单拆建/等两段、`subAgentRecords` 终态 LRU 20、`sub.inbox` 双队列收件箱（step 插队 / turn 排队，唯一消费点在 `runSubRound` 开头）、冷唤醒、`subCompacts` 压缩注册表 + 轮边界 auto-compact、HUD chips/详情视图（含停止与压缩按钮、收件箱预览））、`ai-agent-notices.js`（**会话信箱单一注入通道**：三态投递 忙→下轮边界 / 压缩中→排队 / 闲→`startSessionTurn` 唤醒，唤醒单飞、被拒内容退回队列；`buildSettlementNotice` / `buildAskNotice` 纯函数；会话间投递 `session_send` 守卫矩阵与逐目标回执）、`ai-sidechat.js`（支线对话动作域：`sideOf` 旁路会话的创建/引用预填/带回主对话/提升独立）、`ai-session-send.js`（会话投递的选择器 UI：搜索 + 多选 + 键盘 + 内容预览，`filterSessionRows` / `togglePicked` 纯函数可单测；传输走 ai-agent-notices 的 `deliverToSessions`）、`ai-compact.js`（压缩应用内核：cutoff 回退到 user 轮边界、summary 形状、messages 裁剪、压缩请求组装，主会话与子代理共用）、`ai-classifier-verdict.js`、`ai-local-classifier.js`（端侧命令分类器：int8 推理/严格度/插件分类器聚合/个性化；权重 `local-classifier-weights.mjs` 由 `scripts/train-local-classifier.mjs` 生成、勿手改）
 - `src/reading/`：阅读模式（`reading.js` 控制器、`reading-model.js` 纯函数 TOC/排序/进度、`reading-state.js` localStorage、`reading-view.js` 书架/详情/目录 DOM、`reading-render.js` md/txt/docx/epub + LRU、`reading-search.js` 查找、`reading-tts.js` 朗读）；Go 侧对应 `reading*.go`；方案见 `docs/finished-plans/reading-mode.md`；**只读，禁止调用写接口**
 - `src/dev/mock-backend.js`：vite dev 浏览器调试用的 mock 后端，main.js 在 `!hasWails && import.meta.env.DEV` 时**动态 import**（`import.meta.env.DEV` 守卫让 rollup 在生产构建里整段剔除，否则会产出一个 66 KB 的 chunk 被 go:embed 带进 exe）；改 mock 场景只动这里
 - `src/style.css`：布局、主题、Ace/jsoneditor 样式；`src/reading.css`：阅读模式样式（`.rd-` 前缀）
@@ -72,15 +73,16 @@ CaDt-DataLens 是一个面向 Windows 的轻量级多格式数据查看与编辑
 
 ### `docs/`
 - `packaging.md`（打包与发布）、`plugins/`、`skills/`、`samples/`、`screenshots/`、`icons/`、`legal/`
-- `finished-plans/`：已实施完的方案存档（`ai-panel.md`、`ai-panel-v2.md`、`ai-panel-v3.md`、`ai-head-agents-terminal.md`、`operation-audit-log.md`、`writing-mode.md`、`reading-mode.md`、`visualizer.md`、`mcp-client.md`、`ai-personalization.md`、`local-command-classifier.md` 等）
-- `unfinished-plans/`：未开工/进行中的方案（目前：`frontend-split-phase3.md`、`go-layout.md`）；全部实施后移入 `finished-plans/`
+- `finished-plans/`：已实施完的方案存档（`ai-panel.md`、`ai-panel-v2.md`、`ai-panel-v3.md`、`ai-head-agents-terminal.md`、`operation-audit-log.md`、`writing-mode.md`、`reading-mode.md`、`visualizer.md`、`mcp-client.md`、`ai-personalization.md`、`local-command-classifier.md`、`ai-gen-models.md` 等）
+- `unfinished-plans/`：未开工/进行中的方案（目前：`frontend-split-phase3.md`、`go-layout.md`、`subagent-sandbox.md`）；全部实施后移入 `finished-plans/`
 - `icon-guidelines.md`
 - `reports/optimization-proposals.md`：体积与性能优化提案（含实测体积基线）
 
 ### 其他
 - `build/`：Wails 构建资源与 `build/bin` 产物；`build/windows` 放 NSIS 脚本
 - `scripts/build-installer.ps1`：构建 + 代码签名
-- `plugins/`：随仓库分发的插件样例（如 `scene-carousel`）
+- `tools/rebuild-exe.ps1` + `tools/rebuild-exe.cmd`（双击入口）：一键构建并替换根目录便携副本 `datalens.exe`——测试门（Go + 前端）通过才构建、失败可复制剪贴板给 AI 修复或强行构建；运行中实例优雅关闭 / 改名让路（见脚本头注释）
+- `plugins/`：随仓库分发的插件样例（如 `scene-carousel`，含欢迎页轮播与 AI 空态看板娘换装）
 - `.cadt/`：本应用 AI 助手的持久记忆
 
 ## 约定
@@ -127,7 +129,7 @@ CaDt-DataLens 是一个面向 Windows 的轻量级多格式数据查看与编辑
 - 平台相关代码按现有约定分文件成对出现：`xxx_windows.go` + `xxx_other.go`，不要在一个文件里堆 `runtime.GOOS` 判断。
 - 新增导出方法后，`frontend/wailsjs/` 由 `wails dev` / `wails build` 重新生成。
 - 新增/修改逻辑要补 `*_test.go`；现有测试多为表驱动，跟随即可。
-- 文件大小硬限制（`app.go`）：>10 MB 只读、>100 MB 拒绝打开、图片预览 32 MB、二进制 hex 1 MB。放宽限制前先确认性能。
+- 文件大小硬限制（`app_core.go` 的 `largeFileBytes` / `maxFileBytes` / `imagePreviewLimit`，图片 hex 上限 `app_file.go` 的 `imageHexLimit`）：>10 MB 只读、>100 MB 拒绝打开、图片预览 32 MB、二进制 hex 1 MB。放宽限制前先确认性能。
 
 ### 前端侧
 - `main.js` 是组合根（约 4,400 行）：改动前先按域找到对应模块（editor-groups / writing-ui / settings-ui / terminal-ui / bridge-ui / explorer-ops / structure-panel 等），不要把域逻辑回填进 main.js；新域一律新建模块（从 main.js 拆出的模块需要 deps 重写裸标识符，参考 explorer-ops 先例）。
@@ -141,7 +143,7 @@ CaDt-DataLens 是一个面向 Windows 的轻量级多格式数据查看与编辑
 ### 文档与提交
 - 用户可见的改动同步更新 `CHANGELOG.md` 与 `README.md` 对应小节。
 - 方案文档放 `docs/unfinished-plans/`，全部实施后移入 `docs/finished-plans/`。
-- 版本号三处需一致：`app.go` 的 `appVersion`、`wails.json` 的 `productVersion`、NSIS 脚本（见 `docs/packaging.md`）。
+- 版本号三处需一致：`app_core.go` 的 `appVersion`（`app_core.go:22`）、`wails.json` 的 `productVersion`、NSIS 脚本（见 `docs/packaging.md`）。
 
 ## 常用命令
 
@@ -156,6 +158,13 @@ wails dev
 
 # 构建 exe（产物 build/bin/CaDt-DataLens.exe）
 wails build -devtools
+
+# 一键构建并替换根目录便携副本 datalens.exe（tools/rebuild-exe.cmd 双击入口）：开头选是否跑
+# Go 测试（1 进行 / 2 跳过只跑前端），测试门（Go + 前端）通过才构建，失败可按提示
+# 「1 复制失败信息到剪贴板（粘贴给 AI 修复）」/「2 跳过测试强行构建」/其他退出；
+# 自动优雅关闭运行中的实例，锁死时改名让路 datalens.running-old-*.exe、下次运行清理；
+# -SkipTest 跳过测试门 / -KeepRunning 不停实例 / -Devtools 带调试面板
+powershell -ExecutionPolicy Bypass -File tools/rebuild-exe.ps1
 
 # 构建安装包（需 NSIS 3，makensis 在 PATH）
 wails build -nsis -installscope user

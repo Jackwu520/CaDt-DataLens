@@ -123,7 +123,7 @@ frontend/src/
 
 ### 1.6 明确豁免（本阶段不动）
 
-`structure.js`(1986)、`run.js`(1152)、`ai/ai-tool-defs.js`(606)、`ai/ai-constants.js`(842)、`ai/ai-local-classifier.js`(527)、`dev/mock-backend.js`(2292)、`editor-groups.js`(1521)、`ai/ai-panel.js`(11582)、`main.js`(4453)、`style.css`、`reading.css`、`index.html`、整个 `reading/` 域 —— 表驱动/常量/样式级联/窗口结构/组合根，拆分只会增加查找成本。
+`structure.js`(1986)、`run.js`(1152)、`ai/ai-tool-defs.js`(606)、`ai/ai-constants.js`(842)、`ai/ai-local-classifier.js`(527)、`dev/mock-backend.js`(2292)、`editor-groups.js`(1521)、`ai/ai-panel.js`(11582)、`main.js`(4453)（2026-11-15 更新：`ai-panel.js` 的**视图层**拆分已由 `side-chat-tab.md` §7 接手——支线对话需要第二个会话视图宿主，构成 phase3 判据①的正面命中；编排核心（executeTool / 流式 / 持久化）仍属本豁免）、`style.css`、`reading.css`、`index.html`、整个 `reading/` 域 —— 表驱动/常量/样式级联/窗口结构/组合根，拆分只会增加查找成本。
 
 ---
 

@@ -101,7 +101,7 @@ function renderGitPanel() {
             dirSpan.textContent = relParent;
             row.append(dirSpan);
         }
-        row.title = path;
+        row.dataset.tip = path;
         row.addEventListener('contextmenu', (e) => {
             e.preventDefault();
             e.stopPropagation();
@@ -128,7 +128,7 @@ function renderGitPanel() {
         const chev = document.createElement('button');
         chev.type = 'button';
         chev.className = 'git-chev';
-        chev.title = '展开/收起';
+        chev.dataset.tip = '展开/收起';
         chev.innerHTML = iconSvg(deps.gitGroupCollapsed[key] ? 'chevron-right' : 'chevron-down', 10);
         const gcb = document.createElement('input');
         gcb.type = 'checkbox';
@@ -267,10 +267,7 @@ function applyDockView() {
         deps.els.abDebug.classList.toggle('active', debugOpen);
         deps.els.abDebug.setAttribute('aria-pressed', String(debugOpen));
     }
-    if (deps.els.tbRun) {
-        deps.els.tbRun.classList.toggle('active', runOpen);
-        deps.els.tbRun.setAttribute('aria-pressed', String(runOpen));
-    }
+    // tb-run 是动作按钮（点击即运行），不随运行面板开关显示选中态
     if (termOpen) sessMod.fitActiveTerm();
 }
 

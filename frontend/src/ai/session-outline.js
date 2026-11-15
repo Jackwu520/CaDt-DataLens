@@ -74,7 +74,7 @@ export function renderSessionOutline(body, snapshot, opts) {
         const row = el('div', 'sb-row so-row' + (index === active ? ' so-current' : ''));
         row.tabIndex = -1;
         row.dataset.index = String(index);
-        row.title = item.text || '';
+        row.dataset.tip = item.text || '';
         row.appendChild(el('span', 'so-num', String(item.round || i + 1)));
         row.appendChild(el('span', 'so-text', oneLine(item.text) || '（图片消息）'));
         const time = shortTime(item.ts);

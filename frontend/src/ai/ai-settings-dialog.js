@@ -5,6 +5,7 @@
 // config 为重赋值 let（经 getConfig() 读）；sessions 写经 setSessions；modelEditorState 与
 // settingsStatusTimer 为本域私有 let 随域迁入；skillsCache/permissionAudit 经访问器触达。
 
+import {createAIGenSettings} from './ai-gen-settings.js';
 import {createAIModelSettings} from './ai-model-settings.js';
 import {createAIPermissionSettings} from './ai-permission-settings.js';
 import {createAIPreferenceSettings} from './ai-preference-settings.js';
@@ -24,12 +25,15 @@ import {
     parseRuleLines, webRuleSubject, writeRuleSubject,
 } from './ai-permissions.js';
 import {matchCommandRule, commandFamilySignature, commandText} from './ai-command-rules.js';
+import {CATALOG_URL_DEFAULT, canAutoFill} from './model-catalog.js';
 
 export function createAISettingsDialog(ctx) {
     const el = ctx.el;
     const panel = ctx.panel;
     const opt = ctx.opt;
     const settings = ctx.settings;
+    // 面板显示方式（停靠/全屏/独立悬浮窗）：状态真源在 ai-panel 的 setMode，这里只接线
+    const setMode = ctx.setMode;
     const saveSettings = ctx.saveSettings;
     const flash = ctx.flash;
     const askConfirm = ctx.askConfirm;
@@ -80,6 +84,8 @@ export function createAISettingsDialog(ctx) {
     const showModelListPicker = ctx.showModelListPicker;
     const switchProfile = ctx.switchProfile;
     const getConfig = ctx.getConfig;
+    // 模型配置表：窗口/能力回填的来源，也是「推理强度 / 扩展思考」显示与否的判断依据
+    const modelCatalog = ctx.modelCatalog;
     const setSessions = ctx.setSessions;
     // 端侧命令分类器（ai-panel 构造，getter 惰性触达）与插件分类器列表
     const localClassifier = ctx.localClassifier;
@@ -107,6 +113,8 @@ export function createAISettingsDialog(ctx) {
     const clearMessageQueue = ctx.clearMessageQueue;
     const getSessions = ctx.getSessions;
     const updateCtxBanner = ctx.updateCtxBanner;
+    // 任务清单默认收起/展开切换后，让面板里已有的收起态立即跟随（惰性转发，todos 模块在同层构造）
+    const applyTodosCollapseDefault = ctx.applyTodosCollapseDefault;
 
     // —— 随域迁入的设置编辑器状态（原 ai-panel.js 闭包级）——
     let modelEditorState = null;
@@ -126,7 +134,7 @@ export function createAISettingsDialog(ctx) {
     }
 
     function settingsFormDisabled(disabled) {
-        for (const node of [opt.name, opt.provider, opt.baseURL, opt.apiKey, opt.model, opt.temp, opt.maxTokens, opt.reasoning, opt.thinking, opt.budget, opt.contextWindow, opt.proxy, opt.proxyURL, opt.headers, opt.test, opt.models, opt.entryAdd, opt.entryDel]) {
+        for (const node of [opt.name, opt.provider, opt.baseURL, opt.apiKey, opt.model, opt.temp, opt.maxTokens, opt.reasoning, opt.thinking, opt.budget, opt.contextWindow, opt.proxy, opt.proxyURL, opt.headers, opt.test, opt.models, opt.entryAdd]) {
             if (node) node.disabled = !!disabled;
         }
         if (opt.modalities) {
@@ -140,8 +148,13 @@ export function createAISettingsDialog(ctx) {
         const profile = activeProfile();
         const entry = modelMod.editorEntryOf(profile);
         const anthropic = !!profile && profile.provider === 'anthropic';
-        if (opt.thinkingGroup) opt.thinkingGroup.classList.toggle('hidden', !anthropic);
-        if (opt.reasoningGroup) opt.reasoningGroup.classList.toggle('hidden', !profile || anthropic);
+        const model = entry && entry.model;
+        // 配置表只做「收窄」：明确写了不支持才藏，没写就沿用按协议判断的旧规则。
+        // 反过来说，表里写支持也不会让 Anthropic 账号冒出 reasoning_effort。
+        const reasoningSupport = modelCatalog.support(model, 'reasoningEffort');
+        const thinkingSupport = modelCatalog.support(model, 'thinking');
+        if (opt.thinkingGroup) opt.thinkingGroup.classList.toggle('hidden', !anthropic || thinkingSupport === false);
+        if (opt.reasoningGroup) opt.reasoningGroup.classList.toggle('hidden', !profile || anthropic || reasoningSupport === false);
         if (opt.reasoning && entry) opt.reasoning.value = entry.reasoningEffort || '';
     }
 
@@ -165,13 +178,107 @@ export function createAISettingsDialog(ctx) {
     // 也让 refreshSettingsPane 在「无模型账号提前返回」之前就能刷新该页。
     let refreshPersonaPane = null;
 
+    // 窗口字段的可读回显：输入框里是「256K」这类紧凑写法，右侧给出精确 token 数，
+    // 免得 1M 到底是多少全靠猜（换算唯一来源仍是 ai-config-model 的 parseTokenAmount）。
+    function renderWindowHints(entry) {
+        const fmt = (node, value) => {
+            if (!node) return;
+            const n = Math.round(Number(value) || 0);
+            node.textContent = n > 0 ? n.toLocaleString('en-US') + ' tokens' : '—';
+        };
+        fmt(opt.contextHuman, entry && entry.contextWindow);
+        fmt(opt.maxTokensHuman, entry && entry.outputWindow);
+    }
+
+    // 窗口/能力三个字段的界面回写：整页刷新与「配置表回填」共用，避免两处各写一份
+    function syncModelFieldsFromEntry(entry) {
+        if (!entry) return;
+        if (opt.contextWindow) opt.contextWindow.value = formatTokenAmount(entry.contextWindow);
+        if (opt.maxTokens) opt.maxTokens.value = formatTokenAmount(entry.outputWindow);
+        if (opt.modalities) {
+            for (const node of opt.modalities.querySelectorAll('input[data-modality]')) {
+                node.checked = entry.modalities[node.dataset.modality] !== false;
+            }
+        }
+        renderWindowHints(entry);
+    }
+
+    function relativeTime(ms) {
+        const diff = Date.now() - Number(ms || 0);
+        if (!(diff > 0)) return '刚刚';
+        const minutes = Math.floor(diff / 60000);
+        if (minutes < 1) return '刚刚';
+        if (minutes < 60) return minutes + ' 分钟前';
+        const hours = Math.floor(minutes / 60);
+        if (hours < 24) return hours + ' 小时前';
+        return Math.floor(hours / 24) + ' 天前';
+    }
+
+    // 编辑器里的命中提示：这些窗口/能力是不是配置表给的，以及一个「按表重填」的出口
+    function renderCatalogNote() {
+        if (!opt.catalogNote) return;
+        const profile = activeProfile();
+        const entry = modelMod.editorEntryOf(profile);
+        const hit = entry && entry.model ? modelCatalog.match(entry.model) : null;
+        if (!hit) {
+            opt.catalogNote.classList.add('hidden');
+            return;
+        }
+        const label = hit.label || hit.id;
+        const summary = [
+            hit.contextWindow ? '上下文 ' + formatTokenAmount(hit.contextWindow) : '',
+            hit.outputWindow ? '输出 ' + formatTokenAmount(hit.outputWindow) : '',
+        ].filter(Boolean).join(' · ');
+        const suffix = summary ? '（' + summary + '）' : '';
+        if (canAutoFill(entry)) {
+            if (opt.catalogText) opt.catalogText.textContent = '窗口与能力按配置表填充：' + label + suffix;
+            if (opt.catalogFill) opt.catalogFill.classList.add('hidden');
+        } else {
+            if (opt.catalogText) opt.catalogText.textContent = '窗口或能力已手动调整，配置表有 ' + label + suffix;
+            if (opt.catalogFill) opt.catalogFill.classList.remove('hidden');
+        }
+        opt.catalogNote.classList.remove('hidden');
+    }
+
+    // 设置页「模型配置表」状态行
+    function refreshCatalogStatus() {
+        if (!opt.catalogStatus) return;
+        const status = modelCatalog.status();
+        const parts = [(status.remote ? '远端' : '内置') + ' ' + status.count + ' 个模型', '版本 ' + status.version];
+        parts.push(status.fetchedAt ? '同步于 ' + relativeTime(status.fetchedAt) : '尚未同步远端');
+        opt.catalogStatus.textContent = parts.join(' · ');
+        if (opt.catalogAuto) opt.catalogAuto.checked = status.autoSync;
+        if (opt.catalogUrl && document.activeElement !== opt.catalogUrl) {
+            opt.catalogUrl.value = String(settings.aiCatalogURL || '');
+        }
+    }
+
+    // 新家族 Claude（Opus 4.6 起 / 5.x）只接受自适应思考，传固定预算会 400：
+    // 预算输入留着只会误导，禁用并换一句说明。判定来源是模型配置表的 thinkingBudget 标记。
+    function refreshThinkingHint() {
+        const entry = modelMod.editorEntryOf(activeProfile());
+        const model = entry && entry.model;
+        const adaptive = modelCatalog.support(model, 'thinkingBudget') === false;
+        if (opt.budget) {
+            opt.budget.disabled = adaptive;
+            opt.budget.dataset.tip = adaptive ? '该模型使用自适应思考，不接受固定思考预算' : '';
+        }
+        if (opt.thinkingHint) {
+            opt.thinkingHint.textContent = adaptive
+                ? '该模型使用自适应思考（深度由服务端决定），思考预算不生效；开启后请求省略 temperature。'
+                : '仅 Anthropic 原生可用；开启后请求省略 temperature，预算须小于最大输出，调整时会自动修正。';
+        }
+    }
+
     function refreshSettingsPane() {
         if (refreshPersonaPane) refreshPersonaPane();
+        if (genMod) genMod.renderGenList();
         const profile = activeProfile();
         const entry = modelMod.editorEntryOf(profile);
         renderProfileSelect();
         refreshThinkingVisibility();
         settingsFormDisabled(!profile);
+        refreshThinkingHint();
         if (!profile || !entry) {
             if (opt.name) opt.name.value = '';
             if (opt.baseURL) opt.baseURL.value = '';
@@ -188,6 +295,9 @@ export function createAISettingsDialog(ctx) {
             if (opt.proxy) opt.proxy.value = 'system';
             if (opt.proxyURL) { opt.proxyURL.value = ''; opt.proxyURL.disabled = true; }
             if (opt.headers) opt.headers.value = '';
+            renderWindowHints(null);
+            renderCatalogNote();
+            refreshCatalogStatus();
             modelMod.renderModelEntries();
             return;
         }
@@ -198,16 +308,10 @@ export function createAISettingsDialog(ctx) {
         if (opt.model) opt.model.value = entry.model;
         if (opt.temp) opt.temp.value = String(profile.temperature);
         if (opt.tempVal) opt.tempVal.textContent = String(profile.temperature);
-        if (opt.maxTokens) opt.maxTokens.value = formatTokenAmount(entry.outputWindow);
         if (opt.reasoning) opt.reasoning.value = entry.reasoningEffort || '';
         if (opt.thinking) opt.thinking.checked = entry.thinking === true;
         if (opt.budget) opt.budget.value = String(entry.thinkingBudget);
-        if (opt.contextWindow) opt.contextWindow.value = formatTokenAmount(entry.contextWindow);
-        if (opt.modalities) {
-            for (const node of opt.modalities.querySelectorAll('input[data-modality]')) {
-                node.checked = entry.modalities[node.dataset.modality] !== false;
-            }
-        }
+        syncModelFieldsFromEntry(entry);
         if (opt.proxy) {
             const proxy = aiTextOf(profile.proxy);
             const mode = proxy === 'direct' ? 'direct' : (proxy && proxy !== 'system' ? 'custom' : 'system');
@@ -221,10 +325,14 @@ export function createAISettingsDialog(ctx) {
             opt.headers.value = Object.entries(profile.extraHeaders || {})
                 .map(([name, value]) => name + '=' + value).join('\n');
         }
+        renderWindowHints(entry);
+        renderCatalogNote();
+        refreshCatalogStatus();
         modelMod.renderModelEntries();
     }
 
     function refreshChatSettings() {
+        if (opt.displayMode) opt.displayMode.value = settings.aiFloatMode === 'fullscreen' ? 'fullscreen' : 'dock';
         if (opt.sendKey) opt.sendKey.value = settings.aiSendKey === 'ctrl-enter' ? 'ctrl-enter' : 'enter';
         if (opt.outputLang) opt.outputLang.value = ['zh', 'en', 'auto'].includes(getConfig().outputLanguage) ? getConfig().outputLanguage : 'zh';
         const chatFont = aiClampInt(settings.aiChatFont, 10, 32, 13);
@@ -248,6 +356,7 @@ export function createAISettingsDialog(ctx) {
         if (opt.contextSlim) opt.contextSlim.checked = settings.aiContextSlim !== false;
         if (opt.assistantCard) opt.assistantCard.checked = settings.aiAssistantCard === true;
         if (opt.inlineWidgets) opt.inlineWidgets.checked = settings.aiInlineWidgets !== false;
+        if (opt.todosExpanded) opt.todosExpanded.checked = settings.aiTodosDefaultExpanded === true;
         if (opt.autoTitle) opt.autoTitle.checked = getConfig().autoTitle !== false;
         if (opt.defaultScope) opt.defaultScope.value = normalizeDefaultScope(getConfig().defaultScope);
         if (opt.logEnabled) opt.logEnabled.checked = getConfig().logEnabled !== false;
@@ -319,7 +428,7 @@ export function createAISettingsDialog(ctx) {
             refreshSettingsPane();
         });
         if (opt.provider) opt.provider.addEventListener('change', () => {
-            updateProfileField('provider', opt.provider.value === 'anthropic' ? 'anthropic' : 'openai');
+            updateProfileField('provider', ['anthropic', 'responses'].includes(opt.provider.value) ? opt.provider.value : 'openai');
             const profile = activeProfile();
             const entry = modelMod.editorEntryOf(profile);
             if (profile && entry && profile.provider === 'anthropic' && entry.thinking) {
@@ -338,8 +447,15 @@ export function createAISettingsDialog(ctx) {
             const entry = modelMod.editorEntryOf(profile);
             if (!profile || !entry) return;
             entry.model = String(opt.model.value || '').trim();
+            // 没被手改过的条目跟着配置表走：换 ID 就重新识别窗口与能力。
+            // 只回写这三个控件，不做整页刷新——整页刷新会把光标从 ID 输入框里踢出去。
+            if (canAutoFill(entry)) modelCatalog.fill(entry);
             saveAIConfig();
+            syncModelFieldsFromEntry(entry);
             if (opt.modelEntries) modelMod.renderModelEntries();
+            refreshThinkingVisibility();
+            refreshThinkingHint();
+            renderCatalogNote();
             updateComposerState();
         });
         if (opt.temp) {
@@ -356,6 +472,7 @@ export function createAISettingsDialog(ctx) {
             const entry = modelMod.editorEntryOf(profile);
             if (!profile || !entry) return;
             entry.outputWindow = windowValue(opt.maxTokens.value, OUTPUT_WINDOW_MIN, OUTPUT_WINDOW_MAX, entry.outputWindow);
+            entry.autoFilled = false;
             clampThinkingBudget(profile, entry, 'outputWindow');
             opt.maxTokens.value = formatTokenAmount(entry.outputWindow);
             saveAIConfig();
@@ -394,7 +511,9 @@ export function createAISettingsDialog(ctx) {
             const entry = modelMod.editorEntryOf(profile);
             if (!profile || !entry) return;
             entry.contextWindow = windowValue(opt.contextWindow.value, CONTEXT_WINDOW_MIN, CONTEXT_WINDOW_MAX, entry.contextWindow);
+            entry.autoFilled = false;
             opt.contextWindow.value = formatTokenAmount(entry.contextWindow);
+            renderWindowHints(entry);
             saveAIConfig();
             modelMod.renderModelEntries();
             updateContextCount();
@@ -407,17 +526,69 @@ export function createAISettingsDialog(ctx) {
                 for (const node of opt.modalities.querySelectorAll('input[data-modality]')) {
                     entry.modalities[node.dataset.modality] = !!node.checked;
                 }
+                entry.autoFilled = false;
                 saveAIConfig();
+                renderCatalogNote();
                 updateComposerState();
             });
         }
         if (opt.entryAdd) opt.entryAdd.addEventListener('click', modelMod.addEditorEntry);
-        if (opt.entryDel) opt.entryDel.addEventListener('click', modelMod.deleteEditorEntry);
+        // 配置表命中时的手动回填（用户改过窗口后想拿回表里的口径）
+        if (opt.catalogFill) opt.catalogFill.addEventListener('click', () => {
+            const profile = activeProfile();
+            const entry = modelMod.editorEntryOf(profile);
+            if (!entry) return;
+            entry.autoFilled = true;
+            const result = modelCatalog.fill(entry);
+            saveAIConfig();
+            syncModelFieldsFromEntry(entry);
+            renderCatalogNote();
+            updateContextCount();
+            if (result.changed) setSettingsStatus('已按配置表回填：' + (entry.model || '当前模型'), 'ok');
+            else setSettingsStatus('配置表里没有这个模型的窗口数据', 'error');
+        });
+        if (opt.catalogSync) opt.catalogSync.addEventListener('click', async () => {
+            opt.catalogSync.disabled = true;
+            opt.catalogSync.textContent = '同步中…';
+            try {
+                const result = await modelCatalog.sync();
+                setSettingsStatus('配置表已同步：' + result.count + ' 个模型（' + result.version + '）', 'ok');
+            } catch (e) {
+                setSettingsStatus('同步失败：' + ((e && e.message) || e), 'error');
+            } finally {
+                opt.catalogSync.disabled = false;
+                opt.catalogSync.textContent = '立即同步';
+                refreshCatalogStatus();
+                refreshSettingsPane();
+            }
+        });
+        if (opt.catalogAuto) opt.catalogAuto.addEventListener('change', () => {
+            settings.aiCatalogAutoSync = !!opt.catalogAuto.checked;
+            saveSettings();
+            refreshCatalogStatus();
+        });
+        if (opt.catalogUrl) {
+            opt.catalogUrl.placeholder = CATALOG_URL_DEFAULT;
+            opt.catalogUrl.addEventListener('change', () => {
+                const next = String(opt.catalogUrl.value || '').trim();
+                if (next && !/^https?:\/\//i.test(next)) {
+                    setSettingsStatus('同步地址必须是 http 或 https', 'error');
+                    opt.catalogUrl.value = String(settings.aiCatalogURL || '');
+                    return;
+                }
+                settings.aiCatalogURL = next;
+                saveSettings();
+                refreshCatalogStatus();
+            });
+        }
         if (opt.keyToggle) opt.keyToggle.addEventListener('click', () => {
             if (!opt.apiKey) return;
             const show = opt.apiKey.type === 'password';
             opt.apiKey.type = show ? 'text' : 'password';
-            opt.keyToggle.textContent = show ? '隐藏' : '显示';
+            const label = show ? '隐藏密钥' : '显示密钥';
+            opt.keyToggle.setAttribute('aria-pressed', show ? 'true' : 'false');
+            opt.keyToggle.setAttribute('aria-label', label);
+            opt.keyToggle.dataset.tip = label;
         });
         if (opt.test) opt.test.addEventListener('click', async () => {
             const profile = activeProfile();
@@ -467,7 +638,7 @@ export function createAISettingsDialog(ctx) {
             });
         }
         if (opt.prefAdd) opt.prefAdd.addEventListener('click', () => prefMod.addPreference());
-        if (opt.scheduleAdd) opt.scheduleAdd.addEventListener('click', () => openScheduleEditor(null));
+        if (opt.scheduleAdd) opt.scheduleAdd.addEventListener('click', () => openScheduleEditor(null, {top: true}));
         if (opt.prefFilter) opt.prefFilter.addEventListener('input', () => prefMod.renderPreferenceSettings());
         if (opt.outputLang) opt.outputLang.addEventListener('change', () => {
             getConfig().outputLanguage = ['zh', 'en', 'auto'].includes(opt.outputLang.value) ? opt.outputLang.value : 'zh';
@@ -479,6 +650,11 @@ export function createAISettingsDialog(ctx) {
             settings.aiSendKey = opt.sendKey.value === 'ctrl-enter' ? 'ctrl-enter' : 'enter';
             saveSettings();
             updateSendState();
+        });
+        // 显示方式：dock/fullscreen 持久化；float 是动作（打开独立窗口），选完回弹到已持久化档位
+        if (opt.displayMode) opt.displayMode.addEventListener('change', () => {
+            setMode(opt.displayMode.value);
+            refreshChatSettings();
         });
         if (opt.chatFont) {
             opt.chatFont.addEventListener('input', () => setAIChatFont(opt.chatFont.value));
@@ -542,6 +718,12 @@ export function createAISettingsDialog(ctx) {
             settings.aiInlineWidgets = !!opt.inlineWidgets.checked;
             saveSettings();
             applyPanelSettings();
+        });
+        if (opt.todosExpanded) opt.todosExpanded.addEventListener('change', () => {
+            settings.aiTodosDefaultExpanded = !!opt.todosExpanded.checked;
+            saveSettings();
+            if (applyTodosCollapseDefault) applyTodosCollapseDefault();
+            setSettingsStatus('任务清单：默认' + (opt.todosExpanded.checked ? '展开' : '收起'), 'ok');
         });
         if (opt.autoTitle) opt.autoTitle.addEventListener('change', () => {
             getConfig().autoTitle = !!opt.autoTitle.checked;
@@ -958,11 +1140,14 @@ export function createAISettingsDialog(ctx) {
         refreshSettingsPane();
         prefMod.renderPresetSelect();
         prefMod.refreshPromptSettings();
+        genMod.bindGenPane();
     }
 
     // —— 四个子域：顺序 model → pref（要 openModelEditor/renderModelList）
     //    → io（要 renderModelList/refreshPromptSettings/aiAddUnique）→ perm（无外部依赖，自注册插件广播监听）
     const modelMod = createAIModelSettings(ctx, {setSettingsStatus, refreshSettingsPane});
+    // 生图与视频模型 pane：自管 DOM（列表 + 编辑器弹窗），refreshSettingsPane 驱动列表刷新
+    const genMod = createAIGenSettings(ctx, {setSettingsStatus, refreshSettingsPane});
     const prefMod = createAIPreferenceSettings(ctx, {
         openModelEditor: modelMod.openModelEditor,
         renderModelList: modelMod.renderModelList,
@@ -982,7 +1167,7 @@ export function createAISettingsDialog(ctx) {
     refreshPersonaPane = personaMod.refreshPersonalizationPane;
 
     return {
-        ...permMod, ...prefMod, ...modelMod, ...ioMod, ...personaMod,
+        ...permMod, ...prefMod, ...modelMod, ...ioMod, ...personaMod, ...genMod,
         setSettingsStatus, settingsFormDisabled, refreshThinkingVisibility, clampThinkingBudget, refreshSettingsPane, bindSettingsPane, refreshChatSettings, refreshMemoryPath,
     };
 }

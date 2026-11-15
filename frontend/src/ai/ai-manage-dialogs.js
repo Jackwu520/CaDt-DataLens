@@ -330,7 +330,7 @@ export function createAIManageDialogs(ctx) {
                 const check = document.createElement('input');
                 check.type = 'checkbox';
                 check.checked = !skill.disabled;
-                check.title = '启用 / 禁用该技能';
+                check.dataset.tip = '启用 / 禁用该技能';
                 check.addEventListener('change', () => {
                     toggleSkill(skill, check.checked);
                     status.textContent = '已' + (check.checked ? '启用' : '禁用') + '技能：' + skill.name + '（下一轮生效）';

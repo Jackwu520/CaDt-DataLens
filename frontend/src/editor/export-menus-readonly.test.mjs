@@ -17,7 +17,6 @@ function tabMenuFor(doc, calls) {
         copyText: () => {},
         showPathInFolder: () => {},
         openDiffDialog: () => {},
-        askAIAboutPath: () => {},
         openInNewWindows: () => {},
         reopenClosedTab: () => {},
         setDocReadOnly: (target, locked) => calls.push([target, locked]),
@@ -28,6 +27,13 @@ function tabMenuFor(doc, calls) {
 }
 
 const lockItems = (items) => items.filter((item) => item.label && item.label.includes('只读'));
+
+// AI 引用统一入口后：标签页菜单不再有独立的「在 AI 中询问此文件」（防回归——引用路径与询问曾并排出现）
+test('标签页右键菜单：不出现「在 AI 中询问此文件」', () => {
+    const doc = {id: 3, name: 'sample.json', path: 'C:/data/sample.json'};
+    const items = tabMenuFor(doc, []);
+    assert.equal(items.filter((item) => item.label === '在 AI 中询问此文件').length, 0);
+});
 
 test('固定只读标签：只有禁用的「不可解锁」说明，没有任何解锁入口', () => {
     const doc = {id: 1, name: '本轮改动审阅.diff', path: null, readOnlyFixed: true, readOnlyLocked: true};

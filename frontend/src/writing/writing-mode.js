@@ -413,7 +413,7 @@ function updateCursorPosition() {
     const pos = deps.cursorPositionForDoc();
     const text = pos ? pos.line + ':' + pos.column : '';
     if (deps.els.stPos.textContent !== text) deps.els.stPos.textContent = text;
-    deps.els.stPos.title = text ? '当前光标位置（点击或 Ctrl+G 跳转）' : '';
+    deps.els.stPos.dataset.tip = text ? '当前光标位置（点击或 Ctrl+G 跳转）' : '';
 }
 
 function scheduleCursorPosition() {

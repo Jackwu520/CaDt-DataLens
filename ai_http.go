@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -29,6 +30,9 @@ func aiStreamResponse(ctx context.Context, cancel context.CancelCauseFunc, id st
 	}
 	aiStreams.Unlock()
 
+	// 参数型 400（如 max_tokens 超过模型上限）是确定性故障：按服务端给的上界
+	// 收敛后重试一次，不受 retryMax（只管 429/5xx/网络错误）影响，也绝不循环降档。
+	maxTokensAdjusted := false
 	for attempt := 0; ; attempt++ {
 		req, err := aiBuildChatRequest(ctx, cfg, messages, tools)
 		if err != nil {
@@ -46,16 +50,16 @@ func aiStreamResponse(ctx context.Context, cancel context.CancelCauseFunc, id st
 				// 用户停止 / 空闲超时 / 新请求顶替：交给调用方按 ctx cause 处理
 				return fmt.Errorf("请求 AI 接口失败：%w", err)
 			}
-			if attempt >= retryMax {
+			max := aiRetryAttempts(retryMax, 0)
+			if attempt >= max {
 				return fmt.Errorf("请求 AI 接口失败：%w", err)
 			}
-			delay := aiRetryDelay(attempt, "")
-			emit(aiEventRetry, aiRetryPayload{Id: id, Attempt: attempt + 1, Max: retryMax, DelayMs: int(delay.Milliseconds()), Reason: "网络错误"})
-			writeAppLog("warn", "AI 请求失败，%s 后第 %d/%d 次重试：%v", delay.Round(time.Millisecond), attempt+1, retryMax, err)
-			if !aiRetryWait(ctx, delay) {
+			delay := aiRetryDelay(attempt, "", 0)
+			emit(aiEventRetry, aiRetryPayload{Id: id, Attempt: attempt + 1, Max: max, DelayMs: int(delay.Milliseconds()), Reason: "网络错误"})
+			writeAppLog("warn", "AI 请求失败，%s 后第 %d/%d 次重试：%v", delay.Round(time.Millisecond), attempt+1, max, err)
+			if !aiRetryWait(ctx, delay, touch) {
 				return fmt.Errorf("请求 AI 接口失败：%w", err)
 			}
-			touch()
 			continue
 		}
 		touch()
@@ -65,29 +69,32 @@ func aiStreamResponse(ctx context.Context, cancel context.CancelCauseFunc, id st
 			body, _ := io.ReadAll(io.LimitReader(resp.Body, aiErrorBodyLimit))
 			_ = resp.Body.Close()
 			client.CloseIdleConnections()
-			if attempt >= retryMax {
+			max := aiRetryAttempts(retryMax, resp.StatusCode)
+			if attempt >= max {
 				return errors.New(aiStatusErrorBodyText(resp.StatusCode, body))
 			}
-			delay := aiRetryDelay(attempt, resp.Header.Get("Retry-After"))
-			emit(aiEventRetry, aiRetryPayload{Id: id, Attempt: attempt + 1, Max: retryMax, DelayMs: int(delay.Milliseconds()), Reason: reason})
-			writeAppLog("warn", "AI 接口返回 %d，%s 后第 %d/%d 次重试", resp.StatusCode, delay.Round(time.Millisecond), attempt+1, retryMax)
-			if !aiRetryWait(ctx, delay) {
+			delay := aiRetryDelay(attempt, resp.Header.Get("Retry-After"), resp.StatusCode)
+			emit(aiEventRetry, aiRetryPayload{Id: id, Attempt: attempt + 1, Max: max, DelayMs: int(delay.Milliseconds()), Reason: reason})
+			writeAppLog("warn", "AI 接口返回 %d，%s 后第 %d/%d 次重试", resp.StatusCode, delay.Round(time.Millisecond), attempt+1, max)
+			if !aiRetryWait(ctx, delay, touch) {
 				return errors.New(aiStatusErrorBodyText(resp.StatusCode, body))
 			}
-			touch()
 			continue
 		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			// 非 2xx：读错误体（含网关校验详情），并把完整请求体转储到日志目录——
 			// 定位「reasoning_content 必须回传」这类载荷校验问题的真实规则。
 			errBody, _ := io.ReadAll(io.LimitReader(resp.Body, aiErrorBodyLimit))
-			defer resp.Body.Close()
-			defer client.CloseIdleConnections()
+			_ = resp.Body.Close()
+			client.CloseIdleConnections()
 			var dumpPayload map[string]any
 			var dumpErr error
-			if aiProviderOf(cfg) == aiProviderAnthropic {
+			switch aiProviderOf(cfg) {
+			case aiProviderAnthropic:
 				dumpPayload, dumpErr = aiBuildAnthropicBody(cfg, messages, tools)
-			} else {
+			case aiProviderResponses:
+				dumpPayload, dumpErr = aiBuildResponsesBody(cfg, messages, tools)
+			default:
 				dumpPayload, dumpErr = aiBuildOpenAIBody(cfg, messages, tools)
 			}
 			if dumpErr == nil {
@@ -95,6 +102,30 @@ func aiStreamResponse(ctx context.Context, cancel context.CancelCauseFunc, id st
 					dumpPath := filepath.Join(appLogsDir(), fmt.Sprintf("ai-last-4xx-request-%d.json", time.Now().UnixMilli()))
 					_ = os.WriteFile(dumpPath, bodyBytes, 0o600)
 					writeAppLog("info", "AI 4xx 请求体转储：%s（messages=%d tools=%d）", dumpPath, len(messages), len(tools))
+				}
+			}
+			// 参数型 400/422：服务端把允许范围写回错误体时，按上界收敛 max_tokens 再试一次。
+			// 只在「实际发送值确实超过上界」时降档，鉴权/内容类 4xx 与其它字段不会误命中；
+			// 一次请求最多降一次，降完仍失败就把原始错误如实抛给前端。
+			if !maxTokensAdjusted && (resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusUnprocessableEntity) {
+				if limit := aiMaxTokensLimitFromError(errBody); limit > 0 {
+					previous := cfg.MaxTokens
+					if previous <= 0 && aiProviderOf(cfg) == aiProviderAnthropic {
+						previous = aiDefaultMaxTokens // Anthropic 请求体总会补上默认输出窗口
+					}
+					if previous > limit {
+						cfg.MaxTokens = limit
+						maxTokensAdjusted = true
+						message := fmt.Sprintf("模型 %s 的最大输出 %d 超过服务端上限 %d，已自动降为 %d 并重试",
+							cfg.Model, previous, limit, limit)
+						emit(aiEventParamAdjust, aiParamAdjustPayload{
+							Id: id, Model: cfg.Model, Field: "maxTokens",
+							Previous: previous, Value: limit, Message: message,
+						})
+						writeAppLog("warn", "AI 参数自动降档：%s", message)
+						touch()
+						continue
+					}
 				}
 			}
 			return errors.New(aiStatusErrorBodyText(resp.StatusCode, errBody))
@@ -126,10 +157,14 @@ func aiStreamResponse(ctx context.Context, cancel context.CancelCauseFunc, id st
 				emit(event, payload)
 			}
 		}
-		if aiProviderOf(cfg) == aiProviderAnthropic {
+		switch aiProviderOf(cfg) {
+		case aiProviderAnthropic:
 			return streamAnthropicSSE(resp.Body, id, wrapped, touch)
+		case aiProviderResponses:
+			return streamResponsesSSE(resp.Body, id, wrapped, touch)
+		default:
+			return streamOpenAISSE(resp.Body, id, wrapped, touch)
 		}
-		return streamOpenAISSE(resp.Body, id, wrapped, touch)
 	}
 }
 
@@ -138,35 +173,76 @@ func aiRetryableStatus(code int) bool {
 	return code == http.StatusTooManyRequests || code >= 500
 }
 
-// aiRetryDelay 计算第 attempt 次重试（从 0 计）前的等待：优先 Retry-After（秒），
-// 否则指数退避 1s→2s→4s…上限 30s，附 ±15% 抖动避免同时重试踩踏。
-func aiRetryDelay(attempt int, retryAfter string) time.Duration {
+// aiRateLimitBonusAttempts：429 是配额类限流（tpm/rpm 这类分钟窗），窗口重置需要时间，
+// 在用户设置的 retryMax 之外额外多试几次，避免「退避 30s 仍在耗尽的窗口里」撞墙。
+const aiRateLimitBonusAttempts = 3
+
+// aiRetryAttempts：第 code 类错误的有效重试次数。429 且用户未关闭重试（retryMax>0）时
+// 加上配额类额外预算；其余按用户设置原样。
+func aiRetryAttempts(retryMax, code int) int {
+	if code == http.StatusTooManyRequests && retryMax > 0 {
+		return retryMax + aiRateLimitBonusAttempts
+	}
+	return retryMax
+}
+
+// aiRetryDelay 计算第 attempt 次重试（从 0 计）前的等待：优先 Retry-After（秒数或
+// HTTP-date，原样尊重服务器不钳制）；否则指数退避——429（分钟窗配额）2s→4s→8s…上限 60s，
+// 5xx/网络错误 1s→2s→4s…上限 30s，均附 ±15% 抖动避免同时重试踩踏。
+func aiRetryDelay(attempt int, retryAfter string, code int) time.Duration {
 	if v := strings.TrimSpace(retryAfter); v != "" {
 		if seconds, err := strconv.ParseFloat(v, 64); err == nil && seconds >= 0 {
 			return time.Duration(seconds * float64(time.Second))
 		}
+		if t, err := http.ParseTime(v); err == nil {
+			return max(time.Until(t), 0)
+		}
 	}
-	base := time.Second << min(attempt, 5) // 1s 2s 4s 8s 16s 32s → 上限 30s
-	if base > 30*time.Second {
-		base = 30 * time.Second
+	var base time.Duration
+	if code == http.StatusTooManyRequests {
+		base = 2 * time.Second << min(attempt, 5) // 2s 4s 8s 16s 32s 64s → 上限 60s
+		if base > 60*time.Second {
+			base = 60 * time.Second
+		}
+	} else {
+		base = time.Second << min(attempt, 5) // 1s 2s 4s 8s 16s 32s → 上限 30s
+		if base > 30*time.Second {
+			base = 30 * time.Second
+		}
 	}
 	jitter := time.Duration(float64(base) * (0.85 + 0.3*rand.Float64()))
 	return jitter
 }
 
-// aiRetryWait 等待重试间隔；被取消（用户停止/超时/新请求）返回 false。
-func aiRetryWait(ctx context.Context, delay time.Duration) bool {
+// aiRetryTouchEvery：重试长等待期间给看门狗喂食的间隔（等待超过空闲超时的
+// Retry-After 也不会被误杀）。
+var aiRetryTouchEvery = 30 * time.Second
+
+// aiRetryWait 等待重试间隔，每 30s touch 一次看门狗；被取消（用户停止/新请求）返回 false。
+func aiRetryWait(ctx context.Context, delay time.Duration, touch func()) bool {
 	if delay <= 0 {
 		return ctx.Err() == nil
 	}
-	timer := time.NewTimer(delay)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return false
-	case <-timer.C:
-		return true
+	remaining := delay
+	for remaining > 0 {
+		step := remaining
+		if step > aiRetryTouchEvery {
+			step = aiRetryTouchEvery
+		}
+		timer := time.NewTimer(step)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return false
+		case <-timer.C:
+			timer.Stop()
+		}
+		remaining -= step
+		if touch != nil {
+			touch()
+		}
 	}
+	return true
 }
 
 // aiStatusErrorBodyText 用已读取的状态码与响应体拼错误文案（响应体已关闭时使用）。
@@ -190,30 +266,56 @@ func aiStatusErrorBodyText(statusCode int, body []byte) string {
 	return fmt.Sprintf("AI 接口返回 HTTP %d：%s", statusCode, text)
 }
 
+// aiMaxTokensRangeRule 从网关的参数校验错误里取 max_tokens 允许的上界，覆盖：
+//
+//	field MaxTokens invalid, should be in [1, 131072]      （SenseNova）
+//	max_tokens should be in [1, 65536]
+//	max_completion_tokens must be in [1, 8192]
+//
+// 必须同时出现 max token 字段名与 [下限, 上限]，避免把 temperature 之类的
+// 范围报错误判成输出窗口问题。JSON 错误体里的引号不影响匹配。
+var aiMaxTokensRangeRule = regexp.MustCompile(`(?i)max(?:[ _-]|_completion_)?tokens?[^\[\n]{0,120}\[\s*(\d+)\s*,\s*(\d+)\s*\]`)
+
+// aiMaxTokensLimitFromError 返回服务端允许的最大输出 token 数；无法解析返回 0。
+func aiMaxTokensLimitFromError(body []byte) int {
+	match := aiMaxTokensRangeRule.FindSubmatch(body)
+	if len(match) != 3 {
+		return 0
+	}
+	low, errLow := strconv.Atoi(string(match[1]))
+	high, errHigh := strconv.Atoi(string(match[2]))
+	if errLow != nil || errHigh != nil || low < 0 || high <= 0 || low > high {
+		return 0
+	}
+	return high
+}
+
 func aiBuildChatRequest(ctx context.Context, cfg AIConfig, messages []AIMessage, tools []AIToolDef) (*http.Request, error) {
 	provider := aiProviderOf(cfg)
 	base := strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/")
 
 	var (
 		endpoint string
-		body     []byte
+		payload  map[string]any
 		err      error
 	)
-	if provider == aiProviderAnthropic {
+	switch provider {
+	case aiProviderAnthropic:
 		endpoint = aiAnthropicMessagesURL(base)
-		var payload map[string]any
 		payload, err = aiBuildAnthropicBody(cfg, messages, tools)
-		if err == nil {
-			body, err = json.Marshal(payload)
-		}
-	} else {
+	case aiProviderResponses:
+		endpoint = aiResponsesURL(base)
+		payload, err = aiBuildResponsesBody(cfg, messages, tools)
+	default:
 		endpoint = aiOpenAIChatURL(base)
-		var payload map[string]any
 		payload, err = aiBuildOpenAIBody(cfg, messages, tools)
-		if err == nil {
-			body, err = json.Marshal(payload)
-		}
 	}
+	if err != nil {
+		return nil, err
+	}
+	// 插件 provider 的每轮请求体补丁统一在这里合并；stream 恒为 true，SSE 解码依赖流式响应。
+	aiApplyBodyPatch(payload, cfg.ExtraBody)
+	body, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
 	}
@@ -250,6 +352,18 @@ func aiOpenAIModelsURL(base string) string {
 		return base
 	}
 	return base + "/models"
+}
+
+// aiResponsesURL：Responses API 用 /responses，不是 /chat/completions。
+// 兼容把 base 直接写成 chat 端点的配置。
+func aiResponsesURL(base string) string {
+	if strings.HasSuffix(base, "/responses") {
+		return base
+	}
+	if strings.HasSuffix(base, "/chat/completions") {
+		return strings.TrimSuffix(base, "/chat/completions") + "/responses"
+	}
+	return base + "/responses"
 }
 
 func aiApplyHeaders(req *http.Request, cfg AIConfig, provider aiProviderKind, stream bool) error {
@@ -293,6 +407,22 @@ func aiForbiddenHeader(name string) bool {
 	return false
 }
 
+// aiApplyBodyPatch 合并插件 provider 的请求体补丁。前端 applyPluginAIPatch 已按白名单与
+// 体积上限收过一遍，这里只做最后兜底：拒绝超量补丁，并强制 stream=true——
+// 关掉流式会让 SSE 解码拿不到事件，整轮对话挂住。
+func aiApplyBodyPatch(body, patch map[string]any) {
+	if len(body) == 0 || len(patch) == 0 || len(patch) > aiMaxExtraBodyKeys {
+		return
+	}
+	for key, value := range patch {
+		if strings.EqualFold(key, "stream") {
+			continue
+		}
+		body[key] = value
+	}
+	body["stream"] = true
+}
+
 func aiBuildOpenAIBody(cfg AIConfig, messages []AIMessage, tools []AIToolDef) (map[string]any, error) {
 	passReasoning := strings.Contains(strings.ToLower(cfg.Model), "deepseek")
 	converted, err := aiOpenAIMessages(messages, passReasoning)
@@ -330,6 +460,126 @@ func aiBuildOpenAIBody(cfg AIConfig, messages []AIMessage, tools []AIToolDef) (m
 	return body, nil
 }
 
+// claudeVersionRe 匹配 claude-<tier>-<major>[-<minor>]，如 claude-opus-5-5、claude-sonnet-4-5、
+// claude-fable-5-2、claude-sonnet-4-5-20250929。claude-3-5-sonnet 这种「数字在前」的老命名不匹配，
+// 按老规则处理（固定预算）。
+var claudeVersionRe = regexp.MustCompile(`claude-[a-z]+-(\d+)(?:-(\d+))?`)
+
+// claudeRejectsFixedThinkingBudget：Opus 4.6 起（含 4.7/4.8 与 5.x）Anthropic 只接受自适应思考，
+// 手动预算 thinking:{"type":"enabled","budget_tokens":N} 会被拒（400），要改发 thinking:{"type":"adaptive"}。
+// 4.5 及更早仍用固定预算；非 claude 型号（如走 Anthropic 格式的 DeepSeek）不在此列，保持原样。
+func claudeRejectsFixedThinkingBudget(model string) bool {
+	lower := strings.ToLower(strings.TrimSpace(model))
+	if !strings.Contains(lower, "claude") {
+		return false
+	}
+	m := claudeVersionRe.FindStringSubmatch(lower)
+	if m == nil {
+		return false
+	}
+	major, err := strconv.Atoi(m[1])
+	if err != nil {
+		return false
+	}
+	minor := 0
+	if m[2] != "" {
+		if parsed, err := strconv.Atoi(m[2]); err == nil {
+			minor = parsed
+		}
+	}
+	return major > 4 || (major == 4 && minor >= 6)
+}
+
+// aiBuildResponsesInput 把内部消息映射成 Responses 的 input 数组：
+// system → instructions（合并）、tool → function_call_output、assistant 工具调用 →
+// function_call；普通文本用 input_text / output_text 部件，图片用 input_image。
+func aiBuildResponsesInput(messages []AIMessage) ([]any, string) {
+	input := make([]any, 0, len(messages))
+	var instructions []string
+	for _, m := range messages {
+		role := strings.ToLower(strings.TrimSpace(m.Role))
+		if role == "system" || role == "developer" {
+			if text := strings.TrimSpace(m.Content); text != "" {
+				instructions = append(instructions, text)
+			}
+			continue
+		}
+		if role == "tool" {
+			input = append(input, map[string]any{
+				"type": "function_call_output", "call_id": m.ToolCallId, "output": m.Content,
+			})
+			continue
+		}
+		for _, call := range m.ToolCalls {
+			args := strings.TrimSpace(call.Arguments)
+			if args == "" {
+				args = "{}"
+			}
+			input = append(input, map[string]any{
+				"type": "function_call", "call_id": call.Id, "name": call.Name, "arguments": args,
+			})
+		}
+		textType := "input_text"
+		if role == "assistant" {
+			textType = "output_text"
+		}
+		parts := make([]any, 0, 1+len(m.Images))
+		if m.Content != "" {
+			parts = append(parts, map[string]any{"type": textType, "text": m.Content})
+		}
+		for _, img := range m.Images {
+			parts = append(parts, map[string]any{
+				"type": "input_image", "image_url": "data:" + img.Mime + ";base64," + img.Data,
+			})
+		}
+		if len(parts) > 0 {
+			input = append(input, map[string]any{"role": role, "content": parts})
+		}
+	}
+	return input, strings.Join(instructions, "\n\n")
+}
+
+// Responses 的 function tool 是扁平的（name/description/parameters 在顶层），
+// 与 chat/completions 的 {type, function:{…}} 不同。
+func aiResponsesTools(tools []AIToolDef) []any {
+	out := make([]any, 0, len(tools))
+	for _, tool := range tools {
+		params := json.RawMessage(tool.Parameters)
+		if len(params) == 0 || !json.Valid(params) {
+			params = json.RawMessage(`{}`)
+		}
+		out = append(out, map[string]any{
+			"type": "function", "name": tool.Name, "description": tool.Description, "parameters": params,
+		})
+	}
+	return out
+}
+
+func aiBuildResponsesBody(cfg AIConfig, messages []AIMessage, tools []AIToolDef) (map[string]any, error) {
+	input, instructions := aiBuildResponsesInput(messages)
+	maxTokens := cfg.MaxTokens
+	if maxTokens <= 0 {
+		maxTokens = aiDefaultMaxTokens
+	}
+	body := map[string]any{
+		"model":             cfg.Model,
+		"input":             input,
+		"stream":            true,
+		"max_output_tokens": maxTokens,
+		"temperature":       cfg.Temperature,
+	}
+	if instructions != "" {
+		body["instructions"] = instructions
+	}
+	if len(tools) > 0 {
+		body["tools"] = aiResponsesTools(tools)
+	}
+	if effort := strings.TrimSpace(cfg.ReasoningEffort); effort != "" {
+		body["reasoning"] = map[string]any{"effort": effort}
+	}
+	return body, nil
+}
+
 func aiBuildAnthropicBody(cfg AIConfig, messages []AIMessage, tools []AIToolDef) (map[string]any, error) {
 	system, converted, err := aiAnthropicMessages(messages, cfg.Thinking)
 	if err != nil {
@@ -353,11 +603,16 @@ func aiBuildAnthropicBody(cfg AIConfig, messages []AIMessage, tools []AIToolDef)
 	}
 	if cfg.Thinking {
 		// 扩展思考开启时 Anthropic 拒绝 temperature != 1，直接省略（默认 1）。
-		budget := cfg.ThinkingBudget
-		if budget < 1024 {
-			budget = 1024
+		if claudeRejectsFixedThinkingBudget(cfg.Model) {
+			// 新家族的自适应思考：深度由 effort 控制，固定预算会 400
+			body["thinking"] = map[string]any{"type": "adaptive"}
+		} else {
+			budget := cfg.ThinkingBudget
+			if budget < 1024 {
+				budget = 1024
+			}
+			body["thinking"] = map[string]any{"type": "enabled", "budget_tokens": budget}
 		}
-		body["thinking"] = map[string]any{"type": "enabled", "budget_tokens": budget}
 	} else {
 		body["temperature"] = cfg.Temperature
 	}

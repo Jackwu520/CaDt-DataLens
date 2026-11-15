@@ -10,6 +10,7 @@ class FakeNode {
         this.textContent = '';
         this.children = [];
         this.parentNode = null;
+        this.dataset = {};
         this._classes = new Set();
         this._listeners = {};
     }

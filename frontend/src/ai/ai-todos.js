@@ -2,11 +2,19 @@
 // 从 ai-panel.js 拆出（docs/unfinished-plans/structure-cleanup.md 阶段 3），函数体逐字搬移。
 // todoStates（const Map，引用稳定）与 DOM 表/回调经 ctx 注入。
 
+// 新建会话状态时的默认收起态：默认收起（只看一行进度摘要），
+// 设置页「任务清单默认展开」打开后为展开。纯函数便于单测。
+export function todosDefaultCollapsed(settings) {
+    return !(settings && settings.aiTodosDefaultExpanded === true);
+}
+
 export function createAITodos(ctx) {
     const todoStates = ctx.todoStates;
     const el = ctx.el;
     const currentSession = ctx.currentSession;
     const positionOverlays = ctx.positionOverlays;
+    // settings 对象引用（不进解构）：切设置开关后新会话状态立即按新默认生成
+    const settings = ctx.settings || {};
 
     // 收起态「进行中任务」小字开关：存 localStorage（默认开），不进设置页。
     const TODO_CURRENT_BADGE_KEY = 'datalens-ai-todos-current-badge';
@@ -28,10 +36,25 @@ export function createAITodos(ctx) {
     function todoStateOf(session) {
         let state = todoStates.get(session.id);
         if (!state) {
-            state = {collapsed: false, doneCollapsed: false, timer: 0};
+            state = {collapsed: todosDefaultCollapsed(settings), doneCollapsed: false, timer: 0};
             todoStates.set(session.id, state);
         }
         return state;
+    }
+
+    // 设置页切换「任务清单默认展开」后立即生效：既有会话的收起态一起按新默认重置，
+    // 否则要等下次新建会话才看到变化（用户会以为开关没反应）。
+    function applyDefaultCollapse() {
+        const collapsed = todosDefaultCollapsed(settings);
+        for (const state of todoStates.values()) {
+            if (state.timer) {
+                clearTimeout(state.timer);
+                state.timer = 0;
+            }
+            state.collapsed = collapsed;
+            state.doneCollapsed = false;
+        }
+        renderTodos();
     }
 
     function renderTodos() {
@@ -84,14 +107,14 @@ export function createAITodos(ctx) {
             const cur = document.createElement('span');
             cur.className = 'ai-todos-current';
             cur.textContent = currentTodo.content;
-            cur.title = '进行中：' + currentTodo.content;
+            cur.dataset.tip = '进行中：' + currentTodo.content;
             head.appendChild(cur);
         }
         const curToggle = document.createElement('span');
         curToggle.className = 'ai-todos-cur-toggle' + (badgeOn ? '' : ' off');
         curToggle.setAttribute('role', 'button');
         curToggle.setAttribute('aria-label', '收起时显示进行中的任务');
-        curToggle.title = '收起时显示进行中的任务（' + (badgeOn ? '已开启，点击关闭' : '已关闭，点击开启') + '）';
+        curToggle.dataset.tip = '收起时显示进行中的任务（' + (badgeOn ? '已开启，点击关闭' : '已关闭，点击开启') + '）';
         curToggle.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.1 8c1.5-2.6 3.5-3.9 5.9-3.9s4.4 1.3 5.9 3.9c-1.5 2.6-3.5 3.9-5.9 3.9S3.6 10.6 2.1 8z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><circle cx="8" cy="8" r="2.1" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>';
         curToggle.addEventListener('click', (e) => {
             // 不触发头部的折叠/展开
@@ -101,7 +124,7 @@ export function createAITodos(ctx) {
         });
         head.appendChild(curToggle);
         head.appendChild(chev);
-        head.title = state.collapsed ? '展开任务清单' : '收起任务清单';
+        head.dataset.tip = state.collapsed ? '展开任务清单' : '收起任务清单';
         head.addEventListener('click', () => {
             state.collapsed = !state.collapsed;
             if (state.collapsed && state.timer) {
@@ -140,5 +163,5 @@ export function createAITodos(ctx) {
         // 渲染完成后刷新悬浮层位置：回到底部按钮等以 todos 当前高度为基准。
         positionOverlays();
     }
-    return {todoStateOf, renderTodos};
+    return {todoStateOf, renderTodos, applyDefaultCollapse};
 }

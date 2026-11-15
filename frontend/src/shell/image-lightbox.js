@@ -39,13 +39,13 @@ export function createImageLightbox(host, options = {}) {
         const hint = document.createElement('span');
         hint.className = 'img-lightbox-hint';
         hint.textContent = '滚轮缩放 · 拖动平移';
-        hint.title = '滚轮缩放 · 拖动平移 · 双击原始大小 · 右键复制 / 另存为';
+        hint.dataset.tip = '滚轮缩放 · 拖动平移 · 双击原始大小 · 右键复制 / 另存为';
         zoomNode = document.createElement('span');
         zoomNode.className = 'img-lightbox-zoom';
         const closeBtn = document.createElement('button');
         closeBtn.type = 'button';
         closeBtn.className = 'img-lightbox-close';
-        closeBtn.title = '关闭 (Esc)';
+        closeBtn.dataset.tip = '关闭 (Esc)';
         closeBtn.innerHTML = iconSvg('close', 14);
         head.append(titleNode, hint, zoomNode, closeBtn);
 
@@ -178,7 +178,7 @@ export function createImageLightbox(host, options = {}) {
         dragMoved = false;
         stage.classList.remove('dragging');
         titleNode.textContent = title || '';
-        titleNode.title = title || '';
+        titleNode.dataset.tip = title || '';
         zoomNode.textContent = '';
         img.alt = title || '';
         root.classList.remove('hidden');

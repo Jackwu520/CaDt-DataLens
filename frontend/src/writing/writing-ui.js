@@ -77,7 +77,7 @@ const CSV_ROW_NUM_WIDTH = 44;
 const CSV_COL_MIN_WIDTH = 56;
 
 function viewOptionsFor(fmt, doc) {
-    if (doc && (doc.browser || doc.bgTerm)) return [];
+    if (doc && (doc.browser || doc.bgTerm || doc.agentView || doc.sideChat)) return [];
     if (fmt && fmt.image) return IMAGE_VIEWS;
     if (fmt && fmt.id === 'bytes') return BINARY_VIEWS;
     if (isHtmlDoc(doc)) return HTML_VIEWS;
@@ -141,6 +141,8 @@ function formatDisplayName(doc) {
 
 function viewLabel(mode) {
     if (mode === 'browser') return '网页视图';
+    if (mode === 'agentview') return '实时视图';
+    if (mode === 'sidechat') return '支线对话';
     if (mode === 'split') return '分屏';
     if (mode === 'image') return '图片视图';
     if (mode === 'binary') return '二进制视图';

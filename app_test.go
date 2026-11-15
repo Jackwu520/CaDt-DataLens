@@ -415,7 +415,7 @@ func TestReadDirListsAndTruncates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if all.Truncated || len(all.Entries) != 3 {
+	if all.Truncated || len(all.Entries) != 3 || all.Total != 3 {
 		t.Fatalf("ReadDir all = %+v", all)
 	}
 	if all.Entries[0].Name != "a.yaml" || all.Entries[1].Name != "b.json" || !all.Entries[2].IsDir {
@@ -425,7 +425,7 @@ func TestReadDirListsAndTruncates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !part.Truncated || len(part.Entries) != 2 {
+	if !part.Truncated || len(part.Entries) != 2 || part.Total != 3 {
 		t.Fatalf("ReadDir limit = %+v", part)
 	}
 }

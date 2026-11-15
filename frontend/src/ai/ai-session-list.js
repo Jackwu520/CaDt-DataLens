@@ -228,19 +228,19 @@ export function createAISessionList(ctx) {
                 const pin = document.createElement('span');
                 pin.className = 'ai-session-pin';
                 pin.innerHTML = iconSvg('pin', 11);
-                pin.title = '已置顶';
+                pin.dataset.tip = '已置顶';
                 titleRow.appendChild(pin);
             }
             const title = document.createElement('div');
             title.className = 'ai-session-title';
             title.textContent = session.title || '新会话';
-            title.title = session.title || '新会话';
+            title.dataset.tip = session.title || '新会话';
             titleRow.appendChild(title);
             if (sideBadgeOn(session)) {
                 const badge = document.createElement('span');
                 badge.className = 'ai-session-badge';
                 badge.textContent = '支线';
-                badge.title = '支线对话：轻关联母会话，可用「带回主对话」把结论送回去';
+                badge.dataset.tip = '支线对话：轻关联母会话，可用「带回主对话」把结论送回去';
                 titleRow.appendChild(badge);
             }
             const meta = document.createElement('div');
@@ -265,9 +265,9 @@ export function createAISessionList(ctx) {
                     dot.className = 'ai-session-status-dot';
                     badge.appendChild(dot);
                 }
-                badge.title = SESSION_STATUS_TITLE[statusKind] || '';
+                badge.dataset.tip = SESSION_STATUS_TITLE[statusKind] || '';
                 badge.setAttribute('role', 'img');
-                badge.setAttribute('aria-label', badge.title);
+                badge.setAttribute('aria-label', badge.dataset.tip || '');
                 side.appendChild(badge);
             }
             // 后台轮次的停止（§4.14.2）：只在运行中 / 待确认态出现，hover 才显形（防误触）。
@@ -276,7 +276,7 @@ export function createAISessionList(ctx) {
                 const stopBtn = document.createElement('button');
                 stopBtn.type = 'button';
                 stopBtn.className = 'ai-session-stop';
-                stopBtn.title = '停止这个会话的运行';
+                stopBtn.dataset.tip = '停止这个会话的运行';
                 stopBtn.setAttribute('aria-label', '停止会话运行');
                 stopBtn.innerHTML = iconSvg('pause', 12);
                 stopBtn.addEventListener('click', (e) => {
@@ -289,7 +289,7 @@ export function createAISessionList(ctx) {
             const more = document.createElement('button');
             more.type = 'button';
             more.className = 'ai-session-more';
-            more.title = '会话操作';
+            more.dataset.tip = '会话操作';
             more.innerHTML = iconSvg('more', 13);
             more.addEventListener('click', (e) => {
                 e.stopPropagation();
@@ -351,7 +351,7 @@ export function createAISessionList(ctx) {
                     // 用 div 承载：头部内含两个真实 button，避免 button 嵌套 button 的非法结构。
                     const head = document.createElement('div');
                     head.className = 'ai-session-group-head' + (group.current ? ' current' : '') + (collapsed ? '' : ' expanded');
-                    head.title = group.path || '未关联工作区';
+                    head.dataset.tip = group.path || '未关联工作区';
                     if (collapsible) {
                         head.tabIndex = 0;
                         head.setAttribute('role', 'button');
@@ -372,7 +372,7 @@ export function createAISessionList(ctx) {
                     const add = document.createElement('button');
                     add.type = 'button';
                     add.className = 'ai-session-group-action';
-                    add.title = '新建会话';
+                    add.dataset.tip = '新建会话';
                     add.setAttribute('aria-label', '新建会话');
                     add.innerHTML = iconSvg('plus', 12);
                     add.addEventListener('click', (e) => {
@@ -385,7 +385,7 @@ export function createAISessionList(ctx) {
                     const menu = document.createElement('button');
                     menu.type = 'button';
                     menu.className = 'ai-session-group-action';
-                    menu.title = '会话操作';
+                    menu.dataset.tip = '会话操作';
                     menu.setAttribute('aria-label', '会话操作');
                     menu.innerHTML = iconSvg('more', 12);
                     menu.addEventListener('click', (e) => {
@@ -428,8 +428,8 @@ export function createAISessionList(ctx) {
                     more.type = 'button';
                     more.className = 'ai-session-group-more';
                     more.innerHTML = iconSvg('more', 14);
-                    more.title = '还有 ' + remaining + ' 条会话，点击再显示 ' + Math.min(AI_SESSION_GROUP_PAGE, remaining) + ' 条';
-                    more.setAttribute('aria-label', more.title);
+                    more.dataset.tip = '还有 ' + remaining + ' 条会话，点击再显示 ' + Math.min(AI_SESSION_GROUP_PAGE, remaining) + ' 条';
+                    more.setAttribute('aria-label', more.dataset.tip || '');
                     more.addEventListener('click', () => {
                         workspaceGroupVisibleCounts.set(pageKey, Math.min(total, visible + AI_SESSION_GROUP_PAGE));
                         renderSessionList();

@@ -176,7 +176,7 @@ export function createAIMcpSettings(ctx) {
             const row = document.createElement('div');
             row.className = 'ai-mcp-server-row';
             row.innerHTML =
-                '<span class="ai-mcp-lamp ai-mcp-lamp-' + meta.cls + '" title="' + escapeHtml(meta.text) + '"></span>' +
+                '<span class="ai-mcp-lamp ai-mcp-lamp-' + meta.cls + '" data-tip="' + escapeHtml(meta.text) + '"></span>' +
                 '<span class="ai-mcp-server-name">' + escapeHtml(name) + '</span>' +
                 '<span class="ai-mcp-server-tools">' + toolCount + '/' + (cfg.enabledTools || []).length + ' 工具</span>' +
                 '<label class="ai-mcp-inline-label"><input type="checkbox" data-mcp-toggle="' + escapeHtml(name) + '"' + (enabledOn ? ' checked' : '') + '>启用</label>' +
@@ -372,13 +372,13 @@ export function createAIMcpSettings(ctx) {
         const rows = toolsPanel.tools.map((tool) => {
             const flags = mcpToolFlags(tool.annotations);
             const badges = [];
-            if (flags.destructive) badges.push('<span class="ai-mcp-badge ai-mcp-badge-warn" title="destructiveHint（服务器自填，不可作为安全保证）">写</span>');
-            if (flags.openWorld) badges.push('<span class="ai-mcp-badge ai-mcp-badge-warn" title="openWorldHint：工具会接触外部实体">外</span>');
+            if (flags.destructive) badges.push('<span class="ai-mcp-badge ai-mcp-badge-warn" data-tip="destructiveHint（服务器自填，不可作为安全保证）">写</span>');
+            if (flags.openWorld) badges.push('<span class="ai-mcp-badge ai-mcp-badge-warn" data-tip="openWorldHint：工具会接触外部实体">外</span>');
             const tokens = aiEstimateTokens(JSON.stringify({d: tool.description, s: tool.inputSchema}));
             const isStale = stale.has(tool.name);
             return '<label class="ai-mcp-tool-row' + (isStale ? ' ai-mcp-stale' : '') + '">' +
                 '<input type="checkbox" data-mcp-tool="' + escapeHtml(tool.name) + '"' + (toolsPanel.checked.has(tool.name) ? ' checked' : '') + '> ' +
-                '<span class="ai-mcp-tool-name">' + escapeHtml(tool.name) + badges.join('') + (isStale ? ' <span class="ai-mcp-badge ai-mcp-badge-stale" title="该工具已不在服务器清单中，保存时将被移除">已失效</span>' : '') + '</span>' +
+                '<span class="ai-mcp-tool-name">' + escapeHtml(tool.name) + badges.join('') + (isStale ? ' <span class="ai-mcp-badge ai-mcp-badge-stale" data-tip="该工具已不在服务器清单中，保存时将被移除">已失效</span>' : '') + '</span>' +
                 '<span class="ai-mcp-tool-desc">' + escapeHtml(String(tool.description || '').slice(0, 120)) + '</span>' +
                 '<span class="ai-mcp-tool-tokens">≈' + tokens + ' tok</span></label>';
         }).join('');

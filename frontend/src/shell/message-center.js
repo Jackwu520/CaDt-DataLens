@@ -57,7 +57,7 @@ export function createMessageCenter(ctx) {
         if (badge && btn) {
             badge.textContent = count > 99 ? '99+' : String(count);
             badge.classList.toggle('hidden', !count);
-            btn.title = count ? '消息中心（' + count + ' 条未读）' : '消息中心';
+            btn.dataset.tip = count ? '消息中心（' + count + ' 条未读）' : '消息中心';
         }
         if (pop && pop.isConnected) renderPanel(pop);
     }
@@ -127,7 +127,7 @@ export function createMessageCenter(ctx) {
         const close = document.createElement('button');
         close.type = 'button';
         close.className = 'app-toast-close';
-        close.title = '关闭提示';
+        close.dataset.tip = '关闭提示';
         close.textContent = '×';
         toast.append(icon, main, close);
         let timer = 0;
@@ -204,7 +204,7 @@ export function createMessageCenter(ctx) {
             body.textContent = item.body;
             main.append(line1, body);
             row.append(icon, main);
-            row.title = item.body;
+            row.dataset.tip = item.body;
             row.addEventListener('click', () => {
                 if (!item.read) {
                     item.read = true;

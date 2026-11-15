@@ -79,19 +79,19 @@ export function createAIMessageQueue(ctx) {
             if (imageCount) meta.push(imageCount + ' 张图片');
             if (attachCount) meta.push(attachCount + ' 个附件');
             text.textContent = (item.text || '（无文字）') + (meta.length ? ' · ' + meta.join(' · ') : '');
-            text.title = item.text || '';
+            text.dataset.tip = item.text || '';
             const edit = document.createElement('button');
             edit.type = 'button';
             edit.className = 'ai-queue-action ai-queue-icon';
             edit.innerHTML = iconSvg('rename', 11);
-            edit.title = '编辑：取回输入区重新编辑，附件一并带回';
+            edit.dataset.tip = '编辑：取回输入区重新编辑，附件一并带回';
             edit.setAttribute('aria-label', '编辑排队消息');
             edit.addEventListener('click', () => editQueuedMessage(item));
             const interject = document.createElement('button');
             interject.type = 'button';
             interject.className = 'ai-queue-action';
             interject.textContent = '插话';
-            interject.title = '停止当前回复并立即发送这条消息';
+            interject.dataset.tip = '停止当前回复并立即发送这条消息';
             interject.addEventListener('click', () => {
                 const index = messageQueue.indexOf(item);
                 if (index < 0) return;
@@ -110,7 +110,7 @@ export function createAIMessageQueue(ctx) {
             remove.type = 'button';
             remove.className = 'ai-queue-action';
             remove.textContent = '×';
-            remove.title = '移除这条排队消息';
+            remove.dataset.tip = '移除这条排队消息';
             remove.addEventListener('click', () => {
                 const index = messageQueue.indexOf(item);
                 if (index >= 0) messageQueue.splice(index, 1);

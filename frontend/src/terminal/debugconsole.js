@@ -75,16 +75,16 @@ export function createDebugConsole(opts = {}) {
             '<span class="dbg-title">调试控制台</span>' +
             '<div class="dbg-chips">' +
                 Object.keys(LEVELS).map((lv) =>
-                    '<button type="button" class="dbg-chip" data-level="' + lv + '" title="显示/隐藏' + LEVELS[lv] + '">' +
+                    '<button type="button" class="dbg-chip" data-level="' + lv + '" data-tip="显示/隐藏' + LEVELS[lv] + '">' +
                         LEVELS[lv] + '<span class="dbg-chip-count">0</span></button>').join('') +
             '</div>' +
             '<div class="dbg-tools">' +
                 (!detached && onDetach ?
-                    '<button type="button" class="dbg-btn" data-act="detach" title="在独立窗口中打开">' + iconSvg('new-window', 12) + '</button>' : '') +
-                '<button type="button" class="dbg-btn" data-act="export" title="导出日志">' + iconSvg('download', 12) + '</button>' +
-                '<button type="button" class="dbg-btn" data-act="copy" title="复制全部日志">' + iconSvg('copy', 12) + '</button>' +
-                '<button type="button" class="dbg-btn" data-act="clear" title="清空">' + iconSvg('eraser', 12) + '</button>' +
-                '<button type="button" class="dbg-btn" data-act="close" title="' + (detached ? '关闭窗口 (F12)' : '关闭面板') + '">' +
+                    '<button type="button" class="dbg-btn" data-act="detach" data-tip="在独立窗口中打开">' + iconSvg('new-window', 12) + '</button>' : '') +
+                '<button type="button" class="dbg-btn" data-act="export" data-tip="导出日志">' + iconSvg('download', 12) + '</button>' +
+                '<button type="button" class="dbg-btn" data-act="copy" data-tip="复制全部日志">' + iconSvg('copy', 12) + '</button>' +
+                '<button type="button" class="dbg-btn" data-act="clear" data-tip="清空">' + iconSvg('eraser', 12) + '</button>' +
+                '<button type="button" class="dbg-btn" data-act="close" data-tip="' + (detached ? '关闭窗口 (F12)' : '关闭面板') + '">' +
                     iconSvg('close', 12) + '</button>' +
             '</div>' +
         '</div>' +

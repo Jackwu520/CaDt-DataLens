@@ -51,11 +51,11 @@ async function createTermSession(shell = '') {
     const label = document.createElement('span');
     label.className = 'term-tab-label';
     label.textContent = dup ? baseName + ' (' + (dup + 1) + ')' : baseName;
-    label.title = deps.TERM_SHELL_LABELS[usedShell] || usedShell;
+    label.dataset.tip = deps.TERM_SHELL_LABELS[usedShell] || usedShell;
     const tabClose = document.createElement('span');
     tabClose.className = 'term-tab-close';
     tabClose.innerHTML = iconSvg('close', 11);
-    tabClose.title = '关闭终端';
+    tabClose.dataset.tip = '关闭终端';
     tab.append(label, tabClose);
     tab.addEventListener('click', (e) => {
         const closeHit = e.target.closest('.term-tab-close');
@@ -253,11 +253,11 @@ function renameTermSession(s) {
             if (name) {
                 s.customName = name;
                 label.textContent = name;
-                label.title = name;
+                label.dataset.tip = name;
             } else {
                 s.customName = '';
                 label.textContent = s.defaultLabel;
-                label.title = s.defaultTitle;
+                label.dataset.tip = s.defaultTitle;
             }
         },
     });

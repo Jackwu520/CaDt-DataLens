@@ -238,6 +238,8 @@ export function buildSessionMeta(session) {
         scope: ['read', 'edit', 'auto', 'full'].includes(session && session.scope) ? session.scope : 'read',
         profileId: textOf(session && session.profileId),
         modelId: textOf(session && session.modelId),
+        // 本次会话上下文上限（模型选择器档位，0 = 不设限；随会话持久化，子代理派生时继承）
+        ctxLimit: Number(session && session.ctxLimit) || 0,
         systemPrompt: textOf(session && session.systemPrompt),
         promptTemplateId: textOf(session && session.promptTemplateId),
         planMode: !!(session && session.planMode),

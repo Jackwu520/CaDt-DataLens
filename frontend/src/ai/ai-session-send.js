@@ -197,7 +197,7 @@ export function createAISessionSend(ctx) {
             // 内容由用户自己写时必须先有内容：两个条件都满足才放行，避免「能点但点了报错」
             const hasContent = !!getText();
             confirm.disabled = !canSubmit(picked.size, hasContent);
-            confirm.title = hasContent ? '' : '先写投递内容';
+            confirm.dataset.tip = hasContent ? '' : '先写投递内容';
             confirm.textContent = picked.size ? '投递（' + picked.size + '）' : '投递';
             if (!items.length) {
                 let empty = listBox.querySelector('.ai-send-empty');
@@ -229,7 +229,7 @@ export function createAISessionSend(ctx) {
                 const title = document.createElement('span');
                 title.className = 'ai-send-title';
                 title.textContent = row.title || '新会话';
-                title.title = row.title || '新会话';
+                title.dataset.tip = row.title || '新会话';
                 main.appendChild(title);
                 const meta = document.createElement('span');
                 meta.className = 'ai-send-meta';
@@ -381,7 +381,7 @@ export function createAISessionSend(ctx) {
         for (const row of running) {
             const kind = stateOf(row);
             const chip = node('span', 'ai-send-chip ' + kind);
-            chip.title = (row.title || '新会话') + ' · ' + (STATE_TEXT[kind] || kind);
+            chip.dataset.tip = (row.title || '新会话') + ' · ' + (STATE_TEXT[kind] || kind);
             const dot = node('span', 'ai-send-dot');
             chips.append(chip);
             chip.append(dot, node('span', 'ai-send-chip-title', row.title || '新会话'));

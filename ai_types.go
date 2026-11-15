@@ -18,6 +18,9 @@ const (
 	aiErrorTextLimit      = 500
 	aiDefaultMaxTokens    = 4096
 	aiMaxExtraHeaders     = 8
+	// 插件 provider 每轮注入的请求体补丁上限（与前端 plugin-ai-providers.js 对齐）
+	aiMaxExtraBodyKeys    = 32
+	aiMaxExtraBodyBytes   = 64 << 10
 	aiMaxToolDefs         = 128
 	aiMaxModels           = 500
 	aiMaxImagesPerMessage = 6
@@ -35,6 +38,9 @@ const (
 	aiEventDone     = "ai-done"
 	aiEventError    = "ai-error"
 	aiEventRetry    = "ai-retry"
+	// 服务端参数校验给出的上限（如 max_tokens 超模型上限）被自动收敛时通知前端，
+	// 由前端提示用户并把该模型条目的输出窗口回写到配置。
+	aiEventParamAdjust = "ai-param-adjust"
 )
 
 var (
@@ -54,6 +60,9 @@ type AIConfig struct {
 	MaxTokens      int               `json:"maxTokens"`
 	Proxy          string            `json:"proxy,omitempty"`
 	ExtraHeaders   map[string]string `json:"extraHeaders,omitempty"`
+	// ExtraBody 是插件 provider 每轮注入的请求体补丁；stream 由 aiApplyBodyPatch 强制保持 true，
+	// 否则 SSE 解码会拿不到流。字段上限与合法性在 validateAIEndpoint 里校验。
+	ExtraBody      map[string]any    `json:"extraBody,omitempty"`
 	Thinking       bool              `json:"thinking,omitempty"`
 	ThinkingBudget int               `json:"thinkingBudget,omitempty"`
 	// ReasoningEffort 仅用于 OpenAI 兼容协议，按 reasoning_effort 原样发送。
@@ -131,6 +140,17 @@ type aiRetryPayload struct {
 	Max     int    `json:"max"`
 	DelayMs int    `json:"delayMs"`
 	Reason  string `json:"reason"`
+}
+
+// aiParamAdjustPayload：一次请求内因服务端参数上限而自动降档的通知。
+// Previous/Value 都是 max_tokens 的 token 数；前端按 Value 回写模型条目的 outputWindow。
+type aiParamAdjustPayload struct {
+	Id       string `json:"id"`
+	Model    string `json:"model"`
+	Field    string `json:"field"`
+	Previous int    `json:"previous"`
+	Value    int    `json:"value"`
+	Message  string `json:"message"`
 }
 
 type aiEmitter func(event string, payload any)

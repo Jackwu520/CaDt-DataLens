@@ -7,10 +7,14 @@ import {loadPlugins} from '../shell/plugins.js';
 import {createBridgeCliConvert} from './bridge-cli-convert.js';
 import {createBridgeGit} from './bridge-git.js';
 import {createBridgeTerminalView} from './bridge-terminal-view.js';
+import {createBridgeAgentView} from './bridge-agent-view.js';
+import {createBridgeSideChat} from './bridge-sidechat-view.js';
 
 export function createBridgeUI(deps) {
 
 const termMod = createBridgeTerminalView(deps);
+const agentMod = createBridgeAgentView(deps);
+const sideChatMod = createBridgeSideChat(deps);
 // git 域要开虚拟文档标签：经 Object.create 委托原 deps（保持 getter 惰性），只补一个宿主函数
 const gitDeps = Object.create(deps);
 gitDeps.openVirtualDoc = openVirtualDoc;
@@ -238,7 +242,7 @@ function openBrowserTab(url, profileKey, opts) {
 
 
     return {
-        ...termMod, ...gitMod, ...cliMod,
+        ...termMod, ...agentMod, ...sideChatMod, ...gitMod, ...cliMod,
         openBrowserTab, openVirtualDoc,
     };
 }

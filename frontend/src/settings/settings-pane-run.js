@@ -42,7 +42,7 @@ function renderRunProfiles() {
         detail.className = 'run-profile-detail';
         detail.textContent = [p.lang ? '[' + p.lang + ']' : '', p.args || '', p.template || '']
             .filter(Boolean).join('  ');
-        detail.title = detail.textContent;
+        detail.dataset.tip = detail.textContent;
         const del = document.createElement('button');
         del.type = 'button';
         del.className = 'run-profile-del';

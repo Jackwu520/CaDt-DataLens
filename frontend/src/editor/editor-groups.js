@@ -30,12 +30,11 @@ const SPLIT_MAX_DEPTH = 3;
 const SPLIT_MIN_W = 240;
 const SPLIT_MIN_H = 180;
 
-// ---- Ace 会话钩子域：applyAceMode / 折叠预览 / 多光标 / python token（editor-ace-hooks.js） ----
+// ---- Ace 会话钩子域：applyAceMode / 折叠范围 / 多光标 / python token（editor-ace-hooks.js） ----
 const aceHooks = createEditorAceHooks(deps);
 const applyAceMode = (...a) => aceHooks.applyAceMode(...a);
-const hookCodeFoldPreviews = (...a) => aceHooks.hookCodeFoldPreviews(...a);
+const hookCodeFoldRanges = (...a) => aceHooks.hookCodeFoldRanges(...a);
 const hookMultiCursor = (...a) => aceHooks.hookMultiCursor(...a);
-const updateCodeFoldPreviews = (...a) => aceHooks.updateCodeFoldPreviews(...a);
 const initCodeFoldHover = (...a) => aceHooks.initCodeFoldHover(...a);
 
 // ---- CSV/TSV 表格视图域（editor-csv-view.js） ----
@@ -385,7 +384,7 @@ function buildGroupTools(gid) {
         const on = mode === 'sql' ? !!doc.sqlActive : (activeMode === mode);
         btn.className = 'tb-view' + (on ? ' active' : '');
         btn.dataset.mode = mode;
-        btn.title = label;
+        btn.dataset.tip = label;
         btn.innerHTML = VIEW_ICONS[mode] || '';
         btn.addEventListener('click', async () => {
             if (deps.file !== doc) await activateDoc(doc);
@@ -401,7 +400,7 @@ function buildGroupTools(gid) {
     const more = document.createElement('button');
     more.type = 'button';
     more.className = 'tb-more';
-    more.title = '标签页操作';
+    more.dataset.tip = '标签页操作';
     more.innerHTML = MORE_ICON;
     more.addEventListener('click', () => {
         const r = more.getBoundingClientRect();
@@ -453,6 +452,22 @@ function bgTermTabIcon() {
     return span;
 }
 
+// 子代理详情标签页：没有扩展名可依据，用「智能体团队」同款图标
+function agentViewTabIcon() {
+    const span = document.createElement('span');
+    span.className = 'tab-icon';
+    span.innerHTML = iconSvg('agents', 13);
+    return span;
+}
+
+// 支线对话标签页：双气泡图标（与子代理的协作图区分）
+function sideChatTabIcon() {
+    const span = document.createElement('span');
+    span.className = 'tab-icon';
+    span.innerHTML = iconSvg('sidechat', 13);
+    return span;
+}
+
 function tabTooltip(doc) {
     const lockTip = isTabReadOnlyFixed(doc) ? '\n（只读快照，不可解锁）'
         : isTabReadOnlyLocked(doc) ? '\n（本标签只读锁定，右键可解除）' : '';
@@ -470,12 +485,12 @@ function syncTabReadOnly(doc) {
     if (!tab) return;
     const locked = isTabReadOnlyLocked(doc);
     tab.classList.toggle('tab-readonly', locked);
-    tab.title = tabTooltip(doc);
+    tab.dataset.tip = tabTooltip(doc);
     const existing = tab.querySelector('.tab-lock');
     if (locked && !existing) {
         const lock = document.createElement('span');
         lock.className = 'tab-lock';
-        lock.title = tabLockTitle(doc);
+        lock.dataset.tip = tabLockTitle(doc);
         lock.innerHTML = iconSvg('lock', 12);
         const close = tab.querySelector('.tab-close');
         if (close) tab.insertBefore(lock, close);
@@ -489,9 +504,9 @@ function buildGroupTab(g, doc, strip) {
     const tab = document.createElement('div');
     tab.className = 'tab' + (doc.id === g.activeId ? ' active' : '') + (doc.dirty ? ' dirty' : '') + (doc.staleOnDisk ? ' stale' : '') + (isTabReadOnlyLocked(doc) ? ' tab-readonly' : '');
     tab.dataset.docId = String(doc.id);
-    tab.title = tabTooltip(doc);
-    // 后台终端标签页用 terminal 图标（非文件，没有扩展名图标）
-    const icon = doc.bgTerm ? bgTermTabIcon() : createFileIcon(doc.name, 'tab-icon');
+    tab.dataset.tip = tabTooltip(doc);
+    // 后台终端 / 子代理详情标签页用固定图标（非文件，没有扩展名图标）
+    const icon = doc.bgTerm ? bgTermTabIcon() : doc.agentView ? agentViewTabIcon() : doc.sideChat ? sideChatTabIcon() : createFileIcon(doc.name, 'tab-icon');
     const dot = document.createElement('span');
     dot.className = 'tab-dot';
     const name = document.createElement('span');
@@ -500,7 +515,7 @@ function buildGroupTab(g, doc, strip) {
     const close = document.createElement('button');
     close.type = 'button';
     close.className = 'tab-close';
-    close.title = '关闭';
+    close.dataset.tip = '关闭';
     close.innerHTML = iconSvg('close', 12);
     close.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -509,7 +524,7 @@ function buildGroupTab(g, doc, strip) {
     if (isTabReadOnlyLocked(doc)) {
         const lock = document.createElement('span');
         lock.className = 'tab-lock';
-        lock.title = tabLockTitle(doc);
+        lock.dataset.tip = tabLockTitle(doc);
         lock.innerHTML = iconSvg('lock', 12);
         tab.append(icon, dot, name, lock, close);
     } else {
@@ -730,7 +745,7 @@ function renderBreadcrumb(path) {
         const s = document.createElement('span');
         s.className = 'crumb' + (i === display.length - 1 ? ' crumb-last' : '');
         s.textContent = seg;
-        s.title = seg;
+        s.dataset.tip = seg;
         deps.els.breadcrumb.appendChild(s);
     });
 }
@@ -858,7 +873,7 @@ function updateStatus() {
         return;
     }
     deps.els.stSize.textContent = deps.fmtSize(deps.file.size);
-    deps.els.stSize.title = deps.file.image && deps.file.imageWidth ? deps.file.imageWidth + ' × ' + deps.file.imageHeight : '';
+    deps.els.stSize.dataset.tip = deps.file.image && deps.file.imageWidth ? deps.file.imageWidth + ' × ' + deps.file.imageHeight : '';
     const tableZoom = deps.currentMode === 'table' && deps.file.format && deps.file.format.table;
     const svgScale = deps.file.svgRenderScale && (deps.currentMode === 'render' || (deps.file.splitActive && deps.file.splitKind === 'svg'));
     const renderZoom = svgScale ? Math.round(deps.file.svgRenderScale * 100) + '%' : '';
@@ -866,7 +881,7 @@ function updateStatus() {
         ? Math.round(deps.file.imageScale * 100) + '%'
         : renderZoom || (tableZoom ? Math.round((deps.file.tableZoom || 1) * 100) + '%' : '');
     deps.els.stZoom.textContent = zoom;
-    deps.els.stZoom.title = zoom
+    deps.els.stZoom.dataset.tip = zoom
         ? (tableZoom ? '表格缩放比例（点击选择，Ctrl+滚轮调整）' : '图片缩放比例（点击选择，Ctrl+滚轮调整，双击图片恢复适配）')
         : '';
     const showMdWidth = !!(deps.file.format && deps.file.format.preview && deps.currentMode === 'preview' && !deps.file.large);
@@ -939,7 +954,12 @@ function patchAbsPath(rel) {
 }
 
 async function reloadAfterPatch(files) {
-    if (deps.explorer && deps.explorer.refresh) deps.explorer.refresh();
+    // 不做整树全量刷新（清空重建会闪）；逐文件走轻量差量通知，
+    // 120ms 防抖会把同一次补丁应用的多个文件合并成一次局部刷新。
+    const explorer = deps.explorer;
+    if (explorer && typeof explorer.notifyFileChange === 'function') {
+        for (const rel of files || []) explorer.notifyFileChange(patchAbsPath(rel));
+    }
     for (const rel of files || []) {
         const doc = deps.findDocByPath(patchAbsPath(rel));
         if (!doc) continue;
@@ -1015,6 +1035,17 @@ function createDocEditor(doc) {
     if (doc.browser) {
         if (doc.pane) return;
         createBrowserView(doc);
+        return;
+    }
+    if (doc.agentView) {
+        if (doc.pane) return;
+        deps.createAgentView(doc);
+        return;
+    }
+    // 支线对话标签页：完整会话渲染在内容区（面板保持显示主对话）
+    if (doc.sideChat) {
+        if (doc.pane) return;
+        deps.createSideChatView(doc);
         return;
     }
     if (doc.bgTerm) {
@@ -1112,7 +1143,7 @@ function createDocEditor(doc) {
     doc.editor = ed;
     doc.pane = pane;
     if (ed.aceEditor) {
-        hookCodeFoldPreviews(ed.aceEditor);
+        hookCodeFoldRanges(ed.aceEditor);
         hookMultiCursor(ed.aceEditor);
         ed.aceEditor.on('changeSelection', deps.scheduleWordCount);
         ed.aceEditor.on('input', deps.scheduleWordCount);
@@ -1254,7 +1285,7 @@ function createDoc(data) {
 
 function setFilename(name, path) {
     deps.els.filenameText.textContent = name || '';
-    deps.els.filename.title = path || name || '';
+    deps.els.filename.dataset.tip = path || name || '';
     const icon = deps.els.filenameIcon;
     icon.textContent = '';
     icon.className = 'title-icon';
@@ -1446,7 +1477,10 @@ async function checkDocExternalChange(doc) {
 }
 
 async function handleAIWorkspaceFileChanged(path) {
-    if (deps.explorer && deps.explorer.refresh) deps.explorer.refresh();
+    // 文件树不做整树全量刷新：那会清空整棵树、丢掉展开态、逐级重载并抢滚动位置，
+    // 连续编辑时看起来就是「一直闪」。改为轻量差量通知（纯内容修改零重绘）。
+    const explorer = deps.explorer;
+    if (explorer && typeof explorer.notifyFileChange === 'function') explorer.notifyFileChange(path);
     const doc = deps.findDocByPath(path);
     if (!doc) return;
     if (doc.dirty) {
@@ -1492,6 +1526,15 @@ function closeDocNow(doc, remember = true) {
     if (doc.bgTerm && doc.bgTermUnsub) {
         doc.bgTermUnsub();
         doc.bgTermUnsub = null;
+    }
+    // 子代理详情标签页：卸载视图挂载点（子代理本身不受影响，仍在跑）
+    if (doc.agentView && doc.agentViewUnmount) {
+        doc.agentViewUnmount();
+        doc.agentViewUnmount = null;
+    }
+    if (doc.sideChat && doc.sideChatUnmount) {
+        doc.sideChatUnmount();
+        doc.sideChatUnmount = null;
     }
     deps.docs.splice(idx, 1);
     if (doc.editor) {
@@ -1570,5 +1613,5 @@ function reopenClosedTab() {
     function setFocusedGroupId(v) { focusedGroupId = v; }
     function setSplitRoot(v) { splitRoot = v; }
 
-    return {activateDoc, setFocusedGroupId, setSplitRoot, addDocToFocusedGroup, applyAceMode, applyCsvTableZoom, applyImageZoom, browserViewportLabel, closeDocNow, closeDocsWithConfirm, closeSqlView, createDoc, createDocEditor, createGroup, dismissBanner, doRedo, doUndo, get editorGroups() { return editorGroups; }, enterBinaryView, enterCsvTable, enterImageView, enterMarkdownPreview, enterSplitView, enterSqlView, enterSvgRender, enterTextView, exitSplitView, expandAllWithGuard, flushCsvCellEditor, get focusedGroupId() { return focusedGroupId; }, groupDocs, groupOfDoc, handleAIWorkspaceFileChanged, handleExternalDocChanges, hideBanner, hideSvgRender, hookCodeFoldPreviews, hookMultiCursor, humanizeCounts, initCodeFoldHover, jumpBookmark, leaveCsvTable, leaveMarkdownPreview, markDocDirty, mdSyncScrollFromAce, moveTabInGroup, patchViewContext, refreshPatchMarkers, rememberDocView, renderBookmarks, renderBreadcrumb, renderCsvTableView, renderEditorLayout, renderMarkdownPreview, renderTabs, reopenClosedTab, requestCloseDoc, revertDocToSaved, scheduleGitGutter, setBrowserViewport, setFilename, showBanner, showImageMenu, showMdPreviewMenu, showPathInFolder, showSvgMenu, get splitRoot() { return splitRoot; }, syncAllBrowserTabs, syncBrowserTab, syncTabReadOnly, textArea, toggleBookmark, toggleFocusedNode, updateBrowserTitle, updateCodeFoldPreviews, updateDocChrome, updateStatus, zoomCsvTable, zoomImageBy, zoomSvgRenderBy};
+    return {activateDoc, setFocusedGroupId, setSplitRoot, addDocToFocusedGroup, applyAceMode, applyCsvTableZoom, applyImageZoom, browserViewportLabel, closeDocNow, closeDocsWithConfirm, closeSqlView, createDoc, createDocEditor, createGroup, dismissBanner, doRedo, doUndo, get editorGroups() { return editorGroups; }, enterBinaryView, enterCsvTable, enterImageView, enterMarkdownPreview, enterSplitView, enterSqlView, enterSvgRender, enterTextView, exitSplitView, expandAllWithGuard, flushCsvCellEditor, get focusedGroupId() { return focusedGroupId; }, groupDocs, groupOfDoc, handleAIWorkspaceFileChanged, handleExternalDocChanges, hideBanner, hideSvgRender, hookCodeFoldRanges, hookMultiCursor, humanizeCounts, initCodeFoldHover, jumpBookmark, leaveCsvTable, leaveMarkdownPreview, markDocDirty, mdSyncScrollFromAce, moveTabInGroup, patchViewContext, refreshPatchMarkers, rememberDocView, renderBookmarks, renderBreadcrumb, renderCsvTableView, renderEditorLayout, renderMarkdownPreview, renderTabs, reopenClosedTab, requestCloseDoc, revertDocToSaved, scheduleGitGutter, setBrowserViewport, setFilename, showBanner, showImageMenu, showMdPreviewMenu, showPathInFolder, showSvgMenu, get splitRoot() { return splitRoot; }, syncAllBrowserTabs, syncBrowserTab, syncTabReadOnly, textArea, toggleBookmark, toggleFocusedNode, updateBrowserTitle, updateDocChrome, updateStatus, zoomCsvTable, zoomImageBy, zoomSvgRenderBy};
 }

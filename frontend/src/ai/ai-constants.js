@@ -256,9 +256,9 @@ export const AI_BUILTIN_SKILLS = [
             '- goto_line {line,column?}：当前文件跳转到行:列并整行选中。',
             '- toggle_sidebar {view?}：开关侧边栏（同视图再点=收起）；set_sidebar_view {view}：view = files / git / structure。',
             '- toggle_terminal：开关底部终端面板；toggle_ai_panel {open?}：开关 AI 面板；toggle_fullscreen / toggle_always_on_top。',
-            '- set_theme {theme}：只切换软件主题（界面配色），theme = dark / light / darcula / idea-dark / idea-light / github / newsprint / night / pixyll / whitey / harness。代码高亮配色由独立的 codeStyle 设置控制，不受此动作影响。',
+            '- set_theme {theme}：只切换软件主题（界面配色），theme = dark / light。代码配色（token + 编辑器底色）由独立的 codeStyle 设置控制，不受此动作影响。',
             '- open_settings {pane?}：打开设置弹窗，pane = general / editor-tabs / formats / integration / models / ai / context / plugins / shortcuts / developer / about 或 fmt-<格式> / lang-<语言>。',
-            '- set_setting {key,value}：改受限白名单设置并即时生效（持久化）。可写键：autoSave, showSidebar, alwaysOnTop, codeWrap, codeGuides, treeGuides, treeCounts, mdLineNumbers, mdScrollSync, readOnlyMode, treeRefreshInterval(1/2/3/5/10), sidebarFont(10-20), editorFont(10-24), treeExpandDefault(expand/collapse), openMode(tab/window), theme, codeStyle(auto / jetbrains-dark / darcula / tokyo-night / jetbrains-light / github-light / shiki / newsprint；只改代码高亮配色，不改界面), sidebarWidth(160-500), terminalHeight(120-480), aiPanelWidth(280-800), aiPanelSide(left/right)。未知键会报错并列出可用键。',
+            '- set_setting {key,value}：改受限白名单设置并即时生效（持久化）。可写键：autoSave, showSidebar, alwaysOnTop, codeWrap, codeGuides, treeGuides, treeCounts, mdLineNumbers, mdScrollSync, readOnlyMode, treeRefreshInterval(1/2/3/5/10), sidebarFont(10-20), editorFont(10-24), treeExpandDefault(expand/collapse), openMode(tab/window), theme, codeStyle(auto / jetbrains-dark / darcula / tokyo-night / jetbrains-light / github-light / shiki / newsprint / pixyll / whitey；只改代码配色与编辑器观感，不改界面), sidebarWidth(160-500), terminalHeight(120-480), aiPanelWidth(280-800), aiPanelSide(left/right)。未知键会报错并列出可用键。',
             '- ai_new_session {title?,message?}：新建 AI 会话（本面板），message 非空会立刻发送（真实触发一次模型调用）；当前会话还没发过消息时不会重复创建，而是复用并重命名该会话。ai_switch_session {id}：切换会话。',
             '- type_text {text,target?}：模拟键盘输入到焦点元素（或 target 选择器匹配的输入框），**仅完全权限档**；press_key {key,target?}：模拟按键（Enter/Escape/F3/单字符等，冒泡触发对话框确认、Esc 关闭、全局快捷键），**仅完全权限档**。',
             '- flash {message,isError?}：在状态栏显示一条提示；refresh_explorer：刷新文件树。',
@@ -525,15 +525,17 @@ export const AI_BUILTIN_PROMPTS = [
     },
 ];
 
+// 账号预设：常用厂商的快捷模板。model 取当期主力型号（2026-11 核对），
+// 具体窗口/能力由模型配置表（model-catalog.js）在该模型 ID 被填入时自动回填。
 export const AI_PRESETS = [
     {id: 'deepseek', name: 'DeepSeek（OpenAI）', provider: 'openai', baseURL: 'https://api.deepseek.com/v1', model: 'deepseek-flash'},
     {id: 'deepseek-anthropic', name: 'DeepSeek（Anthropic）', provider: 'anthropic', baseURL: 'https://api.deepseek.com/anthropic', model: 'deepseek-flash'},
-    {id: 'qwen', name: '通义千问', provider: 'openai', baseURL: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen-plus'},
-    {id: 'glm', name: '智谱 GLM', provider: 'openai', baseURL: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-4.6'},
-    {id: 'kimi', name: 'Kimi', provider: 'openai', baseURL: 'https://api.moonshot.cn/v1', model: 'kimi-latest'},
+    {id: 'qwen', name: '通义千问', provider: 'openai', baseURL: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen3.7-plus'},
+    {id: 'glm', name: '智谱 GLM', provider: 'openai', baseURL: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-5.3'},
+    {id: 'kimi', name: 'Kimi', provider: 'openai', baseURL: 'https://api.moonshot.cn/v1', model: 'kimi-k3.1-pro'},
     {id: 'openrouter', name: 'OpenRouter', provider: 'openai', baseURL: 'https://openrouter.ai/api/v1', model: 'openrouter/auto'},
     {id: 'ollama', name: 'Ollama', provider: 'openai', baseURL: 'http://localhost:11434/v1', model: 'llama3.1'},
-    {id: 'anthropic', name: 'Anthropic 官方', provider: 'anthropic', baseURL: 'https://api.anthropic.com', model: 'claude-sonnet-4-5'},
+    {id: 'anthropic', name: 'Anthropic 官方', provider: 'anthropic', baseURL: 'https://api.anthropic.com', model: 'claude-sonnet-5-5'},
 ];
 
 export const AI_COMPACT_SYSTEM_PROMPT = [

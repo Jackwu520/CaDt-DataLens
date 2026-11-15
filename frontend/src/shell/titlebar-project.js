@@ -51,7 +51,7 @@ function appendProjectMain(parent, name, path) {
     const pathEl = document.createElement('div');
     pathEl.className = 'pp-path';
     pathEl.textContent = path;
-    pathEl.title = path;
+    pathEl.dataset.tip = path;
     main.append(nameEl, pathEl);
     parent.appendChild(main);
 }

@@ -140,7 +140,7 @@ function widgetButton(label, title, onClick) {
     button.type = 'button';
     button.className = 'ai-widget-btn';
     button.textContent = label;
-    button.title = title;
+    button.dataset.tip = title;
     button.addEventListener('click', (event) => {
         event.preventDefault();
         event.stopPropagation();
