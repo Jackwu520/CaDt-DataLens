@@ -50,6 +50,26 @@ export function buildSettlementNotice(info) {
     };
 }
 
+// 子代理提问通知（原语 6）：子代理没有用户 UI，问题转交父代理——由父决定答案，
+// 或由父升级为自家 ask_user 问用户。askId 是回答的寻址依据，必须带在文案里。
+export function buildAskNotice(info) {
+    const data = info || {};
+    const name = String(data.name || '子代理').trim() || '子代理';
+    const agentId = String(data.agentId || '').trim();
+    const askId = String(data.askId || '').trim();
+    const questions = Array.isArray(data.questions) ? data.questions : [];
+    const lines = ['［子代理提问 · ' + name + '］后台子代理「' + name + '」需要你拍板（id=' +
+        agentId + '，askId=' + askId + '）：'];
+    questions.forEach((q, index) => {
+        lines.push('Q' + (index + 1) + '：' + String((q && q.text) || q || ''));
+        const options = q && Array.isArray(q.options) ? q.options : [];
+        if (options.length) lines.push('  可选：' + options.join(' / '));
+    });
+    lines.push('请用 agent_send(agentId=\'' + agentId + '\', askId=\'' + askId + '\', message=\'你的回答\') 作答；' +
+        '不确定时可以先自己 ask_user 问用户，再回填。');
+    return {kind: 'subagent-ask', label: '子代理提问 · ' + name, content: lines.join('\n')};
+}
+
 export function createAIAgentNotices(ctx) {
     const sessionById = ctx.sessionById;
     const streamOf = ctx.streamOf;

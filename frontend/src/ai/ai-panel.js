@@ -6640,6 +6640,12 @@ export function createAIPanel(options) {
                 return await runSessionHistoryQuery(ctx.session, input);
             }
             case 'ask_user': {
+                // 子代理提问（原语 6）：子代理没有用户 UI，问题转交父代理作答。
+                // 判据：子会话不进 sessions 表且带 agentDepth——不能用「有 parentSessionId」，
+                // 支线会话也是普通持久化会话（F 阶段）。
+                if (ctx && ctx.agentDepth > 0 && ctx.session && !sessionById(ctx.session.id)) {
+                    return await subagentsMod.runSubAskQuestion(input, ctx);
+                }
                 return await runAskQuestion(input, ctx);
             }
             case 'plan_mode': {

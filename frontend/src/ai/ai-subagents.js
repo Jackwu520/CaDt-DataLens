@@ -6,7 +6,7 @@ import {iconSvg} from '../core/icons.js';
 import {aiClampInt, aiNowId, aiTextOf} from './ai-constants.js';
 import {AI_TOOL_DEFS} from './ai-tool-defs.js';
 import {inspectToolArguments} from './ai-tool-args.js';
-import {buildSettlementNotice} from './ai-agent-notices.js';
+import {buildSettlementNotice, buildAskNotice} from './ai-agent-notices.js';
 
 // 收件箱双队列的纯函数部分（导出供单测：消费顺序与来源前缀是「插队优先、主/用户可辨」的
 // 唯一依据，闭包里改动不易测，这里单独留出来）。
@@ -76,7 +76,7 @@ export function createAISubagents(ctx) {
     const AI_SUB_RECORDS_MAX = 20;
     const AI_SUB_SYSTEM_PROMPT = [
         '你是主代理派出的只读子代理：独立完成任务后输出最终结论，不与用户直接交互。',
-        '约束：只做只读探索（列目录 / 读文件 / 搜索 / 联网检索 / 记忆读取 / 技能加载）；不要尝试修改文件或执行命令；不要反问用户（你没有提问渠道）。',
+        '约束：只做只读探索（列目录 / 读文件 / 搜索 / 联网检索 / 记忆读取 / 技能加载）；不要尝试修改文件或执行命令；不要直接向最终用户发问（后台模式可用 ask_user 问主代理，由主代理决定）。',
         // 投递契约（§4.8）：投递层不截断（阶段 B 移除了 8000 字符上限），结论的紧凑性靠这里自律。
         '结果投递契约：主代理只会收到你的最终结论文本，看不到你的完整转录、工具输出或推理过程——最终结论必须自带结果与关键证据（path:line），不要指望父代理从过程记录里找信息。',
         '完成后输出一段结构化最终结论（要点 + 证据 path:line），它是你返回给主代理的唯一结果。',
@@ -115,6 +115,7 @@ export function createAISubagents(ctx) {
         let text = AI_SUB_SYSTEM_PROMPT;
         if (mode === 'background') {
             text += '\n你在后台运行：主代理不会等你结束，完成后由系统把结论通知给它；期间可以安心把探索做完整。';
+            text += '\n关键决策点可以用 ask_user 向主代理提问（由主代理决定答案，或转询用户）：等待回答期间你的轮次暂停，约 2 分钟没有回答就请基于现有上下文自行决定并继续。';
         }
         if (subAgentCanSpawn(depth)) {
             text += '\n需要并行 / 隔离调查时可以再用 spawn_agent 派下一层只读子代理（总数与层级受设置限制）；简单问题直接自己做。';
@@ -122,13 +123,16 @@ export function createAISubagents(ctx) {
         return text;
     }
 
-    function subToolsForScope(depth) {
+    function subToolsForScope(depth, mode) {
         const list = [
             AI_TOOL_DEFS.list_dir, AI_TOOL_DEFS.read_file, AI_TOOL_DEFS.search_text,
             AI_TOOL_DEFS.web_search, AI_TOOL_DEFS.web_fetch,
             AI_TOOL_DEFS.memory_list, AI_TOOL_DEFS.memory_read,
             AI_TOOL_DEFS.skill_use, AI_TOOL_DEFS.env_list,
         ];
+        // ask_user 只在后台模式挂载（§4.5 原语 6 的实现陷阱）：阻塞模式的父回合被 await
+        // 占住，没人能回答，挂上去必然 120s 超时——按模式硬性区分，不靠提示词自觉。
+        if (mode === 'background') list.push(AI_TOOL_DEFS.ask_user);
         if (subAgentCanSpawn(depth)) list.push(AI_TOOL_DEFS.spawn_agent);
         return list;
     }
@@ -774,6 +778,13 @@ export function createAISubagents(ctx) {
         return sessionById(sub && sub.parentSessionId) || sessionById(sub && sub.rootSessionId) || currentSession();
     }
 
+    // 会话信箱（面板后构造，惰性取）：结算与提问通知都经它投递，本模块不持有队列。
+    function noticesLike() {
+        if (typeof ctx.getNotices !== 'function') return null;
+        const mod = ctx.getNotices();
+        return mod && typeof mod.deliverAgentNotice === 'function' ? mod : null;
+    }
+
     // 建记录 + 注册 + 启动首轮，**不等待终态**（阶段 B 把 spawn 拆成 start / await 两段）。
     // mode='background'：超限直接报错、立即返回 agentId，主代理继续自己的回合；
     // mode='blocking'（默认）：等待空位后阻塞——行为与旧实现逐字一致，工具结果仍是唯一出口。
@@ -955,7 +966,7 @@ export function createAISubagents(ctx) {
         }
         const apiMessages = buildApiMessages(sub.session, index, s.systemPrompt);
         try {
-            const request = backend.AISendChat(s.roundId, s.profileCfg, apiMessages, subToolsForScope(sub.depth), getConfig().retryMax);
+            const request = backend.AISendChat(s.roundId, s.profileCfg, apiMessages, subToolsForScope(sub.depth, sub.mode), getConfig().retryMax);
             if (request && typeof request.then === 'function') {
                 request.catch((e) => finalizeSubAgent(sub, 'error', (e && e.message) || String(e || '请求失败')));
             }
@@ -998,7 +1009,7 @@ export function createAISubagents(ctx) {
             }
             let result = null;
             try {
-                const allowed = new Set(subToolsForScope(sub.depth).map((tool) => tool.name));
+                const allowed = new Set(subToolsForScope(sub.depth, sub.mode).map((tool) => tool.name));
                 if (!allowed.has(call.name)) throw new Error('子代理不允许工具：' + call.name);
                 const parsed = call.arguments ? JSON.parse(call.arguments) : {};
                 result = await executeTool(call.name, parsed, {session: sub.session, toolMessage, stream: s, agentDepth: sub.depth});
@@ -1184,6 +1195,8 @@ export function createAISubagents(ctx) {
         if (sub.state !== 'running') return;
         sub.state = state;
         sub.note = note || '';
+        // 兜底：任何终态都不留挂起的提问（否则 ask_user 的 await 永远不返回）
+        if (sub.inbox && sub.inbox.ask) settleSubAsk(sub, '', 'stopped');
         if (sub.renderTimer) {
             clearTimeout(sub.renderTimer);
             sub.renderTimer = 0;
@@ -1243,9 +1256,9 @@ export function createAISubagents(ctx) {
         // 结算通知（原语 5 / 7）：后台模式专属——阻塞模式的结论已经作为工具结果交给主代理，
         // 再注入一份就是重复上下文。stopped 由发起方（用户 / agent_stop）自己知道，不发通知。
         if (sub.mode === 'background' && (state === 'done' || state === 'error') && session) {
-            const notices = typeof ctx.getNotices === 'function' ? ctx.getNotices() : null;
-            if (notices && typeof notices.deliverAgentNotice === 'function') {
-                notices.deliverAgentNotice(session, buildSettlementNotice({
+            const hub = noticesLike();
+            if (hub) {
+                hub.deliverAgentNotice(session, buildSettlementNotice({
                     name: sub.name, agentId: sub.id, state, summary, note,
                     unconsumed: unseenInboxCount(sub),
                 }));
@@ -1323,6 +1336,8 @@ export function createAISubagents(ctx) {
         if (!sub || sub.state !== 'running') return false;
         // 插队标记必须清掉：否则 AIStop 引发的事件会被误判成「插队续轮」
         sub.steerKick = false;
+        // 挂起中的提问先落定：否则 ask_user 那个 await 会一直悬着（工具轮不算结束）
+        settleSubAsk(sub, '', 'stopped');
         sub.flow.stopped = true;
         try {
             if (backend.AIStop) backend.AIStop(sub.id);
@@ -1498,8 +1513,95 @@ export function createAISubagents(ctx) {
         throw new Error('工具「' + name + '」尚未启用');
     }
 
-    // 提问回答占位（阶段 D 实现真正的 sub.inbox.ask 落定）
-    function answerSubAsk() {
+    // ---- 子代理提问（原语 6）：子发问 → 父作答 → 子续轮 ----
+
+    // 提问超时：默认 120s 后按 ai_decide 语义放行（不悬挂，不让父代理的一次疏忽卡死子代理）。
+    const SUB_ASK_TIMEOUT_SEC = 120;
+
+    function subAskQuestions(input) {
+        const list = Array.isArray(input && input.questions) ? input.questions : [];
+        const out = [];
+        for (const q of list.slice(0, 5)) {
+            const text = aiTextOf(q && q.question).trim();
+            if (!text) continue;
+            const options = Array.isArray(q && q.options)
+                ? q.options.map((opt) => aiTextOf(opt && opt.label).trim()).filter(Boolean)
+                : [];
+            out.push({text, options});
+        }
+        return out;
+    }
+
+    function askAnswerText(answer, how) {
+        if (how === 'timeout') return '主代理未及时回答，请基于现有上下文自行决定并继续。';
+        if (how === 'stopped') return '主代理已停止本次任务，无需再回答。';
+        return '主代理的回答：' + String(answer || '').trim();
+    }
+
+    // 落定挂起的提问（回答 / 超时 / 子代理被停止）。
+    function settleSubAsk(sub, answer, how) {
+        const ask = sub && sub.inbox ? sub.inbox.ask : null;
+        if (!ask) return false;
+        sub.inbox.ask = null;
+        if (ask.timer) {
+            clearTimeout(ask.timer);
+            ask.timer = 0;
+        }
+        // 记住 askId：超时后父代理迟到的回答要降级为普通排队消息并标注（不报错）
+        sub.lastAskId = ask.askId;
+        refreshHeadChips();
+        refreshAgentViewIfOpen(sub.key);
+        try {
+            if (ask.resolve) ask.resolve(askAnswerText(answer, how));
+        } catch (e) {}
+        return true;
+    }
+
+    // 子代理侧 ask_user 执行体（executeTool 的 ask_user case 转调）：
+    // 不建 pendingAsks UI、不挂用户输入区——挂 sub.inbox.ask 并向父代理投递提问卡片。
+    // **仅后台模式可用**：阻塞模式的父回合被 await 占住，没人能回答，必然超时。
+    function runSubAskQuestion(input, ctx) {
+        const sub = subAgents.get(ctx && ctx.session && ctx.session.id);
+        if (!sub) throw new Error('子代理上下文已失效（可能已被停止）');
+        if (sub.mode !== 'background') {
+            throw new Error('阻塞模式的子代理不能向主代理提问（主代理正等你的结论）：请基于现有信息自行决定并完成');
+        }
+        if (sub.inbox.ask) throw new Error('已有一个等待主代理回答的提问（askId=' + sub.inbox.ask.askId + '），请等回答或先自行决定');
+        const questions = subAskQuestions(input);
+        if (!questions.length) throw new Error('ask_user 至少需要一个有效问题');
+        const askId = (ctx.toolMessage && ctx.toolMessage.toolCallId) || aiNowId('ask-');
+        const entry = {askId, questions, resolve: null, timer: 0, createdAt: Date.now()};
+        sub.inbox.ask = entry;
+        const parent = sessionById(sub.parentSessionId);
+        if (parent) {
+            const hub = noticesLike();
+            if (hub) hub.deliverAgentNotice(parent, buildAskNotice({
+                name: sub.name, agentId: sub.id, askId, questions,
+            }));
+        }
+        refreshHeadChips();
+        refreshAgentViewIfOpen(sub.key);
+        const timeoutMs = SUB_ASK_TIMEOUT_SEC * 1000;
+        entry.timer = setTimeout(() => {
+            if (sub.inbox.ask !== entry) return;
+            settleSubAsk(sub, '', 'timeout');
+        }, timeoutMs);
+        return new Promise((resolve) => {
+            entry.resolve = resolve;
+        });
+    }
+
+    // 回答路由：命中挂起提问就地落定；askId 是已超时的那次则降级为普通排队消息。
+    function answerSubAsk(sub, askId, message) {
+        const ask = sub && sub.inbox ? sub.inbox.ask : null;
+        if (ask && (!askId || ask.askId === askId)) {
+            settleSubAsk(sub, message, 'answered');
+            return '已回答子代理「' + sub.name + '」的提问（askId=' + ask.askId + '）：它会把这条当作提问结果继续。';
+        }
+        if (askId && sub.lastAskId === askId) {
+            queueSubAgentMessage(sub, '（迟到的回答）' + message, {from: 'agent'});
+            return '该提问已超时放行（子代理已自行决定继续），回答已作为普通消息排队，并标注「迟到的回答」。';
+        }
         return '';
     }
 
@@ -1524,6 +1626,7 @@ export function createAISubagents(ctx) {
         pushSubAgentRecord, unseenInboxCount, dropSubAgentRecordsOf,
         consumeSubInbox, queueSubAgentMessage, steerSubAgent, stopSubAgent, subRunDigest,
         reviveSubAgent, sendToSubAgent, stopSubAgentByInput, handleAgentTool, answerSubAsk,
+        runSubAskQuestion, settleSubAsk,
         subAgents, subAgentTranscripts, subAgentRecords,
         bgJobSnapshot, notifyBgListeners, bridgeStopBgJob,
     };

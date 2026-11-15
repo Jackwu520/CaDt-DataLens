@@ -3,7 +3,7 @@
 // 信箱深度与溢出策略（会话投递拒收 / 结算合并）、折叠成 user 消息、唤醒被拒后内容回填。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {buildSettlementNotice, createAIAgentNotices, NOTICE_DEPTH_MAX} from './ai-agent-notices.js';
+import {buildSettlementNotice, buildAskNotice, createAIAgentNotices, NOTICE_DEPTH_MAX} from './ai-agent-notices.js';
 
 function makeHarness(overrides) {
     const opts = overrides || {};
@@ -58,6 +58,26 @@ test('buildSettlementNotice：失败与停止的文案各自成句', () => {
     assert.ok(stopped.content.includes('已停止'));
     assert.ok(stopped.content.includes('已读 3 个文件'));
     assert.ok(stopped.content.includes('2 条未消费消息'));
+});
+
+test('buildAskNotice：提问通知带 askId 与作答方式，问题与选项都在', () => {
+    const notice = buildAskNotice({
+        name: '依赖调查',
+        agentId: 'sub-9',
+        askId: 'call_12',
+        questions: [
+            {text: '要不要包含 devDependencies？', options: ['包含', '不包含']},
+            {text: '目标是小程序还是网页？'},
+        ],
+    });
+    assert.equal(notice.kind, 'subagent-ask');
+    assert.equal(notice.label, '子代理提问 · 依赖调查');
+    assert.ok(notice.content.startsWith('［子代理提问 · 依赖调查］'));
+    assert.ok(notice.content.includes('askId=call_12'), 'askId 是回答的寻址依据');
+    assert.ok(notice.content.includes('Q1：要不要包含 devDependencies？'));
+    assert.ok(notice.content.includes('可选：包含 / 不包含'));
+    assert.ok(notice.content.includes('Q2：目标是小程序还是网页？'));
+    assert.ok(notice.content.includes("agent_send(agentId='sub-9'"), '要给出可直接照抄的作答形式');
 });
 
 test('投递：空闲会话立刻唤醒，忙则排队', async () => {
