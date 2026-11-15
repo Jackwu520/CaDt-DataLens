@@ -11001,7 +11001,7 @@ export function createAIPanel(options) {
         if (fill) {
             panel.style.width = '';
         } else {
-            const width = aiClamp(Number(settings.aiPanelWidth) || 380, 280, 640);
+            const width = aiClamp(Number(settings.aiPanelWidth) || 380, 280, Math.max(640, Math.round(window.innerWidth * 0.6)));
             settings.aiPanelWidth = width;
             panel.style.width = width + 'px';
         }
@@ -11302,18 +11302,20 @@ export function createAIPanel(options) {
 
     function moveResize(e) {
         if (!drag || drag.kind !== 'resize') return;
-        // 面板在右：向左拖变宽（-dx）；面板在左：向右拖变宽（+dx）
-        const delta = e.clientX - drag.startX;
+        // 面板在右：向左拖变宽（-dx）；面板在左：向右拖变宽（+dx）。
+        // 上限不写死：大屏分屏用 AI 面板常要拖到半屏宽（此前硬顶 640px 被卡）——
+        // 给视口 60%，至少 640 保底小窗体验。
+        const maxWidth = Math.max(640, Math.round(window.innerWidth * 0.6));
         const width = panelSide() === 'left'
-            ? aiClamp(drag.startWidth + delta, 280, 640)
-            : aiClamp(drag.startWidth - delta, 280, 640);
+            ? aiClamp(drag.startWidth + delta, 280, maxWidth)
+            : aiClamp(drag.startWidth - delta, 280, maxWidth);
         panel.style.width = width + 'px';
     }
 
     function endResize() {
         if (!drag) return;
         if (drag.kind === 'resize') {
-            settings.aiPanelWidth = aiClamp(panel.offsetWidth, 280, 640);
+            settings.aiPanelWidth = aiClamp(panel.offsetWidth, 280, Math.max(640, Math.round(window.innerWidth * 0.6)));
             saveSettings();
             onLayout();
         }

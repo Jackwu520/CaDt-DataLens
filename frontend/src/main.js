@@ -426,7 +426,7 @@ const APP_SETTING_RULES = {
     theme: {type: 'theme'},
     sidebarWidth: {type: 'number', min: 160, max: 500},
     terminalHeight: {type: 'number', min: 120, max: 480},
-    aiPanelWidth: {type: 'number', min: 280, max: 800},
+    aiPanelWidth: {type: 'number', min: 280, max: 2000},
     aiPanelSide: {type: 'enum', values: ['right', 'left']},
 };
 
@@ -1316,7 +1316,8 @@ settings.sidebarFont = Number(settings.sidebarFont);
 if (!Number.isFinite(settings.sidebarFont)) settings.sidebarFont = 12.5;
 settings.sidebarFont = Math.min(20, Math.max(10, settings.sidebarFont));
 settings.aiPanelOpen = !!settings.aiPanelOpen;
-settings.aiPanelWidth = Math.min(640, Math.max(280, Number(settings.aiPanelWidth) || 380));
+// 上限不写死：大屏分屏用 AI 面板常要拖到半屏宽（视口 60%，至少 640）
+  settings.aiPanelWidth = Math.min(Math.max(640, Math.round(window.innerWidth * 0.6)), Math.max(280, Number(settings.aiPanelWidth) || 380));
 settings.aiFloatMode = ['dock', 'fullscreen'].includes(settings.aiFloatMode) ? settings.aiFloatMode : 'dock';
 // AI 面板停靠侧（dock 分屏模式下与内容区互换左右）
 settings.aiPanelSide = settings.aiPanelSide === 'left' ? 'left' : 'right';
