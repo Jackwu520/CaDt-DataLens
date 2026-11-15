@@ -1089,6 +1089,7 @@ export function createAIPanel(options) {
         if (role === 'user') {
             message.turnStartedAt = Number(raw.turnStartedAt) || 0;
             message.systemNote = raw.systemNote === true;
+            message.silent = raw.silent === true;
             if (raw.kind === 'model-switch') {
                 message.kind = 'model-switch';
                 if (raw.modelNote && typeof raw.modelNote === 'object') {
@@ -3047,6 +3048,9 @@ export function createAIPanel(options) {
     function renderMessage(message, index, session, parent, options) {
         const wrap = document.createElement('div');
         wrap.className = 'ai-msg ' + message.role;
+        // silent 机械提醒（给模型的注入块）：保留 DOM 与索引（buildApiMessages / 定位都用），
+        // 视觉隐藏——用户不需要看模型上下文的内部维护信息
+        if (message.silent) wrap.classList.add('msg-silent');
         // 归档回看：索引指向的是「当前 messages」，直接复用会让复制/编辑重发/重新生成
         // 打到错误的条目。标记只读并清掉索引，appendActions 会据此跳过全部操作按钮。
         const archivedView = !!(options && options.archived);
@@ -8299,6 +8303,7 @@ export function createAIPanel(options) {
                     '已完成的步骤请立即 todo_write 标 completed，继续做的保持 in_progress；' +
                     '不要在总结里口头说完成而清单没有更新。</task_todos_check>',
                 systemNote: true,
+                silent: true, // 给模型的机械提醒，不在消息流里渲染（纯噪音）
                 ts: Date.now(),
             });
             persistSessions();
