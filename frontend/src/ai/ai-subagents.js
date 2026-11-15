@@ -1506,10 +1506,68 @@ export function createAISubagents(ctx) {
             '过程记录：\n' + subRunDigest(record.key);
     }
 
+    // wait_agent 执行体：阻塞等指定 / 任一子代理终态，直接返回它的结论（原语 1 的「汇总」
+    // 最短路径）。轮询而非 await promise：等待期间必须能看见「用户停止了主回合」，
+    // 否则停止后最长 600s 才有响应，形同悬挂（§7 风险表）。
+    function subSettledText(record) {
+        const stateText = {done: '已完成', error: '失败', stopped: '已停止'}[record.state] || record.state;
+        return '子代理「' + record.name + '」' + stateText +
+            '（轮次 ' + (record.rounds || 0) + ' · 用时 ' + Math.round((record.ms || 0) / 1000) + 's' +
+            (record.tokens ? ' · ' + record.tokens + ' tokens' : '') + '）\n' +
+            (record.summary || '（无结论）');
+    }
+
+    function subRunningSnapshot(sub) {
+        return '子代理「' + sub.name + '」仍在运行（轮次 ' + ((sub.flow && sub.flow.roundNo) || 0) +
+            '，已用 ' + Math.round((Date.now() - sub.startedAt) / 1000) + 's' +
+            (unseenInboxCount(sub) ? '，收件箱待处理 ' + unseenInboxCount(sub) + ' 条' : '') + '）。';
+    }
+
+    async function waitForSubAgent(input, ctx) {
+        const agentId = aiTextOf(input && input.agentId).trim();
+        const timeoutSec = aiClampInt(input && input.timeoutSec, 0, 600, 120);
+        const owner = ctx && ctx.session ? rootSessionIdOf(ctx.session) : '';
+        const belongs = (sessionId) => !owner || !sessionId || sessionId === owner;
+        const live = agentId ? subAgents.get(agentId) : null;
+        if (agentId && !live) {
+            const record = subAgentRecords.get(agentId);
+            if (!record) throw new Error('找不到子代理 ' + agentId + '（可能已被清理）');
+            return '（该子代理此前已结束，无需等待）\n' + subSettledText(record);
+        }
+        const watched = agentId
+            ? [live]
+            : [...subAgents.values()].filter((sub) => belongs(sub.rootSessionId || sub.parentSessionId));
+        if (!watched.length) {
+            return '当前没有运行中的子代理可等待。可用 spawn_agent(mode=\'background\') 派出，或 agent_send 唤醒已完成的。';
+        }
+        const deadline = timeoutSec > 0 ? Date.now() + timeoutSec * 1000 : 0;
+        const stopSeen = () => !!(ctx && ctx.stream && ctx.stream.stopped);
+        for (;;) {
+            // 用户停止主回合：立即返回状态快照（不是等超时）
+            if (stopSeen()) {
+                const alive = watched.filter((sub) => subAgents.has(sub.id));
+                return '等待被用户停止。' + (alive.length ? alive.map(subRunningSnapshot).join(' ') : '子代理均已结束。') +
+                    '\n可稍后再 wait_agent，或让它们完成时通知你。';
+            }
+            for (const sub of watched) {
+                if (subAgents.has(sub.id)) continue;
+                const record = subAgentRecords.get(sub.id);
+                if (record) return subSettledText(record);
+                return '子代理「' + sub.name + '」已结束但记录不可用（可能被清理）。';
+            }
+            if (deadline && Date.now() >= deadline) {
+                return '等待超时（' + timeoutSec + 's）：' + watched.map(subRunningSnapshot).join(' ') +
+                    '\n可继续 wait_agent，或先做别的——它完成时会通知你。';
+            }
+            await aiDelay(250);
+        }
+    }
+
     // 工具分发薄壳（panel 的 agent_tool case 转调；各阶段在此追加）
     function handleAgentTool(name, input, ctx) {
         if (name === 'agent_send') return sendToSubAgent(input, ctx);
         if (name === 'agent_stop') return stopSubAgentByInput(input);
+        if (name === 'wait_agent') return waitForSubAgent(input, ctx);
         throw new Error('工具「' + name + '」尚未启用');
     }
 
@@ -1626,7 +1684,7 @@ export function createAISubagents(ctx) {
         pushSubAgentRecord, unseenInboxCount, dropSubAgentRecordsOf,
         consumeSubInbox, queueSubAgentMessage, steerSubAgent, stopSubAgent, subRunDigest,
         reviveSubAgent, sendToSubAgent, stopSubAgentByInput, handleAgentTool, answerSubAsk,
-        runSubAskQuestion, settleSubAsk,
+        runSubAskQuestion, settleSubAsk, waitForSubAgent,
         subAgents, subAgentTranscripts, subAgentRecords,
         bgJobSnapshot, notifyBgListeners, bridgeStopBgJob,
     };

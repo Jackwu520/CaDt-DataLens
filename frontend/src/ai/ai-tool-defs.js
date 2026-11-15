@@ -473,6 +473,17 @@ export const AI_TOOL_DEFS = {
             required: ['agentId'],
         },
     },
+    wait_agent: {
+        name: 'wait_agent',
+        description: '阻塞等待子代理结束并直接返回它的结论。省略 agentId 时等任一运行中的子代理（谁先完成返回谁）。用于「并行派出多个方向后汇总」：不用等全部结束就能拿到第一个可用结论。超时返回当前状态快照（不报错），之后它完成仍会通知你。',
+        parameters: {
+            type: 'object',
+            properties: {
+                agentId: {type: 'string', description: '要等的子代理 id；省略 = 任一运行中的子代理'},
+                timeoutSec: {type: 'number', description: '最长等待秒数 0–600，默认 120；0 = 不限时（不建议）'},
+            },
+        },
+    },
     web_search: {
         name: 'web_search',
         description: '联网搜索（Bing）：返回标题、URL、摘要与日期。需要最新信息、官方文档或外部事实时先搜索，再用 web_fetch 打开具体结果；引用时附来源 URL。不能访问本机/内网地址。',
@@ -648,6 +659,7 @@ export const AI_TOOL_CATALOG = {
     spawn_agent: {group: 'task', blurb: '并行调查 / 多视角审查（只读子代理，数量与递归层级受设置限制）'},
     agent_send: {group: 'task', blurb: '给子代理补线索（排队）/ 插队纠正 / 唤醒已完成子代理继续'},
     agent_stop: {group: 'task', blurb: '停止子代理并收集它的过程记录'},
+    wait_agent: {group: 'task', blurb: '阻塞等子代理结论（并行派出后汇总用）'},
     schedule_list: {group: 'task', blurb: '定时任务管理'},
     schedule_create: {group: 'task', blurb: '定时任务管理'},
     schedule_delete: {group: 'task', blurb: '定时任务管理'},
@@ -726,7 +738,8 @@ export function createAIToolDefs(ctx) {
         // 子代理：写权限档与计划模式可用（子代理只读探索正是计划模式的刚需）。
         // agent_send / agent_stop 与 spawn_agent 同档：能派就能补线索与收回，否则后台派单无法治理。
         if (AI_WRITE_SCOPES.includes(scope) || planMode) {
-            list.push(AI_TOOL_DEFS.spawn_agent, AI_TOOL_DEFS.agent_send, AI_TOOL_DEFS.agent_stop);
+            list.push(AI_TOOL_DEFS.spawn_agent, AI_TOOL_DEFS.agent_send, AI_TOOL_DEFS.agent_stop,
+                AI_TOOL_DEFS.wait_agent);
         }
         if (scope === 'full' && !planMode) list.push(AI_TOOL_DEFS.browser_evaluate);
         // MCP：写权限档及以上注入（能力未知，只读档不该拿到）；计划模式不注入（外部副作用不可控）。
@@ -780,7 +793,7 @@ export function createAIToolDefs(ctx) {
             '- 读文档用 web_fetch；要交互用内嵌浏览器；要操作或查看应用本身用 app_control。',
             '- 写文件前必须 read_file；改动尽量最小、可回滚；写完说明改了什么、怎么验证。',
             '- 工具报错先修正参数或换路径，不要原样重试；连续失败就停下来说明情况。',
-            '- 多步任务先 todo_write 规划，值得并行/隔离的调查用 spawn_agent。',
+            '- 多步任务先 todo_write 规划；值得并行的多项调查用 spawn_agent(mode=\'background\') 一次派出、期间继续自己的工作，完成会逐个通知，需要汇总时 wait_agent。单一简单委派仍用默认阻塞模式。',
         );
         const hasAll = (names) => names.every((name) => available.has(name));
         const chains = [
@@ -790,7 +803,7 @@ export function createAIToolDefs(ctx) {
             {need: ['web_search'], text: '外部资料：web_search 找来源 → web_fetch 读正文 → 引用附 URL'},
             {need: ['browser_navigate', 'browser_snapshot'], text: '网页操作：browser_navigate → browser_snapshot 看结构 → 需要时 click/type → 再 snapshot/screenshot 确认'},
             {need: ['app_control'], text: '应用界面：app_control get_state → screenshot 看图核对 → 改视图/设置 → get_state 复核'},
-            {need: ['spawn_agent'], text: '并行调查：spawn_agent 派出多个方向 → 汇总结论'},
+            {need: ['spawn_agent'], text: '并行调查：spawn_agent(mode=background) 一次派出多个方向 → 继续自己的工作 → wait_agent 汇总或等完成通知'},
         ].filter((chain) => hasAll(chain.need));
         if (chains.length) {
             lines.push('典型任务 → 工具链：', ...chains.map((chain) => '- ' + chain.text));
