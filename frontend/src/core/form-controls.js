@@ -1,0 +1,92 @@
+// form-controls.js：表单控件的统一封装（规范见 docs/frontend-form-controls.md）。
+//
+// 此前项目只有 CSS class 约定（.set-switch / .opt-select / .dlg-input / .ai-settings-textarea）
+// 与 settings-select.js 增强器，运行时动态创建的控件散在各域里手写，于是不断冒出
+// 浏览器原生外观。这里把四类控件收成工厂：新 UI 一律经本模块创建，或照规范里的
+// 静态结构写；禁止再写裸 <input> / <select> / <textarea> / <input type=checkbox|radio>。
+//
+// 每个工厂返回 {element, control}：element 是要 append 进 DOM 的节点，
+// control 是值真源（原生控件）——沿用 settings-select「原生控件仍是值真源」的惯例。
+// 本模块刻意不依赖任何 deps/ctx，属于 core 层的纯 DOM 构造函数。
+
+const CONTROL_CLASS = {
+    select: 'opt-select',
+    input: 'dlg-input',
+    textarea: 'dlg-input ai-settings-textarea',
+};
+
+function applyAttrs(control, o) {
+    for (const [key, value] of Object.entries(o.attrs || {})) {
+        if (value == null || value === false) continue;
+        control.setAttribute(key, value === true ? '' : String(value));
+    }
+}
+
+function applyCommon(control, o) {
+    if (o.id) control.id = o.id;
+    if (o.className) control.className += (control.className ? ' ' : '') + o.className;
+    if (o.value != null) control.value = String(o.value);
+    if (o.placeholder != null) control.placeholder = String(o.placeholder);
+    if (o.title != null) control.title = String(o.title);
+    if (o.disabled) control.disabled = true;
+    if (o.spellcheck === false) control.spellcheck = false;
+    if (o.autocomplete) control.autocomplete = o.autocomplete;
+    if (typeof o.onChange === 'function') control.addEventListener('change', o.onChange);
+    if (typeof o.onInput === 'function') control.addEventListener('input', o.onInput);
+    applyAttrs(control, o);
+    return control;
+}
+
+// 开关：必须保持 label.set-switch > (input + track + thumb) 三段结构，
+// 标签文字放在行内的 .set-title / 外部元素，不要塞进 label（会挤坏 track 布局）。
+export function createSwitch(o = {}) {
+    const element = document.createElement('label');
+    element.className = 'set-switch';
+    const control = document.createElement('input');
+    control.type = 'checkbox';
+    control.checked = !!o.checked;
+    if (o.id) control.id = o.id;
+    if (o.disabled) control.disabled = true;
+    if (o.title != null) element.title = String(o.title);
+    if (typeof o.onChange === 'function') control.addEventListener('change', o.onChange);
+    applyAttrs(control, o);
+    const track = document.createElement('span');
+    track.className = 'set-switch-track';
+    const thumb = document.createElement('span');
+    thumb.className = 'set-switch-thumb';
+    element.append(control, track, thumb);
+    return {element, control};
+}
+
+export function createSelect(o = {}) {
+    const control = document.createElement('select');
+    control.className = CONTROL_CLASS.select;
+    for (const option of o.options || []) {
+        const item = document.createElement('option');
+        item.value = String(option.value == null ? '' : option.value);
+        item.textContent = String(option.label == null ? item.value : option.label);
+        if (option.selected) item.selected = true;
+        control.appendChild(item);
+    }
+    applyCommon(control, o);
+    return {element: control, control};
+}
+
+export function createInput(o = {}) {
+    const control = document.createElement('input');
+    control.type = o.type || 'text';
+    control.className = CONTROL_CLASS.input;
+    if (o.min != null) control.min = String(o.min);
+    if (o.max != null) control.max = String(o.max);
+    if (o.step != null) control.step = String(o.step);
+    applyCommon(control, o);
+    return {element: control, control};
+}
+
+export function createTextarea(o = {}) {
+    const control = document.createElement('textarea');
+    control.className = CONTROL_CLASS.textarea;
+    if (o.rows) control.rows = Number(o.rows);
+    applyCommon(control, o);
+    return {element: control, control};
+}
