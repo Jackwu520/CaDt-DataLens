@@ -7,7 +7,16 @@ import {createImageLightbox} from '../shell/image-lightbox.js';
 import {createFileIcon} from '../core/fileicons.js';
 import {buildSessionOutlineItems} from './session-outline.js';
 import {createSessionDiskStore} from './ai-session-disk.js';
-import {replaySessionLog} from './ai-session-store.js';
+import {replaySessionLog, isSilentInjection} from './ai-session-store.js';
+import {redactScopePaths} from './ai-scope-redact.js';
+import {
+    addReadRoot,
+    normalizeReadRoot,
+    normalizeReadRoots,
+    readRootCoversAny,
+    sensitiveReadDenyReason,
+    userNamedPath,
+} from './ai-read-roots.js';
 import {
     analyzeDangerousCommand,
     analyzeReadOnlyCommand,
@@ -619,6 +628,8 @@ export function createAIPanel(options) {
             // 新会话默认权限档（设置 → AI 助手 → 新会话）；只对新建会话生效，历史会话保持各自设置
             defaultScope: normalizeDefaultScope(stored.defaultScope),
             approvedPaths: Array.isArray(stored.approvedPaths) ? stored.approvedPaths : [],
+            // 全局「总是允许」的工作区外读根（读审批卡「总是」档；判定见 ai-read-roots.js）
+            approvedReadRoots: normalizeReadRoots(stored.approvedReadRoots),
             disabledSkills: Array.isArray(stored.disabledSkills) ? stored.disabledSkills : [],
             prompts: [],
             preferences: [],
@@ -1098,7 +1109,8 @@ export function createAIPanel(options) {
         if (role === 'user') {
             message.turnStartedAt = Number(raw.turnStartedAt) || 0;
             message.systemNote = raw.systemNote === true;
-            message.silent = raw.silent === true;
+            // 历史会话没有 silent 字段：按内容识别机械提醒注入块并回填，旧数据同样隐藏
+            message.silent = raw.silent === true || isSilentInjection(message.content);
             message.dedupeKey = aiTextOf(raw.dedupeKey).slice(0, 40);
             if (raw.kind === 'model-switch') {
                 message.kind = 'model-switch';
@@ -1283,6 +1295,8 @@ export function createAIPanel(options) {
             approvedPaths: Array.isArray(raw.approvedPaths)
                 ? raw.approvedPaths.filter((path) => typeof path === 'string' && path).slice(0, 200)
                 : [],
+            // 已批准的工作区外读根（读审批卡「本会话记住」；目录树语义，判定见 ai-read-roots.js）
+            readRoots: normalizeReadRoots(raw.readRoots),
             // 支线对话：指向母会话 id（普通会话为空）。不嵌套——读盘时也压成一层的语义。
             sideOf: aiTextOf(raw.sideOf),
         };
@@ -1313,6 +1327,7 @@ export function createAIPanel(options) {
             reminders: [],
             changes: [],
             approvedPaths: [],
+            readRoots: [],
             sideOf: '',
         };
     }
@@ -2736,9 +2751,21 @@ export function createAIPanel(options) {
             try {
                 abs = aiResolveScopePath(raw, currentSession());
             } catch (e) {
-                img.classList.add('ai-img-broken');
-                img.title = '图片无法加载：' + ((e && e.message) || e);
-                continue;
+                // 越界图片：已批准读根（会话/父会话/全局）则放行展示；渲染时机没有轮次上下文，
+                // 不弹审批。敏感目录判定只在读取链路（resolveReadPathWithApproval）做——这里
+                // 同步拿不到 appDir，且展示放行不产生读取面，不对称可接受。
+                const session = currentSession();
+                const parent = session && session.parentSessionId ? sessionById(session.parentSessionId) : null;
+                const covered = e && e.outOfWorkspace &&
+                    (readRootCoversAny(readRootsOf(session), raw) ||
+                        (parent ? readRootCoversAny(readRootsOf(parent), raw) : false) ||
+                        readRootCoversAny(config.approvedReadRoots, raw));
+                if (!covered) {
+                    img.classList.add('ai-img-broken');
+                    img.title = '图片无法加载：' + ((e && e.message) || e);
+                    continue;
+                }
+                abs = aiNormalizePath(raw);
             }
             backend.ReadImageAsDataURL(abs).then((url) => {
                 if (url) {
@@ -4518,8 +4545,98 @@ export function createAIPanel(options) {
         }
         if (!root) throw new Error('当前没有工作区范围，请先打开文件或文件夹');
         const path = absolute ? aiNormalizePath(rel) : aiNormalizePath(aiJoinPath(root, rel));
-        if (!aiPathInside(root, path)) throw new Error('路径超出工作区范围：' + rel);
+        if (!aiPathInside(root, path)) {
+            // 读工具（read_file/list_dir）捕获该标记走授权链 resolveReadPathWithApproval
+            // （点名直读 / 已批准读根 / 按档审批）；写工具不捕获，行为与文案保持不变。
+            const err = new Error('路径超出工作区范围：' + rel);
+            err.outOfWorkspace = true;
+            err.absPath = path;
+            throw err;
+        }
         return path;
+    }
+
+    function readRootsOf(session) {
+        return normalizeReadRoots(session && session.readRoots);
+    }
+
+    // 审批记住的目录粒度：越界文件的父目录；父目录是盘符根时退化为文件自身
+    // （避免一次批准整个盘）。
+    function readRootDirOf(abs) {
+        const path = normalizeReadRoot(abs);
+        const idx = path.lastIndexOf('/');
+        if (idx < 0) return path;
+        const parent = path.slice(0, idx);
+        return /^[A-Za-z]:$/.test(parent) ? path : parent;
+    }
+
+    // 工作区外读取的授权链（read_file/list_dir 共用）。按「谁想读」分流：
+    // ① 应用数据目录任何档位硬拒（密钥不进转录落盘）；
+    // ② 用户点名（含子代理回查父会话）直接读——审批只区分「谁想读」；
+    // ③ 已批准读根（会话 readRoots / config.approvedReadRoots / 项目规则 Read(...)）直接读；
+    // ④ auto 档直接读（契约即非风险自主执行，命令通道本就绕行）；read/edit 档弹审批卡；
+    // ⑤ 子代理永不弹卡（接管卡按 currentSession 匹配，子会话不可达会永久悬挂），指引报回主代理。
+    // full 档在 aiResolveScopePath 就已放行。留痕口径：点名/已批准的例行读不记审计，
+    // 只记「模型起意」的放行（auto / 项目规则）与全部拒绝。
+    async function resolveReadPathWithApproval(ctx, toolName, inputPath) {
+        const session = ctx && ctx.session;
+        let abs = '';
+        try {
+            return {ok: true, path: aiResolveScopePath(inputPath, session)};
+        } catch (e) {
+            if (!e || !e.outOfWorkspace) throw e;
+            abs = e.absPath;
+        }
+        const denyReason = sensitiveReadDenyReason(abs, await getAIAppDir());
+        if (denyReason) return {ok: false, message: denyReason};
+        const parent = session && session.parentSessionId ? sessionById(session.parentSessionId) : null;
+        const named = userNamedPath(session, abs) || (parent ? userNamedPath(parent, abs) : false);
+        const covered = readRootCoversAny(readRootsOf(session), abs) ||
+            (parent ? readRootCoversAny(readRootsOf(parent), abs) : false) ||
+            readRootCoversAny(config.approvedReadRoots, abs);
+        const decision = decidePermission({
+            scope: currentScopeOf(session),
+            kind: 'read',
+            rules: await ensureProjectRules(false),
+            subject: writeRuleSubject(abs),
+            sessionAllow: named || covered,
+        });
+        if (decision.decision === 'deny') {
+            logPermission('read', abs, 'deny', decision.source, decision.rule);
+            return {ok: false, message: '项目权限规则禁止读取该路径（' + decision.rule + '）。'};
+        }
+        if (decision.decision === 'allow') {
+            if (!named && !covered) logPermission('read', abs, 'allow', decision.source, decision.rule);
+            return {ok: true, path: abs};
+        }
+        if (session && session.parentSessionId) {
+            return {ok: false, message: '该路径在工作区外且未获授权（权限档 ' + currentScopeOf(session) +
+                '）。子代理不弹审批卡：请通过 agent_send 向主代理说明需要读取的目录，' +
+                '由主代理发起授权；获准后重试本读取。'};
+        }
+        const answer = await requestReadApproval(ctx, toolName, abs);
+        if (!answer || !answer.approved) {
+            return {ok: false, message: '用户未授权读取工作区外路径：' + abs +
+                '。不要重复尝试该路径；如确有必要，向用户说明需要读取该目录并等待其授权。'};
+        }
+        return {ok: true, path: abs};
+    }
+
+    function requestReadApproval(ctx, toolName, abs) {
+        const session = ctx && ctx.session;
+        const toolMessage = ctx && ctx.toolMessage;
+        if (!session || !toolMessage) return Promise.resolve({approved: false});
+        const approval = {
+            state: 'pending',
+            kind: 'read',
+            tool: toolName || 'read_file',
+            path: abs,
+            relPath: abs,
+            rootDir: readRootDirOf(abs),
+            remember: '',
+        };
+        return registerPendingApproval(session, toolMessage, approval,
+            (session.title || '会话') + ' · 想读取工作区外 ' + abs + '，需要你确认');
     }
 
     function getAIAppDir() {
@@ -4895,6 +5012,13 @@ export function createAIPanel(options) {
         return parts.length ? '（范围外）' + parts[parts.length - 1] : '（范围外）';
     }
 
+    // 成段文本给模型看的口径：非完全权限档下把工具报错里的真实绝对路径收敛掉
+    //（Go 的 `GetFileAttributesEx D:/…` 会把盘符与目录结构一起带回模型）。
+    // 单条路径走 aiDisplayPath；两者边界口径一致：只有 full 档不设边界。
+    function redactToolText(text, session) {
+        return redactScopePaths(text, getScopeRoot(), currentScopeOf(session || currentSession()));
+    }
+
     function aiDisplayRootLabel(root) {
         const parts = aiNormalizePath(root).replace(/\/+$/, '').split('/').filter(Boolean);
         return parts.length ? parts[parts.length - 1] : '（未打开工作区）';
@@ -5044,20 +5168,9 @@ export function createAIPanel(options) {
         }
     }
 
-    function requestApproval(session, toolMessage, info) {
-        const approval = {
-            state: 'pending',
-            tool: info.tool,
-            path: info.path,
-            relPath: info.relPath,
-            added: info.added,
-            removed: info.removed,
-            newFile: info.newFile,
-            dirty: isFileDirty(info.path),
-            truncated: info.truncated,
-            diff: info.diff,
-            remember: '',
-        };
+    // 审批登记的公共路径（write 与 read 审批共用）：登记 pendingApprovals、刷新接管区与列表；
+    // 后台轮次（用户没在看该会话）打未读 + 桌面通知，60 秒后再提醒一次——不自动放行。
+    function registerPendingApproval(session, toolMessage, approval, notifyBody) {
         toolMessage.approval = approval;
         toolMessage.status = 'pending';
         toolMessage.content = '等待用户审批…';
@@ -5079,7 +5192,7 @@ export function createAIPanel(options) {
             notifyDesktop({
                 kind: 'error',
                 title: 'AI 待审批',
-                body: (session.title || '会话') + ' · ' + (info.relPath || info.tool || '操作') + ' 需要你确认',
+                body: notifyBody,
                 sessionId: session.id,
             });
             // 超时只「再提醒一次」，不替用户拍板（写操作与命令的授权不能由后台代劳）
@@ -5096,6 +5209,24 @@ export function createAIPanel(options) {
         return new Promise((resolve) => {
             entry.resolve = resolve;
         });
+    }
+
+    function requestApproval(session, toolMessage, info) {
+        const approval = {
+            state: 'pending',
+            tool: info.tool,
+            path: info.path,
+            relPath: info.relPath,
+            added: info.added,
+            removed: info.removed,
+            newFile: info.newFile,
+            dirty: isFileDirty(info.path),
+            truncated: info.truncated,
+            diff: info.diff,
+            remember: '',
+        };
+        return registerPendingApproval(session, toolMessage, approval,
+            (session.title || '会话') + ' · ' + (info.relPath || info.tool || '操作') + ' 需要你确认');
     }
 
     // ---- 后台命令（background_command）----
@@ -5659,6 +5790,20 @@ export function createAIPanel(options) {
                 });
                 approval.remember = 'session';
             }
+        } else if (approval.kind === 'read') {
+            // 读授权的「记住」：目录粒度（rootDir），进已批准读根而不是 approvedPaths（写路径）。
+            if (approved && approval.rootDir) {
+                if (remember === 'session' && entry.session) {
+                    entry.session.readRoots = addReadRoot(entry.session.readRoots, approval.rootDir);
+                } else if (remember === 'always') {
+                    config.approvedReadRoots = addReadRoot(config.approvedReadRoots, approval.rootDir);
+                    saveAIConfig();
+                } else if (remember === 'project') {
+                    addProjectRule('read', 'allow', writeRuleSubject(approval.rootDir) + '/**').then((added) => {
+                        if (added) flash('已加入项目权限规则：Read(' + writeRuleSubject(approval.rootDir) + '/**)');
+                    }).catch((e) => flash('项目权限规则保存失败：' + ((e && e.message) || e), true));
+                }
+            }
         } else if (approved && remember === 'always') {
             aiAddUnique(config.approvedPaths, approval.path);
             saveAIConfig();
@@ -5674,11 +5819,13 @@ export function createAIPanel(options) {
         toolMessage.status = approved ? 'running' : 'cancelled';
         toolMessage.content = approval.kind === 'command'
             ? (approved ? '正在执行命令…' : '用户取消了本次命令')
-            : (approved ? '正在应用更改…' : '用户放弃了本次更改');
+            : approval.kind === 'read'
+                ? (approved ? '用户已授权，正在读取…' : '用户未授权本次读取')
+                : (approved ? '正在应用更改…' : '用户放弃了本次更改');
         // 用户裁定也进审批记录：来源标 user，避免只看到「待审批」看不到结果。
         const auditKind = approval.kind === 'command'
             ? (approval.tool === 'web_fetch' ? 'web' : 'command')
-            : 'write';
+            : (approval.kind === 'read' ? 'read' : 'write');
         const auditSubject = approval.kind === 'command'
             ? (approval.tool === 'web_fetch'
                 ? (webRuleSubject(approval.command) || approval.command)
@@ -6391,10 +6538,12 @@ export function createAIPanel(options) {
         switch (name) {
             case 'list_dir': {
                 const rel = aiTextOf(input.path).trim() || '.';
-                const path = aiResolveScopePath(rel, ctx && ctx.session);
+                const resolved = await resolveReadPathWithApproval(ctx, 'list_dir', rel);
+                if (!resolved.ok) return resolved.message;
+                const path = resolved.path;
                 const listing = await backend.ReadDir(path, 200);
                 const entries = (listing && listing.entries) || [];
-                const lines = ['目录：' + rel];
+                const lines = ['目录：' + redactToolText(rel, ctx && ctx.session)];
                 for (const entry of entries) {
                     lines.push((entry.isDir ? '[D] ' : '[F] ') + entry.name);
                 }
@@ -6403,7 +6552,9 @@ export function createAIPanel(options) {
                 return lines.join('\n');
             }
             case 'read_file': {
-                const path = aiResolveScopePath(input.path, ctx && ctx.session);
+                const resolved = await resolveReadPathWithApproval(ctx, 'read_file', input.path);
+                if (!resolved.ok) return resolved.message;
+                const path = resolved.path;
                 const offset = Math.max(0, Math.round(Number(input.offset) || 0));
                 const read = await readTextFile(path, null);
                 // 记录读取时磁盘指纹：write_file 陈旧性防护的基线（见 ai-write-guard.js）
@@ -6418,7 +6569,7 @@ export function createAIPanel(options) {
                 let text = read.text;
                 if (offset > 0) text = text.slice(Math.min(offset, text.length));
                 if (text.length > 64 << 10) text = text.slice(0, 64 << 10) + '\n…（已截断，最多 64KB）';
-                return '文件：' + (input.path || path) + '（' + read.data.size + ' 字节）\n\n' + text;
+                return '文件：' + redactToolText(input.path || path, ctx && ctx.session) + '（' + read.data.size + ' 字节）\n\n' + text;
             }
             case 'search_text': {
                 const query = aiTextOf(input.query).trim();
@@ -8108,10 +8259,10 @@ export function createAIPanel(options) {
             } catch (e) {
                 if (streams.get(s.sessionId) === s) {
                     toolMessage.status = 'error';
-                    toolMessage.content = '工具执行失败：' + ((e && e.message) || e);
+                    toolMessage.content = '工具执行失败：' + redactToolText((e && e.message) || e, session);
                     if (call.name === 'spawn_agent' && toolMessage.agent && toolMessage.agent.state === 'running') {
                         toolMessage.agent.state = 'error';
-                        toolMessage.agent.summary = '子代理启动失败：' + ((e && e.message) || e);
+                        toolMessage.agent.summary = '子代理启动失败：' + redactToolText((e && e.message) || e, session);
                     }
                 }
             }

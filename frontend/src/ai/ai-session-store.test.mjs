@@ -11,6 +11,7 @@ import {
     encodeSessionLines,
     replaySessionLog,
     serializeSessionMessage,
+    isSilentInjection,
     buildSessionMeta,
 } from './ai-session-store.js';
 import {createSessionDiskStore} from './ai-session-disk.js';
@@ -52,6 +53,18 @@ test('model-switch note keeps kind/systemNote/modelNote', () => {
     assert.equal(result.messages[0].kind, 'model-switch');
     assert.equal(result.messages[0].systemNote, true);
     assert.deepEqual(result.messages[0].modelNote, note.modelNote);
+});
+
+test('isSilentInjection：按内容识别历史会话的机械提醒注入块', () => {
+    // 修复前落盘的注入块没有 silent 字段，靠内容前缀回填
+    assert.equal(isSilentInjection('<task_todos_check>任务清单尚未与实际进度对齐：1 项进行中、3 项待处理。</task_todos_check>'), true);
+    assert.equal(isSilentInjection('  <task_todos_check>任务清单尚未与实际进度对齐：…</task_todos_check>  '), true);
+    // 普通用户消息 / 系统注记 / 其他标签不命中
+    assert.equal(isSilentInjection('帮我看看这个文件'), false);
+    assert.equal(isSilentInjection('（系统提示）工具调用轮次已达 10。'), false);
+    assert.equal(isSilentInjection('<task_reminders>提醒内容</task_reminders>'), false);
+    assert.equal(isSilentInjection(''), false);
+    assert.equal(isSilentInjection(null), false);
 });
 
 test('truncate keeps prefix', () => {

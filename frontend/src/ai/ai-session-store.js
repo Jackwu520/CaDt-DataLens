@@ -14,6 +14,12 @@ export function textOf(value) {
     return typeof value === 'string' ? value : (value == null ? '' : String(value));
 }
 
+// 机械提醒注入块（给模型看的，不渲染）：silent 标记是后来才加的，修复前的历史会话
+// 里没有这个字段——按内容前缀识别，加载回填时照常隐藏。新注入块的判定不依赖这里。
+export function isSilentInjection(content) {
+    return /^<task_todos_check>/.test(textOf(content).trim());
+}
+
 export function safeImageName(image) {
     const id = textOf(image && image.id).replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 80) || 'img';
     const ext = IMAGE_EXT[textOf(image && image.mime)] || 'png';
@@ -250,6 +256,8 @@ export function buildSessionMeta(session) {
         reminders: Array.isArray(session && session.reminders) ? session.reminders : [],
         changes: Array.isArray(session && session.changes) ? session.changes : [],
         approvedPaths: Array.isArray(session && session.approvedPaths) ? session.approvedPaths : [],
+        // 已批准的工作区外读根（读审批卡「本会话记住」；跨重启保留授权）
+        readRoots: Array.isArray(session && session.readRoots) ? session.readRoots : [],
         // 支线对话：指向母会话 id（普通会话为空）。sideOf 不嵌套——创建时已扁平化到一层。
         sideOf: textOf(session && session.sideOf),
         summary,

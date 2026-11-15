@@ -384,6 +384,7 @@ export function createAITakeover(ctx) {
         const toolMessage = entry.toolMessage;
         const approval = entry.approval;
         const isCommand = approval.kind === 'command';
+        const isRead = approval.kind === 'read';
         const commandFamily = isCommand ? commandFamilySignature(approval.command) : null;
         const takeoverKey = 'approval:' + (toolMessage.toolCallId || '');
         el.takeover.dataset.takeoverKey = takeoverKey;
@@ -404,10 +405,10 @@ export function createAITakeover(ctx) {
             barText.className = 'ai-takeover-bar-text';
             barText.textContent = isCommand
                 ? '命令待审批'
-                : '更改待审批 · ' + (approval.relPath || approval.path || '');
+                : (isRead ? '读取待审批 · ' : '更改待审批 · ') + (approval.relPath || approval.path || '');
             const barStat = document.createElement('span');
             barStat.className = 'ai-approval-stat';
-            if (!isCommand) {
+            if (!isCommand && !isRead) {
                 const add = document.createElement('span');
                 add.className = 'add';
                 add.textContent = '+' + (approval.added || 0);
@@ -452,22 +453,24 @@ export function createAITakeover(ctx) {
             path.textContent = approval.relPath || approval.path || '';
             path.title = approval.path || '';
             head.appendChild(path);
-            const stat = document.createElement('span');
-            stat.className = 'ai-approval-stat';
-            const add = document.createElement('span');
-            add.className = 'add';
-            add.textContent = '+' + (approval.added || 0);
-            const del = document.createElement('span');
-            del.className = 'del';
-            del.textContent = '−' + (approval.removed || 0);
-            stat.append(add, del);
-            if (approval.newFile) {
-                const tag = document.createElement('span');
-                tag.className = 'ai-approval-tag';
-                tag.textContent = '新文件';
-                stat.appendChild(tag);
+            if (!isRead) {
+                const stat = document.createElement('span');
+                stat.className = 'ai-approval-stat';
+                const add = document.createElement('span');
+                add.className = 'add';
+                add.textContent = '+' + (approval.added || 0);
+                const del = document.createElement('span');
+                del.className = 'del';
+                del.textContent = '−' + (approval.removed || 0);
+                stat.append(add, del);
+                if (approval.newFile) {
+                    const tag = document.createElement('span');
+                    tag.className = 'ai-approval-tag';
+                    tag.textContent = '新文件';
+                    stat.appendChild(tag);
+                }
+                head.appendChild(stat);
             }
-            head.appendChild(stat);
         }
         // 临时收起：折叠整卡为细条，方便继续查看上方消息；审批本身不受影响
         const collapse = document.createElement('button');
@@ -521,6 +524,17 @@ export function createAITakeover(ctx) {
                                 : '命令将在工作目录中执行；授权仅本次对话。')));
                 body.appendChild(note);
             }
+        } else if (isRead) {
+            // 读审批：无 diff，展示完整真实路径（用户要知道自己批准的是什么）与记住粒度。
+            const line = document.createElement('pre');
+            line.className = 'ai-command-line ai-command-line-fill';
+            line.textContent = approval.path || '';
+            body.appendChild(line);
+            const note = document.createElement('div');
+            note.className = 'ai-approval-more';
+            note.textContent = '该文件在工作区外。批准目录后，该目录下的文件可免询问读取' +
+                '（也可不勾选，仅本次放行）；应用数据目录不受此影响，始终拒绝读取。';
+            body.appendChild(note);
         } else if (approval.diff && approval.diff.length) {
             renderDiffInto(body, approval);
             if (approval.truncated) {
@@ -546,22 +560,26 @@ export function createAITakeover(ctx) {
         let projectFamilyBox = null;
         let projectFileBox = null;
         if (!isCommand) {
+            // 写审批记「此文件」（精确路径），读审批记「此目录」（父目录树）——复用同一组勾选框。
+            const noun = isRead ? '此目录' : '此文件';
             const sessionLabel = document.createElement('label');
             sessionBox = document.createElement('input');
             sessionBox.type = 'checkbox';
-            sessionLabel.append(sessionBox, document.createTextNode(' 本会话允许此文件'));
+            sessionLabel.append(sessionBox, document.createTextNode(' 本会话允许' + noun));
             const alwaysLabel = document.createElement('label');
             alwaysBox = document.createElement('input');
             alwaysBox.type = 'checkbox';
-            alwaysLabel.append(alwaysBox, document.createTextNode(' 总是允许此文件'));
+            alwaysLabel.append(alwaysBox, document.createTextNode(' 总是允许' + noun));
             options.append(sessionLabel, alwaysLabel);
             if (projectRulesPath()) {
                 const projectLabel = document.createElement('label');
-                projectLabel.title = '写入 .cadt/permissions.json，随工作区共享';
+                projectLabel.title = isRead
+                    ? '写入 .cadt/permissions.json：Read(' + (approval.rootDir || approval.path) + '/**)，随工作区共享'
+                    : '写入 .cadt/permissions.json，随工作区共享';
                 projectFileBox = document.createElement('input');
                 projectFileBox.type = 'checkbox';
                 projectFileBox.dataset.aiWriteRemember = 'project';
-                projectLabel.append(projectFileBox, document.createTextNode(' 本项目允许此文件'));
+                projectLabel.append(projectFileBox, document.createTextNode(' 本项目允许' + noun));
                 options.appendChild(projectLabel);
             }
             foot.appendChild(options);
@@ -613,12 +631,12 @@ export function createAITakeover(ctx) {
         const deny = document.createElement('button');
         deny.type = 'button';
         deny.className = 'dlg-btn';
-        deny.textContent = '放弃';
+        deny.textContent = isRead ? '拒绝' : '放弃';
         deny.addEventListener('click', () => decideApproval(toolMessage, false, readRemember()));
         const apply = document.createElement('button');
         apply.type = 'button';
         apply.className = 'dlg-btn primary';
-        apply.textContent = isCommand ? '执行' : '应用';
+        apply.textContent = isCommand ? '执行' : (isRead ? '允许' : '应用');
         apply.addEventListener('click', () => decideApproval(toolMessage, true, readRemember()));
         actions.append(deny, apply);
         foot.appendChild(actions);
