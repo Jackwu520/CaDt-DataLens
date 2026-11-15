@@ -20,6 +20,8 @@ export function createMessageCenter(ctx) {
     let seq = 0;
     let pop = null;
     let dismissHandler = null;
+    // 浮层定位函数（内容高度变化后重新调用，保证底部始终贴住按钮）
+    let placePanel = null;
 
     function load() {
         try {
@@ -170,6 +172,8 @@ export function createMessageCenter(ctx) {
         clear.addEventListener('click', () => {
             clearAll();
             renderPanel(host);
+            // 内容清空后浮层变矮：重新定位，让底部继续贴住按钮
+            if (placePanel) placePanel();
         });
         head.append(title, clear);
         host.appendChild(head);
@@ -204,7 +208,6 @@ export function createMessageCenter(ctx) {
             body.textContent = item.body;
             main.append(line1, body);
             row.append(icon, main);
-            row.dataset.tip = item.body;
             row.addEventListener('click', () => {
                 if (!item.read) {
                     item.read = true;
@@ -226,6 +229,7 @@ export function createMessageCenter(ctx) {
         if (!pop) return;
         pop.remove();
         pop = null;
+        placePanel = null;
         if (dismissHandler) {
             document.removeEventListener('pointerdown', dismissHandler, true);
             document.removeEventListener('keydown', dismissHandler, true);
@@ -243,11 +247,11 @@ export function createMessageCenter(ctx) {
         document.body.appendChild(panel);
         renderPanel(panel);
         const rect = anchor.getBoundingClientRect();
-        const place = () => {
+        placePanel = () => {
             panel.style.left = Math.max(8, Math.min(rect.right - panel.offsetWidth, window.innerWidth - panel.offsetWidth - 8)) + 'px';
             panel.style.top = Math.max(8, Math.min(rect.top - panel.offsetHeight - 8, window.innerHeight - panel.offsetHeight - 8)) + 'px';
         };
-        place();
+        placePanel();
         pop = panel;
         // 打开即视为已读：未读角标清零
         markAllRead();

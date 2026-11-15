@@ -54,10 +54,45 @@ export function messageFingerprint(message) {
         agent ? textOf(agent.state) + ':' + (Number(agent.rounds) || 0) + ':' + textOf(agent.summary).length : '',
         bg ? textOf(bg.state) + ':' + (bg.code == null ? '' : Number(bg.code)) : '',
         Array.isArray(message.images) ? message.images.length : 0,
+        // 计划模式落盘路径：后补写（升级前的待批准计划 / 写盘失败后重试）只改这一个字段，
+        // 不进指纹就会被「指纹没变」挡在就地截断之外，重启后又得重算一次。
+        textOf(message.planFile),
         Number(message.turnMs) || 0,
         Number(message.thinkMs) || 0,
         Number(message.finishedAt) || 0,
     ].join('|');
+}
+
+// 「用户发起回合」的边界消息：会话列表的排序键与时间文案只认它。
+// 回合进行中注入的 user 消息不是新回合——轮次提醒 / 待办检查 / 模型切换留痕（systemNote、
+// silent），以及工具中途自动附加的截图（带 app + images 但没有 turnStartedAt）。
+// 消息渲染的回合分组（groupTurns）与列表用同一个判定，两边不会出现「分组算一轮、列表跳两次」。
+export function isTurnBoundaryMessage(message) {
+    if (!message || message.role !== 'user') return false;
+    if (message.systemNote) return false;
+    if (message.app && Array.isArray(message.images) && message.images.length && !message.turnStartedAt) return false;
+    return true;
+}
+
+// 轮次起点：最后一条边界消息的时间（0 = 正文里没有用户发起的回合）。
+export function sessionTurnStartTs(session) {
+    const messages = (session && session.messages) || [];
+    for (let i = messages.length - 1; i >= 0; i--) {
+        const message = messages[i];
+        if (!isTurnBoundaryMessage(message)) continue;
+        return Number(message.turnStartedAt) || Number(message.ts) || 0;
+    }
+    return 0;
+}
+
+// 列表排序/时间文案的键（单一来源）。占位会话只有 meta，读缓存的 turnTs；
+// 已载体的现算，两者同源，补水前后不会跳位。清空正文等没有边界消息的情况回落到写入时间。
+export function sessionActivityTs(session) {
+    if (!session) return 0;
+    if (session._stub) {
+        return Number(session._turnTs) || Number(session.updatedAt) || Number(session.createdAt) || 0;
+    }
+    return sessionTurnStartTs(session) || Number(session.updatedAt) || Number(session.createdAt) || 0;
 }
 
 // ---------- 事件编码 ----------
@@ -234,6 +269,11 @@ export function buildSessionMeta(session) {
         title: textOf(session && session.title),
         createdAt: Number(session && session.createdAt) || 0,
         updatedAt: Number(session && session.updatedAt) || 0,
+        // 轮次起点（列表排序与时间文案的键）：占位沿用缓存值，已载体的现算——和 messageCount 同理，
+        // 占位不能把现算出来的 0 写回 meta.json。
+        turnTs: session && session._stub
+            ? Math.max(0, Number(session._turnTs) || 0)
+            : sessionTurnStartTs(session),
         workspace: textOf(session && session.workspace),
         scope: ['read', 'edit', 'auto', 'full'].includes(session && session.scope) ? session.scope : 'read',
         profileId: textOf(session && session.profileId),

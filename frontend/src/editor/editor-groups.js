@@ -990,6 +990,7 @@ function patchViewContext() {
         },
         notifyChanged: (files) => { reloadAfterPatch(files); },
         flash: (msg, isErr) => deps.flash(msg, isErr),
+        openCloseConfirm: (message, action, okLabel, title) => deps.openCloseConfirm(message, action, okLabel, title),
     };
     return patchViewHostCtx;
 }

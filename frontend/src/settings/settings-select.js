@@ -51,22 +51,32 @@ export function tipTextFromSpans(spans) {
 
 // 截断判定容差：子像素取整误差不算截断
 const TIP_TOLERANCE = 1;
+// 截断文本的「补全文」气泡属于明确求值（用户就是想看被省略的是什么），比普通 data-tip 的
+// 停留窗口（700ms）短一档；仍不用 0，避免鼠标掠过下拉框时冒泡。
+const TIP_DELAY_MS = 260;
 
 // 按 selectors 顺序找第一个命中的片段组做截断检测，被截断才挂 data-tip（完整文本 \n 分行）。
 // 富选项先查 .ss-main/.ss-sub（各自独立截断），单行选项落到 .ss-label；全程无截断则移除。
 function syncTipFromSpans(el, selectors) {
+    const apply = (text) => {
+        if (!text) {
+            el.removeAttribute('data-tip');
+            el.removeAttribute('data-tip-delay');
+            return;
+        }
+        el.dataset.tip = text;
+        el.dataset.tipDelay = String(TIP_DELAY_MS);
+    };
     for (const sel of selectors) {
         const nodes = [...el.querySelectorAll(sel)];
         if (!nodes.length) continue;
-        const text = tipTextFromSpans(nodes.map((n) => ({
+        apply(tipTextFromSpans(nodes.map((n) => ({
             text: n.textContent,
             truncated: n.scrollWidth > n.clientWidth + TIP_TOLERANCE,
-        })));
-        if (text) el.dataset.tip = text;
-        else el.removeAttribute('data-tip');
+        }))));
         return;
     }
-    el.removeAttribute('data-tip');
+    apply('');
 }
 
 export function createSettingsSelect(deps) {

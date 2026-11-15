@@ -12,7 +12,11 @@ import {
     replaySessionLog,
     serializeSessionMessage,
     isSilentInjection,
+    isTurnBoundaryMessage,
+    sessionTurnStartTs,
+    sessionActivityTs,
     buildSessionMeta,
+    messageFingerprint,
 } from './ai-session-store.js';
 import {createSessionDiskStore} from './ai-session-disk.js';
 
@@ -65,6 +69,17 @@ test('isSilentInjection：按内容识别历史会话的机械提醒注入块', 
     assert.equal(isSilentInjection('<task_reminders>提醒内容</task_reminders>'), false);
     assert.equal(isSilentInjection(''), false);
     assert.equal(isSilentInjection(null), false);
+});
+
+test('messageFingerprint：计划落盘路径变化要能触发重写', () => {
+    const message = {role: 'assistant', status: 'done', content: '计划正文', planMode: true};
+    const before = messageFingerprint(message);
+    // 升级前的待批准计划在打开审批卡时才补写路径：只改 planFile，指纹必须变，
+    // 否则「指纹没变就跳过」会把这条路径留在磁盘外，重启后又得重算一次。
+    message.planFile = 'D:/ws/.cadt/plan/20261116-052307-x.md';
+    const after = messageFingerprint(message);
+    assert.notEqual(before, after);
+    assert.equal(messageFingerprint({...message}), after);
 });
 
 test('truncate keeps prefix', () => {
@@ -566,4 +581,73 @@ test('disk store: full rewrite keeps messages whose mid entry was invalidated', 
     await store.flush();
     const loaded = await store.loadAll(null);
     assert.deepEqual(loaded[0].messages.map((m) => m.content), ['a', 'b'], '重写不能丢被失效的消息');
+});
+
+// ---------- 轮次起点：会话列表的排序键与时间文案 ----------
+
+test('isTurnBoundaryMessage 只认用户发起的回合边界', () => {
+    assert.equal(isTurnBoundaryMessage({role: 'user', content: '你好', ts: 1}), true);
+    assert.equal(isTurnBoundaryMessage({role: 'assistant', content: '在', ts: 2}), false);
+    assert.equal(isTurnBoundaryMessage({role: 'tool', content: '结果', ts: 3}), false);
+    // 轮次提醒 / 待办检查 / 模型切换留痕：机器注入的 user 消息，不是新回合
+    assert.equal(isTurnBoundaryMessage({role: 'user', content: '（系统提示）…', ts: 4, systemNote: true}), false);
+    // 工具中途自动附加的截图：带 app 与图片但没有 turnStartedAt
+    assert.equal(isTurnBoundaryMessage({role: 'user', ts: 5, app: {kind: 'app'}, images: [{mime: 'image/png'}]}), false);
+    // 应用入口真正发起的回合带 turnStartedAt，仍然是边界
+    assert.equal(isTurnBoundaryMessage({role: 'user', ts: 6, turnStartedAt: 6, app: {kind: 'app'}, images: [{mime: 'image/png'}]}), true);
+    assert.equal(isTurnBoundaryMessage(null), false);
+    assert.equal(isTurnBoundaryMessage(undefined), false);
+});
+
+test('sessionTurnStartTs 停在最后一个回合起点，轮中间注入不让它前进', () => {
+    const session = {messages: [
+        {role: 'user', content: '第一轮', ts: 1000, turnStartedAt: 1000},
+        {role: 'assistant', content: 'a', ts: 1100},
+        {role: 'user', content: '第二轮', ts: 2000, turnStartedAt: 2000},
+        {role: 'tool', content: '结果', ts: 2100},
+        {role: 'user', ts: 2200, app: {kind: 'app'}, images: [{mime: 'image/png'}]},
+        {role: 'user', content: '（系统提示）轮次已达 20', ts: 2300, systemNote: true},
+        {role: 'assistant', content: 'b', ts: 2400},
+    ]};
+    assert.equal(sessionTurnStartTs(session), 2000, '截图附加与轮次提醒不能把起点推到 2200/2300');
+});
+
+test('sessionTurnStartTs：老数据回落到用户消息 ts，没有用户消息给 0', () => {
+    assert.equal(sessionTurnStartTs({messages: [
+        {role: 'user', content: '旧数据', ts: 500},
+        {role: 'assistant', content: 'x', ts: 600},
+    ]}), 500);
+    assert.equal(sessionTurnStartTs({messages: []}), 0);
+    assert.equal(sessionTurnStartTs({messages: [{role: 'assistant', ts: 9}]}), 0);
+    assert.equal(sessionTurnStartTs(undefined), 0);
+});
+
+test('sessionActivityTs 在占位与已载体两种形态下给出同一个轮次起点', () => {
+    const live = {
+        createdAt: 100,
+        updatedAt: 900,
+        messages: [
+            {role: 'user', content: 'q', ts: 700, turnStartedAt: 700},
+            {role: 'assistant', content: 'a', ts: 800},
+        ],
+    };
+    const meta = buildSessionMeta(live);
+    assert.equal(meta.turnTs, 700, 'meta 要缓存轮次起点，占位阶段才有的可读');
+    const stub = {_stub: true, _turnTs: meta.turnTs, _msgCount: 2, createdAt: 100, updatedAt: 900, messages: []};
+    assert.equal(sessionActivityTs(stub), 700);
+    assert.equal(sessionActivityTs(live), 700, '补水后不能跳到最后一条消息的 800');
+    assert.equal(sessionActivityTs(stub), sessionActivityTs(live), '补水前后不跳位');
+});
+
+test('sessionActivityTs：正文里没有用户回合时回落到写入时间', () => {
+    assert.equal(sessionActivityTs({createdAt: 100, updatedAt: 900, messages: [{role: 'assistant', content: 'x', ts: 800}]}), 900);
+    assert.equal(sessionActivityTs({createdAt: 100, updatedAt: 0, messages: []}), 100);
+    assert.equal(sessionActivityTs({_stub: true, _turnTs: 0, createdAt: 100, updatedAt: 900, messages: []}), 900, '老 meta 没有 turnTs 时占位仍按 updatedAt');
+    assert.equal(sessionActivityTs(null), 0);
+});
+
+test('buildSessionMeta 的 turnTs：占位沿用缓存，不把现算出来的 0 写回盘', () => {
+    const stub = {_stub: true, _turnTs: 777, _msgCount: 3, id: 's1', createdAt: 100, updatedAt: 900, messages: []};
+    assert.equal(buildSessionMeta(stub).turnTs, 777);
+    assert.equal(buildSessionMeta({_stub: true, id: 's1', createdAt: 100, messages: []}).turnTs, 0);
 });

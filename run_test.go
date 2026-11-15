@@ -227,13 +227,13 @@ func TestCleanupRunTempStale(t *testing.T) {
 
 func TestRunExecValidation(t *testing.T) {
 	app := &App{}
-	if err := app.RunExec("", "cmd.exe", nil, "", ""); err == nil {
+	if err := app.RunExec("", "cmd.exe", nil, "", "", 0); err == nil {
 		t.Error("空 id 应报错")
 	}
-	if err := app.RunExec("run-x", "", nil, "", ""); err == nil {
+	if err := app.RunExec("run-x", "", nil, "", "", 0); err == nil {
 		t.Error("空 exe 应报错")
 	}
-	if err := app.RunExec("run-x", "cmd.exe", nil, filepath.Join(t.TempDir(), "missing"), ""); err == nil {
+	if err := app.RunExec("run-x", "cmd.exe", nil, filepath.Join(t.TempDir(), "missing"), "", 0); err == nil {
 		t.Error("不存在的工作目录应报错")
 	}
 	if err := app.RunStop(""); err == nil {
@@ -320,7 +320,7 @@ func TestRunExecEndToEnd(t *testing.T) {
 	}
 	events := captureRunEvents(t)
 	app := &App{}
-	if err := app.RunExec("run-e2e", "cmd.exe", []string{"/c", "echo hi & exit 3"}, "", ""); err != nil {
+	if err := app.RunExec("run-e2e", "cmd.exe", []string{"/c", "echo hi & exit 3"}, "", "", 0); err != nil {
 		t.Fatalf("RunExec 失败：%v", err)
 	}
 	deadline := time.Now().Add(15 * time.Second)
@@ -413,7 +413,7 @@ func TestRunInputEndToEnd(t *testing.T) {
 	events := captureRunEvents(t)
 	app := &App{}
 	id := "run-stdin-e2e"
-	if err := app.RunExec(id, os.Args[0], []string{"-test.run=TestRunInputEndToEnd"}, "", ""); err != nil {
+	if err := app.RunExec(id, os.Args[0], []string{"-test.run=TestRunInputEndToEnd"}, "", "", 0); err != nil {
 		t.Fatalf("RunExec 失败：%v", err)
 	}
 	deadline := time.Now().Add(5 * time.Second)
@@ -453,5 +453,88 @@ func TestRunInputEndToEnd(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(events.lines, "\n"), "got:hello-stdin") {
 		t.Errorf("子进程没有读到 stdin 输入：%#v", events.lines)
+	}
+}
+
+// TestRunExecTimeout：超时到点强杀进程树，run-exit 带 reason="timeout"。
+// 用测试二进制自己当子进程睡死，比依赖外部命令可靠；已捕获输出应保留。
+func TestRunExecTimeout(t *testing.T) {
+	if os.Getenv("CADT_RUN_TIMEOUT_HELPER") == "1" {
+		fmt.Println("before-sleep")
+		time.Sleep(60 * time.Second)
+		fmt.Println("after-sleep")
+		os.Exit(0)
+	}
+	t.Setenv("CADT_RUN_TIMEOUT_HELPER", "1")
+	events := captureRunEvents(t)
+	app := &App{}
+	id := "run-timeout-e2e"
+	if err := app.RunExec(id, os.Args[0], []string{"-test.run=TestRunExecTimeout"}, "", "", 300); err != nil {
+		t.Fatalf("RunExec 失败：%v", err)
+	}
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		events.mu.Lock()
+		done := events.exit != nil
+		events.mu.Unlock()
+		if done {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	events.mu.Lock()
+	defer events.mu.Unlock()
+	if events.exit == nil {
+		t.Fatal("超时：没有收到 run-exit（应被超时强杀）")
+	}
+	if events.exit.Reason != runExitReasonTimeout {
+		t.Errorf("Reason = %q，期望 %q", events.exit.Reason, runExitReasonTimeout)
+	}
+	if events.exit.Code != -1 {
+		t.Errorf("Code = %d，期望 -1（被强杀无有效退出码）", events.exit.Code)
+	}
+	if events.exit.DurationMs > 5000 {
+		t.Errorf("DurationMs = %d，超时应远小于这个值", events.exit.DurationMs)
+	}
+	joined := strings.Join(events.lines, "\n")
+	if !strings.Contains(joined, "before-sleep") {
+		t.Errorf("超时前已捕获的输出应保留：%#v", events.lines)
+	}
+	if strings.Contains(joined, "after-sleep") {
+		t.Error("进程应已被强杀，不该打印 after-sleep")
+	}
+}
+
+// TestRunExecNoTimeout：timeoutMs <= 0 表示不超时，reason 留空。
+func TestRunExecNoTimeout(t *testing.T) {
+	if _, err := exec.LookPath("cmd.exe"); err != nil {
+		t.Skip("缺少 cmd.exe")
+	}
+	events := captureRunEvents(t)
+	app := &App{}
+	id := "run-notimeout-e2e"
+	if err := app.RunExec(id, "cmd.exe", []string{"/c", "echo ok & exit 0"}, "", "", 0); err != nil {
+		t.Fatalf("RunExec 失败：%v", err)
+	}
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		events.mu.Lock()
+		done := events.exit != nil
+		events.mu.Unlock()
+		if done {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	events.mu.Lock()
+	defer events.mu.Unlock()
+	if events.exit == nil {
+		t.Fatal("超时：没有收到 run-exit")
+	}
+	if events.exit.Reason != "" {
+		t.Errorf("Reason = %q，不超时时应为空", events.exit.Reason)
+	}
+	if events.exit.Code != 0 {
+		t.Errorf("Code = %d，期望 0", events.exit.Code)
 	}
 }

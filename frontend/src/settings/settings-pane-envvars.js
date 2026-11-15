@@ -83,26 +83,22 @@ function buildEnvVarRow(v) {
     del.type = 'button';
     del.className = 'dlg-btn envvar-del';
     del.textContent = '删除';
-    del.addEventListener('click', async () => {
-        if (!del.dataset.armed) {
-            del.dataset.armed = '1';
-            del.textContent = '确认删除？';
-            del.classList.add('danger');
-            setTimeout(() => {
-                if (del.isConnected) {
-                    del.dataset.armed = '';
-                    del.textContent = '删除';
-                    del.classList.remove('danger');
-                }
-            }, 3000);
-            return;
-        }
-        try {
-            await saveEnvVarsAll(envVarState.vars.filter((item) => item.name !== v.name));
-            deps.flash('已删除环境变量：' + v.name);
-        } catch (e) {
-            deps.flash('删除失败：' + e, true);
-        }
+    del.addEventListener('click', () => {
+        const act = async () => {
+            try {
+                await saveEnvVarsAll(envVarState.vars.filter((item) => item.name !== v.name));
+                deps.flash('已删除环境变量：' + v.name);
+            } catch (e) {
+                deps.flash('删除失败：' + e, true);
+            }
+        };
+        // 与存储清理等破坏性操作一致：走统一确认弹窗，不做「再点一次按钮」的就地确认
+        deps.openCloseConfirm(
+            '删除环境变量「' + v.name + '」？之后新开的终端会话与命令桥命令将不再注入它。',
+            act,
+            '删除',
+            '删除环境变量'
+        );
     });
     row.append(nameEl, descEl, enabledLabel, editBtn, del);
     return row;

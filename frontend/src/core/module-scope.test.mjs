@@ -24,6 +24,9 @@ function read(rel) {
 // 去掉注释与字符串字面量，避免把说明文字当成代码
 function code(text) {
     return text
+        // 工作副本是 CRLF（core.autocrlf=true）：先归一到 LF，否则逐行的 // 剥离整条失效
+        // （`.*` 不吃 \r、非多行模式的 `$` 也不在 \r 前匹配，注释会被当成代码扫）
+        .replace(/\r\n/g, '\n')
         .replace(/\/\*[\s\S]*?\*\//g, '')
         .split('\n')
         .map((line) => line.replace(/(^|[^:\\])\/\/.*$/, '$1'))

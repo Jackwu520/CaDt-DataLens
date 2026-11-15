@@ -8,6 +8,38 @@ export function todosDefaultCollapsed(settings) {
     return !(settings && settings.aiTodosDefaultExpanded === true);
 }
 
+// 轮末清单提醒（<task_todos_check>）的文案。口径必须与系统提示里的 <task_todos> 一致：
+// 报「共 N 项 + 已完成/进行中/待处理」三分计数，且不断言「清单与实际进度没对齐」。
+// 教训：旧文案只报进行中/待处理，模型拿它对自己刚写的 todo_write 清单对不上总数，
+// 每轮把思考花在「这条提示是不是过期了」上，而不是继续干活。
+export function todosCheckText(todos) {
+    const list = Array.isArray(todos) ? todos : [];
+    const doing = list.filter((todo) => todo.status === 'in_progress').length;
+    const pending = list.filter((todo) => todo.status === 'pending').length;
+    const done = list.length - doing - pending;
+    return '<task_todos_check>任务清单现状：共 ' + list.length + ' 项，' +
+        done + ' 项已完成、' + doing + ' 项进行中、' + pending + ' 项待处理。' +
+        '若有已经做完却没标 completed 的步骤，用一次 todo_write 补齐；没有就无需处理本块。' +
+        '本块仅供自查，不要在思考或回复里复述，也不必核对计数。</task_todos_check>';
+}
+
+// 轮末提醒的节流：清单文本与上次注入完全相同（模型没动过清单，旧那条仍在上下文里，
+// 再插一条只是重复）不催；本轮距上一次 todo_write 不足 minToolCalls 个工具结果也不催
+// ——模型一直在自己更新清单，属于正常推进。阈值放宽到 3 个批次，短轮次交给轮开始的
+// <task_todos> 就够，不必每批都催一次。
+export function shouldSendTodosCheck({text, lastText, toolNames, minToolCalls = 3} = {}) {
+    if (!text || text === lastText) return false;
+    const names = Array.isArray(toolNames) ? toolNames : [];
+    let sinceTodoWrite = names.length;
+    for (let i = names.length - 1; i >= 0; i--) {
+        if (names[i] === 'todo_write') {
+            sinceTodoWrite = names.length - 1 - i;
+            break;
+        }
+    }
+    return sinceTodoWrite >= minToolCalls;
+}
+
 export function createAITodos(ctx) {
     const todoStates = ctx.todoStates;
     const el = ctx.el;
@@ -122,9 +154,11 @@ export function createAITodos(ctx) {
             setCurrentBadgeEnabled(!currentBadgeEnabled());
             renderTodos();
         });
+        // 头部整行不给 tooltip：这是要读的一行标题，鼠标路过就冒「收起任务清单」纯属打扰；
+        // 折叠语义由右侧箭头自明，展开态交给 aria-expanded。
+        head.setAttribute('aria-expanded', String(!state.collapsed));
         head.appendChild(curToggle);
         head.appendChild(chev);
-        head.dataset.tip = state.collapsed ? '展开任务清单' : '收起任务清单';
         head.addEventListener('click', () => {
             state.collapsed = !state.collapsed;
             if (state.collapsed && state.timer) {

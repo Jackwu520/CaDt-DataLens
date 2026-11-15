@@ -347,6 +347,22 @@ func browserGetRaw(id string) *browserInstance {
 	return browserInstances[id]
 }
 
+// browserActiveProfileDirs 列出仍然存活的实例各自占用的配置目录名。
+// 「存储与清理」清除内嵌浏览器数据时按它跳过在用实例——
+// 删了既会被 WebView2 进程拒绝，又会让正开着的标签页当场失联。
+func browserActiveProfileDirs() map[string]bool {
+	browserMu.Lock()
+	defer browserMu.Unlock()
+	out := make(map[string]bool, len(browserInstances))
+	for _, inst := range browserInstances {
+		if inst == nil {
+			continue
+		}
+		out[sanitizeBrowserProfileKey(inst.id+"_"+inst.profileKey)] = true
+	}
+	return out
+}
+
 // browserKillInstance 隔离一个出错的内核实例：记日志 + 通知前端，进程存活。
 // 只在宿主线程（含 COM 回调上下文）调用。
 func browserKillInstance(inst *browserInstance, source string, err error) {
@@ -413,7 +429,7 @@ func browserCreateOnHost(inst *browserInstance, hwnd uintptr) error {
 	c.SetErrorCallback(func(err error) {
 		browserKillInstance(inst, "errorCallback", err)
 	})
-	c.DataPath = filepath.Join(appDataRoot(), "BrowserSessions", sanitizeBrowserProfileKey(inst.id+"_"+inst.profileKey))
+	c.DataPath = filepath.Join(appDataRoot(), browserProfileRoot, sanitizeBrowserProfileKey(inst.id+"_"+inst.profileKey))
 	c.NavigationCompletedCallback = func(sender *edge.ICoreWebView2, args *edge.ICoreWebView2NavigationCompletedEventArgs) {
 		browserCallbackGuard(inst, "NavigationCompleted", func() {
 			inst.loading = false

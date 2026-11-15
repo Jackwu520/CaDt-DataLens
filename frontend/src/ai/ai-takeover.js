@@ -4,6 +4,7 @@
 import {iconSvg} from '../core/icons.js';
 import {AI_WRITE_SCOPES, aiClampInt, aiNowId} from './ai-constants.js';
 import {collectCommandFamilies, commandFamilySignature} from './ai-command-rules.js';
+import {planDigest, planDisplayPath} from './ai-plan-file.js';
 
 // 审批卡判定区的行描述（纯函数，ai-takeover.test.mjs 覆盖）：
 // info = {engine: '线性'|'语义'|插件短名, score, threshold, aiReason}。
@@ -24,6 +25,30 @@ export function classifyVerdictRows(info) {
     const aiReason = info && info.aiReason ? String(info.aiReason) : '';
     if (aiReason) rows.push({chip: 'AI 复核', reason: aiReason});
     return rows;
+}
+
+// ask 接管卡的键盘导航决策（纯函数，ai-takeover.test.mjs 覆盖）。
+// 左右 = 在多个问题间前后切换（仅多题、且焦点不在输入框时；输入框里的左右要留给光标）；
+// 上下 = 在当前题的「选项 + 自己输入」之间移动焦点，回车/空格由原生 button 触发选中。
+// 返回 null 表示不拦截，交还浏览器默认行为。
+// ctx = {multi, questionCount, idx, focusIndex, itemCount, inInput}
+export function askNavAction(key, ctx) {
+    if (!ctx) return null;
+    if (key === 'ArrowLeft' || key === 'ArrowRight') {
+        if (!ctx.multi || ctx.inInput) return null;
+        const next = ctx.idx + (key === 'ArrowLeft' ? -1 : 1);
+        return next >= 0 && next < ctx.questionCount ? {type: 'question', idx: next} : null;
+    }
+    if (key === 'ArrowDown' || key === 'ArrowUp') {
+        const count = Math.max(0, Number(ctx.itemCount) || 0);
+        if (!count) return null;
+        const cur = ctx.focusIndex;
+        // 无有效焦点时，方向键都落到第一项（而不是跳过它）。
+        if (!Number.isInteger(cur) || cur < 0) return {type: 'focus', index: 0};
+        const index = key === 'ArrowDown' ? Math.min(count - 1, cur + 1) : Math.max(0, cur - 1);
+        return {type: 'focus', index};
+    }
+    return null;
 }
 
 // 判定区 DOM：行描述 → 来源 chip / 风险条（蓝刻度=阈值）/ 分数阈值 / 转人工箭头 / AI 复核理由
@@ -110,6 +135,11 @@ export function createAITakeover(ctx) {
     const getStickBottom = ctx.getStickBottom;
     const toolMeta = ctx.toolMeta;
     const acceptPlan = ctx.acceptPlan;
+    // 等待用户拍板的统一提醒（ai-panel 的 markWaitingOnUser）：补丁审批走的是本模块自己的
+    // 登记路径（不经 registerPendingApproval），不单独接一下就会「卡片在等人、通知不响」。
+    const notifyWaiting = typeof ctx.notifyWaiting === 'function' ? ctx.notifyWaiting : null;
+    // 计划卡「在标签页打开」（ai-panel 注入）：先补写 .cadt/plan/ 下的文件再开标签页
+    const openPlanFile = typeof ctx.openPlanFile === 'function' ? ctx.openPlanFile : null;
 
     function requestPatchApproval(session, toolMessage, preview, allowApply) {
         const approval = {
@@ -136,6 +166,10 @@ export function createAITakeover(ctx) {
         pendingApprovals.set(key, entry);
         updateComposerTakeover(true);
         renderSessionList();
+        if (notifyWaiting) {
+            notifyWaiting(session, approval, 'AI 待审批',
+                (session.title || '会话') + ' · 补丁待审批：' + (approval.summary || approval.relPath || '未命名'));
+        }
         return new Promise((resolve) => {
             entry.resolve = resolve;
         });
@@ -731,6 +765,8 @@ export function createAITakeover(ctx) {
         if (draft) return draft;
         draft = {
             idx: 0,
+            // 键盘焦点落在第几个导航项（选项 + 可选「自己输入」框）；整卡重建后据此回焦，保证连续按键不中断。
+            focusOi: 0,
             // 推荐项只显示「推荐」角标不预选：预选会和「点选自动下一题」冲突（点推荐=取消选中）。
             answers: entry.ask.questions.map(() => ({selected: [], custom: ''})),
         };
@@ -771,6 +807,9 @@ export function createAITakeover(ctx) {
         const qi = draft.idx;
         const question = ask.questions[qi];
         const answerDraft = draft.answers[qi];
+        // 键盘导航项 = 选项 + 可选「自己输入」框；focusOi 指向当前项，整卡重建后回焦到这里。
+        const navCount = question.options.length + (question.allowCustom ? 1 : 0);
+        draft.focusOi = aiClampInt(draft.focusOi, 0, Math.max(0, navCount - 1), 0);
         const block = document.createElement('div');
         block.className = 'ai-ask-form-q single';
         const qrow = document.createElement('div');
@@ -829,6 +868,7 @@ export function createAITakeover(ctx) {
             const button = document.createElement('button');
             button.type = 'button';
             button.className = 'ai-ask-option' + (option.recommended ? ' recommended' : '') + (selected ? ' selected' : '');
+            button.dataset.askOpt = String(oi);
             if (question.multiSelect) {
                 const check = document.createElement('span');
                 check.className = 'ai-ask-check';
@@ -855,6 +895,7 @@ export function createAITakeover(ctx) {
                 button.appendChild(desc);
             }
             button.addEventListener('click', () => {
+                draft.focusOi = oi;
                 if (question.multiSelect) {
                     const at = answerDraft.selected.indexOf(option.label);
                     if (at >= 0) answerDraft.selected.splice(at, 1);
@@ -862,7 +903,10 @@ export function createAITakeover(ctx) {
                 } else {
                     answerDraft.selected = selected ? [] : [option.label];
                     answerDraft.custom = '';
-                    if (answerDraft.selected.length && qi < ask.questions.length - 1) draft.idx = qi + 1;
+                    if (answerDraft.selected.length && qi < ask.questions.length - 1) {
+                        draft.idx = qi + 1;
+                        draft.focusOi = 0; // 跳到下一题，焦点回到首项
+                    }
                 }
                 renderAskTakeover(entry);
             });
@@ -877,12 +921,16 @@ export function createAITakeover(ctx) {
             num.textContent = (question.options.length + 1) + '.';
             const input = document.createElement('input');
             input.className = 'ai-ask-input';
+            input.dataset.askOpt = String(question.options.length);
             input.type = 'text';
             input.placeholder = question.options.length ? '其他：自己输入回答…' : '输入你的回答…';
             input.spellcheck = false;
             input.value = answerDraft.custom;
             input.addEventListener('input', () => {
                 answerDraft.custom = input.value;
+            });
+            input.addEventListener('focus', () => {
+                draft.focusOi = question.options.length;
             });
             input.addEventListener('keydown', (e) => {
                 if (e.key !== 'Enter') return;
@@ -903,8 +951,8 @@ export function createAITakeover(ctx) {
         const hint = document.createElement('span');
         hint.className = 'ai-takeover-hint';
         hint.textContent = multi
-            ? 'Tab / 上下键选择，回车或空格选中；左右方向键切换问题'
-            : '不确定可点「跳过」，不回答但继续；超时按设置处理';
+            ? '上下键选择，回车或空格选中；左右方向键切换问题'
+            : '上下键选择，回车或空格选中；不确定可点「跳过」，超时按设置处理';
         const skip = document.createElement('button');
         skip.type = 'button';
         skip.className = 'dlg-btn';
@@ -926,22 +974,39 @@ export function createAITakeover(ctx) {
         }
         foot.append(hint, skip, main);
         card.append(head, body, foot);
-        if (multi) {
+        if (navCount) {
             card.addEventListener('keydown', (e) => {
                 const tag = e.target && e.target.tagName;
-                if (tag === 'INPUT' || tag === 'TEXTAREA') return;
-                if (e.key === 'ArrowLeft' && qi > 0) {
-                    e.preventDefault();
-                    draft.idx = qi - 1;
-                    renderAskTakeover(entry);
-                } else if (e.key === 'ArrowRight' && qi < ask.questions.length - 1) {
-                    e.preventDefault();
-                    draft.idx = qi + 1;
-                    renderAskTakeover(entry);
+                const action = askNavAction(e.key, {
+                    multi,
+                    questionCount: ask.questions.length,
+                    idx: qi,
+                    focusIndex: draft.focusOi,
+                    itemCount: navCount,
+                    inInput: tag === 'INPUT' || tag === 'TEXTAREA',
+                });
+                if (!action) return;
+                e.preventDefault();
+                if (action.type === 'question') {
+                    draft.idx = action.idx;
+                    draft.focusOi = 0;
+                    renderAskTakeover(entry); // 切问题：整卡重建，末尾统一回焦
+                    return;
                 }
+                // 上下：只移动焦点，不重建卡片（避免闪烁 / 打断输入）
+                draft.focusOi = action.index;
+                const opts = card.querySelectorAll('[data-ask-opt]');
+                const target = opts[action.index];
+                if (target) target.focus({preventScroll: true});
             });
         }
         el.takeover.appendChild(card);
+        // 整卡重建后把焦点还回导航项，保证「选完一题按右键→再上下选」这种连续操作不中断。
+        // 首次渲染也聚焦首项，让键盘用户一进来就能直接操作。
+        if (navCount) {
+            const target = card.querySelector('[data-ask-opt="' + draft.focusOi + '"]');
+            if (target) target.focus({preventScroll: true});
+        }
     }
 
     function renderPlanTakeover(session, message) {
@@ -967,7 +1032,39 @@ export function createAITakeover(ctx) {
         const preview = document.createElement('div');
         preview.className = 'ai-plan-preview';
         const text = String(message.content || '').trim();
-        preview.textContent = text.length > 1600 ? text.slice(0, 1600) + '\n…' : text;
+        if (message.planFile) {
+            // 计划正文已落盘 .cadt/plan/：卡里只给文件入口，正文去标签页看
+            // （不再把整篇计划铺进对话，「想看细节」就点开标签页）。
+            preview.classList.add('is-file');
+            const digest = planDigest(text);
+            const row = document.createElement('div');
+            row.className = 'ai-plan-file-row';
+            const path = document.createElement('code');
+            path.className = 'ai-plan-file-path';
+            path.textContent = planDisplayPath(message.planFile);
+            path.dataset.tip = message.planFile;
+            const meta = document.createElement('span');
+            meta.className = 'ai-plan-file-meta';
+            meta.textContent = digest.lines + ' 行 · ' + digest.chars + ' 字';
+            const open = document.createElement('button');
+            open.type = 'button';
+            open.className = 'dlg-btn ai-plan-file-open';
+            open.textContent = '在标签页打开';
+            open.addEventListener('click', () => {
+                if (openPlanFile) openPlanFile(message);
+            });
+            path.addEventListener('click', () => {
+                if (openPlanFile) openPlanFile(message);
+            });
+            row.append(path, meta, open);
+            const note = document.createElement('div');
+            note.className = 'ai-plan-file-note';
+            note.textContent = '计划正文已保存到工作区，点「在标签页打开」看完整内容。';
+            preview.append(row, note);
+        } else {
+            // 没有工作区（或本特性之前产生的历史计划）：没有文件可开，退回原文预览
+            preview.textContent = text.length > 1600 ? text.slice(0, 1600) + '\n…' : text;
+        }
         body.appendChild(preview);
         // 计划里出现的同类命令可在批准时一并授权，减少执行期的重复审批。
         const families = collectCommandFamilies(text);

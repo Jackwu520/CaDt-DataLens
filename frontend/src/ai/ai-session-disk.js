@@ -539,6 +539,8 @@ export function createSessionDiskStore(options) {
             session._stub = true;
             session._msgCount = Math.max(0, Number(meta.messageCount) || 0);
             session._archivedCount = Math.max(0, Number(meta.archivedCount) || 0);
+            // 排序键缓存：占位没有正文，列表的时间与顺序只能读 meta 里的轮次起点
+            session._turnTs = Math.max(0, Number(meta.turnTs) || 0);
             session._metaSig = metaSignature(buildSessionMeta(session));
             out.push(session);
         }

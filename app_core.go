@@ -75,6 +75,9 @@ func (a *App) startup(ctx context.Context) {
 		return
 	}
 	applyTaskbarIcon()
+	// 系统通知的应用标识必须在发出第一条 Toast 之前登记好，
+	// 否则 Windows 只返回成功、不显示（见 notify_windows.go: ensureToastAppID）。
+	prepareNotifyApp()
 	ensureWindowShown(ctx)
 	cleanupSQLTempFiles()
 	cleanupReadingCacheOnStartup()

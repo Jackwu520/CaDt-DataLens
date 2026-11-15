@@ -12,7 +12,9 @@ import {
     AI_MASCOT_PHRASES, mascotPhraseIndex, phrasesForPhase, randomMascotSalt,
 } from './ai-mascot-phrases.js';
 import {createModelCatalogStore} from './model-catalog.js';
-import {replaySessionLog, isSilentInjection} from './ai-session-store.js';
+import {replaySessionLog, isSilentInjection, isTurnBoundaryMessage, sessionActivityTs} from './ai-session-store.js';
+import {formatSessionSearchResult, sessionLogDigest} from './ai-session-tools.js';
+import {formatTerminalList, formatTerminalRead, terminalSendLabel} from './ai-terminal-tools.js';
 import {
     globMatchPath,
     humanSizeBytes,
@@ -21,6 +23,7 @@ import {
     readWindowOf,
 } from './ai-file-tools.js';
 import {redactScopePaths} from './ai-scope-redact.js';
+import {desktopNotifyTargets} from './ai-notify-policy.js';
 import {prepareImagePayload} from './ai-image-encode.js';
 import {
     addReadRoot,
@@ -163,7 +166,8 @@ import {
 import {recordRead, recordWrite, checkWriteFresh} from './ai-write-guard.js';
 import {createAIToolDefs} from './ai-tool-defs.js';
 import {createAISystemContext} from './ai-system-context.js';
-import {createAITodos} from './ai-todos.js';
+import {createAITodos, shouldSendTodosCheck, todosCheckText} from './ai-todos.js';
+import {createScrollGesture, createShrinkBurst, nextStickState, shouldRefollowGrowth, STRICT_BOTTOM_PX} from './ai-scroll-follow.js';
 import {createAIChangesUI} from './ai-changes-ui.js';
 import {createAIGitUi} from './ai-git-ui.js';
 import {createAISlash} from './ai-slash.js';
@@ -176,6 +180,12 @@ import {quoteMarkupFromAttachments, splitQuotePrefix, quoteExcerpt, quoteLabel, 
 import {parseFileRef, pickOpenFileMatch, applyFileRefChip} from './ai-file-refs.js';
 import {createAIToolCards} from './ai-tool-cards.js';
 import {createAITakeover} from './ai-takeover.js';
+import {
+    PLAN_DIR_REL,
+    isPlanMessage,
+    planFileBody,
+    planFileRelPath,
+} from './ai-plan-file.js';
 import {createAIManageDialogs} from './ai-manage-dialogs.js';
 import {createAISettingsDialog} from './ai-settings-dialog.js';
 import {createAISubagents} from './ai-subagents.js';
@@ -245,6 +255,16 @@ export function createAIPanel(options) {
     const runHostAppAction = typeof opts.runAppAction === 'function' ? opts.runAppAction : null;
     // 后台终端在内容区的标签页打开器（main.js 提供，docs/unfinished-plans/ai-head-agents-terminal.md）
     const openTermTab = typeof opts.openTermTab === 'function' ? opts.openTermTab : null;
+    // AI 终端桥（terminal 工具）：main.js 以 getter 注入（延迟求值，避免 terminal-ui 工厂的 TDZ）。
+    // 取不到时 terminal 工具直接报「当前版本不支持」，不抛异常拖垮对话。
+    const terminalHostOf = () => {
+        try {
+            const host = opts.terminalHost;
+            return host && typeof host === 'object' ? host : null;
+        } catch (e) {
+            return null;
+        }
+    };
     // 子代理详情视图的宿主出口（main.js 的 openAgentTab）：在内容区标签页打开，不遮挡面板
     const openAgentTab = typeof opts.openAgentTab === 'function' ? opts.openAgentTab : null;
     // 支线对话的宿主出口（main.js 的 openSideChatTab）：完整会话渲染在内容区标签页，
@@ -470,9 +490,11 @@ export function createAIPanel(options) {
         appControl: document.getElementById('ai-opt-app-control'),
         notifyInApp: document.getElementById('ai-opt-notify-inapp'),
         notifySystem: document.getElementById('ai-opt-notify-system'),
+        notifyTest: document.getElementById('ai-opt-notify-test'),
         notifyFinish: document.getElementById('ai-opt-notify-finish'),
         notifyError: document.getElementById('ai-opt-notify-error'),
         notifyAsk: document.getElementById('ai-opt-notify-ask'),
+        notifyApprove: document.getElementById('ai-opt-notify-approve'),
         notifySound: document.getElementById('ai-opt-notify-sound'),
         retryMax: document.getElementById('ai-opt-retry-max'),
         subAgentMax: document.getElementById('ai-opt-subagent-max'),
@@ -559,6 +581,13 @@ export function createAIPanel(options) {
     let stickBottom = true;
     // 消息区上一次滚动位置：滚动监听靠它区分「向上滚」（解除贴底）与「向下滚 / 内容增长」
     let scrollLastTop = 0;
+    // 用户手势窗口：只有滚轮 / 触摸 / 滚动条拖拽 / 键盘翻页期间的变化才算「用户接管滚动」。
+    // 任务清单 / 审批卡出现后消息区靠 padding-bottom 让位、底部 overlay 收起会把 scrollTop
+    // 钳小，这些布局变化会改 scrollTop 与距底距离，但都不是用户的意图（判定收在
+    // ai-scroll-follow.js，切底 / 补底的口径见那里）。
+    const scrollGesture = createScrollGesture();
+    // 兜底：没有手势事件时凭「连续多次 scrollTop 减小」认出真实拖动（见 ai-scroll-follow.js）
+    const shrinkBurst = createShrinkBurst();
     let processFoldState = new Map();
     // 应用消息（Git 快捷操作 / 定时任务）默认收起指令全文；展开状态按消息 key 记住，避免重渲染后弹回。
     const appMsgExpanded = new Set();
@@ -735,6 +764,7 @@ export function createAIPanel(options) {
             notifyFinish: stored.notifyFinish !== false,
             notifyError: stored.notifyError !== false,
             notifyAsk: stored.notifyAsk !== false,
+            notifyApprove: stored.notifyApprove !== false,
             notifySound: stored.notifySound !== false,
             askTimeout: aiClampInt(stored.askTimeout, 0, 3600, 300),
             askTimeoutAction: ['recommended', 'wait', 'abort', 'ai_decide'].includes(stored.askTimeoutAction)
@@ -1355,6 +1385,8 @@ export function createAIPanel(options) {
             message.model = aiTextOf(raw.model);
             message.modelAccount = aiTextOf(raw.modelAccount);
             message.planMode = raw.planMode === true;
+            // 计划落盘路径：随会话持久化，重启重放后仍能一键回到标签页看正文
+            message.planFile = aiTextOf(raw.planFile);
             message.thinkMs = Number(raw.thinkMs) || 0;
             message.finishedAt = Number(raw.finishedAt) || 0;
             message.turnMs = Math.max(0, Number(raw.turnMs) || 0);
@@ -1773,7 +1805,7 @@ export function createAIPanel(options) {
         const out = [];
         const active = sessions.find((session) => session.id === config.activeSessionId);
         if (active && active._stub) out.push(active);
-        const recent = sessions.slice().sort((a, b) => sessionActivityOf(b) - sessionActivityOf(a));
+        const recent = sessions.slice().sort((a, b) => sessionActivityTs(b) - sessionActivityTs(a));
         for (const session of recent) {
             if (out.length >= AI_STARTUP_HYDRATE) break;
             if (session._stub && !out.includes(session)) out.push(session);
@@ -1844,12 +1876,6 @@ export function createAIPanel(options) {
             listRefreshTimer = 0;
             renderSessionList();
         }, 150);
-    }
-
-    function sessionActivityOf(session) {
-        const messages = session.messages || [];
-        const last = messages[messages.length - 1];
-        return Number(last && last.ts) || Number(session.updatedAt) || Number(session.createdAt) || 0;
     }
 
     // 归档入栈：超过 AI_ARCHIVE_LIMIT 会丢弃最旧的归档，这里主动提示，避免静默。
@@ -3199,18 +3225,7 @@ export function createAIPanel(options) {
         updateComposerTakeover();
     }
 
-    // 是否是「用户发起回合」的边界消息。回合进行中注入的 user 消息（截图自动附加、
-    // 轮次提醒、模型切换留痕）不是新回合：重放分组时并入当前组作为过程内容，否则
-    // 一个回合被切成多个组，以 tool 结尾的中间组会被折叠条误标成「未完成」。
-    function isTurnBoundaryMessage(message) {
-        if (!message || message.role !== 'user') return false;
-        if (message.systemNote) return false;
-        // 截图附加消息（app_control screenshot / browser_screenshot 工具中途插入）：
-        // 带 app 标识与图片且没有 turnStartedAt；应用入口真正发起的回合由 send 设置它。
-        if (message.app && Array.isArray(message.images) && message.images.length && !message.turnStartedAt) return false;
-        return true;
-    }
-
+    // 回合分组按 isTurnBoundaryMessage 切轮（判定与列表排序键同源，见 ai-session-store.js）。
     function groupTurns(session, startIndex = 0, endIndex = session.messages.length) {
         const groups = [];
         let current = null;
@@ -3231,12 +3246,24 @@ export function createAIPanel(options) {
         return groups;
     }
 
-    function turnFinalItem(group) {
-        // 组尾是 tool 消息：本轮还停在工具执行 / 等待审批 / 等待回答（或异常中断），
-        // 最后一条 assistant 的正文与思考必须留在过程时间线里按顺序展示，
-        // 不能抽出来当「最终回答」排到工具卡片后面。
+    // 工具消息是否仍在等用户 / 外部事件（审批、回答、后台作业）：
+    // 只有这类「组尾是 tool」才真是未完成。工具已执行完的轮次（典型：start_timer
+    // 设好后等计时器到点）不该被 processFoldLabel 误标成「未完成」。
+    function toolMessageWaiting(message) {
+        if (!message || message.role !== 'tool') return false;
+        if (message.status === 'pending' || message.status === 'running') return true;
+        if (message.approval && message.approval.state === 'pending') return true;
+        if (message.agent && message.agent.state === 'running') return true;
+        if (message.bg && message.bg.state === 'running') return true;
+        return false;
+    }
+
+    function turnFinalItem(group, turnRunning) {
+        // 组尾是 tool 且仍在流式 / 等审批 / 等回答：本轮确实未完成，最后一条 assistant
+        // 的正文与思考必须留在过程时间线里按顺序展示，不能抽出来当「最终回答」排到工具卡后。
+        // 工具已执行完则回退找最后的 assistant 作为终项（状态 / 用时），让折叠条显示真实结果。
         const last = group.items[group.items.length - 1];
-        if (last && last.message.role === 'tool') return null;
+        if (last && last.message.role === 'tool' && (turnRunning || toolMessageWaiting(last.message))) return null;
         // 回退找最后的 assistant；带工具调用但正文为空的 assistant（工具回合）也算有效终结。
         for (let i = group.items.length - 1; i >= 0; i--) {
             const item = group.items[i];
@@ -3491,8 +3518,9 @@ export function createAIPanel(options) {
     function renderTurn(group, session, isLastGroup, parent, extraOptions) {
         const host = parent || msgHost();
         const turnOptions = extraOptions || {};
-        if (group.user) renderMessage(group.user, group.startIndex, session, host, turnOptions);
-        const finalItem = turnFinalItem(group);
+        const live = streamOf(session.id);
+        const turnRunning = !!(live && isLastGroup);
+        const finalItem = turnFinalItem(group, turnRunning);
         // 本轮文件改动汇总卡固定在轮次末尾（final answer 之后），不进过程折叠区。
         // 取组内最后一张汇总卡，而不是只认「组内最后一项」——重放的历史数据里
         // 卡片后面可能还跟着收尾消息，硬绑最后一项会让卡片在重开对话后消失。
@@ -3505,8 +3533,6 @@ export function createAIPanel(options) {
         }
         const processAll = (finalItem ? group.items.filter((item) => item !== finalItem) : group.items.slice())
             .filter((item) => item.message.kind !== 'changes-summary');
-        const live = streamOf(session.id);
-        const turnRunning = !!(live && isLastGroup);
         const streamingFinal = turnRunning && finalItem && live.assistant === finalItem.message;
         // 最终回答是否有正文可展示（流式/出错/停止都算；纯工具调用的 done 不算）。
         const finalHasBody = !!(finalItem && (finalItem.message.content || finalItem.message.status !== 'done'));
@@ -3536,6 +3562,10 @@ export function createAIPanel(options) {
             if (cur.length) segments.push({items: cur});
         }
         if (!segments.length) segments.push({items: []});
+        // 注入卡（计时器到点 / 定时任务 / 会话投递）本身就是本轮轮首 user 消息，直接渲染全宽卡。
+        // 不要再做「整轮外壳 + 过程开关」：外壳会把用户自己的消息一起折叠，且与内部过程条
+        // 形成两级折叠（2026-11-16 实测后回滚，方案见 docs/unfinished-plans/turn-fold-redesign.md）。
+        if (group.user) renderMessage(group.user, group.startIndex, session, host, turnOptions);
         // 完成后默认收起；但最终回答没有正文时（如工具轮收尾、以工具调用结束），
         // 过程行是唯一信息载体，默认展开以免「全部折叠」看起来没有任何输出。
         // 最终回答的思考链跟随「最后一个 items 段」的折叠体（与完成后收起的设计一致）；
@@ -3543,6 +3573,8 @@ export function createAIPanel(options) {
         const lastItemsIndex = segments.reduce((acc, seg, idx) => (seg.ask ? acc : idx), -1);
         segments.forEach((seg, segIndex) => {
             if (seg.ask) {
+                // 已答提问卡按时间序插在过程段之间，始终整卡渲染（不参与任何折叠）：
+                // 问答记录是用户自己的答复凭据，收起来就等于「没问过」。
                 renderMessage(seg.ask.message, seg.ask.index, session, host, turnOptions);
                 return;
             }
@@ -3868,7 +3900,7 @@ export function createAIPanel(options) {
             return wrap;
         }
         if (message.role === 'tool') {
-            renderToolMessage(wrap, message);
+            renderToolMessage(wrap, message, options);
         } else if (message.role === 'assistant') {
             if (message.status === 'error') wrap.classList.add('error');
             if (message.status === 'streaming') wrap.classList.add('streaming');
@@ -4028,7 +4060,10 @@ export function createAIPanel(options) {
             ? '由应用自动注入 · 其他会话的模型消息，仅供参考'
             : (app.kind === 'session-user'
                 ? '由应用自动注入 · 你发出的消息，AI 按这条指令执行'
-                : '由应用自动注入，AI 按这条指令执行');
+                : (app.kind === 'plan'
+                    // 计划批准是应用代按「执行计划」，不是用户手打的指令
+                    ? '由应用自动注入 · 计划已批准，AI 按上面的计划开始执行'
+                    : '由应用自动注入，AI 按这条指令执行'));
         const toggle = document.createElement('button');
         toggle.type = 'button';
         toggle.className = 'ai-app-msg-toggle' + (expanded ? ' expanded' : '');
@@ -4484,6 +4519,10 @@ export function createAIPanel(options) {
     // 两种都得让位，所以取实测值与浮层宽度（12px）的较大者——多让出的几像素只是同色 --bg，看不出来。
     // 值没变就不写，避免流式帧里反复触发样式重算。声明放在所有调用点之前（含顶部 syncMessagesUnderflow）
     let lastScrollbarGutter = -1;
+    // 平滑滚动宽限期（时间戳）：动画中间帧距底很远，不能被误判成「贴底态被布局挤离底部」。
+    // 只有 scrollToBottom(true) 开启，瞬时贴底清零。
+    let smoothScrollUntil = 0;
+
     function syncScrollbarGutter() {
         if (!el.messages) return;
         const measured = Math.round(el.messages.offsetWidth - el.messages.clientWidth);
@@ -4496,18 +4535,31 @@ export function createAIPanel(options) {
     function scrollToBottom(smooth) {
         if (!el.messages) return;
         const top = Math.max(0, el.messages.scrollHeight - el.messages.clientHeight);
+        // 平滑滚动的宽限期：动画中间的帧距底还很远，不能被当成「贴底态被布局挤离底部」
+        // 再补一次瞬时跳底（那动画就没了）
+        smoothScrollUntil = smooth ? performance.now() + 800 : 0;
         if (smooth && el.messages.scrollTo) el.messages.scrollTo({top, behavior: 'smooth'});
         else el.messages.scrollTop = top;
         stickBottom = true;
+        // 同步基准位置：scroll 事件是异步派发的，等它派发前若来了下一次判定（流式帧、
+        // 补底），旧的基准会把这次程序贴底当成「scrollTop 变大」，反过来把用户紧跟着的
+        // 一次上滚吞掉
+        scrollLastTop = el.messages.scrollTop;
         updateScrollButton();
+    }
+
+    // 距底距离（小于 0 的 overscroll 归零）：滚动跟随的所有判定共用这一个口径
+    function messagesBottomGap() {
+        if (!el.messages) return 0;
+        const gap = el.messages.scrollHeight - el.messages.scrollTop - el.messages.clientHeight;
+        return gap > 0 ? gap : 0;
     }
 
     function updateScrollButton() {
         // 滚动条随内容增长才出现/消失：贴在这里同步槽宽，流式增长与重排都不会漏。
         syncScrollbarGutter();
         if (!el.scrollBtn || !el.messages) return;
-        const distance = el.messages.scrollHeight - el.messages.scrollTop - el.messages.clientHeight;
-        el.scrollBtn.classList.toggle('hidden', distance <= 200);
+        el.scrollBtn.classList.toggle('hidden', messagesBottomGap() <= 200);
     }
 
     function positionOverlays() {
@@ -4541,10 +4593,37 @@ export function createAIPanel(options) {
     // 消息内容 padding-bottom 跟随堆叠区实际高度。刷新统一走 positionOverlays
     // （todos/警告条渲染、会话切换、窗口缩放都会调它），打字增行走 input 事件。
     // 不用 ResizeObserver：部分宿主（IAB 节流渲染帧）不派发 RO 回调。
+    // 留白二次校准的帧句柄：底部浮层一次性长高（展开任务清单、审批卡首帧）时，
+    // 这一帧量到的盒高可能还没定型，下一帧再校一次
+    let underflowResyncRaf = 0;
+
     function syncMessagesUnderflow() {
         if (!el.bottomStack || !el.messages) return;
         const h = Math.round(el.bottomStack.getBoundingClientRect().height);
-        el.messages.style.paddingBottom = h > 0 ? (h + 12) + 'px' : '';
+        const pad = h > 0 ? (h + 12) + 'px' : '';
+        if (el.messages.style.paddingBottom !== pad) {
+            // 补底判定要在写留白之前取：写完 padding 就「不贴底」了
+            const gap = el.messages.scrollHeight - el.messages.scrollTop - el.messages.clientHeight;
+            el.messages.style.paddingBottom = pad;
+            // 留白变化直接改「距底距离」（scrollHeight 变大），但 scrollTop 不动、也不派发
+            // scroll 事件——贴底态就地补回去。否则任务清单 / 审批卡出现后要等下一个流式帧
+            // 才跟到底，流已结束（正在等审批）时就永远停在被顶上去的位置。
+            // 严格贴底（gap ≈ 0）也算贴底并顺手把 stickBottom 修回来：旧版本被布局误判掉
+            // 的贴底态不必等用户手动再滚一次才恢复
+            if (stickBottom || gap <= STRICT_BOTTOM_PX) {
+                stickBottom = true;
+                scrollToBottom(false);
+            }
+            // 展开任务清单 / 审批卡首帧这类一次性长高，量到的可能还是展开前的盒高
+            // （子树这帧才建立、字体行高还没定型）：下一帧再校一次，别让留白差一截、
+            // 末条消息被浮层压住。校完没变化就不再排。
+            if (!underflowResyncRaf) {
+                underflowResyncRaf = requestAnimationFrame(() => {
+                    underflowResyncRaf = 0;
+                    syncMessagesUnderflow();
+                });
+            }
+        }
         syncScrollbarGutter();
     }
     syncMessagesUnderflow();
@@ -5171,6 +5250,89 @@ export function createAIPanel(options) {
         return aiNormalizePath(value).replace(/\/+$/, '').toLowerCase();
     }
 
+    // ---- 计划落盘（计划模式：正文进 .cadt/plan/，对话区只留入口卡） ----
+    // 路径与正文由消息自身推导（ai-plan-file.js），同一消息任何一次渲染 / 重启重放都指向
+    // 同一个文件，不依赖内存里记过的路径。
+
+    function planFileTarget(message, sessionOverride) {
+        if (!isPlanMessage(message)) return null;
+        const ts = Number(message.ts) || Number(message.finishedAt) || 0;
+        // 没有时间戳就没法给出稳定文件名——不落盘，对话里退回原文渲染
+        if (!ts) return null;
+        const session = sessionOverride || currentSession();
+        // 根优先取会话记下的工作区：用户后来换了工作区也不会把旧计划写到新目录去
+        const root = aiTextOf(session && session.workspace) || getScopeRoot() || aiProjectRoot();
+        if (!root) return null;
+        const rel = planFileRelPath(ts, message.content);
+        return {
+            rel,
+            abs: aiNormalizePath(aiJoinPath(root, rel)),
+            dir: aiNormalizePath(aiJoinPath(root, PLAN_DIR_REL)),
+            body: planFileBody(message.content, {
+                ts,
+                title: (session && session.title) || '',
+                model: message.model || '',
+            }),
+        };
+    }
+
+    // 先把路径记到消息上（同步）：轮次收尾的渲染立刻就能出卡片，写文件是异步副作用。
+    function markPlanFile(message, session) {
+        if (!message || message.planFile) return null;
+        const target = planFileTarget(message, session);
+        if (!target) return null;
+        message.planFile = target.abs;
+        return target;
+    }
+
+    function writePlanFile(target) {
+        if (!target || !backend.AIEnsureDir || !backend.SaveFile) return Promise.resolve(false);
+        return Promise.resolve()
+            .then(() => backend.AIEnsureDir(target.dir))
+            .then(() => backend.SaveFile(target.abs, target.body, 'lf', false, 'utf-8'))
+            .then(() => {
+                if (typeof onFileChanged === 'function') onFileChanged(target.abs);
+                return true;
+            });
+    }
+
+    // 打开计划文件。路径优先用消息上记下的绝对值——用户可能已经换了工作区，重算会把
+    // 同一份计划写到新工作区去。只有从没落过盘的历史计划才按当前工作区推导。
+    // 文件已存在就不重写：用户或许已经在标签页里改过它。
+    async function openPlanFile(message) {
+        if (!message) return false;
+        const stored = aiTextOf(message.planFile);
+        const target = stored
+            ? {abs: stored, dir: aiPathDir(stored), body: null}
+            : planFileTarget(message);
+        if (!target || !target.abs) {
+            flash('没有可打开的计划文件（计划只留在对话里）', true);
+            return false;
+        }
+        try {
+            if (message.planFile !== target.abs) {
+                message.planFile = target.abs;
+                persistSessions();
+            }
+            const stat = backend.GetFileStat ? await backend.GetFileStat(target.abs).catch(() => null) : null;
+            if (!stat || !stat.exists) {
+                // 补写正文：与首次落盘同一份内容（路径被删 / 上次写失败 / 历史计划）
+                await writePlanFile(Object.assign({}, target, {
+                    body: target.body != null ? target.body : planFileBody(message.content, {
+                        ts: Number(message.ts) || Number(message.finishedAt) || 0,
+                        title: (currentSession() && currentSession().title) || '',
+                        model: message.model || '',
+                    }),
+                }));
+            }
+        } catch (e) {
+            flash('计划文件写入失败：' + ((e && e.message) || e), true);
+            return false;
+        }
+        openPath(target.abs);
+        return true;
+    }
+
     function aiWorkspaceName(value) {
         const normalized = aiNormalizePath(value).replace(/\/+$/, '');
         const index = normalized.lastIndexOf('/');
@@ -5578,6 +5740,10 @@ export function createAIPanel(options) {
         confirmAction: askConfirm,
         getMcpState: () => mcpMod.getState(),
         onChanged: () => Promise.resolve(mcpMod.refresh()).catch(() => {}), // 尽力而为：保存后拉一次新配置的快照
+        // 服务器编辑器走独立弹层（与「添加生图模型」同一套居中弹窗）
+        openAIDialog,
+        closeAIDialog,
+        dialogButton,
     });
     const toolDefsMod = createAIToolDefs({
         appControlOn,
@@ -5898,6 +6064,33 @@ export function createAIPanel(options) {
         }
     }
 
+    // 等待用户拍板的统一提醒（读/写审批、命令审批、环境变量待填写共用）。
+    // 只有「AI 面板开着、停在这个会话、且软件在前台」才算人就在看，否则打未读并通知——
+    // 这些等待**都没有超时**，不提醒等于让这一轮挂在用户看不见的地方永不结束。
+    // 系统通知的实际弹出还受 notifySystem 与「前台不弹」约束（见 notifyDesktop）。
+    function markWaitingOnUser(session, approval, title, body) {
+        if (!session) return;
+        setSessionUnread(session, 'done');
+        if (config.notifyApprove === false) return;
+        // 口径与「AI 提问」一致：消息中心**一律**记一条（可事后查、点击跳转），
+        // 弹不弹系统卡片由 notifyDesktop 的前台判断决定。别把「要不要记」也交给前台条件——
+        // 那样人在前台看着面板时审批会一点痕迹都不留（实测就是这么漏的）。
+        notifyDesktop({kind: 'error', title, body, sessionId: session.id});
+        // 人正看着这张卡（面板开着该会话 + 软件在前台）就不用再排 60 秒催办。
+        appReallyForeground().then((active) => {
+            if (active && isOpen() && currentSession() === session) return;
+            setTimeout(() => {
+                if (approval && approval.state && approval.state !== 'pending') return;
+                notifyDesktop({
+                    kind: 'error',
+                    title: title + '（仍在等待）',
+                    body: (session.title || '会话') + ' · 已等待超过 1 分钟，后台轮次被卡住',
+                    sessionId: session.id,
+                });
+            }, 60000);
+        });
+    }
+
     // 审批登记的公共路径（write 与 read 审批共用）：登记 pendingApprovals、刷新接管区与列表；
     // 后台轮次（用户没在看该会话）打未读 + 桌面通知，60 秒后再提醒一次——不自动放行。
     function registerPendingApproval(session, toolMessage, approval, notifyBody) {
@@ -5916,26 +6109,7 @@ export function createAIPanel(options) {
         // 后台轮次触发审批（§4.14.1）：接管卡只渲染「当前查看会话」的审批，而写操作审批没有
         // 超时——不通知就等于让这一轮挂在用户看不见的输入区里永不结束。**不自动放行**，
         // 只做「可见 + 可跳转」：桌面通知带 sessionId（消息中心点击即跳），条目打未读。
-        const viewed = isOpen() && currentSession() === session;
-        if (!viewed) {
-            setSessionUnread(session, 'done');
-            notifyDesktop({
-                kind: 'error',
-                title: 'AI 待审批',
-                body: notifyBody,
-                sessionId: session.id,
-            });
-            // 超时只「再提醒一次」，不替用户拍板（写操作与命令的授权不能由后台代劳）
-            setTimeout(() => {
-                if (approval.state !== 'pending') return;
-                notifyDesktop({
-                    kind: 'error',
-                    title: 'AI 审批仍在等待',
-                    body: (session.title || '会话') + ' · 已等待超过 1 分钟，后台轮次被卡住',
-                    sessionId: session.id,
-                });
-            }, 60000);
-        }
+        markWaitingOnUser(session, approval, 'AI 待审批', notifyBody);
         return new Promise((resolve) => {
             entry.resolve = resolve;
         });
@@ -6505,6 +6679,8 @@ export function createAIPanel(options) {
         pendingApprovals.set(key, entry);
         updateComposerTakeover(true);
         renderSessionList();
+        markWaitingOnUser(session, approval, 'AI 待审批',
+            (session.title || '会话') + ' · 命令待批准：' + appToastPreview(info.command || '', 60));
         return new Promise((resolve) => {
             entry.resolve = resolve;
         });
@@ -6667,6 +6843,8 @@ export function createAIPanel(options) {
         // 先登记再刷新接管区：查找逻辑依赖 pendingEnvCreations 已有条目。
         updateComposerTakeover(true);
         renderSessionList();
+        markWaitingOnUser(session, envAsk, 'AI 待填写',
+            (session.title || '会话') + ' · 需要你填写环境变量 ' + (info.name || '') + ' 的值');
         return new Promise((resolve) => {
             entry.resolve = resolve;
         });
@@ -7541,8 +7719,11 @@ export function createAIPanel(options) {
                 const root = getScopeRoot();
                 if (!root) throw new Error('当前没有工作区范围，请先打开文件或文件夹');
                 const pattern = aiTextOf(input.filePattern).trim();
-                // 有文件过滤时把 Go 侧命中窗口放大到上限（1000），过滤后再截，避免先截 200 漏掉目标文件的命中
-                const result = await backend.SearchWorkspace(root, query, !!input.caseSensitive, pattern ? 1000 : 200);
+                // 有文件过滤时把 Go 侧命中窗口放大到上限（1000），过滤后再截，避免先截 200 漏掉目标文件的命中。
+                // 新版本把 filePattern 下推到搜索层（rg --glob / 内置扫描过滤）；旧后端回退到「取大窗再前端过滤」。
+                const result = (pattern && backend.SearchWorkspaceFiltered)
+                    ? await backend.SearchWorkspaceFiltered(root, query, !!input.caseSensitive, 1000, pattern)
+                    : await backend.SearchWorkspace(root, query, !!input.caseSensitive, pattern ? 1000 : 200);
                 let hits = (result && result.hits) || [];
                 let truncated = !!(result && result.truncated);
                 let filterNote = '';
@@ -7575,6 +7756,30 @@ export function createAIPanel(options) {
                 if (filterNote) lines.push('（' + filterNote + '）');
                 if (truncated) lines.push('…（结果已截断）');
                 return lines.join('\n');
+            }
+            case 'glob': {
+                // 文件发现：Go FindFiles 只列名字与大小（不读内容），跳过表与时间预算与 search_text 共用。
+                const pattern = aiTextOf(input.pattern).trim();
+                if (!pattern) throw new Error('pattern 不能为空（如 *.go、src/**/*.ts）');
+                if (!backend.FindFiles) throw new Error('当前版本不支持文件发现（请重新构建或更新应用）');
+                const scopeRoot = getScopeRoot();
+                if (!scopeRoot) throw new Error('当前没有工作区范围，请先打开文件或文件夹');
+                const start = aiTextOf(input.path).trim();
+                const root = start ? aiResolveScopePath(start, ctx && ctx.session) : scopeRoot;
+                const maxResults = aiClampInt(input.maxResults, 1, 1000, 300);
+                const result = await backend.FindFiles(root, pattern, maxResults);
+                const files = (result && result.files) || [];
+                if (!files.length) {
+                    return '没有匹配的文件：' + pattern + (start ? '（起点：' + start + '）' : '') +
+                        '；可放宽 pattern，或确认路径是否在工作区内。';
+                }
+                // Go 侧返回的 path 已相对 root（斜杠分隔）；起点不是范围根时在头部说明口径，避免误当工作区相对路径
+                const head = '匹配 ' + files.length + ' 个文件（pattern: ' + pattern +
+                    (start ? '，起点：' + start : '') + '）' +
+                    (start ? '；以下路径相对该起点' : '；以下路径相对工作区根') + '：';
+                const lines = files.map((file) => file.path + (file.size ? '  ' + humanSizeBytes(file.size) : ''));
+                if (result && result.truncated) lines.push('…（结果已截断：缩小 pattern 或用 path 限定目录）');
+                return head + '\n' + lines.join('\n');
             }
             case 'web_search': {
                 const query = aiTextOf(input.query).trim();
@@ -7879,6 +8084,32 @@ export function createAIPanel(options) {
             case 'session_history': {
                 if (!ctx || !ctx.session) throw new Error('缺少会话上下文');
                 return await runSessionHistoryQuery(ctx.session, input);
+            }
+            case 'session_search': {
+                // 跨会话检索：Go 侧 AISessionSearchScoped 只搜未归档会话，硬预算 100 条 / 3 秒。
+                // 结果可能来自别的工作区，渲染时由 formatSessionSearchResult 统一标注。
+                const query = aiTextOf(input.query).trim();
+                if (!query) throw new Error('搜索内容为空');
+                if (!backend.AISessionSearchScoped) throw new Error('当前版本不支持会话检索（请重新构建或更新应用）');
+                const limit = aiClampInt(input.limit, 1, 100, 20);
+                const brief = input.full !== true;
+                const result = await backend.AISessionSearchScoped(query, limit, brief);
+                return formatSessionSearchResult(query, result);
+            }
+            case 'session_read': {
+                const id = aiTextOf(input.id).trim();
+                if (!id) throw new Error('id 不能为空（先用 session_search 或 session_list 取会话 id）');
+                if (!backend.AISessionRead) throw new Error('当前版本不支持读取会话日志（请重新构建或更新应用）');
+                const raw = await backend.AISessionRead(id);
+                if (!raw) {
+                    return '会话没有可读的日志：' + id + '（可能已被删除，或还没落盘）。先用 session_search 重新找 id。';
+                }
+                return sessionLogDigest(raw, {
+                    limit: aiClampInt(input.limit, 1, 50, 20),
+                    query: aiTextOf(input.query).trim(),
+                    workspace: getScopeRoot(),
+                    id,
+                });
             }
             case 'ask_user': {
                 // 子代理提问（原语 6）：子代理没有用户 UI，问题转交父代理作答。
@@ -8367,13 +8598,80 @@ export function createAIPanel(options) {
                 if (done === list.length) note += '清单已全部完成。';
                 return note;
             }
+            case 'terminal': {
+                // 内置终端（ConPTY 持久会话）：与用户看到的底部终端共用同一份 UI 状态与输出流。
+                // 写操作复用命令审批链（approveCommandForRun），read / list 只读免审批。
+                if (!ctx || !ctx.session || !ctx.toolMessage) throw new Error('终端操作缺少会话上下文');
+                const host = terminalHostOf();
+                if (!host) throw new Error('当前版本不支持终端操作（请重新构建或更新应用）');
+                const action = aiTextOf(input.action).trim().toLowerCase();
+                if (!action) throw new Error('action 不能为空（list / open / send / read / signal / close）');
+                const approve = async (what, subject) => {
+                    const decision = await approveCommandForRun(ctx.session, ctx.toolMessage, what, subject, 'terminal');
+                    if (decision.approved) return null;
+                    return decision.denied
+                        ? '被项目权限规则禁止，未执行（规则 ' + decision.rule + '）。'
+                        : (decision.cancelled ? '用户已停止生成，未执行。' : '用户取消了本次终端操作。');
+                };
+
+                if (action === 'list') {
+                    const local = host.list();
+                    const infos = backend.TermList ? await backend.TermList() : [];
+                    return formatTerminalList(local, infos);
+                }
+
+                if (action === 'open') {
+                    const shell = aiTextOf(input.shell).trim();
+                    const denied = await approve('创建终端' + (shell ? '（' + shell + '）' : ''), '内置终端');
+                    if (denied) return denied;
+                    if (toolHalted(ctx.toolMessage)) return '用户已停止生成，终端未创建。';
+                    const created = await host.open(shell);
+                    return '已创建终端：' + created.id + '（' + created.shell + '），底部终端面板已打开。' +
+                        '写入命令用 terminal send（文本自带 \\r 才回车），读输出用 terminal read。';
+                }
+
+                const id = aiTextOf(input.id).trim();
+                if (!id) throw new Error('id 不能为空（先用 terminal list 取 id）');
+
+                if (action === 'send') {
+                    const text = aiTextOf(input.text);
+                    if (!text) throw new Error('text 不能为空（需要回车请自带 \\r）');
+                    const denied = await approve(terminalSendLabel(text), '终端 ' + id);
+                    if (denied) return denied;
+                    if (toolHalted(ctx.toolMessage)) return '用户已停止生成，未写入终端。';
+                    await host.send(id, text);
+                    return '已向终端 ' + id + ' 写入 ' + text.length + ' 个字符。交互式程序可能需要等一会，用 terminal read 看输出。';
+                }
+
+                if (action === 'signal') {
+                    const denied = await approve('Ctrl+C（中断前台程序）', '终端 ' + id);
+                    if (denied) return denied;
+                    await host.send(id, '\u0003');
+                    return '已向终端 ' + id + ' 发送 Ctrl+C。';
+                }
+
+                if (action === 'read') {
+                    if (!backend.TermRead) throw new Error('当前版本不支持读取终端输出（请重新构建或更新应用）');
+                    const maxChars = aiClampInt(input.maxChars, 200, 20000, 4000);
+                    const res = await backend.TermRead(id, maxChars);
+                    return formatTerminalRead(id, res, maxChars);
+                }
+
+                if (action === 'close') {
+                    const denied = await approve('关闭终端 ' + id, '终端 ' + id);
+                    if (denied) return denied;
+                    await host.close(id);
+                    return '已关闭终端 ' + id + '。';
+                }
+                throw new Error('未知的 action：' + action + '（可用 list / open / send / read / signal / close）');
+            }
             case 'run_command': {
                 if (!ctx || !ctx.session || !ctx.toolMessage) throw new Error('命令执行缺少会话上下文');
                 const command = aiTextOf(input.command).trim();
                 if (!command) throw new Error('命令不能为空');
                 if (!backend.AIRunShellCommand) throw new Error('当前版本不支持执行命令');
                 const cwd = aiResolveScopePath(aiTextOf(input.cwd).trim() || '.', ctx.session);
-                const timeoutMs = aiClampInt(input.timeoutMs, 1000, 120000, 30000);
+                const timeoutMs = aiClampInt(input.timeoutMs, 1000, 600000, 60000);
                 const decision = await approveCommandForRun(ctx.session, ctx.toolMessage, command, cwd, 'run_command');
                 if (!decision.approved) {
                     return decision.denied
@@ -9116,34 +9414,70 @@ export function createAIPanel(options) {
         return clean.length > max ? clean.slice(0, max) + '…' : clean;
     }
 
+    // 页面级焦点判断：只能当兜底。WebView2 在嵌入场景下 hasFocus 会滞留
+    //（切走了还报 true），所以真正说了算的是后端的 AppWindowActive（GetForegroundWindow）。
+    function appInForeground() {
+        if (document.hidden) return false;
+        if (typeof document.hasFocus === 'function') return document.hasFocus();
+        return true;
+    }
+
+    // 「本进程有没有窗口在前台」——后端系统级判定优先，拿不到（旧构建 / 非 Windows）再退回页面判断。
+    function appReallyForeground() {
+        const ask = backend.AppWindowActive;
+        if (typeof ask !== 'function') return Promise.resolve(appInForeground());
+        try {
+            return Promise.resolve(ask()).then((value) => value === true).catch(() => appInForeground());
+        } catch (e) {
+            return Promise.resolve(appInForeground());
+        }
+    }
+
     function notifyDesktop(options) {
         const inApp = config.notifyInApp === true;
         const system = config.notifySystem === true;
-        // 任务完成等通知集成为消息形态：始终进消息中心；右下角 toast 仅在开启应用内提示时弹出
-        // （弹完消失，消息仍在列表——message-center.js 负责渲染与持久化）
-        if (typeof opts.addMessage === 'function') {
-            const kind = options.kind === 'error' ? 'error' : (options.kind === 'success' ? 'success' : 'info');
-            opts.addMessage({
-                kind,
-                title: options.title || 'CaDt-DataLens',
-                body: options.body || '',
-                sessionId: options.sessionId || '',
-            }, {toast: inApp});
+        const sessionId = String(options.sessionId || '');
+        const kind = options.kind === 'error' ? 'error' : (options.kind === 'success' ? 'success' : 'info');
+        const title = options.title || 'CaDt-DataLens';
+        const body = options.body || '';
+        // 「你看得见这条会话吗」：面板开着且就停在这个会话才算看得见（没有 sessionId 的一律算看不见）
+        const current = currentSession();
+        const viewingOther = !(sessionId && isOpen() && current && current.id === sessionId);
+        const deliver = (targets) => {
+            // 消息中心始终记（可事后查、可点开跳转）；只有「人在软件里但看的是别的会话」才额外右下角弹
+            if (typeof opts.addMessage === 'function') {
+                opts.addMessage({kind, title, body, sessionId}, {toast: !!targets.inAppToast});
+            }
+            if (targets.systemToast && backend.NotifySystemToast) {
+                // 未在系统登记过应用标识时，Windows 会「返回成功但不显示」——后端会主动登记，
+                // 并把登记失败 / 用户关掉本应用通知这类错误返回来；以前这里静默吞掉，
+                // 只能看到「开关开着但从来不弹」，现在至少留一条可查的日志。
+                try {
+                    const sent = backend.NotifySystemToast(title, body, config.notifySound === false);
+                    if (sent && typeof sent.then === 'function') {
+                        sent.catch((e) => console.warn('[系统通知] 发送失败：', (e && e.message) || e));
+                    }
+                } catch (e) {
+                    console.warn('[系统通知] 发送失败：', (e && e.message) || e);
+                }
+            }
+            // 任务栏闪烁只在人离开了软件时才有意义
+            if (targets.taskbarFlash && backend.NotifyAttention) {
+                try {
+                    backend.NotifyAttention(!!config.notifySound);
+                } catch (e) {}
+            }
+        };
+        if (!inApp && !system) {
+            deliver({systemToast: false, inAppToast: false, taskbarFlash: false});
+            return;
         }
-        if (!inApp && !system) return;
-        if (system && backend.NotifySystemToast) {
-            try {
-                backend.NotifySystemToast(options.title || 'CaDt-DataLens', options.body || '', config.notifySound === false);
-            } catch (e) {}
-        }
-        if (!inApp) return;
-        const unfocused = document.hidden || (typeof document.hasFocus === 'function' && !document.hasFocus());
-        if (!unfocused) return;
-        if (backend.NotifyAttention) {
-            try {
-                backend.NotifyAttention(!!config.notifySound);
-            } catch (e) {}
-        }
+        appReallyForeground().then((foreground) => {
+            deliver(desktopNotifyTargets({
+                inApp, system, foreground, viewingOther,
+                completion: options.completion === true,
+            }));
+        });
     }
 
     function notifyTurnFinished(session, assistant, stopped) {
@@ -9159,10 +9493,23 @@ export function createAIPanel(options) {
             return;
         }
         if (assistant.status !== 'done' || !String(assistant.content || '').trim()) return;
+        // 计划模式下这一轮产出的是「等你批准的计划」，不是「跑完的任务」：发一条待批准提醒
+        // 就够了，别再叠一条「任务完成」（两条通知说的是同一次落地）。
+        if (session && session.planMode && assistant.planMode) {
+            if (config.notifyApprove === false) return;
+            notifyDesktop({
+                kind: 'info',
+                title: 'AI 计划待批准',
+                body: (session.title || '会话') + ' · 计划已生成，等你批准后开始执行',
+                sessionId: session.id,
+            });
+            return;
+        }
         if (config.notifyFinish === false) return;
         notifyDesktop({
             kind: 'success',
             title: 'AI 任务完成',
+            completion: true,
             body: (session.title || '会话') + ' · ' + appToastPreview(assistant.content, 90),
             sessionId: session.id,
         });
@@ -9209,6 +9556,18 @@ export function createAIPanel(options) {
             }
         }
         notifyTurnFinished(session, current.assistant, current.stopped);
+        // 计划模式的最终计划默认落盘 <工作区>/.cadt/plan/：对话区只留一张入口卡，
+        // 正文去标签页看（计划不再整段铺进对话）。写盘是异步副作用，不拖住收尾。
+        if (session && !current.stopped && current.assistant.status === 'done') {
+            const planTarget = markPlanFile(current.assistant, session);
+            if (planTarget) {
+                writePlanFile(planTarget).catch((e) => {
+                    current.assistant.planFile = '';
+                    if (wasViewed && isOpen()) renderMessages(true);
+                    flash('计划文件写入失败：' + ((e && e.message) || e), true);
+                });
+            }
+        }
         const shouldFlush = queueMod.hasInterject(current.sessionId) || (!current.stopped && current.assistant.status === 'done');
         queueMod.clearInterject(current.sessionId);
         detachStream(current);
@@ -9375,22 +9734,33 @@ export function createAIPanel(options) {
         flushToolImages(session);
         // 轮末清单同步提醒（系统提示里的 <task_todos> 是轮开始快照，长工具链中模型对
         // 被动提醒依从性低——在离行动点最近的地方（收尾请求前）再催一次；systemNote
-        // 会随 buildApiMessages 进入收尾请求）。本轮没跑工具不催、清单全完成不催。
-        const todosOpen = (session.todos || []).filter((t) => t.status !== 'completed');
-        if (todosOpen.length && session.messages.some((m) => m.role === 'tool' && (Number(m.ts) || 0) >= toolStartedAt)) {
-            const doingList = (session.todos || []).filter((t) => t.status === 'in_progress');
-            session.messages.push({
-                role: 'user',
-                content: '<task_todos_check>任务清单尚未与实际进度对齐：' +
-                    doingList.length + ' 项进行中、' + (todosOpen.length - doingList.length) + ' 项待处理。' +
-                    '已完成的步骤请立即 todo_write 标 completed，继续做的保持 in_progress；' +
-                    '不要在总结里口头说完成而清单没有更新。</task_todos_check>',
-                systemNote: true,
-                silent: true, // 给模型的机械提醒，不在消息流里渲染（纯噪音）
-                dedupeKey: 'task_todos_check', // 瞬态注入：发请求时同类只保留最新一条
-                ts: Date.now(),
-            });
-            persistSessions();
+        // 会随 buildApiMessages 进入收尾请求）。清单全完成不催；文案与节流是 ai-todos.js
+        // 的纯函数（todosCheckText / shouldSendTodosCheck），口径与 <task_todos> 对齐。
+        const todosAll = Array.isArray(session.todos) ? session.todos : [];
+        if (todosAll.some((t) => t.status !== 'completed')) {
+            const turnStart = turnStartAt(session, session.messages.length - 1) || toolStartedAt;
+            const turnToolNames = session.messages
+                .filter((m) => m.role === 'tool' && (Number(m.ts) || 0) >= turnStart)
+                .map((m) => m.name);
+            let lastCheckText = '';
+            for (let i = session.messages.length - 1; i >= 0; i--) {
+                if (session.messages[i].dedupeKey === 'task_todos_check') {
+                    lastCheckText = String(session.messages[i].content || '');
+                    break;
+                }
+            }
+            const checkText = todosCheckText(todosAll);
+            if (shouldSendTodosCheck({text: checkText, lastText: lastCheckText, toolNames: turnToolNames})) {
+                session.messages.push({
+                    role: 'user',
+                    content: checkText,
+                    systemNote: true,
+                    silent: true, // 给模型的机械提醒，不在消息流里渲染（纯噪音）
+                    dedupeKey: 'task_todos_check', // 瞬态注入：发请求时同类只保留最新一条
+                    ts: Date.now(),
+                });
+                persistSessions();
+            }
         }
         // 消费点 1（§4.4 时机 1）：工具轮边界把信箱里的通知折叠成 user 消息，随收尾请求进入
         // 上下文——此刻流还在跑，不能起新轮，所以只折叠不唤醒。
@@ -12267,9 +12637,9 @@ export function createAIPanel(options) {
 
     function showNote(text, isError) {
         if (!el.messages) return;
-        // 用户已上滚阅读时不强制拉底（判定胶囊/系统提示出现不该劫持滚动位置）：
-        // 仅当原本贴底附近才跟随滚动，否则保持原位，末条提示让滚动按钮提示即可
-        const nearBottom = el.messages.scrollHeight - el.messages.scrollTop - el.messages.clientHeight < 80;
+        // 用户已上滚阅读时不强制拉底（判定胶囊/系统提示出现不该劫持滚动位置）：贴底态才跟随。
+        // 判贴底只看 stickBottom——它已按用户手势维护，布局变化（任务清单/审批卡出现）不算上翻
+        const stick = stickBottom;
         const empty = el.messages.querySelector('.ai-empty');
         if (empty) empty.remove();
         const note = document.createElement('div');
@@ -12281,7 +12651,7 @@ export function createAIPanel(options) {
             const first = el.messages.querySelector('.ai-note');
             if (first) first.remove();
         }
-        if (nearBottom) scrollToBottom(true);
+        if (stick) scrollToBottom(true);
     }
 
     // ---------- 显示方式与几何 ----------
@@ -12808,17 +13178,78 @@ export function createAIPanel(options) {
                 showAIMessageContextMenu(e);
             });
             el.messages.addEventListener('scroll', () => {
-                const distance = el.messages.scrollHeight - el.messages.scrollTop - el.messages.clientHeight;
-                // 向上滚（哪怕只滚几像素）一律解除贴底：只按「距底 ≤80px」判定的话，用户轻微
-                // 上翻后 stickBottom 仍为 true，而下方内容增长不产生 scroll 事件（scrollTop 没变），
-                // 下一个流式渲染帧就会被 scrollToBottom 整个拽回底部（滚动条突然置底）。
-                if (el.messages.scrollTop < scrollLastTop) stickBottom = false;
-                else stickBottom = distance <= 80;
+                const top = el.messages.scrollTop;
+                const distance = el.messages.scrollHeight - top - el.messages.clientHeight;
+                // 判定收在 ai-scroll-follow.js：只有用户手势里的上滚才解除贴底。
+                // 任务清单 / 审批卡出现后底部留白变高（.ai-bottom-stack 是 overlay，消息区靠
+                // padding-bottom 让位），滚动条 thumb 被顶上去；overlay 收起 / 面板缩放还会把
+                // scrollTop 钳小。这些都不是用户在滚——照旧按「距底 > 80 或 scrollTop 变小」
+                // 判上翻就再也不跟随触底了。贴底态被挤离底部时这里直接补回去。
+                const shrunk = top < scrollLastTop - 0.5;
+                let byUser = scrollGesture.active();
+                // observing：非手势的单发减小——先观望再决定是不是补底，否则「补底」会立刻
+                // 把 scrollTop 顶回去，连续减小的兜底永远攒不起来（无 wheel 的环境上翻失效）
+                let observing = false;
+                if (!byUser && shrunk) {
+                    byUser = shrinkBurst.push();
+                    observing = !byUser;
+                } else {
+                    shrinkBurst.reset();
+                }
+                const next = nextStickState(
+                    {stickBottom, lastTop: scrollLastTop, byUser},
+                    {top, distance},
+                );
+                stickBottom = next.stickBottom;
+                // 平滑滚动动画期间的中间帧、以及正在观望的减小都不算「被挤离底部」
+                if (next.refollow && !observing && performance.now() > smoothScrollUntil) scrollToBottom(false);
                 scrollLastTop = el.messages.scrollTop;
                 updateScrollButton();
                 if (el.messages.scrollTop <= 24) loadEarlierMessages();
                 scheduleOutlineSync();
             });
+            // 用户滚动意图（判定的另一半）：滚轮 / 触摸移动按次刷新宽限期，
+            // 滚动条与触屏拖拽用 begin/end 覆盖整段手势（拖拽期间不产生 wheel）。
+            el.messages.addEventListener('wheel', () => scrollGesture.note(), {passive: true});
+            el.messages.addEventListener('touchstart', () => scrollGesture.begin(), {passive: true});
+            el.messages.addEventListener('touchmove', () => scrollGesture.note(), {passive: true});
+            el.messages.addEventListener('touchend', () => scrollGesture.end(), {passive: true});
+            el.messages.addEventListener('touchcancel', () => scrollGesture.end(), {passive: true});
+            // WebView2/Chromium 把滚动条上的指针事件派发到被滚动的元素本身：只有按在
+            // 滚动条槽里才进入拖拽态，点消息正文不该开启「用户在滚」的窗口
+            el.messages.addEventListener('pointerdown', (e) => {
+                const rect = el.messages.getBoundingClientRect();
+                const x = e.clientX - rect.left - el.messages.clientLeft;
+                if (x >= el.messages.clientWidth) scrollGesture.begin();
+            });
+            const endScrollGesture = () => scrollGesture.end();
+            window.addEventListener('pointerup', endScrollGesture);
+            window.addEventListener('pointercancel', endScrollGesture);
+            // 内容异步长高（工具卡自动展开、截图/图片 onload、widget 出图）不产生 scroll 事件：
+            // 贴底态只靠渲染帧跟随的话，帧走完之后的长高就再也补不回来——滚动条卡在半空、
+            // 距底几百像素，也没有任何事件把它拉回去（用户看到的就是「定死」）。
+            // 盯每个消息节点的高度，长高时若仍贴底就补一次；改 scrollTop 不改节点尺寸，
+            // 不会自激。图片 load 再兜一路（少数宿主不派发 RO 回调）。
+            const refollowAfterGrowth = () => {
+                if (!shouldRefollowGrowth(stickBottom, messagesBottomGap(), scrollGesture.active())) return;
+                scrollToBottom(false);
+            };
+            if (typeof ResizeObserver === 'function') {
+                const growthRO = new ResizeObserver(refollowAfterGrowth);
+                const watch = (node) => {
+                    if (node && node.nodeType === 1) growthRO.observe(node);
+                };
+                for (const child of el.messages.children) watch(child);
+                new MutationObserver((records) => {
+                    for (const record of records) {
+                        for (const node of record.removedNodes) {
+                            if (node.nodeType === 1) growthRO.unobserve(node);
+                        }
+                        for (const node of record.addedNodes) watch(node);
+                    }
+                }).observe(el.messages, {childList: true});
+            }
+            el.messages.addEventListener('load', refollowAfterGrowth, true);
         }
         panel.addEventListener('contextmenu', (e) => {
             if (el.messages && el.messages.contains(e.target)) return;
@@ -13025,6 +13456,8 @@ export function createAIPanel(options) {
         el,
         flash,
         openPath,
+        // 计划卡「在标签页打开」：先补写 .cadt/plan/ 下的文件再开标签页（正文不在卡里铺）
+        openPlanFile,
         compactOf,
         currentSession,
         currentScopeOf,
@@ -13061,6 +13494,8 @@ export function createAIPanel(options) {
         // 惰性转发：toolMeta / acceptPlan 别名随工具卡模块构造于其后
         toolMeta: (...args) => toolMeta(...args),
         acceptPlan: (...args) => acceptPlan(...args),
+        // 补丁审批的等待提醒（补丁在 ai-takeover.js 里自行登记，走同一条提醒口径）
+        notifyWaiting: (...args) => markWaitingOnUser(...args),
     });
     const requestPatchApproval = (...args) => takeoverMod.requestPatchApproval(...args);
     const renderPatchTakeover = (...args) => takeoverMod.renderPatchTakeover(...args);
@@ -13068,7 +13503,25 @@ export function createAIPanel(options) {
     const renderApprovalTakeover = (...args) => takeoverMod.renderApprovalTakeover(...args);
     const renderAskTakeover = (...args) => takeoverMod.renderAskTakeover(...args);
     const renderPlanTakeover = (...args) => takeoverMod.renderPlanTakeover(...args);
-    const updateComposerTakeover = (...args) => takeoverMod.updateComposerTakeover(...args);
+    // 补落盘：升级前留下的待批准计划、或上次写盘失败时，接管区在画计划卡之前先把
+    // .cadt/plan/ 下的文件补出来（先同步记路径，卡片直接带「在标签页打开」；
+    // 正文写盘完成后再重建一次消息区，让消息里的卡片接替原文渲染）。
+    function ensurePlanFileForPendingPlan() {
+        const session = currentSession();
+        if (!session) return;
+        const message = takeoverMod.planApprovalMessage(session);
+        if (!message || message.planFile) return;
+        const target = markPlanFile(message, session);
+        if (!target) return;
+        persistSessions();
+        writePlanFile(target).then(() => {
+            if (currentSession() && currentSession().id === session.id) renderMessages(true);
+        }).catch(() => {});
+    }
+    const updateComposerTakeover = (...args) => {
+        ensurePlanFileForPendingPlan();
+        return takeoverMod.updateComposerTakeover(...args);
+    };
     const planApprovalMessage = (...args) => takeoverMod.planApprovalMessage(...args);
     const planApprovalKey = (...args) => takeoverMod.planApprovalKey(...args);
 
@@ -13467,6 +13920,8 @@ export function createAIPanel(options) {
         renderMermaidBlocks,
         openExternal,
         openTargets,
+        // 计划卡「在标签页打开」：与接管区同一条落盘 + 打开路径
+        openPlanFile: (...args) => openPlanFile(...args),
         settings,
         getScopeRoot,
         currentSession,

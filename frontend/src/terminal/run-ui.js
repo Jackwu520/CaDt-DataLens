@@ -183,6 +183,8 @@ const runController = createRunController({
         return typeof value === 'string' ? value.trim() : '';
     },
     resolveWorkDir: (fallback) => (deps.settings.runCwd === 'workspace' && deps.workspaceFolder ? deps.workspaceFolder : fallback),
+    // 运行超时（毫秒）：0 / 未配置 = 不限时；默认关（settings.runTimeoutMs 缺省即 0）
+    runTimeoutMs: () => Math.max(0, Math.round(Number(deps.settings.runTimeoutMs) || 0)),
     showRunPanel: () => deps.toggleDockView('run'),
     hidePanel: () => deps.toggleTerminalPanel(false),
 });

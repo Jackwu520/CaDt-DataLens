@@ -4,6 +4,7 @@
 // 状态来自 mcpMod.getState()（Go 事件整代快照，本模块不自行维护连接态）。
 // readOnlyHint 是服务器自填的 hint，绝不作为安全判断——批量勾选只是省点击，授权动作是用户点按钮本身。
 import {aiEstimateTokens} from './ai-constants.js';
+import {createInput, createTextarea} from '../core/form-controls.js';
 
 const MCP_SERVER_NAME_RULE = /^[A-Za-z0-9_-]{1,32}$/;
 const MCP_TIMEOUT_MAX_MS = 600000;
@@ -69,6 +70,18 @@ export function mcpStatusMeta(state, reason) {
     }
 }
 
+// mcpApplyServerEnabled：列表行快捷启停成功后同步内存 config 的 enabled（不可变更新）。
+// toggle 走 MCPSetServerEnabled 独立 RPC，绕过 writeConfig，前端 config 不会自动更新；
+// 而 Go applyConfig 必发 mcp-tools-changed → 前端 renderAll/renderList 读 config 重绘，
+// 不同步这里，勾选就会被旧 config 打回，只能切页 loadConfig 才恢复。
+export function mcpApplyServerEnabled(config, name, enabled) {
+    if (!config || !config.mcpServers || !Object.prototype.hasOwnProperty.call(config.mcpServers, name)) return config;
+    const next = Object.assign({}, config);
+    next.mcpServers = Object.assign({}, config.mcpServers);
+    next.mcpServers[name] = Object.assign({}, config.mcpServers[name], {enabled: !!enabled});
+    return next;
+}
+
 // ---- 设置面板工厂 ----
 
 export function createAIMcpSettings(ctx) {
@@ -77,6 +90,17 @@ export function createAIMcpSettings(ctx) {
     const flash = (ctx && ctx.flash) || (() => {});
     const confirmAction = (ctx && ctx.confirmAction) || ((message, action) => { if (window.confirm(message)) action(); });
     const onChanged = (ctx && ctx.onChanged) || (() => {});
+    // 服务器编辑器用独立弹层（仿「添加生图模型」的居中弹窗），这三个是弹层三件套
+    const openAIDialog = (ctx && ctx.openAIDialog) || null;
+    const closeAIDialog = (ctx && ctx.closeAIDialog) || (() => {});
+    const dialogButton = (ctx && ctx.dialogButton) || ((label, className, onClick) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = className || 'dlg-btn';
+        btn.textContent = label;
+        if (onClick) btn.addEventListener('click', onClick);
+        return btn;
+    });
 
     let config = null;      // MCPConfig（Go 读写）
     let editingName = null; // null = 未在编辑；'' = 新建；其他 = 编辑该 server
@@ -87,7 +111,6 @@ export function createAIMcpSettings(ctx) {
         enabled: document.getElementById('ai-opt-mcp-enabled'),
         add: document.getElementById('ai-opt-mcp-add'),
         list: document.getElementById('ai-opt-mcp-list'),
-        editor: document.getElementById('ai-opt-mcp-editor'),
     };
 
     function bind() {
@@ -99,8 +122,7 @@ export function createAIMcpSettings(ctx) {
         }
         if (el.add) {
             el.add.addEventListener('click', () => {
-                editingName = '';
-                renderEditor({});
+                openServerEditor('');
             });
         }
     }
@@ -132,8 +154,10 @@ export function createAIMcpSettings(ctx) {
             toolsPanel = null;
             onChanged();
             renderAll();
+            return true;
         } catch (e) {
             flash('MCP 配置保存失败：' + String((e && e.message) || e), true);
+            return false;
         }
     }
 
@@ -146,7 +170,6 @@ export function createAIMcpSettings(ctx) {
     function renderAll() {
         renderSwitch();
         renderList();
-        renderEditorVisible();
         renderToolsPanel();
     }
 
@@ -206,132 +229,178 @@ export function createAIMcpSettings(ctx) {
         el.list.appendChild(frag);
     }
 
-    function renderEditorVisible() {
-        if (!el.editor) return;
-        if (editingName === null) {
-            el.editor.classList.add('hidden');
-            el.editor.innerHTML = '';
+    // ---- 服务器编辑器：独立弹层（仿「添加生图模型」的居中弹窗） ----
+
+    // fieldRow / fieldStack：与生图模型弹层同构的行式布局（.set-row / .set-row-top）。
+    // 多行输入（参数、环境变量）走 fieldStack 独占整行——塞进 .set-control 会被定宽压成窄缝。
+    function fieldRow(title, desc, ...controlEls) {
+        const row = document.createElement('div');
+        row.className = 'set-row';
+        const main = document.createElement('div');
+        main.className = 'set-main';
+        const t = document.createElement('div');
+        t.className = 'set-title';
+        t.textContent = title;
+        main.appendChild(t);
+        if (desc) {
+            const d = document.createElement('div');
+            d.className = 'set-desc';
+            d.textContent = desc;
+            main.appendChild(d);
         }
+        const box = document.createElement('div');
+        box.className = 'set-control';
+        for (const el of controlEls) if (el) box.appendChild(el);
+        row.append(main, box);
+        return row;
     }
 
-    function renderEditor(cfg) {
-        if (!el.editor) return;
-        el.editor.classList.remove('hidden');
-        const args = (cfg.args || []).join('\n');
-        const envRows = Object.keys(cfg.env || {}).map((key) => ({key, value: ''}));
-        el.editor.innerHTML =
-            '<div class="ai-mcp-editor">' +
-            '<div class="set-row"><div class="set-main"><div class="set-title">名称</div><div class="set-desc">字母数字下划线连字符，最长 32；也用作工具前缀 mcp__名称__</div></div>' +
-            '<div class="set-control"><input type="text" class="ai-settings-input" id="ai-mcp-f-name" maxlength="32" value="' + escapeHtml(editingName || '') + '"></div></div>' +
-            '<div class="set-row"><div class="set-main"><div class="set-title">启动命令</div><div class="set-desc">例如 npx、可执行文件路径；将在本机执行</div></div>' +
-            '<div class="set-control"><input type="text" class="ai-settings-input" id="ai-mcp-f-cmd" value="' + escapeHtml(cfg.command || '') + '"></div></div>' +
-            '<div class="set-row"><div class="set-main"><div class="set-title">参数（每行一个）</div></div>' +
-            '<div class="set-control"><textarea class="ai-settings-input ai-settings-textarea" id="ai-mcp-f-args" rows="3" spellcheck="false">' + escapeHtml(args) + '</textarea></div></div>' +
-            '<div class="set-row"><div class="set-main"><div class="set-title">工作目录</div><div class="set-desc">留空 = 继承应用目录</div></div>' +
-            '<div class="set-control"><input type="text" class="ai-settings-input" id="ai-mcp-f-cwd" value="' + escapeHtml(cfg.cwd || '') + '"></div></div>' +
-            '<div class="set-row"><div class="set-main"><div class="set-title">环境变量</div><div class="set-desc">值留空 = 保持原值；已存的值不回显</div></div>' +
-            '<div class="set-control"><div id="ai-mcp-f-env"></div><button type="button" class="dlg-btn" id="ai-mcp-f-env-add">加一条</button></div></div>' +
-            '<div class="set-row"><div class="set-main"><div class="set-title">启动 / 调用 / 关闭超时（秒）</div></div>' +
-            '<div class="set-control">' +
-            '<input type="number" class="ai-settings-input ai-font-size-num" id="ai-mcp-f-t1" min="1" max="600" value="' + Math.round((cfg.startupTimeoutMs || 30000) / 1000) + '"> ' +
-            '<input type="number" class="ai-settings-input ai-font-size-num" id="ai-mcp-f-t2" min="1" max="600" value="' + Math.round((cfg.callTimeoutMs || 60000) / 1000) + '"> ' +
-            '<input type="number" class="ai-settings-input ai-font-size-num" id="ai-mcp-f-t3" min="1" max="600" value="' + Math.round((cfg.closeTimeoutMs || 5000) / 1000) + '">' +
-            '</div></div>' +
-            '<div class="ai-mcp-editor-actions"><button type="button" class="dlg-btn" id="ai-mcp-f-save">保存</button> ' +
-            '<button type="button" class="dlg-btn" id="ai-mcp-f-cancel">取消</button></div>' +
-            '</div>';
-        renderEnvRows(envRows);
-        el.editor.querySelector('#ai-mcp-f-env-add').addEventListener('click', () => {
+    function fieldStack(title, desc, controlEl) {
+        const row = document.createElement('div');
+        row.className = 'set-row-top';
+        const main = document.createElement('div');
+        main.className = 'set-main';
+        const t = document.createElement('div');
+        t.className = 'set-title';
+        t.textContent = title;
+        main.appendChild(t);
+        if (desc) {
+            const d = document.createElement('div');
+            d.className = 'set-desc';
+            d.textContent = desc;
+            main.appendChild(d);
+        }
+        row.appendChild(main);
+        if (controlEl) row.appendChild(controlEl);
+        return row;
+    }
+
+    // openServerEditor：添加 / 编辑服务器的弹层。name 为空串 = 新建。
+    function openServerEditor(name) {
+        if (!openAIDialog) {
+            flash('对话框不可用，无法打开服务器编辑器', true);
+            return;
+        }
+        const cfg = (name && config.mcpServers[name]) || {};
+        const isNew = !name;
+        editingName = name;
+
+        const nameCtl = createInput({value: name || '', placeholder: '例如 everything', maxlength: 32, spellcheck: false});
+        const cmdCtl = createInput({value: cfg.command || '', placeholder: '例如 npx、可执行文件路径', spellcheck: false});
+        const argsCtl = createTextarea({value: (cfg.args || []).join('\n'), rows: 4, spellcheck: false, placeholder: '每行一个参数'});
+        const cwdCtl = createInput({value: cfg.cwd || '', placeholder: '留空 = 继承应用目录', spellcheck: false});
+        const timeoutCtl = (seconds, label) => createInput({
+            type: 'number', className: 'dlg-input ai-mcp-timeout',
+            value: seconds, min: 1, max: 600, attrs: {'aria-label': label},
+        });
+        const t1Ctl = timeoutCtl(Math.round((cfg.startupTimeoutMs || 30000) / 1000), '启动超时（秒）');
+        const t2Ctl = timeoutCtl(Math.round((cfg.callTimeoutMs || 60000) / 1000), '调用超时（秒）');
+        const t3Ctl = timeoutCtl(Math.round((cfg.closeTimeoutMs || 5000) / 1000), '关闭超时（秒）');
+
+        // 环境变量：值不回显（密码框），留空 = 保持原值
+        const envBox = document.createElement('div');
+        envBox.className = 'ai-mcp-env-list';
+
+        function collectEnvRows() {
+            return [...envBox.querySelectorAll('.ai-mcp-env-row')].map((line) => ({
+                key: line.querySelector('.ai-mcp-env-key').value,
+                initialKey: line.querySelector('.ai-mcp-env-key').dataset.initialKey || '',
+                value: line.querySelector('.ai-mcp-env-val').value,
+            }));
+        }
+
+        function renderEnvRows(rows) {
+            envBox.innerHTML = '';
+            for (const row of rows) {
+                const line = document.createElement('div');
+                line.className = 'ai-mcp-env-row';
+                const keyCtl = createInput({className: 'dlg-input ai-mcp-env-key', placeholder: '变量名', value: row.key || '', spellcheck: false});
+                keyCtl.control.dataset.initialKey = row.key || '';
+                const valCtl = createInput({className: 'dlg-input ai-mcp-env-val', type: 'password', placeholder: '值（留空 = 保持原值）', autocomplete: 'new-password'});
+                line.append(keyCtl.element, valCtl.element);
+                envBox.appendChild(line);
+            }
+        }
+
+        renderEnvRows(Object.keys(cfg.env || {}).map((key) => ({key, value: ''})));
+
+        const envAddBtn = document.createElement('button');
+        envAddBtn.type = 'button';
+        envAddBtn.className = 'dlg-btn';
+        envAddBtn.textContent = '加一条环境变量';
+        envAddBtn.addEventListener('click', () => {
             renderEnvRows(collectEnvRows().concat([{key: '', value: ''}]));
         });
-        el.editor.querySelector('#ai-mcp-f-cancel').addEventListener('click', () => {
+        const envWrap = document.createElement('div');
+        envWrap.append(envBox, envAddBtn);
+
+        const body = document.createElement('div');
+        body.append(
+            fieldRow('名称', '字母数字下划线连字符，最长 32；也用作工具前缀 mcp__名称__', nameCtl.element),
+            fieldRow('启动命令', '例如 npx、可执行文件路径；将在本机执行', cmdCtl.element),
+            fieldStack('参数（每行一个）', '', argsCtl.element),
+            fieldRow('工作目录', '留空 = 继承应用目录', cwdCtl.element),
+            fieldStack('环境变量', '值留空 = 保持原值；已存的值不回显', envWrap),
+            fieldRow('启动超时（秒）', '等待服务器进程就绪的上限', t1Ctl.element),
+            fieldRow('调用超时（秒）', '单次 tools/call 的等待上限', t2Ctl.element),
+            fieldRow('关闭超时（秒）', '停止进程并等待退出的上限', t3Ctl.element),
+        );
+
+        const cancelBtn = dialogButton('取消', 'dlg-btn', () => {
             editingName = null;
-            el.editor.classList.add('hidden');
-            el.editor.innerHTML = '';
+            closeAIDialog();
         });
-        el.editor.querySelector('#ai-mcp-f-save').addEventListener('click', () => {
-            void saveEditor();
+        const saveBtn = dialogButton('保存', 'dlg-btn primary', () => {
+            void saveServerEditor();
         });
-    }
 
-    function renderEnvRows(rows) {
-        const box = el.editor.querySelector('#ai-mcp-f-env');
-        if (!box) return;
-        box.innerHTML = '';
-        for (const row of rows) {
-            const line = document.createElement('div');
-            line.className = 'ai-mcp-env-row';
-            line.innerHTML =
-                '<input type="text" class="ai-settings-input ai-mcp-env-key" placeholder="变量名" value="' + escapeHtml(row.key || '') + '" spellcheck="false">' +
-                '<input type="password" class="ai-settings-input ai-mcp-env-val" placeholder="值（留空 = 保持原值）" autocomplete="new-password">';
-            line.querySelector('.ai-mcp-env-key').dataset.initialKey = row.key || '';
-            line.querySelector('.ai-mcp-env-val').value = '';
-            box.appendChild(line);
-        }
-    }
+        openAIDialog((isNew ? '添加 MCP 服务器' : '编辑 MCP 服务器') + (name ? ' · ' + name : ''),
+            [body], [cancelBtn, saveBtn], {top: true, wide: true});
 
-    function collectEnvRows() {
-        const box = el.editor.querySelector('#ai-mcp-f-env');
-        if (!box) return [];
-        return [...box.querySelectorAll('.ai-mcp-env-row')].map((line) => ({
-            key: line.querySelector('.ai-mcp-env-key').value,
-            initialKey: line.dataset.initialKey || '',
-            value: line.querySelector('.ai-mcp-env-val').value,
-        }));
-    }
+        // 收集与落盘：闭包持有控件，不再依赖 DOM id 查询
+        async function saveServerEditor() {
+            const serverName = nameCtl.control.value.trim();
+            const command = cmdCtl.control.value.trim();
+            const args = argsCtl.control.value.split('\n').map((s) => s.trim()).filter(Boolean);
+            const cwd = cwdCtl.control.value.trim();
+            const t1 = Math.max(0, Math.round(Number(t1Ctl.control.value) || 0)) * 1000;
+            const t2 = Math.max(0, Math.round(Number(t2Ctl.control.value) || 0)) * 1000;
+            const t3 = Math.max(0, Math.round(Number(t3Ctl.control.value) || 0)) * 1000;
+            // 环境变量：mcpMergeEnvRows 只输出当前行 → 删键 / 改名自动生效；留空 = 保持原值
+            const existing = Object.assign({}, (editingName && config.mcpServers[editingName]) || {}).env || {};
+            const env = mcpMergeEnvRows(existing, collectEnvRows().filter((r) => r.key));
 
-    async function saveEditor() {
-        const name = el.editor.querySelector('#ai-mcp-f-name').value.trim();
-        const command = el.editor.querySelector('#ai-mcp-f-cmd').value.trim();
-        const args = el.editor.querySelector('#ai-mcp-f-args').value.split('\n').map((s) => s.trim()).filter(Boolean);
-        const cwd = el.editor.querySelector('#ai-mcp-f-cwd').value.trim();
-        const t1 = Math.max(0, Math.round(Number(el.editor.querySelector('#ai-mcp-f-t1').value) || 0)) * 1000;
-        const t2 = Math.max(0, Math.round(Number(el.editor.querySelector('#ai-mcp-f-t2').value) || 0)) * 1000;
-        const t3 = Math.max(0, Math.round(Number(el.editor.querySelector('#ai-mcp-f-t3').value) || 0)) * 1000;
-        const envRows = collectEnvRows();
-        // 键改名：先删旧键再落新键
-        const existing = Object.assign({}, (editingName && config.mcpServers[editingName]) || {}).env || {};
-        const oldRows = collectInitialRows();
-        const removed = oldRows.filter((r) => r.initialKey && !envRows.some((n) => n.initialKey === r.initialKey && n.key === r.initialKey));
-        const env = mcpMergeEnvRows(existing, envRows.filter((r) => r.key));
-        for (const row of removed) delete env[row.initialKey];
-        // 键名变化（改了名）：旧键删除
-        for (const row of envRows) {
-            if (row.initialKey && row.key && row.initialKey !== row.key) delete env[row.initialKey];
+            // cwd 必须进 form：漏掉它会让「工作目录」看着填了却从不落盘
+            const form = {name: serverName, command, args, cwd, startupTimeoutMs: t1, callTimeoutMs: t2, closeTimeoutMs: t3};
+            const error = mcpValidateServerForm(form);
+            if (error) {
+                flash(error, true);
+                return;
+            }
+            if (!isNew && serverName !== editingName && config.mcpServers[serverName]) {
+                flash('服务器名 ' + serverName + ' 已存在', true);
+                return;
+            }
+            const proceed = () => {
+                const next = Object.assign({}, config);
+                next.mcpServers = Object.assign({}, config.mcpServers);
+                if (!isNew && editingName && editingName !== serverName) delete next.mcpServers[editingName];
+                next.mcpServers[serverName] = Object.assign({
+                    enabledTools: (editingName && !isNew && config.mcpServers[editingName] && config.mcpServers[editingName].enabledTools) || [],
+                }, form, {env});
+                void writeConfig(next).then((ok) => {
+                    if (!ok) return; // 落盘失败：弹层保持打开，用户改完再试
+                    closeAIDialog();
+                    // §15.1 两步走：保存成功 → 异步拉工具清单 → 打开勾选面板（默认全不勾）
+                    openToolsPanel(serverName);
+                });
+            };
+            if (isNew) {
+                confirmAction('该命令会在本机执行，等同于你自己运行它：\n' + command + (args.length ? ' ' + args.join(' ') : '') + '\n确认添加？', proceed);
+            } else {
+                proceed();
+            }
         }
-
-        const form = {name, command, args, startupTimeoutMs: t1, callTimeoutMs: t2, closeTimeoutMs: t3};
-        const error = mcpValidateServerForm(form);
-        if (error) {
-            flash(error, true);
-            return;
-        }
-        if (editingName !== '' && name !== editingName && config.mcpServers[name]) {
-            flash('服务器名 ' + name + ' 已存在', true);
-            return;
-        }
-        const isNew = editingName === '';
-        const proceed = () => {
-            const next = Object.assign({}, config);
-            next.mcpServers = Object.assign({}, config.mcpServers);
-            if (!isNew && editingName && editingName !== name) delete next.mcpServers[editingName];
-            next.mcpServers[name] = Object.assign({
-                enabledTools: (editingName && !isNew && config.mcpServers[editingName] && config.mcpServers[editingName].enabledTools) || [],
-            }, form, {env});
-            void writeConfig(next).then(() => {
-                // §15.1 两步走：保存成功 → 异步拉工具清单 → 打开勾选面板（默认全不勾）
-                openToolsPanel(name);
-            });
-        };
-        if (isNew) {
-            confirmAction('该命令会在本机执行，等同于你自己运行它：\n' + command + (args.length ? ' ' + args.join(' ') : '') + '\n确认添加？', proceed);
-        } else {
-            proceed();
-        }
-    }
-
-    function collectInitialRows() {
-        return collectEnvRows().map((row) => ({initialKey: row.initialKey}));
     }
 
     // ---- 工具勾选面板 ----
@@ -439,8 +508,14 @@ export function createAIMcpSettings(ctx) {
             const toggle = e.target.closest('input[data-mcp-toggle]');
             if (!toggle) return;
             if (typeof backend.MCPSetServerEnabled !== 'function') return;
+            const name = toggle.dataset.mcpToggle;
+            const nextEnabled = toggle.checked;
             try {
-                await backend.MCPSetServerEnabled(toggle.dataset.mcpToggle, toggle.checked);
+                await backend.MCPSetServerEnabled(name, nextEnabled);
+                // 独立 RPC 绕过 writeConfig，内存 config 不会自动更新；Go 事件到达时
+                // renderAll 读的是旧 config，会把勾选打回。这里先同步再重绘，保证即时生效。
+                config = mcpApplyServerEnabled(config, name, nextEnabled);
+                renderList();
                 onChanged();
             } catch (err) {
                 flash('切换失败：' + String((err && err.message) || err), true);
@@ -470,8 +545,7 @@ export function createAIMcpSettings(ctx) {
             if (toolsBtn) return void openToolsPanel(toolsBtn.dataset.mcpTools);
             const editBtn = e.target.closest('button[data-mcp-edit]');
             if (editBtn) {
-                editingName = editBtn.dataset.mcpEdit;
-                renderEditor(config.mcpServers[editingName] || {});
+                openServerEditor(editBtn.dataset.mcpEdit);
                 return;
             }
             const removeBtn = e.target.closest('button[data-mcp-remove]');

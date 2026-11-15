@@ -8,6 +8,10 @@ import "regexp"
 
 const browserMaxInstances = 4
 
+// browserProfileRoot 内嵌浏览器每个实例的 WebView2 用户数据根目录名（在应用数据目录下）。
+// 关掉标签页不会回收这些目录，「存储与清理」按它列出可清除的实例数据（见 storage_app.go）。
+const browserProfileRoot = "BrowserSessions"
+
 var browserProfileKeyRule = regexp.MustCompile(`[^A-Za-z0-9_\-]`)
 
 // sanitizeBrowserProfileKey 把 profileKey 清洗成安全的目录名片段。

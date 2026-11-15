@@ -263,24 +263,18 @@ function render(doc, ctx) {
         actions.appendChild(modeWrap);
 
         const revertable = !!plan.patchId && !plan.external;
-        const btnRevert = el('button', 'dlg-btn' + (st.confirmRevert ? ' danger' : ''), st.confirmRevert ? '确认撤销？' : '撤销');
+        const btnRevert = el('button', 'dlg-btn', '撤销');
         btnRevert.type = 'button';
         btnRevert.disabled = !revertable;
         if (!revertable) btnRevert.dataset.tip = '外部补丁没有本应用的应用记录，无法撤销';
         btnRevert.addEventListener('click', () => {
-            if (!st.confirmRevert) {
-                // 两段式确认，避免误点；3 秒后自动回到普通态
-                st.confirmRevert = true;
-                render(doc, ctx);
-                clearTimeout(st.confirmTimer);
-                st.confirmTimer = setTimeout(() => {
-                    st.confirmRevert = false;
-                    if (st.el) render(doc, ctx);
-                }, 3000);
-                return;
-            }
-            st.confirmRevert = false;
-            revert(doc, ctx);
+            // 与其他破坏性操作一致：走统一确认弹窗，不做「再点一次按钮」的就地确认
+            ctx.openCloseConfirm(
+                '撤销这次补丁应用？已写入的文件会恢复到应用前的内容。',
+                () => revert(doc, ctx),
+                '撤销',
+                '撤销补丁'
+            );
         });
         actions.appendChild(btnRevert);
 

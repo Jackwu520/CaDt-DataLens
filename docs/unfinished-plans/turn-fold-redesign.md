@@ -1,0 +1,93 @@
+# 轮次折叠治本：折叠粒度从「过程」提到「整轮」
+
+> 状态：**未开工**（2026-11-16 成文）
+> 前置：同日的两个过渡尝试**都已回滚**，只有一处修正留下——① 修「未完成」误标（`toolMessageWaiting` / `turnFinalItem`）。回滚的两个是：② **注入卡收编为轮首 + 整轮开关**（`.ai-turn` / `turnFoldState`）——外壳会把用户自己的消息（含截图）一起吞进折叠体，重启后整轮只剩一行「AI 提问 · 3 个问题 · 2 个过程」，展开还撞上第二层过程条；③ 已答提问卡紧凑态（`compactAsk`）——折叠后的提问卡等于藏掉用户的答复凭据。**这两条不要再捡回来**，本文是**治本方案**，不是过渡实现的补丁说明。
+> 范围：`frontend/src/ai/ai-panel.js` 的 `groupTurns` / `turnFinalItem` / `renderTurn`，以及 `ai/ai-scroll-follow.js`、折叠状态与增量渲染签名。
+> 原则：**一个轮 = 一个容器 = 一个折叠状态**；流式态与完成态共用同一 DOM 模型，只有摘要文本和默认折叠值不同。
+
+## 1. 背景：为什么必须治本，而不是再包一层
+
+原始结构下，一轮的可见元素是「轮首 user 消息 → 若干过程折叠条（按已答提问卡切段）→ 最终回答 → 改动汇总卡」，其中提问卡、注入卡（计时器到点 / 定时任务 / 会话投递）都是全宽独立卡，分别插在过程条之间与轮首。问题在于**这些卡没有归属**：它们既不是过程，也不是最终回答，只能以全宽卡的形式打断折叠流，于是出现截图里 `提问卡 → 「未完成」→ 计时器卡 → 处理中` 那种四段碎片。
+
+试过但已回滚的两条捷径，暴露了同一个规律：
+
+1. **把卡收进轮级外壳**（②）：外壳一旦默认收起，用户自己的消息也跟着消失——「看不见自己刚发过什么」比碎片严重得多；展开后还要再点一层过程条，两级折叠。
+2. **把卡做成紧凑态**（③）：紧凑化的前提是「头部摘要足够表达内容」，但提问卡的正文就是内容本身，收起后等于没有。
+
+结论：碎片感的根因是**一轮缺少统一的容器与头部**，不是「卡太宽」。任何在旧结构上叠的开关/紧凑态，都只是把可见内容藏进新的一层。
+
+## 2. 现状代码事实（两次回滚后，即本文起点）
+
+- `groupTurns(session, startIndex, endIndex)`：按 `isTurnBoundaryMessage` 把消息切成轮；`app` 注入消息（计时器到点、定时任务、会话投递）按其 label 成为新一轮的轮首 user 消息，**不是**上一轮的尾部事件——这是刻意的，因为新一轮需要 user 起点供 `turnStartMs` / 上下文压缩 / 轮次计数使用。
+- `turnFinalItem(group, turnRunning)`：组尾是 tool 时，仅在流式或 `toolMessageWaiting`（审批 pending / agent running / bg running / status pending|running）才返回 null；工具已执行完则回退找最后的 assistant 作为终项。**这是唯一保留的过渡修正。**
+- `renderTurn(group, session, isLastGroup, parent, extraOptions)`：渲染顺序 = 轮首 user 消息（`host`）→ 过程分段（`segments`，按已答 ask 切段，每段一个 `.ai-process` 条）→ 提问卡（`host`，整卡）→ 最终回答（`host`）→ 改动汇总卡（`host`）。**没有任何轮级容器**，每段过程各自一个开关。
+- 折叠状态：只有 `processFoldState`，key 是 `session.id + ':' + (u<ts>|g<startIndex>) + ':s' + segIndex`；`processFoldTouched` 在流式期间记下用户手动碰过的段，轮次结束时丢弃。
+- 流式条：`.ai-streaming-bar` 在底部状态条走秒，`.ai-process-head` 流式时只显示「处理中」。
+
+## 3. 目标结构
+
+```text
+.ai-turn[data-turn-key]                 ← 每一轮都有，流式/完成同构
+├─ .ai-turn-head                        ← 唯一开关：图标 + 摘要 + 状态 + 用时
+└─ .ai-turn-body
+   ├─ .ai-turn-anchor                   ← 轮首身份：用户消息 / 注入卡 / 已答提问卡
+   ├─ .ai-process*                      ← 过程时间线（工具、中间回复、思考）
+   └─ .ai-turn-final                    ← 最终回答 + 改动汇总卡
+```
+
+- **一个轮一个开关**：移除内部过程条的独立开关（或将其降级为纯展示的段落标签）。
+- **轮头是身份载体**：注入卡显示「计时器 · X 分 · 到点」、提问卡显示「AI 提问 · N 个问题 · 已回答」，点开头部才展开正文；pending 的 ask 永不折叠。
+- **状态单一来源**：`turnFoldState` 吸收 `processFoldState` / `processFoldTouched`，key 只用轮 key。
+- **两态同构**：流式时容器已存在，头部显示「处理中 · 用时」且默认展开；完成时只改头部文本与默认折叠值，**不换 key、不换 DOM 模型**。
+
+## 4. 影响面（四个硬骨头）
+
+### 4.1 折叠状态的 key 空间
+
+- 现在过程条 key 带 `:s<segIndex>`，段数会随 ask 切分、工具轮增减而变化；整轮 key 不带段号。合并后 key 只能是轮 key。
+- 迁移策略：阶段 1 双轨并存（旧 key 读、新 key 写）；阶段 2 切换为单轨，旧 map 直接丢弃。用户手动折叠偏好会一次性丢失，需要在 CHANGELOG 里说明。
+- `processFoldTouched` 的「流式中碰过 → 完成后丢弃」语义要重新归位：改成 `turnFoldTouched`（轮 key），否则「处理中点过整轮开关」会把状态带进完成态，压掉「完成后默认收起」。
+
+### 4.2 内容签名与增量渲染
+
+- `renderThinkBody` 的 `data-render-sig`、`.ai-md` / `.ai-msg-meta` 的签名都假设节点不会因为重渲染被整段替换。整轮容器若走整段 `innerHTML`，会毁掉 Shadow DOM 图表、代码块高亮和 think 体内滚动位置。
+- 必须沿用「块 + 内容签名增量渲染」：每个块有稳定 key，只改签名不一致的块。`key` 空间**不能因状态切换（running → done）而变化**——这是 2026-11-16 子代理详情踩过的坑（运行态 `m<i>` 换成终态 `t<i>`，一次收尾就整段换模型、滚动被钳到顶部）。
+- 建议把块 key 抽成纯函数 `turnBlockKey(sessionId, group, blockKind)`，配单测护栏。
+
+### 4.3 滚动跟随
+
+- 解除贴底只认用户手势，判定单一来源 `ai/ai-scroll-follow.js`（`createScrollGesture` / `nextStickState`）。整轮折叠会大幅改变容器高度，进而钳小 `scrollTop`；不能按「距底 > 80 / scrollTop 变小」误判成用户上翻。
+- 折叠/展开的同一帧内，贴底态要补底（`syncMessagesUnderflow`）；非贴底态要保住用户正在看的那一行（记锚点元素 + 偏移，而不是记像素 scrollTop）。
+- 首帧必须跟到底部，否则长正文 + `scrollTop=0` 会被误判成「用户在上翻」而永久卡顶。
+
+### 4.4 流式两态切换
+
+- 过渡尝试是「流式不建外壳、结束才建」，治本要求反过来：流式期间容器就已存在，收尾只改头部文本与默认折叠值。风险点：流式期间高频 `renderMessages` 全量重建，若每次都重建容器会触发 CSS 动画回弹（与 `planLiveRowOrder` / `makeToolSpinner` 同类问题）。
+- 顺序不变时零 DOM 写入；容器本身只在「首次出现」时创建，后续只更新头部文本与 `collapsed` class。
+
+## 5. 分阶段实施
+
+| 阶段 | 内容 | 交付 / 护栏 |
+|---|---|---|
+| 0 | 抽纯函数：`turnBlockKey` / `turnFoldDefault` / `toolMessageWaiting` 归位；补单测 | 新 `.test.mjs` 需手动加进 `frontend/package.json` 的硬编码 test script |
+| 1 | 所有轮都出 `.ai-turn`，流式也出；双轨读旧 key、写新 key；用户消息与提问卡、注入卡**一律挂外壳外或默认展开**，外观与现状一致（只减碎片，不减可见内容） | 人工对比截图：碎片消失、最终回答不被收起、用户自己的消息不会因为重启而消失 |
+| 2 | 状态并轨：删 `processFoldState` / `processFoldTouched`，`turnFoldState` 单一来源；移除内部过程条开关 | 折叠偏好迁移一次性丢失，CHANGELOG 说明 |
+| 3 | 锚点卡内化为轮头：`renderAppMessage` / `renderAskCard` 不再在轮体里出独立卡，改由轮头渲染身份摘要；**正文必须默认可见**（轮头只减视觉噪声，不减内容） | pending ask 必须保持完整可答；带图应用消息（截图）不受影响；提问正文默认展开——`compactAsk` 翻车就翻在这里 |
+| 4 | 清理：`.ai-process` 段的独立开关、按 ask 切段的渲染分支、临时 CSS | 全量测试 + 滚动人工验收 |
+
+## 6. 风险与回退
+
+- **工作树常在途改动**：`ai-panel.js` / `main.js` 经常被同时改；动手前重新 `git status`，按当前文件内容定位，不要按本文的行号硬找。
+- **滚动回退最难验证**：阶段 1/2 每步都要人工验「长轮次折叠后再展开」「折叠时用户正在上翻」「流式收尾瞬间」三种情况。
+- **回退策略**：每个阶段单独提交；阶段 2/3 出问题可只回退该阶段的 DOM 变更，保留阶段 0 的纯函数与测试。
+- **不碰的边界**：`groupTurns` / `isTurnBoundaryMessage` 的回合边界语义不改——计时器注入必须是新一轮起点，否则 `turnStartMs`、上下文压缩与轮次计数全乱。
+
+## 7. 验收清单
+
+- [ ] 一轮只有一个折叠开关，展开后不再需要点第二层过程条。
+- [ ] 流式 → 完成不整段重建：Shadow DOM 图表、代码高亮、think 体内滚动位置都保持。
+- [ ] 折叠 / 展开不打断贴底跟随；用户上翻时不被强制拉回底部。
+- [ ] 提问卡（pending / 已答）都完整可见，不被任何轮级折叠吞掉；已答卡的问答正文默认铺开。
+- [ ] 计时器到点、定时任务、会话投递三类注入卡表现一致。
+- [ ] 最终回答与改动汇总卡不随整轮收起而消失。
+- [ ] `npm test` 全绿，新增护栏已进 test script。

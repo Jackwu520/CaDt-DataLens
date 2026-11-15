@@ -274,7 +274,7 @@ export function createExplorer(options) {
             : el('span', 'sb-chev' + (node.isDir && node.expanded ? ' open' : ''));
         if (node.isDir && !emptyDir) {
             chev.innerHTML = ICONS.chevron;
-            chev.dataset.tip = node.expanded ? '收起目录' : '展开目录';
+            // 不给 tooltip：箭头方向已经把「展开 / 收起」说完了，鼠标在树里移动时冒泡只会烦人
         }
         let icon;
         if (node.isDir) {

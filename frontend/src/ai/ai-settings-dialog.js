@@ -370,6 +370,7 @@ export function createAISettingsDialog(ctx) {
         if (opt.subAgentMaxDepth) opt.subAgentMaxDepth.value = String(getConfig().subAgentMaxDepth);
         if (opt.notifyError) opt.notifyError.checked = getConfig().notifyError !== false;
         if (opt.notifyAsk) opt.notifyAsk.checked = getConfig().notifyAsk !== false;
+        if (opt.notifyApprove) opt.notifyApprove.checked = getConfig().notifyApprove !== false;
         if (opt.notifySound) opt.notifySound.checked = getConfig().notifySound !== false;
         if (opt.askTimeout) opt.askTimeout.value = String(aiClampInt(getConfig().askTimeout, 0, 3600, 300));
         if (opt.askTimeoutAction) opt.askTimeoutAction.value = getConfig().askTimeoutAction || 'recommended';
@@ -760,7 +761,18 @@ export function createAISettingsDialog(ctx) {
         bindNotifyToggle(opt.notifyFinish, 'notifyFinish', '任务完成通知');
         bindNotifyToggle(opt.notifyError, 'notifyError', '任务失败通知');
         bindNotifyToggle(opt.notifyAsk, 'notifyAsk', 'AI 提问通知');
+        bindNotifyToggle(opt.notifyApprove, 'notifyApprove', '待审批通知');
         bindNotifyToggle(opt.notifySound, 'notifySound', '失焦提醒（闪烁/提示音）');
+        // 「测试」按钮：系统通知的失败态是静默的（没登记应用标识时系统连错误都不给），
+        // 留一个当场验证的入口，失败原因直接打到状态栏。
+        if (opt.notifyTest) opt.notifyTest.addEventListener('click', () => {
+            if (!backend.NotifySystemToast) return;
+            opt.notifyTest.disabled = true;
+            Promise.resolve(backend.NotifySystemToast('CaDt-DataLens · 测试通知', '能看到这条，说明系统通知已通。', false))
+                .then(() => setSettingsStatus('已发送测试通知；没弹出请检查 Windows 设置 → 系统 → 通知里的 CaDt-DataLens', 'ok'))
+                .catch((e) => setSettingsStatus('测试通知发送失败：' + ((e && e.message) || e), 'error'))
+                .then(() => { opt.notifyTest.disabled = false; });
+        });
         // app_control 开关：切换后立即刷新技能列表缓存（cadt-ui 技能随开关显隐）
         if (opt.appControl) opt.appControl.addEventListener('change', () => {
             getConfig().appControlEnabled = !!opt.appControl.checked;

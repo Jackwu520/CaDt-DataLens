@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -46,6 +47,37 @@ func otherMarketSourceLabel(source string) string {
 		return "Gitee"
 	}
 	return "GitHub"
+}
+
+// otherMarketSource 返回另一侧镜像源；限流回退用。
+func otherMarketSource(source string) string {
+	if normalizeMarketSource(source) == marketSourceGithub {
+		return marketSourceGitee
+	}
+	return marketSourceGithub
+}
+
+// marketHTTPError 携带状态码，供限流回退判断；Error() 是给用户看的文案。
+type marketHTTPError struct {
+	source string
+	status int
+}
+
+func (e *marketHTTPError) Error() string {
+	label := marketSourceLabel(e.source)
+	if e.status == http.StatusForbidden || e.status == http.StatusTooManyRequests {
+		return fmt.Errorf("%s 匿名接口限流（HTTP %d）：稍后点「刷新」重试，或在 设置 → 插件 把数据源切到 %s", label, e.status, otherMarketSourceLabel(e.source)).Error()
+	}
+	return fmt.Errorf("%s 返回 HTTP %d", label, e.status).Error()
+}
+
+// isMarketRateLimitError 403/429 视为限流，可尝试另一侧镜像。
+func isMarketRateLimitError(err error) bool {
+	var httpErr *marketHTTPError
+	if !errors.As(err, &httpErr) {
+		return false
+	}
+	return httpErr.status == http.StatusForbidden || httpErr.status == http.StatusTooManyRequests
 }
 
 func marketSiteHost(source string) string {
@@ -124,10 +156,11 @@ func (a *App) GetPluginMarket() ([]*MarketPlugin, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()
 	source := currentMarketSource()
-	repos, err := fetchMarketRepos(ctx, source)
+	repos, usedSource, err := fetchMarketReposWithFallback(ctx, source, fetchMarketRepos)
 	if err != nil {
 		return nil, err
 	}
+	source = usedSource
 	installed := map[string]string{}
 	if plugins, err := a.GetPlugins(); err == nil {
 		for _, p := range plugins {
@@ -184,11 +217,8 @@ func fetchMarketRepos(ctx context.Context, source string) ([]marketRepo, error) 
 		if readErr != nil {
 			return nil, fmt.Errorf("读取 %s 响应失败：%w", label, readErr)
 		}
-		if res.StatusCode == http.StatusForbidden {
-			return nil, fmt.Errorf("%s 匿名接口限流（HTTP 403）：稍后点「刷新」重试，或在 设置 → 插件 把数据源切到 %s", label, otherMarketSourceLabel(source))
-		}
 		if res.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("%s 返回 HTTP %d", label, res.StatusCode)
+			return nil, &marketHTTPError{source: source, status: res.StatusCode}
 		}
 		var batch []marketRepo
 		if err := json.Unmarshal(body, &batch); err != nil {
@@ -200,6 +230,24 @@ func fetchMarketRepos(ctx context.Context, source string) ([]marketRepo, error) 
 		}
 	}
 	return repos, nil
+}
+
+// fetchMarketReposWithFallback 按所选数据源抓取列表；遇匿名限流（403/429）自动换另一侧镜像重试一次。
+// 数据源设置仍是首选，回退只影响本次抓取（两侧仓库同名同内容，镜像契约见 docs/plugins/README.md）。
+func fetchMarketReposWithFallback(ctx context.Context, source string, fetch func(context.Context, string) ([]marketRepo, error)) ([]marketRepo, string, error) {
+	repos, err := fetch(ctx, source)
+	if err == nil {
+		return repos, source, nil
+	}
+	if !isMarketRateLimitError(err) {
+		return nil, source, err
+	}
+	other := otherMarketSource(source)
+	repos2, err2 := fetch(ctx, other)
+	if err2 != nil {
+		return nil, source, err // 两侧都失败时报主源的原始错误，提示更贴近用户所选
+	}
+	return repos2, other, nil
 }
 
 func fetchMarketManifest(ctx context.Context, source string, repo marketRepo) (marketManifest, bool) {

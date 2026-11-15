@@ -23,6 +23,8 @@ export const APP_MESSAGE_ICONS = {
     session: 'bell',
     'session-user': 'bell',
     sidechat: 'bookmark',
+    // 计划批准：应用代替用户按下「执行计划」，内部指令不该显示成用户胶囊
+    plan: 'compass',
 };
 
 export function normalizeAppMessage(raw) {
@@ -44,6 +46,11 @@ export function appMessageIcon(app) {
 // 前缀是它们唯一的归属依据：重放旧会话时也要能正确归类，所以 prefix 与 buildSettlementNotice 同源约定。
 export function detectAppMessage(content) {
     const text = String(content || '').trim();
+    // 计划批准（「执行计划」按钮）：应用代发的固定指令。旧会话没有 app 元数据，
+    // 按定稿文案前缀认回来，否则历史里继续显示成用户胶囊。
+    if (/^计划已批准，请立即按上面的计划开始执行/.test(text)) {
+        return {kind: 'plan', label: '计划已批准', icon: ''};
+    }
     const git = text.match(/^［Git 快捷操作 · ([^］]+)］/);
     if (git) return {kind: 'git', label: 'Git 快捷操作 · ' + git[1].trim(), icon: ''};
     const scheduled = text.match(/^\[定时任务 · ([^\]]+)\]/);

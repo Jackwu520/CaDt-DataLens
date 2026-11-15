@@ -115,6 +115,7 @@ setupRunSettings();
 function setupRunSettings() {
     const cwd = document.getElementById('run-cwd');
     const dirtyMode = document.getElementById('run-dirty-mode');
+    const timeout = document.getElementById('run-timeout');
     const reset = document.getElementById('run-confirm-reset');
     const openTemp = document.getElementById('run-open-temp');
     const templateLang = document.getElementById('run-template-lang');
@@ -131,6 +132,15 @@ function setupRunSettings() {
         dirtyMode.addEventListener('change', () => {
             deps.settings.runDirtyMode = ['ask', 'save', 'temp'].includes(dirtyMode.value) ? dirtyMode.value : 'ask';
             deps.applySettings();
+        });
+    }
+    if (timeout) {
+        timeout.addEventListener('change', () => {
+            // 档位白名单：0 = 关闭（不限时），非法值一律回落 0
+            const v = Math.round(Number(timeout.value));
+            deps.settings.runTimeoutMs = [0, 30000, 60000, 120000, 300000, 600000, 1800000].includes(v) ? v : 0;
+            deps.applySettings();
+            renderRunPane();
         });
     }
     if (reset) {
@@ -210,12 +220,25 @@ function setupRunSettings() {
 function renderRunPane() {
     const cwd = document.getElementById('run-cwd');
     const dirtyMode = document.getElementById('run-dirty-mode');
+    const timeout = document.getElementById('run-timeout');
+    const timeoutHint = document.getElementById('run-timeout-hint');
     const hint = document.getElementById('run-confirm-hint');
     const tempHint = document.getElementById('run-temp-hint');
     const templateLang = document.getElementById('run-template-lang');
     const templateInput = document.getElementById('run-template-input');
     if (cwd) cwd.value = deps.settings.runCwd;
     if (dirtyMode) dirtyMode.value = deps.settings.runDirtyMode;
+    if (timeout) {
+        const v = Math.round(Number(deps.settings.runTimeoutMs) || 0);
+        const known = [0, 30000, 60000, 120000, 300000, 600000, 1800000].includes(v);
+        timeout.value = String(known ? v : 0);
+    }
+    if (timeoutHint) {
+        const v = Math.round(Number(deps.settings.runTimeoutMs) || 0);
+        timeoutHint.textContent = v > 0
+            ? ('超过 ' + (v % 60000 === 0 ? (v / 60000) + ' 分钟' : Math.round(v / 1000) + ' 秒') + ' 强制停止并提示')
+            : '默认关闭，不限制运行时长';
+    }
     if (templateLang && templateInput) {
         templateInput.value = (deps.settings.runConfigs && deps.settings.runConfigs[templateLang.value]) || '';
     }

@@ -315,6 +315,7 @@
                 <div class="snav-section">诊断</div>
                 <button type="button" class="snav-item" data-pane="developer"><span class="snav-ic" data-icon="terminal"></span><span>开发者</span></button>
                 <button type="button" class="snav-item" data-pane="activity"><span class="snav-ic" data-icon="history"></span><span>操作记录</span></button>
+                <button type="button" class="snav-item" data-pane="storage"><span class="snav-ic" data-icon="eraser"></span><span>存储与清理</span></button>
                 <div class="snav-section">其他</div>
                 <button type="button" class="snav-item" data-pane="about"><span class="snav-ic" data-icon="info"></span><span>关于我们</span></button>
                 </div>
@@ -886,20 +887,20 @@
                                 </div>
                             </div>
                             <div id="ai-opt-mcp-list"></div>
-                            <div id="ai-opt-mcp-editor" class="hidden"></div>
                         </div>
 
                         <div class="set-group-title">通知</div>
                         <div class="set-card">
                             <div class="set-row">
-                                <div class="set-main"><div class="set-title">应用内通知<button type="button" class="info-tip" data-tip="任务完成等通知始终进入状态栏【消息】中心（锁图标右侧）；开启后额外在右下角弹出提示框——弹完消失，消息仍保留在列表。设置 → AI → 权限里 AI 也能用 notify_send 工具给你发消息。" aria-label="应用内通知说明">i</button></div><div class="set-desc">任务完成消息进消息中心；开启后额外右下角弹出</div></div>
+                                <div class="set-main"><div class="set-title">应用内通知<button type="button" class="info-tip" data-tip="任务完成、失败、提问、审批一律进状态栏【消息】中心（锁图标右侧）；开启本项后，审批 / 失败 / 提问在「你看的不是这条会话」时额外在右下角弹一下——任务完成不弹（只留消息中心）。设置 → AI → 权限里 AI 也能用 notify_send 工具给你发消息。" aria-label="应用内通知说明">i</button></div><div class="set-desc">审批 / 失败 / 提问：不是你正看的会话时右下角弹；完成只进消息中心</div></div>
                                 <div class="set-control">
                                     <label class="set-switch"><input type="checkbox" id="ai-opt-notify-inapp"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
                                 </div>
                             </div>
                             <div class="set-row">
-                                <div class="set-main"><div class="set-title">Windows 系统通知</div></div>
+                                <div class="set-main"><div class="set-title">Windows 系统通知<button type="button" class="info-tip" data-tip="走 Windows 自己的通知中心（右下角卡片 + 操作中心）。只在应用处于后台（窗口失焦 / 最小化）时才弹——正看着软件时不打扰，消息中心照常记录。首次发送时会把本应用登记进「设置 → 系统 → 通知」，若那里被关掉则不会再弹。点右侧「测试」可立刻验证一次。" aria-label="Windows 系统通知说明">i</button></div><div class="set-desc">只在应用处于后台（未聚焦 / 最小化）时弹；前台不打扰</div></div>
                                 <div class="set-control">
+                                    <button type="button" id="ai-opt-notify-test" class="dlg-btn">测试</button>
                                     <label class="set-switch"><input type="checkbox" id="ai-opt-notify-system"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
                                 </div>
                             </div>
@@ -919,6 +920,12 @@
                                 <div class="set-main"><div class="set-title">AI 提问时通知</div></div>
                                 <div class="set-control">
                                     <label class="set-switch"><input type="checkbox" id="ai-opt-notify-ask"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">待审批时通知<button type="button" class="info-tip" data-tip="AI 要改文件、跑命令或创建环境变量而等你点「批准」时提醒你——写操作审批没有超时，不提醒的话这一轮会一直卡在后台。只有你「正看着这个会话且软件在前台」时不打扰；等 1 分钟仍没处理会再提醒一次。" aria-label="待审批时通知说明">i</button></div><div class="set-desc">写操作 / 命令等待批准时提醒（含 1 分钟后再提醒一次）</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="ai-opt-notify-approve"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
                                 </div>
                             </div>
                             <div class="set-row">
@@ -1448,6 +1455,20 @@
                                 </div>
                             </div>
                             <div class="set-row">
+                                <div class="set-main"><div class="set-title">运行超时<button type="button" class="info-tip" data-tip="整个任务（编译 + 运行）共用这时长，到点强制杀掉进程树并提示。适合防死循环 / 卡住的脚本；关闭则不限时。长驻服务请用内置终端。" aria-label="运行超时说明">i</button></div><div class="set-desc" id="run-timeout-hint">默认关闭，不限制运行时长</div></div>
+                                <div class="set-control">
+                                    <select id="run-timeout" class="opt-select">
+                                        <option value="0">关闭（不限时）</option>
+                                        <option value="30000">30 秒</option>
+                                        <option value="60000">1 分钟</option>
+                                        <option value="120000">2 分钟</option>
+                                        <option value="300000">5 分钟</option>
+                                        <option value="600000">10 分钟</option>
+                                        <option value="1800000">30 分钟</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="set-row">
                                 <div class="set-main"><div class="set-title">首次运行确认</div><div class="set-desc" id="run-confirm-hint">已确认的语言不会再弹提示。</div></div>
                                 <div class="set-control">
                                     <button type="button" id="run-confirm-reset" class="dlg-btn">重新对每种语言提示一次</button>
@@ -1770,6 +1791,46 @@
                                 </div>
                                 <div class="set-desc" id="activity-list-status">—</div>
                                 <button type="button" id="activity-more" class="dlg-btn hidden">加载更早记录</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="settings-pane hidden" data-pane="storage">
+                        <div class="set-group-title">存储与清理</div>
+                        <div class="set-card">
+                            <div class="set-row-top">
+                                <div class="set-main">
+                                    <div class="set-title">占用统计<button type="button" class="info-tip" data-tip="只统计本应用自己产生的文件：应用数据目录、当前工作区的 .cadt、系统临时目录里我们写的那部分。格子数字含没登记在条目表里的「其他」，所以等于目录真实占用。" aria-label="占用统计说明">i</button></div>
+                                    <div class="set-desc" id="stg-summary">—</div>
+                                    <div class="stg-tiles" id="stg-tiles"></div>
+                                    <div class="stg-bar" id="stg-bar" aria-hidden="true"></div>
+                                    <div class="stg-legend" id="stg-legend"></div>
+                                </div>
+                                <div class="set-control">
+                                    <button type="button" id="stg-refresh" class="dlg-btn">重新统计</button>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="set-card">
+                            <div class="set-row-top">
+                                <div class="set-main">
+                                    <div class="set-title">缓存</div>
+                                    <div class="set-desc" id="stg-cache-total">—</div>
+                                    <div class="stg-rows" id="stg-cache-list"></div>
+                                </div>
+                                <div class="set-control">
+                                    <button type="button" id="stg-clear-cache" class="dlg-btn primary">清除缓存…</button>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="set-card">
+                            <div class="set-row-top">
+                                <div class="set-main">
+                                    <div class="set-title">数据<button type="button" class="info-tip" data-tip="勾选后点「清除所选」；内容送回收站，标了「不可恢复」的删了就取不回来。" aria-label="数据清除说明">i</button></div>
+                                    <div class="stg-rows" id="stg-data-list"></div>
+                                </div>
+                                <div class="set-control">
+                                    <button type="button" id="stg-clear-picked" class="dlg-btn" disabled>清除所选</button>
+                                </div>
                             </div>
                         </div>
                     </div>

@@ -441,6 +441,104 @@ const mockAISessions = new Map();
 const mockAISessionImages = new Map();
 let mockAIConfigText = '';
 
+// 与 frontend/src/ai/ai-file-tools.js / Go globMatchPath 同规则的简易通配（mock 专用，避免跨模块依赖）
+function mockGlobMatch(pattern, relPath, name) {
+    const pat = String(pattern || '').trim();
+    if (!pat) return true;
+    const subject = String(relPath || '').replace(/\\/g, '/');
+    const target = pat.includes('/') ? subject : String(name || subject.split('/').pop() || '');
+    const wildcard = pat.replace(/\*\*\//g, '\u0001').replace(/\*\*/g, '\u0000');
+    let re = '';
+    for (const ch of wildcard) {
+        if (ch === '\u0001') re += '(?:.*/)?';
+        else if (ch === '\u0000') re += '.*';
+        else if (ch === '*') re += '[^/]*';
+        else if (ch === '?') re += '[^/]';
+        else re += ch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    }
+    try {
+        return new RegExp('^' + re + '$', 'i').test(target);
+    } catch (e) {
+        return true;
+    }
+}
+
+// 存储与清理的 mock 数据：字段与 Go 侧 internal/storage 的 Item / Tile / Report 一致，
+// 清除后把对应条目清零，用来在浏览器里看排版、勾选与回执。
+const MOCK_APP_ROOT = 'C:\\Users\\dev\\AppData\\Roaming\\CandySweet\\CaDt-DataLens';
+const mockStorageItems = [
+    {id: 'run-temp', label: '运行临时副本', note: '运行未保存内容时的临时副本与编译产物。', kind: 'cache', scope: 'app', inCache: true, path: MOCK_APP_ROOT + '\\run', bytes: 3 * 1024 * 1024, files: 42, entries: 6, exists: true},
+    {id: 'browser-profiles', label: '内嵌浏览器实例数据', note: '每个浏览器标签一份 WebView2 配置，关掉标签不会自动回收。', kind: 'cache', scope: 'app', inCache: true, path: MOCK_APP_ROOT + '\\BrowserSessions', bytes: 1128 * 1024 * 1024, files: 88120, entries: 44, blocked: 1, exists: true},
+    {id: 'webview-cache', label: '界面浏览器缓存', note: 'WebView2 自己的网络/代码/着色器缓存。', kind: 'cache', scope: 'webview', inCache: true, path: MOCK_APP_ROOT + '\\WebView2\\EBWebView', bytes: 152 * 1024 * 1024, files: 4210, entries: 6, pending: true, exists: true},
+    {id: 'session-index', label: '会话搜索索引', note: 'AI 会话全文搜索的派生库，删后下次搜索重建。', kind: 'cache', scope: 'app', inCache: true, path: MOCK_APP_ROOT + '\\ai-index.db', bytes: 41 * 1024 * 1024, files: 3, entries: 0, exists: true},
+    {id: 'app-logs', label: '运行日志', note: '每次启动一份的排障日志。', kind: 'cache', scope: 'app', inCache: true, path: MOCK_APP_ROOT + '\\logs', bytes: 1400 * 1024, files: 61, entries: 61, exists: true},
+    {id: 'ai-logs', label: 'AI 对话导出', note: '每轮对话写出的 markdown 副本。', kind: 'cache', scope: 'app', inCache: true, path: MOCK_APP_ROOT + '\\ai-logs', bytes: 52 * 1024 * 1024, files: 318, entries: 0, exists: true},
+    {id: 'temp-scratch', label: '系统临时文件', note: '%TEMP% 下本应用写的临时库与插件暂存。', kind: 'cache', scope: 'temp', inCache: true, path: 'C:\\Users\\dev\\AppData\\Local\\Temp', bytes: 720 * 1024, files: 12, entries: 12, exists: true},
+    {id: 'ws-worklog', label: 'AI 工作日志（本工作区）', note: '.cadt/logs 下的工作日志索引与正文。', kind: 'cache', scope: 'workspace', inCache: true, path: '', bytes: 0, files: 0, entries: 0, exists: false},
+    {id: 'ws-gen', label: '生图与视频产物', note: '.cadt/gen 里保存下来的生成图片与视频。', kind: 'data', scope: 'workspace', inCache: false, path: '', bytes: 0, files: 0, entries: 0, exists: false},
+    {id: 'ws-memory', label: '工作区 AI 记忆', note: '.cadt/memory 里的记忆与索引。', kind: 'danger', scope: 'workspace', inCache: false, path: '', bytes: 0, files: 0, entries: 0, exists: false},
+    {id: 'ai-sessions', label: 'AI 会话记录', note: '所有会话的正文 JSONL 与附图，是唯一真源。', kind: 'danger', scope: 'app', inCache: false, path: MOCK_APP_ROOT + '\\ai-sessions', bytes: 60 * 1024 * 1024, files: 1204, entries: 0, exists: true},
+    {id: 'ai-schedule', label: 'AI 定时任务', note: '定时任务定义与运行记录。', kind: 'danger', scope: 'app', inCache: false, path: MOCK_APP_ROOT + '\\ai-schedule.db', bytes: 184 * 1024, files: 3, entries: 0, exists: true},
+    {id: 'activity', label: '操作记录', note: '按月的操作摘要 JSONL。', kind: 'data', scope: 'app', inCache: false, path: MOCK_APP_ROOT + '\\activity', bytes: 1500 * 1024, files: 3, entries: 0, exists: true},
+    {id: 'classifier', label: '端侧分类器个性化', note: '命令审批分类器的样本与权重。', kind: 'data', scope: 'app', inCache: false, path: MOCK_APP_ROOT + '\\local-classifier', bytes: 48 * 1024, files: 2, entries: 0, exists: true},
+    {id: 'ui-state', label: '界面状态（WebView2）', note: '界面设置的 localStorage、网页登录态与浏览历史。', kind: 'danger', scope: 'webview', inCache: false, path: MOCK_APP_ROOT + '\\WebView2', bytes: 222 * 1024 * 1024, files: 9800, entries: 0, exists: true},
+    {id: 'app-config', label: '全部配置', note: 'config / ai-config / mcp / env-vars，删除即恢复出厂。', kind: 'danger', scope: 'app', inCache: false, path: MOCK_APP_ROOT + '\\config.json', bytes: 32 * 1024, files: 4, entries: 0, exists: true},
+];
+
+function buildMockStorageReport(workspaceRoot) {
+    const items = mockStorageItems.map((item) => ({...item}));
+    if (workspaceRoot) {
+        const apply = (id, sub, bytes, files) => {
+            const item = items.find((row) => row.id === id);
+            if (item) Object.assign(item, {path: workspaceRoot + '\\.cadt\\' + sub, bytes, files, entries: 0, exists: bytes > 0});
+        };
+        apply('ws-worklog', 'logs', 29 * 1024, 9);
+        apply('ws-gen', 'gen', 2200 * 1024, 24);
+        apply('ws-memory', 'memory', 48 * 1024, 3);
+    }
+    const tile = (scope, label, path, bytes, files, otherBytes) => ({scope, label, path, bytes, files, otherBytes, otherFiles: otherBytes ? 3 : 0, available: bytes > 0});
+    const sum = (scope) => items.filter((item) => (item.scope === 'webview' ? 'app' : item.scope) === scope)
+        .reduce((acc, item) => acc + item.bytes, 0);
+    const sumFiles = (scope) => items.filter((item) => (item.scope === 'webview' ? 'app' : item.scope) === scope)
+        .reduce((acc, item) => acc + item.files, 0);
+    const tiles = [
+        tile('app', '应用数据目录', MOCK_APP_ROOT, sum('app'), sumFiles('app'), 4 * 1024 * 1024),
+        tile('workspace', '工作区 .cadt', workspaceRoot ? workspaceRoot + '\\.cadt' : '', sum('workspace'), sumFiles('workspace'), workspaceRoot ? 1024 : 0),
+        tile('temp', '系统临时目录', 'C:\\Users\\dev\\AppData\\Local\\Temp', sum('temp'), sumFiles('temp'), 0),
+    ];
+    return {
+        items,
+        tiles,
+        cacheBytes: items.filter((item) => item.inCache).reduce((a, b) => a + b.bytes, 0),
+        dataBytes: items.filter((item) => !item.inCache).reduce((a, b) => a + b.bytes, 0),
+        truncated: false,
+        workspaceSet: !!workspaceRoot,
+        pending: items.filter((item) => item.pending).map((item) => item.id),
+        scannedAt: Date.now(),
+    };
+}
+
+function applyMockStorageClear(ids, workspaceRoot) {
+    const report = {results: [], freed: 0, succeeded: 0, scheduled: [], skipped: [], failed: []};
+    for (const id of ids || []) {
+        const item = mockStorageItems.find((row) => row.id === id);
+        if (!item) {
+            report.failed.push(id);
+            continue;
+        }
+        const scheduled = item.scope === 'webview';
+        const freed = Number(item.bytes) || 0;
+        if (scheduled) item.pending = true;
+        else Object.assign(item, {bytes: 0, files: 0, entries: 0, blocked: 0, exists: false});
+        const result = {id, label: item.label, freed: scheduled ? 0 : freed, entries: scheduled ? 0 : 1, blocked: 0, skipped: 0, remaining: 0, scheduled, reason: ''};
+        report.results.push(result);
+        report.freed += result.freed;
+        if (scheduled) report.scheduled.push(item.label);
+        else report.succeeded += 1;
+    }
+    return report;
+}
+
 const mockBackend = {
     async AIConfigRead() {
         return mockAIConfigText;
@@ -643,7 +741,7 @@ const mockBackend = {
     async PrepareRun(spec) {
         return {sourcePath: (spec && spec.srcPath) || 'mock://run/main.py', workDir: 'mock://run', tempDir: '', tempCopy: !!(spec && spec.content)};
     },
-    async RunExec(id, exe, args) {
+    async RunExec(id, exe, args, cwd, pathPrepend, timeoutMs) {
         setTimeout(() => {
             if (rt && rt.EventsEmit) {
                 rt.EventsEmit('run-out', {id, stream: 'out', data: '模拟运行输出：' + exe + ' ' + (args || []).join(' ') + '\n'});
@@ -677,6 +775,35 @@ const mockBackend = {
     async OpenDebugConsoleWindow() { return null; },
     async AITouchStream() { return null; },
     async AISessionSearch() { return []; },
+    // 跨会话检索（session_search 工具 / 全局搜索的 AI 会话分类）：直接从 mock 会话日志里搜
+    async AISessionSearchScoped(query, limit, brief) {
+        const q = String(query || '').trim().toLowerCase();
+        const hits = [];
+        const max = Math.max(1, Number(limit) || 30);
+        if (!q) return {hits, truncated: false, brief: !!brief};
+        for (const [id, item] of mockAISessions) {
+            const log = String(item.log || '');
+            const at = log.toLowerCase().indexOf(q);
+            if (at < 0) continue;
+            let title = '';
+            try {
+                title = (JSON.parse(item.meta || '{}') || {}).title || '';
+            } catch (e) {}
+            hits.push({
+                sessionId: id,
+                title: title || '(mock 会话)',
+                role: 'user',
+                name: '',
+                mid: '',
+                liveIndex: 0,
+                snippet: log.slice(Math.max(0, at - 40), at + q.length + 60).replace(/\s+/g, ' '),
+                kind: '',
+                ts: 0,
+            });
+            if (hits.length >= max) break;
+        }
+        return {hits, truncated: hits.length >= max, brief: !!brief};
+    },
     async AISessionIndexStats() { return {exists: true, sessions: 0, messages: 0, dirty: 0, bytes: 0, trigram: false}; },
     async AISessionReindex() { return 0; },
     async GetPathInfo(path) {
@@ -909,6 +1036,27 @@ const mockBackend = {
         }
         return {hits, truncated: hits.length >= limit, files};
     },
+    async SearchWorkspaceFiltered(root, query, caseSensitive, maxResults, pattern) {
+        const pat = String(pattern || '').trim();
+        // mock 里文件都在 samples 一层，先取大窗再按通配过滤即可
+        const res = await this.SearchWorkspace(root, query, caseSensitive, 1000);
+        const hits = pat ? (res.hits || []).filter((hit) => mockGlobMatch(pat, hit.name || '', hit.name || '')) : (res.hits || []);
+        const limit = Math.max(1, Math.min(Number(maxResults) || 400, 1000));
+        return {hits: hits.slice(0, limit), truncated: !!res.truncated || hits.length > limit, files: res.files || 0};
+    },
+    async FindFiles(root, pattern, maxResults) {
+        const pat = String(pattern || '*').trim() || '*';
+        const limit = Math.max(1, Math.min(Number(maxResults) || 300, 1000));
+        const files = [];
+        for (const item of Object.values(mockFiles)) {
+            const name = String(item.name || '');
+            if (!mockGlobMatch(pat, name, name)) continue;
+            files.push({path: name, name, dir: '', size: String(item.content || '').length});
+            if (files.length >= limit) break;
+        }
+        files.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+        return {files, truncated: files.length >= limit, scanned: Object.keys(mockFiles).length};
+    },
     async ReadImageDataURL() { return mockImageDataUrl; },
     async SaveFileDialog(name) { return 'mock://' + (window.__mockSaveDialogName || name); },
     async ShowSaveFileDialog(title, defaultName) {
@@ -1000,17 +1148,62 @@ const mockBackend = {
         window.__mockTermSeq = (window.__mockTermSeq || 0) + 1;
         const id = 'term-' + window.__mockTermSeq;
         const usedShell = shell || 'pwsh';
+        window.__mockTermIds = (window.__mockTermIds || []).concat([id]);
+        window.__mockTermShells = window.__mockTermShells || {};
+        window.__mockTermShells[id] = usedShell;
+        window.__mockTermLogs = window.__mockTermLogs || {};
+        window.__mockTermPush = window.__mockTermPush || {};
+        const push = (data) => {
+            window.__mockTermLogs[id] = String(window.__mockTermLogs[id] || '') + data;
+            if (rt && rt.EventsEmit) rt.EventsEmit('term-out', {id, data});
+        };
+        window.__mockTermPush[id] = push;
         setTimeout(() => {
-            if (rt && rt.EventsEmit) {
-                rt.EventsEmit('term-out', {id, data: 'CaDt-DataLens 模拟终端（开发预览）\r\nPS ' + (cwd || 'C:\\') + '> '});
-            }
+            push('CaDt-DataLens 模拟终端（开发预览）\r\nPS ' + (cwd || 'C:\\') + '> ');
         }, 200);
         return {id, shell: usedShell};
     },
     async TermWrite(id, data) {
-        if (rt && rt.EventsEmit && data && !data.includes('\r')) {
-            rt.EventsEmit('term-out', {id, data});
+        const push = (window.__mockTermPush || {})[id];
+        if (!push || !data) return;
+        // 带回车 = 执行一行：回显命令并给一句模拟结果（AI 的 terminal send/read 在 dev 下可用）
+        if (data.includes('\r') || data.includes('\n')) {
+            const command = data.replace(/[\r\n]+$/, '');
+            push((command || '') + '\r\n[mock] 执行：' + (command || '') + '\r\nPS > ');
+        } else {
+            push(data);
         }
+    },
+    async TermRead(id, maxChars) {
+        const text = String((window.__mockTermLogs || {})[id] || '');
+        const limit = Math.max(200, Math.min(Number(maxChars) || 4000, 20000));
+        const truncated = text.length > limit;
+        return {
+            id,
+            shell: String((window.__mockTermShells || {})[id] || 'pwsh'),
+            cwd: '',
+            text: truncated ? text.slice(text.length - limit) : text,
+            truncated,
+            exited: false,
+            exitCode: 0,
+            bytes: text.length,
+        };
+    },
+    async TermList() {
+        const logs = window.__mockTermLogs || {};
+        return (window.__mockTermIds || []).map((id) => {
+            const text = String(logs[id] || '');
+            const lines = text.split(/\r?\n/).filter((line) => line.trim());
+            return {
+                id,
+                shell: String((window.__mockTermShells || {})[id] || 'pwsh'),
+                cwd: '',
+                exited: false,
+                exitCode: 0,
+                bytes: text.length,
+                last: (lines[lines.length - 1] || '').slice(-160),
+            };
+        });
     },
     async TermResize() {},
     async TermClose() {},
@@ -1533,6 +1726,8 @@ const mockBackend = {
         window.__mockNewWindows = (window.__mockNewWindows || []).concat([[dir]]);
     },
     async ShowInFolder(path) { window.__mockShowInFolder = path; },
+    async StorageScan(root) { return buildMockStorageReport(root); },
+    async StorageClear(ids, root) { return applyMockStorageClear(ids, root); },
     async LogFrontend(level, message) { (window.__mockLogs = window.__mockLogs || []).push(level + ': ' + message); },
     async GetDeveloperMode() { return !!window.__mockDevMode; },
     async SetDeveloperMode(on) { window.__mockDevMode = !!on; },
@@ -2262,6 +2457,8 @@ const mockBackend = {
             }
         }
     },
+    // mock 环境没有原生窗口判定：退化成页面焦点，行为与真实构建一致（后台才弹系统卡片）
+    async AppWindowActive() { return typeof document.hasFocus === 'function' ? document.hasFocus() : true; },
     async NotifyAttention(beep) { window.__mockNotify = (window.__mockNotify || []).concat([!!beep]); },
     async NotifySystemToast(title, body, silent) {
         window.__mockSystemToast = (window.__mockSystemToast || []).concat([{title, body, silent: !!silent}]);

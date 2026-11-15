@@ -7,22 +7,34 @@ export function createTerminalSessions(deps) {
 async function createTermSession(shell = '') {
     if (!deps.backend.TermCreate) {
         deps.flash('当前版本不支持内置终端', true);
-        return;
+        return null;
     }
-    const body = document.getElementById('term-body');
-    const host = document.createElement('div');
-    host.className = 'term-session';
-    body.appendChild(host);
     let created;
     try {
         created = await deps.backend.TermCreate(termDefaultCols(), termDefaultRows(), shell, deps.termCwd());
     } catch (e) {
         deps.flash('创建终端失败：' + e, true);
-        host.remove();
-        return;
+        return null;
     }
     const id = created.id;
     const usedShell = created.shell || shell || 'powershell';
+    attachTermSession(id, usedShell, {explicitShell: !!shell});
+    return {id, shell: usedShell};
+}
+
+// attachTermSession：为「已经存在的后端会话」建 xterm 视图与页签。
+// AI 的 terminal 工具走的就是这条路（后端 TermCreate 由调用方负责），
+// 这样 AI 自建的终端与用户点「新建终端」出来的完全一样（同一份页签与输出流）。
+function attachTermSession(id, usedShell, opts = {}) {
+    const existing = deps.terminalUI.sessions.get(id);
+    if (existing) {
+        activateTermSession(id);
+        return existing;
+    }
+    const body = document.getElementById('term-body');
+    const host = document.createElement('div');
+    host.className = 'term-session';
+    body.appendChild(host);
     const term = new window.Terminal({
         fontFamily: '"JetBrains Mono", Consolas, monospace',
         fontSize: 12,
@@ -40,7 +52,7 @@ async function createTermSession(shell = '') {
         deps.backend.TermWrite(id, data).catch(() => {});
     });
     // 页签命名仿 JetBrains：默认 shell 叫「本地」，重复时加 (2)/(3)；显式选择的 shell 用名字
-    const baseName = shell ? (deps.TERM_SHELL_LABELS[usedShell] || usedShell) : '本地';
+    const baseName = opts.explicitShell ? (deps.TERM_SHELL_LABELS[usedShell] || usedShell) : '本地';
     let dup = 0;
     for (const s of deps.terminalUI.sessions.values()) {
         if (s.baseName === baseName) dup++;
@@ -79,8 +91,9 @@ async function createTermSession(shell = '') {
         showTermTabMenu(id, e.clientX, e.clientY);
     });
     document.getElementById('term-tabs').appendChild(tab);
-    deps.terminalUI.sessions.set(id, {id, term, fit, host, tab, shell: usedShell, baseName,
-        defaultLabel: label.textContent, defaultTitle: label.title, customName: ''});
+    const session = {id, term, fit, host, tab, shell: usedShell, baseName,
+        defaultLabel: label.textContent, defaultTitle: label.title, customName: ''};
+    deps.terminalUI.sessions.set(id, session);
     deps.terminalUI.order.push(id);
     activateTermSession(id);
     setTimeout(() => {
@@ -89,6 +102,7 @@ async function createTermSession(shell = '') {
             term.focus();
         } catch (e) {}
     }, 80);
+    return session;
 }
 
 function termDefaultCols() {
@@ -263,6 +277,43 @@ function renameTermSession(s) {
     });
 }
 
+// AI 面板的终端桥（main.js 以 getter 注入 ai-panel）：AI 自建/操作终端时与用户共用同一份 UI 状态
+// （页签、xterm、底部面板）。这里只做转发，不做权限判断——审批在 ai-panel 的 terminal 工具里，
+// 与 run_command 共用同一条命令审批链。
+function terminalHostApi() {
+    return {
+        async open(shell) {
+            const created = await createTermSession(shell || '');
+            if (!created) throw new Error('创建终端失败（详见状态栏提示）');
+            deps.toggleTerminalPanel(true);
+            activateTermSession(created.id);
+            return created;
+        },
+        list() {
+            return [...deps.terminalUI.sessions.values()].map((s) => ({
+                id: s.id,
+                shell: s.shell,
+                label: s.customName || s.defaultLabel || s.id,
+                active: deps.terminalUI.activeId === s.id,
+            }));
+        },
+        send(id, data) {
+            if (!deps.terminalUI.sessions.has(id)) throw new Error('终端不在界面上：' + id);
+            return deps.backend.TermWrite(id, data);
+        },
+        focus(id) {
+            if (!deps.terminalUI.sessions.has(id)) return false;
+            deps.toggleTerminalPanel(true);
+            activateTermSession(id);
+            return true;
+        },
+        close(id) {
+            return closeTermSession(id);
+        },
+    };
+}
+
 return {activateTermSession, closeTermSession, createTermSession, fitActiveTerm, removeTermSession,
-        renameTermSession, showTermShellMenu, showTermTabMenu, syncTerminalTheme, termDefaultCols, termDefaultRows};
+        renameTermSession, showTermShellMenu, showTermTabMenu, syncTerminalTheme, terminalHostApi,
+        termDefaultCols, termDefaultRows};
 }

@@ -127,16 +127,18 @@ export function humanSizeBytes(n) {
 // —— search_text ——
 
 // 文件名/相对路径通配：* 任意串、** 跨目录、? 单字符（都不跨 /，** 除外）；
-// 模式含 / 时匹配相对路径，否则匹配文件名；大小写不敏感（Windows 语义）。
+// **/ 可匹配「零个目录段」（src/**/*.js 命中 src/a.js）；模式含 / 时匹配相对路径，
+// 否则匹配文件名；大小写不敏感（Windows 语义）。Go 侧 globMatchPath 与本函数同规则。
 export function globMatchPath(pattern, relPath, name) {
     const pat = String(pattern || '').trim();
     if (!pat) return true;
     const subject = String(relPath || '').replace(/\\/g, '/');
     const target = pat.includes('/') ? subject : String(name || subject.split('/').pop() || '');
-    const wildcard = pat.replace(/\*\*/g, '\u0000');
+    const wildcard = pat.replace(/\*\*\//g, '\u0001').replace(/\*\*/g, '\u0000');
     let re = '';
     for (const ch of wildcard) {
-        if (ch === '\u0000') re += '.*';
+        if (ch === '\u0001') re += '(?:.*/)?';
+        else if (ch === '\u0000') re += '.*';
         else if (ch === '*') re += '[^/]*';
         else if (ch === '?') re += '[^/]';
         else re += ch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');

@@ -53,6 +53,19 @@ export const AI_TOOL_DEFS = {
             required: ['query'],
         },
     },
+    glob: {
+        name: 'glob',
+        description: '按文件名/路径通配列出工作区文件（只列名字与大小，不读内容）：pattern 支持 *、**、?（如 *.go、src/**/*.ts），不区分大小写；默认跳过 .git/node_modules 等目录，最多 300 条。要找「哪个文件里写了什么」用 search_text，要列某一层目录用 list_dir。',
+        parameters: {
+            type: 'object',
+            properties: {
+                pattern: {type: 'string', description: '通配模式，如 *.go、src/**/*.ts（** 可匹配零个或多个目录）'},
+                path: {type: 'string', description: '搜索起点目录（相对范围根），默认当前范围根'},
+                maxResults: {type: 'integer', description: '最多返回多少条（默认 300，上限 1000）'},
+            },
+            required: ['pattern'],
+        },
+    },
     memory_list: {
         name: 'memory_list',
         description: '列出持久记忆目录中的 Markdown 文件。',
@@ -126,6 +139,32 @@ export const AI_TOOL_DEFS = {
                 from: {type: 'integer', description: '起始序号（0 起，用于翻页跳过前面的结果），默认 0'},
                 limit: {type: 'integer', description: '最多返回多少条消息摘要（1–50，默认 20）'},
             },
+        },
+    },
+    session_search: {
+        name: 'session_search',
+        description: '跨会话检索未归档的历史对话（可能是别的工作区）：按关键词找「哪个会话说过这件事」，返回会话标题、id 与命中片段。要读上下文再用 session_read。只读工具，所有范围档均可用。',
+        parameters: {
+            type: 'object',
+            properties: {
+                query: {type: 'string', description: '关键词（不区分大小写）'},
+                limit: {type: 'integer', description: '最多返回多少条命中（1–100，默认 20）'},
+                full: {type: 'boolean', description: 'true = 全文检索；默认 false 走简要模式（只含用户消息与每轮最后一条助手回复，更快更省）'},
+            },
+            required: ['query'],
+        },
+    },
+    session_read: {
+        name: 'session_read',
+        description: '读某个会话的消息摘要（id 先用 session_search 或 session_list 拿）。默认读最近 20 条；给 query 则返回命中消息及其前后各一条。单次输出有字符预算，结果会标注该会话的工作区（可能是别的工作区，引用前先核对）。只读工具。',
+        parameters: {
+            type: 'object',
+            properties: {
+                id: {type: 'string', description: '会话 id'},
+                query: {type: 'string', description: '关键词：给了就返回命中消息及前后各一条'},
+                limit: {type: 'integer', description: '最多多少条消息（1–50，默认 20）'},
+            },
+            required: ['id'],
         },
     },
     notify_send: {
@@ -214,12 +253,12 @@ export const AI_TOOL_DEFS = {
     },
     write_worklog: {
         name: 'write_worklog',
-        description: '在工作区 .cadt/logs/ 追加一条工作日志（时间自动记录，格式为「标题 + 一句话摘要」）。完成一个任务、修一个问题、做出一个关键决定后调用一次，帮用户和后续会话快速回顾做过什么。只记录标题与摘要，不要写正文、代码片段、密钥或敏感信息。日志文件只能通过本工具追加：不允许也不必用 write_file / edit_file / read_file 修改 .cadt/logs/ 下的任何文件，完整历史请用 list_dir / read_file 之外的方式提示用户自行打开查看。所有范围档均可用，无需审批。',
+        description: '在工作区 .cadt/logs/ 追加一条工作日志（时间自动记录，格式为「标题 + 摘要」）。完成一个任务、修一个问题、做出一个关键决定后调用一次，帮用户和后续会话快速回顾做过什么。**标题会进月份索引，索引里只显示标题这一句**，所以要短到能一眼扫完（说清做了什么、结果如何即可）；细节、文件清单、验证过程、待办一律写进 summary，摘要只留在当日正文里、不进索引。只记录标题与摘要，不要写正文、代码片段、密钥或敏感信息。日志文件只能通过本工具追加：不允许也不必用 write_file / edit_file / read_file 修改 .cadt/logs/ 下的任何文件，完整历史请用 list_dir / read_file 之外的方式提示用户自行打开查看。所有范围档均可用，无需审批。',
         parameters: {
             type: 'object',
             properties: {
-                title: {type: 'string', description: '一句话标题（≤120 字符，如「修复全局搜索跳转定位」）'},
-                summary: {type: 'string', description: '一句话摘要（≤500 字符，说明做了什么、结果如何；可省略）'},
+                title: {type: 'string', description: '索引里显示的一句话（≤40 字，如「修复全局搜索跳转定位」）：只写做了什么，一句话说完；不要用冒号追加副句，不要堆文件清单、数字指标、验证过程、待办，那些放 summary'},
+                summary: {type: 'string', description: '细节摘要（≤300 字，写清怎么改的、结果如何、还剩什么待办；可省略）'},
             },
             required: ['title'],
         },
@@ -366,7 +405,7 @@ export const AI_TOOL_DEFS = {
             properties: {
                 command: {type: 'string', description: '要执行的完整命令'},
                 cwd: {type: 'string', description: '工作目录，默认范围根；完全权限下可为绝对路径'},
-                timeoutMs: {type: 'integer', description: '超时毫秒，默认 30000，最大 120000'},
+                timeoutMs: {type: 'integer', description: '超时毫秒，默认 60000，最大 600000；到点强杀并返回已捕获输出，长任务请用 background_command'},
             },
             required: ['command'],
         },
@@ -714,6 +753,21 @@ export const AI_TOOL_DEFS = {
             required: ['name', 'description'],
         },
     },
+    terminal: {
+        name: 'terminal',
+        description: '操作应用内置终端（ConPTY 持久会话，与用户看到的底部终端是同一个）：list 看已开的终端、open 新建并自动打开底部面板、send 向终端写文本、read 读最近输出、signal 发 Ctrl+C、close 关闭页签。适合交互式/长驻程序（dev server、需要持续输入的命令、看交互式 CLI）；一次性命令仍用 run_command。终端里的程序不受 run_command 的超时与「停止生成」约束——需要中止请用 signal，或让用户自己停。send / open / close 走命令审批。',
+        parameters: {
+            type: 'object',
+            properties: {
+                action: {type: 'string', enum: ['list', 'open', 'send', 'read', 'signal', 'close'], description: '动作'},
+                id: {type: 'string', description: '终端 id（由 list / open 返回）；除 list / open 外必填'},
+                shell: {type: 'string', description: 'open 用：pwsh / powershell / cmd / gitbash；省略为默认 shell'},
+                text: {type: 'string', description: 'send 用：要写入的文本；需要回车请自带 \\r（如 "npm run dev\\r"）'},
+                maxChars: {type: 'integer', description: 'read 用：最多返回多少字符（默认 4000，上限 20000）'},
+            },
+            required: ['action'],
+        },
+    },
 };
 
 // 工具目录数据：<tool_catalog> 段的分组归属与一句话调度文案（模型靠目录学调度语义）。
@@ -726,6 +780,7 @@ export const AI_TOOL_CATALOG = {
     read_file: {group: 'read', blurb: '读文件正文（可指定行范围），改文件前必须先读'},
     read_image: {group: 'read', blurb: '读图片把画面附加到对话（截图 / 图表 / UI 核对）；文本内容仍用 read_file'},
     search_text: {group: 'read', blurb: '文本搜索（caseSensitive 区分大小写、filePattern 限 *.go 这类文件通配），拿 path:line；结果不足再 read_file'},
+    glob: {group: 'read', blurb: '按文件名通配找文件（*.go / src/**/*.ts），拿相对路径；找文件里的内容用 search_text'},
     write_file: {group: 'write', blurb: '新建文件或整体重写；覆盖前必须先 read_file，文件被外部修改后写入会被拒绝'},
     edit_file: {group: 'write', blurb: '最小替换；oldString 逐字一致，默认唯一命中，replaceAll 可全量替换'},
     propose_patch: {group: 'write', blurb: '把改动写成 .patch 交用户审批后一键应用；计划模式下只做预检不落盘'},
@@ -733,6 +788,7 @@ export const AI_TOOL_CATALOG = {
     background_command: {group: 'shell', blurb: '长驻或耗时命令：构建、watch、本地服务器、长测试'},
     check_command: {group: 'shell', blurb: '轮询后台命令的增量输出与状态'},
     stop_command: {group: 'shell', blurb: '停止后台命令'},
+    terminal: {group: 'shell', blurb: '操作内置终端：open / send / read / signal / close（交互式长驻程序用它，一次性命令仍用 run_command）'},
     web_search: {group: 'web', blurb: '找来源、最新信息、官方文档'},
     web_fetch: {group: 'web', blurb: '抓具体网页正文，不执行脚本'},
     generate_image: {group: 'gen', blurb: '调用户配置的生图服务出图，产物存工作区并返回路径'},
@@ -758,7 +814,7 @@ export const AI_TOOL_CATALOG = {
     preference_write: {group: 'memory', blurb: '长期工作方式偏好；一次性要求不要写入'},
     preference_remove: {group: 'memory', blurb: '长期工作方式偏好；一次性要求不要写入'},
     skill_use: {group: 'memory', blurb: '加载技能全文并遵循'},
-    write_worklog: {group: 'memory', blurb: '完成任务后追加一条工作日志到 .cadt/logs/（只存标题与一句话摘要）'},
+    write_worklog: {group: 'memory', blurb: '完成任务后追加工作日志（标题进月份索引，摘要进当日正文）'},
     env_list: {group: 'env', blurb: '看名称与描述（值永远不可见）；命令里直接引用 $名称 / %名称%'},
     env_create: {group: 'env', blurb: '登记新变量，值由用户在弹窗里填写'},
     todo_write: {group: 'task', blurb: '多步任务的进度清单，完成一步更新一步'},
@@ -776,6 +832,8 @@ export const AI_TOOL_CATALOG = {
     schedule_delete: {group: 'task', blurb: '定时任务管理'},
     schedule_toggle: {group: 'task', blurb: '定时任务管理'},
     session_history: {group: 'session', blurb: '查本会话早期消息（含被压缩归档的）：按关键词搜或按序号翻页'},
+    session_search: {group: 'session', blurb: '跨会话检索未归档的历史对话，拿会话 id 与命中片段'},
+    session_read: {group: 'session', blurb: '读某个会话的消息摘要（id 来自 session_search / session_list）'},
     notify_send: {group: 'session', blurb: '往状态栏【消息】中心发阶段性汇报与完成通知'},
     reminder_add: {group: 'session', blurb: '本会话任务提醒（清单每轮自动注入）；完成后 reminder_update 标 done'},
     reminder_list: {group: 'session', blurb: '本会话任务提醒（清单每轮自动注入）；完成后 reminder_update 标 done'},
@@ -809,12 +867,17 @@ export function createAIToolDefs(ctx) {
             AI_TOOL_DEFS.read_file,
             AI_TOOL_DEFS.read_image,
             AI_TOOL_DEFS.search_text,
+            // 文件发现：只读（Go FindFiles），所有档位与计划模式可用
+            AI_TOOL_DEFS.glob,
             AI_TOOL_DEFS.web_search,
             AI_TOOL_DEFS.web_fetch,
             AI_TOOL_DEFS.memory_list,
             AI_TOOL_DEFS.memory_read,
             AI_TOOL_DEFS.preference_list,
             AI_TOOL_DEFS.session_history,
+            // 跨会话检索：只读（AISessionSearchScoped / AISessionRead），所有档位与计划模式可用
+            AI_TOOL_DEFS.session_search,
+            AI_TOOL_DEFS.session_read,
             AI_TOOL_DEFS.skill_use,
             AI_TOOL_DEFS.ask_user,
             AI_TOOL_DEFS.env_list,
@@ -849,7 +912,8 @@ export function createAIToolDefs(ctx) {
         if (AI_WRITE_SCOPES.includes(scope)) {
             list.push(AI_TOOL_DEFS.todo_write);
             if (!planMode) list.push(AI_TOOL_DEFS.write_file, AI_TOOL_DEFS.edit_file, AI_TOOL_DEFS.run_command,
-                AI_TOOL_DEFS.background_command, AI_TOOL_DEFS.check_command, AI_TOOL_DEFS.stop_command);
+                AI_TOOL_DEFS.background_command, AI_TOOL_DEFS.check_command, AI_TOOL_DEFS.stop_command,
+                AI_TOOL_DEFS.terminal);
             if (!planMode) list.push(AI_TOOL_DEFS.browser_click, AI_TOOL_DEFS.browser_type, AI_TOOL_DEFS.browser_press_key,
                 AI_TOOL_DEFS.browser_resize);
         }

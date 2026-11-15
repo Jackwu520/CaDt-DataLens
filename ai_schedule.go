@@ -234,6 +234,18 @@ func aiScheduleAlignNext(nowMs, prev int64, intervalMinutes int) int64 {
 	return prev + k*step
 }
 
+// closeAIScheduleDB 释放派生库句柄并清空内存态，供「存储与清理」删 ai-schedule.db 前调用
+//（SQLite 的库文件在打开状态下删不掉）。调度器下一秒的 tick 会按空库重新拉起，不影响运行。
+func closeAIScheduleDB() {
+	aiScheduleMu.Lock()
+	defer aiScheduleMu.Unlock()
+	if aiScheduleDB != nil {
+		_ = aiScheduleDB.Close()
+		aiScheduleDB = nil
+	}
+	aiSchedules = nil
+}
+
 // startAISchedule 在 startup 时调用：加载任务 + 启动单 ticker 每秒扫描。
 func (a *App) startAISchedule() {
 	if err := aiScheduleEnsureLoaded(); err != nil {

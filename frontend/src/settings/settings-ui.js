@@ -639,6 +639,7 @@ function selectSettingsPane(pane) {
     else if (pane === 'run') deps.renderRunPane();
     else if (pane === 'envvars') deps.renderEnvVarsPane();
     else if (pane === 'activity') deps.renderActivityPane();
+    else if (pane === 'storage') deps.renderStoragePane();
     else if (pane === 'developer') {
         // 补丁库：进面板时拉一次最近补丁（顺带触发 Go 侧滞留 applying 的自愈）
         if (deps.patchesPane && typeof deps.patchesPane.refreshPatchStore === 'function') {

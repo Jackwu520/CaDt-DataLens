@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	pty "github.com/aymanbagabas/go-pty"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -22,6 +23,12 @@ const (
 	termMaxSessions = 8
 	termDefaultCols = 80
 	termDefaultRows = 24
+
+	// AI 读终端输出用的滚动缓冲：只留尾部（长跑命令不能把内存吃光），
+	// 与前端 xterm 显示的是同一份 term-out 数据流（见 append）。
+	termBufferBytes      = 64 << 10
+	termReadDefaultChars = 4000
+	termReadMaxChars     = 20000
 )
 
 type termSession struct {
@@ -30,11 +37,25 @@ type termSession struct {
 	cmd       *pty.Cmd
 	cancel    context.CancelFunc
 	closeOnce sync.Once
+	// releaseOnce 保证 ConPTY 句柄只释放一次：go-pty 的 Close 不幂等
+	//（每次都调 ClosePseudoConsole + 关掉两条管道），退出与关闭两条路径重复调用
+	// 等于二次释放同一句柄。
+	releaseOnce sync.Once
+
+	shell string
+	cwd   string
+
+	bufMu    sync.Mutex
+	buf      []byte
+	seq      int64
+	exited   bool
+	exitCode int32
 }
 
 type terminalManager struct {
 	mu       sync.Mutex
 	sessions map[string]*termSession
+	order    []string // 创建顺序（TermList 的展示顺序；map 本身无序）
 	seq      int
 }
 
@@ -165,7 +186,7 @@ func startTermSession(id, shell string, cols, rows int, cwd string, emit func(ev
 		_ = p.Resize(cols, rows)
 	}
 
-	session := &termSession{id: id, p: p, cmd: cmd}
+	session := &termSession{id: id, p: p, cmd: cmd, shell: shell, cwd: cwd}
 	ctx, cancel := context.WithCancel(context.Background())
 	session.cancel = cancel
 
@@ -183,9 +204,12 @@ func startTermSession(id, shell string, cols, rows int, cwd string, emit func(ev
 			}
 			n, readErr := outPipe.Read(buf)
 			if n > 0 {
+				data := strings.ToValidUTF8(string(buf[:n]), "\ufffd")
+				// 先入 AI 读的滚动缓冲，再推给前端：两边看到的是同一份数据流
+				session.append(data)
 				emit("term-out", map[string]string{
 					"id":   id,
-					"data": strings.ToValidUTF8(string(buf[:n]), "\ufffd"),
+					"data": data,
 				})
 			}
 			if readErr != nil {
@@ -194,25 +218,28 @@ func startTermSession(id, shell string, cols, rows int, cwd string, emit func(ev
 		}
 	}()
 
-	// 退出监听
+	// 退出监听：标记退出并释放 pty，但保留会话与输出缓冲（AI 要读最后的输出），
+	// 真正从注册表移除由 TermClose / closeAll 负责
 	go func() {
 		_ = cmd.Wait()
-		emit("term-exit", map[string]interface{}{"id": id, "code": exitCodeOf(cmd)})
-		session.closeAll()
+		code := termExitCode(cmd)
+		session.finish(code)
+		emit("term-exit", map[string]interface{}{"id": id, "code": code})
 	}()
 
 	return session, nil
 }
 
-func exitCodeOf(cmd *pty.Cmd) int32 {
-	if cmd.Process == nil {
+// termExitCode 取退出码。cmd.Wait() 已经把进程收掉并把结果放进 ProcessState，
+// 这里绝不能再调 cmd.Process.Wait()：那是对同一进程句柄的第二次回收，Windows 上
+// 等于重复 CloseHandle——句柄号被别处复用之后，踩空的是整个进程
+//（2026-11-16 实测：跑过终端会话再启目录监视，会把 go test 的二进制直接搞崩，
+// 崩溃点却落在完全无关的 watch_windows.go 上）。
+func termExitCode(cmd *pty.Cmd) int32 {
+	if cmd == nil || cmd.ProcessState == nil {
 		return -1
 	}
-	state, err := cmd.Process.Wait()
-	if err != nil {
-		return -1
-	}
-	return int32(state.ExitCode())
+	return int32(cmd.ProcessState.ExitCode())
 }
 
 func (s *termSession) write(data string) error {
@@ -230,7 +257,65 @@ func (s *termSession) resize(cols, rows int) error {
 	return s.p.Resize(cols, rows)
 }
 
+// append 把输出写进滚动缓冲，只保留尾部 termBufferBytes（UTF-8 已在读取处清洗）。
+func (s *termSession) append(data string) {
+	if data == "" {
+		return
+	}
+	s.bufMu.Lock()
+	s.buf = append(s.buf, data...)
+	if over := len(s.buf) - termBufferBytes; over > 0 {
+		s.buf = append(s.buf[:0], s.buf[over:]...)
+	}
+	s.seq += int64(len(data))
+	s.bufMu.Unlock()
+}
+
+// tail 取缓冲尾部 maxChars 个字节的文本（不切碎 UTF-8 多字节字符）；第二个返回值表示是否截断。
+func (s *termSession) tail(maxChars int) (string, bool) {
+	s.bufMu.Lock()
+	defer s.bufMu.Unlock()
+	if maxChars <= 0 || len(s.buf) <= maxChars {
+		return string(s.buf), false
+	}
+	text := string(s.buf[len(s.buf)-maxChars:])
+	for len(text) > 0 && !utf8.RuneStart(text[0]) {
+		text = text[1:]
+	}
+	return text, true
+}
+
+// releasePty 释放 ConPTY 句柄与两条管道，只生效一次。
+func (s *termSession) releasePty() {
+	s.releaseOnce.Do(func() {
+		if s.p != nil {
+			_ = s.p.Close()
+		}
+	})
+}
+
+// finish 标记进程已退出并释放 pty，但保留会话与输出缓冲（AI 仍要读最后的输出）；
+// 真正从注册表移除由 TermClose / closeAll 负责。
+func (s *termSession) finish(code int32) {
+	s.bufMu.Lock()
+	s.exited = true
+	s.exitCode = code
+	s.bufMu.Unlock()
+	if s.cancel != nil {
+		s.cancel()
+	}
+	s.releasePty()
+}
+
 func (s *termSession) terminate() {
+	s.bufMu.Lock()
+	exited := s.exited
+	s.bufMu.Unlock()
+	if exited {
+		// 进程已被 cmd.Wait() 收掉、句柄已关闭：再 Kill 就是往可能已被复用的句柄号上打枪，
+		// 与 termExitCode 那处是同一类二次释放（应用退出时 closeAll 会批量踩到）
+		return
+	}
 	if s.cmd != nil && s.cmd.Process != nil {
 		_ = s.cmd.Process.Kill()
 	}
@@ -241,9 +326,15 @@ func (s *termSession) closeAll() {
 		if s.cancel != nil {
 			s.cancel()
 		}
-		s.p.Close()
+		s.releasePty()
 		terminals.mu.Lock()
 		delete(terminals.sessions, s.id)
+		for i, existing := range terminals.order {
+			if existing == s.id {
+				terminals.order = append(terminals.order[:i], terminals.order[i+1:]...)
+				break
+			}
+		}
 		terminals.mu.Unlock()
 	})
 }
@@ -264,6 +355,9 @@ func (m *terminalManager) closeAll() {
 			s.closeAll()
 		}
 	}
+	m.mu.Lock()
+	m.order = nil
+	m.mu.Unlock()
 }
 
 func (a *App) TermCreate(cols, rows int, shell string, cwd string) (map[string]string, error) {
@@ -291,6 +385,7 @@ func (a *App) TermCreate(cols, rows int, shell string, cwd string) (map[string]s
 	}
 	terminals.mu.Lock()
 	terminals.sessions[id] = session
+	terminals.order = append(terminals.order, id)
 	terminals.mu.Unlock()
 	return map[string]string{"id": id, "shell": resolvedShell}, nil
 }
@@ -325,6 +420,96 @@ func (a *App) TermClose(id string) error {
 	s.terminate()
 	s.closeAll()
 	return nil
+}
+
+// TermReadResult 是 TermRead 的返回：最近输出 + 会话状态（AI 靠它判断命令是否跑完）。
+type TermReadResult struct {
+	ID        string `json:"id"`
+	Shell     string `json:"shell"`
+	Cwd       string `json:"cwd"`
+	Text      string `json:"text"`
+	Truncated bool   `json:"truncated"`
+	Exited    bool   `json:"exited"`
+	ExitCode  int32  `json:"exitCode"`
+	Bytes     int64  `json:"bytes"`
+}
+
+type TermInfo struct {
+	ID       string `json:"id"`
+	Shell    string `json:"shell"`
+	Cwd      string `json:"cwd"`
+	Exited   bool   `json:"exited"`
+	ExitCode int32  `json:"exitCode"`
+	Bytes    int64  `json:"bytes"`
+	Last     string `json:"last"`
+}
+
+// TermRead 返回某个终端会话的最近输出（AI terminal 工具的 read 动作）。
+// 会话退出后仍可读（输出缓冲保留到 TermClose）。
+func (a *App) TermRead(id string, maxChars int) (*TermReadResult, error) {
+	if maxChars <= 0 {
+		maxChars = termReadDefaultChars
+	}
+	if maxChars > termReadMaxChars {
+		maxChars = termReadMaxChars
+	}
+	terminals.mu.Lock()
+	s := terminals.sessions[id]
+	terminals.mu.Unlock()
+	if s == nil {
+		return nil, fmt.Errorf("终端会话不存在：%s", id)
+	}
+	s.bufMu.Lock()
+	total := s.seq
+	exited := s.exited
+	code := s.exitCode
+	s.bufMu.Unlock()
+	text, truncated := s.tail(maxChars)
+	return &TermReadResult{
+		ID: id, Shell: s.shell, Cwd: s.cwd, Text: text,
+		Truncated: truncated, Exited: exited, ExitCode: code, Bytes: total,
+	}, nil
+}
+
+// TermList 按创建顺序列出全部终端会话（含已退出的，AI 靠它判断该读还是该新开）。
+func (a *App) TermList() []TermInfo {
+	terminals.mu.Lock()
+	ids := append([]string(nil), terminals.order...)
+	sessions := make(map[string]*termSession, len(terminals.sessions))
+	for id, session := range terminals.sessions {
+		sessions[id] = session
+	}
+	terminals.mu.Unlock()
+	out := []TermInfo{}
+	for _, id := range ids {
+		s := sessions[id]
+		if s == nil {
+			continue
+		}
+		s.bufMu.Lock()
+		exited, code, total := s.exited, s.exitCode, s.seq
+		s.bufMu.Unlock()
+		tail, _ := s.tail(400)
+		out = append(out, TermInfo{ID: id, Shell: s.shell, Cwd: s.cwd,
+			Exited: exited, ExitCode: code, Bytes: total, Last: lastTermLine(tail)})
+	}
+	return out
+}
+
+// lastTermLine 抽最后一行非空输出，供 TermList 给 AI 一个「终端现在停在哪」的线索。
+func lastTermLine(text string) string {
+	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+		if len(line) > 160 {
+			line = line[len(line)-160:]
+		}
+		return line
+	}
+	return ""
 }
 
 // TermShells 返回本机可用的 shell 列表（供新建终端菜单），默认 shell 排在最前。

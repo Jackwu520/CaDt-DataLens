@@ -128,7 +128,9 @@ function renderGitPanel() {
         const chev = document.createElement('button');
         chev.type = 'button';
         chev.className = 'git-chev';
-        chev.dataset.tip = '展开/收起';
+        // 箭头方向自明，不再挂 data-tip；展开态与可访问名走原生属性
+        chev.setAttribute('aria-label', title + '（展开或收起）');
+        chev.setAttribute('aria-expanded', String(!deps.gitGroupCollapsed[key]));
         chev.innerHTML = iconSvg(deps.gitGroupCollapsed[key] ? 'chevron-right' : 'chevron-down', 10);
         const gcb = document.createElement('input');
         gcb.type = 'checkbox';

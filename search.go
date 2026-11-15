@@ -247,6 +247,17 @@ func scanSearchFile(job searchFileJob, needle string, needleASCII, caseSensitive
 
 // SearchWorkspace 流式扫描工作区文本文件，不建索引；命中数/单文件命中/耗时均有限额。
 func (a *App) SearchWorkspace(root, query string, caseSensitive bool, maxResults int) (*SearchResult, error) {
+	return a.searchWorkspace(root, query, caseSensitive, maxResults, "")
+}
+
+// SearchWorkspaceFiltered 与 SearchWorkspace 同源，但只保留 filePattern 通配匹配的文件命中。
+// pattern 语义与 globMatchPath 一致；AI 的 search_text 把 filePattern 下推到这里，
+// 避免无关文件的命中先占满结果窗口（前端仍保留一次兜底过滤）。
+func (a *App) SearchWorkspaceFiltered(root, query string, caseSensitive bool, maxResults int, pattern string) (*SearchResult, error) {
+	return a.searchWorkspace(root, query, caseSensitive, maxResults, strings.TrimSpace(pattern))
+}
+
+func (a *App) searchWorkspace(root, query string, caseSensitive bool, maxResults int, pattern string) (*SearchResult, error) {
 	root = strings.TrimSpace(root)
 	if root == "" {
 		return nil, errors.New("未打开工作区目录")
@@ -265,7 +276,7 @@ func (a *App) SearchWorkspace(root, query string, caseSensitive bool, maxResults
 		maxResults = searchMaxResults
 	}
 	if os.Getenv("DATALENS_NO_RG") == "" {
-		if res, ok := searchWithRipgrep(root, query, caseSensitive, maxResults); ok {
+		if res, ok := searchWithRipgrep(root, query, caseSensitive, maxResults, pattern); ok {
 			return res, nil
 		}
 	}
@@ -293,6 +304,16 @@ func (a *App) SearchWorkspace(root, query string, caseSensitive bool, maxResults
 		}
 		if searchBinaryExt[strings.ToLower(filepath.Ext(name))] {
 			return nil
+		}
+		// filePattern 下推：不匹配的文件不进扫描队列（前端仍会兜底过滤一次，口径一致）
+		if pattern != "" {
+			rel, relErr := filepath.Rel(root, path)
+			if relErr != nil {
+				rel = name
+			}
+			if !globMatchPath(pattern, filepath.ToSlash(rel), name) {
+				return nil
+			}
 		}
 		if info, err := d.Info(); err != nil || info.Size() > searchMaxFileSize {
 			return nil

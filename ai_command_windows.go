@@ -13,6 +13,13 @@ import (
 // AI 终端工具：按 Git Bash → PowerShell 7 → Windows PowerShell → cmd 的优先级执行命令。
 // 复用进程桥的 RunCommandSync（无窗口、超时、输出上限），但 shell 由后端统一选择。
 
+// AI 前台指令（run_command）的超时边界：比插件同步命令（120 s）宽松——
+// AI 跑测试 / 构建属正常需求，但默认仍要有界，长任务应交给 background_command。
+const (
+	aiShellDefaultTimeout = 60000  // 默认 60 s
+	aiShellMaxTimeout     = 600000 // 上限 600 s
+)
+
 type AIShellCommandResult struct {
 	Shell      string `json:"shell"`
 	Exe        string `json:"exe"`
@@ -94,14 +101,14 @@ func (a *App) AIRunShellCommand(command, cwd string, timeoutMs int, runId string
 		}
 	}
 	if timeoutMs <= 0 {
-		timeoutMs = 30000
+		timeoutMs = aiShellDefaultTimeout
 	}
-	if timeoutMs > commandMaxTimeout {
-		timeoutMs = commandMaxTimeout
+	if timeoutMs > aiShellMaxTimeout {
+		timeoutMs = aiShellMaxTimeout
 	}
 	shellName, exe, args := aiShellInvocation(command)
 	started := time.Now()
-	raw, err := a.runCommandSyncRegistered(strings.TrimSpace(runId), exe, args, cwd, timeoutMs)
+	raw, err := a.runCommandSyncRegistered(strings.TrimSpace(runId), exe, args, cwd, timeoutMs, aiShellMaxTimeout)
 	out := &AIShellCommandResult{
 		Shell:      shellName,
 		Exe:        exe,

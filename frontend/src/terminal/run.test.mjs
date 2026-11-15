@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import {
     RECIPES, extOf, stemOf, joinPath, cmdText, versionOf, versionAtLeast,
     ansiSegments, splitRefs, splitRunArgs, applyRunTemplate, SELF_TEST, SELF_TEST_MARK,
-    buildRunAnalysisPrompt,
+    buildRunAnalysisPrompt, runTimeoutRemaining, timeoutLabel,
 } from './run.js';
 
 test('配方表：每项都有 run，编译型必须有 build 与 outExt', () => {
@@ -194,4 +194,29 @@ test('buildRunAnalysisPrompt：尾部 200 行与 12000 字符双重截断', () =
     const p2 = buildRunAnalysisPrompt(huge, {});
     assert.ok(p2.includes('已省略') && p2.includes('THE_END'));
     assert.ok(p2.length < 13000, '提示词长度应受控');
+});
+
+test('runTimeoutRemaining：任务级截止时刻，不限时返回 0', () => {
+    assert.equal(runTimeoutRemaining(1000, 0, 500), 0, '超时关闭时恒为 0');
+    assert.equal(runTimeoutRemaining(1000, -5, 500), 0, '负数视为不限时');
+    assert.equal(runTimeoutRemaining(1000, 3000, 2000), 2000, '剩余 = 上限 - 已耗时');
+    assert.equal(runTimeoutRemaining(1000, 3000, 4500), -500, '已过截止时刻为负');
+    assert.equal(runTimeoutRemaining(1000, 3000, 4000), 0, '正好到点为 0');
+});
+
+test('runTimeoutRemaining：编译耗时计入同一截止时刻（分步传剩余）', () => {
+    const startedAt = 1000;
+    const timeoutMs = 5000;
+    // build 步吃掉 3000ms，run 步只能拿到剩余 2000ms
+    assert.equal(runTimeoutRemaining(startedAt, timeoutMs, 4000), 2000);
+    // build 步吃掉 5500ms，run 步开跑前就已超时
+    assert.equal(runTimeoutRemaining(startedAt, timeoutMs, 6500), -500);
+});
+
+test('timeoutLabel：秒与分钟的人类可读格式', () => {
+    assert.equal(timeoutLabel(0), '不限时');
+    assert.equal(timeoutLabel(30000), '30 秒');
+    assert.equal(timeoutLabel(60000), '1 分钟');
+    assert.equal(timeoutLabel(300000), '5 分钟');
+    assert.equal(timeoutLabel(90000), '1.5 分钟');
 });

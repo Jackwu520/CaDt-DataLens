@@ -4,10 +4,11 @@ package main
 // 布局（固定三层，全部相对 <工作区>/.cadt/logs/）：
 //
 //	INDEX.md                  第 1 层：每月一行（指向对应月份索引）
-//	{YYYY}/{MM}/INDEX.md      第 2 层：每条变更一行
+//	{YYYY}/{MM}/INDEX.md      第 2 层：每条变更一行（只有日期 + 标题，不带摘要）
 //	{YYYY}/{MM}/{YYYY-MM-DD}.md  条目正文（时间 + 标题 + 一句话摘要）
 //
 // 只存标题与摘要，不存正文与敏感信息；追加式写入，跨进程文件锁串行。
+// 摘要只进当日正文，索引用标题当一句话条目——索引要能一眼扫完。
 
 import (
 	"errors"
@@ -23,8 +24,11 @@ import (
 const (
 	worklogLockName   = ".worklog.lock"
 	worklogLockWait   = 2 * time.Second
-	worklogTitleMax   = 120 // 标题字符上限（超出截断）
+	worklogTitleMax   = 120 // 标题字符上限（超出截断，进当日正文的标题）
 	worklogSummaryMax = 500 // 摘要字符上限（超出截断）
+	// worklogIndexTitleMax 月份索引行里标题的字符上限：索引只求一眼扫完，
+	// 比正文标题（120）收得紧；工具描述让模型写 ≤40 字，这里留一点余量当兜底。
+	worklogIndexTitleMax = 48
 )
 
 // 同进程追加互斥（各窗口各建 App，锁必须是包级的）。
@@ -53,6 +57,31 @@ func hasWorklogMonthLine(raw string, stamp string) bool {
 		}
 	}
 	return false
+}
+
+// worklogIndexTitle 把标题压成索引用的短标题：索引里一行就是一条，长了扫不动。
+// 超长时优先在最后一个断句点（：，、；。空格）处截断，断句点太靠前（少于一半）则硬截，
+// 两种都补「…」。正文标题不受影响，细节仍在当日正文里。
+func worklogIndexTitle(title string, max int) string {
+	runes := []rune(title)
+	if len(runes) <= max {
+		return title
+	}
+	head := runes[:max]
+	cut := -1
+	for i := len(head) - 1; i >= 0; i-- {
+		switch head[i] {
+		case '：', '，', '、', '；', '。', ' ', ':', ',', ';':
+			cut = i
+		}
+		if cut >= 0 {
+			break
+		}
+	}
+	if cut >= max/2 {
+		return strings.TrimRight(string(head[:cut]), " ") + "…"
+	}
+	return strings.TrimRight(string(head), " ") + "…"
 }
 
 // appendWorklogEntry 在日志目录里追加一条记录：正文按天落文件，
@@ -93,12 +122,9 @@ func appendWorklogEntry(dir string, now time.Time, title, summary string) (strin
 		return "", err
 	}
 
-	// 月份索引：每条变更一行，指向当天正文
-	line := "- " + now.Format("01-02 15:04") + " " + title
-	if summary != "" {
-		line += " — " + summary
-	}
-	line += "（./" + dayName + "）\n"
+	// 月份索引：每条变更一行，只放「日期 + 短标题」这一句话；摘要留在正文里，不进索引
+	// （索引是扫描用的，挤进 500 字摘要就退化成正文复制）
+	line := "- " + now.Format("01-02 15:04") + " " + worklogIndexTitle(title, worklogIndexTitleMax) + "（./" + dayName + "）\n"
 	if err := appendFileText(filepath.Join(monthDir, "INDEX.md"), line); err != nil {
 		return "", err
 	}

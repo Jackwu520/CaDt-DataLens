@@ -41,3 +41,6 @@ func (a *App) BrowserSnapshot(id string) (string, error)          { return "", b
 func browserUnsupported() error {
 	return fmt.Errorf("当前平台不支持内嵌浏览器")
 }
+
+// browserActiveProfileDirs 非 Windows 没有内嵌浏览器，没有在用配置目录需要跳过。
+func browserActiveProfileDirs() map[string]bool { return map[string]bool{} }

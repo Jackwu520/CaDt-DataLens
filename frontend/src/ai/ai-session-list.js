@@ -4,6 +4,7 @@
 // 列表分组状态与搜索状态为域私有，随域迁入本模块。
 import {iconSvg} from '../core/icons.js';
 import {aiTextOf, aiFormatSessionTime} from './ai-constants.js';
+import {sessionActivityTs} from './ai-session-store.js';
 
 // 支线紧跟母会话：按传入顺序（已按活跃度排序）铺平，再把每条支线插到它的母会话之后。
 // 母会话已删除、或 sideOf 成环时按普通会话处理——渲染不能因为元数据坏了就少一条会话。
@@ -104,9 +105,8 @@ export function createAISessionList(ctx) {
     }
 
     function sessionActivity(session) {
-        // 占位会话 messages 是 []，自然回落到 updatedAt（meta 里的最后写入时间）
-        const last = session.messages[session.messages.length - 1];
-        return Number(last && last.ts) || Number(session.updatedAt) || Number(session.createdAt) || 0;
+        // 轮次起点，不是最后一条消息：工具刷屏、审批改写、标题生成都不该让条目在列表里跳。
+        return sessionActivityTs(session);
     }
 
     function jumpToMessage(session, index) {
@@ -152,8 +152,6 @@ export function createAISessionList(ctx) {
         if (!session || archived || session.archivedAt) return '';
         if (sessionNeedsAttention(session)) return 'pending';
         if (streams.has(session.id)) return 'running';
-        // 后台命令可能比本轮活得更久：即使没有流，作业还在跑也要在列表上标出来
-        if (sessionHasLiveBgJob(session.id)) return 'running';
         // 后台命令可能比本轮活得更久：即使没有流，作业还在跑也要在列表上标出来
         if (sessionHasLiveBgJob(session.id)) return 'running';
         if (session.unread === 'done' || session.unread === 'error') {
@@ -255,7 +253,6 @@ export function createAISessionList(ctx) {
             const title = document.createElement('div');
             title.className = 'ai-session-title';
             title.textContent = session.title || '新会话';
-            title.dataset.tip = session.title || '新会话';
             titleRow.appendChild(title);
             if (sideBadgeOn(session)) {
                 const badge = document.createElement('span');

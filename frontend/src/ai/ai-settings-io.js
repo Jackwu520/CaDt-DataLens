@@ -81,6 +81,7 @@ export function createAISettingsIO(ctx, extras) {
             notifyFinish: getConfig().notifyFinish !== false,
             notifyError: getConfig().notifyError !== false,
             notifyAsk: getConfig().notifyAsk !== false,
+            notifyApprove: getConfig().notifyApprove !== false,
             notifySound: getConfig().notifySound !== false,
             askTimeout: getConfig().askTimeout,
             askTimeoutAction: getConfig().askTimeoutAction,
@@ -180,7 +181,7 @@ export function createAISettingsIO(ctx, extras) {
             if (typeof data.worklogEnabled === 'boolean') getConfig().worklogEnabled = data.worklogEnabled;
             getConfig().subAgentMax = aiClampInt(data.subAgentMax, 1, 20, getConfig().subAgentMax);
             getConfig().subAgentMaxDepth = aiClampInt(data.subAgentMaxDepth, 0, 20, getConfig().subAgentMaxDepth);
-            for (const key of ['notifyInApp', 'notifySystem', 'notifyFinish', 'notifyError', 'notifyAsk', 'notifySound']) {
+            for (const key of ['notifyInApp', 'notifySystem', 'notifyFinish', 'notifyError', 'notifyAsk', 'notifyApprove', 'notifySound']) {
                 if (typeof data[key] === 'boolean') getConfig()[key] = data[key];
             }
             if (Number.isFinite(Number(data.askTimeout))) getConfig().askTimeout = aiClampInt(data.askTimeout, 0, 3600, 300);

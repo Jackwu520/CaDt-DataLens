@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -85,6 +87,86 @@ func TestDataSourceRoundTrip(t *testing.T) {
 	}
 	if got := app.GetDataSource(); got != marketSourceGitee {
 		t.Fatalf("非法值应归一为 gitee，got %q", got)
+	}
+}
+
+func TestMarketRateLimitFallback(t *testing.T) {
+	okRepos := []marketRepo{{FullName: "cadt-datalens-plugins/bak-json"}}
+
+	cases := []struct {
+		name       string
+		fetch      func(context.Context, string) ([]marketRepo, error)
+		wantSource string
+		wantErr    bool
+	}{
+		{
+			name: "主源正常不回退",
+			fetch: func(_ context.Context, source string) ([]marketRepo, error) {
+				return okRepos, nil
+			},
+			wantSource: marketSourceGitee,
+		},
+		{
+			name: "主源限流回退镜像",
+			fetch: func(_ context.Context, source string) ([]marketRepo, error) {
+				if source == marketSourceGitee {
+					return nil, &marketHTTPError{source: source, status: 403}
+				}
+				return okRepos, nil
+			},
+			wantSource: marketSourceGithub,
+		},
+		{
+			name: "非限流错误不回退",
+			fetch: func(_ context.Context, source string) ([]marketRepo, error) {
+				return nil, &marketHTTPError{source: source, status: 500}
+			},
+			wantSource: marketSourceGitee,
+			wantErr:    true,
+		},
+		{
+			name: "两侧都限流报主源错误",
+			fetch: func(_ context.Context, source string) ([]marketRepo, error) {
+				return nil, &marketHTTPError{source: source, status: 429}
+			},
+			wantSource: marketSourceGitee,
+			wantErr:    true,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			repos, usedSource, err := fetchMarketReposWithFallback(context.Background(), marketSourceGitee, c.fetch)
+			if c.wantErr {
+				if err == nil {
+					t.Fatalf("want error, got nil")
+				}
+				if !isMarketRateLimitError(err) && usedSource == marketSourceGitee && c.name == "两侧都限流报主源错误" {
+					t.Fatalf("fallback error should stay rate-limit typed: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if usedSource != c.wantSource || len(repos) != 1 {
+				t.Fatalf("usedSource = %q, repos = %d, want %q/1", usedSource, len(repos), c.wantSource)
+			}
+		})
+	}
+}
+
+func TestMarketHTTPErrorMessages(t *testing.T) {
+	gitee403 := (&marketHTTPError{source: marketSourceGitee, status: 403}).Error()
+	if !strings.Contains(gitee403, "限流") || !strings.Contains(gitee403, "GitHub") {
+		t.Fatalf("gitee 403 message = %q", gitee403)
+	}
+	gh429 := (&marketHTTPError{source: marketSourceGithub, status: 429}).Error()
+	if !strings.Contains(gh429, "限流") || !strings.Contains(gh429, "Gitee") {
+		t.Fatalf("github 429 message = %q", gh429)
+	}
+	plain := (&marketHTTPError{source: marketSourceGitee, status: 500}).Error()
+	if plain != "Gitee 返回 HTTP 500" {
+		t.Fatalf("plain message = %q", plain)
 	}
 }
 

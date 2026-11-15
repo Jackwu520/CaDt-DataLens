@@ -29,7 +29,7 @@ type rgMessage struct {
 	} `json:"data"`
 }
 
-func rgGlobalArgs(query string, caseSensitive bool) []string {
+func rgGlobalArgs(query string, caseSensitive bool, pattern string) []string {
 	args := []string{
 		"--json", "--no-config", "--no-messages", "--color", "never",
 		"--max-filesize", "4M",
@@ -46,19 +46,23 @@ func rgGlobalArgs(query string, caseSensitive bool) []string {
 	if !caseSensitive {
 		args = append(args, "-i")
 	}
+	// 文件名/路径通配下推给 rg（-g 的语义与 globMatchPath 基本一致：含 / 按路径、否则按文件名）
+	if pattern = strings.TrimSpace(pattern); pattern != "" {
+		args = append(args, "--glob", pattern)
+	}
 	return append(args, "--", query)
 }
 
 // searchWithRipgrep 用用户自带的 rg 做搜索；第二个返回值表示是否可用，
 // 不可用（未安装/无法启动/歧义失败）时应退回内置扫描。
-func searchWithRipgrep(root, query string, caseSensitive bool, maxResults int) (*SearchResult, bool) {
+func searchWithRipgrep(root, query string, caseSensitive bool, maxResults int, pattern string) (*SearchResult, bool) {
 	rgPath, err := exec.LookPath("rg")
 	if err != nil {
 		return nil, false
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), searchBudget)
 	defer cancel()
-	args := append(rgGlobalArgs(query, caseSensitive), root)
+	args := append(rgGlobalArgs(query, caseSensitive, pattern), root)
 	cmd := exec.CommandContext(ctx, rgPath, args...)
 	hideCommandWindow(cmd)
 	stdout, err := cmd.StdoutPipe()

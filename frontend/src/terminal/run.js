@@ -300,6 +300,26 @@ export function splitRefs(text) {
     return parts;
 }
 
+// ---- 超时（任务级）----
+// 整个任务（编译 + 运行）共用一个截止时刻：startedAt 起算，每步开跑前算剩余毫秒传给 RunExec。
+// 纯函数便于测试护栏。
+
+// 剩余毫秒：<= 0 表示已到/过了截止时刻；timeoutMs <= 0 表示不限时（返回 0）。
+export function runTimeoutRemaining(startedAt, timeoutMs, now) {
+    const total = Math.round(Number(timeoutMs));
+    if (!Number.isFinite(total) || total <= 0) return 0;
+    return Math.round(Number(startedAt) + total - Number(now));
+}
+
+// 超时上限的人类可读标签：30000 → '30 秒'，90000 → '1.5 分钟'。
+export function timeoutLabel(ms) {
+    const n = Math.round(Number(ms)) || 0;
+    if (n <= 0) return '不限时';
+    if (n < 60000) return Math.round(n / 1000) + ' 秒';
+    const min = n / 60000;
+    return (Number.isInteger(min) ? min : min.toFixed(1)) + ' 分钟';
+}
+
 // ---- 控制器 ----
 
 export function createRunController(deps) {
@@ -616,19 +636,34 @@ export function createRunController(deps) {
 
     async function execSteps(session, steps) {
         let total = 0;
+        // 任务级超时：整个任务（编译 + 运行）共用一个截止时刻，从 startedAt 起算。
+        // 每步开跑前算剩余时间传给 RunExec（0 = 不限时），到点由后端强杀进程树。
+        const timeoutMs = runTimeoutMs();
+        session.timeoutMs = timeoutMs;
         for (const step of steps) {
             if (session.cancelled || session.closed) break;
+            const remainMs = runTimeoutRemaining(session.startedAt, timeoutMs, performance.now());
+            if (timeoutMs > 0 && remainMs <= 0) {
+                appendLine(session, '▸ 运行超时（上限 ' + timeoutLabel(timeoutMs) + '），已强制停止', 'err');
+                finishSession(session, 'timeout', null, total);
+                return;
+            }
             session.phase = step.kind;
             session.eofSent = false;
             renderStatus();
             appendLine(session, '▸ ' + (step.kind === 'build' ? '编译：' : '运行：') + cmdText(step.exe, step.args), 'info');
             const id = session.id + '-' + step.kind;
-            const exit = await startStep(session, id, step);
+            const exit = await startStep(session, id, step, timeoutMs > 0 ? Math.max(1, remainMs) : 0);
             if (!exit) {
                 finishSession(session, 'failed', null, total);
                 return;
             }
             total += exit.durationMs || 0;
+            if (exit.reason === 'timeout') {
+                appendLine(session, '▸ 运行超时（上限 ' + timeoutLabel(timeoutMs) + '），已强制停止', 'err');
+                finishSession(session, 'timeout', exit.code, total);
+                return;
+            }
             if (step.kind === 'build' && exit.code !== 0) {
                 appendLine(session, '▸ 编译失败，未执行', 'err');
                 finishSession(session, 'failed', exit.code, total);
@@ -644,16 +679,27 @@ export function createRunController(deps) {
         finishSession(session, (session.code || 0) === 0 ? 'exited' : 'failed', session.code, total);
     }
 
-    function startStep(session, id, step) {
+    function startStep(session, id, step, remainMs) {
         return new Promise((resolve) => {
-            exitWaiters.set(id, (data) => resolve({code: data.code | 0, durationMs: data.durationMs | 0}));
-            Promise.resolve(deps.backend.RunExec(id, step.exe, step.args, step.cwd || '', step.pathPrepend || ''))
+            exitWaiters.set(id, (data) => resolve({
+                code: data.code | 0,
+                durationMs: data.durationMs | 0,
+                reason: data.reason || '',
+            }));
+            Promise.resolve(deps.backend.RunExec(id, step.exe, step.args, step.cwd || '', step.pathPrepend || '', remainMs | 0))
                 .catch((e) => {
                     exitWaiters.delete(id);
                     appendLine(session, '启动失败：' + errText(e), 'err');
                     resolve(null);
                 });
         });
+    }
+
+    // 超时配置（毫秒）：0 / 未配置 = 不限时
+    function runTimeoutMs() {
+        const raw = deps.runTimeoutMs ? deps.runTimeoutMs() : 0;
+        const n = Math.round(Number(raw));
+        return Number.isFinite(n) && n > 0 ? n : 0;
     }
 
     function stop() {
@@ -817,7 +863,9 @@ export function createRunController(deps) {
             state,
         });
         renderStatus();
-        if (state === 'failed' && !session.closed) {
+        if (state === 'timeout' && !session.closed) {
+            deps.flash('运行超时（上限 ' + timeoutLabel(session.timeoutMs || 0) + '），已强制停止', true);
+        } else if (state === 'failed' && !session.closed) {
             deps.flash('运行失败（退出码 ' + (session.code == null ? '?' : session.code) + '）', true);
         }
     }
@@ -1066,6 +1114,7 @@ export function createRunController(deps) {
             exited: '已完成',
             failed: '已退出（非 0）',
             stopped: '已停止',
+            timeout: '已超时',
         }[session.state] || session.state;
         const label = document.createElement('span');
         label.className = 'run-state-text';

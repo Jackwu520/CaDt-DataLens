@@ -107,6 +107,7 @@ function ctxFor(parseImpl, previewImpl) {
         openPath: () => {},
         notifyChanged: () => {},
         flash: () => {},
+        openCloseConfirm: () => {},
     };
 }
 
@@ -193,4 +194,38 @@ test('审阅文档内容为空时不调用后端解析，只显示说明', async
     assert.equal(calls, 0);
     const {texts} = collect(doc.patchState.el);
     assert.match(texts.join('\n'), /没有可展示的 Git 差异/);
+});
+
+test('撤销走统一确认弹窗，不再「点两次按钮」就地确认', async () => {
+    installDom();
+    const {showPatchView} = await import('./patch-view.js');
+    const doc = {
+        name: 'fix.patch',
+        path: 'D:/fix.patch',
+        format: {patch: true},
+        pane: new FakeNode('div'),
+    };
+    let asked = null;
+    let reverted = 0;
+    const ctx = ctxFor(null, async () => ({...planFor('ok'), patchId: 'patch-1', external: false}));
+    ctx.openCloseConfirm = (message, action, okLabel, title) => { asked = {message, action, okLabel, title}; };
+    ctx.backend.PatchRevert = async () => { reverted += 1; return {ok: true, files: []}; };
+    showPatchView(doc, ctx);
+    await tick();
+
+    const {nodes} = collect(doc.patchState.el);
+    const revertBtn = nodes.find((n) => n.tagName === 'button' && n.textContent === '撤销' && !n.disabled);
+    assert.ok(revertBtn, '应找到可用的撤销按钮');
+    revertBtn._listeners.click();
+
+    assert.ok(asked, '点击撤销必须走确认弹窗');
+    assert.match(asked.message, /撤销这次补丁应用/);
+    assert.equal(asked.okLabel, '撤销');
+    assert.equal(asked.title, '撤销补丁');
+    assert.equal(reverted, 0, '弹窗确认前不能真的撤销');
+    assert.equal(revertBtn.textContent, '撤销', '按钮不能变成「确认撤销？」');
+    assert.equal(revertBtn._classes.has('danger'), false, '按钮不能进红底待确认态');
+
+    await asked.action();
+    assert.equal(reverted, 1, '弹窗确认后才执行撤销');
 });

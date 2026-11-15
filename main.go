@@ -64,6 +64,8 @@ func main() {
 		writeAppLog("info", "程序路径：%s", exe)
 	}
 	writeAppLog("info", "启动参数：%q", os.Args[1:])
+	// 上次在设置页里排的 WebView2 清理：趁浏览器进程还没起来执行（见 cleanup_apply.go）。
+	applyPendingStorageCleanup()
 
 	app := NewApp()
 	app.convert = convertOpts

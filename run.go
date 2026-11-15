@@ -35,7 +35,12 @@ const (
 	runTempDirPrefix = "run-"
 	runInputMax      = 4 << 10 // 单次 stdin 输入上限
 	runInputQueue    = 32      // 未被消费的输入行数上限
+	runMaxTimeout    = 24 * time.Hour // 单次运行超时上限，防止误传超大值撑爆计时器
 )
+
+// 运行结束原因：空表示正常/手动停止，timeout 表示到点被强杀。
+// 手动停止前端另有 cancelled 标志，无需后端区分。
+const runExitReasonTimeout = "timeout"
 
 // RunSpec 前端给出的运行请求。
 type RunSpec struct {
@@ -58,6 +63,7 @@ type RunExit struct {
 	Id         string `json:"id"`
 	Code       int    `json:"code"`
 	DurationMs int64  `json:"durationMs"`
+	Reason     string `json:"reason,omitempty"` // "timeout" 表示超时被强杀；空为正常结束或手动停止
 }
 
 // RunShellInfo 脚本类语言用的解释器路径。
@@ -476,7 +482,9 @@ func (a *App) RunEndInput(id string) error {
 
 // RunExec 启动一个运行进程：输出走 run-out（{id, stream, data}），结束走 run-exit。
 // pathPrepend 非空时前置到子进程 PATH（编译型语言运行阶段用）。
-func (a *App) RunExec(id, exe string, args []string, cwd, pathPrepend string) error {
+// timeoutMs > 0 表示这一步的超时毫秒数：到点强杀整棵进程树，run-exit 带 reason="timeout"；
+// <= 0 表示不超时（默认）。多步骤任务（build + run）由前端传「剩余时间」实现任务级总时限。
+func (a *App) RunExec(id, exe string, args []string, cwd, pathPrepend string, timeoutMs int) error {
 	if strings.TrimSpace(id) == "" {
 		return fmt.Errorf("id 不能为空")
 	}
@@ -502,7 +510,19 @@ func (a *App) RunExec(id, exe string, args []string, cwd, pathPrepend string) er
 		runningMu.Unlock()
 		return fmt.Errorf("同时运行的任务超过上限 %d", commandMaxRunning)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	if timeoutMs < 0 {
+		timeoutMs = 0
+	}
+	if timeoutMs > 0 && time.Duration(timeoutMs)*time.Millisecond > runMaxTimeout {
+		timeoutMs = int(runMaxTimeout / time.Millisecond)
+	}
+	var ctx context.Context
+	var cancel context.CancelFunc
+	if timeoutMs > 0 {
+		ctx, cancel = context.WithTimeout(context.Background(), time.Duration(timeoutMs)*time.Millisecond)
+	} else {
+		ctx, cancel = context.WithCancel(context.Background())
+	}
 	runningCancels[id] = cancel
 	runningMu.Unlock()
 
@@ -564,7 +584,11 @@ func (a *App) RunExec(id, exe string, args []string, cwd, pathPrepend string) er
 		}
 		stream.finish()
 		unregisterRunStdin(id)
-		exit := RunExit{Id: id, Code: code, DurationMs: time.Since(started).Milliseconds()}
+		reason := ""
+		if ctx.Err() == context.DeadlineExceeded {
+			reason = runExitReasonTimeout
+		}
+		exit := RunExit{Id: id, Code: code, DurationMs: time.Since(started).Milliseconds(), Reason: reason}
 		if runEmitHook != nil {
 			runEmitHook("run-exit", exit)
 		}

@@ -28,7 +28,7 @@ type CommandResult struct {
 const (
 	commandOutputCap   = int64(8 << 20) // 单命令输出上限 8 MB
 	commandMaxRunning  = 16             // 同时运行的流式命令上限
-	commandMaxTimeout  = 120000         // 同步命令超时上限 120 s
+	commandMaxTimeout  = 120000         // 插件同步命令超时上限 120 s
 	commandLineMaxSize = 64 << 10       // 单行上限 64 KB
 )
 
@@ -99,15 +99,19 @@ func commandWorkDir(cwd string) (string, error) {
 
 // RunCommandSync 同步执行一个命令并收集输出；非零退出码不是错误（通过 Code 返回）。
 func (a *App) RunCommandSync(exe string, args []string, cwd string, timeoutMs int) (*CommandResult, error) {
-	return a.runCommandSyncRegistered("", exe, args, cwd, timeoutMs)
+	return a.runCommandSyncRegistered("", exe, args, cwd, timeoutMs, commandMaxTimeout)
 }
 
 // runCommandSyncRegistered：runId 非空时把取消函数注册进 runningCancels（可被 stopRunningCommand 杀掉）。
-func (a *App) runCommandSyncRegistered(id, exe string, args []string, cwd string, timeoutMs int) (*CommandResult, error) {
+// maxMs 是调用方的超时上限（插件 120 s / AI 前台 600 s）；超界或非正数回落默认 20 s。
+func (a *App) runCommandSyncRegistered(id, exe string, args []string, cwd string, timeoutMs, maxMs int) (*CommandResult, error) {
 	if err := normalizeCommandArgs(exe, args); err != nil {
 		return nil, err
 	}
-	if timeoutMs <= 0 || timeoutMs > commandMaxTimeout {
+	if maxMs <= 0 {
+		maxMs = commandMaxTimeout
+	}
+	if timeoutMs <= 0 || timeoutMs > maxMs {
 		timeoutMs = 20000
 	}
 	dir, err := commandWorkDir(cwd)

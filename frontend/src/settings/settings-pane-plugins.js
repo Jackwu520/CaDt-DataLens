@@ -190,6 +190,7 @@ function setupPluginsSettings() {
             } catch (e) {
                 sourceSel.value = marketSourcePref;
                 deps.flash('切换数据源失败：' + e, true);
+                if (deps.addMessage) deps.addMessage({kind: 'error', title: '切换数据源失败', body: String(e)}, {});
             }
         });
     }
@@ -318,29 +319,24 @@ async function renderPluginsPane() {
             del.type = 'button';
             del.className = 'dlg-btn plugin-del';
             del.textContent = '删除';
-            del.addEventListener('click', async () => {
-                if (!del.dataset.armed) {
-                    del.dataset.armed = '1';
-                    del.textContent = '确认删除？';
-                    del.classList.add('danger');
-                    setTimeout(() => {
-                        if (del.isConnected) {
-                            del.dataset.armed = '';
-                            del.textContent = '删除';
-                            del.classList.remove('danger');
+            del.addEventListener('click', () => {
+                // 与设置页其他破坏性操作一致：走统一确认弹窗，不做「再点一次按钮」的就地确认
+                deps.openCloseConfirm(
+                    '删除插件「' + p.name + '」？插件代码会立即从本机移除。',
+                    async () => {
+                        try {
+                            await deps.backend.DeletePlugin(p.id);
+                            await reloadPluginErrors('');
+                            deps.flash('插件已删除：' + p.name);
+                            deps.activityLog.log('plugin.change', p.id, {op: 'uninstall'});
+                        } catch (e) {
+                            deps.flash('删除失败：' + e, true);
                         }
-                    }, 3000);
-                    return;
-                }
-                try {
-                    await deps.backend.DeletePlugin(p.id);
-                    await reloadPluginErrors('');
-                    deps.flash('插件已删除：' + p.name);
-                    deps.activityLog.log('plugin.change', p.id, {op: 'uninstall'});
-                } catch (e) {
-                    deps.flash('删除失败：' + e, true);
-                }
-                renderPluginsPane();
+                        renderPluginsPane();
+                    },
+                    '删除',
+                    '删除插件'
+                );
             });
             head.append(name, ver, author, license, enabledLabel, del);
             const desc = document.createElement('div');
@@ -471,6 +467,7 @@ async function renderPluginMarket(force) {
         listEl.appendChild(err);
         fitPluginListBox(listEl);
         deps.logFrontend('error', '插件市场加载失败：' + e);
+        if (deps.addMessage) deps.addMessage({kind: 'error', title: '插件市场加载失败', body: String(e)}, {});
     }
 }
 

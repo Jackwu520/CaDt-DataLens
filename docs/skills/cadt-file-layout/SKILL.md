@@ -38,6 +38,7 @@ description: 决定 AI 产出的文件放在哪：新建文件、生成报告/�
 | `skills/` | 工作区技能（rank 100，可覆盖内置技能） | 技能管理 / 技能创建 | 一个目录一个 `SKILL.md`，附属脚本放技能内 `scripts/` |
 | `answers/` | 单文件 HTML 回答页 | `answer-me-with-html` | 一次性产物 |
 | `patches/` | `.patch`、`index.jsonl`、`manifest/`、`backup/` | 应用（补丁工具 / 补丁视图） | **系统托管，AI 只读** |
+| `plan/` | 计划模式产出的计划正文（`<YYYYMMDD-HHmmss>-<标题>.md`） | 应用（计划轮收尾自动写入） | 对话里只留入口卡，正文在这里看；批准前可手改 |
 | `permissions.json` | 项目级权限规则 | 用户在权限页操作 | **AI 不得直接改** |
 | `git-commit-style.json` | 提交风格 | Git 快捷操作首次询问后写 | 走一次写审批 |
 | 根目录下的一次性脚本 | 必须落盘时的临时脚本 | AI（本轮） | 带 `tmp-` 与时间戳，**用完即删**；见第 6 节 |

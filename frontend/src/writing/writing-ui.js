@@ -309,6 +309,7 @@ const runMod = createSettingsPaneRun(runDeps);
 
 const envDeps = Object.create(deps);
 envDeps.flash = flash;
+envDeps.openCloseConfirm = wmMod.openCloseConfirm;
 const envMod = createSettingsPaneEnvvars(envDeps);
 
 const plugDeps = Object.create(deps);

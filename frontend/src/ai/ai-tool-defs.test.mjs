@@ -150,3 +150,17 @@ test('read_image：只读档与计划模式都下发，且必须登记目录', (
     // 目录文案必须真的描述「看画面」，别退回成读文本
     assert.match(AI_TOOL_CATALOG.read_image.blurb, /图片/);
 });
+
+test('write_worklog：标题只写索引里那一句，细节留给 summary', () => {
+    const def = AI_TOOL_DEFS.write_worklog;
+    // 标题会进 .cadt/logs/{YYYY}/{MM}/INDEX.md，索引一行一条，长了就退化成正文复制
+    assert.match(def.description, /索引/, '描述要点明标题进索引、索引只显示标题');
+    assert.match(def.parameters.properties.title.description, /≤40/,
+        '标题要限长：索引行只放这一句');
+    assert.match(def.parameters.properties.title.description, /summary/,
+        '标题描述要把细节推向 summary');
+    assert.match(def.parameters.properties.summary.description, /细节/,
+        'summary 是细节摘要，不是第二份标题');
+    assert.ok(def.parameters.required.includes('title') && !def.parameters.required.includes('summary'),
+        '标题必填、摘要可选');
+});

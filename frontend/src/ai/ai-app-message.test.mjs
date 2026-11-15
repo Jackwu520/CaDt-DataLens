@@ -32,6 +32,14 @@ test('旧会话按固定前缀识别应用消息', () => {
     assert.equal(detectAppMessage(''), null);
 });
 
+test('计划批准指令按应用消息识别（不渲染成用户胶囊）', () => {
+    const plan = detectAppMessage('计划已批准，请立即按上面的计划开始执行，不要重复计划内容。');
+    assert.deepEqual(plan, {kind: 'plan', label: '计划已批准', icon: ''});
+    assert.equal(appMessageIcon(plan), 'compass');
+    // 用户自己手打的近似文本不算（前缀必须完全对上定稿文案）
+    assert.equal(detectAppMessage('计划已批准之后我又想了想'), null);
+});
+
 test('会话投递的三种身份都能按前缀还原（用户投递 / 模型投递 / 用户广播）', () => {
     // 用户本人写的内容：明确是用户消息，身份带会话 id
     const byUser = detectAppMessage('［用户消息 · 会话 s-mf8k2「重构补丁库」］这是用户本人在另一个会话里写给你的消息，按用户指令执行：\n收到请回复');

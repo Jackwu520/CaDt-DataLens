@@ -5,6 +5,7 @@ import {iconSvg} from '../core/icons.js';
 import {createFileIcon} from '../core/fileicons.js';
 import {enhanceWidgets} from '../core/widget.js';
 import {aiFormatTime, aiTextOf} from './ai-constants.js';
+import {planDigest, planDisplayPath} from './ai-plan-file.js';
 
 // 解码可能未闭合的 JSON 字符串字面量：截掉不完整转义、补收尾引号再 parse；
 // parse 仍失败（如截断的 \uXX）就退回手写替换。仅显示用，无需严格。
@@ -111,6 +112,8 @@ export function createAIToolCards(ctx) {
     const openExternal = ctx.openExternal;
     // 打开文件并跳行（main.js 的 openTargets，经 ai-panel 透传）：read_file 卡路径超链接用
     const openTargets = typeof ctx.openTargets === 'function' ? ctx.openTargets : null;
+    // 计划卡「在标签页打开」：计划正文落在 .cadt/plan/，消息区只留入口卡
+    const openPlanFile = typeof ctx.openPlanFile === 'function' ? ctx.openPlanFile : null;
     const settings = ctx.settings;
     // 助手展示名（ai-panel 注入）：气泡角色标签跟随个性化命名，默认名时仍是「AI」行径不变
     const assistantName = typeof ctx.assistantName === 'function' ? ctx.assistantName : () => 'AI';
@@ -1201,6 +1204,53 @@ export function createAIToolCards(ctx) {
         }
     }
 
+    // 计划卡：计划模式产出的计划默认落盘 .cadt/plan/，消息区不再把整篇计划铺一遍——
+    // 只留「标题 + 文件 + 在标签页打开」，正文去标签页看（用户的明确要求：
+    // 想看细节就跳标签页，别在对话里翻长文）。
+    function renderPlanCard(md, message) {
+        md.textContent = '';
+        const text = String(message.content || '');
+        const digest = planDigest(text);
+        const card = document.createElement('div');
+        card.className = 'ai-plan-card';
+        const head = document.createElement('div');
+        head.className = 'ai-plan-card-head';
+        const icon = document.createElement('span');
+        icon.className = 'ai-plan-card-icon';
+        icon.innerHTML = iconSvg('file', 14);
+        const title = document.createElement('span');
+        title.className = 'ai-plan-card-title';
+        title.textContent = digest.title || '执行计划';
+        const badge = document.createElement('span');
+        badge.className = 'ai-plan-card-badge';
+        badge.textContent = '计划';
+        head.append(icon, title, badge);
+        const foot = document.createElement('div');
+        foot.className = 'ai-plan-card-foot';
+        const path = document.createElement('code');
+        path.className = 'ai-plan-card-path';
+        path.textContent = planDisplayPath(message.planFile);
+        path.dataset.tip = message.planFile;
+        const meta = document.createElement('span');
+        meta.className = 'ai-plan-card-meta';
+        meta.textContent = digest.lines + ' 行 · ' + digest.chars + ' 字';
+        const open = document.createElement('button');
+        open.type = 'button';
+        open.className = 'dlg-btn ai-plan-card-open';
+        open.textContent = '在标签页打开';
+        open.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            if (openPlanFile) openPlanFile(message);
+        });
+        path.addEventListener('click', () => {
+            if (openPlanFile) openPlanFile(message);
+        });
+        foot.append(path, meta, open);
+        card.append(head, foot);
+        md.appendChild(card);
+    }
+
     function updateAssistantElement(wrap, message, streaming, options) {
         if (!wrap) return;
         const hideThinking = !!(options && options.hideThinking);
@@ -1252,7 +1302,6 @@ export function createAIToolCards(ctx) {
             }
             think.dataset.thinkKey = thinkKey;
             think.classList.toggle('thinking', !!streaming);
-            const head = think.querySelector('.ai-think-head');
             const label = think.querySelector('.ai-think-label');
             if (label) label.textContent = aiThinkLabel(message, !!streaming);
             renderThinkBody(think.querySelector('.ai-think-body'), message, !!streaming);
@@ -1260,7 +1309,7 @@ export function createAIToolCards(ctx) {
             if (storedThink !== undefined) think.classList.toggle('collapsed', storedThink);
             else if (!streaming && !expandThinking) think.classList.add('collapsed');
             else think.classList.remove('collapsed');
-            if (head) head.dataset.tip = '展开 / 收起思考过程';
+            // 思考卡头部不给 tooltip：标签 + 箭头已经把「点一下展开 / 收起点思考」说清楚了
         } else if (think) {
             think.remove();
         }
@@ -1275,14 +1324,21 @@ export function createAIToolCards(ctx) {
             // 工具参数接收帧里 content 往往不变，跳过整块 innerHTML 重写可避免
             // 打字点 / 代码块复制钮 / 图片 / widget 每 80ms 重建一次。
             const content = message.content || '';
-            const mdSig = content
-                ? (streaming ? 's' : 'd') + content.length + ':' + content.slice(-64)
-                : (message.status === 'error' && !content ? 'e:' + (message.error || '') :
-                    (streaming ? 't' : (message.status === 'stopped' ? 'stop' : 'empty')));
+            // 计划消息（正文已落盘 .cadt/plan/）在消息区只留入口卡：签名带上路径，
+            // 落盘完成 / 重启重放都能稳定判等，不跟着正文长度每帧重建。
+            const planFile = !streaming && message.planFile ? String(message.planFile) : '';
+            const mdSig = planFile
+                ? 'plan:' + planFile
+                : (content
+                    ? (streaming ? 's' : 'd') + content.length + ':' + content.slice(-64)
+                    : (message.status === 'error' && !content ? 'e:' + (message.error || '') :
+                        (streaming ? 't' : (message.status === 'stopped' ? 'stop' : 'empty'))));
             if (md.dataset.renderSig !== mdSig) {
                 md.dataset.renderSig = mdSig;
                 if (message.status === 'error' && !content) {
                     md.textContent = message.error ? ('请求失败：' + message.error) : '请求失败';
+                } else if (planFile) {
+                    renderPlanCard(md, message);
                 } else if (content) {
                     md.innerHTML = renderMarkdown(content);
                     enhanceAICodeBlocks(md);
@@ -1380,7 +1436,11 @@ export function createAIToolCards(ctx) {
         updateComposerTakeover(true);
         renderMessageQueue();
         renderMessages(true);
-        const ok = await submitText('计划已批准，请立即按上面的计划开始执行，不要重复计划内容。');
+        // 这条指令是应用代用户按「执行计划」发出的，不是用户手打的——按应用消息卡片展示，
+        // 别渲染成用户胶囊（rest 走 detectAppMessage 的同一前缀，历史会话也能认回来）。
+        const ok = await submitText('计划已批准，请立即按上面的计划开始执行，不要重复计划内容。', null, {
+            app: {kind: 'plan', label: '计划已批准'},
+        });
         if (!ok) {
             session.planMode = true;
             persistSessions();

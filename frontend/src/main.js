@@ -50,6 +50,7 @@ import {createMessageCenter} from './shell/message-center.js';
 import {createFindBar} from './editor/find-bar.js';
 import {createActivityPane} from './settings/activity-pane.js';
 import {createSettingsPanePatches} from './settings/settings-pane-patches.js';
+import {createSettingsPaneStorage} from './settings/settings-pane-storage.js';
 import {createMenuBar} from './shell/menu-bar.js';
 import {createModeSwitch} from './shell/mode-switch.js';
 import {createTitlebarPopovers} from './shell/titlebar-popovers.js';
@@ -1439,6 +1440,7 @@ const settingsUI = createSettingsUI({
     get renderMarkdownPreview() { return renderMarkdownPreview; },
     get renderPluginsPane() { return renderPluginsPane; },
     get renderRunPane() { return renderRunPane; },
+    get renderStoragePane() { return settingsPaneStorage.renderStoragePane; },
     get rt() { return rt; },
     get scheduleAutoSave() { return scheduleAutoSave; },
     get settings() { return settings; },
@@ -1461,6 +1463,7 @@ const writingUI = createWritingUI({
     set autoSaveTimer(v) { autoSaveTimer = v; },
     get nextCmdSeq() { return nextCmdSeq; },
     get activityLog() { return activityLog; },
+    get addMessage() { return (...args) => messageCenter.add(...args); },
     get allFormatDefs() { return allFormatDefs; },
     get applyCsvTableZoom() { return applyCsvTableZoom; },
     get applyImageZoom() { return applyImageZoom; },
@@ -2410,7 +2413,7 @@ const messageCenter = createMessageCenter({
         if (!sessionId) return;
         if (!aiPanel) initAIPanel();
         if (!aiPanel) return;
-        aiPanel.open();
+        aiPanel.open(true); // 强制打开：面板已开时无参 open() 是 toggle 关闭语义，会把面板关掉
         try { aiPanel.switchSession(sessionId); } catch (e) {}
     },
     runAction: (actionId) => {
@@ -2432,6 +2435,8 @@ function initAIPanel() {
         overlayParent: document.getElementById('main-pane'),
         backend,
         settings,
+        // 消息中心投递回调：notify_send 工具与任务完成通知都走这里（message-center.js）
+        addMessage: (...args) => messageCenter.add(...args),
         // 头部放大镜：开全局搜索并只勾选「AI 会话」分类（会话搜索框已并入这里）
         onHeadSearch: () => openGlobalSearch({aiOnly: true}),
         // 汇总卡「撤销」：回滚本轮编辑的文件到 HEAD（Git checkout / 删除新建文件）
@@ -2448,6 +2453,16 @@ function initAIPanel() {
         getPluginLoadErrors,
         refreshPlugins: () => loadPlugins(backend),
         openTermTab: (...args) => openBgTermTab(...args),
+        // AI 终端桥（terminal 工具）：延迟求值——terminal-ui 工厂在本模块后段创建，
+        // 创建期直接引用 terminalUI 会 TDZ；getter 在工具调用时才读。
+        get terminalHost() {
+            if (!terminalUI || typeof terminalUI.terminalHostApi !== 'function') return null;
+            try {
+                return terminalUI.terminalHostApi();
+            } catch (e) {
+                return null;
+            }
+        },
         // 子代理详情视图：在内容区标签页打开（不遮挡面板；悬浮窗由面板自己退回覆盖层）
         openAgentTab: (...args) => openAgentTab(...args),
         // 支线对话标签页：完整会话渲染在内容区，面板继续显示主对话
@@ -3244,6 +3259,13 @@ const activityPane = createActivityPane({
 const {renderActivityPane} = activityPane;
 // 补丁库（设置 → 开发者）：最近补丁列表 + 删除（Go 侧 PatchDelete 负责回收文件与摘索引）
 const settingsPanePatches = createSettingsPanePatches({
+    get backend() { return backend; },
+    get flash() { return flash; },
+    get openCloseConfirm() { return openCloseConfirm; },
+    get root() { return workspaceFolder || ''; },
+});
+// 设置 → 存储与清理：条目与删除都在 Go 侧，这里给的是位置（工作区根）与确认/回执通道。
+const settingsPaneStorage = createSettingsPaneStorage({
     get backend() { return backend; },
     get flash() { return flash; },
     get openCloseConfirm() { return openCloseConfirm; },

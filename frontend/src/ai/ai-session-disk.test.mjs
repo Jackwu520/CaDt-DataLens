@@ -1,7 +1,7 @@
 // ai-session-disk.test.mjs：懒加载会话的不变量。
 // 这一层的错误是「不可逆」的（用空正文重写 3MB 历史），所以护栏必须有测试盯着：
 //   1. 占位会话（只有 meta）写盘只能写 meta，绝不触发日志 append / rewrite；
-//   2. 占位的 messageCount 必须沿用 meta 缓存值，否则会把 0 写回 meta.json；
+//   2. 占位的 messageCount / turnTs 必须沿用 meta 缓存值，否则会把 0 写回 meta.json；
 //   3. 归档 / 清空 / 整份重写三个入口拒绝占位；
 //   4. hydrateSession 就地补正文，引用不变、占位标记清干净、条数回到现算。
 import test from 'node:test';
@@ -16,15 +16,21 @@ import {
     metaSignature,
 } from './ai-session-store.js';
 
+// 正文与 meta 必须同源：logOf 写的消息形状，meta 的 messageCount / turnTs 就得算出同一个值，
+// 否则「补水后签名不该误判成 meta 变了」这条不变量会被假数据自己打破。
+function msgsOf(count) {
+    return new Array(count).fill(0).map((unused, i) => ({
+        role: i % 2 ? 'assistant' : 'user',
+        content: 'msg' + i,
+        ts: 2000 + i,
+    }));
+}
+
 function logOf(id, count) {
     const events = [encodeSessionHeader({id, title: 'T-' + id, workspace: 'D:/w', createdAt: 1000})];
-    for (let i = 0; i < count; i++) {
-        events.push(encodeMessageEvent({
-            role: i % 2 ? 'assistant' : 'user',
-            content: 'msg' + i,
-            ts: 2000 + i,
-        }, 'm-' + id + '-' + i, false));
-    }
+    msgsOf(count).forEach((message, i) => {
+        events.push(encodeMessageEvent(message, 'm-' + id + '-' + i, false));
+    });
     return encodeSessionLines(events);
 }
 
@@ -35,7 +41,7 @@ function makeStore(counts) {
         workspace: 'D:/w',
         createdAt: 1000,
         updatedAt: 3000,
-        messages: new Array(count).fill({role: 'user', content: 'x'}),
+        messages: msgsOf(count),
     }));
     const calls = {meta: [], append: 0, rewrite: 0, read: 0};
     const backend = {
@@ -63,6 +69,8 @@ test('toStubs 只产占位、不读正文，条数来自 meta', async () => {
     assert.equal(stubs.length, 2);
     assert.ok(stubs.every((session) => session._stub === true));
     assert.deepEqual(stubs.map((session) => session._msgCount), [3, 5]);
+    // 排序键缓存：占位没有正文，列表的时间与顺序只能靠 meta 里的轮次起点
+    assert.deepEqual(stubs.map((session) => session._turnTs), [2002, 2004]);
     assert.equal(calls.read, 0, '列表阶段不应该读任何正文');
 });
 
@@ -78,6 +86,7 @@ test('占位写盘只写 meta：未改不写，改 unread 只写一次且条数�
     assert.equal(calls.meta.length, 1);
     assert.equal(calls.meta[0].meta.unread, 'done');
     assert.equal(calls.meta[0].meta.messageCount, 3, '条数必须沿用占位缓存，不能写成 0');
+    assert.equal(calls.meta[0].meta.turnTs, 2002, '轮次起点同理，不能写成 0');
     assert.equal(calls.append, 0, '占位绝不能追加日志');
     assert.equal(calls.rewrite, 0, '占位绝不能整份重写日志');
 });

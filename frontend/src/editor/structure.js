@@ -1649,7 +1649,7 @@ export function createStructurePanel(options) {
         chev.className = 'sb-chev' + (hasKids && !collapsed.has(key) ? ' open' : '');
         if (hasKids) {
             chev.innerHTML = ICONS.chevron;
-            chev.dataset.tip = collapsed.has(key) ? '展开' : '折叠';
+            // 不给 tooltip：展开/折叠由箭头方向表达，扫过结构树时不该满屏冒泡
         }
         row.appendChild(chev);
 

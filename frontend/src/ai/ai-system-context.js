@@ -238,7 +238,7 @@ export function createAISystemContext(ctx) {
                     '<task_todos>',
                     '当前任务清单共 ' + todos.length + ' 项：' + doneCount + ' 项已完成' +
                         (doingText ? '、' + doingText : '') + '、' + pendingCount + ' 项待处理。',
-                    '节奏：开始一项前先把它标 in_progress；完成一项立即标 completed；全部完成后无需清理清单。本块仅供自查，不要在思考或回复中复述清单状态，状态变更直接用 todo 工具完成即可。',
+                    '节奏：开始一项前先把它标 in_progress；完成一项立即标 completed；全部完成后无需清理清单。本块仅供自查，不要在思考或回复中复述清单状态、也不必核对计数，状态变更直接用 todo 工具完成即可。',
                     '</task_todos>',
                 ].join('\n'));
                 meta.taskTodos = {count: todos.length, doing: doingList.length, pending: pendingCount};

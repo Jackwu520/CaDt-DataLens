@@ -118,6 +118,8 @@ test('globMatchPath: 文件名模式与路径模式', () => {
     assert.equal(globMatchPath('*.go', 'src/server.go', 'server.go'), true);
     assert.equal(globMatchPath('*.go', 'src/server.js', 'server.js'), false);
     assert.equal(globMatchPath('src/**/*.ts', 'src/a/b/c.ts', 'c.ts'), true);
+    // **/ 可为零个目录段（与 Go 侧 globMatchPath 一致）
+    assert.equal(globMatchPath('src/**/*.ts', 'src/c.ts', 'c.ts'), true);
     assert.equal(globMatchPath('src/**/*.ts', 'lib/a/b/c.ts', 'c.ts'), false);
     assert.equal(globMatchPath('src/*.ts', 'src/a/b/c.ts', 'c.ts'), false);
     assert.equal(globMatchPath('server?.go', 'src/server1.go', 'server1.go'), true);
