@@ -12,6 +12,7 @@ export function createAISchedule(ctx) {
     const askConfirm = ctx.askConfirm;
     const openAIDialog = ctx.openAIDialog;
     const closeAIDialog = ctx.closeAIDialog;
+    const dialogButton = ctx.dialogButton;
     const sessionTitleById = ctx.sessionTitleById;
     const sessionActivity = ctx.sessionActivity;
     const currentSession = ctx.currentSession;
