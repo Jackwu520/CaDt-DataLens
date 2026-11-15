@@ -13,6 +13,7 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 ### 窗口与集成
 
 - 修复 **增量挂卡后看板娘条被顶上去一格**：工具循环增量挂卡直接 append 到消息区末尾——新工具卡排到了「钉在消息区最底」的流式状态条（看板娘条）后面。现在挂卡时若状态条在场上则插到它之前，置底关系恢复；全量重建路径本来就在最后 append，不受影响。
+- 改进 **任务清单轮末同步提醒（`<task_todos_check>`）**：系统提示里的 `<task_todos>` 是轮开始快照，长工具链中模型对被动提醒依从性低（干完活不标 completed、总结都说完了清单还挂着）。现在每批工具循环结束、收尾请求发出前，若清单还有未完成项且本轮跑过工具，注入一条 systemNote 硬提醒（「已完成的步骤请立即 todo_write 标 completed，不要在总结里口头说完成而清单没有更新」）——离行动点最近的催促，随收尾请求进入模型上下文。本轮没跑工具、清单全完成时不催。
 - 修复 **最大化状态下首次打开浏览器标签黑屏几秒**：WebView2 控件创建（`Embed`）到前端首次 `SetBounds` 之间，控件以库默认矩形裸露——页面其实已在加载（状态栏有 URL）但内容区全黑，等布局事件才恢复。现在**创建即隐藏**，前端第一次 `BrowserSetBounds` 自带 Show（w/h>0 → Resize+Show），控件直接以正确矩形出现；黑屏窗口变成标签页背景色的一瞬。
 - 修复 **编辑器里弹出原生白色迷你菜单**：WebView2/Edge 内核对可编辑区域自带的「文本选中迷你菜单」（`Select All / Paste / Find …` 白色横条，选中/点击文本时触发）——浏览器 UI 层的东西，不受应用主题控制、也绕过 JS 的 contextmenu 接管。现在通过 `go-webview2` 的 `AdditionalBrowserArguments` COM/环境双通道注入 `--disable-features=msWebOOUI,msPdfOOUI,…`，全应用所有 WebView2（含内嵌浏览器标签）一并生效。
   - **依赖补丁**：此前用 `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` 环境变量的做法**无效**——go-webview2 会在 `init()` 与每次创建环境时把它置空。为此在仓库内放了一份上游 v1.0.22 并加 `replace`，只新增 `webviewloader/app_browser_args.go` + 三处调用点开出注入点（约 2.2 MB 源码，不进 exe / dist）；**升级 go-webview2 时必须重新套用该补丁**。feature 名改用微软 WebView2Feedback#2140 给出的官方 workaround，同时保留旧名以兼容不同 Edge 版本。
