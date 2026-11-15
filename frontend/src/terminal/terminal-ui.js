@@ -84,6 +84,11 @@ function renderGitPanel() {
         cb.type = 'checkbox';
         cb.checked = checked;
         cb.dataset.path = path;
+        // 勾选状态写入共享集合，跨轮询重渲染保留
+        cb.addEventListener('change', () => {
+            if (cb.checked) deps.gitUncheckedFiles.delete(path);
+            else deps.gitUncheckedFiles.add(path);
+        });
         const name = document.createElement('span');
         name.className = 'git-fname git-st-' + (state || 'modified');
         name.textContent = path.replace(/^.*[\\/]/, '');
@@ -114,7 +119,7 @@ function renderGitPanel() {
         });
         return row;
     };
-    // 分组块：组头勾选框 = 全选/全不选该组文件（JetBrains 式，支持半选态）；组头箭头 = 展开/收起（跨轮询重渲染保留）
+    // 分组块：组头勾选框 = 全选/全不选该组文件（JetBrains 式，支持半选态）；组头箭头与文件勾选态均跨轮询重渲染保留
     const makeGroupBlock = (title, rows, key) => {
         const block = document.createElement('div');
         block.className = 'git-group-block';
@@ -141,7 +146,12 @@ function renderGitPanel() {
             gcb.indeterminate = checkedCount > 0 && checkedCount < cbs.length;
         };
         gcb.addEventListener('change', () => {
-            for (const c of rowCbs()) c.checked = gcb.checked;
+            for (const c of rowCbs()) {
+                c.checked = gcb.checked;
+                // 组头全选/全不选是程序赋值，不触发行 change 事件，这里手动同步集合
+                if (gcb.checked) deps.gitUncheckedFiles.delete(c.dataset.path);
+                else deps.gitUncheckedFiles.add(c.dataset.path);
+            }
             updateGroupState();
         });
         chev.addEventListener('click', () => {
@@ -159,7 +169,7 @@ function renderGitPanel() {
     };
     if (changes.length) {
         const rows = changes.map((item) => {
-            const row = makeRow(item.path, true, item.state);
+            const row = makeRow(item.path, !deps.gitUncheckedFiles.has(item.path), item.state);
             row.querySelector('input').dataset.path = item.path;
             row.addEventListener('dblclick', () => deps.showGitDiff(item.path));
             return row;
@@ -168,7 +178,7 @@ function renderGitPanel() {
     }
     if (untracked.length) {
         const rows = untracked.map((path) => {
-            const row = makeRow(path, true, 'untracked');
+            const row = makeRow(path, !deps.gitUncheckedFiles.has(path), 'untracked');
             row.addEventListener('dblclick', () => deps.showGitDiff(path));
             return row;
         });

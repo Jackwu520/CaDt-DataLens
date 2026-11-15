@@ -52,6 +52,7 @@ import {createMenuBar} from './shell/menu-bar.js';
 import {createModeSwitch} from './shell/mode-switch.js';
 import {createTitlebarPopovers} from './shell/titlebar-popovers.js';
 import {createSettingsUI} from './settings/settings-ui.js';
+import {CODE_STYLE_AUTO, CODE_STYLES} from './settings/code-styles.js';
 import {createWritingUI} from './writing/writing-ui.js';
 import {createStructurePanelController} from './editor/structure-panel.js';
 import {createEditorMenus} from './editor/editor-menus.js';
@@ -424,6 +425,7 @@ const APP_SETTING_RULES = {
     treeExpandDefault: {type: 'enum', values: ['expand', 'collapse']},
     openMode: {type: 'enum', values: ['tab', 'window']},
     theme: {type: 'theme'},
+    codeStyle: {type: 'enum', values: [CODE_STYLE_AUTO, ...CODE_STYLES.map((s) => s.id)]},
     sidebarWidth: {type: 'number', min: 160, max: 500},
     terminalHeight: {type: 'number', min: 120, max: 480},
     aiPanelWidth: {type: 'number', min: 280, max: 2000},
@@ -581,6 +583,7 @@ async function runAppAction(action, params, scope) {
                     sessions: aiPanel && aiPanel.bridgeListSessions ? aiPanel.bridgeListSessions() : [],
                 },
                 theme: settings.theme,
+                codeStyle: settings.codeStyle || CODE_STYLE_AUTO,
                 fullscreen: !!rtFullscreen,
                 alwaysOnTop: !!settings.alwaysOnTop,
                 readOnlyMode: !!settings.readOnlyMode,
@@ -1176,6 +1179,7 @@ const defaultSettings = {
     showBanners: true,
     readOnlyMode: false,
     theme: 'dark',
+    codeStyle: CODE_STYLE_AUTO,
     uiFont: 'inter',
     uiCjkFont: 'auto',
     editorFontFamily: 'jetbrains',
@@ -1417,7 +1421,7 @@ const settingsUI = createSettingsUI({
     get updateWritingStats() { return updateWritingStats; },
     get workspaceFolder() { return workspaceFolder; },
 });
-const {actRel, activityLog, applyIntegration, applyReadOnlyToDoc, applySettings, closeDialogs, closeTopDialog, getConfirmAction, setConfirmAction, countWords, currentTheme, cursorPositionForDoc, elsDialogs, elsSettings, getFormatSettings, installReadOnlyGuards, openDialogEl, openNameDialog, openSaveConflictDialog, openSettings, rtFullscreen, scheduleWordCount, selectSettingsPane, setTheme, syncIntegrationStatus, syncedOpenMode, toggleAlwaysOnTop, toggleCodeWrap, toggleFullscreen, updateLockButton, updateWordCount} = settingsUI;
+const {actRel, activityLog, applyIntegration, applyReadOnlyToDoc, applySettings, closeDialogs, closeTopDialog, getConfirmAction, setConfirmAction, countWords, currentTheme, cursorPositionForDoc, elsDialogs, elsSettings, getFormatSettings, installReadOnlyGuards, openDialogEl, openNameDialog, openSaveConflictDialog, openSettings, rtFullscreen, scheduleWordCount, selectSettingsPane, setCodeStyle, setTheme, syncIntegrationStatus, syncedOpenMode, toggleAlwaysOnTop, toggleCodeWrap, toggleFullscreen, updateLockButton, updateWordCount} = settingsUI;
 const writingUI = createWritingUI({
     set flashTimer(v) { flashTimer = v; },
     set dirty(v) { dirty = v; },
@@ -3403,6 +3407,8 @@ const globalSearch = createGlobalSearch({
     get currentMode() { return currentMode; },
     get editor() { return editor; },
     get els() { return els; },
+    // 行式下拉的浮层增强器（settings-select）：AI 会话范围下拉弹出统一 Portal 浮层，不落原生样式
+    get enhanceSelect() { return settingsUI.enhanceSelect; },
     get file() { return file; },
     get findDocByPath() { return findDocByPath; },
     get flash() { return flash; },
@@ -3780,6 +3786,24 @@ function menuItems(kind) {
                 });
                 prevGroup = theme.group;
             });
+            // 代码风格是独立通道：与上面的软件主题自由组合，切换只改代码着色。
+            items.push({sep: true});
+            const codeItems = [{
+                label: '跟随软件主题',
+                checked: (settings.codeStyle || CODE_STYLE_AUTO) === CODE_STYLE_AUTO,
+                action: () => setCodeStyle(CODE_STYLE_AUTO),
+            }];
+            let prevCodeGroup = '';
+            CODE_STYLES.forEach((style) => {
+                if (prevCodeGroup && style.group !== prevCodeGroup) codeItems.push({sep: true});
+                codeItems.push({
+                    label: style.name,
+                    checked: settings.codeStyle === style.id,
+                    action: () => setCodeStyle(style.id),
+                });
+                prevCodeGroup = style.group;
+            });
+            items.push({label: '代码风格', submenu: codeItems});
             return items;
         }
         case 'tools': {
@@ -4474,6 +4498,7 @@ const terminalMod = createTerminalUI({
     get showGitFileHistory() { return showGitFileHistory; },
     get gitRollbackPaths() { return gitRollbackPaths; },
     get gitGroupCollapsed() { return gitGroupCollapsed; },
+    get gitUncheckedFiles() { return gitUncheckedFiles; },
     get showGitRecentLog() { return showGitRecentLog; },
     get nextCmdSeq() { return nextCmdSeq; },
     get activityLog() { return activityLog; },
@@ -4565,5 +4590,5 @@ const bridgeUI = createBridgeUI({
     get updateBrowserTitle() { return updateBrowserTitle; },
     get workspaceFolder() { return workspaceFolder; },
 });
-const {createBgTermView, gitGroupCollapsed, gitRootDir, gitStateCache, notifyAIGitEntry, openBgTermTab, openBrowserTab, openVirtualDoc, refreshGitStatus, showGitDiff, showGitFileHistory, showGitRecentLog, gitRollbackPaths} = bridgeUI;
+const {createBgTermView, gitGroupCollapsed, gitRootDir, gitStateCache, gitUncheckedFiles, notifyAIGitEntry, openBgTermTab, openBrowserTab, openVirtualDoc, refreshGitStatus, showGitDiff, showGitFileHistory, showGitRecentLog, gitRollbackPaths} = bridgeUI;
 

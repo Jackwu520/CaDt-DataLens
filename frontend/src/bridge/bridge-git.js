@@ -1,10 +1,12 @@
 // git 浅集成：状态缓存、徽标、最近提交/文件历史/diff、回滚。
-// 从 bridge-ui.js 拆出；gitStateCache 与 gitGroupCollapsed 是跨模块共享的活引用（原地变更，非快照）。
+// 从 bridge-ui.js 拆出；gitStateCache、gitGroupCollapsed 与 gitUncheckedFiles 是跨模块共享的活引用（原地变更，非快照）。
 export function createBridgeGit(deps) {
 
 // ===== git 浅集成 =====
 const gitStateCache = {dir: '', map: new Map(), branch: '', available: false, reason: '', untrackedSet: new Set(), ignoredSet: new Set()};
 const gitGroupCollapsed = {changes: false, untracked: false};
+// 提交面板里被取消勾选的文件（归一化路径）。跨轮询重渲染保留，随文件消失（提交/回滚/外部还原）与工作区切换自动清理
+const gitUncheckedFiles = new Set();
 let gitTimer = null;
 
 function gitRootDir() {
@@ -17,6 +19,7 @@ async function refreshGitStatus() {
     if (!root) {
         gitStateCache.dir = '';
         gitStateCache.map.clear();
+        gitUncheckedFiles.clear();
         gitStateCache.available = false;
         gitStateCache.branch = '';
         applyGitBadges();
@@ -27,6 +30,7 @@ async function refreshGitStatus() {
     if (root !== gitStateCache.dir) {
         gitStateCache.dir = root;
         gitStateCache.map.clear();
+        gitUncheckedFiles.clear();
     }
     try {
         const status = await deps.backend.GitStatusFor(root);
@@ -52,6 +56,10 @@ async function refreshGitStatus() {
             }
         }
     } catch (e) {}
+    // 文件已不在变更列表（提交/回滚/外部还原）时同步清理取消勾选记忆
+    for (const p of gitUncheckedFiles) {
+        if (!gitStateCache.map.has(p)) gitUncheckedFiles.delete(p);
+    }
     applyGitBadges();
     applyGitDot();
     deps.renderWorkspaceCrumbs();
@@ -172,6 +180,6 @@ try {
 deps.initCodeFoldHover();
 
 
-return {gitGroupCollapsed, gitStateCache, gitRootDir, notifyAIGitEntry, refreshGitStatus,
+return {gitGroupCollapsed, gitStateCache, gitUncheckedFiles, gitRootDir, notifyAIGitEntry, refreshGitStatus,
         showGitDiff, showGitFileHistory, showGitRecentLog, gitRollbackPaths};
 }
