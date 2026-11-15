@@ -10,11 +10,12 @@ import {
     VISUAL_TOKENS,
     mermaidThemeIdFor,
     resolveThemeColors,
+    svgSanitizeConfig,
 } from './visual-spec.js';
 
 test('SHADOW_STYLE 与历史字符串逐字节一致（阶段 1 纯重构红线）', () => {
     assert.equal(SHADOW_STYLE, [
-        ':host{display:block;color:var(--text,#1f2328);',
+        ':host{display:block;background:var(--panel2,#fff);color:var(--text,#1f2328);',
         'font:13px/1.6 var(--ui-font,system-ui,"Segoe UI",sans-serif);',
         '--color-text-primary:var(--text,#1f2328);',
         '--color-text-secondary:var(--muted,#6b7280);',
@@ -28,6 +29,10 @@ test('SHADOW_STYLE 与历史字符串逐字节一致（阶段 1 纯重构红线�
         'img,svg,canvas{max-width:100%}',
         'svg{height:auto;max-height:520px}',
         'table{border-collapse:collapse}',
+        'input[type=checkbox]{appearance:none;-webkit-appearance:none;position:relative;flex:none;width:14px;height:14px;margin:0 6px 0 0;vertical-align:-2px;border:1.5px solid var(--border);border-radius:4px;background:var(--bg);cursor:pointer;transition:background-color .15s ease,border-color .15s ease}',
+        'input[type=checkbox]:checked{background:var(--color-accent);border-color:var(--color-accent);box-shadow:0 1px 3px color-mix(in srgb,var(--color-accent) 38%,transparent)}',
+        'input[type=checkbox]::after{content:"";position:absolute;left:3px;top:1px;width:4px;height:7px;border:solid #fff;border-width:0 2px 2px 0;border-radius:1px;transform:rotate(45deg) scale(0);transition:transform .16s ease}',
+        'input[type=checkbox]:checked::after{transform:rotate(45deg) scale(1)}',
         'a{color:var(--accent,#4f8cff)}',
     ].join(''));
 });
@@ -87,4 +92,25 @@ test('VISUAL_ROUTING 覆盖画图决策的主出口', () => {
         assert.equal(row.length, 2);
         assert.ok(row[0] && row[1]);
     }
+});
+
+test('svgSanitizeConfig 保留 foreignObject 的 HTML 集成点，同时仍禁执行型内容', () => {
+    const cfg = svgSanitizeConfig();
+    // 少任一项 mermaid 图就只剩空框：profile 缺 html → div/span 不在白名单；
+    // 缺 ADD_TAGS → foreignObject 整体被删；缺 HTML_INTEGRATION_POINTS → 内层 div 被当非法 SVG 元素剥掉。
+    assert.equal(cfg.USE_PROFILES.html, true);
+    assert.equal(cfg.USE_PROFILES.svg, true);
+    assert.ok(cfg.ADD_TAGS.includes('foreignObject'));
+    assert.ok(cfg.ADD_TAGS.includes('style'));
+    assert.equal(cfg.HTML_INTEGRATION_POINTS.foreignobject, true);
+    for (const tag of ['script', 'iframe', 'object', 'embed', 'form', 'link']) {
+        assert.ok(cfg.FORBID_TAGS.includes(tag), tag + ' 必须仍被禁止');
+    }
+    assert.ok(cfg.FORBID_ATTR.includes('srcdoc'));
+    // extra 只追加不覆盖基础键
+    const merged = svgSanitizeConfig({FORBID_ATTR: ['srcdoc', 'x']});
+    assert.deepEqual(merged.FORBID_ATTR, ['srcdoc', 'x']);
+    assert.ok(merged.ADD_TAGS.includes('foreignObject'));
+    // 每次返回全新对象：DOMPurify 会按需改写传入配置，共享同一份会互相污染
+    assert.notEqual(svgSanitizeConfig(), svgSanitizeConfig());
 });

@@ -9,7 +9,7 @@
 //   再放进 Shadow DOM：样式不外泄、主界面不受影响，脚本也不会执行。
 // - 卡片内的链接由外层拦截后交给系统浏览器，其它导航一律阻止。
 import DOMPurify from 'dompurify';
-import {SHADOW_STYLE, VISUAL_BUDGET} from './visual-spec.js';
+import {SHADOW_STYLE, VISUAL_BUDGET, svgSanitizeConfig} from './visual-spec.js';
 
 const WIDGET_LANGS = new Set(['svg', 'html', 'htm', 'mermaid', 'echarts', 'chart', 'graph', 'wordcloud']);
 // 限额与 Shadow 基础样式来自 core/visual-spec.js（规范单一来源，代码与提示词共用一份预算）。
@@ -132,15 +132,7 @@ export function sanitizeWidgetHtml(code, lang) {
     if (lang === 'svg' && !/^\s*<svg[\s>]/i.test(source)) {
         source = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 400">' + source + '</svg>';
     }
-    return DOMPurify.sanitize(source, {
-        USE_PROFILES: {html: true, svg: true, svgFilters: true, mathMl: true},
-        // form 禁掉：无脚本的表单只会把卡片导航走；checkbox / details 等仍保留，纯 CSS 交互照常可用。
-        FORBID_TAGS: [
-            'script', 'iframe', 'frame', 'frameset', 'object', 'embed',
-            'link', 'meta', 'base', 'form', 'audio', 'video', 'source', 'track',
-        ],
-        FORBID_ATTR: ['srcdoc'],
-    });
+    return DOMPurify.sanitize(source, svgSanitizeConfig());
 }
 
 function widgetButton(label, title, onClick) {

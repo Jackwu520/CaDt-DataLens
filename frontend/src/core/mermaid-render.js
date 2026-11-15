@@ -4,7 +4,7 @@
 // 产物是静态 SVG 字符串，由 widget.js 走 sanitizeWidgetHtml → Shadow DOM 现有管线。
 
 import DOMPurify from 'dompurify';
-import {mermaidThemeIdFor} from './visual-spec.js';
+import {mermaidThemeIdFor, svgSanitizeConfig} from './visual-spec.js';
 import {createLruCache} from './render-cache.js';
 
 const cache = createLruCache(30);
@@ -45,12 +45,9 @@ export async function renderMermaidToSvg(code, themeId) {
         mermaid.initialize({startOnLoad: false, securityLevel: 'strict', theme});
     } catch (e) {}
     const {svg} = await mermaid.render('mmd-' + Math.random().toString(36).slice(2), String(code || ''));
-    // mermaid strict 已自净化，再过一遍 DOMPurify（SVG 档）兜底；
-    // style/foreignObject 是 mermaid 自带样式与 HTML 标签所需，保留但内容仍被消毒。
-    const clean = DOMPurify.sanitize(svg, {
-        USE_PROFILES: {svg: true, svgFilters: true},
-        ADD_TAGS: ['style', 'foreignObject'],
-    });
+    // mermaid strict 已自净化，再过一遍 DOMPurify 兜底；配置来自 visual-spec 的单一来源
+    // （必须保留 foreignObject 与其 HTML 集成点，否则节点文字会被剥掉，只剩空框）。
+    const clean = DOMPurify.sanitize(svg, svgSanitizeConfig());
     cache.set(cacheKey, clean);
     return clean;
 }

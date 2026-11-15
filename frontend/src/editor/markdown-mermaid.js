@@ -3,6 +3,7 @@
 
 import DOMPurify from 'dompurify';
 import {createMarkdownRenderer, decodeMermaidSource, encodeMermaidSource} from '../core/markdown.js';
+import {svgSanitizeConfig} from '../core/visual-spec.js';
 
 export function createMarkdownMermaid(deps) {
 
@@ -72,12 +73,9 @@ async function renderMermaidBlocks(root) {
         if (!msrc.trim()) continue;
         try {
             const {svg} = await window.mermaid.render('mmd-' + Math.random().toString(36).slice(2), msrc);
-            // mermaid strict 已自净化，这里再过一遍 DOMPurify（SVG 档）兜底；
-            // style/foreignObject 是 mermaid 自带样式与 HTML 标签所需，保留但内容仍被消毒。
-            block.innerHTML = DOMPurify.sanitize(svg, {
-                USE_PROFILES: {svg: true, svgFilters: true},
-                ADD_TAGS: ['style', 'foreignObject'],
-            });
+            // mermaid strict 已自净化，这里再过一遍 DOMPurify 兜底；配置来自 visual-spec 的单一来源
+            // （必须保留 foreignObject 与其 HTML 集成点，否则节点文字会被剥掉，只剩空框）。
+            block.innerHTML = DOMPurify.sanitize(svg, svgSanitizeConfig());
         } catch (e) {
             block.classList.add('md-mermaid-error');
             block.textContent = 'mermaid 图表渲染失败：' + (e && e.message || e);

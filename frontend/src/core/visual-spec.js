@@ -30,7 +30,7 @@ const SHADOW_ALIAS = [
 ];
 
 export const SHADOW_STYLE = [
-    ':host{display:block;color:var(--text,#1f2328);',
+    ':host{display:block;background:var(--panel2,#fff);color:var(--text,#1f2328);',
     'font:13px/1.6 var(--ui-font,system-ui,"Segoe UI",sans-serif);',
     ...SHADOW_ALIAS.map(([alias, v, fb], i) =>
         alias + ':var(' + v + ',' + fb + ')' + (i === SHADOW_ALIAS.length - 1 ? ';}' : ';')),
@@ -38,8 +38,36 @@ export const SHADOW_STYLE = [
     'img,svg,canvas{max-width:100%}',
     'svg{height:auto;max-height:' + VISUAL_BUDGET.svgMaxHeight + 'px}',
     'table{border-collapse:collapse}',
+    'input[type=checkbox]{appearance:none;-webkit-appearance:none;position:relative;flex:none;width:14px;height:14px;margin:0 6px 0 0;vertical-align:-2px;border:1.5px solid var(--border);border-radius:4px;background:var(--bg);cursor:pointer;transition:background-color .15s ease,border-color .15s ease}',
+    'input[type=checkbox]:checked{background:var(--color-accent);border-color:var(--color-accent);box-shadow:0 1px 3px color-mix(in srgb,var(--color-accent) 38%,transparent)}',
+    'input[type=checkbox]::after{content:"";position:absolute;left:3px;top:1px;width:4px;height:7px;border:solid #fff;border-width:0 2px 2px 0;border-radius:1px;transform:rotate(45deg) scale(0);transition:transform .16s ease}',
+    'input[type=checkbox]:checked::after{transform:rotate(45deg) scale(1)}',
     'a{color:var(--accent,#4f8cff)}',
 ].join('');
+
+// SVG 产物的 DOMPurify 配置单一来源。三个消费方共用：core/widget.js 的 sanitizeWidgetHtml、
+// core/mermaid-render.js、editor/markdown-mermaid.js——各写一份必然漂移（历史上就漂了）。
+// 为什么必须这么配（实测：mermaid 图只剩框、没有文字）：
+// - mermaid 的节点文字在 <foreignObject> 里的 div/span 中，不是 <text>；
+// - foreignObject 不在任何 USE_PROFILES 白名单里，不显式 ADD_TAGS 就会被整体删除；
+// - 只 ADD_TAGS 也不够：DOMPurify 仍按 SVG 上下文校验它的子元素，div/span 会被当非法 SVG 元素剥掉，
+//   必须声明 HTML_INTEGRATION_POINTS 让子元素按 HTML 规则处理；
+// - USE_PROFILES 要带 html，否则 div/span 根本不在标签白名单里。
+// 放宽的只是「允许 foreignObject 内的 HTML 标签存在」：script / 事件属性 / javascript: / FORBID_TAGS
+// 里的标签照旧被剥（前端有对应断言，见 core/visual-spec.test.mjs）。
+export function svgSanitizeConfig(extra) {
+    return Object.assign({
+        USE_PROFILES: {html: true, svg: true, svgFilters: true, mathMl: true},
+        ADD_TAGS: ['style', 'foreignObject'],
+        HTML_INTEGRATION_POINTS: {foreignobject: true},
+        // form 禁掉：无脚本的表单只会把卡片导航走；checkbox / details 等仍保留，纯 CSS 交互照常可用。
+        FORBID_TAGS: [
+            'script', 'iframe', 'frame', 'frameset', 'object', 'embed',
+            'link', 'meta', 'base', 'form', 'audio', 'video', 'source', 'track',
+        ],
+        FORBID_ATTR: ['srcdoc'],
+    }, extra || {});
+}
 
 // 主题语义变量表：[key, 应用变量, 兜底色]。resolveThemeColors 按此读取计算样式；
 // 兜底值仅在变量缺失（异常主题 / 非 DOM 环境）时使用。
@@ -143,6 +171,7 @@ const INLINE_VISUAL_BASE = [
     '- 不要 position:fixed（会被降级为 absolute），不要动画、自动播放、表单、弹窗。',
     '- 样式写在 <style> 里（会注入到卡片的 shadow 内，只作用于卡片），或直接写 style 属性。',
     '- 链接只有 http(s):// 与 mailto: 会交给系统浏览器，其它跳转被拦掉。',
+    '- 颜色零硬编码：不写 #fff、#fafafa、#333、rgb(255,255,255)、white 这类具体色值，全部用主题变量或 color-mix 生成。暗色主题下一条白底卡片会整块刺眼；模板兜底值（var(--x,#fff) 里逗号后的那个）只在变量缺失的异常环境出现，不许拿它当正常配色。',
     '',
     '## 5. 颜色必须跟主题走',
     '',
@@ -153,6 +182,7 @@ const INLINE_VISUAL_BASE = [
     '- 每个变量都带兜底：fill="var(--text,#1f2328)"。',
     '- 不要用 prefers-color-scheme：应用主题由用户手选，不跟系统走，媒体查询会判断错。',
     '- 语义色可用 var(--green) / var(--red) / var(--warn)；需要浅色块时用 color-mix(in srgb, var(--accent) 14%, transparent)。',
+    '- 自检：交稿前扫一遍自己写的颜色——凡是不在 var() 兜底位置上的 hex、rgb、white、black 都换成变量。大面积白底 / 浅灰底是暗色主题下最常见的翻车点，模拟「应用 UI」的卡片（标题条、按钮、标签）同样只用变量画，不要凭记忆复刻浅色界面。',
     '',
     '## 6. 尺寸与排版',
     '',
@@ -229,7 +259,7 @@ const INLINE_VISUAL_BASE = [
     '- SVG 硬编码 width="1200" → 撑爆卡片；用 viewBox。',
     '- 把整段解释塞进节点 → 拆成「图 + 正文」。',
     '- 一条回答贴五张卡片 → 只保留最关键的一张。',
-    '- 写死浅色配色 → 用户在深色主题下几乎看不清；一律用变量。',
+    '- 写死浅色配色（白底卡、浅灰分隔、深色文字）→ 暗色主题下整卡刺眼；对照模板 A/B：底色 var(--panel2)、文字 var(--text)、描边 var(--border)，灰色阶用 color-mix(in srgb, var(--text) N%, transparent) 生成，两种主题都成立。',
     ].join('\n');
 
 // mermaid 图型速查（阶段 3）：零新增字节，把内置 19 种图型写进规范，

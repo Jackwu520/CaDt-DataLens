@@ -43,6 +43,7 @@ markdown-it fence 规则            frontend/src/markdown.js:72
 
 - **源码必须 base64**：DOMPurify 3.4.x 会整体丢弃属性值含换行的属性，明文 `data-src` 会被静默剥掉、图表永远空白。编解码在 `frontend/src/markdown.js:15` / `:22`，有单测（`markdown.test.mjs`）。
 - **二次消毒保留 `style` / `foreignObject`**：否则图表样式全丢。
+  - **2026-11-15 修正**：仅保留标签还不够——`foreignObject` 不在任何 `USE_PROFILES` 白名单里，`widget.js` 那道清洗会把它整体删掉；且 mermaid 的节点文字在 `foreignObject` 内的 `div`/`span` 中，缺 `HTML_INTEGRATION_POINTS: {foreignobject: true}` 时会被当成非法 SVG 元素剥掉，表现为「形状与配色都在、文字全无」。配置现收敛到 `frontend/src/core/visual-spec.js` 的 `svgSanitizeConfig()`，三处消费方共用。
 - **`securityLevel: 'strict'`**：mermaid 侧自净化 + DOMPurify 兜底，双层。
 
 ## 1.2 用例矩阵（实测）
