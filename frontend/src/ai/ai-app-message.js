@@ -12,6 +12,12 @@ export const APP_MESSAGE_ICONS = {
     update: 'refresh',
     plugin: 'agents',
     error: 'warn',
+    // 子代理结算通知（完成 / 失败）与子代理提问：同一张卡片形态，图标区分「汇报」与「要你拍板」
+    subagent: 'agents',
+    'subagent-ask': 'bell',
+    // 会话间投递（共享信箱）与支线对话带回
+    session: 'bell',
+    sidechat: 'bookmark',
 };
 
 export function normalizeAppMessage(raw) {
@@ -29,6 +35,8 @@ export function appMessageIcon(app) {
 }
 
 // 旧会话没有 app 元数据时，按注入指令的固定前缀识别应用消息。
+// 子代理通知 / 提问的卡片由「会话消息化」注入（docs/unfinished-plans/session-messaging.md §4.6），
+// 前缀是它们唯一的归属依据：重放旧会话时也要能正确归类，所以 prefix 与 buildSettlementNotice 同源约定。
 export function detectAppMessage(content) {
     const text = String(content || '').trim();
     const git = text.match(/^［Git 快捷操作 · ([^］]+)］/);
@@ -38,5 +46,13 @@ export function detectAppMessage(content) {
     if (/^\[浏览器截图（browser_screenshot 工具自动附加）\]/.test(text)) {
         return {kind: 'browser', label: '浏览器截图', icon: 'camera'};
     }
+    const ask = text.match(/^［子代理提问 · ([^］]+)］/);
+    if (ask) return {kind: 'subagent-ask', label: '子代理提问 · ' + ask[1].trim(), icon: ''};
+    const settled = text.match(/^［子代理通知 · ([^］]+)］/);
+    if (settled) return {kind: 'subagent', label: '子代理通知 · ' + settled[1].trim(), icon: ''};
+    const side = text.match(/^［支线结论 · ([^］]+)］/);
+    if (side) return {kind: 'sidechat', label: '支线结论 · ' + side[1].trim(), icon: ''};
+    const session = text.match(/^［会话消息 · ([^］]+)］/);
+    if (session) return {kind: 'session', label: '会话消息 · ' + session[1].trim(), icon: ''};
     return null;
 }

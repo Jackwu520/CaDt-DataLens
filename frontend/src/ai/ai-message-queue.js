@@ -5,8 +5,10 @@ import {iconSvg} from '../core/icons.js';
 
 export function createAIMessageQueue(ctx) {
     const el = ctx.el;
-    const messageQueue = ctx.messageQueue;
-    const interjectPending = ctx.interjectPending;
+    // 队列所有权在本模块（阶段 A 迁移）：panel / composer / 设置页一律经下面这组 API 访问，
+    // 不再各自持有数组引用——历史上所有权在 panel、flush 调用点散布在三处，容易漏刷。
+    const messageQueue = [];
+    const interjectPending = new Set();  // sessionId：该会话有一条「插话」待优先发送
     const streams = ctx.streams;
     const flash = ctx.flash;
     const positionOverlays = ctx.positionOverlays;
@@ -205,11 +207,75 @@ export function createAIMessageQueue(ctx) {
         interjectPending.delete(sessionId);
         renderMessageQueue();
     }
+    // ---- 队列所有权 API（供 panel / composer / 设置页消费；不暴露可变数组本体）----
+    function items() {
+        return messageQueue.slice();
+    }
+
+    function itemsForSession(sessionId) {
+        return messageQueue.filter((item) => item.sessionId === sessionId);
+    }
+
+    function hasItems() {
+        return messageQueue.length > 0;
+    }
+
+    function pushItem(item) {
+        messageQueue.push(item);
+    }
+
+    function unshiftItem(item) {
+        messageQueue.unshift(item);
+    }
+
+    function indexOfItem(item) {
+        return messageQueue.indexOf(item);
+    }
+
+    function removeItem(item) {
+        const index = messageQueue.indexOf(item);
+        if (index >= 0) messageQueue.splice(index, 1);
+        return index >= 0;
+    }
+
+    function insertItem(index, item) {
+        messageQueue.splice(Math.max(0, Math.min(index, messageQueue.length)), 0, item);
+    }
+
+    function clearAll() {
+        messageQueue.length = 0;
+        interjectPending.clear();
+    }
+
+    function hasInterject(sessionId) {
+        return interjectPending.has(sessionId);
+    }
+
+    function addInterject(sessionId) {
+        interjectPending.add(sessionId);
+    }
+
+    function clearInterject(sessionId) {
+        interjectPending.delete(sessionId);
+    }
+
     return {
         renderMessageQueue,
         enqueueComposerMessage,
         interjectComposerMessage,
         flushMessageQueue,
         clearQueueForSession,
+        items,
+        itemsForSession,
+        hasItems,
+        pushItem,
+        unshiftItem,
+        indexOfItem,
+        removeItem,
+        insertItem,
+        clearAll,
+        hasInterject,
+        addInterject,
+        clearInterject,
     };
 }

@@ -61,7 +61,6 @@ export function createAISubagents(ctx) {
 
     const subAgents = new Map();      // subId -> 子代理运行态
     const subAgentTranscripts = new Map(); // spawn key -> [{role, name?, text}]
-    const subAgentQueue = [];
 
     // 上限统计 subAgents 里所有层级的运行中子代理（不含主代理），由设置页配置。
     function subAgentLimit() {
@@ -1049,7 +1048,7 @@ export function createAISubagents(ctx) {
         openBgTermInContent, renderChipsPop, toggleChipsPop,
         agentBlock, agentToolRow, renderAgentLiveMessages, renderAgentFinished, renderAgentView,
         parentSessionOfSub, runSubAgent, runSubRound, handleSubEvent, finalizeSubAgent, stopSubAgentsOf, initHud,
-        subAgents, subAgentTranscripts, subAgentQueue,
+        subAgents, subAgentTranscripts,
         bgJobSnapshot, notifyBgListeners, bridgeStopBgJob,
     };
 }

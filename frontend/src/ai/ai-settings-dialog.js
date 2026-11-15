@@ -103,7 +103,8 @@ export function createAISettingsDialog(ctx) {
     const createSessionData = ctx.createSessionData;
     const sessionStore = ctx.sessionStore;
     const sessionUseDisk = ctx.sessionUseDisk;
-    const messageQueue = ctx.messageQueue;
+    // 排队消息的所有权在 ai-message-queue.js（阶段 A 迁移）：这里只要「清空」动作
+    const clearMessageQueue = ctx.clearMessageQueue;
     const getSessions = ctx.getSessions;
     const updateCtxBanner = ctx.updateCtxBanner;
 
@@ -929,7 +930,7 @@ export function createAISettingsDialog(ctx) {
             askConfirm('清空全部 AI 会话（含消息、任务清单与变更记录）？', () => {
                 setSessions([createSessionData()]);
                 permMod.commandApprovalRules.clear();
-                messageQueue.length = 0;
+                clearMessageQueue();
                 getConfig().activeSessionId = getSessions()[0].id;
                 if (sessionUseDisk()) {
                     // 先删干净旧目录，再把当前空会话写回去，避免清空后又被队列写回。

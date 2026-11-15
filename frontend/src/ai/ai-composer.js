@@ -30,7 +30,8 @@ export function createAIComposer(ctx) {
     const renderMessageQueue = ctx.renderMessageQueue;
     const entryOf = ctx.entryOf;
     const sessionImageBytes = ctx.sessionImageBytes;
-    const messageQueue = ctx.messageQueue;
+    // 排队消息的读写经队列模块 API（所有权在 ai-message-queue.js，阶段 A 迁移）
+    const queue = ctx.queue;
     const slashState = ctx.slashState;
     const submitText = ctx.submitText;
     const nextAttachSeq = ctx.nextAttachSeq;
@@ -485,7 +486,7 @@ export function createAIComposer(ctx) {
 
     function currentQueueItems() {
         const session = currentSession();
-        return session ? messageQueue.filter((item) => item.sessionId === session.id) : [];
+        return session ? queue.itemsForSession(session.id) : [];
     }
 
     function captureComposerMessage() {
@@ -513,7 +514,7 @@ export function createAIComposer(ctx) {
 
     function editQueuedMessage(item) {
         if (!item || !el.input) return;
-        const index = messageQueue.indexOf(item);
+        const index = queue.indexOfItem(item);
         if (index < 0) return;
         const session = currentSession();
         if (!session) return;
@@ -521,7 +522,7 @@ export function createAIComposer(ctx) {
         const draftAttachments = attachments.slice();
         let queuedDraft = false;
         if (draftText || draftAttachments.length) {
-            messageQueue.push({
+            queue.pushItem({
                 id: ++queueSeq,
                 sessionId: session.id,
                 text: draftText,
@@ -533,8 +534,7 @@ export function createAIComposer(ctx) {
             renderAttachments();
             queuedDraft = true;
         }
-        const currentIndex = messageQueue.indexOf(item);
-        if (currentIndex >= 0) messageQueue.splice(currentIndex, 1);
+        queue.removeItem(item);
         el.input.value = item.text || '';
         attachments = (item.attachments || []).map((att) => ({...att}));
         renderAttachments();

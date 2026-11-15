@@ -539,8 +539,8 @@ export function createAIPanel(options) {
     const AI_BG_LIVE_MAX_LINES = 200;
     const AI_BG_LIVE_MAX_CHARS = 8192;
     let dismissedPlanApproval = '';
-    const messageQueue = [];
-    const interjectPending = new Set();  // sessionId：该会话有一条「插话」待优先发送
+    // 消息排队 / 插话状态已迁入 ai-message-queue.js（队列模块持有，panel 经 queueMod 的
+    // hasInterject / clearInterject / items 等 API 访问，见阶段 A 的所有权迁移）。
     let archiveOverflowAt = 0;
     let autoCompactCount = new Map();
     let autoCompactWarnedAt = 0;
@@ -2018,7 +2018,10 @@ export function createAIPanel(options) {
         aiNormalizePath, aiJoinPath, aiPathDir, aiPathKey, aiProjectRoot, aiWorkspaceKey,
         queryUsageForAccount, showModelListPicker, switchProfile,
         showNameDialog, setAIChatFont, applyPanelSettings, createSessionData,
-        sessionStore, sessionUseDisk, messageQueue,
+        sessionStore, sessionUseDisk,
+        // 队列所有权在 ai-message-queue.js：这里只给「清空」这一个动作（惰性转发，
+        // 队列模块构造于本模块之后，取数组本体会在构造期触发 TDZ）
+        clearMessageQueue: () => queueMod.clearAll(),
         getSessions: () => sessions,
         updateCtxBanner: (...args) => updateCtxBanner(...args),
         getConfig: () => config,
@@ -7523,41 +7526,35 @@ export function createAIPanel(options) {
         return submitText(content, null, {app: normalizeAppMessage(source)});
     }
 
-    async function submitText(text, truncateAt, extra) {
+    // 会话级启动内核（阶段 A 抽取，纯重构）：给定会话直接起一轮——不读 currentSession、
+    // 不碰输入区 / 附件快照 / 滑出菜单，后台注入（定时任务、计时器、通知唤醒、支线带回）
+    // 全部走这条路径。submitText 只保留 UI 部分（读输入区附件、清空、渲染当前会话）后转调。
+    // 返回 {ok, reason, run, ended}：reason 供调用方决定提示文案（内核不 flash 校验类错误）。
+    async function startSessionTurn(session, text, options) {
+        const opts = options || {};
         const value = String(text == null ? '' : text).trim();
-        const imageAttachments = getAttachments().filter((item) => item.kind === 'image').map(aiNormalizeImage).filter(Boolean);
-        const textAttachments = getAttachments().filter((item) => item.kind !== 'image');
-        if (!value && !imageAttachments.length) return false;
-        if (value.length > AI_CHAT_INPUT_LIMIT) {
-            flash('消息过长（上限 ' + AI_CHAT_INPUT_LIMIT + ' 字符）', true);
-            return false;
-        }
-        const session = currentSession();
-        if (!session) return false;
+        const source = opts.attachments || {};
+        const imageAttachments = (source.images || []).map(aiNormalizeImage).filter(Boolean);
+        const textAttachments = (source.texts || []).slice();
+        if (!value && !imageAttachments.length) return {ok: false, reason: 'empty'};
+        if (value.length > AI_CHAT_INPUT_LIMIT) return {ok: false, reason: 'too_long'};
+        if (!session) return {ok: false, reason: 'no_session'};
         // 只有「本会话」在生成 / 压缩时才拒绝；别的会话在跑不影响这里（各自独立）。
-        if (streamOf(session.id) || compactOf(session.id)) return false;
-        if (session.archivedAt) {
-            flash('该会话已归档，请先在会话菜单中取消归档', true);
-            return false;
-        }
+        if (streamOf(session.id) || compactOf(session.id)) return {ok: false, reason: 'busy'};
+        if (session.archivedAt) return {ok: false, reason: 'archived'};
         if (!session.workspace) {
             const current = currentWorkspacePath();
             if (current) session.workspace = current;
         }
         const profile = profileOf(session);
         const entry = entryOf(session);
-        if (!profile) {
-            renderMessages();
-            updateSendState();
-            return false;
-        }
-        if (!backend.AISendChat) {
-            showNote('当前版本不支持 AI 对话（后端方法缺失）。', true);
-            return false;
-        }
+        if (!profile) return {ok: false, reason: 'no_profile'};
+        if (!backend.AISendChat) return {ok: false, reason: 'no_backend'};
 
-        let cut = truncateAt;
-        if (cut == null && pendingEdit && pendingEdit.index != null &&
+        // 重发 / 编辑态的截断只在 UI 路径生效：注入路径恒传 truncateAt=null 且
+        // allowPendingEdit=false，否则用户正在编辑的那条会被后台唤醒顺手砍掉（§4.4 唤醒防护）。
+        let cut = opts.truncateAt == null ? null : opts.truncateAt;
+        if (cut == null && opts.allowPendingEdit && pendingEdit && pendingEdit.index != null &&
             (!pendingEdit.sessionId || pendingEdit.sessionId === session.id)) cut = pendingEdit.index;
         const windowSize = contextWindowOf(session);
         try {
@@ -7569,15 +7566,13 @@ export function createAIPanel(options) {
             for (const item of textAttachments) previewTokens += aiEstimateTokens(aiTextOf(item.content));
             previewTokens += toolsTokenEstimate(session);
             if (windowSize > 0 && previewTokens > windowSize * 0.9) {
-                flash('上下文预计约 ' + previewTokens + ' tokens，超过窗口 ' + windowSize +
-                    ' 的 90%，请先 /compact 或减少附加内容', true);
                 updateCtxBanner();
-                return false;
+                return {ok: false, reason: 'over_budget', tokens: previewTokens, windowSize};
             }
         } catch (e) {}
 
         if (cut != null && cut >= 0) session.messages = session.messages.slice(0, cut);
-        pendingEdit = null;
+        if (opts.allowPendingEdit) pendingEdit = null;
         // 上一次切换的模型从这条消息开始生效：先把切换记录落到本条消息之前
         flushModelSwitchNote(session);
 
@@ -7587,7 +7582,7 @@ export function createAIPanel(options) {
         if (Array.isArray(session.todos) && session.todos.length && session.todos.every((t) => t.status === 'completed')) {
             session.todos = [];
             persistSessions();
-            if (currentSession() === session) renderTodos();
+            if (isOpen() && currentSession() === session) renderTodos();
         }
         const userMessage = {
             role: 'user',
@@ -7596,8 +7591,8 @@ export function createAIPanel(options) {
             ts: turnStartedAt,
             turnStartedAt,
         };
-        if (extra && extra.app && typeof extra.app === 'object') {
-            userMessage.app = normalizeAppMessage(extra.app);
+        if (opts.app && typeof opts.app === 'object') {
+            userMessage.app = normalizeAppMessage(opts.app);
         }
         session.messages.push(userMessage);
         updateSessionTitleFromText(session, value || '图片对话');
@@ -7638,20 +7633,22 @@ export function createAIPanel(options) {
             scope,
             plan: !!session.planMode,
         });
-        stickBottom = true;
-        if (el.input) {
-            el.input.value = '';
-            resizeInput();
+        // 只渲染「用户正在看的会话」：后台注入不改用户视图、不强开面板，
+        // 完成经会话列表未读标记提示（§4.13.2）。
+        const viewed = isOpen() && currentSession() === session;
+        if (viewed) {
+            stickBottom = true;
+            renderMessages();
+            setStreamingUI();
+            positionOverlays();
         }
-        hideSlash();
         // 会话列表立刻出现「生成中」标记（按会话独立显示，其他会话的流不受影响）
         renderSessionList();
-        renderMessages();
-        setStreamingUI();
-        positionOverlays();
         // 先把用户消息与占位 assistant 落盘：即使流事件丢失、应用崩溃或磁盘重读打断，
         // 会话也不会只剩一个空壳（定时任务/后台注入尤其明显）。
         persistSessions();
+        // UI 侧同点动作（清输入框、收起斜杠菜单）：由 submitText 传入，内核不碰 DOM 输入区。
+        if (typeof opts.onStarted === 'function') opts.onStarted();
 
         let bundle = {text: AI_DEFAULT_SYSTEM_PROMPT, meta: null};
         const attachmentList = textAttachments.slice();
@@ -7661,14 +7658,54 @@ export function createAIPanel(options) {
             noteForSession(session.id, '上下文注入失败：' + ((e && e.message) || e), true);
         }
         rememberPrompt(session.id, bundle);
-        setAttachments([]);
-        attachSeq = 0;
-        renderAttachments();
-        updateContextCount();
-        if (streams.get(session.id) !== run || run.stopped) return true;
+        if (viewed) updateContextCount();
+        if (streams.get(session.id) !== run || run.stopped) return {ok: true, run, ended: true};
         run.baseSystemPrompt = bundle.text;
         run.systemPrompt = bundle.text;
         startRound(run);
+        return {ok: true, run};
+    }
+
+    // UI 路径：读输入区（正文 + 附件）→ 交内核起轮 → 清空输入区并刷新当前视图。
+    // 会话 / 预算 / 后端校验全在内核里，这里只把失败原因翻成用户提示。
+    async function submitText(text, truncateAt, extra) {
+        const value = String(text == null ? '' : text).trim();
+        const attached = getAttachments();
+        const session = currentSession();
+        const result = await startSessionTurn(session, value, {
+            truncateAt,
+            allowPendingEdit: true,
+            app: extra && extra.app,
+            attachments: {
+                images: attached.filter((item) => item.kind === 'image'),
+                texts: attached.filter((item) => item.kind !== 'image'),
+            },
+            // 起轮成功、落盘之后立刻清输入区（与原实现同一时点）；附件要等系统提示组装完再清，
+            // 因为 assembleSystemContext 会读它们。
+            onStarted: () => {
+                if (el.input) {
+                    el.input.value = '';
+                    resizeInput();
+                }
+                hideSlash();
+            },
+        });
+        if (!result.ok) {
+            if (result.reason === 'too_long') flash('消息过长（上限 ' + AI_CHAT_INPUT_LIMIT + ' 字符）', true);
+            else if (result.reason === 'archived') flash('该会话已归档，请先在会话菜单中取消归档', true);
+            else if (result.reason === 'no_backend') showNote('当前版本不支持 AI 对话（后端方法缺失）。', true);
+            else if (result.reason === 'no_profile') {
+                renderMessages();
+                updateSendState();
+            } else if (result.reason === 'over_budget') {
+                flash('上下文预计约 ' + result.tokens + ' tokens，超过窗口 ' + result.windowSize +
+                    ' 的 90%，请先 /compact 或减少附加内容', true);
+            }
+            return false;
+        }
+        setAttachments([]);
+        attachSeq = 0;
+        renderAttachments();
         return true;
     }
 
@@ -7847,8 +7884,8 @@ export function createAIPanel(options) {
             }
         }
         notifyTurnFinished(session, current.assistant, current.stopped);
-        const shouldFlush = interjectPending.has(current.sessionId) || (!current.stopped && current.assistant.status === 'done');
-        interjectPending.delete(current.sessionId);
+        const shouldFlush = queueMod.hasInterject(current.sessionId) || (!current.stopped && current.assistant.status === 'done');
+        queueMod.clearInterject(current.sessionId);
         detachStream(current);
         if (!anyStreaming()) {
             stopProcessTicker();
@@ -9782,8 +9819,8 @@ export function createAIPanel(options) {
             pendingModelSwitches.delete(session.id);
             dropComposerDraft(session.id);
             forgetPrompt(session.id);
-            interjectPending.delete(session.id);
             stopSubAgentsOf(session.id);
+            // clearQueueForSession 同时清该会话的排队消息与「插话待发」标记
             clearQueueForSession(session.id);
             logActivity('ai.session', session.id, {op: 'delete', title: session.title || ''}, {actor: 'user', source: 'user'});
             // 删除的是当前会话：跳到**新建的空白会话**——此前 fallback 到 sessions[0]
@@ -11388,7 +11425,13 @@ export function createAIPanel(options) {
         renderMessageQueue: (...args) => queueMod.renderMessageQueue(...args),
         entryOf,
         sessionImageBytes,
-        messageQueue,
+        // 排队消息的读写一律经队列模块（所有权在 ai-message-queue.js，阶段 A 迁移）
+        queue: {
+            itemsForSession: (...args) => queueMod.itemsForSession(...args),
+            indexOfItem: (...args) => queueMod.indexOfItem(...args),
+            pushItem: (...args) => queueMod.pushItem(...args),
+            removeItem: (...args) => queueMod.removeItem(...args),
+        },
         slashState,
         submitText,
         nextAttachSeq: () => ++attachSeq,
@@ -11425,11 +11468,10 @@ export function createAIPanel(options) {
     const getAttachments = () => composerMod.getAttachments();
     const setAttachments = (value) => composerMod.setAttachments(value);
 
-    // 消息排队 / 插话（阶段 3 拆出：ai-message-queue.js；attachments / dismissedPlanApproval / stream 经访问器读写）
+    // 消息排队 / 插话（阶段 3 拆出：ai-message-queue.js；队列状态与所有权都在该模块内部，
+    // attachments / dismissedPlanApproval / stream 经访问器读写）
     const queueMod = createAIMessageQueue({
         el,
-        messageQueue,
-        interjectPending,
         streams,
         flash,
         positionOverlays,
