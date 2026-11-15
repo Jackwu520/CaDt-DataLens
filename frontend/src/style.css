@@ -8325,6 +8325,8 @@ html[data-theme="whitey"] {
 .ai-sched-editor textarea.ai-settings-input { resize: vertical; min-height: 64px; }
 /* 子代理卡片 */
 .ai-agent-task { font-size: 11.5px; color: var(--text); opacity: .85; margin-bottom: 4px; word-break: break-all; }
+/* 后台派单卡片的状态行：强调「不阻塞、完成才通知」，与阻塞模式的即时结果区分 */
+.ai-agent-bg-tip { font-size: 10.5px; color: var(--muted); margin-bottom: 6px; }
 .ai-agent-transcript { display: flex; flex-direction: column; gap: 3px; max-height: 200px; overflow: auto; margin: 4px 0; padding: 4px; border-radius: 4px; background: var(--hover); }
 .ai-agent-entry { display: flex; gap: 6px; font-size: 10.5px; line-height: 1.45; }
 .ai-agent-entry-tag { flex: none; min-width: 34px; text-align: center; padding: 0 4px; height: 14px; line-height: 14px; border-radius: 7px; background: var(--accent-weak); color: var(--accent); font-size: 9px; }
@@ -9546,6 +9548,8 @@ html[data-writing="on"][data-writing-paper="dim"] .jsoneditor textarea.jsonedito
 .ai-agent-done { background: color-mix(in srgb, var(--green) 16%, transparent); color: var(--green); }
 .ai-agent-error { background: color-mix(in srgb, var(--red) 16%, transparent); color: var(--red); }
 .ai-agent-stopped { background: color-mix(in srgb, var(--muted) 16%, transparent); color: var(--muted); }
+/* 收件箱有待处理消息 / 等待主代理回答：橙色提醒，与 running 的蓝并列出现 */
+.ai-agent-waiting { background: color-mix(in srgb, var(--orange) 18%, transparent); color: var(--orange); }
 .ai-chips-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; overflow: hidden; }
 .ai-chips-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ai-chips-sub { color: var(--muted); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

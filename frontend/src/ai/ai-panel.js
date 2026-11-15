@@ -138,6 +138,7 @@ import {createAITakeover} from './ai-takeover.js';
 import {createAIManageDialogs} from './ai-manage-dialogs.js';
 import {createAISettingsDialog} from './ai-settings-dialog.js';
 import {createAISubagents} from './ai-subagents.js';
+import {createAIAgentNotices} from './ai-agent-notices.js';
 import {createAIMcp} from './ai-mcp.js';
 import {createAIMcpSettings} from './ai-mcp-settings.js';
 import {
@@ -7348,6 +7349,16 @@ export function createAIPanel(options) {
             }
             case 'spawn_agent': {
                 if (!ctx || !ctx.session || !ctx.toolMessage) throw new Error('子代理缺少会话上下文 v2');
+                const mode = String(aiTextOf(input && input.mode) || 'blocking').toLowerCase() === 'background'
+                    ? 'background' : 'blocking';
+                if (mode === 'background') {
+                    // 后台派单：注册即返回，主代理继续自己的回合；结论以后续通知注入（§4.5 原语 1）
+                    const started = await startSubAgent(ctx, input);
+                    const sub = started.sub;
+                    return '已派出后台子代理「' + sub.name + '」（id=' + sub.id + '，第 ' + sub.depth + ' 层，轮次上限 ' +
+                        sub.maxRounds + '）。\n完成后会自动通知你；期间可继续其他工作，需要补充线索就 agent_send' +
+                        '（urgent=true 插队）。要等它的结论用 wait_agent；不需要了用 agent_stop 停止并收集记录。';
+                }
                 const outcome = await runSubAgent(ctx, input);
                 const meta = ctx.toolMessage.agent || {};
                 const head = '子代理「' + (meta.name || '') + '」' +
@@ -7355,6 +7366,18 @@ export function createAIPanel(options) {
                     '（轮次 ' + (meta.rounds || 0) + ' · 用时 ' + Math.round((meta.ms || 0) / 1000) + 's' +
                     (meta.tokens ? ' · ' + meta.tokens + ' tokens' : '') + '）';
                 return head + '\n' + (outcome || '（无结论）');
+            }
+            // —— 会话消息化工具面（agent_send / agent_stop / wait_agent / agent_compact /
+            // session_list / session_send）：执行体按阶段落在 ai-subagents.js 与 ai-agent-notices.js，
+            // panel 只做这个薄分发（§4.11.2「施工即搬迁」）。
+            case 'agent_send':
+            case 'agent_stop':
+            case 'wait_agent':
+            case 'agent_compact':
+            case 'session_list':
+            case 'session_send': {
+                if (typeof agentToolHandler !== 'function') throw new Error('当前版本不支持工具：' + name);
+                return agentToolHandler(name, input, ctx);
             }
             default:
                 throw new Error('未知工具：' + name);
@@ -7595,6 +7618,9 @@ export function createAIPanel(options) {
             userMessage.app = normalizeAppMessage(opts.app);
         }
         session.messages.push(userMessage);
+        // 消费点 3（§4.14.4）：起轮前把信箱里的待投通知一并带上——覆盖「通知刚挂上、用户同时
+        // 手动发了一条」的滞留竞态。顺序固定为「用户消息 → notices → 系统提醒」。
+        foldNoticesBeforeTurn(session);
         updateSessionTitleFromText(session, value || '图片对话');
         // 用户在这个会话里说话了：之前后台结束留下的未读标记立刻作废。
         clearSessionUnread(session);
@@ -7918,6 +7944,9 @@ export function createAIPanel(options) {
             const viewing = currentSession();
             if (viewing && (!session || viewing.id !== session.id)) flushMessageQueue(viewing.id);
         }
+        // 消费点 2（§4.4 时机 3）：流已注销，残余通知交给空闲唤醒——目标此时空闲就起新一轮，
+        // 否则按忙排队。放在消息队列冲刷之后，保证「用户排队消息优先于后台通知」。
+        if (session) flushAgentNotices(session.id);
         // 一轮结束后检查上下文预算：超阈值则自动压缩（不打断生成，此处已无 stream）。
         if (session && !current.stopped && current.assistant.status === 'done') {
             autoCompactCount.delete(session.id);
@@ -8060,6 +8089,9 @@ export function createAIPanel(options) {
             });
             persistSessions();
         }
+        // 消费点 1（§4.4 时机 1）：工具轮边界把信箱里的通知折叠成 user 消息，随收尾请求进入
+        // 上下文——此刻流还在跑，不能起新轮，所以只折叠不唤醒。
+        foldAgentNotices(session.id);
         // 轮次轻提醒统一在 startRound 注入；工具循环不再有硬性上限。
         const profile = profileOf(session);
         const assistant = newAssistantMessage(profile, entryOf(session));
@@ -9820,8 +9852,10 @@ export function createAIPanel(options) {
             dropComposerDraft(session.id);
             forgetPrompt(session.id);
             stopSubAgentsOf(session.id);
-            // clearQueueForSession 同时清该会话的排队消息与「插话待发」标记
+            // clearQueueForSession 同时清该会话的排队消息与「插话待发」标记；信箱与子代理记录随会话删除丢弃
             clearQueueForSession(session.id);
+            noticesMod.dropSession(session.id);
+            dropSubAgentRecordsOf(session.id);
             logActivity('ai.session', session.id, {op: 'delete', title: session.title || ''}, {actor: 'user', source: 'user'});
             // 删除的是当前会话：跳到**新建的空白会话**——此前 fallback 到 sessions[0]
             // （数组头 = 最旧的会话，列表里看着像「跳到了最后一个对话」）；删对话的意图
@@ -11573,6 +11607,38 @@ export function createAIPanel(options) {
         return actions;
     }
 
+    // 会话信箱 / 后台注入通道（阶段 B：docs/unfinished-plans/session-messaging.md §4.4）。
+    // 一条管道 N 个发送方：子代理结算与提问、支线带回、会话间投递、定时任务与计时器。
+    // 三态投递（忙→排队 / 压缩中→排队 / 空闲→startSessionTurn 唤醒）都在模块内部，
+    // panel 只保留三个消费点与工具执行处的薄调用。
+    const noticesMod = createAIAgentNotices({
+        sessionById,
+        streamOf,
+        compactOf,
+        startSessionTurn,
+        currentSession,
+        isOpen,
+        renderMessages,
+        renderSessionList,
+        setSessionUnread,
+        notifyDesktop,
+        flash,
+        persistSessions,
+        getPendingEdit: () => pendingEdit,
+    });
+    const deliverAgentNotice = (...args) => noticesMod.deliverAgentNotice(...args);
+    const foldAgentNotices = (...args) => noticesMod.foldNotices(...args);
+    const flushAgentNotices = (...args) => noticesMod.flushNotices(...args);
+    const foldNoticesBeforeTurn = (...args) => noticesMod.foldBeforeTurn(...args);
+    const pendingNoticeCount = (...args) => noticesMod.pendingCount(...args);
+
+    // 会话消息化工具的执行分发（agent_send / agent_stop / wait_agent / agent_compact /
+    // session_list / session_send）：执行体按阶段落在 ai-subagents.js 与 ai-agent-notices.js，
+    // panel 只保留这一个薄分发。各工具在自己阶段才进 AI_TOOL_DEFS，未启用阶段模型调不到。
+    function agentToolHandler(name, input, ctx) {
+        throw new Error('工具「' + name + '」尚未启用（当前版本不支持）');
+    }
+
     // 子代理域（阶段 3 拆出：ai-subagents.js；hudReady/chipsPopKind 经访问器，注册表经 ctx 注入）
     const subagentsMod = createAISubagents({
         el,
@@ -11611,6 +11677,8 @@ export function createAIPanel(options) {
             return false;
         },
         getConfig: () => config,
+        // 结算通知走会话信箱（惰性：noticesMod 构造在上方，运行时才取值，无 TDZ 风险）
+        getNotices: () => noticesMod,
     });
     const subAgentLimit = (...args) => subagentsMod.subAgentLimit(...args);
     const subAgentMaxDepth = (...args) => subagentsMod.subAgentMaxDepth(...args);
@@ -11652,11 +11720,16 @@ export function createAIPanel(options) {
     const renderAgentView = (...args) => subagentsMod.renderAgentView(...args);
     const parentSessionOfSub = (...args) => subagentsMod.parentSessionOfSub(...args);
     const runSubAgent = (...args) => subagentsMod.runSubAgent(...args);
+    const startSubAgent = (...args) => subagentsMod.startSubAgent(...args);
     const runSubRound = (...args) => subagentsMod.runSubRound(...args);
     const handleSubEvent = (...args) => subagentsMod.handleSubEvent(...args);
     const finalizeSubAgent = (...args) => subagentsMod.finalizeSubAgent(...args);
     const stopSubAgentsOf = (...args) => subagentsMod.stopSubAgentsOf(...args);
     const subAgents = subagentsMod.subAgents;
+    const subAgentRecords = subagentsMod.subAgentRecords;
+    const pushSubAgentRecord = (...args) => subagentsMod.pushSubAgentRecord(...args);
+    const unseenInboxCount = (...args) => subagentsMod.unseenInboxCount(...args);
+    const dropSubAgentRecordsOf = (...args) => subagentsMod.dropSubAgentRecordsOf(...args);
     const bgJobSnapshot = (...args) => subagentsMod.bgJobSnapshot(...args);
     const notifyBgListeners = (...args) => subagentsMod.notifyBgListeners(...args);
     const bridgeStopBgJob = (...args) => subagentsMod.bridgeStopBgJob(...args);

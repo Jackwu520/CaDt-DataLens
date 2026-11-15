@@ -674,6 +674,13 @@ export function createAIToolCards(ctx) {
             task.textContent = agent.task || '';
             task.title = agent.task || '';
             body.appendChild(task);
+            // 后台派单：结束时机独立于主回合，卡片上明确「不阻塞、完成才通知」
+            if (agent.state === 'running' && agent.mode === 'background') {
+                const tip = document.createElement('div');
+                tip.className = 'ai-agent-bg-tip';
+                tip.textContent = '后台运行中 · 完成后会自动通知主代理，期间主代理继续其他工作';
+                body.appendChild(tip);
+            }
             const transcript = subAgentTranscripts.get(agent.key || message.toolCallId);
             if (transcript && transcript.length) {
                 const list = document.createElement('div');

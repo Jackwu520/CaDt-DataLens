@@ -6,6 +6,7 @@ import {iconSvg} from '../core/icons.js';
 import {aiClampInt, aiNowId, aiTextOf} from './ai-constants.js';
 import {AI_TOOL_DEFS} from './ai-tool-defs.js';
 import {inspectToolArguments} from './ai-tool-args.js';
+import {buildSettlementNotice} from './ai-agent-notices.js';
 
 export function createAISubagents(ctx) {
     const el = ctx.el;
@@ -48,10 +49,14 @@ export function createAISubagents(ctx) {
     // 数百条消息仍远未满），撞顶时由强制收尾轮产出结论（见 runSubRound）。
     const AI_SUB_ROUNDS_DEFAULT = 50;
     const AI_SUB_MESSAGES_MAX = 400;
-    const AI_SUB_SUMMARY_MAX = 8000;
+    // 终态记录保留上限（LRU）：超出先降级为「仅状态 + 结论摘要、不可续」，再超就删最早的。
+    // 冷唤醒与子代理压缩都需要活引用（sub.session / profile / entry），不能 done 即删。
+    const AI_SUB_RECORDS_MAX = 20;
     const AI_SUB_SYSTEM_PROMPT = [
         '你是主代理派出的只读子代理：独立完成任务后输出最终结论，不与用户直接交互。',
         '约束：只做只读探索（列目录 / 读文件 / 搜索 / 联网检索 / 记忆读取 / 技能加载）；不要尝试修改文件或执行命令；不要反问用户（你没有提问渠道）。',
+        // 投递契约（§4.8）：投递层不截断（阶段 B 移除了 8000 字符上限），结论的紧凑性靠这里自律。
+        '结果投递契约：主代理只会收到你的最终结论文本，看不到你的完整转录、工具输出或推理过程——最终结论必须自带结果与关键证据（path:line），不要指望父代理从过程记录里找信息。',
         '完成后输出一段结构化最终结论（要点 + 证据 path:line），它是你返回给主代理的唯一结果。',
     ].join('\n');
     let hudReady = false;             // HUD 块执行完才置真，之前的 renderSessionList 调用跳过
@@ -61,6 +66,13 @@ export function createAISubagents(ctx) {
 
     const subAgents = new Map();      // subId -> 子代理运行态
     const subAgentTranscripts = new Map(); // spawn key -> [{role, name?, text}]
+    // agentId -> 终态记录（含 sub.session / profile / entry 活引用）：冷唤醒、子代理压缩、
+    // HUD 兜底都靠它。subAgents 仍只含运行中——事件路由先查 subAgents，records 只作兜底。
+    const subAgentRecords = new Map();
+    // 收件箱（阶段 C 起启用）：排队 / 插队 / 提问挂起。这里先建结构，B 阶段不消费。
+    function newSubInbox() {
+        return {step: [], turn: [], ask: null};
+    }
 
     // 上限统计 subAgents 里所有层级的运行中子代理（不含主代理），由设置页配置。
     function subAgentLimit() {
@@ -77,10 +89,15 @@ export function createAISubagents(ctx) {
         return !maxDepth || depth < maxDepth;
     }
 
-    function subSystemPromptFor(depth) {
-        if (!subAgentCanSpawn(depth)) return AI_SUB_SYSTEM_PROMPT;
-        return AI_SUB_SYSTEM_PROMPT +
-            '\n需要并行 / 隔离调查时可以再用 spawn_agent 派下一层只读子代理（总数与层级受设置限制）；简单问题直接自己做。';
+    function subSystemPromptFor(depth, mode) {
+        let text = AI_SUB_SYSTEM_PROMPT;
+        if (mode === 'background') {
+            text += '\n你在后台运行：主代理不会等你结束，完成后由系统把结论通知给它；期间可以安心把探索做完整。';
+        }
+        if (subAgentCanSpawn(depth)) {
+            text += '\n需要并行 / 隔离调查时可以再用 spawn_agent 派下一层只读子代理（总数与层级受设置限制）；简单问题直接自己做。';
+        }
+        return text;
     }
 
     function subToolsForScope(depth) {
@@ -203,6 +220,8 @@ export function createAISubagents(ctx) {
             if (!belongs(sub.rootSessionId || sub.parentSessionId)) continue;
             out.push({toolCallId: sub.key, key: sub.key, subId: sub.id, name: sub.name, task: sub.task,
                 depth: sub.depth, state: 'running', startedAt: sub.startedAt,
+                mode: sub.mode || 'blocking', continuable: true,
+                inboxCount: unseenInboxCount(sub),
                 sessionTitle: sessionTitleOf(sub.parentSessionId)});
         }
         for (const [key, meta] of agentRegistry) {
@@ -210,6 +229,19 @@ export function createAISubagents(ctx) {
             seen.add(key);
             if (!belongs(meta.rootSessionId || meta.parentSessionId)) continue;
             out.push({...meta, toolCallId: key, key, sessionTitle: sessionTitleOf(meta.parentSessionId)});
+        }
+        // 终态记录兜底：records 里还活引用着的条目比 registry / 持久化 meta 更新（含续轮后的轮次与摘要）
+        for (const rec of subAgentRecords.values()) {
+            if (seen.has(rec.key)) continue;
+            seen.add(rec.key);
+            if (!belongs(rec.rootSessionId || rec.parentSessionId)) continue;
+            out.push({
+                toolCallId: rec.toolCallId || rec.key, key: rec.key, subId: rec.id, name: rec.name,
+                task: rec.task, depth: rec.depth, state: rec.state, startedAt: rec.startedAt,
+                rounds: rec.rounds, ms: rec.ms, tokens: rec.tokens, summary: rec.summary,
+                mode: rec.mode, continuable: rec.continuable,
+                sessionTitle: sessionTitleOf(rec.parentSessionId),
+            });
         }
         // 重启后兜底：当前会话持久化的 spawn_agent meta（转录已不在内存）
         const session = currentSession();
@@ -338,6 +370,14 @@ export function createAISubagents(ctx) {
                 row.type = 'button';
                 row.className = 'ai-chips-row';
                 row.appendChild(agentStateBadge(agent.state));
+                // 收件箱有未消费消息 / 等待主代理回答：单独一枚徽标（不改变 running 语义）
+                if (agent.inboxCount > 0) {
+                    const wait = document.createElement('span');
+                    wait.className = 'ai-agent-badge ai-agent-waiting';
+                    wait.textContent = '待处理 ' + agent.inboxCount;
+                    wait.title = '收件箱里有 ' + agent.inboxCount + ' 条消息还没被消费（子代理下一轮边界会读）';
+                    row.appendChild(wait);
+                }
                 const main = document.createElement('span');
                 main.className = 'ai-chips-main';
                 const nameSpan = document.createElement('span');
@@ -495,7 +535,8 @@ export function createAISubagents(ctx) {
     }
 
     function agentStatusMeta(toolCallId) {
-        const sub = agentViewState && agentViewState.subId ? subAgents.get(agentViewState.subId) : null;
+        const view = agentViewState;
+        const sub = view && view.subId ? subAgents.get(view.subId) : null;
         if (sub) {
             return {
                 state: 'running',
@@ -503,6 +544,19 @@ export function createAISubagents(ctx) {
                 ms: Math.max(0, Date.now() - sub.startedAt),
                 tokens: sub.flow && sub.flow.usage ? (Number(sub.flow.usage.totalTokens) || 0) : 0,
                 summary: '',
+            };
+        }
+        // 终态记录（含可冷唤醒的 done）：比 registry 与持久化 meta 都新
+        const rec = view && view.subId ? subAgentRecords.get(view.subId) : null;
+        if (rec) {
+            return {
+                state: rec.state,
+                rounds: rec.rounds,
+                ms: rec.ms,
+                tokens: rec.tokens,
+                summary: rec.summary,
+                mode: rec.mode,
+                continuable: rec.continuable,
             };
         }
         const meta = agentRegistry.get(toolCallId);
@@ -653,8 +707,13 @@ export function createAISubagents(ctx) {
         return sessionById(sub && sub.parentSessionId) || sessionById(sub && sub.rootSessionId) || currentSession();
     }
 
-    async function runSubAgent(ctx, input) {
+    // 建记录 + 注册 + 启动首轮，**不等待终态**（阶段 B 把 spawn 拆成 start / await 两段）。
+    // mode='background'：超限直接报错、立即返回 agentId，主代理继续自己的回合；
+    // mode='blocking'（默认）：等待空位后阻塞——行为与旧实现逐字一致，工具结果仍是唯一出口。
+    async function startSubAgent(ctx, input) {
         if (!backend.AISendChat) throw new Error('当前版本不支持子代理');
+        const mode = String(aiTextOf(input && input.mode) || 'blocking').toLowerCase() === 'background'
+            ? 'background' : 'blocking';
         const name = aiTextOf(input.name).trim() || '子代理';
         const task = aiTextOf(input.task).trim();
         if (!task) throw new Error('task 不能为空');
@@ -665,10 +724,14 @@ export function createAISubagents(ctx) {
         if (maxDepth && depth > maxDepth) {
             throw new Error('子代理递归层级已达上限（最多 ' + maxDepth + ' 层）');
         }
-        // 总数上限覆盖全部层级：主代理派单时等待空位，子代理再派直接拒绝（否则会与祖先互相等待）
+        // 总数上限覆盖全部层级：主代理派单时等待空位，子代理再派直接拒绝（否则会与祖先互相等待）。
+        // 后台模式不等待：排到队尾再等空位等于把工具调用变回阻塞，直接让模型稍后重试或改阻塞模式。
         const limit = subAgentLimit();
         if (activeSubCount() >= limit) {
             if (depth > 1) throw new Error('子代理总数已达上限 ' + limit + '（含各层级），无法继续派出');
+            if (mode === 'background') {
+                throw new Error('子代理总数已达上限 ' + limit + '，暂时无法派出后台子代理（可等现有子代理完成后再派，或改用阻塞模式排队）');
+            }
             while (activeSubCount() >= limit) await aiDelay(300);
         }
         const parentSession = ctx.session;
@@ -685,6 +748,7 @@ export function createAISubagents(ctx) {
             key: aiNowId('agent-'),
             toolCallId: toolMessage.toolCallId || aiNowId('agent-'),
             depth,
+            mode,
             parentSessionId: parentSession.id,
             rootSessionId,
             parentToolMessage: toolMessage,
@@ -696,12 +760,16 @@ export function createAISubagents(ctx) {
             renderTimer: 0,
             heartbeat: 0,
             resolve: null,
+            // settled：终态 promise（阶段 E 的 wait_agent 与 blocking 模式共用）。
+            settled: null,
             session: null,
             flow: null,
+            inbox: newSubInbox(),
         };
         toolMessage.agent = {
             key: sub.key,
             depth,
+            mode,
             name: sub.name,
             task,
             state: 'running',
@@ -750,7 +818,7 @@ export function createAISubagents(ctx) {
             wrapUp: false,
             toolCalls: new Map(),
             profileCfg: configForProfile(profile, entry),
-            systemPrompt: subSystemPromptFor(depth),
+            systemPrompt: subSystemPromptFor(depth, mode),
             usage: null,
         };
         subAgents.set(sub.id, sub);
@@ -758,7 +826,7 @@ export function createAISubagents(ctx) {
             subId: sub.id, key: sub.key, toolCallId: sub.toolCallId, depth,
             parentSessionId: sub.parentSessionId, rootSessionId,
             name: sub.name, task: sub.task, state: 'running', startedAt: sub.startedAt,
-            rounds: 0, ms: 0, tokens: 0, summary: '',
+            mode, rounds: 0, ms: 0, tokens: 0, summary: '',
         });
         notifyBackgroundActivity();
         persistSessions();
@@ -767,8 +835,16 @@ export function createAISubagents(ctx) {
         // 消息越限/索引丢失）会立刻 finalizeSubAgent，若此时 resolve 尚未挂上，主代理的
         // await 会永远悬挂（实测：子代理失败后主代理卡死无反馈）。见 2026-11-14 修复。
         const outcomePromise = new Promise((resolve) => { sub.resolve = resolve; });
+        sub.settled = outcomePromise;
         runSubRound(sub);
-        const outcome = await outcomePromise;
+        return {sub, outcome: outcomePromise};
+    }
+
+    // 阻塞模式：派单即等待终态（调用方拿到结论文本作为工具结果）。
+    // 后台模式不走这里——ai-panel 的 spawn_agent case 用 startSubAgent 直接返回回执。
+    async function runSubAgent(ctx, input) {
+        const started = await startSubAgent(ctx, input);
+        const outcome = await started.outcome;
         return outcome.text;
     }
 
@@ -967,9 +1043,58 @@ export function createAISubagents(ctx) {
         return '（未完成收尾总结，以下为探索记录摘录）\n' + lines.slice(-12).join('\n');
     }
 
+    // 终态记录入册（LRU）：先保证活引用可用（冷唤醒 / 压缩要 sub.session），
+    // 超出上限时最早的记录先降级为「仅状态 + 结论摘要、不可续」，再超就整条丢弃。
+    function pushSubAgentRecord(sub, state, summary) {
+        const s = sub.flow;
+        const record = {
+            id: sub.id,
+            key: sub.key,
+            toolCallId: sub.toolCallId,
+            name: sub.name,
+            task: sub.task,
+            depth: sub.depth,
+            mode: sub.mode || 'blocking',
+            parentSessionId: sub.parentSessionId,
+            rootSessionId: sub.rootSessionId,
+            state,
+            summary,
+            note: sub.note || '',
+            rounds: s ? s.roundNo : 0,
+            ms: Math.max(0, Date.now() - sub.startedAt),
+            tokens: s && s.usage ? (Number(s.usage.totalTokens) || 0) : 0,
+            startedAt: sub.startedAt,
+            finishedAt: Date.now(),
+            // 冷唤醒所需的活引用（continuable=false 时清空）
+            session: sub.session || null,
+            profile: sub.profile || null,
+            entry: sub.entry || null,
+            baseRound: s ? (Number(s.baseRound) || 1) : 1,
+            continuable: state === 'done',
+        };
+        subAgentRecords.delete(sub.id);
+        subAgentRecords.set(sub.id, record);
+        while (subAgentRecords.size > AI_SUB_RECORDS_MAX) {
+            const oldestKey = subAgentRecords.keys().next().value;
+            const oldest = subAgentRecords.get(oldestKey);
+            if (oldest && oldest.continuable !== false) {
+                // 降级：丢活引用，只留状态与结论摘要（HUD 仍可展示，冷唤醒拒绝）
+                subAgentRecords.set(oldestKey, {
+                    ...oldest,
+                    session: null, profile: null, entry: null, continuable: false,
+                });
+                subAgentTranscripts.delete(oldest.key);
+            } else {
+                subAgentRecords.delete(oldestKey);
+            }
+        }
+        return record;
+    }
+
     function finalizeSubAgent(sub, state, note) {
         if (sub.state !== 'running') return;
         sub.state = state;
+        sub.note = note || '';
         if (sub.renderTimer) {
             clearTimeout(sub.renderTimer);
             sub.renderTimer = 0;
@@ -993,8 +1118,10 @@ export function createAISubagents(ctx) {
         if (state === 'error' && !summary) summary = '子代理执行失败';
         if (!summary && s.wrapUp) summary = subDigestOf(sub);
         if (state === 'stopped') summary = summary ? '（用户停止）' + summary : '（用户停止）';
+        // 阶段 B 决策（§4.4）：投递层不再截断。原 AI_SUB_SUMMARY_MAX（8000 字符）会把
+        // 调研/扫描类子代理的长报告拦腰砍断且无路可取回，等于白跑。长度控制全部前移：
+        // 投递契约（结论自带 path:line 证据）+ 模型单响应上限 + wrapUp 收尾轮。
         summary = summary.trim();
-        if (summary.length > AI_SUB_SUMMARY_MAX) summary = summary.slice(0, AI_SUB_SUMMARY_MAX) + '\n…（子代理结果已截断）';
         const meta = sub.parentToolMessage.agent;
         if (meta) {
             meta.state = state;
@@ -1015,15 +1142,49 @@ export function createAISubagents(ctx) {
         refreshHeadChips();
         refreshAgentViewIfOpen(sub.key);
         subAgents.delete(sub.id);
-        if (state !== 'done') subAgentTranscripts.delete(sub.key);
+        // 终态记录：done 可续（冷唤醒），error/stopped 不可续但仍可查（「停止并收集记录」）。
+        // 转录一律保留至本运行期——原语 2 要拿它做「收集对话记录」；内存由 records LRU 兜底。
+        pushSubAgentRecord(sub, state, summary);
         try {
             if (sub.resolve) sub.resolve({ok: state === 'done', text: summary, state});
         } catch (e) {}
         persistSessions();
         const session = sessionById(sub.parentSessionId);
         if (session) refreshToolWrap(session, sub.parentToolMessage);
+        // 结算通知（原语 5 / 7）：后台模式专属——阻塞模式的结论已经作为工具结果交给主代理，
+        // 再注入一份就是重复上下文。stopped 由发起方（用户 / agent_stop）自己知道，不发通知。
+        if (sub.mode === 'background' && (state === 'done' || state === 'error') && session) {
+            const notices = typeof ctx.getNotices === 'function' ? ctx.getNotices() : null;
+            if (notices && typeof notices.deliverAgentNotice === 'function') {
+                notices.deliverAgentNotice(session, buildSettlementNotice({
+                    name: sub.name, agentId: sub.id, state, summary, note,
+                    unconsumed: unseenInboxCount(sub),
+                }));
+            }
+        }
         if (state === 'error') flash('子代理「' + sub.name + '」失败：' + (note || '执行出错'), true);
         else if (state === 'stopped') flash('子代理「' + sub.name + '」已停止');
+    }
+
+    // 停止时未消费的收件箱条数（阶段 C 起会非零；结算文案与工具回执都要标出来）。
+    function unseenInboxCount(sub) {
+        const inbox = sub && sub.inbox;
+        if (!inbox) return 0;
+        const n = (inbox.step || []).length + (inbox.turn || []).length + (inbox.ask ? 1 : 0);
+        return n;
+    }
+
+    // 会话删除：它名下的终态记录与转录一并丢弃（records 是 LRU，但死会话的活引用没理由留着）
+    function dropSubAgentRecordsOf(sessionId) {
+        if (!sessionId) return 0;
+        let n = 0;
+        for (const [agentId, rec] of [...subAgentRecords]) {
+            if (rec.parentSessionId !== sessionId && rec.rootSessionId !== sessionId) continue;
+            subAgentRecords.delete(agentId);
+            subAgentTranscripts.delete(rec.key);
+            n++;
+        }
+        return n;
     }
 
     function stopSubAgentsOf(sessionId) {
@@ -1047,8 +1208,9 @@ export function createAISubagents(ctx) {
         hideChipsPop, positionChipsPop, agentStateBadge, agentStatusIcon, bgJobFirstLine, taskSnippet,
         openBgTermInContent, renderChipsPop, toggleChipsPop,
         agentBlock, agentToolRow, renderAgentLiveMessages, renderAgentFinished, renderAgentView,
-        parentSessionOfSub, runSubAgent, runSubRound, handleSubEvent, finalizeSubAgent, stopSubAgentsOf, initHud,
-        subAgents, subAgentTranscripts,
+        parentSessionOfSub, runSubAgent, startSubAgent, runSubRound, handleSubEvent, finalizeSubAgent, stopSubAgentsOf, initHud,
+        pushSubAgentRecord, unseenInboxCount, dropSubAgentRecordsOf,
+        subAgents, subAgentTranscripts, subAgentRecords,
         bgJobSnapshot, notifyBgListeners, bridgeStopBgJob,
     };
 }
