@@ -3404,6 +3404,27 @@ aside[data-sidebar-view="chats"] #ai-sessions-panel { display: flex; flex: 1; mi
 .ai-session-item:hover .ai-session-more,
 .ai-session-item:focus-within .ai-session-more { opacity: 1; }
 .ai-session-more:hover { background: var(--hover); color: var(--text); }
+/* 后台轮次的停止按钮：与「⋯」并列，hover 才显形（误触代价是停掉一轮，必须收敛入口） */
+.ai-session-stop {
+    position: absolute;
+    right: 22px;
+    top: 6px;
+    width: 16px;
+    height: 16px;
+    display: grid;
+    place-items: center;
+    padding: 0;
+    border: none;
+    border-radius: 3px;
+    background: none;
+    color: var(--muted);
+    cursor: pointer;
+    opacity: 0;
+}
+.ai-session-stop svg { width: 12px; height: 12px; display: block; }
+.ai-session-item:hover .ai-session-stop,
+.ai-session-item:focus-within .ai-session-stop { opacity: 1; }
+.ai-session-stop:hover { background: var(--hover); color: var(--red); }
 .ai-session-empty {
     display: flex;
     flex-direction: column;

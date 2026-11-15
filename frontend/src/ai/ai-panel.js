@@ -1979,6 +1979,12 @@ export function createAIPanel(options) {
         promoteSideChat: (...args) => sidechatMod.promoteSideChat(...args),
         clearMailbox: (...args) => noticesMod.clearMailbox(...args),
         pendingNoticeCount: (...args) => noticesMod.pendingCount(...args),
+        // 后台轮次的停止入口（§4.14.2）：streams 按会话隔离，停谁都不用切视图
+        flash,
+        stopSessionTurn: (sessionId) => {
+            const target = streamOf(sessionId);
+            if (target) stopGeneration(target);
+        },
         aiWorkspaceKey,
         aiWorkspaceName,
         sessionWorkspacePath,
@@ -2135,6 +2141,8 @@ export function createAIPanel(options) {
         streamOf,
         compactOf,
         sendAppMessage,
+        // 静默注入（阶段 I）：定时任务改走会话信箱，不切视图、不强开面板
+        deliverAgentNotice: (...args) => noticesMod.deliverAgentNotice(...args),
         // 头部定时任务胶囊与弹层（kind=schedules，与计时器胶囊同机制）
         chipSchedules: el.chipSchedules,
         togglePop: (chip) => toggleChipsPop('schedules', chip),
@@ -2248,6 +2256,8 @@ export function createAIPanel(options) {
         }
     }
 
+    // 计时器到点（§4.13.3 #6）：与定时任务走**同一份**静默注入——不 open、不 switchSession、
+    // 不忙等；目标空闲就起一轮，忙就排到它下一轮边界。
     async function wakeSessionByTimer(payload) {
         const label = String((payload && payload.label) || '计时器');
         const sessionId = String((payload && payload.sessionId) || '');
@@ -2256,32 +2266,32 @@ export function createAIPanel(options) {
         const session = sessions.find((s) => s.id === sessionId);
         if (!session) return; // 会话已删除或不在本窗口：静默丢弃
         try {
-            open(true);
             if (session.archivedAt) {
                 // 绑定会话被归档：自动取消归档再唤醒（与定时任务一致）
                 session.archivedAt = 0;
                 persistSessions();
                 renderSessionList();
             }
-            if (currentSession() !== session) switchSession(session.id);
-            if (currentSession() !== session) return; // 目标会话属于其他工作区，注入会落到错误的会话
-            // 窗口正在生成时延迟重试，避免打断当前轮次（最多约 30 秒）
-            for (let i = 0; i < 10 && (streamOf(session.id) || compactOf(session.id)); i++) await aiDelay(3000);
-            if (streamOf(session.id) || compactOf(session.id)) {
-                flash('计时器「' + label + '」到点，但会话正忙未能唤醒', true);
+            // 跨工作区口径同定时任务（§4.13.4）：按本窗口工作区解析系统上下文，跨区目标保持失败
+            if (session.workspace && aiWorkspaceKey(session.workspace) !== aiWorkspaceKey(currentWorkspacePath())) {
+                flash('计时器「' + label + '」到点，但目标会话属于其他工作区，请到对应窗口处理', true);
                 return;
             }
             const seconds = Math.max(1, Math.round(Number(payload && payload.endMs && payload.startMs ? (payload.endMs - payload.startMs) / 1000 : 0)));
             const desc = seconds >= 60 && seconds % 60 === 0 ? (seconds / 60) + ' 分钟' : seconds + ' 秒';
             const marksText = timerMarksText(payload);
-            await sendAppMessage({
+            const receipt = deliverAgentNotice(session, {
                 kind: 'timer',
                 label: '计时器 · ' + label,
                 content: '[计时器到点 · ' + label + ']\n设定为 ' + desc + ' 的倒计时已结束。' +
                     (marksText ? '期间标记时间线：' + marksText + '。\n' : '') +
                     '请继续处理之前等待的事项；若已无可继续的步骤，简短告知用户计时结束即可。',
             });
-            flash('计时器「' + label + '」已到点并唤醒');
+            if (!receipt || !receipt.ok) {
+                flash('计时器「' + label + '」到点但未能注入：' + ((receipt && receipt.reason) || '未知'), true);
+                return;
+            }
+            flash('计时器「' + label + '」已到点' + (receipt.woke ? '并唤醒' : '，已排入会话信箱'));
         } catch (e) {
             flash('计时器「' + label + '」唤醒失败：' + ((e && e.message) || e), true);
         }
@@ -5052,6 +5062,29 @@ export function createAIPanel(options) {
         updateComposerTakeover(true);
         // 列表条目的「待确认」状态跟着审批走（用户可能正在看别的会话）。
         renderSessionList();
+        // 后台轮次触发审批（§4.14.1）：接管卡只渲染「当前查看会话」的审批，而写操作审批没有
+        // 超时——不通知就等于让这一轮挂在用户看不见的输入区里永不结束。**不自动放行**，
+        // 只做「可见 + 可跳转」：桌面通知带 sessionId（消息中心点击即跳），条目打未读。
+        const viewed = isOpen() && currentSession() === session;
+        if (!viewed) {
+            setSessionUnread(session, 'done');
+            notifyDesktop({
+                kind: 'error',
+                title: 'AI 待审批',
+                body: (session.title || '会话') + ' · ' + (info.relPath || info.tool || '操作') + ' 需要你确认',
+                sessionId: session.id,
+            });
+            // 超时只「再提醒一次」，不替用户拍板（写操作与命令的授权不能由后台代劳）
+            setTimeout(() => {
+                if (approval.state !== 'pending') return;
+                notifyDesktop({
+                    kind: 'error',
+                    title: 'AI 审批仍在等待',
+                    body: (session.title || '会话') + ' · 已等待超过 1 分钟，后台轮次被卡住',
+                    sessionId: session.id,
+                });
+            }, 60000);
+        }
         return new Promise((resolve) => {
             entry.resolve = resolve;
         });

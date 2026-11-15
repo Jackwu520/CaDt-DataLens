@@ -51,6 +51,8 @@ export function createAISessionList(ctx) {
     // 会话信箱（阶段 H）：未消费条数与清空入口
     const clearMailbox = typeof ctx.clearMailbox === 'function' ? ctx.clearMailbox : () => 0;
     const pendingNoticeCount = typeof ctx.pendingNoticeCount === 'function' ? ctx.pendingNoticeCount : () => 0;
+    const stopSessionTurn = typeof ctx.stopSessionTurn === 'function' ? ctx.stopSessionTurn : () => {};
+    const listFlash = typeof ctx.flash === 'function' ? ctx.flash : () => {};
     const currentSession = ctx.currentSession;
     const currentWorkspacePath = ctx.currentWorkspacePath;
     const isOpen = ctx.isOpen;
@@ -267,6 +269,22 @@ export function createAISessionList(ctx) {
                 badge.setAttribute('role', 'img');
                 badge.setAttribute('aria-label', badge.title);
                 side.appendChild(badge);
+            }
+            // 后台轮次的停止（§4.14.2）：只在运行中 / 待确认态出现，hover 才显形（防误触）。
+            // streams 按会话隔离，停别人不需要先切过去——「静默跑着的轮次」必须有出口。
+            if (statusKind === 'running' || statusKind === 'pending') {
+                const stopBtn = document.createElement('button');
+                stopBtn.type = 'button';
+                stopBtn.className = 'ai-session-stop';
+                stopBtn.title = '停止这个会话的运行';
+                stopBtn.setAttribute('aria-label', '停止会话运行');
+                stopBtn.innerHTML = iconSvg('pause', 12);
+                stopBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    stopSessionTurn(session.id);
+                    listFlash('已停止会话「' + (session.title || '新会话') + '」');
+                });
+                item.appendChild(stopBtn);
             }
             const more = document.createElement('button');
             more.type = 'button';

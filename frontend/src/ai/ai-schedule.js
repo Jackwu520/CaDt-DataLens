@@ -24,6 +24,8 @@ export function createAISchedule(ctx) {
     const streamOf = ctx.streamOf;
     const compactOf = ctx.compactOf;
     const sendAppMessage = ctx.sendAppMessage;
+    // 会话信箱（阶段 I）：定时任务改成「一个通知发送方」——与子代理结算走同一条注入管道
+    const deliverAgentNotice = typeof ctx.deliverAgentNotice === 'function' ? ctx.deliverAgentNotice : null;
 
     // ---- 设置 → AI → 定时任务 ----
 
@@ -437,37 +439,49 @@ export function createAISchedule(ctx) {
         await runScheduledTurn(fire, target, prefix, prompt);
     }
 
+    // 注入走「会话信箱」（§4.13）：不再 open(true) 强开面板、不再 switchSession 切走用户视图，
+    // 也不再 30s 忙等——目标空闲时静默起一轮，忙则排到它下一轮边界（本轮结束后消费）。
+    // 失败才 flash + 回写 AIScheduleSetResult（语义与改造前一致）。
     async function runScheduledTurn(fire, target, prefix, prompt) {
         const name = aiTextOf(fire.name) || fire.scheduleId;
         try {
-            open(true);
+            if (!deliverAgentNotice) throw new Error('当前版本不支持静默注入');
+            // 跨工作区口径（§4.13.4）：系统上下文按「本窗口工作区」解析，跨工作区目标注入会拿到
+            // 错的工作区规则——保持改造前的失败分支，不在这儿顺手改权限语义。
+            if (target && typeof ctx.isSessionLocal === 'function' && !ctx.isSessionLocal(target)) {
+                throw new Error('目标会话属于其他工作区，请到对应工作区的窗口处理');
+            }
             let session = target;
             if (!session) {
+                // 「每次新建会话」形态：没有目标就没有可注入的对象，仍然建一个（用户预期是新对话）
                 newSession();
                 session = currentSession();
                 if (!session) throw new Error('无法创建会话');
                 if (fire.scope === 'read' || fire.scope === 'edit') session.scope = fire.scope;
             }
             if (session.archivedAt) {
-                // 绑定会话被归档：自动取消归档再唤醒（否则 submitText 会拒绝注入）
+                // 用户自己设的定时任务，唤醒即恢复归档（§4.13.4：与「外部投递拒收归档会话」是两套语义）
                 session.archivedAt = 0;
                 persistSessions();
                 renderSessionList();
                 flash('定时任务目标会话已归档，已自动取消归档：' + (session.title || '新会话'));
             }
-            if (currentSession() !== session) switchSession(session.id);
-            if (currentSession() !== session) {
-                // 软切换（目标会话属于其他工作区）不会切换：注入会落到错误的会话，明确失败
-                throw new Error('目标会话属于其他工作区，请到对应工作区的窗口处理');
+            const receipt = deliverAgentNotice(session, {
+                kind: 'schedule',
+                label: '定时任务 · ' + name,
+                content: prefix + '\n' + prompt,
+            });
+            if (!receipt || !receipt.ok) {
+                const reason = receipt && receipt.reason;
+                throw new Error(reason === 'gone' ? '目标会话已不存在'
+                    : (reason === 'archived' ? '目标会话已归档' : '注入失败（' + (reason || '未知') + '）'));
             }
-            // 窗口正在生成时延迟重试，避免打断当前轮次（最多约 30 秒）
-            for (let i = 0; i < 10 && (streamOf(session.id) || compactOf(session.id)); i++) await aiDelay(3000);
-            if (streamOf(session.id) || compactOf(session.id)) throw new Error('当前会话正在生成，未能注入');
-            const sent = await sendAppMessage({kind: 'schedule', label: '定时任务 · ' + name, content: prefix + '\n' + prompt});
-            if (!sent) throw new Error('消息未能发送（无可用配置或面板正忙）');
-            flash('定时任务「' + name + '」已触发（第 ' + (fire.runNo || 1) + ' 次）');
+            const woke = receipt.woke === true;
+            flash('定时任务「' + name + '」已触发（第 ' + (fire.runNo || 1) + ' 次' +
+                (woke ? '' : '，已排入目标会话的信箱') + '）');
             if (backend.AIScheduleSetResult) {
-                Promise.resolve(backend.AIScheduleSetResult(fire.scheduleId, true, '第 ' + (fire.runNo || 1) + ' 次触发已注入会话')).catch(() => {});
+                Promise.resolve(backend.AIScheduleSetResult(fire.scheduleId, true,
+                    '第 ' + (fire.runNo || 1) + ' 次触发已注入会话' + (woke ? '' : '（排队等待中）'))).catch(() => {});
             }
         } catch (e) {
             flash('定时任务「' + name + '」触发失败：' + ((e && e.message) || e), true);

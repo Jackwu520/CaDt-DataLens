@@ -1,6 +1,6 @@
 # 会话消息化与后台注入：从阻塞等待到消息通知模型（实施计划）
 
-> 状态：未开工（2026-11-14 调研成文；同日增补「侧边对话」§4.9/阶段 F、「子代理压缩」§4.10/阶段 G、「ai-panel.js 拆分边界」§4.11、「共享信箱与会话间投递」§4.12/阶段 H、「定时任务与计时器静默唤醒」§4.13／「后台轮次可观测性」§4.14（均属阶段 I））
+> 状态：**已完成**（2026-11-14 调研成文；2026-11-15 按 A–I 九阶段全部落地，每阶段独立提交、`npm test` 426 项全绿、`vite build` 通过；原文保留为设计依据与坑位记录，实施中的偏差见各阶段 commit 说明）
 > 决策依据：用户 2026-11-14 要求将 spawn_agent 从阻塞模型改造为消息通知模型，给出 7 条原语；参考实现 deepseek-harness（下称 dsh）。同日确认「侧边对话」取「两者都要」形态（用户支线对话 + 子代理对话视图，统一旁路会话基建）
 > 范围：`frontend/src/ai/` 的**会话消息化与后台注入**面——子代理域、主回合注入、侧边对话（§4.9）、共享信箱（§4.12）、定时任务与计时器的静默唤醒（§4.13）；不改 Go 流式协议、不改后台终端、不改定时任务/计时器的调度语义
 
@@ -739,34 +739,34 @@ session_send:  { name: 'session_send',  description: '向一个或多个（1–1
 
 ## 9. 任务清单
 
-- [ ] A1 抽 `startSessionTurn` 内核 + 队列所有权迁移 + 回归
-- [ ] A2 app-message 子代理 kind/前缀
-- [ ] A3 清理 subAgentQueue 死代码
-- [ ] B1 subAgentRecords + 终态保留 + 通知文案函数（含单测）
-- [ ] B2 background 模式 spawn + 完成/失败通知注入（含消费点与唤醒）
-- [ ] B3 HUD 终态合并与卡片文案
-- [ ] C1 子收件箱双队列 + 消费点（含单测）
-- [ ] C2 agent_send / agent_stop 工具与执行
-- [ ] C3 steerKick / 冷唤醒 / 统一停止（含单测）
-- [ ] C4 HUD waiting 状态与详情视图扩展
-- [ ] D1 子 ask_user 桥 + 提问通知 + 超时兜底（含单测）
-- [ ] D2 agent_send askId 回答链路
-- [ ] E1 wait_agent
-- [ ] E2 系统提示 / CHANGELOG / README / 方案状态更新
-- [ ] F1 支线会话 sideOf 元数据 + 列表呈现 + 创建入口/引用预填（含单测）
-- [ ] F2 带回主对话（deliverAgentNotice 泛化 + 唤醒/排队注入 + 兜底）
-- [ ] F3 agentView 输入行（排队/插队/冷唤醒入口/from 前缀区分）（含单测）
-- [ ] F4 提升为独立会话 + 删除兜底 + 文档与回归
-- [ ] G1 抽压缩应用内核 + 主压缩路径回归（含单测）
-- [ ] G2 subCompacts + 轮边界 auto-compact + 防循环 + HUD「压缩中」（含单测）
-- [ ] G3 agent_compact 工具 + agentView 压缩按钮 + steer/停止互斥（含单测）
-- [ ] G4 工具守则 / CHANGELOG / README
-- [ ] H1 共享信箱正式化 + session_list / session_send（单播/组播）工具与执行（含单测）
-- [ ] H2 用户「投递到会话…」（多选选择器）+「通知运行中的会话」动作
-- [ ] H3 防环治理 / 守则 / 清空入口 / 文档与回归
-- [ ] I1 定时任务注入改走 startSessionTurn（去 open/switchSession）+ 回归
-- [ ] I2 「目标会话生成中」并入 notices 队列（去 30s 忙等）+ 回归
-- [ ] I3 归档/跨工作区口径确认 + §6 第 27–29 条 + CHANGELOG/README
-- [ ] I4 计时器唤醒并入 startSessionTurn（去 open/switchSession/忙等）
-- [ ] I5 审批与提问可见性（waiting 态 + 通知 + 跳转；§4.14.1）
-- [ ] I6 后台轮次停止入口 + 投递失败回执/降级 + 消费点补全（§4.14.2–4.14.4）
+- [x] A1 抽 `startSessionTurn` 内核 + 队列所有权迁移 + 回归
+- [x] A2 app-message 子代理 kind/前缀
+- [x] A3 清理 subAgentQueue 死代码
+- [x] B1 subAgentRecords + 终态保留 + 通知文案函数（含单测）
+- [x] B2 background 模式 spawn + 完成/失败通知注入（含消费点与唤醒）
+- [x] B3 HUD 终态合并与卡片文案
+- [x] C1 子收件箱双队列 + 消费点（含单测）
+- [x] C2 agent_send / agent_stop 工具与执行
+- [x] C3 steerKick / 冷唤醒 / 统一停止（含单测）
+- [x] C4 HUD waiting 状态与详情视图扩展
+- [x] D1 子 ask_user 桥 + 提问通知 + 超时兜底（含单测）
+- [x] D2 agent_send askId 回答链路
+- [x] E1 wait_agent
+- [x] E2 系统提示 / CHANGELOG / README / 方案状态更新
+- [x] F1 支线会话 sideOf 元数据 + 列表呈现 + 创建入口/引用预填（含单测）
+- [x] F2 带回主对话（deliverAgentNotice 泛化 + 唤醒/排队注入 + 兜底）
+- [x] F3 agentView 输入行（排队/插队/冷唤醒入口/from 前缀区分）（含单测）
+- [x] F4 提升为独立会话 + 删除兜底 + 文档与回归
+- [x] G1 抽压缩应用内核 + 主压缩路径回归（含单测）
+- [x] G2 subCompacts + 轮边界 auto-compact + 防循环 + HUD「压缩中」（含单测）
+- [x] G3 agent_compact 工具 + agentView 压缩按钮 + steer/停止互斥（含单测）
+- [x] G4 工具守则 / CHANGELOG / README
+- [x] H1 共享信箱正式化 + session_list / session_send（单播/组播）工具与执行（含单测）
+- [x] H2 用户「投递到会话…」（多选选择器）+「通知运行中的会话」动作
+- [x] H3 防环治理 / 守则 / 清空入口 / 文档与回归
+- [x] I1 定时任务注入改走 startSessionTurn（去 open/switchSession）+ 回归
+- [x] I2 「目标会话生成中」并入 notices 队列（去 30s 忙等）+ 回归
+- [x] I3 归档/跨工作区口径确认 + §6 第 27–29 条 + CHANGELOG/README
+- [x] I4 计时器唤醒并入 startSessionTurn（去 open/switchSession/忙等）
+- [x] I5 审批与提问可见性（waiting 态 + 通知 + 跳转；§4.14.1）
+- [x] I6 后台轮次停止入口 + 投递失败回执/降级 + 消费点补全（§4.14.2–4.14.4）
