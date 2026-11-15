@@ -4,6 +4,17 @@
 import {aiFormatTime, aiTextOf} from './ai-constants.js';
 import {createFileIcon} from '../core/fileicons.js';
 
+// 审阅 diff 块归一：GitDiffFor 的输出**不能整串 trim**——git 的空上下文行是「单个空格」
+// 的行，hunk 恰好以空上下文行结尾时（markdown 等文档极常见），整串 trim 会把它连同
+// 换行整行吃掉，hunk 实际行数便与 @@ 头对不上（PatchParseText 报 PATCH_PARSE：
+// 头部声明 -141,7 +141,7，实际数出 -6 +6）。只裁首尾的换行；空上下文行原样保留，
+// 解析端对传输吃尾空格的空行已有兜底（patch_parse.go 的空行按上下文补计）。
+export function normalizeGitDiffBlock(diff) {
+    return String(diff == null ? '' : diff)
+        .replace(/^(?:\r?\n)+/, '')
+        .replace(/(?:\r?\n)+$/, '');
+}
+
 export function createAIChangesUI(ctx) {
     const changesSummaryFold = ctx.changesSummaryFold;
     const el = ctx.el;
@@ -307,7 +318,7 @@ export function createAIChangesUI(ctx) {
                 const result = root && backend.GitDiffFor
                     ? await backend.GitDiffFor(root, file.relPath)
                     : null;
-                if (result && result.diff && String(result.diff).trim()) body = String(result.diff).trim();
+                if (result && result.diff && String(result.diff).trim()) body = normalizeGitDiffBlock(result.diff);
             } catch (e) {
                 notes.push(label + '：获取 Git 差异失败（' + ((e && e.message) || e) + '）');
                 continue;
