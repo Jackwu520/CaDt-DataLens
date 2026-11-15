@@ -139,6 +139,7 @@ import {createAIManageDialogs} from './ai-manage-dialogs.js';
 import {createAISettingsDialog} from './ai-settings-dialog.js';
 import {createAISubagents} from './ai-subagents.js';
 import {createAIAgentNotices} from './ai-agent-notices.js';
+import {createAISidechat} from './ai-sidechat.js';
 import {createAIMcp} from './ai-mcp.js';
 import {createAIMcpSettings} from './ai-mcp-settings.js';
 import {
@@ -1278,6 +1279,8 @@ export function createAIPanel(options) {
             approvedPaths: Array.isArray(raw.approvedPaths)
                 ? raw.approvedPaths.filter((path) => typeof path === 'string' && path).slice(0, 200)
                 : [],
+            // 支线对话：指向母会话 id（普通会话为空）。不嵌套——读盘时也压成一层的语义。
+            sideOf: aiTextOf(raw.sideOf),
         };
     }
 
@@ -1306,6 +1309,7 @@ export function createAIPanel(options) {
             reminders: [],
             changes: [],
             approvedPaths: [],
+            sideOf: '',
         };
     }
 
@@ -1969,6 +1973,9 @@ export function createAIPanel(options) {
         renderWindows,
         streams,
         backend,
+        // 支线对话（阶段 F）：构造在本模块之后，惰性转发
+        openSideChat: (...args) => sidechatMod.openSideChat(...args),
+        promoteSideChat: (...args) => sidechatMod.promoteSideChat(...args),
         aiWorkspaceKey,
         aiWorkspaceName,
         sessionWorkspacePath,
@@ -3411,6 +3418,8 @@ export function createAIPanel(options) {
             rewind: icon('<path d="M6.2 4.4L2.8 7.8l3.4 3.4"/><path d="M3 7.8h6.2a4 4 0 1 1 0 8H6.6"/>'),
             branch: icon('<circle cx="4.6" cy="3.4" r="1.7"/><circle cx="4.6" cy="12.6" r="1.7"/><circle cx="11.5" cy="6.4" r="1.7"/><path d="M4.6 5.1v5.8"/><path d="M4.6 8.9c0-1.7 1.3-2.5 3-2.5h2.2"/>'),
             database: icon('<ellipse cx="8" cy="4.2" rx="4.5" ry="1.7"/><path d="M3.5 4.2v3.7c0 .94 2.01 1.7 4.5 1.7s4.5-.76 4.5-1.7V4.2"/><path d="M3.5 7.9v3.7c0 .94 2.01 1.7 4.5 1.7s4.5-.76 4.5-1.7V7.9"/>'),
+            sidechat: icon('<path d="M13.2 9.2a2 2 0 0 1-2 2H6.8L3.6 13.8v-3.2"/><path d="M12.4 10.4h-.4"/><path d="M3 6.2A2 2 0 0 1 5 4.2h6a2 2 0 0 1 2 2v.6a2 2 0 0 1-2 2H7l-2.8 2.2V8.2H5a2 2 0 0 1-2-2z"/><path d="M11 7.4h.6"/>'),
+            bringback: icon('<path d="M3 8h8.6"/><path d="M8.4 4.6L11.8 8l-3.4 3.4"/><path d="M13 3.2v9.6"/>'),
         };
         const add = (act, label, disabled) => {
             const button = document.createElement('button');
@@ -3440,6 +3449,10 @@ export function createAIPanel(options) {
             const finished = message.status !== 'streaming' && message.status !== 'error';
             if (finished) {
                 if (!sessionBusy) add('branch', '在新对话中分支');
+                // 支线对话（旁路追问）：轻关联，不复制历史，只把这条消息作为引用带入新会话
+                if (!sessionBusy) add('sidechat', '新建支线对话（带这条引用追问）');
+                // 这条消息在支线会话里：一键把结论送回母会话的信箱
+                if (sessionNow && sessionNow.sideOf) add('bringback', '把这条结论带回主对话');
                 if (settings.aiShowUsage !== false && turnUsageTotal(message) > 0) {
                     actions.appendChild(turnUsageChip(message, icons));
                 }
@@ -9183,6 +9196,8 @@ export function createAIPanel(options) {
             );
         }
         items.push(
+            {label: '新建支线对话（旁路追问）', icon: 'bookmark', action: () => openSideChat({session: currentSession()})},
+            {sep: true},
             {label: '提示词…', icon: 'doc', action: () => showPromptDialog()},
             {label: '记忆管理…', icon: 'save', action: () => showMemoryDialog()},
             {label: '技能管理…', icon: 'sparkles', action: () => showSkillsDialog()},
@@ -9582,6 +9597,8 @@ export function createAIPanel(options) {
         else if (action === 'retry') retryLast();
         else if (action === 'rewind') rewindToMessage(session, index);
         else if (action === 'branch') branchSessionAt(session, index);
+        else if (action === 'sidechat') openSideChat({session, quote: message.content});
+        else if (action === 'bringback') bringBackToParent(session, message.content);
     }
 
     // ---------- 会话管理 ----------
@@ -9642,6 +9659,18 @@ export function createAIPanel(options) {
         if (!sessionId) return;
         drafts.delete(sessionId);
         try { localStorage.removeItem(draftLSKey(sessionId)); } catch (e) {}
+    }
+
+    // 给「还没切过去」的会话预填草稿（支线对话的引用块）：写内存 + localStorage，
+    // switchSession 里的 loadComposerDraft 会照常恢复。
+    function setComposerDraft(sessionId, text) {
+        if (!sessionId) return;
+        const value = String(text == null ? '' : text);
+        drafts.set(sessionId, {text: value, attachments: []});
+        try {
+            if (value.trim()) localStorage.setItem(draftLSKey(sessionId), JSON.stringify({text: value}));
+            else localStorage.removeItem(draftLSKey(sessionId));
+        } catch (e) {}
     }
 
     function switchSession(id) {
@@ -11637,6 +11666,25 @@ export function createAIPanel(options) {
     const flushAgentNotices = (...args) => noticesMod.flushNotices(...args);
     const foldNoticesBeforeTurn = (...args) => noticesMod.foldBeforeTurn(...args);
     const pendingNoticeCount = (...args) => noticesMod.pendingCount(...args);
+
+    // 支线对话域（阶段 F：普通持久化会话 + sideOf 元数据；动作在 ai-sidechat.js，
+    // 列表缩进/徽标与排序在 ai-session-list.js，结论带回走上面的信箱通道）
+    const sidechatMod = createAISidechat({
+        getSessions: () => sessions,
+        sessionById,
+        currentSession,
+        createSessionData,
+        persistSessions,
+        switchSession,
+        renderSessionList,
+        setDraft: setComposerDraft,
+        deliverAgentNotice,
+        flash,
+        logActivity,
+    });
+    const openSideChat = (...args) => sidechatMod.openSideChat(...args);
+    const bringBackToParent = (...args) => sidechatMod.bringBackToParent(...args);
+    const promoteSideChat = (...args) => sidechatMod.promoteSideChat(...args);
 
     // 会话消息化工具的执行分发（agent_send / agent_stop / wait_agent / agent_compact /
     // session_list / session_send）：执行体按阶段落在 ai-subagents.js 与 ai-agent-notices.js，

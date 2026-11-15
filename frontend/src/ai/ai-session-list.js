@@ -5,6 +5,35 @@
 import {iconSvg} from '../core/icons.js';
 import {aiTextOf, aiFormatSessionTime} from './ai-constants.js';
 
+// 支线紧跟母会话：按传入顺序（已按活跃度排序）铺平，再把每条支线插到它的母会话之后。
+// 母会话已删除、或 sideOf 成环时按普通会话处理——渲染不能因为元数据坏了就少一条会话。
+export function orderSessionsWithSides(list) {
+    const source = Array.isArray(list) ? list : [];
+    const byId = new Map(source.map((session) => [session.id, session]));
+    const children = new Map();
+    const roots = [];
+    for (const session of source) {
+        const parent = session && session.sideOf ? byId.get(session.sideOf) : null;
+        if (parent && parent !== session) {
+            if (!children.has(parent.id)) children.set(parent.id, []);
+            children.get(parent.id).push(session);
+        } else {
+            roots.push(session);
+        }
+    }
+    const out = [];
+    const seen = new Set();
+    const walk = (session) => {
+        if (!session || seen.has(session.id)) return;
+        seen.add(session.id);
+        out.push(session);
+        for (const child of children.get(session.id) || []) walk(child);
+    };
+    for (const session of roots) walk(session);
+    for (const session of source) walk(session);
+    return out;
+}
+
 export function createAISessionList(ctx) {
     const el = ctx.el;
     const sessionListEl = ctx.sessionListEl;
@@ -16,6 +45,9 @@ export function createAISessionList(ctx) {
     const aiWorkspaceName = ctx.aiWorkspaceName;
     const sessionWorkspacePath = ctx.sessionWorkspacePath;
     const sessionUseDisk = ctx.sessionUseDisk;
+    // 支线对话动作（阶段 F）：面板经惰性转发注入，缺省时菜单项空操作不报错
+    const openSideChat = typeof ctx.openSideChat === 'function' ? ctx.openSideChat : () => {};
+    const promoteSideChat = typeof ctx.promoteSideChat === 'function' ? ctx.promoteSideChat : () => {};
     const currentSession = ctx.currentSession;
     const currentWorkspacePath = ctx.currentWorkspacePath;
     const isOpen = ctx.isOpen;
@@ -149,7 +181,7 @@ export function createAISessionList(ctx) {
         const scrollTop = sessionListEl.scrollTop;
         sessionListEl.innerHTML = '';
         const current = currentSession();
-        const ordered = getSessions().slice().sort((a, b) => sessionActivity(b) - sessionActivity(a));
+        const ordered = orderSessionsWithSides(getSessions().slice().sort((a, b) => sessionActivity(b) - sessionActivity(a)));
         if (!ordered.length) {
             const empty = document.createElement('div');
             empty.className = 'ai-session-empty';
@@ -168,9 +200,18 @@ export function createAISessionList(ctx) {
             return;
         }
 
+        // 支线徽标只在母会话仍存在时显示：母会话删除后回落为普通会话（元数据不追着清，
+        // 「带回主对话」会给出明确提示）
+        const liveIds = new Set(getSessions().map((item) => item.id));
+        const sideBadgeOn = (session) => {
+            const sideOf = aiTextOf(session && session.sideOf).trim();
+            return !!sideOf && liveIds.has(sideOf);
+        };
         const renderItem = (session, archived) => {
             const item = document.createElement('div');
             item.className = 'ai-session-item' + (current && current.id === session.id ? ' active' : '') + (archived ? ' archived' : '');
+            // 支线：缩进 + 「支线」徽标，视觉上从属母会话（排序已保证紧跟其后）
+            if (sideBadgeOn(session)) item.classList.add('ai-session-branch');
             item.dataset.aiSessionId = session.id;
             item.tabIndex = 0;
             item.setAttribute('role', 'button');
@@ -190,6 +231,13 @@ export function createAISessionList(ctx) {
             title.textContent = session.title || '新会话';
             title.title = session.title || '新会话';
             titleRow.appendChild(title);
+            if (sideBadgeOn(session)) {
+                const badge = document.createElement('span');
+                badge.className = 'ai-session-badge';
+                badge.textContent = '支线';
+                badge.title = '支线对话：轻关联母会话，可用「带回主对话」把结论送回去';
+                titleRow.appendChild(badge);
+            }
             const meta = document.createElement('div');
             meta.className = 'ai-session-meta';
             meta.textContent = (archived ? '已归档 · ' : '') + session.messages.length + ' 条消息 · ' + aiFormatSessionTime(sessionActivity(session));
@@ -421,13 +469,17 @@ export function createAISessionList(ctx) {
 
     function showSessionMenu(session, x, y) {
         if (!showContextMenu) return;
+        const side = !!(session && session.sideOf);
         showContextMenu([
             {label: '新建会话', action: () => { ensureOpen(); newSession(); }},
+            {label: '新建支线对话', action: () => { ensureOpen(); openSideChat({session}); }},
             {sep: true},
             {label: session.pinned ? '取消置顶' : '置顶会话', disabled: !!session.archivedAt, action: () => toggleSessionPin(session)},
             {label: '重命名会话…', action: () => renameSession(session)},
             {label: '导出会话…', action: () => exportSession(session)},
             {label: '会话数据诊断…', action: () => showSessionDiagnostics(session)},
+            // 支线专用：清掉 sideOf，此后它就是独立会话（母会话删除也不影响）
+            {label: '提升为独立会话', disabled: !side, action: () => promoteSideChat(session)},
             {label: session.archivedAt ? '取消归档' : '归档会话', action: () => archiveSession(session, !session.archivedAt)},
             {sep: true},
             {label: '删除会话', danger: true, action: () => deleteSession(session)},

@@ -48,36 +48,59 @@
 
 ## 一、现状基线
 
-### 体积构成（实测）
+### 体积构成（实测 2026-11-15，`wails build -devtools`）
 
-| 文件 | 大小 | 说明 |
+exe 总量 **31.5 MB**（31,479,808 字节）＝ 前端资源 **12.7 MB（40%）** ＋ Go 侧 **18.8 MB（60%）**。
+
+PE 节口径（对正式 exe 逐节实测，raw size）：
+
+| PE 节 | 文件占用 | 内容 |
 |---|---|---|
-| `frontend/dist/assets/index-BAwWF6e5.js` | 1.34 MB | 打包后的全部应用 JS |
-| `frontend/public/vendor/mermaid/mermaid.min.js` | 2.57 MB | 单个图表库 |
-| `frontend/src/main.js`（源码） | 573 KB | 业务逻辑主文件 |
-| `frontend/src/structure.js`（源码） | 71 KB | 17 种语言的结构解析 |
-| `frontend/dist/assets/KaTeX_*` | 60 个文件 | woff2 / woff / ttf 三套格式 |
-| `frontend/public/fonts/` | 5 个字体 | Inter ×2、JetBrains Mono ×2、Fira Code ×1 |
+| `.rdata` | 21.6 MB | **嵌入的 dist 12.7 MB** ＋ ≈8.9 MB Go 字符串常量 / 类型元数据 / 反射表 / pclntab（Go 二进制固有开销） |
+| `.text` | 8.3 MB | 全部机器码，归因见下 |
+| `.data` / `.pdata` / `.reloc` / `.rsrc` 等 | ≈1.6 MB | 初始化数据、异常表、重定位、版本资源与图标 |
 
-**结论**：20 MB 级的体积已经主要来自「借来的现成能力」（Ace / jsoneditor / xterm / mermaid / KaTeX / markdown-it / hljs）。因此后续优化应避免引入新的重量级依赖，把预算花在**填充真实功能缺口**上。
+dist 内部（12.7 MB，`du` 逐目录）：
 
-### 已知的硬限制（来自源码）
+| 文件 / 目录 | 大小 | 说明 |
+|---|---|---|
+| `dist/vendor/` | 8.1 MB | mermaid 2.5 · elk 1.6 · ace 1.4 · jsoneditor 1.1 · echarts 1.1 · xterm 0.3 · 词云 0.05 · 许可证/图标 0.15 |
+| `dist/assets/index-*.js` | 2.3 MB | 全部应用 JS（域模块 + markdown-it / hljs / KaTeX 渲染链） |
+| `dist/assets/` 其余 | ≈0.7 MB | CSS 292 KB · KaTeX woff2 ×19 ≈300 KB · structure-worker / DOMPurify 等 |
+| `dist/brand/` | 704 KB | 欢迎横幅 ×2 + lockup |
+| `dist/fonts/` | 532 KB | Inter ×2、JetBrains Mono ×2、Fira Code ×1（woff2） |
+| `dist/index.html` | 208 KB | 窗口结构 |
+
+`.text` 归因（在与正式构建同标签 `desktop,production,devtools` 的探针 exe 上 `go tool nm` 按 T 类符号聚合，nm 覆盖 .text 全量 8.3 MB；裸 `go build` 无这两个标签会少 3.2 MB 代码 / 7.8 MB rodata，不能作归因基准）：
+
+| 包 | 代码量 | 说明 |
+|---|---|---|
+| `modernc.org/sqlite` | 2.0 MB（≈24%） | AI 会话索引 + AI 定时任务两个派生索引共用；整包口径 +3.9 MB（代码 + rodata 里的表） |
+| `main`（本仓库 Go 代码） | 0.8 MB | 仓库根 40+ 文件 + devtools 标签下的调试控制台等 |
+| Go runtime | 0.5 MB | Go 1.26（含 FIPS 模块） |
+| 网络与加密栈 | ≈0.9 MB | crypto/tls · net/http（含 http2）· net · x509——AI 请求 / 市场 / 更新检查 |
+| wails + webview2 绑定 | ≈0.14 MB | desktop/windows 前端层 + edge 绑定（不含 wails 其余内部包，计入下行余量） |
+| 其余依赖（余量） | ≈4.0 MB | encoding/json v2 · x/text（GBK 等中文解码表）· reflect · x/net/html · mimetype · template · regexp · database/sql · wails 内部包等 |
+
+**结论**：31.5 MB 里「借来的现成能力」依旧是大头——前端 6 个引擎 7.6 MB + SQLite 2.0 MB，应用自己的代码（前端 2.3 MB + Go 0.8 MB）只占 ~10%。相比 2026-11-11 旧基线（exe 20 MB、index.js 1.34 MB）涨的 11.5 MB，可对账部分：SQLite 两个派生索引 **+3.9 MB**（作者批准例外）、可视化引擎 echarts/elk/词云 **+2.69 MB**（作者批准例外，≤5 MB 预算）、其余为 MCP 客户端、AI 功能面与依赖升级的自然增长。
+
+### 已知的硬限制（来自源码，2026-11-15 复核）
 
 | 限制 | 位置 | 数值 |
 |---|---|---|
-| 打开文件上限 | `app.go` | 100 MB 拒绝 |
-| 大文件只读 | `app.go` | 10 MB |
-| 图片直接预览 | `app.go` | 32 MB |
-| 二进制 hex 显示 | `app.go` `imageHexLimit` | 1 MB |
-| CSV 表格渲染行数 | `main.js:3408` `CSV_TABLE_ROW_LIMIT` | 5000 |
-| 结构视图文本上限 | `structure.js` `MAX_TEXT` | 4 MB |
+| 打开文件上限 | `app_core.go` `maxFileBytes` | 100 MB 拒绝 |
+| 大文件只读 | `app_core.go` `largeFileBytes` | 10 MB |
+| 图片直接预览 | `app_core.go` `imagePreviewLimit` | 32 MB |
+| 二进制 hex 显示 | `app_file.go` `imageHexLimit` | 1 MB |
+| ~~CSV 表格渲染行数~~ | `editor-csv-view.js` `CSV_VIRTUAL_THRESHOLD` | **5000 行截断已移除**（提案 1 已实施）：>300 行启用虚拟滚动 |
+| 结构视图文本上限 | `structure.js` `MAX_TEXT` | 8 MB（原 4 MB，提案 6 随 Worker 化放宽） |
 | 结构视图节点上限 | `structure.js` `MAX_NODES` | 6000 |
 | 工作区搜索文件上限 | `search.go` `searchMaxFileSize` | 4 MB |
 | 工作区搜索耗时预算 | `search.go` `searchBudget` | 3.5 s |
 | 工作区搜索结果数 | `search.go` `searchMaxResults` | 400 |
 | 单文件搜索命中数 | `search.go` `searchMaxPerFile` | 30 |
 
-这些数字说明一件事：**当前的性能瓶颈是有意用限制绕开的**，而不是被解决了。下面第 1、2、4、6 项就是把这些限制放宽；第 5 项则是消除无效的重复 I/O。
+这些数字说明一件事：**性能瓶颈一部分用限制绕开（文件尺寸、搜索预算），一部分已用工程手段解决**（CSV 虚拟滚动、结构解析 Worker 化 + 缓存）——后者正是第 1、6 项，已随「实施状态」落地。
 
 ---
 
@@ -727,7 +750,7 @@ Step 7  文件树通知（第 5 项阶段二）            ← 视阶段一实�
 | `x/sys` 已存在 | `go.mod` `golang.org/x/sys v0.48.0` |
 | CLI 通道已存在 | `main.go` `runInstallerCommand(os.Args[1:])`；`app.go` `parseOpenTargets()` |
 | 文件读写无 VFS 层 | `app.go` `OpenFile()` 直接 `os.ReadFile` |
-| 体积实测 | `frontend/dist/assets/index-BAwWF6e5.js` 1.34 MB；`frontend/public/vendor/mermaid/mermaid.min.js` 2.57 MB |
+| 体积实测 | 已重测，见「一、现状基线」（2026-11-15：exe 31.5 MB = 嵌入 dist 12.7 MB + Go 侧 18.8 MB，PE 节与 nm 归因） |
 
 ---
 

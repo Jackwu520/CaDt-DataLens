@@ -250,6 +250,8 @@ export function buildSessionMeta(session) {
         reminders: Array.isArray(session && session.reminders) ? session.reminders : [],
         changes: Array.isArray(session && session.changes) ? session.changes : [],
         approvedPaths: Array.isArray(session && session.approvedPaths) ? session.approvedPaths : [],
+        // 支线对话：指向母会话 id（普通会话为空）。sideOf 不嵌套——创建时已扁平化到一层。
+        sideOf: textOf(session && session.sideOf),
         summary,
     };
 }

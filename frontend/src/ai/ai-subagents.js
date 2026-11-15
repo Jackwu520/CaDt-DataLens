@@ -3,6 +3,7 @@
 // 顺手删除了 sessionHasLiveBgJob 的重复定义（原 10923/10933 两份逐字相同，后者覆盖前者，保留一份）。
 // agentViewState/agentViewTimer/hudReady/AGENT_STATE_LABEL 与 AI_SUB_* 常量随域迁入；chipsPopKind 经访问器读写。
 import {iconSvg} from '../core/icons.js';
+import {createTextarea} from '../core/form-controls.js';
 import {aiClampInt, aiNowId, aiTextOf} from './ai-constants.js';
 import {AI_TOOL_DEFS} from './ai-tool-defs.js';
 import {inspectToolArguments} from './ai-tool-args.js';
@@ -599,7 +600,12 @@ export function createAISubagents(ctx) {
     function renderAgentView() {
         if (!agentViewState || !el.agentView) return;
         const view = agentViewState;
-        el.agentView.textContent = '';
+        // 只清头部与正文，**保留输入行**（子代理运行中详情视图每 300ms 重渲染，重建会让
+        // 用户正在打的字与焦点一起丢）。
+        for (const node of [...el.agentView.children]) {
+            if (node.classList && node.classList.contains('ai-agv-composer')) continue;
+            node.remove();
+        }
         const meta = agentStatusMeta(view.toolCallId);
         const head = document.createElement('div');
         head.className = 'ai-agent-view-head';
@@ -651,6 +657,85 @@ export function createAISubagents(ctx) {
         if (sub) appendInboxPreview(sub, body);
         el.agentView.appendChild(body);
         body.scrollTop = body.scrollHeight;
+        // 输入行固定在底部（独立节点，重渲染不重建）
+        const composer = ensureAgentViewComposer(view);
+        if (composer && (composer.parentNode !== el.agentView || el.agentView.lastElementChild !== composer)) {
+            el.agentView.appendChild(composer);
+        }
+    }
+
+    // 子代理对话视图的输入行（F3）：Enter 排队 / Ctrl+Enter 插队；对已完成且可续的子代理
+    // 输入即冷唤醒入口；失败/停止/上下文已回收的记录禁用并说明原因。
+    // 节点按 subId 缓存复用——运行中的详情视图每 300ms 重渲染，重建输入框会丢焦点与草稿。
+    let agentViewComposer = null;
+
+    function ensureAgentViewComposer(view) {
+        const key = view.subId || '';
+        const live = key ? subAgents.get(key) : null;
+        const record = !live && key ? subAgentRecords.get(key) : null;
+        const target = live || record;
+        if (!target) {
+            if (agentViewComposer && agentViewComposer.subId === key) agentViewComposer = null;
+            return null;
+        }
+        const gate = live ? {ok: true, reason: ''} : canReviveRecord(record);
+        const canType = gate.ok;
+        const stateText = {running: '运行中', done: '已完成', error: '失败', stopped: '已停止'}[live ? 'running' : record.state] || '';
+        let wrap = agentViewComposer && agentViewComposer.subId === key ? agentViewComposer.el : null;
+        if (!wrap) {
+            wrap = document.createElement('div');
+            wrap.className = 'ai-agv-composer';
+            // 表单控件走工厂（docs/frontend-form-controls.md）：className 覆盖默认封装 class，
+            // 外观由 .ai-agv-input 自己适配详情视图的紧凑行
+            const input = createTextarea({className: 'ai-agv-input', rows: 1, spellcheck: false}).control;
+            const send = document.createElement('button');
+            send.type = 'button';
+            send.className = 'ai-agv-send';
+            send.textContent = '发送';
+            const submit = (urgent) => {
+                const text = String(input.value || '').trim();
+                if (!text) return;
+                const current = agentViewState && agentViewState.subId ? subAgents.get(agentViewState.subId) : null;
+                const rec = !current && agentViewState && agentViewState.subId
+                    ? subAgentRecords.get(agentViewState.subId) : null;
+                if (current) {
+                    if (urgent) {
+                        const r = steerSubAgent(current, text, {from: 'user'});
+                        flash(r.degraded ? '它正在压缩上下文，消息已排队（压缩完成后消费）' : '已插队：打断当前生成，消息在下一步最前注入');
+                    } else {
+                        queueSubAgentMessage(current, text, {from: 'user'});
+                        flash('已排队：子代理下一轮可见');
+                    }
+                } else if (rec) {
+                    const revived = reviveSubAgent(rec, text, {from: 'user', urgent});
+                    flash(revived ? '已唤醒子代理「' + revived.name + '」，消息已投递' : '唤醒失败：上下文不可用，请重新派单', !revived);
+                }
+                input.value = '';
+                renderAgentView();
+            };
+            input.addEventListener('keydown', (e) => {
+                if (e.key !== 'Enter' || e.shiftKey) return;
+                e.preventDefault();
+                submit(e.ctrlKey || e.metaKey);
+            });
+            send.addEventListener('click', () => submit(false));
+            wrap.append(input, send);
+            agentViewComposer = {subId: key, el: wrap};
+        }
+        // 状态可能变（running → done / 被停止）：每次渲染同步可用性与文案
+        const input = wrap.querySelector('.ai-agv-input');
+        const send = wrap.querySelector('.ai-agv-send');
+        if (input) {
+            input.disabled = !canType;
+            input.placeholder = !canType
+                ? (gate.reason === 'recycled'
+                    ? '上下文已回收（终态记录超出上限），无法继续'
+                    : '该子代理已' + stateText + '，不能再接收消息')
+                : (live ? '给子代理补充线索：Enter 排队 · Ctrl+Enter 插队' : '它已完成，发消息会唤醒它继续：Enter 发送');
+        }
+        if (send) send.disabled = !canType;
+        wrap.classList.toggle('disabled', !canType);
+        return wrap;
     }
 
     // 收件箱预览：让用户看见「已投递但还没被消费」的消息，而不是只有主代理自己知道。
@@ -701,6 +786,7 @@ export function createAISubagents(ctx) {
 
     function closeAgentView() {
         agentViewState = null;
+        agentViewComposer = null;
         if (agentViewTimer) {
             clearTimeout(agentViewTimer);
             agentViewTimer = 0;
