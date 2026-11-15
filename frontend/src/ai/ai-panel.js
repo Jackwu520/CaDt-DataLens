@@ -318,6 +318,8 @@ export function createAIPanel(options) {
     // 会话侧栏顶部操作区（标题栏的 [+] 已并入）：新建会话 / 自动化
     const sessionActionNewBtn = document.getElementById('ai-session-action-new');
     const sessionActionAutoBtn = document.getElementById('ai-session-action-auto');
+    const sessionActionSendBtn = document.getElementById('ai-session-action-send');
+    const sessionToolSendBtn = document.getElementById('ai-session-tool-send');
     const sessionMoreBtn = document.getElementById('ai-session-more');
 
     const opt = {
@@ -9212,6 +9214,10 @@ export function createAIPanel(options) {
             ]},
             {label: '任务提醒…', action: () => remindersMod.openCreateDialog()},
             {sep: true},
+            // 协作：投递 / 支线都在这里——不进输入框、不改当前会话，先选人再写内容
+            {label: '投递到会话…', action: () => openDeliverComposer()},
+            {label: '新建支线对话', action: () => openSideChat({session: currentSession()})},
+            {sep: true},
             {label: '指令', submenu: [
                 {label: '压缩上下文', action: () => startCompact()},
                 {label: '初始化 AGENTS.md', action: () => runInitAgentsMd()},
@@ -9656,6 +9662,15 @@ export function createAIPanel(options) {
     // 旧的「单选菜单」与「借输入框当通知内容」两版实现已废弃——选择器自带内容预览与计数。
     function deliverMessageToSession(session, message) {
         sessionSendMod.openDeliver(message, session);
+    }
+
+    // 不带来源消息的投递：内容由用户在面板里自己写（+ 菜单 / 侧栏「投递」/ 会话行图标共用）。
+    // options.session 是「发起方」（自己不能被投），options.picked 预选目标。
+    function openDeliverComposer(options) {
+        const opts = options || {};
+        sessionSendMod.openDeliver(null, opts.session || currentSession(), {
+            picked: opts.picked || [],
+        });
     }
 
     function notifyRunningSessions() {
@@ -11181,6 +11196,16 @@ export function createAIPanel(options) {
         if (sessionActionAutoBtn) sessionActionAutoBtn.addEventListener('click', () => {
             ensureOpen();
             scheduleMod.openAutomationDialog();
+        });
+        // 投递（侧栏按钮 / 列表头部图标同一份）：先选目标、内容自己写。
+        // 对话框挂在面板 DOM 里，所以与「自动化」一样先确保面板打开。
+        if (sessionActionSendBtn) sessionActionSendBtn.addEventListener('click', () => {
+            ensureOpen();
+            openDeliverComposer();
+        });
+        if (sessionToolSendBtn) sessionToolSendBtn.addEventListener('click', () => {
+            ensureOpen();
+            openDeliverComposer();
         });
         if (sessionMoreBtn) sessionMoreBtn.addEventListener('click', () => showSessionListMenu());
         // 会话搜索框已删：搜索入口在头部放大镜（开全局搜索并只勾选「AI 会话」分类）

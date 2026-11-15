@@ -2208,6 +2208,8 @@ html.about-night .about-banner-img.is-dark { display: block; }
 }
 .dlg-btn:hover { border-color: var(--accent); }
 .dlg-btn.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+/* 主按钮禁用必须看得出来：只改 cursor 的话，蓝底按钮看着照样能点（投递面板内容为空时就会这样） */
+.dlg-btn.primary:disabled { opacity: .55; }
 .dlg-btn.danger { background: var(--red); border-color: var(--red); color: #fff; }
 .dlg-btn.danger:hover { border-color: var(--red); filter: brightness(1.06); }
 .dialog-name { width: 460px; }
@@ -3176,6 +3178,20 @@ aside[data-sidebar-view="chats"] #ai-sessions-panel { display: flex; flex: 1; mi
 .ai-session-action-btn:hover { border-color: var(--accent); }
 .ai-session-action-btn svg { flex: none; width: 13px; height: 13px; display: block; color: var(--muted); }
 .ai-session-action-btn:hover svg { color: var(--accent); }
+/* 自动化 / 投递并排一行：窄侧栏里两条同样重要的入口，竖排会把列表再往下推一行 */
+.ai-session-action-row { display: flex; gap: 4px; }
+.ai-session-action-row .ai-session-action-btn {
+    flex: 1;
+    width: auto;
+    min-width: 0;
+    justify-content: center;
+    padding: 6px 4px;
+}
+.ai-session-action-row .ai-session-action-btn span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
 /* 自动化对话框（设置面板同款模态）：任务按对话分组 + 行级启停/编辑/删除 */
 .ai-automation-body { display: flex; flex-direction: column; gap: 2px; }
 .ai-automation-group { margin: 8px 4px 2px; color: var(--muted); font-size: 10.5px; font-weight: 600; }
@@ -9760,6 +9776,9 @@ html[data-writing="on"][data-writing-paper="dim"] .jsoneditor textarea.jsonedito
     font-size: 11px;
 }
 .ai-send-preview-label { display: block; font-size: 10px; color: var(--muted); margin-bottom: 2px; }
+/* 无来源消息时的可编辑内容块（+ 菜单 / 侧栏进入：内容自己写） */
+.ai-send-compose { flex: none; display: flex; flex-direction: column; gap: 2px; }
+.ai-send-compose .ai-send-preview-label { padding-left: 1px; }
 .ai-send-preview-text {
     white-space: pre-wrap;
     word-break: break-word;

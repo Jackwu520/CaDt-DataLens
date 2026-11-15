@@ -1,6 +1,8 @@
 // ai-session-send.js：会话投递的选择器 UI（用户向）。
-// 两个入口：
-//   1. 「投递到会话…」——把某条消息作为挂号信发给选中的会话（多选，≤10，带搜索与键盘操作）；
+// 两个面板：
+//   1. 「投递到会话…」——把内容作为挂号信发给选中的会话（多选，≤10，带搜索与键盘操作）。
+//      入口三处：消息操作条（带来源消息，内容只读）、composer「+」菜单、会话侧栏按钮 / 图标
+//      （后两者内容由用户自己写，可预填输入框草稿）；
 //   2. 「通知运行中的会话…」——用户向广播（唯一的多对一形态），列出当前 streaming / compacting
 //      的会话，写一条通知投给它们全部。
 // 传输层不在这里：投递走 ai-agent-notices.js 的信箱（三态投递与逐目标回执都在那边），
@@ -34,6 +36,12 @@ export function togglePicked(picked, id, max) {
 export function pickedLabel(count, max) {
     const limit = Number(max) || SESSION_PICK_MAX;
     return '已选 ' + count + '/' + limit;
+}
+
+// 能否提交：既要有目标，也要有内容。内容由用户自己写之后这两条是独立的——
+// 少一条就禁用按钮，别让用户点了才看到报错。
+export function canSubmit(pickCount, hasContent) {
+    return Number(pickCount) > 0 && !!hasContent;
 }
 
 const STATE_TEXT = {streaming: '运行中', compacting: '压缩中', idle: '空闲'};
@@ -94,18 +102,19 @@ export function createAISessionSend(ctx) {
     }
 
     // ---- 投递到会话（多选 + 搜索 + 键盘） ----
-    function openDeliver(message, session) {
-        const text = String((message && message.content) || '').trim();
-        if (!text) {
-            flash('这条消息没有可投递的正文', true);
-            return;
-        }
+    // 两种进入方式：
+    //   a) 带来源消息（消息操作条「投递」）——内容只读预览，用户只选目标；
+    //   b) 不带来源（+ 菜单 / 侧栏按钮）——内容由用户自己写，或预填输入框里的草稿。
+    // options.picked：预选目标（会话行图标进入时用它把该会话先勾上）。
+    function openDeliver(message, session, options) {
+        const opts = options || {};
+        const sourceText = String((message && message.content) || '').trim();
         const rows = listSessions().filter((row) => !session || row.id !== session.id);
         if (!rows.length) {
             flash('没有其他可投递的会话', true);
             return;
         }
-        let picked = new Set();
+        let picked = new Set((opts.picked || []).filter((id) => rows.some((row) => row.id === id)));
         let cursor = 0;
         let query = '';
 
@@ -131,10 +140,28 @@ export function createAISessionSend(ctx) {
         const totalLabel = node('span', 'ai-send-total', rows.length + ' 个可投递会话');
         toolbar.append(totalLabel, node('span', 'ai-send-spacer'), selectAll, clearAll);
 
-        const preview = node('div', 'ai-send-preview');
-        const previewLabel = node('span', 'ai-send-preview-label', '投递内容');
-        const previewText = node('div', 'ai-send-preview-text', text.length > 180 ? text.slice(0, 180) + '…' : text);
-        preview.append(previewLabel, previewText);
+        // 内容块：有来源 → 引用式只读预览；无来源 → 可编辑输入（内容由用户自己写）
+        let area = null;
+        let getText = () => sourceText;
+        let contentBlock;
+        if (sourceText) {
+            contentBlock = node('div', 'ai-send-preview');
+            const previewLabel = node('span', 'ai-send-preview-label', '投递内容');
+            const previewText = node('div', 'ai-send-preview-text',
+                sourceText.length > 180 ? sourceText.slice(0, 180) + '…' : sourceText);
+            contentBlock.append(previewLabel, previewText);
+        } else {
+            contentBlock = node('div', 'ai-send-compose');
+            area = createTextarea({
+                className: 'dlg-input ai-send-textarea',
+                rows: 3,
+                placeholder: '要投给对方的结论、约定或需要它知晓的事实',
+                attrs: {'aria-label': '投递内容'},
+            }).control;
+            area.value = String(opts.draft || '').trim();
+            getText = () => String(area.value || '').trim();
+            contentBlock.append(node('span', 'ai-send-preview-label', '投递内容（自己写）'), area);
+        }
 
         const listBox = node('div', 'ai-send-list');
         listBox.setAttribute('role', 'listbox');
@@ -167,7 +194,10 @@ export function createAISessionSend(ctx) {
                 item.classList.toggle('dimmed', over && !isPicked);
             }
             count.textContent = pickedLabel(picked.size, SESSION_PICK_MAX);
-            confirm.disabled = picked.size === 0;
+            // 内容由用户自己写时必须先有内容：两个条件都满足才放行，避免「能点但点了报错」
+            const hasContent = !!getText();
+            confirm.disabled = !canSubmit(picked.size, hasContent);
+            confirm.title = hasContent ? '' : '先写投递内容';
             confirm.textContent = picked.size ? '投递（' + picked.size + '）' : '投递';
             if (!items.length) {
                 let empty = listBox.querySelector('.ai-send-empty');
@@ -229,6 +259,16 @@ export function createAISessionSend(ctx) {
         }
 
         function submit() {
+            const text = getText();
+            if (!text) {
+                flash('投递内容不能为空', true);
+                if (area) {
+                    try {
+                        area.focus();
+                    } catch (e) {}
+                }
+                return;
+            }
             const ids = [...picked];
             if (!ids.length) return;
             closeDialog();
@@ -287,12 +327,29 @@ export function createAISessionSend(ctx) {
         const keyboard = node('div', 'ai-send-keys', '↑↓ 选择 · Enter 勾选 · Ctrl+Enter 投递');
         keyboard.id = 'ai-send-keys';
         count.classList.add('ai-send-count-foot');
-        openDialog('投递到会话', [head, toolbar, preview, listBox, keyboard], [count, cancel, confirm]);
+        if (area) {
+            area.addEventListener('input', () => updateFooter());
+            area.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                    e.preventDefault();
+                    submit();
+                }
+                if (e.key === 'Escape') {
+                    e.preventDefault();
+                    closeDialog();
+                }
+            });
+        }
+        openDialog('投递到会话', [head, toolbar, contentBlock, listBox, keyboard], [count, cancel, confirm]);
+        // 预选（会话行进入）：光标直接落到第一个已勾选的行上
+        const firstPicked = visible().findIndex((row) => picked.has(row.id));
+        if (firstPicked > 0) cursor = firstPicked;
         renderList();
-        // 打开即聚焦搜索框：键盘用户不必先点一下
+        // 内容为空时先聚焦内容框（用户得先写），否则聚焦搜索框（直接选目标）
+        const needsContent = !!area && !String(area.value || '').trim();
         setTimeout(() => {
             try {
-                search.focus();
+                (needsContent && area ? area : search).focus();
             } catch (e) {}
         }, 0);
     }

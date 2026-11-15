@@ -3,7 +3,7 @@
 // 标题过滤的大小写与空白处理、上限内的勾选增删、计数文案。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {filterSessionRows, togglePicked, pickedLabel, SESSION_PICK_MAX} from './ai-session-send.js';
+import {filterSessionRows, togglePicked, pickedLabel, canSubmit, SESSION_PICK_MAX} from './ai-session-send.js';
 
 const rows = [
     {id: 's1', title: '重构补丁库'},
@@ -55,4 +55,12 @@ test('pickedLabel：计数带上限，缺省用 10', () => {
     assert.equal(pickedLabel(0, 10), '已选 0/10');
     assert.equal(pickedLabel(3, 10), '已选 3/10');
     assert.equal(pickedLabel(2), '已选 2/10');
+});
+
+test('canSubmit：目标与内容缺一不可', () => {
+    assert.equal(canSubmit(1, true), true);
+    assert.equal(canSubmit(10, true), true);
+    assert.equal(canSubmit(0, true), false, '只写内容没选目标不能投');
+    assert.equal(canSubmit(1, false), false, '选了目标没写内容不能投（内容由用户自己写）');
+    assert.equal(canSubmit(0, false), false);
 });
