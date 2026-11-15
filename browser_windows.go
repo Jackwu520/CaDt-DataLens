@@ -410,7 +410,12 @@ func browserCreateOnHost(inst *browserInstance, hwnd uintptr) error {
 	if err := wvInitScript(wv, `window.__cadtHost = 'datalens';`); err != nil {
 		return err
 	}
-	inst.visible = true
+	// 创建即隐藏（2026-11-15）：Embed 到前端首次 SetBounds 之间，控件以库默认矩形
+	// 裸露——最大化首开时用户看到整块黑屏（页面其实已在加载，状态栏有 URL）。
+	// 先 Hide，前端第一次 BrowserSetBounds 自带 Show（w/h>0 → Resize+Show），
+	// 控件直接以正确矩形出现，黑屏窗口变成标签页背景色的一瞬。
+	inst.visible = false
+	_ = c.Hide()
 	if inst.url != "" && inst.url != "about:blank" {
 		if err := wvNavigate(wv, inst.url); err != nil {
 			return err
