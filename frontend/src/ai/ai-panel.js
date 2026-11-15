@@ -3289,7 +3289,12 @@ export function createAIPanel(options) {
         foot.className = 'ai-app-msg-foot';
         const hint = document.createElement('span');
         hint.className = 'ai-app-msg-hint';
-        hint.textContent = '由应用自动注入，AI 按这条指令执行';
+        // 会话投递两种身份在接收方语义相反：模型投递只是参考，用户投递是用户指令
+        hint.textContent = app.kind === 'session'
+            ? '由应用自动注入 · 其他会话的模型消息，仅供参考'
+            : (app.kind === 'session-user'
+                ? '由应用自动注入 · 你发出的消息，AI 按这条指令执行'
+                : '由应用自动注入，AI 按这条指令执行');
         const toggle = document.createElement('button');
         toggle.type = 'button';
         toggle.className = 'ai-app-msg-toggle' + (expanded ? ' expanded' : '');

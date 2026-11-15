@@ -15,8 +15,11 @@ export const APP_MESSAGE_ICONS = {
     // 子代理结算通知（完成 / 失败）与子代理提问：同一张卡片形态，图标区分「汇报」与「要你拍板」
     subagent: 'agents',
     'subagent-ask': 'bell',
-    // 会话间投递（共享信箱）与支线对话带回
+    // 会话间投递（共享信箱）与支线对话带回。
+    // session = 其他会话的模型消息（参考信息）；session-user = 用户本人投递/广播（用户指令）——
+    // 两者在接收方语义完全相反，卡片页脚文案也跟着分开。
     session: 'bell',
+    'session-user': 'bell',
     sidechat: 'bookmark',
 };
 
@@ -52,7 +55,13 @@ export function detectAppMessage(content) {
     if (settled) return {kind: 'subagent', label: '子代理通知 · ' + settled[1].trim(), icon: ''};
     const side = text.match(/^［支线结论 · ([^］]+)］/);
     if (side) return {kind: 'sidechat', label: '支线结论 · ' + side[1].trim(), icon: ''};
-    const session = text.match(/^［会话消息 · ([^］]+)］/);
+    // 用户本人投递（面板里自己写的内容）：是用户指令，与模型投递的「参考信息」区分开
+    const userSend = text.match(/^［用户消息 · (?:会话 )?([^］]+)］/);
+    if (userSend) return {kind: 'session-user', label: '用户消息 · ' + userSend[1].trim(), icon: ''};
+    if (/^［用户消息 · 来自你］/.test(text)) return {kind: 'session-user', label: '用户消息 · 来自你', icon: ''};
+    if (/^［系统通知 · 来自你］/.test(text)) return {kind: 'session-user', label: '系统通知 · 来自你', icon: ''};
+    // 模型投递（session_send）：身份以会话 id 为准，标题只是补充
+    const session = text.match(/^［会话消息 · (?:会话 )?([^］]+)］/);
     if (session) return {kind: 'session', label: '会话消息 · ' + session[1].trim(), icon: ''};
     return null;
 }

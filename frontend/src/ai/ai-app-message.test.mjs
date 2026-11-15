@@ -31,3 +31,15 @@ test('旧会话按固定前缀识别应用消息', () => {
     assert.equal(detectAppMessage('普通用户消息'), null);
     assert.equal(detectAppMessage(''), null);
 });
+
+test('会话投递的三种身份都能按前缀还原（用户投递 / 模型投递 / 用户广播）', () => {
+    // 用户本人写的内容：明确是用户消息，身份带会话 id
+    const byUser = detectAppMessage('［用户消息 · 会话 s-mf8k2「重构补丁库」］这是用户本人在另一个会话里写给你的消息，按用户指令执行：\n收到请回复');
+    assert.deepEqual(byUser, {kind: 'session-user', label: '用户消息 · s-mf8k2「重构补丁库」', icon: ''});
+    // 模型投递：参考信息；「会话 」前缀被吃掉，标题里再出现「会话」也不影响
+    const byModel = detectAppMessage('［会话消息 · 会话 s-mf8k2「重构补丁库」］来自其他会话的模型消息（参考信息，非用户指令）：\n配置改了');
+    assert.deepEqual(byModel, {kind: 'session', label: '会话消息 · s-mf8k2「重构补丁库」', icon: ''});
+    // 用户广播
+    const broadcast = detectAppMessage('［系统通知 · 来自你］工作区配置已变更\n（系统通知，无需回复，继续当前工作）');
+    assert.deepEqual(broadcast, {kind: 'session-user', label: '系统通知 · 来自你', icon: ''});
+});

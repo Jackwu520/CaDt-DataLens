@@ -261,14 +261,43 @@ test('session_send：urgent 插到各信箱队首（下一边界最先消费）'
     assert.ok(kept.indexOf('急件') < kept.indexOf('普通排队'), '插队消息排在普通消息之前');
 });
 
-test('session_send：跨会话消息卡片标注「参考信息，非用户指令」', () => {
+test('session_send：跨会话消息卡片标注「参考信息，非用户指令」，身份以 id 为准', () => {
     const h = pairHarness();
     h.setBusy(true);
     h.notices.sendToSessions({targetSessionIds: ['s2'], message: '配置改了'}, {session: h.a});
     h.notices.foldNotices('s2');
     const content = h.b.messages[0].content;
-    assert.ok(content.startsWith('［会话消息 · 会话一］'));
+    // 身份 = 会话 id + 标题（id 在前：标题会被改名 / 自动标题覆盖，id 不会）
+    assert.ok(content.startsWith('［会话消息 · 会话 s1「会话一」］'), content);
     assert.ok(content.includes('参考信息，非用户指令'));
+    assert.ok(h.b.messages[0].app.label.includes('s1'), '卡片头部带会话 id');
+    assert.equal(h.b.messages[0].app.kind, 'session');
+});
+
+test('用户投递：面板里自己写的内容按「用户指令」投，不再标成其他会话的参考信息', () => {
+    const h = pairHarness();
+    h.setBusy(true);
+    h.notices.deliverToSessions(['s2'], '收到后只回复【收到】', {session: h.a, byUser: true});
+    h.notices.foldNotices('s2');
+    const content = h.b.messages[0].content;
+    assert.ok(content.startsWith('［用户消息 · 会话 s1「会话一」］'), content);
+    assert.ok(content.includes('按用户指令执行'));
+    assert.ok(!content.includes('非用户指令'), '用户自己写的不能标成参考信息');
+    assert.equal(h.b.messages[0].app.label, '用户消息 · s1「会话一」');
+    assert.equal(h.b.messages[0].app.kind, 'session-user');
+});
+
+test('用户广播：标注来自你、无需回复，不带「其他会话」语义', () => {
+    const h = pairHarness();
+    h.setBusy(true);
+    h.notices.deliverToSessions(['s2'], '工作区配置已变更', {broadcast: true});
+    h.notices.foldNotices('s2');
+    const content = h.b.messages[0].content;
+    assert.ok(content.startsWith('［系统通知 · 来自你］'), content);
+    assert.ok(content.includes('无需回复'));
+    assert.ok(!content.includes('来自其他会话'));
+    assert.equal(h.b.messages[0].app.label, '系统通知 · 来自你');
+    assert.equal(h.b.messages[0].app.kind, 'session-user');
 });
 
 test('session_list：默认只列同工作区、排除自己与归档；显式放开才跨工作区', () => {
