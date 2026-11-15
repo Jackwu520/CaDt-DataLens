@@ -3,7 +3,7 @@
 // 这里锁住「改一处就会悄悄变味」的三条判定。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {takeInboxBatch, inboxMessageText, canReviveRecord} from './ai-subagents.js';
+import {takeInboxBatch, inboxMessageText, canReviveRecord, subAgentScopeOf} from './ai-subagents.js';
 
 test('takeInboxBatch：插队（step）先于排队（turn），各自保持入队顺序', () => {
     const inbox = {
@@ -39,4 +39,16 @@ test('canReviveRecord：done 可续，失败/停止/已回收都拒绝', () => {
     assert.deepEqual(canReviveRecord({state: 'done', continuable: false, session: null}), {ok: false, reason: 'recycled'});
     assert.deepEqual(canReviveRecord({state: 'done', continuable: true, session: null}), {ok: false, reason: 'recycled'});
     assert.deepEqual(canReviveRecord({state: 'done', continuable: true, session: {id: 'sub-1'}}), {ok: true, reason: ''});
+});
+
+test('subAgentScopeOf：权限档继承父会话，只读由工具白名单保证', () => {
+    // 完全权限下子代理也必须能读工作区外文件——否则 spawn 出去做跨目录调研会被路径校验拦死
+    assert.equal(subAgentScopeOf('full'), 'full');
+    assert.equal(subAgentScopeOf('auto'), 'auto');
+    assert.equal(subAgentScopeOf('edit'), 'edit');
+    assert.equal(subAgentScopeOf('read'), 'read');
+    // 历史会话 / 缺字段 / 脏数据：退回只读，不意外放大读取范围
+    assert.equal(subAgentScopeOf(undefined), 'read');
+    assert.equal(subAgentScopeOf(''), 'read');
+    assert.equal(subAgentScopeOf('admin'), 'read');
 });

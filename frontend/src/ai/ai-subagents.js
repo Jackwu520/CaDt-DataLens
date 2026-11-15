@@ -32,6 +32,16 @@ export function canReviveRecord(record) {
     return {ok: true, reason: ''};
 }
 
+// 子代理权限档：**继承父会话**，不写死 readonly。
+// 读的边界（工作区内 / 可访问工作区外）由权限档决定，而「只读」由工具白名单
+// （subToolsForScope）保证——子代理拿不到任何写工具，幻觉调用也会被 allowed 集合挡掉。
+// 所以这里继承父档只放开路径范围：父会话是完全权限时，子代理读工作区外文件不该被拦，
+// 否则跨目录调研只能由主代理逐段喂内容，多一层反而更慢更贵。
+const SUB_SCOPES = ['read', 'edit', 'auto', 'full'];
+export function subAgentScopeOf(parentScope) {
+    return SUB_SCOPES.includes(parentScope) ? parentScope : 'read';
+}
+
 export function createAISubagents(ctx) {
     const el = ctx.el;
     const panel = ctx.panel;
@@ -1000,7 +1010,9 @@ export function createAISubagents(ctx) {
             profileId: parentSession.profileId,
             systemPrompt: parentSession.systemPrompt || '',
             promptTemplateId: parentSession.promptTemplateId || '',
-            scope: 'read',
+            // 权限档继承父会话（子代理不再无条件 readonly）：完全权限下才能读到工作区外，
+            // 否则 read_file 的绝对路径会被按「路径超出工作区范围」拒掉。
+            scope: subAgentScopeOf(parentSession.scope),
             planMode: false,
             messages: [{role: 'user', content: task, ts: Date.now(), turnStartedAt: Date.now()}],
             todos: [],
