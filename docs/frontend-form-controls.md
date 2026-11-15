@@ -73,5 +73,5 @@ const prompt = createTextarea({id: 'foo-prompt', rows: 5, spellcheck: false});
 - 不要给 `.set-switch` 的 label 里塞文字，也不要只写 `<input type="checkbox">` 配 `accent-color`——那仍是原生组件。
 - 不要在域模块里 `import main.js` 的绑定来造控件；`core/form-controls.js` 无 deps、不依赖声明顺序，可直接 import。
 - 不要手写 `innerHTML` 拼表单控件再事后补 class：字符串里的标签同样会被静态扫描抓到。
-- 设置页之外的下拉若需要浮层增强，走 `createSettingsSelect` 的接线，不要复制浮层 DOM。
+- 设置页之外的下拉若需要浮层增强，走 `createSettingsSelect` 的接线，不要复制浮层 DOM：工厂返回的 `enhanceSelect(sel)` 对单个 select 幂等增强（main.js 经 deps getter 注入到需要的域，如 `explorer/global-search.js` 的 AI 会话范围下拉）；增强后 wrap 继承原 select 的布局类，触发器外观由各域自己的样式适配（紧凑行在注入样式里覆盖 `.set-select-btn`）。
 - **主副标题选项**：给 `<option>` 加 `data-subtitle`，`option.text` 写主标题（同时是触发器显示值），`settings-select.js` 会渲染成两行（`.ss-opt-rich` + `.ss-main` / `.ss-sub`）。没有该属性的选项保持单行，完全向后兼容；不要把「名字 · 描述」再拼进一个字符串里让它被截断。

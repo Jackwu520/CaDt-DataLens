@@ -15,11 +15,52 @@ let sysCursor = null;
 // 高 DPI 缩放不写死，由 image-set 按运行时 devicePixelRatio 自动选帧。
 let cursorCssSize = 32;
 
+// 统一清理：拖拽态一旦残留，普通区域会继承全局光标、文本无法选中、点击被吞。
+// 各拖拽流程自己的收尾照旧，这里只做幂等兜底，集中一处避免「只清了一半」。
+function clearDragVisualState() {
+    const body = document.body;
+    if (!body) return;
+    body.classList.remove('cursor-ew', 'cursor-ns', 'csv-col-resizing');
+    if (body.style.userSelect) body.style.userSelect = '';
+}
+
+// Wails frameless 的边缘 resize 是「系统级」状态：runtime 会在 6px 边缘写入
+// resizeEdge + html 内联光标，只有下一次非边缘 mousemove 才清。清除被跳过时
+// （最大化时 enableResize=false / 鼠标直接移出窗口），下一次任意 mousedown
+// 都会被 runtime 劫持成 WM_NCLBUTTONDOWN → 系统模态 sizing loop，WebView2
+// 收不到任何输入。这里只在「确认是残留」时清，不干扰正常的边缘拖窗口。
+const RESIZE_CURSOR = /^(n|ne|e|se|s|sw|w|nw)-resize$/;
+function wailsFlags() {
+    return (window.wails && window.wails.flags) || null;
+}
+function clearStaleWailsResize() {
+    const flags = wailsFlags();
+    if (!flags) return;
+    flags.resizeEdge = undefined;
+    const root = document.documentElement;
+    if (root && RESIZE_CURSOR.test(root.style.cursor || '')) root.style.cursor = '';
+}
+function isNearWindowEdge(e, thickness) {
+    const t = thickness || 6;
+    return e.clientX < t
+        || window.outerWidth - e.clientX < t
+        || e.clientY < t
+        || window.outerHeight - e.clientY < t;
+}
+function clearDragState() {
+    clearDragVisualState();
+    clearStaleWailsResize();
+}
+
 function setDragCursor(kind) {
     // 诊断探针：间歇性「全局左右箭头」问题定位——记录谁设置 / 谁清除（进调试控制台与 jsonl）
     if (kind || document.body.classList.contains('cursor-ew') || document.body.classList.contains('cursor-ns')) {
         const stack = String(new Error().stack || '').split('\n').slice(2, 4).join(' ← ').trim();
         console.info('[cursor] setDragCursor(' + (kind || 'null') + ') ' + stack);
+    }
+    if (!kind) {
+        clearDragVisualState();
+        return;
     }
     document.body.classList.toggle('cursor-ew', kind === 'ew');
     document.body.classList.toggle('cursor-ns', kind === 'ns');
@@ -175,7 +216,7 @@ async function applySystemCursors() {
     style.textContent = parts.join('\n');
 }
 
-if (deps.backend.GetSystemCursors) {
+if (deps.backend && deps.backend.GetSystemCursors) {
     deps.backend.GetSystemCursors().then((c) => {
         if (!c || !(c.ew || c.ns)) return;
         const base = Number(c.base);
@@ -185,20 +226,44 @@ if (deps.backend.GetSystemCursors) {
     }).catch(() => {});
 }
 
-// 拖拽结束事件丢失（鼠标在窗外松手、pointer capture 失败等）会把 body.cursor-ew/ns
-// 卡死在全局——普通区域继承 body 光标整个变成左右/上下箭头。三层兜底：
-// ① 抬起 / 取消 / 失焦任一发生即撤标记（各拖拽流程自己的收尾照旧，幂等无害）；
-// ② 「无按键按下却带着拖拽标记」= 必然卡死，pointermove 一动立即自愈（拖拽中 buttons≠0 不误伤）；
+// 拖拽结束事件丢失（鼠标在窗外松手、pointer capture 失败、预览 iframe 吞事件等）
+// 会把全局拖拽态卡死。四层兜底，一律挂捕获阶段：业务代码常在子元素
+// stopPropagation，冒泡阶段的监听收不到事件。
+//  ① 抬起 / 取消 / 失焦：撤前端视觉态（含 CSV 列宽的 csv-col-resizing 与 userSelect）；
+//  ② pointermove / mousemove 且无按键：必然卡死，动一下即自愈（拖拽中 buttons≠0 不误伤）；
+//  ③ mousedown 捕获阶段：Wails 的 resizeEdge 与鼠标位置不符或 resize 已禁用 → 清残留，
+//     抢在 runtime 的冒泡 mousedown 之前，避免误入系统模态 sizing loop；
+//  ④ 窗口尺寸变化 / 页面隐藏：最大化后 enableResize=false，runtime 不再自己清。
 for (const dragEndEvt of ['pointerup', 'pointercancel', 'mouseup', 'blur']) {
-    window.addEventListener(dragEndEvt, () => {
-        document.body.classList.remove('cursor-ew', 'cursor-ns');
-    });
+    window.addEventListener(dragEndEvt, clearDragVisualState, true);
 }
-window.addEventListener('pointermove', (e) => {
-    if (!e.buttons && (document.body.classList.contains('cursor-ew') || document.body.classList.contains('cursor-ns'))) {
-        document.body.classList.remove('cursor-ew', 'cursor-ns');
-    }
-});
+function selfHealOnMove(e) {
+    if (e.buttons) return;
+    const body = document.body;
+    const stuck = body && (body.classList.contains('cursor-ew')
+        || body.classList.contains('cursor-ns')
+        || body.classList.contains('csv-col-resizing')
+        || body.style.userSelect);
+    const flags = wailsFlags();
+    const staleResize = !!(flags && !flags.enableResize && flags.resizeEdge);
+    if (stuck) clearDragVisualState();
+    if (staleResize) clearStaleWailsResize();
+}
+for (const moveEvt of ['pointermove', 'mousemove']) {
+    window.addEventListener(moveEvt, selfHealOnMove, true);
+}
+window.addEventListener('mousedown', (e) => {
+    const flags = wailsFlags();
+    if (!flags || !flags.resizeEdge) return;
+    // 位置不符或 resize 已关 → 这条 edge 一定是上次留下的，清掉才能保住这次点击
+    if (!flags.enableResize || !isNearWindowEdge(e, flags.borderThickness)) clearStaleWailsResize();
+}, true);
+function clearResizeWhenDisabled() {
+    const flags = wailsFlags();
+    if (flags && !flags.enableResize) clearStaleWailsResize();
+}
+window.addEventListener('resize', clearResizeWhenDisabled, true);
+document.addEventListener('visibilitychange', clearResizeWhenDisabled, true);
 
-    return {setDragCursor};
+    return {setDragCursor, clearDragState};
 }

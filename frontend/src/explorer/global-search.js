@@ -36,8 +36,10 @@ function ensureAISearchControls() {
         style.textContent = [
             '.gs-ai-row { display: flex; align-items: center; gap: 8px; padding: 4px 10px 0; font-size: 11px; opacity: .85; }',
             '.gs-ai-row label { display: flex; align-items: center; gap: 4px; cursor: pointer; }',
-            '.gs-ai-mode { margin-left: auto; font-size: 11px; padding: 1px 4px; border: 1px solid var(--border, rgba(128,128,128,.4)); background: transparent; color: inherit; border-radius: 4px; }',
-            '.gs-ai-mode:disabled { opacity: .45; }',
+            // .gs-ai-mode 在增强后落在 wrap（.set-select）上只承担布局；触发器外观沿用
+            // 原生 select 时代的紧凑样式，比设置页默认触发器小一号
+            '.gs-ai-mode { margin-left: auto; font-size: 11px; }',
+            '.gs-ai-mode .set-select-btn { padding: 1px 4px; border: 1px solid var(--border, rgba(128,128,128,.4)); background: transparent; color: inherit; border-radius: 4px; font: inherit; gap: 5px; }',
             '.gs-group { padding: 6px 10px 2px; font-size: 10px; letter-spacing: .04em; opacity: .55; border-top: 1px solid var(--border, rgba(128,128,128,.25)); margin-top: 4px; }',
             '.gs-badge { flex: none; font-size: 9px; font-weight: 600; padding: 1px 4px; border-radius: 4px; background: var(--accent, #4c8dff); color: #fff; margin-right: 2px; }',
             '.gs-role { flex: none; font-size: 10px; opacity: .6; margin-left: 6px; }',
@@ -83,6 +85,9 @@ function ensureAISearchControls() {
     });
     row.append(filesLabel, aiLabel, modeSel);
     searchRow.parentElement.insertBefore(row, searchRow.nextSibling);
+    // 浮层增强（设置页同款触发器 + Portal 浮层，弹出不再走浏览器原生样式）；
+    // 增强器幂等，原生 select 仍是值真源，deps 缺省（未接线）时保留原生外观兜底
+    if (typeof deps.enhanceSelect === 'function') deps.enhanceSelect(modeSel);
     globalSearch.aiControlsBound = true;
 }
 

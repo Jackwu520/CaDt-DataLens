@@ -37,6 +37,12 @@
 :root {
     color-scheme: dark;
     --bg: #1e1f24;
+    /* AI 消息区底色：暗色主题与内容区同色；浅色主题在各自块里覆盖为浅灰，
+       让白卡片 / 用户气泡 / 代码块靠面色差浮起，而不是全靠 1px 边框区分。 */
+    --chat-bg: var(--bg);
+    /* AI 输入框圆角单一来源：.ai-bottom-stack 的圆角兜底扩层与遮挡肩线都跟着它走，
+       改输入框圆角只动这里（harness 主题在主题块里覆写为 16px）。 */
+    --ai-composer-radius: 12px;
     --panel: #26272d;
     --panel2: #2b2d33;
     --border: #3a3b42;
@@ -112,9 +118,11 @@ html[data-theme="light"] {
     --bg: #ffffff;
     --panel: #f4f6f8;
     --panel2: #ffffff;
-    --border: #d8dce2;
+    /* 页面与卡片同为纯白，边框是唯一分界；#d8dce2 只有 1.38:1，整屏会发灰发糊。
+       加深到实色并让卡片轻微浮起（见下方 .ai-widget 阴影规则），层次才立得住。 */
+    --border: #cdd3dc;
     --text: #23272f;
-    --muted: #646b77;
+    --muted: #5c6470;
     --accent: #2f6fd0;
     --on-accent: #ffffff;
     /* git 状态色：取自 JetBrains expUI_lightScheme.xml 的 FILESTATUS_* */
@@ -135,8 +143,8 @@ html[data-theme="light"] {
     --green: #2e7d32;
     --warn: #a86a00;
     --hover: #e8ebef;
-    --placeholder: #9aa1ab;
-    --faint: #c3c8d0;
+    --placeholder: #8b939e;
+    --faint: #98a1ad;
     --chip-bg: rgba(20, 30, 45, 0.055);
     --tree-hover: #f3f5f8;
     --tree-highlight: #eaf1fb;
@@ -396,15 +404,22 @@ html[data-theme="github"] {
    alias 语义层）与同目录 shiki.css（代码高亮），只做变量映射，不改结构。 */
 html[data-theme="harness"] {
     color-scheme: light;
-    /* 面：alias-bg-base = neutral-bluish-00；侧栏 = neutral-bluish-50；平台/次级面 = neutral-bluish-60 */
+    /* 输入框圆角 = dsw-radius-lg；铺底兜底扩层与遮挡肩线经 var 联动 */
+    --ai-composer-radius: 16px;
+    /* 层级约定（对齐其余浅色主题）：--bg 内容区纯白、--panel 侧栏浅灰、--panel2 卡片纯白。
+       dsh 原值把 panel2 当「平台/次级面」（比 bg 暗 10 阶），但本应用里 --panel2 是
+       .ai-widget / .ai-think / 浮层的卡片底色，结果是白页面上铺满灰块，整屏发雾。
+       这里只保留 dsh 的色相与强调色，层级按本应用的语义重排。 */
     --bg: #ffffff;
-    --panel: #f9fafb;
-    --panel2: #f5f6f7;
-    /* 线：alias-border-l2 rgba(0,0,0,.1)，l4 用于强调分隔 */
-    --border: rgba(0, 0, 0, 0.1);
-    /* 字：label-primary = neutral-bluish-1000，label-tertiary = neutral-bluish-600 */
+    --panel: #f2f4f7;
+    --panel2: #ffffff;
+    /* 实色边框：半透明 10% 黑叠在浅灰卡片上会变成第三种灰，且卡片套卡片时越叠越糊；
+       静态 SVG 注入（resolveThemeColors）也需要一个确定的色值。 */
+    --border: #d5dbe3;
+    /* 字：label-primary = neutral-bluish-1000；次要字从 3.7:1 提到 5.8:1，
+       否则大量 --muted 文字一起发灰。 */
     --text: #0f1115;
-    --muted: #81858c;
+    --muted: #5f6672;
     /* 强调：link / state-business-primary = deepseek-500；主按钮另按 brand-primary 走近黑 */
     --accent: #4176e6;
     --on-accent: #ffffff;
@@ -425,15 +440,16 @@ html[data-theme="harness"] {
     --red: #ec1313;      /* red-600 = state-error-primary */
     --green: #01a241;    /* 与 file-diff-added-marker 同色，保证文字可读 */
     --warn: #dd8629;
-    /* 交互：interactive-bg-hover rgba(38,49,72,.06)，active 为 .1 */
+    /* 交互：hover / 高亮 / 选中必须分层。dsh 把三者都设成同一个 6% 中性灰，
+       悬停和选中看不出区别，也是「蒙了一层灰」的来源之一；选中改用蓝调与中性灰拉开。 */
     --hover: rgba(38, 49, 72, 0.06);
-    --placeholder: #adb2b8;  /* label-caption */
-    --faint: #cfd3d6;        /* label-dimmed 偏淡，这里再深一档保证提示文字可读 */
-    --chip-bg: rgba(38, 49, 72, 0.06);
+    --placeholder: #8b939e;  /* 原 #adb2b8 在白底仅 2.2:1 */
+    --faint: #98a1ad;        /* 原 #cfd3d6 在白底仅 1.5:1，几乎不可见 */
+    --chip-bg: #eef1f5;
     --tree-hover: rgba(38, 49, 72, 0.06);
-    --tree-highlight: rgba(38, 49, 72, 0.06);
-    --tree-highlight-active: rgba(38, 49, 72, 0.1);
-    --tree-selected: #ebeef2;  /* sidebar-nav-item-active = neutral-bluish-100 */
+    --tree-highlight: #e8f0ff;
+    --tree-highlight-active: #d9e8ff;
+    --tree-selected: #dbe9ff;
     --field-focus-bg: var(--hover);
     --accent-weak: rgba(65, 118, 230, 0.1);
     --text-selection: rgba(59, 130, 246, 0.4);  /* bg-document-selection = blue-500 40% */
@@ -456,8 +472,8 @@ html[data-theme="harness"] {
     --py-builtin: #6741d9;
     --py-doc: #868e96;
     --py-self: #e8590c;
-    --scroll-thumb: #e5e5e5;  /* neutral-200 */
-    --scroll-thumb-hover: #d4d4d4;
+    --scroll-thumb: #c9ced6;
+    --scroll-thumb-hover: #b3bac4;
     --shadow: rgba(15, 17, 21, 0.1);
     --shadow-strong: rgba(15, 17, 21, 0.18);
     --mask: rgba(0, 0, 0, 0.24);  /* bg-mask-1 */
@@ -493,19 +509,40 @@ html[data-theme="harness"] .ai-user-bubble {
 }
 html[data-theme="harness"] .ai-composer {
     background: #ffffff;          /* specific-input-major */
-    border-color: rgba(0, 0, 0, 0.1);
-    border-radius: 16px;          /* dsw-radius-lg */
+    border-color: var(--border);
+    border-radius: var(--ai-composer-radius);          /* dsw-radius-lg（主题块覆写 16px） */
     box-shadow: 0 2px 8px rgba(15, 17, 21, 0.06);
 }
 html[data-theme="harness"] .ai-app-msg-card,
 html[data-theme="harness"] .ai-tool-card:not(.error) {
-    border-color: rgba(0, 0, 0, 0.1);
+    border-color: var(--border);
     background: #ffffff;
     border-radius: 12px;
 }
 html[data-theme="harness"] .snav-item.active {
-    background: #ebeef2;          /* sidebar-nav-item-active */
+    background: var(--tree-selected);
     color: #0f1115;
+}
+
+/* 浅色主题的消息区铺灰（--chat-bg）后，白卡片靠面色差就能浮起；这里再补一层
+   极轻阴影加强「抬」的层次。只作用于浅色主题，暗色主题保持原样；不改 DOM 结构，
+   也不影响 Shadow DOM 内的模型产出。 */
+html[data-theme="light"] .ai-widget,
+html[data-theme="harness"] .ai-widget {
+    box-shadow: 0 1px 3px rgba(15, 23, 42, 0.07);
+}
+
+/* 浅色主题消息区铺灰（--chat-bg=--panel）后，输入框再保持「透明 + 描边」就会
+   与底融成一片、只剩 1px 线——改成白卡片（--panel2）配轻阴影浮在灰底上。
+   harness 在主题块里已有白底 + 16px 圆角的专属规则，不在此列；暗色主题不动。 */
+html[data-theme="light"] .ai-composer,
+html[data-theme="idea-light"] .ai-composer,
+html[data-theme="github"] .ai-composer,
+html[data-theme="newsprint"] .ai-composer,
+html[data-theme="pixyll"] .ai-composer,
+html[data-theme="whitey"] .ai-composer {
+    background: var(--panel2);
+    box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06);
 }
 
 html[data-theme="newsprint"] {
@@ -685,6 +722,169 @@ html[data-theme="whitey"] {
     --banner-bg: #fff8c5;
     --banner-fg: #7d4e00;
     --icons: url('/vendor/img/jsoneditor-icons-light.svg');
+}
+
+/* ============================================================================
+   代码风格（与软件主题解耦）：只管语法 token 颜色，不管界面、编辑器框架色和图表色。
+   通道：settings.codeStyle → html[data-code-style]；列表单一来源在
+   frontend/src/settings/code-styles.js（CODE_STYLES / CODE_TOKEN_VARS）。
+
+   - 选择器带 [data-theme] 是为把特异性提到 (0,2,1)，压过上面的 html[data-theme="X"]
+     变量块；auto（默认）时 JS 不写 data-code-style，没有任何块命中，token 变量自然
+     回落到软件主题里的定义 —— 老版本观感零变化。
+   - --ace-* 留在软件主题：选区 / 当前行 / 缩进线 / gutter 是编辑器 chrome，不是 token。
+   - --val-* 也留在软件主题：它同时给文件图标 / 结构面板 / 运行输出着色。代码高亮
+     改读 --code-val-*，写成 var(--code-val-x, var(--val-x)) 以便 auto 时回退。
+   - 色值全部从现有 11 个主题里抽，未新增配色。github / night / newsprint 原先没有
+     --syn-* / --py-*，这里补同明暗档的 JetBrains token，取值色仍用各自主题的 --val-*。
+   - 深色 UI 搭浅色代码风格（或反之）时部分 token 可能对比不足，属自由组合的代价，
+     设置页里有提示；深浅对应可从 CODE_STYLES 的 group 判断。
+   ============================================================================ */
+html[data-theme][data-code-style="jetbrains-dark"] {
+    --syn-keyword: #cf8e6d;
+    --syn-operator: #bcbec4;
+    --syn-comment: #7a7e85;
+    --syn-tag: #d5b778;
+    --syn-attr: #bcbec4;
+    --syn-attr-value: #6aab73;
+    --syn-yaml-key: #cf8e6d;
+    --syn-json-key: #c77dbb;
+    --syn-function: #56a8f5;
+    --syn-heading: #bbbbbb;
+    --py-builtin: #8888c6;
+    --py-doc: #5f826b;
+    --py-self: #94558d;
+    --code-val-key: #c77dbb;
+    --code-val-string: #6aab73;
+    --code-val-number: #2aacb8;
+    --code-val-bool: #cf8e6d;
+    --code-val-null: #cf8e6d;
+}
+
+html[data-theme][data-code-style="darcula"] {
+    --syn-keyword: #cc7832;
+    --syn-operator: #a9b7c6;
+    --syn-comment: #808080;
+    --syn-tag: #e8bf6a;
+    --syn-attr: #bababa;
+    --syn-attr-value: #a5c261;
+    --syn-yaml-key: #cc7832;
+    --syn-json-key: #9876aa;
+    --syn-function: #ffc66d;
+    --syn-heading: #bbbbbb;
+    --py-builtin: #8888c6;
+    --py-doc: #5f826b;
+    --py-self: #94558d;
+    --code-val-key: #9876aa;
+    --code-val-string: #6a8759;
+    --code-val-number: #6897bb;
+    --code-val-bool: #cc7832;
+    --code-val-null: #cc7832;
+}
+
+html[data-theme][data-code-style="tokyo-night"] {
+    --syn-keyword: #cf8e6d;
+    --syn-operator: #bcbec4;
+    --syn-comment: #7a7e85;
+    --syn-tag: #d5b778;
+    --syn-attr: #bcbec4;
+    --syn-attr-value: #6aab73;
+    --syn-yaml-key: #cf8e6d;
+    --syn-json-key: #c77dbb;
+    --syn-function: #56a8f5;
+    --syn-heading: #bbbbbb;
+    --py-builtin: #8888c6;
+    --py-doc: #5f826b;
+    --py-self: #94558d;
+    --code-val-key: #7dcfff;
+    --code-val-string: #9ece6a;
+    --code-val-number: #ff9e64;
+    --code-val-bool: #7aa2f7;
+    --code-val-null: #bb9af7;
+}
+
+html[data-theme][data-code-style="jetbrains-light"] {
+    --syn-keyword: #0033b3;
+    --syn-operator: #000000;
+    --syn-comment: #8c8c8c;
+    --syn-tag: #e8bf6a;
+    --syn-attr: #bababa;
+    --syn-attr-value: #a5c261;
+    --syn-yaml-key: #0033b3;
+    --syn-json-key: #871094;
+    --syn-function: #00627a;
+    --syn-heading: #000000;
+    --py-builtin: #871094;
+    --py-doc: #5f826b;
+    --py-self: #94558d;
+    --code-val-key: #871094;
+    --code-val-string: #067d17;
+    --code-val-number: #1750eb;
+    --code-val-bool: #0033b3;
+    --code-val-null: #0033b3;
+}
+
+html[data-theme][data-code-style="github-light"] {
+    --syn-keyword: #0033b3;
+    --syn-operator: #000000;
+    --syn-comment: #8c8c8c;
+    --syn-tag: #e8bf6a;
+    --syn-attr: #bababa;
+    --syn-attr-value: #a5c261;
+    --syn-yaml-key: #0033b3;
+    --syn-json-key: #871094;
+    --syn-function: #00627a;
+    --syn-heading: #000000;
+    --py-builtin: #871094;
+    --py-doc: #5f826b;
+    --py-self: #94558d;
+    --code-val-key: #0550ae;
+    --code-val-string: #0a3069;
+    --code-val-number: #0550ae;
+    --code-val-bool: #cf222e;
+    --code-val-null: #8250df;
+}
+
+html[data-theme][data-code-style="shiki"] {
+    --syn-keyword: #d6336c;
+    --syn-operator: #495057;
+    --syn-comment: #868e96;
+    --syn-tag: #d6336c;
+    --syn-attr: #e8590c;
+    --syn-attr-value: #2f9e44;
+    --syn-yaml-key: #1c7ed6;
+    --syn-json-key: #1c7ed6;
+    --syn-function: #6741d9;
+    --syn-heading: #0f1115;
+    --py-builtin: #6741d9;
+    --py-doc: #868e96;
+    --py-self: #e8590c;
+    --code-val-key: #1c7ed6;
+    --code-val-string: #2f9e44;
+    --code-val-number: #1c7ed6;
+    --code-val-bool: #d6336c;
+    --code-val-null: #6741d9;
+}
+
+html[data-theme][data-code-style="newsprint"] {
+    --syn-keyword: #0033b3;
+    --syn-operator: #000000;
+    --syn-comment: #8c8c8c;
+    --syn-tag: #e8bf6a;
+    --syn-attr: #bababa;
+    --syn-attr-value: #a5c261;
+    --syn-yaml-key: #0033b3;
+    --syn-json-key: #871094;
+    --syn-function: #00627a;
+    --syn-heading: #000000;
+    --py-builtin: #871094;
+    --py-doc: #5f826b;
+    --py-self: #94558d;
+    --code-val-key: #6f4e37;
+    --code-val-string: #8a3b2e;
+    --code-val-number: #4f6b3a;
+    --code-val-bool: #31577a;
+    --code-val-null: #7b4a73;
 }
 
 * { box-sizing: border-box; }
@@ -2485,8 +2685,13 @@ html[data-tab-close="none"] .tab .tab-close { visibility: hidden; }
     line-height: 0;
     font-size: 0;
 }
-body.csv-col-resizing,
-body.csv-col-resizing * {
+/* 拖列宽时的整窗光标反馈只落在 body 上；强制规则收窄到表格内。
+   以前用 `body.csv-col-resizing *` 加 !important 覆盖全应用，一旦拖拽结束事件
+   丢失（松手在窗口外 / 预览 iframe 吞了 pointerup），残留的类会让整个界面
+   永久变成左右箭头且 user-select:none，连按钮都点不动。 */
+body.csv-col-resizing { cursor: col-resize; }
+body.csv-col-resizing .csv-table,
+body.csv-col-resizing .csv-table * {
     cursor: col-resize !important;
     user-select: none !important;
 }
@@ -2733,28 +2938,53 @@ body.csv-col-resizing * {
 .md-preview hr { margin: 1.6em 0; border: none; border-top: 1px solid var(--border); }
 .md-preview img { max-width: 100%; border-radius: 4px; }
 .md-preview .katex-display { padding: 0.3em 0; overflow-x: auto; overflow-y: hidden; }
+/* Markdown 预览与 AI 回答共用同一套高亮（AI 回答此前没有 .hljs-* 着色规则，
+   代码块是单色的，顺带补齐）。取值色读 --code-val-*（代码风格通道），auto 未选
+   代码风格时回退到软件主题的 --val-*；--val-* 本身仍归 UI 消费，不会被改掉。 */
 .md-preview .hljs-keyword,
+.ai-md .hljs-keyword,
 .md-preview .hljs-selector-tag,
-.md-preview .hljs-subst { color: var(--syn-keyword, var(--accent)); }
+.ai-md .hljs-selector-tag,
+.md-preview .hljs-subst,
+.ai-md .hljs-subst { color: var(--syn-keyword, var(--accent)); }
 .md-preview .hljs-string,
+.ai-md .hljs-string,
 .md-preview .hljs-regexp,
-.md-preview .hljs-addition { color: var(--val-string); }
-.md-preview .hljs-number { color: var(--val-number); }
+.ai-md .hljs-regexp,
+.md-preview .hljs-addition,
+.ai-md .hljs-addition { color: var(--code-val-string, var(--val-string)); }
+.md-preview .hljs-number,
+.ai-md .hljs-number { color: var(--code-val-number, var(--val-number)); }
 .md-preview .hljs-comment,
-.md-preview .hljs-quote { color: var(--syn-comment, var(--muted)); font-style: italic; }
+.ai-md .hljs-comment,
+.md-preview .hljs-quote,
+.ai-md .hljs-quote { color: var(--syn-comment, var(--muted)); font-style: italic; }
 .md-preview .hljs-title,
+.ai-md .hljs-title,
 .md-preview .hljs-title.function_,
-.md-preview .hljs-section { color: var(--syn-function, var(--accent)); }
+.ai-md .hljs-title.function_,
+.md-preview .hljs-section,
+.ai-md .hljs-section { color: var(--syn-function, var(--accent)); }
 .md-preview .hljs-attr,
-.md-preview .hljs-attribute { color: var(--syn-attr, var(--orange)); }
+.ai-md .hljs-attr,
+.md-preview .hljs-attribute,
+.ai-md .hljs-attribute { color: var(--syn-attr, var(--orange)); }
 .md-preview .hljs-tag,
-.md-preview .hljs-name { color: var(--syn-tag, var(--val-key)); }
+.ai-md .hljs-tag,
+.md-preview .hljs-name,
+.ai-md .hljs-name { color: var(--syn-tag, var(--code-val-key, var(--val-key))); }
 .md-preview .hljs-built_in,
+.ai-md .hljs-built_in,
 .md-preview .hljs-literal,
-.md-preview .hljs-type { color: var(--val-bool); }
-.md-preview .hljs-meta { color: var(--val-null); }
+.ai-md .hljs-literal,
+.md-preview .hljs-type,
+.ai-md .hljs-type { color: var(--code-val-bool, var(--val-bool)); }
+.md-preview .hljs-meta,
+.ai-md .hljs-meta { color: var(--code-val-null, var(--val-null)); }
 .md-preview .hljs-variable,
-.md-preview .hljs-params { color: var(--text); }
+.ai-md .hljs-variable,
+.md-preview .hljs-params,
+.ai-md .hljs-params { color: var(--text); }
 html[data-theme="idea-dark"] .md-preview .hljs-comment { font-style: normal; }
 
 .jsoneditor-pane.image-active > .jsoneditor { display: none !important; }
@@ -4194,10 +4424,10 @@ div.jsoneditor-tree div.jsoneditor-show-more a:hover {
     white-space: pre;
     tab-size: 2;
 }
-.code-fold-code .hljs-attr { color: var(--val-key); }
-.code-fold-code .hljs-string { color: var(--val-string); }
-.code-fold-code .hljs-number { color: var(--val-number); }
-.code-fold-code .hljs-literal { color: var(--val-bool); }
+.code-fold-code .hljs-attr { color: var(--code-val-key, var(--val-key)); }
+.code-fold-code .hljs-string { color: var(--code-val-string, var(--val-string)); }
+.code-fold-code .hljs-number { color: var(--code-val-number, var(--val-number)); }
+.code-fold-code .hljs-literal { color: var(--code-val-bool, var(--val-bool)); }
 .jsoneditor .ace_fold-widget,
 .jsoneditor .ace_custom-widget {
     background: transparent !important;
@@ -4250,26 +4480,27 @@ div.jsoneditor-tree div.jsoneditor-show-more a:hover {
 .jsoneditor input,
 .jsoneditor textarea,
 .jsoneditor [contenteditable="true"] { caret-color: var(--text); }
-.jsoneditor .ace_string { color: var(--val-string); }
+/* Ace token 同样走代码风格通道；--ace-* 框架色与 --val-* 的 UI 消费不动。 */
+.jsoneditor .ace_string { color: var(--code-val-string, var(--val-string)); }
 .jsoneditor .ace_variable { color: var(--text); }
 .jsoneditor .ace-mode-json .ace_variable,
-.jsoneditor .ace-mode-json5 .ace_variable { color: var(--syn-json-key, var(--val-key)); }
-.jsoneditor .ace_constant.ace_numeric { color: var(--val-number); }
-.jsoneditor .ace_constant.ace_language.ace_boolean { color: var(--val-bool); }
-.jsoneditor .ace_constant.ace_language.ace_null { color: var(--val-null); }
+.jsoneditor .ace-mode-json5 .ace_variable { color: var(--syn-json-key, var(--code-val-key, var(--val-key))); }
+.jsoneditor .ace_constant.ace_numeric { color: var(--code-val-number, var(--val-number)); }
+.jsoneditor .ace_constant.ace_language.ace_boolean { color: var(--code-val-bool, var(--val-bool)); }
+.jsoneditor .ace_constant.ace_language.ace_null { color: var(--code-val-null, var(--val-null)); }
 .jsoneditor .ace_paren, .jsoneditor .ace_punctuation { color: var(--ace-punct); }
 .jsoneditor .ace_text-layer { color: var(--text); }
 .jsoneditor .ace_keyword { color: var(--syn-keyword, var(--accent)); }
 .jsoneditor .ace_keyword.ace_operator { color: var(--syn-operator, var(--ace-punct)); }
 .jsoneditor .ace_meta.ace_tag,
 .jsoneditor .ace_entity.ace_name.ace_tag,
-.jsoneditor .ace_meta.ace_tag.ace_tag-name { color: var(--syn-tag, var(--val-key)); }
-.jsoneditor .ace_entity { color: var(--val-key); }
+.jsoneditor .ace_meta.ace_tag.ace_tag-name { color: var(--syn-tag, var(--code-val-key, var(--val-key))); }
+.jsoneditor .ace_entity { color: var(--code-val-key, var(--val-key)); }
 .jsoneditor .ace_entity.ace_other.ace_attribute-name,
 .jsoneditor .ace_entity.ace_name.ace_attribute-name { color: var(--syn-attr, var(--orange)); }
-.jsoneditor .ace_constant { color: var(--val-number); }
-.jsoneditor .ace_constant.ace_language { color: var(--val-bool); }
-.jsoneditor .ace_storage { color: var(--syn-keyword, var(--val-null)); }
+.jsoneditor .ace_constant { color: var(--code-val-number, var(--val-number)); }
+.jsoneditor .ace_constant.ace_language { color: var(--code-val-bool, var(--val-bool)); }
+.jsoneditor .ace_storage { color: var(--syn-keyword, var(--code-val-null, var(--val-null))); }
 .jsoneditor .ace_comment { color: var(--syn-comment, var(--muted)); font-style: italic; }
 .jsoneditor .ace_markup.ace_heading,
 .jsoneditor .ace_heading { color: var(--syn-heading, var(--accent)); font-weight: 600; }
@@ -5179,11 +5410,15 @@ html[data-theme="idea-light"],
 html[data-theme="github"],
 html[data-theme="newsprint"],
 html[data-theme="pixyll"],
+html[data-theme="harness"],
 html[data-theme="whitey"] {
     --find-match-bg: #fcd47e;
     --word-occ-bg: #edebfc;
     --qs-selected-bg: #cfe0ff;
     --qs-selected-text: #173e6b;
+    /* AI 消息区铺浅灰：与侧栏同源，白卡片（--panel2=#fff）靠面色差浮起，
+       边框退为辅助；night 等暗色主题不在此列，仍跟随 --bg。 */
+    --chat-bg: var(--panel);
 }
 
 /* 设置搜索：左栏顶部搜索框 + 跨面板结果下拉 */
@@ -5515,7 +5750,7 @@ html[data-theme="whitey"] {
     flex-direction: column;
     min-width: 0;
     min-height: 0;
-    background: var(--bg);
+    background: var(--chat-bg);
     color: var(--text);
 }
 /* 底部堆叠区（上下文警告条 / 任务清单 / 输入区 / 统计行）整体绝对定位贴底：
@@ -5525,7 +5760,7 @@ html[data-theme="whitey"] {
    任务清单 / 输入区 / 统计行不再各自呈半透明悬浮卡片。
    铺底放在 ::before 而不是自身 background 上：本区 z-index 高于消息区，整块铺色会把
    消息区滚动条的**下半截**一起盖掉（看不见也拖不动）。::before 右侧让出滚动条槽宽，
-   滚动条从顶到底完整可见；露出来的仍是消息区自己的 --bg，观感与整块铺色一致 */
+   滚动条从顶到底完整可见；露出来的仍是消息区自己的 --chat-bg，观感与整块铺色一致 */
 .ai-bottom-stack {
     position: absolute;
     left: 0;
@@ -5543,12 +5778,38 @@ html[data-theme="whitey"] {
     content: '';
     position: absolute;
     /* 右侧让出滚动条槽宽：--ai-sbw 由 ai-panel 的 syncScrollbarGutter 实测后写在 #ai-panel 上
-       （浮层滚动条也至少让 12px）；未测到时按 12px 兜底 */
-    inset: 0 var(--ai-sbw, 12px) 0 0;
-    background: var(--bg);
+       （浮层滚动条也至少让 12px）；未测到时按 12px 兜底。
+       顶边下移到「肩线」（输入框圆角 + 扩层外扩 6px）：这一段的高度由 ::after 的圆角兜底
+       扩层负责遮，全宽直边若仍从堆叠区顶起步，会正好与输入框顶边相切——滚入的消息卡
+       被直角横线拦腰截断，和下面圆角的输入框拼在一起很违和 */
+    inset: calc(var(--ai-composer-radius) + 6px) var(--ai-sbw, 12px) 0 0;
+    background: var(--chat-bg);
     /* 必须在负层：伪元素是定位元素，默认会画在**静态子元素之上**——任务清单 / 上下文警告条
        都是静态定位，铺底会整块盖住它们（表现为任务面板凭空消失）。
        本区 z-index:25 自成层叠上下文，负层不会掉到消息区下面 */
+    z-index: -1;
+    pointer-events: none;
+}
+/* 输入框圆角兜底扩层：输入框盒左外扩 6px、右贴滚动条槽边界的同心圆角铺底。
+   消息卡滚入底部堆叠区时遮挡沿输入框圆角轮廓收口（肩线以上交给它）：
+   卡片先被圆角弧线接住、再落到 ::before 的全宽肩线上，不再出现与圆角相切的直角切线。
+   - 外扩 6px 是弧线与输入框描边之间的同色凹槽——不外扩的话，卡片会从描边圆角与
+     遮挡边界的夹角里露出月牙（输入框透明底，夹角处没有任何东西盖住卡片）；
+   - 右边不外扩：滚动条槽盖不得（盖住滑块就像压在输入框上），而消息卡右缘本就距
+     输入框右缘 11px（.ai-messages 内容盒 - 11px 内边距），圆角夹角里露不出卡片，
+     右上角圆角直接取输入框同值，弧线与描边严格重合；
+   - 任务清单 / 上下文警告条展开时扩层顶到堆叠区顶，它们的盒宽与输入框一致且自身
+     不透明，圆角夹角露卡片是正常的卡片叠卡片观感，不再额外处理。
+   停靠/全屏加宽后的居中定位必须与 .ai-composer 的 margin 覆盖块同步改（见下方规则） */
+.ai-bottom-stack::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 4px;                                  /* composer margin-left 10px − 外扩 6px */
+    right: var(--ai-sbw, 12px);                 /* 与 composer margin-right 相同 */
+    border-radius: calc(var(--ai-composer-radius) + 6px) var(--ai-composer-radius) 0 0;
+    background: var(--chat-bg);
     z-index: -1;
     pointer-events: none;
 }
@@ -5749,7 +6010,7 @@ html[data-theme="whitey"] {
     display: flex;
     flex-direction: column;
     gap: 10px;
-    background: var(--bg);
+    background: var(--chat-bg);
     user-select: text;
     scrollbar-color: var(--scroll-thumb) transparent;
 }
@@ -6068,7 +6329,8 @@ html[data-theme="whitey"] {
     padding: 7px 10px;
     border: 1px solid var(--border);
     border-radius: 8px;
-    background: var(--panel);
+    /* 卡片形态的回复用白（--panel2）：消息区铺灰后不能再跟 --panel，否则与底融为一体 */
+    background: var(--panel2);
 }
 #ai-panel.ai-assistant-card .ai-msg.error { border-color: color-mix(in srgb, var(--red) 55%, var(--border)); }
 .ai-msg-meta {
@@ -6333,7 +6595,8 @@ html[data-theme="whitey"] {
     gap: 7px;
     padding: 5px 8px;
     border-bottom: 1px solid var(--border);
-    background: var(--bg);
+    /* 卡头用消息区同款灰、卡体白：卡片内部再分一层，白卡不至整块平涂 */
+    background: var(--chat-bg);
 }
 .ai-widget-tag {
     padding: 1px 5px;
@@ -6572,7 +6835,9 @@ html[data-theme="whitey"] {
     border-radius: 50%;
     background: var(--panel2);
     color: var(--text);
-    box-shadow: var(--shadow);
+    /* 悬浮在消息文字上，全局 --shadow（0.16α）在这个尺寸下几乎不可见，容易与背景混成一片；
+       这里用双层实阴影保证按钮在任何主题下都「浮」在文字之上 */
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.22), 0 3px 10px rgba(0, 0, 0, 0.3);
     cursor: pointer;
 }
 .ai-scroll-btn:hover { border-color: var(--accent); color: var(--accent); }
@@ -6633,7 +6898,9 @@ html[data-theme="whitey"] {
     padding: 8px 10px 10px;
     max-height: min(66%, 620px);
     border: 1px solid var(--border);
-    border-radius: 12px;
+    /* 圆角单一来源 --ai-composer-radius：底部堆叠区的圆角兜底扩层（.ai-bottom-stack::after）
+       按它外扩 6px 铺同色底，消息卡滚入时沿本卡圆角轮廓被遮住 */
+    border-radius: var(--ai-composer-radius);
     /* 底色由 .ai-bottom-stack 统一铺：去掉半透明底 / 阴影 / 毛玻璃，只留描边标识输入框 */
     background: none;
     overflow: hidden;
@@ -8737,6 +9004,13 @@ body.console-only > :not(.dbg-console) { display: none !important; }
     padding-left: 10px;
     padding-right: 10px;
 }
+/* 圆角兜底扩层跟随输入框居中：表达式 = 上方 .ai-composer 的 margin ∓ 外扩 6px
+   （左边 −6、右边不外扩），改上面必须同步改这里，两处错位兜底扩层就歪了 */
+#ai-panel.ai-dock .ai-bottom-stack::after,
+#ai-panel.ai-fullscreen .ai-bottom-stack::after {
+    left: max(4px, calc((100% - var(--ai-fullscreen-width, 100%)) / 2 - 6px));
+    right: max(var(--ai-sbw, 12px), calc((100% - var(--ai-fullscreen-width, 100%)) / 2));
+}
 #ai-panel.ai-dock .ai-stats-wrap,
 #ai-panel.ai-fullscreen .ai-stats-wrap {
     margin-left: max(12px, calc((100% - var(--ai-fullscreen-width, 100%)) / 2 + 2px));
@@ -9583,6 +9857,16 @@ body.bgterm-dragging { cursor: row-resize; user-select: none; }
 .patch-hunk.conflict .patch-hunk-head { color: var(--red); }
 .patch-hunk-at { color: var(--muted); }
 .patch-hunk-reason { color: var(--red); }
+/* patch/diff 行底此前从未定义主题值，一直走 13% 透明回退：同一浓度叠在暗色底上
+   偏「脏红 / 脏绿」。暗色主题压淡一档、配合下方文字同向染色；浅色维持回退即可。 */
+:root,
+html[data-theme="darcula"],
+html[data-theme="idea-dark"],
+html[data-theme="night"] {
+    --diff-del-bg: color-mix(in srgb, var(--red) 12%, transparent);
+    --diff-add-bg: color-mix(in srgb, var(--green) 12%, transparent);
+}
+
 .patch-line {
     display: flex;
     gap: 8px;
@@ -9595,7 +9879,13 @@ body.bgterm-dragging { cursor: row-resize; user-select: none; }
 .patch-line.add { background: var(--diff-add-bg, color-mix(in srgb, var(--green) 13%, transparent)); }
 .patch-line.del { background: var(--diff-del-bg, color-mix(in srgb, var(--red) 13%, transparent)); }
 .patch-line.ctx { color: var(--muted); }
+/* diff 语义染色（JetBrains / GitHub 式）：文字与行号跟行性质同向微染，
+   比「纯白文字 + 色条」的贴纸感更容易读；灰阶用 color-mix 随主题自适应。 */
+.patch-line.add .patch-text { color: color-mix(in srgb, var(--green) 58%, var(--text)); }
+.patch-line.del .patch-text { color: color-mix(in srgb, var(--red) 58%, var(--text)); }
 .patch-no { width: 44px; flex: none; text-align: right; color: var(--muted); opacity: .7; }
+.patch-line.add .patch-no { color: color-mix(in srgb, var(--green) 65%, var(--muted)); opacity: 1; }
+.patch-line.del .patch-no { color: color-mix(in srgb, var(--red) 65%, var(--muted)); opacity: 1; }
 .patch-sign { width: 8px; flex: none; }
 .patch-line.add .patch-sign { color: var(--green); }
 .patch-line.del .patch-sign { color: var(--red); }
@@ -9761,41 +10051,53 @@ body.bgterm-dragging { cursor: row-resize; user-select: none; }
     box-sizing: border-box;
     position: relative;
     flex: none;
-    width: 14px;
-    height: 14px;
+    width: 16px;
+    height: 16px;
     margin: 0 6px 0 0;
-    vertical-align: -2px;
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    background: var(--bg);
+    vertical-align: -3px;
+    border: 1.5px solid var(--border);
+    border-radius: 5px;
+    background: var(--panel2, var(--bg));
     cursor: pointer;
-    transition: border-color .14s ease, background-color .14s ease;
+    transition: border-color .15s ease, background-color .15s ease, box-shadow .15s ease;
 }
 :where(input[type="radio"]) { border-radius: 50%; }
 :where(input[type="checkbox"]:not(:is(.set-switch input)), input[type="radio"]):hover:not(:disabled) {
-    border-color: color-mix(in srgb, var(--muted) 60%, var(--border));
+    border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
 }
 :where(input[type="checkbox"]:not(:is(.set-switch input)), input[type="radio"]):checked {
     background: var(--accent);
     border-color: var(--accent);
+    box-shadow: 0 1px 3px color-mix(in srgb, var(--accent) 38%, transparent);
 }
-:where(input[type="checkbox"]:not(:is(.set-switch input)):checked)::after {
+/* 勾与圆点默认 scale(0)，选中时弹出——比静态勾多一层可感知的交互反馈 */
+:where(input[type="checkbox"]:not(:is(.set-switch input)))::after {
     content: "";
     position: absolute;
-    left: 3px;
-    top: 1px;
-    width: 4px;
-    height: 7px;
+    left: 3.5px;
+    top: 1.5px;
+    width: 5px;
+    height: 8px;
     border: solid var(--on-accent, #fff);
     border-width: 0 2px 2px 0;
-    transform: rotate(45deg);
+    border-radius: 1px;
+    transform: rotate(45deg) scale(0);
+    transition: transform .16s ease;
 }
-:where(input[type="radio"]:checked)::after {
+:where(input[type="checkbox"]:not(:is(.set-switch input)):checked)::after {
+    transform: rotate(45deg) scale(1);
+}
+:where(input[type="radio"])::after {
     content: "";
     position: absolute;
-    inset: 3px;
+    inset: 3.5px;
     border-radius: 50%;
     background: var(--on-accent, #fff);
+    transform: scale(0);
+    transition: transform .16s ease;
+}
+:where(input[type="radio"]:checked)::after {
+    transform: scale(1);
 }
 :where(input[type="checkbox"]:not(:is(.set-switch input)), input[type="radio"]):focus-visible {
     outline: 2px solid var(--accent);

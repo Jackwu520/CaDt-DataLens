@@ -9,6 +9,7 @@ import {isDocReadOnly} from '../core/readonly.js';
 import {createSettingsDialogs} from './settings-dialogs.js';
 import {createSettingsSearch} from './settings-search.js';
 import {createSettingsSelect} from './settings-select.js';
+import {CODE_STYLE_AUTO, CODE_STYLES, currentCodeStyleName, isValidCodeStyleId} from './code-styles.js';
 
 export function createSettingsUI(deps) {
 
@@ -89,6 +90,7 @@ const elsSettings = {
     showBanners: document.getElementById('opt-show-banners'),
     autoSave: document.getElementById('opt-auto-save'),
     openMode: document.getElementById('opt-open-mode'),
+    codeStyle: document.getElementById('opt-code-style'),
     tabClose: document.getElementById('opt-tab-close'),
     dblClickClose: document.getElementById('opt-dblclick-close'),
     shiftClickClose: document.getElementById('opt-shiftclick-close'),
@@ -133,6 +135,23 @@ function fillFontSelect(select, list) {
         opt.textContent = face.name;
         select.appendChild(opt);
     }
+}
+// 代码风格下拉：选项来自 code-styles.js 单一来源，必须早于 createSettingsSelect
+// 的行式下拉增强（增强时会读取 select 的 options 生成自定义面板）。
+if (elsSettings.codeStyle) {
+    const csSel = elsSettings.codeStyle;
+    csSel.textContent = '';
+    const autoOpt = document.createElement('option');
+    autoOpt.value = CODE_STYLE_AUTO;
+    autoOpt.textContent = '跟随软件主题';
+    csSel.appendChild(autoOpt);
+    for (const style of CODE_STYLES) {
+        const opt = document.createElement('option');
+        opt.value = style.id;
+        opt.textContent = style.name;
+        csSel.appendChild(opt);
+    }
+    csSel.addEventListener('change', () => setCodeStyle(csSel.value));
 }
 fillFontSelect(elsSettings.uiFont, deps.uiFonts);
 fillFontSelect(elsSettings.uiCjkFont, deps.cjkFonts);
@@ -233,6 +252,34 @@ function applyTheme() {
             deps.backend.SetWindowBg((n >> 16) & 255, (n >> 8) & 255, n & 255);
         } catch (e) {}
     }
+}
+
+// 代码风格是独立于软件主题的第二条通道：只写 data-code-style，token 变量随之切换。
+// auto（默认）时删掉该属性，CSS 里没有任何 [data-code-style] 块命中，自动回落到
+// 软件主题里既有的 token 变量 —— 老用户升级后观感不变。
+let appliedCodeStyle = null;
+function currentCodeStyle() {
+    return String(deps.settings.codeStyle || CODE_STYLE_AUTO);
+}
+
+function applyCodeStyle() {
+    const id = currentCodeStyle();
+    if (appliedCodeStyle === id) return;
+    if (id === CODE_STYLE_AUTO) delete document.documentElement.dataset.codeStyle;
+    else document.documentElement.dataset.codeStyle = id;
+    appliedCodeStyle = id;
+    if (elsSettings.codeStyle) elsSettings.codeStyle.value = id;
+}
+
+function setCodeStyle(id) {
+    const value = String(id || CODE_STYLE_AUTO);
+    if (!isValidCodeStyleId(value)) return;
+    deps.settings.codeStyle = value;
+    // 走 applySettings 只为统一存盘与设置变更留痕；它不会重绘 mermaid / ECharts
+    // （那些只读 UI 语义变量，widget.js 的 MutationObserver 也只盯 data-theme），
+    // 不改窗口底色，hljs / Ace 靠 CSS 变量自动生效，无需重新高亮。
+    applySettings();
+    deps.flash('代码风格：' + currentCodeStyleName(deps.settings.theme, value));
 }
 
 function setTheme(id) {
@@ -416,6 +463,7 @@ function applySettings() {
     document.documentElement.classList.toggle('tree-guides', !!deps.settings.treeGuides);
     syncAboutBannerByTime();
     applyTheme();
+    applyCodeStyle();
     if (typeof deps.syncTerminalTheme === 'function') {
         try {
             deps.syncTerminalTheme();
@@ -766,6 +814,6 @@ const searchMod = createSettingsSearch(searchDeps);
 
     return {
         ...dlgMod, ...selMod, ...searchMod,
-        actRel, activityLog, applyIntegration, applyReadOnlyToDoc, applySettings, countWords, currentTheme, cursorPositionForDoc, elsDialogs, elsSettings, getFormatSettings, installReadOnlyGuards, openSettings, rtFullscreen, scheduleWordCount, selectSettingsPane, setTheme, syncIntegrationStatus, syncedOpenMode, toggleAlwaysOnTop, toggleCodeWrap, toggleFullscreen, updateLockButton, updateWordCount,
+        actRel, activityLog, applyCodeStyle, applyIntegration, applyReadOnlyToDoc, applySettings, countWords, currentCodeStyle, currentTheme, cursorPositionForDoc, elsDialogs, elsSettings, getFormatSettings, installReadOnlyGuards, openSettings, rtFullscreen, scheduleWordCount, selectSettingsPane, setCodeStyle, setTheme, syncIntegrationStatus, syncedOpenMode, toggleAlwaysOnTop, toggleCodeWrap, toggleFullscreen, updateLockButton, updateWordCount,
     };
 }

@@ -362,7 +362,51 @@ function setSelectCloseAll(except) {
     instances.forEach((i) => { i.sel.dataset.ssOpen = ''; i.btn.setAttribute('aria-expanded', 'false'); });
 }
 
-// ---- 增强：把设置页内所有单行 select 替换为触发器 ----
+// ---- 增强：把 select 替换为触发器 + 浮层（原生 select 仍是值真源，change 照常从它派发） ----
+// 单个 select 的增强（幂等）。设置页扫描器与设置页之外的域（如全局搜索，经 main.js deps
+// 注入 enhanceSelect）共用这一条路径；wrap 继承原 select 的布局类，外观类需各域自行适配。
+function enhanceSelect(sel) {
+    if (!sel || sel.tagName !== 'SELECT') return null;
+    if (sel.dataset.setSelect === '1' || sel.multiple || sel.size > 1) return null;
+    sel.dataset.setSelect = '1';
+    const wrap = document.createElement('div');
+    // 继承原 select 的布局类（.opt-select / .set-control .opt-select 的宽度与 flex 规则）
+    wrap.className = 'set-select ' + [...sel.classList].filter((c) => c !== 'set-select-native').join(' ');
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'set-select-btn';
+    btn.setAttribute('role', 'combobox');
+    btn.setAttribute('aria-haspopup', 'listbox');
+    btn.setAttribute('aria-expanded', 'false');
+    btn.setAttribute('aria-controls', POP_ID);
+    const aLabel = sel.getAttribute('aria-label') || sel.title || '';
+    if (aLabel) btn.setAttribute('aria-label', aLabel);
+    btn.innerHTML = '<span class="ss-label"></span><span class="ss-chev"></span>';
+    if (deps.iconSvg) btn.querySelector('.ss-chev').innerHTML = deps.iconSvg('chevron-down', 12);
+    wrap.appendChild(btn);
+    sel.classList.add('set-select-native');
+    sel.after(wrap);
+    const inst = {sel, wrap, btn, label: btn.querySelector('.ss-label'), observer: null};
+    btn.addEventListener('click', () => openInstance(inst));
+    btn.addEventListener('keydown', onBtnKeydown(inst));
+    sel.addEventListener('change', () => refresh(inst));
+    inst.observer = new MutationObserver((records) => {
+        refresh(inst);
+        if (active === inst) {
+            renderOptions(inst);
+            positionActive();
+            setActiveIndex(Math.max(0, inst.sel.selectedIndex), false);
+        }
+    });
+    inst.observer.observe(sel, {
+        childList: true, subtree: true, characterData: true,
+        attributes: true, attributeFilter: ['disabled'],
+    });
+    instances.add(inst);
+    refresh(inst);
+    return inst;
+}
+
 function enhanceSetSelects() {
     // 切到别的设置页时原触发器虽还在 DOM 里但已 display:none，浮层必须跟着收起
     if (active && active.wrap && (!active.wrap.isConnected || !active.wrap.getClientRects().length)) setSelectCloseAll();
@@ -373,45 +417,7 @@ function enhanceSetSelects() {
             instances.delete(inst);
         }
     });
-    document.querySelectorAll('.settings-pane select').forEach((sel) => {
-        if (sel.dataset.setSelect === '1' || sel.multiple || sel.size > 1) return;
-        sel.dataset.setSelect = '1';
-        const wrap = document.createElement('div');
-        // 继承原 select 的布局类（.opt-select / .set-control .opt-select 的宽度与 flex 规则）
-        wrap.className = 'set-select ' + [...sel.classList].filter((c) => c !== 'set-select-native').join(' ');
-        const btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = 'set-select-btn';
-        btn.setAttribute('role', 'combobox');
-        btn.setAttribute('aria-haspopup', 'listbox');
-        btn.setAttribute('aria-expanded', 'false');
-        btn.setAttribute('aria-controls', POP_ID);
-        const aLabel = sel.getAttribute('aria-label') || sel.title || '';
-        if (aLabel) btn.setAttribute('aria-label', aLabel);
-        btn.innerHTML = '<span class="ss-label"></span><span class="ss-chev"></span>';
-        if (deps.iconSvg) btn.querySelector('.ss-chev').innerHTML = deps.iconSvg('chevron-down', 12);
-        wrap.appendChild(btn);
-        sel.classList.add('set-select-native');
-        sel.after(wrap);
-        const inst = {sel, wrap, btn, label: btn.querySelector('.ss-label'), observer: null};
-        btn.addEventListener('click', () => openInstance(inst));
-        btn.addEventListener('keydown', onBtnKeydown(inst));
-        sel.addEventListener('change', () => refresh(inst));
-        inst.observer = new MutationObserver((records) => {
-            refresh(inst);
-            if (active === inst) {
-                renderOptions(inst);
-                positionActive();
-                setActiveIndex(Math.max(0, inst.sel.selectedIndex), false);
-            }
-        });
-        inst.observer.observe(sel, {
-            childList: true, subtree: true, characterData: true,
-            attributes: true, attributeFilter: ['disabled'],
-        });
-        instances.add(inst);
-        refresh(inst);
-    });
+    document.querySelectorAll('.settings-pane select').forEach(enhanceSelect);
     if (!window.__setSelectDelegated) {
         window.__setSelectDelegated = true;
         // 外点关闭（浮层在 body 上，必须把它一并算作「内部」）
@@ -430,5 +436,5 @@ function enhanceSetSelects() {
     }
 }
 
-return {enhanceSetSelects, setSelectCloseAll};
+return {enhanceSetSelects, enhanceSelect, setSelectCloseAll};
 }
