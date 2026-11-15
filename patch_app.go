@@ -113,6 +113,12 @@ func (a *App) PatchSave(root, summary, text string) (*PatchPreview, error) {
 		_ = os.Remove(patchPath)
 		return nil, err
 	}
+	// 一个文件都不可应用（路径越界、hunk 全冲突、语法不支持）→ 不留档，直接把原因报回去：
+	// 这类补丁重提交前必须重写，留下 .patch 只会攒垃圾
+	if !planHasApplicableFile(plan) {
+		_ = os.Remove(patchPath)
+		return nil, &patchError{Code: patchErrHunkConflict, Msg: "补丁没有任何文件可直接应用", Detail: firstPlanReason(plan)}
+	}
 	// 空补丁（+0/−0，也没有新增文件）没有任何价值，同样不落盘、不入索引
 	if plan.Added == 0 && plan.Removed == 0 && !planHasAddedFile(plan) {
 		_ = os.Remove(patchPath)
@@ -154,6 +160,35 @@ func planHasAddedFile(plan *patchPlan) bool {
 		}
 	}
 	return false
+}
+
+// planHasApplicableFile 是否存在可直接应用的 hunk（status=ok）。
+// 全为 blocked/conflict/unsupported 时这份补丁必然要重写，不该落盘。
+func planHasApplicableFile(plan *patchPlan) bool {
+	for _, f := range plan.Files {
+		if f != nil && f.Status == "ok" {
+			return true
+		}
+	}
+	return false
+}
+
+// firstPlanReason 取第一个失败文件的可读原因（附相对路径），给模型定位用。
+func firstPlanReason(plan *patchPlan) string {
+	for _, f := range plan.Files {
+		if f == nil || f.Status == "ok" {
+			continue
+		}
+		rel := f.RelPath
+		if rel == "" {
+			rel = "(路径未知)"
+		}
+		if f.Reason != "" {
+			return rel + "：" + f.Reason
+		}
+		return rel + "：无法应用"
+	}
+	return ""
 }
 
 // previewExistingPatch 复用已存在的同内容补丁：重新预检并返回预览，不新建文件、不改索引。

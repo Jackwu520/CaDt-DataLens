@@ -109,13 +109,45 @@ func TestPatchSavePrecheckFailureLeavesNoFile(t *testing.T) {
 	root := newPatchTestRoot(t)
 	store := patchStoreRoot(root)
 	a := &App{}
-	// 目标路径逃出工作区根 → 解析阶段硬失败
+	// 目标路径逃出工作区根 → 文件被拦，一个 hunk 都不可应用
 	escape := "--- a/../evil.txt\n+++ b/../evil.txt\n@@ -1,1 +1,1 @@\n-x\n+y\n"
-	if _, err := a.PatchSave(root, "越界补丁", escape); err == nil {
+	_, err := a.PatchSave(root, "越界补丁", escape)
+	if err == nil {
 		t.Fatal("越界路径应被拒绝")
 	}
+	pe := patchErrorOf(err)
+	if pe == nil || pe.Code != patchErrHunkConflict {
+		t.Fatalf("错误码 = %+v，预期 %s", pe, patchErrHunkConflict)
+	}
+	if !strings.Contains(pe.Detail, "越界") {
+		t.Fatalf("原因应指出路径越界，实际 %q", pe.Detail)
+	}
 	if n := countPatchFiles(t, store); n != 0 {
-		t.Fatalf("预检失败的补丁不应留档，实际 %d 个 .patch", n)
+		t.Fatalf("不可应用的补丁不应留档，实际 %d 个 .patch", n)
+	}
+}
+
+func TestPatchSaveNoApplicableHunksLeavesNoFile(t *testing.T) {
+	useTempRecycle(t)
+	root := newPatchTestRoot(t)
+	store := patchStoreRoot(root)
+	a := &App{}
+	// 上下文对不上（文件里是 one/two，补丁期望 x/y）→ 冲突，不可应用
+	conflict := "--- a/a.txt\n+++ b/a.txt\n@@ -1,2 +1,2 @@\n x\n-y\n+Y\n"
+	if _, err := a.PatchSave(root, "hunk 冲突", conflict); err == nil {
+		t.Fatal("hunk 冲突应被拒绝")
+	} else if pe := patchErrorOf(err); pe == nil || pe.Code != patchErrHunkConflict {
+		t.Fatalf("错误码 = %+v，预期 %s", pe, patchErrHunkConflict)
+	}
+	if n := countPatchFiles(t, store); n != 0 {
+		t.Fatalf("全冲突的补丁不应留档，实际 %d 个 .patch", n)
+	}
+	if got := readPatchIndex(store); len(got) != 0 {
+		t.Fatalf("不可应用的补丁不应入索引，实际 %d 行", len(got))
+	}
+	// 目标文件必须原样未动
+	if raw, err := os.ReadFile(filepath.Join(root, "a.txt")); err != nil || string(raw) != "one\ntwo\n" {
+		t.Fatalf("目标文件被改动：%q err=%v", raw, err)
 	}
 }
 
@@ -252,6 +284,37 @@ func TestPatchDeleteKeepsSharedMeta(t *testing.T) {
 	}
 	if _, err := os.Stat(metaPath); !os.IsNotExist(err) {
 		t.Fatal("最后一个同内容补丁删掉后 meta 应被回收")
+	}
+}
+
+func TestPatchPreviewTextWritesNothing(t *testing.T) {
+	// 计划模式的 dry_run 走 PatchPreviewText：必须完全不落地（不建 .cadt/patches、
+	// 不写索引、不生成 .patch），否则「计划模式零副作用」就不成立。
+	root := newPatchTestRoot(t)
+	store := patchStoreRoot(root)
+	a := &App{}
+	preview, err := a.PatchPreviewText(patchForFile("a.txt"), root)
+	if err != nil {
+		t.Fatalf("预检: %v", err)
+	}
+	if preview == nil || len(preview.Files) != 1 {
+		t.Fatalf("预检结果异常：%+v", preview)
+	}
+	if !preview.Applicable {
+		t.Fatalf("目标文件存在且上下文匹配，应可应用：%+v", preview.Files)
+	}
+	if _, err := os.Stat(store); !os.IsNotExist(err) {
+		t.Fatalf("预检不应创建补丁目录：%v", err)
+	}
+	if n := countPatchFiles(t, store); n != 0 {
+		t.Fatalf("预检不应生成 .patch，实际 %d", n)
+	}
+	if got := readPatchIndex(store); len(got) != 0 {
+		t.Fatalf("预检不应写索引，实际 %d 行", len(got))
+	}
+	// 目标文件同样保持原样
+	if raw, err := os.ReadFile(filepath.Join(root, "a.txt")); err != nil || string(raw) != "one\ntwo\n" {
+		t.Fatalf("预检改动了目标文件：%q err=%v", raw, err)
 	}
 }
 
