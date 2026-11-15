@@ -9732,6 +9732,141 @@ html[data-writing="on"][data-writing-paper="dim"] .jsoneditor textarea.jsonedito
 }
 .ai-agv-send:disabled { opacity: .45; cursor: not-allowed; }
 .ai-agv-composer.disabled { background: var(--panel); }
+
+/* 会话投递选择器（ai-session-send.js）：搜索 + 多选列表 + 底部实时计数。
+   行是 button（键盘可达），勾选框与状态胶囊自绘——不用原生 checkbox（表单控件硬规范）。 */
+.ai-send-head { flex: none; display: flex; align-items: center; gap: 8px; }
+.ai-send-search { flex: 1; min-width: 0; }
+.ai-send-toolbar { flex: none; display: flex; align-items: center; gap: 6px; margin-top: -2px; }
+.ai-send-link {
+    padding: 2px 7px;
+    font: inherit;
+    font-size: 11px;
+    color: var(--muted);
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    cursor: pointer;
+}
+.ai-send-link:hover { color: var(--text); background: var(--hover); }
+.ai-send-preview {
+    flex: none;
+    padding: 6px 8px;
+    border: 1px solid var(--border);
+    border-left: 2px solid var(--accent);
+    border-radius: 4px;
+    background: var(--panel2);
+    font-size: 11px;
+}
+.ai-send-preview-label { display: block; font-size: 10px; color: var(--muted); margin-bottom: 2px; }
+.ai-send-preview-text {
+    white-space: pre-wrap;
+    word-break: break-word;
+    opacity: .85;
+    max-height: 54px;
+    overflow: hidden;
+}
+.ai-send-list {
+    flex: 1;
+    min-height: 120px;
+    max-height: 264px;
+    overflow: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 3px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--panel);
+}
+.ai-send-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 6px 8px;
+    border: 1px solid transparent;
+    border-radius: 5px;
+    background: none;
+    color: var(--text);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+.ai-send-row:hover { background: var(--hover); }
+.ai-send-row.focus { border-color: var(--accent); background: var(--accent-weak); }
+.ai-send-row.picked { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.ai-send-row.dimmed { opacity: .45; }
+.ai-send-check {
+    flex: none;
+    position: relative;
+    width: 14px;
+    height: 14px;
+    border: 1.5px solid var(--border);
+    border-radius: 4px;
+    background: var(--bg);
+}
+.ai-send-check.on { background: var(--accent); border-color: var(--accent); }
+.ai-send-check.on::after {
+    content: "";
+    position: absolute;
+    left: 3.5px;
+    top: 1px;
+    width: 4px;
+    height: 7px;
+    border: solid var(--on-accent);
+    border-width: 0 2px 2px 0;
+    transform: rotate(45deg);
+}
+.ai-send-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.ai-send-title { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ai-send-meta { font-size: 10px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ai-send-state {
+    flex: none;
+    justify-content: center;
+    min-width: 56px;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 0 6px;
+    border-radius: 999px;
+    font-size: 9.5px;
+    line-height: 15px;
+    color: var(--muted);
+    background: color-mix(in srgb, var(--muted) 12%, transparent);
+}
+.ai-send-state.streaming { color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.ai-send-state.compacting { color: var(--orange); background: color-mix(in srgb, var(--orange) 16%, transparent); }
+.ai-send-dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; animation: ai-send-pulse 1.4s ease-in-out infinite; }
+@keyframes ai-send-pulse { 0%, 100% { opacity: .3; } 50% { opacity: 1; } }
+.ai-send-empty { padding: 18px 10px; text-align: center; font-size: 11.5px; color: var(--muted); }
+.ai-send-foot { flex: none; display: flex; align-items: center; gap: 6px; padding-top: 2px; }
+.ai-send-count { font-size: 10.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+/* 计数落在对话框 footer 里：margin-right:auto 把它推到左端，按钮仍靠右 */
+.ai-send-count-foot { margin-right: auto; }
+.ai-send-keys { flex: none; font-size: 10px; color: var(--faint); }
+.ai-send-total { font-size: 10.5px; color: var(--muted); }
+.ai-send-foot .dlg-btn { white-space: nowrap; flex: none; }
+.ai-send-spacer { flex: 1; }
+.ai-send-label { font-size: 11.5px; color: var(--muted); }
+.ai-send-chips { display: flex; flex-wrap: wrap; gap: 5px; max-height: 88px; overflow: auto; }
+.ai-send-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 7px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--panel2);
+    font-size: 11px;
+}
+.ai-send-chip-title { max-width: 148px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ai-send-chip { white-space: nowrap; }
+.ai-send-chip.streaming .ai-send-dot { color: var(--accent); }
+.ai-send-chip.compacting .ai-send-dot { color: var(--orange); }
+.ai-send-chip.idle .ai-send-dot { color: var(--muted); }
+.ai-send-textarea { resize: vertical; min-height: 64px; }
+.ai-send-hint { font-size: 10.5px; line-height: 1.5; color: var(--muted); }
 /* 后台终端内容区标签页 */
 /* display 必须挂在 .active 上：直接用 .bgterm-pane 设 display 会顶掉
    .jsoneditor-pane { display: none }（同权重、后定义者胜），导致非激活标签页的

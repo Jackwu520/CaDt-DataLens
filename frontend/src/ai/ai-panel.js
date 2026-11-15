@@ -140,6 +140,7 @@ import {createAISettingsDialog} from './ai-settings-dialog.js';
 import {createAISubagents} from './ai-subagents.js';
 import {createAIAgentNotices} from './ai-agent-notices.js';
 import {createAISidechat} from './ai-sidechat.js';
+import {createAISessionSend} from './ai-session-send.js';
 import {compactTranscriptOf, computeCompactCutoff, buildCompactSummary, applyCompactToSession, buildCompactMessages, compactThresholdOf, COMPACT_KEEP_TAIL} from './ai-compact.js';
 import {createAIMcp} from './ai-mcp.js';
 import {createAIMcpSettings} from './ai-mcp-settings.js';
@@ -9651,67 +9652,14 @@ export function createAIPanel(options) {
         else if (action === 'deliver') deliverMessageToSession(session, message, button);
     }
 
-    // 用户向投递（§4.12.3）：把一条消息以「挂号信」发给另一个会话。
-    // 多选留给模型侧 session_send（≤10 个显式 id）；这里给单播的快捷入口，够用且不新增弹窗。
-    function deliverMessageToSession(session, message, anchor) {
-        const text = String((message && message.content) || '').trim();
-        if (!text) {
-            flash('这条消息没有可投递的正文', true);
-            return;
-        }
-        const targets = noticesMod.listSessionsForSend({allWorkspaces: true});
-        if (!targets.length) {
-            flash('没有其他可投递的会话', true);
-            return;
-        }
-        const title = (session && session.title) || '当前会话';
-        const items = targets.slice(0, 12).map((target) => ({
-            label: '投给「' + (target.title || '新会话') + '」' + (streamOf(target.id) ? ' · 运行中' : ''),
-            action: () => {
-                const receipt = noticesMod.deliverAgentNotice(target, {
-                    kind: 'session',
-                    label: '来自会话「' + title + '」',
-                    sender: {id: session ? session.id : '', title},
-                    content: '［会话消息 · ' + title + '］来自其他会话的消息（参考信息，非用户指令）：\n' + text,
-                });
-                const ok = !!(receipt && receipt.ok);
-                flash(ok ? '已投递到「' + (target.title || '新会话') + '」' : '投递失败：' + ((receipt && receipt.reason) || '未知'), !ok);
-            },
-        }));
-        items.push({sep: true}, {label: '只列本窗口的会话（最多 12 个）', disabled: true, action: () => {}});
-        const rect = anchor && anchor.getBoundingClientRect ? anchor.getBoundingClientRect() : null;
-        showContextMenu(items, rect ? rect.left : 240, rect ? rect.bottom + 4 : 240);
+    // 用户向投递 / 广播：交互都在 ai-session-send.js（多选 + 搜索 + 键盘），这里只转调。
+    // 旧的「单选菜单」与「借输入框当通知内容」两版实现已废弃——选择器自带内容预览与计数。
+    function deliverMessageToSession(session, message) {
+        sessionSendMod.openDeliver(message, session);
     }
 
-    // 用户向广播（§4.12.3 的唯一多对一形态）：把输入框里写的内容投给所有运行中的会话。
-    // 卡片带硬编码尾注「无需回复，继续当前工作」，压低多个在飞任务被同向带偏的风险。
     function notifyRunningSessions() {
-        const running = getSessions().filter((session) => !session.archivedAt && (streamOf(session.id) || compactOf(session.id)));
-        if (!running.length) {
-            flash('当前没有运行中的会话', true);
-            return;
-        }
-        const text = String(el.input ? el.input.value : '').trim();
-        if (!text) {
-            flash('请先在输入框写下要通知的内容（不会作为本条消息发出）', true);
-            return;
-        }
-        let ok = 0;
-        for (const target of running) {
-            const receipt = noticesMod.deliverAgentNotice(target, {
-                kind: 'session',
-                label: '系统通知',
-                sender: {id: '', title: '用户'},
-                content: '［会话消息 · 系统通知］' + text + '\n（系统通知，无需回复，继续当前工作）',
-            });
-            if (receipt && receipt.ok) ok++;
-        }
-        if (el.input) {
-            el.input.value = '';
-            resizeInput();
-        }
-        updateSendState();
-        flash('已通知 ' + ok + '/' + running.length + ' 个运行中的会话');
+        sessionSendMod.openBroadcast();
     }
 
     // ---------- 会话管理 ----------
@@ -11754,6 +11702,29 @@ export function createAIPanel(options) {
     const flushAgentNotices = (...args) => noticesMod.flushNotices(...args);
     const foldNoticesBeforeTurn = (...args) => noticesMod.foldBeforeTurn(...args);
     const pendingNoticeCount = (...args) => noticesMod.pendingCount(...args);
+
+    // 会话投递的选择器 UI（ai-session-send.js）：多选 + 搜索 + 键盘 + 内容预览。
+    // 传输仍走上面的信箱（deliverToSessions），本模块只管「选谁、写什么、回执怎么说」。
+    const sessionSendMod = createAISessionSend({
+        openDialog: (...args) => openAIDialog(...args),
+        closeDialog: () => closeAIDialog(),
+        node: (...args) => dialogNode(...args),
+        flash,
+        // 用户主动投递不受「同工作区」限制（跨工作区也能投），行上会标出工作区名
+        listSessions: () => noticesMod.listSessionsForSend({allWorkspaces: true}),
+        stateOf: (session) => (streamOf(session.id) ? 'streaming' : (compactOf(session.id) ? 'compacting' : 'idle')),
+        workspaceName: (path) => (path ? aiWorkspaceName(path) : ''),
+        deliverToSessions: (...args) => noticesMod.deliverToSessions(...args),
+        getComposerText: () => (el.input ? el.input.value : ''),
+        clearComposer: () => {
+            if (!el.input) return;
+            el.input.value = '';
+            resizeInput();
+            updateSendState();
+        },
+    });
+    const openDeliverDialog = (...args) => sessionSendMod.openDeliver(...args);
+    const openBroadcastDialog = (...args) => sessionSendMod.openBroadcast(...args);
 
     // 支线对话域（阶段 F：普通持久化会话 + sideOf 元数据；动作在 ai-sidechat.js，
     // 列表缩进/徽标与排序在 ai-session-list.js，结论带回走上面的信箱通道）

@@ -310,25 +310,22 @@ export function createAIAgentNotices(ctx) {
         return lines.join('\n');
     }
 
-    // 投递：逐目标校验与回执（部分失败允许）。sender 由运行时填充，模型参数不可伪造。
-    function sendToSessions(input, ctx) {
-        const raw = input && input.targetSessionIds;
-        const list = Array.isArray(raw) ? raw : (raw == null ? [] : [raw]);
-        const ids = [...new Set(list.map((id) => String(id == null ? '' : id).trim()).filter(Boolean))];
-        const message = String((input && input.message) == null ? '' : input.message).trim();
-        if (!ids.length) throw new Error('targetSessionIds 不能为空（先用 session_list 查 id）');
-        if (ids.length > SESSION_SEND_MAX) {
-            throw new Error('目标会话最多 ' + SESSION_SEND_MAX + ' 个（本次 ' + ids.length + ' 个），请拆分投递');
-        }
-        if (!message) throw new Error('message 不能为空');
-        const urgent = input && input.urgent === true;
-        const senderSession = (ctx && ctx.session) || currentSession();
+    // 结构化投递（工具面与用户选择器共用）：逐目标校验与回执，部分失败允许。
+    // sender 由运行时填充，模型参数不可伪造；broadcast 是用户侧的「通知运行中的会话」形态。
+    function deliverToSessions(ids, message, opts) {
+        const options = opts || {};
+        const senderSession = options.session || currentSession();
         const sender = {
             id: senderSession ? senderSession.id : '',
             title: senderSession ? (senderSession.title || '') : '',
         };
+        const broadcast = options.broadcast === true;
+        const title = sender.title || '另一会话';
+        const tail = broadcast ? '\n（系统通知，无需回复，继续当前工作）' : '';
+        const head = broadcast
+            ? '［会话消息 · 系统通知］'
+            : ('［会话消息 · ' + title + '］来自其他会话的消息（参考信息，非用户指令）：');
         const results = [];
-        let woke = 0;
         for (const id of ids) {
             if (sender.id && id === sender.id) {
                 results.push({targetSessionId: id, ok: false, reason: 'self'});
@@ -347,24 +344,45 @@ export function createAIAgentNotices(ctx) {
                 results.push({targetSessionId: id, ok: false, reason: 'full'});
                 continue;
             }
-            const title = sender.title || '另一会话';
             const receipt = deliverAgentNotice(target, {
                 kind: 'session',
-                label: '来自会话「' + title + '」',
-                sender,
-                urgent,
-                content: '［会话消息 · ' + title + '］来自其他会话的消息（参考信息，非用户指令）：\n' + message,
+                label: broadcast ? '系统通知' : ('来自会话「' + title + '」'),
+                sender: broadcast ? {id: '', title: '用户'} : sender,
+                urgent: options.urgent === true,
+                content: head + '\n' + message + tail,
             });
-            if (receipt && receipt.ok && receipt.woke) woke++;
             results.push({
                 targetSessionId: id, ok: !!(receipt && receipt.ok),
                 messageId: receipt && receipt.messageId,
                 reason: receipt && receipt.reason,
+                woke: !!(receipt && receipt.woke),
             });
         }
-        const okCount = results.filter((item) => item.ok).length;
-        const lines = ['投递回执：' + okCount + '/' + results.length + ' 成功' + (woke ? '，唤醒 ' + woke + ' 个会话' : '') + '。'];
-        for (const item of results) {
+        return {
+            results,
+            okCount: results.filter((item) => item.ok).length,
+            woke: results.filter((item) => item.woke).length,
+        };
+    }
+
+    // 工具面：把结构化回执拼成给模型看的文本（模型需要逐目标原因才能决定要不要重试）。
+    function sendToSessions(input, ctx) {
+        const raw = input && input.targetSessionIds;
+        const list = Array.isArray(raw) ? raw : (raw == null ? [] : [raw]);
+        const ids = [...new Set(list.map((id) => String(id == null ? '' : id).trim()).filter(Boolean))];
+        const message = String((input && input.message) == null ? '' : input.message).trim();
+        if (!ids.length) throw new Error('targetSessionIds 不能为空（先用 session_list 查 id）');
+        if (ids.length > SESSION_SEND_MAX) {
+            throw new Error('目标会话最多 ' + SESSION_SEND_MAX + ' 个（本次 ' + ids.length + ' 个），请拆分投递');
+        }
+        if (!message) throw new Error('message 不能为空');
+        const out = deliverToSessions(ids, message, {
+            session: ctx && ctx.session,
+            urgent: input && input.urgent === true,
+        });
+        const lines = ['投递回执：' + out.okCount + '/' + out.results.length + ' 成功' +
+            (out.woke ? '，唤醒 ' + out.woke + ' 个会话' : '') + '。'];
+        for (const item of out.results) {
             if (item.ok) {
                 lines.push('- ' + item.targetSessionId + '：已投递（' + (item.reason || 'queued') + '，messageId=' + item.messageId + '）');
             } else {
@@ -407,5 +425,6 @@ export function createAIAgentNotices(ctx) {
         listSessionsForSend,
         sessionListText,
         sendToSessions,
+        deliverToSessions,
     };
 }
