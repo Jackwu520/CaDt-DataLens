@@ -98,7 +98,7 @@ export function createAISlash(ctx) {
                 }
                 break;
             case '/compact':
-                startCompact();
+                startCompact(argText ? {instruction: argText} : undefined);
                 break;
             case '/clear':
                 clearCurrentSession();

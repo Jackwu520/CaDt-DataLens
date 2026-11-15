@@ -10672,6 +10672,8 @@ export function createAIPanel(options) {
             return false;
         }
         const id = session.id + '#compact-' + Date.now() + '-' + (++compactSeq);
+        // Codex 风格压缩焦点指令：/compact 保住补丁库方案 —— 摘要器按指令决定取舍
+        const instruction = aiTextOf(options && options.instruction).slice(0, 500);
         // 记下触发快照：压缩会砍掉几十上百条消息，事后必须能回答「凭什么压的」。
         const triggerWindow = contextWindowOf(session);
         const triggerThreshold = aiClamp(Number(config.autoCompactThreshold) || 0.8, 0.5, 0.95);
@@ -10686,6 +10688,7 @@ export function createAIPanel(options) {
                 estimate: triggerEstimate,
                 profileName: profile.name || '',
                 model: triggerEntry && triggerEntry.model ? triggerEntry.model : '',
+                instruction: instruction || '',
             },
         };
         notify(auto ? '上下文接近上限，正在自动压缩…' : '正在压缩上下文…（可点停止取消）');
@@ -10693,7 +10696,8 @@ export function createAIPanel(options) {
         updateSendState();
         const messages = [
             {role: 'system', content: AI_COMPACT_SYSTEM_PROMPT},
-            {role: 'user', content: '请压缩以下对话记录：\n\n' + compactTranscript(session)},
+            {role: 'user', content: '请压缩以下对话记录：\n\n' + compactTranscript(session) +
+                (instruction ? '\n\n用户压缩指令（摘要须优先落实）：' + instruction : '')},
         ];
         Promise.resolve(backend.AISendChat(id, configForProfile(profile, entryOf(session)), messages, [], config.retryMax)).catch((e) => {
             if (!oneShot || oneShot.id !== id) return;

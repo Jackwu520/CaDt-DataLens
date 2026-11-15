@@ -550,7 +550,7 @@ export const AI_TITLE_SYSTEM_PROMPT = [
 
 export const AI_COMMANDS = [
     {name: '/context', desc: '查看上下文用量估算'},
-    {name: '/compact', desc: '压缩上下文：摘要 + 保留最近 6 条'},
+    {name: '/compact', desc: '压缩上下文：摘要 + 保留最近 6 条；可带重点指令，如 /compact 保住补丁库方案'},
     {name: '/clear', desc: '清空当前会话消息'},
     {name: '/help', desc: '列出可用命令'},
     {name: '/model', desc: '切换 AI 配置'},
