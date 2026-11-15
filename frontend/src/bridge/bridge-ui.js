@@ -37,13 +37,33 @@ function openVirtualDoc(name, content) {
 // ===== 浏览器使用标签页 =====
 let browserSeq = 0;
 
-function openBrowserTab(url, profileKey) {
-    browserSeq += 1;
+// 个人浏览器：固定实例 id ⇒ Go 侧 user data 目录固定（BrowserSessions/browser-user_user），
+// cookie / 登录态随磁盘保留（关标签再开、重启应用都还在）。
+// 任何时刻只允许一个实例：WebView2 规定同一个 user data folder 不能被两个 environment
+// 同时使用，而每个实例各自建一个 environment——多开必然第二个初始化失败。
+const PERSONAL_BROWSER_ID = 'browser-user';
+
+function openBrowserTab(url, profileKey, opts) {
     const target = (url || '').trim() || 'about:blank';
+    const personal = !!(opts && opts.personal);
+    if (personal) {
+        // 已开着就切过去（带地址时顺带导航），不重复建实例
+        const opened = deps.docs.find((d) => d.browser && d.id === PERSONAL_BROWSER_ID);
+        if (opened) {
+            deps.activateDoc(opened);
+            if (target !== 'about:blank' && deps.backend.BrowserNavigate) {
+                opened.browserUrl = target;
+                if (opened.browserAddr) opened.browserAddr.value = target;
+                deps.backend.BrowserNavigate(opened.id, target).catch(() => {});
+            }
+            return opened;
+        }
+    }
+    browserSeq += 1;
     const doc = {
-        id: 'browser-' + Date.now().toString(36) + '-' + browserSeq,
+        id: personal ? PERSONAL_BROWSER_ID : 'browser-' + Date.now().toString(36) + '-' + browserSeq,
         path: null,
-        name: target !== 'about:blank' ? target : '新标签页',
+        name: personal ? '我的浏览器' : (target !== 'about:blank' ? target : '新标签页'),
         content: '',
         size: 0,
         eol: 'lf',
@@ -52,9 +72,11 @@ function openBrowserTab(url, profileKey) {
         enc: 'utf-8',
         format: {id: 'browser', name: '网页', extensions: [], aceMode: 'text', rawOnly: true},
         browser: true,
+        // 个人浏览器（持久 profile）标记：新建标签页永远是隔离会话，两者语义不同
+        browserPersist: personal,
         mode: 'browser',
         browserUrl: target,
-        browserProfile: profileKey || '',
+        browserProfile: personal ? 'user' : (profileKey || ''),
         treeAvailable: false,
         dirty: false,
         untitled: false,
@@ -64,22 +86,33 @@ function openBrowserTab(url, profileKey) {
     deps.docs.push(doc);
     deps.addDocToFocusedGroup(doc);
     deps.activateDoc(doc);
-    if (deps.backend.BrowserOpen) {
-        deps.backend.BrowserOpen(doc.id, target, doc.browserProfile || 'tab-' + doc.id).then((info) => {
-            if (info && info.title) deps.updateBrowserTitle(doc, info.title);
-            if (doc.browserEmpty) {
-                doc.browserEmpty.remove();
-                doc.browserEmpty = null;
+    if (!deps.backend.BrowserOpen) {
+        deps.flash('当前环境不支持内嵌浏览器', true);
+        return doc;
+    }
+    const profileForOpen = doc.browserProfile || 'tab-' + doc.id;
+    const onOpened = (info) => {
+        if (info && info.title) deps.updateBrowserTitle(doc, info.title);
+        if (doc.browserEmpty) {
+            doc.browserEmpty.remove();
+            doc.browserEmpty = null;
+        }
+        deps.syncBrowserTab(doc);
+    };
+    // 个人浏览器关掉后立刻重开：上一个 WebView2 浏览器进程可能还没退干净、同一 user data
+    // 目录短暂被占，补一次重试（约 0.8s），别让「记住登录」的入口动辄弹打开失败。
+    const open = (retryLeft) => {
+        deps.backend.BrowserOpen(doc.id, target, profileForOpen).then(onOpened).catch((e) => {
+            if (doc.browserPersist && retryLeft > 0 && deps.docs.includes(doc)) {
+                setTimeout(() => open(retryLeft - 1), 800);
+                return;
             }
-            deps.syncBrowserTab(doc);
-        }).catch((e) => {
             const stack = String((e && e.stack) || '').split(String.fromCharCode(10)).slice(0, 4).join(' | ');
             deps.flash('浏览器标签页打开失败：' + ((e && e.message) || e) + ' @ ' + stack, true);
             deps.closeDocNow(doc, false);
         });
-    } else {
-        deps.flash('当前环境不支持内嵌浏览器', true);
-    }
+    };
+    open(doc.browserPersist ? 1 : 0);
     return doc;
 }
 
