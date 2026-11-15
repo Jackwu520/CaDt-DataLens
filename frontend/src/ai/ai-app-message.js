@@ -38,7 +38,7 @@ export function appMessageIcon(app) {
 }
 
 // 旧会话没有 app 元数据时，按注入指令的固定前缀识别应用消息。
-// 子代理通知 / 提问的卡片由「会话消息化」注入（docs/unfinished-plans/session-messaging.md §4.6），
+// 子代理通知 / 提问的卡片由「会话消息化」注入（docs/finished-plans/session-messaging.md §4.6），
 // 前缀是它们唯一的归属依据：重放旧会话时也要能正确归类，所以 prefix 与 buildSettlementNotice 同源约定。
 export function detectAppMessage(content) {
     const text = String(content || '').trim();

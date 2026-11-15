@@ -1,6 +1,6 @@
 # 会话消息化 · 手工测试流程
 
-> 覆盖：`docs/unfinished-plans/session-messaging.md` 阶段 A–I（子代理消息化 / 支线对话 / 子代理压缩 /
+> 覆盖：`docs/finished-plans/session-messaging.md` 阶段 A–I（子代理消息化 / 支线对话 / 子代理压缩 /
 > 共享信箱 / 静默唤醒 / 后台可干预）+ 会话投递选择器。
 > 为什么还需要手工测：自动化只覆盖纯函数（`npm test` 431 例：文案组装、队列顺序、上限判定、
 > cutoff 锚定）。**端到端行为必须手工验证**——它依赖真实模型、真实定时器、多会话并发与 DOM 渲染，
