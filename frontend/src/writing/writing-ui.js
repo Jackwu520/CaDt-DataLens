@@ -5,6 +5,7 @@
 // 这样既不依赖 main.js 的声明顺序，也不会把 let 状态拍成快照。
 import DOMPurify from 'dompurify';
 import {WRITING_FONTS, formatWritingText, genName, SCENE_SEPARATOR} from '../core/writing.js';
+import {isDocReadOnly} from '../core/readonly.js';
 import {RECIPES, SELF_TEST} from '../terminal/run.js';
 import {initPluginRuntime, loadPlugins} from '../shell/plugins.js';
 import {iconSvg} from '../core/icons.js';
@@ -251,7 +252,7 @@ function cancelAutoSave() {
 
 function scheduleAutoSave() {
     cancelAutoSave();
-    if (!deps.settings.autoSave || deps.settings.readOnlyMode || !deps.dirty || !deps.file || deps.file.large || deps.file.binary || !deps.file.path || !deps.editor) return;
+    if (!deps.settings.autoSave || isDocReadOnly(deps.file, deps.settings) || !deps.dirty || !deps.file || !deps.file.path || !deps.editor) return;
     deps.autoSaveTimer = setTimeout(() => {
         deps.autoSaveTimer = 0;
         if (deps.dirty && deps.file && deps.settings.autoSave) deps.save({auto: true});

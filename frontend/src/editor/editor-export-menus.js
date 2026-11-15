@@ -7,6 +7,8 @@
 // requestCloseDoc / showPathInFolder / reopenClosedTab / groupDocs / groupOfDoc 的转发箭头。
 import DOMPurify from 'dompurify';
 import {copyImageBlobToClipboard} from '../core/image-clipboard.js';
+import {iconSvg} from '../core/icons.js';
+import {isTabReadOnlyFixed, isTabReadOnlyLocked} from '../core/readonly.js';
 
 export function createEditorExportMenus(deps) {
 
@@ -195,6 +197,18 @@ function showTabMenu(doc, x, y) {
         {label: '复制文件路径', icon: 'E8C8', disabled: !hasPath, action: () => deps.copyText(doc.path, '路径')},
         {label: '复制文件名', icon: 'E8C8', action: () => deps.copyText(doc.name, '文件名')},
         {label: '打开文件位置', icon: 'E8B7', disabled: !hasPath, action: () => deps.showPathInFolder(doc.path)},
+        // 固定只读（审阅快照）：不提供解锁入口，只留一条禁用说明。
+        ...(isTabReadOnlyFixed(doc) ? [{
+            label: '只读快照 · 不可解锁',
+            iconHtml: iconSvg('lock', 14),
+            title: '这是只读快照，不能改成可编辑',
+            disabled: true,
+        }] : [{
+            label: isTabReadOnlyLocked(doc) ? '解除本标签只读' : '只读锁定本标签',
+            iconHtml: iconSvg('lock', 14),
+            title: '只影响当前标签，与编辑器全局只读锁互不干扰',
+            action: () => deps.setDocReadOnly(doc, !isTabReadOnlyLocked(doc)),
+        }]),
         {label: '与另一个标签页比较…', icon: 'E8A5', disabled: gdocs.filter((d) => d.path && !d.binary).length < 2, action: () => deps.openDiffDialog(doc.path)},
         ...deps.aiReferenceFileMenuItems(doc),
         {label: '在 AI 中询问此文件', iconHtml: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3.2l1.1 3.1 3.1 1.1-3.1 1.1L10 11.6 8.9 8.5 5.8 7.4l3.1-1.1z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M15.2 12.3l.6 1.7 1.7.6-1.7.6-.6 1.7-.6-1.7-1.7-.6 1.7-.6z" fill="currentColor"/></svg>', disabled: !hasPath, action: () => deps.askAIAboutPath(doc.path)},

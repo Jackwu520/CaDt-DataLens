@@ -81,6 +81,7 @@ const rawIcons = {
     'info': '<circle cx="8" cy="8" r="5.6"/><path d="M8 7.4v3.4"/><path d="M8 5.2v.1"/>',
     'star': '<path fill="currentColor" stroke="none" d="M8 1.9l1.9 3.9 4.2.6-3.1 2.9.9 4.2L8 11.4l-3.9 2.1.9-4.2L1.9 6.4l4.2-.6L8 1.9z"/>',
     'pin': '<path fill="currentColor" stroke="none" d="M10.6 1.7l3.7 3.7-2.4.7-1.8 1.8.3 2.8-1.3 1.3-2.5-2.5-3.9 3.9-.8-.8 3.9-3.9-2.5-2.5 1.3-1.3 2.8.3 1.8-1.8.4-2.6z"/>',
+    'lock': '<rect x="3.4" y="7" width="9.2" height="6.8" rx="1.4"/><path d="M6 7V5.6a2 2 0 0 1 4 0V7"/><circle cx="8" cy="10.4" r=".9" fill="currentColor" stroke="none"/>',
 };
 
 // 注册表整体导出（冻结）：供图标表页/测试枚举展示，业务代码请用 iconSvg()。

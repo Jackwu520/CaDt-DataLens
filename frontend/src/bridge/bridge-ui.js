@@ -17,7 +17,11 @@ gitDeps.openVirtualDoc = openVirtualDoc;
 const gitMod = createBridgeGit(gitDeps);
 const cliMod = createBridgeCliConvert(deps);
 
-function openVirtualDoc(name, content) {
+// opts：readOnly（标签页只读锁）、readOnlyFixed（固定只读、不可解锁）、
+// patchReview（只读审阅快照）、reviewNotes（无差异文件说明）
+function openVirtualDoc(name, content, opts) {
+    const options = opts || {};
+    const fixed = !!options.readOnlyFixed;
     const doc = deps.createDoc({
         path: null,
         name,
@@ -27,6 +31,10 @@ function openVirtualDoc(name, content) {
         hasBom: false,
         large: false,
         enc: 'utf-8',
+        readOnly: !!(options.readOnly || fixed),
+        readOnlyFixed: fixed,
+        patchReview: !!options.patchReview,
+        reviewNotes: options.reviewNotes || [],
     });
     doc.untitled = true;
     deps.docs.push(doc);

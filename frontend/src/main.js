@@ -1892,8 +1892,8 @@ async function openPath(path, opts) {
 // 免得别的代码路径 / app_control 把 doc.readOnlyLocked 改掉后快照变成可编辑。
 function setDocReadOnly(doc, locked, opts = {}) {
     if (!doc) return;
-    if (doc.readOnlyFixed && !locked) {
-        flash('只读快照不可解锁', true);
+    if (doc.readOnlyFixed) {
+        if (!locked) flash('只读快照不可解锁', true);
         return;
     }
     doc.readOnlyLocked = !!locked;

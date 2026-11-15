@@ -5,6 +5,7 @@
 // 这样既不依赖 main.js 的声明顺序，也不会把 let 状态拍成快照。
 import DOMPurify from 'dompurify';
 import {iconSvg} from '../core/icons.js';
+import {isDocReadOnly, isTabReadOnlyFixed, isTabReadOnlyLocked} from '../core/readonly.js';
 import {createEditorAceHooks} from './editor-ace-hooks.js';
 import {createEditorCsvView} from './editor-csv-view.js';
 import {createEditorSplitPreview} from './editor-split-preview.js';
@@ -452,11 +453,43 @@ function bgTermTabIcon() {
     return span;
 }
 
+function tabTooltip(doc) {
+    const lockTip = isTabReadOnlyFixed(doc) ? '\n（只读快照，不可解锁）'
+        : isTabReadOnlyLocked(doc) ? '\n（本标签只读锁定，右键可解除）' : '';
+    return (doc.path || doc.name) + (doc.staleOnDisk ? '\n（已在外部修改）' : '') + lockTip;
+}
+
+function tabLockTitle(doc) {
+    return isTabReadOnlyFixed(doc) ? '只读快照，不可解锁' : '本标签已只读锁定';
+}
+
+// 切换标签页只读锁后同步角标，不必重建整条标签栏。
+function syncTabReadOnly(doc) {
+    if (!doc) return;
+    const tab = document.querySelector('.etabs .tab[data-doc-id="' + doc.id + '"]');
+    if (!tab) return;
+    const locked = isTabReadOnlyLocked(doc);
+    tab.classList.toggle('tab-readonly', locked);
+    tab.title = tabTooltip(doc);
+    const existing = tab.querySelector('.tab-lock');
+    if (locked && !existing) {
+        const lock = document.createElement('span');
+        lock.className = 'tab-lock';
+        lock.title = tabLockTitle(doc);
+        lock.innerHTML = iconSvg('lock', 12);
+        const close = tab.querySelector('.tab-close');
+        if (close) tab.insertBefore(lock, close);
+        else tab.appendChild(lock);
+    } else if (!locked && existing) {
+        existing.remove();
+    }
+}
+
 function buildGroupTab(g, doc, strip) {
     const tab = document.createElement('div');
-    tab.className = 'tab' + (doc.id === g.activeId ? ' active' : '') + (doc.dirty ? ' dirty' : '') + (doc.staleOnDisk ? ' stale' : '');
+    tab.className = 'tab' + (doc.id === g.activeId ? ' active' : '') + (doc.dirty ? ' dirty' : '') + (doc.staleOnDisk ? ' stale' : '') + (isTabReadOnlyLocked(doc) ? ' tab-readonly' : '');
     tab.dataset.docId = String(doc.id);
-    tab.title = (doc.path || doc.name) + (doc.staleOnDisk ? '\n（已在外部修改）' : '');
+    tab.title = tabTooltip(doc);
     // 后台终端标签页用 terminal 图标（非文件，没有扩展名图标）
     const icon = doc.bgTerm ? bgTermTabIcon() : createFileIcon(doc.name, 'tab-icon');
     const dot = document.createElement('span');
@@ -473,7 +506,15 @@ function buildGroupTab(g, doc, strip) {
         e.stopPropagation();
         requestCloseDoc(doc);
     });
-    tab.append(icon, dot, name, close);
+    if (isTabReadOnlyLocked(doc)) {
+        const lock = document.createElement('span');
+        lock.className = 'tab-lock';
+        lock.title = tabLockTitle(doc);
+        lock.innerHTML = iconSvg('lock', 12);
+        tab.append(icon, dot, name, lock, close);
+    } else {
+        tab.append(icon, dot, name, close);
+    }
     tab.addEventListener('click', (e) => {
         if (e.shiftKey && deps.settings.shiftClickClose !== false) {
             e.preventDefault();
@@ -710,7 +751,7 @@ function textArea() {
 }
 
 function doUndo() {
-    if (!deps.editor || deps.settings.readOnlyMode) return;
+    if (!deps.editor || isDocReadOnly(deps.file, deps.settings)) return;
     if (deps.currentMode === 'tree') {
         const btn = deps.editor.dom && deps.editor.dom.undo;
         if (btn && !btn.disabled) { treeHistory('undo'); return; }
@@ -759,7 +800,7 @@ function revertDocToSaved(doc) {
 }
 
 function doRedo() {
-    if (!deps.editor || deps.settings.readOnlyMode) return;
+    if (!deps.editor || isDocReadOnly(deps.file, deps.settings)) return;
     if (deps.currentMode === 'tree') treeHistory('redo');
     else if (deps.currentMode === 'table') tableHistory('redo');
     else if (deps.currentMode === 'code' && deps.editor.aceEditor) deps.editor.aceEditor.execCommand('redo');
@@ -798,7 +839,10 @@ function updateStatus() {
     syncTabViewTools();
     const fmt = deps.file.format;
     const view = deps.file.splitActive ? deps.viewLabel('split') : deps.viewLabel(deps.file.sqlActive ? 'sql' : deps.currentMode);
-    deps.els.stMode.textContent = deps.formatDisplayName(deps.file) + ' · ' + view + (deps.file.large || deps.file.binary || deps.settings.readOnlyMode ? ' · 只读' : '');
+    const roSuffix = !isDocReadOnly(deps.file, deps.settings) ? ''
+        : isTabReadOnlyFixed(deps.file) ? ' · 只读快照'
+            : isTabReadOnlyLocked(deps.file) ? ' · 本标签只读' : ' · 只读';
+    deps.els.stMode.textContent = deps.formatDisplayName(deps.file) + ' · ' + view + roSuffix;
     if (deps.file.browser) {
         const url = String(deps.file.browserUrl || '');
         deps.els.stMode.textContent = '网页 · ' + (url === 'about:blank' ? '空白页' : (url.length > 60 ? url.slice(0, 60) + '…' : url));
@@ -1007,7 +1051,7 @@ function createDocEditor(doc) {
     const pane = document.createElement('div');
     pane.className = 'jsoneditor-pane active';
     deps.els.editor.appendChild(pane);
-    deps.installReadOnlyGuards(pane);
+    deps.installReadOnlyGuards(pane, doc);
     pane.addEventListener('click', (e) => {
         const target = e.target;
         if (!target || !target.closest) return;
@@ -1086,7 +1130,7 @@ function createDocEditor(doc) {
     } else {
         ed.set(initialValue);
     }
-    if ((doc.large || doc.binary || deps.settings.readOnlyMode) && ed.aceEditor) {
+    if (isDocReadOnly(doc, deps.settings) && ed.aceEditor) {
         ed.aceEditor.setReadOnly(true);
     }
     if (ed.aceEditor) {
@@ -1146,6 +1190,8 @@ function createDoc(data) {
             bases: {tree: null, code: null},
             savedText: data.content,
             diskMtime: data.mtime || '',
+            readOnlyLocked: !!data.readOnly,
+            readOnlyFixed: !!data.readOnlyFixed,
         };
     }
     const preview = detectFormat(data.name, '');
@@ -1196,6 +1242,13 @@ function createDoc(data) {
         savedText: data.content,
         bookmarks: new Set(),
         diskMtime: data.mtime || '',
+        // 标签页只读锁：只作用于本 doc；全局锁在 settings.readOnlyMode（判定统一走 core/readonly.js）
+        // readOnlyFixed = 固定只读（审阅快照），不可解锁
+        readOnlyLocked: !!data.readOnly,
+        readOnlyFixed: !!data.readOnlyFixed,
+        // 只读审阅文档：虚拟 .diff，走 patch 视图但不做预检、不允许应用
+        patchReview: !!data.patchReview,
+        reviewNotes: Array.isArray(data.reviewNotes) ? data.reviewNotes : [],
     };
 }
 
@@ -1517,5 +1570,5 @@ function reopenClosedTab() {
     function setFocusedGroupId(v) { focusedGroupId = v; }
     function setSplitRoot(v) { splitRoot = v; }
 
-    return {activateDoc, setFocusedGroupId, setSplitRoot, addDocToFocusedGroup, applyAceMode, applyCsvTableZoom, applyImageZoom, browserViewportLabel, closeDocNow, closeDocsWithConfirm, closeSqlView, createDoc, createDocEditor, createGroup, dismissBanner, doRedo, doUndo, get editorGroups() { return editorGroups; }, enterBinaryView, enterCsvTable, enterImageView, enterMarkdownPreview, enterSplitView, enterSqlView, enterSvgRender, enterTextView, exitSplitView, expandAllWithGuard, flushCsvCellEditor, get focusedGroupId() { return focusedGroupId; }, groupDocs, groupOfDoc, handleAIWorkspaceFileChanged, handleExternalDocChanges, hideBanner, hideSvgRender, hookCodeFoldPreviews, hookMultiCursor, humanizeCounts, initCodeFoldHover, jumpBookmark, leaveCsvTable, leaveMarkdownPreview, markDocDirty, mdSyncScrollFromAce, moveTabInGroup, patchViewContext, refreshPatchMarkers, rememberDocView, renderBookmarks, renderBreadcrumb, renderCsvTableView, renderEditorLayout, renderMarkdownPreview, renderTabs, reopenClosedTab, requestCloseDoc, revertDocToSaved, scheduleGitGutter, setBrowserViewport, setFilename, showBanner, showImageMenu, showMdPreviewMenu, showPathInFolder, showSvgMenu, get splitRoot() { return splitRoot; }, syncAllBrowserTabs, syncBrowserTab, textArea, toggleBookmark, toggleFocusedNode, updateBrowserTitle, updateCodeFoldPreviews, updateDocChrome, updateStatus, zoomCsvTable, zoomImageBy, zoomSvgRenderBy};
+    return {activateDoc, setFocusedGroupId, setSplitRoot, addDocToFocusedGroup, applyAceMode, applyCsvTableZoom, applyImageZoom, browserViewportLabel, closeDocNow, closeDocsWithConfirm, closeSqlView, createDoc, createDocEditor, createGroup, dismissBanner, doRedo, doUndo, get editorGroups() { return editorGroups; }, enterBinaryView, enterCsvTable, enterImageView, enterMarkdownPreview, enterSplitView, enterSqlView, enterSvgRender, enterTextView, exitSplitView, expandAllWithGuard, flushCsvCellEditor, get focusedGroupId() { return focusedGroupId; }, groupDocs, groupOfDoc, handleAIWorkspaceFileChanged, handleExternalDocChanges, hideBanner, hideSvgRender, hookCodeFoldPreviews, hookMultiCursor, humanizeCounts, initCodeFoldHover, jumpBookmark, leaveCsvTable, leaveMarkdownPreview, markDocDirty, mdSyncScrollFromAce, moveTabInGroup, patchViewContext, refreshPatchMarkers, rememberDocView, renderBookmarks, renderBreadcrumb, renderCsvTableView, renderEditorLayout, renderMarkdownPreview, renderTabs, reopenClosedTab, requestCloseDoc, revertDocToSaved, scheduleGitGutter, setBrowserViewport, setFilename, showBanner, showImageMenu, showMdPreviewMenu, showPathInFolder, showSvgMenu, get splitRoot() { return splitRoot; }, syncAllBrowserTabs, syncBrowserTab, syncTabReadOnly, textArea, toggleBookmark, toggleFocusedNode, updateBrowserTitle, updateCodeFoldPreviews, updateDocChrome, updateStatus, zoomCsvTable, zoomImageBy, zoomSvgRenderBy};
 }

@@ -1,6 +1,7 @@
 // 运行代码（F5）接线：编辑器/设置/对话框这些宿主能力在此汇聚，配方与输出渲染在 run.js。
 // 从 terminal-ui.js 拆出；toggleTerminalPanel / toggleDockView 由宿主经 deps 注入。
 import {createRunController, splitRunArgs} from './run.js';
+import {isDocReadOnly} from '../core/readonly.js';
 
 export function createRunUI(deps) {
 
@@ -157,7 +158,7 @@ const runController = createRunController({
     } : null),
     getDocText: () => activeDocText(),
     saveDoc: () => deps.saveDoc(deps.file, {silent: true}),
-    isReadOnly: () => !!deps.settings.readOnlyMode,
+    isReadOnly: () => isDocReadOnly(deps.file, deps.settings),
     flash: deps.flash,
     askDirtyChoice: (info) => askRunDirty(info),
     hasConfirmed: (lang) => (deps.settings.runConfirmSeen || []).includes(lang),

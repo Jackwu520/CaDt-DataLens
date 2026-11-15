@@ -287,25 +287,21 @@ export function createAIChangesUI(ctx) {
         return wrap;
     }
 
-    // 「审阅」：逐文件取 Git 差异拼成一份**只读审阅文档**（markdown + ```diff 围栏，hljs 高亮）。
-    // 不再打开 .diff（会走补丁视图，出现「应用」按钮与预检爆红——这只是已应用的改动快照）；
-    // 撤销走汇总卡文件行的「撤销」按钮（gitRollbackPaths）。
+    // 「审阅」：逐文件取 Git 差异拼成一份**只读的 .diff 虚拟文档**，复用 patch 视图的
+    // 文件卡 / hunk 高亮。走 PatchParseText 纯解析：不预检、不生成计划、没有应用 / 撤销入口；
+    // 撤销仍走汇总卡文件行的「撤销」按钮（gitRollbackPaths）。
+    // 没有 Git 差异的文件（未跟踪 / 与 HEAD 一致）单独列在视图顶部的说明里。
     async function reviewChangesSummary(changes) {
         if (!openVirtualDoc) {
             for (const file of changes) openPath(file.path || file.relPath);
             return;
         }
         const root = getScopeRoot();
-        const totalAdded = changes.reduce((sum, file) => sum + file.added, 0);
-        const totalRemoved = changes.reduce((sum, file) => sum + file.removed, 0);
-        const lines = [
-            '# 本轮改动审阅',
-            '',
-            changes.length + ' 个文件，+' + totalAdded + ' −' + totalRemoved + '。快照只读。',
-            '',
-        ];
-        for (const file of changes.slice(0, 20)) {
-            lines.push('## ' + file.relPath + '  （+' + file.added + ' −' + file.removed + '）', '');
+        const limited = changes.slice(0, 20);
+        const blocks = [];
+        const notes = [];
+        for (const file of limited) {
+            const label = file.relPath + '  （+' + file.added + ' −' + file.removed + '）';
             let body = '';
             try {
                 const result = root && backend.GitDiffFor
@@ -313,20 +309,25 @@ export function createAIChangesUI(ctx) {
                     : null;
                 if (result && result.diff && String(result.diff).trim()) body = String(result.diff).trim();
             } catch (e) {
-                body = '（获取 Git 差异失败：' + ((e && e.message) || e) + '）';
+                notes.push(label + '：获取 Git 差异失败（' + ((e && e.message) || e) + '）');
+                continue;
             }
-            if (!body) body = '（无 Git 差异：文件未被 Git 跟踪或内容与 HEAD 一致）';
-            // 围栏长度避开正文里出现的 ```（diff 内容可能包含任意文本）
-            const fenceRun = (() => {
-                let longest = 3;
-                for (const match of String(body).matchAll(/`{3,}/g)) {
-                    longest = Math.max(longest, match[0].length + 1);
-                }
-                return '`'.repeat(longest);
-            })();
-            lines.push(fenceRun + 'diff', body, fenceRun, '');
+            if (!body) {
+                notes.push(label + '：未被 Git 跟踪或内容与 HEAD 一致，没有可展示的差异');
+                continue;
+            }
+            blocks.push(body);
         }
-        openVirtualDoc('本轮改动审阅 — ' + changes.length + ' 个文件.md', lines.join('\n'));
+        if (changes.length > limited.length) {
+            notes.push('文件较多，只展示前 ' + limited.length + ' 个（共 ' + changes.length + ' 个）');
+        }
+        openVirtualDoc('本轮改动审阅 — ' + changes.length + ' 个文件.diff', blocks.join('\n'), {
+            patchReview: true,
+            // 审阅是已发生改动的只读快照：固定只读，连解锁入口都不给
+            readOnly: true,
+            readOnlyFixed: true,
+            reviewNotes: notes,
+        });
     }
 
     return {

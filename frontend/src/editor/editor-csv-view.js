@@ -4,6 +4,8 @@
 //
 // deps 经 Object.create 委托继承 editor-groups 的 getter 集，
 // 另接内部函数 markDocDirty / updateStatus 的转发箭头。
+import {isDocReadOnly} from '../core/readonly.js';
+
 export function createEditorCsvView(deps) {
 
 function createCsvTableView(doc) {
@@ -422,7 +424,7 @@ function renderCsvVirtualRows(doc, force) {
     const headers = doc.tableHeaders || [];
     const rows = doc.tableRows || [];
     const indices = doc.csvViewIndices;
-    const editable = !doc.large && !doc.binary && !deps.settings.readOnlyMode;
+    const editable = !isDocReadOnly(doc, deps.settings);
     if (!doc.csvPool || (doc.csvPool.length && doc.csvPool[0].cells.length !== headers.length)) {
         for (const row of doc.csvPool || []) row.tr.remove();
         doc.csvPool = [];
@@ -637,7 +639,7 @@ function renderCsvTableView(doc, opts = {}) {
         doc.csvBottomSpacer = null;
     }
     const fragment = document.createDocumentFragment();
-    const editable = !doc.large && !doc.binary && !deps.settings.readOnlyMode;
+    const editable = !isDocReadOnly(doc, deps.settings);
     if (!virtual) {
         for (let viewRow = 0; viewRow < shown; viewRow++) {
             const rowIndex = viewIndices ? viewIndices[viewRow] : viewRow;
@@ -863,7 +865,7 @@ function applyCsvTableText(doc, text) {
 }
 
 function commitCsvCell(doc, td) {
-    if (!doc || doc !== deps.file || doc.large || deps.settings.readOnlyMode || !doc.tableRows || !doc.tableHeaders || !td) return;
+    if (!doc || doc !== deps.file || isDocReadOnly(doc, deps.settings) || !doc.tableRows || !doc.tableHeaders || !td) return;
     const rowIndex = Number(td.dataset.row);
     const colIndex = Number(td.dataset.col);
     const row = doc.tableRows[rowIndex];

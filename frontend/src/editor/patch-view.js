@@ -1,6 +1,8 @@
 // .patch / .diff 的结构化补丁视图：
 // 文件卡 + hunk 高亮 + 预检状态 + 应用（整体成功 / 允许部分成功）+ 撤销。
-// 所有解析与写入都走 Go 侧（PatchPreviewFile / PatchApply / PatchRevert），
+// 另有「只读审阅」模式（doc.patchReview）：复用同一套文件卡 / hunk 渲染，
+// 但走 PatchParseText 纯解析——不做预检、不生成计划、没有应用 / 撤销 / 目标目录。
+// 所有解析与写入都走 Go 侧（PatchParseText / PatchPreviewFile / PatchApply / PatchRevert），
 // 本模块只负责渲染与交互，不重复实现补丁逻辑。
 
 const MODE_ATOMIC = 'atomic';
@@ -57,6 +59,9 @@ export function patchViewState(doc) {
             root: '',
             ignoreWhitespace: false,
             allowOffset: false,
+            // 只读审阅快照：不做预检、不生成 planId、不显示任何应用入口
+            review: !!doc.patchReview,
+            reviewNotes: Array.isArray(doc.reviewNotes) ? doc.reviewNotes : [],
         };
     }
     return doc.patchState;
@@ -72,10 +77,11 @@ export function showPatchView(doc, ctx) {
     if (!doc || !doc.pane || !doc.format || !doc.format.patch) return;
     const st = patchViewState(doc);
     if (!st.el) {
-        st.el = el('div', 'patch-view');
+        st.el = el('div', 'patch-view' + (doc.patchReview ? ' patch-review' : ''));
         doc.pane.appendChild(st.el);
     }
     doc.pane.classList.add('patch-active');
+    doc.pane.classList.toggle('patch-review', !!doc.patchReview);
     render(doc, ctx);
     if (!st.plan && !st.loading) loadPreview(doc, ctx);
 }
@@ -91,9 +97,77 @@ export async function refreshPatchView(doc, ctx) {
     await loadPreview(doc, ctx);
 }
 
+// 虚拟 diff 文档在 createDocEditor 完成后 doc.content 会被清空，刷新时仍要能取到原文。
+function patchTextOf(doc) {
+    if (!doc) return '';
+    if (doc.content != null) return String(doc.content);
+    if (doc.text != null) return String(doc.text);
+    try {
+        return doc.editor ? String(doc.editor.getText() || '') : '';
+    } catch (e) {
+        return '';
+    }
+}
+
+// 只读审阅只保留展示字段：预检状态 / 原因 / 落点 / 计划 ID 一律不进入视图状态，
+// 免得任何路径（包括 app_control 的 get_patch 快照）把它当成可应用的补丁。
+function sanitizeReviewPlan(plan) {
+    if (!plan) return {files: [], added: 0, removed: 0};
+    return {
+        files: (plan.files || []).map((f) => ({
+            relPath: f.relPath || '',
+            kind: f.kind || '',
+            added: f.added || 0,
+            removed: f.removed || 0,
+            hunks: (f.hunks || []).map((h) => ({
+                header: h.header || '',
+                oldStart: h.oldStart || 0,
+                newStart: h.newStart || 0,
+                lines: (h.lines || []).map((l) => ({
+                    t: l.t || ' ',
+                    text: l.text == null ? '' : l.text,
+                    oldLine: l.oldLine || 0,
+                    newLine: l.newLine || 0,
+                })),
+            })),
+        })),
+        added: plan.added || 0,
+        removed: plan.removed || 0,
+    };
+}
+
 async function loadPreview(doc, ctx, options) {
     const st = patchViewState(doc);
     const opts = options || {};
+    if (st.review) {
+        st.loading = true;
+        st.error = '';
+        render(doc, ctx);
+        try {
+            const text = patchTextOf(doc);
+            let plan = null;
+            if (String(text).trim()) {
+                if (typeof ctx.backend.PatchParseText === 'function') {
+                    plan = await ctx.backend.PatchParseText(text);
+                } else if (typeof ctx.backend.PatchPreviewText === 'function') {
+                    // 旧后端回退：同样只取展示字段，不带预检结果进视图
+                    plan = await ctx.backend.PatchPreviewText(text, ctx.getRoot ? ctx.getRoot() : '');
+                } else {
+                    throw new Error('当前运行环境没有补丁解析能力（需要桌面版后端）');
+                }
+            }
+            st.plan = sanitizeReviewPlan(plan);
+            st.selected = new Set();
+            st.result = null;
+        } catch (e) {
+            st.plan = null;
+            st.error = String((e && e.message) || e);
+        } finally {
+            st.loading = false;
+            render(doc, ctx);
+        }
+        return;
+    }
     if (opts.root) st.root = opts.root;
     if (typeof opts.ignoreWhitespace === 'boolean') st.ignoreWhitespace = opts.ignoreWhitespace;
     if (typeof opts.allowOffset === 'boolean') st.allowOffset = opts.allowOffset;
@@ -105,11 +179,11 @@ async function loadPreview(doc, ctx, options) {
         let plan;
         if (canRepreview) {
             plan = await ctx.backend.PatchRepreview(st.plan.planId, st.allowOffset, st.ignoreWhitespace);
-        } else if (!doc.path && String(doc.content || '').trim() && /\.(diff|patch)$/i.test(doc.name || '')) {
+        } else if (!doc.path && String(patchTextOf(doc)).trim() && /\.(diff|patch)$/i.test(doc.name || '')) {
             // 虚拟 diff 文档（AI 审阅 / Git 差异拼接）：path 为空、内容即补丁文本，
             // 走文本预览（不落盘），否则会掉进「缺少补丁文件路径」
             const root = st.root || ctx.getRoot();
-            plan = await ctx.backend.PatchPreviewText(String(doc.content), root);
+            plan = await ctx.backend.PatchPreviewText(patchTextOf(doc), root);
             if (st.ignoreWhitespace || st.allowOffset) {
                 plan = await ctx.backend.PatchRepreview(plan.planId, st.allowOffset, st.ignoreWhitespace);
             }
@@ -153,6 +227,7 @@ function render(doc, ctx) {
     host.replaceChildren();
 
     const plan = st.plan;
+    const review = !!st.review;
     const bar = el('div', 'patch-bar');
     const title = el('div', 'patch-title');
     title.appendChild(el('span', 'patch-name', doc.name || '补丁'));
@@ -163,11 +238,12 @@ function render(doc, ctx) {
         stats.appendChild(el('span', 'patch-del', '−' + plan.removed));
     }
     title.appendChild(stats);
-    if (plan && plan.external) title.appendChild(el('span', 'patch-tag', '外部补丁'));
+    if (review) title.appendChild(el('span', 'patch-tag', '只读快照'));
+    else if (plan && plan.external) title.appendChild(el('span', 'patch-tag', '外部补丁'));
     bar.appendChild(title);
 
     const actions = el('div', 'patch-actions');
-    if (plan) {
+    if (plan && !review) {
         const modeWrap = el('label', 'patch-mode');
         modeWrap.appendChild(el('span', 'patch-mode-label', '应用模式'));
         const select = document.createElement('select');
@@ -219,7 +295,7 @@ function render(doc, ctx) {
     head.appendChild(bar);
     host.appendChild(head);
 
-    if (plan) {
+    if (plan && !review) {
         const toolbar = el('div', 'patch-subbar');
         const rootWrap = el('span', 'patch-root-wrap');
         rootWrap.appendChild(el('span', 'patch-root-label', '目标：'));
@@ -261,32 +337,44 @@ function render(doc, ctx) {
     }
 
     if (st.loading) {
-        host.appendChild(el('div', 'patch-note', '正在预检…'));
+        host.appendChild(el('div', 'patch-note', review ? '正在解析差异…' : '正在预检…'));
         return;
     }
     if (st.error) {
         const box = el('div', 'patch-error');
-        box.appendChild(el('div', 'patch-error-title', '无法解析该补丁'));
+        box.appendChild(el('div', 'patch-error-title', review ? '无法解析该差异' : '无法解析该补丁'));
         box.appendChild(el('pre', 'patch-error-detail', st.error));
         host.appendChild(box);
         return;
     }
     if (!plan) return;
 
-    if (!(plan.files || []).some((f) => f.status === 'ok')) {
+    if (review) {
+        if (st.reviewNotes.length) {
+            const notes = el('div', 'patch-review-notes');
+            notes.appendChild(el('div', 'patch-note', '以下文件没有可展示的 Git 差异：'));
+            for (const note of st.reviewNotes) notes.appendChild(el('div', 'patch-note', '· ' + note));
+            host.appendChild(notes);
+        }
+        if (!(plan.files || []).length) {
+            host.appendChild(el('div', 'patch-note', '本轮改动没有可展示的 Git 差异（文件可能未被 Git 跟踪）。'));
+        }
+    } else if (!(plan.files || []).some((f) => f.status === 'ok')) {
         host.appendChild(el('div', 'patch-note warn', '没有可直接应用的文件：请按下方原因处理后重新预检。'));
     }
 
-    if (st.result) host.appendChild(renderResult(st.result));
+    if (!review && st.result) host.appendChild(renderResult(st.result));
 
     const list = el('div', 'patch-files');
     for (const file of plan.files || []) {
-        list.appendChild(renderFile(doc, ctx, file, st));
+        list.appendChild(renderFile(doc, ctx, file, st, review));
     }
     host.appendChild(list);
 
-    const hint = el('div', 'patch-footnote', '应用是两阶段操作：先预检，再写入；写入前会把原始文件备份到 .cadt/patches/backup/，可随时撤销。');
-    host.appendChild(hint);
+    if (!review) {
+        const hint = el('div', 'patch-footnote', '应用是两阶段操作：先预检，再写入；写入前会把原始文件备份到 .cadt/patches/backup/，可随时撤销。');
+        host.appendChild(hint);
+    }
 }
 
 function applyLabel(st) {
@@ -312,6 +400,26 @@ export function patchViewSnapshot(doc) {
     const st = doc && doc.patchState;
     if (!st) return null;
     const plan = st.plan;
+    if (st.review) {
+        // 只读审阅：只回展示数据，不暴露 applicable / mode / selected / root / planId 等应用语义
+        return {
+            loaded: !!plan,
+            loading: !!st.loading,
+            error: st.error || '',
+            review: true,
+            name: (doc && doc.name) || '',
+            added: plan ? (plan.added || 0) : 0,
+            removed: plan ? (plan.removed || 0) : 0,
+            notes: (st.reviewNotes || []).slice(),
+            files: (plan ? plan.files || [] : []).map((f) => ({
+                relPath: f.relPath || '',
+                kind: f.kind || '',
+                added: f.added || 0,
+                removed: f.removed || 0,
+                hunks: (f.hunks || []).map((h) => ({header: h.header || ''})),
+            })),
+        };
+    }
     if (!plan) {
         return {
             loaded: false,
@@ -370,6 +478,7 @@ function isAbsolutePath(text) {
 }
 
 export async function setPatchTargetRoot(doc, ctx, root) {
+    if (doc && doc.patchReview) throw new Error('只读审阅文档不支持设置目标目录');
     let target = String(root == null ? '' : root).trim();
     if (!target) throw new Error('root 不能为空');
     if (!isAbsolutePath(target)) {
@@ -385,6 +494,7 @@ export async function setPatchTargetRoot(doc, ctx, root) {
 }
 
 export async function repreviewPatchView(doc, ctx, options) {
+    if (doc && doc.patchReview) throw new Error('只读审阅文档不做预检');
     const opts = options || {};
     await loadPreview(doc, ctx, {
         ignoreWhitespace: typeof opts.ignoreWhitespace === 'boolean' ? opts.ignoreWhitespace : undefined,
@@ -416,20 +526,22 @@ function renderRootSuggestion(doc, ctx, plan) {
     return box;
 }
 
-function renderFile(doc, ctx, file, st) {
-    const card = el('div', 'patch-file ' + (file.status || ''));
+function renderFile(doc, ctx, file, st, review) {
+    const card = el('div', 'patch-file ' + (review ? '' : (file.status || '')));
     const head = el('div', 'patch-file-head');
-    const box = document.createElement('input');
-    box.type = 'checkbox';
-    box.className = 'patch-file-check';
-    box.checked = st.selected.has(file.relPath);
-    box.disabled = file.status !== 'ok' && st.mode === MODE_ATOMIC;
-    box.addEventListener('change', () => {
-        if (box.checked) st.selected.add(file.relPath);
-        else st.selected.delete(file.relPath);
-        render(doc, ctx);
-    });
-    head.appendChild(box);
+    if (!review) {
+        const box = document.createElement('input');
+        box.type = 'checkbox';
+        box.className = 'patch-file-check';
+        box.checked = st.selected.has(file.relPath);
+        box.disabled = file.status !== 'ok' && st.mode === MODE_ATOMIC;
+        box.addEventListener('change', () => {
+            if (box.checked) st.selected.add(file.relPath);
+            else st.selected.delete(file.relPath);
+            render(doc, ctx);
+        });
+        head.appendChild(box);
+    }
 
     const pathWrap = el('div', 'patch-file-path');
     const link = el('button', 'patch-link patch-path-link', file.relPath);
@@ -444,7 +556,7 @@ function renderFile(doc, ctx, file, st) {
     const stat = el('span', 'patch-file-stat');
     stat.append(el('span', 'patch-add', formatCount(file.added)), el('span', 'patch-del', '−' + file.removed));
     head.appendChild(stat);
-    head.appendChild(el('span', 'patch-file-status ' + (file.status || ''), STATUS_LABEL[file.status] || file.status));
+    if (!review) head.appendChild(el('span', 'patch-file-status ' + (file.status || ''), STATUS_LABEL[file.status] || file.status));
 
     const fold = el('button', 'patch-fold', st.collapsed.has(file.relPath) ? '展开' : '收起');
     fold.type = 'button';
@@ -456,7 +568,7 @@ function renderFile(doc, ctx, file, st) {
     head.appendChild(fold);
     card.appendChild(head);
 
-    if (file.reason) {
+    if (!review && file.reason) {
         const reason = el('div', 'patch-file-reason', file.reason);
         card.appendChild(reason);
         const fix = suggestFor(file);
@@ -472,7 +584,7 @@ function renderFile(doc, ctx, file, st) {
                 body.appendChild(el('div', 'patch-note', '…内容较多，点击「展开」查看全部'));
                 break;
             }
-            body.appendChild(renderHunk(doc, ctx, hunk, file, st));
+            body.appendChild(renderHunk(doc, ctx, hunk, file, st, review));
             budget -= (hunk.lines || []).length + 1;
         }
         if (!expanded && budget <= 0) {
@@ -489,14 +601,14 @@ function renderFile(doc, ctx, file, st) {
     return card;
 }
 
-function renderHunk(doc, ctx, hunk, file, st) {
-    const wrap = el('div', 'patch-hunk ' + (hunk.status || ''));
+function renderHunk(doc, ctx, hunk, file, st, review) {
+    const wrap = el('div', 'patch-hunk ' + (review ? '' : (hunk.status || '')));
     const head = el('div', 'patch-hunk-head');
     head.appendChild(el('span', 'patch-hunk-range', hunk.header || `@@ -${hunk.oldStart} +${hunk.newStart} @@`));
-    if (hunk.status === 'ok' && hunk.applyAtLine) {
+    if (!review && hunk.status === 'ok' && hunk.applyAtLine) {
         head.appendChild(el('span', 'patch-hunk-at', '落到第 ' + hunk.applyAtLine + ' 行'));
     }
-    if (hunk.status !== 'ok' && hunk.reason) {
+    if (!review && hunk.status !== 'ok' && hunk.reason) {
         head.appendChild(el('span', 'patch-hunk-reason', hunk.reason));
     }
     wrap.appendChild(head);
@@ -542,7 +654,7 @@ function renderResult(result) {
 
 async function apply(doc, ctx) {
     const st = patchViewState(doc);
-    if (!st.plan || !canApply(st)) return;
+    if (st.review || !st.plan || !canApply(st)) return;
     const root = st.plan.root;
     const files = Array.from(st.selected);
     try {
@@ -562,7 +674,7 @@ async function apply(doc, ctx) {
 
 async function revert(doc, ctx) {
     const st = patchViewState(doc);
-    if (!st.plan || !st.plan.patchId) return;
+    if (st.review || !st.plan || !st.plan.patchId) return;
     try {
         const res = await ctx.backend.PatchRevert(st.plan.patchId, st.plan.root, 'abort');
         if (!res || !res.ok) {

@@ -231,29 +231,11 @@ func (p *patchPlan) toPreview() *PatchPreview {
 				ApplyAtLine: h.ApplyAtLine,
 			}
 			if f.PatchFile != nil && h.Index < len(f.PatchFile.Hunks) {
-				src := f.PatchFile.Hunks[h.Index]
-				ho.Header = src.Header
-				ho.OldStart = src.OldStart
-				ho.OldCount = src.OldCount
-				ho.NewStart = src.NewStart
-				ho.NewCount = src.NewCount
-				oldLine, newLine := src.OldStart, src.NewStart
-				for _, ln := range src.Lines {
-					pl := PatchLineOut{T: string(ln.T), Text: ln.Text}
-					if ln.T == '-' {
-						pl.OldLine = oldLine
-						oldLine++
-					} else if ln.T == '+' {
-						pl.NewLine = newLine
-						newLine++
-					} else {
-						pl.OldLine = oldLine
-						pl.NewLine = newLine
-						oldLine++
-						newLine++
-					}
-					ho.Lines = append(ho.Lines, pl)
-				}
+				// 行号与文本结构由 patchHunkToOut 统一生成，预检只补自己的状态字段。
+				ho = patchHunkToOut(h.Index, f.PatchFile.Hunks[h.Index])
+				ho.Status = h.Status
+				ho.Reason = h.Reason
+				ho.ApplyAtLine = h.ApplyAtLine
 			}
 			fo.Hunks = append(fo.Hunks, ho)
 		}

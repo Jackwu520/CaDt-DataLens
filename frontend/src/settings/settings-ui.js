@@ -5,6 +5,7 @@
 // 对话框族、行式下拉、设置搜索已拆到同目录兄弟模块，经 Object.create 委托同一 deps。
 import {createActivityLog} from '../core/activity-log.js';
 import {iconSvg} from '../core/icons.js';
+import {isDocReadOnly} from '../core/readonly.js';
 import {createSettingsDialogs} from './settings-dialogs.js';
 import {createSettingsSearch} from './settings-search.js';
 import {createSettingsSelect} from './settings-select.js';
@@ -329,16 +330,18 @@ function updateLockButton() {
     }
 }
 
-function installReadOnlyGuards(pane) {
+function installReadOnlyGuards(pane, doc) {
     if (!pane) return;
+    // 每次事件都重新求值：标签页只读锁可以在不刷新编辑器的情况下切换。
+    const locked = () => isDocReadOnly(doc, deps.settings);
     const inTreeField = (target) => target && target.closest && target.closest('.jsoneditor-field, .jsoneditor-value');
     pane.addEventListener('beforeinput', (e) => {
-        if (!deps.settings.readOnlyMode || !inTreeField(e.target)) return;
+        if (!locked() || !inTreeField(e.target)) return;
         e.preventDefault();
         e.stopPropagation();
     }, true);
     pane.addEventListener('keydown', (e) => {
-        if (!deps.settings.readOnlyMode || !inTreeField(e.target)) return;
+        if (!locked() || !inTreeField(e.target)) return;
         const key = e.key;
         if ((e.ctrlKey || e.metaKey) && ['c', 'C', 'a', 'A'].includes(key)) return;
         if (['Tab', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown'].includes(key)) return;
@@ -347,13 +350,13 @@ function installReadOnlyGuards(pane) {
     }, true);
     for (const type of ['paste', 'cut', 'drop']) {
         pane.addEventListener(type, (e) => {
-            if (!deps.settings.readOnlyMode || !inTreeField(e.target)) return;
+            if (!locked() || !inTreeField(e.target)) return;
             e.preventDefault();
             e.stopPropagation();
         }, true);
     }
     pane.addEventListener('contextmenu', (e) => {
-        if (!deps.settings.readOnlyMode) return;
+        if (!locked()) return;
         if (e.target.closest && e.target.closest('.jsoneditor-tree')) {
             e.preventDefault();
             e.stopPropagation();
@@ -363,7 +366,7 @@ function installReadOnlyGuards(pane) {
 
 function applyReadOnlyToDoc(doc) {
     if (!doc || !doc.editor) return;
-    const locked = !!deps.settings.readOnlyMode;
+    const locked = isDocReadOnly(doc, deps.settings);
     if (doc.editor.aceEditor) {
         try {
             doc.editor.aceEditor.setReadOnly(!!(doc.large || doc.binary || locked));
@@ -517,7 +520,7 @@ function applySettings() {
         logSettingsChange(JSON.parse(JSON.stringify(deps.settings)));
         lastSettingsSnapshot = JSON.parse(JSON.stringify(deps.settings));
     } catch (e) {}
-    if (deps.settings.autoSave && deps.dirty && !deps.settings.readOnlyMode) deps.scheduleAutoSave();
+    if (deps.settings.autoSave && deps.dirty && !isDocReadOnly(deps.file, deps.settings)) deps.scheduleAutoSave();
     else deps.cancelAutoSave();
 }
 

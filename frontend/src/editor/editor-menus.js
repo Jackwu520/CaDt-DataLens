@@ -4,6 +4,8 @@
 //
 // deps 由 main.js 显式传入（getter 延迟求值）；原裸标识符引用已重写为 deps.X，
 // 对象简写位展开为 key: deps.X。
+import {isDocReadOnly} from '../core/readonly.js';
+
 export function createEditorMenus(deps) {
 
 function selectedText() {
@@ -94,7 +96,7 @@ function showEditorMenu(x, y) {
     const code = deps.currentMode === 'code' && !!deps.editor && !!deps.editor.aceEditor;
     const text = deps.currentMode === 'text';
     const editable = code || text;
-    const readonly = !!deps.file.binary || !!deps.file.large || !!deps.settings.readOnlyMode;
+    const readonly = isDocReadOnly(deps.file, deps.settings);
     const hasPath = !!deps.file.path;
     const referenceItems = deps.aiEditorReferenceMenuItems();
     // 代码视图下提供运行入口，可用状态与标题栏 ▶ / 工具菜单一致
