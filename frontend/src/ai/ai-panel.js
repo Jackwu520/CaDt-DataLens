@@ -298,6 +298,7 @@ export function createAIPanel(options) {
         ctxTokSystem: panel.querySelector('#ai-ctx-tok-system'),
         ctxTokTools: panel.querySelector('#ai-ctx-tok-tools'),
         ctxTokMessages: panel.querySelector('#ai-ctx-tok-messages'),
+        ctxTokSaved: panel.querySelector('#ai-ctx-tok-saved'),
         ctxPopCompact: panel.querySelector('#ai-ctx-pop-compact'),
     };
     if (el.gitBtn) el.gitBtn.innerHTML = iconSvg('git', 14);
@@ -3712,6 +3713,10 @@ export function createAIPanel(options) {
 
     // ---------- 上下文估算 ----------
 
+    // 最近一次 buildApiMessages 的实时瘦身省略量（token 估算，统计浮层展示用）。
+    // 每次组装重置——浮层打开时自己会组装一遍，读到的就是当前会话的新鲜值。
+    let lastBuildSavedTokens = 0;
+
     function buildApiMessages(session, endIndex, systemText) {
         const messages = [{role: 'system', content: systemText || AI_DEFAULT_SYSTEM_PROMPT}];
         if (!session) return messages;
@@ -3738,6 +3743,7 @@ export function createAIPanel(options) {
         // 轮起点 = 用户消息（非 systemNote）；保留最近 2 轮原文，更早的算「过时区」。
         let recentStart = 0;
         let userTurnsSeen = 0;
+        let savedTokens = 0; // 本次组装剔除的 token（旧思考 / stub 工具结果 / 过期注入）
         for (let i = limit - 1; i >= 0; i--) {
             const m = session.messages[i];
             if (m && m.role === 'user' && !m.systemNote) {
@@ -3756,10 +3762,16 @@ export function createAIPanel(options) {
             // 模型切换记录只是对话里的可视注记，不进入模型上下文
             if (message.kind === 'model-switch') continue;
             // 瞬态注入块的旧条目：只发最新一条（见 lastTransient）
-            if (message.dedupeKey && lastTransient.get(message.dedupeKey) !== i) continue;
+            if (message.dedupeKey && lastTransient.get(message.dedupeKey) !== i) {
+                savedTokens += aiEstimateTokens(aiTextOf(message.content));
+                continue;
+            }
             // 轮次提醒注记（如「工具调用轮次已达 N」）：只在产生时随下一请求有效，
             // 之后是纯噪音，历史里不再发
-            if (message.systemNote && !message.dedupeKey) continue;
+            if (message.systemNote && !message.dedupeKey) {
+                savedTokens += aiEstimateTokens(aiTextOf(message.content));
+                continue;
+            }
             if (message.role === 'tool') {
                 if (message.status === 'running') continue;
                 if (!pendingCalls.has(message.toolCallId)) continue;
@@ -3772,6 +3784,7 @@ export function createAIPanel(options) {
                     (message.name === 'read_file' || message.name === 'web_fetch' ||
                         message.name === 'run_command' || message.name === 'background_command' ||
                         message.name === 'search_text')) {
+                    const before = toolContent.length;
                     if (message.name === 'read_file' || message.name === 'web_fetch') {
                         toolContent = '[内容已省略：此条 ' + message.name + ' 结果共 ' + toolContent.length +
                             ' 字符，读取于较早轮次、大概率已过时。如需当前内容请重新读取。]';
@@ -3780,6 +3793,7 @@ export function createAIPanel(options) {
                         toolContent = '[输出已省略：原 ' + toolContent.length + ' 字符，仅保留尾部 ——\n…' +
                             toolContent.slice(-300) + ']';
                     }
+                    savedTokens += aiEstimateTokens('x'.repeat(Math.max(0, before - toolContent.length)));
                 }
                 messages.push({
                     role: 'tool',
@@ -3807,6 +3821,8 @@ export function createAIPanel(options) {
                 // 重发动辄数千 token 且零价值（文件/状态早变了）
                 item.thinking = message.reasoning;
                 item.thinkingSignature = message.thinkingSignature || '';
+            } else if (message.role === 'assistant' && message.reasoning) {
+                savedTokens += aiEstimateTokens(message.reasoning);
             }
             // 只保留「确有 tool 响应」的调用：多工具批次中途停止/中断会留下残缺批次
             // （如 2 个 calls 只有 1 个执行），OpenAI/Anthropic 会以
@@ -3843,6 +3859,7 @@ export function createAIPanel(options) {
                 pendingCalls = new Set();
             }
         }
+        lastBuildSavedTokens = savedTokens;
         return messages;
     }
 
@@ -4248,6 +4265,7 @@ export function createAIPanel(options) {
         if (el.ctxTokSystem) el.ctxTokSystem.textContent = '~' + aiFormatCompactTokens(systemTokens);
         if (el.ctxTokTools) el.ctxTokTools.textContent = '~' + aiFormatCompactTokens(toolTokens);
         if (el.ctxTokMessages) el.ctxTokMessages.textContent = '~' + aiFormatCompactTokens(messageTokens);
+        if (el.ctxTokSaved) el.ctxTokSaved.textContent = '~' + aiFormatCompactTokens(lastBuildSavedTokens);
     }
 
     // ---------- 路径 / 记忆 / 技能 ----------

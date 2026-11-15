@@ -2183,6 +2183,10 @@ html.about-night .about-banner-img.is-dark { display: block; }
 .tab-close svg { width: 10px; height: 10px; display: block; margin: auto; }
 .tab:hover .tab-close, .tab.active .tab-close { visibility: visible; }
 .tab-close:hover { background: var(--hover); color: var(--text); }
+/* 标签页只读锁：小锁角标常显，不占用关闭按钮的位置 */
+.tab-lock { flex: none; width: 13px; height: 13px; display: grid; place-items: center; color: var(--muted); opacity: .8; }
+.tab-lock svg { width: 12px; height: 12px; }
+.tab.tab-readonly.active .tab-lock { color: var(--accent); opacity: 1; }
 
 #editor-wrap { flex: 1; position: relative; min-height: 0; display: flex; }
 #main-pane { flex: 1; position: relative; min-width: 0; display: flex; flex-direction: column; }
@@ -7188,6 +7192,9 @@ html[data-theme="whitey"] {
 .ai-ctx-dot.system { background: var(--muted); }
 .ai-ctx-dot.tools { background: #a78bfa; }
 .ai-ctx-dot.messages { background: var(--accent); }
+.ai-ctx-dot.saved { background: #34d399; }
+.ai-ctx-row-saved { opacity: .82; }
+.ai-ctx-row-saved b { color: #34d399; }
 .ai-ctx-compact { width: 100%; margin-top: 12px; }
 
 /* AI 设置页 */
@@ -9593,6 +9600,10 @@ body.bgterm-dragging { cursor: row-resize; user-select: none; }
 .patch-line.add .patch-sign { color: var(--green); }
 .patch-line.del .patch-sign { color: var(--red); }
 .patch-text { flex: 1; min-width: 0; }
+/* 只读审阅快照：顶部列出无 Git 差异的文件；文件卡没有勾选框，路径左对齐 */
+.patch-review-notes { background: var(--panel2); border-bottom: 1px solid var(--border); }
+.patch-review-notes .patch-note { padding: 4px 10px; }
+.patch-view.patch-review .patch-file-head { padding-left: 12px; }
 .patch-result {
     margin: 10px;
     border: 1px solid var(--border);
