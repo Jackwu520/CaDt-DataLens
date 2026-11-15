@@ -2185,6 +2185,36 @@ export function createAIPanel(options) {
     });
 
     // 计时器到点：向启动它的会话注入系统消息并唤醒一轮（与定时任务同一投递通道）
+    // 正计时停止通知的抑制表：AI 用 stop_timer 工具停止时，工具结果已带时长文本，
+    // 广播回来的 ai-timer-stopped 不再重复投系统消息（用户手动停止才投）。
+    const suppressCountupStopIds = new Set();
+
+    // wakeSessionByCountupStop 正计时被停止（手动）时给绑定会话投系统消息：
+    // AI 启动「盯耗时」的正计时后，用户停掉它 AI 就能拿到实际时长并接话分析——
+    // 补上 countup 与 countdown 一样的感知闭环（此前 countup 停止只清注册表，AI 全程无感知）。
+    async function wakeSessionByCountupStop(sessionId, info) {
+        const label = String((info && info.label) || '正计时');
+        const session = sessions.find((s) => s.id === sessionId);
+        if (!session) return; // 会话已删除或不在本窗口：静默丢弃
+        try {
+            if (session.archivedAt) {
+                session.archivedAt = 0;
+                persistSessions();
+                renderSessionList();
+            }
+            const seconds = Math.max(0, Math.round(Number(info && info.startMs) ? (Date.now() - info.startMs) / 1000 : 0));
+            const desc = seconds >= 60 && seconds % 60 === 0 ? (seconds / 60) + ' 分钟' : seconds + ' 秒';
+            await sendAppMessage({
+                kind: 'timer',
+                label: '正计时 · ' + label,
+                content: '[正计时已停止 · ' + label + ']\n已计时长 ' + desc + '。若此前在等待该事项的耗时结果，请基于时长继续分析或简短向用户确认；无需展开无关内容。',
+            });
+            flash('正计时「' + label + '」已停止，已计 ' + desc + '（已通知会话）');
+        } catch (e) {
+            flash('正计时「' + label + '」停止通知失败：' + ((e && e.message) || e), true);
+        }
+    }
+
     async function wakeSessionByTimer(payload) {
         const label = String((payload && payload.label) || '计时器');
         const sessionId = String((payload && payload.sessionId) || '');
@@ -6479,10 +6509,19 @@ export function createAIPanel(options) {
                     const desc = total >= 60 && total % 60 === 0 ? (total / 60) + ' 分钟' : total + ' 秒';
                     return '已启动倒计时「' + created.label + '」（' + desc + '）。到点会自动以系统消息唤醒你继续本会话，期间无需轮询等待，可以先做其他事或结束本轮。[id: ' + created.id + ']';
                 }
-                return '已启动正计时「' + created.label + '」。需要结果时用 stop_timer 停止并读取已计时长。[id: ' + created.id + ']';
+                return '已启动正计时「' + created.label + '」。需要结果时用 stop_timer 停止并读取已计时长；用户手动停止时会以系统消息把时长告知你，无需轮询等待。[id: ' + created.id + ']';
             }
             case 'stop_timer': {
-                const stopped = await timerMod.stop(aiTextOf(input.id).trim());
+                const stopId = aiTextOf(input.id).trim();
+                // 抑制广播回来的重复投递：工具结果已带时长文本（事件晚于 await 到达，成功才留在集合里由事件消费）
+                suppressCountupStopIds.add(stopId);
+                let stopped;
+                try {
+                    stopped = await timerMod.stop(stopId);
+                } catch (e) {
+                    suppressCountupStopIds.delete(stopId); // 没停成：事件不会来，回收抑制标记
+                    throw e;
+                }
                 if (stopped.mode === 'countup') {
                     const elapsed = Math.max(0, Math.round((Date.now() - stopped.startMs) / 1000));
                     return '已停止正计时「' + stopped.label + '」，已计时长 ' + Math.floor(elapsed / 60) + ' 分 ' + (elapsed % 60) + ' 秒。';
@@ -12074,8 +12113,20 @@ export function createAIPanel(options) {
         // 计时器事件（ai-timer-fired / ai-timer-stopped）：main.js 从 Go 侧广播转发进来
         handleTimerEvent: (name, info) => {
             if (!timerMod) return;
-            if (name === 'ai-timer-fired') timerMod.onFired(info);
-            else if (name === 'ai-timer-stopped') timerMod.onStopped(info);
+            if (name === 'ai-timer-fired') {
+                timerMod.onFired(info);
+                return;
+            }
+            if (name === 'ai-timer-stopped') {
+                // 正计时停止：归属会话在此窗口才投递（其他窗口无归属，天然去重）；
+                // AI 工具停止已在工具结果里带时长，抑制不重复投
+                const owner = timerMod.onStopped(info);
+                if (owner && info && info.mode === 'countup' && !suppressCountupStopIds.delete(info.id)) {
+                    Promise.resolve(wakeSessionByCountupStop(owner, info)).catch((e) => {
+                        flash('正计时停止通知失败：' + ((e && e.message) || e), true);
+                    });
+                }
+            }
         },
         // MCP 事件（mcp-tools-changed / mcp-status-changed，都携带全量快照）：整表替换 + 设置页状态灯刷新
         handleMcpEvent: (snapshot) => {

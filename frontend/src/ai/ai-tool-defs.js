@@ -163,7 +163,7 @@ export const AI_TOOL_DEFS = {
     },
     start_timer: {
         name: 'start_timer',
-        description: '启动一个计时器（面板顶部会显示胶囊，用户可点击停止）。两种用法：mode=countdown 倒计时（seconds 必填），到点后应用会自动以系统消息唤醒你继续当前会话的任务——适合「等待构建/安装/下载完成」这类不知道要多久的事，不要用 sleep 命令或反复轮询空等；mode=countup 正计时，从启动开始计时，到停止时才上报已计时长。计时器不跨应用重启：重启后全部消失，超过 24 小时的等待请改用定时任务（schedule_create）。',
+        description: '启动一个计时器（面板顶部会显示胶囊，用户可点击停止）。两种用法：mode=countdown 倒计时（seconds 必填），到点后应用会自动以系统消息唤醒你继续当前会话的任务——适合「等待构建/安装/下载完成」这类不知道要多久的事，不要用 sleep 命令或反复轮询空等；mode=countup 正计时，从启动开始计时测实际耗时，停止时上报已计时长（你自己 stop_timer 停会随工具结果返回时长；用户手动停止也会以系统消息把时长告知你，无需轮询）——适合「记录某件事实际花了多久」。计时器不跨应用重启：重启后全部消失，超过 24 小时的等待请改用定时任务（schedule_create）。',
         parameters: {
             type: 'object',
             properties: {
@@ -176,7 +176,7 @@ export const AI_TOOL_DEFS = {
     },
     stop_timer: {
         name: 'stop_timer',
-        description: '停止一个运行中的计时器。id 用 start_timer 返回的值；省略 id 且当前只有一个运行中的计时器时直接停止它。停止正计时会返回已计时长，可用于向用户报告耗时。',
+        description: '停止一个运行中的计时器。id 用 start_timer 返回的值；省略 id 且当前只有一个运行中的计时器时直接停止它。停止正计时会返回已计时长，可用于向用户报告耗时（你自己停止的不会重复投系统消息；用户手动停止的会以系统消息通知你）。',
         parameters: {
             type: 'object',
             properties: {

@@ -276,7 +276,12 @@ export function createAITimer(ctx) {
             stopBtn.innerHTML = iconSvg('close', 12);
             stopBtn.addEventListener('click', (e) => {
                 e.stopPropagation();
-                stop(item.id).catch(() => {});
+                stop(item.id).then((stopped) => {
+                    if (stopped && stopped.mode === 'countup') {
+                        const elapsed = Math.max(0, Math.round((Date.now() - stopped.startMs) / 1000));
+                        flash('正计时「' + stopped.label + '」已停止，已计 ' + Math.floor(elapsed / 60) + ' 分 ' + (elapsed % 60) + ' 秒');
+                    }
+                }).catch(() => {});
             });
             row.append(badge, main, stopBtn);
             row.addEventListener('click', () => {
@@ -343,7 +348,12 @@ export function createAITimer(ctx) {
         stopBtn.className = 'dlg-btn ai-timer-stop-btn';
         stopBtn.textContent = '停止计时器';
         stopBtn.addEventListener('click', () => {
-            stop(info.id).catch(() => {});
+            stop(info.id).then((stopped) => {
+                if (stopped && stopped.mode === 'countup') {
+                    const elapsed = Math.max(0, Math.round((Date.now() - stopped.startMs) / 1000));
+                    flash('正计时「' + stopped.label + '」已停止，已计 ' + Math.floor(elapsed / 60) + ' 分 ' + (elapsed % 60) + ' 秒');
+                }
+            }).catch(() => {});
         });
         box.appendChild(stopBtn);
         host.appendChild(box);
@@ -501,10 +511,11 @@ export function createAITimer(ctx) {
         if (!backend || typeof backend.StopTimer !== 'function') throw new Error('当前版本不支持计时工具');
         const target = id || onlyRunningId();
         if (!target) throw new Error(timers.size ? '有多个计时器在运行，请指定 id（start_timer 返回值里有）' : '没有运行中的计时器');
-        // Go 返回 AITimerStopResult {list, stopped, found}
+        // Go 返回 AITimerStopResult {list, stopped, found}。
+        // 会话归属不在这里删：ai-timer-stopped 广播回来时 onStopped 统一读取并返回，
+        // 正计时停止的会话通知（ai-panel）要靠它找到绑定会话。
         const result = await backend.StopTimer(target);
         if (!result || !result.found) throw new Error('计时器不存在：' + target);
-        sessions.delete(result.stopped.id);
         sync(result.list || []);
         return result.stopped;
     }
@@ -535,11 +546,15 @@ export function createAITimer(ctx) {
     }
 
     // onStopped 计时器被停止（本窗口弹层/详情停止 / 另一窗口 / stop_timer 工具）。
+    // 返回启动时记录的会话归属（启动窗口才有；归属不明的跨窗计时器返回 ''），
+    // ai-panel 据此给绑定会话投递「正计时已停止」的系统消息（AI 感知耗时）。
     function onStopped(info) {
-        if (!info || !info.id) return;
+        if (!info || !info.id) return '';
+        const owner = sessions.get(info.id) || '';
         sessions.delete(info.id);
         timers.delete(info.id);
         render();
+        return owner;
     }
 
     // 头部胶囊点击开关弹层（chip 是静态 DOM，工厂时接线一次即可）
