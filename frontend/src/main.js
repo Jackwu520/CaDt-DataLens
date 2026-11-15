@@ -57,6 +57,7 @@ import {createStructurePanelController} from './editor/structure-panel.js';
 import {createEditorMenus} from './editor/editor-menus.js';
 import {createExplorerOps} from './explorer/explorer-ops.js';
 import {createEditorGroups} from './editor/editor-groups.js';
+import {isDocReadOnly, isTabReadOnlyFixed, isTabReadOnlyLocked} from './core/readonly.js';
 
 window.addEventListener('error', (e) => {
     window.__modErr = (e.message || '') + ' @ ' + (e.filename || '').split('/').pop() + ':' + e.lineno + ':' + e.colno;
@@ -615,7 +616,9 @@ async function runAppAction(action, params, scope) {
                 untitled: !!doc.untitled,
                 treeAvailable: !!doc.treeAvailable,
                 parseError: doc.parseError ? String((doc.parseError && doc.parseError.message) || doc.parseError) : '',
-                readOnly: !!(settings.readOnlyMode || doc.large || doc.binary),
+                readOnly: isDocReadOnly(doc, settings),
+                tabReadOnly: isTabReadOnlyLocked(doc),
+                tabReadOnlyFixed: isTabReadOnlyFixed(doc),
                 lines: doc.binary ? 0 : (text ? text.split('\n').length : 0),
                 chars: doc.binary ? 0 : text.length,
                 cursor: null,
@@ -730,7 +733,7 @@ async function runAppAction(action, params, scope) {
         case 'open_file': {
             const target = String(p.path || '').trim();
             if (!target) throw new Error('open_file 需要 path');
-            await openPathsHere([target]);
+            await openPathsHere([target], {readOnly: !!p.readOnly});
             const doc = findDocByPath(target);
             if (!doc) throw new Error('打开失败或文件不存在：' + target);
             return {opened: appActionDocInfo(doc), tabs: docs.length};
@@ -931,12 +934,14 @@ async function runAppAction(action, params, scope) {
             const doc = appActionResolveDoc(p.target);
             if (!doc) throw new Error('找不到文档：' + (p.target == null ? 'active' : p.target));
             if (!(doc.format && doc.format.patch)) throw new Error('目标标签不是 .patch / .diff：' + (doc.path || doc.name));
+            if (doc.patchReview) throw new Error('只读审阅文档不支持设置目标目录');
             return setPatchTargetRoot(doc, patchViewContext(), p.root);
         }
         case 'patch_repreview': {
             const doc = appActionResolveDoc(p.target);
             if (!doc) throw new Error('找不到文档：' + (p.target == null ? 'active' : p.target));
             if (!(doc.format && doc.format.patch)) throw new Error('目标标签不是 .patch / .diff：' + (doc.path || doc.name));
+            if (doc.patchReview) throw new Error('只读审阅文档不做预检');
             return repreviewPatchView(doc, patchViewContext(), {ignoreWhitespace: p.ignoreWhitespace, allowOffset: p.allowOffset});
         }
         case 'ai_new_session': {
@@ -1186,6 +1191,7 @@ const defaultSettings = {
     aiChatCodeFont: 'follow',
     aiShowThinking: true,
     aiShowEveryTurnMeta: false,
+    aiContextSlim: true,
     aiShowUsage: true,
     aiAssistantCard: false,
     aiInlineWidgets: true,
@@ -1546,6 +1552,7 @@ const editorGroupsMod = createEditorGroups({
     get scheduleWritingCaret() { return scheduleWritingCaret; },
     get sessionPathKey() { return sessionPathKey; },
     get setDirty() { return setDirty; },
+    get setDocReadOnly() { return setDocReadOnly; },
     get setDragCursor() { return setDragCursor; },
     get settings() { return settings; },
     get settingsKey() { return settingsKey; },
@@ -1566,7 +1573,7 @@ const editorGroupsMod = createEditorGroups({
     get viewOptionsFor() { return viewOptionsFor; },
     get workspaceFolder() { return workspaceFolder; },
 });
-const {activateDoc, addDocToFocusedGroup, applyAceMode, applyCsvTableZoom, applyImageZoom, browserViewportLabel, closeDocNow, closeDocsWithConfirm, closeSqlView, createDoc, createDocEditor, createGroup, dismissBanner, doRedo, doUndo,  enterBinaryView, enterCsvTable, enterImageView, enterMarkdownPreview, enterSplitView, enterSqlView, enterSvgRender, enterTextView, exitSplitView, expandAllWithGuard, flushCsvCellEditor,  groupDocs, setFocusedGroupId, setSplitRoot, groupOfDoc, handleAIWorkspaceFileChanged, handleExternalDocChanges, hideBanner, hideSvgRender, hookCodeFoldPreviews, hookMultiCursor, humanizeCounts, initCodeFoldHover, jumpBookmark, leaveCsvTable, leaveMarkdownPreview, markDocDirty, mdSyncScrollFromAce, moveTabInGroup, patchViewContext, refreshPatchMarkers, rememberDocView, renderBookmarks, renderBreadcrumb, renderCsvTableView, renderEditorLayout, renderMarkdownPreview, renderTabs, reopenClosedTab, requestCloseDoc, revertDocToSaved, scheduleGitGutter, setBrowserViewport, setFilename, showBanner, showImageMenu, showMdPreviewMenu, showPathInFolder, showSvgMenu,  syncAllBrowserTabs, syncBrowserTab, textArea, toggleBookmark, toggleFocusedNode, updateBrowserTitle, updateCodeFoldPreviews, updateDocChrome, updateStatus, zoomCsvTable, zoomImageBy, zoomSvgRenderBy} = editorGroupsMod;
+const {activateDoc, addDocToFocusedGroup, applyAceMode, applyCsvTableZoom, applyImageZoom, browserViewportLabel, closeDocNow, closeDocsWithConfirm, closeSqlView, createDoc, createDocEditor, createGroup, dismissBanner, doRedo, doUndo,  enterBinaryView, enterCsvTable, enterImageView, enterMarkdownPreview, enterSplitView, enterSqlView, enterSvgRender, enterTextView, exitSplitView, expandAllWithGuard, flushCsvCellEditor,  groupDocs, setFocusedGroupId, setSplitRoot, groupOfDoc, handleAIWorkspaceFileChanged, handleExternalDocChanges, hideBanner, hideSvgRender, hookCodeFoldPreviews, hookMultiCursor, humanizeCounts, initCodeFoldHover, jumpBookmark, leaveCsvTable, leaveMarkdownPreview, markDocDirty, mdSyncScrollFromAce, moveTabInGroup, patchViewContext, refreshPatchMarkers, rememberDocView, renderBookmarks, renderBreadcrumb, renderCsvTableView, renderEditorLayout, renderMarkdownPreview, renderTabs, reopenClosedTab, requestCloseDoc, revertDocToSaved, scheduleGitGutter, setBrowserViewport, setFilename, showBanner, showImageMenu, showMdPreviewMenu, showPathInFolder, showSvgMenu,  syncAllBrowserTabs, syncBrowserTab, syncTabReadOnly, textArea, toggleBookmark, toggleFocusedNode, updateBrowserTitle, updateCodeFoldPreviews, updateDocChrome, updateStatus, zoomCsvTable, zoomImageBy, zoomSvgRenderBy} = editorGroupsMod;
 const NEW_FILE_TYPES = [
     {label: 'JSON 文件', name: '新建文件.json'},
     {label: '文本文件', name: '新建文件.txt'},
@@ -1799,15 +1806,21 @@ function findDocByPath(path) {
     return docs.find((d) => String(d.path || '').replace(/\\/g, '/').toLowerCase() === key) || null;
 }
 
-async function openPathsHere(paths) {
+async function openPathsHere(paths, opts = {}) {
     const list = (paths || []).filter(Boolean);
     if (!list.length) return;
+    // 打开文件时就带只读锁：只作用于新建/命中的这个标签，不影响全局锁与其它标签。
+    const readOnly = !!(opts && opts.readOnly);
     let target = null;
     let lastNew = null;
     let lastError = null;
     for (const path of list) {
         const existing = findDocByPath(path);
         if (existing) {
+            if (readOnly && !existing.readOnlyLocked) {
+                setDocReadOnly(existing, true, {silent: true});
+                if (existing.dirty) flash(existing.name + ' 有未保存修改，已设为只读；解锁后可保存');
+            }
             target = existing;
             continue;
         }
@@ -1820,7 +1833,7 @@ async function openPathsHere(paths) {
                 await openFolderSmart(data.path);
                 continue;
             }
-            const doc = createDoc(data);
+            const doc = createDoc(readOnly ? {...data, readOnly: true} : data);
             docs.push(doc);
             addDocToFocusedGroup(doc);
             rememberRecentOpen(doc.path, doc.name, false);
@@ -1848,23 +1861,53 @@ async function openInNewWindows(paths) {
     }
 }
 
-async function openPaths(paths) {
+async function openPaths(paths, opts) {
     const list = (paths || []).filter(Boolean);
     if (!list.length) return;
+    // 「以只读打开」是显式的标签级动作：即使设置了「新窗口打开」，也落在当前窗口，
+    // 否则新窗口里的标签拿不到这把锁，功能就静默失效了。
+    if (opts && opts.readOnly) {
+        await openPathsHere(list, opts);
+        return;
+    }
     if (settings.openMode === 'window') {
         if (docs.length === 0) {
-            await openPathsHere([list[0]]);
+            await openPathsHere([list[0]], opts);
             if (list.length > 1) await openInNewWindows(list.slice(1));
         } else {
             await openInNewWindows(list);
         }
         return;
     }
-    await openPathsHere(list);
+    await openPathsHere(list, opts);
 }
 
-async function openPath(path) {
-    await openPaths([path]);
+async function openPath(path, opts) {
+    await openPaths([path], opts);
+}
+
+// 标签页只读锁：只改 doc 自己，不动全局 settings.readOnlyMode。
+// 全局锁开着时解除标签锁仍然只读，提示里说清楚，免得用户以为坏了。
+// 固定只读（审阅快照）不允许解锁：这是硬防线，菜单不给入口，这里再挡一次，
+// 免得别的代码路径 / app_control 把 doc.readOnlyLocked 改掉后快照变成可编辑。
+function setDocReadOnly(doc, locked, opts = {}) {
+    if (!doc) return;
+    if (doc.readOnlyFixed && !locked) {
+        flash('只读快照不可解锁', true);
+        return;
+    }
+    doc.readOnlyLocked = !!locked;
+    applyReadOnlyToDoc(doc);
+    syncTabReadOnly(doc);
+    if (doc === file) {
+        updateStatus();
+        syncRunButtonState();
+    }
+    if (!opts.silent) {
+        flash(doc.readOnlyLocked
+            ? (settings.readOnlyMode ? '本标签已只读锁定（全局只读锁也处于开启状态）' : '本标签已只读锁定，其它标签不受影响')
+            : '已解除本标签只读锁定');
+    }
 }
 
 function waitUntil(check, timeout = 1200) {
@@ -2176,11 +2219,12 @@ function syncWorkspaceWatcher() {
 // 标题栏 ▶ 与工具菜单保持一致的可用状态（菜单是在打开时算的，按钮要随文件切换实时同步）
 function syncRunButtonState() {
     if (!els.tbRun) return;
+    const ro = isDocReadOnly(file, settings);
     const supported = !!file && !file.binary && !file.large &&
-        !!RECIPES[extOf(file.name || file.path)] && !settings.readOnlyMode;
+        !!RECIPES[extOf(file.name || file.path)] && !ro;
     els.tbRun.disabled = !supported;
     els.tbRun.title = supported || !file ? '运行当前文件 (F5)'
-        : settings.readOnlyMode ? '只读模式下不执行代码'
+        : ro ? (isTabReadOnlyLocked(file) ? '本标签已只读，不执行代码' : '只读模式下不执行代码')
             : '当前文件不支持运行';
 }
 
@@ -2878,8 +2922,10 @@ async function reloadActive(opts = {}) {
 
 async function saveDoc(doc, opts = {}) {
     if (!doc || doc.browser || doc.large || doc.binary || !doc.editor) return false;
-    if (settings.readOnlyMode) {
-        if (!opts.auto && !opts.silent) flash('只读锁定中，解锁后才能保存', true);
+    if (isDocReadOnly(doc, settings)) {
+        if (!opts.auto && !opts.silent) {
+            flash(isTabReadOnlyLocked(doc) ? '本标签已只读锁定，解除后才能保存' : '只读锁定中，解锁后才能保存', true);
+        }
         return false;
     }
     if (doc === file) flushCsvCellEditor();
@@ -3740,7 +3786,7 @@ function menuItems(kind) {
                 label: '运行当前文件',
                 shortcut: 'F5',
                 icon: 'E768',
-                disabled: !file || !runController.isSupported({name: file.name, path: file.path}) || !!settings.readOnlyMode,
+                disabled: !file || !runController.isSupported({name: file.name, path: file.path}) || isDocReadOnly(file, settings),
                 action: () => runController.run(),
             }, {
                 label: '停止运行',
@@ -4399,7 +4445,7 @@ els.editor.addEventListener('wheel', (e) => {
 window.addEventListener('keydown', (e) => {
     if (!e.ctrlKey || e.shiftKey || e.altKey) return;
     if ((e.key || '').toLowerCase() !== 'z') return;
-    if (currentMode !== 'code' || !editor || !editor.aceEditor || settings.readOnlyMode) return;
+    if (currentMode !== 'code' || !editor || !editor.aceEditor || isDocReadOnly(file, settings)) return;
     let um = null;
     try { um = editor.aceEditor.session.getUndoManager(); } catch (err) { return; }
     if (um && um.hasUndo()) return;

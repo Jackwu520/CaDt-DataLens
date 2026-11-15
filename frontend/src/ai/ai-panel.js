@@ -380,6 +380,7 @@ export function createAIPanel(options) {
         showThinking: document.getElementById('ai-opt-show-thinking'),
         showUsage: document.getElementById('ai-opt-show-usage'),
         turnMetaAll: document.getElementById('ai-opt-turn-meta-all'),
+        contextSlim: document.getElementById('ai-opt-context-slim'),
         assistantCard: document.getElementById('ai-opt-assistant-card'),
         inlineWidgets: document.getElementById('ai-opt-inline-widgets'),
         autoTitle: document.getElementById('ai-opt-auto-title'),
@@ -3740,17 +3741,21 @@ export function createAIPanel(options) {
         // 不跳过会让后续每一轮请求都被 HTTP 400 拒收。
         let pendingCalls = new Set();
         // —— 实时瘦身（组装视角剔除，会话历史原样保留）——
+        // 总开关 settings.aiContextSlim（默认开，dsh 同款思路：清理是部署策略恒开）。
         // 轮起点 = 用户消息（非 systemNote）；保留最近 2 轮原文，更早的算「过时区」。
-        let recentStart = 0;
+        const slim = settings.aiContextSlim !== false;
+        let recentStart = slim ? 0 : -1; // -1 = 全部视为「当轮」，各剔除点自然全跳过
         let userTurnsSeen = 0;
         let savedTokens = 0; // 本次组装剔除的 token（旧思考 / stub 工具结果 / 过期注入）
-        for (let i = limit - 1; i >= 0; i--) {
-            const m = session.messages[i];
-            if (m && m.role === 'user' && !m.systemNote) {
-                userTurnsSeen += 1;
-                if (userTurnsSeen === 3) {
-                    recentStart = i + 1;
-                    break;
+        if (slim) {
+            for (let i = limit - 1; i >= 0; i--) {
+                const m = session.messages[i];
+                if (m && m.role === 'user' && !m.systemNote) {
+                    userTurnsSeen += 1;
+                    if (userTurnsSeen === 3) {
+                        recentStart = i + 1;
+                        break;
+                    }
                 }
             }
         }
@@ -3761,14 +3766,15 @@ export function createAIPanel(options) {
             if (message.kind === 'changes-summary') continue;
             // 模型切换记录只是对话里的可视注记，不进入模型上下文
             if (message.kind === 'model-switch') continue;
-            // 瞬态注入块的旧条目：只发最新一条（见 lastTransient）
+            // 瞬态注入块的旧条目：只发最新一条（见 lastTransient）。瘦身关闭时仍去重——
+            // 同内容多份纯冗余，与「是否清理上下文」是两回事
             if (message.dedupeKey && lastTransient.get(message.dedupeKey) !== i) {
                 savedTokens += aiEstimateTokens(aiTextOf(message.content));
                 continue;
             }
             // 轮次提醒注记（如「工具调用轮次已达 N」）：只在产生时随下一请求有效，
             // 之后是纯噪音，历史里不再发
-            if (message.systemNote && !message.dedupeKey) {
+            if (slim && message.systemNote && !message.dedupeKey) {
                 savedTokens += aiEstimateTokens(aiTextOf(message.content));
                 continue;
             }
@@ -3777,22 +3783,17 @@ export function createAIPanel(options) {
                 if (!pendingCalls.has(message.toolCallId)) continue;
                 pendingCalls.delete(message.toolCallId);
                 let toolContent = message.content || '';
-                // 过时的大工具结果 stub 化：几轮之前的 read_file / web_fetch / 搜索 /
-                // 命令输出大概率已过时（文件已改、状态已变），全量躺着只烧上下文。
-                // 替换为带字数与重取提示的占位（模型需要时会重新读取/执行）。
-                if (i < recentStart && toolContent.length > 4096 &&
+                // 过时的大工具结果修剪（参数对齐 dsh tool-result-pruner 默认值：阈值
+                // 8192 字符、保留头 4096 + 尾 1024，中间打标记——头部上下文重要，
+                // 命令/搜索的结论常在尾部，read_file 的结构信息在头部）。
+                if (slim && i < recentStart && toolContent.length > 8192 &&
                     (message.name === 'read_file' || message.name === 'web_fetch' ||
                         message.name === 'run_command' || message.name === 'background_command' ||
                         message.name === 'search_text')) {
                     const before = toolContent.length;
-                    if (message.name === 'read_file' || message.name === 'web_fetch') {
-                        toolContent = '[内容已省略：此条 ' + message.name + ' 结果共 ' + toolContent.length +
-                            ' 字符，读取于较早轮次、大概率已过时。如需当前内容请重新读取。]';
-                    } else {
-                        // 命令 / 搜索输出尾部常是结论（测试结果、命中列表），保留尾部 300 字
-                        toolContent = '[输出已省略：原 ' + toolContent.length + ' 字符，仅保留尾部 ——\n…' +
-                            toolContent.slice(-300) + ']';
-                    }
+                    toolContent = toolContent.slice(0, 4096) +
+                        '\n\n[... 中间内容已修剪：原文 ' + before + ' 字符，读取于较早轮次、大概率已过时，如需请重新读取 ...]\n\n' +
+                        toolContent.slice(-1024);
                     savedTokens += aiEstimateTokens('x'.repeat(Math.max(0, before - toolContent.length)));
                 }
                 messages.push({
@@ -3816,7 +3817,7 @@ export function createAIPanel(options) {
                 item.images = message.images.filter((image) => image && image.data)
                     .map((image) => ({mime: image.mime, data: image.data}));
             }
-            if (message.role === 'assistant' && message.reasoning && i >= recentStart) {
+            if (message.role === 'assistant' && message.reasoning && (!slim || i >= recentStart)) {
                 // 历史 reasoning 只保留最近 2 轮：思考只服务于当轮行动，旧轮的思考
                 // 重发动辄数千 token 且零价值（文件/状态早变了）
                 item.thinking = message.reasoning;

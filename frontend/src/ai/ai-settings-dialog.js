@@ -244,6 +244,7 @@ export function createAISettingsDialog(ctx) {
         if (opt.showThinking) opt.showThinking.checked = settings.aiShowThinking !== false;
         if (opt.showUsage) opt.showUsage.checked = settings.aiShowUsage === true;
         if (opt.turnMetaAll) opt.turnMetaAll.checked = settings.aiShowEveryTurnMeta === true;
+        if (opt.contextSlim) opt.contextSlim.checked = settings.aiContextSlim !== false;
         if (opt.assistantCard) opt.assistantCard.checked = settings.aiAssistantCard === true;
         if (opt.inlineWidgets) opt.inlineWidgets.checked = settings.aiInlineWidgets !== false;
         if (opt.autoTitle) opt.autoTitle.checked = getConfig().autoTitle !== false;
@@ -524,6 +525,12 @@ export function createAISettingsDialog(ctx) {
             saveSettings();
             applyPanelSettings();
             if (isOpen() && currentSession()) renderMessages(true);
+        });
+        if (opt.contextSlim) opt.contextSlim.addEventListener('change', () => {
+            settings.aiContextSlim = !!opt.contextSlim.checked;
+            saveSettings();
+            // 瘦身只影响下次组装请求；立即刷新统计让用户看到开关效果
+            updateContextCount();
         });
         if (opt.assistantCard) opt.assistantCard.addEventListener('change', () => {
             settings.aiAssistantCard = !!opt.assistantCard.checked;
