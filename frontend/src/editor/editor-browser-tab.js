@@ -5,6 +5,14 @@
 // deps 经 Object.create 委托继承 editor-groups 的 getter 集。
 import {iconSvg} from '../core/icons.js';
 
+// 纯函数：两个矩形是否真正相交。pad 用来忽略「边缘刚好相切」的 1px 误差，
+// 避免菜单贴着网页区域右边界就被判成遮挡。放在模块顶层供单测直接导入。
+export function browserRectsOverlap(a, b, pad = 2) {
+    if (!a || !b) return false;
+    return a.left < b.right - pad && a.right > b.left + pad &&
+        a.top < b.bottom - pad && a.bottom > b.top + pad;
+}
+
 export function createEditorBrowserTab(deps) {
 
 // ---- 浏览器使用标签页：内容区内嵌 WebView2（browser-use） ----
@@ -230,10 +238,16 @@ function createBrowserView(doc) {
     syncBrowserTab(doc);
 }
 
+// 网页区域的 CSS 像素矩形（浮层相交判定用）与设备像素矩形（后端 SetBounds 用）
+function browserSurfaceCssRect(doc) {
+    if (!doc.browserEl || doc.browserEl.isConnected === false) return null;
+    const rect = browserRectOf(doc.browserEl);
+    return rect && rect.width > 0 && rect.height > 0 ? rect : null;
+}
+
 function browserSurfaceRect(doc) {
-    if (!doc.browserEl || !doc.browserEl.isConnected) return null;
-    const rect = doc.browserEl.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0) return null;
+    const rect = browserSurfaceCssRect(doc);
+    if (!rect) return null;
     const dpr = window.devicePixelRatio || 1;
     return {
         x: Math.round(rect.left * dpr),
@@ -243,24 +257,153 @@ function browserSurfaceRect(doc) {
     };
 }
 
-// WebView2 是原生窗口，永远盖在主 WebView 之上：对话框/菜单/面板等浮层打开时必须隐藏它
+// WebView2 是独立 HWND，永远盖在主 WebView 之上。旧逻辑只要页面里「有」浮层就隐藏
+// 整个控件——哪怕菜单在右侧 AI 面板里、完全没压住网页，用户也会看到整页变空白
+// （2026-11-15 反馈）。现在只对**实际与网页区域相交**的浮层隐藏控件；相交时把
+// 最近一帧网页截图铺在区域上，内容看上去是「定格」而不是消失。
+// 全屏遮罩 / 覆盖整窗的面板也在这里，它们的矩形天然与网页区域相交。
 const BROWSER_POPUP_SELECTORS = [
-    '.dialog:not(.hidden)',
+    '#dialog-mask:not(.hidden)',
     '.ai-model-editor-mask:not(.hidden)',
+    '#palette-mask:not(.hidden)',
+    '#quick-switch-mask:not(.hidden)',
+    '.gs-mask:not(.hidden)', // gs/jp/diff/js 四个遮罩共享此类
+    '#ai-panel.ai-fullscreen:not(.hidden)',
+    '.img-lightbox:not(.hidden)',
+    '.dialog:not(.hidden)',
     '.ctx-menu:not(.hidden)',
     '#menubar .menu.open',
-    '#palette-mask:not(.hidden)',
-    '#ai-panel.ai-fullscreen:not(.hidden)',
+    // 下拉面板是 absolute、从菜单条往下展开的，父级 .menu 的矩形盖不住它，
+    // 必须单独按面板矩形判定（2026-11-15 全量排查）
+    '#menubar .menu > .dropdown:not(.hidden)',
+    '.tb-pop:not(.hidden)',
+    '.msg-center-pop',
+    '.set-select-pop.open',
+    '.ai-popover:not(.hidden)',
+    '.ai-usage-pop',
+    '.ai-turn-usage',
+    '.ai-model-picker', // 关闭态是 inline visibility:hidden，browserRectOf 会滤掉
+    '.ai-model-list-pop',
+    '.ai-dialog.ai-dialog-top:not(.hidden)', // 从设置窗打开记忆/技能管理：fixed 挂 body
+    '.enc-popover:not(.hidden)', // 状态栏编码/视图浮层：fixed
 ];
 
-function browserVisibleFor(doc) {
-    if (doc !== deps.file) return false;
-    for (const sel of BROWSER_POPUP_SELECTORS) {
-        if (document.querySelector(sel)) return false;
+// 取可见元素的矩形；display:none（getClientRects 为空）、visibility:hidden
+// （如 ai-model-picker 关闭态：留在 DOM 里但不可命中）与零尺寸元素一律忽略
+function browserRectOf(el) {
+    if (!el || el.isConnected === false) return null;
+    if (typeof el.getClientRects === 'function' && !el.getClientRects().length) return null;
+    if (typeof el.getBoundingClientRect !== 'function') return null;
+    const vis = el.style && el.style.visibility;
+    if (vis === 'hidden' || vis === 'collapse') return null;
+    if (typeof window !== 'undefined' && typeof window.getComputedStyle === 'function') {
+        try {
+            const css = window.getComputedStyle(el);
+            if (css && (css.visibility === 'hidden' || css.visibility === 'collapse')) return null;
+        } catch { /* 测试桩可能不支持，忽略 */ }
     }
-    const mask = document.getElementById('split-mask');
-    if (mask && mask.style.display === 'block') return false;
-    return true;
+    const rect = el.getBoundingClientRect();
+    return rect && rect.width > 0 && rect.height > 0 ? rect : null;
+}
+
+// 兜底：没列进选择器表的浮层（以后新增的 popover 等）用命中测试抽检 9 个点。
+// 只要网页区域上压着别的元素就认为被遮挡；右下角 toast 不算——它只是短提示，
+// 不该让整页闪一下空白。
+function browserHasUnknownOverlay(doc, surface, dom) {
+    if (!dom || typeof dom.elementsFromPoint !== 'function' || !doc.browserEl) return false;
+    const pad = 8;
+    const w = surface.right - surface.left;
+    const h = surface.bottom - surface.top;
+    if (w < pad * 3 || h < pad * 3) return false;
+    const xs = [surface.left + pad, surface.left + w / 2, surface.right - pad];
+    const ys = [surface.top + pad, surface.top + h / 2, surface.bottom - pad];
+    for (const x of xs) {
+        for (const y of ys) {
+            const stack = dom.elementsFromPoint(x, y);
+            if (!stack || !stack.length) continue;
+            const top = stack[0];
+            if (top === doc.browserEl || (doc.browserEl.contains && doc.browserEl.contains(top))) continue;
+            if (top.contains && top.contains(doc.browserEl)) continue; // 编辑器/body 等祖先
+            if (top.closest && top.closest('#app-toasts')) continue;
+            return true;
+        }
+    }
+    return false;
+}
+
+// dom 参数供单测注入最小 DOM 桩；生产走全局 document
+function browserVisibleFor(doc, surfaceRect, dom) {
+    if (doc !== deps.file || !surfaceRect) return false;
+    const root = dom || (typeof document !== 'undefined' ? document : null);
+    if (!root) return false;
+    const split = root.getElementById && root.getElementById('split-mask');
+    if (split && split.style && split.style.display === 'block') return false;
+    for (const sel of BROWSER_POPUP_SELECTORS) {
+        const nodes = root.querySelectorAll ? root.querySelectorAll(sel) : [];
+        for (const el of nodes) {
+            const rect = browserRectOf(el);
+            if (rect && browserRectsOverlap(rect, surfaceRect)) return false;
+        }
+    }
+    return !browserHasUnknownOverlay(doc, surfaceRect, root);
+}
+
+// ---- 冻结帧：浮层压住网页时保留页面内容 ----
+// 控件可见时用 BrowserSnapshot 轻量抓一帧（Go 侧单次短超时、隐藏态不 Show）；
+// 隐藏时把这一帧铺在 .browser-surface 上，浮层关闭后立刻移除恢复实时渲染。
+const BROWSER_SNAPSHOT_GAP = 2000; // ms，正常浏览时约 2s 刷一帧，不额外打扰宿主线程
+
+function browserSnapshotRefresh(doc, force) {
+    if (!doc.browser || !deps.backend.BrowserSnapshot || !doc.browserApplied || !doc.browserApplied.visible) return Promise.resolve('');
+    if (doc.browserSnapshotPending) return doc.browserSnapshotPending;
+    const now = Date.now();
+    if (!force && doc.browserSnapshotAt && now - doc.browserSnapshotAt < BROWSER_SNAPSHOT_GAP) return Promise.resolve('');
+    doc.browserSnapshotAt = now;
+    const url = doc.browserUrl || '';
+    const pending = deps.backend.BrowserSnapshot(doc.id).then((b64) => {
+        if (!b64) return '';
+        doc.browserSnapshot = {url, src: 'data:image/png;base64,' + b64};
+        // 抓帧期间浮层才打开：补上定格图，别让用户一直对着空白（地址变了就用不上）
+        if (doc.browserApplied && !doc.browserApplied.visible &&
+            doc.browserSnapshot.url === (doc.browserUrl || '')) {
+            showBrowserSnapshot(doc, doc.browserSnapshot.src);
+        }
+        return doc.browserSnapshot.src;
+    }).catch(() => '').finally(() => {
+        if (doc.browserSnapshotPending === pending) doc.browserSnapshotPending = null;
+    });
+    doc.browserSnapshotPending = pending;
+    return pending;
+}
+
+function showBrowserSnapshot(doc, src) {
+    const surface = doc.browserEl;
+    if (!surface || !src) return;
+    let img = doc.browserSnapshotEl;
+    if (!img || img.isConnected === false) {
+        img = document.createElement('img');
+        img.className = 'browser-freeze';
+        img.alt = '';
+        img.style.position = 'absolute';
+        img.style.left = '0';
+        img.style.top = '0';
+        img.style.width = '100%';
+        img.style.height = '100%';
+        img.style.objectFit = 'fill';
+        img.style.pointerEvents = 'none';
+        img.style.userSelect = 'none';
+        surface.appendChild(img);
+        doc.browserSnapshotEl = img;
+    }
+    if (img.src !== src) img.src = src;
+}
+
+function clearBrowserSnapshot(doc) {
+    const img = doc.browserSnapshotEl;
+    if (!img) return;
+    if (typeof img.remove === 'function') img.remove();
+    else if (img.parentNode && img.parentNode.removeChild) img.parentNode.removeChild(img);
+    doc.browserSnapshotEl = null;
 }
 
 let browserSyncPending = false;
@@ -272,13 +415,17 @@ function syncBrowserTab(doc) {
         browserSyncPending = false;
         if (!deps.docs.includes(doc) || !doc.browserEl) return;
         const rect = browserSurfaceRect(doc);
-        const visible = !!rect && browserVisibleFor(doc);
+        const cssRect = browserSurfaceCssRect(doc);
+        const visible = !!rect && browserVisibleFor(doc, cssRect);
         const last = doc.browserApplied;
         // 轮询同步会反复进来：状态没变就别再跨进程调后端
         if (!visible) {
             if (last && !last.visible) return;
             const hidden = {visible: false};
             doc.browserApplied = hidden;
+            const shot = doc.browserSnapshot;
+            // 只展示与当前地址一致的帧，避免导航后露出上一页的内容
+            if (shot && shot.url === (doc.browserUrl || '')) showBrowserSnapshot(doc, shot.src);
             deps.backend.BrowserSetVisible(doc.id, false).catch(() => {
                 // 后端失败也照样记成「已隐藏」的话就再无重试路径（原生窗口会一直压在
                 // 弹层/菜单上面）。撤回状态，下一轮 250ms 轮询重试。
@@ -291,11 +438,18 @@ function syncBrowserTab(doc) {
             // 抢占子窗口 z 顶盖住内嵌控件（用户看是黑屏，点一下才恢复）——
             // z 序幂等自检很便宜（Go 侧一次 GetWindow 扫描，已在顶则零副作用）。
             if (deps.backend.BrowserEnsureZ) deps.backend.BrowserEnsureZ(doc.id).catch(() => {});
+            // 地址变了且已加载完立刻重抓；否则按节流周期刷新，保证浮层打开时有可用的定格帧
+            browserSnapshotRefresh(doc, !!doc.browserSnapshot && !doc.loading &&
+                doc.browserSnapshot.url !== (doc.browserUrl || ''));
             return;
         }
         const applied = {visible: true, x: rect.x, y: rect.y, w: rect.w, h: rect.h};
         doc.browserApplied = applied;
-        deps.backend.BrowserSetBounds(doc.id, rect.x, rect.y, rect.w, rect.h).catch(() => {
+        deps.backend.BrowserSetBounds(doc.id, rect.x, rect.y, rect.w, rect.h).then(() => {
+            if (!deps.docs.includes(doc)) return;
+            clearBrowserSnapshot(doc);      // 原生控件已 Show，撤掉定格帧
+            browserSnapshotRefresh(doc, false); // 为下一次浮层备好新帧
+        }).catch(() => {
             // 首次 Show/SetBounds 失败（宿主忙、看门狗超时）时若仍记成已应用，
             // 后面轮询全部走「状态没变」分支 → 原生控件永远不显示，只能靠点一下
             // 触发新矩形才恢复。撤回状态让轮询自愈。

@@ -1201,6 +1201,10 @@ const mockBackend = {
         window.__mockShotUrl = tab ? tab.url : id;
         return 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
     },
+    async BrowserSnapshot(id) {
+        // 前端定格帧：dev 桩没有原生 WebView2，给一张 1×1 占位图以便走通显隐链路
+        return 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+    },
     async BrowserSetBounds(id, x, y, w, h) {
         if (!window.__mockBrowserBounds) window.__mockBrowserBounds = new Map();
         window.__mockBrowserBounds.set(id, {x, y, w, h});

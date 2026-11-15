@@ -36,6 +36,7 @@ func (a *App) BrowserSetBounds(id string, x int, y int, w int, h int) error {
 
 func (a *App) BrowserSetVisible(id string, visible bool) error    { return browserUnsupported() }
 func (a *App) BrowserCaptureScreenshot(id string) (string, error) { return "", browserUnsupported() }
+func (a *App) BrowserSnapshot(id string) (string, error)          { return "", browserUnsupported() }
 
 func browserUnsupported() error {
 	return fmt.Errorf("当前平台不支持内嵌浏览器")

@@ -688,6 +688,30 @@ func (a *App) BrowserCaptureScreenshot(id string) (string, error) {
 	return result, taskErr
 }
 
+// browserSnapshotTimeout 定格帧抓图的硬上限：浮层打开时必须尽快隐藏原生控件，
+// 这里只允许一次 CapturePreview、最多等 300ms，绝不把宿主线程拖进 30s 超时。
+const browserSnapshotTimeout = 300 * time.Millisecond
+
+// BrowserSnapshot 抓当前可见网页的一帧（PNG base64），供浮层遮挡时的定格占位图使用。
+// 与 BrowserCaptureScreenshot（AI 的 browser_screenshot 工具）的区别：
+//   - 只在控件可见时抓；隐藏态直接返回空串，不临时 Show（否则原生控件会在弹层上闪一下）；
+//   - 单次尝试、短超时、不等帧、不重试，失败或空白帧一律返回空串（前端沿用上一张或留白）。
+func (a *App) BrowserSnapshot(id string) (string, error) {
+	var result string
+	jobErr := browserHostRun(func() {
+		inst := browserGet(id)
+		if inst == nil || inst.webview == nil || !inst.visible {
+			return
+		}
+		shot, err := wvCaptureScreenshot(inst.webview, browserSnapshotTimeout)
+		if err != nil || browserCaptureLooksBlank(shot) {
+			return
+		}
+		result = shot
+	})
+	return result, jobErr
+}
+
 func (a *App) BrowserSetBounds(id string, x int, y int, w int, h int) error {
 	var taskErr error
 	jobErr := browserHostRun(func() {
