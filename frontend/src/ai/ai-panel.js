@@ -10142,10 +10142,14 @@ export function createAIPanel(options) {
             stopSubAgentsOf(session.id);
             clearQueueForSession(session.id);
             logActivity('ai.session', session.id, {op: 'delete', title: session.title || ''}, {actor: 'user', source: 'user'});
-            if (!sessions.length) sessions.push(createSessionData());
-            const next = sessions[Math.max(0, Math.min(sessions.length - 1, 0))];
-            config.activeSessionId = sessions.some((s) => s.id === config.activeSessionId) ? config.activeSessionId : next.id;
-            if (!sessions.some((s) => s.id === config.activeSessionId)) config.activeSessionId = next.id;
+            // 删除的是当前会话：跳到**新建的空白会话**——此前 fallback 到 sessions[0]
+            // （数组头 = 最旧的会话，列表里看着像「跳到了最后一个对话」）；删对话的意图
+            // 通常是「从这里开新的」。删别的会话时当前选中不变。
+            if (!sessions.some((s) => s.id === config.activeSessionId)) {
+                const fresh = createSessionData();
+                sessions.push(fresh);
+                config.activeSessionId = fresh.id;
+            }
             if (sessionUseDisk()) {
                 sessionStore.removeSession(session.id).catch(notifySessionStoreError);
             }
