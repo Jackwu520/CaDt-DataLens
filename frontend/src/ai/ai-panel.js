@@ -2084,6 +2084,11 @@ export function createAIPanel(options) {
         currentSession,
         persistSessions,
         flash,
+        // 创建对话框用居中弹窗（openAIDialog 三件套；函数声明提升，此处引用安全）
+        openDialog: openAIDialog,
+        closeDialog: closeAIDialog,
+        dialogNode,
+        dialogButton,
     });
     remindersMod.mount();
     // reminder_* 工具改完清单后同步徽标与弹层（非当前会话时跳过，切回时由 switchSession 刷新）
@@ -2146,6 +2151,11 @@ export function createAIPanel(options) {
         },
         getChip: () => el.chipTimers,
         flash,
+        // 创建对话框用居中弹窗（openAIDialog 三件套；函数声明提升，此处引用安全）
+        openDialog: openAIDialog,
+        closeDialog: closeAIDialog,
+        dialogNode,
+        dialogButton,
         // 弹层复用 chips-pop 机制（kind=timers），内容经 renderChipsPopExtra 钩子由本域提供
         togglePop: (chip) => toggleChipsPop('timers', chip),
         onTimersChanged: () => {

@@ -26,6 +26,7 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 - 修复 **最大化状态下首次打开浏览器标签黑屏几秒**：WebView2 控件创建（`Embed`）到前端首次 `SetBounds` 之间，控件以库默认矩形裸露——页面其实已在加载（状态栏有 URL）但内容区全黑，等布局事件才恢复。现在**创建即隐藏**，前端第一次 `BrowserSetBounds` 自带 Show（w/h>0 → Resize+Show），控件直接以正确矩形出现；黑屏窗口变成标签页背景色的一瞬。
 - 修复 **编辑器里弹出原生白色迷你菜单**：WebView2/Edge 内核对可编辑区域自带的「文本选中迷你菜单」（`Select All / Paste / Find …` 白色横条，选中/点击文本时触发）——浏览器 UI 层的东西，不受应用主题控制、也绕过 JS 的 contextmenu 接管。现在通过 `go-webview2` 的 `AdditionalBrowserArguments` COM/环境双通道注入 `--disable-features=msWebOOUI,msPdfOOUI,…`，全应用所有 WebView2（含内嵌浏览器标签）一并生效。
   - **依赖补丁**：此前用 `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` 环境变量的做法**无效**——go-webview2 会在 `init()` 与每次创建环境时把它置空。为此在仓库内放了一份上游 v1.0.22 并加 `replace`，只新增 `webviewloader/app_browser_args.go` + 三处调用点开出注入点（约 2.2 MB 源码，不进 exe / dist）；**升级 go-webview2 时必须重新套用该补丁**。feature 名改用微软 WebView2Feedback#2140 给出的官方 workaround，同时保留旧名以兼容不同 Edge 版本。
+- 改进 **新建倒计时 / 正计时 / 任务提醒从面板小浮层改为居中弹窗**（复用 AI 对话框遮罩，Enter 提交 / Esc 关闭一致）：倒计时时长不再手输数字——改为**常用档位直选**（5/10/15/20/30/45 分钟、1 小时）或**自定义到点时刻**（选 HH:MM，已过时刻自动按明天同一时刻算，Go 侧仍按 duration 计时，窗口最小化不漂移）；启动成功提示带上具体到点时刻。输入控件迁移到 form-controls 工厂（表单控件硬规范），AI 面板宽窄形态与浮窗下布局不再受浮层锚点计算影响。
 
 ### MCP 客户端
 

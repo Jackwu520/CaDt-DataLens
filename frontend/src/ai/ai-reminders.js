@@ -3,7 +3,10 @@
 // 不依赖 style.css 新增规则；纯函数（normalizeReminders / remindersForPrompt）可单测。
 // 数据存会话（session.reminders，随 meta.json 持久化），AI 经 reminder_* 工具增删改，
 // 每轮开始由 assembleSystemContext 注入 <task_reminders> 块。
+// 创建对话框用居中弹窗（ctx 注入 openDialog/closeDialog/dialogNode/dialogButton 三件套），
+// 输入控件走 form-controls 工厂（表单控件硬规范：禁新增裸 input）。
 import {aiTextOf, AI_REMINDER_LIMIT, AI_REMINDER_TITLE_MAX, AI_REMINDER_DETAIL_MAX} from './ai-constants.js';
+import {createInput} from '../core/form-controls.js';
 
 // ---------- 纯函数（可单测） ----------
 
@@ -107,11 +110,7 @@ const REMINDER_STYLE = `
 .ai-rem-add-hint { font-size: 10px; opacity: .55; }
 .ai-rem-add-btn { flex: none; }
 .ai-rem-btn.hidden { display: none; }
-.ai-rem-create { position: absolute; z-index: 60; width: 250px; padding: 10px; display: flex; flex-direction: column; gap: 6px; background: var(--panel2); border: 1px solid var(--border, rgba(128,128,128,.4)); border-radius: 9px; box-shadow: 0 8px 24px rgba(0,0,0,.35); }
-.ai-rem-create-title { font-size: 12px; font-weight: 600; }
-.ai-rem-create input { width: 100%; box-sizing: border-box; font-size: 12px; padding: 4px 6px; border-radius: 6px; border: 1px solid var(--border, rgba(128,128,128,.4)); background: var(--input, transparent); color: inherit; }
-.ai-rem-create-err { font-size: 10.5px; color: var(--red, #e5534b); min-height: 13px; }
-.ai-rem-create-foot { display: flex; justify-content: flex-end; gap: 6px; }
+.ai-rem-create-err { font-size: 11px; color: var(--red, #e5534b); min-height: 14px; }
 `;
 
 export function createAIReminders(ctx) {
@@ -124,7 +123,6 @@ export function createAIReminders(ctx) {
     let remBadge = null;
     let remPop = null;
     let mounted = false;
-    let createBox = null; // 「+」菜单弹出的创建小对话框（同时只一个）
 
     function activeList() {
         const session = currentSession();
@@ -212,79 +210,41 @@ export function createAIReminders(ctx) {
     }
 
     function closeCreateDialog() {
-        if (createBox) {
-            createBox.remove();
-            createBox = null;
-        }
+        if (typeof ctx.closeDialog === 'function') ctx.closeDialog();
     }
 
-    // 「+」菜单的手动创建对话框：标题必填 + 简述可选，锚在 composer 上方
+    // 「+」菜单的手动创建对话框（居中弹窗）：标题必填 + 简述可选
     function openCreateDialog() {
         const session = currentSession();
         if (!session) {
             flash('当前没有会话，无法添加任务提醒', true);
             return;
         }
-        closeCreateDialog();
-        const box = document.createElement('div');
-        box.className = 'ai-rem-create';
-        const title = document.createElement('div');
-        title.className = 'ai-rem-create-title';
-        title.textContent = '新建任务提醒';
-        const titleInput = document.createElement('input');
-        titleInput.type = 'text';
-        titleInput.maxLength = AI_REMINDER_TITLE_MAX;
-        titleInput.placeholder = '提醒标题（必填，≤' + AI_REMINDER_TITLE_MAX + ' 字）';
-        const detailInput = document.createElement('input');
-        detailInput.type = 'text';
-        detailInput.maxLength = AI_REMINDER_DETAIL_MAX;
-        detailInput.placeholder = '补充说明（可选，≤' + AI_REMINDER_DETAIL_MAX + ' 字）';
-        const errEl = document.createElement('div');
-        errEl.className = 'ai-rem-create-err';
-        const foot = document.createElement('div');
-        foot.className = 'ai-rem-create-foot';
-        const cancelBtn = document.createElement('button');
-        cancelBtn.type = 'button';
-        cancelBtn.className = 'dlg-btn';
-        cancelBtn.textContent = '取消';
-        const addBtn = document.createElement('button');
-        addBtn.type = 'button';
-        addBtn.className = 'dlg-btn';
-        addBtn.textContent = '添加';
-        foot.append(cancelBtn, addBtn);
-        box.append(title, titleInput, detailInput, foot, errEl);
-        panel.appendChild(box);
-        const composer = panel.querySelector('.ai-composer');
-        const panelRect = panel.getBoundingClientRect();
-        if (composer) {
-            const composerRect = composer.getBoundingClientRect();
-            box.style.bottom = Math.max(8, panelRect.bottom - composerRect.top + 8) + 'px';
-            let left = composerRect.left - panelRect.left;
-            left = Math.max(8, Math.min(left, panel.clientWidth - 258));
-            box.style.left = left + 'px';
-        } else {
-            box.style.bottom = '60px';
-            box.style.left = '12px';
+        if (typeof ctx.openDialog !== 'function') {
+            flash('当前版本不支持创建对话框', true);
+            return;
         }
-        createBox = box;
-        titleInput.focus();
-        const close = () => {
-            closeCreateDialog();
-            document.removeEventListener('mousedown', onOutside, true);
-        };
-        const onOutside = (e) => {
-            if (createBox && !createBox.contains(e.target)) close();
-        };
-        document.addEventListener('mousedown', onOutside, true);
-        cancelBtn.addEventListener('click', close);
+        closeCreateDialog();
+        const errEl = ctx.dialogNode ? ctx.dialogNode('div', 'ai-rem-create-err', '') : document.createElement('div');
+        const titleField = createInput({
+            maxLength: AI_REMINDER_TITLE_MAX,
+            placeholder: '提醒标题（必填，≤' + AI_REMINDER_TITLE_MAX + ' 字）',
+            spellcheck: false,
+        });
+        const detailField = createInput({
+            maxLength: AI_REMINDER_DETAIL_MAX,
+            placeholder: '补充说明（可选，≤' + AI_REMINDER_DETAIL_MAX + ' 字）',
+            spellcheck: false,
+        });
+        const close = () => closeCreateDialog();
         const submit = () => {
-            const value = titleInput.value.trim();
+            const value = titleField.control.value.trim();
             if (!value) {
                 errEl.textContent = '提醒标题不能为空';
-                titleInput.focus();
+                titleField.control.focus();
                 return;
             }
-            const err = addReminder(value, detailInput.value.trim());
+            const err = addReminder(value, detailField.control.value.trim());
             if (err) {
                 errEl.textContent = err;
                 return;
@@ -292,9 +252,14 @@ export function createAIReminders(ctx) {
             close();
             flash('任务提醒已添加（' + openCount() + ' 条未完成）');
         };
-        addBtn.addEventListener('click', submit);
-        for (const input of [titleInput, detailInput]) {
-            input.addEventListener('keydown', (e) => {
+        ctx.openDialog('新建任务提醒',
+            [titleField.element, detailField.element, errEl],
+            [
+                ctx.dialogButton('取消', 'dlg-btn', close),
+                ctx.dialogButton('添加', 'dlg-btn', submit),
+            ]);
+        for (const control of [titleField.control, detailField.control]) {
+            control.addEventListener('keydown', (e) => {
                 if (e.key === 'Enter') {
                     e.preventDefault();
                     submit();
@@ -304,6 +269,7 @@ export function createAIReminders(ctx) {
                 }
             });
         }
+        titleField.control.focus();
     }
 
     function renderPopover() {

@@ -3,7 +3,7 @@
 // 经 ai-panel 的 wakeSessionByTimer 注入系统消息唤醒对应会话（与定时任务同一投递通道）。
 // 头部只挂一枚「计时」胶囊（数量角标 + 最近倒计时剩余走秒），无计时器时隐藏；
 // 点击弹出计时器列表：行点击进入详情（读数/起止时刻/id + 停止按钮），行尾【x】直接停止。
-// 用户也能从消息框「+」→ 计时器手动创建倒计时 / 正计时（openCreateDialog）。
+// 用户也能从消息框「+」→ 计时器手动创建倒计时 / 正计时（openCreateDialog，居中弹窗）。
 // 弹层复用 chips-pop 机制（kind=timers，内容由 renderPop 提供）。
 //
 // deps 由 ai-panel 显式传入（getter 延迟求值）：
@@ -14,7 +14,39 @@
 // - onTimersChanged(): 计时器集合/视图变化通知（弹层开着时由 ai-panel 原位刷新）
 // - flash(msg, isErr): 用户可见提示（创建成功 / 校验失败）
 // - onFire(payload): 到点回调（payload 含 sessionId），由 ai-panel 注入并触发新一轮
+// - openDialog/closeDialog/dialogNode/dialogButton: 居中弹窗三件套（ai-panel openAIDialog）
 import {iconSvg} from '../core/icons.js';
+import {createInput, createSelect} from '../core/form-controls.js';
+
+const AI_TIMER_SESSION_MAX = 5; // 单会话同时运行上限（应用总上限 30 在 Go 侧 aiTimerMaxActive）
+
+// 倒计时的常用时长档位（秒）：select 直选，替代手输数字。
+const AI_TIMER_PRESETS = [
+    {value: 300, label: '5 分钟'},
+    {value: 600, label: '10 分钟'},
+    {value: 900, label: '15 分钟'},
+    {value: 1200, label: '20 分钟'},
+    {value: 1800, label: '30 分钟'},
+    {value: 2700, label: '45 分钟'},
+    {value: 3600, label: '1 小时'},
+];
+
+// secondsUntilClock 把「到点时刻 HH:MM」换算成距现在的秒数（Go 侧按 duration 计时）。
+// 时刻已过按明天同一时刻算（今晚 23 点建一个明早 8 点的到点 ≈ 9 小时）。
+// 返回 0 表示时刻格式非法。
+export function secondsUntilClock(hhmm, nowMs) {
+    const match = /^(\d{1,2}):(\d{2})$/.exec(String(hhmm || '').trim());
+    if (!match) return 0;
+    const hh = Number(match[1]);
+    const mm = Number(match[2]);
+    if (hh > 23 || mm > 59) return 0;
+    const now = Number(nowMs) || Date.now();
+    const target = new Date(now);
+    target.setHours(hh, mm, 0, 0);
+    let delta = target.getTime() - now;
+    if (delta <= 0) delta += 24 * 3600 * 1000;
+    return Math.round(delta / 1000);
+}
 
 // 计时器会话隔离（纯函数，ai-timer.test.mjs 覆盖）。
 // 显示与上限都按会话隔离：胶囊 / 弹层 / 数量角标只算「归属当前会话」的计时器；
@@ -42,15 +74,12 @@ export function countSessionTimers(timers, sessionIdOf, currentSessionId) {
     return n;
 }
 
-const AI_TIMER_SESSION_MAX = 5; // 单会话同时运行上限（应用总上限 30 在 Go 侧 aiTimerMaxActive）
-
 export function createAITimer(ctx) {
     const timers = new Map();   // id → AITimerInfo
     const sessions = new Map(); // id → 启动时的会话 id（Go 侧不感知会话）
     let styleInjected = false;
     let tickTimer = 0;
     let detailId = '';          // 弹层当前展示的详情计时器 id（空 = 列表视图）
-    let createBox = null;       // 「+」菜单弹出的创建小对话框（同时只一个）
 
     // 当前会话可见的计时器（显示隔离的统一口径，见文件头 filterTimersForSession 注释）
     function visibleTimers() {
@@ -78,14 +107,7 @@ export function createAITimer(ctx) {
             '.ai-timer-detail-val { flex: 1; min-width: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }',
             '.ai-timer-detail-time { color: var(--accent); font-weight: 600; }',
             '.ai-timer-stop-btn { margin-top: 6px; align-self: flex-start; }',
-            '.ai-timer-create { position: absolute; z-index: 60; width: 250px; padding: 10px; display: flex; flex-direction: column; gap: 6px; background: var(--panel2); border: 1px solid var(--border); border-radius: 9px; box-shadow: 0 8px 24px rgba(0,0,0,.35); }',
-            '.ai-timer-create-title { font-size: 12px; font-weight: 600; }',
-            '.ai-timer-create input, .ai-timer-create select { width: 100%; box-sizing: border-box; font-size: 12px; padding: 4px 6px; border-radius: 6px; border: 1px solid var(--border); background: var(--input, transparent); color: inherit; }',
-            '.ai-timer-create-row { display: flex; gap: 6px; }',
-            '.ai-timer-create-row input { flex: 1; min-width: 0; }',
-            '.ai-timer-create-row select { flex: none; width: 64px; }',
-            '.ai-timer-create-err { font-size: 10.5px; color: var(--red); min-height: 13px; }',
-            '.ai-timer-create-foot { display: flex; justify-content: flex-end; gap: 6px; }',
+            '.ai-timer-create-err { font-size: 11px; color: var(--red); min-height: 14px; }',
         ].join('\n');
         document.head.appendChild(style);
     }
@@ -327,120 +349,109 @@ export function createAITimer(ctx) {
         host.appendChild(box);
     }
 
-    // 「+」菜单的创建对话框：倒计时填目的 + 时长（分钟/秒），正计时只填目的
+    // 「+」菜单的创建对话框（居中弹窗）：倒计时选常用时长档位或自定义到点时刻，
+    // 正计时只填目的。Go 侧按 duration 计时，到点时刻在此换算成秒。
     function openCreateDialog(mode) {
-        const chip = chipEl();
-        const panel = chip ? chip.closest('#ai-panel') : document.getElementById('ai-panel');
-        if (!panel) {
-            flash('计时器面板不可用', true);
+        if (typeof ctx.openDialog !== 'function') {
+            flash('当前版本不支持创建对话框', true);
             return;
         }
         ensureStyle();
         closeCreateDialog();
         const isCountdown = mode !== 'countup';
-        const box = document.createElement('div');
-        box.className = 'ai-timer-create';
-        const title = document.createElement('div');
-        title.className = 'ai-timer-create-title';
-        title.textContent = isCountdown ? '新建倒计时' : '新建正计时';
-        const labelInput = document.createElement('input');
-        labelInput.type = 'text';
-        labelInput.maxLength = 60;
-        labelInput.placeholder = '计时目的（必填，如「等待构建完成」）';
-        const errEl = document.createElement('div');
-        errEl.className = 'ai-timer-create-err';
-        let secondsRow = null;
+        const errEl = ctx.dialogNode ? ctx.dialogNode('div', 'ai-timer-create-err', '') : document.createElement('div');
+
+        const labelField = createInput({
+            maxLength: 60,
+            placeholder: '计时目的（必填，如「等待构建完成」）',
+            spellcheck: false,
+        });
+
+        let presetSelect = null;
+        let clockField = null;
         if (isCountdown) {
-            secondsRow = document.createElement('div');
-            secondsRow.className = 'ai-timer-create-row';
-            const secondsInput = document.createElement('input');
-            secondsInput.type = 'number';
-            secondsInput.min = '1';
-            secondsInput.placeholder = '时长';
-            const unitSelect = document.createElement('select');
-            const minOpt = document.createElement('option');
-            minOpt.value = '60';
-            minOpt.textContent = '分钟';
-            const secOpt = document.createElement('option');
-            secOpt.value = '1';
-            secOpt.textContent = '秒';
-            unitSelect.append(minOpt, secOpt);
-            unitSelect.value = '60';
-            secondsRow.append(secondsInput, unitSelect);
+            // 到点时刻默认值：现在 + 10 分钟（取整到分钟）
+            const def = new Date(Date.now() + 10 * 60 * 1000);
+            const pad = (n) => String(n).padStart(2, '0');
+            const defClock = pad(def.getHours()) + ':' + pad(def.getMinutes());
+            presetSelect = createSelect({
+                options: AI_TIMER_PRESETS.map((p) => ({value: p.value, label: p.label}))
+                    .concat([{value: 'custom', label: '自定义到点时刻'}]),
+                onChange: () => syncClockVisible(),
+            });
+            clockField = createInput({
+                type: 'time',
+                value: defClock,
+                title: '到点时刻（已过按明天同一时刻算）',
+                onChange: () => {
+                    // 选了时刻但档位还是时长：自动切到自定义档（程序赋值不触发 change，需手动同步可见性）
+                    if (presetSelect.control.value !== 'custom') presetSelect.control.value = 'custom';
+                    syncClockVisible();
+                },
+            });
         }
-        const foot = document.createElement('div');
-        foot.className = 'ai-timer-create-foot';
-        const cancelBtn = document.createElement('button');
-        cancelBtn.type = 'button';
-        cancelBtn.className = 'dlg-btn';
-        cancelBtn.textContent = '取消';
-        const startBtn = document.createElement('button');
-        startBtn.type = 'button';
-        startBtn.className = 'dlg-btn';
-        startBtn.textContent = '启动';
-        foot.append(cancelBtn, startBtn);
-        const headRow = document.createElement('div');
-        headRow.className = 'ai-timer-create-head';
-        headRow.append(title);
-        if (isCountdown) box.append(headRow, labelInput, secondsRow, foot);
-        else box.append(headRow, labelInput, foot);
-        box.appendChild(errEl);
-        panel.appendChild(box);
-        const composer = panel.querySelector('.ai-composer');
-        const panelRect = panel.getBoundingClientRect();
-        if (composer) {
-            const composerRect = composer.getBoundingClientRect();
-            box.style.bottom = Math.max(8, panelRect.bottom - composerRect.top + 8) + 'px';
-            let left = composerRect.left - panelRect.left;
-            left = Math.max(8, Math.min(left, panel.clientWidth - 258));
-            box.style.left = left + 'px';
-        } else {
-            box.style.bottom = '60px';
-            box.style.left = '12px';
+
+        const body = [];
+        body.push(labelField.element);
+        if (isCountdown) {
+            body.push(presetSelect.element);
+            body.push(clockField.element);
         }
-        createBox = box;
-        labelInput.focus();
-        const close = () => {
-            if (createBox) {
-                createBox.remove();
-                createBox = null;
-            }
-            document.removeEventListener('mousedown', onOutside, true);
+        body.push(errEl);
+
+        const close = () => closeCreateDialog();
+        const footerNodes = [
+            ctx.dialogButton('取消', 'dlg-btn', close),
+            ctx.dialogButton(isCountdown ? '启动' : '开始计时', 'dlg-btn', () => {
+                submit().catch(() => {});
+            }),
+        ];
+        ctx.openDialog(isCountdown ? '新建倒计时' : '新建正计时', body, footerNodes);
+
+        const syncClockVisible = () => {
+            if (!clockField) return;
+            clockField.element.classList.toggle('hidden', presetSelect.control.value !== 'custom');
         };
-        const onOutside = (e) => {
-            if (createBox && !createBox.contains(e.target)) close();
-        };
-        document.addEventListener('mousedown', onOutside, true);
-        cancelBtn.addEventListener('click', close);
+        syncClockVisible();
+
         const submit = async () => {
-            const label = labelInput.value.trim();
+            errEl.textContent = '';
+            const label = labelField.control.value.trim();
             if (!label) {
                 errEl.textContent = '计时目的不能为空';
-                labelInput.focus();
+                labelField.control.focus();
                 return;
             }
             let seconds = 0;
-            if (isCountdown && secondsRow) {
-                const secondsInput = secondsRow.querySelector('input');
-                const unitSelect = secondsRow.querySelector('select');
-                const value = Math.round(Number(secondsInput.value) || 0);
-                seconds = value * (Number(unitSelect.value) || 1);
-                if (value < 1 || seconds < 1 || seconds > 86400) {
-                    errEl.textContent = '时长须在 1 秒 – 24 小时之间';
+            if (isCountdown && presetSelect) {
+                if (presetSelect.control.value === 'custom') {
+                    const hhmm = clockField.control.value;
+                    seconds = secondsUntilClock(hhmm, Date.now());
+                    if (!seconds) {
+                        errEl.textContent = '请选择有效的到点时刻';
+                        clockField.control.focus();
+                        return;
+                    }
+                } else {
+                    seconds = Number(presetSelect.control.value) || 0;
+                }
+                if (seconds < 1 || seconds > 86400) {
+                    errEl.textContent = '到点时间须在 1 秒 – 24 小时内';
                     return;
                 }
             }
             try {
                 const created = await start(isCountdown ? 'countdown' : 'countup', seconds, label);
                 close();
-                flash((isCountdown ? '倒计时「' : '正计时「') + created.label + '」已启动');
+                flash((isCountdown ? '倒计时「' : '正计时「') + created.label + '」已启动' +
+                    (isCountdown ? '，' + fmtClock(created.endMs) + ' 到点' : ''));
             } catch (e) {
                 errEl.textContent = (e && e.message) || String(e);
             }
         };
-        startBtn.addEventListener('click', () => { submit().catch(() => {}); });
-        for (const input of [labelInput, isCountdown && secondsRow ? secondsRow.querySelector('input') : null].filter(Boolean)) {
-            input.addEventListener('keydown', (e) => {
+        // Enter 提交 / Esc 关闭（绑在弹窗输入控件上，冒泡统一处理）
+        for (const control of [labelField.control, presetSelect ? presetSelect.control : null, clockField ? clockField.control : null].filter(Boolean)) {
+            control.addEventListener('keydown', (e) => {
                 if (e.key === 'Enter') {
                     e.preventDefault();
                     submit().catch(() => {});
@@ -450,13 +461,11 @@ export function createAITimer(ctx) {
                 }
             });
         }
+        labelField.control.focus();
     }
 
     function closeCreateDialog() {
-        if (createBox) {
-            createBox.remove();
-            createBox = null;
-        }
+        if (typeof ctx.closeDialog === 'function') ctx.closeDialog();
     }
 
     function sync(list) {

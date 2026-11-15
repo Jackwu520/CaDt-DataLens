@@ -1,7 +1,7 @@
 // ai-timer 纯函数测试：计时器的会话隔离（显示过滤 + 会话内上限计数）。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {filterTimersForSession, countSessionTimers, createAITimer} from './ai-timer.js';
+import {filterTimersForSession, countSessionTimers, secondsUntilClock, createAITimer} from './ai-timer.js';
 
 function makeTimers(entries) {
     const timers = new Map();
@@ -63,4 +63,23 @@ test('createAITimer：导出 ai-panel 依赖的全部 API', () => {
     for (const name of required) {
         assert.equal(typeof api[name], 'function', '缺少导出：' + name);
     }
+});
+
+// secondsUntilClock：到点时刻 → 距现在的秒数（创建对话框选时刻替代手输秒）。
+test('secondsUntilClock：当天未到 / 已过按明天 / 非法格式', () => {
+    // 固定 now：2026-11-15 10:00:00 本地时间
+    const now = new Date(2026, 10, 15, 10, 0, 0, 0).getTime();
+    // 当天未到：14:30 → 4.5 小时
+    assert.equal(secondsUntilClock('14:30', now), 4.5 * 3600);
+    // 已过（今早 8 点）→ 明天 8 点：22 小时
+    assert.equal(secondsUntilClock('08:00', now), 22 * 3600);
+    // 等于现在 → 视为已过，按明天算（24h）
+    assert.equal(secondsUntilClock('10:00', now), 24 * 3600);
+    // 单位数时刻容错
+    assert.equal(secondsUntilClock('8:05', now), 22 * 3600 + 5 * 60);
+    // 非法：格式错 / 越界
+    assert.equal(secondsUntilClock('not-a-time', now), 0);
+    assert.equal(secondsUntilClock('25:00', now), 0);
+    assert.equal(secondsUntilClock('12:60', now), 0);
+    assert.equal(secondsUntilClock('', now), 0);
 });
