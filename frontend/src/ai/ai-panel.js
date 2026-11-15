@@ -11636,7 +11636,7 @@ export function createAIPanel(options) {
     // session_list / session_send）：执行体按阶段落在 ai-subagents.js 与 ai-agent-notices.js，
     // panel 只保留这一个薄分发。各工具在自己阶段才进 AI_TOOL_DEFS，未启用阶段模型调不到。
     function agentToolHandler(name, input, ctx) {
-        throw new Error('工具「' + name + '」尚未启用（当前版本不支持）');
+        return subagentsMod.handleAgentTool(name, input, ctx);
     }
 
     // 子代理域（阶段 3 拆出：ai-subagents.js；hudReady/chipsPopKind 经访问器，注册表经 ctx 注入）

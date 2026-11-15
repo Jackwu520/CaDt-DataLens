@@ -8,6 +8,28 @@ import {AI_TOOL_DEFS} from './ai-tool-defs.js';
 import {inspectToolArguments} from './ai-tool-args.js';
 import {buildSettlementNotice} from './ai-agent-notices.js';
 
+// 收件箱双队列的纯函数部分（导出供单测：消费顺序与来源前缀是「插队优先、主/用户可辨」的
+// 唯一依据，闭包里改动不易测，这里单独留出来）。
+// 消费顺序：step（插队）在前、turn（排队）在后——两者各自保持入队顺序。
+export function takeInboxBatch(inbox) {
+    if (!inbox) return [];
+    return [...(inbox.step || []).splice(0), ...(inbox.turn || []).splice(0)];
+}
+
+// 来源前缀：主代理消息与用户插话在子代理上下文里必须能区分（agentView 输入行）。
+export function inboxMessageText(item) {
+    const prefix = item && item.from === 'user' ? '［用户插话］' : '［主代理消息］';
+    return prefix + ' ' + String((item && item.text) || '');
+}
+
+// 冷唤醒准入：终态记录的可用性判断（失败 / 停止 / 上下文已回收都拒绝，附原因）。
+export function canReviveRecord(record) {
+    if (!record) return {ok: false, reason: 'missing'};
+    if (record.state === 'error' || record.state === 'stopped') return {ok: false, reason: 'terminated'};
+    if (record.continuable === false || !record.session) return {ok: false, reason: 'recycled'};
+    return {ok: true, reason: ''};
+}
+
 export function createAISubagents(ctx) {
     const el = ctx.el;
     const panel = ctx.panel;
@@ -132,7 +154,7 @@ export function createAISubagents(ctx) {
         sub.renderTimer = setTimeout(() => {
             sub.renderTimer = 0;
             const session = sessionById(sub.parentSessionId);
-            if (session) refreshToolWrap(session, sub.parentToolMessage);
+            if (session && sub.parentToolMessage) refreshToolWrap(session, sub.parentToolMessage);
             // 子代理详情视图开着时同步实时刷新（docs/unfinished-plans/ai-head-agents-terminal.md）
             if (agentViewState && agentViewState.subId === sub.id) scheduleAgentViewRender();
         }, 350);
@@ -596,8 +618,25 @@ export function createAISubagents(ctx) {
         if (meta && meta.rounds) bits.push('轮次 ' + meta.rounds);
         if (meta && meta.ms) bits.push(Math.max(1, Math.round(meta.ms / 1000)) + 's');
         if (meta && meta.tokens) bits.push((meta.tokens / 1000).toFixed(1) + 'k tok');
+        if (meta && meta.mode === 'background') bits.push('后台');
+        if (meta && meta.continuable === false) bits.push('上下文已回收');
         metaLine.textContent = bits.join(' · ');
         head.appendChild(metaLine);
+        // 后台子代理的结束时机独立于主回合：详情视图必须有手动停止入口（§4.6）
+        const liveSub = view.subId ? subAgents.get(view.subId) : null;
+        if (liveSub && liveSub.state === 'running') {
+            const stopBtn = document.createElement('button');
+            stopBtn.type = 'button';
+            stopBtn.className = 'ai-icon-btn ai-agv-stop';
+            stopBtn.title = '停止这个子代理（保留它的过程记录）';
+            stopBtn.setAttribute('aria-label', '停止子代理');
+            stopBtn.innerHTML = iconSvg('pause', 13);
+            stopBtn.addEventListener('click', () => {
+                stopSubAgent(liveSub, '用户在详情视图停止');
+                renderAgentView();
+            });
+            head.appendChild(stopBtn);
+        }
         el.agentView.appendChild(head);
 
         const body = document.createElement('div');
@@ -605,8 +644,36 @@ export function createAISubagents(ctx) {
         const sub = view.subId ? subAgents.get(view.subId) : null;
         if (sub) renderAgentLiveMessages(sub, body);
         else renderAgentFinished(view.toolCallId, meta, body);
+        if (sub) appendInboxPreview(sub, body);
         el.agentView.appendChild(body);
         body.scrollTop = body.scrollHeight;
+    }
+
+    // 收件箱预览：让用户看见「已投递但还没被消费」的消息，而不是只有主代理自己知道。
+    function appendInboxPreview(sub, body) {
+        const inbox = sub.inbox || {step: [], turn: [], ask: null};
+        const stepN = (inbox.step || []).length;
+        const turnN = (inbox.turn || []).length;
+        if (!stepN && !turnN && !inbox.ask) return;
+        const box = document.createElement('div');
+        box.className = 'ai-agv-inbox';
+        const title = document.createElement('div');
+        title.className = 'ai-agv-inbox-title';
+        title.textContent = '收件箱 · 排队 ' + turnN + ' 条 · 插队 ' + stepN + ' 条';
+        box.appendChild(title);
+        for (const item of [...(inbox.step || []), ...(inbox.turn || [])].slice(0, 3)) {
+            const line = document.createElement('div');
+            line.className = 'ai-agv-inbox-line';
+            line.textContent = (item.from === 'user' ? '用户：' : '主代理：') + String(item.text || '').slice(0, 90);
+            box.appendChild(line);
+        }
+        if (inbox.ask) {
+            const wait = document.createElement('div');
+            wait.className = 'ai-agv-inbox-ask';
+            wait.textContent = '等待主代理回答提问（askId=' + (inbox.ask.askId || '') + '）';
+            box.appendChild(wait);
+        }
+        body.appendChild(box);
     }
 
     function scheduleAgentViewRender() {
@@ -854,6 +921,9 @@ export function createAISubagents(ctx) {
             finalizeSubAgent(sub, s.stopped ? 'stopped' : sub.state);
             return;
         }
+        // 收件箱消费（唯一消费点，§4.3）：先消费再判定预算 / 压缩，避免刚到的指令被
+        // 压进摘要；wrapUp 收尾轮不消费（残余随终态进 records，结算文案会标注）。
+        if (!s.wrapUp) consumeSubInbox(sub);
         if (!s.wrapUp && (s.roundNo >= sub.maxRounds || sub.session.messages.length > AI_SUB_MESSAGES_MAX)) {
             // 预算用尽不再直接收尾：先跑一轮「无工具强制总结」——探索成果不能扔，
             // 占位符只会让主代理拿不到任何可用结论（2026-11-14 实测）。
@@ -993,6 +1063,24 @@ export function createAISubagents(ctx) {
                     last.text = String(s.assistant.content || '').slice(0, 2000);
                     last.live = false;
                 }
+                // 插队打断（原语 4）：主动停止当前在飞调用只是为了把新消息提到下一步边界，
+                // **不是终止**——丢弃本轮半截工具调用、清停止标记，直接续轮；收件箱在
+                // runSubRound 开头被消费。s.steerKick 只由 steerSubAgent 置位，
+                // 用户停止走 stopSubAgent（它先清标记，所以不会被误判成续轮）。
+                if (sub.steerKick) {
+                    sub.steerKick = false;
+                    s.toolCalls.clear();
+                    s.stopped = false;
+                    if (s.assistant && s.assistant.status === 'streaming') s.assistant.status = 'done';
+                    const nextAssistant = newAssistantMessage(
+                        sub.profile || profileOf(parentSessionOfSub(sub)),
+                        sub.entry || entryOf(parentSessionOfSub(sub)));
+                    sub.session.messages.push(nextAssistant);
+                    s.assistant = nextAssistant;
+                    s.thinkStartedAt = 0;
+                    runSubRound(sub);
+                    return;
+                }
                 const argErrors = new Map();
                 const calls = [...s.toolCalls.values()]
                     .filter((call) => call.name)
@@ -1053,6 +1141,7 @@ export function createAISubagents(ctx) {
             toolCallId: sub.toolCallId,
             name: sub.name,
             task: sub.task,
+            maxRounds: sub.maxRounds,
             depth: sub.depth,
             mode: sub.mode || 'blocking',
             parentSessionId: sub.parentSessionId,
@@ -1122,7 +1211,7 @@ export function createAISubagents(ctx) {
         // 调研/扫描类子代理的长报告拦腰砍断且无路可取回，等于白跑。长度控制全部前移：
         // 投递契约（结论自带 path:line 证据）+ 模型单响应上限 + wrapUp 收尾轮。
         summary = summary.trim();
-        const meta = sub.parentToolMessage.agent;
+        const meta = sub.parentToolMessage && sub.parentToolMessage.agent;
         if (meta) {
             meta.state = state;
             meta.rounds = s.roundNo;
@@ -1150,7 +1239,7 @@ export function createAISubagents(ctx) {
         } catch (e) {}
         persistSessions();
         const session = sessionById(sub.parentSessionId);
-        if (session) refreshToolWrap(session, sub.parentToolMessage);
+        if (session && sub.parentToolMessage) refreshToolWrap(session, sub.parentToolMessage);
         // 结算通知（原语 5 / 7）：后台模式专属——阻塞模式的结论已经作为工具结果交给主代理，
         // 再注入一份就是重复上下文。stopped 由发起方（用户 / agent_stop）自己知道，不发通知。
         if (sub.mode === 'background' && (state === 'done' || state === 'error') && session) {
@@ -1187,15 +1276,238 @@ export function createAISubagents(ctx) {
         return n;
     }
 
+    // ---- 子代理收件箱（对齐 dsh 的双队列：step 插队 / turn 排队）----
+
+    // 唯一消费点。step 在前、turn 在后（插队优先），消费后清空。
+    // 每条都落一条 notice user 消息，并同步进转录供详情视图查看。
+    function consumeSubInbox(sub) {
+        const batch = takeInboxBatch(sub.inbox);
+        if (!batch.length) return 0;
+        const ts = Date.now();
+        for (const item of batch) {
+            const content = inboxMessageText(item);
+            sub.session.messages.push({role: 'user', content, ts, turnStartedAt: ts, notice: true});
+            subTranscriptPush(sub, {role: 'user', text: content});
+        }
+        refreshAgentViewIfOpen(sub.key);
+        return batch.length;
+    }
+
+    // 排队：子代理下一轮边界可见（不打断在飞调用）。
+    function queueSubAgentMessage(sub, text, opts) {
+        const item = {text: String(text || ''), from: (opts && opts.from) || 'agent', ts: Date.now()};
+        sub.inbox.turn.push(item);
+        refreshHeadChips();
+        refreshAgentViewIfOpen(sub.key);
+        return item;
+    }
+
+    // 插队：插到队首并打断当前在飞模型调用（对齐主对话「停止当前回复并立即发送」）。
+    // 压缩中降级为排队——压缩流正拿摘要，AIStop 会连摘要一起丢（§4.10.4）。
+    function steerSubAgent(sub, text, opts) {
+        const item = {text: String(text || ''), from: (opts && opts.from) || 'agent', ts: Date.now()};
+        sub.inbox.step.unshift(item);
+        refreshHeadChips();
+        refreshAgentViewIfOpen(sub.key);
+        if (sub.compacting) return {item, kicked: false, degraded: true};
+        sub.steerKick = true;
+        try {
+            if (backend.AIStop) backend.AIStop(sub.id);
+        } catch (e) {}
+        return {item, kicked: true, degraded: false};
+    }
+
+    // 统一停止：用户停止主回合、主代理 agent_stop、HUD 停止按钮都走这里。
+    // 保留收件箱内容（停止当前轮 ≠ 清空队列），并把未消费条数写进结算文案。
+    function stopSubAgent(sub, reason) {
+        if (!sub || sub.state !== 'running') return false;
+        // 插队标记必须清掉：否则 AIStop 引发的事件会被误判成「插队续轮」
+        sub.steerKick = false;
+        sub.flow.stopped = true;
+        try {
+            if (backend.AIStop) backend.AIStop(sub.id);
+        } catch (e) {}
+        finalizeSubAgent(sub, 'stopped', reason || '');
+        return true;
+    }
+
+    // 过程记录摘要（原语 2「停止并收集记录」）：最后一条输出 + 最近工具调用概览。
+    function subRunDigest(key) {
+        const list = subAgentTranscripts.get(key) || [];
+        const tools = list.filter((entry) => entry.role === 'tool');
+        const lastAssistant = [...list].reverse().find((entry) => entry.role === 'assistant' && !entry.live);
+        const lines = [];
+        if (lastAssistant && String(lastAssistant.text || '').trim()) {
+            lines.push('最后一条输出：', String(lastAssistant.text).trim());
+        }
+        if (tools.length) {
+            lines.push('已执行工具 ' + tools.length + ' 次，最近：');
+            for (const entry of tools.slice(-8)) {
+                lines.push('- ' + (entry.name || 'tool') + '：' + String(entry.text || '').trim().slice(0, 160));
+            }
+        }
+        return lines.join('\n') || '（没有可用的过程记录）';
+    }
+
+    // 冷唤醒：对 done 且记录仍持有活引用的子代理继续派活（baseRound+1，事件路由照旧）。
+    function reviveSubAgent(record, text, opts) {
+        if (!record || record.continuable === false || !record.session || !record.profile) return null;
+        const parent = sessionById(record.parentSessionId);
+        const toolMessage = parent
+            ? parent.messages.find((m) => m.role === 'tool' && m.toolCallId === record.toolCallId) || null
+            : null;
+        const sub = {
+            id: record.id,
+            key: record.key,
+            toolCallId: record.toolCallId,
+            depth: record.depth,
+            mode: record.mode || 'background',
+            parentSessionId: record.parentSessionId,
+            rootSessionId: record.rootSessionId,
+            parentToolMessage: toolMessage,
+            name: record.name,
+            task: record.task,
+            maxRounds: Number(record.maxRounds) || AI_SUB_ROUNDS_DEFAULT,
+            state: 'running',
+            startedAt: Date.now(),
+            renderTimer: 0,
+            heartbeat: 0,
+            resolve: null,
+            settled: null,
+            session: record.session,
+            profile: record.profile,
+            entry: record.entry,
+            inbox: newSubInbox(),
+        };
+        const assistant = newAssistantMessage(record.profile, record.entry);
+        sub.session.messages.push(assistant);
+        sub.flow = {
+            sessionId: sub.id,
+            baseRound: (Number(record.baseRound) || 1) + 1,
+            roundNo: 0,
+            roundId: sub.id + '#' + ((Number(record.baseRound) || 1) + 1) + '-0',
+            assistant,
+            startedAt: Date.now(),
+            thinkStartedAt: 0,
+            roundStartedAt: 0,
+            firstTokenAt: 0,
+            renderTimer: 0,
+            finished: false,
+            stopped: false,
+            wrapUp: false,
+            toolCalls: new Map(),
+            profileCfg: configForProfile(record.profile, record.entry),
+            systemPrompt: subSystemPromptFor(record.depth, record.mode),
+            usage: null,
+        };
+        // 终态记录移出（重新变 live）：事件路由、HUD、LRU 都以 subAgents 为准
+        subAgentRecords.delete(sub.id);
+        subAgents.set(sub.id, sub);
+        if (toolMessage && toolMessage.agent) {
+            toolMessage.agent.state = 'running';
+            toolMessage.agent.note = '';
+        }
+        const reg = agentRegistry.get(sub.key);
+        if (reg) {
+            reg.state = 'running';
+            reg.summary = '';
+            reg.note = '';
+        }
+        notifyBackgroundActivity();
+        persistSessions();
+        if (toolMessage && parent) refreshToolWrap(parent, toolMessage);
+        // 消息入队再起轮：runSubRound 开头统一消费（与运行中排队走同一条路径）
+        queueSubAgentMessage(sub, text, {from: (opts && opts.from) || 'agent'});
+        if (opts && opts.urgent) sub.inbox.step.unshift(sub.inbox.turn.pop());
+        const outcomePromise = new Promise((resolve) => { sub.resolve = resolve; });
+        sub.settled = outcomePromise;
+        runSubRound(sub);
+        return sub;
+    }
+
+    // agent_send 执行体：运行中排队 / 插队，已完成冷唤醒，失败记录拒绝。
+    function sendToSubAgent(input, ctx) {
+        const agentId = aiTextOf(input && input.agentId).trim();
+        const message = aiTextOf(input && input.message).trim();
+        if (!agentId) throw new Error('agentId 不能为空');
+        if (!message) throw new Error('message 不能为空');
+        const urgent = input && input.urgent === true;
+        const askId = aiTextOf(input && input.askId).trim();
+        const live = subAgents.get(agentId);
+        if (live) {
+            // 提问回答（阶段 D）：命中挂起中的 askId 就地落定，不再走队列
+            const answered = answerSubAsk(live, askId, message);
+            if (answered) return answered;
+            if (urgent) {
+                const r = steerSubAgent(live, message, {from: 'agent'});
+                return '已插队投递给子代理「' + live.name + '」：打断了它当前的模型调用，' +
+                    '消息将在下一步最前注入。' + (r.degraded ? '（它正在压缩上下文，本次改为排队，压缩完成后消费）' : '');
+            }
+            queueSubAgentMessage(live, message, {from: 'agent'});
+            return '已排队投递给子代理「' + live.name + '」：它当前轮结束后（下一轮边界）可见。';
+        }
+        const record = subAgentRecords.get(agentId);
+        if (!record) throw new Error('找不到子代理 ' + agentId + '（可能已被清理）：可用 wait_agent 或重新 spawn_agent');
+        const gate = canReviveRecord(record);
+        if (!gate.ok) {
+            if (gate.reason === 'terminated') {
+                throw new Error('子代理「' + record.name + '」已' + (record.state === 'error' ? '失败' : '停止') +
+                    '，不能继续；需要的话重新 spawn_agent 派单');
+            }
+            if (gate.reason === 'recycled') {
+                throw new Error('子代理「' + record.name + '」的上下文已回收（终态记录超出上限），无法继续；请重新派单');
+            }
+            throw new Error('找不到子代理 ' + agentId + '（可能已被清理）');
+        }
+        const revived = reviveSubAgent(record, message, {from: 'agent', urgent});
+        if (!revived) throw new Error('子代理「' + record.name + '」无法唤醒（缺少父会话或模型配置）；请重新派单');
+        return '已唤醒子代理「' + revived.name + '」（id=' + revived.id + '，第 ' + (revived.flow.baseRound) +
+            ' 轮起继续），消息已投递。完成后会照常通知你。';
+    }
+
+    // agent_stop 执行体：停止运行中的子代理并收集过程记录；对终态记录返回历史摘要。
+    function stopSubAgentByInput(input) {
+        const agentId = aiTextOf(input && input.agentId).trim();
+        if (!agentId) throw new Error('agentId 不能为空');
+        const live = subAgents.get(agentId);
+        if (live) {
+            const unconsumed = unseenInboxCount(live);
+            const name = live.name;
+            const key = live.key;
+            stopSubAgent(live, '主代理停止');
+            const record = subAgentRecords.get(agentId);
+            const summary = (record && record.summary) || '';
+            return '已停止子代理「' + name + '」' +
+                (unconsumed ? '（停止时仍有 ' + unconsumed + ' 条未消费消息）' : '') + '。\n' +
+                (summary ? '进度与结论：\n' + summary + '\n' : '') +
+                '过程记录：\n' + subRunDigest(key);
+        }
+        const record = subAgentRecords.get(agentId);
+        if (!record) throw new Error('找不到子代理 ' + agentId + '（可能已被清理）');
+        const stateText = {done: '已完成', error: '已失败', stopped: '已停止'}[record.state] || record.state;
+        return '子代理「' + record.name + '」' + stateText +
+            '（轮次 ' + (record.rounds || 0) + ' · 用时 ' + Math.round((record.ms || 0) / 1000) + 's）。\n' +
+            '结论：\n' + (record.summary || '（无结论）') + '\n' +
+            '过程记录：\n' + subRunDigest(record.key);
+    }
+
+    // 工具分发薄壳（panel 的 agent_tool case 转调；各阶段在此追加）
+    function handleAgentTool(name, input, ctx) {
+        if (name === 'agent_send') return sendToSubAgent(input, ctx);
+        if (name === 'agent_stop') return stopSubAgentByInput(input);
+        throw new Error('工具「' + name + '」尚未启用');
+    }
+
+    // 提问回答占位（阶段 D 实现真正的 sub.inbox.ask 落定）
+    function answerSubAsk() {
+        return '';
+    }
+
     function stopSubAgentsOf(sessionId) {
         for (const sub of [...subAgents.values()]) {
             const owner = sub.rootSessionId || sub.parentSessionId;
             if (owner !== sessionId || sub.state !== 'running') continue;
-            sub.flow.stopped = true;
-            try {
-                if (backend.AIStop) backend.AIStop(sub.id);
-            } catch (e) {}
-            finalizeSubAgent(sub, 'stopped');
+            stopSubAgent(sub, '会话停止');
         }
     }
     return {
@@ -1210,6 +1522,8 @@ export function createAISubagents(ctx) {
         agentBlock, agentToolRow, renderAgentLiveMessages, renderAgentFinished, renderAgentView,
         parentSessionOfSub, runSubAgent, startSubAgent, runSubRound, handleSubEvent, finalizeSubAgent, stopSubAgentsOf, initHud,
         pushSubAgentRecord, unseenInboxCount, dropSubAgentRecordsOf,
+        consumeSubInbox, queueSubAgentMessage, steerSubAgent, stopSubAgent, subRunDigest,
+        reviveSubAgent, sendToSubAgent, stopSubAgentByInput, handleAgentTool, answerSubAsk,
         subAgents, subAgentTranscripts, subAgentRecords,
         bgJobSnapshot, notifyBgListeners, bridgeStopBgJob,
     };

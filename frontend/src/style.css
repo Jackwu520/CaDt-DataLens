@@ -9641,6 +9641,25 @@ html[data-writing="on"][data-writing-paper="dim"] .jsoneditor textarea.jsonedito
 .ai-agv-summary-title { font-size: 10.5px; font-weight: 600; color: var(--green); margin-bottom: 5px; }
 .ai-agv-summary-title + .ai-agv-msg { margin-bottom: 0; }
 .ai-agv-live-tip { color: var(--muted); font-size: 10.5px; text-align: center; padding: 4px 0 2px; }
+/* 详情视图 footer 区：收件箱预览 + 停止/压缩入口（后台子代理的干预面） */
+.ai-agv-inbox {
+    margin-top: 8px;
+    padding: 7px 9px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--panel2);
+}
+.ai-agv-inbox-title { font-size: 10.5px; font-weight: 600; color: var(--muted); margin-bottom: 4px; }
+.ai-agv-inbox-line {
+    font-size: 11px;
+    color: var(--text);
+    opacity: .82;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.ai-agv-inbox-ask { font-size: 11px; color: var(--orange); margin-top: 4px; }
+.ai-agv-stop { margin-left: 2px; }
 /* 后台终端内容区标签页 */
 /* display 必须挂在 .active 上：直接用 .bgterm-pane 设 display 会顶掉
    .jsoneditor-pane { display: none }（同权重、后定义者胜），导致非激活标签页的

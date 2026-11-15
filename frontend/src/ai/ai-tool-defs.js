@@ -448,6 +448,31 @@ export const AI_TOOL_DEFS = {
         description: '列出用户在本应用中配置的环境变量（只返回名称、描述与启用状态；值永远不会提供）。终端与 run_command 已注入这些变量，命令里可直接引用。',
         parameters: {type: 'object', properties: {}},
     },
+    agent_send: {
+        name: 'agent_send',
+        description: '向子代理发消息补充线索或纠正方向。运行中的子代理默认排队（它当前轮结束、下一轮开始时可见）；urgent=true 插队（打断它当前的模型调用，消息在下一步最前注入，它不会因此终止）。对已完成的子代理发消息会唤醒它继续工作（沿用原上下文）。带 askId 时是回答该子代理的提问。',
+        parameters: {
+            type: 'object',
+            properties: {
+                agentId: {type: 'string', description: '子代理 id（spawn_agent / 通知里给出的 sub-xxx）'},
+                message: {type: 'string', description: '要投递的内容：补充线索 / 纠正方向 / 对提问的回答'},
+                urgent: {type: 'boolean', description: 'true = 插队（打断当前生成后立即注入）；默认 false 排队'},
+                askId: {type: 'string', description: '回答子代理提问时填通知里给出的 askId'},
+            },
+            required: ['agentId', 'message'],
+        },
+    },
+    agent_stop: {
+        name: 'agent_stop',
+        description: '停止一个子代理并收集它的过程记录（当前进度、最终输出、最近工具调用）。对已完成 / 已失败的子代理返回历史摘要，不会报错。停止只是终止这一轮，不丢弃它的收件箱内容。',
+        parameters: {
+            type: 'object',
+            properties: {
+                agentId: {type: 'string', description: '子代理 id'},
+            },
+            required: ['agentId'],
+        },
+    },
     web_search: {
         name: 'web_search',
         description: '联网搜索（Bing）：返回标题、URL、摘要与日期。需要最新信息、官方文档或外部事实时先搜索，再用 web_fetch 打开具体结果；引用时附来源 URL。不能访问本机/内网地址。',
@@ -621,6 +646,8 @@ export const AI_TOOL_CATALOG = {
     plan_mode: {group: 'task', blurb: '实现类任务先只读规划，等用户批准再动手'},
     ask_user: {group: 'task', blurb: '必须由用户拍板的关键选择'},
     spawn_agent: {group: 'task', blurb: '并行调查 / 多视角审查（只读子代理，数量与递归层级受设置限制）'},
+    agent_send: {group: 'task', blurb: '给子代理补线索（排队）/ 插队纠正 / 唤醒已完成子代理继续'},
+    agent_stop: {group: 'task', blurb: '停止子代理并收集它的过程记录'},
     schedule_list: {group: 'task', blurb: '定时任务管理'},
     schedule_create: {group: 'task', blurb: '定时任务管理'},
     schedule_delete: {group: 'task', blurb: '定时任务管理'},
@@ -696,8 +723,11 @@ export function createAIToolDefs(ctx) {
         // 补丁：计划模式下只给「预检」形态（dry_run，不落盘、不弹卡），批准计划后再真正出补丁；
         // 写权限档非计划模式保持原行为
         if (AI_WRITE_SCOPES.includes(scope) || planMode) list.push(AI_TOOL_DEFS.propose_patch);
-        // 子代理：写权限档与计划模式可用（子代理只读探索正是计划模式的刚需）
-        if (AI_WRITE_SCOPES.includes(scope) || planMode) list.push(AI_TOOL_DEFS.spawn_agent);
+        // 子代理：写权限档与计划模式可用（子代理只读探索正是计划模式的刚需）。
+        // agent_send / agent_stop 与 spawn_agent 同档：能派就能补线索与收回，否则后台派单无法治理。
+        if (AI_WRITE_SCOPES.includes(scope) || planMode) {
+            list.push(AI_TOOL_DEFS.spawn_agent, AI_TOOL_DEFS.agent_send, AI_TOOL_DEFS.agent_stop);
+        }
         if (scope === 'full' && !planMode) list.push(AI_TOOL_DEFS.browser_evaluate);
         // MCP：写权限档及以上注入（能力未知，只读档不该拿到）；计划模式不注入（外部副作用不可控）。
         // getter 只读缓存整代快照（ai-mcp.js），组装路径上不塞 RPC
