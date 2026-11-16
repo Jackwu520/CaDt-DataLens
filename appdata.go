@@ -3,6 +3,8 @@ package main
 import (
 	"os"
 	"path/filepath"
+
+	"datalens/internal/appdata"
 )
 
 // 应用数据统一存放在 %APPDATA%\CandySweet\CaDt-DataLens 下：
@@ -10,25 +12,12 @@ import (
 //	config.json  后端配置（打开方式、插件目录模式、禁用插件）
 //	WebView2\    WebView2 用户数据，localStorage 里的界面设置保存在这里
 //	plugins\     插件目录（设置里选择“应用数据目录”时）
-const (
-	appDataVendorDir = "CandySweet"
-	appDataAppDir    = "CaDt-DataLens"
-)
+//
+// 路径拼装已下沉 internal/appdata；这里保留 main 包内的旧名供既有调用点使用。
 
-func appDataRootAt(configDir string) string {
-	if configDir == "" {
-		return ""
-	}
-	return filepath.Join(configDir, appDataVendorDir, appDataAppDir)
-}
+func appDataRootAt(configDir string) string { return appdata.RootAt(configDir) }
 
-func appDataRoot() string {
-	dir, err := os.UserConfigDir()
-	if err != nil {
-		return ""
-	}
-	return appDataRootAt(dir)
-}
+func appDataRoot() string { return appdata.Root() }
 
 func configFilePath() string {
 	root := appDataRoot()
