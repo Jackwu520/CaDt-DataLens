@@ -1,6 +1,6 @@
 //go:build windows
 
-package main
+package screenshot
 
 // 应用窗口截图：PrintWindow(PW_RENDERFULLCONTENT) 抓主窗口（含 WebView2 的
 // DirectComposition 内容），失败时退回窗口 DC + BitBlt。输出 PNG base64，
@@ -245,8 +245,8 @@ func shotCaptureWindowRegionPNG(hwnd uintptr, rx, ry, rw, rh int) (string, error
 
 // CaptureAppScreenshot 截取当前应用主窗口（含内嵌浏览器与 AI 面板）为 PNG base64，
 // 供 app_control 的 screenshot 动作把界面视觉信息交给模型。
-func (a *App) CaptureAppScreenshot() (string, error) {
-	hwnd := findWailsWindow()
+func (c *Capturer) CaptureAppScreenshot() (string, error) {
+	hwnd := findParent()
 	if hwnd == 0 {
 		return "", fmt.Errorf("找不到主窗口")
 	}
@@ -255,8 +255,8 @@ func (a *App) CaptureAppScreenshot() (string, error) {
 
 // CaptureAppScreenshotRegion 截取主窗口内的指定区域（物理像素，相对窗口左上角）。
 // 供 app_control screenshot {area} 做板块截图；越界会自动裁剪。
-func (a *App) CaptureAppScreenshotRegion(x, y, width, height int) (string, error) {
-	hwnd := findWailsWindow()
+func (c *Capturer) CaptureAppScreenshotRegion(x, y, width, height int) (string, error) {
+	hwnd := findParent()
 	if hwnd == 0 {
 		return "", fmt.Errorf("找不到主窗口")
 	}
