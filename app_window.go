@@ -13,6 +13,7 @@ import (
 	"datalens/internal/appconfig"
 	"datalens/internal/clipboard"
 	"datalens/internal/launchargs"
+	"datalens/internal/newwindow"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -48,74 +49,18 @@ func (a *App) SetOpenMode(mode string) error {
 }
 
 func (a *App) OpenNewWindow() error {
-	exe, err := os.Executable()
-	if err != nil {
-		return err
-	}
-	cmd := exec.Command(exe, "--new-window")
-	cmd.Dir = filepath.Dir(exe)
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-	_ = cmd.Process.Release()
-	return nil
+	return newwindow.Open()
 }
 
 // OpenDirInNewWindow 在独立新窗口打开目录（一目录一窗口）。
-// 带 --new-window 参数让新实例拿到独立 SingleInstanceLock ID，从而真正开出新窗口；
-// 不改动配置里的默认打开模式（文件仍按 openMode 走）。
 func (a *App) OpenDirInNewWindow(dir string) error {
-	if strings.TrimSpace(dir) == "" {
-		return fmt.Errorf("没有目录")
-	}
-	info, err := os.Stat(dir)
-	if err != nil {
-		return err
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("不是目录：%s", dir)
-	}
-	exe, err := os.Executable()
-	if err != nil {
-		return err
-	}
-	cmd := exec.Command(exe, "--new-window", dir)
-	cmd.Dir = dir
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-	_ = cmd.Process.Release()
-	return nil
+	return newwindow.OpenDir(dir)
 }
 
 // OpenWorkspaceForConversation 软切换：当前窗口已有工作区时，另开窗口打开目标工作区，
 // 并把目标 AI 会话 id 传给新窗口（新窗口启动后恢复工作区环境并选中该会话）。
 func (a *App) OpenWorkspaceForConversation(dir string, sessionID string) error {
-	if strings.TrimSpace(dir) == "" {
-		return fmt.Errorf("没有目录")
-	}
-	info, err := os.Stat(dir)
-	if err != nil {
-		return err
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("不是目录：%s", dir)
-	}
-	exe, err := os.Executable()
-	if err != nil {
-		return err
-	}
-	args := []string{"--new-window", dir}
-	if id := strings.TrimSpace(sessionID); id != "" {
-		args = append(args, "--ai-session="+id)
-	}
-	cmd := exec.Command(exe, args...)
-	cmd.Dir = dir
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-	_ = cmd.Process.Release()
-	return nil
+	return newwindow.OpenWorkspaceConversation(dir, sessionID)
 }
 
 func (a *App) ShowInFolder(path string) error {
@@ -162,27 +107,8 @@ func (a *App) GetClipboardImage() (string, error) {
 
 func (a *App) OpenInNewWindows(paths []string) error {
 	_ = a.SetOpenMode("window")
-	exe, err := os.Executable()
-	if err != nil {
-		return err
-	}
-	started := 0
-	for _, path := range paths {
-		if strings.TrimSpace(path) == "" {
-			continue
-		}
-		cmd := exec.Command(exe, path)
-		cmd.Dir = filepath.Dir(path)
-		if err := cmd.Start(); err != nil {
-			return err
-		}
-		_ = cmd.Process.Release()
-		started++
-	}
-	if started == 0 {
-		return fmt.Errorf("没有可打开的文件")
-	}
-	return nil
+	_, err := newwindow.OpenFiles(paths)
+	return err
 }
 
 func (a *App) SetWindowBg(r, g, b int) {
