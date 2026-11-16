@@ -1,4 +1,4 @@
-package main
+package aichat
 
 import (
 	"fmt"
@@ -27,7 +27,7 @@ func TestAIListModelsOpenAI(t *testing.T) {
 	defer server.Close()
 
 	cfg := aitransport.Config{BaseURL: server.URL + "/v1", APIKey: "test-key", Proxy: "direct"}
-	models, err := (&App{}).AIListModels(cfg)
+	models, err := (&Chat{}).AIListModels(cfg)
 	if err != nil {
 		t.Fatalf("AIListModels: %v", err)
 	}
@@ -44,7 +44,7 @@ func TestAIListModelsOpenAI(t *testing.T) {
 
 func TestAIListModelsAnthropicRefused(t *testing.T) {
 	cfg := aitransport.Config{Provider: "anthropic", BaseURL: "https://api.anthropic.com", Proxy: "direct"}
-	if _, err := (&App{}).AIListModels(cfg); err == nil || !strings.Contains(err.Error(), "手动填写") {
+	if _, err := (&Chat{}).AIListModels(cfg); err == nil || !strings.Contains(err.Error(), "手动填写") {
 		t.Fatalf("error = %v", err)
 	}
 }
@@ -57,7 +57,7 @@ func TestAITestConnectionOpenAI(t *testing.T) {
 	defer server.Close()
 
 	cfg := aitransport.Config{BaseURL: server.URL + "/v1", Proxy: "direct"}
-	message, err := (&App{}).AITestConnection(cfg)
+	message, err := (&Chat{}).AITestConnection(cfg)
 	if err != nil {
 		t.Fatalf("AITestConnection: %v", err)
 	}
@@ -80,7 +80,7 @@ func TestAITestConnectionAnthropic(t *testing.T) {
 	defer server.Close()
 
 	cfg := aitransport.Config{Provider: "anthropic", BaseURL: server.URL, APIKey: "test-key", Model: "claude-test", Proxy: "direct"}
-	message, err := (&App{}).AITestConnection(cfg)
+	message, err := (&Chat{}).AITestConnection(cfg)
 	if err != nil {
 		t.Fatalf("AITestConnection: %v", err)
 	}
@@ -91,14 +91,14 @@ func TestAITestConnectionAnthropic(t *testing.T) {
 
 func TestAIEnsureDir(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "ai-memory", "nested")
-	if err := (&App{}).AIEnsureDir(dir); err != nil {
+	if err := (&Chat{}).AIEnsureDir(dir); err != nil {
 		t.Fatalf("AIEnsureDir: %v", err)
 	}
 	info, err := os.Stat(dir)
 	if err != nil || !info.IsDir() {
 		t.Fatalf("dir stat: %v %#v", err, info)
 	}
-	if err := (&App{}).AIEnsureDir("  "); err == nil {
+	if err := (&Chat{}).AIEnsureDir("  "); err == nil {
 		t.Fatalf("empty dir should fail")
 	}
 }
@@ -116,7 +116,7 @@ func TestAISendChatStopCancels(t *testing.T) {
 	}))
 	defer server.Close()
 
-	app := &App{}
+	app := &Chat{}
 	cfg := aitransport.Config{BaseURL: server.URL + "/v1", Model: "m", Proxy: "direct"}
 	if err := app.AISendChat("stop-session#0", cfg, []aitransport.Message{{Role: "user", Content: "hi"}}, nil, 0); err != nil {
 		t.Fatalf("AISendChat: %v", err)
@@ -146,7 +146,7 @@ func TestAIHomeDir(t *testing.T) {
 	if err != nil {
 		t.Skipf("当前环境无法获取用户主目录: %v", err)
 	}
-	if got := (&App{}).AIHomeDir(); got != filepath.Clean(want) {
+	if got := (&Chat{}).AIHomeDir(); got != filepath.Clean(want) {
 		t.Fatalf("AIHomeDir = %q，期望 %q", got, filepath.Clean(want))
 	}
 }

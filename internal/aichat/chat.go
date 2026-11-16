@@ -1,4 +1,4 @@
-package main
+package aichat
 
 // AI 对话入口（Wails 绑定层）：发消息/停止/触摸看门狗/连通性测试/模型列举与目录工具。
 
@@ -14,15 +14,38 @@ import (
 	"strings"
 	"time"
 
-	"github.com/wailsapp/wails/v2/pkg/runtime"
-
 	"datalens/internal/aitransport"
+
+	"datalens/internal/appdata"
 )
+
+// Chat AI 对话引擎：流注册表、取消与看门狗在本包，协议在 internal/aitransport。
+type Chat struct{}
+
+// 宿主注入（main 的 init/startup 接线）。
+var (
+	// Emit 前端事件推送（main 在 startup 注入 Wails EventsEmit）。
+	Emit func(event string, payload any)
+	// Logf 诊断日志（main/logging.go 的 writeAppLog）。
+	Logf func(level, format string, args ...any)
+)
+
+func emit(event string, payload any) {
+	if Emit != nil {
+		Emit(event, payload)
+	}
+}
+
+func logf(level, format string, args ...any) {
+	if Logf != nil {
+		Logf(level, format, args...)
+	}
+}
 
 // AISendChat 启动一轮流式对话。立即返回后由 goroutine 通过 ai-* 事件推送：
 // ai-chunk / ai-think / ai-toolcall / ai-done / ai-error。同一 sessionId 的新请求
 // 会先取消旧请求；AIStop 按 sessionId 前缀取消（前端传 session.id#round）。
-func (a *App) AISendChat(sessionId string, cfg aitransport.Config, messages []aitransport.Message, tools []aitransport.ToolDef, retryMax int) error {
+func (c *Chat) AISendChat(sessionId string, cfg aitransport.Config, messages []aitransport.Message, tools []aitransport.ToolDef, retryMax int) error {
 	sessionId = strings.TrimSpace(sessionId)
 	if sessionId == "" {
 		return errors.New("会话标识为空")
@@ -38,7 +61,7 @@ func (a *App) AISendChat(sessionId string, cfg aitransport.Config, messages []ai
 	}
 	if fixed := aitransport.SanitizeMessages(messages); fixed > 0 {
 		// 兜底：前端已在工具轮把错误作为工具结果回给模型；这里防止旧会话/其他路径的坏参数整轮拒收。
-		writeAppLog("warn", "AI 请求包含 %d 个非法工具参数，已按 {} 兜底发送", fixed)
+		logf("warn", "AI 请求包含 %d 个非法工具参数，已按 {} 兜底发送", fixed)
 	}
 	if err := aitransport.ValidateMessages(messages); err != nil {
 		return err
@@ -68,30 +91,30 @@ func (a *App) AISendChat(sessionId string, cfg aitransport.Config, messages []ai
 		}()
 
 		started := time.Now()
-		writeAppLog("info", "AI 请求：provider=%s host=%s model=%s messages=%d tools=%d",
+		logf("info", "AI 请求：provider=%s host=%s model=%s messages=%d tools=%d",
 			aitransport.ProviderName(cfg), aitransport.BaseHost(cfg.BaseURL), cfg.Model, len(messages), len(tools))
-		err := aitransport.StreamResponse(ctx, cancel, sessionId, cfg, messages, tools, a.aiEmit, retryMax)
+		err := aitransport.StreamResponse(ctx, cancel, sessionId, cfg, messages, tools, emit, retryMax)
 		cause := context.Cause(ctx)
 
 		switch {
 		case errors.Is(cause, aitransport.ErrIdleTimeout):
-			a.aiEmit(aitransport.EventError, aitransport.ErrorPayload{Id: sessionId, Message: aitransport.ErrIdleTimeout.Error()})
-			writeAppLog("error", "AI 流中断：%v", aitransport.ErrIdleTimeout)
+			emit(aitransport.EventError, aitransport.ErrorPayload{Id: sessionId, Message: aitransport.ErrIdleTimeout.Error()})
+			logf("error", "AI 流中断：%v", aitransport.ErrIdleTimeout)
 		case errors.Is(cause, context.Canceled):
-			a.aiEmit(aitransport.EventDone, aitransport.DonePayload{Id: sessionId, FinishReason: "stopped"})
-			writeAppLog("info", "AI 请求已停止（%s）", time.Since(started).Round(time.Millisecond))
+			emit(aitransport.EventDone, aitransport.DonePayload{Id: sessionId, FinishReason: "stopped"})
+			logf("info", "AI 请求已停止（%s）", time.Since(started).Round(time.Millisecond))
 		case err != nil:
-			a.aiEmit(aitransport.EventError, aitransport.ErrorPayload{Id: sessionId, Message: err.Error()})
-			writeAppLog("error", "AI 请求失败（%s）：%v", time.Since(started).Round(time.Millisecond), err)
+			emit(aitransport.EventError, aitransport.ErrorPayload{Id: sessionId, Message: err.Error()})
+			logf("error", "AI 请求失败（%s）：%v", time.Since(started).Round(time.Millisecond), err)
 		default:
-			writeAppLog("info", "AI 请求结束（%s）", time.Since(started).Round(time.Millisecond))
+			logf("info", "AI 请求结束（%s）", time.Since(started).Round(time.Millisecond))
 		}
 	}()
 	return nil
 }
 
 // AIStop 取消匹配 sessionId 的正在进行的请求（前缀匹配支持 session.id#round）。
-func (a *App) AIStop(sessionId string) {
+func (c *Chat) AIStop(sessionId string) {
 	sessionId = strings.TrimSpace(sessionId)
 	if sessionId == "" {
 		return
@@ -111,7 +134,7 @@ func (a *App) AIStop(sessionId string) {
 
 // AITouchStream 重置匹配会话的空闲看门狗（sessionId 前缀匹配）。前端在工具
 // 执行/等待用户输入等无网络数据阶段定期调用，避免 120 秒空闲超时误杀挂起的流。
-func (a *App) AITouchStream(sessionId string) {
+func (c *Chat) AITouchStream(sessionId string) {
 	sessionId = strings.TrimSpace(sessionId)
 	if sessionId == "" {
 		return
@@ -128,7 +151,7 @@ func (a *App) AITouchStream(sessionId string) {
 }
 
 // AITestConnection 验证当前 Profile 的地址/密钥/模型是否可用。
-func (a *App) AITestConnection(cfg aitransport.Config) (string, error) {
+func (c *Chat) AITestConnection(cfg aitransport.Config) (string, error) {
 	if err := aitransport.ValidateEndpoint(cfg); err != nil {
 		return "", err
 	}
@@ -177,7 +200,7 @@ func (a *App) AITestConnection(cfg aitransport.Config) (string, error) {
 }
 
 // AIListModels 拉取 OpenAI 兼容端点的模型列表（Anthropic 需手动填写模型名）。
-func (a *App) AIListModels(cfg aitransport.Config) ([]string, error) {
+func (c *Chat) AIListModels(cfg aitransport.Config) ([]string, error) {
 	if err := aitransport.ValidateEndpoint(cfg); err != nil {
 		return nil, err
 	}
@@ -193,12 +216,12 @@ func (a *App) AIListModels(cfg aitransport.Config) ([]string, error) {
 }
 
 // AIAppDir 返回应用数据根目录（记忆 app 模式、技能 app 级目录都挂在其下）。
-func (a *App) AIAppDir() string {
-	return appDataRoot()
+func (c *Chat) AIAppDir() string {
+	return appdata.Root()
 }
 
 // AIHomeDir 返回当前用户主目录（用户级技能 ~/.agents/skills 解析用；失败返回空串）。
-func (a *App) AIHomeDir() string {
+func (c *Chat) AIHomeDir() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""
@@ -207,7 +230,7 @@ func (a *App) AIHomeDir() string {
 }
 
 // AIExePath 返回当前可执行文件绝对路径（内置技能 {{EXE_PATH}} 占位用；失败返回空串）。
-func (a *App) AIExePath() string {
+func (c *Chat) AIExePath() string {
 	exe, err := os.Executable()
 	if err != nil {
 		return ""
@@ -216,7 +239,7 @@ func (a *App) AIExePath() string {
 }
 
 // AIEnsureDir 创建记忆/技能目录（MkdirAll，已存在不报错）。
-func (a *App) AIEnsureDir(dir string) error {
+func (c *Chat) AIEnsureDir(dir string) error {
 	dir = strings.TrimSpace(dir)
 	if dir == "" {
 		return errors.New("目录路径为空")
@@ -229,11 +252,4 @@ func (a *App) AIEnsureDir(dir string) error {
 		return fmt.Errorf("创建目录失败：%w", err)
 	}
 	return nil
-}
-
-func (a *App) aiEmit(event string, payload any) {
-	if a == nil || a.ctx == nil {
-		return
-	}
-	runtime.EventsEmit(a.ctx, event, payload)
 }

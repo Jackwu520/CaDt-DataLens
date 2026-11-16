@@ -12,6 +12,7 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
+	"datalens/internal/aichat"
 	"datalens/internal/aiconfig"
 	"datalens/internal/aischedule"
 	"datalens/internal/aitimer"
@@ -56,6 +57,7 @@ type App struct {
 	*fileio.Files          // 文件读写与编码（internal/fileio）
 	*fsops.FS              // 目录与条目操作（internal/fsops）
 	*debugconsole.Console  // 调试控制台日志（internal/debugconsole）
+	*aichat.Chat           // AI 对话与流注册表（internal/aichat）
 	*integration.Registrar // Windows 文件关联 / 右键菜单 / PATH（internal/integration）
 	*mcpsamples.Samples    // 内置 MCP 示例（internal/mcpsamples）
 	ctx                    context.Context
@@ -84,7 +86,7 @@ type OpenTarget struct {
 type FileData = fileio.FileData
 
 func NewApp() *App {
-	return &App{Reader: &reading.Reader{}, Runner: &run.Runner{}, Host: &browser.Host{}, Searcher: &search.Searcher{}, Scheduler: &aischedule.Scheduler{}, Bridge: &cmdbridge.Bridge{}, Terminal: &terminal.Terminal{}, Toolchain: &toolchain.Toolchain{}, Store: &aiconfig.Store{}, Manager: &plugins.Manager{}, Skills: &skills.Skills{}, Capturer: &screenshot.Capturer{}, Notifier: &notify.Notifier{}, Watcher: &watch.Watcher{}, Samples: &mcpsamples.Samples{}, Files: &fileio.Files{}, FS: &fsops.FS{}, Registrar: &integration.Registrar{}, Console: &debugconsole.Console{}}
+	return &App{Reader: &reading.Reader{}, Runner: &run.Runner{}, Host: &browser.Host{}, Searcher: &search.Searcher{}, Scheduler: &aischedule.Scheduler{}, Bridge: &cmdbridge.Bridge{}, Terminal: &terminal.Terminal{}, Toolchain: &toolchain.Toolchain{}, Store: &aiconfig.Store{}, Manager: &plugins.Manager{}, Skills: &skills.Skills{}, Capturer: &screenshot.Capturer{}, Notifier: &notify.Notifier{}, Watcher: &watch.Watcher{}, Samples: &mcpsamples.Samples{}, Files: &fileio.Files{}, FS: &fsops.FS{}, Registrar: &integration.Registrar{}, Console: &debugconsole.Console{}, Chat: &aichat.Chat{}}
 }
 
 func (a *App) startup(ctx context.Context) {
