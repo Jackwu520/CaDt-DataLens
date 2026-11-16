@@ -1,4 +1,4 @@
-package main
+package plugins
 
 import (
 	"encoding/base64"
@@ -10,7 +10,7 @@ import (
 
 func TestReadPluginAsset(t *testing.T) {
 	t.Setenv("AppData", t.TempDir())
-	app := NewApp()
+	app := &Manager{}
 	if err := app.SetPluginsPathMode("appdata"); err != nil {
 		t.Fatalf("SetPluginsPathMode: %v", err)
 	}
@@ -110,7 +110,7 @@ func TestReadPluginAsset(t *testing.T) {
 
 func TestReadPluginAssetRejectsOversize(t *testing.T) {
 	t.Setenv("AppData", t.TempDir())
-	app := NewApp()
+	app := &Manager{}
 	if err := app.SetPluginsPathMode("appdata"); err != nil {
 		t.Fatal(err)
 	}

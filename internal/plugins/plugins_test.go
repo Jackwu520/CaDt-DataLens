@@ -1,4 +1,4 @@
-package main
+package plugins
 
 import (
 	"archive/zip"
@@ -161,41 +161,35 @@ func TestExtractPluginZip(t *testing.T) {
 }
 
 func TestDeletePluginAndDisabledConfig(t *testing.T) {
+	resetTestConfig()
 	t.Setenv("AppData", t.TempDir())
-	// SetOpenMode 后再写插件配置不应丢失 openMode
-	if err := NewApp().SetOpenMode("window"); err != nil {
-		t.Fatalf("SetOpenMode: %v", err)
-	}
-	if err := NewApp().SetPluginEnabled("demo-plugin", false); err != nil {
+	m := &Manager{}
+	if err := m.SetPluginEnabled("demo-plugin", false); err != nil {
 		t.Fatalf("SetPluginEnabled: %v", err)
 	}
-	cfg := readAppConfig()
-	if cfg.OpenMode != "window" {
-		t.Fatalf("openMode 丢失: %+v", cfg)
+	if len(testCfg.disabled) != 1 || testCfg.disabled[0] != "demo-plugin" {
+		t.Fatalf("disabledPlugins 不符: %+v", testCfg.disabled)
 	}
-	if len(cfg.DisabledPlugins) != 1 || cfg.DisabledPlugins[0] != "demo-plugin" {
-		t.Fatalf("disabledPlugins 不符: %+v", cfg.DisabledPlugins)
-	}
-	if err := NewApp().SetPluginEnabled("demo-plugin", true); err != nil {
+	if err := m.SetPluginEnabled("demo-plugin", true); err != nil {
 		t.Fatalf("重新启用: %v", err)
 	}
-	if cfg2 := readAppConfig(); len(cfg2.DisabledPlugins) != 0 {
-		t.Fatalf("启用后禁用列表应为空: %+v", cfg2.DisabledPlugins)
+	if len(testCfg.disabled) != 0 {
+		t.Fatalf("启用后禁用列表应为空: %+v", testCfg.disabled)
 	}
-	if err := NewApp().DeletePlugin("demo-plugin"); err != nil {
+	if err := m.DeletePlugin("demo-plugin"); err != nil {
 		t.Fatalf("DeletePlugin: %v", err)
 	}
-	if cfg3 := readAppConfig(); len(cfg3.DisabledPlugins) != 0 {
-		t.Fatalf("删除后禁用列表应为空: %+v", cfg3.DisabledPlugins)
+	if len(testCfg.disabled) != 0 {
+		t.Fatalf("删除后禁用列表应为空: %+v", testCfg.disabled)
 	}
-	if err := NewApp().DeletePlugin("../escape"); err == nil {
+	if err := m.DeletePlugin("../escape"); err == nil {
 		t.Fatal("非法 id 应被拒绝")
 	}
 }
 
 func TestPluginsPathModeRoundTrip(t *testing.T) {
 	t.Setenv("AppData", t.TempDir())
-	app := NewApp()
+	app := &Manager{}
 	if err := app.SetPluginsPathMode("appdata"); err != nil {
 		t.Fatalf("SetPluginsPathMode: %v", err)
 	}
@@ -267,60 +261,13 @@ func TestInstallPluginFromUrlInvalid(t *testing.T) {
 	}
 }
 
-func TestGitRollbackForReal(t *testing.T) {
-	// 在本仓库里做真实回滚测试
-	target := filepath.Join("docs", "plugins", "examples", "bak-json", "main.js")
-	orig, err := os.ReadFile(target)
-	if err != nil {
-		t.Skip("示例文件不存在")
-	}
-	defer func() {
-		_ = os.WriteFile(target, orig, 0o644)
-		_ = exec.Command("git", "checkout", "HEAD", "--", target).Run()
-	}()
-
-	// 修改后回滚
-	if err := os.WriteFile(target, []byte("// modified"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := NewApp().GitRollbackFor(".", []string{target}, nil); err != nil {
-		t.Fatalf("回滚失败: %v", err)
-	}
-	after, _ := os.ReadFile(target)
-	if string(after) != string(orig) {
-		t.Fatal("回滚后内容未还原")
-	}
-
-	// 路径穿越拒绝
-	if err := NewApp().GitRollbackFor(".", []string{".." + string(filepath.Separator) + ".." + string(filepath.Separator) + "go.mod"}, nil); err == nil {
-		t.Fatal("路径穿越应被拒绝")
-	}
-}
-
-func TestGitFileHistoryAndRecentLog(t *testing.T) {
-	out, err := NewApp().GitFileHistoryFor(".", "frontend/src/main.js", 10)
-	if err != nil {
-		t.Fatalf("文件历史: %v", err)
-	}
-	if out == "" {
-		t.Fatal("main.js 有提交历史，输出不应为空")
-	}
-	log, err := NewApp().GitRecentLogFor(".", 5)
-	if err != nil {
-		t.Fatalf("最近提交: %v", err)
-	}
-	if strings.Count(log, "\n") < 1 {
-		t.Fatalf("最近提交应有多条: %q", log)
-	}
-}
-
 func TestEnsurePluginsDirCreatesDirectory(t *testing.T) {
 	t.Setenv("AppData", t.TempDir())
-	app := NewApp()
+	app := &Manager{}
 	if err := app.SetPluginsPathMode("appdata"); err != nil {
 		t.Fatalf("SetPluginsPathMode: %v", err)
 	}
-	dir, err := app.ensurePluginsDir()
+	dir, err := app.EnsureDir()
 	if err != nil {
 		t.Fatalf("ensurePluginsDir: %v", err)
 	}

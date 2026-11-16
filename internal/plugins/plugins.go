@@ -1,4 +1,4 @@
-package main
+package plugins
 
 import (
 	"archive/zip"
@@ -17,8 +17,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/wailsapp/wails/v2/pkg/runtime"
-
+	"datalens/internal/appdata"
 	"datalens/internal/vercmp"
 )
 
@@ -116,7 +115,7 @@ type PluginSource struct {
 // appdata = %APPDATA%\CandySweet\CaDt-DataLens\plugins。
 func pluginsRootFor(mode string) (string, error) {
 	if mode == "appdata" {
-		root := appDataRoot()
+		root := appdata.Root()
 		if root == "" {
 			return "", fmt.Errorf("无法定位应用数据目录")
 		}
@@ -129,12 +128,12 @@ func pluginsRootFor(mode string) (string, error) {
 	return filepath.Join(filepath.Dir(exe), "plugins"), nil
 }
 
-func (a *App) GetPluginsDir() (string, error) {
-	return pluginsRootFor(readAppConfig().PluginsPathMode)
+func (pm *Manager) GetPluginsDir() (string, error) {
+	return pluginsRootFor(currentPathMode())
 }
 
-func (a *App) ensurePluginsDir() (string, error) {
-	dir, err := a.GetPluginsDir()
+func (pm *Manager) EnsureDir() (string, error) {
+	dir, err := pm.GetPluginsDir()
 	if err != nil {
 		return "", err
 	}
@@ -144,31 +143,20 @@ func (a *App) ensurePluginsDir() (string, error) {
 	return dir, nil
 }
 
-// OpenPluginsDir 确保插件目录存在后在资源管理器中打开它。
-func (a *App) OpenPluginsDir() error {
-	dir, err := a.ensurePluginsDir()
-	if err != nil {
-		return err
-	}
-	return a.ShowInFolder(dir)
-}
-
 // GetPluginsPathMode 返回当前插件目录模式（portable / appdata），供设置面板回显。
-func (a *App) GetPluginsPathMode() string {
-	mode := readAppConfig().PluginsPathMode
+func (pm *Manager) GetPluginsPathMode() string {
+	mode := currentPathMode()
 	if mode != "appdata" {
 		return "portable"
 	}
 	return mode
 }
 
-func (a *App) SetPluginsPathMode(mode string) error {
+func (pm *Manager) SetPluginsPathMode(mode string) error {
 	if mode != "appdata" {
 		mode = "portable"
 	}
-	cfg := readAppConfig()
-	cfg.PluginsPathMode = mode
-	return saveAppConfig(cfg)
+	return savePathMode(mode)
 }
 
 func readPluginManifest(dir string) (*pluginManifest, error) {
@@ -234,7 +222,7 @@ func readPluginManifest(dir string) (*pluginManifest, error) {
 // ReadPluginAsset 读取插件目录内的资产并转为 data URL。
 // relPath 相对插件目录，支持图片（16MB 上限）与数据/模型文件（48MB 上限），
 // 且不允许越出插件目录。
-func (a *App) ReadPluginAsset(id, relPath string) (string, error) {
+func (pm *Manager) ReadPluginAsset(id, relPath string) (string, error) {
 	id = strings.TrimSpace(id)
 	if !pluginIdPattern.MatchString(id) {
 		return "", fmt.Errorf("插件 id 无效：%q", id)
@@ -261,7 +249,7 @@ func (a *App) ReadPluginAsset(id, relPath string) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("资产仅支持图片或数据文件格式：%s", relPath)
 	}
-	root, err := pluginsRootFor(readAppConfig().PluginsPathMode)
+	root, err := pluginsRootFor(currentPathMode())
 	if err != nil {
 		return "", err
 	}
@@ -499,7 +487,7 @@ func importPluginZipAt(root, zipPath string) (*PluginInfo, error) {
 }
 
 // InstallPluginFromUrl 用系统 git 浅克隆插件仓库并安装；支持 https(s) 与 git@ 地址。
-func (a *App) InstallPluginFromUrl(rawUrl string) (*PluginInfo, error) {
+func (pm *Manager) InstallPluginFromUrl(rawUrl string) (*PluginInfo, error) {
 	if strings.TrimSpace(rawUrl) == "" {
 		return nil, nil
 	}
@@ -508,7 +496,7 @@ func (a *App) InstallPluginFromUrl(rawUrl string) (*PluginInfo, error) {
 		return nil, err
 	}
 	defer cleanup()
-	root, err := pluginsRootFor(readAppConfig().PluginsPathMode)
+	root, err := pluginsRootFor(currentPathMode())
 	if err != nil {
 		return nil, err
 	}
@@ -516,7 +504,7 @@ func (a *App) InstallPluginFromUrl(rawUrl string) (*PluginInfo, error) {
 }
 
 // UpdatePluginFromUrl 拉取仓库最新版本并替换已安装的同 id 插件；失败时恢复旧版本。
-func (a *App) UpdatePluginFromUrl(id, rawUrl string) (*PluginInfo, error) {
+func (pm *Manager) UpdatePluginFromUrl(id, rawUrl string) (*PluginInfo, error) {
 	id = strings.TrimSpace(id)
 	if !pluginIdPattern.MatchString(id) {
 		return nil, fmt.Errorf("插件 id 无效：%q", id)
@@ -533,12 +521,12 @@ func (a *App) UpdatePluginFromUrl(id, rawUrl string) (*PluginInfo, error) {
 	if m.Id != id {
 		return nil, fmt.Errorf("仓库插件 id 为 %s，与要更新的插件 %s 不一致", m.Id, id)
 	}
-	root, err := pluginsRootFor(readAppConfig().PluginsPathMode)
+	root, err := pluginsRootFor(currentPathMode())
 	if err != nil {
 		return nil, err
 	}
 	disabled := map[string]bool{}
-	for _, item := range readAppConfig().DisabledPlugins {
+	for _, item := range disabledPluginList() {
 		disabled[item] = true
 	}
 	plugins, err := listPluginsAt(root, disabled)
@@ -561,7 +549,7 @@ func (a *App) UpdatePluginFromUrl(id, rawUrl string) (*PluginInfo, error) {
 	if err := replacePluginDir(current.Dir, srcDir); err != nil {
 		return nil, err
 	}
-	writeAppLog("info", "插件已更新：%s %s → %s", m.Name, current.Version, m.Version)
+	logf("info", "插件已更新：%s %s → %s", m.Name, current.Version, m.Version)
 	if refreshed, err := listPluginsAt(root, disabled); err == nil {
 		for _, p := range refreshed {
 			if p.Id == id {
@@ -700,51 +688,30 @@ func pluginSourceAt(dir string, m *pluginManifest) (*PluginSource, error) {
 	}, nil
 }
 
-func (a *App) GetPlugins() ([]*PluginInfo, error) {
-	root, err := pluginsRootFor(readAppConfig().PluginsPathMode)
+func (pm *Manager) GetPlugins() ([]*PluginInfo, error) {
+	root, err := pluginsRootFor(currentPathMode())
 	if err != nil {
 		return nil, err
 	}
-	cfg := readAppConfig()
 	disabled := map[string]bool{}
-	for _, id := range cfg.DisabledPlugins {
+	for _, id := range disabledPluginList() {
 		disabled[id] = true
 	}
 	return listPluginsAt(root, disabled)
 }
 
-func (a *App) AddPluginFromFolder() (*PluginInfo, error) {
-	dir, err := runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{
-		Title: "选择插件文件夹（内含 plugin.json）",
-	})
-	if err != nil {
-		return nil, err
-	}
-	if dir == "" {
-		return nil, nil // 用户取消
-	}
-	root, err := pluginsRootFor(readAppConfig().PluginsPathMode)
+// InstallFromFolder 把本地插件文件夹安装到当前插件目录。
+func InstallFromFolder(dir string) (*PluginInfo, error) {
+	root, err := pluginsRootFor(currentPathMode())
 	if err != nil {
 		return nil, err
 	}
 	return installPluginAt(root, dir)
 }
 
-func (a *App) ImportPluginFromZip() (*PluginInfo, error) {
-	paths, err := runtime.OpenMultipleFilesDialog(a.ctx, runtime.OpenDialogOptions{
-		Title: "导入插件包",
-		Filters: []runtime.FileFilter{
-			{DisplayName: "插件包 (*.zip)", Pattern: "*.zip"},
-			{DisplayName: "所有文件 (*.*)", Pattern: "*.*"},
-		},
-	})
-	if err != nil {
-		return nil, err
-	}
-	if len(paths) == 0 {
-		return nil, nil // 用户取消
-	}
-	root, err := pluginsRootFor(readAppConfig().PluginsPathMode)
+// ImportZipPaths 逐个导入插件 zip；最后一个成功安装的结果作为返回值。
+func ImportZipPaths(paths []string) (*PluginInfo, error) {
+	root, err := pluginsRootFor(currentPathMode())
 	if err != nil {
 		return nil, err
 	}
@@ -759,35 +726,34 @@ func (a *App) ImportPluginFromZip() (*PluginInfo, error) {
 	return last, nil
 }
 
-func (a *App) DeletePlugin(id string) error {
+func (pm *Manager) DeletePlugin(id string) error {
 	if !pluginIdPattern.MatchString(strings.TrimSpace(id)) {
 		return fmt.Errorf("插件 id 无效：%q", id)
 	}
-	root, err := pluginsRootFor(readAppConfig().PluginsPathMode)
+	root, err := pluginsRootFor(currentPathMode())
 	if err != nil {
 		return err
 	}
 	if err := os.RemoveAll(filepath.Join(root, id)); err != nil {
 		return err
 	}
-	cfg := readAppConfig()
-	kept := cfg.DisabledPlugins[:0]
-	for _, item := range cfg.DisabledPlugins {
+	disabled := disabledPluginList()
+	kept := make([]string, 0, len(disabled))
+	for _, item := range disabled {
 		if item != id {
 			kept = append(kept, item)
 		}
 	}
-	cfg.DisabledPlugins = kept
-	return saveAppConfig(cfg)
+	return saveDisabledPlugins(kept)
 }
 
-func (a *App) SetPluginEnabled(id string, enabled bool) error {
+func (pm *Manager) SetPluginEnabled(id string, enabled bool) error {
 	if !pluginIdPattern.MatchString(strings.TrimSpace(id)) {
 		return fmt.Errorf("插件 id 无效：%q", id)
 	}
-	cfg := readAppConfig()
+	disabled := disabledPluginList()
 	set := map[string]bool{}
-	for _, item := range cfg.DisabledPlugins {
+	for _, item := range disabled {
 		set[item] = true
 	}
 	if enabled {
@@ -796,7 +762,7 @@ func (a *App) SetPluginEnabled(id string, enabled bool) error {
 		set[id] = true
 	}
 	kept := make([]string, 0, len(set))
-	for _, item := range cfg.DisabledPlugins {
+	for _, item := range disabled {
 		if set[item] {
 			kept = append(kept, item)
 			delete(set, item)
@@ -806,18 +772,16 @@ func (a *App) SetPluginEnabled(id string, enabled bool) error {
 		kept = append(kept, item)
 	}
 	sort.Strings(kept)
-	cfg.DisabledPlugins = kept
-	return saveAppConfig(cfg)
+	return saveDisabledPlugins(kept)
 }
 
-func (a *App) GetPluginSources() ([]PluginSource, error) {
-	root, err := pluginsRootFor(readAppConfig().PluginsPathMode)
+func (pm *Manager) GetPluginSources() ([]PluginSource, error) {
+	root, err := pluginsRootFor(currentPathMode())
 	if err != nil {
 		return nil, err
 	}
-	cfg := readAppConfig()
 	disabled := map[string]bool{}
-	for _, id := range cfg.DisabledPlugins {
+	for _, id := range disabledPluginList() {
 		disabled[id] = true
 	}
 	plugins, err := listPluginsAt(root, disabled)

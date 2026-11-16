@@ -1,4 +1,4 @@
-package main
+package plugins
 
 import (
 	"context"
@@ -66,7 +66,7 @@ func TestMarketSourceURLs(t *testing.T) {
 
 func TestDataSourceRoundTrip(t *testing.T) {
 	t.Setenv("AppData", t.TempDir())
-	app := NewApp()
+	app := &Manager{}
 	if got := app.GetDataSource(); got != marketSourceGitee {
 		t.Fatalf("默认数据源 = %q, want gitee", got)
 	}

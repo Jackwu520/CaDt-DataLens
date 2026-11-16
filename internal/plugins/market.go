@@ -1,4 +1,4 @@
-package main
+package plugins
 
 import (
 	"context"
@@ -21,17 +21,20 @@ const (
 	marketSourceGithub = "github"
 )
 
+// NormalizeMarketSource 只认 gitee/github 两个值（大小写与空格不敏感），其余一律归一为默认的 gitee。
+func NormalizeMarketSource(source string) string {
+	return normalizeMarketSource(source)
+}
+
+// MarketSourceGitee 默认数据源。
+const MarketSourceGitee = marketSourceGitee
+
 // normalizeMarketSource 只认 gitee/github 两个值（大小写与空格不敏感），其余一律归一为默认的 gitee。
 func normalizeMarketSource(source string) string {
 	if strings.EqualFold(strings.TrimSpace(source), marketSourceGithub) {
 		return marketSourceGithub
 	}
 	return marketSourceGitee
-}
-
-// currentMarketSource 读应用配置，返回本次抓取应使用的数据源。
-func currentMarketSource() string {
-	return normalizeMarketSource(readAppConfig().DataSource)
 }
 
 func marketSourceLabel(source string) string {
@@ -152,7 +155,7 @@ type marketManifest struct {
 }
 
 // GetPluginMarket 按当前数据源（Gitee/GitHub）列出组织里的公开插件仓库，并合并各仓库 plugin.json 的元数据。
-func (a *App) GetPluginMarket() ([]*MarketPlugin, error) {
+func (pm *Manager) GetPluginMarket() ([]*MarketPlugin, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()
 	source := currentMarketSource()
@@ -162,7 +165,7 @@ func (a *App) GetPluginMarket() ([]*MarketPlugin, error) {
 	}
 	source = usedSource
 	installed := map[string]string{}
-	if plugins, err := a.GetPlugins(); err == nil {
+	if plugins, err := pm.GetPlugins(); err == nil {
 		for _, p := range plugins {
 			installed[p.Id] = p.Version
 		}
@@ -362,3 +365,9 @@ func validMarketBranch(branch string) bool {
 	}
 	return true
 }
+
+// GetDataSource 返回当前市场数据源。
+func (pm *Manager) GetDataSource() string { return currentMarketSource() }
+
+// SetDataSource 切换远端数据源；除 github 外一律记为默认的 gitee。
+func (pm *Manager) SetDataSource(source string) error { return saveMarketSource(source) }

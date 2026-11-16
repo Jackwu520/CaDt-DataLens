@@ -16,6 +16,8 @@ import (
 	"datalens/internal/clipboard"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
+
+	"datalens/internal/plugins"
 )
 
 func (a *App) SetDirty(dirty bool) {
@@ -36,7 +38,7 @@ type appConfig struct {
 }
 
 func defaultAppConfig() appConfig {
-	return appConfig{OpenMode: "tab", PluginsPathMode: "portable", DataSource: marketSourceGitee}
+	return appConfig{OpenMode: "tab", PluginsPathMode: "portable", DataSource: plugins.MarketSourceGitee}
 }
 
 func readAppConfig() appConfig {
@@ -63,7 +65,7 @@ func readAppConfig() appConfig {
 		cfg.DisabledPlugins = stored.DisabledPlugins
 	}
 	cfg.DeveloperMode = stored.DeveloperMode
-	cfg.DataSource = normalizeMarketSource(stored.DataSource)
+	cfg.DataSource = plugins.NormalizeMarketSource(stored.DataSource)
 	return cfg
 }
 
@@ -84,18 +86,6 @@ func saveAppConfig(cfg appConfig) error {
 
 func readOpenMode() string {
 	return readAppConfig().OpenMode
-}
-
-// GetDataSource 返回插件市场与模型配置表使用的远端数据源：gitee（默认）或 github。
-func (a *App) GetDataSource() string {
-	return currentMarketSource()
-}
-
-// SetDataSource 切换远端数据源；除 github 外一律记为默认的 gitee。
-func (a *App) SetDataSource(source string) error {
-	cfg := readAppConfig()
-	cfg.DataSource = normalizeMarketSource(source)
-	return saveAppConfig(cfg)
 }
 
 func randomLaunchID() string {
