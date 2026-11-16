@@ -61,6 +61,7 @@ type App struct {
 	*integration.Registrar // Windows 文件关联 / 右键菜单 / PATH（internal/integration）
 	*mcpsamples.Samples    // 内置 MCP 示例（internal/mcpsamples）
 	*sessionstore.Service  // AI 会话磁盘存储（internal/sessionstore）
+	*mcp.Client            // MCP 客户端与子进程管理（internal/mcp）
 	ctx                    context.Context
 	startupTargets         []launchargs.OpenTarget
 	startupSettingsPane    string
@@ -70,8 +71,6 @@ type App struct {
 	aiRunning              bool
 	aiTimersMu             sync.Mutex
 	aiTimers               *aitimer.Registry
-	muMCP                  sync.Mutex
-	mcp                    *mcp.Manager
 	convert                *convertcli.Options
 	convertExitCode        int
 	convertDone            atomic.Bool
@@ -81,7 +80,7 @@ type App struct {
 type FileData = fileio.FileData
 
 func NewApp() *App {
-	return &App{Reader: &reading.Reader{}, Runner: &run.Runner{}, Host: &browser.Host{}, Searcher: &search.Searcher{}, Scheduler: &aischedule.Scheduler{}, Bridge: &cmdbridge.Bridge{}, Terminal: &terminal.Terminal{}, Toolchain: &toolchain.Toolchain{}, Store: &aiconfig.Store{}, Manager: &plugins.Manager{}, Skills: &skills.Skills{}, Capturer: &screenshot.Capturer{}, Notifier: &notify.Notifier{}, Watcher: &watch.Watcher{}, Samples: &mcpsamples.Samples{}, Files: &fileio.Files{}, FS: &fsops.FS{}, Registrar: &integration.Registrar{}, Console: &debugconsole.Console{}, Chat: &aichat.Chat{}, Service: &sessionstore.Service{}}
+	return &App{Reader: &reading.Reader{}, Runner: &run.Runner{}, Host: &browser.Host{}, Searcher: &search.Searcher{}, Scheduler: &aischedule.Scheduler{}, Bridge: &cmdbridge.Bridge{}, Terminal: &terminal.Terminal{}, Toolchain: &toolchain.Toolchain{}, Store: &aiconfig.Store{}, Manager: &plugins.Manager{}, Skills: &skills.Skills{}, Capturer: &screenshot.Capturer{}, Notifier: &notify.Notifier{}, Watcher: &watch.Watcher{}, Samples: &mcpsamples.Samples{}, Files: &fileio.Files{}, FS: &fsops.FS{}, Registrar: &integration.Registrar{}, Console: &debugconsole.Console{}, Chat: &aichat.Chat{}, Service: &sessionstore.Service{}, Client: &mcp.Client{}}
 }
 
 func (a *App) startup(ctx context.Context) {
@@ -132,7 +131,12 @@ func (a *App) startup(ctx context.Context) {
 	a.Scheduler.Start()
 	// MCP 客户端：仅主窗口进程初始化（浮窗/调试控制台不拉 MCP 子进程，避免同机双实例）
 	if !a.IsAIFloatWindow() && !a.IsDebugConsoleWindow() {
-		a.initMCPManager()
+		if err := mcp.InitClient(a.Client, func(event string, payload any) {
+			runtime.EventsEmit(ctx, event, payload)
+		}); err != nil {
+			// 损坏的 mcp.json 不阻塞启动：设置页会读到同样的错误并展示路径
+			writeAppLog("warn", "MCP 配置加载失败：%v", err)
+		}
 	}
 	if a.IsAIFloatWindow() {
 		runtime.WindowSetTitle(ctx, "AI 助手 · CaDt-DataLens")
