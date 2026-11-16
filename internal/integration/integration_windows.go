@@ -1,6 +1,6 @@
 //go:build windows
 
-package main
+package integration
 
 import (
 	"errors"
@@ -40,17 +40,17 @@ type IntegrationStatus struct {
 }
 
 const (
-	hwndBroadcast    = 0xFFFF
-	wmSettingChange  = 0x001A
-	smtoAbortIfHung  = 0x0002
-	envSubKey        = "Environment"
+	hwndBroadcast   = 0xFFFF
+	wmSettingChange = 0x001A
+	smtoAbortIfHung = 0x0002
+	envSubKey       = "Environment"
 )
 
 var shChangeNotify = windows.NewLazySystemDLL("shell32.dll").NewProc("SHChangeNotify")
 var regSetValueEx = windows.NewLazySystemDLL("advapi32.dll").NewProc("RegSetValueExW")
 var sendMessageTimeout = windows.NewLazySystemDLL("user32.dll").NewProc("SendMessageTimeoutW")
 
-func notifyShell() {
+func NotifyShell() {
 	shChangeNotify.Call(shellChgAssoc, shellChgIdList, 0, 0)
 }
 
@@ -129,7 +129,7 @@ func deleteKeyTree(path string) error {
 	return err
 }
 
-func registerFileAssociation(exe string) error {
+func RegisterFileAssociation(exe string) error {
 	prog := classesRoot + assocProgID
 	if err := setString(prog, "", assocLabel); err != nil {
 		return err
@@ -159,7 +159,7 @@ func registerFileAssociation(exe string) error {
 	return setString(appKey+`\shell\open\command`, "", commandFor(exe, "%1"))
 }
 
-func unregisterFileAssociation(exe string) error {
+func UnregisterFileAssociation(exe string) error {
 	if err := deleteKeyTree(classesRoot + assocProgID); err != nil {
 		return err
 	}
@@ -201,7 +201,7 @@ func contextMenuEntries() []struct {
 	}
 }
 
-func registerContextMenu(exe string) error {
+func RegisterContextMenu(exe string) error {
 	for _, entry := range contextMenuEntries() {
 		if err := setString(entry.path, "", entry.label); err != nil {
 			return err
@@ -216,7 +216,7 @@ func registerContextMenu(exe string) error {
 	return nil
 }
 
-func unregisterContextMenu() error {
+func UnregisterContextMenu() error {
 	for _, entry := range contextMenuEntries() {
 		if err := deleteKeyTree(entry.path); err != nil {
 			return err
@@ -297,7 +297,7 @@ func isPathRegisteredFor(exe string) (bool, string, error) {
 	return false, value, nil
 }
 
-func setPathRegisteredFor(exe string, enabled bool) error {
+func SetPathRegisteredFor(exe string, enabled bool) error {
 	exeDir := pathEntryFor(exe)
 	value, kind, err := userPathState()
 	if err != nil {
@@ -329,49 +329,49 @@ func setPathRegisteredFor(exe string, enabled bool) error {
 	return nil
 }
 
-func (a *App) SetFileAssociation(enabled bool) error {
+func (m *Registrar) SetFileAssociation(enabled bool) error {
 	exe, err := os.Executable()
 	if err != nil {
 		return err
 	}
 	if enabled {
-		err = registerFileAssociation(exe)
+		err = RegisterFileAssociation(exe)
 	} else {
-		err = unregisterFileAssociation(exe)
+		err = UnregisterFileAssociation(exe)
 	}
 	if err != nil {
 		return err
 	}
-	notifyShell()
+	NotifyShell()
 	return nil
 }
 
-func (a *App) SetContextMenu(enabled bool) error {
+func (m *Registrar) SetContextMenu(enabled bool) error {
 	exe, err := os.Executable()
 	if err != nil {
 		return err
 	}
 	if enabled {
-		err = registerContextMenu(exe)
+		err = RegisterContextMenu(exe)
 	} else {
-		err = unregisterContextMenu()
+		err = UnregisterContextMenu()
 	}
 	if err != nil {
 		return err
 	}
-	notifyShell()
+	NotifyShell()
 	return nil
 }
 
-func (a *App) SetPathRegistered(enabled bool) error {
+func (m *Registrar) SetPathRegistered(enabled bool) error {
 	exe, err := os.Executable()
 	if err != nil {
 		return err
 	}
-	return setPathRegisteredFor(exe, enabled)
+	return SetPathRegisteredFor(exe, enabled)
 }
 
-func (a *App) GetIntegrationStatus() (*IntegrationStatus, error) {
+func (m *Registrar) GetIntegrationStatus() (*IntegrationStatus, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		return nil, err

@@ -19,6 +19,7 @@ import (
 	"datalens/internal/cmdbridge"
 	"datalens/internal/fileio"
 	"datalens/internal/fsops"
+	"datalens/internal/integration"
 	"datalens/internal/mcp"
 	"datalens/internal/mcpsamples"
 	"datalens/internal/notify"
@@ -37,37 +38,38 @@ import (
 const appVersion = "v1.1.0"
 
 type App struct {
-	*reading.Reader       // 阅读模式引擎（internal/reading），提升方法即 Wails 绑定
-	*run.Runner           // 运行代码引擎（internal/run）
-	*browser.Host         // 内嵌浏览器引擎（internal/browser）
-	*search.Searcher      // 工作区检索 / glob（internal/search）
-	*aischedule.Scheduler // AI 定时任务调度器（internal/aischedule）
-	*cmdbridge.Bridge     // 进程桥：插件 / AI 终端命令（internal/cmdbridge）
-	*terminal.Terminal    // 内置终端后端（internal/terminal）
-	*toolchain.Toolchain  // 语言环境检测（internal/toolchain）
-	*aiconfig.Store       // AI 配置文件读写（internal/aiconfig）
-	*plugins.Manager      // 插件与市场（internal/plugins）
-	*skills.Skills        // 内置技能与 agent 技能注册（internal/skills）
-	*screenshot.Capturer  // 应用窗口截图（internal/screenshot）
-	*notify.Notifier      // 系统通知（internal/notify）
-	*watch.Watcher        // 工作区文件监听（internal/watch）
-	*fileio.Files         // 文件读写与编码（internal/fileio）
-	*fsops.FS             // 目录与条目操作（internal/fsops）
-	*mcpsamples.Samples   // 内置 MCP 示例（internal/mcpsamples）
-	ctx                   context.Context
-	startupTargets        []OpenTarget
-	startupSettingsPane   string
-	startupAISession      string
-	dirty                 bool
-	forceClose            bool
-	aiRunning             bool
-	aiTimersMu            sync.Mutex
-	aiTimers              *aitimer.Registry
-	muMCP                 sync.Mutex
-	mcp                   *mcp.Manager
-	convert               *convertOptions
-	convertExitCode       int
-	convertDone           atomic.Bool
+	*reading.Reader        // 阅读模式引擎（internal/reading），提升方法即 Wails 绑定
+	*run.Runner            // 运行代码引擎（internal/run）
+	*browser.Host          // 内嵌浏览器引擎（internal/browser）
+	*search.Searcher       // 工作区检索 / glob（internal/search）
+	*aischedule.Scheduler  // AI 定时任务调度器（internal/aischedule）
+	*cmdbridge.Bridge      // 进程桥：插件 / AI 终端命令（internal/cmdbridge）
+	*terminal.Terminal     // 内置终端后端（internal/terminal）
+	*toolchain.Toolchain   // 语言环境检测（internal/toolchain）
+	*aiconfig.Store        // AI 配置文件读写（internal/aiconfig）
+	*plugins.Manager       // 插件与市场（internal/plugins）
+	*skills.Skills         // 内置技能与 agent 技能注册（internal/skills）
+	*screenshot.Capturer   // 应用窗口截图（internal/screenshot）
+	*notify.Notifier       // 系统通知（internal/notify）
+	*watch.Watcher         // 工作区文件监听（internal/watch）
+	*fileio.Files          // 文件读写与编码（internal/fileio）
+	*fsops.FS              // 目录与条目操作（internal/fsops）
+	*integration.Registrar // Windows 文件关联 / 右键菜单 / PATH（internal/integration）
+	*mcpsamples.Samples    // 内置 MCP 示例（internal/mcpsamples）
+	ctx                    context.Context
+	startupTargets         []OpenTarget
+	startupSettingsPane    string
+	startupAISession       string
+	dirty                  bool
+	forceClose             bool
+	aiRunning              bool
+	aiTimersMu             sync.Mutex
+	aiTimers               *aitimer.Registry
+	muMCP                  sync.Mutex
+	mcp                    *mcp.Manager
+	convert                *convertOptions
+	convertExitCode        int
+	convertDone            atomic.Bool
 }
 
 type OpenTarget struct {
@@ -80,7 +82,7 @@ type OpenTarget struct {
 type FileData = fileio.FileData
 
 func NewApp() *App {
-	return &App{Reader: &reading.Reader{}, Runner: &run.Runner{}, Host: &browser.Host{}, Searcher: &search.Searcher{}, Scheduler: &aischedule.Scheduler{}, Bridge: &cmdbridge.Bridge{}, Terminal: &terminal.Terminal{}, Toolchain: &toolchain.Toolchain{}, Store: &aiconfig.Store{}, Manager: &plugins.Manager{}, Skills: &skills.Skills{}, Capturer: &screenshot.Capturer{}, Notifier: &notify.Notifier{}, Watcher: &watch.Watcher{}, Samples: &mcpsamples.Samples{}, Files: &fileio.Files{}, FS: &fsops.FS{}}
+	return &App{Reader: &reading.Reader{}, Runner: &run.Runner{}, Host: &browser.Host{}, Searcher: &search.Searcher{}, Scheduler: &aischedule.Scheduler{}, Bridge: &cmdbridge.Bridge{}, Terminal: &terminal.Terminal{}, Toolchain: &toolchain.Toolchain{}, Store: &aiconfig.Store{}, Manager: &plugins.Manager{}, Skills: &skills.Skills{}, Capturer: &screenshot.Capturer{}, Notifier: &notify.Notifier{}, Watcher: &watch.Watcher{}, Samples: &mcpsamples.Samples{}, Files: &fileio.Files{}, FS: &fsops.FS{}, Registrar: &integration.Registrar{}}
 }
 
 func (a *App) startup(ctx context.Context) {

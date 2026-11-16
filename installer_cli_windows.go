@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 
+	"datalens/internal/integration"
 	"datalens/internal/skills"
 )
 
@@ -65,18 +66,18 @@ func runInstallerCommand(args []string) bool {
 		switch action {
 		case "assoc":
 			if enabled {
-				err = registerFileAssociation(exe)
+				err = integration.RegisterFileAssociation(exe)
 			} else {
-				err = unregisterFileAssociation(exe)
+				err = integration.UnregisterFileAssociation(exe)
 			}
 		case "menu":
 			if enabled {
-				err = registerContextMenu(exe)
+				err = integration.RegisterContextMenu(exe)
 			} else {
-				err = unregisterContextMenu()
+				err = integration.UnregisterContextMenu()
 			}
 		case "path":
-			err = setPathRegisteredFor(exe, enabled)
+			err = integration.SetPathRegisteredFor(exe, enabled)
 		case "skill":
 			if enabled {
 				err = skills.RegisterAgentSkill()
@@ -91,7 +92,7 @@ func runInstallerCommand(args []string) bool {
 			os.Exit(2)
 		}
 	}
-	notifyShell()
+	integration.NotifyShell()
 	fmt.Printf("integration %s ok: %s\n", mode, strings.Join(actions, ","))
 	return true
 }

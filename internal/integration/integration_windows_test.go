@@ -1,6 +1,6 @@
 //go:build windows
 
-package main
+package integration
 
 import (
 	"testing"
@@ -21,7 +21,7 @@ func TestCommandHelpers(t *testing.T) {
 }
 
 func TestIntegrationStatusReadable(t *testing.T) {
-	status, err := NewApp().GetIntegrationStatus()
+	status, err := (&Registrar{}).GetIntegrationStatus()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +64,7 @@ func TestRegistryHelpersRoundTrip(t *testing.T) {
 }
 
 func TestSetPathRegisteredRoundTrip(t *testing.T) {
-	app := NewApp()
+	app := &Registrar{}
 
 	// 记录初始状态，结束后还原
 	statusBefore, err := app.GetIntegrationStatus()
