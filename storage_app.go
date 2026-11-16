@@ -11,6 +11,7 @@ import (
 
 	"datalens/internal/activity"
 	"datalens/internal/aicatalog"
+	"datalens/internal/browser"
 	"datalens/internal/envvars"
 	"datalens/internal/mcp"
 	"datalens/internal/run"
@@ -22,7 +23,7 @@ import (
 var storageService = storage.New(storage.Deps{
 	Location:              storageLocation,
 	RemoveToRecycleBin:    deleteEntry,
-	ActiveBrowserProfiles: browserActiveProfileDirs,
+	ActiveBrowserProfiles: browser.ActiveProfileDirs,
 	BeforeClear: map[string]func(){
 		// 派生 SQLite 打开状态下删不掉，清除前先释放本进程句柄
 		"session-index": sessionindex.ResetFiles,
@@ -41,7 +42,7 @@ func storageLocation(name string) string {
 	case storage.LocWebview:
 		return webviewDataPath()
 	case storage.LocBrowserProfiles:
-		return appDataChild(browserProfileRoot)
+		return appDataChild(browser.ProfileRoot)
 	case storage.LocRunTemp:
 		return run.RunTempRoot()
 	case storage.LocAppLogs:

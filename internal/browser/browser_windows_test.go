@@ -1,6 +1,6 @@
 //go:build windows
 
-package main
+package browser
 
 import (
 	"fmt"
@@ -113,7 +113,7 @@ func TestBrowserEmbedAndCDP(t *testing.T) {
 	browserParentHWND = func() uintptr { return hwnd }
 	defer func() { browserParentHWND = origParent }()
 
-	app := &App{}
+	app := &Host{}
 	info, err := app.BrowserOpen("t-browser", "about:blank", "test")
 	if err != nil {
 		t.Fatalf("BrowserOpen: %v", err)
@@ -236,7 +236,7 @@ func TestBrowserLocalFileNavigation(t *testing.T) {
 	browserParentHWND = func() uintptr { return hwnd }
 	defer func() { browserParentHWND = origParent }()
 
-	app := &App{}
+	app := &Host{}
 	if _, err := app.BrowserOpen("t-file", "about:blank", "test"); err != nil {
 		t.Fatalf("BrowserOpen: %v", err)
 	}

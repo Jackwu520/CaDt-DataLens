@@ -1,6 +1,6 @@
 //go:build windows
 
-package main
+package browser
 
 // 内嵌浏览器「视口尺寸」回归测试：预设切换全链路的存活冒烟 +
 // 页面 postMessage 非字符串导致整进程闪退的崩溃类回归。
@@ -55,7 +55,7 @@ func TestBrowserViewportPresetSmoke(t *testing.T) {
 	browserParentHWND = func() uintptr { return hwnd }
 	defer func() { browserParentHWND = origParent }()
 
-	app := &App{}
+	app := &Host{}
 	if _, err := app.BrowserOpen("t-resize", "data:text/html,<html><head><meta name='viewport' content='width=device-width'><title>rp</title></head><body>resize repro</body></html>", "test"); err != nil {
 		t.Fatalf("BrowserOpen: %v", err)
 	}
@@ -119,7 +119,7 @@ func TestBrowserObjectMessageQuarantine(t *testing.T) {
 	browserParentHWND = func() uintptr { return hwnd }
 	defer func() { browserParentHWND = origParent }()
 
-	app := &App{}
+	app := &Host{}
 	url := "data:text/html,<html><body><script>setTimeout(function(){window.chrome.webview.postMessage({a:1});},200)</script></body></html>"
 	if _, err := app.BrowserOpen("t-objmsg", url, "test"); err != nil {
 		t.Fatalf("BrowserOpen: %v", err)

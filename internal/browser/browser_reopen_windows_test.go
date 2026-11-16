@@ -1,6 +1,6 @@
 //go:build windows
 
-package main
+package browser
 
 import (
 	"syscall"
@@ -43,7 +43,7 @@ func TestBrowserCloseThenReopen(t *testing.T) {
 	browserParentHWND = func() uintptr { return hwnd }
 	defer func() { browserParentHWND = origParent }()
 
-	app := &App{}
+	app := &Host{}
 	if _, err := app.BrowserOpen("t-a", "about:blank", "test"); err != nil {
 		t.Fatalf("第一次 BrowserOpen: %v", err)
 	}
@@ -113,7 +113,7 @@ func TestBrowserControlRaisedAboveMainWebView(t *testing.T) {
 	browserParentHWND = func() uintptr { return parent }
 	defer func() { browserParentHWND = origParent }()
 
-	app := &App{}
+	app := &Host{}
 	if _, err := app.BrowserOpen("t-z", "about:blank", "test"); err != nil {
 		t.Fatalf("BrowserOpen: %v", err)
 	}
@@ -182,7 +182,7 @@ func TestBrowserEnsureZRaisesCoveredControl(t *testing.T) {
 	browserParentHWND = func() uintptr { return parent }
 	defer func() { browserParentHWND = origParent }()
 
-	app := &App{}
+	app := &Host{}
 	if _, err := app.BrowserOpen("t-ensure", "about:blank", "test"); err != nil {
 		t.Fatalf("BrowserOpen: %v", err)
 	}

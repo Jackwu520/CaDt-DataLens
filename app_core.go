@@ -13,6 +13,7 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
 	"datalens/internal/aitimer"
+	"datalens/internal/browser"
 	"datalens/internal/mcp"
 	"datalens/internal/reading"
 	"datalens/internal/run"
@@ -30,6 +31,7 @@ const appVersion = "v1.1.0"
 type App struct {
 	*reading.Reader     // 阅读模式引擎（internal/reading），提升方法即 Wails 绑定
 	*run.Runner         // 运行代码引擎（internal/run）
+	*browser.Host       // 内嵌浏览器引擎（internal/browser）
 	ctx                 context.Context
 	startupTargets      []OpenTarget
 	startupSettingsPane string
@@ -73,7 +75,7 @@ type FileData struct {
 }
 
 func NewApp() *App {
-	return &App{Reader: &reading.Reader{}, Runner: &run.Runner{}}
+	return &App{Reader: &reading.Reader{}, Runner: &run.Runner{}, Host: &browser.Host{}}
 }
 
 func (a *App) startup(ctx context.Context) {
@@ -82,6 +84,9 @@ func (a *App) startup(ctx context.Context) {
 		runtime.EventsEmit(ctx, event, data)
 	}
 	run.Emit = func(event string, data any) {
+		runtime.EventsEmit(ctx, event, data)
+	}
+	browser.Emit = func(event string, data any) {
 		runtime.EventsEmit(ctx, event, data)
 	}
 	if a.convert != nil {

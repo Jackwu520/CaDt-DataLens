@@ -1,6 +1,6 @@
 //go:build windows
 
-package main
+package browser
 
 // go-webview2 的 ICoreWebView2 wrapper 只覆盖了部分方法；这里按 COM vtable 槽位
 // （官方 IDL 顺序，与库内 iCoreWebView2Vtbl 字段顺序一致）直接调用缺失的方法，

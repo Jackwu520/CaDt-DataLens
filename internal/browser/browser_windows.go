@@ -1,6 +1,6 @@
 //go:build windows
 
-package main
+package browser
 
 // 浏览器使用标签页内核：宿主线程（STA + 消息泵）上创建/操作嵌入式 WebView2，
 // 绑定方法从 Wails goroutine 封送任务到宿主线程执行。
@@ -19,8 +19,9 @@ import (
 	"time"
 	"unsafe"
 
+	"datalens/internal/appdata"
+
 	"github.com/wailsapp/go-webview2/pkg/edge"
-	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 const (
@@ -112,7 +113,7 @@ func browserHostWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 func runBrowserTask(task func()) {
 	defer func() {
 		if r := recover(); r != nil {
-			writeAppLog("ERROR", "浏览器宿主任务崩溃：%v", r)
+			logf("ERROR", "浏览器宿主任务崩溃：%v", r)
 		}
 	}()
 	task()
@@ -120,7 +121,7 @@ func runBrowserTask(task func()) {
 
 func browserHostFail(format string, args ...interface{}) {
 	browserHostErr = fmt.Errorf(format, args...)
-	writeAppLog("ERROR", "browser-host 初始化失败：%v", browserHostErr)
+	logf("ERROR", "browser-host 初始化失败：%v", browserHostErr)
 	close(browserHostReady)
 }
 
@@ -245,7 +246,7 @@ type browserInstance struct {
 	canGoFwd   bool
 	loading    bool
 	visible    bool
-	raster     float64 // 当前生效的 RasterizationScale（宿主线程读写）
+	raster     float64     // 当前生效的 RasterizationScale（宿主线程读写）
 	dead       atomic.Bool // 内核错误后隔离：该实例不再接受操作，只等关闭
 	emit       func(event string, data interface{})
 }
@@ -302,7 +303,7 @@ func browserRaiseControl(inst *browserInstance) {
 // z 顶，把内嵌控件盖回下面——用户看到内容区「黑屏」，点一下（触发重新同步 /
 // 一次 SetBounds）才恢复（2026-11-14 实测）。前端 250ms 兜底轮询无条件调用本方法；
 // 控件已在 z 顶（或上方只有隐藏兄弟）时零副作用。
-func (a *App) BrowserEnsureZ(id string) error {
+func (h *Host) BrowserEnsureZ(id string) error {
 	jobErr := browserHostRun(func() {
 		inst := browserGet(id)
 		if inst == nil || inst.hwndCtl == 0 || !inst.visible {
@@ -328,7 +329,12 @@ func (a *App) BrowserEnsureZ(id string) error {
 }
 
 // browserParentHWND 返回 WebView2 控件的宿主父窗口（生产 = Wails 主窗口；测试可替换）。
-var browserParentHWND = findWailsWindow
+var browserParentHWND = func() uintptr {
+	if FindParent != nil {
+		return FindParent()
+	}
+	return 0
+}
 
 func browserGet(id string) *browserInstance {
 	browserMu.Lock()
@@ -347,10 +353,10 @@ func browserGetRaw(id string) *browserInstance {
 	return browserInstances[id]
 }
 
-// browserActiveProfileDirs 列出仍然存活的实例各自占用的配置目录名。
+// ActiveProfileDirs 列出仍然存活的实例各自占用的配置目录名。
 // 「存储与清理」清除内嵌浏览器数据时按它跳过在用实例——
 // 删了既会被 WebView2 进程拒绝，又会让正开着的标签页当场失联。
-func browserActiveProfileDirs() map[string]bool {
+func ActiveProfileDirs() map[string]bool {
 	browserMu.Lock()
 	defer browserMu.Unlock()
 	out := make(map[string]bool, len(browserInstances))
@@ -367,7 +373,7 @@ func browserActiveProfileDirs() map[string]bool {
 // 只在宿主线程（含 COM 回调上下文）调用。
 func browserKillInstance(inst *browserInstance, source string, err error) {
 	first := !inst.dead.Swap(true)
-	writeAppLog("ERROR", "browser-%s 内核错误（%s，实例已隔离，请关闭标签页后重开）：%v\n%s",
+	logf("ERROR", "browser-%s 内核错误（%s，实例已隔离，请关闭标签页后重开）：%v\n%s",
 		inst.id, source, err, debug.Stack())
 	if first && inst.emit != nil {
 		inst.emit("browser-error", map[string]interface{}{"id": inst.id})
@@ -429,7 +435,7 @@ func browserCreateOnHost(inst *browserInstance, hwnd uintptr) error {
 	c.SetErrorCallback(func(err error) {
 		browserKillInstance(inst, "errorCallback", err)
 	})
-	c.DataPath = filepath.Join(appDataRoot(), browserProfileRoot, sanitizeBrowserProfileKey(inst.id+"_"+inst.profileKey))
+	c.DataPath = filepath.Join(appdata.Root(), ProfileRoot, sanitizeBrowserProfileKey(inst.id+"_"+inst.profileKey))
 	c.NavigationCompletedCallback = func(sender *edge.ICoreWebView2, args *edge.ICoreWebView2NavigationCompletedEventArgs) {
 		browserCallbackGuard(inst, "NavigationCompleted", func() {
 			inst.loading = false
@@ -457,7 +463,7 @@ func browserCreateOnHost(inst *browserInstance, hwnd uintptr) error {
 		}
 	}
 	if inst.hwndCtl == 0 {
-		writeAppLog("WARN", "browser-%s：未找到 WebView2 控件窗口，页面可能被主界面遮挡", inst.id)
+		logf("WARN", "browser-%s：未找到 WebView2 控件窗口，页面可能被主界面遮挡", inst.id)
 	}
 	ctrl := c.GetController()
 	wv, err := ctrl.GetCoreWebView2()
@@ -486,7 +492,7 @@ func browserCreateOnHost(inst *browserInstance, hwnd uintptr) error {
 
 // ---- App 绑定方法 ----
 
-func (a *App) BrowserOpen(id, url, profileKey string) (map[string]string, error) {
+func (h *Host) BrowserOpen(id, url, profileKey string) (map[string]string, error) {
 	id = strings.TrimSpace(id)
 	if id == "" {
 		return nil, fmt.Errorf("id 不能为空")
@@ -506,11 +512,6 @@ func (a *App) BrowserOpen(id, url, profileKey string) (map[string]string, error)
 	if browserInstances[id] != nil {
 		browserMu.Unlock()
 		return nil, fmt.Errorf("浏览器标签页 %s 已存在", id)
-	}
-	emit := func(event string, data interface{}) {
-		if a.ctx != nil {
-			wruntime.EventsEmit(a.ctx, event, data)
-		}
 	}
 	inst := &browserInstance{id: id, profileKey: profileKey, url: url, emit: emit}
 	browserInstances[id] = inst
@@ -549,7 +550,7 @@ func browserWrapErr(id string, err error) error {
 	return fmt.Errorf("浏览器标签页未就绪：%s", id)
 }
 
-func (a *App) BrowserNavigate(id string, url string) error {
+func (h *Host) BrowserNavigate(id string, url string) error {
 	var taskErr error
 	jobErr := browserHostRun(func() {
 		inst := browserGet(id)
@@ -584,7 +585,7 @@ func (a *App) BrowserNavigate(id string, url string) error {
 	return taskErr
 }
 
-func (a *App) BrowserGoBack(id string) error {
+func (h *Host) BrowserGoBack(id string) error {
 	var taskErr error
 	jobErr := browserHostRun(func() {
 		inst := browserGet(id)
@@ -600,7 +601,7 @@ func (a *App) BrowserGoBack(id string) error {
 	return taskErr
 }
 
-func (a *App) BrowserGoForward(id string) error {
+func (h *Host) BrowserGoForward(id string) error {
 	var taskErr error
 	jobErr := browserHostRun(func() {
 		inst := browserGet(id)
@@ -616,7 +617,7 @@ func (a *App) BrowserGoForward(id string) error {
 	return taskErr
 }
 
-func (a *App) BrowserReload(id string) error {
+func (h *Host) BrowserReload(id string) error {
 	var taskErr error
 	jobErr := browserHostRun(func() {
 		inst := browserGet(id)
@@ -636,7 +637,7 @@ func (a *App) BrowserReload(id string) error {
 	return taskErr
 }
 
-func (a *App) BrowserStop(id string) error {
+func (h *Host) BrowserStop(id string) error {
 	var taskErr error
 	jobErr := browserHostRun(func() {
 		inst := browserGet(id)
@@ -656,7 +657,7 @@ func (a *App) BrowserStop(id string) error {
 	return taskErr
 }
 
-func (a *App) BrowserState(id string) (map[string]interface{}, error) {
+func (h *Host) BrowserState(id string) (map[string]interface{}, error) {
 	var state map[string]interface{}
 	var taskErr error
 	jobErr := browserHostRun(func() {
@@ -683,7 +684,7 @@ func jsonStringValue(s string) string {
 	return string(raw)
 }
 
-func (a *App) BrowserEval(id string, script string) (string, error) {
+func (h *Host) BrowserEval(id string, script string) (string, error) {
 	var result string
 	var handler *browserCDPHandler
 	var taskErr error
@@ -708,7 +709,7 @@ func (a *App) BrowserEval(id string, script string) (string, error) {
 // BrowserCallCDP 直连 DevTools Protocol 通道。CallDevToolsProtocolMethod（槽位 36）
 // 在部分 WebView2 环境调用即崩溃（2026-11-11 调试记录，与 handler 实现无关），暂不开放；
 // 截图走 BrowserCaptureScreenshot（CapturePreview），页面脚本走 BrowserEval（ExecuteScript）。
-func (a *App) BrowserCallCDP(id string, method string, paramsJSON string) (string, error) {
+func (h *Host) BrowserCallCDP(id string, method string, paramsJSON string) (string, error) {
 	if browserGet(id) == nil {
 		return "", fmt.Errorf("浏览器标签页不存在：%s", id)
 	}
@@ -720,7 +721,7 @@ func (a *App) BrowserCallCDP(id string, method string, paramsJSON string) (strin
 // 隐藏态的 WebView2 会暂停渲染，CapturePreview 的完成回调永远不来（实测卡满 30s 超时）——
 // 而 browser_screenshot 恰好最常发生在「用户切到 AI 面板」之后，这时标签页正是隐藏的。
 // 所以抓图前临时 Show 一下（不 Focus、不 Raise、不改边界），抓完立即还原 Hide。
-func (a *App) BrowserCaptureScreenshot(id string) (string, error) {
+func (h *Host) BrowserCaptureScreenshot(id string) (string, error) {
 	var result string
 	var taskErr error
 	jobErr := browserHostRun(func() {
@@ -758,7 +759,7 @@ const browserSnapshotTimeout = 300 * time.Millisecond
 // 与 BrowserCaptureScreenshot（AI 的 browser_screenshot 工具）的区别：
 //   - 只在控件可见时抓；隐藏态直接返回空串，不临时 Show（否则原生控件会在弹层上闪一下）；
 //   - 单次尝试、短超时、不等帧、不重试，失败或空白帧一律返回空串（前端沿用上一张或留白）。
-func (a *App) BrowserSnapshot(id string) (string, error) {
+func (h *Host) BrowserSnapshot(id string) (string, error) {
 	var result string
 	jobErr := browserHostRun(func() {
 		inst := browserGet(id)
@@ -779,7 +780,7 @@ func (a *App) BrowserSnapshot(id string) (string, error) {
 // 自适应模式传设备缩放比，固定视口模式传「缩放比×适配系数」，让页面逻辑视口
 // 保持用户设定的宽高、画面等比缩进标签页区域，而不是把控件铺到区域外面
 // （2026-11-16 修复固定视口盖住其他界面）。
-func (a *App) BrowserSetBounds(id string, x int, y int, w int, h int, rasterScale float64) error {
+func (*Host) BrowserSetBounds(id string, x int, y int, w int, h int, rasterScale float64) error {
 	var taskErr error
 	jobErr := browserHostRun(func() {
 		inst := browserGet(id)
@@ -824,20 +825,20 @@ func browserApplyRasterScale(inst *browserInstance, scale float64) {
 		}
 		c3 := inst.controller.GetICoreWebView2Controller3()
 		if c3 == nil {
-			writeAppLog("WARN", "browser-%s：Runtime 不支持 RasterizationScale，固定视口按 1:1 摆位", inst.id)
+			logf("WARN", "browser-%s：Runtime 不支持 RasterizationScale，固定视口按 1:1 摆位", inst.id)
 			inst.raster = scale // 记住期望值，避免每次摆位重复查询
 			return
 		}
 		inst.ctrl3 = c3
 	}
 	if err := inst.ctrl3.PutRasterizationScale(scale); err != nil {
-		writeAppLog("WARN", "browser-%s：设置栅格缩放 %.4f 失败：%v", inst.id, scale, err)
+		logf("WARN", "browser-%s：设置栅格缩放 %.4f 失败：%v", inst.id, scale, err)
 		return
 	}
 	inst.raster = scale
 }
 
-func (a *App) BrowserSetVisible(id string, visible bool) error {
+func (h *Host) BrowserSetVisible(id string, visible bool) error {
 	var taskErr error
 	jobErr := browserHostRun(func() {
 		inst := browserGet(id)
@@ -863,7 +864,7 @@ func (a *App) BrowserSetVisible(id string, visible bool) error {
 	return taskErr
 }
 
-func (a *App) BrowserFocus(id string) error {
+func (h *Host) BrowserFocus(id string) error {
 	var taskErr error
 	jobErr := browserHostRun(func() {
 		inst := browserGet(id)
@@ -883,7 +884,7 @@ func (a *App) BrowserFocus(id string) error {
 	return taskErr
 }
 
-func (a *App) BrowserClose(id string) error {
+func (h *Host) BrowserClose(id string) error {
 	jobErr := browserHostRun(func() {
 		inst := browserGetRaw(id) // 失效实例也要能关掉并清出注册表
 		if inst == nil {
@@ -900,7 +901,7 @@ func (a *App) BrowserClose(id string) error {
 		}
 		if inst.controller != nil {
 			if err := wvControllerClose(inst.controller); err != nil {
-				writeAppLog("WARN", "浏览器控制器关闭失败：%v", err)
+				logf("WARN", "浏览器控制器关闭失败：%v", err)
 			}
 			inst.controller = nil
 			inst.webview = nil
