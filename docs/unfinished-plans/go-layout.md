@@ -1,6 +1,6 @@
 # Go 侧目录与拆包评估
 
-> 状态：评估完成（2026-11-15 首次复评，2026-11-16 复测更新），**结论：分批抽包值得做**。2026-11-14 首轮评估的「暂不抽包」基于当时的高耦合形态，已被实测取代；首轮已落地的部分与判定存档见 §7
+> 状态：评估完成（2026-11-15 首次复评，2026-11-16 复测更新），**结论：分批抽包值得做**。**B1–B3 已于 2026-11-16 实施完毕**（提交 `998915c` / `79c4706` / `eb2c5df`，`go test ./...` 与 `wails build -devtools` 全绿）；B4 待生图/视频线稳定后开工。2026-11-14 首轮评估的「暂不抽包」基于当时的高耦合形态，已被实测取代；首轮已落地的部分与判定存档见 §7
 > 问题：Go 后端 180 个 `.go`（112 非测试 + 68 测试，40,712 行，module `datalens`）平铺在仓库根、单一 `package main`——能不能像前端那样按域分目录、该拆什么、不该拆什么
 
 ## 0. 结论先行（2026-11-16 复测）
@@ -47,15 +47,27 @@
 
 **每批验证**：`go build ./... && go vet ./... && go test ./...` → `wails build -devtools` → 对应链路冒烟（B1：`--check-patch` / `--apply-patch`；B4：AI 连通性测试）→ `git show` 核对是纯搬移。
 
+**实施进度（2026-11-16）**：B1 / B2 / B3 完成，一批一提交：
+
+| 批 | 提交 | 落地内容 |
+| --- | --- | --- |
+| B1 | `998915c` | `internal/patch`（8 引擎 + 2 测试）；顺带把引擎真实依赖提为共享叶子包：`internal/chardec`（编解码簇）、`internal/atomfile`（原子替换）、`internal/recycle`（回收站）；根留 `patch_app.go` / `patch_cli.go` / `patch_review.go` |
+| B2 | `79c4706` | `internal/mcp`（9 引擎 + 4 测试，含假 server `TestMain` 随包迁移）、`internal/sqlview`、`internal/executil`（合并重复的 hide 窗口助手）；根留 `mcp_app.go` / `sqlview_app.go`；`writeFileAtomic` 族下沉 atomfile |
+| B3 | `eb2c5df` | `internal/sessionstore`、`internal/sessionindex`、`internal/activity`、`internal/sessionlock`（三方共用的写锁独立成包）、`atomfile.RepairTornTail`（sessionstore / activity 共用）；根留 `sessionstore_app.go` / `sessionindex_app.go` / `activity_app.go`，`app_atomfile.go` 过渡壳删除 |
+
+实施中修正的两处评估偏差：① sessionindex 与 sessionstore 并非「零交叉」——索引同步需要 `store.list/read`，用包内最小 `Store` 接口解耦（sessionindex 不 import sessionstore），标脏调用留在根壳；② `activity.go` 复用 sessionstore 的 `repairTornTail`、`ai_worklog.go` 复用会话写锁，两者按「上提共享叶子」处理，未在包间互相 import。
+
 **纪律**（沿首轮）：每批一提交、纯搬移不顺手改逻辑；`_windows/_other` 成对搬移且后缀保留；测试跟包走，混合测试文件先留 main；新包导出面先 grep 全仓防撞（`createStructurePanel` 教训）；未来包间 import 保持单向（sessionindex → sessionstore 等现无依赖，出现了也要单向）。
 
 ## 4. 抽包后的根目录（诚实预期）
 
-| | 现状（11-16） | 四批后 |
-| --- | --- | --- |
-| 根目录 .go 文件 | 180 | 约 135–140 |
-| main 包行数 | 40,712 | 约 26,500 |
-| 非测试文件 | 112 | 约 72–78 |
+| | 抽包前（11-16） | **B1–B3 后实测** | 四批后预期 |
+| --- | --- | --- | --- |
+| 根目录 .go 文件 | 180 | **146**（89 非测试 + 57 测试） | 约 135–140 |
+| main 包行数 | 40,712 | **31,636** | 约 28,000–28,500 |
+| 非测试文件 | 112 | **89** | 约 78–80 |
+
+B1–B3 实测根目录减少 34 个文件、约 9,100 行；B4 再移 ~3,500 行（含测试）后与预期吻合。
 
 剩余非测试文件的构成（行数为 11-16 实测）：`app_*` 应用核心（3,214）、AI 编排层 `ai_chat/schedule/float/worklog/command`（1,321，真 Wails 编排）、reading（3,344）、browser + devtools（2,292）、run（1,417）、gitinfo（1,138）、plugins/skills/market/update（1,458）、平台 glue（`*_windows/_other`、integration / toolchain / terminal 等）。**这些留在 `package main` 不是债**：它们要么是 268 个 Wails 绑定的宿主，要么是平台差异对，要么真消费 App 状态（`reading.go` 的 14 处 `a.` 引用即此类）。
 
