@@ -1,0 +1,331 @@
+// ai-ask-cards.js：提问卡与环境变量询问卡（composer 接管区的 AI 提问交互）。
+// 从 ai-takeover.js 拆出（frontend-split-phase3 A2，同域兄弟模块）；ctx 与宿主同源，
+// askNavAction 纯函数（宿主留守，ai-takeover.test.mjs 覆盖）经 extras 注入。函数体逐字搬移。
+import {aiClampInt, aiNowId} from './ai-constants.js';
+
+export function createAIAskCards(ctx, extras) {
+    const el = ctx.el;
+    const decideEnvCreation = ctx.decideEnvCreation;
+    const askDrafts = ctx.askDrafts;
+    const askCountdownText = ctx.askCountdownText;
+    const skipAsk = ctx.skipAsk;
+    const submitAskAnswers = ctx.submitAskAnswers;
+    // ask 接管卡的键盘导航决策（宿主留守的导出纯函数，测试从 ai-takeover.js 取）
+    const askNavAction = extras.askNavAction;
+
+    function askTakeoverKey(entry) {
+        return entry.toolMessage.toolCallId || entry.key;
+    }
+
+    function askDraftFor(entry) {
+        const key = askTakeoverKey(entry);
+        let draft = askDrafts.get(key);
+        if (draft) return draft;
+        draft = {
+            idx: 0,
+            // 键盘焦点落在第几个导航项（选项 + 可选「自己输入」框）；整卡重建后据此回焦，保证连续按键不中断。
+            focusOi: 0,
+            // 推荐项只显示「推荐」角标不预选：预选会和「点选自动下一题」冲突（点推荐=取消选中）。
+            answers: entry.ask.questions.map(() => ({selected: [], custom: ''})),
+        };
+        askDrafts.set(key, draft);
+        return draft;
+    }
+
+    function renderEnvAskTakeover(entry) {
+        const toolMessage = entry.toolMessage;
+        const envAsk = toolMessage.envAsk;
+        el.takeover.dataset.takeoverKey = 'env:' + (toolMessage.toolCallId || aiNowId('env-ask-'));
+        el.takeover.textContent = '';
+        const card = document.createElement('div');
+        card.className = 'ai-takeover-card ai-env-takeover';
+        const head = document.createElement('div');
+        head.className = 'ai-takeover-head';
+        const icon = document.createElement('span');
+        icon.className = 'ai-ask-icon';
+        icon.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.2" y="3.8" width="11.6" height="8.4" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M5.6 8h4.8" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>';
+        const title = document.createElement('span');
+        title.className = 'ai-takeover-title';
+        title.textContent = '创建环境变量 · ' + envAsk.name;
+        head.append(icon, title);
+        const body = document.createElement('div');
+        body.className = 'ai-takeover-body';
+        if (envAsk.description) {
+            const desc = document.createElement('div');
+            desc.className = 'ai-ask-detail';
+            desc.textContent = envAsk.description;
+            body.appendChild(desc);
+        }
+        const row = document.createElement('div');
+        row.className = 'env-ask-row';
+        const input = document.createElement('input');
+        input.type = 'password';
+        input.className = 'ai-settings-input env-ask-input';
+        input.placeholder = '输入变量值（仅你可见）';
+        input.spellcheck = false;
+        input.autocomplete = 'off';
+        const submit = (approved) => decideEnvCreation(toolMessage, approved, input.value);
+        input.addEventListener('keydown', (e) => {
+            e.stopPropagation();
+            if (e.key === 'Enter') { e.preventDefault(); submit(true); }
+            else if (e.key === 'Escape') { e.preventDefault(); submit(false); }
+        });
+        row.appendChild(input);
+        const hint = document.createElement('div');
+        hint.className = 'ai-approval-more';
+        hint.textContent = '值由你亲自输入，AI 看不到；保存后注入终端与命令桥。Enter 创建 · Esc 放弃。';
+        const actions = document.createElement('div');
+        actions.className = 'ai-approval-actions';
+        const deny = document.createElement('button');
+        deny.type = 'button';
+        deny.className = 'dlg-btn';
+        deny.textContent = '放弃';
+        deny.addEventListener('click', () => submit(false));
+        const apply = document.createElement('button');
+        apply.type = 'button';
+        apply.className = 'dlg-btn primary';
+        apply.textContent = '创建';
+        apply.addEventListener('click', () => submit(true));
+        actions.append(deny, apply);
+        body.append(row, hint, actions);
+        card.append(head, body);
+        el.takeover.appendChild(card);
+        setTimeout(() => {
+            if (input.isConnected) input.focus();
+        }, 50);
+    }
+
+    function renderAskTakeover(entry) {
+        const ask = entry.ask;
+        const draft = askDraftFor(entry);
+        const key = askTakeoverKey(entry);
+        const multi = ask.questions.length > 1;
+        draft.idx = multi ? aiClampInt(draft.idx, 0, ask.questions.length - 1, 0) : 0;
+        el.takeover.dataset.takeoverKey = 'ask:' + key;
+        el.takeover.textContent = '';
+        const card = document.createElement('div');
+        card.className = 'ai-takeover-card ai-ask-takeover' + (multi ? ' multi' : '');
+        const head = document.createElement('div');
+        head.className = 'ai-takeover-head';
+        const icon = document.createElement('span');
+        icon.className = 'ai-ask-icon';
+        icon.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M6.2 6.3a1.8 1.8 0 1 1 2.5 1.7c-.5.2-.7.6-.7 1.1v.4" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><circle cx="8" cy="11.6" r=".75" fill="currentColor"/></svg>';
+        const title = document.createElement('span');
+        title.className = 'ai-takeover-title';
+        title.textContent = 'AI 提问' + (multi ? ' · ' + ask.questions.length + ' 个问题' : '');
+        head.append(icon, title);
+        // 有倒计时用倒计时文案；wait（无 deadline）时也可能有"已忽略 N 秒"的提示
+        const countdownText = askCountdownText(ask);
+        if (countdownText) {
+            const countdown = document.createElement('span');
+            countdown.className = 'ai-ask-countdown';
+            countdown.dataset.askKey = key;
+            countdown.textContent = countdownText;
+            head.appendChild(countdown);
+        }
+        const body = document.createElement('div');
+        body.className = 'ai-takeover-body';
+        const qi = draft.idx;
+        const question = ask.questions[qi];
+        const answerDraft = draft.answers[qi];
+        // 键盘导航项 = 选项 + 可选「自己输入」框；focusOi 指向当前项，整卡重建后回焦到这里。
+        const navCount = question.options.length + (question.allowCustom ? 1 : 0);
+        draft.focusOi = aiClampInt(draft.focusOi, 0, Math.max(0, navCount - 1), 0);
+        const block = document.createElement('div');
+        block.className = 'ai-ask-form-q single';
+        const qrow = document.createElement('div');
+        qrow.className = 'ai-ask-qrow';
+        if (question.header) {
+            const header = document.createElement('span');
+            header.className = 'ai-ask-header';
+            header.textContent = question.header;
+            qrow.appendChild(header);
+        }
+        const q = document.createElement('span');
+        q.className = 'ai-ask-question';
+        q.textContent = question.question;
+        qrow.appendChild(q);
+        if (multi) {
+            const pager = document.createElement('span');
+            pager.className = 'ai-ask-pager';
+            const prev = document.createElement('button');
+            prev.type = 'button';
+            prev.className = 'ai-ask-page-btn';
+            prev.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10 3.5L5.5 8l4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+            prev.disabled = qi <= 0;
+            prev.addEventListener('click', () => {
+                draft.idx = Math.max(0, draft.idx - 1);
+                renderAskTakeover(entry);
+            });
+            const pos = document.createElement('span');
+            pos.className = 'ai-ask-page-pos';
+            pos.textContent = (qi + 1) + ' / ' + ask.questions.length;
+            const next = document.createElement('button');
+            next.type = 'button';
+            next.className = 'ai-ask-page-btn';
+            next.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 3.5L10.5 8 6 12.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+            next.disabled = qi >= ask.questions.length - 1;
+            next.addEventListener('click', () => {
+                draft.idx = Math.min(ask.questions.length - 1, draft.idx + 1);
+                renderAskTakeover(entry);
+            });
+            pager.append(prev, pos, next);
+            qrow.appendChild(pager);
+        }
+        block.appendChild(qrow);
+        if (question.detail) {
+            const detail = document.createElement('div');
+            detail.className = 'ai-ask-detail';
+            detail.textContent = question.detail;
+            block.appendChild(detail);
+        }
+        const options = document.createElement('div');
+        options.className = 'ai-ask-options';
+        for (let oi = 0; oi < question.options.length; oi++) {
+            const option = question.options[oi];
+            const selected = answerDraft.selected.includes(option.label);
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'ai-ask-option' + (option.recommended ? ' recommended' : '') + (selected ? ' selected' : '');
+            button.dataset.askOpt = String(oi);
+            if (question.multiSelect) {
+                const check = document.createElement('span');
+                check.className = 'ai-ask-check';
+                check.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.4 8.4l3.1 3.1 6.1-6.9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+                button.appendChild(check);
+            }
+            const num = document.createElement('span');
+            num.className = 'ai-ask-num';
+            num.textContent = (oi + 1) + '.';
+            const label = document.createElement('span');
+            label.className = 'ai-ask-option-label';
+            label.textContent = option.label;
+            button.append(num, label);
+            if (option.recommended) {
+                const badge = document.createElement('span');
+                badge.className = 'ai-ask-badge';
+                badge.textContent = '推荐';
+                button.appendChild(badge);
+            }
+            if (option.description) {
+                const desc = document.createElement('span');
+                desc.className = 'ai-ask-option-desc';
+                desc.textContent = option.description;
+                button.appendChild(desc);
+            }
+            button.addEventListener('click', () => {
+                draft.focusOi = oi;
+                if (question.multiSelect) {
+                    const at = answerDraft.selected.indexOf(option.label);
+                    if (at >= 0) answerDraft.selected.splice(at, 1);
+                    else answerDraft.selected.push(option.label);
+                } else {
+                    answerDraft.selected = selected ? [] : [option.label];
+                    answerDraft.custom = '';
+                    if (answerDraft.selected.length && qi < ask.questions.length - 1) {
+                        draft.idx = qi + 1;
+                        draft.focusOi = 0; // 跳到下一题，焦点回到首项
+                    }
+                }
+                renderAskTakeover(entry);
+            });
+            options.appendChild(button);
+        }
+        if (options.childNodes.length) block.appendChild(options);
+        if (question.allowCustom) {
+            const custom = document.createElement('div');
+            custom.className = 'ai-ask-custom';
+            const num = document.createElement('span');
+            num.className = 'ai-ask-num';
+            num.textContent = (question.options.length + 1) + '.';
+            const input = document.createElement('input');
+            input.className = 'ai-ask-input';
+            input.dataset.askOpt = String(question.options.length);
+            input.type = 'text';
+            input.placeholder = question.options.length ? '其他：自己输入回答…' : '输入你的回答…';
+            input.spellcheck = false;
+            input.value = answerDraft.custom;
+            input.addEventListener('input', () => {
+                answerDraft.custom = input.value;
+            });
+            input.addEventListener('focus', () => {
+                draft.focusOi = question.options.length;
+            });
+            input.addEventListener('keydown', (e) => {
+                if (e.key !== 'Enter') return;
+                e.preventDefault();
+                if (qi < ask.questions.length - 1) {
+                    draft.idx = qi + 1;
+                    renderAskTakeover(entry);
+                } else {
+                    submitAskAnswers(entry, draft.answers);
+                }
+            });
+            custom.append(num, input);
+            block.appendChild(custom);
+        }
+        body.appendChild(block);
+        const foot = document.createElement('div');
+        foot.className = 'ai-takeover-foot';
+        const hint = document.createElement('span');
+        hint.className = 'ai-takeover-hint';
+        hint.textContent = multi
+            ? '上下键选择，回车或空格选中；左右方向键切换问题'
+            : '上下键选择，回车或空格选中；不确定可点「跳过」，超时按设置处理';
+        const skip = document.createElement('button');
+        skip.type = 'button';
+        skip.className = 'dlg-btn';
+        skip.textContent = '跳过';
+        skip.addEventListener('click', () => skipAsk(entry));
+        const main = document.createElement('button');
+        main.type = 'button';
+        main.className = 'dlg-btn primary';
+        if (multi && qi < ask.questions.length - 1) {
+            main.textContent = '继续';
+            main.addEventListener('click', () => {
+                draft.idx = qi + 1;
+                renderAskTakeover(entry);
+            });
+        } else {
+            main.textContent = '提交回答';
+            main.addEventListener('click', () => submitAskAnswers(entry, draft.answers));
+        }
+        foot.append(hint, skip, main);
+        card.append(head, body, foot);
+        if (navCount) {
+            card.addEventListener('keydown', (e) => {
+                const tag = e.target && e.target.tagName;
+                const action = askNavAction(e.key, {
+                    multi,
+                    questionCount: ask.questions.length,
+                    idx: qi,
+                    focusIndex: draft.focusOi,
+                    itemCount: navCount,
+                    inInput: tag === 'INPUT' || tag === 'TEXTAREA',
+                });
+                if (!action) return;
+                e.preventDefault();
+                if (action.type === 'question') {
+                    draft.idx = action.idx;
+                    draft.focusOi = 0;
+                    renderAskTakeover(entry); // 切问题：整卡重建，末尾统一回焦
+                    return;
+                }
+                // 上下：只移动焦点，不重建卡片（避免闪烁 / 打断输入）
+                draft.focusOi = action.index;
+                const opts = card.querySelectorAll('[data-ask-opt]');
+                const target = opts[action.index];
+                if (target) target.focus({preventScroll: true});
+            });
+        }
+        el.takeover.appendChild(card);
+        // 整卡重建后把焦点还回导航项，保证「选完一题按右键→再上下选」这种连续操作不中断。
+        // 首次渲染也聚焦首项，让键盘用户一进来就能直接操作。
+        if (navCount) {
+            const target = card.querySelector('[data-ask-opt="' + draft.focusOi + '"]');
+            if (target) target.focus({preventScroll: true});
+        }
+    }
+
+    return {askTakeoverKey, renderEnvAskTakeover, renderAskTakeover};
+}

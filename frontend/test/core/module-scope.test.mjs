@@ -133,6 +133,12 @@ const HOSTS = [
             'ai/ai-settings-io.js',
         ],
     },
+    {
+        // 补丁卡 / 提问卡与宿主共享同一个 ctx；宿主的 updateComposerTakeover / askNavAction
+        // 经 extras 注入（分发器在宿主工厂内后定义，extras 传惰性箭头）
+        host: 'ai/ai-takeover.js',
+        modules: ['ai/ai-patch-card.js', 'ai/ai-ask-cards.js'],
+    },
 ];
 
 test('拆出的模块不得裸用宿主定义/宿主 import 的符号', () => {
@@ -190,6 +196,40 @@ test('AI 设置域在 mock ctx 下可构造（捕获工厂执行期的 Reference
             'renderPermissionSettings', 'renderProjectRuleTable', 'renderPreferenceSettings',
             'renderModelList', 'openModelEditor', 'editorEntryOf', 'exportAIConfig', 'importAIConfig',
             'isPathApproved', 'projectRulesPath', 'commandApprovalRules', 'addCommandApprovalRule',
+        ];
+        const missing = required.filter((key) => typeof api[key] === 'undefined');
+        assert.deepEqual(missing, [], '工厂返回面缺成员：' + missing.join(' '));
+    } finally {
+        g.window = prevWindow;
+        g.document = prevDocument;
+    }
+});
+
+// AI 接管卡域（phase3 A2）：宿主工厂构造期会先建补丁卡 / 提问卡两个兄弟模块，
+// 这里整体构造一次，捕获 extras 接线顺序 / 返回面别名漏配这类只有执行才炸的问题。
+test('AI 接管卡域在 mock ctx 下可构造（捕获工厂执行期的 ReferenceError / TDZ）', async () => {
+    const g = globalThis;
+    const prevWindow = g.window;
+    const prevDocument = g.document;
+    const anyObj = new Proxy({}, {
+        get: (t, key) => (key === 'then' ? undefined : anyFn),
+        set: () => true,
+    });
+    const anyFn = new Proxy(function () {}, {
+        get: (t, key) => (key === 'then' ? undefined : anyFn),
+        apply: () => anyFn,
+        construct: () => anyObj,
+    });
+    g.window = {addEventListener() {}, removeEventListener() {}};
+    g.document = {getElementById: () => null, createElement: () => anyObj};
+    try {
+        const mod = await import(new URL('../../src/ai/ai-takeover.js', import.meta.url).href);
+        const api = mod.createAITakeover(new Proxy({}, {get: () => anyFn}));
+        // 返回面 9 键 = ai-panel.js 转发层的全部取用面，缺一即面板接管区失灵
+        const required = [
+            'requestPatchApproval', 'planApprovalMessage', 'planApprovalKey',
+            'renderPatchTakeover', 'renderPatchApprovalBody', 'renderApprovalTakeover',
+            'renderAskTakeover', 'renderPlanTakeover', 'updateComposerTakeover',
         ];
         const missing = required.filter((key) => typeof api[key] === 'undefined');
         assert.deepEqual(missing, [], '工厂返回面缺成员：' + missing.join(' '));
