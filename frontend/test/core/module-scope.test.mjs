@@ -139,6 +139,12 @@ const HOSTS = [
         host: 'ai/ai-takeover.js',
         modules: ['ai/ai-patch-card.js', 'ai/ai-ask-cards.js'],
     },
+    {
+        // 详情视图与宿主共享同一个 ctx；块模型纯函数与运行态注册表（const Map 活引用）、
+        // 运行时动作经 extras 注入
+        host: 'ai/ai-subagents.js',
+        modules: ['ai/ai-agent-view.js'],
+    },
 ];
 
 test('拆出的模块不得裸用宿主定义/宿主 import 的符号', () => {
@@ -233,6 +239,53 @@ test('AI 接管卡域在 mock ctx 下可构造（捕获工厂执行期的 Refere
         ];
         const missing = required.filter((key) => typeof api[key] === 'undefined');
         assert.deepEqual(missing, [], '工厂返回面缺成员：' + missing.join(' '));
+    } finally {
+        g.window = prevWindow;
+        g.document = prevDocument;
+    }
+});
+
+// AI 子代理域（phase3 A4）：宿主工厂构造期会执行 HUD 绑定块并连带构造详情视图兄弟模块，
+// 这里整体构造一次，捕获 extras 接线顺序 / 返回面别名漏配这类只有执行才炸的问题。
+test('AI 子代理域在 mock ctx 下可构造（捕获工厂执行期的 ReferenceError / TDZ）', async () => {
+    const g = globalThis;
+    const prevWindow = g.window;
+    const prevDocument = g.document;
+    const anyObj = new Proxy({}, {
+        get: (t, key) => (key === 'then' ? undefined : anyFn),
+        set: () => true,
+    });
+    const anyFn = new Proxy(function () {}, {
+        get: (t, key) => (key === 'then' ? undefined : anyFn),
+        apply: () => anyFn,
+        construct: () => anyObj,
+    });
+    g.window = {addEventListener() {}, removeEventListener() {}};
+    g.document = {getElementById: () => null, createElement: () => anyObj};
+    try {
+        const mod = await import(new URL('../../src/ai/ai-subagents.js', import.meta.url).href);
+        const api = mod.createAISubagents(new Proxy({}, {get: () => anyFn}));
+        // 覆盖三个域：运行时核心 / 头部 HUD / 详情视图（返回面 55 键的代表性子集）
+        const required = [
+            'startSubAgent', 'runSubAgent', 'runSubRound', 'handleSubEvent', 'finalizeSubAgent',
+            'stopSubAgent', 'reviveSubAgent', 'sendToSubAgent', 'waitForSubAgent',
+            'maybeStartSubCompact', 'startSubCompact', 'handleSubCompactEvent',
+            'runSubAskQuestion', 'answerSubAsk', 'handleAgentTool',
+            'updateHeadHud', 'refreshHeadChips', 'listAgentsForHud', 'renderChipsPop', 'initHud',
+            'openAgentView', 'mountAgentView', 'unmountAgentView', 'renderAgentView',
+            'bgJobSnapshot', 'notifyBgListeners',
+            'subAgents', 'subAgentTranscripts', 'subAgentRecords', 'subCompacts',
+        ];
+        const missing = required.filter((key) => typeof api[key] === 'undefined');
+        assert.deepEqual(missing, [], '工厂返回面缺成员：' + missing.join(' '));
+        // 块模型纯函数是模块级导出（宿主经 extras 注入给视图模块），一并核对
+        const pureExports = [
+            'takeInboxBatch', 'inboxMessageText', 'canReviveRecord', 'isStaleRecord',
+            'subAgentScopeOf', 'agentToolArgBrief', 'agentMessageBlocks', 'agentTranscriptBlocks',
+            'agentRecordBlocks', 'agentBlockSig',
+        ];
+        const missingPure = pureExports.filter((key) => typeof mod[key] === 'undefined');
+        assert.deepEqual(missingPure, [], '模块级纯函数缺导出：' + missingPure.join(' '));
     } finally {
         g.window = prevWindow;
         g.document = prevDocument;
