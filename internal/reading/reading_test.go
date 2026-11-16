@@ -1,4 +1,4 @@
-package main
+package reading
 
 // 阅读模式扫描/排序/字数测试（docs/finished-plans/reading-mode.md §17.1）。
 
@@ -112,8 +112,8 @@ func TestSortReadingFiles(t *testing.T) {
 		got[i] = f.Name
 	}
 	want := []string{
-		"第0卷 基本信息.md", // 详情页
-		"第0000章-引言.md", // 前言
+		"第0卷 基本信息.md",                                                  // 详情页
+		"第0000章-引言.md",                                                 // 前言
 		"第0001章-a.md", "第0002章-b.md", "第9章-c.md", "第10章-x.md", "尾声.md", // 正文
 		"番外0001-甲.md", "番外0002-乙.md", // 番外
 		"后记.md", "扩展卷.md", // 扩展/附录
@@ -229,7 +229,7 @@ func TestScanReadingRootFileProfile(t *testing.T) {
 	writeReadingFixture(t, dir, "assets/pic.png", "\x89PNG\r\n\x1a\n占位")
 	snapshot := hashReadingTree(t, dir)
 
-	app := &App{}
+	app := &Reader{}
 	scan, err := app.ScanReadingRoot(dir, ReadingScanOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -270,7 +270,7 @@ func TestScanReadingRootSplitProfile(t *testing.T) {
 	writeReadingFixture(t, dir, "第2卷.md", b2.String())
 	snapshot := hashReadingTree(t, dir)
 
-	app := &App{}
+	app := &Reader{}
 	scan, err := app.ScanReadingRoot(dir, ReadingScanOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -300,7 +300,7 @@ func TestScanReadingRootTreeProfile(t *testing.T) {
 	writeReadingFixture(t, dir, "附录.md", "# 附录篇\n\n## 条目一\n\n## 条目二\n\n内容。\n")
 	snapshot := hashReadingTree(t, dir)
 
-	app := &App{}
+	app := &Reader{}
 	scan, err := app.ScanReadingRoot(dir, ReadingScanOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -330,7 +330,7 @@ func TestScanReadingRootEncoding(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	app := &App{}
+	app := &Reader{}
 	scan, err := app.ScanReadingRoot(dir, ReadingScanOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -385,7 +385,7 @@ func TestSuggestReadingBooks(t *testing.T) {
 	for i := 0; i < 4; i++ {
 		writeReadingFixture(t, backup, "x"+intToString(i)+".md", "# x")
 	}
-	app := &App{}
+	app := &Reader{}
 	sugs := app.SuggestReadingBooks(ws, 12)
 	if len(sugs) == 0 {
 		t.Fatal("没有候选书")

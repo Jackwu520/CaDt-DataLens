@@ -1,4 +1,4 @@
-package main
+package reading
 
 // 阅读模式 DOCX 解析（docs/finished-plans/reading-mode.md §10.4）：
 // 只解 word/document.xml 与 docProps/core.xml 的文本/标题/表格文本，图片给占位。
@@ -23,7 +23,8 @@ const (
 )
 
 // ReadingDocxRow 表格行。
-type ReadingDocxRow struct {	Cells []string `json:"cells"`
+type ReadingDocxRow struct {
+	Cells []string `json:"cells"`
 }
 
 // ReadingDocxBlock 文档块：h1–h6 / p / table / image。
@@ -61,7 +62,7 @@ var (
 )
 
 // ParseReadingDocx 供前端读取 docx 的块序列与元数据。
-func (a *App) ParseReadingDocx(path string) (*ReadingDocx, error) {
+func (s *Reader) ParseReadingDocx(path string) (*ReadingDocx, error) {
 	blocks, title, author, err := readDocxContent(path)
 	if err != nil {
 		return nil, err

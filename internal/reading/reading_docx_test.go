@@ -1,4 +1,4 @@
-package main
+package reading
 
 // DOCX 解析测试（docs/finished-plans/reading-mode.md §17.1）：zip.Writer 现场构造，不提交二进制夹具。
 
@@ -56,7 +56,7 @@ func TestParseReadingDocxBlocks(t *testing.T) {
 		"word/document.xml": docxTestDocument,
 		"docProps/core.xml": `<?xml version="1.0"?><coreProperties xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>测试文档</dc:title><dc:creator>某人</dc:creator></coreProperties>`,
 	})
-	app := &App{}
+	app := &Reader{}
 	doc, err := app.ParseReadingDocx(path)
 	if err != nil {
 		t.Fatal(err)
@@ -95,7 +95,7 @@ func TestParseReadingDocxChineseStyle(t *testing.T) {
 			`<w:p><w:r><w:t>正文</w:t></w:r></w:p>` +
 			`</w:body></w:document>`,
 	})
-	app := &App{}
+	app := &Reader{}
 	doc, err := app.ParseReadingDocx(path)
 	if err != nil {
 		t.Fatal(err)
@@ -110,7 +110,7 @@ func TestParseReadingDocxOldDocRejected(t *testing.T) {
 	if err := os.WriteFile(path, append([]byte{}, docxOLEHeader...), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	app := &App{}
+	app := &Reader{}
 	_, err := app.ParseReadingDocx(path)
 	if err == nil || !strings.Contains(err.Error(), ".doc") {
 		t.Errorf("期望 .doc 明确报错，got %v", err)
@@ -122,7 +122,7 @@ func TestParseReadingDocxBadZip(t *testing.T) {
 	if err := os.WriteFile(path, []byte("not a zip at all"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	app := &App{}
+	app := &Reader{}
 	if _, err := app.ParseReadingDocx(path); err == nil {
 		t.Error("坏 zip 应报错")
 	}
@@ -132,7 +132,7 @@ func TestParseReadingDocxMissingDocument(t *testing.T) {
 	path := buildTestDocx(t, map[string]string{
 		"other.xml": `<x/>`,
 	})
-	app := &App{}
+	app := &Reader{}
 	if _, err := app.ParseReadingDocx(path); err == nil {
 		t.Error("缺少 document.xml 应报错")
 	}
@@ -146,7 +146,7 @@ func TestScanReadingRootWithDocx(t *testing.T) {
 		t.Fatal(err)
 	}
 	snapshot := hashReadingTree(t, dir)
-	app := &App{}
+	app := &Reader{}
 	scan, err := app.ScanReadingRoot(dir, ReadingScanOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -186,7 +186,7 @@ func TestParseReadingDocxRejectsOversizeEntry(t *testing.T) {
 	if err := f.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := (&App{}).ParseReadingDocx(path); err == nil {
+	if _, err := (&Reader{}).ParseReadingDocx(path); err == nil {
 		t.Fatal("超过 50 MB 的 docx 正文应被拒绝（防解压炸弹）")
 	}
 }

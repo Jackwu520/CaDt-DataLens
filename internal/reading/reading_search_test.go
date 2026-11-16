@@ -1,4 +1,4 @@
-package main
+package reading
 
 // 全书搜索测试（docs/finished-plans/reading-mode.md §17.1）：命中、上下文、大小写、上限。
 
@@ -16,7 +16,7 @@ func TestSearchReadingBookBasics(t *testing.T) {
 	writeReadingFixture(t, dir, "第0002章-再遇.md", "# 第0002章 再遇\n\n再遇里也有关键词。\n")
 	writeReadingFixture(t, dir, "第0003章-无关.md", "# 第0003章 无关\n\n完全无关的内容。\n")
 
-	app := &App{}
+	app := &Reader{}
 	res, err := app.SearchReadingBook("req-1", dir, "关键词", ReadingSearchOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -49,7 +49,7 @@ func TestSearchReadingBookBasics(t *testing.T) {
 func TestSearchReadingBookCaseInsensitive(t *testing.T) {
 	dir := t.TempDir()
 	writeReadingFixture(t, dir, "a.md", "Hello World 你好\n")
-	app := &App{}
+	app := &Reader{}
 	res, err := app.SearchReadingBook("req-2", dir, "hello", ReadingSearchOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -66,7 +66,7 @@ func TestSearchReadingBookMaxResults(t *testing.T) {
 		b.WriteString("命中目标在这一行。\n")
 	}
 	writeReadingFixture(t, dir, "many.md", b.String())
-	app := &App{}
+	app := &Reader{}
 	res, err := app.SearchReadingBook("req-3", dir, "命中目标", ReadingSearchOptions{MaxResults: 3})
 	if err != nil {
 		t.Fatal(err)
@@ -78,7 +78,7 @@ func TestSearchReadingBookMaxResults(t *testing.T) {
 
 func TestSearchReadingBookEmptyQuery(t *testing.T) {
 	dir := t.TempDir()
-	app := &App{}
+	app := &Reader{}
 	if _, err := app.SearchReadingBook("req-4", dir, "  ", ReadingSearchOptions{}); err == nil {
 		t.Error("空搜索词应报错")
 	}
@@ -91,7 +91,7 @@ func TestSearchReadingBookDocx(t *testing.T) {
 	if err := os.Rename(path, filepath.Join(dir, "资料.docx")); err != nil {
 		t.Fatal(err)
 	}
-	app := &App{}
+	app := &Reader{}
 	res, err := app.SearchReadingBook("req-5", dir, "沈世安", ReadingSearchOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -108,7 +108,7 @@ func TestSearchReadingBookDocx(t *testing.T) {
 func TestSearchReadingBookEpubFile(t *testing.T) {
 	t.Setenv("AppData", t.TempDir())
 	path := buildTestEpub(t, epubTestFiles())
-	app := &App{}
+	app := &Reader{}
 	res, err := app.SearchReadingBook("req-6", path, "戊己", ReadingSearchOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -119,6 +119,6 @@ func TestSearchReadingBookEpubFile(t *testing.T) {
 }
 
 func TestCancelReadingSearchUnknownID(t *testing.T) {
-	app := &App{}
+	app := &Reader{}
 	app.CancelReadingSearch("no-such-request") // 不应 panic
 }

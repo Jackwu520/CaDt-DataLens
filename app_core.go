@@ -14,6 +14,7 @@ import (
 
 	"datalens/internal/aitimer"
 	"datalens/internal/mcp"
+	"datalens/internal/reading"
 	"datalens/internal/sqlview"
 )
 
@@ -26,6 +27,7 @@ const (
 const appVersion = "v1.1.0"
 
 type App struct {
+	*reading.Reader     // 阅读模式引擎（internal/reading），提升方法即 Wails 绑定
 	ctx                 context.Context
 	startupTargets      []OpenTarget
 	startupSettingsPane string
@@ -69,11 +71,14 @@ type FileData struct {
 }
 
 func NewApp() *App {
-	return &App{}
+	return &App{Reader: &reading.Reader{}}
 }
 
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+	reading.Emit = func(event string, data any) {
+		runtime.EventsEmit(ctx, event, data)
+	}
 	if a.convert != nil {
 		a.waitConvertTimeout()
 		return
@@ -84,7 +89,7 @@ func (a *App) startup(ctx context.Context) {
 	prepareNotifyApp()
 	ensureWindowShown(ctx)
 	sqlview.CleanupTempFiles()
-	cleanupReadingCacheOnStartup()
+	reading.CleanupCacheOnStartup()
 	// 运行代码的临时副本 / 编译产物：启动时清一次过期的（7 天），失败不影响启动；
 	// 多窗口进程可能各跑一次，RemoveAll 幂等所以无害。
 	go func() { _, _ = a.CleanupRunTempStale() }()

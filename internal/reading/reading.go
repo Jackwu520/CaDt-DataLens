@@ -1,4 +1,4 @@
-package main
+package reading
 
 // 阅读模式扫描：把一个目录（或单个 md/txt/docx/epub 文件）识别为一本书。
 // 只读实现：本文件不写任何源文件，也不引入新依赖。
@@ -19,6 +19,42 @@ import (
 
 	"datalens/internal/chardec"
 )
+
+// Reader 阅读模式引擎。零状态：扫描/解析均按入参进行，事件与日志经包级钩子注入。
+type Reader struct{}
+
+// 宿主注入（main 包的根壳在 init/startup 接线）。
+var (
+	// Logf 诊断日志（main/logging.go 的 writeAppLog）。
+	Logf func(level, format string, args ...any)
+	// Emit 前端事件推送（main 在 startup 注入 Wails EventsEmit）。
+	Emit func(event string, data any)
+	// DebugEnabled 是否开启开发者模式（调试级日志门控，main/logging.go 的 devMode）。
+	DebugEnabled func() bool
+	// RegisterPreviewRoot 把本地目录注册为预览资源根（main/app_preview_assets.go）。
+	RegisterPreviewRoot func(dir string) (string, error)
+)
+
+func debugEnabled() bool { return DebugEnabled != nil && DebugEnabled() }
+
+func registerPreviewRoot(dir string) (string, error) {
+	if RegisterPreviewRoot == nil {
+		return "", fmt.Errorf("预览资源注册未接线")
+	}
+	return RegisterPreviewRoot(dir)
+}
+
+func logf(level, format string, args ...any) {
+	if Logf != nil {
+		Logf(level, format, args...)
+	}
+}
+
+func emit(event string, data any) {
+	if Emit != nil {
+		Emit(event, data)
+	}
+}
 
 const (
 	readingDefaultMaxDepth           = 6
@@ -227,7 +263,7 @@ func decodeReadingUTF16(raw []byte, bigEndian bool) string {
 }
 
 // ScanReadingRoot 扫描书根：目录（递归）或单个 md/txt/docx/epub 文件。
-func (a *App) ScanReadingRoot(root string, opts ReadingScanOptions) (*ReadingScan, error) {
+func (s *Reader) ScanReadingRoot(root string, opts ReadingScanOptions) (*ReadingScan, error) {
 	start := time.Now()
 	opts = normalizeReadingScanOptions(opts)
 	abs, err := filepath.Abs(strings.TrimSpace(root))
@@ -241,7 +277,7 @@ func (a *App) ScanReadingRoot(root string, opts ReadingScanOptions) (*ReadingSca
 	scan := &ReadingScan{Root: abs}
 	var files []ReadingFile
 	if info.Mode().IsRegular() {
-		files, err = a.scanReadingSingleFile(abs, info, opts, scan)
+		files, err = s.scanReadingSingleFile(abs, info, opts, scan)
 		if err != nil {
 			return nil, err
 		}
@@ -249,7 +285,7 @@ func (a *App) ScanReadingRoot(root string, opts ReadingScanOptions) (*ReadingSca
 			scan.Title = strings.TrimSuffix(info.Name(), filepath.Ext(info.Name()))
 		}
 	} else if info.IsDir() {
-		files, err = a.scanReadingDir(abs, opts, scan)
+		files, err = s.scanReadingDir(abs, opts, scan)
 		if err != nil {
 			return nil, err
 		}
@@ -262,8 +298,8 @@ func (a *App) ScanReadingRoot(root string, opts ReadingScanOptions) (*ReadingSca
 	scan.Files = files
 	fillReadingProfile(scan)
 	scan.ScanMs = time.Since(start).Milliseconds()
-	if devMode.Load() {
-		writeAppLog("debug", "阅读扫描 %s：%d 文件 / %d 字 / profile=%s / %d ms",
+	if debugEnabled() {
+		logf("debug", "阅读扫描 %s：%d 文件 / %d 字 / profile=%s / %d ms",
 			abs, len(scan.Files), readingTotalWords(scan), scan.Profile, scan.ScanMs)
 	}
 	return scan, nil
@@ -297,7 +333,7 @@ func readingTotalWords(scan *ReadingScan) int {
 }
 
 // scanReadingSingleFile 单文件书：md/txt/docx 直接解析；epub 走 reading_epub.go。
-func (a *App) scanReadingSingleFile(abs string, info os.FileInfo, opts ReadingScanOptions, scan *ReadingScan) ([]ReadingFile, error) {
+func (s *Reader) scanReadingSingleFile(abs string, info os.FileInfo, opts ReadingScanOptions, scan *ReadingScan) ([]ReadingFile, error) {
 	ext := strings.ToLower(filepath.Ext(abs))
 	switch {
 	case readingTextExts[ext] || ext == ".docx":
@@ -420,7 +456,7 @@ func collectReadingFiles(abs string, opts ReadingScanOptions, warnings *[]string
 }
 
 // scanReadingDir 目录扫描：收集文件列表后 4 worker 并发解析，结果再统一排序。
-func (a *App) scanReadingDir(abs string, opts ReadingScanOptions, scan *ReadingScan) ([]ReadingFile, error) {
+func (s *Reader) scanReadingDir(abs string, opts ReadingScanOptions, scan *ReadingScan) ([]ReadingFile, error) {
 	items := collectReadingFiles(abs, opts, &scan.Warnings)
 	files := make([]ReadingFile, len(items))
 	jobs := make(chan int)
@@ -1002,7 +1038,7 @@ func parseReadingMetaText(text string) (title, author, intro string) {
 }
 
 // SuggestReadingBooks 书架候选：统计一级~三级子目录的书籍特征（仅元数据，不读内容）。
-func (a *App) SuggestReadingBooks(workspace string, limit int) []ReadingBookSuggestion {
+func (s *Reader) SuggestReadingBooks(workspace string, limit int) []ReadingBookSuggestion {
 	if limit <= 0 {
 		limit = 12
 	}

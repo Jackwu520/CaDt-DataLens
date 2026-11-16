@@ -1,8 +1,8 @@
-package main
+package reading
 
 // 阅读模式全书搜索（docs/finished-plans/reading-mode.md §11.2）：
 // 不建全文索引、不进 SQLite，按预算即时扫描；支持取消与超时；进度经
-// runtime.EventsEmit("reading-search-progress") 推送。只读实现。
+// Emit 钩子（main 注入 Wails EventsEmit）推送。只读实现。
 
 import (
 	"fmt"
@@ -12,8 +12,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 const (
@@ -78,7 +76,7 @@ func normalizeReadingSearchOptions(opts ReadingSearchOptions) ReadingSearchOptio
 }
 
 // CancelReadingSearch 取消一次进行中的全书搜索。
-func (a *App) CancelReadingSearch(requestID string) {
+func (s *Reader) CancelReadingSearch(requestID string) {
 	requestID = strings.TrimSpace(requestID)
 	if requestID == "" {
 		return
@@ -92,7 +90,7 @@ func (a *App) CancelReadingSearch(requestID string) {
 }
 
 // SearchReadingBook 全书搜索：目录（md/txt/docx）或单个 epub 文件。
-func (a *App) SearchReadingBook(requestID, root, query string, opts ReadingSearchOptions) (*ReadingSearchResult, error) {
+func (s *Reader) SearchReadingBook(requestID, root, query string, opts ReadingSearchOptions) (*ReadingSearchResult, error) {
 	opts = normalizeReadingSearchOptions(opts)
 	query = strings.TrimSpace(query)
 	if query == "" {
@@ -158,9 +156,9 @@ func (a *App) SearchReadingBook(requestID, root, query string, opts ReadingSearc
 		} else {
 			searchReadingTextOrDocx(item.path, item.rel, folded, opts, result)
 		}
-		if requestID != "" && a.ctx != nil && time.Since(lastEmit) > 100*time.Millisecond {
+		if requestID != "" && time.Since(lastEmit) > 100*time.Millisecond {
 			lastEmit = time.Now()
-			runtime.EventsEmit(a.ctx, "reading-search-progress", map[string]interface{}{
+			emit("reading-search-progress", map[string]interface{}{
 				"requestID": requestID,
 				"scanned":   result.FilesScanned,
 				"total":     result.FilesTotal,

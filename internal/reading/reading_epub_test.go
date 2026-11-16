@@ -1,4 +1,4 @@
-package main
+package reading
 
 // EPUB 解析与安全测试（docs/finished-plans/reading-mode.md §17.1）：现场构造最小 EPUB。
 
@@ -64,13 +64,13 @@ const (
 
 func epubTestFiles() map[string]string {
 	return map[string]string{
-		"mimetype":            "application/epub+zip",
+		"mimetype":               "application/epub+zip",
 		"META-INF/container.xml": epubTestContainer,
-		"OEBPS/content.opf":   epubTestOPF,
-		"OEBPS/toc.ncx":       epubTestNCX,
-		"OEBPS/ch1.xhtml":     epubTestCh1,
-		"OEBPS/ch2.xhtml":     epubTestCh2,
-		"OEBPS/img/pic.png":   "\x89PNG\r\n\x1a\n",
+		"OEBPS/content.opf":      epubTestOPF,
+		"OEBPS/toc.ncx":          epubTestNCX,
+		"OEBPS/ch1.xhtml":        epubTestCh1,
+		"OEBPS/ch2.xhtml":        epubTestCh2,
+		"OEBPS/img/pic.png":      "\x89PNG\r\n\x1a\n",
 	}
 }
 
@@ -79,7 +79,7 @@ func TestPrepareReadingEpub(t *testing.T) {
 	path := buildTestEpub(t, epubTestFiles())
 	before := hashReadingTree(t, filepath.Dir(path))
 
-	app := &App{}
+	app := &Reader{}
 	book, err := app.PrepareReadingEpub(path)
 	if err != nil {
 		t.Fatal(err)
@@ -133,7 +133,7 @@ func TestPrepareReadingEpubDRM(t *testing.T) {
 	files := epubTestFiles()
 	files["META-INF/encryption.xml"] = `<?xml version="1.0"?><encryption xmlns="urn:oasis:names:tc:opendocument:xmlns:container"/>`
 	path := buildTestEpub(t, files)
-	app := &App{}
+	app := &Reader{}
 	_, err := app.PrepareReadingEpub(path)
 	if err == nil || !strings.Contains(err.Error(), "DRM") {
 		t.Errorf("期望 DRM 拒绝，got %v", err)
@@ -148,7 +148,7 @@ func TestPrepareReadingEpubZipSlip(t *testing.T) {
 		`href="img/pic.png"`, `href="../../evil.txt"`, 1)
 	files["evil.txt"] = "pwned"
 	path := buildTestEpub(t, files)
-	app := &App{}
+	app := &Reader{}
 	book, err := app.PrepareReadingEpub(path)
 	if err != nil {
 		t.Fatal(err) // 恶意 href 被跳过而非中断
@@ -166,7 +166,7 @@ func TestPrepareReadingEpubMissingContainer(t *testing.T) {
 	files := epubTestFiles()
 	delete(files, "META-INF/container.xml")
 	path := buildTestEpub(t, files)
-	app := &App{}
+	app := &Reader{}
 	if _, err := app.PrepareReadingEpub(path); err == nil {
 		t.Error("缺少 container.xml 应报错")
 	}
@@ -178,7 +178,7 @@ func TestPrepareReadingEpubBadZip(t *testing.T) {
 	if err := os.WriteFile(path, []byte("garbage"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	app := &App{}
+	app := &Reader{}
 	if _, err := app.PrepareReadingEpub(path); err == nil {
 		t.Error("坏 zip 应报错")
 	}
@@ -187,7 +187,7 @@ func TestPrepareReadingEpubBadZip(t *testing.T) {
 func TestScanReadingRootSingleEpub(t *testing.T) {
 	t.Setenv("AppData", t.TempDir())
 	path := buildTestEpub(t, epubTestFiles())
-	app := &App{}
+	app := &Reader{}
 	scan, err := app.ScanReadingRoot(path, ReadingScanOptions{})
 	if err != nil {
 		t.Fatal(err)

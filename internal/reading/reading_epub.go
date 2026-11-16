@@ -1,4 +1,4 @@
-package main
+package reading
 
 // 阅读模式 EPUB 解析（docs/finished-plans/reading-mode.md §10.5）：
 // container.xml → OPF → metadata/manifest/spine；解压 manifest 资源到
@@ -19,10 +19,12 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"datalens/internal/appdata"
 )
 
 const (
-	epubMaxEntries      = 5000
+	epubMaxEntries            = 5000
 	epubMaxFileBytes    int64 = 50 << 20
 	epubMaxExtractBytes int64 = 200 << 20
 	epubCacheMaxBooks         = 20
@@ -73,7 +75,7 @@ var (
 )
 
 // PrepareReadingEpub 解析并解压一本 EPUB；重复调用命中缓存目录直接复用。
-func (a *App) PrepareReadingEpub(path string) (*ReadingEpubBook, error) {
+func (s *Reader) PrepareReadingEpub(path string) (*ReadingEpubBook, error) {
 	return prepareReadingEpub(path)
 }
 
@@ -99,7 +101,7 @@ func prepareReadingEpub(path string) (*ReadingEpubBook, error) {
 	}
 	epubBooks.Unlock()
 
-	cacheDir := filepath.Join(appDataRoot(), "reading-cache", "epub-"+id)
+	cacheDir := filepath.Join(appdata.Root(), "reading-cache", "epub-"+id)
 	meta, err := parseEpubArchive(abs, cacheDir)
 	if err != nil {
 		return nil, err
@@ -127,7 +129,7 @@ func strconvI64(v int64) string {
 }
 
 // ReadReadingEpubChapter 读取已准备的 EPUB 某章 body HTML。
-func (a *App) ReadReadingEpubChapter(epubID string, index int) (*ReadingEpubChapter, error) {
+func (s *Reader) ReadReadingEpubChapter(epubID string, index int) (*ReadingEpubChapter, error) {
 	epubBooks.Lock()
 	book := epubBooks.byID[strings.TrimSpace(epubID)]
 	epubBooks.Unlock()
@@ -514,7 +516,7 @@ func extractEpubBody(content string) string {
 
 // cleanupReadingEpubCache 缓存 LRU：超过 20 本或 500 MB 时按修改时间从旧到新删除。
 func cleanupReadingEpubCache() {
-	root := filepath.Join(appDataRoot(), "reading-cache")
+	root := filepath.Join(appdata.Root(), "reading-cache")
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return
@@ -560,7 +562,7 @@ func cleanupReadingEpubCache() {
 	}
 }
 
-// cleanupReadingCacheOnStartup 启动时清理超限的阅读缓存目录。
-func cleanupReadingCacheOnStartup() {
+// CleanupCacheOnStartup 启动时清理超限的阅读缓存目录。
+func CleanupCacheOnStartup() {
 	cleanupReadingEpubCache()
 }
