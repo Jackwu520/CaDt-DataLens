@@ -24,7 +24,7 @@ CaDt-DataLens 是一个面向 Windows 的轻量级多格式数据查看与编辑
 - `aiconfig*.go`：AI 配置 `ai-config.json` 的原子读写（0600）
 - `sessionindex_app.go` + `internal/sessionindex/`：AI 会话 SQLite **派生**搜索索引（modernc pure Go，JSONL 为唯一真源；包内只依赖 Store 的 List/Read 最小接口）
 - `timer_app.go` + `internal/aitimer/`：AI 计时工具的 Go 侧计时器（纯内存不持久化，倒计时 `time.AfterFunc` 到点 EventsEmit `ai-timer-fired`；注册表回调化便于测试；应用总上限 30 / 会话内 5（运行中计数，done 不计入；会话内上限由前端按会话归属判定）/ 单个 24h）
-- `ai_worklog.go`：AI 工作日志（工作区 `.cadt/logs/` 三层：根 INDEX.md 每月一行 → `{YYYY}/{MM}/INDEX.md` 每条一行**且只放标题一句话** → 当日 md 正文含标题 + 一句话摘要；追加式 + 跨进程锁；只存标题 + 一句话摘要）
+- `ai_worklog_app.go` + `internal/aiworklog/`：AI 工作日志（工作区 `.cadt/logs/` 三层：根 INDEX.md 每月一行 → `{YYYY}/{MM}/INDEX.md` 每条一行**且只放标题一句话** → 当日 md 正文含标题 + 一句话摘要；追加式 + 跨进程锁；只存标题 + 一句话摘要）
 - `activity_app.go` + `internal/activity/`：操作留痕（追加式 JSONL、按月分文件滚动分段、跨进程写锁、保留清理；只存操作摘要，不存正文与密钥）
 - `sqlview_app.go` + `internal/sqlview/`：CSV/TSV/JSONL 的只读 SQL 查询（导入临时 SQLite，不修改原文件）
 - `internal/patch/`：`.patch` 引擎——类型与错误 · 解析（含 git 引号路径）· 严格匹配与 hunks · 计划构建与 `.cadt/patches` 索引 · 两阶段写入（atomic / partial）与字节快照撤销 · 只读审阅解析
@@ -35,18 +35,22 @@ CaDt-DataLens 是一个面向 Windows 的轻量级多格式数据查看与编辑
 - `browser*.go` / `devtools_*.go`：内嵌浏览器、开发者工具
 - `search.go`：工作区内容搜索（有 `searchBudget`、`searchMaxFileSize` 等硬预算）；`SearchWorkspaceFiltered` 把文件名通配下推到搜索层（rg `--glob` / 内置扫描遍历时过滤），AI 的 `search_text` 用它
 - `glob.go`：AI `glob` 工具的后端（`FindFiles` 列文件与大小 + `globMatchPath` 通配匹配；语义与 `frontend/src/ai/ai-file-tools.js` 的 `globMatchPath` 一致、两边用例互相对齐，测试 `glob_test.go`）
-- `structuredir.go`：结构化目录导出
-- `plugins.go` / `skills.go` / `market.go` / `update.go`：插件、技能注册（`docs/skills` 经 `go:embed` 分发，内置技能首次列出时物化到应用数据 `builtin-skills/`）、市场、检查更新
-- `gitinfo.go`：Git 分支/提交面板后端
-- `delete.go`、`envvars*.go`、`terminal_windows.go`（内置终端 ConPTY 会话 + `TermCreate/Write/Resize/Close/Shells` 绑定；AI 读输出用的 64 KiB 环形缓冲与 `TermRead` / `TermList` 也在这里）、`toolchain_windows.go`、`integration_windows.go`、`installer_cli_windows.go`、`notify_windows.go`、`cursors*`、`windowicon*`：Windows 能力与注册表集成（回收站删除在 `internal/recycle`）
+- `structuredir_app.go` + `internal/structuredir/`：目录结构树生成与导出（遍历与 ├── 渲染在包内，保存对话框与写盘留根）
+- `plugins.go` / `skills.go` / `market.go`：插件、技能注册（`docs/skills` 经 `go:embed` 分发，内置技能首次列出时物化到应用数据 `builtin-skills/`——embed 路径相对根目录，`skills.go` 留根）、市场
+- `update_app.go` + `internal/update/`：检查更新（Gitee Release）；版本比较在 `internal/vercmp`
+- `gitinfo_app.go` + `internal/gitinfo/`：Git 分支/提交面板后端（15 个查询/操作绑定，纯引擎）
+- `delete.go`、`terminal_windows.go`（内置终端 ConPTY 会话 + `TermCreate/Write/Resize/Close/Shells` 绑定；AI 读输出用的 64 KiB 环形缓冲与 `TermRead` / `TermList` 也在这里）、`toolchain_windows.go`、`integration_windows.go`、`installer_cli_windows.go`、`notify_windows.go`、`cursors*`、`windowicon*`：Windows 能力与注册表集成（回收站删除在 `internal/recycle`）
 - `run.go` / `run_shells_*.go`：运行代码（`PrepareRun` 临时副本与工作目录、`RunExec` 流式执行 + GBK 解码 + PATH 前置、stdin 队列 `RunInput` / `RunEndInput`、`RunStop`、临时目录清理）；配方与语言知识在前端 `src/run.js`，Go 侧只负责起进程
-- `run_project.go`：项目感知运行（`DetectRunProject` 只读探测项目标记与候选命令，遇 `.git` / 用户主目录停止）；执行仍走 `RunExec`，确认在前端
+- `run_project_app.go` + `internal/runproject/`：项目感知运行（`DetectRunProject` 只读探测项目标记与候选命令，遇 `.git` / 用户主目录停止）；执行仍走 `RunExec`，确认在前端
+- `envvars_app.go` + `internal/envvars/`：环境变量配置（DPAPI 加密、子进程注入合并 `MergeEnv`；平台加解密对随包）
+- `webtools_app.go` + `internal/webtools/`：联网工具（Bing RSS 搜索 + 公网网页抓取）
+- `ai_usage_app.go` + `internal/aiusage/`：AI 账号余额/用量查询
 - `app_dialogs.go` / `app_commands.go` / `app_preview_assets.go` / `app_debugconsole.go`：对话框、命令注册、预览资源、调试控制台
 - `*_test.go`：与同名源文件对应的单元测试
 
 > **`package main` 只能在仓库根**：`//go:embed all:frontend/dist` 与 `frontend/wailsjs/go/main/` 都以根目录为前提，`type App` 与全部 Wails 绑定方法必须留在根。所以根目录的分类靠**文件名前缀 + 同包拆文件**。
 >
-> **纯引擎可以下沉 `internal/<域>`**（2026-11-16 起按 `docs/finished-plans/go-layout.md` 分批执行）：引擎包不 import main、不碰 App，位置与外部动作一律经 `Deps` 钩子注入，根目录留一个 `*_app.go` 壳做挂名绑定。已落地：`internal/storage`、`internal/patch`、`internal/mcp`、`internal/sqlview`、`internal/sessionstore`、`internal/sessionindex`、`internal/activity`、`internal/aitransport`、`internal/aitimer`、`internal/aigen`、`internal/aicatalog`，以及共享叶子包 `internal/atomfile`（原子替换 + 残行修复）、`internal/chardec`（GBK/GB18030 编解码）、`internal/recycle`（回收站删除）、`internal/executil`（防黑窗/杀进程树）、`internal/sessionlock`（跨进程写锁）。四批（B1–B4）已全部实施；后续下沉 reading / run / browser 需先接口化 App 能力（见该方案 §5 的 spike）。**平台 glue（`*_windows/_other` 成对文件）留在根是本分**，不要摊进 internal 包。
+> **纯引擎可以下沉 `internal/<域>`**（2026-11-16 起按 `docs/finished-plans/go-layout.md` 分批执行）：引擎包不 import main、不碰 App，位置与外部动作一律经 `Deps` 钩子注入，根目录留一个 `*_app.go` 壳做挂名绑定。已落地：`internal/storage`、`internal/patch`、`internal/mcp`、`internal/sqlview`、`internal/sessionstore`、`internal/sessionindex`、`internal/activity`、`internal/aitransport`、`internal/aitimer`、`internal/aigen`、`internal/aicatalog`、`internal/gitinfo`、`internal/webtools`、`internal/structuredir`、`internal/runproject`、`internal/envvars`、`internal/update`、`internal/aiworklog`、`internal/aiusage`，以及共享叶子包 `internal/atomfile`（原子替换 + 残行修复）、`internal/chardec`（GBK/GB18030 编解码）、`internal/recycle`（回收站删除）、`internal/executil`（防黑窗/杀进程树）、`internal/sessionlock`（跨进程写锁）、`internal/vercmp`（数字版本比较）。B1–B4 与 B5 收尾批次均已实施；嵌入服务 spike 已验证 Wails 会绑定提升方法，后续下沉 reading / run / browser 可按域服务嵌入推进。**平台 glue（`*_windows/_other` 成对文件）留在根是本分**，不要摊进 internal 包。
 
 ### 前端 `frontend/`
 > 2026-11-14 目录归位：`src/` 顶层只留 `main.js`，其余按域进目录。**Go 的目录即包，前端的目录只是分组**——新增模块直接放进对应域目录，不要往顶层加文件。

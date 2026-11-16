@@ -1,6 +1,6 @@
 # Go 侧目录与拆包评估
 
-> 状态：**已实施完毕**（2026-11-16）。B1–B4 四批全部落地（提交 `998915c` / `79c4706` / `eb2c5df` / `b09fc32`），每批 `go test ./...` 与 `wails build -devtools` 全绿。根目录 180 → **135 个 .go**（84 非测试 + 51 测试）、main 包 40,712 → **26,861 行**。2026-11-14 首轮评估的「暂不抽包」基于当时的高耦合形态，已被实测取代；首轮已落地的部分与判定存档见 §7
+> 状态：**已实施完毕**（2026-11-16）。B1–B4 四批（`998915c` / `79c4706` / `eb2c5df` / `b09fc32`）+ B5 零耦合收尾（`1692006`）全部落地，每批 `go test ./...` 与 `wails build -devtools` 全绿。嵌入服务 spike 成立。根目录 180 → **125 个 .go**（82 非测试 + 43 测试）、main 包 40,712 → **22,948 行**。2026-11-14 首轮评估的「暂不抽包」基于当时的高耦合形态，已被实测取代；首轮已落地的部分与判定存档见 §7
 > 问题：Go 后端 180 个 `.go`（112 非测试 + 68 测试，40,712 行，module `datalens`）平铺在仓库根、单一 `package main`——能不能像前端那样按域分目录、该拆什么、不该拆什么
 
 ## 0. 结论先行（2026-11-16 复测）
@@ -94,3 +94,23 @@
 - 首轮 §6 前端 misfit 四条全部落地：`diff-dialog` → `editor/`、`core/plugins` → `shell/`、`core/widget` 借驻标注（AGENTS.md）、`shell/debugconsole` → `terminal/`。
 - 首轮 §5（`internal/patch` 施工要点：错误不回引 main 助手、`patch_test.go` 拆两半、CLI 冒烟链路）并入本轮 B1。
 - 2026-11-16 增量记录：649253b 新增 `ai_gen.go` / `ai_catalog.go`（均为纯引擎 + 挂名绑定形态，归入 B4）并修改 AI 传输层；`third_party/go-webview2` 本地 fork 已存在（2.2M，子目录不影响平铺）。
+
+## 8. B5 零耦合收尾与嵌入服务 spike（2026-11-16，提交 `1692006`）
+
+**spike 结论：成立**。把 `*probesvc.Service`（`internal/probesvc`，带一个导出方法）嵌入 `App` 后跑 `wails build -devtools`，`frontend/wailsjs/go/main/App.d.ts` 与 `App.js` 都生成了 `ProbeEmbeddedMethod` 绑定——Wails v2 按 App 的**方法集**生成绑定，提升方法对前端可见；运行时派发未做 UI 冒烟（生成侧证据已足够）。探针随后撤除。含义：reading / run / browser 这类真消费 App 状态的域，可以把域服务整体嵌入 App、省掉逐方法壳；服务内仍需回调注入 EventsEmit/对话框等能力。
+
+**B5 范围**（实测零 `a.` 引用的收尾域）：
+
+| 域 | 去向 | 备注 |
+| --- | --- | --- |
+| gitinfo（873 行，15 绑定） | `internal/gitinfo` | 纯引擎；`LooksBinary` 上提 `chardec` 共用 |
+| webtools（522） | `internal/webtools` | 搜索/抓取，代理沿用 aitransport |
+| envvars（199 + 平台对 101） | `internal/envvars` | DPAPI 平台对随包；`MergeEnv` 导出给命令桥/运行/终端 |
+| aiworklog（182） | `internal/aiworklog` | Logf 注入 |
+| structuredir（216） | `internal/structuredir` | 对话框与写盘留根 |
+| runproject（155） | `internal/runproject` | 只读探测 |
+| aiusage（318） | `internal/aiusage` | Version 注入 |
+| update（119） | `internal/update` + `internal/vercmp` | 版本比较上提共享叶子 |
+| skills（229） | **保留根目录** | `//go:embed all:docs/skills` 路径相对包目录，不能下沉 |
+
+**最终结构（2026-11-16）**：根目录 **125 个 .go**（82 非测试 + 43 测试）、main 包 **22,948 行**；`internal/` **25 个包**（19 个域包 + 6 个共享叶子）。剩余根目录文件全是 Wails 绑定壳、真消费 App 状态的编排（reading / browser / run / ai_chat）与平台 glue。
