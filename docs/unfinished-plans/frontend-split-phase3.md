@@ -10,7 +10,7 @@
 > - S1 `6825aa7`：settings-ui 1105 → 759（+ dialogs 158 / select 119 / search 112）
 > - S2a `9cc481f`：writing-ui 2943 → 1922（+ writing-mode 613 / foot-menus 339 / markdown-mermaid 123）；壳暂留四个设置 pane，S2b 再拆
 > - S2b `73a856a` + `544462c`：writing-ui 1922 → 322（+ settings-pane-run 238 / plugins 587 / envvars 270 / lang 574，落在 settings/）；**S2 全完成，writing-ui 从 2943 降到 322**
-> - 另：前端归位四条 misfit + AGENTS.md 按目录重写（`7813ad6`）；Go 侧评估与同包拆文件见 `go-layout.md`（patch/ai/app 三大文件已拆）
+> - 另：前端归位四条 misfit + AGENTS.md 按目录重写（`7813ad6`）；Go 侧评估与拆包见 `docs/finished-plans/go-layout.md`（patch/ai/app 三大文件已拆）
 > - 修复连环符号缺失 `9202270` / `8213ef7`（elsSettings 未注入、langMod TDZ、RECIPES 缺 import、flash 对象简写）+ 跨模块扫描 `aded726`
 > - A3 `6fbf688`：ai-settings-dialog 2133 → 962（+ permission-settings 623 / model-settings 320 / settings-io 214 / preference-settings 188）；bindSettingsPane 640 行按方案留守
 >   - 附带：扫描器此前用行首 `^` 匹配，factory 缩进 4 空格的宿主声明全漏（形同虚设）；改为 0–4 空格 + 模块侧并入局部/形参 + 排除正则，立刻抓出 pref 漏注入；新增 mock ctx 构造冒烟

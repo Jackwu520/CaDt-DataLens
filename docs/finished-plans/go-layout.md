@@ -1,6 +1,6 @@
 # Go 侧目录与拆包评估
 
-> 状态：评估完成（2026-11-15 首次复评，2026-11-16 复测更新），**结论：分批抽包值得做**。**B1–B3 已于 2026-11-16 实施完毕**（提交 `998915c` / `79c4706` / `eb2c5df`，`go test ./...` 与 `wails build -devtools` 全绿）；B4 待生图/视频线稳定后开工。2026-11-14 首轮评估的「暂不抽包」基于当时的高耦合形态，已被实测取代；首轮已落地的部分与判定存档见 §7
+> 状态：**已实施完毕**（2026-11-16）。B1–B4 四批全部落地（提交 `998915c` / `79c4706` / `eb2c5df` / `b09fc32`），每批 `go test ./...` 与 `wails build -devtools` 全绿。根目录 180 → **135 个 .go**（84 非测试 + 51 测试）、main 包 40,712 → **26,861 行**。2026-11-14 首轮评估的「暂不抽包」基于当时的高耦合形态，已被实测取代；首轮已落地的部分与判定存档见 §7
 > 问题：Go 后端 180 个 `.go`（112 非测试 + 68 测试，40,712 行，module `datalens`）平铺在仓库根、单一 `package main`——能不能像前端那样按域分目录、该拆什么、不该拆什么
 
 ## 0. 结论先行（2026-11-16 复测）
@@ -8,7 +8,7 @@
 1. **硬约束没变，但它只钉住 App，不钉住引擎**：`package main` 与 `type App` 必须留仓库根——`main.go:14` 的 `//go:embed all:frontend/dist` 以包目录为基准；Wails 绑定固定挂 `window.go.main.App`，全部 268 个导出方法必须留在 App 上。所以方向只有一个：**App 留根当壳，引擎下沉 `internal/<域>`**，壳方法委托给包。
 2. **首轮「26k 行与 App 交织、抽包先立接口层」的依据已失效**：如今 52/112 非测试文件零 App 引用，`logf`/`appDataDir` 等共享助手已消失，App 结构缩到 16 个字段，候选域的 App 引用几乎全是「挂名绑定方法」（接收者根本不用 `a.`——`mcp_manager.go`、`sqlview.go`、`gitinfo.go`、`ai_gen.go`、`ai_catalog.go` 的 `a.` 引用数全部为 0）。抽包从「设计能力接口层 + 全域改写」降级为「搬文件 + 导出符号 + 壳改调用前缀」的机械活，编译器兜底。
 3. **前端零影响**：`frontend/src` 没有任何文件 import `wailsjs/go`（全部直接走 `window.go.main.App` 调用），也没有 models 引用——引擎类型挪包对 JS 不可见，`wailsjs/` 产物由 `wails build` 重生成即可。
-4. **建议分四批抽包**（§3）：`internal/patch` → `internal/mcp` + `internal/sqlview` + `internal/atomfile` → 会话存储族（sessionstore / sessionindex / activity）→ AI 传输层 + timer + gen/catalog。预期根目录 180 → 约 135–140 个文件、main 包 40.7k → 约 26,500 行（§4）。**节奏注意**：B1–B3 的组在 649253b 及其后的进行中改动里零触碰，可随时开工；B4 的 AI 传输层刚被生图/视频 feature（649253b）改过且 `ai_catalog.go` 还有未提交修改，等这条线稳定后再动。
+4. **分四批抽包已实施完毕**（§3）：`internal/patch` → `internal/mcp` + `internal/sqlview` + `internal/atomfile` → 会话存储族（sessionstore / sessionindex / activity）→ AI 传输层 + timer + gen/catalog。实测根目录 180 → **135 个文件**、main 包 40.7k → **26,861 行**（§4），与预判一致。
 5. **不做的事**：把剩余 Wails 绑定层全量下沉（仍需能力接口层，收益递减）；把平台 glue（`*_windows/_other` 成对文件、注册表集成等）摊进十几个 internal 包——它们留在根是本分。根目录的 `third_party/go-webview2/`（2.2M 本地 fork，供补丁注入点）是子目录，不参与平铺计数，维持现状。
 6. 首轮的**同包拆文件**（方案 A）落地了一半：patch / ai / app 完成；reading / gitinfo / sqlview / run / sessionindex 未拆。同包拆文件仍是零风险收益，可与对应抽包批次顺手做。
 
@@ -54,6 +54,7 @@
 | B1 | `998915c` | `internal/patch`（8 引擎 + 2 测试）；顺带把引擎真实依赖提为共享叶子包：`internal/chardec`（编解码簇）、`internal/atomfile`（原子替换）、`internal/recycle`（回收站）；根留 `patch_app.go` / `patch_cli.go` / `patch_review.go` |
 | B2 | `79c4706` | `internal/mcp`（9 引擎 + 4 测试，含假 server `TestMain` 随包迁移）、`internal/sqlview`、`internal/executil`（合并重复的 hide 窗口助手）；根留 `mcp_app.go` / `sqlview_app.go`；`writeFileAtomic` 族下沉 atomfile |
 | B3 | `eb2c5df` | `internal/sessionstore`、`internal/sessionindex`、`internal/activity`、`internal/sessionlock`（三方共用的写锁独立成包）、`atomfile.RepairTornTail`（sessionstore / activity 共用）；根留 `sessionstore_app.go` / `sessionindex_app.go` / `activity_app.go`，`app_atomfile.go` 过渡壳删除 |
+| B4 | `b09fc32` | `internal/aitransport`（三协议构造/SSE/重试/看门狗/校验/代理 + 事件契约）、`internal/aitimer`、`internal/aigen`、`internal/aicatalog`；根留 `ai_chat.go`（绑定壳）、`ai_stream.go`（流注册表）、`timer_app.go`、`ai_gen_app.go`、`ai_catalog_app.go`、`ai_transport_app.go`（钩子注入）。混合测试 `ai_test.go` 拆两半：传输用例随包，App 层用例留根 |
 
 实施中修正的两处评估偏差：① sessionindex 与 sessionstore 并非「零交叉」——索引同步需要 `store.list/read`，用包内最小 `Store` 接口解耦（sessionindex 不 import sessionstore），标脏调用留在根壳；② `activity.go` 复用 sessionstore 的 `repairTornTail`、`ai_worklog.go` 复用会话写锁，两者按「上提共享叶子」处理，未在包间互相 import。
 
@@ -61,13 +62,13 @@
 
 ## 4. 抽包后的根目录（诚实预期）
 
-| | 抽包前（11-16） | **B1–B3 后实测** | 四批后预期 |
+| | 抽包前（11-16） | B1–B3 后 | **四批后实测** |
 | --- | --- | --- | --- |
-| 根目录 .go 文件 | 180 | **146**（89 非测试 + 57 测试） | 约 135–140 |
-| main 包行数 | 40,712 | **31,636** | 约 28,000–28,500 |
-| 非测试文件 | 112 | **89** | 约 78–80 |
+| 根目录 .go 文件 | 180 | 146 | **135**（84 非测试 + 51 测试） |
+| main 包行数 | 40,712 | 31,636 | **26,861** |
+| 非测试文件 | 112 | 89 | **84** |
 
-B1–B3 实测根目录减少 34 个文件、约 9,100 行；B4 再移 ~3,500 行（含测试）后与预期吻合。
+四批共移走约 13,900 行、45 个文件；根目录剩 `app_*` 核心、Wails 绑定壳、reading/browser/run/gitinfo 等真 App 编排与平台 glue——按方案预期留在 main。
 
 剩余非测试文件的构成（行数为 11-16 实测）：`app_*` 应用核心（3,214）、AI 编排层 `ai_chat/schedule/float/worklog/command`（1,321，真 Wails 编排）、reading（3,344）、browser + devtools（2,292）、run（1,417）、gitinfo（1,138）、plugins/skills/market/update（1,458）、平台 glue（`*_windows/_other`、integration / toolchain / terminal 等）。**这些留在 `package main` 不是债**：它们要么是 268 个 Wails 绑定的宿主，要么是平台差异对，要么真消费 App 状态（`reading.go` 的 14 处 `a.` 引用即此类）。
 
