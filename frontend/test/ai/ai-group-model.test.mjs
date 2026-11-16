@@ -115,3 +115,158 @@ test('TIMEOUT_PRESETS：宽松档整体大于标准档', () => {
         assert.ok(TIMEOUT_PRESETS.lenient.timeouts[key] > TIMEOUT_PRESETS.standard.timeouts[key], key);
     }
 });
+
+// ==================== G2：上下文组装（§7.1） / 折叠（§3.11） / 超时档（§3.12） ====================
+import {
+    buildMemberMessages,
+    foldPrivateSteps,
+    GROUP_RULES_TEXT,
+    memberTimeouts,
+    outputLanguageRuleText,
+} from '../../src/ai/ai-group-model.js';
+
+const member = agents[0];
+const groupMeta = normalizeGroupMeta({id: 'g1', title: '评审', topic: '存储', memberIds: ['a1', 'a2'], goal: 'decide'});
+
+const sharedMessages = [
+    {gid: 'gm-u1', role: 'user', content: '议题背景'},
+    {gid: 'gm-1', role: 'assistant', agentId: 'a2', agentName: '审查员', content: '我反对', status: 'done'},
+    {gid: 'gm-2', role: 'assistant', agentId: 'a1', agentName: '架构师', content: '我支持', status: 'done'},
+    {gid: 'gm-x', role: 'assistant', agentId: 'a1', agentName: '架构师', content: '', status: 'error', error: '超时'},
+];
+
+test('buildMemberMessages：全量共享对话 + 角色映射 + 尾巴 user 收尾', () => {
+    const built = buildMemberMessages({
+        member,
+        group: groupMeta,
+        sharedMessages,
+        ownSteps: [{gid: 'gm-2', steps: [{kind: 'thinking', text: '我的思考', signature: 'sig-1'}]}],
+        participantsText: '用户：…\n- 审查员：审查',
+        boardText: '',
+        focus: '回应审查员',
+        outputLanguage: 'zh',
+        memberWindow: 100000,
+    });
+    assert.equal(built.messages[0].role, 'system');
+    assert.match(built.messages[0].content, /<group_rules>/);
+    assert.match(built.messages[0].content, /<chair_focus>\n回应审查员/);
+    assert.match(built.messages[0].content, /<participants>/);
+    // 他人消息：user + 名字前缀（连续同角色合并进同一 user 段）；无 error 空消息进上下文；自己消息 assistant + thinking 水合
+    const dialogue = built.messages.map((m) => m.content || '').join('\n');
+    assert.ok(dialogue.includes('[审查员] 我反对'));
+    assert.ok(dialogue.includes('[用户] 议题背景'));
+    const own = built.messages.find((m) => m.role === 'assistant');
+    assert.equal(own.content, '我支持');
+    assert.equal(own.thinking, '我的思考');
+    assert.equal(own.thinkingSignature, 'sig-1');
+    // 上下文里没有模型元数据（模型名/耗时），只有观点
+    assert.ok(!built.messages.some((m) => (m.content || '').includes('done')));
+    assert.equal(built.overflow, false);
+});
+
+test('buildMemberMessages：连续同角色合并为一段 user；尾巴并入其中且仍是 user 结尾', () => {
+    const built = buildMemberMessages({
+        member,
+        group: groupMeta,
+        sharedMessages: [
+            {gid: 'u1', role: 'user', content: '一'},
+            {gid: 'u2', role: 'user', content: '二'},
+            {gid: 'a1', role: 'assistant', agentId: 'a2', agentName: '审查员', content: '甲', status: 'done'},
+            {gid: 'a2', role: 'assistant', agentId: 'a2', agentName: '审查员', content: '乙', status: 'done'},
+        ],
+        ownSteps: [],
+        participantsText: '',
+        boardText: '',
+        focus: '',
+        outputLanguage: 'zh',
+        memberWindow: 100000,
+    });
+    // system + 全部对话合并为一段 user（部分提供商拒绝连续同角色）
+    assert.equal(built.messages.length, 2);
+    assert.equal(built.messages[0].role, 'system');
+    const blob = built.messages[1].content;
+    assert.ok(blob.includes('一') && blob.includes('二'));
+    assert.ok(blob.includes('[审查员] 甲') && blob.includes('[审查员] 乙'));
+    assert.ok(blob.includes('轮到你'));
+    assert.equal(built.messages[1].role, 'user');
+});
+
+test('buildMemberMessages：sharedSummary + cutoff（手动压缩语义）', () => {
+    const withSummary = normalizeGroupMeta({
+        ...groupMeta,
+        sharedSummary: {text: '此前讨论摘要', cutoffGid: 'gm-1', createdAt: 1, createdBy: 'user', summarizerModel: 'x'},
+    });
+    const built = buildMemberMessages({
+        member,
+        group: withSummary,
+        sharedMessages: [
+            {gid: 'gm-old', role: 'user', content: '被摘要覆盖的旧消息'},
+            {gid: 'gm-1', role: 'user', content: 'cutoff 边界'},
+            {gid: 'gm-2', role: 'assistant', agentId: 'a2', agentName: '审查员', content: 'cutoff 之后', status: 'done'},
+        ],
+        ownSteps: [],
+        participantsText: '',
+        boardText: '',
+        focus: '',
+        outputLanguage: 'zh',
+        memberWindow: 100000,
+    });
+    const all = built.messages.map((m) => m.content || '').join('\n');
+    assert.ok(all.includes('此前讨论摘要'));
+    assert.ok(all.includes('cutoff 之后'));
+    assert.ok(!all.includes('被摘要覆盖的旧消息'));
+});
+
+test('buildMemberMessages：小窗口 → overflow（该成员停止参与）', () => {
+    const built = buildMemberMessages({
+        member,
+        group: groupMeta,
+        sharedMessages: [{gid: 'u', role: 'user', content: '长'.repeat(9000)}],
+        ownSteps: [],
+        participantsText: '',
+        boardText: '',
+        focus: '',
+        outputLanguage: 'zh',
+        memberWindow: 8192,
+    });
+    assert.equal(built.overflow, true);
+    assert.equal(built.window, 8192);
+});
+
+test('foldPrivateSteps：超预算保留最近步骤 + 已省略标记；预算内原样', () => {
+    const steps = [
+        {kind: 'thinking', text: '旧'.repeat(500)},
+        {kind: 'thinking', text: '中'.repeat(500)},
+        {kind: 'thinking', text: '新'.repeat(100)},
+    ];
+    const folded = foldPrivateSteps(steps, 50);
+    assert.equal(folded.omitted, 2);
+    assert.equal(folded.steps[0].kind, 'omitted');
+    assert.equal(folded.steps[folded.steps.length - 1].text, '新'.repeat(100));
+    const intact = foldPrivateSteps(steps, 100000);
+    assert.equal(intact.omitted, 0);
+    assert.deepEqual(intact.steps, steps);
+});
+
+test('memberTimeouts：标准档 / 思考档（首活动翻倍）/ slowTier 覆盖', () => {
+    const plain = memberTimeouts(groupMeta, {id: 'x', name: 'X', modelRef: 'p1|m1'}, profiles);
+    assert.equal(plain.tier, 'standard');
+    assert.equal(plain.firstActivityMs, 45000);
+    assert.equal(plain.totalMs, 180000);
+    // 本文件 profiles 无 reasoning 条目；思考档用本地条目验证推导与放宽
+    const reasoningProfiles = [{id: 'p3', name: 'r', models: [{id: 'm1', model: 'r', contextWindow: 262144, outputWindow: 4096, reasoningEffort: 'medium', thinking: false}]}];
+    const reasoning = memberTimeouts(groupMeta, {id: 'y', name: 'Y', modelRef: 'p3|m1'}, reasoningProfiles);
+    assert.equal(reasoning.tier, 'thinking');
+    assert.equal(reasoning.firstActivityMs, 90000);
+    assert.equal(reasoning.totalMs, 240000);
+    const slowMarked = memberTimeouts(groupMeta, {id: 'z', name: 'Z', modelRef: 'p1|m1', slowTier: true}, profiles);
+    assert.equal(slowMarked.tier, 'thinking');
+    assert.equal(slowMarked.totalMs, 240000);
+});
+
+test('outputLanguageRuleText：三档语义', () => {
+    assert.match(outputLanguageRuleText('zh'), /中文/);
+    assert.match(outputLanguageRuleText('en'), /English/);
+    assert.match(outputLanguageRuleText('auto'), /相同的语言/);
+    assert.ok(GROUP_RULES_TEXT.includes('不得 @全体成员'));
+});

@@ -209,3 +209,4 @@ test('未知 roundId 的事件被忽略（不污染面板路由）', () => {
     runtime.handleEvent('ai-chunk', {id: 'session-other#round-1', delta: 'x'});
     assert.equal(backend.sent.length, 0);
 });
+
