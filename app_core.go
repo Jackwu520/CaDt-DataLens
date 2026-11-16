@@ -18,6 +18,7 @@ import (
 	"datalens/internal/browser"
 	"datalens/internal/cmdbridge"
 	"datalens/internal/mcp"
+	"datalens/internal/notify"
 	"datalens/internal/plugins"
 	"datalens/internal/reading"
 	"datalens/internal/run"
@@ -50,6 +51,7 @@ type App struct {
 	*plugins.Manager      // 插件与市场（internal/plugins）
 	*skills.Skills        // 内置技能与 agent 技能注册（internal/skills）
 	*screenshot.Capturer  // 应用窗口截图（internal/screenshot）
+	*notify.Notifier      // 系统通知（internal/notify）
 	ctx                   context.Context
 	startupTargets        []OpenTarget
 	startupSettingsPane   string
@@ -93,7 +95,7 @@ type FileData struct {
 }
 
 func NewApp() *App {
-	return &App{Reader: &reading.Reader{}, Runner: &run.Runner{}, Host: &browser.Host{}, Searcher: &search.Searcher{}, Scheduler: &aischedule.Scheduler{}, Bridge: &cmdbridge.Bridge{}, Terminal: &terminal.Terminal{}, Toolchain: &toolchain.Toolchain{}, Store: &aiconfig.Store{}, Manager: &plugins.Manager{}, Skills: &skills.Skills{}, Capturer: &screenshot.Capturer{}}
+	return &App{Reader: &reading.Reader{}, Runner: &run.Runner{}, Host: &browser.Host{}, Searcher: &search.Searcher{}, Scheduler: &aischedule.Scheduler{}, Bridge: &cmdbridge.Bridge{}, Terminal: &terminal.Terminal{}, Toolchain: &toolchain.Toolchain{}, Store: &aiconfig.Store{}, Manager: &plugins.Manager{}, Skills: &skills.Skills{}, Capturer: &screenshot.Capturer{}, Notifier: &notify.Notifier{}}
 }
 
 func (a *App) startup(ctx context.Context) {
@@ -122,8 +124,8 @@ func (a *App) startup(ctx context.Context) {
 	}
 	applyTaskbarIcon()
 	// 系统通知的应用标识必须在发出第一条 Toast 之前登记好，
-	// 否则 Windows 只返回成功、不显示（见 notify_windows.go: ensureToastAppID）。
-	prepareNotifyApp()
+	// 否则 Windows 只返回成功、不显示（见 internal/notify 的 ensureToastAppID）。
+	notify.Prepare()
 	ensureWindowShown(ctx)
 	sqlview.CleanupTempFiles()
 	reading.CleanupCacheOnStartup()

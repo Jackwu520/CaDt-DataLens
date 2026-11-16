@@ -1,6 +1,6 @@
 //go:build windows
 
-package main
+package notify
 
 import (
 	"fmt"
@@ -15,6 +15,8 @@ import (
 
 	toast "git.sr.ht/~jackmordaunt/go-toast/v2"
 	"golang.org/x/sys/windows/registry"
+
+	"datalens/internal/appdata"
 )
 
 // toastAppID 是系统通知的应用标识（AppUserModelID）。
@@ -40,7 +42,12 @@ var (
 	procNotifyMessageBeep        = notifyUser32.NewProc("MessageBeep")
 	procNotifyGetForegroundWnd   = notifyUser32.NewProc("GetForegroundWindow")
 	procNotifyIsIconic           = notifyUser32.NewProc("IsIconic")
+	procNotifyLoadImage          = notifyUser32.NewProc("LoadImageW")
+	procNotifyGetModuleHandle    = syscall.NewLazyDLL("kernel32.dll").NewProc("GetModuleHandleW")
 )
+
+// notifyImageIcon 对应 LoadImageW 的 IMAGE_ICON。
+const notifyImageIcon = 1
 
 type flashWindowInfo struct {
 	cbSize    uint32
@@ -51,7 +58,7 @@ type flashWindowInfo struct {
 }
 
 // NotifyAttention 让当前进程的任务栏图标闪烁（窗口已聚焦时基本无感），可选播放系统提示音。
-func (a *App) NotifyAttention(beep bool) {
+func (nt *Notifier) NotifyAttention(beep bool) {
 	pid := uint32(os.Getpid())
 	var target uintptr
 	callback := syscall.NewCallback(func(hwnd uintptr, lparam uintptr) uintptr {
@@ -138,7 +145,7 @@ func cleanupLegacyToastAppIDs() {
 // 前端用它决定要不要弹打断性通知，**不能**只信 WebView2 里的 document.hasFocus()：
 // 焦点状态在嵌入场景下会滞留（明明切走了还报 true），通知就永远不弹。
 // 系统级判定：前台窗口属于本进程且未被最小化；多窗口（主窗 / AI 浮窗）任一在前台都算前台。
-func (a *App) AppWindowActive() bool {
+func (nt *Notifier) AppWindowActive() bool {
 	fg, _, _ := procNotifyGetForegroundWnd.Call()
 	if fg == 0 {
 		return false
@@ -152,10 +159,10 @@ func (a *App) AppWindowActive() bool {
 	return iconic == 0
 }
 
-// prepareNotifyApp 启动时把本应用登记进 Windows 通知系统（见 ensureToastAppID），
+// Prepare 启动时把本应用登记进 Windows 通知系统（见 ensureToastAppID），
 // 并预先渲染通知卡片要用的图标（见 toastIconPath）。
 // 失败不阻塞启动：真正要发通知时还会再试一次，并把错误返回给调用方。
-func prepareNotifyApp() {
+func Prepare() {
 	_ = ensureToastAppID()
 	_ = toastIconPath()
 }
@@ -164,7 +171,7 @@ func prepareNotifyApp() {
 //
 // Windows 通知头部「应用名左边」的小图标与「设置 → 系统 → 通知」列表里的图标，都来自注册表
 // AUMID 的 IconUri——而它只认 ico/png 图片文件，写成 exe 路径不生效（实测过，会变成没有图标）。
-// 所以这里把 exe 里嵌的图标（rsrc 图标组 id=appIconID，与任务栏同一个）渲染成一张 PNG 落到
+// 所以这里把 exe 里嵌的图标（rsrc 图标组 id=IconID，与任务栏同一个）渲染成一张 PNG 落到
 // 应用数据目录，IconUri 指向它：不额外打包图片资源，图标改了跟着 exe 自动更新。
 
 const toastIconSize = 48
@@ -202,8 +209,8 @@ type notifyIconBitmapInfo struct {
 // renderAppIconPNG 把 exe 里的图标资源画到 32 位位图再编码成 PNG。
 // 位图用负高度（top-down）省一次翻转；DrawIconEx 会把图标的 alpha 一并写进来。
 func renderAppIconPNG(dest string) error {
-	hinst, _, _ := procGetModuleHandleW.Call(0)
-	hicon, _, _ := procLoadImageW.Call(hinst, appIconID, imageIcon, toastIconSize, toastIconSize, 0)
+	hinst, _, _ := procNotifyGetModuleHandle.Call(0)
+	hicon, _, _ := procNotifyLoadImage.Call(hinst, IconID, notifyImageIcon, toastIconSize, toastIconSize, 0)
 	if hicon == 0 {
 		return fmt.Errorf("读不到 exe 内的图标资源")
 	}
@@ -266,7 +273,7 @@ func toastIconPath() string {
 		return toastIconFile
 	}
 	toastIconDone = true
-	root := appDataRoot()
+	root := appdata.Root()
 	if root == "" {
 		return ""
 	}
@@ -292,7 +299,7 @@ func toastDisabledByUser() bool {
 }
 
 // NotifySystemToast 发送 Windows 系统级 Toast 通知；silent=true 时不播放系统提示音。
-func (a *App) NotifySystemToast(title string, body string, silent bool) error {
+func (nt *Notifier) NotifySystemToast(title string, body string, silent bool) error {
 	title = strings.TrimSpace(title)
 	body = strings.TrimSpace(body)
 	if title == "" {
