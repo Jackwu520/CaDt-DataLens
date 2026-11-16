@@ -159,6 +159,19 @@ function normalizeSharedSummary(raw) {
     };
 }
 
+// 角色分配（§1.4 辩论/评审预设）：agentId → 一句话角色（正方/反方/评审/领域专家…）
+function normalizeRoles(raw) {
+    const out = {};
+    if (!raw || typeof raw !== 'object') return out;
+    for (const [key, value] of Object.entries(raw)) {
+        const id = String(key || '').trim();
+        if (typeof value !== 'string') continue;
+        const role = value.trim().slice(0, 80);
+        if (id && role) out[id] = role;
+    }
+    return out;
+}
+
 // 群 meta 归一化（§6.2）：磁盘读回与创建入参共用；非法字段回默认，不抛错。
 export function normalizeGroupMeta(raw) {
     const source = raw && typeof raw === 'object' ? raw : {};
@@ -185,6 +198,7 @@ export function normalizeGroupMeta(raw) {
         timeouts: normalizeTimeouts(source.timeouts),
         context: normalizeGroupContext(source.context),
         mutedAgentIds: Array.isArray(source.mutedAgentIds) ? source.mutedAgentIds.map(String).filter(Boolean) : [],
+        roles: normalizeRoles(source.roles),
         discussion: normalizeDiscussion(source.discussion),
         sharedSummary: normalizeSharedSummary(source.sharedSummary),
         minutes: source.minutes && typeof source.minutes === 'object' ? source.minutes : null,
@@ -290,11 +304,14 @@ export function memberTimeouts(meta, agent, profiles) {
 
 // 成员系统提示（§7.1 [system]）：规则 / 名单 / 身份 / 人设 / 风格 / 模式 / 看板 / 焦点 / 语言。
 // boardText 传入空串时省略 <discussion_board> 段。
-export function buildMemberSystemPrompt({agent, participantsText, modeLabel, round, goal, boardText, focus, outputLanguage}) {
+export function buildMemberSystemPrompt({agent, participantsText, modeLabel, round, goal, boardText, focus, outputLanguage, roleText}) {
     const parts = [];
     parts.push(`<group_rules>\n${GROUP_RULES_TEXT}\n</group_rules>`);
     if (participantsText) parts.push(`<participants>\n${participantsText}\n</participants>`);
     parts.push(`<agent_identity>\n你是「${agent.name}」${agent.role ? '；职责：' + agent.role : ''}。\n</agent_identity>`);
+    if (roleText) {
+        parts.push(`<agent_role>\n你在这场讨论中的角色：${roleText}。按角色立场表达，不替其他角色发言；与其他角色交锋时针对观点本身。\n</agent_role>`);
+    }
     if (agent.personaText) {
         parts.push(`<agent_persona>\n${PERSONA_GUARD_DATA}\n${agent.personaText}\n</agent_persona>`);
     }
@@ -350,6 +367,7 @@ export function buildMemberMessages({member, group, sharedMessages, ownSteps, pa
         boardText,
         focus,
         outputLanguage,
+        roleText: meta.roles ? meta.roles[member.id] : '',
     });
     const messages = [{role: 'system', content: systemPrompt}];
     let summaryEmitted = !summary;
@@ -769,10 +787,17 @@ export function buildChairMessages({chairAgent, meta, sharedMessages, chairSteps
     if (!summaryEmitted && summary) {
         messages.push({role: 'user', content: `[此前讨论的摘要]\n${summary.text}`});
     }
+    const isTask = group.mode === 'task';
     const instructions = {
-        opening: '讨论开始。请：确认议题并拆出 2–5 个议程（agendaItem）；给出第 1 轮发言计划（每位成员一个 focus，要求回应彼此）；chairMessage 用一句话向用户说明本轮安排。',
-        review: '需要调度。请：复盘已完成的发言（statePatch 更新看板）；决定 roundComplete / done；给出下一步计划（roundComplete=true 时 plan 是下一轮的安排，否则是本轮剩余安排）。成员 handoff 请求与用户点名已注入看板，请酌情采纳。',
-        minutes: '讨论结束。请基于看板与关键发言输出最终纪要 JSON：chairMessage 留空或一句话总结，minutes 字段给完整 Markdown 纪要（议题/共识（带理由）/分歧（双方观点）/决定/行动项/未决问题），done=true。',
+        opening: isTask
+            ? '任务协作开始。请：把目标拆成任务板（statePatch.actionItems：任务、负责人 owner、状态 status、验收口径可写进 title）；给出第 1 轮发言计划（每位的 focus 聚在自己负责或相关的任务：谁做什么、接口/依赖怎么定、风险在哪）；chairMessage 一句话说明分工。'
+            : '讨论开始。请：确认议题并拆出 2–5 个议程（agendaItem）；给出第 1 轮发言计划（每位成员一个 focus，要求回应彼此）；chairMessage 用一句话向用户说明本轮安排。',
+        review: isTask
+            ? '需要调度。请：复盘任务进展（statePatch.actionItems 更新状态：doing/done/blocked，blocked 要写明依赖）；决定 roundComplete / done（全部任务完成或明确 blocked 才 done）；给出下一步计划。成员 handoff 请求与用户点名已注入看板，请酌情采纳。'
+            : '需要调度。请：复盘已完成的发言（statePatch 更新看板）；决定 roundComplete / done；给出下一步计划（roundComplete=true 时 plan 是下一轮的安排，否则是本轮剩余安排）。成员 handoff 请求与用户点名已注入看板，请酌情采纳。',
+        minutes: isTask
+            ? '协作结束。请基于看板输出最终纪要 JSON：minutes 给完整 Markdown（议题/方案决定/任务板（负责人与状态，含 blocked 及依赖）/未决问题），done=true。'
+            : '讨论结束。请基于看板与关键发言输出最终纪要 JSON：chairMessage 留空或一句话总结，minutes 字段给完整 Markdown 纪要（议题/共识（带理由）/分歧（双方观点）/决定/行动项/未决问题），done=true。',
     };
     messages.push({role: 'user', content: instructions[kind] || instructions.review});
 

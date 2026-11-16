@@ -2771,6 +2771,18 @@ function initAIPanel() {
         flash: (...args) => flash(...args),
         openGroupTab: (...args) => openGroupChatTab(...args),
         getWorkspace: () => (workspaceFolder || ''),
+        // G4 纪要带回会话：走面板信箱（deliverToSessions）；会话 id 取面板当前会话
+        deliverToSessions: aiPanel.aiGroupApi
+            ? (...args) => aiPanel.aiGroupApi.deliverToSessions(...args)
+            : null,
+        getCurrentSessionId: () => {
+            try {
+                const state = aiPanel && aiPanel.bridgeGetState ? aiPanel.bridgeGetState() : null;
+                return state && state.session ? state.session.id : '';
+            } catch (e) {
+                return '';
+            }
+        },
     });
     aiGroupRuntime.init();
     aiGroupSidebar = createAIGroupSidebar({

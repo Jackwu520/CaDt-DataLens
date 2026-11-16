@@ -42,6 +42,9 @@ export function createAIGroupRuntime(deps) {
     const flash = deps.flash || (() => {});
     const openGroupTab = deps.openGroupTab || null;
     const getWorkspace = deps.getWorkspace || (() => '');
+    // G4：纪要带回会话（走面板信箱 deliverToSessions；会话 id 由宿主提供）
+    const deliverToSessions = typeof deps.deliverToSessions === 'function' ? deps.deliverToSessions : null;
+    const getCurrentSessionId = typeof deps.getCurrentSessionId === 'function' ? deps.getCurrentSessionId : (() => '');
 
     // groupId → {meta, messages, events, loaded}
     const groups = new Map();
@@ -179,11 +182,12 @@ export function createAIGroupRuntime(deps) {
             topic: source.topic || '',
             goal: source.goal,
             memberIds,
-            mode: 'roundtable',
+            mode: source.mode === 'task' ? 'task' : 'roundtable',
             chair: normalizeChair(chairSpec),
             maxRounds: source.maxRounds,
             roundMode: 'sequential',
             timeouts: preset.timeouts,
+            roles: source.roles || {},
             workspace: getWorkspace() || '',
         });
         meta.updatedAt = Date.now();
@@ -1158,6 +1162,107 @@ export function createAIGroupRuntime(deps) {
         return {ok: true};
     }
 
+    // ---------- 任务板与纪要（G4，§1.2 / §3.8） ----------
+
+    // 任务板增改（任务模式抽屉）：状态流转 / 负责人改派；变更落盘并记系统事件
+    async function updateActionItem(groupId, itemId, patch) {
+        const g = groups.get(groupId);
+        if (!g) return {ok: false, error: '群聊不存在'};
+        const item = (g.meta.discussion.actionItems || []).find((x) => x && x.id === itemId);
+        if (!item) return {ok: false, error: '任务不存在'};
+        const changes = [];
+        await saveMeta(groupId, (meta) => {
+            const target = (meta.discussion.actionItems || []).find((x) => x && x.id === itemId);
+            if (!target) return;
+            if (patch.status && ['todo', 'doing', 'done', 'blocked'].includes(patch.status) && patch.status !== target.status) {
+                target.status = patch.status;
+                changes.push(`状态 → ${patch.status}`);
+            }
+            const owner = String(patch.ownerId == null ? '' : patch.ownerId).trim().slice(0, 60);
+            if (owner && owner !== target.ownerId) {
+                target.ownerId = owner;
+                changes.push(`负责人 → ${owner}`);
+            }
+            const title = String(patch.title == null ? '' : patch.title).trim().slice(0, 200);
+            if (title && title !== target.title) {
+                target.title = title;
+                changes.push('标题已更新');
+            }
+        });
+        if (changes.length) {
+            await appendSystemEvent(groupId, {type: 'task-update', text: `任务「${item.title}」：${changes.join('，')}`});
+        }
+        return {ok: true};
+    }
+
+    async function addActionItem(groupId, title, ownerId) {
+        const g = groups.get(groupId);
+        if (!g) return {ok: false, error: '群聊不存在'};
+        const clean = String(title || '').trim().slice(0, 200);
+        if (!clean) return {ok: false, error: '任务标题为空'};
+        const item = {
+            id: 't' + aiNowId(''),
+            title: clean,
+            ownerId: String(ownerId || '').trim().slice(0, 60),
+            status: 'todo',
+        };
+        await saveMeta(groupId, (meta) => {
+            meta.discussion.actionItems.push(item);
+        });
+        await appendSystemEvent(groupId, {type: 'task-update', text: `新增任务「${clean}」`});
+        return {ok: true, item};
+    }
+
+    // 纪要润色（§3.8 主持人润色，1 次调用）：契约.minutes 优先，失败保留现有纪要
+    async function polishMinutes(groupId) {
+        const g = groups.get(groupId);
+        if (!g) return {ok: false, error: '群聊不存在'};
+        if (!g.meta.minutes) return {ok: false, error: '还没有本场纪要'};
+        if (!g.meta.chair || g.meta.chair.kind === 'user') {
+            return {ok: false, error: '用户主持模式没有主持人模型可润色，导出现有纪要即可'};
+        }
+        const chair = await chairTurn(groupId, 'minutes');
+        if (chair.ok && chair.contract && chair.contract.minutes) {
+            await generateMinutes(groupId, {minutesText: chair.contract.minutes, source: 'polish', modelName: '主持人'});
+            return {ok: true, source: 'polish'};
+        }
+        if (chair.overflow) {
+            return {ok: false, error: '主持人的上下文装不下全部群聊对话，无法润色；可先压缩群聊数据'};
+        }
+        return {ok: false, error: chair.error || '润色失败，保留现有纪要'};
+    }
+
+    // 纪要导出 Markdown（SaveFileDialog + SaveFile）
+    async function exportMinutes(groupId) {
+        const g = groups.get(groupId);
+        if (!g || !g.meta.minutes) return {ok: false, error: '还没有本场纪要'};
+        if (typeof backend.SaveFileDialog !== 'function' || typeof backend.SaveFile !== 'function') {
+            return {ok: false, error: '当前环境不支持保存文件'};
+        }
+        try {
+            const path = await backend.SaveFileDialog(g.meta.title || '群聊纪要');
+            if (!path) return {ok: false, canceled: true};
+            await backend.SaveFile(path, g.meta.minutes.text || '', 'lf', false, 'utf-8');
+            return {ok: true, path};
+        } catch (e) {
+            return {ok: false, error: (e && e.message) || String(e)};
+        }
+    }
+
+    // 纪要带回当前 AI 会话（走会话信箱，出现投递卡）
+    async function bringMinutesBack(groupId) {
+        const g = groups.get(groupId);
+        if (!g || !g.meta.minutes) return {ok: false, error: '还没有本场纪要'};
+        if (!deliverToSessions) return {ok: false, error: '会话信箱不可用'};
+        const sessionId = getCurrentSessionId();
+        if (!sessionId) return {ok: false, error: '没有打开的 AI 会话；先开一个会话再带回'};
+        const text = '【群聊纪要 · ' + (g.meta.title || '未命名群聊') + '】\n\n' + g.meta.minutes.text;
+        const out = await deliverToSessions([sessionId], text, {byUser: true});
+        const first = out && Array.isArray(out.results) ? out.results[0] : null;
+        if (first && first.ok) return {ok: true};
+        return {ok: false, error: (first && first.reason) || '投递失败'};
+    }
+
     return {
         init,
         refreshList,
@@ -1183,6 +1288,12 @@ export function createAIGroupRuntime(deps) {
         endDiscussion,
         discussionSnapshot,
         compressShared,
+        // 任务板与纪要（G4）
+        updateActionItem,
+        addActionItem,
+        polishMinutes,
+        exportMinutes,
+        bringMinutesBack,
         store,
     };
 }

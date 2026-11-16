@@ -11228,3 +11228,11 @@ textarea.dlg-input:focus {
 .gc-badge-concern { color: #d0a215; background: rgba(208, 162, 21, 0.12); }
 .gc-badge-question { color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
 .gc-msg-minutes { border-color: color-mix(in srgb, var(--accent) 45%, transparent); background: color-mix(in srgb, var(--accent) 6%, var(--panel2)); }
+
+/* ===== AI 群聊 G4：任务板编辑 / 纪要卡操作 / 角色徽标 ===== */
+.gc-badge-role { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.gc-minutes-actions { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+.gc-task-cycle { flex: none; min-width: 52px; font-size: 11px; padding: 1px 8px; }
+.gc-task-add > * { flex: 1; min-width: 0; }
+.gc-drawer-task-title { flex: 1; min-width: 0; }
+.gc-member-role { margin-top: 4px; font-size: 12px; }

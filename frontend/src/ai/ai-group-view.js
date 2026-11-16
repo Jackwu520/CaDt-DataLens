@@ -117,12 +117,22 @@ export function createAIGroupView(deps) {
                 compressBtn.textContent = '压缩群聊数据';
             });
         });
+        const polishBtn = el('button', 'dlg-btn hidden', '润色纪要');
+        polishBtn.dataset.tip = '主持人按看板与关键发言重写一份自然语言纪要（1 次调用）';
+        polishBtn.addEventListener('click', () => {
+            polishBtn.disabled = true;
+            runtime.polishMinutes(groupId).then((result) => {
+                if (!result.ok) flashOf(state)(result.error, true);
+            }).catch((e) => flashOf(state)((e && e.message) || String(e), true)).finally(() => {
+                polishBtn.disabled = false;
+            });
+        });
         const boardBtn = el('button', 'dlg-btn', '讨论看板');
         boardBtn.addEventListener('click', () => {
             state.drawer.classList.toggle('hidden');
         });
-        state.discButtons = {startBtn, pauseBtn, resumeBtn, endBtn};
-        discRow.append(startBtn, pauseBtn, resumeBtn, endBtn, compressBtn, boardBtn);
+        state.discButtons = {startBtn, pauseBtn, resumeBtn, endBtn, polishBtn};
+        discRow.append(startBtn, pauseBtn, resumeBtn, endBtn, compressBtn, polishBtn, boardBtn);
         state.discStatusEl = el('span', 'gc-disc-status');
         discRow.appendChild(state.discStatusEl);
         head.appendChild(discRow);
@@ -231,7 +241,7 @@ export function createAIGroupView(deps) {
         const config = getAIConfig();
         while (state.renderedCount < messages.length) {
             const msg = messages[state.renderedCount];
-            const node = messageNode(msg, config);
+            const node = messageNode(msg, config, g.meta, state);
             state.list.appendChild(node);
             state.renderedCount++;
             if (msg.kind === 'minutes') {
@@ -240,7 +250,7 @@ export function createAIGroupView(deps) {
         }
     }
 
-    function messageNode(msg, getAIConfig) {
+    function messageNode(msg, getAIConfig, meta, state) {
         const config = getAIConfig();
         const agents = (config && Array.isArray(config.agents)) ? config.agents : [];
         const isMinutes = msg.kind === 'minutes';
@@ -258,6 +268,9 @@ export function createAIGroupView(deps) {
             headRow.appendChild(dot);
             headRow.appendChild(el('span', 'gc-msg-name', isMinutes ? '纪要' : (msg.chair ? '主持人' : agentNameOf(agents, msg.agentId))));
             if (!isMinutes && msg.model && !msg.chair) headRow.appendChild(el('span', 'gc-badge', msg.model));
+            if (!isMinutes && meta && meta.roles && meta.roles[msg.agentId]) {
+                headRow.appendChild(el('span', 'gc-badge gc-badge-role', '角色：' + meta.roles[msg.agentId]));
+            }
             if (msg.chair && !isMinutes) headRow.appendChild(el('span', 'gc-badge gc-badge-chair', '主持人'));
             if (msg.timeout) headRow.appendChild(el('span', 'gc-badge gc-level-red', '超时未发言'));
             else if (msg.status === 'error') headRow.appendChild(el('span', 'gc-badge gc-level-red', '失败'));
@@ -283,6 +296,32 @@ export function createAIGroupView(deps) {
         }
         if (msg.error) {
             wrap.appendChild(el('div', 'gc-msg-error', '错误：' + msg.error));
+        }
+        // 纪要卡操作（§3.8 / G4）：复制 / 导出 Markdown / 带回当前会话
+        if (isMinutes && meta && meta.minutes) {
+            const actions = el('div', 'gc-minutes-actions');
+            const copyBtn = el('button', 'dlg-btn', '复制');
+            copyBtn.type = 'button';
+            copyBtn.addEventListener('click', () => {
+                navigator.clipboard.writeText(meta.minutes.text || '').then(() => flashOf(state)('纪要已复制')).catch(() => flashOf(state)('复制失败'));
+            });
+            const exportBtn = el('button', 'dlg-btn', '导出 Markdown');
+            exportBtn.type = 'button';
+            exportBtn.addEventListener('click', () => {
+                runtime.exportMinutes(state.groupId).then((result) => {
+                    if (!result.ok && !result.canceled) flashOf(state)(result.error);
+                }).catch((e) => flashOf(state)((e && e.message) || String(e)));
+            });
+            const backBtn = el('button', 'dlg-btn', '带回当前会话');
+            backBtn.type = 'button';
+            backBtn.dataset.tip = '把纪要投递到当前打开的 AI 会话（出现投递卡）';
+            backBtn.addEventListener('click', () => {
+                runtime.bringMinutesBack(state.groupId).then((result) => {
+                    if (!result.ok) flashOf(state)(result.error);
+                }).catch((e) => flashOf(state)((e && e.message) || String(e)));
+            });
+            actions.append(copyBtn, exportBtn, backBtn);
+            wrap.appendChild(actions);
         }
         return wrap;
     }
@@ -344,7 +383,7 @@ export function createAIGroupView(deps) {
         const phase = disc ? disc.phase + (disc.running ? ':run' : '') + (disc.paused ? ':paused' : '') : 'none';
         if (state.lastDiscPhase === phase) return;
         state.lastDiscPhase = phase;
-        const {startBtn, pauseBtn, resumeBtn, endBtn} = state.discButtons;
+        const {startBtn, pauseBtn, resumeBtn, endBtn, polishBtn} = state.discButtons;
         const running = !!(disc && disc.running);
         const paused = !!(disc && disc.paused);
         startBtn.classList.toggle('hidden', running || paused);
@@ -352,6 +391,7 @@ export function createAIGroupView(deps) {
         pauseBtn.classList.toggle('hidden', !running);
         resumeBtn.classList.toggle('hidden', !paused);
         endBtn.classList.toggle('hidden', !running && !paused);
+        polishBtn.classList.toggle('hidden', !g.meta.minutes);
         if (state.discStatusEl) {
             const spoken = disc ? `${disc.speeches} 次发言` : '';
             state.discStatusEl.textContent = running
@@ -392,11 +432,41 @@ export function createAIGroupView(deps) {
         });
         section('未决问题', d.openQuestions, (item) => el('div', 'gc-drawer-item', item));
         section('决定', d.decisions, (item) => el('div', 'gc-drawer-item', item));
-        section('行动项', d.actionItems, (item) => {
-            const row = el('div', 'gc-drawer-item');
-            row.textContent = `${item.title}（${item.ownerId || '待定'} · ${item.status}）`;
-            return row;
-        });
+        // 任务板（§1.2 任务模式可增改；圆桌模式只读展示）
+        if (d.actionItems.length || g.meta.mode === 'task') {
+            state.drawerInner.appendChild(el('div', 'gc-drawer-sec-title', '任务板'));
+            const taskBox = el('div', 'gc-drawer-sec');
+            const statusOrder = ['todo', 'doing', 'done', 'blocked'];
+            const statusLabel = {todo: '待办', doing: '进行中', done: '完成', blocked: '阻塞'};
+            for (const item of d.actionItems) {
+                const row = el('div', 'gc-drawer-item');
+                row.appendChild(el('span', 'gc-drawer-task-title', `${item.title}（${item.ownerId || '待定'}）`));
+                const cycleBtn = el('button', 'dlg-btn gc-task-cycle', statusLabel[item.status] || item.status);
+                cycleBtn.type = 'button';
+                cycleBtn.dataset.tip = '切换状态：待办 → 进行中 → 完成 → 阻塞';
+                cycleBtn.addEventListener('click', () => {
+                    const next = statusOrder[(statusOrder.indexOf(item.status) + 1) % statusOrder.length];
+                    runtime.updateActionItem(state.groupId, item.id, {status: next}).catch((e) => flashOf(state)((e && e.message) || String(e)));
+                });
+                row.appendChild(cycleBtn);
+                taskBox.appendChild(row);
+            }
+            if (g.meta.mode === 'task') {
+                const addRow = el('div', 'gc-drawer-item gc-task-add');
+                const titleInput = createInput({placeholder: '新任务（回车添加）'});
+                titleInput.control.addEventListener('keydown', (e) => {
+                    if (e.key === 'Enter' && titleInput.control.value.trim()) {
+                        runtime.addActionItem(state.groupId, titleInput.control.value.trim()).then((result) => {
+                            if (result.ok) titleInput.control.value = '';
+                            else flashOf(state)(result.error);
+                        }).catch((err) => flashOf(state)((err && err.message) || String(err)));
+                    }
+                });
+                addRow.appendChild(titleInput.element);
+                taskBox.appendChild(addRow);
+            }
+            state.drawerInner.appendChild(taskBox);
+        }
         section('请求发言', (d.floorRequests || []).slice(-6), (req) => {
             const row = el('div', 'gc-drawer-item');
             row.textContent = `${req.fromName || req.from} → ${req.to}${req.reason ? '：' + req.reason : ''}`;

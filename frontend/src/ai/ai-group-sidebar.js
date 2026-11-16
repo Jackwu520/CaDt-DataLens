@@ -175,10 +175,21 @@ export function createAIGroupSidebar(deps) {
         const titleCtl = row('群名', createInput({value: '', placeholder: '例如：存储方案评审', maxlength: String(60)}));
         const topicCtl = row('议题', createTextarea({rows: 2, value: '', placeholder: '要讨论的问题与背景约束（进入主持人开场）'}), 'gc-form-row-top');
         const goalCtl = row('目标', createSelect({options: GROUP_GOALS.map((g) => ({value: g.id, label: g.label, selected: g.id === 'decide'}))}));
+        const modeCtl = row('模式', createSelect({options: [
+            {value: 'roundtable', label: '圆桌讨论（推荐）', selected: true},
+            {value: 'task', label: '任务协作（主持人拆任务板）'},
+        ]}));
+        // 预设（§1.4）：辩论/评审给成员分配角色，发言顺序按 正 → 反 → 评审 交替
+        const presetCtl = row('预设', createSelect({options: [
+            {value: 'standard', label: '标准圆桌', selected: true},
+            {value: 'debate', label: '辩论（正—反—评审）'},
+            {value: 'review', label: '评审团'},
+        ]}));
 
         // 成员勾选（开关列表 + 能力徽标）
         const memberWrap = node('div', 'gc-member-list');
         const memberSwitches = [];
+        const roleInputs = {};
         for (const agent of agents) {
             const item = node('div', 'gc-member-item');
             const dot = node('span', 'gc-dot gc-dot-lg');
@@ -193,7 +204,18 @@ export function createAIGroupSidebar(deps) {
             item.appendChild(badge);
             const sw = createSwitch({checked: false});
             item.appendChild(sw.element);
-            memberSwitches.push({agentId: agent.id, control: sw.control});
+            // 辩论/评审预设的角色输入（勾选后显示；占位按序号给正/反/评审提示）
+            const roleInput = createInput({placeholder: '角色（如 正方 / 反方 / 评审）', maxlength: '80'});
+            roleInput.element.classList.add('gc-member-role');
+            roleInput.element.classList.add('hidden');
+            item.appendChild(roleInput.element);
+            roleInputs[agent.id] = roleInput;
+            memberSwitches.push({agentId: agent.id, control: sw.control, index: memberSwitches.length});
+            sw.control.addEventListener('change', () => {
+                roleInput.element.classList.toggle('hidden', !sw.control.checked);
+                if (!sw.control.checked) roleInput.control.value = '';
+                refreshDerived();
+            });
             memberWrap.appendChild(item);
         }
         body.appendChild(wrapRow('成员', memberWrap, 'gc-form-row-top'));
@@ -246,16 +268,20 @@ export function createAIGroupSidebar(deps) {
         const statusLine = node('div', 'set-desc');
         statusLine.style.minHeight = '14px';
 
-        createControls = {title: titleCtl, topic: topicCtl, goal: goalCtl, memberSwitches,
+        createControls = {title: titleCtl, topic: topicCtl, goal: goalCtl, mode: modeCtl, preset: presetCtl,
+            memberSwitches, roleInputs,
             chairKind: chairKindCtl, chairAgent: chairAgentCtl, policy: policyCtl,
             rounds: roundsCtl, timeout: timeoutCtl};
 
         const refreshDerived = () => {
             refreshChairVisibility();
+            refreshPresetDefaults();
             refreshPreflight(preflightBox, estLine, agents, profiles);
         };
         chairKindCtl.control.addEventListener('change', refreshDerived);
         for (const sw of memberSwitches) sw.control.addEventListener('change', refreshDerived);
+        modeCtl.control.addEventListener('change', refreshDerived);
+        presetCtl.control.addEventListener('change', refreshDerived);
         refreshDerived();
 
         const cancelBtn = dialogButton('取消', 'dlg-btn', () => {
@@ -302,6 +328,41 @@ export function createAIGroupSidebar(deps) {
 
     function refreshChairVisibility() {
         void 0; // kind=ai 与 member 共用同一选择器，选项含义在 change 时重算
+    }
+
+    // 辩论/评审预设（§1.4）：切预设时按勾选顺序填默认角色（正方/反方/评审…）并调目标
+    function refreshPresetDefaults() {
+        if (!createControls) return;
+        const preset = createControls.preset.control.value;
+        if (preset === 'standard') return;
+        const picked = createControls.memberSwitches.filter((sw) => sw.control.checked);
+        const defaults = preset === 'debate'
+            ? ['正方', '反方', '评审', '领域专家', '评审', '正方补充', '反方补充', '评审']
+            : ['评审', '领域专家', '被评审方', '评审', '领域专家', '评审', '领域专家', '评审'];
+        picked.forEach((sw, index) => {
+            const input = createControls.roleInputs[sw.agentId];
+            if (input && !input.control.value.trim()) {
+                input.control.value = defaults[index % defaults.length] || '';
+                input.element.classList.remove('hidden');
+            }
+        });
+        if (picked.length) {
+            if (preset === 'review') createControls.goal.control.value = 'review';
+            else if (preset === 'debate') createControls.goal.control.value = 'decide';
+        }
+    }
+
+    // 辩论/评审的角色表（§1.4）：发言顺序由主持人按角色交替安排，角色进成员提示词
+    function collectRoles() {
+        if (!createControls) return {};
+        const roles = {};
+        for (const sw of createControls.memberSwitches) {
+            if (!sw.control.checked) continue;
+            const input = createControls.roleInputs[sw.agentId];
+            const role = input ? String(input.control.value || '').trim() : '';
+            if (role) roles[sw.agentId] = role.slice(0, 80);
+        }
+        return roles;
     }
 
     function pickedMemberIds() {
@@ -357,6 +418,8 @@ export function createAIGroupSidebar(deps) {
             title: String(createControls.title.control.value || '').trim(),
             topic: String(createControls.topic.control.value || '').trim(),
             goal: createControls.goal.control.value,
+            mode: createControls.mode.control.value === 'task' ? 'task' : 'roundtable',
+            roles: collectRoles(),
             memberIds,
             chair: {kind: chairKind, agentId: chairKind === 'user' ? '' : chairAgentId, policy: createControls.policy.control.value},
             maxRounds: Number(createControls.rounds.control.value) || 2,
