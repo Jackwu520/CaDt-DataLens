@@ -21,6 +21,7 @@ import (
 	"datalens/internal/run"
 	"datalens/internal/search"
 	"datalens/internal/sqlview"
+	"datalens/internal/terminal"
 )
 
 const (
@@ -38,6 +39,7 @@ type App struct {
 	*search.Searcher      // 工作区检索 / glob（internal/search）
 	*aischedule.Scheduler // AI 定时任务调度器（internal/aischedule）
 	*cmdbridge.Bridge     // 进程桥：插件 / AI 终端命令（internal/cmdbridge）
+	*terminal.Terminal    // 内置终端后端（internal/terminal）
 	ctx                   context.Context
 	startupTargets        []OpenTarget
 	startupSettingsPane   string
@@ -81,7 +83,7 @@ type FileData struct {
 }
 
 func NewApp() *App {
-	return &App{Reader: &reading.Reader{}, Runner: &run.Runner{}, Host: &browser.Host{}, Searcher: &search.Searcher{}, Scheduler: &aischedule.Scheduler{}, Bridge: &cmdbridge.Bridge{}}
+	return &App{Reader: &reading.Reader{}, Runner: &run.Runner{}, Host: &browser.Host{}, Searcher: &search.Searcher{}, Scheduler: &aischedule.Scheduler{}, Bridge: &cmdbridge.Bridge{}, Terminal: &terminal.Terminal{}}
 }
 
 func (a *App) startup(ctx context.Context) {
@@ -99,6 +101,9 @@ func (a *App) startup(ctx context.Context) {
 		runtime.EventsEmit(ctx, event, data)
 	}
 	cmdbridge.Emit = func(event string, data any) {
+		runtime.EventsEmit(ctx, event, data)
+	}
+	terminal.Emit = func(event string, data any) {
 		runtime.EventsEmit(ctx, event, data)
 	}
 	if a.convert != nil {

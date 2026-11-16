@@ -1,6 +1,6 @@
 //go:build windows
 
-package main
+package terminal
 
 import (
 	"context"
@@ -103,7 +103,7 @@ func TestTermShellAutoDefault(t *testing.T) {
 }
 
 func TestTermShellsList(t *testing.T) {
-	app := &App{}
+	app := &Terminal{}
 	shells := app.TermShells()
 	ids := map[string]bool{}
 	for _, s := range shells {
@@ -182,14 +182,14 @@ func TestTermTailTruncatesOnRuneBoundary(t *testing.T) {
 }
 
 func TestTermReadUnknownSession(t *testing.T) {
-	app := &App{}
+	app := &Terminal{}
 	if _, err := app.TermRead("term-not-exist", 100); err == nil {
 		t.Fatal("未知会话应报错")
 	}
 }
 
 func TestTermReadAndListAfterExit(t *testing.T) {
-	app := &App{}
+	app := &Terminal{}
 	session := &termSession{id: "t-fake-exit", shell: "cmd", cwd: `C:\`}
 	session.append("line-1\r\nline-2\r\n")
 	terminals.mu.Lock()
@@ -263,13 +263,13 @@ func TestLastTermLine(t *testing.T) {
 //（每次都 ClosePseudoConsole + 关两条管道），所以释放次数必须钉成 1。
 type stubPty struct{ closes int }
 
-func (s *stubPty) Read([]byte) (int, error)   { return 0, io.EOF }
-func (s *stubPty) Write(b []byte) (int, error) { return len(b), nil }
-func (s *stubPty) Close() error               { s.closes++; return nil }
-func (s *stubPty) Name() string               { return "stub-pty" }
-func (s *stubPty) Resize(int, int) error      { return nil }
-func (s *stubPty) Fd() uintptr                { return 0 }
-func (s *stubPty) Command(string, ...string) *pty.Cmd                { return &pty.Cmd{} }
+func (s *stubPty) Read([]byte) (int, error)           { return 0, io.EOF }
+func (s *stubPty) Write(b []byte) (int, error)        { return len(b), nil }
+func (s *stubPty) Close() error                       { s.closes++; return nil }
+func (s *stubPty) Name() string                       { return "stub-pty" }
+func (s *stubPty) Resize(int, int) error              { return nil }
+func (s *stubPty) Fd() uintptr                        { return 0 }
+func (s *stubPty) Command(string, ...string) *pty.Cmd { return &pty.Cmd{} }
 func (s *stubPty) CommandContext(context.Context, string, ...string) *pty.Cmd {
 	return &pty.Cmd{}
 }

@@ -1,6 +1,6 @@
 //go:build windows
 
-package main
+package terminal
 
 import (
 	"context"
@@ -12,7 +12,6 @@ import (
 	"unicode/utf8"
 
 	pty "github.com/aymanbagabas/go-pty"
-	"github.com/wailsapp/wails/v2/pkg/runtime"
 
 	"datalens/internal/envvars"
 	"datalens/internal/shellpath"
@@ -318,7 +317,7 @@ func (m *terminalManager) closeAll() {
 	m.mu.Unlock()
 }
 
-func (a *App) TermCreate(cols, rows int, shell string, cwd string) (map[string]string, error) {
+func (t *Terminal) TermCreate(cols, rows int, shell string, cwd string) (map[string]string, error) {
 	resolvedShell, err := normalizeTermShell(shell)
 	if err != nil {
 		return nil, err
@@ -332,11 +331,6 @@ func (a *App) TermCreate(cols, rows int, shell string, cwd string) (map[string]s
 	id := fmt.Sprintf("term-%d", terminals.seq)
 	terminals.mu.Unlock()
 
-	emit := func(event string, data interface{}) {
-		if a.ctx != nil {
-			runtime.EventsEmit(a.ctx, event, data)
-		}
-	}
 	session, err := startTermSession(id, resolvedShell, cols, rows, cwd, emit)
 	if err != nil {
 		return nil, err
@@ -348,7 +342,7 @@ func (a *App) TermCreate(cols, rows int, shell string, cwd string) (map[string]s
 	return map[string]string{"id": id, "shell": resolvedShell}, nil
 }
 
-func (a *App) TermWrite(id string, data string) error {
+func (t *Terminal) TermWrite(id string, data string) error {
 	terminals.mu.Lock()
 	s := terminals.sessions[id]
 	terminals.mu.Unlock()
@@ -358,7 +352,7 @@ func (a *App) TermWrite(id string, data string) error {
 	return s.write(data)
 }
 
-func (a *App) TermResize(id string, cols, rows int) error {
+func (t *Terminal) TermResize(id string, cols, rows int) error {
 	terminals.mu.Lock()
 	s := terminals.sessions[id]
 	terminals.mu.Unlock()
@@ -368,7 +362,7 @@ func (a *App) TermResize(id string, cols, rows int) error {
 	return s.resize(cols, rows)
 }
 
-func (a *App) TermClose(id string) error {
+func (t *Terminal) TermClose(id string) error {
 	terminals.mu.Lock()
 	s := terminals.sessions[id]
 	terminals.mu.Unlock()
@@ -404,7 +398,7 @@ type TermInfo struct {
 
 // TermRead 返回某个终端会话的最近输出（AI terminal 工具的 read 动作）。
 // 会话退出后仍可读（输出缓冲保留到 TermClose）。
-func (a *App) TermRead(id string, maxChars int) (*TermReadResult, error) {
+func (t *Terminal) TermRead(id string, maxChars int) (*TermReadResult, error) {
 	if maxChars <= 0 {
 		maxChars = termReadDefaultChars
 	}
@@ -430,7 +424,7 @@ func (a *App) TermRead(id string, maxChars int) (*TermReadResult, error) {
 }
 
 // TermList 按创建顺序列出全部终端会话（含已退出的，AI 靠它判断该读还是该新开）。
-func (a *App) TermList() []TermInfo {
+func (t *Terminal) TermList() []TermInfo {
 	terminals.mu.Lock()
 	ids := append([]string(nil), terminals.order...)
 	sessions := make(map[string]*termSession, len(terminals.sessions))
@@ -471,7 +465,7 @@ func lastTermLine(text string) string {
 }
 
 // TermShells 返回本机可用的 shell 列表（供新建终端菜单），默认 shell 排在最前。
-func (a *App) TermShells() []map[string]string {
+func (t *Terminal) TermShells() []map[string]string {
 	shells := []map[string]string{}
 	if findPwsh() != "" {
 		shells = append(shells, map[string]string{"id": "pwsh", "name": "PowerShell 7"})
