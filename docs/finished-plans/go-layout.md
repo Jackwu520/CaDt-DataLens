@@ -1,6 +1,6 @@
 # Go 侧目录与拆包评估
 
-> 状态：**已实施完毕**（2026-11-16）。B1–B4 四批（`998915c` / `79c4706` / `eb2c5df` / `b09fc32`）+ B5 零耦合收尾（`1692006`）全部落地，每批 `go test ./...` 与 `wails build -devtools` 全绿。嵌入服务 spike 成立。根目录 180 → **125 个 .go**（82 非测试 + 43 测试）、main 包 40,712 → **22,948 行**。2026-11-14 首轮评估的「暂不抽包」基于当时的高耦合形态，已被实测取代；首轮已落地的部分与判定存档见 §7
+> 状态：**已实施完毕**（2026-11-16）。B1–B4 四批（`998915c` / `79c4706` / `eb2c5df` / `b09fc32`）+ B5 零耦合收尾（`1692006`）+ B6 三域下沉（`2ec9ca1` / `e7a45c8` / `e088f3b` / `4d48808`）全部落地，每批 `go test ./...` 与 `wails build -devtools` 全绿。嵌入服务 spike 成立并已用于 B6。根目录 180 → **114 个 .go**（78 非测试 + 36 测试）、main 包 40,712 → **17,161 行**，`internal/` 30 个包（22 域 + 8 叶子）。2026-11-14 首轮评估的「暂不抽包」基于当时的高耦合形态，已被实测取代；首轮已落地的部分与判定存档见 §7
 > 问题：Go 后端 180 个 `.go`（112 非测试 + 68 测试，40,712 行，module `datalens`）平铺在仓库根、单一 `package main`——能不能像前端那样按域分目录、该拆什么、不该拆什么
 
 ## 0. 结论先行（2026-11-16 复测）
@@ -114,3 +114,16 @@
 | skills（229） | **保留根目录** | `//go:embed all:docs/skills` 路径相对包目录，不能下沉 |
 
 **最终结构（2026-11-16）**：根目录 **125 个 .go**（82 非测试 + 43 测试）、main 包 **22,948 行**；`internal/` **25 个包**（19 个域包 + 6 个共享叶子）。剩余根目录文件全是 Wails 绑定壳、真消费 App 状态的编排（reading / browser / run / ai_chat）与平台 glue。
+
+## 9. B6 三域下沉与共享叶子补齐（2026-11-16）
+
+嵌入服务 spike 成立后，B6 分四个可单独回滚的提交完成：
+
+| 提交 | 范围 | 说明 |
+| --- | --- | --- |
+| `2ec9ca1` | B6-0 `internal/appdata` | 应用数据路径拼装下沉共享叶子，根目录留同名薄包装 |
+| `e7a45c8` | B6a `internal/reading` | 扫描/解析/搜索与 4 个测试随包；`Reader` 嵌入 App；注入 Logf / Emit / DebugEnabled / RegisterPreviewRoot，启动清理改 `CleanupCacheOnStartup` |
+| `e088f3b` | B6b `internal/run` + `internal/procctl` | 运行通道与平台 shell 探测随包；`Runner` 嵌入 App；run 与命令桥共用的取消表/进程树终止/参数校验提为 `internal/procctl`，命令桥改调共享实现 |
+| `4d48808` | B6c `internal/browser` | WebView2 宿主、CDP 桥、平台 stub 与 5 个集成测试随包；`Host` 嵌入 App；注入 Logf / Emit / FindParent；`ProfileRoot` / `ActiveProfileDirs` 导出给存储清理 |
+
+**结果**：根目录 125 → **114 个 .go**（78 非测试 + 36 测试）、main 包 22,948 → **17,161 行**；`internal/` 30 个包（22 域 + 8 叶子）。Wails 绑定产物在四批前后无差异（提升方法与原壳方法同名），前端零改动；每批 `go test ./... -timeout 300s` 与 `wails build -devtools` 全绿，browser 批含真实 WebView2 集成用例。
