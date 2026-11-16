@@ -22,6 +22,7 @@ import (
 	"datalens/internal/search"
 	"datalens/internal/sqlview"
 	"datalens/internal/terminal"
+	"datalens/internal/toolchain"
 )
 
 const (
@@ -40,6 +41,7 @@ type App struct {
 	*aischedule.Scheduler // AI 定时任务调度器（internal/aischedule）
 	*cmdbridge.Bridge     // 进程桥：插件 / AI 终端命令（internal/cmdbridge）
 	*terminal.Terminal    // 内置终端后端（internal/terminal）
+	*toolchain.Toolchain  // 语言环境检测（internal/toolchain）
 	ctx                   context.Context
 	startupTargets        []OpenTarget
 	startupSettingsPane   string
@@ -83,7 +85,7 @@ type FileData struct {
 }
 
 func NewApp() *App {
-	return &App{Reader: &reading.Reader{}, Runner: &run.Runner{}, Host: &browser.Host{}, Searcher: &search.Searcher{}, Scheduler: &aischedule.Scheduler{}, Bridge: &cmdbridge.Bridge{}, Terminal: &terminal.Terminal{}}
+	return &App{Reader: &reading.Reader{}, Runner: &run.Runner{}, Host: &browser.Host{}, Searcher: &search.Searcher{}, Scheduler: &aischedule.Scheduler{}, Bridge: &cmdbridge.Bridge{}, Terminal: &terminal.Terminal{}, Toolchain: &toolchain.Toolchain{}}
 }
 
 func (a *App) startup(ctx context.Context) {

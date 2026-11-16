@@ -1,6 +1,6 @@
 //go:build windows
 
-package main
+package toolchain
 
 import (
 	"context"
@@ -370,7 +370,7 @@ func scanToolchain(kind, override string) []ToolchainInfo {
 }
 
 // DetectToolchain 检测指定工具的全部环境（路径 + 版本）。
-func (a *App) DetectToolchain(kind string, override string) (*ToolchainScan, error) {
+func (t *Toolchain) DetectToolchain(kind string, override string) (*ToolchainScan, error) {
 	kind = strings.ToLower(strings.TrimSpace(kind))
 	override = strings.TrimSpace(override)
 	envs := []ToolchainInfo{}
@@ -482,7 +482,7 @@ func parseGoModules(out string) []LangPackage {
 // kind+scope: pip/env（target=选中的 Python 解释器路径，取该环境已装的包）；
 //
 //	npm/global、npm/project（target=项目目录，读项目 node_modules）。
-func (a *App) ListLangPackages(kind string, scope string, target string) (*LangPackageList, error) {
+func (t *Toolchain) ListLangPackages(kind string, scope string, target string) (*LangPackageList, error) {
 	kind = strings.ToLower(strings.TrimSpace(kind))
 	scope = strings.ToLower(strings.TrimSpace(scope))
 	target = strings.TrimSpace(target)
