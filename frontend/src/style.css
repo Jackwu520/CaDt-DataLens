@@ -11184,3 +11184,26 @@ textarea.dlg-input:focus {
 .gc-head-topic { font-size: 12px; line-height: 1.6; color: var(--muted); }
 .gc-body { flex: 1; overflow: auto; padding: 12px 14px; }
 .gc-empty { font-size: 12px; color: var(--muted); padding: 24px 0; text-align: center; }
+
+/* ===== AI 群聊 G2：消息区 / 流式行 / 输入区 ===== */
+.gc-head-row { display: flex; align-items: center; gap: 8px; }
+.gc-controls { display: flex; gap: 6px; align-items: center; }
+.gc-controls .gc-member-select { flex: none; width: 130px; }
+.gc-controls input { flex: 1; min-width: 0; }
+.gc-messages { display: flex; flex-direction: column; gap: 14px; }
+.gc-msg { border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; background: var(--panel2); }
+.gc-msg-user { background: transparent; }
+.gc-msg-head { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; flex-wrap: wrap; }
+.gc-msg-name { font-size: 12.5px; font-weight: 600; }
+.gc-msg-name-user { color: var(--accent); }
+.gc-msg-time { margin-left: auto; font-size: 11px; color: var(--muted); }
+.gc-msg-content { font-size: 13px; line-height: 1.65; word-break: break-word; }
+.gc-msg-content > *:first-child { margin-top: 0; }
+.gc-msg-content > *:last-child { margin-bottom: 0; }
+.gc-msg-error { font-size: 11px; color: #e06c75; margin-top: 4px; }
+.gc-msg-streaming { border-style: dashed; }
+.gc-streaming-text { white-space: pre-wrap; }
+.gc-foot { flex: none; padding: 8px 14px; border-top: 1px solid var(--border); }
+.gc-composer { display: flex; gap: 8px; align-items: flex-end; }
+.gc-composer > :first-child { flex: 1; min-width: 0; }
+.gc-composer > button { flex: none; }

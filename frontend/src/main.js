@@ -36,6 +36,7 @@ import privacyText from '../../docs/legal/privacy.md?raw';
 import {createBridgeUI} from './bridge/bridge-ui.js';
 import {createAIGroupRuntime} from './ai/ai-group-runtime.js';
 import {createAIGroupSidebar} from './ai/ai-group-sidebar.js';
+import {createAIGroupView} from './ai/ai-group-view.js';
 import {createCursorThemes} from './shell/cursor-themes.js';
 import {createTerminalUI} from './terminal/terminal-ui.js';
 import {createFormatConvert} from './editor/format-convert.js';
@@ -410,9 +411,10 @@ let fileClipboard = null;
 let ctxMenu = null;
 let palette = null;
 let aiPanel = null;
-// AI 群聊域（ai-group-*）：运行时 + 侧栏；在 initAIPanel 内创建（依赖面板薄 API）
+// AI 群聊域（ai-group-*）：运行时 + 侧栏 + 标签页视图；在 initAIPanel 内创建（依赖面板薄 API）
 let aiGroupRuntime = null;
 let aiGroupSidebar = null;
+let aiGroupView = null;
 let closedTabs = [];
 
 // 应用操作桥：AI 面板 app_control 工具的执行端（仅当前窗口，语义化动作，不模拟 DOM 事件）。
@@ -2790,6 +2792,15 @@ function initAIPanel() {
             : {},
     });
     aiGroupSidebar.bindSidebar();
+    // 群聊标签页视图：消息 / 流式 / 输入区（bridge-group-view 只管标签页壳）
+    aiGroupView = createAIGroupView({
+        runtime: aiGroupRuntime,
+        getAIConfig: () => (aiPanel && aiPanel.aiGroupApi ? aiPanel.aiGroupApi.getConfig() : null),
+        renderMarkdown: aiPanel.aiGroupApi ? (text) => aiPanel.aiGroupApi.renderMarkdown(text) : null,
+        enhanceAnswerBody: aiPanel.aiGroupApi && aiPanel.aiGroupApi.enhanceAnswerBody
+            ? (root) => aiPanel.aiGroupApi.enhanceAnswerBody(root)
+            : null,
+    });
     window.__lens.aiGroupRuntime = aiGroupRuntime;
     window.__mockAiEmit = (name, payload) => {
         if (aiPanel) aiPanel.handleEvent(name, payload);
@@ -4800,6 +4811,7 @@ const bridgeUI = createBridgeUI({
     get aiPanel() { return aiPanel; },
     // 群聊视图（bridge-group-view）：运行时与配置经惰性函数取，避免创建期 TDZ
     get aiGroupRuntime() { return () => aiGroupRuntime; },
+    get aiGroupView() { return () => aiGroupView; },
     get getAIConfig() { return () => (aiPanel && aiPanel.aiGroupApi ? aiPanel.aiGroupApi.getConfig() : null); },
     get applySettings() { return applySettings; },
     get autoCheckUpdateOnStart() { return autoCheckUpdateOnStart; },
