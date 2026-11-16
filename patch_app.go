@@ -4,8 +4,6 @@ package main
 // 真正的解析/匹配/写入在 internal/patch 的自由函数里，CLI 与界面共用同一套实现。
 
 import (
-	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,68 +16,6 @@ import (
 func init() {
 	patch.AppDataDir = appDataRoot
 	patch.Logf = writeAppLog
-}
-
-// patchSidecar 记录"这份补丁是基于哪一版文件生成的"，用于检测生成后的漂移。
-// 不写进 .patch 本身（保持标准格式），按补丁内容 sha256 存本地。
-type patchSidecar struct {
-	ID        string            `json:"id"`
-	Summary   string            `json:"summary"`
-	CreatedAt int64             `json:"createdAt"`
-	PatchSHA  string            `json:"patchSha"`
-	Root      string            `json:"root"`
-	Files     map[string]string `json:"files"` // relPath(小写) -> 生成时内容 sha256
-}
-
-func patchMetaDir(store string) string { return filepath.Join(store, "meta") }
-
-func loadPatchSidecar(store, patchSHA string) *patchSidecar {
-	if store == "" || patchSHA == "" {
-		return nil
-	}
-	b, err := os.ReadFile(filepath.Join(patchMetaDir(store), patchSHA+".json"))
-	if err != nil {
-		return nil
-	}
-	var sc patchSidecar
-	if json.Unmarshal(b, &sc) != nil {
-		return nil
-	}
-	return &sc
-}
-
-func savePatchSidecar(store string, sc *patchSidecar) {
-	if store == "" {
-		return
-	}
-	_ = os.MkdirAll(patchMetaDir(store), 0o755)
-	b, err := json.MarshalIndent(sc, "", "  ")
-	if err != nil {
-		return
-	}
-	_ = os.WriteFile(filepath.Join(patchMetaDir(store), sc.PatchSHA+".json"), b, 0o644)
-}
-
-// readPatchFileText 读取 .patch 文本：剥 BOM、统一换行，并做大小限制。
-func readPatchFileText(path string, limit int) (string, error) {
-	info, err := os.Stat(path)
-	if err != nil {
-		return "", err
-	}
-	if info.IsDir() {
-		return "", fmt.Errorf("这是一个目录：%s", filepath.Base(path))
-	}
-	if info.Size() > int64(limit) {
-		return "", patch.NewPatchError(patch.PatchErrLimit, fmt.Sprintf("补丁文件超过 %d KB，请拆分后再用", limit/1024))
-	}
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return "", err
-	}
-	text := strings.TrimPrefix(string(raw), "\ufeff")
-	text = strings.ReplaceAll(text, "\r\n", "\n")
-	text = strings.ReplaceAll(text, "\r", "\n")
-	return text, nil
 }
 
 // PatchSave 落盘补丁并返回首次预览。
@@ -139,7 +75,7 @@ func (a *App) PatchSave(root, summary, text string) (*patch.PatchPreview, error)
 			files[strings.ToLower(f.RelPath)] = f.Target.Hash
 		}
 	}
-	savePatchSidecar(store, &patchSidecar{
+	patch.SaveSidecar(store, &patch.Sidecar{
 		ID: id, Summary: summary, CreatedAt: time.Now().Unix(),
 		PatchSHA: patch.SHA256Hex([]byte(body)), Root: root, Files: files,
 	})
@@ -171,7 +107,7 @@ func (a *App) PatchPreviewFile(path, root string) (*patch.PatchPreview, error) {
 	if path == "" {
 		return nil, patch.NewPatchError(patch.PatchErrBackend, "缺少补丁文件路径")
 	}
-	text, err := readPatchFileText(path, patch.PatchMaxTextBytes)
+	text, err := patch.ReadFileText(path, patch.PatchMaxTextBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -184,7 +120,7 @@ func (a *App) PatchPreviewFile(path, root string) (*patch.PatchPreview, error) {
 	var opts patch.PatchPlanOptions
 	opts.External = true
 	summary := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
-	if sc := loadPatchSidecar(store, sha); sc != nil {
+	if sc := patch.LoadSidecar(store, sha); sc != nil {
 		opts.BaseHashes = sc.Files
 		if sc.Summary != "" {
 			summary = sc.Summary
@@ -250,7 +186,7 @@ func (a *App) PatchRepreview(planID string, allowOffset, ignoreWhitespace bool) 
 		if old.RawText != "" {
 			return old.RawText, nil
 		}
-		return readPatchFileText(old.PatchPath, patch.PatchMaxTextBytes)
+		return patch.ReadFileText(old.PatchPath, patch.PatchMaxTextBytes)
 	}()
 	if err != nil {
 		return nil, err
@@ -261,7 +197,7 @@ func (a *App) PatchRepreview(planID string, allowOffset, ignoreWhitespace bool) 
 	}
 	store := patch.PatchStoreRoot(old.Root)
 	opts := patch.PatchPlanOptions{AllowOffset: allowOffset, IgnoreWhitespace: ignoreWhitespace, External: old.External}
-	if sc := loadPatchSidecar(store, patch.SHA256Hex([]byte(text))); sc != nil {
+	if sc := patch.LoadSidecar(store, patch.SHA256Hex([]byte(text))); sc != nil {
 		opts.BaseHashes = sc.Files
 	}
 	plan, perr := patch.BuildPatchPlan(doc, old.Root, old.PatchID, old.Summary, old.PatchPath, opts)
@@ -368,7 +304,7 @@ func (a *App) PatchDelete(id, root string) error {
 
 // PatchReadText 给补丁视图取正文（大文件时避免一次性塞进 Wails 调用参数）。
 func (a *App) PatchReadText(path string) (string, error) {
-	return readPatchFileText(path, patch.PatchMaxTextBytes)
+	return patch.ReadFileText(path, patch.PatchMaxTextBytes)
 }
 
 // PatchWorkspaceRoot 给前端一个兜底：没开工作区时用应用数据目录存放补丁。

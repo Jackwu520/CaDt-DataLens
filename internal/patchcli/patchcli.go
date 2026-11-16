@@ -1,4 +1,4 @@
-package main
+package patchcli
 
 // 补丁命令行：不启动 WebView、不需要 AI，直接检查 / 应用 / 撤销。
 //
@@ -19,7 +19,7 @@ import (
 	"datalens/internal/patch"
 )
 
-type patchCLIOptions struct {
+type Options struct {
 	Action      string // check | apply | revert
 	PatchPath   string
 	Dir         string
@@ -33,7 +33,7 @@ type patchCLIOptions struct {
 	RevertID    string
 }
 
-func parsePatchArgs(args []string) (*patchCLIOptions, bool, error) {
+func ParseArgs(args []string) (*Options, bool, error) {
 	action := ""
 	for _, a := range args {
 		switch a {
@@ -51,7 +51,7 @@ func parsePatchArgs(args []string) (*patchCLIOptions, bool, error) {
 	if action == "" {
 		return nil, false, nil
 	}
-	opts := &patchCLIOptions{Action: action, OnConflict: "abort"}
+	opts := &Options{Action: action, OnConflict: "abort"}
 	var positional []string
 	for i := 0; i < len(args); i++ {
 		a := args[i]
@@ -131,7 +131,7 @@ func pout(format string, a ...any) {
 	fmt.Fprintf(patchWriter(), format, a...)
 }
 
-func runPatchCommand(opts *patchCLIOptions) int {
+func Run(opts *Options) int {
 	switch opts.Action {
 	case "check", "apply":
 		return patchCLIApply(opts)
@@ -166,7 +166,7 @@ type patchCLIFileOut struct {
 	Hint    string `json:"hint,omitempty"`
 }
 
-func patchCLIApply(opts *patchCLIOptions) int {
+func patchCLIApply(opts *Options) int {
 	root := strings.TrimSpace(opts.Dir)
 	if root == "" {
 		root = filepath.Dir(opts.PatchPath)
@@ -176,7 +176,7 @@ func patchCLIApply(opts *patchCLIOptions) int {
 		fmt.Fprintf(os.Stderr, "无法解析目录：%v\n", err)
 		return 2
 	}
-	text, err := readPatchFileText(opts.PatchPath, patch.PatchMaxTextBytes)
+	text, err := patch.ReadFileText(opts.PatchPath, patch.PatchMaxTextBytes)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s\n", patchErrorText(err))
 		return 2
@@ -192,7 +192,7 @@ func patchCLIApply(opts *patchCLIOptions) int {
 		StripLevel:       -1,
 		External:         true,
 	}
-	if sc := loadPatchSidecar(patch.PatchStoreRoot(absRoot), patch.SHA256Hex([]byte(text))); sc != nil {
+	if sc := patch.LoadSidecar(patch.PatchStoreRoot(absRoot), patch.SHA256Hex([]byte(text))); sc != nil {
 		optsPlan.BaseHashes = sc.Files
 	}
 	plan, perr := patch.BuildPatchPlan(doc, absRoot, patch.NewPatchRunID(""), filepath.Base(opts.PatchPath), opts.PatchPath, optsPlan)
@@ -291,7 +291,7 @@ func patchCLIExit(report patchCLIReport, code int) int {
 	return code
 }
 
-func patchCLIRevert(opts *patchCLIOptions) int {
+func patchCLIRevert(opts *Options) int {
 	root := strings.TrimSpace(opts.Dir)
 	if root == "" {
 		root, _ = os.Getwd()

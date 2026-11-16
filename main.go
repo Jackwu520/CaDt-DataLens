@@ -10,6 +10,7 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
 	"github.com/wailsapp/wails/v2/pkg/options/windows"
 
+	"datalens/internal/patchcli"
 	"datalens/internal/previewassets"
 )
 
@@ -49,13 +50,13 @@ func main() {
 	}
 
 	// 补丁命令行：不启动窗口、不依赖 AI，处理完直接退出。
-	if patchOpts, isPatch, patchErr := parsePatchArgs(os.Args[1:]); isPatch {
+	if patchOpts, isPatch, patchErr := patchcli.ParseArgs(os.Args[1:]); isPatch {
 		attachParentConsole()
 		if patchErr != nil {
 			fmt.Fprintln(os.Stderr, patchErr)
 			os.Exit(2)
 		}
-		os.Exit(runPatchCommand(patchOpts))
+		os.Exit(patchcli.Run(patchOpts))
 	}
 
 	ensureAppDataDir()
