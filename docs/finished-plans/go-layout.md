@@ -45,9 +45,9 @@
 | B3 | `internal/sessionstore`（含 lock 平台对）+ `internal/sessionindex` + `internal/activity` | 3,192（10 文件） | 各文件尾部绑定方法拆成 `*_app.go` 留根（~300 行） | 实测三者符号零交叉（sessionindex 不引用 sessionstore 任何符号）；若做首轮方案 A 剩余部分，sessionindex 的同包拆分并入本批 |
 | B4 | `internal/aitransport` + `internal/aitimer` + AI gen/catalog | 2,601（ai_types / http / sse / stream / validate / proxy×2 + timer）+ 899（ai_gen + ai_catalog + 各自测试） | AI 绑定、timer 到点回调接线、gen/catalog 的挂名绑定拆出留根 | timer 注册表已回调化，接口化成本低；`ai_test.go`(1,006) 是混合测试，留 main，B4 不强拆。**等生图/视频线稳定后动** |
 
-**每批验证**：`go build ./... && go vet ./... && go test ./...` → `wails build -devtools` → 对应链路冒烟（B1：`--check-patch` / `--apply-patch`；B4：AI 连通性测试）→ `git show` 核对是纯搬移。
+**每批验证**：`go build ./... && go vet ./... && go test ./...` → `wails build -devtools` → 对应链路冒烟（B1 已跑 `--check-patch`；B4 的 AI 连通性冒烟需真实账号，未跑——由完整单测与绑定重生成覆盖）→ `git show` 核对是纯搬移。
 
-**实施进度（2026-11-16）**：B1 / B2 / B3 完成，一批一提交：
+**实施进度（2026-11-16）**：B1–B4 全部完成，一批一提交：
 
 | 批 | 提交 | 落地内容 |
 | --- | --- | --- |
