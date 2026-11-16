@@ -1,4 +1,4 @@
-package main
+package aischedule
 
 import (
 	"database/sql"
@@ -14,8 +14,31 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/wailsapp/wails/v2/pkg/runtime"
+	"datalens/internal/appdata"
 )
+
+// Scheduler AI 定时任务调度器。任务与状态存派生 SQLite；事件与日志经钩子注入。
+type Scheduler struct{}
+
+// 宿主注入（main 包的根壳在 init/startup 接线）。
+var (
+	// Logf 诊断日志（main/logging.go 的 writeAppLog）。
+	Logf func(level, format string, args ...any)
+	// Emit 前端事件推送（main 在 startup 注入 Wails EventsEmit）。
+	Emit func(event string, data any)
+)
+
+func logf(level, format string, args ...any) {
+	if Logf != nil {
+		Logf(level, format, args...)
+	}
+}
+
+func emit(event string, data any) {
+	if Emit != nil {
+		Emit(event, data)
+	}
+}
 
 // AI 定时任务（v2 功能 C）：调度器在 Go 侧（不受 Chromium 对后台页面的 timer 节流影响），
 // 任务定义与运行状态存派生 SQLite（ai-schedule.db，modernc pure Go，可随时删除重建）；
@@ -81,8 +104,8 @@ var (
 	aiScheduleStopCh chan struct{}
 )
 
-func aiSchedulePath() string {
-	root := appDataRoot()
+func Path() string {
+	root := appdata.Root()
 	if root == "" {
 		return ""
 	}
@@ -99,7 +122,7 @@ func aiScheduleEnsureLocked() error {
 	if aiScheduleDB != nil {
 		return nil
 	}
-	path := aiSchedulePath()
+	path := Path()
 	if path == "" {
 		return errors.New("应用数据目录不可用")
 	}
@@ -234,9 +257,9 @@ func aiScheduleAlignNext(nowMs, prev int64, intervalMinutes int) int64 {
 	return prev + k*step
 }
 
-// closeAIScheduleDB 释放派生库句柄并清空内存态，供「存储与清理」删 ai-schedule.db 前调用
-//（SQLite 的库文件在打开状态下删不掉）。调度器下一秒的 tick 会按空库重新拉起，不影响运行。
-func closeAIScheduleDB() {
+// Close 释放派生库句柄并清空内存态，供「存储与清理」删 ai-schedule.db 前调用
+// （SQLite 的库文件在打开状态下删不掉）。调度器下一秒的 tick 会按空库重新拉起，不影响运行。
+func Close() {
 	aiScheduleMu.Lock()
 	defer aiScheduleMu.Unlock()
 	if aiScheduleDB != nil {
@@ -246,10 +269,10 @@ func closeAIScheduleDB() {
 	aiSchedules = nil
 }
 
-// startAISchedule 在 startup 时调用：加载任务 + 启动单 ticker 每秒扫描。
-func (a *App) startAISchedule() {
+// Start 在 startup 时调用：加载任务 + 启动单 ticker 每秒扫描。
+func (sch *Scheduler) Start() {
 	if err := aiScheduleEnsureLoaded(); err != nil {
-		writeAppLog("warn", "AI 定时任务初始化失败: %v", err)
+		logf("warn", "AI 定时任务初始化失败: %v", err)
 		return
 	}
 	aiScheduleMu.Lock()
@@ -266,7 +289,7 @@ func (a *App) startAISchedule() {
 			case <-stop:
 				return
 			case <-ticker.C:
-				a.aiScheduleTick()
+				sch.aiScheduleTick()
 			}
 		}
 	}(aiScheduleStopCh)
@@ -274,7 +297,7 @@ func (a *App) startAISchedule() {
 
 // aiScheduleTick 扫描到期任务：发 sched-fire、回写运行状态、按 kind 推进下一次触发；
 // once / 达到 maxRuns 的任务触发后自动删除。
-func (a *App) aiScheduleTick() {
+func (sch *Scheduler) aiScheduleTick() {
 	now := time.Now()
 	nowMs := now.UnixMilli()
 	fired := make([]AIScheduleFirePayload, 0, 2)
@@ -312,10 +335,10 @@ func (a *App) aiScheduleTick() {
 		if finish {
 			finished[s.Id] = true
 			if _, err := aiScheduleDB.Exec(`DELETE FROM ai_schedules WHERE id = ?`, s.Id); err != nil {
-				writeAppLog("warn", "AI 定时任务删除失败（%s）: %v", s.Id, err)
+				logf("warn", "AI 定时任务删除失败（%s）: %v", s.Id, err)
 			}
 		} else if err := aiSchedulePersistRow(s); err != nil {
-			writeAppLog("warn", "AI 定时任务状态回写失败（%s）: %v", s.Id, err)
+			logf("warn", "AI 定时任务状态回写失败（%s）: %v", s.Id, err)
 		}
 	}
 	if len(finished) > 0 {
@@ -328,23 +351,19 @@ func (a *App) aiScheduleTick() {
 		aiSchedules = kept
 	}
 	aiScheduleMu.Unlock()
-	if a.ctx != nil {
-		for _, p := range fired {
-			runtime.EventsEmit(a.ctx, "sched-fire", p)
-			writeAppLog("info", "AI 定时任务触发（%s · %s · 第 %d 次）", p.ScheduleId, p.Name, p.RunNo)
-		}
+	for _, p := range fired {
+		emit("sched-fire", p)
+		logf("info", "AI 定时任务触发（%s · %s · 第 %d 次）", p.ScheduleId, p.Name, p.RunNo)
 	}
 }
 
-func aiScheduleEmitChanged(a *App) {
-	if a.ctx != nil {
-		runtime.EventsEmit(a.ctx, "schedules-changed", map[string]bool{"changed": true})
-	}
+func aiScheduleEmitChanged() {
+	emit("schedules-changed", map[string]bool{"changed": true})
 }
 
 // ---- 绑定：列表 / 创建 / 更新 / 删除 / 启停 / 结果回写 ----
 
-func (a *App) AIScheduleList() ([]*AISchedule, error) {
+func (sch *Scheduler) AIScheduleList() ([]*AISchedule, error) {
 	if err := aiScheduleEnsureLoaded(); err != nil {
 		return nil, err
 	}
@@ -361,7 +380,7 @@ func (a *App) AIScheduleList() ([]*AISchedule, error) {
 	return list, nil
 }
 
-func (a *App) AIScheduleCreate(input AIScheduleInput) (*AISchedule, error) {
+func (sch *Scheduler) AIScheduleCreate(input AIScheduleInput) (*AISchedule, error) {
 	if err := aiScheduleEnsureLoaded(); err != nil {
 		return nil, err
 	}
@@ -391,11 +410,11 @@ func (a *App) AIScheduleCreate(input AIScheduleInput) (*AISchedule, error) {
 		return nil, err
 	}
 	aiSchedules = append(aiSchedules, s)
-	aiScheduleEmitChanged(a)
+	aiScheduleEmitChanged()
 	return cloneAISchedule(s), nil
 }
 
-func (a *App) AIScheduleUpdate(id string, input AIScheduleInput) (*AISchedule, error) {
+func (sch *Scheduler) AIScheduleUpdate(id string, input AIScheduleInput) (*AISchedule, error) {
 	if err := aiScheduleEnsureLoaded(); err != nil {
 		return nil, err
 	}
@@ -424,11 +443,11 @@ func (a *App) AIScheduleUpdate(id string, input AIScheduleInput) (*AISchedule, e
 		return nil, err
 	}
 	*s = *next
-	aiScheduleEmitChanged(a)
+	aiScheduleEmitChanged()
 	return cloneAISchedule(s), nil
 }
 
-func (a *App) AIScheduleDelete(id string) error {
+func (sch *Scheduler) AIScheduleDelete(id string) error {
 	if err := aiScheduleEnsureLoaded(); err != nil {
 		return err
 	}
@@ -450,11 +469,11 @@ func (a *App) AIScheduleDelete(id string) error {
 	if _, err := aiScheduleDB.Exec(`DELETE FROM ai_schedules WHERE id = ?`, id); err != nil {
 		return err
 	}
-	aiScheduleEmitChanged(a)
+	aiScheduleEmitChanged()
 	return nil
 }
 
-func (a *App) AIScheduleToggle(id string, enabled bool) (*AISchedule, error) {
+func (sch *Scheduler) AIScheduleToggle(id string, enabled bool) (*AISchedule, error) {
 	if err := aiScheduleEnsureLoaded(); err != nil {
 		return nil, err
 	}
@@ -474,12 +493,12 @@ func (a *App) AIScheduleToggle(id string, enabled bool) (*AISchedule, error) {
 	if err := aiSchedulePersistRow(s); err != nil {
 		return nil, err
 	}
-	aiScheduleEmitChanged(a)
+	aiScheduleEmitChanged()
 	return cloneAISchedule(s), nil
 }
 
 // AIScheduleSetResult 前端触发执行后回写结果（成功/失败 + 说明）。
-func (a *App) AIScheduleSetResult(id string, ok bool, note string) error {
+func (sch *Scheduler) AIScheduleSetResult(id string, ok bool, note string) error {
 	if err := aiScheduleEnsureLoaded(); err != nil {
 		return err
 	}

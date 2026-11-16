@@ -12,6 +12,7 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
+	"datalens/internal/aischedule"
 	"datalens/internal/aitimer"
 	"datalens/internal/browser"
 	"datalens/internal/mcp"
@@ -30,28 +31,29 @@ const (
 const appVersion = "v1.1.0"
 
 type App struct {
-	*reading.Reader     // 阅读模式引擎（internal/reading），提升方法即 Wails 绑定
-	*run.Runner         // 运行代码引擎（internal/run）
-	*browser.Host       // 内嵌浏览器引擎（internal/browser）
-	*search.Searcher    // 工作区检索 / glob（internal/search）
-	ctx                 context.Context
-	startupTargets      []OpenTarget
-	startupSettingsPane string
-	startupAISession    string
-	dirty               bool
-	forceClose          bool
-	aiRunning           bool
-	aiTimersMu          sync.Mutex
-	aiTimers            *aitimer.Registry
-	muMCP               sync.Mutex
-	mcp                 *mcp.Manager
-	watchMu             sync.Mutex
-	watchRoot           string
-	watchStop           chan struct{}
-	watchDone           chan struct{}
-	convert             *convertOptions
-	convertExitCode     int
-	convertDone         atomic.Bool
+	*reading.Reader       // 阅读模式引擎（internal/reading），提升方法即 Wails 绑定
+	*run.Runner           // 运行代码引擎（internal/run）
+	*browser.Host         // 内嵌浏览器引擎（internal/browser）
+	*search.Searcher      // 工作区检索 / glob（internal/search）
+	*aischedule.Scheduler // AI 定时任务调度器（internal/aischedule）
+	ctx                   context.Context
+	startupTargets        []OpenTarget
+	startupSettingsPane   string
+	startupAISession      string
+	dirty                 bool
+	forceClose            bool
+	aiRunning             bool
+	aiTimersMu            sync.Mutex
+	aiTimers              *aitimer.Registry
+	muMCP                 sync.Mutex
+	mcp                   *mcp.Manager
+	watchMu               sync.Mutex
+	watchRoot             string
+	watchStop             chan struct{}
+	watchDone             chan struct{}
+	convert               *convertOptions
+	convertExitCode       int
+	convertDone           atomic.Bool
 }
 
 type OpenTarget struct {
@@ -77,7 +79,7 @@ type FileData struct {
 }
 
 func NewApp() *App {
-	return &App{Reader: &reading.Reader{}, Runner: &run.Runner{}, Host: &browser.Host{}, Searcher: &search.Searcher{}}
+	return &App{Reader: &reading.Reader{}, Runner: &run.Runner{}, Host: &browser.Host{}, Searcher: &search.Searcher{}, Scheduler: &aischedule.Scheduler{}}
 }
 
 func (a *App) startup(ctx context.Context) {
@@ -89,6 +91,9 @@ func (a *App) startup(ctx context.Context) {
 		runtime.EventsEmit(ctx, event, data)
 	}
 	browser.Emit = func(event string, data any) {
+		runtime.EventsEmit(ctx, event, data)
+	}
+	aischedule.Emit = func(event string, data any) {
 		runtime.EventsEmit(ctx, event, data)
 	}
 	if a.convert != nil {
@@ -112,7 +117,7 @@ func (a *App) startup(ctx context.Context) {
 		return
 	}
 	// AI 定时任务调度器：主窗口与 AI 悬浮窗进程各自扫描，执行去重由前端裁决
-	a.startAISchedule()
+	a.Scheduler.Start()
 	// MCP 客户端：仅主窗口进程初始化（浮窗/调试控制台不拉 MCP 子进程，避免同机双实例）
 	if !a.IsAIFloatWindow() && !a.IsDebugConsoleWindow() {
 		a.initMCPManager()

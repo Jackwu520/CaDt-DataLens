@@ -11,6 +11,7 @@ import (
 
 	"datalens/internal/activity"
 	"datalens/internal/aicatalog"
+	"datalens/internal/aischedule"
 	"datalens/internal/browser"
 	"datalens/internal/envvars"
 	"datalens/internal/mcp"
@@ -27,7 +28,7 @@ var storageService = storage.New(storage.Deps{
 	BeforeClear: map[string]func(){
 		// 派生 SQLite 打开状态下删不掉，清除前先释放本进程句柄
 		"session-index": sessionindex.ResetFiles,
-		"ai-schedule":   closeAIScheduleDB,
+		"ai-schedule":   aischedule.Close,
 	},
 })
 
@@ -52,7 +53,7 @@ func storageLocation(name string) string {
 	case storage.LocSessionIndex:
 		return sessionindex.Path()
 	case storage.LocScheduleDB:
-		return aiSchedulePath()
+		return aischedule.Path()
 	case storage.LocModelCatalog:
 		return aicatalog.Path()
 	case storage.LocActivity:

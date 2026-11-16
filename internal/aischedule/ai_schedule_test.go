@@ -1,4 +1,4 @@
-package main
+package aischedule
 
 import (
 	"strings"
@@ -75,10 +75,10 @@ func TestAICronNextAfter(t *testing.T) {
 		want time.Time
 	}{
 		{"*/5 * * * *", time.Date(2026, 11, 12, 10, 5, 0, 0, time.Local)},
-		{"30 9 * * *", time.Date(2026, 11, 13, 9, 30, 0, 0, time.Local)},  // 明天 9:30
+		{"30 9 * * *", time.Date(2026, 11, 13, 9, 30, 0, 0, time.Local)},   // 明天 9:30
 		{"10 10 * * *", time.Date(2026, 11, 12, 10, 10, 0, 0, time.Local)}, // 今天 10:10 尚未到
-		{"0 12 1 * *", time.Date(2026, 12, 1, 12, 0, 0, 0, time.Local)},   // 下月 1 日
-		{"0 8 * * 1", time.Date(2026, 11, 16, 8, 0, 0, 0, time.Local)},    // 下周一
+		{"0 12 1 * *", time.Date(2026, 12, 1, 12, 0, 0, 0, time.Local)},    // 下月 1 日
+		{"0 8 * * 1", time.Date(2026, 11, 16, 8, 0, 0, 0, time.Local)},     // 下周一
 	}
 	for _, c := range cases {
 		got, ok := aiCronNextAfter(c.spec, base)
@@ -116,7 +116,7 @@ func TestAIScheduleAlignNext(t *testing.T) {
 
 func TestAIScheduleCreateValidate(t *testing.T) {
 	resetAIScheduleTest(t)
-	app := &App{}
+	app := &Scheduler{}
 	if _, err := app.AIScheduleCreate(AIScheduleInput{Kind: "interval", IntervalMinutes: 5}); err == nil {
 		t.Fatal("缺少 prompt 应被拒绝")
 	}
@@ -137,7 +137,7 @@ func TestAIScheduleCreateValidate(t *testing.T) {
 
 func TestAIScheduleCreateListDeleteRoundtrip(t *testing.T) {
 	resetAIScheduleTest(t)
-	app := &App{}
+	app := &Scheduler{}
 	s, err := app.AIScheduleCreate(AIScheduleInput{
 		Name: "每 10 分钟问好", Kind: "interval", IntervalMinutes: 10,
 		Prompt: "向用户问好", Scope: "chat",
@@ -189,7 +189,7 @@ func TestAIScheduleCreateListDeleteRoundtrip(t *testing.T) {
 
 func TestAIScheduleTickOnceFiresAndRemoves(t *testing.T) {
 	resetAIScheduleTest(t)
-	app := &App{} // ctx 为 nil：不真正发事件，仅验证扫描与状态推进
+	app := &Scheduler{} // ctx 为 nil：不真正发事件，仅验证扫描与状态推进
 	future := time.Now().Add(2 * time.Minute).Format(time.RFC3339)
 	_, err := app.AIScheduleCreate(AIScheduleInput{Kind: "once", Prompt: "提醒我", At: future})
 	if err != nil {
@@ -209,7 +209,7 @@ func TestAIScheduleTickOnceFiresAndRemoves(t *testing.T) {
 
 func TestAIScheduleTickIntervalAdvances(t *testing.T) {
 	resetAIScheduleTest(t)
-	app := &App{}
+	app := &Scheduler{}
 	_, err := app.AIScheduleCreate(AIScheduleInput{Kind: "interval", IntervalMinutes: 2, Prompt: "检查", MaxRuns: 2})
 	if err != nil {
 		t.Fatalf("创建失败: %v", err)
@@ -242,7 +242,7 @@ func TestAIScheduleTickIntervalAdvances(t *testing.T) {
 
 func TestAIScheduleReloadMissedOnceDisabled(t *testing.T) {
 	resetAIScheduleTest(t)
-	app := &App{}
+	app := &Scheduler{}
 	at := time.Now().Add(2 * time.Minute).Format(time.RFC3339)
 	if _, err := app.AIScheduleCreate(AIScheduleInput{Kind: "once", Prompt: "错过我", At: at}); err != nil {
 		t.Fatalf("创建失败: %v", err)
@@ -276,7 +276,7 @@ func TestAIScheduleReloadMissedOnceDisabled(t *testing.T) {
 
 func TestAIScheduleCronRoundtrip(t *testing.T) {
 	resetAIScheduleTest(t)
-	app := &App{}
+	app := &Scheduler{}
 	s, err := app.AIScheduleCreate(AIScheduleInput{Kind: "cron", Prompt: "每分钟", Cron: "* * * * *"})
 	if err != nil {
 		t.Fatalf("创建失败: %v", err)
