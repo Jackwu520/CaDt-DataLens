@@ -1,7 +1,6 @@
-package main
-
-// 联网工具：Bing RSS 搜索 + 公开网页抓取（转纯文本与链接）。
-// 只允许 http/https 公网地址；不执行页面脚本，结果仅供模型阅读。
+// Package webtools：联网工具引擎——Bing RSS 搜索 + 公开网页抓取（转纯文本与链接），
+// 只允许 http/https 公网地址，不执行页面脚本。
+package webtools
 
 import (
 	"context"
@@ -76,7 +75,7 @@ type webResponse struct {
 }
 
 // WebSearch 用 Bing RSS 搜索公开网页，返回标题、链接、摘要与日期。
-func (a *App) WebSearch(query string, maxResults int) (map[string]interface{}, error) {
+func Search(query string, maxResults int) (map[string]interface{}, error) {
 	started := time.Now()
 	q := strings.TrimSpace(query)
 	if q == "" {
@@ -114,7 +113,7 @@ func (a *App) WebSearch(query string, maxResults int) (map[string]interface{}, e
 }
 
 // WebFetch 抓取一个公开网页并返回标题、正文纯文本与页面链接。
-func (a *App) WebFetch(rawURL string, maxChars int) (map[string]interface{}, error) {
+func Fetch(rawURL string, maxChars int) (map[string]interface{}, error) {
 	started := time.Now()
 	limit := maxChars
 	if limit <= 0 {

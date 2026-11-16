@@ -1,4 +1,5 @@
-package main
+// Package structuredir：目录结构树生成（├──/└── 文本），纯文件系统遍历。
+package structuredir
 
 import (
 	"fmt"
@@ -131,7 +132,8 @@ func writeStructureTree(b *strings.Builder, children []*structureNode, prefix st
 	}
 }
 
-func structureDirRoot(dir string) (string, string, error) {
+// ResolveRoot 解析导出根目录：返回清理后的绝对路径与根名。
+func ResolveRoot(dir string) (string, string, error) {
 	if strings.TrimSpace(dir) == "" {
 		return "", "", fmt.Errorf("没有目录")
 	}
@@ -150,9 +152,9 @@ func structureDirRoot(dir string) (string, string, error) {
 	return clean, rootName, nil
 }
 
-// StructureDir 生成当前目录的结构化文本（目录名在首行，子项用 ├──/└── 连接）
-func (a *App) StructureDir(dir string) (string, error) {
-	clean, rootName, err := structureDirRoot(dir)
+// Render 生成目录结构文本（目录名在首行，子项用 ├──/└── 连接）。
+func Render(dir string) (string, error) {
+	clean, rootName, err := ResolveRoot(dir)
 	if err != nil {
 		return "", err
 	}
@@ -165,52 +167,4 @@ func (a *App) StructureDir(dir string) (string, error) {
 	b.WriteByte('\n')
 	writeStructureTree(&b, children, "")
 	return b.String(), nil
-}
-
-// ExportStructureDir 先弹出系统保存对话框选择导出路径，再生成并写入；
-// 用户取消时返回空路径且不写文件。
-func (a *App) ExportStructureDir(dir string) (string, error) {
-	clean, rootName, err := structureDirRoot(dir)
-	if err != nil {
-		return "", err
-	}
-	path, err := a.ShowSaveFileDialog("导出结构化目录", rootName+"-目录结构.txt", "txt")
-	if err != nil {
-		return "", err
-	}
-	if strings.TrimSpace(path) == "" {
-		return "", nil
-	}
-	text, err := a.StructureDir(clean)
-	if err != nil {
-		return "", err
-	}
-	if err := a.SaveFile(path, text, "lf", false, "utf-8"); err != nil {
-		return "", err
-	}
-	return path, nil
-}
-
-// ExportStructureText 先弹出系统保存对话框选择导出路径，再写入调用方给定的文本；
-// 用户取消时返回空路径且不写文件。结构面板的结构树导出复用此通道。
-func (a *App) ExportStructureText(defaultName string, content string) (string, error) {
-	name := strings.TrimSpace(defaultName)
-	if name == "" {
-		name = "结构.txt"
-	}
-	filter := "txt"
-	if strings.HasSuffix(strings.ToLower(name), ".mmd") {
-		filter = "mmd"
-	}
-	path, err := a.ShowSaveFileDialog("导出结构", name, filter)
-	if err != nil {
-		return "", err
-	}
-	if strings.TrimSpace(path) == "" {
-		return "", nil
-	}
-	if err := a.SaveFile(path, content, "lf", false, "utf-8"); err != nil {
-		return "", err
-	}
-	return path, nil
 }

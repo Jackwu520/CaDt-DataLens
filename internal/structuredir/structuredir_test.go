@@ -1,4 +1,4 @@
-package main
+package structuredir
 
 import (
 	"os"
@@ -32,7 +32,7 @@ func TestStructureDirFormat(t *testing.T) {
 	writeTestFile(t, filepath.Join(root, ".git", "ignored.txt"))
 	writeTestFile(t, filepath.Join(root, "__pycache__", "cache.pyc"))
 
-	out, err := (&App{}).StructureDir(root)
+	out, err := Render(root)
 	if err != nil {
 		t.Fatalf("StructureDir: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestStructureDirFormat(t *testing.T) {
 
 func TestStructureDirEmpty(t *testing.T) {
 	root := t.TempDir()
-	out, err := (&App{}).StructureDir(root)
+	out, err := Render(root)
 	if err != nil {
 		t.Fatalf("StructureDir: %v", err)
 	}
@@ -79,15 +79,15 @@ func TestStructureDirEmpty(t *testing.T) {
 }
 
 func TestStructureDirValidation(t *testing.T) {
-	if _, err := (&App{}).StructureDir(""); err == nil || !strings.Contains(err.Error(), "没有目录") {
+	if _, err := Render(""); err == nil || !strings.Contains(err.Error(), "没有目录") {
 		t.Fatalf("empty dir error = %v", err)
 	}
-	if _, err := (&App{}).StructureDir(filepath.Join(t.TempDir(), "missing")); err == nil {
+	if _, err := Render(filepath.Join(t.TempDir(), "missing")); err == nil {
 		t.Fatal("missing dir should error")
 	}
 	file := filepath.Join(t.TempDir(), "a.txt")
 	writeTestFile(t, file)
-	if _, err := (&App{}).StructureDir(file); err == nil || !strings.Contains(err.Error(), "不是目录") {
+	if _, err := Render(file); err == nil || !strings.Contains(err.Error(), "不是目录") {
 		t.Fatalf("file path error = %v", err)
 	}
 }

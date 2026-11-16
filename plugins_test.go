@@ -276,7 +276,7 @@ func TestGitRollbackForReal(t *testing.T) {
 	}
 	defer func() {
 		_ = os.WriteFile(target, orig, 0o644)
-		_, _, _ = gitRun(".", []string{"checkout", "HEAD", "--", target}, 10000)
+		_ = exec.Command("git", "checkout", "HEAD", "--", target).Run()
 	}()
 
 	// 修改后回滚

@@ -1,6 +1,5 @@
-package main
-
-// AI 工作日志：AI 通过 write_worklog 工具向工作区沉淀「做过什么」的一行式记录。
+// Package aiworklog：AI 工作日志——AI 通过 write_worklog 工具向工作区沉淀
+// 「做过什么」的一行式记录；追加式写入、跨进程锁串行，Logf 由宿主（main）注入。
 // 布局（固定三层，全部相对 <工作区>/.cadt/logs/）：
 //
 //	INDEX.md                  第 1 层：每月一行（指向对应月份索引）
@@ -9,6 +8,7 @@ package main
 //
 // 只存标题与摘要，不存正文与敏感信息；追加式写入，跨进程文件锁串行。
 // 摘要只进当日正文，索引用标题当一句话条目——索引要能一眼扫完。
+package aiworklog
 
 import (
 	"errors"
@@ -22,6 +22,9 @@ import (
 
 	"datalens/internal/sessionlock"
 )
+
+// Logf 宿主注入：诊断日志（main/logging.go 的 writeAppLog）。
+var Logf func(level, format string, args ...any)
 
 const (
 	worklogLockName   = ".worklog.lock"
@@ -160,9 +163,9 @@ func appendFileText(path, text string) error {
 	return f.Sync()
 }
 
-// AIWorklogAppend write_worklog 工具的后端通道：向 <工作区>/.cadt/logs/ 追加一条工作日志，
+// Append write_worklog 工具的后端通道：向 <工作区>/.cadt/logs/ 追加一条工作日志，
 // 返回条目正文的绝对路径。root 必须是绝对路径的工作区根；标题必填，摘要可选。
-func (a *App) AIWorklogAppend(root string, title string, summary string) (string, error) {
+func Append(root string, title string, summary string) (string, error) {
 	root = strings.TrimSpace(root)
 	if root == "" {
 		return "", errors.New("没有工作区，无法写工作日志")
@@ -177,6 +180,12 @@ func (a *App) AIWorklogAppend(root string, title string, summary string) (string
 	if err != nil {
 		return "", err
 	}
-	writeAppLog("INFO", "AI 工作日志已记录：%s", dayPath)
+	logf("INFO", "AI 工作日志已记录：%s", dayPath)
 	return dayPath, nil
+}
+
+func logf(level, format string, args ...any) {
+	if Logf != nil {
+		Logf(level, format, args...)
+	}
 }

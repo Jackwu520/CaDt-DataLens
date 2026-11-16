@@ -1,6 +1,6 @@
 //go:build !windows
 
-package main
+package envvars
 
 // 非 Windows 平台没有 DPAPI：环境变量值仅支持明文存储（encrypted 恒为 false，
 // envProtectValue/envUnprotectValue 不会被实际调用）。

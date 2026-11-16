@@ -15,6 +15,7 @@ import (
 
 	"datalens/internal/executil"
 
+	"datalens/internal/envvars"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 	"golang.org/x/text/encoding/simplifiedchinese"
 	"golang.org/x/text/transform"
@@ -35,8 +36,8 @@ const (
 	runFlushBytes    = 8 << 10               // 攒够 8 KB 立即发
 	runTempKeep      = 7 * 24 * time.Hour    // 临时目录保留时长
 	runTempDirPrefix = "run-"
-	runInputMax      = 4 << 10 // 单次 stdin 输入上限
-	runInputQueue    = 32      // 未被消费的输入行数上限
+	runInputMax      = 4 << 10        // 单次 stdin 输入上限
+	runInputQueue    = 32             // 未被消费的输入行数上限
 	runMaxTimeout    = 24 * time.Hour // 单次运行超时上限，防止误传超大值撑爆计时器
 )
 
@@ -196,7 +197,7 @@ func decodeRunOutput(raw []byte) string {
 // envWithPathPrepend 在继承环境（含设置里的私密变量）之上前置 PATH。
 // 编译产物运行需要它：MinGW 出来的 exe 依赖编译器同目录的 libstdc++-6.dll 等。
 func envWithPathPrepend(prepend string) []string {
-	env := mergeEnv(os.Environ())
+	env := envvars.MergeEnv(os.Environ())
 	prepend = strings.TrimSpace(prepend)
 	if prepend == "" {
 		return env

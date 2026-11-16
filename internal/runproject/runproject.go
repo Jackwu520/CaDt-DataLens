@@ -1,4 +1,5 @@
-package main
+// Package runproject：项目感知运行——只探测项目标记并给出候选命令，不执行任何命令。
+package runproject
 
 import (
 	"encoding/json"
@@ -33,7 +34,7 @@ const runProjectMaxDepth = 8
 var runProjectMarkers = []string{"package.json", "go.mod", "Cargo.toml", "pyproject.toml", "Makefile", "makefile"}
 
 // DetectRunProject 从文件或目录向上探测项目标记，返回项目根与候选命令。
-func (a *App) DetectRunProject(path string) (*RunProjectInfo, error) {
+func Detect(path string) (*RunProjectInfo, error) {
 	start := strings.TrimSpace(path)
 	if start == "" {
 		return nil, fmt.Errorf("路径为空")

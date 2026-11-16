@@ -1,4 +1,4 @@
-package main
+package envvars
 
 import (
 	"encoding/json"
@@ -7,15 +7,17 @@ import (
 	"testing"
 )
 
-func envTestApp(t *testing.T) *App {
+func envTestApp(t *testing.T) {
 	t.Helper()
-	t.Setenv("AppData", t.TempDir())
-	return NewApp()
+	dir := t.TempDir()
+	old := AppDataDir
+	AppDataDir = func() string { return dir }
+	t.Cleanup(func() { AppDataDir = old })
 }
 
 func TestEnvVarsCRUDRoundtrip(t *testing.T) {
-	app := envTestApp(t)
-	snap, err := app.GetEnvVars()
+	envTestApp(t)
+	snap, err := Get()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -25,14 +27,14 @@ func TestEnvVarsCRUDRoundtrip(t *testing.T) {
 	if snap.Supported != envEncryptionSupported() {
 		t.Fatalf("supported = %v, want %v", snap.Supported, envEncryptionSupported())
 	}
-	err = app.SetEnvVars([]EnvVarInput{
+	err = Set([]EnvVarInput{
 		{Name: "OPENAI_API_KEY", Value: "sk-test-123", Description: "OpenAI 密钥", Enabled: true},
 		{Name: "MY_TOKEN", Value: "t-2", Description: "", Enabled: false},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	snap, err = app.GetEnvVars()
+	snap, err = Get()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,16 +48,16 @@ func TestEnvVarsCRUDRoundtrip(t *testing.T) {
 	if snap.Vars[1].Enabled {
 		t.Fatalf("entry 1 should be disabled: %+v", snap.Vars[1])
 	}
-	if envVarsFilePath() == "" {
+	if Path() == "" {
 		t.Fatal("env vars path empty")
 	}
-	if _, err := os.Stat(envVarsFilePath()); err != nil {
+	if _, err := os.Stat(Path()); err != nil {
 		t.Fatalf("config file not created: %v", err)
 	}
 }
 
 func TestEnvVarsValidation(t *testing.T) {
-	app := envTestApp(t)
+	envTestApp(t)
 	cases := []struct {
 		name  string
 		input EnvVarInput
@@ -69,23 +71,23 @@ func TestEnvVarsValidation(t *testing.T) {
 		{"描述超限", EnvVarInput{Name: "OK_NAME", Value: "v", Description: strings.Repeat("描", envVarDescMaxRunes+1), Enabled: true}},
 	}
 	for _, c := range cases {
-		if err := app.SetEnvVars([]EnvVarInput{c.input}); err == nil {
+		if err := Set([]EnvVarInput{c.input}); err == nil {
 			t.Fatalf("%s：应拒绝但通过了", c.name)
 		}
 	}
 	// 重复名拒绝
-	if err := app.SetEnvVars([]EnvVarInput{
+	if err := Set([]EnvVarInput{
 		{Name: "DUP", Value: "1", Enabled: true},
 		{Name: "DUP", Value: "2", Enabled: true},
 	}); err == nil {
 		t.Fatal("重复变量名应被拒绝")
 	}
 	// 数量上限
-	if err := app.SetEnvVars(makeVars(envVarsMaxCount + 1)); err == nil {
+	if err := Set(makeVars(envVarsMaxCount + 1)); err == nil {
 		t.Fatal("超过数量上限应被拒绝")
 	}
 	// 边界可用
-	if err := app.SetEnvVars(makeVars(envVarsMaxCount)); err != nil {
+	if err := Set(makeVars(envVarsMaxCount)); err != nil {
 		t.Fatalf("上限数量应可用：%v", err)
 	}
 }
@@ -99,15 +101,15 @@ func makeVars(n int) []EnvVarInput {
 }
 
 func TestMergeEnvAppendsEnabledOnly(t *testing.T) {
-	app := envTestApp(t)
-	if err := app.SetEnvVars([]EnvVarInput{
+	envTestApp(t)
+	if err := Set([]EnvVarInput{
 		{Name: "CADT_ON", Value: "yes", Enabled: true},
 		{Name: "CADT_OFF", Value: "no", Enabled: false},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	base := []string{"PATH=whatever"}
-	merged := mergeEnv(base)
+	merged := MergeEnv(base)
 	if len(merged) != 2 {
 		t.Fatalf("merged = %v, want base + 1 entry", merged)
 	}
@@ -122,20 +124,20 @@ func TestMergeEnvAppendsEnabledOnly(t *testing.T) {
 	// 无配置时原样返回
 	envTestApp(t)
 	base2 := []string{"A=1"}
-	if got := mergeEnv(base2); len(got) != 1 || got[0] != "A=1" {
+	if got := MergeEnv(base2); len(got) != 1 || got[0] != "A=1" {
 		t.Fatalf("mergeEnv without config = %v", got)
 	}
 }
 
 func TestEnvVarsCorruptFileFallback(t *testing.T) {
-	app := envTestApp(t)
-	if err := os.MkdirAll(appDataRoot(), 0o755); err != nil {
+	envTestApp(t)
+	if err := os.MkdirAll(AppDataDir(), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(envVarsFilePath(), []byte("{ not json"), 0o600); err != nil {
+	if err := os.WriteFile(Path(), []byte("{ not json"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	snap, err := app.GetEnvVars()
+	snap, err := Get()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,14 +152,14 @@ func TestEnvVarsCorruptFileFallback(t *testing.T) {
 // TestEnvVarsPlaintextFileHeader 验证关闭加密后文件头与明文值（全平台）；
 // 加密模式的"文件不含明文"断言在 envvars_windows_test.go。
 func TestEnvVarsPlaintextFileHeader(t *testing.T) {
-	app := envTestApp(t)
-	if err := app.SetEnvVarEncrypted(false); err != nil {
+	envTestApp(t)
+	if err := SetEncrypted(false); err != nil {
 		t.Fatal(err)
 	}
-	if err := app.SetEnvVars([]EnvVarInput{{Name: "PLAIN", Value: "plain-value", Enabled: true}}); err != nil {
+	if err := Set([]EnvVarInput{{Name: "PLAIN", Value: "plain-value", Enabled: true}}); err != nil {
 		t.Fatal(err)
 	}
-	raw, err := os.ReadFile(envVarsFilePath())
+	raw, err := os.ReadFile(Path())
 	if err != nil {
 		t.Fatal(err)
 	}

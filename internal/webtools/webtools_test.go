@@ -1,4 +1,4 @@
-package main
+package webtools
 
 import (
 	"context"
@@ -165,8 +165,7 @@ func TestWebSearchNetwork(t *testing.T) {
 	if os.Getenv("CADT_WEB_TEST") != "1" {
 		t.Skip("设置 CADT_WEB_TEST=1 运行联网测试")
 	}
-	app := &App{}
-	got, err := app.WebSearch("Wails v2", 3)
+	got, err := Search("Wails v2", 3)
 	if err != nil {
 		t.Fatalf("web search failed: %v", err)
 	}
@@ -185,8 +184,7 @@ func TestWebFetchNetwork(t *testing.T) {
 	if os.Getenv("CADT_WEB_TEST") != "1" {
 		t.Skip("设置 CADT_WEB_TEST=1 运行联网测试")
 	}
-	app := &App{}
-	got, err := app.WebFetch("https://example.com/", 4000)
+	got, err := Fetch("https://example.com/", 4000)
 	if err != nil {
 		t.Fatalf("web fetch failed: %v", err)
 	}

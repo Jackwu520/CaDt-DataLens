@@ -1,6 +1,6 @@
 //go:build windows
 
-package main
+package envvars
 
 // DPAPI（CryptProtectData/CryptUnprotectData）加密环境变量值：绑定当前用户与本机，
 // 配置文件拷到其他机器或换用户都无法解出明文。

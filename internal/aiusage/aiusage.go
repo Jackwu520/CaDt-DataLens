@@ -1,8 +1,7 @@
-// ai_usage.go：cc-switch 式用量查询（设置 → 模型账号卡片「查询用量」）。
-// 按账号 baseURL 的 host 匹配内置端点表，向服务商的余额/用量接口发一次 GET；
-// 未收录的服务商返回 Supported=false（前端给出明确提示）。API Key 只用于本次
-// 请求头，不写入日志、不落盘。
-package main
+// Package aiusage：AI 账号余额/用量查询——按账号 baseURL 的 host 匹配内置端点表，
+// 向服务商的接口发一次 GET；未收录的服务商返回 Supported=false。API Key 只用于本次
+// 请求头，不写入日志、不落盘。Version 由宿主（main）注入。
+package aiusage
 
 import (
 	"context"
@@ -70,8 +69,11 @@ var aiUsageEndpoints = []aiUsageEndpoint{
 	},
 }
 
-// (a *App) AIUsageQuery 是 Wails 绑定入口；耗时操作放后台线程由 Wails 调度。
-func (a *App) AIUsageQuery(cfg aitransport.Config) AIUsageResult {
+// Version 宿主注入：应用版本，用于 User-Agent（main/app_core.go 的 appVersion）。
+var Version = ""
+
+// Query 是 AIUsageQuery 的引擎入口（Wails 绑定在 main 壳文件）。
+func Query(cfg aitransport.Config) AIUsageResult {
 	return aiUsageQuery(cfg)
 }
 
@@ -151,7 +153,7 @@ func aiUsageOrigin(baseURL string) string {
 // aiApplyUsageHeaders 与 aitransport.ApplyHeaders 的鉴权/自定义头逻辑一致，但无流式语义。
 func aiApplyUsageHeaders(req *http.Request, cfg aitransport.Config) error {
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "CaDt-DataLens/"+strings.TrimPrefix(appVersion, "v")+" AI")
+	req.Header.Set("User-Agent", "CaDt-DataLens/"+strings.TrimPrefix(Version, "v")+" AI")
 	if key := strings.TrimSpace(cfg.APIKey); key != "" {
 		req.Header.Set("Authorization", "Bearer "+key)
 	}

@@ -1,4 +1,6 @@
-package main
+// Package gitinfo：Git 浅集成引擎——调系统 git 做只读查询与低风险操作，
+// 未安装或不在仓库内时优雅降级（Available=false）。
+package gitinfo
 
 import (
 	"context"
@@ -10,6 +12,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"datalens/internal/chardec"
 )
 
 // git 浅集成：调系统 git（VS Code 同款做法），只读查询。
@@ -85,8 +89,8 @@ func gitBadgeState(x, y byte) string {
 	return "modified"
 }
 
-// GitStatusFor 返回 dir 所在仓库的文件状态（供文件树角标）。
-func (a *App) GitStatusFor(dir string) (*GitTreeStatus, error) {
+// StatusFor 返回 dir 所在仓库的文件状态（供文件树角标）。
+func StatusFor(dir string) (*GitTreeStatus, error) {
 	status := &GitTreeStatus{Entries: []GitFileState{}}
 	dir = strings.TrimSpace(dir)
 	if dir == "" {
@@ -267,9 +271,9 @@ func recentBranchesFromReflog(raw string, local map[string]bool, current string,
 	return out
 }
 
-// GitBranchesFor 返回分支弹窗所需数据：本地/远程/标签/最近分支、上游与领先落后。
+// BranchesFor 返回分支弹窗所需数据：本地/远程/标签/最近分支、上游与领先落后。
 // includeRemote=false 时跳过 refs/remotes（远程列表由前端缓存，只在手动刷新时重读）。
-func (a *App) GitBranchesFor(dir string, includeRemote bool) (*GitBranchesResult, error) {
+func BranchesFor(dir string, includeRemote bool) (*GitBranchesResult, error) {
 	result := &GitBranchesResult{Recent: []string{}, Local: []GitBranchInfo{}, Remote: []GitBranchInfo{}, Tags: []string{}}
 	dir = strings.TrimSpace(dir)
 	if dir == "" {
@@ -323,8 +327,8 @@ func gitBranchRefExists(dir, ref string) bool {
 	return err == nil && code == 0
 }
 
-// GitCheckoutBranch 签出本地分支；远程分支会创建同名本地跟踪分支。
-func (a *App) GitCheckoutBranch(dir string, name string, remote bool) (*GitOperationResult, error) {
+// CheckoutBranch 签出本地分支；远程分支会创建同名本地跟踪分支。
+func CheckoutBranch(dir string, name string, remote bool) (*GitOperationResult, error) {
 	dir = strings.TrimSpace(dir)
 	name = strings.TrimSpace(name)
 	if dir == "" || name == "" {
@@ -364,8 +368,8 @@ func (a *App) GitCheckoutBranch(dir string, name string, remote bool) (*GitOpera
 	return &GitOperationResult{Success: code == 0, Output: strings.TrimSpace(out), Branch: name}, nil
 }
 
-// GitCreateBranch 从当前 HEAD 新建分支并立即检出。
-func (a *App) GitCreateBranch(dir string, name string) (*GitOperationResult, error) {
+// CreateBranch 从当前 HEAD 新建分支并立即检出。
+func CreateBranch(dir string, name string) (*GitOperationResult, error) {
 	dir = strings.TrimSpace(dir)
 	name = strings.TrimSpace(name)
 	if dir == "" || name == "" {
@@ -391,8 +395,8 @@ func (a *App) GitCreateBranch(dir string, name string) (*GitOperationResult, err
 	return &GitOperationResult{Success: code == 0, Output: strings.TrimSpace(out), Branch: name}, nil
 }
 
-// GitCheckoutRefFor 签出分支、标签或提交 SHA（标签/提交会进入 detached HEAD）。
-func (a *App) GitCheckoutRefFor(dir string, ref string) (*GitOperationResult, error) {
+// CheckoutRef 签出分支、标签或提交 SHA（标签/提交会进入 detached HEAD）。
+func CheckoutRef(dir string, ref string) (*GitOperationResult, error) {
 	dir = strings.TrimSpace(dir)
 	ref = strings.TrimSpace(ref)
 	if dir == "" || ref == "" {
@@ -415,8 +419,8 @@ func (a *App) GitCheckoutRefFor(dir string, ref string) (*GitOperationResult, er
 	return &GitOperationResult{Success: code == 0, Output: strings.TrimSpace(out), Branch: branch}, nil
 }
 
-// GitPullFor 更新项目：拉取并合并当前分支的上游（git pull）。
-func (a *App) GitPullFor(dir string) (*GitOperationResult, error) {
+// Pull 更新项目：拉取并合并当前分支的上游（git pull）。
+func Pull(dir string) (*GitOperationResult, error) {
 	dir = strings.TrimSpace(dir)
 	if dir == "" {
 		return nil, fmt.Errorf("缺少目录")
@@ -428,8 +432,8 @@ func (a *App) GitPullFor(dir string) (*GitOperationResult, error) {
 	return &GitOperationResult{Success: code == 0, Output: strings.TrimSpace(out)}, nil
 }
 
-// GitPushFor 推送当前分支；没有上游时自动设置 origin 为上游。
-func (a *App) GitPushFor(dir string) (*GitOperationResult, error) {
+// Push 推送当前分支；没有上游时自动设置 origin 为上游。
+func Push(dir string) (*GitOperationResult, error) {
 	dir = strings.TrimSpace(dir)
 	if dir == "" {
 		return nil, fmt.Errorf("缺少目录")
@@ -451,8 +455,8 @@ func (a *App) GitPushFor(dir string) (*GitOperationResult, error) {
 	return &GitOperationResult{Success: code == 0, Output: strings.TrimSpace(out)}, nil
 }
 
-// GitFetchFor 获取所有远程分支并清理已删除的远程跟踪分支。
-func (a *App) GitFetchFor(dir string) (*GitOperationResult, error) {
+// Fetch 获取所有远程分支并清理已删除的远程跟踪分支。
+func Fetch(dir string) (*GitOperationResult, error) {
 	dir = strings.TrimSpace(dir)
 	if dir == "" {
 		return nil, fmt.Errorf("缺少目录")
@@ -464,8 +468,8 @@ func (a *App) GitFetchFor(dir string) (*GitOperationResult, error) {
 	return &GitOperationResult{Success: code == 0, Output: strings.TrimSpace(out)}, nil
 }
 
-// GitCloneRepository 克隆仓库到目标目录（目标必须不存在或为空）。
-func (a *App) GitCloneRepository(url string, target string) (*GitOperationResult, error) {
+// CloneRepository 克隆仓库到目标目录（目标必须不存在或为空）。
+func CloneRepository(url string, target string) (*GitOperationResult, error) {
 	url = strings.TrimSpace(url)
 	target = strings.TrimSpace(target)
 	if url == "" || target == "" {
@@ -498,8 +502,8 @@ type GitCommitResult struct {
 	Output  string `json:"output"`
 }
 
-// GitCommitChanges 暂存勾选的文件并提交（可选修正/推送）。
-func (a *App) GitCommitChanges(dir string, message string, paths []string, amend bool, push bool) (*GitCommitResult, error) {
+// CommitChanges 暂存勾选的文件并提交（可选修正/推送）。
+func CommitChanges(dir string, message string, paths []string, amend bool, push bool) (*GitCommitResult, error) {
 	dir = strings.TrimSpace(dir)
 	message = strings.TrimSpace(message)
 	if dir == "" {
@@ -555,8 +559,8 @@ func gitPathInRoot(root, path string) bool {
 	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
-// GitRollbackFor 回滚指定文件：已跟踪还原到 HEAD，未跟踪直接删除。
-func (a *App) GitRollbackFor(dir string, paths []string, untracked []string) error {
+// RollbackFor 回滚指定文件：已跟踪还原到 HEAD，未跟踪直接删除。
+func RollbackFor(dir string, paths []string, untracked []string) error {
 	dir = strings.TrimSpace(dir)
 	if dir == "" {
 		return fmt.Errorf("缺少目录")
@@ -586,8 +590,8 @@ func (a *App) GitRollbackFor(dir string, paths []string, untracked []string) err
 	return nil
 }
 
-// GitFileHistoryFor 返回指定文件的提交历史文本。
-func (a *App) GitFileHistoryFor(dir string, path string, limit int) (string, error) {
+// FileHistoryFor 返回指定文件的提交历史文本。
+func FileHistoryFor(dir string, path string, limit int) (string, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 50
 	}
@@ -603,8 +607,8 @@ func (a *App) GitFileHistoryFor(dir string, path string, limit int) (string, err
 	return strings.TrimSpace(out), nil
 }
 
-// GitRecentLogFor 返回仓库最近的提交历史文本。
-func (a *App) GitRecentLogFor(dir string, limit int) (string, error) {
+// RecentLogFor 返回仓库最近的提交历史文本。
+func RecentLogFor(dir string, limit int) (string, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
@@ -619,8 +623,8 @@ func (a *App) GitRecentLogFor(dir string, limit int) (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
-// GitDiffFor 返回指定文件相对 HEAD 的差异（unified patch）。
-func (a *App) GitDiffFor(dir string, path string) (*GitDiffResult, error) {
+// DiffFor 返回指定文件相对 HEAD 的差异（unified patch）。
+func DiffFor(dir string, path string) (*GitDiffResult, error) {
 	result := &GitDiffResult{}
 	dir = strings.TrimSpace(dir)
 	path = strings.TrimSpace(path)
@@ -665,7 +669,7 @@ func untrackedFileUnifiedDiff(dir, path string) (string, bool) {
 		return "", false
 	}
 	raw, err := os.ReadFile(abs)
-	if err != nil || looksBinary(raw) {
+	if err != nil || chardec.LooksBinary(raw) {
 		return "", false
 	}
 	return newFileUnifiedDiff(filepath.ToSlash(strings.TrimPrefix(path, "./")), string(raw)), true
@@ -700,9 +704,9 @@ type GitLineMarks struct {
 	DelBefore []int `json:"delBefore"`
 }
 
-// GitLineMarksFor 对比 HEAD 中的版本与传入的编辑器内容，产出行级标记。
+// LineMarksFor 对比 HEAD 中的版本与传入的编辑器内容，产出行级标记。
 // path 为仓库内文件的绝对路径；文件不在 HEAD 中时视为空基线（全部算新增）。
-func (a *App) GitLineMarksFor(dir string, path string, content string) (*GitLineMarks, error) {
+func LineMarksFor(dir string, path string, content string) (*GitLineMarks, error) {
 	dir = strings.TrimSpace(dir)
 	path = strings.TrimSpace(path)
 	if dir == "" || path == "" {

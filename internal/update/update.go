@@ -1,4 +1,6 @@
-package main
+// Package update：检查更新——拉取 Gitee 最新 Release 并与当前版本比较。
+// Version 由宿主（main）注入。
+package update
 
 import (
 	"context"
@@ -8,6 +10,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"datalens/internal/vercmp"
 )
 
 const (
@@ -44,12 +48,15 @@ type updateAsset struct {
 	BrowserDownloadURL string `json:"browser_download_url"`
 }
 
-// CheckForUpdates 读取 Gitee 最新 Release，并与当前编译版本比较。
-func (a *App) CheckForUpdates() (*UpdateInfo, error) {
-	return checkForUpdates(updateReleaseAPI, appVersion)
+// Version 宿主注入：当前编译版本（main/app_core.go 的 appVersion）。
+var Version = ""
+
+// Check 读取 Gitee 最新 Release，并与当前编译版本比较。
+func Check() (*UpdateInfo, error) {
+	return check(updateReleaseAPI, Version)
 }
 
-func checkForUpdates(apiURL, current string) (*UpdateInfo, error) {
+func check(apiURL, current string) (*UpdateInfo, error) {
 	info := &UpdateInfo{CurrentVersion: current, Status: "ok", PageUrl: updateReleasesPage}
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 	defer cancel()
@@ -65,7 +72,7 @@ func checkForUpdates(apiURL, current string) (*UpdateInfo, error) {
 	if info.LatestVersion == "" {
 		return info, fmt.Errorf("发布信息缺少版本号")
 	}
-	info.HasUpdate = comparePluginVersion(info.LatestVersion, current) > 0
+	info.HasUpdate = vercmp.Compare(info.LatestVersion, current) > 0
 	info.Title = strings.TrimSpace(release.Name)
 	info.Notes = strings.TrimSpace(release.Body)
 	info.PublishedAt = strings.TrimSpace(release.CreatedAt)
@@ -79,7 +86,7 @@ func fetchLatestRelease(ctx context.Context, apiURL string) (*updateRelease, boo
 		return nil, false, err
 	}
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "CaDt-DataLens/"+strings.TrimPrefix(appVersion, "v"))
+	req.Header.Set("User-Agent", "CaDt-DataLens/"+strings.TrimPrefix(Version, "v"))
 	resp, err := updateHTTPClient.Do(req)
 	if err != nil {
 		return nil, false, fmt.Errorf("无法连接 Gitee：%w", err)

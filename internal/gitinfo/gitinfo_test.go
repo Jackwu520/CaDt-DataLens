@@ -1,4 +1,4 @@
-package main
+package gitinfo
 
 import (
 	"os"
@@ -36,8 +36,7 @@ func TestGitBranchFlow(t *testing.T) {
 	gitTestCmd(t, dir, "commit", "-m", "init")
 	gitTestCmd(t, dir, "branch", "feature/one")
 
-	app := &App{}
-	res, err := app.GitBranchesFor(dir, true)
+	res, err := BranchesFor(dir, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,23 +51,23 @@ func TestGitBranchFlow(t *testing.T) {
 		t.Fatalf("local branches = %v", names)
 	}
 
-	op, err := app.GitCheckoutBranch(dir, "feature/one", false)
+	op, err := CheckoutBranch(dir, "feature/one", false)
 	if err != nil || !op.Success {
 		t.Fatalf("checkout local failed: %#v %v", op, err)
 	}
-	res, _ = app.GitBranchesFor(dir, true)
+	res, _ = BranchesFor(dir, true)
 	if res.Current != "feature/one" {
 		t.Fatalf("current branch = %q, want feature/one", res.Current)
 	}
 
-	op, err = app.GitCreateBranch(dir, "feature/two")
+	op, err = CreateBranch(dir, "feature/two")
 	if err != nil || !op.Success {
 		t.Fatalf("create branch failed: %#v %v", op, err)
 	}
-	if res, _ = app.GitBranchesFor(dir, true); res.Current != "feature/two" {
+	if res, _ = BranchesFor(dir, true); res.Current != "feature/two" {
 		t.Fatalf("current branch after create = %q", res.Current)
 	}
-	op, err = app.GitCreateBranch(dir, "bad name")
+	op, err = CreateBranch(dir, "bad name")
 	if err != nil {
 		t.Fatalf("invalid branch name returned error: %v", err)
 	}
@@ -77,11 +76,11 @@ func TestGitBranchFlow(t *testing.T) {
 	}
 
 	gitTestCmd(t, dir, "tag", "v1")
-	op, err = app.GitCheckoutRefFor(dir, "v1")
+	op, err = CheckoutRef(dir, "v1")
 	if err != nil || !op.Success {
 		t.Fatalf("checkout tag failed: %#v %v", op, err)
 	}
-	if res, _ = app.GitBranchesFor(dir, true); res.Current != "HEAD" {
+	if res, _ = BranchesFor(dir, true); res.Current != "HEAD" {
 		t.Fatalf("detached HEAD current = %q", res.Current)
 	}
 }
@@ -112,8 +111,7 @@ func TestGitRemoteBranchCheckout(t *testing.T) {
 	gitTestCmd(t, dir, "push", "origin", "remote-only")
 	gitTestCmd(t, dir, "branch", "-D", "remote-only")
 
-	app := &App{}
-	res, err := app.GitBranchesFor(dir, true)
+	res, err := BranchesFor(dir, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +127,7 @@ func TestGitRemoteBranchCheckout(t *testing.T) {
 	if !found {
 		t.Fatalf("remote branches = %#v", res.Remote)
 	}
-	localOnly, err := app.GitBranchesFor(dir, false)
+	localOnly, err := BranchesFor(dir, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,11 +137,11 @@ func TestGitRemoteBranchCheckout(t *testing.T) {
 	if !localOnly.Available || len(localOnly.Local) == 0 {
 		t.Fatalf("local-only result incomplete: %#v", localOnly)
 	}
-	op, err := app.GitCheckoutBranch(dir, "origin/remote-only", true)
+	op, err := CheckoutBranch(dir, "origin/remote-only", true)
 	if err != nil || !op.Success {
 		t.Fatalf("checkout remote branch failed: %#v %v", op, err)
 	}
-	res, _ = app.GitBranchesFor(dir, true)
+	res, _ = BranchesFor(dir, true)
 	if res.Current != "remote-only" {
 		t.Fatalf("current branch = %q, want remote-only", res.Current)
 	}
@@ -231,8 +229,7 @@ func TestGitDiffForUntrackedFile(t *testing.T) {
 	gitTestCmd(t, dir, "add", "a.txt")
 	gitTestCmd(t, dir, "commit", "-m", "init")
 
-	app := &App{}
-	res, err := app.GitDiffFor(dir, "a.txt")
+	res, err := DiffFor(dir, "a.txt")
 	if err != nil || res.HasChanges {
 		t.Fatalf("已跟踪且无改动不应有差异：res=%#v err=%v", res, err)
 	}
@@ -240,7 +237,7 @@ func TestGitDiffForUntrackedFile(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "new.txt"), []byte("hello\nworld\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	res, err = app.GitDiffFor(dir, "new.txt")
+	res, err = DiffFor(dir, "new.txt")
 	if err != nil {
 		t.Fatal(err)
 	}

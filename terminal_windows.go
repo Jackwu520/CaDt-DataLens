@@ -14,6 +14,8 @@ import (
 
 	pty "github.com/aymanbagabas/go-pty"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
+
+	"datalens/internal/envvars"
 )
 
 // 内置终端：基于 Windows ConPTY，经 go-pty v0.2.3（MIT, © Ayman Bagabas，见 THIRD_PARTY_LICENSES.md）。
@@ -176,7 +178,7 @@ func startTermSession(id, shell string, cols, rows int, cwd string, emit func(ev
 	}
 	cmd := p.Command(argv0, args[1:]...)
 	cmd.Dir = cwd
-	cmd.Env = mergeEnv(os.Environ())
+	cmd.Env = envvars.MergeEnv(os.Environ())
 	if err := cmd.Start(); err != nil {
 		p.Close()
 		return nil, fmt.Errorf("启动 %s 失败：%w", args[0], err)

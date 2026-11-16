@@ -11,6 +11,7 @@ import (
 
 	"datalens/internal/activity"
 	"datalens/internal/aicatalog"
+	"datalens/internal/envvars"
 	"datalens/internal/mcp"
 	"datalens/internal/sessionindex"
 	"datalens/internal/sessionstore"
@@ -63,7 +64,7 @@ func storageLocation(name string) string {
 	case storage.LocMCPConfig:
 		return mcp.ConfigFilePath()
 	case storage.LocEnvVars:
-		return envVarsFilePath()
+		return envvars.Path()
 	}
 	return ""
 }

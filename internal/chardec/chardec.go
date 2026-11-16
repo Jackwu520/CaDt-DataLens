@@ -122,3 +122,27 @@ func BuildSaveBytes(content, eol string, hasBom bool, enc string) ([]byte, error
 	}
 	return raw, nil
 }
+
+// LooksBinary 按控制字符占比粗判二进制（只看前 8KB，NUL 立即判定）。
+func LooksBinary(raw []byte) bool {
+	sample := raw
+	if len(sample) > 8192 {
+		sample = sample[:8192]
+	}
+	if len(sample) == 0 {
+		return false
+	}
+	control := 0
+	for _, b := range sample {
+		if b == 0 {
+			return true
+		}
+		if b == '\t' || b == '\n' || b == '\r' {
+			continue
+		}
+		if b < 0x20 || b == 0x7F {
+			control++
+		}
+	}
+	return control*10 > len(sample)
+}

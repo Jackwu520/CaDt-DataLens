@@ -1,4 +1,6 @@
-package main
+// Package envvars：环境变量配置的读写（Windows 默认 DPAPI 加密）与子进程注入合并。
+// AI 只能看到名称与描述，拿不到值；AppDataDir 由宿主（main）注入。
+package envvars
 
 // 环境变量配置：用户在设置里维护私密变量（API key 等），值只保存在应用数据目录
 // env-vars.json（Windows 默认 DPAPI 加密），注入到内置终端与命令桥子进程；
@@ -48,8 +50,15 @@ type EnvVarInput struct {
 	Enabled     bool   `json:"enabled"`
 }
 
-func envVarsFilePath() string {
-	root := appDataRoot()
+// AppDataDir 宿主注入：应用数据根目录（main/appdata.go 的 appDataRoot）。
+var AppDataDir func() string
+
+// Path 返回环境变量配置文件路径。
+func Path() string {
+	if AppDataDir == nil {
+		return ""
+	}
+	root := AppDataDir()
 	if root == "" {
 		return ""
 	}
@@ -59,7 +68,7 @@ func envVarsFilePath() string {
 // readEnvVarsFile 读取配置文件并把密文解回明文；缺失/损坏回退空集（加密开关取平台默认）。
 func readEnvVarsFile() envVarsFile {
 	file := envVarsFile{Encrypted: envEncryptionSupported()}
-	path := envVarsFilePath()
+	path := Path()
 	if path == "" {
 		return file
 	}
@@ -83,7 +92,7 @@ func readEnvVarsFile() envVarsFile {
 
 // saveEnvVarsFile 落盘：入参值必须已是明文，加密模式在此统一加密。
 func saveEnvVarsFile(file envVarsFile) error {
-	path := envVarsFilePath()
+	path := Path()
 	if path == "" {
 		return fmt.Errorf("无法定位配置目录")
 	}
@@ -128,16 +137,16 @@ func normalizeEnvVarInput(in EnvVarInput) (envVarEntry, error) {
 	return envVarEntry{Name: name, Value: in.Value, Description: desc, Enabled: in.Enabled}, nil
 }
 
-// GetEnvVars 返回环境变量配置（值已解密，仅供设置界面）。
-func (a *App) GetEnvVars() (*EnvVarSnapshot, error) {
+// Get 返回环境变量配置（值已解密，仅供设置界面）。
+func Get() (*EnvVarSnapshot, error) {
 	file := readEnvVarsFile()
 	vars := make([]envVarEntry, len(file.Vars))
 	copy(vars, file.Vars)
 	return &EnvVarSnapshot{Encrypted: file.Encrypted, Supported: envEncryptionSupported(), Vars: vars}, nil
 }
 
-// SetEnvVars 整体替换环境变量配置。
-func (a *App) SetEnvVars(inputs []EnvVarInput) error {
+// Set 整体替换环境变量配置。
+func Set(inputs []EnvVarInput) error {
 	if len(inputs) > envVarsMaxCount {
 		return fmt.Errorf("环境变量最多 %d 个", envVarsMaxCount)
 	}
@@ -159,8 +168,8 @@ func (a *App) SetEnvVars(inputs []EnvVarInput) error {
 	return saveEnvVarsFile(file)
 }
 
-// SetEnvVarEncrypted 切换加密存储：读回全部明文后按新模式重写。
-func (a *App) SetEnvVarEncrypted(on bool) error {
+// SetEncrypted 切换加密存储：读回全部明文后按新模式重写。
+func SetEncrypted(on bool) error {
 	if on && !envEncryptionSupported() {
 		return fmt.Errorf("当前平台不支持加密存储")
 	}
@@ -185,9 +194,9 @@ func injectedEnvEntries() []string {
 	return entries
 }
 
-// mergeEnv 在继承环境之后追加注入变量；exec.Cmd 与 go-pty 在 Windows 构建环境块时
+// MergeEnv 在继承环境之后追加注入变量；exec.Cmd 与 go-pty 在 Windows 构建环境块时
 // 同名键保留最后一次出现（不区分大小写），因此注入值覆盖系统同名值。
-func mergeEnv(base []string) []string {
+func MergeEnv(base []string) []string {
 	entries := injectedEnvEntries()
 	if len(entries) == 0 {
 		return base

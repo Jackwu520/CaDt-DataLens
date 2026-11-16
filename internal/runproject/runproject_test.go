@@ -1,4 +1,4 @@
-package main
+package runproject
 
 import (
 	"os"
@@ -23,8 +23,7 @@ func TestDetectRunProjectNodeScripts(t *testing.T) {
 	}
 	entry := filepath.Join(sub, "index.js")
 	writeProjectFile(t, sub, "index.js", "// x")
-	app := &App{}
-	info, err := app.DetectRunProject(entry)
+	info, err := Detect(entry)
 	if err != nil {
 		t.Fatalf("探测失败：%v", err)
 	}
@@ -60,12 +59,11 @@ func TestDetectRunProjectMarkers(t *testing.T) {
 		{"Cargo.toml", "Rust", "cargo run"},
 		{"Makefile", "Make", "make"},
 	}
-	app := &App{}
 	for _, tc := range cases {
 		t.Run(tc.file, func(t *testing.T) {
 			dir := t.TempDir()
 			writeProjectFile(t, dir, tc.file, "# generated\n")
-			info, err := app.DetectRunProject(dir)
+			info, err := Detect(dir)
 			if err != nil {
 				t.Fatalf("探测失败：%v", err)
 			}
@@ -83,8 +81,7 @@ func TestDetectRunProjectPythonEntry(t *testing.T) {
 	dir := t.TempDir()
 	writeProjectFile(t, dir, "pyproject.toml", "[project]\nname = 'demo'\n")
 	writeProjectFile(t, dir, "main.py", "print(1)\n")
-	app := &App{}
-	info, err := app.DetectRunProject(filepath.Join(dir, "main.py"))
+	info, err := Detect(filepath.Join(dir, "main.py"))
 	if err != nil {
 		t.Fatalf("探测失败：%v", err)
 	}
@@ -100,19 +97,18 @@ func TestDetectRunProjectWalksUpAndErrors(t *testing.T) {
 	if err := os.MkdirAll(nested, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	app := &App{}
-	info, err := app.DetectRunProject(nested)
+	info, err := Detect(nested)
 	if err != nil || info.Root != root {
 		t.Fatalf("应向上找到项目根：info=%+v err=%v", info, err)
 	}
-	if _, err := app.DetectRunProject(""); err == nil {
+	if _, err := Detect(""); err == nil {
 		t.Error("空路径应报错")
 	}
-	if _, err := app.DetectRunProject(filepath.Join(root, "missing.go")); err == nil {
+	if _, err := Detect(filepath.Join(root, "missing.go")); err == nil {
 		t.Error("不存在的路径应报错")
 	}
 	empty := t.TempDir()
-	if got, err := app.DetectRunProject(empty); err == nil {
+	if got, err := Detect(empty); err == nil {
 		t.Errorf("没有项目标记时应返回明确错误，实际命中 %s（%s）", got.Marker, got.Root)
 	}
 }

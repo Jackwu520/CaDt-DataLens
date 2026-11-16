@@ -1,4 +1,4 @@
-package main
+package update
 
 import (
 	"net/http"
@@ -34,7 +34,7 @@ func TestCheckForUpdatesAvailable(t *testing.T) {
 		]
 	}`
 	srv := updateTestServer(t, http.StatusOK, body)
-	info, err := checkForUpdates(srv.URL, "v1.0.0")
+	info, err := check(srv.URL, "v1.0.0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +54,7 @@ func TestCheckForUpdatesAvailable(t *testing.T) {
 
 func TestCheckForUpdatesCurrent(t *testing.T) {
 	srv := updateTestServer(t, http.StatusOK, `{"tag_name":"v1.0.0","name":"v1.0.0"}`)
-	info, err := checkForUpdates(srv.URL, "v1.0.0")
+	info, err := check(srv.URL, "v1.0.0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +65,7 @@ func TestCheckForUpdatesCurrent(t *testing.T) {
 
 func TestCheckForUpdatesNoRelease(t *testing.T) {
 	srv := updateTestServer(t, http.StatusNotFound, `{"message":"404 Not Found"}`)
-	info, err := checkForUpdates(srv.URL, "v1.0.0")
+	info, err := check(srv.URL, "v1.0.0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +76,7 @@ func TestCheckForUpdatesNoRelease(t *testing.T) {
 
 func TestCheckForUpdatesHTTPError(t *testing.T) {
 	srv := updateTestServer(t, http.StatusInternalServerError, `{"message":"boom"}`)
-	if _, err := checkForUpdates(srv.URL, "v1.0.0"); err == nil {
+	if _, err := check(srv.URL, "v1.0.0"); err == nil {
 		t.Fatal("expected error for HTTP 500")
 	}
 }

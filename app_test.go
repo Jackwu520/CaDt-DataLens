@@ -103,8 +103,8 @@ func TestLooksBinary(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := looksBinary(tc.raw); got != tc.want {
-				t.Fatalf("looksBinary(%q) = %v, want %v", tc.raw, got, tc.want)
+			if got := chardec.LooksBinary(tc.raw); got != tc.want {
+				t.Fatalf("chardec.LooksBinary(%q) = %v, want %v", tc.raw, got, tc.want)
 			}
 		})
 	}

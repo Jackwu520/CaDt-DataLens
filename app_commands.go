@@ -13,6 +13,7 @@ import (
 
 	"datalens/internal/executil"
 
+	"datalens/internal/envvars"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -114,7 +115,7 @@ func (a *App) runCommandSyncRegistered(id, exe string, args []string, cwd string
 	cmd := exec.CommandContext(ctx, exe, args...)
 	applyCommandCancel(cmd)
 	cmd.Dir = dir
-	cmd.Env = mergeEnv(os.Environ())
+	cmd.Env = envvars.MergeEnv(os.Environ())
 	executil.HideCommandWindow(cmd)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &limitedWriter{w: &stdout, limit: commandOutputCap}
@@ -187,7 +188,7 @@ func (a *App) StartCommand(id, exe string, args []string, cwd string) error {
 	cmd := exec.CommandContext(ctx, exe, args...)
 	applyCommandCancel(cmd)
 	cmd.Dir = dir
-	cmd.Env = mergeEnv(os.Environ())
+	cmd.Env = envvars.MergeEnv(os.Environ())
 	executil.HideCommandWindow(cmd)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -279,9 +280,9 @@ func (a *App) emitCommandEvent(id, stream, data string) {
 // AICommandStatus 按游标增量读取，AICommandStop 终止并返回最终状态。
 
 const (
-	aiJobBufferCap   = 256 << 10     // 单作业输出缓冲 256 KB，超限从头丢弃
-	aiJobReadChunk   = 64 << 10      // 单次状态查询最多返回 64 KB 增量
-	aiJobMaxFinished = 32            // 保留的已结束作业数，超出淘汰最旧
+	aiJobBufferCap   = 256 << 10 // 单作业输出缓冲 256 KB，超限从头丢弃
+	aiJobReadChunk   = 64 << 10  // 单次状态查询最多返回 64 KB 增量
+	aiJobMaxFinished = 32        // 保留的已结束作业数，超出淘汰最旧
 	aiJobStopWait    = 3 * time.Second
 )
 
