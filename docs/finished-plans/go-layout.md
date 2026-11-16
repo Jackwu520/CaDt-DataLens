@@ -175,3 +175,18 @@
 **结果**：根目录 79 → **73 个 .go**（56 非测试 + 17 测试）、main 包 7,595 → **5,727 行**；`internal/` 51 个包（39 域 + 12 叶子）。绑定名不变，最终 `wails build -devtools` 通过。
 
 **剩余不可拆项（收益 < 成本）**：`convert_cli.go`（App convert 生命周期与主入口共用状态）、`app_window.go` 的 appConfig/窗口编排、`logging.go`（跨包 Logf 已够用）、`patch_app.go` / `mcp_app.go` / `sessionstore_app.go`（绑定壳与生命周期）、以及 `ai_float` / `app_dialogs` / `installer_cli` / `delete` / `app_pathinfo` 等平台 glue。继续拆需要为单个绑定再造服务与测试脚手架，属于为行数而搬。
+
+## 13. E 系列：根目录残余引擎收口（2026-11-16）
+
+| 提交 | 范围 | 说明 |
+| --- | --- | --- |
+| `67c837d` | E1 `internal/launchargs` | 打开目标（path:line:column）、设置页、AI 会话、单实例 ID 与开关判定随包；OpenTarget 随包 |
+| `b36b81c` | E2 `internal/appconfig` | config.json 结构、默认值、归一化与路径随包；插件 / 打开方式 / 开发者模式共用同一份 Read/Save |
+| `1377174` | E3 `internal/applog` | 运行日志文件与轮转（保留 20 个）、分级写入、开发者模式、Wails Logger 随包；根留 5 个绑定壳与 writeAppLog 别名 |
+| `3edb7c2` | E4 `internal/convertcli` | --convert 类型、目标格式表、输入展开与参数解析随包；根留隐藏窗口生命周期（请求 / 结果 / 超时） |
+| `e272a16` | E5 fileio 收敛读图 | 删除根目录重复的 ReadImageAsDataURL（扩展名白名单版），统一 fileio 内容嗅探（32 MB、补 svg MIME）；绑定名统一 ReadImageAsDataURL |
+| `40ddbf0` | E6 `internal/installercli` | 安装器 --integrate/--unintegrate 解析与执行随包，main 只留一行调用 |
+
+**结果**：根目录 73 → **69 个 .go**（54 非测试 + 15 测试）、main 包 5,727 → **4,631 行**；`internal/` 51 → **56 个包**。绑定变化仅两处：`OpenTarget` 命名空间改为 `launchargs`、`ReadImageDataURL` 绑定移除（统一为 `ReadImageAsDataURL`），`frontend/wailsjs` 由 wails build 重生成。
+
+**停止线更新**：剩余 4,631 行中，`main.go` / `app_core.go` 是 Wails 生命周期与 App 结构（必须在根）；17 个 `*_app.go` 是绑定壳；`patch_app` / `mcp_app` / `sessionstore_app` / `storage_app` 是较厚的壳但不含独立引擎；其余为 `windowicon` / `cursors` / `console` / `devtools` / `webview_args` / `app_dialogs` / `ai_float` / `delete` / `app_pathinfo` 等平台 glue。继续拆需要为单个绑定再造服务与测试脚手架，收益低于维护成本。
