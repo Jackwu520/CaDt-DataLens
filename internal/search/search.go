@@ -1,4 +1,4 @@
-package main
+package search
 
 import (
 	"bufio"
@@ -15,6 +15,9 @@ import (
 	"time"
 	"unicode/utf8"
 )
+
+// Searcher 工作区检索与 glob 引擎（无状态）。
+type Searcher struct{}
 
 const (
 	searchMaxFileSize   = 4 << 20
@@ -46,6 +49,9 @@ var searchBinaryExt = map[string]bool{
 	".ttf": true, ".otf": true, ".eot": true, ".sqlite": true, ".db": true,
 	".wgt": true, ".pak": true, ".zipx": true,
 }
+
+// SkipDir 判断目录名是否属于检索与目录树共同忽略的目录（大小写不敏感）。
+func SkipDir(name string) bool { return searchSkipDirs[strings.ToLower(name)] }
 
 // searchArtifactDirs / searchArtifactSuffixes 定义「产物档」：构建输出与依赖目录。
 // 命中只降权不排除——工作区本身可能就是一份构建站，产物也必须搜得到，只是排在源码之后。
@@ -330,18 +336,18 @@ func scanSearchFile(job searchFileJob, needle string, needleASCII, caseSensitive
 }
 
 // SearchWorkspace 流式扫描工作区文本文件，不建索引；命中数/单文件命中/耗时均有限额。
-func (a *App) SearchWorkspace(root, query string, caseSensitive bool, maxResults int) (*SearchResult, error) {
-	return a.searchWorkspace(root, query, caseSensitive, maxResults, "")
+func (s *Searcher) SearchWorkspace(root, query string, caseSensitive bool, maxResults int) (*SearchResult, error) {
+	return s.searchWorkspace(root, query, caseSensitive, maxResults, "")
 }
 
 // SearchWorkspaceFiltered 与 SearchWorkspace 同源，但只保留 filePattern 通配匹配的文件命中。
 // pattern 语义与 globMatchPath 一致；AI 的 search_text 把 filePattern 下推到这里，
 // 避免无关文件的命中先占满结果窗口（前端仍保留一次兜底过滤）。
-func (a *App) SearchWorkspaceFiltered(root, query string, caseSensitive bool, maxResults int, pattern string) (*SearchResult, error) {
-	return a.searchWorkspace(root, query, caseSensitive, maxResults, strings.TrimSpace(pattern))
+func (s *Searcher) SearchWorkspaceFiltered(root, query string, caseSensitive bool, maxResults int, pattern string) (*SearchResult, error) {
+	return s.searchWorkspace(root, query, caseSensitive, maxResults, strings.TrimSpace(pattern))
 }
 
-func (a *App) searchWorkspace(root, query string, caseSensitive bool, maxResults int, pattern string) (*SearchResult, error) {
+func (s *Searcher) searchWorkspace(root, query string, caseSensitive bool, maxResults int, pattern string) (*SearchResult, error) {
 	root = strings.TrimSpace(root)
 	if root == "" {
 		return nil, errors.New("未打开工作区目录")

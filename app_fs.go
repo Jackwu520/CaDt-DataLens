@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 
+	"datalens/internal/search"
+
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -128,7 +130,7 @@ const (
 	dirTreeMaxEntries = 400 // 全树条目预算：超过即截断，防止 node_modules 类目录刷爆上下文
 )
 
-// ReadDirTree 递归列目录树。searchSkipDirs 里的目录整棵跳过（与 search_text 同一张表），
+// ReadDirTree 递归列目录树。search.SkipDir 命中的目录整棵跳过（与 search_text 同一张表），
 // 目录符号链接不跟（防环）；条目预算用尽时在对应目录打 Omitted 并停止深入。
 func (a *App) ReadDirTree(path string, depth int) (*DirTreeListing, error) {
 	path = strings.TrimSpace(path)
@@ -169,7 +171,7 @@ func walkDirTree(dir string, remainingDepth int, budget *int) (*DirTreeNode, boo
 	for _, entry := range entries {
 		name := entry.Name()
 		isDir := entry.IsDir() && entry.Type()&os.ModeSymlink == 0
-		if isDir && searchSkipDirs[name] {
+		if isDir && search.SkipDir(name) {
 			continue
 		}
 		if *budget <= 0 {

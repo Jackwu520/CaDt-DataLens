@@ -1,4 +1,4 @@
-package main
+package search
 
 import (
 	"errors"
@@ -81,7 +81,7 @@ func globMatchPath(pattern, relPath, name string) bool {
 
 // FindFiles 遍历工作区列出匹配通配的文件（相对 root，按路径排序）。
 // 预算：searchBudget 墙钟、findFilesHardMax 条上限、跳过 searchSkipDirs。
-func (a *App) FindFiles(root, pattern string, maxResults int) (*FindFilesResult, error) {
+func (s *Searcher) FindFiles(root, pattern string, maxResults int) (*FindFilesResult, error) {
 	root = strings.TrimSpace(root)
 	if root == "" {
 		return nil, errors.New("未打开工作区目录")

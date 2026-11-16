@@ -1,4 +1,4 @@
-package main
+package search
 
 import (
 	"os"
@@ -34,7 +34,7 @@ func TestSearchWorkspace(t *testing.T) {
 	writeSearchFile(t, filepath.Join(dir, ".git", "config"), "TrimSpace\n")
 	writeSearchFile(t, filepath.Join(dir, "image.dat"), "TrimSpace\x00binary\n")
 
-	app := NewApp()
+	app := &Searcher{}
 	res, err := app.SearchWorkspace(dir, "trimsPACE", false, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -74,7 +74,7 @@ func TestSearchWorkspaceLimitAndUnicode(t *testing.T) {
 	dir := t.TempDir()
 	content := "中文TrimSpace结束\n"
 	writeSearchFile(t, filepath.Join(dir, "zh.txt"), content)
-	app := NewApp()
+	app := &Searcher{}
 	res, err := app.SearchWorkspace(dir, "TrimSpace", false, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -112,7 +112,7 @@ func TestSearchWorkspaceLongPreview(t *testing.T) {
 	}
 	long += "Needle" + long
 	writeSearchFile(t, filepath.Join(dir, "long.txt"), long+"\n")
-	app := NewApp()
+	app := &Searcher{}
 	res, err := app.SearchWorkspace(dir, "Needle", false, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -135,7 +135,7 @@ func TestSearchWorkspaceParallelDeterministic(t *testing.T) {
 		name := filepath.Join(dir, "f"+string(rune('a'+i%26))+string(rune('0'+i/26))+".txt")
 		writeSearchFile(t, name, "tick\nTick\ntick\n")
 	}
-	app := NewApp()
+	app := &Searcher{}
 	res, err := app.SearchWorkspace(dir, "tick", false, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -176,7 +176,7 @@ func TestSearchWorkspaceBuiltinFallback(t *testing.T) {
 	t.Setenv("DATALENS_NO_RG", "1")
 	dir := t.TempDir()
 	writeSearchFile(t, filepath.Join(dir, "fallback.txt"), "alphaNeedle\nbetaNeedle\n")
-	app := NewApp()
+	app := &Searcher{}
 	res, err := app.SearchWorkspace(dir, "needle", false, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -222,7 +222,7 @@ func TestSearchArtifactTierAfterSource(t *testing.T) {
 	// 且产物文件名命中也不能越过源码档。
 	writeSearchFile(t, filepath.Join(dir, "dist", "needle-bundle.js"), "needle\n")
 	writeSearchFile(t, filepath.Join(dir, "src", "main.go"), "needle\n")
-	app := NewApp()
+	app := &Searcher{}
 	res, err := app.SearchWorkspace(dir, "needle", false, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -246,7 +246,7 @@ func TestSearchNameHitSortsFirstInTier(t *testing.T) {
 	dir := t.TempDir()
 	writeSearchFile(t, filepath.Join(dir, "a-notes.txt"), "needle\n")
 	writeSearchFile(t, filepath.Join(dir, "z-needle.txt"), "needle\n")
-	app := NewApp()
+	app := &Searcher{}
 	res, err := app.SearchWorkspace(dir, "needle", false, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -265,7 +265,7 @@ func TestSearchSourceTierFillsCapFirst(t *testing.T) {
 	writeSearchFile(t, filepath.Join(dir, "a.txt"), "needle\n")
 	writeSearchFile(t, filepath.Join(dir, "b.txt"), "needle\n")
 	writeSearchFile(t, filepath.Join(dir, "dist", "bundle.js"), "needle\n")
-	app := NewApp()
+	app := &Searcher{}
 	res, err := app.SearchWorkspace(dir, "needle", false, 2)
 	if err != nil {
 		t.Fatal(err)
@@ -291,7 +291,7 @@ func TestSearchRgArtifactSkippedFlag(t *testing.T) {
 	writeSearchFile(t, filepath.Join(dir, "a.txt"), "needle\n")
 	writeSearchFile(t, filepath.Join(dir, "b.txt"), "needle\n")
 	writeSearchFile(t, filepath.Join(dir, "dist", "bundle.js"), "needle\n")
-	app := NewApp()
+	app := &Searcher{}
 	res, err := app.SearchWorkspace(dir, "needle", false, 2)
 	if err != nil {
 		t.Fatal(err)
@@ -310,7 +310,7 @@ func TestSearchRgArtifactTierAndNameHit(t *testing.T) {
 	writeSearchFile(t, filepath.Join(dir, "src", "main.go"), "needle\n")
 	writeSearchFile(t, filepath.Join(dir, "a-notes.txt"), "needle\n")
 	writeSearchFile(t, filepath.Join(dir, "z-needle.txt"), "needle\n")
-	app := NewApp()
+	app := &Searcher{}
 	res, err := app.SearchWorkspace(dir, "needle", false, 0)
 	if err != nil {
 		t.Fatal(err)

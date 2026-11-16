@@ -1,4 +1,4 @@
-package main
+package search
 
 import (
 	"os"
@@ -59,7 +59,7 @@ func TestFindFiles(t *testing.T) {
 	write("node_modules/skip/d.go", "package d\n")
 	write(".git/HEAD", "ref: refs/heads/main\n")
 
-	app := &App{}
+	app := &Searcher{}
 	res, err := app.FindFiles(dir, "*.go", 0)
 	if err != nil {
 		t.Fatalf("FindFiles: %v", err)
@@ -100,7 +100,7 @@ func TestFindFilesLimitAndEmptyPattern(t *testing.T) {
 			t.Fatalf("write: %v", err)
 		}
 	}
-	app := &App{}
+	app := &Searcher{}
 	limited, err := app.FindFiles(dir, "*.txt", 2)
 	if err != nil {
 		t.Fatalf("FindFiles: %v", err)
@@ -122,7 +122,7 @@ func TestFindFilesLimitAndEmptyPattern(t *testing.T) {
 }
 
 func TestFindFilesRootErrors(t *testing.T) {
-	app := &App{}
+	app := &Searcher{}
 	if _, err := app.FindFiles("", "*", 0); err == nil {
 		t.Fatal("空根目录应报错")
 	}
@@ -148,7 +148,7 @@ func TestSearchWorkspaceFiltered(t *testing.T) {
 			t.Fatalf("write: %v", err)
 		}
 	}
-	app := &App{}
+	app := &Searcher{}
 	res, err := app.SearchWorkspaceFiltered(dir, "needle", false, 0, "*.go")
 	if err != nil {
 		t.Fatalf("SearchWorkspaceFiltered: %v", err)
