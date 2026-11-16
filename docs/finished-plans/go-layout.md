@@ -1,6 +1,6 @@
 # Go 侧目录与拆包评估
 
-> 状态：**已实施完毕**（2026-11-16）。B1–B4 四批（`998915c` / `79c4706` / `eb2c5df` / `b09fc32`）+ B5 零耦合收尾（`1692006`）+ B6 三域下沉（`2ec9ca1` / `e7a45c8` / `e088f3b` / `4d48808`）全部落地，每批 `go test ./...` 与 `wails build -devtools` 全绿。嵌入服务 spike 成立并已用于 B6。根目录 180 → **114 个 .go**（78 非测试 + 36 测试）、main 包 40,712 → **17,161 行**，`internal/` 30 个包（22 域 + 8 叶子）。2026-11-14 首轮评估的「暂不抽包」基于当时的高耦合形态，已被实测取代；首轮已落地的部分与判定存档见 §7
+> 状态：**已实施完毕**（2026-11-16）。B1–B4 四批（`998915c` / `79c4706` / `eb2c5df` / `b09fc32`）+ B5 零耦合收尾（`1692006`）+ B6 三域下沉（`2ec9ca1` / `e7a45c8` / `e088f3b` / `4d48808`）+ B7–B12（`ed790d2` / `52580bb` / `86e5af0` / `28f54e1` / `9b624b5`）全部落地，每批 `go test ./...` 与 `wails build -devtools` 全绿。B11（plugins/market/skills）按收益递减暂缓，施工要点见 §10。根目录 180 → **99 个 .go**（69 非测试 + 30 测试）、main 包 40,712 → **12,391 行**，`internal/` 36 个包（27 域 + 9 叶子）。2026-11-14 首轮评估的「暂不抽包」基于当时的高耦合形态，已被实测取代；首轮已落地的部分与判定存档见 §7
 > 问题：Go 后端 180 个 `.go`（112 非测试 + 68 测试，40,712 行，module `datalens`）平铺在仓库根、单一 `package main`——能不能像前端那样按域分目录、该拆什么、不该拆什么
 
 ## 0. 结论先行（2026-11-16 复测）
@@ -127,3 +127,17 @@
 | `4d48808` | B6c `internal/browser` | WebView2 宿主、CDP 桥、平台 stub 与 5 个集成测试随包；`Host` 嵌入 App；注入 Logf / Emit / FindParent；`ProfileRoot` / `ActiveProfileDirs` 导出给存储清理 |
 
 **结果**：根目录 125 → **114 个 .go**（78 非测试 + 36 测试）、main 包 22,948 → **17,161 行**；`internal/` 30 个包（22 域 + 8 叶子）。Wails 绑定产物在四批前后无差异（提升方法与原壳方法同名），前端零改动；每批 `go test ./... -timeout 300s` 与 `wails build -devtools` 全绿，browser 批含真实 WebView2 集成用例。
+
+## 10. B7–B12 批次与 B11 暂缓（2026-11-16）
+
+| 提交 | 范围 | 说明 |
+| --- | --- | --- |
+| `ed790d2` | B7 `internal/search` | search / search_rg / glob 与测试随包；`Searcher` 嵌入 App；`SkipDir` 导出给目录树共用忽略表 |
+| `52580bb` | B8 `internal/aischedule` | 调度器与派生 SQLite 随包；`Scheduler` 嵌入 App；导出 `Start` / `Close` / `Path` |
+| `86e5af0` | B9 `internal/cmdbridge` + `internal/shellpath` | 进程桥与 AI 终端命令随包；`findGitBash` / `findPwsh` 提为共享叶子，run 去掉钩子、终端留薄包装 |
+| `28f54e1` | B10 `internal/terminal` | ConPTY 会话与 AI 读取接口随包；`Terminal` 嵌入 App |
+| `9b624b5` | B12 `internal/toolchain` | 语言环境检测随包；`Toolchain` 嵌入 App |
+
+**结果**：根目录 125 → **99 个 .go**（69 非测试 + 30 测试）、main 包 22,948 → **12,391 行**；`internal/` 36 个包（27 域 + 9 叶子）。每批 `go test ./... -timeout 300s` 与 `wails build -devtools` 全绿，`frontend/wailsjs` 无差异。
+
+**B11（plugins / market / skills）暂缓**：`plugins.go` 反复读改写根 `AppConfig`（PluginsPathMode / DisabledPlugins），`market.go` 读 DataSource，另有两个 runtime 文件对话框；`skills.go` 的 `//go:embed all:docs/skills` 需改由根壳传 `embed.FS`。施工要点：注入窄配置钩子（读写插件路径模式与禁用列表、读市场源）、文件选择器、embed.FS；测试需改为构造测试服务而非 `NewApp()`。按「收益递减」与平台 glue 留根口径，暂不实施——剩余根目录为 App 核心、绑定壳、平台 glue、CLI 与插件/技能宿主。
