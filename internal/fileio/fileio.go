@@ -1,4 +1,4 @@
-package main
+package fileio
 
 // 文件读写与编码：打开/保存（含外部修改校验）、图片与二进制判定、编码探测与转换。
 // 从 app.go 拆出（同包）。
@@ -16,7 +16,32 @@ import (
 	"time"
 )
 
-func (a *App) OpenFile(path string, enc string) (*FileData, error) {
+// Files 文件读写引擎（无状态）。
+type Files struct{}
+
+const (
+	largeFileBytes    = 10 << 20
+	maxFileBytes      = 100 << 20
+	imagePreviewLimit = 32 << 20
+)
+
+type FileData struct {
+	Path     string `json:"path"`
+	Name     string `json:"name"`
+	Content  string `json:"content"`
+	Size     int64  `json:"size"`
+	Eol      string `json:"eol"`
+	HasBom   bool   `json:"hasBom"`
+	Large    bool   `json:"large"`
+	Enc      string `json:"enc"`
+	Binary   bool   `json:"binary"`
+	Image    bool   `json:"image,omitempty"`
+	IsDir    bool   `json:"isDir"`
+	HexShown int64  `json:"hexShown,omitempty"`
+	Mtime    string `json:"mtime,omitempty"`
+}
+
+func (f *Files) OpenFile(path string, enc string) (*FileData, error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		return nil, err
@@ -158,7 +183,7 @@ func imageHexDump(raw []byte) string {
 	return strings.TrimSuffix(b.String(), "\n")
 }
 
-func (a *App) ReadImageDataURL(path string) (string, error) {
+func (f *Files) ReadImageDataURL(path string) (string, error) {
 	path = strings.TrimSpace(path)
 	if path == "" {
 		return "", fmt.Errorf("没有图片路径")
@@ -216,7 +241,7 @@ func imageMimeByExtension(path string) string {
 	return ""
 }
 
-func (a *App) SaveFile(path, content, eol string, hasBom bool, enc string) error {
+func (f *Files) SaveFile(path, content, eol string, hasBom bool, enc string) error {
 	if path == "" {
 		return fmt.Errorf("没有目标文件")
 	}
@@ -241,7 +266,7 @@ type FileStatInfo struct {
 }
 
 // GetFileStat 返回文件当前修改时间（UnixNano 字符串）；文件不存在时 Exists=false。
-func (a *App) GetFileStat(path string) (*FileStatInfo, error) {
+func (f *Files) GetFileStat(path string) (*FileStatInfo, error) {
 	path = strings.TrimSpace(path)
 	if path == "" {
 		return nil, fmt.Errorf("缺少文件路径")
@@ -267,7 +292,7 @@ type SaveFileResult struct {
 // SaveFileChecked 与 SaveFile 相同，但写入前校验磁盘 mtime：
 // expectMtime 非空且与当前磁盘不一致时不写入并返回 Conflict，避免覆盖外部修改；
 // expectMtime 为空表示不校验（新建 / 另存为 / 用户选择强制覆盖）。
-func (a *App) SaveFileChecked(path, content, eol string, hasBom bool, enc string, expectMtime string) (*SaveFileResult, error) {
+func (f *Files) SaveFileChecked(path, content, eol string, hasBom bool, enc string, expectMtime string) (*SaveFileResult, error) {
 	path = strings.TrimSpace(path)
 	if path == "" {
 		return nil, fmt.Errorf("没有目标文件")
@@ -298,7 +323,7 @@ func (a *App) SaveFileChecked(path, content, eol string, hasBom bool, enc string
 	return result, nil
 }
 
-func (a *App) CheckEncoding(content string, enc string) bool {
+func (f *Files) CheckEncoding(content string, enc string) bool {
 	if enc == "utf-8" || enc == "auto" {
 		return true
 	}

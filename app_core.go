@@ -17,6 +17,7 @@ import (
 	"datalens/internal/aitimer"
 	"datalens/internal/browser"
 	"datalens/internal/cmdbridge"
+	"datalens/internal/fileio"
 	"datalens/internal/mcp"
 	"datalens/internal/mcpsamples"
 	"datalens/internal/notify"
@@ -30,12 +31,6 @@ import (
 	"datalens/internal/terminal"
 	"datalens/internal/toolchain"
 	"datalens/internal/watch"
-)
-
-const (
-	largeFileBytes    = 10 << 20
-	maxFileBytes      = 100 << 20
-	imagePreviewLimit = 32 << 20
 )
 
 const appVersion = "v1.1.0"
@@ -55,6 +50,7 @@ type App struct {
 	*screenshot.Capturer  // 应用窗口截图（internal/screenshot）
 	*notify.Notifier      // 系统通知（internal/notify）
 	*watch.Watcher        // 工作区文件监听（internal/watch）
+	*fileio.Files         // 文件读写与编码（internal/fileio）
 	*mcpsamples.Samples   // 内置 MCP 示例（internal/mcpsamples）
 	ctx                   context.Context
 	startupTargets        []OpenTarget
@@ -78,24 +74,11 @@ type OpenTarget struct {
 	Column int    `json:"column,omitempty"`
 }
 
-type FileData struct {
-	Path     string `json:"path"`
-	Name     string `json:"name"`
-	Content  string `json:"content"`
-	Size     int64  `json:"size"`
-	Eol      string `json:"eol"`
-	HasBom   bool   `json:"hasBom"`
-	Large    bool   `json:"large"`
-	Enc      string `json:"enc"`
-	Binary   bool   `json:"binary"`
-	Image    bool   `json:"image,omitempty"`
-	IsDir    bool   `json:"isDir"`
-	HexShown int64  `json:"hexShown,omitempty"`
-	Mtime    string `json:"mtime,omitempty"`
-}
+// FileData 兼容别名（实现已下沉 internal/fileio）。
+type FileData = fileio.FileData
 
 func NewApp() *App {
-	return &App{Reader: &reading.Reader{}, Runner: &run.Runner{}, Host: &browser.Host{}, Searcher: &search.Searcher{}, Scheduler: &aischedule.Scheduler{}, Bridge: &cmdbridge.Bridge{}, Terminal: &terminal.Terminal{}, Toolchain: &toolchain.Toolchain{}, Store: &aiconfig.Store{}, Manager: &plugins.Manager{}, Skills: &skills.Skills{}, Capturer: &screenshot.Capturer{}, Notifier: &notify.Notifier{}, Watcher: &watch.Watcher{}, Samples: &mcpsamples.Samples{}}
+	return &App{Reader: &reading.Reader{}, Runner: &run.Runner{}, Host: &browser.Host{}, Searcher: &search.Searcher{}, Scheduler: &aischedule.Scheduler{}, Bridge: &cmdbridge.Bridge{}, Terminal: &terminal.Terminal{}, Toolchain: &toolchain.Toolchain{}, Store: &aiconfig.Store{}, Manager: &plugins.Manager{}, Skills: &skills.Skills{}, Capturer: &screenshot.Capturer{}, Notifier: &notify.Notifier{}, Watcher: &watch.Watcher{}, Samples: &mcpsamples.Samples{}, Files: &fileio.Files{}}
 }
 
 func (a *App) startup(ctx context.Context) {
