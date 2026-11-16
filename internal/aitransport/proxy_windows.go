@@ -1,6 +1,6 @@
 //go:build windows
 
-package main
+package aitransport
 
 import (
 	"net/http"
@@ -10,9 +10,9 @@ import (
 	"golang.org/x/sys/windows/registry"
 )
 
-// systemAIProxy 读取 Windows「Internet 选项」的代理设置（与浏览器/系统代理一致），
+// SystemProxy 读取 Windows「Internet 选项」的代理设置（与浏览器/系统代理一致），
 // 读不到注册表时才退回环境变量。
-func systemAIProxy() func(*http.Request) (*url.URL, error) {
+func SystemProxy() func(*http.Request) (*url.URL, error) {
 	key, err := registry.OpenKey(registry.CURRENT_USER,
 		`Software\Microsoft\Windows\CurrentVersion\Internet Settings`, registry.QUERY_VALUE)
 	if err != nil {

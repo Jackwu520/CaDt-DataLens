@@ -1,6 +1,6 @@
 // ai_gen_test.go：生图/视频执行通道测试——目录解析与越界拒绝、mime/扩展名、
 // b64 解码嗅探、HTTP 规格请求（httptest 回环）、落盘流程与上限。
-package main
+package aigen
 
 import (
 	"encoding/base64"
@@ -87,7 +87,7 @@ func TestAiGenClampTimeoutAndLimit(t *testing.T) {
 func TestAiGenDecodeB64(t *testing.T) {
 	// 1x1 PNG（8 字节签名字头可被 DetectContentType 识别）
 	png := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0x00}
-	raw, productMIME, err := aiGenDecodeB64(AIGenProductItem{Type: "b64", Data: base64.StdEncoding.EncodeToString(png)})
+	raw, productMIME, err := aiGenDecodeB64(ProductItem{Type: "b64", Data: base64.StdEncoding.EncodeToString(png)})
 	if err != nil || len(raw) != len(png) {
 		t.Fatalf("纯 b64 解码失败：%v", err)
 	}
@@ -95,17 +95,17 @@ func TestAiGenDecodeB64(t *testing.T) {
 		t.Fatalf("嗅探 mime 不符：%q", productMIME)
 	}
 	// data URL 前缀容忍 + 显式 mime 优先
-	raw2, productMIME2, err := aiGenDecodeB64(AIGenProductItem{
+	raw2, productMIME2, err := aiGenDecodeB64(ProductItem{
 		Type: "b64", MIME: "image/webp",
 		Data: "data:image/webp;base64," + base64.StdEncoding.EncodeToString(png)})
 	if err != nil || productMIME2 != "image/webp" {
 		t.Fatalf("data URL 解码失败：mime=%q err=%v", productMIME2, err)
 	}
 	_ = raw2
-	if _, _, err = aiGenDecodeB64(AIGenProductItem{Type: "b64", Data: ""}); err == nil {
+	if _, _, err = aiGenDecodeB64(ProductItem{Type: "b64", Data: ""}); err == nil {
 		t.Fatal("空 b64 应报错")
 	}
-	if _, _, err = aiGenDecodeB64(AIGenProductItem{Type: "b64", Data: "!!not-b64!!"}); err == nil {
+	if _, _, err = aiGenDecodeB64(ProductItem{Type: "b64", Data: "!!not-b64!!"}); err == nil {
 		t.Fatal("非法 b64 应报错")
 	}
 }
@@ -134,7 +134,7 @@ func TestAiGenHTTPRequestRoundtrip(t *testing.T) {
 	}))
 	defer server.Close()
 
-	spec := AIGenHTTPSpec{
+	spec := HTTPSpec{
 		URL:    server.URL + "/v1/images/generations",
 		Method: "POST",
 		Headers: map[string]string{
@@ -145,7 +145,7 @@ func TestAiGenHTTPRequestRoundtrip(t *testing.T) {
 		TimeoutSec: 10,
 	}
 	raw, _ := json.Marshal(spec)
-	result := aiGenHTTPRequest(string(raw))
+	result := HTTPRequest(string(raw))
 	if result.Error != "" {
 		t.Fatalf("回环请求报错：%s", result.Error)
 	}
@@ -163,19 +163,19 @@ func TestAiGenHTTPRequestRoundtrip(t *testing.T) {
 	badSpec := spec
 	badSpec.Headers = map[string]string{"Authorization": "Bearer wrong"}
 	rawBad, _ := json.Marshal(badSpec)
-	resultBad := aiGenHTTPRequest(string(rawBad))
+	resultBad := HTTPRequest(string(rawBad))
 	if resultBad.Status != http.StatusUnauthorized || !strings.Contains(resultBad.Body, "bad key") {
 		t.Fatalf("非 2xx 应回状态与体：%+v", resultBad)
 	}
 
 	// 非法 scheme / 禁止头
-	evil := aiGenHTTPRequest(`{"url":"file:///C:/Windows"}`)
+	evil := HTTPRequest(`{"url":"file:///C:/Windows"}`)
 	if evil.Error == "" {
 		t.Fatal("file:// scheme 应被拒绝")
 	}
-	forbidden := AIGenHTTPSpec{URL: server.URL, Method: "GET", Headers: map[string]string{"Host": "evil"}}
+	forbidden := HTTPSpec{URL: server.URL, Method: "GET", Headers: map[string]string{"Host": "evil"}}
 	rawForbidden, _ := json.Marshal(forbidden)
-	if got := aiGenHTTPRequest(string(rawForbidden)); !strings.Contains(got.Error, "不允许自定义请求头") {
+	if got := HTTPRequest(string(rawForbidden)); !strings.Contains(got.Error, "不允许自定义请求头") {
 		t.Fatalf("禁止头应被拒绝：%+v", got)
 	}
 }
@@ -189,16 +189,16 @@ func TestAiGenSaveProductsFlow(t *testing.T) {
 	defer server.Close()
 
 	workspace := t.TempDir()
-	spec := AIGenSaveSpec{
+	spec := SaveSpec{
 		Workspace: workspace,
 		Kind:      "image",
-		Items: []AIGenProductItem{
+		Items: []ProductItem{
 			{Type: "b64", Data: base64.StdEncoding.EncodeToString(png)},
 			{Type: "url", URL: server.URL + "/out.png"},
 		},
 	}
 	raw, _ := json.Marshal(spec)
-	result := aiGenSaveProducts(string(raw))
+	result := SaveProducts(string(raw))
 	if result.Error != "" {
 		t.Fatalf("落盘失败：%s", result.Error)
 	}
@@ -220,7 +220,7 @@ func TestAiGenSaveProductsFlow(t *testing.T) {
 	spec2 := spec
 	spec2.OutputPath = filepath.Join("assets", "renders")
 	raw2, _ := json.Marshal(spec2)
-	result2 := aiGenSaveProducts(string(raw2))
+	result2 := SaveProducts(string(raw2))
 	if result2.Error != "" || !strings.Contains(result2.Files[0].Path, "assets") {
 		t.Fatalf("output_path 覆盖失败：%+v", result2)
 	}
@@ -228,11 +228,11 @@ func TestAiGenSaveProductsFlow(t *testing.T) {
 	spec3 := spec
 	spec3.OutputPath = "..\\escape"
 	raw3, _ := json.Marshal(spec3)
-	if got := aiGenSaveProducts(string(raw3)); got.Error == "" {
+	if got := SaveProducts(string(raw3)); got.Error == "" {
 		t.Fatal(".. 逃逸 output_path 应被拒绝")
 	}
 	// 空产物 / 超量
-	if got := aiGenSaveProducts(`{"workspace":"x","kind":"image","items":[]}`); got.Error == "" {
+	if got := SaveProducts(`{"workspace":"x","kind":"image","items":[]}`); got.Error == "" {
 		t.Fatal("空产物清单应报错")
 	}
 	many := `{"workspace":"x","kind":"image","items":[`
@@ -243,7 +243,7 @@ func TestAiGenSaveProductsFlow(t *testing.T) {
 		many += `{"type":"b64","data":"QQ=="}`
 	}
 	many += `]}`
-	if got := aiGenSaveProducts(many); got.Error == "" {
+	if got := SaveProducts(many); got.Error == "" {
 		t.Fatal("产物超量应报错")
 	}
 }

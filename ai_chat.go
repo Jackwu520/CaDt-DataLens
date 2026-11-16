@@ -15,9 +15,14 @@ import (
 	"time"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
+
+	"datalens/internal/aitransport"
 )
 
-func (a *App) AISendChat(sessionId string, cfg AIConfig, messages []AIMessage, tools []AIToolDef, retryMax int) error {
+// AISendChat 启动一轮流式对话。立即返回后由 goroutine 通过 ai-* 事件推送：
+// ai-chunk / ai-think / ai-toolcall / ai-done / ai-error。同一 sessionId 的新请求
+// 会先取消旧请求；AIStop 按 sessionId 前缀取消（前端传 session.id#round）。
+func (a *App) AISendChat(sessionId string, cfg aitransport.Config, messages []aitransport.Message, tools []aitransport.ToolDef, retryMax int) error {
 	sessionId = strings.TrimSpace(sessionId)
 	if sessionId == "" {
 		return errors.New("会话标识为空")
@@ -28,17 +33,17 @@ func (a *App) AISendChat(sessionId string, cfg AIConfig, messages []AIMessage, t
 	if retryMax > 10 {
 		retryMax = 10
 	}
-	if err := validateAIConfig(cfg); err != nil {
+	if err := aitransport.ValidateConfig(cfg); err != nil {
 		return err
 	}
-	if fixed := sanitizeAIMessages(messages); fixed > 0 {
+	if fixed := aitransport.SanitizeMessages(messages); fixed > 0 {
 		// 兜底：前端已在工具轮把错误作为工具结果回给模型；这里防止旧会话/其他路径的坏参数整轮拒收。
 		writeAppLog("warn", "AI 请求包含 %d 个非法工具参数，已按 {} 兜底发送", fixed)
 	}
-	if err := validateAIMessages(messages); err != nil {
+	if err := aitransport.ValidateMessages(messages); err != nil {
 		return err
 	}
-	if err := validateAITools(tools); err != nil {
+	if err := aitransport.ValidateTools(tools); err != nil {
 		return err
 	}
 
@@ -64,19 +69,19 @@ func (a *App) AISendChat(sessionId string, cfg AIConfig, messages []AIMessage, t
 
 		started := time.Now()
 		writeAppLog("info", "AI 请求：provider=%s host=%s model=%s messages=%d tools=%d",
-			aiProviderName(cfg), aiBaseHost(cfg.BaseURL), cfg.Model, len(messages), len(tools))
-		err := aiStreamResponse(ctx, cancel, sessionId, cfg, messages, tools, a.aiEmit, retryMax)
+			aitransport.ProviderName(cfg), aitransport.BaseHost(cfg.BaseURL), cfg.Model, len(messages), len(tools))
+		err := aitransport.StreamResponse(ctx, cancel, sessionId, cfg, messages, tools, a.aiEmit, retryMax)
 		cause := context.Cause(ctx)
 
 		switch {
-		case errors.Is(cause, errAIIdleTimeout):
-			a.aiEmit(aiEventError, aiErrorPayload{Id: sessionId, Message: errAIIdleTimeout.Error()})
-			writeAppLog("error", "AI 流中断：%v", errAIIdleTimeout)
+		case errors.Is(cause, aitransport.ErrIdleTimeout):
+			a.aiEmit(aitransport.EventError, aitransport.ErrorPayload{Id: sessionId, Message: aitransport.ErrIdleTimeout.Error()})
+			writeAppLog("error", "AI 流中断：%v", aitransport.ErrIdleTimeout)
 		case errors.Is(cause, context.Canceled):
-			a.aiEmit(aiEventDone, aiDonePayload{Id: sessionId, FinishReason: "stopped"})
+			a.aiEmit(aitransport.EventDone, aitransport.DonePayload{Id: sessionId, FinishReason: "stopped"})
 			writeAppLog("info", "AI 请求已停止（%s）", time.Since(started).Round(time.Millisecond))
 		case err != nil:
-			a.aiEmit(aiEventError, aiErrorPayload{Id: sessionId, Message: err.Error()})
+			a.aiEmit(aitransport.EventError, aitransport.ErrorPayload{Id: sessionId, Message: err.Error()})
 			writeAppLog("error", "AI 请求失败（%s）：%v", time.Since(started).Round(time.Millisecond), err)
 		default:
 			writeAppLog("info", "AI 请求结束（%s）", time.Since(started).Round(time.Millisecond))
@@ -115,7 +120,7 @@ func (a *App) AITouchStream(sessionId string) {
 	for id, entry := range aiStreams.entries {
 		if id == sessionId || strings.HasPrefix(id, sessionId+"#") {
 			if entry.watchdog != nil {
-				entry.watchdog.Reset(aiIdleTimeout)
+				entry.watchdog.Reset(aitransport.IdleTimeout)
 			}
 		}
 	}
@@ -123,21 +128,21 @@ func (a *App) AITouchStream(sessionId string) {
 }
 
 // AITestConnection 验证当前 Profile 的地址/密钥/模型是否可用。
-func (a *App) AITestConnection(cfg AIConfig) (string, error) {
-	if err := validateAIEndpoint(cfg); err != nil {
+func (a *App) AITestConnection(cfg aitransport.Config) (string, error) {
+	if err := aitransport.ValidateEndpoint(cfg); err != nil {
 		return "", err
 	}
-	if aiProviderOf(cfg) == aiProviderAnthropic && strings.TrimSpace(cfg.Model) == "" {
+	if aitransport.ProviderOf(cfg) == aitransport.ProviderAnthropic && strings.TrimSpace(cfg.Model) == "" {
 		return "", errors.New("请先配置模型名")
 	}
-	client, err := newAIHTTPClient(cfg)
+	client, err := aitransport.NewHTTPClient(cfg)
 	if err != nil {
 		return "", err
 	}
 	defer client.CloseIdleConnections()
 
 	base := strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/")
-	if aiProviderOf(cfg) == aiProviderAnthropic {
+	if aitransport.ProviderOf(cfg) == aitransport.ProviderAnthropic {
 		body, err := json.Marshal(map[string]any{
 			"model":      cfg.Model,
 			"max_tokens": 1,
@@ -146,11 +151,11 @@ func (a *App) AITestConnection(cfg AIConfig) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		req, err := http.NewRequest(http.MethodPost, aiAnthropicMessagesURL(base), bytes.NewReader(body))
+		req, err := http.NewRequest(http.MethodPost, aitransport.AnthropicMessagesURL(base), bytes.NewReader(body))
 		if err != nil {
 			return "", err
 		}
-		if err := aiApplyHeaders(req, cfg, aiProviderAnthropic, false); err != nil {
+		if err := aitransport.ApplyHeaders(req, cfg, aitransport.ProviderAnthropic, false); err != nil {
 			return "", err
 		}
 		resp, err := client.Do(req)
@@ -159,12 +164,12 @@ func (a *App) AITestConnection(cfg AIConfig) (string, error) {
 		}
 		defer resp.Body.Close()
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			return "", errors.New(aiStatusErrorText(resp))
+			return "", errors.New(aitransport.StatusErrorText(resp))
 		}
 		return fmt.Sprintf("连接成功（Anthropic，HTTP %d）", resp.StatusCode), nil
 	}
 
-	models, err := listAIModels(client, cfg)
+	models, err := aitransport.ListModels(client, cfg)
 	if err != nil {
 		return "", err
 	}
@@ -172,19 +177,19 @@ func (a *App) AITestConnection(cfg AIConfig) (string, error) {
 }
 
 // AIListModels 拉取 OpenAI 兼容端点的模型列表（Anthropic 需手动填写模型名）。
-func (a *App) AIListModels(cfg AIConfig) ([]string, error) {
-	if err := validateAIEndpoint(cfg); err != nil {
+func (a *App) AIListModels(cfg aitransport.Config) ([]string, error) {
+	if err := aitransport.ValidateEndpoint(cfg); err != nil {
 		return nil, err
 	}
-	if aiProviderOf(cfg) == aiProviderAnthropic {
+	if aitransport.ProviderOf(cfg) == aitransport.ProviderAnthropic {
 		return nil, errors.New("Anthropic 不提供模型列表接口，请手动填写模型名")
 	}
-	client, err := newAIHTTPClient(cfg)
+	client, err := aitransport.NewHTTPClient(cfg)
 	if err != nil {
 		return nil, err
 	}
 	defer client.CloseIdleConnections()
-	return listAIModels(client, cfg)
+	return aitransport.ListModels(client, cfg)
 }
 
 // AIAppDir 返回应用数据根目录（记忆 app 模式、技能 app 级目录都挂在其下）。

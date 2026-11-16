@@ -1,4 +1,4 @@
-package main
+package aitransport
 
 import (
 	"context"
@@ -10,24 +10,24 @@ import (
 
 func TestAIProviderOfResponses(t *testing.T) {
 	for _, value := range []string{"responses", "openai-responses", " Responses "} {
-		if got := aiProviderOf(AIConfig{Provider: value}); got != aiProviderResponses {
+		if got := ProviderOf(Config{Provider: value}); got != ProviderResponses {
 			t.Fatalf("%q 未识别成 responses：%v", value, got)
 		}
 	}
-	if aiProviderName(AIConfig{Provider: "responses"}) != "responses" {
-		t.Fatal("aiProviderName 未返回 responses")
+	if ProviderName(Config{Provider: "responses"}) != "responses" {
+		t.Fatal("ProviderName 未返回 responses")
 	}
-	if aiProviderOf(AIConfig{Provider: "anthropic"}) != aiProviderAnthropic ||
-		aiProviderOf(AIConfig{Provider: "openai"}) != aiProviderOpenAI {
+	if ProviderOf(Config{Provider: "anthropic"}) != ProviderAnthropic ||
+		ProviderOf(Config{Provider: "openai"}) != ProviderOpenAI {
 		t.Fatal("原有协议识别被破坏")
 	}
 }
 
 func TestAIResponsesURL(t *testing.T) {
 	cases := map[string]string{
-		"https://api.openai.com/v1":              "https://api.openai.com/v1/responses",
-		"https://api.openai.com/v1/responses":    "https://api.openai.com/v1/responses",
-		"https://x/v1/chat/completions":          "https://x/v1/responses",
+		"https://api.openai.com/v1":           "https://api.openai.com/v1/responses",
+		"https://api.openai.com/v1/responses": "https://api.openai.com/v1/responses",
+		"https://x/v1/chat/completions":       "https://x/v1/responses",
 	}
 	for base, want := range cases {
 		if got := aiResponsesURL(base); got != want {
@@ -37,14 +37,14 @@ func TestAIResponsesURL(t *testing.T) {
 }
 
 func TestAIBuildResponsesBody(t *testing.T) {
-	cfg := AIConfig{Provider: "responses", Model: "gpt-5", MaxTokens: 512, Temperature: 0.4, ReasoningEffort: "high"}
-	messages := []AIMessage{
+	cfg := Config{Provider: "responses", Model: "gpt-5", MaxTokens: 512, Temperature: 0.4, ReasoningEffort: "high"}
+	messages := []Message{
 		{Role: "system", Content: "规则"},
 		{Role: "user", Content: "hi"},
-		{Role: "assistant", ToolCalls: []AIToolCall{{Id: "c1", Name: "read", Arguments: `{"path":"a"}`}}},
+		{Role: "assistant", ToolCalls: []ToolCall{{Id: "c1", Name: "read", Arguments: `{"path":"a"}`}}},
 		{Role: "tool", ToolCallId: "c1", Content: "文件内容"},
 	}
-	tools := []AIToolDef{{Name: "read", Description: "读文件", Parameters: json.RawMessage(`{"type":"object"}`)}}
+	tools := []ToolDef{{Name: "read", Description: "读文件", Parameters: json.RawMessage(`{"type":"object"}`)}}
 	body, err := aiBuildResponsesBody(cfg, messages, tools)
 	if err != nil {
 		t.Fatal(err)
@@ -88,12 +88,12 @@ func TestAIBuildResponsesBody(t *testing.T) {
 
 // 请求侧端到端：URL / Bearer / ExtraBody 补丁 / stream 强制。
 func TestAIChatRequestResponses(t *testing.T) {
-	cfg := AIConfig{
+	cfg := Config{
 		Provider: "responses", BaseURL: "https://api.openai.com/v1", APIKey: "k",
 		Model: "gpt-5", MaxTokens: 8,
 		ExtraBody: map[string]any{"tool_choice": "auto", "stream": false},
 	}
-	req, err := aiBuildChatRequest(context.Background(), cfg, []AIMessage{{Role: "user", Content: "hi"}}, nil)
+	req, err := aiBuildChatRequest(context.Background(), cfg, []Message{{Role: "user", Content: "hi"}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,18 +143,18 @@ func TestStreamResponsesSSE(t *testing.T) {
 	}
 	var text, think string
 	var toolName string
-	var done *aiDonePayload
+	var done *DonePayload
 	for _, ev := range events {
 		switch p := ev.payload.(type) {
-		case aiChunkPayload:
-			if ev.name == aiEventChunk {
+		case ChunkPayload:
+			if ev.name == EventChunk {
 				text += p.Delta
-			} else if ev.name == aiEventThink {
+			} else if ev.name == EventThink {
 				think += p.Delta
 			}
-		case aiToolCallPayload:
+		case ToolCallPayload:
 			toolName = p.Name
-		case aiDonePayload:
+		case DonePayload:
 			copy := p
 			done = &copy
 		}

@@ -1,4 +1,6 @@
-package main
+// Package aitransport：AI 传输引擎——OpenAI / Anthropic / Responses 三套请求构造、
+// SSE 解码、重试与空闲看门狗、配置校验与代理；事件名与载荷类型是绑定层与前端的事件契约。
+package aitransport
 
 import (
 	"encoding/json"
@@ -12,12 +14,12 @@ import (
 // AI 面板的 Go 侧只做两件事：双协议 HTTP + SSE 流式转发（事件归一化），
 // 以及记忆/技能目录解析。Agent 编排、审批、diff 全在前端。
 const (
-	aiIdleTimeout         = 120 * time.Second
-	aiDialTimeout         = 10 * time.Second
-	aiErrorBodyLimit      = 64 << 10
-	aiErrorTextLimit      = 500
-	aiDefaultMaxTokens    = 4096
-	aiMaxExtraHeaders     = 8
+	IdleTimeout        = 120 * time.Second
+	aiDialTimeout      = 10 * time.Second
+	aiErrorBodyLimit   = 64 << 10
+	aiErrorTextLimit   = 500
+	aiDefaultMaxTokens = 4096
+	aiMaxExtraHeaders  = 8
 	// 插件 provider 每轮注入的请求体补丁上限（与前端 plugin-ai-providers.js 对齐）
 	aiMaxExtraBodyKeys    = 32
 	aiMaxExtraBodyBytes   = 64 << 10
@@ -32,79 +34,79 @@ const (
 )
 
 const (
-	aiEventChunk    = "ai-chunk"
-	aiEventThink    = "ai-think"
-	aiEventToolCall = "ai-toolcall"
-	aiEventDone     = "ai-done"
-	aiEventError    = "ai-error"
-	aiEventRetry    = "ai-retry"
+	EventChunk    = "ai-chunk"
+	EventThink    = "ai-think"
+	EventToolCall = "ai-toolcall"
+	EventDone     = "ai-done"
+	EventError    = "ai-error"
+	EventRetry    = "ai-retry"
 	// 服务端参数校验给出的上限（如 max_tokens 超模型上限）被自动收敛时通知前端，
 	// 由前端提示用户并把该模型条目的输出窗口回写到配置。
-	aiEventParamAdjust = "ai-param-adjust"
+	EventParamAdjust = "ai-param-adjust"
 )
 
 var (
-	errAIIdleTimeout = errors.New("AI 响应超时（120 秒无数据）")
+	ErrIdleTimeout   = errors.New("AI 响应超时（120 秒无数据）")
 	errAnthropicDone = errors.New("anthropic stream done")
 	aiToolNameRule   = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 )
 
-// AIConfig 由前端 Profile 组装；API Key 只存在于前端 localStorage 与请求头，
+// Config 由前端 Profile 组装；API Key 只存在于前端 localStorage 与请求头，
 // 不写入日志、不落盘。
-type AIConfig struct {
-	Provider       string            `json:"provider"`
-	BaseURL        string            `json:"baseURL"`
-	APIKey         string            `json:"apiKey"`
-	Model          string            `json:"model"`
-	Temperature    float64           `json:"temperature"`
-	MaxTokens      int               `json:"maxTokens"`
-	Proxy          string            `json:"proxy,omitempty"`
-	ExtraHeaders   map[string]string `json:"extraHeaders,omitempty"`
+type Config struct {
+	Provider     string            `json:"provider"`
+	BaseURL      string            `json:"baseURL"`
+	APIKey       string            `json:"apiKey"`
+	Model        string            `json:"model"`
+	Temperature  float64           `json:"temperature"`
+	MaxTokens    int               `json:"maxTokens"`
+	Proxy        string            `json:"proxy,omitempty"`
+	ExtraHeaders map[string]string `json:"extraHeaders,omitempty"`
 	// ExtraBody 是插件 provider 每轮注入的请求体补丁；stream 由 aiApplyBodyPatch 强制保持 true，
-	// 否则 SSE 解码会拿不到流。字段上限与合法性在 validateAIEndpoint 里校验。
-	ExtraBody      map[string]any    `json:"extraBody,omitempty"`
-	Thinking       bool              `json:"thinking,omitempty"`
-	ThinkingBudget int               `json:"thinkingBudget,omitempty"`
+	// 否则 SSE 解码会拿不到流。字段上限与合法性在 ValidateEndpoint 里校验。
+	ExtraBody      map[string]any `json:"extraBody,omitempty"`
+	Thinking       bool           `json:"thinking,omitempty"`
+	ThinkingBudget int            `json:"thinkingBudget,omitempty"`
 	// ReasoningEffort 仅用于 OpenAI 兼容协议，按 reasoning_effort 原样发送。
 	ReasoningEffort string `json:"reasoningEffort,omitempty"`
 }
 
-// AIMessage 是前端与 Go 之间的会话消息（规范化中间格式）。
+// Message 是前端与 Go 之间的会话消息（规范化中间格式）。
 // assistant 的 ToolCalls 为工具调用请求，role=tool 的消息用 ToolCallId 回填结果。
-type AIMessage struct {
-	Role              string        `json:"role"`
-	Content           string        `json:"content,omitempty"`
-	Images            []AIImagePart `json:"images,omitempty"`
-	ToolCalls         []AIToolCall  `json:"toolCalls,omitempty"`
-	ToolCallId        string        `json:"toolCallId,omitempty"`
-	Name              string        `json:"name,omitempty"`
-	Thinking          string        `json:"thinking,omitempty"`
-	ThinkingSignature string        `json:"thinkingSignature,omitempty"`
+type Message struct {
+	Role              string      `json:"role"`
+	Content           string      `json:"content,omitempty"`
+	Images            []ImagePart `json:"images,omitempty"`
+	ToolCalls         []ToolCall  `json:"toolCalls,omitempty"`
+	ToolCallId        string      `json:"toolCallId,omitempty"`
+	Name              string      `json:"name,omitempty"`
+	Thinking          string      `json:"thinking,omitempty"`
+	ThinkingSignature string      `json:"thinkingSignature,omitempty"`
 }
 
-type AIImagePart struct {
+type ImagePart struct {
 	Mime string `json:"mime"`
 	Data string `json:"data"`
 }
 
-type AIToolCall struct {
+type ToolCall struct {
 	Id        string `json:"id"`
 	Name      string `json:"name"`
 	Arguments string `json:"arguments"`
 }
 
-type AIToolDef struct {
+type ToolDef struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description"`
 	Parameters  json.RawMessage `json:"parameters"`
 }
 
-type aiChunkPayload struct {
+type ChunkPayload struct {
 	Id    string `json:"id"`
 	Delta string `json:"delta"`
 }
 
-type aiToolCallPayload struct {
+type ToolCallPayload struct {
 	Id        string `json:"id"`
 	Index     int    `json:"index"`
 	CallId    string `json:"callId,omitempty"`
@@ -122,19 +124,19 @@ type aiUsage struct {
 	CacheWriteTokens int `json:"cacheWriteTokens,omitempty"`
 }
 
-type aiDonePayload struct {
+type DonePayload struct {
 	Id                string   `json:"id"`
 	FinishReason      string   `json:"finishReason"`
 	ThinkingSignature string   `json:"thinkingSignature,omitempty"`
 	Usage             *aiUsage `json:"usage,omitempty"`
 }
 
-type aiErrorPayload struct {
+type ErrorPayload struct {
 	Id      string `json:"id"`
 	Message string `json:"message"`
 }
 
-type aiRetryPayload struct {
+type RetryPayload struct {
 	Id      string `json:"id"`
 	Attempt int    `json:"attempt"`
 	Max     int    `json:"max"`
@@ -142,9 +144,9 @@ type aiRetryPayload struct {
 	Reason  string `json:"reason"`
 }
 
-// aiParamAdjustPayload：一次请求内因服务端参数上限而自动降档的通知。
+// ParamAdjustPayload：一次请求内因服务端参数上限而自动降档的通知。
 // Previous/Value 都是 max_tokens 的 token 数；前端按 Value 回写模型条目的 outputWindow。
-type aiParamAdjustPayload struct {
+type ParamAdjustPayload struct {
 	Id       string `json:"id"`
 	Model    string `json:"model"`
 	Field    string `json:"field"`
@@ -153,7 +155,7 @@ type aiParamAdjustPayload struct {
 	Message  string `json:"message"`
 }
 
-type aiEmitter func(event string, payload any)
+type Emitter func(event string, payload any)
 
 // aiChunkBatcher 按时间窗合并思考/正文增量。toolcall/done/error 不经批处理，
 // 终端事件发出前先同步 flush，保证前端收到 done 时内容已完整。
@@ -163,5 +165,5 @@ type aiChunkBatcher struct {
 	think   strings.Builder
 	content strings.Builder
 	timer   *time.Timer
-	emit    aiEmitter
+	emit    Emitter
 }

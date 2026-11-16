@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 
 	"datalens/internal/activity"
+	"datalens/internal/aicatalog"
 	"datalens/internal/mcp"
 	"datalens/internal/sessionindex"
 	"datalens/internal/sessionstore"
@@ -50,7 +51,7 @@ func storageLocation(name string) string {
 	case storage.LocScheduleDB:
 		return aiSchedulePath()
 	case storage.LocModelCatalog:
-		return modelCatalogFilePath()
+		return aicatalog.Path()
 	case storage.LocActivity:
 		return activity.Dir()
 	case storage.LocAISessions:

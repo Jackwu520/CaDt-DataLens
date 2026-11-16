@@ -1,11 +1,13 @@
-// ai_gen.go：生图/视频生成的 Go 执行通道（受控 HTTP + 产物落盘）。
+// Package aigen：生图/视频的哑执行通道——按前端渲染好的规格发同步 HTTP、
+// 把产物解码/下载并落盘到工作区。Version 由宿主（main）注入用于 User-Agent。
+package aigen
+
 // 模板渲染与响应提取在前端纯函数层（ai-gen-model.js，可单测）；Go 侧保持「哑通道」：
-// AIGenHTTPRequest 按前端渲染好的请求规格发一次同步 HTTP（复用 newAIHTTPClient 的代理栈，
+// HTTPRequest 按前端渲染好的请求规格发一次同步 HTTP（复用 aitransport 的代理栈，
 // 允许 localhost——本地 ComfyUI 是合法端点，与聊天账号 baseURL 同信任模型）；
-// AIGenSaveProducts 把前端提取出的产物（b64 / URL）下载解码后写入工作区
+// SaveProducts 把前端提取出的产物（b64 / URL）下载解码后写入工作区
 // .cadt/gen/{kind}/YYYY-MM/（output_path 可覆盖为工作区内其他目录），路径越界一律拒绝。
 // API Key 只在前端存储并已渲染进请求头，Go 不落日志；错误摘要做密钥形态脱敏。
-package main
 
 import (
 	"context"
@@ -20,20 +22,25 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"datalens/internal/aitransport"
 )
+
+// Version 宿主注入：应用版本，用于 User-Agent（main/app_core.go 的 appVersion）。
+var Version = ""
 
 const (
-	aiGenDefaultTimeout   = 120
-	aiGenMinTimeout       = 5
-	aiGenMaxTimeout       = 300
-	aiGenBodyLimit        = int64(64 << 20) // 响应体上限（含内嵌 b64 的 JSON）
-	aiGenImageLimit       = int64(25 << 20)
-	aiGenVideoLimit       = int64(220 << 20)
-	aiGenMaxItems         = 16
+	aiGenDefaultTimeout = 120
+	aiGenMinTimeout     = 5
+	aiGenMaxTimeout     = 300
+	aiGenBodyLimit      = int64(64 << 20) // 响应体上限（含内嵌 b64 的 JSON）
+	aiGenImageLimit     = int64(25 << 20)
+	aiGenVideoLimit     = int64(220 << 20)
+	aiGenMaxItems       = 16
 )
 
-// AIGenHTTPSpec 是前端渲染好的单次请求规格（URL/头/体已含占位符替换结果）。
-type AIGenHTTPSpec struct {
+// HTTPSpec 是前端渲染好的单次请求规格（URL/头/体已含占位符替换结果）。
+type HTTPSpec struct {
 	URL        string            `json:"url"`
 	Method     string            `json:"method"`
 	Headers    map[string]string `json:"headers"`
@@ -43,8 +50,8 @@ type AIGenHTTPSpec struct {
 	MaxBytes   int64             `json:"maxBytes"`
 }
 
-// AIGenHTTPResult 返回状态与响应体（非 2xx 也回体，前端按 errorPath 提取服务端错误文案）。
-type AIGenHTTPResult struct {
+// HTTPResult 返回状态与响应体（非 2xx 也回体，前端按 errorPath 提取服务端错误文案）。
+type HTTPResult struct {
 	Status      int    `json:"status"`
 	ContentType string `json:"contentType"`
 	Body        string `json:"body"`
@@ -53,58 +60,54 @@ type AIGenHTTPResult struct {
 	Error       string `json:"error,omitempty"`
 }
 
-// AIGenProductItem 是前端从响应里提取出的单个产物：b64 数据或下载 URL。
-type AIGenProductItem struct {
+// ProductItem 是前端从响应里提取出的单个产物：b64 数据或下载 URL。
+type ProductItem struct {
 	Type string `json:"type"` // "b64" | "url"
 	MIME string `json:"mime"`
 	Data string `json:"data,omitempty"`
 	URL  string `json:"url,omitempty"`
 }
 
-// AIGenSaveSpec 落盘规格：workspace 根 + 可选工作区相对目录 + 产物清单。
-type AIGenSaveSpec struct {
-	Workspace  string             `json:"workspace"`
-	OutputPath string             `json:"outputPath"`
-	Kind       string             `json:"kind"` // image | video
-	Proxy      string             `json:"proxy"`
-	TimeoutSec int                `json:"timeoutSec"`
-	Items      []AIGenProductItem `json:"items"`
+// SaveSpec 落盘规格：workspace 根 + 可选工作区相对目录 + 产物清单。
+type SaveSpec struct {
+	Workspace  string        `json:"workspace"`
+	OutputPath string        `json:"outputPath"`
+	Kind       string        `json:"kind"` // image | video
+	Proxy      string        `json:"proxy"`
+	TimeoutSec int           `json:"timeoutSec"`
+	Items      []ProductItem `json:"items"`
 }
 
-// AIGenSavedFile 是落盘后的单个产物（路径回给模型继续引用）。
-type AIGenSavedFile struct {
+// SavedFile 是落盘后的单个产物（路径回给模型继续引用）。
+type SavedFile struct {
 	Path  string `json:"path"`
 	Bytes int64  `json:"bytes"`
 	MIME  string `json:"mime"`
 }
 
-type AIGenSaveResult struct {
-	Files []AIGenSavedFile `json:"files,omitempty"`
-	Error string           `json:"error,omitempty"`
+type SaveResult struct {
+	Files []SavedFile `json:"files,omitempty"`
+	Error string      `json:"error,omitempty"`
 }
 
 // (a *App) AIGenHTTPRequest 是 Wails 绑定入口：按规格发一次同步 HTTP。
-func (a *App) AIGenHTTPRequest(specJSON string) AIGenHTTPResult {
-	return aiGenHTTPRequest(specJSON)
-}
-
-func aiGenHTTPRequest(specJSON string) AIGenHTTPResult {
-	var spec AIGenHTTPSpec
+func HTTPRequest(specJSON string) HTTPResult {
+	var spec HTTPSpec
 	if err := json.Unmarshal([]byte(specJSON), &spec); err != nil {
-		return AIGenHTTPResult{Error: "请求规格解析失败：" + err.Error()}
+		return HTTPResult{Error: "请求规格解析失败：" + err.Error()}
 	}
 	if !strings.HasPrefix(spec.URL, "http://") && !strings.HasPrefix(spec.URL, "https://") {
-		return AIGenHTTPResult{Error: "URL 无效（需以 http:// 或 https:// 开头）"}
+		return HTTPResult{Error: "URL 无效（需以 http:// 或 https:// 开头）"}
 	}
 	timeout := aiGenClampTimeout(spec.TimeoutSec)
 	maxBytes := spec.MaxBytes
 	if maxBytes <= 0 || maxBytes > aiGenBodyLimit {
 		maxBytes = aiGenBodyLimit
 	}
-	cfg := AIConfig{Proxy: spec.Proxy}
-	client, err := newAIHTTPClient(cfg)
+	cfg := aitransport.Config{Proxy: spec.Proxy}
+	client, err := aitransport.NewHTTPClient(cfg)
 	if err != nil {
-		return AIGenHTTPResult{Error: err.Error()}
+		return HTTPResult{Error: err.Error()}
 	}
 	defer client.CloseIdleConnections()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
@@ -119,26 +122,26 @@ func aiGenHTTPRequest(specJSON string) AIGenHTTPResult {
 	}
 	req, err := http.NewRequestWithContext(ctx, method, spec.URL, bodyReader)
 	if err != nil {
-		return AIGenHTTPResult{Error: "请求构造失败：" + err.Error()}
+		return HTTPResult{Error: "请求构造失败：" + err.Error()}
 	}
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "CaDt-DataLens/"+strings.TrimPrefix(appVersion, "v")+" AI-Gen")
+	req.Header.Set("User-Agent", "CaDt-DataLens/"+strings.TrimPrefix(Version, "v")+" AI-Gen")
 	for name, value := range spec.Headers {
 		name = strings.TrimSpace(name)
 		if name == "" {
 			continue
 		}
-		if aiForbiddenHeader(name) {
-			return AIGenHTTPResult{Error: "不允许自定义请求头：" + name}
+		if aitransport.ForbiddenHeader(name) {
+			return HTTPResult{Error: "不允许自定义请求头：" + name}
 		}
 		if strings.ContainsAny(name, "\r\n") || strings.ContainsAny(value, "\r\n") {
-			return AIGenHTTPResult{Error: "自定义请求头包含换行"}
+			return HTTPResult{Error: "自定义请求头包含换行"}
 		}
 		req.Header.Set(name, value)
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return AIGenHTTPResult{Error: "请求失败：" + aiGenRedactError(err.Error())}
+		return HTTPResult{Error: "请求失败：" + aiGenRedactError(err.Error())}
 	}
 	defer resp.Body.Close()
 	body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
@@ -147,7 +150,7 @@ func aiGenHTTPRequest(specJSON string) AIGenHTTPResult {
 		body = body[:maxBytes]
 		truncated = true
 	}
-	result := AIGenHTTPResult{
+	result := HTTPResult{
 		Status:      resp.StatusCode,
 		ContentType: resp.Header.Get("Content-Type"),
 		Body:        string(body),
@@ -161,20 +164,16 @@ func aiGenHTTPRequest(specJSON string) AIGenHTTPResult {
 }
 
 // (a *App) AIGenSaveProducts 是 Wails 绑定入口：产物解码/下载并落盘到工作区。
-func (a *App) AIGenSaveProducts(specJSON string) AIGenSaveResult {
-	return aiGenSaveProducts(specJSON)
-}
-
-func aiGenSaveProducts(specJSON string) AIGenSaveResult {
-	var spec AIGenSaveSpec
+func SaveProducts(specJSON string) SaveResult {
+	var spec SaveSpec
 	if err := json.Unmarshal([]byte(specJSON), &spec); err != nil {
-		return AIGenSaveResult{Error: "落盘规格解析失败：" + err.Error()}
+		return SaveResult{Error: "落盘规格解析失败：" + err.Error()}
 	}
 	if len(spec.Items) == 0 {
-		return AIGenSaveResult{Error: "没有可落盘的产物"}
+		return SaveResult{Error: "没有可落盘的产物"}
 	}
 	if len(spec.Items) > aiGenMaxItems {
-		return AIGenSaveResult{Error: fmt.Sprintf("产物数量超过上限 %d", aiGenMaxItems)}
+		return SaveResult{Error: fmt.Sprintf("产物数量超过上限 %d", aiGenMaxItems)}
 	}
 	kind := spec.Kind
 	if kind != "image" && kind != "video" {
@@ -182,20 +181,20 @@ func aiGenSaveProducts(specJSON string) AIGenSaveResult {
 	}
 	dir, err := aiGenResolveDir(spec.Workspace, spec.OutputPath, kind)
 	if err != nil {
-		return AIGenSaveResult{Error: err.Error()}
+		return SaveResult{Error: err.Error()}
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return AIGenSaveResult{Error: "创建产物目录失败：" + err.Error()}
+		return SaveResult{Error: "创建产物目录失败：" + err.Error()}
 	}
 	limit := aiGenItemLimit(kind)
-	client, err := newAIHTTPClient(AIConfig{Proxy: spec.Proxy})
+	client, err := aitransport.NewHTTPClient(aitransport.Config{Proxy: spec.Proxy})
 	if err != nil {
-		return AIGenSaveResult{Error: err.Error()}
+		return SaveResult{Error: err.Error()}
 	}
 	defer client.CloseIdleConnections()
 	timeout := aiGenClampTimeout(spec.TimeoutSec)
 	stamp := strconv.FormatInt(time.Now().UnixNano(), 36)
-	files := []AIGenSavedFile{}
+	files := []SavedFile{}
 	for idx, item := range spec.Items {
 		var raw []byte
 		var productMIME string
@@ -208,19 +207,19 @@ func aiGenSaveProducts(specJSON string) AIGenSaveResult {
 			err = fmt.Errorf("未知产物类型 %q（支持 b64 / url）", item.Type)
 		}
 		if err != nil {
-			return AIGenSaveResult{Error: fmt.Sprintf("产物 %d 处理失败：%s", idx+1, aiGenRedactError(err.Error()))}
+			return SaveResult{Error: fmt.Sprintf("产物 %d 处理失败：%s", idx+1, aiGenRedactError(err.Error()))}
 		}
 		if int64(len(raw)) > limit {
-			return AIGenSaveResult{Error: fmt.Sprintf("产物 %d 超过大小上限（%d MB）", idx+1, limit>>20)}
+			return SaveResult{Error: fmt.Sprintf("产物 %d 超过大小上限（%d MB）", idx+1, limit>>20)}
 		}
 		name := fmt.Sprintf("gen-%s-%d.%s", stamp, idx+1, aiGenExtFor(productMIME, kind))
 		path := filepath.Join(dir, name)
 		if err := os.WriteFile(path, raw, 0o644); err != nil {
-			return AIGenSaveResult{Error: "写入产物失败：" + err.Error()}
+			return SaveResult{Error: "写入产物失败：" + err.Error()}
 		}
-		files = append(files, AIGenSavedFile{Path: path, Bytes: int64(len(raw)), MIME: productMIME})
+		files = append(files, SavedFile{Path: path, Bytes: int64(len(raw)), MIME: productMIME})
 	}
-	return AIGenSaveResult{Files: files}
+	return SaveResult{Files: files}
 }
 
 // aiGenResolveDir 解析产物目录：缺省 <workspace>/.cadt/gen/{kind}/YYYY-MM/，
@@ -252,7 +251,7 @@ func aiGenResolveDir(workspace, outputPath, kind string) (string, error) {
 }
 
 // aiGenDecodeB64 解码前端提取的 b64 产物（容忍 data URL 前缀），类型嗅探补 mime。
-func aiGenDecodeB64(item AIGenProductItem) ([]byte, string, error) {
+func aiGenDecodeB64(item ProductItem) ([]byte, string, error) {
 	data := item.Data
 	if idx := strings.Index(data, "base64,"); idx >= 0 {
 		data = data[idx+len("base64,"):]
@@ -273,7 +272,7 @@ func aiGenDecodeB64(item AIGenProductItem) ([]byte, string, error) {
 }
 
 // aiGenDownloadURL 下载 URL 产物（走用户配置的代理栈，限长 + 超时）。
-func aiGenDownloadURL(client *http.Client, item AIGenProductItem, timeoutSec int, limit int64) ([]byte, string, error) {
+func aiGenDownloadURL(client *http.Client, item ProductItem, timeoutSec int, limit int64) ([]byte, string, error) {
 	target := strings.TrimSpace(item.URL)
 	if !strings.HasPrefix(target, "http://") && !strings.HasPrefix(target, "https://") {
 		return nil, "", fmt.Errorf("产物 URL 无效（需以 http:// 或 https:// 开头）")
@@ -284,7 +283,7 @@ func aiGenDownloadURL(client *http.Client, item AIGenProductItem, timeoutSec int
 	if err != nil {
 		return nil, "", fmt.Errorf("下载请求构造失败：%s", err.Error())
 	}
-	req.Header.Set("User-Agent", "CaDt-DataLens/"+strings.TrimPrefix(appVersion, "v")+" AI-Gen")
+	req.Header.Set("User-Agent", "CaDt-DataLens/"+strings.TrimPrefix(Version, "v")+" AI-Gen")
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, "", fmt.Errorf("下载失败：%s", err.Error())

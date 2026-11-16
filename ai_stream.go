@@ -1,62 +1,13 @@
 package main
 
-// AI 流式增量合并：把思考/正文增量按时间窗合并后再发事件（toolcall/done/error 不过窗）。
-// 从 ai.go 拆出（同包）。
+// AI 流注册表：按 sessionId 记录取消句柄与空闲看门狗（Wails 绑定 AISendChat /
+// AIStop / AITouchStream 的宿主状态）。协议构造与 SSE 解码在 internal/aitransport。
 
 import (
 	"context"
 	"sync"
 	"time"
 )
-
-
-func newAIChunkBatcher(id string, emit aiEmitter) *aiChunkBatcher {
-	return &aiChunkBatcher{id: id, emit: emit}
-}
-
-func (b *aiChunkBatcher) add(event, delta string) {
-	if delta == "" {
-		return
-	}
-	b.mu.Lock()
-	if event == aiEventThink {
-		b.think.WriteString(delta)
-	} else {
-		b.content.WriteString(delta)
-	}
-	if b.timer == nil {
-		b.timer = time.AfterFunc(aiChunkBatchWindow, b.flush)
-	}
-	b.mu.Unlock()
-}
-
-// flush 取出窗口内缓冲并按 think→content 顺序发出（由 AfterFunc 或 flushNow 调用）。
-func (b *aiChunkBatcher) flush() {
-	b.mu.Lock()
-	think := b.think.String()
-	content := b.content.String()
-	b.think.Reset()
-	b.content.Reset()
-	b.timer = nil
-	b.mu.Unlock()
-	if think != "" {
-		b.emit(aiEventThink, aiChunkPayload{Id: b.id, Delta: think})
-	}
-	if content != "" {
-		b.emit(aiEventChunk, aiChunkPayload{Id: b.id, Delta: content})
-	}
-}
-
-// flushNow 流结束前同步清空缓冲，done/error 随后发出，保证内容完整先于终态。
-func (b *aiChunkBatcher) flushNow() {
-	b.mu.Lock()
-	if b.timer != nil {
-		b.timer.Stop()
-		b.timer = nil
-	}
-	b.mu.Unlock()
-	b.flush()
-}
 
 type aiStreamEntry struct {
 	cancel   context.CancelCauseFunc
@@ -68,17 +19,11 @@ var aiStreams = struct {
 	entries map[string]*aiStreamEntry
 }{entries: make(map[string]*aiStreamEntry)}
 
-type aiProviderKind int
-
-const (
-	aiProviderOpenAI aiProviderKind = iota
-	aiProviderAnthropic
-	// OpenAI Responses API（/v1/responses）：input/tools/SSE 事件形状都与
-	// chat/completions 不同，单独一套构造与解码，见 aiBuildResponsesBody /
-	// streamResponsesSSE。认证仍走 Bearer，与 OpenAI 兼容端点一致。
-	aiProviderResponses
-)
-
-// AISendChat 启动一轮流式对话。立即返回后由 goroutine 通过 ai-* 事件推送：
-// ai-chunk / ai-think / ai-toolcall / ai-done / ai-error。同一 sessionId 的新请求
-// 会先取消旧请求；AIStop 按 sessionId 前缀取消（前端传 session.id#round）。
+// attachAIStreamWatchdog 把空闲看门狗挂到会话的流条目上（transport 在流开始时回调）。
+func attachAIStreamWatchdog(id string, watchdog *time.Timer) {
+	aiStreams.Lock()
+	if entry := aiStreams.entries[id]; entry != nil {
+		entry.watchdog = watchdog
+	}
+	aiStreams.Unlock()
+}

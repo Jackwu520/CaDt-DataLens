@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"datalens/internal/aitransport"
 )
 
 func TestAIUsageEndpointFor(t *testing.T) {
@@ -72,7 +74,7 @@ func TestAIUsageQueryDeepSeek(t *testing.T) {
 		`{"is_available":true,"balance_infos":[{"currency":"CNY","total_balance":"110.00","granted_balance":"2.00","topped_up_balance":"108.00"}]}`,
 		&gotAuth)
 	withTestUsageEndpoint(t, server, "/user/balance")
-	cfg := AIConfig{BaseURL: "https://deepseek.test/v1", APIKey: "sk-test"}
+	cfg := aitransport.Config{BaseURL: "https://deepseek.test/v1", APIKey: "sk-test"}
 	result := aiUsageQuery(cfg)
 	if !result.Supported || result.Error != "" {
 		t.Fatalf("query error = %q", result.Error)
@@ -128,26 +130,26 @@ func TestAIUsageQuerySiliconFlowParse(t *testing.T) {
 
 func TestAIUsageQueryErrors(t *testing.T) {
 	// 不支持的服务商
-	result := aiUsageQuery(AIConfig{BaseURL: "https://api.example.com/v1", APIKey: "k"})
+	result := aiUsageQuery(aitransport.Config{BaseURL: "https://api.example.com/v1", APIKey: "k"})
 	if result.Supported {
 		t.Fatalf("不支持的服务商应返回 Supported=false")
 	}
 	// 缺少 Key
-	result = aiUsageQuery(AIConfig{BaseURL: "https://api.deepseek.com", APIKey: ""})
+	result = aiUsageQuery(aitransport.Config{BaseURL: "https://api.deepseek.com", APIKey: ""})
 	if !result.Supported || result.Error == "" {
 		t.Fatalf("缺少 Key 应返回提示，得到 %+v", result)
 	}
 	// HTTP 错误码
 	server := aiUsageMockServer(t, http.StatusUnauthorized, "/user/balance", `{"error":{"message":"invalid key"}}`, nil)
 	withTestUsageEndpoint(t, server, "/user/balance")
-	result = aiUsageQuery(AIConfig{BaseURL: "https://deepseek.test", APIKey: "bad"})
+	result = aiUsageQuery(aitransport.Config{BaseURL: "https://deepseek.test", APIKey: "bad"})
 	if !result.Supported || !strings.Contains(result.Error, "HTTP 401") {
 		t.Fatalf("401 应进入 Error，得到 %+v", result)
 	}
 	// 响应缺字段
 	server2 := aiUsageMockServer(t, http.StatusOK, "/user/balance", `{"is_available":true}`, nil)
 	withTestUsageEndpoint(t, server2, "/user/balance")
-	result = aiUsageQuery(AIConfig{BaseURL: "https://deepseek.test", APIKey: "k"})
+	result = aiUsageQuery(aitransport.Config{BaseURL: "https://deepseek.test", APIKey: "k"})
 	if !strings.Contains(result.Error, "balance_infos") {
 		t.Fatalf("缺字段应报解析错误，得到 %+v", result)
 	}

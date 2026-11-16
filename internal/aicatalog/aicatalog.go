@@ -1,4 +1,6 @@
-package main
+// Package aicatalog：模型配置表的远端拉取、校验与 appdata 缓存读写。
+// 字段归一与合并规则在前端 model-catalog.js（单一来源），Go 侧只搬原始文本。
+package aicatalog
 
 import (
 	"context"
@@ -25,60 +27,55 @@ const modelCatalogFileMax = 2 << 20
 // 但保留环境变量代理，跟随系统。
 var modelCatalogHTTPClient = &http.Client{Timeout: 15 * time.Second}
 
-// ModelCatalogBlob 是前后端之间搬的原始文本：Text 为 catalog.json 原文，
+// Blob 是前后端之间搬的原始文本：Text 为 catalog.json 原文，
 // FetchedAt 是缓存落盘时间（Unix 秒，0 = 从未同步）。
-type ModelCatalogBlob struct {
+type Blob struct {
 	Text      string `json:"text"`
 	FetchedAt int64  `json:"fetchedAt"`
 }
 
-func modelCatalogFilePath() string {
-	root := appDataRoot()
+// 宿主注入（main 包的根壳在 init 中接线）。
+var (
+	// AppDataDir 应用数据根目录（main/appdata.go 的 appDataRoot）。
+	AppDataDir func() string
+	// Version 应用版本，用于 User-Agent（main/app_core.go 的 appVersion）。
+	Version = ""
+)
+
+func Path() string {
+	if AppDataDir == nil {
+		return ""
+	}
+	root := AppDataDir()
 	if root == "" {
 		return ""
 	}
 	return filepath.Join(root, "model-catalog.json")
 }
 
-// AIModelCatalogCached 读缓存；没有缓存返回空 blob（不是错误——内置表兜底）。
-func (a *App) AIModelCatalogCached() (*ModelCatalogBlob, error) {
-	return readModelCatalogFile(modelCatalogFilePath())
-}
-
-// AIModelCatalogSync 拉取远端表：校验通过才落盘，失败时旧缓存原样保留。
-func (a *App) AIModelCatalogSync(rawURL string) (*ModelCatalogBlob, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	text, err := fetchModelCatalog(ctx, rawURL)
-	if err != nil {
-		return nil, err
-	}
-	return writeModelCatalogFile(modelCatalogFilePath(), text)
-}
-
 // 缓存读写单独抽出来（路径入参），测试用 t.TempDir() 隔离，不碰真实 appdata。
-func readModelCatalogFile(path string) (*ModelCatalogBlob, error) {
+func readFile(path string) (*Blob, error) {
 	if path == "" {
 		return nil, errors.New("无法定位应用数据目录")
 	}
 	info, err := os.Stat(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return &ModelCatalogBlob{}, nil
+			return &Blob{}, nil
 		}
 		return nil, err
 	}
 	if info.Size() > modelCatalogFileMax {
-		return &ModelCatalogBlob{}, nil
+		return &Blob{}, nil
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	return &ModelCatalogBlob{Text: string(raw), FetchedAt: info.ModTime().Unix()}, nil
+	return &Blob{Text: string(raw), FetchedAt: info.ModTime().Unix()}, nil
 }
 
-func writeModelCatalogFile(path, text string) (*ModelCatalogBlob, error) {
+func writeFile(path, text string) (*Blob, error) {
 	if path == "" {
 		return nil, errors.New("无法定位应用数据目录")
 	}
@@ -89,11 +86,11 @@ func writeModelCatalogFile(path, text string) (*ModelCatalogBlob, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &ModelCatalogBlob{Text: text, FetchedAt: info.ModTime().Unix()}, nil
+	return &Blob{Text: text, FetchedAt: info.ModTime().Unix()}, nil
 }
 
-// fetchModelCatalog 只接受 http/https（挡掉 file:// 之类把本地文件读成「配置表」的玩法）。
-func fetchModelCatalog(ctx context.Context, rawURL string) (string, error) {
+// fetch 只接受 http/https（挡掉 file:// 之类把本地文件读成「配置表」的玩法）。
+func fetch(ctx context.Context, rawURL string) (string, error) {
 	addr := strings.TrimSpace(rawURL)
 	if addr == "" {
 		return "", errors.New("同步地址为空")
@@ -113,7 +110,7 @@ func fetchModelCatalog(ctx context.Context, rawURL string) (string, error) {
 		return "", err
 	}
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "CaDt-DataLens/"+appVersion)
+	req.Header.Set("User-Agent", "CaDt-DataLens/"+Version)
 	res, err := modelCatalogHTTPClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("拉取失败：%v", err)
@@ -131,16 +128,16 @@ func fetchModelCatalog(ctx context.Context, rawURL string) (string, error) {
 		return "", fmt.Errorf("配置表超过 %d KB", modelCatalogFileMax/1024)
 	}
 	text := string(body)
-	if err := validateModelCatalog(text); err != nil {
+	if err := validate(text); err != nil {
 		return "", err
 	}
 	return text, nil
 }
 
-// validateModelCatalog 只做「别把 HTML 错误页当配置表存下来」这一级校验：
+// validate 只做「别把 HTML 错误页当配置表存下来」这一级校验：
 // 必须是 JSON 对象、models 为非空数组、至少一条带非空 id。
 // 字段级归一交给前端，那边有一套和运行时一致的 clamp。
-func validateModelCatalog(text string) error {
+func validate(text string) error {
 	var probe struct {
 		Version string            `json:"version"`
 		Models  []json.RawMessage `json:"models"`
@@ -161,4 +158,18 @@ func validateModelCatalog(text string) error {
 		}
 	}
 	return errors.New("配置表里没有带 id 的模型条目")
+}
+
+// Cached 读缓存；没有缓存返回空 blob（不是错误——内置表兜底）。
+func Cached() (*Blob, error) {
+	return readFile(Path())
+}
+
+// Sync 拉取远端表：校验通过才落盘，失败时旧缓存原样保留。
+func Sync(ctx context.Context, rawURL string) (*Blob, error) {
+	text, err := fetch(ctx, rawURL)
+	if err != nil {
+		return nil, err
+	}
+	return writeFile(Path(), text)
 }

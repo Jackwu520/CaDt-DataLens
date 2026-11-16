@@ -1,4 +1,4 @@
-package main
+package aitransport
 
 import (
 	"testing"
@@ -18,8 +18,8 @@ func TestAIOpenAIBodyThinkingOff(t *testing.T) {
 		{"QwQ-32B", "enable_thinking", false},
 	}
 	for _, c := range cases {
-		cfg := AIConfig{Provider: "openai", Model: c.model, Temperature: 0, MaxTokens: 512, Thinking: false}
-		body, err := aiBuildOpenAIBody(cfg, []AIMessage{{Role: "user", Content: "q"}}, nil)
+		cfg := Config{Provider: "openai", Model: c.model, Temperature: 0, MaxTokens: 512, Thinking: false}
+		body, err := aiBuildOpenAIBody(cfg, []Message{{Role: "user", Content: "q"}}, nil)
 		if err != nil {
 			t.Fatalf("%s: aiBuildOpenAIBody: %v", c.model, err)
 		}
@@ -38,8 +38,8 @@ func TestAIOpenAIBodyThinkingOff(t *testing.T) {
 	}
 	// 非思考系模型：不下发未知参数
 	for _, model := range []string{"deepseek-chat", "deepseek-flash", "gpt-4o-mini"} {
-		cfg := AIConfig{Provider: "openai", Model: model, Temperature: 0, MaxTokens: 100, Thinking: false}
-		body, err := aiBuildOpenAIBody(cfg, []AIMessage{{Role: "user", Content: "q"}}, nil)
+		cfg := Config{Provider: "openai", Model: model, Temperature: 0, MaxTokens: 100, Thinking: false}
+		body, err := aiBuildOpenAIBody(cfg, []Message{{Role: "user", Content: "q"}}, nil)
 		if err != nil {
 			t.Fatalf("%s: aiBuildOpenAIBody: %v", model, err)
 		}
@@ -51,8 +51,8 @@ func TestAIOpenAIBodyThinkingOff(t *testing.T) {
 		}
 	}
 	// Thinking=true：不下发关闭参数
-	cfg := AIConfig{Provider: "openai", Model: "glm-4-flash", Temperature: 0, MaxTokens: 100, Thinking: true}
-	body, err := aiBuildOpenAIBody(cfg, []AIMessage{{Role: "user", Content: "q"}}, nil)
+	cfg := Config{Provider: "openai", Model: "glm-4-flash", Temperature: 0, MaxTokens: 100, Thinking: true}
+	body, err := aiBuildOpenAIBody(cfg, []Message{{Role: "user", Content: "q"}}, nil)
 	if err != nil {
 		t.Fatalf("aiBuildOpenAIBody: %v", err)
 	}

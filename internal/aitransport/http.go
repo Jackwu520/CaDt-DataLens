@@ -1,4 +1,4 @@
-package main
+package aitransport
 
 // AI 请求构建：双协议（OpenAI 兼容 / Anthropic）的 URL、请求头、请求体与重试策略。
 
@@ -19,16 +19,14 @@ import (
 	"time"
 )
 
-func aiStreamResponse(ctx context.Context, cancel context.CancelCauseFunc, id string, cfg AIConfig, messages []AIMessage, tools []AIToolDef, emit aiEmitter, retryMax int) error {
-	watchdog := time.AfterFunc(aiIdleTimeout, func() { cancel(errAIIdleTimeout) })
+func StreamResponse(ctx context.Context, cancel context.CancelCauseFunc, id string, cfg Config, messages []Message, tools []ToolDef, emit Emitter, retryMax int) error {
+	watchdog := time.AfterFunc(IdleTimeout, func() { cancel(ErrIdleTimeout) })
 	defer watchdog.Stop()
-	touch := func() { watchdog.Reset(aiIdleTimeout) }
+	touch := func() { watchdog.Reset(IdleTimeout) }
 	// 登记到流条目：工具执行/用户输入等长时间无网络数据时，前端经 AITouchStream 重置看门狗。
-	aiStreams.Lock()
-	if entry := aiStreams.entries[id]; entry != nil {
-		entry.watchdog = watchdog
+	if AttachWatchdog != nil {
+		AttachWatchdog(id, watchdog)
 	}
-	aiStreams.Unlock()
 
 	// 参数型 400（如 max_tokens 超过模型上限）是确定性故障：按服务端给的上界
 	// 收敛后重试一次，不受 retryMax（只管 429/5xx/网络错误）影响，也绝不循环降档。
@@ -38,7 +36,7 @@ func aiStreamResponse(ctx context.Context, cancel context.CancelCauseFunc, id st
 		if err != nil {
 			return err
 		}
-		client, err := newAIHTTPClient(cfg)
+		client, err := NewHTTPClient(cfg)
 		if err != nil {
 			return err
 		}
@@ -55,8 +53,8 @@ func aiStreamResponse(ctx context.Context, cancel context.CancelCauseFunc, id st
 				return fmt.Errorf("请求 AI 接口失败：%w", err)
 			}
 			delay := aiRetryDelay(attempt, "", 0)
-			emit(aiEventRetry, aiRetryPayload{Id: id, Attempt: attempt + 1, Max: max, DelayMs: int(delay.Milliseconds()), Reason: "网络错误"})
-			writeAppLog("warn", "AI 请求失败，%s 后第 %d/%d 次重试：%v", delay.Round(time.Millisecond), attempt+1, max, err)
+			emit(EventRetry, RetryPayload{Id: id, Attempt: attempt + 1, Max: max, DelayMs: int(delay.Milliseconds()), Reason: "网络错误"})
+			logf("warn", "AI 请求失败，%s 后第 %d/%d 次重试：%v", delay.Round(time.Millisecond), attempt+1, max, err)
 			if !aiRetryWait(ctx, delay, touch) {
 				return fmt.Errorf("请求 AI 接口失败：%w", err)
 			}
@@ -74,8 +72,8 @@ func aiStreamResponse(ctx context.Context, cancel context.CancelCauseFunc, id st
 				return errors.New(aiStatusErrorBodyText(resp.StatusCode, body))
 			}
 			delay := aiRetryDelay(attempt, resp.Header.Get("Retry-After"), resp.StatusCode)
-			emit(aiEventRetry, aiRetryPayload{Id: id, Attempt: attempt + 1, Max: max, DelayMs: int(delay.Milliseconds()), Reason: reason})
-			writeAppLog("warn", "AI 接口返回 %d，%s 后第 %d/%d 次重试", resp.StatusCode, delay.Round(time.Millisecond), attempt+1, max)
+			emit(EventRetry, RetryPayload{Id: id, Attempt: attempt + 1, Max: max, DelayMs: int(delay.Milliseconds()), Reason: reason})
+			logf("warn", "AI 接口返回 %d，%s 后第 %d/%d 次重试", resp.StatusCode, delay.Round(time.Millisecond), attempt+1, max)
 			if !aiRetryWait(ctx, delay, touch) {
 				return errors.New(aiStatusErrorBodyText(resp.StatusCode, body))
 			}
@@ -89,19 +87,19 @@ func aiStreamResponse(ctx context.Context, cancel context.CancelCauseFunc, id st
 			client.CloseIdleConnections()
 			var dumpPayload map[string]any
 			var dumpErr error
-			switch aiProviderOf(cfg) {
-			case aiProviderAnthropic:
+			switch ProviderOf(cfg) {
+			case ProviderAnthropic:
 				dumpPayload, dumpErr = aiBuildAnthropicBody(cfg, messages, tools)
-			case aiProviderResponses:
+			case ProviderResponses:
 				dumpPayload, dumpErr = aiBuildResponsesBody(cfg, messages, tools)
 			default:
 				dumpPayload, dumpErr = aiBuildOpenAIBody(cfg, messages, tools)
 			}
 			if dumpErr == nil {
 				if bodyBytes, merr := json.Marshal(dumpPayload); merr == nil {
-					dumpPath := filepath.Join(appLogsDir(), fmt.Sprintf("ai-last-4xx-request-%d.json", time.Now().UnixMilli()))
+					dumpPath := filepath.Join(logsDir(), fmt.Sprintf("ai-last-4xx-request-%d.json", time.Now().UnixMilli()))
 					_ = os.WriteFile(dumpPath, bodyBytes, 0o600)
-					writeAppLog("info", "AI 4xx 请求体转储：%s（messages=%d tools=%d）", dumpPath, len(messages), len(tools))
+					logf("info", "AI 4xx 请求体转储：%s（messages=%d tools=%d）", dumpPath, len(messages), len(tools))
 				}
 			}
 			// 参数型 400/422：服务端把允许范围写回错误体时，按上界收敛 max_tokens 再试一次。
@@ -110,7 +108,7 @@ func aiStreamResponse(ctx context.Context, cancel context.CancelCauseFunc, id st
 			if !maxTokensAdjusted && (resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusUnprocessableEntity) {
 				if limit := aiMaxTokensLimitFromError(errBody); limit > 0 {
 					previous := cfg.MaxTokens
-					if previous <= 0 && aiProviderOf(cfg) == aiProviderAnthropic {
+					if previous <= 0 && ProviderOf(cfg) == ProviderAnthropic {
 						previous = aiDefaultMaxTokens // Anthropic 请求体总会补上默认输出窗口
 					}
 					if previous > limit {
@@ -118,11 +116,11 @@ func aiStreamResponse(ctx context.Context, cancel context.CancelCauseFunc, id st
 						maxTokensAdjusted = true
 						message := fmt.Sprintf("模型 %s 的最大输出 %d 超过服务端上限 %d，已自动降为 %d 并重试",
 							cfg.Model, previous, limit, limit)
-						emit(aiEventParamAdjust, aiParamAdjustPayload{
+						emit(EventParamAdjust, ParamAdjustPayload{
 							Id: id, Model: cfg.Model, Field: "maxTokens",
 							Previous: previous, Value: limit, Message: message,
 						})
-						writeAppLog("warn", "AI 参数自动降档：%s", message)
+						logf("warn", "AI 参数自动降档：%s", message)
 						touch()
 						continue
 					}
@@ -144,23 +142,23 @@ func aiStreamResponse(ctx context.Context, cancel context.CancelCauseFunc, id st
 		defer batcher.flushNow()
 		wrapped := func(event string, payload any) {
 			switch event {
-			case aiEventThink, aiEventChunk:
-				if p, ok := payload.(aiChunkPayload); ok {
+			case EventThink, EventChunk:
+				if p, ok := payload.(ChunkPayload); ok {
 					batcher.add(event, p.Delta)
 					return
 				}
 				emit(event, payload)
-			case aiEventDone, aiEventError:
+			case EventDone, EventError:
 				batcher.flushNow()
 				emit(event, payload)
 			default:
 				emit(event, payload)
 			}
 		}
-		switch aiProviderOf(cfg) {
-		case aiProviderAnthropic:
+		switch ProviderOf(cfg) {
+		case ProviderAnthropic:
 			return streamAnthropicSSE(resp.Body, id, wrapped, touch)
-		case aiProviderResponses:
+		case ProviderResponses:
 			return streamResponsesSSE(resp.Body, id, wrapped, touch)
 		default:
 			return streamOpenAISSE(resp.Body, id, wrapped, touch)
@@ -290,8 +288,8 @@ func aiMaxTokensLimitFromError(body []byte) int {
 	return high
 }
 
-func aiBuildChatRequest(ctx context.Context, cfg AIConfig, messages []AIMessage, tools []AIToolDef) (*http.Request, error) {
-	provider := aiProviderOf(cfg)
+func aiBuildChatRequest(ctx context.Context, cfg Config, messages []Message, tools []ToolDef) (*http.Request, error) {
+	provider := ProviderOf(cfg)
 	base := strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/")
 
 	var (
@@ -300,10 +298,10 @@ func aiBuildChatRequest(ctx context.Context, cfg AIConfig, messages []AIMessage,
 		err      error
 	)
 	switch provider {
-	case aiProviderAnthropic:
-		endpoint = aiAnthropicMessagesURL(base)
+	case ProviderAnthropic:
+		endpoint = AnthropicMessagesURL(base)
 		payload, err = aiBuildAnthropicBody(cfg, messages, tools)
-	case aiProviderResponses:
+	case ProviderResponses:
 		endpoint = aiResponsesURL(base)
 		payload, err = aiBuildResponsesBody(cfg, messages, tools)
 	default:
@@ -324,7 +322,7 @@ func aiBuildChatRequest(ctx context.Context, cfg AIConfig, messages []AIMessage,
 	if err != nil {
 		return nil, fmt.Errorf("请求地址无效：%w", err)
 	}
-	if err := aiApplyHeaders(req, cfg, provider, true); err != nil {
+	if err := ApplyHeaders(req, cfg, provider, true); err != nil {
 		return nil, err
 	}
 	return req, nil
@@ -337,7 +335,7 @@ func aiOpenAIChatURL(base string) string {
 	return base + "/chat/completions"
 }
 
-func aiAnthropicMessagesURL(base string) string {
+func AnthropicMessagesURL(base string) string {
 	if strings.HasSuffix(base, "/messages") {
 		return base
 	}
@@ -366,15 +364,15 @@ func aiResponsesURL(base string) string {
 	return base + "/responses"
 }
 
-func aiApplyHeaders(req *http.Request, cfg AIConfig, provider aiProviderKind, stream bool) error {
+func ApplyHeaders(req *http.Request, cfg Config, provider ProviderKind, stream bool) error {
 	req.Header.Set("Content-Type", "application/json")
 	if stream {
 		req.Header.Set("Accept", "text/event-stream")
 	} else {
 		req.Header.Set("Accept", "application/json")
 	}
-	req.Header.Set("User-Agent", "CaDt-DataLens/"+strings.TrimPrefix(appVersion, "v")+" AI")
-	if provider == aiProviderAnthropic {
+	req.Header.Set("User-Agent", "CaDt-DataLens/"+strings.TrimPrefix(Version, "v")+" AI")
+	if provider == ProviderAnthropic {
 		if key := strings.TrimSpace(cfg.APIKey); key != "" {
 			req.Header.Set("x-api-key", key)
 		}
@@ -387,7 +385,7 @@ func aiApplyHeaders(req *http.Request, cfg AIConfig, provider aiProviderKind, st
 		if name == "" {
 			continue
 		}
-		if aiForbiddenHeader(name) {
+		if ForbiddenHeader(name) {
 			return fmt.Errorf("不允许自定义请求头：%s", name)
 		}
 		if strings.ContainsAny(name, "\r\n") || strings.ContainsAny(value, "\r\n") {
@@ -398,7 +396,7 @@ func aiApplyHeaders(req *http.Request, cfg AIConfig, provider aiProviderKind, st
 	return nil
 }
 
-func aiForbiddenHeader(name string) bool {
+func ForbiddenHeader(name string) bool {
 	switch strings.ToLower(strings.TrimSpace(name)) {
 	case "host", "content-length", "transfer-encoding", "connection",
 		"proxy-connection", "upgrade", "te", "trailer":
@@ -423,7 +421,7 @@ func aiApplyBodyPatch(body, patch map[string]any) {
 	body["stream"] = true
 }
 
-func aiBuildOpenAIBody(cfg AIConfig, messages []AIMessage, tools []AIToolDef) (map[string]any, error) {
+func aiBuildOpenAIBody(cfg Config, messages []Message, tools []ToolDef) (map[string]any, error) {
 	passReasoning := strings.Contains(strings.ToLower(cfg.Model), "deepseek")
 	converted, err := aiOpenAIMessages(messages, passReasoning)
 	if err != nil {
@@ -493,7 +491,7 @@ func claudeRejectsFixedThinkingBudget(model string) bool {
 // aiBuildResponsesInput 把内部消息映射成 Responses 的 input 数组：
 // system → instructions（合并）、tool → function_call_output、assistant 工具调用 →
 // function_call；普通文本用 input_text / output_text 部件，图片用 input_image。
-func aiBuildResponsesInput(messages []AIMessage) ([]any, string) {
+func aiBuildResponsesInput(messages []Message) ([]any, string) {
 	input := make([]any, 0, len(messages))
 	var instructions []string
 	for _, m := range messages {
@@ -541,7 +539,7 @@ func aiBuildResponsesInput(messages []AIMessage) ([]any, string) {
 
 // Responses 的 function tool 是扁平的（name/description/parameters 在顶层），
 // 与 chat/completions 的 {type, function:{…}} 不同。
-func aiResponsesTools(tools []AIToolDef) []any {
+func aiResponsesTools(tools []ToolDef) []any {
 	out := make([]any, 0, len(tools))
 	for _, tool := range tools {
 		params := json.RawMessage(tool.Parameters)
@@ -555,7 +553,7 @@ func aiResponsesTools(tools []AIToolDef) []any {
 	return out
 }
 
-func aiBuildResponsesBody(cfg AIConfig, messages []AIMessage, tools []AIToolDef) (map[string]any, error) {
+func aiBuildResponsesBody(cfg Config, messages []Message, tools []ToolDef) (map[string]any, error) {
 	input, instructions := aiBuildResponsesInput(messages)
 	maxTokens := cfg.MaxTokens
 	if maxTokens <= 0 {
@@ -580,7 +578,7 @@ func aiBuildResponsesBody(cfg AIConfig, messages []AIMessage, tools []AIToolDef)
 	return body, nil
 }
 
-func aiBuildAnthropicBody(cfg AIConfig, messages []AIMessage, tools []AIToolDef) (map[string]any, error) {
+func aiBuildAnthropicBody(cfg Config, messages []Message, tools []ToolDef) (map[string]any, error) {
 	system, converted, err := aiAnthropicMessages(messages, cfg.Thinking)
 	if err != nil {
 		return nil, err
@@ -619,7 +617,7 @@ func aiBuildAnthropicBody(cfg AIConfig, messages []AIMessage, tools []AIToolDef)
 	return body, nil
 }
 
-func aiOpenAIMessages(messages []AIMessage, passReasoning bool) ([]map[string]any, error) {
+func aiOpenAIMessages(messages []Message, passReasoning bool) ([]map[string]any, error) {
 	out := make([]map[string]any, 0, len(messages))
 	for i, m := range messages {
 		role := strings.ToLower(strings.TrimSpace(m.Role))
@@ -689,7 +687,7 @@ func aiOpenAIMessages(messages []AIMessage, passReasoning bool) ([]map[string]an
 	return out, nil
 }
 
-func aiAnthropicMessages(messages []AIMessage, includeThinking bool) (string, []map[string]any, error) {
+func aiAnthropicMessages(messages []Message, includeThinking bool) (string, []map[string]any, error) {
 	var systemParts []string
 	out := make([]map[string]any, 0, len(messages))
 
@@ -785,7 +783,7 @@ func aiAppendAnthropicTurn(out *[]map[string]any, role string, blocks []any) {
 	*out = append(*out, map[string]any{"role": role, "content": blocks})
 }
 
-func aiOpenAITools(tools []AIToolDef) []map[string]any {
+func aiOpenAITools(tools []ToolDef) []map[string]any {
 	out := make([]map[string]any, 0, len(tools))
 	for _, tool := range tools {
 		schema, err := aiToolSchema(tool)
@@ -804,7 +802,7 @@ func aiOpenAITools(tools []AIToolDef) []map[string]any {
 	return out
 }
 
-func aiAnthropicTools(tools []AIToolDef) []map[string]any {
+func aiAnthropicTools(tools []ToolDef) []map[string]any {
 	out := make([]map[string]any, 0, len(tools))
 	for _, tool := range tools {
 		schema, err := aiToolSchema(tool)

@@ -12,6 +12,7 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
+	"datalens/internal/aitimer"
 	"datalens/internal/mcp"
 	"datalens/internal/sqlview"
 )
@@ -33,7 +34,7 @@ type App struct {
 	forceClose          bool
 	aiRunning           bool
 	aiTimersMu          sync.Mutex
-	aiTimers            *aiTimerRegistry
+	aiTimers            *aitimer.Registry
 	muMCP               sync.Mutex
 	mcp                 *mcp.Manager
 	watchMu             sync.Mutex

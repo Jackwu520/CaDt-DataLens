@@ -1,4 +1,4 @@
-package main
+package aitransport
 
 // AI 流式解析与传输：OpenAI/Anthropic SSE 解码、状态错误文本、HTTP 客户端与代理。
 
@@ -17,7 +17,7 @@ import (
 	"time"
 )
 
-func streamOpenAISSE(body io.Reader, id string, emit aiEmitter, touch func()) error {
+func streamOpenAISSE(body io.Reader, id string, emit Emitter, touch func()) error {
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 64<<10), 4<<20)
 
@@ -29,11 +29,11 @@ func streamOpenAISSE(body io.Reader, id string, emit aiEmitter, touch func()) er
 			return
 		}
 		doneSent = true
-		payload := aiDonePayload{Id: id, FinishReason: finishReason}
+		payload := DonePayload{Id: id, FinishReason: finishReason}
 		if usage.TotalTokens > 0 || usage.PromptTokens > 0 || usage.CompletionTokens > 0 || usage.CachedTokens > 0 || usage.CacheWriteTokens > 0 {
 			payload.Usage = &usage
 		}
-		emit(aiEventDone, payload)
+		emit(EventDone, payload)
 	}
 
 	for scanner.Scan() {
@@ -74,13 +74,13 @@ func streamOpenAISSE(body io.Reader, id string, emit aiEmitter, touch func()) er
 			// DeepSeek/Qwen/GLM 系用 reasoning_content，OpenRouter 归一为 reasoning。
 			// 注意：推理流的分块边界常带空格/换行，不能 TrimSpace，否则英文思考链会粘连。
 			if text := delta.ReasoningContent; text != "" {
-				emit(aiEventThink, aiChunkPayload{Id: id, Delta: text})
+				emit(EventThink, ChunkPayload{Id: id, Delta: text})
 			}
 			if text := delta.Reasoning; text != "" {
-				emit(aiEventThink, aiChunkPayload{Id: id, Delta: text})
+				emit(EventThink, ChunkPayload{Id: id, Delta: text})
 			}
 			for _, call := range delta.ToolCalls {
-				emit(aiEventToolCall, aiToolCallPayload{
+				emit(EventToolCall, ToolCallPayload{
 					Id:        id,
 					Index:     call.Index,
 					CallId:    call.Id,
@@ -89,7 +89,7 @@ func streamOpenAISSE(body io.Reader, id string, emit aiEmitter, touch func()) er
 				})
 			}
 			if delta.Content != "" {
-				emit(aiEventChunk, aiChunkPayload{Id: id, Delta: delta.Content})
+				emit(EventChunk, ChunkPayload{Id: id, Delta: delta.Content})
 			}
 			if choice.FinishReason != nil && *choice.FinishReason != "" {
 				finishReason = aiFinishReason(*choice.FinishReason)
@@ -146,7 +146,7 @@ func responsesEventError(ev responsesStreamEvent) string {
 // streamResponsesSSE 把 Responses 事件流归一成现有的 ai-chunk / ai-think /
 // ai-toolcall / ai-done。工具调用取 output_item.done 里的完整 function_call
 // （arguments 已完整，无需拼接 function_call_arguments.delta）。
-func streamResponsesSSE(body io.Reader, id string, emit aiEmitter, touch func()) error {
+func streamResponsesSSE(body io.Reader, id string, emit Emitter, touch func()) error {
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 64<<10), 4<<20)
 
@@ -159,11 +159,11 @@ func streamResponsesSSE(body io.Reader, id string, emit aiEmitter, touch func())
 			return
 		}
 		doneSent = true
-		payload := aiDonePayload{Id: id, FinishReason: finishReason}
+		payload := DonePayload{Id: id, FinishReason: finishReason}
 		if usage.TotalTokens > 0 || usage.PromptTokens > 0 || usage.CompletionTokens > 0 || usage.CachedTokens > 0 {
 			payload.Usage = &usage
 		}
-		emit(aiEventDone, payload)
+		emit(EventDone, payload)
 	}
 
 	for scanner.Scan() {
@@ -190,11 +190,11 @@ func streamResponsesSSE(body io.Reader, id string, emit aiEmitter, touch func())
 		switch ev.Type {
 		case "response.output_text.delta", "response.refusal.delta":
 			if ev.Delta != "" {
-				emit(aiEventChunk, aiChunkPayload{Id: id, Delta: ev.Delta})
+				emit(EventChunk, ChunkPayload{Id: id, Delta: ev.Delta})
 			}
 		case "response.reasoning_text.delta":
 			if ev.Delta != "" {
-				emit(aiEventThink, aiChunkPayload{Id: id, Delta: ev.Delta})
+				emit(EventThink, ChunkPayload{Id: id, Delta: ev.Delta})
 			}
 		case "response.output_item.done":
 			item := ev.Item
@@ -205,7 +205,7 @@ func streamResponsesSSE(body io.Reader, id string, emit aiEmitter, touch func())
 			if callId == "" {
 				callId = fmt.Sprintf("responses-call-%d", toolIndex)
 			}
-			emit(aiEventToolCall, aiToolCallPayload{
+			emit(EventToolCall, ToolCallPayload{
 				Id: id, Index: toolIndex, CallId: callId, Name: item.Name, ArgsDelta: item.Arguments,
 			})
 			toolIndex++
@@ -238,7 +238,7 @@ func streamResponsesSSE(body io.Reader, id string, emit aiEmitter, touch func())
 	return nil
 }
 
-func streamAnthropicSSE(body io.Reader, id string, emit aiEmitter, touch func()) error {
+func streamAnthropicSSE(body io.Reader, id string, emit Emitter, touch func()) error {
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 64<<10), 4<<20)
 
@@ -254,7 +254,7 @@ func streamAnthropicSSE(body io.Reader, id string, emit aiEmitter, touch func())
 			return
 		}
 		doneSent = true
-		payload := aiDonePayload{
+		payload := DonePayload{
 			Id:                id,
 			FinishReason:      finishReason,
 			ThinkingSignature: signature.String(),
@@ -262,7 +262,7 @@ func streamAnthropicSSE(body io.Reader, id string, emit aiEmitter, touch func())
 		if usage.TotalTokens > 0 || usage.PromptTokens > 0 || usage.CompletionTokens > 0 || usage.CachedTokens > 0 || usage.CacheWriteTokens > 0 {
 			payload.Usage = &usage
 		}
-		emit(aiEventDone, payload)
+		emit(EventDone, payload)
 	}
 
 	dispatch := func(event, data string) error {
@@ -289,17 +289,17 @@ func streamAnthropicSSE(body io.Reader, id string, emit aiEmitter, touch func())
 				switch block.Type {
 				case "text":
 					if block.Text != "" {
-						emit(aiEventChunk, aiChunkPayload{Id: id, Delta: block.Text})
+						emit(EventChunk, ChunkPayload{Id: id, Delta: block.Text})
 					}
 				case "thinking":
 					if block.Thinking != "" {
-						emit(aiEventThink, aiChunkPayload{Id: id, Delta: block.Thinking})
+						emit(EventThink, ChunkPayload{Id: id, Delta: block.Thinking})
 					}
 					if block.Signature != "" {
 						signature.WriteString(block.Signature)
 					}
 				case "tool_use":
-					emit(aiEventToolCall, aiToolCallPayload{
+					emit(EventToolCall, ToolCallPayload{
 						Id:     id,
 						Index:  envelope.Index,
 						CallId: block.Id,
@@ -310,16 +310,16 @@ func streamAnthropicSSE(body io.Reader, id string, emit aiEmitter, touch func())
 		case "content_block_delta":
 			if delta := envelope.Delta; delta != nil {
 				if delta.Text != "" {
-					emit(aiEventChunk, aiChunkPayload{Id: id, Delta: delta.Text})
+					emit(EventChunk, ChunkPayload{Id: id, Delta: delta.Text})
 				}
 				if delta.Thinking != "" {
-					emit(aiEventThink, aiChunkPayload{Id: id, Delta: delta.Thinking})
+					emit(EventThink, ChunkPayload{Id: id, Delta: delta.Thinking})
 				}
 				if delta.Signature != "" {
 					signature.WriteString(delta.Signature)
 				}
 				if delta.PartialJson != "" {
-					emit(aiEventToolCall, aiToolCallPayload{
+					emit(EventToolCall, ToolCallPayload{
 						Id:        id,
 						Index:     envelope.Index,
 						ArgsDelta: delta.PartialJson,
@@ -406,7 +406,7 @@ func aiFinishReason(reason string) string {
 	}
 }
 
-func aiStatusErrorText(resp *http.Response) string {
+func StatusErrorText(resp *http.Response) string {
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, aiErrorBodyLimit))
 	text := strings.TrimSpace(string(body))
 	var envelope struct {
@@ -427,7 +427,7 @@ func aiStatusErrorText(resp *http.Response) string {
 	return fmt.Sprintf("AI 接口返回 HTTP %d：%s", resp.StatusCode, text)
 }
 
-func aiBaseHost(baseURL string) string {
+func BaseHost(baseURL string) string {
 	u, err := url.Parse(strings.TrimSpace(baseURL))
 	if err != nil {
 		return ""
@@ -435,7 +435,7 @@ func aiBaseHost(baseURL string) string {
 	return u.Host
 }
 
-func newAIHTTPClient(cfg AIConfig) (*http.Client, error) {
+func NewHTTPClient(cfg Config) (*http.Client, error) {
 	proxy, err := aiProxyFunc(cfg.Proxy)
 	if err != nil {
 		return nil, err
@@ -455,7 +455,7 @@ func newAIHTTPClient(cfg AIConfig) (*http.Client, error) {
 func aiProxyFunc(mode string) (func(*http.Request) (*url.URL, error), error) {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
 	case "", "system":
-		return systemAIProxy(), nil
+		return SystemProxy(), nil
 	case "direct", "none", "off":
 		return nil, nil
 	default:
@@ -582,13 +582,13 @@ func aiProxyBypassed(host, override string) bool {
 	return false
 }
 
-func listAIModels(client *http.Client, cfg AIConfig) ([]string, error) {
+func ListModels(client *http.Client, cfg Config) ([]string, error) {
 	base := strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/")
 	req, err := http.NewRequest(http.MethodGet, aiOpenAIModelsURL(base), nil)
 	if err != nil {
 		return nil, err
 	}
-	if err := aiApplyHeaders(req, cfg, aiProviderOpenAI, false); err != nil {
+	if err := ApplyHeaders(req, cfg, ProviderOpenAI, false); err != nil {
 		return nil, err
 	}
 	resp, err := client.Do(req)
@@ -597,7 +597,7 @@ func listAIModels(client *http.Client, cfg AIConfig) ([]string, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, errors.New(aiStatusErrorText(resp))
+		return nil, errors.New(StatusErrorText(resp))
 	}
 	var payload struct {
 		Data []struct {

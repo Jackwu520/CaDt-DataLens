@@ -16,6 +16,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"datalens/internal/aitransport"
 )
 
 const (
@@ -69,11 +71,11 @@ var aiUsageEndpoints = []aiUsageEndpoint{
 }
 
 // (a *App) AIUsageQuery 是 Wails 绑定入口；耗时操作放后台线程由 Wails 调度。
-func (a *App) AIUsageQuery(cfg AIConfig) AIUsageResult {
+func (a *App) AIUsageQuery(cfg aitransport.Config) AIUsageResult {
 	return aiUsageQuery(cfg)
 }
 
-func aiUsageQuery(cfg AIConfig) AIUsageResult {
+func aiUsageQuery(cfg aitransport.Config) AIUsageResult {
 	endpoint := aiUsageEndpointFor(cfg.BaseURL)
 	if endpoint == nil {
 		return AIUsageResult{Supported: false}
@@ -81,7 +83,7 @@ func aiUsageQuery(cfg AIConfig) AIUsageResult {
 	if strings.TrimSpace(cfg.APIKey) == "" {
 		return AIUsageResult{Supported: true, Provider: endpoint.name, Error: "API Key 未配置，请先在账号设置中填写"}
 	}
-	client, err := newAIHTTPClient(cfg)
+	client, err := aitransport.NewHTTPClient(cfg)
 	if err != nil {
 		return AIUsageResult{Supported: true, Provider: endpoint.name, Error: err.Error()}
 	}
@@ -119,7 +121,7 @@ func aiUsageQuery(cfg AIConfig) AIUsageResult {
 }
 
 func aiUsageEndpointFor(baseURL string) *aiUsageEndpoint {
-	host := strings.ToLower(aiBaseHost(baseURL))
+	host := strings.ToLower(aitransport.BaseHost(baseURL))
 	if host == "" {
 		return nil
 	}
@@ -146,8 +148,8 @@ func aiUsageOrigin(baseURL string) string {
 	return u.Scheme + "://" + u.Host
 }
 
-// aiApplyUsageHeaders 与 aiApplyHeaders 的鉴权/自定义头逻辑一致，但无流式语义。
-func aiApplyUsageHeaders(req *http.Request, cfg AIConfig) error {
+// aiApplyUsageHeaders 与 aitransport.ApplyHeaders 的鉴权/自定义头逻辑一致，但无流式语义。
+func aiApplyUsageHeaders(req *http.Request, cfg aitransport.Config) error {
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "CaDt-DataLens/"+strings.TrimPrefix(appVersion, "v")+" AI")
 	if key := strings.TrimSpace(cfg.APIKey); key != "" {
@@ -158,7 +160,7 @@ func aiApplyUsageHeaders(req *http.Request, cfg AIConfig) error {
 		if name == "" {
 			continue
 		}
-		if aiForbiddenHeader(name) {
+		if aitransport.ForbiddenHeader(name) {
 			return fmt.Errorf("不允许自定义请求头：%s", name)
 		}
 		if strings.ContainsAny(name, "\r\n") || strings.ContainsAny(value, "\r\n") {

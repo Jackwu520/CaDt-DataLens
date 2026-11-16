@@ -1,6 +1,6 @@
 //go:build !windows
 
-package main
+package aitransport
 
 import (
 	"net/http"
@@ -8,6 +8,6 @@ import (
 )
 
 // 非 Windows 平台没有统一的系统代理注册表，跟随环境变量。
-func systemAIProxy() func(*http.Request) (*url.URL, error) {
+func SystemProxy() func(*http.Request) (*url.URL, error) {
 	return http.ProxyFromEnvironment
 }

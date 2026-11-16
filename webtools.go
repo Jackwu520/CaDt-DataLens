@@ -21,6 +21,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"datalens/internal/aitransport"
 	"datalens/internal/chardec"
 )
 
@@ -189,7 +190,7 @@ func webClient() *http.Client {
 	return &http.Client{
 		Timeout: webRequestTimeout,
 		Transport: &http.Transport{
-			Proxy:                 systemAIProxy(),
+			Proxy:                 aitransport.SystemProxy(),
 			ForceAttemptHTTP2:     true,
 			TLSHandshakeTimeout:   10 * time.Second,
 			ResponseHeaderTimeout: 15 * time.Second,
