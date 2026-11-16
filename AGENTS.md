@@ -44,6 +44,7 @@ CaDt-DataLens 是一个面向 Windows 的轻量级多格式数据查看与编辑
 - `run_project_app.go` + `internal/runproject/`：项目感知运行（`DetectRunProject` 只读探测项目标记与候选命令，遇 `.git` / 用户主目录停止）；执行仍走 `RunExec`，确认在前端
 - `envvars_app.go` + `internal/envvars/`：环境变量配置（DPAPI 加密、子进程注入合并 `MergeEnv`；平台加解密对随包）
 - `webtools_app.go` + `webtools_config.go` + `internal/webtools/`：联网与外部工具——内置 Bing RSS 搜索 / 公网网页抓取，DeepSeek 工具 API 适配（搜索 / 抓取 / OCR / TTS / ASR，TTS 流式落盘 `.cadt/gen/tts/`，ASR 接受 20 MB 音频字节）；`webtools_config.go` 管 `<应用数据>/external-tools.json`（0600、apiKey 只掩码下发、空值保持）与五个能力来源配置；来源路由（含本地 MCP 转发）在前端 `executeTool`
+- `mcp_samples.go`：内置 MCP 示例——`//go:embed` 三份 `docs/mcp-samples` 脚本，按需释放到 `<应用数据>/builtin-mcp-samples/<版本>/` 并合并进 `mcp.json`（只启用示例工具、不覆盖同名服务器）；只内置脚本，不打包 Python / whisper 模型 / OCR 引擎；绑定 `MCPSamplesList` / `MCPInstallSample`
 - `ai_usage_app.go` + `internal/aiusage/`：AI 账号余额/用量查询
 - `app_dialogs.go` / `app_commands.go` / `app_preview_assets.go` / `app_debugconsole.go`：对话框、命令注册、预览资源、调试控制台
 - `*_test.go`：与同名源文件对应的单元测试
@@ -83,7 +84,7 @@ CaDt-DataLens 是一个面向 Windows 的轻量级多格式数据查看与编辑
 - `dist/`：构建产物，经 `go:embed` 编进 exe，**不要手改**
 
 ### `docs/`
-- `packaging.md`（打包与发布）、`plugins/`、`skills/`、`samples/`、`screenshots/`、`icons/`、`legal/`、`mcp-samples/`（外部工具本地来源示例：SAPI TTS / Windows OCR / whisper ASR；不随 exe 分发）
+- `packaging.md`（打包与发布）、`plugins/`、`skills/`、`samples/`、`screenshots/`、`icons/`、`legal/`、`mcp-samples/`（外部工具本地来源示例：SAPI TTS / Windows OCR / whisper ASR）；三份脚本已随 exe 内嵌、可在设置 → AI → 外部工具 → MCP 服务器 → 内置示例一键安装，本目录保留用于单独分发、审查与修改（Python / whisper 模型 / OCR 引擎仍不打包）
 - `finished-plans/`：已实施完的方案存档（`ai-panel.md`、`ai-panel-v2.md`、`ai-panel-v3.md`、`ai-head-agents-terminal.md`、`operation-audit-log.md`、`writing-mode.md`、`reading-mode.md`、`visualizer.md`、`mcp-client.md`、`ai-personalization.md`、`local-command-classifier.md`、`ai-gen-models.md` 等）
 - `unfinished-plans/`：未开工/进行中的方案（目前：`frontend-split-phase3.md`、`subagent-sandbox.md`、`ai-gen-image-edit.md`）；全部实施后移入 `finished-plans/`
 - `icon-guidelines.md`

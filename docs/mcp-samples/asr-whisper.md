@@ -14,7 +14,7 @@ Python MCP stdio server，把 `whisper.cpp` 的命令行程序包成 MCP 工具 
 
 ## 2. MCP server 脚本
 
-把下面内容保存为 `asr-whisper.py`（UTF-8）：
+同目录的 `asr-whisper.py` 就是可运行副本（UTF-8）。如果单独下载本文件，用它即可；下面附内容便于审查：
 
 ```python
 #!/usr/bin/env python3

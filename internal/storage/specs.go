@@ -171,6 +171,11 @@ func (s *Service) specs() []spec {
 			targets: []target{appDirTarget("builtin-skills")},
 		},
 		{
+			id: "builtin-mcp-samples", label: "内置 MCP 示例副本", scope: ScopeApp, kind: KindCache, inCache: true,
+			note:    "随程序内嵌、在设置里安装 MCP 示例时释放的脚本（builtin-mcp-samples/<版本>/）；删后可重新安装释放，已注册的 MCP 服务器条目不受影响（指向的脚本需要重新释放）。",
+			targets: []target{appDirTarget("builtin-mcp-samples")},
+		},
+		{
 			id: "temp-scratch", label: "系统临时文件", scope: ScopeTemp, kind: KindCache, inCache: true,
 			note:    "%TEMP% 下本应用自己写的临时库与插件下载暂存（cadt-sql-* / cadt-plugin-*），只按前缀匹配。",
 			targets: []target{locChildrenTarget(LocScratchDir, isTempScratchName)},

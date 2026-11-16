@@ -10,7 +10,7 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 - **五种能力各选来源**：搜索、抓取 = 内置（默认）/ 服务提供商 / 本地 MCP / 关闭；OCR、语音合成、语音识别 = 服务提供商 / 本地 MCP / 关闭（默认）。来源关闭时工具不注册；provider 未启用或缺 Key、MCP 绑定失效时按关闭处理（设置页给出提示）。搜索/抓取的非内置来源失败**自动回退内置并注明**；OCR/语音不回退，明确报错。选择本地 MCP 时沿用 MCP 既有边界：仅写权限档、非计划模式、按绑定工具名走写工具审批。
 - **服务提供商 = DeepSeek 工具 API**（`/v1/tools/*`）：新增搜索、抓取、OCR、TTS、ASR 适配；搜索映射到现有结果结构（`engine=deepseek`），抓取返回 Markdown；OCR 按页返回并在 4 万字符预算处标注省略页；TTS 音频流边读边写临时文件、原子改名到 `.cadt/gen/tts/tts-YYYYMMDD-HHmmss-*.wav`；ASR 接受 WAV / Ogg Opus。配置存 `<应用数据>/external-tools.json`（0600），API Key 不回传前端、日志脱敏，留空保存 = 保持原值，清除走独立按钮。
 - **新增 AI 工具**：`ocr(path, purpose?)`、`text_to_speech(text, voice?)`、`transcribe_audio(path)`，工具目录新增「语音与识别（外部服务）」组。provider 来源下 OCR/ASR 全权限档可用（OCR 读文件、ASR 上传音频，审批沿用域名规则并可显示预估费用），TTS 写权限档（产物写工作区）；MCP 来源按上条边界。ASR 非直传格式走 WebView2 WebAudio 转 16 kHz 单声道 + 纯 JS WAV 编码（零新依赖，20 MB / 15 分钟上限，wma / ape 明确拒绝）；TTS 工具卡可直接打开产物。
-- **本地来源示例**：`docs/mcp-samples/` 提供 `tts-sapi.ps1`（Windows SAPI）、`ocr-windows.ps1`（Windows.Media.Ocr，需 Windows PowerShell 5.1）、`asr-whisper.md`（whisper.cpp 接入脚本），不参与构建、不随 exe 分发；模型与本地引擎由用户自备。
+- **本地来源示例**：`docs/mcp-samples/` 提供 `tts-sapi.ps1`（Windows SAPI）、`ocr-windows.ps1`（Windows.Media.Ocr，需 Windows PowerShell 5.1）、`asr-whisper.py` / `asr-whisper.md`（whisper.cpp 接入脚本）；三份脚本随后改为随 exe 内嵌的内置示例（见下条），模型与本地引擎仍由用户自备。
 - 实现落点：引擎在 `internal/webtools`（配置、DeepSeek 适配、音频读取），根目录 `webtools_config.go` / `webtools_app.go` 只做绑定；前端 `ai/ai-external-tools.js`（来源判定与结果格式化）、`ai/ai-audio-transcode.js`（转码）、`settings/settings-pane-external-tools.js`（设置页）；新增测试覆盖配置归一化、来源可用性、WAV 编码与 httptest 假服务。
 
 ### MCP 服务器（AI 代配）
@@ -18,6 +18,8 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 - 新增 **AI 可代配 MCP 服务器**（`app_control` 新动作 `get_mcp_servers` / `set_mcp_server` / `delete_mcp_server` + 内置技能 `cadt-mcp-config`）：用户说「帮我接 XX MCP server」，AI 按官方文档代填 command / args / cwd / 超时 / 启停，部分更新语义（未传字段沿用原值）；保存后刷新设置页并提醒用户去「工具」面板勾选授权。
 - **安全边界（比生图条目更严）**：env 值不可读写——AI 只能用 `envKeys` 登记变量名（值留空由用户填）；`enabledTools`（工具授权）永远由用户勾选，AI 不能设置；新增/修改/删除每次都会弹「本机命令执行」确认，即使用户选了自动审批也不会静默执行；已配置环境变量的服务器 AI 不可修改/删除。只读视图不下发 args 原文与环境变量值，只给命令、参数个数、env 键名、已授权工具与运行状态。
 - 实现落点：纯逻辑 `frontend/src/ai/ai-mcp-config.js`（视图脱敏 / 合并 / 删除保护，测试 `ai-mcp-config.test.mjs`），审批与接线在 `ai-panel.js` 的 `app_control` 分支；`AI_TOOL_DEFS`、`APP_ACTIONS`、`cadt-ui` 技能与新增 `cadt-mcp-config` 技能同步登记。
+- 新增 **内置 MCP 示例**（设置 → AI → 外部工具 → MCP 服务器 → 内置示例）：TTS（Windows SAPI）、OCR（Windows.Media.Ocr）、ASR（whisper.cpp）三份脚本随 exe 内嵌，安装时释放到应用数据目录 `builtin-mcp-samples/<版本>/` 并合并进 `mcp.json`（只启用该示例自己的工具，不覆盖同名服务器）；**只内置脚本，不内置 Python / whisper 模型 / OCR 引擎**，exe 只增加约 20 KB。释放副本登记进设置 → 存储与清理，可随时删除重装。
+- AI 新增 `list_mcp_samples` / `install_mcp_sample` 两个 app_control 动作与内置技能 `cadt-mcp-samples`：用户缺本地 TTS / OCR / ASR 时，AI 先列示例、说明前置条件，用户同意后安装（每次弹本机命令确认）；安装后提醒去「能力来源」绑定并填 ASR 的 `WHISPER_CLI` / `WHISPER_MODEL`。ASR 示例的 `asr-whisper.py` 从文档中抽出为独立可运行文件。
 
 ### 思考循环守卫
 

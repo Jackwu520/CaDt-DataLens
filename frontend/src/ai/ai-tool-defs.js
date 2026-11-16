@@ -325,7 +325,7 @@ export const AI_TOOL_DEFS = {
     },
     app_control: {
         name: 'app_control',
-        description: '操作并读取当前 CaDt-DataLens 窗口（像真人一样）：打开/切换/关闭标签页、切换视图、主题、设置、开关侧边栏/终端/AI 面板、管理 AI 会话、代配 MCP 服务器（get_mcp_servers / set_mcp_server / delete_mcp_server：填命令与参数，env 值/工具授权仍归用户）、截取整窗或指定板块截图（screenshot {area}）；也可只读查询设置值、编辑器状态与选区、内存中的文档内容、Git 状态、AI 面板状态、资源管理器、插件、终端输出、操作留痕（get_activity）以及补丁视图状态（get_patch / patch_set_root / patch_repreview）。仅限当前窗口；不改工作区文件（补丁应用/撤销不在此工具内）。先 skill_use 加载 cadt-ui 技能获取动作全表，再调用本工具。',
+        description: '操作并读取当前 CaDt-DataLens 窗口（像真人一样）：打开/切换/关闭标签页、切换视图、主题、设置、开关侧边栏/终端/AI 面板、管理 AI 会话、代配 MCP 服务器与安装内置示例（get_mcp_servers / list_mcp_samples / install_mcp_sample / set_mcp_server / delete_mcp_server：填命令与参数，env 值/工具授权仍归用户）、截取整窗或指定板块截图（screenshot {area}）；也可只读查询设置值、编辑器状态与选区、内存中的文档内容、Git 状态、AI 面板状态、资源管理器、插件、终端输出、操作留痕（get_activity）以及补丁视图状态（get_patch / patch_set_root / patch_repreview）。仅限当前窗口；不改工作区文件（补丁应用/撤销不在此工具内）。先 skill_use 加载 cadt-ui 技能获取动作全表，再调用本工具。',
         parameters: {
             type: 'object',
             properties: {
@@ -844,7 +844,7 @@ export const AI_TOOL_CATALOG = {
     browser_evaluate: {group: 'browser', blurb: '在页面里执行脚本（完全权限）'},
     browser_resize: {group: 'browser', blurb: '调整视口宽高（模拟手机/平板等尺寸测响应式）'},
     browser_close: {group: 'browser', blurb: '关闭标签页'},
-    app_control: {group: 'app', blurb: '操作/读取应用本身：标签、视图、主题、设置、面板、AI 会话、MCP 服务器代配、窗口截图、操作留痕、补丁视图状态与目标目录（先 skill_use cadt-ui 取动作表）'},
+    app_control: {group: 'app', blurb: '操作/读取应用本身：标签、视图、主题、设置、面板、AI 会话、MCP 服务器代配与内置示例安装、窗口截图、操作留痕、补丁视图状态与目标目录（先 skill_use cadt-ui 取动作表）'},
     memory_list: {group: 'memory', blurb: '跨会话事实与结论；写后更新 MEMORY.md 索引'},
     memory_read: {group: 'memory', blurb: '跨会话事实与结论；写后更新 MEMORY.md 索引'},
     memory_write: {group: 'memory', blurb: '跨会话事实与结论；写后更新 MEMORY.md 索引'},
@@ -1044,6 +1044,7 @@ export function createAIToolDefs(ctx) {
             {need: ['browser_navigate', 'browser_snapshot'], text: '网页操作：browser_navigate → browser_snapshot 看结构 → 需要时 click/type → 再 snapshot/screenshot 确认'},
             {need: ['app_control'], text: '应用界面：app_control get_state → screenshot 看图核对 → 改视图/设置 → get_state 复核'},
             {need: ['app_control'], text: '配置 MCP 服务器：skill_use cadt-mcp-config → app_control get_mcp_servers → set_mcp_server（用户确认本机命令）→ 提醒用户在设置里勾选工具/填环境变量'},
+            {need: ['app_control'], text: '缺本地 TTS / OCR / ASR：skill_use cadt-mcp-samples → list_mcp_samples → install_mcp_sample（用户确认）→ 提醒绑定能力并填环境变量'},
             {need: ['spawn_agent'], text: '并行调查：spawn_agent(mode=background) 一次派出多个方向 → 继续自己的工作 → wait_agent 汇总或等完成通知'},
         ].filter((chain) => hasAll(chain.need));
         if (chains.length) {

@@ -101,8 +101,10 @@ test('planMcpServerDelete：env-free 可删，env-bearing 拒绝，缺失返回 
 
 test('接线护栏：app_control 拦截 MCP 动作，写操作必须走命令确认', () => {
     const panel = readFileSync(new URL('./ai-panel.js', import.meta.url), 'utf8');
-    assert.ok(panel.includes("'get_mcp_servers', 'set_mcp_server', 'delete_mcp_server'"));
+    assert.ok(panel.includes("'get_mcp_servers', 'list_mcp_samples', 'install_mcp_sample', 'set_mcp_server', 'delete_mcp_server'"));
     assert.ok(panel.includes('MCP_CONFIG_ACTIONS.includes(action)'));
+    assert.ok(panel.includes('backend.MCPInstallSample(id)'), '安装内置示例必须走后端释放+合并');
+    assert.ok(panel.includes("tool: 'install_mcp_sample'"));
     assert.ok(panel.includes("tool: 'set_mcp_server'"));
     assert.ok(panel.includes("tool: 'delete_mcp_server'"));
     assert.ok(panel.includes('requestCommandApproval(session, ctx.toolMessage'), 'MCP 配置写操作必须经过审批卡');

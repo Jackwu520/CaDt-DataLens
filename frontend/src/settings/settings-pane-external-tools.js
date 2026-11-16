@@ -20,14 +20,23 @@ export function createSettingsPaneExternalTools(deps) {
     const getAiPanel = (deps && deps.getAiPanel) || (() => null);
     const openExternalUrl = (deps && deps.openExternalUrl) || (() => {});
     const enhanceSetSelects = (deps && deps.enhanceSetSelects) || null;
+    const confirmAction = (deps && deps.confirmAction) || ((message, action) => {
+        if (window.confirm(message)) action();
+    });
 
     const els = {
         list: document.getElementById('extcap-list'),
         provider: document.getElementById('extcap-provider'),
+        samples: document.getElementById('ai-opt-mcp-samples'),
+        samplesList: document.getElementById('ai-opt-mcp-samples-list'),
     };
     let config = defaultExternalToolsConfig();
     let loading = false;
     let errorText = '';
+    let samples = [];
+    let samplesError = '';
+    let samplesOpen = false;
+    let sampleInstalling = '';
 
     function fieldRow(title, desc, ...controls) {
         const row = document.createElement('div');
@@ -239,6 +248,107 @@ export function createSettingsPaneExternalTools(deps) {
         );
     }
 
+    async function loadSamples() {
+        samplesError = '';
+        if (typeof backend.MCPSamplesList !== 'function') {
+            samples = [];
+            return;
+        }
+        try {
+            const list = await backend.MCPSamplesList();
+            samples = Array.isArray(list) ? list : [];
+        } catch (e) {
+            samples = [];
+            samplesError = '内置示例读取失败：' + ((e && e.message) || e);
+        }
+    }
+
+    function paintSamples() {
+        if (!els.samples || !els.samplesList) return;
+        els.samples.classList.toggle('hidden', !samples.length && !samplesError);
+        els.samplesList.classList.toggle('hidden', !samplesOpen);
+        const btn = els.samples;
+        if (btn) btn.textContent = samplesOpen ? '收起示例' : '查看示例';
+        if (!samplesOpen) return;
+        els.samplesList.textContent = '';
+        if (samplesError) {
+            const hint = document.createElement('div');
+            hint.className = 'fmt-hint hint-indent';
+            hint.textContent = samplesError;
+            els.samplesList.appendChild(hint);
+            return;
+        }
+        if (!samples.length) {
+            const hint = document.createElement('div');
+            hint.className = 'fmt-hint hint-indent';
+            hint.textContent = '当前版本没有可用示例。';
+            els.samplesList.appendChild(hint);
+            return;
+        }
+        for (const sample of samples) {
+            const envText = (sample.envKeys || []).length ? '；安装后需填写环境变量：' + sample.envKeys.join('、') : '';
+            const preText = (sample.prerequisites || []).length ? '前置：' + sample.prerequisites.join('、') + '。' : '';
+            const desc = String(sample.description || '') + ' ' + preText +
+                '安装后公开工具名：' + sample.publicToolName + envText + '。';
+            const card = document.createElement('div');
+            card.className = 'set-card';
+            const control = document.createElement('div');
+            if (sample.installed) {
+                const done = document.createElement('span');
+                done.className = 'set-desc';
+                done.textContent = '已安装';
+                control.appendChild(done);
+            } else {
+                const installBtn = button('安装', 'dlg-btn primary', () => {
+                    if (sampleInstalling) return;
+                    confirmAction(
+                        '将释放内置脚本并在本机注册 MCP 服务器「' + sample.serverName + '」：\n' +
+                        sample.commandPreview + '\n该命令会在本机执行，安装后 AI 可按工具「' + sample.toolName + '」调用它。确认安装？',
+                        () => { void installSample(sample); },
+                        '确认安装',
+                        '安装内置 MCP 示例',
+                    );
+                });
+                installBtn.disabled = !!sampleInstalling;
+                control.appendChild(installBtn);
+            }
+            const row = fieldRow(sample.name, desc, control);
+            card.appendChild(row);
+            els.samplesList.appendChild(card);
+        }
+    }
+
+    async function installSample(sample) {
+        if (typeof backend.MCPInstallSample !== 'function') {
+            flash('当前后端版本不支持安装内置示例', true);
+            return;
+        }
+        sampleInstalling = sample.id;
+        paintSamples();
+        try {
+            const result = await backend.MCPInstallSample(sample.id);
+            flash('已安装内置 MCP 示例「' + (result.name || sample.name) + '」');
+            await loadSamples();
+            const panel = getAiPanel();
+            if (panel && typeof panel.refreshMcpConfig === 'function') {
+                Promise.resolve(panel.refreshMcpConfig()).catch(() => {});
+            }
+        } catch (e) {
+            flash('安装示例失败：' + ((e && e.message) || e), true);
+        } finally {
+            sampleInstalling = '';
+            paintSamples();
+        }
+    }
+
+    function bindSamples() {
+        if (!els.samples) return;
+        els.samples.addEventListener('click', () => {
+            samplesOpen = !samplesOpen;
+            paintSamples();
+        });
+    }
+
     function paint() {
         if (els.list) els.list.textContent = '';
         if (els.provider) els.provider.textContent = '';
@@ -253,14 +363,17 @@ export function createSettingsPaneExternalTools(deps) {
         }
         paintCapabilities();
         paintProvider();
+        paintSamples();
         // 动态创建的行式下拉需要设置页增强器接管（与其它动态 pane 一致）
         if (typeof enhanceSetSelects === 'function') enhanceSetSelects();
     }
 
     async function renderExternalToolsPane() {
-        await load();
+        await Promise.all([load(), loadSamples()]);
         paint();
     }
+
+    bindSamples();
 
     return {renderExternalToolsPane};
 }

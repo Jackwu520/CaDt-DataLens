@@ -279,3 +279,10 @@
 - **与方案的偏差**：MCP 绑定存公开名 `mcp__<server>__<tool>`（不是 `server__tool`）；搜索/抓取在 MCP 调用抛错时回退内置，用户拒绝审批则不回退（直接作为工具结果）；provider 抓取 URL 用轻量校验（http/https、无账号密码、拒绝内网 IP / localhost），不做本地 DNS 解析。
 - **B5 未做**：`speak_text`（系统语音朗读）仍为可选批次，待作者决定。
 - 文件落点：`internal/webtools/{config,deepseek}.go`、根 `webtools_config.go`、前端 `ai/ai-external-tools.js`、`ai/ai-audio-transcode.js`、`settings/settings-pane-external-tools.js`、`docs/mcp-samples/`。
+
+## 9. 后续补充：内置 MCP 示例（2026-11-16）
+
+- 三份示例脚本（SAPI TTS / Windows OCR / whisper.cpp ASR）经 `//go:embed` 随 exe 内嵌，体积增加约 20 KB；**不打包 Python / whisper 模型 / OCR 引擎**。本节取代 §3.10 / §7 中「示例不随 exe 分发、不内置安装器」的旧口径。
+- 设置 → AI → 外部工具 → MCP 服务器新增「内置示例」：按需释放脚本到 `<应用数据>/builtin-mcp-samples/<版本>/`，合并进 `mcp.json` 并只启用示例自身的工具；同名服务器已存在时拒绝、不覆盖。
+- `app_control` 增加 `list_mcp_samples` / `install_mcp_sample`（安装前弹本机命令确认），内置技能 `cadt-mcp-samples` 指导 AI 在用户缺本地 TTS/OCR/ASR 时推荐并安装。
+- 释放副本登记进 设置 → 存储与清理（可删缓存，删除后需重新安装释放）。

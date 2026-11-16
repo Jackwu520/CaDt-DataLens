@@ -183,7 +183,7 @@ func TestSpecTable(t *testing.T) {
 func TestCacheIDs(t *testing.T) {
 	want := []string{
 		"run-temp", "browser-profiles", "webview-cache", "session-index", "app-logs",
-		"debug-console", "ai-logs", "model-catalog", "builtin-skills", "temp-scratch", "ws-worklog",
+		"debug-console", "ai-logs", "model-catalog", "builtin-skills", "builtin-mcp-samples", "temp-scratch", "ws-worklog",
 	}
 	got := New(Deps{}).CacheIDs()
 	if strings.Join(got, ",") != strings.Join(want, ",") {

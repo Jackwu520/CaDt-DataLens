@@ -7820,9 +7820,15 @@ export function createAIPanel(options) {
     // ---- MCP 配置桥（app_control：get_mcp_servers / set_mcp_server / delete_mcp_server）----
     // 与生图条目同构，但边界更严：env 键可由 AI 登记（值留空）、env 值不可写、
     // enabledTools 永远由用户勾选；新增/修改/删除每次都要用户确认本机命令。
-    const MCP_CONFIG_ACTIONS = ['get_mcp_servers', 'set_mcp_server', 'delete_mcp_server'];
+    const MCP_CONFIG_ACTIONS = ['get_mcp_servers', 'list_mcp_samples', 'install_mcp_sample', 'set_mcp_server', 'delete_mcp_server'];
 
     async function runMcpConfigAction(action, params, ctx) {
+        if (action === 'list_mcp_samples') {
+            if (typeof backend.MCPSamplesList !== 'function') {
+                throw new Error('当前后端版本不支持内置 MCP 示例（请重新构建或更新应用）');
+            }
+            return {samples: await backend.MCPSamplesList()};
+        }
         if (typeof backend.MCPGetConfig !== 'function' || typeof backend.MCPWriteConfig !== 'function') {
             throw new Error('当前后端版本不支持 MCP 配置（请重新构建或更新应用）');
         }
@@ -7833,6 +7839,31 @@ export function createAIPanel(options) {
         const session = ctx && ctx.session;
         if (!session || !ctx.toolMessage) throw new Error('MCP 配置缺少会话上下文，无法请求确认');
         if (session.planMode === true) throw new Error('计划模式不修改 MCP 配置；退出计划模式后再操作');
+        if (action === 'install_mcp_sample') {
+            if (typeof backend.MCPSamplesList !== 'function' || typeof backend.MCPInstallSample !== 'function') {
+                throw new Error('当前后端版本不支持内置 MCP 示例（请重新构建或更新应用）');
+            }
+            const id = aiTextOf(params.id).trim();
+            if (!id) throw new Error('install_mcp_sample 需要 id');
+            const list = await backend.MCPSamplesList();
+            const sample = (list || []).find((item) => item.id === id);
+            if (!sample) throw new Error('未知内置示例：' + id);
+            if (sample.installed) return {installed: false, note: '该示例已经安装（同名服务器已存在）。'};
+            const answer = await requestCommandApproval(session, ctx.toolMessage, {
+                command: '安装内置 MCP 示例「' + sample.name + '」：\n' + sample.commandPreview +
+                    '\n将启用工具 ' + sample.toolName + '（本机执行）。',
+                cwd: 'MCP 内置示例',
+                tool: 'install_mcp_sample',
+            });
+            if (!answer.approved) {
+                return answer.cancelled ? '用户已停止生成，未安装示例。' : '用户未允许安装该内置示例。';
+            }
+            const result = await backend.MCPInstallSample(id);
+            Promise.resolve(mcpMod.refresh()).catch(() => {});
+            if (mcpSettingsMod) mcpSettingsMod.renderAll();
+            flash('AI 已安装内置 MCP 示例「' + sample.name + '」');
+            return result;
+        }
         if (action === 'set_mcp_server') {
             const source = params.server && typeof params.server === 'object' ? params.server : params;
             const plan = mergeMcpServerConfig(current, source);
@@ -14547,6 +14578,9 @@ export function createAIPanel(options) {
         getMcpToolDefs: () => mcpMod.mcpToolDefs(),
         getExternalToolsConfig: () => externalToolsConfig,
         refreshExternalTools: () => loadExternalToolsConfig(true),
+        refreshMcpConfig: () => Promise.resolve(mcpMod.refresh()).then(() => {
+            if (mcpSettingsMod) mcpSettingsMod.renderAll();
+        }).catch(() => {}),
         handleEvent,
         // localClassifierMod 不再进 return（红队链C）：经 main.js 的 window.__lens.aiPanel
         // 会把 recordDecision / classifyAll 连带暴露给插件运行时同窗 JS，可伪造 source 灌样本；
