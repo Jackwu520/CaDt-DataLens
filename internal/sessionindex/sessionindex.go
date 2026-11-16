@@ -1,4 +1,6 @@
-package main
+// Package sessionindex：AI 会话搜索的派生 SQLite 索引（JSONL 是唯一真源，可随时重建）。
+// AppDataDir 由宿主（main）注入；Store 只要求 List / Read 两个只读能力。
+package sessionindex
 
 import (
 	"database/sql"
@@ -21,7 +23,7 @@ const (
 	aiIndexTextLimit = 200000 // 单条消息入索引的字符上限
 )
 
-type AISessionSearchHit struct {
+type SearchHit struct {
 	SessionID string `json:"sessionId"`
 	Title     string `json:"title"`
 	Role      string `json:"role"`
@@ -33,7 +35,7 @@ type AISessionSearchHit struct {
 	Ts        int64  `json:"ts,omitempty"`
 }
 
-type AISessionIndexStats struct {
+type IndexStats struct {
 	Exists    bool  `json:"exists"`
 	Sessions  int   `json:"sessions"`
 	Messages  int   `json:"messages"`
@@ -41,6 +43,12 @@ type AISessionIndexStats struct {
 	Bytes     int64 `json:"bytes"`
 	Trigram   bool  `json:"trigram"`
 	IndexedAt int64 `json:"indexedAt"`
+}
+
+// Store 是索引重建需要的最小会话存储能力（internal/sessionstore 的 Store 满足它）。
+type Store interface {
+	List() ([]string, error)
+	Read(id string) (string, error)
 }
 
 type aiIndexMessage struct {
@@ -58,16 +66,23 @@ var (
 	aiIndexTrigram bool
 )
 
-func aiIndexPath() string {
-	root := appDataRoot()
+// AppDataDir 宿主注入：应用数据根目录（main/appdata.go 的 appDataRoot）。
+var AppDataDir func() string
+
+// Path 返回索引库路径；未注入或无法定位应用数据目录时为空。
+func Path() string {
+	if AppDataDir == nil {
+		return ""
+	}
+	root := AppDataDir()
 	if root == "" {
 		return ""
 	}
 	return filepath.Join(root, aiIndexFileName)
 }
 
-func aiIndexExists() bool {
-	path := aiIndexPath()
+func Exists() bool {
+	path := Path()
 	if path == "" {
 		return false
 	}
@@ -75,8 +90,8 @@ func aiIndexExists() bool {
 	return err == nil
 }
 
-func aiIndexDatabase() (*sql.DB, error) {
-	path := aiIndexPath()
+func database() (*sql.DB, error) {
+	path := Path()
 	if path == "" {
 		return nil, errors.New("无法定位应用数据目录")
 	}
@@ -308,8 +323,8 @@ type aiIndexMeta struct {
 	ArchivedCount int    `json:"archivedCount"`
 }
 
-func syncSessionIndex(db *sql.DB, store *aiSessionStore) error {
-	metas, err := store.list()
+func syncSessionIndex(db *sql.DB, store Store) error {
+	metas, err := store.List()
 	if err != nil {
 		return err
 	}
@@ -381,7 +396,7 @@ func syncSessionIndex(db *sql.DB, store *aiSessionStore) error {
 	}
 	rows.Close()
 	for _, id := range dirtyIDs {
-		raw, err := store.read(id)
+		raw, err := store.Read(id)
 		if err != nil {
 			continue
 		}
@@ -432,8 +447,8 @@ func makeSearchSnippet(text, query string, radius int) string {
 	return prefix + text[start:pos] + "\x01" + text[pos:matchEnd] + "\x02" + text[matchEnd:end] + suffix
 }
 
-func searchSessionIndex(db *sql.DB, trigram bool, query string, limit int) ([]AISessionSearchHit, error) {
-	hits := make([]AISessionSearchHit, 0, limit)
+func searchSessionIndex(db *sql.DB, trigram bool, query string, limit int) ([]SearchHit, error) {
+	hits := make([]SearchHit, 0, limit)
 	rows, err := db.Query(`SELECT id, title FROM sessions WHERE instr(lower(title), lower(?)) > 0 ORDER BY updated_at DESC LIMIT ?`, query, limit)
 	if err != nil {
 		return nil, err
@@ -444,7 +459,7 @@ func searchSessionIndex(db *sql.DB, trigram bool, query string, limit int) ([]AI
 			rows.Close()
 			return nil, err
 		}
-		hits = append(hits, AISessionSearchHit{SessionID: id, Title: title, LiveIndex: -1, Kind: "title"})
+		hits = append(hits, SearchHit{SessionID: id, Title: title, LiveIndex: -1, Kind: "title"})
 	}
 	rows.Close()
 	if len(hits) >= limit {
@@ -472,7 +487,7 @@ func searchSessionIndex(db *sql.DB, trigram bool, query string, limit int) ([]AI
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var hit AISessionSearchHit
+		var hit SearchHit
 		var snippet string
 		if err := rows.Scan(&hit.SessionID, &hit.Title, &hit.Role, &hit.Name, &hit.Mid, &hit.LiveIndex, &snippet); err != nil {
 			return nil, err
@@ -489,11 +504,11 @@ func searchSessionIndex(db *sql.DB, trigram bool, query string, limit int) ([]AI
 
 // ---------- 写路径钩子（索引未创建时零开销） ----------
 
-func aiIndexMarkDirty(id string) {
-	if !aiIndexExists() {
+func MarkDirty(id string) {
+	if !Exists() {
 		return
 	}
-	db, err := aiIndexDatabase()
+	db, err := database()
 	if err != nil {
 		return
 	}
@@ -501,11 +516,11 @@ func aiIndexMarkDirty(id string) {
 		ON CONFLICT(id) DO UPDATE SET dirty=1`, id)
 }
 
-func aiIndexUpdateMeta(id, metaJSON string) {
-	if !aiIndexExists() {
+func UpdateMeta(id, metaJSON string) {
+	if !Exists() {
 		return
 	}
-	db, err := aiIndexDatabase()
+	db, err := database()
 	if err != nil {
 		return
 	}
@@ -522,11 +537,11 @@ func aiIndexUpdateMeta(id, metaJSON string) {
 		id, meta.Title, meta.Workspace, meta.UpdatedAt, meta.ArchivedAt, meta.MessageCount, meta.ArchivedCount)
 }
 
-func aiIndexDelete(id string) {
-	if !aiIndexExists() {
+func Delete(id string) {
+	if !Exists() {
 		return
 	}
-	db, err := aiIndexDatabase()
+	db, err := database()
 	if err != nil {
 		return
 	}
@@ -539,11 +554,11 @@ func aiIndexDelete(id string) {
 	_ = tx.Commit()
 }
 
-func aiIndexClear() {
-	if !aiIndexExists() {
+func Clear() {
+	if !Exists() {
 		return
 	}
-	db, err := aiIndexDatabase()
+	db, err := database()
 	if err != nil {
 		return
 	}
@@ -556,30 +571,6 @@ func aiIndexClear() {
 	_ = tx.Commit()
 }
 
-// ---------- Wails 绑定 ----------
-
-func (a *App) AISessionSearch(query string, limit int) ([]AISessionSearchHit, error) {
-	q := strings.TrimSpace(query)
-	if q == "" {
-		return []AISessionSearchHit{}, nil
-	}
-	if limit <= 0 || limit > 100 {
-		limit = 30
-	}
-	db, err := aiIndexDatabase()
-	if err != nil {
-		return nil, err
-	}
-	store, err := defaultAISessionStore()
-	if err != nil {
-		return nil, err
-	}
-	if err := syncSessionIndex(db, store); err != nil {
-		return nil, err
-	}
-	return searchSessionIndex(db, aiIndexTrigram, q, limit)
-}
-
 // ---------- 全局搜索接入：仅未归档会话，详细 / 简要两档（global-search 面板用） ----------
 
 const (
@@ -589,19 +580,19 @@ const (
 	aiScopedSearchTimeBudget = 3 * time.Second // 整次搜索的墙钟上限
 )
 
-// AISessionScopedSearchResult 全局搜索「搜索 AI 会话」的结果集；
+// ScopedSearchResult 全局搜索「搜索 AI 会话」的结果集；
 // Truncated 表示因条数 / 字节 / 时长预算提前截断。
-type AISessionScopedSearchResult struct {
-	Hits      []AISessionSearchHit `json:"hits"`
-	Truncated bool                 `json:"truncated"`
-	Brief     bool                 `json:"brief"`
+type ScopedSearchResult struct {
+	Hits      []SearchHit `json:"hits"`
+	Truncated bool        `json:"truncated"`
+	Brief     bool        `json:"brief"`
 }
 
 // syncSessionIndexBudgeted 带时长预算的脏会话重建：超过预算就停下，
 // 剩下的会话等下次搜索继续（dirty 标记仍在）。
-func syncSessionIndexBudgeted(db *sql.DB, store *aiSessionStore, maxWait time.Duration) error {
+func syncSessionIndexBudgeted(db *sql.DB, store Store, maxWait time.Duration) error {
 	deadline := time.Now().Add(maxWait)
-	metas, err := store.list()
+	metas, err := store.List()
 	if err != nil {
 		return err
 	}
@@ -676,7 +667,7 @@ func syncSessionIndexBudgeted(db *sql.DB, store *aiSessionStore, maxWait time.Du
 		if time.Now().After(deadline) {
 			return nil
 		}
-		raw, err := store.read(id)
+		raw, err := store.Read(id)
 		if err != nil {
 			continue
 		}
@@ -700,13 +691,13 @@ type briefSessionWalk struct {
 	text         string
 }
 
-func (w *briefSessionWalk) flush(query string, out *[]AISessionSearchHit, limit int) {
+func (w *briefSessionWalk) flush(query string, out *[]SearchHit, limit int) {
 	if !w.hasAssistant || len(*out) >= limit {
 		w.hasAssistant = false
 		return
 	}
 	if strings.Contains(strings.ToLower(w.text), query) {
-		*out = append(*out, AISessionSearchHit{
+		*out = append(*out, SearchHit{
 			SessionID: w.sessionID, Title: w.title, Role: "assistant",
 			Mid: w.mid, LiveIndex: w.liveIndex, Ts: w.ts,
 			Snippet: makeSearchSnippet(w.text, query, 60), Kind: "message",
@@ -719,9 +710,10 @@ func (w *briefSessionWalk) flush(query string, out *[]AISessionSearchHit, limit 
 //   - brief=false（详细）：标题 + 全部 live 消息全文（FTS/LIKE，与侧栏会话搜索同源）；
 //   - brief=true（简要）：标题 + 每条 user 消息 + 每轮最后一条 assistant 消息（作为该轮总结），
 //     流式扫描带硬预算（总字节 / 墙钟 / 结果条数），超限置 Truncated。
+//
 // 两种模式都只搜未归档会话（archived_at = 0）与未压缩的 live 消息（live_index >= 0）。
-func searchScopedSessionIndex(db *sql.DB, trigram bool, query string, limit int, brief bool, deadline time.Time) (AISessionScopedSearchResult, error) {
-	result := AISessionScopedSearchResult{Hits: make([]AISessionSearchHit, 0, 16), Brief: brief}
+func searchScopedSessionIndex(db *sql.DB, trigram bool, query string, limit int, brief bool, deadline time.Time) (ScopedSearchResult, error) {
+	result := ScopedSearchResult{Hits: make([]SearchHit, 0, 16), Brief: brief}
 	lowerQuery := strings.ToLower(query)
 
 	// 标题命中
@@ -735,7 +727,7 @@ func searchScopedSessionIndex(db *sql.DB, trigram bool, query string, limit int,
 			rows.Close()
 			return result, err
 		}
-		result.Hits = append(result.Hits, AISessionSearchHit{SessionID: id, Title: title, LiveIndex: -1, Kind: "title"})
+		result.Hits = append(result.Hits, SearchHit{SessionID: id, Title: title, LiveIndex: -1, Kind: "title"})
 	}
 	rows.Close()
 	if len(result.Hits) >= limit || time.Now().After(deadline) {
@@ -767,7 +759,7 @@ func searchScopedSessionIndex(db *sql.DB, trigram bool, query string, limit int,
 		}
 		defer rows.Close()
 		for rows.Next() {
-			var hit AISessionSearchHit
+			var hit SearchHit
 			var ts int64
 			var text string
 			if err := rows.Scan(&hit.SessionID, &hit.Title, &hit.Role, &hit.Name, &hit.Mid, &hit.LiveIndex, &ts, &text); err != nil {
@@ -819,7 +811,7 @@ func searchScopedSessionIndex(db *sql.DB, trigram bool, query string, limit int,
 		case "user":
 			walk.flush(lowerQuery, &result.Hits, limit)
 			if len(result.Hits) < limit && strings.Contains(strings.ToLower(text), lowerQuery) {
-				result.Hits = append(result.Hits, AISessionSearchHit{
+				result.Hits = append(result.Hits, SearchHit{
 					SessionID: sessionID, Title: title, Role: role,
 					Mid: mid, LiveIndex: int(liveIndex), Ts: ts,
 					Snippet: makeSearchSnippet(text, query, 60), Kind: "message",
@@ -844,20 +836,58 @@ func searchScopedSessionIndex(db *sql.DB, trigram bool, query string, limit int,
 // AISessionSearchScoped 全局搜索的 AI 会话通道：只搜未归档会话；
 // brief=true 时只搜用户消息 + 每轮最后一条 assistant（简要），false 为全文（详细）。
 // 硬预算：结果 ≤100 条、简要扫描 ≤32MB、脏索引重建 ≤1.5s、整次 ≤3s。
-func (a *App) AISessionSearchScoped(query string, limit int, brief bool) (AISessionScopedSearchResult, error) {
+func ResetFiles() {
+	aiIndexMu.Lock()
+	if aiIndexDB != nil {
+		_ = aiIndexDB.Close()
+		aiIndexDB = nil
+	}
+	aiIndexDBPath = ""
+	aiIndexTrigram = false
+	path := Path()
+	aiIndexMu.Unlock()
+	if path == "" {
+		return
+	}
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		_ = os.Remove(path + suffix)
+	}
+}
+
+// ---------- 查询入口（App 壳与测试共用） ----------
+
+// Search 全量会话搜索（未归档 + 归档都参与）；首次调用会按需同步脏会话。
+func Search(store Store, query string, limit int) ([]SearchHit, error) {
 	q := strings.TrimSpace(query)
-	result := AISessionScopedSearchResult{Hits: []AISessionSearchHit{}, Brief: brief}
+	if q == "" {
+		return []SearchHit{}, nil
+	}
+	if limit <= 0 || limit > 100 {
+		limit = 30
+	}
+	db, err := database()
+	if err != nil {
+		return nil, err
+	}
+	if err := syncSessionIndex(db, store); err != nil {
+		return nil, err
+	}
+	return searchSessionIndex(db, aiIndexTrigram, q, limit)
+}
+
+// SearchScoped 全局搜索的 AI 会话通道：只搜未归档会话；brief=true 时只搜用户消息
+// + 每轮最后一条 assistant（简要），false 为全文（详细）。
+// 硬预算：结果 ≤100 条、简要扫描 ≤32MB、脏索引重建 ≤1.5s、整次 ≤3s。
+func SearchScoped(store Store, query string, limit int, brief bool) (ScopedSearchResult, error) {
+	q := strings.TrimSpace(query)
+	result := ScopedSearchResult{Hits: []SearchHit{}, Brief: brief}
 	if q == "" {
 		return result, nil
 	}
 	if limit <= 0 || limit > aiScopedSearchMaxLimit {
 		limit = 30
 	}
-	db, err := aiIndexDatabase()
-	if err != nil {
-		return result, err
-	}
-	store, err := defaultAISessionStore()
+	db, err := database()
 	if err != nil {
 		return result, err
 	}
@@ -868,32 +898,10 @@ func (a *App) AISessionSearchScoped(query string, limit int, brief bool) (AISess
 	return searchScopedSessionIndex(db, aiIndexTrigram, q, limit, brief, deadline)
 }
 
-func resetSessionIndexFiles() {
-	aiIndexMu.Lock()
-	if aiIndexDB != nil {
-		_ = aiIndexDB.Close()
-		aiIndexDB = nil
-	}
-	aiIndexDBPath = ""
-	aiIndexTrigram = false
-	path := aiIndexPath()
-	aiIndexMu.Unlock()
-	if path == "" {
-		return
-	}
-	for _, suffix := range []string{"", "-wal", "-shm"} {
-		_ = os.Remove(path + suffix)
-	}
-}
-
-func (a *App) AISessionReindex() (int, error) {
-	// 显式重建 = 删掉派生索引后从 JSONL 全量重来，也用来恢复损坏的索引。
-	resetSessionIndexFiles()
-	db, err := aiIndexDatabase()
-	if err != nil {
-		return 0, err
-	}
-	store, err := defaultAISessionStore()
+// Reindex 显式重建 = 删掉派生索引后从 JSONL 全量重来，也用来恢复损坏的索引。
+func Reindex(store Store) (int, error) {
+	ResetFiles()
+	db, err := database()
 	if err != nil {
 		return 0, err
 	}
@@ -907,16 +915,13 @@ func (a *App) AISessionReindex() (int, error) {
 	return count, nil
 }
 
-func (a *App) AISessionIndexStats() (AISessionIndexStats, error) {
-	stats := AISessionIndexStats{Exists: aiIndexExists()}
+// Stats 返回索引健康度与容量统计；会先同步脏会话。
+func Stats(store Store) (IndexStats, error) {
+	stats := IndexStats{Exists: Exists()}
 	if !stats.Exists {
 		return stats, nil
 	}
-	db, err := aiIndexDatabase()
-	if err != nil {
-		return stats, err
-	}
-	store, err := defaultAISessionStore()
+	db, err := database()
 	if err != nil {
 		return stats, err
 	}
@@ -937,12 +942,8 @@ func (a *App) AISessionIndexStats() (AISessionIndexStats, error) {
 	if err := db.QueryRow(`SELECT COALESCE(max(indexed_at),0) FROM sessions`).Scan(&stats.IndexedAt); err != nil {
 		return stats, err
 	}
-	if info, err := os.Stat(aiIndexPath()); err == nil {
+	if info, err := os.Stat(Path()); err == nil {
 		stats.Bytes = info.Size()
 	}
 	return stats, nil
-}
-
-func (a *App) AISessionIndexPath() (string, error) {
-	return aiIndexPath(), nil
 }

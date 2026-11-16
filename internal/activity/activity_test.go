@@ -1,4 +1,4 @@
-package main
+package activity
 
 import (
 	"encoding/json"
@@ -10,6 +10,16 @@ import (
 	"testing"
 	"time"
 )
+
+// withTempDataDir 把包的 AppDataDir 钩子指向临时目录，测试结束恢复。
+func withTempDataDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	old := AppDataDir
+	AppDataDir = func() string { return dir }
+	t.Cleanup(func() { AppDataDir = old })
+	return dir
+}
 
 func activityTestEntry(ts int64, actor, action, target string) activityEntry {
 	return activityEntry{V: 1, TS: ts, Actor: actor, Source: actor, Action: action, Target: target, Seq: ts}
@@ -89,8 +99,7 @@ func TestNormalizeActivityEntrySizeCap(t *testing.T) {
 }
 
 func TestActivityAppendReadRoundtrip(t *testing.T) {
-	t.Setenv("AppData", t.TempDir())
-	app := &App{}
+	withTempDataDir(t)
 	payload := activityAppendPayload{
 		Entries: []activityEntry{
 			activityTestEntry(1000, "user", "file.open", "a.json"),
@@ -100,10 +109,10 @@ func TestActivityAppendReadRoundtrip(t *testing.T) {
 		RetentionMonths: 12,
 	}
 	raw, _ := json.Marshal(payload)
-	if err := app.ActivityAppend(string(raw)); err != nil {
+	if err := Append(string(raw)); err != nil {
 		t.Fatal(err)
 	}
-	out, err := app.ActivityRead(`{"limit":10}`)
+	out, err := Read(`{"limit":10}`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +134,7 @@ func TestActivityAppendReadRoundtrip(t *testing.T) {
 		t.Errorf("files 不对：%v", result.Files)
 	}
 	// 落盘内容每行可解析、字段齐全
-	dir := activityDir()
+	dir := Dir()
 	segs, err := listActivitySegments(dir)
 	if err != nil || len(segs) != 1 {
 		t.Fatalf("分段数 = %d err = %v", len(segs), err)
@@ -148,31 +157,29 @@ func TestActivityAppendReadRoundtrip(t *testing.T) {
 }
 
 func TestActivityAppendRejectsAllInvalid(t *testing.T) {
-	t.Setenv("AppData", t.TempDir())
-	app := &App{}
+	withTempDataDir(t)
 	raw, _ := json.Marshal(activityAppendPayload{Entries: []activityEntry{{TS: 1, Actor: "x", Action: "bad action"}}})
-	if err := app.ActivityAppend(string(raw)); err == nil {
+	if err := Append(string(raw)); err == nil {
 		t.Error("全部无效应报错")
 	}
 	raw, _ = json.Marshal(activityAppendPayload{Entries: []activityEntry{}})
-	if err := app.ActivityAppend(string(raw)); err != nil {
+	if err := Append(string(raw)); err != nil {
 		t.Errorf("空批不应报错：%v", err)
 	}
-	if err := app.ActivityAppend("{not-json"); err == nil {
+	if err := Append("{not-json"); err == nil {
 		t.Error("非法 JSON 应报错")
 	}
 }
 
 func TestActivityReadFilters(t *testing.T) {
-	t.Setenv("AppData", t.TempDir())
-	app := &App{}
+	withTempDataDir(t)
 	raw, _ := json.Marshal(activityAppendPayload{Entries: []activityEntry{
 		activityTestEntry(1000, "user", "file.open", "a.json"),
 		activityTestEntry(2000, "ai", "ai.tool", "write_file"),
 		activityTestEntry(3000, "user", "file.save", "a.json"),
 		activityTestEntry(4000, "system", "app.start", ""),
 	}})
-	if err := app.ActivityAppend(string(raw)); err != nil {
+	if err := Append(string(raw)); err != nil {
 		t.Fatal(err)
 	}
 	cases := []struct {
@@ -189,7 +196,7 @@ func TestActivityReadFilters(t *testing.T) {
 		{"limit 生效", `{"limit":2}`, 2, "app.start"},
 	}
 	for _, tc := range cases {
-		out, err := app.ActivityRead(tc.query)
+		out, err := Read(tc.query)
 		if err != nil {
 			t.Fatalf("%s: %v", tc.name, err)
 		}
@@ -208,21 +215,20 @@ func TestActivityReadFilters(t *testing.T) {
 }
 
 func TestActivitySegmentRolling(t *testing.T) {
-	t.Setenv("AppData", t.TempDir())
+	withTempDataDir(t)
 	oldMax := activitySegmentMax
 	activitySegmentMax = 512
 	t.Cleanup(func() { activitySegmentMax = oldMax })
 
-	app := &App{}
 	for i := 0; i < 20; i++ {
 		raw, _ := json.Marshal(activityAppendPayload{Entries: []activityEntry{
 			activityTestEntry(int64(1000+i), "user", "file.save", strings.Repeat("x", 80)),
 		}})
-		if err := app.ActivityAppend(string(raw)); err != nil {
+		if err := Append(string(raw)); err != nil {
 			t.Fatal(err)
 		}
 	}
-	segs, err := listActivitySegments(activityDir())
+	segs, err := listActivitySegments(Dir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,7 +245,7 @@ func TestActivitySegmentRolling(t *testing.T) {
 	if !suffixes[0] || !suffixes[1] {
 		t.Errorf("应包含本体与 -1 之后…（suffix 0 与 1 缺失）：%v", suffixes)
 	}
-	out, err := app.ActivityRead(`{"limit":100}`)
+	out, err := Read(`{"limit":100}`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -253,8 +259,8 @@ func TestActivitySegmentRolling(t *testing.T) {
 }
 
 func TestActivityRetentionPrune(t *testing.T) {
-	t.Setenv("AppData", t.TempDir())
-	dir := activityDir()
+	withTempDataDir(t)
+	dir := Dir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -293,19 +299,18 @@ func TestActivityRetentionPrune(t *testing.T) {
 }
 
 func TestActivityClear(t *testing.T) {
-	t.Setenv("AppData", t.TempDir())
-	app := &App{}
+	withTempDataDir(t)
 	raw, _ := json.Marshal(activityAppendPayload{Entries: []activityEntry{
 		activityTestEntry(1, "user", "file.open", "a.json"),
 		activityTestEntry(2, "user", "file.save", "a.json"),
 	}})
-	if err := app.ActivityAppend(string(raw)); err != nil {
+	if err := Append(string(raw)); err != nil {
 		t.Fatal(err)
 	}
-	if err := app.ActivityClear(); err != nil {
+	if err := Clear(); err != nil {
 		t.Fatal(err)
 	}
-	out, err := app.ActivityRead(`{"limit":10}`)
+	out, err := Read(`{"limit":10}`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -325,16 +330,14 @@ func TestActivityClear(t *testing.T) {
 }
 
 func TestActivityClearEmptyDir(t *testing.T) {
-	t.Setenv("AppData", t.TempDir())
-	app := &App{}
-	if err := app.ActivityClear(); err != nil {
+	withTempDataDir(t)
+	if err := Clear(); err != nil {
 		t.Fatalf("空目录清空不应报错：%v", err)
 	}
 }
 
 func TestActivityConcurrentAppendNoTear(t *testing.T) {
-	t.Setenv("AppData", t.TempDir())
-	app := &App{}
+	withTempDataDir(t)
 	const workers = 6
 	const perWorker = 10
 	var wg sync.WaitGroup
@@ -348,7 +351,7 @@ func TestActivityConcurrentAppendNoTear(t *testing.T) {
 				entries = append(entries, activityTestEntry(int64(w*1000+i), "user", "file.save", fmt.Sprintf("w%d-i%d", w, i)))
 			}
 			raw, _ := json.Marshal(activityAppendPayload{Entries: entries})
-			if err := app.ActivityAppend(string(raw)); err != nil {
+			if err := Append(string(raw)); err != nil {
 				errs <- err
 			}
 		}(w)
@@ -358,7 +361,7 @@ func TestActivityConcurrentAppendNoTear(t *testing.T) {
 	for err := range errs {
 		t.Fatalf("并发追加失败：%v", err)
 	}
-	out, err := app.ActivityRead(`{"limit":100}`)
+	out, err := Read(`{"limit":100}`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -372,9 +375,8 @@ func TestActivityConcurrentAppendNoTear(t *testing.T) {
 }
 
 func TestActivityPath(t *testing.T) {
-	t.Setenv("AppData", t.TempDir())
-	app := &App{}
-	path, err := app.ActivityPath()
+	withTempDataDir(t)
+	path, err := Path()
 	if err != nil {
 		t.Fatal(err)
 	}

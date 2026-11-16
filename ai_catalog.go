@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"datalens/internal/atomfile"
 )
 
 // 模型配置表（model catalog）：内置快照在前端 model-catalog.js，远端由 cadt-datalens-data/model-catalog
@@ -80,7 +82,7 @@ func writeModelCatalogFile(path, text string) (*ModelCatalogBlob, error) {
 	if path == "" {
 		return nil, errors.New("无法定位应用数据目录")
 	}
-	if err := writeFileAtomicMode(path, []byte(text), 0o600); err != nil {
+	if err := atomfile.WriteFileAtomicMode(path, []byte(text), 0o600); err != nil {
 		return nil, err
 	}
 	info, err := os.Stat(path)

@@ -9,7 +9,10 @@ import (
 	"os"
 	"path/filepath"
 
+	"datalens/internal/activity"
 	"datalens/internal/mcp"
+	"datalens/internal/sessionindex"
+	"datalens/internal/sessionstore"
 	"datalens/internal/storage"
 )
 
@@ -19,7 +22,7 @@ var storageService = storage.New(storage.Deps{
 	ActiveBrowserProfiles: browserActiveProfileDirs,
 	BeforeClear: map[string]func(){
 		// 派生 SQLite 打开状态下删不掉，清除前先释放本进程句柄
-		"session-index": resetSessionIndexFiles,
+		"session-index": sessionindex.ResetFiles,
 		"ai-schedule":   closeAIScheduleDB,
 	},
 })
@@ -43,15 +46,15 @@ func storageLocation(name string) string {
 	case storage.LocDebugConsole:
 		return debugConsoleLogPath()
 	case storage.LocSessionIndex:
-		return aiIndexPath()
+		return sessionindex.Path()
 	case storage.LocScheduleDB:
 		return aiSchedulePath()
 	case storage.LocModelCatalog:
 		return modelCatalogFilePath()
 	case storage.LocActivity:
-		return activityDir()
+		return activity.Dir()
 	case storage.LocAISessions:
-		return appDataChild(aiSessionsDirName)
+		return appDataChild(sessionstore.SessionsDirName)
 	case storage.LocConfig:
 		return configFilePath()
 	case storage.LocAIConfig:

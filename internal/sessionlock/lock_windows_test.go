@@ -1,6 +1,6 @@
 //go:build windows
 
-package main
+package sessionlock
 
 import (
 	"path/filepath"
@@ -17,7 +17,7 @@ import (
 // 旧实现只重试 LockFileEx，首个 CreateFile 失败就直接返回，表现为
 // 「操作记录正被其他窗口写入：Access is denied」。
 func TestLockAISessionFileConcurrentAcquire(t *testing.T) {
-	path := filepath.Join(t.TempDir(), aiSessionLockName)
+	path := filepath.Join(t.TempDir(), "lock.test")
 	const workers = 6
 	const rounds = 10
 
@@ -33,7 +33,7 @@ func TestLockAISessionFileConcurrentAcquire(t *testing.T) {
 			defer wg.Done()
 			<-start
 			for j := 0; j < rounds; j++ {
-				l, err := lockAISessionFile(path, 2*time.Second)
+				l, err := LockFile(path, 2*time.Second)
 				if err != nil {
 					errs <- err
 					return
@@ -45,7 +45,7 @@ func TestLockAISessionFileConcurrentAcquire(t *testing.T) {
 					}
 				}
 				atomic.AddInt32(&holders, -1)
-				l.release()
+				l.Release()
 			}
 		}()
 	}
@@ -60,4 +60,22 @@ func TestLockAISessionFileConcurrentAcquire(t *testing.T) {
 	for msg := range overlap {
 		t.Fatal(msg)
 	}
+}
+
+// TestLockFileExclusion 第二个写者在超时窗口内拿不到锁，释放后可再次获取。
+func TestLockFileExclusion(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "lock.test")
+	first, err := LockFile(path, time.Second)
+	if err != nil {
+		t.Fatalf("首次加锁失败：%v", err)
+	}
+	if _, err := LockFile(path, 150*time.Millisecond); err == nil {
+		t.Fatal("第二个写者应等待超时")
+	}
+	first.Release()
+	second, err := LockFile(path, time.Second)
+	if err != nil {
+		t.Fatalf("释放后再次加锁失败：%v", err)
+	}
+	second.Release()
 }

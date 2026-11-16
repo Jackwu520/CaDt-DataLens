@@ -1,4 +1,6 @@
-package main
+// Package sessionstore：AI 会话磁盘存储引擎——每个会话一个目录，正文为追加式 JSONL，
+// 元数据为原子替换的 meta.json。AppDataDir 由宿主（main）注入。
+package sessionstore
 
 import (
 	"encoding/json"
@@ -10,16 +12,18 @@ import (
 	"sync"
 	"time"
 
+	"datalens/internal/atomfile"
 	"datalens/internal/recycle"
+	"datalens/internal/sessionlock"
 )
 
 // AI 会话磁盘存储：每个会话一个目录，正文为追加式 JSONL，元数据为原子替换的 meta.json。
 // 布局：<appdata>/ai-sessions/<id>/{meta.json,session.v1.jsonl,images/}
 const (
-	aiSessionsDirName  = "ai-sessions"
+	SessionsDirName    = "ai-sessions"
 	aiSessionMetaName  = "meta.json"
 	aiSessionLogName   = "session.v1.jsonl"
-	aiSessionImagesDir = "images"
+	ImagesDir          = "images"
 	aiSessionLockName  = ".session.lock"
 	aiSessionLockWait  = 5 * time.Second
 	aiSessionReadLimit = 64 << 20 // 单会话正文上限：超过后拒绝加载，提示先压缩
@@ -28,33 +32,34 @@ const (
 	aiSessionImageMax  = 120
 )
 
-type aiSessionStore struct {
-	root     string
-	deleteFn func(string) error
-}
-
-// aiSessionFileLock 由平台文件实现：Windows 用 LockFileEx，其余平台用 flock(2)。
-type aiSessionFileLock struct {
-	release func()
+type Store struct {
+	Root     string
+	DeleteFn func(string) error
 }
 
 // 同进程内所有 App 方法各建一个 store，追加互斥必须是包级的。
-var aiSessionAppendMu sync.Mutex
+var appendMu sync.Mutex
 
-func newAISessionStore(root string) *aiSessionStore {
-	return &aiSessionStore{root: root, deleteFn: recycle.Move}
+func New(root string) *Store {
+	return &Store{Root: root, DeleteFn: recycle.Move}
 }
 
-func defaultAISessionStore() (*aiSessionStore, error) {
-	base := appDataRoot()
+// AppDataDir 宿主注入：应用数据根目录（main/appdata.go 的 appDataRoot）。
+var AppDataDir func() string
+
+func Default() (*Store, error) {
+	if AppDataDir == nil {
+		return nil, errors.New("会话存储未注入应用数据目录")
+	}
+	base := AppDataDir()
 	if base == "" {
 		return nil, errors.New("无法定位应用数据目录")
 	}
-	return newAISessionStore(filepath.Join(base, aiSessionsDirName)), nil
+	return New(filepath.Join(base, SessionsDirName)), nil
 }
 
-// validAISessionID 限制会话 id 可安全拼进路径：不含分隔符、不以点开头、不是 . / ..。
-func validAISessionID(id string) bool {
+// ValidSessionID 限制会话 id 可安全拼进路径：不含分隔符、不以点开头、不是 . / ..。
+func ValidSessionID(id string) bool {
 	if id == "" || len(id) > aiSessionIDMax || id[0] == '.' {
 		return false
 	}
@@ -85,29 +90,29 @@ func isWindowsReservedName(name string) bool {
 	return false
 }
 
-func (s *aiSessionStore) ensureRoot() error {
-	if s.root == "" {
+func (s *Store) EnsureRoot() error {
+	if s.Root == "" {
 		return errors.New("会话存储目录为空")
 	}
-	return os.MkdirAll(s.root, 0o755)
+	return os.MkdirAll(s.Root, 0o755)
 }
 
-func (s *aiSessionStore) sessionDir(id string) (string, error) {
-	if !validAISessionID(id) {
+func (s *Store) sessionDir(id string) (string, error) {
+	if !ValidSessionID(id) {
 		return "", fmt.Errorf("非法会话 id：%q", id)
 	}
-	if s.root == "" {
+	if s.Root == "" {
 		return "", errors.New("会话存储目录为空")
 	}
-	return filepath.Join(s.root, id), nil
+	return filepath.Join(s.Root, id), nil
 }
 
-func (s *aiSessionStore) ensureSessionDir(id string) (string, error) {
+func (s *Store) ensureSessionDir(id string) (string, error) {
 	dir, err := s.sessionDir(id)
 	if err != nil {
 		return "", err
 	}
-	if err := s.ensureRoot(); err != nil {
+	if err := s.EnsureRoot(); err != nil {
 		return "", err
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -118,20 +123,20 @@ func (s *aiSessionStore) ensureSessionDir(id string) (string, error) {
 
 // withSessionLock 在会话目录的锁文件上取跨进程独占锁；超时返回可读错误。
 // 读取不加锁；只有追加/整份重写/写 meta 这类写操作需要。
-func (s *aiSessionStore) withSessionLock(id string, fn func(dir string) error) error {
+func (s *Store) withSessionLock(id string, fn func(dir string) error) error {
 	dir, err := s.ensureSessionDir(id)
 	if err != nil {
 		return err
 	}
-	lock, err := lockAISessionFile(filepath.Join(dir, aiSessionLockName), aiSessionLockWait)
+	lock, err := sessionlock.LockFile(filepath.Join(dir, aiSessionLockName), aiSessionLockWait)
 	if err != nil {
 		return fmt.Errorf("会话正被其他窗口写入，请稍后重试：%w", err)
 	}
-	defer lock.release()
+	defer lock.Release()
 	return fn(dir)
 }
 
-func (s *aiSessionStore) logPath(id string) (string, error) {
+func (s *Store) logPath(id string) (string, error) {
 	dir, err := s.sessionDir(id)
 	if err != nil {
 		return "", err
@@ -139,7 +144,7 @@ func (s *aiSessionStore) logPath(id string) (string, error) {
 	return filepath.Join(dir, aiSessionLogName), nil
 }
 
-func validAISessionImageName(name string) bool {
+func validSessionImageName(name string) bool {
 	if name == "" || len(name) > aiSessionImageMax || name[0] == '.' {
 		return false
 	}
@@ -162,35 +167,35 @@ func validAISessionImageName(name string) bool {
 	return true
 }
 
-func (s *aiSessionStore) imagePath(id, name string) (string, error) {
-	if !validAISessionImageName(name) {
+func (s *Store) ImagePath(id, name string) (string, error) {
+	if !validSessionImageName(name) {
 		return "", fmt.Errorf("非法图片名：%q", name)
 	}
 	dir, err := s.sessionDir(id)
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, aiSessionImagesDir, name), nil
+	return filepath.Join(dir, ImagesDir, name), nil
 }
 
 // list 只读各会话的 meta.json，不触碰正文；meta 缺失/损坏时用正文 header 兜底。
-func (s *aiSessionStore) list() ([]string, error) {
-	if err := s.ensureRoot(); err != nil {
+func (s *Store) List() ([]string, error) {
+	if err := s.EnsureRoot(); err != nil {
 		return nil, err
 	}
-	entries, err := os.ReadDir(s.root)
+	entries, err := os.ReadDir(s.Root)
 	if err != nil {
 		return nil, err
 	}
 	out := make([]string, 0, len(entries))
 	for _, entry := range entries {
-		if !entry.IsDir() || !validAISessionID(entry.Name()) {
+		if !entry.IsDir() || !ValidSessionID(entry.Name()) {
 			continue
 		}
-		raw, err := os.ReadFile(filepath.Join(s.root, entry.Name(), aiSessionMetaName))
+		raw, err := os.ReadFile(filepath.Join(s.Root, entry.Name(), aiSessionMetaName))
 		if err != nil || len(raw) == 0 || len(raw) > aiSessionMetaLimit || !json.Valid(raw) {
 			// meta 丢失/损坏时用正文首行 header 兜底，避免整段会话从列表里消失。
-			raw = synthesizeMetaFromHeader(filepath.Join(s.root, entry.Name(), aiSessionLogName), entry.Name())
+			raw = synthesizeMetaFromHeader(filepath.Join(s.Root, entry.Name(), aiSessionLogName), entry.Name())
 			if len(raw) == 0 {
 				continue
 			}
@@ -244,7 +249,7 @@ func synthesizeMetaFromHeader(logPath, id string) []byte {
 	return raw
 }
 
-func (s *aiSessionStore) read(id string) (string, error) {
+func (s *Store) Read(id string) (string, error) {
 	path, err := s.logPath(id)
 	if err != nil {
 		return "", err
@@ -269,7 +274,7 @@ func (s *aiSessionStore) read(id string) (string, error) {
 
 // append 在文件末尾追加若干行；写入前修掉上次崩溃留下的半行，
 // 写入后 fsync；失败回滚到追加前的长度，避免半批事件留在日志里。
-func (s *aiSessionStore) append(id string, payload string) error {
+func (s *Store) Append(id string, payload string) error {
 	if payload == "" {
 		return nil
 	}
@@ -278,13 +283,13 @@ func (s *aiSessionStore) append(id string, payload string) error {
 	}
 	return s.withSessionLock(id, func(dir string) error {
 		path := filepath.Join(dir, aiSessionLogName)
-		aiSessionAppendMu.Lock()
-		defer aiSessionAppendMu.Unlock()
+		appendMu.Lock()
+		defer appendMu.Unlock()
 		f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
 		if err != nil {
 			return err
 		}
-		before, err := repairTornTail(f)
+		before, err := atomfile.RepairTornTail(f)
 		if closeErr := f.Close(); err == nil {
 			err = closeErr
 		}
@@ -310,55 +315,21 @@ func (s *aiSessionStore) append(id string, payload string) error {
 	})
 }
 
-// repairTornTail 把不以换行结尾的尾部残行截掉，返回可安全追加的字节长度。
-func repairTornTail(f *os.File) (int64, error) {
-	info, err := f.Stat()
-	if err != nil {
-		return 0, err
-	}
-	size := info.Size()
-	if size == 0 {
-		return 0, nil
-	}
-	buf := make([]byte, 32*1024)
-	offset := size
-	for offset > 0 {
-		n := int64(len(buf))
-		if offset < n {
-			n = offset
-		}
-		offset -= n
-		if _, err := f.ReadAt(buf[:n], offset); err != nil {
-			return 0, err
-		}
-		for i := n - 1; i >= 0; i-- {
-			if buf[i] == '\n' {
-				keep := offset + i + 1
-				if keep == size {
-					return size, nil
-				}
-				return keep, f.Truncate(keep)
-			}
-		}
-	}
-	return 0, f.Truncate(0)
-}
-
 // rewrite 原子替换整个正文（迁移、清空、状态与日志不一致时的兜底）。
-func (s *aiSessionStore) rewrite(id string, payload string) error {
+func (s *Store) Rewrite(id string, payload string) error {
 	return s.withSessionLock(id, func(dir string) error {
-		return writeFileAtomic(filepath.Join(dir, aiSessionLogName), []byte(payload))
+		return atomfile.WriteFileAtomic(filepath.Join(dir, aiSessionLogName), []byte(payload))
 	})
 }
 
-func (s *aiSessionStore) writeMeta(id string, payload string) error {
+func (s *Store) WriteMeta(id string, payload string) error {
 	return s.withSessionLock(id, func(dir string) error {
-		return writeFileAtomic(filepath.Join(dir, aiSessionMetaName), []byte(payload))
+		return atomfile.WriteFileAtomic(filepath.Join(dir, aiSessionMetaName), []byte(payload))
 	})
 }
 
 // remove 单个会话目录（Windows 走回收站，可撤销）。
-func (s *aiSessionStore) remove(id string) error {
+func (s *Store) Remove(id string) error {
 	dir, err := s.sessionDir(id)
 	if err != nil {
 		return err
@@ -373,12 +344,12 @@ func (s *aiSessionStore) remove(id string) error {
 	if !info.IsDir() {
 		return fmt.Errorf("不是会话目录：%s", dir)
 	}
-	return s.deleteFn(dir)
+	return s.DeleteFn(dir)
 }
 
 // removeAll 清空全部会话目录（整根目录进回收站）。
-func (s *aiSessionStore) removeAll() error {
-	info, err := os.Stat(s.root)
+func (s *Store) RemoveAll() error {
+	info, err := os.Stat(s.Root)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
@@ -386,132 +357,7 @@ func (s *aiSessionStore) removeAll() error {
 		return err
 	}
 	if !info.IsDir() {
-		return fmt.Errorf("不是会话目录：%s", s.root)
+		return fmt.Errorf("不是会话目录：%s", s.Root)
 	}
-	return s.deleteFn(s.root)
-}
-
-// ---------- Wails 绑定 ----------
-
-func (a *App) AISessionStoreRoot() (string, error) {
-	store, err := defaultAISessionStore()
-	if err != nil {
-		return "", err
-	}
-	if err := store.ensureRoot(); err != nil {
-		return "", err
-	}
-	return store.root, nil
-}
-
-// AISessionList 返回各会话 meta.json 的原始 JSON 字符串（列表页只需这些摘要）。
-func (a *App) AISessionList() ([]string, error) {
-	store, err := defaultAISessionStore()
-	if err != nil {
-		return nil, err
-	}
-	return store.list()
-}
-
-func (a *App) AISessionRead(id string) (string, error) {
-	store, err := defaultAISessionStore()
-	if err != nil {
-		return "", err
-	}
-	return store.read(id)
-}
-
-func (a *App) AISessionAppend(id string, lines string) error {
-	store, err := defaultAISessionStore()
-	if err != nil {
-		return err
-	}
-	if err := store.append(id, lines); err != nil {
-		return err
-	}
-	aiIndexMarkDirty(id)
-	return nil
-}
-
-func (a *App) AISessionRewrite(id string, content string) error {
-	store, err := defaultAISessionStore()
-	if err != nil {
-		return err
-	}
-	if err := store.rewrite(id, content); err != nil {
-		return err
-	}
-	aiIndexMarkDirty(id)
-	return nil
-}
-
-func (a *App) AISessionWriteMeta(id string, data string) error {
-	store, err := defaultAISessionStore()
-	if err != nil {
-		return err
-	}
-	if err := store.writeMeta(id, data); err != nil {
-		return err
-	}
-	aiIndexUpdateMeta(id, data)
-	return nil
-}
-
-// AISessionSaveImage 把会话图片写进 <id>/images/，返回相对路径 images/<name>。
-func (a *App) AISessionSaveImage(id, name, dataURL string) (string, error) {
-	store, err := defaultAISessionStore()
-	if err != nil {
-		return "", err
-	}
-	path, err := store.imagePath(id, name)
-	if err != nil {
-		return "", err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return "", err
-	}
-	if len(dataURL) > 16<<20 {
-		return "", fmt.Errorf("图片数据过大（>16 MB）")
-	}
-	if err := a.SaveDataURL(path, dataURL); err != nil {
-		return "", err
-	}
-	return aiSessionImagesDir + "/" + name, nil
-}
-
-// AISessionReadImage 读取会话图片为 data URL；name 只允许单个文件名，拒绝路径穿越。
-func (a *App) AISessionReadImage(id, name string) (string, error) {
-	store, err := defaultAISessionStore()
-	if err != nil {
-		return "", err
-	}
-	path, err := store.imagePath(id, name)
-	if err != nil {
-		return "", err
-	}
-	return a.ReadImageDataURL(path)
-}
-
-func (a *App) AISessionDelete(id string) error {
-	store, err := defaultAISessionStore()
-	if err != nil {
-		return err
-	}
-	if err := store.remove(id); err != nil {
-		return err
-	}
-	aiIndexDelete(id)
-	return nil
-}
-
-func (a *App) AISessionDeleteAll() error {
-	store, err := defaultAISessionStore()
-	if err != nil {
-		return err
-	}
-	if err := store.removeAll(); err != nil {
-		return err
-	}
-	aiIndexClear()
-	return nil
+	return s.DeleteFn(s.Root)
 }

@@ -1,4 +1,6 @@
-package main
+// Package activity：操作留痕（Activity Audit Log）引擎——按月分文件追加 JSONL，
+// 跨进程写锁串行；AppDataDir / Logf 由宿主（main）注入。
+package activity
 
 // 操作留痕（Activity Audit Log）：记录用户与 AI 的状态改变类操作。
 // 布局：<appdata>/activity/YYYY-MM.jsonl（按月分文件，单文件 >5MB 滚动为 YYYY-MM-2.jsonl、-3…）。
@@ -16,6 +18,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"datalens/internal/atomfile"
+	"datalens/internal/sessionlock"
 )
 
 const (
@@ -72,8 +77,18 @@ type activityReadResult struct {
 	Files     []string        `json:"files"`
 }
 
-func activityDir() string {
-	return filepath.Join(appDataRoot(), activityDirName)
+// AppDataDir 宿主注入：应用数据根目录（main/appdata.go 的 appDataRoot）。
+var AppDataDir func() string
+
+// Logf 宿主注入：诊断日志（main/logging.go 的 writeAppLog）。
+var Logf func(level, format string, args ...any)
+
+// Dir 返回操作记录目录；未注入应用数据目录时为空串。
+func Dir() string {
+	if AppDataDir == nil {
+		return ""
+	}
+	return filepath.Join(AppDataDir(), activityDirName)
 }
 
 func validActivityActor(actor string) bool {
@@ -210,11 +225,11 @@ func appendActivityEntries(dir string, entries []activityEntry) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("创建操作记录目录失败：%w", err)
 	}
-	lock, err := lockAISessionFile(filepath.Join(dir, activityLockName), activityLockWait)
+	lock, err := sessionlock.LockFile(filepath.Join(dir, activityLockName), activityLockWait)
 	if err != nil {
 		return fmt.Errorf("操作记录正被其他窗口写入，请稍后重试：%w", err)
 	}
-	defer lock.release()
+	defer lock.Release()
 
 	activityMu.Lock()
 	defer activityMu.Unlock()
@@ -240,7 +255,7 @@ func appendActivityEntries(dir string, entries []activityEntry) error {
 	if err != nil {
 		return err
 	}
-	before, err := repairTornTail(f)
+	before, err := atomfile.RepairTornTail(f)
 	if closeErr := f.Close(); err == nil {
 		err = closeErr
 	}
@@ -297,7 +312,51 @@ func pruneActivityFiles(dir string, months int) {
 	}
 }
 
-func (a *App) ActivityAppend(entriesJSON string) error {
+func activityActionMatch(action string, filters []string) bool {
+	for _, filter := range filters {
+		if action == filter || strings.HasPrefix(action, filter+".") {
+			return true
+		}
+	}
+	return false
+}
+
+func activityMatchKeyword(entry activityEntry, keyword string) bool {
+	if strings.Contains(strings.ToLower(entry.Action), keyword) ||
+		strings.Contains(strings.ToLower(entry.Target), keyword) {
+		return true
+	}
+	if len(entry.Detail) > 0 {
+		return strings.Contains(strings.ToLower(string(entry.Detail)), keyword)
+	}
+	return false
+}
+
+// ActivityClear 清空全部记录：先删旧文件，再写入一条 activity.clear（保留「清空过」这个事实）。
+// ActivityPath 返回记录目录（设置页打开目录 / 展示用）；目录不存在时创建。
+// parseActivityInt 本文件专用的小整数转换：失败返回 0（调用处已用范围校验兜底）。
+func parseActivityInt(s string) (int, error) {
+	n := 0
+	if s == "" {
+		return 0, errors.New("空字符串")
+	}
+	for _, ch := range s {
+		if ch < '0' || ch > '9' {
+			return 0, fmt.Errorf("非数字：%q", s)
+		}
+		n = n*10 + int(ch-'0')
+		if n > 1<<20 {
+			return 0, fmt.Errorf("数字过大：%q", s)
+		}
+	}
+	return n, nil
+}
+
+// ---------- 包级入口（App 壳与测试共用） ----------
+
+// Append 追加一批已校验记录：entriesJSON 是前端攒批的请求体
+// （entries + retentionMonths）；非法条目丢弃，整批无效时报错。
+func Append(entriesJSON string) error {
 	var payload activityAppendPayload
 	if err := json.Unmarshal([]byte(entriesJSON), &payload); err != nil {
 		return fmt.Errorf("操作记录格式无效：%w", err)
@@ -317,19 +376,22 @@ func (a *App) ActivityAppend(entriesJSON string) error {
 		}
 		return nil
 	}
-	dir := activityDir()
+	dir := Dir()
 	err := appendActivityEntries(dir, valid)
 	if err != nil {
 		return err
 	}
 	pruneActivityFiles(dir, payload.RetentionMonths)
 	if dropped > 0 {
-		writeAppLog("WARN", "操作记录有 %d 条字段非法被丢弃", dropped)
+		if Logf != nil {
+			Logf("WARN", "操作记录有 %d 条字段非法被丢弃", dropped)
+		}
 	}
 	return nil
 }
 
-func (a *App) ActivityRead(queryJSON string) (string, error) {
+// Read 按 queryJSON 过滤读取：从新到旧命中 limit 即停，结果整体 JSON 返回。
+func Read(queryJSON string) (string, error) {
 	query := activityQuery{Limit: 200}
 	if strings.TrimSpace(queryJSON) != "" {
 		if err := json.Unmarshal([]byte(queryJSON), &query); err != nil {
@@ -342,7 +404,7 @@ func (a *App) ActivityRead(queryJSON string) (string, error) {
 	if query.Limit > 500 {
 		query.Limit = 500
 	}
-	dir := activityDir()
+	dir := Dir()
 	segs, err := listActivitySegments(dir)
 	if err != nil {
 		return "", err
@@ -413,37 +475,17 @@ func (a *App) ActivityRead(queryJSON string) (string, error) {
 	return string(out), nil
 }
 
-func activityActionMatch(action string, filters []string) bool {
-	for _, filter := range filters {
-		if action == filter || strings.HasPrefix(action, filter+".") {
-			return true
-		}
-	}
-	return false
-}
-
-func activityMatchKeyword(entry activityEntry, keyword string) bool {
-	if strings.Contains(strings.ToLower(entry.Action), keyword) ||
-		strings.Contains(strings.ToLower(entry.Target), keyword) {
-		return true
-	}
-	if len(entry.Detail) > 0 {
-		return strings.Contains(strings.ToLower(string(entry.Detail)), keyword)
-	}
-	return false
-}
-
-// ActivityClear 清空全部记录：先删旧文件，再写入一条 activity.clear（保留「清空过」这个事实）。
-func (a *App) ActivityClear() error {
-	dir := activityDir()
+// Clear 清空全部记录：先删旧文件，再写入一条 activity.clear（保留「清空过」这个事实）。
+func Clear() error {
+	dir := Dir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("创建操作记录目录失败：%w", err)
 	}
-	lock, err := lockAISessionFile(filepath.Join(dir, activityLockName), activityLockWait)
+	lock, err := sessionlock.LockFile(filepath.Join(dir, activityLockName), activityLockWait)
 	if err != nil {
 		return fmt.Errorf("操作记录正被其他窗口写入，请稍后重试：%w", err)
 	}
-	defer lock.release()
+	defer lock.Release()
 
 	activityMu.Lock()
 	defer activityMu.Unlock()
@@ -481,29 +523,11 @@ func (a *App) ActivityClear() error {
 	return af.Sync()
 }
 
-// ActivityPath 返回记录目录（设置页打开目录 / 展示用）；目录不存在时创建。
-func (a *App) ActivityPath() (string, error) {
-	dir := activityDir()
+// Path 返回记录目录（设置页打开目录 / 展示用）；目录不存在时创建。
+func Path() (string, error) {
+	dir := Dir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("创建操作记录目录失败：%w", err)
 	}
 	return dir, nil
-}
-
-// parseActivityInt 本文件专用的小整数转换：失败返回 0（调用处已用范围校验兜底）。
-func parseActivityInt(s string) (int, error) {
-	n := 0
-	if s == "" {
-		return 0, errors.New("空字符串")
-	}
-	for _, ch := range s {
-		if ch < '0' || ch > '9' {
-			return 0, fmt.Errorf("非数字：%q", s)
-		}
-		n = n*10 + int(ch-'0')
-		if n > 1<<20 {
-			return 0, fmt.Errorf("数字过大：%q", s)
-		}
-	}
-	return n, nil
 }

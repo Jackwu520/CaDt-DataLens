@@ -19,6 +19,8 @@ import (
 	"sync"
 	"time"
 	"unicode/utf8"
+
+	"datalens/internal/sessionlock"
 )
 
 const (
@@ -96,11 +98,11 @@ func appendWorklogEntry(dir string, now time.Time, title, summary string) (strin
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("创建工作日志目录失败：%w", err)
 	}
-	lock, err := lockAISessionFile(filepath.Join(dir, worklogLockName), worklogLockWait)
+	lock, err := sessionlock.LockFile(filepath.Join(dir, worklogLockName), worklogLockWait)
 	if err != nil {
 		return "", fmt.Errorf("工作日志正被其他窗口写入，请稍后重试：%w", err)
 	}
-	defer lock.release()
+	defer lock.Release()
 
 	worklogMu.Lock()
 	defer worklogMu.Unlock()

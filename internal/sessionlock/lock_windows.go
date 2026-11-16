@@ -1,6 +1,6 @@
 //go:build windows
 
-package main
+package sessionlock
 
 import (
 	"errors"
@@ -20,14 +20,14 @@ func lockOpenRace(err error) bool {
 		errors.Is(err, windows.ERROR_SHARING_VIOLATION)
 }
 
-// lockAISessionFile 用 LockFileEx 对锁文件首字节加独占锁；进程退出时内核自动释放。
+// LockFile 用 LockFileEx 对锁文件首字节加独占锁；进程退出时内核自动释放。
 // 锁文件以 FILE_SHARE_DELETE 打开，删除会话目录不会被阻塞。
 //
 // CreateFile 与 LockFileEx 都在重试循环内：并发抢同一把锁时，前者会瞬时返回
 // ERROR_ACCESS_DENIED / ERROR_SHARING_VIOLATION，后者返回 ERROR_LOCK_VIOLATION，
 // 三种都等到 deadline 再放弃，而不是首次失败就报错（否则多窗口同时写操作记录 /
 // 会话会偶发「正被其他窗口写入：Access is denied」）。
-func lockAISessionFile(path string, timeout time.Duration) (*aiSessionFileLock, error) {
+func LockFile(path string, timeout time.Duration) (*FileLock, error) {
 	name, err := windows.UTF16PtrFromString(path)
 	if err != nil {
 		return nil, err
@@ -51,7 +51,7 @@ func lockAISessionFile(path string, timeout time.Duration) (*aiSessionFileLock, 
 				0, 1, 0, overlapped,
 			)
 			if err == nil {
-				return &aiSessionFileLock{release: func() {
+				return &FileLock{release: func() {
 					_ = windows.UnlockFileEx(handle, 0, 1, 0, overlapped)
 					_ = windows.CloseHandle(handle)
 				}}, nil

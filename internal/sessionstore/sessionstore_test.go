@@ -1,11 +1,10 @@
-package main
+package sessionstore
 
 import (
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
 
 func TestValidAISessionID(t *testing.T) {
@@ -29,21 +28,21 @@ func TestValidAISessionID(t *testing.T) {
 		{strings.Repeat("a", aiSessionIDMax+1), false},
 	}
 	for _, tc := range cases {
-		if got := validAISessionID(tc.id); got != tc.want {
-			t.Errorf("validAISessionID(%q) = %v, want %v", tc.id, got, tc.want)
+		if got := ValidSessionID(tc.id); got != tc.want {
+			t.Errorf("ValidSessionID(%q) = %v, want %v", tc.id, got, tc.want)
 		}
 	}
 }
 
 func TestAISessionStoreAppendRead(t *testing.T) {
-	store := newAISessionStore(t.TempDir())
-	if err := store.append("s1", `{"t":"header"}`); err != nil {
+	store := New(t.TempDir())
+	if err := store.Append("s1", `{"t":"header"}`); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.append("s1", `{"t":"msg","n":1}`+"\n"); err != nil {
+	if err := store.Append("s1", `{"t":"msg","n":1}`+"\n"); err != nil {
 		t.Fatal(err)
 	}
-	got, err := store.read("s1")
+	got, err := store.Read("s1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,8 +53,8 @@ func TestAISessionStoreAppendRead(t *testing.T) {
 }
 
 func TestAISessionStoreReadMissingIsEmpty(t *testing.T) {
-	store := newAISessionStore(t.TempDir())
-	got, err := store.read("nope")
+	store := New(t.TempDir())
+	got, err := store.Read("nope")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +65,7 @@ func TestAISessionStoreReadMissingIsEmpty(t *testing.T) {
 
 func TestAISessionStoreRepairsTornTail(t *testing.T) {
 	root := t.TempDir()
-	store := newAISessionStore(root)
+	store := New(root)
 	dir := filepath.Join(root, "s1")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
@@ -74,10 +73,10 @@ func TestAISessionStoreRepairsTornTail(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, aiSessionLogName), []byte("{\"ok\":1}\n{\"torn\":"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.append("s1", `{"next":2}`); err != nil {
+	if err := store.Append("s1", `{"next":2}`); err != nil {
 		t.Fatal(err)
 	}
-	got, err := store.read("s1")
+	got, err := store.Read("s1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +88,7 @@ func TestAISessionStoreRepairsTornTail(t *testing.T) {
 
 func TestAISessionStoreRepairsHeaderlessTail(t *testing.T) {
 	root := t.TempDir()
-	store := newAISessionStore(root)
+	store := New(root)
 	dir := filepath.Join(root, "s1")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
@@ -97,28 +96,28 @@ func TestAISessionStoreRepairsHeaderlessTail(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, aiSessionLogName), []byte(`{"torn"`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.append("s1", `{"a":1}`); err != nil {
+	if err := store.Append("s1", `{"a":1}`); err != nil {
 		t.Fatal(err)
 	}
-	got, _ := store.read("s1")
+	got, _ := store.Read("s1")
 	if got != "{\"a\":1}\n" {
 		t.Fatalf("read = %q", got)
 	}
 }
 
 func TestAISessionStoreRewrite(t *testing.T) {
-	store := newAISessionStore(t.TempDir())
-	if err := store.append("s1", "old\n"); err != nil {
+	store := New(t.TempDir())
+	if err := store.Append("s1", "old\n"); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.rewrite("s1", "new\n"); err != nil {
+	if err := store.Rewrite("s1", "new\n"); err != nil {
 		t.Fatal(err)
 	}
-	got, _ := store.read("s1")
+	got, _ := store.Read("s1")
 	if got != "new\n" {
 		t.Fatalf("read = %q, want new", got)
 	}
-	entries, err := os.ReadDir(filepath.Join(store.root, "s1"))
+	entries, err := os.ReadDir(filepath.Join(store.Root, "s1"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,27 +129,27 @@ func TestAISessionStoreRewrite(t *testing.T) {
 }
 
 func TestAISessionStoreMetaList(t *testing.T) {
-	store := newAISessionStore(t.TempDir())
-	if err := store.writeMeta("s1", `{"id":"s1","title":"一"}`); err != nil {
+	store := New(t.TempDir())
+	if err := store.WriteMeta("s1", `{"id":"s1","title":"一"}`); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.writeMeta("s2", `{"id":"s2","title":"二"}`); err != nil {
+	if err := store.WriteMeta("s2", `{"id":"s2","title":"二"}`); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.writeMeta("s1", `{"id":"s1","title":"改名"}`); err != nil {
+	if err := store.WriteMeta("s1", `{"id":"s1","title":"改名"}`); err != nil {
 		t.Fatal(err)
 	}
 	// 没有 meta 的目录、非法名字的目录都要被跳过
-	if err := os.MkdirAll(filepath.Join(store.root, "s3"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(store.Root, "s3"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Join(store.root, "_migration-backup"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(store.Root, "_migration-backup"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.writeMeta("s4", `{broken`); err != nil {
+	if err := store.WriteMeta("s4", `{broken`); err != nil {
 		t.Fatal(err)
 	}
-	list, err := store.list()
+	list, err := store.List()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,58 +163,58 @@ func TestAISessionStoreMetaList(t *testing.T) {
 }
 
 func TestAISessionStoreRejectsTraversal(t *testing.T) {
-	store := newAISessionStore(t.TempDir())
-	if err := store.append("../x", "1\n"); err == nil {
+	store := New(t.TempDir())
+	if err := store.Append("../x", "1\n"); err == nil {
 		t.Fatal("append 应拒绝越界 id")
 	}
-	if _, err := store.read("../../x"); err == nil {
+	if _, err := store.Read("../../x"); err == nil {
 		t.Fatal("read 应拒绝越界 id")
 	}
-	if err := store.writeMeta("a/b", "{}"); err == nil {
+	if err := store.WriteMeta("a/b", "{}"); err == nil {
 		t.Fatal("writeMeta 应拒绝越界 id")
 	}
 }
 
 func TestAISessionStoreDelete(t *testing.T) {
-	store := newAISessionStore(t.TempDir())
-	store.deleteFn = os.RemoveAll
-	if err := store.append("s1", "x\n"); err != nil {
+	store := New(t.TempDir())
+	store.DeleteFn = os.RemoveAll
+	if err := store.Append("s1", "x\n"); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.remove("s1"); err != nil {
+	if err := store.Remove("s1"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(store.root, "s1")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(store.Root, "s1")); !os.IsNotExist(err) {
 		t.Fatalf("会话目录未删除：%v", err)
 	}
-	if err := store.remove("s1"); err != nil {
+	if err := store.Remove("s1"); err != nil {
 		t.Fatalf("重复删除应静默：%v", err)
 	}
 }
 
 func TestAISessionStoreDeleteAll(t *testing.T) {
-	store := newAISessionStore(t.TempDir())
-	store.deleteFn = os.RemoveAll
-	if err := store.writeMeta("s1", "{}"); err != nil {
+	store := New(t.TempDir())
+	store.DeleteFn = os.RemoveAll
+	if err := store.WriteMeta("s1", "{}"); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.writeMeta("s2", "{}"); err != nil {
+	if err := store.WriteMeta("s2", "{}"); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.removeAll(); err != nil {
+	if err := store.RemoveAll(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(store.root); !os.IsNotExist(err) {
+	if _, err := os.Stat(store.Root); !os.IsNotExist(err) {
 		t.Fatalf("会话根目录未删除：%v", err)
 	}
 }
 
 func TestAISessionStoreListFallsBackToHeader(t *testing.T) {
-	store := newAISessionStore(t.TempDir())
-	if err := store.writeMeta("s1", `{"id":"s1","title":"正常"}`); err != nil {
+	store := New(t.TempDir())
+	if err := store.WriteMeta("s1", `{"id":"s1","title":"正常"}`); err != nil {
 		t.Fatal(err)
 	}
-	dir := filepath.Join(store.root, "s2")
+	dir := filepath.Join(store.Root, "s2")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -223,7 +222,7 @@ func TestAISessionStoreListFallsBackToHeader(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, aiSessionLogName), []byte(header), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	list, err := store.list()
+	list, err := store.List()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -259,42 +258,25 @@ func TestValidAISessionImageName(t *testing.T) {
 		{strings.Repeat("a", aiSessionImageMax+1), false},
 	}
 	for _, tc := range cases {
-		if got := validAISessionImageName(tc.name); got != tc.want {
-			t.Errorf("validAISessionImageName(%q) = %v, want %v", tc.name, got, tc.want)
+		if got := validSessionImageName(tc.name); got != tc.want {
+			t.Errorf("validSessionImageName(%q) = %v, want %v", tc.name, got, tc.want)
 		}
 	}
 }
 
 func TestAISessionStoreImagePathRejectsTraversal(t *testing.T) {
-	store := newAISessionStore(t.TempDir())
-	if _, err := store.imagePath("s1", "../escape.png"); err == nil {
+	store := New(t.TempDir())
+	if _, err := store.ImagePath("s1", "../escape.png"); err == nil {
 		t.Fatal("imagePath 应拒绝 ../")
 	}
-	if _, err := store.imagePath("../s1", "a.png"); err == nil {
+	if _, err := store.ImagePath("../s1", "a.png"); err == nil {
 		t.Fatal("imagePath 应拒绝越界会话 id")
 	}
-	got, err := store.imagePath("s1", "img-1.png")
+	got, err := store.ImagePath("s1", "img-1.png")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasSuffix(got, filepath.Join("s1", aiSessionImagesDir, "img-1.png")) {
+	if !strings.HasSuffix(got, filepath.Join("s1", ImagesDir, "img-1.png")) {
 		t.Fatalf("imagePath = %q", got)
 	}
-}
-
-func TestLockAISessionFileExclusion(t *testing.T) {
-	path := filepath.Join(t.TempDir(), aiSessionLockName)
-	first, err := lockAISessionFile(path, time.Second)
-	if err != nil {
-		t.Fatalf("首次加锁失败：%v", err)
-	}
-	if _, err := lockAISessionFile(path, 150*time.Millisecond); err == nil {
-		t.Fatal("第二个写者应等待超时")
-	}
-	first.release()
-	second, err := lockAISessionFile(path, time.Second)
-	if err != nil {
-		t.Fatalf("释放后再次加锁失败：%v", err)
-	}
-	second.release()
 }
