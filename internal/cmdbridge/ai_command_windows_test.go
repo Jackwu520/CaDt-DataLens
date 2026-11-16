@@ -4,6 +4,7 @@ package cmdbridge
 
 import (
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -158,5 +159,87 @@ func TestAICommandStartValidation(t *testing.T) {
 	}
 	if _, err := app.AICommandStop(""); err == nil {
 		t.Fatal("空 jobId 停止应被拒绝")
+	}
+}
+
+// cmd-out 事件载荷形状护栏（2026-11-17）：map 复合字面量的键是表达式，裸写 id:/stream:/data:
+// 会把「变量值」当键名（实际发出 {"bg-1":"bg-1",...}），前端 EventsOn 按 payload.id 分发
+// 永远落空——后台终端标签页与插件命令的实时输出自 11-14 起从未工作过。这里锁死载荷形状。
+func TestAICommandStartEmitsEventPayload(t *testing.T) {
+	app := &Bridge{}
+	type bridgeEvent struct {
+		name string
+		data map[string]string
+	}
+	var (
+		mu     sync.Mutex
+		events []bridgeEvent
+	)
+	prev := Emit
+	Emit = func(name string, data any) {
+		m, ok := data.(map[string]string)
+		if !ok {
+			t.Errorf("事件 %s 载荷应为 map[string]string，实际 %T", name, data)
+			return
+		}
+		mu.Lock()
+		events = append(events, bridgeEvent{name, m})
+		mu.Unlock()
+	}
+	defer func() { Emit = prev }()
+
+	started, err := app.AICommandStart("echo CADT_BG_EVT_7701", "")
+	if err != nil {
+		t.Fatalf("启动失败: %v", err)
+	}
+	deadline := time.Now().Add(15 * time.Second)
+	hasExit := false
+	for !hasExit {
+		mu.Lock()
+		for _, ev := range events {
+			if ev.name == "cmd-exit" && ev.data["id"] == started.JobId {
+				hasExit = true
+			}
+		}
+		mu.Unlock()
+		if hasExit {
+			break
+		}
+		if time.Now().After(deadline) {
+			mu.Lock()
+			total := len(events)
+			mu.Unlock()
+			t.Fatalf("15 秒内未收到 cmd-exit（已收 %d 个事件）", total)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(events) == 0 {
+		t.Fatal("未捕获到任何事件")
+	}
+	outCount := 0
+	joined := ""
+	for _, ev := range events {
+		if ev.data["id"] != started.JobId {
+			t.Fatalf("事件 %s 的 id 字段缺失或错误: %#v", ev.name, ev.data)
+		}
+		if ev.name != "cmd-out" {
+			continue
+		}
+		outCount++
+		if ev.data["stream"] == "" || ev.data["data"] == "" {
+			t.Fatalf("cmd-out 载荷缺少 stream/data 字段: %#v", ev.data)
+		}
+		if ev.data["stream"] == "out" {
+			joined += ev.data["data"] + "\n"
+		}
+	}
+	if outCount == 0 {
+		t.Fatalf("echo 应产生至少一条 cmd-out，实际 0 条（共 %d 个事件）", len(events))
+	}
+	if !strings.Contains(joined, "CADT_BG_EVT_7701") {
+		t.Fatalf("cmd-out 数据未包含预期输出: %q", joined)
 	}
 }

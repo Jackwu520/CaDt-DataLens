@@ -14,6 +14,7 @@ import (
 	"datalens/internal/clipboard"
 	"datalens/internal/launchargs"
 	"datalens/internal/newwindow"
+	"datalens/internal/shellexec"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -77,6 +78,19 @@ func (a *App) ShowInFolder(path string) error {
 	}
 	_ = cmd.Process.Release()
 	return nil
+}
+
+// OpenWithDefaultApp 用系统默认关联程序打开文件或目录（右键「用默认应用打开」）。
+// 路径先校验存在性：ShellExecute 对不存在的路径只会给出含糊的错误码。
+func (a *App) OpenWithDefaultApp(path string) error {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return fmt.Errorf("没有文件路径")
+	}
+	if _, err := os.Stat(path); err != nil {
+		return fmt.Errorf("路径不存在：%s", path)
+	}
+	return shellexec.Open(filepath.Clean(path))
 }
 
 // explorerArgs 构造 ShowInFolder 传给 explorer.exe 的参数。

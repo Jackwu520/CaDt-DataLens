@@ -33,7 +33,7 @@ func init() {
 
 // OpenPluginsDir 确保插件目录存在后在资源管理器中打开它。
 func (a *App) OpenPluginsDir() error {
-	dir, err := a.Manager.EnsureDir()
+	dir, err := plugins.EnsureDir()
 	if err != nil {
 		return err
 	}

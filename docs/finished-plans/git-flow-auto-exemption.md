@@ -1,6 +1,6 @@
 # Git 快捷操作在 auto 档的一次性窄豁免
 
-> 2026-11-16 定稿并实施。状态：已实施，待移入 `docs/finished-plans/`。
+> 2026-11-16 定稿并实施；2026-11-17 归档。
 
 ## 背景与问题
 
@@ -25,7 +25,7 @@ AI 面板头部的 Git 快捷操作（提交并推送 / 提交代码 / 推送代
 
 ### 护栏（必须保留）
 
-1. **危险检测先行**：`push --force/--delete/--mirror/--force-with-lease/+ref`、`reset --hard`、`clean -f`、`checkout --`、`restore`、`stash drop/clear`、`branch -D`、`update-ref -d` 仍走单次确认（`analyzeDangerousCommand`）。
+1. **危险检测先行**：`push --force/--delete/--mirror/--force-with-lease`、`push +ref` / `push :ref`（强制推送 / 删除远端分支）、`reset --hard`、`clean -f`、`checkout --`、`restore`、`stash drop/clear`、`branch -D`、`update-ref -d`、`--receive-pack` / `--upload-pack` / `--exec`（指定远端执行程序）仍走单次确认（`analyzeDangerousCommand`）。
 2. **项目规则优先**：`Bash(git push):deny/ask` 仍生效（`decidePermission` 的 deny/ask 分支在 auto 分支之前）。
 3. **非 git 命令不受影响**：`rm`、`npm publish` 等照常走原审批。
 4. **窄作用域**：
@@ -34,18 +34,20 @@ AI 面板头部的 Git 快捷操作（提交并推送 / 提交代码 / 推送代
    - 只对 auto 档生效（edit 档仍逐条询问，符合「每次询问」契约）。
    - TTL 15 分钟，过期即失效；不持久化，重启即清。
    - `git -C` / `--git-dir` / `--work-tree` / `-c` 等全局旗标直接判不安全（`GIT_GLOBAL_DANGEROUS`）。
-   - cwd 必须在 git 根内（子目录允许，git 会向上找仓库）。
+   - cwd 必须在令牌记录的工作区根内（`currentWorkspacePath()`；子目录允许，git 会向上找仓库）。
+5. **不替用户跳过钩子**：`--no-verify`（含 `commit -n`）不享受豁免，回到原审批链。
 
 ### 子命令级额外限制
 
 | 子命令 | 不放行的形态 |
 |---|---|
-| `push` | `-f` / `--force` / `--force-with-lease` / `-d` / `--delete` / `--mirror` / `+ref` |
-| `stash` | `drop` / `clear` / `branch`；只放行 `create`/`pop`/`push`/`apply`/`save`/`list`/`show` 与无参 |
-| `commit` | `--amend`（改写历史提交） |
+| `push` | `-f` / `--force` / `--force-with-lease` / `-d` / `--delete` / `--mirror` / `+ref` / `:ref` |
+| `stash` | `drop` / `clear` / `branch`；`push` / `save` 的 `-u` / `--include-untracked` / `-a` / `--all`；只放行 `create`/`pop`/`push`/`apply`/`save`/`list`/`show` 与无参 |
+| `commit` | `--amend`（改写历史提交）、`-a` / `--all`、`-n` / `--no-verify`（跳过钩子） |
 | `add` | `-A` / `--all` / `-u` / `--update` / `.`（与提示词「不要 git add -A / git add .」对齐） |
-| `pull` | `-r` / `--rebase`（改写本地提交形状） |
-| `merge` | `--abort`（放弃进行中的合并） |
+| `pull` | `-r` / `--rebase`（改写本地提交形状）、`--no-verify` |
+| `merge` | `--abort`（放弃进行中的合并）、`--no-verify` |
+| 全局 | `--receive-pack` / `--upload-pack` / `--exec`（指定远端执行程序，本地 / file:// 远端等于拉起任意程序） |
 
 ### 已知保留的审批（本次不处理）
 
@@ -59,8 +61,8 @@ AI 面板头部的 Git 快捷操作（提交并推送 / 提交代码 / 推送代
 | `frontend/src/ai/ai-permissions.js` | `decidePermission` 增加 `gitFlowSafe` 入参，auto 分支在 `readOnly` 之前检查 → `{decision:'allow', source:'git-flow'}` |
 | `frontend/src/ai/ai-panel.js` | import `gitFlowSafeCommand`；`gitFlowTokens` Map + `setGitFlowToken`/`gitFlowTokenFor`；`approveCommandForRun` 计算 `gitFlowSafe`（显式排除 terminal）；`COMMAND_AUTO_LABELS` 加 `git-flow` 标签；`createAIGitUi` ctx 传 `setGitFlowToken` |
 | `frontend/src/ai/ai-git-ui.js` | `runGitAction` 在 `sendAppMessage` 前调用 `setGitFlowToken(session.id, gitEntryState.root)` |
-| `frontend/src/ai/ai-command-rules.test.mjs` | 新增 `gitFlowSafeCommand` 用例（安全 / 危险 / 复合 / 非 git / 全局旗标 / cwd 越界 / `--force-with-lease=` / `-C` 粘连 / `commit -a` / `add ..` / `stash push -u`） |
-| `frontend/src/ai/ai-permissions.test.mjs` | 新增 `decidePermission` 的 `gitFlowSafe` 用例（allow + 来源；deny/ask 优先；非 auto 不生效；非命令通道不生效） |
+| `frontend/test/ai/ai-command-rules.test.mjs` | 新增 `gitFlowSafeCommand` 与危险检测用例（安全 / 危险 / 复合 / 非 git / 全局旗标 / cwd 越界 / `--force-with-lease=` / `-C` 粘连 / `commit -a` / `add ..` / `stash push -u` / `:ref` / 执行旗标 / `--no-verify`） |
+| `frontend/test/ai/ai-permissions.test.mjs` | 新增 `decidePermission` 的 `gitFlowSafe` 用例（allow + 来源；deny/ask 优先；非 auto 不生效；非命令通道不生效） |
 
 无 Go 改动、无新后端绑定、无 mock-backend 改动、无 package.json 改动。
 
@@ -76,6 +78,17 @@ AI 面板头部的 Git 快捷操作（提交并推送 / 提交代码 / 推送代
 
 修复后验证：`npm test` 784 全过、`go test ./...` 全过、`wails build -devtools` 通过；`--force-with-lease=<ref>` 等 11 条危险/边界命令实测 `dangerous=true` 或 `gitFlowSafe=false`。
 
+## 复核修复（2026-11-16 第二次核验）
+
+对已提交实现做只读复核后追加的四个修复（均落在 `ai-command-rules.js` + 测试）：
+
+- **B5【高】** `git push --receive-pack=<cmd>` / `git fetch --upload-pack=<cmd>` / `--exec=<cmd>` 穿过豁免——本地 / `file://` 远端等于拉起任意程序，且分类器对这类 argv 不可见。新增 `GIT_EXEC_PROGRAM_FLAGS`：豁免检查拒绝，`gitSegmentDangerRule` 记 `git-exec-program`（单次确认，与解释器内联代码同类）。
+- **B6【中】** `git push origin :branch`（空源 refspec = 删除远端分支）危险检测与豁免都不拦 → 两层都按 positional 的 `:` 前缀拦截（与 `-d/--delete` 同规则；`HEAD:main` 这类正常推送不受影响）。
+- **B7【中】** `git stash save -u/--include-untracked/-a/--all` 未被拦（旧别名，检查只写了 `push`）→ `save` 与 `push` 同规则。
+- **B8【中】** `commit -n/--no-verify`、`push/pull/merge --no-verify` 可跳过钩子 → 豁免层统一拒绝 `--no-verify`，`commit -n` 同步拒绝（未经用户许可不得跳过钩子）。
+
+复核验证：`node --test test/ai/ai-command-rules.test.mjs test/ai/ai-permissions.test.mjs` 39 用例全过；`npm test` 785 全过；20 条边界命令实测——安全形态仍放行（含 `push origin HEAD:main`、`stash save -m`），上述形态全部 `gitFlowSafe=false`，其中 `:ref` 与三个执行旗标同时 `dangerous=true`。
+
 ## 决策链位置（`decidePermission`）
 
 ```
@@ -88,12 +101,12 @@ AI 面板头部的 Git 快捷操作（提交并推送 / 提交代码 / 推送代
 
 ## 验证
 
-- 单元测试：`node --test src/ai/ai-command-rules.test.mjs src/ai/ai-permissions.test.mjs src/ai/ai-git.test.mjs`（44 个用例全过）；完整 `npm test` 784 全过。
+- 单元测试：`node --test test/ai/ai-command-rules.test.mjs test/ai/ai-permissions.test.mjs test/ai/ai-git.test.mjs`（44 个用例全过）；完整 `npm test` 785 全过。
 - 手动核对：`gitFlowSafeCommand('git push --force origin main', root, cwd) === false`；`gitFlowSafeCommand('git add src/a.js', root, cwd) === true`；`gitFlowSafeCommand('git -C other status', root, cwd) === false`。
 - 审查修复后实测：`git push --force-with-lease=origin/main`、`git pull --rebase=merges`、`git -C/other push`、`git commit -a`、`git add ..`、`git stash push -u` 全部 `gitFlowSafe=false`，其中 `--force-with-lease=<ref>` 同时 `dangerous=true`。
 - 构建：`wails build -devtools` 通过。
 
 ## 风险与回滚
 
-- **风险**：15 分钟窗口内同一会话的 git 写命令免审批。缓解：仅 auto 档、仅安全子命令、危险变体仍拦、项目 deny/ask 仍优先、TTL 15 分钟。若用户觉得窗口太长，可调 `GIT_FLOW_TOKEN_TTL_MS`。
+- **风险**：15 分钟窗口内同一会话的 git 写命令免审批。缓解：仅 auto 档、仅安全子命令、危险变体与任意执行旗标仍拦、项目 deny/ask 仍优先、TTL 15 分钟。若用户觉得窗口太长，可调 `GIT_FLOW_TOKEN_TTL_MS`。
 - **回滚**：改动集中在 4 个前端文件 + 2 个测试文件，`git revert` 单 commit 可整体回退；令牌是内存态，重启即失效，无持久化残留。

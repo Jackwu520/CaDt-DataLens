@@ -270,7 +270,9 @@ func Close() {
 }
 
 // Start 在 startup 时调用：加载任务 + 启动单 ticker 每秒扫描。
-func (sch *Scheduler) Start() {
+// 包级函数而非 Scheduler 方法：Scheduler 以服务嵌入 App，导出方法会被提升成
+// Wails 绑定（Start 曾因此误增绑定）。
+func Start() {
 	if err := aiScheduleEnsureLoaded(); err != nil {
 		logf("warn", "AI 定时任务初始化失败: %v", err)
 		return
@@ -289,7 +291,7 @@ func (sch *Scheduler) Start() {
 			case <-stop:
 				return
 			case <-ticker.C:
-				sch.aiScheduleTick()
+				aiScheduleTick()
 			}
 		}
 	}(aiScheduleStopCh)
@@ -297,7 +299,7 @@ func (sch *Scheduler) Start() {
 
 // aiScheduleTick 扫描到期任务：发 sched-fire、回写运行状态、按 kind 推进下一次触发；
 // once / 达到 maxRuns 的任务触发后自动删除。
-func (sch *Scheduler) aiScheduleTick() {
+func aiScheduleTick() {
 	now := time.Now()
 	nowMs := now.UnixMilli()
 	fired := make([]AIScheduleFirePayload, 0, 2)

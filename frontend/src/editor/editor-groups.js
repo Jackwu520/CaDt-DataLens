@@ -73,6 +73,12 @@ const exitSplitView = (...a) => splitPreview.exitSplitView(...a);
 const createImageView = (...a) => splitPreview.createImageView(...a);
 const showImageView = (...a) => splitPreview.showImageView(...a);
 const enterImageView = (...a) => splitPreview.enterImageView(...a);
+const createVideoView = (...a) => splitPreview.createVideoView(...a);
+const showVideoView = (...a) => splitPreview.showVideoView(...a);
+const hideVideoView = (...a) => splitPreview.hideVideoView(...a);
+const enterVideoView = (...a) => splitPreview.enterVideoView(...a);
+const pauseVideoInDoc = (...a) => splitPreview.pauseVideoInDoc(...a);
+const releaseVideo = (...a) => splitPreview.releaseVideo(...a);
 const applyImageZoom = (...a) => splitPreview.applyImageZoom(...a);
 const zoomImageBy = (...a) => splitPreview.zoomImageBy(...a);
 const enterSvgRender = (...a) => splitPreview.enterSvgRender(...a);
@@ -134,6 +140,7 @@ menusDeps.updateStatus = (...a) => updateStatus(...a);
 menusDeps.closeDocsWithConfirm = (...a) => closeDocsWithConfirm(...a);
 menusDeps.requestCloseDoc = (...a) => requestCloseDoc(...a);
 menusDeps.showPathInFolder = (...a) => showPathInFolder(...a);
+menusDeps.openWithDefaultApp = (...a) => openWithDefaultApp(...a);
 menusDeps.reopenClosedTab = (...a) => reopenClosedTab(...a);
 menusDeps.groupDocs = (...a) => groupDocs(...a);
 menusDeps.groupOfDoc = (...a) => groupOfDoc(...a);
@@ -349,6 +356,7 @@ const VIEW_ICONS = {
     preview: '<svg viewBox="0 0 14 14" aria-hidden="true"><rect x="1.5" y="2.2" width="11" height="9.6" rx="1" stroke="currentColor" stroke-width="1.2" fill="none"/><circle cx="4.8" cy="5.3" r="1.05" fill="currentColor"/><path d="M2.6 10.4 5.8 7.3l2.3 2.3L9.8 8l1.9 2.3" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linejoin="round"/></svg>',
     image: '<svg viewBox="0 0 14 14" aria-hidden="true"><rect x="1.5" y="2.2" width="11" height="9.6" rx="1" stroke="currentColor" stroke-width="1.2" fill="none"/><circle cx="4.8" cy="5.3" r="1.05" fill="currentColor"/><path d="M2.6 10.4 5.8 7.3l2.3 2.3L9.8 8l1.9 2.3" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linejoin="round"/></svg>',
     binary: '<svg viewBox="0 0 14 14" aria-hidden="true"><text x="2" y="10.6" font-size="9" font-family="JetBrains Mono, Consolas, monospace" font-weight="700" fill="currentColor">01</text></svg>',
+    video: '<svg viewBox="0 0 14 14" aria-hidden="true"><rect x="1.5" y="2.6" width="11" height="8.8" rx="1.4" stroke="currentColor" stroke-width="1.2" fill="none"/><path d="M5.9 5.3l3.3 1.7-3.3 1.7z" fill="currentColor" stroke="none"/></svg>',
     render: '<svg viewBox="0 0 14 14" aria-hidden="true"><path d="M2 11c2.8 0 3.4-7 6.2-7 1.7 0 2 1.6 3.8 1.6" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"/><circle cx="2" cy="11" r="1.1" fill="currentColor"/><circle cx="12" cy="5.6" r="1.1" fill="currentColor"/></svg>',
     patch: '<svg viewBox="0 0 14 14" aria-hidden="true"><path d="M2 3.4h10M2 7h6.4M2 10.6h4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" fill="none"/><path d="M9.6 8.2l2.4 2.4-2.4 2.4" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>',
     split: '<svg viewBox="0 0 14 14" aria-hidden="true"><rect x="1.5" y="2.2" width="11" height="9.6" rx="1" stroke="currentColor" stroke-width="1.2" fill="none"/><path d="M7 2.6v9" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>',
@@ -358,6 +366,7 @@ const MORE_ICON = '<svg viewBox="0 0 14 14" aria-hidden="true"><circle cx="7" cy
 function viewDisabledFor(doc, mode) {
     if (!doc) return true;
     if (mode === 'image') return !doc.image;
+    if (mode === 'video') return !doc.video;
     if (mode === 'binary') return !doc.binary;
     if (mode === 'tree') return !doc.treeAvailable;
     if (mode === 'preview') return !(doc.format && doc.format.preview) || !!doc.large;
@@ -1060,7 +1069,8 @@ function createDocEditor(doc) {
     const previewRequested = !!fmt.preview && doc.mode === 'preview';
     const splitRequested = doc.mode === 'split' && !!deps.splitKindFor(doc);
     const imageRequested = !!fmt.image && doc.mode === 'image';
-    const binaryMode = !!fmt.image || fmt.id === 'bytes';
+    const videoRequested = !!fmt.video && doc.mode === 'video';
+    const binaryMode = !!fmt.image || !!fmt.video || fmt.id === 'bytes';
     let startMode = doc.mode === 'text' ? 'text' : (!doc.treeAvailable ? 'code' : (doc.mode === 'code' ? 'code' : 'tree'));
     if (tableRequested || patchRequested) startMode = 'text';
     if (previewRequested || splitRequested) startMode = 'code';
@@ -1171,7 +1181,7 @@ function createDocEditor(doc) {
         } catch (e) {}
     }
     setupTreeContextMenu(doc);
-    doc.mode = splitRequested ? 'split' : previewRequested ? 'preview' : tableRequested ? 'table' : imageRequested ? 'image' : binaryMode ? 'binary' : startMode;
+    doc.mode = splitRequested ? 'split' : previewRequested ? 'preview' : tableRequested ? 'table' : imageRequested ? 'image' : videoRequested ? 'video' : binaryMode ? 'binary' : startMode;
     // 补丁视图是覆盖层：底层编辑器仍按 text 起始，但 doc.mode 必须记成 patch，
     // 否则首次打开时状态栏显示补丁、视图按钮却选中文本。
     if (patchRequested) doc.mode = 'patch';
@@ -1182,10 +1192,12 @@ function createDocEditor(doc) {
     if (fmt.table) createCsvTableView(doc);
     if (fmt.preview) createMarkdownPreview(doc);
     if (fmt.image) createImageView(doc);
+    if (fmt.video) createVideoView(doc);
     if (patchRequested) showPatchView(doc, patchViewContext());
     if (tableRequested) showCsvTableView(doc);
     if (previewRequested) showMarkdownPreview(doc);
     if (imageRequested) showImageView(doc);
+    if (videoRequested) showVideoView(doc);
     if (!doc.dirty) doc.bases[doc.mode] = doc.text;
     deps.applyReadOnlyToDoc(doc);
     doc.content = null;
@@ -1207,11 +1219,12 @@ function createDoc(data) {
             large: false,
             enc: 'binary',
             content: data.content,
-            format: data.image ? formats.image : formats.bytes,
+            format: data.image ? formats.image : (data.video ? formats.video : formats.bytes),
             image: !!data.image,
+            video: !!data.video,
             treeAvailable: false,
             parseError: null,
-            mode: data.image ? 'image' : 'binary',
+            mode: data.video ? 'video' : (data.image ? 'image' : 'binary'),
             text: null,
             rawText: null,
             dirty: false,
@@ -1308,6 +1321,10 @@ function updateDocChrome() {
     deps.updateSearchState();
     renderTabs();
     if (deps.aiPanel) deps.aiPanel.refreshDockFill();
+    // 有内容被打开 / 切到前台：宿主据此解开编辑区收起态。必须放在 refreshDockFill 之后——
+    // 一旦有 activeFile，面板就不再 ai-dock-fill 占满，此时若编辑区还收着就是「面板不满、
+    // 内容区不可见」的空白状态。收起从来不是固定锁，看内容就展开。
+    if (deps.onDocVisible) deps.onDocVisible(deps.file);
     syncAllBrowserTabs();
     deps.refreshStructureSources();
 }
@@ -1365,6 +1382,8 @@ async function activateDoc(doc) {
         if (g0) { g0.activeId = doc.id; focusedGroupId = g0.id; }
         return;
     }
+    // 切换标签时先暂停上一个标签的视频：面板只是被隐藏，不会自动停音频
+    pauseVideoInDoc(deps.file);
     let g = groupOfDoc(doc.id);
     if (!g) {
         g = focusedGroup() || createGroup();
@@ -1513,6 +1532,8 @@ function closeDocNow(doc, remember = true) {
     else deps.activityLog.log('tab.close', doc.name, {});
     disposeSqlDoc(doc);
     disposePatchView(doc);
+    // 视频视图：先断源再摘节点，否则解码器与文件句柄要等 GC 才释放
+    releaseVideo(doc);
     const wasActive = doc === deps.file;
     if (doc.path && remember) {
         deps.closedTabs.push({path: doc.path, name: doc.name});
@@ -1588,6 +1609,17 @@ function showPathInFolder(path) {
     deps.backend.ShowInFolder(path).catch((e) => deps.flash('打开文件位置失败：' + e, true));
 }
 
+// 用系统默认关联程序打开（标签页 / 文件树右键共用）：不经过命令行，空格与中文路径都安全。
+function openWithDefaultApp(path) {
+    if (!path) return;
+    if (!deps.backend.OpenWithDefaultApp) {
+        deps.flash('当前版本不支持用默认应用打开', true);
+        return;
+    }
+    Promise.resolve(deps.backend.OpenWithDefaultApp(path))
+        .catch((e) => deps.flash('用默认应用打开失败：' + e, true));
+}
+
 function closeDocsWithConfirm(list, message) {
     const targets = (list || []).filter((doc) => deps.docs.includes(doc));
     if (!targets.length) return;
@@ -1612,5 +1644,5 @@ function reopenClosedTab() {
     function setFocusedGroupId(v) { focusedGroupId = v; }
     function setSplitRoot(v) { splitRoot = v; }
 
-    return {activateDoc, setFocusedGroupId, setSplitRoot, addDocToFocusedGroup, applyAceMode, applyCsvTableZoom, applyImageZoom, browserViewportLabel, closeDocNow, closeDocsWithConfirm, closeSqlView, createDoc, createDocEditor, createGroup, dismissBanner, doRedo, doUndo, get editorGroups() { return editorGroups; }, enterBinaryView, enterCsvTable, enterImageView, enterMarkdownPreview, enterSplitView, enterSqlView, enterSvgRender, enterTextView, exitSplitView, expandAllWithGuard, flushCsvCellEditor, get focusedGroupId() { return focusedGroupId; }, groupDocs, groupOfDoc, handleAIWorkspaceFileChanged, handleExternalDocChanges, hideBanner, hideSvgRender, hookCodeFoldRanges, hookMultiCursor, humanizeCounts, initCodeFoldHover, jumpBookmark, leaveCsvTable, leaveMarkdownPreview, markDocDirty, mdSyncScrollFromAce, moveTabInGroup, patchViewContext, refreshPatchMarkers, rememberDocView, renderBookmarks, renderBreadcrumb, renderCsvTableView, renderEditorLayout, renderMarkdownPreview, renderTabs, reopenClosedTab, requestCloseDoc, revertDocToSaved, scheduleGitGutter, setBrowserViewport, setFilename, showBanner, showImageMenu, showMdPreviewMenu, showPathInFolder, showSvgMenu, get splitRoot() { return splitRoot; }, syncAllBrowserTabs, syncBrowserTab, syncTabReadOnly, textArea, toggleBookmark, toggleFocusedNode, updateBrowserTitle, updateDocChrome, updateStatus, zoomCsvTable, zoomImageBy, zoomSvgRenderBy};
+    return {activateDoc, setFocusedGroupId, setSplitRoot, addDocToFocusedGroup, applyAceMode, applyCsvTableZoom, applyImageZoom, browserViewportLabel, closeDocNow, closeDocsWithConfirm, closeSqlView, createDoc, createDocEditor, createGroup, dismissBanner, doRedo, doUndo, get editorGroups() { return editorGroups; }, enterBinaryView, enterCsvTable, enterImageView, enterMarkdownPreview, enterSplitView, enterSqlView, enterSvgRender, enterTextView, enterVideoView, exitSplitView, expandAllWithGuard, flushCsvCellEditor, get focusedGroupId() { return focusedGroupId; }, groupDocs, groupOfDoc, handleAIWorkspaceFileChanged, handleExternalDocChanges, hideBanner, hideSvgRender, hideVideoView, hookCodeFoldRanges, hookMultiCursor, humanizeCounts, initCodeFoldHover, jumpBookmark, leaveCsvTable, leaveMarkdownPreview, markDocDirty, mdSyncScrollFromAce, moveTabInGroup, openWithDefaultApp, patchViewContext, refreshPatchMarkers, rememberDocView, renderBookmarks, renderBreadcrumb, renderCsvTableView, renderEditorLayout, renderMarkdownPreview, renderTabs, reopenClosedTab, releaseVideo, requestCloseDoc, revertDocToSaved, scheduleGitGutter, setBrowserViewport, setFilename, showBanner, showImageMenu, showMdPreviewMenu, showPathInFolder, showSvgMenu, get splitRoot() { return splitRoot; }, syncAllBrowserTabs, syncBrowserTab, syncTabReadOnly, textArea, toggleBookmark, toggleFocusedNode, updateBrowserTitle, updateDocChrome, updateStatus, zoomCsvTable, zoomImageBy, zoomSvgRenderBy};
 }

@@ -3,8 +3,10 @@
 package aigen
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -180,6 +182,49 @@ func TestAiGenHTTPRequestRoundtrip(t *testing.T) {
 	}
 }
 
+func TestAiGenHTTPRequestBinaryBody(t *testing.T) {
+	// multipart/form-data 的编辑端点：前端把整个 body base64 后交 Go 解码发送。
+	// 服务端必须收到**原始字节**（含 0x89 这类非 UTF-8 值），Content-Type 的 boundary 原样保留。
+	rawBody := []byte("--BND\r\nContent-Disposition: form-data; name=\"image\"; filename=\"a.png\"\r\n\r\n\x89PNG\r\n\x00\xff\r\n--BND--\r\n")
+	var gotBody []byte
+	var gotType string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotType = r.Header.Get("Content-Type")
+		gotBody, _ = io.ReadAll(r.Body)
+		_, _ = w.Write([]byte(`{"data":[{"b64_json":"QQ=="}]}`))
+	}))
+	defer server.Close()
+
+	spec := HTTPSpec{
+		URL:        server.URL + "/v1/images/edits",
+		Method:     "POST",
+		Headers:    map[string]string{"Content-Type": "multipart/form-data; boundary=BND"},
+		Body:       "should-be-ignored",
+		BodyBase64: base64.StdEncoding.EncodeToString(rawBody),
+		TimeoutSec: 10,
+	}
+	raw, _ := json.Marshal(spec)
+	result := HTTPRequest(string(raw))
+	if result.Error != "" {
+		t.Fatalf("二进制 body 请求报错：%s", result.Error)
+	}
+	if !bytes.Equal(gotBody, rawBody) {
+		t.Fatalf("服务端收到的字节与原文不一致：\n got=%q\nwant=%q", gotBody, rawBody)
+	}
+	if gotType != "multipart/form-data; boundary=BND" {
+		t.Fatalf("Content-Type 被改动：%q", gotType)
+	}
+	if spec.Body != "should-be-ignored" {
+		t.Fatal("Body 字段不应被改动")
+	}
+
+	// 非法 base64 应报错而不是发空体
+	bad, _ := json.Marshal(HTTPSpec{URL: server.URL, Method: "POST", BodyBase64: "!!not-b64!!", TimeoutSec: 10})
+	if got := HTTPRequest(string(bad)); !strings.Contains(got.Error, "base64") {
+		t.Fatalf("非法 base64 应报错：%+v", got)
+	}
+}
+
 func TestAiGenSaveProductsFlow(t *testing.T) {
 	png := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0x00, 0x01, 0x02}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -187,7 +232,6 @@ func TestAiGenSaveProductsFlow(t *testing.T) {
 		_, _ = w.Write(png)
 	}))
 	defer server.Close()
-
 	workspace := t.TempDir()
 	spec := SaveSpec{
 		Workspace: workspace,
@@ -245,5 +289,63 @@ func TestAiGenSaveProductsFlow(t *testing.T) {
 	many += `]}`
 	if got := SaveProducts(many); got.Error == "" {
 		t.Fatal("产物超量应报错")
+	}
+}
+
+func TestAiGenSaveProductsHeaders(t *testing.T) {
+	// 产物端点需要鉴权：下载必须带上条目配置的头，否则 401。同时禁止头（Host 等）要被挡掉。
+	mp4 := []byte("fake-mp4-bytes")
+	var sawAuth, sawUA, sawHost string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawAuth = r.Header.Get("Authorization")
+		sawUA = r.Header.Get("User-Agent")
+		sawHost = r.Host // 前端传的 Host 若被透传会覆盖真实 Host
+		if sawAuth != "Bearer sk-test" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "video/mp4")
+		_, _ = w.Write(mp4)
+	}))
+	defer server.Close()
+
+	workspace := t.TempDir()
+	spec := SaveSpec{
+		Workspace: workspace,
+		Kind:      "video",
+		Headers: map[string]string{
+			"Authorization": "Bearer sk-test",
+			"Host":          "evil.example.com",
+			"X-Custom":      "1",
+		},
+		Items: []ProductItem{{Type: "url", URL: server.URL + "/v1/videos/abc/content"}},
+	}
+	raw, _ := json.Marshal(spec)
+	result := SaveProducts(string(raw))
+	if result.Error != "" {
+		t.Fatalf("带鉴权头的下载失败：%s", result.Error)
+	}
+	if len(result.Files) != 1 || result.Files[0].Bytes != int64(len(mp4)) {
+		t.Fatalf("产物不符：%+v", result.Files)
+	}
+	if !strings.HasSuffix(result.Files[0].Path, ".mp4") {
+		t.Fatalf("扩展名应为 mp4：%s", result.Files[0].Path)
+	}
+	if sawAuth != "Bearer sk-test" {
+		t.Fatalf("Authorization 未透传：%q", sawAuth)
+	}
+	if sawUA == "" || !strings.Contains(sawUA, "CaDt-DataLens") {
+		t.Fatalf("User-Agent 应保留：%q", sawUA)
+	}
+	if strings.Contains(sawHost, "evil") {
+		t.Fatalf("禁止头 Host 被透传了：%q", sawHost)
+	}
+
+	// 不带头的下载仍应照常工作（回归：b64 与无鉴权 url 不受影响）
+	spec2 := spec
+	spec2.Headers = nil
+	raw2, _ := json.Marshal(spec2)
+	if got := SaveProducts(string(raw2)); got.Error == "" {
+		t.Fatal("服务端要求鉴权时无头下载应失败（401）")
 	}
 }

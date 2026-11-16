@@ -328,7 +328,7 @@ function newFileMenuItems(dirPath) {
         {label: '文件…', icon: 'E7C3', action: () => openCreateEntryDialog(dirPath, false, '', '新建文件')},
         {label: '目录…', icon: 'E8B7', action: () => openCreateEntryDialog(dirPath, true, '新建文件夹', '新建文件夹')},
         {sep: true},
-        ...newFileTypeMenuItems((type) => openCreateEntryDialog(dirPath, false, type.name, '新建 ' + type.label)),
+        ...deps.newFileTypeMenuItems((type) => openCreateEntryDialog(dirPath, false, type.name, '新建 ' + type.label)),
     ];
 }
 
@@ -503,9 +503,11 @@ function showExplorerMenu(info, x, y, node) {
             submenu: newFileMenuItems(info.path),
         });
         items.push({label: '作为书籍阅读', icon: 'E8A5', action: () => deps.readingMode && deps.readingMode.openBook(info.path)});
+        items.push({label: '用默认应用打开', icon: 'E8E5', action: () => deps.openWithDefaultApp(info.path)});
     } else {
         items.push({label: '打开', icon: 'E8E5', action: () => deps.openPath(info.path)});
         items.push({label: '以只读打开', icon: 'E8E5', action: () => deps.openPath(info.path, {readOnly: true})});
+        items.push({label: '用默认应用打开', icon: 'E8E5', action: () => deps.openWithDefaultApp(info.path)});
         items.push({label: '在新窗口中打开', icon: 'E8A7', action: () => deps.openInNewWindows([info.path])});
         if (deps.readingMode && /\.(md|markdown|mdx|txt|docx|epub)$/i.test(info.name || '')) {
             items.push({label: '阅读此文件', icon: 'E8A5', action: () => deps.readingMode.openSingleFile(info.path)});

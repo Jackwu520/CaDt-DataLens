@@ -544,3 +544,34 @@ func namesOf(paths []string) []string {
 	}
 	return out
 }
+
+// 孤儿 worktree 清理：登记之外的可清，登记内的保留（大小写不敏感）；
+// 宿主未注入登记钩子时一律不清（fail-safe——不能把活跃会话的草稿当孤儿删掉）。
+func TestOrphanWorktreeTargets(t *testing.T) {
+	root := t.TempDir()
+	wt := filepath.Join(root, ".cadt", "worktree")
+	// NTFS 大小写不敏感：active / ACTIVE 是同一个目录，用不同名造登记内外的对照
+	for _, name := range []string{"orphan", "active", "ACTIVE-X"} {
+		if err := os.MkdirAll(filepath.Join(wt, name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	targetOfID := func(svc *Service) target {
+		tgt, _ := targetOf(t, svc, "ws-worktrees")
+		return tgt
+	}
+
+	// 未注入钩子：一个都不列
+	if got := namesOf(New(Deps{}).targetFiles(targetOfID(New(Deps{})), root)); len(got) != 0 {
+		t.Fatalf("未注入登记钩子应一个都不列，实际 %v", got)
+	}
+	// 注入钩子：登记内（active，大小写不敏感匹配）保留，其余全列
+	keepDir := filepath.Join(wt, "active")
+	svc := New(Deps{KeepWorktreeNames: func() []string {
+		return []string{keepDir, filepath.Join(wt, "ACTIVE-X")}
+	}})
+	got := namesOf(svc.targetFiles(targetOfID(svc), root))
+	if strings.Join(got, ",") != "orphan" {
+		t.Fatalf("孤儿过滤不对，实际 %v", got)
+	}
+}

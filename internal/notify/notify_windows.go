@@ -160,12 +160,50 @@ func (nt *Notifier) AppWindowActive() bool {
 }
 
 // Prepare 启动时把本应用登记进 Windows 通知系统（见 ensureToastAppID），
-// 并预先渲染通知卡片要用的图标（见 toastIconPath）。
+// 并预先渲染通知卡片要用的图标（见 toastIconPath）、注册点击激活回调（见 registerToastActivation）。
 // 失败不阻塞启动：真正要发通知时还会再试一次，并把错误返回给调用方。
 func Prepare() {
 	_ = ensureToastAppID()
 	_ = toastIconPath()
+	registerToastActivation()
 }
+
+// ---- 通知点击激活 ----
+//
+// 通知卡片上除了 Title/Body 还得告诉 Windows「点了我之后叫醒谁」，否则点击只等于关闭卡片：
+//   · toast XML 的 launch 属性放业务参数（NotifySystemToast 的 payload，如 "ai-session=<id>"）；
+//   · 注册表 AUMID 下写 CustomActivator 指向库内置的 COM 激活器 GUID（SetAppData 完成），
+//     再由 pushCOM 在本进程注册类工厂——应用运行期间点击通知，Windows 就把激活投递回本进程；
+//   · SetActivationCallback 收到激活后转交宿主钩子 OnToastActivation（拉窗口 + 发事件给前端）。
+//
+// 应用完全没在跑时点旧卡片：Windows 会按 LocalServer32 拉起 exe（带 -Embedding 参数），
+// 应用正常启动即可；旧通知的会话参数在冷启动场景拿不到（激活超时早过），可接受——
+// 旧卡片本来就多半过期了。
+func registerToastActivation() {
+	toastActivationOnce.Do(func() {
+		// 库的回调签名是 (args, userData)：args 即 toast XML launch 属性（invokedArgs）原文。
+		toast.SetActivationCallback(func(args string, userData []toast.UserData) {
+			payload := strings.TrimSpace(args)
+			logf("info", "系统通知被点击，激活参数：%q", payload)
+			if OnToastActivation != nil {
+				OnToastActivation(payload)
+			}
+		})
+		exe, err := os.Executable()
+		if err != nil {
+			logf("warn", "登记通知激活器失败（通知点击无效）：%v", err)
+			return
+		}
+		// SetAppData 会补写 CustomActivator 与 LocalServer32；DisplayName/IconUri 我们已写过，
+		// 库对已存在的值跳过写入，不会覆盖友好名。exe 被挪动后 LocalServer32 里是旧路径
+		//（库对已存在值不覆盖），只影响「应用没跑时点旧卡片」的冷启动，运行期激活不走它。
+		if err := toast.SetAppData(toast.AppData{AppID: toastAppID, ActivationExe: exe}); err != nil {
+			logf("warn", "登记通知激活器失败（通知点击无效）：%v", err)
+		}
+	})
+}
+
+var toastActivationOnce sync.Once
 
 // ---- 通知头部的应用图标 ----
 //
@@ -299,7 +337,8 @@ func toastDisabledByUser() bool {
 }
 
 // NotifySystemToast 发送 Windows 系统级 Toast 通知；silent=true 时不播放系统提示音。
-func (nt *Notifier) NotifySystemToast(title string, body string, silent bool) error {
+// payload 是点击通知时回传给激活回调（OnToastActivation）的参数，如 "ai-session=<id>"；可为空。
+func (nt *Notifier) NotifySystemToast(title string, body string, payload string, silent bool) error {
 	title = strings.TrimSpace(title)
 	body = strings.TrimSpace(body)
 	if title == "" {
@@ -314,9 +353,10 @@ func (nt *Notifier) NotifySystemToast(title string, body string, silent bool) er
 	// 不要设 Notification.Icon：那是 appLogoOverride（贴正文左侧的 48×48 大图），
 	// 与系统通知「应用名左边的小图标」不是一回事；后者由 IconUri 提供。
 	n := toast.Notification{
-		AppID: toastAppID,
-		Title: title,
-		Body:  body,
+		AppID:               toastAppID,
+		Title:               title,
+		Body:                body,
+		ActivationArguments: strings.TrimSpace(payload),
 	}
 	if silent {
 		n.Audio = toast.Silent

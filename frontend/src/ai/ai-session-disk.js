@@ -13,6 +13,7 @@ import {
     metaSignature,
     replaySessionLog,
     safeImageName,
+    safeVideoName,
     textOf,
 } from './ai-session-store.js';
 
@@ -117,14 +118,38 @@ export function createSessionDiskStore(options) {
         if (rel) image.file = rel;
     }
 
+    // 会话视频落盘（<id>/videos/）：与图片同构，只是换 Go 绑定与安全名。
+    async function saveVideoFile(sessionId, video) {
+        if (!video || typeof video !== 'object') return;
+        if (!video.data || video.file) return;
+        if (!backend.AISessionSaveVideo) return; // 旧后端：保留内嵌 base64，不丢视频
+        const rel = await backend.AISessionSaveVideo(
+            sessionId,
+            safeVideoName(video),
+            'data:' + (video.mime || 'video/mp4') + ';base64,' + video.data,
+        );
+        if (rel) video.file = rel;
+    }
+
     async function prepareImages(session, messages) {
         for (const message of messages || []) {
-            if (!message || !Array.isArray(message.images)) continue;
-            for (const image of message.images) {
-                try {
-                    await saveImageFile(session.id, image);
-                } catch (e) {
-                    // 落盘失败时保留 base64，事件里继续内嵌，保证图片不丢。
+            if (!message) continue;
+            if (Array.isArray(message.images)) {
+                for (const image of message.images) {
+                    try {
+                        await saveImageFile(session.id, image);
+                    } catch (e) {
+                        // 落盘失败时保留 base64，事件里继续内嵌，保证图片不丢。
+                    }
+                }
+            }
+            if (Array.isArray(message.videos)) {
+                for (const video of message.videos) {
+                    try {
+                        await saveVideoFile(session.id, video);
+                    } catch (e) {
+                        // 落盘失败时保留 base64，事件里继续内嵌，保证视频不丢。
+                    }
                 }
             }
         }
@@ -604,21 +629,35 @@ export function createSessionDiskStore(options) {
     }
 
     async function hydrateImages(session) {
-        if (!backend.AISessionReadImage) return;
         const lists = [session.messages, session.archived];
         for (const list of lists) {
             for (const message of list || []) {
-                if (!message || !Array.isArray(message.images)) continue;
-                for (const image of message.images) {
-                    if (!image || image.data || !image.file) continue;
-                    const name = textOf(image.file).replace(/^images[\\/]/, '');
-                    if (!name || name.includes('/') || name.includes('\\')) continue;
-                    try {
-                        const url = await backend.AISessionReadImage(session.id, name);
-                        const marker = 'base64,';
-                        const index = textOf(url).indexOf(marker);
-                        if (index >= 0) image.data = textOf(url).slice(index + marker.length);
-                    } catch (e) {}
+                if (!message) continue;
+                if (Array.isArray(message.images) && backend.AISessionReadImage) {
+                    for (const image of message.images) {
+                        if (!image || image.data || !image.file) continue;
+                        const name = textOf(image.file).replace(/^images[\\/]/, '');
+                        if (!name || name.includes('/') || name.includes('\\')) continue;
+                        try {
+                            const url = await backend.AISessionReadImage(session.id, name);
+                            const marker = 'base64,';
+                            const index = textOf(url).indexOf(marker);
+                            if (index >= 0) image.data = textOf(url).slice(index + marker.length);
+                        } catch (e) {}
+                    }
+                }
+                if (Array.isArray(message.videos) && backend.AISessionReadVideo) {
+                    for (const video of message.videos) {
+                        if (!video || video.data || !video.file) continue;
+                        const name = textOf(video.file).replace(/^videos[\\/]/, '');
+                        if (!name || name.includes('/') || name.includes('\\')) continue;
+                        try {
+                            const url = await backend.AISessionReadVideo(session.id, name);
+                            const marker = 'base64,';
+                            const index = textOf(url).indexOf(marker);
+                            if (index >= 0) video.data = textOf(url).slice(index + marker.length);
+                        } catch (e) {}
+                    }
                 }
             }
         }

@@ -12,7 +12,7 @@ CaDt-DataLens 是一个面向 Windows 的轻量级多格式数据查看与编辑
 
 ### Go 后端（仓库根）
 - `main.go`：Wails 启动配置、窗口选项、`//go:embed all:frontend/dist` 资源内嵌、单实例锁
-- `app_core.go`：App 结构与生命周期（startup/domReady/单实例）、命令行目标与启动参数解析；`const appVersion` 在 `app_core.go:39`
+- `app_core.go`：App 结构与生命周期（startup/domReady/单实例）、命令行目标与启动参数解析；`const appVersion` 在 `app_core.go:40`
 - `app_window.go` / `app_fs.go`：脏标记/应用配置/多窗口与资源管理器定位 · 文件/文件夹对话框；文件读写与目录条目操作已下沉 `internal/fileio` / `internal/fsops`
 - `appdata.go` / `logging.go`：应用数据目录、日志（文件属性在 `internal/fsops` 的 `GetPathInfo`）
 - `internal/aichat/` + `internal/aitransport/`：AI 对话与传输——发消息/停止/流注册表/看门狗/连通性/目录（aichat）· OpenAI/Anthropic/Responses 三套请求构造 · SSE 解码 · 重试与空闲看门狗 · 参数校验与代理 · 事件契约（aitransport）；`ai_transport_app.go` 注入 Logf/Version/LogsDir/看门狗挂载点
@@ -45,7 +45,7 @@ CaDt-DataLens 是一个面向 Windows 的轻量级多格式数据查看与编辑
 - `internal/run/`：运行代码（`PrepareRun` 临时副本与工作目录、`RunExec` 流式执行 + GBK 解码 + PATH 前置、stdin 队列 `RunInput` / `RunEndInput`、`RunStop`、临时目录清理）；进程取消表与命令桥共用 `internal/procctl`；配方与语言知识在前端 `src/run.js`，Go 侧只负责起进程
 - `run_project_app.go` + `internal/runproject/`：项目感知运行（`DetectRunProject` 只读探测项目标记与候选命令，遇 `.git` / 用户主目录停止）；执行仍走 `RunExec`，确认在前端
 - `envvars_app.go` + `internal/envvars/`：环境变量配置（DPAPI 加密、子进程注入合并 `MergeEnv`；平台加解密对随包）
-- `webtools_app.go` + `webtools_config.go` + `internal/webtools/`：联网与外部工具——内置 Bing RSS 搜索 / 公网网页抓取，DeepSeek 工具 API 适配（搜索 / 抓取 / OCR / TTS / ASR，TTS 流式落盘 `.cadt/gen/tts/`，ASR 接受 20 MB 音频字节）；`webtools_config.go` 管 `<应用数据>/external-tools.json`（0600、apiKey 只掩码下发、空值保持）与五个能力来源配置；来源路由（含本地 MCP 转发）在前端 `executeTool`
+- `webtools_app.go` + `webtools_config.go` + `internal/webtools/`：联网与外部工具——内置 Bing RSS 搜索 / 公网网页抓取 / 公网图片抓取（`FetchImage` → data URL 供 AI 的 `read_image` 看网图，与 `Fetch` 共用 `webValidateURL` 的 SSRF 与重定向校验，16 MB 上限、只信魔数），DeepSeek 工具 API 适配（搜索 / 抓取 / OCR / TTS / ASR，TTS 流式落盘 `.cadt/gen/tts/`，ASR 接受 20 MB 音频字节）；`webtools_config.go` 管 `<应用数据>/external-tools.json`（0600、apiKey 只掩码下发、空值保持）与五个能力来源配置；来源路由（含本地 MCP 转发）在前端 `executeTool`
 - `internal/mcpsamples/`：内置 MCP 示例（根壳 `mcp_samples.go` 只保留 `//go:embed` 三份 `docs/mcp-samples` 脚本并注入 `embed.FS`；释放与 `mcp.json` 合并在包内）
 - `ai_usage_app.go` + `internal/aiusage/`：AI 账号余额/用量查询
 - `internal/aischedule/`：AI 定时任务调度器（派生 SQLite `ai-schedule.db`；`AISchedule*` 绑定；`Start` / `Close` / `Path` 由根壳调用）
@@ -91,7 +91,7 @@ CaDt-DataLens 是一个面向 Windows 的轻量级多格式数据查看与编辑
 ### `docs/`
 - `packaging.md`（打包与发布）、`plugins/`、`skills/`、`samples/`、`screenshots/`、`icons/`、`legal/`、`mcp-samples/`（外部工具本地来源示例：SAPI TTS / Windows OCR / whisper ASR）；三份脚本已随 exe 内嵌、可在设置 → AI → 外部工具 → MCP 服务器 → 内置示例一键安装，本目录保留用于单独分发、审查与修改（Python / whisper 模型 / OCR 引擎仍不打包）
 - `finished-plans/`：已实施完的方案存档（`ai-panel.md`、`ai-panel-v2.md`、`ai-panel-v3.md`、`ai-head-agents-terminal.md`、`operation-audit-log.md`、`writing-mode.md`、`reading-mode.md`、`visualizer.md`、`mcp-client.md`、`ai-personalization.md`、`local-command-classifier.md`、`ai-gen-models.md` 等）
-- `unfinished-plans/`：未开工/进行中的方案（目前：`frontend-split-phase3.md`、`subagent-sandbox.md`、`ai-gen-image-edit.md`）；全部实施后移入 `finished-plans/`
+- `unfinished-plans/`：未开工/进行中的方案（目前：`ai-rerank.md`、`ai-group-chat.md`、`ai-rename-session.md`、`desktop-mcp.md`、`git-worktree.md`、`side-chat-tab.md`、`subagent-sandbox.md`、`turn-fold-redesign.md`）；全部实施后移入 `finished-plans/`
 - `icon-guidelines.md`
 - `reports/optimization-proposals.md`：体积与性能优化提案（含实测体积基线）
 
@@ -166,6 +166,9 @@ CaDt-DataLens 是一个面向 Windows 的轻量级多格式数据查看与编辑
 **新增工具**
 - `AI_TOOL_DEFS` 定义（描述写清「何时用 / 何时不用 / 与相邻工具的分工」）；**必须**同步登记 `AI_TOOL_CATALOG` + `AI_TOOL_GROUPS`（一致性测试见 `ai-tool-defs.test.mjs`，漏目录直接红，规则详情 `.cadt/memory/ai-tool-catalog-rule.md`）。
 - 下发范围：`toolsForScope` 档位清单、计划模式白名单、子代理 `subToolsForScope`（`ai-subagents.js`）按需同步。
+- 执行分支：`ai-panel.js` 的 `executeTool` 加 `case '<名字>'`（异步记得 await）；工具卡 `ai-tool-cards.js` 的 `toolMeta` 补 `verb` + `icon`（图标名必须在 `core/icons.js` 注册，否则渲染为空不报错）。
+- **接线守卫**：`frontend/test/ai/ai-tool-wiring.test.mjs` 会逐个工具核对「目录 ↔ 档位下发 ↔ 执行分支 ↔ 工具卡元数据 ↔ 图标注册」，并交叉核对「描述里提到的参数名 ↔ `parameters.properties` ↔ 执行分支读的 `input.*`」，漏一处直接红；执行分支确实不在 `ai-panel.js` 时登记到该文件的 `EXECUTED_ELSEWHERE` 并写明原因。
+- **加参数**（改已有工具同理）：`properties` 加字段 + 写 `description`（模型只看这个）；描述里提到参数名就必须已声明——词表命中的参数名会被守卫当「参数提及」校验，确属取值 / 输出字段 / 别的工具参数时登记 `PROSE_TOKENS` 并写原因。
 - Go 绑定 + `frontend/wailsjs/` 三件（App.js / App.d.ts / models.ts，wails 重新生成或手写）；**`dev/mock-backend.js` 补同名 mock**（漏了 dev 模式调用即崩）。
 - 配套测试：纯函数进 `*.test.mjs` / `*_test.go`，并登记 `npm test` 清单。
 
@@ -178,12 +181,28 @@ CaDt-DataLens 是一个面向 Windows 的轻量级多格式数据查看与编辑
 **删除工具**
 - def、`AI_TOOL_CATALOG` 条目、`toolsForScope` / 计划模式 / 子代理白名单、`dev/mock-backend.js` 同名 mock、Go 绑定与调用分支一并清；测试里的精确断言同步删。
 
+**app_control 动作（第二套「工具」，同样三处对齐）**
+- 动作清单有三份：`ai-constants.js` 的 cadt-ui 技能「动作表」（模型唯一看得到的清单）、`main.js` 的 `APP_ACTIONS`（错误提示列它）、`runAppAction` 的 `switch` + `MCP_CONFIG_ACTIONS`（真正分发）。新增/删除动作三处必须同时改。
+- 守卫 `frontend/test/ai/ai-app-actions.test.mjs` 三方对账，并要求技能表**一条一个动作**（`- action_name {params}：说明`）——历史上用 `；` / `/` 塞多个动作的行没法机械核对，格式现在由测试强制。
+- 已实现但刻意不给模型的动作，登记该文件的 `UNDOCUMENTED`（写原因）；参数写进技能表，别只写在 `description` 里。
+
 **收尾**：用户可见变更进 `CHANGELOG.md`（见下节）。
+
+### 内容区虚拟文档（新增一类标签页时必读）
+
+`browser` / `bgTerm` / `agentView` / `sideChat` 这类**不对应磁盘文件**的标签页靠 doc 上的标记位接进编辑器，四处必须同时改，漏一处都不报错：
+
+1. `src/bridge/*.js` 里建 doc（`kind: …`）——否则编辑器里的分支是死代码；
+2. `editor-groups.js` 的 `createDocEditor` 分支（`if (doc.X) { … View(doc) }`）——漏了标签打开是空白；
+3. `writing-ui.js` 的 `viewOptionsFor` 返回 `[]`——漏了虚拟标签页会出现文件视图下拉，一切换就坏；
+4. `editor-groups.js` 的 `closeDocNow` 卸载（`doc.XUnsub` / `doc.XUnmount`）——漏了订阅、监听与面板 DOM 泄漏。
+
+守卫 `frontend/test/editor/virtual-doc-wiring.test.mjs` 会从 `createDocEditor` 反推虚拟类型集合，与 `viewOptionsFor` 清单双向对账，并核对卸载与创建点。
 
 ### 文档与提交
 - 用户可见的改动同步更新 `CHANGELOG.md` 与 `README.md` 对应小节。
 - 方案文档放 `docs/unfinished-plans/`，全部实施后移入 `docs/finished-plans/`。
-- 版本号三处需一致：`app_core.go` 的 `appVersion`（`app_core.go:22`）、`wails.json` 的 `productVersion`、NSIS 脚本（见 `docs/packaging.md`）。
+- 版本号三处需一致：`app_core.go` 的 `appVersion`（`app_core.go:40`）、`wails.json` 的 `productVersion`、NSIS 脚本（见 `docs/packaging.md`）。
 
 ## 常用命令
 

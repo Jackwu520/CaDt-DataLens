@@ -8,6 +8,7 @@ import {
     emptyPermissionRules,
     evaluatePermissionRules,
     formatRuleLines,
+    isWebApproval,
     matchPermissionRule,
     normalizeDefaultScope,
     normalizePermissionRules,
@@ -279,4 +280,17 @@ test('read 决策链：deny 优先、sessionAllow 次之、auto 直放、read/ed
         decidePermission({scope: 'auto', kind: 'read', rules: {read: {allow: [], ask: ['D:/Watch/**'], deny: []}}, subject: 'D:/Watch/a.md'}),
         {decision: 'ask', source: 'project', rule: 'D:/Watch/**'},
     );
+});
+
+test('isWebApproval：read_image 的网图审批按网络处理，本地读图仍是读', () => {
+    // 网图审批（read_image 传 URL / web_fetch）：文案说「本会话允许该网址」、审计记 kind web
+    assert.equal(isWebApproval({kind: 'command', tool: 'read_image', web: true, command: 'https://a.com/x.png'}), true);
+    assert.equal(isWebApproval({kind: 'command', tool: 'web_fetch', command: 'https://a.com/'}), true,
+        '旧会话没有 web 字段，按工具名回落');
+    // 本地读图是 read 审批，不能套网络文案
+    assert.equal(isWebApproval({kind: 'read', tool: 'read_image', path: 'D:/a.png'}), false);
+    // 普通命令审批 / 空值
+    assert.equal(isWebApproval({kind: 'command', tool: 'run_command', command: 'npm test'}), false);
+    assert.equal(isWebApproval({kind: 'command', tool: 'run_command', web: false, command: 'npm test'}), false);
+    assert.equal(isWebApproval(null), false);
 });

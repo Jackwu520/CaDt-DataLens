@@ -168,6 +168,30 @@ func ValidateMessages(messages []Message) error {
 				}
 			}
 		}
+		if len(m.Videos) > 0 {
+			if role != "user" {
+				return fmt.Errorf("第 %d 条消息只有用户消息可以携带视频", i+1)
+			}
+			if len(m.Videos) > aiMaxVideosPerMessage {
+				return fmt.Errorf("第 %d 条消息视频超过上限（%d 个）", i+1, aiMaxVideosPerMessage)
+			}
+			for j, vid := range m.Videos {
+				mime := strings.ToLower(strings.TrimSpace(vid.Mime))
+				if mime != "video/mp4" {
+					return fmt.Errorf("第 %d 条消息第 %d 个视频格式不支持：%s（当前仅支持 mp4）", i+1, j+1, vid.Mime)
+				}
+				data := strings.TrimSpace(vid.Data)
+				if data == "" {
+					return fmt.Errorf("第 %d 条消息第 %d 个视频数据为空", i+1, j+1)
+				}
+				if len(data) > aiMaxVideoBase64 {
+					return fmt.Errorf("第 %d 条消息第 %d 个视频超过大小上限", i+1, j+1)
+				}
+				if _, err := base64.StdEncoding.DecodeString(data); err != nil {
+					return fmt.Errorf("第 %d 条消息第 %d 个视频不是合法 base64", i+1, j+1)
+				}
+			}
+		}
 		if len(m.ToolCalls) > aiMaxToolDefs {
 			return fmt.Errorf("第 %d 条消息的工具调用过多", i+1)
 		}

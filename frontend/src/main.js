@@ -15,6 +15,7 @@ import {createActivityLog} from './core/activity-log.js';
 import {iconSvg, renderMenuIcon} from './core/icons.js';
 import {createPalette} from './shell/palette.js';
 import {createAIPanel} from './ai/ai-panel.js';
+import {decideAutoCollapse, shouldExpandEditorOnTab} from './ai/ai-auto-collapse.js';
 import {createReadingMode} from './reading/reading.js';
 import {repairJson} from './core/jsonrepair.js';
 import {fileIconSpec} from './core/fileicons.js';
@@ -432,14 +433,16 @@ const APP_SETTING_RULES = {
     sidebarWidth: {type: 'number', min: 160, max: 500},
     terminalHeight: {type: 'number', min: 120, max: 480},
     aiPanelWidth: {type: 'number', min: 280, max: 2000},
-    aiPanelSide: {type: 'enum', values: ['right', 'left']},
+    // 面板显示形态（aiFloatMode：停靠/全屏/悬浮）与停靠侧（aiPanelSide）**故意不在白名单**：
+    // 布局形态只能由用户手动切（面板 [...] 菜单 / 设置页 / 视图菜单），AI 与任何自动化都不得改
+    // （2026-11-17 用户硬规则；别为了「顺手」把 aiPanelSide 加回来）。
 };
 
 const APP_ACTIONS = [
     'get_state', 'screenshot', 'open_file', 'open_folder', 'activate_tab', 'close_tab', 'reopen_closed_tab', 'move_tab',
     'set_view', 'goto_line', 'toggle_sidebar', 'set_sidebar_view', 'toggle_terminal', 'toggle_ai_panel',
     'toggle_fullscreen', 'toggle_always_on_top', 'set_theme', 'open_settings', 'set_setting',
-    'ai_new_session', 'ai_switch_session', 'flash', 'refresh_explorer', 'type_text', 'press_key',
+    'ai_new_session', 'ai_switch_session', 'ai_rename_session', 'flash', 'refresh_explorer', 'type_text', 'press_key',
     'open_browser_tab', 'close_browser_tab',
     'get_settings', 'get_editor', 'get_content', 'get_git', 'get_ai', 'get_explorer', 'get_plugins', 'get_terminal',
     'get_activity', 'get_patch', 'patch_set_root', 'patch_repreview',
@@ -967,6 +970,10 @@ async function runAppAction(action, params, scope) {
             if (!session) throw new Error('找不到会话：' + p.id);
             return {switched: session};
         }
+        case 'ai_rename_session': {
+            if (!aiPanel || !aiPanel.bridgeRenameSession) throw new Error('AI 面板未初始化');
+            return {renamed: await aiPanel.bridgeRenameSession(p.id, p.title)};
+        }
         case 'get_gen_models': {
             if (!aiPanel || !aiPanel.bridgeGenModelsList) throw new Error('AI 面板未初始化');
             return aiPanel.bridgeGenModelsList();
@@ -1217,10 +1224,16 @@ const defaultSettings = {
     aiShowEveryTurnMeta: false,
     aiContextSlim: true,
     aiShowUsage: true,
+    // 回复操作按钮颗粒度：full 全部完整出现（默认）/ mid-basic 中间步骤只留复制+回退 / last-only 只在最后一条显示
+    aiMsgActions: 'full',
     aiAssistantCard: false,
     aiInlineWidgets: true,
     // 任务清单默认展开（默认收起：只占一行进度摘要，设置页可改）
     aiTodosDefaultExpanded: false,
+    // AI 回合开始时自动收起编辑区，把内容区位置让给对话（默认关：会改变布局，须主动开启）
+    aiAutoCollapseEditor: false,
+    // 编辑区被收起时，任何新标签页打开都自动展开（默认开；仅停靠分屏生效）
+    editorExpandOnNewTab: true,
     aiMaxSessions: 50,
     aiInjectContext: true,
     aiInjectRoot: true,
@@ -1365,11 +1378,17 @@ for (const key of ['aiChatFontEn', 'aiChatFontCjk', 'aiChatCodeFont']) {
 }
 settings.aiShowThinking = settings.aiShowThinking !== false;
 settings.aiShowUsage = settings.aiShowUsage !== false;
+// 回复操作按钮颗粒度（三档，非法值回落 full）
+settings.aiMsgActions = ['full', 'mid-basic', 'last-only'].includes(settings.aiMsgActions) ? settings.aiMsgActions : 'full';
 settings.aiAssistantCard = settings.aiAssistantCard === true;
 // AI 回答里把 svg / html 围栏渲染成可视化卡片（默认开；关闭后按普通代码块显示）
 settings.aiInlineWidgets = settings.aiInlineWidgets !== false;
 // 任务清单默认展开（默认关 = 收起成一行进度摘要）
 settings.aiTodosDefaultExpanded = settings.aiTodosDefaultExpanded === true;
+// AI 工作时自动收起编辑区（默认关；存量配置缺该键即视为关，不会悄悄改布局）
+settings.aiAutoCollapseEditor = settings.aiAutoCollapseEditor === true;
+// 新标签页打开时自动展开编辑区（默认开；存量配置缺该键即视为开）
+settings.editorExpandOnNewTab = settings.editorExpandOnNewTab !== false;
 settings.aiMaxSessions = Math.min(500, Math.max(2, Number(settings.aiMaxSessions) || 50));
 settings.aiInjectContext = settings.aiInjectContext !== false;
 for (const key of ['aiInjectRoot', 'aiInjectActiveFile', 'aiInjectCaret', 'aiInjectViewport', 'aiInjectOpenFiles',
@@ -1532,6 +1551,8 @@ const editorGroupsMod = createEditorGroups({
     set docSeq(v) { docSeq = v; },
     get activityLog() { return activityLog; },
     get aiPanel() { return aiPanel; },
+    // 内容区有文档被打开/切到前台：解开编辑区收起态（见 revealEditorForContent）
+    get onDocVisible() { return revealEditorForContent; },
     get aiReferenceFileMenuItems() { return aiReferenceFileMenuItems; },
     get applyReadOnlyToDoc() { return applyReadOnlyToDoc; },
     get applySettings() { return applySettings; },
@@ -1620,7 +1641,7 @@ const editorGroupsMod = createEditorGroups({
     get viewOptionsFor() { return viewOptionsFor; },
     get workspaceFolder() { return workspaceFolder; },
 });
-const {activateDoc, addDocToFocusedGroup, applyAceMode, applyCsvTableZoom, applyImageZoom, browserViewportLabel, closeDocNow, closeDocsWithConfirm, closeSqlView, createDoc, createDocEditor, createGroup, dismissBanner, doRedo, doUndo,  enterBinaryView, enterCsvTable, enterImageView, enterMarkdownPreview, enterSplitView, enterSqlView, enterSvgRender, enterTextView, exitSplitView, expandAllWithGuard, flushCsvCellEditor,  groupDocs, setFocusedGroupId, setSplitRoot, groupOfDoc, handleAIWorkspaceFileChanged, handleExternalDocChanges, hideBanner, hideSvgRender, hookCodeFoldRanges, hookMultiCursor, humanizeCounts, initCodeFoldHover, jumpBookmark, leaveCsvTable, leaveMarkdownPreview, markDocDirty, mdSyncScrollFromAce, moveTabInGroup, patchViewContext, refreshPatchMarkers, rememberDocView, renderBookmarks, renderBreadcrumb, renderCsvTableView, renderEditorLayout, renderMarkdownPreview, renderTabs, reopenClosedTab, requestCloseDoc, revertDocToSaved, scheduleGitGutter, setBrowserViewport, setFilename, showBanner, showImageMenu, showMdPreviewMenu, showPathInFolder, showSvgMenu,  syncAllBrowserTabs, syncBrowserTab, syncTabReadOnly, textArea, toggleBookmark, toggleFocusedNode, updateBrowserTitle, updateDocChrome, updateStatus, zoomCsvTable, zoomImageBy, zoomSvgRenderBy} = editorGroupsMod;
+const {activateDoc, addDocToFocusedGroup, applyAceMode, applyCsvTableZoom, applyImageZoom, browserViewportLabel, closeDocNow, closeDocsWithConfirm, closeSqlView, createDoc, createDocEditor, createGroup, dismissBanner, doRedo, doUndo,  enterBinaryView, enterCsvTable, enterImageView, enterMarkdownPreview, enterSplitView, enterSqlView, enterSvgRender, enterTextView, enterVideoView, exitSplitView, expandAllWithGuard, flushCsvCellEditor,  groupDocs, setFocusedGroupId, setSplitRoot, groupOfDoc, handleAIWorkspaceFileChanged, handleExternalDocChanges, hideBanner, hideSvgRender, hideVideoView, hookCodeFoldRanges, hookMultiCursor, humanizeCounts, initCodeFoldHover, jumpBookmark, leaveCsvTable, leaveMarkdownPreview, markDocDirty, mdSyncScrollFromAce, moveTabInGroup, openWithDefaultApp, patchViewContext, refreshPatchMarkers, rememberDocView, renderBookmarks, renderBreadcrumb, renderCsvTableView, renderEditorLayout, renderMarkdownPreview, renderTabs, reopenClosedTab, releaseVideo, requestCloseDoc, revertDocToSaved, scheduleGitGutter, setBrowserViewport, setFilename, showBanner, showImageMenu, showMdPreviewMenu, showPathInFolder, showSvgMenu,  syncAllBrowserTabs, syncBrowserTab, syncTabReadOnly, textArea, toggleBookmark, toggleFocusedNode, updateBrowserTitle, updateDocChrome, updateStatus, zoomCsvTable, zoomImageBy, zoomSvgRenderBy} = editorGroupsMod;
 const NEW_FILE_TYPES = [
     {label: 'JSON 文件', name: '新建文件.json'},
     {label: '文本文件', name: '新建文件.txt'},
@@ -1802,12 +1823,14 @@ const explorerOps = createExplorerOps({
     set fileClipboard(v) { fileClipboard = v; },
     get flash() { return flash; },
     get gitStateCache() { return gitStateCache; },
+    get newFileTypeMenuItems() { return newFileTypeMenuItems; },
     get openConfirmDialog() { return openConfirmDialog; },
     get openDiffDialog() { return openDiffDialog; },
     get openFolderWorkspace() { return openFolderWorkspace; },
     get openInNewWindows() { return openInNewWindows; },
     get openNameDialog() { return openNameDialog; },
     get openPath() { return openPath; },
+    get openWithDefaultApp() { return openWithDefaultApp; },
     get readingMode() { return readingMode; },
     get renderBreadcrumb() { return renderBreadcrumb; },
     get renderTabs() { return renderTabs; },
@@ -2287,7 +2310,7 @@ function initActivityBar() {
     if (els.tbRun) els.tbRun.addEventListener('click', () => runController.run());
     // 新建浏览器标签页：活动栏是「一次性动作」而非面板开关，故无 aria-pressed
     if (els.abBrowser) els.abBrowser.addEventListener('click', () => openBrowserTab('about:blank'));
-    if (els.editorCollapseStrip) els.editorCollapseStrip.addEventListener('click', () => setEditorCollapsed(!editorCollapsedFlag));
+    if (els.editorCollapseStrip) els.editorCollapseStrip.addEventListener('click', () => toggleEditorCollapsed());
     if (els.abTerminal) els.abTerminal.addEventListener('click', () => toggleDockView('terminal'));
     if (els.abDebug) els.abDebug.addEventListener('click', () => toggleDockView('debug'));
     if (els.abGit) els.abGit.addEventListener('click', () => toggleSidebarView('git'));
@@ -2309,16 +2332,28 @@ function toggleAIPanel(force) {
 }
 
 // 编辑区收起：把内容区位置让给 AI 助手（标签页保留），收起条可随时恢复。
+// 收起有**两个原因**（手动点收起条 / AI 工作时自动让位），必须分开记账——AI 回合结束时
+// 只还原「自己收起的」，绝不把用户刻意收起的编辑区顶开（反之亦然）。
 // 会话态不持久化——AI 面板是惰性初始化，重启后未打开则自然回到展开态。
-let editorCollapsedFlag = false;
-function setEditorCollapsed(next) {
+let editorCollapseReason = ''; // '' 展开 | 'manual' 用户收起 | 'auto' AI 让位
+// 自动让位的粘性位：用户手动展开过之后，**当前这次让位过程**内不再自动收起（不跟用户抢）。
+// 回合开始与切会话都会清零——它不是固定锁，只保护「用户刚表达过要看的这一刻」。
+// 「始终不要自动收起」是开关 settings.aiAutoCollapseEditor 的事。
+let autoCollapseSuppressed = false;
+let autoCollapseSessionId = '';
+
+function isEditorCollapsed() { return !!editorCollapseReason; }
+
+function setEditorCollapsed(next, reason) {
     const target = !!next;
     if (target) {
         if (!aiPanel) initAIPanel();
         if (!aiPanel) { flash('AI 面板不可用', true); return; }
         if (aiPanel.isOpen && !aiPanel.isOpen()) aiPanel.open(true);
+        editorCollapseReason = reason === 'auto' ? 'auto' : 'manual';
+    } else {
+        editorCollapseReason = '';
     }
-    editorCollapsedFlag = target;
     const topRow = document.getElementById('top-row');
     if (topRow) topRow.classList.toggle('ai-editor-collapsed', target);
     if (els.editorCollapseStrip) {
@@ -2332,12 +2367,63 @@ function setEditorCollapsed(next) {
     }
     try { if (terminalUI.open) fitActiveTerm(); } catch (e) {}
 }
+
+// 收起条 / 视图菜单共用的手动开合：手动展开一律记「别再自动收我」。
+function toggleEditorCollapsed() {
+    if (isEditorCollapsed()) {
+        autoCollapseSuppressed = true;
+        setEditorCollapsed(false, 'manual');
+    } else {
+        setEditorCollapsed(true, 'manual');
+    }
+}
+
+// 内容区出现内容就解开收起态：文件、浏览器、子代理详情、后台终端……全部经
+// activateDoc → updateDocChrome 收敛到这一条路。
+// 只在「停靠分屏 + 开关打开」时展开（settings.editorExpandOnNewTab，默认开）：
+// 全屏盖住内容区、悬浮是另一个窗口，展开都看不见，没必要动布局。
+// 这里不置粘性位：下一个回合 AI 仍然可以再次让位。
+function revealEditorForContent() {
+    const expand = shouldExpandEditorOnTab({
+        enabled: settings.editorExpandOnNewTab !== false,
+        collapsed: !!editorCollapseReason,
+        mode: (aiPanel && aiPanel.getMode) ? aiPanel.getMode() : 'dock',
+    });
+    if (expand) setEditorCollapsed(false);
+}
+
+// AI 回合驱动自动让位：回合开始收一次、结束还原一次。attachStream / detachStream 是
+// 按会话整轮触发（含中间多步工具调用），所以不会随流式每帧闪。
+// 判定本身在 ai-auto-collapse.js（纯函数、可测），这里只做 DOM 动作。
+function applyAutoCollapse(running, sessionId, isCurrent) {
+    // 会话归属变了 = 换了会话看：清粘性位（用户的展开意图只对本会话有效）
+    if (sessionId && sessionId !== autoCollapseSessionId) {
+        autoCollapseSessionId = sessionId;
+        autoCollapseSuppressed = false;
+    }
+    // 新回合 = 重新给「自动让位」一次机会。粘性位只保护本次让位过程，
+    // 不是永久锁——想长期不收请关掉 settings.aiAutoCollapseEditor。
+    if (running) autoCollapseSuppressed = false;
+    const action = decideAutoCollapse({
+        enabled: settings.aiAutoCollapseEditor === true,
+        isCurrent,
+        running,
+        collapseReason: editorCollapseReason,
+        suppressed: autoCollapseSuppressed,
+        mode: (aiPanel && aiPanel.getMode) ? aiPanel.getMode() : 'dock',
+        panelOpen: !!(aiPanel && aiPanel.isOpen && aiPanel.isOpen()),
+        hasDirtyDoc: docs.some((doc) => doc && doc.dirty),
+    });
+    if (action === 'collapse') setEditorCollapsed(true, 'auto');
+    else if (action === 'expand') setEditorCollapsed(false);
+}
+
 // AI 面板关闭时自动还原编辑区，避免内容区只剩侧边栏
 if (els.editorCollapseStrip) {
     const aiPanelEl = document.getElementById('ai-panel');
     if (aiPanelEl) {
         new MutationObserver(() => {
-            if (editorCollapsedFlag && aiPanelEl.classList.contains('hidden')) setEditorCollapsed(false);
+            if (editorCollapseReason && aiPanelEl.classList.contains('hidden')) setEditorCollapsed(false);
         }).observe(aiPanelEl, {attributes: true, attributeFilter: ['class']});
     }
 }
@@ -2411,16 +2497,28 @@ function setAIPanelMode(mode) {
     if (aiPanel) aiPanel.setMode(mode);
 }
 
-// 消息中心：状态栏【消息】入口 + 浮层面板 + 持久化队列（AI notify_send / 任务完成 / 版本更新都进这里）。
+// 消息中心：状态栏【消息】入口 + 浮层面板 + 持久化队列（AI notify_send / 失败·提问·审批 / 版本更新进这里；
+// 例行「任务完成」不进——会刷屏，见 ai/ai-notify-policy.js）。
 // toast 点击与消息行点击：带 actionId 的分派动作（如打开更新对话框），否则跳转到对应 AI 会话。
+// 跳转逻辑被 focusAISession 收口：系统通知点击（ai-notify-activate 事件）走同一条路。
+function focusAISession(sessionId) {
+    if (!sessionId) return;
+    if (!aiPanel) initAIPanel();
+    if (!aiPanel || !aiPanel.switchSession) return;
+    aiPanel.open(true); // 强制打开：面板已开时无参 open() 是 toggle 关闭语义，会把面板关掉
+    try { aiPanel.switchSession(sessionId); } catch (e) {}
+}
+
+// 系统通知点击（Go 侧 COM 激活回调 → WindowShow + ai-notify-activate 事件）：
+// payload 形如 "ai-session=<id>"，解析出自带会话就跳；其余只享受「窗口已拉回前台」。
+function handleNotifyActivation(payload) {
+    const hit = /(?:^|&)ai-session=([^&]+)/.exec(String(payload || ''));
+    if (!hit) return;
+    try { focusAISession(decodeURIComponent(hit[1])); } catch (e) {}
+}
+
 const messageCenter = createMessageCenter({
-    focusSession: (sessionId) => {
-        if (!sessionId) return;
-        if (!aiPanel) initAIPanel();
-        if (!aiPanel) return;
-        aiPanel.open(true); // 强制打开：面板已开时无参 open() 是 toggle 关闭语义，会把面板关掉
-        try { aiPanel.switchSession(sessionId); } catch (e) {}
-    },
+    focusSession: focusAISession,
     runAction: (actionId) => {
         if (actionId === 'open-update-dialog') {
             // 重新检查并打开更新对话框（结果比消息里的快照新鲜）
@@ -2440,7 +2538,8 @@ function initAIPanel() {
         overlayParent: document.getElementById('main-pane'),
         backend,
         settings,
-        // 消息中心投递回调：notify_send 工具与任务完成通知都走这里（message-center.js）
+        // 消息中心投递回调：notify_send 工具与「需要你处理」的通知都走这里（message-center.js）；
+        // 是否真的写进列表由 ai-notify-policy 的 centerRecord 决定（任务完成不写）
         addMessage: (...args) => messageCenter.add(...args),
         // 头部放大镜：开全局搜索并只勾选「AI 会话」分类（会话搜索框已并入这里）
         onHeadSearch: () => openGlobalSearch({aiOnly: true}),
@@ -2459,11 +2558,13 @@ function initAIPanel() {
         refreshPlugins: () => loadPlugins(backend),
         openTermTab: (...args) => openBgTermTab(...args),
         // AI 终端桥（terminal 工具）：延迟求值——terminal-ui 工厂在本模块后段创建，
-        // 创建期直接引用 terminalUI 会 TDZ；getter 在工具调用时才读。
+        // 创建期直接引用会 TDZ；getter 在工具调用时才读。注意 terminalHostApi 挂在
+        // terminalMod 模块返回面（sessMod 转发），不在 terminalUI（那只是 dock 状态对象）——
+        // 以前调错对象导致 terminal 工具一直报「当前版本不支持」。
         get terminalHost() {
-            if (!terminalUI || typeof terminalUI.terminalHostApi !== 'function') return null;
+            if (typeof terminalHostApi !== 'function') return null;
             try {
-                return terminalUI.terminalHostApi();
+                return terminalHostApi();
             } catch (e) {
                 return null;
             }
@@ -2650,6 +2751,8 @@ function initAIPanel() {
         },
         // 面板开合 / 显示方式 / 消息流变化：结构面板据此决定显示文件结构还是会话结构
         onPanelStateChange: () => refreshStructureSources(),
+        // 会话回合开始 / 结束：驱动「AI 工作时自动收起编辑区」（默认关，见 settings.aiAutoCollapseEditor）
+        onTurnStateChange: (running, sessionId, isCurrent) => applyAutoCollapse(running, sessionId, isCurrent),
     });
     window.__lens.aiPanel = aiPanel;
     window.__mockAiEmit = (name, payload) => {
@@ -2658,7 +2761,7 @@ function initAIPanel() {
     if (rt) {
         // 新增 Go 侧 aiEvent* 常量时必须同步加进这里，否则事件发出后前端无人接收
         // （ai-retry 曾长期漏订阅，导致流式状态条的重试提示是死代码）。
-        for (const eventName of ['ai-chunk', 'ai-think', 'ai-toolcall', 'ai-done', 'ai-error', 'ai-retry', 'ai-param-adjust']) {
+        for (const eventName of ['ai-chunk', 'ai-think', 'ai-toolcall', 'ai-done', 'ai-error', 'ai-retry', 'ai-param-adjust', 'ai-queue']) {
             rt.EventsOn(eventName, (payload) => {
                 if (aiPanel) aiPanel.handleEvent(eventName, payload);
             });
@@ -2960,12 +3063,16 @@ async function reloadActive(opts = {}) {
         doc.imageScale = 0;
         doc.imageZoom = null;
         doc.imagePan = null;
+        // 重新加载会重建 pane：先把视频断源，否则旧解码器还在播
+        releaseVideo(doc);
+        doc.videoReleased = false;
         doc.loading = false;
         doc.bannerDismissed = false;
         Object.assign(doc, fresh, {id: doc.id, dirty: false, untitled: false, text: null, content: data.content, bookmarks: doc.bookmarks || new Set()});
         let nextMode = keepMode;
         if (doc.binary) {
-            nextMode = doc.image && keepMode === 'image' ? 'image' : 'binary';
+            nextMode = doc.video && keepMode === 'video' ? 'video'
+                : doc.image && keepMode === 'image' ? 'image' : 'binary';
         } else if (doc.format.preview) {
             if (doc.large) nextMode = 'code';
             else if (!['preview', 'code', 'text'].includes(nextMode)) nextMode = 'preview';
@@ -3471,10 +3578,12 @@ const modeSwitch = createModeSwitch({
     get enterSqlView() { return enterSqlView; },
     get enterSvgRender() { return enterSvgRender; },
     get enterTextView() { return enterTextView; },
+    get enterVideoView() { return enterVideoView; },
     get exitSplitView() { return exitSplitView; },
     get file() { return file; },
     get flash() { return flash; },
     get hideSvgRender() { return hideSvgRender; },
+    get hideVideoView() { return hideVideoView; },
     get hookCodeFoldRanges() { return hookCodeFoldRanges; },
     get hookMultiCursor() { return hookMultiCursor; },
     get isSvgDoc() { return isSvgDoc; },
@@ -3867,7 +3976,7 @@ function menuItems(kind) {
                         {label: '悬浮（独立窗口）', action: () => setAIPanelMode('float')},
                     ],
                 },
-                {label: '收起编辑区（标签页保留）', checked: editorCollapsedFlag, action: () => setEditorCollapsed(!editorCollapsedFlag)},
+                {label: '收起编辑区（标签页保留）', checked: isEditorCollapsed(), action: () => toggleEditorCollapsed()},
             );
             return items;
         }
@@ -4453,6 +4562,8 @@ if (rt) {
     });
     rt.EventsOn('open-targets', (targets) => openTargets(targets));
     rt.EventsOn('open-files', (paths) => openPaths(paths));
+    // 系统通知被点击：Go 侧已把窗口拉回前台，这里按激活参数跳到对应 AI 会话
+    rt.EventsOn('ai-notify-activate', (payload) => handleNotifyActivation(payload));
     rt.EventsOn('workspace-changed', (payload) => {
         if (explorer && typeof explorer.handleExternalChanges === 'function') explorer.handleExternalChanges(payload);
         handleExternalDocChanges(payload);
@@ -4634,7 +4745,7 @@ const terminalMod = createTerminalUI({
     get toolEnvFor() { return toolEnvFor; },
     get workspaceFolder() { return workspaceFolder; },
 });
-const {applyDockView, renderGitPanel, cmdExitHandlers, cmdOutHandlers, currentSidebarView, fitActiveTerm, runArgsText, runController, switchSidebarView, syncTerminalTheme, termCwd, terminalUI, toggleDockView, toggleSidebarView, toggleTerminalPanel, getDockView, setDockView, nextCmdSeq, nextMockBgSeq, nextMockSchedSeq, startRunProject} = terminalMod;
+const {applyDockView, renderGitPanel, cmdExitHandlers, cmdOutHandlers, currentSidebarView, fitActiveTerm, runArgsText, runController, switchSidebarView, syncTerminalTheme, termCwd, terminalHostApi, terminalUI, toggleDockView, toggleSidebarView, toggleTerminalPanel, getDockView, setDockView, nextCmdSeq, nextMockBgSeq, nextMockSchedSeq, startRunProject} = terminalMod;
 // —— 启动初始化：必须在 terminalMod 解构之后（applySettings 经 deps 触达
 //    terminal-ui 导出），也必须在 bridgeUI 工厂之前（保持原始执行顺序）——
 applySettings();

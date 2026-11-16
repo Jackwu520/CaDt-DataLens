@@ -661,3 +661,17 @@ test('buildSessionMeta 的 turnTs：占位沿用缓存，不把现算出来的 0
     assert.equal(buildSessionMeta(stub).turnTs, 777);
     assert.equal(buildSessionMeta({_stub: true, id: 's1', createdAt: 100, messages: []}).turnTs, 0);
 });
+
+test('buildSessionMeta：worktree 会话态随 meta 持久化（占位与非对象归一）', () => {
+    const wt = {name: 'demo-ab12', branch: 'cadt/wt/demo-ab12', path: 'D:/repo/.cadt/worktree/demo-ab12', baseSha: 'abc', createdAt: 5};
+    const meta = buildSessionMeta({id: 's1', worktree: wt});
+    assert.deepEqual(meta.worktree, wt);
+    // 占位会话（_stub）也原样保留 worktree（孤儿判定要占位会话参与）
+    const stubMeta = buildSessionMeta({id: 's2', _stub: true, _msgCount: 3, worktree: wt});
+    assert.equal(stubMeta.worktree.name, 'demo-ab12');
+    // 非法值归一成 null；JSON 往返不失真
+    assert.equal(buildSessionMeta({id: 's3'}).worktree, null);
+    assert.equal(buildSessionMeta({id: 's4', worktree: 'x'}).worktree, null);
+    const round = JSON.parse(JSON.stringify(buildSessionMeta({id: 's5', worktree: wt})));
+    assert.equal(round.worktree.path, wt.path);
+});

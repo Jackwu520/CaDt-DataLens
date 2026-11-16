@@ -27,6 +27,10 @@ const (
 	aiMaxModels           = 500
 	aiMaxImagesPerMessage = 6
 	aiMaxImageBase64      = 8 << 20
+	// 视频输入（OpenAI 兼容协议的 video_url 内容段）：不做降质/截帧，体积门禁放前端，
+	// 这里只兜底。Qwen-VL 系（DashScope / vLLM）实测可吃十几 MB 的 base64 视频。
+	aiMaxVideosPerMessage = 1
+	aiMaxVideoBase64      = 24 << 20
 	// aiChunkBatchWindow 合并 ai-think/ai-chunk 的时间窗：DeepSeek reasoning 每秒可达
 	// 上百个小块，逐块 EventsEmit 会造成 WebView2 IPC 洪泛、渲染进程主线程被压到流
 	// 结束才消化完（思考内容表现为「全部输出完才出现」）。窗口内的同类文本合并一次发出。
@@ -43,6 +47,9 @@ const (
 	// 服务端参数校验给出的上限（如 max_tokens 超模型上限）被自动收敛时通知前端，
 	// 由前端提示用户并把该模型条目的输出窗口回写到配置。
 	EventParamAdjust = "ai-param-adjust"
+	// 请求因本地 RPM 限流（或 429 冻结）排队时通知前端。WaitMs=0 表示排队结束、
+	// 请求已发出——前端据此收起「排队中」提示，否则用户看到的是纯空转。
+	EventQueue = "ai-queue"
 )
 
 var (
@@ -69,6 +76,12 @@ type Config struct {
 	ThinkingBudget int            `json:"thinkingBudget,omitempty"`
 	// ReasoningEffort 仅用于 OpenAI 兼容协议，按 reasoning_effort 原样发送。
 	ReasoningEffort string `json:"reasoningEffort,omitempty"`
+	// RPMLimit 是手动设置的每分钟请求数上限（0 = 不限）。按 baseURL+model 统计，
+	// 超出就在客户端排队，避免并发把接口打到 429。见 ratelimit.go。
+	RPMLimit int `json:"rpmLimit,omitempty"`
+	// noStreamUsage 只在本次请求内由重试逻辑置位：网关 400 拒收 stream_options
+	// （个别老 shim 会把未知字段当参数错误）时，去掉该字段再试一次。不进 JSON。
+	noStreamUsage bool
 }
 
 // Message 是前端与 Go 之间的会话消息（规范化中间格式）。
@@ -77,6 +90,7 @@ type Message struct {
 	Role              string      `json:"role"`
 	Content           string      `json:"content,omitempty"`
 	Images            []ImagePart `json:"images,omitempty"`
+	Videos            []ImagePart `json:"videos,omitempty"`
 	ToolCalls         []ToolCall  `json:"toolCalls,omitempty"`
 	ToolCallId        string      `json:"toolCallId,omitempty"`
 	Name              string      `json:"name,omitempty"`
@@ -142,6 +156,13 @@ type RetryPayload struct {
 	Max     int    `json:"max"`
 	DelayMs int    `json:"delayMs"`
 	Reason  string `json:"reason"`
+}
+
+// QueuePayload 描述本地限流导致的排队。WaitMs 为 0 是「排队结束」的清除信号。
+type QueuePayload struct {
+	Id     string `json:"id"`
+	WaitMs int    `json:"waitMs"`
+	Reason string `json:"reason,omitempty"`
 }
 
 // ParamAdjustPayload：一次请求内因服务端参数上限而自动降档的通知。

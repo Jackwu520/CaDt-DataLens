@@ -293,6 +293,14 @@ export const formats = {
         rawOnly: true,
         image: true,
     },
+    video: {
+        id: 'video',
+        name: '视频',
+        extensions: [],
+        aceMode: 'text',
+        rawOnly: true,
+        video: true,
+    },
     bytes: {
         id: 'bytes',
         name: '字节数据',
@@ -306,6 +314,10 @@ export const imageExtensions = [
     'png', 'jpg', 'jpeg', 'jfif', 'gif', 'bmp', 'webp', 'ico', 'tif', 'tiff',
     'avif', 'heic', 'heif', 'psd', 'raw', 'cr2', 'nef', 'arw', 'dng',
 ];
+
+// 视频容器：与 Go 侧 internal/fileio 的 videoExtensions 保持同表（那边同时看 ftyp/EBML 头，
+// 这里只用于「打开对话框能选、拖进来自动打开」的扩展名判定）。
+export const videoExtensions = ['mp4', 'm4v', 'webm', 'mov', 'mkv'];
 
 // 插件注册的自定义格式；内置格式优先，插件格式不能覆盖内置格式
 export const pluginFormats = [];
@@ -351,6 +363,7 @@ export function isSupportedFile(name) {
     if (dot < 0) return false;
     const ext = base.slice(dot + 1).toLowerCase();
     if (imageExtensions.includes(ext)) return true;
+    if (videoExtensions.includes(ext)) return true;
     if (pluginFormats.some((f) => f.extensions.includes(ext))) return true;
     return Object.values(formats).some((f) => f.extensions.includes(ext));
 }

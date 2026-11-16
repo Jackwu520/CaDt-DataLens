@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"datalens/internal/appdata"
+	"datalens/internal/launchargs"
 )
 
 // 独立调试控制台窗口：
@@ -51,13 +52,9 @@ func Path() string {
 	return filepath.Join(root, debugConsoleLogName)
 }
 
+// HasArg 判断启动参数里是否带有某个开关（转发 launchargs.HasFlag，匹配逻辑单一来源）。
 func HasArg(flag string) bool {
-	for _, arg := range os.Args[1:] {
-		if arg == flag {
-			return true
-		}
-	}
-	return false
+	return launchargs.HasFlag(os.Args[1:], flag)
 }
 
 // DebugConsoleAppend 追加一批日志（主窗口调用，失败不影响业务）。

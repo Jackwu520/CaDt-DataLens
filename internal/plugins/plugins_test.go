@@ -263,13 +263,12 @@ func TestInstallPluginFromUrlInvalid(t *testing.T) {
 
 func TestEnsurePluginsDirCreatesDirectory(t *testing.T) {
 	t.Setenv("AppData", t.TempDir())
-	app := &Manager{}
-	if err := app.SetPluginsPathMode("appdata"); err != nil {
+	if err := (&Manager{}).SetPluginsPathMode("appdata"); err != nil {
 		t.Fatalf("SetPluginsPathMode: %v", err)
 	}
-	dir, err := app.EnsureDir()
+	dir, err := EnsureDir()
 	if err != nil {
-		t.Fatalf("ensurePluginsDir: %v", err)
+		t.Fatalf("EnsureDir: %v", err)
 	}
 	info, err := os.Stat(dir)
 	if err != nil {

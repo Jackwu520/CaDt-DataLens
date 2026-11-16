@@ -191,7 +191,7 @@ export function createAISubagents(ctx) {
     const AI_SUB_RECORDS_MAX = 20;
     const AI_SUB_SYSTEM_PROMPT = [
         '你是主代理派出的只读子代理：独立完成任务后输出最终结论，不与用户直接交互。',
-        '约束：只做只读探索（列目录 / 读文件 / 看图片 / 搜索 / 联网检索 / 记忆读取 / 技能加载）；不要尝试修改文件或执行命令；不要直接向最终用户发问（后台模式可用 ask_user 问主代理，由主代理决定）。',
+        '约束：只做只读探索（列目录 / 读文件 / 看图片（本地文件或公网图片 URL）/ 搜索 / 联网检索 / 记忆读取 / 技能加载）；不要尝试修改文件或执行命令；不要直接向最终用户发问（后台模式可用 ask_user 问主代理，由主代理决定）。',
         '你的工具范围在派出时已固定，无法从会话内放宽：范围外工具会被直接拒绝——不要换参数或写法重试，在最终结论中说明该限制即可，由主代理决定如何处理。',
         'timer_list 是主会话计时器的只读共享时钟：可用来对齐时间基准（正计时已计时长 / 倒计时剩余），但不能启动、停止或打标记；读数只是调用瞬间的快照，不会阻塞等待，不要靠反复调用来「等 N 秒」。',
         // 投递契约（§4.8）：投递层不截断（阶段 B 移除了 8000 字符上限），结论的紧凑性靠这里自律。
@@ -284,7 +284,7 @@ export function createAISubagents(ctx) {
         return !maxDepth || depth < maxDepth;
     }
 
-    function subSystemPromptFor(depth, mode) {
+    function subSystemPromptFor(depth, mode, hasWorktree) {
         let text = AI_SUB_SYSTEM_PROMPT;
         if (mode === 'background') {
             text += '\n你在后台运行：主代理不会等你结束，完成后由系统把结论通知给它；期间可以安心把探索做完整。';
@@ -293,15 +293,19 @@ export function createAISubagents(ctx) {
         if (subAgentCanSpawn(depth)) {
             text += '\n需要并行 / 隔离调查时可以再用 spawn_agent 派下一层只读子代理（总数与层级受设置限制）；简单问题直接自己做。';
         }
+        if (hasWorktree) {
+            text += '\n你有一个隔离 git worktree 作为草稿工作区：所有文件改动写到 .cadt/worktree/<slug>/…（相对范围根，路径见派单信息），隔离前缀之外的写会被拒绝；写操作自动应用（隔离区即审批边界），隔离前缀之外一律不要写。'
+                + '\n不要 commit 到隔离分支；完成后在结论里列出你改动的文件清单，由主代理决定是否导出补丁回灌主根。';
+        }
         return text;
     }
 
-    function subToolsForScope(depth, mode) {
+    function subToolsForScope(depth, mode, hasWorktree) {
         const list = [
-            AI_TOOL_DEFS.list_dir, AI_TOOL_DEFS.read_file, AI_TOOL_DEFS.read_image, AI_TOOL_DEFS.search_text,
+            AI_TOOL_DEFS.list_dir, AI_TOOL_DEFS.read_file, AI_TOOL_DEFS.read_image, AI_TOOL_DEFS.read_video, AI_TOOL_DEFS.search_text,
             AI_TOOL_DEFS.web_search, AI_TOOL_DEFS.web_fetch,
             AI_TOOL_DEFS.memory_list, AI_TOOL_DEFS.memory_read,
-            // 主会话计时器的只读快照：子代理与孙代理共用本表，只有读权（不能启动 / 停止 / 打标记）
+            // 主会话计时器的只读快照：子代理与孙代理共享本表，只有读权（不能启动 / 停止 / 打标记）
             AI_TOOL_DEFS.timer_list,
             AI_TOOL_DEFS.skill_use, AI_TOOL_DEFS.env_list,
         ];
@@ -309,6 +313,10 @@ export function createAISubagents(ctx) {
         // 占住，没人能回答，挂上去必然 120s 超时——按模式硬性区分，不靠提示词自觉。
         if (mode === 'background') list.push(AI_TOOL_DEFS.ask_user);
         if (subAgentCanSpawn(depth)) list.push(AI_TOOL_DEFS.spawn_agent);
+        // 隔离 worktree 子代理：挂写工具（写效应圈定在自己的隔离前缀内，applyWorkspaceWrite
+        // 里闸；审批链不适用于子代理——隔离区即审批边界，回灌由主代理 export 走人工 patch 卡）。
+        // run_command 仍不给：命令通道归 OS 沙箱方案（docs/unfinished-plans/subagent-sandbox.md）。
+        if (hasWorktree) list.push(AI_TOOL_DEFS.write_file, AI_TOOL_DEFS.edit_file);
         return list;
     }
 
@@ -496,6 +504,21 @@ export function createAISubagents(ctx) {
         sub.entry = entry;
         const assistant = newAssistantMessage(profile, entry);
         sub.session.messages.push(assistant);
+        // 隔离 worktree（spawn isolation='worktree'）：给子代理一份独立草稿区，写效应圈定在
+        // .cadt/worktree/<slug>/ 内。创建失败让 spawn 直接报错——静默降级会让子代理把改动
+        // 写进主根，违背隔离承诺。label 用子代理名（Go 侧 slugify + sub.id 尾段保证唯一）。
+        if (String(aiTextOf(input && input.isolation)).trim() === 'worktree') {
+            const root = typeof ctx.getScopeRoot === 'function' ? ctx.getScopeRoot() : '';
+            if (!root) throw new Error('当前没有工作区范围：隔离 worktree 建在主根的 .cadt/worktree/ 下，请先打开文件夹');
+            let added;
+            try {
+                added = await backend.GitWorktreeAdd(root, sub.name, sub.id);
+            } catch (e) {
+                throw new Error('创建子代理隔离 worktree 失败：' + ((e && e.message) || e));
+            }
+            sub.worktree = {name: added.name, branch: added.branch, path: added.path, baseSha: added.baseSha, createdAt: Date.now()};
+            sub.session.worktree = sub.worktree;
+        }
         sub.flow = {
             sessionId: sub.id,
             baseRound: 1,
@@ -512,7 +535,7 @@ export function createAISubagents(ctx) {
             wrapUp: false,
             toolCalls: new Map(),
             profileCfg: configForProfile(profile, entry),
-            systemPrompt: subSystemPromptFor(depth, mode),
+            systemPrompt: subSystemPromptFor(depth, mode, !!sub.worktree),
             usage: null,
         };
         subAgents.set(sub.id, sub);
@@ -587,7 +610,7 @@ export function createAISubagents(ctx) {
         }
         const apiMessages = buildApiMessages(sub.session, index, s.systemPrompt);
         try {
-            const request = backend.AISendChat(s.roundId, s.profileCfg, apiMessages, subToolsForScope(sub.depth, sub.mode), getConfig().retryMax);
+            const request = backend.AISendChat(s.roundId, s.profileCfg, apiMessages, subToolsForScope(sub.depth, sub.mode, !!sub.worktree), getConfig().retryMax);
             if (request && typeof request.then === 'function') {
                 request.catch((e) => finalizeSubAgent(sub, 'error', (e && e.message) || String(e || '请求失败')));
             }
@@ -630,7 +653,7 @@ export function createAISubagents(ctx) {
             }
             // 权限边界（dsh 同款语义）：范围外工具确定性拒绝、不进审批链路；模型侧文案
             // 明确「不重试、上报父会话」，拒绝本身落操作留痕（不含工具输入）。
-            const allowed = new Set(subToolsForScope(sub.depth, sub.mode).map((tool) => tool.name));
+            const allowed = new Set(subToolsForScope(sub.depth, sub.mode, !!sub.worktree).map((tool) => tool.name));
             if (!allowed.has(call.name)) {
                 toolMessage.status = 'error';
                 toolMessage.content = '工具 ' + call.name + ' 超出子代理只读范围（工具范围在派出时已固定，无法从会话内放宽）；不要重试，请在最终结论中说明该限制，由主代理决定如何处理。';
@@ -1092,7 +1115,7 @@ export function createAISubagents(ctx) {
             wrapUp: false,
             toolCalls: new Map(),
             profileCfg: configForProfile(record.profile, record.entry),
-            systemPrompt: subSystemPromptFor(record.depth, record.mode),
+            systemPrompt: subSystemPromptFor(record.depth, record.mode, !!record.worktree),
             usage: null,
         };
         // 终态记录移出（重新变 live）：事件路由、HUD、LRU 都以 subAgents 为准
@@ -1542,6 +1565,24 @@ export function createAISubagents(ctx) {
             stopSubAgent(sub, '会话停止');
         }
     }
+
+    // 本会话派生的子代理隔离区（含运行中与终态记录）：worktree_manage 的 export/discard
+    // 按 name 操作时以此判定「本会话拥有的」——别的会话的隔离区不可触碰。
+    function worktreeNamesForSession(sessionId) {
+        const out = [];
+        const seen = new Set();
+        const collect = (sub) => {
+            const wt = sub && sub.worktree;
+            const owner = sub && (sub.parentSessionId || sub.rootSessionId);
+            if (wt && wt.name && wt.baseSha && owner === sessionId && !seen.has(wt.name)) {
+                seen.add(wt.name);
+                out.push({name: wt.name, baseSha: wt.baseSha});
+            }
+        };
+        for (const sub of subAgents.values()) collect(sub);
+        for (const record of subAgentRecords.values()) collect(record);
+        return out;
+    }
     return {
         subAgentLimit, subAgentMaxDepth, subAgentCanSpawn, subSystemPromptFor, subToolsForScope,
         activeSubCount, subTranscriptPush, subThrottleRender,
@@ -1559,6 +1600,7 @@ export function createAISubagents(ctx) {
         reviveSubAgent, sendToSubAgent, stopSubAgentByInput, handleAgentTool, answerSubAsk,
         runSubAskQuestion, settleSubAsk, waitForSubAgent,
         compactSubAgentByInput, maybeStartSubCompact, startSubCompact, handleSubCompactEvent,
+        worktreeNamesForSession,
         subCompacts,
         subAgents, subAgentTranscripts, subAgentRecords,
         bgJobSnapshot, notifyBgListeners, bridgeStopBgJob,

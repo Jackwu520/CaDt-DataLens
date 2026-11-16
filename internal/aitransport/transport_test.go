@@ -1109,3 +1109,219 @@ func TestAIRetryWaitTouchesWatchdog(t *testing.T) {
 		t.Fatalf("已取消的 ctx 应返回 false")
 	}
 }
+
+func TestAIOpenAIUserVideos(t *testing.T) {
+	data := base64.StdEncoding.EncodeToString([]byte("fake-mp4"))
+	out, err := aiOpenAIMessages([]Message{{
+		Role:    "user",
+		Content: "看看这段视频",
+		Videos:  []ImagePart{{Mime: "video/mp4", Data: data}},
+	}}, false)
+	if err != nil {
+		t.Fatalf("aiOpenAIMessages: %v", err)
+	}
+	parts := out[0]["content"].([]any)
+	if len(parts) != 2 {
+		t.Fatalf("parts = %#v", parts)
+	}
+	video := parts[1].(map[string]any)
+	videoURL := video["video_url"].(map[string]any)
+	if video["type"] != "video_url" || videoURL["url"] != "data:video/mp4;base64,"+data {
+		t.Fatalf("video part = %#v", video)
+	}
+}
+
+func TestAIOpenAIImageAndVideoParts(t *testing.T) {
+	img := base64.StdEncoding.EncodeToString([]byte("img"))
+	vid := base64.StdEncoding.EncodeToString([]byte("vid"))
+	out, err := aiOpenAIMessages([]Message{{
+		Role:    "user",
+		Content: "混排",
+		Images:  []ImagePart{{Mime: "image/png", Data: img}},
+		Videos:  []ImagePart{{Mime: "video/mp4", Data: vid}},
+	}}, false)
+	if err != nil {
+		t.Fatalf("aiOpenAIMessages: %v", err)
+	}
+	parts := out[0]["content"].([]any)
+	if len(parts) != 3 {
+		t.Fatalf("parts = %#v", parts)
+	}
+	if parts[1].(map[string]any)["type"] != "image_url" || parts[2].(map[string]any)["type"] != "video_url" {
+		t.Fatalf("parts 顺序 = %#v", parts)
+	}
+}
+
+func TestAIAnthropicVideosRejected(t *testing.T) {
+	_, _, err := aiAnthropicMessages([]Message{{
+		Role:   "user",
+		Content: "看",
+		Videos: []ImagePart{{Mime: "video/mp4", Data: "AAA"}},
+	}}, false)
+	if err == nil || !strings.Contains(err.Error(), "不支持视频输入") {
+		t.Fatalf("anthropic videos error = %v", err)
+	}
+}
+
+func TestAIResponsesVideosRejected(t *testing.T) {
+	_, _, err := aiBuildResponsesInput([]Message{{
+		Role:   "user",
+		Content: "看",
+		Videos: []ImagePart{{Mime: "video/mp4", Data: "AAA"}},
+	}})
+	if err == nil || !strings.Contains(err.Error(), "不支持视频输入") {
+		t.Fatalf("responses videos error = %v", err)
+	}
+}
+
+func TestAIMessageVideoValidation(t *testing.T) {
+	data := base64.StdEncoding.EncodeToString([]byte("vid"))
+	err := ValidateMessages([]Message{{Role: "assistant", Videos: []ImagePart{{Mime: "video/mp4", Data: data}}}})
+	if err == nil || !strings.Contains(err.Error(), "用户消息") {
+		t.Fatalf("assistant video error = %v", err)
+	}
+	err = ValidateMessages([]Message{{Role: "user", Videos: []ImagePart{{Mime: "video/webm", Data: data}}}})
+	if err == nil || !strings.Contains(err.Error(), "不支持") {
+		t.Fatalf("bad mime error = %v", err)
+	}
+	err = ValidateMessages([]Message{{Role: "user", Videos: []ImagePart{{Mime: "video/mp4", Data: "not base64!!"}}}})
+	if err == nil || !strings.Contains(err.Error(), "base64") {
+		t.Fatalf("bad data error = %v", err)
+	}
+	err = ValidateMessages([]Message{{Role: "user", Videos: []ImagePart{
+		{Mime: "video/mp4", Data: data}, {Mime: "video/mp4", Data: data},
+	}}})
+	if err == nil || !strings.Contains(err.Error(), "上限") {
+		t.Fatalf("count limit error = %v", err)
+	}
+	err = ValidateMessages([]Message{{Role: "user", Content: "ok", Videos: []ImagePart{{Mime: "video/mp4", Data: data}}}})
+	if err != nil {
+		t.Fatalf("合法视频应通过：%v", err)
+	}
+}
+
+// 流式 usage 必须显式索取：llama.cpp / LM Studio / vLLM 这类服务不带上
+// stream_options.include_usage 就完全不回 token 数，前端的速度与缓存命中永远显示「—」。
+func TestAIStreamOpenAIRequestsStreamUsage(t *testing.T) {
+	requestCh := make(chan aiCapturedRequest, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		requestCh <- aiCapturedRequest{Path: r.URL.Path, Body: body}
+		w.Header().Set("Content-Type", "text/event-stream")
+		writeSSEJSON(w, map[string]any{"choices": []any{map[string]any{
+			"delta": map[string]any{"content": "好"}, "finish_reason": "stop",
+		}}})
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	cfg := Config{BaseURL: server.URL + "/v1", APIKey: "k", Model: "qwen3.8-27b", Proxy: "direct"}
+	if _, err := runAIStreamForTest(cfg, []Message{{Role: "user", Content: "hi"}}, nil); err != nil {
+		t.Fatalf("StreamResponse: %v", err)
+	}
+	captured := <-requestCh
+	opts, _ := captured.Body["stream_options"].(map[string]any)
+	if opts == nil || opts["include_usage"] != true {
+		t.Fatalf("stream_options = %#v，想要 {include_usage:true}", captured.Body["stream_options"])
+	}
+}
+
+// llama.cpp 系只在 timings 里给数字（cache_n / prompt_n / predicted_n）时也要能统计。
+func TestAIStreamOpenAIUsageFromTimings(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		writeSSEJSON(w, map[string]any{"choices": []any{map[string]any{
+			"delta": map[string]any{"content": "本地答复"}, "finish_reason": nil,
+		}}})
+		// 无 usage，只有引擎自报计时（老版本 llama-server 的行为）
+		writeSSEJSON(w, map[string]any{
+			"choices": []any{map[string]any{"delta": map[string]any{}, "finish_reason": "stop"}},
+			"timings": map[string]any{
+				"cache_n": 1024, "prompt_n": 24, "predicted_n": 40,
+				"predicted_per_second": 44.5,
+			},
+		})
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	cfg := Config{BaseURL: server.URL + "/v1", APIKey: "k", Model: "qwen3.8-27b", Proxy: "direct"}
+	events, err := runAIStreamForTest(cfg, []Message{{Role: "user", Content: "hi"}}, nil)
+	if err != nil {
+		t.Fatalf("StreamResponse: %v", err)
+	}
+	doneList := aiEventsNamed(events, EventDone)
+	if len(doneList) != 1 {
+		t.Fatalf("done 数 = %d", len(doneList))
+	}
+	usage := doneList[0].(DonePayload).Usage
+	if usage == nil {
+		t.Fatal("timings 存在时应补出 usage")
+	}
+	if usage.PromptTokens != 1048 || usage.CompletionTokens != 40 || usage.CachedTokens != 1024 || usage.TotalTokens != 1088 {
+		t.Fatalf("usage = %#v，想要 prompt=1048 completion=40 cached=1024 total=1088", usage)
+	}
+}
+
+// 网关把 stream_options 当未知参数拒收：摘掉该字段重发一次，对话不能被卡死。
+func TestAIStreamDropsStreamOptionsWhenRejected(t *testing.T) {
+	var requestCount int32
+	var secondBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := atomic.AddInt32(&requestCount, 1)
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if n == 1 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = fmt.Fprint(w, `{"error":{"message":"Unrecognized request argument supplied: stream_options"}}`)
+			return
+		}
+		secondBody = body
+		w.Header().Set("Content-Type", "text/event-stream")
+		writeSSEJSON(w, map[string]any{"choices": []any{map[string]any{
+			"delta": map[string]any{"content": "兼容成功"}, "finish_reason": "stop",
+		}}})
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	cfg := Config{BaseURL: server.URL + "/v1", APIKey: "k", Model: "m", Proxy: "direct"}
+	events, err := runAIStreamForTestRetry(cfg, []Message{{Role: "user", Content: "hi"}}, nil, 0)
+	if err != nil {
+		t.Fatalf("StreamResponse: %v", err)
+	}
+	if got := atomic.LoadInt32(&requestCount); got != 2 {
+		t.Fatalf("请求数 = %d，想要 2（400 后摘字段重发）", got)
+	}
+	if _, ok := secondBody["stream_options"]; ok {
+		t.Fatalf("重发请求不该再带 stream_options：%#v", secondBody)
+	}
+	if got := aiJoinedDelta(events, EventChunk); !strings.Contains(got, "兼容成功") {
+		t.Fatalf("重发后正文缺失：%q", got)
+	}
+	if retries := aiEventsNamed(events, EventRetry); len(retries) != 0 {
+		t.Fatalf("兼容性降级不应产生退避重试事件，实际 %d 个", len(retries))
+	}
+}
+
+// 与 stream_options 无关的 400 不许被当成兼容问题循环重发。
+func TestAIStreamNoDropForUnrelated400(t *testing.T) {
+	var requestCount int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&requestCount, 1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = fmt.Fprint(w, `{"error":{"message":"invalid api key"}}`)
+	}))
+	defer server.Close()
+
+	cfg := Config{BaseURL: server.URL + "/v1", APIKey: "bad", Model: "m", Proxy: "direct"}
+	if _, err := runAIStreamForTestRetry(cfg, []Message{{Role: "user", Content: "hi"}}, nil, 0); err == nil {
+		t.Fatal("鉴权 400 应当报错")
+	}
+	if got := atomic.LoadInt32(&requestCount); got != 1 {
+		t.Fatalf("无关 400 不该重发，请求数 = %d", got)
+	}
+}

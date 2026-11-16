@@ -190,6 +190,16 @@ func (s *Service) specs() []spec {
 			note:    "工作区 .cadt/tmp 下 AI 写的临时与中间产物（验证片段、草稿页等），删了不丢正式内容。",
 			targets: []target{workspaceTarget("tmp")},
 		},
+		{
+			id: "ws-worktrees", label: "AI 隔离 worktree（孤儿）", scope: ScopeWorkspace, kind: KindDanger,
+			note: "工作区 .cadt/worktree 下没有会话登记的孤儿隔离区（AI 的 git worktree 草稿区全量检出副本，通常是被删会话或手动清理目录留下的）。活跃会话登记的隔离区不在本条目范围，正在试错的草稿不会被动到；删除走回收站，git 侧管理记录由下次启动的 worktree prune 收敛，其分支（cadt/wt/<slug>）不随之删除。",
+			targets: []target{func() target {
+				t := workspaceTarget("worktree")
+				t.children = true
+				t.include = s.orphanWorktreeFilter()
+				return t
+			}()},
+		},
 		// ---- 数据：用户内容，只在「清除数据」里按勾选处理，删除走回收站 ----
 		{
 			id: "ws-gen", label: "生图与视频产物", scope: ScopeWorkspace, kind: KindData,

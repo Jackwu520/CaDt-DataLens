@@ -154,3 +154,39 @@ test('审批正文：读类审批（无 added/removed）不渲染 ± 统计，�
     // 读类审批收尾文案按读取措辞，不写「已应用更改」
     assert.match(body, /readKind \? '已授权读取'/, '读类审批收尾文案应按读取措辞');
 });
+
+test('生成卡正文渲染完整提示词：头部只有 60 字摘要，全文放展开正文并按命令卡模式折叠', () => {
+    const src = readFileSync(new URL('../../src/ai/ai-tool-cards.js', import.meta.url), 'utf8');
+    const body = src.slice(src.indexOf('} else if (message.gen) {'));
+    assert.ok(body.length > 100, 'message.gen 源码切片失效');
+    // 完整提示词必须渲染在展开正文里（generate_image / generate_video 共用 gen 分支）
+    assert.match(body, /ai-gen-prompt/, '生成卡正文缺少完整提示词块');
+    // 长提示词折叠：阈值与命令卡一致（>120 字符或含换行），按钮文案「展开/收起提示词」
+    assert.match(body, /genPrompt\.length > 120/, '折叠阈值应与命令卡一致（120 字符）');
+    assert.match(body, /展开提示词/, '长提示词要有展开/收起按钮');
+    // 提示词块排在状态行之前（输入在上、进度在下，同命令卡「命令 → 输出」的次序）
+    assert.ok(
+        body.indexOf('ai-gen-prompt') < body.indexOf('ai-gen-status'),
+        '提示词块应排在状态行之前',
+    );
+});
+
+test('代码块工具条：思考链走 noBar 不建「语言 + 复制」栏，主回答区仍建', () => {
+    const cards = readFileSync(new URL('../../src/ai/ai-tool-cards.js', import.meta.url), 'utf8');
+    const fn = cards.slice(cards.indexOf('function enhanceAICodeBlocks'));
+    // noBar 开关必须真的门住 bar 的创建，而不只是加个空类
+    assert.match(fn, /const noBar = !!\(\opts && opts\.noBar\)/);
+    const barBlock = fn.match(/if \(!noBar\) \{[\s\S]*?card\.appendChild\(bar\);\s*\}/);
+    assert.ok(barBlock, 'bar 的创建必须被 if (!noBar) 门住');
+    assert.match(barBlock[0], /ai-code-bar/, '门住的应是工具栏本体');
+    assert.match(barBlock[0], /ai-code-copy/, '复制按钮也要在门内');
+    // noBar 卡仍带代码区（高亮/边框/滚动照旧），只是没有条
+    assert.match(fn, /card\.appendChild\(body\)/);
+    // 正文增强链默认不传 noBar → 主回答区/子代理详情仍有工具条可复制
+    const answer = cards.slice(cards.indexOf('function enhanceAnswerBody'), cards.indexOf('function codeBlockLanguage'));
+    assert.match(answer, /enhanceAICodeBlocks\(root\)\s*;/, '正文增强链必须调用默认带条版本');
+
+    const panel = readFileSync(new URL('../../src/ai/ai-panel.js', import.meta.url), 'utf8');
+    assert.match(panel, /enhanceAICodeBlocks\(body, \{noBar: true\}\)/,
+        '思考链必须走 noBar——「js + 复制」栏在弱化的思考区里很突兀');
+});

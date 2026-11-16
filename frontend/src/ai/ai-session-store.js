@@ -1,6 +1,10 @@
 // AI 会话磁盘存储：JSONL 事件日志（唯一真源）+ 每会话 meta.json。
 // 纯编解码/重放与磁盘适配放在一起，但代码只依赖注入的 backend，不碰 DOM。
 
+// ai-session-store 依赖注入式纯编解码模块，但 worktree 归一与 ai-panel 共用单一来源
+//（ai-worktree.js 只 import ai-constants，无环）。
+import {normalizeWorktreeState} from './ai-worktree.js';
+
 export const AI_SESSION_SCHEMA = 1;
 
 const IMAGE_EXT = {
@@ -8,6 +12,11 @@ const IMAGE_EXT = {
     'image/webp': 'webp',
     'image/gif': 'gif',
     'image/png': 'png',
+};
+
+// 会话视频落盘的扩展名表（Go AISessionSaveVideo / VideoPath 只认这个白名单）
+const VIDEO_EXT = {
+    'video/mp4': 'mp4',
 };
 
 export function textOf(value) {
@@ -23,6 +32,12 @@ export function isSilentInjection(content) {
 export function safeImageName(image) {
     const id = textOf(image && image.id).replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 80) || 'img';
     const ext = IMAGE_EXT[textOf(image && image.mime)] || 'png';
+    return id + '.' + ext;
+}
+
+export function safeVideoName(video) {
+    const id = textOf(video && video.id).replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 80) || 'vid';
+    const ext = VIDEO_EXT[textOf(video && video.mime)] || 'mp4';
     return id + '.' + ext;
 }
 
@@ -54,6 +69,7 @@ export function messageFingerprint(message) {
         agent ? textOf(agent.state) + ':' + (Number(agent.rounds) || 0) + ':' + textOf(agent.summary).length : '',
         bg ? textOf(bg.state) + ':' + (bg.code == null ? '' : Number(bg.code)) : '',
         Array.isArray(message.images) ? message.images.length : 0,
+        Array.isArray(message.videos) ? message.videos.length : 0,
         // 计划模式落盘路径：后补写（升级前的待批准计划 / 写盘失败后重试）只改这一个字段，
         // 不进指纹就会被「指纹没变」挡在就地截断之外，重启后又得重算一次。
         textOf(message.planFile),
@@ -74,6 +90,8 @@ export function isTurnBoundaryMessage(message) {
     if (!message || message.role !== 'user') return false;
     if (message.systemNote) return false;
     if (message.app && Array.isArray(message.images) && message.images.length && !message.turnStartedAt) return false;
+    // read_video 自动附加的视频消息与 read_image 同口径：不是用户发起的回合
+    if (message.app && Array.isArray(message.videos) && message.videos.length && !message.turnStartedAt) return false;
     return true;
 }
 
@@ -118,7 +136,7 @@ export function serializeSessionMessage(message) {
     const out = {};
     for (const key of Object.keys(message)) {
         if (key === '_mid' || key === '_stored' || key.startsWith('_')) continue;
-        if (key === 'images') continue;
+        if (key === 'images' || key === 'videos') continue;
         out[key] = message[key];
     }
     if (Array.isArray(message.images)) {
@@ -129,6 +147,18 @@ export function serializeSessionMessage(message) {
                 for (const key of Object.keys(image)) {
                     if (key === 'data' && image.file) continue;
                     copy[key] = image[key];
+                }
+                return copy;
+            });
+    }
+    if (Array.isArray(message.videos)) {
+        out.videos = message.videos
+            .filter((video) => video && typeof video === 'object')
+            .map((video) => {
+                const copy = {};
+                for (const key of Object.keys(video)) {
+                    if (key === 'data' && video.file) continue;
+                    copy[key] = video[key];
                 }
                 return copy;
             });
@@ -311,6 +341,9 @@ export function buildSessionMeta(session) {
         readRoots: Array.isArray(session && session.readRoots) ? session.readRoots : [],
         // 支线对话：指向母会话 id（普通会话为空）。sideOf 不嵌套——创建时已扁平化到一层。
         sideOf: textOf(session && session.sideOf),
+        // 隔离 worktree 会话态（唯一归属凭证；fork/支线/投递新建的会话没有该字段 → null，
+        // 保证「一会话一 worktree」不被复制破坏）。恢复校验在 ai-worktree.js 的 blockFor。
+        worktree: normalizeWorktreeState(session && session.worktree),
         summary,
     };
 }

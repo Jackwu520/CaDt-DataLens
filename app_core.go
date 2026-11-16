@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -106,6 +107,9 @@ func (a *App) startup(ctx context.Context) {
 	watch.Emit = func(event string, data any) {
 		runtime.EventsEmit(ctx, event, data)
 	}
+	aichat.Emit = func(event string, payload any) {
+		runtime.EventsEmit(ctx, event, payload)
+	}
 	watch.Logf = writeAppLog
 	if a.convert != nil {
 		a.waitConvertTimeout()
@@ -114,6 +118,8 @@ func (a *App) startup(ctx context.Context) {
 	applyTaskbarIcon()
 	// 系统通知的应用标识必须在发出第一条 Toast 之前登记好，
 	// 否则 Windows 只返回成功、不显示（见 internal/notify 的 ensureToastAppID）。
+	// 点击通知的激活回调也在这里接上：把窗口拉回前台 + 把激活参数转给前端。
+	notify.OnToastActivation = a.onToastActivation
 	notify.Prepare()
 	ensureWindowShown(ctx)
 	sqlview.CleanupTempFiles()
@@ -128,7 +134,7 @@ func (a *App) startup(ctx context.Context) {
 		return
 	}
 	// AI 定时任务调度器：主窗口与 AI 悬浮窗进程各自扫描，执行去重由前端裁决
-	a.Scheduler.Start()
+	aischedule.Start()
 	// MCP 客户端：仅主窗口进程初始化（浮窗/调试控制台不拉 MCP 子进程，避免同机双实例）
 	if !a.IsAIFloatWindow() && !a.IsDebugConsoleWindow() {
 		if err := mcp.InitClient(a.Client, func(event string, payload any) {
@@ -172,6 +178,19 @@ func (a *App) secondInstance(data options.SecondInstanceData) {
 	// 只用 WindowShow：Windows 上 WindowUnminimise 走 WM_SYSCOMMAND/SC_RESTORE，
 	// 会把最大化的窗口还原成普通窗口；WindowShow 内部只在最小化时才恢复。
 	runtime.WindowShow(a.ctx)
+}
+
+// onToastActivation 系统通知被点击（internal/notify 的 COM 激活回调，可能在任意 COM 线程触发）：
+// 先把窗口拉回前台（语义与 secondInstance 一致，只用 WindowShow 避免还原最大化），
+// 再把激活参数原文发给前端自行解析跳转（形如 "ai-session=<id>"；空参数只拉窗口）。
+func (a *App) onToastActivation(payload string) {
+	if a.ctx == nil {
+		return
+	}
+	runtime.WindowShow(a.ctx)
+	if strings.TrimSpace(payload) != "" {
+		runtime.EventsEmit(a.ctx, "ai-notify-activate", payload)
+	}
 }
 
 // ConsumeStartupSettings 返回本次启动携带的设置页并清空（供前端启动后打开）。

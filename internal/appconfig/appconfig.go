@@ -63,7 +63,7 @@ func Read() Config {
 	return cfg
 }
 
-// Save 原子地写回配置（先建目录再整体覆盖）。
+// Save 整体覆盖写回配置（先建目录；os.WriteFile 直接覆盖，非临时文件+改名）。
 func Save(cfg Config) error {
 	path := Path()
 	if path == "" {

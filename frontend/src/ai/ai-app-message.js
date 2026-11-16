@@ -10,6 +10,8 @@ export const APP_MESSAGE_ICONS = {
     app: 'camera',
     // read_image 读取的本地图片：同一张「应用消息」卡片，图标用图片，页脚走消息正文
     'read-image': 'image',
+    // read_video 读取的本地视频：同一张卡片形态，图标用播放键
+    'read-video': 'play',
     notice: 'info',
     update: 'refresh',
     plugin: 'agents',

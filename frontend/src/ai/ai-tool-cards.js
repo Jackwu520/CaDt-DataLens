@@ -467,8 +467,10 @@ export function createAIToolCards(ctx) {
         switch (name) {
             case 'read_file': return {verb: '读取', icon: 'eye'};
             case 'read_image': return {verb: '看图', icon: 'image'};
+            case 'read_video': return {verb: '看视频', icon: 'play'};
             case 'list_dir': return {verb: '列目录', icon: 'folder'};
             case 'search_text': return {verb: '搜索', icon: 'search'};
+            case 'glob': return {verb: '找文件', icon: 'folder'};
             case 'web_search': return {verb: '联网搜索', icon: 'web-search'};
             case 'web_fetch': return {verb: '读取网页', icon: 'globe'};
             case 'generate_image': return {verb: '生成图片', icon: 'image'};
@@ -480,19 +482,37 @@ export function createAIToolCards(ctx) {
             case 'write_file': return {verb: (approval && approval.newFile) ? '新建' : '写入', icon: 'save'};
             case 'edit_file': return {verb: '编辑', icon: 'rename'};
             case 'propose_patch': return {verb: '补丁', icon: 'save'};
+            case 'worktree_manage': return {verb: '隔离工作区', icon: 'folder'};
             case 'run_command': return {verb: '终端', icon: 'terminal'};
             case 'background_command': return {verb: '后台命令', icon: 'terminal'};
             case 'check_command': return {verb: '查询作业', icon: 'refresh'};
             case 'stop_command': return {verb: '停止作业', icon: 'close'};
+            case 'terminal': return {verb: '终端读写', icon: 'terminal'};
             case 'schedule_create': return {verb: '创建定时任务', icon: 'clock'};
             case 'schedule_list': return {verb: '定时任务列表', icon: 'clock'};
             case 'timer_list': return {verb: '计时器读数', icon: 'clock'};
+            case 'start_timer': return {verb: '开始计时', icon: 'clock'};
+            case 'stop_timer': return {verb: '停止计时', icon: 'clock'};
+            case 'reminder_list': return {verb: '提醒列表', icon: 'bell'};
+            case 'reminder_add': return {verb: '加提醒', icon: 'bell'};
+            case 'reminder_update': return {verb: '改提醒', icon: 'bell'};
+            case 'reminder_remove': return {verb: '删提醒', icon: 'trash'};
             case 'schedule_delete': return {verb: '删除定时任务', icon: 'trash'};
             case 'schedule_toggle': return {verb: '启停定时任务', icon: 'refresh'};
             case 'spawn_agent': return {verb: '子代理', icon: 'agents'};
+            case 'agent_send': return {verb: '通知子代理', icon: 'agents'};
+            case 'agent_stop': return {verb: '停止子代理', icon: 'close'};
+            case 'agent_compact': return {verb: '压缩子代理', icon: 'eraser'};
+            case 'wait_agent': return {verb: '等待子代理', icon: 'agents'};
             case 'memory_list': return {verb: '记忆目录', icon: 'book'};
             case 'memory_read': return {verb: '读取记忆', icon: 'book-open'};
             case 'memory_write': return {verb: '写入记忆', icon: 'book-plus'};
+            case 'write_worklog': return {verb: '记工作日志', icon: 'book-plus'};
+            case 'session_history': return {verb: '查历史', icon: 'history'};
+            case 'session_search': return {verb: '搜会话', icon: 'search'};
+            case 'session_read': return {verb: '读会话', icon: 'sidechat'};
+            case 'session_list': return {verb: '会话列表', icon: 'list'};
+            case 'session_send': return {verb: '会话投递', icon: 'sidechat'};
             case 'preference_list': return {verb: '偏好列表', icon: 'bookmark'};
             case 'preference_write': return {verb: '记录偏好', icon: 'bookmark-plus'};
             case 'preference_remove': return {verb: '删除偏好', icon: 'trash'};
@@ -532,6 +552,10 @@ export function createAIToolCards(ctx) {
             case 'read_file': case 'write_file': case 'edit_file':
                 return {primary: base || path || '—', dir};
             case 'read_image':
+                // 网图（read_image 传 URL）：卡头显示「域名 + 路径」，且不做本地文件链接
+                if (/^https?:\/\//i.test(path)) {
+                    return {primary: path.replace(/^https?:\/\//i, '').replace(/[?#].*$/, ''), dir: '', remote: true};
+                }
                 return {primary: base || path || '—', dir};
             case 'list_dir':
                 return {primary: aiTextOf(args.path).trim() || '.', dir: ''};
@@ -686,14 +710,14 @@ export function createAIToolCards(ctx) {
         }
         head.append(chev, icon, verb);
         if (isRead || isBuiltinSkill) chev.remove(); // 无展开功能，折叠箭头不出现
-        if (toolFileVerb(message) && info.primary && info.primary !== '—') {
+        if (toolFileVerb(message) && info.primary && info.primary !== '—' && !info.remote) {
             head.appendChild(createFileIcon(info.primary, 'ai-tool-fileicon'));
         }
         if (info.primary) {
             const primary = document.createElement('span');
             primary.className = 'ai-tool-primary';
             primary.textContent = info.primary;
-            if (isRead || isImageRead) {
+            if ((isRead || isImageRead) && !info.remote) {
                 // 路径名即超链接：点击在标签页打开，读取带 offset 时跳到对应行
                 primary.classList.add('ai-tool-link');
                 primary.dataset.tip = '点击打开文件' + (Number(message.targetLine) > 1 ? '（跳到读取起始行）' : '');
@@ -872,7 +896,35 @@ export function createAIToolCards(ctx) {
                 body.appendChild(live);
             }
         } else if (message.gen) {
-            // 生成任务卡（generate_image / generate_video）：进度行 + 停止钮 + 图片缩略图条
+            // 生成任务卡（generate_image / generate_video）：提示词块 + 进度行 + 停止钮 + 参考图行 + 产物缩略图条
+            // 头部主参数只有 60 字摘要，完整提示词放展开正文（长文折叠，同命令卡模式）
+            let genPrompt = '';
+            try {
+                genPrompt = aiTextOf(JSON.parse(message.arguments || '{}').prompt).trim();
+            } catch (e) {}
+            if (genPrompt) {
+                const promptLine = document.createElement('div');
+                promptLine.className = 'ai-cmd-line ai-gen-prompt';
+                const promptText = document.createElement('span');
+                promptText.className = 'ai-cmd-text';
+                promptText.textContent = genPrompt;
+                promptLine.appendChild(promptText);
+                if (genPrompt.length > 120 || /\n/.test(genPrompt)) {
+                    promptLine.classList.add('clamped');
+                    const more = document.createElement('button');
+                    more.type = 'button';
+                    more.className = 'ai-cmd-more';
+                    more.textContent = '展开提示词';
+                    more.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        const clamped = promptLine.classList.toggle('clamped');
+                        more.textContent = clamped ? '展开提示词' : '收起提示词';
+                    });
+                    body.append(promptLine, more);
+                } else {
+                    body.appendChild(promptLine);
+                }
+            }
             const gen = message.gen;
             const statusLine = document.createElement('div');
             statusLine.className = 'ai-gen-status' + (gen.status === 'running' ? ' running' : '') + (gen.status === 'failed' ? ' failed' : '');
@@ -891,6 +943,51 @@ export function createAIToolCards(ctx) {
                     if (ctx.genStopJob(gen.jobId)) flash('已停止生成任务');
                 });
                 body.appendChild(stopBtn);
+            }
+            // 参考图行（图生图）：本地图按路径现读缩略图（快照里只存路径，不存 Data URL），
+            // 远程 URL 只显示地址不代拉取——卡片重绘不该产生额外网络请求。
+            const genRefs = gen.references || [];
+            if (genRefs.length) {
+                const refRow = document.createElement('div');
+                refRow.className = 'ai-gen-refs';
+                const refLabel = document.createElement('div');
+                refLabel.className = 'ai-gen-refs-label';
+                refLabel.textContent = '参考图 · ' + genRefs.length + ' 张';
+                refRow.appendChild(refLabel);
+                const refStrip = document.createElement('div');
+                refStrip.className = 'ai-gen-thumbs';
+                for (const ref of genRefs) {
+                    if (/^https?:\/\//i.test(ref)) {
+                        const chip = document.createElement('div');
+                        chip.className = 'ai-gen-ref-url';
+                        chip.textContent = ref;
+                        chip.title = ref;
+                        refStrip.appendChild(chip);
+                        continue;
+                    }
+                    const thumb = document.createElement('button');
+                    thumb.type = 'button';
+                    thumb.className = 'ai-gen-thumb ai-gen-ref-thumb';
+                    thumb.title = ref;
+                    const img = document.createElement('img');
+                    img.alt = '参考图';
+                    img.loading = 'lazy';
+                    thumb.appendChild(img);
+                    const refName = document.createElement('span');
+                    refName.className = 'ai-gen-thumb-name';
+                    refName.textContent = ref.split(/[\\/]/).pop();
+                    thumb.appendChild(refName);
+                    thumb.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        if (typeof ctx.openTargets === 'function') ctx.openTargets([{path: ref, line: 1, column: 0}]);
+                    });
+                    refStrip.appendChild(thumb);
+                    Promise.resolve(backend.ReadImageAsDataURL(ref))
+                        .then((dataURL) => { img.src = dataURL || ''; })
+                        .catch(() => {});
+                }
+                refRow.appendChild(refStrip);
+                body.appendChild(refRow);
             }
             const imageFiles = (gen.files || []).filter((file) => file.mime && file.mime.startsWith('image/'));
             if (imageFiles.length) {
@@ -987,8 +1084,11 @@ export function createAIToolCards(ctx) {
 
     // 代码块卡片：顶部信息条（左语言 / 右复制图标）+ 下方代码区。
     // 结构必须保持「条 + 体」两层——条高固定、体负责横向滚动，滚动条只在代码区出现。
-    function enhanceAICodeBlocks(root) {
+    // opts.noBar：只留代码区，不建顶部条。思考链这类弱化区域里，「js + 复制」工具栏比代码
+    // 本身还跳；代码高亮与边框照旧，只是不摆那条操作栏。主回答区/子代理详情仍走默认带条分支。
+    function enhanceAICodeBlocks(root, opts) {
         if (!root) return;
+        const noBar = !!(opts && opts.noBar);
         const blocks = [];
         root.querySelectorAll('.md-code-frame').forEach((frame) => blocks.push(frame));
         root.querySelectorAll('pre').forEach((pre) => {
@@ -1000,39 +1100,42 @@ export function createAIToolCards(ctx) {
             if (block.parentNode && block.parentNode.classList.contains('ai-code-body')) continue;
             const code = block.querySelector('code') || block;
             const card = document.createElement('div');
-            card.className = 'ai-code-card';
-            const bar = document.createElement('div');
-            bar.className = 'ai-code-bar';
-            const lang = document.createElement('span');
-            lang.className = 'ai-code-lang';
-            lang.textContent = codeBlockLanguage(block) || '文本';
-            const button = document.createElement('button');
-            button.type = 'button';
-            button.className = 'ai-code-copy';
-            button.dataset.tip = '复制代码';
-            button.setAttribute('aria-label', '复制代码');
-            button.innerHTML = iconSvg('copy', 13);
-            button.addEventListener('click', (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                Promise.resolve(copyText(code.textContent || '', '代码')).then((ok) => {
-                    if (ok === false || button.dataset.copied) return;
-                    // 图标按钮没有文字反馈，短暂换成勾号（1s 后由重渲染或定时器复原）
-                    button.dataset.copied = '1';
-                    button.innerHTML = iconSvg('check', 13);
-                    setTimeout(() => {
-                        if (!button.isConnected) return;
-                        delete button.dataset.copied;
-                        button.innerHTML = iconSvg('copy', 13);
-                    }, 1000);
-                }).catch(() => {});
-            });
-            bar.append(lang, button);
+            card.className = 'ai-code-card' + (noBar ? ' no-bar' : '');
+            if (!noBar) {
+                const bar = document.createElement('div');
+                bar.className = 'ai-code-bar';
+                const lang = document.createElement('span');
+                lang.className = 'ai-code-lang';
+                lang.textContent = codeBlockLanguage(block) || '文本';
+                const button = document.createElement('button');
+                button.type = 'button';
+                button.className = 'ai-code-copy';
+                button.dataset.tip = '复制代码';
+                button.setAttribute('aria-label', '复制代码');
+                button.innerHTML = iconSvg('copy', 13);
+                button.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    Promise.resolve(copyText(code.textContent || '', '代码')).then((ok) => {
+                        if (ok === false || button.dataset.copied) return;
+                        // 图标按钮没有文字反馈，短暂换成勾号（1s 后由重渲染或定时器复原）
+                        button.dataset.copied = '1';
+                        button.innerHTML = iconSvg('check', 13);
+                        setTimeout(() => {
+                            if (!button.isConnected) return;
+                            delete button.dataset.copied;
+                            button.innerHTML = iconSvg('copy', 13);
+                        }, 1000);
+                    }).catch(() => {});
+                });
+                bar.append(lang, button);
+                card.appendChild(bar);
+            }
             const body = document.createElement('div');
             body.className = 'ai-code-body';
             block.parentNode.insertBefore(card, block);
             body.appendChild(block);
-            card.append(bar, body);
+            card.appendChild(body);
         }
     }
 

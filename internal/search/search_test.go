@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"unicode/utf16"
 )
@@ -323,5 +324,103 @@ func TestSearchRgArtifactTierAndNameHit(t *testing.T) {
 	}
 	if last := res.Hits[3]; !searchIsArtifactPath(last.Dir) {
 		t.Fatalf("expected artifact hit last, got %+v", res.Hits)
+	}
+}
+
+// ---------- AI 隔离 worktree 跳过（SkipPath） ----------
+
+func TestSkipPath(t *testing.T) {
+	cases := []struct {
+		rel  string
+		want bool
+	}{
+		{".cadt/worktree", true},
+		{".cadt/worktree/x", true},
+		{".cadt/worktree/x/src/a.js", true},
+		{".CADT/WORKTREE/X/a.js", true},       // Windows 语义大小写不敏感
+		{".cadt\\worktree\\x\\a.js", true},    // 反斜杠归一
+		{".cadt/worktree-x/a.js", false},      // 不误伤同名前缀目录
+		{".cadtworktree/x", false},            // 不误伤无分隔前缀
+		{".cadt/tmp/a.md", false},             // AI 中间产物保持可搜
+		{".cadt/logs/2026/11/INDEX.md", false},
+		{".cadt/memory", false},
+		{"src/main.go", false},
+		{"", false},   // 根自身（从 worktree 内发起检索）
+		{".", false},  // 根自身
+	}
+	for _, c := range cases {
+		if got := SkipPath(c.rel); got != c.want {
+			t.Fatalf("SkipPath(%q) = %v, want %v", c.rel, got, c.want)
+		}
+	}
+}
+
+// worktree 检出副本不进检索结果；从 worktree 自身发起的检索照常工作。
+// 内置扫描路径（DATALENS_NO_RG=1）。
+func TestSearchWorkspaceSkipsWorktreeBuiltin(t *testing.T) {
+	t.Setenv("DATALENS_NO_RG", "1")
+	dir := t.TempDir()
+	writeSearchFile(t, filepath.Join(dir, "a.txt"), "needle\n")
+	writeSearchFile(t, filepath.Join(dir, ".cadt", "worktree", "x", "a.js"), "needle\n")
+	writeSearchFile(t, filepath.Join(dir, ".cadt", "tmp", "note.md"), "needle\n")
+	app := &Searcher{}
+	res, err := app.SearchWorkspace(dir, "needle", false, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Hits) != 2 {
+		t.Fatalf("worktree 副本应被跳过（tmp 保留），got %d: %+v", len(res.Hits), res.Hits)
+	}
+	for _, hit := range res.Hits {
+		if strings.Contains(hit.Path, "worktree") {
+			t.Fatalf("worktree 命中泄漏：%+v", hit)
+		}
+	}
+	// 从 worktree 内发起：rel 不命中，照常搜索
+	res, err = app.SearchWorkspace(filepath.Join(dir, ".cadt", "worktree", "x"), "needle", false, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Hits) != 1 {
+		t.Fatalf("worktree 内检索应正常工作，got %d", len(res.Hits))
+	}
+}
+
+func TestSearchWorkspaceSkipsWorktreeRg(t *testing.T) {
+	if _, err := exec.LookPath("rg"); err != nil {
+		t.Skip("未安装 ripgrep，跳过 rg 路径")
+	}
+	dir := t.TempDir()
+	writeSearchFile(t, filepath.Join(dir, "a.txt"), "needle\n")
+	writeSearchFile(t, filepath.Join(dir, ".cadt", "worktree", "x", "a.js"), "needle\n")
+	app := &Searcher{}
+	res, err := app.SearchWorkspace(dir, "needle", false, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Hits) != 1 || strings.Contains(res.Hits[0].Path, "worktree") {
+		t.Fatalf("rg 路径应跳过 worktree 副本：%+v", res.Hits)
+	}
+}
+
+func TestFindFilesSkipsWorktree(t *testing.T) {
+	t.Setenv("DATALENS_NO_RG", "1")
+	dir := t.TempDir()
+	writeSearchFile(t, filepath.Join(dir, "a.go"), "package main\n")
+	writeSearchFile(t, filepath.Join(dir, ".cadt", "worktree", "x", "b.go"), "package wt\n")
+	app := &Searcher{}
+	res, err := app.FindFiles(dir, "*.go", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Files) != 1 || res.Files[0].Path != "a.go" {
+		t.Fatalf("glob 应跳过 worktree：%+v", res.Files)
+	}
+	res, err = app.FindFiles(filepath.Join(dir, ".cadt", "worktree", "x"), "*.go", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Files) != 1 || res.Files[0].Name != "b.go" {
+		t.Fatalf("worktree 内 glob 应正常工作：%+v", res.Files)
 	}
 }

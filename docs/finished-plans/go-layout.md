@@ -123,22 +123,22 @@
 | --- | --- | --- |
 | `2ec9ca1` | B6-0 `internal/appdata` | 应用数据路径拼装下沉共享叶子，根目录留同名薄包装 |
 | `e7a45c8` | B6a `internal/reading` | 扫描/解析/搜索与 4 个测试随包；`Reader` 嵌入 App；注入 Logf / Emit / DebugEnabled / RegisterPreviewRoot，启动清理改 `CleanupCacheOnStartup` |
-| `e088f3b` | B6b `internal/run` + `internal/procctl` | 运行通道与平台 shell 探测随包；`Runner` 嵌入 App；run 与命令桥共用的取消表/进程树终止/参数校验提为 `internal/procctl`，命令桥改调共享实现 |
+| `e088f3b` | B6b `internal/run` + `internal/procctl` | 运行通道与平台 shell 探测随包；`Runner` 嵌入 App；run 与命令桥共用的取消表/进程树终止/参数校验提为 `internal/procctl`，命令桥改调共享实现。**已知有意变更（2026-11-17 审查确认接受）**：取消表统一错误文案为「任务 id %q 已在运行」「同时运行的任务超过上限 16」，且同步命令（AI run_command / 插件同步）一并纳入 16 上限（原同步路径不查上限），见 CHANGELOG「未发布」 |
 | `4d48808` | B6c `internal/browser` | WebView2 宿主、CDP 桥、平台 stub 与 5 个集成测试随包；`Host` 嵌入 App；注入 Logf / Emit / FindParent；`ProfileRoot` / `ActiveProfileDirs` 导出给存储清理 |
 
-**结果**：根目录 125 → **114 个 .go**（78 非测试 + 36 测试）、main 包 22,948 → **17,161 行**；`internal/` 30 个包（22 域 + 8 叶子）。Wails 绑定产物在四批前后无差异（提升方法与原壳方法同名），前端零改动；每批 `go test ./... -timeout 300s` 与 `wails build -devtools` 全绿，browser 批含真实 WebView2 集成用例。
+**结果**：根目录 129 → **114 个 .go**（78 非测试 + 36 测试）、main 包 23,994 → **17,161 行**；`internal/` 30 个包（22 域 + 8 叶子）。起点是 B6 实测基线——§8 的 125/22,948 是 B5 终点测量值，其后两个 feat 提交又入了 4 个文件；终点数字精确无误。Wails 绑定产物在四批前后无差异（提升方法与原壳方法同名），前端零改动；每批 `go test ./... -timeout 300s` 与 `wails build -devtools` 全绿，browser 批含真实 WebView2 集成用例。
 
 ## 10. B7–B12 批次与 B11 暂缓（2026-11-16）
 
 | 提交 | 范围 | 说明 |
 | --- | --- | --- |
 | `ed790d2` | B7 `internal/search` | search / search_rg / glob 与测试随包；`Searcher` 嵌入 App；`SkipDir` 导出给目录树共用忽略表 |
-| `52580bb` | B8 `internal/aischedule` | 调度器与派生 SQLite 随包；`Scheduler` 嵌入 App；导出 `Start` / `Close` / `Path` |
+| `52580bb` | B8 `internal/aischedule` | 调度器与派生 SQLite 随包；`Scheduler` 嵌入 App；`Close` / `Path` 为包级函数；`Start` 同为包级（曾误为导出方法、被提升成 `Start` 绑定，2026-11-17 审查修正） |
 | `86e5af0` | B9 `internal/cmdbridge` + `internal/shellpath` | 进程桥与 AI 终端命令随包；`findGitBash` / `findPwsh` 提为共享叶子，run 去掉钩子、终端留薄包装 |
 | `28f54e1` | B10 `internal/terminal` | ConPTY 会话与 AI 读取接口随包；`Terminal` 嵌入 App |
 | `9b624b5` | B12 `internal/toolchain` | 语言环境检测随包；`Toolchain` 嵌入 App |
 
-**结果**：根目录 125 → **99 个 .go**（69 非测试 + 30 测试）、main 包 22,948 → **12,391 行**；`internal/` 36 个包（27 域 + 9 叶子）。每批 `go test ./... -timeout 300s` 与 `wails build -devtools` 全绿，`frontend/wailsjs` 无差异。
+**结果**：根目录 114 → **99 个 .go**（69 非测试 + 30 测试）、main 包 17,161 → **12,391 行**；`internal/` 36 个包（27 域 + 9 叶子）。每批 `go test ./... -timeout 300s` 与 `wails build -devtools` 全绿；绑定面注记：B8 曾因 `Scheduler.Start` 导出方法多出一个 `Start` 绑定（2026-11-17 修正为包级函数后与基线一致）。
 
 **B11（plugins / market / skills）暂缓**：`plugins.go` 反复读改写根 `AppConfig`（PluginsPathMode / DisabledPlugins），`market.go` 读 DataSource，另有两个 runtime 文件对话框；`skills.go` 的 `//go:embed all:docs/skills` 需改由根壳传 `embed.FS`。施工要点：注入窄配置钩子（读写插件路径模式与禁用列表、读市场源）、文件选择器、embed.FS；测试需改为构造测试服务而非 `NewApp()`。按「收益递减」与平台 glue 留根口径，暂不实施——剩余根目录为 App 核心、绑定壳、平台 glue、CLI 与插件/技能宿主。
 
@@ -158,7 +158,7 @@
 | `d7c22a5` | C3a `internal/mcpsamples` | MCP 示例释放与 mcp.json 合并随包，根壳保留 //go:embed 三份脚本 |
 | `843c133` | C3b `internal/patchcli` + patch sidecar | 补丁 CLI 整体下沉；sidecar 读写/文本读取提为 internal/patch 导出能力 |
 
-**结果**：根目录 99 → **79 个 .go**（60 非测试 + 19 测试）、main 包 12,391 → **7,595 行**；`internal/` 46 个包（34 域 + 12 叶子）。绑定名保持不变，`frontend/wailsjs` 无差异；每批全量 `go test ./... -timeout 300s` 与最终 `wails build -devtools` 全绿。
+**结果**：根目录 99 → **79 个 .go**（60 非测试 + 19 测试）、main 包 12,391 → **7,595 行**；`internal/` 46 个包（34 域 + 12 叶子）。绑定名保持不变（注：C1a 曾把内部助手提为 `Manager.EnsureDir` 导出方法、多出一个 `EnsureDir` 绑定，2026-11-17 修正为包级函数）；每批全量 `go test ./... -timeout 300s` 与最终 `wails build -devtools` 全绿。
 
 **停止线**：剩余根目录为 App 核心与 Wails 绑定壳、平台 glue（`integration_windows` / `cursors` / `windowicon` / `devtools` / `console`）、CLI 生命周期（`convert_cli` / `installer_cli` / `main`）、补丁与存储的薄壳（`patch_app` / `patch_review` / `storage_app`）以及 `webtools_app` 等转发壳。继续拆分的收益已低于维护成本，布局工作到此结束。
 

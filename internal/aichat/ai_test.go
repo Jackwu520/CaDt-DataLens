@@ -150,3 +150,32 @@ func TestAIHomeDir(t *testing.T) {
 		t.Fatalf("AIHomeDir = %q，期望 %q", got, filepath.Clean(want))
 	}
 }
+
+// Emit 接线后失败请求必须发出 ai-error。这是 aichat.Emit 漏注入事故的回归守卫：
+// 曾因 startup 忘记注入导致 AI 流式事件（chunk/think/toolcall/done/error）全量静默丢失，
+// 且 emit 的 nil 守卫把接线缺失变成无声吞事件，go test 与构建都发现不了。
+func TestAISendChatEmitsErrorToWiredHook(t *testing.T) {
+	events := make(chan string, 8)
+	oldEmit := Emit
+	Emit = func(event string, payload any) { events <- event }
+	t.Cleanup(func() { Emit = oldEmit })
+
+	// 500 直接走「重试耗尽→失败」路径（retryMax=0 只试一次），不依赖网络拒绝时序。
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	cfg := aitransport.Config{BaseURL: server.URL + "/v1", Model: "m", Proxy: "direct"}
+	if err := (&Chat{}).AISendChat("emit-session#0", cfg, []aitransport.Message{{Role: "user", Content: "hi"}}, nil, 0); err != nil {
+		t.Fatalf("AISendChat: %v", err)
+	}
+	select {
+	case event := <-events:
+		if event != aitransport.EventError {
+			t.Fatalf("event = %q，期望 %q", event, aitransport.EventError)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatalf("失败请求 3 秒内未发出 ai-error：Emit 事件链路中断")
+	}
+}

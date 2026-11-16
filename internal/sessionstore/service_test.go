@@ -99,3 +99,38 @@ func TestServiceImageRoundTrip(t *testing.T) {
 		t.Fatal("路径穿越应报错")
 	}
 }
+
+// 视频落盘往返：与图片同构，落 videos/ 子目录；超限与路径穿越拒绝。
+func TestServiceVideoRoundTrip(t *testing.T) {
+	withServiceAppData(t)
+	svc := &Service{}
+	mp4 := []byte{0x00, 0x00, 0x00, 0x18, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm', 1, 2, 3}
+	dataURL := "data:video/mp4;base64," + base64.StdEncoding.EncodeToString(mp4)
+	rel, err := svc.AISessionSaveVideo("s1", "clip.mp4", dataURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rel != "videos/clip.mp4" {
+		t.Fatalf("rel = %q", rel)
+	}
+	got, err := svc.AISessionReadVideo("s1", "clip.mp4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != dataURL {
+		t.Fatalf("data URL 不一致: %q", got)
+	}
+	if _, err := svc.AISessionSaveVideo("s1", "big.mp4", "data:video/mp4;base64,"+strings.Repeat("A", 25<<20)); err == nil {
+		t.Fatal("超大视频应报错")
+	}
+	if _, err := svc.AISessionReadVideo("s1", "../meta.json"); err == nil {
+		t.Fatal("路径穿越应报错")
+	}
+	// 读回非 mp4 内容（落盘后被人改过）也要拒绝
+	if _, err := svc.AISessionSaveVideo("s1", "fake.mp4", "data:video/mp4;base64,"+base64.StdEncoding.EncodeToString([]byte("plain"))); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.AISessionReadVideo("s1", "fake.mp4"); err == nil {
+		t.Fatal("非 mp4 内容应拒绝")
+	}
+}

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"datalens/internal/appdata"
+	"datalens/internal/fsops"
 	"datalens/internal/vercmp"
 )
 
@@ -132,8 +133,11 @@ func (pm *Manager) GetPluginsDir() (string, error) {
 	return pluginsRootFor(currentPathMode())
 }
 
-func (pm *Manager) EnsureDir() (string, error) {
-	dir, err := pm.GetPluginsDir()
+// EnsureDir 创建插件目录（不存在时），返回目录路径。
+// 包级函数而非 Manager 方法：Manager 以服务嵌入 App，导出方法会被提升成
+// Wails 绑定——内部助手一律不得写成导出方法（EnsureDir 曾因此误增绑定）。
+func EnsureDir() (string, error) {
+	dir, err := pluginsRootFor(currentPathMode())
 	if err != nil {
 		return "", err
 	}
@@ -372,7 +376,7 @@ func installPluginAt(root, srcDir string) (*PluginInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := copyEntry(srcDir, dest, info); err != nil {
+	if err := fsops.CopyTree(srcDir, dest, info); err != nil {
 		os.RemoveAll(dest)
 		return nil, fmt.Errorf("复制插件文件失败：%w", err)
 	}
@@ -641,7 +645,7 @@ func replacePluginDir(destDir, srcDir string) error {
 	if err != nil {
 		return fmt.Errorf("读取已安装插件失败：%w", err)
 	}
-	if err := copyEntry(destDir, backupDir, info); err != nil {
+	if err := fsops.CopyTree(destDir, backupDir, info); err != nil {
 		return fmt.Errorf("备份当前插件失败：%w", err)
 	}
 	srcInfo, err := os.Stat(srcDir)
@@ -651,9 +655,9 @@ func replacePluginDir(destDir, srcDir string) error {
 	if err := os.RemoveAll(destDir); err != nil {
 		return fmt.Errorf("移除旧插件失败：%w", err)
 	}
-	if err := copyEntry(srcDir, destDir, srcInfo); err != nil {
+	if err := fsops.CopyTree(srcDir, destDir, srcInfo); err != nil {
 		_ = os.RemoveAll(destDir)
-		if restoreErr := copyEntry(backupDir, destDir, info); restoreErr != nil {
+		if restoreErr := fsops.CopyTree(backupDir, destDir, info); restoreErr != nil {
 			return fmt.Errorf("更新失败且恢复旧版本失败：%v（恢复错误：%v）", err, restoreErr)
 		}
 		return fmt.Errorf("更新失败，已恢复旧版本：%w", err)

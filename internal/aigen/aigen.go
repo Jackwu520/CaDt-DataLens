@@ -10,6 +10,7 @@ package aigen
 // API Key 只在前端存储并已渲染进请求头，Go 不落日志；错误摘要做密钥形态脱敏。
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -40,11 +41,14 @@ const (
 )
 
 // HTTPSpec 是前端渲染好的单次请求规格（URL/头/体已含占位符替换结果）。
+// BodyBase64 给二进制请求体（multipart/form-data 的编辑端点）：JSON 字符串传不了原始字节，
+// 前端把整个 multipart body base64 后放这里，Go 侧解码成 []byte 发送；非空时忽略 Body。
 type HTTPSpec struct {
 	URL        string            `json:"url"`
 	Method     string            `json:"method"`
 	Headers    map[string]string `json:"headers"`
 	Body       string            `json:"body"`
+	BodyBase64 string            `json:"bodyBase64,omitempty"`
 	Proxy      string            `json:"proxy"`
 	TimeoutSec int               `json:"timeoutSec"`
 	MaxBytes   int64             `json:"maxBytes"`
@@ -69,13 +73,16 @@ type ProductItem struct {
 }
 
 // SaveSpec 落盘规格：workspace 根 + 可选工作区相对目录 + 产物清单。
+// Headers 只作用于 url 类型的下载请求（有的服务端产物端点在独立路径上、需要鉴权；
+// b64 类型不联网，用不到）。
 type SaveSpec struct {
-	Workspace  string        `json:"workspace"`
-	OutputPath string        `json:"outputPath"`
-	Kind       string        `json:"kind"` // image | video
-	Proxy      string        `json:"proxy"`
-	TimeoutSec int           `json:"timeoutSec"`
-	Items      []ProductItem `json:"items"`
+	Workspace  string            `json:"workspace"`
+	OutputPath string            `json:"outputPath"`
+	Kind       string            `json:"kind"` // image | video
+	Proxy      string            `json:"proxy"`
+	TimeoutSec int               `json:"timeoutSec"`
+	Headers    map[string]string `json:"headers,omitempty"`
+	Items      []ProductItem     `json:"items"`
 }
 
 // SavedFile 是落盘后的单个产物（路径回给模型继续引用）。
@@ -118,7 +125,15 @@ func HTTPRequest(specJSON string) HTTPResult {
 	}
 	var bodyReader io.Reader
 	if method != http.MethodGet && method != http.MethodHead {
-		bodyReader = strings.NewReader(spec.Body)
+		if spec.BodyBase64 != "" {
+			decoded, decodeErr := base64.StdEncoding.DecodeString(spec.BodyBase64)
+			if decodeErr != nil {
+				return HTTPResult{Error: "请求体 base64 解码失败：" + aiGenRedactError(decodeErr.Error())}
+			}
+			bodyReader = bytes.NewReader(decoded)
+		} else {
+			bodyReader = strings.NewReader(spec.Body)
+		}
 	}
 	req, err := http.NewRequestWithContext(ctx, method, spec.URL, bodyReader)
 	if err != nil {
@@ -202,7 +217,7 @@ func SaveProducts(specJSON string) SaveResult {
 		case "b64":
 			raw, productMIME, err = aiGenDecodeB64(item)
 		case "url":
-			raw, productMIME, err = aiGenDownloadURL(client, item, timeout, limit)
+			raw, productMIME, err = aiGenDownloadURL(client, item, timeout, limit, spec.Headers)
 		default:
 			err = fmt.Errorf("未知产物类型 %q（支持 b64 / url）", item.Type)
 		}
@@ -272,7 +287,9 @@ func aiGenDecodeB64(item ProductItem) ([]byte, string, error) {
 }
 
 // aiGenDownloadURL 下载 URL 产物（走用户配置的代理栈，限长 + 超时）。
-func aiGenDownloadURL(client *http.Client, item ProductItem, timeoutSec int, limit int64) ([]byte, string, error) {
+// headers 由前端传入（与生成请求同一套渲染结果），用于需要鉴权的产物端点；
+// 禁止头（Host / Content-Length 等）在这里再挡一次，避免前端漏校验。
+func aiGenDownloadURL(client *http.Client, item ProductItem, timeoutSec int, limit int64, headers map[string]string) ([]byte, string, error) {
 	target := strings.TrimSpace(item.URL)
 	if !strings.HasPrefix(target, "http://") && !strings.HasPrefix(target, "https://") {
 		return nil, "", fmt.Errorf("产物 URL 无效（需以 http:// 或 https:// 开头）")
@@ -284,6 +301,16 @@ func aiGenDownloadURL(client *http.Client, item ProductItem, timeoutSec int, lim
 		return nil, "", fmt.Errorf("下载请求构造失败：%s", err.Error())
 	}
 	req.Header.Set("User-Agent", "CaDt-DataLens/"+strings.TrimPrefix(Version, "v")+" AI-Gen")
+	for name, value := range headers {
+		name = strings.TrimSpace(name)
+		if name == "" || aitransport.ForbiddenHeader(name) {
+			continue
+		}
+		if strings.ContainsAny(name, "\r\n") || strings.ContainsAny(value, "\r\n") {
+			continue
+		}
+		req.Header.Set(name, value)
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, "", fmt.Errorf("下载失败：%s", err.Error())

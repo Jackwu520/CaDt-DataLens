@@ -2,18 +2,29 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+    buildGenMultipart,
+    buildGenVars,
+    classifyGenRef,
+    dataURLBytes,
     defaultGenModelOf,
     extractGenPath,
+    extractGenProducts,
     genExtFor,
+    GEN_IMAGE_WRAP_DEFAULT,
     genModelByRef,
+    genRequestPath,
     GEN_MODEL_PRESETS,
     GEN_PLACEHOLDERS,
+    GEN_REF_BYTES_LIMIT,
+    GEN_REF_LIMIT,
     isAsyncGenModel,
     mergeGenModelEntry,
     moveGenModelWithinKind,
     normalizeGenHeaders,
     normalizeGenModel,
     normalizeGenModels,
+    normalizeGenSnapshot,
+    renderGenImages,
     renderGenJson,
     renderGenText,
 } from '../../src/ai/ai-gen-model.js';
@@ -217,4 +228,180 @@ test('mergeGenModelEntry：AI 来源合并——字段覆盖，apiKey 只取 exi
     const junk = mergeGenModelEntry(existing, 'junk', () => 'gen-new3');
     assert.equal(junk.apiKey, 'sk-user-secret');
     assert.equal(junk.baseURL, 'https://old.example.com', '坏 incoming 不冲掉已有配置');
+});
+
+// ---------- 参考图（图生图 / edits） ----------
+
+test('normalizeGenModel：editPath 缺省空、editImageWrap 缺省 image_url，显式空串保留为裸数组', () => {
+    const plain = normalizeGenModel({id: 'a', name: 'n'}, () => 'g');
+    assert.equal(plain.editPath, '', '未配编辑端点 = 不支持参考图');
+    assert.equal(plain.editImageWrap, GEN_IMAGE_WRAP_DEFAULT);
+    assert.equal(GEN_IMAGE_WRAP_DEFAULT, 'image_url');
+    const edited = normalizeGenModel({id: 'b', name: 'n', editPath: ' /v1/images/edits ', editImageWrap: ' image '}, () => 'g');
+    assert.equal(edited.editPath, '/v1/images/edits', '首尾空白剥掉');
+    assert.equal(edited.editImageWrap, 'image', '自定义包装字段保留');
+    // 用户故意清空包装字段 = 裸字符串数组：不能被归一化悄悄改回 image_url
+    assert.equal(normalizeGenModel({id: 'c', name: 'n', editImageWrap: ''}, () => 'g').editImageWrap, '');
+});
+
+test('renderGenImages：缺省包装 image_url、自定义字段、空字段裸数组、非法字段名抛错', () => {
+    assert.equal(renderGenImages([], undefined), '[]');
+    assert.equal(renderGenImages(['data:image/png;base64,QQ=='], undefined), '[{"image_url":"data:image/png;base64,QQ=="}]');
+    assert.equal(renderGenImages(['https://a/b.png'], 'image'), '[{"image":"https://a/b.png"}]');
+    assert.equal(renderGenImages(['u1', 'u2'], ''), '["u1","u2"]', '空包装字段 = 裸字符串数组');
+    assert.equal(renderGenImages(['u1'], '  '), '["u1"]', '纯空白同样视为空');
+    assert.equal(renderGenImages(null, 'image_url'), '[]', '非数组按空处理');
+    assert.throws(() => renderGenImages(['u1'], 'bad name'), /包装字段名无效/);
+    assert.throws(() => renderGenImages(['u1'], '1x'), /包装字段名无效/);
+});
+
+test('classifyGenRef：http(s) 原样、盘符/相对路径算路径、data:/file: 拒绝、空白丢弃', () => {
+    assert.deepEqual(classifyGenRef('https://x.test/a.png'), {kind: 'url', value: 'https://x.test/a.png'});
+    assert.equal(classifyGenRef('HTTP://x.test/a.png').kind, 'url', '协议大小写不敏感');
+    assert.deepEqual(classifyGenRef('  img/a.png  '), {kind: 'path', value: 'img/a.png'});
+    assert.equal(classifyGenRef('D:/work/a.png').kind, 'path', '盘符路径不是协议');
+    assert.equal(classifyGenRef('D:\\work\\a.png').kind, 'path');
+    assert.equal(classifyGenRef('data:image/png;base64,QQ==').kind, 'invalid', 'data URL 绕开文件授权与体积预算');
+    assert.equal(classifyGenRef('file:///D:/a.png').kind, 'invalid');
+    assert.equal(classifyGenRef('ftp://x/a.png').kind, 'invalid');
+    assert.equal(classifyGenRef('   ').kind, 'empty');
+    assert.equal(classifyGenRef(null).kind, 'empty');
+});
+
+test('dataURLBytes：base64 段长度 ×3/4，无 base64 段给 0', () => {
+    // 'AAAA' 4 个 base64 字符 = 3 字节
+    assert.equal(dataURLBytes('data:image/png;base64,AAAA'), 3);
+    assert.equal(dataURLBytes('data:image/png;base64,AAAA\nAAAA'), 6, '换行不计入');
+    assert.equal(dataURLBytes('https://x/a.png'), 0);
+    assert.equal(dataURLBytes(''), 0);
+    assert.equal(GEN_REF_BYTES_LIMIT, 4 << 20);
+    assert.equal(GEN_REF_LIMIT, 5);
+});
+
+test('genRequestPath：带参考图走 editPath，无参考图 / 未配 editPath 回落 path', () => {
+    const entry = {path: '/v1/images/generations', editPath: '/v1/images/edits'};
+    assert.equal(genRequestPath(entry, {references: ['data:image/png;base64,QQ==']}), '/v1/images/edits');
+    assert.equal(genRequestPath(entry, {references: []}), '/v1/images/generations');
+    assert.equal(genRequestPath(entry, {}), '/v1/images/generations');
+    assert.equal(genRequestPath({path: '/gen'}, {references: ['x']}), '/gen', '没配 editPath 时回落生成端点（调用方先报错）');
+    assert.equal(genRequestPath(null, {references: ['x']}), '');
+});
+
+test('buildGenVars + renderGenJson：{{images}} 渲染成数组字面量，不二次加引号', () => {
+    const entry = normalizeGenModel({
+        id: 'e1', name: 'edits', kind: 'image',
+        editPath: '/v1/images/edits', editImageWrap: 'image_url',
+        bodyTemplate: '{"model":{{model}},"images":{{images}},"prompt":{{prompt}}}',
+    }, () => 'g');
+    const vars = buildGenVars(entry, {prompt: '把背景换成海边', references: ['data:image/png;base64,QQ==', 'https://x/a.png']});
+    const body = JSON.parse(renderGenJson(entry.bodyTemplate, vars));
+    assert.deepEqual(body.images, [
+        {image_url: 'data:image/png;base64,QQ=='},
+        {image_url: 'https://x/a.png'},
+    ]);
+    assert.equal(body.prompt, '把背景换成海边');
+    // 无参考图：渲染成空数组（模板里有 {{images}} 也不会拼出非法 JSON）
+    const emptyBody = JSON.parse(renderGenJson(entry.bodyTemplate, buildGenVars(entry, {prompt: 'x'})));
+    assert.deepEqual(emptyBody.images, []);
+    // 裸数组条目
+    const bare = normalizeGenModel({...entry, editImageWrap: ''}, () => 'g');
+    const bareBody = JSON.parse(renderGenJson(bare.bodyTemplate, buildGenVars(bare, {prompt: 'x', references: ['u1']})));
+    assert.deepEqual(bareBody.images, ['u1']);
+    // 模板里没有 {{images}} 时占位符词表仍合法（渲染不报错，参考图被丢弃由调用方校验）
+    assert.equal(renderGenJson('{"prompt":{{prompt}}}', vars), '{"prompt":"把背景换成海边"}');
+});
+
+test('normalizeGenSnapshot：references 只留路径/URL 摘要（去空、超 5 张截断）', () => {
+    const snap = normalizeGenSnapshot({
+        kind: 'image', status: 'done',
+        references: ['a.png', '', null, 'https://x/a.png'],
+    });
+    assert.deepEqual(snap.references, ['a.png', 'https://x/a.png']);
+    assert.deepEqual(normalizeGenSnapshot({}).references, [], '缺省给空数组');
+    const many = normalizeGenSnapshot({references: ['1', '2', '3', '4', '5', '6', '7']});
+    assert.equal(many.references.length, GEN_REF_LIMIT);
+});
+
+// ---------- multipart 编辑端点（Qwen-Image / OpenAI 官方 /v1/images/edits） ----------
+
+const TINY_PNG_B64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+
+test('normalizeGenModel：editFormat 缺省 json、multipart 保留、非法值回落 json', () => {
+    assert.equal(normalizeGenModel({name: 'a'}, () => 'g').editFormat, 'json');
+    assert.equal(normalizeGenModel({name: 'b', editFormat: 'multipart'}, () => 'g').editFormat, 'multipart');
+    assert.equal(normalizeGenModel({name: 'c', editFormat: 'form'}, () => 'g').editFormat, 'json');
+});
+
+test('normalizeGenModel：probePath 缺省空、去首尾空白、保留占位符', () => {
+    assert.equal(normalizeGenModel({name: 'a'}, () => 'g').probePath, '');
+    assert.equal(normalizeGenModel({name: 'b', probePath: '  /v1/videos/{{jobId}}/content  '}, () => 'g').probePath,
+        '/v1/videos/{{jobId}}/content', '探针端点保留 {{jobId}} 占位符（轮询时才渲染）');
+});
+
+test('extractGenProducts：滤掉 null / 空串产物值（服务端常用 url:null + 独立端点）', () => {
+    // 这是「任务完成却卡在取回产物」的根因：extractGenPath 返回 [null]，长度 1 被误判成有产物
+    assert.deepEqual(extractGenPath({url: null}, 'url'), [null], 'extractGenPath 原样返回 null（行为不变）');
+    assert.deepEqual(extractGenProducts({url: null}, 'url'), [], 'null 不算产物');
+    assert.deepEqual(extractGenProducts({url: '  '}, 'url'), [], '空白串不算产物');
+    assert.deepEqual(extractGenProducts({url: 'https://x/a.mp4'}, 'url'), ['https://x/a.mp4']);
+    // 多值里混着空值：只保留有效的
+    assert.deepEqual(extractGenProducts({data: [{url: null}, {url: 'https://x/b.png'}]}, 'data[*].url'),
+        ['https://x/b.png']);
+    // b64 空串同样滤掉
+    assert.deepEqual(extractGenProducts({data: [{b64_json: ''}, {b64_json: 'QQ=='}]}, 'data[*].b64_json'), ['QQ==']);
+});
+
+test('buildGenMultipart：模板生成文本字段，参考图走重复的 image 文件段', () => {
+    const entry = normalizeGenModel({
+        name: 'qwen',
+        path: '/v1/images/generations',
+        editPath: '/v1/images/edits',
+        editFormat: 'multipart',
+        bodyTemplate: '{"model":{{model}},"prompt":{{prompt}},"size":{{size}},"num_inference_steps":40,"images":{{images}}}',
+        defaultModel: 'Qwen/Qwen-Image-2.1',
+        defaultSize: '1024x1024',
+    }, () => 'g');
+    const vars = buildGenVars(entry, {prompt: '把背景换成海边'});
+    const out = buildGenMultipart(entry, vars,
+        ['data:image/png;base64,' + TINY_PNG_B64, 'data:image/png;base64,' + TINY_PNG_B64],
+        {boundary: 'BND'});
+
+    assert.equal(out.contentType, 'multipart/form-data; boundary=BND');
+    const body = Buffer.from(out.bodyBase64, 'base64');
+    assert.equal(out.bytes, body.length);
+    const text = body.toString('utf8');
+    assert.ok(text.startsWith('--BND\r\n'), '首个分隔行');
+    assert.ok(text.includes('name="model"\r\n\r\nQwen/Qwen-Image-2.1\r\n'), 'model 文本字段');
+    assert.ok(text.includes('name="prompt"\r\n\r\n把背景换成海边\r\n'), 'prompt 按 UTF-8 写入');
+    assert.ok(text.includes('name="size"\r\n\r\n1024x1024\r\n'));
+    assert.ok(text.includes('name="num_inference_steps"\r\n\r\n40\r\n'), '数字字段转文本');
+    assert.equal((text.match(/name="image"; filename="ref-\d+\.png"/g) || []).length, 2, '两张图 → 两个文件段');
+    assert.ok(text.includes('Content-Type: image/png'), '文件段带 mime');
+    assert.ok(text.endsWith('--BND--\r\n'), '结尾分隔行');
+    // 模板里的 images 不重复出现在文本字段里（参考图只从 references 来）
+    assert.ok(!text.includes('name="images"'), 'images 字段被跳过');
+    // 图片字节原样落进 body（PNG 魔数）
+    assert.ok(body.includes(Buffer.from([0x89, 0x50, 0x4e, 0x47])), 'PNG 原始字节');
+});
+
+test('buildGenMultipart：文件字段名可自定义、URL 参考图与空参考图直接报错', () => {
+    const entry = normalizeGenModel({
+        name: 'x', editFormat: 'multipart', editImageWrap: 'file',
+        bodyTemplate: '{"prompt":{{prompt}}}',
+    }, () => 'g');
+    const vars = buildGenVars(entry, {prompt: 'p'});
+    const out = buildGenMultipart(entry, vars, ['data:image/png;base64,' + TINY_PNG_B64], {boundary: 'B'});
+    const text = Buffer.from(out.bodyBase64, 'base64').toString('utf8');
+    assert.ok(text.includes('name="file"; filename="ref-1.png"'), '自定义文件字段名');
+
+    assert.throws(() => buildGenMultipart(entry, vars, ['https://example.com/a.png'], {boundary: 'B'}),
+        /需要本地图片/, 'URL 参考图在 multipart 下不可用');
+    assert.throws(() => buildGenMultipart(entry, vars, [], {boundary: 'B'}), /至少一张参考图/);
+
+    const bad = normalizeGenModel({name: 'y', editFormat: 'multipart', bodyTemplate: 'not json'}, () => 'g');
+    assert.throws(() => buildGenMultipart(bad, buildGenVars(bad, {prompt: 'p'}),
+        ['data:image/png;base64,' + TINY_PNG_B64], {boundary: 'B'}), /合法 JSON 对象/);
+    const arr = normalizeGenModel({name: 'z', editFormat: 'multipart', bodyTemplate: '[1,2]'}, () => 'g');
+    assert.throws(() => buildGenMultipart(arr, buildGenVars(arr, {prompt: 'p'}),
+        ['data:image/png;base64,' + TINY_PNG_B64], {boundary: 'B'}), /必须是 JSON 对象/);
 });

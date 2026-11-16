@@ -10,6 +10,7 @@ package storage
 
 import (
 	"path/filepath"
+	"strings"
 	"sync"
 )
 
@@ -65,6 +66,10 @@ type Deps struct {
 	RemoveToRecycleBin func(path string) error
 	// ActiveBrowserProfiles 返回仍在使用的浏览器配置目录名，清除与统计都跳过它们。
 	ActiveBrowserProfiles func() map[string]bool
+	// KeepWorktreeNames 返回「有会话登记」的 AI 隔离 worktree 绝对路径（.cadt/worktree/<slug>），
+	// 孤儿判定用：登记之外的才算孤儿。nil 时隔离区条目一律不删（宁可不清，也不能把活跃
+	// 会话的草稿当孤儿清掉）。
+	KeepWorktreeNames func() []string
 	// BeforeClear 按条目 id 在删除前释放本进程句柄（派生 SQLite 开着就删不掉）。
 	BeforeClear map[string]func()
 }
@@ -123,4 +128,32 @@ func (s *Service) blockedBrowserProfiles() map[string]bool {
 		return map[string]bool{}
 	}
 	return s.deps.ActiveBrowserProfiles()
+}
+
+// registeredWorktreeNames 有会话登记的隔离 worktree 目录名（小写集合）。路径取 basename
+// 登记——children 过滤按目录名匹配。宿主未注入钩子时返回空集（配合 isOrphanWorktree
+// 的 nil 检查实现 fail-safe：未注入 = 不清理）。
+func (s *Service) registeredWorktreeNames() map[string]bool {
+	out := map[string]bool{}
+	if s.deps.KeepWorktreeNames == nil {
+		return out
+	}
+	for _, path := range s.deps.KeepWorktreeNames() {
+		if path == "" {
+			continue
+		}
+		out[strings.ToLower(filepath.Base(filepath.Clean(path)))] = true
+	}
+	return out
+}
+
+// orphanWorktreeFilter 孤儿过滤器：宿主未注入会话登记钩子时一律不删（fail-safe——
+// 宁可不清，也不能把活跃会话的隔离区当孤儿清掉）；注入后登记之外的才算孤儿。
+// 登记集合在过滤器创建时取一次：一次扫描/清除期间的会话登记视为不变。
+func (s *Service) orphanWorktreeFilter() func(string) bool {
+	if s.deps.KeepWorktreeNames == nil {
+		return func(string) bool { return false }
+	}
+	keep := s.registeredWorktreeNames()
+	return func(name string) bool { return !keep[strings.ToLower(name)] }
 }

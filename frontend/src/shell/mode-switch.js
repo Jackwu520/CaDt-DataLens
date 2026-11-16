@@ -39,11 +39,17 @@ function applySwitchMode(mode) {
         if (doc && doc.image) deps.enterImageView(doc);
         return;
     }
+    if (mode === 'video') {
+        if (doc && doc.video) deps.enterVideoView(doc);
+        return;
+    }
+    // 离开视频视图：视频是覆盖层，不清掉 video-active 会把编辑器挡住（同时暂停播放）
+    if (deps.currentMode === 'video' && doc) deps.hideVideoView(doc);
     if (mode === 'binary') {
         if (doc && doc.binary) deps.enterBinaryView(doc);
         return;
     }
-    if (mode === 'text' && (deps.currentMode === 'image' || deps.currentMode === 'binary') && doc) {
+    if (mode === 'text' && (deps.currentMode === 'image' || deps.currentMode === 'binary' || deps.currentMode === 'video') && doc) {
         deps.enterTextView(doc);
         return;
     }

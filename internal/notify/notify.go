@@ -10,6 +10,10 @@ var (
 	Logf func(level, format string, args ...any)
 	// IconID 是 exe 内嵌图标组编号（main/windowicon_windows.go 的 appIconID）。
 	IconID uintptr
+	// OnToastActivation 在用户点击本应用的系统通知时被调用（Windows COM 激活回调，
+	// payload 是发通知时随 NotifySystemToast 传入的激活参数原文，如 "ai-session=<id>"）。
+	// 宿主负责把窗口拉回前台并分发给前端。只在 Windows 且进程内注册过激活器时有意义。
+	OnToastActivation func(payload string)
 )
 
 func logf(level, format string, args ...any) {

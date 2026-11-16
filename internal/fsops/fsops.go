@@ -135,12 +135,14 @@ func (f *FS) ReadDirTree(path string, depth int) (*DirTreeListing, error) {
 		depth = DirTreeMaxDepth
 	}
 	budget := DirTreeMaxEntries
-	root, truncated := walkDirTree(path, depth, &budget)
+	root, truncated := walkDirTree(path, "", depth, &budget)
 	return &DirTreeListing{Root: root, Depth: depth, Total: DirTreeMaxEntries - budget, Truncated: truncated}, nil
 }
 
 // walkDirTree 递归收录；根级读失败由调用方先 os.Stat 挡过，子级读失败按空目录跳过。
-func walkDirTree(dir string, remainingDepth int, budget *int) (*DirTreeNode, bool) {
+// rel 为当前目录相对遍历根的路径（正斜杠；根为空串）——用于按路径跳过 AI 隔离 worktree
+//（.cadt/worktree 整棵不列；从 worktree 自身发起的遍历 rel 不命中，照常列出）。
+func walkDirTree(dir string, rel string, remainingDepth int, budget *int) (*DirTreeNode, bool) {
 	node := &DirTreeNode{Name: filepath.Base(dir), IsDir: true}
 	if remainingDepth <= 0 {
 		return node, false
@@ -155,8 +157,13 @@ func walkDirTree(dir string, remainingDepth int, budget *int) (*DirTreeNode, boo
 	for _, entry := range entries {
 		name := entry.Name()
 		isDir := entry.IsDir() && entry.Type()&os.ModeSymlink == 0
-		if isDir && search.SkipDir(name) {
-			continue
+		if isDir {
+			if search.SkipDir(name) {
+				continue
+			}
+			if search.SkipPath(joinRelPath(rel, name)) {
+				continue
+			}
 		}
 		if *budget <= 0 {
 			node.Omitted = true
@@ -171,13 +178,21 @@ func walkDirTree(dir string, remainingDepth int, budget *int) (*DirTreeNode, boo
 		}
 		node.Children = append(node.Children, child)
 		if isDir {
-			sub, subTruncated := walkDirTree(filepath.Join(dir, name), remainingDepth-1, budget)
+			sub, subTruncated := walkDirTree(filepath.Join(dir, name), joinRelPath(rel, name), remainingDepth-1, budget)
 			child.Children = sub.Children
 			child.Omitted = sub.Omitted
 			truncated = truncated || subTruncated
 		}
 	}
 	return node, truncated
+}
+
+// joinRelPath 拼接遍历根相对路径（正斜杠）；根为空串时返回 name 自身。
+func joinRelPath(rel, name string) string {
+	if rel == "" {
+		return name
+	}
+	return rel + "/" + name
 }
 
 // sortDirTreeEntries 目录在前，名字不区分大小写（Windows 资源管理器语义的简化版）
@@ -383,7 +398,10 @@ func resolvePasteTarget(src, destDir, newName string) (string, os.FileInfo, erro
 	return dest, srcInfo, nil
 }
 
-func copyEntry(src, dst string, info os.FileInfo) error {
+// CopyTree 复制文件或目录树（保留权限位，文件用 O_EXCL 防覆盖）。
+// 包级导出供同层域包（插件安装/替换）复用，避免各包自留一份逐字相同的副本；
+// 包级函数不会成为 Wails 绑定（与 CopyEntry 方法的粘贴语义不同，互不替代）。
+func CopyTree(src, dst string, info os.FileInfo) error {
 	if info.IsDir() {
 		if err := os.Mkdir(dst, info.Mode().Perm()); err != nil {
 			return err
@@ -399,7 +417,7 @@ func copyEntry(src, dst string, info os.FileInfo) error {
 			if err != nil {
 				return err
 			}
-			if err := copyEntry(childSrc, childDst, childInfo); err != nil {
+			if err := CopyTree(childSrc, childDst, childInfo); err != nil {
 				return err
 			}
 		}
@@ -427,7 +445,7 @@ func (f *FS) CopyEntry(src, destDir, newName string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := copyEntry(src, dest, info); err != nil {
+	if err := CopyTree(src, dest, info); err != nil {
 		os.RemoveAll(dest)
 		return "", err
 	}
@@ -442,7 +460,7 @@ func (f *FS) MoveEntry(src, destDir, newName string) (string, error) {
 	if err := os.Rename(src, dest); err == nil {
 		return dest, nil
 	}
-	if err := copyEntry(src, dest, info); err != nil {
+	if err := CopyTree(src, dest, info); err != nil {
 		os.RemoveAll(dest)
 		return "", err
 	}

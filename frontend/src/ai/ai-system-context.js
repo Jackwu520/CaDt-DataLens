@@ -6,6 +6,7 @@ import {AI_SCOPES, AI_WRITE_SCOPES, aiTextOf} from './ai-constants.js';
 import {escapeXmlText, normalizePersona, personaSegments} from './ai-persona.js';
 import {remindersForPrompt} from './ai-reminders.js';
 import {isReadableImagePath} from './ai-image-encode.js';
+import {isReadableVideoPath} from './ai-constants.js';
 
 export function createAISystemContext(ctx) {
     function workspaceRulesText(scope, planMode) {
@@ -55,6 +56,7 @@ export function createAISystemContext(ctx) {
                     '- write_file 用于新建文件或整体覆盖；覆盖已存在文件前必须先 read_file（本会话没读过、或读取后文件已被外部修改时会拒绝写入，防止覆盖其他会话的改动）；不要修改 .git 等版本库内部文件。',
                     '- run_command 用于测试、构建、git 查看等一次性命令；不要运行交互式或长驻命令，必要时用 timeoutMs 控制超时。每条命令都在独立进程中执行、工作目录由 cwd 参数决定，cd 不会保留；不要用 cd / pwd / echo %CD% 探测目录，需要换目录直接传 cwd。',
                     '- 长驻 / 耗时命令（构建、watch、本地服务器、长测试）用 background_command 启动并立即返回，之后用 check_command 轮询增量输出、结束或汇报结果；不要用 run_command 跑长任务，也不要反复 check_command 空等。',
+                    '- 需要等待一段时间再继续（等构建 / 下载 / 生成完成、到点提醒）用 start_timer 倒计时：到点会以系统消息自动唤醒本会话；不要用 run_command 或终端跑 sleep、ping 之类的命令空等凑时长。',
                 ]),
                 '- 多步任务先用 todo_write 规划，并在每完成一步后更新任务状态。',
                 ...(full && !planMode ? ['- 完全权限下没有审批兜底（含终端命令）：破坏性操作前先向用户说明。'] : []),
@@ -164,6 +166,20 @@ export function createAISystemContext(ctx) {
             if (sideOf) {
                 parts.push(sideChatBlock(session));
                 meta.sideChat = {owner: sideOf};
+            }
+        }
+
+        // 隔离 worktree 块：会话持有活跃 worktree 时每轮注入（含目录存在性校验，
+        // 失效自动清登记并提示重建——见 ai-worktree.js 的 blockFor）
+        if (typeof ctx.worktreeBlock === 'function') {
+            try {
+                const wtBlock = await ctx.worktreeBlock(session);
+                if (wtBlock) {
+                    parts.push(wtBlock);
+                    meta.worktree = {name: session && session.worktree ? session.worktree.name : ''};
+                }
+            } catch (e) {
+                meta.errors.push('worktree 块：' + ((e && e.message) || e));
             }
         }
 
@@ -315,7 +331,8 @@ export function createAISystemContext(ctx) {
                         (active.mode ? '（视图：' + active.mode + '）' : '') +
                         (active.dirty ? '（未保存）' : '') +
                         // 用户开着图片问「这张图怎么样」是最常见的误判点：不提示的话模型会去截应用窗口
-                        (isReadableImagePath(active.path) ? '（图片文件：要看画面用 read_image，read_file 读二进制会报错）' : ''));
+                        (isReadableImagePath(active.path) ? '（图片文件：要看画面用 read_image，read_file 读二进制会报错）' :
+                            (isReadableVideoPath(active.path) ? '（mp4 视频：要看内容用 read_video，read_file 读二进制会报错）' : '')));
                 }
                 if (ctx.settings.aiInjectCaret !== false) {
                     if (active.cursor && active.cursor.line) {

@@ -1,8 +1,15 @@
-# app_control 集成会话重命名（ai_rename_session）（方案）
+# app_control 集成会话重命名（ai_rename_session）（实施记录）
 
-> 状态：**未开工**（2026-11-16 评估成文，当日未实施）
+> 状态：**已完成**（2026-11-17 实施；`npm test` 891 项全绿、`ai-app-actions.test.mjs` 三方对账守卫通过。跨会话改名与重启保留待手动验收，见 §5）
 > 决策依据：参考 DSH（deepseek-harness）的 `session.rename` RPC 端点设计——DSH 把会话重命名做成**正式的 RPC 业务命令**（`@Remote('rename')`），UI 与客户端统一走它；CaDt-DataLens 现有 `app_control` 已有 `ai_new_session` / `ai_switch_session` 两个会话动作（走 `aiPanel.bridgeXxx` 桥接），重命名可完全照此模式接入，成本约 25 行
 > 范围：`app_control` 新增 `ai_rename_session` 动作；`ai-panel.js` 新增 `bridgeRenameSession` 桥接；复用现有 `renameSession` 语义（改 `session.title` + 持久化 + 渲染）
+
+## 0. 与方案的偏离（实施时发现）
+
+1. **懒加载 stub 会话先补正文再改名（方案没有，实施补上）**：改名后 `queueLogSave` 会把 md 日志写盘，对 `_stub` 会话（正文未载入、`messages` 恒为空数组）直接写盘会把「空内容」当真源写出去——`switchSession` / `exportSession` / 清空会话都已有同款护栏。`bridgeRenameSession` 照 `bridgeSwitchSession` 先例：`target._stub` 时先 `ensureSessionLoaded`，失败抛错不落盘。
+2. **目标 §2.4 在方案成文时即已存在**：`bridgeGetState` 返回的 `session` 对象早已含 `id`，`get_ai` 无需补字段；实施时只把 cadt-ui 技能表 `get_ai` 行的文案补上 id（`会话信息（id/标题/…）`），让模型知道从哪拿 id。
+3. **动作表位置**：方案 §3.3 写的 `docs/skills/cadt-ui/SKILL.md` 已迁入 `ai-constants.js` 的 cadt-ui 技能「动作表」段（三方对账守卫 `frontend/test/ai/ai-app-actions.test.mjs` 自动核对）。方案内其余行号均为评估日快照，以实施日代码为准。
+4. **无新增单测**：桥接是闭包内函数（依赖 `sessions`/`persistSessions` 等闭包状态），与 `bridgeNewSession` / `bridgeSwitchSession` 先例一致不做单测；登记一致性由三方对账守卫覆盖，行为靠 §5 手动验收。
 
 ## 1. 背景与现状（代码事实）
 
@@ -27,7 +34,7 @@
 1. `app_control` 新增 `ai_rename_session {id, title}` 动作：AI 可直接重命名指定会话标题。
 2. 复用现有 `renameSession` 的语义（改 `session.title`、截断 60 字符、持久化、渲染、写盘），不引入新存储结构。
 3. 参数校验与 DSH 对齐：`id` 必须命中现有会话；`title` 非空、截断 60 字符。
-4. **`get_ai` 返回会话 id**（用户决策 2026-11-16）：AI 调用 `ai_rename_session` 前需要会话 id 定位目标——`get_ai` 现有返回含标题/消息数/轮次/工作区，**需补会话 id 字段**；否则 AI 无法定位目标会话。
+4. **`get_ai` 返回会话 id**（用户决策 2026-11-16）：~~AI 调用 `ai_rename_session` 前需要会话 id 定位目标——`get_ai` 现有返回含标题/消息数/轮次/工作区，**需补会话 id 字段**~~。**实施核对：`bridgeGetState` 的 `session` 对象早已含 `id`，无需补字段**；只把技能表 `get_ai` 行文案补上 id（见 §0.2）。
 5. **同步 `ai_new_session` 空会话复用重命名**（用户决策 2026-11-16）：现有 `bridgeNewSession` 在空会话复用时已隐式改标题（`ai-panel.js:13747`），与 `bridgeRenameSession` 语义一致，确认无需改动。
 
 ### 非目标
@@ -37,7 +44,7 @@
 - **不做权限控制**：DSH 的 `session/rename` 有 `remoteAccess` 端点权限；CaDt-DataLens 的 `app_control` 已由「AI 工具权限」开关统一控制（`appControlOn()`），不细粒度到单个动作。
 - **不做标题归一化的控制字符清洗**：DSH 的 `normalizeSessionTitle` 去 ANSI 转义/控制字符；CaDt-DataLens 现有 `slice(0,60)` 已够用，标题是用户/AI 输入的普通文本，风险低。
 
-## 3. 设计
+## 3. 设计（实施注记：动作表现驻 `ai-constants.js` 的 cadt-ui 技能「动作表」段；下文行号为 2026-11-16 评估快照）
 
 ### 3.1 桥接方法（`ai-panel.js`）
 
@@ -79,7 +86,9 @@ case 'ai_rename_session': {
 
 ### 3.3 技能文档（`cadt-ui`）
 
-`docs/skills/cadt-ui/SKILL.md` 的动作表补一行：
+> 实施注记：动作表已从 `docs/skills/cadt-ui/SKILL.md` 迁至 `frontend/src/ai/ai-constants.js` 的 cadt-ui 技能「动作表」段，实际落点为该处。
+
+动作表补一行（实际实施文案略详，见 `ai-constants.js`）：
 
 ```
 - ai_rename_session {id,title}：重命名指定 AI 会话标题（id 为会话 id，title 非空、截断 60 字符）。

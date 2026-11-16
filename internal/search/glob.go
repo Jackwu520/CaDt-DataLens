@@ -109,8 +109,14 @@ func (s *Searcher) FindFiles(root, pattern string, maxResults int) (*FindFilesRe
 		}
 		name := d.Name()
 		if d.IsDir() {
-			if path != root && (searchSkipDirs[strings.ToLower(name)] || name == ".git") {
-				return filepath.SkipDir
+			if path != root {
+				if searchSkipDirs[strings.ToLower(name)] || name == ".git" {
+					return filepath.SkipDir
+				}
+				// 与 searchWorkspace 同口径：AI 隔离 worktree 副本整棵跳过
+				if rel, relErr := filepath.Rel(root, path); relErr == nil && SkipPath(rel) {
+					return filepath.SkipDir
+				}
 			}
 			return nil
 		}

@@ -270,7 +270,7 @@ runTurn(session, userMsg):
 | `read_file(path, offset?)` | `OpenFile(path,'auto')` → Content 切片，**单次 ≤64KB**，二进制/超 10MB 拒绝 | 读取+ | 免 |
 | `search_text(query)` | `SearchWorkspace(scopeRoot, query, false, 200)` | 读取+ | 免 |
 | `web_search(query, maxResults?)` | 后端 `WebSearch`：Bing RSS 搜索，返回标题 / URL / 摘要 / 日期；默认 8 条、最多 10 条 | 读取+ / 计划模式 | 免 |
-| `web_fetch(url, maxChars?)` | 后端 `WebFetch`：抓取公网 HTML / 文本 / JSON / XML → 标题 + 正文纯文本 + 页面链接；默认 12000 字、最多 60000；拒绝本机 / 内网 / 二进制 | 读取+ / 计划模式 | 默认免；命中项目 `Web(...)` 规则时 deny 拒绝、ask 弹审批卡 |
+| `web_fetch(url, maxChars?)` | 后端 `WebFetch`：抓取公网 HTML / 文本 / JSON / XML → 标题 + 正文纯文本 + 页面链接；默认 12000 字、最多 60000；拒绝本机 / 内网 / 二进制。**图片地址改投 `read_image`**（见 `docs/finished-plans/read-image.md`） | 读取+ / 计划模式 | 默认免；命中项目 `Web(...)` 规则时 deny 拒绝、ask 弹审批卡 |
 | `memory_list()` | `AIEnsureDir` 后 `ReadDir(dir, 200)`：文件名+大小+修改时间 | 读取+ | 免 |
 | `memory_read(name)` | 记忆目录 + `OpenFile`（≤64KB） | 读取+ | 免 |
 | `memory_write(name, content)` | 记忆目录 + `SaveFile`（文件名白名单校验，见 §15） | 读取+ | 免（**显示写入卡片**） |

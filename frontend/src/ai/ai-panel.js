@@ -27,7 +27,7 @@ import {
 import {redactScopePaths} from './ai-scope-redact.js';
 import {createLoopGuard} from './ai-loop-guard.js';
 import {createSystemTakeoverHost} from './ai-system-takeover.js';
-import {desktopNotifyTargets} from './ai-notify-policy.js';
+import {buildNotifyActivationPayload, desktopNotifyTargets} from './ai-notify-policy.js';
 import {prepareImagePayload} from './ai-image-encode.js';
 import {
     DEFAULT_PROVIDER_BASE_URL,
@@ -66,6 +66,7 @@ import {
     decidePermission,
     emptyPermissionRules,
     formatRuleLines,
+    isWebApproval,
     normalizeDefaultScope,
     normalizeLocalClassifierStrictness,
     normalizePermissionRules,
@@ -107,6 +108,10 @@ import {
     windowValue,
 } from './ai-config-model.js';
 import {
+    classifyGenRef,
+    dataURLBytes,
+    GEN_REF_BYTES_LIMIT,
+    GEN_REF_LIMIT,
     genModelByRef,
     isAsyncGenModel,
     mergeGenModelEntry,
@@ -152,6 +157,8 @@ import {
     AI_IMAGE_MAX_BASE64,
     AI_IMAGE_MESSAGE_BUDGET,
     AI_IMAGE_MIMES,
+    AI_VIDEO_LIMIT,
+    AI_VIDEO_ESTIMATE_TOKENS,
     AI_DEFAULT_SYSTEM_PROMPT,
     AI_LEGACY_DEFAULT_PROMPTS,
     aiNormalizedPromptText,
@@ -179,11 +186,17 @@ import {
     aiImageExt,
     aiEstimateImageTokens,
     aiImageStats,
+    aiNormalizeVideo,
+    aiVideoFromSrc,
+    isReadableVideoPath,
+    aiEstimateVideoTokens,
+    aiMsgActionsStepMode,
     aiSafeFileStem,
 } from './ai-constants.js';
 import {recordRead, recordWrite, checkWriteFresh} from './ai-write-guard.js';
 import {createAIToolDefs} from './ai-tool-defs.js';
 import {createAISystemContext} from './ai-system-context.js';
+import {createAIWorktree, normalizeWorktreeState, agentWorktreeWriteVerdict} from './ai-worktree.js';
 import {createAITodos, shouldSendTodosCheck, todosCheckText} from './ai-todos.js';
 import {createScrollGesture, createShrinkBurst, nextStickState, shouldRefollowGrowth, STRICT_BOTTOM_PX} from './ai-scroll-follow.js';
 import {createAIChangesUI} from './ai-changes-ui.js';
@@ -257,6 +270,11 @@ export function createAIPanel(options) {
     // 面板状态（开合 / 显示方式 / 消息流）变化的宿主通知：结构面板据此决定
     // 「文件结构 / 会话结构」的可见性与内容
     const onPanelStateChange = typeof opts.onPanelStateChange === 'function' ? opts.onPanelStateChange : null;
+    // 会话回合开始 / 结束的宿主通知（attachStream / detachStream 处触发，零延迟）。
+    // 宿主据此做布局让位（编辑区自动收起）。isCurrent 表示这个回合是否属于用户正在查看的
+    // 会话——后台会话在跑不该改变当前布局，由宿主自行决定是否理会。
+    // 只挂真正的会话回合：上下文压缩（oneShot）是后台动作，不改变布局。
+    const onTurnStateChange = typeof opts.onTurnStateChange === 'function' ? opts.onTurnStateChange : null;
     const getWorkspaceContext = typeof opts.getWorkspaceContext === 'function' ? opts.getWorkspaceContext : () => ({workspaceFolder: '', activeFile: null, openFiles: []});
     const getGitRepo = typeof opts.getGitRepo === 'function' ? opts.getGitRepo : () => null;
     const openWorkspaceFolder = typeof opts.openWorkspaceFolder === 'function' ? opts.openWorkspaceFolder : null;
@@ -332,6 +350,7 @@ export function createAIPanel(options) {
         chipTerms: panel.querySelector('#ai-chip-terms'),
         chipTimers: panel.querySelector('#ai-chip-timers'),
         chipSchedules: panel.querySelector('#ai-chip-schedules'),
+        chipWorktree: panel.querySelector('#ai-chip-worktree'),
         headSearch: panel.querySelector('#ai-head-search'),
         chipsPop: panel.querySelector('#ai-chips-pop'),
         agentView: panel.querySelector('#ai-agent-view'),
@@ -352,6 +371,7 @@ export function createAIPanel(options) {
         slash: panel.querySelector('#ai-slash'),
         ctxBanner: panel.querySelector('#ai-ctx-banner'),
         ctxBannerText: panel.querySelector('#ai-ctx-banner-text'),
+        ctxBannerClose: panel.querySelector('#ai-ctx-close'),
         ctxCompact: panel.querySelector('#ai-ctx-compact'),
         dialog: panel.querySelector('#ai-dialog'),
         dialogTitle: panel.querySelector('#ai-dialog-title'),
@@ -456,6 +476,7 @@ export function createAIPanel(options) {
         tempVal: document.getElementById('ai-opt-temp-val'),
         maxTokens: document.getElementById('ai-opt-maxtokens'),
         maxTokensHuman: document.getElementById('ai-opt-maxtokens-human'),
+        rpm: document.getElementById('ai-opt-rpm'),
         contextHuman: document.getElementById('ai-opt-context-human'),
         reasoningGroup: document.getElementById('ai-opt-reasoning-group'),
         reasoning: document.getElementById('ai-opt-reasoning'),
@@ -497,11 +518,14 @@ export function createAIPanel(options) {
         chatFontCode: document.getElementById('ai-opt-chatfont-code'),
         showThinking: document.getElementById('ai-opt-show-thinking'),
         showUsage: document.getElementById('ai-opt-show-usage'),
+        msgActions: document.getElementById('ai-opt-msg-actions'),
         turnMetaAll: document.getElementById('ai-opt-turn-meta-all'),
         contextSlim: document.getElementById('ai-opt-context-slim'),
         assistantCard: document.getElementById('ai-opt-assistant-card'),
         inlineWidgets: document.getElementById('ai-opt-inline-widgets'),
         todosExpanded: document.getElementById('ai-opt-todos-expanded'),
+        autoCollapseEditor: document.getElementById('ai-opt-auto-collapse-editor'),
+        expandEditorOnTab: document.getElementById('ai-opt-expand-editor-on-tab'),
         autoTitle: document.getElementById('ai-opt-auto-title'),
         defaultScope: document.getElementById('ai-opt-default-scope'),
         logEnabled: document.getElementById('ai-opt-log-enabled'),
@@ -787,8 +811,9 @@ export function createAIPanel(options) {
             // 个性化蒸馏学习：端侧只学大模型的判定（云端 AI 分类器结论 / 语义插件结论）；
             // 用户的允许 / 拒绝不回流——审批是一次性授权语境，回流会把临时授权学成永久放行
             localClassifierPersonalize: stored.localClassifierPersonalize !== false,
-            // 应用内完成 toast 默认关（作者反馈：太烦人）；未发版，旧存量值直接忽略
-            notifyInApp: false,
+            // 应用内 toast 默认关（作者反馈：太烦人）；开关存值要如实生效——「任务完成不弹」
+            // 由 ai-notify-policy 的 completion 档管，不在这里一刀切（否则设置页开关是死的）
+            notifyInApp: stored.notifyInApp === true,
             notifySystem: stored.notifySystem === true,
             notifyFinish: stored.notifyFinish !== false,
             notifyError: stored.notifyError !== false,
@@ -1108,15 +1133,25 @@ export function createAIPanel(options) {
         if (!raw || typeof raw !== 'object') return null;
         const state = ['pending', 'approved', 'denied', 'cancelled', 'failed'].includes(raw.state) ? raw.state : 'cancelled';
         const kind = raw.kind === 'command' ? 'command' : 'file';
+        // 命令类审批的 tool 只回这三个值；read_image 的网图审批带 web 标记，要按原样留住，
+        // 否则会话重开后卡文案退回「在工作目录执行命令」、记住粒度也变成「相同命令」。
+        let tool = 'run_command';
+        if (kind === 'command') {
+            if (raw.tool === 'background_command') tool = 'background_command';
+            else if (raw.tool === 'web_fetch') tool = 'web_fetch';
+            else if (raw.web === true && raw.tool === 'read_image') tool = 'read_image';
+        } else {
+            tool = raw.tool === 'edit_file' ? 'edit_file' : 'write_file';
+        }
         return {
             state,
             kind,
             error: aiTextOf(raw.error),
             command: aiTextOf(raw.command).slice(0, 8000),
             cwd: aiTextOf(raw.cwd),
-            tool: kind === 'command'
-                ? (raw.tool === 'background_command' ? 'background_command' : (raw.tool === 'web_fetch' ? 'web_fetch' : 'run_command'))
-                : (raw.tool === 'edit_file' ? 'edit_file' : 'write_file'),
+            tool,
+            // 网络类审批（web_fetch / read_image 网图）：卡文案与「记住」粒度按网址走
+            web: raw.web === true,
             path: aiTextOf(raw.path),
             relPath: aiTextOf(raw.relPath),
             added: Math.max(0, Number(raw.added) || 0),
@@ -1340,6 +1375,9 @@ export function createAIPanel(options) {
             message.images = Array.isArray(raw.images)
                 ? raw.images.map(aiNormalizeImage).filter(Boolean).slice(0, AI_IMAGE_LIMIT)
                 : [];
+            message.videos = Array.isArray(raw.videos)
+                ? raw.videos.map(aiNormalizeVideo).filter(Boolean).slice(0, AI_VIDEO_LIMIT)
+                : [];
         }
         if (role === 'tool') {
             message.toolCallId = aiTextOf(raw.toolCallId);
@@ -1519,6 +1557,9 @@ export function createAIPanel(options) {
             readRoots: normalizeReadRoots(raw.readRoots),
             // 支线对话：指向母会话 id（普通会话为空）。不嵌套——读盘时也压成一层的语义。
             sideOf: aiTextOf(raw.sideOf),
+            // 隔离 worktree 会话态（唯一归属凭证；fork/支线/投递产生的新会话不继承——
+            // 它们走 createSessionData 新建，raw 里没有这个字段就归一成 null）
+            worktree: normalizeWorktreeState(raw.worktree),
         };
     }
 
@@ -2064,6 +2105,12 @@ export function createAIPanel(options) {
         return stream;
     }
 
+    // 回合运行态广播：异常必须吞掉，宿主回调不能影响流本身的生命周期。
+    function notifyTurnState(running, sessionId, isCurrent) {
+        if (!onTurnStateChange) return;
+        try { onTurnStateChange(!!running, sessionId || '', !!isCurrent); } catch (e) {}
+    }
+
     // 注册 / 注销会话流，并立即刷新镜像与 composer 状态。
     function attachStream(next) {
         streams.set(next.sessionId, next);
@@ -2072,12 +2119,17 @@ export function createAIPanel(options) {
         const viewed = currentSession();
         if (viewed && viewed.id === next.sessionId) clearSessionUnread(viewed);
         syncStreamView();
+        notifyTurnState(true, next.sessionId, !!(viewed && viewed.id === next.sessionId));
         return next;
     }
 
     function detachStream(next) {
         if (next && streams.get(next.sessionId) === next) streams.delete(next.sessionId);
         syncStreamView();
+        if (next) {
+            const viewed = currentSession();
+            notifyTurnState(false, next.sessionId, !!(viewed && viewed.id === next.sessionId));
+        }
     }
 
     // ---------- 每会话系统提示词缓存 ----------
@@ -2542,6 +2594,38 @@ export function createAIPanel(options) {
     function syncRemindersUI(session) {
         if (session && currentSession() === session) remindersMod.refresh();
     }
+
+    // 隔离 worktree 域（ai-worktree.js）：工具执行、会话态、胶囊与启动 reconcile。
+    // requestPatchApproval / patchResultText 构造于本模块之后，一律惰性转发。
+    const worktreeMod = createAIWorktree({
+        backend,
+        getScopeRoot,
+        currentSession,
+        currentScopeOf,
+        persistSessions,
+        flash,
+        requestPatchApproval: (...args) => requestPatchApproval(...args),
+        patchResultText: (...args) => patchResultText(...args),
+        recordChange,
+        notifyFileChanged,
+        refreshToolWrap: (...args) => refreshToolWrap(...args),
+        toolHalted: (...args) => toolHalted(...args),
+        logPermission,
+        getSessions: () => sessions,
+        // 本会话派生的子代理隔离区（含终态记录）：export/discard by name 的归属判定
+        getSubWorktrees: (...args) => subagentsMod.worktreeNamesForSession(...args),
+        joinPath: (...args) => aiJoinPath(...args),
+        openDialog: openAIDialog,
+        closeDialog: closeAIDialog,
+        dialogNode,
+        dialogButton,
+        dialogEl: el.dialog,
+        chip: el.chipWorktree,
+    });
+    worktreeMod.mountChip();
+    worktreeMod.pruneStartup();
+    // 启动即按当前会话同步胶囊（恢复的会话 meta 里有 worktree 字段，占位也能显示）
+    worktreeMod.syncChip(currentSession());
 
 
 
@@ -3419,7 +3503,8 @@ export function createAIPanel(options) {
         const prevTop = body.scrollTop;
         body.classList.add('ai-md');
         body.innerHTML = renderMarkdown(text);
-        if (!streaming) enhanceAICodeBlocks(body);
+        // 思考链是弱化的灰色区域：代码块只留代码区，不挂「js + 复制」工具栏（那行比代码本身还跳）
+        if (!streaming) enhanceAICodeBlocks(body, {noBar: true});
         resolveAIImages(body);
         // 流式中且仍处于跟随状态 → 贴底；用户上滑过就保留他看的位置。
         if (streaming && st.pinned) body.scrollTop = body.scrollHeight;
@@ -3607,8 +3692,10 @@ export function createAIPanel(options) {
         const duration = turnRunning && live
             ? Math.max(0, Date.now() - (Number(live.startedAt) || turnStartMs(group)))
             : turnDurationMs(group, finalItem, false);
-        // 按「已回答的提问卡」把过程内容切成多段：提问卡按时间序插在段之间（每段一个折叠行）。
-        // 否则提问卡会被抽到全部过程之后，看起来始终钉在本轮底部、不被后续内容推上去。
+        // 按「已回答的提问卡」把过程内容切成多段：提问卡按时间序插在段之间。
+        // 分段只是为了守住时间序，**折叠状态与折叠头都是轮级唯一的**——否则同一轮会出
+        // 多条「已完成 · 用时 X」的过程条，看起来像好几轮（提问卡是折叠区外的整卡，
+        // 它只把 body 隔开，不该切出第二个开关）。
         const segments = [];
         {
             let cur = [];
@@ -3635,6 +3722,18 @@ export function createAIPanel(options) {
         // 最终回答的思考链跟随「最后一个 items 段」的折叠体（与完成后收起的设计一致）；
         // 尾部是提问卡时同样挂在它前面的末段，不额外暴露在折叠区外。
         const lastItemsIndex = segments.reduce((acc, seg, idx) => (seg.ask ? acc : idx), -1);
+        // 折叠状态的 key 只到轮：段号不进 key，否则每段一个开关、一轮被切成好几条。
+        const turnFoldKey = session.id + ':' + (group.user ? 'u' + group.user.ts : 'g' + group.startIndex);
+        // 段是否有可展示内容（仅末段可能只挂最终回答的思考链）。
+        const segHasBody = (seg, segIndex) => seg.items.length > 0 ||
+            (segIndex === lastItemsIndex && !!finalReasoning);
+        // 只有「收尾但无正文、也无可展开内容」的那一条退化过程条才允许空 body。
+        const segRenderable = (seg, segIndex) => segHasBody(seg, segIndex) ||
+            (segments.length === 1 && !!finalItem && !!duration);
+        // 折叠头只出一次：落在第一个真正渲染出来的 items 段上（前面的空段会被跳过）。
+        const foldHeadIndex = segments.findIndex((seg, idx) => !seg.ask && segRenderable(seg, idx));
+        // 展开/收起时要把同一轮所有段的 body 建起来（每段的 ensureBody 是各自闭包）。
+        const segEnsureBody = [];
         segments.forEach((seg, segIndex) => {
             if (seg.ask) {
                 // 已答提问卡按时间序插在过程段之间，始终整卡渲染（不参与任何折叠）：
@@ -3644,11 +3743,14 @@ export function createAIPanel(options) {
             }
             const processItems = seg.items;
             const segReasoning = segIndex === lastItemsIndex && !!finalReasoning;
-            const hasBody = processItems.length > 0 || segReasoning;
-            if (!hasBody && !(segments.length === 1 && finalItem && duration)) return;
-            const key = session.id + ':' + (group.user ? 'u' + group.user.ts : 'g' + group.startIndex) + ':s' + segIndex;
+            const hasBody = segHasBody(seg, segIndex);
+            if (!segRenderable(seg, segIndex)) return;
+            const key = turnFoldKey;
+            const isFoldHead = segIndex === foldHeadIndex;
             const fold = document.createElement('div');
-            fold.className = 'ai-process' + (turnRunning ? ' streaming' : '');
+            // 只有首个段带折叠头；其余段只是「无头的 body 容器」，与首段共享同一个开合状态，
+            // 视觉上仍是一条折叠流被提问卡隔开（不再逐段吐一条「已完成 · 用时」）。
+            fold.className = 'ai-process' + (turnRunning ? ' streaming' : '') + (isFoldHead ? '' : ' cont');
             fold.dataset.processKey = key;
             if (turnRunning) fold.dataset.processStart = String(Number(live.startedAt) || turnStartMs(group));
             // 轮次已结束：丢掉「处理中点过折叠条」留下的记忆，回到完成后默认值。
@@ -3660,19 +3762,6 @@ export function createAIPanel(options) {
                 ? (processFoldState.has(key) ? processFoldState.get(key) : true)
                 : (processFoldState.has(key) ? processFoldState.get(key) : !finalHasBody);
             fold.classList.toggle('collapsed', !expanded);
-            const head = document.createElement('button');
-            head.type = 'button';
-            head.className = 'ai-process-head';
-            head.disabled = !hasBody;
-            const chev = document.createElement('span');
-            chev.className = 'ai-process-chev';
-            chev.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 6.5L8 10l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>';
-            if (!hasBody) chev.style.visibility = 'hidden';
-            const label = document.createElement('span');
-            label.className = 'ai-process-label';
-            // 流式时计时器在底部状态条（.ai-streaming-bar），fold 头只显示状态文本
-            label.textContent = turnRunning ? '处理中' : processFoldLabel(group, finalItem, turnRunning, live);
-            head.append(chev, label);
             let body = null;
             const ensureBody = () => {
                 if (body) return body;
@@ -3689,17 +3778,37 @@ export function createAIPanel(options) {
                 fold.appendChild(body);
                 return body;
             };
-            head.addEventListener('click', () => {
-                if (!hasBody) return;
-                const next = fold.classList.contains('collapsed');
-                processFoldState.set(key, next);
-                // 轮次还在跑时记下「用户手动碰过」，等轮次结束后丢弃这条记忆。
-                if (turnRunning) processFoldTouched.add(key);
-                else processFoldTouched.delete(key);
-                if (next) ensureBody();
-                fold.classList.toggle('collapsed', !next);
-            });
-            fold.appendChild(head);
+            segEnsureBody.push(ensureBody);
+            if (isFoldHead) {
+                const head = document.createElement('button');
+                head.type = 'button';
+                head.className = 'ai-process-head';
+                head.disabled = !hasBody;
+                const chev = document.createElement('span');
+                chev.className = 'ai-process-chev';
+                chev.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 6.5L8 10l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+                if (!hasBody) chev.style.visibility = 'hidden';
+                const label = document.createElement('span');
+                label.className = 'ai-process-label';
+                // 流式时计时器在底部状态条（.ai-streaming-bar），fold 头只显示状态文本
+                label.textContent = turnRunning ? '处理中' : processFoldLabel(group, finalItem, turnRunning, live);
+                head.append(chev, label);
+                head.addEventListener('click', () => {
+                    if (!hasBody) return;
+                    const next = fold.classList.contains('collapsed');
+                    processFoldState.set(key, next);
+                    // 轮次还在跑时记下「用户手动碰过」，等轮次结束后丢弃这条记忆。
+                    if (turnRunning) processFoldTouched.add(key);
+                    else processFoldTouched.delete(key);
+                    // 同一轮被提问卡隔开的所有段落一起开合：只有一条折叠条，不能各段不同步。
+                    // next = true 表示即将展开——先把各段懒建的 body 补齐，再统一撤掉 collapsed。
+                    if (next) segEnsureBody.forEach((fn) => fn());
+                    for (const node of host.querySelectorAll('.ai-process')) {
+                        if (node.dataset.processKey === key) node.classList.toggle('collapsed', !next);
+                    }
+                });
+                fold.appendChild(head);
+            }
             if (expanded && hasBody) ensureBody();
             host.appendChild(fold);
         });
@@ -3835,7 +3944,6 @@ export function createAIPanel(options) {
             showImagePreviewMenu(image, e.clientX, e.clientY);
         });
         openAIDialog('图片预览 · ' + (image.name || '图片'), [img], [
-            dialogButton('全屏查看', 'dlg-btn', () => showImageFullscreen(image)),
             dialogButton('复制', 'dlg-btn', () => { copyPreviewImage(image); }),
             dialogButton('关闭', 'dlg-btn primary', closeAIDialog),
         ]);
@@ -3904,6 +4012,21 @@ export function createAIPanel(options) {
     function appendUserImages(wrap, images) {
         const strip = buildImageStrip(images, 'ai-user-images', 'ai-user-image');
         if (strip) wrap.appendChild(strip);
+    }
+
+    // 视频附件只渲染文件名 chip：不做 <video> 预览（16 MB 级 blob 进 DOM 得不偿失，
+    // 且气泡里自动播放没有任何安全边界）。
+    function appendUserVideos(wrap, videos) {
+        for (const video of videos || []) {
+            if (!video) continue;
+            const chip = document.createElement('div');
+            chip.className = 'ai-user-video';
+            const label = document.createElement('span');
+            label.className = 'ai-user-video-name';
+            label.textContent = (video.name || '视频') + ' · ' + video.mime;
+            chip.appendChild(label);
+            wrap.appendChild(chip);
+        }
     }
 
     // 对话内模型切换记录：分隔线 + 文案 + 信息图标（悬停看账号 / 推理等级 / 时间）。
@@ -3994,6 +4117,7 @@ export function createAIPanel(options) {
             const bubble = document.createElement('div');
             bubble.className = 'ai-user-bubble' + (message.systemNote ? ' system-note' : '');
             appendUserImages(bubble, message.images);
+            appendUserVideos(bubble, message.videos);
             // 引用块拆出来单独渲染：截断成单行摘要，title 悬浮看全文；消息正文只显示追问本身
             const parsedQuote = splitQuotePrefix(message.content || '');
             if (parsedQuote.quotes.length) {
@@ -4089,6 +4213,14 @@ export function createAIPanel(options) {
 
         // 带图片的应用消息（浏览器截图）：直接铺图片，不显示「查看指令」折叠区
         const images = Array.isArray(message.images) ? message.images : [];
+        const videos = Array.isArray(message.videos) ? message.videos : [];
+        if (videos.length) {
+            appendUserVideos(card, videos);
+            const hint = document.createElement('div');
+            hint.className = 'ai-app-msg-hint';
+            hint.textContent = '视频已自动附加到对话，模型可直接查看';
+            card.appendChild(hint);
+        }
         if (images.length) {
             const strip = buildImageStrip(images, 'ai-app-msg-images', 'ai-app-msg-image');
             if (strip) {
@@ -4245,6 +4377,13 @@ export function createAIPanel(options) {
         if (wrap && wrap.dataset.aiArchived === '1') return;
         // 系统注记（工具轮次提醒 / 模型切换记录）不是用户输入：不给复制、编辑重发。
         if (message && message.systemNote) return;
+        const sessionNow = session || currentSession();
+        const lastAssistant = sessionNow ? lastAssistantIndex(sessionNow) : -1;
+        const lastUser = sessionNow ? lastUserIndex(sessionNow) : -1;
+        // 回复操作按钮颗粒度（设置 → AI 助手 → 回复操作按钮）：'last-only' 时中间步骤
+        // 整行不出现——早退放在元素创建之前；中间步骤 'basic' 档在按钮分支里收敛。
+        if (message && message.role !== 'user' &&
+            aiMsgActionsStepMode(settings.aiMsgActions, index === lastAssistant) === 'none') return;
         const host = target || wrap;
         let actions = host.querySelector(':scope > .ai-msg-actions');
         if (!actions) {
@@ -4253,9 +4392,6 @@ export function createAIPanel(options) {
             host.appendChild(actions);
         }
         actions.innerHTML = '';
-        const sessionNow = session || currentSession();
-        const lastAssistant = sessionNow ? lastAssistantIndex(sessionNow) : -1;
-        const lastUser = sessionNow ? lastUserIndex(sessionNow) : -1;
         // 只有「这条消息所属会话」在生成时才收起改写类操作：其他会话在跑不影响这里。
         const sessionBusy = !!(sessionNow && streamOf(sessionNow.id));
         const icon = (path) => '<svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">' + path + '</svg>';
@@ -4277,6 +4413,9 @@ export function createAIPanel(options) {
             button.className = 'ai-msg-action';
             button.dataset.aiAct = act;
             button.setAttribute('aria-label', label);
+            // 纯图标按钮：tooltip 运行时只认 data-tip，aria-label 不会弹气泡。
+            // 沿用 label 作文案——它本就是每个动作的准确说明（与无障碍名同源）。
+            button.dataset.tip = label;
             button.innerHTML = icons[act] || label;
             button.disabled = !!disabled;
             actions.appendChild(button);
@@ -4285,10 +4424,13 @@ export function createAIPanel(options) {
             add('copy', '复制');
             if (index === lastUser && !sessionBusy) add('edit', '编辑重发');
         } else {
+            // 中间步骤按颗粒度收敛：'basic' 只留复制 + 回退（回合收尾信息也只属于最后一条）
+            const stepMode = aiMsgActionsStepMode(settings.aiMsgActions, index === lastAssistant);
+            const isLast = index === lastAssistant;
             add('copy', '复制');
             if (message.status === 'error') {
-                if (!sessionBusy) add('retry', '重试');
-            } else if (index === lastAssistant && !sessionBusy) {
+                if (!sessionBusy && (isLast || stepMode === 'full')) add('retry', '重试');
+            } else if (isLast && !sessionBusy) {
                 add('regenerate', '重新生成');
             }
             if (!sessionBusy && !compactOf(sessionNow.id) && index < sessionNow.messages.length - 1) {
@@ -4296,7 +4438,7 @@ export function createAIPanel(options) {
             }
             // 回合收尾信息：分支 / 本轮用量 / 耗时。生成中与失败轮不显示（还没得看、也没意义）
             const finished = message.status !== 'streaming' && message.status !== 'error';
-            if (finished) {
+            if (finished && (isLast || stepMode === 'full')) {
                 if (!sessionBusy) add('branch', '在新对话中分支');
                 // 支线对话（旁路追问）：轻关联，不复制历史，只把这条消息作为引用带入新会话
                 if (!sessionBusy) add('sidechat', '新建支线对话（带这条引用追问）');
@@ -4777,16 +4919,22 @@ export function createAIPanel(options) {
             }
             const hasCalls = message.role === 'assistant' && Array.isArray(message.toolCalls) && message.toolCalls.length;
             const hasImages = message.role === 'user' && Array.isArray(message.images) && message.images.some((image) => image && image.data);
+            const hasVideos = message.role === 'user' && Array.isArray(message.videos) && message.videos.some((video) => video && video.data);
             let content = message.content;
-            if (!content && !hasImages && message.role === 'user' && Array.isArray(message.images) && message.images.length) {
-                content = '（图片已归档，原始图片见对话日志）';
+            if (!content && !hasImages && !hasVideos && message.role === 'user' &&
+                ((Array.isArray(message.images) && message.images.length) || (Array.isArray(message.videos) && message.videos.length))) {
+                content = '（图片/视频已归档，原始内容见对话日志）';
             }
-            if (!content && !hasCalls && !hasImages) continue;
+            if (!content && !hasCalls && !hasImages && !hasVideos) continue;
             if (message.role === 'assistant' && message.status === 'error') continue;
             const item = {role: message.role, content};
             if (hasImages) {
                 item.images = message.images.filter((image) => image && image.data)
                     .map((image) => ({mime: image.mime, data: image.data}));
+            }
+            if (hasVideos) {
+                item.videos = message.videos.filter((video) => video && video.data)
+                    .map((video) => ({mime: video.mime, data: video.data}));
             }
             if (message.role === 'assistant' && message.reasoning && (!slim || i >= recentStart)) {
                 // 历史 reasoning 只保留最近 2 轮：思考只服务于当轮行动，旧轮的思考
@@ -4903,7 +5051,10 @@ export function createAIPanel(options) {
             const chars = messages.reduce((sum, message) => sum + aiTextOf(message.content).length, 0);
             const extra = getAttachments().reduce((sum, item) => sum + aiTextOf(item.content).length, 0);
             const imageCount = aiImageStats(messages).count + getAttachments().filter((item) => item.kind === 'image').length;
-            el.contextCount.textContent = '上下文约 ' + (chars + extra) + ' 字符' + (imageCount ? ' · 图片 ' + imageCount + ' 张' : '');
+            const videoCount = getAttachments().filter((item) => item.kind === 'video').length;
+            el.contextCount.textContent = '上下文约 ' + (chars + extra) + ' 字符' +
+                (imageCount ? ' · 图片 ' + imageCount + ' 张' : '') +
+                (videoCount ? ' · 视频 ' + videoCount + ' 个' : '');
         }
         updateCtxBanner();
         renderStats();
@@ -5212,7 +5363,9 @@ export function createAIPanel(options) {
             else messageTokens += tokens;
         });
         for (const item of getAttachments()) {
-            messageTokens += item.kind === 'image' ? aiEstimateImageTokens(item) : aiEstimateTokens(aiTextOf(item.content));
+            if (item.kind === 'image') messageTokens += aiEstimateImageTokens(item);
+            else if (item.kind === 'video') messageTokens += aiEstimateVideoTokens();
+            else messageTokens += aiEstimateTokens(aiTextOf(item.content));
         }
         const toolTokens = toolsTokenEstimate(session);
         const total = systemTokens + messageTokens + toolTokens;
@@ -5683,6 +5836,12 @@ export function createAIPanel(options) {
         return {text, data};
     }
 
+    // 视频附件/ read_video 的读取通道：Go 侧 ReadVideoAsDataURL（mp4 白名单 + ftyp 魔数 + 16 MB 上限）
+    async function readVideoFile(path) {
+        if (!backend.ReadVideoAsDataURL) throw new Error('当前版本不支持读取视频');
+        return backend.ReadVideoAsDataURL(path);
+    }
+
     function parseSkillText(text, fallbackName) {
         let name = fallbackName;
         let description = '';
@@ -5917,6 +6076,8 @@ export function createAIPanel(options) {
         get getScopeRoot() { return getScopeRoot; },
         // 支线定性块要显示主对话标题（<side_chat> 里点名「主对话：「X」」），按 id 查会话
         get sessionById() { return sessionById; },
+        // 隔离 worktree 块：会话持有活跃 worktree 时每轮注入（含目录存在性校验与失效清登记）
+        get worktreeBlock() { return worktreeMod.blockFor; },
     });
     const assembleSystemContext = (session, attachmentList) => systemCtxMod.assembleSystemContext(session, attachmentList);
     const planModeBlock = () => systemCtxMod.planModeBlock();
@@ -6829,6 +6990,8 @@ export function createAIPanel(options) {
             state: 'pending',
             kind: 'command',
             tool: info.tool || 'run_command',
+            // 网络类审批（web_fetch / read_image 网图）：审批卡按「访问网址」渲染，审计记 kind web
+            web: info.web === true,
             command: info.command,
             cwd: info.cwd,
             remember: '',
@@ -6942,10 +7105,10 @@ export function createAIPanel(options) {
                     : (approved ? '正在应用更改…' : '用户放弃了本次更改');
         // 用户裁定也进审批记录：来源标 user，避免只看到「待审批」看不到结果。
         const auditKind = approval.kind === 'command'
-            ? (approval.tool === 'web_fetch' ? 'web' : 'command')
+            ? (isWebApproval(approval) ? 'web' : 'command')
             : (approval.kind === 'read' ? 'read' : 'write');
         const auditSubject = approval.kind === 'command'
-            ? (approval.tool === 'web_fetch'
+            ? (isWebApproval(approval)
                 ? (webRuleSubject(approval.command) || approval.command)
                 : approval.command)
             : (approval.relPath || approval.path || '');
@@ -7355,6 +7518,10 @@ export function createAIPanel(options) {
         const rel = aiRelPath(getScopeRoot(), path).toLowerCase();
         if (rel === 'agents.md' || rel.endsWith('/agents.md')) return true;
         if (rel === '.git' || rel.startsWith('.git/') || rel.includes('/.git/')) return true;
+        // .cadt/worktree 是 AI 隔离 worktree（草稿区，炸了不伤主根）：auto 档免逐写审批。
+        // 豁免必须精确到 worktree/ 前缀——.cadt/permissions.json、.cadt/patches/ 仍 risky。
+        // 脏文件仍 risky；免审的安全债由回灌 patch 卡（全档必弹）偿还（ai-worktree.js）。
+        if (rel === '.cadt/worktree' || rel.startsWith('.cadt/worktree/')) return false;
         // .cadt/tmp 是约定的临时产物区（纯文本中间产物，可被存储清理整目录回收）：
         // auto 档免审批放行；.cadt 其余部分仍 risky——permissions.json 是 AI 自己的权限规则、
         // patches/ 是补丁索引，都不能让 AI 免审自改。豁免必须精确到 tmp/ 前缀。
@@ -7377,14 +7544,32 @@ export function createAIPanel(options) {
             return '用户已停止生成，写入已取消。';
         }
         const rel = writeRuleSubject(aiRelPath(getScopeRoot(), info.path));
-        const decision = decidePermission({
-            scope,
-            kind: 'write',
-            rules,
-            subject: rel,
-            sessionAllow: isPathApproved(session, info.path),
-            risky,
-        });
+        // 子代理隔离 worktree 写：子代理永不弹卡（没人可答），隔离区即审批边界——
+        // 本子代理前缀内的写确定性放行（自动应用），前缀外确定性拒绝；回灌由主代理经
+        // worktree_manage(action=export, name=…) 走人工 patch 卡。run_command 不挂
+        // （命令通道归 subagent-sandbox 方案）。没有隔离区的子代理维持只读（write 工具不挂）。
+        let decision;
+        const subWorktree = session.parentSessionId ? normalizeWorktreeState(session.worktree) : null;
+        if (subWorktree) {
+            const verdict = agentWorktreeWriteVerdict(subWorktree, rel);
+            if (verdict.verdict === 'deny') {
+                logPermission('write', rel, 'deny', 'agent-worktree', '');
+                toolMessage.status = 'done';
+                toolMessage.content = '超出子代理隔离前缀';
+                refreshToolWrap(session, toolMessage);
+                return verdict.message;
+            }
+            decision = {decision: 'allow', source: 'agent-worktree', rule: ''};
+        } else {
+            decision = decidePermission({
+                scope,
+                kind: 'write',
+                rules,
+                subject: rel,
+                sessionAllow: isPathApproved(session, info.path),
+                risky,
+            });
+        }
         logPermission('write', rel, decision.decision, decision.source, decision.rule);
         if (decision.decision === 'deny') {
             toolMessage.approval = {
@@ -7753,7 +7938,13 @@ export function createAIPanel(options) {
         if (!imageFile) return '没有适合回传的图片（超过 6MB 或非图片产物）。';
         const dataURL = await backend.ReadImageAsDataURL(imageFile.path);
         if (!dataURL || dataURL.indexOf('base64,') < 0) throw new Error('读取生成图片失败');
-        const normalized = aiNormalizeImage({mime: imageFile.mime, data: dataURL.slice(dataURL.indexOf('base64,') + 7), name: '生成图'});
+        const b64 = dataURL.slice(dataURL.indexOf('base64,') + 7);
+        // 图片过大：跳过回传（保护上下文预算），产物已正常保存——这是有意跳过，不是失败
+        if (dataURLBytes(dataURL) > AI_IMAGE_MAX_BASE64) {
+            return '生成图较大（约 ' + (dataURLBytes(dataURL) / (1 << 20)).toFixed(1) +
+                'MB），已跳过图片回传；产物已正常保存，可用 read_image 查看。';
+        }
+        const normalized = aiNormalizeImage({mime: imageFile.mime, data: b64, name: '生成图'});
         if (!normalized) throw new Error('生成图片数据无法解析');
         queueSessionImage(session, {
             role: 'user',
@@ -7763,6 +7954,57 @@ export function createAIPanel(options) {
             ts: Date.now(),
         });
         return '';
+    }
+
+    // 参考图解析（图生图 / edits，ai-gen-image-edit.md §3.1）：元素二选一——
+    // http(s) 图片 URL 原样透传（由服务商拉取），本地图片走 read_file 同一条授权链读成 Data URL。
+    // labels = 审批卡与工具卡上给用户看的清单（本地图用绝对路径，重启后仍能现读缩略图）；
+    // values = 真正塞进请求体的值（Data URL / URL）。任何一张失败整单失败（不静默丢图）。
+    async function resolveGenReferences(ctx, raw) {
+        const list = Array.isArray(raw) ? raw : (raw == null || raw === '' ? [] : [raw]);
+        if (!list.length) return {ok: true, labels: [], values: []};
+        if (list.length > GEN_REF_LIMIT) {
+            return {ok: false, message: '参考图至多 ' + GEN_REF_LIMIT + ' 张（当前 ' + list.length + ' 张）。请挑最关键的几张重试。'};
+        }
+        if (!backend.ReadImageAsDataURL) {
+            return {ok: false, message: '当前版本不支持读取本地图片（请重新构建或更新应用）。'};
+        }
+        const labels = [];
+        const values = [];
+        for (const item of list) {
+            const ref = classifyGenRef(item);
+            if (ref.kind === 'empty') continue;
+            if (ref.kind === 'invalid') {
+                return {ok: false, message: '参考图只接受 http(s) 图片 URL 或本地图片路径：' + ref.value};
+            }
+            if (ref.kind === 'url') {
+                labels.push(ref.value);
+                values.push(ref.value);
+                continue;
+            }
+            const resolved = await resolveReadPathWithApproval(ctx, 'generate_image', ref.value);
+            if (!resolved.ok) return {ok: false, message: resolved.message};
+            let dataURL = '';
+            try {
+                dataURL = await backend.ReadImageAsDataURL(resolved.path);
+            } catch (e) {
+                return {ok: false, message: '读取参考图失败：' + resolved.path + '（' + ((e && e.message) || e) + '）'};
+            }
+            if (!dataURL || dataURL.indexOf('base64,') < 0) {
+                return {ok: false, message: '读取参考图失败：' + resolved.path + '（不是可用的图片数据）'};
+            }
+            const bytes = dataURLBytes(dataURL);
+            if (bytes > GEN_REF_BYTES_LIMIT) {
+                return {
+                    ok: false,
+                    message: '参考图「' + resolved.path + '」约 ' + (bytes / (1 << 20)).toFixed(1) +
+                        'MB，超过单张 4MB 上限。请先压缩再重试（不自动压缩，避免构图与画质被悄悄改掉）。',
+                };
+            }
+            labels.push(resolved.path);
+            values.push(dataURL);
+        }
+        return {ok: true, labels, values};
     }
 
     async function runGenerateTool(kind, input, ctx) {
@@ -7776,6 +8018,35 @@ export function createAIPanel(options) {
         }
         const workspace = getScopeRoot();
         if (!workspace) throw new Error('当前没有工作区，无法保存生成产物');
+        // 参考图（图生图 / edits）：只有配了 editPath 的同步型生图条目能承载。
+        // 空白元素先剔掉——否则 reference: "" 这种输入会误触发「未配编辑端点」。
+        const refList = (Array.isArray(input.reference)
+            ? input.reference
+            : (input.reference == null ? [] : [input.reference]))
+            .filter((item) => classifyGenRef(item).kind !== 'empty');
+        let refs = {ok: true, labels: [], values: []};
+        if (refList.length) {
+            if (kind !== 'image') throw new Error('generate_video 暂不支持参考图（服务商形态各家差异大，另行评估）。');
+            if (isAsyncGenModel(entry)) {
+                throw new Error('该条目是异步型（配了提交/轮询端点），暂不支持参考图：已知的编辑端点均为同步型。');
+            }
+            if (!entry.editPath) {
+                throw new Error('该条目未配置编辑端点（editPath），不支持参考图。' +
+                    '请让用户在 设置 → AI → 生图与视频 → 编辑 里填写编辑端点，或换一个配了编辑端点的条目。');
+            }
+            // multipart 型编辑端点（Qwen-Image / OpenAI 官方 /v1/images/edits）的图片走独立的
+            // image 文件字段，不经过请求体模板，所以不要求 {{images}} 占位符。
+            if (entry.editFormat !== 'multipart' && !/\{\{\s*images\s*\}\}/.test(entry.bodyTemplate || '')) {
+                throw new Error('该条目的请求体模板没有 {{images}} 占位符，参考图进不了请求体；请先补上 {{images}}。');
+            }
+            refs = await resolveGenReferences(ctx, refList);
+            if (!refs.ok) throw new Error(refs.message);
+        }
+        // 审批卡 command 是单行文本（.ai-cmd-text 不保留换行）：参考图清单用括号内联，
+        // 用户在批准这一刻能看清哪几张图会被外传（本地图显示绝对路径，远程图显示 URL）。
+        const refNote = refs.labels.length
+            ? '（参考图 ' + refs.labels.length + ' 张：' + refs.labels.join('、') + '）'
+            : '';
         const rules = await ensureProjectRules(false);
         const sessionRule = session
             ? matchCommandRule(commandRulesFor(session), entry.baseURL, aiPathKey('生成请求'))
@@ -7795,7 +8066,7 @@ export function createAIPanel(options) {
             if (!session || !ctx.toolMessage) throw new Error('生成工具缺少会话上下文');
             const brief = aiTextOf(input.prompt).slice(0, 120);
             const answer = await requestCommandApproval(session, ctx.toolMessage, {
-                command: toolName + ' · ' + (entry.name || entry.id) + '：' + brief,
+                command: toolName + ' · ' + (entry.name || entry.id) + '：' + brief + refNote,
                 cwd: '生成请求',
                 tool: toolName,
             });
@@ -7814,6 +8085,8 @@ export function createAIPanel(options) {
             size: aiTextOf(input.size),
             n: input.n,
             outputPath: aiTextOf(input.outputPath),
+            // 参考图的值（Data URL / URL）只进请求体：不落日志、不进模型上下文
+            references: refs.values,
         };
         // 留痕：只记条目名与参数摘要（prompt 记长度不记原文），产物计数
         if (activity) {
@@ -7822,6 +8095,7 @@ export function createAIPanel(options) {
                 promptLen: params.prompt.length,
                 size: params.size || entry.defaultSize || '',
                 n: kind === 'image' ? Math.max(1, Math.round(Number(input.n) || entry.defaultN || 1)) : undefined,
+                refCount: refs.labels.length || undefined,
                 output: params.outputPath || '',
             }, {actor: 'ai', noRel: true});
         }
@@ -7834,7 +8108,9 @@ export function createAIPanel(options) {
         // 同步型：等待完成（Go 侧超时保护），产物落盘后返回清单
         const files = await genJobsMod.runSync(workspace, entry, params);
         if (ctx.toolMessage) {
-            ctx.toolMessage.gen = normalizeGenSnapshot({kind, entryName: entry.name || entry.id, status: 'done', files});
+            ctx.toolMessage.gen = normalizeGenSnapshot({
+                kind, entryName: entry.name || entry.id, status: 'done', files, references: refs.labels,
+            });
             const owner = sessionById(session.id);
             if (owner) refreshToolWrap(owner, ctx.toolMessage);
         }
@@ -7847,7 +8123,8 @@ export function createAIPanel(options) {
             }
         }
         const lines = files.map((file) => '- ' + file.path + '（' + file.mime + '，' + file.bytes + ' 字节）').join('\n');
-        return '已生成 ' + files.length + ' 个产物（' + (entry.name || entry.id) + '）：\n' + lines +
+        return '已生成 ' + files.length + ' 个产物（' + (entry.name || entry.id) +
+            (refs.labels.length ? ' · 参考图 ' + refs.labels.length + ' 张（走编辑端点 ' + entry.editPath + '）' : '') + '）：\n' + lines +
             (reviewNote ? '\n' + reviewNote : '') +
             '\n可在回复中用 Markdown 图片语法（![](' + '相对路径)）向用户展示产物。';
     }
@@ -7994,6 +8271,52 @@ export function createAIPanel(options) {
         throw new Error('未知 MCP 配置动作：' + action);
     }
 
+    // gateWebTarget 联网工具共用的目标闸门：联网开关 → 项目域名规则（deny 直接拒绝、ask 弹审批）。
+    // 返回 null 表示放行，返回字符串表示本次调用要原样回给模型的说明。内网 / 保留地址不在这里判，
+    // 由 Go 侧 webValidateURL 兜底（两处入口都过它）。
+    async function gateWebTarget(target, ctx, toolName) {
+        const isImage = toolName === 'read_image';
+        const subject = isImage ? '读取网络图片' : '网页抓取';
+        if (externalModeOf('fetch') === 'off') {
+            throw new Error(isImage
+                ? '读取网络图片已被用户关闭（设置 → AI → 外部工具：「网页抓取」为关闭时网图一并停用）'
+                : subject + '已被用户关闭（设置 → AI → 外部工具）');
+        }
+        const hostSubject = webRuleSubject(target);
+        if (!hostSubject) return null;
+        const rules = await ensureProjectRules(false);
+        const session = ctx && ctx.session;
+        const sessionRule = session
+            ? matchCommandRule(commandRulesFor(session), target, aiPathKey('网络请求'))
+            : null;
+        const decision = decidePermission({
+            scope: currentScopeOf(session),
+            kind: 'web',
+            rules,
+            subject: hostSubject,
+            sessionAllow: !!sessionRule,
+        });
+        logPermission('web', hostSubject, decision.decision, decision.source, decision.rule);
+        if (decision.decision === 'deny') {
+            throw new Error('项目权限规则禁止访问该域名：' + hostSubject + '（规则 ' + decision.rule + '）');
+        }
+        if (decision.decision === 'ask') {
+            if (!session || !ctx.toolMessage) throw new Error(subject + '缺少会话上下文');
+            const answer = await requestCommandApproval(session, ctx.toolMessage, {
+                command: target,
+                cwd: '网络请求',
+                tool: toolName,
+                web: true,
+            });
+            if (!answer.approved) {
+                return answer.cancelled
+                    ? '用户已停止生成，未抓取网页。'
+                    : (isImage ? '用户未允许读取该地址：' : '用户未允许抓取该网页：') + target;
+            }
+        }
+        return null;
+    }
+
     async function executeTool(name, args, ctx) {
         const input = args && typeof args === 'object' ? args : {};
         // MCP 转发：公开名 mcp__ 前缀走审批判定后直通 Go 路由（查表发原始名），零侵入现有 switch
@@ -8054,50 +8377,115 @@ export function createAIPanel(options) {
                 return head + view.text + (view.hint ? '\n' + view.hint : '');
             }
             case 'read_image': {
-                // 与 read_file 同一条路径授权链（工作区外 read/edit 档弹卡、auto/full 直读、点名直读）
-                const resolved = await resolveReadPathWithApproval(ctx, 'read_image', input.path);
-                if (!resolved.ok) return resolved.message;
-                const path = resolved.path;
+                const target = aiTextOf(input.path).trim();
+                // 公网图片直接传 URL：与本地文件共用同一条「图片进对话」注入链，只有取字节的通道不同
+                const remote = /^https?:\/\//i.test(target);
                 const session = ctx && ctx.session;
                 if (!session) throw new Error('当前没有会话，无法把图片附加到对话');
+                let path = '';
+                let shown = '';
+                if (remote) {
+                    // 联网开关与域名规则与 web_fetch 同源；内网 / 保留地址由 Go 侧 webValidateURL 兜底
+                    const blocked = await gateWebTarget(target, ctx, 'read_image');
+                    if (blocked) return blocked;
+                    shown = target;
+                } else {
+                    // 与 read_file 同一条路径授权链（工作区外 read/edit 档弹卡、auto/full 直读、点名直读）
+                    const resolved = await resolveReadPathWithApproval(ctx, 'read_image', input.path);
+                    if (!resolved.ok) return resolved.message;
+                    path = resolved.path;
+                    shown = redactToolText(input.path || path, session);
+                }
                 // modalities.image === false 才是「明确不支持」；字段缺省表示不清楚，放行由服务商判定
                 const chatEntry = entryOf(session);
                 if (chatEntry && chatEntry.modalities && chatEntry.modalities.image === false) {
                     return '当前聊天模型未启用图像输入（设置 → AI → 该模型条目的「图像输入」），图片无法交给它看。' +
                         '不要重试：请让用户换用支持图像输入的模型，或改用文字/代码方式说明。';
                 }
-                if (!backend.ReadImageAsDataURL) throw new Error('当前版本不支持读取图片');
                 let dataURL = '';
+                let label = '图片';
                 try {
-                    dataURL = await backend.ReadImageAsDataURL(path);
+                    if (remote) {
+                        if (!backend.WebFetchImage) throw new Error('当前版本不支持读取网络图片（请重新构建或更新应用）');
+                        const fetched = await backend.WebFetchImage(target);
+                        dataURL = aiTextOf(fetched && fetched.dataUrl).trim();
+                        if (!dataURL) throw new Error('没有取到图片内容');
+                        label = aiTextOf(fetched && fetched.name).trim() || '网络图片';
+                    } else {
+                        if (!backend.ReadImageAsDataURL) throw new Error('当前版本不支持读取图片');
+                        dataURL = await backend.ReadImageAsDataURL(path);
+                        label = String(input.path || path).split(/[\\/]/).pop() || '图片';
+                    }
                 } catch (e) {
                     const reason = (e && e.message) || String(e || '');
+                    if (remote) {
+                        throw new Error('抓不了这张网图：' + reason +
+                            '。只支持公网可直链访问的 png / jpg / webp / gif / bmp / svg（需要登录或防盗链的地址取不到）；' +
+                            '文本页面请用 web_fetch。');
+                    }
                     if (/不支持的图片格式|图片过大/.test(reason)) {
                         throw new Error('读不了这张图：' + reason + '（read_image 支持 png / jpg / webp / gif / bmp / svg）。' +
                             '文本内容请用 read_file。');
                     }
                     throw e;
                 }
-                const fileName = String(input.path || path).split(/[\\/]/).pop() || '图片';
                 const payload = await prepareImagePayload(dataURL, {
                     maxDim: AI_IMAGE_MAX_DIM,
                     maxBase64: AI_IMAGE_MAX_BASE64,
-                    name: fileName,
+                    name: label,
                 });
                 const normalized = aiNormalizeImage(payload);
                 if (!normalized) throw new Error('图片数据无法解析（格式不支持或压缩后仍然过大）');
-                const shown = redactToolText(input.path || path, session);
                 queueSessionImage(session, {
                     role: 'user',
                     content: '[图片：' + shown + '（read_image 自动附加）]',
                     images: [normalized],
-                    app: normalizeAppMessage({kind: 'read-image', label: '读取图片', icon: 'image'}),
+                    app: normalizeAppMessage({kind: 'read-image', label: remote ? '读取网络图片' : '读取图片', icon: 'image'}),
                     ts: Date.now(),
                 });
-                if (ctx && ctx.toolMessage) ctx.toolMessage.targetPath = path;
+                if (ctx && ctx.toolMessage) {
+                    if (remote) ctx.toolMessage.targetUrl = target;
+                    else ctx.toolMessage.targetPath = path;
+                }
                 return '已把图片附加到对话：' + shown + '（' + payload.width + '×' + payload.height + '，' +
                     payload.mime + '，' + humanSizeBytes(payload.bytes) + '）。图片作为独立消息挂在工具结果之后，' +
                     '直接按画面内容回答即可；不要再用 read_file 读它。';
+            }
+            case 'read_video': {
+                const target = aiTextOf(input.path).trim();
+                if (/^https?:\/\//i.test(target)) {
+                    return 'read_video 不支持公网 URL：只读本地/工作区 mp4 文件（网页视频无法直链转存）。';
+                }
+                const session = ctx && ctx.session;
+                if (!session) throw new Error('当前没有会话，无法把视频附加到对话');
+                // 与 read_file 同一条路径授权链（工作区外 read/edit 档弹卡、auto/full 直读、点名直读）
+                const resolved = await resolveReadPathWithApproval(ctx, 'read_video', input.path);
+                if (!resolved.ok) return resolved.message;
+                const path = resolved.path;
+                const shown = redactToolText(input.path || path, session);
+                // modalities.video === false 才是「明确不支持」；字段缺省表示不清楚，放行由服务商判定
+                const chatEntry = entryOf(session);
+                if (chatEntry && chatEntry.modalities && chatEntry.modalities.video === false) {
+                    return '当前聊天模型未启用视频输入（设置 → AI → 该模型条目的「视频输入」），视频无法交给它看。' +
+                        '不要重试：请让用户换用支持视频输入的模型，或改用文字方式描述视频内容。';
+                }
+                if (!backend.ReadVideoAsDataURL) throw new Error('当前版本不支持读取视频');
+                const dataURL = await backend.ReadVideoAsDataURL(path);
+                const payload = aiVideoFromSrc(dataURL, String(path).split(/[\\/]/).pop());
+                if (!payload) throw new Error('视频数据无法解析（当前仅支持 mp4，且不超过 16 MB）');
+                const normalized = aiNormalizeVideo(payload);
+                if (!normalized) throw new Error('视频数据无法解析（格式不支持或超过大小上限）');
+                queueSessionImage(session, {
+                    role: 'user',
+                    content: '[视频：' + shown + '（read_video 自动附加）]',
+                    videos: [normalized],
+                    app: normalizeAppMessage({kind: 'read-video', label: '读取视频', icon: 'play'}),
+                    ts: Date.now(),
+                });
+                if (ctx && ctx.toolMessage) ctx.toolMessage.targetPath = path;
+                return '已把视频附加到对话：' + shown + '（' + payload.mime + '，' +
+                    humanSizeBytes(payload.bytes) + '）。视频作为独立消息挂在工具结果之后，' +
+                    '直接按视频内容回答即可；不要再用 read_file 读它。';
             }
             case 'search_text': {
                 const query = aiTextOf(input.query).trim();
@@ -8203,41 +8591,10 @@ export function createAIPanel(options) {
             case 'web_fetch': {
                 const target = aiTextOf(input.url).trim();
                 if (!/^https?:\/\//i.test(target)) throw new Error('URL 无效（需以 http:// 或 https:// 开头）');
+                // 目标域名规则对所有来源都生效（项目规则 deny 仍应拦住）；返回非空即本次不抓
+                const blocked = await gateWebTarget(target, ctx, 'web_fetch');
+                if (blocked) return blocked;
                 const mode = externalModeOf('fetch');
-                if (mode === 'off') throw new Error('网页抓取已被用户关闭（设置 → AI → 外部工具）');
-                // 目标域名规则对所有来源都生效（项目规则 deny 仍应拦住）
-                const hostSubject = webRuleSubject(target);
-                if (hostSubject) {
-                    const rules = await ensureProjectRules(false);
-                    const session = ctx && ctx.session;
-                    const sessionRule = session
-                        ? matchCommandRule(commandRulesFor(session), target, aiPathKey('网络请求'))
-                        : null;
-                    const decision = decidePermission({
-                        scope: currentScopeOf(session),
-                        kind: 'web',
-                        rules,
-                        subject: hostSubject,
-                        sessionAllow: !!sessionRule,
-                    });
-                    logPermission('web', hostSubject, decision.decision, decision.source, decision.rule);
-                    if (decision.decision === 'deny') {
-                        throw new Error('项目权限规则禁止访问该域名：' + hostSubject + '（规则 ' + decision.rule + '）');
-                    }
-                    if (decision.decision === 'ask') {
-                        if (!session || !ctx.toolMessage) throw new Error('网页抓取缺少会话上下文');
-                        const answer = await requestCommandApproval(session, ctx.toolMessage, {
-                            command: target,
-                            cwd: '网络请求',
-                            tool: 'web_fetch',
-                        });
-                        if (!answer.approved) {
-                            return answer.cancelled
-                                ? '用户已停止生成，未抓取网页。'
-                                : '用户未允许抓取该网页：' + target;
-                        }
-                    }
-                }
                 const maxChars = webToolLimit(input.maxChars, 1000, 60000, 12000);
                 if (mode === 'mcp') {
                     try {
@@ -9013,6 +9370,8 @@ export function createAIPanel(options) {
                 }
                 return (reusedNote ? reusedNote + '\n' : '') + patchResultText(result);
             }
+            case 'worktree_manage':
+                return worktreeMod.manageTool(ctx, input);
             case 'write_file': {
                 if (!ctx || !ctx.session || !ctx.toolMessage) throw new Error('写操作缺少会话上下文');
                 const path = aiResolveScopePath(input.path, ctx.session);
@@ -9524,10 +9883,14 @@ export function createAIPanel(options) {
         const hasText = !!(el.input && el.input.value.trim());
         const attachedItems = getAttachments();
         const hasImages = attachedItems.some((item) => item.kind === 'image');
-        const hasTextAttachments = attachedItems.some((item) => item.kind !== 'image');
-        const imageEntry = hasImages ? entryOf(currentSession()) : null;
+        const hasVideos = attachedItems.some((item) => item.kind === 'video');
+        const hasTextAttachments = attachedItems.some((item) => item.kind !== 'image' && item.kind !== 'video');
+        const imageEntry = (hasImages || hasVideos) ? entryOf(currentSession()) : null;
         const imageBlocked = !!imageEntry && imageEntry.modalities && imageEntry.modalities.image === false;
-        el.send.disabled = !hasProfile || archived || loadFailed || imageBlocked || (!hasText && !hasImages && !hasTextAttachments);
+        // 视频与图像共用发送门禁：附加后模型条目被改掉能力位时在这里兜底拦下
+        const videoBlocked = hasVideos && !!imageEntry && imageEntry.modalities && imageEntry.modalities.video === false;
+        el.send.disabled = !hasProfile || archived || loadFailed || imageBlocked || videoBlocked ||
+            (!hasText && !hasImages && !hasVideos && !hasTextAttachments);
         syncSendStopButtons(busy);
         if (!busy && el.hint) {
             // 本会话空闲但别的会话在跑：给出提示，但发送按钮仍然是「发送」
@@ -9536,7 +9899,8 @@ export function createAIPanel(options) {
                 ? '会话正文读取失败，已禁止追加；可清空该会话或检查 ai-sessions 目录'
                 : (archived ? '会话已归档，取消归档后可继续'
                     : (imageBlocked ? '当前模型未勾选图像输入：请移除图片或在模型设置中开启'
-                        : (hasProfile ? (others ? '其他会话正在生成（' + others + ' 个）· Enter 发送到本会话' : '') : '未配置 AI')));
+                        : (videoBlocked ? '当前模型未勾选视频输入：请移除视频或在模型设置中开启'
+                            : (hasProfile ? (others ? '其他会话正在生成（' + others + ' 个）· Enter 发送到本会话' : '') : '未配置 AI'))));
         }
     }
 
@@ -9643,8 +10007,9 @@ export function createAIPanel(options) {
         let value = String(text == null ? '' : text).trim();
         const source = opts.attachments || {};
         const imageAttachments = (source.images || []).map(aiNormalizeImage).filter(Boolean);
+        const videoAttachments = (source.videos || []).map(aiNormalizeVideo).filter(Boolean);
         const textAttachments = (source.texts || []).slice();
-        if (!value && !imageAttachments.length && !textAttachments.length) return {ok: false, reason: 'empty'};
+        if (!value && !imageAttachments.length && !videoAttachments.length && !textAttachments.length) return {ok: false, reason: 'empty'};
         // 纯文本附件 + 空输入：给一个极短占位，避免向 API 发送空 content（Anthropic 不接受空文本块）
         if (!value && textAttachments.length) value = '（已附加引用/文件，见 <attachments>）';
         if (value.length > AI_CHAT_INPUT_LIMIT) return {ok: false, reason: 'too_long'};
@@ -9668,6 +10033,11 @@ export function createAIPanel(options) {
         const entry = entryOf(session);
         if (!profile) return {ok: false, reason: 'no_profile'};
         if (!backend.AISendChat) return {ok: false, reason: 'no_backend'};
+        // 视频只有 OpenAI 兼容 chat completions 有公认内容段：Anthropic / Responses 协议在
+        // 这里拦下并说明（Go 传输层对这两套协议遇 videos 也会报错，双保险）。
+        if (videoAttachments.length && profile.provider && profile.provider !== 'openai') {
+            return {ok: false, reason: 'video_protocol'};
+        }
 
         // 重发 / 编辑态的截断只在 UI 路径生效：注入路径恒传 truncateAt=null 且
         // allowPendingEdit=false，否则用户正在编辑的那条会被后台唤醒顺手砍掉（§4.4 唤醒防护）。
@@ -9681,6 +10051,7 @@ export function createAIPanel(options) {
             let previewTokens = estimateApiMessagesTokens(previewMessages) +
                 aiEstimateTokens(value);
             for (const item of imageAttachments) previewTokens += aiEstimateImageTokens(item);
+            for (const item of videoAttachments) previewTokens += aiEstimateVideoTokens();
             for (const item of textAttachments) previewTokens += aiEstimateTokens(aiTextOf(item.content));
             previewTokens += toolsTokenEstimate(session);
             if (windowSize > 0 && previewTokens > windowSize * 0.9) {
@@ -9711,6 +10082,7 @@ export function createAIPanel(options) {
             role: 'user',
             content: value,
             images: imageAttachments,
+            videos: videoAttachments,
             ts: turnStartedAt,
             turnStartedAt,
         };
@@ -9828,7 +10200,8 @@ export function createAIPanel(options) {
             preserveScroll: !!(extra && extra.preserveScroll),
             attachments: {
                 images: attached.filter((item) => item.kind === 'image'),
-                texts: attached.filter((item) => item.kind !== 'image' && item.kind !== 'message_quote'),
+                videos: attached.filter((item) => item.kind === 'video'),
+                texts: attached.filter((item) => item.kind !== 'image' && item.kind !== 'video' && item.kind !== 'message_quote'),
             },
             // 起轮成功、落盘之后立刻清输入区（与原实现同一时点）；附件要等系统提示组装完再清，
             // 因为 assembleSystemContext 会读它们。
@@ -9852,6 +10225,8 @@ export function createAIPanel(options) {
             } else if (result.reason === 'over_budget') {
                 flash('上下文预计约 ' + result.tokens + ' tokens，超过窗口 ' + result.windowSize +
                     ' 的 90%，请先 /compact 或减少附加内容', true);
+            } else if (result.reason === 'video_protocol') {
+                flash('当前账号协议（Anthropic / Responses）不支持视频输入：请改用 OpenAI 兼容协议的模型条目，或移除视频附件', true);
             }
             return false;
         }
@@ -9975,17 +10350,21 @@ export function createAIPanel(options) {
         // 「你看得见这条会话吗」：面板开着且就停在这个会话才算看得见（没有 sessionId 的一律算看不见）
         const current = currentSession();
         const viewingOther = !(sessionId && isOpen() && current && current.id === sessionId);
+        const completion = options.completion === true;
         const deliver = (targets) => {
-            // 消息中心始终记（可事后查、可点开跳转）；只有「人在软件里但看的是别的会话」才额外右下角弹
-            if (typeof opts.addMessage === 'function') {
+            // 消息中心只记「需要你回来处理」的（可事后查、可点开跳转）；例行任务完成不记——
+            // 一轮一条会把【消息】列表刷成流水账，会话列表已有「已完成未查看」角标。
+            // 只有「人在软件里但看的是别的会话」才额外右下角弹。
+            if (targets.centerRecord !== false && typeof opts.addMessage === 'function') {
                 opts.addMessage({kind, title, body, sessionId}, {toast: !!targets.inAppToast});
             }
             if (targets.systemToast && backend.NotifySystemToast) {
                 // 未在系统登记过应用标识时，Windows 会「返回成功但不显示」——后端会主动登记，
                 // 并把登记失败 / 用户关掉本应用通知这类错误返回来；以前这里静默吞掉，
                 // 只能看到「开关开着但从来不弹」，现在至少留一条可查的日志。
+                // payload（ai-session=<id>）在点击通知时由 Go 侧原样回传，前端据此跳会话。
                 try {
-                    const sent = backend.NotifySystemToast(title, body, config.notifySound === false);
+                    const sent = backend.NotifySystemToast(title, body, buildNotifyActivationPayload(sessionId), config.notifySound === false);
                     if (sent && typeof sent.then === 'function') {
                         sent.catch((e) => console.warn('[系统通知] 发送失败：', (e && e.message) || e));
                     }
@@ -10001,13 +10380,14 @@ export function createAIPanel(options) {
             }
         };
         if (!inApp && !system) {
-            deliver({systemToast: false, inAppToast: false, taskbarFlash: false});
+            // 两个弹层开关都关着也照样走一遍：消息中心仍要记「需要处理」的那几条
+            deliver({centerRecord: !completion, systemToast: false, inAppToast: false, taskbarFlash: false});
             return;
         }
         appReallyForeground().then((foreground) => {
             deliver(desktopNotifyTargets({
                 inApp, system, foreground, viewingOther,
-                completion: options.completion === true,
+                completion,
             }));
         });
     }
@@ -10038,6 +10418,8 @@ export function createAIPanel(options) {
             return;
         }
         if (config.notifyFinish === false) return;
+        // completion: true —— 这条只可能落到「软件在后台时的系统卡片 / 任务栏闪烁」，
+        // 不进消息中心（一轮一条会把【消息】列表刷成流水账，见 ai-notify-policy.js）。
         notifyDesktop({
             kind: 'success',
             title: 'AI 任务完成',
@@ -10317,6 +10699,41 @@ export function createAIPanel(options) {
     // 请求重试提示：显示在流式状态条内（429/5xx/网络错误指数退避时），收到数据后清除
     function clearRetryNote() {
         const note = el.messages && el.messages.querySelector('.ai-retry-note');
+        if (note) note.remove();
+    }
+
+    // 本地限流排队提示。必须显示：排队发生在 Go 侧 goroutine 里，前端在这段时间收不到
+    // 任何流，不提示的话用户看到的是纯空转——比 429 更像卡死。waitMs=0 是「已放行」的
+    // 清除信号（Go 侧发完请求后补发一次）。
+    function showQueueNote(payload) {
+        const waitMs = Math.max(0, Number(payload && payload.waitMs) || 0);
+        if (waitMs <= 0) {
+            clearQueueNote();
+            return;
+        }
+        const bar = el.messages && el.messages.querySelector('.ai-streaming-bar');
+        if (!bar) return;
+        let note = bar.querySelector('.ai-queue-note');
+        if (!note) {
+            note = document.createElement('span');
+            note.className = 'ai-queue-note';
+            const icon = document.createElement('span');
+            icon.className = 'ai-queue-icon';
+            icon.innerHTML = iconSvg('refresh', 11);
+            note.append(icon);
+            const timer = bar.querySelector('.ai-process-timer');
+            bar.insertBefore(note, timer || null);
+        }
+        note.dataset.waitMs = String(waitMs);
+        const label = note.querySelector('.ai-queue-text') || document.createElement('span');
+        label.className = 'ai-queue-text';
+        label.textContent = (String((payload && payload.reason) || '').trim() || '排队中')
+            + ' · 约 ' + (waitMs / 1000).toFixed(1) + ' 秒';
+        if (!label.parentNode) note.append(label);
+    }
+
+    function clearQueueNote() {
+        const note = el.messages && el.messages.querySelector('.ai-queue-note');
         if (note) note.remove();
     }
 
@@ -10642,13 +11059,17 @@ export function createAIPanel(options) {
                 if (onScreen) showRetryNote(payload);
                 break;
             }
+            case 'ai-queue': {
+                if (onScreen) showQueueNote(payload);
+                break;
+            }
             case 'ai-param-adjust': {
                 handleParamAdjust(current, payload, onScreen);
                 break;
             }
             case 'ai-chunk':
                 if (payload.delta) {
-                    if (onScreen) clearRetryNote();
+                    if (onScreen) { clearRetryNote(); clearQueueNote(); }
                     markFirstToken(current);
                     current.assistant.content += payload.delta;
                     scheduleStreamRender(current);
@@ -10656,7 +11077,7 @@ export function createAIPanel(options) {
                 break;
             case 'ai-think':
                 if (payload.delta) {
-                    if (onScreen) clearRetryNote();
+                    if (onScreen) { clearRetryNote(); clearQueueNote(); }
                     markFirstToken(current);
                     if (!current.thinkStartedAt) current.thinkStartedAt = Date.now();
                     current.assistant.reasoning += payload.delta;
@@ -10680,7 +11101,7 @@ export function createAIPanel(options) {
                 break;
             }
             case 'ai-done': {
-                if (onScreen) clearRetryNote();
+                if (onScreen) { clearRetryNote(); clearQueueNote(); }
                 // 本轮思考已结束：挂起的循环确认卡没有继续等待的意义。
                 cancelLoopGuardPrompt(current, 'round-ended');
                 if (current.renderTimer) {
@@ -10747,7 +11168,7 @@ export function createAIPanel(options) {
                 break;
             }
             case 'ai-error':
-                if (onScreen) clearRetryNote();
+                if (onScreen) { clearRetryNote(); clearQueueNote(); }
                 finishStreamError(payload.message || '请求失败', current);
                 break;
             default:
@@ -11949,6 +12370,16 @@ export function createAIPanel(options) {
         }));
     }
 
+    function attachmentsFromVideos(videos) {
+        return (videos || []).filter((video) => video && video.data).map((video) => ({
+            kind: 'video',
+            label: video.name || '视频',
+            mime: video.mime,
+            data: video.data,
+            bytes: video.bytes,
+        }));
+    }
+
     function regenerateLast() {
         const session = currentSession();
         if (!session || streamOf(session.id)) return;
@@ -11958,9 +12389,9 @@ export function createAIPanel(options) {
         if (userIndex < 0) return;
         const userMessage = session.messages[userIndex];
         const userText = userMessage.content;
-        const images = attachmentsFromImages(userMessage.images);
+        const media = attachmentsFromImages(userMessage.images).concat(attachmentsFromVideos(userMessage.videos));
         session.messages = session.messages.slice(0, userIndex);
-        setAttachments(images);
+        setAttachments(media);
         renderAttachments();
         persistSessions();
         submitText(userText, userIndex);
@@ -12031,7 +12462,11 @@ export function createAIPanel(options) {
             flash('分支失败：消息快照无法深拷贝', true);
             return;
         }
-        const branch = createSessionData();
+        // 标题派生自母会话（与支线对话「支线 · X」同一思路），别留成「新会话」——列表里
+        // 一眼看不出是哪条会话分出来的。母会话还没自动生成标题时退化为「分支」。
+        const sourceTitle = source.title && source.title !== '新会话' && source.title !== '会话'
+            ? source.title : '';
+        const branch = createSessionData(sourceTitle ? '分支 · ' + sourceTitle : '分支');
         Object.assign(branch, forkSettings(source));
         branch.workspace = branch.workspace || currentWorkspacePath();
         branch.messages = forked.messages;
@@ -12044,7 +12479,7 @@ export function createAIPanel(options) {
         logActivity('ai.session', branch.id, {op: 'branch', title: branch.title, from: source.id}, {actor: 'user', source: 'user'});
         renderSessionList();
         switchSession(branch.id);
-        flash('已在新对话中分支（复制 ' + branchMessages.length + ' 条消息）');
+        flash('已在新对话中分支（复制 ' + branch.messages.length + ' 条消息）');
     }
 
     function editLast() {
@@ -12058,7 +12493,7 @@ export function createAIPanel(options) {
         el.input.value = parsedQuote.quotes.length ? parsedQuote.body : message.content;
         // 引用还原成附件条：编辑重发时不把 <quote> 标记原文暴露在输入框里。
         // 走 addAttachment 让 chip 拿到稳定 id，否则移除按钮会连带删掉所有无 id 附件。
-        setAttachments(attachmentsFromImages(message.images));
+        setAttachments(attachmentsFromImages(message.images).concat(attachmentsFromVideos(message.videos)));
         for (const quote of parsedQuote.quotes) {
             addAttachment({
                 kind: AI_QUOTE_KIND,
@@ -12310,6 +12745,8 @@ export function createAIPanel(options) {
         syncRemindersUI(target);
         // 计时胶囊按目标会话重新过滤（显示与上限都是会话隔离的）
         timerMod.render();
+        // 隔离 worktree 胶囊随目标会话切换（显示 / 隐藏 / 名称）
+        worktreeMod.syncChip(target);
         // 头部弹层（智能体团队 / 后台终端）是「上个会话的」列表：切会话就收起来
         if (chipsPopKind) hideChipsPop();
         refreshSystemPromptEstimate(true);
@@ -12577,6 +13014,10 @@ export function createAIPanel(options) {
                     if (src) lines.push('![图片](<' + src + '>)', '');
                     else if (image.logFile) lines.push('（图片已归档：`' + image.logFile + '`）', '');
                 }
+                for (const video of message.videos || []) {
+                    if (video.file || video.logFile) lines.push('（视频已归档：`' + (video.file || video.logFile) + '`）', '');
+                    else lines.push('（视频附件：' + (video.name || video.mime || 'video') + '）', '');
+                }
             } else {
                 lines.push('## AI' + (message.model ? '（' + message.model + '）' : ''), '');
                 if (message.reasoning) {
@@ -12659,11 +13100,15 @@ export function createAIPanel(options) {
                 return;
             }
             const images = (message.images || []).map(aiNormalizeImage).filter(Boolean);
-            if (!message.content && !images.length) return;
+            const videos = (message.videos || []).filter((video) => video && (video.data || video.file));
+            if (!message.content && !images.length && !videos.length) return;
             lines.push(level + ' 用户 · ' + logTimestamp(message.ts), '');
             if (message.content) lines.push(message.content, '');
             for (const image of images) {
                 if (image.logFile) lines.push('![图片](<' + image.logFile + '>)', '');
+            }
+            for (const video of videos) {
+                lines.push('（视频附件：' + (video.file || video.name || 'video') + '）', '');
             }
             return;
         }
@@ -13370,6 +13815,7 @@ export function createAIPanel(options) {
         positionOverlays();
     }
 
+    // 面板形态唯一的落地点，只由用户手势触发（面板 […] 菜单 / 设置页 / 视图菜单）。
     function applyMode(nextMode, persist) {
         mode = normalizeFloatMode(nextMode);
         if (persist) {
@@ -13481,10 +13927,6 @@ export function createAIPanel(options) {
         const size = floatSizeBeforeCollapse || {w: window.outerWidth || 560, h: window.outerHeight || 760};
         if (rt.WindowSetSize) rt.WindowSetSize(size.w, size.h);
         floatSizeBeforeCollapse = null;
-    }
-
-    function toggleFullscreen() {
-        applyMode(mode === 'fullscreen' ? 'dock' : 'fullscreen', true);
     }
 
     function applyLoadedSessions(next) {
@@ -13771,12 +14213,6 @@ export function createAIPanel(options) {
             }
             open(false);
         });
-        if (el.head) {
-            el.head.addEventListener('dblclick', (e) => {
-                if (floatWindow || e.target.closest('button, select, input, textarea')) return;
-                toggleFullscreen();
-            });
-        }
         if (el.sideBtn) el.sideBtn.addEventListener('click', togglePanelSide);
         if (el.floatFullscreen) el.floatFullscreen.addEventListener('click', toggleFloatFullscreen);
         if (el.floatCollapse) el.floatCollapse.addEventListener('click', () => setFloatCollapsed(!floatCollapsed));
@@ -13815,6 +14251,7 @@ export function createAIPanel(options) {
         if (el.memoryBtn) el.memoryBtn.addEventListener('click', () => showMemoryDialog());
         if (el.skillsBtn) el.skillsBtn.addEventListener('click', () => showSkillsDialog());
         if (el.ctxCompact) el.ctxCompact.addEventListener('click', startCompact);
+        if (el.ctxBannerClose) el.ctxBannerClose.addEventListener('click', () => dialogsMod.dismissCtxBanner());
         if (el.statsSessionBtn) el.statsSessionBtn.addEventListener('click', (e) => {
             e.stopPropagation();
             toggleStatsPop('session');
@@ -14237,6 +14674,7 @@ export function createAIPanel(options) {
         listSkills,
         pickFiles,
         readTextFile,
+        readVideoFile,
         settings,
         showContextMenu,
         showImagePreview,
@@ -14460,15 +14898,8 @@ export function createAIPanel(options) {
 
     // 支线对话域（阶段 F：普通持久化会话 + sideOf 元数据；动作在 ai-sidechat.js，
     // 列表缩进/徽标与排序在 ai-session-list.js，结论带回走上面的信箱通道）
-    // 支线对话的标签页出口（与子代理详情同一套判定）：全屏形态先回到停靠，否则标签页
-    // 会开在看不见的地方；悬浮窗没有内容区，置 null 让调用方退回面板内切换。
-    sideChatTabOutlet = !openSideChatTab || window.__aiFloatWindow ? null : (spec) => {
-        if (mode === 'fullscreen') {
-            setMode('dock');
-            flash('已切回停靠形态：支线对话在内容区标签页打开');
-        }
-        return openSideChatTab(spec);
-    };
+    // 支线对话在内容区标签页打开；悬浮窗没有内容区，置 null 让调用方退回面板内切换（不动面板形态）。
+    sideChatTabOutlet = !openSideChatTab || window.__aiFloatWindow ? null : (spec) => openSideChatTab(spec);
 
     const sidechatMod = createAISidechat({
         getSessions: () => sessions,
@@ -14507,15 +14938,11 @@ export function createAIPanel(options) {
         flash,
         renderMarkdown,
         openTermTab,
-        // 子代理详情落在内容区标签页：全屏形态下面板本身盖满内容区，标签页会开在看不见的
-        // 地方——先回到停靠形态（左内容区 + 右面板），这也正是「并排看子代理与主对话」要的布局。
-        openAgentTab: !openAgentTab || window.__aiFloatWindow ? null : (spec) => {
-            if (mode === 'fullscreen') {
-                setMode('dock');
-                flash('已切回停靠形态：子代理详情在内容区标签页打开');
-            }
-            return openAgentTab(spec);
-        },
+        // 隔离 worktree（spawn isolation='worktree'）：子代理草稿区建在主根 .cadt/worktree/ 下
+        getScopeRoot,
+        // 子代理详情落在内容区标签页（编辑区收起时由 main.js 的 revealEditorForContent 展开；
+        // 不动面板形态）。悬浮窗没有内容区，置 null 让调用方退回面板内覆盖层。
+        openAgentTab: !openAgentTab || window.__aiFloatWindow ? null : (spec) => openAgentTab(spec),
         // 悬浮窗没有内容区：详情视图退回面板内覆盖层（与改造前的表现一致）
         isFloatWindow: () => !!window.__aiFloatWindow,
         // 子代理正文与主消息区同一条增强链（代码复制钮 / 本地图片 / 可视化卡片）
@@ -14683,6 +15110,9 @@ export function createAIPanel(options) {
         toggle,
         open,
         isOpen,
+        // 消息中心 / 系统通知点击跳会话用（main.js focusSession）：不导出的话调用抛
+        // TypeError 被 try/catch 吞掉，面板开了却永远停在原会话——「toast 点了没反应」的根因
+        switchSession,
         whenReady: () => Promise.all([whenConfigReady(), whenSessionsReady()]).then(() => undefined),
         setMode,
         applySettings: applyPanelSettings,
@@ -14787,6 +15217,23 @@ export function createAIPanel(options) {
             switchSession(String(id || ''));
             return currentSession() ? {id: currentSession().id, title: currentSession().title} : null;
         },
+        bridgeRenameSession: async (id, title) => {
+            if (typeof renameSession !== 'function') throw new Error('会话桥不可用');
+            const target = sessions.find((s) => s.id === String(id || ''));
+            if (!target) throw new Error('找不到会话：' + id);
+            // 懒加载会话要先补正文：改名后的 queueLogSave 会把 md 日志写盘，不能把
+            // 没读完的历史当成空内容写出去（同 bridgeSwitchSession / exportSession 的护栏）。
+            if (target._stub && !(await ensureSessionLoaded(target))) {
+                throw new Error('会话正文读取失败：' + (target._loadError || '未知原因'));
+            }
+            const next = String(title || '').trim();
+            if (!next) throw new Error('会话名称不能为空');
+            target.title = next.slice(0, 60);
+            persistSessions();
+            renderSessionList();
+            queueLogSave(target);
+            return {id: target.id, title: target.title};
+        },
         // ---------- 生成条目桥（app_control：get_gen_models / set_gen_model / delete_gen_model） ----------
         // AI 可代填除 API Key 外的全部字段（mergeGenModelEntry 保证密钥只来自 existing）；
         // 新建后用户在设置里填 Key 并核对 baseURL。列表/返回值一律不带密钥。
@@ -14798,6 +15245,9 @@ export function createAIPanel(options) {
                 enabled: item.enabled !== false,
                 baseURL: item.baseURL,
                 path: item.path,
+                editPath: item.editPath,
+                editImageWrap: item.editImageWrap,
+                editFormat: item.editFormat,
                 resultType: item.resultType,
                 defaultModel: item.defaultModel,
                 defaultSize: item.defaultSize,
@@ -14829,7 +15279,9 @@ export function createAIPanel(options) {
             return {
                 saved: {
                     id: merged.id, name: merged.name, kind: merged.kind, enabled: merged.enabled !== false,
-                    baseURL: merged.baseURL, path: merged.path, resultType: merged.resultType,
+                    baseURL: merged.baseURL, path: merged.path, editPath: merged.editPath,
+                    editFormat: merged.editFormat,
+                    resultType: merged.resultType,
                     defaultModel: merged.defaultModel, defaultSize: merged.defaultSize,
                 },
                 apiKeyFilled: !!merged.apiKey,

@@ -198,3 +198,90 @@ func TestWebFetchNetwork(t *testing.T) {
 		t.Fatalf("status = %v", got["status"])
 	}
 }
+
+func TestWebImageMime(t *testing.T) {
+	png := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR")
+	jpeg := []byte("\xff\xd8\xff\xe0\x00\x10JFIF\x00")
+	gif := []byte("GIF89a\x01\x00\x01\x00")
+	webp := []byte("RIFF\x24\x00\x00\x00WEBPVP8 ")
+	bmp := []byte("BM\x36\x00\x00\x00")
+	avif := []byte("\x00\x00\x00\x1cftypavif\x00\x00\x00\x00")
+	svg := []byte(`<svg xmlns="http://www.w3.org/2000/svg"><rect/></svg>`)
+	svgDecl := []byte("\xef\xbb\xbf<?xml version=\"1.0\"?>\n<!-- 注释 -->\n<svg />")
+	html := []byte("<!DOCTYPE html><html><body>hi</body></html>")
+	json := []byte(`{"ok":true}`)
+	tests := []struct {
+		name     string
+		declared string
+		body     []byte
+		want     string
+		wantErr  string
+	}{
+		{name: "png", declared: "image/png", body: png, want: "image/png"},
+		{name: "魔数优先于声明", declared: "text/html", body: jpeg, want: "image/jpeg"},
+		{name: "gif", declared: "", body: gif, want: "image/gif"},
+		{name: "webp", declared: "", body: webp, want: "image/webp"},
+		{name: "bmp", declared: "", body: bmp, want: "image/bmp"},
+		{name: "avif 走 ftyp 品牌", declared: "image/avif", body: avif, want: "image/avif"},
+		{name: "svg 无声明", declared: "", body: svg, want: "image/svg+xml"},
+		{name: "svg 带 BOM 与 XML 声明", declared: "text/plain", body: svgDecl, want: "image/svg+xml"},
+		{name: "谎报图片", declared: "image/jpeg", body: html, wantErr: "不是有效图片"},
+		{name: "文本页面", declared: "text/html", body: html, wantErr: "不是图片"},
+		{name: "json", declared: "application/json", body: json, wantErr: "不是图片"},
+		{name: "空内容", declared: "image/png", body: nil, wantErr: "内容为空"},
+	}
+	for _, tt := range tests {
+		got, err := webImageMime(tt.declared, tt.body)
+		if tt.wantErr != "" {
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("%s: err = %v, want 含 %q", tt.name, err, tt.wantErr)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("%s: 意外错误 %v", tt.name, err)
+		}
+		if got != tt.want {
+			t.Fatalf("%s: got %q, want %q", tt.name, got, tt.want)
+		}
+	}
+}
+
+func TestWebLooksLikeSVG(t *testing.T) {
+	cases := map[string]bool{
+		`<svg/>`:                                   true,
+		"  \n<SVG viewBox=\"0 0 1 1\"/>":           true,
+		`<?xml version="1.0"?><svg/>`:              true,
+		"<!-- c -->\n<svg/>":                       true,
+		`<svg xmlns="http://www.w3.org/2000/svg">`: true,
+		`<html><svg/></html>`:                      false,
+		`{"svg":true}`:                             false,
+		"":                                         false,
+	}
+	for input, want := range cases {
+		if got := webLooksLikeSVG([]byte(input)); got != want {
+			t.Fatalf("webLooksLikeSVG(%q) = %v, want %v", input, got, want)
+		}
+	}
+}
+
+func TestWebFetchImageNetwork(t *testing.T) {
+	if os.Getenv("CADT_WEB_TEST") != "1" {
+		t.Skip("设置 CADT_WEB_TEST=1 运行联网测试")
+	}
+	got, err := FetchImage("https://picsum.photos/64/64")
+	if err != nil {
+		t.Fatalf("fetch image failed: %v", err)
+	}
+	if ct, _ := got["contentType"].(string); !strings.HasPrefix(ct, "image/") {
+		t.Fatalf("contentType = %v", got["contentType"])
+	}
+	if dataURL, _ := got["dataUrl"].(string); !strings.HasPrefix(dataURL, "data:image/") || !strings.Contains(dataURL, ";base64,") {
+		t.Fatalf("dataUrl 前缀不对：%q", dataURL[:min(len(dataURL), 40)])
+	}
+	// 同一地址当网页抓应当报错并指向 read_image（文案是模型看见的唯一线索）
+	_, err = Fetch("https://picsum.photos/64/64", 2000)
+	if err == nil || !strings.Contains(err.Error(), "read_image") {
+		t.Fatalf("Fetch 对图片地址应报错并提到 read_image，实际：%v", err)
+	}
+}

@@ -222,7 +222,9 @@ func (b *Bridge) emitCommandEvent(id, stream, data string) {
 	if job := lookupCommandJob(id); job != nil {
 		job.writeLine(stream, data)
 	}
-	emit("cmd-out", map[string]string{id: id, stream: stream, data: strings.ToValidUTF8(data, "\ufffd")})
+		// 键必须带引号：map 字面量的键是表达式，裸写 id/stream/data 会把变量值当键名
+		//（{"bg-1":"bg-1",...}），前端按 payload.id 分发永远落空，后台终端实时输出全灭。
+		emit("cmd-out", map[string]string{"id": id, "stream": stream, "data": strings.ToValidUTF8(data, "\ufffd")})
 }
 
 // ---------- AI 后台命令作业（后台终端） ----------

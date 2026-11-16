@@ -163,6 +163,36 @@ test('read_image：只读档与计划模式都下发，且必须登记目录', (
     assert.match(AI_TOOL_CATALOG.read_image.blurb, /图片/);
 });
 
+test('read_video：只读档与计划模式都下发，且必须登记目录', () => {
+    for (const scope of ['read', 'edit', 'auto', 'full']) {
+        for (const planMode of [false, true]) {
+            assert.ok(names(scope, planMode).includes('read_video'),
+                scope + ' / planMode=' + planMode + ' 应下发 read_video（只读能力，不该被档位挡住）');
+        }
+    }
+    const def = toolsForScope('read', false).find((tool) => tool.name === 'read_video');
+    assert.deepEqual(Object.keys(def.parameters.properties), ['path'], 'read_video 只接受 path');
+    assert.match(AI_TOOL_DEFS.read_video.description, /read_file/, '描述里要点明与 read_file 的分工');
+    assert.match(AI_TOOL_DEFS.read_video.description, /read_image/, '描述里要点明与 read_image 的分工');
+    assert.match(AI_TOOL_DEFS.read_video.description, /4000 token/, '描述里要写上下文成本');
+    assert.match(AI_TOOL_DEFS.read_video.description, /mp4/, '描述里要写格式限制');
+    assert.match(AI_TOOL_DEFS.read_video.description, /未启用视频输入/, '描述里要写模型未勾选视频输入时的行为');
+    assert.equal(AI_TOOL_CATALOG.read_video.group, 'read', 'read_video 属于只读组');
+    assert.match(AI_TOOL_CATALOG.read_video.blurb, /mp4/);
+});
+
+test('网图走 read_image：描述里写明 URL 通道，web_fetch 把图片指向它', () => {
+    // web_fetch 遇到 image/* 只会报错，模型必须知道改投 read_image（否则就像 2026-11-17 那张
+    // picsum 链接：报一次失败后只能猜「URL 有效但看不了」）。
+    assert.match(AI_TOOL_DEFS.read_image.description, /URL/, 'read_image 描述要写明接受公网图片 URL');
+    assert.match(AI_TOOL_DEFS.read_image.parameters.properties.path.description, /URL/,
+        'path 参数描述要点明可传 URL（模型只看参数说明也会填）');
+    assert.match(AI_TOOL_DEFS.web_fetch.description, /read_image/, 'web_fetch 描述要把图片链接指向 read_image');
+    // 不新增 url 参数：少一个字段就少一次填错
+    assert.deepEqual(Object.keys(AI_TOOL_DEFS.read_image.parameters.properties), ['path'],
+        'read_image 仍只接受 path（URL 走同一个入参）');
+});
+
 test('外部工具来源：off 不注册、provider 按档、MCP 只在写档非计划模式', () => {
     const modesFor = (modes) => (cap, scope, planMode) =>
         externalCapabilityUsable(cap, modes[cap] || 'off', scope, planMode);

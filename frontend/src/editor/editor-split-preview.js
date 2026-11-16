@@ -817,9 +817,175 @@ function enterImageView(doc) {
     }
 }
 
+// ---- 视频视图（mp4 / webm 等容器） ----
+// 播放源复用预览资源通道 /__local/<token>/…：按目录注册 token，全文件走 http.ServeFile，
+// Range 请求（拖动进度条）由 Go 侧处理，不需要把整个文件读成 base64。
+// 解码交给 WebView2：H.264/AAC、VP9、AV1 能播；HEVC 依赖系统「HEVC 视频扩展」，
+// 解不了时回退二进制视图并说清原因（不静默黑屏）。
+
+function videoErrorMessage(code) {
+    // MediaError: 1 中止 2 网络 3 解码 4 源不支持
+    if (code === 3) return 'WebView2 无法解码该视频（HEVC/H.265 需要系统装「HEVC 视频扩展」）';
+    if (code === 4) return '容器或编码不受支持';
+    if (code === 2) return '读取文件失败';
+    if (code === 1) return '加载被中止';
+    return '未知错误';
+}
+
+async function videoSrcFor(doc) {
+    if (doc.videoSrc) return doc.videoSrc;
+    if (!doc.path) throw new Error('文件尚未保存到磁盘');
+    if (!deps.backend.RegisterPreviewRoot) throw new Error('当前后端不支持视频预览');
+    // 工作区内就注册工作区，否则注册文件所在目录：token 只能访问注册过的目录。
+    const root = (deps.workspaceFolder && deps.pathWithinValue(deps.workspaceFolder, doc.path))
+        ? deps.workspaceFolder
+        : deps.parentFolderOf(doc.path);
+    if (!root) throw new Error('无法确定视频所在目录');
+    const token = await deps.backend.RegisterPreviewRoot(root);
+    if (!token) throw new Error('无法注册视频所在目录');
+    const full = String(doc.path).replace(/\\/g, '/');
+    const base = String(root).replace(/\\/g, '/').replace(/\/+$/, '');
+    const rel = full.toLowerCase().startsWith(base.toLowerCase() + '/') ? full.slice(base.length + 1) : doc.name;
+    doc.videoSrc = '/__local/' + token + '/' + rel.split('/').filter(Boolean).map(encodeURIComponent).join('/');
+    return doc.videoSrc;
+}
+
+function createVideoView(doc) {
+    if (doc.videoEl || !doc.pane) return;
+    const wrap = document.createElement('div');
+    wrap.className = 'video-preview-view';
+    const stage = document.createElement('div');
+    stage.className = 'video-preview-stage';
+    const video = document.createElement('video');
+    video.className = 'video-preview-node';
+    video.controls = true;
+    video.preload = 'metadata';
+    video.playsInline = true;
+    video.setAttribute('playsinline', '');
+    const status = document.createElement('div');
+    status.className = 'video-preview-status';
+    status.textContent = '正在加载视频…';
+    video.addEventListener('loadedmetadata', () => {
+        doc.videoError = null;
+        doc.videoWidth = video.videoWidth || 0;
+        doc.videoHeight = video.videoHeight || 0;
+        doc.videoDuration = Number.isFinite(video.duration) ? video.duration : 0;
+        status.classList.add('hidden');
+        if (doc === deps.file) deps.updateStatus();
+    });
+    video.addEventListener('error', () => {
+        // releaseVideo 主动断源也会触发 error：那种情况已经关标签，不再提示
+        if (doc.videoReleased) return;
+        const code = video.error ? video.error.code : 0;
+        doc.videoError = videoErrorMessage(code);
+        status.textContent = '无法播放此视频：' + doc.videoError;
+        status.classList.remove('hidden');
+        if (doc === deps.file && deps.currentMode === 'video') {
+            deps.flash('视频无法播放，已切换到二进制视图', true);
+            deps.switchMode('binary');
+        }
+    });
+    stage.appendChild(video);
+    wrap.append(stage, status);
+    doc.pane.appendChild(wrap);
+    doc.videoEl = wrap;
+    doc.videoNode = video;
+    doc.videoStatus = status;
+}
+
+function loadVideoPreview(doc) {
+    if (!doc || !doc.video) return;
+    createVideoView(doc);
+    if (!doc.videoNode) return;
+    if (doc.videoSrc) {
+        if (doc.videoNode.getAttribute('src') !== doc.videoSrc) doc.videoNode.src = doc.videoSrc;
+        doc.videoStatus.classList.add('hidden');
+        return;
+    }
+    if (doc.videoLoading) return;
+    doc.videoLoading = true;
+    doc.videoError = null;
+    doc.videoStatus.textContent = '正在加载视频…';
+    doc.videoStatus.classList.remove('hidden');
+    videoSrcFor(doc).then((src) => {
+        doc.videoLoading = false;
+        if (!doc.videoNode) return;
+        doc.videoNode.src = src;
+        doc.videoNode.load();
+    }).catch((err) => {
+        doc.videoLoading = false;
+        doc.videoError = (err && err.message) || String(err);
+        if (!doc.videoStatus) return;
+        doc.videoStatus.textContent = '无法播放此视频：' + doc.videoError;
+        doc.videoStatus.classList.remove('hidden');
+        if (doc === deps.file && deps.currentMode === 'video') {
+            deps.flash('视频无法播放，已切换到二进制视图', true);
+            deps.switchMode('binary');
+        }
+    });
+}
+
+// 暂停但保留 src 与播放位置：切回来还能接着看
+function pauseVideoInDoc(doc) {
+    const node = doc && doc.videoNode;
+    if (!node || node.paused) return;
+    try {
+        node.pause();
+    } catch (e) {}
+}
+
+// 关标签用：断源并释放解码器（不置 videoReleased 的话，清空 src 会触发一次 error 回调）
+function releaseVideo(doc) {
+    const node = doc && doc.videoNode;
+    if (!node) return;
+    doc.videoReleased = true;
+    try {
+        node.pause();
+        node.removeAttribute('src');
+        node.load();
+    } catch (e) {}
+    doc.videoNode = null;
+    doc.videoEl = null;
+    doc.videoStatus = null;
+    doc.videoSrc = '';
+}
+
+function showVideoView(doc) {
+    if (!doc || !doc.video) return;
+    createVideoView(doc);
+    if (doc.pane) doc.pane.classList.add('video-active');
+    loadVideoPreview(doc);
+}
+
+function hideVideoView(doc) {
+    if (!doc || !doc.pane) return;
+    doc.pane.classList.remove('video-active');
+    pauseVideoInDoc(doc);
+}
+
+function enterVideoView(doc) {
+    if (!doc || !doc.video || !doc.editor) return;
+    hideImageView(doc);
+    doc.loading = true;
+    try {
+        doc.editor.setMode('code');
+        doc.mode = 'video';
+        deps.currentMode = 'video';
+        showVideoView(doc);
+        deps.showBanner(doc, doc.parseError);
+        deps.updateStatus();
+        deps.updateSearchState();
+    } catch (e) {
+        deps.flash('切换视频视图失败：' + e.message, true);
+    } finally {
+        doc.loading = false;
+    }
+}
+
 function enterBinaryView(doc) {
     if (!doc || !doc.binary || !doc.editor) return;
     hideImageView(doc);
+    hideVideoView(doc);
     doc.mode = 'binary';
     deps.currentMode = 'binary';
     const loading = doc.loading;
@@ -844,6 +1010,7 @@ function enterBinaryView(doc) {
 function enterTextView(doc) {
     if (!doc || !doc.editor) return;
     hideImageView(doc);
+    hideVideoView(doc);
     const loading = doc.loading;
     doc.loading = true;
     try {
@@ -899,6 +1066,12 @@ function enterTextView(doc) {
         showImageView,
         hideImageView,
         enterImageView,
+        createVideoView,
+        showVideoView,
+        hideVideoView,
+        enterVideoView,
+        pauseVideoInDoc,
+        releaseVideo,
         enterBinaryView,
         enterTextView,
     };

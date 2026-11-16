@@ -98,7 +98,8 @@ export function ctxLimitTiersFor(baseWindow) {
 }
 
 export function defaultModalities() {
-    // 默认勾选文本 + 图像；视频 / 音频留待模型与发送通道支持后再开。
+    // 默认只勾文本 + 图像：大多数模型不支持视频输入，视频是按条目手动勾的能力位
+    // （勾了才允许附加视频 / 调 read_video；「获取列表」添加时由配置表对已知视频模型自动勾上）。
     return {text: true, image: true, video: false, audio: false};
 }
 
@@ -125,6 +126,9 @@ export function normalizeModelEntry(raw, idGen) {
         reasoningEffort: ['low', 'medium', 'high'].includes(source.reasoningEffort) ? source.reasoningEffort : '',
         thinking: source.thinking === true,
         thinkingBudget: clampNumber(source.thinkingBudget, THINKING_BUDGET_MIN, THINKING_BUDGET_MAX, 8000),
+        // 每分钟请求数上限（0 = 不限）：超出在 Go 侧排队，避免并发把接口打到 429。
+        // 这是**偏好**不是能力，所以不进 model-catalog（那张表只管事实）。
+        rpm: clampNumber(source.rpm, 0, 6000, 0),
         // 窗口/能力是否还归模型配置表管（model-catalog.js）：用户手改过任一被回填字段就置 false，
         // 之后再换模型 ID 也不覆盖。存量条目视为手填，不会被配置表改动。
         autoFilled: source.autoFilled === true,
@@ -235,6 +239,8 @@ export function configForModel(account, entry) {
         thinking: provider === 'anthropic' && !!entry && entry.thinking === true,
         thinkingBudget: entry ? entry.thinkingBudget : 8000,
         reasoningEffort: provider === 'anthropic' ? '' : (entry ? (entry.reasoningEffort || '') : ''),
+        // 限流阈值随请求下发到 Go 侧（Config.RPMLimit），0 = 不限
+        rpmLimit: entry ? (Number(entry.rpm) || 0) : 0,
     };
 }
 

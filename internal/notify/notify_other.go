@@ -12,4 +12,6 @@ func Prepare() {}
 func (nt *Notifier) NotifyAttention(beep bool) {}
 
 // NotifySystemToast 在非 Windows 平台无操作。
-func (nt *Notifier) NotifySystemToast(title string, body string, silent bool) error { return nil }
+func (nt *Notifier) NotifySystemToast(title string, body string, payload string, silent bool) error {
+	return nil
+}

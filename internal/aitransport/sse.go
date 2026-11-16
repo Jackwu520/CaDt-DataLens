@@ -24,11 +24,13 @@ func streamOpenAISSE(body io.Reader, id string, emit Emitter, touch func()) erro
 	finishReason := "stop"
 	doneSent := false
 	var usage aiUsage
+	var timings *aiChatTimings
 	emitDone := func() {
 		if doneSent {
 			return
 		}
 		doneSent = true
+		aiMergeTimings(&usage, timings)
 		payload := DonePayload{Id: id, FinishReason: finishReason}
 		if usage.TotalTokens > 0 || usage.PromptTokens > 0 || usage.CompletionTokens > 0 || usage.CachedTokens > 0 || usage.CacheWriteTokens > 0 {
 			payload.Usage = &usage
@@ -68,6 +70,9 @@ func streamOpenAISSE(body io.Reader, id string, emit Emitter, touch func()) erro
 			if details := chunk.Usage.PromptTokensDetails; details != nil && details.CachedTokens > usage.CachedTokens {
 				usage.CachedTokens = details.CachedTokens
 			}
+		}
+		if chunk.Timings != nil {
+			timings = chunk.Timings
 		}
 		for _, choice := range chunk.Choices {
 			delta := choice.Delta
@@ -624,6 +629,35 @@ func ListModels(client *http.Client, cfg Config) ([]string, error) {
 	return models, nil
 }
 
+// aiChatTimings 是 llama.cpp 系服务（llama-server / LM Studio / 兼容实现）在流末块附带的
+// 引擎自报计时：cache_n = 从提示缓存复用的 token，prompt_n = 本次真正预填充的 token，
+// predicted_n = 生成的 token。老版本即便收下 stream_options 也可能只在 timings 里给数字，
+// 所以拿它当 usage 的兜底来源，别让本地模型的速度统计永远是「—」。
+type aiChatTimings struct {
+	CacheN     int `json:"cache_n"`
+	PromptN    int `json:"prompt_n"`
+	PredictedN int `json:"predicted_n"`
+}
+
+// aiMergeTimings 用 timings 补齐 usage 里缺的字段（已有值不覆盖），最后补 total。
+func aiMergeTimings(usage *aiUsage, timings *aiChatTimings) {
+	if usage == nil || timings == nil {
+		return
+	}
+	if usage.CachedTokens <= 0 && timings.CacheN > 0 {
+		usage.CachedTokens = timings.CacheN
+	}
+	if usage.PromptTokens <= 0 && (timings.PromptN > 0 || timings.CacheN > 0) {
+		usage.PromptTokens = timings.PromptN + timings.CacheN
+	}
+	if usage.CompletionTokens <= 0 && timings.PredictedN > 0 {
+		usage.CompletionTokens = timings.PredictedN
+	}
+	if usage.TotalTokens <= 0 {
+		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+	}
+}
+
 // openAIStreamChunk 的 arguments/reasoning 用 RawMessage 兼容个别网关
 // 把对象/字符串混发的情况。
 type openAIStreamChunk struct {
@@ -645,7 +679,8 @@ type openAIStreamChunk struct {
 			CachedTokens int `json:"cached_tokens"`
 		} `json:"prompt_tokens_details"`
 	} `json:"usage"`
-	Error *struct {
+	Timings *aiChatTimings `json:"timings"`
+	Error   *struct {
 		Message string `json:"message"`
 	} `json:"error"`
 }

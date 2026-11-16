@@ -5,12 +5,15 @@
 // ctx.onJobUpdate 刷新工具卡。轮询不跨重启：normalizeMessage 恢复时运行中任务收敛为失败。
 import {aiNowId} from './ai-constants.js';
 import {
+    buildGenMultipart,
     buildGenVars,
     extractGenPath,
+    extractGenProducts,
     GEN_BODY_LIMIT,
     genHeaderMap,
     genJoinURL,
     genModelByRef,
+    genRequestPath,
     isAsyncGenModel,
     normalizeGenSnapshot,
     renderGenJson,
@@ -105,18 +108,24 @@ export function createAIGenJobs(ctx) {
     }
 
     async function saveProducts(workspace, entry, params, values) {
-        const items = values.slice(0, 16).map((value) => entry.resultType === 'url'
-            ? {type: 'url', url: String(value)}
-            : {type: 'b64', data: String(value)});
+        const items = (Array.isArray(values) ? values : [])
+            .filter((value) => value !== null && value !== undefined && String(value).trim() !== '')
+            .slice(0, 16)
+            .map((value) => entry.resultType === 'url'
+                ? {type: 'url', url: String(value).trim()}
+                : {type: 'b64', data: String(value)});
         if (!items.length) throw new Error('没有可落盘的产物');
         const backend = getBackend();
         if (!backend.AIGenSaveProducts) throw new Error('生成产物落盘通道不可用（请重新构建或更新应用）');
+        // url 型产物在独立端点上、常需鉴权（如 /v1/videos/{id}/content）：下载时带同一条
+        // 渲染好的请求头（Authorization: Bearer {{apiKey}} 已落地）。
         const result = await backend.AIGenSaveProducts(JSON.stringify({
             workspace,
             outputPath: params.outputPath || '',
             kind: entry.kind,
             proxy: entry.proxy,
             timeoutSec: entry.kind === 'video' ? 300 : 120,
+            headers: genHeaderMap(entry, buildGenVars(entry, params)),
             items,
         }));
         if (result && result.error) throw new Error(result.error);
@@ -129,18 +138,32 @@ export function createAIGenJobs(ctx) {
         const vars = buildGenVars(entry, params);
         const backend = getBackend();
         if (!backend.AIGenHTTPRequest) throw new Error('生成请求通道不可用（请重新构建或更新应用）');
+        // 带参考图走条目的编辑端点（editPath），纯文生图仍走 path。
+        // 编辑端点两种请求体格式：json（渲染后的模板直接当 body，多数服务商）/
+        // multipart（图片走独立的 image 文件字段，如 Qwen-Image、OpenAI 官方 /v1/images/edits）。
+        const refs = Array.isArray(params && params.references) ? params.references : [];
+        const url = genJoinURL(entry.baseURL, genRequestPath(entry, params));
+        const headers = genHeaderMap(entry, vars);
+        const spec = {url, method: 'POST', headers, body: renderGenJson(entry.bodyTemplate, vars)};
+        if (refs.length && entry.editFormat === 'multipart') {
+            const multipart = buildGenMultipart(entry, vars, refs);
+            // 用户手写的 Content-Type 可能是任意大小写，先清掉再设 multipart
+            for (const key of Object.keys(headers)) {
+                if (key.toLowerCase() === 'content-type') delete headers[key];
+            }
+            headers['Content-Type'] = multipart.contentType;
+            spec.body = '';
+            spec.bodyBase64 = multipart.bodyBase64;
+        }
         const resp = await backend.AIGenHTTPRequest(JSON.stringify({
-            url: genJoinURL(entry.baseURL, entry.path),
-            method: 'POST',
-            headers: genHeaderMap(entry, vars),
-            body: renderGenJson(entry.bodyTemplate, vars),
+            ...spec,
             proxy: entry.proxy,
             timeoutSec: entry.timeoutSec,
             maxBytes: GEN_BODY_LIMIT,
         }));
         assertOk(resp, entry);
         const parsed = parseRespJSON(resp);
-        const values = extractGenPath(parsed, entry.resultPath);
+        const values = extractGenProducts(parsed, entry.resultPath);
         if (!values.length) throw new Error('响应里没有提取到产物（resultPath ' + (entry.resultPath || '未配置') + ' 未命中）');
         return saveProducts(workspace, entry, params, values);
     }
@@ -216,6 +239,32 @@ export function createAIGenJobs(ctx) {
         }, Math.max(1000, delayMs));
     }
 
+    // 探针：GET probePath（支持 {{jobId}}），2xx 即视为「产物已就绪」，返回可下载的绝对 URL。
+    // 只取状态码（maxBytes 很小）、不读体——产物随后由 saveProducts 完整下载。
+    // 探针本身失败不改变任务状态（继续按原节奏轮询），避免把瞬时网络问题当成任务失败。
+    async function probeProducts(job, entry, vars) {
+        const path = String(entry.probePath || '').trim();
+        if (!path) return '';
+        const url = genJoinURL(entry.baseURL, renderGenText(path, vars));
+        if (!url) return '';
+        const backend = getBackend();
+        let resp;
+        try {
+            resp = await backend.AIGenHTTPRequest(JSON.stringify({
+                url,
+                method: 'GET',
+                headers: genHeaderMap(entry, vars),
+                proxy: entry.proxy,
+                timeoutSec: Math.min(entry.timeoutSec, 30),
+                maxBytes: 1024,
+            }));
+        } catch (e) {
+            return '';
+        }
+        if (resp && !resp.error && resp.status >= 200 && resp.status < 300) return url;
+        return '';
+    }
+
     async function pollOnce(job, entry, params) {
         if (job.status !== 'running') return;
         job.pollCount++;
@@ -231,7 +280,6 @@ export function createAIGenJobs(ctx) {
             maxBytes: GEN_BODY_LIMIT,
         }));
         assertOk(resp, entry);
-        job.pollErrors = 0;
         const parsed = parseRespJSON(resp);
         let settled = false;
         if (entry.statusPath) {
@@ -250,7 +298,10 @@ export function createAIGenJobs(ctx) {
             }
         }
         if (settled || !entry.statusPath) {
-            const values = extractGenPath(parsed, entry.resultPath);
+            // ⚠️ 必须用 extractGenProducts（滤掉 null / 空串）：服务端完成后常把 url 写成 null
+            // （产物在独立端点），extractGenPath 会返回 [null]、长度 1 被误当成「已取到产物」，
+            // 随后拿 "null" 当 URL 下载必然失败。
+            const values = extractGenProducts(parsed, entry.resultPath);
             if (values.length) {
                 job.stage = 'save';
                 job.progressText = '取回产物中…';
@@ -260,10 +311,25 @@ export function createAIGenJobs(ctx) {
                 return;
             }
         }
+        // 探针兜底：有的服务端任务完成后响应里不含可下载地址（url 为空、只给本机路径），
+        // 产物在独立端点上；配了 probePath 就多一次「2xx 即完成」判定，
+        // 产物用该 URL 下载（带条目请求头，下载端点通常要鉴权）。
+        const probeURL = await probeProducts(job, entry, vars);
+        if (probeURL) {
+            job.stage = 'save';
+            job.progressText = '产物已就绪（探针命中），取回中…';
+            updateJob(job);
+            job.files = await saveProducts(job.workspace, entry, params, [probeURL]);
+            finishJob(job, 'done');
+            return;
+        }
         if (job.pollCount >= job.maxPolls) {
             failJob(job, '轮询超上限（' + job.maxPolls + ' 次），任务仍未完成');
             return;
         }
+        // ⚠️ 只有「整轮走完、没抛错」才清零失败计数。放在轮询请求之后清零会让取产物阶段的
+        // 失败被无限重试（每次失败先被清零、永远到不了 GEN_POLL_ERROR_BUDGET）。
+        job.pollErrors = 0;
         schedulePoll(job, entry, params, entry.pollIntervalSec * 1000);
     }
 

@@ -130,6 +130,42 @@ func (s *Service) AISessionReadImage(id, name string) (string, error) {
 	return (&fileio.Files{}).ReadImageAsDataURL(path)
 }
 
+// AISessionSaveVideo 会话视频落盘（与图片同构，落 <id>/videos/）。视频单文件大，
+// dataURL 上限放宽到 24 MB，与传输层 aiMaxVideoBase64 对齐；name 由前端 safeVideoName 生成（<id>.mp4）。
+func (s *Service) AISessionSaveVideo(id, name, dataURL string) (string, error) {
+	store, err := s.store()
+	if err != nil {
+		return "", err
+	}
+	path, err := store.VideoPath(id, name)
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return "", err
+	}
+	if len(dataURL) > 24<<20 {
+		return "", fmt.Errorf("视频数据过大（>24 MB）")
+	}
+	if err := (&fsops.FS{}).SaveDataURL(path, dataURL); err != nil {
+		return "", err
+	}
+	return VideosDir + "/" + name, nil
+}
+
+// AISessionReadVideo 读取会话视频为 data URL；name 只允许单个文件名，拒绝路径穿越。
+func (s *Service) AISessionReadVideo(id, name string) (string, error) {
+	store, err := s.store()
+	if err != nil {
+		return "", err
+	}
+	path, err := store.VideoPath(id, name)
+	if err != nil {
+		return "", err
+	}
+	return (&fileio.Files{}).ReadVideoAsDataURL(path)
+}
+
 func (s *Service) AISessionDelete(id string) error {
 	store, err := s.store()
 	if err != nil {

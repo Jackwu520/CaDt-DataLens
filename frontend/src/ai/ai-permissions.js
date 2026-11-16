@@ -96,6 +96,15 @@ export function webRuleSubject(url) {
     }
 }
 
+// 网络类审批（web_fetch 与 read_image 的网图通道）：授权语义是「允许访问这个网址」，
+// 不是「在工作目录执行这条命令」——审批卡文案、审计 kind/subject 都要按网络处理。
+// `web` 标记由发起方显式写入；旧会话的审批对象没有该字段，回落到工具名。
+export function isWebApproval(approval) {
+    if (!approval || typeof approval !== 'object') return false;
+    if (approval.web === true) return true;
+    return approval.tool === 'web_fetch';
+}
+
 // 路径 glob 匹配（write 与 read 共用）：`D:/xxx/**` 覆盖目录本身与其子树。
 function matchPathGlobRule(subject, rule) {
     const path = writeRuleSubject(subject).toLowerCase();

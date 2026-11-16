@@ -62,3 +62,45 @@ func TestPreviewAssetMiddleware(t *testing.T) {
 		t.Fatalf("non-preview path should fall through: code=%d", rec.Code)
 	}
 }
+
+// 视频视图靠这条通道播放：拖进度条时前端发 Range，必须拿到 206 + Content-Range
+// （全靠 http.ServeFile 的实现，换成自己读文件就会退化成「只能从头播」）。
+func TestPreviewAssetRangeRequest(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "clip.mp4"), []byte("0123456789abcdef"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	token, err := Register(root)
+	if err != nil || token == "" {
+		t.Fatalf("register: token=%q err=%v", token, err)
+	}
+	handler := Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTeapot)
+	}))
+	req := httptest.NewRequest(http.MethodGet, "/__local/"+token+"/clip.mp4", nil)
+	req.Header.Set("Range", "bytes=4-7")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusPartialContent {
+		t.Fatalf("range 请求应回 206，got %d", rec.Code)
+	}
+	if body := rec.Body.String(); body != "4567" {
+		t.Fatalf("range 正文 = %q", body)
+	}
+	if cr := rec.Header().Get("Content-Range"); !strings.Contains(cr, "bytes 4-7/16") {
+		t.Fatalf("Content-Range = %q", cr)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.Contains(ct, "video/mp4") {
+		t.Fatalf("Content-Type = %q", ct)
+	}
+
+	// <video> 打开时先探测元数据：HEAD 同样要通
+	head := httptest.NewRecorder()
+	handler.ServeHTTP(head, httptest.NewRequest(http.MethodHead, "/__local/"+token+"/clip.mp4", nil))
+	if head.Code != http.StatusOK {
+		t.Fatalf("HEAD 应回 200，got %d", head.Code)
+	}
+	if n := head.Header().Get("Content-Length"); n != "16" {
+		t.Fatalf("HEAD Content-Length = %q", n)
+	}
+}

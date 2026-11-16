@@ -4,7 +4,7 @@
 //
 // deps 经 Object.create 委托继承 editor-groups 的 getter 集，另接
 // renderMarkdownPreview（分屏预览域）与核心函数 updateStatus / closeDocsWithConfirm /
-// requestCloseDoc / showPathInFolder / reopenClosedTab / groupDocs / groupOfDoc 的转发箭头。
+// requestCloseDoc / showPathInFolder / openWithDefaultApp / reopenClosedTab / groupDocs / groupOfDoc 的转发箭头。
 import DOMPurify from 'dompurify';
 import {copyImageBlobToClipboard} from '../core/image-clipboard.js';
 import {iconSvg} from '../core/icons.js';
@@ -196,6 +196,7 @@ function showTabMenu(doc, x, y) {
         {sep: true},
         {label: '复制文件路径', icon: 'E8C8', disabled: !hasPath, action: () => deps.copyText(doc.path, '路径')},
         {label: '复制文件名', icon: 'E8C8', action: () => deps.copyText(doc.name, '文件名')},
+        {label: '用默认应用打开', icon: 'E8E5', disabled: !hasPath, action: () => deps.openWithDefaultApp(doc.path)},
         {label: '打开文件位置', icon: 'E8B7', disabled: !hasPath, action: () => deps.showPathInFolder(doc.path)},
         // 固定只读（审阅快照）：不提供解锁入口，只留一条禁用说明。
         ...(isTabReadOnlyFixed(doc) ? [{

@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"datalens/internal/search"
 )
 
 // 与参考脚本保持一致：结构化目录时跳过这两类目录
@@ -85,8 +87,11 @@ func sortStructureChildren(children []*structureNode) {
 	})
 }
 
-// structureChildren 读取目录并递归；root 级错误返回给调用方，子级读取失败时跳过
-func structureChildren(dir string) ([]*structureNode, error) {
+// structureChildren 读取目录并递归；root 级错误返回给调用方，子级读取失败时跳过。
+// rel 为当前目录相对导出根的路径（正斜杠，根为空串）：search.SkipPath 命中的目录整棵跳过
+//（AI 隔离 worktree .cadt/worktree 不进导出树，`.cadt/worktree` 目录名本身也不出现；
+// 从 worktree 自身发起的导出 rel 不命中，照常渲染）。
+func structureChildren(dir string, rel string) ([]*structureNode, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
@@ -98,14 +103,27 @@ func structureChildren(dir string) ([]*structureNode, error) {
 			continue
 		}
 		isDir := entry.IsDir() && entry.Type()&os.ModeSymlink == 0
+		if isDir {
+			if search.SkipPath(joinRel(rel, name)) {
+				continue
+			}
+		}
 		node := &structureNode{name: name, isDir: isDir}
 		if isDir {
-			node.children, _ = structureChildren(filepath.Join(dir, name))
+			node.children, _ = structureChildren(filepath.Join(dir, name), joinRel(rel, name))
 		}
 		children = append(children, node)
 	}
 	sortStructureChildren(children)
 	return children, nil
+}
+
+// joinRel 拼接相对路径（正斜杠）；根为空串时返回 name 自身。
+func joinRel(rel, name string) string {
+	if rel == "" {
+		return name
+	}
+	return rel + "/" + name
 }
 
 func writeStructureTree(b *strings.Builder, children []*structureNode, prefix string) {
@@ -158,7 +176,7 @@ func Render(dir string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	children, err := structureChildren(clean)
+	children, err := structureChildren(clean, "")
 	if err != nil {
 		return "", err
 	}

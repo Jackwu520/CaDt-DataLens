@@ -366,6 +366,10 @@ export const GIT_FLOW_SAFE_SUBCOMMANDS = new Set([
     'add', 'commit', 'push', 'pull', 'merge', 'fetch', 'stash',
 ]);
 
+// 指定远端执行程序的旗标：本地 / file:// 远端下等于拉起任意程序，分类器看不出风险，
+// 与解释器内联代码同属「argv 级分析盲区」——危险检测与豁免检查都拦。
+const GIT_EXEC_PROGRAM_FLAGS = ['--exec', '--upload-pack', '--receive-pack'];
+
 function normPathKey(value) {
     return String(value == null ? '' : value).replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
 }
@@ -383,32 +387,41 @@ export function gitFlowSafeCommand(command, gitRoot, cwd) {
     if (commandExecutable(tokens[0]) !== 'git') return false;
     const args = tokens.slice(1);
     if (args.some((arg) => GIT_GLOBAL_DANGEROUS.some((flag) => gitGlobalFlagHit(arg, flag)))) return false;
+    if (args.some((arg) => argBlocked(arg, GIT_EXEC_PROGRAM_FLAGS))) return false;
     const sub = args.find((arg) => !arg.startsWith('-'));
     if (!sub || !GIT_FLOW_SAFE_SUBCOMMANDS.has(sub)) return false;
     // cwd 必须在 git 根内（子目录允许，git 会向上找仓库）
     const root = normPathKey(gitRoot);
     const dir = normPathKey(cwd);
     if (!root || !dir || (dir !== root && !dir.startsWith(root + '/'))) return false;
+    // AI 隔离 worktree（.cadt/worktree/）内令牌豁免失效：cwd 在隔离区时 git 命令作用于
+    // 草稿分支，「Git 快捷操作」的静默放行会误导用户以为在改主根——回退逐条审批。
+    const relInRoot = dir.slice(root.length + 1);
+    if (relInRoot === '.cadt/worktree' || relInRoot.startsWith('.cadt/worktree/')) return false;
     const rest = args.slice(args.indexOf(sub) + 1);
     const positional = rest.filter((arg) => !arg.startsWith('-'));
     const flags = shortFlagSet(rest);
+    // 跳过 pre-commit / pre-push 等钩子的变体不享受豁免（未经用户许可不得 --no-verify）
+    if (flags.has('--no-verify')) return false;
     switch (sub) {
         case 'push':
-            // 强制 / 删除远端分支：危险检测已拦，这里双保险
+            // 强制 / 删除远端分支：危险检测已拦，这里双保险；`+ref` 与 `:ref` 都是 refspec 写法
             if (flags.has('f') || flags.has('--force') || flags.has('--force-with-lease') ||
                 flags.has('d') || flags.has('--delete') || flags.has('--mirror')) return false;
-            if (positional.some((arg) => arg.startsWith('+'))) return false;
+            if (positional.some((arg) => arg.startsWith('+') || arg.startsWith(':'))) return false;
             return true;
         case 'stash':
             // 只放行流程用到的 create/pop/push/apply/save 与只读 list/show；drop/clear/branch 不放行
             if (!positional.length) return true;
             if (!['create', 'pop', 'push', 'apply', 'save', 'list', 'show'].includes(positional[0])) return false;
-            // stash push -u / --include-untracked 会把未跟踪文件也收进 stash（流程没用到）
-            if (positional[0] === 'push' && (flags.has('u') || flags.has('--include-untracked') || flags.has('a') || flags.has('--all'))) return false;
+            // push / save 的 -u / --include-untracked 会把未跟踪文件也收进 stash（流程没用到）
+            if ((positional[0] === 'push' || positional[0] === 'save') &&
+                (flags.has('u') || flags.has('--include-untracked') || flags.has('a') || flags.has('--all'))) return false;
             return true;
         case 'commit':
-            // --amend 改写历史提交，不放行；-a/--all 自动暂存全部已跟踪修改，与提示词「逐文件 git add」冲突
-            if (flags.has('--amend')) return false;
+            // --amend 改写历史提交；-a/--all 自动暂存全部已跟踪修改，与提示词「逐文件 git add」冲突；
+            // -n 是 --no-verify 的短写法。
+            if (flags.has('--amend') || flags.has('n')) return false;
             if (flags.has('a') || flags.has('--all')) return false;
             return true;
         case 'add':
@@ -524,6 +537,7 @@ export const DANGER_LABELS = {
     'git-reset-hard': '丢弃全部未提交修改（reset --hard）',
     'git-clean-force': '强制清理未跟踪文件（clean -f）',
     'git-push-force': '强制推送或删除远端分支',
+    'git-exec-program': '指定远端执行程序（--receive-pack / --upload-pack / --exec）',
     'git-discard-worktree': '丢弃工作区修改（checkout / restore）',
     'git-stash-drop': '清除 stash 记录',
     'git-worktree-force': '强制删除 worktree',
@@ -576,6 +590,8 @@ function pipelineDownloadExec(segments) {
 }
 
 function gitSegmentDangerRule(args) {
+    // 指定远端执行程序的旗标：等效任意程序执行，分类器不可见，一律单次确认
+    if (args.some((arg) => argBlocked(arg, GIT_EXEC_PROGRAM_FLAGS))) return 'git-exec-program';
     const sub = args.find((arg) => !arg.startsWith('-'));
     if (!sub) return '';
     const rest = args.slice(args.indexOf(sub) + 1);
@@ -590,7 +606,8 @@ function gitSegmentDangerRule(args) {
             if (flags.has('f') || flags.has('--force') || flags.has('--mirror')) return 'git-push-force';
             if (flags.has('d') || flags.has('--delete')) return 'git-push-force';
             if (flags.has('--force-with-lease')) return 'git-push-force';
-            if (positional.some((arg) => arg.startsWith('+'))) return 'git-push-force';
+            // `+ref` 强制推送、`:ref` 删除远端分支：与 -f / -d 等价
+            if (positional.some((arg) => arg.startsWith('+') || arg.startsWith(':'))) return 'git-push-force';
             return '';
         }
         case 'checkout':

@@ -131,3 +131,28 @@ test('planModeBlock 输出计划约定块', () => {
     assert.ok(block.startsWith('<plan_mode>') && block.endsWith('</plan_mode>'));
     assert.ok(block.includes('等待用户批准'));
 });
+
+test('worktree 块：会话持活跃 worktree 时注入，ctx 未提供或无 worktree 时不注入', async () => {
+    const wt = {name: 'demo-ab12', branch: 'cadt/wt/demo-ab12', path: 'D:/repo/.cadt/worktree/demo-ab12', baseSha: 'abc', createdAt: 1};
+    // ctx 提供 worktreeBlock（ai-panel 注入 worktreeMod.blockFor）→ 注入且 meta 带名
+    const withMod = createAISystemContext(makeCtx({
+        ctx: {worktreeBlock: async (session) => (session && session.worktree ? '<worktree>WT-BLOCK ' + session.worktree.name + '</worktree>' : '')},
+    }));
+    const {text, meta} = await withMod.assembleSystemContext({todos: [], worktree: wt}, []);
+    assert.ok(text.includes('<worktree>WT-BLOCK demo-ab12</worktree>'));
+    assert.equal(meta.worktree.name, 'demo-ab12');
+    // 会话没有 worktree → 块函数返回空串 → 不注入
+    const none = await withMod.assembleSystemContext({todos: []}, []);
+    assert.ok(!none.text.includes('<worktree>'));
+    assert.equal(none.meta.worktree, undefined);
+    // ctx 没有该 getter（旧宿主）→ 直接跳过不报错
+    const legacy = createAISystemContext(makeCtx());
+    const plain = await legacy.assembleSystemContext({todos: [], worktree: wt}, []);
+    assert.ok(!plain.text.includes('<worktree>'));
+    // 块函数抛错只进 meta.errors，不阻断组装
+    const broken = createAISystemContext(makeCtx({
+        ctx: {worktreeBlock: async () => { throw new Error('boom'); }},
+    }));
+    const res = await broken.assembleSystemContext({todos: [], worktree: wt}, []);
+    assert.ok(res.meta.errors.some((line) => line.includes('worktree 块：boom')));
+});

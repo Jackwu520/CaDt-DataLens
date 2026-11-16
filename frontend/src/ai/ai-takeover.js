@@ -5,6 +5,7 @@
 // approvalTakeoverKey/Collapsed、dismissedPlanApproval、stickBottom 经访问器读写（核心域他处亦写）。
 import {iconSvg} from '../core/icons.js';
 import {AI_WRITE_SCOPES} from './ai-constants.js';
+import {isWebApproval} from './ai-permissions.js';
 import {collectCommandFamilies, commandFamilySignature} from './ai-command-rules.js';
 import {planDigest, planDisplayPath} from './ai-plan-file.js';
 import {createAIAskCards} from './ai-ask-cards.js';
@@ -280,7 +281,7 @@ export function createAITakeover(ctx) {
             } else {
                 const note = document.createElement('div');
                 note.className = 'ai-approval-more';
-                note.textContent = toolMessage.name === 'web_fetch'
+                note.textContent = isWebApproval(approval)
                     ? '将向该地址发起网络请求；域名规则可在 .cadt/permissions.json 的 Web(...) 中预先配置。'
                     : (approval.danger || approval.singleUse
                         ? '命令将在工作目录中执行；危险命令不提供「本会话 / 本项目允许」。'
@@ -357,7 +358,7 @@ export function createAITakeover(ctx) {
             sessionBox = document.createElement('input');
             sessionBox.type = 'checkbox';
             sessionBox.dataset.aiCommandRemember = 'exact';
-            exactLabel.append(sessionBox, document.createTextNode(toolMessage.name === 'web_fetch' ? ' 本会话允许该网址' : ' 本会话允许相同命令'));
+            exactLabel.append(sessionBox, document.createTextNode(isWebApproval(approval) ? ' 本会话允许该网址' : ' 本会话允许相同命令'));
             options.appendChild(exactLabel);
             if (commandFamily) {
                 const familyLabel = document.createElement('label');

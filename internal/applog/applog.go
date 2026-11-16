@@ -94,7 +94,7 @@ func OpenAt(dir string) (string, error) {
 	return path, nil
 }
 
-// Close 关闭当前日志文件（不清空路径，GetLogPath 仍可读）。
+// Close 关闭当前日志文件并清空路径（Close 后 GetLogPath 返回空串）。
 func Close() {
 	mu.Lock()
 	f := file

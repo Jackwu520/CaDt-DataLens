@@ -706,7 +706,7 @@
                         <div class="set-group-title">能力来源</div>
                         <div class="set-card">
                             <div class="set-row">
-                                <div class="set-main"><div class="set-title">外部能力来源</div><div class="set-desc">搜索 / 抓取默认用内置 Bing，OCR / 语音合成 / 语音识别默认关闭。选「本地 MCP」需要先在下方配置服务器并勾选工具；本地 MCP 来源只在写权限档（非计划模式）向 AI 开放。来源=服务提供商时会把本次请求的文件 / 文本上传到外部服务并产生费用。</div></div>
+                                <div class="set-main"><div class="set-title">外部能力来源</div><div class="set-desc">搜索 / 抓取默认用内置 Bing，OCR / 语音合成 / 语音识别默认关闭。选「本地 MCP」需要先在下方配置服务器并勾选工具；本地 MCP 来源只在写权限档（非计划模式）向 AI 开放。来源=服务提供商时会把本次请求的文件 / 文本上传到外部服务并产生费用。把「网页抓取」设为关闭，AI 也读不了公网图片（read_image 的 URL 通道）。</div></div>
                             </div>
                         </div>
                         <div id="extcap-list"></div>
@@ -851,6 +851,16 @@
                                 </div>
                             </div>
                             <div class="set-row">
+                                <div class="set-main"><div class="set-title">回复操作按钮</div><div class="set-desc">悬停在回复上出现的复制 / 回退 / 分支等按钮，轮次中间步骤按此口径收敛</div></div>
+                                <div class="set-control">
+                                    <select id="ai-opt-msg-actions" class="opt-select">
+                                        <option value="full">都完整出现</option>
+                                        <option value="mid-basic">最后一条完整，中间只留复制 / 回退</option>
+                                        <option value="last-only">只在最后一条显示，中间不出现</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="set-row">
                                 <div class="set-main"><div class="set-title">每条回复都显示 AI 信息行</div><div class="set-desc">默认只在轮次开头与模型切换时显示</div></div>
                                 <div class="set-control">
                                     <label class="set-switch"><input type="checkbox" id="ai-opt-turn-meta-all"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
@@ -866,6 +876,18 @@
                                 <div class="set-main"><div class="set-title">任务清单默认展开</div><div class="set-desc">关闭时默认收起为一行进度摘要，点一下展开</div></div>
                                 <div class="set-control">
                                     <label class="set-switch"><input type="checkbox" id="ai-opt-todos-expanded"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">AI 工作时收起编辑区</div><div class="set-desc">回合开始时把内容区位置让给对话、结束后还原；有未保存修改时不收起</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="ai-opt-auto-collapse-editor"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">打开新标签页时展开编辑区</div><div class="set-desc">停靠分屏下编辑区被收起时，任何新标签页（文件 / 浏览器 / 子代理 / 后台终端）打开都会自动展开，内容不会开在看不见的地方</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="ai-opt-expand-editor-on-tab"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
                                 </div>
                             </div>
                             <div class="set-row">
@@ -912,7 +934,7 @@
                         <div class="set-group-title">通知</div>
                         <div class="set-card">
                             <div class="set-row">
-                                <div class="set-main"><div class="set-title">应用内通知<button type="button" class="info-tip" data-tip="任务完成、失败、提问、审批一律进状态栏【消息】中心（锁图标右侧）；开启本项后，审批 / 失败 / 提问在「你看的不是这条会话」时额外在右下角弹一下——任务完成不弹（只留消息中心）。设置 → AI → 权限里 AI 也能用 notify_send 工具给你发消息。" aria-label="应用内通知说明">i</button></div><div class="set-desc">审批 / 失败 / 提问：不是你正看的会话时右下角弹；完成只进消息中心</div></div>
+                                <div class="set-main"><div class="set-title">应用内通知<button type="button" class="info-tip" data-tip="失败、提问、审批、AI 主动发的消息进状态栏【消息】中心（锁图标右侧），可事后查、点击跳回会话；例行「任务完成」不进消息中心——会话列表已有「已完成未查看」角标，一轮一条会把消息列表刷屏。开启本项后，审批 / 失败 / 提问在「你看的不是这条会话」时额外在右下角弹一下；任务完成不弹。设置 → AI → 权限里 AI 也能用 notify_send 工具给你发消息。" aria-label="应用内通知说明">i</button></div><div class="set-desc">审批 / 失败 / 提问：不是你正看的会话时右下角弹；任务完成只在会话列表留角标</div></div>
                                 <div class="set-control">
                                     <label class="set-switch"><input type="checkbox" id="ai-opt-notify-inapp"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
                                 </div>
@@ -925,7 +947,7 @@
                                 </div>
                             </div>
                             <div class="set-row">
-                                <div class="set-main"><div class="set-title">任务完成时通知</div></div>
+                                <div class="set-main"><div class="set-title">任务完成时通知<button type="button" class="info-tip" data-tip="只在软件处于后台（窗口未聚焦 / 最小化）时弹 Windows 系统卡片（并按「应用内通知」开关闪任务栏），点卡片可跳回该会话；不写状态栏【消息】中心——完成不占消息列表，会话列表有「已完成未查看」角标。人在软件里时不打扰。" aria-label="任务完成时通知说明">i</button></div><div class="set-desc">只在后台时弹系统卡片 / 闪任务栏；不写消息中心</div></div>
                                 <div class="set-control">
                                     <label class="set-switch"><input type="checkbox" id="ai-opt-notify-finish"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
                                 </div>
@@ -2035,15 +2057,25 @@
                         </div>
                     </div>
                     <div class="mcfg-row">
+                        <label class="mcfg-label" for="ai-opt-rpm">频率上限</label>
+                        <div class="mcfg-control">
+                            <div class="mcfg-line">
+                                <input id="ai-opt-rpm" class="mcfg-input mcfg-input-sm" type="text" inputmode="numeric" spellcheck="false" autocomplete="off" placeholder="不限">
+                                <span class="mcfg-note">次 / 分钟</span>
+                            </div>
+                            <p class="mcfg-hint">超出的请求在本地排队而不是直接发出，用来避免 429。留空 = 不限。</p>
+                        </div>
+                    </div>
+                    <div class="mcfg-row">
                         <span class="mcfg-label">输入能力</span>
                         <div class="mcfg-control">
                             <div class="mcfg-chips" id="ai-opt-modalities">
                                 <label class="mcfg-chip"><input type="checkbox" data-modality="text"><span class="mcfg-chip-dot"></span>文本</label>
                                 <label class="mcfg-chip"><input type="checkbox" data-modality="image"><span class="mcfg-chip-dot"></span>图像</label>
-                                <label class="mcfg-chip mcfg-chip-soon" data-tip="暂不能随对话发送，勾选仅记录模型能力" aria-label="暂不能随对话发送，勾选仅记录模型能力"><input type="checkbox" data-modality="video"><span class="mcfg-chip-dot"></span>视频<span class="mcfg-chip-tag">待支持</span></label>
+                                <label class="mcfg-chip"><input type="checkbox" data-modality="video"><span class="mcfg-chip-dot"></span>视频</label>
                                 <label class="mcfg-chip mcfg-chip-soon" data-tip="暂不能随对话发送，勾选仅记录模型能力" aria-label="暂不能随对话发送，勾选仅记录模型能力"><input type="checkbox" data-modality="audio"><span class="mcfg-chip-dot"></span>音频<span class="mcfg-chip-tag">待支持</span></label>
                             </div>
-                            <p class="mcfg-hint">未勾选「图像」时，输入框的图片附件按钮将被禁用。</p>
+                            <p class="mcfg-hint">视频只走 OpenAI 兼容协议（Qwen-VL 系 video_url 内容段，mp4 ≤ 16 MB）；未勾选「图像」/「视频」时，对应的粘贴附件与 read_image / read_video 都会被拒绝。</p>
                         </div>
                     </div>
                     <div id="ai-opt-reasoning-group" class="mcfg-row hidden">
@@ -2488,6 +2520,10 @@
                             <span class="ai-chip-label">定时</span>
                             <span class="ai-chip-count hidden"></span>
                         </button>
+                        <button type="button" id="ai-chip-worktree" class="ai-chip hidden" aria-label="隔离工作区（AI 的 git worktree 草稿区）">
+                            <span class="ai-chip-icon"></span>
+                            <span class="ai-chip-label">隔离区</span>
+                        </button>
                     </div>
                     <div class="ai-head-actions">
                         <button type="button" id="ai-new-session" class="ai-icon-btn" data-tip="新建会话（当前工作区）" aria-label="新建会话（当前工作区）">
@@ -2527,7 +2563,10 @@
             <div class="ai-bottom-stack">
             <div id="ai-ctx-banner" class="ai-ctx-banner hidden">
                 <span id="ai-ctx-banner-text">上下文接近窗口上限</span>
-                <button type="button" id="ai-ctx-compact" class="dlg-btn">压缩上下文</button>
+                <button type="button" id="ai-ctx-compact" class="ai-ctx-banner-btn">压缩上下文</button>
+                <button type="button" id="ai-ctx-close" class="ai-ctx-banner-close" data-tip="关闭提醒；上下文再涨 5% 会再次提醒" aria-label="关闭上下文提醒">
+                    <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+                </button>
             </div>
             <div id="ai-todos" class="ai-todos hidden"></div>
             <div class="ai-composer">

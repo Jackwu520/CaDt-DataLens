@@ -22,7 +22,7 @@ function showBanner(data, parseError) {
         return;
     }
     if (data.binary) {
-        if (data.image && data.mode === 'image') {
+        if ((data.image && data.mode === 'image') || (data.video && data.mode === 'video')) {
             hideBanner();
             return;
         }

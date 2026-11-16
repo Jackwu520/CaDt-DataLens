@@ -7,6 +7,23 @@ import (
 	"time"
 )
 
+// worktreeSkipPrefix AI 隔离 worktree 的固定父目录（相对监听根，正斜杠语义）。
+const worktreeSkipPrefix = ".cadt/worktree"
+
+// skipWorktreeEvent 过滤 AI 隔离 worktree（.cadt/worktree）内部的变更事件：worktree 是
+// 给 AI 自己看的草稿区，UI 不需要刷新；且全量检出/依赖安装的事件洪峰会冲出 overflow
+// （内核丢事件，前端被迫对所有打开文档 stat 一遍）。patch 回灌到主根后走正常通知路径。
+// 只跳 worktree 子树——.cadt/logs、.cadt/patches 等事件量小且有意义，保持推送。
+// paths 为监听根相对路径（Windows 下 ReadDirectoryChangesW 返回反斜杠）。overflow 事件
+// 本身不过滤（内核已丢事件，前端有既有兜底）。
+func skipWorktreeEvent(path string) bool {
+	rel := strings.ToLower(strings.Trim(strings.ReplaceAll(path, "\\", "/"), "/"))
+	if rel == "" {
+		return false
+	}
+	return rel == worktreeSkipPrefix || strings.HasPrefix(rel, worktreeSkipPrefix+"/")
+}
+
 // WatchWorkspace 递归监听工作区，变化时通过 workspace-changed 事件推给前端；
 // 监听失败时前端仍保留轮询兜底。
 func (w *Watcher) WatchWorkspace(root string) error {
@@ -34,11 +51,20 @@ func (w *Watcher) WatchWorkspace(root string) error {
 	go func() {
 		defer close(done)
 		err := watchDirectory(root, stop, func(paths []string, overflow bool) {
-			emit("workspace-changed", map[string]interface{}{
-				"root":     root,
-				"paths":    paths,
-				"overflow": overflow,
-			})
+			filtered := make([]string, 0, len(paths))
+			for _, p := range paths {
+				if skipWorktreeEvent(p) {
+					continue
+				}
+				filtered = append(filtered, p)
+			}
+			if overflow || len(filtered) > 0 {
+				emit("workspace-changed", map[string]interface{}{
+					"root":     root,
+					"paths":    filtered,
+					"overflow": overflow,
+				})
+			}
 		})
 		if err != nil {
 			logf("warn", "文件监听已停止（%s）：%v", root, err)

@@ -258,6 +258,11 @@ test('危险命令：单次确认清单', () => {
         ['git push --force origin main', 'git-push-force'],
         ['git push -f', 'git-push-force'],
         ['git push --delete origin feat', 'git-push-force'],
+        ['git push origin :feat', 'git-push-force'],
+        ['git push origin :refs/heads/feat', 'git-push-force'],
+        ['git push --receive-pack=evil origin main', 'git-exec-program'],
+        ['git push --receive-pack evil origin main', 'git-exec-program'],
+        ['git fetch --upload-pack=evil origin', 'git-exec-program'],
         ['git checkout .', 'git-discard-worktree'],
         ['git checkout -- src/a.js', 'git-discard-worktree'],
         ['git restore src/a.js', 'git-discard-worktree'],
@@ -384,7 +389,6 @@ test('Git 流程豁免：常规 git 写命令放行', () => {
         'git add src/a.js',
         'git add src/a.js src/b.js',
         'git commit -m "feat: x"',
-        'git commit --no-verify -m "chore: y"',
         'git push origin main',
         'git push -u origin main',
         'git pull --no-rebase --no-edit',
@@ -413,6 +417,12 @@ test('Git 流程豁免：危险变体 / 复合命令 / 非 git / cwd 越界不�
         'git push --delete origin feat',
         'git push --mirror origin',
         'git push origin +main',
+        'git push origin :main',
+        'git push origin :refs/heads/main',
+        'git push --receive-pack=evil origin main',
+        'git push --receive-pack evil origin main',
+        'git push --exec=evil origin main',
+        'git fetch --upload-pack=evil origin',
         'git push --force-with-lease origin main',
         'git push --force-with-lease=origin/main origin main',
         'git push --force-with-lease=refs/heads/main:origin/main',
@@ -424,10 +434,18 @@ test('Git 流程豁免：危险变体 / 复合命令 / 非 git / cwd 越界不�
         'git stash clear',
         'git stash push -u',
         'git stash push --include-untracked',
+        'git stash save -u',
+        'git stash save --include-untracked',
+        'git stash save -a',
         'git branch -D feat',
         'git commit --amend -m "x"',
         'git commit -a -m "x"',
         'git commit --all -m "x"',
+        'git commit -n -m "x"',
+        'git commit --no-verify -m "x"',
+        'git push --no-verify origin main',
+        'git pull --no-verify',
+        'git merge --no-verify',
         'git add -A',
         'git add .',
         'git add ..',
@@ -462,4 +480,17 @@ test('Git 流程豁免：危险变体 / 复合命令 / 非 git / cwd 越界不�
     // 空 git 根 / 空 cwd 不放行
     assert.equal(gitFlowSafeCommand('git status', '', 'D:/repo'), false);
     assert.equal(gitFlowSafeCommand('git status', 'D:/repo', ''), false);
+});
+
+test('Git 流程豁免：隔离 worktree cwd 内令牌豁免失效（回退逐条审批）', () => {
+    const root = 'D:/repo';
+    // 与放行用例同组断言：主根与普通子目录仍放行，worktree 前缀一律不放行
+    assert.equal(gitFlowSafeCommand('git add src/a.js', root, 'D:/repo/src'), true);
+    assert.equal(gitFlowSafeCommand('git commit -m "x"', root, 'D:/repo/.cadt/worktree/demo-ab12'), false);
+    assert.equal(gitFlowSafeCommand('git commit -m "x"', root, 'D:/repo/.cadt/worktree'), false);
+    assert.equal(gitFlowSafeCommand('git add src/a.js', root, 'D:/repo/.cadt/worktree/demo-ab12/src'), false);
+    // 不误伤同名前缀目录（.cadt/worktree-x 不是隔离区）
+    assert.equal(gitFlowSafeCommand('git commit -m "x"', root, 'D:/repo/.cadt/worktree-x'), true);
+    // 大小写 / 反斜杠归一
+    assert.equal(gitFlowSafeCommand('git commit -m "x"', root, 'D:/REPO/.CADT/WORKTREE/demo'), false);
 });

@@ -1,6 +1,6 @@
 # 轮次折叠治本：折叠粒度从「过程」提到「整轮」
 
-> 状态：**未开工**（2026-11-16 成文）
+> 状态：**部分落地**（2026-11-16 成文；2026-11-17 完成「轮级折叠头」，见 §8）
 > 前置：同日的两个过渡尝试**都已回滚**，只有一处修正留下——① 修「未完成」误标（`toolMessageWaiting` / `turnFinalItem`）。回滚的两个是：② **注入卡收编为轮首 + 整轮开关**（`.ai-turn` / `turnFoldState`）——外壳会把用户自己的消息（含截图）一起吞进折叠体，重启后整轮只剩一行「AI 提问 · 3 个问题 · 2 个过程」，展开还撞上第二层过程条；③ 已答提问卡紧凑态（`compactAsk`）——折叠后的提问卡等于藏掉用户的答复凭据。**这两条不要再捡回来**，本文是**治本方案**，不是过渡实现的补丁说明。
 > 范围：`frontend/src/ai/ai-panel.js` 的 `groupTurns` / `turnFinalItem` / `renderTurn`，以及 `ai/ai-scroll-follow.js`、折叠状态与增量渲染签名。
 > 原则：**一个轮 = 一个容器 = 一个折叠状态**；流式态与完成态共用同一 DOM 模型，只有摘要文本和默认折叠值不同。
@@ -20,8 +20,8 @@
 
 - `groupTurns(session, startIndex, endIndex)`：按 `isTurnBoundaryMessage` 把消息切成轮；`app` 注入消息（计时器到点、定时任务、会话投递）按其 label 成为新一轮的轮首 user 消息，**不是**上一轮的尾部事件——这是刻意的，因为新一轮需要 user 起点供 `turnStartMs` / 上下文压缩 / 轮次计数使用。
 - `turnFinalItem(group, turnRunning)`：组尾是 tool 时，仅在流式或 `toolMessageWaiting`（审批 pending / agent running / bg running / status pending|running）才返回 null；工具已执行完则回退找最后的 assistant 作为终项。**这是唯一保留的过渡修正。**
-- `renderTurn(group, session, isLastGroup, parent, extraOptions)`：渲染顺序 = 轮首 user 消息（`host`）→ 过程分段（`segments`，按已答 ask 切段，每段一个 `.ai-process` 条）→ 提问卡（`host`，整卡）→ 最终回答（`host`）→ 改动汇总卡（`host`）。**没有任何轮级容器**，每段过程各自一个开关。
-- 折叠状态：只有 `processFoldState`，key 是 `session.id + ':' + (u<ts>|g<startIndex>) + ':s' + segIndex`；`processFoldTouched` 在流式期间记下用户手动碰过的段，轮次结束时丢弃。
+- `renderTurn(group, session, isLastGroup, parent, extraOptions)`：渲染顺序 = 轮首 user 消息（`host`）→ 过程分段（`segments`，按已答 ask 切段）→ 提问卡（`host`，整卡）→ 最终回答（`host`）→ 改动汇总卡（`host`）。**没有任何轮级容器**。~~每段过程各自一个开关~~（2026-11-17 已改：折叠状态与折叠头收到轮级，见 §8）。
+- 折叠状态：`processFoldState` 的 key ~~是 `session.id + ':' + (u<ts>|g<startIndex>) + ':s' + segIndex`~~ → 2026-11-17 起只到轮（不带段号）；`processFoldTouched` 在流式期间记下用户手动碰过的轮次，轮次结束时丢弃。
 - 流式条：`.ai-streaming-bar` 在底部状态条走秒，`.ai-process-head` 流式时只显示「处理中」。
 
 ## 3. 目标结构
@@ -84,10 +84,23 @@
 
 ## 7. 验收清单
 
-- [ ] 一轮只有一个折叠开关，展开后不再需要点第二层过程条。
+- [x] 一轮只有一个折叠开关，展开后不再需要点第二层过程条。（2026-11-17：折叠头与折叠状态都已收到轮级）
 - [ ] 流式 → 完成不整段重建：Shadow DOM 图表、代码高亮、think 体内滚动位置都保持。
 - [ ] 折叠 / 展开不打断贴底跟随；用户上翻时不被强制拉回底部。
 - [ ] 提问卡（pending / 已答）都完整可见，不被任何轮级折叠吞掉；已答卡的问答正文默认铺开。
 - [ ] 计时器到点、定时任务、会话投递三类注入卡表现一致。
 - [ ] 最终回答与改动汇总卡不随整轮收起而消失。
 - [ ] `npm test` 全绿，新增护栏已进 test script。
+
+## 8. 进展（2026-11-17）：轮级折叠头已落地
+
+触发点是实测截图：一轮内两张已回答提问卡，界面出现三条「已完成，用时 13 分 9 秒」，看起来像三轮。根因就是 §1 说的「段各带一个开关」——**提问卡是折叠区外的整卡，却切出了第二个、第三个折叠头**。
+
+这次只做最小收敛，不引入轮级容器（`②` 的老路不再走）：
+
+- `processFoldState` / `processFoldTouched` 的 key 去掉 `:s<segIndex>`，只到轮。
+- 折叠头只在 `foldHeadIndex`（第一个可渲染的 items 段）创建；其余段加 `.ai-process.cont`，只出无头 body 容器，与首段共享同一开合状态。
+- 点头时遍历 `host` 下同 `data-process-key` 的段一起 toggle，并把各段懒建的 `ensureBody` 全部补上。
+- 续段收起时 `display:none`（否则空容器让卡片之间的间距翻倍）。
+
+仍然没做的（本文档的治本部分）：`.ai-turn` 容器与唯一轮头、锚点卡内化为轮头摘要、流式两态同构。**已答提问卡依旧整卡常显、不参与折叠**——这条不因本次改动放松。

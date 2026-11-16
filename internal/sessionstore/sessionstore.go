@@ -18,18 +18,20 @@ import (
 )
 
 // AI 会话磁盘存储：每个会话一个目录，正文为追加式 JSONL，元数据为原子替换的 meta.json。
-// 布局：<appdata>/ai-sessions/<id>/{meta.json,session.v1.jsonl,images/}
+// 布局：<appdata>/ai-sessions/<id>/{meta.json,session.v1.jsonl,images/,videos/}
 const (
 	SessionsDirName    = "ai-sessions"
 	aiSessionMetaName  = "meta.json"
 	aiSessionLogName   = "session.v1.jsonl"
 	ImagesDir          = "images"
+	VideosDir          = "videos"
 	aiSessionLockName  = ".session.lock"
 	aiSessionLockWait  = 5 * time.Second
 	aiSessionReadLimit = 64 << 20 // 单会话正文上限：超过后拒绝加载，提示先压缩
 	aiSessionMetaLimit = 1 << 20
 	aiSessionIDMax     = 128
 	aiSessionImageMax  = 120
+	aiSessionVideoMax  = 40
 )
 
 type Store struct {
@@ -150,6 +152,8 @@ func validSessionImageName(name string) bool {
 	}
 	switch strings.ToLower(filepath.Ext(name)) {
 	case ".png", ".jpg", ".jpeg", ".webp", ".gif":
+		// .mp4 是会话视频（VideoPath）的扩展名，与图片共用同一个文件名校验。
+	case ".mp4":
 	default:
 		return false
 	}
@@ -176,6 +180,18 @@ func (s *Store) ImagePath(id, name string) (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, ImagesDir, name), nil
+}
+
+// VideoPath 与 ImagePath 同构：会话视频落 videos/ 子目录（存储清理按整个 ai-sessions/ 统计，无需单列）。
+func (s *Store) VideoPath(id, name string) (string, error) {
+	if !validSessionImageName(name) {
+		return "", fmt.Errorf("非法视频名：%q", name)
+	}
+	dir, err := s.sessionDir(id)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, VideosDir, name), nil
 }
 
 // list 只读各会话的 meta.json，不触碰正文；meta 缺失/损坏时用正文 header 兜底。

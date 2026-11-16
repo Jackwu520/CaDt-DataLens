@@ -47,7 +47,7 @@ require (
 	modernc.org/memory v1.12.1 // indirect
 )
 
-// replace github.com/wailsapp/wails/v2 v2.17.1 => C:\Users\admin\go\pkg\mod
+// replace github.com/wailsapp/wails/v2 v2.17.1 => C:\Users\<用户名>\go\pkg\mod
 
 // go-webview2 本地补丁：开出 Chromium 参数注入点（禁用 WebView2 原生迷你菜单）。
 // 相对上游 v1.0.22 只新增 webviewloader/app_browser_args.go + 三处调用点；升级依赖需重新套用。

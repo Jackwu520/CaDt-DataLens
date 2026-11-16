@@ -31,6 +31,8 @@ func StreamResponse(ctx context.Context, cancel context.CancelCauseFunc, id stri
 	// 参数型 400（如 max_tokens 超过模型上限）是确定性故障：按服务端给的上界
 	// 收敛后重试一次，不受 retryMax（只管 429/5xx/网络错误）影响，也绝不循环降档。
 	maxTokensAdjusted := false
+	// stream_options 兼容性降级：只允许降一次，之后即便再失败也如实报错。
+	streamUsageDropped := false
 	for attempt := 0; ; attempt++ {
 		req, err := aiBuildChatRequest(ctx, cfg, messages, tools)
 		if err != nil {
@@ -39,6 +41,14 @@ func StreamResponse(ctx context.Context, cancel context.CancelCauseFunc, id stri
 		client, err := NewHTTPClient(cfg)
 		if err != nil {
 			return err
+		}
+
+		// 本地限流：RPM 超阈值、或正处在 429 回灌的冻结期，就在客户端排队。
+		// 每次重试都重新取名额（重试本身也是一次请求）。排队中持续喂看门狗并上报
+		// ai-queue 事件，详见 ratelimit.go。
+		if err := acquireSlot(ctx, cfg, id, emit, touch); err != nil {
+			client.CloseIdleConnections()
+			return fmt.Errorf("请求 AI 接口失败：%w", err)
 		}
 
 		resp, err := client.Do(req)
@@ -72,6 +82,10 @@ func StreamResponse(ctx context.Context, cancel context.CancelCauseFunc, id stri
 				return errors.New(aiStatusErrorBodyText(resp.StatusCode, body))
 			}
 			delay := aiRetryDelay(attempt, resp.Header.Get("Retry-After"), resp.StatusCode)
+			// 429 是配额类限流：把服务端要求的等待时间回灌给限流器，冻结期内同 key 的
+			// 其他请求（子代理、分类器、别的会话）一起排队，避免「一个请求在退避、
+			// 另外二十个还在往前撞」。5xx 不是配额问题，不冻结。
+			aiRateLimiter.freezeUntil(rateKey(cfg), time.Now().Add(delay))
 			emit(EventRetry, RetryPayload{Id: id, Attempt: attempt + 1, Max: max, DelayMs: int(delay.Milliseconds()), Reason: reason})
 			logf("warn", "AI 接口返回 %d，%s 后第 %d/%d 次重试", resp.StatusCode, delay.Round(time.Millisecond), attempt+1, max)
 			if !aiRetryWait(ctx, delay, touch) {
@@ -125,6 +139,16 @@ func StreamResponse(ctx context.Context, cancel context.CancelCauseFunc, id stri
 						continue
 					}
 				}
+			}
+			// 网关把 stream_options 当未知参数拒收：摘掉这个字段重发，宁可不带流式 usage
+			// 也要让对话能跑通（老 shim / 自研网关常见）。
+			if !streamUsageDropped && aiRejectsStreamOptions(resp.StatusCode, errBody) {
+				cfg.noStreamUsage = true
+				streamUsageDropped = true
+				logf("warn", "网关不接受 stream_options（流式 usage），已去掉该字段重试：%s",
+					aiStatusErrorBodyText(resp.StatusCode, errBody))
+				touch()
+				continue
 			}
 			return errors.New(aiStatusErrorBodyText(resp.StatusCode, errBody))
 		}
@@ -421,6 +445,16 @@ func aiApplyBodyPatch(body, patch map[string]any) {
 	body["stream"] = true
 }
 
+// aiRejectsStreamOptions：4xx 错误体点名 stream_options / include_usage，说明网关把
+// 「索取流式 usage」当成非法参数。只认 400/422 且文本命中，别的原因不降级。
+func aiRejectsStreamOptions(code int, body []byte) bool {
+	if code != http.StatusBadRequest && code != http.StatusUnprocessableEntity {
+		return false
+	}
+	text := strings.ToLower(aiStatusErrorBodyText(code, body))
+	return strings.Contains(text, "stream_options") || strings.Contains(text, "include_usage")
+}
+
 func aiBuildOpenAIBody(cfg Config, messages []Message, tools []ToolDef) (map[string]any, error) {
 	passReasoning := strings.Contains(strings.ToLower(cfg.Model), "deepseek")
 	converted, err := aiOpenAIMessages(messages, passReasoning)
@@ -432,6 +466,14 @@ func aiBuildOpenAIBody(cfg Config, messages []Message, tools []ToolDef) (map[str
 		"messages":    converted,
 		"stream":      true,
 		"temperature": cfg.Temperature,
+	}
+	// 流式 usage 必须显式索取：llama.cpp / LM Studio / vLLM 这类本地与开放服务
+	// 默认不在流里放 usage（OpenAI 官方也要求 include_usage），不带上这一项就一个
+	// token 数都拿不到——前端会话统计的 TPS、缓存命中、总 token 全是「—」。
+	// DeepSeek / DashScope / GLM 等网关无论有没有这个字段都会在末块回 usage，
+	// 带上只是统一口径；真被拒（400 提到 stream_options）时由重试逻辑摘掉重发。
+	if !cfg.noStreamUsage {
+		body["stream_options"] = map[string]any{"include_usage": true}
 	}
 	if cfg.MaxTokens > 0 {
 		body["max_tokens"] = cfg.MaxTokens
@@ -491,10 +533,14 @@ func claudeRejectsFixedThinkingBudget(model string) bool {
 // aiBuildResponsesInput 把内部消息映射成 Responses 的 input 数组：
 // system → instructions（合并）、tool → function_call_output、assistant 工具调用 →
 // function_call；普通文本用 input_text / output_text 部件，图片用 input_image。
-func aiBuildResponsesInput(messages []Message) ([]any, string) {
+// Responses 协议没有视频内容段：带视频的消息直接报错（前端已按 provider 拦，这里是双保险）。
+func aiBuildResponsesInput(messages []Message) ([]any, string, error) {
 	input := make([]any, 0, len(messages))
 	var instructions []string
 	for _, m := range messages {
+		if len(m.Videos) > 0 {
+			return nil, "", errors.New("Responses 协议不支持视频输入：请改用 OpenAI 兼容协议的模型条目，或移除视频附件")
+		}
 		role := strings.ToLower(strings.TrimSpace(m.Role))
 		if role == "system" || role == "developer" {
 			if text := strings.TrimSpace(m.Content); text != "" {
@@ -534,7 +580,7 @@ func aiBuildResponsesInput(messages []Message) ([]any, string) {
 			input = append(input, map[string]any{"role": role, "content": parts})
 		}
 	}
-	return input, strings.Join(instructions, "\n\n")
+	return input, strings.Join(instructions, "\n\n"), nil
 }
 
 // Responses 的 function tool 是扁平的（name/description/parameters 在顶层），
@@ -554,7 +600,10 @@ func aiResponsesTools(tools []ToolDef) []any {
 }
 
 func aiBuildResponsesBody(cfg Config, messages []Message, tools []ToolDef) (map[string]any, error) {
-	input, instructions := aiBuildResponsesInput(messages)
+	input, instructions, err := aiBuildResponsesInput(messages)
+	if err != nil {
+		return nil, err
+	}
 	maxTokens := cfg.MaxTokens
 	if maxTokens <= 0 {
 		maxTokens = aiDefaultMaxTokens
@@ -623,8 +672,8 @@ func aiOpenAIMessages(messages []Message, passReasoning bool) ([]map[string]any,
 		role := strings.ToLower(strings.TrimSpace(m.Role))
 		switch role {
 		case "system", "user":
-			if role == "user" && len(m.Images) > 0 {
-				parts := make([]any, 0, len(m.Images)+1)
+			if role == "user" && (len(m.Images) > 0 || len(m.Videos) > 0) {
+				parts := make([]any, 0, len(m.Images)+len(m.Videos)+1)
 				if strings.TrimSpace(m.Content) != "" {
 					parts = append(parts, map[string]any{"type": "text", "text": m.Content})
 				}
@@ -634,6 +683,17 @@ func aiOpenAIMessages(messages []Message, passReasoning bool) ([]map[string]any,
 						"type": "image_url",
 						"image_url": map[string]any{
 							"url": "data:" + mime + ";base64," + img.Data,
+						},
+					})
+				}
+				// 视频内容段按 Qwen-VL（DashScope / vLLM）的 OpenAI 兼容约定发 video_url；
+				// 官方 OpenAI / Gemini 兼容层不认这个类型，前端门禁只对勾了「视频」的条目放行。
+				for _, vid := range m.Videos {
+					mime := strings.ToLower(strings.TrimSpace(vid.Mime))
+					parts = append(parts, map[string]any{
+						"type": "video_url",
+						"video_url": map[string]any{
+							"url": "data:" + mime + ";base64," + vid.Data,
 						},
 					})
 				}
@@ -699,6 +759,10 @@ func aiAnthropicMessages(messages []Message, includeThinking bool) (string, []ma
 				systemParts = append(systemParts, m.Content)
 			}
 		case "user":
+			// Anthropic 协议没有视频内容段：带视频直接报错（前端已按 provider 拦，这里是双保险）。
+			if len(m.Videos) > 0 {
+				return "", nil, errors.New("Anthropic 协议不支持视频输入：请改用 OpenAI 兼容协议的模型条目，或移除视频附件")
+			}
 			if strings.TrimSpace(m.Content) == "" && len(m.Images) == 0 {
 				continue
 			}

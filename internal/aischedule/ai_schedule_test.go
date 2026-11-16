@@ -200,7 +200,7 @@ func TestAIScheduleTickOnceFiresAndRemoves(t *testing.T) {
 	aiScheduleMu.Lock()
 	list[0].NextRunAt = time.Now().Add(-time.Second).UnixMilli()
 	aiScheduleMu.Unlock()
-	app.aiScheduleTick()
+	aiScheduleTick()
 	list, _ = app.AIScheduleList()
 	if len(list) != 0 {
 		t.Fatalf("once 触发后应自动删除，剩余 %d", len(list))
@@ -218,7 +218,7 @@ func TestAIScheduleTickIntervalAdvances(t *testing.T) {
 	aiScheduleMu.Lock()
 	list[0].NextRunAt = time.Now().Add(-time.Second).UnixMilli()
 	aiScheduleMu.Unlock()
-	app.aiScheduleTick()
+	aiScheduleTick()
 	list, _ = app.AIScheduleList()
 	if len(list) != 1 {
 		t.Fatalf("未达 maxRuns 不应删除: %d", len(list))
@@ -233,7 +233,7 @@ func TestAIScheduleTickIntervalAdvances(t *testing.T) {
 	aiScheduleMu.Lock()
 	list[0].NextRunAt = time.Now().Add(-time.Second).UnixMilli()
 	aiScheduleMu.Unlock()
-	app.aiScheduleTick()
+	aiScheduleTick()
 	list, _ = app.AIScheduleList()
 	if len(list) != 0 {
 		t.Fatalf("达到 maxRuns 应自动删除，剩余 %d", len(list))
@@ -268,7 +268,7 @@ func TestAIScheduleReloadMissedOnceDisabled(t *testing.T) {
 		t.Fatalf("错过的 once 应停用并标记: %+v", list[0])
 	}
 	// 不会补跑
-	app.aiScheduleTick()
+	aiScheduleTick()
 	if got := list[0].RunCount; got != 0 {
 		t.Fatalf("不应补跑，runCount=%d", got)
 	}
@@ -290,7 +290,7 @@ func TestAIScheduleCronRoundtrip(t *testing.T) {
 	aiScheduleMu.Lock()
 	list[0].NextRunAt = time.Now().Add(-time.Second).UnixMilli()
 	aiScheduleMu.Unlock()
-	app.aiScheduleTick()
+	aiScheduleTick()
 	list, _ = app.AIScheduleList()
 	if len(list) != 1 || list[0].RunCount != 1 {
 		t.Fatalf("cron 触发后应保留并计数: %+v", list)

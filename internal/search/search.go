@@ -53,6 +53,21 @@ var searchBinaryExt = map[string]bool{
 // SkipDir 判断目录名是否属于检索与目录树共同忽略的目录（大小写不敏感）。
 func SkipDir(name string) bool { return searchSkipDirs[strings.ToLower(name)] }
 
+// worktreeSkipPrefix AI 隔离 worktree 的固定父目录（相对主根，正斜杠）。检出副本不进检索
+// 与目录树——否则搜一个函数名会命中主根与副本两份；.cadt 其余子目录（含 .cadt/tmp）不受影响。
+const worktreeSkipPrefix = ".cadt/worktree"
+
+// SkipPath 按相对路径（相对检索/遍历根，正斜杠）判断是否整棵跳过。rg 路径的排除 glob
+// 在 search_rg.go 与本函数口径一致（改这里即两边同步）。根自身（rel 为空或 "."）永不命中
+// ——从 worktree 内发起的检索照常工作。
+func SkipPath(rel string) bool {
+	rel = strings.ToLower(strings.Trim(strings.ReplaceAll(rel, "\\", "/"), "/"))
+	if rel == "" || rel == "." {
+		return false
+	}
+	return rel == worktreeSkipPrefix || strings.HasPrefix(rel, worktreeSkipPrefix+"/")
+}
+
 // searchArtifactDirs / searchArtifactSuffixes 定义「产物档」：构建输出与依赖目录。
 // 命中只降权不排除——工作区本身可能就是一份构建站，产物也必须搜得到，只是排在源码之后。
 // 两张表同时驱动 rg 的排除/包含 glob（见 search_rg.go），改这里即两边同步。
@@ -384,8 +399,14 @@ func (s *Searcher) searchWorkspace(root, query string, caseSensitive bool, maxRe
 		}
 		name := d.Name()
 		if d.IsDir() {
-			if path != root && (searchSkipDirs[strings.ToLower(name)] || name == ".git") {
-				return filepath.SkipDir
+			if path != root {
+				if searchSkipDirs[strings.ToLower(name)] || name == ".git" {
+					return filepath.SkipDir
+				}
+				// AI 隔离 worktree 副本整棵跳过（按相对路径；从 worktree 内发起的检索不受影响）
+				if rel, relErr := filepath.Rel(root, path); relErr == nil && SkipPath(rel) {
+					return filepath.SkipDir
+				}
 			}
 			return nil
 		}

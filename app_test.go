@@ -614,3 +614,18 @@ func TestExplorerArgsUseNativePath(t *testing.T) {
 		}
 	}
 }
+
+// OpenWithDefaultApp 的前置校验必须拦住空路径与不存在的路径：
+// 这两种输入在到达 ShellExecute 之前就返回，测试不会真的拉起外部程序。
+func TestOpenWithDefaultAppRejectsBadPaths(t *testing.T) {
+	app := NewApp()
+	if err := app.OpenWithDefaultApp("   "); err == nil {
+		t.Fatalf("空路径应当报错")
+	}
+	missing := filepath.Join(t.TempDir(), "nope.txt")
+	if err := app.OpenWithDefaultApp(missing); err == nil {
+		t.Fatalf("不存在的路径应当报错")
+	} else if !strings.Contains(err.Error(), "路径不存在") {
+		t.Fatalf("错误文案应当说明路径不存在：%v", err)
+	}
+}

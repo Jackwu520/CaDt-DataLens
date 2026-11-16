@@ -12,6 +12,11 @@ func (a *App) WebFetch(rawURL string, maxChars int) (map[string]interface{}, err
 	return webtools.Fetch(rawURL, maxChars)
 }
 
+// WebFetchImage 抓取公网图片并转成 data URL（AI 的 read_image 看网图走这条通道）。
+func (a *App) WebFetchImage(rawURL string) (map[string]interface{}, error) {
+	return webtools.FetchImage(rawURL)
+}
+
 func (a *App) ExternalSearch(query string, maxResults int) (map[string]interface{}, error) {
 	cfg, err := webtools.LoadDefaultConfig()
 	if err != nil {

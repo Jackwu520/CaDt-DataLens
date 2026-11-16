@@ -152,7 +152,8 @@ export function createAIGenSettings(ctx, extras) {
         const desc = document.createElement('div');
         desc.className = 'set-desc';
         const target = isAsyncGenModel(entry) ? '异步：' + entry.submitPath + ' → ' + entry.pollPath : (entry.path || '未配置路径');
-        desc.textContent = (entry.baseURL || '') + (entry.baseURL && target ? '  ·  ' : '') + target;
+        desc.textContent = (entry.baseURL || '') + (entry.baseURL && target ? '  ·  ' : '') + target +
+            (entry.editPath ? '  ·  图生图 ' + entry.editPath : '');
         main.append(title, desc);
         const control = document.createElement('div');
         control.className = 'set-control';
@@ -290,6 +291,15 @@ export function createAIGenSettings(ctx, extras) {
         const timeoutCtl = createInput({type: 'number', value: base.timeoutSec, min: 30, max: 300, step: 10});
         const baseURLCtl = createInput({value: base.baseURL, placeholder: 'https://api.siliconflow.cn 或 http://127.0.0.1:8188（本地服务）', spellcheck: false});
         const pathCtl = createInput({value: base.path, placeholder: '/v1/images/generations', spellcheck: false});
+        const editPathCtl = createInput({value: base.editPath, placeholder: '/v1/images/edits（留空 = 不支持参考图）', spellcheck: false});
+        const editWrapCtl = createInput({value: base.editImageWrap, placeholder: 'image_url（留空 = 裸字符串数组）', spellcheck: false});
+        const editFormatCtl = createSelect({
+            options: [
+                {value: 'json', label: 'JSON（模板即请求体）'},
+                {value: 'multipart', label: 'multipart（图片走文件字段）'},
+            ],
+            value: base.editFormat === 'multipart' ? 'multipart' : 'json',
+        });
         const headersCtl = createTextarea({
             value: headersToText(base.headers), rows: 4, spellcheck: false,
             placeholder: '每行一条：Key: Value\nAuthorization: Bearer {{apiKey}}',
@@ -311,6 +321,7 @@ export function createAIGenSettings(ctx, extras) {
         const jobIdPathCtl = createInput({value: base.jobIdPath, placeholder: 'output.task_id', spellcheck: false});
         const pollPathCtl = createInput({value: base.pollPath, placeholder: '/v1/video/status?task_id={{jobId}}', spellcheck: false});
         const statusPathCtl = createInput({value: base.statusPath, placeholder: 'output.task_status', spellcheck: false});
+        const probePathCtl = createInput({value: base.probePath, placeholder: '/v1/videos/{{jobId}}/content（可选）', spellcheck: false});
         const doneValueCtl = createInput({value: base.doneValue, placeholder: 'SUCCESS', spellcheck: false});
         const failedValueCtl = createInput({value: base.failedValue, placeholder: 'FAIL', spellcheck: false});
         const pollIntervalCtl = createInput({type: 'number', value: base.pollIntervalSec, min: 2, max: 30, step: 1});
@@ -326,9 +337,17 @@ export function createAIGenSettings(ctx, extras) {
         body.appendChild(groupTitle('请求'));
         body.appendChild(fieldRow('服务地址 baseURL', '同步型/异步型共用的服务根地址', baseURLCtl.element));
         body.appendChild(fieldRow('生成端点 path', '同步型：直接生成接口；异步型：留空（走下方提交端点）', pathCtl.element));
+        body.appendChild(fieldRow('编辑端点 editPath',
+            '图生图 / 图像编辑（同步型）：带参考图时用它替代上面两个端点；留空 = 不支持参考图',
+            editPathCtl.element));
+        body.appendChild(fieldRow('编辑端点格式',
+            'JSON：参考图经 {{images}} 进请求体模板；multipart：参考图作为 image 文件字段重复提交、模板只提供其余文本字段（Qwen-Image / OpenAI 官方 /v1/images/edits 这类接口，且只接受本地图片）',
+            editFormatCtl.element));
+        body.appendChild(fieldRow('参考图包装字段', 'JSON 格式：参考图数组元素的字段名，如 image_url（SenseNova / 豆包 / 万相同构）；留空 = 裸字符串数组。multipart 格式：文件字段名（留空 = image）', editWrapCtl.element));
         body.appendChild(fieldStack('自定义请求头', '每行一条「Key: Value」；{{apiKey}} 会替换为上方密钥', headersCtl.element));
         body.appendChild(fieldStack('请求体模板',
-            '占位符渲染为 JSON 字面量（字符串自动带引号转义），模板里不要手写引号：\n{"prompt":{{prompt}}} 是对的，"prompt":"{{prompt}}" 是错的',
+            '占位符渲染为 JSON 字面量（字符串自动带引号转义），模板里不要手写引号：\n{"prompt":{{prompt}}} 是对的，"prompt":"{{prompt}}" 是错的\n' +
+            '图生图用 {{images}}（已渲染成数组，同样不要再包引号）：{"model":{{model}},"images":{{images}},"prompt":{{prompt}}}',
             bodyCtl.element));
         body.appendChild(groupTitle('响应'));
         body.appendChild(fieldRow('产物形态', '', resultTypeCtl.element));
@@ -342,6 +361,9 @@ export function createAIGenSettings(ctx, extras) {
         body.appendChild(fieldRow('任务 ID 提取路径', '从提交响应里取任务 id', jobIdPathCtl.element));
         body.appendChild(fieldRow('轮询端点', '支持 {{jobId}} 占位', pollPathCtl.element));
         body.appendChild(fieldRow('状态字段路径 / 完成值 / 失败值', '如 output.task_status · SUCCESS · FAIL', statusPathCtl.element, doneValueCtl.element, failedValueCtl.element));
+        body.appendChild(fieldRow('探针端点（可选）',
+            '有的服务端任务跑完后，响应里不含可下载地址（url 为空、只给本机文件路径），产物要从独立端点取。填这个端点后，轮询时会额外探一次，**2xx 即视为完成**、产物直接用它下载（带下方请求头，下载端点通常要鉴权）。支持 {{jobId}}，形如 /v1/videos/{{jobId}}/content',
+            probePathCtl.element));
         body.appendChild(fieldRow('轮询间隔（秒）', '2-30', pollIntervalCtl.element));
         body.appendChild(fieldRow('最大轮询次数', '超限判失败', maxPollsCtl.element));
 
@@ -368,12 +390,13 @@ export function createAIGenSettings(ctx, extras) {
         genEditorControls = {
             name: nameCtl, kind: kindCtl, enabled: enabledCtl, apiKey: keyCtl,
             proxy: proxyCtl, proxyURL: proxyURLCtl, timeout: timeoutCtl,
-            baseURL: baseURLCtl, path: pathCtl, headers: headersCtl, body: bodyCtl,
+            baseURL: baseURLCtl, path: pathCtl, editPath: editPathCtl, editImageWrap: editWrapCtl, editFormat: editFormatCtl,
+            headers: headersCtl, body: bodyCtl,
             resultType: resultTypeCtl, resultPath: resultPathCtl, errorPath: errorPathCtl,
             defaultModel: defaultModelCtl, defaultSize: defaultSizeCtl, defaultN: defaultNCtl,
             submitPath: submitPathCtl, jobIdPath: jobIdPathCtl, pollPath: pollPathCtl,
             statusPath: statusPathCtl, doneValue: doneValueCtl, failedValue: failedValueCtl,
-            pollInterval: pollIntervalCtl, maxPolls: maxPollsCtl,
+            pollInterval: pollIntervalCtl, maxPolls: maxPollsCtl, probePath: probePathCtl,
         };
         ctx.openAIDialog((genEditorState.editingId ? '编辑生成条目' : '新建生成条目') +
             (genEditorState.entry && genEditorState.entry.name ? ' · ' + genEditorState.entry.name : ''),
@@ -381,7 +404,7 @@ export function createAIGenSettings(ctx, extras) {
         // 弹窗里的三个下拉同样走设置页的行式下拉（enhanceSelect）：原生 select 会露出系统下拉，
         // 跟自绘触发器混在一起像两套控件。必须在 openAIDialog 之后增强——wrap 要插进已入 DOM 的节点。
         if (typeof ctx.enhanceSelect === 'function') {
-            for (const ctl of [kindCtl, proxyCtl, resultTypeCtl]) ctx.enhanceSelect(ctl.control);
+            for (const ctl of [kindCtl, proxyCtl, resultTypeCtl, editFormatCtl]) ctx.enhanceSelect(ctl.control);
         }
     }
 
@@ -402,6 +425,9 @@ export function createAIGenSettings(ctx, extras) {
             enabled: c.enabled.control.checked,
             baseURL: c.baseURL.control.value,
             path: c.path.control.value,
+            editPath: c.editPath.control.value,
+            editImageWrap: c.editImageWrap.control.value,
+            editFormat: c.editFormat.control.value,
             proxy: c.proxy.control.value,
             proxyURL: c.proxyURL.control.value,
             timeoutSec: Number(c.timeout.control.value) || 120,
@@ -418,6 +444,7 @@ export function createAIGenSettings(ctx, extras) {
             jobIdPath: c.jobIdPath.control.value,
             pollPath: c.pollPath.control.value,
             statusPath: c.statusPath.control.value,
+            probePath: c.probePath.control.value,
             doneValue: c.doneValue.control.value,
             failedValue: c.failedValue.control.value,
             pollIntervalSec: Number(c.pollInterval.control.value) || 5,
@@ -434,6 +461,9 @@ export function createAIGenSettings(ctx, extras) {
                 enabled: draft.enabled,
                 baseURL: draft.baseURL,
                 path: draft.path,
+                editPath: draft.editPath,
+                editImageWrap: draft.editImageWrap,
+                editFormat: draft.editFormat,
                 proxy: draft.proxy === 'custom' ? (draft.proxyURL || 'system') : draft.proxy,
                 timeoutSec: draft.timeoutSec,
                 apiKey: draft.apiKey,
@@ -449,6 +479,7 @@ export function createAIGenSettings(ctx, extras) {
                 jobIdPath: draft.jobIdPath,
                 pollPath: draft.pollPath,
                 statusPath: draft.statusPath,
+                probePath: draft.probePath,
                 doneValue: draft.doneValue,
                 failedValue: draft.failedValue,
                 pollIntervalSec: draft.pollIntervalSec,

@@ -2,7 +2,7 @@
 // 从 ai-panel.js 拆出（docs/unfinished-plans/structure-cleanup.md 阶段 3），函数体逐字搬移。
 // config 为重赋值 let（经 getConfig() 读）；memoryFallbackNotified 经访问器写；
 // 对话框基建（openAIDialog/closeAIDialog/dialogNode/dialogButton）留在面板闭包经 ctx 注入。
-import {aiClamp, aiEstimateTokens, aiEstimateImageTokens, aiImageStats, aiTextOf} from './ai-constants.js';
+import {aiClamp, aiCtxBannerShow, aiEstimateTokens, aiEstimateImageTokens, aiEstimateVideoTokens, aiImageStats, aiTextOf} from './ai-constants.js';
 import {createInput, createSelect, createTextarea} from '../core/form-controls.js';
 
 export function createAIManageDialogs(ctx) {
@@ -412,7 +412,9 @@ export function createAIManageDialogs(ctx) {
                 tokens += aiEstimateTokens(aiTextOf(call.arguments));
             }
         }
-        return tokens + aiImageStats([message]).tokens;
+        return tokens + aiImageStats([message]).tokens +
+            // 视频按固定值估算（AI_VIDEO_ESTIMATE_TOKENS）；已归档（无 data）的视频不随请求发，不计
+            (Array.isArray(message.videos) ? message.videos.filter((v) => v && v.data).length * aiEstimateVideoTokens() : 0);
     }
 
     function estimateApiMessagesTokens(messages) {
@@ -429,18 +431,26 @@ export function createAIManageDialogs(ctx) {
         const messages = buildApiMessages(session, null, promptTextOf(session && session.id));
         let tokens = estimateApiMessagesTokens(messages);
         for (const item of getAttachments()) {
-            tokens += item.kind === 'image' ? aiEstimateImageTokens(item) : aiEstimateTokens(aiTextOf(item.content));
+            if (item.kind === 'image') tokens += aiEstimateImageTokens(item);
+            else if (item.kind === 'video') tokens += aiEstimateVideoTokens();
+            else tokens += aiEstimateTokens(aiTextOf(item.content));
         }
         tokens += toolsTokenEstimate(session);
         const windowSize = contextWindowOf(session);
         return {tokens, windowSize, percent: windowSize > 0 ? tokens / windowSize : 0};
     }
 
+    // 上下文提醒条的会话内关闭态：session → 关闭时的整数百分比；再涨 5% 才重新提醒。
+    // WeakMap 挂会话对象，会话删除即回收；压缩后百分比回落自然隐藏，不受关闭态影响。
+    const ctxBannerDismissed = new WeakMap();
+
     function updateCtxBanner() {
         if (!el.ctxBanner) return;
         const {tokens, windowSize, percent} = estimateCurrentTokens();
         const threshold = aiClamp(Number(getConfig().autoCompactThreshold) || 0.8, 0.5, 0.95);
-        const show = percent >= threshold;
+        const session = currentSession();
+        const dismissedAt = session ? ctxBannerDismissed.get(session) : null;
+        const show = aiCtxBannerShow(percent, threshold, dismissedAt);
         const wasHidden = el.ctxBanner.classList.contains('hidden');
         el.ctxBanner.classList.toggle('hidden', !show);
         if (wasHidden !== !show) positionOverlays();
@@ -449,6 +459,15 @@ export function createAIManageDialogs(ctx) {
                 ' tokens，估算），建议压缩';
         }
     }
-    return {showPromptDialog, showMemoryDialog, createAppSkill, showSkillsDialog, updateCtxBanner,
+
+    // 点 × 关闭提醒：记下当前百分比（会话内），上下文再涨 5% 才重新出现
+    function dismissCtxBanner() {
+        const session = currentSession();
+        if (session) ctxBannerDismissed.set(session, Math.round(estimateCurrentTokens().percent * 100));
+        if (!el.ctxBanner) return;
+        el.ctxBanner.classList.add('hidden');
+        positionOverlays();
+    }
+    return {showPromptDialog, showMemoryDialog, createAppSkill, showSkillsDialog, updateCtxBanner, dismissCtxBanner,
         showArchivedDialog, estimateMessageTokens, estimateApiMessagesTokens, estimateCurrentTokens};
 }

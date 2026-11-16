@@ -11,7 +11,7 @@
 - **联网工具引擎**在 `internal/webtools`（`webtools.go`）：`Search` 走 Bing RSS（`https://www.bing.com/search?format=rss&count=N&q=…`，默认 8 条 / 上限 10 条 / 1 MiB 上限），`Fetch` 是自写 HTTP 抓取 + 正则 HTML→纯文本（25s 超时、6 次重定向、4 MiB 上限、公网地址校验，含逐跳重定向校验与 DNS 解析后的 IP 检查）。根目录 `webtools_app.go` 是 Wails 薄包装（`WebSearch` / `WebFetch`）。
 - **工具声明单一来源** `frontend/src/ai/ai-tool-defs.js`：`AI_TOOL_DEFS`（def 表）+ `toolsForScope`（权限档清单）+ `AI_TOOL_CATALOG` / `AI_TOOL_GROUPS`（`<tool_catalog>` 渲染数据）。约定（2026-11-15 作者定）：**新增工具必须写进目录**，测试强制 def ↔ 目录一一对应。
 - **条件工具先例**：生图/视频的 `generate_image` / `generate_video` / `check_gen` 只在配置了启用条目时才 push 进 `toolsForScope`（`ctx.genModelsOn()`），目录里始终有条目并注明「未配置条目时这些工具不可用」。
-- **执行侧**：`ai-panel.js` 的 `executeTool` 按工具名分发；`web_search` / `web_fetch` 全权限档（含计划模式）可用；`web_fetch` 走域名级权限判定（`decidePermission kind:'web'`，项目规则 allow/ask/deny + 会话级允许），`web_search` 因域名固定不弹审批。
+- **执行侧**：`ai-panel.js` 的 `executeTool` 按工具名分发；`web_search` / `web_fetch` 全权限档（含计划模式）可用；`web_fetch` 走域名级权限判定（`decidePermission kind:'web'`，项目规则 allow/ask/deny + 会话级允许），`web_search` 因域名固定不弹审批。`read_image` 的网图通道（2026-11-17 起）共用同一闸门（`gateWebTarget`，做法见 `read-image.md`）。
 - **审批卡与留痕**：命令/读取/写入/网络四类（`kind: command | read | write | web`），审批记录进权限审计（`logPermission`）。
 - **MCP 设置现状**：MCP 服务器组是 `frontend/index.html` 中 `data-pane="ai"` 页内的一组（约 875–891 行，元素 id `ai-opt-mcp-*`）；绑定器在 `frontend/src/ai/ai-mcp-settings.js`（按 id 绑定，配置读写走 Go `MCPGetConfig` / `MCPWriteConfig`，状态灯来自 `mcpMod.getState()` 整代快照），由 `ai-panel.js` 创建并在 `refreshSettings` / MCP 事件时 `render()` / `renderAll()`。
 - **设置页信息架构**：`index.html` 的 `.snav-item[data-pane]` + `.settings-pane[data-pane]` 驱动导航；`settings-ui.js:607` 按 data-pane 切换；设置搜索（`settings-search.js`）**自动**从 DOM 收集条目，新增页无需额外注册。当前 AI 子页顺序：模型 / 生图与视频 / AI 助手 / 权限 / 个性化 / 上下文注入 / 用户偏好 / 定时任务。

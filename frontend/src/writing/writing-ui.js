@@ -50,6 +50,7 @@ const JSONL_VIEWS = [['tree', '树视图'], ['code', '代码视图'], ['text', '
 const MARKDOWN_VIEWS = [['split', '分屏'], ['preview', '预览'], ['code', '代码视图'], ['text', '文本视图']];
 const HTML_VIEWS = [['split', '分屏'], ['code', '代码视图'], ['text', '文本视图']];
 const IMAGE_VIEWS = [['image', '图片视图'], ['binary', '二进制视图'], ['text', '文本视图']];
+const VIDEO_VIEWS = [['video', '视频视图'], ['binary', '二进制视图'], ['text', '文本视图']];
 const BINARY_VIEWS = [['binary', '二进制视图'], ['text', '文本视图']];
 const SVG_VIEWS = [['split', '分屏'], ['render', '渲染视图'], ['tree', '树视图'], ['code', '代码视图'], ['text', '文本视图']];
 
@@ -79,6 +80,7 @@ const CSV_COL_MIN_WIDTH = 56;
 function viewOptionsFor(fmt, doc) {
     if (doc && (doc.browser || doc.bgTerm || doc.agentView || doc.sideChat)) return [];
     if (fmt && fmt.image) return IMAGE_VIEWS;
+    if (fmt && fmt.video) return VIDEO_VIEWS;
     if (fmt && fmt.id === 'bytes') return BINARY_VIEWS;
     if (isHtmlDoc(doc)) return HTML_VIEWS;
     if (fmt && fmt.id === 'markdown') return MARKDOWN_VIEWS;
@@ -106,6 +108,7 @@ function normalizeLegacySqlMode(doc) {
 function viewDisabled(mode) {
     if (!deps.file) return true;
     if (mode === 'image') return !deps.file.image;
+    if (mode === 'video') return !deps.file.video;
     if (mode === 'binary') return !deps.file.binary;
     if (mode === 'tree') return !deps.file.treeAvailable;
     if (mode === 'text') return false;
@@ -145,6 +148,7 @@ function viewLabel(mode) {
     if (mode === 'sidechat') return '支线对话';
     if (mode === 'split') return '分屏';
     if (mode === 'image') return '图片视图';
+    if (mode === 'video') return '视频视图';
     if (mode === 'binary') return '二进制视图';
     if (mode === 'preview') return '预览';
     if (mode === 'render') return '渲染视图';

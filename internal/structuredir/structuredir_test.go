@@ -111,3 +111,32 @@ func TestNaturalLess(t *testing.T) {
 		}
 	}
 }
+
+// AI 隔离 worktree（.cadt/worktree）整棵不进导出树（`.cadt/worktree` 目录名本身也不出现）；
+// .cadt 其余子目录与从 worktree 自身发起的导出不受影响。
+func TestStructureDirSkipsWorktree(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, filepath.Join(root, ".cadt", "memory", "note.md"))
+	writeTestFile(t, filepath.Join(root, ".cadt", "worktree", "x", "src", "a.js"))
+	writeTestFile(t, filepath.Join(root, ".cadt", "worktree", "x", "b.txt"))
+	writeTestFile(t, filepath.Join(root, "main.go"))
+
+	out, err := Render(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "worktree") {
+		t.Fatalf("worktree 副本泄漏进结构树：\n%s", out)
+	}
+	if !strings.Contains(out, ".cadt") || !strings.Contains(out, "note.md") || !strings.Contains(out, "main.go") {
+		t.Fatalf(".cadt 其余内容应保留：\n%s", out)
+	}
+	// 从 worktree 自身发起：正常渲染其内容
+	wtOut, err := Render(filepath.Join(root, ".cadt", "worktree", "x"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(wtOut, "a.js") || !strings.Contains(wtOut, "b.txt") {
+		t.Fatalf("worktree 内导出应正常：\n%s", wtOut)
+	}
+}

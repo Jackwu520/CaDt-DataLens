@@ -4,6 +4,7 @@ package webtools
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/xml"
 	"errors"
 	"fmt"
@@ -32,10 +33,12 @@ const (
 	webFetchDefaultChars    = 12000
 	webFetchMaxChars        = 60000
 	webFetchMaxBytes        = 4 << 20
-	webRequestTimeout       = 25 * time.Second
-	webMaxRedirects         = 6
-	webMaxLinks             = 40
-	webUserAgent            = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+	// 图片单独一档上限：网页 4 MB 是按文本估的，常见照片 3–8 MB 会被误判成「截断」。
+	webImageMaxBytes  = 16 << 20
+	webRequestTimeout = 25 * time.Second
+	webMaxRedirects   = 6
+	webMaxLinks       = 40
+	webUserAgent      = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 )
 
 var (
@@ -141,6 +144,10 @@ func Fetch(rawURL string, maxChars int) (map[string]interface{}, error) {
 		mediaType == "application/javascript" ||
 		mediaType == "application/x-javascript"
 	if !isText {
+		if strings.HasPrefix(mediaType, "image/") {
+			return nil, fmt.Errorf("该地址是图片（%s）。要看画面请用 read_image 并把这个 URL 作为 path 传入；"+
+				"只需确认链接可访问可忽略本结果", mediaType)
+		}
 		return nil, fmt.Errorf("该地址返回 %s，web_fetch 只支持 HTML / 文本 / JSON / XML", mediaType)
 	}
 	charset := webNormalizeCharset(params["charset"])
@@ -183,6 +190,109 @@ func Fetch(rawURL string, maxChars int) (map[string]interface{}, error) {
 		"bytes":       len(resp.Body),
 		"elapsedMs":   time.Since(started).Milliseconds(),
 	}, nil
+}
+
+// FetchImage 抓取一张公网图片并转成 data URL——AI 的 read_image 用它看网图。
+// 与 Fetch 共用同一套 URL 校验（仅公网 http/https、逐跳校验重定向、超时与体积上限），
+// 区别只在于按图片处理：更大的体积上限、只信魔数、不做正文抽取。
+func FetchImage(rawURL string) (map[string]interface{}, error) {
+	started := time.Now()
+	resp, err := webRequest(rawURL, webImageMaxBytes,
+		"image/avif,image/webp,image/png,image/jpeg,image/gif,image/bmp,image/svg+xml;q=0.9,image/*;q=0.8,*/*;q=0.5")
+	if err != nil {
+		return nil, err
+	}
+	if resp.Status < 200 || resp.Status >= 300 {
+		return nil, fmt.Errorf("抓取失败：HTTP %d", resp.Status)
+	}
+	if resp.Truncated {
+		return nil, fmt.Errorf("图片超过 %d MB，无法读取", webImageMaxBytes>>20)
+	}
+	declared, _, _ := mime.ParseMediaType(resp.ContentType)
+	declared = strings.ToLower(strings.TrimSpace(declared))
+	mediaType, err := webImageMime(declared, resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	name := ""
+	if pu, parseErr := url.Parse(resp.FinalURL); parseErr == nil {
+		name = path.Base(pu.Path)
+		// 只有带扩展名的末段才像文件名（picsum.photos/640/360 这种末段是尺寸，别当名字）
+		if name == "." || name == "/" || !strings.Contains(name, ".") {
+			name = ""
+		}
+	}
+	return map[string]interface{}{
+		"url":         rawURL,
+		"finalUrl":    resp.FinalURL,
+		"status":      resp.Status,
+		"contentType": mediaType,
+		"name":        name,
+		"bytes":       len(resp.Body),
+		"dataUrl":     "data:" + mediaType + ";base64," + base64.StdEncoding.EncodeToString(resp.Body),
+		"elapsedMs":   time.Since(started).Milliseconds(),
+	}, nil
+}
+
+// webImageMime 判定抓回来的字节到底是不是图片：只信魔数（Content-Type 由站点随便写），
+// SVG 例外——它按文本传，靠开头标记识别；AVIF 的容器魔数 DetectContentType 不认，单独看一眼。
+// 声明的类型只用于把错误话说清楚。
+func webImageMime(declared string, body []byte) (string, error) {
+	if len(body) == 0 {
+		return "", errors.New("图片内容为空")
+	}
+	sniffed, _, _ := mime.ParseMediaType(http.DetectContentType(body))
+	sniffed = strings.ToLower(strings.TrimSpace(sniffed))
+	if strings.HasPrefix(sniffed, "image/") {
+		return sniffed, nil
+	}
+	if webLooksLikeSVG(body) {
+		return "image/svg+xml", nil
+	}
+	if declared == "image/avif" && webHasAVIFBrand(body) {
+		return "image/avif", nil
+	}
+	if strings.HasPrefix(declared, "image/") {
+		return "", fmt.Errorf("该地址声明是 %s，但返回的内容不是有效图片", declared)
+	}
+	if declared == "" {
+		declared = sniffed
+	}
+	return "", fmt.Errorf("该地址返回 %s，不是图片（文本页面请用 web_fetch）", declared)
+}
+
+// webLooksLikeSVG 看开头是不是 <svg（容忍 BOM、XML 声明与前导注释）。
+func webLooksLikeSVG(body []byte) bool {
+	head := body
+	if len(head) > 4096 {
+		head = head[:4096]
+	}
+	s := strings.ToLower(strings.TrimPrefix(string(head), "\ufeff"))
+	s = strings.TrimSpace(s)
+	if strings.HasPrefix(s, "<?xml") {
+		idx := strings.Index(s, "?>")
+		if idx < 0 {
+			return false
+		}
+		s = strings.TrimSpace(s[idx+2:])
+	}
+	for strings.HasPrefix(s, "<!--") {
+		idx := strings.Index(s, "-->")
+		if idx < 0 {
+			return false
+		}
+		s = strings.TrimSpace(s[idx+3:])
+	}
+	return strings.HasPrefix(s, "<svg")
+}
+
+// webHasAVIFBrand 判 ISO-BMFF 的 ftyp 里是不是 avif / avis 品牌。
+func webHasAVIFBrand(body []byte) bool {
+	if len(body) < 12 || string(body[4:8]) != "ftyp" {
+		return false
+	}
+	brand := string(body[8:12])
+	return brand == "avif" || brand == "avis"
 }
 
 func webClient() *http.Client {

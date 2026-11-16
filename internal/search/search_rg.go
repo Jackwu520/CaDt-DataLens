@@ -43,6 +43,10 @@ func rgGlobalArgs(query string, caseSensitive bool, pattern string, artifactOnly
 		"--glob", "!node_modules", "--glob", "!__pycache__",
 		"--glob", "!.pytest_cache", "--glob", "!.mypy_cache",
 		"--glob", "!.gradle", "--glob", "!.cache",
+		// AI 隔离 worktree：目录与子树双保险（尽力剪枝；Windows 上路径型 glob 不可靠，
+		// runRgPass 里另有 skipRgHit 按 SkipPath 二次过滤保底）。口径与 search.go 的
+		// SkipPath 一致（含 .cadt/tmp 不受影响）。
+		"--glob", "!.cadt/worktree", "--glob", "!.cadt/worktree/**",
 		"-F",
 	}
 	if !caseSensitive {
@@ -78,10 +82,27 @@ type rgPass struct {
 	usable    bool
 }
 
+// skipRgHit 过滤 rg 命中路径里的 AI 隔离 worktree 副本。rg 的路径型 glob 在 Windows 上
+// 不可靠（路径分隔符语义随版本差异，见 rgGlobalArgs 注释），glob 只是尽力剪枝，
+// 这里按 SkipPath 二次过滤保底。结果按 path 缓存（同一文件多命中只算一次）。
+func skipRgHit(root, path string, cache map[string]bool) bool {
+	if cached, ok := cache[path]; ok {
+		return cached
+	}
+	rel := path
+	if r, relErr := filepath.Rel(root, path); relErr == nil {
+		rel = r
+	}
+	skip := SkipPath(rel)
+	cache[path] = skip
+	return skip
+}
+
 // runRgPass 跑一趟 rg 并把命中收齐。artifactOnly 时只收产物档命中——glob 已做包含，
 // Go 侧再按分类器过滤一次，避免用户 filePattern 与包含 glob 取并集时混进源码命中。
 func runRgPass(rgPath, root, query string, caseSensitive bool, pattern string, artifactOnly bool, hitCap int, deadline time.Time) rgPass {
 	pass := rgPass{files: map[string]bool{}}
+	worktreeCache := map[string]bool{}
 	remaining := time.Until(deadline)
 	if remaining <= 0 || hitCap <= 0 {
 		pass.truncated = true
@@ -114,6 +135,9 @@ loop:
 			continue
 		}
 		path := msg.Data.Path.Text
+		if skipRgHit(root, path, worktreeCache) {
+			continue
+		}
 		if artifactOnly {
 			isArtifact, cached := tierCache[path]
 			if !cached {

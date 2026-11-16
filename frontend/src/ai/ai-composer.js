@@ -2,7 +2,8 @@
 // 从 ai-panel.js 拆出（docs/unfinished-plans/structure-cleanup.md 阶段 3），函数体逐字搬移。
 // attachments 与 queueSeq 为本域私有 let（attachments 经 getAttachments/setAttachments 供面板与消息队列访问）；
 // attachSeq 留在面板（executeTool /clear 会重置），经 nextAttachSeq() 取号。
-import {aiTextOf, aiImageSrc, AI_IMAGE_LIMIT, AI_IMAGE_MAX_BASE64, AI_IMAGE_MAX_DIM, AI_IMAGE_MAX_INPUT_BYTES, AI_IMAGE_MESSAGE_BUDGET} from './ai-constants.js';
+import {aiTextOf, aiImageSrc, AI_IMAGE_LIMIT, AI_IMAGE_MAX_BASE64, AI_IMAGE_MAX_DIM, AI_IMAGE_MAX_INPUT_BYTES, AI_IMAGE_MESSAGE_BUDGET,
+    AI_VIDEO_LIMIT, AI_VIDEO_MAX_INPUT_BYTES, AI_VIDEO_MAX_BASE64, AI_VIDEO_MIMES, aiVideoFromSrc, bufferToBase64, isReadableVideoPath} from './ai-constants.js';
 import {prepareImagePayload} from './ai-image-encode.js';
 import {AI_QUOTE_KIND, quoteChipLabel, quoteExcerpt} from './ai-quote.js';
 
@@ -32,6 +33,7 @@ export function createAIComposer(ctx) {
     const renderMessageQueue = ctx.renderMessageQueue;
     const entryOf = ctx.entryOf;
     const sessionImageBytes = ctx.sessionImageBytes;
+    const readVideoFile = ctx.readVideoFile;
     // 排队消息的读写经队列模块 API（所有权在 ai-message-queue.js，阶段 A 迁移）
     const queue = ctx.queue;
     const slashState = ctx.slashState;
@@ -76,6 +78,7 @@ export function createAIComposer(ctx) {
                 else if (item.kind === 'reference') prefix = '引用 · ';
                 else if (item.kind === 'selection_reference') prefix = '引用选区 · ';
                 else if (item.kind === AI_QUOTE_KIND) prefix = '回复引用 · ';
+                else if (item.kind === 'video') prefix = '视频 · ';
                 label.textContent = prefix + item.label;
                 chip.append(label, remove);
             }
@@ -104,6 +107,24 @@ export function createAIComposer(ctx) {
                 .reduce((sum, current) => sum + sessionImageBytes([current]), 0);
             if (currentBytes + item.data.length > AI_IMAGE_MESSAGE_BUDGET) {
                 flash('图片总量超过上限，请减少图片或先发送当前消息', true);
+                return false;
+            }
+            item.id = 'att-' + (nextAttachSeq());
+            attachments.push(item);
+            renderAttachments();
+            el.input && el.input.focus();
+            return true;
+        }
+        if (item.kind === 'video') {
+            // 模型条目未勾选视频输入时拒绝附加（粘贴 / 文件对话框统一走这里）
+            const entry = entryOf(currentSession());
+            if (entry && entry.modalities && entry.modalities.video === false) {
+                flash('当前模型（' + (entry.model || '未命名') + '）未勾选视频输入，可在模型设置中开启', true);
+                return false;
+            }
+            if (!item.data) return false;
+            if (attachments.some((current) => current.kind === 'video')) {
+                flash('每条消息最多附加 ' + AI_VIDEO_LIMIT + ' 个视频', true);
                 return false;
             }
             item.id = 'att-' + (nextAttachSeq());
@@ -181,23 +202,56 @@ export function createAIComposer(ctx) {
         });
     }
 
+    // 视频：不降质不截帧（浏览器无法解任意容器），原样 base64；体积门禁在这里与传输层双保险。
+    async function prepareVideoAttachment(file) {
+        if (!file) throw new Error('没有视频数据');
+        if (file.size > AI_VIDEO_MAX_INPUT_BYTES) throw new Error('视频超过 16 MB（请先压缩）');
+        let mime = String(file.type || '').toLowerCase();
+        if (!AI_VIDEO_MIMES.includes(mime)) {
+            if (!isReadableVideoPath(file.name)) throw new Error('不支持的视频格式（当前仅支持 mp4）');
+            mime = 'video/mp4';
+        }
+        const data = bufferToBase64(await file.arrayBuffer());
+        if (data.length > AI_VIDEO_MAX_BASE64) throw new Error('视频超过 base64 上限');
+        return {mime, data, bytes: file.size, name: String(file.name || '').trim() || '视频'};
+    }
+
+    async function attachVideoPath(path) {
+        if (!readVideoFile) {
+            flash('当前版本不支持读取视频', true);
+            return false;
+        }
+        try {
+            const dataURL = await readVideoFile(path);
+            const payload = aiVideoFromSrc(dataURL, String(path).split(/[\\/]/).pop());
+            if (!payload) throw new Error('不是支持的 mp4 视频');
+            return addAttachment({kind: 'video', label: payload.name, ...payload});
+        } catch (e) {
+            flash('附加视频失败：' + ((e && e.message) || e), true);
+            return false;
+        }
+    }
+
     async function handleInputPaste(e) {
         const data = e.clipboardData;
         if (!data || !data.items) return;
         const files = [];
+        const videoFiles = [];
         for (const item of data.items) {
-            if (item && item.kind === 'file' && String(item.type || '').startsWith('image/')) {
+            if (item && item.kind === 'file') {
                 const file = item.getAsFile();
-                if (file) files.push(file);
+                if (!file) continue;
+                const type = String(item.type || '');
+                if (type.startsWith('image/')) files.push(file);
+                else if (type.startsWith('video/')) videoFiles.push(file);
             }
         }
-        if (!files.length) return;
+        if (!files.length && !videoFiles.length) return;
         const text = data.getData('text/plain');
         if (!text) e.preventDefault();
         const room = AI_IMAGE_LIMIT - attachments.filter((item) => item.kind === 'image').length;
-        if (room <= 0) {
+        if (files.length && room <= 0) {
             flash('每条消息最多附加 ' + AI_IMAGE_LIMIT + ' 张图片', true);
-            return;
         }
         for (const file of files.slice(0, room)) {
             try {
@@ -210,6 +264,16 @@ export function createAIComposer(ctx) {
             }
         }
         if (files.length > room) flash('超出图片数量上限，已附加 ' + room + ' 张', true);
+        for (const file of videoFiles) {
+            try {
+                const prepared = await prepareVideoAttachment(file);
+                prepared.kind = 'video';
+                prepared.label = prepared.name;
+                addAttachment(prepared);
+            } catch (err) {
+                flash('视频处理失败：' + ((err && err.message) || err), true);
+            }
+        }
     }
 
     async function attachPath(path, opts) {
@@ -313,7 +377,9 @@ export function createAIComposer(ctx) {
         }
         if (!paths || !paths.length) return;
         for (const path of paths) {
-            await attachPath(path);
+            // mp4 走视频通道（二进制 base64），其余照旧读文本
+            if (isReadableVideoPath(path)) await attachVideoPath(path);
+            else await attachPath(path);
         }
     }
 
@@ -516,7 +582,9 @@ export function createAIComposer(ctx) {
         renderAttachments,
         addAttachment,
         prepareImageAttachment,
+        prepareVideoAttachment,
         attachPath,
+        attachVideoPath,
         attachSelection,
         referencePath,
         referenceSelection,

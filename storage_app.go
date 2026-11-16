@@ -6,6 +6,7 @@ package main
 // 把宿主知道的位置与删除动作注进去、暴露两个绑定方法、在 WebView2 起来之前执行待清理项。
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 
@@ -30,12 +31,39 @@ var storageService = storage.New(storage.Deps{
 	Location:              storageLocation,
 	RemoveToRecycleBin:    fsops.RemoveToRecycleBin,
 	ActiveBrowserProfiles: browser.ActiveProfileDirs,
+	// AI 隔离 worktree 的孤儿判定：从会话 meta 里收「有会话登记」的隔离区路径
+	KeepWorktreeNames: registeredWorktreePaths,
 	BeforeClear: map[string]func(){
 		// 派生 SQLite 打开状态下删不掉，清除前先释放本进程句柄
 		"session-index": sessionindex.ResetFiles,
 		"ai-schedule":   aischedule.Close,
 	},
 })
+
+// registeredWorktreePaths 读全部会话 meta 的 worktree.path（唯一归属凭证；
+// _stub 占位会话的 meta 同样参与判定）。读失败按空处理——孤儿判定宁缺勿滥。
+func registeredWorktreePaths() []string {
+	paths := []string{}
+	svc := sessionstore.Service{}
+	metas, err := svc.AISessionList()
+	if err != nil {
+		return paths
+	}
+	for _, raw := range metas {
+		var meta struct {
+			Worktree *struct {
+				Path string `json:"path"`
+			} `json:"worktree"`
+		}
+		if json.Unmarshal([]byte(raw), &meta) != nil || meta.Worktree == nil {
+			continue
+		}
+		if meta.Worktree.Path != "" {
+			paths = append(paths, meta.Worktree.Path)
+		}
+	}
+	return paths
+}
 
 // storageLocation 报告应用真正写数据的位置。已有构造函数的全部复用，
 // 免得目录名在写入端与清理端各写一遍、改一处就清错地方。

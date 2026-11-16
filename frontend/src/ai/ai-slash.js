@@ -160,6 +160,22 @@ export function createAISlash(ctx) {
                 showNote('已填入提示词。');
                 break;
             }
+            case '/worktree': {
+                // 隔离 worktree：注入提示词，用户确认后 AI 走 worktree_manage(action=create)
+                //（创建前还有确认卡，双保险）；带用途名时一并转给 AI 派生 slug
+                const ask = argText.trim();
+                const prompt = ask
+                    ? '在隔离 git worktree 里做「' + ask + '」：先 worktree_manage(action=create, label="' + ask.replace(/"/g, '') + '") 创建，之后所有改动都写到隔离区前缀下，完成后 export 给我审阅。'
+                    : '开一个隔离 git worktree（worktree_manage action=create），之后有风险的改动都在隔离区里试，完成或确认可行后 export 给我审阅。';
+                if (el.input) {
+                    el.input.value = prompt;
+                    el.input.focus();
+                    try { el.input.setSelectionRange(prompt.length, prompt.length); } catch (e) {}
+                    updateSendState();
+                }
+                showNote('已填入提示词。');
+                break;
+            }
             default:
                 showNote('未知命令，输入 /help 查看可用命令。', true);
                 break;

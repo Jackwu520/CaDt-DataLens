@@ -134,7 +134,7 @@ export function createAISettingsDialog(ctx) {
     }
 
     function settingsFormDisabled(disabled) {
-        for (const node of [opt.name, opt.provider, opt.baseURL, opt.apiKey, opt.model, opt.temp, opt.maxTokens, opt.reasoning, opt.thinking, opt.budget, opt.contextWindow, opt.proxy, opt.proxyURL, opt.headers, opt.test, opt.models, opt.entryAdd]) {
+        for (const node of [opt.name, opt.provider, opt.baseURL, opt.apiKey, opt.model, opt.temp, opt.maxTokens, opt.rpm, opt.reasoning, opt.thinking, opt.budget, opt.contextWindow, opt.proxy, opt.proxyURL, opt.headers, opt.test, opt.models, opt.entryAdd]) {
             if (node) node.disabled = !!disabled;
         }
         if (opt.modalities) {
@@ -195,6 +195,7 @@ export function createAISettingsDialog(ctx) {
         if (!entry) return;
         if (opt.contextWindow) opt.contextWindow.value = formatTokenAmount(entry.contextWindow);
         if (opt.maxTokens) opt.maxTokens.value = formatTokenAmount(entry.outputWindow);
+        if (opt.rpm) opt.rpm.value = Number(entry.rpm) > 0 ? String(entry.rpm) : '';
         if (opt.modalities) {
             for (const node of opt.modalities.querySelectorAll('input[data-modality]')) {
                 node.checked = entry.modalities[node.dataset.modality] !== false;
@@ -287,6 +288,7 @@ export function createAISettingsDialog(ctx) {
             if (opt.temp) opt.temp.value = '0.7';
             if (opt.tempVal) opt.tempVal.textContent = '0.7';
             if (opt.maxTokens) opt.maxTokens.value = '';
+            if (opt.rpm) opt.rpm.value = '';
             if (opt.reasoning) opt.reasoning.value = '';
             if (opt.thinking) opt.thinking.checked = false;
             if (opt.budget) opt.budget.value = '8000';
@@ -352,11 +354,14 @@ export function createAISettingsDialog(ctx) {
         }
         if (opt.showThinking) opt.showThinking.checked = settings.aiShowThinking !== false;
         if (opt.showUsage) opt.showUsage.checked = settings.aiShowUsage === true;
+        if (opt.msgActions) opt.msgActions.value = settings.aiMsgActions || 'full';
         if (opt.turnMetaAll) opt.turnMetaAll.checked = settings.aiShowEveryTurnMeta === true;
         if (opt.contextSlim) opt.contextSlim.checked = settings.aiContextSlim !== false;
         if (opt.assistantCard) opt.assistantCard.checked = settings.aiAssistantCard === true;
         if (opt.inlineWidgets) opt.inlineWidgets.checked = settings.aiInlineWidgets !== false;
         if (opt.todosExpanded) opt.todosExpanded.checked = settings.aiTodosDefaultExpanded === true;
+        if (opt.autoCollapseEditor) opt.autoCollapseEditor.checked = settings.aiAutoCollapseEditor === true;
+        if (opt.expandEditorOnTab) opt.expandEditorOnTab.checked = settings.editorExpandOnNewTab !== false;
         if (opt.autoTitle) opt.autoTitle.checked = getConfig().autoTitle !== false;
         if (opt.defaultScope) opt.defaultScope.value = normalizeDefaultScope(getConfig().defaultScope);
         if (opt.logEnabled) opt.logEnabled.checked = getConfig().logEnabled !== false;
@@ -478,6 +483,19 @@ export function createAISettingsDialog(ctx) {
             opt.maxTokens.value = formatTokenAmount(entry.outputWindow);
             saveAIConfig();
             refreshSettingsPane();
+        });
+        // 频率上限：超出的请求由 Go 侧排队（Config.RPMLimit），留空 = 不限。
+        // 这是本地限流不是服务端配额，所以不做 K/M 之类单位解析。
+        if (opt.rpm) opt.rpm.addEventListener('change', () => {
+            const profile = activeProfile();
+            const entry = modelMod.editorEntryOf(profile);
+            if (!profile || !entry) return;
+            const raw = Number(String(opt.rpm.value || '').trim());
+            entry.rpm = Number.isFinite(raw) && raw > 0 ? Math.min(6000, Math.round(raw)) : 0;
+            entry.autoFilled = false;
+            opt.rpm.value = entry.rpm > 0 ? String(entry.rpm) : '';
+            saveAIConfig();
+            setSettingsStatus(entry.rpm > 0 ? '频率上限：' + entry.rpm + ' 次 / 分钟' : '频率上限：不限', 'ok');
         });
         if (opt.reasoning) opt.reasoning.addEventListener('change', () => {
             const profile = activeProfile();
@@ -697,6 +715,11 @@ export function createAISettingsDialog(ctx) {
             saveSettings();
             applyPanelSettings();
         });
+        if (opt.msgActions) opt.msgActions.addEventListener('change', () => {
+            settings.aiMsgActions = ['full', 'mid-basic', 'last-only'].includes(opt.msgActions.value) ? opt.msgActions.value : 'full';
+            saveSettings();
+            if (isOpen() && currentSession()) renderMessages(true);
+        });
         if (opt.turnMetaAll) opt.turnMetaAll.addEventListener('change', () => {
             settings.aiShowEveryTurnMeta = !!opt.turnMetaAll.checked;
             saveSettings();
@@ -724,6 +747,16 @@ export function createAISettingsDialog(ctx) {
             saveSettings();
             if (applyTodosCollapseDefault) applyTodosCollapseDefault();
             setSettingsStatus('任务清单：默认' + (opt.todosExpanded.checked ? '展开' : '收起'), 'ok');
+        });
+        if (opt.autoCollapseEditor) opt.autoCollapseEditor.addEventListener('change', () => {
+            settings.aiAutoCollapseEditor = !!opt.autoCollapseEditor.checked;
+            saveSettings();
+            setSettingsStatus('AI 工作时收起编辑区：' + (opt.autoCollapseEditor.checked ? '开' : '关'), 'ok');
+        });
+        if (opt.expandEditorOnTab) opt.expandEditorOnTab.addEventListener('change', () => {
+            settings.editorExpandOnNewTab = !!opt.expandEditorOnTab.checked;
+            saveSettings();
+            setSettingsStatus('新标签页展开编辑区：' + (opt.expandEditorOnTab.checked ? '开' : '关'), 'ok');
         });
         if (opt.autoTitle) opt.autoTitle.addEventListener('change', () => {
             getConfig().autoTitle = !!opt.autoTitle.checked;
@@ -767,7 +800,7 @@ export function createAISettingsDialog(ctx) {
         if (opt.notifyTest) opt.notifyTest.addEventListener('click', () => {
             if (!backend.NotifySystemToast) return;
             opt.notifyTest.disabled = true;
-            Promise.resolve(backend.NotifySystemToast('CaDt-DataLens · 测试通知', '能看到这条，说明系统通知已通。', false))
+            Promise.resolve(backend.NotifySystemToast('CaDt-DataLens · 测试通知', '能看到这条，说明系统通知已通。', '', false))
                 .then(() => setSettingsStatus('已发送测试通知；没弹出请检查 Windows 设置 → 系统 → 通知里的 CaDt-DataLens', 'ok'))
                 .catch((e) => setSettingsStatus('测试通知发送失败：' + ((e && e.message) || e), 'error'))
                 .then(() => { opt.notifyTest.disabled = false; });

@@ -585,6 +585,13 @@ const mockBackend = {
     async AISessionReadImage(id, name) {
         return mockAISessionImages.get(String(id) + '/' + name) || '';
     },
+    async AISessionSaveVideo(id, name, dataURL) {
+        mockAISessionImages.set(String(id) + '/videos/' + name, dataURL);
+        return 'videos/' + name;
+    },
+    async AISessionReadVideo(id, name) {
+        return mockAISessionImages.get(String(id) + '/videos/' + name) || '';
+    },
     async AISessionDelete(id) {
         mockAISessions.delete(String(id));
         return null;
@@ -1096,6 +1103,7 @@ const mockBackend = {
         return {files, truncated: files.length >= limit, scanned: Object.keys(mockFiles).length};
     },
     async ReadImageAsDataURL() { return mockImageDataUrl; },
+    async ReadVideoAsDataURL() { throw new Error('mock 环境不读取视频'); },
     async SaveFileDialog(name) { return 'mock://' + (window.__mockSaveDialogName || name); },
     async ShowSaveFileDialog(title, defaultName) {
         return 'mock://' + (window.__mockExportName || defaultName || 'export.json');
@@ -1480,6 +1488,42 @@ const mockBackend = {
         if (window.__mockBrowserTabs) window.__mockBrowserTabs.delete(id);
         return null;
     },
+    async GitWorktreeList(dir) {
+        const items = (window.__mockWorktrees || []).map((w) => ({
+            path: dir + '\\.cadt\\worktree\\' + w.name,
+            relPath: '.cadt/worktree/' + w.name,
+            branch: 'cadt/wt/' + w.name,
+            head: w.baseSha || 'mock-head',
+            underCadt: true,
+        }));
+        return {available: mockScenario.has('gitmock'), root: dir, items};
+    },
+    async GitWorktreeAdd(dir, label, sessionKey) {
+        if (!mockScenario.has('gitmock')) throw new Error('mock 无 git');
+        const slug = String(label || 'wt').toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 32) || 'wt';
+        const idPart = String(sessionKey || '').toLowerCase().replace(/[^a-z0-9]/g, '').slice(-8);
+        const name = (slug + (idPart ? '-' + idPart : '')).slice(0, 41);
+        const entry = {name, baseSha: 'mock-base-' + (window.__mockWorktrees || []).length};
+        window.__mockWorktrees = (window.__mockWorktrees || []).concat([entry]);
+        return {name, branch: 'cadt/wt/' + name, path: dir + '\\.cadt\\worktree\\' + name, baseSha: entry.baseSha, deps: ['node_modules'], depErrors: []};
+    },
+    async GitWorktreeRemove(dir, name, deleteBranch) {
+        window.__mockWorktrees = (window.__mockWorktrees || []).filter((w) => w.name !== name);
+        return null;
+    },
+    async GitWorktreePrune(dir) {
+        return null;
+    },
+    async GitWorktreeStat(dir, name, baseSha) {
+        if (!mockScenario.has('gitmock')) throw new Error('mock 无 git');
+        if (mockScenario.has('wtempty')) return '';
+        return ' sample.js | 2 +-\n 1 file changed, 1 insertion(+), 1 deletion(-)';
+    },
+    async GitWorktreeDiff(dir, name, baseSha) {
+        if (!mockScenario.has('gitmock')) throw new Error('mock 无 git');
+        if (mockScenario.has('wtempty')) throw new Error('worktree 没有改动');
+        return 'diff --git a/sample.js b/sample.js\n--- a/sample.js\n+++ b/sample.js\n@@ -1,1 +1,2 @@\n old line\n+new line from worktree\n';
+    },
     async GitStatusFor(dir) {
         if (!mockScenario.has('gitmock')) {
             return {available: false, reason: 'mock 无 git', entries: []};
@@ -1571,6 +1615,23 @@ const mockBackend = {
     },
     async ReadImageAsDataURL(path) {
         return 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAFklEQVR42mNkYPjPgAyYGBgYmRgAHPoBG0gGtMUAAAAASUVORK5CYII=';
+    },
+    // read_video 的读取通道：mock 环境造不出真 mp4（magic 校验过不了），直接报错
+    async ReadVideoAsDataURL(path) {
+        throw new Error('mock 环境不读取视频');
+    },
+    // read_image 的网图通道：dev 下给一张 8×8 png 占位，不真联网
+    async WebFetchImage(url) {
+        window.__mockWebFetchImage = {url};
+        return {
+            url,
+            finalUrl: url,
+            status: 200,
+            contentType: 'image/png',
+            name: '',
+            bytes: 68,
+            dataUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAFklEQVR42mNkYPjPgAyYGBgYmRgAHPoBG0gGtMUAAAAASUVORK5CYII=',
+        };
     },
     async GetAppVersion() {
         return 'v1.0.0';
@@ -1764,12 +1825,13 @@ const mockBackend = {
         window.__mockNewWindows = (window.__mockNewWindows || []).concat([[dir]]);
     },
     async ShowInFolder(path) { window.__mockShowInFolder = path; },
+    async OpenWithDefaultApp(path) { window.__mockOpenWithDefaultApp = path; },
     async StorageScan(root) { return buildMockStorageReport(root); },
     async StorageClear(ids, root) { return applyMockStorageClear(ids, root); },
     async LogFrontend(level, message) { (window.__mockLogs = window.__mockLogs || []).push(level + ': ' + message); },
     async GetDeveloperMode() { return !!window.__mockDevMode; },
     async SetDeveloperMode(on) { window.__mockDevMode = !!on; },
-    async GetLogPath() { return 'C:\\Users\\admin\\AppData\\Roaming\\CandySweet\\CaDt-DataLens\\logs\\2026-11-09_13-00-00.txt'; },
+    async GetLogPath() { return 'C:\\Users\\dev\\AppData\\Roaming\\CandySweet\\CaDt-DataLens\\logs\\2026-11-09_13-00-00.txt'; },
     async OpenLogDir() { window.__mockOpenLogDir = (window.__mockOpenLogDir || 0) + 1; },
     async CopyText(text) { window.__mockCopied = text; window.__mockClipboard = text; },
     async SaveDataURL(path) { window.__mockSaved = path; return path; },
@@ -2544,8 +2606,8 @@ const mockBackend = {
     // mock 环境没有原生窗口判定：退化成页面焦点，行为与真实构建一致（后台才弹系统卡片）
     async AppWindowActive() { return typeof document.hasFocus === 'function' ? document.hasFocus() : true; },
     async NotifyAttention(beep) { window.__mockNotify = (window.__mockNotify || []).concat([!!beep]); },
-    async NotifySystemToast(title, body, silent) {
-        window.__mockSystemToast = (window.__mockSystemToast || []).concat([{title, body, silent: !!silent}]);
+    async NotifySystemToast(title, body, payload, silent) {
+        window.__mockSystemToast = (window.__mockSystemToast || []).concat([{title, body, payload: String(payload || ''), silent: !!silent}]);
     },
     async AITestConnection(cfg) { window.__mockAiTestCfg = cfg; return '连接成功（mock）'; },
     async AIListModels(cfg) { window.__mockAiModelsCfg = cfg; return ['deepseek-flash', 'deepseek-v4-pro', 'qwen3.7-plus', 'kimi-k3.1-pro']; },

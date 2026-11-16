@@ -63,3 +63,29 @@ func (a *App) GitDiffFor(dir string, path string) (*gitinfo.GitDiffResult, error
 func (a *App) GitLineMarksFor(dir string, path string, content string) (*gitinfo.GitLineMarks, error) {
 	return gitinfo.LineMarksFor(dir, path, content)
 }
+
+// ===== AI 隔离 worktree（引擎在 internal/gitinfo/worktree.go；回灌审批仍走 patch 壳与前端） =====
+
+func (a *App) GitWorktreeList(dir string) (*gitinfo.GitWorktreeListResult, error) {
+	return gitinfo.WorktreeList(dir)
+}
+
+func (a *App) GitWorktreeAdd(dir, label, sessionKey string) (*gitinfo.GitWorktreeAddResult, error) {
+	return gitinfo.WorktreeAdd(dir, label, sessionKey)
+}
+
+func (a *App) GitWorktreeRemove(dir, name string, deleteBranch bool) error {
+	return gitinfo.WorktreeRemove(dir, name, deleteBranch)
+}
+
+func (a *App) GitWorktreePrune(dir string) error {
+	return gitinfo.WorktreePrune(dir)
+}
+
+func (a *App) GitWorktreeDiff(dir, name, baseSha string) (string, error) {
+	return gitinfo.WorktreeDiff(dir, name, baseSha)
+}
+
+func (a *App) GitWorktreeStat(dir, name, baseSha string) (string, error) {
+	return gitinfo.WorktreeStat(dir, name, baseSha)
+}
