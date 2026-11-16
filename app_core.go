@@ -12,6 +12,7 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
+	"datalens/internal/aiconfig"
 	"datalens/internal/aischedule"
 	"datalens/internal/aitimer"
 	"datalens/internal/browser"
@@ -42,6 +43,7 @@ type App struct {
 	*cmdbridge.Bridge     // 进程桥：插件 / AI 终端命令（internal/cmdbridge）
 	*terminal.Terminal    // 内置终端后端（internal/terminal）
 	*toolchain.Toolchain  // 语言环境检测（internal/toolchain）
+	*aiconfig.Store       // AI 配置文件读写（internal/aiconfig）
 	ctx                   context.Context
 	startupTargets        []OpenTarget
 	startupSettingsPane   string
@@ -85,7 +87,7 @@ type FileData struct {
 }
 
 func NewApp() *App {
-	return &App{Reader: &reading.Reader{}, Runner: &run.Runner{}, Host: &browser.Host{}, Searcher: &search.Searcher{}, Scheduler: &aischedule.Scheduler{}, Bridge: &cmdbridge.Bridge{}, Terminal: &terminal.Terminal{}, Toolchain: &toolchain.Toolchain{}}
+	return &App{Reader: &reading.Reader{}, Runner: &run.Runner{}, Host: &browser.Host{}, Searcher: &search.Searcher{}, Scheduler: &aischedule.Scheduler{}, Bridge: &cmdbridge.Bridge{}, Terminal: &terminal.Terminal{}, Toolchain: &toolchain.Toolchain{}, Store: &aiconfig.Store{}}
 }
 
 func (a *App) startup(ctx context.Context) {

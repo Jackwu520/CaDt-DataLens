@@ -1,4 +1,4 @@
-package main
+package aiconfig
 
 import (
 	"os"
@@ -9,7 +9,7 @@ import (
 
 func TestAIConfigFileRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "ai-config.json")
-	got, err := readAIConfigFile(path)
+	got, err := ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -17,10 +17,10 @@ func TestAIConfigFileRoundTrip(t *testing.T) {
 		t.Fatalf("缺失文件应返回空串，得到 %q", got)
 	}
 	payload := `{"profiles":[{"id":"p1"}],"preferences":[]}`
-	if err := writeAIConfigFile(path, payload); err != nil {
+	if err := WriteFile(path, payload); err != nil {
 		t.Fatal(err)
 	}
-	got, err = readAIConfigFile(path)
+	got, err = ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,30 +40,30 @@ func TestAIConfigFileRoundTrip(t *testing.T) {
 
 func TestAIConfigFileRejectsOversize(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "ai-config.json")
-	big := strings.Repeat("x", aiConfigFileMax+1)
-	if err := writeAIConfigFile(path, big); err == nil {
+	big := strings.Repeat("x", FileMax+1)
+	if err := WriteFile(path, big); err == nil {
 		t.Fatal("超限写入应报错")
 	}
 	if err := os.WriteFile(path, []byte(big), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := readAIConfigFile(path); err == nil {
+	if _, err := ReadFile(path); err == nil {
 		t.Fatal("超限读取应报错")
 	}
 }
 
 func TestAIConfigFileEmptyPath(t *testing.T) {
-	if _, err := readAIConfigFile(""); err == nil {
+	if _, err := ReadFile(""); err == nil {
 		t.Fatal("空路径应报错")
 	}
-	if err := writeAIConfigFile("", "{}"); err == nil {
+	if err := WriteFile("", "{}"); err == nil {
 		t.Fatal("空路径应报错")
 	}
 }
 
 func TestAppAIConfigRoundTrip(t *testing.T) {
 	t.Setenv("AppData", t.TempDir())
-	app := &App{}
+	app := &Store{}
 	if got, err := app.AIConfigRead(); err != nil || got != "" {
 		t.Fatalf("初始读取 = %q, %v", got, err)
 	}

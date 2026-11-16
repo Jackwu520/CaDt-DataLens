@@ -11,6 +11,7 @@ import (
 
 	"datalens/internal/activity"
 	"datalens/internal/aicatalog"
+	"datalens/internal/aiconfig"
 	"datalens/internal/aischedule"
 	"datalens/internal/browser"
 	"datalens/internal/envvars"
@@ -63,7 +64,7 @@ func storageLocation(name string) string {
 	case storage.LocConfig:
 		return configFilePath()
 	case storage.LocAIConfig:
-		return aiConfigFilePath()
+		return aiconfig.Path()
 	case storage.LocMCPConfig:
 		return mcp.ConfigFilePath()
 	case storage.LocEnvVars:
