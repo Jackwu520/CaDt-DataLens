@@ -38,6 +38,7 @@ function baseName(path) {
 }
 
 import {createFileIcon} from '../core/fileicons.js';
+import {createExplorerList} from './explorer-list.js';
 
 function compareEntries(a, b) {
     if (!!a.isDir !== !!b.isDir) return a.isDir ? -1 : 1;
@@ -128,10 +129,7 @@ export function createExplorer(options) {
         onModeChange, onContextMenu, onMove, onExternalDrop, canDrag,
         readLimit = 1000, listReadLimit = 5000,
     } = options;
-    // 文件列表（扁平视图）扫描上限：递归扫描时防止大仓库拖垮界面
-    const LIST_RENDER_CAP = 2000;   // DOM 最多渲染的行数，超出用过滤缩小范围
-    const LIST_DIR_LIMIT = 400;     // 最多遍历的目录数
-    const LIST_DEPTH_LIMIT = 12;    // 嵌套深度上限
+    // 列表扫描上限三常量随列表引擎迁入 explorer-list.js；忽略表与文件系统通知共用，留宿主
     const LIST_SKIP_DIRS = new Set(['.git', 'node_modules', '.svn', '.hg', '__pycache__', '.idea', '.vs', '.cadt']);
     let mode = 'tree';
     let visible = false;
@@ -144,8 +142,6 @@ export function createExplorer(options) {
     let tree = null;
     let treeSeq = 0;
     let revealSeq = 0;
-    let listState = {root: null, entries: [], tooMany: false, error: '', loading: false, loaded: false, token: 0, dirMtime: 0};
-    let listRevealPending = false;
     let autoRefreshSeconds = -1;
     let autoRefreshTimer = 0;
     let autoRefreshBusy = false;
@@ -155,6 +151,31 @@ export function createExplorer(options) {
     let dragState = null;
 
     const canList = (name) => (typeof isSupported === 'function' ? isSupported(name) : true);
+
+    // 扁平列表视图引擎（phase3 X1 拆出的同域兄弟模块）：树/列表共享的选择状态、渲染辅助与
+    // options 经 deps 注入，let 状态一律 getter/setter 活引用（禁止值快照）。
+    const listMod = createExplorerList({
+        readDir, dirMtime, openPath, openFileDialog, onContextMenu, readLimit, listReadLimit, body,
+        samePath, compareEntries, el, canList, skipDirs: LIST_SKIP_DIRS, listRootPath,
+        emptyState, statusRow, updateTitle, updateSelectionBoundaries, scrollToActive,
+        selectionHas, selectRangeTo, toggleSelection, selectOnly, selectForContext,
+        getMode: () => mode,
+        getVisible: () => visible,
+        getActivePath: () => activePath,
+        getFocused: () => focused,
+        getFilterText: () => filterText,
+        getCutPaths: () => cutPaths,
+        getSelection: () => selection,
+        setSelection: (next) => { selection = next; },
+        getAnchorPath: () => anchorPath,
+        setAnchorPath: (next) => { anchorPath = next; },
+    });
+    const loadList = (...args) => listMod.loadList(...args);
+    const renderList = (...args) => listMod.renderList(...args);
+    const refreshListSilently = (...args) => listMod.refreshListSilently(...args);
+    const requestListReveal = () => listMod.requestListReveal();
+    const getListState = () => listMod.getListState();
+    const invalidateList = () => listMod.invalidateList();
 
     function treeRootPath() {
         if (explicitRoot) return explicitRoot;
@@ -680,166 +701,6 @@ export function createExplorer(options) {
         renderTree(true);
     }
 
-    // 递归扫描 root 下所有受支持文件（BFS，带目录数/深度/条目数硬上限）。
-    // 根目录读取失败视为整体失败（抛出），子目录失败跳过（无权限等）。
-    async function scanListEntries(root, token) {
-        const files = [];
-        let truncated = false;
-        let visited = 0;
-        let rootMtime = 0;
-        const queue = [{path: root, depth: 0}];
-        while (queue.length) {
-            if (token !== listState.token) return null;
-            if (visited >= LIST_DIR_LIMIT || files.length >= listReadLimit) {
-                truncated = true;
-                break;
-            }
-            const {path: dir, depth} = queue.shift();
-            visited++;
-            let result;
-            try {
-                result = await readDir(dir, readLimit);
-            } catch (e) {
-                if (samePath(dir, root)) throw e;
-                continue;
-            }
-            if (token !== listState.token) return null;
-            if (samePath(dir, root)) rootMtime = (result && result.mtime) || 0;
-            if (result && result.truncated) truncated = true;
-            for (const entry of (result && result.entries) || []) {
-                if (entry.isDir) {
-                    if (depth + 1 >= LIST_DEPTH_LIMIT) {
-                        truncated = true;
-                        continue;
-                    }
-                    if (LIST_SKIP_DIRS.has(String(entry.name || '').toLowerCase())) continue;
-                    queue.push({path: entry.path, depth: depth + 1});
-                } else if (canList(entry.name)) {
-                    files.push(entry);
-                    if (files.length >= listReadLimit) {
-                        truncated = true;
-                        break;
-                    }
-                }
-            }
-        }
-        files.sort(compareEntries);
-        return {files, truncated, mtime: rootMtime};
-    }
-
-    async function loadList(force) {
-        const root = listRootPath();
-        if (!root) {
-            listState = {root: null, entries: [], tooMany: false, error: '', loading: false, loaded: true, token: listState.token, dirMtime: 0};
-            renderList();
-            return;
-        }
-        if (!force && listState.root && samePath(listState.root, root) && listState.loaded) {
-            renderList();
-            return;
-        }
-        const token = ++listState.token;
-        listState = {root, entries: [], tooMany: false, error: '', loading: true, loaded: false, token, dirMtime: 0};
-        renderList();
-        try {
-            if (typeof readDir !== 'function') throw new Error('后端不支持目录读取');
-            const scan = await scanListEntries(root, token);
-            if (!scan || token !== listState.token) return;
-            listState.entries = scan.files;
-            listState.tooMany = scan.truncated;
-            listState.dirMtime = scan.mtime;
-            listState.error = '';
-        } catch (e) {
-            if (token !== listState.token) return;
-            listState.error = String((e && e.message) || e);
-        } finally {
-            if (token === listState.token) {
-                listState.loading = false;
-                listState.loaded = true;
-                renderList();
-            }
-        }
-    }
-
-    function listRow(entry) {
-        const row = el('div', 'sb-row sb-list-row' + (samePath(entry.path, activePath) ? ' current' : '') +
-            (selectionHas(entry.path) ? ' selected' : '') +
-            (samePath(entry.path, anchorPath) ? ' anchor' : '') +
-            (cutPaths.some((path) => samePath(entry.path, path)) ? ' cut' : ''));
-        row.dataset.path = entry.path;
-        row.tabIndex = -1;
-        row.append(createFileIcon(entry.name, 'sb-icon'), el('span', 'sb-name', entry.name));
-        row.addEventListener('click', (e) => {
-            row.focus({preventScroll: true});
-            const node = {path: entry.path, name: entry.name, isDir: false};
-            if (e.shiftKey) {
-                selectRangeTo(node, e.ctrlKey || e.metaKey);
-                return;
-            }
-            if (e.ctrlKey || e.metaKey) toggleSelection(node);
-            else selectOnly(node);
-        });
-        row.addEventListener('dblclick', (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            if (e.ctrlKey || e.metaKey || e.shiftKey) return;
-            if (typeof openPath === 'function') openPath(entry.path);
-        });
-        row.addEventListener('contextmenu', (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            selectForContext({path: entry.path, name: entry.name, isDir: false});
-            if (typeof onContextMenu === 'function') {
-                onContextMenu({kind: 'list', name: entry.name, path: entry.path, isDir: false}, e.clientX, e.clientY, null);
-            }
-        });
-        return row;
-    }
-
-    function renderList() {
-        if (!visible || mode !== 'list') return;
-        const prevTop = body.scrollTop;
-        body.textContent = '';
-        if (!listState.root) {
-            body.appendChild(emptyState('未打开文件', '打开文件…', () => {
-                if (typeof openFileDialog === 'function') openFileDialog();
-            }));
-        } else if (listState.loading) {
-            body.appendChild(emptyState('正在读取目录…'));
-        } else if (listState.error) {
-            body.appendChild(emptyState('无法读取目录：' + listState.error));
-        } else if (!listState.entries.length) {
-            body.appendChild(emptyState('此目录没有可用的数据文件'));
-        } else {
-            const entries = filterText
-                ? listState.entries.filter((entry) => String(entry.name || '').toLowerCase().includes(filterText))
-                : listState.entries;
-            const cap = Math.min(entries.length, LIST_RENDER_CAP);
-            const frag = document.createDocumentFragment();
-            for (let i = 0; i < cap; i++) frag.appendChild(listRow(entries[i]));
-            if (!cap) body.appendChild(emptyState('没有匹配的文件'));
-            body.appendChild(frag);
-            // 截断提示放在尾部，不弹错误态：列表按扫描上限递归，超限靠过滤缩小范围
-            if (cap < entries.length) {
-                body.appendChild(statusRow('仅显示前 ' + cap + ' / ' + entries.length + ' 项，可用上方过滤缩小范围'));
-            } else if (listState.tooMany) {
-                body.appendChild(statusRow('已扫描 ' + entries.length + ' 个文件（超出扫描上限，结果可能不完整）'));
-            }
-            body.scrollTop = prevTop;
-            updateSelectionBoundaries();
-            if (focused) {
-                const row = body.querySelector('.sb-row.anchor') || body.querySelector('.sb-row.selected');
-                if (row) row.focus({preventScroll: true});
-            }
-        }
-        // 只有切换根/切换文件等主动动作才把当前文件滚进视野；静默刷新一律保持滚动位置
-        if (listRevealPending) {
-            listRevealPending = false;
-            scrollToActive();
-        }
-        updateTitle();
-    }
-
     function setMode(next, notify = true) {
         if (next !== 'tree' && next !== 'list') return;
         const changed = mode !== next;
@@ -852,7 +713,7 @@ export function createExplorer(options) {
         if (changed && notify && typeof onModeChange === 'function') onModeChange(mode);
         if (!visible) return;
         if (mode === 'list') {
-            listRevealPending = true;
+            requestListReveal();
             loadList(false);
         } else {
             ensureTree();
@@ -872,7 +733,7 @@ export function createExplorer(options) {
             return;
         }
         if (mode === 'list') {
-            listRevealPending = true;
+            requestListReveal();
             loadList(false);
         } else {
             ensureTree();
@@ -903,7 +764,7 @@ export function createExplorer(options) {
         activePath = path || null;
         if (!visible) return;
         if (mode === 'list') {
-            listRevealPending = true;
+            requestListReveal();
             const root = listRootPath();
             if (selection.length) {
                 selection = selection.filter((item) => root && samePath(parentPath(item.path), root));
@@ -1002,55 +863,6 @@ export function createExplorer(options) {
         if (changed && visible && mode === 'tree') renderTree();
     }
 
-    async function refreshListSilently() {
-        if (!visible || mode !== 'list' || listState.loading) return;
-        const root = listRootPath();
-        if (!root) return;
-        if (listState.dirMtime && typeof dirMtime === 'function') {
-            try {
-                const current = await dirMtime(root);
-                if (current && Number(current) === listState.dirMtime) return;
-            } catch (e) {}
-            if (mode !== 'list' || !samePath(root, listRootPath()) || listState.loading) return;
-        }
-        const token = listState.token;
-        let scan;
-        try {
-            scan = await scanListEntries(root, token);
-        } catch (e) {
-            if (token !== listState.token || mode !== 'list' || !samePath(root, listRootPath()) || listState.loading) return;
-            const message = String((e && e.message) || e);
-            if (listState.error !== message) {
-                listState.error = message;
-                listState.loaded = true;
-                if (visible) renderList();
-            }
-            return;
-        }
-        if (!scan || token !== listState.token || mode !== 'list' || !samePath(root, listRootPath()) || listState.loading) return;
-        const files = scan.files;
-        const tooMany = scan.truncated;
-        const previous = listState.entries;
-        let changed = !!listState.error || tooMany !== listState.tooMany ||
-            files.length !== previous.length ||
-            files.some((entry, index) => entry.path !== previous[index].path);
-        listState.root = root;
-        listState.entries = files;
-        listState.tooMany = tooMany;
-        listState.dirMtime = scan.mtime;
-        listState.error = '';
-        listState.loaded = true;
-        if (changed) {
-            if (!tooMany && selection.length) {
-                selection = selection.filter((item) => files.some((entry) => samePath(entry.path, item.path)));
-                if (!selection.some((item) => samePath(item.path, anchorPath))) {
-                    anchorPath = selection.length ? selection[selection.length - 1].path : null;
-                }
-            }
-            if (visible) renderList();
-        }
-    }
-
     function scheduleAutoRefresh(delay) {
         clearTimeout(autoRefreshTimer);
         autoRefreshTimer = 0;
@@ -1072,7 +884,7 @@ export function createExplorer(options) {
             externalDirs.clear();
             externalOverflow = false;
             // 差量刷新：内容没变就不重渲染，避免列表闪烁与滚动位置丢失
-            if (hasChanges && mode === 'list' && visible && listState.root) await refreshListSilently();
+            if (hasChanges && mode === 'list' && visible && getListState().root) await refreshListSilently();
             return;
         }
         if (externalOverflow) {
@@ -1292,8 +1104,7 @@ export function createExplorer(options) {
         if (anchorPath) anchorPath = remapPath(anchorPath, oldPath, newPath);
         cutPaths = cutPaths.map((path) => remapPath(path, oldPath, newPath));
         if (mode === 'list') {
-            listState.loaded = false;
-            if (visible) loadList(true);
+            invalidateList();
             return;
         }
         if (!tree) return;

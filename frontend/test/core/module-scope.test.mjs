@@ -115,6 +115,11 @@ const HOSTS = [
         modules: ['bridge/bridge-git.js', 'bridge/bridge-terminal-view.js', 'bridge/bridge-cli-convert.js'],
     },
     {
+        // 扁平列表引擎与宿主共享选择状态 / 渲染辅助 / options，经 deps 注入；let 状态走 getter/setter
+        host: 'explorer/explorer.js',
+        modules: ['explorer/explorer-list.js'],
+    },
+    {
         host: 'shell/titlebar-popovers.js',
         modules: ['shell/titlebar-project.js', 'shell/titlebar-git-branch.js'],
     },
