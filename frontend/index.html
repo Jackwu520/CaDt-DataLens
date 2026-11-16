@@ -279,6 +279,7 @@
                     </button>
                     <div class="snav-children">
                         <button type="button" class="snav-item snav-child" data-pane="models"><span class="snav-ic" data-icon="zap"></span><span>模型</span></button>
+                        <button type="button" class="snav-item snav-child" data-pane="agents"><span class="snav-ic" data-icon="agents"></span><span>智能体</span></button>
                         <button type="button" class="snav-item snav-child" data-pane="gen-models"><span class="snav-ic" data-icon="image"></span><span>生图与视频</span></button>
                         <button type="button" class="snav-item snav-child" data-pane="external-tools"><span class="snav-ic" data-icon="globe"></span><span>外部工具</span></button>
                         <button type="button" class="snav-item snav-child" data-pane="ai"><span class="snav-ic" data-icon="sparkles"></span><span>AI 助手</span></button>
@@ -687,6 +688,18 @@
                                 </div>
                             </div>
                         </div>
+                    </div>
+                    <div class="settings-pane hidden" data-pane="agents">
+                        <div class="set-group-title">智能体</div>
+                        <div class="set-card">
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">群聊成员</div><div class="set-desc">智能体是群聊（圆桌讨论）的成员：绑定一个账号下的模型，配人设与职责。名字全局唯一，不能含空白或 @；标记「可作为主持人」的成员可在群创建时被选为主持人（只调度与写纪要，不参与辩论）。</div></div>
+                                <div class="set-control">
+                                    <button type="button" id="ai-agent-create" class="dlg-btn primary">新建智能体</button>
+                                </div>
+                            </div>
+                        </div>
+                        <div id="agents-list"></div>
                     </div>
                     <div class="settings-pane hidden" data-pane="gen-models">
                         <div class="set-group-title">生图与视频模型</div>

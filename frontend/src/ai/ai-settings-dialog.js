@@ -5,6 +5,7 @@
 // config 为重赋值 let（经 getConfig() 读）；sessions 写经 setSessions；modelEditorState 与
 // settingsStatusTimer 为本域私有 let 随域迁入；skillsCache/permissionAudit 经访问器触达。
 
+import {createAIAgentSettings} from './ai-agent-settings.js';
 import {createAIGenSettings} from './ai-gen-settings.js';
 import {createAIModelSettings} from './ai-model-settings.js';
 import {createAIPermissionSettings} from './ai-permission-settings.js';
@@ -274,6 +275,7 @@ export function createAISettingsDialog(ctx) {
     function refreshSettingsPane() {
         if (refreshPersonaPane) refreshPersonaPane();
         if (genMod) genMod.renderGenList();
+        if (agentsMod) agentsMod.renderAgentsPane();
         const profile = activeProfile();
         const entry = modelMod.editorEntryOf(profile);
         renderProfileSelect();
@@ -1185,6 +1187,7 @@ export function createAISettingsDialog(ctx) {
         prefMod.renderPresetSelect();
         prefMod.refreshPromptSettings();
         genMod.bindGenPane();
+        agentsMod.bindAgentsPane();
     }
 
     // —— 四个子域：顺序 model → pref（要 openModelEditor/renderModelList）
@@ -1192,6 +1195,8 @@ export function createAISettingsDialog(ctx) {
     const modelMod = createAIModelSettings(ctx, {setSettingsStatus, refreshSettingsPane});
     // 生图与视频模型 pane：自管 DOM（列表 + 编辑器弹窗），refreshSettingsPane 驱动列表刷新
     const genMod = createAIGenSettings(ctx, {setSettingsStatus, refreshSettingsPane});
+    // 智能体 pane（群聊成员）：同 genMod 形态，数据层在 ai-agent-model.js
+    const agentsMod = createAIAgentSettings(ctx, {setSettingsStatus});
     const prefMod = createAIPreferenceSettings(ctx, {
         openModelEditor: modelMod.openModelEditor,
         renderModelList: modelMod.renderModelList,

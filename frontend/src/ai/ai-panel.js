@@ -119,6 +119,8 @@ import {
     normalizeGenSnapshot,
 } from './ai-gen-model.js';
 import {createAIGenJobs} from './ai-gen-jobs.js';
+// 智能体（群聊成员）归一化：agents[] 存 ai-config.json，群聊域读它组上下文
+import {normalizeAgents} from './ai-agent-model.js';
 import {
     AI_CONFIG_KEY,
     AI_SESSIONS_KEY,
@@ -828,6 +830,8 @@ export function createAIPanel(options) {
             persona: normalizePersona(stored.persona),
             // 生图/视频生成条目（generate_image / generate_video 工具的服务商配置）：同上零迁移
             genModels: normalizeGenModels(stored.genModels, () => aiNowId('gen-')),
+            // 智能体（群聊成员，方案 docs/unfinished-plans/ai-group-chat.md §6.1）：零迁移
+            agents: normalizeAgents(stored.agents, () => aiNowId('agent-')),
         };
         if (Array.isArray(stored.prompts)) {
             stored.prompts.forEach((raw, index) => {
