@@ -11,9 +11,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"datalens/internal/clipboard"
+	"datalens/internal/launchargs"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
@@ -88,24 +88,8 @@ func readOpenMode() string {
 	return readAppConfig().OpenMode
 }
 
-func randomLaunchID() string {
-	return fmt.Sprintf("cadt-datalens-window-%d-%d", os.Getpid(), time.Now().UnixNano())
-}
-
-func uniqueIDForArgs(args []string) string {
-	for _, arg := range args {
-		if arg == "--new-window" {
-			return randomLaunchID()
-		}
-	}
-	if readOpenMode() == "window" {
-		return randomLaunchID()
-	}
-	return "cadt-datalens-7f3a9c21"
-}
-
 func uniqueIDForLaunch() string {
-	return uniqueIDForArgs(os.Args[1:])
+	return launchargs.UniqueIDForArgs(os.Args[1:], readOpenMode())
 }
 
 func (a *App) GetOpenMode() string {
