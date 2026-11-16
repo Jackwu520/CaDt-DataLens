@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"datalens/internal/clipboard"
+
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -277,7 +279,7 @@ func (a *App) GetClipboardText() (string, error) {
 // GetClipboardImage 把剪贴板里的图片读成 PNG data URL（空串表示没有图片）。
 // 编辑器/AI 输入框的右键菜单「粘贴」拿不到 paste 事件，只能由后端回读系统剪贴板。
 func (a *App) GetClipboardImage() (string, error) {
-	return clipboardImageDataURL()
+	return clipboard.ImageDataURL()
 }
 
 func (a *App) OpenInNewWindows(paths []string) error {

@@ -1,6 +1,6 @@
 //go:build windows
 
-package main
+package clipboard
 
 import (
 	"bytes"
@@ -33,10 +33,10 @@ var (
 	procGlobalSize   = modKernel32Clip.NewProc("GlobalSize")
 )
 
-// clipboardImageDataURL 读取剪贴板里的图片并编码成 PNG data URL；没有图片时返回空串。
+// ImageDataURL 读取剪贴板里的图片并编码成 PNG data URL；没有图片时返回空串。
 // 优先取注册格式 "PNG"（原样字节，不丢 alpha、免去 DIB 解析），回退到 CF_DIB。
 // 右键菜单的「粘贴」拿不到 paste 事件，只能用这种方式回读剪贴板。
-func clipboardImageDataURL() (string, error) {
+func ImageDataURL() (string, error) {
 	pngFormat := registerClipboardFormat("PNG")
 	hasPNG := false
 	if pngFormat != 0 {
