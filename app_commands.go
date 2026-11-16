@@ -244,7 +244,19 @@ func (a *App) StartCommand(id, exe string, args []string, cwd string) error {
 		wg.Add(2)
 		go emitLines(stdout, "out")
 		go emitLines(stderr, "err")
+		// 取消时主动关闭读端：taskkill 可能留下握着管道的孤儿子进程（Cygwin 偶发
+		// 「操作不被支持」杀不掉），不关管道 wg.Wait 要等它自然退出，作业会卡在 running。
+		readersDone := make(chan struct{})
+		go func() {
+			select {
+			case <-ctx.Done():
+				_ = stdout.Close()
+				_ = stderr.Close()
+			case <-readersDone:
+			}
+		}()
 		wg.Wait()
+		close(readersDone)
 		code := 0
 		if waitErr := cmd.Wait(); waitErr != nil {
 			if ctx.Err() != nil {
@@ -283,7 +295,7 @@ const (
 	aiJobBufferCap   = 256 << 10 // 单作业输出缓冲 256 KB，超限从头丢弃
 	aiJobReadChunk   = 64 << 10  // 单次状态查询最多返回 64 KB 增量
 	aiJobMaxFinished = 32        // 保留的已结束作业数，超出淘汰最旧
-	aiJobStopWait    = 3 * time.Second
+	aiJobStopWait    = 4 * time.Second // 必须大于 applyCommandCancel 的 WaitDelay（3s），让兜底关闭管道后仍能观察到退出
 )
 
 type commandJob struct {
@@ -448,7 +460,7 @@ func (a *App) AICommandStatus(jobId string, since int64) (*AICommandJobStatus, e
 	return a.commandJobStatus(jobId, since), nil
 }
 
-// AICommandStop 终止后台作业并等待其退出（最多 3 s），返回包含全部缓冲输出的最终状态。
+// AICommandStop 终止后台作业并等待其退出（最多 4 s），返回包含全部缓冲输出的最终状态。
 func (a *App) AICommandStop(jobId string) (*AICommandJobStatus, error) {
 	if strings.TrimSpace(jobId) == "" {
 		return nil, fmt.Errorf("jobId 不能为空")
