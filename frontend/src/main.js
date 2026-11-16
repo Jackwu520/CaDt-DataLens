@@ -34,6 +34,8 @@ import changelogText from '../../CHANGELOG.md?raw';
 import termsText from '../../docs/legal/terms.md?raw';
 import privacyText from '../../docs/legal/privacy.md?raw';
 import {createBridgeUI} from './bridge/bridge-ui.js';
+import {createAIGroupRuntime} from './ai/ai-group-runtime.js';
+import {createAIGroupSidebar} from './ai/ai-group-sidebar.js';
 import {createCursorThemes} from './shell/cursor-themes.js';
 import {createTerminalUI} from './terminal/terminal-ui.js';
 import {createFormatConvert} from './editor/format-convert.js';
@@ -408,6 +410,9 @@ let fileClipboard = null;
 let ctxMenu = null;
 let palette = null;
 let aiPanel = null;
+// AI 群聊域（ai-group-*）：运行时 + 侧栏；在 initAIPanel 内创建（依赖面板薄 API）
+let aiGroupRuntime = null;
+let aiGroupSidebar = null;
 let closedTabs = [];
 
 // 应用操作桥：AI 面板 app_control 工具的执行端（仅当前窗口，语义化动作，不模拟 DOM 事件）。
@@ -1567,6 +1572,7 @@ const editorGroupsMod = createEditorGroups({
     get copyText() { return copyText; },
     get createAgentView() { return createAgentView; },
     get createSideChatView() { return createSideChatView; },
+    get createGroupChatView() { return createGroupChatView; },
     get createBgTermView() { return createBgTermView; },
     get CSV_COL_MIN_WIDTH() { return CSV_COL_MIN_WIDTH; },
     get CSV_ROW_NUM_WIDTH() { return CSV_ROW_NUM_WIDTH; },
@@ -2755,6 +2761,36 @@ function initAIPanel() {
         onTurnStateChange: (running, sessionId, isCurrent) => applyAutoCollapse(running, sessionId, isCurrent),
     });
     window.__lens.aiPanel = aiPanel;
+    // AI 群聊域：运行时 + 侧栏（面板薄 API aiGroupApi 提供配置/渲染链/弹窗三件套；
+    // ai-* 流事件经下方 EventsOn 循环同时转发给面板与本运行时）
+    aiGroupRuntime = createAIGroupRuntime({
+        backend,
+        getAIConfig: () => (aiPanel && aiPanel.aiGroupApi ? aiPanel.aiGroupApi.getConfig() : null),
+        flash: (...args) => flash(...args),
+        openGroupTab: (...args) => openGroupChatTab(...args),
+        getWorkspace: () => (workspaceFolder || ''),
+    });
+    aiGroupRuntime.init();
+    aiGroupSidebar = createAIGroupSidebar({
+        runtime: aiGroupRuntime,
+        getAIConfig: () => (aiPanel && aiPanel.aiGroupApi ? aiPanel.aiGroupApi.getConfig() : null),
+        saveConfig: () => {
+            if (aiPanel && aiPanel.aiGroupApi) aiPanel.aiGroupApi.saveConfig();
+        },
+        flash: (...args) => flash(...args),
+        confirm: (message, action, okLabel, title) => openConfirmDialog(message, action, okLabel, title),
+        dialog: aiPanel.aiGroupApi
+            ? {
+                open: (...args) => aiPanel.aiGroupApi.openDialog(...args),
+                close: () => aiPanel.aiGroupApi.closeDialog(),
+                node: (...args) => aiPanel.aiGroupApi.node(...args),
+                button: (...args) => aiPanel.aiGroupApi.button(...args),
+                enhanceSelect: aiPanel.aiGroupApi.enhanceSelect,
+            }
+            : {},
+    });
+    aiGroupSidebar.bindSidebar();
+    window.__lens.aiGroupRuntime = aiGroupRuntime;
     window.__mockAiEmit = (name, payload) => {
         if (aiPanel) aiPanel.handleEvent(name, payload);
     };
@@ -2764,6 +2800,7 @@ function initAIPanel() {
         for (const eventName of ['ai-chunk', 'ai-think', 'ai-toolcall', 'ai-done', 'ai-error', 'ai-retry', 'ai-param-adjust', 'ai-queue']) {
             rt.EventsOn(eventName, (payload) => {
                 if (aiPanel) aiPanel.handleEvent(eventName, payload);
+                if (aiGroupRuntime) aiGroupRuntime.handleEvent(eventName, payload);
             });
         }
         // 定时任务：sched-fire 由 Go 调度器广播（多窗口都会收到，执行去重在面板内裁决）
@@ -4761,6 +4798,9 @@ const bridgeUI = createBridgeUI({
     get activityLog() { return activityLog; },
     get addDocToFocusedGroup() { return addDocToFocusedGroup; },
     get aiPanel() { return aiPanel; },
+    // 群聊视图（bridge-group-view）：运行时与配置经惰性函数取，避免创建期 TDZ
+    get aiGroupRuntime() { return () => aiGroupRuntime; },
+    get getAIConfig() { return () => (aiPanel && aiPanel.aiGroupApi ? aiPanel.aiGroupApi.getConfig() : null); },
     get applySettings() { return applySettings; },
     get autoCheckUpdateOnStart() { return autoCheckUpdateOnStart; },
     get backend() { return backend; },
@@ -4801,5 +4841,5 @@ const bridgeUI = createBridgeUI({
     get updateBrowserTitle() { return updateBrowserTitle; },
     get workspaceFolder() { return workspaceFolder; },
 });
-const {createAgentView, createSideChatView, createBgTermView, gitGroupCollapsed, gitRootDir, gitStateCache, gitUncheckedFiles, notifyAIGitEntry, openAgentTab, openSideChatTab, openBgTermTab, openBrowserTab, openVirtualDoc, refreshGitStatus, showGitDiff, showGitFileHistory, showGitRecentLog, gitRollbackPaths} = bridgeUI;
+const {createAgentView, createSideChatView, createGroupChatView, openGroupChatTab, createBgTermView, gitGroupCollapsed, gitRootDir, gitStateCache, gitUncheckedFiles, notifyAIGitEntry, openAgentTab, openSideChatTab, openBgTermTab, openBrowserTab, openVirtualDoc, refreshGitStatus, showGitDiff, showGitFileHistory, showGitRecentLog, gitRollbackPaths} = bridgeUI;
 

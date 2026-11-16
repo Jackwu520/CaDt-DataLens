@@ -439,6 +439,17 @@ function mockDropPath(path) {
 
 const mockAISessions = new Map();
 const mockAISessionImages = new Map();
+// AI 群聊（ai-groups）：meta + 共享日志 + 各成员私有日志，纯内存
+const mockAIGroups = new Map();
+function mockAIGroupEnsure(id) {
+    const key = String(id);
+    let item = mockAIGroups.get(key);
+    if (!item) {
+        item = {meta: '{}', log: '', priv: {}};
+        mockAIGroups.set(key, item);
+    }
+    return item;
+}
 let mockAIConfigText = '';
 
 // 与 frontend/src/ai/ai-file-tools.js / Go globMatchPath 同规则的简易通配（mock 专用，避免跨模块依赖）
@@ -598,6 +609,52 @@ const mockBackend = {
     },
     async AISessionDeleteAll() {
         mockAISessions.clear();
+        return null;
+    },
+    // AI 群聊存储（ai-groups，与 Go groupstore 同形）
+    async AIGroupList() {
+        return Array.from(mockAIGroups.values()).map((item) => item.meta);
+    },
+    async AIGroupRead(id) {
+        const item = mockAIGroups.get(String(id));
+        return item ? item.log : '';
+    },
+    async AIGroupAppend(id, lines) {
+        const item = mockAIGroupEnsure(id);
+        item.log += lines.endsWith('\n') ? lines : lines + '\n';
+        return null;
+    },
+    async AIGroupRewrite(id, content) {
+        const item = mockAIGroupEnsure(id);
+        item.log = content;
+        return null;
+    },
+    async AIGroupWriteMeta(id, data) {
+        const item = mockAIGroupEnsure(id);
+        item.meta = data;
+        return null;
+    },
+    async AIGroupDelete(id) {
+        mockAIGroups.delete(String(id));
+        return null;
+    },
+    async AIGroupDeleteAll() {
+        mockAIGroups.clear();
+        return null;
+    },
+    async AIGroupPrivateRead(groupId, agentId) {
+        const item = mockAIGroups.get(String(groupId));
+        return item && item.priv[String(agentId)] ? item.priv[String(agentId)] : '';
+    },
+    async AIGroupPrivateAppend(groupId, agentId, lines) {
+        const item = mockAIGroupEnsure(groupId);
+        const key = String(agentId);
+        item.priv[key] = (item.priv[key] || '') + (lines.endsWith('\n') ? lines : lines + '\n');
+        return null;
+    },
+    async AIGroupPrivateRewrite(groupId, agentId, content) {
+        const item = mockAIGroupEnsure(groupId);
+        item.priv[String(agentId)] = content;
         return null;
     },
     async GetStartupFiles() {

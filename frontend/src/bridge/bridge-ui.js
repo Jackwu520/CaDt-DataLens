@@ -9,12 +9,15 @@ import {createBridgeGit} from './bridge-git.js';
 import {createBridgeTerminalView} from './bridge-terminal-view.js';
 import {createBridgeAgentView} from './bridge-agent-view.js';
 import {createBridgeSideChat} from './bridge-sidechat-view.js';
+import {createBridgeGroupView} from './bridge-group-view.js';
 
 export function createBridgeUI(deps) {
 
 const termMod = createBridgeTerminalView(deps);
 const agentMod = createBridgeAgentView(deps);
 const sideChatMod = createBridgeSideChat(deps);
+// 群聊虚拟文档标签页：doc.groupChat = groupId；数据在 ai-groups 独立存储（不进会话列表）
+const groupMod = createBridgeGroupView(deps);
 // git 域要开虚拟文档标签：经 Object.create 委托原 deps（保持 getter 惰性），只补一个宿主函数
 const gitDeps = Object.create(deps);
 gitDeps.openVirtualDoc = openVirtualDoc;
@@ -245,7 +248,7 @@ function openBrowserTab(url, profileKey, opts) {
 
 
     return {
-        ...termMod, ...agentMod, ...sideChatMod, ...gitMod, ...cliMod,
+        ...termMod, ...agentMod, ...sideChatMod, ...groupMod, ...gitMod, ...cliMod,
         openBrowserTab, openVirtualDoc,
     };
 }

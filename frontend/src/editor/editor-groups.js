@@ -477,6 +477,14 @@ function sideChatTabIcon() {
     return span;
 }
 
+// 群聊标签页：双人像图标
+function groupChatTabIcon() {
+    const span = document.createElement('span');
+    span.className = 'tab-icon';
+    span.innerHTML = iconSvg('group', 13);
+    return span;
+}
+
 function tabTooltip(doc) {
     const lockTip = isTabReadOnlyFixed(doc) ? '\n（只读快照，不可解锁）'
         : isTabReadOnlyLocked(doc) ? '\n（本标签只读锁定，右键可解除）' : '';
@@ -515,7 +523,7 @@ function buildGroupTab(g, doc, strip) {
     tab.dataset.docId = String(doc.id);
     tab.dataset.tip = tabTooltip(doc);
     // 后台终端 / 子代理详情标签页用固定图标（非文件，没有扩展名图标）
-    const icon = doc.bgTerm ? bgTermTabIcon() : doc.agentView ? agentViewTabIcon() : doc.sideChat ? sideChatTabIcon() : createFileIcon(doc.name, 'tab-icon');
+    const icon = doc.bgTerm ? bgTermTabIcon() : doc.agentView ? agentViewTabIcon() : doc.sideChat ? sideChatTabIcon() : doc.groupChat ? groupChatTabIcon() : createFileIcon(doc.name, 'tab-icon');
     const dot = document.createElement('span');
     dot.className = 'tab-dot';
     const name = document.createElement('span');
@@ -1056,6 +1064,12 @@ function createDocEditor(doc) {
         deps.createSideChatView(doc);
         return;
     }
+    // 群聊标签页：多智能体圆桌（消息 + 看板），数据在 ai-groups 独立存储
+    if (doc.groupChat) {
+        if (doc.pane) return;
+        deps.createGroupChatView(doc);
+        return;
+    }
     if (doc.bgTerm) {
         if (doc.pane) return;
         deps.createBgTermView(doc);
@@ -1555,6 +1569,11 @@ function closeDocNow(doc, remember = true) {
     if (doc.sideChat && doc.sideChatUnmount) {
         doc.sideChatUnmount();
         doc.sideChatUnmount = null;
+    }
+    // 群聊标签页：断开运行时订阅（讨论本身继续在后台，重开标签页恢复）
+    if (doc.groupChat && doc.groupChatUnmount) {
+        doc.groupChatUnmount();
+        doc.groupChatUnmount = null;
     }
     deps.docs.splice(idx, 1);
     if (doc.editor) {

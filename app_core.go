@@ -12,6 +12,7 @@ import (
 
 	"datalens/internal/aichat"
 	"datalens/internal/aiconfig"
+	"datalens/internal/aigroups"
 	"datalens/internal/aischedule"
 	"datalens/internal/aitimer"
 	"datalens/internal/browser"
@@ -62,6 +63,7 @@ type App struct {
 	*integration.Registrar // Windows 文件关联 / 右键菜单 / PATH（internal/integration）
 	*mcpsamples.Samples    // 内置 MCP 示例（internal/mcpsamples）
 	*sessionstore.Service  // AI 会话磁盘存储（internal/sessionstore）
+	*aigroups.GroupStore   // AI 群聊磁盘存储（internal/aigroups），提升方法即 AIGroup* 绑定
 	*mcp.Client            // MCP 客户端与子进程管理（internal/mcp）
 	ctx                    context.Context
 	startupTargets         []launchargs.OpenTarget
@@ -81,7 +83,7 @@ type App struct {
 type FileData = fileio.FileData
 
 func NewApp() *App {
-	return &App{Reader: &reading.Reader{}, Runner: &run.Runner{}, Host: &browser.Host{}, Searcher: &search.Searcher{}, Scheduler: &aischedule.Scheduler{}, Bridge: &cmdbridge.Bridge{}, Terminal: &terminal.Terminal{}, Toolchain: &toolchain.Toolchain{}, Store: &aiconfig.Store{}, Manager: &plugins.Manager{}, Skills: &skills.Skills{}, Capturer: &screenshot.Capturer{}, Notifier: &notify.Notifier{}, Watcher: &watch.Watcher{}, Samples: &mcpsamples.Samples{}, Files: &fileio.Files{}, FS: &fsops.FS{}, Registrar: &integration.Registrar{}, Console: &debugconsole.Console{}, Chat: &aichat.Chat{}, Service: &sessionstore.Service{}, Client: &mcp.Client{}}
+	return &App{Reader: &reading.Reader{}, Runner: &run.Runner{}, Host: &browser.Host{}, Searcher: &search.Searcher{}, Scheduler: &aischedule.Scheduler{}, Bridge: &cmdbridge.Bridge{}, Terminal: &terminal.Terminal{}, Toolchain: &toolchain.Toolchain{}, Store: &aiconfig.Store{}, Manager: &plugins.Manager{}, Skills: &skills.Skills{}, Capturer: &screenshot.Capturer{}, Notifier: &notify.Notifier{}, Watcher: &watch.Watcher{}, Samples: &mcpsamples.Samples{}, Files: &fileio.Files{}, FS: &fsops.FS{}, Registrar: &integration.Registrar{}, Console: &debugconsole.Console{}, Chat: &aichat.Chat{}, Service: &sessionstore.Service{}, GroupStore: &aigroups.GroupStore{}, Client: &mcp.Client{}}
 }
 
 func (a *App) startup(ctx context.Context) {

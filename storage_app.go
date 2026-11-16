@@ -13,6 +13,7 @@ import (
 	"datalens/internal/activity"
 	"datalens/internal/aicatalog"
 	"datalens/internal/aiconfig"
+	"datalens/internal/aigroups"
 	"datalens/internal/aischedule"
 	"datalens/internal/appconfig"
 	"datalens/internal/applog"
@@ -93,6 +94,8 @@ func storageLocation(name string) string {
 		return activity.Dir()
 	case storage.LocAISessions:
 		return appDataChild(sessionstore.SessionsDirName)
+	case storage.LocAIGroups:
+		return appDataChild(aigroups.RootDirName)
 	case storage.LocConfig:
 		return appconfig.Path()
 	case storage.LocAIConfig:

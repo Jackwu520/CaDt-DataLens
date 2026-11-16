@@ -15110,6 +15110,23 @@ export function createAIPanel(options) {
 
 
 
+    // 群聊成员模型解析（ai-group-* 域经 aiGroupApi.resolveModel 调用）：
+    // '账号id|模型id' → {account, entry, profileCfg, label}；失效返回 null，不静默回退。
+    function resolveChatModelRef(ref) {
+        const resolved = resolveModelRef(ref, config.profiles);
+        if (!resolved) return null;
+        const sep = resolved.indexOf('|');
+        const account = config.profiles.find((p) => p && p.id === resolved.slice(0, sep));
+        const entry = findModelEntry(account, resolved.slice(sep + 1));
+        if (!account || !entry) return null;
+        return {
+            account,
+            entry,
+            profileCfg: configForProfile(account, entry),
+            label: modelRefLabel(account, entry) || (entry.model || ''),
+        };
+    }
+
     return {
         toggle,
         open,
@@ -15138,6 +15155,21 @@ export function createAIPanel(options) {
         refreshMcpConfig: () => Promise.resolve(mcpMod.refresh()).then(() => {
             if (mcpSettingsMod) mcpSettingsMod.renderAll();
         }).catch(() => {}),
+        // AI 群聊域（ai-group-*）薄 API：配置读取 / 渲染链 / 模型解析 / 会话投递 / 弹窗三件套。
+        // 方案 docs/unfinished-plans/ai-group-chat.md §9.3——群聊逻辑全在新模块，面板只给这些面。
+        aiGroupApi: {
+            getConfig: () => config,
+            saveConfig: saveAIConfig,
+            renderMarkdown,
+            enhanceAnswerBody: (...args) => toolCardsMod.enhanceAnswerBody(...args),
+            deliverToSessions: (...args) => noticesMod.deliverToSessions(...args),
+            resolveModel: (ref) => resolveChatModelRef(ref),
+            openDialog: (...args) => openAIDialog(...args),
+            closeDialog: () => closeAIDialog(),
+            node: (tag, className, text) => dialogNode(tag, className, text),
+            button: (label, className, onClick) => dialogButton(label, className, onClick),
+            enhanceSelect: typeof enhanceSelect === 'function' ? enhanceSelect : null,
+        },
         handleEvent,
         // localClassifierMod 不再进 return（红队链C）：经 main.js 的 window.__lens.aiPanel
         // 会把 recordDecision / classifyAll 连带暴露给插件运行时同窗 JS，可伪造 source 灌样本；

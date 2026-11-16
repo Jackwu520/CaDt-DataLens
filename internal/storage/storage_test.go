@@ -69,6 +69,8 @@ func (e *testEnv) newService(withRecycleBin bool) *Service {
 				return filepath.Join(e.appRoot, "activity")
 			case LocAISessions:
 				return filepath.Join(e.appRoot, "ai-sessions")
+			case LocAIGroups:
+				return filepath.Join(e.appRoot, "ai-groups")
 			case LocConfig:
 				return filepath.Join(e.appRoot, "config.json")
 			case LocAIConfig:

@@ -51,6 +51,7 @@ const (
 	LocModelCatalog    = "model-catalog"
 	LocActivity        = "activity"
 	LocAISessions      = "ai-sessions"
+	LocAIGroups        = "ai-groups"
 	LocConfig          = "config"
 	LocAIConfig        = "ai-config"
 	LocMCPConfig       = "mcp-config"

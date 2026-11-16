@@ -232,6 +232,11 @@ func (s *Service) specs() []spec {
 			targets: []target{locTarget(LocAISessions)},
 		},
 		{
+			id: "ai-groups", label: "AI 群聊记录", scope: ScopeApp, kind: KindDanger,
+			note:    "智能体群聊的共享对话与各成员私有过程（ai-groups/），是群聊的唯一真源；删了讨论与纪要就没了。",
+			targets: []target{locTarget(LocAIGroups)},
+		},
+		{
 			id: "ai-memory", label: "应用级 AI 记忆", scope: ScopeApp, kind: KindData,
 			note:    "记忆模式选「应用级」时写到 ai-memory 的内容；工作区模式的记忆在 .cadt/memory，不在这里。",
 			targets: []target{appDirTarget("ai-memory")},

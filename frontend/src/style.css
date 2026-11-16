@@ -11138,3 +11138,49 @@ textarea.dlg-input:focus {
 .agent-switch-item .set-switch { margin-top: 2px; }
 .agent-switch-text .set-title { font-size: 12px; }
 .agent-switch-text .set-desc { font-size: 11px; }
+
+/* ===== AI 群聊（ai-group-*：侧栏列表 / 新建弹窗 / 群聊标签页 G1 壳） ===== */
+.ai-list-segment { display: flex; gap: 4px; padding: 8px 10px 2px; }
+.ai-list-segment button { flex: 1; padding: 4px 0; font-size: 12px; border: 1px solid var(--border); border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer; }
+.ai-list-segment button.active { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.gc-list-empty { padding: 18px 12px; font-size: 12px; line-height: 1.6; color: var(--muted); }
+.gc-list-row { cursor: pointer; }
+.gc-list-head { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.gc-list-title { font-size: 12.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gc-list-dots { display: flex; gap: 3px; margin: 4px 0 0; flex-wrap: wrap; }
+.gc-list-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 4px; }
+.gc-list-meta { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gc-list-del { flex: none; border: none; background: none; color: var(--muted); font-size: 11px; cursor: pointer; padding: 0 2px; }
+.gc-list-del:hover { color: #e06c75; }
+.gc-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; }
+.gc-dot-lg { width: 10px; height: 10px; flex: none; }
+.gc-badge { display: inline-flex; align-items: center; padding: 1px 7px; border-radius: 9px; font-size: 11px; line-height: 16px; color: var(--muted); background: var(--hover); white-space: nowrap; }
+.gc-badge.gc-badge-mode { color: var(--accent); background: color-mix(in srgb, var(--accent) 13%, transparent); }
+.gc-badge.gc-level-green { color: #3aa66a; background: rgba(58, 166, 106, 0.14); }
+.gc-badge.gc-level-yellow { color: #d0a215; background: rgba(208, 162, 21, 0.16); }
+.gc-badge.gc-level-red { color: #e06c75; background: rgba(224, 108, 117, 0.15); }
+.gc-form-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.gc-form-row.gc-form-row-top { align-items: flex-start; }
+.gc-form-row > *:not(.gc-form-label) { flex: 1; min-width: 0; }
+.gc-form-label { flex: none; width: 42px; color: var(--muted); font-size: 12px; padding-top: 4px; }
+.gc-member-list { display: flex; flex-direction: column; gap: 6px; max-height: 180px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; padding: 8px; }
+.gc-member-item { display: flex; align-items: center; gap: 8px; }
+.gc-member-text { flex: 1; min-width: 0; }
+.gc-member-text .set-title { font-size: 12px; }
+.gc-member-text .set-desc { font-size: 11px; }
+.gc-preflight { margin: 6px 0 10px; padding: 8px 10px; border: 1px dashed var(--border); border-radius: 8px; }
+.gc-preflight-summary { display: flex; gap: 6px; align-items: center; }
+.gc-preflight-note { font-size: 11px; color: var(--muted); margin-left: 4px; }
+.gc-preflight-detail { display: flex; flex-direction: column; gap: 2px; margin-top: 6px; }
+.gc-preflight-item { font-size: 11px; line-height: 1.5; }
+.gc-preflight-item.gc-level-red { color: #e06c75; }
+.gc-preflight-item.gc-level-yellow { color: #d0a215; }
+.gc-est-line { font-size: 11px; color: var(--muted); margin-bottom: 8px; }
+.groupchat-pane { display: flex; flex-direction: column; overflow: hidden; }
+.gc-head { flex: none; padding: 10px 14px; border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: 6px; }
+.gc-head-title { font-size: 14px; font-weight: 600; }
+.gc-head-chips { display: flex; align-items: center; gap: 6px; }
+.gc-head-dots { display: flex; gap: 3px; margin-left: 4px; }
+.gc-head-topic { font-size: 12px; line-height: 1.6; color: var(--muted); }
+.gc-body { flex: 1; overflow: auto; padding: 12px 14px; }
+.gc-empty { font-size: 12px; color: var(--muted); padding: 24px 0; text-align: center; }
