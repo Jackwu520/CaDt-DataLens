@@ -601,6 +601,28 @@ function applySettings() {
 }
 
 
+// 关于页版本号唯一来源是 Go 的 appVersion（GetAppVersion 绑定），index.html 只留占位符。
+let aboutVersionText = '';
+async function fillAboutVersion() {
+    const el = document.getElementById('about-version');
+    if (!el) return;
+    if (aboutVersionText) {
+        el.textContent = aboutVersionText;
+        return;
+    }
+    try {
+        if (deps.backend && deps.backend.GetAppVersion) {
+            const version = await deps.backend.GetAppVersion();
+            if (version) {
+                aboutVersionText = version;
+                el.textContent = version;
+            }
+        }
+    } catch (e) {
+        // 尽力而为：版本取不到就保留占位符，不打扰用户
+    }
+}
+
 function selectSettingsPane(pane) {
     searchMod.resetSettingsSearch();
     document.querySelectorAll('.snav-item').forEach((b) => b.classList.toggle('active', b.dataset.pane === pane));
@@ -694,6 +716,7 @@ function openSettings(pane = 'general', preset) {
             status.textContent = '';
             status.className = 'about-update-status';
         }
+        fillAboutVersion();
     }
     if (pane === 'integration') syncIntegrationStatus();
 }

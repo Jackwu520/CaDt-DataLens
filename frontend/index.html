@@ -1845,7 +1845,7 @@
                             <div class="about-meta">
                                 <span>作者</span><span>OraSkyC</span>
                                 <span>组织</span><span>CandySweet</span>
-                                <span>版本</span><span>v1.0.0</span>
+                                <span>版本</span><span id="about-version">—</span>
                             </div>
                             <div class="about-update">
                                 <button type="button" id="about-check-update" class="dlg-btn">检查更新</button>
@@ -2447,23 +2447,23 @@
                 <div class="ai-head-row ai-head-title-row">
                     <span class="ai-title" id="ai-session-title">AI 助手</span>
                     <div class="ai-head-chips" id="ai-head-chips">
-                        <button type="button" id="ai-chip-agents" class="ai-chip" data-tip="智能体团队（子代理运行状态）" aria-label="智能体团队（子代理运行状态）" aria-haspopup="true">
+                        <button type="button" id="ai-chip-agents" class="ai-chip" aria-label="智能体团队（子代理运行状态）" aria-haspopup="true">
                             <span class="ai-chip-icon"></span>
                             <span class="ai-chip-label">智能体团队</span>
                             <span class="ai-chip-count hidden"></span>
                         </button>
-                        <button type="button" id="ai-chip-terms" class="ai-chip" data-tip="后台终端（AI 启动的后台命令）" aria-label="后台终端（AI 启动的后台命令）" aria-haspopup="true">
+                        <button type="button" id="ai-chip-terms" class="ai-chip" aria-label="后台终端（AI 启动的后台命令）" aria-haspopup="true">
                             <span class="ai-chip-icon"></span>
                             <span class="ai-chip-label">终端</span>
                             <span class="ai-chip-count hidden"></span>
                         </button>
-                        <button type="button" id="ai-chip-timers" class="ai-chip hidden" data-tip="计时器（AI 启动的倒计时 / 正计时）" aria-label="计时器（AI 启动的倒计时 / 正计时）" aria-haspopup="true">
+                        <button type="button" id="ai-chip-timers" class="ai-chip hidden" aria-label="计时器（AI 启动的倒计时 / 正计时）" aria-haspopup="true">
                             <span class="ai-chip-icon"></span>
                             <span class="ai-chip-label">计时</span>
                             <span class="ai-chip-time hidden"></span>
                             <span class="ai-chip-count hidden"></span>
                         </button>
-                        <button type="button" id="ai-chip-schedules" class="ai-chip hidden" data-tip="定时任务（应用运行期间的计划触发）" aria-label="定时任务（应用运行期间的计划触发）" aria-haspopup="true">
+                        <button type="button" id="ai-chip-schedules" class="ai-chip hidden" aria-label="定时任务（应用运行期间的计划触发）" aria-haspopup="true">
                             <span class="ai-chip-icon"></span>
                             <span class="ai-chip-label">定时</span>
                             <span class="ai-chip-count hidden"></span>
