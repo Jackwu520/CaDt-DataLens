@@ -13,7 +13,7 @@ func (a *App) WebFetch(rawURL string, maxChars int) (map[string]interface{}, err
 }
 
 func (a *App) ExternalSearch(query string, maxResults int) (map[string]interface{}, error) {
-	cfg, err := loadExternalToolsConfig()
+	cfg, err := webtools.LoadDefaultConfig()
 	if err != nil {
 		return nil, err
 	}
@@ -24,7 +24,7 @@ func (a *App) ExternalSearch(query string, maxResults int) (map[string]interface
 }
 
 func (a *App) ExternalFetch(rawURL string, maxChars int) (map[string]interface{}, error) {
-	cfg, err := loadExternalToolsConfig()
+	cfg, err := webtools.LoadDefaultConfig()
 	if err != nil {
 		return nil, err
 	}
@@ -35,7 +35,7 @@ func (a *App) ExternalFetch(rawURL string, maxChars int) (map[string]interface{}
 }
 
 func (a *App) ExternalOCR(path, purpose string) (map[string]interface{}, error) {
-	cfg, err := loadExternalToolsConfig()
+	cfg, err := webtools.LoadDefaultConfig()
 	if err != nil {
 		return nil, err
 	}
@@ -47,7 +47,7 @@ func (a *App) ExternalOCR(path, purpose string) (map[string]interface{}, error) 
 
 // ExternalTTS 语音合成落盘到 <workspace>/.cadt/gen/tts/，返回绝对路径与字节数。
 func (a *App) ExternalTTS(workspace, text, voice string) (map[string]interface{}, error) {
-	cfg, err := loadExternalToolsConfig()
+	cfg, err := webtools.LoadDefaultConfig()
 	if err != nil {
 		return nil, err
 	}
@@ -59,7 +59,7 @@ func (a *App) ExternalTTS(workspace, text, voice string) (map[string]interface{}
 
 // ExternalASR 语音识别。wavBase64 非空时用转码后的音频，否则直接读 path（wav/opus）。
 func (a *App) ExternalASR(name, path, wavBase64 string) (map[string]interface{}, error) {
-	cfg, err := loadExternalToolsConfig()
+	cfg, err := webtools.LoadDefaultConfig()
 	if err != nil {
 		return nil, err
 	}
