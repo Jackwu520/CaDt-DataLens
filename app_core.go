@@ -18,6 +18,7 @@ import (
 	"datalens/internal/browser"
 	"datalens/internal/cmdbridge"
 	"datalens/internal/mcp"
+	"datalens/internal/mcpsamples"
 	"datalens/internal/notify"
 	"datalens/internal/plugins"
 	"datalens/internal/reading"
@@ -54,6 +55,7 @@ type App struct {
 	*screenshot.Capturer  // 应用窗口截图（internal/screenshot）
 	*notify.Notifier      // 系统通知（internal/notify）
 	*watch.Watcher        // 工作区文件监听（internal/watch）
+	*mcpsamples.Samples   // 内置 MCP 示例（internal/mcpsamples）
 	ctx                   context.Context
 	startupTargets        []OpenTarget
 	startupSettingsPane   string
@@ -93,7 +95,7 @@ type FileData struct {
 }
 
 func NewApp() *App {
-	return &App{Reader: &reading.Reader{}, Runner: &run.Runner{}, Host: &browser.Host{}, Searcher: &search.Searcher{}, Scheduler: &aischedule.Scheduler{}, Bridge: &cmdbridge.Bridge{}, Terminal: &terminal.Terminal{}, Toolchain: &toolchain.Toolchain{}, Store: &aiconfig.Store{}, Manager: &plugins.Manager{}, Skills: &skills.Skills{}, Capturer: &screenshot.Capturer{}, Notifier: &notify.Notifier{}, Watcher: &watch.Watcher{}}
+	return &App{Reader: &reading.Reader{}, Runner: &run.Runner{}, Host: &browser.Host{}, Searcher: &search.Searcher{}, Scheduler: &aischedule.Scheduler{}, Bridge: &cmdbridge.Bridge{}, Terminal: &terminal.Terminal{}, Toolchain: &toolchain.Toolchain{}, Store: &aiconfig.Store{}, Manager: &plugins.Manager{}, Skills: &skills.Skills{}, Capturer: &screenshot.Capturer{}, Notifier: &notify.Notifier{}, Watcher: &watch.Watcher{}, Samples: &mcpsamples.Samples{}}
 }
 
 func (a *App) startup(ctx context.Context) {

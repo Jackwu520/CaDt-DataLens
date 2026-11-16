@@ -1,4 +1,4 @@
-package main
+package mcpsamples
 
 import (
 	"os"
@@ -8,13 +8,18 @@ import (
 	"datalens/internal/mcp"
 )
 
+func init() {
+	Embedded = os.DirFS("../..")
+	Version = "test"
+}
+
 func TestBuiltinMCPSamples(t *testing.T) {
 	appDir := t.TempDir()
 	oldAppDataDir := mcp.AppDataDir
 	mcp.AppDataDir = func() string { return appDir }
 	defer func() { mcp.AppDataDir = oldAppDataDir }()
 
-	app := NewApp()
+	app := &Samples{}
 	list, err := app.MCPSamplesList()
 	if err != nil {
 		t.Fatal(err)
