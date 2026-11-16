@@ -6,7 +6,7 @@
 // 解码（createImageBitmap / Image / canvas）分开，便于 ai-image-encode.test.mjs 用假画布测。
 import {AI_IMAGE_MAX_BASE64, AI_IMAGE_MAX_DIM} from './ai-constants.js';
 
-// 后端 ReadImageAsDataURL 认的扩展名（app_window.go 的 mime 表）：png / jpg / jpeg / gif / webp / bmp / svg。
+// 后端 ReadImageAsDataURL 认的扩展名（internal/fileio/fileio.go 的 imageMimeByExtension）：png / jpg / jpeg / gif / webp / bmp / svg。
 // 其中 bmp / svg 不在 AI_IMAGE_MIMES 里，交给画布统一转成 png / jpeg。
 const IMAGE_EXT_RE = /\.(png|jpe?g|gif|webp|bmp|svg)$/i;
 

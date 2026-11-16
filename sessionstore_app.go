@@ -117,7 +117,7 @@ func (a *App) AISessionReadImage(id, name string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return a.ReadImageDataURL(path)
+	return a.ReadImageAsDataURL(path)
 }
 
 func (a *App) AISessionDelete(id string) error {

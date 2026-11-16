@@ -113,7 +113,7 @@ func TestOpenFileBinaryBytes(t *testing.T) {
 	}
 }
 
-func TestReadImageDataURL(t *testing.T) {
+func TestReadImageAsDataURL(t *testing.T) {
 	const pngBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
 	raw, err := base64.StdEncoding.DecodeString(pngBase64)
 	if err != nil {
@@ -132,7 +132,7 @@ func TestReadImageDataURL(t *testing.T) {
 	if !data.Image || !data.Binary {
 		t.Fatalf("expected image binary data, got %+v", data)
 	}
-	url, err := app.ReadImageDataURL(path)
+	url, err := app.ReadImageAsDataURL(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +143,7 @@ func TestReadImageDataURL(t *testing.T) {
 	if err := os.WriteFile(textPath, []byte("not an image"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := app.ReadImageDataURL(textPath); err == nil {
+	if _, err := app.ReadImageAsDataURL(textPath); err == nil {
 		t.Fatal("expected error for non-image file")
 	}
 }

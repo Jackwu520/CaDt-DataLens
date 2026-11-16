@@ -109,6 +109,7 @@ var imageExtensions = map[string]bool{
 	".png": true, ".jpg": true, ".jpeg": true, ".jfif": true, ".gif": true, ".bmp": true,
 	".webp": true, ".ico": true, ".tif": true, ".tiff": true, ".avif": true, ".heic": true,
 	".heif": true, ".psd": true, ".raw": true, ".cr2": true, ".nef": true, ".arw": true, ".dng": true,
+	".svg": true,
 }
 
 func isImageFile(path string, raw []byte) bool {
@@ -183,7 +184,8 @@ func imageHexDump(raw []byte) string {
 	return strings.TrimSuffix(b.String(), "\n")
 }
 
-func (f *Files) ReadImageDataURL(path string) (string, error) {
+// ReadImageAsDataURL 读取本地图片为 data URL（Markdown 预览与 AI 附件走同一条链）。
+func (f *Files) ReadImageAsDataURL(path string) (string, error) {
 	path = strings.TrimSpace(path)
 	if path == "" {
 		return "", fmt.Errorf("没有图片路径")
@@ -227,6 +229,8 @@ func imageMimeByExtension(path string) string {
 		return "image/bmp"
 	case ".webp":
 		return "image/webp"
+	case ".svg":
+		return "image/svg+xml"
 	case ".ico":
 		return "image/x-icon"
 	case ".tif", ".tiff":

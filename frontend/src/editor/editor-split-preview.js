@@ -652,8 +652,8 @@ function loadImagePreview(doc) {
     doc.imageStatus.textContent = '正在加载图片…';
     doc.imageStatus.classList.remove('hidden');
     doc.imageNode.hidden = true;
-    const load = deps.backend.ReadImageDataURL
-        ? deps.backend.ReadImageDataURL(doc.path)
+    const load = deps.backend.ReadImageAsDataURL
+        ? deps.backend.ReadImageAsDataURL(doc.path)
         : Promise.reject(new Error('当前后端不支持图片预览'));
     Promise.resolve(load).then((url) => {
         doc.imageLoading = false;

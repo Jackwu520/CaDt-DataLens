@@ -4,7 +4,6 @@ package main
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 	"os"
 	"os/exec"
@@ -33,40 +32,6 @@ func uniqueIDForLaunch() string {
 
 func (a *App) GetOpenMode() string {
 	return appconfig.OpenMode()
-}
-
-// ReadImageAsDataURL 读取本地图片为 data URL（供 Markdown 预览解析相对路径图片）。
-func (a *App) ReadImageAsDataURL(path string) (string, error) {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return "", fmt.Errorf("路径为空")
-	}
-	ext := strings.ToLower(filepath.Ext(path))
-	mime := map[string]string{
-		".png":  "image/png",
-		".jpg":  "image/jpeg",
-		".jpeg": "image/jpeg",
-		".gif":  "image/gif",
-		".webp": "image/webp",
-		".bmp":  "image/bmp",
-		".svg":  "image/svg+xml",
-	}
-	m, ok := mime[ext]
-	if !ok {
-		return "", fmt.Errorf("不支持的图片格式: %s", ext)
-	}
-	info, err := os.Stat(path)
-	if err != nil {
-		return "", err
-	}
-	if info.Size() > 30*1024*1024 {
-		return "", fmt.Errorf("图片过大（>30MB）")
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", err
-	}
-	return "data:" + m + ";base64," + base64.StdEncoding.EncodeToString(data), nil
 }
 
 func (a *App) GetAppVersion() string {

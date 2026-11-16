@@ -1095,7 +1095,7 @@ const mockBackend = {
         files.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
         return {files, truncated: files.length >= limit, scanned: Object.keys(mockFiles).length};
     },
-    async ReadImageDataURL() { return mockImageDataUrl; },
+    async ReadImageAsDataURL() { return mockImageDataUrl; },
     async SaveFileDialog(name) { return 'mock://' + (window.__mockSaveDialogName || name); },
     async ShowSaveFileDialog(title, defaultName) {
         return 'mock://' + (window.__mockExportName || defaultName || 'export.json');
