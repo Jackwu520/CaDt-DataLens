@@ -14,6 +14,7 @@ import (
 	"datalens/internal/aiconfig"
 	"datalens/internal/aischedule"
 	"datalens/internal/browser"
+	"datalens/internal/debugconsole"
 	"datalens/internal/envvars"
 	"datalens/internal/mcp"
 	"datalens/internal/run"
@@ -50,7 +51,7 @@ func storageLocation(name string) string {
 	case storage.LocAppLogs:
 		return appLogsDir()
 	case storage.LocDebugConsole:
-		return debugConsoleLogPath()
+		return debugconsole.Path()
 	case storage.LocSessionIndex:
 		return sessionindex.Path()
 	case storage.LocScheduleDB:
