@@ -13,9 +13,9 @@ CaDt-DataLens 是一个面向 Windows 的轻量级多格式数据查看与编辑
 ### Go 后端（仓库根）
 - `main.go`：Wails 启动配置、窗口选项、`//go:embed all:frontend/dist` 资源内嵌、单实例锁
 - `app_core.go`：App 结构与生命周期（startup/domReady/单实例）、命令行目标与启动参数解析；`const appVersion` 在 `app_core.go:39`
-- `app_file.go` / `app_fs.go` / `app_window.go`：文件读写与编码（opensave/外部修改校验/图片判定）· 目录与条目操作（列举/增删改移/落盘/对话框）· 脏标记/应用配置/多窗口与资源管理器定位
+- `app_window.go` / `app_fs.go`：脏标记/应用配置/多窗口与资源管理器定位 · 文件/文件夹对话框；文件读写与目录条目操作已下沉 `internal/fileio` / `internal/fsops`
 - `appdata.go` / `logging.go` / `app_pathinfo.go`：应用数据目录、日志、路径信息
-- `ai_chat.go` + `internal/aitransport/`：AI 传输引擎——Wails 入口（发消息/停止/看门狗/连通性/目录，流注册表在 `ai_stream.go`）· OpenAI/Anthropic/Responses 三套请求构造 · SSE 解码 · 重试与空闲看门狗 · 参数校验与代理 · 事件契约（`Event*` / `*Payload`）；`ai_transport_app.go` 注入 Logf/Version/LogsDir/看门狗挂载点
+- `internal/aichat/` + `internal/aitransport/`：AI 对话与传输——发消息/停止/流注册表/看门狗/连通性/目录（aichat）· OpenAI/Anthropic/Responses 三套请求构造 · SSE 解码 · 重试与空闲看门狗 · 参数校验与代理 · 事件契约（aitransport）；`ai_transport_app.go` 注入 Logf/Version/LogsDir/看门狗挂载点
 - `ai_gen_app.go` + `internal/aigen/`：生图/视频执行通道（哑通道两绑定：`AIGenHTTPRequest` 按前端渲染好的规格发同步 HTTP、`AIGenSaveProducts` 产物解码/下载 + 工作区路径校验落盘 `.cadt/gen/`；模板渲染/提取/轮询在前端 `ai-gen-model.js` / `ai-gen-jobs.js`，方案见 `docs/finished-plans/ai-gen-models.md`）
 - `ai_catalog_app.go` + `internal/aicatalog/`：模型配置表远端拉取/校验/appdata 缓存（字段归一在前端 `model-catalog.js`，Go 只搬原始文本）
 - `ai_float.go` / `ai_command_windows.go`：AI 浮窗、命令执行
@@ -40,7 +40,7 @@ CaDt-DataLens 是一个面向 Windows 的轻量级多格式数据查看与编辑
 - `gitinfo_app.go` + `internal/gitinfo/`：Git 分支/提交面板后端（15 个查询/操作绑定，纯引擎）
 - `internal/terminal/`：内置终端 ConPTY 会话 + `TermCreate/Write/Resize/Close/Shells` 绑定与 AI 读取（64 KiB 环形缓冲 `TermRead` / `TermList`），App 以服务嵌入
 - `internal/toolchain/`：语言环境检测（`DetectToolchain` / `ListLangPackages`），Windows 实现与包内 build tag
-- `delete.go`、`integration_windows.go`、`installer_cli_windows.go`、`cursors*`、`windowicon*`：Windows 能力与注册表集成（回收站删除在 `internal/recycle`；notify / screenshot / watch 已下沉 `internal/`）
+- `delete.go`、`installer_cli_windows.go`、`cursors*`、`windowicon*`：Windows 能力与安装器（回收站删除在 `internal/recycle`；notify / screenshot / watch / integration 已下沉 `internal/`）
 - `reading_app.go` + `internal/reading/`：阅读模式扫描/解析/搜索（零状态引擎，日志与事件经钩子注入；启动缓存清理由根壳调用）
 - `internal/run/`：运行代码（`PrepareRun` 临时副本与工作目录、`RunExec` 流式执行 + GBK 解码 + PATH 前置、stdin 队列 `RunInput` / `RunEndInput`、`RunStop`、临时目录清理）；进程取消表与命令桥共用 `internal/procctl`；配方与语言知识在前端 `src/run.js`，Go 侧只负责起进程
 - `run_project_app.go` + `internal/runproject/`：项目感知运行（`DetectRunProject` 只读探测项目标记与候选命令，遇 `.git` / 用户主目录停止）；执行仍走 `RunExec`，确认在前端
@@ -50,12 +50,12 @@ CaDt-DataLens 是一个面向 Windows 的轻量级多格式数据查看与编辑
 - `ai_usage_app.go` + `internal/aiusage/`：AI 账号余额/用量查询
 - `internal/aischedule/`：AI 定时任务调度器（派生 SQLite `ai-schedule.db`；`AISchedule*` 绑定；`Start` / `Close` / `Path` 由根壳调用）
 - `internal/cmdbridge/`：进程桥（插件命令、git 浅集成、AI 终端命令）；App 以服务嵌入，与 run 共用 `internal/procctl`
-- `app_dialogs.go` / `app_preview_assets.go` / `app_debugconsole.go`：对话框、预览资源、调试控制台
+- `app_dialogs.go` / `app_preview_assets.go` / `app_debugconsole.go`：对话框与绑定壳（预览资源在 `internal/previewassets`，调试控制台存储在 `internal/debugconsole`）
 - `*_test.go`：与同名源文件对应的单元测试
 
 > **`package main` 只能在仓库根**：`//go:embed all:frontend/dist` 与 `frontend/wailsjs/go/main/` 都以根目录为前提，`type App` 与全部 Wails 绑定方法必须留在根。所以根目录的分类靠**文件名前缀 + 同包拆文件**。
 >
-> **纯引擎可以下沉 `internal/<域>`**（2026-11-16 起按 `docs/finished-plans/go-layout.md` 分批执行）：引擎包不 import main、不碰 App，位置与外部动作一律经 `Deps` 钩子注入，根目录留一个 `*_app.go` 壳做挂名绑定。已落地：`internal/storage`、`internal/patch`、`internal/mcp`、`internal/sqlview`、`internal/sessionstore`、`internal/sessionindex`、`internal/activity`、`internal/aitransport`、`internal/aitimer`、`internal/aigen`、`internal/aicatalog`、`internal/gitinfo`、`internal/webtools`、`internal/structuredir`、`internal/runproject`、`internal/envvars`、`internal/update`、`internal/aiworklog`、`internal/aiusage`、`internal/reading`、`internal/run`、`internal/browser`、`internal/search`、`internal/aischedule`、`internal/cmdbridge`、`internal/terminal`、`internal/toolchain`、`internal/plugins`、`internal/skills`、`internal/aiconfig`、`internal/screenshot`、`internal/notify`、`internal/watch`、`internal/mcpsamples`、`internal/patchcli`，以及共享叶子包 `internal/appdata`（应用数据路径）、`internal/procctl`（进程注册与取消）、`internal/shellpath`（Git Bash / pwsh 探测）、`internal/clipboard`（剪贴板图片）、`internal/previewassets`（预览资源 token）、`internal/atomfile`（原子替换 + 残行修复）、`internal/chardec`（GBK/GB18030 编解码）、`internal/recycle`（回收站删除）、`internal/executil`（防黑窗/杀进程树）、`internal/sessionlock`（跨进程写锁）、`internal/vercmp`（数字版本比较）。B1–B12 与 C0–C3 均已实施（B11 已并入 C1 完成）；嵌入服务实测成立，reading / run / browser / search / aischedule / cmdbridge / terminal / toolchain / plugins / skills / screenshot / notify / watch / mcpsamples 均按域服务嵌入 App。**平台 glue（`*_windows/_other` 成对文件）留在根是本分**，不要摊进 internal 包。
+> **纯引擎可以下沉 `internal/<域>`**（2026-11-16 起按 `docs/finished-plans/go-layout.md` 分批执行）：引擎包不 import main、不碰 App，位置与外部动作一律经 `Deps` 钩子注入，根目录留一个 `*_app.go` 壳做挂名绑定。已落地：`internal/storage`、`internal/patch`、`internal/mcp`、`internal/sqlview`、`internal/sessionstore`、`internal/sessionindex`、`internal/activity`、`internal/aitransport`、`internal/aitimer`、`internal/aigen`、`internal/aicatalog`、`internal/gitinfo`、`internal/webtools`、`internal/structuredir`、`internal/runproject`、`internal/envvars`、`internal/update`、`internal/aiworklog`、`internal/aiusage`、`internal/reading`、`internal/run`、`internal/browser`、`internal/search`、`internal/aischedule`、`internal/cmdbridge`、`internal/terminal`、`internal/toolchain`、`internal/plugins`、`internal/skills`、`internal/aiconfig`、`internal/screenshot`、`internal/notify`、`internal/watch`、`internal/mcpsamples`、`internal/patchcli`、`internal/fileio`、`internal/fsops`、`internal/integration`、`internal/debugconsole`、`internal/aichat`，以及共享叶子包 `internal/appdata`（应用数据路径）、`internal/procctl`（进程注册与取消）、`internal/shellpath`（Git Bash / pwsh 探测）、`internal/clipboard`（剪贴板图片）、`internal/previewassets`（预览资源 token）、`internal/atomfile`（原子替换 + 残行修复）、`internal/chardec`（GBK/GB18030 编解码）、`internal/recycle`（回收站删除）、`internal/executil`（防黑窗/杀进程树）、`internal/sessionlock`（跨进程写锁）、`internal/vercmp`（数字版本比较）。B1–B12、C0–C3、D 系列均已实施（B11 已并入 C1 完成）；嵌入服务实测成立，reading / run / browser / search / aischedule / cmdbridge / terminal / toolchain / plugins / skills / screenshot / notify / watch / mcpsamples / fileio / fsops / integration / debugconsole / aichat 均按域服务嵌入 App；剩余根目录为绑定壳与平台 glue，布局收口。**平台 glue（`*_windows/_other` 成对文件）留在根是本分**，不要摊进 internal 包。
 
 ### 前端 `frontend/`
 > 2026-11-14 目录归位：`src/` 顶层只留 `main.js`，其余按域进目录。**Go 的目录即包，前端的目录只是分组**——新增模块直接放进对应域目录，不要往顶层加文件。

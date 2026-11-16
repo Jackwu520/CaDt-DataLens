@@ -1,6 +1,6 @@
 # Go 侧目录与拆包评估
 
-> 状态：**已实施完毕**（2026-11-16）。B1–B4 四批（`998915c` / `79c4706` / `eb2c5df` / `b09fc32`）+ B5 零耦合收尾（`1692006`）+ B6 三域下沉（`2ec9ca1` / `e7a45c8` / `e088f3b` / `4d48808`）+ B7–B12（`ed790d2` / `52580bb` / `86e5af0` / `28f54e1` / `9b624b5`）与 C0–C3（`051c418` / `178079a` / `355434e` / `96aa4f7` / `5cad98b` / `971c264` / `5e95a14` / `ffaaa34` / `0a525b6` / `d7c22a5` / `843c133`）全部落地，每批 `go test ./...` 与 `wails build -devtools` 全绿。B11 已并入 C1 完成。根目录 180 → **79 个 .go**（60 非测试 + 19 测试）、main 包 40,712 → **7,595 行**，`internal/` 46 个包（34 域 + 12 叶子）。2026-11-14 首轮评估的「暂不抽包」基于当时的高耦合形态，已被实测取代；首轮已落地的部分与判定存档见 §7
+> 状态：**已实施完毕**（2026-11-16）。B1–B4 四批（`998915c` / `79c4706` / `eb2c5df` / `b09fc32`）+ B5 零耦合收尾（`1692006`）+ B6 三域下沉（`2ec9ca1` / `e7a45c8` / `e088f3b` / `4d48808`）+ B7–B12（`ed790d2` / `52580bb` / `86e5af0` / `28f54e1` / `9b624b5`）、C0–C3（`051c418` / `178079a` / `355434e` / `96aa4f7` / `5cad98b` / `971c264` / `5e95a14` / `ffaaa34` / `0a525b6` / `d7c22a5` / `843c133`）与 D 系列（`b3efb83` / `219d394` / `33eff0b` / `b10c2df` / `06d4d0c` / `ad17119`）全部落地，每批 `go test ./...` 与 `wails build -devtools` 全绿。B11 已并入 C1 完成。根目录 180 → **73 个 .go**（56 非测试 + 17 测试）、main 包 40,712 → **5,727 行**，`internal/` 51 个包（39 域 + 12 叶子）。2026-11-14 首轮评估的「暂不抽包」基于当时的高耦合形态，已被实测取代；首轮已落地的部分与判定存档见 §7
 > 问题：Go 后端 180 个 `.go`（112 非测试 + 68 测试，40,712 行，module `datalens`）平铺在仓库根、单一 `package main`——能不能像前端那样按域分目录、该拆什么、不该拆什么
 
 ## 0. 结论先行（2026-11-16 复测）
@@ -161,3 +161,17 @@
 **结果**：根目录 99 → **79 个 .go**（60 非测试 + 19 测试）、main 包 12,391 → **7,595 行**；`internal/` 46 个包（34 域 + 12 叶子）。绑定名保持不变，`frontend/wailsjs` 无差异；每批全量 `go test ./... -timeout 300s` 与最终 `wails build -devtools` 全绿。
 
 **停止线**：剩余根目录为 App 核心与 Wails 绑定壳、平台 glue（`integration_windows` / `cursors` / `windowicon` / `devtools` / `console`）、CLI 生命周期（`convert_cli` / `installer_cli` / `main`）、补丁与存储的薄壳（`patch_app` / `patch_review` / `storage_app`）以及 `webtools_app` 等转发壳。继续拆分的收益已低于维护成本，布局工作到此结束。
+
+## 12. D 系列：文件系统、集成与 AI 对话收口（2026-11-16）
+
+| 提交 | 范围 | 说明 |
+| --- | --- | --- |
+| `b3efb83` | D1a `internal/fileio` | 打开/保存、外部修改校验、图片与二进制判定、编码探测随包；FileData 根别名 |
+| `219d394` + `33eff0b` | D1b `internal/fsops` | 目录树/列举、新建改名、复制移动、data URL 落盘随包；三个系统对话框留根；预算常量与 EntryExists 导出给测试 |
+| `b10c2df` | D2 `internal/integration` | 文件关联/右键菜单/PATH 集成随包，Registrar 嵌入 App；安装器 CLI 改调导出函数 |
+| `06d4d0c` | D3 `internal/debugconsole` | 调试控制台日志追加/增量读/裁剪随包，Console 嵌入 App；导出与开窗留根壳 |
+| `ad17119` | D4 `internal/aichat` | AI 对话与流注册表、看门狗随包，Chat 嵌入 App；aitransport 看门狗挂载点改指 aichat |
+
+**结果**：根目录 79 → **73 个 .go**（56 非测试 + 17 测试）、main 包 7,595 → **5,727 行**；`internal/` 51 个包（39 域 + 12 叶子）。绑定名不变，最终 `wails build -devtools` 通过。
+
+**剩余不可拆项（收益 < 成本）**：`convert_cli.go`（App convert 生命周期与主入口共用状态）、`app_window.go` 的 appConfig/窗口编排、`logging.go`（跨包 Logf 已够用）、`patch_app.go` / `mcp_app.go` / `sessionstore_app.go`（绑定壳与生命周期）、以及 `ai_float` / `app_dialogs` / `installer_cli` / `delete` / `app_pathinfo` 等平台 glue。继续拆需要为单个绑定再造服务与测试脚手架，属于为行数而搬。
