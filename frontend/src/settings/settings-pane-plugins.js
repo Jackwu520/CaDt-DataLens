@@ -1,5 +1,5 @@
 // 设置 → 插件：插件列表与错误、加载/卸载、插件市场（TTL 缓存与列表）。
-// 从 writing-ui.js 拆出；deps.flash / openCloseConfirm / setupFormatSettings / setupLanguageSettings 由宿主注入。
+// 从 writing-ui.js 拆出；deps.flash / openConfirmDialog / setupFormatSettings / setupLanguageSettings 由宿主注入。
 import {iconSvg} from '../core/icons.js';
 
 import {formats} from '../core/formats.js';
@@ -140,7 +140,7 @@ function setupPluginsSettings() {
             onSubmit: async (url) => {
                 if (!url || !url.trim()) throw new Error('仓库地址为空');
                 // 安装插件 = 执行第三方代码：先明示权限范围，确认后再装
-                deps.openCloseConfirm('插件代码以与应用相同的权限运行，可读写本机文件、执行命令。仅安装你信任的来源：' + url, () => {
+                deps.openConfirmDialog('插件代码以与应用相同的权限运行，可读写本机文件、执行命令。仅安装你信任的来源：' + url, () => {
                     (async () => {
                         try {
                             const installed = await deps.backend.InstallPluginFromUrl(url);
@@ -321,7 +321,7 @@ async function renderPluginsPane() {
             del.textContent = '删除';
             del.addEventListener('click', () => {
                 // 与设置页其他破坏性操作一致：走统一确认弹窗，不做「再点一次按钮」的就地确认
-                deps.openCloseConfirm(
+                deps.openConfirmDialog(
                     '删除插件「' + p.name + '」？插件代码会立即从本机移除。',
                     async () => {
                         try {
@@ -335,7 +335,8 @@ async function renderPluginsPane() {
                         renderPluginsPane();
                     },
                     '删除',
-                    '删除插件'
+                    '删除插件',
+                    'danger'
                 );
             });
             head.append(name, ver, author, license, enabledLabel, del);
@@ -545,7 +546,7 @@ function renderPluginMarketList(listEl, items) {
             install.className = 'dlg-btn plugin-market-action';
             install.textContent = '安装';
             install.addEventListener('click', () => {
-                deps.openCloseConfirm('插件代码以与应用相同的权限运行，可读写本机文件、执行命令。仅安装你信任的来源：' + (m.name || m.url), async () => {
+                deps.openConfirmDialog('插件代码以与应用相同的权限运行，可读写本机文件、执行命令。仅安装你信任的来源：' + (m.name || m.url), async () => {
                     install.disabled = true;
                     install.textContent = '安装中…';
                     try {

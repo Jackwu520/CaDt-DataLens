@@ -542,9 +542,14 @@ document.addEventListener('selectionchange', () => {
     if (textarea && document.activeElement === textarea) updateCursorPosition();
 });
 
-function openCloseConfirm(message, action, okLabel, title) {
+function openConfirmDialog(message, action, okLabel, title, variant) {
     deps.elsDialogs.confirmText.textContent = message || '有未保存的修改，关闭后将丢弃。';
     deps.elsDialogs.confirmOk.textContent = okLabel || '丢弃并关闭';
+    // variant：'danger' = 破坏性操作（删除/清空/回滚等），确认按钮标红；默认普通确认。
+    // 语义化类型而非布尔，后续可扩展 'warning' / 'info' 等。
+    const isDanger = variant === 'danger';
+    deps.elsDialogs.confirmOk.classList.toggle('danger', isDanger);
+    deps.elsDialogs.confirmOk.classList.toggle('primary', !isDanger);
     const titleEl = deps.elsDialogs.confirm.querySelector('.dialog-title');
     if (titleEl) titleEl.textContent = title || '关闭';
     deps.setConfirmAction(action || (() => {
@@ -607,7 +612,7 @@ document.querySelector('.settings-nav').addEventListener('click', (e) => {
 });
 // 常用编程语言：独立于数据格式，每个语言单独配置环境信息（为后续辅助运行代码预留）
 
-return {applyWritingFormat, applyWritingMode, insertSceneSeparator, jumpToPosition, openCloseConfirm,
+return {applyWritingFormat, applyWritingMode, insertSceneSeparator, jumpToPosition, openConfirmDialog,
         openGotoDialog, openWritingNameDialog, scheduleCursorPosition, scheduleWritingCaret, toggleWritingMode,
         updateCursorPosition, updateWritingStats, writingFormatable};
 }

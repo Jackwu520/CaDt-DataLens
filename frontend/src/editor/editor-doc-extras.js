@@ -473,7 +473,7 @@ function expandAllWithGuard(doc) {
         run();
         return;
     }
-    deps.openCloseConfirm(
+    deps.openConfirmDialog(
         '「' + (doc.name || '当前文件') + '」约含 ' + nodes.toLocaleString() + ' 个节点，全部展开需要一次性渲染整棵树，会卡顿数秒，展开后浏览 / 编辑也会明显变慢。可改用树视图右键「展开该节点」逐层展开。仍要全部展开吗？',
         run, '全部展开', '全部展开');
 }

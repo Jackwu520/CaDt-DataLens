@@ -107,7 +107,7 @@ function ctxFor(parseImpl, previewImpl) {
         openPath: () => {},
         notifyChanged: () => {},
         flash: () => {},
-        openCloseConfirm: () => {},
+        openConfirmDialog: () => {},
     };
 }
 
@@ -208,7 +208,7 @@ test('撤销走统一确认弹窗，不再「点两次按钮」就地确认', as
     let asked = null;
     let reverted = 0;
     const ctx = ctxFor(null, async () => ({...planFor('ok'), patchId: 'patch-1', external: false}));
-    ctx.openCloseConfirm = (message, action, okLabel, title) => { asked = {message, action, okLabel, title}; };
+    ctx.openConfirmDialog = (message, action, okLabel, title, variant) => { asked = {message, action, okLabel, title, variant}; };
     ctx.backend.PatchRevert = async () => { reverted += 1; return {ok: true, files: []}; };
     showPatchView(doc, ctx);
     await tick();
@@ -222,6 +222,7 @@ test('撤销走统一确认弹窗，不再「点两次按钮」就地确认', as
     assert.match(asked.message, /撤销这次补丁应用/);
     assert.equal(asked.okLabel, '撤销');
     assert.equal(asked.title, '撤销补丁');
+    assert.equal(asked.variant, 'danger', '撤销补丁是破坏性操作，确认按钮应标红');
     assert.equal(reverted, 0, '弹窗确认前不能真的撤销');
     assert.equal(revertBtn.textContent, '撤销', '按钮不能变成「确认撤销？」');
     assert.equal(revertBtn._classes.has('danger'), false, '按钮不能进红底待确认态');

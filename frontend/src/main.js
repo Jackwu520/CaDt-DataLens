@@ -444,7 +444,7 @@ const APP_ACTIONS = [
     'get_settings', 'get_editor', 'get_content', 'get_git', 'get_ai', 'get_explorer', 'get_plugins', 'get_terminal',
     'get_activity', 'get_patch', 'patch_set_root', 'patch_repreview',
     'get_gen_models', 'set_gen_model', 'delete_gen_model',
-    'get_mcp_servers', 'set_mcp_server', 'delete_mcp_server',
+    'get_mcp_servers', 'list_mcp_samples', 'install_mcp_sample', 'set_mcp_server', 'delete_mcp_server',
 ];
 
 const APP_SCREENSHOT_AREAS = {
@@ -1070,7 +1070,7 @@ window.__lens = {
     get closedTabs() { return closedTabs; },
     // 这些函数拆分到域模块后经 const 解构引入（不再有函数声明提升），
     // 这里必须用 getter 延迟求值，否则顶层急切求值会 TDZ
-    get openCloseConfirm() { return openCloseConfirm; },
+    get openConfirmDialog() { return openConfirmDialog; },
     get openPaths() { return openPaths; },
     get openTargets() { return openTargets; },
     get openFolderWorkspace() { return openFolderWorkspace; },
@@ -1520,7 +1520,7 @@ const writingUI = createWritingUI({
     get themes() { return themes; },
     get updateStatus() { return updateStatus; },
 });
-const {CSV_COL_MIN_WIDTH, CSV_ROW_NUM_WIDTH, INDENTS, LANG_DEFS, TREE_MAX_CHILDREN, applyWritingFormat, applyWritingMode, canSplitDoc, cancelAutoSave, closeFootPopover, editorLocale, effectiveToolEnv, flash, fmtSize, formatDisplayName, insertSceneSeparator, isSqlSupportedDoc, isSvgDoc, jumpToPosition, markdownRenderer, mdPreviewWidthLabel, normalizeLegacySqlMode, openCloseConfirm, openGotoDialog, openWritingNameDialog, renderEnvVarsPane, renderFmtTable, renderFormatPane, renderLangPane, renderMarkdownHtml, renderMermaidBlocks, renderPluginsPane, renderRunPane, resolveMarkdownImages, scheduleAutoSave, scheduleCursorPosition, scheduleWritingCaret, setDirty, splitKindFor, toggleWritingMode, toolEnvFor, updateAiWidthWidget, updateBackendDirty, updateCursorPosition, updateTabDirty, updateWindowTitle, updateWritingStats, viewDisabled, viewLabel, viewOptionsFor, writingFormatable} = writingUI;
+const {CSV_COL_MIN_WIDTH, CSV_ROW_NUM_WIDTH, INDENTS, LANG_DEFS, TREE_MAX_CHILDREN, applyWritingFormat, applyWritingMode, canSplitDoc, cancelAutoSave, closeFootPopover, editorLocale, effectiveToolEnv, flash, fmtSize, formatDisplayName, insertSceneSeparator, isSqlSupportedDoc, isSvgDoc, jumpToPosition, markdownRenderer, mdPreviewWidthLabel, normalizeLegacySqlMode, openConfirmDialog, openGotoDialog, openWritingNameDialog, renderEnvVarsPane, renderFmtTable, renderFormatPane, renderLangPane, renderMarkdownHtml, renderMermaidBlocks, renderPluginsPane, renderRunPane, resolveMarkdownImages, scheduleAutoSave, scheduleCursorPosition, scheduleWritingCaret, setDirty, splitKindFor, toggleWritingMode, toolEnvFor, updateAiWidthWidget, updateBackendDirty, updateCursorPosition, updateTabDirty, updateWindowTitle, updateWritingStats, viewDisabled, viewLabel, viewOptionsFor, writingFormatable} = writingUI;
 const editorGroupsMod = createEditorGroups({
     set currentMode(v) { currentMode = v; },
     set dirty(v) { dirty = v; },
@@ -1571,7 +1571,7 @@ const editorGroupsMod = createEditorGroups({
     get mdPreviewWidthLabel() { return mdPreviewWidthLabel; },
     get normalizeLegacySqlMode() { return normalizeLegacySqlMode; },
     get openBrowserTab() { return openBrowserTab; },
-    get openCloseConfirm() { return openCloseConfirm; },
+    get openConfirmDialog() { return openConfirmDialog; },
     get openDiffDialog() { return openDiffDialog; },
     get openInNewWindows() { return openInNewWindows; },
     get openNameDialog() { return openNameDialog; },
@@ -1799,7 +1799,7 @@ const explorerOps = createExplorerOps({
     set fileClipboard(v) { fileClipboard = v; },
     get flash() { return flash; },
     get gitStateCache() { return gitStateCache; },
-    get openCloseConfirm() { return openCloseConfirm; },
+    get openConfirmDialog() { return openConfirmDialog; },
     get openDiffDialog() { return openDiffDialog; },
     get openFolderWorkspace() { return openFolderWorkspace; },
     get openInNewWindows() { return openInNewWindows; },
@@ -2502,7 +2502,7 @@ function initAIPanel() {
         // AI 回答里的 ```mermaid 围栏占位渲染（功能验证报告 §1.3.3：原来占位无人渲染，图直接消失）
         renderMermaidBlocks,
         openExternal: openExternalUrl,
-        confirm: openCloseConfirm,
+        confirm: openConfirmDialog,
         nameDialog: openNameDialog,
         openSettings: (pane, preset) => {
             if (window.__aiFloatWindow && backend.OpenSettingsInMainWindow) {
@@ -2903,7 +2903,7 @@ async function requestReload() {
     const doc = file;
     if (!doc || !doc.path) return;
     if (doc.dirty) {
-        openCloseConfirm('重新加载将丢弃未保存的修改。', () => reloadActive(), '丢弃并重新加载');
+        openConfirmDialog('重新加载将丢弃未保存的修改。', () => reloadActive(), '丢弃并重新加载', '重新加载', 'danger');
     } else {
         await reloadActive();
     }
@@ -3255,7 +3255,7 @@ const activityPane = createActivityPane({
     get backend() { return backend; },
     get elsSettings() { return elsSettings; },
     get flash() { return flash; },
-    get openCloseConfirm() { return openCloseConfirm; },
+    get openConfirmDialog() { return openConfirmDialog; },
     get settings() { return settings; },
 });
 const {renderActivityPane} = activityPane;
@@ -3263,14 +3263,14 @@ const {renderActivityPane} = activityPane;
 const settingsPanePatches = createSettingsPanePatches({
     get backend() { return backend; },
     get flash() { return flash; },
-    get openCloseConfirm() { return openCloseConfirm; },
+    get openConfirmDialog() { return openConfirmDialog; },
     get root() { return workspaceFolder || ''; },
 });
 // 设置 → 存储与清理：条目与删除都在 Go 侧，这里给的是位置（工作区根）与确认/回执通道。
 const settingsPaneStorage = createSettingsPaneStorage({
     get backend() { return backend; },
     get flash() { return flash; },
-    get openCloseConfirm() { return openCloseConfirm; },
+    get openConfirmDialog() { return openConfirmDialog; },
     get root() { return workspaceFolder || ''; },
 });
 // 设置 → AI → 外部工具：能力来源矩阵 + 服务提供商配置（MCP 组由 index.html 迁入，绑定仍归 ai-panel）
@@ -3282,6 +3282,9 @@ const settingsPaneExternalTools = createSettingsPaneExternalTools({
         return () => (aiPanel && typeof aiPanel.getMcpToolDefs === 'function' ? aiPanel.getMcpToolDefs() : []);
     },
     get getAiPanel() { return () => aiPanel; },
+    get confirmAction() {
+        return (message, action, okLabel, title, variant) => openConfirmDialog(message, action, okLabel, title, variant);
+    },
     // 该工厂创建时会立即读取 deps.openExternalUrl；用包装函数把真正的 openExternalUrl 读取推迟到点击时
     get openExternalUrl() { return (url) => openExternalUrl(url); },
 });
@@ -3632,7 +3635,7 @@ const propertiesUI = createPropertiesUI({
     get fmtSize() { return fmtSize; },
     get newDocumentWith() { return newDocumentWith; },
     get newFileTypeMenuItems() { return newFileTypeMenuItems; },
-    get openCloseConfirm() { return openCloseConfirm; },
+    get openConfirmDialog() { return openConfirmDialog; },
     get openCreateEntryDialog() { return openCreateEntryDialog; },
     get openDialogEl() { return openDialogEl; },
     get reloadActive() { return reloadActive; },
@@ -4468,14 +4471,14 @@ if (rt) {
         flushCsvCellEditor();
         const r = reasons || {};
         if (r.aiRunning) {
-            openCloseConfirm(
+            openConfirmDialog(
                 r.dirty ? '有未保存的修改，且 AI 会话正在进行中；关闭后将丢弃修改并中断任务。'
                     : 'AI 会话正在进行中，关闭窗口会中断当前任务。',
                 () => { if (backend.ForceClose) backend.ForceClose(); },
-                '中断并关闭', '关闭');
+                '中断并关闭', '关闭', 'danger');
             return;
         }
-        openCloseConfirm();
+        openConfirmDialog(undefined, undefined, undefined, undefined, 'danger');
     });
     // AI 回合状态同步给后端（Go 侧 beforeClose 据此决定是否弹关窗确认）
     let aiRunningLast = false;
@@ -4610,7 +4613,7 @@ const terminalMod = createTerminalUI({
     get gitStateCache() { return gitStateCache; },
     get initAIPanel() { return initAIPanel; },
     get openAIPanelWithDraft() { return openAIPanelWithDraft; },
-    get openCloseConfirm() { return openCloseConfirm; },
+    get openConfirmDialog() { return openConfirmDialog; },
     get openDialogEl() { return openDialogEl; },
     get openNameDialog() { return openNameDialog; },
     get openPathsHere() { return openPathsHere; },

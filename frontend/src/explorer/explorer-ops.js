@@ -398,7 +398,7 @@ function deleteExplorerEntries(targets) {
     const message = dirty
         ? what + '已打开且有未保存的修改，删除后这些修改会一并丢失。\n确定移到回收站吗？'
         : what + '将被移到回收站，确定继续吗？';
-    deps.openCloseConfirm(message, async () => {
+    deps.openConfirmDialog(message, async () => {
         const deleted = [];
         const failures = [];
         for (const item of deletable) {
@@ -439,7 +439,7 @@ function deleteExplorerEntries(targets) {
         } else {
             deps.flash(deleted.length > 1 ? '已删除 ' + deleted.length + ' 个项目' : '已删除：' + deleted[0].name);
         }
-    }, '删除', '删除');
+    }, '删除', '删除', 'danger');
 }
 
 function openRenameEntryDialog(info) {

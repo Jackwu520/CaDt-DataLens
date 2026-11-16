@@ -124,7 +124,7 @@ export function createSettingsPanePatches(deps) {
             deps.flash('当前版本不支持删除补丁', true);
             return;
         }
-        deps.openCloseConfirm(patchDeleteConfirmText(meta), async () => {
+        deps.openConfirmDialog(patchDeleteConfirmText(meta), async () => {
             const root = typeof deps.root === 'function' ? deps.root() : (deps.root || '');
             try {
                 await deps.backend.PatchDelete(meta.id, root);
@@ -133,7 +133,7 @@ export function createSettingsPanePatches(deps) {
                 deps.flash('删除失败：' + ((e && e.message) || e), true);
             }
             refreshPatchStore();
-        }, '删除', '删除补丁');
+        }, '删除', '删除补丁', 'danger');
     }
 
     if (refreshBtn) refreshBtn.addEventListener('click', () => refreshPatchStore());

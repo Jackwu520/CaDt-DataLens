@@ -113,7 +113,7 @@ function renderGitPanel() {
                 {sep: true},
                 {label: '回滚更改', icon: 'E7A7', danger: true, action: () => {
                     const what = isUntracked ? '该文件未被版本管理，回滚将删除文件：' : '将丢弃该文件的全部未提交修改：';
-                    deps.openCloseConfirm(what + '\n' + path, () => deps.gitRollbackPaths([path], isUntracked ? [path] : []), '回滚');
+                    deps.openConfirmDialog(what + '\n' + path, () => deps.gitRollbackPaths([path], isUntracked ? [path] : []), '回滚', '回滚更改', 'danger');
                 }},
             ], e.clientX, e.clientY);
         });

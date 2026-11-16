@@ -405,8 +405,8 @@ export function createSettingsPaneStorage(deps) {
             }
         };
         // 缓存与数据都要确认：前者会让人退出网页登录，后者直接删内容
-        if (typeof deps.openCloseConfirm === 'function') {
-            deps.openCloseConfirm(options.message, act, options.okLabel, options.title);
+        if (typeof deps.openConfirmDialog === 'function') {
+            deps.openConfirmDialog(options.message, act, options.okLabel, options.title, 'danger');
         } else {
             act();
         }

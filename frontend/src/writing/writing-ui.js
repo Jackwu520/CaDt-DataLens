@@ -309,12 +309,12 @@ const runMod = createSettingsPaneRun(runDeps);
 
 const envDeps = Object.create(deps);
 envDeps.flash = flash;
-envDeps.openCloseConfirm = wmMod.openCloseConfirm;
+envDeps.openConfirmDialog = wmMod.openConfirmDialog;
 const envMod = createSettingsPaneEnvvars(envDeps);
 
 const plugDeps = Object.create(deps);
 plugDeps.flash = flash;
-plugDeps.openCloseConfirm = wmMod.openCloseConfirm;
+plugDeps.openConfirmDialog = wmMod.openConfirmDialog;
 plugDeps.setupFormatSettings = langMod.setupFormatSettings;
 plugDeps.setupLanguageSettings = langMod.setupLanguageSettings;
 const plugMod = createSettingsPanePlugins(plugDeps);

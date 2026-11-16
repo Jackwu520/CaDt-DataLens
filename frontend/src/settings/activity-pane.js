@@ -201,7 +201,7 @@ if (deps.elsSettings.exportActivityCsv) {
 if (deps.elsSettings.clearActivity) {
     deps.elsSettings.clearActivity.addEventListener('click', () => {
         if (!deps.backend.ActivityClear) return deps.flash('当前版本不支持操作记录', true);
-        deps.openCloseConfirm('将删除全部操作记录（包括按月分文件与滚动分段），只保留一条「已清空」标记。确定继续吗？', async () => {
+        deps.openConfirmDialog('将删除全部操作记录（包括按月分文件与滚动分段），只保留一条「已清空」标记。确定继续吗？', async () => {
             try {
                 await deps.backend.ActivityClear();
                 deps.flash('操作记录已清空');
@@ -209,7 +209,7 @@ if (deps.elsSettings.clearActivity) {
             } catch (e) {
                 deps.flash('清空失败：' + ((e && e.message) || e), true);
             }
-        }, '清空', '清空操作记录');
+        }, '清空', '清空操作记录', 'danger');
     });
 }
 {

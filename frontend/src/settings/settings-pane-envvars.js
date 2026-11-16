@@ -92,11 +92,12 @@ function buildEnvVarRow(v) {
             }
         };
         // 与存储清理等破坏性操作一致：走统一确认弹窗，不做「再点一次按钮」的就地确认
-        deps.openCloseConfirm(
+        deps.openConfirmDialog(
             '删除环境变量「' + v.name + '」？之后新开的终端会话与命令桥命令将不再注入它。',
             act,
             '删除',
-            '删除环境变量'
+            '删除环境变量',
+            'danger'
         );
     });
     row.append(nameEl, descEl, enabledLabel, editBtn, del);

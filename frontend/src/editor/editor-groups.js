@@ -988,7 +988,7 @@ function patchViewContext() {
         },
         notifyChanged: (files) => { reloadAfterPatch(files); },
         flash: (msg, isErr) => deps.flash(msg, isErr),
-        openCloseConfirm: (message, action, okLabel, title) => deps.openCloseConfirm(message, action, okLabel, title),
+        openConfirmDialog: (message, action, okLabel, title, variant) => deps.openConfirmDialog(message, action, okLabel, title, variant),
     };
     return patchViewHostCtx;
 }
@@ -1499,7 +1499,7 @@ function requestCloseDoc(doc) {
     if (!doc) return;
     if (doc === deps.file) flushCsvCellEditor();
     if (doc.dirty) {
-        deps.openCloseConfirm('“' + doc.name + '”有未保存的修改，关闭标签后将丢弃。', () => closeDocNow(doc));
+        deps.openConfirmDialog('“' + doc.name + '”有未保存的修改，关闭标签后将丢弃。', () => closeDocNow(doc), '丢弃并关闭', '关闭标签', 'danger');
     } else {
         closeDocNow(doc);
     }
@@ -1595,7 +1595,7 @@ function closeDocsWithConfirm(list, message) {
         for (const doc of targets.slice()) closeDocNow(doc);
     };
     if (targets.some((doc) => doc.dirty)) {
-        deps.openCloseConfirm(message || '有未保存的修改，关闭后将丢弃。', run);
+        deps.openConfirmDialog(message || '有未保存的修改，关闭后将丢弃。', run, '丢弃并关闭', '关闭标签', 'danger');
     } else {
         run();
     }

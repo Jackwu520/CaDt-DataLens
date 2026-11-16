@@ -268,11 +268,12 @@ function render(doc, ctx) {
         btnRevert.disabled = !revertable;
         btnRevert.addEventListener('click', () => {
             // 与其他破坏性操作一致：走统一确认弹窗，不做「再点一次按钮」的就地确认
-            ctx.openCloseConfirm(
+            ctx.openConfirmDialog(
                 '撤销这次补丁应用？已写入的文件会恢复到应用前的内容。',
                 () => revert(doc, ctx),
                 '撤销',
-                '撤销补丁'
+                '撤销补丁',
+                'danger'
             );
         });
         actions.appendChild(btnRevert);

@@ -153,7 +153,7 @@ async function reloadAllFromDisk() {
         deps.flash('已从磁盘重新加载 ' + ok + ' 个文件' + (failed ? '，' + failed + ' 个失败' : ''), failed > 0);
     };
     if (targets.some((d) => d.dirty)) {
-        deps.openCloseConfirm('全部重新加载将丢弃所有未保存的修改。', run, '全部重新加载');
+        deps.openConfirmDialog('全部重新加载将丢弃所有未保存的修改。', run, '全部重新加载', '重新加载', 'danger');
     } else {
         await run();
     }
