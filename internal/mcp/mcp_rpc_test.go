@@ -1,5 +1,5 @@
 // mcp_rpc_test.go：JSON-RPC 层的内存管道测试——分帧、id 配对、通知、-32601、超长行、垃圾行容忍。
-package main
+package mcp
 
 import (
 	"bufio"

@@ -1,7 +1,7 @@
 // mcp_rpc.go：MCP stdio 传输的 JSON-RPC 2.0 层——逐行分帧、id 配对、通知分发。
 // stdout 是协议通道：非 JSON 行容忍（丢弃 + 记警告），连续过多判定协议错乱；
 // server→client 请求一律回 -32601（我们 capabilities 声明为空对象，server 不该发这些）。
-package main
+package mcp
 
 import (
 	"bufio"
@@ -17,9 +17,9 @@ import (
 )
 
 const (
-	mcpMaxLineBytes    = 8 << 20  // 单行上限：超了报协议错误而不是崩（bufio.Scanner 默认 64 KB 会静默截断大响应）
+	mcpMaxLineBytes    = 8 << 20 // 单行上限：超了报协议错误而不是崩（bufio.Scanner 默认 64 KB 会静默截断大响应）
 	mcpReadBufSize     = 64 << 10
-	mcpMaxGarbageLines = 20       // 连续非 JSON 行容忍上限：超过判定协议错乱
+	mcpMaxGarbageLines = 20 // 连续非 JSON 行容忍上限：超过判定协议错乱
 	mcpStderrRingMax   = 64 << 10
 )
 
@@ -86,9 +86,9 @@ type rpcConn struct {
 
 func newRPCConn(stdin io.Writer, onNotify func(*rpcMessage)) *rpcConn {
 	return &rpcConn{
-		stdin:   stdin,
-		pending: map[int64]chan *rpcMessage{},
-		closed:  make(chan struct{}),
+		stdin:    stdin,
+		pending:  map[int64]chan *rpcMessage{},
+		closed:   make(chan struct{}),
 		onNotify: onNotify,
 	}
 }
@@ -109,7 +109,7 @@ func (c *rpcConn) serve(r io.Reader) error {
 			// 容忍对方的不规范：banner、print 调试等丢弃 + 记警告，不当协议错误中止。
 			// stdout 是协议通道，污染它的是 server，我们防的是被拖死。
 			garbage++
-			writeAppLog("warn", "MCP stdout 丢弃非 JSON 行（连续第 %d 行）：%s", garbage, mcpLogPreview(line, 160))
+			logf("warn", "MCP stdout 丢弃非 JSON 行（连续第 %d 行）：%s", garbage, mcpLogPreview(line, 160))
 			if garbage >= mcpMaxGarbageLines {
 				return fmt.Errorf("stdout 连续 %d 行非 JSON，判定协议错乱", garbage)
 			}
@@ -172,7 +172,7 @@ func (c *rpcConn) respondError(id json.RawMessage, code int, message string) err
 	resp := map[string]any{"jsonrpc": "2.0", "id": json.RawMessage(id), "error": map[string]any{"code": code, "message": message}}
 	if err := c.writeMsg(resp); err != nil {
 		// 尽力而为的礼节性响应：写失败（进程已死）不值得中断读循环。
-		writeAppLog("warn", "MCP 回写 -32601 失败：%v", err)
+		logf("warn", "MCP 回写 -32601 失败：%v", err)
 	}
 	return nil
 }

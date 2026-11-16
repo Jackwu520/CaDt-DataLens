@@ -1,6 +1,6 @@
 // mcp_manager.go：多 server 编排——惰性启动、世代交换发布、状态聚合、重连调度、
 // tools/call 路由、配置应用与全量关闭。核心逻辑不依赖 App；Wails 薄包装在 mcp_app.go。
-package main
+package mcp
 
 import (
 	"context"
@@ -11,6 +11,21 @@ import (
 	"sync"
 	"time"
 )
+
+// 宿主注入：诊断日志与 appdata 目录由 main 包 init 注入（mcp_app.go）；
+// 未注入（测试 / 独立使用）时日志静默、配置路径为空。
+var (
+	Logf       func(level, format string, args ...any)
+	AppDataDir func() string
+	Version    string
+)
+
+// logf 宿主日志钩子的 nil 安全包装。
+func logf(level, format string, args ...any) {
+	if Logf != nil {
+		Logf(level, format, args...)
+	}
+}
 
 const (
 	mcpReconnectInitialDelayMs = 500
@@ -81,7 +96,7 @@ type mcpRoute struct {
 
 // mcpManager 多 server 编排。mu 保护 servers 表 / registry / routes；connect 等慢操作不持锁，
 // 完成后回到锁内做 eligible 检查（entry 未被丢弃且客户端代仍是自己）再发布。
-type mcpManager struct {
+type Manager struct {
 	mu      sync.Mutex
 	enabled bool
 	servers map[string]*mcpServerEntry
@@ -93,8 +108,8 @@ type mcpManager struct {
 	now    func() time.Time
 }
 
-func newMCPManager(emit func(event string, payload any)) *mcpManager {
-	return &mcpManager{
+func NewManager(emit func(event string, payload any)) *Manager {
+	return &Manager{
 		enabled: true,
 		servers: map[string]*mcpServerEntry{},
 		routes:  map[string]mcpRoute{},
@@ -106,7 +121,7 @@ func newMCPManager(emit func(event string, payload any)) *mcpManager {
 
 // setEnabled 总开关：关闭时工具全部注销、进程全部停止；重新打开后下次取快照惰性重启。
 // 不做「值相同就跳过」的守卫——applyConfig 关闭路径依赖这里必定执行停止。
-func (m *mcpManager) setEnabled(on bool) {
+func (m *Manager) setEnabled(on bool) {
 	m.mu.Lock()
 	m.enabled = on
 	entries := make([]*mcpServerEntry, 0, len(m.servers))
@@ -125,7 +140,7 @@ func (m *mcpManager) setEnabled(on bool) {
 
 // applyConfig 应用新配置：删除消失/停用的 server，重建配置变化的 server，
 // EnabledTools-only 变化直接用现有连接重建世代（不重启进程）。
-func (m *mcpManager) applyConfig(cfg MCPConfig) {
+func (m *Manager) ApplyConfig(cfg MCPConfig) {
 	m.mu.Lock()
 	m.config = cfg
 	m.enabled = mcpConfigEnabled(cfg)
@@ -162,9 +177,9 @@ func (m *mcpManager) applyConfig(cfg MCPConfig) {
 		if !mcpServerEnabled(newCfg) {
 			continue // 停用的条目不建运行态
 		}
-		if err := mcpValidateServer(name, newCfg); err != nil {
+		if err := ValidateServer(name, newCfg); err != nil {
 			// 读盘是宽松的（写盘才强校验）：手改出的坏条目不建运行态，记日志供诊断
-			writeAppLog("warn", "MCP 配置条目 %q 不合法，跳过：%v", name, err)
+			logf("warn", "MCP 配置条目 %q 不合法，跳过：%v", name, err)
 			continue
 		}
 		m.newEntryLocked(name, newCfg)
@@ -201,7 +216,7 @@ func stripRuntimeFields(s MCPServerConfig) MCPServerConfig {
 	return out
 }
 
-func (m *mcpManager) newEntryLocked(name string, cfg MCPServerConfig) *mcpServerEntry {
+func (m *Manager) newEntryLocked(name string, cfg MCPServerConfig) *mcpServerEntry {
 	entry := &mcpServerEntry{
 		name:     name,
 		cfg:      cfg,
@@ -214,7 +229,7 @@ func (m *mcpManager) newEntryLocked(name string, cfg MCPServerConfig) *mcpServer
 }
 
 // ensureStarted 惰性启动：仅 enabled 且 EnabledTools 非空、未连接、未在连接、未阻塞的 server。
-func (m *mcpManager) ensureStarted(name string) {
+func (m *Manager) ensureStarted(name string) {
 	m.mu.Lock()
 	entry, ok := m.servers[name]
 	if !ok || !m.enabled || entry.connecting || entry.blocking || entry.disposed || entry.client != nil {
@@ -231,7 +246,7 @@ func (m *mcpManager) ensureStarted(name string) {
 }
 
 // lazyStartAll 首次需要工具清单时并发启动所有候选 server（各自独立预算）。
-func (m *mcpManager) lazyStartAll() {
+func (m *Manager) LazyStartAll() {
 	m.mu.Lock()
 	names := make([]string, 0, len(m.servers))
 	for name, entry := range m.servers {
@@ -251,7 +266,7 @@ func (m *mcpManager) lazyStartAll() {
 
 // connectGeneration 一代连接的全生命周期：启动 → 握手 → 列表 → 世代发布。
 // connect 慢操作不持锁；发布前做 eligible 检查，防止废弃连接把工具挂上去。
-func (m *mcpManager) connectGeneration(name string) {
+func (m *Manager) connectGeneration(name string) {
 	m.mu.Lock()
 	entry, ok := m.servers[name]
 	if !ok || entry.disposed || !m.enabled {
@@ -304,18 +319,18 @@ func (m *mcpManager) connectGeneration(name string) {
 }
 
 // rebuildGenerationLocked 构建并原子替换 entry 的工具世代 + 重建全局路由表。
-func (m *mcpManager) rebuildGenerationLocked(entry *mcpServerEntry, tools map[string]mcpRemoteTool) {
+func (m *Manager) rebuildGenerationLocked(entry *mcpServerEntry, tools map[string]RemoteTool) {
 	defs, stale, err := mcpBuildToolSet(entry.name, tools, entry.cfg.EnabledTools)
 	if err != nil {
 		// hash 碰撞等构建失败：整代回滚，该 server 零工具
-		writeAppLog("error", "MCP %s 工具世代构建失败：%v", entry.name, err)
+		logf("error", "MCP %s 工具世代构建失败：%v", entry.name, err)
 		entry.registry = nil
 		entry.staleTools = nil
 	} else {
 		entry.registry = defs
 		entry.staleTools = stale
 		if len(stale) > 0 {
-			writeAppLog("warn", "MCP %s 勾选的工具已不存在（对账提示）：%v", entry.name, stale)
+			logf("warn", "MCP %s 勾选的工具已不存在（对账提示）：%v", entry.name, stale)
 		}
 	}
 	entry.setStatusLocked(func(s *mcpStatus) {
@@ -331,7 +346,7 @@ func (m *mcpManager) rebuildGenerationLocked(entry *mcpServerEntry, tools map[st
 	m.rebuildRoutesLocked()
 }
 
-func (m *mcpManager) rebuildRoutesLocked() {
+func (m *Manager) rebuildRoutesLocked() {
 	routes := map[string]mcpRoute{}
 	for _, entry := range m.servers {
 		for _, def := range entry.registry {
@@ -342,7 +357,7 @@ func (m *mcpManager) rebuildRoutesLocked() {
 }
 
 // startResyncLoop 单 server 的串行重同步消费者：容量 1 的信号 channel 天然合并通知风暴。
-func (m *mcpManager) startResyncLoop(entry *mcpServerEntry) {
+func (m *Manager) startResyncLoop(entry *mcpServerEntry) {
 	go func() {
 		for {
 			select {
@@ -355,7 +370,7 @@ func (m *mcpManager) startResyncLoop(entry *mcpServerEntry) {
 	}()
 }
 
-func (m *mcpManager) queueResync(name string) {
+func (m *Manager) queueResync(name string) {
 	m.mu.Lock()
 	entry, ok := m.servers[name]
 	var ch chan struct{}
@@ -372,7 +387,7 @@ func (m *mcpManager) queueResync(name string) {
 }
 
 // resyncEntry 重新拉取工具清单并重建世代。失败保留上一代（连接继续用），只记日志。
-func (m *mcpManager) resyncEntry(name string) {
+func (m *Manager) resyncEntry(name string) {
 	m.mu.Lock()
 	entry, ok := m.servers[name]
 	if !ok || entry.client == nil || entry.disposed {
@@ -392,7 +407,7 @@ func (m *mcpManager) resyncEntry(name string) {
 		return // 世代已换代：这批结果无权发布（eligible 检查）
 	}
 	if err != nil {
-		writeAppLog("warn", "MCP %s tools/list_changed 重同步失败，保留上一代：%v", name, err)
+		logf("warn", "MCP %s tools/list_changed 重同步失败，保留上一代：%v", name, err)
 		m.mu.Unlock()
 		return
 	}
@@ -403,7 +418,7 @@ func (m *mcpManager) resyncEntry(name string) {
 }
 
 // onLost server 进程意外退出：等关闭确认，确认了才重连（叠两个实例的后果不可逆）。
-func (m *mcpManager) onLost(name string, client *mcpClient, reason string) {
+func (m *Manager) onLost(name string, client *mcpClient, reason string) {
 	m.mu.Lock()
 	entry, ok := m.servers[name]
 	if !ok || entry.client != client || entry.disposed {
@@ -429,11 +444,11 @@ func (m *mcpManager) onLost(name string, client *mcpClient, reason string) {
 		entry.setStatusLocked(func(s *mcpStatus) {
 			s.State = "failed"
 			s.Reason = "unclosed-generation"
-			s.LastError = mcpRedactSecrets(entry.cfg.Env, reason + "；" + cr.CleanupError)
+			s.LastError = mcpRedactSecrets(entry.cfg.Env, reason+"；"+cr.CleanupError)
 		})
 		m.emitStatusLocked()
 		m.mu.Unlock()
-		writeAppLog("error", "MCP %s 关闭未确认，阻止重连与替换（需重启应用）：%s", name, cr.CleanupError)
+		logf("error", "MCP %s 关闭未确认，阻止重连与替换（需重启应用）：%s", name, cr.CleanupError)
 		return
 	}
 	m.scheduleReconnectLocked(entry, reason)
@@ -443,7 +458,7 @@ func (m *mcpManager) onLost(name string, client *mcpClient, reason string) {
 
 // scheduleReconnectLocked 退避调度。三条易错点：稳定运行 ≥ MaxDelayMs 才重置预算；
 // failedAttempts > MaxAttempts 才放弃（允许正好 10 次）；放弃时注销工具。
-func (m *mcpManager) scheduleReconnectLocked(entry *mcpServerEntry, errText string) {
+func (m *Manager) scheduleReconnectLocked(entry *mcpServerEntry, errText string) {
 	if entry.disposed {
 		return
 	}
@@ -469,7 +484,7 @@ func (m *mcpManager) scheduleReconnectLocked(entry *mcpServerEntry, errText stri
 			s.Attempt = entry.failedAttempts - 1
 			s.LastError = errText
 		})
-		writeAppLog("error", "MCP %s 连续 %d 次失败，放弃重连：%s", entry.name, m.policy.MaxAttempts, errText)
+		logf("error", "MCP %s 连续 %d 次失败，放弃重连：%s", entry.name, m.policy.MaxAttempts, errText)
 		return
 	}
 	delay := m.policy.delayFor(entry.failedAttempts)
@@ -484,7 +499,7 @@ func (m *mcpManager) scheduleReconnectLocked(entry *mcpServerEntry, errText stri
 	entry.retryTimer = time.AfterFunc(delay, func() { m.connectGeneration(name) })
 }
 
-func (m *mcpManager) clearToolsLocked(entry *mcpServerEntry) {
+func (m *Manager) clearToolsLocked(entry *mcpServerEntry) {
 	entry.registry = nil
 	entry.staleTools = nil
 	entry.setStatusLocked(func(s *mcpStatus) { s.ToolCount = 0 })
@@ -492,7 +507,7 @@ func (m *mcpManager) clearToolsLocked(entry *mcpServerEntry) {
 }
 
 // stopEntry 停止单个 server：关闭连接（等待确认）、注销工具、终止重同步循环。
-func (m *mcpManager) stopEntry(entry *mcpServerEntry) {
+func (m *Manager) stopEntry(entry *mcpServerEntry) {
 	m.mu.Lock()
 	client := entry.client
 	entry.client = nil
@@ -510,7 +525,7 @@ func (m *mcpManager) stopEntry(entry *mcpServerEntry) {
 		return
 	}
 	if cr := client.close(); !cr.CloseConfirmed {
-		writeAppLog("error", "MCP %s 停止时关闭未确认：%s", entry.name, cr.CleanupError)
+		logf("error", "MCP %s 停止时关闭未确认：%s", entry.name, cr.CleanupError)
 	}
 }
 
@@ -526,7 +541,7 @@ func mcpRedactSecrets(env map[string]string, text string) string {
 }
 
 // routeFor 公开名 → 路由信息（server / 原始名 / openWorld），前端留痕用。
-func (m *mcpManager) routeFor(publicName string) (mcpRoute, bool) {
+func (m *Manager) routeFor(publicName string) (mcpRoute, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	route, ok := m.routes[publicName]
@@ -535,7 +550,7 @@ func (m *mcpManager) routeFor(publicName string) (mcpRoute, bool) {
 
 // callTool 按公开名查表路由（绝不字符串反解），转发到对应 server 的原始名。
 // 失败路径文本经 env 值脱敏（args 可能把密钥带进错误回显）。
-func (m *mcpManager) callTool(publicName string, args json.RawMessage) (mcpCallResult, error) {
+func (m *Manager) CallTool(publicName string, args json.RawMessage) (CallResult, error) {
 	m.mu.Lock()
 	route, ok := m.routes[publicName]
 	var client *mcpClient
@@ -550,22 +565,22 @@ func (m *mcpManager) callTool(publicName string, args json.RawMessage) (mcpCallR
 	}
 	m.mu.Unlock()
 	if !ok {
-		return mcpCallResult{}, fmt.Errorf("未知 MCP 工具：%s（可能已被注销或配置变更）", publicName)
+		return CallResult{}, fmt.Errorf("未知 MCP 工具：%s（可能已被注销或配置变更）", publicName)
 	}
 	if client == nil {
 		if state == "reconnecting" {
-			return mcpCallResult{}, fmt.Errorf("MCP server %s 正在重连，请稍后重试", route.Server)
+			return CallResult{}, fmt.Errorf("MCP server %s 正在重连，请稍后重试", route.Server)
 		}
-		return mcpCallResult{}, fmt.Errorf("MCP server %s 未连接", route.Server)
+		return CallResult{}, fmt.Errorf("MCP server %s 未连接", route.Server)
 	}
-	result, err := client.callTool(context.Background(), route.Raw, args)
+	result, err := client.CallTool(context.Background(), route.Raw, args)
 	if err != nil {
-		return mcpCallResult{}, fmt.Errorf("%s", mcpRedactSecrets(env, err.Error()))
+		return CallResult{}, fmt.Errorf("%s", mcpRedactSecrets(env, err.Error()))
 	}
 	return result, nil
 }
 
-type mcpSnapshotServer struct {
+type SnapshotServer struct {
 	Name        string             `json:"name"`
 	State       string             `json:"state"`
 	Reason      string             `json:"reason,omitempty"`
@@ -578,22 +593,22 @@ type mcpSnapshotServer struct {
 	NextRetryAt int64              `json:"nextRetryAt,omitempty"`
 }
 
-type mcpSnapshot struct {
-	Enabled bool                `json:"enabled"`
-	Servers []mcpSnapshotServer `json:"servers"`
+type Snapshot struct {
+	Enabled bool             `json:"enabled"`
+	Servers []SnapshotServer `json:"servers"`
 }
 
 // snapshot 当前全量快照（工具 + 状态），MCPSnapshot 兜底拉取用。
-func (m *mcpManager) snapshot() mcpSnapshot {
+func (m *Manager) Snapshot() Snapshot {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.snapshotLocked()
 }
 
-func (m *mcpManager) snapshotLocked() mcpSnapshot {
-	out := mcpSnapshot{Enabled: m.enabled, Servers: []mcpSnapshotServer{}}
+func (m *Manager) snapshotLocked() Snapshot {
+	out := Snapshot{Enabled: m.enabled, Servers: []SnapshotServer{}}
 	for _, entry := range m.servers {
-		s := mcpSnapshotServer{
+		s := SnapshotServer{
 			Name:        entry.name,
 			State:       entry.status.State,
 			Reason:      entry.status.Reason,
@@ -616,7 +631,7 @@ func (m *mcpManager) snapshotLocked() mcpSnapshot {
 // rawToolsForPanel 工具勾选面板用：server 的原始工具清单（含描述/schema/hints）。
 // 已连接直接取；未连接则临时起一个只读连接拉清单（不注册工具、不预留 namespace，
 // 绝不触碰活动实例——未连接时本就没有活动实例）。
-func (m *mcpManager) rawToolsForPanel(name string) ([]mcpRemoteTool, error) {
+func (m *Manager) RawToolsForPanel(name string) ([]RemoteTool, error) {
 	m.mu.Lock()
 	entry, ok := m.servers[name]
 	var cfg MCPServerConfig
@@ -632,7 +647,7 @@ func (m *mcpManager) rawToolsForPanel(name string) ([]mcpRemoteTool, error) {
 	if client != nil {
 		return clientToolsSorted(client), nil
 	}
-	if err := mcpValidateServer(name, cfg); err != nil {
+	if err := ValidateServer(name, cfg); err != nil {
 		return nil, err
 	}
 	tmp := newMCPClient(name, cfg)
@@ -644,9 +659,9 @@ func (m *mcpManager) rawToolsForPanel(name string) ([]mcpRemoteTool, error) {
 	return clientToolsSorted(tmp), nil
 }
 
-func clientToolsSorted(c *mcpClient) []mcpRemoteTool {
+func clientToolsSorted(c *mcpClient) []RemoteTool {
 	tools := c.currentTools()
-	out := make([]mcpRemoteTool, 0, len(tools))
+	out := make([]RemoteTool, 0, len(tools))
 	for _, t := range tools {
 		out = append(out, t)
 	}
@@ -654,7 +669,7 @@ func clientToolsSorted(c *mcpClient) []mcpRemoteTool {
 }
 
 // restartServer 用户点「重启」：清失败计数、重置状态、重新连接。
-func (m *mcpManager) restartServer(name string) error {
+func (m *Manager) RestartServer(name string) error {
 	m.mu.Lock()
 	entry, ok := m.servers[name]
 	if !ok {
@@ -686,7 +701,7 @@ func (m *mcpManager) restartServer(name string) error {
 }
 
 // closeAll 应用退出：并发关所有 server，总预算 8s；超时的靠 taskkill 兜底。
-func (m *mcpManager) closeAll() {
+func (m *Manager) CloseAll() {
 	m.mu.Lock()
 	entries := make([]*mcpServerEntry, 0, len(m.servers))
 	for _, entry := range m.servers {
@@ -710,20 +725,20 @@ func (m *mcpManager) closeAll() {
 	}
 }
 
-func (m *mcpManager) emitTools() {
+func (m *Manager) emitTools() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.emitToolsLocked()
 }
 
-func (m *mcpManager) emitToolsLocked() {
+func (m *Manager) emitToolsLocked() {
 	if m.emit == nil {
 		return
 	}
 	m.emit("mcp-tools-changed", m.snapshotLocked())
 }
 
-func (m *mcpManager) emitStatusLocked() {
+func (m *Manager) emitStatusLocked() {
 	if m.emit == nil {
 		return
 	}
@@ -731,11 +746,11 @@ func (m *mcpManager) emitStatusLocked() {
 }
 
 // loadInitialConfig 启动时读盘建表（不自动启动进程——惰性，首次需要工具清单才起）。
-func (m *mcpManager) loadInitialConfig() error {
-	cfg, err := readMCPConfig()
+func (m *Manager) LoadInitialConfig() error {
+	cfg, err := ReadConfig()
 	if err != nil {
 		return err
 	}
-	m.applyConfig(cfg)
+	m.ApplyConfig(cfg)
 	return nil
 }

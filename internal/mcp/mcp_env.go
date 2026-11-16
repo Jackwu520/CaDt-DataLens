@@ -1,6 +1,6 @@
 // mcp_env.go：MCP 子进程环境清洗——先过滤父进程环境里的疑似密钥，再合并显式配置的 env。
 // 不清洗的话每个 MCP server 都能白拿用户父进程的全部 token；server 是第三方代码。
-package main
+package mcp
 
 import (
 	"os"

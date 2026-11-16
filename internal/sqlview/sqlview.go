@@ -1,4 +1,6 @@
-package main
+// Package sqlview：CSV/TSV/JSONL 只读 SQL 查询引擎（临时 SQLite，不动原文件）。
+// 从仓库根 sqlview.go 整体下沉；Wails 绑定留在根 sqlview_app.go。
+package sqlview
 
 import (
 	"context"
@@ -565,7 +567,7 @@ func importJSONL(content string) ([]sqlColumn, func(insert func([]any) error) er
 	return columns, insertRows, rows, truncated, nil
 }
 
-func (a *App) SQLImport(path, kind, encoding, text string, useText bool) (SQLImportInfo, error) {
+func Import(path, kind, encoding, text string, useText bool) (SQLImportInfo, error) {
 	started := time.Now()
 	kind = strings.ToLower(strings.TrimSpace(kind))
 	if kind != "csv" && kind != "tsv" && kind != "jsonl" {
@@ -646,7 +648,7 @@ func sqlCellString(value any) (string, bool) {
 	}
 }
 
-func (a *App) SQLQuery(id, query string, limit int) (SQLResult, error) {
+func Query(id, query string, limit int) (SQLResult, error) {
 	started := time.Now()
 	query = strings.TrimSpace(query)
 	if query == "" {
@@ -712,7 +714,7 @@ func (a *App) SQLQuery(id, query string, limit int) (SQLResult, error) {
 	return result, nil
 }
 
-func (a *App) SQLClose(id string) error {
+func Close(id string) error {
 	sqlSessionsMu.Lock()
 	session := sqlSessions[id]
 	delete(sqlSessions, id)
@@ -724,7 +726,7 @@ func (a *App) SQLClose(id string) error {
 }
 
 // cleanupSQLTempFiles 清理上次运行遗留的临时查询库（只删 7 天前的，避免误删长时间开着的会话）。
-func cleanupSQLTempFiles() {
+func CleanupTempFiles() {
 	matches, err := filepath.Glob(filepath.Join(os.TempDir(), "cadt-sql-*.db*"))
 	if err != nil {
 		return

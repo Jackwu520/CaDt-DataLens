@@ -1,6 +1,6 @@
 // mcp_generation.go：工具世代——从 tools/list 原始清单构造面向模型的整代公开工具集。
 // 原子性硬约束：要么完整世代，要么没有，绝不部分发布（模型看到「半个 server」排查成本极高）。
-package main
+package mcp
 
 import (
 	"encoding/json"
@@ -8,7 +8,7 @@ import (
 )
 
 const (
-	mcpDescriptionMax  = 500 // 单条工具描述截断：远端文本进 system prompt，必须保守
+	mcpDescriptionMax  = 500                        // 单条工具描述截断：远端文本进 system prompt，必须保守
 	mcpPublicToolDestr = "destructiveHint 默认为 true" // 仅注释用途
 )
 
@@ -28,7 +28,7 @@ type mcpPublicToolDef struct {
 // mcpBuildToolSet 构造单 server 的整代工具集。
 // EnabledTools 里 server 已不存在的工具不算失败（server 升级移除工具是常态）：
 // 跳过并记入 stale，由工具面板异步对账标黄提示；hash 碰撞才算失败并整体回滚。
-func mcpBuildToolSet(server string, tools map[string]mcpRemoteTool, enabledTools []string) (defs []mcpPublicToolDef, stale []string, err error) {
+func mcpBuildToolSet(server string, tools map[string]RemoteTool, enabledTools []string) (defs []mcpPublicToolDef, stale []string, err error) {
 	defs = make([]mcpPublicToolDef, 0, len(enabledTools))
 	seen := map[string]string{} // publicName → rawName，同一 server 内防 hash 碰撞
 	for _, raw := range enabledTools {

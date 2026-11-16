@@ -74,11 +74,11 @@ func ParseReviewText(text string) (*PatchPreview, error) {
 			rel = strings.TrimPrefix(strings.TrimPrefix(strings.TrimSpace(raw), "a/"), "b/")
 		}
 		fo := PatchFileOut{
-			RelPath:  rel,
-			Kind:     f.Kind,
-			Added:    f.Added,
-			Removed:  f.Removed,
-			Hunks:    make([]PatchHunkOut, 0, len(f.Hunks)),
+			RelPath: rel,
+			Kind:    f.Kind,
+			Added:   f.Added,
+			Removed: f.Removed,
+			Hunks:   make([]PatchHunkOut, 0, len(f.Hunks)),
 		}
 		for j := range f.Hunks {
 			fo.Hunks = append(fo.Hunks, patchHunkToOut(j, f.Hunks[j]))

@@ -127,6 +127,8 @@ CaDt-DataLens 是一个面向 Windows 的轻量级多格式数据查看与编辑
 **验证与提交**
 - 新增/修改纯逻辑必须配测试：Go 表驱动 `*_test.go`；前端 `*.test.mjs` 与源码同目录，**并登记进 `npm test` 清单**（漏登记 = 测试从未跑过）。
 - 提交前跑改动面的测试 + 构建；**测试/构建命令不许接 grep/tail 等管道核对结果**（会吞退出码，M3 带病提交教训），要看退出码本身。
+- **`go test` 禁止前台阻塞等待**：一律丢后台执行（后台任务 / 独立终端，输出重定向到日志），前台用 `sleep` 或计时器轮询日志判断是否结束；必须显式带 `-timeout`（全量建议 `-timeout 300s`）。会拉子进程的用例（MCP 假 server / ConPTY / WebView2）一旦回归，前台阻塞会把整个会话和桌面一起拖死（2026-11-16 教训：假 server 的 `TestMain` 没随包迁移，子进程递归跑全量测试，进程树指数增长，机器黑屏）。
+- 测试文件跨包迁移时，`TestMain` 与它服务的测试必须同批同包移动；子进程自调用的测试（如 MCP 假 server）靠 `TestMain` 识别运行模式，漏搬即递归启动。搬完先跑一条最小用例验证子进程模式生效，再跑全量。
 - conventional commits + 中文描述（feat/fix/refactor/docs/test/chore/perf）；一次提交一个主题；重构类一批一 commit、可单独 revert；提交信息写明行为变化，提交前核对 `git show` 的 diff 与描述一致（d5ad6ac 教训）。
 
 ### Go 侧

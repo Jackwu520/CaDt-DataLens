@@ -1,4 +1,4 @@
-package main
+package sqlview
 
 import (
 	"os"
@@ -7,15 +7,14 @@ import (
 	"testing"
 )
 
-func importSQLText(t *testing.T, kind, text string) (*App, SQLImportInfo) {
+func importSQLText(t *testing.T, kind, text string) SQLImportInfo {
 	t.Helper()
-	app := &App{}
-	info, err := app.SQLImport("", kind, "utf-8", text, true)
+	info, err := Import("", kind, "utf-8", text, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = app.SQLClose(info.ID) })
-	return app, info
+	t.Cleanup(func() { _ = Close(info.ID) })
+	return info
 }
 
 func TestSQLImportCSVAndQuery(t *testing.T) {
@@ -24,16 +23,15 @@ func TestSQLImportCSVAndQuery(t *testing.T) {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	app := &App{}
-	info, err := app.SQLImport(path, "csv", "utf-8", "", false)
+	info, err := Import(path, "csv", "utf-8", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer app.SQLClose(info.ID)
+	defer Close(info.ID)
 	if info.Rows != 3 || len(info.Columns) != 3 {
 		t.Fatalf("info = %+v", info)
 	}
-	result, err := app.SQLQuery(info.ID, "SELECT name, age FROM t ORDER BY age DESC", 10)
+	result, err := Query(info.ID, "SELECT name, age FROM t ORDER BY age DESC", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,32 +45,32 @@ func TestSQLImportCSVAndQuery(t *testing.T) {
 		t.Fatalf("空值应为 NULL：%+v nulls=%+v", result.Rows[2], result.Nulls[2])
 	}
 	// 数值列应能按数值排序/聚合
-	sum, err := app.SQLQuery(info.ID, "SELECT sum(age) AS s FROM t", 10)
+	sum, err := Query(info.ID, "SELECT sum(age) AS s FROM t", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if sum.Rows[0][0] != "55" {
 		t.Fatalf("sum(age) = %q", sum.Rows[0][0])
 	}
-	limited, err := app.SQLQuery(info.ID, "SELECT * FROM t", 2)
+	limited, err := Query(info.ID, "SELECT * FROM t", 2)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(limited.Rows) != 2 || !limited.Truncated {
 		t.Fatalf("limit 结果 = %d truncated=%v", len(limited.Rows), limited.Truncated)
 	}
-	if _, err := app.SQLQuery(info.ID, "SELECT * FROM missing_table", 10); err == nil {
+	if _, err := Query(info.ID, "SELECT * FROM missing_table", 10); err == nil {
 		t.Fatal("错误 SQL 应报错")
 	}
 }
 
 func TestSQLImportTSVAndDirtyHeaders(t *testing.T) {
 	content := "id\t\tname\n1\tx\ta\n2\ty\tb\n"
-	app, info := importSQLText(t, "tsv", content)
+	info := importSQLText(t, "tsv", content)
 	if len(info.Columns) != 3 || info.Columns[1] != "col2" {
 		t.Fatalf("columns = %+v", info.Columns)
 	}
-	result, err := app.SQLQuery(info.ID, "SELECT id, name FROM t ORDER BY id", 10)
+	result, err := Query(info.ID, "SELECT id, name FROM t ORDER BY id", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,11 +84,11 @@ func TestSQLImportJSONL(t *testing.T) {
 		`{"name":"a","age":1,"meta":{"x":1}}`,
 		`{"name":"b","age":2}`,
 	}, "\n") + "\n"
-	app, info := importSQLText(t, "jsonl", content)
+	info := importSQLText(t, "jsonl", content)
 	if info.Rows != 2 {
 		t.Fatalf("rows = %d", info.Rows)
 	}
-	result, err := app.SQLQuery(info.ID, "SELECT name, age, meta FROM t ORDER BY age DESC", 10)
+	result, err := Query(info.ID, "SELECT name, age, meta FROM t ORDER BY age DESC", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +98,7 @@ func TestSQLImportJSONL(t *testing.T) {
 	if result.Rows[1][0] != "a" || !strings.Contains(result.Rows[1][2], `"x":1`) {
 		t.Fatalf("嵌套值应存 JSON 文本：%+v", result.Rows[1])
 	}
-	jsonResult, err := app.SQLQuery(info.ID, `SELECT json_extract(meta,'$.x') AS x FROM t WHERE name='a'`, 10)
+	jsonResult, err := Query(info.ID, `SELECT json_extract(meta,'$.x') AS x FROM t WHERE name='a'`, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,11 +108,11 @@ func TestSQLImportJSONL(t *testing.T) {
 }
 
 func TestSQLImportJSONLFallback(t *testing.T) {
-	app, info := importSQLText(t, "jsonl", "[1,2]\n[3,4]\n")
+	info := importSQLText(t, "jsonl", "[1,2]\n[3,4]\n")
 	if len(info.Columns) != 1 || info.Columns[0] != "data" {
 		t.Fatalf("columns = %+v", info.Columns)
 	}
-	result, err := app.SQLQuery(info.ID, "SELECT data FROM t ORDER BY data", 10)
+	result, err := Query(info.ID, "SELECT data FROM t ORDER BY data", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,14 +122,13 @@ func TestSQLImportJSONLFallback(t *testing.T) {
 }
 
 func TestSQLImportEmpty(t *testing.T) {
-	app := &App{}
-	if _, err := app.SQLImport("", "csv", "utf-8", "   \n", true); err == nil {
+	if _, err := Import("", "csv", "utf-8", "   \n", true); err == nil {
 		t.Fatal("空内容应报错")
 	}
 }
 
 func TestSQLCloseRemovesTempFile(t *testing.T) {
-	app, info := importSQLText(t, "csv", "a,b\n1,2\n")
+	info := importSQLText(t, "csv", "a,b\n1,2\n")
 	sqlSessionsMu.Lock()
 	session := sqlSessions[info.ID]
 	sqlSessionsMu.Unlock()
@@ -139,23 +136,23 @@ func TestSQLCloseRemovesTempFile(t *testing.T) {
 		t.Fatal("session 不存在")
 	}
 	path := session.path
-	if err := app.SQLClose(info.ID); err != nil {
+	if err := Close(info.ID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("临时库未删除：%v", err)
 	}
-	if _, err := app.SQLQuery(info.ID, "SELECT * FROM t", 10); err == nil {
+	if _, err := Query(info.ID, "SELECT * FROM t", 10); err == nil {
 		t.Fatal("关闭后查询应报错")
 	}
 }
 
 func TestSQLDML(t *testing.T) {
-	app, info := importSQLText(t, "csv", "a\n1\n")
-	if _, err := app.SQLQuery(info.ID, "UPDATE t SET a=2", 10); err != nil {
+	info := importSQLText(t, "csv", "a\n1\n")
+	if _, err := Query(info.ID, "UPDATE t SET a=2", 10); err != nil {
 		t.Fatalf("DML 查询报错：%v", err)
 	}
-	result, err := app.SQLQuery(info.ID, "SELECT a FROM t", 10)
+	result, err := Query(info.ID, "SELECT a FROM t", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,8 +162,8 @@ func TestSQLDML(t *testing.T) {
 }
 
 func TestSQLCSVPreservesNumericText(t *testing.T) {
-	app, info := importSQLText(t, "csv", "code,value\n1,00123\n2,30.0\n3,+1\n")
-	result, err := app.SQLQuery(info.ID, "SELECT value FROM t ORDER BY code", 10)
+	info := importSQLText(t, "csv", "code,value\n1,00123\n2,30.0\n3,+1\n")
+	result, err := Query(info.ID, "SELECT value FROM t ORDER BY code", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,11 +176,11 @@ func TestSQLCSVPreservesNumericText(t *testing.T) {
 }
 
 func TestSQLJSONLFallbackCountsAllRows(t *testing.T) {
-	app, info := importSQLText(t, "jsonl", "[1]\n{\"a\":2}\n[3]\n")
+	info := importSQLText(t, "jsonl", "[1]\n{\"a\":2}\n[3]\n")
 	if info.Rows != 3 || info.Truncated {
 		t.Fatalf("info = %+v，回退模式应统计全部 3 行且未截断", info)
 	}
-	result, err := app.SQLQuery(info.ID, "SELECT count(*) FROM t", 10)
+	result, err := Query(info.ID, "SELECT count(*) FROM t", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,23 +190,23 @@ func TestSQLJSONLFallbackCountsAllRows(t *testing.T) {
 }
 
 func TestSQLRejectsStatementsWritingOutsideSession(t *testing.T) {
-	app, info := importSQLText(t, "csv", "a\n1\n")
+	info := importSQLText(t, "csv", "a\n1\n")
 	for _, q := range []string{
 		"ATTACH DATABASE 'C:/tmp/cadt-escape.db' AS x",
 		"detach database x",
 		"VACUUM INTO 'C:/tmp/cadt-escape.db'",
 		"SELECT 1; /* c */ VACUUM INTO 'x.db'",
 	} {
-		if _, err := app.SQLQuery(info.ID, q, 10); err == nil {
+		if _, err := Query(info.ID, q, 10); err == nil {
 			t.Fatalf("%q 应被拒绝（能把文件写到临时副本之外）", q)
 		}
 	}
 	// 注释与字符串字面量里的关键词不误判
-	if _, err := app.SQLQuery(info.ID, "SELECT 'ATTACH' AS k -- VACUUM", 10); err != nil {
+	if _, err := Query(info.ID, "SELECT 'ATTACH' AS k -- VACUUM", 10); err != nil {
 		t.Fatalf("字面量误判：%v", err)
 	}
 	// 临时副本上的 DML 仍然允许（见 TestSQLDML）
-	if _, err := app.SQLQuery(info.ID, "UPDATE t SET a=9", 10); err != nil {
+	if _, err := Query(info.ID, "UPDATE t SET a=9", 10); err != nil {
 		t.Fatalf("临时副本 DML 不应被误拦：%v", err)
 	}
 }

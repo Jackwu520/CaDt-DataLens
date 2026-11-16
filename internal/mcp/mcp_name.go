@@ -2,7 +2,7 @@
 // 纯函数是硬要求：公开名进会话历史与权限白名单，重连/重启/配置升级后必须保持不变。
 // 干净路径不加 hash（可读性），有损路径（字符替换或截断）加 12 位身份 hash 防折叠。
 // 公开名绝不发给 server，也绝不被字符串反解还原（tools/call 只发原始名，路由查表）。
-package main
+package mcp
 
 import (
 	"crypto/sha256"

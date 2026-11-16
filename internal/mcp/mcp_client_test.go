@@ -1,5 +1,5 @@
 // mcp_client_test.go：连接桥的进程级测试——假 server 用 go test 二进制自调用（见 mcp_fakeserver_test.go）。
-package main
+package mcp
 
 import (
 	"context"
@@ -13,6 +13,12 @@ import (
 // mode 经 env 显式传入（显式 env 不受清洗过滤，见 mcp_env.go）。
 func mcpTestServerConfig(t *testing.T, mode string, mutate func(*MCPServerConfig)) MCPServerConfig {
 	t.Helper()
+	// 防递归护栏：子进程带着 MCP_FAKE_SERVER 却仍在跑测试，说明 TestMain 没接住
+	// （典型原因：mcp_fakeserver_test.go 没和 MCP 测试同包）。此时必须立刻失败，
+	// 否则每层测试都会再拉起一层子进程，进程树指数增长拖垮整机。
+	if active := os.Getenv("MCP_FAKE_SERVER"); active != "" {
+		t.Fatalf("测试进程带着 MCP_FAKE_SERVER=%s 在跑测试：假 server 的 TestMain 未生效，拒绝递归拉起", active)
+	}
 	exe, err := os.Executable()
 	if err != nil {
 		t.Fatalf("定位测试二进制失败：%v", err)
@@ -52,7 +58,7 @@ func TestMCPClientConnectListCall(t *testing.T) {
 		t.Fatalf("状态应为 connected/2，实际：%+v", st)
 	}
 
-	result, err := client.callTool(context.Background(), "alpha", nil)
+	result, err := client.CallTool(context.Background(), "alpha", nil)
 	if err != nil {
 		t.Fatalf("callTool 失败：%v", err)
 	}
@@ -64,7 +70,7 @@ func TestMCPClientConnectListCall(t *testing.T) {
 	}
 
 	// args 以 JSON 原样透传
-	result, err = client.callTool(context.Background(), "beta", []byte(`{"x":1}`))
+	result, err = client.CallTool(context.Background(), "beta", []byte(`{"x":1}`))
 	if err != nil {
 		t.Fatalf("带参调用失败：%v", err)
 	}
@@ -97,7 +103,7 @@ func TestMCPClientDuplicateToolsRejected(t *testing.T) {
 
 func TestMCPClientCallIsError(t *testing.T) {
 	client := mcpConnectForTest(t, "toolerr", nil)
-	result, err := client.callTool(context.Background(), "alpha", nil)
+	result, err := client.CallTool(context.Background(), "alpha", nil)
 	if err != nil {
 		t.Fatalf("isError 结果不当异常，call 层不应报错：%v", err)
 	}
@@ -111,7 +117,7 @@ func TestMCPClientCallIsError(t *testing.T) {
 
 func TestMCPClientCallRPCError(t *testing.T) {
 	client := mcpConnectForTest(t, "rpcerr", nil)
-	_, err := client.callTool(context.Background(), "alpha", nil)
+	_, err := client.CallTool(context.Background(), "alpha", nil)
 	var rpcErr *rpcError
 	if err == nil {
 		t.Fatal("RPC 错误应上抛")
@@ -193,7 +199,7 @@ func TestMCPClientCloseTwice(t *testing.T) {
 }
 
 func TestMCPProbeServer(t *testing.T) {
-	res := mcpProbeServer(context.Background(), "probe-server", mcpTestServerConfig(t, "ok", nil))
+	res := ProbeServer(context.Background(), "probe-server", mcpTestServerConfig(t, "ok", nil))
 	if res.Error != "" {
 		t.Fatalf("探测不应失败：%s", res.Error)
 	}
@@ -212,7 +218,7 @@ func TestMCPProbeServer(t *testing.T) {
 }
 
 func TestMCPProbeServerConnectFailure(t *testing.T) {
-	res := mcpProbeServer(context.Background(), "probe-server", MCPServerConfig{
+	res := ProbeServer(context.Background(), "probe-server", MCPServerConfig{
 		Command: "definitely-not-exists-xyz.exe",
 	})
 	if res.Stage != "connect" {

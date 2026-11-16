@@ -1,7 +1,7 @@
 // mcp_config.go：MCP 服务器配置（mcp.json）——Go 独占读写、0600 原子写、写入期校验。
 // 独立于 ai-config.json（后者由前端整块读写覆盖，混入结构化配置冲突面太大）。
 // 读取时损坏/超限一律报错，绝不自动重写——那会洗掉用户手写的内容。
-package main
+package mcp
 
 import (
 	"bytes"
@@ -14,6 +14,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"datalens/internal/atomfile"
 )
 
 const (
@@ -28,7 +30,7 @@ const (
 
 var (
 	// serverName 是 mcp.json 的键，也是工具 namespace 的唯一来源（绝不用远程 serverInfo.name）。
-	mcpServerNameRule  = regexp.MustCompile(`^[A-Za-z0-9_-]{1,32}$`)
+	mcpServerNameRule = regexp.MustCompile(`^[A-Za-z0-9_-]{1,32}$`)
 	// 原始工具名允许点号等字符（如 context7.resolve-library-id）；公开名的合法性由 mcp_name.go 保证。
 	mcpRawToolNameRule = regexp.MustCompile(`^[A-Za-z0-9_.:@/-]{1,128}$`)
 )
@@ -56,11 +58,14 @@ func mcpConfigEnabled(cfg MCPConfig) bool {
 	return cfg.Enabled == nil || *cfg.Enabled
 }
 
-func mcpConfigFilePath() string {
-	return mcpConfigFilePathAt(appDataRoot())
+func ConfigFilePath() string {
+	if AppDataDir == nil {
+		return ""
+	}
+	return ConfigFilePathAt(AppDataDir())
 }
 
-func mcpConfigFilePathAt(configDir string) string {
+func ConfigFilePathAt(configDir string) string {
 	if configDir == "" {
 		return ""
 	}
@@ -95,8 +100,8 @@ func (s MCPServerConfig) closeTimeout() time.Duration {
 
 // readMCPConfig 读取 mcp.json。不存在返回空配置不报错；损坏/超限返回错误让设置页展示，
 // 绝不自动重写成空配置。
-func readMCPConfig() (MCPConfig, error) {
-	return readMCPConfigAt(mcpConfigFilePath())
+func ReadConfig() (MCPConfig, error) {
+	return readMCPConfigAt(ConfigFilePath())
 }
 
 func readMCPConfigAt(path string) (MCPConfig, error) {
@@ -132,8 +137,8 @@ func readMCPConfigAt(path string) (MCPConfig, error) {
 
 // writeMCPConfig 写入 mcp.json。写入期校验：坏条目当场拒绝落盘，用户改配置的当下就知道错在哪，
 // 而不是下次开 AI 面板看到一句「启动失败」。
-func writeMCPConfig(cfg MCPConfig) error {
-	return writeMCPConfigAt(mcpConfigFilePath(), cfg)
+func WriteConfig(cfg MCPConfig) error {
+	return writeMCPConfigAt(ConfigFilePath(), cfg)
 }
 
 func writeMCPConfigAt(path string, cfg MCPConfig) error {
@@ -147,7 +152,7 @@ func writeMCPConfigAt(path string, cfg MCPConfig) error {
 		cfg.MCPServers = map[string]MCPServerConfig{}
 	}
 	for name, s := range cfg.MCPServers {
-		if err := mcpValidateServer(name, s); err != nil {
+		if err := ValidateServer(name, s); err != nil {
 			return err
 		}
 	}
@@ -158,12 +163,12 @@ func writeMCPConfigAt(path string, cfg MCPConfig) error {
 	if len(data) > mcpConfigFileMax {
 		return fmt.Errorf("MCP 配置超过 %d KB", mcpConfigFileMax/1024)
 	}
-	return writeFileAtomicMode(path, data, 0o600)
+	return atomfile.WriteFileAtomicMode(path, data, 0o600)
 }
 
 // mcpValidateServer 校验单个 server 条目。EnabledTools 不在这里校验存在性——
 // 写入时进程可能从未启动（本方案明确不预探测），存在性对账移到保存后的异步工具面板（§15.1）。
-func mcpValidateServer(name string, s MCPServerConfig) error {
+func ValidateServer(name string, s MCPServerConfig) error {
 	if !mcpServerNameRule.MatchString(name) {
 		return fmt.Errorf("服务器名 %q 不合法：只能用字母数字下划线连字符，最长 32", name)
 	}

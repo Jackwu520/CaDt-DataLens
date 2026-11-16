@@ -1,6 +1,10 @@
 // mcp_fakeserver_test.go：go test 二进制自调用充当 MCP server（os.Args[0] + 环境变量开关），
 // 不在 testdata 里塞编译产物。需要覆盖的假 server 行为见各 mode。
-package main
+//
+// 硬约束：本文件的 TestMain 必须与 MCP 测试同包（internal/mcp）。
+// 它不在时，子进程不认得 MCP_FAKE_SERVER，会递归跑整个测试套件——进程树指数增长，
+// 表现为 go test 永不结束、机器资源耗尽（2026-11-16 挪包事故）。挪包时一起移动。
+package mcp
 
 import (
 	"bufio"

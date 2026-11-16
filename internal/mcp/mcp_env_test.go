@@ -1,5 +1,5 @@
 // mcp_env_test.go：MCP 子进程环境清洗的表驱动测试。
-package main
+package mcp
 
 import "testing"
 

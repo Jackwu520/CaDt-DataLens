@@ -1,5 +1,5 @@
 // mcp_name_test.go：工具命名纯函数——干净名不加 hash、有损名加 12 位 hash、身份不折叠、超长截断。
-package main
+package mcp
 
 import (
 	"regexp"

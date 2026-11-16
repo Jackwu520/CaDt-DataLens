@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"datalens/internal/executil"
 )
 
 type rgMessage struct {
@@ -64,7 +66,7 @@ func searchWithRipgrep(root, query string, caseSensitive bool, maxResults int, p
 	defer cancel()
 	args := append(rgGlobalArgs(query, caseSensitive, pattern), root)
 	cmd := exec.CommandContext(ctx, rgPath, args...)
-	hideCommandWindow(cmd)
+	executil.HideCommandWindow(cmd)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, false

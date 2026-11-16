@@ -13,6 +13,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"datalens/internal/executil"
+
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 	"golang.org/x/text/encoding/simplifiedchinese"
 	"golang.org/x/text/transform"
@@ -530,7 +532,7 @@ func (a *App) RunExec(id, exe string, args []string, cwd, pathPrepend string, ti
 	applyCommandCancel(cmd)
 	cmd.Dir = dir
 	cmd.Env = envWithPathPrepend(pathPrepend)
-	hideConsoleWindow(cmd)
+	executil.HideCommandWindow(cmd)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		stopRunningCommand(id)

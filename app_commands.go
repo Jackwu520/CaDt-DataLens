@@ -7,11 +7,11 @@ import (
 	"os"
 	"os/exec"
 	"sort"
-	"strconv"
 	"strings"
-	"syscall"
 	"sync"
 	"time"
+
+	"datalens/internal/executil"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -50,33 +50,10 @@ func (lw *limitedWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// hideConsoleWindow 后台命令不闪控制台窗口（GUI 进程拉起控制台子进程时必须）。
-func hideConsoleWindow(cmd *exec.Cmd) {
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x08000000} // CREATE_NO_WINDOW
-}
-
-// killProcessTree 终止整个进程树。Git for Windows 的 bin/bash.exe 是个 wrapper，
-// 真实 bash 是它的子进程：只 Kill wrapper 会让真实子进程继续运行并握住输出管道，
-// cmd.Wait 永不返回（同步超时失效、后台作业永不结束）。taskkill /F /T 连树终止。
-func killProcessTree(cmd *exec.Cmd) error {
-	if cmd.Process == nil {
-		return nil
-	}
-	if cmd.Process.Pid > 0 {
-		// taskkill 也是控制台程序：GUI 进程直接拉起时 Windows 会为它新建控制台窗口（黑框一闪）。
-		killCmd := exec.Command("taskkill", "/F", "/T", "/PID", strconv.Itoa(cmd.Process.Pid))
-		hideConsoleWindow(killCmd)
-		if err := killCmd.Run(); err == nil {
-			return nil
-		}
-	}
-	return cmd.Process.Kill()
-}
-
 // applyCommandCancel 配置取消行为：context 到期/取消时杀整棵进程树，
 // WaitDelay 兜底强制关闭管道，保证超时与停止语义在 wrapper shell 下依然成立。
 func applyCommandCancel(cmd *exec.Cmd) {
-	cmd.Cancel = func() error { return killProcessTree(cmd) }
+	cmd.Cancel = func() error { return executil.KillProcessTree(cmd) }
 	cmd.WaitDelay = 3 * time.Second
 }
 
@@ -138,7 +115,7 @@ func (a *App) runCommandSyncRegistered(id, exe string, args []string, cwd string
 	applyCommandCancel(cmd)
 	cmd.Dir = dir
 	cmd.Env = mergeEnv(os.Environ())
-	hideConsoleWindow(cmd)
+	executil.HideCommandWindow(cmd)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &limitedWriter{w: &stdout, limit: commandOutputCap}
 	cmd.Stderr = &limitedWriter{w: &stderr, limit: commandOutputCap}
@@ -211,7 +188,7 @@ func (a *App) StartCommand(id, exe string, args []string, cwd string) error {
 	applyCommandCancel(cmd)
 	cmd.Dir = dir
 	cmd.Env = mergeEnv(os.Environ())
-	hideConsoleWindow(cmd)
+	executil.HideCommandWindow(cmd)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		stopRunningCommand(id)

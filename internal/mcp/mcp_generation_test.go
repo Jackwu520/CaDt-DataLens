@@ -1,5 +1,5 @@
 // mcp_generation_test.go：工具世代构建——勾选过滤、stale 对账、hash 碰撞整体回滚、hint 缺省悲观。
-package main
+package mcp
 
 import (
 	"encoding/json"
@@ -7,11 +7,11 @@ import (
 	"testing"
 )
 
-func mcpTestRemoteTools() map[string]mcpRemoteTool {
+func mcpTestRemoteTools() map[string]RemoteTool {
 	ro := true
 	destr := false
 	open := true
-	return map[string]mcpRemoteTool{
+	return map[string]RemoteTool{
 		"read_thing":  {Name: "read_thing", Description: "读取", InputSchema: json.RawMessage(`{"type":"object"}`), Annotations: &mcpToolAnnotations{ReadOnlyHint: &ro}},
 		"write_thing": {Name: "write_thing", Description: "写入", Annotations: nil}, // 无 annotations：全部取悲观默认
 		"explore":     {Name: "explore", Description: "上网", Annotations: &mcpToolAnnotations{ReadOnlyHint: &ro, DestructiveHint: &destr, OpenWorldHint: &open}},
@@ -78,7 +78,7 @@ func TestMCPBuildToolSetEmptySelection(t *testing.T) {
 
 func TestMCPBuildToolSetAntiCollapse(t *testing.T) {
 	// 两个身份规范化后同串：12 位身份 hash 保证公开名不折叠（这正是 hash 输入用原始身份的意义）
-	tools := map[string]mcpRemoteTool{
+	tools := map[string]RemoteTool{
 		"a.b.c": {Name: "a.b.c", Description: "身份1"},
 		"a_b_c": {Name: "a_b_c", Description: "身份2"},
 	}

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"datalens/internal/mcp"
 	"datalens/internal/storage"
 )
 
@@ -56,7 +57,7 @@ func storageLocation(name string) string {
 	case storage.LocAIConfig:
 		return aiConfigFilePath()
 	case storage.LocMCPConfig:
-		return mcpConfigFilePath()
+		return mcp.ConfigFilePath()
 	case storage.LocEnvVars:
 		return envVarsFilePath()
 	}

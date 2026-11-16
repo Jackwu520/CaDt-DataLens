@@ -1,6 +1,6 @@
 // mcp_client.go：单个 MCP server 的连接桥——进程启动、initialize 握手、tools/list 分页、
 // tools/call 转发与关闭确认。多 server 编排、世代交换与重连调度在 mcp_manager.go。
-package main
+package mcp
 
 import (
 	"context"
@@ -20,9 +20,9 @@ import (
 const (
 	mcpProtocolVersion = "2025-06-18" // 握手以 server 返回的版本为准，不硬拒
 	mcpClientName      = "CaDt-DataLens"
-	mcpMaxListPages    = 20         // 分页上限：游标死循环的 server 按截断处理，不挂死
-	mcpMaxProbeTools   = 512        // 探测工具名上限：firehose server 不至于把面板撑爆
-	mcpResultMaxBytes  = 256 << 10  // 单次调用结果截断：防一次查询打爆上下文
+	mcpMaxListPages    = 20        // 分页上限：游标死循环的 server 按截断处理，不挂死
+	mcpMaxProbeTools   = 512       // 探测工具名上限：firehose server 不至于把面板撑爆
+	mcpResultMaxBytes  = 256 << 10 // 单次调用结果截断：防一次查询打爆上下文
 	mcpWaitPipeDelay   = 3 * time.Second
 	mcpCloseForceWait  = 3 * time.Second
 )
@@ -34,7 +34,7 @@ type mcpToolAnnotations struct {
 }
 
 // mcpRemoteTool 是 tools/list 返回的原始工具（raw 名），面向模型的公开名由 mcp_name.go 映射。
-type mcpRemoteTool struct {
+type RemoteTool struct {
 	Name        string              `json:"name"`
 	Description string              `json:"description,omitempty"`
 	InputSchema json.RawMessage     `json:"inputSchema,omitempty"`
@@ -66,22 +66,22 @@ type mcpClient struct {
 	procCancel context.CancelFunc
 	cmd        *exec.Cmd
 	stdin      io.WriteCloser
-	jobClose   func() // Job Object 句柄释放（KILL_ON_JOB_CLOSE：关句柄 = 内核杀整组）
+	jobClose   func()        // Job Object 句柄释放（KILL_ON_JOB_CLOSE：关句柄 = 内核杀整组）
 	waitDone   chan struct{} // cmd.Wait 返回后关闭，waitErr 随之可见
 	waitErr    error
 
 	conn      *rpcConn
 	stderrLog *mcpRingBuffer
 
-	onToolsChanged func() // notifications/tools/list_changed 回调（manager 接线）
+	onToolsChanged func()              // notifications/tools/list_changed 回调（manager 接线）
 	onLost         func(reason string) // 进程意外退出 / 读取异常结束（主动 close 时不触发）
 	closing        atomic.Bool         // 主动关闭标记：区分「我们关的」和「server 自己死了」
 
 	mu           sync.Mutex
 	status       mcpStatus
-	tools        map[string]mcpRemoteTool // raw 名 → 工具（当前世代）
-	serverName   string                   // 远端 serverInfo.name，仅诊断展示，绝不作 namespace
-	instructions string                   // server 说明书：只展示给用户看，不注入系统提示
+	tools        map[string]RemoteTool // raw 名 → 工具（当前世代）
+	serverName   string                // 远端 serverInfo.name，仅诊断展示，绝不作 namespace
+	instructions string                // server 说明书：只展示给用户看，不注入系统提示
 }
 
 func newMCPClient(name string, cfg MCPServerConfig) *mcpClient {
@@ -101,7 +101,7 @@ func (c *mcpClient) connect(ctx context.Context) error {
 	cmd.Env = mcpChildEnv(c.cfg.Env)
 	mcpHideWindow(cmd)
 	cmd.Cancel = func() error { return mcpKillTree(cmd) } // ctx 取消 = 杀整棵树
-	cmd.WaitDelay = mcpWaitPipeDelay                       // wrapper 子进程握管道时强制收尾
+	cmd.WaitDelay = mcpWaitPipeDelay                      // wrapper 子进程握管道时强制收尾
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -122,7 +122,7 @@ func (c *mcpClient) connect(ctx context.Context) error {
 	c.stdin = stdin
 	c.stderrLog = &mcpRingBuffer{limit: mcpStderrRingMax}
 	if closeJob, jobErr := mcpAttachJob(cmd); jobErr != nil {
-		writeAppLog("warn", "MCP %s Job Object 附加失败（taskkill 兜底仍在）：%v", c.name, jobErr)
+		logf("warn", "MCP %s Job Object 附加失败（taskkill 兜底仍在）：%v", c.name, jobErr)
 	} else {
 		c.jobClose = closeJob
 	}
@@ -130,7 +130,7 @@ func (c *mcpClient) connect(ctx context.Context) error {
 	c.conn = newRPCConn(stdin, c.onNotification)
 	go func() {
 		if err := c.conn.serve(stdout); err != nil {
-			writeAppLog("warn", "MCP %s 连接读取结束：%v", c.name, err)
+			logf("warn", "MCP %s 连接读取结束：%v", c.name, err)
 		}
 		if !c.closing.Load() && c.onLost != nil {
 			c.onLost("stdout 读取结束（server 可能已退出）")
@@ -157,7 +157,7 @@ func (c *mcpClient) connect(ctx context.Context) error {
 		"capabilities":    map[string]any{}, // 不声明 sampling/roots/elicitation，server 就不会发反向请求
 		"clientInfo": map[string]any{
 			"name":    mcpClientName,
-			"version": strings.TrimPrefix(appVersion, "v"),
+			"version": strings.TrimPrefix(Version, "v"),
 		},
 	}
 	raw, err := c.conn.call(hsCtx, "initialize", initParams)
@@ -196,12 +196,12 @@ func (c *mcpClient) connect(ctx context.Context) error {
 }
 
 // listTools 分页拉完整工具清单；同一 server 重复列出同一原始名 → 整个列表判为无效。
-func (c *mcpClient) listTools(ctx context.Context) (map[string]mcpRemoteTool, error) {
-	tools := map[string]mcpRemoteTool{}
+func (c *mcpClient) listTools(ctx context.Context) (map[string]RemoteTool, error) {
+	tools := map[string]RemoteTool{}
 	cursor := ""
 	for page := 0; ; page++ {
 		if page >= mcpMaxListPages {
-			writeAppLog("warn", "MCP %s tools/list 超过 %d 页，按截断处理", c.name, mcpMaxListPages)
+			logf("warn", "MCP %s tools/list 超过 %d 页，按截断处理", c.name, mcpMaxListPages)
 			break
 		}
 		params := map[string]any{}
@@ -213,8 +213,8 @@ func (c *mcpClient) listTools(ctx context.Context) (map[string]mcpRemoteTool, er
 			return nil, fmt.Errorf("tools/list 失败：%w", err)
 		}
 		var pageResp struct {
-			Tools      []mcpRemoteTool `json:"tools"`
-			NextCursor string          `json:"nextCursor"`
+			Tools      []RemoteTool `json:"tools"`
+			NextCursor string       `json:"nextCursor"`
 		}
 		if err := json.Unmarshal(raw, &pageResp); err != nil {
 			return nil, fmt.Errorf("tools/list 响应解析失败：%w", err)
@@ -242,14 +242,14 @@ func (c *mcpClient) onNotification(msg *rpcMessage) {
 	}
 }
 
-type mcpCallResult struct {
+type CallResult struct {
 	Text    string `json:"text"`
 	IsError bool   `json:"isError"`
 }
 
 // callTool 转发一次工具调用（只发原始名，公开名绝不发给 server）。
 // RPC 层错误返回 error；server 侧的业务失败走 IsError（isError 结果不当异常）。
-func (c *mcpClient) callTool(ctx context.Context, rawName string, args json.RawMessage) (mcpCallResult, error) {
+func (c *mcpClient) CallTool(ctx context.Context, rawName string, args json.RawMessage) (CallResult, error) {
 	if len(args) == 0 {
 		args = json.RawMessage("{}")
 	}
@@ -258,7 +258,7 @@ func (c *mcpClient) callTool(ctx context.Context, rawName string, args json.RawM
 	defer cancel()
 	raw, err := c.conn.call(callCtx, "tools/call", params)
 	if err != nil {
-		return mcpCallResult{}, err
+		return CallResult{}, err
 	}
 	var resp struct {
 		Content []struct {
@@ -270,7 +270,7 @@ func (c *mcpClient) callTool(ctx context.Context, rawName string, args json.RawM
 		IsError bool `json:"isError"`
 	}
 	if err := json.Unmarshal(raw, &resp); err != nil {
-		return mcpCallResult{}, fmt.Errorf("tools/call 响应解析失败：%w", err)
+		return CallResult{}, fmt.Errorf("tools/call 响应解析失败：%w", err)
 	}
 	var b strings.Builder
 	for _, item := range resp.Content {
@@ -286,7 +286,7 @@ func (c *mcpClient) callTool(ctx context.Context, rawName string, args json.RawM
 			b.WriteString(fmt.Sprintf("[%s 内容略]", item.Type))
 		}
 	}
-	return mcpCallResult{Text: mcpTruncateText(b.String(), mcpResultMaxBytes), IsError: resp.IsError}, nil
+	return CallResult{Text: mcpTruncateText(b.String(), mcpResultMaxBytes), IsError: resp.IsError}, nil
 }
 
 // mcpTruncateText 按字节截断但不截断 UTF-8 码点，并注明截断。
@@ -325,8 +325,8 @@ func (c *mcpClient) close() mcpCloseResult {
 		c.releaseJob()
 		return mcpCloseResult{CloseConfirmed: true}
 	case <-time.After(c.cfg.closeTimeout()):
-		c.procCancel()  // 超预算：cmd.Cancel → 杀整棵树，WaitDelay 兜底管道
-		c.releaseJob()  // 内核兜底：句柄关闭即杀整组（覆盖 taskkill 失败/孤儿场景）
+		c.procCancel() // 超预算：cmd.Cancel → 杀整棵树，WaitDelay 兜底管道
+		c.releaseJob() // 内核兜底：句柄关闭即杀整组（覆盖 taskkill 失败/孤儿场景）
 		select {
 		case <-c.waitDone:
 			c.shutdownAll()
@@ -371,10 +371,10 @@ func (c *mcpClient) snapshotStatus() mcpStatus {
 	return c.status
 }
 
-func (c *mcpClient) currentTools() map[string]mcpRemoteTool {
+func (c *mcpClient) currentTools() map[string]RemoteTool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	out := make(map[string]mcpRemoteTool, len(c.tools))
+	out := make(map[string]RemoteTool, len(c.tools))
 	for k, v := range c.tools {
 		out[k] = v
 	}
@@ -388,7 +388,7 @@ func (c *mcpClient) diagnostics() (serverName, instructions, stderr string) {
 }
 
 // mcpProbeResult 探测结果。durationMs 不含清理时间——用户关心「多快能连上」。
-type mcpProbeResult struct {
+type ProbeResult struct {
 	Stage          string   `json:"stage"` // connect | list（空 = 成功）
 	Error          string   `json:"error,omitempty"`
 	Tools          []string `json:"tools,omitempty"`
@@ -401,15 +401,15 @@ type mcpProbeResult struct {
 // mcpProbeServer 探测（设置页「测试连接」用）：总预算 10s，独立临时进程，只读——
 // 不注册工具、不预留 namespace、绝不触碰活动实例。失败分阶段，用户能区分
 // 「连不上」和「连上了但列不出工具」。
-func mcpProbeServer(ctx context.Context, name string, cfg MCPServerConfig) mcpProbeResult {
+func ProbeServer(ctx context.Context, name string, cfg MCPServerConfig) ProbeResult {
 	const budget = 10 * time.Second
 	startedAt := time.Now()
 	probeCtx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 
 	client := newMCPClient(name, cfg)
-	res := mcpProbeResult{}
-	finish := func(stage, errText string) mcpProbeResult {
+	res := ProbeResult{}
+	finish := func(stage, errText string) ProbeResult {
 		cr := client.close()
 		res.Stage = stage
 		res.Error = errText

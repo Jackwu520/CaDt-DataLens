@@ -1,5 +1,5 @@
 // mcp_config_test.go：MCP 配置读写与校验——缺文件返回空、损坏不覆盖、重复键、写入期校验、缺省语义。
-package main
+package mcp
 
 import (
 	"os"
@@ -129,7 +129,7 @@ func TestMCPWriteRejectsBadEntries(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.label, func(t *testing.T) {
-			err := mcpValidateServer(tc.name, tc.cfg)
+			err := ValidateServer(tc.name, tc.cfg)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("应拒绝（含 %q），实际：%v", tc.want, err)
 			}
@@ -139,7 +139,7 @@ func TestMCPWriteRejectsBadEntries(t *testing.T) {
 
 func TestMCPValidateServerAccepts(t *testing.T) {
 	// 合法条目：原始工具名允许点号（context7.resolve-library-id 一类）
-	if err := mcpValidateServer("ctx7", MCPServerConfig{
+	if err := ValidateServer("ctx7", MCPServerConfig{
 		Command: "npx", EnabledTools: []string{"resolve-library-id", "context7.get-docs"},
 	}); err != nil {
 		t.Fatalf("合法条目不应报错：%v", err)

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"datalens/internal/atomfile"
 )
 
 // AI 配置（profiles / prompts / preferences / 审批白名单）落盘为 appdata 下的 ai-config.json。
@@ -47,7 +49,7 @@ func writeAIConfigFile(path, data string) error {
 	if len(data) > aiConfigFileMax {
 		return fmt.Errorf("AI 配置超过 %d KB", aiConfigFileMax/1024)
 	}
-	return writeFileAtomicMode(path, []byte(data), 0o600)
+	return atomfile.WriteFileAtomicMode(path, []byte(data), 0o600)
 }
 
 func (a *App) AIConfigRead() (string, error) {

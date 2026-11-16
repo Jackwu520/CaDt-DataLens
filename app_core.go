@@ -11,6 +11,9 @@ import (
 
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
+
+	"datalens/internal/mcp"
+	"datalens/internal/sqlview"
 )
 
 const (
@@ -32,7 +35,7 @@ type App struct {
 	aiTimersMu          sync.Mutex
 	aiTimers            *aiTimerRegistry
 	muMCP               sync.Mutex
-	mcp                 *mcpManager
+	mcp                 *mcp.Manager
 	watchMu             sync.Mutex
 	watchRoot           string
 	watchStop           chan struct{}
@@ -79,7 +82,7 @@ func (a *App) startup(ctx context.Context) {
 	// 否则 Windows 只返回成功、不显示（见 notify_windows.go: ensureToastAppID）。
 	prepareNotifyApp()
 	ensureWindowShown(ctx)
-	cleanupSQLTempFiles()
+	sqlview.CleanupTempFiles()
 	cleanupReadingCacheOnStartup()
 	// 运行代码的临时副本 / 编译产物：启动时清一次过期的（7 天），失败不影响启动；
 	// 多窗口进程可能各跑一次，RemoveAll 幂等所以无害。

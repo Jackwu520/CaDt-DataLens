@@ -1,6 +1,6 @@
 // mcp_manager_test.go：多 server 编排——惰性启动、快照发布、callTool 路由、
 // 放弃重连、配置应用启停、总开关。重连策略注入微小时延保证测试快速且确定。
-package main
+package mcp
 
 import (
 	"os"
@@ -21,10 +21,10 @@ func mcpManagerTestConfig(t *testing.T, mode string, tools []string) MCPConfig {
 }
 
 // newTestManager 构造注入了微小时延策略与事件收集的 manager。
-func newTestManager(t *testing.T) (*mcpManager, *[]string, *sync.Mutex) {
+func newTestManager(t *testing.T) (*Manager, *[]string, *sync.Mutex) {
 	var mu sync.Mutex
 	var events []string
-	mgr := newMCPManager(func(event string, _ any) {
+	mgr := NewManager(func(event string, _ any) {
 		mu.Lock()
 		events = append(events, event)
 		mu.Unlock()
@@ -47,32 +47,32 @@ func mcpWaitFor(t *testing.T, timeout time.Duration, cond func() bool, label str
 }
 
 // mgrSnapshotForDebug 从当前测试关联的 manager 取快照（仅失败诊断用）。
-var debugMgr *mcpManager
+var debugMgr *Manager
 
 func mgrSnapshotForDebug(t *testing.T) any {
 	if debugMgr == nil {
 		return nil
 	}
-	return debugMgr.snapshot()
+	return debugMgr.Snapshot()
 }
 
 func TestMCPManagerLazyStartSnapshotCall(t *testing.T) {
 	mgr, _, _ := newTestManager(t)
-	defer mgr.closeAll()
-	mgr.applyConfig(mcpManagerTestConfig(t, "ok", []string{"alpha", "beta"}))
+	defer mgr.CloseAll()
+	mgr.ApplyConfig(mcpManagerTestConfig(t, "ok", []string{"alpha", "beta"}))
 
 	// 惰性：配置应用后不应立即连接
-	if st := mgr.snapshot().Servers[0]; st.State == "connected" {
+	if st := mgr.Snapshot().Servers[0]; st.State == "connected" {
 		t.Fatal("applyConfig 不应立即启动进程（首次需要工具清单才起）")
 	}
 
-	mgr.lazyStartAll()
+	mgr.LazyStartAll()
 	mcpWaitFor(t, 10*time.Second, func() bool {
-		snap := mgr.snapshot()
+		snap := mgr.Snapshot()
 		return len(snap.Servers) == 1 && snap.Servers[0].State == "connected" && snap.Servers[0].ToolCount == 2
 	}, "server 未在预算内连接并注册工具")
 
-	snap := mgr.snapshot()
+	snap := mgr.Snapshot()
 	if !snap.Enabled || len(snap.Servers[0].Tools) != 2 {
 		t.Fatalf("快照工具集不符：%+v", snap)
 	}
@@ -81,30 +81,30 @@ func TestMCPManagerLazyStartSnapshotCall(t *testing.T) {
 	}
 
 	// callTool 按公开名路由到原始名
-	result, err := mgr.callTool("mcp__fake__alpha", nil)
+	result, err := mgr.CallTool("mcp__fake__alpha", nil)
 	if err != nil {
 		t.Fatalf("callTool 失败：%v", err)
 	}
 	if !strings.Contains(result.Text, "hello from fake") {
 		t.Fatalf("结果不符：%q", result.Text)
 	}
-	if _, err := mgr.callTool("mcp__fake__missing", nil); err == nil || !strings.Contains(err.Error(), "未知 MCP 工具") {
+	if _, err := mgr.CallTool("mcp__fake__missing", nil); err == nil || !strings.Contains(err.Error(), "未知 MCP 工具") {
 		t.Fatalf("未注册公开名应报未知工具：%v", err)
 	}
 }
 
 func TestMCPManagerSkipsDisabledAndUnselected(t *testing.T) {
 	mgr, _, _ := newTestManager(t)
-	defer mgr.closeAll()
+	defer mgr.CloseAll()
 	disabled := false
 	cfg := MCPConfig{Version: mcpConfigVersion, MCPServers: map[string]MCPServerConfig{
-		"off":     {Command: "whatever", Enabled: &disabled, EnabledTools: []string{"alpha"}},
+		"off":      {Command: "whatever", Enabled: &disabled, EnabledTools: []string{"alpha"}},
 		"on-empty": {Command: "whatever", EnabledTools: []string{}}, // 勾选为空：一个都不给，也不起进程
 	}}
-	mgr.applyConfig(cfg)
-	mgr.lazyStartAll()
+	mgr.ApplyConfig(cfg)
+	mgr.LazyStartAll()
 	time.Sleep(300 * time.Millisecond)
-	snap := mgr.snapshot()
+	snap := mgr.Snapshot()
 	// 停用与空勾选的 server 不建运行态（off 不建、on-empty 建但不启动）
 	if !snap.Enabled {
 		t.Fatal("总开关应为启用")
@@ -121,39 +121,39 @@ func TestMCPManagerSkipsDisabledAndUnselected(t *testing.T) {
 
 func TestMCPManagerGaveUpClearsTools(t *testing.T) {
 	mgr, _, _ := newTestManager(t)
-	defer mgr.closeAll()
-	mgr.applyConfig(mcpManagerTestConfig(t, "crash", []string{"alpha"})) // 假 server 握手期即崩
-	mgr.lazyStartAll()
+	defer mgr.CloseAll()
+	mgr.ApplyConfig(mcpManagerTestConfig(t, "crash", []string{"alpha"})) // 假 server 握手期即崩
+	mgr.LazyStartAll()
 	// 微小时延策略：3 次尝试 + 10/20ms 退避，秒级内到达 gave-up
 	mcpWaitFor(t, 15*time.Second, func() bool {
-		snap := mgr.snapshot()
+		snap := mgr.Snapshot()
 		return len(snap.Servers) == 1 && snap.Servers[0].State == "failed" && snap.Servers[0].Reason == "gave-up"
 	}, "未在预算内放弃重连")
-	snap := mgr.snapshot()
+	snap := mgr.Snapshot()
 	if snap.Servers[0].ToolCount != 0 || len(snap.Servers[0].Tools) != 0 {
 		t.Fatalf("放弃时必须注销工具：%+v", snap.Servers[0])
 	}
 	// 注销后 callTool 报未知工具
-	if _, err := mgr.callTool("mcp__fake__alpha", nil); err == nil {
+	if _, err := mgr.CallTool("mcp__fake__alpha", nil); err == nil {
 		t.Fatal("工具注销后调用应报错")
 	}
 }
 
 func TestMCPManagerApplyConfigRebuilds(t *testing.T) {
 	mgr, _, _ := newTestManager(t)
-	defer mgr.closeAll()
-	mgr.applyConfig(mcpManagerTestConfig(t, "ok", []string{"alpha"}))
-	mgr.lazyStartAll()
+	defer mgr.CloseAll()
+	mgr.ApplyConfig(mcpManagerTestConfig(t, "ok", []string{"alpha"}))
+	mgr.LazyStartAll()
 	mcpWaitFor(t, 10*time.Second, func() bool {
-		snap := mgr.snapshot()
+		snap := mgr.Snapshot()
 		return len(snap.Servers) == 1 && snap.Servers[0].ToolCount == 1
 	}, "首次连接超时")
 
 	// 仅勾选变化：不重启进程，直接用现有连接重建世代
 	cfg := mcpManagerTestConfig(t, "ok", []string{"alpha", "beta"})
-	mgr.applyConfig(cfg)
+	mgr.ApplyConfig(cfg)
 	mcpWaitFor(t, 10*time.Second, func() bool {
-		snap := mgr.snapshot()
+		snap := mgr.Snapshot()
 		return len(snap.Servers) == 1 && snap.Servers[0].ToolCount == 2
 	}, "勾选变化未重建世代")
 
@@ -162,45 +162,45 @@ func TestMCPManagerApplyConfigRebuilds(t *testing.T) {
 	fakeCfg := cfg.MCPServers["fake"]
 	fakeCfg.Args = []string{"-mode", "paged"}
 	cfg.MCPServers["fake"] = fakeCfg
-	mgr.applyConfig(cfg)
+	mgr.ApplyConfig(cfg)
 	mcpWaitFor(t, 10*time.Second, func() bool {
-		snap := mgr.snapshot()
+		snap := mgr.Snapshot()
 		return len(snap.Servers) == 1 && snap.Servers[0].ToolCount == 1 && snap.Servers[0].State == "connected"
 	}, "配置变化未重建 server")
 
 	// 移除 server：停止并注销
-	mgr.applyConfig(MCPConfig{Version: mcpConfigVersion, MCPServers: map[string]MCPServerConfig{}})
+	mgr.ApplyConfig(MCPConfig{Version: mcpConfigVersion, MCPServers: map[string]MCPServerConfig{}})
 	mcpWaitFor(t, 10*time.Second, func() bool {
-		snap := mgr.snapshot()
+		snap := mgr.Snapshot()
 		return len(snap.Servers) == 0
 	}, "移除配置后 server 未停止")
-	if _, err := mgr.callTool("mcp__fake__t1", nil); err == nil {
+	if _, err := mgr.CallTool("mcp__fake__t1", nil); err == nil {
 		t.Fatal("server 移除后路由应失效")
 	}
 }
 
 func TestMCPManagerMasterSwitch(t *testing.T) {
 	mgr, _, _ := newTestManager(t)
-	defer mgr.closeAll()
-	mgr.applyConfig(mcpManagerTestConfig(t, "ok", []string{"alpha"}))
-	mgr.lazyStartAll()
+	defer mgr.CloseAll()
+	mgr.ApplyConfig(mcpManagerTestConfig(t, "ok", []string{"alpha"}))
+	mgr.LazyStartAll()
 	mcpWaitFor(t, 10*time.Second, func() bool {
-		snap := mgr.snapshot()
+		snap := mgr.Snapshot()
 		return len(snap.Servers) == 1 && snap.Servers[0].ToolCount == 1
 	}, "首次连接超时")
 
 	off := false
-	mgr.applyConfig(MCPConfig{Version: mcpConfigVersion, Enabled: &off, MCPServers: mcpManagerTestConfig(t, "ok", []string{"alpha"}).MCPServers})
+	mgr.ApplyConfig(MCPConfig{Version: mcpConfigVersion, Enabled: &off, MCPServers: mcpManagerTestConfig(t, "ok", []string{"alpha"}).MCPServers})
 	mcpWaitFor(t, 5*time.Second, func() bool {
-		snap := mgr.snapshot()
+		snap := mgr.Snapshot()
 		return !snap.Enabled && snap.Servers[0].ToolCount == 0 && snap.Servers[0].State == "closed"
 	}, "总开关关闭未生效")
 
 	// 重新打开：惰性重启
-	mgr.applyConfig(mcpManagerTestConfig(t, "ok", []string{"alpha"}))
-	mgr.lazyStartAll()
+	mgr.ApplyConfig(mcpManagerTestConfig(t, "ok", []string{"alpha"}))
+	mgr.LazyStartAll()
 	mcpWaitFor(t, 10*time.Second, func() bool {
-		snap := mgr.snapshot()
+		snap := mgr.Snapshot()
 		return snap.Enabled && snap.Servers[0].ToolCount == 1
 	}, "总开关重开后未恢复")
 }
@@ -230,20 +230,20 @@ func TestMCPReconnectPolicyDelayFor(t *testing.T) {
 
 func TestMCPManagerCloseAll(t *testing.T) {
 	mgr, _, _ := newTestManager(t)
-	mgr.applyConfig(mcpManagerTestConfig(t, "ok", []string{"alpha", "beta"}))
-	mgr.lazyStartAll()
+	mgr.ApplyConfig(mcpManagerTestConfig(t, "ok", []string{"alpha", "beta"}))
+	mgr.LazyStartAll()
 	mcpWaitFor(t, 10*time.Second, func() bool {
-		return mgr.snapshot().Servers[0].State == "connected"
+		return mgr.Snapshot().Servers[0].State == "connected"
 	}, "首次连接超时")
 
 	done := make(chan struct{})
-	go func() { mgr.closeAll(); close(done) }()
+	go func() { mgr.CloseAll(); close(done) }()
 	select {
 	case <-done:
 	case <-time.After(mcpCloseAllBudget + 10*time.Second):
 		t.Fatal("closeAll 未在预算内返回")
 	}
-	snap := mgr.snapshot()
+	snap := mgr.Snapshot()
 	if snap.Servers[0].State != "closed" || snap.Servers[0].ToolCount != 0 {
 		t.Fatalf("closeAll 后应停止并注销工具：%+v", snap.Servers[0])
 	}
@@ -251,10 +251,10 @@ func TestMCPManagerCloseAll(t *testing.T) {
 
 func TestMCPManagerRawToolsForPanel(t *testing.T) {
 	mgr, _, _ := newTestManager(t)
-	defer mgr.closeAll()
-	mgr.applyConfig(mcpManagerTestConfig(t, "ok", []string{})) // 空勾选：连接器不会自动启动
+	defer mgr.CloseAll()
+	mgr.ApplyConfig(mcpManagerTestConfig(t, "ok", []string{})) // 空勾选：连接器不会自动启动
 	// 未连接时面板拉取：临时起只读连接
-	tools, err := mgr.rawToolsForPanel("fake")
+	tools, err := mgr.RawToolsForPanel("fake")
 	if err != nil {
 		t.Fatalf("面板拉取失败：%v", err)
 	}
@@ -264,10 +264,10 @@ func TestMCPManagerRawToolsForPanel(t *testing.T) {
 	if tools[0].Name == "" || tools[0].Description == "" {
 		t.Fatalf("面板工具应含原始名与描述：%+v", tools[0])
 	}
-	if mgr.snapshot().Servers[0].ToolCount != 0 {
+	if mgr.Snapshot().Servers[0].ToolCount != 0 {
 		t.Fatal("面板拉取是只读的，不得注册工具")
 	}
-	if _, err := mgr.rawToolsForPanel("nope"); err == nil {
+	if _, err := mgr.RawToolsForPanel("nope"); err == nil {
 		t.Fatal("不存在的 server 应报错")
 	}
 }
