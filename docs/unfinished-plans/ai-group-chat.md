@@ -1,6 +1,6 @@
 # 智能体群聊：多轮讨论引擎、主持调度与任务协作（实施计划）
 
-> 状态：**设计评审中（v2.1，2026-11-17）**。v1 的「@ 即唤醒、回完即停」被作者判定为不符合目标——群聊要允许不同 AI 持续讨论，而不是一对一答完就结束。本版把核心从「消息路由」改为「讨论引擎」；v1 的 @ 路由降级为可选「自由模式」。v2.1：§16 的 14 个开放问题已与作者确认收口——自由模式后置 G5、用户主持随 G3 交付、并行轮后置、非思考总时长上调 180s、思考主持对齐 240s、智能体新增 `slowTier` 开关、手动压缩默认保留最近 1 轮全文。
+> 状态：**G0–G4 已实施（2026-11-17，master 分批提交）**；G5 可选增强（自由群聊 / 只读工具 / 群聊搜索索引 / 图片附件 / 智能体 1:1 单聊）未实施，另行评估。v1 的「@ 即唤醒、回完即停」被作者判定为不符合目标——群聊要允许不同 AI 持续讨论，而不是一对一答完就结束。本版把核心从「消息路由」改为「讨论引擎」；v1 的 @ 路由降级为可选「自由模式」。v2.1：§16 的 14 个开放问题已与作者确认收口——自由模式后置 G5、用户主持随 G3 交付、并行轮后置、非思考总时长上调 180s、思考主持对齐 240s、智能体新增 `slowTier` 开关、手动压缩默认保留最近 1 轮全文。实施落点：`internal/aigroups` + `groupstore_app.go`（Go 存储）、`frontend/src/ai/ai-agent-model.js / ai-agent-settings.js / ai-group-model.js / ai-group-store.js / ai-group-runtime.js / ai-group-view.js / ai-group-sidebar.js` + `bridge/bridge-group-view.js`（前端群聊域）、`internal/storage`（清理条目 ai-groups）。
 > 前置阅读：`docs/finished-plans/session-messaging.md`（会话信箱 / 后台注入）· `docs/finished-plans/ai-personalization.md`（人设与注入护栏）· `docs/unfinished-plans/side-chat-tab.md`（内容区虚拟文档标签页先例）· `docs/finished-plans/ai-head-agents-terminal.md`（多智能体 UI 先例）
 > 范围：设置 → AI → 智能体；AI 面板群聊列表；内容区「群聊」标签页；`frontend/src/ai/ai-agent-*` / `ai-group-*` 新域；Go 侧新增 `ai-groups` 存储壳（复用 `internal/sessionstore` 引擎）；不改 AI 传输协议、不改现有会话存储格式、不新增 npm / Go 依赖
 
