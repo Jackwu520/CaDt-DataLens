@@ -28,6 +28,7 @@ import (
 	"datalens/internal/sqlview"
 	"datalens/internal/terminal"
 	"datalens/internal/toolchain"
+	"datalens/internal/watch"
 )
 
 const (
@@ -52,6 +53,7 @@ type App struct {
 	*skills.Skills        // 内置技能与 agent 技能注册（internal/skills）
 	*screenshot.Capturer  // 应用窗口截图（internal/screenshot）
 	*notify.Notifier      // 系统通知（internal/notify）
+	*watch.Watcher        // 工作区文件监听（internal/watch）
 	ctx                   context.Context
 	startupTargets        []OpenTarget
 	startupSettingsPane   string
@@ -63,10 +65,6 @@ type App struct {
 	aiTimers              *aitimer.Registry
 	muMCP                 sync.Mutex
 	mcp                   *mcp.Manager
-	watchMu               sync.Mutex
-	watchRoot             string
-	watchStop             chan struct{}
-	watchDone             chan struct{}
 	convert               *convertOptions
 	convertExitCode       int
 	convertDone           atomic.Bool
@@ -95,7 +93,7 @@ type FileData struct {
 }
 
 func NewApp() *App {
-	return &App{Reader: &reading.Reader{}, Runner: &run.Runner{}, Host: &browser.Host{}, Searcher: &search.Searcher{}, Scheduler: &aischedule.Scheduler{}, Bridge: &cmdbridge.Bridge{}, Terminal: &terminal.Terminal{}, Toolchain: &toolchain.Toolchain{}, Store: &aiconfig.Store{}, Manager: &plugins.Manager{}, Skills: &skills.Skills{}, Capturer: &screenshot.Capturer{}, Notifier: &notify.Notifier{}}
+	return &App{Reader: &reading.Reader{}, Runner: &run.Runner{}, Host: &browser.Host{}, Searcher: &search.Searcher{}, Scheduler: &aischedule.Scheduler{}, Bridge: &cmdbridge.Bridge{}, Terminal: &terminal.Terminal{}, Toolchain: &toolchain.Toolchain{}, Store: &aiconfig.Store{}, Manager: &plugins.Manager{}, Skills: &skills.Skills{}, Capturer: &screenshot.Capturer{}, Notifier: &notify.Notifier{}, Watcher: &watch.Watcher{}}
 }
 
 func (a *App) startup(ctx context.Context) {
@@ -118,6 +116,10 @@ func (a *App) startup(ctx context.Context) {
 	terminal.Emit = func(event string, data any) {
 		runtime.EventsEmit(ctx, event, data)
 	}
+	watch.Emit = func(event string, data any) {
+		runtime.EventsEmit(ctx, event, data)
+	}
+	watch.Logf = writeAppLog
 	if a.convert != nil {
 		a.waitConvertTimeout()
 		return
