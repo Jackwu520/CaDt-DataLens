@@ -190,3 +190,19 @@
 **结果**：根目录 73 → **69 个 .go**（54 非测试 + 15 测试）、main 包 5,727 → **4,631 行**；`internal/` 51 → **56 个包**。绑定变化仅两处：`OpenTarget` 命名空间改为 `launchargs`、`ReadImageDataURL` 绑定移除（统一为 `ReadImageAsDataURL`），`frontend/wailsjs` 由 wails build 重生成。
 
 **停止线更新**：剩余 4,631 行中，`main.go` / `app_core.go` 是 Wails 生命周期与 App 结构（必须在根）；17 个 `*_app.go` 是绑定壳；`patch_app` / `mcp_app` / `sessionstore_app` / `storage_app` 是较厚的壳但不含独立引擎；其余为 `windowicon` / `cursors` / `console` / `devtools` / `webview_args` / `app_dialogs` / `ai_float` / `delete` / `app_pathinfo` 等平台 glue。继续拆需要为单个绑定再造服务与测试脚手架，收益低于维护成本。
+
+## 14. F 系列：三次收口后的残余再评估（2026-11-16）
+
+E 系列后再审根目录，确认仍有三处「壳里有引擎编排」和两处「独立小引擎」，按批实施：
+
+| 提交 | 范围 | 说明 |
+| --- | --- | --- |
+| `fc74f9c` | F1 `internal/newwindow` | OpenNewWindow / OpenDirInNewWindow / OpenWorkspaceForConversation / OpenInNewWindows 的目录校验与进程拉起随包；根留四行转发绑定，多文件多窗口先 SetOpenMode 再调包 |
+| `bb4c911` | F2 fsops 吸收 | PathInfo + GetPathInfo 与 DeleteEntry（路径校验 + 回收站）并入 `internal/fsops.FS`，删除根 `app_pathinfo.go` / `delete.go`；测试同批迁入包内，存储清理改用 `RemoveToRecycleBin` |
+| `571164a` | F3 `internal/sessionstore.Service` | 十个 AISession* 绑定随 Service 嵌入 App；派生索引标脏改为 OnBodyChange / OnMetaChange / OnRemove / OnClear 四个宿主钩子，根壳只剩 AppDataDir 与钩子接线 |
+| `83792dd` | F4 patch 编排 | SavePatch（内容去重、预检失败清理、sidecar 基线、索引写入）与 DeletePatch（锁、索引摘除、回收站）移入 `internal/patch`；patch_app.go 只剩转发 |
+| `aa6c0d0` | F5 `internal/mcp.Client` | MCP* 八个绑定与 Manager 生命周期（含互斥状态）收进 Client，App 少两个字段；InitClient 注入事件出口并加载配置，CloseClient 统一退出关闭 |
+
+**结果**：根目录 69 → **64 个 .go**（52 非测试 + 12 测试）、main 包 4,631 → **3,961 行**（−670 行）；`internal/` 56 → **57 个包**。绑定名全部保持不变（提升方法），`frontend/wailsjs` 由 wails build 重生成；每批全量 `go test ./... -timeout 300s` 与 `wails build -devtools` 全绿。
+
+**最终停止线**：剩余根目录为 `main.go` / `app_core.go`（Wails 生命周期与 App 结构）、十余个 `*_app.go` 转发壳、`storage_app.go` 的位置映射接线，以及 `windowicon` / `cursors` / `console` / `devtools` / `webview_args` / `app_dialogs` / `ai_float` / `app_window`（config/剪贴板/资源管理器）等平台 glue。按 AGENTS 口径平台 glue 留根是本分；继续拆任何一项都需要造有状态服务或跨包搬 Windows API，收益已明确低于维护成本，布局工作收口。
