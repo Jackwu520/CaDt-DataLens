@@ -18,6 +18,7 @@ import (
 	"datalens/internal/browser"
 	"datalens/internal/cmdbridge"
 	"datalens/internal/fileio"
+	"datalens/internal/fsops"
 	"datalens/internal/mcp"
 	"datalens/internal/mcpsamples"
 	"datalens/internal/notify"
@@ -51,6 +52,7 @@ type App struct {
 	*notify.Notifier      // 系统通知（internal/notify）
 	*watch.Watcher        // 工作区文件监听（internal/watch）
 	*fileio.Files         // 文件读写与编码（internal/fileio）
+	*fsops.FS             // 目录与条目操作（internal/fsops）
 	*mcpsamples.Samples   // 内置 MCP 示例（internal/mcpsamples）
 	ctx                   context.Context
 	startupTargets        []OpenTarget
@@ -78,7 +80,7 @@ type OpenTarget struct {
 type FileData = fileio.FileData
 
 func NewApp() *App {
-	return &App{Reader: &reading.Reader{}, Runner: &run.Runner{}, Host: &browser.Host{}, Searcher: &search.Searcher{}, Scheduler: &aischedule.Scheduler{}, Bridge: &cmdbridge.Bridge{}, Terminal: &terminal.Terminal{}, Toolchain: &toolchain.Toolchain{}, Store: &aiconfig.Store{}, Manager: &plugins.Manager{}, Skills: &skills.Skills{}, Capturer: &screenshot.Capturer{}, Notifier: &notify.Notifier{}, Watcher: &watch.Watcher{}, Samples: &mcpsamples.Samples{}, Files: &fileio.Files{}}
+	return &App{Reader: &reading.Reader{}, Runner: &run.Runner{}, Host: &browser.Host{}, Searcher: &search.Searcher{}, Scheduler: &aischedule.Scheduler{}, Bridge: &cmdbridge.Bridge{}, Terminal: &terminal.Terminal{}, Toolchain: &toolchain.Toolchain{}, Store: &aiconfig.Store{}, Manager: &plugins.Manager{}, Skills: &skills.Skills{}, Capturer: &screenshot.Capturer{}, Notifier: &notify.Notifier{}, Watcher: &watch.Watcher{}, Samples: &mcpsamples.Samples{}, Files: &fileio.Files{}, FS: &fsops.FS{}}
 }
 
 func (a *App) startup(ctx context.Context) {
