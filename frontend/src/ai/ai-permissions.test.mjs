@@ -123,6 +123,31 @@ test('统一决策链：会话/项目 allow、只读、命令族与分类器', (
     assert.equal(decidePermission({scope: 'read', kind: 'command', subject: 'ls'}).decision, 'ask');
 });
 
+test('统一决策链：Git 快捷操作一次性窄豁免（auto 档、命令通道）', () => {
+    // auto + gitFlowSafe → 放行，来源 git-flow
+    assert.deepEqual(
+        decidePermission({scope: 'auto', kind: 'command', subject: 'git add src/a.js', gitFlowSafe: true}),
+        {decision: 'allow', source: 'git-flow'},
+    );
+    // 非 auto 档不生效（edit 仍逐条询问）
+    assert.equal(decidePermission({scope: 'edit', kind: 'command', subject: 'git add src/a.js', gitFlowSafe: true}).decision, 'ask');
+    assert.equal(decidePermission({scope: 'read', kind: 'command', subject: 'git add src/a.js', gitFlowSafe: true}).decision, 'ask');
+    // 危险命令压过豁免（singleUse 单次确认）
+    assert.equal(
+        decidePermission({scope: 'auto', kind: 'command', subject: 'git push --force origin main', dangerous: true, gitFlowSafe: true}).decision,
+        'ask',
+    );
+    // 项目 deny / ask 压过豁免
+    const denyRules = normalizePermissionRules({command: {deny: ['git push:*']}});
+    assert.equal(decidePermission({scope: 'auto', kind: 'command', rules: denyRules, subject: 'git push origin main', gitFlowSafe: true}).decision, 'deny');
+    const askRules = normalizePermissionRules({command: {ask: ['git push:*']}});
+    assert.equal(decidePermission({scope: 'auto', kind: 'command', rules: askRules, subject: 'git push origin main', gitFlowSafe: true}).decision, 'ask');
+    // gitFlowSafe 缺省 false：行为不变
+    assert.equal(decidePermission({scope: 'auto', kind: 'command', subject: 'git add src/a.js'}).decision, 'ask');
+    // 非命令通道不生效（write 走自己的 risky 判定；.cadt 整树 risky 转人工）
+    assert.equal(decidePermission({scope: 'auto', kind: 'write', subject: '.cadt/x', gitFlowSafe: true, risky: true}).decision, 'ask');
+});
+
 test('统一决策链：写入与网络', () => {
     const rules = normalizePermissionRules({write: {deny: ['.git/**'], ask: ['AGENTS.md']}});
     assert.equal(decidePermission({scope: 'full', kind: 'write', rules, subject: '.git/config'}).decision, 'deny');

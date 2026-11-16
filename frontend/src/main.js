@@ -1473,6 +1473,7 @@ const writingUI = createWritingUI({
     get applySettings() { return applySettings; },
     get autoSaveTimer() { return autoSaveTimer; },
     get backend() { return backend; },
+    get baseNameOf() { return baseNameOf; },
     get cjkFonts() { return cjkFonts; },
     get closeDialogs() { return closeDialogs; },
     get closeTopDialog() { return closeTopDialog; },
@@ -1519,6 +1520,8 @@ const writingUI = createWritingUI({
     get textArea() { return textArea; },
     get themes() { return themes; },
     get updateStatus() { return updateStatus; },
+    get updateWindowTitle() { return updateWindowTitle; },
+    get workspaceFolder() { return workspaceFolder; },
 });
 const {CSV_COL_MIN_WIDTH, CSV_ROW_NUM_WIDTH, INDENTS, LANG_DEFS, TREE_MAX_CHILDREN, applyWritingFormat, applyWritingMode, canSplitDoc, cancelAutoSave, closeFootPopover, editorLocale, effectiveToolEnv, flash, fmtSize, formatDisplayName, insertSceneSeparator, isSqlSupportedDoc, isSvgDoc, jumpToPosition, markdownRenderer, mdPreviewWidthLabel, normalizeLegacySqlMode, openConfirmDialog, openGotoDialog, openWritingNameDialog, renderEnvVarsPane, renderFmtTable, renderFormatPane, renderLangPane, renderMarkdownHtml, renderMermaidBlocks, renderPluginsPane, renderRunPane, resolveMarkdownImages, scheduleAutoSave, scheduleCursorPosition, scheduleWritingCaret, setDirty, splitKindFor, toggleWritingMode, toolEnvFor, updateAiWidthWidget, updateBackendDirty, updateCursorPosition, updateTabDirty, updateWindowTitle, updateWritingStats, viewDisabled, viewLabel, viewOptionsFor, writingFormatable} = writingUI;
 const editorGroupsMod = createEditorGroups({
@@ -2139,6 +2142,7 @@ function openFolderWorkspace(dir) {
     syncWorkspaceWatcher();
     applySidebarUI();
     renderWorkspaceCrumbs();
+    updateWindowTitle();
     refreshGitStatus();
     if (aiPanel && aiPanel.refreshSessionList) aiPanel.refreshSessionList();
     activityLog.log('workspace.open', dir, {}, {noRel: true});
@@ -2176,6 +2180,7 @@ function closeFolder() {
     gitStateCache.available = false;
     gitStateCache.branch = '';
     renderWorkspaceCrumbs();
+    updateWindowTitle();
     notifyAIGitEntry();
     scheduleSessionSave();
     if (aiPanel && aiPanel.refreshSessionList) aiPanel.refreshSessionList();

@@ -17,6 +17,7 @@ export function createAIGitUi(ctx) {
     const showNote = ctx.showNote;
     const sendAppMessage = ctx.sendAppMessage;
     const showContextMenu = ctx.showContextMenu;
+    const setGitFlowToken = ctx.setGitFlowToken;
 
     // ---------- Git 快捷操作 ----------
 
@@ -73,6 +74,9 @@ export function createAIGitUi(ctx) {
         }
         const prompt = buildGitActionPrompt(action, {root: gitEntryState.root, branch: gitEntryState.branch});
         if (!prompt) return;
+        // 一次性窄豁免：auto 档下常规 git 写命令（add/commit/push/pull）免逐条审批。
+        // 令牌按会话归属、15 分钟过期；危险变体与项目规则仍照常拦截（见 ai-panel.js approveCommandForRun）。
+        if (setGitFlowToken) setGitFlowToken(session.id, gitEntryState.root);
         ensureOpen();
         sendAppMessage({kind: 'git', label: 'Git 快捷操作 · ' + meta.label, content: prompt}).then((sent) => {
             if (!sent) flash('Git 操作未能发送，请检查模型配置或当前会话状态', true);

@@ -9,6 +9,7 @@ import {
     userNamedPath,
     sensitiveReadDenyReason,
     scanRootDenyReason,
+    hardReadDenyReason,
 } from './ai-read-roots.js';
 
 // ---------- normalizeReadRoot / normalizeReadRoots ----------
@@ -124,4 +125,21 @@ test('扫描起点严格包含应用数据目录时拒绝，等于 / 位于其�
     assert.equal(scanRootDenyReason('C:/Users/admin/AppData/Roaming/CaDt-DataLensX', appDir), null);
     assert.equal(scanRootDenyReason('D:/Novel', ''), null);
     assert.equal(scanRootDenyReason('', appDir), null);
+});
+
+// ---------- hardReadDenyReason ----------
+
+test('hardReadDenyReason：应用数据目录硬拒优先，扫描起点包含它时也拒绝', () => {
+    const appDir = 'C:/Users/admin/AppData/Roaming/CandySweet/CaDt-DataLens';
+    // 路径在应用数据目录内：读文件与扫描都拒绝，且用「读取」文案
+    for (const opts of [undefined, {scanRoot: true}]) {
+        const reason = hardReadDenyReason('C:\\Users\\admin\\AppData\\Roaming\\CandySweet\\CaDt-DataLens\\ai-config.json', appDir, opts);
+        assert.ok(reason && reason.includes('拒绝读取'), '应用数据目录内优先按单文件硬拒');
+    }
+    // 扫描起点包含应用数据目录：只有 scanRoot 才拒绝
+    assert.ok(hardReadDenyReason('C:/Users/admin/AppData/Roaming/CandySweet', appDir, {scanRoot: true}).includes('拒绝搜索'));
+    assert.equal(hardReadDenyReason('C:/Users/admin/AppData/Roaming/CandySweet', appDir), null);
+    // 无关路径 / 空 appDir 放过
+    assert.equal(hardReadDenyReason('D:/Novel/a.md', appDir, {scanRoot: true}), null);
+    assert.equal(hardReadDenyReason('D:/Novel', '', {scanRoot: true}), null);
 });

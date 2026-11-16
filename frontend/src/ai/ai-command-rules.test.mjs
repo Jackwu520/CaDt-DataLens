@@ -7,6 +7,7 @@ import {
     collectCommandFamilies,
     commandFamilySignature,
     commandText,
+    gitFlowSafeCommand,
     matchCommandRule,
     splitCommandSegments,
 } from './ai-command-rules.js';
@@ -372,4 +373,93 @@ test('计划预授权：从正文与代码块提取同类命令签名', () => {
     ].join('\n');
     const families = collectCommandFamilies(plan);
     assert.deepEqual(families, ['git status', 'npm run build', 'go test', 'git diff']);
+});
+
+// ---------- Git 快捷操作一次性窄豁免（2026-11-16） ----------
+
+test('Git 流程豁免：常规 git 写命令放行', () => {
+    const root = 'D:/repo';
+    const cwd = 'D:/repo';
+    const cases = [
+        'git add src/a.js',
+        'git add src/a.js src/b.js',
+        'git commit -m "feat: x"',
+        'git commit --no-verify -m "chore: y"',
+        'git push origin main',
+        'git push -u origin main',
+        'git pull --no-rebase --no-edit',
+        'git merge origin/main',
+        'git fetch origin',
+        'git stash',
+        'git stash create',
+        'git stash pop',
+    ];
+    for (const command of cases) {
+        assert.equal(gitFlowSafeCommand(command, root, cwd), true, command);
+    }
+});
+
+test('Git 流程豁免：子目录 cwd 也放行', () => {
+    assert.equal(gitFlowSafeCommand('git add src/a.js', 'D:/repo', 'D:/repo/src'), true);
+    assert.equal(gitFlowSafeCommand('git commit -m "x"', 'D:/repo', 'D:/repo/sub/dir'), true);
+});
+
+test('Git 流程豁免：危险变体 / 复合命令 / 非 git / cwd 越界不放行', () => {
+    const root = 'D:/repo';
+    const cwd = 'D:/repo';
+    const cases = [
+        'git push --force origin main',
+        'git push -f',
+        'git push --delete origin feat',
+        'git push --mirror origin',
+        'git push origin +main',
+        'git push --force-with-lease origin main',
+        'git push --force-with-lease=origin/main origin main',
+        'git push --force-with-lease=refs/heads/main:origin/main',
+        'git reset --hard HEAD~1',
+        'git clean -fd',
+        'git checkout -- src/a.js',
+        'git restore src/a.js',
+        'git stash drop',
+        'git stash clear',
+        'git stash push -u',
+        'git stash push --include-untracked',
+        'git branch -D feat',
+        'git commit --amend -m "x"',
+        'git commit -a -m "x"',
+        'git commit --all -m "x"',
+        'git add -A',
+        'git add .',
+        'git add ..',
+        'git add ../',
+        'git pull --rebase',
+        'git pull --rebase=merges',
+        'git merge --abort',
+        'git -C other status',
+        'git -C/other push origin main',
+        'git -cfoo=bar status',
+        'git --git-dir=/x status',
+        'git --git-dir=/x push origin main',
+        'git --work-tree=/x status',
+        'git status && git add .',
+        'git add . | cat',
+        'git add . > out.txt',
+        'git add $(pwd)',
+        'git status; rm -rf build',
+        'rm -rf build',
+        'npm run build',
+        'git tag v1.0.0',
+        'git remote add origin url',
+        'git config user.name demo',
+        'FOO=bar git push origin main',
+    ];
+    for (const command of cases) {
+        assert.equal(gitFlowSafeCommand(command, root, cwd), false, command);
+    }
+    // cwd 越界（git 根之外）不放行
+    assert.equal(gitFlowSafeCommand('git status', 'D:/repo', 'D:/other'), false);
+    assert.equal(gitFlowSafeCommand('git status', 'D:/repo', 'D:/repo2'), false);
+    // 空 git 根 / 空 cwd 不放行
+    assert.equal(gitFlowSafeCommand('git status', '', 'D:/repo'), false);
+    assert.equal(gitFlowSafeCommand('git status', 'D:/repo', ''), false);
 });

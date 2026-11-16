@@ -44,11 +44,10 @@ import {
 import {arrayBufferToBase64, isDirectAsrPath, transcodeAudioToWav16k} from './ai-audio-transcode.js';
 import {
     addReadRoot,
+    hardReadDenyReason,
     normalizeReadRoot,
     normalizeReadRoots,
     readRootCoversAny,
-    scanRootDenyReason,
-    sensitiveReadDenyReason,
     userNamedPath,
 } from './ai-read-roots.js';
 import {
@@ -58,6 +57,7 @@ import {
     collectCommandFamilies,
     commandFamilySignature,
     commandText,
+    gitFlowSafeCommand,
     matchCommandRule,
 } from './ai-command-rules.js';
 import {
@@ -5497,26 +5497,26 @@ export function createAIPanel(options) {
     // ③ 已批准读根（会话 readRoots / config.approvedReadRoots / 项目规则 Read(...)）直接读；
     // ④ auto 档直接读（契约即非风险自主执行，命令通道本就绕行）；read/edit 档弹审批卡；
     // ⑤ 子代理永不弹卡（接管卡按 currentSession 匹配，子会话不可达会永久悬挂），指引报回主代理。
-    // full 档在 aiResolveScopePath 就已放行。留痕口径：点名/已批准的例行读不记审计，
-    // 只记「模型起意」的放行（auto / 项目规则）与全部拒绝。
+    // full 档在 aiResolveScopePath 就已放行（应用数据目录硬拒仍先于放行执行）。留痕口径：
+    // 点名/已批准的例行读不记审计，只记「模型起意」的放行（auto / 项目规则）与全部拒绝。
     // opts.scanRoot：扫描类工具（search_text / glob）的目录起点——多挡一层「起点包含应用数据目录」，
     // 且审批「记住」的粒度是目录本身（单文件读取记父目录）。
     async function resolveReadPathWithApproval(ctx, toolName, inputPath, opts) {
         const session = ctx && ctx.session;
         let abs = '';
+        let inScope = false;
         try {
-            return {ok: true, path: aiResolveScopePath(inputPath, session)};
+            abs = aiResolveScopePath(inputPath, session);
+            inScope = true;
         } catch (e) {
             if (!e || !e.outOfWorkspace) throw e;
             abs = e.absPath;
         }
-        const appDir = await getAIAppDir();
-        const denyReason = sensitiveReadDenyReason(abs, appDir);
+        // 硬拒先于「在范围内」提前返回：full 档与工作区内路径同样不能读应用数据目录
+        //（full 档曾因提前返回绕过此检查，2026-11-16 实测修复）。
+        const denyReason = hardReadDenyReason(abs, await getAIAppDir(), opts);
         if (denyReason) return {ok: false, message: denyReason};
-        if (opts && opts.scanRoot) {
-            const scanDeny = scanRootDenyReason(abs, appDir);
-            if (scanDeny) return {ok: false, message: scanDeny};
-        }
+        if (inScope) return {ok: true, path: abs};
         const parent = session && session.parentSessionId ? sessionById(session.parentSessionId) : null;
         const named = userNamedPath(session, abs) || (parent ? userNamedPath(parent, abs) : false);
         const covered = readRootCoversAny(readRootsOf(session), abs) ||
@@ -5575,7 +5575,8 @@ export function createAIPanel(options) {
     // 扫描类工具（search_text / glob）的起点解析：缺省用范围根；显式 path 走 read_file
     // 同一条授权链（点名 / 已批准根 / 按档审批），并额外要求是已存在目录——Go 扫描
     // 会把文件路径静默改成父目录，实际范围会比模型预期的大。目录校验放在审批之前，
-    // 避免让用户批准一个不存在的路径。
+    // 避免让用户批准一个不存在的路径。两条路径都先过 hardReadDenyReason
+    //（应用数据目录内 / 包含应用数据目录的起点一律拒绝）。
     async function resolveScanRoot(ctx, toolName, inputPath) {
         const start = aiTextOf(inputPath).trim();
         if (!start) {
@@ -5583,6 +5584,9 @@ export function createAIPanel(options) {
             if (!scopeRoot) {
                 return {ok: false, message: '当前没有工作区范围，请先打开文件或文件夹，或用 path 指定目录'};
             }
+            // 默认扫描根也受硬拒约束：工作区若覆盖应用数据目录，不能整树扫进密钥与会话数据
+            const denyReason = hardReadDenyReason(scopeRoot, await getAIAppDir(), {scanRoot: true});
+            if (denyReason) return {ok: false, message: denyReason};
             return {ok: true, path: scopeRoot};
         }
         let abs = '';
@@ -6375,8 +6379,29 @@ export function createAIPanel(options) {
         if (changed) notifyBackgroundActivity();
     }
 
+    // ---------- Git 快捷操作一次性窄豁免（2026-11-16） ----------
+    // 点 Git 快捷操作时给当前会话打一个令牌（git 根 + 过期时间），auto 档下常规 git 写命令
+    // 在危险检测与项目规则通过后免逐条审批。令牌按会话归属、TTL 15 分钟、不持久化。
+    const GIT_FLOW_TOKEN_TTL_MS = 15 * 60 * 1000;
+    const gitFlowTokens = new Map(); // sessionId -> {root, expiresAt}
+
+    function setGitFlowToken(sessionId, root) {
+        if (!sessionId || !root) return;
+        gitFlowTokens.set(sessionId, {root, expiresAt: Date.now() + GIT_FLOW_TOKEN_TTL_MS});
+    }
+
+    function gitFlowTokenFor(sessionId) {
+        const token = gitFlowTokens.get(sessionId);
+        if (!token) return null;
+        if (Date.now() > token.expiresAt) {
+            gitFlowTokens.delete(sessionId);
+            return null;
+        }
+        return token;
+    }
+
     // run_command / background_command 共用审批：项目规则 → 危险命令单次确认 → 会话/项目放行
-    // → 完全权限 → 自动审批（只读命令 / 已知命令族 / 可选分类器）→ 逐次询问。
+    // → 完全权限 → 自动审批（只读命令 / 已知命令族 / Git 快捷操作豁免 / 可选分类器）→ 逐次询问.
     async function approveCommandForRun(session, toolMessage, command, cwd, toolName) {
         // 判定胶囊一律按会话归属投递：后台会话在跑命令时，别的会话不该冒出它的放行/转人工提示。
         const note = (text) => noteForSession(session && session.id, text);
@@ -6391,6 +6416,11 @@ export function createAIPanel(options) {
         const danger = dangerBase.dangerous ? dangerBase : envLeak;
         const sessionRule = matchCommandApproval(session, command, cwd);
         const family = commandFamilySignature(command);
+        // Git 快捷操作一次性窄豁免：令牌有效 + 命令静态安全（危险检测与项目规则已在上方判定）。
+        // 显式排除 terminal 通道——它走同一审批链但 cwd 实参是「终端 <id>」而非路径，
+        // 不能依赖「cwd 不是路径」这一偶然事实挡住豁免。
+        const gitToken = gitFlowTokenFor(session && session.id);
+        const gitFlowSafe = toolName !== 'terminal' && !!(gitToken && gitFlowSafeCommand(command, gitToken.root, cwd));
         const decision = decidePermission({
             scope,
             kind: 'command',
@@ -6401,6 +6431,7 @@ export function createAIPanel(options) {
             readOnly,
             dangerous: danger.dangerous,
             classifierEnabled: config.autoClassifier === true,
+            gitFlowSafe,
         });
         if (decision.decision !== 'classify') {
             logPermission('command', command, decision.decision, decision.source, decision.rule);
@@ -6546,6 +6577,7 @@ export function createAIPanel(options) {
         family: '自动审批已放行（已知命令族）',
         classifier: '自动审批已放行（AI 分类器）',
         'local-classifier': '自动审批已放行（端侧分类器）',
+        'git-flow': '自动审批已放行（Git 快捷操作一次性豁免）',
         session: '已按本会话授权，正在执行…',
         project: '已按项目权限规则放行，正在执行…',
         full: '完全权限，直接执行…',
@@ -11718,6 +11750,8 @@ export function createAIPanel(options) {
         showNote,
         sendAppMessage,
         showContextMenu,
+        // Git 快捷操作一次性窄豁免：动作发送前给会话打令牌（auto 档常规 git 写命令免逐条审批）
+        setGitFlowToken,
     });
     const refreshGitEntry = () => gitUiMod.refreshGitEntry();
     const showGitMenu = () => gitUiMod.showGitMenu();

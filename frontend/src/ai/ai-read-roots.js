@@ -99,3 +99,12 @@ export function scanRootDenyReason(root, appDir) {
     return '拒绝搜索：该目录包含应用数据目录（含 API 密钥与会话数据），AI 不扫描其中内容；' +
         '请把 path 缩小到不含它的子目录。';
 }
+
+// 读类工具的硬拒判定（顺序：路径在应用数据目录内 → 扫描起点包含应用数据目录）。
+// 必须在作用域解析的最终绝对路径上调用，且先于「在范围内直接放行」——full 档与
+// 工作区内路径同样适用；opts.scanRoot 表示 search_text / glob 的目录起点。
+export function hardReadDenyReason(path, appDir, opts) {
+    const deny = sensitiveReadDenyReason(path, appDir);
+    if (deny) return deny;
+    return opts && opts.scanRoot ? scanRootDenyReason(path, appDir) : null;
+}

@@ -282,7 +282,10 @@ function shortFlagSet(args) {
         if (/^-[a-z]+$/.test(value)) {
             for (const ch of value.slice(1)) flags.add(ch);
         } else if (value.startsWith('--')) {
-            flags.add(value);
+            // --long=value 拆出 --long 前缀：判定处用 flags.has('--force-with-lease')
+            // 精确匹配时，`--force-with-lease=origin/main` 必须命中，否则强制推送漏判。
+            const eq = value.indexOf('=');
+            flags.add(eq > 0 ? value.slice(0, eq) : value);
         }
     }
     return flags;
@@ -295,9 +298,21 @@ function argsHitPrefixes(args, prefixes) {
     });
 }
 
+// git 全局危险旗标命中判定：长选项支持 --flag=value（`--git-dir=/x`），
+// 短选项支持粘连值（`-C/other`、`-cfoo=bar`）。判定处统一用本函数，
+// 避免 `-C/other` 因 `arg.startsWith('-C=')` 为假而漏判。
+function gitGlobalFlagHit(arg, flag) {
+    const value = String(arg || '').toLowerCase();
+    if (flag.length === 2 && flag.startsWith('-')) {
+        // 短选项（-C / -c）：`-C`、`-C/path`、`-Cpath` 都命中
+        return value === flag || value.startsWith(flag);
+    }
+    return value === flag || value.startsWith(flag + '=');
+}
+
 function gitSegmentIsReadOnly(tokens) {
     const args = tokens.slice(1);
-    if (args.some((arg) => GIT_GLOBAL_DANGEROUS.some((flag) => arg === flag || arg.startsWith(flag + '=')))) {
+    if (args.some((arg) => GIT_GLOBAL_DANGEROUS.some((flag) => gitGlobalFlagHit(arg, flag)))) {
         return false;
     }
     if (args.some((arg) => arg.startsWith('--output') || arg === '--ext-diff' || arg === '--textconv')) return false;
@@ -336,6 +351,76 @@ function gitSegmentIsReadOnly(tokens) {
                 flags.every((flag) => ['-v', '--verbose'].includes(flag));
         case 'config':
             return ['--get', '--get-all', '--get-regexp', '-l', '--list'].some((flag) => args.includes(flag));
+        default:
+            return true;
+    }
+}
+
+// ---------- Git 快捷操作一次性窄豁免（2026-11-16） ----------
+// auto 档下点「Git 快捷操作」后，AI 经 run_command 执行常规 git 写命令时不再逐条弹审批卡。
+// 令牌由 ai-panel.js 管理（点快捷操作时打、15 分钟过期、按会话 + git 根限定），这里只做
+// 命令本身的静态判定：安全写子命令放行，危险变体 / 复合命令 / 全局旗标 / cwd 越界一律不放行。
+// 危险检测（analyzeDangerousCommand）与项目规则仍先行，本函数只在它们都通过后生效。
+// 只读子命令（status/diff/log 等）本就能被 analyzeReadOnlyCommand 放行，无需列进豁免集。
+export const GIT_FLOW_SAFE_SUBCOMMANDS = new Set([
+    'add', 'commit', 'push', 'pull', 'merge', 'fetch', 'stash',
+]);
+
+function normPathKey(value) {
+    return String(value == null ? '' : value).replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+}
+
+/**
+ * Git 快捷操作流程内的命令是否可免审批（仅静态判定，不查令牌状态）。
+ * 返回 true 表示：单条简单 git 命令 + 子命令在安全集 + 无危险旗标 + cwd 在 git 根内。
+ * 复合命令（&& / ; / | / 重定向 / 命令替换）一律不放行，由原审批链逐段处理。
+ */
+export function gitFlowSafeCommand(command, gitRoot, cwd) {
+    const split = splitCommandSegments(command);
+    if (!split || split.compound) return false;
+    const tokens = commandTokens(command);
+    if (!tokens || !tokens.length) return false;
+    if (commandExecutable(tokens[0]) !== 'git') return false;
+    const args = tokens.slice(1);
+    if (args.some((arg) => GIT_GLOBAL_DANGEROUS.some((flag) => gitGlobalFlagHit(arg, flag)))) return false;
+    const sub = args.find((arg) => !arg.startsWith('-'));
+    if (!sub || !GIT_FLOW_SAFE_SUBCOMMANDS.has(sub)) return false;
+    // cwd 必须在 git 根内（子目录允许，git 会向上找仓库）
+    const root = normPathKey(gitRoot);
+    const dir = normPathKey(cwd);
+    if (!root || !dir || (dir !== root && !dir.startsWith(root + '/'))) return false;
+    const rest = args.slice(args.indexOf(sub) + 1);
+    const positional = rest.filter((arg) => !arg.startsWith('-'));
+    const flags = shortFlagSet(rest);
+    switch (sub) {
+        case 'push':
+            // 强制 / 删除远端分支：危险检测已拦，这里双保险
+            if (flags.has('f') || flags.has('--force') || flags.has('--force-with-lease') ||
+                flags.has('d') || flags.has('--delete') || flags.has('--mirror')) return false;
+            if (positional.some((arg) => arg.startsWith('+'))) return false;
+            return true;
+        case 'stash':
+            // 只放行流程用到的 create/pop/push/apply/save 与只读 list/show；drop/clear/branch 不放行
+            if (!positional.length) return true;
+            if (!['create', 'pop', 'push', 'apply', 'save', 'list', 'show'].includes(positional[0])) return false;
+            // stash push -u / --include-untracked 会把未跟踪文件也收进 stash（流程没用到）
+            if (positional[0] === 'push' && (flags.has('u') || flags.has('--include-untracked') || flags.has('a') || flags.has('--all'))) return false;
+            return true;
+        case 'commit':
+            // --amend 改写历史提交，不放行；-a/--all 自动暂存全部已跟踪修改，与提示词「逐文件 git add」冲突
+            if (flags.has('--amend')) return false;
+            if (flags.has('a') || flags.has('--all')) return false;
+            return true;
+        case 'add':
+            // 提示词明确「不要 git add -A / git add .」：豁免与提示词约束对齐
+            if (flags.has('a') || flags.has('--all') || flags.has('u') || flags.has('--update')) return false;
+            return !positional.some((arg) => arg === '.' || arg === './' || arg === '..' || arg === '../');
+        case 'pull':
+            // 流程固定 --no-rebase；--rebase 会改写本地提交形状，不放行
+            return !(flags.has('r') || flags.has('--rebase'));
+        case 'merge':
+            // --abort 放弃进行中的合并，不放行
+            return !flags.has('--abort');
         default:
             return true;
     }

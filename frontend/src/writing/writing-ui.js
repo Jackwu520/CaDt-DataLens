@@ -214,7 +214,11 @@ function flash(msg, isError) {
 }
 
 function updateWindowTitle() {
-    const title = window.__aiFloatWindow ? 'AI 助手 · CaDt-DataLens' : (deps.file ? deps.file.name + ' - CaDt-DataLens' : 'CaDt-DataLens');
+    // 没打开文件时显示工作区名字（目录名，不是绝对路径）
+    const wsName = deps.workspaceFolder ? ((deps.baseNameOf && deps.baseNameOf(deps.workspaceFolder)) || deps.workspaceFolder) : '';
+    const title = window.__aiFloatWindow
+        ? 'AI 助手 · CaDt-DataLens'
+        : (deps.file ? deps.file.name + ' - CaDt-DataLens' : (wsName ? wsName + ' - CaDt-DataLens' : 'CaDt-DataLens'));
     document.title = title;
     if (deps.rt && deps.rt.WindowSetTitle) {
         try {

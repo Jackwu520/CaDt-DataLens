@@ -8,6 +8,7 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 
 - **list_dir 支持递归树状输出（新 `depth` 参数）**：此前模型摸多层目录结构只能逐层 list_dir（实测一轮串行 10+ 次调用）。现在 depth 缺省仍是单层（行为与输出不变）；depth 传 2–8 走 Go 新绑定 `ReadDirTree`，一次返回 `├──/└──` 树状文本——目录带 `/` 后缀、文件带人类可读大小，跳过 `.git` / `node_modules` 等目录（与 search_text 同一张跳过表），目录符号链接不跟（防环），全树 400 项预算、超限截断并在对应目录标「还有条目未列出」。递归授权粒度记**目录本身**（`scanRoot` 语义，整个子树都在授权范围内，与 search_text / glob 的起点一致）；读审批弹窗动词按工具名显示「想列目录」，不再误作「想搜索」。实现落点：`app_fs.go`（ReadDirTree / walkDirTree，测试 `app_fs_test.go`）、`ai-file-tools.js`（`renderDirTreeText` 纯函数）、`ai-panel.js`（list_dir 分支 + 审批动词）、`ai-tool-defs.js`（depth 参数、工具描述与目录文案）、`dev/mock-backend.js`（dev 模式同名 mock）。
 - 修复 **读类审批卡（list_dir / read_file / 搜索起点授权）展开出现「+undefined −undefined」**：审批正文的 ±diff 统计此前无条件渲染，而读类审批没有 added / removed 字段；现在与工具卡头部同一门卫（有数字才渲染），并把读类审批收尾文案从「已应用更改（…）」改为「已授权读取（…）/ 已拒绝，未读取」，与授权裁定侧的「用户已授权，正在读取…」措辞对齐。护栏见 `ai-tool-cards.test.mjs`。
+- **Git 快捷操作在 auto 档的一次性窄豁免**：点 AI 面板头部 Git 快捷操作（提交并推送 / 提交代码 / 推送代码 / 拉取代码）后，auto 档下常规 git 写命令（`add` / `commit` / `push` / `pull` / `merge` / `fetch` / `stash`）不再逐条弹审批卡——此前一次「提交并推送」会弹 3~5 张卡（add、commit、push、可能 pull/merge 各一张），与 auto 档「非风险自主执行」契约不符。实现为**一次性 Git 流程令牌**：点快捷操作时给当前会话打一个令牌（git 根 + 15 分钟 TTL），`approveCommandForRun` 在危险检测与项目规则**之后**检查令牌 + 命令静态安全 → 放行（来源 `git-flow`）。护栏保留：`push --force/--delete/--mirror/--force-with-lease`、`reset --hard`、`clean -f`、`checkout --`、`restore`、`stash drop/clear`、`branch -D`、`commit --amend`、`commit -a`、`add -A`/`add .`/`add ..`、`pull --rebase`、`merge --abort` 仍走单次确认；项目 `Bash(...):deny/ask` 规则仍优先；非 git 命令不受影响；只对 `run_command` / `background_command`（terminal 显式排除）、发起动作的会话、auto 档生效（edit 档仍逐条询问）；`git -C`/`-C/path`/`--git-dir` 等全局旗标与 cwd 越界直接不放行。纯函数 `gitFlowSafeCommand` 在 `ai-command-rules.js`（配 `ai-command-rules.test.mjs`），决策链入参 `gitFlowSafe` 在 `ai-permissions.js`（配 `ai-permissions.test.mjs`）。方案见 `docs/unfinished-plans/git-flow-auto-exemption.md`。
 
 ### AI 内嵌浏览器
 
@@ -52,6 +53,7 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 
 ### AI 助手
 
+- 修复 **full 档与工作区内路径绕过应用数据目录硬拒**：`resolveReadPathWithApproval` 在 `aiResolveScopePath` 成功（full 档 / 工作区内）时提前返回，`sensitiveReadDenyReason` 与扫描类的 `scanRootDenyReason` 从未执行——full 档下 AI 能把 `ai-config.json`、会话数据扫进转录。现在两道硬拒在作用域解析之后、在范围内提前放行之前执行（任何档位与工作区内路径同样生效），默认扫描根（工作区）也做「包含应用数据目录」检查。`run_command` 读敏感路径仍是已知边界，不在本次范围内。
 - **`search_text` / `glob` 支持自定义起点目录（含工作区外）**：`search_text` 新增 `path` 参数（默认仍是当前范围根）；两者传工作区外绝对路径时走与 `read_file` 相同的授权链——用户点名或已批准读根直接搜，read/edit 档弹审批卡（记住的粒度是目录本身），auto/full 档直接搜，子代理报回主代理。起点**包含**应用数据目录时拒绝（避免把 `ai-config.json` 扫进结果），传文件路径直接报错并提示用 `read_file`。此前外盘搜索只能借 `run_command` 绕。
 - **会话列表不再在轮中间跳动**：条目的排序与右侧时间以前取「最后一条消息的时间」，于是同一轮里的工具结果、审批改写、截图自动附加、轮次提醒都会把会话（尤其是后台跑着的那些）不断顶到列表最前、时间一路往前推。现在统一按**轮次起点**——最后一条「用户发起的回合」的消息时间（用户消息、定时任务/会话投递/计时器到点等注入的轮首消息都算，轮中间的过程消息不算），一条会话只在有人对它说话时上跳一次；运行中 / 待确认 / 已完成未查看仍由条目右侧的状态图标实时表达。占位会话（正文未加载）改用 meta 里新增的 `turnTs` 缓存同一个键，补水前后不会跳位；老会话首次活动后自动补齐。
 - 新增 **`session_search` / `session_read` 两个跨会话检索工具**：AI 可以按关键词搜「哪个会话说过这件事」（复用全局搜索的 AI 会话通道，只搜未归档会话、带 3 秒 / 100 条硬预算），再用 `session_read` 读该会话的消息摘要（默认最近 20 条；给了关键词则返回命中消息及前后各一条；单次输出 ≤ 8000 字符）。跨工作区的会话会明确标注来源，提示引用前先核对。此前 `session_history` 只能查当前会话。

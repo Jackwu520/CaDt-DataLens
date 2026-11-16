@@ -238,6 +238,7 @@ export function decidePermission(input) {
         dangerous = false,
         risky = false,
         classifierEnabled = false,
+        gitFlowSafe = false,
     } = input || {};
     const hit = evaluatePermissionRules(rules, kind, subject);
     if (hit.decision === 'deny') return {decision: 'deny', source: 'project', rule: hit.rule};
@@ -262,6 +263,9 @@ export function decidePermission(input) {
         return {decision: 'ask', source: 'scope'};
     }
     if (scope === 'auto') {
+        // Git 快捷操作一次性窄豁免：只在 auto 档、命令通道、令牌有效且命令静态安全时放行。
+        // 危险命令 / 项目 deny/ask 已在上方拦截，这里只兜 auto 档常规 git 写命令。
+        if (gitFlowSafe) return {decision: 'allow', source: 'git-flow'};
         if (readOnly) return {decision: 'allow', source: 'readonly'};
         if (familyAuto) return {decision: 'allow', source: 'family'};
         if (classifierEnabled) return {decision: 'classify', source: 'classifier'};
