@@ -64,7 +64,7 @@ test('generate_*：配置了启用条目才下发，计划模式不注入，chec
 test('toolCatalogText：按档位过滤、合并同文案相邻工具、含会话新组', () => {
     const catalogText = createAIToolDefs({appControlOn: () => false}).toolCatalogText;
     const read = catalogText('read', false);
-    assert.ok(read.includes('- list_dir：列目录与文件大小，先摸清结构'));
+    assert.ok(read.includes('- list_dir：列目录与文件大小；depth 传 2–8 可递归出树，一次摸清多层结构'));
     assert.ok(read.includes('- memory_list / memory_read / memory_write：跨会话事实与结论；写后更新 MEMORY.md 索引'));
     assert.ok(read.includes('【会话、提醒与通知】'));
     assert.ok(read.includes('- reminder_add / reminder_list / reminder_update / reminder_remove：'));
@@ -127,6 +127,17 @@ test('timer_list：所有权限档与计划模式都下发只读时钟，且不�
     assert.match(AI_TOOL_DEFS.timer_list.description, /只读/);
     assert.match(AI_TOOL_DEFS.timer_list.description, /不要靠反复调用/);
     assert.ok(AI_TOOL_CATALOG.timer_list, '工具目录必须登记 timer_list');
+});
+
+test('list_dir：depth 参数递归列子目录，缺省仍是单层', () => {
+    const def = toolsForScope('read', false).find((t) => t.name === 'list_dir');
+    assert.deepEqual(Object.keys(def.parameters.properties), ['path', 'depth']);
+    assert.match(AI_TOOL_DEFS.list_dir.description, /depth 缺省只列一层/,
+        '描述要写清缺省行为不变');
+    assert.match(AI_TOOL_DEFS.list_dir.description, /逐层 list_dir/,
+        '描述要明确「一次递归代替逐层调用」的行为指引');
+    assert.match(AI_TOOL_DEFS.list_dir.description, /400 项/,
+        '描述要交代条目预算，别让模型以为无限递归');
 });
 
 test('计划模式仍保留只读探索与子代理', () => {

@@ -22,7 +22,7 @@
 | 权限系统 read kind | `ai-permissions.js`：`PERMISSION_KINDS` 加 `'read'`，`matchPermissionRule` write/read 共用 `matchPathGlobRule`（`D:/xxx/**` 目录树 glob），`decidePermission` read 分支（deny → sessionAllow → allow → auto 直放 → read/edit ask） |
 | 权限设置 UI | `ai-permission-settings.js`：`Read` 前缀标签、规则表格 read 桶、审批记录 pattern、来源标签 `auto` |
 | 路径闸标记 | `ai-panel.js` `aiResolveScopePath`：越界 Error 带 `outOfWorkspace` / `absPath`（写工具不捕获，行为与文案不变） |
-| 授权链 | `ai-panel.js` `resolveReadPathWithApproval(ctx, tool, path)`（read_file / list_dir 共用）：敏感硬拒 → 点名（含父会话回查）→ 已批准根 → `decidePermission`（auto 直放留痕 `logPermission('read',…,'auto')`）→ 子代理报回指引 → 主会话 `requestReadApproval`；例行放行（点名/已批准）不记审计，只记「起意」放行与拒绝 |
+| 授权链 | `ai-panel.js` `resolveReadPathWithApproval(ctx, tool, path)`（read_file / list_dir 共用）：敏感硬拒 → 点名（含父会话回查）→ 已批准根 → `decidePermission`（auto 直放留痕 `logPermission('read',…,'auto')`）→ 子代理报回指引 → 主会话 `requestReadApproval`；例行放行（点名/已批准）不记审计，只记「起意」放行与拒绝。**2026-11-16 补**：list_dir 递归（depth>1）传 `opts.scanRoot`——授权「记住」的粒度是目录本身（整个子树都在范围内，与 search_text / glob 的起点同语义）；审批动词按工具名显示「列目录」，不再借用搜索措辞 |
 | 审批登记 | `ai-panel.js` `registerPendingApproval`（从 requestApproval 抽出的 write/read 共用公共路径：pendingApprovals + 接管区 + 未读/桌面通知/60s 再提醒）；`decideApproval` 加 read 分支（三档记住 + 卡文案 + audit kind） |
 | 审批卡 | `ai-takeover.js`：read 分支——收起细条「读取待审批」、头部无 ± 统计、正文完整真实路径 + 说明（复用 `ai-command-line` pre 样式）、勾选框文案「此目录」、按钮「允许 / 拒绝」。复用写审批已有勾选框，**零新增裸控件**（form-controls 基线不变） |
 | 会话字段 | `session.readRoots`：normalizeSession / createSessionData / buildSessionMeta（随 meta 持久化，上限 200）；`config.approvedReadRoots`：normalizeAIConfig / ai-settings-io 导入导出 |
@@ -32,7 +32,7 @@
 
 ## 3. 已知边界（明确不做）
 
-- `search_text` 仍只搜工作区根（Go `SearchWorkspace` 单根签名）；已批准目录内可逐文件读，多根搜索另立方案。
+- ~~`search_text` 仍只搜工作区根（Go `SearchWorkspace` 单根签名）；已批准目录内可逐文件读，多根搜索另立方案。~~ **后续已实现（2026-11-16）**：`search_text` / `glob` 支持用 `path` 指定单个起点目录（含工作区外，走同一授权链；扫描起点包含应用数据目录时拒绝），仍不提供多根并行搜索。
 - auto/edit 档经 `run_command` 读敏感路径（`.ssh`、浏览器 profile 等）不在本次防线内——读文件对分类器不是风险操作；后续可给分类器加「凭据类路径」规则。
 - 写工具（write_file / edit_file）越界仍硬报错，文案与行为不变。
 - `resolveAIImages` 的展示放行不查应用数据目录（同步渲染拿不到 appDir；读取链路已硬拒，展示不产生读取面，不对称可接受）。

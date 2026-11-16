@@ -904,6 +904,44 @@ const mockBackend = {
         const cap = limit > 0 ? limit : 1000;
         return {entries: entries.slice(0, cap), truncated: entries.length > cap, mtime: 0};
     },
+    async ReadDirTree(path, depth) {
+        // 与 app_fs.go ReadDirTree 同语义的 mock：跳过垃圾目录、400 项预算、深度钳 1–8
+        const key = String(path || '').replace(/\/+$/, '');
+        if (!mockTree[key]) throw new Error('目录不存在');
+        const skip = new Set(['.git', '.svn', '.hg', '.idea', '.vscode', 'node_modules', '__pycache__']);
+        const maxDepth = Math.max(1, Math.min(8, Math.round(Number(depth) || 1)));
+        let budget = 400;
+        let total = 0;
+        let truncated = false;
+        const walk = (dir, remaining) => {
+            const node = {name: dir.split('/').pop() || dir, isDir: true, children: []};
+            if (remaining <= 0) return node;
+            const entries = mockTree[dir];
+            if (!entries) return node;
+            const sorted = entries.slice().sort((a, b) => ((b.isDir ? 1 : 0) - (a.isDir ? 1 : 0)) || a.name.localeCompare(b.name));
+            for (const entry of sorted) {
+                if (entry.isDir && skip.has(entry.name)) continue;
+                if (budget <= 0) {
+                    node.omitted = true;
+                    truncated = true;
+                    return node;
+                }
+                budget -= 1;
+                total += 1;
+                const child = {name: entry.name, isDir: !!entry.isDir};
+                if (!entry.isDir) child.size = 128;
+                node.children.push(child);
+                if (entry.isDir) {
+                    const sub = walk(entry.path, remaining - 1);
+                    child.children = sub.children;
+                    child.omitted = sub.omitted;
+                }
+            }
+            return node;
+        };
+        const root = walk(key, maxDepth);
+        return {root, depth: maxDepth, total, truncated};
+    },
     async DirMtime(path) {
         const key = String(path || '').replace(/\/+$/, '');
         if (!mockTree[key]) throw new Error('目录不存在');

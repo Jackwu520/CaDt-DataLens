@@ -558,8 +558,11 @@ export function createAITakeover(ctx) {
             body.appendChild(line);
             const note = document.createElement('div');
             note.className = 'ai-approval-more';
-            note.textContent = '该文件在工作区外。批准目录后，该目录下的文件可免询问读取' +
-                '（也可不勾选，仅本次放行）；应用数据目录不受此影响，始终拒绝读取。';
+            note.textContent = approval.isDir
+                ? '该目录在工作区外。批准后可免询问搜索与读取该目录树' +
+                    '（也可不勾选，仅本次放行）；应用数据目录不受此影响，始终拒绝。'
+                : '该文件在工作区外。批准目录后，该目录下的文件可免询问读取' +
+                    '（也可不勾选，仅本次放行）；应用数据目录不受此影响，始终拒绝读取。';
             body.appendChild(note);
         } else if (approval.diff && approval.diff.length) {
             renderDiffInto(body, approval);

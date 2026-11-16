@@ -185,6 +185,11 @@ func (s *Service) specs() []spec {
 			note:    "工作区 .cadt/logs 下的三层工作日志索引与正文，只记做过什么，不是设定或正文。",
 			targets: []target{workspaceTarget("logs")},
 		},
+		{
+			id: "ws-tmp", label: "AI 临时文件（本工作区）", scope: ScopeWorkspace, kind: KindCache, inCache: true,
+			note:    "工作区 .cadt/tmp 下 AI 写的临时与中间产物（验证片段、草稿页等），删了不丢正式内容。",
+			targets: []target{workspaceTarget("tmp")},
+		},
 		// ---- 数据：用户内容，只在「清除数据」里按勾选处理，删除走回收站 ----
 		{
 			id: "ws-gen", label: "生图与视频产物", scope: ScopeWorkspace, kind: KindData,

@@ -19,8 +19,10 @@ import {
     globMatchPath,
     humanSizeBytes,
     locateEditTarget,
+    normalizeFileUrlTarget,
     normalizeReadWindow,
     readWindowOf,
+    renderDirTreeText,
 } from './ai-file-tools.js';
 import {redactScopePaths} from './ai-scope-redact.js';
 import {createLoopGuard} from './ai-loop-guard.js';
@@ -45,6 +47,7 @@ import {
     normalizeReadRoot,
     normalizeReadRoots,
     readRootCoversAny,
+    scanRootDenyReason,
     sensitiveReadDenyReason,
     userNamedPath,
 } from './ai-read-roots.js';
@@ -5488,7 +5491,7 @@ export function createAIPanel(options) {
         return /^[A-Za-z]:$/.test(parent) ? path : parent;
     }
 
-    // 工作区外读取的授权链（read_file/list_dir 共用）。按「谁想读」分流：
+    // 工作区外读取的授权链（各读类工具共用）。按「谁想读」分流：
     // ① 应用数据目录任何档位硬拒（密钥不进转录落盘）；
     // ② 用户点名（含子代理回查父会话）直接读——审批只区分「谁想读」；
     // ③ 已批准读根（会话 readRoots / config.approvedReadRoots / 项目规则 Read(...)）直接读；
@@ -5496,7 +5499,9 @@ export function createAIPanel(options) {
     // ⑤ 子代理永不弹卡（接管卡按 currentSession 匹配，子会话不可达会永久悬挂），指引报回主代理。
     // full 档在 aiResolveScopePath 就已放行。留痕口径：点名/已批准的例行读不记审计，
     // 只记「模型起意」的放行（auto / 项目规则）与全部拒绝。
-    async function resolveReadPathWithApproval(ctx, toolName, inputPath) {
+    // opts.scanRoot：扫描类工具（search_text / glob）的目录起点——多挡一层「起点包含应用数据目录」，
+    // 且审批「记住」的粒度是目录本身（单文件读取记父目录）。
+    async function resolveReadPathWithApproval(ctx, toolName, inputPath, opts) {
         const session = ctx && ctx.session;
         let abs = '';
         try {
@@ -5505,8 +5510,13 @@ export function createAIPanel(options) {
             if (!e || !e.outOfWorkspace) throw e;
             abs = e.absPath;
         }
-        const denyReason = sensitiveReadDenyReason(abs, await getAIAppDir());
+        const appDir = await getAIAppDir();
+        const denyReason = sensitiveReadDenyReason(abs, appDir);
         if (denyReason) return {ok: false, message: denyReason};
+        if (opts && opts.scanRoot) {
+            const scanDeny = scanRootDenyReason(abs, appDir);
+            if (scanDeny) return {ok: false, message: scanDeny};
+        }
         const parent = session && session.parentSessionId ? sessionById(session.parentSessionId) : null;
         const named = userNamedPath(session, abs) || (parent ? userNamedPath(parent, abs) : false);
         const covered = readRootCoversAny(readRootsOf(session), abs) ||
@@ -5532,7 +5542,7 @@ export function createAIPanel(options) {
                 '）。子代理不弹审批卡：请通过 agent_send 向主代理说明需要读取的目录，' +
                 '由主代理发起授权；获准后重试本读取。'};
         }
-        const answer = await requestReadApproval(ctx, toolName, abs);
+        const answer = await requestReadApproval(ctx, toolName, abs, opts);
         if (!answer || !answer.approved) {
             return {ok: false, message: '用户未授权读取工作区外路径：' + abs +
                 '。不要重复尝试该路径；如确有必要，向用户说明需要读取该目录并等待其授权。'};
@@ -5540,7 +5550,7 @@ export function createAIPanel(options) {
         return {ok: true, path: abs};
     }
 
-    function requestReadApproval(ctx, toolName, abs) {
+    function requestReadApproval(ctx, toolName, abs, opts) {
         const session = ctx && ctx.session;
         const toolMessage = ctx && ctx.toolMessage;
         if (!session || !toolMessage) return Promise.resolve({approved: false});
@@ -5550,11 +5560,51 @@ export function createAIPanel(options) {
             tool: toolName || 'read_file',
             path: abs,
             relPath: abs,
-            rootDir: readRootDirOf(abs),
+            // 扫描类工具的授权对象就是目录本身，记住它；单文件读取记住父目录
+            rootDir: opts && opts.scanRoot ? normalizeReadRoot(abs) : readRootDirOf(abs),
+            isDir: !!(opts && opts.scanRoot),
             remember: '',
         };
+        // scanRoot 只是「授权粒度记目录本身」；动词按工具名取——递归 list_dir 也走 scanRoot，
+        // 但它不是搜索（此前会误弹「想搜索工作区外…」）
+        const verb = toolName === 'list_dir' ? '列目录' : (opts && opts.scanRoot ? '搜索' : '读取');
         return registerPendingApproval(session, toolMessage, approval,
-            (session.title || '会话') + ' · 想读取工作区外 ' + abs + '，需要你确认');
+            (session.title || '会话') + ' · 想' + verb + '工作区外 ' + abs + '，需要你确认');
+    }
+
+    // 扫描类工具（search_text / glob）的起点解析：缺省用范围根；显式 path 走 read_file
+    // 同一条授权链（点名 / 已批准根 / 按档审批），并额外要求是已存在目录——Go 扫描
+    // 会把文件路径静默改成父目录，实际范围会比模型预期的大。目录校验放在审批之前，
+    // 避免让用户批准一个不存在的路径。
+    async function resolveScanRoot(ctx, toolName, inputPath) {
+        const start = aiTextOf(inputPath).trim();
+        if (!start) {
+            const scopeRoot = getScopeRoot() || '';
+            if (!scopeRoot) {
+                return {ok: false, message: '当前没有工作区范围，请先打开文件或文件夹，或用 path 指定目录'};
+            }
+            return {ok: true, path: scopeRoot};
+        }
+        let abs = '';
+        try {
+            abs = aiResolveScopePath(start, ctx && ctx.session);
+        } catch (e) {
+            if (!e || !e.outOfWorkspace) throw e;
+            abs = e.absPath;
+        }
+        if (backend.GetPathInfo) {
+            let info = null;
+            try {
+                info = await backend.GetPathInfo(abs);
+            } catch (e) {
+                info = null;
+            }
+            if (!info) return {ok: false, message: '目录不存在或不可访问：' + abs};
+            if (!info.isDir) {
+                return {ok: false, message: 'path 必须是目录：' + start + '（读单个文件请用 read_file）'};
+            }
+        }
+        return resolveReadPathWithApproval(ctx, toolName, start, {scanRoot: true});
     }
 
     function getAIAppDir() {
@@ -7273,6 +7323,10 @@ export function createAIPanel(options) {
         const rel = aiRelPath(getScopeRoot(), path).toLowerCase();
         if (rel === 'agents.md' || rel.endsWith('/agents.md')) return true;
         if (rel === '.git' || rel.startsWith('.git/') || rel.includes('/.git/')) return true;
+        // .cadt/tmp 是约定的临时产物区（纯文本中间产物，可被存储清理整目录回收）：
+        // auto 档免审批放行；.cadt 其余部分仍 risky——permissions.json 是 AI 自己的权限规则、
+        // patches/ 是补丁索引，都不能让 AI 免审自改。豁免必须精确到 tmp/ 前缀。
+        if (rel === '.cadt/tmp' || rel.startsWith('.cadt/tmp/')) return false;
         if (rel === '.cadt' || rel.startsWith('.cadt/') || rel.includes('/.cadt/')) return true;
         if (rel === '.agents' || rel.startsWith('.agents/') || rel.includes('/.agents/')) return true;
         return false;
@@ -7920,9 +7974,22 @@ export function createAIPanel(options) {
         switch (name) {
             case 'list_dir': {
                 const rel = aiTextOf(input.path).trim() || '.';
-                const resolved = await resolveReadPathWithApproval(ctx, 'list_dir', rel);
+                const depth = Math.max(1, Math.min(8, Math.round(Number(input.depth) || 1)));
+                // 递归时整个子树都在授权范围内：授权粒度记目录本身，与 search_text 的起点同语义
+                const resolved = await resolveReadPathWithApproval(ctx, 'list_dir', rel, depth > 1 ? {scanRoot: true} : undefined);
                 if (!resolved.ok) return resolved.message;
                 const path = resolved.path;
+                if (depth > 1) {
+                    const tree = await backend.ReadDirTree(path, depth);
+                    const lines = ['目录：' + redactToolText(rel, ctx && ctx.session) + '（递归 ' + (tree ? tree.depth : depth) + ' 层）'];
+                    const treeLines = renderDirTreeText(tree && tree.root ? tree.root.children : null);
+                    if (treeLines.length) lines.push(...treeLines);
+                    else lines.push('（空目录）');
+                    if (tree && tree.truncated) {
+                        lines.push('…（条目超预算已截断：共收录 ' + tree.total + ' 项，树不完整；可收窄 path 或改用 glob）');
+                    }
+                    return lines.join('\n');
+                }
                 const listing = await backend.ReadDir(path, 200);
                 const entries = (listing && listing.entries) || [];
                 const lines = ['目录：' + redactToolText(rel, ctx && ctx.session)];
@@ -8003,8 +8070,10 @@ export function createAIPanel(options) {
             case 'search_text': {
                 const query = aiTextOf(input.query).trim();
                 if (!query) throw new Error('搜索内容为空');
-                const root = getScopeRoot();
-                if (!root) throw new Error('当前没有工作区范围，请先打开文件或文件夹');
+                const start = aiTextOf(input.path).trim();
+                const resolvedRoot = await resolveScanRoot(ctx, 'search_text', start);
+                if (!resolvedRoot.ok) return resolvedRoot.message;
+                const root = resolvedRoot.path;
                 const pattern = aiTextOf(input.filePattern).trim();
                 // 有文件过滤时把 Go 侧命中窗口放大到上限（1000），过滤后再截，避免先截 200 漏掉目标文件的命中。
                 // 新版本把 filePattern 下推到搜索层（rg --glob / 内置扫描过滤）；旧后端回退到「取大窗再前端过滤」。
@@ -8031,7 +8100,8 @@ export function createAIPanel(options) {
                     }
                 }
                 if (!hits.length) {
-                    return '没有找到匹配：' + query + (filterNote ? '（' + filterNote + '）' : '');
+                    return '没有找到匹配：' + query + (start ? '（起点：' + start + '）' : '') +
+                        (filterNote ? '（' + filterNote + '）' : '');
                 }
                 const lines = hits.map((hit) => {
                     let shown = aiNormalizePath(hit.path);
@@ -8040,6 +8110,7 @@ export function createAIPanel(options) {
                     }
                     return shown + ':' + hit.line + ': ' + hit.preview;
                 });
+                if (start) lines.unshift('搜索起点：' + start + '；以下路径相对该起点');
                 if (filterNote) lines.push('（' + filterNote + '）');
                 if (truncated) lines.push('…（结果已截断）');
                 if (result && result.artifactSkipped) {
@@ -8052,16 +8123,16 @@ export function createAIPanel(options) {
                 const pattern = aiTextOf(input.pattern).trim();
                 if (!pattern) throw new Error('pattern 不能为空（如 *.go、src/**/*.ts）');
                 if (!backend.FindFiles) throw new Error('当前版本不支持文件发现（请重新构建或更新应用）');
-                const scopeRoot = getScopeRoot();
-                if (!scopeRoot) throw new Error('当前没有工作区范围，请先打开文件或文件夹');
                 const start = aiTextOf(input.path).trim();
-                const root = start ? aiResolveScopePath(start, ctx && ctx.session) : scopeRoot;
+                const resolvedRoot = await resolveScanRoot(ctx, 'glob', start);
+                if (!resolvedRoot.ok) return resolvedRoot.message;
+                const root = resolvedRoot.path;
                 const maxResults = aiClampInt(input.maxResults, 1, 1000, 300);
                 const result = await backend.FindFiles(root, pattern, maxResults);
                 const files = (result && result.files) || [];
                 if (!files.length) {
                     return '没有匹配的文件：' + pattern + (start ? '（起点：' + start + '）' : '') +
-                        '；可放宽 pattern，或确认路径是否在工作区内。';
+                        '；可放宽 pattern，或确认目录存在且已获授权。';
                 }
                 // Go 侧返回的 path 已相对 root（斜杠分隔）；起点不是范围根时在头部说明口径，避免误当工作区相对路径
                 const head = '匹配 ' + files.length + ' 个文件（pattern: ' + pattern +
@@ -8539,6 +8610,18 @@ export function createAIPanel(options) {
                 const action = aiTextOf(input.action).trim();
                 if (!action) throw new Error('action 为空；先用 skill_use 加载 cadt-ui 获取动作表');
                 const params = (input.params && typeof input.params === 'object' && !Array.isArray(input.params)) ? input.params : {};
+                // open_browser_tab 的 file:// 与 browser_navigate 同一条读权限链：这条 UI 动作
+                // 不能成为绕过工作区外读取审批的旁路（用户手动在地址栏打开不受影响）
+                if (action === 'open_browser_tab') {
+                    const rawUrl = aiTextOf(params.url).trim();
+                    if (/^file:/i.test(rawUrl)) {
+                        const local = normalizeFileUrlTarget(rawUrl);
+                        if (!local.ok) throw new Error(local.reason);
+                        const resolved = await resolveReadPathWithApproval(ctx, 'open_browser_tab', local.path);
+                        if (!resolved.ok) throw new Error(resolved.message);
+                        params.url = local.url;
+                    }
+                }
                 let result;
                 try {
                     result = MCP_CONFIG_ACTIONS.includes(action)
@@ -8615,8 +8698,19 @@ export function createAIPanel(options) {
                     '；值由用户填写，未包含在对话中。变量已注入终端与命令桥，命令里可直接引用。';
             }
             case 'browser_navigate': {
-                const url = aiTextOf(input.url).trim();
-                if (!/^(https?|about|data):/i.test(url)) throw new Error('URL 无效（需以 http/https/about/data 开头）');
+                let url = aiTextOf(input.url).trim();
+                if (/^file:/i.test(url)) {
+                    // 本地文件走读权限链（与 read_file 同口径）：工作区内直开；工作区外
+                    // 点名/已批准读根/auto·full 直开，read/edit 弹审批，应用数据目录硬拒。
+                    // 否则 browser_snapshot/evaluate 能读页面内容，等于绕开工作区外读取审批。
+                    const local = normalizeFileUrlTarget(url);
+                    if (!local.ok) throw new Error(local.reason);
+                    const resolved = await resolveReadPathWithApproval(ctx, 'browser_navigate', local.path);
+                    if (!resolved.ok) throw new Error(resolved.message);
+                    url = local.url;
+                } else if (!/^(https?|about|data):/i.test(url)) {
+                    throw new Error('URL 无效（需以 http/https/about/data 开头；本地文件用 file://）');
+                }
                 const tab = await ensureBrowserTab(ctx.session);
                 await backend.BrowserNavigate(tab.id, url);
                 await new Promise((resolve) => setTimeout(resolve, 400));

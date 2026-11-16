@@ -246,22 +246,28 @@ export function createAIToolCards(ctx) {
             path.className = 'ai-approval-path';
             path.textContent = approval.relPath || approval.path;
             path.dataset.tip = approval.path || '';
-            const stat = document.createElement('span');
-            stat.className = 'ai-approval-stat';
-            const add = document.createElement('span');
-            add.className = 'add';
-            add.textContent = '+' + approval.added;
-            const del = document.createElement('span');
-            del.className = 'del';
-            del.textContent = '−' + approval.removed;
-            stat.append(add, del);
-            if (approval.newFile) {
-                const tag = document.createElement('span');
-                tag.className = 'ai-approval-tag';
-                tag.textContent = '新文件';
-                stat.appendChild(tag);
+            // diff 统计只有写类审批才有（read 审批如 list_dir / read_file 没有 added/removed，
+            // 直接拼会出「+undefined −undefined」）；与头部统计的判定保持一致。
+            if (approval.added || approval.removed) {
+                const stat = document.createElement('span');
+                stat.className = 'ai-approval-stat';
+                const add = document.createElement('span');
+                add.className = 'add';
+                add.textContent = '+' + approval.added;
+                const del = document.createElement('span');
+                del.className = 'del';
+                del.textContent = '−' + approval.removed;
+                stat.append(add, del);
+                if (approval.newFile) {
+                    const tag = document.createElement('span');
+                    tag.className = 'ai-approval-tag';
+                    tag.textContent = '新文件';
+                    stat.appendChild(tag);
+                }
+                meta.append(path, stat);
+            } else {
+                meta.append(path);
             }
-            meta.append(path, stat);
             container.appendChild(meta);
         }
 
@@ -315,10 +321,14 @@ export function createAIToolCards(ctx) {
         } else {
             const result = document.createElement('div');
             result.className = 'ai-approval-result ' + approval.state;
+            // 读类审批（read_file / 列目录 / 搜索起点）没有「更改」可应用，文案按读取措辞
+            const readKind = approval.kind === 'read';
             result.textContent = approval.state === 'approved'
-                ? (toolIsLive(message) ? '正在应用更改…' : '已应用更改' + approvalTraceNote(approval))
+                ? (toolIsLive(message)
+                    ? (readKind ? '正在读取…' : '正在应用更改…')
+                    : (readKind ? '已授权读取' : '已应用更改') + approvalTraceNote(approval))
                 : approval.state === 'denied'
-                    ? '已放弃，文件未修改'
+                    ? (readKind ? '已拒绝，未读取' : '已放弃，文件未修改')
                     : (approval.state === 'failed'
                         ? ('应用失败：' + (approval.error || '写入文件失败'))
                         : '审批已取消');
@@ -526,7 +536,7 @@ export function createAIToolCards(ctx) {
             case 'list_dir':
                 return {primary: aiTextOf(args.path).trim() || '.', dir: ''};
             case 'search_text':
-                return {primary: aiTextOf(args.query).trim() || '—', dir: ''};
+                return {primary: aiTextOf(args.query).trim() || '—', dir: aiTextOf(args.path).trim()};
             case 'web_search':
                 return {primary: aiTextOf(args.query).trim() || '—', dir: ''};
             case 'web_fetch':

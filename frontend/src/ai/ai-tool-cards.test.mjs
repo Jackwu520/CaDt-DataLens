@@ -139,3 +139,18 @@ test('liveToolParts：edit_file 的 old_string（闭合才算完整）与 new_st
     // 无 edit 字段的工具不受影响
     assert.equal(liveToolParts('{"command":"git status"}').oldString, null);
 });
+
+test('审批正文：读类审批（无 added/removed）不渲染 ± 统计，避免出现 +undefined', () => {
+    const src = readFileSync(new URL('./ai-tool-cards.js', import.meta.url), 'utf8');
+    const body = src.slice(src.indexOf('function renderApprovalBody'));
+    assert.ok(body.length > 100, 'renderApprovalBody 源码切片失效');
+    // ± 统计必须有 added/removed 门卫（与工具卡头部统计同一判定）：read 审批
+    // （read_file / 列目录 / 搜索起点）没有 diff 数字，直接拼会出「+undefined −undefined」
+    assert.match(
+        body,
+        /if \(approval\.added \|\| approval\.removed\) \{\s*const stat = document\.createElement/,
+        '审批 meta 的 ± 统计缺少 added/removed 门卫',
+    );
+    // 读类审批收尾文案按读取措辞，不写「已应用更改」
+    assert.match(body, /readKind \? '已授权读取'/, '读类审批收尾文案应按读取措辞');
+});

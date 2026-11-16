@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -103,6 +104,106 @@ func (a *App) ReadDir(path string, limit int) (*DirListing, error) {
 		out = append(out, item)
 	}
 	return &DirListing{Entries: out, Truncated: truncated, Total: total, Mtime: info.ModTime().UnixMilli()}, nil
+}
+
+// ---- list_dir 递归树（AI 工具 depth>1 走这里） ----
+
+type DirTreeNode struct {
+	Name     string         `json:"name"`
+	IsDir    bool           `json:"isDir"`
+	Size     int64          `json:"size,omitempty"`
+	Children []*DirTreeNode `json:"children,omitempty"`
+	Omitted  bool           `json:"omitted,omitempty"` // 该目录还有条目没列出（预算用尽）
+}
+
+type DirTreeListing struct {
+	Root      *DirTreeNode `json:"root"`
+	Depth     int          `json:"depth"`
+	Total     int          `json:"total"` // 实际收录的条目数（不含根）
+	Truncated bool         `json:"truncated"`
+}
+
+const (
+	dirTreeMaxDepth   = 8   // 模型可请求的递归深度上限（再深就是树导出的活）
+	dirTreeMaxEntries = 400 // 全树条目预算：超过即截断，防止 node_modules 类目录刷爆上下文
+)
+
+// ReadDirTree 递归列目录树。searchSkipDirs 里的目录整棵跳过（与 search_text 同一张表），
+// 目录符号链接不跟（防环）；条目预算用尽时在对应目录打 Omitted 并停止深入。
+func (a *App) ReadDirTree(path string, depth int) (*DirTreeListing, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil, fmt.Errorf("没有目录路径")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("不是目录：%s", path)
+	}
+	if depth < 1 {
+		depth = 1
+	}
+	if depth > dirTreeMaxDepth {
+		depth = dirTreeMaxDepth
+	}
+	budget := dirTreeMaxEntries
+	root, truncated := walkDirTree(path, depth, &budget)
+	return &DirTreeListing{Root: root, Depth: depth, Total: dirTreeMaxEntries - budget, Truncated: truncated}, nil
+}
+
+// walkDirTree 递归收录；根级读失败由调用方先 os.Stat 挡过，子级读失败按空目录跳过。
+func walkDirTree(dir string, remainingDepth int, budget *int) (*DirTreeNode, bool) {
+	node := &DirTreeNode{Name: filepath.Base(dir), IsDir: true}
+	if remainingDepth <= 0 {
+		return node, false
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		node.Omitted = true
+		return node, false
+	}
+	sortDirTreeEntries(entries)
+	truncated := false
+	for _, entry := range entries {
+		name := entry.Name()
+		isDir := entry.IsDir() && entry.Type()&os.ModeSymlink == 0
+		if isDir && searchSkipDirs[name] {
+			continue
+		}
+		if *budget <= 0 {
+			node.Omitted = true
+			return node, true
+		}
+		*budget--
+		child := &DirTreeNode{Name: name, IsDir: isDir}
+		if !isDir {
+			if info, err := entry.Info(); err == nil {
+				child.Size = info.Size()
+			}
+		}
+		node.Children = append(node.Children, child)
+		if isDir {
+			sub, subTruncated := walkDirTree(filepath.Join(dir, name), remainingDepth-1, budget)
+			child.Children = sub.Children
+			child.Omitted = sub.Omitted
+			truncated = truncated || subTruncated
+		}
+	}
+	return node, truncated
+}
+
+// sortDirTreeEntries 目录在前，名字不区分大小写（Windows 资源管理器语义的简化版）
+func sortDirTreeEntries(entries []os.DirEntry) {
+	sort.SliceStable(entries, func(i, j int) bool {
+		aDir := entries[i].IsDir() && entries[i].Type()&os.ModeSymlink == 0
+		bDir := entries[j].IsDir() && entries[j].Type()&os.ModeSymlink == 0
+		if aDir != bDir {
+			return aDir
+		}
+		return strings.ToLower(entries[i].Name()) < strings.ToLower(entries[j].Name())
+	})
 }
 
 var reservedEntryNames = map[string]bool{

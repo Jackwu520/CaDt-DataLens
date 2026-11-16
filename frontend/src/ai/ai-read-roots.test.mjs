@@ -8,6 +8,7 @@ import {
     addReadRoot,
     userNamedPath,
     sensitiveReadDenyReason,
+    scanRootDenyReason,
 } from './ai-read-roots.js';
 
 // ---------- normalizeReadRoot / normalizeReadRoots ----------
@@ -106,4 +107,21 @@ test('应用数据目录下的路径硬拒，目录外与空 appDir 放过', () 
     assert.equal(sensitiveReadDenyReason('C:/Users/admin/AppData/Roaming/CaDt-DataLensX/a.md', appDir), null);
     assert.equal(sensitiveReadDenyReason('D:/Novel/a.md', appDir), null);
     assert.equal(sensitiveReadDenyReason('D:/Novel/a.md', ''), null);
+});
+
+// ---------- scanRootDenyReason ----------
+
+test('扫描起点严格包含应用数据目录时拒绝，等于 / 位于其内交给单文件硬拒', () => {
+    const appDir = 'C:/Users/admin/AppData/Roaming/CaDt-DataLens';
+    const reason = scanRootDenyReason('C:\\Users\\admin', appDir);
+    assert.ok(reason && reason.includes('应用数据目录'));
+    assert.ok(scanRootDenyReason('C:/', appDir), '盘符根包含应用数据目录也要拒绝');
+    // 起点就是应用数据目录 / 在其内部 → 不归这里管（sensitiveReadDenyReason 已有更准确的文案）
+    assert.equal(scanRootDenyReason(appDir, appDir), null);
+    assert.equal(scanRootDenyReason(appDir + '/ai-memory', appDir), null);
+    // 无关目录、兄弟前缀、空参数放过
+    assert.equal(scanRootDenyReason('D:/Novel', appDir), null);
+    assert.equal(scanRootDenyReason('C:/Users/admin/AppData/Roaming/CaDt-DataLensX', appDir), null);
+    assert.equal(scanRootDenyReason('D:/Novel', ''), null);
+    assert.equal(scanRootDenyReason('', appDir), null);
 });

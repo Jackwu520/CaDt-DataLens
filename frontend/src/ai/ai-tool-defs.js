@@ -8,10 +8,13 @@ import {AI_WRITE_SCOPES} from './ai-constants.js';
 export const AI_TOOL_DEFS = {
     list_dir: {
         name: 'list_dir',
-        description: '列出目录条目（文件带大小，按名排序，最多 200 条）。path 为相对范围根的路径，默认当前范围根；工作区外目录的授权规则与 read_file 相同（用户点名直接列，否则 read/edit 档请求批准、auto/full 档直接列）。',
+        description: '列出目录条目（文件带大小，按名排序，最多 200 条）。depth 缺省只列一层；depth 传 2–8 时递归列子目录并以树状文本输出（跳过 .git/node_modules 等目录，全树最多约 400 项，超出截断）——摸清多层结构时用一次递归列代替逐层 list_dir，不要反复对同一棵子树逐层调用。path 为相对范围根的路径，默认当前范围根；工作区外目录的授权规则与 read_file 相同（用户点名直接列，否则 read/edit 档请求批准、auto/full 档直接列）。',
         parameters: {
             type: 'object',
-            properties: {path: {type: 'string', description: '目录路径，默认 "."'}},
+            properties: {
+                path: {type: 'string', description: '目录路径，默认 "."'},
+                depth: {type: 'integer', description: '递归深度：缺省/1 只列一层；2–8 递归列子目录并输出树状结构'},
+            },
         },
     },
     read_file: {
@@ -42,11 +45,12 @@ export const AI_TOOL_DEFS = {
     },
     search_text: {
         name: 'search_text',
-        description: '在工作区范围内搜索文本，返回命中文件、行号与预览（默认最多 200 条；已跳过 .git/node_modules 等目录；结果按源码优先、构建产物 dist/build 等垫底排序）。caseSensitive 区分大小写；filePattern 按 *.go 这类通配过滤命中文件。',
+        description: '搜索文本，返回命中文件、行号与预览（默认最多 200 条；已跳过 .git/node_modules 等目录；结果按源码优先、构建产物 dist/build 等垫底排序）。path 默认当前范围根；工作区外目录的授权规则与 read_file 相同（用户点名直接搜，否则 read/edit 档请求批准、auto/full 档直接搜）。caseSensitive 区分大小写；filePattern 按 *.go 这类通配过滤命中文件。',
         parameters: {
             type: 'object',
             properties: {
                 query: {type: 'string', description: '要搜索的文本'},
+                path: {type: 'string', description: '搜索起点目录（相对范围根，或已授权的工作区外绝对路径），默认当前范围根'},
                 caseSensitive: {type: 'boolean', description: '区分大小写，默认 false'},
                 filePattern: {type: 'string', description: '文件名或相对路径通配（如 *.go、src/**/*.ts），只保留匹配文件的命中'},
             },
@@ -55,12 +59,12 @@ export const AI_TOOL_DEFS = {
     },
     glob: {
         name: 'glob',
-        description: '按文件名/路径通配列出工作区文件（只列名字与大小，不读内容）：pattern 支持 *、**、?（如 *.go、src/**/*.ts），不区分大小写；默认跳过 .git/node_modules 等目录，最多 300 条。要找「哪个文件里写了什么」用 search_text，要列某一层目录用 list_dir。',
+        description: '按文件名/路径通配列出文件（只列名字与大小，不读内容）：pattern 支持 *、**、?（如 *.go、src/**/*.ts），不区分大小写；默认跳过 .git/node_modules 等目录，最多 300 条。path 默认当前范围根；工作区外目录的授权规则与 read_file 相同。要找「哪个文件里写了什么」用 search_text，要列某一层目录用 list_dir，要一次看多层目录结构用 list_dir 的 depth 参数。',
         parameters: {
             type: 'object',
             properties: {
                 pattern: {type: 'string', description: '通配模式，如 *.go、src/**/*.ts（** 可匹配零个或多个目录）'},
-                path: {type: 'string', description: '搜索起点目录（相对范围根），默认当前范围根'},
+                path: {type: 'string', description: '搜索起点目录（相对范围根，或已授权的工作区外绝对路径），默认当前范围根'},
                 maxResults: {type: 'integer', description: '最多返回多少条（默认 300，上限 1000）'},
             },
             required: ['pattern'],
@@ -351,7 +355,7 @@ export const AI_TOOL_DEFS = {
     },
     write_file: {
         name: 'write_file',
-        description: '创建新文件或整体覆盖工作区内的文本文件。覆盖已存在文件前必须先 read_file 当前内容：本会话未读过的文件、或读取后已被外部修改的文件会被拒绝写入（防止覆盖其他会话的改动）。写操作会先显示 diff；「每次询问」档由用户审批，「自动审批」/「完全权限」直接应用。需写权限档。',
+        description: '创建新文件或整体覆盖工作区内的文本文件。覆盖已存在文件前必须先 read_file 当前内容：本会话未读过的文件、或读取后已被外部修改的文件会被拒绝写入（防止覆盖其他会话的改动）。写操作会先显示 diff；「每次询问」档由用户审批，「自动审批」/「完全权限」直接应用。需写权限档。临时文件与中间产物（验证片段、调试输出、待预览的草稿页等）统一放 .cadt/tmp/ 下（该目录可被存储清理整体回收，且自动审批档免确认），不要散落在 .cadt/ 根或其他目录；确认要保留的结果再写到正式位置。',
         parameters: {
             type: 'object',
             properties: {
@@ -653,10 +657,10 @@ export const AI_TOOL_DEFS = {
     },
     browser_navigate: {
         name: 'browser_navigate',
-        description: '在本会话绑定的浏览器标签页中打开一个 URL（每会话独立浏览器，用户可见）。返回页面标题与状态。',
+        description: '在本会话绑定的浏览器标签页中打开一个 URL（每会话独立浏览器，用户可见）。支持 http/https/about:blank/data: 与本地文件（file://，按读权限：工作区内直开，工作区外与 read_file 同一条授权链）。返回页面标题与状态。',
         parameters: {
             type: 'object',
-            properties: {url: {type: 'string', description: '完整 URL（含 https://）'}},
+            properties: {url: {type: 'string', description: '完整 URL（含 https://）；本地文件用 file:///D:/...，工作区外按读权限审批'}},
             required: ['url'],
         },
     },
@@ -811,11 +815,11 @@ export const AI_TOOL_DEFS = {
 // API（toolsForScope 与 ai-subagents 的 subToolsForScope 都是直接 push def），内联字段会漏进
 // 请求载荷。作者规则（2026-11-15）：新增工具必须同步写进目录，漏了 ai-tool-defs.test.mjs 会红。
 export const AI_TOOL_CATALOG = {
-    list_dir: {group: 'read', blurb: '列目录与文件大小，先摸清结构'},
+    list_dir: {group: 'read', blurb: '列目录与文件大小；depth 传 2–8 可递归出树，一次摸清多层结构'},
     read_file: {group: 'read', blurb: '读文件正文（可指定行范围），改文件前必须先读'},
     read_image: {group: 'read', blurb: '读图片把画面附加到对话（截图 / 图表 / UI 核对）；文本内容仍用 read_file'},
-    search_text: {group: 'read', blurb: '文本搜索（caseSensitive 区分大小写、filePattern 限 *.go 这类文件通配），拿 path:line；结果不足再 read_file'},
-    glob: {group: 'read', blurb: '按文件名通配找文件（*.go / src/**/*.ts），拿相对路径；找文件里的内容用 search_text'},
+    search_text: {group: 'read', blurb: '文本搜索（path 限定起点目录、filePattern 限 *.go 这类文件通配），拿 path:line；结果不足再 read_file'},
+    glob: {group: 'read', blurb: '按文件名通配找文件（*.go / src/**/*.ts，path 可指定起点目录），拿相对路径；找文件里的内容用 search_text'},
     write_file: {group: 'write', blurb: '新建文件或整体重写；覆盖前必须先 read_file，文件被外部修改后写入会被拒绝'},
     edit_file: {group: 'write', blurb: '最小替换；oldString 逐字一致，默认唯一命中，replaceAll 可全量替换'},
     propose_patch: {group: 'write', blurb: '把改动写成 .patch 交用户审批后一键应用；计划模式下只做预检不落盘'},
@@ -1023,8 +1027,8 @@ export function createAIToolDefs(ctx) {
             '调度原则：',
             '- 先查后答：涉及文件、代码或数据时先读再下结论，不要凭记忆编造内容、行号或命令输出。',
             '- 并行读、串行写：互不依赖的只读调用可在同一轮一起发（多个文件、多个关键词）；有依赖时按结果顺序来。',
-            '- 有专用工具就不要用 run_command 绕：列目录 / 读文件 / 搜索用 list_dir / read_file / search_text。',
-            '- 工作区外的文件：用户明确给过路径的直接读；没给过时 read/edit 档会请求批准（批准过的目录免询问）、auto/full 档可直接读。被拒绝的路径不要反复尝试。',
+            '- 有专用工具就不要用 run_command 绕：列目录 / 读文件 / 搜索 / 找文件用 list_dir / read_file / search_text / glob；工作区外路径也能直接传（已授权或会弹审批），不要拼 shell 命令去搜——引号与编码转义容易出错。',
+            '- 工作区外的路径：用户明确给过路径的直接读/搜；没给过时 read/edit 档会请求批准（批准过的目录免询问）、auto/full 档可直接访问。search_text / glob 传 path 与 read_file 同权。被拒绝的路径不要反复尝试。',
             '- 读文档用 web_fetch；要交互用内嵌浏览器；要操作或查看应用本身用 app_control。',
             '- 写文件前必须 read_file；改动尽量最小、可回滚；写完说明改了什么、怎么验证。',
             '- 工具报错先修正参数或换路径，不要原样重试；连续失败就停下来说明情况。',

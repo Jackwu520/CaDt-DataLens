@@ -87,3 +87,15 @@ export function sensitiveReadDenyReason(path, appDir) {
     return '拒绝读取：该路径位于应用数据目录（含 API 密钥与会话数据），AI 不读取其中的文件；' +
         '如需查看请用主界面直接打开。';
 }
+
+// 扫描类工具（search_text / glob）的起点不能「包含」应用数据目录：目录树语义下会把
+// ai-config.json 等密钥文件扫进结果（单文件读取只有目标文件一个入口，不存在这个面）。
+// 起点本身位于应用数据目录内的情况由 sensitiveReadDenyReason 负责，这里只挡严格祖先。
+export function scanRootDenyReason(root, appDir) {
+    const r = normalizeReadRoot(root);
+    const dir = normalizeReadRoot(appDir);
+    if (!r || !dir) return null;
+    if (!readRootCovers(r, dir) || readRootCovers(dir, r)) return null;
+    return '拒绝搜索：该目录包含应用数据目录（含 API 密钥与会话数据），AI 不扫描其中内容；' +
+        '请把 path 缩小到不含它的子目录。';
+}

@@ -1,6 +1,7 @@
 // ai-file-tools.js：AI 文件类工具的纯函数（read_file 窗口切片 / edit_file 定位 /
-// search_text 通配过滤 / list_dir 人类可读大小）。ai-panel.js 超线只减不增，
-// 这些逻辑从 executeTool 各 case 抽到这里，配套测试见 ai-file-tools.test.mjs。
+// search_text 通配过滤 / list_dir 人类可读大小 / browser_navigate 的 file:// 解析）。
+// ai-panel.js 超线只减不增，这些逻辑从 executeTool 各 case 抽到这里，
+// 配套测试见 ai-file-tools.test.mjs。
 
 export const AI_READ_MAX_CHARS = 64 << 10;
 
@@ -124,6 +125,35 @@ export function humanSizeBytes(n) {
     return trim(v / (1024 * 1024)) + 'MB';
 }
 
+// list_dir 递归树（Go ReadDirTree 的结果）→ ├──/└── 文本。目录名带 / 后缀，
+// 文件带人类可读大小；Omitted 目录补一行「…（还有条目未列出）」。
+// 节点结构见 app_fs.go DirTreeNode；nodes 传 null 时返回占位（空目录）。
+export function renderDirTreeText(nodes) {
+    const lines = [];
+    const walk = (children, prefix) => {
+        const list = Array.isArray(children) ? children : [];
+        for (let i = 0; i < list.length; i++) {
+            const node = list[i] || {};
+            const last = i === list.length - 1;
+            const branch = last ? '└── ' : '├── ';
+            if (node.isDir) {
+                lines.push(prefix + branch + (node.name || '') + '/');
+            } else {
+                const sizeText = humanSizeBytes(node.size);
+                lines.push(prefix + branch + (node.name || '') + (sizeText ? '（' + sizeText + '）' : ''));
+            }
+            if (node.isDir && Array.isArray(node.children) && node.children.length) {
+                walk(node.children, prefix + (last ? '    ' : '│   '));
+            }
+            if (node.isDir && node.omitted) {
+                lines.push(prefix + (last ? '    ' : '│   ') + '…（还有条目未列出）');
+            }
+        }
+    };
+    walk(nodes, '');
+    return lines;
+}
+
 // —— search_text ——
 
 // 文件名/相对路径通配：* 任意串、** 跨目录、? 单字符（都不跨 /，** 除外）；
@@ -149,4 +179,70 @@ export function globMatchPath(pattern, relPath, name) {
         // 非法模式按「不过滤」处理，避免一次坏参数把搜索整个打挂
         return true;
     }
+}
+
+// —— browser_navigate 的 file:// 解析 ——
+
+// 解码后的本地路径做段归一：\→/、折叠空段与 .、解析 ..（盘符/UNC 分享为地板）。
+// 只接受「盘符:/...」与「//server/share/...」两种绝对形式；file:foo.html 会被 URL
+// 解析成 file:///foo.html（驱动器相对），语义不明确，一并拒绝。失败返回 ''。
+function normalizeLocalFilePath(raw) {
+    const text = String(raw || '').replace(/\\/g, '/');
+    const drive = /^[A-Za-z]:\//.exec(text);
+    const unc = text.startsWith('//');
+    let prefix = '';
+    let rest = '';
+    if (drive) {
+        prefix = text.slice(0, 2);
+        rest = text.slice(3);
+    } else if (unc) {
+        rest = text.slice(2);
+    } else {
+        return '';
+    }
+    const out = [];
+    for (const part of rest.split('/')) {
+        if (!part || part === '.') continue;
+        if (part === '..') {
+            // URL 解析器已把 .. 挡在盘符/分享根内，但解码后出现的 ..（%2e%2e）要在这里兜住
+            if (out.length <= (unc ? 2 : 0)) return '';
+            out.pop();
+            continue;
+        }
+        out.push(part);
+    }
+    if (unc) return out.length >= 2 ? '//' + out.join('/') : '';
+    return prefix + '/' + out.join('/');
+}
+
+// file:// 导航目标解析：把 URL 解析成解码后的本地绝对路径。只做解析与归一，不判权限——
+// 授权链在 ai-panel 的 resolveReadPathWithApproval（与 read_file 同口径：工作区内直开；
+// 工作区外点名/已批准读根直开，read/edit 弹审批、auto/full 直开，应用数据目录硬拒）。
+// 通过返回 {ok:true, url（规范化后的可导航地址）, path（解码 + 段归一的本地路径）}；
+// 失败返回 {ok:false, reason}。
+export function normalizeFileUrlTarget(raw) {
+    const text = String(raw || '').trim();
+    let u;
+    try {
+        u = new URL(text);
+    } catch (e) {
+        return {ok: false, reason: 'file:// 地址格式无效：' + text + '（示例：file:///D:/dir/page.html）'};
+    }
+    if (u.protocol !== 'file:') {
+        return {ok: false, reason: '不是 file:// 地址：' + text};
+    }
+    let decoded;
+    try {
+        decoded = decodeURIComponent(u.pathname);
+    } catch (e) {
+        return {ok: false, reason: 'file:// 地址编码无效：' + text};
+    }
+    const host = String(u.hostname || '').toLowerCase();
+    // pathname 恒以 / 开头：本机形式 /D:/dir/x → D:/dir/x；UNC 形式由 host 拼回 //server/share
+    const joined = host && host !== 'localhost' ? '//' + u.hostname + decoded : decoded.replace(/^\//, '');
+    const path = normalizeLocalFilePath(joined);
+    if (!path) {
+        return {ok: false, reason: 'file:// 需要绝对路径（示例：file:///D:/dir/page.html）：' + text};
+    }
+    return {ok: true, url: u.href, path};
 }

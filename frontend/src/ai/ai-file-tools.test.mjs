@@ -1,4 +1,4 @@
-// ai-file-tools.test.mjs：read_file 窗口切片 / edit_file 定位 / list_dir 大小 / search_text 通配 的纯函数测试。
+// ai-file-tools.test.mjs：read_file 窗口切片 / edit_file 定位 / list_dir 大小 / search_text 通配 / file:// 解析 的纯函数测试。
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
@@ -6,8 +6,10 @@ import {
     globMatchPath,
     humanSizeBytes,
     locateEditTarget,
+    normalizeFileUrlTarget,
     normalizeReadWindow,
     readWindowOf,
+    renderDirTreeText,
 } from './ai-file-tools.js';
 
 // —— normalizeReadWindow ——
@@ -125,4 +127,98 @@ test('globMatchPath: 文件名模式与路径模式', () => {
     assert.equal(globMatchPath('server?.go', 'src/server1.go', 'server1.go'), true);
     assert.equal(globMatchPath('SERVER.GO', 'src/server.go', 'server.go'), true);
     assert.equal(globMatchPath('', 'a/b.txt', 'b.txt'), true);
+});
+
+// —— normalizeFileUrlTarget ——
+
+test('normalizeFileUrlTarget: 解码为本地路径并保留可导航地址', () => {
+    const cases = [
+        ['file:///D:/work/项目/page.html', 'D:/work/项目/page.html'],
+        ['file:///d:/WORK/项目/sub/a%20b.html', 'd:/WORK/项目/sub/a b.html'],
+        ['file:///D:/work/项目/%E4%B8%AD%E6%96%87.html', 'D:/work/项目/中文.html'],
+        ['file://localhost/D:/work/项目/x.html', 'D:/work/项目/x.html'],
+    ];
+    for (const [url, path] of cases) {
+        const target = normalizeFileUrlTarget(url);
+        assert.equal(target.ok, true, url + ' 应解析：' + target.reason);
+        assert.equal(target.path, path);
+        assert.ok(target.url.startsWith('file:'));
+    }
+    // 片段留在导航地址里，不进本地路径
+    const frag = normalizeFileUrlTarget('file:///D:/work/项目/p.html#sec');
+    assert.equal(frag.path, 'D:/work/项目/p.html');
+    assert.match(frag.url, /#sec$/);
+});
+
+test('normalizeFileUrlTarget: .. 与编码分隔符在解码后归一', () => {
+    // URL 解析器会把 .. 归一（盘符为地板）
+    assert.equal(normalizeFileUrlTarget('file:///D:/work/proj/../page.html').path, 'D:/work/page.html');
+    assert.equal(normalizeFileUrlTarget('file:///D:/work/proj/../../../secret.txt').path, 'D:/secret.txt');
+    // 编码的点段/分隔符解码后再归一（限制权限需要真实路径）
+    assert.equal(normalizeFileUrlTarget('file:///D:/work/项目/%2e%2e/secret.txt').path, 'D:/work/secret.txt');
+    assert.equal(normalizeFileUrlTarget('file:///D:/work/项目/a%2F..%2Fb.html').path, 'D:/work/项目/b.html');
+    // 连 .. 也越不过盘符根
+    assert.equal(normalizeFileUrlTarget('file:///D:/%2e%2e%2f%2e%2e%2fx.txt').ok, false);
+});
+
+test('normalizeFileUrlTarget: UNC 分享与非法形式', () => {
+    const unc = normalizeFileUrlTarget('file://server/share/dir/x.html');
+    assert.equal(unc.ok, true, unc.reason);
+    assert.equal(unc.path, '//server/share/dir/x.html');
+    const bad = [
+        ['file:foo.html', /绝对路径/],          // 驱动器相对（file:///foo.html）
+        ['file:///', /绝对路径/],
+        ['file://server/', /绝对路径/],          // 缺分享名
+        ['file://%zz', /格式无效/],
+        ['https://example.com', /不是 file:/],
+    ];
+    for (const [url, re] of bad) {
+        const target = normalizeFileUrlTarget(url);
+        assert.equal(target.ok, false, url + ' 应拒绝');
+        assert.match(target.reason, re);
+    }
+});
+
+// —— renderDirTreeText（list_dir depth>1 的树状输出） ——
+
+test('renderDirTreeText: ├──/└── 前缀、目录 / 后缀、文件带大小', () => {
+    const nodes = [
+        {name: 'ai', isDir: true, children: [
+            {name: 'ai-panel.js', isDir: false, size: 524288},
+            {name: 'defs.js', isDir: false, size: 300},
+        ]},
+        {name: 'core', isDir: true, children: []},
+        {name: 'README.md', isDir: false, size: 2048},
+    ];
+    assert.deepEqual(renderDirTreeText(nodes), [
+        '├── ai/',
+        '│   ├── ai-panel.js（512KB）',
+        '│   └── defs.js（300B）',
+        '├── core/',
+        '└── README.md（2KB）',
+    ]);
+});
+
+test('renderDirTreeText: 最后一个子树的缩进与 Omitted 标记', () => {
+    const nodes = [
+        {name: 'a', isDir: true, children: [
+            {name: 'x.js', isDir: false, size: 1},
+        ]},
+        {name: 'b', isDir: true, omitted: true, children: [
+            {name: 'y.js', isDir: false, size: 2},
+        ]},
+    ];
+    assert.deepEqual(renderDirTreeText(nodes), [
+        '├── a/',
+        '│   └── x.js（1B）',
+        '└── b/',
+        '    └── y.js（2B）',
+        '    …（还有条目未列出）',
+    ]);
+});
+
+test('renderDirTreeText: 空与非数组输入返回空行表（由调用方补「空目录」占位）', () => {
+    assert.deepEqual(renderDirTreeText(null), []);
+    assert.deepEqual(renderDirTreeText(undefined), []);
+    assert.deepEqual(renderDirTreeText([]), []);
 });

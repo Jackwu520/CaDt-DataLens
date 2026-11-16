@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
 import {
     classifierModelOptionLabel,
     countPermissionRules,
@@ -131,6 +132,23 @@ test('统一决策链：写入与网络', () => {
     assert.equal(decidePermission({scope: 'edit', kind: 'write', rules, subject: 'src/a.js'}).decision, 'ask');
     assert.equal(decidePermission({scope: 'edit', kind: 'web', subject: 'domain:example.com'}).decision, 'allow');
     assert.equal(decidePermission({scope: 'edit', kind: 'web', rules: normalizePermissionRules({web: {ask: ['domain:example.com']}}), subject: 'domain:example.com'}).decision, 'ask');
+});
+
+test('接线护栏：.cadt/tmp 是 auto 档写入免审批的唯一 .cadt 豁免', () => {
+    // isAutoWriteRisky 在 ai-panel.js 闭包里，这里钉源码形态：
+    // 豁免必须精确到 .cadt/tmp 前缀且排在 .cadt 整树 risky 判定之前，防止将来被放宽成通配。
+    const panel = readFileSync(new URL('./ai-panel.js', import.meta.url), 'utf8');
+    assert.ok(
+        panel.includes("if (rel === '.cadt/tmp' || rel.startsWith('.cadt/tmp/')) return false;"),
+        '.cadt/tmp 免审批豁免必须精确到 tmp/ 前缀',
+    );
+    const tmpIndex = panel.indexOf("rel === '.cadt/tmp'");
+    const cadtIndex = panel.indexOf("rel === '.cadt' || rel.startsWith('.cadt/')");
+    assert.ok(tmpIndex >= 0 && cadtIndex > tmpIndex, 'tmp 豁免必须先于 .cadt 整树 risky 判定');
+    // auto 档 risky 语义（纯函数层）：risky 转人工，非 risky 直发
+    assert.equal(decidePermission({scope: 'auto', kind: 'write', subject: '.cadt/tmp/x.html', risky: false}).decision, 'allow');
+    assert.equal(decidePermission({scope: 'auto', kind: 'write', subject: '.cadt/tmp/x.html', risky: true}).decision, 'ask');
+    assert.equal(decidePermission({scope: 'auto', kind: 'write', subject: '.cadt/permissions.json', risky: true}).decision, 'ask');
 });
 
 test('空规则集结构稳定', () => {

@@ -266,7 +266,7 @@ runTurn(session, userMsg):
 
 | 工具 | 执行（前端包装） | 档位 | 审批 |
 |---|---|---|---|
-| `list_dir(path)` | `ReadDir(path, 200)` | 读取+ | 免 |
+| `list_dir(path[, depth])` | depth 缺省 `ReadDir(path, 200)`（单层）；depth 2–8 `ReadDirTree(path, depth)` 递归树（跳 .git/node_modules 等、全树 400 项预算、超限标 Omitted/Truncated） | 读取+ | 免（工作区外走读审批，递归授权粒度记目录本身） |
 | `read_file(path, offset?)` | `OpenFile(path,'auto')` → Content 切片，**单次 ≤64KB**，二进制/超 10MB 拒绝 | 读取+ | 免 |
 | `search_text(query)` | `SearchWorkspace(scopeRoot, query, false, 200)` | 读取+ | 免 |
 | `web_search(query, maxResults?)` | 后端 `WebSearch`：Bing RSS 搜索，返回标题 / URL / 摘要 / 日期；默认 8 条、最多 10 条 | 读取+ / 计划模式 | 免 |
