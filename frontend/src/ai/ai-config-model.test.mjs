@@ -271,7 +271,7 @@ test('applyOutputWindowLimit：只降不升，超限时同步压低思考预算'
 
 test('接线护栏：max_tokens 自动降档事件跨 Go / main.js / ai-panel.js 一致', () => {
     const read = (path) => readFileSync(new URL(path, import.meta.url), 'utf8');
-    assert.match(read('../../../ai_types.go'), /aiEventParamAdjust\s*=\s*"ai-param-adjust"/);
+    assert.match(read('../../../internal/aitransport/types.go'), /EventParamAdjust\s*=\s*"ai-param-adjust"/);
     assert.match(read('../main.js'), /'ai-param-adjust'/,
         'main.js 必须订阅降档事件，否则 Go 侧 emit 无人接收');
     assert.match(read('./ai-panel.js'), /case 'ai-param-adjust':/);
@@ -281,7 +281,7 @@ test('接线护栏：max_tokens 自动降档事件跨 Go / main.js / ai-panel.js
 
 test('接线护栏：Go 侧每个 AI 流式事件都有 main.js 订阅与面板分支', () => {
     const read = (path) => readFileSync(new URL(path, import.meta.url), 'utf8');
-    const names = [...read('../../../ai_types.go').matchAll(/\baiEvent\w+\s*=\s*"([^"]+)"/g)]
+    const names = [...read('../../../internal/aitransport/types.go').matchAll(/\bEvent\w+\s*=\s*"([^"]+)"/g)]
         .map((m) => m[1]);
     assert.ok(names.length >= 7, '至少应解析出 chunk/think/toolcall/done/error/retry/param-adjust');
     const main = read('../main.js');

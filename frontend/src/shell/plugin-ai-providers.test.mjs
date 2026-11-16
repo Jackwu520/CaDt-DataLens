@@ -155,14 +155,14 @@ test('接线护栏：宿主 / 面板 / Go 侧 / 文档 / 测试清单五处齐�
     const read = (rel) => readFileSync(new URL(rel, import.meta.url), 'utf8');
     const plugins = read('./plugins.js');
     const panel = read('../ai/ai-panel.js');
-    const goTypes = read('../../../ai_types.go');
-    const goHttp = read('../../../ai_http.go');
-    const goValidate = read('../../../ai_validate.go');
+    const goTypes = read('../../../internal/aitransport/types.go');
+    const goHttp = read('../../../internal/aitransport/http.go');
+    const goValidate = read('../../../internal/aitransport/validate.go');
     const docs = read('../../../docs/plugins/README.md');
     const packageJson = read('../../package.json');
     const html = read('../../index.html');
-    const goStream = read('../../../ai_stream.go');
-    const goSSE = read('../../../ai_sse.go');
+    const goStream = read('../../../internal/aitransport/stream.go');
+    const goSSE = read('../../../internal/aitransport/sse.go');
 
     assert.match(plugins, /registerAIProvider\(spec\)/);
     assert.match(plugins, /clearPluginAIProviders\(\)/);
@@ -177,7 +177,7 @@ test('接线护栏：宿主 / 面板 / Go 侧 / 文档 / 测试清单五处齐�
     assert.match(docs, /cadt\.registerAIProvider\(spec\)/);
     assert.match(packageJson, /plugin-ai-providers\.test\.mjs/);
     assert.match(html, /value="responses"/, '协议下拉要有 Responses 选项');
-    assert.match(goStream, /aiProviderResponses/);
+    assert.match(goStream, /ProviderResponses/);
     assert.match(goHttp, /aiBuildResponsesBody/);
     assert.match(goSSE, /func streamResponsesSSE/);
     assert.match(docs, /OpenAI Responses API/);
