@@ -22,6 +22,7 @@ import (
 	"datalens/internal/reading"
 	"datalens/internal/run"
 	"datalens/internal/search"
+	"datalens/internal/skills"
 	"datalens/internal/sqlview"
 	"datalens/internal/terminal"
 	"datalens/internal/toolchain"
@@ -46,6 +47,7 @@ type App struct {
 	*toolchain.Toolchain  // 语言环境检测（internal/toolchain）
 	*aiconfig.Store       // AI 配置文件读写（internal/aiconfig）
 	*plugins.Manager      // 插件与市场（internal/plugins）
+	*skills.Skills        // 内置技能与 agent 技能注册（internal/skills）
 	ctx                   context.Context
 	startupTargets        []OpenTarget
 	startupSettingsPane   string
@@ -89,7 +91,7 @@ type FileData struct {
 }
 
 func NewApp() *App {
-	return &App{Reader: &reading.Reader{}, Runner: &run.Runner{}, Host: &browser.Host{}, Searcher: &search.Searcher{}, Scheduler: &aischedule.Scheduler{}, Bridge: &cmdbridge.Bridge{}, Terminal: &terminal.Terminal{}, Toolchain: &toolchain.Toolchain{}, Store: &aiconfig.Store{}, Manager: &plugins.Manager{}}
+	return &App{Reader: &reading.Reader{}, Runner: &run.Runner{}, Host: &browser.Host{}, Searcher: &search.Searcher{}, Scheduler: &aischedule.Scheduler{}, Bridge: &cmdbridge.Bridge{}, Terminal: &terminal.Terminal{}, Toolchain: &toolchain.Toolchain{}, Store: &aiconfig.Store{}, Manager: &plugins.Manager{}, Skills: &skills.Skills{}}
 }
 
 func (a *App) startup(ctx context.Context) {

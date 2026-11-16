@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"datalens/internal/skills"
 )
 
 // splitIntegrationActions 解析集成项列表；all 展开为全部集成项。
@@ -77,9 +79,9 @@ func runInstallerCommand(args []string) bool {
 			err = setPathRegisteredFor(exe, enabled)
 		case "skill":
 			if enabled {
-				err = RegisterAgentSkill()
+				err = skills.RegisterAgentSkill()
 			} else {
-				err = UnregisterAgentSkill()
+				err = skills.UnregisterAgentSkill()
 			}
 		default:
 			err = fmt.Errorf("未知集成项 %q", action)

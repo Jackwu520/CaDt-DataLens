@@ -1,4 +1,4 @@
-package main
+package skills
 
 import (
 	"os"
@@ -7,6 +7,12 @@ import (
 	"sync"
 	"testing"
 )
+
+func init() {
+	Embedded = os.DirFS("../..")
+	Version = "test"
+	Logf = func(string, string, ...any) {}
+}
 
 func TestAgentSkillRegisterUnregister(t *testing.T) {
 	home := t.TempDir()
@@ -83,7 +89,7 @@ func TestBuiltinSkillAssetsPresent(t *testing.T) {
 		if len(paths) < 2 {
 			t.Fatalf("%s 文件过少：%v", dir, paths)
 		}
-		data, err := skillAssets.ReadFile(source + "/SKILL.md")
+		data, err := readEmbedded(source + "/SKILL.md")
 		if err != nil {
 			t.Fatalf("%s/SKILL.md 未嵌入：%v", dir, err)
 		}
