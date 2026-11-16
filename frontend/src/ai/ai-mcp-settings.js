@@ -424,18 +424,30 @@ export function createAIMcpSettings(ctx) {
     }
 
     function renderToolsPanel() {
-        const host = el.list && el.list.parentElement;
-        if (!host) return;
-        let panel = host.querySelector('#ai-opt-mcp-tools');
+        if (!el.list) return;
+        let panel = el.list.querySelector('#ai-opt-mcp-tools');
         if (!toolsPanel) {
+            if (panel) panel.remove();
+            return;
+        }
+        // 面板跟随所属服务器行展开（插在行后，同诊断行）。整块列表重绘会把面板一起清掉，
+        // renderAll 的顺序是 renderList → renderToolsPanel，这里每次重新挂回去。
+        const rowBtn = el.list.querySelector('button[data-mcp-tools="' + CSS.escape(toolsPanel.name) + '"]');
+        const row = rowBtn && rowBtn.closest('.ai-mcp-server-row');
+        if (!row) {
+            // 服务器被删除 / 改名：面板一并收起
+            toolsPanel = null;
             if (panel) panel.remove();
             return;
         }
         if (!panel) {
             panel = document.createElement('div');
             panel.id = 'ai-opt-mcp-tools';
-            host.appendChild(panel);
         }
+        const anchor = row.nextElementSibling && row.nextElementSibling.classList.contains('ai-mcp-diag')
+            ? row.nextElementSibling
+            : row;
+        anchor.after(panel);
         const st = getMcpState().servers.find((s) => s.name === toolsPanel.name);
         const stale = new Set((st && st.staleTools) || []);
         const rows = toolsPanel.tools.map((tool) => {
@@ -493,7 +505,7 @@ export function createAIMcpSettings(ctx) {
     }
 
     function syncCheckboxes() {
-        const panel = el.list && el.list.parentElement.querySelector('#ai-opt-mcp-tools');
+        const panel = el.list && el.list.querySelector('#ai-opt-mcp-tools');
         if (!panel) return;
         for (const box of panel.querySelectorAll('input[data-mcp-tool]')) {
             box.checked = toolsPanel.checked.has(box.dataset.mcpTool);
@@ -516,6 +528,7 @@ export function createAIMcpSettings(ctx) {
                 // renderAll 读的是旧 config，会把勾选打回。这里先同步再重绘，保证即时生效。
                 config = mcpApplyServerEnabled(config, name, nextEnabled);
                 renderList();
+                renderToolsPanel(); // renderList 会清掉行内的工具面板，重新挂回
                 onChanged();
             } catch (err) {
                 flash('切换失败：' + String((err && err.message) || err), true);

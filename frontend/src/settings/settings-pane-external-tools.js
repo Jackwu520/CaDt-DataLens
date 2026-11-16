@@ -69,6 +69,23 @@ export function createSettingsPaneExternalTools(deps) {
         return el;
     }
 
+    function infoTip(label, text) {
+        const tip = document.createElement('button');
+        tip.type = 'button';
+        tip.className = 'info-tip';
+        tip.dataset.tip = text;
+        tip.setAttribute('aria-label', label + '说明');
+        tip.textContent = 'i';
+        return tip;
+    }
+
+    function fieldRowWithTip(title, desc, tipText, ...controls) {
+        const row = fieldRow(title, desc, ...controls);
+        const titleEl = row.querySelector('.set-title');
+        if (titleEl) titleEl.appendChild(infoTip(title, tipText));
+        return row;
+    }
+
     async function load() {
         if (loading) return;
         loading = true;
@@ -187,7 +204,7 @@ export function createSettingsPaneExternalTools(deps) {
         });
         const keyInput = createInput({
             type: 'password',
-            className: 'dlg-input',
+            className: 'ai-settings-input extcap-key-input',
             placeholder: config.apiKeySet ? '已保存；留空保持不变' : 'sk-...（只保存在本机）',
             autocomplete: 'new-password',
             onChange: (event) => {
@@ -213,7 +230,7 @@ export function createSettingsPaneExternalTools(deps) {
             }));
         }
         const baseInput = createInput({
-            className: 'dlg-input',
+            className: 'ai-settings-input extcap-base-url',
             value: config.baseUrl,
             placeholder: DEFAULT_PROVIDER_BASE_URL,
             spellcheck: false,
@@ -232,19 +249,17 @@ export function createSettingsPaneExternalTools(deps) {
                 void save({searchCount: n});
             },
         });
-        const links = document.createElement('div');
-        links.className = 'set-control';
-        links.append(
-            button('API 文档', 'dlg-btn', () => openExternalUrl('https://api-docs.deepseek.com/zh-cn/api/search')),
-            button('价格', 'dlg-btn', () => openExternalUrl('https://api-docs.deepseek.com/zh-cn/quick_start/pricing')),
-            button('获取 Key', 'dlg-btn', () => openExternalUrl('https://platform.deepseek.com')),
-        );
         els.provider.append(
-            fieldRow('启用服务提供商', '各能力选择「服务提供商」时必须启用并配置 API Key；搜索/抓取选「内置」时不受影响。', switchCtl.element),
-            fieldRow('API Key', '只保存在本机应用数据目录（0600）；不会回显明文，也不会写入日志。', ...keyControls),
-            fieldRow('基础地址', '留空 = ' + DEFAULT_PROVIDER_BASE_URL + '（程序自动追加 /search、/fetch、/ocr、/tts、/asr）。', baseInput.element),
-            fieldRow('每次搜索结果数', '1–50；实际返回还受工具单次上限 10 约束。', countInput.element),
-            fieldRow('外部链接', '接口、计费与申请 Key 的官方页面。', links),
+            fieldRowWithTip('启用服务提供商', '', '各能力选择「服务提供商」时必须启用并配置 API Key；搜索 / 抓取选择「内置」时不受影响。', switchCtl.element),
+            fieldRowWithTip('API Key', '仅保存在本机', '保存在应用数据目录（0600）；不会回显明文，也不会写入日志。', ...keyControls),
+            fieldRowWithTip('基础地址', '留空用 DeepSeek 默认地址', '留空 = ' + DEFAULT_PROVIDER_BASE_URL + '（程序自动追加 /search、/fetch、/ocr、/tts、/asr）。', baseInput.element),
+            fieldRowWithTip('每次搜索结果数', '实际最多返回 10 条', '可设置 1–50；实际返回还受工具单次上限 10 约束。', countInput.element),
+            fieldRow(
+                '相关链接', '',
+                button('API 文档', 'dlg-btn', () => openExternalUrl('https://api-docs.deepseek.com/zh-cn/api/search')),
+                button('价格', 'dlg-btn', () => openExternalUrl('https://api-docs.deepseek.com/zh-cn/quick_start/pricing')),
+                button('获取 Key', 'dlg-btn', () => openExternalUrl('https://platform.deepseek.com')),
+            ),
         );
     }
 

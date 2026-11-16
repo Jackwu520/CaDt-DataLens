@@ -5070,24 +5070,16 @@ export function createAIPanel(options) {
         const totals = sessionUsageTotals(session);
         setStatItem(el.statsTurns, totals.rounds + ' 轮 ' + totals.steps + ' 步');
         setStatItem(el.statsSpeed, totals.speed > 0 ? totals.speed + ' tok/s' : '');
-        if (el.statsSpeed) {
-            el.statsSpeed.dataset.tip = totals.speedKind === 'gen'
-                ? '生成速度：输出 tokens ÷（模型往返耗时 − 首 token 延迟）'
-                : (totals.speedKind === 'e2e'
-                    ? '端到端吞吐：输出 tokens ÷ 模型往返耗时（含首 token 延迟）'
-                    : '');
-        }
         setStatItem(el.statsTotal, totals.total > 0 ? aiFormatCompactTokens(totals.total) + ' tok' : '');
         const cacheRate = totals.prompt > 0 && totals.cached > 0 ? Math.round(totals.cached / totals.prompt * 100) : 0;
         setStatItem(el.statsCache, cacheRate > 0 ? '缓存命中 ' + cacheRate + '%' : '');
         const tokenVisible = totals.total > 0 || totals.prompt > 0 || totals.completion > 0;
         if (el.statsTokenBtn) el.statsTokenBtn.classList.toggle('hidden', !tokenVisible);
         if (el.statsSep) el.statsSep.classList.toggle('hidden', !tokenVisible);
-        const {tokens, windowSize, percent} = estimateCurrentTokens();
+        const {percent} = estimateCurrentTokens();
         const pct = Math.max(0, Math.round(percent * 100));
         if (el.statsCtxPct) el.statsCtxPct.textContent = pct + '%';
         if (el.ctxRing) el.ctxRing.style.setProperty('--ctx-pct', String(Math.min(100, pct)));
-        if (el.ctxBtn) el.ctxBtn.dataset.tip = '上下文约 ' + aiFormatCompactTokens(tokens) + ' / ' + aiFormatCompactTokens(windowSize) + ' tokens（估算）';
         if (openStatsPop === 'ctx') void renderCtxPopover(false);
         else if (openStatsPop === 'session') renderSessionPopover();
         else if (openStatsPop === 'token') renderTokenPopover();
@@ -13216,7 +13208,10 @@ export function createAIPanel(options) {
         note.className = 'ai-note' + (isError ? ' error' : '');
         note.textContent = text;
         note.dataset.aiNote = String(++noteSeq);
-        el.messages.appendChild(note);
+        // 流式状态条（看板娘条）钉在消息区最底：提示插到它之前，别让胶囊掉到看板娘下面
+        const bar = el.messages.querySelector('.ai-streaming-bar');
+        if (bar) el.messages.insertBefore(note, bar);
+        else el.messages.appendChild(note);
         while (el.messages.querySelectorAll('.ai-note').length > 6) {
             const first = el.messages.querySelector('.ai-note');
             if (first) first.remove();

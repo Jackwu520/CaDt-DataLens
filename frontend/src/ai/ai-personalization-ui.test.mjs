@@ -37,13 +37,14 @@ function setup() {
     const logs = [];
     const statuses = [];
     const saved = [];
+    const memoryOpenCalls = [];
     let confirmCallback = null;
     const deps = {
         getConfig: () => config,
         saveAIConfig: () => saved.push(JSON.stringify(config.persona)),
         readTextFile: async () => ({text: '# 记忆\n- 用户偏好简洁回答'}),
         resolveMemoryDir: async () => ({dir: 'D:/ws/.cadt/memory', mode: 'workspace'}),
-        showMemoryDialog: async () => {},
+        showMemoryDialog: async (options) => { memoryOpenCalls.push(options); },
         aiJoinPath: (a, b) => a + '/' + b,
         flash: () => {},
         askConfirm: (msg, action) => { confirmCallback = action; },
@@ -52,7 +53,7 @@ function setup() {
         assistantName: () => config.persona.assistantName.custom || '甜澄',
         activity: {log: (action, target) => logs.push([action, target])},
     };
-    return {els, config, logs, statuses, saved, deps, fireConfirm: () => confirmCallback && confirmCallback()};
+    return {els, config, logs, statuses, saved, deps, memoryOpenCalls, fireConfirm: () => confirmCallback && confirmCallback()};
 }
 
 const modPath = './ai-personalization-ui.js';
@@ -159,4 +160,14 @@ test('重复初始化只绑定一次：不会重复派发保存', () => {
     const count = logs.filter((entry) => entry[1] === 'userLabel').length;
     assert.equal(count, 1);
     assert.equal(config.persona.userLabel, '老板');
+});
+
+test('打开记忆管理：从设置窗打开必须传 top:true 盖住设置窗', async () => {
+    const {els, deps, memoryOpenCalls} = setup();
+    const mod = createAIPersonalizationSettings(deps, {setSettingsStatus: () => {}});
+    mod.refreshPersonalizationPane();
+    els['ai-persona-memory-open'].dispatch('click');
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.equal(memoryOpenCalls.length, 1, '应调用一次 showMemoryDialog');
+    assert.deepEqual(memoryOpenCalls[0], {top: true}, '从设置窗打开必须传 top:true，弹窗才能盖住设置窗');
 });

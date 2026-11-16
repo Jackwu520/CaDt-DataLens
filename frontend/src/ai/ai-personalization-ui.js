@@ -237,7 +237,8 @@ export function createAIPersonalizationSettings(ctx, extras) {
         });
 
         if (el.memoryOpen) el.memoryOpen.addEventListener('click', () => {
-            Promise.resolve(showMemoryDialog && showMemoryDialog())
+            // 从设置窗打开：挂到 body 顶层盖住设置窗（openAIDialog 的 options.top）
+            Promise.resolve(showMemoryDialog && showMemoryDialog({top: true}))
                 .then(() => refreshMemoryPreview())
                 .catch(() => {});
         });

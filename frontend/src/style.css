@@ -7304,6 +7304,7 @@ div.jsoneditor-tree textarea { user-select: text; }
 .ai-settings-key { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; }
 .ai-settings-key .ai-settings-input { flex: 1 1 260px; }
 #ai-opt-log-path { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; word-break: break-all; }
+#ai-opt-mcp-samples-list.hidden { display: none; }
 .ai-settings-status {
     min-width: 0;
     overflow: hidden;
@@ -10611,6 +10612,8 @@ body.bgterm-dragging { cursor: row-resize; user-select: none; }
 .set-control { flex: none; display: flex; align-items: center; gap: 8px; max-width: 55%; }
 .set-control .opt-select { width: 190px; }
 .set-control .ai-settings-input { width: 210px; }
+.set-control .extcap-key-input { width: 260px; }
+.set-control .extcap-base-url { width: 320px; }
 /* 配置表同步地址是 URL，210px 放不下一整条地址 */
 #ai-catalog-url { width: 320px; }
 .set-control .popover-value { min-width: 40px; text-align: right; }
@@ -10869,12 +10872,15 @@ body.bgterm-dragging { cursor: row-resize; user-select: none; }
 .settings-content :is(input[type="text"], input[type="search"], input[type="password"], input[type="number"], input[type="url"], input[type="email"], input[type="tel"], input:not([type])):focus,
 .dlg-input:focus {
     border-color: var(--accent);
-    background-color: var(--field-focus-bg, var(--bg));
+    /* 聚焦底色只染一层极淡的主题色作提示：此前整块铺 --field-focus-bg（= --hover），
+       深色主题下 --hover 比 --bg 亮一大截，聚焦瞬间整个框像被点亮（2026-11-16 用户反馈）。
+       聚焦反馈主体仍是边框色 + 外发光，底色不参与明度跳变 */
+    background-color: color-mix(in srgb, var(--accent) 7%, var(--bg));
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
 }
-/* 多行文本框聚焦时不要整块铺 --field-focus-bg：单行输入那点底色是提示，
-   换成 120px 高的系统提示词编辑框就成了一整片蓝色，视觉压迫感很强。
-   背景保持常态，聚焦反馈只交给边框色 + 外发光。放在通用规则之后覆盖它。 */
+/* 多行文本框聚焦连淡染底色也不要：单行一行字的那点提示搬到 120px 高的系统提示词
+   编辑框就是一整片染色，视觉压迫感强。背景保持常态，聚焦反馈只交给边框色 + 外发光。
+   放在通用规则之后覆盖它。 */
 .settings-content textarea:focus,
 textarea.dlg-input:focus {
     border-color: var(--accent);
@@ -10921,6 +10927,8 @@ textarea.dlg-input:focus {
 .ai-mcp-stale .ai-mcp-tool-name { text-decoration: line-through wavy rgba(213, 68, 66, .6); }
 .ai-mcp-tools-head { padding: 6px 8px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .ai-mcp-tools-list { max-height: 260px; overflow: auto; border-top: 1px solid var(--border); }
+/* 工具面板挂在所属服务器行之后：左缩进对齐服务器名（行内灯 8 + 灯宽 8 + 间距 8） */
+#ai-opt-mcp-tools { padding: 0 0 8px 16px; }
 
 /* ===== 对话引用块（ai-quote.js / ai-panel.js）：截断摘要 + 原生 title 看全文 ===== */
 .ai-user-quote { display: flex; flex-direction: column; gap: 4px; margin: 0 0 6px; padding: 5px 8px; border: 1px solid var(--border); border-left: 2px solid var(--accent); border-radius: 6px; background: var(--panel2); }

@@ -12,6 +12,7 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 - **新增 AI 工具**：`ocr(path, purpose?)`、`text_to_speech(text, voice?)`、`transcribe_audio(path)`，工具目录新增「语音与识别（外部服务）」组。provider 来源下 OCR/ASR 全权限档可用（OCR 读文件、ASR 上传音频，审批沿用域名规则并可显示预估费用），TTS 写权限档（产物写工作区）；MCP 来源按上条边界。ASR 非直传格式走 WebView2 WebAudio 转 16 kHz 单声道 + 纯 JS WAV 编码（零新依赖，20 MB / 15 分钟上限，wma / ape 明确拒绝）；TTS 工具卡可直接打开产物。
 - **本地来源示例**：`docs/mcp-samples/` 提供 `tts-sapi.ps1`（Windows SAPI）、`ocr-windows.ps1`（Windows.Media.Ocr，需 Windows PowerShell 5.1）、`asr-whisper.py` / `asr-whisper.md`（whisper.cpp 接入脚本）；三份脚本随后改为随 exe 内嵌的内置示例（见下条），模型与本地引擎仍由用户自备。
 - 实现落点：引擎在 `internal/webtools`（配置、DeepSeek 适配、音频读取），根目录 `webtools_config.go` / `webtools_app.go` 只做绑定；前端 `ai/ai-external-tools.js`（来源判定与结果格式化）、`ai/ai-audio-transcode.js`（转码）、`settings/settings-pane-external-tools.js`（设置页）；新增测试覆盖配置归一化、来源可用性、WAV 编码与 httptest 假服务。
+- 修复 **MCP 服务器「工具」勾选面板跑到整页最底部**：面板此前 append 到列表容器的父级末尾，MCP 组迁进外部工具页后落到了「内置示例」下面。现在与状态灯诊断行同一规则，插在所属服务器行之后展开（左侧缩进对齐服务器名）；列表重绘（启停、状态事件）后自动挂回，服务器被删/改名时面板一并收起。
 
 ### MCP 服务器（AI 代配）
 
@@ -47,6 +48,7 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 - 新增 **`glob` 工具**：按 `*.go`、`src/**/*.ts` 这类通配列工作区文件（只回相对路径与大小，不读内容），补上「已知文件名找路径」的缺口——此前只有 `list_dir`（单层目录）与 `search_text`（按内容找）。同时把 `search_text` 的 `filePattern` 从「前端先取 1000 条再过滤」**下推到搜索层**（rg 走 `--glob`，内置扫描在遍历时过滤），无关文件的命中不再挤占结果窗口。两者共用同一套通配语义（`*` / `**` / `?`，且 `**/` 可匹配零个目录段），Go 与前端各有一份表驱动用例互相卡住。
 - 新增 **`terminal` 工具**：AI 可在应用内置终端（ConPTY 持久会话）里 `open` / `send` / `read` / `signal` / `close`，适合 dev server、交互式 CLI 这类需要持续输入的长驻程序。AI 自建的终端与用户点「新建终端」出来的完全一样（同一个页签、同一份输出流，并自动打开底部面板）；`read` 读的是 Go 侧 64 KiB 滚动缓冲——面板收起时也能拿到输出，进程退出后缓冲保留到关闭为止；写操作走与 `run_command` 同一条命令审批链（`deny` 规则同样生效），`signal` 发 Ctrl+C。停止生成不会杀掉终端里的程序，需要中止请显式 `signal`。
 - **工作日志的月份索引回归「一句话」**：`.cadt/logs/{YYYY}/{MM}/INDEX.md` 此前每条把标题 + 最多 500 字摘要拼成一行，索引退化成正文复制（一个月 37 条就有 22 KB）。现在每行只放「日期 + 短标题 + 指向当日正文的链接」，摘要只留在正文里；`write_worklog` 的工具描述同步收口——标题写成 ≤40 字的一句话（索引里只有它），细节/验证/待办进 summary，写超长时索引侧再收紧到 48 字并在断句点截断。
+- 修复 **判定 / 系统提示胶囊掉到看板娘条下面**：`showNote` 无条件把 `.ai-note` append 到消息区末尾，而流式状态条（看板娘条）固定钉在最底——「AI 分类器判定中」「端侧未放行…AI 复核放行」这类提示全排到了看板娘下面。现在与工具卡同一规则：状态条在场上时插到它之前，提示始终留在消息流里、看板娘条保持置底。
 
 ### 数据源（Gitee / GitHub）
 
@@ -229,6 +231,18 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 
 - **统一确认对话框改名**：内部函数 `openCloseConfirm` 改名为 `openConfirmDialog`（原名「打开关闭确认」名不副实，实际承载删除 / 清空 / 回滚 / 关闭标签 / 全部展开等通用确认），全仓 15 个文件 46 处引用同步更新，无行为变化。
 - **破坏性操作确认按钮标红**：`openConfirmDialog` 新增第 5 参数 `variant`（语义化类型而非布尔，后续可扩展 `warning` / `info`）。删除环境变量 / 插件 / 补丁 / 文件、清空操作记录、Git 回滚、撤销补丁、关闭脏标签、重新加载丢弃修改、存储清理等破坏性操作传 `variant='danger'`，确认按钮显示为红色；安装插件（信任来源）、全部展开（性能确认）等中性操作保持主色。确认前仍不执行动作，确认后才回调。
+
+### 修复：从设置窗打开记忆管理弹窗被设置窗盖住
+
+- 修复 **设置 → AI → 个性化 → 长期记忆 →「打开记忆管理…」弹出的弹窗显示在设置窗下层**：从设置窗打开时，`showMemoryDialog` 未传 `{top: true}`，弹窗留在 AI 面板内（z-index 40），被设置窗（z-index 101）盖住。现在设置页调用传 `{top: true}`，弹窗经 `attachDialogTop` 挂到 body 顶层（z-index 300）盖住设置窗，设置窗保持打开。新增测试断言 `showMemoryDialog` 收到 `{top: true}`。
+
+### 精简 AI 状态栏冗余 tooltip
+
+- 移除 **AI 面板状态栏三个状态项的 tooltip**：会话统计（轮次/步数/速度）、Token 用量（总量/缓存命中）、上下文用量（百分比）的图标 + 文本已自明，悬浮提示属于冗余。移除静态 `data-tip`（会话统计 / Token 用量 / 上下文用量）与动态 tooltip（生成速度/端到端吞吐说明、「上下文约 N tokens（估算）」），保留 `aria-label` 无障碍标签。
+
+### 精简窗口标题栏控制按钮 tooltip
+
+- 移除 **窗口标题栏三个控制按钮的 tooltip**：最小化 / 最大化还原 / 关闭（红色 X）是标准窗口控件，图标自明，悬浮提示冗余。移除对应 `data-tip`，保留 `aria-label` 无障碍标签。
 
 ## v1.1.0 — 2026-11-15
 
