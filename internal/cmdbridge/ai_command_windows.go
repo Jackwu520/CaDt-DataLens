@@ -1,6 +1,6 @@
 //go:build windows
 
-package main
+package cmdbridge
 
 import (
 	"fmt"
@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"datalens/internal/shellpath"
 )
 
 // AI 终端工具：按 Git Bash → PowerShell 7 → Windows PowerShell → cmd 的优先级执行命令。
@@ -39,10 +41,10 @@ func findExe(name string) string {
 }
 
 func aiShellInvocation(command string) (shellName, exe string, args []string) {
-	if bash := findGitBash(); bash != "" {
+	if bash := shellpath.FindGitBash(); bash != "" {
 		return "Git Bash", bash, []string{"--login", "-c", command}
 	}
-	if pwsh := findPwsh(); pwsh != "" {
+	if pwsh := shellpath.FindPwsh(); pwsh != "" {
 		// 避免中文输出按控制台代码页编码；-NonInteractive 防止命令等待输入。
 		prefix := "[Console]::OutputEncoding=[Text.Encoding]::UTF8;$OutputEncoding=[Console]::OutputEncoding;"
 		return "PowerShell 7", pwsh, []string{"-NoLogo", "-NoProfile", "-NonInteractive", "-Command", prefix + command}
@@ -62,7 +64,7 @@ type AICommandJobStart struct {
 // AICommandStart 把一条 AI 发起的 shell 命令放到后台执行：立即返回 jobId，不闪窗口、
 // 不阻塞对话。输出按行缓冲（每作业 256 KB，超限丢弃最早内容），用 AICommandStatus
 // 增量查询，AICommandStop 终止；同时照常广播 cmd-out / cmd-exit 供前端卡片实时显示。
-func (a *App) AICommandStart(command, cwd string) (*AICommandJobStart, error) {
+func (b *Bridge) AICommandStart(command, cwd string) (*AICommandJobStart, error) {
 	command = strings.TrimSpace(command)
 	if command == "" {
 		return nil, fmt.Errorf("命令不能为空")
@@ -79,7 +81,7 @@ func (a *App) AICommandStart(command, cwd string) (*AICommandJobStart, error) {
 	jobId := fmt.Sprintf("bg-%d", commandJobSeq)
 	commandJobsMu.Unlock()
 	registerCommandJob(jobId, shellName, command)
-	if err := a.StartCommand(jobId, exe, args, cwd); err != nil {
+	if err := b.StartCommand(jobId, exe, args, cwd); err != nil {
 		unregisterCommandJob(jobId)
 		return nil, err
 	}
@@ -89,7 +91,7 @@ func (a *App) AICommandStart(command, cwd string) (*AICommandJobStart, error) {
 // AIRunShellCommand 执行一条 AI 发起的 shell 命令；超时不算错误（TimedOut=true + 已捕获输出）。
 // runId 非空时注册进取消注册表：用户停止会话可经 AIStopShellRun 杀掉进程，
 // 不再只能等命令跑完/超时（此前停止后工具卡会一直转圈到自然结束）。
-func (a *App) AIRunShellCommand(command, cwd string, timeoutMs int, runId string) (*AIShellCommandResult, error) {
+func (b *Bridge) AIRunShellCommand(command, cwd string, timeoutMs int, runId string) (*AIShellCommandResult, error) {
 	command = strings.TrimSpace(command)
 	if command == "" {
 		return nil, fmt.Errorf("命令不能为空")
@@ -108,7 +110,7 @@ func (a *App) AIRunShellCommand(command, cwd string, timeoutMs int, runId string
 	}
 	shellName, exe, args := aiShellInvocation(command)
 	started := time.Now()
-	raw, err := a.runCommandSyncRegistered(strings.TrimSpace(runId), exe, args, cwd, timeoutMs, aiShellMaxTimeout)
+	raw, err := b.runCommandSyncRegistered(strings.TrimSpace(runId), exe, args, cwd, timeoutMs, aiShellMaxTimeout)
 	out := &AIShellCommandResult{
 		Shell:      shellName,
 		Exe:        exe,

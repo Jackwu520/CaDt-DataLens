@@ -17,6 +17,7 @@ import (
 	"datalens/internal/envvars"
 	"datalens/internal/executil"
 	"datalens/internal/procctl"
+	"datalens/internal/shellpath"
 	"golang.org/x/text/encoding/simplifiedchinese"
 	"golang.org/x/text/transform"
 )
@@ -28,9 +29,6 @@ type Runner struct{}
 var (
 	// Emit 前端事件推送（main 在 startup 注入 Wails EventsEmit）。
 	Emit func(event string, data any)
-	// FindGitBash / FindPwsh 解释器探测（main/terminal_windows.go）。
-	FindGitBash func() string
-	FindPwsh    func() string
 )
 
 func emit(event string, data any) {
@@ -39,19 +37,9 @@ func emit(event string, data any) {
 	}
 }
 
-func findGitBash() string {
-	if FindGitBash != nil {
-		return FindGitBash()
-	}
-	return ""
-}
+func findGitBash() string { return shellpath.FindGitBash() }
 
-func findPwsh() string {
-	if FindPwsh != nil {
-		return FindPwsh()
-	}
-	return ""
-}
+func findPwsh() string { return shellpath.FindPwsh() }
 
 // 运行代码：把当前文件交给本机已检测到的解释器/编译器执行，输出流式回传。
 //

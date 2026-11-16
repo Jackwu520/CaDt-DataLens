@@ -1,4 +1,4 @@
-package main
+package cmdbridge
 
 import (
 	"bytes"
@@ -11,11 +11,9 @@ import (
 	"sync"
 	"time"
 
-	"datalens/internal/executil"
-
 	"datalens/internal/envvars"
+	"datalens/internal/executil"
 	"datalens/internal/procctl"
-	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // 进程桥：为内置终端面板以外的场景（插件命令、git 浅集成等）提供受控的命令执行能力。
@@ -52,13 +50,13 @@ func (lw *limitedWriter) Write(p []byte) (int, error) {
 }
 
 // RunCommandSync 同步执行一个命令并收集输出；非零退出码不是错误（通过 Code 返回）。
-func (a *App) RunCommandSync(exe string, args []string, cwd string, timeoutMs int) (*CommandResult, error) {
-	return a.runCommandSyncRegistered("", exe, args, cwd, timeoutMs, commandMaxTimeout)
+func (b *Bridge) RunCommandSync(exe string, args []string, cwd string, timeoutMs int) (*CommandResult, error) {
+	return b.runCommandSyncRegistered("", exe, args, cwd, timeoutMs, commandMaxTimeout)
 }
 
 // runCommandSyncRegistered：runId 非空时把取消函数注册进 共享消息表（可被 procctl.Stop 杀掉）。
 // maxMs 是调用方的超时上限（插件 120 s / AI 前台 600 s）；超界或非正数回落默认 20 s。
-func (a *App) runCommandSyncRegistered(id, exe string, args []string, cwd string, timeoutMs, maxMs int) (*CommandResult, error) {
+func (b *Bridge) runCommandSyncRegistered(id, exe string, args []string, cwd string, timeoutMs, maxMs int) (*CommandResult, error) {
 	if err := procctl.NormalizeArgs(exe, args); err != nil {
 		return nil, err
 	}
@@ -108,13 +106,13 @@ func (a *App) runCommandSyncRegistered(id, exe string, args []string, cwd string
 }
 
 // AIStopShellRun 停止一次 run_command 的同步执行（按前端生成的 runId 杀进程树）；不存在时静默成功。
-func (a *App) AIStopShellRun(id string) {
+func (b *Bridge) AIStopShellRun(id string) {
 	procctl.Stop(strings.TrimSpace(id))
 }
 
 // StartCommand 流式执行：按行发出 cmd-out {id, stream, data} 事件，结束时发出 cmd-exit {id, code}。
 // id 由调用方（前端/插件）生成并保证唯一。
-func (a *App) StartCommand(id, exe string, args []string, cwd string) error {
+func (b *Bridge) StartCommand(id, exe string, args []string, cwd string) error {
 	if strings.TrimSpace(id) == "" {
 		return fmt.Errorf("id 不能为空")
 	}
@@ -166,22 +164,22 @@ func (a *App) StartCommand(id, exe string, args []string, cwd string) error {
 						idx := bytes.IndexByte(buf, '\n')
 						if idx < 0 {
 							if len(buf) > commandLineMaxSize {
-								a.emitCommandEvent(id, stream, string(buf[:commandLineMaxSize]))
+								b.emitCommandEvent(id, stream, string(buf[:commandLineMaxSize]))
 								buf = buf[:0]
 							}
 							break
 						}
-						a.emitCommandEvent(id, stream, string(buf[:idx]))
+						b.emitCommandEvent(id, stream, string(buf[:idx]))
 						buf = buf[:copy(buf, buf[idx+1:])]
 					}
 					if total > commandOutputCap {
-						a.emitCommandEvent(id, stream, "…输出超过 8 MB 上限，已截断…")
+						b.emitCommandEvent(id, stream, "…输出超过 8 MB 上限，已截断…")
 						break
 					}
 				}
 				if readErr != nil {
 					if len(buf) > 0 {
-						a.emitCommandEvent(id, stream, string(buf))
+						b.emitCommandEvent(id, stream, string(buf))
 					}
 					return
 				}
@@ -215,21 +213,16 @@ func (a *App) StartCommand(id, exe string, args []string, cwd string) error {
 		}
 		procctl.Stop(id)
 		finishCommandJob(id, code)
-		if a.ctx != nil {
-			runtime.EventsEmit(a.ctx, "cmd-exit", map[string]string{"id": id, "code": fmt.Sprintf("%d", code)})
-		}
+		emit("cmd-exit", map[string]string{"id": id, "code": fmt.Sprintf("%d", code)})
 	}()
 	return nil
 }
 
-func (a *App) emitCommandEvent(id, stream, data string) {
+func (b *Bridge) emitCommandEvent(id, stream, data string) {
 	if job := lookupCommandJob(id); job != nil {
 		job.writeLine(stream, data)
 	}
-	if a.ctx == nil {
-		return
-	}
-	runtime.EventsEmit(a.ctx, "cmd-out", map[string]string{id: id, stream: stream, data: strings.ToValidUTF8(data, "\ufffd")})
+	emit("cmd-out", map[string]string{id: id, stream: stream, data: strings.ToValidUTF8(data, "\ufffd")})
 }
 
 // ---------- AI 后台命令作业（后台终端） ----------
@@ -375,7 +368,7 @@ type AICommandJobStatus struct {
 	StartedAtMs int64  `json:"startedAtMs"`
 }
 
-func (a *App) commandJobStatus(jobId string, since int64) *AICommandJobStatus {
+func (b *Bridge) commandJobStatus(jobId string, since int64) *AICommandJobStatus {
 	commandJobsMu.Lock()
 	job := commandJobs[jobId]
 	commandJobsMu.Unlock()
@@ -399,15 +392,15 @@ func (a *App) commandJobStatus(jobId string, since int64) *AICommandJobStatus {
 }
 
 // AICommandStatus 查询后台作业状态与自 since 游标以来的增量输出。
-func (a *App) AICommandStatus(jobId string, since int64) (*AICommandJobStatus, error) {
+func (b *Bridge) AICommandStatus(jobId string, since int64) (*AICommandJobStatus, error) {
 	if strings.TrimSpace(jobId) == "" {
 		return nil, fmt.Errorf("jobId 不能为空")
 	}
-	return a.commandJobStatus(jobId, since), nil
+	return b.commandJobStatus(jobId, since), nil
 }
 
 // AICommandStop 终止后台作业并等待其退出（最多 4 s），返回包含全部缓冲输出的最终状态。
-func (a *App) AICommandStop(jobId string) (*AICommandJobStatus, error) {
+func (b *Bridge) AICommandStop(jobId string) (*AICommandJobStatus, error) {
 	if strings.TrimSpace(jobId) == "" {
 		return nil, fmt.Errorf("jobId 不能为空")
 	}
@@ -432,11 +425,11 @@ func (a *App) AICommandStop(jobId string) (*AICommandJobStatus, error) {
 			}
 		}
 	}
-	return a.commandJobStatus(jobId, 0), nil
+	return b.commandJobStatus(jobId, 0), nil
 }
 
 // StopCommand 终止一个流式命令。
-func (a *App) StopCommand(id string) error {
+func (b *Bridge) StopCommand(id string) error {
 	if strings.TrimSpace(id) == "" {
 		return fmt.Errorf("id 不能为空")
 	}

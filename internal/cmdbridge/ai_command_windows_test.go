@@ -1,24 +1,26 @@
 //go:build windows
 
-package main
+package cmdbridge
 
 import (
 	"strings"
 	"testing"
 	"time"
+
+	"datalens/internal/shellpath"
 )
 
 func TestAIShellPriority(t *testing.T) {
 	shell, exe, args := aiShellInvocation("echo hi")
 	switch {
-	case findGitBash() != "":
+	case shellpath.FindGitBash() != "":
 		if shell != "Git Bash" || !strings.Contains(strings.ToLower(exe), "bash") {
 			t.Fatalf("应优先 Git Bash，实际 %s (%s)", shell, exe)
 		}
 		if len(args) < 3 || args[len(args)-1] != "echo hi" {
 			t.Fatalf("Git Bash 参数异常: %v", args)
 		}
-	case findPwsh() != "":
+	case shellpath.FindPwsh() != "":
 		if shell != "PowerShell 7" || !strings.Contains(strings.ToLower(exe), "pwsh") {
 			t.Fatalf("无 Git Bash 时应优先 pwsh，实际 %s (%s)", shell, exe)
 		}
@@ -30,7 +32,7 @@ func TestAIShellPriority(t *testing.T) {
 }
 
 func TestAIRunShellCommandEcho(t *testing.T) {
-	app := &App{}
+	app := &Bridge{}
 	res, err := app.AIRunShellCommand("echo CADT_AI_CMD_OK_9137", "", 20000, "")
 	if err != nil {
 		t.Fatalf("执行失败: %v", err)
@@ -47,7 +49,7 @@ func TestAIRunShellCommandEcho(t *testing.T) {
 }
 
 func TestAIRunShellCommandValidation(t *testing.T) {
-	app := &App{}
+	app := &Bridge{}
 	if _, err := app.AIRunShellCommand("   ", "", 0, ""); err == nil {
 		t.Fatal("空命令应被拒绝")
 	}
@@ -58,7 +60,7 @@ func TestAIRunShellCommandValidation(t *testing.T) {
 
 // runId 注册与停止：占位 runId 注册后能被 AIStopShellRun 杀掉，返回「已被用户停止」。
 func TestAIRunShellCommandStopByRunID(t *testing.T) {
-	app := &App{}
+	app := &Bridge{}
 	done := make(chan error, 1)
 	go func() {
 		_, err := app.AIRunShellCommand("ping -n 30 127.0.0.1", "", 60000, "test-run-stop-1")
@@ -79,7 +81,7 @@ func TestAIRunShellCommandStopByRunID(t *testing.T) {
 }
 
 func TestAICommandStartStatusStop(t *testing.T) {
-	app := &App{}
+	app := &Bridge{}
 	started, err := app.AICommandStart("echo CADT_BG_OK_6211", "")
 	if err != nil {
 		t.Fatalf("启动失败: %v", err)
@@ -124,7 +126,7 @@ func TestAICommandStopRunning(t *testing.T) {
 	if shell != "Git Bash" {
 		t.Skipf("停止用例依赖 Git Bash（read -t 无子进程、可被干净终止），当前 shell: %s", shell)
 	}
-	app := &App{}
+	app := &Bridge{}
 	// 纯 bash 内建循环阻塞（无长命子进程，stdin EOF 也不影响），确保停止时仍在运行
 	started, err := app.AICommandStart("echo bg-started; for ((i=0;i<300;i++)); do sleep 0.1; done", "")
 	if err != nil {
@@ -144,7 +146,7 @@ func TestAICommandStopRunning(t *testing.T) {
 }
 
 func TestAICommandStartValidation(t *testing.T) {
-	app := &App{}
+	app := &Bridge{}
 	if _, err := app.AICommandStart("   ", ""); err == nil {
 		t.Fatal("空命令应被拒绝")
 	}

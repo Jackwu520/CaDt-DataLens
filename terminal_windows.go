@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"sync"
 	"unicode/utf8"
@@ -16,6 +15,7 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
 	"datalens/internal/envvars"
+	"datalens/internal/shellpath"
 )
 
 // 内置终端：基于 Windows ConPTY，经 go-pty v0.2.3（MIT, © Ayman Bagabas，见 THIRD_PARTY_LICENSES.md）。
@@ -109,54 +109,10 @@ func termShellArgs(shell string) ([]string, error) {
 	}
 }
 
-// findPwsh 定位 PowerShell 7+；找不到返回空串。
-func findPwsh() string {
-	if path, err := exec.LookPath("pwsh"); err == nil {
-		return path
-	}
-	for _, candidate := range []string{
-		`C:\Program Files\PowerShell\7\pwsh.exe`,
-		filepath.Join(os.Getenv("LOCALAPPDATA"), "Microsoft", "WindowsApps", "pwsh.exe"),
-	} {
-		if st, err := os.Stat(candidate); err == nil && !st.IsDir() {
-			return candidate
-		}
-	}
-	return ""
-}
+// findPwsh / findGitBash 的实现在 internal/shellpath（运行通道与命令桥共用）。
+func findPwsh() string { return shellpath.FindPwsh() }
 
-// findGitBash 定位 Git for Windows 自带的 bash.exe（排除 WSL 的 System32\bash.exe）；
-// 找不到返回空串。
-func findGitBash() string {
-	var candidates []string
-	if gitPath, err := exec.LookPath("git"); err == nil {
-		// git.exe 通常在 <Git>\cmd\ 或 <Git>\bin\ 下，回退两级得到安装根目录
-		root := filepath.Dir(filepath.Dir(gitPath))
-		candidates = append(candidates,
-			filepath.Join(root, "bin", "bash.exe"),
-			filepath.Join(root, "usr", "bin", "bash.exe"),
-		)
-	}
-	for _, root := range []string{
-		`C:\Program Files\Git`,
-		`C:\Program Files (x86)\Git`,
-		filepath.Join(os.Getenv("LOCALAPPDATA"), "Programs", "Git"),
-	} {
-		candidates = append(candidates,
-			filepath.Join(root, "bin", "bash.exe"),
-			filepath.Join(root, "usr", "bin", "bash.exe"),
-		)
-	}
-	for _, c := range candidates {
-		if !strings.Contains(strings.ToLower(c), "git") {
-			continue // 防止误认 WSL/System32 的 bash.exe
-		}
-		if st, err := os.Stat(c); err == nil && !st.IsDir() {
-			return c
-		}
-	}
-	return ""
-}
+func findGitBash() string { return shellpath.FindGitBash() }
 
 // startTermSession 创建一个 ConPTY 会话；emit 回调发送 term-out / term-exit 事件。
 func startTermSession(id, shell string, cols, rows int, cwd string, emit func(event string, data interface{})) (*termSession, error) {
@@ -235,7 +191,7 @@ func startTermSession(id, shell string, cols, rows int, cwd string, emit func(ev
 // termExitCode 取退出码。cmd.Wait() 已经把进程收掉并把结果放进 ProcessState，
 // 这里绝不能再调 cmd.Process.Wait()：那是对同一进程句柄的第二次回收，Windows 上
 // 等于重复 CloseHandle——句柄号被别处复用之后，踩空的是整个进程
-//（2026-11-16 实测：跑过终端会话再启目录监视，会把 go test 的二进制直接搞崩，
+// （2026-11-16 实测：跑过终端会话再启目录监视，会把 go test 的二进制直接搞崩，
 // 崩溃点却落在完全无关的 watch_windows.go 上）。
 func termExitCode(cmd *pty.Cmd) int32 {
 	if cmd == nil || cmd.ProcessState == nil {

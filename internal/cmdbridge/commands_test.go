@@ -1,4 +1,4 @@
-package main
+package cmdbridge
 
 import (
 	"strings"
@@ -116,7 +116,7 @@ func TestFinishCommandJobEviction(t *testing.T) {
 }
 
 func TestCommandJobStatusNotfound(t *testing.T) {
-	app := &App{}
+	app := &Bridge{}
 	st := app.commandJobStatus("bg-not-exist", 0)
 	if st.State != "notfound" {
 		t.Fatalf("未知作业应返回 notfound，实际 %s", st.State)
