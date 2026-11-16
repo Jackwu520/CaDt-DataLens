@@ -5,28 +5,29 @@ package main
 import (
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
+	"datalens/internal/appconfig"
 	"datalens/internal/plugins"
 )
 
 func init() {
 	plugins.Logf = writeAppLog
-	plugins.PluginsPathMode = func() string { return readAppConfig().PluginsPathMode }
+	plugins.PluginsPathMode = func() string { return appconfig.Read().PluginsPathMode }
 	plugins.SavePluginsPathMode = func(mode string) error {
-		cfg := readAppConfig()
+		cfg := appconfig.Read()
 		cfg.PluginsPathMode = mode
-		return saveAppConfig(cfg)
+		return appconfig.Save(cfg)
 	}
-	plugins.DisabledPlugins = func() []string { return readAppConfig().DisabledPlugins }
+	plugins.DisabledPlugins = func() []string { return appconfig.Read().DisabledPlugins }
 	plugins.SaveDisabledPlugins = func(ids []string) error {
-		cfg := readAppConfig()
+		cfg := appconfig.Read()
 		cfg.DisabledPlugins = ids
-		return saveAppConfig(cfg)
+		return appconfig.Save(cfg)
 	}
-	plugins.MarketSource = func() string { return readAppConfig().DataSource }
+	plugins.MarketSource = func() string { return appconfig.Read().DataSource }
 	plugins.SaveMarketSource = func(source string) error {
-		cfg := readAppConfig()
+		cfg := appconfig.Read()
 		cfg.DataSource = source
-		return saveAppConfig(cfg)
+		return appconfig.Save(cfg)
 	}
 }
 

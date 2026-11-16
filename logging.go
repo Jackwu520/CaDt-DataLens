@@ -12,6 +12,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"datalens/internal/appconfig"
 )
 
 const appLogKeep = 20
@@ -41,7 +43,7 @@ func startAppLog() {
 	if err != nil {
 		return
 	}
-	devMode.Store(readAppConfig().DeveloperMode)
+	devMode.Store(appconfig.Read().DeveloperMode)
 	if f := currentAppLogFile(); f != nil {
 		log.SetOutput(io.MultiWriter(os.Stderr, f))
 		log.SetFlags(log.LstdFlags | log.Lmicroseconds)
@@ -195,9 +197,9 @@ func (a *App) GetDeveloperMode() bool {
 }
 
 func (a *App) SetDeveloperMode(enabled bool) error {
-	cfg := readAppConfig()
+	cfg := appconfig.Read()
 	cfg.DeveloperMode = enabled
-	if err := saveAppConfig(cfg); err != nil {
+	if err := appconfig.Save(cfg); err != nil {
 		return err
 	}
 	devMode.Store(enabled)

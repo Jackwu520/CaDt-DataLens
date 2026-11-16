@@ -18,9 +18,6 @@ func TestAppDataPathsUnderCandySweet(t *testing.T) {
 	if appDataRootAt("") != "" {
 		t.Fatal("空配置目录应返回空路径")
 	}
-	if got, want := configFilePath(), filepath.Join(wantRoot, "config.json"); got != want {
-		t.Fatalf("config.json 路径不符: %q != %q", got, want)
-	}
 	if got, want := webviewDataPath(), filepath.Join(wantRoot, "WebView2"); got != want {
 		t.Fatalf("WebView2 路径不符: %q != %q", got, want)
 	}

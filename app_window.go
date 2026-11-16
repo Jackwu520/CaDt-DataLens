@@ -5,19 +5,17 @@ package main
 import (
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 
+	"datalens/internal/appconfig"
 	"datalens/internal/clipboard"
 	"datalens/internal/launchargs"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
-
-	"datalens/internal/plugins"
 )
 
 func (a *App) SetDirty(dirty bool) {
@@ -29,71 +27,12 @@ func (a *App) SetAIRunning(running bool) {
 	a.aiRunning = running
 }
 
-type appConfig struct {
-	OpenMode        string   `json:"openMode"`
-	PluginsPathMode string   `json:"pluginsPathMode,omitempty"`
-	DisabledPlugins []string `json:"disabledPlugins,omitempty"`
-	DeveloperMode   bool     `json:"developerMode,omitempty"`
-	DataSource      string   `json:"dataSource,omitempty"`
-}
-
-func defaultAppConfig() appConfig {
-	return appConfig{OpenMode: "tab", PluginsPathMode: "portable", DataSource: plugins.MarketSourceGitee}
-}
-
-func readAppConfig() appConfig {
-	cfg := defaultAppConfig()
-	path := configFilePath()
-	if path == "" {
-		return cfg
-	}
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return cfg
-	}
-	var stored appConfig
-	if json.Unmarshal(raw, &stored) != nil {
-		return cfg
-	}
-	if stored.OpenMode == "window" {
-		cfg.OpenMode = "window"
-	}
-	if stored.PluginsPathMode == "appdata" {
-		cfg.PluginsPathMode = "appdata"
-	}
-	if stored.DisabledPlugins != nil {
-		cfg.DisabledPlugins = stored.DisabledPlugins
-	}
-	cfg.DeveloperMode = stored.DeveloperMode
-	cfg.DataSource = plugins.NormalizeMarketSource(stored.DataSource)
-	return cfg
-}
-
-func saveAppConfig(cfg appConfig) error {
-	path := configFilePath()
-	if path == "" {
-		return fmt.Errorf("无法定位配置目录")
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-		return err
-	}
-	raw, err := json.MarshalIndent(cfg, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(path, raw, 0644)
-}
-
-func readOpenMode() string {
-	return readAppConfig().OpenMode
-}
-
 func uniqueIDForLaunch() string {
-	return launchargs.UniqueIDForArgs(os.Args[1:], readOpenMode())
+	return launchargs.UniqueIDForArgs(os.Args[1:], appconfig.OpenMode())
 }
 
 func (a *App) GetOpenMode() string {
-	return readOpenMode()
+	return appconfig.OpenMode()
 }
 
 // ReadImageAsDataURL 读取本地图片为 data URL（供 Markdown 预览解析相对路径图片）。
@@ -138,9 +77,9 @@ func (a *App) SetOpenMode(mode string) error {
 	if mode != "window" {
 		mode = "tab"
 	}
-	cfg := readAppConfig()
+	cfg := appconfig.Read()
 	cfg.OpenMode = mode
-	return saveAppConfig(cfg)
+	return appconfig.Save(cfg)
 }
 
 func (a *App) OpenNewWindow() error {

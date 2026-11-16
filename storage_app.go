@@ -13,6 +13,7 @@ import (
 	"datalens/internal/aicatalog"
 	"datalens/internal/aiconfig"
 	"datalens/internal/aischedule"
+	"datalens/internal/appconfig"
 	"datalens/internal/browser"
 	"datalens/internal/debugconsole"
 	"datalens/internal/envvars"
@@ -63,7 +64,7 @@ func storageLocation(name string) string {
 	case storage.LocAISessions:
 		return appDataChild(sessionstore.SessionsDirName)
 	case storage.LocConfig:
-		return configFilePath()
+		return appconfig.Path()
 	case storage.LocAIConfig:
 		return aiconfig.Path()
 	case storage.LocMCPConfig:

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"datalens/internal/appconfig"
 	"datalens/internal/chardec"
 
 	"golang.org/x/text/encoding/simplifiedchinese"
@@ -229,13 +230,13 @@ func TestCheckEncoding(t *testing.T) {
 func TestOpenModeConfig(t *testing.T) {
 	t.Setenv("AppData", t.TempDir())
 	app := NewApp()
-	if got := readOpenMode(); got != "tab" {
+	if got := appconfig.OpenMode(); got != "tab" {
 		t.Fatalf("default open mode = %q, want tab", got)
 	}
 	if err := app.SetOpenMode("window"); err != nil {
 		t.Fatal(err)
 	}
-	if got := readOpenMode(); got != "window" {
+	if got := appconfig.OpenMode(); got != "window" {
 		t.Fatalf("open mode = %q, want window", got)
 	}
 	if got := uniqueIDForLaunch(); !strings.HasPrefix(got, "cadt-datalens-window-") {
@@ -244,7 +245,7 @@ func TestOpenModeConfig(t *testing.T) {
 	if err := app.SetOpenMode("tab"); err != nil {
 		t.Fatal(err)
 	}
-	if got := readOpenMode(); got != "tab" {
+	if got := appconfig.OpenMode(); got != "tab" {
 		t.Fatalf("open mode = %q, want tab", got)
 	}
 }

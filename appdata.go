@@ -19,14 +19,6 @@ func appDataRootAt(configDir string) string { return appdata.RootAt(configDir) }
 
 func appDataRoot() string { return appdata.Root() }
 
-func configFilePath() string {
-	root := appDataRoot()
-	if root == "" {
-		return ""
-	}
-	return filepath.Join(root, "config.json")
-}
-
 func webviewDataPath() string {
 	root := appDataRoot()
 	if root == "" {
