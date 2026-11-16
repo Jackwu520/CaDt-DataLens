@@ -13,6 +13,7 @@ import (
 	"datalens/internal/aicatalog"
 	"datalens/internal/envvars"
 	"datalens/internal/mcp"
+	"datalens/internal/run"
 	"datalens/internal/sessionindex"
 	"datalens/internal/sessionstore"
 	"datalens/internal/storage"
@@ -42,7 +43,7 @@ func storageLocation(name string) string {
 	case storage.LocBrowserProfiles:
 		return appDataChild(browserProfileRoot)
 	case storage.LocRunTemp:
-		return runTempRoot()
+		return run.RunTempRoot()
 	case storage.LocAppLogs:
 		return appLogsDir()
 	case storage.LocDebugConsole:

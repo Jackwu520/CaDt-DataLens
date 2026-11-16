@@ -1,4 +1,4 @@
-package main
+package run
 
 import (
 	"bytes"
@@ -93,7 +93,7 @@ func TestPrepareRunDiskSource(t *testing.T) {
 	if err := os.WriteFile(src, []byte("print(1)\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	app := &App{}
+	app := &Runner{}
 	ws, err := app.PrepareRun(RunSpec{SrcPath: src})
 	if err != nil {
 		t.Fatalf("PrepareRun 失败：%v", err)
@@ -115,7 +115,7 @@ func TestPrepareRunTempCopy(t *testing.T) {
 	if err := os.WriteFile(src, []byte("old\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	app := &App{}
+	app := &Runner{}
 	ws, err := app.PrepareRun(RunSpec{SrcPath: src, Content: "print('new')\n", TempName: "main.py"})
 	if err != nil {
 		t.Fatalf("PrepareRun 失败：%v", err)
@@ -148,7 +148,7 @@ func TestPrepareRunNeedTempForBuild(t *testing.T) {
 	if err := os.WriteFile(src, []byte("int main(){return 0;}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	app := &App{}
+	app := &Runner{}
 	ws, err := app.PrepareRun(RunSpec{SrcPath: src, NeedTemp: true})
 	if err != nil {
 		t.Fatalf("PrepareRun 失败：%v", err)
@@ -166,7 +166,7 @@ func TestPrepareRunNeedTempForBuild(t *testing.T) {
 }
 
 func TestPrepareRunErrors(t *testing.T) {
-	app := &App{}
+	app := &Runner{}
 	if _, err := app.PrepareRun(RunSpec{}); err == nil {
 		t.Error("空请求应报错")
 	}
@@ -179,7 +179,7 @@ func TestPrepareRunErrors(t *testing.T) {
 }
 
 func TestCleanupRunTempGuards(t *testing.T) {
-	app := &App{}
+	app := &Runner{}
 	if err := app.CleanupRunTemp(""); err != nil {
 		t.Errorf("空目录应静默成功：%v", err)
 	}
@@ -213,7 +213,7 @@ func TestCleanupRunTempStale(t *testing.T) {
 	if err := os.Chtimes(stale, old, old); err != nil {
 		t.Fatalf("改时间戳失败：%v", err)
 	}
-	app := &App{}
+	app := &Runner{}
 	if _, err := app.CleanupRunTempStale(); err != nil {
 		t.Fatalf("清理过期目录失败：%v", err)
 	}
@@ -226,7 +226,7 @@ func TestCleanupRunTempStale(t *testing.T) {
 }
 
 func TestRunExecValidation(t *testing.T) {
-	app := &App{}
+	app := &Runner{}
 	if err := app.RunExec("", "cmd.exe", nil, "", "", 0); err == nil {
 		t.Error("空 id 应报错")
 	}
@@ -279,7 +279,7 @@ func captureRunEvents(t *testing.T) *runEvents {
 
 func TestRunStreamSplitsDecodesAndFlagsStderr(t *testing.T) {
 	events := captureRunEvents(t)
-	stream := &runStream{a: &App{}, id: "run-1"}
+	stream := &runStream{id: "run-1"}
 	// UTF-8 行 + GBK 行（“中文”）+ CRLF
 	payload := append([]byte("hello\r\n"), []byte{0xD6, 0xD0, 0xCE, 0xC4, '\n'}...)
 	stream.readPipe(bytes.NewReader(payload), "out")
@@ -299,7 +299,7 @@ func TestRunStreamSplitsDecodesAndFlagsStderr(t *testing.T) {
 
 func TestRunStreamTruncatesOverLimit(t *testing.T) {
 	events := captureRunEvents(t)
-	stream := &runStream{a: &App{}, id: "run-2"}
+	stream := &runStream{id: "run-2"}
 	big := strings.Repeat("x", 1024)
 	for i := 0; i < int(runOutputCap/1024)+8; i++ {
 		stream.add("out", big)
@@ -319,7 +319,7 @@ func TestRunExecEndToEnd(t *testing.T) {
 		t.Skip("缺少 cmd.exe")
 	}
 	events := captureRunEvents(t)
-	app := &App{}
+	app := &Runner{}
 	if err := app.RunExec("run-e2e", "cmd.exe", []string{"/c", "echo hi & exit 3"}, "", "", 0); err != nil {
 		t.Fatalf("RunExec 失败：%v", err)
 	}
@@ -353,7 +353,7 @@ func TestRunExecEndToEnd(t *testing.T) {
 }
 
 func TestRunInputValidation(t *testing.T) {
-	app := &App{}
+	app := &Runner{}
 	if err := app.RunInput("missing", "x"); err == nil {
 		t.Error("不存在的运行 id 应报错")
 	}
@@ -411,7 +411,7 @@ func TestRunInputEndToEnd(t *testing.T) {
 	}
 	t.Setenv("CADT_RUN_STDIN_HELPER", "1")
 	events := captureRunEvents(t)
-	app := &App{}
+	app := &Runner{}
 	id := "run-stdin-e2e"
 	if err := app.RunExec(id, os.Args[0], []string{"-test.run=TestRunInputEndToEnd"}, "", "", 0); err != nil {
 		t.Fatalf("RunExec 失败：%v", err)
@@ -467,7 +467,7 @@ func TestRunExecTimeout(t *testing.T) {
 	}
 	t.Setenv("CADT_RUN_TIMEOUT_HELPER", "1")
 	events := captureRunEvents(t)
-	app := &App{}
+	app := &Runner{}
 	id := "run-timeout-e2e"
 	if err := app.RunExec(id, os.Args[0], []string{"-test.run=TestRunExecTimeout"}, "", "", 300); err != nil {
 		t.Fatalf("RunExec 失败：%v", err)
@@ -511,7 +511,7 @@ func TestRunExecNoTimeout(t *testing.T) {
 		t.Skip("缺少 cmd.exe")
 	}
 	events := captureRunEvents(t)
-	app := &App{}
+	app := &Runner{}
 	id := "run-notimeout-e2e"
 	if err := app.RunExec(id, "cmd.exe", []string{"/c", "echo ok & exit 0"}, "", "", 0); err != nil {
 		t.Fatalf("RunExec 失败：%v", err)

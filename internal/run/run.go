@@ -1,4 +1,4 @@
-package main
+package run
 
 import (
 	"bytes"
@@ -13,17 +13,49 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"datalens/internal/executil"
-
+	"datalens/internal/appdata"
 	"datalens/internal/envvars"
-	"github.com/wailsapp/wails/v2/pkg/runtime"
+	"datalens/internal/executil"
+	"datalens/internal/procctl"
 	"golang.org/x/text/encoding/simplifiedchinese"
 	"golang.org/x/text/transform"
 )
 
+// Runner 运行通道引擎。进程注册/取消与命令桥共用 internal/procctl。
+type Runner struct{}
+
+// 宿主注入（main 包的根壳在 init/startup 接线）。
+var (
+	// Emit 前端事件推送（main 在 startup 注入 Wails EventsEmit）。
+	Emit func(event string, data any)
+	// FindGitBash / FindPwsh 解释器探测（main/terminal_windows.go）。
+	FindGitBash func() string
+	FindPwsh    func() string
+)
+
+func emit(event string, data any) {
+	if Emit != nil {
+		Emit(event, data)
+	}
+}
+
+func findGitBash() string {
+	if FindGitBash != nil {
+		return FindGitBash()
+	}
+	return ""
+}
+
+func findPwsh() string {
+	if FindPwsh != nil {
+		return FindPwsh()
+	}
+	return ""
+}
+
 // 运行代码：把当前文件交给本机已检测到的解释器/编译器执行，输出流式回传。
 //
-// 与 commands.go 命令桥的分工：
+// 与 app_commands.go 命令桥的分工：
 //   - 命令桥（cmd-out）面向插件与 AI，输出按 UTF-8 强转；
 //   - 运行通道（run-out）面向用户，输出要兼容中文 Windows 的 GBK —— gcc / pip / cl 在
 //     中文系统上默认吐 GBK 字节，直接 ToValidUTF8 会整片变成 �。
@@ -76,7 +108,7 @@ type RunShellInfo struct {
 }
 
 // ResolveRunShell 解析 shell 类解释器（gitbash / pwsh / powershell / cmd）。
-func (a *App) ResolveRunShell(kind string) (*RunShellInfo, error) {
+func (r *Runner) ResolveRunShell(kind string) (*RunShellInfo, error) {
 	path, name, err := resolveRunShell(strings.ToLower(strings.TrimSpace(kind)))
 	if err != nil {
 		return nil, err
@@ -84,8 +116,8 @@ func (a *App) ResolveRunShell(kind string) (*RunShellInfo, error) {
 	return &RunShellInfo{Path: path, Name: name}, nil
 }
 
-func runTempRoot() string {
-	root := appDataRoot()
+func RunTempRoot() string {
+	root := appdata.Root()
 	if root == "" {
 		return ""
 	}
@@ -95,7 +127,7 @@ func runTempRoot() string {
 // newRunTempDir 在应用数据目录下开一个本次运行独占的临时目录。
 // 不用 %TEMP%：Defender 对 %TEMP% 下新生成的 exe 更敏感，编译产物容易被拦。
 func newRunTempDir() (string, error) {
-	root := runTempRoot()
+	root := RunTempRoot()
 	if root == "" {
 		return "", fmt.Errorf("无法定位应用数据目录")
 	}
@@ -130,7 +162,7 @@ func safeRunFileName(name string) string {
 
 // PrepareRun 准备可执行的源文件与工作目录。
 // 有未保存修改或虚拟文档时把内容写成临时副本；需要编译产物时额外开临时目录。
-func (a *App) PrepareRun(spec RunSpec) (*RunWorkspace, error) {
+func (r *Runner) PrepareRun(spec RunSpec) (*RunWorkspace, error) {
 	src := strings.TrimSpace(spec.SrcPath)
 	content := spec.Content
 	name := safeRunFileName(spec.TempName)
@@ -217,7 +249,6 @@ func envWithPathPrepend(prepend string) []string {
 
 // runStream 输出合并器：按行切分后攒批发送，避免高产命令每行一次跨进程事件。
 type runStream struct {
-	a         *App
 	id        string
 	startedAt time.Time
 
@@ -304,10 +335,7 @@ func (s *runStream) emitLocked(stream, data string) {
 	if runEmitHook != nil {
 		runEmitHook("run-out", payload)
 	}
-	if s.a == nil || s.a.ctx == nil {
-		return
-	}
-	runtime.EventsEmit(s.a.ctx, "run-out", payload)
+	emit("run-out", payload)
 }
 
 func (s *runStream) finish() {
@@ -446,7 +474,7 @@ func unregisterRunStdin(id string) {
 }
 
 // RunInput 往运行中的进程写一行输入（自动补 \n）。队列满说明进程没有在读 stdin。
-func (a *App) RunInput(id, text string) error {
+func (r *Runner) RunInput(id, text string) error {
 	runStdinMu.Lock()
 	s := runStdins[strings.TrimSpace(id)]
 	runStdinMu.Unlock()
@@ -472,7 +500,7 @@ func (a *App) RunInput(id, text string) error {
 }
 
 // RunEndInput 关闭 stdin（发送 EOF）：给按行读到 EOF 才退出的程序一个正常结束的机会。
-func (a *App) RunEndInput(id string) error {
+func (r *Runner) RunEndInput(id string) error {
 	runStdinMu.Lock()
 	s := runStdins[strings.TrimSpace(id)]
 	runStdinMu.Unlock()
@@ -487,14 +515,14 @@ func (a *App) RunEndInput(id string) error {
 // pathPrepend 非空时前置到子进程 PATH（编译型语言运行阶段用）。
 // timeoutMs > 0 表示这一步的超时毫秒数：到点强杀整棵进程树，run-exit 带 reason="timeout"；
 // <= 0 表示不超时（默认）。多步骤任务（build + run）由前端传「剩余时间」实现任务级总时限。
-func (a *App) RunExec(id, exe string, args []string, cwd, pathPrepend string, timeoutMs int) error {
+func (r *Runner) RunExec(id, exe string, args []string, cwd, pathPrepend string, timeoutMs int) error {
 	if strings.TrimSpace(id) == "" {
 		return fmt.Errorf("id 不能为空")
 	}
-	if err := normalizeCommandArgs(exe, args); err != nil {
+	if err := procctl.NormalizeArgs(exe, args); err != nil {
 		return err
 	}
-	dir, err := commandWorkDir(cwd)
+	dir, err := procctl.WorkDir(cwd)
 	if err != nil {
 		return err
 	}
@@ -504,15 +532,6 @@ func (a *App) RunExec(id, exe string, args []string, cwd, pathPrepend string, ti
 		}
 	}
 
-	runningMu.Lock()
-	if _, exists := runningCancels[id]; exists {
-		runningMu.Unlock()
-		return fmt.Errorf("运行 id %q 已在运行", id)
-	}
-	if len(runningCancels) >= commandMaxRunning {
-		runningMu.Unlock()
-		return fmt.Errorf("同时运行的任务超过上限 %d", commandMaxRunning)
-	}
 	if timeoutMs < 0 {
 		timeoutMs = 0
 	}
@@ -526,27 +545,29 @@ func (a *App) RunExec(id, exe string, args []string, cwd, pathPrepend string, ti
 	} else {
 		ctx, cancel = context.WithCancel(context.Background())
 	}
-	runningCancels[id] = cancel
-	runningMu.Unlock()
+	if err := procctl.Register(id, cancel); err != nil {
+		cancel()
+		return err
+	}
 
 	cmd := exec.CommandContext(ctx, exe, args...)
-	applyCommandCancel(cmd)
+	procctl.ApplyCancel(cmd)
 	cmd.Dir = dir
 	cmd.Env = envWithPathPrepend(pathPrepend)
 	executil.HideCommandWindow(cmd)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		stopRunningCommand(id)
+		procctl.Stop(id)
 		return err
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
-		stopRunningCommand(id)
+		procctl.Stop(id)
 		return err
 	}
 	stdinR, stdinW, err := os.Pipe()
 	if err != nil {
-		stopRunningCommand(id)
+		procctl.Stop(id)
 		return err
 	}
 	cmd.Stdin = stdinR
@@ -554,13 +575,13 @@ func (a *App) RunExec(id, exe string, args []string, cwd, pathPrepend string, ti
 	if err := cmd.Start(); err != nil {
 		_ = stdinR.Close()
 		_ = stdinW.Close()
-		stopRunningCommand(id)
+		procctl.Stop(id)
 		return fmt.Errorf("启动失败：%w", err)
 	}
 	_ = stdinR.Close() // 读端已交给子进程，父进程只留写端
 	registerRunStdin(id, stdinW)
 
-	stream := &runStream{a: a, id: id, startedAt: started}
+	stream := &runStream{id: id, startedAt: started}
 	stopFlusher := stream.startFlusher()
 	go func() {
 		var wg sync.WaitGroup
@@ -595,31 +616,24 @@ func (a *App) RunExec(id, exe string, args []string, cwd, pathPrepend string, ti
 		if runEmitHook != nil {
 			runEmitHook("run-exit", exit)
 		}
-		if a.ctx != nil {
-			runtime.EventsEmit(a.ctx, "run-exit", exit)
-		}
-		stopRunningCommand(id)
+		emit("run-exit", exit)
+		procctl.Stop(id)
 	}()
 	return nil
 }
 
 // RunStop 停止一次运行；id 不存在时静默成功（前端可能连点）。
-func (a *App) RunStop(id string) error {
+func (r *Runner) RunStop(id string) error {
 	if strings.TrimSpace(id) == "" {
 		return fmt.Errorf("id 不能为空")
 	}
-	runningMu.Lock()
-	_, ok := runningCancels[id]
-	runningMu.Unlock()
-	if ok {
-		stopRunningCommand(id)
-	}
+	procctl.Stop(id)
 	return nil
 }
 
 // GetRunTempDir 返回（并按需创建）运行临时目录根，供设置页「打开临时目录」用。
-func (a *App) GetRunTempDir() (string, error) {
-	root := runTempRoot()
+func (r *Runner) GetRunTempDir() (string, error) {
+	root := RunTempRoot()
 	if root == "" {
 		return "", fmt.Errorf("无法定位应用数据目录")
 	}
@@ -630,12 +644,12 @@ func (a *App) GetRunTempDir() (string, error) {
 }
 
 // CleanupRunTemp 删除一次运行独占的临时目录；只允许删应用数据目录下的 run/ 子目录。
-func (a *App) CleanupRunTemp(dir string) error {
+func (r *Runner) CleanupRunTemp(dir string) error {
 	dir = strings.TrimSpace(dir)
 	if dir == "" {
 		return nil
 	}
-	root := runTempRoot()
+	root := RunTempRoot()
 	if root == "" {
 		return fmt.Errorf("无法定位应用数据目录")
 	}
@@ -647,8 +661,8 @@ func (a *App) CleanupRunTemp(dir string) error {
 }
 
 // CleanupRunTempStale 清理超过保留期的运行临时目录，返回删除数量。
-func (a *App) CleanupRunTempStale() (int, error) {
-	root := runTempRoot()
+func (r *Runner) CleanupRunTempStale() (int, error) {
+	root := RunTempRoot()
 	if root == "" {
 		return 0, nil
 	}

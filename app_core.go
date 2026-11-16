@@ -15,6 +15,7 @@ import (
 	"datalens/internal/aitimer"
 	"datalens/internal/mcp"
 	"datalens/internal/reading"
+	"datalens/internal/run"
 	"datalens/internal/sqlview"
 )
 
@@ -28,6 +29,7 @@ const appVersion = "v1.1.0"
 
 type App struct {
 	*reading.Reader     // 阅读模式引擎（internal/reading），提升方法即 Wails 绑定
+	*run.Runner         // 运行代码引擎（internal/run）
 	ctx                 context.Context
 	startupTargets      []OpenTarget
 	startupSettingsPane string
@@ -71,12 +73,15 @@ type FileData struct {
 }
 
 func NewApp() *App {
-	return &App{Reader: &reading.Reader{}}
+	return &App{Reader: &reading.Reader{}, Runner: &run.Runner{}}
 }
 
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	reading.Emit = func(event string, data any) {
+		runtime.EventsEmit(ctx, event, data)
+	}
+	run.Emit = func(event string, data any) {
 		runtime.EventsEmit(ctx, event, data)
 	}
 	if a.convert != nil {

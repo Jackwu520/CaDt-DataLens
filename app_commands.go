@@ -14,6 +14,7 @@ import (
 	"datalens/internal/executil"
 
 	"datalens/internal/envvars"
+	"datalens/internal/procctl"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -28,7 +29,6 @@ type CommandResult struct {
 
 const (
 	commandOutputCap   = int64(8 << 20) // 单命令输出上限 8 MB
-	commandMaxRunning  = 16             // 同时运行的流式命令上限
 	commandMaxTimeout  = 120000         // 插件同步命令超时上限 120 s
 	commandLineMaxSize = 64 << 10       // 单行上限 64 KB
 )
@@ -51,39 +51,15 @@ func (lw *limitedWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// applyCommandCancel 配置取消行为：context 到期/取消时杀整棵进程树，
-// WaitDelay 兜底强制关闭管道，保证超时与停止语义在 wrapper shell 下依然成立。
-func applyCommandCancel(cmd *exec.Cmd) {
-	cmd.Cancel = func() error { return executil.KillProcessTree(cmd) }
-	cmd.WaitDelay = 3 * time.Second
-}
-
-func normalizeCommandArgs(exe string, args []string) error {
-	if strings.TrimSpace(exe) == "" {
-		return fmt.Errorf("exe 不能为空")
-	}
-	if len(args) > 128 {
-		return fmt.Errorf("参数个数超过上限 128")
-	}
-	return nil
-}
-
-func commandWorkDir(cwd string) (string, error) {
-	if strings.TrimSpace(cwd) == "" {
-		return "", nil
-	}
-	return cwd, nil
-}
-
 // RunCommandSync 同步执行一个命令并收集输出；非零退出码不是错误（通过 Code 返回）。
 func (a *App) RunCommandSync(exe string, args []string, cwd string, timeoutMs int) (*CommandResult, error) {
 	return a.runCommandSyncRegistered("", exe, args, cwd, timeoutMs, commandMaxTimeout)
 }
 
-// runCommandSyncRegistered：runId 非空时把取消函数注册进 runningCancels（可被 stopRunningCommand 杀掉）。
+// runCommandSyncRegistered：runId 非空时把取消函数注册进 共享消息表（可被 procctl.Stop 杀掉）。
 // maxMs 是调用方的超时上限（插件 120 s / AI 前台 600 s）；超界或非正数回落默认 20 s。
 func (a *App) runCommandSyncRegistered(id, exe string, args []string, cwd string, timeoutMs, maxMs int) (*CommandResult, error) {
-	if err := normalizeCommandArgs(exe, args); err != nil {
+	if err := procctl.NormalizeArgs(exe, args); err != nil {
 		return nil, err
 	}
 	if maxMs <= 0 {
@@ -92,28 +68,20 @@ func (a *App) runCommandSyncRegistered(id, exe string, args []string, cwd string
 	if timeoutMs <= 0 || timeoutMs > maxMs {
 		timeoutMs = 20000
 	}
-	dir, err := commandWorkDir(cwd)
+	dir, err := procctl.WorkDir(cwd)
 	if err != nil {
 		return nil, err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutMs)*time.Millisecond)
 	defer cancel()
 	if id != "" {
-		runningMu.Lock()
-		if _, exists := runningCancels[id]; exists {
-			runningMu.Unlock()
-			return nil, fmt.Errorf("命令 id %q 已在运行", id)
+		if err := procctl.Register(id, cancel); err != nil {
+			return nil, err
 		}
-		runningCancels[id] = cancel
-		runningMu.Unlock()
-		defer func() {
-			runningMu.Lock()
-			delete(runningCancels, id)
-			runningMu.Unlock()
-		}()
+		defer procctl.Unregister(id)
 	}
 	cmd := exec.CommandContext(ctx, exe, args...)
-	applyCommandCancel(cmd)
+	procctl.ApplyCancel(cmd)
 	cmd.Dir = dir
 	cmd.Env = envvars.MergeEnv(os.Environ())
 	executil.HideCommandWindow(cmd)
@@ -141,22 +109,7 @@ func (a *App) runCommandSyncRegistered(id, exe string, args []string, cwd string
 
 // AIStopShellRun 停止一次 run_command 的同步执行（按前端生成的 runId 杀进程树）；不存在时静默成功。
 func (a *App) AIStopShellRun(id string) {
-	stopRunningCommand(strings.TrimSpace(id))
-}
-
-var (
-	runningMu      sync.Mutex
-	runningCancels = map[string]context.CancelFunc{}
-)
-
-func stopRunningCommand(id string) {
-	runningMu.Lock()
-	cancel, ok := runningCancels[id]
-	delete(runningCancels, id)
-	runningMu.Unlock()
-	if ok {
-		cancel()
-	}
+	procctl.Stop(strings.TrimSpace(id))
 }
 
 // StartCommand 流式执行：按行发出 cmd-out {id, stream, data} 事件，结束时发出 cmd-exit {id, code}。
@@ -165,43 +118,36 @@ func (a *App) StartCommand(id, exe string, args []string, cwd string) error {
 	if strings.TrimSpace(id) == "" {
 		return fmt.Errorf("id 不能为空")
 	}
-	if err := normalizeCommandArgs(exe, args); err != nil {
+	if err := procctl.NormalizeArgs(exe, args); err != nil {
 		return err
 	}
-	dir, err := commandWorkDir(cwd)
+	dir, err := procctl.WorkDir(cwd)
 	if err != nil {
 		return err
 	}
-	runningMu.Lock()
-	if _, exists := runningCancels[id]; exists {
-		runningMu.Unlock()
-		return fmt.Errorf("命令 id %q 已在运行", id)
-	}
-	if len(runningCancels) >= commandMaxRunning {
-		runningMu.Unlock()
-		return fmt.Errorf("同时运行的命令超过上限 %d", commandMaxRunning)
-	}
 	ctx, cancel := context.WithCancel(context.Background())
-	runningCancels[id] = cancel
-	runningMu.Unlock()
+	if err := procctl.Register(id, cancel); err != nil {
+		cancel()
+		return err
+	}
 
 	cmd := exec.CommandContext(ctx, exe, args...)
-	applyCommandCancel(cmd)
+	procctl.ApplyCancel(cmd)
 	cmd.Dir = dir
 	cmd.Env = envvars.MergeEnv(os.Environ())
 	executil.HideCommandWindow(cmd)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		stopRunningCommand(id)
+		procctl.Stop(id)
 		return err
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
-		stopRunningCommand(id)
+		procctl.Stop(id)
 		return err
 	}
 	if err := cmd.Start(); err != nil {
-		stopRunningCommand(id)
+		procctl.Stop(id)
 		return err
 	}
 	go func() {
@@ -267,7 +213,7 @@ func (a *App) StartCommand(id, exe string, args []string, cwd string) error {
 				code = -1
 			}
 		}
-		stopRunningCommand(id)
+		procctl.Stop(id)
 		finishCommandJob(id, code)
 		if a.ctx != nil {
 			runtime.EventsEmit(a.ctx, "cmd-exit", map[string]string{"id": id, "code": fmt.Sprintf("%d", code)})
@@ -292,10 +238,10 @@ func (a *App) emitCommandEvent(id, stream, data string) {
 // AICommandStatus 按游标增量读取，AICommandStop 终止并返回最终状态。
 
 const (
-	aiJobBufferCap   = 256 << 10 // 单作业输出缓冲 256 KB，超限从头丢弃
-	aiJobReadChunk   = 64 << 10  // 单次状态查询最多返回 64 KB 增量
-	aiJobMaxFinished = 32        // 保留的已结束作业数，超出淘汰最旧
-	aiJobStopWait    = 4 * time.Second // 必须大于 applyCommandCancel 的 WaitDelay（3s），让兜底关闭管道后仍能观察到退出
+	aiJobBufferCap   = 256 << 10       // 单作业输出缓冲 256 KB，超限从头丢弃
+	aiJobReadChunk   = 64 << 10        // 单次状态查询最多返回 64 KB 增量
+	aiJobMaxFinished = 32              // 保留的已结束作业数，超出淘汰最旧
+	aiJobStopWait    = 4 * time.Second // 必须大于 procctl.ApplyCancel 的 WaitDelay（3s），让兜底关闭管道后仍能观察到退出
 )
 
 type commandJob struct {
@@ -473,7 +419,7 @@ func (a *App) AICommandStop(jobId string) (*AICommandJobStatus, error) {
 		exited := job.exited
 		job.mu.Unlock()
 		if !exited {
-			stopRunningCommand(jobId)
+			procctl.Stop(jobId)
 			deadline := time.Now().Add(aiJobStopWait)
 			for {
 				job.mu.Lock()
@@ -494,12 +440,8 @@ func (a *App) StopCommand(id string) error {
 	if strings.TrimSpace(id) == "" {
 		return fmt.Errorf("id 不能为空")
 	}
-	runningMu.Lock()
-	_, ok := runningCancels[id]
-	runningMu.Unlock()
-	if !ok {
+	if !procctl.Stop(id) {
 		return fmt.Errorf("没有正在运行的命令 %q", id)
 	}
-	stopRunningCommand(id)
 	return nil
 }
