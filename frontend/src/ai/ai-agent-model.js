@@ -1,0 +1,192 @@
+// ai-agent-model.js：智能体（群聊成员）数据层——归一化、名字校验/去重、modelRef 解析
+// 与能力快照。纯函数无 DOM，可单测；方案见 docs/unfinished-plans/ai-group-chat.md §6.1。
+// 智能体存 ai-config.json 的 agents[]；删除不级联（群内显示「已删除成员」）。
+// modelRef = '账号id|模型id'（复用 ai-config-model 的 resolveModelRef）；失效显示
+// 「模型不可用」，不静默回退。
+
+import {PERSONA_TEXT_MAX, REPLY_STYLES} from './ai-persona.js';
+import {findModelEntry, modelRefLabel, resolveModelRef} from './ai-config-model.js';
+
+export const AGENT_MAX_COUNT = 32;
+export const AGENT_NAME_MAX = 32;
+export const AGENT_ROLE_MAX = 120;
+export const AGENT_MODELREF_MAX = 200;
+// 点名保留词：@all 语义冲突，这些名字不能用于智能体（§6.1）
+export const AGENT_RESERVED_NAMES = ['all', 'everyone', '全体成员', '所有人'];
+// 头像圆点调色板：颜色名对应 style.css 的 .gc-dot-<name>；HEX 表供无 CSS 处（设置行内圆点）取色
+export const AGENT_COLORS = ['blue', 'violet', 'green', 'amber', 'red', 'cyan', 'pink', 'lime'];
+export const AGENT_COLOR_HEX = {
+    blue: '#4d8bf5', violet: '#8b5cf6', green: '#34a853', amber: '#f59e0b',
+    red: '#ef4444', cyan: '#06b6d4', pink: '#ec4899', lime: '#84cc16',
+};
+
+function clampText(value, max) {
+    return String(value == null ? '' : value).slice(0, max);
+}
+
+export function normalizeAgentName(raw) {
+    return String(raw == null ? '' : raw).normalize('NFC').trim();
+}
+
+// 名字合法性：'' = 合法，否则返回错误文案。唯一性按 NFC + 小写比较（§6.1）。
+export function agentNameError(name, agents, excludeId) {
+    const trimmed = normalizeAgentName(name);
+    if (!trimmed) return '名字不能为空';
+    if (trimmed.length > AGENT_NAME_MAX) return '名字不能超过 ' + AGENT_NAME_MAX + ' 字符';
+    if (/[\s@]/.test(trimmed)) return '名字不能包含空白或 @';
+    const lower = trimmed.toLowerCase();
+    if (AGENT_RESERVED_NAMES.some((word) => word === trimmed || word.toLowerCase() === lower)) {
+        return '「' + trimmed + '」是保留名（@全体成员语义冲突），请换一个';
+    }
+    const list = Array.isArray(agents) ? agents : [];
+    const dup = list.some((agent) => agent && agent.id !== excludeId &&
+        normalizeAgentName(agent.name).toLowerCase() === lower);
+    if (dup) return '名字与现有智能体重名';
+    return '';
+}
+
+function validReplyStyle(id) {
+    return REPLY_STYLES.some((style) => style && style.id === id);
+}
+
+// 单条归一化：name/id 全空的原始数据丢弃（返回 null），其余字段 clamp 到边界。
+export function normalizeAgent(raw, index, idGen) {
+    const source = raw && typeof raw === 'object' ? raw : {};
+    const name = normalizeAgentName(source.name);
+    const id = String(source.id || '').trim();
+    if (!name && !id) return null;
+    let temperature = null;
+    if (source.temperature != null && source.temperature !== '') {
+        const t = Number(source.temperature);
+        if (Number.isFinite(t)) temperature = Math.min(2, Math.max(-2, Math.round(t * 100) / 100));
+    }
+    const now = Date.now();
+    return {
+        id: id || (idGen ? idGen() : 'agent-' + now.toString(36)),
+        name: name || ('智能体 ' + ((index || 0) + 1)),
+        color: AGENT_COLORS.includes(source.color) ? source.color : AGENT_COLORS[(index || 0) % AGENT_COLORS.length],
+        role: clampText(source.role, AGENT_ROLE_MAX),
+        modelRef: clampText(source.modelRef, AGENT_MODELREF_MAX),
+        personaText: clampText(source.personaText, PERSONA_TEXT_MAX),
+        replyStyle: validReplyStyle(source.replyStyle) ? source.replyStyle : 'default',
+        temperature,
+        slowTier: source.slowTier === true,
+        chair: source.chair === true,
+        enabled: source.enabled !== false,
+        createdAt: Number(source.createdAt) || now,
+        updatedAt: Number(source.updatedAt) || Number(source.createdAt) || now,
+    };
+}
+
+// 数组归一化：去重 id / 名字（冲突加后缀保留数据）、数量截到上限。
+export function normalizeAgents(raw, idGen) {
+    const list = [];
+    if (!Array.isArray(raw)) return list;
+    const usedIds = new Set();
+    const usedNames = new Set();
+    for (let index = 0; index < raw.length && list.length < AGENT_MAX_COUNT; index++) {
+        const agent = normalizeAgent(raw[index], index, idGen);
+        if (!agent) continue;
+        let id = agent.id;
+        let suffix = 2;
+        while (usedIds.has(id)) id = agent.id + '-' + suffix++;
+        agent.id = id;
+        let name = agent.name;
+        let n = 2;
+        while (usedNames.has(name.toLowerCase())) name = agent.name + '-' + n++;
+        agent.name = name;
+        usedIds.add(id);
+        usedNames.add(name.toLowerCase());
+        list.push(agent);
+    }
+    return list;
+}
+
+// 新建 / 编辑：就地写入传入数组（配置里的 agents[] 即真源），返回 {ok, agent, error}。
+export function agentsUpsert(agents, raw, idGen) {
+    const list = Array.isArray(agents) ? agents : [];
+    const source = raw && typeof raw === 'object' ? raw : {};
+    const draft = normalizeAgent(source, list.length, idGen);
+    if (!draft) return {ok: false, error: '智能体数据无效'};
+    const editingId = String(source.id || '').trim();
+    if (editingId) {
+        const existing = list.find((agent) => agent && agent.id === editingId);
+        if (!existing) return {ok: false, error: '智能体不存在或已被删除'};
+        const nameError = agentNameError(draft.name, list, editingId);
+        if (nameError) return {ok: false, error: nameError};
+        Object.assign(existing, draft, {
+            id: existing.id,
+            createdAt: existing.createdAt,
+            updatedAt: Date.now(),
+        });
+        return {ok: true, agent: existing};
+    }
+    if (list.length >= AGENT_MAX_COUNT) return {ok: false, error: '智能体最多 ' + AGENT_MAX_COUNT + ' 个'};
+    const nameError = agentNameError(draft.name, list, '');
+    if (nameError) return {ok: false, error: nameError};
+    list.push(draft);
+    return {ok: true, agent: draft};
+}
+
+export function agentsRemove(agents, id) {
+    const list = Array.isArray(agents) ? agents : [];
+    const index = list.findIndex((agent) => agent && agent.id === id);
+    if (index < 0) return null;
+    return list.splice(index, 1)[0];
+}
+
+export function agentById(agents, id) {
+    const key = String(id || '');
+    return (Array.isArray(agents) ? agents : []).find((agent) => agent && agent.id === key) || null;
+}
+
+// 解析 modelRef：失效（账号/模型被删）返回 null，调用方显示「模型不可用」。
+export function resolveAgentModel(agent, profiles) {
+    const ref = resolveModelRef(agent && agent.modelRef, profiles);
+    if (!ref) return null;
+    const sep = ref.indexOf('|');
+    const account = (Array.isArray(profiles) ? profiles : []).find((p) => p && p.id === ref.slice(0, sep));
+    const entry = findModelEntry(account, ref.slice(sep + 1));
+    return account && entry ? {account, entry, ref} : null;
+}
+
+// 超时档：模型本身会思考（Anthropic thinking / 兼容端点 reasoningEffort）或智能体手动
+// 标注 slowTier（§16.12）→ 'thinking'（更长等待窗）；否则 'standard'。
+export function agentThinkingTier(agent, profiles) {
+    const resolved = resolveAgentModel(agent, profiles);
+    if (!resolved) return agent && agent.slowTier ? 'thinking' : 'standard';
+    const entry = resolved.entry;
+    const thinking = entry.thinking === true || (entry.reasoningEffort || '') !== '';
+    return (thinking || !!(agent && agent.slowTier)) ? 'thinking' : 'standard';
+}
+
+// 能力快照（群创建预检 / 成员徽标用；不落盘，随模型配置推导，§3.10）。
+export function agentCapability(agent, profiles) {
+    const resolved = resolveAgentModel(agent, profiles);
+    if (!resolved) {
+        return {
+            available: false,
+            contextWindow: 0,
+            outputWindow: 0,
+            thinking: false,
+            slowTier: !!(agent && agent.slowTier),
+            tier: agent && agent.slowTier ? 'thinking' : 'standard',
+            label: '模型不可用',
+        };
+    }
+    const entry = resolved.entry;
+    return {
+        available: true,
+        contextWindow: entry.contextWindow || 0,
+        outputWindow: entry.outputWindow || 0,
+        thinking: entry.thinking === true || (entry.reasoningEffort || '') !== '',
+        slowTier: !!(agent && agent.slowTier),
+        tier: agentThinkingTier(agent, profiles),
+        label: modelRefLabel(resolved.account, resolved.entry) || (entry.model || '模型'),
+    };
+}
+
+// 可被群设为主持人的智能体（标记 chair 且启用；§3.1）
+export function chairAgents(agents) {
+    return (Array.isArray(agents) ? agents : []).filter((agent) => agent && agent.chair && agent.enabled);
+}

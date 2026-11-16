@@ -1,0 +1,289 @@
+// ai-agent-settings.js：设置 → AI → 智能体 pane（列表 + 编辑器弹窗）。
+// 编辑器用居中动态弹窗（openAIDialog 三件套，仿生成条目编辑器），表单控件一律走
+// core/form-controls.js 工厂（表单控件硬规范）。数据层在 ai-agent-model.js；
+// agents[] 存 ai-config.json（panel 归一化后即真源，本模块就地改 + saveAIConfig）。
+
+import {createInput, createSelect, createSwitch, createTextarea} from '../core/form-controls.js';
+import {aiNowId} from './ai-constants.js';
+import {modelRefLabel} from './ai-config-model.js';
+import {REPLY_STYLES} from './ai-persona.js';
+import {
+    AGENT_COLOR_HEX, AGENT_COLORS, agentsRemove, agentsUpsert, agentCapability,
+} from './ai-agent-model.js';
+
+export function createAIAgentSettings(ctx, extras) {
+    const getConfig = ctx.getConfig;
+    const saveAIConfig = ctx.saveAIConfig;
+    const askConfirm = ctx.askConfirm;
+    const openAIDialog = ctx.openAIDialog;
+    const closeAIDialog = ctx.closeAIDialog;
+    const dialogButton = ctx.dialogButton;
+    const enhanceSelect = ctx.enhanceSelect;
+    const setSettingsStatus = (extras && extras.setSettingsStatus) || (() => {});
+    const listEl = document.getElementById('agents-list');
+    const createBtn = document.getElementById('ai-agent-create');
+
+    // 编辑器状态：editingId = null 表示新建；无临时插入 config 的中间态（保存才落）。
+    let editorState = null; // {editingId} | null
+    let editorControls = null;
+
+    function agents() {
+        return getConfig().agents || [];
+    }
+
+    function node(tag, className, text) {
+        const el = document.createElement(tag);
+        if (className) el.className = className;
+        if (text != null) el.textContent = text;
+        return el;
+    }
+
+    function bindAgentsPane() {
+        if (!createBtn || createBtn.dataset.agentsBound === '1') return;
+        createBtn.dataset.agentsBound = '1';
+        createBtn.addEventListener('click', () => openAgentEditor(null));
+    }
+
+    // 模型下拉：全部账号的全部条目；失效 ref（账号/模型被删）保留原值显示「模型不可用」。
+    function modelOptions(selectedRef) {
+        const options = [{value: '', label: '未选择模型'}];
+        let found = false;
+        for (const profile of getConfig().profiles || []) {
+            for (const entry of profile.models || []) {
+                const ref = profile.id + '|' + entry.id;
+                const selected = ref === selectedRef;
+                if (selected) found = true;
+                options.push({value: ref, label: modelRefLabel(profile, entry), selected});
+            }
+        }
+        if (selectedRef && !found) {
+            options.push({value: selectedRef, label: '模型不可用（' + selectedRef + '）', selected: true});
+        }
+        return options;
+    }
+
+    // ---------- 列表 ----------
+
+    function renderAgentsPane() {
+        if (!listEl) return;
+        listEl.innerHTML = '';
+        const list = agents();
+        if (!list.length) {
+            const card = node('div', 'set-card');
+            const row = node('div', 'set-row');
+            const main = node('div', 'set-main');
+            main.appendChild(node('div', 'set-title', '还没有智能体'));
+            main.appendChild(node('div', 'set-desc', '智能体是群聊（圆桌讨论）的成员：绑定一个账号下的模型，配人设与职责。点上方「新建智能体」创建第一个。'));
+            row.appendChild(main);
+            card.appendChild(row);
+            listEl.appendChild(card);
+            return;
+        }
+        for (const agent of list) {
+            listEl.appendChild(agentRow(agent));
+        }
+    }
+
+    function agentRow(agent) {
+        const card = node('div', 'set-card');
+        const row = node('div', 'set-row');
+        const main = node('div', 'set-main');
+        const title = node('div', 'set-title');
+        const dot = node('span', 'agent-color-dot');
+        dot.style.backgroundColor = AGENT_COLOR_HEX[agent.color] || '#888';
+        title.appendChild(dot);
+        title.appendChild(document.createTextNode(agent.name));
+        const cap = agentCapability(agent, getConfig().profiles);
+        if (agent.chair) title.appendChild(badge('gc-badge-chair', '主持人'));
+        if (!agent.enabled) title.appendChild(badge('agent-badge-off', '停用'));
+        else if (!cap.available) title.appendChild(badge('agent-badge-off', '模型不可用'));
+        else title.appendChild(badge('agent-badge-model', cap.label));
+        main.appendChild(title);
+        const desc = agent.role
+            ? agent.role
+            : '无职责描述';
+        main.appendChild(node('div', 'set-desc', desc));
+
+        const control = node('div', 'set-control');
+        const editBtn = node('button', 'dlg-btn', '编辑');
+        editBtn.type = 'button';
+        editBtn.addEventListener('click', () => openAgentEditor(agent));
+        const delBtn = node('button', 'dlg-btn', '删除');
+        delBtn.type = 'button';
+        delBtn.addEventListener('click', () => {
+            askConfirm('删除智能体「' + agent.name + '」？引用它的群聊将显示「已删除成员」，群聊数据不受影响。', () => {
+                agentsRemove(agents(), agent.id);
+                saveAIConfig();
+                renderAgentsPane();
+                setSettingsStatus('已删除智能体：' + agent.name, 'ok');
+            }, '删除', '删除智能体');
+        });
+        control.append(editBtn, delBtn);
+        row.append(main, control);
+        card.appendChild(row);
+        return card;
+    }
+
+    function badge(className, text) {
+        const span = node('span', 'agent-badge ' + className, text);
+        return span;
+    }
+
+    // ---------- 编辑器弹窗 ----------
+
+    function openAgentEditor(agent) {
+        const editing = !!(agent && agent.id);
+        editorState = {editingId: editing ? agent.id : null};
+
+        const wrap = node('div');
+        const rowName = node('div', 'agent-form-row');
+        rowName.appendChild(fieldLabel('名字'));
+        const nameCtl = createInput({
+            value: agent ? agent.name : '',
+            placeholder: '1–32 字符，无空白与 @，全局唯一',
+            spellcheck: false,
+            autocomplete: 'off',
+        });
+        rowName.appendChild(nameCtl.element);
+        wrap.appendChild(rowName);
+
+        const rowModel = node('div', 'agent-form-row');
+        rowModel.appendChild(fieldLabel('模型'));
+        const modelCtl = createSelect({options: modelOptions(agent ? agent.modelRef : '')});
+        rowModel.appendChild(modelCtl.element);
+        wrap.appendChild(rowModel);
+
+        const rowRole = node('div', 'agent-form-row');
+        rowRole.appendChild(fieldLabel('职责'));
+        const roleCtl = createInput({
+            value: agent ? agent.role : '',
+            placeholder: '一句话职责，进入成员名单与主持人参考',
+        });
+        rowRole.appendChild(roleCtl.element);
+        wrap.appendChild(rowRole);
+
+        const rowPersona = node('div', 'agent-form-row agent-form-row-top');
+        rowPersona.appendChild(fieldLabel('人设'));
+        const personaCtl = createTextarea({rows: 6, value: agent ? agent.personaText : '', placeholder: '人设正文（可选，≤4096 字符）：只影响表达，不改变事实判断与安全规则'});
+        rowPersona.appendChild(personaCtl.element);
+        wrap.appendChild(rowPersona);
+
+        const rowStyle = node('div', 'agent-form-row');
+        rowStyle.appendChild(fieldLabel('回复风格'));
+        const styleCtl = createSelect({
+            options: REPLY_STYLES.map((style) => ({
+                value: style.id,
+                label: style.name,
+                selected: agent ? agent.replyStyle === style.id : style.id === 'default',
+            })),
+        });
+        rowStyle.appendChild(styleCtl.element);
+        wrap.appendChild(rowStyle);
+
+        const rowTemp = node('div', 'agent-form-row');
+        rowTemp.appendChild(fieldLabel('温度'));
+        const tempCtl = createInput({
+            type: 'number',
+            step: '0.1',
+            min: '-2',
+            max: '2',
+            value: agent && agent.temperature != null ? String(agent.temperature) : '',
+            placeholder: '留空跟随账号',
+        });
+        rowTemp.appendChild(tempCtl.element);
+        wrap.appendChild(rowTemp);
+
+        const rowColor = node('div', 'agent-form-row');
+        rowColor.appendChild(fieldLabel('颜色'));
+        const colorCtl = createSelect({
+            options: AGENT_COLORS.map((color) => ({
+                value: color,
+                label: color,
+                selected: agent ? agent.color === color : false,
+            })),
+        });
+        rowColor.appendChild(colorCtl.element);
+        wrap.appendChild(rowColor);
+
+        const rowSwitches = node('div', 'agent-form-row agent-form-row-top');
+        const switchCol = node('div', 'agent-form-switches');
+        const chairCtl = createSwitch({checked: agent ? agent.chair : false});
+        switchCol.appendChild(switchWrap(chairCtl.element, '可作为主持人', '只做调度与纪要，不参与辩论（§3.1）；群创建时从这里选'));
+        const slowCtl = createSwitch({checked: agent ? agent.slowTier : false});
+        switchCol.appendChild(switchWrap(slowCtl.element, '按思考/慢速档超时', '兼容端点不暴露 reasoning 能力时手动标注；超时档与预检徽标同步'));
+        const enabledCtl = createSwitch({checked: agent ? agent.enabled : true});
+        switchCol.appendChild(switchWrap(enabledCtl.element, '启用', '停用后不可加入新讨论，已有群内显示停用状态'));
+        rowSwitches.appendChild(switchCol);
+        wrap.appendChild(rowSwitches);
+
+        const statusLine = node('div', 'set-desc');
+        statusLine.style.minHeight = '14px';
+
+        const cancelBtn = dialogButton('取消', 'dlg-btn', () => {
+            editorControls = null;
+            closeAIDialog();
+        });
+        const saveBtn = dialogButton('保存', 'dlg-btn primary', () => {
+            saveAgentEditor(collectDraft(), statusLine);
+        });
+
+        editorControls = {name: nameCtl, model: modelCtl, role: roleCtl, persona: personaCtl,
+            style: styleCtl, temperature: tempCtl, color: colorCtl,
+            chair: chairCtl, slow: slowCtl, enabled: enabledCtl};
+
+        openAIDialog((editing ? '编辑智能体' : '新建智能体') + (editing && agent.name ? ' · ' + agent.name : ''),
+            [wrap], [statusLine, cancelBtn, saveBtn], {top: true, wide: true});
+        // 与生成条目编辑器同款：下拉在入 DOM 后再增强，否则露原生外观
+        if (typeof enhanceSelect === 'function') {
+            for (const ctl of [modelCtl, styleCtl, colorCtl]) enhanceSelect(ctl.control);
+        }
+    }
+
+    function fieldLabel(text) {
+        const label = node('span', 'agent-form-label', text);
+        return label;
+    }
+
+    function switchWrap(element, title, desc) {
+        const wrap = node('div', 'agent-switch-item');
+        wrap.appendChild(element);
+        const textCol = node('div', 'agent-switch-text');
+        textCol.appendChild(node('div', 'set-title', title));
+        textCol.appendChild(node('div', 'set-desc', desc));
+        wrap.appendChild(textCol);
+        return wrap;
+    }
+
+    function collectDraft() {
+        const controls = editorControls || {};
+        const temperatureRaw = String((controls.temperature && controls.temperature.control.value) || '').trim();
+        return {
+            id: editorState && editorState.editingId ? editorState.editingId : '',
+            name: String((controls.name && controls.name.control.value) || ''),
+            modelRef: String((controls.model && controls.model.control.value) || ''),
+            role: String((controls.role && controls.role.control.value) || ''),
+            personaText: String((controls.persona && controls.persona.control.value) || ''),
+            replyStyle: String((controls.style && controls.style.control.value) || 'default'),
+            temperature: temperatureRaw === '' ? null : Number(temperatureRaw),
+            color: String((controls.color && controls.color.control.value) || ''),
+            chair: !!(controls.chair && controls.chair.control.checked),
+            slowTier: !!(controls.slow && controls.slow.control.checked),
+            enabled: !controls.enabled || controls.enabled.control.checked,
+        };
+    }
+
+    function saveAgentEditor(draft, statusLine) {
+        const result = agentsUpsert(agents(), draft, () => aiNowId('agent-'));
+        if (!result.ok) {
+            statusLine.textContent = result.error || '保存失败';
+            return;
+        }
+        saveAIConfig();
+        editorControls = null;
+        closeAIDialog();
+        renderAgentsPane();
+        setSettingsStatus('已保存智能体：' + result.agent.name, 'ok');
+    }
+
+    return {bindAgentsPane, renderAgentsPane};
+}
