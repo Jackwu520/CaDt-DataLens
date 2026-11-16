@@ -3,6 +3,7 @@ package main
 // app_fs.go 的 ReadDirTree（AI list_dir 递归树）测试。
 
 import (
+	"datalens/internal/fsops"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -86,7 +87,7 @@ func TestReadDirTreeSkipsJunkDirs(t *testing.T) {
 
 func TestReadDirTreeTruncatesOnBudget(t *testing.T) {
 	dir := t.TempDir()
-	for i := 0; i < dirTreeMaxEntries+50; i++ {
+	for i := 0; i < fsops.DirTreeMaxEntries+50; i++ {
 		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("f%04d.txt", i)), nil, 0644); err != nil {
 			t.Fatal(err)
 		}
@@ -95,7 +96,7 @@ func TestReadDirTreeTruncatesOnBudget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !listing.Truncated || listing.Total != dirTreeMaxEntries {
+	if !listing.Truncated || listing.Total != fsops.DirTreeMaxEntries {
 		t.Fatalf("listing truncated=%v total=%d", listing.Truncated, listing.Total)
 	}
 	if !listing.Root.Omitted {
@@ -114,7 +115,7 @@ func TestReadDirTreeClampsDepth(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if listing.Depth < 1 || listing.Depth > dirTreeMaxDepth {
+		if listing.Depth < 1 || listing.Depth > fsops.DirTreeMaxDepth {
 			t.Fatalf("depth %d 未被钳制: %+v", depth, listing)
 		}
 	}

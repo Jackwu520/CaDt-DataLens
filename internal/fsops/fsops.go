@@ -110,8 +110,8 @@ type DirTreeListing struct {
 }
 
 const (
-	dirTreeMaxDepth   = 8   // 模型可请求的递归深度上限（再深就是树导出的活）
-	dirTreeMaxEntries = 400 // 全树条目预算：超过即截断，防止 node_modules 类目录刷爆上下文
+	DirTreeMaxDepth   = 8   // 模型可请求的递归深度上限（再深就是树导出的活）
+	DirTreeMaxEntries = 400 // 全树条目预算：超过即截断，防止 node_modules 类目录刷爆上下文
 )
 
 // ReadDirTree 递归列目录树。search.SkipDir 命中的目录整棵跳过（与 search_text 同一张表），
@@ -131,12 +131,12 @@ func (f *FS) ReadDirTree(path string, depth int) (*DirTreeListing, error) {
 	if depth < 1 {
 		depth = 1
 	}
-	if depth > dirTreeMaxDepth {
-		depth = dirTreeMaxDepth
+	if depth > DirTreeMaxDepth {
+		depth = DirTreeMaxDepth
 	}
-	budget := dirTreeMaxEntries
+	budget := DirTreeMaxEntries
 	root, truncated := walkDirTree(path, depth, &budget)
-	return &DirTreeListing{Root: root, Depth: depth, Total: dirTreeMaxEntries - budget, Truncated: truncated}, nil
+	return &DirTreeListing{Root: root, Depth: depth, Total: DirTreeMaxEntries - budget, Truncated: truncated}, nil
 }
 
 // walkDirTree 递归收录；根级读失败由调用方先 os.Stat 挡过，子级读失败按空目录跳过。
@@ -299,7 +299,7 @@ func (f *FS) RenameEntry(path, newName string) (string, error) {
 	return target, nil
 }
 
-func entryExists(path string) bool {
+func EntryExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
 }
@@ -328,7 +328,7 @@ func (f *FS) SuggestCopyName(dir, name string, isDir bool) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if !entryExists(filepath.Join(dir, clean)) {
+	if !EntryExists(filepath.Join(dir, clean)) {
 		return clean, nil
 	}
 	stem, ext := clean, ""
@@ -345,7 +345,7 @@ func (f *FS) SuggestCopyName(dir, name string, isDir bool) (string, error) {
 			suffix = fmt.Sprintf(" - 副本 %d", i)
 		}
 		candidate := stem + suffix + ext
-		if !entryExists(filepath.Join(dir, candidate)) {
+		if !EntryExists(filepath.Join(dir, candidate)) {
 			return candidate, nil
 		}
 	}
@@ -377,7 +377,7 @@ func resolvePasteTarget(src, destDir, newName string) (string, os.FileInfo, erro
 	if srcInfo.IsDir() && pathIsWithin(src, dest) {
 		return "", nil, fmt.Errorf("不能把文件夹复制或移动到它自己的子目录")
 	}
-	if entryExists(dest) {
+	if EntryExists(dest) {
 		return "", nil, fmt.Errorf("“%s”已存在", clean)
 	}
 	return dest, srcInfo, nil

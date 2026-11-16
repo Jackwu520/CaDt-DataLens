@@ -1,6 +1,7 @@
 package main
 
 import (
+	"datalens/internal/fsops"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -63,13 +64,13 @@ func TestDeleteEntryWith(t *testing.T) {
 	if err := deleteEntryWith(" "+file+" ", remove); err != nil {
 		t.Fatalf("删除文件失败: %v", err)
 	}
-	if entryExists(file) {
+	if fsops.EntryExists(file) {
 		t.Fatal("文件仍然存在")
 	}
 	if err := deleteEntryWith(sub, remove); err != nil {
 		t.Fatalf("删除目录失败: %v", err)
 	}
-	if entryExists(child) {
+	if fsops.EntryExists(child) {
 		t.Fatal("目录内文件仍然存在")
 	}
 	if len(moved) != 2 || moved[0] != file || moved[1] != sub {
