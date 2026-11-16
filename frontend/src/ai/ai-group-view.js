@@ -1,9 +1,9 @@
-// ai-group-view.js：群聊标签页视图——头部（群名/徽标/点将）、消息区（增量渲染）、
-// 流式行（80ms 节流 + 纯文本流、完成转 Markdown）、输入区（插话 / 停止）。
-// 手动「请发言」是用户主持的雏形，G3 主持人循环正式接管调度。
-// 状态来自 runtime（subscribe 快照 + activeStreamOf）；DOM 只做渲染，不做业务判定。
+// ai-group-view.js：群聊标签页视图——头部（群名/徽标/点将/讨论控制）、消息区（增量渲染，
+// 立场卡 / 纪要卡）、流式行（80ms 节流纯文本流、完成转 Markdown）、看板抽屉、输入区。
+// 状态来自 runtime（subscribe 快照 + activeStreamOf + discussionSnapshot）；DOM 只做渲染。
 import {createInput, createSelect, createTextarea} from '../core/form-controls.js';
 import {AGENT_COLOR_HEX} from './ai-agent-model.js';
+import {STANCE_LABELS} from './ai-group-model.js';
 
 const FLUSH_THROTTLE_MS = 80;
 
@@ -19,17 +19,7 @@ export function createAIGroupView(deps) {
     const getAIConfig = deps.getAIConfig || (() => null);
     const renderMarkdown = typeof deps.renderMarkdown === 'function' ? deps.renderMarkdown : null;
     const enhanceAnswerBody = typeof deps.enhanceAnswerBody === 'function' ? deps.enhanceAnswerBody : null;
-    // docId → 视图状态（doc 关闭时清理）
-    const views = new Map();
-
-    function colorOf(agent) {
-        return AGENT_COLOR_HEX[agent && agent.color] || '#989898';
-    }
-
-    function agentNameOf(agents, agentId) {
-        const agent = (agents || []).find((item) => item && item.id === agentId);
-        return agent ? agent.name : '已删除成员';
-    }
+    const views = new Map(); // docId → 视图状态（doc 关闭时清理）
 
     function createGroupChatView(doc, host) {
         if (doc.pane) return;
@@ -39,9 +29,14 @@ export function createAIGroupView(deps) {
         doc.pane = pane;
 
         const head = el('div', 'gc-head');
+        const main = el('div', 'gc-main');
         const body = el('div', 'gc-body');
+        const drawer = el('div', 'gc-drawer hidden');
+        const drawerInner = el('div', 'gc-drawer-inner');
+        drawer.appendChild(drawerInner);
+        main.append(body, drawer);
         const foot = el('div', 'gc-foot');
-        pane.append(head, body, foot);
+        pane.append(head, main, foot);
 
         const state = {
             doc,
@@ -49,6 +44,8 @@ export function createAIGroupView(deps) {
             pane,
             head,
             body,
+            drawer,
+            drawerInner,
             list: el('div', 'gc-messages'),
             streamingRow: null,
             streamingKey: '',
@@ -57,6 +54,7 @@ export function createAIGroupView(deps) {
             elapsedTimer: null,
             renderedCount: 0,
             lastMetaStamp: 0,
+            lastDiscPhase: '',
             flushTimer: null,
             memberSelect: null,
             focusInput: null,
@@ -65,7 +63,7 @@ export function createAIGroupView(deps) {
         };
         body.appendChild(state.list);
 
-        // ---- 头部：标题行（G1 壳延续） + 点将行 ----
+        // ---- 头部 ----
         const titleRow = el('div', 'gc-head-row');
         const title = el('div', 'gc-head-title', doc.name);
         titleRow.appendChild(title);
@@ -76,13 +74,14 @@ export function createAIGroupView(deps) {
         state.topicEl = el('div', 'gc-head-topic');
         head.appendChild(state.topicEl);
 
+        // 点将行（手动调度 / 用户主持）
         const controlRow = el('div', 'gc-controls');
         state.memberSelect = createSelect({options: [{value: '', label: '选择发言成员'}]});
         state.memberSelect.element.classList.add('gc-member-select');
         controlRow.appendChild(state.memberSelect.element);
         state.focusInput = createInput({placeholder: '焦点（可选）：要求回应谁 / 解决什么'});
         controlRow.appendChild(state.focusInput.element);
-        const speakBtn = el('button', 'dlg-btn primary', '请发言');
+        const speakBtn = el('button', 'dlg-btn', '请发言');
         speakBtn.type = 'button';
         speakBtn.addEventListener('click', () => {
             const agentId = state.memberSelect.control.value;
@@ -93,16 +92,44 @@ export function createAIGroupView(deps) {
             }).catch((e) => flashOf(state)((e && e.message) || String(e), true));
         });
         controlRow.appendChild(speakBtn);
-        const stopBtn = el('button', 'dlg-btn', '停止本场');
-        stopBtn.type = 'button';
-        stopBtn.dataset.tip = '停止当前发言（讨论继续，可再请）';
-        stopBtn.addEventListener('click', () => runtime.stopAll(groupId));
-        controlRow.appendChild(stopBtn);
         head.appendChild(controlRow);
+
+        // 讨论控制行（G3）
+        const discRow = el('div', 'gc-disc-row');
+        const startBtn = el('button', 'dlg-btn primary', '开始讨论');
+        startBtn.addEventListener('click', () => runtime.startDiscussion(groupId));
+        const pauseBtn = el('button', 'dlg-btn hidden', '暂停');
+        pauseBtn.addEventListener('click', () => runtime.pauseDiscussion(groupId));
+        const resumeBtn = el('button', 'dlg-btn hidden', '继续');
+        resumeBtn.addEventListener('click', () => runtime.resumeDiscussion(groupId));
+        const endBtn = el('button', 'dlg-btn', '结束并总结');
+        endBtn.dataset.tip = '停止在飞请求，按看板生成本场纪要';
+        endBtn.addEventListener('click', () => runtime.endDiscussion(groupId));
+        const compressBtn = el('button', 'dlg-btn', '压缩群聊数据');
+        compressBtn.dataset.tip = '生成共享摘要 + 截止点；最近 1 轮全文保留，原始日志不删';
+        compressBtn.addEventListener('click', () => {
+            compressBtn.disabled = true;
+            compressBtn.textContent = '压缩中…';
+            runtime.compressShared(groupId, {keepRounds: 1}).then((result) => {
+                if (!result.ok) flashOf(state)(result.error, true);
+            }).catch((e) => flashOf(state)((e && e.message) || String(e), true)).finally(() => {
+                compressBtn.disabled = false;
+                compressBtn.textContent = '压缩群聊数据';
+            });
+        });
+        const boardBtn = el('button', 'dlg-btn', '讨论看板');
+        boardBtn.addEventListener('click', () => {
+            state.drawer.classList.toggle('hidden');
+        });
+        state.discButtons = {startBtn, pauseBtn, resumeBtn, endBtn};
+        discRow.append(startBtn, pauseBtn, resumeBtn, endBtn, compressBtn, boardBtn);
+        state.discStatusEl = el('span', 'gc-disc-status');
+        discRow.appendChild(state.discStatusEl);
+        head.appendChild(discRow);
 
         // ---- 底部输入区 ----
         const composerRow = el('div', 'gc-composer');
-        state.composerCtl = createTextarea({rows: 2, placeholder: '插话 / 补充议题（当前成员说完后由主持人吸收）'});
+        state.composerCtl = createTextarea({rows: 2, placeholder: '插话 / 点名 @成员 / @全体成员（当前成员说完后由主持人吸收）'});
         composerRow.appendChild(state.composerCtl.element);
         const sendBtn = el('button', 'dlg-btn primary', '发送');
         sendBtn.type = 'button';
@@ -144,13 +171,11 @@ export function createAIGroupView(deps) {
     }
 
     function flashOf(state) {
-        return (message, isError) => {
-            // 视图内轻提示：复用面板 flash 的语义但落到群聊状态条；这里直接 console + 标题闪示
+        return (message) => {
             console.warn('[group]', message);
-            if (state && state.streamNoteEl) {
-                state.streamNoteEl.textContent = message;
+            if (state && state.discStatusEl) {
+                state.discStatusEl.textContent = message;
             }
-            void isError;
         };
     }
 
@@ -169,6 +194,8 @@ export function createAIGroupView(deps) {
         renderHead(state, g);
         renderMessages(state, g);
         renderStreaming(state, g);
+        renderDiscussionControls(state, g);
+        renderDrawer(state, g);
     }
 
     function renderHead(state, g) {
@@ -177,12 +204,10 @@ export function createAIGroupView(deps) {
             state.lastMetaStamp = meta.updatedAt;
             state.titleEl.textContent = meta.title || '未命名群聊';
             state.chipsEl.innerHTML = '';
-            const modeChip = el('span', 'gc-badge', meta.mode === 'task' ? '任务' : '圆桌');
-            state.chipsEl.appendChild(modeChip);
-            state.chipsEl.appendChild(el('span', 'gc-badge', `第 ${Math.max(1, (meta.discussion && meta.discussion.round) || 1)} 轮`));
+            state.chipsEl.appendChild(el('span', 'gc-badge', meta.mode === 'task' ? '任务' : '圆桌'));
+            state.chipsEl.appendChild(el('span', 'gc-badge', `第 ${Math.max(1, (meta.discussion && meta.discussion.round) || 1)}/${meta.maxRounds} 轮`));
             state.topicEl.textContent = meta.topic || '';
         }
-        // 成员下拉：启用且未静音的成员；选中项失效时回第一个
         const config = getAIConfig();
         const agents = (config && Array.isArray(config.agents)) ? config.agents : [];
         const eligible = meta.memberIds
@@ -203,17 +228,25 @@ export function createAIGroupView(deps) {
 
     function renderMessages(state, g) {
         const messages = g.messages || [];
+        const config = getAIConfig();
         while (state.renderedCount < messages.length) {
             const msg = messages[state.renderedCount];
-            state.list.appendChild(messageNode(msg, getAIConfig));
+            const node = messageNode(msg, config);
+            state.list.appendChild(node);
             state.renderedCount++;
+            if (msg.kind === 'minutes') {
+                node.scrollIntoView({block: 'start'});
+            }
         }
     }
 
     function messageNode(msg, getAIConfig) {
         const config = getAIConfig();
         const agents = (config && Array.isArray(config.agents)) ? config.agents : [];
-        const wrap = el('div', 'gc-msg' + (msg.role === 'user' ? ' gc-msg-user' : '') +
+        const isMinutes = msg.kind === 'minutes';
+        const wrap = el('div', 'gc-msg' +
+            (msg.role === 'user' ? ' gc-msg-user' : '') +
+            (isMinutes ? ' gc-msg-minutes' : '') +
             (msg.status && msg.status !== 'done' ? ' gc-msg-' + msg.status : ''));
         const headRow = el('div', 'gc-msg-head');
         if (msg.role === 'user') {
@@ -221,10 +254,11 @@ export function createAIGroupView(deps) {
         } else {
             const agent = agents.find((item) => item && item.id === msg.agentId);
             const dot = el('span', 'gc-dot');
-            dot.style.backgroundColor = msg.agentColor ? (AGENT_COLOR_HEX[msg.agentColor] || '#989898') : colorOf(agent);
+            dot.style.backgroundColor = msg.agentColor ? (AGENT_COLOR_HEX[msg.agentColor] || '#989898') : (AGENT_COLOR_HEX[agent && agent.color] || '#989898');
             headRow.appendChild(dot);
-            headRow.appendChild(el('span', 'gc-msg-name', agentNameOf(agents, msg.agentId)));
-            if (msg.model) headRow.appendChild(el('span', 'gc-badge', msg.model));
+            headRow.appendChild(el('span', 'gc-msg-name', isMinutes ? '纪要' : (msg.chair ? '主持人' : agentNameOf(agents, msg.agentId))));
+            if (!isMinutes && msg.model && !msg.chair) headRow.appendChild(el('span', 'gc-badge', msg.model));
+            if (msg.chair && !isMinutes) headRow.appendChild(el('span', 'gc-badge gc-badge-chair', '主持人'));
             if (msg.timeout) headRow.appendChild(el('span', 'gc-badge gc-level-red', '超时未发言'));
             else if (msg.status === 'error') headRow.appendChild(el('span', 'gc-badge gc-level-red', '失败'));
             else if (msg.status === 'stopped') headRow.appendChild(el('span', 'gc-badge', '已停止'));
@@ -243,10 +277,23 @@ export function createAIGroupView(deps) {
             contentEl.textContent = String(msg.content || '');
         }
         wrap.appendChild(contentEl);
+        // 立场卡（§3.5）：结构化 stance，不显示 JSON 原文
+        if (msg.groupBlock && (msg.groupBlock.stance || msg.groupBlock.keyPoints.length || msg.groupBlock.concerns.length || msg.groupBlock.questions.length)) {
+            wrap.appendChild(stanceCard(msg.groupBlock));
+        }
         if (msg.error) {
             wrap.appendChild(el('div', 'gc-msg-error', '错误：' + msg.error));
         }
         return wrap;
+    }
+
+    function stanceCard(block) {
+        const card = el('div', 'gc-stance');
+        if (block.stance) card.appendChild(el('span', 'gc-badge gc-badge-stance-' + block.stance, '立场：' + (STANCE_LABELS[block.stance] || block.stance)));
+        for (const point of block.keyPoints) card.appendChild(el('span', 'gc-badge', '要点：' + point));
+        for (const concern of block.concerns) card.appendChild(el('span', 'gc-badge gc-badge-concern', '担忧：' + concern));
+        for (const question of block.questions) card.appendChild(el('span', 'gc-badge gc-badge-question', '疑问：' + question));
+        return card;
     }
 
     function renderStreaming(state, g) {
@@ -287,9 +334,83 @@ export function createAIGroupView(deps) {
                 state.elapsedEl.textContent = Math.round((Date.now() - stream.startedAt) / 1000) + 's';
             }, 1000);
         }
-        // 流式期间用纯文本（不整屏重建 Markdown），完成后落盘消息按 Markdown 渲染
         state.streamingContentEl.textContent = stream.content || (stream.thinking ? '…' : '');
         state.streamNoteEl.textContent = stream.statusNote || (stream.thinking && !stream.content ? '思考中…' : '正在输入…');
+    }
+
+    // 讨论控制按钮的可见性随状态切换（§3.9 暂停/继续/结束）
+    function renderDiscussionControls(state, g) {
+        const disc = runtime.discussionSnapshot(state.groupId);
+        const phase = disc ? disc.phase + (disc.running ? ':run' : '') + (disc.paused ? ':paused' : '') : 'none';
+        if (state.lastDiscPhase === phase) return;
+        state.lastDiscPhase = phase;
+        const {startBtn, pauseBtn, resumeBtn, endBtn} = state.discButtons;
+        const running = !!(disc && disc.running);
+        const paused = !!(disc && disc.paused);
+        startBtn.classList.toggle('hidden', running || paused);
+        startBtn.textContent = (g.meta.discussion && g.meta.discussion.round > 0) && !g.meta.minutes ? '继续讨论' : '开始讨论';
+        pauseBtn.classList.toggle('hidden', !running);
+        resumeBtn.classList.toggle('hidden', !paused);
+        endBtn.classList.toggle('hidden', !running && !paused);
+        if (state.discStatusEl) {
+            const spoken = disc ? `${disc.speeches} 次发言` : '';
+            state.discStatusEl.textContent = running
+                ? `讨论中 · ${spoken}`
+                : paused
+                    ? '已暂停 · ' + (disc.error || '点「继续」接着讨论')
+                    : (g.meta.minutes ? '本场已产出纪要' : '');
+        }
+    }
+
+    // 讨论看板抽屉（§3.2）：议程 / 立场 / 共识 / 分歧 / 未决 / 决定 / 行动项 / 点名请求
+    function renderDrawer(state, g) {
+        if (state.drawer.classList.contains('hidden')) return;
+        const d = g.meta.discussion;
+        if (!d) return;
+        state.drawerInner.innerHTML = '';
+        state.drawerInner.appendChild(el('div', 'gc-drawer-title', '讨论看板'));
+        const section = (title, items, renderer) => {
+            if (!items || !items.length) return;
+            state.drawerInner.appendChild(el('div', 'gc-drawer-sec-title', title));
+            const box = el('div', 'gc-drawer-sec');
+            for (const item of items) box.appendChild(renderer(item));
+            state.drawerInner.appendChild(box);
+        };
+        if (d.agenda.length) section('议程', d.agenda, (item) => el('div', 'gc-drawer-item', item));
+        section('成员立场', d.positions.filter((p) => p && p.stance), (pos) => {
+            const row = el('div', 'gc-drawer-item');
+            row.appendChild(el('span', 'gc-badge gc-badge-stance-' + pos.stance, `${pos.name || pos.agentId}：${STANCE_LABELS[pos.stance] || pos.stance}`));
+            for (const point of pos.keyPoints || []) row.appendChild(el('div', 'gc-drawer-sub', '· ' + point));
+            for (const concern of pos.concerns || []) row.appendChild(el('div', 'gc-drawer-sub', '· 担忧：' + concern));
+            return row;
+        });
+        section('共识', d.agreements, (item) => el('div', 'gc-drawer-item', item));
+        section('分歧', d.disagreements, (item) => {
+            const row = el('div', 'gc-drawer-item');
+            row.textContent = `${item.point}（${(item.sides || []).join(' vs ')}）${item.resolution ? ' → ' + item.resolution : ''}`;
+            return row;
+        });
+        section('未决问题', d.openQuestions, (item) => el('div', 'gc-drawer-item', item));
+        section('决定', d.decisions, (item) => el('div', 'gc-drawer-item', item));
+        section('行动项', d.actionItems, (item) => {
+            const row = el('div', 'gc-drawer-item');
+            row.textContent = `${item.title}（${item.ownerId || '待定'} · ${item.status}）`;
+            return row;
+        });
+        section('请求发言', (d.floorRequests || []).slice(-6), (req) => {
+            const row = el('div', 'gc-drawer-item');
+            row.textContent = `${req.fromName || req.from} → ${req.to}${req.reason ? '：' + req.reason : ''}`;
+            return row;
+        });
+        if (d.lastRoundSummary) section('上一轮小结', [d.lastRoundSummary], (item) => el('div', 'gc-drawer-item', item));
+        if (!state.drawerInner.children.length) {
+            state.drawerInner.appendChild(el('div', 'gc-drawer-item', '看板还是空的：开始讨论后由主持人开场与成员立场自动填充。'));
+        }
+    }
+
+    function agentNameOf(agents, agentId) {
+        const agent = (agents || []).find((item) => item && item.id === agentId);
+        return agent ? agent.name : '已删除成员';
     }
 
     return {createGroupChatView};

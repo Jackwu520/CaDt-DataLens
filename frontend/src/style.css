@@ -11207,3 +11207,24 @@ textarea.dlg-input:focus {
 .gc-composer { display: flex; gap: 8px; align-items: flex-end; }
 .gc-composer > :first-child { flex: 1; min-width: 0; }
 .gc-composer > button { flex: none; }
+
+/* ===== AI 群聊 G3：讨论控制 / 看板抽屉 / 立场卡 / 纪要卡 ===== */
+.gc-main { flex: 1; display: flex; min-height: 0; }
+.gc-disc-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.gc-disc-status { font-size: 11px; color: var(--muted); margin-left: 4px; }
+.gc-drawer { flex: none; width: 300px; border-left: 1px solid var(--border); overflow: auto; }
+.gc-drawer.hidden { display: none; }
+.gc-drawer-inner { padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+.gc-drawer-title { font-size: 13px; font-weight: 600; }
+.gc-drawer-sec-title { font-size: 11px; color: var(--muted); margin-top: 4px; }
+.gc-drawer-sec { display: flex; flex-direction: column; gap: 4px; }
+.gc-drawer-item { font-size: 12px; line-height: 1.55; background: var(--panel2); border: 1px solid var(--border); border-radius: 6px; padding: 5px 8px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.gc-drawer-sub { font-size: 11px; color: var(--muted); padding-left: 8px; }
+.gc-stance { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 5px; }
+.gc-badge-stance-agree { color: #3aa66a; background: rgba(58, 166, 106, 0.14); }
+.gc-badge-stance-disagree { color: #e06c75; background: rgba(224, 108, 117, 0.15); }
+.gc-badge-stance-supplement { color: var(--accent); background: color-mix(in srgb, var(--accent) 13%, transparent); }
+.gc-badge-stance-question { color: #d0a215; background: rgba(208, 162, 21, 0.16); }
+.gc-badge-concern { color: #d0a215; background: rgba(208, 162, 21, 0.12); }
+.gc-badge-question { color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.gc-msg-minutes { border-color: color-mix(in srgb, var(--accent) 45%, transparent); background: color-mix(in srgb, var(--accent) 6%, var(--panel2)); }
