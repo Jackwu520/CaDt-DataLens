@@ -8,5 +8,4 @@ import "datalens/internal/reading"
 func init() {
 	reading.Logf = writeAppLog
 	reading.DebugEnabled = func() bool { return devMode.Load() }
-	reading.RegisterPreviewRoot = registerPreviewRoot
 }

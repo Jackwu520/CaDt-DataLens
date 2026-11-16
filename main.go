@@ -9,6 +9,8 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
 	"github.com/wailsapp/wails/v2/pkg/options/windows"
+
+	"datalens/internal/previewassets"
 )
 
 //go:embed all:frontend/dist
@@ -93,7 +95,7 @@ func main() {
 		BackgroundColour: &options.RGBA{R: 30, G: 31, B: 36, A: 1},
 		AssetServer: &assetserver.Options{
 			Assets:     assets,
-			Middleware: previewAssetMiddleware,
+			Middleware: previewassets.Middleware,
 		},
 		OnStartup:     app.startup,
 		OnDomReady:    app.domReady,

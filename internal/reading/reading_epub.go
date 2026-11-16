@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"datalens/internal/appdata"
+	"datalens/internal/previewassets"
 )
 
 const (
@@ -112,7 +113,7 @@ func prepareReadingEpub(path string) (*ReadingEpubBook, error) {
 	if meta.Title == "" {
 		meta.Title = strings.TrimSuffix(filepath.Base(abs), filepath.Ext(abs))
 	}
-	token, err := registerPreviewRoot(cacheDir)
+	token, err := previewassets.Register(cacheDir)
 	if err != nil {
 		return nil, err
 	}

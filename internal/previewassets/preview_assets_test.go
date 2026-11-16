@@ -1,4 +1,4 @@
-package main
+package previewassets
 
 import (
 	"net/http"
@@ -27,18 +27,18 @@ func TestPreviewAssetMiddleware(t *testing.T) {
 	}
 	defer os.Remove(secret)
 
-	token, err := registerPreviewRoot(root)
+	token, err := Register(root)
 	if err != nil || token == "" {
 		t.Fatalf("register: token=%q err=%v", token, err)
 	}
-	if again, err := registerPreviewRoot(root); err != nil || again != token {
+	if again, err := Register(root); err != nil || again != token {
 		t.Fatalf("same dir should reuse token: %q vs %q err=%v", again, token, err)
 	}
 
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusTeapot)
 	})
-	handler := previewAssetMiddleware(next)
+	handler := Middleware(next)
 
 	get := func(path string) *httptest.ResponseRecorder {
 		rec := httptest.NewRecorder()

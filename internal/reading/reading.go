@@ -31,18 +31,9 @@ var (
 	Emit func(event string, data any)
 	// DebugEnabled 是否开启开发者模式（调试级日志门控，main/logging.go 的 devMode）。
 	DebugEnabled func() bool
-	// RegisterPreviewRoot 把本地目录注册为预览资源根（main/app_preview_assets.go）。
-	RegisterPreviewRoot func(dir string) (string, error)
 )
 
 func debugEnabled() bool { return DebugEnabled != nil && DebugEnabled() }
-
-func registerPreviewRoot(dir string) (string, error) {
-	if RegisterPreviewRoot == nil {
-		return "", fmt.Errorf("预览资源注册未接线")
-	}
-	return RegisterPreviewRoot(dir)
-}
 
 func logf(level, format string, args ...any) {
 	if Logf != nil {
