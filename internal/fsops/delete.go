@@ -1,4 +1,6 @@
-package main
+package fsops
+
+// 删除条目：校验后送系统回收站，不做不可恢复的直删。
 
 import (
 	"fmt"
@@ -10,7 +12,12 @@ import (
 )
 
 // DeleteEntry 把文件或目录移到回收站；不存在或非法路径返回错误。
-func (a *App) DeleteEntry(path string) error {
+func (f *FS) DeleteEntry(path string) error {
+	return deleteEntry(path)
+}
+
+// RemoveToRecycleBin 供非绑定调用方（存储清理）复用同一套校验与回收站动作。
+func RemoveToRecycleBin(path string) error {
 	return deleteEntry(path)
 }
 

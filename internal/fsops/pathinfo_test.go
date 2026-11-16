@@ -1,4 +1,4 @@
-package main
+package fsops
 
 import (
 	"os"
@@ -12,8 +12,8 @@ func TestGetPathInfo(t *testing.T) {
 	if err := os.WriteFile(file, []byte("{\"a\":1}"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	app := NewApp()
-	info, err := app.GetPathInfo(file)
+	f := &FS{}
+	info, err := f.GetPathInfo(file)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -26,10 +26,10 @@ func TestGetPathInfo(t *testing.T) {
 	if info.ReadOnly {
 		t.Fatalf("expected writable file")
 	}
-	if _, err := app.GetPathInfo(""); err == nil {
+	if _, err := f.GetPathInfo(""); err == nil {
 		t.Fatal("expected error for empty path")
 	}
-	if _, err := app.GetPathInfo(filepath.Join(dir, "missing.json")); err == nil {
+	if _, err := f.GetPathInfo(filepath.Join(dir, "missing.json")); err == nil {
 		t.Fatal("expected error for missing file")
 	}
 }

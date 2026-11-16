@@ -1,4 +1,6 @@
-package main
+package fsops
+
+// 文件属性：属性对话框与 AI 路径校验用的只读元信息。
 
 import (
 	"fmt"
@@ -16,7 +18,7 @@ type PathInfo struct {
 }
 
 // GetPathInfo 返回文件属性对话框需要的信息；修改时间为 Unix 毫秒。
-func (a *App) GetPathInfo(path string) (*PathInfo, error) {
+func (f *FS) GetPathInfo(path string) (*PathInfo, error) {
 	path = strings.TrimSpace(path)
 	if path == "" {
 		return nil, fmt.Errorf("没有文件路径")

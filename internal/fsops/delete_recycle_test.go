@@ -1,7 +1,6 @@
-package main
+package fsops
 
 import (
-	"datalens/internal/fsops"
 	"os"
 	"path/filepath"
 	"testing"
@@ -19,7 +18,7 @@ func TestDeleteEntryMovesToRecycleBin(t *testing.T) {
 	if err := deleteEntry(file); err != nil {
 		t.Fatalf("移到回收站失败: %v", err)
 	}
-	if fsops.EntryExists(file) {
+	if EntryExists(file) {
 		t.Fatal("文件仍在原位置")
 	}
 }

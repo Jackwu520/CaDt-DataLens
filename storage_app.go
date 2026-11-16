@@ -18,6 +18,7 @@ import (
 	"datalens/internal/browser"
 	"datalens/internal/debugconsole"
 	"datalens/internal/envvars"
+	"datalens/internal/fsops"
 	"datalens/internal/mcp"
 	"datalens/internal/run"
 	"datalens/internal/sessionindex"
@@ -27,7 +28,7 @@ import (
 
 var storageService = storage.New(storage.Deps{
 	Location:              storageLocation,
-	RemoveToRecycleBin:    deleteEntry,
+	RemoveToRecycleBin:    fsops.RemoveToRecycleBin,
 	ActiveBrowserProfiles: browser.ActiveProfileDirs,
 	BeforeClear: map[string]func(){
 		// 派生 SQLite 打开状态下删不掉，清除前先释放本进程句柄
