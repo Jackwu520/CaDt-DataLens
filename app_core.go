@@ -29,6 +29,7 @@ import (
 	"datalens/internal/run"
 	"datalens/internal/screenshot"
 	"datalens/internal/search"
+	"datalens/internal/sessionstore"
 	"datalens/internal/skills"
 	"datalens/internal/sqlview"
 	"datalens/internal/terminal"
@@ -59,6 +60,7 @@ type App struct {
 	*aichat.Chat           // AI 对话与流注册表（internal/aichat）
 	*integration.Registrar // Windows 文件关联 / 右键菜单 / PATH（internal/integration）
 	*mcpsamples.Samples    // 内置 MCP 示例（internal/mcpsamples）
+	*sessionstore.Service  // AI 会话磁盘存储（internal/sessionstore）
 	ctx                    context.Context
 	startupTargets         []launchargs.OpenTarget
 	startupSettingsPane    string
@@ -79,7 +81,7 @@ type App struct {
 type FileData = fileio.FileData
 
 func NewApp() *App {
-	return &App{Reader: &reading.Reader{}, Runner: &run.Runner{}, Host: &browser.Host{}, Searcher: &search.Searcher{}, Scheduler: &aischedule.Scheduler{}, Bridge: &cmdbridge.Bridge{}, Terminal: &terminal.Terminal{}, Toolchain: &toolchain.Toolchain{}, Store: &aiconfig.Store{}, Manager: &plugins.Manager{}, Skills: &skills.Skills{}, Capturer: &screenshot.Capturer{}, Notifier: &notify.Notifier{}, Watcher: &watch.Watcher{}, Samples: &mcpsamples.Samples{}, Files: &fileio.Files{}, FS: &fsops.FS{}, Registrar: &integration.Registrar{}, Console: &debugconsole.Console{}, Chat: &aichat.Chat{}}
+	return &App{Reader: &reading.Reader{}, Runner: &run.Runner{}, Host: &browser.Host{}, Searcher: &search.Searcher{}, Scheduler: &aischedule.Scheduler{}, Bridge: &cmdbridge.Bridge{}, Terminal: &terminal.Terminal{}, Toolchain: &toolchain.Toolchain{}, Store: &aiconfig.Store{}, Manager: &plugins.Manager{}, Skills: &skills.Skills{}, Capturer: &screenshot.Capturer{}, Notifier: &notify.Notifier{}, Watcher: &watch.Watcher{}, Samples: &mcpsamples.Samples{}, Files: &fileio.Files{}, FS: &fsops.FS{}, Registrar: &integration.Registrar{}, Console: &debugconsole.Console{}, Chat: &aichat.Chat{}, Service: &sessionstore.Service{}}
 }
 
 func (a *App) startup(ctx context.Context) {

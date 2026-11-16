@@ -1,0 +1,159 @@
+package sessionstore
+
+// Service：AI 会话存储的 Wails 绑定层，main.App 以服务嵌入（方法名与原壳一致）。
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+
+	"datalens/internal/fileio"
+	"datalens/internal/fsops"
+)
+
+// 派生搜索索引的标脏钩子：宿主（main）注入，引擎不依赖 sessionindex。
+var (
+	OnBodyChange func(id string)
+	OnMetaChange func(id, metaJSON string)
+	OnRemove     func(id string)
+	OnClear      func()
+)
+
+type Service struct{}
+
+func (s *Service) store() (*Store, error) {
+	return Default()
+}
+
+func (s *Service) AISessionStoreRoot() (string, error) {
+	store, err := s.store()
+	if err != nil {
+		return "", err
+	}
+	if err := store.EnsureRoot(); err != nil {
+		return "", err
+	}
+	return store.Root, nil
+}
+
+// AISessionList 返回各会话 meta.json 的原始 JSON 字符串（列表页只需这些摘要）。
+func (s *Service) AISessionList() ([]string, error) {
+	store, err := s.store()
+	if err != nil {
+		return nil, err
+	}
+	return store.List()
+}
+
+func (s *Service) AISessionRead(id string) (string, error) {
+	store, err := s.store()
+	if err != nil {
+		return "", err
+	}
+	return store.Read(id)
+}
+
+func (s *Service) AISessionAppend(id string, lines string) error {
+	store, err := s.store()
+	if err != nil {
+		return err
+	}
+	if err := store.Append(id, lines); err != nil {
+		return err
+	}
+	if OnBodyChange != nil {
+		OnBodyChange(id)
+	}
+	return nil
+}
+
+func (s *Service) AISessionRewrite(id string, content string) error {
+	store, err := s.store()
+	if err != nil {
+		return err
+	}
+	if err := store.Rewrite(id, content); err != nil {
+		return err
+	}
+	if OnBodyChange != nil {
+		OnBodyChange(id)
+	}
+	return nil
+}
+
+func (s *Service) AISessionWriteMeta(id string, data string) error {
+	store, err := s.store()
+	if err != nil {
+		return err
+	}
+	if err := store.WriteMeta(id, data); err != nil {
+		return err
+	}
+	if OnMetaChange != nil {
+		OnMetaChange(id, data)
+	}
+	return nil
+}
+
+// AISessionSaveImage 把会话图片写进 <id>/images/，返回相对路径 images/<name>。
+func (s *Service) AISessionSaveImage(id, name, dataURL string) (string, error) {
+	store, err := s.store()
+	if err != nil {
+		return "", err
+	}
+	path, err := store.ImagePath(id, name)
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return "", err
+	}
+	if len(dataURL) > 16<<20 {
+		return "", fmt.Errorf("图片数据过大（>16 MB）")
+	}
+	if err := (&fsops.FS{}).SaveDataURL(path, dataURL); err != nil {
+		return "", err
+	}
+	return ImagesDir + "/" + name, nil
+}
+
+// AISessionReadImage 读取会话图片为 data URL；name 只允许单个文件名，拒绝路径穿越。
+func (s *Service) AISessionReadImage(id, name string) (string, error) {
+	store, err := s.store()
+	if err != nil {
+		return "", err
+	}
+	path, err := store.ImagePath(id, name)
+	if err != nil {
+		return "", err
+	}
+	return (&fileio.Files{}).ReadImageAsDataURL(path)
+}
+
+func (s *Service) AISessionDelete(id string) error {
+	store, err := s.store()
+	if err != nil {
+		return err
+	}
+	if err := store.Remove(id); err != nil {
+		return err
+	}
+	if OnRemove != nil {
+		OnRemove(id)
+	}
+	return nil
+}
+
+func (s *Service) AISessionDeleteAll() error {
+	store, err := s.store()
+	if err != nil {
+		return err
+	}
+	if err := store.RemoveAll(); err != nil {
+		return err
+	}
+	if OnClear != nil {
+		OnClear()
+	}
+	return nil
+}
