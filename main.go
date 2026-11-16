@@ -10,6 +10,7 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
 	"github.com/wailsapp/wails/v2/pkg/options/windows"
 
+	"datalens/internal/applog"
 	"datalens/internal/patchcli"
 	"datalens/internal/previewassets"
 )
@@ -60,8 +61,8 @@ func main() {
 	}
 
 	ensureAppDataDir()
-	startAppLog()
-	defer stopAppLog()
+	applog.Start()
+	defer applog.Stop()
 	writeAppLog("info", "启动 CaDt-DataLens %s", appVersion)
 	if exe, err := os.Executable(); err == nil {
 		writeAppLog("info", "程序路径：%s", exe)
@@ -101,7 +102,7 @@ func main() {
 		OnStartup:     app.startup,
 		OnDomReady:    app.domReady,
 		OnBeforeClose: app.beforeClose,
-		Logger:        appLogger{},
+		Logger:        applog.WailsLogger{},
 		Windows: &windows.Options{
 			IsZoomControlEnabled: false,
 			DisablePinchZoom:     true,

@@ -29,7 +29,7 @@ var (
 	Logf func(level, format string, args ...any)
 	// Emit 前端事件推送（main 在 startup 注入 Wails EventsEmit）。
 	Emit func(event string, data any)
-	// DebugEnabled 是否开启开发者模式（调试级日志门控，main/logging.go 的 devMode）。
+	// DebugEnabled 是否开启开发者模式（调试级日志门控，internal/applog.DevMode）。
 	DebugEnabled func() bool
 )
 

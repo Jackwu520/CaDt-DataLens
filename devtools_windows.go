@@ -8,6 +8,8 @@ import (
 	"unsafe"
 
 	"github.com/wailsapp/go-webview2/pkg/edge"
+
+	"datalens/internal/applog"
 )
 
 // uiThreadInvoker 对应 winc.Form/ControlBase 的 Invoke：把函数切到窗口线程执行。
@@ -21,7 +23,7 @@ type uiThreadInvoker interface {
 // WebView2 控制器只能在窗口线程调用，所以经 winc 的 Invoke 切线程。
 // 该实现依赖当前锁定的 Wails v2.17.1 结构，字段缺失时直接报错。
 func (a *App) OpenDevTools() error {
-	if !devMode.Load() {
+	if !applog.DevMode() {
 		return fmt.Errorf("请先在设置中开启开发者模式")
 	}
 	if a.ctx == nil {

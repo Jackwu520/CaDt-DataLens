@@ -1,67 +1,22 @@
 package main
 
 import (
-	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
+
+	"datalens/internal/applog"
 )
 
-func TestAppLogWritesAndPrunes(t *testing.T) {
-	dir := t.TempDir()
-	for i := 0; i < 25; i++ {
-		name := fmt.Sprintf("2020-01-01_00-00-%02d.txt", i)
-		if err := os.WriteFile(filepath.Join(dir, name), []byte("old"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	path, err := openAppLogAt(dir)
-	if err != nil {
-		t.Fatalf("openAppLogAt: %v", err)
-	}
-	defer closeAppLog()
-
-	writeAppLog("error", "测试错误 %d", 42)
-	writeAppLog("warn", "第一行\n第二行")
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("读取日志：%v", err)
-	}
-	text := string(raw)
-	for _, want := range []string{"[ERROR] 测试错误 42", "[WARN] 第一行", "[WARN] 第二行"} {
-		if !strings.Contains(text, want) {
-			t.Fatalf("日志缺少 %q：\n%s", want, text)
-		}
-	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	count := 0
-	for _, entry := range entries {
-		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".txt") {
-			count++
-		}
-	}
-	if count != appLogKeep {
-		t.Fatalf("日志保留 %d 个，期望 %d", count, appLogKeep)
-	}
-	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("本次日志被误删：%v", err)
-	}
-}
-
 func TestLogFrontendLevelGate(t *testing.T) {
-	dir := t.TempDir()
-	path, err := openAppLogAt(dir)
+	path, err := applog.OpenAt(t.TempDir())
 	if err != nil {
-		t.Fatalf("openAppLogAt: %v", err)
+		t.Fatalf("OpenAt: %v", err)
 	}
-	defer closeAppLog()
-	defer devMode.Store(false)
+	defer applog.Close()
+	defer applog.SetDevMode(false)
 
-	devMode.Store(false)
+	applog.SetDevMode(false)
 	app := &App{}
 	app.LogFrontend("info", "隐藏的 info")
 	app.LogFrontend("debug", "隐藏的 debug")
@@ -76,7 +31,7 @@ func TestLogFrontendLevelGate(t *testing.T) {
 		t.Fatalf("警告/错误应始终记录：\n%s", text)
 	}
 
-	devMode.Store(true)
+	applog.SetDevMode(true)
 	app.LogFrontend("info", "可见的 info")
 	app.LogFrontend("debug", "可见的 debug")
 	raw, _ = os.ReadFile(path)

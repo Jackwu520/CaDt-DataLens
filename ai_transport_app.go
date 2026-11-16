@@ -6,12 +6,13 @@ package main
 import (
 	"datalens/internal/aichat"
 	"datalens/internal/aitransport"
+	"datalens/internal/applog"
 )
 
 func init() {
 	aitransport.Logf = writeAppLog
 	aitransport.Version = appVersion
-	aitransport.LogsDir = appLogsDir
+	aitransport.LogsDir = applog.Dir
 	aitransport.AttachWatchdog = aichat.AttachWatchdog
 	aichat.Logf = writeAppLog
 }
