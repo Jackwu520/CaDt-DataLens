@@ -51,6 +51,7 @@ import {createFindBar} from './editor/find-bar.js';
 import {createActivityPane} from './settings/activity-pane.js';
 import {createSettingsPanePatches} from './settings/settings-pane-patches.js';
 import {createSettingsPaneStorage} from './settings/settings-pane-storage.js';
+import {createSettingsPaneExternalTools} from './settings/settings-pane-external-tools.js';
 import {createMenuBar} from './shell/menu-bar.js';
 import {createModeSwitch} from './shell/mode-switch.js';
 import {createTitlebarPopovers} from './shell/titlebar-popovers.js';
@@ -265,7 +266,6 @@ async function refreshLogPath() {
         const path = await backend.GetLogPath();
         if (elsSettings.logPath) {
             elsSettings.logPath.textContent = path ? '日志文件：' + path : '日志文件：—';
-            elsSettings.logPath.dataset.tip = path || '';
         }
     } catch (e) {}
 }
@@ -444,6 +444,7 @@ const APP_ACTIONS = [
     'get_settings', 'get_editor', 'get_content', 'get_git', 'get_ai', 'get_explorer', 'get_plugins', 'get_terminal',
     'get_activity', 'get_patch', 'patch_set_root', 'patch_repreview',
     'get_gen_models', 'set_gen_model', 'delete_gen_model',
+    'get_mcp_servers', 'set_mcp_server', 'delete_mcp_server',
 ];
 
 const APP_SCREENSHOT_AREAS = {
@@ -1441,6 +1442,7 @@ const settingsUI = createSettingsUI({
     get renderPluginsPane() { return renderPluginsPane; },
     get renderRunPane() { return renderRunPane; },
     get renderStoragePane() { return settingsPaneStorage.renderStoragePane; },
+    get renderExternalToolsPane() { return settingsPaneExternalTools.renderExternalToolsPane; },
     get rt() { return rt; },
     get scheduleAutoSave() { return scheduleAutoSave; },
     get settings() { return settings; },
@@ -2068,13 +2070,11 @@ function renderWorkspaceCrumbs() {
     if (!hasWorkspace) return;
     const name = baseNameOf(workspaceFolder) || workspaceFolder;
     els.wsProjectName.textContent = name;
-    els.wsProject.dataset.tip = workspaceFolder;
     els.wsProjectBadge.textContent = projectBadgeText(name);
     let branch = '';
     try { branch = (gitStateCache.available && gitStateCache.branch) || ''; } catch (e) {}
     els.wsBranch.classList.toggle('hidden', !branch);
     els.wsBranchName.textContent = branch;
-    els.wsBranch.dataset.tip = branch ? '当前 Git 分支：' + branch + '（点击查看更多）' : '';
 }
 
 const titlebarPopovers = createTitlebarPopovers({
@@ -2686,11 +2686,13 @@ function initAIPanel() {
             if (aiPanel && typeof aiPanel.handleMcpEvent === 'function') {
                 try { aiPanel.handleMcpEvent(snapshot); } catch (e) {}
             }
+            refreshExternalToolsPaneIfVisible();
         });
         rt.EventsOn('mcp-status-changed', (snapshot) => {
             if (aiPanel && typeof aiPanel.handleMcpEvent === 'function') {
                 try { aiPanel.handleMcpEvent(snapshot); } catch (e) {}
             }
+            refreshExternalToolsPaneIfVisible();
         });
     }
 }
@@ -3271,6 +3273,23 @@ const settingsPaneStorage = createSettingsPaneStorage({
     get openCloseConfirm() { return openCloseConfirm; },
     get root() { return workspaceFolder || ''; },
 });
+// 设置 → AI → 外部工具：能力来源矩阵 + 服务提供商配置（MCP 组由 index.html 迁入，绑定仍归 ai-panel）
+const settingsPaneExternalTools = createSettingsPaneExternalTools({
+    get backend() { return backend; },
+    get flash() { return flash; },
+    get enhanceSetSelects() { return settingsUI.enhanceSetSelects; },
+    get getMcpToolDefs() {
+        return () => (aiPanel && typeof aiPanel.getMcpToolDefs === 'function' ? aiPanel.getMcpToolDefs() : []);
+    },
+    get getAiPanel() { return () => aiPanel; },
+    // 该工厂创建时会立即读取 deps.openExternalUrl；用包装函数把真正的 openExternalUrl 读取推迟到点击时
+    get openExternalUrl() { return (url) => openExternalUrl(url); },
+});
+function refreshExternalToolsPaneIfVisible() {
+    const pane = document.querySelector('.settings-pane[data-pane="external-tools"]');
+    if (!pane || pane.classList.contains('hidden')) return;
+    settingsPaneExternalTools.renderExternalToolsPane();
+}
 const debugConsoleBtn = document.getElementById('opt-debug-console');
 if (debugConsoleBtn) debugConsoleBtn.addEventListener('click', () => toggleDockView('debug'));
 elsSettings.openMode.addEventListener('change', () => {

@@ -122,7 +122,6 @@ function ensureSplitDivider(doc) {
     if (doc.splitDivider || !doc.pane) return;
     const bar = document.createElement('div');
     bar.className = 'vp-split-divider';
-    bar.dataset.tip = '拖动调整左右宽度';
     doc.pane.appendChild(bar);
     bar.addEventListener('mousedown', (e) => {
         if (e.button !== 0 || !doc.pane) return;

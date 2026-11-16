@@ -173,7 +173,6 @@ function renderLangPane(id) {
             const pv = document.createElement('span');
             pv.className = 'env-status-val mono';
             pv.textContent = eff.path || '';
-            pv.dataset.tip = eff.path || '';
             pRow.append(pk, pv);
             body.appendChild(pRow);
         } else {

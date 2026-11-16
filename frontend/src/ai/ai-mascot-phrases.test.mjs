@@ -6,12 +6,12 @@ import {
     mascotPhraseIndex, phrasesForPhase, randomMascotSalt,
 } from './ai-mascot-phrases.js';
 
-test('文案池：五组各 4 条，首句跨组不重复，漫游中只在 wait 出现', () => {
-    assert.deepEqual([...MASCOT_PHRASE_PHASES].sort(), ['approval', 'talk', 'think', 'tool', 'wait']);
+test('文案池：七组各 6 条，首句跨组不重复，漫游中只在 wait 出现', () => {
+    assert.deepEqual([...MASCOT_PHRASE_PHASES].sort(), ['approval', 'ask', 'env', 'talk', 'think', 'tool', 'wait']);
     const firsts = [];
     for (const phase of MASCOT_PHRASE_PHASES) {
         const list = AI_MASCOT_PHRASES[phase];
-        assert.equal(list.length, 4, `${phase} 应有 4 条`);
+        assert.equal(list.length, 6, `${phase} 应有 6 条`);
         assert.ok(list.every((s) => typeof s === 'string' && s.startsWith('甜澄')), `${phase} 文案应以甜澄开头`);
         firsts.push(list[0]);
     }
@@ -69,4 +69,14 @@ test('接线：ai-panel.js 只从新模块取文案逻辑，不在本地重复�
     assert.doesNotMatch(src, /dataset\.phaseAt/);
     assert.match(src, /dataset\.phraseSalt/);
     assert.match(src, /dataset\.phraseBaseAt/);
+});
+
+test('状态机：approval 拆成 approval/ask/env 三个独立分支，不再合并判定', () => {
+    const src = readFileSync(new URL('./ai-panel.js', import.meta.url), 'utf8');
+    // 三个 pending Map 各自独立判定，不合并成 || 链
+    assert.match(src, /pendingHere\(pendingApprovals\)\) return 'approval'/);
+    assert.match(src, /pendingHere\(pendingAsks\)\) return 'ask'/);
+    assert.match(src, /pendingHere\(pendingEnvCreations\)\) return 'env'/);
+    // 旧的合并判定不应再出现
+    assert.doesNotMatch(src, /pendingHere\(pendingApprovals\) \|\| pendingHere\(pendingAsks\)/);
 });

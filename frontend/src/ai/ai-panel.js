@@ -23,8 +23,23 @@ import {
     readWindowOf,
 } from './ai-file-tools.js';
 import {redactScopePaths} from './ai-scope-redact.js';
+import {createLoopGuard} from './ai-loop-guard.js';
+import {createSystemTakeoverHost} from './ai-system-takeover.js';
 import {desktopNotifyTargets} from './ai-notify-policy.js';
 import {prepareImagePayload} from './ai-image-encode.js';
+import {
+    DEFAULT_PROVIDER_BASE_URL,
+    defaultExternalToolsConfig,
+    defaultSearchCount,
+    effectiveExternalMode,
+    externalCapabilityUsable,
+    formatAsrOutput,
+    formatMcpSourceLine,
+    formatOcrOutput,
+    formatTtsOutput,
+    normalizeExternalToolsConfig,
+} from './ai-external-tools.js';
+import {arrayBufferToBase64, isDirectAsrPath, transcodeAudioToWav16k} from './ai-audio-transcode.js';
 import {
     addReadRoot,
     normalizeReadRoot,
@@ -195,6 +210,7 @@ import {forkMessages, forkSettings} from './ai-session-fork.js';
 import {createAISessionSend} from './ai-session-send.js';
 import {compactTranscriptOf, computeCompactCutoff, buildCompactSummary, applyCompactToSession, buildCompactMessages, compactThresholdOf, COMPACT_KEEP_TAIL} from './ai-compact.js';
 import {createAIMcp} from './ai-mcp.js';
+import {mcpConfigView, mcpServerCommandPreview, mergeMcpServerConfig, planMcpServerDelete} from './ai-mcp-config.js';
 import {createAIMcpSettings} from './ai-mcp-settings.js';
 import {
     escapeXmlText, normalizePersona, personaSegments, resolveAssistantName,
@@ -640,6 +656,16 @@ export function createAIPanel(options) {
     const pendingAsks = new Map();
     const pendingEnvCreations = new Map();
     const askDrafts = new Map();
+    // 系统接管（应用发起、模型不可见）：与 ask / 审批共用 composer 位置，但结算只回给调用方，
+    // 不生成任何喂回模型的消息。onChange 只做 UI 收敛，运行时才取后面的渲染函数。
+    const systemTakeoverHost = createSystemTakeoverHost({
+        onChange: () => {
+            updateComposerTakeover(true);
+            renderSessionList();
+        },
+    });
+    const LOOP_GUARD_TIMEOUT_SEC = 30;
+    const LOOP_GUARD_RECHECK_MS = 2 * 60 * 1000;
     const todoStates = new Map();
     // 后台命令作业的实时输出状态：jobId -> {session, message, lines, text, timer}
     // cmd-out 广播驱动追加；面板不可见时只更新 message.bgLog，切回后由重渲恢复。
@@ -1201,6 +1227,26 @@ export function createAIPanel(options) {
         };
     }
 
+    // 思考循环守卫记录：pending 只在流存活时有意义，页面重开后一律收敛为 ended，
+    // 避免历史消息上出现一个永远等不到回答的「待确认」。
+    function normalizeGuard(raw) {
+        if (!raw || typeof raw !== 'object') return null;
+        const states = ['warned', 'pending', 'continued', 'stopped', 'ended', 'cancelled'];
+        if (!states.includes(raw.state)) return null;
+        return {
+            state: raw.state === 'pending' ? 'ended' : raw.state,
+            key: aiTextOf(raw.key).slice(0, 160),
+            action: aiTextOf(raw.action).slice(0, 32),
+            source: aiTextOf(raw.source).slice(0, 32),
+            repeats: Math.max(0, Number(raw.repeats) || 0),
+            ratio: Math.max(0, Math.min(1, Number(raw.ratio) || 0)),
+            chars: Math.max(0, Number(raw.chars) || 0),
+            lines: Math.max(0, Number(raw.lines) || 0),
+            detectedAt: Number(raw.detectedAt) || 0,
+            answeredAt: Number(raw.answeredAt) || 0,
+        };
+    }
+
     function normalizeEnvAsk(raw) {
         if (!raw || typeof raw !== 'object') return null;
         const name = aiTextOf(raw.name).trim().slice(0, 128);
@@ -1387,6 +1433,7 @@ export function createAIPanel(options) {
             message.planMode = raw.planMode === true;
             // 计划落盘路径：随会话持久化，重启重放后仍能一键回到标签页看正文
             message.planFile = aiTextOf(raw.planFile);
+            message.guard = normalizeGuard(raw.guard);
             message.thinkMs = Number(raw.thinkMs) || 0;
             message.finishedAt = Number(raw.finishedAt) || 0;
             message.turnMs = Math.max(0, Number(raw.turnMs) || 0);
@@ -3306,12 +3353,25 @@ export function createAIPanel(options) {
         return (session ? session.id : '') + ':' + (ts || (index != null ? 'i' + index : '0'));
     }
 
+    // 思考循环守卫的头部短标签：低阈值只是提示，停止后才占用「思考循环」说法。
+    function loopGuardLabel(message) {
+        const guard = message && message.guard;
+        if (!guard) return '';
+        if (guard.state === 'warned') return '重复思考';
+        if (guard.state === 'pending') return '重复思考 · 待确认';
+        if (guard.state === 'continued') return '重复思考 · 已继续';
+        if (guard.state === 'stopped') return '思考循环 · 已停止';
+        return '';
+    }
+
     function aiThinkLabel(message, streaming) {
-        if (streaming) return '正在思考…';
+        const guard = loopGuardLabel(message);
+        const suffix = guard ? ' · ' + guard : '';
+        if (streaming) return '正在思考…' + suffix;
         const chars = String(message && message.reasoning || '').length;
         const ms = Number(message && message.thinkMs) || 0;
         const time = ms > 0 ? (ms < 1000 ? '<1 秒' : Math.max(1, Math.round(ms / 1000)) + ' 秒') : '';
-        return '已深度思考' + (time ? ' · ' + time : '') + ' · ' + chars + ' 字';
+        return '已深度思考' + (time ? ' · ' + time : '') + ' · ' + chars + ' 字' + suffix;
     }
 
     // 思考体比 .ai-think-body 的 max-height 高时出现内滚动条。默认跟随底部，
@@ -3506,6 +3566,7 @@ export function createAIPanel(options) {
         const label = document.createElement('span');
         label.className = 'ai-think-label';
         label.textContent = aiThinkLabel(message, false);
+        label.classList.toggle('ai-think-guard', !!loopGuardLabel(message));
         head.append(chev, label);
         head.addEventListener('click', () => toggleThink(think));
         const body = document.createElement('div');
@@ -3660,7 +3721,9 @@ export function createAIPanel(options) {
             }
             return false;
         };
-        if (pendingHere(pendingApprovals) || pendingHere(pendingAsks) || pendingHere(pendingEnvCreations)) return 'approval';
+        if (pendingHere(pendingApprovals)) return 'approval';
+        if (pendingHere(pendingAsks)) return 'ask';
+        if (pendingHere(pendingEnvCreations)) return 'env';
         if (live.toolCalls && live.toolCalls.size > 0) return 'tool';
         const session = sessionById(sessionId);
         const last = session && session.messages.length ? session.messages[session.messages.length - 1] : null;
@@ -3703,6 +3766,7 @@ export function createAIPanel(options) {
                 const timer = bar.querySelector('.ai-process-timer');
                 const start = Number(bar.dataset.processStart) || 0;
                 if (timer && start) timer.textContent = aiFormatLiveDuration(Date.now() - start);
+                tickRetryNote(bar);
                 refreshStreamingPhrase(bar);
             }
         }, 100);
@@ -3761,7 +3825,6 @@ export function createAIPanel(options) {
         img.className = 'ai-image-preview';
         img.src = aiImageSrc(image);
         img.alt = image.name || '图片';
-        img.dataset.tip = '点击全屏查看（右键：复制 / 另存为）';
         img.addEventListener('click', () => showImageFullscreen(image));
         img.addEventListener('contextmenu', (e) => {
             e.preventDefault();
@@ -3821,7 +3884,6 @@ export function createAIPanel(options) {
                 const missing = document.createElement('div');
                 missing.className = 'ai-user-image-missing';
                 missing.textContent = '图片已归档';
-                missing.dataset.tip = image.logFile;
                 strip.appendChild(missing);
                 continue;
             }
@@ -3829,7 +3891,6 @@ export function createAIPanel(options) {
             img.className = imgClass;
             img.src = aiImageSrc(image);
             img.alt = image.name || '图片';
-            img.dataset.tip = (image.name || '图片') + (image.width && image.height ? ' · ' + image.width + '×' + image.height : '');
             img.loading = 'lazy';
             img.addEventListener('click', () => showImagePreview(image));
             strip.appendChild(img);
@@ -3854,11 +3915,6 @@ export function createAIPanel(options) {
         info.className = 'ai-model-switch-info';
         info.innerHTML = iconSvg('info', 12);
         info.setAttribute('aria-label', '模型切换信息');
-        const tips = [];
-        if (note.account) tips.push('账号：' + note.account);
-        if (note.effort) tips.push('推理等级：' + note.effort);
-        tips.push('时间：' + aiFormatTime(message.ts));
-        info.dataset.tip = tips.join('\n');
         row.append(text, info);
         wrap.appendChild(row);
     }
@@ -4217,7 +4273,6 @@ export function createAIPanel(options) {
             button.type = 'button';
             button.className = 'ai-msg-action';
             button.dataset.aiAct = act;
-            button.dataset.tip = label;
             button.setAttribute('aria-label', label);
             button.innerHTML = icons[act] || label;
             button.disabled = !!disabled;
@@ -4254,7 +4309,6 @@ export function createAIPanel(options) {
                     const duration = document.createElement('span');
                     duration.className = 'ai-msg-duration';
                     duration.textContent = clock;
-                    duration.dataset.tip = '本轮耗时';
                     actions.appendChild(duration);
                 }
             }
@@ -4287,7 +4341,6 @@ export function createAIPanel(options) {
         button.type = 'button';
         button.className = 'ai-msg-usage';
         button.dataset.aiAct = 'usage';
-        button.dataset.tip = '查看本轮用量明细';
         button.setAttribute('aria-label', '本轮用量');
         const glyph = document.createElement('span');
         glyph.className = 'ai-msg-usage-icon';
@@ -4354,7 +4407,6 @@ export function createAIPanel(options) {
             const val = document.createElement('span');
             val.className = 'ai-turn-usage-value' + (mono ? ' num' : '');
             val.textContent = value;
-            val.dataset.tip = value;
             line.append(name, val);
             rows.appendChild(line);
         };
@@ -5730,6 +5782,48 @@ export function createAIPanel(options) {
         return config.appControlEnabled !== false;
     }
 
+    // ---- 外部工具来源（设置 → AI → 外部工具；config 真源在 Go 的 external-tools.json）----
+    // 工具可见性与执行路由共用这一份缓存：provider 缺 key / MCP 绑定失效都按 off 处理。
+    let externalToolsConfig = defaultExternalToolsConfig();
+    let externalToolsConfigLoaded = false;
+    let externalToolsConfigPending = null;
+
+    async function loadExternalToolsConfig(force = false) {
+        if (!force && externalToolsConfigLoaded) return externalToolsConfig;
+        if (!externalToolsConfigPending) {
+            externalToolsConfigPending = (async () => {
+                try {
+                    if (typeof backend.WebToolsConfigGet === 'function') {
+                        externalToolsConfig = normalizeExternalToolsConfig(await backend.WebToolsConfigGet());
+                        externalToolsConfigLoaded = true;
+                    }
+                } catch (e) {
+                    // 读取失败保留默认值（搜索/抓取内置、其余关闭），不阻塞面板
+                } finally {
+                    externalToolsConfigPending = null;
+                }
+                return externalToolsConfig;
+            })();
+        }
+        return externalToolsConfigPending;
+    }
+
+    function externalMcpToolNames() {
+        return mcpMod.mcpToolDefs().map((def) => def.name);
+    }
+
+    function externalModeOf(capability) {
+        return effectiveExternalMode(externalToolsConfig, capability, externalMcpToolNames());
+    }
+
+    function externalProviderHost() {
+        try {
+            return new URL(externalToolsConfig.baseUrl || DEFAULT_PROVIDER_BASE_URL).host;
+        } catch (e) {
+            return 'api.deepseek.com';
+        }
+    }
+
     // 工具定义表与权限档工具清单（阶段 3 拆出：ai-tool-defs.js）
     // MCP 客户端前端逻辑层（ai-mcp.js）：registry 只被 Go 的整代快照替换（§5.4）
     const mcpMod = createAIMcp({backend, flash});
@@ -5750,6 +5844,9 @@ export function createAIPanel(options) {
         mcpToolDefs: () => mcpMod.mcpToolDefs(),
         // 生图/视频：配置了启用条目才下发 generate_image / generate_video / check_gen
         genModelsOn: () => (config.genModels || []).some((item) => item && item.enabled !== false),
+        // 外部工具：按能力的实际来源（off/provider/mcp/builtin）与权限档决定是否下发
+        externalToolsOn: (capability, scope, planMode) =>
+            externalCapabilityUsable(capability, externalModeOf(capability), scope, planMode),
     });
     const toolsForScope = (scope, planMode) => toolDefsMod.toolsForScope(scope, planMode);
     // 系统提示词组装域（ai-system-context.js）：面板闭包状态经 getter 注入——config 是可变 let、
@@ -7305,7 +7402,9 @@ export function createAIPanel(options) {
         if (!results.length) {
             return '搜索「' + query + '」没有找到结果。换更短的关键词，或直接用 web_fetch 打开已知 URL。';
         }
-        const lines = ['搜索「' + query + '」（' + ((result && result.engine) || 'bing') + '）：共 ' + results.length + ' 条', ''];
+        const engine = String((result && result.engine) || 'bing');
+        const engineLabel = {bing: '内置 Bing', deepseek: 'DeepSeek', mcp: '本地 MCP'}[engine] || engine;
+        const lines = ['搜索「' + query + '」（' + engineLabel + '）：共 ' + results.length + ' 条', ''];
         results.forEach((item, index) => {
             lines.push((index + 1) + '. ' + (item.title || '（无标题）'));
             if (item.url) lines.push('   ' + item.url);
@@ -7326,6 +7425,7 @@ export function createAIPanel(options) {
         if (result.charset) meta.push(result.charset);
         if (result.bytes) meta.push(result.bytes + ' 字节');
         if (meta.length) lines.push(meta.join(' · '));
+        if (result.engine === 'deepseek') lines.push('来源：DeepSeek 抓取（Markdown 正文）');
         if (result.truncated) lines.push('（正文已截断；可提高 maxChars 后重试，最大 60000）');
         lines.push('', '---', aiTextOf(result.text).trim() || '（页面没有可读正文）', '---');
         const links = Array.isArray(result.links) ? result.links.slice(0, 20) : [];
@@ -7425,7 +7525,9 @@ export function createAIPanel(options) {
     // MCP 工具执行（§10.2/§15.4）：审批走与 write_file 同源的判定链（归入写权限档），
     // 调用后留痕只记结构不记值（顶层键名 + 字节数 + 8 位 hash）——MCP 参数里出现
     // token/密码/连接串是常态，不记值是硬线；需要原文走会话 JSONL（留痕是索引，会话是真源）。
-    async function executeMcpTool(name, input, ctx) {
+    // 返回值统一 {ok, text} 或 {ok:false, denied, message}：能力来源路由要区分「用户拒绝」
+    // （不回退，直接作答）与「调用失败」（搜索/抓取回退内置）。
+    async function invokeMcpToolWithApproval(name, input, ctx, approvalText) {
         const session = ctx && ctx.session;
         const scope = currentScopeOf(session);
         const rules = await ensureProjectRules(false);
@@ -7438,20 +7540,24 @@ export function createAIPanel(options) {
         });
         logPermission('write', name, decision.decision, decision.source, decision.rule);
         if (decision.decision === 'deny') {
-            return '项目权限规则禁止调用：' + name + '（规则 ' + decision.rule + '）';
+            return {ok: false, denied: true, message: '项目权限规则禁止调用：' + name + '（规则 ' + decision.rule + '）'};
         }
         if (decision.decision === 'ask') {
             if (!session || !ctx.toolMessage) throw new Error('MCP 工具缺少会话上下文，无法请求审批');
             const argsPreview = JSON.stringify(input || {}).slice(0, 2048);
             const answer = await requestCommandApproval(session, ctx.toolMessage, {
-                command: name + (argsPreview === '{}' ? '' : ' ' + argsPreview),
+                command: approvalText || (name + (argsPreview === '{}' ? '' : ' ' + argsPreview)),
                 cwd: 'MCP 工具',
                 tool: 'run_command',
             });
             if (!answer.approved) {
-                return answer.cancelled
-                    ? '用户已停止生成，未调用 MCP 工具。'
-                    : '用户未允许调用：' + name;
+                return {
+                    ok: false,
+                    denied: true,
+                    message: answer.cancelled
+                        ? '用户已停止生成，未调用 MCP 工具。'
+                        : '用户未允许调用：' + name,
+                };
             }
         }
         const startedAt = Date.now();
@@ -7459,11 +7565,96 @@ export function createAIPanel(options) {
         try {
             const text = await mcpMod.callTool(name, input);
             mcpLogActivity(route, name, input, 'ok', Date.now() - startedAt);
-            return text;
+            return {ok: true, text};
         } catch (e) {
             mcpLogActivity(route, name, input, 'error', Date.now() - startedAt);
             throw e;
         }
+    }
+
+    async function executeMcpTool(name, input, ctx) {
+        const result = await invokeMcpToolWithApproval(name, input, ctx);
+        return result.ok ? result.text : result.message;
+    }
+
+    // 能力来源=MCP：调用户绑定的 MCP 公开工具；调用前校验绑定仍在快照里。
+    async function invokeExternalMcp(capability, input, ctx) {
+        const binding = String((externalToolsConfig.mcpBindings || {})[capability] || '');
+        if (!binding) throw new Error('未绑定 MCP 工具（设置 → AI → 外部工具）');
+        if (!externalMcpToolNames().includes(binding)) {
+            throw new Error('绑定的 MCP 工具不可用：' + binding + '（服务器被禁用 / 删除，或工具未勾选）');
+        }
+        return await invokeMcpToolWithApproval(binding, input, ctx,
+            'MCP 能力来源 · ' + capability + ' → ' + binding);
+    }
+
+    // 服务提供商上传审批（OCR / ASR）：kind:'web' 沿用域名规则；默认放行，项目规则可 ask / deny。
+    async function approveExternalProviderUpload(toolName, ctx, command) {
+        const session = ctx && ctx.session;
+        const host = externalProviderHost();
+        const rules = await ensureProjectRules(false);
+        const sessionRule = session
+            ? matchCommandRule(commandRulesFor(session), host, aiPathKey('网络请求'))
+            : null;
+        const decision = decidePermission({
+            scope: currentScopeOf(session),
+            kind: 'web',
+            rules,
+            subject: host,
+            sessionAllow: !!sessionRule,
+        });
+        logPermission('web', host, decision.decision, decision.source, decision.rule);
+        if (decision.decision === 'deny') {
+            throw new Error('项目权限规则禁止上传到外部服务：' + host + '（规则 ' + decision.rule + '）');
+        }
+        if (decision.decision === 'ask') {
+            if (!session || !ctx || !ctx.toolMessage) throw new Error('外部工具缺少会话上下文，无法请求审批');
+            const answer = await requestCommandApproval(session, ctx.toolMessage, {
+                command: command,
+                cwd: '外部服务上传 · ' + host,
+                tool: toolName,
+            });
+            if (!answer.approved) {
+                return answer.cancelled ? '用户已停止生成，未上传。' : '用户未允许上传到外部服务：' + host;
+            }
+        }
+        return '';
+    }
+
+    // TTS 产物写工作区：审批按写工具档（read/edit 弹卡、auto/full 直发），与生图同口径。
+    async function approveExternalWrite(toolName, ctx, command) {
+        const session = ctx && ctx.session;
+        const rules = await ensureProjectRules(false);
+        const sessionRule = session
+            ? matchCommandRule(commandRulesFor(session), toolName, aiPathKey('生成请求'))
+            : null;
+        const decision = decidePermission({
+            scope: currentScopeOf(session),
+            kind: 'write',
+            rules,
+            subject: toolName,
+            sessionAllow: !!sessionRule,
+        });
+        logPermission('write', toolName, decision.decision, decision.source, decision.rule);
+        if (decision.decision === 'deny') {
+            throw new Error('项目权限规则禁止语音合成（规则 ' + decision.rule + '）');
+        }
+        if (decision.decision === 'ask') {
+            if (!session || !ctx || !ctx.toolMessage) throw new Error('语音合成缺少会话上下文');
+            const answer = await requestCommandApproval(session, ctx.toolMessage, {
+                command: command,
+                cwd: '生成请求',
+                tool: toolName,
+            });
+            if (!answer.approved) {
+                return answer.cancelled ? '用户已停止生成，未执行。' : '用户未允许语音合成。';
+            }
+        }
+        return '';
+    }
+
+    function fileNameOf(path) {
+        return String(path || '').split(/[\\/]/).pop() || '文件';
     }
 
     // ---------- 生图/视频（generate_image / generate_video / check_gen，ai-gen-models.md §3.4） ----------
@@ -7626,10 +7817,83 @@ export function createAIPanel(options) {
         return list.length;
     }
 
+    // ---- MCP 配置桥（app_control：get_mcp_servers / set_mcp_server / delete_mcp_server）----
+    // 与生图条目同构，但边界更严：env 键可由 AI 登记（值留空）、env 值不可写、
+    // enabledTools 永远由用户勾选；新增/修改/删除每次都要用户确认本机命令。
+    const MCP_CONFIG_ACTIONS = ['get_mcp_servers', 'set_mcp_server', 'delete_mcp_server'];
+
+    async function runMcpConfigAction(action, params, ctx) {
+        if (typeof backend.MCPGetConfig !== 'function' || typeof backend.MCPWriteConfig !== 'function') {
+            throw new Error('当前后端版本不支持 MCP 配置（请重新构建或更新应用）');
+        }
+        const current = await backend.MCPGetConfig();
+        if (action === 'get_mcp_servers') {
+            return mcpConfigView(current, mcpMod.getState(), externalToolsConfig.mcpBindings);
+        }
+        const session = ctx && ctx.session;
+        if (!session || !ctx.toolMessage) throw new Error('MCP 配置缺少会话上下文，无法请求确认');
+        if (session.planMode === true) throw new Error('计划模式不修改 MCP 配置；退出计划模式后再操作');
+        if (action === 'set_mcp_server') {
+            const source = params.server && typeof params.server === 'object' ? params.server : params;
+            const plan = mergeMcpServerConfig(current, source);
+            const preview = mcpServerCommandPreview(plan.server);
+            const envKeys = Object.keys(plan.server.env || {}).sort();
+            const answer = await requestCommandApproval(session, ctx.toolMessage, {
+                command: (plan.created ? '新增' : '修改') + ' MCP 服务器「' + plan.name + '」\n' + preview +
+                    (envKeys.length ? '\n环境变量键（值由你填写）：' + envKeys.join(', ') : '') +
+                    '\n该命令会在本机执行；工具授权仍需你在设置里勾选。',
+                cwd: 'MCP 服务器（本机）',
+                tool: 'set_mcp_server',
+            });
+            if (!answer.approved) {
+                return answer.cancelled ? '用户已停止生成，MCP 配置未修改。' : '用户未允许修改 MCP 配置。';
+            }
+            await backend.MCPWriteConfig(plan.config);
+            Promise.resolve(mcpMod.refresh()).catch(() => {});
+            if (mcpSettingsMod) mcpSettingsMod.renderAll();
+            flash('AI 已' + (plan.created ? '新增' : '修改') + ' MCP 服务器「' + plan.name + '」');
+            return {
+                ok: true,
+                created: plan.created,
+                name: plan.name,
+                command: plan.server.command,
+                argCount: plan.server.args.length,
+                envKeys,
+                note: '配置已保存。请让用户在 设置 → AI → 外部工具 → MCP 服务器 → 该行「工具」里勾选要授权给 AI 的工具（默认全不勾）' +
+                    (envKeys.length ? '，并在「编辑」里填写环境变量的值' : '') +
+                    (plan.config.enabled === false ? '；MCP 客户端总开关当前是关闭的，需要用户开启' : '') + '。',
+            };
+        }
+        if (action === 'delete_mcp_server') {
+            const plan = planMcpServerDelete(current, params.name);
+            if (!plan.deleted) return {deleted: false, note: plan.note};
+            const answer = await requestCommandApproval(session, ctx.toolMessage, {
+                command: '删除 MCP 服务器「' + plan.name + '」：' + mcpServerCommandPreview(plan.server) +
+                    '\n其进程会停止，配置将被删除。',
+                cwd: 'MCP 服务器（本机）',
+                tool: 'delete_mcp_server',
+            });
+            if (!answer.approved) {
+                return answer.cancelled ? '用户已停止生成，未删除。' : '用户未允许删除该 MCP 服务器。';
+            }
+            await backend.MCPWriteConfig(plan.config);
+            Promise.resolve(mcpMod.refresh()).catch(() => {});
+            if (mcpSettingsMod) mcpSettingsMod.renderAll();
+            flash('AI 已删除 MCP 服务器「' + plan.name + '」');
+            return {deleted: true, name: plan.name};
+        }
+        throw new Error('未知 MCP 配置动作：' + action);
+    }
+
     async function executeTool(name, args, ctx) {
         const input = args && typeof args === 'object' ? args : {};
         // MCP 转发：公开名 mcp__ 前缀走审批判定后直通 Go 路由（查表发原始名），零侵入现有 switch
         if (name.startsWith('mcp__')) return executeMcpTool(name, input, ctx);
+        // 外部工具执行前确保来源配置已读入（缓存命中时只是微任务；首次失败会重试）
+        if (name === 'web_search' || name === 'web_fetch' || name === 'ocr' ||
+            name === 'text_to_speech' || name === 'transcribe_audio') {
+            await loadExternalToolsConfig();
+        }
         switch (name) {
             case 'list_dir': {
                 const rel = aiTextOf(input.path).trim() || '.';
@@ -7755,6 +8019,9 @@ export function createAIPanel(options) {
                 });
                 if (filterNote) lines.push('（' + filterNote + '）');
                 if (truncated) lines.push('…（结果已截断）');
+                if (result && result.artifactSkipped) {
+                    lines.push('…（源码命中已占满窗口，产物档 dist/build 等未检索）');
+                }
                 return lines.join('\n');
             }
             case 'glob': {
@@ -7784,15 +8051,35 @@ export function createAIPanel(options) {
             case 'web_search': {
                 const query = aiTextOf(input.query).trim();
                 if (!query) throw new Error('搜索词为空');
+                const mode = externalModeOf('search');
+                if (mode === 'off') throw new Error('网页搜索已被用户关闭（设置 → AI → 外部工具）');
+                const maxResults = webToolLimit(input.maxResults, 1, 10, defaultSearchCount(externalToolsConfig));
+                if (mode === 'mcp') {
+                    const routed = await invokeExternalMcp('search', {query, count: maxResults}, ctx);
+                    if (!routed.ok) return routed.message;
+                    return formatMcpSourceLine(externalToolsConfig.mcpBindings.search) + '\n\n' + routed.text;
+                }
+                let fallbackNote = '';
+                if (mode === 'provider') {
+                    try {
+                        if (!backend.ExternalSearch) throw new Error('外部搜索通道不可用（请重新构建或更新应用）');
+                        const result = await backend.ExternalSearch(query, maxResults);
+                        return formatWebSearchOutput(query, result);
+                    } catch (e) {
+                        fallbackNote = '外部搜索失败（' + ((e && e.message) || e) + '），已回退内置 Bing';
+                    }
+                }
                 if (!backend.WebSearch) throw new Error('联网搜索通道不可用（请重新构建或更新应用）');
-                const maxResults = webToolLimit(input.maxResults, 1, 10, 8);
                 const result = await backend.WebSearch(query, maxResults);
-                return formatWebSearchOutput(query, result);
+                const output = formatWebSearchOutput(query, result);
+                return fallbackNote ? output + '\n（' + fallbackNote + '）' : output;
             }
             case 'web_fetch': {
                 const target = aiTextOf(input.url).trim();
                 if (!/^https?:\/\//i.test(target)) throw new Error('URL 无效（需以 http:// 或 https:// 开头）');
-                if (!backend.WebFetch) throw new Error('网页抓取通道不可用（请重新构建或更新应用）');
+                const mode = externalModeOf('fetch');
+                if (mode === 'off') throw new Error('网页抓取已被用户关闭（设置 → AI → 外部工具）');
+                // 目标域名规则对所有来源都生效（项目规则 deny 仍应拦住）
                 const hostSubject = webRuleSubject(target);
                 if (hostSubject) {
                     const rules = await ensureProjectRules(false);
@@ -7826,8 +8113,99 @@ export function createAIPanel(options) {
                     }
                 }
                 const maxChars = webToolLimit(input.maxChars, 1000, 60000, 12000);
+                if (mode === 'mcp') {
+                    try {
+                        const routed = await invokeExternalMcp('fetch', {url: target}, ctx);
+                        if (!routed.ok) return routed.message;
+                        return formatMcpSourceLine(externalToolsConfig.mcpBindings.fetch) + '\n\n' + routed.text;
+                    } catch (e) {
+                        // 本地 MCP 抓取失败：回退内置并注明
+                        if (!backend.WebFetch) throw new Error('本地 MCP 抓取失败（' + ((e && e.message) || e) + '），且内置通道不可用');
+                        const result = await backend.WebFetch(target, maxChars);
+                        return formatWebFetchOutput(result) + '\n（本地 MCP 抓取失败：' + ((e && e.message) || e) + '；已回退内置抓取）';
+                    }
+                }
+                let fallbackNote = '';
+                if (mode === 'provider') {
+                    try {
+                        if (!backend.ExternalFetch) throw new Error('外部抓取通道不可用（请重新构建或更新应用）');
+                        const result = await backend.ExternalFetch(target, maxChars);
+                        return formatWebFetchOutput(result);
+                    } catch (e) {
+                        fallbackNote = '外部抓取失败（' + ((e && e.message) || e) + '），已回退内置抓取';
+                    }
+                }
+                if (!backend.WebFetch) throw new Error('网页抓取通道不可用（请重新构建或更新应用）');
                 const result = await backend.WebFetch(target, maxChars);
-                return formatWebFetchOutput(result);
+                const output = formatWebFetchOutput(result);
+                return fallbackNote ? output + '\n（' + fallbackNote + '）' : output;
+            }
+            case 'ocr': {
+                const resolved = await resolveReadPathWithApproval(ctx, 'ocr', input.path);
+                if (!resolved.ok) return resolved.message;
+                const path = resolved.path;
+                const mode = externalModeOf('ocr');
+                if (mode === 'off') throw new Error('OCR 未启用（设置 → AI → 外部工具）');
+                const purpose = input.purpose === 'rich_layout_recognition' ? 'rich_layout_recognition' : 'text_recognition';
+                if (mode === 'mcp') {
+                    const routed = await invokeExternalMcp('ocr', {path, purpose}, ctx);
+                    if (!routed.ok) return routed.message;
+                    return formatMcpSourceLine(externalToolsConfig.mcpBindings.ocr) + '\n\n' + routed.text;
+                }
+                const denied = await approveExternalProviderUpload('ocr', ctx,
+                    'ocr · ' + fileNameOf(path) + ' → ' + externalProviderHost() + '（按页计费）');
+                if (denied) return denied;
+                if (!backend.ExternalOCR) throw new Error('外部 OCR 通道不可用（请重新构建或更新应用）');
+                const result = await backend.ExternalOCR(path, purpose);
+                return formatOcrOutput(result);
+            }
+            case 'text_to_speech': {
+                const text = aiTextOf(input.text).trim();
+                if (!text) throw new Error('朗读文本为空');
+                if ([...text].length > 5000) throw new Error('文本超过 5000 字符，请分段后再试');
+                const mode = externalModeOf('tts');
+                if (mode === 'off') throw new Error('语音合成未启用（设置 → AI → 外部工具）');
+                const voice = input.voice === 'tide' ? 'tide' : 'stella';
+                if (mode === 'mcp') {
+                    const routed = await invokeExternalMcp('tts', {text, voice}, ctx);
+                    if (!routed.ok) return routed.message;
+                    return formatMcpSourceLine(externalToolsConfig.mcpBindings.tts) + '\n\n' + routed.text;
+                }
+                const denied = await approveExternalWrite('text_to_speech', ctx,
+                    'text_to_speech · voice=' + voice + '：' + text.slice(0, 80) + (text.length > 80 ? '…' : ''));
+                if (denied) return denied;
+                const workspace = getScopeRoot();
+                if (!workspace) throw new Error('当前没有工作区，无法保存语音产物');
+                if (!backend.ExternalTTS) throw new Error('外部语音合成通道不可用（请重新构建或更新应用）');
+                const result = await backend.ExternalTTS(workspace, text, voice);
+                if (ctx && ctx.toolMessage && result && result.path) ctx.toolMessage.targetPath = result.path;
+                return formatTtsOutput(result);
+            }
+            case 'transcribe_audio': {
+                const resolved = await resolveReadPathWithApproval(ctx, 'transcribe_audio', input.path);
+                if (!resolved.ok) return resolved.message;
+                const path = resolved.path;
+                const mode = externalModeOf('asr');
+                if (mode === 'off') throw new Error('语音识别未启用（设置 → AI → 外部工具）');
+                const name = fileNameOf(path);
+                if (mode === 'mcp') {
+                    const routed = await invokeExternalMcp('asr', {path}, ctx);
+                    if (!routed.ok) return routed.message;
+                    return formatMcpSourceLine(externalToolsConfig.mcpBindings.asr) + '\n\n' + routed.text;
+                }
+                const denied = await approveExternalProviderUpload('transcribe_audio', ctx,
+                    'transcribe_audio · ' + name + ' → ' + externalProviderHost() + '（按音频时长计费）');
+                if (denied) return denied;
+                if (!backend.ExternalASR) throw new Error('外部语音识别通道不可用（请重新构建或更新应用）');
+                let wavBase64 = '';
+                if (!isDirectAsrPath(path)) {
+                    if (!backend.ReadAudioDataURL) throw new Error('当前版本不支持音频转码（请重新构建或更新应用）');
+                    const dataURL = await backend.ReadAudioDataURL(path);
+                    const wav = await transcodeAudioToWav16k(dataURL);
+                    wavBase64 = arrayBufferToBase64(wav);
+                }
+                const result = await backend.ExternalASR(name, path, wavBase64);
+                return formatAsrOutput(result);
             }
             case 'generate_image': {
                 return await runGenerateTool('image', input, ctx);
@@ -8140,7 +8518,9 @@ export function createAIPanel(options) {
                 const params = (input.params && typeof input.params === 'object' && !Array.isArray(input.params)) ? input.params : {};
                 let result;
                 try {
-                    result = await runHostAppAction(action, params, currentScopeOf(ctx && ctx.session));
+                    result = MCP_CONFIG_ACTIONS.includes(action)
+                        ? await runMcpConfigAction(action, params, ctx)
+                        : await runHostAppAction(action, params, currentScopeOf(ctx && ctx.session));
                 } catch (e) {
                     const known = typeof hostAppActions === 'function' ? hostAppActions() : null;
                     const hint = Array.isArray(known) && known.length ? '可用动作：' + known.join(', ') : '可用动作见 cadt-ui 技能';
@@ -9366,6 +9746,9 @@ export function createAIPanel(options) {
         s.roundStartedAt = Date.now();
         s.firstTokenAt = 0;
         s.toolCalls.clear();
+        // 每轮单独判定：上一轮的重复不能把新 Assistant 消息直接拖进确认卡。
+        s.loopGuard = createLoopGuard();
+        s.loopGuardDisarmedUntil = 0;
         // 每轮刷新计划状态、工具集与系统提示：plan_mode 工具可在流中途切换会话状态。
         s.plan = !!session.planMode;
         s.tools = toolsForScope(currentScopeOf(session), !!session.planMode);
@@ -9537,6 +9920,8 @@ export function createAIPanel(options) {
         // 只收尾指定的那条流：别的会话可能还在生成，不能碰它们的注册与 UI。
         const current = target || syncStreamView();
         if (!current) return;
+        // 流已结束：挂起的循环确认卡直接收敛，避免用户对着已结束的轮次点停止。
+        cancelLoopGuardPrompt(current, 'stream-ended');
         if (current.renderTimer) {
             clearTimeout(current.renderTimer);
             current.renderTimer = 0;
@@ -9786,6 +10171,17 @@ export function createAIPanel(options) {
         if (note) note.remove();
     }
 
+    // 重试倒计时原位刷新：note.dataset.retryAt 记录到点时刻，表针每 100ms 重写剩余秒数
+    function tickRetryNote(bar) {
+        const note = bar.querySelector('.ai-retry-note');
+        if (!note) return;
+        const retryAt = Number(note.dataset.retryAt) || 0;
+        if (!retryAt) return;
+        const remain = Math.max(0, (retryAt - Date.now()) / 1000);
+        const label = note.querySelector('.ai-retry-text');
+        if (label) label.textContent = (note.dataset.reason || '请求失败') + ' · ' + remain.toFixed(1) + ' 秒后重试 ' + (note.dataset.attempt || 1) + '/' + (note.dataset.max || 1);
+    }
+
     function showRetryNote(payload) {
         const bar = el.messages && el.messages.querySelector('.ai-streaming-bar');
         if (!bar) return;
@@ -9804,8 +10200,10 @@ export function createAIPanel(options) {
         const max = Math.max(1, Math.round(Number(payload && payload.max) || 1));
         const delayMs = Math.max(0, Number(payload && payload.delayMs) || 0);
         const reason = String((payload && payload.reason) || '').trim() || '请求失败';
-        note.dataset.tip = reason + '，' + (delayMs / 1000).toFixed(1) + ' 秒后重试';
         note.dataset.reason = reason;
+        note.dataset.attempt = String(attempt);
+        note.dataset.max = String(max);
+        note.dataset.retryAt = String(Date.now() + delayMs);
         const label = note.querySelector('.ai-retry-text') || document.createElement('span');
         label.className = 'ai-retry-text';
         label.textContent = reason + ' · ' + (delayMs / 1000).toFixed(1) + ' 秒后重试 ' + attempt + '/' + max;
@@ -9834,6 +10232,149 @@ export function createAIPanel(options) {
             : message + '（设置未改动，可在模型设置里手动调整「最大输出」）';
         flash(text);
         if (onScreen) showNote(text);
+    }
+
+    // ---------- 思考循环守卫 ----------
+
+    function loopGuardStatsText(stats) {
+        return '同一句已重复 ' + stats.maxRepeat + ' 次，最近 ' + stats.lines +
+            ' 行里只有 ' + stats.uniq + ' 个不同行。';
+    }
+
+    function loopGuardRecord(stats, state) {
+        return {
+            state,
+            repeats: stats.maxRepeat,
+            ratio: stats.ratio,
+            chars: stats.chars,
+            lines: stats.lines,
+            detectedAt: Date.now(),
+        };
+    }
+
+    function requestLoopGuardTakeover(s, assistant, stats, onScreen) {
+        let request = null;
+        try {
+            request = systemTakeoverHost.request({
+                key: 'loop:' + s.roundId,
+                kind: 'loop-guard',
+                sessionId: s.sessionId,
+                priority: 100,
+                title: '检测到思考循环',
+                detail: loopGuardStatsText(stats),
+                meta: LOOP_GUARD_TIMEOUT_SEC + ' 秒内未选择将停止本轮；继续观察后 2 分钟内仍重复也会自动停止。',
+                actions: [
+                    {value: 'stop', label: '停止本轮', default: true, tone: 'danger'},
+                    {value: 'continue', label: '继续观察'},
+                ],
+                timeoutSec: LOOP_GUARD_TIMEOUT_SEC,
+                timeoutValue: 'stop',
+            });
+        } catch (e) {
+            // key 冲突等异常不能打断流：退化为静默提示，交给超时 / 用户手动停止。
+            noteForSession(s.sessionId, '思考循环守卫启动失败：' + ((e && e.message) || e), true);
+            return;
+        }
+        assistant.guard = Object.assign(loopGuardRecord(stats, 'pending'), {key: request.key});
+        persistSessions();
+        if (onScreen) {
+            updateComposerTakeover(true);
+            scheduleStreamRender(s);
+        } else {
+            const session = sessionById(s.sessionId);
+            notifyDesktop({
+                kind: 'error',
+                title: '检测到思考循环',
+                body: (session && session.title || '会话') + ' · ' + loopGuardStatsText(stats) +
+                    LOOP_GUARD_TIMEOUT_SEC + ' 秒未确认将停止本轮',
+                sessionId: s.sessionId,
+            });
+        }
+        request.done.then((outcome) => applyLoopGuardOutcome(s, assistant, outcome));
+    }
+
+    function applyLoopGuardOutcome(s, assistant, outcome) {
+        const guard = assistant && assistant.guard;
+        if (!guard || guard.state !== 'pending') return;
+        const answeredAt = Date.now();
+        if (outcome.source === 'cancelled') {
+            assistant.guard = Object.assign({}, guard, {
+                state: outcome.reason === 'stream-ended' ? 'ended' : 'cancelled',
+                action: '',
+                source: outcome.reason || 'cancelled',
+                answeredAt,
+            });
+            persistSessions();
+            if (isOpen() && currentSession() && currentSession().id === s.sessionId) scheduleStreamRender(s);
+            return;
+        }
+        if (outcome.value === 'continue') {
+            assistant.guard = Object.assign({}, guard, {
+                state: 'continued',
+                action: 'continue',
+                source: outcome.source,
+                answeredAt,
+            });
+            s.loopGuardDisarmedUntil = answeredAt + LOOP_GUARD_RECHECK_MS;
+            persistSessions();
+            noteForSession(s.sessionId, '已继续观察；2 分钟后仍在重复思考将自动停止本轮');
+            if (isOpen() && currentSession() && currentSession().id === s.sessionId) scheduleStreamRender(s);
+            return;
+        }
+        assistant.guard = Object.assign({}, guard, {
+            state: 'stopped',
+            action: 'stop',
+            source: outcome.source,
+            answeredAt,
+        });
+        persistSessions();
+        noteForSession(s.sessionId, outcome.source === 'timeout'
+            ? '思考循环：' + LOOP_GUARD_TIMEOUT_SEC + ' 秒未确认，已停止本轮'
+            : '思考循环：已停止本轮', true);
+        if (!s.finished) stopGeneration(s);
+    }
+
+    // 流 / 轮结束时收掉待确认卡：结果只落 guard.state，不影响已完成的这一轮。
+    function cancelLoopGuardPrompt(s, reason) {
+        const guard = s && s.assistant && s.assistant.guard;
+        if (!guard || guard.state !== 'pending' || !guard.key) return;
+        systemTakeoverHost.cancel(guard.key, reason);
+    }
+
+    function handleThinkLoopGuard(s, delta, onScreen) {
+        if (!s.loopGuard) s.loopGuard = createLoopGuard();
+        s.loopGuard.push(delta);
+        const assistant = s.assistant;
+        // 迟到增量 / 已停止 / 已收尾：不再对旧消息挂新卡。
+        if (!assistant || s.stopped || assistant.status !== 'streaming') return;
+        const level = s.loopGuard.verdict();
+        if (!level) return;
+        const stats = s.loopGuard.stats();
+        const guard = assistant.guard;
+        if (level === 'warn') {
+            if (!guard) {
+                assistant.guard = loopGuardRecord(stats, 'warned');
+                persistSessions();
+                if (onScreen) scheduleStreamRender(s);
+            }
+            return;
+        }
+        if (guard && (guard.state === 'pending' || guard.state === 'stopped')) return;
+        if (guard && guard.state === 'continued') {
+            const until = Number(s.loopGuardDisarmedUntil) || 0;
+            if (Date.now() < until) return;
+            assistant.guard = Object.assign({}, guard, {
+                state: 'stopped',
+                action: 'stop',
+                source: 'recheck',
+                answeredAt: Date.now(),
+            });
+            persistSessions();
+            noteForSession(s.sessionId, '思考循环：继续观察后仍在重复，已自动停止本轮', true);
+            if (!s.finished) stopGeneration(s);
+            return;
+        }
+        requestLoopGuardTakeover(s, assistant, stats, onScreen);
     }
 
     function handleEvent(name, payload) {
@@ -9970,6 +10511,7 @@ export function createAIPanel(options) {
                     markFirstToken(current);
                     if (!current.thinkStartedAt) current.thinkStartedAt = Date.now();
                     current.assistant.reasoning += payload.delta;
+                    handleThinkLoopGuard(current, payload.delta, onScreen);
                     scheduleStreamRender(current);
                 }
                 break;
@@ -9990,6 +10532,8 @@ export function createAIPanel(options) {
             }
             case 'ai-done': {
                 if (onScreen) clearRetryNote();
+                // 本轮思考已结束：挂起的循环确认卡没有继续等待的意义。
+                cancelLoopGuardPrompt(current, 'round-ended');
                 if (current.renderTimer) {
                     clearTimeout(current.renderTimer);
                     current.renderTimer = 0;
@@ -10117,6 +10661,8 @@ export function createAIPanel(options) {
         cancelPendingApprovals('用户已停止生成，写操作已取消', sessionId);
         cancelPendingAsks('用户已停止生成，问题未回答', sessionId);
         cancelPendingEnvCreations('用户已停止生成，变量创建已取消', sessionId);
+        // 用户主动停止（或守卫自身结算后的收尾）：挂起的系统接管一并取消。
+        systemTakeoverHost.cancelBySession(sessionId, '已停止生成');
         try {
             if (backend.AIStop) backend.AIStop(sessionId);
         } catch (e) {}
@@ -10331,7 +10877,6 @@ export function createAIPanel(options) {
         const profile = profileOf(currentSession());
         if (!profile) {
             el.modelChip.textContent = '选择模型';
-            el.modelChip.dataset.tip = '未配置模型，点击打开设置';
             return;
         }
         const entry = entryOf(currentSession());
@@ -10362,8 +10907,6 @@ export function createAIPanel(options) {
             el.modelChip.append(cap);
         }
         el.modelChip.append(chev);
-        el.modelChip.dataset.tip = '模型：' + model + '\n账号：' + profile.name + '\n推理等级：' + effort +
-            (capActive ? '\n本次会话上限：' + formatTokenAmount(capActive) + '（模型窗口 ' + formatTokenAmount(baseWindow) + '）' : '');
     }
 
     // 对话内切换模型 / 账号的留痕：切换只在下一条消息发出时生效，
@@ -10636,7 +11179,6 @@ export function createAIPanel(options) {
                     effort.className = 'ai-model-picker-effort';
                     effort.dataset.tone = info.tone;
                     effort.textContent = info.label;
-                    effort.dataset.tip = '该模型的思考等级，点击修改';
                     effort.addEventListener('click', (e) => {
                         e.stopPropagation();
                         toggleQuickBar(account, entry);
@@ -10736,9 +11278,6 @@ export function createAIPanel(options) {
                 chip.type = 'button';
                 chip.className = 'ai-model-picker-seg' + (effective === currentEffective ? ' active' : '');
                 chip.textContent = label;
-                chip.dataset.tip = value === 0
-                    ? '不设限，按模型窗口 ' + formatTokenAmount(base) + ' 计算占用'
-                    : '本会话按 ' + formatTokenAmount(effective) + ' 计算占用与压缩';
                 chip.addEventListener('click', () => {
                     closeModelPicker();
                     applyCtxLimit(value);
@@ -11026,6 +11565,7 @@ export function createAIPanel(options) {
             if (el.gitBtn && !el.gitBtn.classList.contains('hidden')) {
                 items.push({label: 'Git 操作', icon: 'git', submenu: GIT_ACTIONS.map((a) => ({
                     label: a.label,
+                    icon: a.icon,
                     action: () => gitUiMod.runGitAction(a.id),
                 }))});
             }
@@ -11341,7 +11881,6 @@ export function createAIPanel(options) {
             return;
         }
         const branch = createSessionData();
-        branch.dataset.tip = (source.title || '会话') + ' · 分支';
         Object.assign(branch, forkSettings(source));
         branch.workspace = branch.workspace || currentWorkspacePath();
         branch.messages = forked.messages;
@@ -13385,6 +13924,12 @@ export function createAIPanel(options) {
         return sessionId ? sessionById(sessionId) : currentSession();
     }
 
+    function currentSystemTakeoverEntry(sessionId) {
+        const session = pendingSessionOf(sessionId);
+        if (!session) return null;
+        return systemTakeoverHost.pick(session.id);
+    }
+
     function currentPendingAskEntry(sessionId) {
         const session = pendingSessionOf(sessionId);
         if (!session) return null;
@@ -13467,6 +14012,8 @@ export function createAIPanel(options) {
         currentPendingApprovalEntry,
         currentPendingAskEntry,
         currentPendingEnvEntry,
+        currentSystemTakeoverEntry,
+        systemTakeoverHost,
         refreshToolWrap,
         projectRulesPath,
         lastAssistantIndex,
@@ -13669,6 +14216,8 @@ export function createAIPanel(options) {
         // MCP 工具清单兜底拉取：防错过启动早期事件；Go 侧 MCPSnapshot 会触发惰性启动。
         // 尽力而为路径：旧后端 / MCP 未启用时 registry 留空，失败不影响面板初始化。
         Promise.resolve(mcpMod.refresh()).catch(() => {});
+        // 外部工具来源：工具可见性依赖它，尽早拉一次；失败保留默认值
+        void loadExternalToolsConfig();
         if (floatWindow || settings.aiPanelOpen) {
             stickBottom = true;
             refreshSystemPromptEstimate(true);
@@ -13991,7 +14540,13 @@ export function createAIPanel(options) {
             renderModelList();
             refreshMemoryPath();
             mcpSettingsMod.render();
+            // 来源矩阵在设置页可能刚被改过：重读一次，保证下一轮工具可见性正确
+            void loadExternalToolsConfig(true);
         },
+        // 外部工具（设置 → AI → 外部工具 / 能力来源路由）
+        getMcpToolDefs: () => mcpMod.mcpToolDefs(),
+        getExternalToolsConfig: () => externalToolsConfig,
+        refreshExternalTools: () => loadExternalToolsConfig(true),
         handleEvent,
         // localClassifierMod 不再进 return（红队链C）：经 main.js 的 window.__lens.aiPanel
         // 会把 recordDecision / classifyAll 连带暴露给插件运行时同窗 JS，可伪造 source 灌样本；

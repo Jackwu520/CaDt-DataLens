@@ -199,15 +199,6 @@ export function createAITimer(ctx) {
         return latest;
     }
 
-    function chipTitle() {
-        const parts = [];
-        for (const info of visibleTimers()) {
-            parts.push((info.mode === 'countdown' ? '倒计时「' : '正计时「') + (info.label || '')
-                + '」' + (info.mode === 'countdown' ? '剩 ' : '已计 ') + liveTime(info));
-        }
-        return parts.join('；');
-    }
-
     function ensureChipChrome(chip) {
         const iconEl = chip.querySelector('.ai-chip-icon');
         if (iconEl && !iconEl.dataset.ready) {
@@ -244,7 +235,6 @@ export function createAITimer(ctx) {
         }
         if (visible.length) {
             updateChipTime(chip);
-            chip.dataset.tip = chipTitle();
         }
         // 弹层开着时由 ai-panel 原位刷新（详情对象被停止时自动回到列表）
         refreshPop();

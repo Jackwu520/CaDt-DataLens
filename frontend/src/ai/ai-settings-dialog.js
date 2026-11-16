@@ -589,7 +589,6 @@ export function createAISettingsDialog(ctx) {
             const label = show ? '隐藏密钥' : '显示密钥';
             opt.keyToggle.setAttribute('aria-pressed', show ? 'true' : 'false');
             opt.keyToggle.setAttribute('aria-label', label);
-            opt.keyToggle.dataset.tip = label;
         });
         if (opt.test) opt.test.addEventListener('click', async () => {
             const profile = activeProfile();

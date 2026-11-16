@@ -1780,6 +1780,38 @@ const mockBackend = {
             bytes: 2048,
         };
     },
+    // 外部工具（设置 → AI → 外部工具）：mock 只在内存里保存来源矩阵，便于浏览器调试页面。
+    async WebToolsConfigGet() {
+        return window.__mockExternalTools || {
+            enabled: false,
+            baseUrl: '',
+            apiKeySet: false,
+            searchCount: 10,
+            capabilities: {
+                search: {mode: 'builtin'}, fetch: {mode: 'builtin'},
+                ocr: {mode: 'off'}, tts: {mode: 'off'}, asr: {mode: 'off'},
+            },
+            mcpBindings: {search: '', fetch: '', ocr: '', tts: '', asr: ''},
+            defaultBaseUrl: 'https://api.deepseek.com/v1/tools',
+        };
+    },
+    async WebToolsConfigSave(payload) {
+        const prev = await this.WebToolsConfigGet();
+        const next = Object.assign({}, prev, payload || {});
+        next.apiKeySet = !!((payload && payload.apiKey) || prev.apiKeySet);
+        delete next.apiKey;
+        window.__mockExternalTools = next;
+    },
+    async WebToolsConfigClearKey() {
+        const prev = await this.WebToolsConfigGet();
+        window.__mockExternalTools = Object.assign({}, prev, {apiKeySet: false});
+    },
+    async ExternalSearch() { throw new Error('mock 环境不调用外部服务'); },
+    async ExternalFetch() { throw new Error('mock 环境不调用外部服务'); },
+    async ExternalOCR() { throw new Error('mock 环境不调用外部服务'); },
+    async ExternalTTS() { throw new Error('mock 环境不调用外部服务'); },
+    async ExternalASR() { throw new Error('mock 环境不调用外部服务'); },
+    async ReadAudioDataURL() { throw new Error('mock 环境不读取音频'); },
     async AISendChat(sessionId, cfg, messages, tools, retryMax) {
         const run = {stopped: false, timers: []};
         window.__mockAiRuns = window.__mockAiRuns || new Map();

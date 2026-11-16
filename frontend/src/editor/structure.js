@@ -1805,7 +1805,6 @@ export function createStructurePanel(options) {
         if (!collapseBtn) return;
         const expanded = hasExpandedContainer();
         collapseBtn.innerHTML = expanded ? ICONS.collapse : ICONS.expand;
-        collapseBtn.dataset.tip = expanded ? '全部折叠' : '全部展开';
     }
 
     function setDoc(next) {

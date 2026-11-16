@@ -3,6 +3,7 @@
 import {
     AI_PREF_LIMIT, AI_PREF_TEXT_LIMIT, AI_PRESETS, aiNowId,
 } from './ai-constants.js';
+import {iconSvg} from '../core/icons.js';
 
 export function createAIPreferenceSettings(ctx, extras) {
 
@@ -42,29 +43,30 @@ export function createAIPreferenceSettings(ctx, extras) {
                 const text = document.createElement('span');
                 text.className = 'ai-pref-text';
                 text.textContent = pref.text;
-                text.dataset.tip = pref.text;
                 const src = document.createElement('span');
-                src.className = 'ai-pref-src';
+                src.className = 'ai-pref-src' + (pref.source === 'ai' ? ' on' : '');
                 src.textContent = pref.source === 'ai' ? 'AI' : '你';
-                src.dataset.tip = pref.source === 'ai' ? '由 AI 记录' : '由你添加';
                 const edit = document.createElement('button');
                 edit.type = 'button';
                 edit.className = 'ai-pref-btn';
-                edit.dataset.tip = '编辑';
-                edit.textContent = '✎';
+                edit.setAttribute('aria-label', '编辑');
+                edit.innerHTML = iconSvg('rename', 12);
                 edit.addEventListener('click', () => editPreference(pref));
                 const remove = document.createElement('button');
                 remove.type = 'button';
                 remove.className = 'ai-pref-btn';
-                remove.dataset.tip = '删除';
-                remove.textContent = '×';
+                remove.setAttribute('aria-label', '删除');
+                remove.innerHTML = iconSvg('close', 12);
                 remove.addEventListener('click', () => {
                     getConfig().preferences = getConfig().preferences.filter((item) => item.id !== pref.id);
                     saveAIConfig();
                     renderPreferenceSettings();
                     flash('已删除偏好：' + pref.text);
                 });
-                row.append(text, src, edit, remove);
+                const actions = document.createElement('div');
+                actions.className = 'ai-pref-actions';
+                actions.append(edit, remove);
+                row.append(text, src, actions);
                 opt.prefs.appendChild(row);
             }
         }

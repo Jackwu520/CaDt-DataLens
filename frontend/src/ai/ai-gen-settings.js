@@ -148,9 +148,6 @@ export function createAIGenSettings(ctx, extras) {
         const badge = document.createElement('span');
         badge.className = 'gen-prio' + (isDefault ? ' is-default' : '');
         badge.textContent = '#' + (pos + 1) + (isDefault ? ' 缺省' : '');
-        badge.dataset.tip = isDefault
-            ? '本组优先级第 ' + (pos + 1) + '，且是当前缺省条目：AI 不指定模型时用它'
-            : '本组优先级第 ' + (pos + 1) + (entry.enabled === false ? '（已停用，不参与缺省解析）' : '');
         title.appendChild(badge);
         const desc = document.createElement('div');
         desc.className = 'set-desc';

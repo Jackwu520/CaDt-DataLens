@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -46,6 +47,87 @@ var searchBinaryExt = map[string]bool{
 	".wgt": true, ".pak": true, ".zipx": true,
 }
 
+// searchArtifactDirs / searchArtifactSuffixes 定义「产物档」：构建输出与依赖目录。
+// 命中只降权不排除——工作区本身可能就是一份构建站，产物也必须搜得到，只是排在源码之后。
+// 两张表同时驱动 rg 的排除/包含 glob（见 search_rg.go），改这里即两边同步。
+var searchArtifactDirs = []string{
+	"dist", "build", "out", "target", "bin", "obj",
+	"vendor", "coverage", "bower_components",
+	".next", ".nuxt", ".output", ".svelte-kit", ".turbo",
+}
+
+var searchArtifactSuffixes = []string{".min.js", ".min.css", ".map"}
+
+// searchIsArtifactPath 按路径段/后缀判断是否产物档。O(len(rel))，遍历时每个文件只算一次。
+func searchIsArtifactPath(rel string) bool {
+	low := strings.ToLower(rel)
+	base := low
+	if i := strings.LastIndexAny(low, `/\`); i >= 0 {
+		base = low[i+1:]
+	}
+	for _, suffix := range searchArtifactSuffixes {
+		if strings.HasSuffix(base, suffix) {
+			return true
+		}
+	}
+	rest := low
+	for rest != "" {
+		i := strings.IndexAny(rest, `/\`)
+		seg := rest
+		if i >= 0 {
+			seg = rest[:i]
+			rest = rest[i+1:]
+		} else {
+			rest = ""
+		}
+		for _, dir := range searchArtifactDirs {
+			if seg == dir {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// searchNameHit 判断查询词是否出现在文件名里（比仅内容命中更强的信号）。
+// needle 需由调用方预小写（大小写不敏感时）。
+func searchNameHit(name, needle string, caseSensitive bool) bool {
+	if needle == "" {
+		return false
+	}
+	if caseSensitive {
+		return strings.Contains(name, needle)
+	}
+	return strings.Contains(strings.ToLower(name), needle)
+}
+
+// sortSearchTier 档内排序：文件名命中优先，其后路径/行/列升序。
+// 命中数受 maxResults 约束（≤ 千级），排序开销可忽略。
+func sortSearchTier(hits []SearchHit, needle string, caseSensitive bool) {
+	if len(hits) < 2 {
+		return
+	}
+	nameHit := make(map[string]bool, 8)
+	for _, h := range hits {
+		if _, ok := nameHit[h.Path]; !ok {
+			nameHit[h.Path] = searchNameHit(h.Name, needle, caseSensitive)
+		}
+	}
+	sort.SliceStable(hits, func(i, j int) bool {
+		a, b := hits[i], hits[j]
+		if an, bn := nameHit[a.Path], nameHit[b.Path]; an != bn {
+			return an
+		}
+		if a.Path != b.Path {
+			return a.Path < b.Path
+		}
+		if a.Line != b.Line {
+			return a.Line < b.Line
+		}
+		return a.Column < b.Column
+	})
+}
+
 type SearchHit struct {
 	Path       string `json:"path"`
 	Name       string `json:"name"`
@@ -62,6 +144,8 @@ type SearchResult struct {
 	Hits      []SearchHit `json:"hits"`
 	Truncated bool        `json:"truncated"`
 	Files     int         `json:"files"`
+	// ArtifactSkipped 表示源码档已吃满结果上限、产物档根本没去扫（仅当被上限截住时为 true）。
+	ArtifactSkipped bool `json:"artifactSkipped,omitempty"`
 }
 
 func utf16Len(s string) int {
@@ -285,9 +369,9 @@ func (a *App) searchWorkspace(root, query string, caseSensitive bool, maxResults
 		needle = strings.ToLower(query)
 	}
 	needleASCII := isASCIIString(needle)
-	started := time.Now()
-	deadline := started.Add(searchBudget)
-	jobs := make([]searchFileJob, 0, 256)
+	deadline := time.Now().Add(searchBudget)
+	srcJobs := make([]searchFileJob, 0, 256)
+	artJobs := make([]searchFileJob, 0, 32)
 	walkErr := filepath.WalkDir(root, func(path string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return nil
@@ -305,35 +389,54 @@ func (a *App) searchWorkspace(root, query string, caseSensitive bool, maxResults
 		if searchBinaryExt[strings.ToLower(filepath.Ext(name))] {
 			return nil
 		}
+		rel := name
+		if r, relErr := filepath.Rel(root, path); relErr == nil {
+			rel = r
+		}
 		// filePattern 下推：不匹配的文件不进扫描队列（前端仍会兜底过滤一次，口径一致）
-		if pattern != "" {
-			rel, relErr := filepath.Rel(root, path)
-			if relErr != nil {
-				rel = name
-			}
-			if !globMatchPath(pattern, filepath.ToSlash(rel), name) {
-				return nil
-			}
+		if pattern != "" && !globMatchPath(pattern, filepath.ToSlash(rel), name) {
+			return nil
 		}
 		if info, err := d.Info(); err != nil || info.Size() > searchMaxFileSize {
 			return nil
 		}
-		relDir := filepath.Dir(path)
-		if rel, err := filepath.Rel(root, relDir); err == nil {
-			relDir = rel
-		}
+		relDir := filepath.Dir(rel)
 		if relDir == "." || relDir == "" {
 			relDir = filepath.Base(root)
 		}
-		jobs = append(jobs, searchFileJob{path: path, name: name, relDir: relDir})
+		job := searchFileJob{path: path, name: name, relDir: relDir}
+		if searchIsArtifactPath(rel) {
+			artJobs = append(artJobs, job)
+		} else {
+			srcJobs = append(srcJobs, job)
+		}
 		return nil
 	})
 	if walkErr != nil && walkErr != filepath.SkipAll {
 		return nil, walkErr
 	}
-	result := &SearchResult{}
-	if len(jobs) == 0 {
-		return result, nil
+	// 两阶段扫描：源码档先占预算，未被挤满才补产物档（共享同一个绝对 deadline）
+	srcHits, srcScanned, truncated := scanSearchJobs(srcJobs, needle, needleASCII, caseSensitive, deadline, maxResults)
+	sortSearchTier(srcHits, needle, caseSensitive)
+	result := &SearchResult{Hits: srcHits, Files: srcScanned}
+	if len(result.Hits) < maxResults && len(artJobs) > 0 {
+		artHits, artScanned, artTrunc := scanSearchJobs(artJobs, needle, needleASCII, caseSensitive, deadline, maxResults-len(result.Hits))
+		sortSearchTier(artHits, needle, caseSensitive)
+		result.Hits = append(result.Hits, artHits...)
+		result.Files += artScanned
+		truncated = truncated || artTrunc
+	} else if len(artJobs) > 0 && len(result.Hits) >= maxResults {
+		result.ArtifactSkipped = true
+	}
+	result.Truncated = truncated || len(result.Hits) >= maxResults
+	return result, nil
+}
+
+// scanSearchJobs 并行扫描一组文件，命中按 jobs 顺序回收；到 hitCap 或超预算即截断。
+// 每个文件只扫一遍，排序只在 ≤ hitCap 条命中上做。
+func scanSearchJobs(jobs []searchFileJob, needle string, needleASCII, caseSensitive bool, deadline time.Time, hitCap int) ([]SearchHit, int, bool) {
+	if len(jobs) == 0 || hitCap <= 0 {
+		return nil, 0, len(jobs) > 0
 	}
 	workers := runtime.NumCPU()
 	if workers > len(jobs) {
@@ -367,7 +470,7 @@ func (a *App) searchWorkspace(root, query string, caseSensitive bool, maxResults
 				}
 				if len(res.hits) > 0 {
 					perFile[idx] = res.hits
-					if atomic.AddInt64(&totalHits, int64(len(res.hits))) >= int64(maxResults) {
+					if atomic.AddInt64(&totalHits, int64(len(res.hits))) >= int64(hitCap) {
 						truncated.Store(true)
 						stop.Store(true)
 					}
@@ -393,17 +496,16 @@ func (a *App) searchWorkspace(root, query string, caseSensitive bool, maxResults
 	if feedStopped {
 		truncated.Store(true)
 	}
+	hits := make([]SearchHit, 0, min(int(totalHits), hitCap))
 merge:
 	for idx := range perFile {
 		for _, hit := range perFile[idx] {
-			if len(result.Hits) >= maxResults {
+			if len(hits) >= hitCap {
 				truncated.Store(true)
 				break merge
 			}
-			result.Hits = append(result.Hits, hit)
+			hits = append(hits, hit)
 		}
 	}
-	result.Files = int(filesScanned)
-	result.Truncated = truncated.Load()
-	return result, nil
+	return hits, int(filesScanned), truncated.Load()
 }

@@ -266,7 +266,6 @@ function render(doc, ctx) {
         const btnRevert = el('button', 'dlg-btn', '撤销');
         btnRevert.type = 'button';
         btnRevert.disabled = !revertable;
-        if (!revertable) btnRevert.dataset.tip = '外部补丁没有本应用的应用记录，无法撤销';
         btnRevert.addEventListener('click', () => {
             // 与其他破坏性操作一致：走统一确认弹窗，不做「再点一次按钮」的就地确认
             ctx.openCloseConfirm(
@@ -295,7 +294,6 @@ function render(doc, ctx) {
         rootWrap.appendChild(el('span', 'patch-root-label', '目标：'));
         const rootBtn = el('button', 'patch-link patch-root', plan.root || '（未选择）');
         rootBtn.type = 'button';
-        rootBtn.dataset.tip = '选择补丁要写入的目标文件夹';
         rootBtn.addEventListener('click', () => chooseTargetRoot(doc, ctx, plan));
         rootWrap.appendChild(rootBtn);
         const btnRoot = el('button', 'patch-link', '更改…');

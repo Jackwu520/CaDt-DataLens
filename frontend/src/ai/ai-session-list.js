@@ -247,7 +247,6 @@ export function createAISessionList(ctx) {
                 const pin = document.createElement('span');
                 pin.className = 'ai-session-pin';
                 pin.innerHTML = iconSvg('pin', 11);
-                pin.dataset.tip = '已置顶';
                 titleRow.appendChild(pin);
             }
             const title = document.createElement('div');
@@ -258,7 +257,6 @@ export function createAISessionList(ctx) {
                 const badge = document.createElement('span');
                 badge.className = 'ai-session-badge';
                 badge.textContent = '支线';
-                badge.dataset.tip = '支线对话：轻关联母会话，可用「带回主对话」把结论送回去';
                 titleRow.appendChild(badge);
             }
             const meta = document.createElement('div');
@@ -369,7 +367,6 @@ export function createAISessionList(ctx) {
                     // 用 div 承载：头部内含两个真实 button，避免 button 嵌套 button 的非法结构。
                     const head = document.createElement('div');
                     head.className = 'ai-session-group-head' + (group.current ? ' current' : '') + (collapsed ? '' : ' expanded');
-                    head.dataset.tip = group.path || '未关联工作区';
                     if (collapsible) {
                         head.tabIndex = 0;
                         head.setAttribute('role', 'button');
@@ -446,8 +443,8 @@ export function createAISessionList(ctx) {
                     more.type = 'button';
                     more.className = 'ai-session-group-more';
                     more.innerHTML = iconSvg('more', 14);
-                    more.dataset.tip = '还有 ' + remaining + ' 条会话，点击再显示 ' + Math.min(AI_SESSION_GROUP_PAGE, remaining) + ' 条';
-                    more.setAttribute('aria-label', more.dataset.tip || '');
+                    const moreTip = '还有 ' + remaining + ' 条会话，点击再显示 ' + Math.min(AI_SESSION_GROUP_PAGE, remaining) + ' 条';
+                    more.setAttribute('aria-label', moreTip);
                     more.addEventListener('click', () => {
                         workspaceGroupVisibleCounts.set(pageKey, Math.min(total, visible + AI_SESSION_GROUP_PAGE));
                         renderSessionList();

@@ -51,7 +51,6 @@ export function createAIComposer(ctx) {
             const remove = document.createElement('button');
             remove.type = 'button';
             remove.className = 'ai-chip-remove';
-            remove.dataset.tip = '移除';
             remove.textContent = '×';
             remove.addEventListener('click', () => {
                 attachments = attachments.filter((current) => current.id !== item.id);
@@ -60,7 +59,6 @@ export function createAIComposer(ctx) {
             });
             if (item.kind === 'image') {
                 chip.className = 'ai-chip ai-chip-image';
-                chip.dataset.tip = item.name + (item.width && item.height ? ' · ' + item.width + '×' + item.height : '');
                 const img = document.createElement('img');
                 img.className = 'ai-chip-img';
                 img.src = aiImageSrc(item);
@@ -79,12 +77,6 @@ export function createAIComposer(ctx) {
                 else if (item.kind === 'selection_reference') prefix = '引用选区 · ';
                 else if (item.kind === AI_QUOTE_KIND) prefix = '回复引用 · ';
                 label.textContent = prefix + item.label;
-                label.dataset.tip = item.kind === AI_QUOTE_KIND
-                    ? quoteExcerpt(item.content, 400)
-                    : (item.kind === 'selection_reference'
-                        ? (item.path || '') + ' · ' + (item.start && item.start.line ? item.start.line + ':' + item.start.column : '') +
-                            '–' + (item.end && item.end.line ? item.end.line + ':' + item.end.column : '')
-                        : (item.path || item.label));
                 chip.append(label, remove);
             }
             el.attach.appendChild(chip);

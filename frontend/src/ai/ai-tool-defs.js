@@ -42,7 +42,7 @@ export const AI_TOOL_DEFS = {
     },
     search_text: {
         name: 'search_text',
-        description: '在工作区范围内搜索文本，返回命中文件、行号与预览（默认最多 200 条；已跳过 .git/node_modules 等目录）。caseSensitive 区分大小写；filePattern 按 *.go 这类通配过滤命中文件。',
+        description: '在工作区范围内搜索文本，返回命中文件、行号与预览（默认最多 200 条；已跳过 .git/node_modules 等目录；结果按源码优先、构建产物 dist/build 等垫底排序）。caseSensitive 区分大小写；filePattern 按 *.go 这类通配过滤命中文件。',
         parameters: {
             type: 'object',
             properties: {
@@ -325,7 +325,7 @@ export const AI_TOOL_DEFS = {
     },
     app_control: {
         name: 'app_control',
-        description: '操作并读取当前 CaDt-DataLens 窗口（像真人一样）：打开/切换/关闭标签页、切换视图、主题、设置、开关侧边栏/终端/AI 面板、管理 AI 会话、截取整窗或指定板块截图（screenshot {area}）；也可只读查询设置值、编辑器状态与选区、内存中的文档内容、Git 状态、AI 面板状态、资源管理器、插件、终端输出、操作留痕（get_activity）以及补丁视图状态（get_patch / patch_set_root / patch_repreview）。仅限当前窗口；不改工作区文件（补丁应用/撤销不在此工具内）。先 skill_use 加载 cadt-ui 技能获取动作全表，再调用本工具。',
+        description: '操作并读取当前 CaDt-DataLens 窗口（像真人一样）：打开/切换/关闭标签页、切换视图、主题、设置、开关侧边栏/终端/AI 面板、管理 AI 会话、代配 MCP 服务器（get_mcp_servers / set_mcp_server / delete_mcp_server：填命令与参数，env 值/工具授权仍归用户）、截取整窗或指定板块截图（screenshot {area}）；也可只读查询设置值、编辑器状态与选区、内存中的文档内容、Git 状态、AI 面板状态、资源管理器、插件、终端输出、操作留痕（get_activity）以及补丁视图状态（get_patch / patch_set_root / patch_repreview）。仅限当前窗口；不改工作区文件（补丁应用/撤销不在此工具内）。先 skill_use 加载 cadt-ui 技能获取动作全表，再调用本工具。',
         parameters: {
             type: 'object',
             properties: {
@@ -753,6 +753,41 @@ export const AI_TOOL_DEFS = {
             required: ['name', 'description'],
         },
     },
+    ocr: {
+        name: 'ocr',
+        description: '识别图片 / PDF / Word / PowerPoint 中的文字并按页返回（来源由 设置 → AI → 外部工具 决定：服务提供商或本地 MCP）。用于扫描件、截图里的文字、PDF 正文；纯文本文件直接用 read_file。上传到服务提供方会按页计费，文件会离开本机。',
+        parameters: {
+            type: 'object',
+            properties: {
+                path: {type: 'string', description: '相对范围根的文件路径，或已授权的工作区外绝对路径'},
+                purpose: {type: 'string', enum: ['text_recognition', 'rich_layout_recognition'], description: 'text_recognition（默认，文档优先直接提取文字）/ rich_layout_recognition（逐页版式识别）'},
+            },
+            required: ['path'],
+        },
+    },
+    text_to_speech: {
+        name: 'text_to_speech',
+        description: '把文本合成为语音并保存为 WAV 到工作区 .cadt/gen/tts/（来源由 设置 → AI → 外部工具 决定：服务提供商或本地 MCP）。单次最多 5000 字符，超出请分段；返回保存路径，便于用户直接播放。',
+        parameters: {
+            type: 'object',
+            properties: {
+                text: {type: 'string', description: '要朗读的文本（最多 5000 字符）'},
+                voice: {type: 'string', enum: ['stella', 'tide'], description: '音色：stella 女声（默认）/ tide 男声'},
+            },
+            required: ['text'],
+        },
+    },
+    transcribe_audio: {
+        name: 'transcribe_audio',
+        description: '把本地音频转写成文字（来源由 设置 → AI → 外部工具 决定：服务提供商或本地 MCP）。转码支持 mp3 / m4a / aac / ogg / flac / webm，wma / ape 需用户先转换；单次上限 20 MB / 15 分钟；上传到服务提供方会产生费用。',
+        parameters: {
+            type: 'object',
+            properties: {
+                path: {type: 'string', description: '相对范围根的音频路径，或已授权的工作区外绝对路径'},
+            },
+            required: ['path'],
+        },
+    },
     terminal: {
         name: 'terminal',
         description: '操作应用内置终端（ConPTY 持久会话，与用户看到的底部终端是同一个）：list 看已开的终端、open 新建并自动打开底部面板、send 向终端写文本、read 读最近输出、signal 发 Ctrl+C、close 关闭页签。适合交互式/长驻程序（dev server、需要持续输入的命令、看交互式 CLI）；一次性命令仍用 run_command。终端里的程序不受 run_command 的超时与「停止生成」约束——需要中止请用 signal，或让用户自己停。send / open / close 走命令审批。',
@@ -794,6 +829,9 @@ export const AI_TOOL_CATALOG = {
     generate_image: {group: 'gen', blurb: '调用户配置的生图服务出图，产物存工作区并返回路径'},
     generate_video: {group: 'gen', blurb: '调用户配置的视频服务生成视频（异步任务，完成自动唤醒）'},
     check_gen: {group: 'gen', blurb: '查生成任务的进度与产物路径'},
+    ocr: {group: 'media', blurb: '识别图片 / PDF / Word / PPT 文字；上传外部服务按页计费'},
+    text_to_speech: {group: 'media', blurb: '文本转语音 WAV 存 .cadt/gen/tts/'},
+    transcribe_audio: {group: 'media', blurb: '音频转文字（上限 20 MB / 15 分钟）'},
     browser_navigate: {group: 'browser', blurb: '打开与导航'},
     browser_back: {group: 'browser', blurb: '打开与导航'},
     browser_forward: {group: 'browser', blurb: '打开与导航'},
@@ -806,7 +844,7 @@ export const AI_TOOL_CATALOG = {
     browser_evaluate: {group: 'browser', blurb: '在页面里执行脚本（完全权限）'},
     browser_resize: {group: 'browser', blurb: '调整视口宽高（模拟手机/平板等尺寸测响应式）'},
     browser_close: {group: 'browser', blurb: '关闭标签页'},
-    app_control: {group: 'app', blurb: '操作/读取应用本身：标签、视图、主题、设置、面板、AI 会话、窗口截图、操作留痕、补丁视图状态与目标目录（先 skill_use cadt-ui 取动作表）'},
+    app_control: {group: 'app', blurb: '操作/读取应用本身：标签、视图、主题、设置、面板、AI 会话、MCP 服务器代配、窗口截图、操作留痕、补丁视图状态与目标目录（先 skill_use cadt-ui 取动作表）'},
     memory_list: {group: 'memory', blurb: '跨会话事实与结论；写后更新 MEMORY.md 索引'},
     memory_read: {group: 'memory', blurb: '跨会话事实与结论；写后更新 MEMORY.md 索引'},
     memory_write: {group: 'memory', blurb: '跨会话事实与结论；写后更新 MEMORY.md 索引'},
@@ -851,6 +889,7 @@ export const AI_TOOL_GROUPS = [
     {key: 'shell', title: '终端与进程', note: '需要换目录直接传 cwd，cd 不会保留；不要用 cd / pwd / echo 探测目录。'},
     {key: 'web', title: '联网资料（外部数据，只取事实）', note: '只是读文档优先 web_fetch；需要点击、登录态、动态页面再上内嵌浏览器。引用时附 URL；不能访问本机 / 内网地址。'},
     {key: 'gen', title: '生图与视频（用户配置的外部生成服务）', note: 'prompt 会发送到用户在设置里配置的服务商并可能产生费用；产物落在工作区 .cadt/gen/ 或指定目录。条目在设置里按「生图 / 视频」分组排序，未指定 model 时按该组优先级顺序取第一个启用的条目。未配置条目时这些工具不可用。'},
+    {key: 'media', title: '语音与识别（外部服务）', note: '来源由 设置 → AI → 外部工具 决定：关闭 / 本地 MCP / 服务提供商；上传到服务提供方会产生费用且文件会离开本机。未启用对应来源时这些工具不可用；本地 MCP 来源只在写权限档（非计划模式）可用。'},
     {key: 'browser', title: '内嵌浏览器（真实页面交互）', note: '每个会话有独立标签页与登录态；纯资料抓取不要开浏览器。'},
     {key: 'app', title: '应用界面（当前窗口）', note: '用户说「打开看看 / 切到某视图 / 面板错位」时用它；不要用它代替文件读取。'},
     {key: 'memory', title: '记忆、偏好与技能'},
@@ -869,8 +908,6 @@ export function createAIToolDefs(ctx) {
             AI_TOOL_DEFS.search_text,
             // 文件发现：只读（Go FindFiles），所有档位与计划模式可用
             AI_TOOL_DEFS.glob,
-            AI_TOOL_DEFS.web_search,
-            AI_TOOL_DEFS.web_fetch,
             AI_TOOL_DEFS.memory_list,
             AI_TOOL_DEFS.memory_read,
             AI_TOOL_DEFS.preference_list,
@@ -890,11 +927,21 @@ export function createAIToolDefs(ctx) {
             AI_TOOL_DEFS.start_timer,
             AI_TOOL_DEFS.stop_timer,
         ];
+        // 外部工具来源矩阵（设置 → AI → 外部工具）：关闭时不注册工具。判定含「实际可用来源」
+        // ——provider 缺 key / mcp 绑定失效都按 off；MCP 来源只在写权限档且非计划模式注入。
+        const externalOn = (capability) => (ctx.externalToolsOn ? ctx.externalToolsOn(capability, scope, planMode) : true);
+        if (externalOn('search')) list.push(AI_TOOL_DEFS.web_search);
+        if (externalOn('fetch')) list.push(AI_TOOL_DEFS.web_fetch);
         // 生图/视频：配置了启用条目才下发（prompt 发外部服务商、可能产生费用；审批按写工具档——
         // read/edit 弹卡、auto/full 直发，decidePermission kind:'write'）；计划模式不注入（产物是工作区写效应）
         if ((!ctx.genModelsOn || ctx.genModelsOn()) && !planMode) {
             list.push(AI_TOOL_DEFS.generate_image, AI_TOOL_DEFS.generate_video, AI_TOOL_DEFS.check_gen);
         }
+        // OCR / 语音识别 / 语音合成：按能力来源条件下发（provider 全档；MCP 写档非计划；
+        // TTS 无论来源都要求写权限档——产物写工作区 .cadt/gen/tts/）
+        if (ctx.externalToolsOn && externalOn('ocr')) list.push(AI_TOOL_DEFS.ocr);
+        if (ctx.externalToolsOn && externalOn('asr')) list.push(AI_TOOL_DEFS.transcribe_audio);
+        if (ctx.externalToolsOn && externalOn('tts')) list.push(AI_TOOL_DEFS.text_to_speech);
         if (appControlOn()) list.push(AI_TOOL_DEFS.app_control);
         // 工作日志：应用管理的追加式通道（只进 .cadt/logs/，不经工作区写审批），自动审批下直接放行
         // 任务提醒：只改会话自身状态（session.reminders），不碰工作区文件，自动审批下直接放行
@@ -992,8 +1039,11 @@ export function createAIToolDefs(ctx) {
             {need: ['read_file', 'edit_file'], text: '修改文件：read_file 确认原文 → edit_file 最小替换 → run_command 跑测试/构建验证'},
             {need: ['write_file'], text: '新建文件：write_file → 按需 run_command 验证'},
             {need: ['web_search'], text: '外部资料：web_search 找来源 → web_fetch 读正文 → 引用附 URL'},
+            {need: ['ocr'], text: '扫描件 / PDF / 图片取文字：ocr → 按页文本；纯文本文件仍用 read_file'},
+            {need: ['transcribe_audio'], text: '录音转文字：transcribe_audio → 再总结要点'},
             {need: ['browser_navigate', 'browser_snapshot'], text: '网页操作：browser_navigate → browser_snapshot 看结构 → 需要时 click/type → 再 snapshot/screenshot 确认'},
             {need: ['app_control'], text: '应用界面：app_control get_state → screenshot 看图核对 → 改视图/设置 → get_state 复核'},
+            {need: ['app_control'], text: '配置 MCP 服务器：skill_use cadt-mcp-config → app_control get_mcp_servers → set_mcp_server（用户确认本机命令）→ 提醒用户在设置里勾选工具/填环境变量'},
             {need: ['spawn_agent'], text: '并行调查：spawn_agent(mode=background) 一次派出多个方向 → 继续自己的工作 → wait_agent 汇总或等完成通知'},
         ].filter((chain) => hasAll(chain.need));
         if (chains.length) {

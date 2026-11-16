@@ -6,10 +6,10 @@
 export const GIT_COMMIT_STYLE_PATH = '.cadt/git-commit-style.json';
 
 export const GIT_ACTIONS = [
-    {id: 'commit-push', label: '提交并推送'},
-    {id: 'commit', label: '提交代码'},
-    {id: 'push', label: '推送代码'},
-    {id: 'pull', label: '拉取代码'},
+    {id: 'commit-push', label: '提交并推送', icon: 'git-commit-push'},
+    {id: 'commit', label: '提交代码', icon: 'git-commit'},
+    {id: 'push', label: '推送代码', icon: 'upload'},
+    {id: 'pull', label: '拉取代码', icon: 'download'},
 ];
 
 const STYLE_RULES = [

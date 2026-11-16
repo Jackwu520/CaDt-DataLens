@@ -66,7 +66,6 @@ export function createAIChangesUI(ctx) {
         const count = session && Array.isArray(session.changes) ? session.changes.length : 0;
         if (el.changesCount) el.changesCount.textContent = String(count);
         el.changesBtn.classList.toggle('hidden', count === 0);
-        el.changesBtn.dataset.tip = count ? '本会话变更记录（' + count + '）' : '本会话暂无变更';
         if (!count) hideChangesPopover();
         else if (el.changesPop && !el.changesPop.classList.contains('hidden')) renderChangesPopover();
     }
@@ -89,7 +88,6 @@ export function createAIChangesUI(ctx) {
             const row = document.createElement('button');
             row.type = 'button';
             row.className = 'ai-change-row';
-            row.dataset.tip = '打开 ' + change.path;
             const path = document.createElement('span');
             path.className = 'ai-change-path';
             path.textContent = change.relPath || change.path;

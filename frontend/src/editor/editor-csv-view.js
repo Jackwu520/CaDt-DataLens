@@ -21,13 +21,11 @@ function createCsvTableView(doc) {
     const filterInput = document.createElement('input');
     filterInput.type = 'search';
     filterInput.placeholder = '筛选所有列…';
-    filterInput.dataset.tip = '对所有列做子串筛选；只影响表格显示，不改文件内容';
     filterInput.spellcheck = false;
     const filterClear = document.createElement('button');
     filterClear.type = 'button';
     filterClear.className = 'csv-filter-clear';
     filterClear.textContent = '×';
-    filterClear.dataset.tip = '清除筛选';
     filterWrap.append(filterInput, filterClear);
     const hint = document.createElement('span');
     hint.className = 'csv-table-hint';
@@ -252,7 +250,6 @@ function openCsvColumnStats(doc, col) {
     close.type = 'button';
     close.className = 'csv-stats-close';
     close.textContent = '×';
-    close.dataset.tip = '关闭（Esc）';
     close.addEventListener('click', () => closeCsvColumnStats(doc));
     head.append(title, close);
     panel.appendChild(head);
@@ -551,7 +548,6 @@ function renderCsvTableView(doc, opts = {}) {
         label.textContent = header === '' ? '(空列名)' : header;
         const handle = document.createElement('span');
         handle.className = 'csv-col-resize';
-        handle.dataset.tip = '拖动调整列宽';
         handle.dataset.col = String(col);
         handle.addEventListener('pointerdown', (e) => startCsvColumnResize(doc, col, e));
         handle.addEventListener('click', (e) => e.stopPropagation());

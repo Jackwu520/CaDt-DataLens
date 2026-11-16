@@ -11,6 +11,7 @@ import {AI_TOOL_DEFS} from './ai-tool-defs.js';
 import {inspectToolArguments} from './ai-tool-args.js';
 import {buildSettlementNotice, buildAskNotice} from './ai-agent-notices.js';
 import {compactTranscriptOf, computeCompactCutoff, buildCompactSummary, applyCompactToSession, buildCompactMessages, compactThresholdOf, COMPACT_KEEP_TAIL} from './ai-compact.js';
+import {createLoopGuard} from './ai-loop-guard.js';
 
 // 收件箱双队列的纯函数部分（导出供单测：消费顺序与来源前缀是「插队优先、主/用户可辨」的
 // 唯一依据，闭包里改动不易测，这里单独留出来）。
@@ -314,7 +315,6 @@ export function createAISubagents(ctx) {
         const session = currentSession();
         const title = session ? String(session.title || '').trim() : '';
         el.headTitle.textContent = title || 'AI 助手';
-        el.headTitle.dataset.tip = title || 'AI 助手';
     }
 
     function bgJobStateOf(entry) {
@@ -532,7 +532,6 @@ export function createAISubagents(ctx) {
                     const wait = document.createElement('span');
                     wait.className = 'ai-agent-badge ai-agent-waiting';
                     wait.textContent = '待处理 ' + agent.inboxCount;
-                    wait.dataset.tip = '收件箱里有 ' + agent.inboxCount + ' 条消息还没被消费（子代理下一轮边界会读）';
                     row.appendChild(wait);
                 }
                 if (agent.compacting) {
@@ -554,7 +553,6 @@ export function createAISubagents(ctx) {
                 if (agent.sessionTitle) bits.push('@ ' + agent.sessionTitle);
                 subSpan.textContent = bits.join(' · ');
                 main.append(nameSpan, subSpan);
-                main.dataset.tip = (agent.task || '') + (agent.sessionTitle ? '（会话：' + agent.sessionTitle + '）' : '');
                 row.appendChild(main);
                 const go = document.createElement('span');
                 go.className = 'ai-chips-go';
@@ -588,7 +586,6 @@ export function createAISubagents(ctx) {
                 const main = document.createElement('span');
                 main.className = 'ai-chips-main';
                 main.textContent = bgJobFirstLine(entry.command);
-                main.dataset.tip = entry.command || '';
                 row.appendChild(main);
                 const go = document.createElement('span');
                 go.className = 'ai-chips-go';
@@ -665,14 +662,12 @@ export function createAISubagents(ctx) {
         if (label) {
             const suffix = block.error ? ' · 失败' : '';
             label.textContent = (block.name || 'tool') + (block.arg ? ' · ' + block.arg : '') + suffix;
-            label.dataset.tip = (block.name || 'tool') + (block.arg ? ' ' + block.arg : '');
         }
         const pre = row.querySelector('pre');
         if (!pre) return;
         const raw = String(block.text || '');
         const cut = raw.length > AGV_TOOL_TEXT_MAX;
         pre.textContent = cut ? raw.slice(0, AGV_TOOL_TEXT_MAX) + '\n…（输出过长，已截断）' : raw;
-        pre.dataset.tip = cut ? '完整输出见父会话里这张工具卡' : '';
     }
 
     // 正文块模型：user / assistant / tool / summary / inbox / tip。
@@ -929,7 +924,6 @@ export function createAISubagents(ctx) {
         const nameSpan = document.createElement('span');
         nameSpan.className = 'ai-agent-view-name';
         nameSpan.textContent = view.name;
-        nameSpan.dataset.tip = view.name;
         head.appendChild(nameSpan);
         if (meta) head.appendChild(agentStateBadge(meta.state));
         const liveSub = view.subId ? subAgents.get(view.subId) : null;
@@ -949,7 +943,6 @@ export function createAISubagents(ctx) {
             const compactBtn = document.createElement('button');
             compactBtn.type = 'button';
             compactBtn.className = 'ai-icon-btn ai-agv-compact';
-            compactBtn.dataset.tip = '压缩这个子代理的上下文（当前工具轮结束后执行）';
             compactBtn.setAttribute('aria-label', '压缩上下文');
             compactBtn.innerHTML = iconSvg('eraser', 13);
             compactBtn.addEventListener('click', () => {
@@ -965,7 +958,6 @@ export function createAISubagents(ctx) {
                 const compactBtn = document.createElement('button');
                 compactBtn.type = 'button';
                 compactBtn.className = 'ai-icon-btn ai-agv-compact';
-                compactBtn.dataset.tip = '立即压缩这个子代理的上下文（之后唤醒以精简上下文继续）';
                 compactBtn.setAttribute('aria-label', '压缩上下文');
                 compactBtn.innerHTML = iconSvg('eraser', 13);
                 compactBtn.addEventListener('click', () => {
@@ -981,7 +973,6 @@ export function createAISubagents(ctx) {
             const stopBtn = document.createElement('button');
             stopBtn.type = 'button';
             stopBtn.className = 'ai-icon-btn ai-agv-stop';
-            stopBtn.dataset.tip = '停止这个子代理（保留它的过程记录）';
             stopBtn.setAttribute('aria-label', '停止子代理');
             stopBtn.innerHTML = iconSvg('pause', 13);
             stopBtn.addEventListener('click', () => {
@@ -1436,6 +1427,8 @@ export function createAISubagents(ctx) {
         s.thinkStartedAt = 0;
         s.roundStartedAt = Date.now();
         s.firstTokenAt = 0;
+        // 循环守卫每轮独立：上一轮的重复不能把新 Assistant 消息直接判死。
+        s.loopGuard = createLoopGuard();
         // 子代理固定用派出时的配置；标签跟随实际配置，避免与主对话的模型切换串味。
         if (s.assistant && s.profileCfg && s.profileCfg.model) s.assistant.model = s.profileCfg.model;
         const index = sub.session.messages.indexOf(s.assistant);
@@ -1549,7 +1542,27 @@ export function createAISubagents(ctx) {
                 }
                 break;
             case 'ai-think':
-                if (payload.delta) s.assistant.reasoning += payload.delta;
+                // 子代理没有 composer 可接管：高阈值直接自动停止，原因写进记录摘要。
+                if (payload.delta && sub.state === 'running') {
+                    s.assistant.reasoning += payload.delta;
+                    if (!s.loopGuard) s.loopGuard = createLoopGuard();
+                    s.loopGuard.push(payload.delta);
+                    if (s.loopGuard.verdict() === 'prompt') {
+                        const stats = s.loopGuard.stats();
+                        s.assistant.guard = {
+                            state: 'stopped',
+                            action: 'stop',
+                            source: 'subagent',
+                            repeats: stats.maxRepeat,
+                            ratio: stats.ratio,
+                            chars: stats.chars,
+                            lines: stats.lines,
+                            detectedAt: Date.now(),
+                            answeredAt: Date.now(),
+                        };
+                        stopSubAgent(sub, '检测到思考循环，已自动停止', {autoStop: true});
+                    }
+                }
                 break;
             case 'ai-toolcall': {
                 const index = Number(payload.index) || 0;
@@ -1693,7 +1706,7 @@ export function createAISubagents(ctx) {
         return record;
     }
 
-    function finalizeSubAgent(sub, state, note) {
+    function finalizeSubAgent(sub, state, note, options) {
         if (sub.state !== 'running') return;
         sub.state = state;
         sub.note = note || '';
@@ -1721,7 +1734,13 @@ export function createAISubagents(ctx) {
         }
         if (state === 'error' && !summary) summary = '子代理执行失败';
         if (!summary && s.wrapUp) summary = subDigestOf(sub);
-        if (state === 'stopped') summary = summary ? '（用户停止）' + summary : '（用户停止）';
+        if (state === 'stopped') {
+            // 守卫触发的自停不能冒充「用户停止」，否则主代理会误以为人拍板过。
+            const autoStop = !!(options && options.autoStop);
+            summary = summary
+                ? (autoStop ? '' : '（用户停止）') + summary
+                : (autoStop ? '已自动停止' : '（用户停止）');
+        }
         // 阶段 B 决策（§4.4）：投递层不再截断。原 AI_SUB_SUMMARY_MAX（8000 字符）会把
         // 调研/扫描类子代理的长报告拦腰砍断且无路可取回，等于白跑。长度控制全部前移：
         // 投递契约（结论自带 path:line 证据）+ 模型单响应上限 + wrapUp 收尾轮。
@@ -1834,7 +1853,7 @@ export function createAISubagents(ctx) {
 
     // 统一停止：用户停止主回合、主代理 agent_stop、HUD 停止按钮都走这里。
     // 保留收件箱内容（停止当前轮 ≠ 清空队列），并把未消费条数写进结算文案。
-    function stopSubAgent(sub, reason) {
+    function stopSubAgent(sub, reason, options) {
         if (!sub || sub.state !== 'running') return false;
         // 插队标记必须清掉：否则 AIStop 引发的事件会被误判成「插队续轮」
         sub.steerKick = false;
@@ -1852,7 +1871,7 @@ export function createAISubagents(ctx) {
         try {
             if (backend.AIStop) backend.AIStop(sub.id);
         } catch (e) {}
-        finalizeSubAgent(sub, 'stopped', reason || '');
+        finalizeSubAgent(sub, 'stopped', reason || '', options);
         return true;
     }
 

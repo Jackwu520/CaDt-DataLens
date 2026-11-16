@@ -1,10 +1,10 @@
 // 补丁示例用的配置（docs/samples/patch）
 export const config = {
-    theme: 'light',
-    pageSize: 20,
+    theme: 'dark',
+    pageSize: 50,
     locale: 'zh-CN',
     features: {
-        patchView: false,
+        patchView: true,
         aiPanel: true,
     },
 };

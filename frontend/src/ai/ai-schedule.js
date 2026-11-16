@@ -94,9 +94,6 @@ export function createAISchedule(ctx) {
                     iconEl.dataset.ready = '1';
                     iconEl.innerHTML = iconSvg('clock', 12);
                 }
-                chip.dataset.tip = mine.length
-                    ? mine.map((s) => s.name).join('、')
-                    : '定时任务（本会话绑定的计划触发）';
             }
             // 弹层开着时原位重渲染（重新定位）
             if (typeof ctx.onSchedulesChanged === 'function') ctx.onSchedulesChanged();
@@ -196,7 +193,6 @@ export function createAISchedule(ctx) {
         const name = document.createElement('span');
         name.className = 'ai-sched-name';
         name.textContent = s.name;
-        name.dataset.tip = s.prompt;
         const badge = document.createElement('span');
         badge.className = 'ai-sched-badge' + (s.enabled ? ' on' : '');
         badge.textContent = s.enabled ? '启用' : '停用';
@@ -212,7 +208,6 @@ export function createAISchedule(ctx) {
         const toggle = document.createElement('button');
         toggle.type = 'button';
         toggle.className = 'ai-pref-btn';
-        toggle.dataset.tip = s.enabled ? '停用' : '启用';
         toggle.innerHTML = iconSvg(s.enabled ? 'pause' : 'play', 12);
         toggle.addEventListener('click', () => {
             Promise.resolve(backend.AIScheduleToggle(s.id, !s.enabled)).then(() => {
@@ -223,13 +218,11 @@ export function createAISchedule(ctx) {
         const edit = document.createElement('button');
         edit.type = 'button';
         edit.className = 'ai-pref-btn';
-        edit.dataset.tip = '编辑';
         edit.innerHTML = iconSvg('rename', 12);
         edit.addEventListener('click', () => openScheduleEditor(s));
         const remove = document.createElement('button');
         remove.type = 'button';
         remove.className = 'ai-pref-btn';
-        remove.dataset.tip = '删除';
         remove.innerHTML = iconSvg('close', 12);
         remove.addEventListener('click', () => {
             askConfirm('删除定时任务「' + s.name + '」？', () => {

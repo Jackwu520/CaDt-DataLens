@@ -4,6 +4,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {AI_TOOL_CATALOG, AI_TOOL_DEFS, AI_TOOL_GROUPS, createAIToolDefs} from './ai-tool-defs.js';
+import {externalCapabilityUsable} from './ai-external-tools.js';
 
 const {toolsForScope} = createAIToolDefs({appControlOn: () => false});
 const names = (scope, planMode) => toolsForScope(scope, planMode).map((t) => t.name);
@@ -149,6 +150,32 @@ test('read_image：只读档与计划模式都下发，且必须登记目录', (
     assert.equal(AI_TOOL_CATALOG.read_image.group, 'read', 'read_image 属于只读组');
     // 目录文案必须真的描述「看画面」，别退回成读文本
     assert.match(AI_TOOL_CATALOG.read_image.blurb, /图片/);
+});
+
+test('外部工具来源：off 不注册、provider 按档、MCP 只在写档非计划模式', () => {
+    const modesFor = (modes) => (cap, scope, planMode) =>
+        externalCapabilityUsable(cap, modes[cap] || 'off', scope, planMode);
+    const tools = (modes) => createAIToolDefs({appControlOn: () => false, externalToolsOn: modesFor(modes)}).toolsForScope;
+    const namesOf = (modes, scope, planMode) => tools(modes)(scope, planMode).map((t) => t.name);
+
+    const allOff = namesOf({}, 'full', false);
+    for (const name of ['web_search', 'web_fetch', 'ocr', 'text_to_speech', 'transcribe_audio']) {
+        assert.ok(!allOff.includes(name), '来源关闭时不应注册 ' + name);
+    }
+    const builtin = namesOf({search: 'builtin', fetch: 'builtin'}, 'read', true);
+    assert.ok(builtin.includes('web_search') && builtin.includes('web_fetch'), '内置搜索/抓取全档可用（含计划模式）');
+    assert.ok(!builtin.includes('ocr'), '未启用的 OCR 不应下发');
+
+    const provider = namesOf({ocr: 'provider', asr: 'provider', tts: 'provider'}, 'read', false);
+    assert.ok(provider.includes('ocr') && provider.includes('transcribe_audio'), 'provider 识别能力只读档可用');
+    assert.ok(!provider.includes('text_to_speech'), 'TTS 写工作区产物，只读档不下发');
+    assert.ok(!namesOf({tts: 'provider'}, 'edit', true).includes('text_to_speech'), '计划模式不下发 TTS');
+    assert.ok(namesOf({tts: 'provider'}, 'edit', false).includes('text_to_speech'), '写档非计划模式下发 TTS');
+
+    const mcp = namesOf({search: 'mcp', ocr: 'mcp'}, 'read', false);
+    assert.ok(!mcp.includes('web_search') && !mcp.includes('ocr'), 'MCP 来源沿用写权限档边界');
+    const mcpWrite = namesOf({search: 'mcp', ocr: 'mcp'}, 'auto', false);
+    assert.ok(mcpWrite.includes('web_search') && mcpWrite.includes('ocr'), '写档非计划模式可用 MCP 来源');
 });
 
 test('write_worklog：标题只写索引里那一句，细节留给 summary', () => {

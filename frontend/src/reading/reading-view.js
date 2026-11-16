@@ -25,10 +25,9 @@ function el(tag, className, text) {
     return e;
 }
 
-function btn(className, text, title) {
+function btn(className, text) {
     const b = el('button', className, text);
     b.type = 'button';
-    if (title) b.dataset.tip = title;
     return b;
 }
 
@@ -59,16 +58,16 @@ function fmtAgo(ts) {
 export function buildSkeleton(container) {
     container.textContent = '';
     const topbar = el('div', 'rd-topbar');
-    const back = btn('rd-btn', '←', '退出阅读 (Esc)');
+    const back = btn('rd-btn', '←');
     const bookTitle = el('span', 'rd-book-title');
     const unitTitle = el('span', 'rd-unit-title');
     const actions = el('div', 'rd-topbar-actions');
-    const btnToc = btn('rd-btn', '目录', '目录 (拖动进度条也可打开)');
-    const btnBm = btn('rd-btn', '书签', '书签列表');
-    const btnSearch = btn('rd-btn', '搜索', '全书搜索 (Ctrl+Shift+F)');
-    const btnAa = btn('rd-btn', 'Aa', '排版设置');
-    const btnTts = btn('rd-btn', '朗读', '朗读本章');
-    const btnFocus = btn('rd-btn', '专注', '专注模式');
+    const btnToc = btn('rd-btn', '目录');
+    const btnBm = btn('rd-btn', '书签');
+    const btnSearch = btn('rd-btn', '搜索');
+    const btnAa = btn('rd-btn', 'Aa');
+    const btnTts = btn('rd-btn', '朗读');
+    const btnFocus = btn('rd-btn', '专注');
     actions.append(btnToc, btnBm, btnSearch, btnAa, btnTts, btnFocus);
     topbar.append(back, bookTitle, unitTitle, actions);
 
@@ -158,7 +157,6 @@ export function renderBookshelf(container, data) {
             el('span', 'rd-book-meta', (s.bookFiles ?? s.books ?? 0) + ' 个文件 · 约 ' + fmtWords(s.estWords) + ' / 未读'),
         );
         card.append(cover, info);
-        card.dataset.tip = s.root;
         card.addEventListener('click', () => data.onOpen({key: s.root, root: s.root, title: s.name}));
         detected.appendChild(card);
     }
@@ -291,7 +289,6 @@ export function renderToc(container, data) {
             if (node.words) {
                 label.appendChild(el('span', 'rd-toc-words', fmtWords(node.words)));
             }
-            label.dataset.tip = node.words ? '约 ' + minutesFor(node.words) + ' 分钟' : node.title;
             label.addEventListener('click', () => {
                 if (data.onJump) data.onJump(node);
             });
@@ -529,7 +526,6 @@ export function renderStats(container, data) {
             const bar = el('div', 'rd-stats-bar');
             const fill = el('div', 'rd-stats-bar-fill');
             fill.style.height = Math.max(4, Math.round(sec / max * 100)) + '%';
-            fill.dataset.tip = key + '：' + fmtTime(sec);
             bar.appendChild(fill);
             bar.appendChild(el('span', 'rd-stats-bar-label', String(d.getDate())));
             chart.appendChild(bar);

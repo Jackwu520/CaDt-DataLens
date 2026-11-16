@@ -197,7 +197,6 @@ function humanizeCounts() {
             const text = deps.settings.treeCounts ? count + ' 项' : '';
             if (el.textContent !== text || el.querySelector('.jsoneditor-fold-preview')) el.textContent = text;
             el.dataset.foldSig = 'e:' + count + ':' + (deps.settings.treeCounts ? '1' : '0');
-            el.dataset.tip = deps.settings.treeCounts ? (isObject ? '对象' : '数组') + '，共 ' + count + ' 项' : '';
         }
         el.classList.toggle('value-fold', collapsed);
         el.classList.toggle('value-count', !collapsed && !!deps.settings.treeCounts);

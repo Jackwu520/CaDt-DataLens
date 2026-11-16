@@ -1,10 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {GIT_ACTIONS, GIT_COMMIT_STYLE_PATH, buildGitActionPrompt} from './ai-git.js';
+import {ICONS} from '../core/icons.js';
 
 test('Git 动作顺序与标签符合菜单约定', () => {
     assert.deepEqual(GIT_ACTIONS.map((item) => item.id), ['commit-push', 'commit', 'push', 'pull']);
     assert.deepEqual(GIT_ACTIONS.map((item) => item.label), ['提交并推送', '提交代码', '推送代码', '拉取代码']);
+    // 菜单图标走 core/icons.js 命名注册表；每个动作必须带已登记的图标键
+    assert.deepEqual(GIT_ACTIONS.map((item) => item.icon), ['git-commit-push', 'git-commit', 'upload', 'download']);
+    for (const item of GIT_ACTIONS) {
+        assert.ok(ICONS[item.icon], '未登记的图标键：' + item.icon);
+    }
 });
 
 test('提交类提示词包含风格配置、首次询问与超时默认', () => {

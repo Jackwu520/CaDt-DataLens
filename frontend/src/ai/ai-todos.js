@@ -139,14 +139,12 @@ export function createAITodos(ctx) {
             const cur = document.createElement('span');
             cur.className = 'ai-todos-current';
             cur.textContent = currentTodo.content;
-            cur.dataset.tip = '进行中：' + currentTodo.content;
             head.appendChild(cur);
         }
         const curToggle = document.createElement('span');
         curToggle.className = 'ai-todos-cur-toggle' + (badgeOn ? '' : ' off');
         curToggle.setAttribute('role', 'button');
         curToggle.setAttribute('aria-label', '收起时显示进行中的任务');
-        curToggle.dataset.tip = '收起时显示进行中的任务（' + (badgeOn ? '已开启，点击关闭' : '已关闭，点击开启') + '）';
         curToggle.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.1 8c1.5-2.6 3.5-3.9 5.9-3.9s4.4 1.3 5.9 3.9c-1.5 2.6-3.5 3.9-5.9 3.9S3.6 10.6 2.1 8z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><circle cx="8" cy="8" r="2.1" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>';
         curToggle.addEventListener('click', (e) => {
             // 不触发头部的折叠/展开

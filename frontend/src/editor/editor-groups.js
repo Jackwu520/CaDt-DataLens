@@ -745,7 +745,6 @@ function renderBreadcrumb(path) {
         const s = document.createElement('span');
         s.className = 'crumb' + (i === display.length - 1 ? ' crumb-last' : '');
         s.textContent = seg;
-        s.dataset.tip = seg;
         deps.els.breadcrumb.appendChild(s);
     });
 }
@@ -873,7 +872,6 @@ function updateStatus() {
         return;
     }
     deps.els.stSize.textContent = deps.fmtSize(deps.file.size);
-    deps.els.stSize.dataset.tip = deps.file.image && deps.file.imageWidth ? deps.file.imageWidth + ' × ' + deps.file.imageHeight : '';
     const tableZoom = deps.currentMode === 'table' && deps.file.format && deps.file.format.table;
     const svgScale = deps.file.svgRenderScale && (deps.currentMode === 'render' || (deps.file.splitActive && deps.file.splitKind === 'svg'));
     const renderZoom = svgScale ? Math.round(deps.file.svgRenderScale * 100) + '%' : '';

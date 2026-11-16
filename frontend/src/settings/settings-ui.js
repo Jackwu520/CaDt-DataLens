@@ -647,7 +647,7 @@ function selectSettingsPane(pane) {
     }
     const aiGroup = document.getElementById('snav-ai');
     if (aiGroup) {
-        const inAI = pane === 'models' || pane === 'gen-models' || pane === 'ai' || pane === 'persona' || pane === 'context' || pane === 'preferences' || pane === 'schedules';
+        const inAI = pane === 'models' || pane === 'gen-models' || pane === 'external-tools' || pane === 'ai' || pane === 'persona' || pane === 'context' || pane === 'preferences' || pane === 'schedules';
         if (inAI && !aiGroup.classList.contains('expanded')) {
             aiGroup.classList.add('expanded');
             const parent = aiGroup.querySelector('.snav-parent');
@@ -662,13 +662,17 @@ function selectSettingsPane(pane) {
     else if (pane === 'envvars') deps.renderEnvVarsPane();
     else if (pane === 'activity') deps.renderActivityPane();
     else if (pane === 'storage') deps.renderStoragePane();
+    else if (pane === 'external-tools' && typeof deps.renderExternalToolsPane === 'function') {
+        // 异步面板：渲染失败落到控制台，不能让导航看起来「点了没反应」
+        Promise.resolve(deps.renderExternalToolsPane()).catch((e) => console.error('外部工具设置页渲染失败', e));
+    }
     else if (pane === 'developer') {
         // 补丁库：进面板时拉一次最近补丁（顺带触发 Go 侧滞留 applying 的自愈）
         if (deps.patchesPane && typeof deps.patchesPane.refreshPatchStore === 'function') {
             try { deps.patchesPane.refreshPatchStore(); } catch (e) {}
         }
     }
-    if (pane === 'ai' || pane === 'models' || pane === 'gen-models' || pane === 'persona' || pane === 'context' || pane === 'preferences') {
+    if (pane === 'ai' || pane === 'models' || pane === 'gen-models' || pane === 'external-tools' || pane === 'persona' || pane === 'context' || pane === 'preferences') {
         if (!deps.aiPanel) deps.initAIPanel();
         if (deps.aiPanel && typeof deps.aiPanel.refreshSettings === 'function') {
             try { deps.aiPanel.refreshSettings(); } catch (e) {}

@@ -234,7 +234,6 @@ function globalSearchRow(hit, index) {
         const name = document.createElement('span');
         name.className = 'gs-name';
         name.textContent = hit.title || '（无标题会话）';
-        name.dataset.tip = hit.title || '';
         const dir = document.createElement('span');
         dir.className = 'gs-dir';
         dir.textContent = hit.kind === 'title' ? '会话标题' : '';

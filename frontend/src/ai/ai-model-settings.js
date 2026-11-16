@@ -238,9 +238,6 @@ export function createAIModelSettings(ctx, extras) {
             name.className = 'ai-entry-chip-name';
             name.textContent = entry.model || '（未填写）';
             chip.appendChild(name);
-            chip.dataset.tip = (entry.model || '（未填写）')
-                + ' · 上下文 ' + (formatTokenAmount(entry.contextWindow) || '—')
-                + ' · 输出 ' + (formatTokenAmount(entry.outputWindow) || '—');
             chip.addEventListener('click', () => {
                 if (modelEditorState) modelEditorState.entryId = entry.id;
                 // 两个字段必须一起写：activeModelId 是窗口选择，lastModelId 是账号记忆。
@@ -257,7 +254,6 @@ export function createAIModelSettings(ctx, extras) {
                 remove.setAttribute('role', 'button');
                 remove.setAttribute('tabindex', '0');
                 remove.setAttribute('aria-label', '删除模型 ' + (entry.model || '未填写'));
-                remove.dataset.tip = '删除该模型';
                 remove.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>';
                 remove.addEventListener('click', (event) => {
                     event.stopPropagation();

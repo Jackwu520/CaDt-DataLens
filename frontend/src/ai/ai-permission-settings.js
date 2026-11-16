@@ -61,11 +61,9 @@ let semanticAutoRecheckDone = false; // 注册表空时的自动补扫，每会�
                 const text = document.createElement('span');
                 text.className = 'ai-approved-path';
                 text.textContent = path;
-                text.dataset.tip = path;
                 const remove = document.createElement('button');
                 remove.type = 'button';
                 remove.className = 'ai-approved-remove';
-                remove.dataset.tip = '移除授权';
                 remove.textContent = '×';
                 remove.addEventListener('click', () => {
                     getConfig().approvedPaths = getConfig().approvedPaths.filter((item) => aiPathKey(item) !== aiPathKey(path));
@@ -154,14 +152,12 @@ let semanticAutoRecheckDone = false; // 注册表空时的自动补扫，每会�
         const pattern = document.createElement('span');
         pattern.className = 'ai-perm-pattern';
         pattern.textContent = rule;
-        pattern.dataset.tip = rule;
         const badge = document.createElement('span');
         badge.className = 'ai-perm-decision ' + behavior;
         badge.textContent = behavior;
         const remove = document.createElement('button');
         remove.type = 'button';
         remove.className = 'ai-perm-mini';
-        remove.dataset.tip = '删除这条规则';
         remove.textContent = '×';
         remove.addEventListener('click', () => {
             removeProjectRule(kind, behavior, rule).then((removed) => {
@@ -334,7 +330,6 @@ let semanticAutoRecheckDone = false; // 注册表空时的自动补扫，每会�
         if (opt.permissionsPath) {
             const path = projectRulesPath();
             opt.permissionsPath.textContent = path || '（未打开工作区）';
-            opt.permissionsPath.dataset.tip = path || '';
         }
         if (opt.permissionClassifier) opt.permissionClassifier.checked = getConfig().autoClassifier === true;
         renderClassifierModelOptions();
@@ -355,15 +350,12 @@ let semanticAutoRecheckDone = false; // 注册表空时的自动补扫，每会�
                     const text = document.createElement('span');
                     text.className = 'ai-approved-path';
                     text.textContent = (rule.mode === 'family' ? '同类命令 ' : '相同命令 ') + (rule.signature || rule.command);
-                    text.dataset.tip = (rule.cwd || '') + ' · ' + (rule.signature || rule.command);
                     const cwd = document.createElement('span');
                     cwd.className = 'ai-perm-cwd';
                     cwd.textContent = rule.cwd || '';
-                    cwd.dataset.tip = rule.cwd || '';
                     const project = document.createElement('button');
                     project.type = 'button';
                     project.className = 'ai-perm-mini';
-                    project.dataset.tip = '把这条授权写入项目规则（allow）';
                     project.textContent = '存入项目';
                     project.addEventListener('click', () => {
                         const pattern = sessionRulePattern(rule);
@@ -377,7 +369,6 @@ let semanticAutoRecheckDone = false; // 注册表空时的自动补扫，每会�
                     const remove = document.createElement('button');
                     remove.type = 'button';
                     remove.className = 'ai-perm-mini';
-                    remove.dataset.tip = '删除本会话这条授权';
                     remove.textContent = '×';
                     remove.addEventListener('click', () => {
                         if (!removeCommandApprovalRule(session, rule)) return;
@@ -408,11 +399,9 @@ let semanticAutoRecheckDone = false; // 注册表空时的自动补扫，每会�
                     const text = document.createElement('span');
                     text.className = 'ai-approved-path';
                     text.textContent = entry.subject;
-                    text.dataset.tip = entry.subject + (entry.rule ? ' · ' + entry.rule : '');
                     const source = document.createElement('span');
                     source.className = 'ai-perm-cwd';
                     source.textContent = AUDIT_SOURCE_LABELS[entry.source] || entry.source || '';
-                    source.dataset.tip = (AUDIT_SOURCE_LABELS[entry.source] || entry.source || '') + (entry.rule ? ' · ' + entry.rule : '');
                     const time = document.createElement('span');
                     time.className = 'ai-perm-time';
                     time.textContent = new Date(entry.at).toLocaleTimeString();
@@ -425,7 +414,6 @@ let semanticAutoRecheckDone = false; // 注册表空时的自动补扫，每会�
                             button.type = 'button';
                             button.className = 'ai-perm-mini';
                             button.textContent = '+' + behavior;
-                            button.dataset.tip = '加入项目规则：' + pattern + ' → ' + behavior;
                             button.addEventListener('click', () => {
                                 addProjectRule(entry.kind, behavior, pattern).then((added) => {
                                     flash(added

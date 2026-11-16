@@ -7,3 +7,8 @@
 .banner-title {
     font-weight: 600;
 }
+
+.banner-note {
+    color: #5b6472;
+    font-size: 12px;
+}

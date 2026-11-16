@@ -97,7 +97,6 @@ export function createBridgeSideChat(deps) {
         const snap = snapLabel(meta.snapAt);
         note.textContent = (meta.ownerTitle ? '主对话「' + meta.ownerTitle + '」' : '') +
             (meta.ownerTitle && snap ? ' · ' : '') + snap;
-        note.dataset.tip = '历史是主对话在分叉那一刻的快照，此后主对话的进展这里看不到';
         head.append(title, note);
 
         // ---- 胶囊条（三枚：智能体团队 / 后台终端 / 计时器；点开回到面板的对应弹层） ----
@@ -113,7 +112,6 @@ export function createBridgeSideChat(deps) {
             const btn = document.createElement('button');
             btn.type = 'button';
             btn.className = 'sidechat-chip';
-            btn.dataset.tip = def.label;
             btn.innerHTML = iconSvg(def.icon, 12);
             const badge = document.createElement('span');
             badge.className = 'sidechat-chip-badge';

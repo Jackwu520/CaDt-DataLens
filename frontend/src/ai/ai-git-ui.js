@@ -39,11 +39,6 @@ export function createAIGitUi(ctx) {
             branch: aiTextOf(repo && repo.branch),
         };
         el.gitBtn.classList.toggle('hidden', !available);
-        if (available) {
-            el.gitBtn.dataset.tip = 'Git 操作' + (gitEntryState.branch ? '（' + gitEntryState.branch + '）' : '');
-        } else {
-            el.gitBtn.dataset.tip = 'Git 操作';
-        }
     }
 
     function gitActionBlockedReason(session) {
@@ -94,6 +89,7 @@ export function createAIGitUi(ctx) {
         const rect = el.gitBtn.getBoundingClientRect();
         showContextMenu(GIT_ACTIONS.map((action) => ({
             label: action.label,
+            icon: action.icon,
             action: () => runGitAction(action.id),
         })), rect.left - 40, rect.bottom + 4);
     }

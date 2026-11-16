@@ -57,6 +57,9 @@ export function messageFingerprint(message) {
         // 计划模式落盘路径：后补写（升级前的待批准计划 / 写盘失败后重试）只改这一个字段，
         // 不进指纹就会被「指纹没变」挡在就地截断之外，重启后又得重算一次。
         textOf(message.planFile),
+        // 思考循环守卫的状态在流中被就地改写（warned→pending→continued/stopped）：
+        // 不进指纹会被「指纹没变」挡在就地截断之外，重启重放又会回到 pending。
+        message.guard ? textOf(message.guard.state) + ':' + textOf(message.guard.action) + ':' + textOf(message.guard.source) : '',
         Number(message.turnMs) || 0,
         Number(message.thinkMs) || 0,
         Number(message.finishedAt) || 0,

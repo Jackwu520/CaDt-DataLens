@@ -280,6 +280,7 @@
                     <div class="snav-children">
                         <button type="button" class="snav-item snav-child" data-pane="models"><span class="snav-ic" data-icon="zap"></span><span>模型</span></button>
                         <button type="button" class="snav-item snav-child" data-pane="gen-models"><span class="snav-ic" data-icon="image"></span><span>生图与视频</span></button>
+                        <button type="button" class="snav-item snav-child" data-pane="external-tools"><span class="snav-ic" data-icon="globe"></span><span>外部工具</span></button>
                         <button type="button" class="snav-item snav-child" data-pane="ai"><span class="snav-ic" data-icon="sparkles"></span><span>AI 助手</span></button>
                         <button type="button" class="snav-item snav-child" data-pane="permissions"><span class="snav-ic" data-icon="shield"></span><span>权限</span></button>
                         <button type="button" class="snav-item snav-child" data-pane="persona"><span class="snav-ic" data-icon="star"></span><span>个性化</span></button>
@@ -701,6 +702,35 @@
                         </div>
                         <div id="ai-gen-list"></div>
                     </div>
+                    <div class="settings-pane hidden" data-pane="external-tools">
+                        <div class="set-group-title">能力来源</div>
+                        <div class="set-card">
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">外部能力来源</div><div class="set-desc">搜索 / 抓取默认用内置 Bing，OCR / 语音合成 / 语音识别默认关闭。选「本地 MCP」需要先在下方配置服务器并勾选工具；本地 MCP 来源只在写权限档（非计划模式）向 AI 开放。来源=服务提供商时会把本次请求的文件 / 文本上传到外部服务并产生费用。</div></div>
+                            </div>
+                        </div>
+                        <div id="extcap-list"></div>
+
+                        <div class="set-group-title">服务提供商（DeepSeek 工具 API）</div>
+                        <div class="set-card" id="extcap-provider"></div>
+
+                        <div class="set-group-title">MCP 服务器</div>
+                        <div class="set-card">
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">MCP 客户端<button type="button" class="info-tip" data-tip="连接本机 MCP 服务器（stdio），把远端工具并入 AI 工具表。服务器命令在本机执行，等同于你自己运行它；子进程环境自动过滤疑似密钥变量。不配置则零开销。" aria-label="MCP 客户端说明">i</button></div><div class="set-desc">把外部工具并入 AI 工具表；不配置则零开销</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="ai-opt-mcp-enabled"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">服务器</div><div class="set-desc">工具勾选决定 AI 能看到哪些远端工具，默认全不勾；也可在「能力来源」里绑定为搜索 / OCR / 语音等能力的来源。也可以让 AI 代填命令与参数（环境变量值与工具授权仍由你完成，每次保存都会确认本机命令）</div></div>
+                                <div class="set-control">
+                                    <button type="button" id="ai-opt-mcp-add" class="dlg-btn">添加服务器</button>
+                                </div>
+                            </div>
+                            <div id="ai-opt-mcp-list"></div>
+                        </div>
+                    </div>
                     <div class="settings-pane hidden" data-pane="ai">
                         <div class="set-group-title">界面</div>
                         <div class="set-card">
@@ -870,23 +900,6 @@
                                     <input type="number" id="ai-opt-subagent-depth" class="ai-settings-input ai-font-size-num" min="0" max="20" step="1" value="0">
                                 </div>
                             </div>
-                        </div>
-
-                        <div class="set-group-title">MCP 服务器</div>
-                        <div class="set-card">
-                            <div class="set-row">
-                                <div class="set-main"><div class="set-title">MCP 客户端<button type="button" class="info-tip" data-tip="连接本机 MCP 服务器（stdio），把远端工具并入 AI 工具表。服务器命令在本机执行，等同于你自己运行它；子进程环境自动过滤疑似密钥变量。不配置则零开销。" aria-label="MCP 客户端说明">i</button></div><div class="set-desc">把外部工具并入 AI 工具表；不配置则零开销</div></div>
-                                <div class="set-control">
-                                    <label class="set-switch"><input type="checkbox" id="ai-opt-mcp-enabled"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
-                                </div>
-                            </div>
-                            <div class="set-row">
-                                <div class="set-main"><div class="set-title">服务器</div><div class="set-desc">工具勾选决定 AI 能看到哪些远端工具，默认全不勾</div></div>
-                                <div class="set-control">
-                                    <button type="button" id="ai-opt-mcp-add" class="dlg-btn">添加服务器</button>
-                                </div>
-                            </div>
-                            <div id="ai-opt-mcp-list"></div>
                         </div>
 
                         <div class="set-group-title">通知</div>
@@ -1187,7 +1200,7 @@
                         <div class="set-card">
                             <div class="set-row">
                                 <div class="set-main"><div class="set-title">筛选</div></div>
-                                <div class="set-control">
+                                <div class="set-control ai-pref-filter">
                                     <input id="ai-opt-pref-filter" class="ai-settings-input" type="text" placeholder="搜索偏好内容…" spellcheck="false" autocomplete="off">
                                     <span class="popover-value" id="ai-opt-pref-count">0 条</span>
                                 </div>
@@ -2435,9 +2448,9 @@
             </div>
         </div>
         <aside id="ai-panel" class="hidden" aria-label="AI 助手">
-            <div class="ai-resize ai-resize-l" data-ai-resize="l" data-tip="拖动调整宽度" aria-label="拖动调整宽度"></div>
+            <div class="ai-resize ai-resize-l" data-ai-resize="l" aria-label="拖动调整宽度"></div>
             <div class="ai-resize ai-resize-r" data-ai-resize="r"></div>
-            <div class="ai-resize ai-resize-t" data-ai-resize="t" data-tip="拖动调整高度" aria-label="拖动调整高度"></div>
+            <div class="ai-resize ai-resize-t" data-ai-resize="t" aria-label="拖动调整高度"></div>
             <div class="ai-resize ai-resize-b" data-ai-resize="b"></div>
             <div class="ai-resize ai-resize-tl" data-ai-resize="tl"></div>
             <div class="ai-resize ai-resize-tr" data-ai-resize="tr"></div>

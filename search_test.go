@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"unicode/utf16"
@@ -187,5 +188,140 @@ func TestSearchWorkspaceBuiltinFallback(t *testing.T) {
 		if hit.Name != "fallback.txt" || previewMatch(hit) != "Needle" {
 			t.Fatalf("unexpected hit: %+v", hit)
 		}
+	}
+}
+
+func TestSearchArtifactPathClassifier(t *testing.T) {
+	cases := []struct {
+		rel  string
+		want bool
+	}{
+		{"src/main.go", false},
+		{"README.md", false},
+		{"distributions/app.js", false},
+		{"notes.mapping", false},
+		{"frontend/dist/assets/index-DuKKsrlq.js", true},
+		{"build/out.txt", true},
+		{"src/vendor/lib.go", true},
+		{"a/b/index.min.css", true},
+		{".next/server/chunk.js", true},
+		{"maps/app.js.map", true},
+		{`frontend\dist\assets\index.js`, true},
+	}
+	for _, tc := range cases {
+		if got := searchIsArtifactPath(tc.rel); got != tc.want {
+			t.Fatalf("searchIsArtifactPath(%q) = %v, want %v", tc.rel, got, tc.want)
+		}
+	}
+}
+
+func TestSearchArtifactTierAfterSource(t *testing.T) {
+	t.Setenv("DATALENS_NO_RG", "1")
+	dir := t.TempDir()
+	// dist 字典序在 src 之前；分档后产物命中必须仍排在源码命中之后，
+	// 且产物文件名命中也不能越过源码档。
+	writeSearchFile(t, filepath.Join(dir, "dist", "needle-bundle.js"), "needle\n")
+	writeSearchFile(t, filepath.Join(dir, "src", "main.go"), "needle\n")
+	app := NewApp()
+	res, err := app.SearchWorkspace(dir, "needle", false, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Hits) != 2 {
+		t.Fatalf("expected 2 hits, got %d: %+v", len(res.Hits), res.Hits)
+	}
+	if res.Hits[0].Name != "main.go" {
+		t.Fatalf("expected source hit first, got %+v", res.Hits)
+	}
+	if res.Hits[1].Name != "needle-bundle.js" {
+		t.Fatalf("expected artifact hit last, got %+v", res.Hits)
+	}
+	if res.ArtifactSkipped {
+		t.Fatalf("artifact pass ran, ArtifactSkipped must stay false")
+	}
+}
+
+func TestSearchNameHitSortsFirstInTier(t *testing.T) {
+	t.Setenv("DATALENS_NO_RG", "1")
+	dir := t.TempDir()
+	writeSearchFile(t, filepath.Join(dir, "a-notes.txt"), "needle\n")
+	writeSearchFile(t, filepath.Join(dir, "z-needle.txt"), "needle\n")
+	app := NewApp()
+	res, err := app.SearchWorkspace(dir, "needle", false, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Hits) != 2 {
+		t.Fatalf("expected 2 hits, got %d", len(res.Hits))
+	}
+	if res.Hits[0].Name != "z-needle.txt" {
+		t.Fatalf("expected name-hit file first, got %+v", res.Hits)
+	}
+}
+
+func TestSearchSourceTierFillsCapFirst(t *testing.T) {
+	t.Setenv("DATALENS_NO_RG", "1")
+	dir := t.TempDir()
+	writeSearchFile(t, filepath.Join(dir, "a.txt"), "needle\n")
+	writeSearchFile(t, filepath.Join(dir, "b.txt"), "needle\n")
+	writeSearchFile(t, filepath.Join(dir, "dist", "bundle.js"), "needle\n")
+	app := NewApp()
+	res, err := app.SearchWorkspace(dir, "needle", false, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Hits) != 2 || !res.Truncated {
+		t.Fatalf("expected 2 truncated hits, got %d truncated=%v", len(res.Hits), res.Truncated)
+	}
+	if !res.ArtifactSkipped {
+		t.Fatalf("source tier filled the cap, ArtifactSkipped must be true")
+	}
+	for _, hit := range res.Hits {
+		if searchIsArtifactPath(hit.Dir) {
+			t.Fatalf("artifact hit must not crowd out source tier: %+v", res.Hits)
+		}
+	}
+}
+
+func TestSearchRgArtifactSkippedFlag(t *testing.T) {
+	if _, err := exec.LookPath("rg"); err != nil {
+		t.Skip("未安装 ripgrep，跳过 rg 路径")
+	}
+	dir := t.TempDir()
+	writeSearchFile(t, filepath.Join(dir, "a.txt"), "needle\n")
+	writeSearchFile(t, filepath.Join(dir, "b.txt"), "needle\n")
+	writeSearchFile(t, filepath.Join(dir, "dist", "bundle.js"), "needle\n")
+	app := NewApp()
+	res, err := app.SearchWorkspace(dir, "needle", false, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Hits) != 2 || !res.Truncated || !res.ArtifactSkipped {
+		t.Fatalf("expected 2 truncated source hits with ArtifactSkipped, got %+v", res)
+	}
+}
+
+func TestSearchRgArtifactTierAndNameHit(t *testing.T) {
+	if _, err := exec.LookPath("rg"); err != nil {
+		t.Skip("未安装 ripgrep，跳过 rg 路径")
+	}
+	dir := t.TempDir()
+	writeSearchFile(t, filepath.Join(dir, "dist", "bundle.js"), "needle\n")
+	writeSearchFile(t, filepath.Join(dir, "src", "main.go"), "needle\n")
+	writeSearchFile(t, filepath.Join(dir, "a-notes.txt"), "needle\n")
+	writeSearchFile(t, filepath.Join(dir, "z-needle.txt"), "needle\n")
+	app := NewApp()
+	res, err := app.SearchWorkspace(dir, "needle", false, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Hits) != 4 {
+		t.Fatalf("expected 4 rg hits, got %d: %+v", len(res.Hits), res.Hits)
+	}
+	if res.Hits[0].Name != "z-needle.txt" {
+		t.Fatalf("expected name-hit file first, got %+v", res.Hits)
+	}
+	if last := res.Hits[3]; !searchIsArtifactPath(last.Dir) {
+		t.Fatalf("expected artifact hit last, got %+v", res.Hits)
 	}
 }

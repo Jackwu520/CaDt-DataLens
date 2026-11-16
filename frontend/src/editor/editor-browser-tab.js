@@ -214,7 +214,6 @@ function createBrowserView(doc) {
         const b = document.createElement('button');
         b.type = 'button';
         b.className = 'browser-btn';
-        b.dataset.tip = title;
         b.innerHTML = iconSvg(icon, 14);
         b.addEventListener('click', action);
         return b;

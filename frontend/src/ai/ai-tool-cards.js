@@ -464,6 +464,9 @@ export function createAIToolCards(ctx) {
             case 'generate_image': return {verb: '生成图片', icon: 'image'};
             case 'generate_video': return {verb: '生成视频', icon: 'image'};
             case 'check_gen': return {verb: '查询生成', icon: 'refresh'};
+            case 'ocr': return {verb: '文字识别', icon: 'scan'};
+            case 'text_to_speech': return {verb: '语音合成', icon: 'speaker'};
+            case 'transcribe_audio': return {verb: '语音识别', icon: 'microphone'};
             case 'write_file': return {verb: (approval && approval.newFile) ? '新建' : '写入', icon: 'save'};
             case 'edit_file': return {verb: '编辑', icon: 'rename'};
             case 'propose_patch': return {verb: '补丁', icon: 'save'};
@@ -530,6 +533,10 @@ export function createAIToolCards(ctx) {
                 return {primary: aiTextOf(args.url).trim() || '—', dir: ''};
             case 'generate_image': case 'generate_video':
                 return {primary: aiTextOf(args.prompt).trim().slice(0, 60) || '—', dir: ''};
+            case 'ocr': case 'transcribe_audio':
+                return {primary: base || path || '—', dir};
+            case 'text_to_speech':
+                return {primary: aiTextOf(args.text).trim().replace(/\s+/g, ' ').slice(0, 60) || '—', dir: ''};
             case 'check_gen':
                 return {primary: aiTextOf(args.jobId).trim() || '—', dir: ''};
             case 'browser_navigate':
@@ -676,7 +683,6 @@ export function createAIToolCards(ctx) {
             const primary = document.createElement('span');
             primary.className = 'ai-tool-primary';
             primary.textContent = info.primary;
-            primary.dataset.tip = info.primary;
             if (isRead || isImageRead) {
                 // 路径名即超链接：点击在标签页打开，读取带 offset 时跳到对应行
                 primary.classList.add('ai-tool-link');
@@ -761,7 +767,6 @@ export function createAIToolCards(ctx) {
             const task = document.createElement('div');
             task.className = 'ai-agent-task';
             task.textContent = agent.task || '';
-            task.dataset.tip = agent.task || '';
             body.appendChild(task);
             // 后台派单：结束时机独立于主回合，卡片上明确「不阻塞、完成才通知」
             if (agent.state === 'running' && agent.mode === 'background') {
@@ -885,7 +890,6 @@ export function createAIToolCards(ctx) {
                     const thumb = document.createElement('button');
                     thumb.type = 'button';
                     thumb.className = 'ai-gen-thumb';
-                    thumb.dataset.tip = file.path + '\n点击在标签页打开';
                     const img = document.createElement('img');
                     img.alt = '生成图';
                     img.loading = 'lazy';
@@ -1303,7 +1307,13 @@ export function createAIToolCards(ctx) {
             think.dataset.thinkKey = thinkKey;
             think.classList.toggle('thinking', !!streaming);
             const label = think.querySelector('.ai-think-label');
-            if (label) label.textContent = aiThinkLabel(message, !!streaming);
+            if (label) {
+                label.textContent = aiThinkLabel(message, !!streaming);
+                const guardState = message.guard && message.guard.state;
+                label.classList.toggle('ai-think-guard',
+                    guardState === 'warned' || guardState === 'pending' ||
+                    guardState === 'continued' || guardState === 'stopped');
+            }
             renderThinkBody(think.querySelector('.ai-think-body'), message, !!streaming);
             const storedThink = thinkFoldState.get(thinkKey);
             if (storedThink !== undefined) think.classList.toggle('collapsed', storedThink);

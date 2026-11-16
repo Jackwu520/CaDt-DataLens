@@ -79,7 +79,6 @@ export function createAIMessageQueue(ctx) {
             if (imageCount) meta.push(imageCount + ' 张图片');
             if (attachCount) meta.push(attachCount + ' 个附件');
             text.textContent = (item.text || '（无文字）') + (meta.length ? ' · ' + meta.join(' · ') : '');
-            text.dataset.tip = item.text || '';
             const edit = document.createElement('button');
             edit.type = 'button';
             edit.className = 'ai-queue-action ai-queue-icon';

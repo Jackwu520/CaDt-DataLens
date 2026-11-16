@@ -5990,6 +5990,7 @@ div.jsoneditor-tree textarea { user-select: text; }
 }
 .ai-think-head:hover { background: var(--hover); color: var(--text); }
 .ai-think.thinking .ai-think-head { color: var(--accent); }
+.ai-think-head .ai-think-label.ai-think-guard { color: var(--warn); }
 .ai-think-chev {
     flex: none;
     width: 10px;
@@ -6712,6 +6713,13 @@ div.jsoneditor-tree textarea { user-select: text; }
     white-space: nowrap;
 }
 .ai-takeover-foot .dlg-btn { flex: none; }
+/* 系统接管（思考循环守卫等）：默认动作用危险色，和普通主操作区分开 */
+.ai-system-takeover .ai-takeover-foot .dlg-btn.danger {
+    background: var(--danger, #f85149);
+    border-color: var(--danger, #f85149);
+    color: #fff;
+}
+.ai-system-takeover .ai-takeover-foot .dlg-btn.danger:hover { filter: brightness(1.06); }
 /* 审批接管（写文件 / 终端命令）：diff 或命令内容吃满剩余高度并内部滚动，
    「放弃 / 应用」固定在底部操作条，永远可见 */
 .ai-approval-takeover { gap: 6px; }
@@ -8116,7 +8124,15 @@ div.jsoneditor-tree textarea { user-select: text; }
 .ai-pref-row { display: flex; align-items: center; gap: 6px; padding: 2px 4px; border-radius: 4px; font-size: 11.5px; }
 .ai-pref-row:hover { background: var(--hover); }
 .ai-pref-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ai-pref-src { flex: none; padding: 0 5px; height: 15px; line-height: 15px; border-radius: 7px; background: var(--accent-weak); color: var(--accent); font-size: 9.5px; }
+.ai-pref-src { flex: none; padding: 0 5px; height: 15px; line-height: 15px; border-radius: 7px; background: var(--muted-weak, var(--hover)); color: var(--muted); font-size: 9.5px; }
+/* AI 记录的偏好用强调色徽标（对齐 .ai-sched-badge.on），「你」保持中性色 */
+.ai-pref-src.on { background: var(--accent-weak); color: var(--accent); }
+.ai-pref-actions { flex: none; display: flex; gap: 3px; }
+/* 筛选行：搜索框与计数锁定一行 —— set-control 默认 wrap + 输入框 flex-basis 320px，
+   窄面板下会把「N 条」计数挤到搜索框下面第二行（150% 缩放必现），这里强制不换行 */
+.set-control.ai-pref-filter { flex-wrap: nowrap; }
+.set-control.ai-pref-filter .ai-settings-input { flex: 1 1 210px; width: auto; min-width: 140px; }
+.set-control.ai-pref-filter .popover-value { flex: none; }
 .ai-pref-btn { flex: none; width: 18px; height: 18px; display: grid; place-items: center; padding: 0; border: none; border-radius: 3px; background: none; color: var(--muted); cursor: pointer; }
 .ai-pref-btn:hover { background: var(--hover); color: var(--text); }
 /* 设置 → AI → 定时任务 */

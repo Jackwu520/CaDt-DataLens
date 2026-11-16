@@ -82,6 +82,16 @@ test('messageFingerprint：计划落盘路径变化要能触发重写', () => {
     assert.equal(messageFingerprint({...message}), after);
 });
 
+test('messageFingerprint：思考循环守卫状态变化要能触发重写', () => {
+    const message = {role: 'assistant', status: 'stopped', content: '', guard: {state: 'pending'}};
+    const before = messageFingerprint(message);
+    // pending → stopped 发生在同一条流里：不重写的话磁盘上会一直停在「待确认」。
+    message.guard = {state: 'stopped', action: 'stop', source: 'timeout'};
+    const after = messageFingerprint(message);
+    assert.notEqual(before, after);
+    assert.equal(messageFingerprint({...message, guard: {...message.guard}}), after);
+});
+
 test('truncate keeps prefix', () => {
     const text = logOf(
         encodeSessionHeader({id: 's1'}),

@@ -103,7 +103,6 @@ function buildActivityRow(entry) {
     const target = document.createElement('span');
     target.className = 'act-target';
     target.textContent = entry.target || '';
-    target.dataset.tip = entry.target || '';
 
     row.append(time, badge, action, target);
 
