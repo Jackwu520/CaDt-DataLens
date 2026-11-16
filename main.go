@@ -12,6 +12,7 @@ import (
 
 	"datalens/internal/applog"
 	"datalens/internal/convertcli"
+	"datalens/internal/installercli"
 	"datalens/internal/patchcli"
 	"datalens/internal/previewassets"
 )
@@ -39,7 +40,7 @@ func disableMiniMenu() {
 
 func main() {
 	disableMiniMenu()
-	if runInstallerCommand(os.Args[1:]) {
+	if installercli.Run(os.Args[1:]) {
 		return
 	}
 	convertOpts, isConvert, convertErr := convertcli.ParseArgs(os.Args[1:])

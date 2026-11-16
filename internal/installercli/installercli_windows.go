@@ -1,6 +1,7 @@
 //go:build windows
 
-package main
+// installercli：安装包调用的 --integrate/--unintegrate 集成命令（文件关联、右键菜单、PATH、agent 技能）。
+package installercli
 
 import (
 	"fmt"
@@ -50,8 +51,8 @@ func parseIntegrationArgs(args []string) (string, []string) {
 	return mode, actions
 }
 
-// runInstallerCommand 处理安装包调用的集成命令；返回 true 表示已处理并应直接退出。
-func runInstallerCommand(args []string) bool {
+// Run 处理安装包调用的集成命令；返回 true 表示已处理并应直接退出。
+func Run(args []string) bool {
 	mode, actions := parseIntegrationArgs(args)
 	if mode == "" {
 		return false
