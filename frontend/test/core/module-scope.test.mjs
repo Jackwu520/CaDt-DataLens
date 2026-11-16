@@ -140,10 +140,10 @@ const HOSTS = [
         modules: ['ai/ai-patch-card.js', 'ai/ai-ask-cards.js'],
     },
     {
-        // 详情视图与宿主共享同一个 ctx；块模型纯函数与运行态注册表（const Map 活引用）、
-        // 运行时动作经 extras 注入
+        // 详情视图 / 头部 HUD 与宿主共享同一个 ctx；块模型纯函数与运行态注册表
+        // （const Map 活引用）、运行时动作经 extras 注入
         host: 'ai/ai-subagents.js',
-        modules: ['ai/ai-agent-view.js'],
+        modules: ['ai/ai-agent-view.js', 'ai/ai-head-hud.js'],
     },
 ];
 

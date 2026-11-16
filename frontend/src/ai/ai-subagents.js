@@ -1,10 +1,10 @@
 // ai-subagents.js：子代理域宿主（spawn_agent 运行时 / 收件箱 / 压缩 / 提问 / 后台命令桥 + 块模型纯函数）。
-// 详情视图已拆至 ai-agent-view.js（phase3 A4a 同域兄弟模块：ctx 同源、extras 注入，函数体逐字搬移）；
-// 本文件仍保留 HUD 头部块（chips/弹层）与运行时核心。块模型纯函数留守（ai-subagents.test.mjs）。
-// 详情视图挂在宿主给的根节点上：主窗口是内容区标签页（bridge-agent-view.js），悬浮窗退回面板内覆盖层 #ai-agent-view。
-// hudReady/AGENT_STATE_LABEL 与 AI_SUB_* 常量随域迁入；chipsPopKind 经访问器读写。
-import {iconSvg} from '../core/icons.js';
+// 详情视图与头部 HUD 已拆至 ai-agent-view.js / ai-head-hud.js（phase3 A4 同域兄弟模块：
+// ctx 同源、extras 注入，函数体逐字搬移）；本文件是三域共享状态的持有者与运行时核心。
+// 块模型纯函数留守（ai-subagents.test.mjs）。详情视图挂载点：主窗口是内容区标签页
+// （bridge-agent-view.js），悬浮窗退回面板内覆盖层 #ai-agent-view。
 import {createAIAgentView} from './ai-agent-view.js';
+import {createAIHeadHud} from './ai-head-hud.js';
 import {aiClampInt, aiNowId, aiTextOf, AI_COMPACT_SYSTEM_PROMPT} from './ai-constants.js';
 import {AI_TOOL_DEFS} from './ai-tool-defs.js';
 import {inspectToolArguments} from './ai-tool-args.js';
@@ -198,8 +198,6 @@ export function createAISubagents(ctx) {
         '结果投递契约：主代理只会收到你的最终结论文本，看不到你的完整转录、工具输出或推理过程——最终结论必须自带结果与关键证据（path:line），不要指望父代理从过程记录里找信息。',
         '完成后输出一段结构化最终结论（要点 + 证据 path:line），它是你返回给主代理的唯一结果。',
     ].join('\n');
-    let hudReady = false;             // HUD 块执行完才置真，之前的 renderSessionList 调用跳过
-    const AGENT_STATE_LABEL = {running: '运行中', done: '已完成', error: '失败', stopped: '已停止'};
 
     const subAgents = new Map();      // subId -> 子代理运行态
     const subAgentTranscripts = new Map(); // spawn key -> [{role, name?, text}]
@@ -231,6 +229,41 @@ export function createAISubagents(ctx) {
     const openAgentView = (...args) => viewMod.openAgentView(...args);
     const mountAgentView = (...args) => viewMod.mountAgentView(...args);
     const unmountAgentView = (...args) => viewMod.unmountAgentView(...args);
+
+    // 头部 HUD（phase3 A4b 拆出的同域兄弟模块）：ctx 同源直传；运行态注册表（const Map 活引用）
+    // 与运行时动作 / 视图入口经 extras 注入。留守侧调用点（运行时刷新 / 派单归属判定）与
+    // 返回面经同名惰性别名零改动。
+    const hudMod = createAIHeadHud(ctx, {
+        subAgents, subAgentRecords,
+        unseenInboxCount: (...args) => unseenInboxCount(...args),
+        openAgentView: (...args) => openAgentView(...args),
+    });
+    const sessionTitleOf = (...args) => hudMod.sessionTitleOf(...args);
+    const sessionTitleById = (...args) => hudMod.sessionTitleById(...args);
+    const updateHeadIdentity = (...args) => hudMod.updateHeadIdentity(...args);
+    const bgJobStateOf = (...args) => hudMod.bgJobStateOf(...args);
+    const rootSessionIdOf = (...args) => hudMod.rootSessionIdOf(...args);
+    const hudSessionId = (...args) => hudMod.hudSessionId(...args);
+    const bgEntryOwnerId = (...args) => hudMod.bgEntryOwnerId(...args);
+    const isBgEntryOfHud = (...args) => hudMod.isBgEntryOfHud(...args);
+    const hudBgEntries = (...args) => hudMod.hudBgEntries(...args);
+    const sessionHasLiveBgJob = (...args) => hudMod.sessionHasLiveBgJob(...args);
+    const runningBgCount = (...args) => hudMod.runningBgCount(...args);
+    const listAgentsForHud = (...args) => hudMod.listAgentsForHud(...args);
+    const setChipCount = (...args) => hudMod.setChipCount(...args);
+    const notifyBackgroundActivity = (...args) => hudMod.notifyBackgroundActivity(...args);
+    const refreshHeadChips = (...args) => hudMod.refreshHeadChips(...args);
+    const updateHeadHud = (...args) => hudMod.updateHeadHud(...args);
+    const hideChipsPop = (...args) => hudMod.hideChipsPop(...args);
+    const positionChipsPop = (...args) => hudMod.positionChipsPop(...args);
+    const agentStateBadge = (...args) => hudMod.agentStateBadge(...args);
+    const agentStatusIcon = (...args) => hudMod.agentStatusIcon(...args);
+    const bgJobFirstLine = (...args) => hudMod.bgJobFirstLine(...args);
+    const taskSnippet = (...args) => hudMod.taskSnippet(...args);
+    const openBgTermInContent = (...args) => hudMod.openBgTermInContent(...args);
+    const renderChipsPop = (...args) => hudMod.renderChipsPop(...args);
+    const toggleChipsPop = (...args) => hudMod.toggleChipsPop(...args);
+    const initHud = (...args) => hudMod.initHud(...args);
     // 收件箱（阶段 C 起启用）：排队 / 插队 / 提问挂起。这里先建结构，B 阶段不消费。
     function newSubInbox() {
         return {step: [], turn: [], ask: null};
@@ -311,339 +344,6 @@ export function createAISubagents(ctx) {
         }, 350);
     }
 
-    // ---- 头部 HUD：会话标题 + 智能体团队 / 后台终端入口 ----
-    // 标题显示当前会话标题（自动标题/改名/切换经 renderSessionList 统一走 updateHeadHud）；
-    // 两个 chip 是常驻入口：智能体团队（子代理状态）与后台终端（background_command 作业）。
-    // 状态注册表声明在闭包顶部（el 之后），这里只放行为函数。
-
-    function sessionTitleOf(sessionId) {
-        const session = sessionById(sessionId);
-        return session ? (session.title || '新会话') : '';
-    }
-
-    function sessionTitleById(id) {
-        const session = getSessions().find((s) => s.id === id);
-        return session ? (session.title || '新会话') : '';
-    }
-
-    function updateHeadIdentity() {
-        if (!el.headTitle) return;
-        const session = currentSession();
-        const title = session ? String(session.title || '').trim() : '';
-        el.headTitle.textContent = title || 'AI 助手';
-    }
-
-    function bgJobStateOf(entry) {
-        const bg = entry && entry.message && entry.message.bg;
-        return (bg && bg.state) || 'unknown';
-    }
-
-    // 头部两个入口与 dsh 一致：只展示「当前会话」的后台任务 / 子代理。
-    // 子代理的会话对象带 rootSessionId，因此子代理里启动的后台命令归到根会话名下。
-    function rootSessionIdOf(session) {
-        if (!session) return '';
-        return session.rootSessionId || session.parentSessionId || session.id || '';
-    }
-
-    function hudSessionId() {
-        const session = currentSession();
-        return session ? session.id : '';
-    }
-
-    function bgEntryOwnerId(entry) {
-        if (!entry) return '';
-        return entry.rootSessionId || rootSessionIdOf(entry.session);
-    }
-
-    function isBgEntryOfHud(entry) {
-        const id = hudSessionId();
-        return !!id && bgEntryOwnerId(entry) === id;
-    }
-
-    function hudBgEntries() {
-        return [...bgJobIndex.values()].filter(isBgEntryOfHud);
-    }
-
-    // 某个会话是否还有正在跑的后台命令（会话列表的运行中标记用）
-    function sessionHasLiveBgJob(sessionId) {
-        if (!sessionId) return false;
-        for (const entry of bgJobIndex.values()) {
-            if (bgEntryOwnerId(entry) !== sessionId) continue;
-            if (bgJobStateOf(entry) === 'running') return true;
-        }
-        return false;
-    }
-
-    function runningBgCount() {
-        let n = 0;
-        for (const entry of hudBgEntries()) {
-            if (bgJobStateOf(entry) === 'running') n++;
-        }
-        return n;
-    }
-
-    function listAgentsForHud() {
-        const out = [];
-        const seen = new Set();
-        const ownerId = hudSessionId();
-        const belongs = (owner) => !ownerId || !owner || owner === ownerId;
-        for (const sub of subAgents.values()) {
-            seen.add(sub.key);
-            if (!belongs(sub.rootSessionId || sub.parentSessionId)) continue;
-            out.push({toolCallId: sub.key, key: sub.key, subId: sub.id, name: sub.name, task: sub.task,
-                depth: sub.depth, state: 'running', startedAt: sub.startedAt,
-                mode: sub.mode || 'blocking', continuable: true,
-                inboxCount: unseenInboxCount(sub),
-                compacting: !!sub.compacting,
-                sessionTitle: sessionTitleOf(sub.parentSessionId)});
-        }
-        for (const [key, meta] of agentRegistry) {
-            if (seen.has(key)) continue;
-            seen.add(key);
-            if (!belongs(meta.rootSessionId || meta.parentSessionId)) continue;
-            out.push({...meta, toolCallId: key, key, sessionTitle: sessionTitleOf(meta.parentSessionId)});
-        }
-        // 终态记录兜底：records 里还活引用着的条目比 registry / 持久化 meta 更新（含续轮后的轮次与摘要）
-        for (const rec of subAgentRecords.values()) {
-            if (seen.has(rec.key)) continue;
-            seen.add(rec.key);
-            if (!belongs(rec.rootSessionId || rec.parentSessionId)) continue;
-            out.push({
-                toolCallId: rec.toolCallId || rec.key, key: rec.key, subId: rec.id, name: rec.name,
-                task: rec.task, depth: rec.depth, state: rec.state, startedAt: rec.startedAt,
-                rounds: rec.rounds, ms: rec.ms, tokens: rec.tokens, summary: rec.summary,
-                mode: rec.mode, continuable: rec.continuable,
-                sessionTitle: sessionTitleOf(rec.parentSessionId),
-            });
-        }
-        // 重启后兜底：当前会话持久化的 spawn_agent meta（转录已不在内存）
-        const session = currentSession();
-        if (session) {
-            for (const m of session.messages) {
-                const key = (m.agent && m.agent.key) || m.toolCallId;
-                if (m.role !== 'tool' || m.name !== 'spawn_agent' || !m.agent || seen.has(key)) continue;
-                seen.add(key);
-                out.push({toolCallId: key, key, depth: m.agent.depth || 1, name: m.agent.name || '子代理',
-                    task: m.agent.task || '', state: m.agent.state || 'done', summary: m.agent.summary || '',
-                    rounds: m.agent.rounds || 0, ms: m.agent.ms || 0, tokens: m.agent.tokens || 0,
-                    sessionTitle: session.title || ''});
-            }
-        }
-        return out;
-    }
-
-    function setChipCount(chip, total, running) {
-        if (!chip) return;
-        const countEl = chip.querySelector('.ai-chip-count');
-        if (countEl) {
-            if (total > 0) {
-                countEl.textContent = running > 0 ? String(running) : String(total);
-                countEl.classList.remove('hidden');
-            } else {
-                countEl.classList.add('hidden');
-            }
-        }
-        chip.classList.toggle('ai-chip-live', running > 0);
-    }
-
-    // 后台作业 / 子代理状态变化：刷新头部角标，并让「会话列表的运行中标记」跟上。
-    function notifyBackgroundActivity() {
-        refreshHeadChips();
-        renderSessionList();
-    }
-
-    function refreshHeadChips() {
-        const agents = listAgentsForHud();
-        const runningAgents = agents.filter((a) => a.state === 'running').length;
-        const jobs = hudBgEntries();
-        setChipCount(el.chipAgents, agents.length, runningAgents);
-        setChipCount(el.chipTerms, jobs.length, runningBgCount());
-    }
-
-    function updateHeadHud() {
-        if (!hudReady) return;
-        updateHeadIdentity();
-        refreshHeadChips();
-    }
-
-    function hideChipsPop() {
-        setChipsPopKind('');
-        if (el.chipsPop) el.chipsPop.classList.add('hidden');
-    }
-
-    function positionChipsPop(chip) {
-        if (!el.chipsPop || !chip) return;
-        const panelRect = panel.getBoundingClientRect();
-        const chipRect = chip.getBoundingClientRect();
-        if (!panelRect.height || !panelRect.width) return;
-        // 先显示再量宽：挂在 chip 下方左对齐，超出面板右缘时往回收
-        const width = el.chipsPop.offsetWidth || 320;
-        el.chipsPop.style.top = (chipRect.bottom - panelRect.top + 6) + 'px';
-        let left = chipRect.left - panelRect.left;
-        if (left + width > panelRect.width - 8) left = Math.max(8, panelRect.width - width - 8);
-        el.chipsPop.style.right = 'auto';
-        el.chipsPop.style.left = Math.max(8, left) + 'px';
-    }
-
-    function agentStateBadge(state) {
-        const span = document.createElement('span');
-        span.className = 'ai-agent-badge ai-agent-' + (AGENT_STATE_LABEL[state] ? state : 'done');
-        span.textContent = AGENT_STATE_LABEL[state] || '已结束';
-        return span;
-    }
-
-    function agentStatusIcon(state) {
-        if (state === 'running') return iconSvg('refresh', 12);
-        if (state === 'exited') return iconSvg('check', 12);
-        if (state === 'stopped' || state === 'notfound') return iconSvg('pause', 12);
-        return iconSvg('warn', 12);
-    }
-
-    function bgJobFirstLine(command) {
-        const line = String(command || '').split('\n', 1)[0].replace(/\s+/g, ' ').trim();
-        if (!line) return '（空命令）';
-        return line.length > 60 ? line.slice(0, 60) + '…' : line;
-    }
-
-    function taskSnippet(task) {
-        const line = String(task || '').replace(/\s+/g, ' ').trim();
-        return line.length > 76 ? line.slice(0, 76) + '…' : line;
-    }
-
-    function openBgTermInContent(entry) {
-        if (!openTermTab) {
-            flash('当前宿主不支持内容区标签页', true);
-            return;
-        }
-        const bg = (entry.message && entry.message.bg) || {};
-        openTermTab({
-            jobId: bg.jobId,
-            command: entry.command,
-            cwd: entry.cwd,
-            state: bgJobStateOf(entry),
-        });
-    }
-
-    function renderChipsPop(kind) {
-        if (!el.chipsPop) return;
-        el.chipsPop.textContent = '';
-        // 其它域的弹层内容（如计时器）：经 ctx 注入的钩子接管，返回 true 表示已渲染
-        if (typeof ctx.renderChipsPopExtra === 'function' && ctx.renderChipsPopExtra(kind, el.chipsPop)) return;
-        const title = document.createElement('div');
-        title.className = 'ai-chips-pop-title';
-        title.textContent = kind === 'agents' ? '智能体团队' : '后台终端';
-        el.chipsPop.appendChild(title);
-        let rows = 0;
-        if (kind === 'agents') {
-            const agents = listAgentsForHud().sort((a, b) =>
-                ((b.state === 'running') - (a.state === 'running')) || ((b.startedAt || 0) - (a.startedAt || 0)));
-            for (const agent of agents) {
-                rows++;
-                const row = document.createElement('button');
-                row.type = 'button';
-                row.className = 'ai-chips-row';
-                row.appendChild(agentStateBadge(agent.state));
-                // 收件箱有未消费消息 / 等待主代理回答：单独一枚徽标（不改变 running 语义）
-                if (agent.inboxCount > 0) {
-                    const wait = document.createElement('span');
-                    wait.className = 'ai-agent-badge ai-agent-waiting';
-                    wait.textContent = '待处理 ' + agent.inboxCount;
-                    row.appendChild(wait);
-                }
-                if (agent.compacting) {
-                    const compacting = document.createElement('span');
-                    compacting.className = 'ai-agent-badge ai-agent-waiting';
-                    compacting.textContent = '压缩中';
-                    row.appendChild(compacting);
-                }
-                const main = document.createElement('span');
-                main.className = 'ai-chips-main';
-                const nameSpan = document.createElement('span');
-                nameSpan.className = 'ai-chips-name';
-                nameSpan.textContent = agent.name || '子代理';
-                const subSpan = document.createElement('span');
-                subSpan.className = 'ai-chips-sub';
-                const bits = [];
-                if (agent.depth > 1) bits.push('第 ' + agent.depth + ' 层');
-                bits.push(taskSnippet(agent.task));
-                if (agent.sessionTitle) bits.push('@ ' + agent.sessionTitle);
-                subSpan.textContent = bits.join(' · ');
-                main.append(nameSpan, subSpan);
-                row.appendChild(main);
-                const go = document.createElement('span');
-                go.className = 'ai-chips-go';
-                go.innerHTML = iconSvg('chevron-right', 12);
-                row.appendChild(go);
-                row.addEventListener('click', () => {
-                    hideChipsPop();
-                    openAgentView({
-                        toolCallId: agent.toolCallId,
-                        subId: agent.subId || '',
-                        name: agent.name || '子代理',
-                        // 详情头部要在这个会话的正文里找 spawn_agent 记录：带上它，就能精确补
-                        // 这一个会话（懒加载下别的会话可能只有 meta）
-                        sessionId: (currentSession() || {}).id || '',
-                    });
-                });
-                el.chipsPop.appendChild(row);
-            }
-        } else {
-            const jobs = hudBgEntries().sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0));
-            for (const entry of jobs) {
-                rows++;
-                const state = bgJobStateOf(entry);
-                const row = document.createElement('button');
-                row.type = 'button';
-                row.className = 'ai-chips-row';
-                const icon = document.createElement('span');
-                icon.className = 'ai-chips-status ai-status-' + state;
-                icon.innerHTML = agentStatusIcon(state);
-                row.appendChild(icon);
-                const main = document.createElement('span');
-                main.className = 'ai-chips-main';
-                main.textContent = bgJobFirstLine(entry.command);
-                row.appendChild(main);
-                const go = document.createElement('span');
-                go.className = 'ai-chips-go';
-                go.innerHTML = iconSvg('chevron-right', 12);
-                row.appendChild(go);
-                row.addEventListener('click', () => {
-                    hideChipsPop();
-                    openBgTermInContent(entry);
-                });
-                el.chipsPop.appendChild(row);
-            }
-        }
-        if (!rows) {
-            const empty = document.createElement('div');
-            empty.className = 'ai-chips-empty';
-            empty.textContent = kind === 'agents'
-                ? '暂无共享任务'
-                : '暂无后台命令';
-            el.chipsPop.appendChild(empty);
-        }
-    }
-
-    function toggleChipsPop(kind, chip) {
-        if (!el.chipsPop) return;
-        if (getChipsPopKind() === kind) {
-            hideChipsPop();
-            return;
-        }
-        setChipsPopKind(kind);
-        renderChipsPop(kind);
-        el.chipsPop.classList.remove('hidden');
-        positionChipsPop(chip);
-        // 弹层打开时对账后台作业状态：错过的 cmd-exit 不会重放，避免永久显示运行中
-        if (kind === 'terms') {
-            reconcileBgJobs().then(() => {
-                if (getChipsPopKind() !== 'terms') return;
-                renderChipsPop('terms');
-                positionChipsPop(chip);
-            }).catch(() => {});
-        }
-    }
-
     // ---- 后台命令桥接（供 main.js 的内容区终端标签页读取/订阅/停止） ----
 
     function bgJobSnapshot(jobId) {
@@ -674,36 +374,6 @@ export function createAISubagents(ctx) {
         bgJobCursors.set(String(jobId || ''), Number(st && st.cursor) || 0);
         syncBgCardState(String(jobId || ''), st);
         return st || null;
-    }
-
-    if (el.chipAgents) {
-        const iconEl = el.chipAgents.querySelector('.ai-chip-icon');
-        if (iconEl) iconEl.innerHTML = iconSvg('agents', 13);
-        el.chipAgents.addEventListener('click', () => toggleChipsPop('agents', el.chipAgents));
-    }
-    if (el.chipTerms) {
-        const iconEl = el.chipTerms.querySelector('.ai-chip-icon');
-        if (iconEl) iconEl.innerHTML = iconSvg('terminal', 13);
-        el.chipTerms.addEventListener('click', () => toggleChipsPop('terms', el.chipTerms));
-    }
-    // 点面板其他位置关闭 chips 弹层
-    panel.addEventListener('mousedown', (e) => {
-        if (!getChipsPopKind()) return;
-        if (e.target.closest && (e.target.closest('#ai-chips-pop') || e.target.closest('.ai-chip'))) return;
-        hideChipsPop();
-    });
-    // 标题行宽度自适应：不够宽时只显示 icon（保留角标）
-    const headTitleRow = panel.querySelector('.ai-head-title-row');
-    if (headTitleRow && typeof ResizeObserver === 'function') {
-        const headRO = new ResizeObserver(() => {
-            headTitleRow.classList.toggle('ai-head-compact', headTitleRow.clientWidth < 420);
-        });
-        headRO.observe(headTitleRow);
-    }
-    // 面板在原闭包体位次（init 之后）调用：置 HUD 就绪并刷一次头部
-    function initHud() {
-        hudReady = true;
-        updateHeadHud();
     }
 
     // 子代理的父会话（嵌套时取中间那层；找不到就回落当前会话）
