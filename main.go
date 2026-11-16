@@ -11,6 +11,7 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/options/windows"
 
 	"datalens/internal/applog"
+	"datalens/internal/convertcli"
 	"datalens/internal/patchcli"
 	"datalens/internal/previewassets"
 )
@@ -41,7 +42,7 @@ func main() {
 	if runInstallerCommand(os.Args[1:]) {
 		return
 	}
-	convertOpts, isConvert, convertErr := parseConvertArgs(os.Args[1:])
+	convertOpts, isConvert, convertErr := convertcli.ParseArgs(os.Args[1:])
 	if isConvert {
 		attachParentConsole()
 		if convertErr != nil {

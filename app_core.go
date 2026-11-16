@@ -15,6 +15,7 @@ import (
 	"datalens/internal/aitimer"
 	"datalens/internal/browser"
 	"datalens/internal/cmdbridge"
+	"datalens/internal/convertcli"
 	"datalens/internal/debugconsole"
 	"datalens/internal/fileio"
 	"datalens/internal/fsops"
@@ -69,7 +70,7 @@ type App struct {
 	aiTimers               *aitimer.Registry
 	muMCP                  sync.Mutex
 	mcp                    *mcp.Manager
-	convert                *convertOptions
+	convert                *convertcli.Options
 	convertExitCode        int
 	convertDone            atomic.Bool
 }
