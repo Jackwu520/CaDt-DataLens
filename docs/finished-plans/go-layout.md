@@ -1,6 +1,6 @@
 # Go 侧目录与拆包评估
 
-> 状态：**已实施完毕**（2026-11-16）。B1–B4 四批（`998915c` / `79c4706` / `eb2c5df` / `b09fc32`）+ B5 零耦合收尾（`1692006`）+ B6 三域下沉（`2ec9ca1` / `e7a45c8` / `e088f3b` / `4d48808`）+ B7–B12（`ed790d2` / `52580bb` / `86e5af0` / `28f54e1` / `9b624b5`）全部落地，每批 `go test ./...` 与 `wails build -devtools` 全绿。B11（plugins/market/skills）按收益递减暂缓，施工要点见 §10。根目录 180 → **99 个 .go**（69 非测试 + 30 测试）、main 包 40,712 → **12,391 行**，`internal/` 36 个包（27 域 + 9 叶子）。2026-11-14 首轮评估的「暂不抽包」基于当时的高耦合形态，已被实测取代；首轮已落地的部分与判定存档见 §7
+> 状态：**已实施完毕**（2026-11-16）。B1–B4 四批（`998915c` / `79c4706` / `eb2c5df` / `b09fc32`）+ B5 零耦合收尾（`1692006`）+ B6 三域下沉（`2ec9ca1` / `e7a45c8` / `e088f3b` / `4d48808`）+ B7–B12（`ed790d2` / `52580bb` / `86e5af0` / `28f54e1` / `9b624b5`）与 C0–C3（`051c418` / `178079a` / `355434e` / `96aa4f7` / `5cad98b` / `971c264` / `5e95a14` / `ffaaa34` / `0a525b6` / `d7c22a5` / `843c133`）全部落地，每批 `go test ./...` 与 `wails build -devtools` 全绿。B11 已并入 C1 完成。根目录 180 → **79 个 .go**（60 非测试 + 19 测试）、main 包 40,712 → **7,595 行**，`internal/` 46 个包（34 域 + 12 叶子）。2026-11-14 首轮评估的「暂不抽包」基于当时的高耦合形态，已被实测取代；首轮已落地的部分与判定存档见 §7
 > 问题：Go 后端 180 个 `.go`（112 非测试 + 68 测试，40,712 行，module `datalens`）平铺在仓库根、单一 `package main`——能不能像前端那样按域分目录、该拆什么、不该拆什么
 
 ## 0. 结论先行（2026-11-16 复测）
@@ -141,3 +141,23 @@
 **结果**：根目录 125 → **99 个 .go**（69 非测试 + 30 测试）、main 包 22,948 → **12,391 行**；`internal/` 36 个包（27 域 + 9 叶子）。每批 `go test ./... -timeout 300s` 与 `wails build -devtools` 全绿，`frontend/wailsjs` 无差异。
 
 **B11（plugins / market / skills）暂缓**：`plugins.go` 反复读改写根 `AppConfig`（PluginsPathMode / DisabledPlugins），`market.go` 读 DataSource，另有两个 runtime 文件对话框；`skills.go` 的 `//go:embed all:docs/skills` 需改由根壳传 `embed.FS`。施工要点：注入窄配置钩子（读写插件路径模式与禁用列表、读市场源）、文件选择器、embed.FS；测试需改为构造测试服务而非 `NewApp()`。按「收益递减」与平台 glue 留根口径，暂不实施——剩余根目录为 App 核心、绑定壳、平台 glue、CLI 与插件/技能宿主。
+
+## 11. C 系列：B11 落地与剩余收口（2026-11-16）
+
+| 提交 | 范围 | 说明 |
+| --- | --- | --- |
+| `051c418` | C0a `internal/clipboard` | 剪贴板图片读取与平台 stub、测试随包；粘贴绑定只改调用点 |
+| `178079a` | C0b `internal/previewassets` | token 注册表与 /__local/ 中间件随包；reading 去掉 B6a 引入的 RegisterPreviewRoot 钩子 |
+| `355434e` | C0c `internal/aiconfig` | ai-config.json 原子读写随包，Store 嵌入 App |
+| `96aa4f7` | C0d webtools 配置 | external-tools.json 路径/加载/掩码合并并入 internal/webtools |
+| `5cad98b` | C1a `internal/plugins` | 插件安装/更新/删除、资产读取与市场随包；路径模式/禁用列表/市场源经窄配置钩子注入；对话框留根壳；Git 测试拆回根目录 |
+| `971c264` | C1b `internal/skills` | 物化与 agent 技能注册随包；根壳保留 //go:embed 并注入 embed.FS |
+| `5e95a14` | C2a `internal/screenshot` | 窗口截图随包，FindParent 钩子注入 |
+| `ffaaa34` | C2b `internal/notify` | Toast/闪烁/前台判定随包，IconID 与日志钩子注入 |
+| `0a525b6` | C2c `internal/watch` | 监听状态收进 Watcher，App 四个字段移除 |
+| `d7c22a5` | C3a `internal/mcpsamples` | MCP 示例释放与 mcp.json 合并随包，根壳保留 //go:embed 三份脚本 |
+| `843c133` | C3b `internal/patchcli` + patch sidecar | 补丁 CLI 整体下沉；sidecar 读写/文本读取提为 internal/patch 导出能力 |
+
+**结果**：根目录 99 → **79 个 .go**（60 非测试 + 19 测试）、main 包 12,391 → **7,595 行**；`internal/` 46 个包（34 域 + 12 叶子）。绑定名保持不变，`frontend/wailsjs` 无差异；每批全量 `go test ./... -timeout 300s` 与最终 `wails build -devtools` 全绿。
+
+**停止线**：剩余根目录为 App 核心与 Wails 绑定壳、平台 glue（`integration_windows` / `cursors` / `windowicon` / `devtools` / `console`）、CLI 生命周期（`convert_cli` / `installer_cli` / `main`）、补丁与存储的薄壳（`patch_app` / `patch_review` / `storage_app`）以及 `webtools_app` 等转发壳。继续拆分的收益已低于维护成本，布局工作到此结束。
