@@ -1,6 +1,6 @@
 # 前端拆分第三阶段：目录归位 + 多域混装文件解耦
 
-> 状态：**进行中**（2026-11-14 初版；同日二次评估增补 §0 目录约定与 4 个新候选，批次重排为「目录分组」）
+> 状态：**已完成，归档 finished-plans**（2026-11-14 初版；2026-11-17 剩余批次 A2/A4/X1 落地后收口）
 > 实施记录（2026-11-14 22:10 起，四项决策全按推荐：11 目录 / 先 Z / 可选批次都纳入 / S2 拆两次）：
 > - Z 目录归位 `3cb7ca0`：64 文件 git mv + 106 行 import 重写，顶层只剩 main.js；npm test 234/234、双构建通过
 > - A1 `d71ee73`：ai-session-store 750 → 255（+ ai-session-disk 512）
@@ -14,6 +14,12 @@
 > - 修复连环符号缺失 `9202270` / `8213ef7`（elsSettings 未注入、langMod TDZ、RECIPES 缺 import、flash 对象简写）+ 跨模块扫描 `aded726`
 > - A3 `6fbf688`：ai-settings-dialog 2133 → 962（+ permission-settings 623 / model-settings 320 / settings-io 214 / preference-settings 188）；bindSettingsPane 640 行按方案留守
 >   - 附带：扫描器此前用行首 `^` 匹配，factory 缩进 4 空格的宿主声明全漏（形同虚设）；改为 0–4 空格 + 模块侧并入局部/形参 + 排除正则，立刻抓出 pref 漏注入；新增 mock ctx 构造冒烟
+> - **剩余批次（2026-11-17 复核锚点，`wc -l` 实测）**：**A2 ai-takeover（必做，未开工）**——`ai-patch-card.js` / `ai-ask-cards.js` 未建，宿主 1066 → **1279**（拆分边界不变：补丁卡 / ask 卡两模块 + `classifyVerdictRows`/审批卡/计划卡/分发器留守）；**A4 ai-subagents HUD（已决策纳入，未开工）**——`ai-head-hud.js` 未建，`ai-subagents.js` 1055 → **2417**，当初「剩余 750 行内聚良好」的判断已过时（已达 3000 红线的 80%），动手前须重新评估切面（HUD 之外大概率长出第二个该拆的域）；**X1 explorer 列表视图（已决策纳入，未开工）**——`explorer-list.js` 未建，`explorer.js` 1369（基本未动，仍是低收益批）。
+> - 已完成 9 批现状复核（后续功能提交有自然增长，结构均已就位）：writing-ui 331 / settings-ui 864 / bridge-ui 251 / terminal-ui 423 / titlebar-popovers 57 / ai-session-store 316 / ai-settings-dialog 1205（新增量入了留守的 bindSettingsPane 宿主，留守约定不变）；豁免项 ai-panel 15128 / main.js 4779。
+> - A2 `1d3ba5a`：ai-takeover 1279 → 708（+ ai-patch-card 289 / ai-ask-cards 331）。两处边界微调：`planApprovalMessage`/`planApprovalKey` 是计划域逻辑（计划卡与分发器都消费），随计划卡留守宿主而非按锚点机械分组进 ask 卡；`el0` 随唯一消费域迁入补丁卡。表单控件基线按存量迁移重分布：ai-takeover 11 → 7，新登记 patch-card 2 / ask-cards 2（总量不变）。
+> - A4 切面重评结论：方案预判的「第二个域」为**详情视图**（~535 行，mount/unmount 挂载契约独立、与运行时仅函数级互调），故 A4 拆两模块、分两批——A4a `35a69e8`：ai-subagents 2417 → 1897（+ ai-agent-view 590，agentViews/overlayView/hydrateTried 随域迁入）；A4b `9688008`：→ 1566（+ ai-head-hud 402，hudReady/AGENT_STATE_LABEL/构造期 chip 绑定块随域迁入，时机不变）。纯函数区 10 个导出（ai-subagents.test.mjs）留守宿主经 extras 注入视图。
+> - X1 `986fbc5`：explorer 1369 → 1180（+ explorer-list 281）。listState/listRevealPending 与 LIST_RENDER_CAP/DIR/DEPTH 随域迁入；LIST_SKIP_DIRS 因 notifyFileChange 共用留宿主经 deps 注入；宿主写位收敛为 requestListReveal/getListState/invalidateList 三入口。
+> - 三批均登记 module-scope 扫描器 HOSTS + 新增 createAITakeover / createAISubagents 的 mock ctx 构造冒烟；npm test 818/818、vite 与 wails 构建全绿。
 > 前置阅读：`docs/finished-plans/frontend-split-phase2.md`（两阶段实施记录与教训）、`.cadt/memory/frontend-module-refactor-audit.md`（验证方法论：tokenizer 重写、三类扫描、对照验证、退出码纪律）
 > 范围：阶段 Z 目录归位 + 11 个「多域混装 / 内聚但体量逼近红线」文件的解耦；**不动** ai-panel.js（交子代理消息化方案）、main.js 组合根、editor-groups.js 编排核心
 > 目标：把「未来拆分会很痛」的文件在低耦合期提前解耦（预防性拆分），不是追行数指标；同时终结 src/ 顶层平铺
