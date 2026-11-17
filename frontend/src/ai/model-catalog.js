@@ -25,60 +25,104 @@ export const CATALOG_STALE_MS = 7 * 24 * 3600 * 1000;
 //   node scripts/export-model-catalog.mjs > catalog.json
 // 把远端仓库（cadt-datalens-data/model-catalog）那份一起提交，否则两边会漂。
 //
-// 出处（2026-11-15 核对）：
-//   DeepSeek  https://api-docs.deepseek.com/quick_start/pricing ＋ thinking_mode 指南
-//   Anthropic 模型概览 + Opus 5.5 迁移指南（4.6 起只接受自适应思考）
-//   OpenAI    gpt-5.x 规格页（thinking 档 400K/128K，chat 档 128K/16K）
-//   阿里百炼  「文本生成与视觉理解」模型表（qwen4/qwen3.8/qwen3.7…）
-//   火山方舟  模型列表（doubao-seed-2.1 系列，含 glm/kimi/deepseek 托管版）
-//   腾讯混元  TokenHub 模型列表（hy4 / hy3）
-//   Google    Vertex AI supported models（Gemini 3.x 全部 1M/64K）
-//   智谱/月之暗面 官方模型页；MiniMax、Step、ERNIE 取厂商或云平台公开口径
+// 出处（2026-11-17 核对）：
+//   OpenCode  https://opencode.ai/inference/v1/models（官方元数据端点，覆盖 Anthropic /
+//             OpenAI / Google / DeepSeek / GLM / Kimi / MiniMax / Qwen / Grok / Mistral /
+//             Muse / Nemotron / 混元 Hy / 小米 MiMo 及全部 -free 免费档；窗口、模态、
+//             推理档位均取该端点实测值，最权威）
+//   阿里百炼  「文本生成与视觉理解」模型表（qwen4/qwen3.7 等百炼独有 ID）
+//   火山方舟  模型列表（doubao-seed-2.1 系列）
+//   腾讯混元  TokenHub 模型列表（hy4 / hy3 / hy4-preview 等 Go 专属变体）
+//   其它      Step、ERNIE、mimo-v2.6-pro-ultraspeed 取厂商或云平台公开口径
+//
+// ⚠️ -free 免费档窗口普遍低于付费正主（如 deepseek-v4.1-flash-free 是 200K/32K，付费版
+//    1M/384K），所以 -free 一律作为独立条目按实测值录入，**不做后缀剥离复用正主窗口**。
 export const BUILTIN_CATALOG = {
-    version: '2026.11.15',
+    version: '2026.11.17',
     source: '内置',
     models: [
-        // ================= DeepSeek（1M 上下文 / 最大 384K 输出，思考默认开启）=================
+        // ================= DeepSeek（端点：1M 上下文 / 384K 输出；V4.1 Flash 收图）=================
         {id: 'deepseek-flash', vendor: 'deepseek', contextWindow: 1048576, outputWindow: 393216, modalities: {text: true, image: true}, reasoningEffort: true},
-        {id: 'deepseek-v4-pro', vendor: 'deepseek', contextWindow: 1048576, outputWindow: 393216, modalities: {text: true, image: false}, reasoningEffort: true},
+        {id: 'deepseek-v4.1-flash', vendor: 'deepseek', contextWindow: 1000000, outputWindow: 384000, modalities: {text: true, image: true}, reasoningEffort: true},
+        {id: 'deepseek-v4.1-flash-free', vendor: 'deepseek', contextWindow: 200000, outputWindow: 32000, modalities: {text: true, image: true}, reasoningEffort: true},
+        {id: 'deepseek-v4-pro', vendor: 'deepseek', contextWindow: 1000000, outputWindow: 384000, modalities: {text: true}, reasoningEffort: true},
         // 百炼/方舟上带日期后缀的同款（运维常用这个 ID）
-        {id: 'deepseek-v4-pro-0813', vendor: 'deepseek', contextWindow: 1048576, outputWindow: 393216, modalities: {text: true, image: false}, reasoningEffort: true},
+        {id: 'deepseek-v4-pro-0813', vendor: 'deepseek', contextWindow: 1000000, outputWindow: 384000, modalities: {text: true}, reasoningEffort: true},
 
-        // ================= Anthropic（当期四款 1M / 128K；4.6 起只接受自适应思考）=================
-        {id: 'claude-fable-5-2', vendor: 'anthropic', contextWindow: 1048576, outputWindow: 131072, modalities: {text: true, image: true}, thinking: true, thinkingBudget: false},
-        {id: 'claude-opus-5-5', vendor: 'anthropic', contextWindow: 1048576, outputWindow: 131072, modalities: {text: true, image: true}, thinking: true, thinkingBudget: false},
-        {id: 'claude-sonnet-5-5', vendor: 'anthropic', contextWindow: 1048576, outputWindow: 131072, modalities: {text: true, image: true}, thinking: true, thinkingBudget: false},
-        {id: 'claude-haiku-5-5', vendor: 'anthropic', contextWindow: 1048576, outputWindow: 131072, modalities: {text: true, image: true}, thinking: true, thinkingBudget: false},
-        // 仍在服务、且是旧预设默认值的型号，保留以免老配置失去回填
-        {id: 'claude-sonnet-4-5', vendor: 'anthropic', contextWindow: 200000, outputWindow: 64000, modalities: {text: true, image: true}, thinking: true},
+        // ================= Anthropic（端点：当期 1M / 128K；4.5 及更早 200K / 64K）=================
+        // thinking=true 表示支持扩展思考；thinkingBudget=false 表示只接受自适应思考（4.6 起）
+        {id: 'claude-fable-5', vendor: 'anthropic', contextWindow: 1000000, outputWindow: 128000, modalities: {text: true, image: true}, thinking: true},
+        {id: 'claude-fable-5-1', vendor: 'anthropic', contextWindow: 1000000, outputWindow: 128000, modalities: {text: true, image: true}, thinking: true},
+        {id: 'claude-fable-5-2', vendor: 'anthropic', contextWindow: 1000000, outputWindow: 128000, modalities: {text: true, image: true}, thinking: true},
+        {id: 'claude-opus-5', vendor: 'anthropic', contextWindow: 1000000, outputWindow: 128000, modalities: {text: true, image: true}, thinking: true},
+        {id: 'claude-opus-5-5', vendor: 'anthropic', contextWindow: 1000000, outputWindow: 128000, modalities: {text: true, image: true}, thinking: true},
+        {id: 'claude-sonnet-5', vendor: 'anthropic', contextWindow: 1000000, outputWindow: 128000, modalities: {text: true, image: true}, thinking: true},
+        {id: 'claude-sonnet-5-5', vendor: 'anthropic', contextWindow: 1000000, outputWindow: 128000, modalities: {text: true, image: true}, thinking: true},
+        {id: 'claude-haiku-5-5', vendor: 'anthropic', contextWindow: 1000000, outputWindow: 128000, modalities: {text: true, image: true}, thinking: true},
+        {id: 'claude-opus-4-8', vendor: 'anthropic', contextWindow: 1000000, outputWindow: 128000, modalities: {text: true, image: true}, thinking: true},
+        {id: 'claude-opus-4-7', vendor: 'anthropic', contextWindow: 1000000, outputWindow: 128000, modalities: {text: true, image: true}, thinking: true},
+        {id: 'claude-opus-4-6', vendor: 'anthropic', contextWindow: 1000000, outputWindow: 128000, modalities: {text: true, image: true}, thinking: true},
+        {id: 'claude-sonnet-4-6', vendor: 'anthropic', contextWindow: 1000000, outputWindow: 64000, modalities: {text: true, image: true}, thinking: true},
+        // 仍在服务、且是旧预设默认值的型号，保留以免老配置失去回填（端点：sonnet-4-5 已是 1M）
+        {id: 'claude-sonnet-4-5', vendor: 'anthropic', contextWindow: 1000000, outputWindow: 64000, modalities: {text: true, image: true}, thinking: true},
+        {id: 'claude-opus-4-5', vendor: 'anthropic', contextWindow: 200000, outputWindow: 64000, modalities: {text: true, image: true}, thinking: true},
+        {id: 'claude-haiku-4-5', vendor: 'anthropic', contextWindow: 200000, outputWindow: 64000, modalities: {text: true, image: true}, thinking: true},
 
-        // ================= OpenAI（thinking 档 400K / 128K；chat 档 128K / 16K 不带推理）=================
+        // ================= OpenAI（端点：5.4 起旗舰 1050000/128K；5.x 标准 400K/128K）=================
+        // 全系收图 + reasoningEffort；gpt-5.3-codex-spark 例外（纯文本、128K/128K）
+        {id: 'gpt-6.1-sol', vendor: 'openai', contextWindow: 1050000, outputWindow: 128000, modalities: {text: true, image: true}, reasoningEffort: true},
+        {id: 'gpt-6-astra', vendor: 'openai', contextWindow: 1050000, outputWindow: 128000, modalities: {text: true, image: true}, reasoningEffort: true},
+        {id: 'gpt-6-sol', vendor: 'openai', contextWindow: 1050000, outputWindow: 128000, modalities: {text: true, image: true}, reasoningEffort: true},
+        {id: 'gpt-6-luna', vendor: 'openai', contextWindow: 1050000, outputWindow: 128000, modalities: {text: true, image: true}, reasoningEffort: true},
+        {id: 'gpt-5.6-sol', vendor: 'openai', contextWindow: 1050000, outputWindow: 128000, modalities: {text: true, image: true}, reasoningEffort: true},
+        {id: 'gpt-5.6-terra', vendor: 'openai', contextWindow: 1050000, outputWindow: 128000, modalities: {text: true, image: true}, reasoningEffort: true},
+        {id: 'gpt-5.6-luna', vendor: 'openai', contextWindow: 1050000, outputWindow: 128000, modalities: {text: true, image: true}, reasoningEffort: true},
+        {id: 'gpt-5.5-pro', vendor: 'openai', contextWindow: 1050000, outputWindow: 128000, modalities: {text: true, image: true}, reasoningEffort: true},
+        {id: 'gpt-5.5', vendor: 'openai', contextWindow: 1050000, outputWindow: 128000, modalities: {text: true, image: true}, reasoningEffort: true},
+        {id: 'gpt-5.4-pro', vendor: 'openai', contextWindow: 1050000, outputWindow: 128000, modalities: {text: true, image: true}, reasoningEffort: true},
+        {id: 'gpt-5.4', vendor: 'openai', contextWindow: 1050000, outputWindow: 128000, modalities: {text: true, image: true}, reasoningEffort: true},
+        {id: 'gpt-5.4-mini', vendor: 'openai', contextWindow: 400000, outputWindow: 128000, modalities: {text: true, image: true}, reasoningEffort: true},
+        {id: 'gpt-5.4-nano', vendor: 'openai', contextWindow: 400000, outputWindow: 128000, modalities: {text: true, image: true}, reasoningEffort: true},
         {id: 'gpt-5.3-codex', vendor: 'openai', contextWindow: 400000, outputWindow: 128000, modalities: {text: true, image: true}, reasoningEffort: true},
-        {id: 'gpt-5.3-chat', vendor: 'openai', contextWindow: 128000, modalities: {text: true, image: true}, reasoningEffort: false},
+        {id: 'gpt-5.3-codex-spark', vendor: 'openai', contextWindow: 128000, outputWindow: 128000, modalities: {text: true}, reasoningEffort: true},
         {id: 'gpt-5.2', vendor: 'openai', contextWindow: 400000, outputWindow: 128000, modalities: {text: true, image: true}, reasoningEffort: true},
         {id: 'gpt-5.2-codex', vendor: 'openai', contextWindow: 400000, outputWindow: 128000, modalities: {text: true, image: true}, reasoningEffort: true},
-        {id: 'gpt-5.2-chat-latest', vendor: 'openai', contextWindow: 128000, outputWindow: 16384, modalities: {text: true, image: true}, reasoningEffort: false},
         {id: 'gpt-5.1', vendor: 'openai', contextWindow: 400000, outputWindow: 128000, modalities: {text: true, image: true}, reasoningEffort: true},
+        {id: 'gpt-5.1-codex', vendor: 'openai', contextWindow: 400000, outputWindow: 128000, modalities: {text: true, image: true}, reasoningEffort: true},
+        {id: 'gpt-5.1-codex-max', vendor: 'openai', contextWindow: 400000, outputWindow: 128000, modalities: {text: true, image: true}, reasoningEffort: true},
+        {id: 'gpt-5.1-codex-mini', vendor: 'openai', contextWindow: 400000, outputWindow: 128000, modalities: {text: true, image: true}, reasoningEffort: true},
+        {id: 'gpt-5-codex', vendor: 'openai', contextWindow: 400000, outputWindow: 128000, modalities: {text: true, image: true}, reasoningEffort: true},
         {id: 'gpt-5', vendor: 'openai', contextWindow: 400000, outputWindow: 128000, modalities: {text: true, image: true}, reasoningEffort: true},
+        {id: 'gpt-5-nano', vendor: 'openai', contextWindow: 400000, outputWindow: 128000, modalities: {text: true, image: true}, reasoningEffort: true},
+        // chat 档（厂商公开口径，端点未列）：不带推理
+        {id: 'gpt-5.3-chat', vendor: 'openai', contextWindow: 128000, modalities: {text: true, image: true}, reasoningEffort: false},
+        {id: 'gpt-5.2-chat-latest', vendor: 'openai', contextWindow: 128000, outputWindow: 16384, modalities: {text: true, image: true}, reasoningEffort: false},
 
-        // ================= Google Gemini（3.x 全部 1M 上下文 / 64K 输出）=================
+        // ================= Google Gemini（端点：3.x/4.x 全部 1048576 / 64K，全模态）=================
+        {id: 'gemini-4-argon', vendor: 'google', contextWindow: 1048576, outputWindow: 65536, modalities: {text: true, image: true, video: true, audio: true}, reasoningEffort: true},
+        {id: 'gemini-4-carbon', vendor: 'google', contextWindow: 1048576, outputWindow: 65536, modalities: {text: true, image: true, video: true, audio: true}, reasoningEffort: true},
+        {id: 'gemini-4-hydrogen', vendor: 'google', contextWindow: 1048576, outputWindow: 65536, modalities: {text: true, image: true, video: true, audio: true}, reasoningEffort: true},
+        {id: 'gemini-3.8-flash', vendor: 'google', contextWindow: 1048576, outputWindow: 65536, modalities: {text: true, image: true, video: true, audio: true}, reasoningEffort: true},
+        {id: 'gemini-3.7-flash', vendor: 'google', contextWindow: 1048576, outputWindow: 65536, modalities: {text: true, image: true, video: true, audio: true}, reasoningEffort: true},
+        {id: 'gemini-3.6-flash', vendor: 'google', contextWindow: 1048576, outputWindow: 65536, modalities: {text: true, image: true, video: true, audio: true}, reasoningEffort: true},
+        {id: 'gemini-3.5-flash', vendor: 'google', contextWindow: 1048576, outputWindow: 65536, modalities: {text: true, image: true, video: true, audio: true}, reasoningEffort: true},
+        {id: 'gemini-3.5-flash-lite', vendor: 'google', contextWindow: 1048576, outputWindow: 65536, modalities: {text: true, image: true, video: true, audio: true}, reasoningEffort: true},
+        // 以下取厂商公开口径（端点未列）
         {id: 'gemini-3.1-pro-preview', vendor: 'google', contextWindow: 1048576, outputWindow: 65536, modalities: {text: true, image: true, video: true, audio: true}},
-        {id: 'gemini-3.8-flash', vendor: 'google', contextWindow: 1048576, outputWindow: 65536, modalities: {text: true, image: true, video: true, audio: true}},
-        {id: 'gemini-3.5-flash-lite', vendor: 'google', contextWindow: 1048576, outputWindow: 65536, modalities: {text: true, image: true, video: true, audio: true}},
         {id: 'gemini-2.5-pro', vendor: 'google', contextWindow: 1048576, outputWindow: 65536, modalities: {text: true, image: true, video: true, audio: true}},
         {id: 'gemini-2.5-flash', vendor: 'google', contextWindow: 1048576, outputWindow: 65536, modalities: {text: true, image: true, video: true, audio: true}},
 
-        // ================= 通义千问（百炼：Plus / Max / Flash 都是 1M，且收文本 + 图像 + 视频）=================
+        // ================= 通义千问（端点：qwen3.8-max/3.6/3.5-plus 262K；3.8-flash 1M）=================
         // 思考开关是 enable_thinking，不是 reasoning_effort，所以推理强度这行对它们是隐藏的
-        {id: 'qwen4-max-preview', vendor: 'qwen', contextWindow: 1048576, outputWindow: 393216, modalities: {text: true, image: true, video: true}, reasoningEffort: false},
-        {id: 'qwen3.8-max', vendor: 'qwen', contextWindow: 1048576, outputWindow: 131072, modalities: {text: true, image: true, video: true}, reasoningEffort: false},
-        {id: 'qwen3.8-flash', vendor: 'qwen', contextWindow: 1048576, outputWindow: 131072, modalities: {text: true, image: true, video: true}, reasoningEffort: false},
+        {id: 'qwen4-max-preview', aliases: ['qwen4-max'], vendor: 'qwen', contextWindow: 1048576, outputWindow: 393216, modalities: {text: true, image: true, video: true}, reasoningEffort: false},
+        {id: 'qwen3.8-flash', vendor: 'qwen', contextWindow: 1000000, outputWindow: 131072, modalities: {text: true, image: true, video: true}, reasoningEffort: false},
+        {id: 'qwen3.8-max', vendor: 'qwen', contextWindow: 262144, outputWindow: 131072, modalities: {text: true, image: true}, reasoningEffort: false},
         {id: 'qwen3.7-plus', vendor: 'qwen', contextWindow: 1048576, outputWindow: 131072, modalities: {text: true, image: true, video: true}, reasoningEffort: false},
         {id: 'qwen3.7-max', vendor: 'qwen', contextWindow: 1048576, modalities: {text: true, image: true, video: true}, reasoningEffort: false},
         {id: 'qwen3.7-flash', vendor: 'qwen', contextWindow: 1048576, outputWindow: 65536, modalities: {text: true, image: true, video: true}, reasoningEffort: false},
-        {id: 'qwen3.6-plus', vendor: 'qwen', contextWindow: 1048576, outputWindow: 65536, modalities: {text: true, image: true, video: true}, reasoningEffort: false},
+        {id: 'qwen3.6-plus', vendor: 'qwen', contextWindow: 262144, outputWindow: 65536, modalities: {text: true, image: true, video: true}, reasoningEffort: false},
         {id: 'qwen3.6-flash', vendor: 'qwen', contextWindow: 1048576, outputWindow: 65536, modalities: {text: true, image: true, video: true}, reasoningEffort: false},
-        {id: 'qwen3.5-plus', vendor: 'qwen', contextWindow: 1048576, outputWindow: 65536, modalities: {text: true, image: true, video: true}, reasoningEffort: false},
+        {id: 'qwen3.5-plus', vendor: 'qwen', contextWindow: 262144, outputWindow: 65536, modalities: {text: true, image: true, video: true}, reasoningEffort: false},
         {id: 'qwen3.5-flash', vendor: 'qwen', contextWindow: 1048576, outputWindow: 65536, modalities: {text: true, image: true, video: true}, reasoningEffort: false},
         {id: 'qwen3-coder-flash', vendor: 'qwen', contextWindow: 1048576, modalities: {text: true}, reasoningEffort: false},
         // 滚动别名：始终指向当期版本，输出上限文档没给就不写
@@ -87,22 +131,62 @@ export const BUILTIN_CATALOG = {
         // qwen-max 还停在 32K，且不支持思考
         {id: 'qwen-max', vendor: 'qwen', contextWindow: 32768, modalities: {text: true}, reasoningEffort: false},
 
-        // ================= 智谱 GLM（1M / 128K）=================
-        {id: 'glm-5.3', aliases: ['glm-latest'], vendor: 'glm', contextWindow: 1048576, outputWindow: 131072, modalities: {text: true}},
-        // flash 版是原生多模态，收图
-        {id: 'glm-5.3-flash', vendor: 'glm', contextWindow: 1048576, outputWindow: 131072, modalities: {text: true, image: true}},
+        // ================= 智谱 GLM（端点：5.2/5.3/5.3-flash 1M/128K；5/5.1 200K/128K）=================
+        {id: 'glm-5.3', aliases: ['glm-latest'], vendor: 'glm', contextWindow: 1000000, outputWindow: 131072, modalities: {text: true}, reasoningEffort: true},
+        {id: 'glm-5.2', vendor: 'glm', contextWindow: 1000000, outputWindow: 131072, modalities: {text: true}, reasoningEffort: true},
+        {id: 'glm-5.1', vendor: 'glm', contextWindow: 204800, outputWindow: 131072, modalities: {text: true}, thinking: true},
+        {id: 'glm-5', vendor: 'glm', contextWindow: 204800, outputWindow: 131072, modalities: {text: true}, thinking: true},
+        // flash 版是原生多模态，收图 + 视频
+        {id: 'glm-5.3-flash', vendor: 'glm', contextWindow: 1000000, outputWindow: 131072, modalities: {text: true, image: true, video: true}, reasoningEffort: true},
+        {id: 'glm-5.3-flash-free', vendor: 'glm', contextWindow: 200000, outputWindow: 32000, modalities: {text: true, image: true, video: true}, reasoningEffort: true},
 
-        // ================= Kimi（K3.1 Pro 为当前旗舰，顶层 reasoning_effort 支持 low/high/max）=================
+        // ================= Kimi（端点：K3 1M/1M；K2.x 262K；全系收图 + 视频）=================
+        {id: 'kimi-k3', vendor: 'kimi', contextWindow: 1048576, outputWindow: 1048576, modalities: {text: true, image: true, video: true}, reasoningEffort: true},
+        {id: 'kimi-k2.7-code', vendor: 'kimi', contextWindow: 262144, outputWindow: 262144, modalities: {text: true, image: true, video: true}},
+        {id: 'kimi-k2.6', vendor: 'kimi', contextWindow: 262144, outputWindow: 65536, modalities: {text: true, image: true, video: true}},
+        {id: 'kimi-k2.5', vendor: 'kimi', contextWindow: 262144, outputWindow: 65536, modalities: {text: true, image: true, video: true}},
+        // 以下取厂商公开口径（端点未列）
         {id: 'kimi-k3.1-pro', vendor: 'kimi', contextWindow: 1048576, modalities: {text: true, image: true}, reasoningEffort: true},
         {id: 'kimi-k3.1-pro-highspeed', vendor: 'kimi', contextWindow: 1048576, modalities: {text: true, image: true}, reasoningEffort: true},
-        {id: 'kimi-k3', vendor: 'kimi', contextWindow: 1048576, outputWindow: 1048576, modalities: {text: true, image: true}},
         {id: 'kimi-k2.8-preview', vendor: 'kimi', contextWindow: 1048576, outputWindow: 1048576, modalities: {text: true, image: true}},
 
-        // ================= MiniMax =================
-        // M3 标称 1M，官方保障稳定 512K；按保障值填，避免请求真塞满时被截
-        {id: 'MiniMax-M3', vendor: 'minimax', contextWindow: 524288, outputWindow: 524288, modalities: {text: true}},
-        // M3.1-Flash 是少数在 OpenAI 兼容端点上明确认 reasoning_effort 的国内厂商
-        {id: 'MiniMax-M3.1-Flash', vendor: 'minimax', contextWindow: 1048576, modalities: {text: true}, reasoningEffort: true},
+        // ================= MiniMax（官网 https://www.minimax.io/models/text/m3：M3 最高 1M、保障最低 512K）=================
+        {id: 'minimax-m3', aliases: ['MiniMax-M3'], vendor: 'minimax', contextWindow: 1048576, outputWindow: 128000, modalities: {text: true, image: true, video: true}},
+        {id: 'minimax-m2.7', vendor: 'minimax', contextWindow: 204800, outputWindow: 131072, modalities: {text: true}},
+        {id: 'minimax-m2.5', vendor: 'minimax', contextWindow: 204800, outputWindow: 131072, modalities: {text: true}},
+        // M3.1-Flash：官网定价页 $0.15/$0.60，窗口官方未给明确值（OpenCode 端点亦无），只记 ID 走兜底
+        {id: 'minimax-m3.1-flash', vendor: 'minimax', modalities: {text: true, image: true}},
+
+        // ================= xAI Grok（端点：4.5/4.6/4.7 500K/500K；build-0.1 256K/256K）=================
+        {id: 'grok-4.7', vendor: 'xai', contextWindow: 500000, outputWindow: 500000, modalities: {text: true, image: true}, reasoningEffort: true},
+        {id: 'grok-4.6', vendor: 'xai', contextWindow: 500000, outputWindow: 500000, modalities: {text: true, image: true}, reasoningEffort: true},
+        {id: 'grok-4.5', vendor: 'xai', contextWindow: 500000, outputWindow: 500000, modalities: {text: true, image: true}, reasoningEffort: true},
+        {id: 'grok-build-0.1', vendor: 'xai', contextWindow: 256000, outputWindow: 256000, modalities: {text: true, image: true}},
+
+        // ================= Mistral（端点：Large 4 512K/256K 收图）=================
+        {id: 'mistral-large-4', vendor: 'mistral', contextWindow: 524288, outputWindow: 262144, modalities: {text: true, image: true}, reasoningEffort: true},
+
+        // ================= Meta Muse（端点：全系 1M/128K，收图+视频+音频）=================
+        {id: 'muse-spark-1.3', vendor: 'meta', contextWindow: 1048576, outputWindow: 131072, modalities: {text: true, image: true, video: true, audio: true}, reasoningEffort: true},
+        {id: 'muse-spark-1.2', vendor: 'meta', contextWindow: 1048576, outputWindow: 131072, modalities: {text: true, image: true, video: true, audio: true}, reasoningEffort: true},
+        {id: 'muse-wonder-1.0', vendor: 'meta', contextWindow: 1048576, outputWindow: 131072, modalities: {text: true, image: true, video: true, audio: true}, reasoningEffort: true},
+        {id: 'muse-ember-1.0', vendor: 'meta', contextWindow: 1048576, outputWindow: 270000, modalities: {text: true, image: true, video: true}, reasoningEffort: true},
+
+        // ================= NVIDIA Nemotron（端点：免费档）=================
+        {id: 'nemotron-3.5-super-vl-free', vendor: 'nvidia', contextWindow: 1048576, outputWindow: 131072, modalities: {text: true, image: true}, reasoningEffort: true},
+        {id: 'nemotron-3.5-lightning-free', vendor: 'nvidia', contextWindow: 262144, outputWindow: 262144, modalities: {text: true}},
+
+        // ================= OpenCode 免费档（端点实测，窗口普遍低于付费正主）=================
+        {id: 'beam-free', vendor: 'reflection', contextWindow: 1048576, outputWindow: 131072, modalities: {text: true}, reasoningEffort: true},
+        {id: 'longcat-2.5-free', vendor: 'meituan', contextWindow: 1000000, outputWindow: 262144, modalities: {text: true, image: true}},
+        // LongCat-2.0：美团技术博客 https://tech.meituan.com/2026/06/30/LongCat2.0.html 明确「原生支持 1M 超长上下文」；最大输出官方未给，只记上下文
+        {id: 'longcat-2.0', vendor: 'meituan', contextWindow: 1048576, modalities: {text: true, image: true}},
+        {id: 'inkling-2-small-free', vendor: 'thinkingmachines', contextWindow: 1048576, outputWindow: 131072, modalities: {text: true, image: true}, reasoningEffort: true},
+        {id: 'mimo-v2.6-flash-free', vendor: 'xiaomi', contextWindow: 200000, outputWindow: 32000, modalities: {text: true, image: true, video: true, audio: true}},
+        {id: 'hy4-flash-free', vendor: 'hunyuan', contextWindow: 1048576, outputWindow: 65536, modalities: {text: true, image: true}},
+        {id: 'iceman-free', vendor: 'opencode', contextWindow: 262144, outputWindow: 131072, modalities: {text: true}},
+        {id: 'flint-40b-free', vendor: 'recursive', contextWindow: 262144, outputWindow: 65536, modalities: {text: true}, reasoningEffort: true},
+        {id: 'big-pickle', vendor: 'opencode', contextWindow: 200000, outputWindow: 32000, modalities: {text: true}, reasoningEffort: true},
 
         // ================= 字节豆包（火山方舟）=================
         {id: 'doubao-seed-evolving', aliases: ['doubao-seed-evolving-latest'], vendor: 'doubao', contextWindow: 1048576, outputWindow: 262144, modalities: {text: true, image: true}},
@@ -121,8 +205,38 @@ export const BUILTIN_CATALOG = {
         {id: 'step-5-preview', vendor: 'step', contextWindow: 1048576, modalities: {text: true}},
         {id: 'step-3.7-flash', vendor: 'step', contextWindow: 256000, outputWindow: 65536, modalities: {text: true, image: true}},
         {id: 'mimo-v2.6-pro-ultraspeed', vendor: 'xiaomi', contextWindow: 1048576, modalities: {text: true}},
+        // 小米 MiMo Flash 付费版：官网 https://mimo.mi.com 1M 上下文 / 128K 输出，全模态
+        {id: 'mimo-v2.6-flash', vendor: 'xiaomi', contextWindow: 1048576, outputWindow: 131072, modalities: {text: true, image: true, video: true, audio: true}},
+        // MiMo-V2.6-Pro 旗舰：官网 1M 上下文 / 128K 输出，全模态（V2.5/V2.5-Pro 已于 2026-10-21 下线，故不收录）
+        {id: 'mimo-v2.6-pro', vendor: 'xiaomi', contextWindow: 1048576, outputWindow: 131072, modalities: {text: true, image: true, video: true, audio: true}},
         // 文心：千帆未明确标注输出上限，只记上下文
         {id: 'ernie-4.5-turbo-128k', vendor: 'ernie', contextWindow: 131072, modalities: {text: true}},
+
+        // ================= 商汤 SenseNova（日日新）=================
+        // 窗口取官方文档 https://platform.sensenova.cn/docs ；未公开数值的型号留空走兜底 256K/64K。
+        // 收录 6.0/5.5/5 等较早 ID（自部署 / 私有化场景 model ID 仍有效）。
+        {id: 'senseNova-6.8-flash', aliases: ['sensenova-6.8-flash', 'SenseNova-6.8-Flash'], vendor: 'sensenova', contextWindow: 1048576, outputWindow: 131072, modalities: {text: true, image: true}},
+        {id: 'senseNova-6.8-flash-lite', aliases: ['sensenova-6.8-flash-lite', 'SenseNova-6.8-Flash-Lite'], vendor: 'sensenova', contextWindow: 262144, outputWindow: 65536, modalities: {text: true, image: true}},
+        {id: 'senseNova-6.5', aliases: ['sensenova-6.5', 'SenseNova-6.5'], vendor: 'sensenova', modalities: {text: true, image: true}},
+        {id: 'senseNova-6.0', aliases: ['sensenova-6.0', 'SenseNova-6.0'], vendor: 'sensenova', modalities: {text: true, image: true}},
+        {id: 'senseNova-5.5', aliases: ['sensenova-5.5', 'SenseNova-5.5'], vendor: 'sensenova', modalities: {text: true, image: true}},
+        {id: 'senseNova-5', aliases: ['sensenova-5', 'SenseNova-5'], vendor: 'sensenova', modalities: {text: true, image: true}},
+
+        // ================= 智谱 GLM 历史模型（官网 https://docs.bigmodel.cn 模型概览）=================
+        // 自部署 / 老配置仍可能用到，按官网口径收录
+        {id: 'glm-4.6', vendor: 'glm', contextWindow: 200000, outputWindow: 131072, modalities: {text: true}},
+        {id: 'glm-4.5', vendor: 'glm', contextWindow: 128000, outputWindow: 98304, modalities: {text: true}},
+        {id: 'glm-4.5-air', vendor: 'glm', contextWindow: 128000, outputWindow: 98304, modalities: {text: true}},
+        {id: 'glm-4.5-flash', vendor: 'glm', contextWindow: 128000, outputWindow: 98304, modalities: {text: true}},
+        {id: 'glm-4.7', vendor: 'glm', contextWindow: 200000, outputWindow: 131072, modalities: {text: true}},
+        {id: 'glm-4.7-flash', vendor: 'glm', contextWindow: 200000, outputWindow: 131072, modalities: {text: true}},
+        {id: 'glm-4-long', vendor: 'glm', contextWindow: 1000000, outputWindow: 4096, modalities: {text: true}},
+
+        // ================= 小米 MiMo（已下线，自部署仍可用）=================
+        // V2.5 / V2.5-Pro 已于 2026-10-21 下线（https://mimo.mi.com 公告），云 API 失效；
+        // 按用户要求收录以覆盖自部署场景，窗口留空走兜底。
+        {id: 'mimo-v2.5', vendor: 'xiaomi', modalities: {text: true, image: true}},
+        {id: 'mimo-v2.5-pro', vendor: 'xiaomi', modalities: {text: true, image: true}},
     ],
 };
 

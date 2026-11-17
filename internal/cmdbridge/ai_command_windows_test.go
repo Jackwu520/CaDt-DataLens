@@ -12,7 +12,7 @@ import (
 )
 
 func TestAIShellPriority(t *testing.T) {
-	shell, exe, args := aiShellInvocation("echo hi")
+	shell, exe, args := aiShellInvocation("echo hi", false)
 	switch {
 	case shellpath.FindGitBash() != "":
 		if shell != "Git Bash" || !strings.Contains(strings.ToLower(exe), "bash") {
@@ -123,7 +123,7 @@ func TestAICommandStartStatusStop(t *testing.T) {
 }
 
 func TestAICommandStopRunning(t *testing.T) {
-	shell, _, _ := aiShellInvocation("")
+	shell, _, _ := aiShellInvocation("", false)
 	if shell != "Git Bash" {
 		t.Skipf("停止用例依赖 Git Bash（read -t 无子进程、可被干净终止），当前 shell: %s", shell)
 	}

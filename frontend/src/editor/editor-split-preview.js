@@ -966,6 +966,7 @@ function hideVideoView(doc) {
 function enterVideoView(doc) {
     if (!doc || !doc.video || !doc.editor) return;
     hideImageView(doc);
+    hideAudioView(doc);
     doc.loading = true;
     try {
         doc.editor.setMode('code');
@@ -982,10 +983,172 @@ function enterVideoView(doc) {
     }
 }
 
+// ---- 音频视图（wav / mp3 / ogg / flac 等） ----
+// 播放源与视频同走预览资源通道 /__local/<token>/…，Range 请求由 Go 侧处理；
+// 解码交给 WebView2（wav / mp3 / ogg / opus / flac / m4a / aac / weba 都能播），
+// 解不了时回退二进制视图并说清原因。条形播放器居中摆放，不占整屏。
+
+function audioErrorMessage(code) {
+    // MediaError: 1 中止 2 网络 3 解码 4 源不支持
+    if (code === 3) return 'WebView2 无法解码该音频';
+    if (code === 4) return '容器或编码不受支持';
+    if (code === 2) return '读取文件失败';
+    if (code === 1) return '加载被中止';
+    return '未知错误';
+}
+
+async function audioSrcFor(doc) {
+    if (doc.audioSrc) return doc.audioSrc;
+    if (!doc.path) throw new Error('文件尚未保存到磁盘');
+    if (!deps.backend.RegisterPreviewRoot) throw new Error('当前后端不支持音频预览');
+    // 工作区内就注册工作区，否则注册文件所在目录：token 只能访问注册过的目录。
+    const root = (deps.workspaceFolder && deps.pathWithinValue(deps.workspaceFolder, doc.path))
+        ? deps.workspaceFolder
+        : deps.parentFolderOf(doc.path);
+    if (!root) throw new Error('无法确定音频所在目录');
+    const token = await deps.backend.RegisterPreviewRoot(root);
+    if (!token) throw new Error('无法注册音频所在目录');
+    const full = String(doc.path).replace(/\\/g, '/');
+    const base = String(root).replace(/\\/g, '/').replace(/\/+$/, '');
+    const rel = full.toLowerCase().startsWith(base.toLowerCase() + '/') ? full.slice(base.length + 1) : doc.name;
+    doc.audioSrc = '/__local/' + token + '/' + rel.split('/').filter(Boolean).map(encodeURIComponent).join('/');
+    return doc.audioSrc;
+}
+
+function createAudioView(doc) {
+    if (doc.audioEl || !doc.pane) return;
+    const wrap = document.createElement('div');
+    wrap.className = 'audio-preview-view';
+    const stage = document.createElement('div');
+    stage.className = 'audio-preview-stage';
+    const audio = document.createElement('audio');
+    audio.className = 'audio-preview-node';
+    audio.controls = true;
+    audio.preload = 'metadata';
+    const status = document.createElement('div');
+    status.className = 'audio-preview-status';
+    status.textContent = '正在加载音频…';
+    audio.addEventListener('loadedmetadata', () => {
+        doc.audioError = null;
+        doc.audioDuration = Number.isFinite(audio.duration) ? audio.duration : 0;
+        status.classList.add('hidden');
+        if (doc === deps.file) deps.updateStatus();
+    });
+    audio.addEventListener('error', () => {
+        // releaseAudio 主动断源也会触发 error：那种情况已经关标签，不再提示
+        if (doc.audioReleased) return;
+        const code = audio.error ? audio.error.code : 0;
+        doc.audioError = audioErrorMessage(code);
+        status.textContent = '无法播放此音频：' + doc.audioError;
+        status.classList.remove('hidden');
+        if (doc === deps.file && deps.currentMode === 'audio') {
+            deps.flash('音频无法播放，已切换到二进制视图', true);
+            deps.switchMode('binary');
+        }
+    });
+    stage.appendChild(audio);
+    wrap.append(stage, status);
+    doc.pane.appendChild(wrap);
+    doc.audioEl = wrap;
+    doc.audioNode = audio;
+    doc.audioStatus = status;
+}
+
+function loadAudioPreview(doc) {
+    if (!doc || !doc.audio) return;
+    createAudioView(doc);
+    if (!doc.audioNode) return;
+    if (doc.audioSrc) {
+        if (doc.audioNode.getAttribute('src') !== doc.audioSrc) doc.audioNode.src = doc.audioSrc;
+        doc.audioStatus.classList.add('hidden');
+        return;
+    }
+    if (doc.audioLoading) return;
+    doc.audioLoading = true;
+    doc.audioError = null;
+    doc.audioStatus.textContent = '正在加载音频…';
+    doc.audioStatus.classList.remove('hidden');
+    audioSrcFor(doc).then((src) => {
+        doc.audioLoading = false;
+        if (!doc.audioNode) return;
+        doc.audioNode.src = src;
+        doc.audioNode.load();
+    }).catch((err) => {
+        doc.audioLoading = false;
+        doc.audioError = (err && err.message) || String(err);
+        if (!doc.audioStatus) return;
+        doc.audioStatus.textContent = '无法播放此音频：' + doc.audioError;
+        doc.audioStatus.classList.remove('hidden');
+        if (doc === deps.file && deps.currentMode === 'audio') {
+            deps.flash('音频无法播放，已切换到二进制视图', true);
+            deps.switchMode('binary');
+        }
+    });
+}
+
+// 暂停但保留 src 与播放位置：切回来还能接着听
+function pauseAudioInDoc(doc) {
+    const node = doc && doc.audioNode;
+    if (!node || node.paused) return;
+    try {
+        node.pause();
+    } catch (e) {}
+}
+
+// 关标签用：断源并释放解码器（不置 audioReleased 的话，清空 src 会触发一次 error 回调）
+function releaseAudio(doc) {
+    const node = doc && doc.audioNode;
+    if (!node) return;
+    doc.audioReleased = true;
+    try {
+        node.pause();
+        node.removeAttribute('src');
+        node.load();
+    } catch (e) {}
+    doc.audioNode = null;
+    doc.audioEl = null;
+    doc.audioStatus = null;
+    doc.audioSrc = '';
+}
+
+function showAudioView(doc) {
+    if (!doc || !doc.audio) return;
+    createAudioView(doc);
+    if (doc.pane) doc.pane.classList.add('audio-active');
+    loadAudioPreview(doc);
+}
+
+function hideAudioView(doc) {
+    if (!doc || !doc.pane) return;
+    doc.pane.classList.remove('audio-active');
+    pauseAudioInDoc(doc);
+}
+
+function enterAudioView(doc) {
+    if (!doc || !doc.audio || !doc.editor) return;
+    hideImageView(doc);
+    hideVideoView(doc);
+    doc.loading = true;
+    try {
+        doc.editor.setMode('code');
+        doc.mode = 'audio';
+        deps.currentMode = 'audio';
+        showAudioView(doc);
+        deps.showBanner(doc, doc.parseError);
+        deps.updateStatus();
+        deps.updateSearchState();
+    } catch (e) {
+        deps.flash('切换音频视图失败：' + e.message, true);
+    } finally {
+        doc.loading = false;
+    }
+}
+
 function enterBinaryView(doc) {
     if (!doc || !doc.binary || !doc.editor) return;
     hideImageView(doc);
     hideVideoView(doc);
+    hideAudioView(doc);
     doc.mode = 'binary';
     deps.currentMode = 'binary';
     const loading = doc.loading;
@@ -1011,6 +1174,7 @@ function enterTextView(doc) {
     if (!doc || !doc.editor) return;
     hideImageView(doc);
     hideVideoView(doc);
+    hideAudioView(doc);
     const loading = doc.loading;
     doc.loading = true;
     try {
@@ -1072,6 +1236,12 @@ function enterTextView(doc) {
         enterVideoView,
         pauseVideoInDoc,
         releaseVideo,
+        createAudioView,
+        showAudioView,
+        hideAudioView,
+        enterAudioView,
+        pauseAudioInDoc,
+        releaseAudio,
         enterBinaryView,
         enterTextView,
     };

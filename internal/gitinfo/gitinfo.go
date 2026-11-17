@@ -10,10 +10,10 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"datalens/internal/chardec"
+	"datalens/internal/executil"
 )
 
 // git 浅集成：调系统 git（VS Code 同款做法），只读查询。
@@ -42,7 +42,7 @@ func gitRun(dir string, args []string, timeoutMs int) (string, int, error) {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x08000000} // CREATE_NO_WINDOW
+	executil.HideCommandWindow(cmd) // CREATE_NO_WINDOW，防 GUI 进程拉起 git 时闪黑窗；非 Windows 空实现
 	// GUI 进程没有可用终端：禁止 git 等待终端输入，网络操作失败时直接返回输出
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 	var stdout, stderr strings.Builder

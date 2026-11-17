@@ -66,6 +66,8 @@ export function createAISettingsIO(ctx, extras) {
             approvedPaths: getConfig().approvedPaths,
             approvedReadRoots: getConfig().approvedReadRoots,
             disabledSkills: getConfig().disabledSkills,
+            hiddenSkills: getConfig().hiddenSkills,
+            skillIndexMaxUser: getConfig().skillIndexMaxUser,
             autoCompactThreshold: getConfig().autoCompactThreshold,
             autoCompact: getConfig().autoCompact,
             autoTitle: getConfig().autoTitle !== false,
@@ -216,6 +218,12 @@ export function createAISettingsIO(ctx, extras) {
             }
             for (const name of Array.isArray(data.disabledSkills) ? data.disabledSkills : []) {
                 extras.aiAddUnique(getConfig().disabledSkills, name);
+            }
+            for (const name of Array.isArray(data.hiddenSkills) ? data.hiddenSkills : []) {
+                extras.aiAddUnique(getConfig().hiddenSkills, name);
+            }
+            if (Number.isFinite(Number(data.skillIndexMaxUser))) {
+                getConfig().skillIndexMaxUser = aiClampInt(data.skillIndexMaxUser, 1, 100, 100);
             }
             if (!getConfig().profiles.some((profile) => profile.id === getConfig().activeProfileId)) {
                 getConfig().activeProfileId = getConfig().profiles[0] ? getConfig().profiles[0].id : '';

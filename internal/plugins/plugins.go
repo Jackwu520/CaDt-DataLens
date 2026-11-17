@@ -14,10 +14,10 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"syscall"
 	"time"
 
 	"datalens/internal/appdata"
+	"datalens/internal/executil"
 	"datalens/internal/fsops"
 	"datalens/internal/vercmp"
 )
@@ -601,7 +601,7 @@ func clonePluginRepo(rawUrl string) (string, func(), error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	cloneCmd := exec.CommandContext(ctx, "git", "clone", "--depth", "1", "--single-branch", urlStr, filepath.Join(tmp, "repo"))
-	cloneCmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x08000000}
+	executil.HideCommandWindow(cloneCmd) // 防黑窗；平台差异收在 executil 里，本包保持可交叉编译
 	if out, cloneErr := cloneCmd.CombinedOutput(); cloneErr != nil {
 		cleanup()
 		if ctx.Err() != nil {

@@ -113,15 +113,27 @@ export function normalizeModalities(raw) {
     return out;
 }
 
+// 该账号 + 条目组合能否接收视频内容段——read_video 下发/执行/起轮门禁的单一判定。
+// 两道门槛都要过：协议只认 OpenAI 兼容 chat completions（Anthropic / Responses 的
+// 传输层没有公认视频内容段，会拒收）；模态位仅把显式 false 当「明确不支持」，缺省
+// 放行交由服务商判定（与 read_image / read_video 执行守卫的历史口径一致）。
+// 注意 defaultModalities() 默认 video:false，配置加载后条目通常带该字段，因此绝大多数
+// 模型返回 false——这正是「不支持视频的模型连 read_video 都不该看到」的意图。
+export function modelVideoInputEnabled(profile, entry) {
+    if (profile && profile.provider && profile.provider !== 'openai') return false;
+    if (entry && entry.modalities && entry.modalities.video === false) return false;
+    return true;
+}
+
 export function normalizeModelEntry(raw, idGen) {
     const source = raw && typeof raw === 'object' ? raw : {};
     return {
         id: String(source.id || '').trim() || (idGen ? idGen() : 'model-' + Date.now().toString(36)),
         model: String(source.model || '').trim(),
-        contextWindow: windowValue(source.contextWindow, CONTEXT_WINDOW_MIN, CONTEXT_WINDOW_MAX, 128000),
+        contextWindow: windowValue(source.contextWindow, CONTEXT_WINDOW_MIN, CONTEXT_WINDOW_MAX, 262144),
         outputWindow: windowValue(
             source.outputWindow != null ? source.outputWindow : source.maxTokens,
-            OUTPUT_WINDOW_MIN, OUTPUT_WINDOW_MAX, 4096),
+            OUTPUT_WINDOW_MIN, OUTPUT_WINDOW_MAX, 65536),
         modalities: normalizeModalities(source.modalities),
         reasoningEffort: ['low', 'medium', 'high'].includes(source.reasoningEffort) ? source.reasoningEffort : '',
         thinking: source.thinking === true,
@@ -244,6 +256,25 @@ export function configForModel(account, entry) {
     };
 }
 
+// OpenCode（Zen / Go）建议每个会话带一个稳定的 x-opencode-session 头，用于路由优化与
+// prompt 缓存（见 https://opencode.ai/docs/console/go/ ）。生成一次存进会话对象，整会话复用。
+// 返回形如 datalens-<随机> 的短串；不外泄内部 session.id。
+export function newOpencodeSessionId() {
+    return 'datalens-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+}
+
+// 把 x-opencode-session 头合进 cfg.extraHeaders：用户在账号里手填过该头时保留用户的值，
+// 否则用会话的稳定 ID。session 为空（个别一次性任务拿不到会话身份）时不注入，不影响其他服务商。
+// 返回新的 cfg（浅拷贝），不改动入参。
+export function withOpencodeSessionHeader(cfg, session) {
+    if (!cfg || !session) return cfg;
+    const userHeaders = cfg.extraHeaders && typeof cfg.extraHeaders === 'object' ? cfg.extraHeaders : {};
+    const hasUserValue = Object.keys(userHeaders).some((name) => String(name).toLowerCase() === 'x-opencode-session');
+    if (hasUserValue) return cfg;
+    const id = String(session.opencodeSessionId || '').trim();
+    if (!id) return cfg;
+    return Object.assign({}, cfg, {extraHeaders: Object.assign({}, userHeaders, {'x-opencode-session': id})});
+}
 // 解析模型引用（自动审批分类器等场景）：'accountId|modelId'；兼容旧格式（纯账号 id
 // 解析为该账号首条目）。无效 / 已删除返回 ''（跟随当前模型）。
 export function resolveModelRef(rawRef, profiles) {

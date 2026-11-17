@@ -9,6 +9,7 @@ import {AI_QUOTE_KIND, quoteChipLabel, quoteExcerpt} from './ai-quote.js';
 
 export function createAIComposer(ctx) {
     const el = ctx.el;
+    const backend = ctx.backend || {};
     const compactOf = ctx.compactOf;
     const currentSession = ctx.currentSession;
     const flash = ctx.flash;
@@ -500,6 +501,13 @@ export function createAIComposer(ctx) {
                 return;
             }
         }
+        // Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z 走 textarea 自己的撤销栈（原生行为，不 preventDefault）。
+        // 只挡冒泡：main.js 的全局快捷键会把这三个键抢去做编辑器 undo/redo。
+        if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key &&
+            (e.key.toLowerCase() === 'z' || e.key.toLowerCase() === 'y')) {
+            e.stopPropagation();
+            return;
+        }
         if (e.key !== 'Enter') return;
         if (syncStreamView() || compactOf((currentSession() || {}).id)) {
             if (e.shiftKey || e.altKey) return;
@@ -578,6 +586,116 @@ export function createAIComposer(ctx) {
         el.input.focus();
         flash(queuedDraft ? '已取回待编辑消息；输入区原有内容已放回排队' : '已取回待编辑消息');
     }
+    // ---------- 输入框右键编辑菜单（撤销/重做/剪切/复制/粘贴/全选；方案 M2 搬入） ----------
+
+    function editableHasSelection(target) {
+        if (typeof target.selectionStart === 'number') return target.selectionEnd > target.selectionStart;
+        const selection = window.getSelection ? window.getSelection() : null;
+        return !!(selection && selection.rangeCount && !selection.isCollapsed);
+    }
+
+    function execEditable(target, command) {
+        target.focus();
+        try {
+            return !!document.execCommand(command);
+        } catch (e) {
+            return false;
+        }
+    }
+
+    // data URL → File：右键菜单粘贴到的图片由后端以 data URL 返回，复用粘贴/拖拽的压缩管线。
+    function dataUrlToFile(dataUrl, name) {
+        const raw = String(dataUrl || '');
+        const comma = raw.indexOf(',');
+        if (comma < 0) return null;
+        const header = raw.slice(0, comma);
+        const mime = (header.slice(header.indexOf(':') + 1).split(';')[0] || 'image/png').trim() || 'image/png';
+        let binary = '';
+        try {
+            binary = atob(raw.slice(comma + 1));
+        } catch (e) {
+            return null;
+        }
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        if (!bytes.length) return null;
+        try {
+            return new File([bytes], name || '粘贴的图片', {type: mime});
+        } catch (e) {
+            return null;
+        }
+    }
+
+    // 右键菜单的「粘贴」拿不到 paste 事件（菜单点击不会触发剪贴板事件），
+    // 图片只能请后端回读系统剪贴板，再走和 Ctrl+V 一样的附件流程。
+    async function pasteImageFromClipboard() {
+        if (!backend.GetClipboardImage) return false;
+        let dataUrl = '';
+        try {
+            dataUrl = String((await backend.GetClipboardImage()) || '');
+        } catch (e) {
+            return false;
+        }
+        if (!dataUrl) return false;
+        const file = dataUrlToFile(dataUrl, '粘贴的图片.png');
+        if (!file) return false;
+        try {
+            const prepared = await prepareImageAttachment(file);
+            prepared.kind = 'image';
+            prepared.label = prepared.name;
+            return addAttachment(prepared);
+        } catch (err) {
+            flash('图片处理失败：' + ((err && err.message) || err), true);
+            return false;
+        }
+    }
+
+    async function pasteIntoEditable(target) {
+        let text = '';
+        try {
+            if (backend.GetClipboardText) text = String((await backend.GetClipboardText()) || '');
+        } catch (e) {}
+        if (!text && navigator.clipboard && navigator.clipboard.readText) {
+            try {
+                text = await navigator.clipboard.readText();
+            } catch (e) {}
+        }
+        if (!text) {
+            // 剪贴板里没有文字：按图片粘贴（Ctrl+V 走 paste 事件，菜单粘贴只能这样回读）。
+            await pasteImageFromClipboard();
+            return;
+        }
+        target.focus();
+        // execCommand('insertText') 会进 undo 栈（菜单粘贴也能 Ctrl+Z 撤销）；不可用时回退 setRangeText
+        let ok = false;
+        try {
+            ok = document.execCommand('insertText', false, text);
+        } catch (e) {}
+        if (!ok) {
+            if (typeof target.selectionStart === 'number') {
+                target.setRangeText(text, target.selectionStart, target.selectionEnd, 'end');
+            } else {
+                target.value += text;
+            }
+            target.dispatchEvent(new Event('input', {bubbles: true}));
+        }
+    }
+
+    function showAIEditMenu(event, target) {
+        if (!showContextMenu) return;
+        const hasSel = editableHasSelection(target);
+        showContextMenu([
+            {label: '撤销', shortcut: 'Ctrl+Z', icon: 'E7A7', action: () => execEditable(target, 'undo')},
+            {label: '重做', shortcut: 'Ctrl+Y', icon: 'E7A6', action: () => execEditable(target, 'redo')},
+            {sep: true},
+            {label: '剪切', shortcut: 'Ctrl+X', icon: 'E8C6', disabled: !hasSel, action: () => execEditable(target, 'cut')},
+            {label: '复制', shortcut: 'Ctrl+C', icon: 'E8C8', disabled: !hasSel, action: () => execEditable(target, 'copy')},
+            {label: '粘贴', shortcut: 'Ctrl+V', icon: 'E77F', action: () => pasteIntoEditable(target)},
+            {sep: true},
+            {label: '全选', shortcut: 'Ctrl+A', icon: 'E8B3', action: () => execEditable(target, 'selectAll')},
+        ], event.clientX, event.clientY);
+    }
+
     return {
         renderAttachments,
         addAttachment,
@@ -600,6 +718,7 @@ export function createAIComposer(ctx) {
         editQueuedMessage,
         handleInputPaste,
         attachCurrentFile,
+        showAIEditMenu,
         getAttachments: () => attachments,
         setAttachments: (value) => { attachments = value; },
     };

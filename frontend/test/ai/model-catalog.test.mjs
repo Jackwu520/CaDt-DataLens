@@ -38,6 +38,27 @@ test('normalizeModelId：去 vendor 前缀 / 路由后缀 / -latest / 日期尾�
     assert.equal(normalizeModelId('  '), '');
 });
 
+test('-free 免费档作为独立条目，窗口低于付费正主且不被后缀剥离', () => {
+    // normalizeModelId 刻意不剥 -free：免费档窗口普遍低于付费正主，剥离会错填
+    assert.equal(normalizeModelId('deepseek-v4.1-flash-free'), 'deepseek-v4.1-flash-free');
+    assert.equal(normalizeModelId('beam-free'), 'beam-free');
+    const catalog = normalizeCatalog({
+        version: 't',
+        models: [
+            {id: 'deepseek-v4.1-flash', contextWindow: 1000000, outputWindow: 384000},
+            {id: 'deepseek-v4.1-flash-free', contextWindow: 200000, outputWindow: 32000},
+            {id: 'beam-free', contextWindow: 1048576, outputWindow: 131072},
+        ],
+    });
+    const paid = matchCatalogModel(catalog, 'deepseek-v4.1-flash');
+    const free = matchCatalogModel(catalog, 'deepseek-v4.1-flash-free');
+    assert.ok(free, '-free 条目应能精确命中');
+    assert.equal(free.contextWindow, 200000, '免费档用自己的低窗口，不复用付费正主');
+    assert.equal(free.outputWindow, 32000);
+    assert.equal(paid.contextWindow, 1000000, '付费正主不受 -free 条目影响');
+    assert.ok(matchCatalogModel(catalog, 'beam-free'), '纯 -free 结尾的模型也能命中');
+});
+
 test('matchCatalogModel：精确 → 别名 → 归一化，不做模糊匹配', () => {
     const catalog = normalizeCatalog({
         version: 't',
@@ -164,7 +185,7 @@ test('内置表覆盖：常见厂商各有条目，且关键别名能被识别',
     assert.equal(probe('glm-latest')?.id, 'glm-5.3');
     assert.equal(probe('anthropic/claude-opus-5-5')?.id, 'claude-opus-5-5');
     assert.equal(probe('gpt-5.2-2025-12-11')?.id, 'gpt-5.2');
-    assert.equal(probe('minimax-m3.1-flash')?.id, 'MiniMax-M3.1-Flash');
+    assert.equal(probe('MiniMax-M3.1-Flash')?.id, 'minimax-m3.1-flash');
     assert.equal(probe('kimi-k3.1-pro-highspeed')?.id, 'kimi-k3.1-pro-highspeed');
     assert.equal(probe('hy4')?.id, 'hy4');
 });

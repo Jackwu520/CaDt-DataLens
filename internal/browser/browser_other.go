@@ -30,7 +30,9 @@ func (h *Host) BrowserCallCDP(id string, method string, paramsJSON string) (stri
 	return "", browserUnsupported()
 }
 
-func (h *Host) BrowserSetBounds(id string, x int, y int, w int, h int, rasterScale float64) error {
+// BrowserSetBounds 非 Windows 无内嵌浏览器：参数名不能与接收者 h 重名（否则本文件
+// 编译即报 redeclared——之前这份桩从未被编译过，2026-11-17 交叉编译才发现）。
+func (h *Host) BrowserSetBounds(id string, x int, y int, w int, height int, rasterScale float64) error {
 	return browserUnsupported()
 }
 

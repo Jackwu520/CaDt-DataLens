@@ -609,7 +609,7 @@ function appActionAgentSnapshot() {
     return {agents, models: options.map((option) => ({ref: option.ref, label: option.label}))};
 }
 
-async function runAppAction(action, params, scope) {
+async function runAppAction(action, params, scope, callerSessionId) {
     const actionScope = scope || 'full';
     const p = params || {};
     switch (String(action || '').trim()) {
@@ -625,7 +625,8 @@ async function runAppAction(action, params, scope) {
                 aiPanel: {
                     open: aiOpen,
                     mode: aiPanel && aiPanel.getMode ? aiPanel.getMode() : '',
-                    sessions: aiPanel && aiPanel.bridgeListSessions ? aiPanel.bridgeListSessions() : [],
+                    // 透传调用者会话 id：列表里 caller=true 的是调用者自己，active=true 只是面板当前查看的会话
+                    sessions: aiPanel && aiPanel.bridgeListSessions ? aiPanel.bridgeListSessions(callerSessionId) : [],
                 },
                 theme: settings.theme,
                 codeStyle: settings.codeStyle || CODE_STYLE_AUTO,
@@ -726,7 +727,8 @@ async function runAppAction(action, params, scope) {
         }
         case 'get_ai': {
             if (!aiPanel) throw new Error('AI 面板未初始化');
-            if (aiPanel.bridgeGetState) return aiPanel.bridgeGetState();
+            // 透传调用者会话 id：bridgeGetState 据此区分「调用者自己」与「面板查看的会话」。
+            if (aiPanel.bridgeGetState) return aiPanel.bridgeGetState(callerSessionId);
             return {open: !!(aiPanel.isOpen && aiPanel.isOpen()), mode: aiPanel.getMode ? aiPanel.getMode() : ''};
         }
         case 'get_explorer': {
@@ -1009,7 +1011,8 @@ async function runAppAction(action, params, scope) {
         }
         case 'ai_rename_session': {
             if (!aiPanel || !aiPanel.bridgeRenameSession) throw new Error('AI 面板未初始化');
-            return {renamed: await aiPanel.bridgeRenameSession(p.id, p.title)};
+            // 透传调用者会话 id：不传 id 时默认改「调用者自己」的会话，后台会话不会误改前台。
+            return {renamed: await aiPanel.bridgeRenameSession(p.id, p.title, callerSessionId)};
         }
         case 'get_gen_models': {
             if (!aiPanel || !aiPanel.bridgeGenModelsList) throw new Error('AI 面板未初始化');
@@ -1725,7 +1728,7 @@ const editorGroupsMod = createEditorGroups({
     get viewOptionsFor() { return viewOptionsFor; },
     get workspaceFolder() { return workspaceFolder; },
 });
-const {activateDoc, addDocToFocusedGroup, applyAceMode, applyCsvTableZoom, applyImageZoom, browserViewportLabel, closeDocNow, closeDocsWithConfirm, closeSqlView, createDoc, createDocEditor, createGroup, dismissBanner, doRedo, doUndo,  enterBinaryView, enterCsvTable, enterImageView, enterMarkdownPreview, enterSplitView, enterSqlView, enterSvgRender, enterTextView, enterVideoView, exitSplitView, expandAllWithGuard, flushCsvCellEditor,  groupDocs, setFocusedGroupId, setSplitRoot, groupOfDoc, handleAIWorkspaceFileChanged, handleExternalDocChanges, hideBanner, hideSvgRender, hideVideoView, hookCodeFoldRanges, hookMultiCursor, humanizeCounts, initCodeFoldHover, jumpBookmark, leaveCsvTable, leaveMarkdownPreview, markDocDirty, mdSyncScrollFromAce, moveTabInGroup, openWithDefaultApp, patchViewContext, refreshPatchMarkers, rememberDocView, renderBookmarks, renderBreadcrumb, renderCsvTableView, renderEditorLayout, renderMarkdownPreview, renderTabs, reopenClosedTab, releaseVideo, requestCloseDoc, revertDocToSaved, scheduleGitGutter, setBrowserViewport, setFilename, showBanner, showImageMenu, showMdPreviewMenu, showPathInFolder, showSvgMenu,  syncAllBrowserTabs, syncBrowserTab, syncTabReadOnly, textArea, toggleBookmark, toggleFocusedNode, updateBrowserTitle, updateDocChrome, updateStatus, zoomCsvTable, zoomImageBy, zoomSvgRenderBy} = editorGroupsMod;
+const {activateDoc, addDocToFocusedGroup, applyAceMode, applyCsvTableZoom, applyImageZoom, browserViewportLabel, closeDocNow, closeDocsWithConfirm, closeSqlView, createDoc, createDocEditor, createGroup, dismissBanner, doRedo, doUndo,  enterAudioView, enterBinaryView, enterCsvTable, enterImageView, enterMarkdownPreview, enterSplitView, enterSqlView, enterSvgRender, enterTextView, enterVideoView, exitSplitView, expandAllWithGuard, flushCsvCellEditor,  groupDocs, setFocusedGroupId, setSplitRoot, groupOfDoc, handleAIWorkspaceFileChanged, handleExternalDocChanges, hideAudioView, hideBanner, hideSvgRender, hideVideoView, hookCodeFoldRanges, hookMultiCursor, humanizeCounts, initCodeFoldHover, jumpBookmark, leaveCsvTable, leaveMarkdownPreview, markDocDirty, mdSyncScrollFromAce, moveTabInGroup, openWithDefaultApp, patchViewContext, refreshPatchMarkers, rememberDocView, renderBookmarks, renderBreadcrumb, renderCsvTableView, renderEditorLayout, renderMarkdownPreview, renderTabs, reopenClosedTab, releaseAudio, releaseVideo, requestCloseDoc, revertDocToSaved, scheduleGitGutter, setBrowserViewport, setFilename, showBanner, showImageMenu, showMdPreviewMenu, showPathInFolder, showSvgMenu,  syncAllBrowserTabs, syncBrowserTab, syncTabReadOnly, textArea, toggleBookmark, toggleFocusedNode, updateBrowserTitle, updateDocChrome, updateStatus, zoomCsvTable, zoomImageBy, zoomSvgRenderBy} = editorGroupsMod;
 const NEW_FILE_TYPES = [
     {label: 'JSON 文件', name: '新建文件.json'},
     {label: '文本文件', name: '新建文件.txt'},
@@ -3199,15 +3202,18 @@ async function reloadActive(opts = {}) {
         doc.imageScale = 0;
         doc.imageZoom = null;
         doc.imagePan = null;
-        // 重新加载会重建 pane：先把视频断源，否则旧解码器还在播
+        // 重新加载会重建 pane：先把视频/音频断源，否则旧解码器还在播
         releaseVideo(doc);
         doc.videoReleased = false;
+        releaseAudio(doc);
+        doc.audioReleased = false;
         doc.loading = false;
         doc.bannerDismissed = false;
         Object.assign(doc, fresh, {id: doc.id, dirty: false, untitled: false, text: null, content: data.content, bookmarks: doc.bookmarks || new Set()});
         let nextMode = keepMode;
         if (doc.binary) {
             nextMode = doc.video && keepMode === 'video' ? 'video'
+                : doc.audio && keepMode === 'audio' ? 'audio'
                 : doc.image && keepMode === 'image' ? 'image' : 'binary';
         } else if (doc.format.preview) {
             if (doc.large) nextMode = 'code';
@@ -3706,6 +3712,7 @@ const modeSwitch = createModeSwitch({
     get currentMode() { return currentMode; },
     get dirty() { return dirty; },
     get editor() { return editor; },
+    get enterAudioView() { return enterAudioView; },
     get enterBinaryView() { return enterBinaryView; },
     get enterCsvTable() { return enterCsvTable; },
     get enterImageView() { return enterImageView; },
@@ -3718,6 +3725,7 @@ const modeSwitch = createModeSwitch({
     get exitSplitView() { return exitSplitView; },
     get file() { return file; },
     get flash() { return flash; },
+    get hideAudioView() { return hideAudioView; },
     get hideSvgRender() { return hideSvgRender; },
     get hideVideoView() { return hideVideoView; },
     get hookCodeFoldRanges() { return hookCodeFoldRanges; },
@@ -4368,6 +4376,35 @@ function isTypingTarget() {
     return !!(el.closest && el.closest('.ace_editor'));
 }
 
+// Ctrl+Z / Ctrl+Y：普通文本输入控件（AI 输入框、设置项、查找框等）的撤销交给控件自己的撤销栈，
+// 别被全局快捷键抢去做编辑器 undo/redo；Ace / jsoneditor 仍走 doUndo/doRedo（含空栈回退已保存态）。
+function isPlainTextUndoTarget() {
+    if (!isTypingTarget()) return false;
+    const active = document.activeElement;
+    if (!active) return false;
+    if (active.closest && active.closest('.ace_editor')) return false;
+    if (active.matches && active.matches('textarea.jsoneditor-text')) return false;
+    return true;
+}
+
+// 文件树聚焦时 Ctrl+Z/Y 走 explorerOps 的操作历史（删除可从回收站还原），而不是编辑器撤销。
+// 必须在捕获层拦截器和冒泡层全局快捷键之前判定。
+function isExplorerUndoTarget() {
+    return !!(explorer && explorer.hasFocus && explorer.hasFocus());
+}
+
+function handleExplorerUndoKey(e) {
+    if (!isExplorerUndoTarget()) return false;
+    const key = (e.key || '').toLowerCase();
+    const redo = key === 'y' || (key === 'z' && e.shiftKey);
+    if (!redo && key !== 'z') return false;
+    e.preventDefault();
+    e.stopPropagation();
+    if (redo) explorerOps.redoExplorer();
+    else explorerOps.undoExplorer();
+    return true;
+}
+
 // 编辑器（Ace 隐藏输入框）不算纯文本输入，允许编辑器内使用 Git 快捷键
 function isPlainTextEntryTarget() {
     const el = document.activeElement;
@@ -4619,10 +4656,14 @@ window.addEventListener('keydown', (e) => {
         e.stopPropagation();
         openDialog();
     } else if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === 'z') {
+        if (isPlainTextUndoTarget()) return;
+        if (handleExplorerUndoKey(e)) return;
         e.preventDefault();
         e.stopPropagation();
         doUndo();
     } else if (e.ctrlKey && (e.key.toLowerCase() === 'y' || (e.shiftKey && e.key.toLowerCase() === 'z'))) {
+        if (isPlainTextUndoTarget()) return;
+        if (handleExplorerUndoKey(e)) return;
         e.preventDefault();
         e.stopPropagation();
         doRedo();
@@ -4816,6 +4857,8 @@ els.editor.addEventListener('wheel', (e) => {
 window.addEventListener('keydown', (e) => {
     if (!e.ctrlKey || e.shiftKey || e.altKey) return;
     if ((e.key || '').toLowerCase() !== 'z') return;
+    if (isPlainTextUndoTarget()) return;
+    if (handleExplorerUndoKey(e)) return;
     if (currentMode !== 'code' || !editor || !editor.aceEditor || isDocReadOnly(file, settings)) return;
     let um = null;
     try { um = editor.aceEditor.session.getUndoManager(); } catch (err) { return; }

@@ -102,7 +102,9 @@ test('接线护栏：引用只进 user content，气泡截断 + title 全文，�
     assert.ok(panel.includes("item.kind !== 'message_quote'"));
     assert.ok(panel.includes('!value && !imageAttachments.length && !videoAttachments.length && !textAttachments.length'));
     assert.ok(panel.includes('!hasText && !hasImages && !hasVideos && !hasTextAttachments'));
-    assert.ok(panel.includes('splitQuotePrefix(message.content'));
+    // 气泡 / 编辑重发 / 支线编辑三条路径：先剥开头的 <system-reminder> 环境块，再拆 <quote>
+    assert.ok(panel.includes('splitTurnReminderPrefix(message.content'));
+    assert.ok(panel.includes('splitQuotePrefix(parsedReminder.body)'));
     assert.ok(panel.includes('excerpt.dataset.tip = quote.text'));
     assert.ok(panel.includes('引用所选到输入框') && panel.includes('引用整条回复'));
     assert.ok(composer.includes('addMessageQuote') && composer.includes("prefix = '回复引用 · '"));

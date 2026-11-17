@@ -285,3 +285,112 @@ func TestWebFetchImageNetwork(t *testing.T) {
 		t.Fatalf("Fetch 对图片地址应报错并提到 read_image，实际：%v", err)
 	}
 }
+
+// ---------- 正文抽取管线（语义收窄 / 黑名单 / pre 保留 / Markdown 化） ----------
+
+func TestWebExtractPreservesCodeIndent(t *testing.T) {
+	page := `<html><body><p>示例：</p><pre><code>func main() {
+    fmt.Println("hi")
+}</code></pre><p>结束</p></body></html>`
+	_, text, _ := webExtractHTML(page, "https://example.com/")
+	if !strings.Contains(text, "    fmt.Println") {
+		t.Fatalf("pre 缩进丢失：%q", text)
+	}
+	if !strings.Contains(text, "```") {
+		t.Fatalf("pre 未转 fenced code：%q", text)
+	}
+	if strings.Contains(text, "<pre") || strings.Contains(text, "<code") {
+		t.Fatalf("pre/code 标签残留：%q", text)
+	}
+	if !strings.Contains(text, "示例") || !strings.Contains(text, "结束") {
+		t.Fatalf("正文丢失：%q", text)
+	}
+}
+
+func TestWebDropNoiseBlocks(t *testing.T) {
+	page := `<html><body>
+<p>正文开始</p>
+<div class="sidebar"><ul><li>侧栏链接</li></ul></div>
+<div class="comments" id="comments">评论区内容</div>
+<div class="ad-box">广告内容</div>
+<div class="article-header">标题区域</div>
+<p>正文结束</p>
+</body></html>`
+	_, text, _ := webExtractHTML(page, "https://example.com/")
+	for _, noise := range []string{"侧栏链接", "评论区内容", "广告内容"} {
+		if strings.Contains(text, noise) {
+			t.Fatalf("噪声未删除 %q：%q", noise, text)
+		}
+	}
+	for _, keep := range []string{"正文开始", "正文结束", "标题区域"} {
+		if !strings.Contains(text, keep) {
+			t.Fatalf("正文误删 %q：%q", keep, text)
+		}
+	}
+}
+
+func TestWebPickMainContentNarrows(t *testing.T) {
+	long := strings.Repeat("这是文章正文内容。", 60)
+	page := `<html><body><div class="menu">导航导航导航</div>` +
+		`<article><p>` + long + `</p></article>` +
+		`<div class="ads">广告广告广告</div></body></html>`
+	_, text, _ := webExtractHTML(page, "https://example.com/")
+	if !strings.Contains(text, "文章正文内容") {
+		t.Fatalf("正文丢失：%q", text)
+	}
+	if strings.Contains(text, "导航导航") || strings.Contains(text, "广告广告") {
+		t.Fatalf("容器外噪声未收窄排除：%q", text)
+	}
+}
+
+func TestWebSmallPageNotNarrowed(t *testing.T) {
+	page := `<html><body><article><p>短文摘要</p></article><p>后面的正文</p></body></html>`
+	_, text, _ := webExtractHTML(page, "https://example.com/")
+	// 全文不足 400 字不收窄：短页里 article 可能只是摘要块
+	if !strings.Contains(text, "短文摘要") || !strings.Contains(text, "后面的正文") {
+		t.Fatalf("短页不应收窄：%q", text)
+	}
+}
+
+func TestWebMarkdownStructure(t *testing.T) {
+	page := `<html><body><h2>安装步骤</h2><p>直接 <strong>安装</strong> 即可，<em>注意</em>版本。</p>` +
+		`<ul><li>第一步</li><li>第二步</li></ul>` +
+		`<table><tr><th>名称</th><th>值</th></tr><tr><td>mode</td><td>fast</td></tr></table>` +
+		`<hr></body></html>`
+	_, text, _ := webExtractHTML(page, "https://example.com/")
+	for _, want := range []string{"## 安装步骤", "**安装**", "*注意*", "- 第一步", "- 第二步", "| 名称 | 值 |", "| mode | fast |"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("缺少 %q：%q", want, text)
+		}
+	}
+}
+
+func TestWebInlineAnchorsMarkdown(t *testing.T) {
+	page := `<a href="/docs/intro.html">介绍</a> 与 <a href="javascript:void(0)">无效链接</a>` +
+		` 与 <a href="https://other.com/x? a=1">外链</a> 与 <img src="/i.png" alt="架构图">`
+	_, text, _ := webExtractHTML(page, "https://example.com/page.html")
+	if !strings.Contains(text, "[介绍](https://example.com/docs/intro.html)") {
+		t.Fatalf("相对链接未就地绝对化：%q", text)
+	}
+	if strings.Contains(text, "javascript:") {
+		t.Fatalf("脚本链接未剥除：%q", text)
+	}
+	if !strings.Contains(text, "无效链接") {
+		t.Fatalf("无 href 链接应保留文本：%q", text)
+	}
+	if !strings.Contains(text, "[外链](https://other.com/x?%20a=1)") {
+		t.Fatalf("外链未就地化（空格应转义 %%20）：%q", text)
+	}
+	if !strings.Contains(text, "[图片: 架构图]") {
+		t.Fatalf("img alt 未保留：%q", text)
+	}
+}
+
+func TestWebLargeFormNotDropped(t *testing.T) {
+	long := strings.Repeat("表单内包裹的正文内容。", 40)
+	page := `<html><body><form id="mainform"><p>` + long + `</p></form></body></html>`
+	_, text, _ := webExtractHTML(page, "https://example.com/")
+	if !strings.Contains(text, "表单内包裹的正文内容") {
+		t.Fatalf("大 form 包裹的正文被误删：%q", text)
+	}
+}

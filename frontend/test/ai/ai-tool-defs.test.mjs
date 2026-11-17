@@ -181,6 +181,38 @@ test('read_video：只读档与计划模式都下发，且必须登记目录', (
     assert.match(AI_TOOL_CATALOG.read_video.blurb, /mp4/);
 });
 
+test('read_video 按会话视频能力裁剪：不支持时工具与目录链一起消失', () => {
+    const session = {id: 's-video'};
+    const capable = (enabled) => createAIToolDefs({
+        appControlOn: () => false,
+        videoCapableOf: (s) => s === session && enabled,
+    });
+    const has = (enabled, scope, planMode) =>
+        capable(enabled).toolsForScope(scope, planMode, session).some((t) => t.name === 'read_video');
+    // 支持视频：所有档位与计划模式都下发（与旧行为一致）
+    for (const scope of ['read', 'edit', 'auto', 'full']) {
+        for (const planMode of [false, true]) {
+            assert.equal(has(true, scope, planMode), true, scope + ' / ' + planMode + ' 支持视频应下发 read_video');
+        }
+    }
+    // 不支持视频：所有档位与计划模式都不下发
+    for (const scope of ['read', 'edit', 'auto', 'full']) {
+        for (const planMode of [false, true]) {
+            assert.equal(has(false, scope, planMode), false, scope + ' / ' + planMode + ' 不支持视频不该下发 read_video');
+        }
+    }
+    // 目录：能力判定必须透传到 toolCatalogText，否则"看视频"工具链仍会错误展示
+    const catalogOn = capable(true).toolCatalogText('read', false, session);
+    const catalogOff = capable(false).toolCatalogText('read', false, session);
+    assert.match(catalogOn, /read_video/, '支持视频时目录含 read_video');
+    assert.match(catalogOn, /看视频/, '支持视频时目录含"看视频"工具链');
+    assert.doesNotMatch(catalogOff, /read_video/, '不支持视频时目录不该出现 read_video');
+    assert.doesNotMatch(catalogOff, /看视频/, '不支持视频时目录不该出现"看视频"工具链');
+    // 顺序稳定：下发列表里 read_video 仍紧跟 read_image
+    const enabledNames = capable(true).toolsForScope('read', false, session).map((t) => t.name);
+    assert.equal(enabledNames[enabledNames.indexOf('read_video') - 1], 'read_image', 'read_video 应紧跟 read_image');
+});
+
 test('网图走 read_image：描述里写明 URL 通道，web_fetch 把图片指向它', () => {
     // web_fetch 遇到 image/* 只会报错，模型必须知道改投 read_image（否则就像 2026-11-17 那张
     // picsum 链接：报一次失败后只能猜「URL 有效但看不了」）。

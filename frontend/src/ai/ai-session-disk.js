@@ -16,6 +16,14 @@ import {
     safeVideoName,
     textOf,
 } from './ai-session-store.js';
+import {
+    aiFormatDuration,
+    aiImageExt,
+    aiImageSrc,
+    aiNormalizeImage,
+    aiNowId,
+    aiSafeFileStem,
+} from './ai-constants.js';
 
 // ---------- 磁盘适配 ----------
 
@@ -693,4 +701,190 @@ export function createSessionDiskStore(options) {
         hydrateImages,
         newMid,
     };
+}
+
+// ---------- 对话日志自动落盘（方案 M3 从 ai-panel.js 搬入） ----------
+// Markdown 构建（含工具 / ask / 图片附件）+ 图片归档 + 400ms 防抖后按会话串行排队。
+// 目录定位（应用数据 ai-logs）、配置开关与审批文案（askStateLabel / askResultText）
+// 由宿主注入——本模块不碰面板闭包。
+export function createAIConversationLog(ctx) {
+    const backend = ctx.backend || {};
+    const getConfig = ctx.getConfig;
+    const ensureLogDir = ctx.ensureLogDir;
+    const persistSessions = ctx.persistSessions;
+    const flash = ctx.flash;
+    const askStateLabel = ctx.askStateLabel;
+    const askResultText = ctx.askResultText;
+    const joinPath = ctx.joinPath;
+
+    let logSaveErrorShown = false;
+    const logTimers = new Map();
+    const logQueues = new Map();
+
+    function logTimestamp(ts) {
+        return new Date(Number(ts) || Date.now()).toLocaleString();
+    }
+
+    function logTruncate(text, max) {
+        const value = textOf(text);
+        if (value.length <= max) return value;
+        return value.slice(0, max) + '\n…（已截断 ' + (value.length - max) + ' 字符）';
+    }
+
+    function appendAskMarkdown(lines, ask) {
+        if (!ask) return;
+        (ask.questions || []).forEach((question, index) => {
+            lines.push('问题 ' + (index + 1) + '：' + question.question, '');
+            for (const option of question.options || []) {
+                lines.push('- ' + option.label + (option.recommended ? '（推荐）' : '') +
+                    (option.description ? ' — ' + option.description : ''));
+            }
+            const answer = (ask.answers || []).find((item) => item.id === question.id) || {};
+            const selected = Array.isArray(answer.selected) ? answer.selected : [];
+            if (selected.length) lines.push('回答：' + selected.join('、'));
+            if (answer.custom) lines.push('补充：' + answer.custom);
+            if (!selected.length && !answer.custom) lines.push('回答：（未回答）');
+            lines.push('');
+        });
+        const result = askResultText(ask);
+        if (result) lines.push('状态：' + askStateLabel(ask) + ' · ' + result, '');
+    }
+
+    function appendLogMessage(lines, message, level) {
+        if (!message || !message.role) return;
+        if (message.role === 'user') {
+            if (message.kind === 'model-switch') {
+                if (message.content) lines.push('> ' + message.content, '');
+                return;
+            }
+            const images = (message.images || []).map(aiNormalizeImage).filter(Boolean);
+            const videos = (message.videos || []).filter((video) => video && (video.data || video.file));
+            if (!message.content && !images.length && !videos.length) return;
+            lines.push(level + ' 用户 · ' + logTimestamp(message.ts), '');
+            if (message.content) lines.push(message.content, '');
+            for (const image of images) {
+                if (image.logFile) lines.push('![图片](<' + image.logFile + '>)', '');
+            }
+            for (const video of videos) {
+                lines.push('（视频附件：' + (video.file || video.name || 'video') + '）', '');
+            }
+            return;
+        }
+        if (message.role === 'tool') {
+            lines.push(level + ' 工具：' + (message.name || 'tool') + ' · ' + (message.status || 'done'), '');
+            if (message.arguments) lines.push('参数：`' + logTruncate(message.arguments, 4000) + '`', '');
+            if (message.ask) appendAskMarkdown(lines, message.ask);
+            lines.push('```text', logTruncate(message.content || '（无输出）', 50000), '```', '');
+            return;
+        }
+        if (!message.content && !message.reasoning && !(message.toolCalls || []).length && !message.error) return;
+        lines.push(level + ' AI' + (message.model ? '（' + message.model + '）' : '') + ' · ' + logTimestamp(message.ts), '');
+        if (message.turnMs) lines.push('用时：' + aiFormatDuration(message.turnMs), '');
+        if (message.reasoning) {
+            lines.push('<details>', '<summary>思考过程</summary>', '', message.reasoning, '', '</details>', '');
+        }
+        if (message.content) lines.push(message.content, '');
+        if (Array.isArray(message.toolCalls) && message.toolCalls.length) {
+            lines.push('工具调用：' + message.toolCalls.map((call) => call.name).filter(Boolean).join('、'), '');
+        }
+        if (message.usage && message.usage.totalTokens) {
+            lines.push('tokens：输入 ' + (message.usage.promptTokens || 0) + ' · 输出 ' + (message.usage.completionTokens || 0) +
+                ' · 合计 ' + message.usage.totalTokens, '');
+        }
+        if (message.status === 'error' && message.error) lines.push('> 错误：' + message.error, '');
+    }
+
+    function buildConversationLogMarkdown(session) {
+        const config = getConfig();
+        const lines = ['# ' + (session.title || 'AI 会话'), ''];
+        lines.push('- 会话 ID：`' + session.id + '`');
+        lines.push('- 创建时间：' + new Date(Number(session.createdAt) || Date.now()).toLocaleString());
+        lines.push('- 最近更新：' + new Date().toLocaleString());
+        const profile = config.profiles.find((item) => item.id === session.profileId);
+        if (profile) lines.push('- 最后配置：' + profile.name + (profile.model ? '（' + profile.model + '）' : ''));
+        lines.push('');
+        if (session.summary && session.summary.text) {
+            lines.push('## 会话摘要', '', session.summary.text, '');
+        }
+        const archived = Array.isArray(session.archived) ? session.archived : [];
+        if (archived.length) {
+            lines.push('## 已归档消息（压缩前，不进入当前上下文）', '');
+            for (const message of archived) appendLogMessage(lines, message, '###');
+            lines.push('');
+        }
+        lines.push('## 当前对话', '');
+        for (const message of session.messages) appendLogMessage(lines, message, '###');
+        if (Array.isArray(session.changes) && session.changes.length) {
+            lines.push('', '## 变更记录', '');
+            for (const change of session.changes) {
+                lines.push('- `' + (change.relPath || change.path) + '` +' + change.added + ' −' + change.removed +
+                    ' · ' + new Date(change.time).toLocaleString());
+            }
+        }
+        return lines.join('\n');
+    }
+
+    async function saveConversationLog(session) {
+        const config = getConfig();
+        if (!config.logEnabled || !session) return;
+        if (!backend.SaveFile || !backend.SaveDataURL) return;
+        try {
+            const dir = await ensureLogDir();
+            if (!session.logFile) {
+                session.logFile = aiSafeFileStem(session.title || 'AI 会话') + '-' + String(session.id).slice(-8) + '.md';
+            }
+            const archived = Array.isArray(session.archived) ? session.archived : [];
+            const messages = archived.concat(session.messages);
+            const imagesDir = joinPath(dir, 'images');
+            let imagesSaved = false;
+            let imagesDirReady = false;
+            for (const message of messages) {
+                if (!message || message.role !== 'user' || !Array.isArray(message.images)) continue;
+                for (let i = 0; i < message.images.length; i++) {
+                    const image = aiNormalizeImage(message.images[i]);
+                    if (!image) continue;
+                    message.images[i] = image;
+                    if (!image.logFile && image.data) {
+                        if (!imagesDirReady) {
+                            if (backend.AIEnsureDir) await backend.AIEnsureDir(imagesDir);
+                            imagesDirReady = true;
+                        }
+                        const name = aiSafeFileStem(String(session.id).slice(-16) + '-' + (image.id || aiNowId('img-')))
+                            .replace(/\s+/g, '_').slice(0, 100) + '.' + aiImageExt(image.mime);
+                        const rel = 'images/' + name;
+                        await backend.SaveDataURL(joinPath(imagesDir, name), aiImageSrc(image));
+                        image.logFile = rel;
+                        imagesSaved = true;
+                    }
+                }
+            }
+            if (imagesSaved) persistSessions();
+            const markdown = buildConversationLogMarkdown(session);
+            await backend.SaveFile(joinPath(dir, session.logFile), markdown, 'lf', false, 'utf-8');
+            session.logSavedAt = Date.now();
+            persistSessions();
+        } catch (e) {
+            if (!logSaveErrorShown) {
+                logSaveErrorShown = true;
+                flash('对话日志保存失败：' + ((e && e.message) || e), true);
+            }
+        }
+    }
+
+    function queueLogSave(session) {
+        if (!getConfig().logEnabled || !session) return;
+        const existing = logTimers.get(session.id);
+        if (existing) clearTimeout(existing);
+        logTimers.set(session.id, setTimeout(() => {
+            logTimers.delete(session.id);
+            const previous = logQueues.get(session.id) || Promise.resolve();
+            const next = previous.catch(() => {}).then(() => saveConversationLog(session));
+            logQueues.set(session.id, next);
+            next.finally(() => {
+                if (logQueues.get(session.id) === next) logQueues.delete(session.id);
+            });
+        }, 400));
+    }
+
+    return {queueLogSave, saveConversationLog, buildConversationLogMarkdown, appendAskMarkdown};
 }

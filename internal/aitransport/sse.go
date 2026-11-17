@@ -411,6 +411,19 @@ func aiFinishReason(reason string) string {
 	}
 }
 
+// aiStreamErrorText 把「流中途被断开」翻成用户能看懂的文案。网关/代理在长生成中
+// 掐断 SSE 时，Go 只返回 io.ErrUnexpectedEOF（chunked 流缺终止块），原文冒到界面
+// 既看不出是网络问题，也给不出下一步。解析失败、业务错误体等已有明确文本的照原样返回。
+func aiStreamErrorText(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, io.ErrUnexpectedEOF) || strings.Contains(strings.ToLower(err.Error()), "unexpected eof") {
+		return fmt.Errorf("%w：通常是网关或代理在长生成中超时、掐断了连接，本轮已生成的内容可能不完整。可直接重试；大段改动建议拆成多次小改动", ErrStreamTruncated)
+	}
+	return err
+}
+
 func StatusErrorText(resp *http.Response) string {
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, aiErrorBodyLimit))
 	text := strings.TrimSpace(string(body))

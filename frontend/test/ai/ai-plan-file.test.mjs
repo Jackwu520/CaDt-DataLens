@@ -10,6 +10,8 @@ import {
     planDisplayPath,
     planFileBody,
     planFileRelPath,
+    planReferenceBlock,
+    planSessionSlug,
     planSlug,
     planStamp,
     planTitleOf,
@@ -40,14 +42,25 @@ test('planSlug：去 Markdown 记号 + 剔除 Windows 非法字符 + 长度截�
     assert.equal(long.length, 40);
 });
 
-test('planStamp / planFileRelPath：本地时间秒级 + .cadt/plan 前缀', () => {
+test('planStamp：本地时间秒级（只用于来源注释，不参与文件名）', () => {
     const ts = new Date(2026, 10, 16, 5, 23, 7).getTime();
     assert.equal(planStamp(ts), '20261116-052307');
-    const rel = planFileRelPath(ts, PLAN_TEXT);
-    assert.ok(rel.startsWith(PLAN_DIR_REL + '/20261116-052307-'));
-    assert.ok(rel.endsWith('.md'));
-    // 同一消息算出同一路径（不随时间漂移）
-    assert.equal(planFileRelPath(ts, PLAN_TEXT), rel);
+});
+
+test('planSessionSlug：清洗为文件名安全字符，空值回落 session', () => {
+    assert.equal(planSessionSlug('abc-123'), 'abc-123');
+    assert.equal(planSessionSlug('session:with/slashes'), 'session-with-slashes');
+    assert.equal(planSessionSlug('  '), 'session');
+    assert.equal(planSessionSlug(null), 'session');
+    assert.equal(planSessionSlug('---'), 'session');
+});
+
+test('planFileRelPath：按会话固定路径（同会话永远覆盖同一份）', () => {
+    const rel = planFileRelPath('sess_plan-1');
+    assert.equal(rel, PLAN_DIR_REL + '/plan-sess_plan-1.md');
+    // 同一会话算出同一路径（不随时间 / 标题漂移）
+    assert.equal(planFileRelPath('sess_plan-1'), rel);
+    assert.equal(planFileRelPath(''), PLAN_DIR_REL + '/plan-session.md');
 });
 
 test('planDisplayPath：绝对路径切出 .cadt/plan 一段，其它回落文件名', () => {
@@ -85,4 +98,75 @@ test('isPlanMessage：只有计划模式的最终答复才算计划', () => {
     assert.equal(isPlanMessage({...base, content: '   '}), false, '空正文不落盘');
     assert.equal(isPlanMessage({role: 'user', planMode: true, status: 'done', content: 'x', toolCalls: []}), false);
     assert.equal(isPlanMessage(null), false);
+});
+
+function planMsg(content, planFile) {
+    return {role: 'assistant', planMode: true, status: 'done', content, toolCalls: [], planFile: planFile || ''};
+}
+
+test('planReferenceBlock：未压缩（无 summary）不注入——计划全文还在历史里', () => {
+    assert.equal(planReferenceBlock(null), '');
+    assert.equal(planReferenceBlock({summary: null, messages: [planMsg(PLAN_TEXT)]}), '');
+    assert.equal(planReferenceBlock({summary: {text: '  '}, messages: [planMsg(PLAN_TEXT)]}), '');
+});
+
+test('planReferenceBlock：压缩后注入最近一条计划（archived 与 messages 都搜）', () => {
+    const session = {
+        summary: {text: '摘要'},
+        archived: [planMsg('# 旧计划\n内容 A', 'D:/ws/.cadt/plan/plan-s1.md')],
+        messages: [{role: 'user', content: 'hi'}, planMsg('# 新计划\n内容 B')],
+    };
+    const block = planReferenceBlock(session);
+    assert.ok(block.startsWith('<plan_reference>') && block.endsWith('</plan_reference>'));
+    // 取的是最近一条（messages 里的新计划），不是 archived 里的旧计划
+    assert.ok(block.includes('内容 B'));
+    assert.ok(!block.includes('内容 A'));
+    // 新计划未批准（无 planFile）→ 未落盘提示；旧计划的路径不能串进来
+    assert.ok(block.includes('尚未保存为文件'));
+    assert.ok(!block.includes('.cadt/plan/plan-s1.md'));
+    assert.ok(block.includes('不要重新规划'));
+});
+
+test('planReferenceBlock：已批准计划带文件路径提示', () => {
+    const session = {
+        summary: {text: '摘要'},
+        messages: [planMsg(PLAN_TEXT, 'D:/ws/.cadt/plan/plan-s2.md')],
+    };
+    const block = planReferenceBlock(session);
+    assert.ok(block.includes('已保存到工作区文件：D:/ws/.cadt/plan/plan-s2.md'));
+    assert.ok(block.includes(PLAN_TEXT));
+});
+
+test('isPlanMessage：submit_plan 形态（计划在 planText，正文可空、带 toolCalls）', () => {
+    const submitted = {
+        role: 'assistant', planMode: true, status: 'done', content: '', planText: PLAN_TEXT,
+        toolCalls: [{id: 'c1', name: 'submit_plan', arguments: '{}'}],
+    };
+    assert.equal(isPlanMessage(submitted), true, 'planText 有值即计划消息');
+    assert.equal(isPlanMessage({...submitted, status: 'streaming'}), false, '流式中不算');
+    assert.equal(isPlanMessage({...submitted, planText: '  '}), false, '无 planText 且正文为空不算');
+});
+
+test('planReferenceBlock：submit_plan 形态优先用 planText 回注', () => {
+    const session = {
+        summary: {text: '摘要'},
+        messages: [{
+            role: 'assistant', planMode: true, status: 'done', content: '（计划已提交）',
+            planText: '# 计划\n只读正文在参数里', planFile: 'D:/ws/.cadt/plan/plan-s3.md',
+            toolCalls: [{id: 'c1', name: 'submit_plan', arguments: '{}'}],
+        }],
+    };
+    const block = planReferenceBlock(session);
+    assert.ok(block.includes('只读正文在参数里'), '回注的是 planText 而非对话正文');
+    assert.ok(!block.includes('（计划已提交）'));
+    assert.ok(block.includes('.cadt/plan/plan-s3.md'));
+});
+
+test('planReferenceBlock：压缩后没有计划消息则不注入', () => {
+    const session = {
+        summary: {text: '摘要'},
+        archived: [{role: 'user', content: 'x'}],
+        messages: [{role: 'assistant', planMode: true, status: 'stopped', content: '半成品', toolCalls: []}],
+    };
+    assert.equal(planReferenceBlock(session), '');
 });

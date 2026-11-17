@@ -1,107 +1,213 @@
 # 子代理命令执行与 OS 级沙箱（方案）
 
-> 状态：**未开工**（2026-11-15 调研成文，当日未实施）
-> 决策依据：2026-11-15 评估「子代理权限最大对齐 dsh（deepseek-harness）」时定档——语义对齐（提示声明 + 确定性拒绝 + 留痕）当日已落地，OS 沙箱单独立项为本方案；设计参考 dsh 的 `sandbox` / `sandbox-policy` / `sandbox-local` / `approval` 子系统与设计笔记（路径见 §1.2）
+> 状态：**方案 C 确认采用，2026-11-17 按真机实测修订；阶段 A 未开工**
+> 决策：2026-11-17 —— 作者在对齐 dsh（`D:\OraSkyC\Project\OpenSource\deepseek-harness`）实现后选择「接受 shell 分裂，继续 C」。本文档是唯一实施依据；§7 保留原复核意见作为过程记录，§8 记录推翻它的实测数据。
 > 范围：子代理获得命令执行能力，文件效应由 Windows OS 级沙箱强制圈定；不改主会话命令链路、不做子代理审批链路（子代理永远「不问」）、不做 macOS/Linux
 
 ## 1. 背景与现状
 
 ### 1.1 现状（代码事实）
 
-- 子代理工具白名单 `subToolsForScope(depth, mode)`（`frontend/src/ai/ai-subagents.js`）：只有 list_dir / read_file / search_text / web_search / web_fetch / memory_list / memory_read / timer_list / skill_use / env_list（后台模式 + ask_user，深度允许 + spawn_agent）。**没有命令与写工具**。
+- 子代理工具白名单 `subToolsForScope(depth, mode, hasWorktree)`（`frontend/src/ai/ai-subagents.js:303`）：只有 list_dir / read_file / read_image / read_video / search_text / web_search / web_fetch / memory_list / memory_read / timer_list / skill_use / env_list（后台模式 + ask_user，深度允许 + spawn_agent，隔离 worktree 额外 + write_file / edit_file）。**没有命令工具**。
 - 执行侧用 `allowed` 集合硬挡（`runSubRound` 的工具循环）：范围外调用走独立的确定性拒绝分支——模型侧文案「超出子代理只读范围……不要重试，在最终结论中说明限制」，留痕 `ai.tool` status: denied（2026-11-15 落地）。
 - 子代理系统提示已声明「工具范围在派出时已固定，无法从会话内放宽；被拒不要重试、上报父会话」（同日落地，对齐 dsh 的 `SUBAGENT_DELEGATION_CONTEXT` 声明）。
-- 主会话 `run_command` 链路：审批卡 + 自动审批档（只读命令族自动执行、危险命令确认一次、端侧分类器辅助判级，见 `ai-command-rules.js` / `ai-local-classifier.js`）+ `timeoutMs`（默认 30s、上限 120s）；Go 侧 `RunExec`（PrepareRun 临时副本与工作目录、流式执行、GBK 解码、PATH 前置、stdin 队列 `RunInput` / `RunEndInput`）。
-- 2026-11-15 实测：子代理探针调用 run_command / background_command / start_timer 全部被拒——「让子代理 sleep / 跑只读探测」在架构上堵死；主会话 `start_timer` 串行派单可行但笨重（450 秒级错峰验证只能靠主会话计时器逐个等）。
+- 主会话命令链路：审批卡 + 自动审批档 + `timeoutMs`（默认 30 s、上限 600 s）→ `AIRunShellCommand`（`internal/cmdbridge/ai_command_windows.go:94`）→ `runCommandSyncRegistered`（`internal/cmdbridge/app_commands.go:59`，`exec.CommandContext` + `envvars.MergeEnv` + `executil.HideCommandWindow` + `procctl` 取消注册）。shell 由 `aiShellInvocation` 选择：**Git Bash → PowerShell 7 → Windows PowerShell → cmd**。
+- 2026-11-15 实测：子代理探针调用 run_command / background_command / start_timer 全部被拒——「让子代理跑测试 / 只读探测」在架构上堵死。
 
-### 1.2 dsh 参考事实
+### 1.2 dsh 参考事实（2026-11-17 逐文件核对）
 
-- **策略钉死派生边界**（`packages/subagent/subagent/src/child-agent.ts` L221-280）：派生时向子会话日志追加三类持久策略事件——`sandbox/mode`（仅继承父的显式 override，不复制部署默认与一次性 grant）、`approval/policy{policy:'never', source:'delegation'}`（一律钉死，与父自身策略无关）、`permission/preset`（仅父为 auto / danger-full-access 时复制身份）。
-- **审批 pin never 的动机**（`.agents/notes/archived/feature/2026-08-10-subagent-approval-pinned-never.md`）：后台子代理弹审批卡「没有人可问」——子会话不进侧边栏、受阻子代理与正常子代理无法区分；因此「把审批提示从它的世界里移除」，ask 一律确定性拒绝。
-- **OS 级文件效应沙箱**（`docs/subsystems/sandbox.md`）：`read-only / workspace-write / danger-full-access` 三档，只管文件效应；平台后端 Linux bwrap/Landlock、macOS Seatbelt、Windows ACL restricted-token；per-call 解析、schema 默认 fail-safe read-only；无可用 runner 报 `SANDBOX_UNAVAILABLE` 不裸跑；enforcement 分 full / partial（**Windows 标 partial**：硬链接别名绕过、读不受 ACL 限制——dsh 自己诚实标注）。
-- **escalation 阶梯**（`packages/sandbox/sandbox/src/escalation.ts`）：被沙箱拒绝的 bash/fs 可带 justification 做一次严格更宽的重试并走审批；子代理因 pin never 一律拒绝。
-- **免责**（dsh `SAFETY.md`）：沙箱/审批/权限只是减险手段，不构成隔离保证，不要作为唯一安全控制。
+- **策略钉死派生边界**（`packages/subagent/subagent/src/child-agent.ts` 的 `captureDelegatedPolicyOverrides`）：派生时只捕获父会话**显式**设置的 sandbox mode（不复制部署默认、不复制一次性 grant），approval 一律钉死 `policy:'never', source:'delegation'`。
+- **写根定义**（`packages/sandbox/sandbox-policy/src/index.ts:197`）：`workspaceRoot = session.header.cwd`（会话不可变 cwd，**不是副本、不是 worktree**）；无 cwd 时回落部署配置。`additionalWritableRoots` 由部署显式列出，**Windows 后端直接拒绝**（`sandbox-local/README.md:133`，`SANDBOX_UNSUPPORTED_POLICY`）。
+- **写入白名单推导**（`packages/sandbox/sandbox/src/roots.ts`）：`workspace-write` = 工作区 + 显式额外根 + 平台 temp；`read-only` 为空。Windows 不用系统 temp，而是每次拉起一个**随机私有 temp 目录**并以独立 SID 授权（`sandbox-local/README.md:83`）。
+- **Windows 后端**（`packages/sandbox/sandbox-windows-acl/src/`）：`CreateRestrictedToken(WRITE_RESTRICTED|DISABLE_MAX_PRIVILEGE)`，restricting 列表 `read-only=[logonSID, Everyone]` / `workspace-write=[logonSID, Everyone, workspaceSID, tempSID]`，再降到 Low 完整性；每次授予在**一次** `SetNamedSecurityInfoW` 里同时落三件事——能力 SID 的 allow ACE、Everyone 的 `FILE_DELETE_CHILD` deny（只继承到容器）、Low no-write-up 标签；workspace ACE 永久 standing（复用缓存），temp ACE 可撤销；`enforcement` 如实标 `partial`。
+- **token 默认 DACL 必须补授权**（`sandbox-windows-acl/src/token.ts` 的 `setTokenDefaultDaclGrant`）：受限令牌不继承任何 restricting SID，新建对象（管道、共享内存）的 write 二次检查必失败。
+- **默认档 fail-safe**：`mode` 默认 `read-only`，`workspace-write` 需部署显式 opt-in。
+- **免责**（`SAFETY.md`）：沙箱/审批/权限只是减险手段，不构成隔离保证。
+
+### 1.2b ZCode 参考事实（2026-11-17 核对 `D:\OraSkyC\Project\OpenSource\ZCode`）
+
+ZCode **没有 OS 级沙箱实现**——`ExecutionSandboxPolicy`（`packages/contracts/src/interfaces/execution.port.ts:110`）只有 `{enabled, profile?, dangerouslyDisableSandbox?, metadata?}`，第一版是 no-op，靠 trace/telemetry 记录 `sandboxed`。可采纳的是它的**契约纪律**与 **Windows 执行合同**：
+
+- **如实上报优先于假装**：adapter 不支持沙箱时必须暴露 `unsupported` / `no-op`，并把它写进 trace 与工具结果，不能静默降级（`04-bash.md:386`）。
+- **沙箱是独立边界**：不与 WebFetch 的预授权域名混同；`dangerouslyDisableSandbox` 只能「策略允许 + 用户批准」后生效（`:161`、`:462`）。⇒ 本项目子代理永远「不问」，所以**不向子代理暴露任何 bypass 参数**。
+- **权限分三层**：`ShellParserPort`（跨平台 argv 视图）/ `ShellPermissionPolicy`（只读、危险语义、规则匹配）/ `ExecutionPort`（执行 + timeout + cancel + sandbox），接口必须与具体 shell 解耦（`:168`、`:204`）。⇒ 支持我们「沙箱只管效应、权限分层各司其职」的切法。
+- **只读判定必须带 shell 上下文**：`cmd` / `legacy-shell` 下 Bash AST 不能证明只读（`type # & python script.py` 在 AST 里只剩 `type`，CMD 仍执行 Python），因此这两种 shell 不授予免审批（`:170`）。⇒ 我们若在 P2 引入命令分类器，必须知道这条命令在哪个 shell 里跑——沙箱档是 PowerShell，分类器的只读白名单不能沿用 bash 那套。
+- **Windows 执行合同**：不要求用户装 Git Bash；`argv` 模式必须解析 `PATHEXT`（`pnpm`/`npm` 是 `.cmd` shim）；`.cmd`/`.bat` 不得直接 spawn，必须显式经 `ComSpec`；`PATH` 按 `;` 拆分并去引号；`env` 的 set/unset 大小写无关（`:197-220`）。
+- **文件改动优先专用工具**：读用 `Read`、改用 `Edit`/`ApplyPatch`，不要用 shell 脚本绕过（`:436` 设计结论）。
+- **子代理继承**：ZCode 是「继承父 turn 的 runtime config、cwd、approval、sandbox、环境」的**全量继承**（`07-subagent-background-plan.md:49`），与 dsh「只继承显式 override」不同。本项目用第三种：按权限档映射（§3.1），因为本产品没有独立的 sandbox mode 状态。
 
 ### 1.3 问题
 
-子代理无法执行命令，探测类任务（跑测试、`git log`、查版本、错峰验证）只能由主会话串行做或靠「读文件耗时间」伪装。dsh 的经验是：**命令执行能力不必切除，可保留 + 策略约束**——前提是文件效应有 OS 级兜底。本项目在 Windows 上的对应物是受限令牌 + ACL，纯 Win32 可做。
+子代理无法执行命令，探测类任务（跑测试、`git log`、查版本、错峰验证）只能由主会话串行做或靠读文件耗时间。dsh 的经验是：命令能力可保留 + 策略约束，前提是文件效应有 OS 级兜底。本项目在 Windows 上的对应物是受限令牌 + ACL（纯 Win32，`golang.org/x/sys/windows` 已是直接依赖，0 新依赖）。
 
 ## 2. 目标与非目标
 
 ### 目标
 
 1. 子代理可按策略执行 `run_command` / `background_command`，文件效应由 OS 沙箱圈定。
-2. 派生边界策略快照：sandbox 模式从父会话权限档解析、随 spawn 固定，子会话内不可放宽（含孙代理——快照向下传递不放宽）。
+2. 派生边界策略快照：sandbox 模式随 spawn 固定，子会话内不可放宽（含孙代理）。
 3. fail-closed：沙箱不可用即拒绝执行并在工具结果中说明，绝不静默裸跑。
-4. 执行与拒绝落操作留痕（命令输出不落盘，既有原则）；子代理提示如实声明边界。
-5. Windows-only（本项目目标平台）；复用 `golang.org/x/sys/windows`（go.mod 已有，0 新依赖）。
+4. 执行与拒绝落操作留痕（命令输出不落盘）；子代理提示如实声明边界（含 shell 差异）。
+5. Windows-only；复用 `golang.org/x/sys/windows`。
 6. 每阶段独立提交、独立验证、独立回滚。
 
 ### 非目标（明确排除）
 
 - **不做子代理审批链路**：永不弹卡（dsh pin never 同款）；escalation 仅主会话可用。
-- **不改主会话命令链路**：审批 / 分类器 / timeout 语义不动；主会话是否也接沙箱列为可选延伸（§6）。
-- **不承诺隔离保证**：对齐 dsh SAFETY.md 的定位——沙箱是「误操作兜底」而非「对抗性防御」；本项目无浏览器级多进程边界，威胁模型是模型失误与提示注入的**后果收敛**，不是拦截决心坚定的攻击者。
-- 不做 macOS/Linux；不做 additionalWritableRoots 用户配置（v1 不暴露）。
+- **不改主会话命令链路**：审批 / 分类器 / timeout 语义不动；主会话接入沙箱列为 P2 可选延伸（§6）。
+- **不承诺隔离保证**：定位为「误操作兜底」而非「对抗性防御」——威胁模型是模型失误与提示注入的**后果收敛**。
+- **不做 Git Bash 的沙箱化**：实测结论（§8.2）——Cygwin 在 restricting SID 下无法启动，沙箱档 shell 固定 PowerShell（回退 cmd）。这是显式接受的产品代价，不当作待办。
+- 不做 macOS/Linux；v1 不暴露 `additionalWritableRoots` 用户配置（且 Windows 后端本就不支持）。
 
 ## 3. 设计
 
 ### 3.1 策略词表与派生映射
 
-- `SandboxMode = read-only | workspace-write | danger-full-access`（词表对齐 dsh，便于文档与心智互认）。
+- `SandboxMode = read-only | workspace-write | danger-full-access`（与 dsh 词表一致）。
 - 父权限档 → 子代理 sandbox 快照（spawn 时解析并冻结到 `sub.policy`）：
 
 | 父档 | 子代理 sandbox | 理由 |
 | --- | --- | --- |
 | read | read-only | 只读契约原样下传 |
-| edit | read-only | edit 档的写审批依赖「人在场」，子代理没有审批通道，所以不给写盘 |
-| auto | workspace-write | auto 契约即非风险自主执行；写效应圈定在运行 cwd + 系统临时目录 |
-| full | danger-full-access | 继承父的完全权限（父已自担风险，§6 未决项之一） |
+| edit | read-only | edit 档的写审批依赖「人在场」，子代理没有审批通道 |
+| auto | workspace-write | auto 契约即非风险自主执行 |
+| full | danger-full-access | **已拍板：继承父的完全权限**（对齐 dsh「继承宽身份」），提示中如实声明 |
 
-- 写效应根 v1 固定为：运行 cwd（PrepareRun 临时副本目录）+ 系统临时目录。读范围不受沙箱限制（对齐 dsh：沙箱只管写效应；读边界由既有权限档与 read-roots 体系管——但子代理读工具的既有边界不变，本方案只新增命令通道）。
-- `background_command` 在 sandbox 模式下同样放行；后台 job 生命周期挂在子代理上，子代理终止即 kill job（对齐 Job Object kill-on-close）。
+### 3.2 写根（对齐 dsh，v1 定死）
 
-### 3.2 Windows enforcement（Go 侧）
+| 项 | 取值 | 说明 |
+| --- | --- | --- |
+| `workspaceRoot` | **该子代理的 cwd**（`aiResolveScopePath` 解析后的绝对路径） | 隔离 worktree 子代理天然落在 `.cadt/worktree/<slug>`；普通子代理落在会话工作区。语义与 dsh 的 `session.header.cwd` 一致 |
+| 私有 temp | 每次 spawn 一个随机目录（`os.MkdirTemp`），TMP/TEMP 重写指向它，独立 SID 授权，进程退出后撤销 ACE 并删目录 | 对齐 dsh：系统 temp **永不**整体授权 |
+| 额外写根 | v1 不支持 | Windows 后端本就不支持；不引入 v1 之外的可注入面 |
+| 读范围 | 不受沙箱限制 | 沙箱只管写效应；读边界由既有权限档管 |
 
-- 新文件 `sandbox_windows.go`（+ `sandbox_test.go`；按仓库惯例平台差异成对出现，本方案 Windows-only 暂无 `sandbox_other.go`，若后续要编译护栏再补空实现）：
-  - `CreateRestrictedToken`：deny-only SID（禁 Everyone / Users 写权）+ 低完整性级别（Low IL），禁 `SE_ASSIGNPRIMARYTOKEN` 等敏感特权；
-  - Job Object：`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`，子代理终止时连带杀全进程树（补 `RunStop` 的树杀缺口）；
-  - 每次调用的临时可写目录：ACL 仅授受限令牌与当前用户写权，进程结束后清理（复用 PrepareRun 的清理路径）；
-  - 桌面 / 窗口站隔离 v1 不做（写明 partial）。
-- `RunExec` 增加 sandbox 参数（mode + writableRoots），命令在受限令牌 + Job 内启动；stdin / GBK 解码 / PATH 前置等既有行为不变。
-- 失败分类：令牌创建或 ACL 设置失败 → `SANDBOX_UNAVAILABLE`，工具结果明确报「沙箱不可用，命令未执行」——fail-closed，不降级裸跑（对齐 dsh）。
-- **enforcement 诚实标注 partial**（对齐 dsh `sandbox-local` README 的自述）：硬链接别名可绕过 deny-only SID、读不受 ACL 限制。文档与提示都不夸大。
+- `background_command` 同样放行；后台 job 挂在子代理上，子代理终止即 kill（Job Object `KILL_ON_JOB_CLOSE`）。
+- 写根与 temp 必须互不包含（对齐 dsh `assertPrivateTempDisjoint`），任一方向重叠直接 fail-closed。
 
-### 3.3 派生边界与前端
+### 3.3 Windows enforcement（Go 侧，按实测修订）
 
-- `spawn_agent` 时解析并冻结 `sub.policy = {sandboxMode}`；`subToolsForScope` 按 policy 挂载 `run_command`（read-only / workspace-write / danger-full-access 都挂，沙箱在 Go 侧管效应）与 `background_command`；孙代理继承父快的快照不放宽（`sub.policy` 原样传给下一层 spawn）。
-- 子代理系统提示同步更新：「你可执行命令，文件效应被沙箱圈定在 <mode>；沙箱拒绝的命令不要重试，在结论中说明」。
-- 拒绝文案复用现有确定性拒绝分支的形状（2026-11-15 已落），新增两类：`sandbox-denied`（OS 层拒绝）与 `sandbox-unavailable`；留痕 `ai.tool` status 对应。
-- 子代理详情视图（HUD）显示当前 policy（`sandbox: workspace-write`）。
+新包 `internal/sandbox/`（`sandbox_windows.go` + `sandbox_other.go` 桩；纯引擎，不 import main）。任一步失败即停：
 
-### 3.4 审计
+1. **令牌**：`OpenProcessToken` → 取登录会话 SID（`TokenGroups` 里带 `SE_GROUP_LOGON_ID` 的项）→ `CreateRestrictedToken(DISABLE_MAX_PRIVILEGE|WRITE_RESTRICTED, restricting=[logon, Everyone, workspaceSID, tempSID])` → `SetTokenInformation(TokenIntegrityLevel, Low)` → **`SetTokenInformation(TokenDefaultDacl)` 补一条 restricting SID 的全权 ACE**（缺这步新建管道与 Cygwin 初始化全挂，dsh 同一处修复）。
+2. **SID 派生**：workspace SID = `sha256(规范化工作区路径)` 前 8 字节取模成 `S-1-4-x-y`；temp SID 再加第三个子授权 `-1` 做域分离。workspace ACE 同 dsh 一样永久 standing（复用缓存），temp ACE 可撤销。
+3. **授予**：`GetNamedSecurityInfoW(DACL|LABEL)` → `SetEntriesInAclW` 合并两条记录（Everyone 的 `FILE_DELETE_CHILD` deny `CONTAINER_INHERIT` + 能力 SID 的 `GRANT_MASK` allow `OI|CI`）→ `SetNamedSecurityInfoW` 一次写入 DACL + Low 标签。整段 get-merge-set 走 per-path `LockFileEx` 排他锁。幂等：三条记录都已存在则跳过（`SetNamedSecurityInfoW` 会 eager 传播整棵树，大树几十秒）。
+4. **启动形态**：子进程**继承宿主的隐藏控制台**（`AllocConsole` + `ShowWindow(SW_HIDE)`，懒执行一次），`CreationFlags = 0`。**禁用** `CREATE_NO_WINDOW` / `CREATE_NEW_CONSOLE` / `HideWindow`——实测三者一律 `0xC0000142`（STATUS_DLL_INIT_FAILED）。
+   > 为什么不是 `DETACHED_PROCESS`：它能跑 `cmd.exe`，但 **PowerShell 在无控制台时静默退出**（exit 0、什么都不执行，5.1 与 7 都是，实测）。沙箱档的 shell 是 PowerShell，所以 v1 用隐藏控制台；`sandbox.Policy.ShareConsole` 保留两种形态，`DETACHED` 留给只用 cmd 的场景。
+   > 已知副作用：`AllocConsole` 是进程级的一次性动作，会改变宿主 stdout/stderr 指向；控制台已隐藏，非沙箱命令仍走 `CREATE_NO_WINDOW`，不受影响。
+5. **shell**：沙箱档命令固定走 PowerShell（`shellpath.FindPwsh()` → `powershell.exe` → `cmd.exe`），**永不解析 Git Bash**。`aiShellInvocation` 增加 `sandboxed bool` 参数，非沙箱档行为零变化。
+6. **Job Object**：`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`，子代理终止连带杀全进程树（补 `RunStop` 的树杀缺口）。
+7. **失败分类**：任一步失败 → `SANDBOX_UNAVAILABLE`，工具结果明确「沙箱不可用，命令未执行」，**不降级裸跑**。
+8. `enforcement` 如实标 `partial`（硬链接别名可绕过、读不受限、AppContainer 打过包 SID 的树读不了）。
 
-- 执行：`logActivity('ai.tool', name, {status, ms, depth})`——沿用主会话「不记命令输出正文」的口径，命令行参数照主会话审批展示口径截 120 字。
-- 沙箱拒绝与不可用单独 status，设置页操作记录可筛。
+### 3.4 派生边界与前端
+
+- `spawn_agent` 时解析并冻结 `sub.policy = {sandboxMode, workspaceRoot}`；`subToolsForScope` 按 policy 挂载命令四件套 `run_command` / `background_command` / `check_command` / `stop_command`（三种模式都挂，效应由 Go 侧管）。
+  > **实施订正（2026-11-17）**：后台三件套必须一起挂——只给 `background_command` 不给 `check`/`stop`，模型起了作业也读不到、停不掉。对应 Go 侧新增 `AICommandStartConfined(command, cwd, mode, workspaceRoot)`：作业退出后由 `startCommandConfined` 的收尾路径撤 temp 授权、删目录、杀残留进程树。
+  > 策略不再单独存字段：`subSandboxPolicy(session)` 由既有持久字段现算——`session.scope`（父档继承而来）+ `session.worktree`（隔离区绝对路径，优先）+ `session.workspace`。这样恢复会话、孙代理递归都不用额外序列化。
+  > 子代理不弹审批，但**项目 deny 规则照旧生效**：只调 `evaluatePermissionRules` 取 `deny`，不问、不跑分类器（用户的禁令不是「需要人判断」的事）。
+  > 已知粗糙处：`stop_command` 按 jobId 直接停，没有「只能停自己起的作业」的归属校验（jobId 对模型不透明，暂无实际风险，P3 再收紧）。
+- 子代理系统提示新增两段：「你可执行命令，文件效应被沙箱圈定在 <mode>：<root>」+「**沙箱内 shell 是 PowerShell，不是 bash**；命令请用 PowerShell 语法，`ls`/`grep`/`sed` 这类写法不要用」。
+- 拒绝文案沿用现有确定性拒绝分支形状，新增 `sandbox-denied`（OS 层拒绝）与 `sandbox-unavailable` 两种 status，留痕 `ai.tool` 对应。
+- 子代理详情视图（HUD）显示 `沙箱 只读 / 可写 / 完全`（`ai-head-hud.js` 副标题，读派出时定死的 `sub.sandboxMode`；未知档位原样回显，不猜）。
+- 卡片如实显示 `PowerShell 7` / `Windows PowerShell` / `Command Prompt`——用户一眼能看出这条命令没走 Git Bash。
+- **沙箱状态必须如实进卡片与留痕**（ZCode 契约纪律 §1.2b）：`sandbox: workspace-write (partial)` / `sandbox: unavailable` / `sandbox: bypassed(full)` 三态之一，不允许「看起来沙箱了其实没沙箱」。`enforcement=partial` 也进卡片。
+- **不向子代理暴露任何 bypass 参数**：子代理永远「不问」，`dangerouslyDisableSandbox` 这类字段只可能出现在主会话（P2），且必须走审批。
+
+### 3.5 审计（已实施 2026-11-17）
+
+- 执行：`logActivity('ai.tool', name, {status, ms, depth, sandbox?})`，沿用「不记命令输出正文」；子代理工具循环此前只在「范围外拒绝」时留痕，现在**每次工具执行都留痕**（子代理的命令无人可问，留痕是唯一审计面）。
+- status 词表新增两种，与 `done` / `error` 并列：
+  - `sandbox-denied`：命令失败且 stderr 命中 ACL 拒绝特征串（Go 侧 `detectSandboxDenial`，用 `chardec.DecodeBytes` 自动解 UTF-8 / GBK，认「拒绝访问」「Access is denied」「is denied」「Permission denied」等）；**宁可漏判成 `error` 也不误判**——把「工具链崩了」记成「沙箱拒绝」会误导排查。
+  - `sandbox-unavailable`：沙箱建不起来（fail-closed 拒绝执行），`error` 文案里带「沙箱不可用」。
+- 成功执行不单列 status（仍是 `done`），档位记在 `sandbox` 字段（`read-only` / `workspace-write`），设置页操作记录可按它筛。
+- **后台作业的拒绝已能分类**（2026-11-17 补齐）：作业退出时 Go 侧按缓冲里的 `[stderr]` 行调同一个 `detectSandboxDenial`，结论放进 `AICommandJobStatus.sandboxDenied`；`check_command` 轮询到就把这次调用记成 `sandbox-denied`，并在结果里加一句「这条命令被沙箱拒绝」。
+- `stop_command` 做归属校验：只能停**本任务树**（`rootSessionId` 相同）起的作业，越界确定性拒绝并记 `denied`——子代理跑命令后没人看着，不能让它顺手掐掉别的会话的后台作业。
+- 字段命名：工具消息上承载覆盖的字段叫 **`activityStatus`**（不是 `sandboxStatus`）——它同时承载沙箱拒绝、沙箱不可用与作业归属拒绝三类确定性结果，用沙箱命名会让第三类无处安放；档位另记在 `sandbox` 字段。留痕读取处按 `activityStatus || (error ? 'error' : 'done')` 取，拒绝不会被记成普通成功。
 
 ## 4. 阶段划分（每阶段独立提交）
 
-1. **阶段 A（Go 沙箱执行器）**：`sandbox_windows.go` + 表驱动测试（令牌创建、ACL、Job、fail-closed）；不含前端，可先合入待用。集成测试覆盖：受限进程写可写根成功 / 写工作区外失败 / Job 连带杀树。
-2. **阶段 B（RunExec 接线）**：`RunExec` 增加 sandbox 参数，`run_command` 工具透传（主会话 v1 不启用沙箱，仅打通管道，零行为变化）。
-3. **阶段 C（子代理挂载）**：策略快照解析 + `subToolsForScope` 挂载 + 提示 / 拒绝文案 / 留痕 / HUD 展示；本方案的行为主体。
-4. **阶段 D（收尾）**：设置页权限档说明补「子代理命令与沙箱」小节、README/CHANGELOG、（可选）主会话 auto 档接入评估（§6）。
+1. **阶段 A（Go 沙箱引擎）— 已实施（2026-11-17）**：`internal/sandbox`（令牌、默认 DACL、SID 派生、ACL 三重授予与撤销、幂等跳过、Job、fail-closed、temp 与写根互不包含）+ 11 例真机测试。
+2. **阶段 B（执行链接线）— 已实施（2026-11-17）**：`sandbox.Policy.ShareConsole`、`runCommandSyncConfined`（沙箱档不调 `HideCommandWindow`）、`aiShellInvocation(command, sandboxed)`、新绑定 `AIRunShellCommandConfined(command, cwd, timeoutMs, runId, mode, workspaceRoot)`、结果带 `sandboxMode` / `enforcement` / `tempDir`。主会话不启用沙箱，行为零变化。
+3. **阶段 C（子代理挂载）— 已实施（2026-11-17）**：`subSandboxPolicy` / `subSandboxModeOf`（`ai-subagents.js`）、`subToolsForScope` 挂命令四件套、子代理系统提示声明「沙箱 + PowerShell 语法 + 后台三件套用法」、`run_command` 与 `background_command` 分支按会话分流（沙箱 → `AIRunShellCommandConfined` / `AICommandStartConfined`，主会话 → 审批链不变）、结果行回显沙箱档位与写根。Go 侧 `AICommandStartConfined` + `startCommandConfined`（作业退出后收尾）。护栏 `frontend/test/ai/ai-subagent-sandbox.test.mjs`（8 例）+ `internal/cmdbridge` 3 例。
+   > 余量：无（HUD 档位标签、`stop_command` 归属校验、后台作业的 `sandbox-denied` 分类均已在 2026-11-17 补齐）。
+4. **阶段 D（收尾）— 撤销工具与设置页说明已实施（2026-11-17）**：`sandbox.Scan` / `sandbox.Revoke`（引擎）+ 根壳 `sandbox_app.go` 的两个绑定 + AI 设置 → 权限 → 「子代理命令沙箱」小节（说明 + 检查 / 清除授权两个按钮）。
+   > `Revoke` 只删「完全匹配本应用签名」的条目：能力 SID 的 allow ACE、Everyone 的 `FILE_DELETE_CHILD` deny（按 ACE 逐条重建 ACL，**不能**用 `REVOKE_ACCESS`——那会把 Everyone 的其它授权一起删掉），以及没有其它能力授权时的 Low 标签。若重建后 ACL 为空则放弃并报错（空 DACL = 全员拒绝，比留着残留更糟）。
+   > 余量：无（README / CHANGELOG 的用户向说明已随 2026-11-17 的收口补上）。
 
-## 5. 风险与代价
+## 5. 风险与代价（如实记录）
 
-- **工程量**：Go 侧 1000–1500 行 + Windows 集成测试，数周级（dsh 光 Windows 后端就单独立项：`.agents/notes/implemented/feature/2026-08-08-windows-acl-restricted-token-sandbox.md`）。
-- **维护坑**：UNC / 网络盘路径、符号链接、硬链接别名（dsh 标 partial 的直接原因）、受限令牌下部分工具链跑不起来（需要 UAC 提权的安装器、写用户配置目录的工具）——预期「能跑的命令子集」要靠实测收敛并写进文档。
-- **性能**：每次调用多一次令牌创建 + temp 目录准备，毫秒级，可感知但可接受。
-- **安全边界（必须如实宣传）**：子代理日常 web_fetch / 读外部内容，命令通道对提示注入**可达**——沙箱收敛的是文件效应后果（写不出工作区与 temp、杀得出进程树），网络效应与读效应不在其内。read-only 快照下命令依然能联网、能读用户目录（对齐 dsh 的 partial 现实）。
-- **体积**：0 新依赖（`golang.org/x/sys/windows` 已是直接依赖）；代码体量按红线另计。
+- **工程量**：Go 侧 1000–1500 行 + Windows 集成测试，数周级。
+- **永久副作用**：workspace 树被打上 Low 完整性标签且 `dispose` 不撤销，此后**任何** Low IL 进程（别家沙箱、Protected Mode 阅读器）都能写它；`icacls` 无法撤销（`ERROR_NONE_MAPPED 1332`，能力 SID 是派生值解析不了），只能走本包的 `sandbox.Revoke`（设置 → 权限 → 子代理命令沙箱 → 清除授权）。首次授予是 eager 全树传播，大树几十秒。
+- **shell 分裂**：沙箱档不能用 Git Bash（§8.2 实测），命令语义在档位间不同。这是本方案最贵的产品代价，靠提示词与卡片如实显示兜住。
+- **介质**：FAT/exFAT 卷作为写根直接失败（移动盘常见）；NULL-DACL 目录在 grant/revoke 往返后不等价；写根目录需 caller-owned 且有 `WRITE_OWNER`（仅 Modify 的目录会响亮失败）。
+- **工具链子集**：命名管道受限，libuv 的 piped stdio 孙进程可能 EPERM；`go build` / `npm` 的失败面要靠实测收敛并写进文档。
+- **体积**：0 新依赖。
 
-## 6. 未决问题（拍板后开工）
+## 6. 未决问题
 
-1. **full → danger-full-access 是否放行**：父已是完全权限时子代理继承裸命令，还是保守映射为 workspace-write + 提示差异？（dsh 选择继承宽身份；本项目倾向继承，但先问）
-2. **沙箱不可用的兜底**：仅报错（推荐，fail-closed），还是允许「显式降级 + 每次审批」？（后者与「子代理永不弹卡」矛盾，除非降级提示走主会话确认——复杂度不值）
-3. **主会话命令是否同样接入沙箱**：对齐 dsh 的完整形态是「所有 agent 的命令都走沙箱」（auto 档收益最大——自动执行的命令多一层兜底）；代价是主会话命令行为的兼容性回归面。建议阶段 D 单独评估。
-4. **命令族白名单是否还要**：沙箱管效应后，端侧分类器对子代理命令是否仍有价值（如拦网络类命令）？v1 倾向不加——效应兜底已够，分类器是启发式不是边界，叠两层反而模糊责任。
+1. ~~full → danger-full-access 是否放行~~ → **已拍板：继承**（§3.1）。
+2. ~~沙箱不可用的兜底~~ → **已拍板：fail-closed 报错**（§3.3-7）。
+3. **主会话命令是否同样接入沙箱**：阶段 D 单独评估（auto 档收益最大，代价是兼容性回归面）。
+4. **命令族白名单是否还要**：v1 不加（效应兜底已够，分类器是启发式不是边界）。若 P2 要加，必须遵守 ZCode 那条约束（§1.2b）：**分类判定要带 shell 上下文**——沙箱档命令跑在 PowerShell 里，bash 的 AST 只读白名单在这里不成立。
+5. ~~隔离 worktree 子代理的 cwd~~ → **已定（2026-11-17）**：worktree 本来就是「显式长路径、不做前缀注入」（`ai-worktree.js` 文件头），`<worktree>` 注入块已经要求模型把 `run_command` 的 cwd 传成 `.cadt/worktree/<slug>`。所以写根就是 `wt.path` 那一个目录，不需要两个根，也不用改 `applyWorkspaceWrite`。
+
+## 7. 原复核意见（2026-11-17，已被决策推翻，保留过程记录）
+
+> 该节曾建议「降级为闭合命令集 `run_check`」。作者 2026-11-17 决定仍走 C，理由是需求（子代理要能真正跑命令、做错峰验证）比闭合集合更宽。以下三条批评**部分成立**，已写进 §5：
+>
+> 1. 写根是真实工作区 ⇒ `workspace-write` 允许的正是最可能出事的操作（无 git 的散落数据目录没有撤销手段）。缓解：写根取子代理 cwd，隔离 worktree 子代理天然被圈在自己的 slug 目录；普通子代理仍是会话工作区，风险如实记录。
+> 2. 沙箱覆盖不到「读 + 外发」这条注入路径（`read-only` 下照样联网、照样读用户目录）。缓解：无——如实声明 `partial`，不宣传成隔离。
+> 3. 成本/收益：1000–1500 行 + 数周。已接受。
+>
+> `docs/unfinished-plans/run-check.md` 保留为存档方案；若 C 在 P1 实测中因工具链失败面不可接受而回退，它是首选替代。
+
+## 8. 实测记录（2026-11-17，Windows 11 + Wails GUI 宿主真机）
+
+证据代码：`tools/sandbox-poc/`（GUI 子系统 exe，不参与产品构建）。
+
+```sh
+go build -ldflags "-H windowsgui" -o poc.exe ./tools/sandbox-poc
+poc.exe C:\path\to\poc.log
+```
+
+### 8.1 控制台（决定性）
+
+受限令牌（`WRITE_RESTRICTED|DISABLE_MAX_PRIVILEGE`，restricting=[logon, Everyone]，Low IL，已补默认 DACL 授权）下：
+
+| 启动标志 | cmd.exe | Git Bash |
+| --- | --- | --- |
+| 无标志 | `0xC0000142` | `0xC0000142` |
+| `HideWindow` | `0xC0000142` | — |
+| `CREATE_NO_WINDOW` | `0xC0000142` | — |
+| `CREATE_NO_WINDOW + HideWindow` | `0xC0000142` | — |
+| `CREATE_NEW_CONSOLE` | `0xC0000142` | — |
+| **`DETACHED_PROCESS`** | **✅ 正常，git 孙进程正常** | ❌ `NtCreateDirectoryObject(\BaseNamedObjects)` |
+| 宿主 `AllocConsole` + 隐藏后继承 | ✅ 正常，git 孙进程正常 | ❌ 同上 |
+
+结论：**只有「不建控制台」或「继承一个已存在的控制台」能活**；`executil.HideCommandWindow` 现有的 `0x08000000` 是必死组合。
+
+### 8.1b PowerShell 必须有控制台（决定 v1 形态）
+
+同一令牌下再测两种 shell：
+
+| 启动形态 | cmd.exe | pwsh 7 | powershell.exe 5.1 |
+| --- | --- | --- | --- |
+| `DETACHED_PROCESS` | ✅ `CMD_OK` | ✅ 输出正常 | ❌ exit 0，**什么都不执行**（写文件也不落盘） |
+| 继承隐藏控制台 | ✅ `CMD_OK` | ✅ 输出正常、写文件成功 | ✅ 输出正常、写文件成功 |
+
+所以 v1 选「继承隐藏控制台」：沙箱档的 shell 是 PowerShell，只有这种形态能让它真正执行。
+另有一条实测：商店版 `pwsh.exe` 已在别的 Job 里，`AssignProcessToJobObject` 会返回
+`Access is denied`——Job 只是顺带杀树的增强、不是边界，故改为**尽力而为**，失败不阻断执行
+（停止仍由 `procctl` 的 taskkill 树杀兜住）。
+
+### 8.2 Git Bash（决定性）
+
+- 受限 + Low IL：先死在 `cygheap_user::init: NtSetInformationToken(TokenDefaultDacl), 0xC0000022`；补上默认 DACL 授权后推进到 `NtCreateDirectoryObject(\BaseNamedObjects)` 致命错。
+- 受限**去掉 Low IL**：推进到 `CreateFileMapping S-1-5-21-<用户SID>` 致命错。
+
+结论：**restricting SID 是根因**——Cygwin 要在 `\BaseNamedObjects` 建目录对象、按用户 SID 建共享内存，而 restricting 列表里没有用户 SID，write 的二次检查必拒；补默认 DACL 只能修「新对象自身 DACL」，修不了父容器的创建权；把用户 SID 加进列表等于取消沙箱。⇒ 沙箱档 shell 固定 PowerShell/cmd。
+
+### 8.3 写效应
+
+未授予任何写根时，`echo probe > %TEMP%\...` 在受限子进程里返回「拒绝访问」——授权边界真实生效（与 dsh 的 `read-only` 语义一致）。

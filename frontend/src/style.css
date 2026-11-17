@@ -2699,6 +2699,42 @@ html[data-theme="dark"] .md-preview .hljs-comment { font-style: normal; }
 }
 .video-preview-status.hidden { display: none; }
 
+/* 音频视图：与视频视图同为 pane 内的覆盖层；条形播放器居中，不占整屏 */
+.jsoneditor-pane.audio-active > .jsoneditor { display: none !important; }
+.audio-preview-view {
+    position: absolute;
+    inset: 0;
+    display: none;
+    min-height: 0;
+    background: var(--bg);
+}
+.jsoneditor-pane.audio-active .audio-preview-view { display: flex; flex-direction: column; }
+.audio-preview-stage {
+    flex: 1 1 auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 0;
+    padding: 16px;
+    box-sizing: border-box;
+}
+.audio-preview-node {
+    width: min(520px, calc(100% - 32px));
+}
+.audio-preview-status {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    color: var(--muted);
+    font-size: 13px;
+    text-align: center;
+    pointer-events: none;
+}
+.audio-preview-status.hidden { display: none; }
+
 #activity-bar {
     width: 42px;
     flex: none;
@@ -3377,6 +3413,7 @@ html.tree-guides .sb-children { border-left: 1px solid var(--border); }
 .fi-patch { color: var(--accent); }
 .fi-image { color: var(--val-null); }
 .fi-video { color: var(--val-number); }
+.fi-audio { color: var(--accent); }
 .fi-binary { color: var(--muted); }
 .fi-js { color: var(--orange); }
 .fi-ts { color: var(--accent); }
@@ -6025,6 +6062,22 @@ div.jsoneditor-tree textarea { user-select: text; }
     cursor: zoom-in;
 }
 .ai-app-msg-images + .ai-app-msg-hint { margin-top: 4px; }
+/* 「查看指令」里的宿主环境块（system-reminder）：保留原文，弱化为辅助信息 */
+.ai-app-msg-env {
+    margin: 0 0 5px;
+    max-height: 160px;
+    overflow: auto;
+    padding: 5px 8px;
+    border-left: 2px solid var(--border);
+    border-radius: 3px;
+    background: var(--bg);
+    color: var(--faint);
+    font-family: var(--editor-font-family), monospace;
+    font-size: 10px;
+    line-height: 1.55;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
 .ai-app-msg-text {
     margin: 0;
     max-height: 260px;
@@ -8646,6 +8699,17 @@ div.jsoneditor-tree textarea { user-select: text; }
 .ai-mgr-meta { color: var(--muted); font-size: 10.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ai-mgr-actions { flex: none; display: flex; align-items: center; gap: 4px; }
 .ai-mgr-actions .dlg-btn { padding: 2px 6px; font-size: 10.5px; }
+/* 技能行「不在 AI 索引」开关：文字 + 迷你开关（开关尺寸沿用 .set-switch，缩小到行内可容） */
+.ai-mgr-hidden-toggle {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    color: var(--muted);
+    font-size: 10.5px;
+    white-space: nowrap;
+}
+.ai-mgr-hidden-toggle .set-switch { transform: scale(0.82); }
 .ai-mgr-path {
     font-family: var(--editor-font-family);
     font-size: 10.5px;
@@ -9337,6 +9401,20 @@ input[type="password"]::-ms-clear { display: none; }
 }
 .mcfg-select:hover { border-color: color-mix(in srgb, var(--border) 45%, var(--muted)); }
 .mcfg-select:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-weak); }
+
+/* 打开模型编辑器时这三个下拉经 enhanceSelect 增强成浮层触发器（原生展开会露出系统菜单）：
+   wrap 继承 .mcfg-select 的宽度约束，触发器按 .mcfg-input 的 30px 高度与底色对齐 */
+.mcfg-control .set-select { width: 100%; height: 30px; }
+.mcfg-control .set-select-btn {
+    height: 30px;
+    padding: 0 9px;
+    border-radius: 6px;
+    background: var(--bg);
+}
+.mcfg-control .set-select-btn:hover:not(:disabled) {
+    border-color: color-mix(in srgb, var(--border) 45%, var(--muted));
+    background: var(--bg);
+}
 
 /* 密钥框：显示/隐藏按钮贴在输入框内侧，避免与字段外的按钮重复 */
 .mcfg-field { position: relative; display: flex; min-width: 0; }
@@ -10362,6 +10440,53 @@ html[data-writing="on"][data-writing-paper="dim"] .jsoneditor textarea.jsonedito
 .sidechat-send:disabled { opacity: .55; cursor: default; }
 .sidechat-stop.hidden { display: none; }
 .sidechat-hint { flex: none; font-size: 11px; color: var(--faint); }
+/* slash 弹层锚定在输入行上方：root 是唯一有 relative 的祖先 */
+.sidechat-root { position: relative; }
+.sidechat-slash {
+    position: absolute;
+    left: 16px;
+    bottom: 44px;
+    z-index: 30;
+    min-width: 300px;
+    max-height: 200px;
+    overflow: auto;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--panel);
+    box-shadow: 0 6px 20px rgba(0, 0, 0, .18);
+}
+.sidechat-slash.hidden { display: none; }
+.sidechat-slash-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 6px 10px;
+    border: 0;
+    background: transparent;
+    color: var(--text);
+    font-size: 12px;
+    text-align: left;
+    cursor: pointer;
+}
+.sidechat-slash-item:hover,
+.sidechat-slash-item.selected { background: var(--hover); }
+.sidechat-slash-item span:first-child { flex: none; font-weight: 600; }
+.sidechat-slash-desc { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--faint); }
+/* 统计行：composer 下方一条轻量摘要，空态隐藏 */
+.sidechat-stats {
+    flex: none;
+    padding: 0 16px 6px;
+    border-top: 1px solid var(--border);
+    background: var(--panel);
+    color: var(--faint);
+    font-size: 11px;
+    line-height: 1.6;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.sidechat-stats.hidden { display: none; }
 
 /* 会话投递选择器（ai-session-send.js）：搜索 + 多选列表 + 底部实时计数。
    行是 button（键盘可达），勾选框与状态胶囊自绘——不用原生 checkbox（表单控件硬规范）。 */
@@ -10845,7 +10970,9 @@ body.bgterm-dragging { cursor: row-resize; user-select: none; }
 
 /* ⓘ 说明气泡：悬浮 / 键盘聚焦 / 点击（触屏）均展开，点击收起 */
 /* ⓘ 说明圆点：气泡由 core/tooltip.js 全局运行时渲染（data-tip 驱动），这里只保留圆点形态 */
-.info-tip { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 15px; height: 15px; border-radius: 50%; border: 1px solid var(--border); color: var(--muted); background: transparent; font-size: 10px; font-weight: 600; line-height: 1; cursor: help; padding: 0; flex: none; vertical-align: middle; user-select: none; }
+/* ⓘ 造型用 SVG（描边圆圈 + 点 + 柄）经 mask 绘制，currentColor 跟随 color，:hover 变色不变 */
+.info-tip { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 15px; height: 15px; border-radius: 50%; border: 1px solid var(--border); color: var(--muted); background: transparent; cursor: help; padding: 0; flex: none; vertical-align: middle; user-select: none; }
+.info-tip::before { content: ""; flex: none; width: 14px; height: 14px; background-color: currentColor; -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='7.1' fill='none' stroke='black' stroke-width='1.6'/%3E%3Ccircle cx='8' cy='4.9' r='1.2' fill='black'/%3E%3Crect x='6.9' y='7.3' width='2.2' height='4.7' rx='1.1' fill='black'/%3E%3C/svg%3E") center / contain no-repeat; mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='7.1' fill='none' stroke='black' stroke-width='1.6'/%3E%3Ccircle cx='8' cy='4.9' r='1.2' fill='black'/%3E%3Crect x='6.9' y='7.3' width='2.2' height='4.7' rx='1.1' fill='black'/%3E%3C/svg%3E") center / contain no-repeat; }
 .info-tip:hover, .info-tip:focus-visible { color: var(--text); border-color: var(--muted); }
 /* 全局 tooltip（core/tooltip.js，data-tip 驱动）：与 info-tip 气泡同视觉，固定定位、视口钳制 */
 .app-tip {
@@ -11249,3 +11376,38 @@ textarea.dlg-input:focus {
 /* 侧栏列表模式切换：.hidden 在仓库里按「.组件.hidden」逐条声明（无全局兜底），
    ai-session-list / ai-session-actions 必须补变体，否则「会话 | 群聊」切换后两块都显示 */
 .ai-session-list.hidden, .ai-session-actions.hidden { display: none; }
+
+/* ===== 浮层入场动画（对话框 / 灯箱 / 菜单 / 命令面板 / 标题栏弹层） =====
+   约束：只动 opacity + transform（合成层），不碰任何布局属性；
+   元素从 display:none 恢复时浏览器自动重播，无需 rAF / JS 配合。
+   仓库的 .hidden 是逐组件声明（无全局兜底），故用 :not(.hidden) 精确挂接。
+   对话框拖拽会写内联 transform:none，但 openDialogEl 每次打开都会清空，
+   所以这里的 translate(-50%,-50%) 不会被拖拽状态污染。 */
+@keyframes ui-fade-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+@keyframes ui-pop-in {
+    from { opacity: 0; transform: translateY(-5px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+@keyframes ui-dialog-in {
+    from { opacity: 0; transform: translate(-50%, calc(-50% + 8px)) scale(.98); }
+    to { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+}
+
+#dialog-mask:not(.hidden) { animation: ui-fade-in 120ms ease-out; }
+.dialog:not(.hidden) { animation: ui-dialog-in 170ms cubic-bezier(.2, .8, .3, 1); }
+.img-lightbox:not(.hidden) { animation: ui-fade-in 140ms ease-out; }
+.ctx-menu:not(.hidden) { animation: ui-pop-in 110ms ease-out; }
+.quick-switch-mask:not(.hidden) { animation: ui-fade-in 120ms ease-out; }
+.quick-switch-mask:not(.hidden) .quick-switch { animation: ui-pop-in 150ms cubic-bezier(.2, .8, .3, 1); }
+.tb-pop:not(.hidden) { animation: ui-pop-in 120ms ease-out; }
+
+/* 无障碍兜底：只关掉这里新加的入场动画，不影响功能性 spinner / 进度指示 */
+@media (prefers-reduced-motion: reduce) {
+    #dialog-mask, .dialog, .img-lightbox, .ctx-menu,
+    .quick-switch-mask, .quick-switch-mask .quick-switch, .tb-pop {
+        animation: none !important;
+    }
+}

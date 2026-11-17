@@ -73,6 +73,10 @@ export function messageFingerprint(message) {
         // 计划模式落盘路径：后补写（升级前的待批准计划 / 写盘失败后重试）只改这一个字段，
         // 不进指纹就会被「指纹没变」挡在就地截断之外，重启后又得重算一次。
         textOf(message.planFile),
+        // submit_plan 提交的计划正文同理：工具执行发生在占位 assistant 落盘之后，
+        // 不进指纹会被「指纹没变」挡住重写，重启后计划消息就丢了。
+        textOf(message.planText).length,
+        textOf(message.planTitle),
         // 思考循环守卫的状态在流中被就地改写（warned→pending→continued/stopped）：
         // 不进指纹会被「指纹没变」挡在就地截断之外，重启重放又会回到 pending。
         message.guard ? textOf(message.guard.state) + ':' + textOf(message.guard.action) + ':' + textOf(message.guard.source) : '',
@@ -341,6 +345,8 @@ export function buildSessionMeta(session) {
         readRoots: Array.isArray(session && session.readRoots) ? session.readRoots : [],
         // 支线对话：指向母会话 id（普通会话为空）。sideOf 不嵌套——创建时已扁平化到一层。
         sideOf: textOf(session && session.sideOf),
+        // OpenCode 稳定会话标识：随 meta 持久化，重启后沿用同一 ID（否则每次读盘都会重新生成）。
+        opencodeSessionId: textOf(session && session.opencodeSessionId),
         // 隔离 worktree 会话态（唯一归属凭证；fork/支线/投递新建的会话没有该字段 → null，
         // 保证「一会话一 worktree」不被复制破坏）。恢复校验在 ai-worktree.js 的 blockFor。
         worktree: normalizeWorktreeState(session && session.worktree),

@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import {aceModeFor, isKnownCodeFileName, isSupportedFile} from '../../src/core/formats.js';
+import {aceModeFor, defaultMediaMode, isKnownCodeFileName, isSupportedFile} from '../../src/core/formats.js';
 
 test('仓库元信息约定名受支持且按代码文件名处理', () => {
     for (const name of ['LICENSE', 'licence', 'NOTICE', 'COPYING', 'AUTHORS', 'CONTRIBUTORS',
@@ -28,4 +28,15 @@ test('既有映射不受影响，普通未知名仍回退 text', () => {
     assert.equal(aceModeFor('randomfile'), 'ace/mode/text');
     assert.ok(!isKnownCodeFileName('randomfile'));
     assert.ok(!isSupportedFile('randomfile'));
+});
+
+test('defaultMediaMode：媒体文档首屏用媒体视图，非媒体返回空', () => {
+    assert.equal(defaultMediaMode({video: true}), 'video');
+    assert.equal(defaultMediaMode({audio: true}), 'audio');
+    assert.equal(defaultMediaMode({image: true}), 'image');
+    assert.equal(defaultMediaMode(null), '');
+    assert.equal(defaultMediaMode({}), '');
+    assert.equal(defaultMediaMode({image: false, audio: false, video: false}), '');
+    // 媒体标记互斥；万一叠了，优先级与 createDoc 的旧规则一致（视频 > 音频 > 图片）
+    assert.equal(defaultMediaMode({video: true, audio: true, image: true}), 'video');
 });

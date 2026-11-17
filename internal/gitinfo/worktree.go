@@ -8,11 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
-	"syscall"
 )
 
 // ErrWorktreeNoChanges 导出 diff 时 worktree 相对基准没有任何改动（含未跟踪文件）。
@@ -60,21 +58,9 @@ type GitWorktreeAddResult struct {
 // junction（mklink /J）不需要管理员权限，删除 worktree 只删 reparse 点、不动目标目录。
 var junctionWhitelist = []string{"node_modules", ".venv", "venv"}
 
-// isReparsePoint 判断路径是否为 junction / 符号链接。实测（Go 1.27 Windows）：os.Lstat
-// 对 junction 不报 ModeSymlink 也不报 dir（mode 显示 ?---------），必须查文件属性里的
-// FILE_ATTRIBUTE_REPARSE_POINT 才可靠。ReadDir/WalkDir 同理把 junction 当非目录条目
-// （不会下钻，遍历安全）；os.Stat/ReadFile 则正常跟随（AI 经 junction 读写依赖可用）。
-func isReparsePoint(path string) bool {
-	p16, err := syscall.UTF16PtrFromString(path)
-	if err != nil {
-		return false
-	}
-	attrs, err := syscall.GetFileAttributes(p16)
-	if err != nil {
-		return false
-	}
-	return attrs&syscall.FILE_ATTRIBUTE_REPARSE_POINT != 0
-}
+// isReparsePoint / createJunction / junctionSupported 是 Windows 专属能力（目录联接
+// 与 FILE_ATTRIBUTE_REPARSE_POINT），实现分别在 worktree_platform_windows.go 与
+// worktree_platform_other.go。这里不放平台代码：gitinfo 的引擎部分要保持可交叉编译。
 
 // linkDepDirs 把主根的依赖目录 junction 进 worktree：worktree/<dep> → 主根/<dep>。
 // 目标已存在（同名实体或旧 junction）跳过；创建失败记错误但不致命（依赖共享是增益不是前提）。
@@ -82,6 +68,9 @@ func isReparsePoint(path string) bool {
 func linkDepDirs(root, wtPath string) (deps []string, depErrors []string) {
 	deps = []string{}
 	depErrors = []string{}
+	if !junctionSupported {
+		return deps, depErrors // 非 Windows 没有 junction：依赖共享整体跳过
+	}
 	for _, dep := range junctionWhitelist {
 		src := filepath.Join(root, dep)
 		info, err := os.Stat(src)
@@ -101,17 +90,7 @@ func linkDepDirs(root, wtPath string) (deps []string, depErrors []string) {
 	return deps, depErrors
 }
 
-// createJunction 用 mklink /J 建目录联接（Windows 免管理员权限；gitinfo 本身就是
-// Windows 专用 syscall，见 gitinfo.go 的 SysProcAttr）。路径含空格由 exec 引号处理。
-func createJunction(link, target string) error {
-	cmd := exec.Command("cmd", "/c", "mklink", "/J", link, target)
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x08000000}
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("mklink /J 失败：%v（%s）", err, strings.TrimSpace(string(out)))
-	}
-	return nil
-}
+// createJunction 见 worktree_platform_windows.go（mklink /J）与 _other.go（不支持）。
 
 // unlinkDepDirs 按 white 名单把 worktree 里的依赖 junction 摘掉（只删 reparse 点，
 // 不动主根目标）。WorktreeRemove 在 git 之前调用，双保险防 git 的递归删除跟进 junction。

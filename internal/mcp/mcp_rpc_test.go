@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"strings"
 	"sync"
@@ -299,6 +300,48 @@ func TestRPCConnGarbageFlood(t *testing.T) {
 	}
 	if _, err := peer.conn.call(context.Background(), "ping", nil); err != errConnClosed {
 		t.Fatalf("协议错乱后 call 应返回 errConnClosed，实际：%v", err)
+	}
+}
+
+// 连续垃圾只记首行 + 末尾汇总：起不来的 server 会连打十几行启动横幅，
+// 逐行 WARN 会把真正的失败原因挤出日志（2026-11-17 实际事故）。
+func TestRPCConnGarbageLoggedOncePerRun(t *testing.T) {
+	var mu sync.Mutex
+	var logs []string
+	old := Logf
+	Logf = func(level, format string, args ...any) {
+		mu.Lock()
+		defer mu.Unlock()
+		logs = append(logs, level+" "+fmt.Sprintf(format, args...))
+	}
+	defer func() { Logf = old }()
+
+	payload := strings.Join([]string{
+		"Windows PowerShell 5.1",
+		"版权所有 (C) Microsoft Corporation",
+		"用法: pwsh[.exe] [-Login] ...",
+		`{"jsonrpc":"2.0","method":"notifications/a"}`,
+		"孤零零一行垃圾",
+		`{"jsonrpc":"2.0","method":"notifications/b"}`,
+	}, "\n") + "\n"
+
+	if err := newRPCConn(io.Discard, nil).serve(strings.NewReader(payload)); err != nil {
+		t.Fatalf("垃圾行应被容忍：%v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(logs) != 3 {
+		t.Fatalf("应只记 3 条（首行 + 3 行汇总 + 单行那条），实际 %d 条：%v", len(logs), logs)
+	}
+	if !strings.Contains(logs[0], "丢弃非 JSON 行") || !strings.Contains(logs[0], "Windows PowerShell 5.1") {
+		t.Fatalf("首行应带预览：%q", logs[0])
+	}
+	if !strings.Contains(logs[1], "连续丢弃 3 行") {
+		t.Fatalf("第二段应为 3 行汇总：%q", logs[1])
+	}
+	if !strings.Contains(logs[2], "孤零零一行垃圾") || strings.Contains(logs[2], "连续丢弃") {
+		t.Fatalf("单行垃圾不该追加汇总：%q", logs[2])
 	}
 }
 

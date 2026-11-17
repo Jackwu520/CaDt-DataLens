@@ -675,3 +675,13 @@ test('buildSessionMeta：worktree 会话态随 meta 持久化（占位与非对�
     const round = JSON.parse(JSON.stringify(buildSessionMeta({id: 's5', worktree: wt})));
     assert.equal(round.worktree.path, wt.path);
 });
+
+test('buildSessionMeta：opencodeSessionId 随 meta 持久化，重启后沿用同一 ID', () => {
+    const meta = buildSessionMeta({id: 's1', opencodeSessionId: 'datalens-abc'});
+    assert.equal(meta.opencodeSessionId, 'datalens-abc');
+    // 缺失归一成空串（读盘时由 normalizeSession 惰性补生成）
+    assert.equal(buildSessionMeta({id: 's2'}).opencodeSessionId, '');
+    // JSON 往返不失真
+    const round = JSON.parse(JSON.stringify(buildSessionMeta({id: 's3', opencodeSessionId: 'datalens-xyz'})));
+    assert.equal(round.opencodeSessionId, 'datalens-xyz');
+});

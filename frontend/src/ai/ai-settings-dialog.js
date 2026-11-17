@@ -375,6 +375,7 @@ export function createAISettingsDialog(ctx) {
         if (opt.retryMax) opt.retryMax.value = String(getConfig().retryMax);
         if (opt.subAgentMax) opt.subAgentMax.value = String(getConfig().subAgentMax);
         if (opt.subAgentMaxDepth) opt.subAgentMaxDepth.value = String(getConfig().subAgentMaxDepth);
+        if (opt.skillIndexMax) opt.skillIndexMax.value = String(aiClampInt(getConfig().skillIndexMaxUser, 1, 100, 100));
         if (opt.notifyError) opt.notifyError.checked = getConfig().notifyError !== false;
         if (opt.notifyAsk) opt.notifyAsk.checked = getConfig().notifyAsk !== false;
         if (opt.notifyApprove) opt.notifyApprove.checked = getConfig().notifyApprove !== false;
@@ -833,6 +834,13 @@ export function createAISettingsDialog(ctx) {
             setSettingsStatus(getConfig().subAgentMaxDepth > 0
                 ? '子代理递归层级：最多 ' + getConfig().subAgentMaxDepth + ' 层'
                 : '子代理递归层级：不设限', 'ok');
+        });
+        if (opt.skillIndexMax) opt.skillIndexMax.addEventListener('change', () => {
+            getConfig().skillIndexMaxUser = aiClampInt(opt.skillIndexMax.value, 1, 100, 100);
+            opt.skillIndexMax.value = String(getConfig().skillIndexMaxUser);
+            saveAIConfig();
+            updateContextCount();
+            setSettingsStatus('技能索引 · 用户技能上限：' + getConfig().skillIndexMaxUser + '（内置技能不受限，下一轮生效）', 'ok');
         });
         if (opt.askTimeout) opt.askTimeout.addEventListener('change', () => {
             getConfig().askTimeout = aiClampInt(opt.askTimeout.value, 0, 3600, 300);

@@ -37,6 +37,7 @@ type FileData struct {
 	Binary   bool   `json:"binary"`
 	Image    bool   `json:"image,omitempty"`
 	Video    bool   `json:"video,omitempty"`
+	Audio    bool   `json:"audio,omitempty"`
 	IsDir    bool   `json:"isDir"`
 	HexShown int64  `json:"hexShown,omitempty"`
 	Mtime    string `json:"mtime,omitempty"`
@@ -65,12 +66,21 @@ func (f *Files) OpenFile(path string, enc string) (*FileData, error) {
 	ext := strings.ToLower(filepath.Ext(path))
 	imageFile := isImageFile(path, raw)
 	videoFile := isVideoFile(path, raw)
-	// 两个标记互斥：扩展名明确是视频容器时优先视频（HEVC 品牌位也可能出现在 MP4 里，
-	// isImageFile 会把它当 HEIF 静态图）。
+	audioFile := isAudioFile(path, raw)
+	// 三个标记互斥，优先级 视频 > 图片 > 音频：扩展名明确是视频容器时优先视频（HEVC
+	// 品牌位也可能出现在 MP4 里，isImageFile 会把它当 HEIF 静态图）；扩展名明确是音频
+	// 容器时优先音频（.ogg / .weba 等与视频共享魔数家族时按扩展名裁决）。
 	if videoFile && videoExtensions[ext] {
 		imageFile = false
+		audioFile = false
 	} else if imageFile {
 		videoFile = false
+		audioFile = false
+	} else if audioFile && audioExtensions[ext] {
+		videoFile = false
+		imageFile = false
+	} else {
+		audioFile = false
 	}
 	if strings.EqualFold(ext, ".bin") || imageFile || videoFile || chardec.LooksBinary(raw) {
 		shown := len(raw)
@@ -87,6 +97,7 @@ func (f *Files) OpenFile(path string, enc string) (*FileData, error) {
 			Binary:   true,
 			Image:    imageFile,
 			Video:    videoFile,
+			Audio:    audioFile,
 			HexShown: int64(shown),
 			Mtime:    formatFileMtime(info.ModTime()),
 		}, nil
@@ -179,6 +190,39 @@ func isVideoFile(path string, raw []byte) bool {
 	}
 	// EBML 头（WebM / Matroska）
 	if len(raw) >= 4 && raw[0] == 0x1A && raw[1] == 0x45 && raw[2] == 0xDF && raw[3] == 0xA3 {
+		return true
+	}
+	return false
+}
+
+// audioExtensions：走「音频视图」的容器扩展名。与前端 core/formats.js 的 audioExtensions 同表；
+// 只收 WebView2 能解码的格式（wav / mp3 / ogg / opus / flac / m4a / aac / weba），
+// .wma、.mid 这类 WebView2 解不了的故意不收——进来也只会得到一条错误再回退二进制视图。
+var audioExtensions = map[string]bool{
+	".wav": true, ".mp3": true, ".ogg": true, ".oga": true, ".opus": true,
+	".flac": true, ".m4a": true, ".aac": true, ".weba": true,
+}
+
+// isAudioFile 判定能否进音频视图：扩展名命中，或 RIFF-WAVE / fLaC / OggS / ID3 /
+// MP3 帧同步等音频魔数。能不能解码由 WebView2 决定（失败时前端回退二进制视图）。
+func isAudioFile(path string, raw []byte) bool {
+	if audioExtensions[strings.ToLower(filepath.Ext(path))] {
+		return true
+	}
+	// RIFF 容器：WAVE 是音频（WEBP 已在 isImageFile 处理）
+	if len(raw) >= 12 && string(raw[:4]) == "RIFF" && string(raw[8:12]) == "WAVE" {
+		return true
+	}
+	// FLAC：ASCII "fLaC"
+	if len(raw) >= 4 && string(raw[:4]) == "fLaC" {
+		return true
+	}
+	// Ogg 容器（ogg / oga / opus / weba 共用）
+	if len(raw) >= 4 && string(raw[:4]) == "OggS" {
+		return true
+	}
+	// MP3：ID3v2 标签（裸帧流没有可靠的文件头，只靠 .mp3 扩展名兜底，避免误判随机二进制）
+	if len(raw) >= 3 && string(raw[:3]) == "ID3" {
 		return true
 	}
 	return false

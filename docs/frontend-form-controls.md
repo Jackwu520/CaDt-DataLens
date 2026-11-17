@@ -61,7 +61,7 @@ const prompt = createTextarea({id: 'foo-prompt', rows: 5, spellcheck: false});
 
 ## 4. 存量与执行
 
-- 存量裸控件允许保留，按文件登记在 `frontend/src/core/form-controls-factory.test.mjs` 的 `BASELINE` 里。
+- 存量裸控件允许保留，按文件登记在 `frontend/test/core/form-controls-factory.test.mjs` 的 `BASELINE` 里。
 - 该测试扫描 `index.html` 与 `src/**/*.js`，任何新增裸用法都会让计数超过基线而失败。**BASELINE 只允许调小（迁移存量后），绝不允许调大。** 新增文件里出现裸用法同样失败。
 - 新增 UI 与提交前都跑 `npm test`（见 `AGENTS.md`「验证与提交」）。
 - 迁移存量优先从动态创建点下手：`ai/ai-panel.js`、`ai/ai-takeover.js`、`ai/ai-tool-cards.js`、`editor/patch-view.js`、`explorer/global-search.js`、`settings/settings-pane-envvars.js`、`settings/settings-pane-plugins.js`、`terminal/terminal-ui.js` 等；每迁一处把对应基线数字减一。
@@ -73,5 +73,5 @@ const prompt = createTextarea({id: 'foo-prompt', rows: 5, spellcheck: false});
 - 不要给 `.set-switch` 的 label 里塞文字，也不要只写 `<input type="checkbox">` 配 `accent-color`——那仍是原生组件。
 - 不要在域模块里 `import main.js` 的绑定来造控件；`core/form-controls.js` 无 deps、不依赖声明顺序，可直接 import。
 - 不要手写 `innerHTML` 拼表单控件再事后补 class：字符串里的标签同样会被静态扫描抓到。
-- 设置页之外的下拉若需要浮层增强，走 `createSettingsSelect` 的接线，不要复制浮层 DOM：工厂返回的 `enhanceSelect(sel)` 对单个 select 幂等增强（main.js 经 deps getter 注入到需要的域，如 `explorer/global-search.js` 的 AI 会话范围下拉）；增强后 wrap 继承原 select 的布局类，触发器外观由各域自己的样式适配（紧凑行在注入样式里覆盖 `.set-select-btn`）。
+- 设置页之外的下拉若需要浮层增强，走 `createSettingsSelect` 的接线，不要复制浮层 DOM：工厂返回的 `enhanceSelect(sel)` 对单个 select 幂等增强（main.js 经 deps getter 注入到需要的域，如 `explorer/global-search.js` 的 AI 会话范围下拉）；增强后 wrap 继承原 select 的布局类，触发器外观由各域自己的样式适配（紧凑行在注入样式里覆盖 `.set-select-btn`）。已增强的 select 再调一次不会重复包装，只重新同步触发器文本——程序化改 `select.value` 不派发 change，面板刷新后可补一次调用。
 - **主副标题选项**：给 `<option>` 加 `data-subtitle`，`option.text` 写主标题（同时是触发器显示值），`settings-select.js` 会渲染成两行（`.ss-opt-rich` + `.ss-main` / `.ss-sub`）。没有该属性的选项保持单行，完全向后兼容；不要把「名字 · 描述」再拼进一个字符串里让它被截断。

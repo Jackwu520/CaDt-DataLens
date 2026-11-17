@@ -5,7 +5,7 @@ import {iconSvg} from '../core/icons.js';
 import {createFileIcon} from '../core/fileicons.js';
 import {enhanceWidgets} from '../core/widget.js';
 import {aiFormatTime, aiTextOf} from './ai-constants.js';
-import {planDigest, planDisplayPath} from './ai-plan-file.js';
+import {isPlanMessage, planDigest, planDisplayPath} from './ai-plan-file.js';
 
 // 解码可能未闭合的 JSON 字符串字面量：截掉不完整转义、补收尾引号再 parse；
 // parse 仍失败（如截断的 \uXX）就退回手写替换。仅显示用，无需严格。
@@ -112,7 +112,7 @@ export function createAIToolCards(ctx) {
     const openExternal = ctx.openExternal;
     // 打开文件并跳行（main.js 的 openTargets，经 ai-panel 透传）：read_file 卡路径超链接用
     const openTargets = typeof ctx.openTargets === 'function' ? ctx.openTargets : null;
-    // 计划卡「在标签页打开」：计划正文落在 .cadt/plan/，消息区只留入口卡
+    // 计划卡「在标签页打开」：已批准开 .cadt/plan/ 的真文件，未批准开虚拟只读预览
     const openPlanFile = typeof ctx.openPlanFile === 'function' ? ctx.openPlanFile : null;
     const settings = ctx.settings;
     // 助手展示名（ai-panel 注入）：气泡角色标签跟随个性化命名，默认名时仍是「AI」行径不变
@@ -517,7 +517,9 @@ export function createAIToolCards(ctx) {
             case 'preference_write': return {verb: '记录偏好', icon: 'bookmark-plus'};
             case 'preference_remove': return {verb: '删除偏好', icon: 'trash'};
             case 'skill_use': return {verb: '技能', icon: 'star'};
+            case 'skill_list': return {verb: '技能目录', icon: 'book'};
             case 'plan_mode': return {verb: '计划模式', icon: 'compass'};
+            case 'submit_plan': return {verb: '提交计划', icon: 'compass'};
             case 'ask_user': return {verb: '提问', icon: 'info'};
             case 'app_control': return {verb: '应用操作', icon: 'gear'};
             case 'todo_write': return {verb: '任务', icon: 'check'};
@@ -588,6 +590,9 @@ export function createAIToolCards(ctx) {
                 return {primary: '', dir: ''};
             case 'plan_mode':
                 return {primary: args.enabled === false ? '退出' : '进入', dir: ''};
+            case 'submit_plan':
+                // 计划正文很长，卡头只显示标题（缺省「计划文档」），绝不把 plan 参数塞进摘要
+                return {primary: aiTextOf(args.title).trim().slice(0, 60) || '计划文档', dir: ''};
             case 'run_command':
                 return {primary: aiTextOf(args.command).trim().replace(/\s+/g, ' '), dir: ''};
             case 'background_command':
@@ -1321,13 +1326,14 @@ export function createAIToolCards(ctx) {
         }
     }
 
-    // 计划卡：计划模式产出的计划默认落盘 .cadt/plan/，消息区不再把整篇计划铺一遍——
-    // 只留「标题 + 文件 + 在标签页打开」，正文去标签页看（用户的明确要求：
-    // 想看细节就跳标签页，别在对话里翻长文）。
+    // 计划卡：计划模式产出的计划不整篇铺进对话——只留「标题 + 位置 + 在标签页打开」。
+    // 已批准（planFile 有值）：位置是 .cadt/plan/ 固定文件；未落盘（未批准 / 写盘失败）：显示
+    // 「未保存到工作区」，打开走虚拟只读标签页（openPlanFile 内部分流），两种状态都不在对话里翻长文。
     function renderPlanCard(md, message) {
         md.textContent = '';
-        const text = String(message.content || '');
+        const text = String(message.planText || message.content || '');
         const digest = planDigest(text);
+        const saved = !!String(message.planFile || '').trim();
         const card = document.createElement('div');
         card.className = 'ai-plan-card';
         const head = document.createElement('div');
@@ -1346,8 +1352,13 @@ export function createAIToolCards(ctx) {
         foot.className = 'ai-plan-card-foot';
         const path = document.createElement('code');
         path.className = 'ai-plan-card-path';
-        path.textContent = planDisplayPath(message.planFile);
-        path.dataset.tip = message.planFile;
+        if (saved) {
+            path.textContent = planDisplayPath(message.planFile);
+            path.dataset.tip = message.planFile;
+        } else {
+            path.textContent = '未保存到工作区';
+            path.dataset.tip = '计划还没写入 .cadt/plan/（批准「执行计划」时落盘）：点「在标签页打开」可预览全文';
+        }
         const meta = document.createElement('span');
         meta.className = 'ai-plan-card-meta';
         meta.textContent = digest.lines + ' 行 · ' + digest.chars + ' 字';
@@ -1447,11 +1458,16 @@ export function createAIToolCards(ctx) {
             // 工具参数接收帧里 content 往往不变，跳过整块 innerHTML 重写可避免
             // 打字点 / 代码块复制钮 / 图片 / widget 每 80ms 重建一次。
             const content = message.content || '';
-            // 计划消息（正文已落盘 .cadt/plan/）在消息区只留入口卡：签名带上路径，
+            // 计划消息（submit_plan 提交 / 旧式正文计划）非流式时一律渲染入口卡：签名带落盘状态与
             // 落盘完成 / 重启重放都能稳定判等，不跟着正文长度每帧重建。
-            const planFile = !streaming && message.planFile ? String(message.planFile) : '';
-            const mdSig = planFile
-                ? 'plan:' + planFile
+            // 计划消息（submit_plan 提交 / 旧式正文计划）非流式时一律渲染入口卡：已批准落盘的带
+            // 文件路径，未批准的显示「未保存到工作区」（打开走虚拟只读预览）。签名带落盘状态与
+            // 计划正文摘要（新形态正文可为空，计划在 planText），批准落盘 / 重放都稳定判等。
+            const planCard = !streaming && isPlanMessage(message);
+            const planText = String(message.planText || '');
+            const mdSig = planCard
+                ? 'plancard:' + (message.planFile || '') + ':' + planText.length + ':' + content.length + ':' +
+                    (planText || content).slice(-64)
                 : (content
                     ? (streaming ? 's' : 'd') + content.length + ':' + content.slice(-64)
                     : (message.status === 'error' && !content ? 'e:' + (message.error || '') :
@@ -1460,7 +1476,7 @@ export function createAIToolCards(ctx) {
                 md.dataset.renderSig = mdSig;
                 if (message.status === 'error' && !content) {
                     md.textContent = message.error ? ('请求失败：' + message.error) : '请求失败';
-                } else if (planFile) {
+                } else if (planCard) {
                     renderPlanCard(md, message);
                 } else if (content) {
                     md.innerHTML = renderMarkdown(content);
@@ -1561,7 +1577,7 @@ export function createAIToolCards(ctx) {
         renderMessages(true);
         // 这条指令是应用代用户按「执行计划」发出的，不是用户手打的——按应用消息卡片展示，
         // 别渲染成用户胶囊（rest 走 detectAppMessage 的同一前缀，历史会话也能认回来）。
-        const ok = await submitText('计划已批准，请立即按上面的计划开始执行，不要重复计划内容。', null, {
+        const ok = await submitText('计划已批准，请立即按你通过 submit_plan 提交的计划开始执行，不要重复计划内容。', null, {
             app: {kind: 'plan', label: '计划已批准'},
         });
         if (!ok) {

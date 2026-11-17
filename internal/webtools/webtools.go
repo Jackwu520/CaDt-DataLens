@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"datalens/internal/aitransport"
@@ -52,6 +53,7 @@ var (
 		regexp.MustCompile(`(?is)<head\b[^>]*>.*?</head\s*>`),
 		regexp.MustCompile(`(?is)<nav\b[^>]*>.*?</nav\s*>`),
 		regexp.MustCompile(`(?is)<aside\b[^>]*>.*?</aside\s*>`),
+		regexp.MustCompile(`(?is)<footer\b[^>]*>.*?</footer\s*>`),
 		regexp.MustCompile(`(?is)<iframe\b[^>]*>.*?</iframe\s*>`),
 		regexp.MustCompile(`(?is)<object\b[^>]*>.*?</object\s*>`),
 		regexp.MustCompile(`(?is)<canvas\b[^>]*>.*?</canvas\s*>`),
@@ -67,6 +69,18 @@ var (
 	webReAnchor     = regexp.MustCompile(`(?is)<a\b[^>]*href\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+))[^>]*>(.*?)</a\s*>`)
 	webReSpaces     = regexp.MustCompile(`[ \t\f\v\x{00a0}]+`)
 	webReMetaChars  = regexp.MustCompile(`(?is)<meta\b[^>]+charset\s*=\s*["']?\s*([a-zA-Z0-9._-]+)`)
+	webReClassAttr  = regexp.MustCompile(`(?is)\bclass\s*=\s*("([^"]*)"|'([^']*)'|([^\s">]+))|\bid\s*=\s*("([^"]*)"|'([^']*)'|([^\s">]+))`)
+	webReRoleMain   = regexp.MustCompile(`(?i)\brole\s*=\s*("main"|'main'|main\b)`)
+	webReHOpen      = regexp.MustCompile(`(?is)<h([1-6])\b[^>]*>`)
+	webReInlineBold   = regexp.MustCompile(`(?is)<(?:strong|b)\b[^>]*>([^<]*)</(?:strong|b)\s*>`)
+	webReInlineItalic = regexp.MustCompile(`(?is)<(?:em|i)\b[^>]*>([^<]*)</(?:em|i)\s*>`)
+	webReInlineCode   = regexp.MustCompile(`(?is)<code\b[^>]*>([^<]*)</code\s*>`)
+	webRePreBlock     = regexp.MustCompile(`(?is)<pre\b[^>]*>(.*?)</pre\s*>`)
+	webReImgTag       = regexp.MustCompile(`(?is)<img\b[^>]*>`)
+	webReImgAlt       = regexp.MustCompile(`(?is)\balt\s*=\s*("([^"]*)"|'([^']*)'|([^\s">]+))`)
+	webReHrTag        = regexp.MustCompile(`(?is)<hr\b[^>]*>`)
+	webReTrClose      = regexp.MustCompile(`(?is)</tr\s*>`)
+	webReBlockCloseMD = regexp.MustCompile(`(?is)</(p|div|section|article|blockquote|li|h[1-6]|table|ul|ol|dl|dd|dt|thead|tbody|tfoot|figure|figcaption|address|pre|main|footer|header|nav|aside|form)\s*>`)
 )
 
 type webResponse struct {
@@ -488,7 +502,446 @@ func webExtractHTML(page, pageURL string) (string, string, []map[string]string) 
 		title = webCleanInline(m[1])
 	}
 	links := webExtractLinks(page, pageURL)
-	return title, webStripHTMLBlocks(page), links
+	return title, webMainToMarkdown(page, pageURL), links
+}
+
+// ---------- 正文抽取管线：预清洗 → 语义容器收窄 → 噪声黑名单 → Markdown 转换 ----------
+
+// webMainToMarkdown 网页主文本管线的入口。
+func webMainToMarkdown(page, pageURL string) string {
+	clean := webPreClean(page)
+	content := webPickMainContent(clean)
+	content = webDropNoise(content)
+	return webContentToMarkdown(content, pageURL)
+}
+
+// webPreClean 删注释与确定无正文价值的整块（script/style 等），
+// 为容器收窄提供干净的文本量基准。
+func webPreClean(page string) string {
+	s := webReComment.ReplaceAllString(page, " ")
+	for _, re := range webReDropBlocks {
+		s = re.ReplaceAllString(s, " ")
+	}
+	return s
+}
+
+type webTagInfo struct {
+	name  string
+	close bool
+	start int
+	end   int
+	attrs string
+}
+
+var webVoidTags = map[string]bool{
+	"br": true, "img": true, "hr": true, "input": true, "meta": true,
+	"link": true, "source": true, "wbr": true, "col": true, "area": true,
+	"embed": true, "track": true,
+}
+
+// webIterTags 遍历 s 里所有标签边界。假设第一个 > 结束标签（属性值含 > 极罕见，可牺牲）；
+// 注释按 --> 配对跳过。visit 返回 false 提前终止。
+func webIterTags(s string, visit func(t webTagInfo) bool) {
+	for i := 0; i < len(s); {
+		lt := strings.IndexByte(s[i:], '<')
+		if lt < 0 {
+			return
+		}
+		start := i + lt
+		rest := s[start:]
+		if strings.HasPrefix(rest, "<!--") {
+			idx := strings.Index(rest, "-->")
+			if idx < 0 {
+				return
+			}
+			i = start + idx + 3
+			continue
+		}
+		gt := strings.IndexByte(rest, '>')
+		if gt < 0 {
+			return
+		}
+		end := start + gt + 1
+		inner := strings.TrimSpace(s[start+1 : end-1])
+		t := webTagInfo{start: start, end: end}
+		if strings.HasPrefix(inner, "/") {
+			t.close = true
+			inner = strings.TrimSpace(inner[1:])
+		}
+		nameEnd := 0
+		for nameEnd < len(inner) {
+			c := inner[nameEnd]
+			if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' ||
+				c == '-' || c == '_' || c == ':' {
+				nameEnd++
+				continue
+			}
+			break
+		}
+		if nameEnd == 0 {
+			i = end
+			continue
+		}
+		t.name = strings.ToLower(inner[:nameEnd])
+		if !t.close {
+			t.attrs = inner[nameEnd:]
+		}
+		if !visit(t) {
+			return
+		}
+		i = end
+	}
+}
+
+// webBlockRange 从开标签 t 起按同名标签平衡扫描，返回内容区间 [t.end, 闭标签 end)。
+// 未找到配对闭标签返回 false（宁可跳过也不吞半页）。
+func webBlockRange(s string, t webTagInfo) (int, int, bool) {
+	if t.close || webVoidTags[t.name] {
+		return 0, 0, false
+	}
+	depth := 1
+	found := false
+	end := 0
+	webIterTags(s[t.end:], func(u webTagInfo) bool {
+		if u.name != t.name {
+			return true
+		}
+		if u.close {
+			depth--
+			if depth == 0 {
+				end = t.end + u.end
+				found = true
+				return false
+			}
+			return true
+		}
+		if !webVoidTags[u.name] {
+			depth++
+		}
+		return true
+	})
+	if !found {
+		return 0, 0, false
+	}
+	return t.end, end, true
+}
+
+func webFindAllTags(s string, pred func(webTagInfo) bool) []webTagInfo {
+	var out []webTagInfo
+	webIterTags(s, func(t webTagInfo) bool {
+		if pred(t) {
+			out = append(out, t)
+		}
+		return true
+	})
+	return out
+}
+
+// webClassTokens 从标签属性里取 class/id 的值，按非字母数字分词（小写）。
+var webReTagChar = regexp.MustCompile(`[^a-z0-9]+`)
+
+func webClassTokens(attrs string) map[string]bool {
+	out := map[string]bool{}
+	for _, m := range webReClassAttr.FindAllStringSubmatch(attrs, 4) {
+		val := ""
+		for _, g := range []int{2, 3, 4, 6, 7, 8} {
+			if len(m) > g && m[g] != "" {
+				val = strings.ToLower(m[g])
+				break
+			}
+		}
+		for _, w := range webReTagChar.Split(val, -1) {
+			if w != "" {
+				out[w] = true
+			}
+		}
+	}
+	return out
+}
+
+// webNoiseTokens class/id 命中这些词的块整体丢弃。刻意不含 header/footer：
+// 「article-header」这类正文标题容器会被误删；站点头尾噪声靠语义收窄排除。
+var webNoiseTokens = map[string]bool{
+	"nav": true, "navbar": true, "menu": true, "sidebar": true,
+	"comment": true, "comments": true,
+	"advert": true, "adverts": true, "advertisement": true, "advertising": true,
+	"ads": true, "ad": true,
+	"banner": true, "promo": true, "promotion": true, "promotions": true,
+	"related": true, "recommend": true, "recommended": true,
+	"recommendation": true, "recommendations": true,
+	"cookie": true, "cookies": true, "consent": true,
+	"breadcrumb": true, "breadcrumbs": true,
+	"pagination": true, "pager": true,
+	"newsletter": true, "subscribe": true, "subscription": true,
+	"social": true, "share": true, "sharing": true,
+	"sponsor": true, "sponsors": true,
+	"popup": true, "modal": true, "overlay": true,
+	"tracking": true, "analytics": true, "seo": true,
+	"search": true, "searchbox": true,
+	"hidden": true, "offscreen": true, "skip": true,
+	"widget": true, "widgets": true, "masthead": true,
+}
+
+// webMainTokens id/class 命中这些词的容器视为语义正文候选。
+var webMainTokens = map[string]bool{
+	"content": true, "main": true, "post": true, "article": true, "entry": true,
+}
+
+// webRuneTextLen 剥标签、解码实体后统计非空白字符数，用于收窄与删除决策。
+func webRuneTextLen(s string) int {
+	t := webReTag.ReplaceAllString(s, " ")
+	t = html.UnescapeString(t)
+	n := 0
+	for _, r := range t {
+		if !unicode.IsSpace(r) {
+			n++
+		}
+	}
+	return n
+}
+
+// webPickMainContent 语义容器收窄：article → main → role=main → id/class 容器词。
+// 收窄条件：容器文本 ≥200 字且占全文 ≥25%，防止把摘要块当正文、或误删正文。
+func webPickMainContent(s string) string {
+	total := webRuneTextLen(s)
+	if total < 400 {
+		return s
+	}
+	try := func(t webTagInfo) (string, bool) {
+		start, end, ok := webBlockRange(s, t)
+		if !ok {
+			return "", false
+		}
+		inner := s[start:end]
+		n := webRuneTextLen(inner)
+		if n < 200 || n*4 < total {
+			return "", false
+		}
+		return inner, true
+	}
+	preds := []func(webTagInfo) bool{
+		func(t webTagInfo) bool { return t.name == "article" },
+		func(t webTagInfo) bool { return t.name == "main" },
+		func(t webTagInfo) bool { return !t.close && webReRoleMain.MatchString(t.attrs) },
+		func(t webTagInfo) bool {
+			if t.name != "div" && t.name != "section" {
+				return false
+			}
+			for w := range webClassTokens(t.attrs) {
+				if webMainTokens[w] {
+					return true
+				}
+			}
+			return false
+		},
+	}
+	for _, pred := range preds {
+		for _, t := range webFindAllTags(s, pred) {
+			if inner, ok := try(t); ok {
+				return inner
+			}
+		}
+	}
+	return s
+}
+
+// webDropNoise class/id 命中黑名单的容器整块删除。
+// form 有例外：部分 CMS 用 <form> 包全文，内部文本超过 300 字就不删。
+func webDropNoise(s string) string {
+	type span struct{ start, end int }
+	var spans []span
+	lastEnd := 0
+	webIterTags(s, func(t webTagInfo) bool {
+		if t.close || t.start < lastEnd {
+			return true
+		}
+		switch t.name {
+		case "div", "section", "ul", "ol", "form", "article", "main", "aside", "nav", "footer", "header":
+			noisy := false
+			for w := range webClassTokens(t.attrs) {
+				if webNoiseTokens[w] {
+					noisy = true
+					break
+				}
+			}
+			if !noisy {
+				return true
+			}
+			_, end, ok := webBlockRange(s, t)
+			if !ok {
+				return true
+			}
+			if t.name == "form" && webRuneTextLen(s[t.end:end]) > 300 {
+				return true
+			}
+			spans = append(spans, span{t.start, end})
+			lastEnd = end
+		}
+		return true
+	})
+	if len(spans) == 0 {
+		return s
+	}
+	var b strings.Builder
+	prev := 0
+	for _, sp := range spans {
+		b.WriteString(s[prev:sp.start])
+		prev = sp.end
+	}
+	b.WriteString(s[prev:])
+	return b.String()
+}
+
+// webPreInnerText pre 内部转纯文本：块边界转行、剥标签、解码实体；
+// 保留全部空白与缩进（这正是 pre 存在的意义）。
+func webPreInnerText(s string) string {
+	s = webReBr.ReplaceAllString(s, "\n")
+	s = webReBlockClose.ReplaceAllString(s, "\n")
+	s = webReTag.ReplaceAllString(s, "")
+	s = html.UnescapeString(s)
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\r", "\n")
+	return strings.Trim(s, "\n")
+}
+
+// webExtractPres 把 pre 块替换为占位符（占一行），转换完成后原样放回 fenced code。
+func webExtractPres(s string) (string, []string) {
+	var preserved []string
+	idx := 0
+	out := webRePreBlock.ReplaceAllStringFunc(s, func(m string) string {
+		sub := webRePreBlock.FindStringSubmatch(m)
+		preserved = append(preserved, webPreInnerText(sub[1]))
+		tag := "\x00cadt-pre-" + strconv.Itoa(idx) + "\x00"
+		idx++
+		return "\n" + tag + "\n"
+	})
+	return out, preserved
+}
+
+// webCodeFence pre 内容包成 Markdown 代码围栏；围栏长度避开内容里的反引号串。
+func webCodeFence(code string) string {
+	longest := 0
+	run := 0
+	for _, r := range code {
+		if r == '`' {
+			run++
+			if run > longest {
+				longest = run
+			}
+		} else {
+			run = 0
+		}
+	}
+	fence := "```"
+	if longest >= 3 {
+		fence = strings.Repeat("`", longest+1)
+	}
+	return fence + "\n" + code + "\n" + fence
+}
+
+// webInlineAnchors 锚链接就地转 [text](绝对地址)。无 href、空文本、
+// javascript:/mailto:/tel: 只保留文本；文本超 200 字视为匹配异常，放弃转换。
+func webInlineAnchors(s, pageURL string) string {
+	base, err := url.Parse(pageURL)
+	if err != nil {
+		base = nil
+	}
+	count := 0
+	return webReAnchor.ReplaceAllStringFunc(s, func(m string) string {
+		count++
+		if count > 200 {
+			return webCleanInline(webReTag.ReplaceAllString(m, " "))
+		}
+		sub := webReAnchor.FindStringSubmatch(m)
+		href := ""
+		for _, g := range []int{2, 3, 4} {
+			if len(sub) > g && sub[g] != "" {
+				href = sub[g]
+				break
+			}
+		}
+		text := webCleanInline(sub[5])
+		if text == "" {
+			return ""
+		}
+		if href == "" {
+			return text
+		}
+		if len([]rune(text)) > 200 {
+			return text
+		}
+		href = html.UnescapeString(strings.TrimSpace(href))
+		lower := strings.ToLower(href)
+		if strings.HasPrefix(lower, "javascript:") ||
+			strings.HasPrefix(lower, "mailto:") ||
+			strings.HasPrefix(lower, "tel:") {
+			return text
+		}
+		if base != nil {
+			if ref, perr := base.Parse(href); perr == nil && (ref.Scheme == "http" || ref.Scheme == "https") {
+				ref.Fragment = ""
+				href = ref.String()
+			}
+		}
+		href = strings.ReplaceAll(href, " ", "%20")
+		href = strings.ReplaceAll(href, "(", "%28")
+		href = strings.ReplaceAll(href, ")", "%29")
+		return "[" + text + "](" + href + ")"
+	})
+}
+
+// webContentToMarkdown 把清洗后的 HTML 转 Markdown 正文：
+// pre→围栏代码、锚点就地化、标题→#、列表→-、表格→| 行、行内样式→**/*。
+func webContentToMarkdown(content, pageURL string) string {
+	text, pres := webExtractPres(content)
+	text = webInlineAnchors(text, pageURL)
+	text = webReInlineBold.ReplaceAllString(text, "**$1**")
+	text = webReInlineItalic.ReplaceAllString(text, "*$1*")
+	text = webReInlineCode.ReplaceAllStringFunc(text, func(m string) string {
+		sub := webReInlineCode.FindStringSubmatch(m)
+		body := sub[1]
+		if strings.Contains(body, "`") {
+			return "`` " + body + " ``"
+		}
+		return "`" + body + "`"
+	})
+	text = webReImgTag.ReplaceAllStringFunc(text, func(m string) string {
+		alt := ""
+		if sub := webReImgAlt.FindStringSubmatch(m); len(sub) > 1 {
+			for _, g := range []int{2, 3, 4} {
+				if len(sub) > g && sub[g] != "" {
+					alt = sub[g]
+					break
+				}
+			}
+			alt = strings.TrimSpace(webCleanInline(alt))
+		}
+		if alt == "" {
+			return " "
+		}
+		return " [图片: " + alt + "] "
+	})
+	text = webReHrTag.ReplaceAllString(text, "\n---\n")
+	text = webReHOpen.ReplaceAllStringFunc(text, func(m string) string {
+		sub := webReHOpen.FindStringSubmatch(m)
+		return "\n" + strings.Repeat("#", int(sub[1][0]-'0')) + " "
+	})
+	text = webReLiOpen.ReplaceAllString(text, "\n- ")
+	text = webReTrOpen.ReplaceAllString(text, "\n| ")
+	text = webReCellClose.ReplaceAllString(text, " | ")
+	text = webReTrClose.ReplaceAllString(text, " |\n")
+	text = webReBr.ReplaceAllString(text, "\n")
+	text = webReBlockCloseMD.ReplaceAllString(text, "\n")
+	text = webReTag.ReplaceAllString(text, " ")
+	text = html.UnescapeString(text)
+	text = webNormalizeText(text)
+	for i, code := range pres {
+		tag := "\x00cadt-pre-" + strconv.Itoa(i) + "\x00"
+		if strings.Contains(text, tag) {
+			text = strings.ReplaceAll(text, tag, webCodeFence(code))
+		}
+	}
+	return text
 }
 
 func webExtractLinks(page, pageURL string) []map[string]string {
@@ -563,7 +1016,10 @@ func webNormalizeText(s string) string {
 	blank := false
 	for _, line := range lines {
 		line = strings.TrimSpace(webReSpaces.ReplaceAllString(line, " "))
-		line = strings.Trim(line, "| ")
+		// 表格行（首尾都是 |）保留定界符，Markdown 表格靠它们对齐单元格
+		if !(strings.HasPrefix(line, "|") && strings.HasSuffix(line, "|")) {
+			line = strings.Trim(line, "| ")
+		}
 		if line == "" || line == "-" || line == "•" || line == "|" {
 			if len(out) > 0 && !blank {
 				out = append(out, "")

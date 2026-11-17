@@ -1103,6 +1103,10 @@ const mockBackend = {
         if (!mockFindEntry(key)) throw new Error('文件不存在');
         mockDropPath(key);
     },
+    async RestoreEntry(path) {
+        // mock 后端是内存文件系统，没有系统回收站可还原
+        throw new Error('调试模式不支持从回收站还原：' + String(path || ''));
+    },
     async SearchWorkspace(root, query, caseSensitive, maxResults) {
         const text = String(query == null ? '' : query);
         const limit = Math.max(1, Math.min(Number(maxResults) || 400, 1000));
@@ -1346,6 +1350,29 @@ const mockBackend = {
             durationMs: 200,
         };
     },
+    async AIRunShellCommandConfined(command, cwd, timeoutMs, runId, mode, workspaceRoot) {
+        (window.__mockShellLog || (window.__mockShellLog = [])).push({command, cwd, timeoutMs, mode, workspaceRoot});
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        const sandboxed = mode !== 'danger-full-access';
+        return {
+            // 沙箱档的 shell 是 PowerShell（Git Bash 在受限令牌下起不来），如实回显
+            shell: sandboxed ? 'PowerShell 7' : 'Git Bash',
+            exe: sandboxed ? 'C:/Program Files/PowerShell/7/pwsh.exe' : 'C:/Program Files/Git/bin/bash.exe',
+            code: 0,
+            stdout: '[mock] ' + command + (cwd ? '\n(cwd ' + cwd + ')' : ''),
+            stderr: '',
+            timedOut: false,
+            durationMs: 200,
+            ...(sandboxed ? {sandboxMode: mode, enforcement: 'partial', tempDir: 'C:/Temp/cadt-sandbox-mock'} : {}),
+        };
+    },
+    async SandboxScan(root) {
+        return {root, workspaceSid: 'S-1-4-1001-2002', granted: false, denyPresent: false, labeled: false};
+    },
+    async SandboxRevoke(root) {
+        // mock 里没有真实 ACL：直接回一个「已清空」的状态
+        return {root, workspaceSid: 'S-1-4-1001-2002', granted: false, denyPresent: false, labeled: false};
+    },
     async AICommandStart(command, cwd) {
         const jobs = window.__mockBgJobs || (window.__mockBgJobs = new Map());
         const id = 'bg-mock-' + nextMockBgSeq();
@@ -1374,6 +1401,20 @@ const mockBackend = {
             emit('cmd-exit', {id, code: '0'});
         }, 950);
         return {jobId: id, shell: 'Git Bash'};
+    },
+    async AICommandStartConfined(command, cwd, mode, workspaceRoot) {
+        // 沙箱档的后台作业：结构与 AICommandStart 相同，额外回显档位与写根
+        const started = await this.AICommandStart(command, cwd);
+        const sandboxed = mode !== 'danger-full-access';
+        if (!sandboxed) return started;
+        return {
+            ...started,
+            shell: 'PowerShell 7',
+            sandboxMode: mode,
+            enforcement: 'partial',
+            tempDir: 'C:/Temp/cadt-sandbox-mock',
+            workspaceRoot,
+        };
     },
     async AICommandStatus(jobId, since) {
         const jobs = window.__mockBgJobs || (window.__mockBgJobs = new Map());

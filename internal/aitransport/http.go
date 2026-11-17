@@ -179,14 +179,16 @@ func StreamResponse(ctx context.Context, cancel context.CancelCauseFunc, id stri
 				emit(event, payload)
 			}
 		}
+		var streamErr error
 		switch ProviderOf(cfg) {
 		case ProviderAnthropic:
-			return streamAnthropicSSE(resp.Body, id, wrapped, touch)
+			streamErr = streamAnthropicSSE(resp.Body, id, wrapped, touch)
 		case ProviderResponses:
-			return streamResponsesSSE(resp.Body, id, wrapped, touch)
+			streamErr = streamResponsesSSE(resp.Body, id, wrapped, touch)
 		default:
-			return streamOpenAISSE(resp.Body, id, wrapped, touch)
+			streamErr = streamOpenAISSE(resp.Body, id, wrapped, touch)
 		}
+		return aiStreamErrorText(streamErr)
 	}
 }
 

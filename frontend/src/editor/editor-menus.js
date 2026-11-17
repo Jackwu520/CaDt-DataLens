@@ -312,7 +312,7 @@ function initContextMenus() {
             return;
         }
         if (deps.currentMode === 'tree' || deps.currentMode === 'table' || deps.currentMode === 'preview' ||
-            deps.currentMode === 'image' || deps.currentMode === 'video' || deps.currentMode === 'binary') return;
+            deps.currentMode === 'image' || deps.currentMode === 'video' || deps.currentMode === 'audio' || deps.currentMode === 'binary') return;
         e.preventDefault();
         e.stopPropagation();
         showEditorMenu(e.clientX, e.clientY);

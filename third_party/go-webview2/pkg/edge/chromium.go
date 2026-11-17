@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -152,6 +153,18 @@ func (e *Chromium) errorCallback(err error) {
 	// 跑在独立宿主线程上，页面 postMessage 非字符串等可恢复错误会走到这里，
 	// 直接退进程等于整个应用闪退。改为只通知回调方，由调用方隔离故障实例。
 	e.globalErrorCallback(err)
+}
+
+// guardCallback 统一兜住 COM 回调里的 panic：回调跑在原生派发帧上，Go panic 穿不过
+// 原生栈，会直接终止整个进程（无日志、无 WER，表现为「网页一开程序就没了」）。
+// 捕获后转给 errorCallback，由宿主隔离出错的实例，进程继续存活。
+func (e *Chromium) guardCallback(name string, fn func()) {
+	defer func() {
+		if r := recover(); r != nil {
+			e.errorCallback(fmt.Errorf("webview2 回调 %s 崩溃：%v\n%s", name, r, debug.Stack()))
+		}
+	}()
+	fn()
 }
 
 func (e *Chromium) SetErrorCallback(callback func(error)) {
@@ -308,30 +321,46 @@ func (e *Chromium) Release() uintptr {
 }
 
 func (e *Chromium) EnvironmentCompleted(res uintptr, env *ICoreWebView2Environment) uintptr {
-	if env == nil {
-		err := syscall.Errno(res)
-		log.Printf("[WebView2] Environment creation failed with error code %v: %v\n", res, err)
-		if e.globalErrorCallback != nil {
-			e.globalErrorCallback(fmt.Errorf("failed to create WebView2 environment: %w", err))
+	e.guardCallback("EnvironmentCompleted", func() {
+		if env == nil {
+			err := syscall.Errno(res)
+			log.Printf("[WebView2] Environment creation failed with error code %v: %v\n", res, err)
+			if e.globalErrorCallback != nil {
+				e.globalErrorCallback(fmt.Errorf("failed to create WebView2 environment: %w", err))
+			}
+			return
 		}
-		return res
-	}
 
-	log.Printf("[WebView2] Environment created successfully\n")
+		log.Printf("[WebView2] Environment created successfully\n")
 
-	env.vtbl.AddRef.Call(uintptr(unsafe.Pointer(env)))
-	e.environment = env
+		env.vtbl.AddRef.Call(uintptr(unsafe.Pointer(env)))
+		e.environment = env
 
-	err := env.CreateCoreWebView2Controller(e.hwnd, e.controllerCompleted)
-	if err != nil {
-		e.errorCallback(err)
-	}
+		err := env.CreateCoreWebView2Controller(e.hwnd, e.controllerCompleted)
+		if err != nil {
+			e.errorCallback(err)
+		}
+	})
 	return 0
 }
 
 func (e *Chromium) CreateCoreWebView2ControllerCompleted(res uintptr, controller *ICoreWebView2Controller) uintptr {
+	e.guardCallback("CreateCoreWebView2ControllerCompleted", func() {
+		e.createControllerCompleted(res, controller)
+	})
+	return 0
+}
+
+func (e *Chromium) createControllerCompleted(res uintptr, controller *ICoreWebView2Controller) {
 	if int32(res) < 0 {
 		e.errorCallback(fmt.Errorf("error creating controller with %08x: %s", res, syscall.Errno(res)))
+		return
+	}
+	// 本地补丁（2026-11-17）：上游在失败后继续 controller.vtbl.AddRef，nil 解引用发生在
+	// COM 回调帧里，panic 穿不过原生栈 → 整个应用瞬间消失（无日志）。这里直接放弃初始化。
+	if controller == nil {
+		e.errorCallback(errors.New("WebView2 controller 为空"))
+		return
 	}
 
 	var err error
@@ -353,8 +382,12 @@ func (e *Chromium) CreateCoreWebView2ControllerCompleted(res uintptr, controller
 	}
 	var token _EventRegistrationToken
 	e.webview, err = e.controller.GetCoreWebView2()
-	if err != nil {
+	if err != nil || e.webview == nil {
+		if err == nil {
+			err = errors.New("WebView2 内核为空")
+		}
 		e.errorCallback(err)
+		return
 	}
 
 	e.webview.vtbl.AddRef.Call(uintptr(unsafe.Pointer(e.webview)))
@@ -389,46 +422,48 @@ func (e *Chromium) CreateCoreWebView2ControllerCompleted(res uintptr, controller
 	}
 
 	atomic.StoreUintptr(&e.inited, 1)
-
-	return 0
 }
 
 func (e *Chromium) ContainsFullScreenElementChanged(sender *ICoreWebView2, args *ICoreWebView2ContainsFullScreenElementChangedEventArgs) uintptr {
-	if e.ContainsFullScreenElementChangedCallback != nil {
-		e.ContainsFullScreenElementChangedCallback(sender, args)
-	}
+	e.guardCallback("ContainsFullScreenElementChanged", func() {
+		if e.ContainsFullScreenElementChangedCallback != nil {
+			e.ContainsFullScreenElementChangedCallback(sender, args)
+		}
+	})
 	return 0
 }
 
 func (e *Chromium) MessageReceived(sender *ICoreWebView2, args *ICoreWebView2WebMessageReceivedEventArgs) uintptr {
-	message, err := args.TryGetWebMessageAsString()
-	if err != nil {
-		e.errorCallback(err)
-		// 本地补丁（2026-11-16）：非字符串消息取不到内容，继续往下会用空消息回显，
-		// 直接丢弃这条派发（上游在这里只记录、不返回）。
-		return 0
-	}
-
-	if HasCapability(e.webview2RuntimeVersion, GetAdditionalObjects) {
-		obj, err := args.GetAdditionalObjects()
+	e.guardCallback("MessageReceived", func() {
+		message, err := args.TryGetWebMessageAsString()
 		if err != nil {
 			e.errorCallback(err)
+			// 本地补丁（2026-11-16）：非字符串消息取不到内容，继续往下会用空消息回显，
+			// 直接丢弃这条派发（上游在这里只记录、不返回）。
+			return
 		}
 
-		if obj != nil && e.MessageWithAdditionalObjectsCallback != nil {
-			defer obj.Release()
-			e.MessageWithAdditionalObjectsCallback(message, sender, args)
+		if HasCapability(e.webview2RuntimeVersion, GetAdditionalObjects) {
+			obj, err := args.GetAdditionalObjects()
+			if err != nil {
+				e.errorCallback(err)
+			}
+
+			if obj != nil && e.MessageWithAdditionalObjectsCallback != nil {
+				defer obj.Release()
+				e.MessageWithAdditionalObjectsCallback(message, sender, args)
+			} else if e.MessageCallback != nil {
+				e.MessageCallback(message, sender, args)
+			}
 		} else if e.MessageCallback != nil {
 			e.MessageCallback(message, sender, args)
 		}
-	} else if e.MessageCallback != nil {
-		e.MessageCallback(message, sender, args)
-	}
 
-	err = sender.PostWebMessageAsString(message)
-	if err != nil && !errors.Is(err, windows.ERROR_IO_PENDING) {
-		e.errorCallback(err)
-	}
+		err = sender.PostWebMessageAsString(message)
+		if err != nil && !errors.Is(err, windows.ERROR_IO_PENDING) {
+			e.errorCallback(err)
+		}
+	})
 	return 0
 }
 
@@ -463,37 +498,44 @@ func (e *Chromium) SetGlobalPermission(state CoreWebView2PermissionState) {
 }
 
 func (e *Chromium) PermissionRequested(_ *ICoreWebView2, args *iCoreWebView2PermissionRequestedEventArgs) uintptr {
-	kind, err := args.GetPermissionKind()
-	if err != nil {
-		e.errorCallback(err)
-	}
-	var result CoreWebView2PermissionState
-	if e.globalPermission != nil {
-		result = *e.globalPermission
-	} else {
-		var ok bool
-		result, ok = e.permissions[kind]
-		if !ok {
-			result = CoreWebView2PermissionStateDefault
+	e.guardCallback("PermissionRequested", func() {
+		kind, err := args.GetPermissionKind()
+		if err != nil {
+			e.errorCallback(err)
 		}
-	}
-	err = args.PutState(result)
-	if err != nil {
-		e.errorCallback(err)
-	}
+		var result CoreWebView2PermissionState
+		if e.globalPermission != nil {
+			result = *e.globalPermission
+		} else {
+			var ok bool
+			result, ok = e.permissions[kind]
+			if !ok {
+				result = CoreWebView2PermissionStateDefault
+			}
+		}
+		err = args.PutState(result)
+		if err != nil {
+			e.errorCallback(err)
+		}
+	})
 	return 0
 }
 
 func (e *Chromium) WebResourceRequested(sender *ICoreWebView2, args *ICoreWebView2WebResourceRequestedEventArgs) uintptr {
-	req, err := args.GetRequest()
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer req.Release()
+	e.guardCallback("WebResourceRequested", func() {
+		req, err := args.GetRequest()
+		if err != nil {
+			// 本地补丁（2026-11-17）：上游这里是 log.Fatal(err)，直接 os.Exit(1)——
+			// 任一次资源请求取不到就整个应用静默退出。改为只报告错误。
+			e.errorCallback(err)
+			return
+		}
+		defer req.Release()
 
-	if e.WebResourceRequestedCallback != nil {
-		e.WebResourceRequestedCallback(req, args)
-	}
+		if e.WebResourceRequestedCallback != nil {
+			e.WebResourceRequestedCallback(req, args)
+		}
+	})
 	return 0
 }
 
@@ -515,24 +557,26 @@ func (e *Chromium) AcceleratorKeyPressed(sender *ICoreWebView2Controller, args *
 	if e.AcceleratorKeyCallback == nil {
 		return 0
 	}
-	eventKind, _ := args.GetKeyEventKind()
-	if eventKind == COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN ||
-		eventKind == COREWEBVIEW2_KEY_EVENT_KIND_SYSTEM_KEY_DOWN {
-		virtualKey, _ := args.GetVirtualKey()
-		status, _ := args.GetPhysicalKeyStatus()
-		if !status.WasKeyDown {
-			err := args.PutHandled(e.AcceleratorKeyCallback(virtualKey))
-			if err != nil {
-				e.errorCallback(err)
+	e.guardCallback("AcceleratorKeyPressed", func() {
+		eventKind, _ := args.GetKeyEventKind()
+		if eventKind == COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN ||
+			eventKind == COREWEBVIEW2_KEY_EVENT_KIND_SYSTEM_KEY_DOWN {
+			virtualKey, _ := args.GetVirtualKey()
+			status, _ := args.GetPhysicalKeyStatus()
+			if !status.WasKeyDown {
+				err := args.PutHandled(e.AcceleratorKeyCallback(virtualKey))
+				if err != nil {
+					e.errorCallback(err)
+				}
+			} else {
+				return
 			}
-		} else {
-			return 0
 		}
-	}
-	err := args.PutHandled(false)
-	if err != nil {
-		e.errorCallback(err)
-	}
+		err := args.PutHandled(false)
+		if err != nil {
+			e.errorCallback(err)
+		}
+	})
 	return 0
 }
 
@@ -552,16 +596,20 @@ func boolToInt(input bool) int {
 }
 
 func (e *Chromium) NavigationCompleted(sender *ICoreWebView2, args *ICoreWebView2NavigationCompletedEventArgs) uintptr {
-	if e.NavigationCompletedCallback != nil {
-		e.NavigationCompletedCallback(sender, args)
-	}
+	e.guardCallback("NavigationCompleted", func() {
+		if e.NavigationCompletedCallback != nil {
+			e.NavigationCompletedCallback(sender, args)
+		}
+	})
 	return 0
 }
 
 func (e *Chromium) ProcessFailed(sender *ICoreWebView2, args *ICoreWebView2ProcessFailedEventArgs) uintptr {
-	if e.ProcessFailedCallback != nil {
-		e.ProcessFailedCallback(sender, args)
-	}
+	e.guardCallback("ProcessFailed", func() {
+		if e.ProcessFailedCallback != nil {
+			e.ProcessFailedCallback(sender, args)
+		}
+	})
 	return 0
 }
 

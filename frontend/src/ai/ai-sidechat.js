@@ -111,10 +111,30 @@ export function createAISidechat(ctx) {
             return {ok: false, reason: 'empty'};
         }
         const title = side.title || '支线';
+        // 支线若动过文件，把改动文件清单一并带回：母会话的 changes 卡不收支线的改动
+        // （两边都改文件会串味，方案 §6），只能靠这份摘要让它知道「支线改了什么」。
+        // 同一路径聚合（relPath 合并 + / − 计），超过 12 个文件折叠为计数。
+        const changes = Array.isArray(side.changes) ? side.changes : [];
+        const merged = new Map();
+        for (const change of changes) {
+            const relPath = String((change && change.relPath) || (change && change.path) || '').trim();
+            if (!relPath) continue;
+            const prev = merged.get(relPath) || {relPath, added: 0, removed: 0};
+            prev.added += Math.max(0, Math.round(Number(change && change.added) || 0));
+            prev.removed += Math.max(0, Math.round(Number(change && change.removed) || 0));
+            merged.set(relPath, prev);
+        }
+        const files = [...merged.values()];
+        const digestLimit = 12;
+        const changesNote = files.length
+            ? '\n\n支线改动（' + files.length + ' 个文件）：' +
+              files.slice(0, digestLimit).map((f) => f.relPath + '（+' + f.added + '/−' + f.removed + '）').join('、') +
+              (files.length > digestLimit ? ' 等 ' + files.length + ' 个' : '')
+            : '';
         const result = deliverAgentNotice(owner, {
             kind: 'sidechat',
             label: '支线结论 · ' + title,
-            content: '［支线结论 · ' + title + '］来自支线对话「' + title + '」的结论：\n' + content,
+            content: '［支线结论 · ' + title + '］来自支线对话「' + title + '」的结论：\n' + content + changesNote,
         });
         if (result && result.ok) {
             flash(result.woke

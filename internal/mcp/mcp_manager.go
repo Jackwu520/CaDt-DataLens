@@ -18,6 +18,11 @@ var (
 	Logf       func(level, format string, args ...any)
 	AppDataDir func() string
 	Version    string
+	// PrepareServer 在每代连接真正 spawn 前调用（main 包注入 mcpsamples 的自愈实现）：
+	// 内置示例脚本被「设置 → 存储清理」当缓存删掉、或版本升级换了释放目录时，
+	// 已注册的服务器会永久初始化失败（还带十次重连与刷屏日志），这里按配置里的原路径补回。
+	// 只读 cfg，不改配置；实现失败必须静默放过，让服务器自己报真实错误。
+	PrepareServer func(cfg MCPServerConfig)
 )
 
 // logf 宿主日志钩子的 nil 安全包装。

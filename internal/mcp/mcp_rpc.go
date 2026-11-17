@@ -99,6 +99,15 @@ func (c *rpcConn) serve(r io.Reader) error {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, mcpReadBufSize), mcpMaxLineBytes)
 	garbage := 0
+	// 连续垃圾只记首行 + 结尾汇总：起不来的 server（banner / 用法说明）动辄十几行，
+	// 逐行记 WARN 会把真正的失败原因挤出日志（2026-11-17 实际事故：10 次重连刷了上百行）。
+	flushGarbage := func() {
+		if garbage > 1 {
+			logf("warn", "MCP stdout 连续丢弃 %d 行非 JSON（同类内容，首行见上一条）", garbage)
+		}
+		garbage = 0
+	}
+	defer flushGarbage()
 	for sc.Scan() {
 		line := bytes.TrimSpace(sc.Bytes())
 		if len(line) == 0 {
@@ -109,13 +118,17 @@ func (c *rpcConn) serve(r io.Reader) error {
 			// 容忍对方的不规范：banner、print 调试等丢弃 + 记警告，不当协议错误中止。
 			// stdout 是协议通道，污染它的是 server，我们防的是被拖死。
 			garbage++
-			logf("warn", "MCP stdout 丢弃非 JSON 行（连续第 %d 行）：%s", garbage, mcpLogPreview(line, 160))
+			if garbage == 1 {
+				logf("warn", "MCP stdout 丢弃非 JSON 行：%s", mcpLogPreview(line, 160))
+			}
 			if garbage >= mcpMaxGarbageLines {
-				return fmt.Errorf("stdout 连续 %d 行非 JSON，判定协议错乱", garbage)
+				// 错误文本已带行数，交给上层记失败原因：清掉计数免得 defer 再写一条重复的。
+				garbage = 0
+				return fmt.Errorf("stdout 连续 %d 行非 JSON，判定协议错乱", mcpMaxGarbageLines)
 			}
 			continue
 		}
-		garbage = 0
+		flushGarbage()
 		if err := c.handleMessage(&msg); err != nil {
 			return err
 		}

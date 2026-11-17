@@ -152,6 +152,56 @@ function ensureShadow(host) {
     return host.shadowRoot || host.attachShadow({mode: 'open'});
 }
 
+// ---- 小 viewBox 图标兜底 ----
+// 规范基准是 680 宽的 viewBox，卡片按容器宽度缩放。模型偶尔给 15×15 这类图标级
+// viewBox，缩放策略会把它撑满卡片：灰底一大片、图标却只有一个点。宽高都很小时
+// 改为按内容尺寸显示（保持比例，最长边至少 24px），正常尺寸的图完全不碰。
+const TINY_VIEWBOX_MAX = 64;
+const TINY_ICON_MIN_PX = 24;
+
+// 只有「没写」「auto」「100%」算未指定；50% 等具体值是作者的明确意图，尊重。
+function hasDeclaredSize(value) {
+    const text = String(value == null ? '' : value).trim().toLowerCase();
+    return !!text && text !== 'auto' && text !== '100%';
+}
+
+// 纯函数：返回需要内联的尺寸，不需要兜底时返回 null。抽出来给 node 测试覆盖
+// （DOM 桩只测接线，尺寸算法本身不依赖浏览器）。
+export function tinySvgSize(viewBox, width, height) {
+    if (hasDeclaredSize(width) || hasDeclaredSize(height)) return null;
+    const parts = String(viewBox || '').trim().split(/[\s,]+/);
+    if (parts.length !== 4) return null;
+    const nums = parts.map(Number);
+    if (nums.some((n) => !Number.isFinite(n))) return null;
+    const vw = nums[2];
+    const vh = nums[3];
+    if (!(vw > 0 && vh > 0) || vw > TINY_VIEWBOX_MAX || vh > TINY_VIEWBOX_MAX) return null;
+    const scale = Math.max(1, TINY_ICON_MIN_PX / Math.max(vw, vh));
+    return {
+        width: Math.round(vw * scale * 100) / 100,
+        height: Math.round(vh * scale * 100) / 100,
+    };
+}
+
+// 应用在已清洗的 shadow DOM 上：只写数值型尺寸，不引入任何 url / 表达式。
+// inline style 里已写尺寸的同样视为作者自管，直接跳过。
+function fitTinySvg(shadow) {
+    const svg = shadow && shadow.querySelector ? shadow.querySelector('svg') : null;
+    if (!svg) return;
+    const inline = svg.style;
+    if (inline && (hasDeclaredSize(inline.width) || hasDeclaredSize(inline.height))) return;
+    const size = tinySvgSize(
+        svg.getAttribute('viewBox'),
+        svg.getAttribute('width'),
+        svg.getAttribute('height'),
+    );
+    if (!size) return;
+    svg.style.setProperty('width', size.width + 'px', 'important');
+    svg.style.setProperty('height', size.height + 'px', 'important');
+    svg.style.setProperty('display', 'block', 'important');
+    svg.style.setProperty('margin', '12px auto', 'important');
+}
+
 // fillShadow 只负责填充内容；主题重渲染（异步卡片）会重复调用，不改监听器。
 function fillShadow(host, code, lang) {
     const shadow = ensureShadow(host);
@@ -160,6 +210,8 @@ function fillShadow(host, code, lang) {
     const extracted = extractWidgetCss(lang === 'html' ? preserveLocalImageSrc(code) : code);
     shadow.innerHTML = '<style>' + SHADOW_STYLE + extracted.css + '</style>' +
         sanitizeWidgetHtml(extracted.code, lang);
+    // 异步引擎产物也走这条（lang 传 'svg'），但它们的 viewBox 是 680 宽，不会命中。
+    if (lang === 'svg') fitTinySvg(shadow);
 }
 
 function mountShadow(host, code, lang, opts) {

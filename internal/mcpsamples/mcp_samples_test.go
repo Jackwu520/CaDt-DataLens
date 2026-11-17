@@ -1,7 +1,9 @@
 package mcpsamples
 
 import (
+	"bytes"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -93,5 +95,96 @@ func TestBuiltinMCPSamples(t *testing.T) {
 	}
 	if !installed["tts_sapi"] || !installed["asr_whisper"] || installed["ocr_windows"] {
 		t.Fatalf("安装状态不对：%+v", installed)
+	}
+}
+
+// overrideAppData 把应用数据目录临时指到 temp（与 TestBuiltinMCPSamples 同款手法）。
+func overrideAppData(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	old := mcp.AppDataDir
+	mcp.AppDataDir = func() string { return dir }
+	t.Cleanup(func() { mcp.AppDataDir = old })
+	return dir
+}
+
+// 设置 → 存储清理会把 builtin-mcp-samples 当缓存删掉，而 mcp.json 里留着绝对路径。
+// 没有自愈时服务器初始化失败十次后放弃，日志被 shell 启动横幅刷屏（2026-11-17 实际事故）。
+func TestEnsureServerScriptRepairsMissingScript(t *testing.T) {
+	appDir := overrideAppData(t)
+	script := filepath.Join(appDir, "builtin-mcp-samples", "v0.9.0", "tts-sapi.ps1")
+	cfg := mcp.MCPServerConfig{
+		Command: "pwsh",
+		Args:    []string{"-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script},
+	}
+
+	EnsureServerScript(cfg)
+
+	got, err := os.ReadFile(script)
+	if err != nil {
+		t.Fatalf("脚本未补回：%v", err)
+	}
+	want, err := os.ReadFile(filepath.Join("..", "..", "docs", "mcp-samples", "tts-sapi.ps1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatal("补回内容与内嵌脚本不一致")
+	}
+	// 幂等：已存在时不再写盘（每次 spawn 都动盘没有必要）
+	if info, err := os.Stat(script); err != nil || info.Size() != int64(len(want)) {
+		t.Fatalf("补回后文件状态异常：%v %+v", err, info)
+	}
+}
+
+// 用户按 README 自备一份同名脚本放在别处时，保留它们，不许覆盖。
+func TestEnsureServerScriptLeavesForeignCopyAlone(t *testing.T) {
+	overrideAppData(t)
+	foreign := filepath.Join(t.TempDir(), "tts-sapi.ps1")
+
+	EnsureServerScript(mcp.MCPServerConfig{
+		Command: "pwsh",
+		Args:    []string{"-NoProfile", "-ExecutionPolicy", "Bypass", "-File", foreign},
+	})
+
+	if _, err := os.Stat(foreign); err == nil {
+		t.Fatal("不应往用户自备目录写脚本")
+	}
+}
+
+// 脚本缺失时「安装示例」要能修复，而不是一律报「已存在同名服务器」把用户堵死。
+func TestMCPInstallSampleRepairsWhenScriptMissing(t *testing.T) {
+	overrideAppData(t)
+	app := &Samples{}
+	if _, err := app.MCPInstallSample("tts_sapi"); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := mcp.ReadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := cfg.MCPServers["tts_sapi"].Args
+	script := args[len(args)-1]
+	if err := os.Remove(script); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := app.MCPInstallSample("tts_sapi")
+	if err != nil {
+		t.Fatalf("脚本缺失时应修复而不是拒绝：%v", err)
+	}
+	if out["repaired"] != true {
+		t.Fatalf("应标记为 repaired：%+v", out)
+	}
+	if _, err := os.Stat(script); err != nil {
+		t.Fatalf("脚本未补回：%v", err)
+	}
+	// 用户改过的授权不能被覆盖
+	after, err := mcp.ReadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after.MCPServers["tts_sapi"].EnabledTools) != 1 {
+		t.Fatalf("修复不该改配置：%+v", after.MCPServers["tts_sapi"])
 	}
 }

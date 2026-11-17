@@ -3,12 +3,14 @@
 // 由浏览器冒烟覆盖，不在 node --test 里跑。
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
 import {
     buildWidgetPlaceholder,
     escapeWidgetText,
     extractWidgetCss,
     preserveLocalImageSrc,
     sanitizeWidgetCss,
+    tinySvgSize,
     widgetCacheKey,
     widgetKindOf,
     widgetLangOf,
@@ -131,6 +133,40 @@ test('sanitizeWidgetCss 阻断外链资源与执行型写法', () => {
 test('sanitizeWidgetCss 拦掉试图闭合 style 标签的内容', () => {
     const css = sanitizeWidgetCss('.a{color:red}</style><div>injected</div>');
     assert.ok(!css.includes('</style>'));
+});
+
+test('tinySvgSize 把图标级 viewBox 按内容尺寸显示（保比例，最长边至少 24px）', () => {
+    assert.deepEqual(tinySvgSize('0 0 15 15'), {width: 24, height: 24});
+    assert.deepEqual(tinySvgSize('0 0 16 16'), {width: 24, height: 24});
+    assert.deepEqual(tinySvgSize('0 0 32 32'), {width: 32, height: 32});
+    assert.deepEqual(tinySvgSize('0 0 64 64'), {width: 64, height: 64});
+    assert.deepEqual(tinySvgSize('0 0 20 10'), {width: 24, height: 12}, '等比例放大，不拉伸');
+    assert.deepEqual(tinySvgSize('0,0,15,15'), {width: 24, height: 24}, '逗号分隔也能解析');
+    assert.deepEqual(tinySvgSize('1 2 16 16'), {width: 24, height: 24}, 'origin 不参与尺寸计算');
+});
+
+test('tinySvgSize 跳过正常 viewBox、显式尺寸与非法输入', () => {
+    assert.equal(tinySvgSize('0 0 680 400'), null, '规范尺寸不兜底');
+    assert.equal(tinySvgSize('0 0 65 65'), null, '略超阈值不兜底');
+    assert.equal(tinySvgSize('0 0 100 40'), null, '单边超阈值不兜底');
+    assert.equal(tinySvgSize('0 0 15 15', '48'), null, '作者写了 width 就不动');
+    assert.equal(tinySvgSize('0 0 15 15', null, '48px'), null);
+    assert.equal(tinySvgSize('0 0 15 15', '50%'), null, '具体百分比是明确意图，尊重');
+    assert.deepEqual(tinySvgSize('0 0 15 15', '100%'), {width: 24, height: 24}, '100% 等于没写');
+    assert.deepEqual(tinySvgSize('0 0 15 15', null, 'auto'), {width: 24, height: 24});
+    assert.equal(tinySvgSize(''), null);
+    assert.equal(tinySvgSize('none'), null);
+    assert.equal(tinySvgSize('0 0 15'), null);
+    assert.equal(tinySvgSize('0 0 abc 15'), null);
+    assert.equal(tinySvgSize('0 0 -15 15'), null);
+    assert.equal(tinySvgSize(null), null);
+});
+
+test('widget.js 在 fillShadow 里接上小 viewBox 兜底', () => {
+    const src = readFileSync(new URL('../../src/core/widget.js', import.meta.url), 'utf8');
+    assert.match(src, /function fillShadow[\s\S]*?fitTinySvg\(shadow\)/, 'fillShadow 必须调用兜底');
+    assert.match(src, /function fitTinySvg[\s\S]*?tinySvgSize\(/, '兜底必须用纯函数算尺寸');
+    assert.match(src, /if \(lang === 'svg'\) fitTinySvg/, '只处理 svg 卡，html 卡里布局好的图标不越界');
 });
 
 test('preserveLocalImageSrc 给本地图片补 data-ai-src，外链不动', () => {

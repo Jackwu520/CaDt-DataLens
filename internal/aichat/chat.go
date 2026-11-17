@@ -104,7 +104,11 @@ func (c *Chat) AISendChat(sessionId string, cfg aitransport.Config, messages []a
 			emit(aitransport.EventDone, aitransport.DonePayload{Id: sessionId, FinishReason: "stopped"})
 			logf("info", "AI 请求已停止（%s）", time.Since(started).Round(time.Millisecond))
 		case err != nil:
-			emit(aitransport.EventError, aitransport.ErrorPayload{Id: sessionId, Message: err.Error()})
+			emit(aitransport.EventError, aitransport.ErrorPayload{
+				Id:        sessionId,
+				Message:   err.Error(),
+				Retryable: errors.Is(err, aitransport.ErrStreamTruncated),
+			})
 			logf("error", "AI 请求失败（%s）：%v", time.Since(started).Round(time.Millisecond), err)
 		default:
 			logf("info", "AI 请求结束（%s）", time.Since(started).Round(time.Millisecond))

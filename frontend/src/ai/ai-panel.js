@@ -6,8 +6,8 @@ import {mergePluginAIRequest, pluginAIAccounts} from '../shell/plugin-ai-provide
 import {copyImageUrlToClipboard} from '../core/image-clipboard.js';
 import {createImageLightbox} from '../shell/image-lightbox.js';
 import {createFileIcon} from '../core/fileicons.js';
-import {buildSessionOutlineItems} from './session-outline.js';
-import {createSessionDiskStore} from './ai-session-disk.js';
+import {createSessionOutlineController} from './session-outline.js';
+import {createSessionDiskStore, createAIConversationLog} from './ai-session-disk.js';
 import {
     AI_MASCOT_PHRASES, mascotPhraseIndex, phrasesForPhase, randomMascotSalt,
 } from './ai-mascot-phrases.js';
@@ -65,6 +65,7 @@ import {
     countPermissionRules,
     decidePermission,
     emptyPermissionRules,
+    evaluatePermissionRules,
     formatRuleLines,
     isWebApproval,
     normalizeDefaultScope,
@@ -98,6 +99,8 @@ import {
     migrateAccountModels,
     modelEntryOf,
     modelRefLabel,
+    modelVideoInputEnabled,
+    newOpencodeSessionId,
     normalizeCtxLimit,
     normalizeModalities,
     normalizeModelEntry,
@@ -106,6 +109,7 @@ import {
     resolveModelId,
     resolveModelRef,
     windowValue,
+    withOpencodeSessionHeader,
 } from './ai-config-model.js';
 import {
     classifyGenRef,
@@ -138,7 +142,6 @@ import {
     AI_WRITE_LIMIT,
     AI_PATCH_LIMIT,
     AI_PATCH_MAX_ATTEMPTS,
-    AI_DIFF_MAX_LINES,
     AI_DIFF_PREVIEW_LIMIT,
     AI_CHANGES_LIMIT,
     AI_SCOPES,
@@ -197,11 +200,16 @@ import {
 } from './ai-constants.js';
 import {recordRead, recordWrite, checkWriteFresh} from './ai-write-guard.js';
 import {createAIToolDefs} from './ai-tool-defs.js';
-import {createAISystemContext} from './ai-system-context.js';
+import {createAISystemContext, truncateSkillDescription} from './ai-system-context.js';
 import {createAIWorktree, normalizeWorktreeState, agentWorktreeWriteVerdict} from './ai-worktree.js';
 import {createAITodos, shouldSendTodosCheck, todosCheckText} from './ai-todos.js';
 import {createScrollGesture, createShrinkBurst, nextStickState, shouldRefollowGrowth, STRICT_BOTTOM_PX} from './ai-scroll-follow.js';
 import {createAIChangesUI} from './ai-changes-ui.js';
+import {createAIModelPicker} from './ai-model-picker.js';
+import {createAIUsageUI, aiFormatCompactTokens, aiFormatExactCount, aiFormatCompactDuration, turnUsageTotal} from './ai-usage-ui.js';
+import {computeLineDiff, diffStats, buildDiffPreview} from './ai-diff-view.js';
+import {missingFileHint} from './ai-path-hints.js';
+import {aiStreamRetryBudget, shouldAutoRetryStream} from './ai-stream-retry.js';
 import {createAIGitUi} from './ai-git-ui.js';
 import {createAISlash} from './ai-slash.js';
 import {createAIMessageQueue} from './ai-message-queue.js';
@@ -210,18 +218,21 @@ import {createAITimer} from './ai-timer.js';
 import {createAISessionList} from './ai-session-list.js';
 import {createAIComposer} from './ai-composer.js';
 import {quoteMarkupFromAttachments, splitQuotePrefix, quoteExcerpt, quoteLabel, quoteChipLabel, AI_QUOTE_KIND} from './ai-quote.js';
+import {splitTurnReminderPrefix} from './ai-turn-reminder.js';
 import {parseFileRef, pickOpenFileMatch, applyFileRefChip} from './ai-file-refs.js';
 import {createAIToolCards} from './ai-tool-cards.js';
 import {createAITakeover} from './ai-takeover.js';
 import {
     PLAN_DIR_REL,
     isPlanMessage,
+    planDigest,
     planFileBody,
     planFileRelPath,
+    planReferenceBlock,
 } from './ai-plan-file.js';
 import {createAIManageDialogs} from './ai-manage-dialogs.js';
 import {createAISettingsDialog} from './ai-settings-dialog.js';
-import {createAISubagents} from './ai-subagents.js';
+import {createAISubagents, subSandboxPolicy} from './ai-subagents.js';
 import {createAIAgentNotices} from './ai-agent-notices.js';
 import {createAISidechat} from './ai-sidechat.js';
 import {forkMessages, forkSettings} from './ai-session-fork.js';
@@ -507,6 +518,7 @@ export function createAIPanel(options) {
         injectAgents: document.getElementById('ai-opt-inject-agents'),
         injectMemory: document.getElementById('ai-opt-inject-memory'),
         injectSkills: document.getElementById('ai-opt-inject-skills'),
+        skillIndexMax: document.getElementById('ai-opt-skill-index-max'),
         injectPrefs: document.getElementById('ai-opt-inject-prefs'),
         injectEnvVars: document.getElementById('ai-opt-inject-envvars'),
         injectPersona: document.getElementById('ai-opt-inject-persona'),
@@ -591,6 +603,9 @@ export function createAIPanel(options) {
         permissionsSession: document.getElementById('ai-opt-perm-session'),
         permissionsSessionClear: document.getElementById('ai-opt-perm-session-clear'),
         permissionsLog: document.getElementById('ai-opt-perm-log'),
+        sandboxState: document.getElementById('ai-opt-sandbox-state'),
+        sandboxScanBtn: document.getElementById('ai-opt-sandbox-scan'),
+        sandboxRevokeBtn: document.getElementById('ai-opt-sandbox-revoke'),
         prefs: document.getElementById('ai-opt-prefs'),
         prefAdd: document.getElementById('ai-opt-pref-add'),
         prefFilter: document.getElementById('ai-opt-pref-filter'),
@@ -665,7 +680,6 @@ export function createAIPanel(options) {
     let attachSeq = 0;
     let appDirPromise = null;
     let memoryFallbackNotified = false;
-    let logSaveErrorShown = false;
     // 上下文占用估算依赖「真正会发给模型的系统提示词」：面板重开 / 切换会话 / 注入开关变化后
     // 需要异步重建，否则会沿用默认或旧值，显示偏小或带着旧工作区上下文。
     // 按会话缓存：并发生成 / 来回切会话时，A 的提示词不能拿去估 B 的占用。
@@ -782,6 +796,10 @@ export function createAIPanel(options) {
             // 全局「总是允许」的工作区外读根（读审批卡「总是」档；判定见 ai-read-roots.js）
             approvedReadRoots: normalizeReadRoots(stored.approvedReadRoots),
             disabledSkills: Array.isArray(stored.disabledSkills) ? stored.disabledSkills : [],
+            // hiddenSkills：仅「不在 AI 索引」的技能名单（仍可被输入框附加与 skill_use 加载）；与 disabledSkills 同按名小写匹配
+            hiddenSkills: Array.isArray(stored.hiddenSkills) ? stored.hiddenSkills : [],
+            // 技能索引的用户技能上限（内置技能不受限）：1–100，默认 100；溢出走 skill_list 查询
+            skillIndexMaxUser: aiClampInt(stored.skillIndexMaxUser, 1, 100, 100),
             prompts: [],
             preferences: [],
             activePromptId: aiTextOf(stored.activePromptId),
@@ -1478,6 +1496,9 @@ export function createAIPanel(options) {
             message.planMode = raw.planMode === true;
             // 计划落盘路径：随会话持久化，重启重放后仍能一键回到标签页看正文
             message.planFile = aiTextOf(raw.planFile);
+            // submit_plan 提交的计划正文：对话正文不承载计划，重启重放后审批卡 / 入口卡 / 回注都靠它
+            message.planText = aiTextOf(raw.planText);
+            message.planTitle = aiTextOf(raw.planTitle);
             message.guard = normalizeGuard(raw.guard);
             message.thinkMs = Number(raw.thinkMs) || 0;
             message.finishedAt = Number(raw.finishedAt) || 0;
@@ -1564,6 +1585,8 @@ export function createAIPanel(options) {
             // 隔离 worktree 会话态（唯一归属凭证；fork/支线/投递产生的新会话不继承——
             // 它们走 createSessionData 新建，raw 里没有这个字段就归一成 null）
             worktree: normalizeWorktreeState(raw.worktree),
+            // OpenCode 稳定会话标识：存量会话读盘时没有就补生成一个，下次保存即持久化。
+            opencodeSessionId: aiTextOf(raw.opencodeSessionId) || newOpencodeSessionId(),
         };
     }
 
@@ -1640,6 +1663,8 @@ export function createAIPanel(options) {
             approvedPaths: [],
             readRoots: [],
             sideOf: '',
+            // OpenCode（Zen/Go）的稳定会话标识：整会话复用，用于 x-opencode-session 头。
+            opencodeSessionId: newOpencodeSessionId(),
         };
     }
 
@@ -1823,6 +1848,35 @@ export function createAIPanel(options) {
         }
         persistSessions();
         renderSessionList();
+    }
+
+    // 空会话「切走即删」：新建后没发过消息就去了别的会话，它不该留在列表里占位——
+    // 带着创建时间参与排序，会把刚用过的活跃会话一路挤到下面。离开前先把输入框里的
+    // 草稿（文字 + 附件）转存到所属工作区的草稿槽，下次在该工作区新建会话时回填
+    // （见 loadComposerDraft）。返回是否真的删了；渲染与 activeSessionId 由调用方收尾。
+    function discardVirginOnLeave(session) {
+        if (!session || !isVirginSession(session)) return false;
+        // 只处理「正在看的那个会话被切走」：activeSessionId 还没改，对不上就不是离开
+        if (session.id !== config.activeSessionId) return false;
+        // 支线有独立标签页承载：静默删掉会让那个标签页指向不存在的会话
+        if (aiTextOf(session.sideOf)) return false;
+        if (streams.has(session.id) || compactOf(session.id)) return false;
+        stashWorkspaceDraft(session);
+        sessions = sessions.filter((item) => item !== session);
+        commandApprovalRules.delete(session.id);
+        pendingModelSwitches.delete(session.id);
+        forgetPrompt(session.id);
+        clearQueueForSession(session.id);
+        noticesMod.dropSession(session.id);
+        dropSubAgentRecordsOf(session.id);
+        dropComposerDraft(session.id);
+        if (sessionUseDisk()) {
+            sessionStore.removeSession(session.id).catch(notifySessionStoreError);
+        } else {
+            // legacy 模式的「列表」就是 localStorage 全量快照：删完得重写一次才真的消失
+            persistSessions();
+        }
+        return true;
     }
 
     async function bootstrapSessionStorage() {
@@ -2199,6 +2253,13 @@ export function createAIPanel(options) {
         return sessionModelRef(session).entry;
     }
 
+    // 该会话能否接收视频内容段——read_video 下发/执行/目录的单一判定（协议 + 模态位）。
+    // 用 session 解析出账号与条目，转交 ai-config-model 的纯函数；缺省会话按当前会话。
+    function videoCapableOf(session) {
+        const ref = sessionModelRef(session);
+        return modelVideoInputEnabled(ref.profile, ref.entry);
+    }
+
     // 会话自己的上下文窗口（预算 / 压缩估算用）：模型条目窗口被「本次会话上下文上限」
     // 收窄（取 min，永不放大）。用量百分比 / auto-compact / 发送预检等消费方全部经此单点。
     function contextWindowOf(session) {
@@ -2241,8 +2302,8 @@ export function createAIPanel(options) {
     }
 
     function providerLabel(profile) {
-        return profile && profile.provider === 'anthropic' ? 'Anthropic'
-            : (profile && profile.provider === 'responses' ? 'Responses' : 'OpenAI 兼容');
+        return profile && profile.provider === 'anthropic' ? '/v1/messages'
+            : (profile && profile.provider === 'responses' ? '/responses' : '/chat/completions');
     }
 
     function promptById(id) {
@@ -2261,7 +2322,8 @@ export function createAIPanel(options) {
 
     // 组装请求配置：连接字段取账号；模型字段取条目。激活账号用 activeModelId，
     // 其他账号（如分类器引用）用其 lastModelId 记住的条目。
-    function configForProfile(profile, entry) {
+    // session 可选：传入时注入 OpenCode 稳定会话头（x-opencode-session），缺省用当前会话。
+    function configForProfile(profile, entry, session) {
         let cfg;
         if (!profile) cfg = configForModel(null, null);
         else if (entry) cfg = configForModel(profile, entry);
@@ -2270,6 +2332,8 @@ export function createAIPanel(options) {
             const fallback = modelEntryOf(profile, isActive ? config.activeModelId : profile.lastModelId);
             cfg = configForModel(profile, fallback);
         }
+        const targetSession = session || currentSession();
+        cfg = withOpencodeSessionHeader(cfg, targetSession);
         // 插件 provider 的每轮动态补丁（请求头 / 请求体）在这里统一合并；
         // 普通账号原样返回，prepare 抛异常时插件模块内部降级忽略。
         return mergePluginAIRequest(cfg, {
@@ -2336,7 +2400,9 @@ export function createAIPanel(options) {
         if (messages.length < 2) return false;
         const user = messages[0];
         if (!user || user.role !== 'user' || user.systemNote) return false;
-        const text = aiTextOf(user.content).trim();
+        // 标题只依据用户正文：开头的 <system-reminder> 环境块是宿主注入的每轮状态，不参与命名
+        //（fallback 与落标题时的口径必须一致，否则「标题仍是首条消息截断」的判定永远不成立）
+        const text = splitTurnReminderPrefix(aiTextOf(user.content)).body.trim();
         if (!text) return false;
         const fallback = text.replace(/\s+/g, ' ').trim().slice(0, 24);
         if (session.title !== fallback) return false;
@@ -2384,13 +2450,60 @@ export function createAIPanel(options) {
     // 「这条渲染要不要落到 DOM 上」的判定都收敛到 hasHost()：渲染函数不再假设「面板
     // 当前查看的会话就是唯一渲染目标」——旧守卫 `currentSession() !== session` 会让
     // 面板显示母会话时吞掉支线标签页里的流式与工具卡更新。
-    // 当前只有面板一个宿主，本实现与旧守卫逐字节等价（isOpen + 会话相同）；支线标签
-    // 页接入时只需把本函数换成查 viewHosts 登记表，调用点不必再动。
+    // 宿主登记表（viewHosts 真表）：面板当前会话永远是第一宿主，随 switchSession 迁移、
+    // 查询时现算，不进表；支线标签页在挂载期间把自己的宿主对象（root/body/refresh）
+    // 登记进来，卸载时注销——登记点在 bridge/bridge-sidechat-view.js。
+    const sideChatHosts = new Map(); // sessionId -> Set<host>
+    function registerSideChatHost(sessionId, host) {
+        if (!sessionId || !host || !host.body) return;
+        let set = sideChatHosts.get(sessionId);
+        if (!set) {
+            set = new Set();
+            sideChatHosts.set(sessionId, set);
+        }
+        set.add(host);
+    }
+    function unregisterSideChatHost(sessionId, host) {
+        const set = sessionId ? sideChatHosts.get(sessionId) : null;
+        if (!set) return;
+        set.delete(host);
+        if (!set.size) sideChatHosts.delete(sessionId);
+    }
+    // 该会话的宿主对象列表（面板在前）：倒计时这类「整个宿主范围找节点」的更新逐宿主落。
+    // 面板伪宿主带 isPanel 标记（root=panel 整域查，body=消息区）；标签页宿主带 refresh 回调。
+    function sideChatHostsOf(sessionId) {
+        const list = [];
+        if (isOpen()) {
+            const viewed = currentSession();
+            if (viewed && viewed.id === sessionId) list.push({isPanel: true, root: panel, body: el.messages});
+        }
+        const set = sessionId ? sideChatHosts.get(sessionId) : null;
+        if (set) for (const host of set) list.push(host);
+        return list;
+    }
+    // 增量更新（工具卡挂载 / 原位刷新）的落点：面板正在看就落面板，否则落第一个支线标签页
+    function hostContainer(sessionId) {
+        const hosts = sideChatHostsOf(sessionId);
+        return hosts.length ? hosts[0].body : null;
+    }
+    // 支线标签页宿主的贴底跟随：距底 80px 内算「在看尾部」，增量内容落进来就跟到底；
+    // 上翻阅读时保持原位（与宿主全量渲染的 nearBottom 判定同口径）
+    function stickHostScroll(host) {
+        const gap = host.scrollHeight - host.scrollTop - host.clientHeight;
+        if (gap <= 80) host.scrollTop = host.scrollHeight;
+    }
     function hasHost(sessionId) {
-        if (!sessionId) return false;
-        if (!isOpen()) return false;
-        const viewed = currentSession();
-        return !!viewed && viewed.id === sessionId;
+        return sideChatHostsOf(sessionId).length > 0;
+    }
+    // 会话数据在宿主外被改动（清空 / 回退确认 / 压缩收尾）时通知各支线标签页重绘
+    function notifySideChatHosts(sessionId) {
+        const set = sessionId ? sideChatHosts.get(sessionId) : null;
+        if (!set) return;
+        for (const host of set) {
+            try {
+                if (typeof host.refresh === 'function') host.refresh();
+            } catch (e) {} // 宿主已卸载等尽力而为通知，失败不阻塞主流程
+        }
     }
 
     function updateEntryButtons() {
@@ -3145,7 +3258,9 @@ export function createAIPanel(options) {
 
     // 内容区「支线对话」标签页的渲染入口：宿主给容器，面板用自己的渲染函数画进去。
     // 不调 renderMessages 外壳——那会顺手刷新面板的结构面板与大纲，跟这个会话无关。
-    function renderSideChatInto(root, sessionId) {
+    // keepScroll：增量原位刷新（refreshToolWrap 兜底）传 true 保持滚动位置；
+    // 标签页轮询的全量重绘传 false（贴底），滚动细节由宿主自己修。
+    function renderSideChatInto(root, sessionId, keepScroll) {
         if (!root) return false;
         const session = sessionById(sessionId);
         if (!session) {
@@ -3153,7 +3268,7 @@ export function createAIPanel(options) {
             root.classList.add('empty');
             return false;
         }
-        withRenderTarget({container: root, session}, () => renderMessagesInner(false));
+        withRenderTarget({container: root, session}, () => renderMessagesInner(!!keepScroll));
         return true;
     }
 
@@ -3177,15 +3292,32 @@ export function createAIPanel(options) {
             // 无 sideOf（转正后的独立会话）不受「与母会话同场」约束，视为在位
             inPlace: ownerId ? (!!owner && !!viewing && viewing.id === owner.id) : true,
             streaming: !!streamOf(session.id),
+            // 压缩也靠轮询推进（标签页轮询条件见 bridge-sidechat-view 的 refresh）
+            compacting: !!compactOf(session.id),
             scope: session.scope || 'read',
             count: (session.messages || []).length,
         };
     }
 
-    async function sendSideChatMessage(sessionId, text) {
+    async function sendSideChatMessage(sessionId, text, options) {
         const session = sessionById(sessionId);
         if (!session) return {ok: false, reason: 'gone'};
-        return await startSessionTurn(session, text, {});
+        const opts = options || {};
+        // 「编辑重发」：截断在发送时进行（与面板 pendingEdit 同语义）。编辑时记下的
+        // 图片 / 视频附件这里自动带回——标签页输入行没有附件区，丢了就只能重贴。
+        const attachments = {};
+        if (opts.editIndex != null) {
+            const media = sideChatEditMedia.get(sessionId);
+            if (media) {
+                if (media.images.length) attachments.images = media.images;
+                if (media.videos.length) attachments.videos = media.videos;
+                sideChatEditMedia.delete(sessionId);
+            }
+        }
+        return await startSessionTurn(session, text, {
+            truncateAt: opts.editIndex != null ? opts.editIndex : null,
+            attachments: Object.keys(attachments).length ? attachments : undefined,
+        });
     }
 
     function stopSideChatMessage(sessionId) {
@@ -3246,14 +3378,95 @@ export function createAIPanel(options) {
         return true;
     }
 
-    // 标签页里的消息点击代理：审批 / 环境变量 / 用量徽标（其余动作无响应，避免误伤母会话）
+    // 标签页里的消息点击代理：审批 / 环境变量 / 用量徽标 / 消息动作（复制、分支、重试、
+    // 回退、新建支线、带回、投递——都会话域动作，不会误伤面板当前会话）。
+    // 返回 {handled, edit?}：edit 由标签页用来预填输入框（截断在发送时进行）。
     function sideChatClick(e, sessionId) {
         const session = sessionById(sessionId);
-        if (!session) return;
+        if (!session) return {handled: false};
         const target = e.target;
-        if (!target || !target.closest) return;
-        if (!target.closest('[data-ai-approve],[data-ai-env],[data-ai-act="usage"]')) return;
+        if (!target || !target.closest) return {handled: false};
+        const actionBtn = target.closest('.ai-msg-action');
+        if (actionBtn) {
+            handleMessageClick(e, session);
+            if (actionBtn.dataset.aiAct === 'edit') {
+                // 编辑交给标签页自己的输入框：这里只算出要回填的文本与消息位置
+                const edit = beginSideChatEdit(session);
+                return {handled: true, edit: edit.ok ? edit : null};
+            }
+            return {handled: true};
+        }
+        if (!target.closest('[data-ai-approve],[data-ai-env],[data-ai-act="usage"]')) return {handled: false};
         handleMessageClick(e, session);
+        return {handled: true};
+    }
+
+    // 标签页的「编辑重发」：与面板 editLast 同语义（截断延后到发送、引用块还原成正文），
+    // 但不碰面板 composer——附件条 / pendingEdit 都属于面板当前会话。编辑的媒体附件暂存
+    // sideChatEditMedia，发送时由 sendSideChatMessage 自动带回。
+    const sideChatEditMedia = new Map(); // sessionId -> {images, videos}
+    function beginSideChatEdit(session) {
+        if (!session) return {ok: false};
+        if (streamOf(session.id) || compactOf(session.id)) return {ok: false};
+        const userIndex = lastUserIndex(session);
+        if (userIndex < 0) return {ok: false};
+        const message = session.messages[userIndex];
+        const parsedReminder = splitTurnReminderPrefix(message.content);
+        const parsedQuote = splitQuotePrefix(parsedReminder.body);
+        sideChatEditMedia.set(session.id, {
+            images: attachmentsFromImages(message.images),
+            videos: attachmentsFromVideos(message.videos),
+        });
+        return {
+            ok: true,
+            index: userIndex,
+            text: parsedQuote.quotes.length ? parsedQuote.body : parsedReminder.body,
+            hasMedia: !!(message.images || []).length || !!(message.videos || []).length,
+        };
+    }
+
+    // 标签页统计行：与面板底部统计行同口径（sessionUsageTotals / estimateCurrentTokens）
+    function sideChatStatsOf(sessionId) {
+        const session = sessionById(sessionId);
+        if (!session) return null;
+        const totals = sessionUsageTotals(session);
+        const est = estimateCurrentTokens(session);
+        return {
+            rounds: totals.rounds,
+            steps: totals.steps,
+            speed: totals.speed,
+            total: totals.total,
+            cacheRate: totals.prompt > 0 && totals.cached > 0 ? Math.round(totals.cached / totals.prompt * 100) : 0,
+            ctxTokens: est.tokens,
+            windowSize: est.windowSize,
+            ctxPct: est.windowSize > 0 ? Math.max(0, Math.round(est.percent * 100)) : 0,
+        };
+    }
+
+    // 标签页的 slash 子集：只放行「会话域」命令。模型 / 技能 / 计划等面板外壳命令不进
+    // 支线——那些动作读写面板输入区与外壳状态，语义上属于主对话。
+    function sideChatSlash(sessionId, name) {
+        const session = sessionById(sessionId);
+        if (!session) return {ok: false, message: '会话不存在'};
+        const cmd = String(name || '').trim().toLowerCase();
+        if (cmd === '/help') {
+            return {ok: true, message: '支线可用命令：/compact 压缩上下文 · /clear 清空会话 · /context 查看占用 · /help'};
+        }
+        if (cmd === '/compact') {
+            const ok = startCompact({session, flashNotify: true});
+            return {ok, message: ok ? '已开始压缩这个支线的上下文' : '压缩未开始'};
+        }
+        if (cmd === '/clear') {
+            clearCurrentSession(session);
+            return {ok: true, message: ''};
+        }
+        if (cmd === '/context') {
+            contextSummaryText(session).then((text) => {
+                if (text) flash(text);
+            }).catch(() => {}); // 统计文本失败属尽力而为路径
+            return {ok: true, message: ''};
+        }
+        return {ok: false, message: '支线标签页只支持 /compact /clear /context /help，其余命令请回主对话面板使用'};
     }
 
     // 面板单例 UI 的收尾刷新：外部宿主渲染时跳过（宿主自己管滚动与状态条）
@@ -4122,8 +4335,9 @@ export function createAIPanel(options) {
             bubble.className = 'ai-user-bubble' + (message.systemNote ? ' system-note' : '');
             appendUserImages(bubble, message.images);
             appendUserVideos(bubble, message.videos);
-            // 引用块拆出来单独渲染：截断成单行摘要，title 悬浮看全文；消息正文只显示追问本身
-            const parsedQuote = splitQuotePrefix(message.content || '');
+            // 环境块（<system-reminder>）是宿主注入的每轮状态，不展示；引用块拆出来单独渲染。
+            const parsedReminder = splitTurnReminderPrefix(message.content || '');
+            const parsedQuote = splitQuotePrefix(parsedReminder.body);
             if (parsedQuote.quotes.length) {
                 const quoteBox = document.createElement('div');
                 quoteBox.className = 'ai-user-quote';
@@ -4142,7 +4356,7 @@ export function createAIPanel(options) {
                 }
                 bubble.appendChild(quoteBox);
             }
-            const shownText = parsedQuote.quotes.length ? parsedQuote.body : (message.content || '');
+            const shownText = parsedQuote.quotes.length ? parsedQuote.body : parsedReminder.body;
             if (shownText) {
                 const text = document.createElement('div');
                 text.className = 'ai-user-text';
@@ -4272,9 +4486,19 @@ export function createAIPanel(options) {
 
         const body = document.createElement('div');
         body.className = 'ai-app-msg-body' + (expanded ? '' : ' hidden');
+        // 「查看指令」展示实际发给模型的完整内容：开头的宿主环境块（system-reminder：
+        // 任务清单 / workspace_context / 提醒 / 附件）弱化显示，与投递 / 应用指令正文区分——
+        // 不删内容，排查注入时这正是要核对的东西。非严格形状（无块）时原样全量显示。
+        const parsed = splitTurnReminderPrefix(aiTextOf(message.content));
+        if (parsed.reminder) {
+            const env = document.createElement('pre');
+            env.className = 'ai-app-msg-env';
+            env.textContent = parsed.reminder;
+            body.appendChild(env);
+        }
         const pre = document.createElement('pre');
         pre.className = 'ai-app-msg-text';
-        pre.textContent = message.content || '';
+        pre.textContent = parsed.reminder ? parsed.body : (message.content || '');
         body.appendChild(pre);
 
         toggle.addEventListener('click', () => {
@@ -4464,15 +4688,6 @@ export function createAIPanel(options) {
         }
     }
 
-    // 本轮用量合计（totalTokens 缺失时用输入 + 输出兜底）
-    function turnUsageTotal(message) {
-        const usage = message && message.usage;
-        if (!usage) return 0;
-        const prompt = Number(usage.promptTokens) || 0;
-        const completion = Number(usage.completionTokens) || 0;
-        return Math.max(0, Number(usage.totalTokens) || (prompt + completion));
-    }
-
     // 本轮耗时 → 00:34 / 1:02:03（不足 1 秒不显示）
     function turnClockLabel(message) {
         const ms = Math.max(0, Number(message && message.turnMs) || 0);
@@ -4500,107 +4715,25 @@ export function createAIPanel(options) {
         return button;
     }
 
-    // ---------- 本轮用量浮层 ----------
-
-    let turnUsagePop = null;
-    let turnUsageAnchor = null;
-    let turnUsageDismiss = null;
-
-    function closeTurnUsagePop() {
-        if (turnUsageDismiss) {
-            const dispose = turnUsageDismiss;
-            turnUsageDismiss = null;
-            dispose();
-        }
-        if (turnUsagePop) {
-            turnUsagePop.remove();
-            turnUsagePop = null;
-        }
-        turnUsageAnchor = null;
-    }
-
-    function showTurnUsagePop(anchor, message) {
-        closeTurnUsagePop();
-        if (!anchor || !message) return;
-        const usage = message.usage || {};
-        const prompt = Math.max(0, Number(usage.promptTokens) || 0);
-        const cached = Math.max(0, Number(usage.cachedTokens) || 0);
-        const cacheWrite = Math.max(0, Number(usage.cacheWriteTokens) || 0);
-        const completion = Math.max(0, Number(usage.completionTokens) || 0);
-        const total = turnUsageTotal(message);
-        const uncached = Math.max(0, prompt - cached);
-        const hitRate = prompt > 0 && cached > 0 ? Math.min(100, cached / prompt * 100) : -1;
-
-        const pop = document.createElement('div');
-        pop.className = 'ai-turn-usage';
-        const head = document.createElement('div');
-        head.className = 'ai-turn-usage-head';
-        const title = document.createElement('span');
-        title.className = 'ai-turn-usage-title';
-        const glyph = document.createElement('span');
-        glyph.className = 'ai-turn-usage-icon';
-        glyph.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="8" cy="4.2" rx="4.5" ry="1.7"/><path d="M3.5 4.2v3.7c0 .94 2.01 1.7 4.5 1.7s4.5-.76 4.5-1.7V4.2"/><path d="M3.5 7.9v3.7c0 .94 2.01 1.7 4.5 1.7s4.5-.76 4.5-1.7V7.9"/></svg>';
-        title.append(glyph, document.createTextNode('本轮用量'));
-        const sum = document.createElement('b');
-        sum.textContent = aiFormatExactCount(total) + ' tok';
-        head.append(title, sum);
-        pop.appendChild(head);
-
-        const rows = document.createElement('div');
-        rows.className = 'ai-turn-usage-rows';
-        const row = (label, value, mono) => {
-            const line = document.createElement('div');
-            line.className = 'ai-turn-usage-row';
-            const name = document.createElement('span');
-            name.textContent = label;
-            const val = document.createElement('span');
-            val.className = 'ai-turn-usage-value' + (mono ? ' num' : '');
-            val.textContent = value;
-            line.append(name, val);
-            rows.appendChild(line);
-        };
-        const provider = [message.modelAccount, message.model].filter(Boolean).join(' / ');
-        row('提供方 / 模型', provider || '—');
-        row('缓存命中', hitRate >= 0 ? hitRate.toFixed(1) + '%' : '—');
-        row('未缓存输入', aiFormatExactCount(uncached) + ' tok', true);
-        row('缓存读取', aiFormatExactCount(cached) + ' tok', true);
-        row('缓存写入', aiFormatExactCount(cacheWrite) + ' tok', true);
-        row('输出', aiFormatExactCount(completion) + ' tok', true);
-        pop.appendChild(rows);
-        document.body.appendChild(pop);
-
-        const rect = anchor.getBoundingClientRect();
-        const width = pop.offsetWidth || 300;
-        const height = pop.offsetHeight || 200;
-        const left = Math.min(Math.max(8, rect.left - 6), Math.max(8, window.innerWidth - width - 8));
-        let top = rect.top - height - 8;
-        if (top < 8) top = Math.min(rect.bottom + 8, Math.max(8, window.innerHeight - height - 8));
-        pop.style.left = Math.round(left) + 'px';
-        pop.style.top = Math.round(top) + 'px';
-        turnUsagePop = pop;
-        turnUsageAnchor = anchor;
-
-        // 面板滚动 / 换会话 / 点别处 / Esc 都收起；滚轮滚动时浮层会脱锚，直接关。
-        const onDown = (e) => {
-            if (pop.contains(e.target)) return;
-            if (e.target && e.target.closest && e.target.closest('[data-ai-act="usage"]')) return;
-            closeTurnUsagePop();
-        };
-        const onKey = (e) => {
-            if (e.key === 'Escape') closeTurnUsagePop();
-        };
-        const onScroll = () => closeTurnUsagePop();
-        document.addEventListener('mousedown', onDown, true);
-        document.addEventListener('keydown', onKey, true);
-        window.addEventListener('scroll', onScroll, true);
-        window.addEventListener('resize', onScroll);
-        turnUsageDismiss = () => {
-            document.removeEventListener('mousedown', onDown, true);
-            document.removeEventListener('keydown', onKey, true);
-            window.removeEventListener('scroll', onScroll, true);
-            window.removeEventListener('resize', onScroll);
-        };
-    }
+    // ---------- 用量 UI 域（阶段 3 拆出：ai-usage-ui.js） ----------
+    // 本轮用量浮层 + 统计行弹层（会话 / tokens）搬进模块；ctx 弹层正文（renderCtxPopover）
+    // 依赖面板闭包（系统上下文组装 / 记忆缓存 / 附件），留守并经 ctx 注入。下方别名让
+    // 既有调用点（渲染 / 事件绑定）零改动。
+    const usageMod = createAIUsageUI({
+        el,
+        currentSession,
+        renderCtxPopover,
+    });
+    const closeTurnUsagePop = (...args) => usageMod.closeTurnUsagePop(...args);
+    const showTurnUsagePop = (...args) => usageMod.showTurnUsagePop(...args);
+    const hideStatsPops = (...args) => usageMod.hideStatsPops(...args);
+    const hideCtxPop = (...args) => usageMod.hideCtxPop(...args);
+    const positionStatsPop = (...args) => usageMod.positionStatsPop(...args);
+    const renderSessionPopover = (...args) => usageMod.renderSessionPopover(...args);
+    const renderTokenPopover = (...args) => usageMod.renderTokenPopover(...args);
+    const toggleStatsPop = (...args) => usageMod.toggleStatsPop(...args);
+    const toggleCtxPop = (...args) => usageMod.toggleCtxPop(...args);
+    const sessionUsageTotals = (...args) => usageMod.sessionUsageTotals(...args);
 
     function isStreamingMessage(session, index) {
         const live = session ? streamOf(session.id) : null;
@@ -4623,87 +4756,31 @@ export function createAIPanel(options) {
     }
 
     // ---------- 结构面板的「会话结构」（用户消息定位条） ----------
-    // 结构面板在「内容区只有 AI 助手」时，或用户在两者间切换时，展示当前会话的用户消息。
-    // 这里只提供数据与跳转能力，渲染在 session-outline.js / structure.js。
-
-    const OUTLINE_MAX_ITEMS = 400;
-    let outlineActiveIndex = -1;
-    let outlineFrame = 0;
-    let outlineTimer = 0;
+    // 控制器搬进 session-outline.js（方案 M5）：数据快照 / 视口吸附 / 跳转与高位通知；
+    // 渲染仍在 session-outline.js 的 renderSessionOutline。下方函数声明保持既有调用点不变。
+    const outlineMod = createSessionOutlineController({
+        el,
+        currentSession,
+        onPanelStateChange,
+        renderWindowState,
+        renderWindows,
+        renderMessages,
+    });
 
     function sessionOutlineSnapshot() {
-        const session = currentSession();
-        if (!session) return {sessionId: '', items: [], activeIndex: -1};
-        const built = buildSessionOutlineItems(session.messages, {max: OUTLINE_MAX_ITEMS});
-        return {
-            sessionId: session.id,
-            total: built.total,
-            truncated: built.truncated,
-            items: built.items,
-            activeIndex: outlineActiveIndex,
-        };
-    }
-
-    // 视口顶部所在的那一轮：scrollTop 落在某条用户消息之内时就认为定位到它
-    function outlineActiveFromView() {
-        if (!el.messages) return -1;
-        const nodes = el.messages.querySelectorAll('.ai-msg.user:not(.archived):not(.ai-app-msg):not(.model-switch)');
-        if (!nodes.length) return -1;
-        const top = el.messages.getBoundingClientRect().top;
-        const pick = (node) => {
-            const idx = Number(node.dataset.aiIdx);
-            return Number.isFinite(idx) ? idx : -1;
-        };
-        for (const node of nodes) {
-            if (node.getBoundingClientRect().bottom > top + 4) return pick(node);
-        }
-        return pick(nodes[nodes.length - 1]);
+        return outlineMod.snapshot();
     }
 
     function scheduleOutlineSync() {
-        if (outlineFrame) return;
-        outlineFrame = requestAnimationFrame(() => {
-            outlineFrame = 0;
-            const next = outlineActiveFromView();
-            if (next === outlineActiveIndex) return;
-            outlineActiveIndex = next;
-            notifyStructure();
-        });
+        return outlineMod.scheduleSync();
     }
 
-    // 结构面板要跟着变的时机（开合 / 显示方式 / 消息变化）统一从这里通知
     function notifyStructure() {
-        if (!onPanelStateChange) return;
-        clearTimeout(outlineTimer);
-        outlineTimer = setTimeout(() => {
-            try {
-                onPanelStateChange();
-            } catch (e) {}
-        }, 140);
+        return outlineMod.notify();
     }
 
-    // 跳到某一轮用户消息：目标在窗口之外时先把更早的消息放进来
     function jumpToSessionMessage(index) {
-        const session = currentSession();
-        const idx = Math.round(Number(index));
-        if (!session || !Number.isFinite(idx) || idx < 0 || idx >= session.messages.length) return false;
-        const state = renderWindowState(session);
-        if (idx < state.start) {
-            state.start = Math.max(0, idx - 8);
-            state.len = session.messages.length;
-            renderWindows.set(session.id, state);
-            renderMessages(true);
-        }
-        const node = el.messages ? el.messages.querySelector('.ai-msg[data-ai-idx="' + idx + '"]') : null;
-        if (!node) return false;
-        if (node.scrollIntoView) node.scrollIntoView({block: 'center', behavior: 'smooth'});
-        node.classList.remove('ai-msg-flash');
-        void node.offsetWidth;
-        node.classList.add('ai-msg-flash');
-        setTimeout(() => node.classList.remove('ai-msg-flash'), 1600);
-        outlineActiveIndex = idx;
-        notifyStructure();
-        return true;
+        return outlineMod.jumpTo(index);
     }
 
     function turnStartAt(session, assistantIndex) {
@@ -4787,7 +4864,7 @@ export function createAIPanel(options) {
             el.scrollBtn.style.left = center + 'px';
             el.scrollBtn.style.right = 'auto';
         }
-            if (openStatsPop) positionStatsPop(openStatsPop);
+            if (usageMod.openStatsPopKind()) positionStatsPop(usageMod.openStatsPopKind());
     }
 
     // 消息区占满面板全高（滚动条轨道随之占满），底部堆叠区浮在其上：
@@ -4843,6 +4920,10 @@ export function createAIPanel(options) {
                 role: 'system',
                 content: '<conversation_summary>\n' + aiTextOf(session.summary.text).trim() + '\n</conversation_summary>',
             });
+            // compact 后计划回注（对齐 ZCode plan_file_reference）：归档会丢计划正文，
+            // 摘要之后紧跟完整计划，压缩后的下一轮仍能「继续按计划执行 / 修订」。
+            const planReference = planReferenceBlock(session);
+            if (planReference) messages.push({role: 'system', content: planReference});
         }
         const limit = endIndex == null ? session.messages.length : endIndex;
         // 瞬态注入块去重（实时压缩式剔除）：同类 dedupeKey 的注入只保留**最新一条**发
@@ -4987,10 +5068,11 @@ export function createAIPanel(options) {
         return messages;
     }
 
-    async function contextSummaryText() {
-        const session = currentSession();
+    // sessionOverride：支线标签页的 /context 按指定会话统计（附件只属于面板输入框，不计入）
+    async function contextSummaryText(sessionOverride) {
+        const session = sessionOverride || currentSession();
         const profile = profileOf(session);
-        const bundle = await assembleSystemContext(session, getAttachments());
+        const bundle = await assembleSystemContext(session, sessionOverride ? [] : getAttachments());
         rememberPrompt(session && session.id, bundle);
         const apiMessages = buildApiMessages(session, null, bundle.text);
         let chars = 0;
@@ -5025,12 +5107,15 @@ export function createAIPanel(options) {
             '图片：' + imageStats.count + ' 张（估算 ' + imageStats.tokens + ' tokens）',
             '估算 tokens：' + totalTokens + ' / 窗口 ' + windowSize + '（' + percent.toFixed(1) + '%）',
             '系统注入：AGENTS.md ' + (bundle.meta.agents.loaded ? '✓ ' + bundle.meta.agents.chars + ' 字符' : '—') +
-                ' · 记忆 ' + (bundle.meta.memory.loaded ? '✓ ' + bundle.meta.memory.mode + ' ' + bundle.meta.memory.chars + ' 字符' : '—') +
+                ' · 记忆 ' + (bundle.meta.memory.loaded
+                    ? '✓ ' + bundle.meta.memory.mode + ' ' + bundle.meta.memory.chars + ' 字符' + (bundle.meta.memory.placeholder ? '（空索引占位）' : '')
+                    : '—') +
                 ' · 技能 ' + bundle.meta.skills.count + ' 个' +
+                ((bundle.meta.skills && bundle.meta.skills.overflow) ? '（另有 ' + bundle.meta.skills.overflow + ' 个未列出）' : '') +
                 ' · 环境变量 ' + (bundle.meta.env.count || 0) + ' 个' +
                 ' · 附加 ' + bundle.meta.attachments.count + ' 项',
         ];
-        if (bundle.meta.memory.error && bundle.meta.memory.error !== '') {
+        if (bundle.meta.memory.error && bundle.meta.memory.error !== '' && !bundle.meta.memory.placeholder) {
             lines.push('记忆未注入：' + bundle.meta.memory.error);
         }
         if (lastUsage) {
@@ -5096,119 +5181,13 @@ export function createAIPanel(options) {
     // ---------- Composer 统计行 / 上下文弹层 ----------
 
     function toolsTokenEstimate(session) {
-        return aiEstimateTokens(JSON.stringify(toolsForScope(currentScopeOf(session), !!(session && session.planMode))));
+        return aiEstimateTokens(JSON.stringify(toolsForScope(currentScopeOf(session), !!(session && session.planMode), session)));
     }
 
-    function aiFormatCompactTokens(value) {
-        const num = Math.max(0, Math.round(Number(value) || 0));
-        if (num < 1000) return String(num);
-        if (num < 1000000) {
-            const k = num / 1000;
-            return (k < 100 ? k.toFixed(1) : k.toFixed(0)).replace(/\.0$/, '') + 'K';
-        }
-        const m = num / 1000000;
-        return (m < 10 ? m.toFixed(1) : m.toFixed(0)).replace(/\.0$/, '') + 'M';
-    }
+    // aiFormatCompactTokens / aiFormatExactCount / aiFormatCompactDuration 收编进
+    // ai-usage-ui.js（import 进来，调用点零改动）。
 
-    function aiFormatExactCount(value) {
-        return Math.max(0, Math.round(Number(value) || 0)).toLocaleString('en-US');
-    }
-
-    function aiFormatCompactDuration(ms) {
-        const total = Math.max(0, Math.round(Number(ms) / 1000));
-        if (total < 1) return '不到 1 秒';
-        const hours = Math.floor(total / 3600);
-        const minutes = Math.floor((total % 3600) / 60);
-        const seconds = total % 60;
-        if (hours) return hours + '小时' + (minutes ? minutes + '分' : '');
-        if (minutes) return minutes + '分' + (seconds ? seconds + '秒' : '');
-        return seconds + '秒';
-    }
-
-    // TPS 采样下限：单轮生成窗口过短（<200ms）时除法的量化误差太大，改走端到端兜底。
-    const MIN_TPS_WINDOW_MS = 200;
-
-    function sessionUsageTotals(session) {
-        const all = ((session && session.archived) || []).concat((session && session.messages) || []);
-        let rounds = 0;
-        let steps = 0;
-        let prompt = 0;
-        let completion = 0;
-        let total = 0;
-        let cached = 0;
-        let turnMs = 0;
-        let modelMs = 0;
-        let toolMs = 0;
-        let genMs = 0;
-        let genCompletion = 0;
-        let e2eMs = 0;
-        let e2eCompletion = 0;
-        let ttftMs = 0;
-        let ttftCount = 0;
-        let hasTools = false;
-        for (const message of all) {
-            if (!message) continue;
-            if (message.role === 'user' && !message.systemNote) rounds++;
-            if (message.role === 'tool') {
-                hasTools = true;
-                continue;
-            }
-            if (message.role !== 'assistant') continue;
-            steps++;
-            let messageCompletion = 0;
-            const usage = message.usage;
-            if (usage) {
-                const p = Number(usage.promptTokens) || 0;
-                const c = Number(usage.completionTokens) || 0;
-                prompt += p;
-                completion += c;
-                messageCompletion = c;
-                total += Number(usage.totalTokens) || (p + c);
-                cached += Number(usage.cachedTokens) || 0;
-            }
-            const messageModelMs = Number(message.modelMs) || 0;
-            const messageTurnMs = Number(message.turnMs) || 0;
-            modelMs += messageModelMs;
-            toolMs += Number(message.toolMs) || 0;
-            turnMs += messageTurnMs;
-            const firstTokenMs = Number(message.firstTokenMs) || 0;
-            if (firstTokenMs > 0) {
-                ttftMs += firstTokenMs;
-                ttftCount++;
-            }
-            // TPS 的分子分母必须同源，否则多步任务会把速度算到极低：
-            //  · 分母只用 modelMs（本轮模型往返），绝不回退 turnMs —— turnMs 从用户发消息算起，
-            //    包含本轮之前所有步骤与工具调用耗时，几十步的任务会得到几十秒的分母；
-            //  · 分母扣掉 TTFT：排队 + 预填充 + 首 token 延迟不属于「生成速度」；
-            //  · 没有 usage 的轮次直接跳过，避免「分母涨、分子不涨」稀释均值。
-            if (usage && messageCompletion > 0 && messageModelMs > 0) {
-                const windowMs = Math.max(0, messageModelMs - firstTokenMs);
-                if (windowMs >= MIN_TPS_WINDOW_MS) {
-                    genMs += windowMs;
-                    genCompletion += messageCompletion;
-                } else {
-                    // 非流式一次性返回（TTFT ≈ 总耗时）或仅吐了几个 token：
-                    // 用它算生成速度会得到天文数字，退化为端到端吞吐计权。
-                    e2eMs += messageModelMs;
-                    e2eCompletion += messageCompletion;
-                }
-            }
-        }
-        // 有真实生成窗口就优先用它；否则退化为端到端吞吐（含 TTFT），仍远好过混入 turnMs。
-        let speed = 0;
-        if (genCompletion > 0 && genMs > 0) {
-            speed = Math.round(genCompletion / (genMs / 1000));
-        } else if (e2eCompletion > 0 && e2eMs > 0) {
-            speed = Math.round(e2eCompletion / (e2eMs / 1000));
-        }
-        return {
-            rounds, steps, prompt, completion, total, cached, turnMs,
-            modelMs, toolMs, hasTools,
-            ttftAvg: ttftCount ? ttftMs / ttftCount : 0,
-            speed,
-            speedKind: genCompletion > 0 && genMs > 0 ? 'gen' : (speed > 0 ? 'e2e' : ''),
-        };
-    }
+    // TPS 采样下限与 sessionUsageTotals 搬进 ai-usage-ui.js（统计行 / 弹层 / 支线统计行共用）。
 
     function setStatItem(node, text) {
         if (!node) return;
@@ -5238,107 +5217,13 @@ export function createAIPanel(options) {
         const pct = Math.max(0, Math.round(percent * 100));
         if (el.statsCtxPct) el.statsCtxPct.textContent = pct + '%';
         if (el.ctxRing) el.ctxRing.style.setProperty('--ctx-pct', String(Math.min(100, pct)));
-        if (openStatsPop === 'ctx') void renderCtxPopover(false);
-        else if (openStatsPop === 'session') renderSessionPopover();
-        else if (openStatsPop === 'token') renderTokenPopover();
+        const popKind = usageMod.openStatsPopKind();
+        if (popKind === 'ctx') void renderCtxPopover(false);
+        else if (popKind === 'session') renderSessionPopover();
+        else if (popKind === 'token') renderTokenPopover();
     }
 
-    let openStatsPop = '';
-
-    function statsPopEl(kind) {
-        if (kind === 'session') return el.sessionPop;
-        if (kind === 'token') return el.tokenPop;
-        return el.ctxPop;
-    }
-
-    function statsPopBtn(kind) {
-        if (kind === 'session') return el.statsSessionBtn;
-        if (kind === 'token') return el.statsTokenBtn;
-        return el.ctxBtn;
-    }
-
-    function hideStatsPops() {
-        for (const kind of ['session', 'token', 'ctx']) {
-            const pop = statsPopEl(kind);
-            if (pop) pop.classList.add('hidden');
-        }
-        openStatsPop = '';
-    }
-
-    function hideCtxPop() {
-        hideStatsPops();
-    }
-
-    function positionStatsPop(kind) {
-        const pop = statsPopEl(kind);
-        const btn = statsPopBtn(kind);
-        if (!pop || !btn || !el.statsWrap) return;
-        const wrapRect = el.statsWrap.getBoundingClientRect();
-        const btnRect = btn.getBoundingClientRect();
-        const width = pop.offsetWidth || 308;
-        const left = Math.max(0, Math.min(Math.max(0, wrapRect.width - width), btnRect.left - wrapRect.left));
-        pop.style.left = left + 'px';
-        pop.style.right = 'auto';
-    }
-
-    function renderSessionPopover() {
-        if (!el.sessionPop) return;
-        const session = currentSession();
-        if (!session) return;
-        const totals = sessionUsageTotals(session);
-        if (el.sessionPopTurns) el.sessionPopTurns.textContent = totals.rounds + ' 轮 ' + totals.steps + ' 步';
-        if (el.sessionModel) el.sessionModel.textContent = totals.modelMs > 0 ? aiFormatCompactDuration(totals.modelMs) : '—';
-        if (el.sessionTools) el.sessionTools.textContent = totals.hasTools ? aiFormatCompactDuration(totals.toolMs) : '—';
-        if (el.sessionTtft) {
-            el.sessionTtft.textContent = totals.ttftAvg > 0
-                ? (totals.ttftAvg < 1000 ? (totals.ttftAvg / 1000).toFixed(2) : (totals.ttftAvg / 1000).toFixed(1)) + ' 秒'
-                : '—';
-        }
-        if (el.sessionTps) {
-            el.sessionTps.textContent = totals.speed > 0 ? totals.speed + ' tok/s' : '—';
-            // gen = 纯生成速度（已扣除首 token 延迟）；e2e = 端到端吞吐（无流式时间戳时的兜底）
-            el.sessionTps.dataset.tip = totals.speedKind === 'gen'
-                ? '生成速度：输出 tokens ÷（模型往返耗时 − 首 token 延迟）'
-                : (totals.speedKind === 'e2e'
-                    ? '端到端吞吐：输出 tokens ÷ 模型往返耗时（含首 token 延迟）'
-                    : '');
-        }
-    }
-
-    function renderTokenPopover() {
-        if (!el.tokenPop) return;
-        const session = currentSession();
-        if (!session) return;
-        const totals = sessionUsageTotals(session);
-        const total = totals.total || (totals.prompt + totals.completion);
-        const uncached = Math.max(0, totals.prompt - totals.cached);
-        const hitRate = totals.prompt > 0 && totals.cached > 0 ? Math.round(totals.cached / totals.prompt * 100) : -1;
-        if (el.tokenPopTotal) el.tokenPopTotal.textContent = total > 0 ? aiFormatExactCount(total) + ' tok' : '—';
-        if (el.tokenHit) el.tokenHit.textContent = hitRate >= 0 ? hitRate + '%' : '—';
-        if (el.tokenUncached) el.tokenUncached.textContent = totals.prompt > 0 ? aiFormatExactCount(uncached) + ' tok' : '—';
-        if (el.tokenCached) el.tokenCached.textContent = totals.cached > 0 ? aiFormatExactCount(totals.cached) + ' tok' : '—';
-        if (el.tokenOutput) el.tokenOutput.textContent = totals.completion > 0 ? aiFormatExactCount(totals.completion) + ' tok' : '—';
-    }
-
-    function toggleStatsPop(kind) {
-        if (openStatsPop === kind) {
-            hideStatsPops();
-            return;
-        }
-        hideStatsPops();
-        const pop = statsPopEl(kind);
-        if (!pop) return;
-        pop.classList.remove('hidden');
-        openStatsPop = kind;
-        positionStatsPop(kind);
-        if (kind === 'ctx') void renderCtxPopover(true);
-        else if (kind === 'session') renderSessionPopover();
-        else renderTokenPopover();
-    }
-
-    function toggleCtxPop() {
-        toggleStatsPop('ctx');
-    }
+    const statsPopEl = (...args) => usageMod.statsPopEl(...args);
 
     let ctxPopSeq = 0;
     async function renderCtxPopover(refreshSystem) {
@@ -5454,33 +5339,30 @@ export function createAIPanel(options) {
         return aiNormalizePath(value).replace(/\/+$/, '').toLowerCase();
     }
 
-    // ---- 计划落盘（计划模式：正文进 .cadt/plan/，对话区只留入口卡） ----
-    // 路径与正文由消息自身推导（ai-plan-file.js），同一消息任何一次渲染 / 重启重放都指向
-    // 同一个文件，不依赖内存里记过的路径。
+    // ---- 计划落盘（批准时写 <工作区>/.cadt/plan/plan-<会话id>.md；未批准不落盘） ----
+    // 路径由会话推导（ai-plan-file.js）：同一会话永远覆盖同一个文件，继续规划的修订轮
+    // 自然演进同一份文档；正文由消息 content 提供。
 
     function planFileTarget(message, sessionOverride) {
         if (!isPlanMessage(message)) return null;
-        const ts = Number(message.ts) || Number(message.finishedAt) || 0;
-        // 没有时间戳就没法给出稳定文件名——不落盘，对话里退回原文渲染
-        if (!ts) return null;
         const session = sessionOverride || currentSession();
         // 根优先取会话记下的工作区：用户后来换了工作区也不会把旧计划写到新目录去
         const root = aiTextOf(session && session.workspace) || getScopeRoot() || aiProjectRoot();
         if (!root) return null;
-        const rel = planFileRelPath(ts, message.content);
+        const rel = planFileRelPath((session && session.id) || '');
         return {
             rel,
             abs: aiNormalizePath(aiJoinPath(root, rel)),
             dir: aiNormalizePath(aiJoinPath(root, PLAN_DIR_REL)),
-            body: planFileBody(message.content, {
-                ts,
+            body: planFileBody(String(message.planText || message.content || ''), {
+                ts: Number(message.ts) || Number(message.finishedAt) || 0,
                 title: (session && session.title) || '',
                 model: message.model || '',
             }),
         };
     }
 
-    // 先把路径记到消息上（同步）：轮次收尾的渲染立刻就能出卡片，写文件是异步副作用。
+    // 批准（「执行计划」）时回填路径：入口卡随即指向真文件；未批准的消息 planFile 保持为空。
     function markPlanFile(message, session) {
         if (!message || message.planFile) return null;
         const target = planFileTarget(message, session);
@@ -5500,29 +5382,34 @@ export function createAIPanel(options) {
             });
     }
 
-    // 打开计划文件。路径优先用消息上记下的绝对值——用户可能已经换了工作区，重算会把
-    // 同一份计划写到新工作区去。只有从没落过盘的历史计划才按当前工作区推导。
-    // 文件已存在就不重写：用户或许已经在标签页里改过它。
+    // 打开计划。已落盘（planFile 有值，即已批准）→ 打开真文件（被删过则按同一份内容补写，
+    // 用户或许已在标签页里改过它，文件还在就不重写）；未落盘（未批准）→ 虚拟只读标签页
+    // 预览（openVirtualDoc：内存文档、Markdown 渲染、不碰磁盘），避免长计划刷屏也不产生文件。
     async function openPlanFile(message) {
         if (!message) return false;
         const stored = aiTextOf(message.planFile);
-        const target = stored
-            ? {abs: stored, dir: aiPathDir(stored), body: null}
-            : planFileTarget(message);
-        if (!target || !target.abs) {
-            flash('没有可打开的计划文件（计划只留在对话里）', true);
-            return false;
-        }
-        try {
-            if (message.planFile !== target.abs) {
-                message.planFile = target.abs;
-                persistSessions();
+        if (!stored) {
+            const text = String(message.planText || message.content || '');
+            if (!text.trim()) {
+                flash('这条计划没有可预览的正文', true);
+                return false;
             }
+            if (typeof openVirtualDoc !== 'function') {
+                flash('当前版本不支持计划预览', true);
+                return false;
+            }
+            const digest = planDigest(text);
+            // 标题通常自带「计划：」前缀，直接用，避免「计划 · 计划：…」的重复观感
+            openVirtualDoc((digest.title || '计划') + '.md', text, {readOnlyFixed: true});
+            return true;
+        }
+        const target = {abs: stored, dir: aiPathDir(stored), body: null};
+        try {
             const stat = backend.GetFileStat ? await backend.GetFileStat(target.abs).catch(() => null) : null;
             if (!stat || !stat.exists) {
-                // 补写正文：与首次落盘同一份内容（路径被删 / 上次写失败 / 历史计划）
+                // 补写正文：与批准时落盘同一份内容（路径被删 / 上次写失败 / 历史计划）
                 await writePlanFile(Object.assign({}, target, {
-                    body: target.body != null ? target.body : planFileBody(message.content, {
+                    body: planFileBody(String(message.planText || message.content || ''), {
                         ts: Number(message.ts) || Number(message.finishedAt) || 0,
                         title: (currentSession() && currentSession().title) || '',
                         model: message.model || '',
@@ -5840,6 +5727,20 @@ export function createAIPanel(options) {
         return {text, data};
     }
 
+    // 读不到文件时的自解释错误（纯逻辑在 ai-path-hints.js）：确认不存在 + 同名文件在
+    // 工作区其它目录的位置，让模型一轮就改对路径（最常见：把 test/ 镜像位猜成 src/）。
+    async function readFileMissingHint(err, inputPath, absPath, ctx) {
+        return missingFileHint(err, inputPath, absPath, {
+            findFiles: backend.FindFiles ? (root, pattern, max) => backend.FindFiles(root, pattern, max) : null,
+            resolveRoot: async () => {
+                const resolved = await resolveScanRoot(ctx, 'glob', '');
+                return resolved.ok ? resolved.path : '';
+            },
+            redact: redactToolText,
+            session: ctx && ctx.session,
+        });
+    }
+
     // 视频附件/ read_video 的读取通道：Go 侧 ReadVideoAsDataURL（mp4 白名单 + ftyp 魔数 + 16 MB 上限）
     async function readVideoFile(path) {
         if (!backend.ReadVideoAsDataURL) throw new Error('当前版本不支持读取视频');
@@ -5969,9 +5870,11 @@ export function createAIPanel(options) {
             if (!merged.has(candidate.name)) merged.set(candidate.name, candidate);
         }
         const disabled = new Set((config.disabledSkills || []).map((name) => String(name).toLowerCase()));
+        const hidden = new Set((config.hiddenSkills || []).map((name) => String(name).toLowerCase()));
         const list = [...merged.values()].map((skill) => ({
             ...skill,
             disabled: disabled.has(skill.name.toLowerCase()),
+            hidden: hidden.has(skill.name.toLowerCase()),
         })).sort((a, b) => a.name.localeCompare(b.name));
         skillsCache = {at: Date.now(), list};
         return list;
@@ -6050,6 +5953,8 @@ export function createAIPanel(options) {
     });
     const toolDefsMod = createAIToolDefs({
         appControlOn,
+        // read_video 按会话视频能力裁剪：不支持的协议/模型连工具定义都不下发
+        videoCapableOf,
         mcpToolDefs: () => mcpMod.mcpToolDefs(),
         // 生图/视频：配置了启用条目才下发 generate_image / generate_video / check_gen
         genModelsOn: () => (config.genModels || []).some((item) => item && item.enabled !== false),
@@ -6057,7 +5962,7 @@ export function createAIPanel(options) {
         externalToolsOn: (capability, scope, planMode) =>
             externalCapabilityUsable(capability, externalModeOf(capability), scope, planMode),
     });
-    const toolsForScope = (scope, planMode) => toolDefsMod.toolsForScope(scope, planMode);
+    const toolsForScope = (scope, planMode, session) => toolDefsMod.toolsForScope(scope, planMode, session);
     // 系统提示词组装域（ai-system-context.js）：面板闭包状态经 getter 注入——config 是可变 let、
     // settings 属性可变，必须走活引用而不是值快照（splitRoot 教训）。
     const systemCtxMod = createAISystemContext({
@@ -6074,7 +5979,8 @@ export function createAIPanel(options) {
         get listSkills() { return listSkills; },
         get skillSourceLabel() { return skillSourceLabel; },
         get listEnvVarsForAI() { return listEnvVarsForAI; },
-        get toolCatalogText() { return toolDefsMod.toolCatalogText; },
+        // 目录随会话视频能力裁剪：assembleSystemContext 传入 session，read_video 不可用时同步去掉工具链
+        get toolCatalogText() { return (scope, planMode, session) => toolDefsMod.toolCatalogText(scope, planMode, session); },
         get currentScopeOf() { return currentScopeOf; },
         get getWorkspaceContext() { return getWorkspaceContext; },
         get getScopeRoot() { return getScopeRoot; },
@@ -6191,6 +6097,8 @@ export function createAIPanel(options) {
     }
 
     // ---------- 行 diff 与写审批 ----------
+    // diff 核（LCS / 统计 / 预览裁剪）收编进 ai-diff-view.js（方案 V4，import 进来，
+    // 调用点与 ai-tool-cards 的 ctx 注入零改动）。
 
     function aiPathKey(path) {
         return aiNormalizePath(path).replace(/\/+$/, '').toLowerCase();
@@ -6258,105 +6166,6 @@ export function createAIPanel(options) {
     function approvalAuditRule(approval) {
         if (!approval || !approval.classifyNote) return '';
         return aiTextOf(approval.classifyNote).replace(/\s+/g, ' ').slice(0, 160);
-    }
-
-    function diffLinesOf(text) {
-        const normalized = aiTextOf(text).replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-        if (!normalized) return [];
-        const lines = normalized.split('\n');
-        if (lines.length && lines[lines.length - 1] === '') lines.pop();
-        return lines;
-    }
-
-    function computeLineDiff(oldText, newText) {
-        const a = diffLinesOf(oldText);
-        const b = diffLinesOf(newText);
-        const ops = [];
-        if (a.length + b.length > AI_DIFF_MAX_LINES || a.length * b.length > 4000000) {
-            let start = 0;
-            while (start < a.length && start < b.length && a[start] === b[start]) start++;
-            let endA = a.length;
-            let endB = b.length;
-            while (endA > start && endB > start && a[endA - 1] === b[endB - 1]) {
-                endA--;
-                endB--;
-            }
-            for (let i = 0; i < start; i++) ops.push({t: ' ', text: a[i]});
-            for (let i = start; i < endA; i++) ops.push({t: '-', text: a[i]});
-            for (let j = start; j < endB; j++) ops.push({t: '+', text: b[j]});
-            for (let i = endA; i < a.length; i++) ops.push({t: ' ', text: a[i]});
-            return ops;
-        }
-        const n = a.length;
-        const m = b.length;
-        const dp = new Array(n + 1);
-        for (let i = 0; i <= n; i++) dp[i] = new Uint32Array(m + 1);
-        for (let i = n - 1; i >= 0; i--) {
-            for (let j = m - 1; j >= 0; j--) {
-                dp[i][j] = a[i] === b[j]
-                    ? dp[i + 1][j + 1] + 1
-                    : Math.max(dp[i + 1][j], dp[i][j + 1]);
-            }
-        }
-        let i = 0;
-        let j = 0;
-        while (i < n && j < m) {
-            if (a[i] === b[j]) {
-                ops.push({t: ' ', text: a[i]});
-                i++;
-                j++;
-            } else if (dp[i + 1][j] >= dp[i][j + 1]) {
-                ops.push({t: '-', text: a[i]});
-                i++;
-            } else {
-                ops.push({t: '+', text: b[j]});
-                j++;
-            }
-        }
-        while (i < n) ops.push({t: '-', text: a[i++]});
-        while (j < m) ops.push({t: '+', text: b[j++]});
-        return ops;
-    }
-
-    function diffStats(ops) {
-        let added = 0;
-        let removed = 0;
-        for (const op of ops) {
-            if (op.t === '+') added++;
-            else if (op.t === '-') removed++;
-        }
-        return {added, removed};
-    }
-
-    function buildDiffPreview(ops) {
-        const keep = new Array(ops.length).fill(false);
-        let changed = false;
-        for (let i = 0; i < ops.length; i++) {
-            if (ops[i].t === ' ') continue;
-            changed = true;
-            for (let k = Math.max(0, i - 2); k <= Math.min(ops.length - 1, i + 2); k++) keep[k] = true;
-        }
-        if (!changed && ops.length) keep[0] = true;
-        const lines = [];
-        let last = -1;
-        let truncated = false;
-        for (let i = 0; i < ops.length; i++) {
-            if (!keep[i]) continue;
-            if (last >= 0 && i > last + 1) {
-                if (lines.length >= AI_DIFF_PREVIEW_LIMIT) {
-                    truncated = true;
-                    break;
-                }
-                lines.push({t: '…', text: ''});
-            }
-            if (lines.length >= AI_DIFF_PREVIEW_LIMIT) {
-                truncated = true;
-                break;
-            }
-            lines.push({t: ops[i].t, text: ops[i].text});
-            last = i;
-        }
-        return {lines, truncated};
     }
 
     async function readOptionalText(path) {
@@ -7273,11 +7082,19 @@ export function createAIPanel(options) {
     }
 
     function updateAskCountdown(entry) {
-        if (!entry || !hasHost(entry.session && entry.session.id)) return;
+        if (!entry) return;
+        const sessionId = entry.session && entry.session.id;
+        if (!hasHost(sessionId)) return;
         const key = entry.toolMessage.toolCallId || entry.key;
-        panel.querySelectorAll('.ai-ask-countdown').forEach((node) => {
-            if (node.dataset.askKey === key) node.textContent = askCountdownText(entry.ask);
-        });
+        const text = askCountdownText(entry.ask);
+        // 逐宿主更新：面板整域查（倒计时可能出现在消息区或接管区），支线标签页查各自 root
+        for (const host of sideChatHostsOf(sessionId)) {
+            const scope = host.isPanel ? panel : host.root;
+            if (!scope || !scope.querySelectorAll) continue;
+            scope.querySelectorAll('.ai-ask-countdown').forEach((node) => {
+                if (node.dataset.askKey === key) node.textContent = text;
+            });
+        }
     }
 
     function clearAskTimers(entry) {
@@ -8366,7 +8183,14 @@ export function createAIPanel(options) {
                 const resolved = await resolveReadPathWithApproval(ctx, 'read_file', input.path);
                 if (!resolved.ok) return resolved.message;
                 const path = resolved.path;
-                const read = await readTextFile(path, null);
+                let read;
+                try {
+                    read = await readTextFile(path, null);
+                } catch (err) {
+                    const hint = await missingFileHint(err, input.path, path, ctx);
+                    if (hint) return hint; // 不存在 → 给模型可行动的替代路径，省一轮 glob
+                    throw err;
+                }
                 // 记录读取时磁盘指纹：write_file 陈旧性防护的基线（见 ai-write-guard.js）
                 recordRead(ctx && ctx.session, path, read.data && read.data.mtime, read.data && read.data.size);
                 const view = readWindowOf(read.text, normalizeReadWindow(input));
@@ -8467,11 +8291,10 @@ export function createAIPanel(options) {
                 if (!resolved.ok) return resolved.message;
                 const path = resolved.path;
                 const shown = redactToolText(input.path || path, session);
-                // modalities.video === false 才是「明确不支持」；字段缺省表示不清楚，放行由服务商判定
-                const chatEntry = entryOf(session);
-                if (chatEntry && chatEntry.modalities && chatEntry.modalities.video === false) {
-                    return '当前聊天模型未启用视频输入（设置 → AI → 该模型条目的「视频输入」），视频无法交给它看。' +
-                        '不要重试：请让用户换用支持视频输入的模型，或改用文字方式描述视频内容。';
+                // 与下发/目录/起轮门禁同一判定（协议 + 模态位），杜绝「下发放行、执行另判」的双口径
+                if (!videoCapableOf(session)) {
+                    return '当前聊天模型或协议不支持视频输入（协议需 OpenAI 兼容，且模型条目勾选了「视频输入」），视频无法交给它看。' +
+                        '不要重试：请让用户换用支持视频输入的模型与协议，或改用文字方式描述视频内容。';
                 }
                 if (!backend.ReadVideoAsDataURL) throw new Error('当前版本不支持读取视频');
                 const dataURL = await backend.ReadVideoAsDataURL(path);
@@ -8946,6 +8769,25 @@ export function createAIPanel(options) {
                     (baseDir ? '\n技能目录：' + baseDir : '') +
                     '\n\n' + skill.content + '\n\n请遵循该技能指令。';
             }
+            case 'skill_list': {
+                const skills = await listSkillsRaw(true);
+                if (!skills.length) return '当前没有可用技能。把 SKILL.md 放进技能目录即可（工作区 .cadt/skills、.agents/skills 或应用数据 ai-skills）。';
+                const groups = new Map();
+                for (const skill of skills) {
+                    const label = skillSourceLabel(skill.source);
+                    if (!groups.has(label)) groups.set(label, []);
+                    groups.get(label).push(skill);
+                }
+                const lines = [];
+                for (const [label, items] of groups) {
+                    lines.push('【' + label + '】');
+                    for (const skill of items) {
+                        lines.push('- ' + skill.name + '：' + truncateSkillDescription(skill.description) +
+                            (skill.disabled ? '（已禁用）' : (skill.hidden ? '（不在 AI 索引）' : '')));
+                    }
+                }
+                return '全部技能（' + skills.length + ' 个）：\n' + lines.join('\n');
+            }
             case 'session_history': {
                 if (!ctx || !ctx.session) throw new Error('缺少会话上下文');
                 return await runSessionHistoryQuery(ctx.session, input);
@@ -8994,8 +8836,29 @@ export function createAIPanel(options) {
                 const ok = setPlanMode(enabled, false, true);
                 if (!ok) throw new Error('切换失败（会话不存在或正在生成）');
                 return enabled
-                    ? '已进入计划模式：下一轮起只保留只读探索与规划类工具；请输出完整计划并等待用户批准。'
+                    ? '已进入计划模式：下一轮起只保留只读探索与规划类工具；请用 submit_plan 提交完整计划并等待用户批准。'
                     : '已退出计划模式：下一轮起恢复当前权限档的完整工具集；写操作仍按权限档审批。';
+            }
+            case 'submit_plan': {
+                if (!ctx || !ctx.session) throw new Error('submit_plan 缺少会话上下文');
+                if (!ctx.session.planMode) throw new Error('只能用 submit_plan 在计划模式下提交计划');
+                const planText = aiTextOf(input.plan).trim();
+                if (!planText) throw new Error('plan 不能为空：请提交完整的 Markdown 计划文档');
+                if (planText.length > AI_CHAT_INPUT_LIMIT) {
+                    throw new Error('计划过长（' + planText.length + ' 字符，上限 ' + AI_CHAT_INPUT_LIMIT + '）');
+                }
+                const planTitle = aiTextOf(input.title).replace(/\s+/g, ' ').trim().slice(0, 120);
+                // 计划正文挂在**消息**上（不用会话级字段）：审批卡 / 入口卡 / 落盘 / 回注
+                // 全部按「最近一条带 planText 的 assistant 消息」取，历史重放也能还原。
+                const assistant = ctx.stream && ctx.stream.assistant;
+                if (!assistant) throw new Error('submit_plan 缺少本轮消息载体');
+                assistant.planText = planText;
+                assistant.planTitle = planTitle;
+                persistSessions();
+                if (isOpen() && currentSession() === ctx.session) renderMessages(true);
+                const digest = planDigest(planText);
+                return '计划已提交（' + digest.lines + ' 行 · ' + digest.chars + ' 字），等待用户批准。' +
+                    '不要在正文里重复计划内容；用户会点「执行计划」或发送补充意见。';
             }
             case 'app_control': {
                 if (!appControlOn()) throw new Error('应用操作已被禁用（设置 → AI → 权限 → AI 工具权限）');
@@ -9019,7 +8882,11 @@ export function createAIPanel(options) {
                 try {
                     result = MCP_CONFIG_ACTIONS.includes(action)
                         ? await runMcpConfigAction(action, params, ctx)
-                        : await runHostAppAction(action, params, currentScopeOf(ctx && ctx.session));
+                        // 第 4 参传调用者自己的会话 id：后台会话（用户已切到别的会话）调 get_ai /
+                        // ai_rename_session 时，宿主据此区分「调用者自己」与「面板当前查看的会话」，
+                        // 不传 id 的改名默认改自己，不会误改前台会话。
+                        : await runHostAppAction(action, params, currentScopeOf(ctx && ctx.session),
+                            ctx && ctx.session ? ctx.session.id : '');
                 } catch (e) {
                     const known = typeof hostAppActions === 'function' ? hostAppActions() : null;
                     const hint = Array.isArray(known) && known.length ? '可用动作：' + known.join(', ') : '可用动作见 cadt-ui 技能';
@@ -9564,13 +9431,26 @@ export function createAIPanel(options) {
                 if (!backend.AIRunShellCommand) throw new Error('当前版本不支持执行命令');
                 const cwd = aiResolveScopePath(aiTextOf(input.cwd).trim() || '.', ctx.session);
                 const timeoutMs = aiClampInt(input.timeoutMs, 1000, 600000, 60000);
-                const decision = await approveCommandForRun(ctx.session, ctx.toolMessage, command, cwd, 'run_command');
-                if (!decision.approved) {
-                    return decision.denied
-                        ? '命令被项目权限规则禁止，未执行（规则 ' + decision.rule + '）。'
-                        : (decision.cancelled
-                            ? '用户已停止生成，命令未执行。'
-                            : '用户取消了本次命令，未执行。');
+                // 子代理：一律走 OS 沙箱，且永不弹审批（没人可答；沙箱即边界，对齐 dsh 的
+                // approval pin never）。主会话：审批链照旧，行为零变化。
+                const sandbox = subSandboxPolicy(ctx.session, getScopeRoot());
+                if (sandbox) {
+                    if (!backend.AIRunShellCommandConfined) throw new Error('当前版本不支持沙箱执行命令');
+                    // 子代理不弹审批（没人可答），但项目里写死的 deny 规则必须照旧生效——
+                    // 那是用户的明确禁令，不是「需要人判断」的事。只取 deny：不问、不跑分类器。
+                    const denyHit = evaluatePermissionRules(await ensureProjectRules(false), 'command', command);
+                    if (denyHit.decision === 'deny') {
+                        return '命令被项目权限规则禁止，未执行（规则 ' + denyHit.rule + '）。';
+                    }
+                } else {
+                    const decision = await approveCommandForRun(ctx.session, ctx.toolMessage, command, cwd, 'run_command');
+                    if (!decision.approved) {
+                        return decision.denied
+                            ? '命令被项目权限规则禁止，未执行（规则 ' + decision.rule + '）。'
+                            : (decision.cancelled
+                                ? '用户已停止生成，命令未执行。'
+                                : '用户取消了本次命令，未执行。');
+                    }
                 }
                 // 审批 / 分类器 await 期间用户可能已按停止：命令绝不能在停止之后才拉起进程。
                 // 旧实现漏了这道闸，进程照跑而结算分支被 s.stopped 拦住 → 卡片永久「执行中」+ spinner。
@@ -9582,11 +9462,18 @@ export function createAIPanel(options) {
                 refreshToolWrap(ctx.session, ctx.toolMessage);
                 let result;
                 try {
-                    result = await backend.AIRunShellCommand(command, cwd, timeoutMs, ctx.toolMessage.runId);
+                    result = sandbox
+                        ? await backend.AIRunShellCommandConfined(command, cwd, timeoutMs, ctx.toolMessage.runId, sandbox.mode, sandbox.workspaceRoot)
+                        : await backend.AIRunShellCommand(command, cwd, timeoutMs, ctx.toolMessage.runId);
                 } catch (e) {
                     if (ctx.toolMessage.interrupted) {
                         // 用户已停止：进程已被 AIStopShellRun 杀掉，卡片保持终止态，不再标注失败细节
                         return '用户已停止生成，命令已终止。';
+                    }
+                    // 沙箱建不起来（fail-closed）单独留痕：这与「命令失败」是两类事。
+                    if (sandbox && String((e && e.message) || e).includes('沙箱不可用')) {
+                        ctx.toolMessage.sandbox = sandbox.mode;
+                        ctx.toolMessage.activityStatus = 'sandbox-unavailable';
                     }
                     const approval = ctx.toolMessage.approval;
                     if (approval && approval.kind === 'command') {
@@ -9600,6 +9487,10 @@ export function createAIPanel(options) {
                     // 进程在停止后才自然结束：输出丢弃，卡片保持终止态
                     return '用户已停止生成，命令输出已丢弃。';
                 }
+                // 操作留痕用：activityStatus 覆盖留痕 status（拒绝 / 不可用各自成一种），
+                // 沙箱档位另记在 sandbox 字段（供设置页筛）。
+                if (result && result.sandboxMode) ctx.toolMessage.sandbox = result.sandboxMode;
+                if (result && result.sandboxDenied) ctx.toolMessage.activityStatus = 'sandbox-denied';
                 const clip = (text) => {
                     const value = aiTextOf(text).replace(/\r\n/g, '\n').trimEnd();
                     return value.length > 16000 ? value.slice(0, 16000) + '\n…（输出已截断）' : value;
@@ -9610,6 +9501,11 @@ export function createAIPanel(options) {
                         ' · 退出码：' + (result && result.code != null ? result.code : -1) +
                         ' · 用时：' + ((result && result.durationMs) || 0) + ' ms',
                 ];
+                if (result && result.sandboxMode) {
+                    // 如实上报（ZCode 契约纪律）：模型与用户都能看出这条命令在沙箱里、
+                    // 写根是哪个、完整度只是 partial。
+                    lines.push('沙箱：' + result.sandboxMode + '（' + (result.enforcement || 'partial') + '）· 写根：' + ((sandbox && sandbox.workspaceRoot) || '无'));
+                }
                 if (result && result.timedOut) lines.push('（命令超时，已终止；以下为已捕获输出）');
                 const stdout = clip(result && result.stdout);
                 const stderr = clip(result && result.stderr);
@@ -9624,13 +9520,24 @@ export function createAIPanel(options) {
                 if (!command) throw new Error('命令不能为空');
                 if (!backend.AICommandStart) throw new Error('当前版本不支持后台命令');
                 const cwd = aiResolveScopePath(aiTextOf(input.cwd).trim() || '.', ctx.session);
-                const decision = await approveCommandForRun(ctx.session, ctx.toolMessage, command, cwd, 'background_command');
-                if (!decision.approved) {
-                    return decision.denied
-                        ? '命令被项目权限规则禁止，未启动（规则 ' + decision.rule + '）。'
-                        : (decision.cancelled
-                            ? '用户已停止生成，命令未启动。'
-                            : '用户取消了本次后台命令，未启动。');
+                // 与 run_command 同口径：子代理走沙箱、永不弹审批，只过项目 deny 规则；
+                // 主会话审批链不变。
+                const sandbox = subSandboxPolicy(ctx.session, getScopeRoot());
+                if (sandbox) {
+                    if (!backend.AICommandStartConfined) throw new Error('当前版本不支持沙箱后台命令');
+                    const denyHit = evaluatePermissionRules(await ensureProjectRules(false), 'command', command);
+                    if (denyHit.decision === 'deny') {
+                        return '命令被项目权限规则禁止，未启动（规则 ' + denyHit.rule + '）。';
+                    }
+                } else {
+                    const decision = await approveCommandForRun(ctx.session, ctx.toolMessage, command, cwd, 'background_command');
+                    if (!decision.approved) {
+                        return decision.denied
+                            ? '命令被项目权限规则禁止，未启动（规则 ' + decision.rule + '）。'
+                            : (decision.cancelled
+                                ? '用户已停止生成，命令未启动。'
+                                : '用户取消了本次后台命令，未启动。');
+                    }
                 }
                 // 同 run_command：停止之后不再拉起后台作业
                 if (toolHalted(ctx.toolMessage)) return '用户已停止生成，命令未启动。';
@@ -9639,8 +9546,14 @@ export function createAIPanel(options) {
                 refreshToolWrap(ctx.session, ctx.toolMessage);
                 let job;
                 try {
-                    job = await backend.AICommandStart(command, cwd);
+                    job = sandbox
+                        ? await backend.AICommandStartConfined(command, cwd, sandbox.mode, sandbox.workspaceRoot)
+                        : await backend.AICommandStart(command, cwd);
                 } catch (e) {
+                    if (sandbox && String((e && e.message) || e).includes('沙箱不可用')) {
+                        ctx.toolMessage.sandbox = sandbox.mode;
+                        ctx.toolMessage.activityStatus = 'sandbox-unavailable';
+                    }
                     const approval = ctx.toolMessage.approval;
                     if (approval && approval.kind === 'command') {
                         approval.state = 'failed';
@@ -9649,6 +9562,7 @@ export function createAIPanel(options) {
                     }
                     throw e;
                 }
+                if (job.sandboxMode) ctx.toolMessage.sandbox = job.sandboxMode;
                 ctx.toolMessage.bg = {jobId: job.jobId, state: 'running', code: null};
                 ctx.toolMessage.bgLog = '';
                 bgJobCursors.set(job.jobId, 0);
@@ -9668,6 +9582,9 @@ export function createAIPanel(options) {
                 }
                 refreshToolWrap(ctx.session, ctx.toolMessage);
                 return '已在后台启动：jobId=' + job.jobId + '（Shell：' + (job.shell || '未知') + '）\n' +
+                    (job.sandboxMode
+                        ? '沙箱：' + job.sandboxMode + '（' + (job.enforcement || 'partial') + '）· 写根：' + ((sandbox && sandbox.workspaceRoot) || '无') + '\n'
+                        : '') +
                     '不要用 run_command 重复执行它。用 check_command 轮询进度，作业结束后向用户汇报结果；需提前终止用 stop_command（jobId 传 ' + job.jobId + '）。';
             }
             case 'check_command': {
@@ -9686,6 +9603,12 @@ export function createAIPanel(options) {
                         ' · ' + (Number(st.durationMs) || 0) + ' ms',
                 ];
                 if (st.truncated) lines.push('（最早的部分输出因超出缓冲已被丢弃）');
+                // 后台作业的拒绝发生在输出缓冲里，只能在轮询时分类：Go 侧在作业退出时
+                // 已按 stderr 特征串判定，这里如实转成留痕 status。
+                if (st.sandboxDenied) {
+                    if (ctx && ctx.toolMessage) ctx.toolMessage.activityStatus = 'sandbox-denied';
+                    lines.push('（这条命令被沙箱拒绝：写入超出了允许范围）');
+                }
                 const clip = (text) => {
                     const value = aiTextOf(text).replace(/\r\n/g, '\n').trimEnd();
                     return value.length > 16000 ? value.slice(0, 16000) + '\n…（输出已截断）' : value;
@@ -9704,6 +9627,13 @@ export function createAIPanel(options) {
                 const jobId = aiTextOf(input.jobId).trim();
                 if (!jobId) throw new Error('jobId 不能为空');
                 if (!backend.AICommandStop) throw new Error('当前版本不支持停止后台命令');
+                // 归属校验：只能停「本任务树」起的作业。子代理跑命令后没人看着，
+                // 若允许按 jobId 乱停，一个会话能顺手掐掉另一个会话的后台作业。
+                const owner = bgJobIndex.get(jobId);
+                if (owner && ctx && ctx.session && owner.rootSessionId !== rootSessionIdOf(ctx.session)) {
+                    if (ctx.toolMessage) ctx.toolMessage.activityStatus = 'denied';
+                    return '作业 ' + jobId + ' 不属于当前任务（它属于另一个会话），未停止。只停自己起的作业。';
+                }
                 const st = await backend.AICommandStop(jobId);
                 bgJobCursors.set(jobId, Number(st.cursor) || 0);
                 syncBgCardState(jobId, st);
@@ -9960,8 +9890,12 @@ export function createAIPanel(options) {
     // 工具循环增量挂卡：新工具消息只 append 自己的卡，不全量重建消息区——
     // renderMessages 的全量重建会把前面所有工具卡的 spinner 动画重启
     // （AI 连续跑工具时当前执行中的卡疯狂闪烁）。
+    // 多宿主：落点由 hostContainer 决定——面板正在看落面板，否则落支线标签页容器
+    // （流式中的标签页轮询全量重绘仍会跑，增量挂卡只是把两次轮询之间的空窗补上）。
     function appendToolCard(session, toolMessage) {
-        if (!hasHost(session && session.id) || !el.messages) return;
+        const host = hostContainer(session && session.id);
+        if (!host) return;
+        const forPanel = host === el.messages;
         const index = session.messages.indexOf(toolMessage);
         if (index < 0) return;
         const wrap = document.createElement('div');
@@ -9969,27 +9903,41 @@ export function createAIPanel(options) {
         wrap.dataset.aiIdx = String(index);
         renderToolMessage(wrap, toolMessage);
         // 流式状态条（看板娘条）钉在消息区最底：新工具卡插到它之前，别把它顶上去
-        const bar = el.messages.querySelector('.ai-streaming-bar');
-        if (bar) el.messages.insertBefore(wrap, bar);
-        else el.messages.appendChild(wrap);
-        notifyStructure();
-        scheduleOutlineSync();
-        if (stickBottom) scrollToBottom(false);
-        else updateScrollButton();
+        const bar = host.querySelector('.ai-streaming-bar');
+        if (bar) host.insertBefore(wrap, bar);
+        else host.appendChild(wrap);
+        if (forPanel) {
+            notifyStructure();
+            scheduleOutlineSync();
+            if (stickBottom) scrollToBottom(false);
+            else updateScrollButton();
+        } else {
+            stickHostScroll(host);
+        }
     }
 
-    function refreshToolWrap(session, toolMessage) {        if (!hasHost(session && session.id)) return;
+    function refreshToolWrap(session, toolMessage) {
+        const sessionId = session && session.id;
+        if (!hasHost(sessionId)) return;
+        const host = hostContainer(sessionId);
+        if (!host) return;
+        const forPanel = host === el.messages;
         const index = session.messages.indexOf(toolMessage);
-        const wrap = el.messages.querySelector('.ai-msg.tool[data-ai-idx="' + index + '"]');
+        const wrap = host.querySelector('.ai-msg.tool[data-ai-idx="' + index + '"]');
         if (!wrap) {
-            renderMessages(true);
+            if (forPanel) renderMessages(true);
+            else renderSideChatInto(host, sessionId, true);
             return;
         }
         wrap.innerHTML = '';
         renderToolMessage(wrap, toolMessage);
         // 卡片原位更新后高度可能变化（如 diff 展开）：跟随底部，避免把文档末尾的流式状态条顶出视口
-        if (stickBottom) scrollToBottom(false);
-        else updateScrollButton();
+        if (forPanel) {
+            if (stickBottom) scrollToBottom(false);
+            else updateScrollButton();
+        } else {
+            stickHostScroll(host);
+        }
     }
 
     // 通用应用消息：任意功能向当前会话注入一条带来源标识的「应用消息」卡片，交给 AI 执行。
@@ -10037,9 +9985,10 @@ export function createAIPanel(options) {
         const entry = entryOf(session);
         if (!profile) return {ok: false, reason: 'no_profile'};
         if (!backend.AISendChat) return {ok: false, reason: 'no_backend'};
-        // 视频只有 OpenAI 兼容 chat completions 有公认内容段：Anthropic / Responses 协议在
-        // 这里拦下并说明（Go 传输层对这两套协议遇 videos 也会报错，双保险）。
-        if (videoAttachments.length && profile.provider && profile.provider !== 'openai') {
+        // 视频只有 OpenAI 兼容 chat completions 有公认内容段：用与 read_video 下发/执行
+        // 同一判定（协议 + 模态位），杜绝对用户附件放行、对工具附件拦截的双口径。
+        // Go 传输层对 Anthropic / Responses 遇 videos 也会报错，这里是前端双保险。
+        if (videoAttachments.length && !modelVideoInputEnabled(profile, entry)) {
             return {ok: false, reason: 'video_protocol'};
         }
 
@@ -10056,7 +10005,10 @@ export function createAIPanel(options) {
                 aiEstimateTokens(value);
             for (const item of imageAttachments) previewTokens += aiEstimateImageTokens(item);
             for (const item of videoAttachments) previewTokens += aiEstimateVideoTokens();
-            for (const item of textAttachments) previewTokens += aiEstimateTokens(aiTextOf(item.content));
+            // 文本附件已包含在 <system-reminder> 环境块里（随用户消息落盘），不再单独累加；
+            // 块生成失败（turnBlock 为空）时按旧口径单独计附件。
+            if (previewBundle.turnBlock) previewTokens += aiEstimateTokens(previewBundle.turnBlock);
+            else for (const item of textAttachments) previewTokens += aiEstimateTokens(aiTextOf(item.content));
             previewTokens += toolsTokenEstimate(session);
             if (windowSize > 0 && previewTokens > windowSize * 0.9) {
                 updateCtxBanner();
@@ -10082,9 +10034,17 @@ export function createAIPanel(options) {
             persistSessions();
             if (isOpen() && currentSession() === session) renderTodos();
         }
+        // 每轮环境块随用户消息落盘（不再进系统提示词）：历史字节保持追加式，服务商前缀缓存可
+        // 整段命中；块在起轮时冻结一份（与旧 baseSystemPrompt 快照同等新鲜度）。生成失败不阻塞起轮。
+        let turnBlock = '';
+        try {
+            turnBlock = systemCtxMod.turnContextBundle(session, textAttachments).text;
+        } catch (e) {
+            // 尽力而为路径：环境块生成失败时按无块发送，下一轮会重建
+        }
         const userMessage = {
             role: 'user',
-            content: value,
+            content: turnBlock ? turnBlock + '\n\n' + value : value,
             images: imageAttachments,
             videos: videoAttachments,
             ts: turnStartedAt,
@@ -10128,7 +10088,7 @@ export function createAIPanel(options) {
             finished: false,
             stopped: false,
             toolCalls: new Map(),
-            tools: toolsForScope(scope, !!session.planMode),
+            tools: toolsForScope(scope, !!session.planMode, session),
             profileCfg: configForProfile(profile, entry),
             // 本轮实际使用的模型条目（对象引用即 config.profiles 里的那条）：
             // 服务端给出 max_tokens 上界时用它精确回写输出窗口，不靠模型名反查。
@@ -10230,7 +10190,7 @@ export function createAIPanel(options) {
                 flash('上下文预计约 ' + result.tokens + ' tokens，超过窗口 ' + result.windowSize +
                     ' 的 90%，请先 /compact 或减少附加内容', true);
             } else if (result.reason === 'video_protocol') {
-                flash('当前账号协议（Anthropic / Responses）不支持视频输入：请改用 OpenAI 兼容协议的模型条目，或移除视频附件', true);
+                flash('当前模型或协议不支持视频输入：需 OpenAI 兼容协议且模型条目勾选了「视频输入」，请换模型或移除视频附件', true);
             }
             return false;
         }
@@ -10279,7 +10239,7 @@ export function createAIPanel(options) {
         s.loopGuardDisarmedUntil = 0;
         // 每轮刷新计划状态、工具集与系统提示：plan_mode 工具可在流中途切换会话状态。
         s.plan = !!session.planMode;
-        s.tools = toolsForScope(currentScopeOf(session), !!session.planMode);
+        s.tools = toolsForScope(currentScopeOf(session), !!session.planMode, session);
         s.systemPrompt = (s.baseSystemPrompt || AI_DEFAULT_SYSTEM_PROMPT) +
             (session.planMode ? '\n\n' + planModeBlock() : '');
         // 一轮对话固定使用启动时的模型配置：对话中切换模型从下一条消息开始生效，
@@ -10314,6 +10274,44 @@ export function createAIPanel(options) {
         current.assistant.status = 'error';
         current.assistant.error = String(message || '请求失败');
         finishStream(current);
+    }
+
+    // 流中途被网关掐断（ai-error.retryable）的自动重试：把本轮已收到的半截正文 /
+    // 思考 / 工具参数整轮作废，换一条空 assistant 就地重发——走的是与「空回复自动
+    // 重试」相同的路，不新增用户消息。预算与开关见 ai-stream-retry.js（retryMax=0
+    // 视为关闭）。普通接口错误（401/400 等）不带 retryable，照旧走错误卡。
+    function retryTruncatedRound(current, payload) {
+        const budget = aiStreamRetryBudget(config.retryMax);
+        const retryable = !!(payload && payload.retryable);
+        if (!shouldAutoRetryStream({retryable, stopped: !!current.stopped, retried: current.streamRetried, budget})) {
+            return false;
+        }
+        const session = sessionById(current.sessionId);
+        if (!session) return false;
+        const idx = session.messages.indexOf(current.assistant);
+        if (idx < 0) return false;
+        current.streamRetried = (current.streamRetried || 0) + 1;
+        // 半截内容作废：旧 assistant 整条移除，否则重试内容会接在断点后面
+        session.messages.splice(idx, 1);
+        const assistant = newAssistantMessage(profileOf(session), entryOf(session));
+        session.messages.push(assistant);
+        current.assistant = assistant;
+        current.thinkStartedAt = 0;
+        current.firstTokenAt = 0;
+        current.roundStartedAt = Date.now();
+        if (current.renderTimer) {
+            clearTimeout(current.renderTimer);
+            current.renderTimer = 0;
+        }
+        cancelLoopGuardPrompt(current, 'round-ended');
+        persistSessions();
+        if (isOpen() && currentSession() === session) {
+            renderMessages(true);
+            showNote('流式连接被中断，正在自动重试（' + current.streamRetried + '/' + budget + '）…');
+        }
+        setStreamingUI();
+        startRound(current);
+        return true;
     }
 
     function appToastPreview(text, max) {
@@ -10476,18 +10474,8 @@ export function createAIPanel(options) {
             }
         }
         notifyTurnFinished(session, current.assistant, current.stopped);
-        // 计划模式的最终计划默认落盘 <工作区>/.cadt/plan/：对话区只留一张入口卡，
-        // 正文去标签页看（计划不再整段铺进对话）。写盘是异步副作用，不拖住收尾。
-        if (session && !current.stopped && current.assistant.status === 'done') {
-            const planTarget = markPlanFile(current.assistant, session);
-            if (planTarget) {
-                writePlanFile(planTarget).catch((e) => {
-                    current.assistant.planFile = '';
-                    if (wasViewed && isOpen()) renderMessages(true);
-                    flash('计划文件写入失败：' + ((e && e.message) || e), true);
-                });
-            }
-        }
+        // 计划模式的最终计划不在这里落盘：未批准不落盘（对话区入口卡 + 虚拟只读预览），
+        // 用户点「执行计划」时才写 <工作区>/.cadt/plan/plan-<会话id>.md（见 acceptPlan 包装）。
         const shouldFlush = queueMod.hasInterject(current.sessionId) || (!current.stopped && current.assistant.status === 'done');
         queueMod.clearInterject(current.sessionId);
         detachStream(current);
@@ -10583,7 +10571,7 @@ export function createAIPanel(options) {
             }
         };
         startToolHeartbeat();
-        const allowedTools = new Set((s.tools || toolsForScope(s.scope, s.plan)).map((tool) => tool.name));
+        const allowedTools = new Set((s.tools || toolsForScope(s.scope, s.plan, sessionById(s.sessionId))).map((tool) => tool.name));
         for (const call of calls) {
             if (streams.get(s.sessionId) !== s || s.stopped) {
                 saveToolTiming();
@@ -10637,10 +10625,15 @@ export function createAIPanel(options) {
                 toolMessage.content = String(result);
             }
             // 操作留痕：工具执行摘要（不记返回正文；命令沿用审批展示口径截 120 字）。
+            // activityStatus 是工具自己给出的「留痕状态覆盖」：沙箱拒绝 / 沙箱不可用 /
+            // 作业归属拒绝各自成一种 status，优先于 done / error（否则拒绝会被记成普通成功）。
+            const logStatus = toolMessage.activityStatus
+                || (toolMessage.status === 'error' ? 'error' : 'done');
             logActivity('ai.tool', call.name + ' ' + toolArgsSummary(call.arguments), {
-                status: toolMessage.status === 'error' ? 'error' : 'done',
+                status: logStatus,
                 ms: Math.max(0, Date.now() - toolExecStart),
                 error: toolMessage.status === 'error' ? String(toolMessage.content || '').slice(0, 120) : undefined,
+                ...(toolMessage.sandbox ? {sandbox: toolMessage.sandbox} : {}),
             });
             persistSessions();
             refreshToolWrap(session, toolMessage);
@@ -11173,6 +11166,7 @@ export function createAIPanel(options) {
             }
             case 'ai-error':
                 if (onScreen) { clearRetryNote(); clearQueueNote(); }
+                if (retryTruncatedRound(current, payload)) break;
                 finishStreamError(payload.message || '请求失败', current);
                 break;
             default:
@@ -11631,8 +11625,6 @@ export function createAIPanel(options) {
 
     // ---------- 双层级模型选择器（搜索 + 按账号分组 + 推理等级） ----------
 
-    let modelPickerEl = null;
-    let modelPickerDismiss = null;
     let modelListPickerEl = null;
     let modelListPickerDismiss = null;
     let usagePopoverEl = null;
@@ -11650,262 +11642,27 @@ export function createAIPanel(options) {
         }
     }
 
-    function closeModelPicker() {
-        if (modelPickerDismiss) {
-            const dispose = modelPickerDismiss;
-            modelPickerDismiss = null;
-            dispose();
-        }
-        if (modelPickerEl) {
-            modelPickerEl.remove();
-            modelPickerEl = null;
-        }
-    }
-
+    // 选择器本体（搜索 / 账号分组 / 行内思考等级 / 会话上下文上限）搬进 ai-model-picker.js（方案 M1）。
+    const pickerMod = createAIModelPicker({
+        el,
+        getConfig: () => config,
+        currentSession,
+        entryOf,
+        sessionModelRef,
+        switchModel,
+        openSettings,
+        providerLabelFor,
+        setReasoningLevelFor,
+        applyCtxLimit,
+        flash,
+    });
+    // 函数声明（hoisted）：sessionListMod 构造期就把 showModelPicker 当依赖传进来
     function showModelPicker() {
-        if (!el.modelChip) return;
-        if (modelPickerEl) {
-            closeModelPicker();
-            return;
-        }
-        if (!config.profiles.length) {
-            openSettings('models');
-            return;
-        }
-        const rect = el.modelChip.getBoundingClientRect();
-        // 选择器展示 / 勾选的都是「当前会话」的模型（各会话独立）
-        const sessionRef = sessionModelRef(currentSession());
-        const activeAccountId = (sessionRef.profile && sessionRef.profile.id) || '';
-        const activeEntryId = (sessionRef.entry && sessionRef.entry.id) || '';
-        const picker = document.createElement('div');
-        picker.className = 'ai-model-picker';
-        modelPickerEl = picker;
-
-        const searchWrap = document.createElement('div');
-        searchWrap.className = 'ai-model-picker-searchwrap';
-        const searchIco = document.createElement('span');
-        searchIco.className = 'ai-model-picker-searchico';
-        searchIco.innerHTML = iconSvg('search', 13);
-        const search = document.createElement('input');
-        search.type = 'text';
-        search.className = 'ai-model-picker-search';
-        search.placeholder = '搜索模型…';
-        search.spellcheck = false;
-        searchWrap.append(searchIco, search);
-        const listBox = document.createElement('div');
-        listBox.className = 'ai-model-picker-list';
-        const limitRow = document.createElement('div');
-        limitRow.className = 'ai-model-picker-limits';
-        const foot = document.createElement('div');
-        foot.className = 'ai-model-picker-foot';
-        const settingsBtn = document.createElement('button');
-        settingsBtn.type = 'button';
-        settingsBtn.className = 'ai-model-picker-settings';
-        settingsBtn.textContent = '模型设置…';
-        settingsBtn.addEventListener('click', () => {
-            closeModelPicker();
-            openSettings('models');
-        });
-        foot.appendChild(settingsBtn);
-        picker.append(searchWrap, listBox, limitRow, foot);
-
-        let flatItems = [];
-        let navIndex = -1;
-        // 行内展开的思考等级档位条（accountId|entryId）；搜索重建列表时收起
-        let expandedKey = '';
-
-        function renderList() {
-            const query = search.value.trim().toLowerCase();
-            const tokens = query.split(/\s+/).filter(Boolean);
-            listBox.innerHTML = '';
-            flatItems = [];
-            for (const account of config.profiles) {
-                const entries = (account.models || []).filter((entry) => {
-                    if (!tokens.length) return true;
-                    const haystack = ((entry.model || '') + ' ' + (account.name || '')).toLowerCase();
-                    return tokens.every((token) => haystack.includes(token));
-                });
-                if (!entries.length) continue;
-                const group = document.createElement('div');
-                group.className = 'ai-model-picker-group';
-                const head = document.createElement('div');
-                head.className = 'ai-model-picker-group-head';
-                const headName = document.createElement('span');
-                headName.textContent = account.name || '未命名账号';
-                const headTag = document.createElement('span');
-                headTag.className = 'ai-model-picker-tag';
-                headTag.textContent = providerLabelFor(account);
-                head.append(headName, headTag);
-                group.appendChild(head);
-                for (const entry of entries) {
-                    const isActive = account.id === activeAccountId && entry.id === activeEntryId;
-                    const item = document.createElement('button');
-                    item.type = 'button';
-                    item.className = 'ai-model-picker-item' + (isActive ? ' active' : '');
-                    const name = document.createElement('span');
-                    name.className = 'ai-model-picker-name';
-                    name.textContent = entry.model || '（未填写模型 ID）';
-                    // 思考等级徽标：每个模型条目自己的等级（分色见 --ai-lv-*），
-                    // 点击在行下展开档位条直接改该模型 —— 弹层不关，可连续配置多个
-                    const info = reasoningLevelInfo(account, entry);
-                    const effort = document.createElement('button');
-                    effort.type = 'button';
-                    effort.className = 'ai-model-picker-effort';
-                    effort.dataset.tone = info.tone;
-                    effort.textContent = info.label;
-                    effort.addEventListener('click', (e) => {
-                        e.stopPropagation();
-                        toggleQuickBar(account, entry);
-                    });
-                    const win = document.createElement('span');
-                    win.className = 'ai-model-picker-win';
-                    win.textContent = formatTokenAmount(entry.contextWindow || 128000);
-                    const check = document.createElement('span');
-                    check.className = 'ai-model-picker-check';
-                    check.innerHTML = isActive ? iconSvg('check', 13) : '';
-                    item.append(name, effort, win, check);
-                    item.addEventListener('click', () => {
-                        closeModelPicker();
-                        switchModel(account.id, entry.id);
-                    });
-                    flatItems.push(item);
-                    group.appendChild(item);
-                    // 档位条是 item 的兄弟节点（按钮不能嵌套），展开态单开
-                    if (account.id + '|' + entry.id === expandedKey) group.appendChild(buildQuickBar(account, entry));
-                }
-                listBox.appendChild(group);
-            }
-            if (!flatItems.length) {
-                const empty = document.createElement('div');
-                empty.className = 'ai-model-picker-empty';
-                empty.textContent = query
-                    ? '没有匹配「' + search.value.trim() + '」的模型'
-                    : '还没有模型';
-                listBox.appendChild(empty);
-            }
-            navIndex = -1;
-        }
-
-        // 展开 / 收起某模型行下的思考等级档位条（同弹层内只开一个）
-        function toggleQuickBar(account, entry) {
-            const key = account.id + '|' + entry.id;
-            expandedKey = expandedKey === key ? '' : key;
-            renderList();
-            const bar = expandedKey ? listBox.querySelector('.ai-model-picker-quick') : null;
-            if (bar && bar.scrollIntoView) bar.scrollIntoView({block: 'nearest'});
-        }
-
-        // 思考等级档位条：连体分段控件，点档写该模型条目（不关弹层、徽标即时刷新）
-        function buildQuickBar(account, entry) {
-            const info = reasoningLevelInfo(account, entry);
-            const bar = document.createElement('div');
-            bar.className = 'ai-model-picker-quick ai-model-picker-seggroup';
-            for (const [value, label] of info.options) {
-                const chip = document.createElement('button');
-                chip.type = 'button';
-                chip.className = 'ai-model-picker-seg' + (info.value === value ? ' active' : '');
-                chip.textContent = label;
-                chip.addEventListener('click', () => {
-                    setReasoningLevelFor(account, entry, value);
-                    flash('已更新 ' + (entry.model || '未命名模型') + ' 思考等级：' + reasoningLevelInfo(account, entry).label);
-                    expandedKey = account.id + '|' + entry.id;
-                    renderList();
-                });
-                bar.appendChild(chip);
-            }
-            return bar;
-        }
-
-        function setNav(next) {
-            if (!flatItems.length) return;
-            navIndex = (next + flatItems.length) % flatItems.length;
-            flatItems.forEach((item, index) => item.classList.toggle('nav', index === navIndex));
-            const target = flatItems[navIndex];
-            if (target && target.scrollIntoView) target.scrollIntoView({block: 'nearest'});
-        }
-
-        // 本次会话上下文上限（会话级，不动模型条目）：档位只列 < 模型窗口的固定档
-        //（CTX_LIMIT_TIERS），模型窗口不大于最小档（如上限就 256K 的模型）时整行隐藏。
-        // 思考等级已收进模型行的行内徽标 + 档位条，这里不再有全局推理等级行。
-        function renderLimits() {
-            const session = currentSession();
-            const entry = entryOf(session);
-            const base = (entry && entry.contextWindow) || 128000;
-            const tiers = ctxLimitTiersFor(base);
-            limitRow.innerHTML = '';
-            if (!session || !entry || !tiers.length) {
-                limitRow.style.display = 'none';
-                return;
-            }
-            limitRow.style.display = '';
-            const lab = document.createElement('span');
-            lab.className = 'ai-model-picker-limits-label';
-            lab.textContent = '上下文上限';
-            limitRow.appendChild(lab);
-            const seg = document.createElement('div');
-            seg.className = 'ai-model-picker-seggroup';
-            const currentEffective = effectiveContextWindow(base, session.ctxLimit);
-            const options = [[0, '默认']].concat(tiers.map((tier) => [tier, formatTokenAmount(tier)]));
-            for (const [value, label] of options) {
-                const effective = effectiveContextWindow(base, value);
-                const chip = document.createElement('button');
-                chip.type = 'button';
-                chip.className = 'ai-model-picker-seg' + (effective === currentEffective ? ' active' : '');
-                chip.textContent = label;
-                chip.addEventListener('click', () => {
-                    closeModelPicker();
-                    applyCtxLimit(value);
-                });
-                seg.appendChild(chip);
-            }
-            limitRow.appendChild(seg);
-        }
-
-        search.addEventListener('input', () => {
-            expandedKey = '';
-            renderList();
-        });
-        search.addEventListener('keydown', (e) => {
-            if (e.key === 'ArrowDown') {
-                e.preventDefault();
-                setNav(navIndex < 0 ? 0 : navIndex + 1);
-            } else if (e.key === 'ArrowUp') {
-                e.preventDefault();
-                setNav(navIndex < 0 ? flatItems.length - 1 : navIndex - 1);
-            } else if (e.key === 'Enter') {
-                e.preventDefault();
-                const target = flatItems[navIndex >= 0 ? navIndex : 0];
-                if (target) target.click();
-            } else if (e.key === 'Escape') {
-                e.preventDefault();
-                closeModelPicker();
-            }
-        });
-
-        const onDocMouseDown = (e) => {
-            if (modelPickerEl && picker.contains(e.target)) return;
-            if (el.modelChip && el.modelChip.contains(e.target)) return;
-            closeModelPicker();
-        };
-        modelPickerDismiss = () => {
-            document.removeEventListener('mousedown', onDocMouseDown, true);
-        };
-        document.addEventListener('mousedown', onDocMouseDown, true);
-
-        renderList();
-        renderLimits();
-        document.body.appendChild(picker);
-        picker.style.visibility = 'hidden';
-        const width = Math.min(360, window.innerWidth - 16);
-        const height = picker.offsetHeight;
-        const top = rect.top - height - 8 >= 8 ? rect.top - height - 8 : Math.max(8, rect.bottom + 8);
-        picker.style.left = Math.max(8, Math.min(rect.left, window.innerWidth - width - 8)) + 'px';
-        picker.style.top = top + 'px';
-        picker.style.width = width + 'px';
-        picker.style.visibility = '';
-        search.focus();
+        return pickerMod.showModelPicker();
     }
-
+    function closeModelPicker() {
+        return pickerMod.closeModelPicker();
+    }
     // 获取列表的多选弹层：勾选模型 ID 批量添加为该账号的模型条目
     function showModelListPicker(profile, list) {
         if (!opt.models) return;
@@ -12197,7 +11954,11 @@ export function createAIPanel(options) {
 
     function copyMessage(message) {
         if (!message) return;
-        copyText(message.content || '', 'AI 消息');
+        // 用户消息只复制正文：开头的 <system-reminder> 环境块是宿主注入的每轮状态
+        const content = message.role === 'user'
+            ? splitTurnReminderPrefix(message.content || '').body
+            : (message.content || '');
+        copyText(content, 'AI 消息');
     }
 
     function selectAllAIText() {
@@ -12209,116 +11970,8 @@ export function createAIPanel(options) {
         selection.addRange(range);
     }
 
-    // ---------- 输入框右键编辑菜单（撤销/重做/剪切/复制/粘贴/全选） ----------
-
-    function editableHasSelection(target) {
-        if (typeof target.selectionStart === 'number') return target.selectionEnd > target.selectionStart;
-        const selection = window.getSelection ? window.getSelection() : null;
-        return !!(selection && selection.rangeCount && !selection.isCollapsed);
-    }
-
-    function execEditable(target, command) {
-        target.focus();
-        try {
-            return !!document.execCommand(command);
-        } catch (e) {
-            return false;
-        }
-    }
-
-    // data URL → File：右键菜单粘贴到的图片由后端以 data URL 返回，复用粘贴/拖拽的压缩管线。
-    function dataUrlToFile(dataUrl, name) {
-        const raw = String(dataUrl || '');
-        const comma = raw.indexOf(',');
-        if (comma < 0) return null;
-        const header = raw.slice(0, comma);
-        const mime = (header.slice(header.indexOf(':') + 1).split(';')[0] || 'image/png').trim() || 'image/png';
-        let binary = '';
-        try {
-            binary = atob(raw.slice(comma + 1));
-        } catch (e) {
-            return null;
-        }
-        const bytes = new Uint8Array(binary.length);
-        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-        if (!bytes.length) return null;
-        try {
-            return new File([bytes], name || '粘贴的图片', {type: mime});
-        } catch (e) {
-            return null;
-        }
-    }
-
-    // 右键菜单的「粘贴」拿不到 paste 事件（菜单点击不会触发剪贴板事件），
-    // 图片只能请后端回读系统剪贴板，再走和 Ctrl+V 一样的附件流程。
-    async function pasteImageFromClipboard() {
-        if (!backend.GetClipboardImage) return false;
-        let dataUrl = '';
-        try {
-            dataUrl = String((await backend.GetClipboardImage()) || '');
-        } catch (e) {
-            return false;
-        }
-        if (!dataUrl) return false;
-        const file = dataUrlToFile(dataUrl, '粘贴的图片.png');
-        if (!file) return false;
-        try {
-            const prepared = await prepareImageAttachment(file);
-            prepared.kind = 'image';
-            prepared.label = prepared.name;
-            return addAttachment(prepared);
-        } catch (err) {
-            flash('图片处理失败：' + ((err && err.message) || err), true);
-            return false;
-        }
-    }
-
-    async function pasteIntoEditable(target) {
-        let text = '';
-        try {
-            if (backend.GetClipboardText) text = String((await backend.GetClipboardText()) || '');
-        } catch (e) {}
-        if (!text && navigator.clipboard && navigator.clipboard.readText) {
-            try {
-                text = await navigator.clipboard.readText();
-            } catch (e) {}
-        }
-        if (!text) {
-            // 剪贴板里没有文字：按图片粘贴（Ctrl+V 走 paste 事件，菜单粘贴只能这样回读）。
-            await pasteImageFromClipboard();
-            return;
-        }
-        target.focus();
-        // execCommand('insertText') 会进 undo 栈（菜单粘贴也能 Ctrl+Z 撤销）；不可用时回退 setRangeText
-        let ok = false;
-        try {
-            ok = document.execCommand('insertText', false, text);
-        } catch (e) {}
-        if (!ok) {
-            if (typeof target.selectionStart === 'number') {
-                target.setRangeText(text, target.selectionStart, target.selectionEnd, 'end');
-            } else {
-                target.value += text;
-            }
-            target.dispatchEvent(new Event('input', {bubbles: true}));
-        }
-    }
-
-    function showAIEditMenu(event, target) {
-        if (!showContextMenu) return;
-        const hasSel = editableHasSelection(target);
-        showContextMenu([
-            {label: '撤销', shortcut: 'Ctrl+Z', icon: 'E7A7', action: () => execEditable(target, 'undo')},
-            {label: '重做', shortcut: 'Ctrl+Y', icon: 'E7A6', action: () => execEditable(target, 'redo')},
-            {sep: true},
-            {label: '剪切', shortcut: 'Ctrl+X', icon: 'E8C6', disabled: !hasSel, action: () => execEditable(target, 'cut')},
-            {label: '复制', shortcut: 'Ctrl+C', icon: 'E8C8', disabled: !hasSel, action: () => execEditable(target, 'copy')},
-            {label: '粘贴', shortcut: 'Ctrl+V', icon: 'E77F', action: () => pasteIntoEditable(target)},
-            {sep: true},
-            {label: '全选', shortcut: 'Ctrl+A', icon: 'E8B3', action: () => execEditable(target, 'selectAll')},
-        ], event.clientX, event.clientY);
-    }
-
+    // ---------- 输入框右键编辑菜单 ----------
+    // 菜单本体（撤销/重做/剪切/复制/粘贴/全选 + 剪贴板图片回读）搬进 ai-composer.js（方案 M2）。
     function showAIMessageContextMenu(event) {
         if (!showContextMenu) return;
         const selection = window.getSelection ? window.getSelection() : null;
@@ -12338,6 +11991,10 @@ export function createAIPanel(options) {
         // 对话引用：与编辑器右键的「引用该文件 / 引用选取」（只给路径、让模型自己读）区分，
         // 这里把消息正文/选区带进输入区附件条，发送时拼成 user content 前缀的 <quote>。
         if (message && (message.role === 'assistant' || message.role === 'user')) {
+            // 用户消息引用只取正文（开头的 <system-reminder> 环境块是宿主注入的每轮状态，不引用）
+            const quotedBody = message.role === 'user'
+                ? splitTurnReminderPrefix(message.content || '').body
+                : (message.content || '');
             const quoteOf = (text, scope) => addMessageQuote({
                 source: message.role, index, scope, content: text,
             });
@@ -12347,8 +12004,8 @@ export function createAIPanel(options) {
             items.push({
                 label: message.role === 'assistant' ? '引用整条回复' : '引用整条消息',
                 icon: 'E8C8',
-                disabled: !aiTextOf(message.content).trim(),
-                action: () => quoteOf(message.content || '', 'message'),
+                disabled: !aiTextOf(quotedBody).trim(),
+                action: () => quoteOf(quotedBody, 'message'),
             });
         }
         if (codeText.trim()) {
@@ -12384,8 +12041,10 @@ export function createAIPanel(options) {
         }));
     }
 
-    function regenerateLast() {
-        const session = currentSession();
+    // sessionOverride：支线标签页里的重试。面板路径走输入区附件条；标签页不碰面板
+    // composer——媒体附件随轮直接带给 startSessionTurn。
+    function regenerateLast(sessionOverride) {
+        const session = sessionOverride || currentSession();
         if (!session || streamOf(session.id)) return;
         const assistantIndex = lastAssistantIndex(session);
         if (assistantIndex < 0) return;
@@ -12395,14 +12054,24 @@ export function createAIPanel(options) {
         const userText = userMessage.content;
         const media = attachmentsFromImages(userMessage.images).concat(attachmentsFromVideos(userMessage.videos));
         session.messages = session.messages.slice(0, userIndex);
+        if (sessionOverride) {
+            persistSessions();
+            startSessionTurn(session, userText, {
+                attachments: {
+                    images: media.filter((item) => item.kind === 'image'),
+                    videos: media.filter((item) => item.kind === 'video'),
+                },
+            });
+            return;
+        }
         setAttachments(media);
         renderAttachments();
         persistSessions();
         submitText(userText, userIndex);
     }
 
-    function retryLast() {
-        regenerateLast();
+    function retryLast(sessionOverride) {
+        regenerateLast(sessionOverride);
     }
 
     // 回退到某条 assistant 回复：保留它及之前的消息，丢弃之后的所有轮次。
@@ -12437,6 +12106,8 @@ export function createAIPanel(options) {
                 updateComposerState();
                 updateComposerTakeover(true);
             }
+            // 会话在支线标签页里被回退：面板没显示它，上面的面板路径不会画，单独通知宿主重绘
+            notifySideChatHosts(target.id);
             renderSessionList();
             flash('已回退到该轮，删除 ' + removed + ' 条消息');
         }, '回退', '回退到该轮');
@@ -12493,8 +12164,10 @@ export function createAIPanel(options) {
         if (userIndex < 0) return;
         const message = session.messages[userIndex];
         if (!el.input) return;
-        const parsedQuote = splitQuotePrefix(message.content);
-        el.input.value = parsedQuote.quotes.length ? parsedQuote.body : message.content;
+        // 环境块（<system-reminder>）不进输入框：编辑重发时按最新状态重新生成
+        const parsedReminder = splitTurnReminderPrefix(message.content);
+        const parsedQuote = splitQuotePrefix(parsedReminder.body);
+        el.input.value = parsedQuote.quotes.length ? parsedQuote.body : parsedReminder.body;
         // 引用还原成附件条：编辑重发时不把 <quote> 标记原文暴露在输入框里。
         // 走 addAttachment 让 chip 拿到稳定 id，否则移除按钮会连带删掉所有无 id 附件。
         setAttachments(attachmentsFromImages(message.images).concat(attachmentsFromVideos(message.videos)));
@@ -12563,7 +12236,7 @@ export function createAIPanel(options) {
             const usageSession = sessionOverride || currentSession();
             const usageMessage = usageSession && usageIndex >= 0 ? usageSession.messages[usageIndex] : null;
             if (usageMessage) {
-                if (turnUsagePop && turnUsageAnchor === usageChip) closeTurnUsagePop();
+                if (usageMod.matchesAnchor(usageChip)) closeTurnUsagePop();
                 else showTurnUsagePop(usageChip, usageMessage);
             }
             return;
@@ -12578,9 +12251,11 @@ export function createAIPanel(options) {
         if (!message) return;
         const action = button.dataset.aiAct;
         if (action === 'copy') copyMessage(message);
-        else if (action === 'edit') editLast();
-        else if (action === 'regenerate') regenerateLast();
-        else if (action === 'retry') retryLast();
+        // 编辑：面板路径填面板输入框；标签页路径由 sideChatClick 返回预填文本，这里跳过
+        else if (action === 'edit') {
+            if (!sessionOverride) editLast();
+        } else if (action === 'regenerate') regenerateLast(sessionOverride);
+        else if (action === 'retry') retryLast(sessionOverride);
         else if (action === 'rewind') rewindToMessage(session, index);
         else if (action === 'branch') branchSessionAt(session, index);
         else if (action === 'sidechat') openSideChat({session, quote: message.content});
@@ -12595,10 +12270,14 @@ export function createAIPanel(options) {
     }
 
     // 不带来源消息的投递：内容由用户在面板里自己写（+ 菜单 / 侧栏「投递」/ 会话行图标共用）。
-    // options.session 是「发起方」（自己不能被投），options.picked 预选目标。
+    // 这是用户全局动作：不挂会话身份，面板当前会话也作为合法目标出现在列表里。
+    // options.session 是显式指定的发起方（按会话绑定的入口）；不给就是全局入口。
+    // options.picked 预选目标。
     function openDeliverComposer(options) {
         const opts = options || {};
-        sessionSendMod.openDeliver(null, opts.session || currentSession(), {
+        const sender = opts.session || null;
+        sessionSendMod.openDeliver(null, sender, {
+            senderless: !sender,
             picked: opts.picked || [],
         });
     }
@@ -12616,9 +12295,19 @@ export function createAIPanel(options) {
     const drafts = new Map(); // sessionId -> {text, attachments}
 
     const AI_DRAFT_KEY_PREFIX = 'datalens-ai-draft:';
+    // 工作区级草稿槽：空会话「没发出去就切走」时会被直接删掉，输入框里的内容不能跟着
+    // 会话一起消失。按工作区（归一化路径）暂存，下次在该工作区新建会话时回填——不同
+    // 工作区的草稿互不串门。文字照旧落 localStorage，附件（可能是大体积 dataURL）只随内存走。
+    const workspaceDrafts = new Map(); // wsKey -> {text, attachments}
+
+    const AI_WS_DRAFT_KEY_PREFIX = 'datalens-ai-draft-ws:';
 
     function draftLSKey(sessionId) {
         return AI_DRAFT_KEY_PREFIX + sessionId;
+    }
+
+    function wsDraftLSKey(wsKey) {
+        return AI_WS_DRAFT_KEY_PREFIX + (wsKey || '');
     }
 
     function saveComposerDraft(sessionId) {
@@ -12638,7 +12327,7 @@ export function createAIPanel(options) {
         } catch (e) {}
     }
 
-    function loadComposerDraft(sessionId) {
+    function loadComposerDraft(sessionId, session) {
         let draft = sessionId ? drafts.get(sessionId) : null;
         if (!draft && sessionId) {
             // 内存里没有（重开面板 / 重启后的首次切换）：从 localStorage 兜底恢复文本草稿
@@ -12654,6 +12343,12 @@ export function createAIPanel(options) {
                 }
             } catch (e) {}
         }
+        if (!draft && session && isVirginSession(session)) {
+            // 本会话没有自己的草稿：接住它所属工作区里暂存的输入——上一个空会话
+            // 没发出去就切走了，那些文字 / 图片应该在这里继续，而不是随会话消失。
+            draft = takeWorkspaceDraft(session);
+            if (draft) drafts.set(sessionId, draft);
+        }
         setAttachments(draft ? draft.attachments.slice() : []);
         if (el.input) el.input.value = draft ? draft.text : '';
         resizeInput();
@@ -12665,6 +12360,43 @@ export function createAIPanel(options) {
         if (!sessionId) return;
         drafts.delete(sessionId);
         try { localStorage.removeItem(draftLSKey(sessionId)); } catch (e) {}
+    }
+
+    // 把某个会话当前的输入草稿转存到它所属工作区的草稿槽（删空会话前调用）。
+    function stashWorkspaceDraft(session) {
+        if (!session || !session.id) return;
+        const draft = drafts.get(session.id);
+        if (!draft) return;
+        const text = String(draft.text == null ? '' : draft.text);
+        const attachments = Array.isArray(draft.attachments) ? draft.attachments.slice() : [];
+        if (!text.trim() && !attachments.length) return;
+        const key = aiWorkspaceKey(sessionWorkspacePath(session));
+        workspaceDrafts.set(key, {text, attachments});
+        try {
+            if (text.trim()) localStorage.setItem(wsDraftLSKey(key), JSON.stringify({text}));
+            else localStorage.removeItem(wsDraftLSKey(key));
+        } catch (e) {}
+    }
+
+    // 取走该工作区暂存的草稿（取用即清空）：交给这个工作区里新建 / 复用的空会话。
+    function takeWorkspaceDraft(session) {
+        const key = aiWorkspaceKey(sessionWorkspacePath(session));
+        let draft = workspaceDrafts.get(key) || null;
+        if (!draft) {
+            // 重开面板 / 重启后内存槽没了：只剩文本能从 localStorage 恢复（附件本就不落盘）
+            try {
+                const raw = localStorage.getItem(wsDraftLSKey(key));
+                if (raw) {
+                    const parsed = JSON.parse(raw);
+                    const text = parsed && typeof parsed.text === 'string' ? parsed.text : '';
+                    if (text.trim()) draft = {text, attachments: []};
+                }
+            } catch (e) {}
+        }
+        if (!draft) return null;
+        workspaceDrafts.delete(key);
+        try { localStorage.removeItem(wsDraftLSKey(key)); } catch (e) {}
+        return draft;
     }
 
     // 给「还没切过去」的会话预填草稿（支线对话的引用块）：写内存 + localStorage，
@@ -12727,7 +12459,11 @@ export function createAIPanel(options) {
             persistSessions();
         }
         const previous = currentSession();
-        if (previous && previous.id !== id) saveComposerDraft(previous.id);
+        if (previous && previous.id !== id) {
+            saveComposerDraft(previous.id);
+            // 没发过消息的空会话：切走就删（草稿已转存到工作区槽），列表里不留占位
+            discardVirginOnLeave(previous);
+        }
         config.activeSessionId = id;
         // 切会话即「我改用这个模型了」：窗口默认同步成该会话的账号+条目，新会话才继承得对
         syncActiveFromSession(target);
@@ -12736,8 +12472,9 @@ export function createAIPanel(options) {
         logActivity('ai.session', id, {op: 'switch', title: target.title || ''}, {actor: 'user', source: 'user'});
         stickBottom = true;
         pendingEdit = null;
-        // 输入框 / 附件换成目标会话自己的草稿（各会话互不夹带）
-        loadComposerDraft(id);
+        // 输入框 / 附件换成目标会话自己的草稿（各会话互不夹带）；目标若是新建的空会话，
+        // loadComposerDraft 会把它所属工作区暂存的草稿接过来。
+        loadComposerDraft(id, target);
         renderSessionList();
         syncStreamView();
         renderMessages();
@@ -12773,6 +12510,10 @@ export function createAIPanel(options) {
                     persistSessions();
                     renderSessionList();
                 }
+                // 当前空会话可能就是上次「没发就切走」留下的那个位置：把该工作区暂存的
+                // 草稿接回来。输入框里已经有内容（用户正在写）时不覆盖。
+                const typing = !!(el.input && String(el.input.value || '').trim()) || getAttachments().length > 0;
+                if (!typing && isVirginSession(current)) loadComposerDraft(current.id, current);
                 pendingEdit = null;
                 flash('当前会话为空，已复用');
                 if (el.input) el.input.focus();
@@ -12806,12 +12547,15 @@ export function createAIPanel(options) {
             if (el.input) el.input.focus();
             return;
         }
-        const session = createSessionData();
         saveComposerDraft(current && current.id);
+        // 当前会话若是没发过消息的空会话，新建即离开：删掉它（草稿已进工作区槽），
+        // 由下面的新会话把草稿接回来。
+        discardVirginOnLeave(current);
+        const session = createSessionData();
         pendingEdit = null;
         sessions.push(session);
         config.activeSessionId = session.id;
-        loadComposerDraft(session.id);
+        loadComposerDraft(session.id, session);
         persistSessions();
         logActivity('ai.session', session.id, {op: 'create', title: session.title || ''}, {actor: 'user', source: 'user'});
         renderSessionList();
@@ -13009,10 +12753,12 @@ export function createAIPanel(options) {
             if (message.role === 'tool') {
                 lines.push('## 工具调用：' + (message.name || 'tool'), '');
                 if (message.arguments) lines.push('参数：`' + message.arguments + '`', '');
-                if (message.ask) appendAskMarkdown(lines, message.ask);
+                if (message.ask) conversationLog.appendAskMarkdown(lines, message.ask);
                 lines.push('```text', message.content || '（无输出）', '```', '');
             } else if (message.role === 'user') {
-                lines.push('## ' + (message.app && message.app.label ? '应用 · ' + message.app.label : '用户'), '', message.content || '', '');
+                // 导出只保留用户正文：环境块是宿主注入的每轮状态，不进导出文档
+                lines.push('## ' + (message.app && message.app.label ? '应用 · ' + message.app.label : '用户'), '',
+                    splitTurnReminderPrefix(message.content || '').body, '');
                 for (const image of message.images || []) {
                     const src = aiImageSrc(image);
                     if (src) lines.push('![图片](<' + src + '>)', '');
@@ -13067,170 +12813,22 @@ export function createAIPanel(options) {
         return dir;
     }
 
-    function logTimestamp(ts) {
-        return new Date(Number(ts) || Date.now()).toLocaleString();
-    }
-
-    function logTruncate(text, max) {
-        const value = aiTextOf(text);
-        if (value.length <= max) return value;
-        return value.slice(0, max) + '\n…（已截断 ' + (value.length - max) + ' 字符）';
-    }
-
-    function appendAskMarkdown(lines, ask) {
-        if (!ask) return;
-        (ask.questions || []).forEach((question, index) => {
-            lines.push('问题 ' + (index + 1) + '：' + question.question, '');
-            for (const option of question.options || []) {
-                lines.push('- ' + option.label + (option.recommended ? '（推荐）' : '') +
-                    (option.description ? ' — ' + option.description : ''));
-            }
-            const answer = (ask.answers || []).find((item) => item.id === question.id) || {};
-            const selected = Array.isArray(answer.selected) ? answer.selected : [];
-            if (selected.length) lines.push('回答：' + selected.join('、'));
-            if (answer.custom) lines.push('补充：' + answer.custom);
-            if (!selected.length && !answer.custom) lines.push('回答：（未回答）');
-            lines.push('');
-        });
-        const result = askResultText(ask);
-        if (result) lines.push('状态：' + askStateLabel(ask) + ' · ' + result, '');
-    }
-
-    function appendLogMessage(lines, message, level) {
-        if (!message || !message.role) return;
-        if (message.role === 'user') {
-            if (message.kind === 'model-switch') {
-                if (message.content) lines.push('> ' + message.content, '');
-                return;
-            }
-            const images = (message.images || []).map(aiNormalizeImage).filter(Boolean);
-            const videos = (message.videos || []).filter((video) => video && (video.data || video.file));
-            if (!message.content && !images.length && !videos.length) return;
-            lines.push(level + ' 用户 · ' + logTimestamp(message.ts), '');
-            if (message.content) lines.push(message.content, '');
-            for (const image of images) {
-                if (image.logFile) lines.push('![图片](<' + image.logFile + '>)', '');
-            }
-            for (const video of videos) {
-                lines.push('（视频附件：' + (video.file || video.name || 'video') + '）', '');
-            }
-            return;
-        }
-        if (message.role === 'tool') {
-            lines.push(level + ' 工具：' + (message.name || 'tool') + ' · ' + (message.status || 'done'), '');
-            if (message.arguments) lines.push('参数：`' + logTruncate(message.arguments, 4000) + '`', '');
-            if (message.ask) appendAskMarkdown(lines, message.ask);
-            lines.push('```text', logTruncate(message.content || '（无输出）', 50000), '```', '');
-            return;
-        }
-        if (!message.content && !message.reasoning && !(message.toolCalls || []).length && !message.error) return;
-        lines.push(level + ' AI' + (message.model ? '（' + message.model + '）' : '') + ' · ' + logTimestamp(message.ts), '');
-        if (message.turnMs) lines.push('用时：' + aiFormatDuration(message.turnMs), '');
-        if (message.reasoning) {
-            lines.push('<details>', '<summary>思考过程</summary>', '', message.reasoning, '', '</details>', '');
-        }
-        if (message.content) lines.push(message.content, '');
-        if (Array.isArray(message.toolCalls) && message.toolCalls.length) {
-            lines.push('工具调用：' + message.toolCalls.map((call) => call.name).filter(Boolean).join('、'), '');
-        }
-        if (message.usage && message.usage.totalTokens) {
-            lines.push('tokens：输入 ' + (message.usage.promptTokens || 0) + ' · 输出 ' + (message.usage.completionTokens || 0) +
-                ' · 合计 ' + message.usage.totalTokens, '');
-        }
-        if (message.status === 'error' && message.error) lines.push('> 错误：' + message.error, '');
-    }
-
-    function buildConversationLogMarkdown(session) {
-        const lines = ['# ' + (session.title || 'AI 会话'), ''];
-        lines.push('- 会话 ID：`' + session.id + '`');
-        lines.push('- 创建时间：' + new Date(Number(session.createdAt) || Date.now()).toLocaleString());
-        lines.push('- 最近更新：' + new Date().toLocaleString());
-        const profile = config.profiles.find((item) => item.id === session.profileId);
-        if (profile) lines.push('- 最后配置：' + profile.name + (profile.model ? '（' + profile.model + '）' : ''));
-        lines.push('');
-        if (session.summary && session.summary.text) {
-            lines.push('## 会话摘要', '', session.summary.text, '');
-        }
-        const archived = Array.isArray(session.archived) ? session.archived : [];
-        if (archived.length) {
-            lines.push('## 已归档消息（压缩前，不进入当前上下文）', '');
-            for (const message of archived) appendLogMessage(lines, message, '###');
-            lines.push('');
-        }
-        lines.push('## 当前对话', '');
-        for (const message of session.messages) appendLogMessage(lines, message, '###');
-        if (Array.isArray(session.changes) && session.changes.length) {
-            lines.push('', '## 变更记录', '');
-            for (const change of session.changes) {
-                lines.push('- `' + (change.relPath || change.path) + '` +' + change.added + ' −' + change.removed +
-                    ' · ' + new Date(change.time).toLocaleString());
-            }
-        }
-        return lines.join('\n');
-    }
-
-    async function saveConversationLog(session) {
-        if (!config.logEnabled || !session) return;
-        if (!backend.SaveFile || !backend.SaveDataURL) return;
-        try {
-            const dir = await ensureAILogDir();
-            if (!session.logFile) {
-                session.logFile = aiSafeFileStem(session.title || 'AI 会话') + '-' + String(session.id).slice(-8) + '.md';
-            }
-            const archived = Array.isArray(session.archived) ? session.archived : [];
-            const messages = archived.concat(session.messages);
-            const imagesDir = aiJoinPath(dir, 'images');
-            let imagesSaved = false;
-            let imagesDirReady = false;
-            for (const message of messages) {
-                if (!message || message.role !== 'user' || !Array.isArray(message.images)) continue;
-                for (let i = 0; i < message.images.length; i++) {
-                    const image = aiNormalizeImage(message.images[i]);
-                    if (!image) continue;
-                    message.images[i] = image;
-                    if (!image.logFile && image.data) {
-                        if (!imagesDirReady) {
-                            if (backend.AIEnsureDir) await backend.AIEnsureDir(imagesDir);
-                            imagesDirReady = true;
-                        }
-                        const name = aiSafeFileStem(String(session.id).slice(-16) + '-' + (image.id || aiNowId('img-')))
-                            .replace(/\s+/g, '_').slice(0, 100) + '.' + aiImageExt(image.mime);
-                        const rel = 'images/' + name;
-                        await backend.SaveDataURL(aiJoinPath(imagesDir, name), aiImageSrc(image));
-                        image.logFile = rel;
-                        imagesSaved = true;
-                    }
-                }
-            }
-            if (imagesSaved) persistSessions();
-            const markdown = buildConversationLogMarkdown(session);
-            await backend.SaveFile(aiJoinPath(dir, session.logFile), markdown, 'lf', false, 'utf-8');
-            session.logSavedAt = Date.now();
-            persistSessions();
-        } catch (e) {
-            if (!logSaveErrorShown) {
-                logSaveErrorShown = true;
-                flash('对话日志保存失败：' + ((e && e.message) || e), true);
-            }
-        }
-    }
-
-    const logTimers = new Map();
-    const logQueues = new Map();
-
+    // 落盘机（Markdown 构建 / 图片归档 / 400ms 防抖按会话排队）搬进 ai-session-disk.js（方案 M3）。
+    const conversationLog = createAIConversationLog({
+        backend,
+        getConfig: () => config,
+        ensureLogDir: () => ensureAILogDir(),
+        persistSessions,
+        flash,
+        // 惰性转发：ask 文案别名随工具卡模块构造（面板末尾）
+        askStateLabel: (...args) => askStateLabel(...args),
+        askResultText: (...args) => askResultText(...args),
+        joinPath: (...args) => aiJoinPath(...args),
+    });
+    // 函数声明（hoisted）：sessionListMod 构造期就把 queueLogSave 当依赖传进来，
+    // 用 const 箭头会在「构造先于本行执行」时命中 TDZ。
     function queueLogSave(session) {
-        if (!config.logEnabled || !session) return;
-        const existing = logTimers.get(session.id);
-        if (existing) clearTimeout(existing);
-        logTimers.set(session.id, setTimeout(() => {
-            logTimers.delete(session.id);
-            const previous = logQueues.get(session.id) || Promise.resolve();
-            const next = previous.catch(() => {}).then(() => saveConversationLog(session));
-            logQueues.set(session.id, next);
-            next.finally(() => {
-                if (logQueues.get(session.id) === next) logQueues.delete(session.id);
-            });
-        }, 400));
+        return conversationLog.queueLogSave(session);
     }
 
     async function openAILogDir() {
@@ -13322,78 +12920,18 @@ export function createAIPanel(options) {
 
     // ---------- 管理对话框 / 提示词 / 记忆 / 技能 ----------
 
-    // 从设置窗打开记忆 / 技能管理时，把对话框临时挂到 body 顶层（盖在设置窗之上），
-    // 不再为了显示对话框而关闭设置窗；关闭后放回 AI 面板原位。
-    let dialogOnTop = false;
-    let dialogHome = null;
-
-    function attachDialogTop() {
-        if (!el.dialog || dialogOnTop) return;
-        if (!dialogHome) dialogHome = el.dialog.parentElement;
-        dialogOnTop = true;
-        el.dialog.classList.add('ai-dialog-top');
-        document.body.appendChild(el.dialog);
-    }
-
-    function detachDialogTop() {
-        if (!el.dialog || !dialogOnTop) return;
-        dialogOnTop = false;
-        el.dialog.classList.remove('ai-dialog-top');
-        if (dialogHome) dialogHome.appendChild(el.dialog);
-    }
-
-    function openAIDialog(title, bodyNodes, footerNodes, options) {
-        if (!el.dialog) return;
-        if (floatWindow && floatCollapsed) setFloatCollapsed(false);
-        if (options && options.top) attachDialogTop();
-        else if (dialogOnTop) detachDialogTop();
-        if (options && options.top) attachDialogTop();
-        else if (dialogOnTop) detachDialogTop();
-        el.dialog.classList.remove('ai-permission-dialog');
-        // 宽弹窗：内容密集的编辑器（生成条目等）在 560px 里太挤，调用方传 options.wide 加宽
-        if (el.dialogCard) el.dialogCard.classList.toggle('ai-dialog-card-wide', !!(options && options.wide));
-        if (el.dialogTitle) el.dialogTitle.textContent = title || '';
-        if (el.dialogBody) {
-            el.dialogBody.innerHTML = '';
-            for (const node of bodyNodes || []) if (node) el.dialogBody.appendChild(node);
-        }
-        if (el.dialogFoot) {
-            el.dialogFoot.innerHTML = '';
-            for (const node of footerNodes || []) if (node) el.dialogFoot.appendChild(node);
-        }
-        el.dialog.classList.remove('hidden');
-    }
-
-    function closeAIDialog() {
-        if (!el.dialog) return;
-        el.dialog.classList.remove('ai-permission-dialog');
-        el.dialog.classList.add('hidden');
-        if (el.dialogCard) el.dialogCard.classList.remove('ai-dialog-card-wide');
-        if (el.dialogBody) el.dialogBody.innerHTML = '';
-        if (el.dialogFoot) el.dialogFoot.innerHTML = '';
-        detachDialogTop();
-    }
-
-    function dialogNode(tag, className, text) {
-        const node = document.createElement(tag);
-        if (className) node.className = className;
-        if (text != null) node.textContent = text;
-        return node;
-    }
-
-    function dialogButton(label, className, onClick) {
-        const button = document.createElement('button');
-        button.type = 'button';
-        button.className = className || 'dlg-btn';
-        button.textContent = label;
-        button.addEventListener('click', onClick);
-        return button;
-    }
-
+    // 对话框基建（openAIDialog / closeAIDialog / dialogNode / dialogButton）搬进
+    // ai-manage-dialogs.js（方案 M4）。函数声明（hoisted）保持既有调用点与 ctx 转发不变。
+    function openAIDialog(...args) { return dialogsMod.openAIDialog(...args); }
+    function closeAIDialog() { return dialogsMod.closeAIDialog(); }
+    function dialogNode(...args) { return dialogsMod.dialogNode(...args); }
+    function dialogButton(...args) { return dialogsMod.dialogButton(...args); }
     function injectionStatusText(meta) {
         if (!meta) return '注入状态：—';
         const agents = meta.agents && meta.agents.loaded ? '✓ ' + meta.agents.chars + ' 字符' : '—';
-        const memory = meta.memory && meta.memory.loaded ? '✓ ' + meta.memory.mode + ' ' + meta.memory.chars + ' 字符' : '—';
+        const memory = meta.memory && meta.memory.loaded
+            ? '✓ ' + meta.memory.mode + ' ' + meta.memory.chars + ' 字符' + (meta.memory.placeholder ? '（占位）' : '')
+            : '—';
         const workspace = meta.workspace && meta.workspace.loaded ? '✓ ' + meta.workspace.files + ' 个文件' : '—';
         const skills = meta.skills ? meta.skills.count + ' 个' : '0 个';
         return '注入状态：AGENTS.md ' + agents + ' · 记忆 ' + memory + ' · 技能 ' + skills + ' · 上下文 ' + workspace;
@@ -13402,6 +12940,9 @@ export function createAIPanel(options) {
     // 提示词 / 记忆 / 技能管理对话框（阶段 3 拆出：ai-manage-dialogs.js；config 经 getConfig() 读）
     const dialogsMod = createAIManageDialogs({
         el,
+        // 浮动窗折叠状态：openAIDialog 打开对话框前先展开浮窗（访问器延迟读）
+        getFloatCollapsed: () => !!(floatWindow && floatCollapsed),
+        setFloatCollapsed: (next) => setFloatCollapsed(next),
         flash,
         askConfirm,
         backend,
@@ -13421,10 +12962,6 @@ export function createAIPanel(options) {
         promptById,
         promptTextOf,
         injectionStatusText,
-        dialogNode,
-        dialogButton,
-        openAIDialog,
-        closeAIDialog,
         resolveMemoryDir,
         getAIAppDir,
         skillSourceLabel,
@@ -13456,8 +12993,10 @@ export function createAIPanel(options) {
     // options.auto = true：自动压缩。不弹窗打断、用状态栏提示，且不要求用户在当前会话。
     function startCompact(options) {
         const auto = !!(options && options.auto);
+        // flashNotify：发起方不在面板里（支线标签页的 /compact），提示走全局 toast——
+        // showNote 会写进面板消息区，与发起会话对不上。
         const notify = (text, isError) => {
-            if (auto) {
+            if (auto || (options && options.flashNotify)) {
                 try {
                     if (typeof flash === 'function') flash(text, isError);
                 } catch (e) {}
@@ -13595,6 +13134,8 @@ export function createAIPanel(options) {
         pushArchivedMessages(session, archived);
         persistSessions();
         queueLogSave(session);
+        // 会话在支线标签页里被压缩：面板没显示它，单独通知宿主重绘（否则消息区停在压缩前）
+        notifySideChatHosts(session.id);
         if (isOpen() && currentSession() === session) renderMessages(true);
         if (viewed) {
             updateContextCount();
@@ -13737,17 +13278,20 @@ export function createAIPanel(options) {
     const runSlashCommand = (command) => slashMod.runSlashCommand(command);
     const handleSlashText = (text) => slashMod.handleSlashText(text);
 
-    function clearCurrentSession() {
-        const session = currentSession();
+    // sessionOverride：支线标签页的 /clear 清的是标签页里的会话（面板没显示它）。
+    // 无参调用 = 面板当前会话，行为不变。
+    function clearCurrentSession(sessionOverride) {
+        const session = sessionOverride || currentSession();
         if (!session) return;
+        const notify = sessionOverride ? flash : showNote;
         if (streamOf(session.id) || compactOf(session.id)) {
-            showNote('请先停止当前生成，再清空会话。', true);
+            notify('请先停止当前生成，再清空会话。', true);
             return;
         }
         askConfirm('清空当前会话的全部消息？', () => {
             // 正文没载入时既不能清（内存里是空的）也不能重置日志（会被护栏拦下）
             if (session._stub) {
-                showNote('这个会话还没载入，稍等一下再试', true);
+                notify('这个会话还没载入，稍等一下再试', true);
                 return;
             }
             session.messages = [];
@@ -13762,8 +13306,11 @@ export function createAIPanel(options) {
             session._mids = [];
             session._archivedMids = [];
             persistSessions();
-            renderMessages();
-            updateComposerState();
+            notifySideChatHosts(session.id);
+            if (currentSession() === session) {
+                renderMessages();
+                updateComposerState();
+            }
         }, '清空', '清空会话');
     }
 
@@ -14281,8 +13828,9 @@ export function createAIPanel(options) {
             });
         }
         document.addEventListener('pointerdown', (e) => {
-            if (openStatsPop) {
-                const pop = statsPopEl(openStatsPop);
+            const popKind = usageMod.openStatsPopKind();
+            if (popKind) {
+                const pop = statsPopEl(popKind);
                 const inPop = pop && pop.contains(e.target);
                 const onTrigger = e.target.closest('#ai-ctx-btn') || e.target.closest('#ai-stats-session') || e.target.closest('#ai-stats-token');
                 if (!inPop && !onTrigger) hideStatsPops();
@@ -14596,7 +14144,7 @@ export function createAIPanel(options) {
         el,
         flash,
         openPath,
-        // 计划卡「在标签页打开」：先补写 .cadt/plan/ 下的文件再开标签页（正文不在卡里铺）
+        // 计划卡「在标签页打开」：已批准开 .cadt/plan/ 的真文件（缺了补写），未批准开虚拟只读预览
         openPlanFile,
         compactOf,
         currentSession,
@@ -14645,31 +14193,15 @@ export function createAIPanel(options) {
     const renderApprovalTakeover = (...args) => takeoverMod.renderApprovalTakeover(...args);
     const renderAskTakeover = (...args) => takeoverMod.renderAskTakeover(...args);
     const renderPlanTakeover = (...args) => takeoverMod.renderPlanTakeover(...args);
-    // 补落盘：升级前留下的待批准计划、或上次写盘失败时，接管区在画计划卡之前先把
-    // .cadt/plan/ 下的文件补出来（先同步记路径，卡片直接带「在标签页打开」；
-    // 正文写盘完成后再重建一次消息区，让消息里的卡片接替原文渲染）。
-    function ensurePlanFileForPendingPlan() {
-        const session = currentSession();
-        if (!session) return;
-        const message = takeoverMod.planApprovalMessage(session);
-        if (!message || message.planFile) return;
-        const target = markPlanFile(message, session);
-        if (!target) return;
-        persistSessions();
-        writePlanFile(target).then(() => {
-            if (currentSession() && currentSession().id === session.id) renderMessages(true);
-        }).catch(() => {});
-    }
-    const updateComposerTakeover = (...args) => {
-        ensurePlanFileForPendingPlan();
-        return takeoverMod.updateComposerTakeover(...args);
-    };
+    // 未批准的计划不再补落盘（预览走 openPlanFile 的虚拟只读分支），直接转发。
+    const updateComposerTakeover = (...args) => takeoverMod.updateComposerTakeover(...args);
     const planApprovalMessage = (...args) => takeoverMod.planApprovalMessage(...args);
     const planApprovalKey = (...args) => takeoverMod.planApprovalKey(...args);
 
     // 输入区与附件域（阶段 3 拆出：ai-composer.js；attachments/queueSeq 随域迁入，attachSeq 经 nextAttachSeq 取号）
     const composerMod = createAIComposer({
         el,
+        backend,
         compactOf,
         currentSession,
         flash,
@@ -14721,6 +14253,7 @@ export function createAIPanel(options) {
     const renderAttachments = () => composerMod.renderAttachments();
     const addAttachment = (...args) => composerMod.addAttachment(...args);
     const prepareImageAttachment = (...args) => composerMod.prepareImageAttachment(...args);
+    const showAIEditMenu = (...args) => composerMod.showAIEditMenu(...args);
     const attachPath = (...args) => composerMod.attachPath(...args);
     const attachSelection = (...args) => composerMod.attachSelection(...args);
     const referencePath = (...args) => composerMod.referencePath(...args);
@@ -14884,8 +14417,10 @@ export function createAIPanel(options) {
         closeDialog: () => closeAIDialog(),
         node: (...args) => dialogNode(...args),
         flash,
-        // 用户主动投递不受「同工作区」限制（跨工作区也能投），行上会标出工作区名
-        listSessions: () => noticesMod.listSessionsForSend({allWorkspaces: true}),
+        // 用户主动投递不受「同工作区」限制（跨工作区也能投），行上会标出工作区名。
+        // excludeSessionId 由选择器按入口传入：会话发起传发起方 id，全局入口传 null（不排除）。
+        listSessions: (sendOptions) => noticesMod.listSessionsForSend(
+            Object.assign({allWorkspaces: true}, sendOptions || {})),
         stateOf: (session) => (streamOf(session.id) ? 'streaming' : (compactOf(session.id) ? 'compacting' : 'idle')),
         workspaceName: (path) => (path ? aiWorkspaceName(path) : ''),
         deliverToSessions: (...args) => noticesMod.deliverToSessions(...args),
@@ -14959,6 +14494,8 @@ export function createAIPanel(options) {
         ensureSessionLoaded,
         entryOf,
         profileOf,
+        // 子代理 read_video 下发裁剪：与主会话同一视频能力判定
+        videoCapableOf,
         configForProfile,
         executeTool,
         flushToolImages,
@@ -15098,7 +14635,24 @@ export function createAIPanel(options) {
     const updateAssistantElement = (...args) => toolCardsMod.updateAssistantElement(...args);
     // toolMeta / acceptPlan：随工具卡提取段带入的相邻函数（接管区审批卡与计划批准在用）
     const toolMeta = (...args) => toolCardsMod.toolMeta(...args);
-    const acceptPlan = (...args) => toolCardsMod.acceptPlan(...args);
+    // 批准（「执行计划」）时才落盘：写会话固定路径并回填 message.planFile；失败不阻断批准，
+    // 入口卡回落到虚拟只读预览（openPlanFile 的无 planFile 分支）。
+    async function writePlanFileForApproval(session, message) {
+        if (!session || !message || message.planFile) return;
+        const target = markPlanFile(message, session);
+        if (!target) return;
+        persistSessions();
+        try {
+            await writePlanFile(target);
+        } catch (e) {
+            message.planFile = '';
+            flash('计划文件写入失败：' + ((e && e.message) || e), true);
+        }
+    }
+    const acceptPlan = async (session, message, families) => {
+        await writePlanFileForApproval(session, message);
+        return toolCardsMod.acceptPlan(session, message, families);
+    };
     const askStateLabel = (...args) => toolCardsMod.askStateLabel(...args);
     const askResultText = (...args) => toolCardsMod.askResultText(...args);
     const enhanceAICodeBlocks = (...args) => toolCardsMod.enhanceAICodeBlocks(...args);
@@ -15253,10 +14807,17 @@ export function createAIPanel(options) {
             switchSession(String(id || ''));
             return currentSession() ? {id: currentSession().id, title: currentSession().title} : null;
         },
-        bridgeRenameSession: async (id, title) => {
+        bridgeRenameSession: async (id, title, callerSessionId) => {
             if (typeof renameSession !== 'function') throw new Error('会话桥不可用');
-            const target = sessions.find((s) => s.id === String(id || ''));
-            if (!target) throw new Error('找不到会话：' + id);
+            const wanted = String(id || '').trim();
+            const caller = String(callerSessionId || '').trim();
+            // 目标解析优先级：显式 id > 调用者自己的会话 > 面板当前查看的会话。
+            // 不传 id 时优先改「调用者自己」——用户已切到别的会话时，后台会话改自己的标题
+            // 不会误改前台会话（currentSession() 只是最后的兜底）。
+            const target = wanted
+                ? sessions.find((s) => s.id === wanted)
+                : (caller ? sessions.find((s) => s.id === caller) : null) || currentSession();
+            if (!target) throw new Error(wanted ? '找不到会话：' + wanted : '当前没有可重命名的会话');
             // 懒加载会话要先补正文：改名后的 queueLogSave 会把 md 日志写盘，不能把
             // 没读完的历史当成空内容写出去（同 bridgeSwitchSession / exportSession 的护栏）。
             if (target._stub && !(await ensureSessionLoaded(target))) {
@@ -15388,7 +14949,7 @@ export function createAIPanel(options) {
         bridgeRenderSideChat: (root, sessionId) => renderSideChatInto(root, sessionId),
         // 支线标签页的状态与动作（薄转发，状态仍在面板闭包里）
         bridgeSideChatState: (id) => sideChatState(id),
-        bridgeSideChatSend: (id, text) => sendSideChatMessage(id, text),
+        bridgeSideChatSend: (id, text, options) => sendSideChatMessage(id, text, options),
         bridgeSideChatStop: (id) => stopSideChatMessage(id),
         bridgeSideChatChips: (id) => sideChatChipsOf(id),
         bridgeSideChatChip: (kind) => openSideChatChip(kind),
@@ -15396,6 +14957,12 @@ export function createAIPanel(options) {
         bridgeSideChatPromote: (id) => promoteSideChatFromTab(id),
         bridgeSideChatTakeover: (root, id) => renderSideChatTakeover(root, id),
         bridgeSideChatClick: (e, id) => sideChatClick(e, id),
+        // 宿主登记（viewHosts 真表）：增量更新（工具卡 / ask 倒计时）与数据改动通知按此路由
+        bridgeSideChatHostRegister: (id, host) => registerSideChatHost(id, host),
+        bridgeSideChatHostUnregister: (id, host) => unregisterSideChatHost(id, host),
+        // 统计行与 slash 子集（/compact /clear /context /help）——面板外壳命令不进支线
+        bridgeSideChatStats: (id) => sideChatStatsOf(id),
+        bridgeSideChatSlash: (id, name) => sideChatSlash(id, name),
         // 面板切换会话（支线标签页据此判定在位 / 失联）；返回取消订阅
         bridgeOnSessionSwitch: (cb) => {
             if (typeof cb !== 'function') return () => {};
@@ -15408,27 +14975,39 @@ export function createAIPanel(options) {
             return () => bgUpdateListeners.delete(cb);
         },
         bridgeStopBgJob: async (jobId) => bridgeStopBgJob(String(jobId || '')),
-        bridgeListSessions: () => (sessions || []).map((s) => ({
-            id: s.id,
-            title: s.title,
-            scope: s.scope || 'read',
-            workspace: s.workspace || '',
-            planMode: !!s.planMode,
-            messages: sessionMessageCount(s),
-            active: s.id === (config && config.activeSessionId),
-        })),
+        bridgeListSessions: (callerSessionId) => {
+            const caller = String(callerSessionId || '').trim();
+            return (sessions || []).map((s) => ({
+                id: s.id,
+                title: s.title,
+                scope: s.scope || 'read',
+                workspace: s.workspace || '',
+                planMode: !!s.planMode,
+                messages: sessionMessageCount(s),
+                active: s.id === (config && config.activeSessionId),
+                // 「哪一个是我」：active 只是面板当前查看的会话，后台会话调用时 caller 才是自己
+                caller: !!caller && s.id === caller,
+            }));
+        },
         // 结构面板的「会话结构」数据源：当前会话里的用户消息（用户消息定位条）
         bridgeSessionOutline: () => sessionOutlineSnapshot(),
         bridgeJumpToMessage: (index) => jumpToSessionMessage(index),
-        bridgeGetState: () => {
+        bridgeGetState: (callerSessionId) => {
             const session = currentSession();
             const profile = profileOf(session);
             const entry = entryOf(session);
+            const caller = String(callerSessionId || '').trim();
+            // 区分「调用者自己的会话」与「面板当前查看的会话」：用户切到别的会话时两者会不一致，
+            // 此时 callerIsBackground=true，提示模型「你不在前台」——别把 session 块当成自己的会话。
+            const callerIsBackground = !!(caller && session && caller !== session.id);
             return {
                 open: isOpen(),
                 mode,
                 scope: session ? currentScopeOf(session) : '',
                 planMode: !!(session && session.planMode),
+                callerSessionId: caller || (session ? session.id : ''),
+                viewingSessionId: session ? session.id : '',
+                callerIsBackground,
                 profile: profile ? {
                     id: profile.id,
                     name: profile.name,
@@ -15449,6 +15028,8 @@ export function createAIPanel(options) {
                 })),
                 memoryMode: config.memoryMode === 'app' ? 'app' : 'workspace',
                 preferences: (config.preferences || []).length,
+                // session 块是「面板当前查看的会话」：调用者在后台时它与 callerSessionId 不同，
+                // 模型要改自己的标题应看 callerSessionId，别拿这里的 id。
                 session: session ? {
                     id: session.id,
                     title: session.title,

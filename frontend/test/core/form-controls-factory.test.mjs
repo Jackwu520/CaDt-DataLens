@@ -5,7 +5,7 @@
 //   - 新增任何一处裸 <input>/<select>/<textarea> 或 createElement 表单控件都会让计数超基线而失败；
 //   - 迁移存量后把对应数字调小，**永远不要调大**；
 //   - 新文件里出现裸用法直接失败（基线里没有该文件）。
-// 用 `PRINT_FORM_BASELINE=1 node --test src/core/form-controls-factory.test.mjs` 可重新打印当前快照。
+// 用 `PRINT_FORM_BASELINE=1 node --test test/core/form-controls-factory.test.mjs` 可重新打印当前快照。
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync, readdirSync} from 'node:fs';

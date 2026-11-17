@@ -40,8 +40,9 @@ function listedActions(text) {
 }
 
 // 3a) runAppAction 的 switch 分发
+// 只按前缀定位（签名后续可能追加参数，如 callerSessionId）；switch 体仍取到下一个函数定义为止。
 function dispatchedActions(text) {
-    const signature = 'async function runAppAction(action, params, scope) {';
+    const signature = 'async function runAppAction(action, params, scope';
     const start = text.indexOf(signature);
     assert.ok(start >= 0, '找不到 runAppAction');
     const rest = text.slice(start + signature.length);

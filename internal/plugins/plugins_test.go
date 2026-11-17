@@ -7,8 +7,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
+
+	"datalens/internal/executil"
 )
 
 func writeTestPlugin(t *testing.T, dir, id string) {
@@ -217,7 +218,7 @@ func installPluginFromUrl(root, rawUrl string) (*PluginInfo, error) {
 	}
 	defer os.RemoveAll(tmp)
 	cloneCmd := exec.Command("git", "clone", "--depth", "1", "--single-branch", rawUrl, filepath.Join(tmp, "repo"))
-	cloneCmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x08000000}
+	executil.HideCommandWindow(cloneCmd)
 	if out, cloneErr := cloneCmd.CombinedOutput(); cloneErr != nil {
 		return nil, fmt.Errorf("克隆失败：%s", strings.TrimSpace(string(out)))
 	}

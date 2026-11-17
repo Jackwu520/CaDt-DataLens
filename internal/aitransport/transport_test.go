@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -692,6 +693,37 @@ func TestAIStreamMalformedChunk(t *testing.T) {
 	}
 }
 
+// TestAIStreamUnexpectedEOF：网关在长生成中途掐断 SSE（chunked 流缺终止块）时，
+// Go 只报 "unexpected EOF"；这层必须翻成可读文案，且断开前收到的增量不能丢。
+func TestAIStreamUnexpectedEOF(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, buf, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_, _ = buf.WriteString("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n")
+		payload := "data: {\"choices\":[{\"delta\":{\"content\":\"半截\"}}]}\n\n"
+		_, _ = fmt.Fprintf(buf, "%x\r\n%s\r\n", len(payload), payload)
+		_ = buf.Flush()
+		// 不写 0 长度终止块就断开：模拟服务端/代理掐断长生成
+	}))
+	defer server.Close()
+
+	cfg := Config{BaseURL: server.URL + "/v1", Model: "m", Proxy: "direct"}
+	events, err := runAIStreamForTest(cfg, []Message{{Role: "user", Content: "hi"}}, nil)
+	if err == nil || !strings.Contains(err.Error(), "提前断开") || !strings.Contains(err.Error(), "unexpected EOF") {
+		t.Fatalf("error = %v", err)
+	}
+	// 前端靠这个哨兵把「整轮重发即可恢复」与普通接口错误区分开（自动重试）
+	if !errors.Is(err, ErrStreamTruncated) {
+		t.Fatalf("error 未标记 ErrStreamTruncated：%v", err)
+	}
+	if got := aiJoinedDelta(events, EventChunk); got != "半截" {
+		t.Fatalf("断开前的增量丢失：%q", got)
+	}
+}
+
 func TestValidateAIConfigThinking(t *testing.T) {
 	cfg := Config{
 		Provider: "anthropic", BaseURL: "https://example.com", Model: "m",
@@ -1154,9 +1186,9 @@ func TestAIOpenAIImageAndVideoParts(t *testing.T) {
 
 func TestAIAnthropicVideosRejected(t *testing.T) {
 	_, _, err := aiAnthropicMessages([]Message{{
-		Role:   "user",
+		Role:    "user",
 		Content: "看",
-		Videos: []ImagePart{{Mime: "video/mp4", Data: "AAA"}},
+		Videos:  []ImagePart{{Mime: "video/mp4", Data: "AAA"}},
 	}}, false)
 	if err == nil || !strings.Contains(err.Error(), "不支持视频输入") {
 		t.Fatalf("anthropic videos error = %v", err)
@@ -1165,9 +1197,9 @@ func TestAIAnthropicVideosRejected(t *testing.T) {
 
 func TestAIResponsesVideosRejected(t *testing.T) {
 	_, _, err := aiBuildResponsesInput([]Message{{
-		Role:   "user",
+		Role:    "user",
 		Content: "看",
-		Videos: []ImagePart{{Mime: "video/mp4", Data: "AAA"}},
+		Videos:  []ImagePart{{Mime: "video/mp4", Data: "AAA"}},
 	}})
 	if err == nil || !strings.Contains(err.Error(), "不支持视频输入") {
 		t.Fatalf("responses videos error = %v", err)

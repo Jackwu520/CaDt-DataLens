@@ -152,13 +152,18 @@ func mcpSampleServerConfig(def mcpSampleDef, scriptPath string) mcp.MCPServerCon
 }
 
 func materializeMCPSample(def mcpSampleDef) (string, error) {
-	raw, err := fs.ReadFile(Embedded, "docs/mcp-samples/"+def.File)
-	if err != nil {
-		return "", fmt.Errorf("内置示例缺失：%w", err)
-	}
 	path := mcpSampleScriptPath(def)
 	if path == "" {
 		return "", errors.New("无法定位应用数据目录")
+	}
+	return writeSampleScript(def, path)
+}
+
+// writeSampleScript 把内嵌脚本写到指定路径（内容一致则跳过）。调用方负责路径合法性。
+func writeSampleScript(def mcpSampleDef, path string) (string, error) {
+	raw, err := fs.ReadFile(Embedded, "docs/mcp-samples/"+def.File)
+	if err != nil {
+		return "", fmt.Errorf("内置示例缺失：%w", err)
 	}
 	if existing, err := os.ReadFile(path); err == nil && bytes.Equal(existing, raw) {
 		return path, nil
@@ -170,6 +175,59 @@ func materializeMCPSample(def mcpSampleDef) (string, error) {
 		return "", err
 	}
 	return path, nil
+}
+
+// sampleScriptInConfig 找出 cfg 参数里指向「我们自己释放的示例脚本」的路径。
+// 只认 <应用数据>/builtin-mcp-samples/ 下的同名文件：用户在别处自备一份同名脚本时
+// （README 也支持单独分发），绝不去覆盖它。
+func sampleScriptInConfig(def mcpSampleDef, cfg mcp.MCPServerConfig) string {
+	root := mcpSamplesRoot()
+	if root == "" {
+		return ""
+	}
+	base := filepath.Join(root, "builtin-mcp-samples")
+	for _, arg := range cfg.Args {
+		raw := strings.TrimSpace(arg)
+		if raw == "" || !strings.EqualFold(filepath.Base(raw), def.File) {
+			continue
+		}
+		abs, err := filepath.Abs(raw)
+		if err != nil {
+			continue
+		}
+		if !strings.HasPrefix(strings.ToLower(abs), strings.ToLower(base)+string(os.PathSeparator)) {
+			continue
+		}
+		return abs
+	}
+	return ""
+}
+
+// EnsureServerScript 是 mcp.PrepareServer 的实现：服务器每次 spawn 前的自愈。
+// 触发场景都是真实的：设置 → 存储清理把 builtin-mcp-samples 当缓存删掉（脚本没了、
+// mcp.json 里的绝对路径还在），或版本升级后释放目录变成新版本号而配置仍指旧路径。
+// 两种情况下没有这条路径，已注册的服务器会初始化失败十次后放弃，日志被启动横幅刷屏。
+func EnsureServerScript(cfg mcp.MCPServerConfig) {
+	for _, def := range mcpSampleDefs {
+		path := sampleScriptInConfig(def, cfg)
+		if path == "" {
+			continue
+		}
+		if _, err := os.Stat(path); err == nil {
+			continue
+		}
+		if _, err := writeSampleScript(def, path); err != nil {
+			logSamplef("warn", "内置 MCP 示例脚本补回失败（%s）：%v", path, err)
+			return
+		}
+		logSamplef("info", "内置 MCP 示例脚本已补回：%s", path)
+	}
+}
+
+func logSamplef(level, format string, args ...any) {
+	if mcp.Logf != nil {
+		mcp.Logf(level, format, args...)
+	}
 }
 
 // MCPSamplesList 列出内置示例；只读，不释放脚本。
@@ -210,6 +268,33 @@ func (s *Samples) MCPInstallSample(id string) (map[string]interface{}, error) {
 		cfg.MCPServers = map[string]mcp.MCPServerConfig{}
 	}
 	if _, exists := cfg.MCPServers[def.ServerName()]; exists {
+		// 已注册但脚本被清掉了（存储清理 / 版本升级）：只补回脚本，不动用户改过的
+		// EnabledTools / Env——否则这里一律报「已存在同名服务器」，用户没有出路，
+		// 只能先删条目再重装，等于配置永久失效。
+		if missing := sampleScriptInConfig(def, cfg.MCPServers[def.ServerName()]); missing != "" {
+			if _, statErr := os.Stat(missing); statErr != nil {
+				if _, err := writeSampleScript(def, missing); err != nil {
+					return nil, err
+				}
+				note := "已存在同名服务器，但脚本缺失：已按原路径补回脚本，服务器配置未改动。"
+				if cfg.Enabled != nil && !*cfg.Enabled {
+					note += " MCP 客户端总开关当前是关闭的，需要用户开启。"
+				}
+				return map[string]interface{}{
+					"installed":      true,
+					"repaired":       true,
+					"id":             def.ID,
+					"name":           def.Name,
+					"serverName":     def.ServerName(),
+					"toolName":       def.ToolName,
+					"publicToolName": mcpSamplePublicToolName(def),
+					"scriptPath":     missing,
+					"commandPreview": mcpSampleCommandPreview(def, missing),
+					"envKeys":        def.EnvKeys,
+					"note":           note,
+				}, nil
+			}
+		}
 		return nil, fmt.Errorf("已存在同名 MCP 服务器 %q；请先在设置里删除或改名后再安装示例", def.ServerName())
 	}
 	path, err := materializeMCPSample(def)

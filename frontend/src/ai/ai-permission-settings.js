@@ -11,6 +11,10 @@ import {
     normalizeLocalClassifierStrictness, normalizePermissionRules, webRuleSubject,
     writeRuleSubject,
 } from './ai-permissions.js';
+import {describeSandboxGrant, sandboxHasResidue} from './ai-sandbox-grant.js';
+
+// 沙箱授权残留的可读描述来自 ai-sandbox-grant.js（纯模块：本文件顶层挂了 window 监听，
+// 测试不能直接 import 这里的纯函数）。
 
 export function createAIPermissionSettings(ctx, extras) {
 
@@ -326,6 +330,71 @@ let semanticAutoRecheckDone = false; // 注册表空时的自动补扫，每会�
         });
     }
 
+    // ---- 子代理命令沙箱：授权残留的检查与清理（docs/unfinished-plans/subagent-sandbox.md §4 阶段 D） ----
+    // 授权是跨会话复用的缓存，日常不必清理；这里只为「想还原目录权限」的用户提供出口。
+    let sandboxGrantBound = false;
+    let sandboxGrantBusy = false;
+
+    function sandboxWorkspaceRoot() {
+        const root = typeof ctx.getScopeRoot === 'function' ? ctx.getScopeRoot() : '';
+        return root || aiProjectRoot() || '';
+    }
+
+    async function refreshSandboxGrant() {
+        if (!opt.sandboxState) return;
+        if (!backend.SandboxScan) {
+            opt.sandboxState.textContent = '当前版本不支持沙箱授权检查';
+            if (opt.sandboxScanBtn) opt.sandboxScanBtn.disabled = true;
+            if (opt.sandboxRevokeBtn) opt.sandboxRevokeBtn.disabled = true;
+            return;
+        }
+        const root = sandboxWorkspaceRoot();
+        if (!root) {
+            opt.sandboxState.textContent = '（未打开工作区）';
+            if (opt.sandboxRevokeBtn) opt.sandboxRevokeBtn.disabled = true;
+            return;
+        }
+        opt.sandboxState.textContent = '检查中…';
+        try {
+            const state = await backend.SandboxScan(root);
+            opt.sandboxState.textContent = describeSandboxGrant(state);
+            if (opt.sandboxRevokeBtn) opt.sandboxRevokeBtn.disabled = !sandboxHasResidue(state);
+        } catch (e) {
+            opt.sandboxState.textContent = '检查失败：' + ((e && e.message) || e);
+            if (opt.sandboxRevokeBtn) opt.sandboxRevokeBtn.disabled = true;
+        }
+    }
+
+    async function revokeSandboxGrant() {
+        if (sandboxGrantBusy || !opt.sandboxState) return;
+        const root = sandboxWorkspaceRoot();
+        if (!root || !backend.SandboxRevoke) return;
+        sandboxGrantBusy = true;
+        if (opt.sandboxRevokeBtn) opt.sandboxRevokeBtn.disabled = true;
+        opt.sandboxState.textContent = '正在清除…';
+        try {
+            const state = await backend.SandboxRevoke(root);
+            opt.sandboxState.textContent = sandboxHasResidue(state)
+                ? describeSandboxGrant(state)
+                : '已清除本工作区的沙箱授权与完整性标签（子代理下次执行时会重新授权）';
+        } catch (e) {
+            opt.sandboxState.textContent = '清除失败：' + ((e && e.message) || e);
+        } finally {
+            sandboxGrantBusy = false;
+            if (opt.sandboxRevokeBtn) opt.sandboxRevokeBtn.disabled = true;
+        }
+    }
+
+    function renderSandboxGrant() {
+        if (!opt.sandboxState) return;
+        if (!sandboxGrantBound) {
+            sandboxGrantBound = true;
+            if (opt.sandboxScanBtn) opt.sandboxScanBtn.addEventListener('click', () => { refreshSandboxGrant(); });
+            if (opt.sandboxRevokeBtn) opt.sandboxRevokeBtn.addEventListener('click', () => { revokeSandboxGrant(); });
+        }
+        refreshSandboxGrant();
+    }
+
     function renderPermissionSettings() {
         if (opt.permissionsPath) {
             const path = projectRulesPath();
@@ -334,6 +403,7 @@ let semanticAutoRecheckDone = false; // 注册表空时的自动补扫，每会�
         if (opt.permissionClassifier) opt.permissionClassifier.checked = getConfig().autoClassifier === true;
         renderClassifierModelOptions();
         renderLocalClassifierSettings();
+        renderSandboxGrant();
         if (opt.permissionsSession) {
             opt.permissionsSession.innerHTML = '';
             const session = currentSession();

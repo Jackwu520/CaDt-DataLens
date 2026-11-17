@@ -162,3 +162,56 @@ func TestOpenFileVideoClassification(t *testing.T) {
 		}
 	}
 }
+
+// OpenFile 的音频分类：容器扩展名或 RIFF-WAVE / fLaC / OggS / ID3 魔数命中才 Audio=true。
+// 音频与视频/图片互斥：扩展名明确是视频容器时优先视频；wav 的 RIFF 头不得抢成图片/视频。
+func TestOpenFileAudioClassification(t *testing.T) {
+	wav := append([]byte("RIFF"), []byte{0x24, 0x08, 0x00, 0x00}...)
+	wav = append(wav, []byte("WAVEfmt ")...)
+	wav = append(wav, bytes.Repeat([]byte{0}, 24)...)
+	cases := []struct {
+		name       string
+		raw        []byte
+		wantAudio  bool
+		wantVideo  bool
+		wantImage  bool
+	}{
+		{"clip.wav", wav, true, false, false},
+		{"clip.mp3", append([]byte("ID3\x03\x00\x00"), bytes.Repeat([]byte{0xFF, 0xFB}, 8)...), true, false, false},
+		{"clip.flac", append([]byte("fLaC"), bytes.Repeat([]byte{0}, 24)...), true, false, false},
+		{"clip.ogg", append([]byte("OggS"), bytes.Repeat([]byte{0}, 24)...), true, false, false},
+		{"clip.m4a", append([]byte{0x00, 0x00, 0x00, 0x18, 'f', 't', 'y', 'p', 'M', '4', 'A', ' '}, bytes.Repeat([]byte{0}, 20)...), true, false, false},
+		{"notes.txt", []byte("plain text\n"), false, false, false},
+	}
+	for _, c := range cases {
+		path := filepath.Join(t.TempDir(), c.name)
+		if err := os.WriteFile(path, c.raw, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		data, err := (&Files{}).OpenFile(path, "")
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if data.Audio != c.wantAudio || data.Video != c.wantVideo || data.Image != c.wantImage {
+			t.Fatalf("%s: audio=%v video=%v image=%v, want audio=%v video=%v image=%v",
+				c.name, data.Audio, data.Video, data.Image, c.wantAudio, c.wantVideo, c.wantImage)
+		}
+		// 音频也仍是二进制文档，编辑/保存路径不变
+		if c.wantAudio && !data.Binary {
+			t.Fatalf("%s 应标记为 binary 文档", c.name)
+		}
+	}
+	// 互斥回归：mp4 视频扩展名优先于音频/图片
+	videoPath := filepath.Join(t.TempDir(), "clip.mp4")
+	videoRaw := append([]byte{0x00, 0x00, 0x00, 0x18, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm'}, bytes.Repeat([]byte{0}, 24)...)
+	if err := os.WriteFile(videoPath, videoRaw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	data, err := (&Files{}).OpenFile(videoPath, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !data.Video || data.Audio || data.Image {
+		t.Fatalf("mp4 应判成视频：video=%v audio=%v image=%v", data.Video, data.Audio, data.Image)
+	}
+}

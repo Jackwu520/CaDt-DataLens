@@ -10,6 +10,7 @@
 2. **目标 §2.4 在方案成文时即已存在**：`bridgeGetState` 返回的 `session` 对象早已含 `id`，`get_ai` 无需补字段；实施时只把 cadt-ui 技能表 `get_ai` 行的文案补上 id（`会话信息（id/标题/…）`），让模型知道从哪拿 id。
 3. **动作表位置**：方案 §3.3 写的 `docs/skills/cadt-ui/SKILL.md` 已迁入 `ai-constants.js` 的 cadt-ui 技能「动作表」段（三方对账守卫 `frontend/test/ai/ai-app-actions.test.mjs` 自动核对）。方案内其余行号均为评估日快照，以实施日代码为准。
 4. **无新增单测**：桥接是闭包内函数（依赖 `sessions`/`persistSessions` 等闭包状态），与 `bridgeNewSession` / `bridgeSwitchSession` 先例一致不做单测；登记一致性由三方对账守卫覆盖，行为靠 §5 手动验收。
+5. **`id` 可省略，缺省改调用者自己的会话（2026-11-17 当日演进 + 修正）**：最常见的用法是 AI 改自己所在会话的标题，不必先 `get_ai` 拿 id。`executeTool` 的 app_control 分支把调用者自己的会话 id 作为 `runAppAction` 第 4 参注入（`ctx.session.id`），桥接的目标解析优先级为「**显式 id > 调用者自己的会话 > 面板当前查看的会话（兜底）**」——后台会话（用户已切到别的会话）改自己标题不会误改前台会话。同步修正 `get_ai`：`bridgeGetState(callerSessionId)` 返回 `callerSessionId` / `viewingSessionId` / `callerIsBackground`，`session` 块明确标注为「面板当前查看的会话」，调用者不在前台时模型据 `callerIsBackground` 辨识、要改自己标题用 `callerSessionId`。动作表签名改为 `{title,id?}`，`get_ai` 与 `ai_rename_session` 两行文案同步标明该语义；`get_state` 的会话列表同步返回 `caller` 标记（`active` 只是面板当前查看的会话），其动作表文案同样注明。**刻意不做每轮 `<workspace_context>` 会话 id 注入**（同期评估后移除）：模型不需要自己的 id——改自己靠宿主动注入（`runAppAction` 第 4 参），改别人要用别人的 id，面板/自己的消歧由 `get_ai` 的 caller 字段按需完成；每轮注入是纯冗余 token（随用户消息落盘、长会话历史累积）。
 
 ## 1. 背景与现状（代码事实）
 
@@ -31,7 +32,7 @@
 
 ### 目标
 
-1. `app_control` 新增 `ai_rename_session {id, title}` 动作：AI 可直接重命名指定会话标题。
+1. `app_control` 新增 `ai_rename_session {title, id?}` 动作：AI 可直接重命名会话标题（id 可省略，缺省改调用者自己的会话，见 §0.5）。
 2. 复用现有 `renameSession` 的语义（改 `session.title`、截断 60 字符、持久化、渲染、写盘），不引入新存储结构。
 3. 参数校验与 DSH 对齐：`id` 必须命中现有会话；`title` 非空、截断 60 字符。
 4. **`get_ai` 返回会话 id**（用户决策 2026-11-16）：~~AI 调用 `ai_rename_session` 前需要会话 id 定位目标——`get_ai` 现有返回含标题/消息数/轮次/工作区，**需补会话 id 字段**~~。**实施核对：`bridgeGetState` 的 `session` 对象早已含 `id`，无需补字段**；只把技能表 `get_ai` 行文案补上 id（见 §0.2）。
@@ -51,10 +52,15 @@
 照 `bridgeSwitchSession`（`ai-panel.js:13754`）模式，在 `createAIPanel` 返回对象里新增：
 
 ```js
-bridgeRenameSession: async (id, title) => {
+bridgeRenameSession: async (id, title, callerSessionId) => {
     if (typeof renameSession !== 'function') throw new Error('会话桥不可用');
-    const target = sessions.find((s) => s.id === String(id || ''));
-    if (!target) throw new Error('找不到会话：' + id);
+    const wanted = String(id || '').trim();
+    const caller = String(callerSessionId || '').trim();
+    // 目标优先级：显式 id > 调用者自己的会话 > 面板当前查看的会话（兜底，见 §0.5）
+    const target = wanted
+        ? sessions.find((s) => s.id === wanted)
+        : (caller ? sessions.find((s) => s.id === caller) : null) || currentSession();
+    if (!target) throw new Error(wanted ? '找不到会话：' + wanted : '当前没有可重命名的会话');
     const next = String(title || '').trim();
     if (!next) throw new Error('会话名称不能为空');
     target.title = next.slice(0, 60);
@@ -77,12 +83,12 @@ bridgeRenameSession: async (id, title) => {
 ```js
 case 'ai_rename_session': {
     if (!aiPanel || !aiPanel.bridgeRenameSession) throw new Error('AI 面板未初始化');
-    const session = await aiPanel.bridgeRenameSession(p.id, p.title);
-    return {renamed: session};
+    // callerSessionId 由 runAppAction 第 4 参统一注入（来自 executeTool 的 ctx.session）
+    return {renamed: await aiPanel.bridgeRenameSession(p.id, p.title, callerSessionId)};
 }
 ```
 
-- 参数：`p.id`（会话 id，必填）、`p.title`（新标题，必填非空）。
+- 参数：`p.title`（新标题，必填非空）、`p.id`（会话 id，**可选**；省略时改调用者自己的会话，见 §0.5）。
 
 ### 3.3 技能文档（`cadt-ui`）
 
@@ -91,7 +97,7 @@ case 'ai_rename_session': {
 动作表补一行（实际实施文案略详，见 `ai-constants.js`）：
 
 ```
-- ai_rename_session {id,title}：重命名指定 AI 会话标题（id 为会话 id，title 非空、截断 60 字符）。
+- ai_rename_session {title,id?}：重命名 AI 会话标题（不传 id 改调用者自己所在的会话；title 非空、截断 60 字符）。
 ```
 
 ## 4. 工作量与体量估算
@@ -110,6 +116,8 @@ case 'ai_rename_session': {
 
 - 纯逻辑：`bridgeRenameSession` 的会话查找（命中/未命中）、空标题拒绝、60 字符截断、持久化与渲染调用。
 - 手动验收：`app_control ai_rename_session {id, title}` 后，会话列表标题更新、重启后标题保留（JSONL 已落盘）。
+- 手动验收：**不传 id** 调 `ai_rename_session {title}` → 改名的是调用者自己的会话；用户切到其他会话后由后台会话调用 → 改的仍是后台会话自己，不误改前台（§0.5）。
+- 手动验收：`get_ai` 返回 `callerSessionId` / `viewingSessionId` / `callerIsBackground`；后台调用时 `callerIsBackground=true`，前端会话的 `session` 块是面板当前查看的会话。
 - 手动验收：`app_control get_ai` 返回的会话信息含 `id` 字段（目标 §2.4）。
 - 回归：现有 `ai_new_session` / `ai_switch_session` 不受影响。
 

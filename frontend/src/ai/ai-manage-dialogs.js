@@ -1,9 +1,9 @@
 // ai-manage-dialogs.js：提示词 / 记忆 / 技能三个管理对话框与 createAppSkill。
 // 从 ai-panel.js 拆出（docs/unfinished-plans/structure-cleanup.md 阶段 3），函数体逐字搬移。
 // config 为重赋值 let（经 getConfig() 读）；memoryFallbackNotified 经访问器写；
-// 对话框基建（openAIDialog/closeAIDialog/dialogNode/dialogButton）留在面板闭包经 ctx 注入。
+// 对话框基建（openAIDialog/closeAIDialog/dialogNode/dialogButton）也归本模块（方案 M4 搬入）；浮动窗折叠状态经 ctx 访问器读写。
 import {aiClamp, aiCtxBannerShow, aiEstimateTokens, aiEstimateImageTokens, aiEstimateVideoTokens, aiImageStats, aiTextOf} from './ai-constants.js';
-import {createInput, createSelect, createTextarea} from '../core/form-controls.js';
+import {createInput, createSelect, createSwitch, createTextarea} from '../core/form-controls.js';
 
 export function createAIManageDialogs(ctx) {
     const el = ctx.el;
@@ -26,10 +26,6 @@ export function createAIManageDialogs(ctx) {
     const promptById = ctx.promptById;
     const promptTextOf = ctx.promptTextOf;
     const injectionStatusText = ctx.injectionStatusText;
-    const dialogNode = ctx.dialogNode;
-    const dialogButton = ctx.dialogButton;
-    const openAIDialog = ctx.openAIDialog;
-    const closeAIDialog = ctx.closeAIDialog;
     const resolveMemoryDir = ctx.resolveMemoryDir;
     const getAIAppDir = ctx.getAIAppDir;
     const skillSourceLabel = ctx.skillSourceLabel;
@@ -42,6 +38,75 @@ export function createAIManageDialogs(ctx) {
     const getConfig = ctx.getConfig;
     const setMemoryFallbackNotified = ctx.setMemoryFallbackNotified;
     const getAttachments = ctx.getAttachments;
+
+    // ---------- 对话框基建（方案 M4 从 ai-panel.js 搬入） ----------
+    // 从设置窗打开记忆 / 技能管理时，把对话框临时挂到 body 顶层（盖在设置窗之上），
+    // 不再为了显示对话框而关闭设置窗；关闭后放回 AI 面板原位。
+    const getFloatCollapsed = ctx.getFloatCollapsed;
+    const setFloatCollapsed = ctx.setFloatCollapsed;
+    let dialogOnTop = false;
+    let dialogHome = null;
+
+    function attachDialogTop() {
+        if (!el.dialog || dialogOnTop) return;
+        if (!dialogHome) dialogHome = el.dialog.parentElement;
+        dialogOnTop = true;
+        el.dialog.classList.add('ai-dialog-top');
+        document.body.appendChild(el.dialog);
+    }
+
+    function detachDialogTop() {
+        if (!el.dialog || !dialogOnTop) return;
+        dialogOnTop = false;
+        el.dialog.classList.remove('ai-dialog-top');
+        if (dialogHome) dialogHome.appendChild(el.dialog);
+    }
+
+    function openAIDialog(title, bodyNodes, footerNodes, options) {
+        if (!el.dialog) return;
+        if (getFloatCollapsed && getFloatCollapsed()) setFloatCollapsed(false);
+        if (options && options.top) attachDialogTop();
+        else if (dialogOnTop) detachDialogTop();
+        el.dialog.classList.remove('ai-permission-dialog');
+        // 宽弹窗：内容密集的编辑器（生成条目等）在 560px 里太挤，调用方传 options.wide 加宽
+        if (el.dialogCard) el.dialogCard.classList.toggle('ai-dialog-card-wide', !!(options && options.wide));
+        if (el.dialogTitle) el.dialogTitle.textContent = title || '';
+        if (el.dialogBody) {
+            el.dialogBody.innerHTML = '';
+            for (const node of bodyNodes || []) if (node) el.dialogBody.appendChild(node);
+        }
+        if (el.dialogFoot) {
+            el.dialogFoot.innerHTML = '';
+            for (const node of footerNodes || []) if (node) el.dialogFoot.appendChild(node);
+        }
+        el.dialog.classList.remove('hidden');
+    }
+
+    function closeAIDialog() {
+        if (!el.dialog) return;
+        el.dialog.classList.remove('ai-permission-dialog');
+        el.dialog.classList.add('hidden');
+        if (el.dialogCard) el.dialogCard.classList.remove('ai-dialog-card-wide');
+        if (el.dialogBody) el.dialogBody.innerHTML = '';
+        if (el.dialogFoot) el.dialogFoot.innerHTML = '';
+        detachDialogTop();
+    }
+
+    function dialogNode(tag, className, text) {
+        const node = document.createElement(tag);
+        if (className) node.className = className;
+        if (text != null) node.textContent = text;
+        return node;
+    }
+
+    function dialogButton(label, className, onClick) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = className || 'dlg-btn';
+        button.textContent = label;
+        button.addEventListener('click', onClick);
+        return button;
+    }
 
     async function showPromptDialog() {
         const session = currentSession();
@@ -310,6 +375,17 @@ export function createAIManageDialogs(ctx) {
             updateContextCount();
         }
 
+        // 「不在 AI 索引」开关：只隐藏系统提示词里的索引行；技能仍可被输入框附加与 skill_use 加载
+        function toggleHidden(skill, inIndex) {
+            const hidden = new Set((getConfig().hiddenSkills || []).map((value) => String(value).toLowerCase()));
+            if (inIndex) hidden.delete(skill.name.toLowerCase());
+            else hidden.add(skill.name.toLowerCase());
+            getConfig().hiddenSkills = [...hidden];
+            saveAIConfig();
+            invalidateSkillsCache();
+            updateContextCount();
+        }
+
         async function reload() {
             list.innerHTML = '';
             list.classList.remove('ai-skills-list');
@@ -335,6 +411,18 @@ export function createAIManageDialogs(ctx) {
                     toggleSkill(skill, check.checked);
                     status.textContent = '已' + (check.checked ? '启用' : '禁用') + '技能：' + skill.name + '（下一轮生效）';
                 });
+                const hiddenWrap = document.createElement('span');
+                hiddenWrap.className = 'ai-mgr-hidden-toggle';
+                hiddenWrap.appendChild(document.createTextNode('索引'));
+                const hiddenSwitch = createSwitch({
+                    checked: !skill.hidden,
+                    title: '开 = 出现在 AI 系统提示词的技能索引；关 = 只隐藏索引，仍可手动附加或用 skill_use 加载',
+                });
+                hiddenSwitch.control.addEventListener('change', () => {
+                    toggleHidden(skill, hiddenSwitch.control.checked);
+                    status.textContent = '已' + (hiddenSwitch.control.checked ? '列入' : '移出') + 'AI 索引：' + skill.name + '（下一轮生效）';
+                });
+                hiddenWrap.appendChild(hiddenSwitch.element);
                 const main = dialogNode('div', 'ai-mgr-main');
                 const isBuiltin = skill.source === 'builtin';
                 const sourceLabel = skillSourceLabel(skill.source);
@@ -352,7 +440,7 @@ export function createAIManageDialogs(ctx) {
                         else openPath(dir);
                     }));
                 }
-                row.append(check, main, actions);
+                row.append(check, hiddenWrap, main, actions);
                 host.appendChild(row);
             }
 
@@ -426,11 +514,13 @@ export function createAIManageDialogs(ctx) {
         return tokens;
     }
 
-    function estimateCurrentTokens() {
-        const session = currentSession();
+    // sessionOverride：支线标签页的统计行按指定会话估算（附件只属于面板输入框，不计入）；
+    // 无参调用 = 面板当前会话，行为不变。
+    function estimateCurrentTokens(sessionOverride) {
+        const session = sessionOverride || currentSession();
         const messages = buildApiMessages(session, null, promptTextOf(session && session.id));
         let tokens = estimateApiMessagesTokens(messages);
-        for (const item of getAttachments()) {
+        for (const item of sessionOverride ? [] : getAttachments()) {
             if (item.kind === 'image') tokens += aiEstimateImageTokens(item);
             else if (item.kind === 'video') tokens += aiEstimateVideoTokens();
             else tokens += aiEstimateTokens(aiTextOf(item.content));
@@ -469,5 +559,6 @@ export function createAIManageDialogs(ctx) {
         positionOverlays();
     }
     return {showPromptDialog, showMemoryDialog, createAppSkill, showSkillsDialog, updateCtxBanner, dismissCtxBanner,
+        openAIDialog, closeAIDialog, dialogNode, dialogButton,
         showArchivedDialog, estimateMessageTokens, estimateApiMessagesTokens, estimateCurrentTokens};
 }

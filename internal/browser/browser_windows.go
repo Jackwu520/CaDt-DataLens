@@ -439,6 +439,9 @@ func browserCreateOnHost(inst *browserInstance, hwnd uintptr) error {
 	c.NavigationCompletedCallback = func(sender *edge.ICoreWebView2, args *edge.ICoreWebView2NavigationCompletedEventArgs) {
 		browserCallbackGuard(inst, "NavigationCompleted", func() {
 			inst.loading = false
+			if ok, status := wvNavCompletedStatus(args); !ok {
+				logf("WARN", "browser-%s：页面加载失败（WebErrorStatus=%d，url=%s）", inst.id, status, inst.url)
+			}
 			browserRefreshState(inst)
 		})
 	}
@@ -455,6 +458,7 @@ func browserCreateOnHost(inst *browserInstance, hwnd uintptr) error {
 	if !c.Embed(hwnd) {
 		return fmt.Errorf("创建浏览器控件失败")
 	}
+	logf("INFO", "browser-%s：实例已创建（profile=%s）", inst.id, inst.profileKey)
 	// Embed 会新建一个 Chrome_WidgetWin_0 子窗口；找出来记住，后面调 z 序用
 	for h := range browserWebviewChildren(hwnd) {
 		if !before[h] {
@@ -565,6 +569,7 @@ func (h *Host) BrowserNavigate(id string, url string) error {
 		if taskErr = wvNavigate(inst.webview, url); taskErr != nil {
 			return
 		}
+		logf("INFO", "browser-%s：导航 %s", id, url)
 		// 让前端立刻拿到 loading=true（「停止加载」可用），完成回调会再发一次 loading=false
 		browserNotifyLoading(inst)
 		// 任务内泵等导航完成（回调依赖宿主线程泵）；超时不视为错误，状态事件照发
@@ -909,6 +914,7 @@ func (h *Host) BrowserClose(id string) error {
 		browserMu.Lock()
 		delete(browserInstances, inst.id)
 		browserMu.Unlock()
+		logf("INFO", "browser-%s：已关闭", inst.id)
 	})
 	return jobErr
 }

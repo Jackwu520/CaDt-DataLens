@@ -1,6 +1,6 @@
 # 支线对话标签页化 + AI 面板视图层抽取（实施计划）
 
-> 状态：**进行中**（2026-11-15 调研成文；同日按作者「都按推荐开工」完成阶段 0 与阶段 1 的数据层，见 §12 实施记录）
+> 状态：**进行中**（2026-11-15 调研成文；同日按作者「都按推荐开工」完成阶段 0 与阶段 1 的数据层，见 §12 实施记录。2026-11-17 阶段 2 遗留与阶段 3/4 收口，V1/V5 因注入面超红线另立方案，见 §13）
 > 决策依据：作者 2026-11-15 判定「支线对话与分支已无实质区别」，选定「支线进内容区标签页、能力与 UI 均完整、母会话留在 AI 面板、三枚头部 chip 在标签页内降级为顶部悬浮胶囊」；同时要求顺带抽离 `ai-panel.js` 的方法以收敛体积。
 > 前置阅读：`docs/unfinished-plans/frontend-split-phase3.md`（拆分纪律与豁免条款）· `docs/finished-plans/session-messaging.md` §4.9（支线原始设计与 §4.12 信箱）· `.cadt/memory/ai-panel-ui-conventions.md`（接管 composer 的固定做法）· `.cadt/memory/frontend-module-refactor-audit.md`（验证方法论）
 > 范围：`frontend/src/ai/` 的会话视图层与支线域、`frontend/src/bridge/bridge-sidechat-view.js`（新）、`frontend/src/editor/editor-groups.js` 特判分支、`frontend/src/style.css` 新增块；不改 Go 侧、不改流式协议、不改会话存储格式（仅新增可选字段）。
@@ -481,3 +481,48 @@ V2–V5 + 胶囊（§5.3）+ changes 卡 + 统计行 + slash/搜索。按块提�
 4. `switchSession` 重定向（§3.1）+ 三态（§5.2）。
 
 第 4 项必须与第 3 项同批交付——重定向的落点就是标签页，单独上线会出现「切到母会话但支线无处可看」的中间态。
+
+---
+
+## 13. 实施记录（2026-11-17 · 阶段 2 遗留收口 + 阶段 3/4）
+
+### 13.1 功能遗留（§5.2/§5.4/§6 的「仍未做」清单）
+
+| 项 | 落点 | 说明 |
+| --- | --- | --- |
+| 标签页消息动作全放行 | `ai-panel.js` `sideChatClick` / `handleMessageClick` | 复制 / 分支 / 重试 / 回退 / 新建支线 / 带回 / 投递全部可用；审批类过滤保留。`regenerateLast(sessionOverride)` 会话参数化（不碰面板 composer，媒体附件随轮带给 `startSessionTurn`） |
+| 标签页「编辑重发」 | `beginSideChatEdit` + `sendSideChatMessage(id, text, {editIndex})` + `bridge-sidechat-view.js` 输入框回填 | 截断延后到发送（`startSessionTurn` 的 `truncateAt`，与面板 pendingEdit 同语义）；原消息图片/视频暂存 `sideChatEditMedia`，发送时自动带回；待发送提示与 slash 提示走 `setHint` 粘滞（不被下一次 paintState 冲掉） |
+| 带回主对话附 changes 摘要 | `ai-sidechat.js` `bringBackToParent` | 按 relPath 聚合支线 `.changes`，最多列 12 个文件（超出折叠计数），随 notice 正文带给母会话 |
+| viewHosts 真表 | `ai-panel.js` 宿主登记（`sideChatHosts` / `sideChatHostsOf` / `hostContainer` / `stickHostScroll`） | 面板伪宿主（isPanel）随 `switchSession` 迁移、不进表；标签页宿主 `{root, body, refresh}` 由 `bridge-sidechat-view.js` 在 refresh 中登记、卸载时注销 |
+| 增量路径宿主化 | `appendToolCard` / `refreshToolWrap` / `updateAskCountdown` | 落点由 `hostContainer(sessionId)` 决定：面板在前，否则第一个标签页容器；面板路径的滚动/结构通知保持原行为，标签页走近底跟随（80px） |
+| 会话数据改动主动通知 | `notifySideChatHosts` | 回退确认 / 清空会话 / 压缩收尾三处触发宿主 `refresh`（`clearCurrentSession` 新增可选 session 参数，面板无参行为不变） |
+| 标签页统计行 | `sideChatStatsOf` + `bridgeSideChatStats` + `.sidechat-stats` | 与面板底部统计行同口径：`sessionUsageTotals`（已搬进 ai-usage-ui.js）+ `estimateCurrentTokens(sessionOverride)`（附件只属于面板输入框，按会话估算时不计入） |
+| 标签页 slash 子集 | `sideChatSlash` + `.sidechat-slash` | 只放行会话域命令 `/compact` `/clear` `/context` `/help`；模型/技能/计划等面板外壳命令给出明确提示。`startCompact` 新增 `flashNotify`（提示走 toast 而不是写进面板消息区） |
+| 压缩中轮询 | `sideChatState.compacting` + bridge 轮询条件 | `streaming || compacting` 期间 400ms 重绘，压缩收尾由 `notifySideChatHosts` 补一次主动刷新 |
+
+**A3（`--ai-sbw` 标签页实测）结论**：`--ai-sbw` 的全部消费者（style.css 5522/5527/5552/6732/9113/9122）都是 `#ai-panel` 作用域或面板堆叠区；标签页是 `.sidechat-root` 纵向 flex（composer 不覆盖消息区滚动条），**无消费者、无需按宿主实测**。审批卡在内容区宽度的排版仍需真机目视（headless 无法验收）。
+
+### 13.2 抽取批次（阶段 3 V3/V4 + 阶段 4 M1–M5）
+
+| 批次 | 去向 | 内容 |
+| --- | --- | --- |
+| V3 | `ai/ai-usage-ui.js`（新） | 本轮用量浮层 + 统计行弹层（会话/tokens）；`sessionUsageTotals`、`turnUsageTotal`、格式化三件套收编为唯一来源；ctx 弹层正文（`renderCtxPopover`）依赖过深留面板、经 ctx 注入。测试 `ai-usage-ui.test.mjs` 6 例 |
+| V4 | `ai/ai-diff-view.js`（新） | LCS 行 diff / ± 统计 / 审批卡预览裁剪（`diffLinesOf` / `computeLineDiff` / `diffStats` / `buildDiffPreview`），调用点与 ai-tool-cards 的 ctx 注入零改动。测试 `ai-diff-view.test.mjs` 7 例 |
+| M1 | `ai/ai-model-picker.js`（新） | 双层级模型选择器（搜索 / 账号分组 / 行内思考等级 / 会话上下文上限）；档位计算直接复用 `ai-config-model.js` 纯函数；面板保留 hoisted 转发（sessionListMod 构造期即引用）。搜索框走 `createInput`（表单控件基线守卫） |
+| M2 | `ai/ai-composer.js`（既有） | 输入框右键编辑菜单（撤销/重做/剪切/复制/粘贴/全选）+ 剪贴板图片回读；composer ctx 增 `backend` |
+| M3 | `ai/ai-session-disk.js`（既有） | `createAIConversationLog`：Markdown 构建（工具/ask/图片附件）+ 图片归档 + 400ms 防抖按会话串行排队；目录定位与配置经 ctx 注入；`queueLogSave` 在面板保持函数声明（sessionListMod 构造期传引用，const 箭头会 TDZ） |
+| M4 | `ai/ai-manage-dialogs.js`（既有） | 对话框基建四件（`openAIDialog` / `closeAIDialog` / `dialogNode` / `dialogButton`）+ 浮窗顶层挂载（`attachDialogTop` / `detachDialogTop`）；浮窗折叠状态经 ctx 访问器；顺带删掉 openAIDialog 里重复的 attach/detach 两行（幂等重复，行为不变） |
+| M5 | `ai/session-outline.js`（既有） | `createSessionOutlineController`：快照 / 视口吸附 / 跳转 / 高位通知；消息窗口（`renderWindows`）与重绘由宿主注入 |
+
+验证：`npm test` **965/965**、`vite build` 通过（含 module-scope / 表单控件基线 / 测试清单守卫）；新增两个测试文件均已登记 `frontend/package.json`。
+
+### 13.3 未做（附实测理由）
+
+- **V1 / V5（消息渲染家族 → `ai/ai-session-view.js`）**：实测渲染家族在 `ai-panel.js` 内约 1700 行（emptyState / renderWindowState / renderMessagesInner / groupTurns / renderTurn / renderMessage / renderAppMessage / appendActions / renderPendingApprovalPlaceholder 等），外部依赖 30+ 项（跨 5 个模块 + 面板 10+ 项状态：streams / stickBottom / renderWindows / userFoldExpanded / appMsgExpanded / 面板单例 UI 等）。**超出 §7.2 自定的「>15 项 = 不搬」红线**；且 `turn-fold-redesign` 正在同域在途（轮折叠渲染正是本批要搬的核心），此时搬移会与之正面冲突。按 §7.6 的兜底：另立「消息区 / 底部堆叠 / 滚动与搜索」三段切分方案。V5 的落点即 V1 的模块，同批推迟。
+- **V2（工具卡按钮态与审批交互）**：计划目标已在先前批次由 `ai-tool-cards.js`（工具卡渲染 / updateAssistantElement / ask 文案）与 `ai-takeover.js`（审批/提问接管区）收编；面板侧同名 `updateEntryButtons` 只剩 9 行面板按钮激活态，无 V2 语义，**无需再搬**。
+- **实机验证**：审批卡 `.takeover-*` 在内容区宽度下的排版、标签页滚动行为需真机目视（见 13.1 A3 结论）。
+
+### 13.4 本批文件面
+
+新增：`ai/ai-usage-ui.js`、`ai/ai-diff-view.js`、`ai/ai-model-picker.js`、`test/ai/ai-usage-ui.test.mjs`、`test/ai/ai-diff-view.test.mjs`。
+修改：`ai/ai-panel.js`（宿主登记 / 消息动作 / 统计 / slash / 抽取接线）、`ai/ai-sidechat.js`、`bridge/bridge-sidechat-view.js`、`ai/ai-composer.js`、`ai/ai-manage-dialogs.js`、`ai/ai-session-disk.js`、`ai/session-outline.js`、`style.css`（`.sidechat-stats` / `.sidechat-slash` / root 定位）、`frontend/package.json`（测试清单）。

@@ -4,15 +4,89 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 
 ## 未发布
 
+### AI 面板（查看指令：环境块弱化）
+
+- **应用消息的「查看指令」里，宿主环境块（`<system-reminder>`：任务清单 / workspace_context / 提醒 / 附件）改为弱化显示**：此前展开「查看指令」时，投递唤醒等应用消息的环境块与正文同样式混排，一展开先是一大段注入文本、看不清真正的指令正文。现在环境块单独渲染为灰色小字分区（左侧细边框、更暗背景、最大高度 160px 内滚动），正文保持原样式——**内容一字不删**（「查看指令」的用途就是核对实际发给模型的内容，环境块正是要核对的对象）。判定复用 `splitTurnReminderPrefix`（仅严格形状拆出），非严格形状原样全量显示。实现：`ai-panel.js`（应用消息卡渲染）、`style.css`（`.ai-app-msg-env`）。
+
+### 修复（模型账号编辑器 · 下拉不再露出系统原生菜单）
+
+- **「接口协议 / 代理 / 推理强度」改用统一的浮层下拉**：这三个 select 是 `index.html` 里的静态原生控件，只有 `.mcfg-select` 外观类、从未走设置页的 `enhanceSelect` 增强（扫描器只覆盖 `.settings-pane select`），展开时露出 WebView2 的系统菜单，和弹窗里的自绘控件像两套。现在打开编辑器时增强成与设置页同款触发器（宽高、圆角、底色对齐 `.mcfg-input`），并给三个控件补了 `aria-label`。
+- **重复增强改为同步触发器文本**：程序化改 `select.value` 不派发 change，此前触发器标签会停在旧值。`enhanceSelect` 对已增强的 select 再调一次时改为刷新标签（仍幂等、不重复包装），面板刷新后可补一次调用。
+
+### 修复（媒体文件默认视图 · 重开不再落到二进制）
+
+- **图片 / 视频 / 音频文件重开时固定回到自己的视图**：启动恢复会按上次会话的 `modes` 逐文件复原视图，而媒体文件上次可能是二进制（旧版本还没有该媒体视图，或播放失败自动回退留下的），于是每次重开都「默认」进十六进制。现在媒体文档的首屏视图收敛到 `core/formats.js` 的 `defaultMediaMode`（单一来源）：`createDoc` 初始 mode、会话保存、启动恢复三处都走它，旧的持久化 `binary` / `text` 不再盖掉媒体视图。手动切到二进制 / 文本视图仍可用，但不会跨启动变成默认。
+- 护栏：`test/core/formats.test.mjs`（defaultMediaMode 优先级）、`test/editor/audio-view-wiring.test.mjs`（恢复 / 保存两侧接线）、`test/editor/video-view-wiring.test.mjs`。
+
+### 修复（会话投递入口口径 · 侧栏 / ＋菜单不挂会话身份）
+
+- **侧栏「投递」与 composer「+」菜单改为用户全局入口**：不再把面板当前会话当发起方——列表里当前会话照常可选（此前被当前会话与发起方两道过滤连挡，想投给它时永远找不到），卡片标注「用户消息 · 来自你」，不再写「会话 X「标题」」。
+- **消息操作条 / 支线标签页仍按会话发起**：只排除真正的发起方；从支线标签页转发消息时，面板当前会话不再被误当成发起方而漏掉。
+- 护栏：`test/ai/ai-agent-notices.test.mjs` 新增 excludeSessionId 口径与全局投递（不判 self、卡片「来自你」）两例。
+
+### AI 子代理（命令沙箱 · Windows 受限令牌 + ACL）
+
+- **子代理能执行命令了，写入由 Windows 系统层圈死**：此前子代理只有读工具，跑测试 / 看 `git log` / 验证构建只能由主会话串行做。现在子代理可用 `run_command`（前台）与 `background_command` / `check_command` / `stop_command`（后台），执行时子进程跑在受限令牌（`WRITE_RESTRICTED` + Low 完整性）里：**写效应只允许落在本次任务的工作区根**（有隔离 worktree 时就是那个草稿目录）**与一次性的私有临时目录**内，其余写入由系统拒绝；读、网络不受这层限制（`enforcement` 如实标 `partial`）。
+- **档位与父会话一致**：只读访问 / 每次询问 → `read-only`（一个写根都不给，含私有 temp）；自动审批 → `workspace-write`；完全权限 → 不圈定。**子代理永不弹审批卡**（后台子代理没有「人」可问，与 dsh 的 approval pin never 同语义），但项目里写死的 **deny 规则照旧生效**（只取 deny，不问、不跑分类器）。
+- **沙箱里没有 bash**：实测 Git Bash（Cygwin）在受限令牌下无法启动——它要在 `\BaseNamedObjects` 建目录对象、按用户 SID 建共享内存，而 restricting 列表里没有用户 SID。所以沙箱档的 shell 固定为 PowerShell（回退 `cmd`），卡片与工具结果如实显示实际 shell（`PowerShell 7` / `Windows PowerShell` / `Command Prompt`）与 `沙箱：workspace-write（partial）· 写根：…`；子代理系统提示也提前声明「用 PowerShell 语法，不要用 ls / grep / sed」。
+- **不可用就不跑（fail-closed）**：受限令牌、ACL 或 Job 建不起来时直接报「沙箱不可用，命令未执行」，绝不降级裸跑。后台作业退出后自动撤销临时目录授权并删除目录。
+- **操作记录可查**：`ai.tool` 新增两种 status —— `sandbox-denied`（命令失败且 stderr 命中「拒绝访问 / Access is denied / Permission denied」等特征，识别 UTF-8 与 GBK 两种输出）与 `sandbox-unavailable`（沙箱建不起来）；成功执行记 `done` 并附 `sandbox` 档位。**后台作业同样能分类**：作业退出时按缓冲里的 stderr 行判定，结论走 `AICommandJobStatus.sandboxDenied`，`check_command` 轮询到就把这次调用记成 `sandbox-denied` 并在结果里说明。子代理的工具执行此前**只在「超出只读范围被拒」时留痕**，现在每次执行都记（子代理命令无人可问，留痕是唯一审计面）。
+- **看得见、也掐得断**：团队弹层里每个子代理的副标题显示 `沙箱 只读 / 可写 / 完全`（读派出时定死的档位，未知值原样回显）；`stop_command` 增加归属校验——只能停**本任务树**起的后台作业，子代理不能顺手掐掉别的会话的作业（越界确定性拒绝）。
+- **授权残留可自己清**：`workspace-write` 会给工作区目录留下能力 SID 的授权 ACE、Everyone 的「禁止删除子项」deny 与 Low 完整性标签，跨会话复用、不随退出撤销（撤销会让下次重新传播整棵树）。这些痕迹 **`icacls` 撤不掉**（能力 SID 是派生的 `S-1-4-x-y`，解析失败报 1332），现在可在 设置 → 权限 →「子代理命令沙箱」检查并清除；清除只删完全匹配本应用的条目，用户自己的权限原样保留。
+- 已知代价（如实说明）：工作区树被打上 **Low 完整性标签**后，其它以 Low IL 运行的进程也能写它；首次授权是 eager 全树传播（大目录几十秒）；FAT / exFAT 卷不能作为写根；硬链接别名可绕过能力 SID。
+- 护栏：Go `internal/sandbox` 13 例（令牌 / 授权 / 幂等 / Job / 扫描撤销）+ `internal/cmdbridge` 10 例（前台与后台沙箱执行、写根外拒绝、拒绝分类、后台拒绝标记）；前端 `test/ai/ai-subagent-sandbox.test.mjs` 11 例（档位映射、写根来源、工具挂载、执行分支、留痕、残留文案、HUD 与归属校验）。
+
+### AI 工具（read_file 路径纠错）
+
+- **读不到文件时直接告诉模型同名文件在哪**：`read_file` 失败且错误确属「不存在」（Windows / Go 的 not-found 文案，目录 / 过大 / 二进制不误判）时，按 basename 在范围根扫一遍并返回「同名文件在以下位置（可直接用它们重试 read_file）」，一轮改对路径；没有同名则引导用 glob 找相近文件名。此前只回 Go 的原始英文报错，模型（把 test/ 镜像位猜成 src/ 是最高频姿势）得再花一轮 glob 才能找回。纯逻辑收在 `ai/ai-path-hints.js`（deps 注入 IO），护栏 `test/ai/ai-path-hints.test.mjs` 6 例。
+
+### 修复（AI 流式中断可读化 · 自动重试）
+
+- **网关掐断 SSE 时自动重试，不再只显示 `unexpected EOF`**：长生成（如一次「整体替换大数组」的 `edit_file`）被网关/代理中途断开时，Go 只返回 `io.ErrUnexpectedEOF`（chunked 流缺终止块）。现在传输层把它标成 `ErrStreamTruncated`、`ai-error` 载荷带 `retryable`，文案翻成「AI 流式响应被服务端提前断开（unexpected EOF）：通常是网关或代理在长生成中超时、掐断了连接……大段改动建议拆成多次小改动」；解析失败、业务错误体等原有文案不变，断开前已收到的增量照常保留。
+- **主面板自动重试断流轮次**：收到可重试的断流错误时，把本轮半截正文 / 思考 / 工具参数整轮作废，换一条空 assistant 就地重发（与「空回复自动重试」同一条路，不新增用户消息），状态条提示「流式连接被中断，正在自动重试（n/2）…」；预算取设置里的重试次数、上限 2 次，`retryMax=0` 视为关闭。群聊 / 子代理本轮未接入自动重试，仍按原样显示错误卡。
+- 护栏：Go `TestAIStreamUnexpectedEOF`（文案 + `ErrStreamTruncated` 哨兵 + 断开前增量不丢）、`TestAISendChatMarksTruncatedStreamRetryable`（`ai-error.retryable` 接线）；前端 `ai/ai-stream-retry.js` 纯函数 + `test/ai/ai-stream-retry.test.mjs`。
+
+### 修复（内嵌浏览器闪退兜底 · 崩溃报告落日志）
+
+- **WebView2 完成回调的 use-after-free**：`ExecuteScript` / `CapturePreview` 超时返回后，原生侧晚到的完成回调仍会写 handler（快照轮询用的正是 300ms 短超时，页面忙时极易踩中）；此前 handler 超时后即失去引用，被 GC 回收后回调写进已释放内存，进程可能在随后任意时刻被堆校验/野指针直接终止——无日志、无 WER（2026-11-17 打开网页闪退的排查轨迹）。现在 handler 在「创建 → 回调到达」期间登记在存活表里，回调后释放；重复派发只留第一份结果且不阻塞原生线程（`browser_com_windows.go`，护栏 `browser_com_windows_test.go` 三例）。
+- **WebView2 回调里的 panic 不再击穿整个进程**：go-webview2 本地补丁补齐——`EnvironmentCompleted` / `CreateCoreWebView2ControllerCompleted` / `MessageReceived` / `NavigationCompleted` / `ProcessFailed` / `PermissionRequested` / `WebResourceRequested` / `AcceleratorKeyPressed` / `ContainsFullScreenElementChanged` 各回调统一加 recover，出事只走 `errorCallback` 隔离实例并记日志；顺带修掉两处上游会静默杀进程的洞：controller 创建失败后继续解引用 nil（`CreateCoreWebView2ControllerCompleted`，改为直接放弃初始化），`WebResourceRequested` 取请求失败走 `log.Fatal`（改为只报告）。主 WebView2（Wails 运行时）也套上了同一层兜底。
+- **崩溃报告写进当次运行日志**：`applog.Start` 打开日志后调用 `debug.SetCrashOutput`（并 `SetTraceback("all")`）——未恢复的 panic / 致命错误此前只写 stderr，GUI 进程没有控制台，症状就是「进程瞬间消失、日志空白」；现在死因与全 goroutine 栈直接落在 `logs/<时间>.txt`。
+- **浏览器生命周期留痕**：实例创建（含 profile 名）/ 导航目标 / 关闭各记一条 INFO；页面加载失败记 WARN 并带 `WebErrorStatus` 与 URL，下次闪退能直接看出死在哪一步。
+
+### 修复（内置 MCP 示例脚本自动补回 · 日志噪音收敛）
+
+- **已注册的内置 MCP 示例服务器不再永久失效**：设置 → 存储与清理把 `builtin-mcp-samples/` 当缓存删掉后，`mcp.json` 里的绝对路径还在，`ocr_windows` / `tts_sapi` 每次启动都初始化失败、重连十次后放弃，并把 PowerShell 的启动横幅当成「MCP stdout 丢弃非 JSON 行」刷满日志；此时「重新安装示例」又被「已存在同名服务器」拦住，用户没有出路。现在 spawn 前自愈：`mcp.PrepareServer`（根壳注入 `mcpsamples.EnsureServerScript`）在每次连接 / 测试连接 / 面板列工具前，按配置里的**原路径**补回内嵌脚本（版本升级换了释放目录也一并覆盖），只认 `<应用数据>/builtin-mcp-samples/` 下我们自己释放的那份，用户自备的同名脚本一律不碰。`MCPInstallSample` 遇到同名条目但脚本缺失时改为只补脚本、不动用户改过的授权与环境变量，并返回 `repaired`。护栏：`internal/mcpsamples` 三例（补回内容 / 不碰外部副本 / 修复不改配置）+ 根壳接线守卫。
+- **日志不再被 MCP 启动横幅刷屏**：`rpcConn.serve` 对连续非 JSON 行改为「首行带预览 + 结尾一行汇总行数」，一段十几行的 shell 启动横幅现在只留两条记录（此前逐行 WARN，一次起不来的 server 能刷出上百行把真实失败原因挤掉）；判定协议错乱时直接由错误文本带行数，不再重复记一条。护栏：`TestRPCConnGarbageLoggedOncePerRun`。
+
+### AI 面板（支线对话标签页补全 · 视图层抽取）
+
+- **支线对话标签页能力补齐**：标签页消息动作此前只放行审批类，现在复制 / 分支 / 重试 / 回到某轮 / 新建支线 / 带回主对话 / 投递全部可用；「编辑重发」把原文回填到标签页输入框（原消息的图片 / 视频随发送自动带上，截断在发送时进行，与面板 pendingEdit 同语义）。「带回主对话」现在附带支线的改动文件清单（同路径聚合 +/−，超过 12 个折叠计数），母会话能直接看到支线改了哪些文件。
+- **标签页的增量更新与统计**：宿主登记表（viewHosts 真表）落地——工具卡挂载 / 原位刷新 / ask 倒计时现在直接写进支线标签页容器（此前只能靠 400ms 全量轮询兜底），回退 / 清空 / 压缩收尾等会话数据改动会主动通知标签页重绘。标签页底部新增与面板同口径的统计行（轮/步、tok/s、累计、缓存命中、上下文占用），输入框支持 slash 子集（/compact、/clear、/context、/help），压缩期间也走轮询推进。
+- **视图层抽取（纯重构，行为不变）**：用量弹层与统计逻辑收进 `ai/ai-usage-ui.js`（`sessionUsageTotals` / 格式化三件套成为唯一来源，附 6 例单测）；行级 diff 核（LCS / ± 统计 / 预览裁剪）收进 `ai/ai-diff-view.js`（附 7 例单测）；双层级模型选择器收进 `ai/ai-model-picker.js`；输入框右键编辑菜单收进 `ai/ai-composer.js`；对话日志落盘机（Markdown 构建 / 图片归档 / 防抖排队）收进 `ai/ai-session-disk.js`；AI 对话框基建四件收进 `ai/ai-manage-dialogs.js`；会话结构定位条控制器收进 `ai/session-outline.js`。`npm test` 965/965、`vite build` 通过。
+
+### AI 面板（上下文注入布局：动态块随用户消息落盘）
+
+- **每轮环境块移出系统提示词，改随起轮的用户消息以 `<system-reminder>` 前缀落盘**：`<workspace_context>`（活动文件 / 光标 / 选区 / 可见范围 / 已打开文件）、`<task_todos>`、`<task_reminders>`、`<attachments>` 四块此前拼在系统提示词尾部、每轮都变——服务商的前缀缓存按字节前缀匹配，系统提示词在最前面，尾部一变，**后面整段历史每轮全价重算**（长会话白白多付一个数量级的输入）。现在 `turnContextBundle`（`ai-system-context.js`，同步实现）在起轮时冻结一份块，拼进用户消息 content 后随 JSONL 落盘；系统提示词只剩稳定段（基座 / 人设 / AGENTS.md / 记忆 / 偏好 / 技能 / 环境变量 / 工具目录 / 守则 / 输出语言），每轮完全一致、历史追加式增长，缓存可整段命中。注入开关（范围根 / 活动文件 / 光标 / 可见范围 / 打开文件等）语义不变，只是块的位置变了；旧注释里「稳定 → 动态排序」的妥协随之删除。
+- **新增纯函数模块 `ai-turn-reminder.js`**（与 `ai-quote.js` 同架构）：`wrapTurnReminder` 包装（内容里的 `</system-reminder>` 中和为全角斜杠防提前闭合；无任何子块时返回空串，不生成空包装）、`splitTurnReminderPrefix` 只认严格形状（开头紧跟四个已知子块标签之一，用户手写的同名标签不误判）。所有展示/派生路径统一经它剥块：气泡渲染、编辑重发（`editLast` / 支线编辑）、导出 Markdown、会话日志、`session_search` 片段、`session_read` 摘要、复制消息、右键「引用整条消息」、自动标题取名——这些地方此前会把环境块当正文带进输入框 / 剪贴板 / 导出文档 / 标题请求。护栏：`test/ai/ai-turn-reminder.test.mjs`（5 例，含中和与严格形状），`ai-system-context.test.mjs` 断言改为「系统提示词不含动态块、turnBlock 含」，`ai-quote.test.mjs` 接线护栏同步为「先剥环境块再拆引用」。
+- **附带行为变化**：① 文本附件（文件 / 引用 / 技能正文）现在随消息进历史，后续轮次模型仍能看到（此前只在该轮系统提示词里，下一轮即消失）；② 打字态的上下文估算不再包含当轮的块（块尚不存在），发送预检与落盘后估算口径不变；③ 跨会话搜索索引（Go 侧 SQLite）仍索引块文本，片段展示已在前端剥离，索引层剥离留作后续。
+
 ### AI 群聊（多智能体圆桌）
 
 - **智能体（设置 → AI → 智能体）**：群聊成员数据层——每个智能体绑定「账号id|模型id」，配职责 / 人设正文 / 回复风格 / 温度 / 颜色，名字全局唯一（无空白与 `@`、`all / everyone / 全体成员` 等保留词拦截），`slowTier` 开关给不暴露 reasoning 能力的兼容端点手动按思考档计时（预检徽标同步）；删除不级联，群内显示「已删除成员」。存 `ai-config.json` 的 `agents[]`，上限 32 个；「可作为主持人」标记的成员在群创建时可被选为主持人（无主持人智能体时提供「一键创建默认主持人」）。
 - **群聊（AI 侧栏「会话 | 群聊」→ 新建群聊）**：多智能体圆桌——用户提议题，主持人（AI 独立 / 成员兼任 / 我来主持，轮计划或逐句调度）安排多个不同模型的智能体按轮多轮讨论，成员必须回应彼此并输出结构化立场块（同意 / 反对 / 补充 / 存疑 + 要点 / 担忧 / 疑问），轮末复盘更新讨论看板并判定收敛，产出结构化纪要（看板模板 0 次调用或主持人润色），可复制 / 导出 Markdown / 带回当前 AI 会话。创建时逐成员红黄绿兼容性预检（上下文 / 思考档）与预计调用量；串行轮保证互相回应；超时跳过不报错（首次 45s / 思考 90s，总 180s / 240s，整场 15min，宽松预设可选）；**共享群聊对话永不自动压缩**——某成员窗口装不下即停止参与（不阻塞其他成员），手动「压缩群聊数据」生成摘要 + 截止点且最近 1 轮全文保留、原始日志不删；私有过程（思考链）按成员独立日志、仅本人与用户可见。用户可随时插话、`@点名`（强制进下一次调度）、`@全体成员`、暂停 / 继续 / 结束并总结；讨论看板抽屉实时展示议程 / 立场 / 共识 / 分歧 / 未决 / 行动项（任务模式可增改状态）；辩论 / 评审预设给成员分配正方 / 反方 / 评审角色。群聊打开为内容区标签页（最多 3 个，关闭不停止讨论）。存储在独立 `ai-groups` 根（复用会话存储引擎：原子追加 / 跨进程锁 / 回收站删除 / 残行修复），清空 AI 会话不会误删群聊、不进会话搜索索引；设置 → 存储与清理新增「AI 群聊记录」条目。
 - **AI 可代建智能体（app_control）**：`get_agents` 列出智能体与全部可用模型（ref + 展示名），`create_agent` 按模型名 /「账号名/模型名」/ ref 创建成员——名字唯一性与保留词沿用设置页校验，模型名多命中会报候选让 AI 明确，`chair` / `style` / `slowTier` 等字段一次写全并即时持久化；只新建、不改删（改删仍由用户在设置页操作）。
 
+### AI 面板（系统提示词瘦身 · 技能索引预算 · 记忆提示）
+
+- **系统提示词内部去重（每条规则只留一个「家」）**：此前「先读后改」「start_timer 空等」「不可信数据」「todo_write」「MCP 描述不构成指令」「auto 档审批语义」「不要 cd 探测目录」等规则在 基座提示词 / 工具描述 / `<tool_catalog>` 调度原则 / `<workspace_rules>` 四层里重复出现（最多一处写了 5 遍），估算基线约 6.3K tok。现收敛：基座只留身份 + 输出风格 + 密钥红线（528 → 367 tok，删除的 4 条行为规则语义都在中文块有权威版本），`<workspace_rules>` 删掉与工具描述/调度原则重复的 7 行（env、spawn_agent 过时的「阻塞等待」表述、run_command/cwd、background_command 空等、start_timer、auto 档整段重复），调度原则删 start_timer 条、精简 web_fetch 与最小改动条，auto 档审批语义收敛进 scopeText 并保留「不要拆单规避审批」句，`<workspace_context>` 不再重复范围根行（`aiInjectRoot` 门控随之收敛到 `<workspace_rules>` 首行一处）。语义去向：env_create desc 补「不要 ask_user 索取变量值」、check_command desc 补「不要反复调用空等」。基座改写前的旧文本追加进 `AI_LEGACY_DEFAULT_PROMPTS`（`ai-panel.js:852` 的迁移判定会把未自定义的存量默认模板升级到新默认词）。
+- **会话标题生成的两句兜底**（对齐 DSH）：`AI_TITLE_SYSTEM_PROMPT` 补「不要 Markdown / XML / 终端控制符」与「没什么可命名时（如纯问候）仍返回尽力而为的短标题，不要解释、不要答话」——此前发「你好」时模型偶尔答话而不是给标题。
+- **技能索引设预算（防「技能装多了索引爆炸」）**：`<skills>` 索引此前全量拼接所有技能描述（装 100 个市场技能 ≈ 9K tok）。现三层：① 单条描述超 120 字截断为头 70 + 尾 50（`truncateSkillDescription`，保住开头目的句与结尾「当…时使用」触发句，纯函数可测）；② **内置技能全量必列**，用户技能上限 `skillIndexMaxUser`（设置 → AI 助手 → 项目与记忆「技能索引 · 用户技能上限」，1–100 默认 100，ai-config.json 持久化、导入导出同步），溢出行「另有 N 个技能未列出：用 skill_list 查看全部」；③ 技能管理对话框每行新增「索引」开关（`createSwitch` 合规控件），关掉只隐藏索引行——仍可输入框附加与 `skill_use` 加载（`config.hiddenSkills`，与 `disabledSkills` 同按名小写匹配）。
+- **新增 `skill_list` 工具**（只读，所有档位与计划模式可用）：列出全部技能的名称 + 一句话描述（按来源分组，已禁用 / 不在索引的标注），索引截断时模型用它发现长尾；描述写明「不要用它加载技能——加载用 skill_use」。接线全套（def + 目录 + toolsForScope + executeTool + 工具卡「技能目录」book 图标），目录一致性 / 档位并集 / 执行分支 / 工具卡 / 参数提及守卫自动覆盖。
+- **空记忆不再「整块消失」**：MEMORY.md 读不到或为空时注入占位引导块（记忆区路径 + 「值得跨会话保留的事实用 memory_write 落盘并同步更新 MEMORY.md 索引」），`meta.memory.placeholder` 标记；估算面板「系统注入」行占位态显示「空索引占位」且不再与「记忆未注入」错误并存；`<workspace_rules>` 补一条 memory_* 使用守则（写入时机 + 先 memory_list），与 preference_* 同级。顺带修正 `memory_write` 参数描述 256KB → 60KB（与实现截断一致）。护栏：`ai-system-context.test.mjs` 新增 8 例（截断 / 预算 / 溢出行 / hidden / 占位块 / 范围根去重 / auto 收敛 / 守则行增删）。
+
 ### AI 面板（会话重命名动作）
 
-- **app_control 新增 `ai_rename_session {id,title}`**：AI 可直接重命名指定 AI 会话——此前只有用户手动入口（右键列表项 / 标题栏菜单），AI 想改个不准确的默认标题只能删会话重建（丢上下文）。`id` 从 `get_ai` 的会话信息或跨会话搜索结果获取（`get_ai` 技能表文案同步补上 id 字段），`title` 非空、超 60 字符截断；懒加载 stub 会话先补正文再改名（改名后的 md 日志写盘不能把未载入的历史当空内容写出，与 `bridgeSwitchSession` / `exportSession` 护栏一致），改名即持久化并写盘、重启保留。实现落点：`ai-panel.js`（`bridgeRenameSession` 桥接，紧随 `bridgeSwitchSession`）、`main.js`（`APP_ACTIONS` 登记 + `runHostAppAction` case）、`ai-constants.js`（cadt-ui 技能动作表补行 + `get_ai` 文案补 id）。护栏：`ai-app-actions.test.mjs` 三方对账（技能表 ↔ APP_ACTIONS ↔ 分发，自动覆盖新动作）。方案存档 `docs/finished-plans/ai-rename-session.md`。
+- **app_control 新增 `ai_rename_session {title,id?}`**：AI 可直接重命名 AI 会话——此前只有用户手动入口（右键列表项 / 标题栏菜单），AI 想改个不准确的默认标题只能删会话重建（丢上下文）。**`id` 可省略，缺省改调用者自己所在的会话**——`runAppAction` 第 4 参注入调用者会话 id（`executeTool` 的 `ctx.session`），桥接按「显式 id > 调用者自己 > 面板当前查看的会话（兜底）」解析目标，后台会话改自己标题不会误改前台会话；改其他会话时从 `get_ai` 的会话信息或跨会话搜索结果获取。`get_ai` 同步修正：返回 `callerSessionId` / `viewingSessionId` / `callerIsBackground`，`session` 块标注为「面板当前查看的会话」（不一定是调用者自己的），后台调用时模型据 `callerIsBackground` 辨识、要改自己标题用 `callerSessionId`；`get_state` 的会话列表同步返回 `caller` 标记（`active` 只是面板当前查看的会话）。`title` 非空、超 60 字符截断；懒加载 stub 会话先补正文再改名（改名后的 md 日志写盘不能把未载入的历史当空内容写出，与 `bridgeSwitchSession` / `exportSession` 护栏一致），改名即持久化并写盘、重启保留。实现落点：`ai-panel.js`（`bridgeRenameSession` 桥接 + `bridgeGetState` 的调用者语义）、`main.js`（`APP_ACTIONS` 登记 + `runHostAppAction` case + `runAppAction` 第 4 参）、`ai-constants.js`（cadt-ui 技能动作表 + `get_ai` 文案）。护栏：`ai-app-actions.test.mjs` 三方对账（技能表 ↔ APP_ACTIONS ↔ 分发，自动覆盖新动作）。方案存档 `docs/finished-plans/ai-rename-session.md`。
 
 ### AI 面板（显示方式只归用户 · 新标签页展开编辑区）
 

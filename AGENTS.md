@@ -91,7 +91,7 @@ CaDt-DataLens 是一个面向 Windows 的轻量级多格式数据查看与编辑
 ### `docs/`
 - `packaging.md`（打包与发布）、`plugins/`、`skills/`、`samples/`、`screenshots/`、`icons/`、`legal/`、`mcp-samples/`（外部工具本地来源示例：SAPI TTS / Windows OCR / whisper ASR）；三份脚本已随 exe 内嵌、可在设置 → AI → 外部工具 → MCP 服务器 → 内置示例一键安装，本目录保留用于单独分发、审查与修改（Python / whisper 模型 / OCR 引擎仍不打包）
 - `finished-plans/`：已实施完的方案存档（`ai-panel.md`、`ai-panel-v2.md`、`ai-panel-v3.md`、`ai-head-agents-terminal.md`、`operation-audit-log.md`、`writing-mode.md`、`reading-mode.md`、`visualizer.md`、`mcp-client.md`、`ai-personalization.md`、`local-command-classifier.md`、`ai-gen-models.md` 等）
-- `unfinished-plans/`：未开工/进行中的方案（目前：`ai-rerank.md`、`ai-group-chat.md`、`ai-rename-session.md`、`desktop-mcp.md`、`git-worktree.md`、`side-chat-tab.md`、`subagent-sandbox.md`、`turn-fold-redesign.md`）；全部实施后移入 `finished-plans/`
+- `unfinished-plans/`：未开工/进行中的方案（目前：`ai-rerank.md`、`ai-group-chat.md`、`desktop-mcp.md`、`git-worktree.md`、`side-chat-tab.md`、`subagent-sandbox.md`、`turn-fold-redesign.md`）；全部实施后移入 `finished-plans/`
 - `icon-guidelines.md`
 - `reports/optimization-proposals.md`：体积与性能优化提案（含实测体积基线）
 
@@ -148,6 +148,7 @@ CaDt-DataLens 是一个面向 Windows 的轻量级多格式数据查看与编辑
 - 平台相关代码按现有约定分文件成对出现：`xxx_windows.go` + `xxx_other.go`，不要在一个文件里堆 `runtime.GOOS` 判断。
 - 新增导出方法后，`frontend/wailsjs/` 由 `wails dev` / `wails build` 重新生成。
 - 新增/修改逻辑要补 `*_test.go`；现有测试多为表驱动，跟随即可。
+- **平台无关文件里不许出现 Windows 专属符号**（`syscall` 的 `HideWindow`/`CreationFlags`、`UTF16PtrFromString`、`golang.org/x/sys/windows` 等）；防黑窗统一用 `executil.HideCommandWindow`。守两道：`crossplatform_guard_test.go`（静态扫，毫秒级）+ `tools\check-crossbuild.cmd`（真编 linux/darwin，约 5 秒）。`_other.go` 桩**同样要能编译**——2026-11-17 交叉编译发现三个包从未在非 Windows 下编过（其中 `browser_other.go` 连参数重名都没人发现）。评估与分期见 `docs/unfinished-plans/cross-platform.md`。
 - 文件大小硬限制（`app_core.go` 的 `largeFileBytes` / `maxFileBytes` / `imagePreviewLimit`，图片 hex 上限 `app_file.go` 的 `imageHexLimit`）：>10 MB 只读、>100 MB 拒绝打开、图片预览 32 MB、二进制 hex 1 MB。放宽限制前先确认性能。
 
 ### 前端侧
@@ -155,7 +156,7 @@ CaDt-DataLens 是一个面向 Windows 的轻量级多格式数据查看与编辑
 - 域模块的约定是「factory + 显式依赖注入」：`export function createXxx(deps)`，依赖一律 `deps.X` 延迟求值，main.js 侧传 getter（`get X() { return X; }`）——不依赖声明顺序、不拍 let 快照。新增域照此办理，不要在模块顶层 import main.js 的绑定。
 - 格式相关逻辑放 `formats.js`，结构解析放 `structure.js`，不要往 `main.js` 里塞新的格式分支。
 - 界面设计原则：避免不必要的辅助标签与说明，让布局本身发挥解释作用（Avoid unnecessary secondary labels and descriptions. Let the layout do the explaining.）。
-- **表单控件硬规范（2026-11-15 定）**：禁止新增裸 `<input>` / `<select>` / `<textarea>`（含 checkbox / radio），一律用 `core/form-controls.js` 的 `createSwitch / createSelect / createInput / createTextarea`（动态）或 `docs/frontend-form-controls.md` 里的静态 class 结构；设置页行式下拉用 `createSettingsSelect`。`style.css` 的 `:where()` 全局兜底只兜存量，不是继续写原生控件的许可；`core/form-controls-factory.test.mjs` 按文件基线卡新增，**基线只允许调小，不许调大**。
+- **表单控件硬规范（2026-11-15 定）**：禁止新增裸 `<input>` / `<select>` / `<textarea>`（含 checkbox / radio），一律用 `core/form-controls.js` 的 `createSwitch / createSelect / createInput / createTextarea`（动态）或 `docs/frontend-form-controls.md` 里的静态 class 结构；设置页行式下拉用 `createSettingsSelect`。`style.css` 的 `:where()` 全局兜底只兜存量，不是继续写原生控件的许可；`test/core/form-controls-factory.test.mjs` 按文件基线卡新增，**基线只允许调小，不许调大**。
 - Markdown 渲染链：markdown-it → DOMPurify → hljs / KaTeX / mermaid；涉安全的改动（sanitize、外链、内嵌 HTML）必须保守，**原始 HTML 不执行是硬要求**。
 - 预览/表格等大 DOM 操作注意避免整段 `innerHTML` 重渲染。
 

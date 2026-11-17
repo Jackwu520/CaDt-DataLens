@@ -14,6 +14,8 @@ import {
     migrateAccountModels,
     modelEntryOf,
     modelRefLabel,
+    modelVideoInputEnabled,
+    newOpencodeSessionId,
     normalizeCtxLimit,
     normalizeModalities,
     normalizeModelEntry,
@@ -21,6 +23,7 @@ import {
     reasoningLevelInfo,
     resolveModelId,
     resolveModelRef,
+    withOpencodeSessionHeader,
 } from '../../src/ai/ai-config-model.js';
 
 test('parseTokenAmount：支持 K / M / 纯数字 / 小数 / 千分位，非法返回 null', () => {
@@ -59,6 +62,25 @@ test('normalizeModalities：默认勾选文本+图像，非法输入收敛', () 
         {text: false, image: true, video: true, audio: false});
 });
 
+test('modelVideoInputEnabled：协议非 openai 或模态位显式关闭即不支持视频输入', () => {
+    const openai = {provider: 'openai'};
+    const anthropic = {provider: 'anthropic'};
+    const responses = {provider: 'responses'};
+    const videoOn = {modalities: {video: true}};
+    const videoOff = {modalities: {video: false}};
+    // 唯一双门槛都过的组合：openai 协议 + 勾了视频输入
+    assert.equal(modelVideoInputEnabled(openai, videoOn), true);
+    // 协议门槛：Anthropic / Responses 即便勾了视频也不支持（传输层没有视频内容段）
+    assert.equal(modelVideoInputEnabled(anthropic, videoOn), false);
+    assert.equal(modelVideoInputEnabled(responses, videoOn), false);
+    // 模态门槛：openai 协议但显式关视频
+    assert.equal(modelVideoInputEnabled(openai, videoOff), false);
+    // 缺省放行：字段未给时交给服务商判定，与执行守卫历史口径一致
+    assert.equal(modelVideoInputEnabled(null, null), true);
+    assert.equal(modelVideoInputEnabled(openai, {}), true);
+    assert.equal(modelVideoInputEnabled({}, null), true);
+});
+
 test('normalizeModelEntry：字段 clamp 与回退', () => {
     const entry = normalizeModelEntry({
         id: 'm1',
@@ -77,8 +99,8 @@ test('normalizeModelEntry：字段 clamp 与回退', () => {
     assert.equal(entry.thinkingBudget, 1024);
     const fallback = normalizeModelEntry(null, () => 'gen-2');
     assert.equal(fallback.id, 'gen-2');
-    assert.equal(fallback.contextWindow, 128000);
-    assert.equal(fallback.outputWindow, 4096);
+    assert.equal(fallback.contextWindow, 262144, '读不到配置表时兜底 256K 上下文');
+    assert.equal(fallback.outputWindow, 65536, '读不到配置表时兜底 64K 输出');
 });
 
 test('migrateAccountModels：旧版单模型 profile 迁移为首条目并镜像旧字段', () => {
@@ -364,3 +386,37 @@ test('设置页模型选择接线：chip 点击同步 lastModelId，兜底用严
     assert.match(chipBlock[0], /activeModelId = entry\.id/, '选条目必须写窗口选择');
     assert.doesNotMatch(src, /if \(!modelEntryOf\([^)]*\)\)/, '设置页不得再用恒假校验');
 });
+
+test('newOpencodeSessionId：返回带前缀的稳定短串，两次生成不同', () => {
+    const a = newOpencodeSessionId();
+    const b = newOpencodeSessionId();
+    assert.match(a, /^datalens-/);
+    assert.notEqual(a, b);
+});
+
+test('withOpencodeSessionHeader：自动注入 / 用户值优先 / 无会话不注入', () => {
+    const cfg = {provider: 'openai', baseURL: 'https://opencode.ai/inference/go/openai/v1', extraHeaders: {}};
+    const session = {opencodeSessionId: 'datalens-abc'};
+
+    // 有会话：注入稳定 ID
+    const injected = withOpencodeSessionHeader(cfg, session);
+    assert.equal(injected.extraHeaders['x-opencode-session'], 'datalens-abc');
+    // 不改动入参
+    assert.deepEqual(cfg.extraHeaders, {});
+
+    // 用户手填过（任意大小写）：原样返回，保留用户的值，不额外注入小写 key
+    const withUser = {provider: 'openai', extraHeaders: {'X-OpenCode-Session': 'my-own-id'}};
+    const kept = withOpencodeSessionHeader(withUser, session);
+    assert.equal(kept, withUser, '用户已设置该头时原样返回');
+    assert.equal(kept.extraHeaders['X-OpenCode-Session'], 'my-own-id');
+    assert.equal(kept.extraHeaders['x-opencode-session'], undefined);
+
+    // 无会话身份：原样返回，不注入
+    const noSession = withOpencodeSessionHeader(cfg, null);
+    assert.equal(noSession.extraHeaders['x-opencode-session'], undefined);
+
+    // 会话缺 opencodeSessionId（异常存量）：不注入
+    const bare = withOpencodeSessionHeader(cfg, {id: 'session-1'});
+    assert.equal(bare.extraHeaders['x-opencode-session'], undefined);
+});
+

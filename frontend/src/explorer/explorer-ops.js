@@ -4,7 +4,20 @@
 //
 // deps 由 main.js 显式传入（getter 延迟求值 + 需要回写的状态带 setter）；
 // 原 main.js 裸标识符引用已按 deps 名重写为 deps.X。
+import {createExplorerHistory} from './explorer-history.js';
+
 export function createExplorerOps(deps) {
+
+// 文件树操作历史（会话内）：删除 / 重命名 / 移动 / 新建各自记录可逆动作。
+const history = createExplorerHistory();
+
+// 撤销动作写盘后走差量刷新，保留树的展开态与滚动位置（refresh() 是用户主动点刷新专用）。
+function afterHistoryChange(paths) {
+    if (!deps.explorer || !deps.explorer.notifyFileChange) return;
+    for (const path of paths) {
+        if (path) deps.explorer.notifyFileChange(path);
+    }
+}
 
 function remapPathValue(path, oldPath, newPath) {
     if (!path) return path;
@@ -100,6 +113,42 @@ function applyMovedPath(oldPath, newPath) {
     return {activeChanged, rootChanged};
 }
 
+// 移动可撤销：记录每项的原路径与新路径，正反两个方向都调 MoveEntry + applyMovedPath。
+function recordMove(results, destDir) {
+    if (!results.length) return;
+    const moves = results.map((result) => ({
+        from: result.path,
+        to: result.newPath,
+        name: result.name || deps.baseNameOf(result.path),
+        isDir: !!result.isDir,
+    }));
+    const replay = (forward) => async () => {
+        const failures = [];
+        for (const move of moves) {
+            const src = forward ? move.from : move.to;
+            const dir = forward ? destDir : parentFolderOf(move.from);
+            try {
+                const landed = await deps.backend.MoveEntry(src, dir, move.name);
+                applyMovedPath(src, landed);
+                afterHistoryChange([src, landed]);
+            } catch (e) {
+                failures.push(move.name + '：' + ((e && e.message) || e));
+            }
+        }
+        if (failures.length) {
+            deps.flash((forward ? '移动' : '移回') + '失败：' + failures[0], true);
+            return false;
+        }
+        deps.flash(forward ? '已移动 ' + moves.length + ' 项' : '已移回 ' + moves.length + ' 项');
+        return true;
+    };
+    history.push({
+        label: moves.length > 1 ? '移动 ' + moves.length + ' 项' : '移动“' + moves[0].name + '”',
+        undo: replay(false),
+        redo: replay(true),
+    });
+}
+
 async function runPasteItems(clip, destDir, names) {
     if (!clip || !clip.items.length) throw new Error('剪贴板中没有文件');
     if (!deps.backend.CopyEntry || !deps.backend.MoveEntry) throw new Error('当前版本不支持粘贴');
@@ -136,6 +185,7 @@ async function runPasteItems(clip, destDir, names) {
             deps.fileClipboard = null;
             if (deps.explorer) deps.explorer.setCutPaths([]);
         }
+        recordMove(results, destDir);
     }
     if (rootChanged && deps.explorer) deps.explorer.setRoot(deps.workspaceFolder);
     if (rootChanged) deps.renderWorkspaceCrumbs();
@@ -197,6 +247,7 @@ async function moveEntriesByDrag(items, destDir) {
         if (deps.explorer) deps.explorer.removePath(result.path);
     }
     if (rootChanged && deps.explorer) deps.explorer.setRoot(deps.workspaceFolder);
+    recordMove(results, destDir);
     if (deps.explorer && results.length) {
         await deps.explorer.refreshDir(destDir);
         deps.explorer.selectPaths(results.map((result) => ({
@@ -319,6 +370,22 @@ function openCreateEntryDialog(dirPath, isDir, suggestedName, title) {
             } else {
                 await deps.openPath(target);
             }
+            // 新建可撤销：撤销删除（进回收站），重做则重新创建同名条目
+            history.push({
+                label: '新建“' + deps.baseNameOf(target) + '”',
+                undo: async () => {
+                    if (!deps.backend.DeleteEntry) return false;
+                    await deps.backend.DeleteEntry(target);
+                    afterHistoryChange([target]);
+                    return true;
+                },
+                redo: async () => {
+                    const created = await deps.backend.CreateEntry(dirPath, deps.baseNameOf(target), isDir);
+                    afterHistoryChange([created]);
+                    if (deps.explorer) await deps.explorer.refreshDir(dirPath);
+                    return true;
+                },
+            });
         },
     });
 }
@@ -374,6 +441,78 @@ function applyRenamedPath(oldPath, newPath) {
     deps.flash('已重命名为：' + deps.baseNameOf(newPath));
 }
 
+// 真正执行删除并做联动（关闭文档 / 清剪贴板 / 差量刷新 / 留痕）。
+// deleteExplorerEntries 与历史回放共用，避免两套逻辑分叉。
+async function performDelete(items, opts) {
+    const skipLog = !!(opts && opts.skipLog);
+    const deleted = [];
+    const failures = [];
+    for (const item of items) {
+        try {
+            await deps.backend.DeleteEntry(item.path);
+            deleted.push(item);
+        } catch (e) {
+            failures.push(item.name + '：' + ((e && e.message) || e));
+        }
+    }
+    if (deleted.length) {
+        for (const doc of deps.docs.slice()) {
+            if (!doc.path) continue;
+            if (deleted.some((item) =>
+                item.isDir ? pathWithinValue(item.path, doc.path) : samePathValue(item.path, doc.path))) {
+                deps.closeDocNow(doc, false);
+            }
+        }
+        deps.closedTabs = deps.closedTabs.filter((entry) => !deleted.some((item) =>
+            item.isDir ? pathWithinValue(item.path, entry.path) : samePathValue(item.path, entry.path)));
+        if (deps.fileClipboard && deps.fileClipboard.cut) {
+            deps.fileClipboard.items = deps.fileClipboard.items.filter((item) => !deleted.some((target) =>
+                target.isDir ? pathWithinValue(target.path, item.path) : samePathValue(target.path, item.path)));
+            if (!deps.fileClipboard.items.length) deps.fileClipboard = null;
+        }
+        if (deps.explorer) {
+            for (const item of deleted) deps.explorer.removePath(item.path);
+            deps.explorer.setCutPaths(deps.fileClipboard && deps.fileClipboard.cut ? deps.fileClipboard.items.map((item) => item.path) : []);
+            deps.explorer.refresh();
+        }
+        // 操作留痕：逐项记录（回收站可撤销，故记路径而非仅计数）。回放不重复记。
+        if (!skipLog) {
+            for (const item of deleted) {
+                deps.activityLog.log('file.delete', item.path, {count: deleted.length, toRecycle: true});
+            }
+        }
+    }
+    if (failures.length) {
+        deps.flash('删除失败：' + failures[0] + (failures.length > 1 ? '（另有 ' + (failures.length - 1) + ' 项失败）' : ''), true);
+        return false;
+    }
+    deps.flash(deleted.length > 1 ? '已删除 ' + deleted.length + ' 个项目' : '已删除：' + deleted[0].name);
+    return true;
+}
+
+// 从系统回收站还原（撤销删除）；整批全部成功才算成功，避免栈状态与实际文件不一致。
+async function performRestore(items) {
+    if (!deps.backend.RestoreEntry) {
+        deps.flash('当前版本不支持从回收站还原', true);
+        return false;
+    }
+    const failures = [];
+    for (const item of items) {
+        try {
+            await deps.backend.RestoreEntry(item.path);
+            afterHistoryChange([item.path]);
+        } catch (e) {
+            failures.push(item.name + '：' + ((e && e.message) || e));
+        }
+    }
+    if (failures.length) {
+        deps.flash('还原失败：' + failures[0] + (failures.length > 1 ? '（另有 ' + (failures.length - 1) + ' 项失败）' : ''), true);
+        return false;
+    }
+    deps.flash(items.length > 1 ? '已还原 ' + items.length + ' 个项目' : '已还原：' + items[0].name);
+    return true;
+}
+
 function deleteExplorerEntries(targets) {
     const list = clipboardItems(targets);
     if (!list.length) return;
@@ -399,47 +538,27 @@ function deleteExplorerEntries(targets) {
         ? what + '已打开且有未保存的修改，删除后这些修改会一并丢失。\n确定移到回收站吗？'
         : what + '将被移到回收站，确定继续吗？';
     deps.openConfirmDialog(message, async () => {
-        const deleted = [];
-        const failures = [];
-        for (const item of deletable) {
-            try {
-                await deps.backend.DeleteEntry(item.path);
-                deleted.push(item);
-            } catch (e) {
-                failures.push(item.name + '：' + ((e && e.message) || e));
-            }
-        }
-        if (deleted.length) {
-            for (const doc of deps.docs.slice()) {
-                if (!doc.path) continue;
-                if (deleted.some((item) =>
-                    item.isDir ? pathWithinValue(item.path, doc.path) : samePathValue(item.path, doc.path))) {
-                    deps.closeDocNow(doc, false);
-                }
-            }
-            deps.closedTabs = deps.closedTabs.filter((entry) => !deleted.some((item) =>
-                item.isDir ? pathWithinValue(item.path, entry.path) : samePathValue(item.path, entry.path)));
-            if (deps.fileClipboard && deps.fileClipboard.cut) {
-                deps.fileClipboard.items = deps.fileClipboard.items.filter((item) => !deleted.some((target) =>
-                    target.isDir ? pathWithinValue(target.path, item.path) : samePathValue(target.path, item.path)));
-                if (!deps.fileClipboard.items.length) deps.fileClipboard = null;
-            }
-            if (deps.explorer) {
-                for (const item of deleted) deps.explorer.removePath(item.path);
-                deps.explorer.setCutPaths(deps.fileClipboard && deps.fileClipboard.cut ? deps.fileClipboard.items.map((item) => item.path) : []);
-                deps.explorer.refresh();
-            }
-            // 操作留痕：逐项记录（回收站可撤销，故记路径而非仅计数）。
-            for (const item of deleted) {
-                deps.activityLog.log('file.delete', item.path, {count: deleted.length, toRecycle: true});
-            }
-        }
-        if (failures.length) {
-            deps.flash('删除失败：' + failures[0] + (failures.length > 1 ? '（另有 ' + (failures.length - 1) + ' 项失败）' : ''), true);
-        } else {
-            deps.flash(deleted.length > 1 ? '已删除 ' + deleted.length + ' 个项目' : '已删除：' + deleted[0].name);
+        const items = deletable.map((item) => ({...item}));
+        const ok = await performDelete(items);
+        if (ok) {
+            const label = items.length > 1 ? '删除 ' + items.length + ' 项' : '删除“' + items[0].name + '”';
+            history.push({
+                label,
+                undo: () => performRestore(items),
+                redo: () => performDelete(items, {skipLog: true}),
+            });
         }
     }, '删除', '删除', 'danger');
+}
+
+// 重命名到指定路径并做全链联动；正向与撤销共用。
+async function performRename(path, newName, opts) {
+    const newPath = await deps.backend.RenameEntry(path, newName);
+    if (!newPath || newPath === path) return false;
+    applyRenamedPath(path, newPath);
+    afterHistoryChange([path, newPath]);
+    if (!(opts && opts.quiet)) deps.activityLog.log('file.rename', newPath, {from: deps.actRel(path)});
+    return {newPath};
 }
 
 function openRenameEntryDialog(info) {
@@ -451,11 +570,17 @@ function openRenameEntryDialog(info) {
         okLabel: '重命名',
         onSubmit: async (name) => {
             if (!deps.backend.RenameEntry) throw new Error('当前版本不支持重命名');
-            const newPath = await deps.backend.RenameEntry(info.path, name);
-            if (newPath && newPath !== info.path) {
-                applyRenamedPath(info.path, newPath);
-                deps.activityLog.log('file.rename', newPath, {from: deps.actRel(info.path)});
-            }
+            const oldPath = info.path;
+            const oldName = deps.baseNameOf(oldPath);
+            const result = await performRename(oldPath, name);
+            if (!result) return;
+            const newPath = result.newPath;
+            const label = '重命名“' + oldName + '”';
+            history.push({
+                label,
+                undo: () => performRename(newPath, oldName, {quiet: true}),
+                redo: () => performRename(oldPath, name, {quiet: true}),
+            });
         },
     });
 }
@@ -487,6 +612,22 @@ function copyPathMenuItems(targets) {
     ];
 }
 
+async function undoExplorer() {
+    if (!history.canUndo()) return false;
+    const label = history.peekUndo();
+    const ok = await history.undo();
+    if (ok) deps.flash('已撤销：' + label);
+    return ok;
+}
+
+async function redoExplorer() {
+    if (!history.canRedo()) return false;
+    const label = history.peekRedo();
+    const ok = await history.redo();
+    if (ok) deps.flash('已重做：' + label);
+    return ok;
+}
+
 function showExplorerMenu(info, x, y, node) {
     if (!deps.ctxMenu || !info) return;
     const isDir = !!info.isDir;
@@ -495,6 +636,21 @@ function showExplorerMenu(info, x, y, node) {
     const rootPath = deps.explorer && deps.explorer.getRoot ? deps.explorer.getRoot() : '';
     const deletable = targets.filter((item) => !(rootPath && samePathValue(rootPath, item.path)));
     const items = [];
+    items.push({
+        label: '撤销' + (history.canUndo() ? '：' + history.peekUndo() : ''),
+        shortcut: 'Ctrl+Z',
+        icon: 'E7A7',
+        disabled: !history.canUndo(),
+        action: () => { undoExplorer(); },
+    });
+    items.push({
+        label: '重做' + (history.canRedo() ? '：' + history.peekRedo() : ''),
+        shortcut: 'Ctrl+Y',
+        icon: 'E7A6',
+        disabled: !history.canRedo(),
+        action: () => { redoExplorer(); },
+    });
+    items.push({sep: true});
     if (isDir) {
         items.push({
             label: '新建',
@@ -599,6 +755,10 @@ function showExplorerMenu(info, x, y, node) {
         applyRenamedPath,
         deleteExplorerEntries,
         openRenameEntryDialog,
+        undoExplorer,
+        redoExplorer,
+        canUndoExplorer: () => history.canUndo(),
+        canRedoExplorer: () => history.canRedo(),
         relativePathFrom,
         copyPathMenuItems,
         showExplorerMenu,

@@ -141,6 +141,52 @@ func TestAISendChatStopCancels(t *testing.T) {
 	t.Fatalf("stream entry did not clean up")
 }
 
+// 流中途被网关掐断时，ai-error 必须带 retryable 标记——前端据此整轮自动重发；
+// 普通接口错误（401/400 等）不得带，避免把确定性失败重试成死循环。
+func TestAISendChatMarksTruncatedStreamRetryable(t *testing.T) {
+	events := make(chan aitransport.ErrorPayload, 1)
+	oldEmit := Emit
+	Emit = func(event string, payload any) {
+		if event != aitransport.EventError {
+			return
+		}
+		if p, ok := payload.(aitransport.ErrorPayload); ok {
+			events <- p
+		}
+	}
+	t.Cleanup(func() { Emit = oldEmit })
+
+	// chunked 流只发一个数据块就不写终止块直接断开：客户端读到 unexpected EOF
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, buf, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_, _ = buf.WriteString("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n")
+		payload := "data: {\"choices\":[{\"delta\":{\"content\":\"半截\"}}]}\n\n"
+		_, _ = fmt.Fprintf(buf, "%x\r\n%s\r\n", len(payload), payload)
+		_ = buf.Flush()
+	}))
+	defer server.Close()
+
+	cfg := aitransport.Config{BaseURL: server.URL + "/v1", Model: "m", Proxy: "direct"}
+	if err := (&Chat{}).AISendChat("truncate-session#0", cfg, []aitransport.Message{{Role: "user", Content: "hi"}}, nil, 0); err != nil {
+		t.Fatalf("AISendChat: %v", err)
+	}
+	select {
+	case payload := <-events:
+		if !payload.Retryable {
+			t.Fatalf("断流错误未标记 retryable：%#v", payload)
+		}
+		if !strings.Contains(payload.Message, "提前断开") {
+			t.Fatalf("message = %q", payload.Message)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatalf("3 秒内未收到 ai-error")
+	}
+}
+
 func TestAIHomeDir(t *testing.T) {
 	want, err := os.UserHomeDir()
 	if err != nil {

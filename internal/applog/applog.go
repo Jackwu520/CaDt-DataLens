@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"sync"
@@ -51,6 +52,11 @@ func Start() {
 	if f := currentFile(); f != nil {
 		log.SetOutput(io.MultiWriter(os.Stderr, f))
 		log.SetFlags(log.LstdFlags | log.Lmicroseconds)
+		// 未恢复的 panic / 致命错误默认只写 stderr；GUI 进程没有控制台，症状是
+		// 「进程瞬间消失、日志一行不剩」（2026-11-17 打开网页闪退就查不到死因）。
+		// 让 runtime 把崩溃报告复制进本次运行日志；all 档带上全部 goroutine 栈。
+		_ = debug.SetCrashOutput(f, debug.CrashOptions{})
+		debug.SetTraceback("all")
 	}
 	Write("info", "日志文件：%s", path)
 	Write("info", "开发者模式：%s", OnOff(devMode.Load()))

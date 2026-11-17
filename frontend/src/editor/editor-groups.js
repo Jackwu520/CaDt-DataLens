@@ -14,7 +14,7 @@ import {createEditorSqlView} from './editor-sql-view.js';
 import {createEditorDocExtras} from './editor-doc-extras.js';
 import {createEditorExportMenus} from './editor-export-menus.js';
 import {createFileIcon, fileIconSpec} from '../core/fileicons.js';
-import {formats, detectFormat, isKnownCodeFileName} from '../core/formats.js';
+import {formats, detectFormat, defaultMediaMode, isKnownCodeFileName} from '../core/formats.js';
 import {showPatchView, disposePatchView} from './patch-view.js';
 
 export function createEditorGroups(deps) {
@@ -79,6 +79,12 @@ const hideVideoView = (...a) => splitPreview.hideVideoView(...a);
 const enterVideoView = (...a) => splitPreview.enterVideoView(...a);
 const pauseVideoInDoc = (...a) => splitPreview.pauseVideoInDoc(...a);
 const releaseVideo = (...a) => splitPreview.releaseVideo(...a);
+const createAudioView = (...a) => splitPreview.createAudioView(...a);
+const showAudioView = (...a) => splitPreview.showAudioView(...a);
+const hideAudioView = (...a) => splitPreview.hideAudioView(...a);
+const enterAudioView = (...a) => splitPreview.enterAudioView(...a);
+const pauseAudioInDoc = (...a) => splitPreview.pauseAudioInDoc(...a);
+const releaseAudio = (...a) => splitPreview.releaseAudio(...a);
 const applyImageZoom = (...a) => splitPreview.applyImageZoom(...a);
 const zoomImageBy = (...a) => splitPreview.zoomImageBy(...a);
 const enterSvgRender = (...a) => splitPreview.enterSvgRender(...a);
@@ -357,6 +363,7 @@ const VIEW_ICONS = {
     image: '<svg viewBox="0 0 14 14" aria-hidden="true"><rect x="1.5" y="2.2" width="11" height="9.6" rx="1" stroke="currentColor" stroke-width="1.2" fill="none"/><circle cx="4.8" cy="5.3" r="1.05" fill="currentColor"/><path d="M2.6 10.4 5.8 7.3l2.3 2.3L9.8 8l1.9 2.3" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linejoin="round"/></svg>',
     binary: '<svg viewBox="0 0 14 14" aria-hidden="true"><text x="2" y="10.6" font-size="9" font-family="JetBrains Mono, Consolas, monospace" font-weight="700" fill="currentColor">01</text></svg>',
     video: '<svg viewBox="0 0 14 14" aria-hidden="true"><rect x="1.5" y="2.6" width="11" height="8.8" rx="1.4" stroke="currentColor" stroke-width="1.2" fill="none"/><path d="M5.9 5.3l3.3 1.7-3.3 1.7z" fill="currentColor" stroke="none"/></svg>',
+    audio: '<svg viewBox="0 0 14 14" aria-hidden="true"><ellipse cx="5.2" cy="9.8" rx="2.2" ry="1.7" fill="currentColor" stroke="none"/><path d="M7.4 9.8V3.2c2.6.4 3.7 1.3 3.7 2.9" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"/></svg>',
     render: '<svg viewBox="0 0 14 14" aria-hidden="true"><path d="M2 11c2.8 0 3.4-7 6.2-7 1.7 0 2 1.6 3.8 1.6" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"/><circle cx="2" cy="11" r="1.1" fill="currentColor"/><circle cx="12" cy="5.6" r="1.1" fill="currentColor"/></svg>',
     patch: '<svg viewBox="0 0 14 14" aria-hidden="true"><path d="M2 3.4h10M2 7h6.4M2 10.6h4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" fill="none"/><path d="M9.6 8.2l2.4 2.4-2.4 2.4" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>',
     split: '<svg viewBox="0 0 14 14" aria-hidden="true"><rect x="1.5" y="2.2" width="11" height="9.6" rx="1" stroke="currentColor" stroke-width="1.2" fill="none"/><path d="M7 2.6v9" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>',
@@ -367,6 +374,7 @@ function viewDisabledFor(doc, mode) {
     if (!doc) return true;
     if (mode === 'image') return !doc.image;
     if (mode === 'video') return !doc.video;
+    if (mode === 'audio') return !doc.audio;
     if (mode === 'binary') return !doc.binary;
     if (mode === 'tree') return !doc.treeAvailable;
     if (mode === 'preview') return !(doc.format && doc.format.preview) || !!doc.large;
@@ -1084,7 +1092,8 @@ function createDocEditor(doc) {
     const splitRequested = doc.mode === 'split' && !!deps.splitKindFor(doc);
     const imageRequested = !!fmt.image && doc.mode === 'image';
     const videoRequested = !!fmt.video && doc.mode === 'video';
-    const binaryMode = !!fmt.image || !!fmt.video || fmt.id === 'bytes';
+    const audioRequested = !!fmt.audio && doc.mode === 'audio';
+    const binaryMode = !!fmt.image || !!fmt.video || !!fmt.audio || fmt.id === 'bytes';
     let startMode = doc.mode === 'text' ? 'text' : (!doc.treeAvailable ? 'code' : (doc.mode === 'code' ? 'code' : 'tree'));
     if (tableRequested || patchRequested) startMode = 'text';
     if (previewRequested || splitRequested) startMode = 'code';
@@ -1195,7 +1204,7 @@ function createDocEditor(doc) {
         } catch (e) {}
     }
     setupTreeContextMenu(doc);
-    doc.mode = splitRequested ? 'split' : previewRequested ? 'preview' : tableRequested ? 'table' : imageRequested ? 'image' : videoRequested ? 'video' : binaryMode ? 'binary' : startMode;
+    doc.mode = splitRequested ? 'split' : previewRequested ? 'preview' : tableRequested ? 'table' : imageRequested ? 'image' : videoRequested ? 'video' : audioRequested ? 'audio' : binaryMode ? 'binary' : startMode;
     // 补丁视图是覆盖层：底层编辑器仍按 text 起始，但 doc.mode 必须记成 patch，
     // 否则首次打开时状态栏显示补丁、视图按钮却选中文本。
     if (patchRequested) doc.mode = 'patch';
@@ -1207,11 +1216,13 @@ function createDocEditor(doc) {
     if (fmt.preview) createMarkdownPreview(doc);
     if (fmt.image) createImageView(doc);
     if (fmt.video) createVideoView(doc);
+    if (fmt.audio) createAudioView(doc);
     if (patchRequested) showPatchView(doc, patchViewContext());
     if (tableRequested) showCsvTableView(doc);
     if (previewRequested) showMarkdownPreview(doc);
     if (imageRequested) showImageView(doc);
     if (videoRequested) showVideoView(doc);
+    if (audioRequested) showAudioView(doc);
     if (!doc.dirty) doc.bases[doc.mode] = doc.text;
     deps.applyReadOnlyToDoc(doc);
     doc.content = null;
@@ -1233,12 +1244,14 @@ function createDoc(data) {
             large: false,
             enc: 'binary',
             content: data.content,
-            format: data.image ? formats.image : (data.video ? formats.video : formats.bytes),
+            format: data.image ? formats.image : (data.video ? formats.video : (data.audio ? formats.audio : formats.bytes)),
             image: !!data.image,
             video: !!data.video,
+            audio: !!data.audio,
             treeAvailable: false,
             parseError: null,
-            mode: data.video ? 'video' : (data.image ? 'image' : 'binary'),
+            // 媒体文档首屏就是它自己的视图（规则单一来源见 core/formats.js）
+            mode: defaultMediaMode(data) || 'binary',
             text: null,
             rawText: null,
             dirty: false,
@@ -1396,8 +1409,9 @@ async function activateDoc(doc) {
         if (g0) { g0.activeId = doc.id; focusedGroupId = g0.id; }
         return;
     }
-    // 切换标签时先暂停上一个标签的视频：面板只是被隐藏，不会自动停音频
+    // 切换标签时先暂停上一个标签的视频/音频：面板只是被隐藏，不会自动停音频
     pauseVideoInDoc(deps.file);
+    pauseAudioInDoc(deps.file);
     let g = groupOfDoc(doc.id);
     if (!g) {
         g = focusedGroup() || createGroup();
@@ -1548,6 +1562,7 @@ function closeDocNow(doc, remember = true) {
     disposePatchView(doc);
     // 视频视图：先断源再摘节点，否则解码器与文件句柄要等 GC 才释放
     releaseVideo(doc);
+    releaseAudio(doc);
     const wasActive = doc === deps.file;
     if (doc.path && remember) {
         deps.closedTabs.push({path: doc.path, name: doc.name});
@@ -1663,5 +1678,5 @@ function reopenClosedTab() {
     function setFocusedGroupId(v) { focusedGroupId = v; }
     function setSplitRoot(v) { splitRoot = v; }
 
-    return {activateDoc, setFocusedGroupId, setSplitRoot, addDocToFocusedGroup, applyAceMode, applyCsvTableZoom, applyImageZoom, browserViewportLabel, closeDocNow, closeDocsWithConfirm, closeSqlView, createDoc, createDocEditor, createGroup, dismissBanner, doRedo, doUndo, get editorGroups() { return editorGroups; }, enterBinaryView, enterCsvTable, enterImageView, enterMarkdownPreview, enterSplitView, enterSqlView, enterSvgRender, enterTextView, enterVideoView, exitSplitView, expandAllWithGuard, flushCsvCellEditor, get focusedGroupId() { return focusedGroupId; }, groupDocs, groupOfDoc, handleAIWorkspaceFileChanged, handleExternalDocChanges, hideBanner, hideSvgRender, hideVideoView, hookCodeFoldRanges, hookMultiCursor, humanizeCounts, initCodeFoldHover, jumpBookmark, leaveCsvTable, leaveMarkdownPreview, markDocDirty, mdSyncScrollFromAce, moveTabInGroup, openWithDefaultApp, patchViewContext, refreshPatchMarkers, rememberDocView, renderBookmarks, renderBreadcrumb, renderCsvTableView, renderEditorLayout, renderMarkdownPreview, renderTabs, reopenClosedTab, releaseVideo, requestCloseDoc, revertDocToSaved, scheduleGitGutter, setBrowserViewport, setFilename, showBanner, showImageMenu, showMdPreviewMenu, showPathInFolder, showSvgMenu, get splitRoot() { return splitRoot; }, syncAllBrowserTabs, syncBrowserTab, syncTabReadOnly, textArea, toggleBookmark, toggleFocusedNode, updateBrowserTitle, updateDocChrome, updateStatus, zoomCsvTable, zoomImageBy, zoomSvgRenderBy};
+    return {activateDoc, setFocusedGroupId, setSplitRoot, addDocToFocusedGroup, applyAceMode, applyCsvTableZoom, applyImageZoom, browserViewportLabel, closeDocNow, closeDocsWithConfirm, closeSqlView, createDoc, createDocEditor, createGroup, dismissBanner, doRedo, doUndo, enterAudioView, enterBinaryView, enterCsvTable, enterImageView, enterMarkdownPreview, enterSplitView, enterSqlView, enterSvgRender, enterTextView, enterVideoView, exitSplitView, expandAllWithGuard, flushCsvCellEditor, get focusedGroupId() { return focusedGroupId; }, groupDocs, groupOfDoc, handleAIWorkspaceFileChanged, handleExternalDocChanges, hideAudioView, hideBanner, hideSvgRender, hideVideoView, hookCodeFoldRanges, hookMultiCursor, humanizeCounts, initCodeFoldHover, jumpBookmark, leaveCsvTable, leaveMarkdownPreview, markDocDirty, mdSyncScrollFromAce, moveTabInGroup, openWithDefaultApp, patchViewContext, refreshPatchMarkers, rememberDocView, renderBookmarks, renderBreadcrumb, renderCsvTableView, renderEditorLayout, renderMarkdownPreview, renderTabs, reopenClosedTab, releaseAudio, releaseVideo, requestCloseDoc, revertDocToSaved, scheduleGitGutter, setBrowserViewport, setFilename, showBanner, showImageMenu, showMdPreviewMenu, showPathInFolder, showSvgMenu, get splitRoot() { return splitRoot; }, syncAllBrowserTabs, syncBrowserTab, syncTabReadOnly, textArea, toggleBookmark, toggleFocusedNode, updateBrowserTitle, updateDocChrome, updateStatus, zoomCsvTable, zoomImageBy, zoomSvgRenderBy};
 }

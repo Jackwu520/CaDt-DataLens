@@ -7,7 +7,7 @@ import (
 )
 
 func TestCommandJobBufferIncrementalRead(t *testing.T) {
-	job := registerCommandJob("bg-test-incr", "Git Bash", "echo hi")
+	job := registerCommandJob("bg-test-incr", "Git Bash", "echo hi", false)
 	defer unregisterCommandJob("bg-test-incr")
 	job.writeLine("out", "line-1")
 	job.writeLine("err", "oops")
@@ -29,7 +29,7 @@ func TestCommandJobBufferIncrementalRead(t *testing.T) {
 }
 
 func TestCommandJobBufferReadChunk(t *testing.T) {
-	job := registerCommandJob("bg-test-chunk", "sh", "flood")
+	job := registerCommandJob("bg-test-chunk", "sh", "flood", false)
 	defer unregisterCommandJob("bg-test-chunk")
 	job.writeChunk([]byte(strings.Repeat("a", aiJobReadChunk+100)))
 	text, cursor, _ := job.read(0)
@@ -46,7 +46,7 @@ func TestCommandJobBufferReadChunk(t *testing.T) {
 }
 
 func TestCommandJobBufferDropHead(t *testing.T) {
-	job := registerCommandJob("bg-test-drop", "sh", "flood")
+	job := registerCommandJob("bg-test-drop", "sh", "flood", false)
 	defer unregisterCommandJob("bg-test-drop")
 	filler := strings.Repeat("x", 4096)
 	for i := 0; i < 100; i++ { // 100 * 4KB ≈ 400 KB > 256 KB 缓冲
@@ -91,7 +91,7 @@ func TestFinishCommandJobEviction(t *testing.T) {
 	for i := 0; i < aiJobMaxFinished+2; i++ {
 		id := "bg-evict-" + string(rune('a'+i))
 		ids = append(ids, id)
-		registerCommandJob(id, "sh", "noop")
+		registerCommandJob(id, "sh", "noop", false)
 		// 直接写入结束时间，避免依赖时钟精度判断淘汰顺序
 		commandJobsMu.Lock()
 		j := commandJobs[id]

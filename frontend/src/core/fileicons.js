@@ -34,6 +34,9 @@ const ICONS = {
     image: badge('<circle cx="10.7" cy="5.9" r="1.05" fill="currentColor"></circle>' +
         '<path d="M4.5 11.4l2.4-3.2 1.55 1.95 1.15-1.4 2.1 2.65z" fill="currentColor"></path>'),
     video: badge('<path d="M6.5 5.1l4.5 2.9-4.5 2.9z" fill="currentColor"></path>'),
+    audio: badge('<ellipse cx="6.9" cy="10.9" rx="1.9" ry="1.5" fill="currentColor"></ellipse>' +
+        '<rect x="8.4" y="3.9" width="1.1" height="7" fill="currentColor"></rect>' +
+        '<path d="M9.5 4.4c1.8.5 2.5 1.4 2.5 2.8" fill="none" stroke="currentColor" stroke-width="1.05" stroke-linecap="round"></path>'),
     binary: badge(label('01', 5.1)),
     js: badge(label('JS', 5.3)),
     ts: badge(label('TS', 5.3)),
@@ -74,6 +77,15 @@ const OS_EXTRA_ICONS = {
         '<rect x="2.6" y="6.4" width="26.8" height="19.2" rx="3.4" fill="#4a5bd4"/>' +
         '<path fill="#39489f" d="M2.6 9.8h4.6v12.4H2.6zM24.8 9.8h4.6v12.4h-4.6z"/>' +
         '<path fill="#fff" d="M13.1 11.9l7.9 4.1-7.9 4.1z"/>' +
+        '</svg>',
+    // 音频：圆盘唱片 + 中心孔 + 音符柄（开源图标集里没有 audio，自绘，配色与视频同族错开）
+    audio: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">' +
+        '<circle cx="14.4" cy="16" r="11" fill="#b3502e"/>' +
+        '<circle cx="14.4" cy="16" r="6.6" fill="#933f20"/>' +
+        '<circle cx="14.4" cy="16" r="2.3" fill="#f4e9df"/>' +
+        '<path fill="#fff" d="M20.3 8.9c2.9.9 4.4 2.4 4.4 4.9 0 .9-.2 1.7-.6 2.5l-1.9-1c.3-.6.4-1.1.4-1.5 0-1.6-1-2.6-3.1-3.3z"/>' +
+        '<rect x="18.4" y="8.6" width="2" height="12.2" rx="0.6"/>' +
+        '<ellipse cx="16.6" cy="21.3" rx="2.9" ry="2.2"/>' +
         '</svg>'
 };
 
@@ -97,6 +109,9 @@ const EXTENSIONS = {
     mp4: 'video', m4v: 'video', webm: 'video', mov: 'video', mkv: 'video',
     avi: 'video', flv: 'video', wmv: 'video', mpg: 'video', mpeg: 'video', m2ts: 'video',
     '3gp': 'video', ogv: 'video',
+    // 音频容器（注意不要收 mid：WebView2 解不了；oga/weba 与 ogg/opus 同族）
+    wav: 'audio', mp3: 'audio', ogg: 'audio', oga: 'audio', opus: 'audio',
+    flac: 'audio', m4a: 'audio', aac: 'audio', weba: 'audio', wma: 'audio',
     bin: 'binary', dat: 'binary', exe: 'binary', dll: 'binary', zip: 'binary', gz: 'binary',
     js: 'js', mjs: 'js', cjs: 'js', jsx: 'js',
     ts: 'ts', tsx: 'ts',

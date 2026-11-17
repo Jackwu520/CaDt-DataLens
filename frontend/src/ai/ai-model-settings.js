@@ -17,6 +17,7 @@ export function createAIModelSettings(ctx, extras) {
     const askConfirm = ctx.askConfirm;
     const saveAIConfig = ctx.saveAIConfig;
     const updateComposerState = ctx.updateComposerState;
+    const enhanceSelect = typeof ctx.enhanceSelect === 'function' ? ctx.enhanceSelect : null;
 
     // 模型编辑器的临时状态（原在 ai-settings-dialog.js 闭包级，随模型域迁入）
     let modelEditorState = null;
@@ -40,8 +41,8 @@ export function createAIModelSettings(ctx, extras) {
     }
 
     function providerLabelFor(profile) {
-        return profile && profile.provider === 'anthropic' ? 'Anthropic 原生'
-            : (profile && profile.provider === 'responses' ? 'OpenAI Responses' : 'OpenAI 兼容');
+        return profile && profile.provider === 'anthropic' ? '/v1/messages'
+            : (profile && profile.provider === 'responses' ? '/responses' : '/chat/completions');
     }
 
     function renderModelList() {
@@ -141,6 +142,13 @@ export function createAIModelSettings(ctx, extras) {
         }
         if (opt.modelEditorMask) opt.modelEditorMask.classList.remove('hidden');
         opt.modelEditor.classList.remove('hidden');
+        // 协议 / 代理 / 推理下拉与设置页同款浮层：原生 select 展开会露出系统菜单，
+        // 和弹窗里的自绘控件像两套。enhanceSelect 幂等，重复调用顺带同步触发器文本。
+        if (enhanceSelect) {
+            for (const node of [opt.provider, opt.proxy, opt.reasoning]) {
+                if (node) enhanceSelect(node);
+            }
+        }
         setTimeout(() => {
             if (opt.name) {
                 opt.name.focus();

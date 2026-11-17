@@ -3,6 +3,7 @@
 // 运行态注册表（const Map 活引用）与运行时动作 / 详情视图入口经 extras 注入。函数体逐字搬移。
 // 构造期即绑定 chip 点击 / 面板点击关弹层 / 标题行 ResizeObserver（时机与拆分前一致）。
 import {iconSvg} from '../core/icons.js';
+import {sandboxModeLabel} from './ai-sandbox-grant.js';
 
 export function createAIHeadHud(ctx, extras) {
     const el = ctx.el;
@@ -109,6 +110,7 @@ export function createAIHeadHud(ctx, extras) {
             out.push({toolCallId: sub.key, key: sub.key, subId: sub.id, name: sub.name, task: sub.task,
                 depth: sub.depth, state: 'running', startedAt: sub.startedAt,
                 mode: sub.mode || 'blocking', continuable: true,
+                sandboxMode: sub.sandboxMode || '',
                 inboxCount: unseenInboxCount(sub),
                 compacting: !!sub.compacting,
                 sessionTitle: sessionTitleOf(sub.parentSessionId)});
@@ -129,6 +131,7 @@ export function createAIHeadHud(ctx, extras) {
                 task: rec.task, depth: rec.depth, state: rec.state, startedAt: rec.startedAt,
                 rounds: rec.rounds, ms: rec.ms, tokens: rec.tokens, summary: rec.summary,
                 mode: rec.mode, continuable: rec.continuable,
+                sandboxMode: rec.sandboxMode || '',
                 sessionTitle: sessionTitleOf(rec.parentSessionId),
             });
         }
@@ -142,6 +145,7 @@ export function createAIHeadHud(ctx, extras) {
                 out.push({toolCallId: key, key, depth: m.agent.depth || 1, name: m.agent.name || '子代理',
                     task: m.agent.task || '', state: m.agent.state || 'done', summary: m.agent.summary || '',
                     rounds: m.agent.rounds || 0, ms: m.agent.ms || 0, tokens: m.agent.tokens || 0,
+                    sandboxMode: m.agent.sandboxMode || '',
                     sessionTitle: session.title || ''});
             }
         }
@@ -281,6 +285,7 @@ export function createAIHeadHud(ctx, extras) {
                 subSpan.className = 'ai-chips-sub';
                 const bits = [];
                 if (agent.depth > 1) bits.push('第 ' + agent.depth + ' 层');
+                if (agent.sandboxMode) bits.push('沙箱 ' + sandboxModeLabel(agent.sandboxMode));
                 bits.push(taskSnippet(agent.task));
                 if (agent.sessionTitle) bits.push('@ ' + agent.sessionTitle);
                 subSpan.textContent = bits.join(' · ');

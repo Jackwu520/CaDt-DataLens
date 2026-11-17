@@ -30,11 +30,11 @@ test('视图选项：视频文档给视频/二进制/文本三档，文案与禁
 
 test('文档层：视频标记落到 createDoc 与首屏视图', () => {
     const g = src('editor/editor-groups.js');
-    assert.match(g, /format: data\.image \? formats\.image : \(data\.video \? formats\.video : formats\.bytes\)/);
+    assert.match(g, /format: data\.image \? formats\.image : \(data\.video \? formats\.video : \(data\.audio \? formats\.audio : formats\.bytes\)\)/);
     assert.match(g, /video: !!data\.video/);
-    assert.match(g, /mode: data\.video \? 'video'/);
+    assert.match(g, /mode: defaultMediaMode\(data\) \|\| 'binary'/, '首屏视图走媒体默认单一来源');
     assert.match(g, /const videoRequested = !!fmt\.video && doc\.mode === 'video';/);
-    assert.match(g, /const binaryMode = !!fmt\.image \|\| !!fmt\.video \|\| fmt\.id === 'bytes';/);
+    assert.match(g, /const binaryMode = !!fmt\.image \|\| !!fmt\.video \|\| !!fmt\.audio \|\| fmt\.id === 'bytes';/);
     assert.match(g, /if \(fmt\.video\) createVideoView\(doc\);/);
     assert.match(g, /if \(videoRequested\) showVideoView\(doc\);/);
     assert.match(g, /video: '<svg/, '标签条的视图按钮要有图标');

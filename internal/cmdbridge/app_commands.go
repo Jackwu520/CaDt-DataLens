@@ -14,6 +14,7 @@ import (
 	"datalens/internal/envvars"
 	"datalens/internal/executil"
 	"datalens/internal/procctl"
+	"datalens/internal/sandbox"
 )
 
 // 进程桥：为内置终端面板以外的场景（插件命令、git 浅集成等）提供受控的命令执行能力。
@@ -57,6 +58,17 @@ func (b *Bridge) RunCommandSync(exe string, args []string, cwd string, timeoutMs
 // runCommandSyncRegistered：runId 非空时把取消函数注册进 共享消息表（可被 procctl.Stop 杀掉）。
 // maxMs 是调用方的超时上限（插件 120 s / AI 前台 600 s）；超界或非正数回落默认 20 s。
 func (b *Bridge) runCommandSyncRegistered(id, exe string, args []string, cwd string, timeoutMs, maxMs int) (*CommandResult, error) {
+	return b.runCommandSyncConfined(id, exe, args, cwd, timeoutMs, maxMs, nil)
+}
+
+// runCommandSyncConfined 与 runCommandSyncRegistered 同语义，额外支持把子进程放进沙箱。
+// sb 为 nil 时行为与裸跑完全一致。
+//
+// 沙箱档有两条硬约束（见 docs/unfinished-plans/subagent-sandbox.md §3.3）：
+//   - 不能调用 executil.HideCommandWindow：它设的 CREATE_NO_WINDOW 会让受限令牌
+//     子进程死在 0xC0000142，启动标志由 Sandbox.Configure 统一给 DETACHED_PROCESS；
+//   - 环境块必须先由调用方合并好，Sandbox.Configure 只在其上重写 TMP/TEMP。
+func (b *Bridge) runCommandSyncConfined(id, exe string, args []string, cwd string, timeoutMs, maxMs int, sb *sandbox.Sandbox) (*CommandResult, error) {
 	if err := procctl.NormalizeArgs(exe, args); err != nil {
 		return nil, err
 	}
@@ -82,11 +94,20 @@ func (b *Bridge) runCommandSyncRegistered(id, exe string, args []string, cwd str
 	procctl.ApplyCancel(cmd)
 	cmd.Dir = dir
 	cmd.Env = envvars.MergeEnv(os.Environ())
-	executil.HideCommandWindow(cmd)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &limitedWriter{w: &stdout, limit: commandOutputCap}
 	cmd.Stderr = &limitedWriter{w: &stderr, limit: commandOutputCap}
-	runErr := cmd.Run()
+	var runErr error
+	if sb != nil {
+		// 沙箱档：启动标志与令牌由 Sandbox 统一配置，这里不能再碰 SysProcAttr。
+		if startErr := sb.Start(cmd); startErr != nil {
+			return nil, startErr
+		}
+		runErr = cmd.Wait()
+	} else {
+		executil.HideCommandWindow(cmd)
+		runErr = cmd.Run()
+	}
 	res := &CommandResult{Stdout: stdout.String(), Stderr: stderr.String()}
 	if ctx.Err() == context.DeadlineExceeded {
 		return res, fmt.Errorf("命令超时（%d ms）", timeoutMs)
@@ -113,6 +134,13 @@ func (b *Bridge) AIStopShellRun(id string) {
 // StartCommand 流式执行：按行发出 cmd-out {id, stream, data} 事件，结束时发出 cmd-exit {id, code}。
 // id 由调用方（前端/插件）生成并保证唯一。
 func (b *Bridge) StartCommand(id, exe string, args []string, cwd string) error {
+	return b.startCommandConfined(id, exe, args, cwd, nil, nil)
+}
+
+// startCommandConfined 与 StartCommand 同语义，可把子进程放进沙箱（sb 非 nil 时）：
+// 启动标志交给 Sandbox.Configure（禁 HideCommandWindow，见 runCommandSyncConfined 的注释），
+// 进程退出后由本函数负责 sb.Close()（撤 temp 授权 + 杀残留进程树）与 cleanup()。
+func (b *Bridge) startCommandConfined(id, exe string, args []string, cwd string, sb *sandbox.Sandbox, cleanup func()) error {
 	if strings.TrimSpace(id) == "" {
 		return fmt.Errorf("id 不能为空")
 	}
@@ -133,7 +161,9 @@ func (b *Bridge) StartCommand(id, exe string, args []string, cwd string) error {
 	procctl.ApplyCancel(cmd)
 	cmd.Dir = dir
 	cmd.Env = envvars.MergeEnv(os.Environ())
-	executil.HideCommandWindow(cmd)
+	if sb == nil {
+		executil.HideCommandWindow(cmd)
+	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		procctl.Stop(id)
@@ -144,11 +174,26 @@ func (b *Bridge) StartCommand(id, exe string, args []string, cwd string) error {
 		procctl.Stop(id)
 		return err
 	}
-	if err := cmd.Start(); err != nil {
+	if sb != nil {
+		// 沙箱档：令牌与启动标志由 Sandbox 统一配置（DETACHED / 继承隐藏控制台二选一）。
+		if err := sb.Start(cmd); err != nil {
+			procctl.Stop(id)
+			return err
+		}
+	} else if err := cmd.Start(); err != nil {
 		procctl.Stop(id)
 		return err
 	}
 	go func() {
+		// 进程结束后统一收尾：先关沙箱（撤 temp 授权、杀残留进程树），再跑调用方的清理。
+		defer func() {
+			if sb != nil {
+				_ = sb.Close()
+			}
+			if cleanup != nil {
+				cleanup()
+			}
+		}()
 		var wg sync.WaitGroup
 		emitLines := func(pipe interface{ Read([]byte) (int, error) }, stream string) {
 			defer wg.Done()
@@ -222,9 +267,9 @@ func (b *Bridge) emitCommandEvent(id, stream, data string) {
 	if job := lookupCommandJob(id); job != nil {
 		job.writeLine(stream, data)
 	}
-		// 键必须带引号：map 字面量的键是表达式，裸写 id/stream/data 会把变量值当键名
-		//（{"bg-1":"bg-1",...}），前端按 payload.id 分发永远落空，后台终端实时输出全灭。
-		emit("cmd-out", map[string]string{"id": id, "stream": stream, "data": strings.ToValidUTF8(data, "\ufffd")})
+	// 键必须带引号：map 字面量的键是表达式，裸写 id/stream/data 会把变量值当键名
+	//（{"bg-1":"bg-1",...}），前端按 payload.id 分发永远落空，后台终端实时输出全灭。
+	emit("cmd-out", map[string]string{"id": id, "stream": stream, "data": strings.ToValidUTF8(data, "\ufffd")})
 }
 
 // ---------- AI 后台命令作业（后台终端） ----------
@@ -243,6 +288,8 @@ type commandJob struct {
 	id      string // 等于 StartCommand 的 id（bg-<seq>）
 	shell   string
 	command string
+	// sandboxed 表示这条作业跑在 OS 沙箱里：退出时据此判定失败是否来自 ACL 拒绝。
+	sandboxed bool
 
 	mu        sync.Mutex
 	buf       []byte
@@ -253,6 +300,8 @@ type commandJob struct {
 	endedAt   time.Time
 	exited    bool
 	code      int
+	// sandboxDenied 表示退出时判定为「被沙箱拒绝」（沙箱作业 + 非零退出 + stderr 命中特征串）。
+	sandboxDenied bool
 }
 
 func (j *commandJob) writeChunk(p []byte) {
@@ -301,8 +350,8 @@ var (
 	commandJobSeq int
 )
 
-func registerCommandJob(id, shell, command string) *commandJob {
-	job := &commandJob{id: id, shell: shell, command: command, startedAt: time.Now()}
+func registerCommandJob(id, shell, command string, sandboxed bool) *commandJob {
+	job := &commandJob{id: id, shell: shell, command: command, sandboxed: sandboxed, startedAt: time.Now()}
 	commandJobsMu.Lock()
 	commandJobs[id] = job
 	commandJobsMu.Unlock()
@@ -331,6 +380,11 @@ func finishCommandJob(id string, code int) {
 			job.exited = true
 			job.code = code
 			job.endedAt = time.Now()
+			// 沙箱作业失败时顺手判定一次「是不是被 ACL 拒绝的」，供 check_command 如实分类。
+			// 缓冲里 stderr 行带 "[stderr] " 前缀，特征串照样能命中。
+			if job.sandboxed && code != 0 {
+				job.sandboxDenied = detectSandboxDenial(code, string(job.buf))
+			}
 		}
 		job.mu.Unlock()
 	}
@@ -368,6 +422,8 @@ type AICommandJobStatus struct {
 	Cursor      int64  `json:"cursor"`
 	Truncated   bool   `json:"truncated"`
 	StartedAtMs int64  `json:"startedAtMs"`
+	// SandboxDenied 表示作业失败且判定为被沙箱拒绝（沙箱作业 + 非零退出 + stderr 命中特征串）。
+	SandboxDenied bool `json:"sandboxDenied,omitempty"`
 }
 
 func (b *Bridge) commandJobStatus(jobId string, since int64) *AICommandJobStatus {
@@ -379,11 +435,12 @@ func (b *Bridge) commandJobStatus(jobId string, since int64) *AICommandJobStatus
 	}
 	st := &AICommandJobStatus{JobId: job.id, Shell: job.shell, Command: job.command, StartedAtMs: job.startedAt.UnixMilli()}
 	job.mu.Lock()
-	exited, code, endedAt := job.exited, job.code, job.endedAt
+	exited, code, endedAt, denied := job.exited, job.code, job.endedAt, job.sandboxDenied
 	job.mu.Unlock()
 	if exited {
 		st.State = "exited"
 		st.Code = code
+		st.SandboxDenied = denied
 		st.DurationMs = endedAt.Sub(job.startedAt).Milliseconds()
 	} else {
 		st.State = "running"

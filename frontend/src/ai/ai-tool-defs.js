@@ -104,10 +104,15 @@ export const AI_TOOL_DEFS = {
             type: 'object',
             properties: {
                 name: {type: 'string', description: '记忆文件名（安全字符，.md 结尾）'},
-                content: {type: 'string', description: '完整文件内容（最多 256KB）'},
+                content: {type: 'string', description: '完整文件内容（最多 60KB）'},
             },
             required: ['name', 'content'],
         },
+    },
+    skill_list: {
+        name: 'skill_list',
+        description: '列出全部可用技能的名称与一句话描述（含来源，含未进系统提示词索引的长尾技能）。当系统提示词的技能索引因数量上限没有列全、或你需要找一个可能存在但索引里没有的技能时使用；不要用它加载技能——加载用 skill_use。',
+        parameters: {type: 'object', properties: {}},
     },
     preference_list: {
         name: 'preference_list',
@@ -282,7 +287,7 @@ export const AI_TOOL_DEFS = {
     },
     plan_mode: {
         name: 'plan_mode',
-        description: '进入或退出计划模式。复杂的多步实现类任务可先进入计划模式（只读探索并输出计划，用户批准后再执行）。计划模式下完成计划后：先输出完整计划等待用户批准，不要自行退出后直接执行。切换从下一轮对话生效。',
+        description: '进入或退出计划模式。复杂的多步实现类任务可先进入计划模式（只读探索并输出计划，用户批准后再执行）。计划模式下完成计划后：先输出完整计划等待用户批准，不要自行退出后直接执行。最终计划的答复正文就是计划文档本身（会被整体保存成文件供审阅），不要混入开场白、探索过程叙述或结尾问句。切换从下一轮对话生效。',
         parameters: {
             type: 'object',
             properties: {
@@ -290,6 +295,18 @@ export const AI_TOOL_DEFS = {
                 reason: {type: 'string', description: '切换原因（可选）'},
             },
             required: ['enabled'],
+        },
+    },
+    submit_plan: {
+        name: 'submit_plan',
+        description: '计划模式下把计划作为文档提交给用户审批。提交前若仍有未决的意图/方案问题，先用 ask_user 澄清（不要写进计划，也不要用普通文本提问）。plan 字段放完整、纯净的 Markdown 计划正文——用户审阅、以及最终保存成计划文件的都是这个字段的内容；不要在对话正文里重复计划，也不要把开场白、探索过程叙述、结尾问句写进 plan（正文留空或一句话即可）。提交后停下等待用户批准（用户会点「执行计划」或发送补充意见）。',
+        parameters: {
+            type: 'object',
+            properties: {
+                plan: {type: 'string', description: '完整计划文档（Markdown）：目标、现状（可选）、涉及文件、按顺序的步骤、验证方式、风险与回滚'},
+                title: {type: 'string', description: '计划标题（可选，默认取文档第一个一级标题）'},
+            },
+            required: ['plan'],
         },
     },
     ask_user: {
@@ -462,7 +479,7 @@ export const AI_TOOL_DEFS = {
     },
     check_command: {
         name: 'check_command',
-        description: '查询后台命令作业：返回状态（running / exited / notfound）、退出码、已运行时长与自上次查询以来的新增输出（每作业最多保留 256 KB，超出丢弃最早内容）。',
+        description: '查询后台命令作业：返回状态（running / exited / notfound）、退出码、已运行时长与自上次查询以来的新增输出（每作业最多保留 256 KB，超出丢弃最早内容）。不要靠反复调用空等。',
         parameters: {
             type: 'object',
             properties: {
@@ -792,7 +809,7 @@ export const AI_TOOL_DEFS = {
     },
     env_create: {
         name: 'env_create',
-        description: '创建一个新的环境变量：你只提供名称与描述，值由用户在弹出的输入框中亲自填写（你拿不到值）。创建成功后变量立即注入终端与命令桥。',
+        description: '创建一个新的环境变量：你只提供名称与描述，值由用户在弹出的输入框中亲自填写（你拿不到值），不要用 ask_user 或对话索取变量值。创建成功后变量立即注入终端与命令桥。',
         parameters: {
             type: 'object',
             properties: {
@@ -903,11 +920,13 @@ export const AI_TOOL_CATALOG = {
     preference_write: {group: 'memory', blurb: '长期工作方式偏好；一次性要求不要写入'},
     preference_remove: {group: 'memory', blurb: '长期工作方式偏好；一次性要求不要写入'},
     skill_use: {group: 'memory', blurb: '加载技能全文并遵循'},
+    skill_list: {group: 'memory', blurb: '看全部技能的名称与一句话描述（索引截断时的长尾入口）'},
     write_worklog: {group: 'memory', blurb: '完成任务后追加工作日志（标题进月份索引，摘要进当日正文）'},
     env_list: {group: 'env', blurb: '看名称与描述（值永远不可见）；命令里直接引用 $名称 / %名称%'},
     env_create: {group: 'env', blurb: '登记新变量，值由用户在弹窗里填写'},
     todo_write: {group: 'task', blurb: '多步任务的进度清单，完成一步更新一步'},
     plan_mode: {group: 'task', blurb: '实现类任务先只读规划，等用户批准再动手'},
+    submit_plan: {group: 'task', blurb: '计划模式下把完整计划作为文档提交审批（正文不用重复）'},
     ask_user: {group: 'task', blurb: '必须由用户拍板的关键选择'},
     spawn_agent: {group: 'task', blurb: '并行调查 / 多视角审查（只读子代理；isolation=worktree 给它独立草稿区可写，回灌仍要你 export 审阅）'},
     agent_send: {group: 'task', blurb: '给子代理补线索（排队）/ 插队纠正 / 唤醒已完成子代理继续'},
@@ -951,12 +970,15 @@ export const AI_TOOL_GROUPS = [
 
 export function createAIToolDefs(ctx) {
     const appControlOn = ctx.appControlOn;
-    function toolsForScope(scope, planMode) {
+    // read_video 会把视频内容段塞进请求，只有「能接收视频的会话」才该拿到这个工具。
+    // 判定由 ctx.videoCapableOf(session) 提供（ai-config-model.modelVideoInputEnabled 的
+    // 活引用）；缺省恒 true——测试与无会话上下文的调用（如 token 估算）保持旧行为。
+    const videoCapableOf = ctx.videoCapableOf || (() => true);
+    function toolsForScope(scope, planMode, session) {
         const list = [
             AI_TOOL_DEFS.list_dir,
             AI_TOOL_DEFS.read_file,
             AI_TOOL_DEFS.read_image,
-            AI_TOOL_DEFS.read_video,
             AI_TOOL_DEFS.search_text,
             // 文件发现：只读（Go FindFiles），所有档位与计划模式可用
             AI_TOOL_DEFS.glob,
@@ -968,9 +990,13 @@ export function createAIToolDefs(ctx) {
             AI_TOOL_DEFS.session_search,
             AI_TOOL_DEFS.session_read,
             AI_TOOL_DEFS.skill_use,
+            // 技能目录：只读（listSkillsRaw 组装），所有档位与计划模式可用——系统提示词索引截断时的长尾入口
+            AI_TOOL_DEFS.skill_list,
             AI_TOOL_DEFS.ask_user,
             AI_TOOL_DEFS.env_list,
             AI_TOOL_DEFS.plan_mode,
+            // 提交计划：计划模式下把计划作为文档提交（正文不承载计划，落盘用参数）
+            ...(planMode ? [AI_TOOL_DEFS.submit_plan] : []),
             AI_TOOL_DEFS.schedule_list,
             AI_TOOL_DEFS.reminder_list,
             // 计时器：纯会话态（不碰工作区文件、不产生进程），到点经系统消息唤醒，所有范围档可用
@@ -1036,14 +1062,17 @@ export function createAIToolDefs(ctx) {
         if (ctx.mcpToolDefs && AI_WRITE_SCOPES.includes(scope) && !planMode) {
             list.push(...ctx.mcpToolDefs());
         }
+        // read_video 夹在 read_image 与 search_text 之间（保持目录/载荷的稳定顺序）：
+        // 会话能接收视频才注册，否则连定义都不下发，模型既看不到也调不到。
+        if (videoCapableOf(session)) list.splice(3, 0, AI_TOOL_DEFS.read_video);
         return list;
     }
 
     // 工具目录：给模型一张「有哪些工具、各自干什么、什么时候用」的分类地图。
     // 从 AI_TOOL_CATALOG + AI_TOOL_GROUPS 推导，按当前权限档过滤；同组内文案相同的相邻工具合并一行。
     // 只描述调度语义；硬约束仍放在 workspace_rules 的守则里。
-    function toolCatalogText(scope, planMode) {
-        const available = new Set(toolsForScope(scope, planMode).map((tool) => tool.name));
+    function toolCatalogText(scope, planMode, session) {
+        const available = new Set(toolsForScope(scope, planMode, session).map((tool) => tool.name));
         const lines = ['<tool_catalog>', '工具分类（当前权限档实际可用的工具）：'];
         for (const group of AI_TOOL_GROUPS) {
             const items = [];
@@ -1079,12 +1108,11 @@ export function createAIToolDefs(ctx) {
             '- 先查后答：涉及文件、代码或数据时先读再下结论，不要凭记忆编造内容、行号或命令输出。',
             '- 并行读、串行写：互不依赖的只读调用可在同一轮一起发（多个文件、多个关键词）；有依赖时按结果顺序来。',
             '- 有专用工具就不要用 run_command 绕：列目录 / 读文件 / 搜索 / 找文件用 list_dir / read_file / search_text / glob；工作区外路径也能直接传（已授权或会弹审批），不要拼 shell 命令去搜——引号与编码转义容易出错。',
-            '- 需要等待一段时间再继续（等构建 / 下载 / 生成完成、到点提醒）：用 start_timer 倒计时，到点会自动唤醒本会话，期间可以先做其他事或结束本轮；不要用 run_command / 终端跑 sleep、ping 之类的空等命令。',
             '- 工作区外的路径：用户明确给过路径的直接读/搜；没给过时 read/edit 档会请求批准（批准过的目录免询问）、auto/full 档可直接访问。search_text / glob 传 path 与 read_file 同权。被拒绝的路径不要反复尝试。',
-            '- 读文档用 web_fetch（图片链接改用 read_image，它能把网图直接给你看）；要交互用内嵌浏览器；要操作或查看应用本身用 app_control。',
-            '- 写文件前必须 read_file；改动尽量最小、可回滚；写完说明改了什么、怎么验证。',
+            '- 要网页交互用内嵌浏览器；操作或查看应用本身用 app_control。',
+            '- 改动尽量最小、可回滚；写完说明改了什么、怎么验证。',
             '- 工具报错先修正参数或换路径，不要原样重试；连续失败就停下来说明情况。',
-            '- 多步任务先 todo_write 规划；值得并行的多项调查用 spawn_agent(mode=\'background\') 一次派出、期间继续自己的工作，完成会逐个通知，需要汇总时 wait_agent。单一简单委派仍用默认阻塞模式。',
+            '- 值得并行的多项调查用 spawn_agent(mode=\'background\') 一次派出、期间继续自己的工作，完成会逐个通知，需要汇总时 wait_agent；单一简单委派仍用默认阻塞模式，简单问题直接自己做。',
             '- 子代理跑得很长（轮次多、迟迟不出结论）时可以 agent_compact 压缩它的上下文再让它继续；要收回就 agent_stop，它会连过程记录一起返回。',
             '- 需要让另一个会话知道某件事：session_list 查 id → session_send 单播（能单播不要组播，收到「信箱已满」即停）；对方的回复不是必须，不要互相刷消息。',
         );

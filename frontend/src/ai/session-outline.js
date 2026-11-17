@@ -112,3 +112,98 @@ export function syncSessionOutlineActive(body, activeIndex) {
         row.classList.toggle('so-current', row.dataset.index === active);
     }
 }
+
+// ---------- 定位条控制器（方案 M5 从 ai-panel.js 搬入） ----------
+// 数据快照 / 视口吸附 / 跳到某一轮；消息窗口（renderWindows）与重绘由宿主注入，
+// 结构面板的刷新通知（onPanelStateChange）也走宿主。面板侧保留同名函数声明做转发，
+// 既有调用点（renderMessages / appendToolCard 等）零改动。
+export function createSessionOutlineController(ctx) {
+    const el = ctx.el;
+    const currentSession = ctx.currentSession;
+    const onPanelStateChange = ctx.onPanelStateChange;
+    const renderWindowState = ctx.renderWindowState;
+    const renderWindows = ctx.renderWindows;
+    const renderMessages = ctx.renderMessages;
+
+    const OUTLINE_MAX_ITEMS = 400;
+    let activeIndex = -1;
+    let frame = 0;
+    let timer = 0;
+
+    function snapshot() {
+        const session = currentSession();
+        if (!session) return {sessionId: '', items: [], activeIndex: -1};
+        const built = buildSessionOutlineItems(session.messages, {max: OUTLINE_MAX_ITEMS});
+        return {
+            sessionId: session.id,
+            total: built.total,
+            truncated: built.truncated,
+            items: built.items,
+            activeIndex,
+        };
+    }
+
+    // 视口顶部所在的那一轮：scrollTop 落在某条用户消息之内时就认为定位到它
+    function activeFromView() {
+        if (!el.messages) return -1;
+        const nodes = el.messages.querySelectorAll('.ai-msg.user:not(.archived):not(.ai-app-msg):not(.model-switch)');
+        if (!nodes.length) return -1;
+        const top = el.messages.getBoundingClientRect().top;
+        const pick = (node) => {
+            const idx = Number(node.dataset.aiIdx);
+            return Number.isFinite(idx) ? idx : -1;
+        };
+        for (const node of nodes) {
+            if (node.getBoundingClientRect().bottom > top + 4) return pick(node);
+        }
+        return pick(nodes[nodes.length - 1]);
+    }
+
+    function scheduleSync() {
+        if (frame) return;
+        frame = requestAnimationFrame(() => {
+            frame = 0;
+            const next = activeFromView();
+            if (next === activeIndex) return;
+            activeIndex = next;
+            notify();
+        });
+    }
+
+    // 结构面板要跟着变的时机（开合 / 显示方式 / 消息变化）统一从这里通知
+    function notify() {
+        if (!onPanelStateChange) return;
+        clearTimeout(timer);
+        timer = setTimeout(() => {
+            try {
+                onPanelStateChange();
+            } catch (e) {}
+        }, 140);
+    }
+
+    // 跳到某一轮用户消息：目标在窗口之外时先把更早的消息放进来
+    function jumpTo(index) {
+        const session = currentSession();
+        const idx = Math.round(Number(index));
+        if (!session || !Number.isFinite(idx) || idx < 0 || idx >= session.messages.length) return false;
+        const state = renderWindowState(session);
+        if (idx < state.start) {
+            state.start = Math.max(0, idx - 8);
+            state.len = session.messages.length;
+            renderWindows.set(session.id, state);
+            renderMessages(true);
+        }
+        const node = el.messages ? el.messages.querySelector('.ai-msg[data-ai-idx="' + idx + '"]') : null;
+        if (!node) return false;
+        if (node.scrollIntoView) node.scrollIntoView({block: 'center', behavior: 'smooth'});
+        node.classList.remove('ai-msg-flash');
+        void node.offsetWidth;
+        node.classList.add('ai-msg-flash');
+        setTimeout(() => node.classList.remove('ai-msg-flash'), 1600);
+        activeIndex = idx;
+        notify();
+        return true;
+    }
+
+    return {snapshot, scheduleSync, notify, jumpTo};
+}

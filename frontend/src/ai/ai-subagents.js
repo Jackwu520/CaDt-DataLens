@@ -5,6 +5,7 @@
 // （bridge-agent-view.js），悬浮窗退回面板内覆盖层 #ai-agent-view。
 import {createAIAgentView} from './ai-agent-view.js';
 import {createAIHeadHud} from './ai-head-hud.js';
+import {normalizeWorktreeState} from './ai-worktree.js';
 import {aiClampInt, aiNowId, aiTextOf, AI_COMPACT_SYSTEM_PROMPT} from './ai-constants.js';
 import {AI_TOOL_DEFS} from './ai-tool-defs.js';
 import {inspectToolArguments} from './ai-tool-args.js';
@@ -50,6 +51,32 @@ export function isStaleRecord(record) {
 const SUB_SCOPES = ['read', 'edit', 'auto', 'full'];
 export function subAgentScopeOf(parentScope) {
     return SUB_SCOPES.includes(parentScope) ? parentScope : 'read';
+}
+
+// 父权限档 → 子代理沙箱档（方案 docs/unfinished-plans/subagent-sandbox.md §3.1）。
+// 本产品没有独立的 sandbox 状态，权限档就是子代理的命令边界：edit 档的写审批依赖
+// 「人在场」，子代理没有审批通道，所以只给 read-only；full 档按决策继承完全权限。
+export const SUB_SANDBOX_MODE_BY_SCOPE = Object.freeze({
+    read: 'read-only',
+    edit: 'read-only',
+    auto: 'workspace-write',
+    full: 'danger-full-access',
+});
+
+export function subSandboxModeOf(scope) {
+    return SUB_SANDBOX_MODE_BY_SCOPE[subAgentScopeOf(scope)] || 'read-only';
+}
+
+// 子代理的沙箱策略；**主会话返回 null**（主会话的边界是审批链，不是沙箱）。
+//
+// workspaceRoot 优先取隔离 worktree 的绝对路径，其次会话工作区，再其次调用方给的范围根。
+// 三者都取不到就留空——由 Go 侧 fail-closed 拒绝 workspace-write，绝不在这里悄悄降级成
+// 「不沙箱」。
+export function subSandboxPolicy(session, fallbackRoot) {
+    if (!session || !session.parentSessionId) return null;
+    const wt = normalizeWorktreeState(session.worktree);
+    const root = (wt && aiTextOf(wt.path)) || aiTextOf(session.workspace) || aiTextOf(fallbackRoot);
+    return {mode: subSandboxModeOf(session.scope), workspaceRoot: root};
 }
 
 // 工具主参数速览：优先取「点名到具体对象」的字段，避免把整段 JSON 塞进工具行标题。
@@ -144,6 +171,8 @@ export function createAISubagents(ctx) {
     const sessionById = ctx.sessionById;
     const entryOf = ctx.entryOf;
     const profileOf = ctx.profileOf;
+    // read_video 下发按会话视频能力裁剪（与主会话同判定）；缺省恒 true 兼容无该依赖的测试
+    const videoCapableOf = typeof ctx.videoCapableOf === 'function' ? ctx.videoCapableOf : (() => true);
     const configForProfile = ctx.configForProfile;
     const executeTool = ctx.executeTool;
     // read_image 把画面挂成独立 user 消息：必须在工具批次结束后落盘（批次中途 push 会拆开
@@ -297,12 +326,22 @@ export function createAISubagents(ctx) {
             text += '\n你有一个隔离 git worktree 作为草稿工作区：所有文件改动写到 .cadt/worktree/<slug>/…（相对范围根，路径见派单信息），隔离前缀之外的写会被拒绝；写操作自动应用（隔离区即审批边界），隔离前缀之外一律不要写。'
                 + '\n不要 commit 到隔离分支；完成后在结论里列出你改动的文件清单，由主代理决定是否导出补丁回灌主根。';
         }
+        // 命令通道（所有子代理都有，主会话没有沙箱）：sandbox 档的 shell 是 PowerShell，
+        // 模型必须提前知道，否则会照着 bash 习惯写 ls / grep / sed 然后一头撞死。
+        text += '\n你可以用 run_command 验证结论（跑测试、git log、查版本、看构建是否还过）。命令在 OS 沙箱里执行：'
+            + (hasWorktree
+                ? '写效应只允许落在你的隔离 worktree（.cadt/worktree/<slug>/）内'
+                : '写效应只允许落在本次任务的工作区根内')
+            + '，其余写入由系统拒绝。'
+            + '\n**沙箱里的 shell 是 PowerShell，不是 bash**：用 PowerShell 语法（Get-ChildItem / Select-String / Test-Path），不要用 ls / grep / sed / awk；git、go、npm 等外部命令本身不受影响。'
+            + '\n耗时任务（构建、长测试、watch）用 background_command 起、check_command 轮询、stop_command 收尾，别用 run_command 干等。'
+            + '\n被沙箱拒绝或提示「沙箱不可用」时不要重试、不要绕道用别的工具改文件，在结论里如实写「因沙箱限制未验证」。';
         return text;
     }
 
-    function subToolsForScope(depth, mode, hasWorktree) {
+    function subToolsForScope(depth, mode, hasWorktree, session) {
         const list = [
-            AI_TOOL_DEFS.list_dir, AI_TOOL_DEFS.read_file, AI_TOOL_DEFS.read_image, AI_TOOL_DEFS.read_video, AI_TOOL_DEFS.search_text,
+            AI_TOOL_DEFS.list_dir, AI_TOOL_DEFS.read_file, AI_TOOL_DEFS.read_image, AI_TOOL_DEFS.search_text,
             AI_TOOL_DEFS.web_search, AI_TOOL_DEFS.web_fetch,
             AI_TOOL_DEFS.memory_list, AI_TOOL_DEFS.memory_read,
             // 主会话计时器的只读快照：子代理与孙代理共享本表，只有读权（不能启动 / 停止 / 打标记）
@@ -315,8 +354,15 @@ export function createAISubagents(ctx) {
         if (subAgentCanSpawn(depth)) list.push(AI_TOOL_DEFS.spawn_agent);
         // 隔离 worktree 子代理：挂写工具（写效应圈定在自己的隔离前缀内，applyWorkspaceWrite
         // 里闸；审批链不适用于子代理——隔离区即审批边界，回灌由主代理 export 走人工 patch 卡）。
-        // run_command 仍不给：命令通道归 OS 沙箱方案（docs/unfinished-plans/subagent-sandbox.md）。
         if (hasWorktree) list.push(AI_TOOL_DEFS.write_file, AI_TOOL_DEFS.edit_file);
+        // 命令通道：一律走 OS 沙箱（docs/unfinished-plans/subagent-sandbox.md），写效应圈在
+        // cwd / 隔离 worktree 内，子代理永不弹审批。沙箱不可用时工具直接报错，不降级裸跑。
+        // 后台三件套必须一起挂：只给 background_command 而不给 check/stop，模型起了作业
+        // 也读不到、停不掉（等于把进程扔在后台自生自灭）。
+        list.push(AI_TOOL_DEFS.run_command, AI_TOOL_DEFS.background_command,
+            AI_TOOL_DEFS.check_command, AI_TOOL_DEFS.stop_command);
+        // read_video 夹在 read_image 之后：子代理会话能接收视频才注册（与主会话同判定）
+        if (videoCapableOf(session)) list.splice(4, 0, AI_TOOL_DEFS.read_video);
         return list;
     }
 
@@ -519,6 +565,10 @@ export function createAISubagents(ctx) {
             sub.worktree = {name: added.name, branch: added.branch, path: added.path, baseSha: added.baseSha, createdAt: Date.now()};
             sub.session.worktree = sub.worktree;
         }
+        // 沙箱档位在派出时定死（与工具表、系统提示同源）：HUD 与详情只读它，不再各自推导。
+        const sandboxPolicy = subSandboxPolicy(sub.session);
+        sub.sandboxMode = sandboxPolicy ? sandboxPolicy.mode : '';
+        toolMessage.agent.sandboxMode = sub.sandboxMode;
         sub.flow = {
             sessionId: sub.id,
             baseRound: 1,
@@ -544,6 +594,7 @@ export function createAISubagents(ctx) {
             parentSessionId: sub.parentSessionId, rootSessionId,
             name: sub.name, task: sub.task, state: 'running', startedAt: sub.startedAt,
             mode, rounds: 0, ms: 0, tokens: 0, summary: '',
+            sandboxMode: sub.sandboxMode,
         });
         notifyBackgroundActivity();
         persistSessions();
@@ -610,7 +661,7 @@ export function createAISubagents(ctx) {
         }
         const apiMessages = buildApiMessages(sub.session, index, s.systemPrompt);
         try {
-            const request = backend.AISendChat(s.roundId, s.profileCfg, apiMessages, subToolsForScope(sub.depth, sub.mode, !!sub.worktree), getConfig().retryMax);
+            const request = backend.AISendChat(s.roundId, s.profileCfg, apiMessages, subToolsForScope(sub.depth, sub.mode, !!sub.worktree, sub.session), getConfig().retryMax);
             if (request && typeof request.then === 'function') {
                 request.catch((e) => finalizeSubAgent(sub, 'error', (e && e.message) || String(e || '请求失败')));
             }
@@ -653,7 +704,7 @@ export function createAISubagents(ctx) {
             }
             // 权限边界（dsh 同款语义）：范围外工具确定性拒绝、不进审批链路；模型侧文案
             // 明确「不重试、上报父会话」，拒绝本身落操作留痕（不含工具输入）。
-            const allowed = new Set(subToolsForScope(sub.depth, sub.mode, !!sub.worktree).map((tool) => tool.name));
+            const allowed = new Set(subToolsForScope(sub.depth, sub.mode, !!sub.worktree, sub.session).map((tool) => tool.name));
             if (!allowed.has(call.name)) {
                 toolMessage.status = 'error';
                 toolMessage.content = '工具 ' + call.name + ' 超出子代理只读范围（工具范围在派出时已固定，无法从会话内放宽）；不要重试，请在最终结论中说明该限制，由主代理决定如何处理。';
@@ -662,6 +713,7 @@ export function createAISubagents(ctx) {
                 continue;
             }
             let result = null;
+            const toolExecStart = Date.now();
             try {
                 const parsed = call.arguments ? JSON.parse(call.arguments) : {};
                 result = await executeTool(call.name, parsed, {session: sub.session, toolMessage, stream: s, agentDepth: sub.depth});
@@ -674,6 +726,15 @@ export function createAISubagents(ctx) {
                 toolMessage.status = 'done';
                 toolMessage.content = String(result);
             }
+            // 操作留痕：子代理工具执行摘要（不记返回正文）。activityStatus 是工具给出的
+            // 「留痕状态覆盖」——沙箱拒绝 / 沙箱不可用 / 作业归属拒绝各自成一种 status，
+            // 优先于 done / error；子代理的命令无人可问，留痕是唯一的审计面。
+            logActivity('ai.tool', call.name, {
+                status: toolMessage.activityStatus || (toolMessage.status === 'error' ? 'error' : 'done'),
+                ms: Math.max(0, Date.now() - toolExecStart),
+                depth: sub.depth,
+                ...(toolMessage.sandbox ? {sandbox: toolMessage.sandbox} : {}),
+            });
             subTranscriptPush(sub, {role: 'tool', name: call.name, text: String(toolMessage.content || '').slice(0, 600)});
         }
         if (sub.state !== 'running' || s.stopped) {
@@ -842,6 +903,7 @@ export function createAISubagents(ctx) {
             maxRounds: sub.maxRounds,
             depth: sub.depth,
             mode: sub.mode || 'blocking',
+            sandboxMode: sub.sandboxMode || '',
             parentSessionId: sub.parentSessionId,
             rootSessionId: sub.rootSessionId,
             state,

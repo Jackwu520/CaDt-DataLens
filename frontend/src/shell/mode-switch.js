@@ -43,13 +43,18 @@ function applySwitchMode(mode) {
         if (doc && doc.video) deps.enterVideoView(doc);
         return;
     }
-    // 离开视频视图：视频是覆盖层，不清掉 video-active 会把编辑器挡住（同时暂停播放）
+    if (mode === 'audio') {
+        if (doc && doc.audio) deps.enterAudioView(doc);
+        return;
+    }
+    // 离开视频/音频视图：都是覆盖层，不清掉 active 类会把编辑器挡住（同时暂停播放）
     if (deps.currentMode === 'video' && doc) deps.hideVideoView(doc);
+    if (deps.currentMode === 'audio' && doc) deps.hideAudioView(doc);
     if (mode === 'binary') {
         if (doc && doc.binary) deps.enterBinaryView(doc);
         return;
     }
-    if (mode === 'text' && (deps.currentMode === 'image' || deps.currentMode === 'binary' || deps.currentMode === 'video') && doc) {
+    if (mode === 'text' && (deps.currentMode === 'image' || deps.currentMode === 'binary' || deps.currentMode === 'video' || deps.currentMode === 'audio') && doc) {
         deps.enterTextView(doc);
         return;
     }

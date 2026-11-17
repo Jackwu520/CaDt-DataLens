@@ -287,6 +287,20 @@ test('用户投递：面板里自己写的内容按「用户指令」投，不�
     assert.equal(h.b.messages[0].app.kind, 'session-user');
 });
 
+test('用户全局投递：不挂会话身份（来自你），当前会话本身可作为目标', () => {
+    const h = pairHarness();
+    h.setBusy(true);
+    // 显式传 session: null = 侧栏 / ＋菜单入口：目标是当前会话也不判 self
+    const out = h.notices.deliverToSessions(['s1'], '记一下：字段名改成 foo', {session: null, byUser: true});
+    assert.equal(out.okCount, 1, '全局入口不判 self');
+    h.notices.foldNotices('s1');
+    const content = h.session.messages[0].content;
+    assert.ok(content.startsWith('［用户消息 · 来自你］'), content);
+    assert.ok(content.includes('按用户指令执行'));
+    assert.ok(!content.includes('另一个会话'), '全局入口不编造「另一个会话」');
+    assert.equal(h.session.messages[0].app.label, '用户消息 · 来自你');
+});
+
 test('用户广播：标注来自你、无需回复，不带「其他会话」语义', () => {
     const h = pairHarness();
     h.setBusy(true);
@@ -316,4 +330,17 @@ test('session_list：默认只列同工作区、排除自己与归档；显式�
     assert.ok(all.includes('s4'));
     assert.ok(!all.includes('s5'));
     assert.ok(h.notices.sessionListText().includes('会话二'));
+});
+
+test('session_list：excludeSessionId 只排发起方；null 表示不排除（全局入口）', () => {
+    const a = {id: 's1', title: '会话一', messages: [], archivedAt: 0, updatedAt: 3};
+    const b = {id: 's2', title: '会话二', messages: [], archivedAt: 0, updatedAt: 2};
+    const side = {id: 's3', title: '支线', messages: [], archivedAt: 0, updatedAt: 1};
+    const h = makeHarness({sessions: () => [a, b, side], workspaceKey: () => 'ws'});
+    // 会话发起（支线标签页）：只排发起方，面板当前会话（s1）仍是合法目标
+    const fromSide = h.notices.listSessionsForSend({allWorkspaces: true, excludeSessionId: 's3'}).map((row) => row.id);
+    assert.deepEqual(fromSide, ['s1', 's2']);
+    // 全局入口（侧栏 / ＋菜单）：不排除任何人，当前会话可选
+    const global = h.notices.listSessionsForSend({allWorkspaces: true, excludeSessionId: null}).map((row) => row.id);
+    assert.deepEqual(global, ['s1', 's2', 's3']);
 });

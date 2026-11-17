@@ -2,6 +2,7 @@
 //
 // 依赖一律经 deps 延迟求值（调用方传 getter），不在创建期解构：
 // 这样既不依赖 main.js 的声明顺序，也不会把 let 状态拍成快照。
+import {defaultMediaMode} from '../core/formats.js';
 
 
 export function createSessionRestore(deps) {
@@ -115,7 +116,10 @@ function serializeSession() {
     if (!groups.length && !deps.workspaceFolder) return null;
     const modes = {};
     for (const d of deps.docs) {
-        if (d.path && d.mode) modes[d.path] = d.mode === 'sql' ? (d.sqlPrevMode || 'text') : d.mode;
+        if (!d.path || !d.mode) continue;
+        // 媒体文档只记它自己的媒体视图：binary / text 是手动备份（也可能是播放失败自动
+        // 回退留下的），跨启动不能变成「默认视图」。
+        modes[d.path] = defaultMediaMode(d) || (d.mode === 'sql' ? (d.sqlPrevMode || 'text') : d.mode);
     }
     const views = {};
     const liveKeys = new Set();
@@ -242,7 +246,9 @@ async function restoreSession(sess) {
         const current = sess.current ? deps.findDocByPath(sess.current) : null;
         if (current) {
             await deps.activateDoc(current);
-            const mode = sess.modes && sess.modes[current.path];
+            // 媒体文档首屏固定用自己的视图（图片 / 视频 / 音频播放），忽略旧会话里
+            // 持久化的 binary / text——那是备份视图或自动回退的结果，不是默认视图。
+            const mode = defaultMediaMode(current) || (sess.modes && sess.modes[current.path]);
             if (mode && mode !== deps.currentMode) deps.switchMode(mode);
         } else if (deps.editorGroups.length) {
             const first = deps.groupDocs(deps.editorGroups[0])[0];

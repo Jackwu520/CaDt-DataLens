@@ -132,7 +132,7 @@ export function createAITakeover(ctx) {
     const getStickBottom = ctx.getStickBottom;
     const toolMeta = ctx.toolMeta;
     const acceptPlan = ctx.acceptPlan;
-    // 计划卡「在标签页打开」（ai-panel 注入）：先补写 .cadt/plan/ 下的文件再开标签页
+    // 计划卡「在标签页打开」（ai-panel 注入）：已批准开 .cadt/plan/ 的真文件，未批准开虚拟只读预览
     const openPlanFile = typeof ctx.openPlanFile === 'function' ? ctx.openPlanFile : null;
 
     // 补丁卡与提问卡（phase3 A2 拆出的同域兄弟模块）：ctx 同源直传，宿主侧符号经 extras 注入；
@@ -414,15 +414,20 @@ export function createAITakeover(ctx) {
     function planApprovalMessage(session) {
         if (!session || streamOf(session.id) || compactOf(session.id) || !session.planMode) return null;
         const index = lastAssistantIndex(session);
-        if (index < 0 || index !== session.messages.length - 1) return null;
+        if (index < 0) return null;
         const message = session.messages[index];
-        if (!message || message.role !== 'assistant' || !message.planMode || message.status !== 'done' ||
-            !String(message.content || '').trim()) return null;
+        if (!message || message.role !== 'assistant' || message.status !== 'done') return null;
+        // 新形态：submit_plan 提交，计划在 message.planText（正文可为空、带 toolCalls）
+        if (String(message.planText || '').trim()) return message;
+        // 旧形态（兼容历史会话）：最后一条 assistant 消息正文即计划
+        if (index !== session.messages.length - 1) return null;
+        if (!message.planMode || !String(message.content || '').trim()) return null;
         return message;
     }
 
     function planApprovalKey(session, message) {
-        return session.id + ':' + (Number(message.ts) || 0) + ':' + String(message.content || '').length;
+        return session.id + ':' + (Number(message.ts) || 0) + ':' +
+            String(message.planText || message.content || '').length;
     }
 
     // ---- 系统接管（通用；系统发起、模型不可见） ----
@@ -540,9 +545,9 @@ export function createAITakeover(ctx) {
         body.className = 'ai-takeover-body';
         const preview = document.createElement('div');
         preview.className = 'ai-plan-preview';
-        const text = String(message.content || '').trim();
+        const text = String(message.planText || message.content || '').trim();
         if (message.planFile) {
-            // 计划正文已落盘 .cadt/plan/：卡里只给文件入口，正文去标签页看
+            // 计划正文已落盘 .cadt/plan/（已批准）：卡里只给文件入口，正文去标签页看
             // （不再把整篇计划铺进对话，「想看细节」就点开标签页）。
             preview.classList.add('is-file');
             const digest = planDigest(text);
@@ -570,10 +575,25 @@ export function createAITakeover(ctx) {
             note.textContent = '计划正文已保存到工作区，点「在标签页打开」看完整内容。';
             preview.append(row, note);
         } else {
-            // 没有工作区（或本特性之前产生的历史计划）：没有文件可开，退回原文预览
+            // 未批准不落盘：预览只给截断片段；「查看完整计划」放预览区**外面**（固定可见，
+            // 不跟着内容滚走），点击打开虚拟只读标签页预览（不写盘）。
             preview.textContent = text.length > 1600 ? text.slice(0, 1600) + '\n…' : text;
+            const openFull = document.createElement('button');
+            openFull.type = 'button';
+            openFull.className = 'dlg-btn ai-plan-file-open';
+            openFull.textContent = '查看完整计划';
+            openFull.addEventListener('click', () => {
+                if (openPlanFile) openPlanFile(message);
+            });
+            openFullRow = document.createElement('div');
+            openFullRow.className = 'ai-plan-file-row';
+            const note = document.createElement('span');
+            note.className = 'ai-plan-file-note';
+            note.textContent = '计划尚未保存成文件，批准后写入 .cadt/plan/';
+            openFullRow.append(note, openFull);
         }
         body.appendChild(preview);
+        if (openFullRow) body.appendChild(openFullRow);
         // 计划里出现的同类命令可在批准时一并授权，减少执行期的重复审批。
         const families = collectCommandFamilies(text);
         const selectedFamilies = new Set(families);

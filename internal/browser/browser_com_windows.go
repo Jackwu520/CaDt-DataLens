@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"runtime"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -129,6 +130,31 @@ func wvControllerClose(ctrl *edge.ICoreWebView2Controller) error {
 	return nil
 }
 
+// ---- 完成回调 handler 存活登记 ----
+
+// 超时返回后 handler 仍可能被原生侧**晚到**的回调触发（CapturePreview 在页面渲染
+// 繁忙或控件隐藏时会拖过超时；快照轮询用的正是 300ms 短超时）。若此时 Go 对象已被
+// GC 回收，回调会写进已释放内存（use-after-free），进程可能在随后的任意时刻被
+// 堆校验/野指针直接终止——无日志、无 WER，只表现为「网页一开程序就没了」
+// （2026-11-17 按此模式修复）。登记表把 handler 钉住，收到回调再释放；
+// 超时且回调永不到达时只留一个几十字节的登记项，代价可接受。
+var (
+	browserHandlerMu   sync.Mutex
+	browserHandlerLive = map[uintptr]any{}
+)
+
+func browserHandlerRetain(h any, ptr uintptr) {
+	browserHandlerMu.Lock()
+	browserHandlerLive[ptr] = h
+	browserHandlerMu.Unlock()
+}
+
+func browserHandlerRelease(ptr uintptr) {
+	browserHandlerMu.Lock()
+	delete(browserHandlerLive, ptr)
+	browserHandlerMu.Unlock()
+}
+
 // ---- CallDevToolsProtocolMethod 完成回调 ----
 
 // 旧式静态 vtbl handler（与 go-webview2 内部实现同模式，完全掌控布局）。
@@ -159,7 +185,9 @@ var browserCDPHandlerVtblStatic = browserCDPHandlerVtbl{
 }
 
 func newBrowserCDPHandler() *browserCDPHandler {
-	return &browserCDPHandler{vtbl: &browserCDPHandlerVtblStatic, resultCh: make(chan browserCDPResult, 1)}
+	h := &browserCDPHandler{vtbl: &browserCDPHandlerVtblStatic, resultCh: make(chan browserCDPResult, 1)}
+	browserHandlerRetain(h, uintptr(unsafe.Pointer(h)))
+	return h
 }
 
 var browserIUnknownGUID = windows.GUID{
@@ -196,8 +224,12 @@ func browserCDPInvoke(this, errorCode, returnObjectAsJson uintptr) uintptr {
 		n, _, _ := procBrowserLstrlenW.Call(returnObjectAsJson)
 		payload = syscall.UTF16ToString(unsafe.Slice((*uint16)(unsafe.Pointer(returnObjectAsJson)), int(n)))
 	}
-	handler.resultCh <- browserCDPResult{errCode: errorCode, json: payload}
+	select {
+	case handler.resultCh <- browserCDPResult{errCode: errorCode, json: payload}:
+	default: // 重复派发：只留第一份结果，不能阻塞原生回调线程
+	}
 	atomic.StoreUint32(&handler.done, 1)
+	browserHandlerRelease(this)
 	return 0
 }
 
@@ -213,6 +245,26 @@ func wvNavigate(wv *edge.ICoreWebView2, url string) error {
 		return fmt.Errorf("Navigate 0x%08x", hr)
 	}
 	return nil
+}
+
+// wvNavCompletedStatus 读 NavigationCompleted 的 IsSuccess 与 WebErrorStatus
+// （ICoreWebView2NavigationCompletedEventArgs 槽位 3/4；库只导出 AddRef/Release）。
+func wvNavCompletedStatus(args *edge.ICoreWebView2NavigationCompletedEventArgs) (bool, int32) {
+	if args == nil {
+		return true, 0
+	}
+	raw := (*wvRaw)(unsafe.Pointer(args))
+	var success int32
+	hr, _, _ := syscall.SyscallN(raw.vtbl[3], uintptr(unsafe.Pointer(args)), uintptr(unsafe.Pointer(&success)))
+	if hr != 0 {
+		return true, 0 // 读不到就按成功处理，别把诊断信息当成错误
+	}
+	var errStatus int32
+	hr, _, _ = syscall.SyscallN(raw.vtbl[4], uintptr(unsafe.Pointer(args)), uintptr(unsafe.Pointer(&errStatus)))
+	if hr != 0 {
+		errStatus = 0
+	}
+	return success != 0, errStatus
 }
 
 // wvInitScript 槽位直调 AddScriptToExecuteOnDocumentCreated。
@@ -241,6 +293,8 @@ func wvCallExecScriptStart(wv *edge.ICoreWebView2, script string) (*browserCDPHa
 		uintptr(unsafe.Pointer(scriptPtr)),
 		uintptr(unsafe.Pointer(handler)))
 	if hr != 0 {
+		// 调用没发出去就不会有回调：释放存活登记，避免每失败一次泄漏一项
+		browserHandlerRelease(uintptr(unsafe.Pointer(handler)))
 		return nil, fmt.Errorf("ExecuteScript 0x%08x", hr)
 	}
 	return handler, nil
@@ -337,7 +391,9 @@ var browserCaptureHandlerVtblStatic = browserCaptureHandlerVtbl{
 }
 
 func newBrowserCaptureHandler() *browserCaptureHandler {
-	return &browserCaptureHandler{vtbl: &browserCaptureHandlerVtblStatic}
+	h := &browserCaptureHandler{vtbl: &browserCaptureHandlerVtblStatic}
+	browserHandlerRetain(h, uintptr(unsafe.Pointer(h)))
+	return h
 }
 
 func browserCaptureQueryInterface(this, refiid, object uintptr) uintptr {
@@ -356,6 +412,7 @@ func browserCaptureInvoke(this, errorCode uintptr) uintptr {
 	handler := (*browserCaptureHandler)(unsafe.Pointer(this))
 	handler.errCode = errorCode
 	atomic.StoreUint32(&handler.done, 1)
+	browserHandlerRelease(this)
 	return 0
 }
 
@@ -401,6 +458,7 @@ func wvCaptureScreenshot(wv *edge.ICoreWebView2, timeout time.Duration) (string,
 	// handler 地址已交给原生回调，函数返回前保持存活
 	defer runtime.KeepAlive(handler)
 	if hr != 0 {
+		browserHandlerRelease(uintptr(unsafe.Pointer(handler)))
 		streamRelease(stream)
 		return "", fmt.Errorf("CapturePreview 0x%08x", hr)
 	}

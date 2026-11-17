@@ -172,7 +172,7 @@ func (s *Service) specs() []spec {
 		},
 		{
 			id: "builtin-mcp-samples", label: "内置 MCP 示例副本", scope: ScopeApp, kind: KindCache, inCache: true,
-			note:    "随程序内嵌、在设置里安装 MCP 示例时释放的脚本（builtin-mcp-samples/<版本>/）；删后可重新安装释放，已注册的 MCP 服务器条目不受影响（指向的脚本需要重新释放）。",
+			note:    "随程序内嵌、在设置里安装 MCP 示例时释放的脚本（builtin-mcp-samples/<版本>/）；删后已注册的服务器在下次启动时按原路径自动补回，配置不用重装。",
 			targets: []target{appDirTarget("builtin-mcp-samples")},
 		},
 		{

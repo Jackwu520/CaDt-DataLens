@@ -75,7 +75,6 @@ export function createSettingsPaneExternalTools(deps) {
         tip.className = 'info-tip';
         tip.dataset.tip = text;
         tip.setAttribute('aria-label', label + '说明');
-        tip.textContent = 'i';
         return tip;
     }
 

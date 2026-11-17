@@ -405,8 +405,18 @@ function setSelectCloseAll(except) {
 // 单个 select 的增强（幂等）。设置页扫描器与设置页之外的域（如全局搜索，经 main.js deps
 // 注入 enhanceSelect）共用这一条路径；wrap 继承原 select 的布局类，外观类需各域自行适配。
 function enhanceSelect(sel) {
-    if (!sel || sel.tagName !== 'SELECT') return null;
-    if (sel.dataset.setSelect === '1' || sel.multiple || sel.size > 1) return null;
+    if (!sel || sel.tagName !== 'SELECT' || sel.multiple || sel.size > 1) return null;
+    // 已增强的 select 再调一次只重新同步触发器文本：程序化改 select.value 不触发 change，
+    // 面板刷新后补一次调用，标签才不会停在旧值（整个增强过程保持幂等）。
+    if (sel.dataset.setSelect === '1') {
+        for (const inst of instances) {
+            if (inst.sel === sel) {
+                refresh(inst);
+                return inst;
+            }
+        }
+        return null;
+    }
     sel.dataset.setSelect = '1';
     const wrap = document.createElement('div');
     // 继承原 select 的布局类（.opt-select / .set-control .opt-select 的宽度与 flex 规则）

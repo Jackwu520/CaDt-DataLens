@@ -1,8 +1,9 @@
 // ai-session-send.js：会话投递的选择器 UI（用户向）。
 // 两个面板：
 //   1. 「投递到会话…」——把内容作为挂号信发给选中的会话（多选，≤10，带搜索与键盘操作）。
-//      入口三处：消息操作条（带来源消息，内容只读）、composer「+」菜单、会话侧栏按钮 / 图标
-//      （后两者内容由用户自己写，可预填输入框草稿）；
+//      两类入口：会话发起（消息操作条 / 支线标签页——带来源消息或会话身份，列表排除发起方）
+//      与全局入口（侧栏按钮 / composer「+」菜单——内容由用户自己写，不挂会话身份，
+//      面板当前会话也照常可选）；
 //   2. 「通知运行中的会话…」——用户向广播（唯一的多对一形态），列出当前 streaming / compacting
 //      的会话，写一条通知投给它们全部。
 // 传输层不在这里：投递走 ai-agent-notices.js 的信箱（三态投递与逐目标回执都在那边），
@@ -102,16 +103,21 @@ export function createAISessionSend(ctx) {
     }
 
     // ---- 投递到会话（多选 + 搜索 + 键盘） ----
-    // 两种进入方式：
-    //   a) 带来源消息（消息操作条「投递」）——内容只读预览，用户只选目标；
-    //   b) 不带来源（+ 菜单 / 侧栏按钮）——内容由用户自己写，或预填输入框里的草稿。
+    // 两类进入方式：
+    //   a) 会话发起（消息操作条「投递」/ 支线标签页）——发起方是该消息所属会话，列表排除它，
+    //      卡片带它的身份；带来源消息时内容只读预览；
+    //   b) 全局入口（侧栏按钮 / 列表头部图标 / composer「+」菜单）——options.senderless：
+    //      不挂会话身份，当前会话也能勾，内容由用户自己写。
     // options.picked：预选目标（会话行图标进入时用它把该会话先勾上）。
     function openDeliver(message, session, options) {
         const opts = options || {};
+        const sender = opts.senderless ? null : (session || null);
         const sourceText = String((message && message.content) || '').trim();
-        const rows = listSessions().filter((row) => !session || row.id !== session.id);
+        // 排除对象跟着入口走：会话发起排它自己；全局入口显式传 null（不排除任何人）。
+        const rows = listSessions({excludeSessionId: sender ? sender.id : null})
+            .filter((row) => !sender || row.id !== sender.id);
         if (!rows.length) {
-            flash('没有其他可投递的会话', true);
+            flash(sender ? '没有其他可投递的会话' : '没有可投递的会话', true);
             return;
         }
         let picked = new Set((opts.picked || []).filter((id) => rows.some((row) => row.id === id)));
@@ -271,8 +277,9 @@ export function createAISessionSend(ctx) {
             const ids = [...picked];
             if (!ids.length) return;
             closeDialog();
-            // 内容由用户自己写的（无来源消息）→ 按「用户指令」投递；转发某条模型消息 → 仍按参考信息
-            const out = deliverToSessions(ids, text, {session, byUser: !sourceText});
+            // 内容由用户自己写的（无来源消息）→ 按「用户指令」投递；转发某条模型消息 → 仍按参考信息。
+            // sender 为 null（全局入口）时卡片写「来自你」，不编造会话身份。
+            const out = deliverToSessions(ids, text, {session: sender, byUser: !sourceText});
             reportReceipt(out, '已投递到');
         }
 

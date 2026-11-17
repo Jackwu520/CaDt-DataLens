@@ -85,6 +85,11 @@ type mcpClient struct {
 }
 
 func newMCPClient(name string, cfg MCPServerConfig) *mcpClient {
+	// 三个 spawn 点（连接、设置页测试连接、面板列工具）都经这里，自愈钩子放这一处，
+	// 免得漏掉某条路径后「测试连接成功、实际启动失败」。
+	if PrepareServer != nil {
+		PrepareServer(cfg)
+	}
 	return &mcpClient{name: name, cfg: cfg, waitDone: make(chan struct{})}
 }
 

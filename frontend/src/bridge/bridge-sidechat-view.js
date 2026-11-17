@@ -141,19 +141,32 @@ export function createBridgeSideChat(deps) {
         const takeover = document.createElement('div');
         takeover.className = 'sidechat-takeover hidden';
 
-        // 消息区的点击走面板的代理（只放行审批 / 环境变量 / 用量徽标，避免误改母会话）
+        // 消息区的点击走面板的代理（审批 / 环境变量 / 用量徽标 / 会话域消息动作：
+        // 复制、分支、重试、回退、新建支线、带回、投递——不会误改面板当前会话）。
+        // 「编辑」由代理返回预填文本，截断在发送时进行（与面板 pendingEdit 同语义）。
+        let editPending = null; // {index}：标签页自己的编辑重发状态，成功发送后清空
         body.addEventListener('click', (e) => {
             const panel = api();
-            if (panel && typeof panel.bridgeSideChatClick === 'function') {
-                panel.bridgeSideChatClick(e, doc.sideChat);
+            if (!panel || typeof panel.bridgeSideChatClick !== 'function') return;
+            const result = panel.bridgeSideChatClick(e, doc.sideChat);
+            if (!result || !result.handled) return;
+            if (result.edit) {
+                editPending = {index: result.edit.index};
+                input.value = String(result.edit.text || '');
+                autoGrow();
+                input.focus();
+                hint.textContent = result.edit.hasMedia
+                    ? '编辑中：原消息的图片 / 视频将随发送一并带上'
+                    : '编辑中：发送将从这条消息重新开始';
             }
+            scheduleRefresh();
         });
 
         // ---- 输入行 ----
         const composer = document.createElement('div');
         composer.className = 'sidechat-composer';
         const input = createTextarea({className: 'sidechat-input', rows: 1, spellcheck: false}).control;
-        input.placeholder = '在支线里继续问…（Enter 发送，Shift+Enter 换行）';
+        input.placeholder = '在支线里继续问…（Enter 发送，Shift+Enter 换行，/ 唤起命令）';
         const sendBtn = document.createElement('button');
         sendBtn.type = 'button';
         sendBtn.className = 'sidechat-send';
@@ -166,11 +179,17 @@ export function createBridgeSideChat(deps) {
         hint.className = 'sidechat-hint';
         composer.append(input, sendBtn, stopBtn, hint);
 
-        root.append(head, capsules, banner, body, takeover, composer);
+        // ---- 统计行（与面板底部统计行同口径）+ slash 子集弹层 ----
+        const stats = document.createElement('div');
+        stats.className = 'sidechat-stats hidden';
+        const slashPop = document.createElement('div');
+        slashPop.className = 'sidechat-slash hidden';
+
+        root.append(head, capsules, banner, body, takeover, composer, stats, slashPop);
         doc.pane = pane;
         doc.sideChatRoot = root;
         doc.sideChatBody = body;
-        doc.sideChatView = {banner, bannerText, bannerBtn, chips, input, sendBtn, stopBtn, hint};
+        doc.sideChatView = {banner, bannerText, bannerBtn, chips, input, sendBtn, stopBtn, hint, stats};
 
         // ---- 渲染与状态 ----
         let pollTimer = 0;
@@ -196,15 +215,26 @@ export function createBridgeSideChat(deps) {
             }
         }
 
+        // hint 粘滞：slash 返回消息与编辑提示不能被下一次 paintState 立刻冲掉。
+        // busy（不可用 / 流式）总是覆盖；粘滞期内保留，过期后清空。
+        let hintUntil = 0;
+        function setHint(text, stickyMs) {
+            hint.textContent = text || '';
+            hintUntil = stickyMs ? Date.now() + stickyMs : 0;
+        }
+
         function paintState(st) {
             const lost = st.ok && !st.inPlace;
             banner.classList.toggle('hidden', !lost);
             input.disabled = !st.ok || lost;
             sendBtn.disabled = !st.ok || lost || st.streaming;
             stopBtn.classList.toggle('hidden', !st.streaming);
-            hint.textContent = !st.ok ? '对话不可用'
-                : st.streaming ? '生成中…'
-                    : lost ? '' : '';
+            if (!st.ok || st.streaming) {
+                hint.textContent = !st.ok ? '对话不可用' : '生成中…';
+                hintUntil = 0;
+            } else if (!editPending && Date.now() >= hintUntil) {
+                hint.textContent = lost ? '' : '';
+            }
             if (lost) {
                 if (st.ownerGone) {
                     bannerText.textContent = '主对话已删除，这条支线失去了归属';
@@ -232,6 +262,31 @@ export function createBridgeSideChat(deps) {
             }
         }
 
+        // 统计行：与面板底部统计行同口径（轮 / 步 / 速度 / 累计 / 缓存 / 上下文占用）
+        function formatCompact(n) {
+            n = Math.max(0, Math.round(Number(n) || 0));
+            return n >= 10000 ? (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k' : String(n);
+        }
+
+        function paintStats(st) {
+            const panel = api();
+            const s = panel && typeof panel.bridgeSideChatStats === 'function'
+                ? panel.bridgeSideChatStats(doc.sideChat)
+                : null;
+            if (!st.ok || !s) {
+                stats.classList.add('hidden');
+                return;
+            }
+            const parts = [];
+            if (s.rounds || s.steps) parts.push(s.rounds + ' 轮 ' + s.steps + ' 步');
+            if (s.speed > 0) parts.push(s.speed + ' tok/s');
+            if (s.total > 0) parts.push(formatCompact(s.total) + ' tok');
+            if (s.cacheRate > 0) parts.push('缓存 ' + s.cacheRate + '%');
+            if (s.windowSize > 0) parts.push('上下文 ' + s.ctxPct + '%');
+            stats.textContent = parts.join(' · ');
+            stats.classList.toggle('hidden', !parts.length);
+        }
+
         function render() {
             const panel = api();
             if (disposed || !panel || typeof panel.bridgeRenderSideChat !== 'function') {
@@ -253,16 +308,19 @@ export function createBridgeSideChat(deps) {
 
         function refresh() {
             if (disposed) return;
+            ensureRegistered();
             const st = state();
             paintState(st);
             paintChips(st);
+            paintStats(st);
             render();
             const panelMod = api();
             if (panelMod && typeof panelMod.bridgeSideChatTakeover === 'function') {
                 panelMod.bridgeSideChatTakeover(takeover, doc.sideChat);
             }
-            // 流式中靠轮询推进：增量渲染路径都指向面板，标签页这边整段重绘最省事
-            if (st.ok && st.streaming) startPolling();
+            // 流式与压缩都靠轮询推进：增量渲染路径指向面板，标签页这边整段重绘最省事；
+            // 压缩收尾由面板侧 notifySideChatHosts 补一次主动刷新
+            if (st.ok && (st.streaming || st.compacting)) startPolling();
             else stopPolling();
         }
 
@@ -271,7 +329,7 @@ export function createBridgeSideChat(deps) {
             pollTimer = setInterval(() => {
                 if (disposed) return stopPolling();
                 const st = state();
-                if (!st.ok || !st.streaming) {
+                if (!st.ok || (!st.streaming && !st.compacting)) {
                     stopPolling();
                     refresh();
                     return;
@@ -286,6 +344,16 @@ export function createBridgeSideChat(deps) {
             pollTimer = 0;
         }
 
+        function autoGrow() {
+            input.style.height = 'auto';
+            input.style.height = Math.min(input.scrollHeight, 160) + 'px';
+        }
+
+        function scheduleRefresh() {
+            if (disposed) return;
+            setTimeout(() => refresh(), 0);
+        }
+
         async function submit() {
             const st = state();
             if (!st.ok || !st.inPlace) return;
@@ -293,23 +361,123 @@ export function createBridgeSideChat(deps) {
             if (!text) return;
             const panel = api();
             if (!panel || typeof panel.bridgeSideChatSend !== 'function') return;
+            const opts = editPending ? {editIndex: editPending.index} : undefined;
             input.value = '';
+            autoGrow();
             sendBtn.disabled = true;
-            const result = await panel.bridgeSideChatSend(doc.sideChat, text);
+            const result = await panel.bridgeSideChatSend(doc.sideChat, text, opts);
             if (!result || !result.ok) {
                 input.value = text;
+                autoGrow();
                 sendBtn.disabled = false;
-                hint.textContent = result && result.reason === 'busy' ? '上一轮还没结束' : '发送失败';
+                setHint(result && result.reason === 'busy' ? '上一轮还没结束' : '发送失败', 4000);
                 return;
             }
-            hint.textContent = '';
+            editPending = null;
+            setHint('');
             refresh();
         }
 
+        // ---- slash 子集（会话域命令）：模型 / 技能 / 计划等面板外壳命令不进支线 ----
+        const TAB_SLASH = [
+            {name: '/compact', desc: '压缩这个支线的上下文'},
+            {name: '/clear', desc: '清空会话全部消息'},
+            {name: '/context', desc: '查看上下文占用'},
+            {name: '/help', desc: '查看可用命令'},
+        ];
+        let slashIndex = 0;
+
+        function hideSlashPop() {
+            slashPop.classList.add('hidden');
+            slashPop.innerHTML = '';
+        }
+
+        function slashPopOpen() {
+            return !slashPop.classList.contains('hidden');
+        }
+
+        function paintSlashPop(items) {
+            slashPop.innerHTML = '';
+            items.forEach((cmd, index) => {
+                const item = document.createElement('button');
+                item.type = 'button';
+                item.className = 'sidechat-slash-item' + (index === slashIndex ? ' selected' : '');
+                item.dataset.cmd = cmd.name;
+                const name = document.createElement('span');
+                name.textContent = cmd.name;
+                const desc = document.createElement('span');
+                desc.className = 'sidechat-slash-desc';
+                desc.textContent = cmd.desc;
+                item.append(name, desc);
+                item.addEventListener('click', () => void runSlash(cmd.name));
+                slashPop.appendChild(item);
+            });
+            slashPop.classList.remove('hidden');
+        }
+
+        function updateSlashPop() {
+            const value = String(input.value || '');
+            if (!value.startsWith('/') || value.includes(' ') || value.includes('\n')) {
+                hideSlashPop();
+                return;
+            }
+            const query = value.slice(1).toLowerCase();
+            const items = TAB_SLASH.filter((cmd) => cmd.name.slice(1).startsWith(query));
+            if (!items.length) {
+                hideSlashPop();
+                return;
+            }
+            slashIndex = Math.max(0, Math.min(slashIndex, items.length - 1));
+            paintSlashPop(items);
+        }
+
+        async function runSlash(name) {
+            hideSlashPop();
+            input.value = '';
+            autoGrow();
+            const panel = api();
+            if (!panel || typeof panel.bridgeSideChatSlash !== 'function') return;
+            const result = await panel.bridgeSideChatSlash(doc.sideChat, name);
+            if (result && result.message) setHint(result.message, 6000);
+            scheduleRefresh();
+        }
+
+        input.addEventListener('input', () => {
+            autoGrow();
+            updateSlashPop();
+        });
+        input.addEventListener('blur', () => {
+            // 点弹层项时先失焦：延迟关，让 click 先拿到 dataset
+            setTimeout(() => {
+                if (document.activeElement !== input && !slashPop.contains(document.activeElement)) hideSlashPop();
+            }, 120);
+        });
+
         input.addEventListener('keydown', (e) => {
-            if (e.key !== 'Enter' || e.shiftKey) return;
-            e.preventDefault();
-            submit();
+            if (e.key === 'Escape' && slashPopOpen()) {
+                e.preventDefault();
+                hideSlashPop();
+                return;
+            }
+            if (slashPopOpen() && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+                e.preventDefault();
+                const items = [...slashPop.querySelectorAll('.sidechat-slash-item')];
+                if (!items.length) return;
+                slashIndex = (slashIndex + (e.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length;
+                items.forEach((node, index) => node.classList.toggle('selected', index === slashIndex));
+                return;
+            }
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                if (slashPopOpen()) {
+                    const picked = slashPop.querySelectorAll('.sidechat-slash-item')[slashIndex];
+                    if (picked && picked.dataset.cmd) {
+                        void runSlash(picked.dataset.cmd);
+                        return;
+                    }
+                }
+                submit();
+            }
         });
         sendBtn.addEventListener('click', () => submit());
         stopBtn.addEventListener('click', () => {
@@ -317,6 +485,15 @@ export function createBridgeSideChat(deps) {
             if (panel && typeof panel.bridgeSideChatStop === 'function') panel.bridgeSideChatStop(doc.sideChat);
             refresh();
         });
+
+        // ---- 宿主登记（viewHosts 真表）：增量更新与数据改动通知按此路由 ----
+        const hostObj = {root, body, refresh: () => refresh()};
+        function ensureRegistered() {
+            const panel = api();
+            if (panel && typeof panel.bridgeSideChatHostRegister === 'function') {
+                panel.bridgeSideChatHostRegister(doc.sideChat, hostObj);
+            }
+        }
 
         // 面板切换会话：立即重新判定在位 / 失联
         let offSwitch = null;
@@ -330,6 +507,10 @@ export function createBridgeSideChat(deps) {
         doc.sideChatUnmount = () => {
             disposed = true;
             stopPolling();
+            const panelNow = api();
+            if (panelNow && typeof panelNow.bridgeSideChatHostUnregister === 'function') {
+                panelNow.bridgeSideChatHostUnregister(doc.sideChat, hostObj);
+            }
             if (offSwitch) offSwitch();
             offSwitch = null;
             doc.sideChatUnmount = null;

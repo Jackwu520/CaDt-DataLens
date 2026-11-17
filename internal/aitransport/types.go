@@ -53,9 +53,12 @@ const (
 )
 
 var (
-	ErrIdleTimeout   = errors.New("AI 响应超时（120 秒无数据）")
-	errAnthropicDone = errors.New("anthropic stream done")
-	aiToolNameRule   = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+	ErrIdleTimeout = errors.New("AI 响应超时（120 秒无数据）")
+	// ErrStreamTruncated：流式响应在生成中途被服务端断开（chunked 流缺终止块）。
+	// 整轮重发即可恢复，前端据此自动重试而不是直接把原始 EOF 摆给用户。
+	ErrStreamTruncated = errors.New("AI 流式响应被服务端提前断开（unexpected EOF）")
+	errAnthropicDone   = errors.New("anthropic stream done")
+	aiToolNameRule     = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 )
 
 // Config 由前端 Profile 组装；API Key 只存在于前端 localStorage 与请求头，
@@ -148,6 +151,8 @@ type DonePayload struct {
 type ErrorPayload struct {
 	Id      string `json:"id"`
 	Message string `json:"message"`
+	// Retryable 表示整轮重发即可恢复（目前只有流中途被掐断）：前端据此自动重试。
+	Retryable bool `json:"retryable,omitempty"`
 }
 
 type RetryPayload struct {

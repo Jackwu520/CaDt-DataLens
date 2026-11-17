@@ -138,10 +138,12 @@ export function createAISessionList(ctx) {
             if (message.ask && message.ask.state === 'pending') return true;
             if (message.envAsk && message.envAsk.state === 'pending') return true;
         }
-        // 计划模式：最后一条是待批准的计划（用户还没批准 / 放弃）
+        // 计划模式：最后一条是待批准的计划（用户还没批准 / 放弃）。
+        // submit_plan 形态下正文为空、计划在 planText，两者都要认。
         if (session.planMode && session.messages.length) {
             const last = session.messages[session.messages.length - 1];
-            if (last && last.role === 'assistant' && last.planMode && last.status === 'done' && String(last.content || '').trim()) {
+            if (last && last.role === 'assistant' && last.planMode && last.status === 'done' &&
+                String(last.planText || last.content || '').trim()) {
                 return true;
             }
         }

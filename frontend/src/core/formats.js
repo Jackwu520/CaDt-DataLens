@@ -301,6 +301,14 @@ export const formats = {
         rawOnly: true,
         video: true,
     },
+    audio: {
+        id: 'audio',
+        name: '音频',
+        extensions: [],
+        aceMode: 'text',
+        rawOnly: true,
+        audio: true,
+    },
     bytes: {
         id: 'bytes',
         name: '字节数据',
@@ -318,6 +326,21 @@ export const imageExtensions = [
 // 视频容器：与 Go 侧 internal/fileio 的 videoExtensions 保持同表（那边同时看 ftyp/EBML 头，
 // 这里只用于「打开对话框能选、拖进来自动打开」的扩展名判定）。
 export const videoExtensions = ['mp4', 'm4v', 'webm', 'mov', 'mkv'];
+
+// 音频容器：与 Go 侧 internal/fileio 的 audioExtensions 保持同表（那边同时看
+// RIFF-WAVE / fLaC / OggS / ID3 魔数）。只收 WebView2 能解码的格式。
+export const audioExtensions = ['wav', 'mp3', 'ogg', 'oga', 'opus', 'flac', 'm4a', 'aac', 'weba'];
+
+// 媒体文档（图片 / 视频 / 音频）的首屏视图单一来源：有对应媒体就先给它自己的视图，
+// binary / text 只是手动备份视图。createDoc 的初始 mode 与启动恢复都走这里——
+// 持久化下来的 binary（历史版本或播放失败自动回退留下的）不能变成「默认视图」。
+export function defaultMediaMode(source) {
+    if (!source) return '';
+    if (source.video) return 'video';
+    if (source.audio) return 'audio';
+    if (source.image) return 'image';
+    return '';
+}
 
 // 插件注册的自定义格式；内置格式优先，插件格式不能覆盖内置格式
 export const pluginFormats = [];
@@ -364,6 +387,7 @@ export function isSupportedFile(name) {
     const ext = base.slice(dot + 1).toLowerCase();
     if (imageExtensions.includes(ext)) return true;
     if (videoExtensions.includes(ext)) return true;
+    if (audioExtensions.includes(ext)) return true;
     if (pluginFormats.some((f) => f.extensions.includes(ext))) return true;
     return Object.values(formats).some((f) => f.extensions.includes(ext));
 }

@@ -166,7 +166,6 @@ export function createSettingsPaneStorage(deps) {
         tip.className = 'info-tip';
         tip.dataset.tip = text || '';
         tip.setAttribute('aria-label', '说明');
-        tip.textContent = 'i';
         return tip;
     }
 

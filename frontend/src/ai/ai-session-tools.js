@@ -2,6 +2,7 @@
 // 搜索结果分组渲染与会话 JSONL 摘要。工具执行在 ai-panel.js，这里只做无副作用整形，
 // 配套测试见 ai-session-tools.test.mjs。
 import {replaySessionLog, textOf} from './ai-session-store.js';
+import {splitTurnReminderPrefix} from './ai-turn-reminder.js';
 
 // 单次 session_read 的输出预算：总字符上限与单条消息截断长度（跨会话上下文，宁可少给不要灌满）
 export const AI_SESSION_DIGEST_MAX_CHARS = 8000;
@@ -82,7 +83,9 @@ export function formatSessionSearchResult(query, result) {
         lines.push('● ' + group.title + (when ? '（' + when + '）' : '') + ' · id: ' + group.id);
         for (const hit of group.items) {
             index++;
-            lines.push('  ' + index + '. [' + roleLabel(hit.role) + '] ' + (oneLine(hit.snippet, 200) || '(无片段)'));
+            // 用户消息片段去掉开头的 <system-reminder> 环境块（宿主注入的每轮状态，不是用户说的内容）
+            const snippet = splitTurnReminderPrefix(hit.snippet).body;
+            lines.push('  ' + index + '. [' + roleLabel(hit.role) + '] ' + (oneLine(snippet, 200) || '(无片段)'));
         }
     }
     lines.push('');
@@ -151,7 +154,8 @@ export function sessionLogDigest(raw, options = {}) {
     let clipped = false;
     for (const item of picked) {
         const when = formatTs(item.message && item.message.ts);
-        const body = oneLine(messageTextOf(item.message), AI_SESSION_MESSAGE_MAX_CHARS);
+        // 用户消息正文去掉开头的 <system-reminder> 环境块（宿主注入的每轮状态，不是用户说的内容）
+        const body = oneLine(splitTurnReminderPrefix(messageTextOf(item.message)).body, AI_SESSION_MESSAGE_MAX_CHARS);
         const line = '[#' + (item.index + 1) + ' ' + roleLabel(item.message && item.message.role) + (when ? ' ' + when : '') + '] ' + (body || '(空)');
         if (used + line.length > AI_SESSION_DIGEST_MAX_CHARS) {
             clipped = true;
