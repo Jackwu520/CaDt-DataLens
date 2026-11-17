@@ -4,6 +4,7 @@
 // ai-session-store 依赖注入式纯编解码模块，但 worktree 归一与 ai-panel 共用单一来源
 //（ai-worktree.js 只 import ai-constants，无环）。
 import {normalizeWorktreeState} from './ai-worktree.js';
+import {normalizeActivePlan} from './ai-plan-file.js';
 
 export const AI_SESSION_SCHEMA = 1;
 
@@ -25,8 +26,11 @@ export function textOf(value) {
 
 // 机械提醒注入块（给模型看的，不渲染）：silent 标记是后来才加的，修复前的历史会话
 // 里没有这个字段——按内容前缀识别，加载回填时照常隐藏。新注入块的判定不依赖这里。
+// 两种形态都要认：裸 <task_todos_check>（旧）与 <system-reminder> 包裹的宿主块（新）。
 export function isSilentInjection(content) {
-    return /^<task_todos_check>/.test(textOf(content).trim());
+    const text = textOf(content).trim();
+    return /^<task_todos_check>/.test(text) ||
+        /^<system-reminder>\s*<task_todos_check>/.test(text);
 }
 
 export function safeImageName(image) {
@@ -70,13 +74,6 @@ export function messageFingerprint(message) {
         bg ? textOf(bg.state) + ':' + (bg.code == null ? '' : Number(bg.code)) : '',
         Array.isArray(message.images) ? message.images.length : 0,
         Array.isArray(message.videos) ? message.videos.length : 0,
-        // 计划模式落盘路径：后补写（升级前的待批准计划 / 写盘失败后重试）只改这一个字段，
-        // 不进指纹就会被「指纹没变」挡在就地截断之外，重启后又得重算一次。
-        textOf(message.planFile),
-        // submit_plan 提交的计划正文同理：工具执行发生在占位 assistant 落盘之后，
-        // 不进指纹会被「指纹没变」挡住重写，重启后计划消息就丢了。
-        textOf(message.planText).length,
-        textOf(message.planTitle),
         // 思考循环守卫的状态在流中被就地改写（warned→pending→continued/stopped）：
         // 不进指纹会被「指纹没变」挡在就地截断之外，重启重放又会回到 pending。
         message.guard ? textOf(message.guard.state) + ':' + textOf(message.guard.action) + ':' + textOf(message.guard.source) : '',
@@ -93,6 +90,9 @@ export function messageFingerprint(message) {
 export function isTurnBoundaryMessage(message) {
     if (!message || message.role !== 'user') return false;
     if (message.systemNote) return false;
+    // 插话（steer）是本轮补充指示，不是用户发起的新回合：分组 / 列表排序键 / 渲染窗口
+    // 都沿用原回合起点（与 ai-panel.js 的 turnStartAt / 瘦身轮次口径一致）。
+    if (message.steer) return false;
     if (message.app && Array.isArray(message.images) && message.images.length && !message.turnStartedAt) return false;
     // read_video 自动附加的视频消息与 read_image 同口径：不是用户发起的回合
     if (message.app && Array.isArray(message.videos) && message.videos.length && !message.turnStartedAt) return false;
@@ -320,6 +320,10 @@ export function buildSessionMeta(session) {
         systemPrompt: textOf(session && session.systemPrompt),
         promptTemplateId: textOf(session && session.promptTemplateId),
         planMode: !!(session && session.planMode),
+        // 当前计划（唯一真源）：{title, goal, files, steps, verification, risks, markdown,
+        // status:'pending'|'approved', ts, fileRel}。审批卡 / 落盘 / 回注 / 列表角标都读它，
+        // 消息不承载计划内容。空计划归一成 null，不写空壳。
+        activePlan: normalizeActivePlan(session && session.activePlan),
         browserTabId: textOf(session && session.browserTabId),
         round: Number(session && session.round) || 0,
         archivedAt: Number(session && session.archivedAt) || 0,

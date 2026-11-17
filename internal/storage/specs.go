@@ -212,6 +212,11 @@ func (s *Service) specs() []spec {
 			targets: []target{workspaceTarget("answers")},
 		},
 		{
+			id: "ws-memo", label: "快捷便签（本工作区）", scope: ScopeWorkspace, kind: KindData,
+			note:    "工作区 .cadt/memo 里的快捷便签面板数据与贴图。",
+			targets: []target{workspaceTarget("memo")},
+		},
+		{
 			id: "ws-memory", label: "工作区 AI 记忆", scope: ScopeWorkspace, kind: KindDanger,
 			note:    "工作区 .cadt/memory 里的记忆与索引（MEMORY.md 是真源）。删除后 AI 不再记得这个项目的约定。",
 			targets: []target{workspaceTarget("memory")},
@@ -240,6 +245,11 @@ func (s *Service) specs() []spec {
 			id: "ai-memory", label: "应用级 AI 记忆", scope: ScopeApp, kind: KindData,
 			note:    "记忆模式选「应用级」时写到 ai-memory 的内容；工作区模式的记忆在 .cadt/memory，不在这里。",
 			targets: []target{appDirTarget("ai-memory")},
+		},
+		{
+			id: "memo", label: "快捷便签（全局）", scope: ScopeApp, kind: KindData,
+			note:    "应用数据 memo/ 里的全局快捷便签面板数据与贴图；工作区各自的在 .cadt/memo，不在这里。",
+			targets: []target{appDirTarget("memo")},
 		},
 		{
 			id: "ai-schedule", label: "AI 定时任务", scope: ScopeApp, kind: KindDanger,

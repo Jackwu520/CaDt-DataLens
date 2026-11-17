@@ -98,8 +98,9 @@ func (c *Chat) AISendChat(sessionId string, cfg aitransport.Config, messages []a
 
 		switch {
 		case errors.Is(cause, aitransport.ErrIdleTimeout):
-			emit(aitransport.EventError, aitransport.ErrorPayload{Id: sessionId, Message: aitransport.ErrIdleTimeout.Error()})
-			logf("error", "AI 流中断：%v", aitransport.ErrIdleTimeout)
+			// cause 是带实际秒数的 idleTimeoutError；用户看到的文案要说清具体阈值。
+			emit(aitransport.EventError, aitransport.ErrorPayload{Id: sessionId, Message: cause.Error()})
+			logf("error", "AI 流中断：%v", cause)
 		case errors.Is(cause, context.Canceled):
 			emit(aitransport.EventDone, aitransport.DonePayload{Id: sessionId, FinishReason: "stopped"})
 			logf("info", "AI 请求已停止（%s）", time.Since(started).Round(time.Millisecond))
@@ -137,7 +138,7 @@ func (c *Chat) AIStop(sessionId string) {
 }
 
 // AITouchStream 重置匹配会话的空闲看门狗（sessionId 前缀匹配）。前端在工具
-// 执行/等待用户输入等无网络数据阶段定期调用，避免 120 秒空闲超时误杀挂起的流。
+// 执行/等待用户输入等无网络数据阶段定期调用，避免空闲超时（可配置）误杀挂起的流。
 func (c *Chat) AITouchStream(sessionId string) {
 	sessionId = strings.TrimSpace(sessionId)
 	if sessionId == "" {

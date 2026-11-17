@@ -63,23 +63,33 @@ test('isSilentInjection：按内容识别历史会话的机械提醒注入块', 
     // 修复前落盘的注入块没有 silent 字段，靠内容前缀回填
     assert.equal(isSilentInjection('<task_todos_check>任务清单尚未与实际进度对齐：1 项进行中、3 项待处理。</task_todos_check>'), true);
     assert.equal(isSilentInjection('  <task_todos_check>任务清单尚未与实际进度对齐：…</task_todos_check>  '), true);
+    // 新形态：包成 <system-reminder> 宿主块（2026-11-17 起），同样要隐藏
+    assert.equal(isSilentInjection('<system-reminder>\n<task_todos_check>任务清单现状：共 2 项……</task_todos_check>\n</system-reminder>'), true);
     // 普通用户消息 / 系统注记 / 其他标签不命中
     assert.equal(isSilentInjection('帮我看看这个文件'), false);
     assert.equal(isSilentInjection('（系统提示）工具调用轮次已达 10。'), false);
     assert.equal(isSilentInjection('<task_reminders>提醒内容</task_reminders>'), false);
+    assert.equal(isSilentInjection('<system-reminder>\n<workspace_context>x</workspace_context>\n</system-reminder>\n\n正文'), false);
     assert.equal(isSilentInjection(''), false);
     assert.equal(isSilentInjection(null), false);
 });
 
-test('messageFingerprint：计划落盘路径变化要能触发重写', () => {
-    const message = {role: 'assistant', status: 'done', content: '计划正文', planMode: true};
-    const before = messageFingerprint(message);
-    // 升级前的待批准计划在打开审批卡时才补写路径：只改 planFile，指纹必须变，
-    // 否则「指纹没变就跳过」会把这条路径留在磁盘外，重启后又得重算一次。
-    message.planFile = 'D:/ws/.cadt/plan/20261116-052307-x.md';
-    const after = messageFingerprint(message);
-    assert.notEqual(before, after);
-    assert.equal(messageFingerprint({...message}), after);
+test('buildSessionMeta：activePlan 归一随 meta 持久化（计划唯一真源）', () => {
+    // 计划状态在 session 层（activePlan），不再挂在消息上；meta 必须原样带出，
+    // 重启后审批卡 / 落盘 / 回注才能恢复。
+    const plan = {
+        title: 'Git 图谱', markdown: '# Git 图谱\n\n## 目标', status: 'pending',
+        ts: 123, fileRel: '.cadt/plan/plan-s1.md',
+    };
+    const meta = buildSessionMeta({id: 's1', planMode: true, activePlan: plan});
+    assert.deepEqual(meta.activePlan, plan);
+    // 空 / 脏数据归一成 null，不写空壳
+    assert.equal(buildSessionMeta({id: 's1'}).activePlan, null);
+    assert.equal(buildSessionMeta({id: 's1', activePlan: {markdown: '   '}}).activePlan, null);
+    // status 只认 pending / approved
+    const bad = buildSessionMeta({id: 's1', activePlan: {...plan, status: 'weird', extraField: 1}});
+    assert.equal(bad.activePlan.status, 'pending');
+    assert.equal('extraField' in bad.activePlan, false, '白名单外字段不得透传');
 });
 
 test('messageFingerprint：思考循环守卫状态变化要能触发重写', () => {

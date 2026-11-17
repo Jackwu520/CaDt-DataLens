@@ -43,6 +43,14 @@ function stripTrailingCommas(s, fixes) {
     return out;
 }
 
+/**
+ * 把常见「坏 JSON」修成可被 JSON.parse 的文本（保守策略，只做确定性损伤的修复）。
+ * 覆盖：BOM 头、零宽字符、智能引号、行/块注释、单引号字符串、尾逗号、
+ * 未加引号的键/值、NaN/Infinity、undefined/None、Python 风格 True/False。
+ * @param {string} input 可能损坏的 JSON 文本
+ * @returns {{ok: boolean, text: string, fixes: string[], error?: string}}
+ *   ok=true 时 text 可被 JSON.parse；ok=false 时 error 为解析错误消息；fixes 列出应用的修复名
+ */
 export function repairJson(input) {
     const fixes = [];
     let s = String(input || '');

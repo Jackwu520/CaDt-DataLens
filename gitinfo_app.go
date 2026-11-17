@@ -70,8 +70,8 @@ func (a *App) GitWorktreeList(dir string) (*gitinfo.GitWorktreeListResult, error
 	return gitinfo.WorktreeList(dir)
 }
 
-func (a *App) GitWorktreeAdd(dir, label, sessionKey string) (*gitinfo.GitWorktreeAddResult, error) {
-	return gitinfo.WorktreeAdd(dir, label, sessionKey)
+func (a *App) GitWorktreeAdd(dir, label, sessionKey string, carry bool) (*gitinfo.GitWorktreeAddResult, error) {
+	return gitinfo.WorktreeAdd(dir, label, sessionKey, carry)
 }
 
 func (a *App) GitWorktreeRemove(dir, name string, deleteBranch bool) error {
@@ -88,4 +88,26 @@ func (a *App) GitWorktreeDiff(dir, name, baseSha string) (string, error) {
 
 func (a *App) GitWorktreeStat(dir, name, baseSha string) (string, error) {
 	return gitinfo.WorktreeStat(dir, name, baseSha)
+}
+
+// ===== Git 图谱（引擎在 internal/gitinfo/graph.go；泳道在 Go 侧算好，前端只渲染） =====
+
+func (a *App) GitGraphCommits(dir, ref string, limit, skip int) (*gitinfo.GitGraphPage, error) {
+	return gitinfo.GraphCommits(dir, ref, limit, skip)
+}
+
+func (a *App) GitGraphRefs(dir string) (*gitinfo.GitGraphRefsResult, error) {
+	return gitinfo.GraphRefs(dir)
+}
+
+func (a *App) GitGraphCheckout(dir, ref string) (*gitinfo.GitOperationResult, error) {
+	return gitinfo.GraphCheckout(dir, ref)
+}
+
+func (a *App) GitGraphReset(dir, sha, mode string) (*gitinfo.GitOperationResult, error) {
+	return gitinfo.GraphReset(dir, sha, mode)
+}
+
+func (a *App) GitGraphCherryPick(dir, sha string) (*gitinfo.GitOperationResult, error) {
+	return gitinfo.GraphCherryPick(dir, sha)
 }

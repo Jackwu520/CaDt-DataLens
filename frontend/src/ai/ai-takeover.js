@@ -7,7 +7,7 @@ import {iconSvg} from '../core/icons.js';
 import {AI_WRITE_SCOPES} from './ai-constants.js';
 import {isWebApproval} from './ai-permissions.js';
 import {collectCommandFamilies, commandFamilySignature} from './ai-command-rules.js';
-import {planDigest, planDisplayPath} from './ai-plan-file.js';
+import {planDigest, planPreviewSlice, PLAN_PREVIEW_CHARS} from './ai-plan-file.js';
 import {createAIAskCards} from './ai-ask-cards.js';
 import {createAIPatchCard} from './ai-patch-card.js';
 
@@ -131,9 +131,10 @@ export function createAITakeover(ctx) {
     const setDismissedPlanApproval = ctx.setDismissedPlanApproval;
     const getStickBottom = ctx.getStickBottom;
     const toolMeta = ctx.toolMeta;
+    const renderMarkdown = ctx.renderMarkdown;
     const acceptPlan = ctx.acceptPlan;
-    // 计划卡「在标签页打开」（ai-panel 注入）：已批准开 .cadt/plan/ 的真文件，未批准开虚拟只读预览
-    const openPlanFile = typeof ctx.openPlanFile === 'function' ? ctx.openPlanFile : null;
+    // 计划卡「查看完整计划」（ai-panel 注入）：已批准开 .cadt/plan/ 的真文件，未批准开虚拟只读预览
+    const openPlan = typeof ctx.openPlan === 'function' ? ctx.openPlan : null;
 
     // 补丁卡与提问卡（phase3 A2 拆出的同域兄弟模块）：ctx 同源直传，宿主侧符号经 extras 注入；
     // 分发器 updateComposerTakeover 在下方定义，extras 里用惰性箭头延迟解析。
@@ -141,7 +142,11 @@ export function createAITakeover(ctx) {
     const patchCards = createAIPatchCard(ctx, {
         updateComposerTakeover: (...args) => updateComposerTakeover(...args),
     });
-    const askCards = createAIAskCards(ctx, {askNavAction});
+    const askCards = createAIAskCards(ctx, {
+        askNavAction,
+        // 提问卡折叠/展开走宿主分发器（与审批卡同口径：重定位浮层 + stickBottom 跟随）
+        updateComposerTakeover: (...args) => updateComposerTakeover(...args),
+    });
     const requestPatchApproval = (...args) => patchCards.requestPatchApproval(...args);
     const renderPatchTakeover = (...args) => patchCards.renderPatchTakeover(...args);
     const renderPatchApprovalBody = (...args) => patchCards.renderPatchApprovalBody(...args);
@@ -152,6 +157,10 @@ export function createAITakeover(ctx) {
     function renderApprovalTakeover(entry) {
         if (entry && entry.approval && entry.approval.kind === 'patch') {
             renderPatchTakeover(entry);
+            return;
+        }
+        if (entry && entry.approval && entry.approval.kind === 'worktree') {
+            renderWorktreeTakeover(entry);
             return;
         }
         const toolMessage = entry.toolMessage;
@@ -411,23 +420,123 @@ export function createAITakeover(ctx) {
         el.takeover.appendChild(card);
     }
 
-    function planApprovalMessage(session) {
-        if (!session || streamOf(session.id) || compactOf(session.id) || !session.planMode) return null;
-        const index = lastAssistantIndex(session);
-        if (index < 0) return null;
-        const message = session.messages[index];
-        if (!message || message.role !== 'assistant' || message.status !== 'done') return null;
-        // 新形态：submit_plan 提交，计划在 message.planText（正文可为空、带 toolCalls）
-        if (String(message.planText || '').trim()) return message;
-        // 旧形态（兼容历史会话）：最后一条 assistant 消息正文即计划
-        if (index !== session.messages.length - 1) return null;
-        if (!message.planMode || !String(message.content || '').trim()) return null;
-        return message;
+    // 隔离工作区动作审批（AI 主动 create / discard）：接管 composer 的简洁审批卡。
+    // 与写/命令审批共用 pendingApprovals 通道；全档必弹（含完全权限）。用户手点的
+    // 「隔离」开关仍走居中确认弹窗（那是用户自己发起的动作）。
+    function renderWorktreeTakeover(entry) {
+        const toolMessage = entry.toolMessage;
+        const approval = entry.approval;
+        const discard = approval.action === 'discard';
+        const takeoverKey = 'approval:' + (toolMessage.toolCallId || '');
+        el.takeover.dataset.takeoverKey = takeoverKey;
+        if (getApprovalTakeoverKey() !== takeoverKey) {
+            setApprovalTakeoverKey(takeoverKey);
+            setApprovalTakeoverCollapsed(false);
+        }
+        el.takeover.textContent = '';
+        const titleText = discard ? '丢弃隔离工作区' : '创建隔离工作区';
+        if (getApprovalTakeoverCollapsed()) {
+            const bar = document.createElement('button');
+            bar.type = 'button';
+            bar.className = 'ai-takeover-bar';
+            const barIcon = document.createElement('span');
+            barIcon.className = 'ai-takeover-icon';
+            barIcon.innerHTML = iconSvg(discard ? 'trash' : 'folder', 13);
+            const barText = document.createElement('span');
+            barText.className = 'ai-takeover-bar-text';
+            barText.textContent = '隔离工作区待审批 · ' + titleText + (approval.name ? ' ' + approval.name : '');
+            const chev = document.createElement('span');
+            chev.className = 'ai-takeover-collapse';
+            chev.innerHTML = AI_CHEVRON_SVG;
+            bar.append(barIcon, barText, chev);
+            bar.addEventListener('click', () => {
+                setApprovalTakeoverCollapsed(false);
+                updateComposerTakeover(true);
+            });
+            el.takeover.appendChild(bar);
+            return;
+        }
+        const card = document.createElement('div');
+        card.className = 'ai-takeover-card ai-approval-takeover ai-worktree-takeover';
+        const head = document.createElement('div');
+        head.className = 'ai-takeover-head';
+        const icon = document.createElement('span');
+        icon.className = 'ai-takeover-icon';
+        icon.innerHTML = iconSvg(discard ? 'trash' : 'folder', 13);
+        const title = document.createElement('span');
+        title.className = 'ai-takeover-title';
+        title.textContent = titleText;
+        const collapse = document.createElement('button');
+        collapse.type = 'button';
+        collapse.className = 'ai-takeover-collapse';
+        collapse.innerHTML = AI_CHEVRON_SVG;
+        collapse.addEventListener('click', () => {
+            setApprovalTakeoverCollapsed(true);
+            updateComposerTakeover(true);
+        });
+        head.append(icon, title, collapse);
+
+        const body = document.createElement('div');
+        body.className = 'ai-takeover-body';
+        const text = document.createElement('div');
+        text.className = 'ai-worktree-approval-text';
+        if (discard) {
+            text.textContent = 'AI 请求丢弃 ' + (approval.relPath || approval.name || '隔离工作区')
+                + '（分支 ' + (approval.branch || '隔离分支') + '）。\n'
+                + '未导出的改动会随 worktree 与分支一起删除；主根不受影响。';
+            body.appendChild(text);
+            if (approval.stat) {
+                const stat = document.createElement('pre');
+                stat.className = 'ai-worktree-approval-stat';
+                stat.textContent = '改动统计：\n' + approval.stat;
+                body.appendChild(stat);
+            }
+        } else {
+            const lines = [
+                'AI 请求为当前会话创建隔离 git worktree：改动只落在 .cadt/worktree/<slug>/'
+                    + '（新分支 cadt/wt/<slug>），主根不受影响；完成后经补丁审批卡回灌。',
+            ];
+            if (approval.label) lines.push('用途：' + approval.label);
+            if (approval.carry) lines.push('将把主根当前的未提交改动一并带入隔离区（打成快照作为基准），主根不受影响。');
+            lines.push('创建会写盘并新建分支；拒绝后 AI 只能在主根按常规流程继续。');
+            text.textContent = lines.join('\n');
+            body.appendChild(text);
+        }
+
+        const foot = document.createElement('div');
+        foot.className = 'ai-takeover-foot ai-approval-takeover-foot';
+        const hint = document.createElement('span');
+        hint.className = 'ai-takeover-hint';
+        hint.textContent = '由 AI 发起 · 批准后才执行';
+        const actions = document.createElement('div');
+        actions.className = 'ai-approval-actions';
+        const deny = document.createElement('button');
+        deny.type = 'button';
+        deny.className = 'dlg-btn';
+        deny.textContent = discard ? '保留' : '取消';
+        deny.addEventListener('click', () => decideApproval(toolMessage, false));
+        const apply = document.createElement('button');
+        apply.type = 'button';
+        apply.className = 'dlg-btn ' + (discard ? 'danger' : 'primary');
+        apply.textContent = discard ? '丢弃隔离区' : '创建隔离区';
+        apply.addEventListener('click', () => decideApproval(toolMessage, true));
+        actions.append(deny, apply);
+        foot.append(hint, actions);
+        card.append(head, body, foot);
+        el.takeover.appendChild(card);
     }
 
-    function planApprovalKey(session, message) {
-        return session.id + ':' + (Number(message.ts) || 0) + ':' +
-            String(message.planText || message.content || '').length;
+    function planApprovalMessage(session) {
+        if (!session || streamOf(session.id) || compactOf(session.id) || !session.planMode) return null;
+        // 计划唯一真源是 session.activePlan：pending 且属于本会话才弹审批卡。
+        // 不扫消息——模型提交后补一句话、工具轮，都不影响卡的显示与指向。
+        const plan = session.activePlan;
+        if (!plan || plan.status !== 'pending' || !String(plan.markdown || '').trim()) return null;
+        return plan;
+    }
+
+    function planApprovalKey(session, plan) {
+        return session.id + ':' + (Number(plan.ts) || 0) + ':' + String(plan.markdown || '').length;
     }
 
     // ---- 系统接管（通用；系统发起、模型不可见） ----
@@ -523,8 +632,8 @@ export function createAITakeover(ctx) {
         el.takeover.appendChild(card);
     }
 
-    function renderPlanTakeover(session, message) {
-        const key = planApprovalKey(session, message);
+    function renderPlanTakeover(session, plan) {
+        const key = planApprovalKey(session, plan);
         el.takeover.dataset.takeoverKey = 'plan:' + key;
         el.takeover.textContent = '';
         const card = document.createElement('div');
@@ -544,56 +653,30 @@ export function createAITakeover(ctx) {
         const body = document.createElement('div');
         body.className = 'ai-takeover-body';
         const preview = document.createElement('div');
-        preview.className = 'ai-plan-preview';
-        const text = String(message.planText || message.content || '').trim();
-        if (message.planFile) {
-            // 计划正文已落盘 .cadt/plan/（已批准）：卡里只给文件入口，正文去标签页看
-            // （不再把整篇计划铺进对话，「想看细节」就点开标签页）。
-            preview.classList.add('is-file');
-            const digest = planDigest(text);
-            const row = document.createElement('div');
-            row.className = 'ai-plan-file-row';
-            const path = document.createElement('code');
-            path.className = 'ai-plan-file-path';
-            path.textContent = planDisplayPath(message.planFile);
-            const meta = document.createElement('span');
-            meta.className = 'ai-plan-file-meta';
-            meta.textContent = digest.lines + ' 行 · ' + digest.chars + ' 字';
-            const open = document.createElement('button');
-            open.type = 'button';
-            open.className = 'dlg-btn ai-plan-file-open';
-            open.textContent = '在标签页打开';
-            open.addEventListener('click', () => {
-                if (openPlanFile) openPlanFile(message);
-            });
-            path.addEventListener('click', () => {
-                if (openPlanFile) openPlanFile(message);
-            });
-            row.append(path, meta, open);
-            const note = document.createElement('div');
-            note.className = 'ai-plan-file-note';
-            note.textContent = '计划正文已保存到工作区，点「在标签页打开」看完整内容。';
-            preview.append(row, note);
-        } else {
-            // 未批准不落盘：预览只给截断片段；「查看完整计划」放预览区**外面**（固定可见，
-            // 不跟着内容滚走），点击打开虚拟只读标签页预览（不写盘）。
-            preview.textContent = text.length > 1600 ? text.slice(0, 1600) + '\n…' : text;
-            const openFull = document.createElement('button');
-            openFull.type = 'button';
-            openFull.className = 'dlg-btn ai-plan-file-open';
-            openFull.textContent = '查看完整计划';
-            openFull.addEventListener('click', () => {
-                if (openPlanFile) openPlanFile(message);
-            });
-            openFullRow = document.createElement('div');
-            openFullRow.className = 'ai-plan-file-row';
-            const note = document.createElement('span');
-            note.className = 'ai-plan-file-note';
-            note.textContent = '计划尚未保存成文件，批准后写入 .cadt/plan/';
-            openFullRow.append(note, openFull);
-        }
+        preview.className = 'ai-plan-preview ai-md';
+        // plan 是 session.activePlan（pending）；审批卡只在待批准状态出现，不需要「已落盘」分支
+        const text = String(plan.markdown || '').trim();
+        const digest = planDigest(text);
+        // 未批准不落盘：预览只给截断片段——planPreviewSlice 只在行边界 + 围栏外切（结构化
+        // 计划格式不伤），走共享渲染链（markdown-it → DOMPurify → hljs），原始 HTML 不执行。
+        // 「查看完整计划」放预览区**外面**（固定可见，不跟着内容滚走），点击打开虚拟只读预览（不写盘）。
+        const slice = planPreviewSlice(text, PLAN_PREVIEW_CHARS);
+        preview.innerHTML = renderMarkdown(slice.text + (slice.truncated ? '\n\n…' : ''));
+        const openFull = document.createElement('button');
+        openFull.type = 'button';
+        openFull.className = 'dlg-btn ai-plan-file-open';
+        openFull.textContent = '查看完整计划';
+        openFull.addEventListener('click', () => {
+            if (openPlan) openPlan(session);
+        });
+        const openFullRow = document.createElement('div');
+        openFullRow.className = 'ai-plan-file-row';
+        const note = document.createElement('span');
+        note.className = 'ai-plan-file-note';
+        note.textContent = digest.lines + ' 行 · ' + digest.chars + ' 字 · 尚未保存成文件，批准后写入 .cadt/plan/';
+        openFullRow.append(note, openFull);
         body.appendChild(preview);
-        if (openFullRow) body.appendChild(openFullRow);
+        body.appendChild(openFullRow);
         // 计划里出现的同类命令可在批准时一并授权，减少执行期的重复审批。
         const families = collectCommandFamilies(text);
         const selectedFamilies = new Set(families);
@@ -657,7 +740,7 @@ export function createAITakeover(ctx) {
         accept.type = 'button';
         accept.className = 'dlg-btn primary';
         accept.textContent = '执行计划';
-        accept.addEventListener('click', () => acceptPlan(session, message, Array.from(selectedFamilies)));
+        accept.addEventListener('click', () => acceptPlan(session, Array.from(selectedFamilies)));
         foot.append(hint, continueBtn, accept);
         card.append(head, body, foot);
         el.takeover.appendChild(card);

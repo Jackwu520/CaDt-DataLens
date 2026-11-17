@@ -72,6 +72,7 @@ import {
     normalizeLocalClassifierStrictness,
     normalizePermissionRules,
     parseRuleLines,
+    scopeUpgradedToFull,
     webRuleSubject,
     writeRuleSubject,
 } from './ai-permissions.js';
@@ -86,6 +87,9 @@ import {patchAllowApply, lastUserTextOf} from './ai-patch-policy.js';
 import {
     CONTEXT_WINDOW_MAX,
     CONTEXT_WINDOW_MIN,
+    IDLE_TIMEOUT_DEFAULT_SEC,
+    IDLE_TIMEOUT_MAX_SEC,
+    IDLE_TIMEOUT_MIN_SEC,
     MODALITY_KEYS,
     MODALITY_LABELS,
     OUTPUT_WINDOW_MAX,
@@ -108,6 +112,9 @@ import {
     reasoningLevelInfo,
     resolveModelId,
     resolveModelRef,
+    resolveModelRefTarget,
+    matchSubAgentModelChoice,
+    subAgentModelChoicesFrom,
     windowValue,
     withOpencodeSessionHeader,
 } from './ai-config-model.js';
@@ -124,6 +131,8 @@ import {
 } from './ai-gen-model.js';
 import {createAIGenJobs} from './ai-gen-jobs.js';
 // 智能体（群聊成员）归一化：agents[] 存 ai-config.json，群聊域读它组上下文
+import {createInboxWaiters} from './ai-inbox-wait.js';
+import {agentLevelText} from './ai-team-model.js';
 import {normalizeAgents} from './ai-agent-model.js';
 import {
     AI_CONFIG_KEY,
@@ -201,7 +210,7 @@ import {
 import {recordRead, recordWrite, checkWriteFresh} from './ai-write-guard.js';
 import {createAIToolDefs} from './ai-tool-defs.js';
 import {createAISystemContext, truncateSkillDescription} from './ai-system-context.js';
-import {createAIWorktree, normalizeWorktreeState, agentWorktreeWriteVerdict} from './ai-worktree.js';
+import {createAIWorktree, normalizeWorktreeState, worktreeRelPath, agentWorktreeWriteVerdict, mainRootWriteVerdict} from './ai-worktree.js';
 import {createAITodos, shouldSendTodosCheck, todosCheckText} from './ai-todos.js';
 import {createScrollGesture, createShrinkBurst, nextStickState, shouldRefollowGrowth, STRICT_BOTTOM_PX} from './ai-scroll-follow.js';
 import {createAIChangesUI} from './ai-changes-ui.js';
@@ -212,27 +221,30 @@ import {missingFileHint} from './ai-path-hints.js';
 import {aiStreamRetryBudget, shouldAutoRetryStream} from './ai-stream-retry.js';
 import {createAIGitUi} from './ai-git-ui.js';
 import {createAISlash} from './ai-slash.js';
-import {createAIMessageQueue} from './ai-message-queue.js';
+import {createAIMessageQueue, formatSteerMessage} from './ai-message-queue.js';
 import {createAISchedule} from './ai-schedule.js';
 import {createAITimer} from './ai-timer.js';
 import {createAISessionList} from './ai-session-list.js';
 import {createAIComposer} from './ai-composer.js';
 import {quoteMarkupFromAttachments, splitQuotePrefix, quoteExcerpt, quoteLabel, quoteChipLabel, AI_QUOTE_KIND} from './ai-quote.js';
-import {splitTurnReminderPrefix} from './ai-turn-reminder.js';
+import {splitTurnReminderPrefix, wrapTurnReminder} from './ai-turn-reminder.js';
 import {parseFileRef, pickOpenFileMatch, applyFileRefChip} from './ai-file-refs.js';
 import {createAIToolCards} from './ai-tool-cards.js';
 import {createAITakeover} from './ai-takeover.js';
 import {
     PLAN_DIR_REL,
-    isPlanMessage,
     planDigest,
     planFileBody,
     planFileRelPath,
+    planMarkdownFrom,
     planReferenceBlock,
+    normalizeActivePlan,
+    normalizePlanSections,
+    planSectionsChars,
 } from './ai-plan-file.js';
 import {createAIManageDialogs} from './ai-manage-dialogs.js';
 import {createAISettingsDialog} from './ai-settings-dialog.js';
-import {createAISubagents, subSandboxPolicy} from './ai-subagents.js';
+import {createAISubagents, subSandboxPolicy, resolveSubAgentRounds} from './ai-subagents.js';
 import {createAIAgentNotices} from './ai-agent-notices.js';
 import {createAISidechat} from './ai-sidechat.js';
 import {forkMessages, forkSettings} from './ai-session-fork.js';
@@ -317,6 +329,8 @@ export function createAIPanel(options) {
     };
     // 子代理详情视图的宿主出口（main.js 的 openAgentTab）：在内容区标签页打开，不遮挡面板
     const openAgentTab = typeof opts.openAgentTab === 'function' ? opts.openAgentTab : null;
+    // 智能体团队详情（主代理 + 子代理树）的内容区标签页出口
+    const openAgentTeamTab = typeof opts.openAgentTeamTab === 'function' ? opts.openAgentTeamTab : null;
     // 支线对话的宿主出口（main.js 的 openSideChatTab）：完整会话渲染在内容区标签页，
     // 面板继续显示主对话——这是「支线不切走」的实现基础
     const openSideChatTab = typeof opts.openSideChatTab === 'function' ? opts.openSideChatTab : null;
@@ -399,6 +413,7 @@ export function createAIPanel(options) {
         attachBtn: panel.querySelector('#ai-attach-btn'),
         permission: panel.querySelector('#ai-permission'),
         plan: panel.querySelector('#ai-plan'),
+        worktreeToggle: panel.querySelector('#ai-worktree'),
         modelChip: panel.querySelector('#ai-model-chip'),
         input: panel.querySelector('#ai-input'),
         hint: panel.querySelector('#ai-hint'),
@@ -556,10 +571,16 @@ export function createAIPanel(options) {
         retryMax: document.getElementById('ai-opt-retry-max'),
         subAgentMax: document.getElementById('ai-opt-subagent-max'),
         subAgentMaxDepth: document.getElementById('ai-opt-subagent-depth'),
+        subAgentRounds: document.getElementById('ai-opt-subagent-rounds'),
+        subAgentModel: document.getElementById('ai-opt-subagent-model'),
+        subAgentChoice1: document.getElementById('ai-opt-subagent-choice1'),
+        subAgentChoice2: document.getElementById('ai-opt-subagent-choice2'),
+        subAgentChoice3: document.getElementById('ai-opt-subagent-choice3'),
         schedules: document.getElementById('ai-opt-schedules'),
         scheduleAdd: document.getElementById('ai-opt-schedule-add'),
         askTimeout: document.getElementById('ai-opt-ask-timeout'),
         askTimeoutAction: document.getElementById('ai-opt-ask-action'),
+        idleTimeout: document.getElementById('ai-opt-idle-timeout'),
         logPath: document.getElementById('ai-opt-log-path'),
         openLogs: document.getElementById('ai-opt-open-logs'),
         prompt: document.getElementById('ai-opt-prompt'),
@@ -633,7 +654,15 @@ export function createAIPanel(options) {
     let stream = null;
     let oneShot = null;
     let titleJob = null;
-    const titleAttempted = new Set();
+    // 自动标题最多尝试 2 次：失败（4xx / 空回复 / 被取消）后下一轮还能补，但不会每轮白跑请求。
+    // 用计数而非「试过就永久跳过」——原逻辑把一次偶发失败变成该会话永久停留在首条消息截断。
+    const AI_TITLE_MAX_ATTEMPTS = 2;
+    // 标题请求的输出预算是「防失控上限」，不是标题长度目标（对齐 deepseek-harness 的取法）：
+    // 只给 64 时，关不掉思考的模型（如 sensenova-6.8-flash）会把预算全烧在 reasoning 上，
+    // 正文 0 字符、finish_reason=length，标题永远停在首条消息截断。标题本身仍由提示词限长。
+    const AI_TITLE_MAX_TOKENS = 4096;
+    const titleAttempts = new Map(); // sessionId -> 已发起的标题请求次数
+    let titleJobSeq = 0;
     let compactSeq = 0;
     let mode = floatWindow ? 'dock' : normalizeFloatMode(settings.aiFloatMode);
     let floatCollapsed = false;
@@ -815,6 +844,16 @@ export function createAIPanel(options) {
             // 子代理总数（含递归派出的全部层级，不含主代理）；递归层级 0 = 不设限
             subAgentMax: aiClampInt(stored.subAgentMax, 1, 20, 20),
             subAgentMaxDepth: aiClampInt(stored.subAgentMaxDepth, 0, 20, 0),
+            // 子代理默认轮次预算（spawn_agent 未指定 maxRounds 时用）：一轮 = 一次模型请求
+            subAgentRounds: aiClampInt(stored.subAgentRounds, 3, 200, 50),
+            // 子代理请求模型：'账号id|模型id'；空串 = 跟随派出它的会话（与分类器模型同款引用）
+            subAgentModel: aiTextOf(stored.subAgentModel),
+            // 子代理自选模型的候选白名单（最多 3 条，同款引用）：非空才让主代理在 spawn_agent
+            // 里点名模型；失效引用在归一化末尾按账号表回收（空数组 = 未启用自选）
+            subAgentModelChoices: (Array.isArray(stored.subAgentModelChoices) ? stored.subAgentModelChoices : [])
+                .map((ref) => aiTextOf(ref))
+                .filter(Boolean)
+                .slice(0, 3),
             autoClassifier: stored.autoClassifier === true,
             // 自动审批分类器的请求模型：'账号id|模型id'；空串 = 跟随当前模型
             autoClassifierModel: aiTextOf(stored.autoClassifierModel),
@@ -844,6 +883,8 @@ export function createAIPanel(options) {
             askTimeoutAction: ['recommended', 'wait', 'abort', 'ai_decide'].includes(stored.askTimeoutAction)
                 ? stored.askTimeoutAction
                 : 'recommended',
+            // 响应空闲超时：连续 N 秒无数据即中断请求，默认 120 秒（30~3600）。
+            idleTimeoutSec: aiClampInt(stored.idleTimeoutSec, IDLE_TIMEOUT_MIN_SEC, IDLE_TIMEOUT_MAX_SEC, IDLE_TIMEOUT_DEFAULT_SEC),
             // 个性化（身份命名 / 回复风格 / 人设 / 长期指令）：旧配置缺该字段即默认态，升级零迁移
             persona: normalizePersona(stored.persona),
             // 生图/视频生成条目（generate_image / generate_video 工具的服务商配置）：同上零迁移
@@ -952,6 +993,12 @@ export function createAIPanel(options) {
         // 分类器指定的模型已不存在（被删除 / 导入半程）时回退为跟随当前模型；
         // 旧格式（纯账号 id）在这里升级为 '账号id|模型id'
         out.autoClassifierModel = resolveModelRef(out.autoClassifierModel, out.profiles);
+        // 子代理指定的模型同理：被删除 / 导入半程时回退为跟随派出方，旧格式升级为双 id
+        out.subAgentModel = resolveModelRef(out.subAgentModel, out.profiles);
+        // 自选候选白名单：逐条校验，失效的（账号或条目已删）直接剔掉并压回 ≤3
+        out.subAgentModelChoices = subAgentModelChoicesFrom(out.subAgentModelChoices, out.profiles)
+            .map((choice) => choice.ref)
+            .slice(0, 3);
         return out;
     }
 
@@ -1154,7 +1201,9 @@ export function createAIPanel(options) {
     function normalizeApproval(raw) {
         if (!raw || typeof raw !== 'object') return null;
         const state = ['pending', 'approved', 'denied', 'cancelled', 'failed'].includes(raw.state) ? raw.state : 'cancelled';
-        const kind = raw.kind === 'command' ? 'command' : 'file';
+        // worktree（AI 主动 create/discard）要保住自己的 kind 与载荷：重开会话后工具卡的
+        // 结果文案（已创建 / 已丢弃 / 操作已取消）依赖 action/name/stat；其余仍归一成 file/command。
+        const kind = raw.kind === 'command' ? 'command' : (raw.kind === 'worktree' ? 'worktree' : 'file');
         // 命令类审批的 tool 只回这三个值；read_image 的网图审批带 web 标记，要按原样留住，
         // 否则会话重开后卡文案退回「在工作目录执行命令」、记住粒度也变成「相同命令」。
         let tool = 'run_command';
@@ -1171,6 +1220,13 @@ export function createAIPanel(options) {
             error: aiTextOf(raw.error),
             command: aiTextOf(raw.command).slice(0, 8000),
             cwd: aiTextOf(raw.cwd),
+            // worktree 审批载荷（kind 非 worktree 时保持空值，不影响旧会话）
+            action: raw.kind === 'worktree' ? (raw.action === 'discard' ? 'discard' : 'create') : '',
+            name: raw.kind === 'worktree' ? aiTextOf(raw.name) : '',
+            label: raw.kind === 'worktree' ? aiTextOf(raw.label) : '',
+            branch: raw.kind === 'worktree' ? aiTextOf(raw.branch) : '',
+            stat: raw.kind === 'worktree' ? aiTextOf(raw.stat) : '',
+            carry: raw.kind === 'worktree' ? !!raw.carry : false,
             tool,
             // 网络类审批（web_fetch / read_image 网图）：卡文案与「记住」粒度按网址走
             web: raw.web === true,
@@ -1185,6 +1241,10 @@ export function createAIPanel(options) {
                 ? raw.diff.map((line) => ({
                     t: line && ['+', '-', '…'].includes(line.t) ? line.t : ' ',
                     text: aiTextOf(line && line.text),
+                    // 真实文件行号（buildDiffPreview 按完整 diff 算好）；旧会话没有该字段 → 0，
+                    // 渲染端退回从 1 连数
+                    oldLine: Math.max(0, Math.round(Number(line && line.oldLine) || 0)),
+                    newLine: Math.max(0, Math.round(Number(line && line.newLine) || 0)),
                 })).slice(0, AI_DIFF_PREVIEW_LIMIT + 8)
                 : [],
             remember: ['session', 'always', 'family', 'pre', 'auto', 'project'].includes(raw.remember) ? raw.remember : '',
@@ -1372,6 +1432,9 @@ export function createAIPanel(options) {
         if (role === 'user') {
             message.turnStartedAt = Number(raw.turnStartedAt) || 0;
             message.systemNote = raw.systemNote === true;
+            // 插话（steer）标记：随 JSONL 落盘，重放 / 懒加载补正文后仍要保留——
+            // 否则重启后历史 steer 不再包 user_steer 模板，轮次口径也会失真。
+            if (raw.steer === true) message.steer = true;
             // 历史会话没有 silent 字段：按内容识别机械提醒注入块并回填，旧数据同样隐藏
             message.silent = raw.silent === true || isSilentInjection(message.content);
             message.dedupeKey = aiTextOf(raw.dedupeKey).slice(0, 40);
@@ -1413,7 +1476,10 @@ export function createAIPanel(options) {
                 message.approval.state = 'cancelled';
                 message.status = 'done';
                 message._recovered = true;
-                if (!message.content) message.content = '审批已取消（会话重新加载）';
+                // 「等待用户审批…」是注册时的占位正文：重载后不能留它和新状态同框
+                if (!message.content || message.content === '等待用户审批…') {
+                    message.content = '审批已取消（会话重新加载）';
+                }
             }
             message.ask = normalizeAsk(raw.ask);
             if (message.ask && message.ask.state === 'pending') {
@@ -1494,11 +1560,6 @@ export function createAIPanel(options) {
             message.model = aiTextOf(raw.model);
             message.modelAccount = aiTextOf(raw.modelAccount);
             message.planMode = raw.planMode === true;
-            // 计划落盘路径：随会话持久化，重启重放后仍能一键回到标签页看正文
-            message.planFile = aiTextOf(raw.planFile);
-            // submit_plan 提交的计划正文：对话正文不承载计划，重启重放后审批卡 / 入口卡 / 回注都靠它
-            message.planText = aiTextOf(raw.planText);
-            message.planTitle = aiTextOf(raw.planTitle);
             message.guard = normalizeGuard(raw.guard);
             message.thinkMs = Number(raw.thinkMs) || 0;
             message.finishedAt = Number(raw.finishedAt) || 0;
@@ -1793,12 +1854,32 @@ export function createAIPanel(options) {
         return !sessionsLoaded && effectiveStorageMode() === 'disk';
     }
 
+    // 当前查看会话的 chrome 统一刷新。消息区、输入区、发送/停止按钮、提醒徽标、计时胶囊、
+    // 隔离 worktree 芯片、系统提示词估算——全是「跟着当前会话走」的显示状态。凡是当前
+    // 会话可能变化的路径（switchSession / newSession / deleteSession 兜底 / applyLoadedSessions
+    // 兜底 / 启动加载与 init）一律走这里，不许各自手写清单：漏一项就残留上一个会话的显示
+    // （2026-11-18 隔离芯片残留即此因——newSession 不走 switchSession，芯片漏刷一行）。
+    // renderSessionList 不在这里：面板关闭时也要刷列表（refreshSessionUI 的口径）；
+    // timerMod / worktreeMod 构造于本声明之后，调用都发生在构造完成以后，无 TDZ 问题。
+    function syncActiveSessionUI(keepScroll) {
+        const session = currentSession();
+        syncStreamView();
+        renderMessages(keepScroll === true);
+        updateComposerState();
+        // 目标会话自己的流决定「发送 / 停止」与占位文案，其他会话在跑不干扰
+        setStreamingUI();
+        // 写入徽标与任务提醒徽标随目标会话刷新（后台会话的写入不在这里闪）
+        syncRemindersUI(session);
+        // 计时胶囊按目标会话重新过滤（显示与上限都是会话隔离的）
+        timerMod.render();
+        // 隔离 worktree 胶囊随目标会话切换（显示 / 隐藏 / 名称）
+        worktreeMod.syncChip(session);
+        refreshSystemPromptEstimate(true);
+    }
+
     function refreshSessionUI() {
         renderSessionList();
-        if (isOpen()) {
-            renderMessages(true);
-            updateComposerState();
-        }
+        if (isOpen()) syncActiveSessionUI(true);
         updateScopeUI();
         updateSendState();
     }
@@ -2325,12 +2406,13 @@ export function createAIPanel(options) {
     // session 可选：传入时注入 OpenCode 稳定会话头（x-opencode-session），缺省用当前会话。
     function configForProfile(profile, entry, session) {
         let cfg;
-        if (!profile) cfg = configForModel(null, null);
-        else if (entry) cfg = configForModel(profile, entry);
+        const idleSec = config.idleTimeoutSec;
+        if (!profile) cfg = configForModel(null, null, idleSec);
+        else if (entry) cfg = configForModel(profile, entry, idleSec);
         else {
             const isActive = profile.id === (activeProfile() && activeProfile().id);
             const fallback = modelEntryOf(profile, isActive ? config.activeModelId : profile.lastModelId);
-            cfg = configForModel(profile, fallback);
+            cfg = configForModel(profile, fallback, idleSec);
         }
         const targetSession = session || currentSession();
         cfg = withOpencodeSessionHeader(cfg, targetSession);
@@ -2342,6 +2424,46 @@ export function createAIPanel(options) {
         });
     }
 
+    // 子代理请求配置：设置里指定了专用模型（设置 → AI 助手 → 子代理 · 子代理模型）且它仍然
+    // 存在时用那个模型（连同该账号的连接信息与条目参数），否则跟随派出方 profile/entry。
+    // 冷唤醒重放走同一条口径，保证「同一次派单前后用同一个模型」。
+    function subAgentConfigFor(profile, entry) {
+        const target = resolveModelRefTarget(config.subAgentModel, config.profiles);
+        return target ? configForProfile(target.account, target.entry) : configForProfile(profile, entry);
+    }
+
+    // 子代理模型档的目标（null = 跟随派出方）。派遣点用它 pin 子代理会话，让上下文窗口 /
+    // 视频能力 / 压缩基数与真正请求的模型同源——只在请求侧换模型会让窗口基数停在旧值。
+    function subAgentModelTarget() {
+        return resolveModelRefTarget(config.subAgentModel, config.profiles);
+    }
+
+    // 自选模型候选清单（设置里的白名单，最多 3 条）：spawn_agent 的 def 与孙代理共用同一份。
+    function subAgentModelChoices() {
+        return subAgentModelChoicesFrom(config.subAgentModelChoices, config.profiles);
+    }
+
+    // spawn_agent 点名的模型 → {account, entry}。没点名返回 null（走默认档）。
+    // 白名单外一律抛错并附合法清单：静默回落会让模型以为选上了，实际跑的是别的模型。
+    function subAgentModelPick(raw) {
+        const wanted = aiTextOf(raw);
+        if (!wanted) return null;
+        const choices = subAgentModelChoices();
+        if (!choices.length) {
+            throw new Error('子代理自选模型未启用：省略 model 参数（用设置里的默认子代理模型），'
+                + '或让用户在 设置 → AI 助手 → 子代理 → 自选模型 里勾选候选');
+        }
+        const choice = matchSubAgentModelChoice(wanted, choices);
+        if (!choice) {
+            throw new Error('model="' + wanted + '" 不在候选清单里。可选：'
+                + choices.map((item) => item.label).join(' / ')
+                + '；也可以省略 model 用默认');
+        }
+        const target = resolveModelRefTarget(choice.ref, config.profiles);
+        if (!target) throw new Error('model="' + wanted + '" 对应的模型配置已被删除，请让用户重选');
+        return target;
+    }
+
     function updateSessionTitleFromText(session, text) {
         if (session.title && session.title !== '新会话' && session.title !== '会话') return;
         const title = String(text || '').replace(/\s+/g, ' ').trim().slice(0, 24);
@@ -2351,7 +2473,12 @@ export function createAIPanel(options) {
     function generatedTitle(text) {
         let value = aiTextOf(text).trim();
         if (!value) return '';
+        // 成对的内联思考块先整体去掉；只剩闭合标签时（部分网关把思考「关掉」后会把
+        // 思维链直接写进 content 并以 </think> 结尾）丢掉标签之前的所有分析文本。
+        value = value.replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, ' ');
+        value = value.replace(/^[\s\S]*<\/think(?:ing)?>/i, '');
         value = value.replace(/^```[a-z]*\s*/i, '').replace(/```$/, '').trim();
+        if (!value) return '';
         value = value.split(/\r?\n/).map((line) => line.trim()).find(Boolean) || '';
         value = value.replace(/^#+\s*/, '');
         value = value.replace(/^(标题|会话标题|title)\s*[:：]\s*/i, '');
@@ -2361,6 +2488,13 @@ export function createAIPanel(options) {
         value = value.replace(/\s+/g, ' ').trim();
         if (value.length < 2) return '';
         return value.slice(0, 24);
+    }
+
+    // 标题请求失败：计数在发请求时已累加（代表「已尝试次数」），这里不再改动——
+    // 保留计数才能形成「最多 AI_TITLE_MAX_ATTEMPTS 次」的封顶；减回去会变成每轮都重试。
+    // 失败仍允许下一轮补（除非已达上限），日志留痕，别再静默吞。
+    function failTitleJob(job, reason) {
+        console.warn('[AI 标题] 会话 ' + job.sessionId + ' 生成失败（' + reason + '），标题保留为：' + job.titleBase);
     }
 
     function finishTitleJob() {
@@ -2374,6 +2508,11 @@ export function createAIPanel(options) {
                 persistSessions();
                 renderSessionList();
                 queueLogSave(session);
+            } else if (session && session.title !== job.titleBase) {
+                // 用户/AI 在生成期间改过名：不覆盖、不算失败（改名优先于自动生成）
+            } else {
+                // ai-done 但没拿到可用标题（空回复 / 答非所问 / 被取消）——按失败处理，允许下轮重试
+                failTitleJob(job, '未返回有效标题');
             }
         }
         // 结束（无论成败）后再处理排队的会话：多会话同时收尾时都能拿到标题
@@ -2395,7 +2534,7 @@ export function createAIPanel(options) {
     function maybeAutoTitle(session) {
         if (!config.autoTitle) return false;
         if (!session || session.archivedAt || !backend.AISendChat) return false;
-        if (titleAttempted.has(session.id)) return false;
+        if ((titleAttempts.get(session.id) || 0) >= AI_TITLE_MAX_ATTEMPTS) return false;
         const messages = session.messages || [];
         if (messages.length < 2) return false;
         const user = messages[0];
@@ -2413,24 +2552,32 @@ export function createAIPanel(options) {
             if (!pendingTitleSessions.includes(session.id)) pendingTitleSessions.push(session.id);
             return false;
         }
-        titleAttempted.add(session.id);
-        const id = session.id + '#title-' + Date.now();
+        titleAttempts.set(session.id, (titleAttempts.get(session.id) || 0) + 1);
+        // 关键：id 不能带「会话id#」前缀，否则用户在生成期间点停止时，
+        // AIStop(会话id) 的前缀匹配（chat.go:129）会把标题请求一起取消，标题永远停在截断文本。
+        // 用独立前缀，让标题请求与主对话流、压缩流、分类器流互相隔离。
+        const id = 'ai-title-' + (++titleJobSeq);
         titleJob = {id, sessionId: session.id, buffer: '', titleBase: session.title};
+        // 任务框架写进用户消息（deepseek-harness 的取法）：素材用 JSON 数组包住，
+        // 模型把它当「待命名的材料」而不是一轮对话，弱指令跟随的模型也少答话。
         const requestMessages = [
             {role: 'system', content: AI_TITLE_SYSTEM_PROMPT},
-            {role: 'user', content: text.slice(0, 4000)},
+            {role: 'user', content: 'Generate the session title from this JSON array of human messages:\n'
+                + JSON.stringify([text.slice(0, 4000)])},
         ];
         const titleConfig = Object.assign(configForProfile(profile, entryOf(session)), {
-            maxTokens: 64,
+            maxTokens: AI_TITLE_MAX_TOKENS,
             temperature: 0.3,
             thinking: false,
             reasoningEffort: '',
         });
-        Promise.resolve(backend.AISendChat(id, titleConfig, requestMessages, [], 0)).catch(() => {
+        Promise.resolve(backend.AISendChat(id, titleConfig, requestMessages, [], 0)).catch((e) => {
             if (titleJob && titleJob.id === id) {
+                const job = titleJob;
                 titleJob = null;
-                drainTitleQueue();
+                failTitleJob(job, '请求异常：' + ((e && e.message) || e));
             }
+            drainTitleQueue();
         });
         return true;
     }
@@ -2722,6 +2869,11 @@ export function createAIPanel(options) {
         persistSessions,
         flash,
         requestPatchApproval: (...args) => requestPatchApproval(...args),
+        requestWorktreeApproval: (...args) => requestWorktreeApproval(...args),
+        // 审批通过后执行失败/停止：把 approval.state 落成 failed/cancelled（卡片文案与状态一致）
+        persistApprovalMutation: (...args) => persistApprovalMutation(...args),
+        // 用户手点的创建/丢弃合成 worktree_manage 消息对写进会话历史（AI 路径有真实工具卡）
+        recordToolEvent: (...args) => recordWorktreeToolEvent(...args),
         patchResultText: (...args) => patchResultText(...args),
         recordChange,
         notifyFileChanged,
@@ -2738,6 +2890,9 @@ export function createAIPanel(options) {
         dialogButton,
         dialogEl: el.dialog,
         chip: el.chipWorktree,
+        // 输入区常驻开关（对齐 ZCode）：勾上=创建隔离区，取消=确认丢弃；运行中不许切换
+        toggle: el.worktreeToggle,
+        isRunning: (sessionId) => !!streamOf(sessionId),
     });
     worktreeMod.mountChip();
     worktreeMod.pruneStartup();
@@ -2870,6 +3025,12 @@ export function createAIPanel(options) {
         return marks.map((mark) => 'T+' + offset(mark) + (mark.note ? ' ' + String(mark.note) : '')).join('；');
     }
 
+    // 计时器会话树：自身 + 父/根/最初发起会话（timer_list 可见性与 stop_timer 可停范围共用）。
+    function timerTreeIdsOf(session) {
+        if (!session) return [];
+        return [session.id, session.parentSessionId, session.rootSessionId, session.originSessionId].filter(Boolean);
+    }
+
     // wakeSessionByCountupStop 正计时被停止（用户手动 / 到点自动）时给绑定会话投系统消息：
     // AI 启动「盯耗时」的正计时后，停止发生时 AI 就能拿到实际时长（与标记时间线）并接话分析——
     // countup 与 countdown 一样的感知闭环。
@@ -2887,14 +3048,21 @@ export function createAIPanel(options) {
             const desc = seconds >= 60 && seconds % 60 === 0 ? (seconds / 60) + ' 分钟' : seconds + ' 秒';
             const marksText = timerMarksText(info);
             const stopKind = info && info.auto ? '（到点自动停止）' : '';
-            await sendAppMessage({
+            // 必须投给绑定会话而不是面板当前会话：用户在别的对话里时，旧实现的 sendAppMessage
+            // 会落到可见会话上（同一会话归属漏洞）。走信箱：忙则排队，闲则静默起一轮。
+            const receipt = deliverAgentNotice(session, {
                 kind: 'timer',
                 label: '正计时 · ' + label,
                 content: '[正计时已停止' + stopKind + ' · ' + label + ']\n已计时长 ' + desc + '。' +
                     (marksText ? '期间标记时间线：' + marksText + '。\n' : '') +
                     '若此前在等待该事项的耗时结果，请基于时长与标记继续分析或简短向用户确认；无需展开无关内容。',
             });
-            flash('正计时「' + label + '」已停止' + stopKind + '，已计 ' + desc + '（已通知会话）');
+            if (!receipt || !receipt.ok) {
+                flash('正计时「' + label + '」停止但未能通知会话：' + ((receipt && receipt.reason) || '未知'), true);
+                return;
+            }
+            flash('正计时「' + label + '」已停止' + stopKind + '，已计 ' + desc +
+                (receipt.woke ? '（已通知会话）' : '（已排入会话信箱）'));
         } catch (e) {
             flash('正计时「' + label + '」停止通知失败：' + ((e && e.message) || e), true);
         }
@@ -4540,16 +4708,21 @@ export function createAIPanel(options) {
         const approval = message.approval;
         if (approval) {
             const command = approval.kind === 'command';
+            const worktree = approval.kind === 'worktree';
+            const worktreeDone = approval.action === 'discard' ? '已丢弃' : '已创建';
             if (approval.state === 'pending') return '等待审批…';
             if (approval.state === 'approved') {
                 if (message.interrupted) return '已停止';
-                if (message.status === 'running') return command ? '执行中…' : '应用中…';
-                return command ? '已执行' : '已应用';
+                if (message.status === 'running') {
+                    return command ? '执行中…' : (worktree ? (approval.action === 'discard' ? '丢弃中…' : '创建中…') : '应用中…');
+                }
+                return command ? '已执行' : (worktree ? worktreeDone : '已应用');
             }
-            if (approval.state === 'denied') return '已放弃';
+            if (approval.state === 'denied') return worktree ? (approval.action === 'discard' ? '已保留' : '未创建') : '已放弃';
             if (approval.state === 'cancelled') return '已取消';
-            if (approval.state === 'failed') return command ? '执行失败' : '应用失败';
+            if (approval.state === 'failed') return command ? '执行失败' : (worktree ? '操作失败' : '应用失败');
         }
+        if (message.activityStatus === 'denied') return '已拒绝';
         if (message.status === 'pending') return '等待审批…';
         if (message.status === 'running') return '执行中…';
         if (message.interrupted) return '中断';
@@ -4563,13 +4736,16 @@ export function createAIPanel(options) {
         const hint = document.createElement('div');
         hint.className = 'ai-approval-placeholder';
         const isCommand = approval.kind === 'command';
+        const isWorktree = approval.kind === 'worktree';
         const dot = document.createElement('span');
         dot.className = 'ai-approval-placeholder-dot';
         const text = document.createElement('span');
         text.className = 'ai-approval-placeholder-text';
         text.textContent = isCommand
             ? '命令待审批，请在下方输入区确认执行'
-            : '更改待审批，请在下方输入区确认应用';
+            : isWorktree
+                ? '隔离工作区操作待审批，请在下方输入区确认'
+                : '更改待审批，请在下方输入区确认应用';
         hint.append(dot, text);
         container.appendChild(hint);
     }
@@ -4750,7 +4926,8 @@ export function createAIPanel(options) {
     function lastUserIndex(session) {
         for (let i = session.messages.length - 1; i >= 0; i--) {
             const message = session.messages[i];
-            if (message.role === 'user' && !message.systemNote) return i;
+            // steer 是本轮补充指示，不是用户发起的新问题：重新生成 / 编辑重发要回到原始用户消息。
+            if (message.role === 'user' && !message.systemNote && !message.steer) return i;
         }
         return -1;
     }
@@ -4786,7 +4963,8 @@ export function createAIPanel(options) {
     function turnStartAt(session, assistantIndex) {
         for (let i = Math.min(assistantIndex, session.messages.length - 1); i >= 0; i--) {
             const message = session.messages[i];
-            if (message.role === 'user' && !message.systemNote) return Number(message.turnStartedAt) || Number(message.ts) || 0;
+            // steer 是本轮补充指示，不是新一轮的起点（否则轮耗时会被它截短）。
+            if (message.role === 'user' && !message.systemNote && !message.steer) return Number(message.turnStartedAt) || Number(message.ts) || 0;
         }
         return 0;
     }
@@ -4948,7 +5126,8 @@ export function createAIPanel(options) {
         if (slim) {
             for (let i = limit - 1; i >= 0; i--) {
                 const m = session.messages[i];
-                if (m && m.role === 'user' && !m.systemNote) {
+                // 插话（steer）是本轮补充指示，不算新的一轮：否则「保留最近 2 轮原文」会被它挤掉。
+                if (m && m.role === 'user' && !m.systemNote && !m.steer) {
                     userTurnsSeen += 1;
                     if (userTurnsSeen === 3) {
                         recentStart = i + 1;
@@ -5009,6 +5188,11 @@ export function createAIPanel(options) {
             if (!content && !hasImages && !hasVideos && message.role === 'user' &&
                 ((Array.isArray(message.images) && message.images.length) || (Array.isArray(message.videos) && message.videos.length))) {
                 content = '（图片/视频已归档，原始内容见对话日志）';
+            }
+            // 插话（steer）只在请求里包 user_steer 模板：落盘与气泡仍是用户原文，
+            // 否则重放后模板会越包越多（见 ai-message-queue.js formatSteerMessage）。
+            if (message.role === 'user' && message.steer && String(content || '').trim()) {
+                content = formatSteerMessage(content);
             }
             if (!content && !hasCalls && !hasImages && !hasVideos) continue;
             if (message.role === 'assistant' && message.status === 'error') continue;
@@ -5087,7 +5271,7 @@ export function createAIPanel(options) {
         const totalTokens = tokens;
         const windowSize = contextWindowOf(session);
         const percent = windowSize > 0 ? (totalTokens / windowSize * 100) : 0;
-        const userCount = session ? session.messages.filter((m) => m.role === 'user' && !m.systemNote).length : 0;
+        const userCount = session ? session.messages.filter((m) => m.role === 'user' && !m.systemNote && !m.steer).length : 0;
         const assistantCount = session ? session.messages.filter((m) => m.role === 'assistant').length : 0;
         const toolCount = session ? session.messages.filter((m) => m.role === 'tool').length : 0;
         let lastUsage = null;
@@ -5341,34 +5525,22 @@ export function createAIPanel(options) {
 
     // ---- 计划落盘（批准时写 <工作区>/.cadt/plan/plan-<会话id>.md；未批准不落盘） ----
     // 路径由会话推导（ai-plan-file.js）：同一会话永远覆盖同一个文件，继续规划的修订轮
-    // 自然演进同一份文档；正文由消息 content 提供。
+    // 自然演进同一份文档；正文来自 session.activePlan.markdown（计划唯一真源）。
 
-    function planFileTarget(message, sessionOverride) {
-        if (!isPlanMessage(message)) return null;
+    function planFileTarget(sessionOverride) {
         const session = sessionOverride || currentSession();
+        const plan = session && session.activePlan;
+        if (!plan || !String(plan.markdown || '').trim()) return null;
         // 根优先取会话记下的工作区：用户后来换了工作区也不会把旧计划写到新目录去
-        const root = aiTextOf(session && session.workspace) || getScopeRoot() || aiProjectRoot();
+        const root = aiTextOf(session.workspace) || getScopeRoot() || aiProjectRoot();
         if (!root) return null;
-        const rel = planFileRelPath((session && session.id) || '');
+        const rel = planFileRelPath(session.id || '');
         return {
             rel,
             abs: aiNormalizePath(aiJoinPath(root, rel)),
             dir: aiNormalizePath(aiJoinPath(root, PLAN_DIR_REL)),
-            body: planFileBody(String(message.planText || message.content || ''), {
-                ts: Number(message.ts) || Number(message.finishedAt) || 0,
-                title: (session && session.title) || '',
-                model: message.model || '',
-            }),
+            body: planFileBody(plan.markdown, {ts: plan.ts, title: session.title || ''}),
         };
-    }
-
-    // 批准（「执行计划」）时回填路径：入口卡随即指向真文件；未批准的消息 planFile 保持为空。
-    function markPlanFile(message, session) {
-        if (!message || message.planFile) return null;
-        const target = planFileTarget(message, session);
-        if (!target) return null;
-        message.planFile = target.abs;
-        return target;
     }
 
     function writePlanFile(target) {
@@ -5382,45 +5554,39 @@ export function createAIPanel(options) {
             });
     }
 
-    // 打开计划。已落盘（planFile 有值，即已批准）→ 打开真文件（被删过则按同一份内容补写，
-    // 用户或许已在标签页里改过它，文件还在就不重写）；未落盘（未批准）→ 虚拟只读标签页
-    // 预览（openVirtualDoc：内存文档、Markdown 渲染、不碰磁盘），避免长计划刷屏也不产生文件。
-    async function openPlanFile(message) {
-        if (!message) return false;
-        const stored = aiTextOf(message.planFile);
-        if (!stored) {
-            const text = String(message.planText || message.content || '');
-            if (!text.trim()) {
-                flash('这条计划没有可预览的正文', true);
-                return false;
-            }
-            if (typeof openVirtualDoc !== 'function') {
-                flash('当前版本不支持计划预览', true);
-                return false;
-            }
-            const digest = planDigest(text);
-            // 标题通常自带「计划：」前缀，直接用，避免「计划 · 计划：…」的重复观感
-            openVirtualDoc((digest.title || '计划') + '.md', text, {readOnlyFixed: true});
-            return true;
-        }
-        const target = {abs: stored, dir: aiPathDir(stored), body: null};
-        try {
-            const stat = backend.GetFileStat ? await backend.GetFileStat(target.abs).catch(() => null) : null;
-            if (!stat || !stat.exists) {
-                // 补写正文：与批准时落盘同一份内容（路径被删 / 上次写失败 / 历史计划）
-                await writePlanFile(Object.assign({}, target, {
-                    body: planFileBody(String(message.planText || message.content || ''), {
-                        ts: Number(message.ts) || Number(message.finishedAt) || 0,
-                        title: (currentSession() && currentSession().title) || '',
-                        model: message.model || '',
-                    }),
-                }));
-            }
-        } catch (e) {
-            flash('计划文件写入失败：' + ((e && e.message) || e), true);
+    // 打开计划（当前会话的 activePlan）。已批准（status=approved）→ 打开真文件，文件被删过
+    // 则按同一份内容补写；未批准 → 虚拟只读标签页预览（openVirtualDoc：内存文档、Markdown
+    // 渲染、不碰磁盘）。
+    async function openPlan(sessionOverride) {
+        const session = sessionOverride || currentSession();
+        const plan = session && session.activePlan;
+        if (!plan || !String(plan.markdown || '').trim()) {
+            flash('当前没有可查看的计划', true);
             return false;
         }
-        openPath(target.abs);
+        if (plan.status === 'approved') {
+            const target = planFileTarget(session);
+            if (target) {
+                try {
+                    const stat = backend.GetFileStat ? await backend.GetFileStat(target.abs).catch(() => null) : null;
+                    if (!stat || !stat.exists) {
+                        // 补写正文：与批准时落盘同一份内容（路径被删 / 上次写失败）
+                        await writePlanFile(target);
+                    }
+                } catch (e) {
+                    flash('计划文件写入失败：' + ((e && e.message) || e), true);
+                    return false;
+                }
+                openPath(target.abs);
+                return true;
+            }
+        }
+        if (typeof openVirtualDoc !== 'function') {
+            flash('当前版本不支持计划预览', true);
+            return false;
+        }
+        // 标题通常自带「计划：」前缀，直接用，避免「计划 · 计划：…」的重复观感
+        openVirtualDoc((plan.title || '计划') + '.md', plan.markdown, {readOnlyFixed: true});
         return true;
     }
 
@@ -5519,6 +5685,16 @@ export function createAIPanel(options) {
             throw err;
         }
         return path;
+    }
+
+    // 命令 cwd 解析（run_command / background_command 共用）：会话持有隔离区且未显式传
+    // cwd 时默认落在隔离区里——隔离语义是「主根只读」，相对路径命令不应误改主根
+    // （要看主根就显式传 cwd='.'）。子代理同样按自己的隔离区取默认。
+    function commandCwdOf(session, value) {
+        const raw = aiTextOf(value).trim();
+        const wt = normalizeWorktreeState(session && session.worktree);
+        if (!raw && wt) return aiResolveScopePath(worktreeRelPath(wt.name), session);
+        return aiResolveScopePath(raw || '.', session);
     }
 
     function readRootsOf(session) {
@@ -5961,6 +6137,11 @@ export function createAIPanel(options) {
         // 外部工具：按能力的实际来源（off/provider/mcp/builtin）与权限档决定是否下发
         externalToolsOn: (capability, scope, planMode) =>
             externalCapabilityUsable(capability, externalModeOf(capability), scope, planMode),
+        // spawn_agent 的 per-call 模型档：勾了候选才把 model 参数拼进 def（见 buildSpawnAgentDef）
+        subAgentModelChoices,
+        // 设置里的子代理默认轮次：拼进工具描述，让模型看到真实默认值而不是写死的 50。
+        // 直接读 config（工具表在 subagentsMod 之前构造，别在这里引用它的成员）。
+        subAgentRounds: () => resolveSubAgentRounds(undefined, config.subAgentRounds),
     });
     const toolsForScope = (scope, planMode, session) => toolDefsMod.toolsForScope(scope, planMode, session);
     // 系统提示词组装域（ai-system-context.js）：面板闭包状态经 getter 注入——config 是可变 let、
@@ -6232,6 +6413,31 @@ export function createAIPanel(options) {
         });
     }
 
+    // 隔离工作区动作审批（AI 主动 create / discard）：接管 composer 的审批卡，而不是居中
+    // 二次确认弹窗。与写/命令审批共用 pendingApprovals 通道；**全档必弹**（含完全权限）——
+    // 创建/丢弃是会话级状态变更 + 磁盘级增删，不随逐写档位静默执行。
+    function requestWorktreeApproval(session, toolMessage, info) {
+        // 停止竞态：弹卡前若本工具已被停止（如 discard 前等 GitWorktreeStat 的窗口），
+        // 绝不能再注册一张「已死轮次」的 pending 卡——它会永久待审批并顶掉下一轮的审批。
+        if (toolHalted(toolMessage)) return Promise.resolve({approved: false, cancelled: true});
+        const approval = {
+            kind: 'worktree',
+            state: 'pending',
+            action: info && info.action === 'discard' ? 'discard' : 'create',
+            name: aiTextOf(info && info.name),
+            label: aiTextOf(info && info.label),
+            relPath: aiTextOf(info && info.relPath),
+            branch: aiTextOf(info && info.branch),
+            stat: aiTextOf(info && info.stat),
+            carry: !!(info && info.carry),
+        };
+        const summary = approval.action === 'discard'
+            ? 'AI 请求丢弃隔离工作区 ' + (approval.name || '')
+            : 'AI 请求创建隔离工作区' + (approval.label ? '（' + approval.label + '）' : '');
+        return registerPendingApproval(session, toolMessage, approval,
+            (session.title || '会话') + ' · ' + summary);
+    }
+
     function requestApproval(session, toolMessage, info) {
         const approval = {
             state: 'pending',
@@ -6485,6 +6691,8 @@ export function createAIPanel(options) {
                         command,
                         cwd,
                         tool: toolName || 'run_command',
+                        // source：档位在分类器等待期间被提升到 full 时用于重判（项目 ask 除外）
+                        source: 'classifier',
                         classifyNote: '端侧 ' + localSummary + '；AI 分类器复核未放行：' + (verdict.reason || ''),
                         classifyInfo: {
                             engine: localEngineOf(local),
@@ -6504,6 +6712,7 @@ export function createAIPanel(options) {
                     command,
                     cwd,
                     tool: toolName || 'run_command',
+                    source: 'local-classifier',
                     classifyNote: localSummary,
                     classifyInfo: {
                         engine: localEngineOf(local),
@@ -6529,6 +6738,7 @@ export function createAIPanel(options) {
                 command,
                 cwd,
                 tool: toolName || 'run_command',
+                source: 'classifier',
                 classifyNote: verdict.reason,
                 classifyInfo: {aiReason: verdict.reason || '', aiVerdict: 'ask'},
             });
@@ -6541,6 +6751,8 @@ export function createAIPanel(options) {
             command,
             cwd,
             tool: toolName || 'run_command',
+            // 项目 ask 规则在 full 档也保留（source='project' 不参与档位重判）
+            source: decision.source,
             danger: danger.dangerous ? danger : null,
             singleUse: decision.source === 'dangerous',
         });
@@ -6686,13 +6898,8 @@ export function createAIPanel(options) {
     // 分类器请求模型：设置了专用模型引用（设置 → AI → 权限 → 模式与判定顺序）且仍存在时
     // 用它的完整连接信息（账号连接 + 条目模型参数），否则跟随「发起命令的会话」的模型。
     function classifierModelRef(session) {
-        const ref = resolveModelRef(config.autoClassifierModel, config.profiles);
-        if (ref) {
-            const sep = ref.indexOf('|');
-            const account = config.profiles.find((profile) => profile.id === ref.slice(0, sep));
-            const entry = account ? modelEntryOf(account, ref.slice(sep + 1)) : null;
-            if (account && entry) return {account, entry};
-        }
+        const target = resolveModelRefTarget(config.autoClassifierModel, config.profiles);
+        if (target) return target;
         return {account: profileOf(session), entry: entryOf(session)};
     }
 
@@ -6796,6 +7003,15 @@ export function createAIPanel(options) {
         // 已停止的轮不再弹审批接管：停止之后迟到的分类器 / 规则结论一律按「取消」处理，
         // 否则用户先看到「已停止」，几秒后又冒出待审批卡片。
         if (toolHalted(toolMessage)) return Promise.resolve({approved: false, cancelled: true});
+        // 档位竞态：判定发起后、卡片弹出前用户可能已把档位提升到完全权限（分类器最长等 12s）。
+        // 只有命令通道会带 source（project / dangerous / classifier / scope…）；项目 ask 规则
+        // 有意压过 full，其余来源在 full 下一律按当前档位直接放行。
+        if (scopeUpgradedToFull(currentScopeOf(session), info.source)) {
+            logPermission('command', info.command || '', 'allow', 'full',
+                '审批等待期间已提升到完全权限');
+            flash('审批等待期间已切换到完全权限，命令自动放行');
+            return Promise.resolve({approved: true});
+        }
         const danger = info.danger && info.danger.dangerous
             ? {ruleId: info.danger.ruleId, label: info.danger.label || info.danger.ruleId}
             : null;
@@ -6915,16 +7131,22 @@ export function createAIPanel(options) {
                 ? (approved ? '正在执行命令…' : '用户取消了本次命令')
                 : approval.kind === 'read'
                     ? (approved ? '用户已授权，正在读取…' : '用户未授权本次读取')
-                    : (approved ? '正在应用更改…' : '用户放弃了本次更改');
+                    : approval.kind === 'worktree'
+                        ? (approved
+                            ? (approval.action === 'discard' ? '正在丢弃隔离工作区…' : '正在创建隔离工作区…')
+                            : '用户取消了隔离工作区操作')
+                        : (approved ? '正在应用更改…' : '用户放弃了本次更改');
         // 用户裁定也进审批记录：来源标 user，避免只看到「待审批」看不到结果。
         const auditKind = approval.kind === 'command'
             ? (isWebApproval(approval) ? 'web' : 'command')
-            : (approval.kind === 'read' ? 'read' : 'write');
+            : (approval.kind === 'read' ? 'read' : (approval.kind === 'worktree' ? 'worktree' : 'write'));
         const auditSubject = approval.kind === 'command'
             ? (isWebApproval(approval)
                 ? (webRuleSubject(approval.command) || approval.command)
                 : approval.command)
-            : (approval.relPath || approval.path || '');
+            : approval.kind === 'worktree'
+                ? (approval.relPath || approval.name || 'worktree')
+                : (approval.relPath || approval.path || '');
         logPermission(auditKind, auditSubject, approved ? 'allow' : 'deny', 'user', approvalAuditRule(approval));
         // 用户裁定的唯一学习点 = **三层结论分歧**（线性 / 语义 / 云端 AI 放行结论不一致）：
         // 此时不一致的是模型之间，用户的允许 / 拒绝是在裁决「谁对谁错」，值得回流；
@@ -7076,9 +7298,7 @@ export function createAIPanel(options) {
         const label = {recommended: '按 AI 推荐项继续', abort: '停止本轮', ai_decide: '交给 AI 决定'}[action] || '继续';
         const mm = Math.floor(left / 60);
         const ss = left % 60;
-        // 本次超时由 AI 定制时标注出来，避免用户以为时间不对
-        const custom = ask.timeoutCustom ? '（本次自定义 ' + ask.timeoutSec + ' 秒）' : '';
-        return '超时后' + label + custom + ' · 剩余 ' + mm + ':' + String(ss).padStart(2, '0');
+        return '超时后' + label + ' · 剩余 ' + mm + ':' + String(ss).padStart(2, '0');
     }
 
     function updateAskCountdown(entry) {
@@ -7364,7 +7584,26 @@ export function createAIPanel(options) {
             refreshToolWrap(session, toolMessage);
             return '用户已停止生成，写入已取消。';
         }
-        const rel = writeRuleSubject(aiRelPath(getScopeRoot(), info.path));
+        const relRaw = aiRelPath(getScopeRoot(), info.path);
+        const rel = writeRuleSubject(relRaw);
+        // 主会话隔离写闸：隔离区开启期间主根只读（全档生效，含完全权限）——回灌只能走
+        // worktree_manage(export) 的补丁审批卡。否则导出预检冲突时模型会「直接改主根对齐」
+        // 把未审阅内容写进主根（2026-11-17 真机）。/init 是应用代发的用户动作，不在此列。
+        const ownWorktree = (!session.parentSessionId && !info.appInitiated)
+            ? normalizeWorktreeState(session.worktree)
+            : null;
+        if (ownWorktree) {
+            const worktreeVerdict = mainRootWriteVerdict(ownWorktree, relRaw);
+            if (worktreeVerdict.verdict === 'deny') {
+                logPermission('write', rel, 'deny', 'worktree-isolation', '');
+                toolMessage.status = 'done';
+                // 操作留痕与工具卡头据此显示「已拒绝」，而不是伪装成「完成」
+                toolMessage.activityStatus = 'denied';
+                toolMessage.content = '隔离工作区开启期间主根只读';
+                refreshToolWrap(session, toolMessage);
+                return worktreeVerdict.message;
+            }
+        }
         // 子代理隔离 worktree 写：子代理永不弹卡（没人可答），隔离区即审批边界——
         // 本子代理前缀内的写确定性放行（自动应用），前缀外确定性拒绝；回灌由主代理经
         // worktree_manage(action=export, name=…) 走人工 patch 卡。run_command 不挂
@@ -8138,8 +8377,31 @@ export function createAIPanel(options) {
         return null;
     }
 
+    // 计划模式纵深防御：工具没下发只是第一层——同一轮里模型仍持有整轮开始时的 tools 列表，
+    // 「先 plan_mode(true) 再写」或幻觉调用都会走到 executeTool。工作区写 / 命令执行 / 有副作用
+    // 的界面或浏览器动作在这里直接拒绝（propose_patch 例外：计划模式已自动降级为 dry_run 预检；
+    // memory_* / preference_* 等会话态工具不受限）。
+    const PLAN_MODE_DENIED_TOOLS = new Set([
+        'write_file', 'edit_file', 'run_command', 'background_command',
+        'generate_image', 'generate_video', 'worktree_manage', 'terminal',
+        'browser_click', 'browser_type', 'browser_press_key', 'browser_evaluate',
+        // 任务清单属于执行阶段：计划未批准就建 todo 会让模型误以为已进入执行（实测
+        // submit_plan 成功后紧接着建了 8 项任务，还宣称「用户已批准计划」）。
+        'todo_write',
+        // 快捷便签的写动作是 app_control 的 per-action 拦截（见 executeTool 的 app_control 分支）：
+        // 工具本身只有一个 app_control，没法整只进这份清单。
+    ]);
+
     async function executeTool(name, args, ctx) {
         const input = args && typeof args === 'object' ? args : {};
+        if (ctx && ctx.session && ctx.session.planMode === true &&
+            (PLAN_MODE_DENIED_TOOLS.has(name) || name.startsWith('mcp__'))) {
+            if (name === 'todo_write') {
+                throw new Error('计划还没批准：任务清单属于执行阶段。请停下等待用户点「执行计划」，批准后再建 todo。');
+            }
+            throw new Error('计划模式只允许只读探索：' + name +
+                ' 不可用。请先用 submit_plan 提交完整计划，用户批准后再执行。');
+        }
         // MCP 转发：公开名 mcp__ 前缀走审批判定后直通 Go 路由（查表发原始名），零侵入现有 switch
         if (name.startsWith('mcp__')) return executeMcpTool(name, input, ctx);
         // 外部工具执行前确保来源配置已读入（缓存命中时只是微任务；首次失败会重试）
@@ -8525,6 +8787,11 @@ export function createAIPanel(options) {
             }
             case 'check_gen': {
                 const hit = genJobsMod.checkJob(aiTextOf(input.jobId));
+                // 生成任务按启动会话隔离：别的会话的任务不能按 id 查询产物与进度
+                if (hit && ctx && ctx.session && hit.job.sessionId &&
+                    hit.job.sessionId !== ctx.session.id && hit.job.sessionId !== rootSessionIdOf(ctx.session)) {
+                    return '生成任务 ' + aiTextOf(input.jobId) + ' 不属于当前会话，不可查询。';
+                }
                 if (!hit) {
                     return '未找到任务：' + aiTextOf(input.jobId) + '（应用重启后任务不保留；请核对 id 或直接告知用户无法追踪）。';
                 }
@@ -8659,9 +8926,7 @@ export function createAIPanel(options) {
             // ---------- 计时器（timer_list / start_timer / stop_timer）：Go 侧计时，到点系统消息唤醒 ----------
             // timer_list：主代理与子/孙代理共享的只读时钟（按会话树过滤，只有读权）
             case 'timer_list': {
-                const s = ctx && ctx.session ? ctx.session : null;
-                const sessionIds = s ? [s.id, s.parentSessionId, s.rootSessionId, s.originSessionId].filter(Boolean) : [];
-                const list = timerMod.snapshot(sessionIds);
+                const list = timerMod.snapshot(timerTreeIdsOf(ctx && ctx.session));
                 if (!list.length) return '本会话树没有运行中的计时器（计时器不跨应用重启，重启后全部消失）。';
                 const clock = (ms) => {
                     const total = Math.max(0, Math.round(Number(ms) / 1000));
@@ -8685,7 +8950,10 @@ export function createAIPanel(options) {
                 const label = aiTextOf(input.label).trim().slice(0, 60);
                 if (!label) throw new Error('计时目的（label）不能为空');
                 if (mode === 'countdown' && seconds < 1) throw new Error('倒计时必须提供大于 0 的秒数（seconds）');
-                const created = await timerMod.start(mode, seconds, label);
+                // 归属记「发起这次调用的会话」而不是当前查看的会话：后台会话建的计时器
+                // 到点要唤醒自己（同 schedule_create 的口径）
+                const timerCaller = (ctx && ctx.session) || currentSession();
+                const created = await timerMod.start(mode, seconds, label, timerCaller ? timerCaller.id : '');
                 // 返回值必须带 id：stop_timer 在多计时器并存时按 id 停止（功能验证报告 §2.3.2）
                 if (mode === 'countdown') {
                     const total = Math.round((created.endMs - created.startMs) / 1000);
@@ -8695,7 +8963,18 @@ export function createAIPanel(options) {
                 return '已启动正计时「' + created.label + '」' + (created.autoStopMs ? '（' + new Date(created.autoStopMs).toLocaleTimeString() + ' 自动停止）' : '') + '。需要结果时用 stop_timer 停止并读取已计时长与标记时间线；用户手动停止或到点自动停止时会以系统消息告知，无需轮询等待。[id: ' + created.id + ']';
             }
             case 'stop_timer': {
-                const stopId = aiTextOf(input.id).trim();
+                // 只能停「本会话树」启动的计时器（与 timer_list 的可见口径一致）：别的会话的 id
+                // 一律拒绝——否则一个会话能顺手掐掉另一个会话的计时器，还会把对方应得的
+                // 正计时停止通知一起抑制掉。
+                const running = timerMod.snapshot(timerTreeIdsOf(ctx && ctx.session));
+                let stopId = aiTextOf(input.id).trim();
+                if (!stopId) {
+                    if (!running.length) throw new Error('本会话没有运行中的计时器');
+                    if (running.length > 1) throw new Error('本会话有多个计时器在运行，请指定 id（start_timer 返回值里有）');
+                    stopId = running[0].id;
+                } else if (!running.some((t) => t.id === stopId)) {
+                    return '计时器 ' + stopId + ' 不属于当前会话（或已停止），未停止。先用 timer_list 查看本会话运行中的 id。';
+                }
                 // 抑制广播回来的重复投递：工具结果已带时长文本（事件晚于 await 到达，成功才留在集合里由事件消费）
                 suppressCountupStopIds.add(stopId);
                 let stopped;
@@ -8841,30 +9120,64 @@ export function createAIPanel(options) {
             }
             case 'submit_plan': {
                 if (!ctx || !ctx.session) throw new Error('submit_plan 缺少会话上下文');
-                if (!ctx.session.planMode) throw new Error('只能用 submit_plan 在计划模式下提交计划');
-                const planText = aiTextOf(input.plan).trim();
-                if (!planText) throw new Error('plan 不能为空：请提交完整的 Markdown 计划文档');
+                if (!ctx.session.planMode) {
+                    throw new Error('尚未进入计划模式：先调用 plan_mode(true)（进入即时生效），再用 submit_plan 分节提交计划');
+                }
+                const assistant = ctx.stream && ctx.stream.assistant;
+                if (!assistant) throw new Error('submit_plan 缺少本轮消息载体');
+                // 分节提交是唯一路径：模型按逻辑自由分节（每节独立短文本，在它能力圈内），
+                // 应用拼成完整文档——比「整篇长参数」（模型会交摘要）和「固定六字段」
+                // （文档被压成填表）都好。steps 容错 / 旧字段全部移除。
+                const rejects = Number(assistant.planRejects) || 0;
+                const sections = normalizePlanSections(input.sections);
+                const sectionChars = planSectionsChars(sections);
+                const missing = [];
+                if (sections.length < 3) missing.push('sections（至少 3 个小节，按你的设计逻辑自由分节）');
+                if (sectionChars < 300) {
+                    missing.push('sections 内容太单薄（合计 ' + sectionChars + ' 字）——目标动机、涉及文件与改动、实施步骤、验证方式都要写实');
+                }
+                // 缺内容最多拒三次（错误信息列清缺什么）；第四次用已有小节兜底拼，避免卡死循环。
+                if (missing.length && rejects < 3) {
+                    assistant.planRejects = rejects + 1;
+                    throw new Error('计划不完整：' + missing.join('；') +
+                        '。请按 title / sections[{heading, body}] 重新提交——每节 body 写实写全' +
+                        '（涉及文件逐行列出、实施步骤按顺序、细节不省略），不是一句摘要或状态说明。');
+                }
+                const planText = planMarkdownFrom({title: aiTextOf(input.title), sections});
                 if (planText.length > AI_CHAT_INPUT_LIMIT) {
                     throw new Error('计划过长（' + planText.length + ' 字符，上限 ' + AI_CHAT_INPUT_LIMIT + '）');
                 }
-                const planTitle = aiTextOf(input.title).replace(/\s+/g, ' ').trim().slice(0, 120);
-                // 计划正文挂在**消息**上（不用会话级字段）：审批卡 / 入口卡 / 落盘 / 回注
-                // 全部按「最近一条带 planText 的 assistant 消息」取，历史重放也能还原。
-                const assistant = ctx.stream && ctx.stream.assistant;
-                if (!assistant) throw new Error('submit_plan 缺少本轮消息载体');
-                assistant.planText = planText;
-                assistant.planTitle = planTitle;
+                // 长度兜底**不放行**：占位话绝不收下——宁可让循环守卫停住，也不能把废话当计划弹审批。
+                const planShape = planDigest(planText);
+                if (planShape.lines < 4 || planShape.chars < 120) {
+                    assistant.planRejects = rejects + 1;
+                    throw new Error('计划过短（' + planShape.lines + ' 行 · ' + planShape.chars +
+                        ' 字）：这不像一份可执行的计划。请把目标、涉及文件（逐行）、实施步骤、验证方式写全。');
+                }
+                // 计划的唯一真源：session.activePlan（审批卡 / 落盘 / 回注 / 列表角标都读它）。
+                // 消息不再承载计划内容——对话区只留 submit_plan 工具卡。
+                ctx.session.activePlan = normalizeActivePlan({
+                    title: aiTextOf(input.title).replace(/\s+/g, ' ').trim().slice(0, 120),
+                    markdown: planText,
+                    status: 'pending',
+                    ts: Date.now(),
+                });
                 persistSessions();
                 if (isOpen() && currentSession() === ctx.session) renderMessages(true);
-                const digest = planDigest(planText);
-                return '计划已提交（' + digest.lines + ' 行 · ' + digest.chars + ' 字），等待用户批准。' +
-                    '不要在正文里重复计划内容；用户会点「执行计划」或发送补充意见。';
+                return '计划已提交（' + planShape.lines + ' 行 · ' + planShape.chars + ' 字），但「用户尚未批准」。' +
+                    '请立即停止本轮：不要开始执行、不要调用 todo_write 建任务清单、不要继续读代码或写文件，' +
+                    '也不要在正文里重复计划内容。等用户点「执行计划」或发送补充意见。';
             }
             case 'app_control': {
                 if (!appControlOn()) throw new Error('应用操作已被禁用（设置 → AI → 权限 → AI 工具权限）');
                 if (typeof runHostAppAction !== 'function') throw new Error('当前宿主不支持应用操作桥');
                 const action = aiTextOf(input.action).trim();
                 if (!action) throw new Error('action 为空；先用 skill_use 加载 cadt-ui 获取动作表');
+                // 快捷便签的写动作：用户可见的面板，批准计划前写入会误导用户（get_memo 只读不受限）
+                if (ctx && ctx.session && ctx.session.planMode === true &&
+                    (action === 'add_memo' || action === 'update_memo' || action === 'remove_memo')) {
+                    throw new Error('计划还没批准：快捷便签面板是用户可见的，属于执行阶段。等待用户批准计划后再写（读取用 get_memo，不受限）。');
+                }
                 const params = (input.params && typeof input.params === 'object' && !Array.isArray(input.params)) ? input.params : {};
                 // open_browser_tab 的 file:// 与 browser_navigate 同一条读权限链：这条 UI 动作
                 // 不能成为绕过工作区外读取审批的旁路（用户手动在地址栏打开不受影响）
@@ -9181,12 +9494,19 @@ export function createAIPanel(options) {
                         '建议重新 read_file 目标文件后重写对应 hunk；' + (preview.patchPath ? '补丁文件：' + preview.patchPath : ''),
                         true);
                 }
-                const allowApply = patchAllowApply(input, currentScopeOf(ctx.session), lastUserTextOf(ctx.session && ctx.session.messages));
+                // 隔离工作区开启时全档必弹：主根只读闸下 propose_patch 是唯一能写主根的通道，
+                // 与 worktree_manage(export) 的回灌卡同一条红线
+                const allowApply = patchAllowApply(
+                    input,
+                    currentScopeOf(ctx.session),
+                    lastUserTextOf(ctx.session && ctx.session.messages),
+                    !!(ctx.session && !ctx.session.parentSessionId && normalizeWorktreeState(ctx.session.worktree)),
+                );
                 if (!allowApply) {
                     // 完全权限档默认走到这里：只产出可分享的 .patch，不弹审批卡打断流程
                     const fullNote = input.apply === false
                         ? ''
-                        : '（完全权限档：只产出文件、未弹审批卡；要当场应用就说「应用这个补丁」，或直接打开补丁视图点应用）';
+                        : '（完全权限档：只产出文件、未弹审批卡；用户同意当场应用就再调一次本工具并带 apply:true 直接弹审批卡，或打开补丁视图点应用）';
                     return '已生成补丁 ' + (preview.patchPath || '') + '（' + (preview.files || []).length + ' 文件 +' + preview.added + ' −' + preview.removed + '）' + reusedNote + fullNote + '\n'
                         + '预检：' + okFiles.length + ' 个文件可应用。用户可打开该文件在补丁视图中应用。';
                 }
@@ -9316,7 +9636,8 @@ export function createAIPanel(options) {
                     truncated: preview.truncated,
                     diff: preview.lines,
                 });
-                return located.count > 1 ? msg + '（已替换 ' + located.count + ' 处）' : msg;
+                // 只在真正落盘后补「替换 N 处」——被权限/隔离闸拦下时 msg 是拒绝说明
+                return (located.count > 1 && msg.startsWith('已应用更改')) ? msg + '（已替换 ' + located.count + ' 处）' : msg;
             }
             case 'todo_write': {
                 if (!ctx || !ctx.session) throw new Error('todo_write 缺少会话上下文');
@@ -9429,7 +9750,7 @@ export function createAIPanel(options) {
                 const command = aiTextOf(input.command).trim();
                 if (!command) throw new Error('命令不能为空');
                 if (!backend.AIRunShellCommand) throw new Error('当前版本不支持执行命令');
-                const cwd = aiResolveScopePath(aiTextOf(input.cwd).trim() || '.', ctx.session);
+                const cwd = commandCwdOf(ctx.session, input.cwd);
                 const timeoutMs = aiClampInt(input.timeoutMs, 1000, 600000, 60000);
                 // 子代理：一律走 OS 沙箱，且永不弹审批（没人可答；沙箱即边界，对齐 dsh 的
                 // approval pin never）。主会话：审批链照旧，行为零变化。
@@ -9519,7 +9840,7 @@ export function createAIPanel(options) {
                 const command = aiTextOf(input.command).trim();
                 if (!command) throw new Error('命令不能为空');
                 if (!backend.AICommandStart) throw new Error('当前版本不支持后台命令');
-                const cwd = aiResolveScopePath(aiTextOf(input.cwd).trim() || '.', ctx.session);
+                const cwd = commandCwdOf(ctx.session, input.cwd);
                 // 与 run_command 同口径：子代理走沙箱、永不弹审批，只过项目 deny 规则；
                 // 主会话审批链不变。
                 const sandbox = subSandboxPolicy(ctx.session, getScopeRoot());
@@ -9591,6 +9912,13 @@ export function createAIPanel(options) {
                 const jobId = aiTextOf(input.jobId).trim();
                 if (!jobId) throw new Error('jobId 不能为空');
                 if (!backend.AICommandStatus) throw new Error('当前版本不支持查询后台命令');
+                // 归属校验同 stop_command：输出可能含敏感信息，别的任务树的作业不能按 id 读
+                // （bg-<序号> 的编号可猜，不拦就等于没有会话隔离）。
+                const bgOwner = bgJobIndex.get(jobId);
+                if (bgOwner && ctx && ctx.session && bgOwner.rootSessionId !== rootSessionIdOf(ctx.session)) {
+                    if (ctx.toolMessage) ctx.toolMessage.activityStatus = 'denied';
+                    return '作业 ' + jobId + ' 不属于当前任务（它属于另一个会话），不可读取。';
+                }
                 const since = bgJobCursors.get(jobId) || 0;
                 const st = await backend.AICommandStatus(jobId, since);
                 bgJobCursors.set(jobId, Number(st.cursor) || since);
@@ -9722,9 +10050,9 @@ export function createAIPanel(options) {
                     // 后台派单：注册即返回，主代理继续自己的回合；结论以后续通知注入（§4.5 原语 1）
                     const started = await startSubAgent(ctx, input);
                     const sub = started.sub;
-                    return '已派出后台子代理「' + sub.name + '」（id=' + sub.id + '，第 ' + sub.depth + ' 层，轮次上限 ' +
-                        sub.maxRounds + '）。\n完成后会自动通知你；期间可继续其他工作，需要补充线索就 agent_send' +
-                        '（urgent=true 插队）。要等它的结论用 wait_agent；不需要了用 agent_stop 停止并收集记录。';
+                    return '已派出后台子代理「' + sub.name + '」（id=' + sub.id + '，' + agentLevelText(sub.depth) + '，轮次上限 ' +
+                        sub.maxRounds + '）。\n完成后会自动通知你（进你的收件箱）；期间可继续其他工作，需要补充线索就 agent_send' +
+                        '（urgent=true 插队）。要停下等回报用 wait_agent；不需要了用 agent_stop 停止并收集记录。';
                 }
                 const outcome = await runSubAgent(ctx, input);
                 const meta = ctx.toolMessage.agent || {};
@@ -9737,6 +10065,7 @@ export function createAIPanel(options) {
             // —— 会话消息化工具面（agent_send / agent_stop / wait_agent / agent_compact /
             // session_list / session_send）：执行体按阶段落在 ai-subagents.js 与 ai-agent-notices.js，
             // panel 只做这个薄分发（§4.11.2「施工即搬迁」）。
+            case 'agent_tree':
             case 'agent_send':
             case 'agent_stop':
             case 'wait_agent':
@@ -9758,16 +10087,16 @@ export function createAIPanel(options) {
 
     // ---------- 流式对话 ----------
 
-    // 「发送 / 停止」按钮显隐：空闲显示发送；生成中若输入区已有内容（文字 / 图片），
-    // 保持「发送」——点击排队、Ctrl+点击 插话；输入区为空才切回「停止」（要停止先清空输入）。
+    // 「发送 / 停止」按钮显隐：空闲显示发送；生成中若输入区已有内容（文字 / 图片），保持「发送」；输入区为空才切回「停止」。
     function syncSendStopButtons(busy) {
+        // 生成中有内容时按钮仍叫「发送」，三手势保持可用：点击 = 排队、Ctrl+点击 = 插话、Ctrl+Shift+点击 = 抢占（tooltip 同步展示）。
         const hasContent = !!(el.input && el.input.value.trim())
             || getAttachments().some((item) => item.kind === 'image');
         const showStop = busy && !hasContent;
         if (el.stop) el.stop.classList.toggle('hidden', !showStop);
         if (el.send) el.send.classList.toggle('hidden', showStop);
         if (el.send) el.send.dataset.tip = (busy && hasContent)
-            ? '排队发送；Ctrl+点击 = 插话（停止当前回复并立即发送）'
+            ? '发送消息 Enter\n插话 Ctrl + Enter\n抢占 Ctrl + Shift + Enter'
             : '发送';
     }
 
@@ -9780,16 +10109,18 @@ export function createAIPanel(options) {
         const busy = !!stream || !!compact;
         syncSendStopButtons(busy);
         if (el.input) {
-            el.input.placeholder = busy
-                ? '输入消息：Enter/点击发送 排队，Ctrl+点击发送 插话'
-                : '发消息或粘贴图片；/ 调用指令，@ 提及文件';
+            el.input.placeholder = compact
+                ? '正在压缩上下文：消息将排队'
+                : busy
+                    ? '输入消息：Enter 排队 · Ctrl+Enter 插话（不打断）· Ctrl+Shift+Enter 抢占（停掉重来）'
+                    : '发消息或粘贴图片；/ 调用指令，@ 提及文件';
         }
         updateSendState();
         updateComposerTakeover();
         if (stream) {
             // 提示本轮实际使用的模型；对话中切换模型要到下一条消息才生效
             const running = (stream.profileCfg && stream.profileCfg.model) || (entryOf(currentSession()) || {}).model || '';
-            if (el.hint) el.hint.textContent = '生成中 · Enter/点击发送排队 · Ctrl+Enter/Ctrl+点击发送 插话' + (running ? ' · ' + running : '');
+            if (el.hint) el.hint.textContent = '生成中' + (running ? ' · ' + running : '');
         } else if (compact) {
             if (el.hint) el.hint.textContent = '正在压缩上下文…';
         }
@@ -10245,6 +10576,50 @@ export function createAIPanel(options) {
         // 一轮对话固定使用启动时的模型配置：对话中切换模型从下一条消息开始生效，
         // 本轮剩余的工具轮仍走旧模型；消息头标签跟随本轮实际请求的模型。
         if (s.assistant && s.profileCfg && s.profileCfg.model) s.assistant.model = s.profileCfg.model;
+        // 轮边界 drain（对齐 ZCode / pi / cline）：第一次请求前不注入；工具批次全部完成后
+        // （新的 assistant 占位已就位）取出该会话全部 pending steer，落进 session.messages
+        // 的 assistant 之前——落盘的是用户原文，请求里才包 user_steer 模板。
+        // 契约：不跳过正在执行的 tool（工具批次 Promise.all 结束才回到 startRound）。
+        let drainedSteer = null;
+        let drainedSteerMessages = null;
+        if (s.roundNo > 1 && queueMod.hasSteer(s.sessionId)) {
+            drainedSteer = queueMod.drainSteer(s.sessionId);
+            if (drainedSteer.length) {
+                drainedSteerMessages = drainedSteer.map((item) => {
+                    const attachments = item.attachments || [];
+                    const images = attachments.filter((att) => att.kind === 'image')
+                        .map(aiNormalizeImage).filter(Boolean);
+                    const videos = attachments.filter((att) => att.kind === 'video')
+                        .map(aiNormalizeVideo).filter(Boolean);
+                    const quoteMarkup = quoteMarkupFromAttachments(attachments);
+                    let body = quoteMarkup
+                        ? (item.text ? quoteMarkup + '\n\n' + item.text : quoteMarkup)
+                        : (item.text || '');
+                    // 纯附件插话也要有正文：否则 buildApiMessages 跳过模板，模型看不到「轮中补充」语义。
+                    if (!String(body).trim() && (images.length || videos.length)) body = '（附图）';
+                    return {
+                        role: 'user',
+                        content: body,
+                        steer: true,
+                        images,
+                        videos,
+                        ts: Date.now(),
+                    };
+                });
+                const insertAt = session.messages.indexOf(s.assistant);
+                if (insertAt < 0) {
+                    // 占位 assistant 丢了（异常状态）：这批 steer 退回队列，别留在历史里成为从未发出的消息。
+                    queueMod.restoreItems(drainedSteer, 'queue');
+                    queueMod.renderMessageQueue();
+                    finishStream(s);
+                    return;
+                }
+                session.messages.splice(insertAt, 0, ...drainedSteerMessages);
+                persistSessions();
+                queueMod.renderMessageQueue();
+                if (isOpen() && currentSession() === session) renderMessages(true);
+            }
+        }
         const index = session.messages.indexOf(s.assistant);
         if (index < 0) {
             finishStream(s);
@@ -10254,7 +10629,23 @@ export function createAIPanel(options) {
             const wrap = el.messages.querySelector('.ai-msg.assistant[data-ai-idx="' + index + '"]');
             if (wrap) updateAssistantElement(wrap, s.assistant, true);
         }
-        const apiMessages = buildApiMessages(session, index, s.systemPrompt);
+        let apiMessages = buildApiMessages(session, index, s.systemPrompt);
+        // steer 会增加请求体积：超过窗口 90% 时把这批插话改回排队（不中断本轮，也不强塞超限请求）。
+        if (drainedSteerMessages && drainedSteerMessages.length) {
+            const windowSize = contextWindowOf(session);
+            const tokens = estimateApiMessagesTokens(apiMessages) + toolsTokenEstimate(session);
+            if (windowSize > 0 && tokens > windowSize * 0.9) {
+                const inserted = new Set(drainedSteerMessages);
+                session.messages = session.messages.filter((message) => !inserted.has(message));
+                queueMod.restoreItems(drainedSteer, 'queue');
+                persistSessions();
+                queueMod.renderMessageQueue();
+                if (isOpen() && currentSession() === session) renderMessages(true);
+                flash('插话后上下文将超过窗口 90%，已改回排队（本轮结束后发送）', true);
+                const rebuiltIndex = session.messages.indexOf(s.assistant);
+                apiMessages = buildApiMessages(session, rebuiltIndex >= 0 ? rebuiltIndex : null, s.systemPrompt);
+            }
+        }
         try {
             const result = backend.AISendChat(s.roundId, s.profileCfg, apiMessages, s.tools, config.retryMax);
             if (result && typeof result.then === 'function') {
@@ -10406,10 +10797,11 @@ export function createAIPanel(options) {
             });
             return;
         }
-        if (assistant.status !== 'done' || !String(assistant.content || '').trim()) return;
-        // 计划模式下这一轮产出的是「等你批准的计划」，不是「跑完的任务」：发一条待批准提醒
-        // 就够了，别再叠一条「任务完成」（两条通知说的是同一次落地）。
-        if (session && session.planMode && assistant.planMode) {
+        if (assistant.status !== 'done') return;
+        // 计划待批准判定与审批卡同源（session.activePlan.status==='pending'），且必须前置：
+        // submit_plan 形态的正文可为空，不能被下面的 content 检查挡掉；模型以正文给计划的
+        // 旧场景（activePlan 不存在）不再误报「待批准」，落回普通完成通知。
+        if (session && session.planMode && session.activePlan && session.activePlan.status === 'pending') {
             if (config.notifyApprove === false) return;
             notifyDesktop({
                 kind: 'info',
@@ -10419,6 +10811,7 @@ export function createAIPanel(options) {
             });
             return;
         }
+        if (!String(assistant.content || '').trim()) return;
         if (config.notifyFinish === false) return;
         // completion: true —— 这条只可能落到「软件在后台时的系统卡片 / 任务栏闪烁」，
         // 不进消息中心（一轮一条会把【消息】列表刷成流水账，见 ai-notify-policy.js）。
@@ -10476,6 +10869,10 @@ export function createAIPanel(options) {
         notifyTurnFinished(session, current.assistant, current.stopped);
         // 计划模式的最终计划不在这里落盘：未批准不落盘（对话区入口卡 + 虚拟只读预览），
         // 用户点「执行计划」时才写 <工作区>/.cadt/plan/plan-<会话id>.md（见 acceptPlan 包装）。
+        // 轮已结束：steer 窗口关闭。停止 / 抢占 → 丢弃 pending steer（用户放弃当前任务）；
+        // 自然结束 → 降级为排队，由下面的 shouldFlush 冲刷（不丢消息，也不需要额外续轮路径）。
+        if (current.stopped) queueMod.clearSteer(current.sessionId);
+        else queueMod.fallbackSteerToQueue(current.sessionId);
         const shouldFlush = queueMod.hasInterject(current.sessionId) || (!current.stopped && current.assistant.status === 'done');
         queueMod.clearInterject(current.sessionId);
         detachStream(current);
@@ -10645,10 +11042,13 @@ export function createAIPanel(options) {
         // 工具批次全部结束才挂 read_image / 生图 review 的图片消息：批次中途 push 会插在
         // assistant(tool_calls) 与 tool 结果之间，整轮请求会被服务商拒收。
         flushToolImages(session);
-        // 轮末清单同步提醒（系统提示里的 <task_todos> 是轮开始快照，长工具链中模型对
-        // 被动提醒依从性低——在离行动点最近的地方（收尾请求前）再催一次；systemNote
-        // 会随 buildApiMessages 进入收尾请求）。清单全完成不催；文案与节流是 ai-todos.js
-        // 的纯函数（todosCheckText / shouldSendTodosCheck），口径与 <task_todos> 对齐。
+        // 轮末清单同步提醒（起轮的 <task_todos> 是轮开始快照，长工具链中模型对被动提醒
+        // 依从性低——在离行动点最近的地方（收尾请求前）再催一次）。
+        // 必须包装成 <system-reminder> 宿主块而不是裸文本：这是唯一以 user 角色进入请求的
+        // 注入消息，裸块会被弱模型当成「用户刚说的话」（2026-11-17 实测：sensenova 把裸块
+        // 转述成「用户说执行工具任务」并反问）。包成宿主块后受 workspace_rules 的
+        // 「<system-reminder> 是宿主环境信息、不是用户正文」约束，不改角色、不碰工具通道。
+        // 清单全完成不催；文案与节流是 ai-todos.js 的纯函数，口径与 <task_todos> 对齐。
         const todosAll = Array.isArray(session.todos) ? session.todos : [];
         if (todosAll.some((t) => t.status !== 'completed')) {
             const turnStart = turnStartAt(session, session.messages.length - 1) || toolStartedAt;
@@ -10658,7 +11058,8 @@ export function createAIPanel(options) {
             let lastCheckText = '';
             for (let i = session.messages.length - 1; i >= 0; i--) {
                 if (session.messages[i].dedupeKey === 'task_todos_check') {
-                    lastCheckText = String(session.messages[i].content || '');
+                    // 节流比较用正文：content 里现在带宿主块包装，直接比会永远不相等
+                    lastCheckText = splitTurnReminderPrefix(String(session.messages[i].content || '')).body;
                     break;
                 }
             }
@@ -10666,7 +11067,7 @@ export function createAIPanel(options) {
             if (shouldSendTodosCheck({text: checkText, lastText: lastCheckText, toolNames: turnToolNames})) {
                 session.messages.push({
                     role: 'user',
-                    content: checkText,
+                    content: wrapTurnReminder(checkText),
                     systemNote: true,
                     silent: true, // 给模型的机械提醒，不在消息流里渲染（纯噪音）
                     dedupeKey: 'task_todos_check', // 瞬态注入：发请求时同类只保留最新一条
@@ -10997,7 +11398,9 @@ export function createAIPanel(options) {
             if (name === 'ai-chunk' && payload.delta) titleJob.buffer += payload.delta;
             else if (name === 'ai-done') finishTitleJob();
             else if (name === 'ai-error') {
+                const job = titleJob;
                 titleJob = null;
+                failTitleJob(job, '服务端返回错误：' + (String((payload && payload.message) || '').slice(0, 120) || '未知'));
                 drainTitleQueue();
             }
             return;
@@ -11160,6 +11563,30 @@ export function createAIPanel(options) {
                         return;
                     }
                 }
+                // no-tool final response 但还有 pending steer：本轮不结束——新建 assistant 占位，
+                // 下一次 startRound 在请求前 drain（方案 §5.4）。绝不能复用已完成的 assistant
+                // 继续写，否则新一轮正文会追加进上一条消息。空回复先走上面的自动重试（它也会 drain）。
+                if (!current.stopped && payload.finishReason === 'stop' && !calls.length && queueMod.hasSteer(current.sessionId)) {
+                    const session = sessionById(current.sessionId);
+                    if (session) {
+                        commitThinkTime(current);
+                        current.assistant.status = 'done';
+                        const assistant = newAssistantMessage(profileOf(session), entryOf(session));
+                        assistant.planMode = !!current.plan;
+                        session.messages.push(assistant);
+                        current.assistant = assistant;
+                        current.thinkStartedAt = 0;
+                        current.firstTokenAt = 0;
+                        current.roundStartedAt = Date.now();
+                        persistSessions();
+                        if (isOpen() && currentSession() === session) {
+                            renderMessages(true);
+                            setStreamingUI();
+                        }
+                        startRound(current);
+                        return;
+                    }
+                }
                 current.assistant.status = 'done';
                 finishStream(current);
                 break;
@@ -11223,6 +11650,11 @@ export function createAIPanel(options) {
         }
         const sessionId = current.sessionId;
         current.stopped = true;
+        // 放行这个会话上挂着的 wait_agent：停止必须立刻生效，不能等 250ms 心跳兜底。
+        if (inboxWaiters && typeof inboxWaiters.cancel === 'function') inboxWaiters.cancel(sessionId);
+        // 抢占 = 放弃当前任务：挂着的 pending steer 一并作废（排队消息照旧保留）。
+        queueMod.clearSteer(sessionId);
+        renderMessageQueue();
         stopSubAgentsOf(sessionId);
         // 排队的 / 在飞的自动审批分类请求也一并撤销：工具会转人工确认，不会白等 12 秒
         cancelClassifierJobs(sessionId);
@@ -11285,9 +11717,15 @@ export function createAIPanel(options) {
         if (el.permission) {
             const scope = currentScope();
             el.permission.textContent = scopeLabel(scope);
-            const root = getScopeRoot() || '';
-            el.permission.dataset.tip = '权限：' + scopeLabel(scope) + '（' + scopeDescription(scope) + '）\n' + (root ? '范围根：' + root : '未打开工作区');
+            // 这是「选择器」而不是开关：文字后带下拉箭头，避免被当成和「计划」一样的点亮态开关
+            const chev = document.createElement('span');
+            chev.className = 'ai-chip-chev';
+            chev.innerHTML = iconSvg('chevron-down', 12);
+            el.permission.appendChild(chev);
+            el.permission.setAttribute('aria-label', '权限：' + scopeLabel(scope));
             el.permission.classList.toggle('active', scope === 'auto' || scope === 'full');
+            // 窄档「计划」pill 会被收起：用圆点让「计划已开」仍可见（宽档不显示，见 CSS）
+            el.permission.classList.toggle('plan-on', !!(session && session.planMode));
         }
         if (el.plan) {
             const plan = !!(session && session.planMode);
@@ -11414,9 +11852,36 @@ export function createAIPanel(options) {
 
     function showPermissionMenu() {
         if (!el.permission || !showContextMenu) return;
-        const rect = el.permission.getBoundingClientRect();
         const scope = currentScope();
-        const items = AI_SCOPES.map((value) => ({
+        const session = currentSession();
+        const worktree = normalizeWorktreeState(session && session.worktree);
+        // 会话模式两行（对齐 ZCode 的权限弹窗）：窄宽度时「计划」「隔离」两个 pill 会被容器
+        // 查询收掉，这里是它们的唯一入口——所以**任何宽度都保留**，宽档 pill 与菜单并存。
+        const modeItems = [
+            {
+                label: '计划模式',
+                description: session && session.planMode
+                    ? '编辑前先出只读计划；批准后我再动手（点此关闭）'
+                    : '编辑前先出只读计划，批准后再动手',
+                icon: 'compass',
+                selected: !!(session && session.planMode),
+                action: () => togglePlanMode(),
+            },
+            {
+                label: '隔离工作区',
+                description: worktree
+                    ? '改动落在 ' + worktreeRelPath(worktree.name) + '/；点此查看路径与改动统计（可丢弃）'
+                    : '在独立 git worktree 里试改，主根零改动；导出补丁审阅后回灌',
+                icon: 'folder',
+                selected: !!worktree,
+                // 已开启时进入信息卡（丢弃要再点一次弹窗按钮），不做"点一下即退出"的危险开关
+                action: () => (worktree
+                    ? worktreeMod.openChipDialog()
+                    : worktreeMod.createForSession(currentSession(), '')),
+            },
+            {sep: true},
+        ];
+        const items = modeItems.concat(AI_SCOPES.map((value) => ({
             label: scopeLabel(value),
             description: scopeDescription(value),
             icon: value === 'read' ? 'eye' : (value === 'edit' ? 'shield' : (value === 'auto' ? 'zap' : 'warn')),
@@ -11426,8 +11891,10 @@ export function createAIPanel(options) {
             ...(value === 'auto' && config.autoClassifier === true ? {badge: 'AI'} : {}),
             ...(value === 'auto' && config.localClassifierEnabled === true ? {badgeIcon: 'zap'} : {}),
             action: () => setScope(value),
-        }));
-        showContextMenu(items, rect.left, rect.top - 280);
+        })));
+        // 底部的权限胶囊：菜单向上展开、底边贴住胶囊，按实测高度定位——写死偏移会在
+        // 菜单高度变化（描述行 / 缩放）时飘出一段空档
+        showContextMenu(items, null, null, {anchor: el.permission, anchorAbove: true});
     }
 
     // 思考等级推导统一走数据层 reasoningLevelInfo（单一来源：档位表 / 中文标签 / 徽标 tone）
@@ -11475,6 +11942,11 @@ export function createAIPanel(options) {
             el.modelChip.append(cap);
         }
         el.modelChip.append(chev);
+        // 窄档只显示单图标（容器查询隐藏 name/effort/cap）——把模型名放进 tooltip / aria-label，
+        // 否则图标形态下当前模型不可发现
+        const tipText = '模型：' + model + (effort ? ' · ' + effort : '') + '（点击切换模型与推理等级）';
+        el.modelChip.dataset.tip = tipText;
+        el.modelChip.setAttribute('aria-label', tipText);
     }
 
     // 对话内切换模型 / 账号的留痕：切换只在下一条消息发出时生效，
@@ -11840,7 +12312,6 @@ export function createAIPanel(options) {
 
     function showAttachMenu() {
         if (!el.attachBtn || !showContextMenu) return;
-        const rect = el.attachBtn.getBoundingClientRect();
         showContextMenu([
             {label: '当前文件', icon: 'doc', action: () => attachCurrentFile()},
             {label: '选中内容', icon: 'select-all', action: () => attachSelection()},
@@ -11864,7 +12335,7 @@ export function createAIPanel(options) {
                 {label: '记忆管理…', action: () => showMemoryDialog()},
                 {label: '技能管理…', action: () => showSkillsDialog()},
             ]},
-        ], rect.left, rect.top - 240);
+        ], null, null, {anchor: el.attachBtn, anchorAbove: true});
     }
 
     function showMoreMenu() {
@@ -12476,21 +12947,9 @@ export function createAIPanel(options) {
         // loadComposerDraft 会把它所属工作区暂存的草稿接过来。
         loadComposerDraft(id, target);
         renderSessionList();
-        syncStreamView();
-        renderMessages();
-        updateComposerState();
-        // 目标会话自己的流决定「发送 / 停止」与占位文案，其他会话在跑不干扰
-        setStreamingUI();
-        // 状态栏写入徽标也切到目标会话自己的（后台会话的写入不在这里闪）
-        // 任务提醒徽标随目标会话刷新
-        syncRemindersUI(target);
-        // 计时胶囊按目标会话重新过滤（显示与上限都是会话隔离的）
-        timerMod.render();
-        // 隔离 worktree 胶囊随目标会话切换（显示 / 隐藏 / 名称）
-        worktreeMod.syncChip(target);
+        syncActiveSessionUI();
         // 头部弹层（智能体团队 / 后台终端）是「上个会话的」列表：切会话就收起来
         if (chipsPopKind) hideChipsPop();
-        refreshSystemPromptEstimate(true);
         setTimeout(() => flushMessageQueue(id), 0);
         // 面板切了会话：支线标签页据此重新判定「在位 / 失联」
         for (const cb of sessionSwitchListeners) {
@@ -12560,10 +13019,7 @@ export function createAIPanel(options) {
         logActivity('ai.session', session.id, {op: 'create', title: session.title || ''}, {actor: 'user', source: 'user'});
         renderSessionList();
         if (sessionListEl) sessionListEl.scrollTop = 0;
-        syncStreamView();
-        renderMessages();
-        updateComposerState();
-        setStreamingUI();
+        syncActiveSessionUI();
         if (el.input) el.input.focus();
     }
 
@@ -12707,8 +13163,7 @@ export function createAIPanel(options) {
             }
             persistSessions();
             renderSessionList();
-            renderMessages();
-            updateComposerState();
+            syncActiveSessionUI();
         }, '删除', '删除会话');
     }
 
@@ -12750,6 +13205,8 @@ export function createAIPanel(options) {
             lines.push('## 会话摘要', '', session.summary.text, '');
         }
         for (const message of session.messages) {
+            // 宿主注入块（轮末清单催促等）不进导出文档：那是模型上下文的内部维护信息
+            if (message.silent) continue;
             if (message.role === 'tool') {
                 lines.push('## 工具调用：' + (message.name || 'tool'), '');
                 if (message.arguments) lines.push('参数：`' + message.arguments + '`', '');
@@ -13157,6 +13614,37 @@ export function createAIPanel(options) {
         showNote('已取消压缩。');
     }
 
+    // 用户手点的隔离区操作（pill / 菜单 / /worktree / 胶囊丢弃）没有 AI 工具调用可落历史，
+    // 合成一条 worktree_manage 的 assistant+tool 消息对写进会话历史（同 /init 的做法）——
+    // 重启后对话里仍能看到「这个隔离区是什么时候建的、什么时候丢的」（对齐 ZCode 的
+    // 「已创建 worktree」timeline part）。
+    function recordWorktreeToolEvent(session, argsObj, content) {
+        if (!session) return;
+        const callId = aiNowId('wt-');
+        const args = JSON.stringify(argsObj);
+        session.messages.push({
+            role: 'assistant',
+            content: '',
+            reasoning: '',
+            thinkingSignature: '',
+            toolCalls: [{id: callId, name: 'worktree_manage', arguments: args}],
+            model: '',
+            status: 'done',
+            ts: Date.now(),
+        });
+        session.messages.push({
+            role: 'tool',
+            toolCallId: callId,
+            name: 'worktree_manage',
+            arguments: args,
+            content,
+            status: 'done',
+            ts: Date.now(),
+        });
+        if (isOpen() && currentSession() === session) renderMessages(true);
+        persistSessions();
+    }
+
     async function runInitAgentsMd() {
         if (syncStreamView() || compactOf((currentSession() || {}).id)) {
             showNote('请先停止当前生成，再生成 AGENTS.md。', true);
@@ -13233,6 +13721,9 @@ export function createAIPanel(options) {
         if (isOpen() && currentSession() === session) renderMessages(true);
         const result = await applyWorkspaceWrite(session, toolMessage, {
             tool: 'write_file',
+            // /init 是用户显式命令触发、由应用代发的写入：不受隔离会话「主根只读」约束
+            // （隔离写闸只拦 AI 工具调用，不拦用户自己点出来的命令）。
+            appInitiated: true,
             path,
             relPath: 'AGENTS.md',
             content,
@@ -13272,6 +13763,13 @@ export function createAIPanel(options) {
         showSkillsDialog,
         handlePlanCommand,
         runInitAgentsMd,
+        // 斜杠技能补全与调用：listSkills（5s 缓存）、来源标签、附件与直发/排队出口
+        listSkills: (...args) => listSkills(...args),
+        skillSourceLabel: (...args) => skillSourceLabel(...args),
+        addAttachment: (...args) => addAttachment(...args),
+        sendComposerMessage: (...args) => composerMod.sendComposerMessage(...args),
+        // /worktree：面板直连创建（不依赖模型回合；确认卡 → GitWorktreeAdd → 胶囊）
+        createWorktree: (label) => worktreeMod.createForSession(currentSession(), label),
     });
     const hideSlash = () => slashMod.hideSlash();
     const updateSlash = () => slashMod.updateSlash();
@@ -13514,9 +14012,8 @@ export function createAIPanel(options) {
         }
         renderSessionList();
         renderProfileSelect();
-        renderMessages(true);
-        updateComposerState();
-        refreshSystemPromptEstimate(true);
+        // 兜底改指后当前会话已换人：会话级 chrome（流式按钮 / 提醒 / 计时 / 隔离芯片）一并统一刷新
+        syncActiveSessionUI(true);
         // 上一步保留了内存里更全的会话时，立刻补写磁盘，避免下次读盘又回到旧内容。
         if (diskActive && diskActive._needsRewrite) persistSessions();
     }
@@ -14144,8 +14641,8 @@ export function createAIPanel(options) {
         el,
         flash,
         openPath,
-        // 计划卡「在标签页打开」：已批准开 .cadt/plan/ 的真文件（缺了补写），未批准开虚拟只读预览
-        openPlanFile,
+        // 计划卡「查看完整计划」：已批准开 .cadt/plan/ 的真文件（缺了补写），未批准开虚拟只读预览
+        openPlan,
         compactOf,
         currentSession,
         currentScopeOf,
@@ -14170,6 +14667,7 @@ export function createAIPanel(options) {
         pendingApprovals,
         askDrafts,
         AI_CHEVRON_SVG,
+        renderMarkdown,
         // 惰性转发：渲染别名构造于本模块之后（工具卡 / 消息队列互引）
         renderDiffInto: (...args) => renderDiffInto(...args),
         renderMessageQueue: (...args) => renderMessageQueue(...args),
@@ -14198,7 +14696,7 @@ export function createAIPanel(options) {
     const planApprovalMessage = (...args) => takeoverMod.planApprovalMessage(...args);
     const planApprovalKey = (...args) => takeoverMod.planApprovalKey(...args);
 
-    // 输入区与附件域（阶段 3 拆出：ai-composer.js；attachments/queueSeq 随域迁入，attachSeq 经 nextAttachSeq 取号）
+    // 输入区与附件域（阶段 3 拆出：ai-composer.js；attachments 随域迁入，attachSeq 经 nextAttachSeq 取号）
     const composerMod = createAIComposer({
         el,
         backend,
@@ -14225,14 +14723,15 @@ export function createAIPanel(options) {
         // 惰性转发：queueMod 构造于本模块之后（composer 提交流与队列互引）
         enqueueComposerMessage: (...args) => queueMod.enqueueComposerMessage(...args),
         interjectComposerMessage: (...args) => queueMod.interjectComposerMessage(...args),
+        preemptComposerMessage: (...args) => queueMod.preemptComposerMessage(...args),
         renderMessageQueue: (...args) => queueMod.renderMessageQueue(...args),
         entryOf,
         sessionImageBytes,
         // 排队消息的读写一律经队列模块（所有权在 ai-message-queue.js，阶段 A 迁移）
         queue: {
+            enqueue: (...args) => queueMod.enqueueItem(...args),
             itemsForSession: (...args) => queueMod.itemsForSession(...args),
             indexOfItem: (...args) => queueMod.indexOfItem(...args),
-            pushItem: (...args) => queueMod.pushItem(...args),
             removeItem: (...args) => queueMod.removeItem(...args),
         },
         slashState,
@@ -14273,10 +14772,16 @@ export function createAIPanel(options) {
     const getAttachments = () => composerMod.getAttachments();
     const setAttachments = (value) => composerMod.setAttachments(value);
 
+    // 等待原语（ai-inbox-wait.js）：wait_agent 等「自己下一步的新输入」，不再指向具体子代理。
+    // 三个入队方 notify 它——会话信箱（ai-agent-notices）、子代理收件箱（ai-subagents）、
+    // 用户插话/排队（ai-message-queue）。这里只持有单例，语义与接线分在各域模块内。
+    const inboxWaiters = createInboxWaiters();
+
     // 消息排队 / 插话（阶段 3 拆出：ai-message-queue.js；队列状态与所有权都在该模块内部，
     // attachments / dismissedPlanApproval / stream 经访问器读写）
     const queueMod = createAIMessageQueue({
         el,
+        inboxWaiters,
         streams,
         flash,
         positionOverlays,
@@ -14301,10 +14806,13 @@ export function createAIPanel(options) {
         getDismissedPlanApproval: () => dismissedPlanApproval,
         setDismissedPlanApproval: (value) => { dismissedPlanApproval = value; },
         getStream: () => stream,
+        // 视频 steer 的协议门禁与正常发送同源（startSessionTurn 的 video_protocol 预检）。
+        videoSteerAllowed: (session) => modelVideoInputEnabled(profileOf(session), entryOf(session)),
     });
     const renderMessageQueue = () => queueMod.renderMessageQueue();
     const enqueueComposerMessage = (...args) => queueMod.enqueueComposerMessage(...args);
     const interjectComposerMessage = (...args) => queueMod.interjectComposerMessage(...args);
+    const preemptComposerMessage = (...args) => queueMod.preemptComposerMessage(...args);
     const flushMessageQueue = (...args) => queueMod.flushMessageQueue(...args);
     const clearQueueForSession = (...args) => queueMod.clearQueueForSession(...args);
 
@@ -14336,9 +14844,10 @@ export function createAIPanel(options) {
         bindPanelInteractions();
         bindSettingsPane();
         applyPanelSettings();
-        // 首次读盘没完成时 renderMessages 内部会画加载态，读盘结束后再画真内容
-        renderMessages();
-        updateComposerState();
+        // 首次读盘没完成时 renderMessages 内部会画加载态，读盘结束后再画真内容；
+        // 会话级 chrome（流式按钮 / 提醒 / 计时 / 隔离芯片）一并统一刷新——
+        // 上面的 activeSessionId 兜底改指后，构造期的那次 syncChip 可能已指向旧会话
+        syncActiveSessionUI();
         panel.classList.toggle('hidden', floatWindow ? false : !settings.aiPanelOpen);
         refreshDockFill();
         updateEntryButtons();
@@ -14387,6 +14896,7 @@ export function createAIPanel(options) {
     // 三态投递（忙→排队 / 压缩中→排队 / 空闲→startSessionTurn 唤醒）都在模块内部，
     // panel 只保留三个消费点与工具执行处的薄调用。
     const noticesMod = createAIAgentNotices({
+        inboxWaiters,
         sessionById,
         streamOf,
         compactOf,
@@ -14474,6 +14984,7 @@ export function createAIPanel(options) {
         el,
         panel,
         backend,
+        inboxWaiters,
         flash,
         renderMarkdown,
         openTermTab,
@@ -14482,6 +14993,8 @@ export function createAIPanel(options) {
         // 子代理详情落在内容区标签页（编辑区收起时由 main.js 的 revealEditorForContent 展开；
         // 不动面板形态）。悬浮窗没有内容区，置 null 让调用方退回面板内覆盖层。
         openAgentTab: !openAgentTab || window.__aiFloatWindow ? null : (spec) => openAgentTab(spec),
+        // 团队详情同样只在有内容区时开标签页（悬浮窗里的「查看详情」入口不渲染）
+        openAgentTeamTab: !openAgentTeamTab || window.__aiFloatWindow ? null : (spec) => openAgentTeamTab(spec),
         // 悬浮窗没有内容区：详情视图退回面板内覆盖层（与改造前的表现一致）
         isFloatWindow: () => !!window.__aiFloatWindow,
         // 子代理正文与主消息区同一条增强链（代码复制钮 / 本地图片 / 可视化卡片）
@@ -14489,6 +15002,12 @@ export function createAIPanel(options) {
         currentSession,
         persistSessions,
         sessionById,
+        // wait_agent 的「已有待消费输入」判定：主会话的用户插话/排队消息也算（否则队列里
+        // 已有消息时调 wait_agent 会白等到超时）。
+        hasQueuedInput: (sessionId) => {
+            const list = queueMod.itemsForSession(sessionId);
+            return !!(list && list.length);
+        },
         // 子代理详情头部兜底：所属会话还是懒加载占位时只补它一个（见 ai-subagents 的
         // requestAgentRecordHydrate），不为了一个徽标扫全部会话的正文
         ensureSessionLoaded,
@@ -14497,6 +15016,12 @@ export function createAIPanel(options) {
         // 子代理 read_video 下发裁剪：与主会话同一视频能力判定
         videoCapableOf,
         configForProfile,
+        // 子代理请求模型：设置里指定了专用模型就用它，否则跟随派出方（见 subAgentConfigFor）
+        subAgentConfigFor,
+        subAgentModelTarget,
+        // spawn_agent 点名的模型（白名单校验 + 错误带清单）与候选清单（孙代理 def 用）
+        subAgentModelPick,
+        subAgentModelChoices,
         executeTool,
         flushToolImages,
         buildApiMessages,
@@ -14563,6 +15088,22 @@ export function createAIPanel(options) {
     const toggleChipsPop = (...args) => subagentsMod.toggleChipsPop(...args);
     const mountAgentView = (...args) => subagentsMod.mountAgentView(...args);
     const unmountAgentView = (...args) => subagentsMod.unmountAgentView(...args);
+    const mountTeamView = (...args) => subagentsMod.mountTeamView(...args);
+    const unmountTeamView = (...args) => subagentsMod.unmountTeamView(...args);
+    // 团队详情标签页的主代理信息：标题 / 模型标签 / 权限档 / 生成状态（流注册表在面板闭包）
+    function mainAgentInfoOf(sessionId) {
+        const session = sessionById(String(sessionId || ''));
+        if (!session) return null;
+        const ref = sessionModelRef(session);
+        const compacting = !!compactOf(session.id);
+        const streaming = !!streamOf(session.id);
+        return {
+            title: session.title || '新会话',
+            modelLabel: ref && ref.profile ? modelSwitchLabel(ref.profile, ref.entry) : '',
+            scopeLabel: scopeLabel(session.scope),
+            state: compacting ? 'compacting' : (streaming ? 'streaming' : 'idle'),
+        };
+    }
     const parentSessionOfSub = (...args) => subagentsMod.parentSessionOfSub(...args);
     const runSubAgent = (...args) => subagentsMod.runSubAgent(...args);
     const startSubAgent = (...args) => subagentsMod.startSubAgent(...args);
@@ -14591,8 +15132,8 @@ export function createAIPanel(options) {
         renderMermaidBlocks,
         openExternal,
         openTargets,
-        // 计划卡「在标签页打开」：与接管区同一条落盘 + 打开路径
-        openPlanFile: (...args) => openPlanFile(...args),
+        // submit_plan 工具卡「查看计划」：与接管区同一条落盘 + 打开路径
+        openPlan: (...args) => openPlan(...args),
         settings,
         getScopeRoot,
         currentSession,
@@ -14635,23 +15176,37 @@ export function createAIPanel(options) {
     const updateAssistantElement = (...args) => toolCardsMod.updateAssistantElement(...args);
     // toolMeta / acceptPlan：随工具卡提取段带入的相邻函数（接管区审批卡与计划批准在用）
     const toolMeta = (...args) => toolCardsMod.toolMeta(...args);
-    // 批准（「执行计划」）时才落盘：写会话固定路径并回填 message.planFile；失败不阻断批准，
-    // 入口卡回落到虚拟只读预览（openPlanFile 的无 planFile 分支）。
-    async function writePlanFileForApproval(session, message) {
-        if (!session || !message || message.planFile) return;
-        const target = markPlanFile(message, session);
-        if (!target) return;
-        persistSessions();
+    // 批准（「执行计划」）时才落盘：写会话固定路径并把 activePlan 置为 approved；落盘失败
+    // （后端不可用 / 目录创建失败）保持 pending 并明确报错——绝不静默吞掉，否则审批卡消失
+    // 而执行指令又没发出，用户看到的就是「点了没反应」。
+    async function writePlanFileForApproval(session) {
+        if (!session || !session.activePlan || session.activePlan.status !== 'pending') return;
+        const target = planFileTarget(session);
+        if (!target) {
+            flash('计划落盘失败：当前会话没有可用的工作区目录', true);
+            return;
+        }
+        let ok = false;
         try {
-            await writePlanFile(target);
+            ok = await writePlanFile(target) === true;
         } catch (e) {
-            message.planFile = '';
             flash('计划文件写入失败：' + ((e && e.message) || e), true);
         }
+        if (!ok) {
+            flash('计划文件写入失败（未批准生效），可重试或手动保存到 ' + target.rel, true);
+            return;
+        }
+        session.activePlan.status = 'approved';
+        session.activePlan.fileRel = target.rel;
+        persistSessions();
     }
-    const acceptPlan = async (session, message, families) => {
-        await writePlanFileForApproval(session, message);
-        return toolCardsMod.acceptPlan(session, message, families);
+    const acceptPlan = async (session, families) => {
+        // 批准意图明确：模型若还在收尾输出（提示词要求它提交后停轮，但可能没停干净），
+        // 直接停掉再批准——否则用户点按钮无反应，只能干等或手动停止。
+        const live = session && streamOf(session.id);
+        if (live) stopGeneration(live);
+        await writePlanFileForApproval(session);
+        return toolCardsMod.acceptPlan(session, families);
     };
     const askStateLabel = (...args) => toolCardsMod.askStateLabel(...args);
     const askResultText = (...args) => toolCardsMod.askResultText(...args);
@@ -14944,6 +15499,10 @@ export function createAIPanel(options) {
         // 因为运行态、收件箱与插话输入行都在面板闭包里（标签页只提供容器与标签）。
         bridgeMountAgentView: (root, spec) => mountAgentView(root, spec),
         bridgeUnmountAgentView: (root) => unmountAgentView(root),
+        // 智能体团队详情标签页（内容区）用的桥：主代理的标题 / 模型 / 权限档 / 生成状态
+        // 都在面板闭包里，注入给团队视图；标签页本身只提供容器。
+        bridgeMountAgentTeamView: (root, spec) => mountTeamView(root, spec, {getMainAgent: mainAgentInfoOf}),
+        bridgeUnmountAgentTeamView: (root) => unmountTeamView(root),
         // 内容区「支线对话」标签页：把会话渲染进宿主容器（复用面板渲染函数，
         // 面板单例 UI 在外渲染时跳过；滚动由宿主自己管）
         bridgeRenderSideChat: (root, sessionId) => renderSideChatInto(root, sessionId),

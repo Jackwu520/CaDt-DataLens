@@ -90,6 +90,92 @@ test('read_video 下发按会话视频能力裁剪，执行守卫用同一判定
     assert.ok(branch.includes('videoCapableOf(session)'), 'read_video 执行守卫必须与下发同判定');
 });
 
+test('P7 子代理挂 wait_agent，且等的是自己的收件箱（不指向具体代理）', () => {
+    const text = sourceOf('ai/ai-subagents.js');
+    const tools = sliceBetween(text, 'function subToolsForScope(', 'function activeSubCount(');
+    // 2026-11-17 实测：子代理工具表没有 wait_agent，用 background 派单后结果只能靠结算通知回流，
+    // 那条路对子代理会话不可靠（B 支一条支线的第 5 层汇报丢失）。能派单就必须能收。
+    const pushLine = tools.split('\n').find((line) => line.includes('AI_TOOL_DEFS.wait_agent'));
+    assert.ok(pushLine && /spawn/i.test(pushLine),
+        '能派单的层必须同时挂 wait_agent，否则 background 派单收不回结论');
+
+    // 语义已改为 dsh 的「等自己下一步的新输入」：不再按 agentId 定向等，
+    // 因此也不再有祖先判定与自等风险（那套守卫随旧实现一起删掉）。
+    assert.ok(!text.includes('agentCanBeWaitedBy'), '定向等待的守卫应随旧语义一起删除');
+    const waitFn = sliceBetween(text, 'async function waitForInbox(', '// 工具分发薄壳');
+    assert.ok(waitFn.includes('inboxWaiters.wait('), '等待必须走收件箱原语（事件驱动）');
+    assert.ok(waitFn.includes('countPending'), '要先判定「是否已有待消费输入」，避免明明有消息还睡一轮');
+    assert.ok(!waitFn.includes('agentId'), '不按具体代理等待');
+    assert.ok(!waitFn.includes('aiDelay('), '不许退化成轮询等待');
+    // 收尾轮不消费收件箱（runSubRound 的 !s.wrapUp）：此时必须立即返回，否则空等满超时。
+    assert.ok(waitFn.includes('wrapUp'), '收尾轮守卫必须在，否则最后一步改进程会白等');
+    // 2026-11-17 审查抓到：hasQueuedInput 曾从**工具 ctx** 取（那里只有 session/toolMessage/stream），
+    // 恒为 undefined ⇒ 队列判定等于关掉。它必须来自模块 ctx。
+    assert.ok(!waitFn.includes('ctx.hasQueuedInput'), 'hasQueuedInput 不能从工具 ctx 取（那里没有）');
+    assert.ok(text.includes('const hasQueuedInput = ctx.hasQueuedInput'), '要从模块 ctx 解包一次供闭包使用');
+    // 停止要立刻生效：两处统一停止入口都必须调 cancel
+    assert.ok(text.includes('inboxWaiters.cancel(sub.id)'), 'stopSubAgent 必须放行等待（不等心跳）');
+    const panel = sourceOf('ai/ai-panel.js');
+    assert.ok(panel.includes('inboxWaiters.cancel(sessionId)'), 'stopGeneration 必须放行等待');
+});
+
+test('P10 嵌套投递：结算与提问都经 deliverToParent，不只看 sessions 表', () => {
+    // 2026-11-17 五层嵌套实测：层5 的结论没回到层4。根因是 sessionById(parentSessionId)
+    // 对子代理会话恒为 null（子会话不进 sessions 表），于是第 2 层起的通知全部静默丢失。
+    const text = sourceOf('ai/ai-subagents.js');
+    assert.ok(text.includes('function deliverToParent('), '必须有统一的父级投递入口');
+    const fn = sliceBetween(text, 'function deliverToParent(', 'function finalizeSubAgent(');
+    assert.ok(fn.includes('subAgents.get(sub.parentSessionId)'), '先看父是不是运行中的子代理');
+    assert.ok(fn.includes("from: 'subagent'"), '嵌套回报在收件箱里要有自己的来源前缀');
+    assert.ok(fn.includes('deliverAgentNotice'), '父是主会话时仍走会话信箱');
+    const fin = sliceBetween(text, 'function finalizeSubAgent(', '// 停止时未消费的收件箱条数');
+    assert.ok(fin.includes('deliverToParent(sub,'), '结算通知必须走 deliverToParent');
+    const ask = sliceBetween(text, 'function runSubAskQuestion(', '// 回答路由');
+    assert.ok(ask.includes('deliverToParent(sub,'), '提问通知必须走 deliverToParent（否则嵌套提问到不了父代理）');
+    assert.ok(!ask.includes('sessionById(sub.parentSessionId)'), '提问不得再只看 sessions 表');
+});
+
+test('P11 收件箱来源前缀三方可辨：用户插话 / 主代理消息 / 下级代理回报', () => {
+    const text = sourceOf('ai/ai-subagents.js');
+    const fn = sliceBetween(text, 'export function inboxMessageText(', '// 冷唤醒准入');
+    assert.ok(fn.includes('［用户插话］') && fn.includes('［上级代理消息］') && fn.includes('［下级代理回报］'),
+        '三种来源都必须有独立前缀，否则嵌套时父代理分不清谁说的');
+});
+
+
+test('P12 嵌套提问可作答：能派单的层同时挂 agent_send，且方向限死自己的下级', () => {
+    // 2026-11-17 审查发现：buildAskNotice 教父代理用 agent_send(askId=…) 作答，但子代理工具表
+    // 里没有它 —— 嵌套时父是子代理，收得到提问却答不了，只能等 120s 放行。
+    const text = sourceOf('ai/ai-subagents.js');
+    const tools = sliceBetween(text, 'function subToolsForScope(', 'function activeSubCount(');
+    // 用「同一条 push 语句里带条件」而不是字符距离——距离断言会被无关的文案改动撞红（刚发生过）
+    const sendLine = tools.split('\n').find((line) => line.includes('AI_TOOL_DEFS.agent_send'));
+    assert.ok(sendLine && sendLine.includes('subAgentCanSpawn(depth)'),
+        'agent_send 必须与「还能派单」同条件（到层级上限的层没有下级）');
+    // 方向守卫：子代理只能发自己的下级，不能给祖先 / 兄弟喊话
+    const sendFn = sliceBetween(text, 'function sendToSubAgent(', '// agent_stop 执行体');
+    assert.ok(sendFn.includes('agentDescendsFrom('), '子代理调用必须过「是不是我的下级」判定');
+    assert.ok(sendFn.includes('viewer.parentSessionId'), '只对子代理视角生效，主代理不受限');
+    // 系统提示要教它怎么用（否则模型不会想到去回答）
+    const prompt = sliceBetween(text, 'function subSystemPromptFor(', 'function subToolsForScope(');
+    assert.ok(prompt.includes('askId='), '提示里要给出作答形式');
+    assert.ok(prompt.includes('只能发给自己派出的下级'), '提示里要写清方向限制');
+});
+
+test('P13 收尾轮真的不下发工具，幻觉调用直接收尾（不死循环）', () => {
+    // 旧实现：注释写「收尾轮不带工具」，实际每次请求都发完整工具表；模型在收尾轮
+    // 仍能调 read_file / spawn_agent，调 ask_user 还会空等父代理 120s。
+    const text = sourceOf('ai/ai-subagents.js');
+    const round = sliceBetween(text, 'const apiMessages = buildApiMessages(', 'async function runSubToolRound(');
+    assert.ok(/const tools = s\.wrapUp \? \[\] : subToolsForScope\(/.test(round),
+        'wrapUp 时必须传空工具表');
+    assert.ok(round.includes('AISendChat(s.roundId, s.profileCfg, apiMessages, tools,'),
+        '请求要用上面算好的 tools，而不是再调一次 subToolsForScope');
+    const toolRound = sliceBetween(text, 'async function runSubToolRound(', 'const toolMessage = {');
+    assert.ok(toolRound.includes('if (s.wrapUp)'), '收尾轮收到工具调用要单独处理');
+    assert.ok(toolRound.includes("finalizeSubAgent(sub, 'done')"), '拒绝后必须立即收尾，不能进下一轮');
+});
+
 test('P6 background_command 分支：沙箱档走 AICommandStartConfined，且先过项目 deny 规则', () => {
     const text = sourceOf('ai/ai-panel.js');
     const branch = sliceBetween(text, "case 'background_command': {", "case 'check_command': {");
@@ -157,7 +243,9 @@ test('P9 HUD 档位标签、后台拒绝分类与作业归属校验', () => {
 
     const hud = sourceOf('ai/ai-head-hud.js');
     assert.ok(hud.includes('sandboxMode: sub.sandboxMode'), 'HUD 要读派出时定死的档位');
-    assert.ok(hud.includes("'沙箱 ' + sandboxModeLabel(agent.sandboxMode)"), 'HUD 副标题要显示档位');
+    assert.ok(hud.includes('ai-agent-badge ai-sandbox-badge'), '档位要渲染成胶囊标识');
+    assert.ok(hud.includes('appendBit(agentSandboxBadge(agent.sandboxMode))'), '档位胶囊要嵌在副标题原「沙箱 …」文本的位置');
+    assert.ok(!hud.includes("'沙箱 ' + sandboxModeLabel"), '副标题不再拼「沙箱 …」文本（胶囊已承载）');
 
     const panel = sourceOf('ai/ai-panel.js');
     const check = sliceBetween(panel, "case 'check_command': {", "case 'stop_command': {");

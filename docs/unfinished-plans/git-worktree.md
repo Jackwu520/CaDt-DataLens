@@ -93,12 +93,16 @@ export 的具体序列（Go 侧 `GitWorktreeDiff`）：
 - 命令：`run_command` 的 `cwd` 传 `.cadt/worktree/<slug>`，能过 cwd 检查且 git 自动识别该 worktree。
 - **不要**引入「会话级工作目录前缀重写」：那会让 `aiResolveScopePath` 失去单一语义，且所有写工具、`run_command` cwd、patch 根目录判定都要跟着改，收益不抵风险。
 - 前缀由 `<worktree>` 注入块明确写出（§6.3），否则 AI 会默认在主根改代码。
+- **用户表态必须绑定到工具调用（2026-11-17 实测补）**：此前模型会把用户说的「基于 worktree」理解成「参考 worktree 方案文档」，全程在主根规划/开发；计划模式下它连 `worktree_manage` 都不可见，更不会建。现在三处守则显式绑定：`<workspace_rules>` 写档守则「用户以『基于 worktree / 用隔离区 / 在 worktree 里开发』措辞要求时，实施第一步先 `worktree_manage(action=create)`，并声明这不是读方案文档」；计划模式守则与 `<plan_mode>` 块要求「计划 steps 第一项写创建隔离区，批准后才执行」；`worktree_manage` 的 create 描述同步。提示词是行为依据不是硬约束——确定性入口仍是 `/worktree`（见 §3.5）。
 
 ### 3.5 入口
 
-- AI 面板输入框斜杠 `/worktree`（`AI_COMMANDS` 加一条，`ai-slash.js` 转发到 worktree 域模块）。
-- 会话获得活跃 worktree 后，头部出一条状态胶囊（`#ai-chip-worktree`，与计时/定时胶囊同排）：显示隔离区名，点击弹信息与「丢弃隔离区」确认。**实施简化（2026-11-17）**：胶囊不带「导出补丁」快捷钮——export 的 patch 审批卡挂在回合的 toolMessage 上（composer takeover 机制），胶囊没有消息载体；一期 export 统一走 AI 的 `worktree_manage(action=export)`。
-- AI 也可经 `worktree_manage` 主动 create（走确认卡），用于「我建议在隔离区里试」的场景。
+- **输入区常驻开关「隔离」**（对齐 ZCode 的 worktree 勾选，2026-11-17 补）：`#ai-worktree` pill 在 composer 底部栏（与「计划」同排、同 `.active`/`aria-pressed` 样式）——勾上=立即创建（确认卡按档位、full 免），取消=确认丢弃（含改动统计）；轮次运行中不许切换；只读档点击给「先切权限档」提示。会话切换/启动/创建/丢弃后由 `syncChip` 同时刷新胶囊与开关。**窄宽度降级（2026-11-17）**：容器查询分两级——内容宽 ≤400px 模型 chip 收成单图标（名字/等级/上限/箭头隐藏，模型名进 tooltip）；≤330px「计划」「隔离」两个 pill 收起、入口移进**权限模式弹窗**的「会话模式」两行（计划模式 / 隔离工作区，带勾选、任何宽度都保留），计划已开用权限胶囊上的强调色圆点提示。
+- AI 面板输入框斜杠 `/worktree`（`AI_COMMANDS` 加一条，`ai-slash.js` 转发到 worktree 域模块）。**实施修正（2026-11-17）**：不再是「填提示词」，而是面板直连创建（`createForSession`：确认卡按档位出、full 免 → `GitWorktreeAdd` → 会话登记 + 胶囊），不依赖模型回合，是确定性入口。菜单行「隔离工作区」在已开启时进入**信息卡**（查看路径/分支/改动统计，底部【关闭】【丢弃隔离区】），未开启时创建；输入区 pill 仍是勾选语义（取消=确认丢弃）——两条入口共用 `createForSession` / `discardForSession`，运行中守卫一致。
+- 会话获得活跃 worktree 后，头部出一条状态胶囊（`#ai-chip-worktree`，与计时/定时胶囊同排）：注入 folder 图标（compact 档隐藏文字时不做空白圆）、tooltip 带隔离区名；**点击=信息卡**（路径、分支、改动统计、回灌指引，底部【关闭】【丢弃隔离区】两个显式按钮），点胶囊本身不再直接进入丢弃流程。**实施简化（2026-11-17）**：胶囊不带「导出补丁」快捷钮——export 的 patch 审批卡挂在回合的 toolMessage 上（composer takeover 机制），胶囊没有消息载体；一期 export 统一走 AI 的 `worktree_manage(action=export)`。
+- 确认弹窗（创建 / 丢弃 / 信息卡）统一走 `confirmDialog`：**按钮回调先 `closeDialog()` 再落定**（2026-11-17 真机修复——此前漏了关窗，表现为「slug 已创建但弹层不消失、点取消也没反应」）。
+- 隔离区内的临时文件：worktree 检出不含主根 `.cadt/`，`<worktree>` 块明确「工具路径一律相对主根、临时产物用 `write_file` 写主根 `.cadt/tmp/`（auto 档免审）、不要用 `../` 猜路径、不要用输出重定向写日志再读（复合命令会转人工）」，`run_command` 描述同步补「输出已捕获」。
+- AI 也可经 `worktree_manage` 主动 create（走接管 composer 的审批卡，全档必弹），用于「我建议在隔离区里试」的场景。
 
 ## 4. 五处必须改的护栏（不改则功能不可用或污染全局）
 
@@ -226,7 +230,7 @@ WorktreeDiff(dir, name string) (string, error)                  // 空 diff 返�
 
 校验顺序（WorktreeAdd）：git 可用 → `rev-parse` 确认 dir 在仓库内 → slug 派生与碰撞重试 → 目标路径不存在 → 分支名不存在 → `worktree add` → 回读 `rev-parse HEAD` 得 baseSha。
 
-工具层约定：`worktree_manage` 的 export/discard **不带 name 参数**，隐式作用于本会话 `session.worktree`——工具面天然消除「跨会话删除他人 worktree」的可能；Go 绑定虽收 `name`，但一律校验其落在 `.cadt/worktree/` 下且目录存在（防路径注入）。
+工具层约定：`worktree_manage` 的 export/stat/discard 缺省作用于本会话 `session.worktree`；**二期新增可选 `name`**，只认本会话自己的或本会话派生子代理的隔离区（`resolveWorktreeTarget` 纯函数，归属外拒绝）——工具面天然消除「跨会话删除他人 worktree」的可能；Go 绑定一律校验路径落在 `.cadt/worktree/` 下且目录存在（防路径注入）。
 
 ### 6.2 `worktree_manage` 工具定义（文案草案，description 是模型唯一的行为依据）
 
@@ -235,11 +239,11 @@ worktree_manage: {
     name: 'worktree_manage',
     description: [
         '管理本会话的隔离 git worktree（草稿工作区）：改动落在 .cadt/worktree/<slug>/，不直接碰主根，适合有风险的批量改动、大规模重构、不确定能成的试错。',
-        'action=create：创建（一个会话同时只能有一个）。创建后 <worktree> 块会给出前缀，之后所有文件改动都写到该前缀下、run_command 的 cwd 传该目录；不要写主根同名文件。',
+        'action=create：创建（一个会话同时只能有一个；走 composer 审批卡，全档必弹）。创建后 <worktree> 块会给出前缀，之后所有文件改动都写到该前缀下、run_command 未显式传 cwd 时默认就在隔离区；不要写主根同名文件。',
         'action=list：列出仓库现有 worktree（只读）。',
         'action=export：把 worktree 里相对创建基准的全部改动（含新文件与删除）导出为补丁，交用户在审批卡里审阅后回灌主根。导出是全量语义：上一轮已回灌过的改动再次导出会预检报「不可应用」，属预期——应用成功后应 discard 收尾。worktree 里不要 commit。',
         'action=discard：删除 worktree 与其隔离分支（不可恢复；未 export 的改动会丢）。回灌成功、或用户明确不要这轮试验时用它收尾。',
-        '何时不用：常规小改动直接 edit_file/write_file，不要为每次修改开 worktree；依赖安装/跑测试在 worktree 里可能因缺依赖目录（node_modules 等）失败，不要在 worktree 里反复装依赖。',
+        '何时不用：常规小改动直接 edit_file/write_file，不要为每次修改开 worktree；依赖共享只覆盖主根顶层的 node_modules/.venv/venv，子目录依赖（如 frontend/node_modules）缺就只在隔离区里装一次，不要手动 mklink 借主根目录。',
     ].join('\n'),
     parameters: { action: 'create|list|export|discard', label: 'create 时可选，用途短名（英文/数字/连字符），用于派生目录与分支名' },
 }
@@ -253,8 +257,8 @@ worktree_manage: {
 ```
 <worktree>
 本会话正在隔离工作区中改代码：所有文件改动写到 .cadt/worktree/<slug>/…（相对范围根），不要改主根同名文件。
-- run_command 的 cwd 传 .cadt/worktree/<slug>；git 命令会自动作用于该 worktree 的分支 <branch>。
-- 依赖目录（node_modules、venv、Go build cache）不跟 worktree：npm test / go test 可能因缺依赖失败，不要因此反复安装依赖，也不要承诺「能在隔离区跑测试」。
+- run_command / background_command 未显式传 cwd 时默认在 .cadt/worktree/<slug> 里执行；git 命令会自动作用于该 worktree 的分支 <branch>。要看主根显式传 cwd='.'。
+- 依赖共享只覆盖主根顶层的 node_modules/.venv/venv；子目录依赖（如 frontend/node_modules）缺就在隔离区里装一次，不要手动 mklink 借主根目录（删除时会跟进 junction 删空目标）。Go 无需共享。
 - 完成后调 worktree_manage(action=export) 生成补丁交用户审阅回灌主根；应用成功后建议 discard 收尾。
 - 不要 commit 到隔离分支：worktree 是草稿区，分支不保留。
 </worktree>
@@ -264,10 +268,12 @@ worktree_manage: {
 
 | action | read | edit | auto | full | plan |
 |---|---|---|---|---|---|
-| create | 工具不可见 | 确认卡 | 确认卡 | 免（档位契约内；写的是 `.cadt/worktree` 已豁免区） | 工具不可见 |
+| create（**AI 主动**） | 工具不可见 | **composer 审批卡** | **composer 审批卡** | **composer 审批卡**（2026-11-17 起全档必弹） | 工具不可见 |
+| create（用户手点开关/菜单） | — | 居中确认弹窗 | 居中确认弹窗 | 免（既有档位契约；写的是 `.cadt/worktree` 已豁免区） | — |
 | list | 工具不可见 | 免 | 免 | 免 | 工具不可见 |
 | export | 工具不可见 | **patch 卡** | **patch 卡** | **patch 卡**（人工审阅闸门，全档必弹，§3.3） | 工具不可见 |
-| discard | 工具不可见 | 确认卡 | 确认卡 | 确认卡（销毁性动作，对齐 `git-worktree-force` 危险语义） | 工具不可见 |
+| discard（**AI 主动**） | 工具不可见 | **composer 审批卡** | **composer 审批卡** | **composer 审批卡**（销毁性动作，全档必弹） | 工具不可见 |
+| discard（用户手点胶囊/开关） | — | 居中确认弹窗 | 居中确认弹窗 | 居中确认弹窗 | — |
 
 `run_command` 路径的约束不变：`git worktree add/remove` 不进 `GIT_FLOW_SAFE_SUBCOMMANDS`（等于任意目录写盘 + 分支创建，比 add/commit 危险得多），auto 档照常逐条审批；只读白名单里已有的 `worktree list`（`ai-command-rules.js:331`）保持。
 
@@ -279,11 +285,12 @@ worktree_manage: {
 | 全局只读锁 | `core/readonly.js`（`settings.readOnlyMode`） | **实施修正（2026-11-17）**：核实后确认 AI 工具面没有 settings.readOnlyMode 闸（那是编辑器文档锁，write_file 也不查它）——`worktree_manage` 与 write_file 同走 AI 档位体系（write 档可见、非计划模式），不单独接文档锁，保持权限面一致 |
 | auto 档风险判定 | `isAutoWriteRisky` | `.cadt/worktree/` 精确前缀豁免（§4.1）；脏文件仍 risky，`ai-write-guard.js` 陈旧缓冲防护照常生效 |
 | 项目规则 | `.cadt/permissions.json` 的 decidePermission | worktree 路径照常参与（subject = `.cadt/worktree/<slug>/…`）——加一条对 `.cadt/worktree` 的 deny 规则即可整域硬禁该功能，无需新开关 |
-| 命令通道 | `approveCommandForRun` 链 | cwd 检查天然通过；**git-flow 令牌豁免在 cwd 位于 `.cadt/worktree/` 下时失效**（`gitFlowSafeCommand` 加前缀判断，回退逐条审批）——防止「Git 快捷操作」令牌被拿去在 worktree cwd 里静默 commit 草稿分支；`worktree add/remove` 不进安全集的约束不变 |
+| **主根只读闸（主会话，2026-11-17 真机补）** | `mainRootWriteVerdict`（ai-worktree.js） | 隔离区开启期间 `write_file` / `edit_file` 写主根**确定性拒绝**（全档生效，含完全权限；`.cadt/tmp/` 临时产物与范围外绝对路径除外），返回 `WORKTREE_MAIN_READONLY` 指引：改到 `.cadt/worktree/<slug>/…`、冲突在隔离区修正后重新 export。背景：导出预检冲突时模型会「直接改主根对齐」（真机 `edit_file` 改 `style.css` +23 −18），绕过回灌审批卡。`/init` 是应用代发的用户动作，豁免（`appInitiated`）。 |
+| 命令通道 | `approveCommandForRun` 链 | cwd 检查天然通过；**命令默认 cwd（`commandCwdOf`）**：隔离会话未显式传 `cwd` 时默认落在隔离区（`run_command` / `background_command` 同口径），防止相对路径命令误改主根；要看主根需显式 `cwd='.'`（隔离开启时主根应只读，写操作仍受项目 deny / 审批链约束）。**git-flow 令牌豁免在 cwd 位于 `.cadt/worktree/` 下时失效**（`gitFlowSafeCommand` 加前缀判断，回退逐条审批）——防止「Git 快捷操作」令牌被拿去在 worktree cwd 里静默 commit 草稿分支；`worktree add/remove` 不进安全集的约束不变。**档位竞态（2026-11-17 真机修复）**：分类器判定最长等 12s，等待期间切到完全权限后迟到的 ask 不再弹卡——`requestCommandApproval` 按当前档位重判（`scopeUpgradedToFull`：full 下除项目 ask 规则外一律自动放行并留痕）。 |
 | 回灌闸 | export → patch 审批卡 | 全档必弹（§3.3）；补丁卡即审批，应用不再逐文件过 decidePermission（与 propose_patch 现状一致） |
-| 确认卡 | create（edit/auto）/ discard（全档） | 结果进 `logPermission('worktree', slug, …)`，审批记录页可见。实施落点：Promise 化居中弹窗（MutationObserver 监听 dialog hidden，Esc/× 按放弃收敛），在 ai-worktree.js 的 confirmDialog |
+| 确认卡 | **AI 主动 create / discard → 接管 composer 的审批卡（全档必弹，含完全权限）**；用户手点「隔离」开关 / 胶囊信息卡 → 居中确认弹窗 | AI 路径：`requestWorktreeApproval` 建 `approval.kind='worktree'` 走 `pendingApprovals`，卡片在 `ai-takeover.js` 的 `renderWorktreeTakeover`（创建显示用途/路径/分支；丢弃附改动统计与丢失警告），支持临时收起；裁定由 `decideApproval` 统一落状态并 resolve。用户路径：Promise 化居中弹窗（MutationObserver 监听 dialog hidden，Esc/× 按放弃收敛）保留在 ai-worktree.js 的 confirmDialog。两者结果都进 `logPermission('worktree', slug, …)`，审批记录页可见。 |
 | 留痕 | activity-log | create / export / discard 三个动作点记操作摘要（subject `worktree/<slug>`，不记正文与文件清单） |
-| 子代理 | 一期只读子代理 | 无写入面，无需处理；二期并行 worktree 时随子代理方案单独设计绑定与权限 |
+| 子代理 | 二期已实施（`isolation: 'worktree'`） | 子代理写闸 `agentWorktreeWriteVerdict`：自己的前缀内自动应用、前缀外拒绝、永不弹卡；权限档随父会话（read/edit 只读、auto 工作区可写、full 不圈定）；命令通道走 `internal/sandbox`。`worktree_manage` 的 export/discard 支持可选 `name`，只认本会话或本会话派生子代理的隔离区（`resolveWorktreeTarget`）。 |
 
 ## 7. 测试计划
 
@@ -296,7 +303,8 @@ Go（表驱动，跟随现有风格；`go test` 一律后台执行、显式 `-ti
 
 前端（`frontend/test/ai/`，镜像 `src/ai/`，登记 npm test 清单）：
 
-- `ai-worktree.test.mjs`（新）：slug/文案纯函数、export 空改动的哨兵处理、只读锁（`settings.readOnlyMode`）下四个 action 全拒。
+- `ai-worktree.test.mjs`（新）：slug/文案纯函数、`mainRootWriteVerdict` 主根只读判定、`manageTool(create/discard)` 的 AI 审批闸（批准前不落盘、丢弃卡带统计）、`<worktree>` 提示词块断言。
+- `internal/gitinfo/worktree_test.go`：生命周期 / junction 共享 / `TestWorktreeRemoveNestedJunction`（嵌套 junction 删除不得伤主根目标）。
 - `ai-command-rules.test.mjs`：`gitFlowSafeCommand` 对 `.cadt/worktree` cwd 的豁免失效用例（与放行用例同组，防日后误删收紧）。
 - `ai-session-store.test.mjs`：`session.worktree` 序列化/反序列化往返。
 - `ai-system-context.test.mjs`：有/无 worktree 时 `<worktree>` 块注入。
@@ -316,10 +324,13 @@ Go（表驱动，跟随现有风格；`go test` 一律后台执行、显式 `-ti
 
 **二期（已实施，2026-11-17）**
 
-1. **依赖目录 junction**：`WorktreeAdd` 自动把主根的 `node_modules` / `.venv` / `venv`（白名单，只共享通常 gitignore 的目录，git 跟踪的 vendor 不碰）以 `mklink /J` junction 进 worktree（免管理员权限），结果带 `deps` / `depErrors`；`WorktreeRemove` 先摘 reparse 点再交 git（绝不伤主根依赖，测试断言）。**实施实测**：Go 1.27 Windows 下 `os.Lstat` 对 junction 不报 ModeSymlink/dir（`ReadDir`/`WalkDir` 把 junction 当非目录条目、不下钻——遍历天然安全；`os.Stat`/读写正常跟随），`isReparsePoint` 必须查 `FILE_ATTRIBUTE_REPARSE_POINT`。`<worktree>` 块与工具文案改为「依赖已共享，npm/pip 可直接用」。
+1. **依赖目录 junction**：`WorktreeAdd` 自动把主根**顶层**的 `node_modules` / `.venv` / `venv`（白名单，只共享通常 gitignore 的目录，git 跟踪的 vendor 不碰）以目录联接接进 worktree（`FSCTL_SET_REPARSE_POINT` 原生创建，免管理员权限、不经 cmd.exe），结果带 `deps` / `depErrors`；`WorktreeRemove` 先**递归摘掉 worktree 内所有 reparse 点**再交 git（只删链接、绝不伤目标，fail-closed），`WorktreeDiff` 的 `git add -N` 对 junction 路径加 exclude pathspec（防止未 gitignore 的依赖目标被当成新文件导出）。**实施实测**：Go 1.27 Windows 下 `os.Lstat` 对 junction 不报 ModeSymlink/dir（`ReadDir`/`WalkDir` 把 junction 当非目录条目、不下钻——遍历天然安全；`os.Stat`/读写正常跟随），`isReparsePoint` 按 reparse tag 精确判定（只认 MOUNT_POINT/SYMLINK，云占位符/去重/ProjFS 不算）。`<worktree>` 块与工具文案说明「只共享主根顶层依赖；子目录依赖在隔离区里装，禁止手动 mklink」。
 2. **改动统计（对比 lite）**：`WorktreeStat`（baseSha 有效对比基准，否则对比 HEAD）+ `worktree_manage` 新增 `stat` action + `list` 每个隔离区附一行未提交改动统计 + 胶囊弹层显示统计。完整并排对比视图仍未做，看使用反馈。
 3. **孤儿回收**：存储清理页新条目 `ws-worktrees`（KindDanger，走回收站）——children 过滤 = 会话登记之外才算孤儿；宿主注入 `KeepWorktreeNames`（从 sessionstore metas 收 `worktree.path`），**未注入钩子时一律不清（fail-safe）**。git 侧管理记录由启动 prune 收敛，分支残留写进条目 note。
 4. **子代理并行 worktree**：`spawn_agent` 新增 `isolation: 'worktree'`——spawn 时建独立隔离区（失败让派单报错，不静默降级），`subToolsForScope(depth, mode, hasWorktree)` 挂 `write_file` / `edit_file`；写闸在 `applyWorkspaceWrite`：子代理会话（parentSessionId 有值 + worktree 登记）前缀内确定性放行（`agent-worktree` 来源）、前缀外确定性拒绝（`agentWorktreeWriteVerdict` 纯函数），**永不弹卡（隔离区即审批边界）**；`run_command` 仍不给（命令通道归 subagent-sandbox 方案）；`worktree_manage` 的 export / stat / discard 支持可选 `name`，只认「本会话自己的或本会话派生子代理的」隔离区（`resolveWorktreeTarget` 纯函数，归属外拒绝）。子代理提示词带隔离区段（前缀用法 + 不 commit + 结论列改动清单）。
+5. **主根只读闸（2026-11-17 真机补）**：导出预检冲突时模型绕过审批直接 `edit_file` 主根（`style.css` +23 −18）——`applyWorkspaceWrite` 新增主会话隔离写闸 `mainRootWriteVerdict`：隔离期间只允许写自己的隔离前缀与 `.cadt/tmp/`（全档生效）；`run_command` / `background_command` 的默认 cwd 改为隔离区（`commandCwdOf`）；`<worktree>` 块补「主根只读 + 冲突在隔离区修正后重新 export」指引（配 `ai-worktree.test.mjs` 断言）。
+6. **AI 动作审批卡 + 嵌套 junction 防误删（2026-11-17 真机补）**：① `worktree_manage(create/discard)` 从居中确认弹窗改为**接管 composer 的审批卡**（`approval.kind='worktree'`，全档必弹含 full；丢弃卡附改动统计），用户手点的开关/信息卡仍用居中弹窗；② 真机发现 AI 手动 `mklink /J frontend/node_modules` 借主根依赖后，discard 时 `git worktree remove --force` 跟进 junction 把主根依赖删空——`WorktreeRemove` 改为先递归摘掉 worktree 内所有 reparse point（`unlinkReparsePoints`），提示词改为「只共享主根顶层依赖、子目录缺依赖在隔离区里装、禁止手动 mklink」；配 Go 嵌套 junction 用例。
+7. **参照 ZCode managed-worktree 补齐（2026-11-18）**：① 隔离会话的 `propose_patch` **全档必弹**（`patchAllowApply` 增 `worktreeActive` 维度，`apply=false` 仍只产出文件）——主根只读下回灌必须过审；② **`.worktreeinclude`**（对齐 ZCode §3.4）：创建时按仓库根清单拷贝「被忽略且匹配」的 dotfiles（junction 覆盖不了），失败不致命；③ **`carry=true` 带入主根未提交改动**（对齐 ZCode fork 的 binary patch：暂存 `--index` + 未暂存 + 未跟踪拷贝），打快照 commit 推进 baseSha，export 只含 AI 草稿；④ 丢弃前查终端占用（`TermList` 的 cwd 前缀）；⑤ `gitRun` 剔除 `GIT_DIR` 等重定向变量（环境隔离）；⑥ 用户手点的创建/丢弃合成 `worktree_manage` 工具卡写进会话历史（对齐 ZCode 的「已创建 worktree」timeline part）。
 
 ## 9. 明确不做与已知限制
 
@@ -334,8 +345,11 @@ Go（表驱动，跟随现有风格；`go test` 一律后台执行、显式 `-ti
 
 **已知限制**
 
-- **依赖目录不跟 worktree**：`node_modules`、Go build cache、Python venv 都在主根，worktree 是干净检出。AI 在 worktree 里执行 `npm test` / `go test` 会因缺依赖失败。一期不解决、不承诺——只承诺「能改代码 + diff 审阅」。真要跑测试需二期 junction。
-- **跨会话软隔离**：AI 理论上可写其他会话的 `.cadt/worktree/<other>/…`（前缀豁免是整棵）。单用户单机场景接受，二期随子代理并行再收紧。
+- **依赖共享只覆盖主根顶层**：`linkDepDirs` 只把主根顶层的 `node_modules` / `.venv` / `venv` junction 进来；依赖放在子目录（如本项目的 `frontend/node_modules`）不会自动共享，隔离区里跑测试会缺依赖——正确做法是在隔离区里 `npm install`（装进隔离区自己的目录），dotfiles 类（`.env`）用仓库根的 `.worktreeinclude` 清单声明（创建时自动拷贝）。**绝不允许手动 `mklink /J` 借主根目录**：`git worktree remove --force` 在 Windows 上会跟进 junction 递归删空目标（2026-11-17 真机事故），删除侧已加 `unlinkReparsePoints` 递归摘链兜底，但手动 junction 仍是危险动作。Go 的模块与构建缓存在用户级，无需共享。
+- **跨会话软隔离**：主会话写闸只放行**自己的**隔离前缀与 `.cadt/tmp/`（2026-11-17 起 `mainRootWriteVerdict` 收紧），其他会话的 `.cadt/worktree/<other>/…` 与 `run_command` 通道仍可触达（命令不按写路径拦截）。单用户单机场景接受。
+- **命令通道不是硬沙箱**：主会话的 `run_command` 在隔离会话里默认 cwd 落在隔离区，但显式 `cwd='.'` / 绝对路径 / `terminal` 工具仍可操作主根——隔离的红线由「写工具只读闸 + 回灌审批卡」承担，不做 OS 级主根只读（子代理才有 `internal/sandbox`）。完全权限本就是对主机的全权授权，隔离只是防误伤与防绕过审阅的工程约束。
+- **孤儿隔离区走回收站而非递归删除**：存储清理的 `ws-worktrees` 是 `KindDanger`，`removePath` 强制走 `RemoveToRecycleBin`（SHFileOperation 移动，不跟进 junction），没有回收站时直接拒绝；不会走 `os.RemoveAll` 的缓存直删路径。
+- **写闸按路径前缀判定，不做文件系统级校验**：若隔离区内被手动建了「指回主根」的 junction（如 `mklink /J .cadt/worktree/<slug>/src <主根>/src`），再经该前缀写入即可穿透。提示词明确禁止手动 mklink，删除侧递归摘链兜底；要堵死需 OS 级沙箱（子代理才有）。单用户单机场景接受，随 `subagent-sandbox` 的推广再评估。
 - **二进制文件改动静默不可回灌**：`git diff` 对二进制只有「Binary files differ」占位，patch 预检会如实标「不可应用」——需要二进制回灌时用户用 git 操作兜底。
 - **重复 export 的全量语义**（§3.3）：第二轮预检报「不可应用」是预期行为，文案已引导。
 - **`.cadt` 占用会显著增大**：每个 worktree 是一份全量检出；存储清理页的占用统计会如实反映（`internal/storage` 无需改动）。
@@ -347,8 +361,11 @@ Go（表驱动，跟随现有风格；`go test` 一律后台执行、显式 `-ti
 | rg 对 `--glob !.cadt/worktree` 是否真剪枝目录遍历 | 测试 fixture 实测两条 glob；不放心时再补 `--glob !.cadt/worktree/**` 已含双保险（§4.3） |
 | `git add -A -N` 在大仓库的耗时 | 只在 export 时执行一次，走 `gitRun` 超时保护；worktree 本身就是新增检出，量级与 add 相当 |
 | patch 解析器对 git diff 产物的边角（mode 行、引号路径） | 解析器已支持 git 引号路径；mode 变更等边角由预检如实报错兜底，用户可改用补丁视图手动处理 |
-| AI 忘记在 worktree 里改、仍写主根 | `<worktree>` 块每轮注入 + 状态胶囊常驻；主根写入照常走原审批链，不会静默 |
+| AI 忘记在 worktree 里改、仍写主根 | `<worktree>` 块每轮注入 + 状态胶囊常驻；**主根写工具确定性拒绝**（`mainRootWriteVerdict`，全档生效，2026-11-17 真机补）——不再依赖审批链（完全权限下没有卡） |
 | watch 过滤误伤正常 `.cadt` 事件 | 过滤只命中 `.cadt/worktree` 前缀，`.cadt/logs`、`.cadt/patches` 等照常；护栏测试覆盖 `.cadt/worktree-x` 不误伤 |
+| 手动 junction 借主根依赖，discard 时被 git 递归删除牵连主根 | `WorktreeRemove` 先 `unlinkReparsePoints` 递归摘掉所有 reparse point（只删链接、不动目标，`WalkDir` 对 junction 不下钻）；worktree 根本身是链接时 fail-closed 拒绝；提示词与工具描述禁止手动 mklink；`TestWorktreeRemoveNestedJunction` / `TestWorktreeRemoveRejectsRootJunction` 覆盖 |
+| 工作区/依赖目录名含 cmd 元字符（`&` `%` 等）导致 junction 创建被注入或假成功 | `createJunction` 改用 `FSCTL_SET_REPARSE_POINT` 原生创建，不经 cmd.exe；`TestCreateJunctionMetachars` 覆盖 |
+| 未 gitignore 的 junction 目标被 `git add -N` 索引进导出补丁 | `WorktreeDiff` 对 `reparseRelPaths` 逐个加 `:(exclude,literal)` pathspec；`TestWorktreeJunctionDeps` 断言导出不含 junction 目标 |
 | ai-panel.js 超线文件继续膨胀 | 域逻辑独立 `ai-worktree.js`，executeTool 只留一行转发（§5） |
 | 「Git 快捷操作」令牌 + worktree cwd 被组合利用，静默 commit 草稿分支 | 令牌豁免在 `.cadt/worktree` cwd 下失效（§6.5），回退逐条审批 |
 

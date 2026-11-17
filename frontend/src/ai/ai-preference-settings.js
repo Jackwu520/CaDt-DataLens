@@ -27,25 +27,30 @@ export function createAIPreferenceSettings(ctx, extras) {
         const query = opt.prefFilter ? String(opt.prefFilter.value || '').trim().toLowerCase() : '';
         const shown = query ? prefs.filter((pref) => String(pref.text).toLowerCase().includes(query)) : prefs;
         if (!prefs.length) {
-            const empty = document.createElement('span');
+            const empty = document.createElement('div');
             empty.className = 'ai-pref-empty';
             empty.textContent = '（暂无偏好；例如「回答用中文，尽量简洁」）';
             opt.prefs.appendChild(empty);
         } else if (!shown.length) {
-            const empty = document.createElement('span');
+            const empty = document.createElement('div');
             empty.className = 'ai-pref-empty';
             empty.textContent = '没有匹配「' + query + '」的偏好';
             opt.prefs.appendChild(empty);
         } else {
-            for (const pref of shown) {
+            for (let i = 0; i < shown.length; i++) {
+                const pref = shown[i];
                 const row = document.createElement('div');
                 row.className = 'ai-pref-row';
+                const idx = document.createElement('span');
+                idx.className = 'ai-pref-idx';
+                idx.textContent = String(i + 1);
                 const text = document.createElement('span');
                 text.className = 'ai-pref-text';
                 text.textContent = pref.text;
+                text.dataset.tip = pref.text;
                 const src = document.createElement('span');
                 src.className = 'ai-pref-src' + (pref.source === 'ai' ? ' on' : '');
-                src.textContent = pref.source === 'ai' ? 'AI' : '你';
+                src.textContent = pref.source === 'ai' ? 'AI' : '用户';
                 const edit = document.createElement('button');
                 edit.type = 'button';
                 edit.className = 'ai-pref-btn';
@@ -66,7 +71,7 @@ export function createAIPreferenceSettings(ctx, extras) {
                 const actions = document.createElement('div');
                 actions.className = 'ai-pref-actions';
                 actions.append(edit, remove);
-                row.append(text, src, actions);
+                row.append(idx, text, src, actions);
                 opt.prefs.appendChild(row);
             }
         }

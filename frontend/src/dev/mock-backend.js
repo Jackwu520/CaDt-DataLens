@@ -474,6 +474,35 @@ function mockGlobMatch(pattern, relPath, name) {
     }
 }
 
+// mock 侧的 fzf 式子序列匹配：返回收紧后的最小窗口 [start, end)，无命中返回 [-1, -1]。
+// 规则与 Go 侧 internal/search/fuzzy.go 对齐（正向贪婪 + 反向收紧、200 字符窗口上限）。
+function mockFuzzyWindow(line, needle, caseSensitive) {
+    if (!needle) return [-1, -1];
+    const fold = (ch) => (caseSensitive ? ch : ch.toLowerCase());
+    const want = Array.from(needle);
+    const chars = Array.from(line);
+    let hi = 0;
+    for (const w of want) {
+        let found = false;
+        while (hi < chars.length) {
+            const ch = chars[hi++];
+            if (fold(ch) === fold(w)) { found = true; break; }
+        }
+        if (!found) return [-1, -1];
+    }
+    let lo = hi;
+    for (let k = want.length - 1; k >= 0; k--) {
+        let found = false;
+        while (lo > 0) {
+            const ch = chars[--lo];
+            if (fold(ch) === fold(want[k])) { found = true; break; }
+        }
+        if (!found) return [-1, -1];
+    }
+    if (hi - lo > 200) return [-1, -1];
+    return [lo, hi];
+}
+
 // 存储与清理的 mock 数据：字段与 Go 侧 internal/storage 的 Item / Tile / Report 一致，
 // 清除后把对应条目清零，用来在浏览器里看排版、勾选与回执。
 const MOCK_APP_ROOT = 'C:\\Users\\dev\\AppData\\Roaming\\CandySweet\\CaDt-DataLens';
@@ -1142,6 +1171,48 @@ const mockBackend = {
         }
         return {hits, truncated: hits.length >= limit, files};
     },
+    async SearchWorkspaceFuzzy(root, query, caseSensitive, maxResults) {
+        const text = String(query == null ? '' : query);
+        const limit = Math.max(1, Math.min(Number(maxResults) || 400, 1000));
+        const hits = [];
+        if (!text) return {hits, truncated: false, files: 0};
+        const needle = caseSensitive ? text : text.toLowerCase();
+        const pushHit = (item, lineNo, line, start, end) => hits.push({
+            path: mockDir + item.name,
+            name: item.name,
+            dir: 'samples',
+            line: lineNo,
+            column: start + 1,
+            length: end - start,
+            preview: line,
+            matchStart: start,
+            matchEnd: end,
+        });
+        let files = 0;
+        for (const item of Object.values(mockFiles)) {
+            files++;
+            const lines = String(item.content || '').split('\n');
+            for (let i = 0; i < lines.length && hits.length < limit; i++) {
+                const line = lines[i].replace(/\r$/, '');
+                if (!line) continue;
+                const hay = caseSensitive ? line : line.toLowerCase();
+                const before = hits.length;
+                let from = 0;
+                while (hits.length < limit) {
+                    const idx = hay.indexOf(needle, from);
+                    if (idx < 0) break;
+                    pushHit(item, i + 1, line, idx, idx + needle.length);
+                    from = idx + Math.max(1, needle.length);
+                }
+                // 整行没有字面命中时才做子序列匹配（与 Go 侧一致），每行至多一条
+                if (hits.length === before) {
+                    const [start, end] = mockFuzzyWindow(line, text, caseSensitive);
+                    if (start >= 0) pushHit(item, i + 1, line, start, end);
+                }
+            }
+        }
+        return {hits, truncated: hits.length >= limit, files};
+    },
     async SearchWorkspaceFiltered(root, query, caseSensitive, maxResults, pattern) {
         const pat = String(pattern || '').trim();
         // mock 里文件都在 samples 一层，先取大窗再按通配过滤即可
@@ -1596,14 +1667,24 @@ const mockBackend = {
         }));
         return {available: mockScenario.has('gitmock'), root: dir, items};
     },
-    async GitWorktreeAdd(dir, label, sessionKey) {
+    async GitWorktreeAdd(dir, label, sessionKey, carry) {
         if (!mockScenario.has('gitmock')) throw new Error('mock 无 git');
         const slug = String(label || 'wt').toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 32) || 'wt';
         const idPart = String(sessionKey || '').toLowerCase().replace(/[^a-z0-9]/g, '').slice(-8);
         const name = (slug + (idPart ? '-' + idPart : '')).slice(0, 41);
         const entry = {name, baseSha: 'mock-base-' + (window.__mockWorktrees || []).length};
         window.__mockWorktrees = (window.__mockWorktrees || []).concat([entry]);
-        return {name, branch: 'cadt/wt/' + name, path: dir + '\\.cadt\\worktree\\' + name, baseSha: entry.baseSha, deps: ['node_modules'], depErrors: []};
+        return {
+            name,
+            branch: 'cadt/wt/' + name,
+            path: dir + '\\.cadt\\worktree\\' + name,
+            baseSha: carry ? entry.baseSha + '-carried' : entry.baseSha,
+            deps: ['node_modules'],
+            depErrors: [],
+            includeCopied: 1,
+            includeErrors: [],
+            carried: carry ? 3 : 0,
+        };
     },
     async GitWorktreeRemove(dir, name, deleteBranch) {
         window.__mockWorktrees = (window.__mockWorktrees || []).filter((w) => w.name !== name);
@@ -1621,6 +1702,62 @@ const mockBackend = {
         if (!mockScenario.has('gitmock')) throw new Error('mock 无 git');
         if (mockScenario.has('wtempty')) throw new Error('worktree 没有改动');
         return 'diff --git a/sample.js b/sample.js\n--- a/sample.js\n+++ b/sample.js\n@@ -1,1 +1,2 @@\n old line\n+new line from worktree\n';
+    },
+    async GitGraphCommits(dir, ref, limit, skip) {
+        if (!mockScenario.has('gitmock')) {
+            return {available: false, reason: 'mock 无 git', commits: [], laneCount: 0, hasMore: false, nextSkip: 0};
+        }
+        const n = Math.min(limit || 500, 20);
+        const commits = [];
+        for (let i = 0; i < n; i++) {
+            const idx = (skip || 0) + i;
+            const isMerge = idx % 7 === 3;
+            const parents = isMerge ? ['p' + (idx + 1), 'side' + idx] : (idx < 19 ? ['p' + (idx + 1)] : []);
+            commits.push({
+                sha: 'c' + idx.toString().padStart(6, '0'),
+                parents,
+                refs: idx === 0 ? 'HEAD -> mock/main, origin/mock/main' : (idx % 5 === 0 ? 'tag: v1.0.' + idx : ''),
+                author: 'CandySweet',
+                email: 'candy@example.com',
+                date: '2026-11-' + String(8 - (idx % 8)).padStart(2, '0') + ' 12:00',
+                subject: (isMerge ? 'Merge branch ' : '提交 ') + idx,
+                lane: 0,
+                throughLanes: [],
+            });
+        }
+        // 简单泳道：直线为主，合并行给个示意
+        commits.forEach((c, i) => { c.lane = 0; c.throughLanes = c.parents.length > 1 ? [1] : []; });
+        return {
+            available: true, root: dir, headBranch: window.__mockBranch || 'mock/main',
+            ref: ref || '', commits, laneCount: 2,
+            hasMore: (skip || 0) + n < 100, nextSkip: (skip || 0) + n,
+        };
+    },
+    async GitGraphRefs(dir) {
+        if (!mockScenario.has('gitmock')) {
+            return {available: false, reason: 'mock 无 git', local: [], remote: [], tags: [], worktrees: []};
+        }
+        const current = window.__mockBranch || 'mock/main';
+        return {
+            available: true, root: dir, current, headSha: 'c000000',
+            local: [
+                {name: 'mock/main', sha: 'c000000', current: current === 'mock/main'},
+                {name: 'mock/feature', sha: 'c000003', current: current === 'mock/feature'},
+                {name: 'hotfix/1.0.1', sha: 'c000005', current: current === 'hotfix/1.0.1'},
+            ],
+            remote: [
+                {name: 'origin/mock/main', sha: 'c000000'},
+                {name: 'origin/mock/feature', sha: 'c000003'},
+            ],
+            tags: [
+                {name: 'v1.1.0', sha: 'c000002'},
+                {name: 'v1.0.1', sha: 'c000005'},
+                {name: 'v1.0.0', sha: 'c000009'},
+            ],
+            worktrees: (window.__mockWorktrees || []).map((w) => ({
+                name: 'cadt/wt/' + w.name, sha: w.baseSha, worktree: '.cadt/worktree/' + w.name,
+            })),
+        };
     },
     async GitStatusFor(dir) {
         if (!mockScenario.has('gitmock')) {
@@ -1680,6 +1817,16 @@ const mockBackend = {
     },
     async GitCheckoutRefFor(dir, ref) {
         return {success: true, output: '[mock] checkout ' + ref, branch: ref};
+    },
+    async GitGraphCheckout(dir, ref) {
+        window.__mockBranch = ref;
+        return {success: true, output: '[mock] 图谱签出 ' + ref, branch: ref};
+    },
+    async GitGraphReset(dir, sha, mode) {
+        return {success: true, output: '[mock] 重置（' + mode + '）到 ' + sha};
+    },
+    async GitGraphCherryPick(dir, sha) {
+        return {success: true, output: '[mock] cherry-pick ' + sha};
     },
     async GitPullFor(dir) {
         return {success: true, output: '[mock] Already up to date.'};
@@ -1937,6 +2084,31 @@ const mockBackend = {
     async GetClipboardText() { return window.__mockClipboard || ''; },
     // mock：浏览器调试时没有系统剪贴板图片，用 window.__mockClipboardImage 模拟 data URL。
     async GetClipboardImage() { return window.__mockClipboardImage || ''; },
+    // mock：快捷便签存储。内存态按「作用域+工作区」键缓存，CAS 只对 mtime 做等值比较。
+    async MemoLoad(scope, workspace) {
+        const store = window.__mockMemo = window.__mockMemo || {};
+        const key = scope + '|' + (workspace || '');
+        if (!store[key]) store[key] = {data: '{"version":1,"updatedAt":0,"blocks":[]}', mtimeMs: 0};
+        return JSON.stringify({data: store[key].data, mtimeMs: store[key].mtimeMs});
+    },
+    async MemoSave(scope, workspace, doc, baseMtimeMs) {
+        const store = window.__mockMemo = window.__mockMemo || {};
+        const key = scope + '|' + (workspace || '');
+        const cur = store[key];
+        if (baseMtimeMs > 0 && (!cur || cur.mtimeMs !== baseMtimeMs)) {
+            return {ok: false, conflict: true, error: 'conflict: 快捷便签已在其他窗口修改'};
+        }
+        if (baseMtimeMs === 0 && cur && cur.mtimeMs > 0) {
+            return {ok: false, conflict: true, error: 'conflict: 快捷便签已在其他窗口创建'};
+        }
+        store[key] = {data: String(doc || ''), mtimeMs: Date.now()};
+        return {ok: true, mtimeMs: store[key].mtimeMs};
+    },
+    async MemoSaveImage(scope, workspace, dataURL) {
+        window.__mockMemoImages = window.__mockMemoImages || [];
+        window.__mockMemoImages.push({scope, workspace, bytes: String(dataURL || '').length});
+        return 'img/img-' + Date.now().toString(36) + '.png';
+    },
     async ForceClose() { window.__mockForceClosed = (window.__mockForceClosed || 0) + 1; },
     async WebSearch(query, maxResults) {
         window.__mockWebSearch = {query, maxResults};

@@ -6,6 +6,7 @@
 import {iconSvg} from '../core/icons.js';
 import {createRunUI} from './run-ui.js';
 import {createTerminalSessions} from './terminal-sessions.js';
+import {createGitGraph} from '../git-graph/git-graph.js';
 
 export function createTerminalUI(deps) {
 
@@ -244,15 +245,28 @@ function toggleTerminalPanel(force) {
     }
 }
 
-let dockView = 'terminal'; // 底部面板当前内容：'terminal' | 'debug'
+let dockView = 'terminal'; // 底部面板当前内容：'terminal' | 'debug' | 'run' | 'graph'
 
-// 应用底部面板视图：终端、调试控制台与运行面板共用同一个容器
+// Git 图谱域模块（懒初始化：首次切到该视图才建实例并拉数据）
+let gitGraphMod = null;
+function getGitGraph() {
+    if (!gitGraphMod) {
+        // 注入宿主能力（关闭面板），与 runDeps / sessDeps 同款
+        const graphDeps = Object.create(deps);
+        graphDeps.toggleTerminalPanel = toggleTerminalPanel;
+        gitGraphMod = createGitGraph(graphDeps);
+    }
+    return gitGraphMod;
+}
+
+// 应用底部面板视图：终端、调试控制台、运行面板与 Git 图谱共用同一个容器
 function applyDockView() {
     const panel = document.getElementById('terminal-panel');
     if (!panel) return;
     const termOpen = terminalUI.open && dockView === 'terminal';
     const debugOpen = terminalUI.open && dockView === 'debug';
     const runOpen = terminalUI.open && dockView === 'run';
+    const graphOpen = terminalUI.open && dockView === 'graph';
     const head = panel.querySelector('.term-head');
     if (head) head.classList.toggle('hidden', terminalUI.open && dockView !== 'terminal');
     const termBody = document.getElementById('term-body');
@@ -261,6 +275,8 @@ function applyDockView() {
     if (debugView) debugView.classList.toggle('hidden', !debugOpen);
     const runView = document.getElementById('run-view');
     if (runView) runView.classList.toggle('hidden', !runOpen);
+    const graphView = document.getElementById('git-graph-view');
+    if (graphView) graphView.classList.toggle('hidden', !graphOpen);
     if (deps.els.abTerminal) {
         deps.els.abTerminal.classList.toggle('active', termOpen);
         deps.els.abTerminal.setAttribute('aria-pressed', String(termOpen));
@@ -269,13 +285,18 @@ function applyDockView() {
         deps.els.abDebug.classList.toggle('active', debugOpen);
         deps.els.abDebug.setAttribute('aria-pressed', String(debugOpen));
     }
+    if (deps.els.abGitGraph) {
+        deps.els.abGitGraph.classList.toggle('active', graphOpen);
+        deps.els.abGitGraph.setAttribute('aria-pressed', String(graphOpen));
+    }
     // tb-run 是动作按钮（点击即运行），不随运行面板开关显示选中态
     if (termOpen) sessMod.fitActiveTerm();
+    if (graphOpen) getGitGraph().show();
 }
 
 // 左下活动栏 / 菜单 / F12 的统一入口：同一视图再点一次收起，不同视图则切换
 function toggleDockView(view) {
-    const target = view === 'debug' ? 'debug' : (view === 'run' ? 'run' : 'terminal');
+    const target = view === 'debug' ? 'debug' : (view === 'run' ? 'run' : (view === 'graph' ? 'graph' : 'terminal'));
     const panel = document.getElementById('terminal-panel');
     if (!panel) return;
     if (!terminalUI.open) {

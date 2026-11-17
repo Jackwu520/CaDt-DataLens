@@ -82,7 +82,7 @@ let semanticAutoRecheckDone = false; // 注册表空时的自动补扫，每会�
         if (opt.approvedClear) opt.approvedClear.disabled = !(getConfig().approvedPaths || []).length;
     }
 
-    const PERMISSION_KIND_LABELS = {command: 'Bash', write: 'Write', web: 'Web', read: 'Read'};
+    const PERMISSION_KIND_LABELS = {command: 'Bash', write: 'Write', web: 'Web', read: 'Read', worktree: '隔离工作区'};
     const AUDIT_SOURCE_LABELS = {
         readonly: '只读命令',
         family: '已知命令族',
@@ -97,6 +97,9 @@ let semanticAutoRecheckDone = false; // 注册表空时的自动补扫，每会�
         default: '默认放行',
         auto: '自动权限档',
         user: '用户批准',
+        confirm: '确认弹窗',
+        'worktree-isolation': '隔离区主根只读',
+        'agent-worktree': '子代理隔离前缀',
     };
 
     function sessionRulePattern(rule) {

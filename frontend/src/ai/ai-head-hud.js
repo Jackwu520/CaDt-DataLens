@@ -4,6 +4,8 @@
 // 构造期即绑定 chip 点击 / 面板点击关弹层 / 标题行 ResizeObserver（时机与拆分前一致）。
 import {iconSvg} from '../core/icons.js';
 import {sandboxModeLabel} from './ai-sandbox-grant.js';
+import {buildAgentTree, flattenAgentTree} from './ai-agent-tree.js';
+import {agentLevelText} from './ai-team-model.js';
 
 export function createAIHeadHud(ctx, extras) {
     const el = ctx.el;
@@ -25,9 +27,17 @@ export function createAIHeadHud(ctx, extras) {
     // 运行时动作与详情视图入口（宿主后定义，惰性箭头延迟解析）
     const unseenInboxCount = extras.unseenInboxCount;
     const openAgentView = extras.openAgentView;
+    // 团队详情标签页的打开入口（悬浮窗不提供内容区，面板会注入 null）
+    const openAgentTeamTab = ctx.openAgentTeamTab;
 
     let hudReady = false;             // HUD 块执行完才置真，之前的 renderSessionList 调用跳过
     const AGENT_STATE_LABEL = {running: '运行中', done: '已完成', error: '失败', stopped: '已停止'};
+    // 智能体团队弹层的折叠态：按 agent.key 记，弹层重渲染（开关 / 切 chip / 实时刷新）后保留。
+    const agentCollapsed = new Set();
+    const agentRowKey = (agent) => (agent && (agent.key || agent.toolCallId || agent.subId)) || '';
+    // 树形缩进最多到第 4 层（80px）：弹层只有 320px 宽，再深会把名称列挤成 0 并撑出横向滚动条。
+    // 更深的层级靠副标题里的「第 N 层」补足深度信息。
+    const AGENT_TREE_MAX_INDENT = 4;
 
     // ---- 头部 HUD：会话标题 + 智能体团队 / 后台终端入口 ----
     // 标题显示当前会话标题（自动标题/改名/切换经 renderSessionList 统一走 updateHeadHud）；
@@ -99,15 +109,17 @@ export function createAIHeadHud(ctx, extras) {
         return n;
     }
 
-    function listAgentsForHud() {
+    // ownerOverride：团队详情标签页按「打开时的会话」取数（用户切走后它仍显示原会话的团队）
+    function listAgentsForHud(ownerOverride) {
         const out = [];
         const seen = new Set();
-        const ownerId = hudSessionId();
+        const ownerId = String(ownerOverride || '') || hudSessionId();
         const belongs = (owner) => !ownerId || !owner || owner === ownerId;
         for (const sub of subAgents.values()) {
             seen.add(sub.key);
             if (!belongs(sub.rootSessionId || sub.parentSessionId)) continue;
-            out.push({toolCallId: sub.key, key: sub.key, subId: sub.id, name: sub.name, task: sub.task,
+            out.push({toolCallId: sub.key, key: sub.key, subId: sub.id, parentSessionId: sub.parentSessionId,
+                name: sub.name, task: sub.task,
                 depth: sub.depth, state: 'running', startedAt: sub.startedAt,
                 mode: sub.mode || 'blocking', continuable: true,
                 sandboxMode: sub.sandboxMode || '',
@@ -127,7 +139,8 @@ export function createAIHeadHud(ctx, extras) {
             seen.add(rec.key);
             if (!belongs(rec.rootSessionId || rec.parentSessionId)) continue;
             out.push({
-                toolCallId: rec.toolCallId || rec.key, key: rec.key, subId: rec.id, name: rec.name,
+                toolCallId: rec.toolCallId || rec.key, key: rec.key, subId: rec.id,
+                parentSessionId: rec.parentSessionId, name: rec.name,
                 task: rec.task, depth: rec.depth, state: rec.state, startedAt: rec.startedAt,
                 rounds: rec.rounds, ms: rec.ms, tokens: rec.tokens, summary: rec.summary,
                 mode: rec.mode, continuable: rec.continuable,
@@ -135,8 +148,9 @@ export function createAIHeadHud(ctx, extras) {
                 sessionTitle: sessionTitleOf(rec.parentSessionId),
             });
         }
-        // 重启后兜底：当前会话持久化的 spawn_agent meta（转录已不在内存）
-        const session = currentSession();
+        // 重启后兜底：该会话持久化的 spawn_agent meta（转录已不在内存）。
+        // 指定 ownerOverride 时只查它自己的会话，找不到就不兜底（不能拿当前会话的记录串台）。
+        const session = ownerOverride && ownerId ? sessionById(ownerId) : currentSession();
         if (session) {
             for (const m of session.messages) {
                 const key = (m.agent && m.agent.key) || m.toolCallId;
@@ -172,12 +186,36 @@ export function createAIHeadHud(ctx, extras) {
         renderSessionList();
     }
 
+    // 弹层开着时的实时刷新：状态变化只重绘弹层内容，不丢折叠态 / 滚动位置 / 键盘焦点。
+    // 节流 120ms，连续事件（多代理同时跑到轮边界）合并成一次重建。
+    let agentsPopRefreshTimer = 0;
+    function scheduleAgentsPopRefresh() {
+        if (agentsPopRefreshTimer) return;
+        agentsPopRefreshTimer = setTimeout(() => {
+            agentsPopRefreshTimer = 0;
+            if (getChipsPopKind() !== 'agents' || !el.chipsPop) return;
+            const scrollTop = el.chipsPop.scrollTop;
+            const active = document.activeElement;
+            const focusKey = active && el.chipsPop.contains(active) ? (active.dataset.agentKey || '') : '';
+            renderChipsPop('agents');
+            el.chipsPop.scrollTop = scrollTop;
+            if (focusKey) {
+                const next = el.chipsPop.querySelector('[data-agent-key="' + focusKey + '"]');
+                if (next) next.focus({preventScroll: true});
+            }
+        }, 120);
+    }
+
     function refreshHeadChips() {
         const agents = listAgentsForHud();
         const runningAgents = agents.filter((a) => a.state === 'running').length;
         const jobs = hudBgEntries();
         setChipCount(el.chipAgents, agents.length, runningAgents);
         setChipCount(el.chipTerms, jobs.length, runningBgCount());
+        // 弹层开着时把新状态同步进去（关闭 / 切到后台终端时不做事）
+        if (getChipsPopKind() === 'agents') scheduleAgentsPopRefresh();
+        // 团队详情标签页同样跟随状态变化（未打开时只是空遍历）
+        if (typeof extras.onAgentsChanged === 'function') extras.onAgentsChanged();
     }
 
     function updateHeadHud() {
@@ -209,6 +247,17 @@ export function createAIHeadHud(ctx, extras) {
         const span = document.createElement('span');
         span.className = 'ai-agent-badge ai-agent-' + (AGENT_STATE_LABEL[state] ? state : 'done');
         span.textContent = AGENT_STATE_LABEL[state] || '已结束';
+        return span;
+    }
+
+    // 沙箱档位胶囊：只写档位本身。未知值走中性色原样回显，不猜。
+    const SANDBOX_TONE = {'read-only': 'read-only', 'workspace-write': 'workspace-write', 'danger-full-access': 'danger-full-access'};
+
+    function agentSandboxBadge(mode) {
+        const span = document.createElement('span');
+        const tone = SANDBOX_TONE[mode];
+        span.className = 'ai-agent-badge ai-sandbox-badge' + (tone ? ' ai-sandbox-' + tone : '');
+        span.textContent = sandboxModeLabel(mode);
         return span;
     }
 
@@ -251,30 +300,89 @@ export function createAIHeadHud(ctx, extras) {
         if (typeof ctx.renderChipsPopExtra === 'function' && ctx.renderChipsPopExtra(kind, el.chipsPop)) return;
         const title = document.createElement('div');
         title.className = 'ai-chips-pop-title';
-        title.textContent = kind === 'agents' ? '智能体团队' : '后台终端';
+        const titleText = document.createElement('span');
+        titleText.textContent = kind === 'agents' ? '智能体团队' : '后台终端';
+        title.appendChild(titleText);
+        // 团队详情：内容区标签页（悬浮窗无内容区，入口不渲染）
+        if (kind === 'agents' && typeof openAgentTeamTab === 'function') {
+            const detail = document.createElement('button');
+            detail.type = 'button';
+            detail.className = 'ai-chips-pop-action';
+            detail.textContent = '查看详情';
+            detail.addEventListener('click', () => {
+                const session = currentSession();
+                const sessionId = session ? session.id : '';
+                if (!sessionId) return;
+                hideChipsPop();
+                openAgentTeamTab({sessionId, title: session.title || ''});
+            });
+            title.appendChild(detail);
+        }
         el.chipsPop.appendChild(title);
         let rows = 0;
         if (kind === 'agents') {
-            const agents = listAgentsForHud().sort((a, b) =>
-                ((b.state === 'running') - (a.state === 'running')) || ((b.startedAt || 0) - (a.startedAt || 0)));
-            for (const agent of agents) {
+            // 树形展示嵌套关系：父子靠 parentSessionId ↔ subId 还原（纯函数见 ai-agent-tree.js）。
+            // 折叠态挂闭包 Set；renderChipsPop 全量重建，展开行序由 flattenAgentTree 给出。
+            const treeRows = flattenAgentTree(buildAgentTree(listAgentsForHud()), (key) => agentCollapsed.has(key));
+            // 已消失的代理不留折叠键，避免 Set 长期膨胀
+            const liveKeys = new Set();
+            for (const item of treeRows) liveKeys.add(agentRowKey(item.agent));
+            for (const key of [...agentCollapsed]) if (!liveKeys.has(key)) agentCollapsed.delete(key);
+            // 列表里没有可折叠父行（全是第 1 层子代理）时不预留箭头列：
+            // 否则整份列表会右移 20px，左边空出一条没有意义的槽
+            const hasTree = treeRows.some((item) => item.childCount > 0);
+            for (const item of treeRows) {
+                const agent = item.agent;
+                const key = agentRowKey(agent);
                 rows++;
-                const row = document.createElement('button');
-                row.type = 'button';
-                row.className = 'ai-chips-row';
-                row.appendChild(agentStateBadge(agent.state));
+                // 行容器不是按钮：折叠箭头与「打开详情」主按钮各是一个 button（按钮不能嵌套按钮）
+                const row = document.createElement('div');
+                row.className = 'ai-chips-row ai-agent-tree-row';
+                // 缩进封顶：更深的层级不再往右推，靠副标题的「第 N 层」补深度
+                row.style.setProperty('--ai-lv', hasTree ? String(Math.min(item.level, AGENT_TREE_MAX_INDENT)) : '0');
+                if (hasTree && item.level > 0) row.dataset.nested = '1';
+                if (hasTree) {
+                    if (item.childCount > 0) {
+                        const toggle = document.createElement('button');
+                        toggle.type = 'button';
+                        toggle.className = 'ai-chips-toggle' + (item.collapsed ? '' : ' open');
+                        toggle.dataset.agentKey = key;
+                        toggle.setAttribute('aria-expanded', String(!item.collapsed));
+                        toggle.innerHTML = iconSvg('chevron-right', 12);
+                        toggle.addEventListener('click', () => {
+                            if (agentCollapsed.has(key)) agentCollapsed.delete(key);
+                            else agentCollapsed.add(key);
+                            renderChipsPop('agents');
+                            // 重建后焦点回到同一个折叠箭头，键盘操作不丢位
+                            const next = el.chipsPop.querySelector('.ai-chips-toggle[data-agent-key="' + key + '"]');
+                            if (next) next.focus({preventScroll: true});
+                        });
+                        row.appendChild(toggle);
+                    } else {
+                        // 叶子行用等宽占位，和父行名称列对齐
+                        const spacer = document.createElement('span');
+                        spacer.className = 'ai-chips-toggle-spacer';
+                        row.appendChild(spacer);
+                    }
+                }
+                const mainBtn = document.createElement('button');
+                mainBtn.type = 'button';
+                mainBtn.className = 'ai-chips-row-main';
+                // 实时刷新重建后按这个键找回焦点
+                mainBtn.dataset.agentKey = key;
+                mainBtn.appendChild(agentStateBadge(agent.state));
                 // 收件箱有未消费消息 / 等待主代理回答：单独一枚徽标（不改变 running 语义）
                 if (agent.inboxCount > 0) {
                     const wait = document.createElement('span');
                     wait.className = 'ai-agent-badge ai-agent-waiting';
                     wait.textContent = '待处理 ' + agent.inboxCount;
-                    row.appendChild(wait);
+                    mainBtn.appendChild(wait);
                 }
                 if (agent.compacting) {
                     const compacting = document.createElement('span');
                     compacting.className = 'ai-agent-badge ai-agent-waiting';
                     compacting.textContent = '压缩中';
-                    row.appendChild(compacting);
+                    mainBtn.appendChild(compacting);
                 }
                 const main = document.createElement('span');
                 main.className = 'ai-chips-main';
@@ -283,19 +391,28 @@ export function createAIHeadHud(ctx, extras) {
                 nameSpan.textContent = agent.name || '子代理';
                 const subSpan = document.createElement('span');
                 subSpan.className = 'ai-chips-sub';
-                const bits = [];
-                if (agent.depth > 1) bits.push('第 ' + agent.depth + ' 层');
-                if (agent.sandboxMode) bits.push('沙箱 ' + sandboxModeLabel(agent.sandboxMode));
-                bits.push(taskSnippet(agent.task));
-                if (agent.sessionTitle) bits.push('@ ' + agent.sessionTitle);
-                subSpan.textContent = bits.join(' · ');
+                const appendBit = (part, noSep) => {
+                    if (!part) return;
+                    if (!noSep && subSpan.childNodes.length) subSpan.appendChild(document.createTextNode(' · '));
+                    subSpan.appendChild(typeof part === 'string' ? document.createTextNode(part) : part);
+                };
+                // 缩进已经表达层级；父代理不在列表（孤儿）或层级超过缩进封顶时才补层号
+                if (agent.depth >= 1 && (item.level === 0 || item.level > AGENT_TREE_MAX_INDENT)) {
+                    appendBit(agentLevelText(agent.depth));
+                }
+                if (item.collapsed && item.descendantCount > 0) appendBit(item.descendantCount + ' 个下级');
+                // 档位胶囊占原「沙箱 只读」文本的位置：层级位之后、任务摘要之前
+                if (agent.sandboxMode) appendBit(agentSandboxBadge(agent.sandboxMode));
+                // 胶囊本身就是分隔，后面直接接任务摘要，不再补「·」
+                appendBit(taskSnippet(agent.task), !!agent.sandboxMode);
+                if (agent.sessionTitle) appendBit('@ ' + agent.sessionTitle);
                 main.append(nameSpan, subSpan);
-                row.appendChild(main);
+                mainBtn.appendChild(main);
                 const go = document.createElement('span');
                 go.className = 'ai-chips-go';
                 go.innerHTML = iconSvg('chevron-right', 12);
-                row.appendChild(go);
-                row.addEventListener('click', () => {
+                mainBtn.appendChild(go);
+                mainBtn.addEventListener('click', () => {
                     hideChipsPop();
                     openAgentView({
                         toolCallId: agent.toolCallId,
@@ -306,6 +423,7 @@ export function createAIHeadHud(ctx, extras) {
                         sessionId: (currentSession() || {}).id || '',
                     });
                 });
+                row.appendChild(mainBtn);
                 el.chipsPop.appendChild(row);
             }
         } else {

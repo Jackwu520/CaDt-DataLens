@@ -138,7 +138,7 @@ test('planModeBlock 输出计划约定块', () => {
     const mod = createAISystemContext(makeCtx());
     const block = mod.planModeBlock();
     assert.ok(block.startsWith('<plan_mode>') && block.endsWith('</plan_mode>'));
-    assert.ok(block.includes('等待用户批准'));
+    assert.ok(block.includes('用户必须点「执行计划」才算批准'));
     // 修订语义：补充意见 = 基于原计划修订，不另起炉灶（继续规划场景的模型行为护栏）
     assert.ok(block.includes('修订当前计划'));
     // 纯净文档语义：计划走 submit_plan 参数（正文不承载计划），对话性内容禁入
@@ -147,6 +147,8 @@ test('planModeBlock 输出计划约定块', () => {
     // 澄清语义：意图/方案有歧义时先用 ask_user，疑问不写进计划、也不用普通文本提问
     assert.ok(block.includes('先用 ask_user 澄清'));
     assert.ok(block.includes('核对用户意图'));
+    // 提交 ≠ 批准：submit_plan 成功不等于用户批准（实测模型会自称「用户已批准」并开始执行）
+    assert.ok(block.includes('提交 ≠ 批准'));
 });
 
 test('worktree 块：会话持活跃 worktree 时注入，ctx 未提供或无 worktree 时不注入', async () => {

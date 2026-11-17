@@ -14,6 +14,7 @@ import {
     normalizePermissionRules,
     parseRuleLines,
     resolveClassifierProfileId,
+    scopeUpgradedToFull,
     webRuleSubject,
     writeRuleSubject,
 } from '../../src/ai/ai-permissions.js';
@@ -293,4 +294,19 @@ test('isWebApproval：read_image 的网图审批按网络处理，本地读图�
     assert.equal(isWebApproval({kind: 'command', tool: 'run_command', command: 'npm test'}), false);
     assert.equal(isWebApproval({kind: 'command', tool: 'run_command', web: false, command: 'npm test'}), false);
     assert.equal(isWebApproval(null), false);
+});
+
+test('档位竞态：审批等待期间提升到完全权限后，项目 ask 之外一律放行', () => {
+    // full + 非项目来源 → 重判放行（分类器/危险/逐次询问都算）
+    assert.equal(scopeUpgradedToFull('full', 'classifier'), true);
+    assert.equal(scopeUpgradedToFull('full', 'local-classifier'), true);
+    assert.equal(scopeUpgradedToFull('full', 'dangerous'), true);
+    assert.equal(scopeUpgradedToFull('full', 'scope'), true);
+    assert.equal(scopeUpgradedToFull('full', ''), true);
+    // 项目 ask 规则有意压过 full：不参与重判
+    assert.equal(scopeUpgradedToFull('full', 'project'), false);
+    // 非 full 档一律不重判（仍按原判定弹卡）
+    assert.equal(scopeUpgradedToFull('auto', 'classifier'), false);
+    assert.equal(scopeUpgradedToFull('edit', 'scope'), false);
+    assert.equal(scopeUpgradedToFull('read', 'classifier'), false);
 });

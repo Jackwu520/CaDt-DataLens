@@ -232,7 +232,7 @@ func searchWithRipgrep(root, query string, caseSensitive bool, maxResults int, p
 	if !caseSensitive {
 		needle = strings.ToLower(query)
 	}
-	sortSearchTier(src.hits, needle, caseSensitive)
+	sortSearchTier(src.hits, needle, caseSensitive, false)
 	result := &SearchResult{
 		Hits:      src.hits,
 		Files:     len(src.files),
@@ -241,7 +241,7 @@ func searchWithRipgrep(root, query string, caseSensitive bool, maxResults int, p
 	if len(result.Hits) < maxResults {
 		art := runRgPass(rgPath, root, query, caseSensitive, pattern, true, maxResults-len(result.Hits), deadline)
 		if art.usable {
-			sortSearchTier(art.hits, needle, caseSensitive)
+			sortSearchTier(art.hits, needle, caseSensitive, false)
 			result.Hits = append(result.Hits, art.hits...)
 			result.Files += len(art.files)
 			result.Truncated = result.Truncated || art.truncated

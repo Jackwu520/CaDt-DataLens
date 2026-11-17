@@ -1,5 +1,10 @@
 // 零依赖 JSONPath 子集：$ . [] * .. 过滤/切片/联合，以及 JSON 源码路径→行列映射。
 
+/**
+ * 把对象键转成 JSONPath 括号路径段（如 key → ['key']）。
+ * @param {string} key 对象键名
+ * @returns {string} JSONPath 路径片段
+ */
 export function jsonPathKey(key) {
     return "['" + String(key).replace(/\\/g, '\\\\').replace(/'/g, "\\'") + "']";
 }
@@ -131,6 +136,12 @@ function readPathName(text, start) {
     return {name: text.slice(start, i), end: i};
 }
 
+/**
+ * 解析 JSONPath 表达式为步骤序列。
+ * @param {string} expr JSONPath 表达式（可省略前导 $）
+ * @returns {Array<object>} 步骤数组，每项含 type（key/wildcard/index/slice/filter/union/recursive/recursiveKey）
+ * @throws {Error} 表达式为空、路径段缺失或语法非法时抛错
+ */
 export function parseJsonPath(expr) {
     const text = String(expr || '').trim();
     if (!text) throw new Error('请输入 JSONPath');
@@ -296,6 +307,12 @@ function applyStep(node, step, out, seen) {
     }
 }
 
+/**
+ * 在 JSON 根值上执行 JSONPath 查询。
+ * @param {*} root JSON 解析后的根值
+ * @param {string} expr JSONPath 表达式
+ * @returns {Array<{path: string, value: *}>} 命中节点数组，path 为完整 JSONPath，value 为节点值；无命中返回空数组
+ */
 export function queryJsonPath(root, expr) {
     const text = String(expr || '').trim();
     if (text === '$') return [{path: '$', value: root}];
@@ -645,6 +662,11 @@ function parseJsonValue(sc, path, starts, map) {
     if (sc.i === start) throw new Error('缺少值');
 }
 
+/**
+ * 构建 JSON 源码路径→行列映射（1 基），供错误定位与跳转使用。
+ * @param {string} text JSON 源码文本
+ * @returns {Map<string, {line: number, column: number}>} 键为 JSONPath（如 $['a'][0]），值为该节点在源码中的行列；解析失败返回空 Map
+ */
 export function buildJsonLineMap(text) {
     const source = String(text == null ? '' : text);
     const map = new Map();

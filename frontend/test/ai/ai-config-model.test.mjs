@@ -23,6 +23,9 @@ import {
     reasoningLevelInfo,
     resolveModelId,
     resolveModelRef,
+    resolveModelRefTarget,
+    subAgentModelChoicesFrom,
+    matchSubAgentModelChoice,
     withOpencodeSessionHeader,
 } from '../../src/ai/ai-config-model.js';
 
@@ -186,6 +189,17 @@ test('configForModel：连接字段取账号、模型字段取条目，Anthropic
     assert.equal(openai.thinking, false);
 });
 
+test('configForModel：idleTimeoutSec 随请求下发，缺省 120 秒', () => {
+    const account = {provider: 'openai', baseURL: 'https://x.test/v1', apiKey: 'k'};
+    const entry = {model: 'm', outputWindow: 4096};
+    assert.equal(configForModel(account, entry, 300).idleTimeoutSec, 300);
+    assert.equal(configForModel(account, entry, 3600).idleTimeoutSec, 3600);
+    // 缺省 / 非法值回落到 120 秒，与 Go 侧默认值一致。
+    assert.equal(configForModel(account, entry).idleTimeoutSec, 120);
+    assert.equal(configForModel(account, entry, 0).idleTimeoutSec, 120);
+    assert.equal(configForModel(account, entry, 'bad').idleTimeoutSec, 120);
+});
+
 test('reasoningLevelInfo：openai 系按 reasoningEffort 推导，非法/缺省归自动', () => {
     const account = {provider: 'openai'};
     assert.deepEqual(
@@ -232,6 +246,51 @@ test('resolveModelRef：新格式校验双 id，旧格式解析为首条目，�
     assert.equal(resolveModelRef('', profiles), '');
     assert.equal(resolveModelRef('p1|m2', null), '');
     assert.equal(resolveModelRef(null, profiles), '');
+});
+
+test('resolveModelRefTarget：解析出 {account, entry}，失效一律 null', () => {
+    const profiles = [
+        {id: 'p1', models: [{id: 'm1', model: 'a'}, {id: 'm2', model: 'b'}]},
+        {id: 'p2', models: [{id: 'm3', model: 'c'}]},
+    ];
+    const hit = resolveModelRefTarget('p1|m2', profiles);
+    assert.equal(hit.account.id, 'p1');
+    assert.equal(hit.entry.id, 'm2');
+    // 旧格式（纯账号 id）同样解析为首条目——与 resolveModelRef 的兼容口径一致
+    assert.equal(resolveModelRefTarget('p2', profiles).entry.id, 'm3');
+    assert.equal(resolveModelRefTarget('p1|ghost', profiles), null);
+    assert.equal(resolveModelRefTarget('ghost|m1', profiles), null);
+    assert.equal(resolveModelRefTarget('', profiles), null);
+    assert.equal(resolveModelRefTarget('p1|m2', null), null);
+});
+
+test('subAgentModelChoicesFrom：解析候选、去重、失效剔除，标签取模型名 · 账号名', () => {
+    const profiles = [
+        {id: 'p1', name: '主账号', models: [{id: 'm1', model: 'a'}, {id: 'm2', model: 'b'}]},
+        {id: 'p2', name: '备用', models: [{id: 'm3', model: 'c'}]},
+    ];
+    const choices = subAgentModelChoicesFrom(['p1|m2', 'p1|m2', 'p2|m3', 'ghost|m1', 'p1|ghost'], profiles);
+    assert.deepEqual(choices.map((choice) => choice.ref), ['p1|m2', 'p2|m3'], '重复与失效引用都剔掉');
+    assert.equal(choices[0].model, 'b');
+    assert.equal(choices[0].label, 'b · 主账号');
+    assert.deepEqual(subAgentModelChoicesFrom([], profiles), []);
+    assert.deepEqual(subAgentModelChoicesFrom(null, profiles), []);
+    assert.deepEqual(subAgentModelChoicesFrom(['p1|m1'], null), []);
+});
+
+test('matchSubAgentModelChoice：ref 精确、模型名/标签唯一命中，歧义与未命中回 null', () => {
+    const choices = [
+        {ref: 'p1|m1', model: 'fast-model', label: 'fast-model · 主账号'},
+        {ref: 'p2|m2', model: 'strong-model', label: 'strong-model · 备用'},
+        {ref: 'p3|m3', model: 'fast-model', label: 'fast-model · 第三方'},
+    ];
+    assert.equal(matchSubAgentModelChoice('p2|m2', choices).ref, 'p2|m2', 'ref 精确命中');
+    assert.equal(matchSubAgentModelChoice('strong-model', choices).ref, 'p2|m2', '模型名唯一命中');
+    assert.equal(matchSubAgentModelChoice(' FAST-MODEL · 第三方 ', choices).ref, 'p3|m3', '标签唯一命中（大小写与空白容错）');
+    assert.equal(matchSubAgentModelChoice('fast-model', choices), null, '两个候选同名模型时歧义，不猜');
+    assert.equal(matchSubAgentModelChoice('ghost', choices), null, '未命中');
+    assert.equal(matchSubAgentModelChoice('', choices), null, '空值');
+    assert.equal(matchSubAgentModelChoice('p1|m1', []), null, '候选为空');
 });
 
 test('modelRefLabel：模型名 · 账号名；缺模型名退回账号名', () => {

@@ -1,7 +1,10 @@
-// ai-ask-cards.js：提问卡与环境变量询问卡（composer 接管区的 AI 提问交互）。
+// ai-ask-cards.js：提问卡（可折叠收起成细条）与环境变量询问卡（composer 接管区的 AI 提问交互）。
 // 从 ai-takeover.js 拆出（frontend-split-phase3 A2，同域兄弟模块）；ctx 与宿主同源，
-// askNavAction 纯函数（宿主留守，ai-takeover.test.mjs 覆盖）经 extras 注入。函数体逐字搬移。
+// askNavAction 纯函数（宿主留守，ai-takeover.test.mjs 覆盖）与宿主分发器经 extras 注入。
 import {aiClampInt, aiNowId} from './ai-constants.js';
+
+// 问号圆圈图标：展开态头部与收起态细条共用
+const ASK_ICON_SVG = '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M6.2 6.3a1.8 1.8 0 1 1 2.5 1.7c-.5.2-.7.6-.7 1.1v.4" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><circle cx="8" cy="11.6" r=".75" fill="currentColor"/></svg>';
 
 export function createAIAskCards(ctx, extras) {
     const el = ctx.el;
@@ -10,8 +13,11 @@ export function createAIAskCards(ctx, extras) {
     const askCountdownText = ctx.askCountdownText;
     const skipAsk = ctx.skipAsk;
     const submitAskAnswers = ctx.submitAskAnswers;
+    const AI_CHEVRON_SVG = ctx.AI_CHEVRON_SVG;
     // ask 接管卡的键盘导航决策（宿主留守的导出纯函数，测试从 ai-takeover.js 取）
     const askNavAction = extras.askNavAction;
+    // 折叠/展开走宿主分发器（与审批卡同口径：重定位浮层 + stickBottom 跟随）
+    const updateComposerTakeover = extras.updateComposerTakeover;
 
     function askTakeoverKey(entry) {
         return entry.toolMessage.toolCallId || entry.key;
@@ -23,6 +29,9 @@ export function createAIAskCards(ctx, extras) {
         if (draft) return draft;
         draft = {
             idx: 0,
+            // 收起态：整卡折成单行细条（保留倒计时、不放决策按钮），方便先看上方消息；
+            // 草稿与题目进度不丢，点击细条恢复
+            collapsed: false,
             // 键盘焦点落在第几个导航项（选项 + 可选「自己输入」框）；整卡重建后据此回焦，保证连续按键不中断。
             focusOi: 0,
             // 推荐项只显示「推荐」角标不预选：预选会和「点选自动下一题」冲突（点推荐=取消选中）。
@@ -103,13 +112,17 @@ export function createAIAskCards(ctx, extras) {
         draft.idx = multi ? aiClampInt(draft.idx, 0, ask.questions.length - 1, 0) : 0;
         el.takeover.dataset.takeoverKey = 'ask:' + key;
         el.takeover.textContent = '';
+        if (draft.collapsed) {
+            renderAskCollapsedBar(entry, ask, draft, key, multi);
+            return;
+        }
         const card = document.createElement('div');
         card.className = 'ai-takeover-card ai-ask-takeover' + (multi ? ' multi' : '');
         const head = document.createElement('div');
         head.className = 'ai-takeover-head';
         const icon = document.createElement('span');
         icon.className = 'ai-ask-icon';
-        icon.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M6.2 6.3a1.8 1.8 0 1 1 2.5 1.7c-.5.2-.7.6-.7 1.1v.4" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><circle cx="8" cy="11.6" r=".75" fill="currentColor"/></svg>';
+        icon.innerHTML = ASK_ICON_SVG;
         const title = document.createElement('span');
         title.className = 'ai-takeover-title';
         title.textContent = 'AI 提问' + (multi ? ' · ' + ask.questions.length + ' 个问题' : '');
@@ -123,6 +136,17 @@ export function createAIAskCards(ctx, extras) {
             countdown.textContent = countdownText;
             head.appendChild(countdown);
         }
+        // 临时收起：整卡折成单行细条，方便继续看上方消息；倒计时保留在细条上（renderAskCollapsedBar），
+        // 答案草稿与题目进度在 askDrafts 里不丢。展开态头部无倒计时时收起按钮自己推右（CSS 兄弟选择器分工）
+        const collapse = document.createElement('button');
+        collapse.type = 'button';
+        collapse.className = 'ai-takeover-collapse';
+        collapse.innerHTML = AI_CHEVRON_SVG;
+        collapse.addEventListener('click', () => {
+            draft.collapsed = true;
+            updateComposerTakeover(true);
+        });
+        head.appendChild(collapse);
         const body = document.createElement('div');
         body.className = 'ai-takeover-body';
         const qi = draft.idx;
@@ -325,6 +349,42 @@ export function createAIAskCards(ctx, extras) {
             const target = card.querySelector('[data-ask-opt="' + draft.focusOi + '"]');
             if (target) target.focus({preventScroll: true});
         }
+    }
+
+    // 收起态细条（沿用审批卡的 .ai-takeover-bar）：标题 + 当前问题 + 倒计时，不放「跳过 / 提交回答」；
+    // 超时处理照常在后台走（到点按设置结算，细条随接管区一起消失）。点击恢复完整卡。
+    function renderAskCollapsedBar(entry, ask, draft, key, multi) {
+        const bar = document.createElement('button');
+        bar.type = 'button';
+        bar.className = 'ai-takeover-bar';
+        const barIcon = document.createElement('span');
+        barIcon.className = 'ai-ask-icon';
+        barIcon.innerHTML = ASK_ICON_SVG;
+        const barText = document.createElement('span');
+        barText.className = 'ai-takeover-bar-text';
+        const qi = aiClampInt(draft.idx, 0, ask.questions.length - 1, 0);
+        const question = ask.questions[qi];
+        barText.textContent = 'AI 提问' + (multi ? ' · ' + ask.questions.length + ' 个问题' : '') +
+            ' · ' + (question ? question.question : '');
+        bar.append(barIcon, barText);
+        // 倒计时节点沿用同一 data-ask-key：updateAskCountdown 的原地更新对细条照常生效
+        const countdownText = askCountdownText(ask);
+        if (countdownText) {
+            const countdown = document.createElement('span');
+            countdown.className = 'ai-ask-countdown';
+            countdown.dataset.askKey = key;
+            countdown.textContent = countdownText;
+            bar.appendChild(countdown);
+        }
+        const chev = document.createElement('span');
+        chev.className = 'ai-takeover-collapse';
+        chev.innerHTML = AI_CHEVRON_SVG;
+        bar.appendChild(chev);
+        bar.addEventListener('click', () => {
+            draft.collapsed = false;
+            updateComposerTakeover(true);
+        });
+        el.takeover.appendChild(bar);
     }
 
     return {askTakeoverKey, renderEnvAskTakeover, renderAskTakeover};

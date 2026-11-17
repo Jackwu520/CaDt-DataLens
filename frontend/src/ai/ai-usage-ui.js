@@ -64,7 +64,8 @@ export function sessionUsageTotals(session) {
     let hasTools = false;
     for (const message of all) {
         if (!message) continue;
-        if (message.role === 'user' && !message.systemNote) rounds++;
+        // steer 是本轮补充指示，不计入「N 轮」（与 turnStartAt / 会话分组的轮次口径一致）
+        if (message.role === 'user' && !message.systemNote && !message.steer) rounds++;
         if (message.role === 'tool') {
             hasTools = true;
             continue;

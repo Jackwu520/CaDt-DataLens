@@ -3,7 +3,7 @@
 // 依赖一律经 deps 延迟求值（调用方传 getter），不在创建期解构：
 // 这样既不依赖 main.js 的声明顺序，也不会把 let 状态拍成快照。
 import {fileIconSpec} from '../core/fileicons.js';
-import {createSelect} from '../core/form-controls.js';
+import {createSelect, createCheckbox} from '../core/form-controls.js';
 
 export function createGlobalSearch(deps) {
 
@@ -20,6 +20,8 @@ const globalSearch = {
     filesEnabled: true,
     aiEnabled: false,
     aiMode: 'brief',
+    // 模糊：fzf 式子序列匹配，仅作用于工作区文件，默认关闭
+    fuzzyEnabled: false,
     aiControlsBound: false,
 };
 
@@ -48,28 +50,38 @@ function ensureAISearchControls() {
     }
     const row = document.createElement('div');
     row.className = 'gs-ai-row';
-    // 分类勾选：工作区文件（默认勾选）/ AI 会话（默认不勾）
-    const filesLabel = document.createElement('label');
-    const filesBox = document.createElement('input');
-    filesBox.type = 'checkbox';
-    filesBox.id = 'gs-files-enabled';
-    filesBox.checked = globalSearch.filesEnabled;
-    filesBox.addEventListener('change', () => {
-        globalSearch.filesEnabled = filesBox.checked;
-        scheduleGlobalSearch();
+    // 分类勾选：工作区文件（默认勾选）/ 模糊（默认不勾）/ AI 会话（默认不勾）
+    const files = createCheckbox({
+        id: 'gs-files-enabled',
+        label: '工作区文件',
+        checked: globalSearch.filesEnabled,
+        onChange: () => {
+            globalSearch.filesEnabled = files.control.checked;
+            fuzzy.control.disabled = !files.control.checked;
+            scheduleGlobalSearch();
+        },
     });
-    filesLabel.append(filesBox, document.createTextNode('工作区文件'));
-    const aiLabel = document.createElement('label');
-    const aiBox = document.createElement('input');
-    aiBox.type = 'checkbox';
-    aiBox.id = 'gs-ai-enabled';
-    aiBox.checked = globalSearch.aiEnabled;
-    aiBox.addEventListener('change', () => {
-        globalSearch.aiEnabled = aiBox.checked;
-        if (modeSel) modeSel.disabled = !aiBox.checked;
-        scheduleGlobalSearch();
+    const fuzzy = createCheckbox({
+        id: 'gs-fuzzy-enabled',
+        label: '模糊',
+        checked: globalSearch.fuzzyEnabled,
+        disabled: !globalSearch.filesEnabled,
+        title: '模糊匹配：字符按顺序出现即可命中（fzf 式子序列），大工作区搜索更慢',
+        onChange: () => {
+            globalSearch.fuzzyEnabled = fuzzy.control.checked;
+            scheduleGlobalSearch();
+        },
     });
-    aiLabel.append(aiBox, document.createTextNode('AI 会话'));
+    const ai = createCheckbox({
+        id: 'gs-ai-enabled',
+        label: 'AI 会话',
+        checked: globalSearch.aiEnabled,
+        onChange: () => {
+            globalSearch.aiEnabled = ai.control.checked;
+            modeSel.disabled = !ai.control.checked;
+            scheduleGlobalSearch();
+        },
+    });
     const {control: modeSel} = createSelect({id: 'gs-ai-mode', className: 'gs-ai-mode'});
     modeSel.disabled = !globalSearch.aiEnabled;
     for (const [value, text] of [['brief', '简要（用户消息 + 每轮总结）'], ['full', '详细（全部消息）']]) {
@@ -83,7 +95,7 @@ function ensureAISearchControls() {
         globalSearch.aiMode = modeSel.value === 'full' ? 'full' : 'brief';
         scheduleGlobalSearch();
     });
-    row.append(filesLabel, aiLabel, modeSel);
+    row.append(files.element, fuzzy.element, ai.element, modeSel);
     searchRow.parentElement.insertBefore(row, searchRow.nextSibling);
     // 浮层增强（设置页同款触发器 + Portal 浮层，弹出不再走浏览器原生样式）；
     // 增强器幂等，原生 select 仍是值真源，deps 缺省（未接线）时保留原生外观兜底
@@ -146,9 +158,14 @@ function globalSearchEmptyHint() {
 // 控件行与状态同步（打开 / aiOnly 预设后调用）
 function syncScopeControls() {
     const filesBox = document.getElementById('gs-files-enabled');
+    const fuzzyBox = document.getElementById('gs-fuzzy-enabled');
     const aiBox = document.getElementById('gs-ai-enabled');
     const modeSel = document.getElementById('gs-ai-mode');
     if (filesBox) filesBox.checked = globalSearch.filesEnabled;
+    if (fuzzyBox) {
+        fuzzyBox.checked = globalSearch.fuzzyEnabled;
+        fuzzyBox.disabled = !globalSearch.filesEnabled;
+    }
     if (aiBox) aiBox.checked = globalSearch.aiEnabled;
     if (modeSel) modeSel.disabled = !globalSearch.aiEnabled;
 }
@@ -200,9 +217,13 @@ async function runGlobalSearch() {
     deps.els.gsCount.textContent = '搜索中…';
     const root = globalSearch.filesEnabled ? globalSearch.root : '';
     const aiEnabled = globalSearch.aiEnabled && !!deps.backend.AISessionSearchScoped;
-    // 各分类按勾选并行发起；工作区未打开或未勾选时只搜会话
+    // 各分类按勾选并行发起；工作区未打开或未勾选时只搜会话。
+    // 模糊只作用于工作区文件：勾选后改走 SearchWorkspaceFuzzy（旧构建没有该绑定时退回字面搜索）
     const workspaceTask = root
-        ? deps.backend.SearchWorkspace(root, query, false, 400).catch((e) => ({error: e}))
+        ? (globalSearch.fuzzyEnabled && typeof deps.backend.SearchWorkspaceFuzzy === 'function'
+            ? deps.backend.SearchWorkspaceFuzzy(root, query, false, 400)
+            : deps.backend.SearchWorkspace(root, query, false, 400)
+          ).catch((e) => ({error: e}))
         : Promise.resolve({hits: []});
     const sessionTask = aiEnabled
         ? deps.backend.AISessionSearchScoped(query, 30, globalSearch.aiMode !== 'full').catch((e) => ({error: e}))

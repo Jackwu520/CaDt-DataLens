@@ -84,7 +84,16 @@ export function buildDiffPreview(ops) {
     const lines = [];
     let last = -1;
     let truncated = false;
+    // 行号按完整 ops 连数后再随行带走：预览会裁掉大段未改上下文并插「…」，
+    // 渲染端若从 1 连数，文件中间/末尾的改动会被标成开头几行（0 = 该侧不适用）。
+    let oldNo = 1;
+    let newNo = 1;
     for (let i = 0; i < ops.length; i++) {
+        const op = ops[i];
+        const oldLine = op.t === '+' ? 0 : oldNo;
+        const newLine = op.t === '-' ? 0 : newNo;
+        if (op.t !== '+') oldNo++;
+        if (op.t !== '-') newNo++;
         if (!keep[i]) continue;
         if (last >= 0 && i > last + 1) {
             if (lines.length >= AI_DIFF_PREVIEW_LIMIT) {
@@ -97,7 +106,7 @@ export function buildDiffPreview(ops) {
             truncated = true;
             break;
         }
-        lines.push({t: ops[i].t, text: ops[i].text});
+        lines.push({t: op.t, text: op.text, oldLine, newLine});
         last = i;
     }
     return {lines, truncated};

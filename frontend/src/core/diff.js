@@ -1,5 +1,12 @@
 // 行级 diff（Myers）与结构化语义 diff，零依赖。
 
+/**
+ * 计算 a / b 两份行数组的 Myers 行级 diff 操作序列。
+ * 总行数超过 20000 时自动退化为 coarseDiff（公共前缀/后缀 + 中间整段替换）。
+ * @param {string[]} aLines 旧文本按行切分
+ * @param {string[]} bLines 新文本按行切分
+ * @returns {Array<{type: 'equal'|'add'|'del', text: string}>} 操作序列
+ */
 export function diffLineOps(aLines, bLines) {
     const n = aLines.length;
     const m = bLines.length;
@@ -75,13 +82,25 @@ function coarseDiff(aLines, bLines) {
     return ops;
 }
 
+/**
+ * 把文本按行切分（统一换行为 \n，空文本返回空数组）。
+ * @param {string} text 任意文本
+ * @returns {string[]} 行数组
+ */
 export function splitDiffLines(text) {
     const normalized = String(text == null ? '' : text).replace(/\r\n?/g, '\n');
     if (!normalized) return [];
     return normalized.split('\n');
 }
 
-// unified diff 文本（带 @@ 头，上下文 3 行），供 <pre> 直接渲染
+/**
+ * 生成 unified diff 文本（带 @@ 头，上下文 3 行），供 <pre> 直接渲染。
+ * @param {string} aText 旧文本
+ * @param {string} bText 新文本
+ * @param {number} [context=3] 每个 hunk 上下文行数
+ * @returns {{text: string, ops: Array<object>, added: number, removed: number}}
+ *   text 为空串表示无差异；added / removed 为新增/删除行数
+ */
 export function unifiedDiff(aText, bText, context = 3) {
     const a = splitDiffLines(aText);
     const b = splitDiffLines(bText);
@@ -162,6 +181,13 @@ function describeValue(value) {
     }
 }
 
+/**
+ * 计算两个 JSON 值的语义 diff（对象按键、数组按下标递归对比）。
+ * @param {*} a 旧值
+ * @param {*} b 新值
+ * @returns {Array<{kind: 'add'|'remove'|'change', path: string, before?: *, after?: *}>}
+ *   path 形如 $['key'][0]；change 项含 before/after，add 只含 after，remove 只含 before
+ */
 export function semanticDiff(a, b) {
     const out = [];
     (function walk(left, right, path) {
@@ -190,6 +216,11 @@ export function semanticDiff(a, b) {
     return out;
 }
 
+/**
+ * 把 semanticDiff 的一条变更渲染成人类可读文本。
+ * @param {{kind: string, before?: *, after?: *}} entry semanticDiff 产出的一条变更
+ * @returns {string} 新增只显示 after，删除只显示 before，变更显示「before → after」
+ */
 export function semanticEntryText(entry) {
     if (entry.kind === 'add') return describeValue(entry.after);
     if (entry.kind === 'remove') return describeValue(entry.before);

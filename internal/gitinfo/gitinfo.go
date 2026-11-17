@@ -43,8 +43,11 @@ func gitRun(dir string, args []string, timeoutMs int) (string, int, error) {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
 	executil.HideCommandWindow(cmd) // CREATE_NO_WINDOW，防 GUI 进程拉起 git 时闪黑窗；非 Windows 空实现
-	// GUI 进程没有可用终端：禁止 git 等待终端输入，网络操作失败时直接返回输出
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	// 环境隔离（对齐 ZCode managed-worktree §6.5）：GUI 进程继承的环境里可能残留
+	// GIT_DIR / GIT_WORK_TREE 等重定向变量（用户从带这些变量的终端拉起应用、或在
+	// 别的仓库里设置了它们），它们会让 cmd.Dir 失效——git 跑到别的仓库去。
+	// 逐个剔除而不是整体换空环境，保留 PATH / HOME / 代理等正常配置。
+	cmd.Env = sanitizeGitEnv(os.Environ())
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -61,6 +64,36 @@ func gitRun(dir string, args []string, timeoutMs int) (string, int, error) {
 		return "", -1, fmt.Errorf("git 命令超时")
 	}
 	return stdout.String(), code, nil
+}
+
+// gitEnvRedirectKeys 会重定向 git 仓库位置的变量：一律剔除，保证 cmd.Dir 就是 git 眼中的仓库。
+var gitEnvRedirectKeys = []string{
+	"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE",
+	"GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+	"GIT_COMMON_DIR", "GIT_NAMESPACE", "GIT_CEILING_DIRECTORIES",
+}
+
+func sanitizeGitEnv(environ []string) []string {
+	out := make([]string, 0, len(environ)+1)
+	for _, entry := range environ {
+		eq := strings.IndexByte(entry, '=')
+		key := entry
+		if eq >= 0 {
+			key = entry[:eq]
+		}
+		skip := false
+		for _, blocked := range gitEnvRedirectKeys {
+			if strings.EqualFold(key, blocked) {
+				skip = true
+				break
+			}
+		}
+		if !skip {
+			out = append(out, entry)
+		}
+	}
+	// GUI 进程没有可用终端：禁止 git 等待终端输入，网络操作失败时直接返回输出
+	return append(out, "GIT_TERMINAL_PROMPT=0")
 }
 
 // gitBadgeState 返回细分状态：untracked/added/modified/deleted/renamed/conflict/ignored。

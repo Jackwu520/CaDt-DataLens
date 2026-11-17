@@ -265,11 +265,11 @@ export const AI_TOOL_DEFS = {
     },
     stop_timer: {
         name: 'stop_timer',
-        description: '停止一个运行中的计时器。id 用 start_timer 返回的值；省略 id 且当前只有一个运行中的计时器时直接停止它。停止正计时会返回已计时长与用户打的标记时间线（如「T+05:12 开始报错」），可用于向用户报告耗时；你自己停止的不会重复投系统消息，用户手动停止或到点自动停止的会以系统消息通知你。',
+        description: '停止一个本会话启动的运行中计时器（子代理树上启动的也在内）。id 用 start_timer 返回的值；省略 id 且本会话只有一个运行中的计时器时直接停止它。只作用于本会话树：别的会话的计时器不可停止，id 用 timer_list 核对。停止正计时会返回已计时长与用户打的标记时间线（如「T+05:12 开始报错」），可用于向用户报告耗时；你自己停止的不会重复投系统消息，用户手动停止或到点自动停止的会以系统消息通知你。',
         parameters: {
             type: 'object',
             properties: {
-                id: {type: 'string', description: '计时器 id；省略且只有一个运行中的计时器时停止它'},
+                id: {type: 'string', description: '计时器 id；省略且本会话只有一个运行中的计时器时停止它'},
             },
         },
     },
@@ -287,7 +287,7 @@ export const AI_TOOL_DEFS = {
     },
     plan_mode: {
         name: 'plan_mode',
-        description: '进入或退出计划模式。复杂的多步实现类任务可先进入计划模式（只读探索并输出计划，用户批准后再执行）。计划模式下完成计划后：先输出完整计划等待用户批准，不要自行退出后直接执行。最终计划的答复正文就是计划文档本身（会被整体保存成文件供审阅），不要混入开场白、探索过程叙述或结尾问句。切换从下一轮对话生效。',
+        description: '进入或退出计划模式。默认直接动手，只有两种情况先进入：① 用户明确说「先规划 / 给方案 / 先出方案 / 别动手」；② 动工前必须由用户拍板方案——多种架构路线要取舍、接口 / 数据格式 / 交互形态存在实质分歧、需求歧义大到不探索就无法圈定范围。新增功能、改动跨多个文件、加设置项、单点 UI / 样式 / 文案调整、少量修改、typo、纯查询都不构成进入理由；拿不准时直接动手（用户可随时叫停），不要反复权衡。进入即时生效：本轮即可用 submit_plan 分节提交计划，写工具会被立即拒绝。不要自行退出后直接执行。',
         parameters: {
             type: 'object',
             properties: {
@@ -299,14 +299,25 @@ export const AI_TOOL_DEFS = {
     },
     submit_plan: {
         name: 'submit_plan',
-        description: '计划模式下把计划作为文档提交给用户审批。提交前若仍有未决的意图/方案问题，先用 ask_user 澄清（不要写进计划，也不要用普通文本提问）。plan 字段放完整、纯净的 Markdown 计划正文——用户审阅、以及最终保存成计划文件的都是这个字段的内容；不要在对话正文里重复计划，也不要把开场白、探索过程叙述、结尾问句写进 plan（正文留空或一句话即可）。提交后停下等待用户批准（用户会点「执行计划」或发送补充意见）。',
+        description: '计划模式下把计划作为文档提交给用户审批。按 sections 分节填写（每节 = 小节标题 + 正文内容）——应用会拼成 Markdown 计划文档，用户审阅与最终保存的就是它。分节按你的设计逻辑自由组织（如：目标与现状 / 实现（可按组件再分小节）/ 实施步骤 / 验证方式），每节正文写实、写全：涉及哪些文件、每处怎么改、怎么验证。内容太薄会被拒。提交前若仍有未决的意图/方案问题，先用 ask_user 澄清。提交后停下等待用户批准（用户会点「执行计划」或发送补充意见）。',
         parameters: {
             type: 'object',
             properties: {
-                plan: {type: 'string', description: '完整计划文档（Markdown）：目标、现状（可选）、涉及文件、按顺序的步骤、验证方式、风险与回滚'},
-                title: {type: 'string', description: '计划标题（可选，默认取文档第一个一级标题）'},
+                title: {type: 'string', description: '计划标题（一句话）'},
+                sections: {
+                    type: 'array',
+                    description: '计划的各个小节，3-6 节。body 是自由 Markdown，可用 ### 子标题、列表、行内代码写清细节',
+                    items: {
+                        type: 'object',
+                        properties: {
+                            heading: {type: 'string', description: '小节标题（如：目标与现状 / 实现 / 验证方式）'},
+                            body: {type: 'string', description: '本节内容：写实写全，涉及文件逐行列出，细节不省略'},
+                        },
+                        required: ['heading', 'body'],
+                    },
+                },
             },
-            required: ['plan'],
+            required: ['title', 'sections'],
         },
     },
     ask_user: {
@@ -359,7 +370,7 @@ export const AI_TOOL_DEFS = {
     },
     app_control: {
         name: 'app_control',
-        description: '操作并读取当前 CaDt-DataLens 窗口（像真人一样）：打开/切换/关闭标签页、切换视图、主题、设置、开关侧边栏/终端/AI 面板、管理 AI 会话、代配 MCP 服务器与安装内置示例（get_mcp_servers / list_mcp_samples / install_mcp_sample / set_mcp_server / delete_mcp_server：填命令与参数，env 值/工具授权仍归用户）、截取整窗或指定板块截图（screenshot {area}）；也可只读查询设置值、编辑器状态与选区、内存中的文档内容、Git 状态、AI 面板状态、资源管理器、插件、终端输出、操作留痕（get_activity）以及补丁视图状态（get_patch / patch_set_root / patch_repreview）。仅限当前窗口；不改工作区文件（补丁应用/撤销不在此工具内）。先 skill_use 加载 cadt-ui 技能获取动作全表，再调用本工具。',
+        description: '操作并读取当前 CaDt-DataLens 窗口（像真人一样）：打开/切换/关闭标签页、切换视图、主题、设置、开关侧边栏/终端/AI 面板、管理 AI 会话、代配 MCP 服务器与安装内置示例（get_mcp_servers / list_mcp_samples / install_mcp_sample / set_mcp_server / delete_mcp_server：填命令与参数，env 值/工具授权仍归用户）、截取整窗或指定板块截图（screenshot {area}）；也可只读查询设置值、编辑器状态与选区、内存中的文档内容、Git 状态、AI 面板状态、资源管理器、插件、终端输出、操作留痕（get_activity）以及补丁视图状态（get_patch / patch_set_root / patch_repreview）；读写用户「快捷便签」面板：get_memo / add_memo / update_memo / remove_memo（分组/条目/状态/贴图引用），open_memo_panel 打开面板标签页。仅限当前窗口；不改工作区文件（补丁应用/撤销不在此工具内）。先 skill_use 加载 cadt-ui 技能获取动作全表，再调用本工具。',
         parameters: {
             type: 'object',
             properties: {
@@ -371,13 +382,13 @@ export const AI_TOOL_DEFS = {
     },
     propose_patch: {
         name: 'propose_patch',
-        description: '把一组改动写成标准 unified diff 补丁（.patch），交给用户审批后一键应用。适用于：用户要可存档/可转交的补丁、改动跨多个文件、需要先看后改；**完全权限档也可用**——补丁是可分享的交付物，与直接改文件不冲突（默认仍优先 edit_file / write_file）。完全权限档下默认只落盘 .patch + 返回路径，不弹审批卡；用户明确说「应用」时才弹卡。**计划模式只做预检**（dry_run：逐文件能否应用，不落盘、不写索引、不弹卡）。同内容重复提交会复用已有补丁（不新建文件），空补丁（+0/−0）与一个文件都不可应用的补丁不落盘。路径相对工作区根，必须用 --- a/<路径> / +++ b/<路径> 头，上下文 3 行。失败会返回【patch:error】错误码（PATCH_EMPTY / PATCH_HUNK_CONFLICT / PATCH_PATH_DENIED …）与修复建议，retryable=no 的不要原样重试。写补丁前先 skill_use patch-workflow。',
+        description: '把一组改动写成标准 unified diff 补丁（.patch），交给用户审批后一键应用。适用于：用户要可存档/可转交的补丁、改动跨多个文件、需要先看后改；**完全权限档也可用**——补丁是可分享的交付物，与直接改文件不冲突（默认仍优先 edit_file / write_file）。完全权限档下默认只落盘 .patch + 返回路径，不弹审批卡；用户明确说「应用」或给出肯定答复（可以/好的/同意）时弹卡，你也可以带 apply:true 强制弹卡（用户已同意但没说「应用」时用）。**隔离工作区开启时无论档位、无论 apply 都弹审批卡**（apply=false 仍只产出文件）——隔离期间主根只读，补丁回灌必须过人工审阅。**计划模式只做预检**（dry_run：逐文件能否应用，不落盘、不写索引、不弹卡）。同内容重复提交会复用已有补丁（不新建文件），空补丁（+0/−0）与一个文件都不可应用的补丁不落盘。路径相对工作区根，必须用 --- a/<路径> / +++ b/<路径> 头，上下文 3 行。失败会返回【patch:error】错误码（PATCH_EMPTY / PATCH_HUNK_CONFLICT / PATCH_PATH_DENIED …）与修复建议，retryable=no 的不要原样重试。写补丁前先 skill_use patch-workflow。',
         parameters: {
             type: 'object',
             properties: {
                 patch: {type: 'string', description: '完整 unified diff 文本，可含多个文件'},
                 summary: {type: 'string', description: '一句话说明改什么（用于文件名与审批卡标题）'},
-                apply: {type: 'boolean', description: '是否在审批卡上提供应用按钮；false 表示只产出文件'},
+                apply: {type: 'boolean', description: '审批卡三态：false=只产出文件永不弹卡；true=强制弹审批卡（用户已同意但没说「应用」、或用户要求当场应用时用）；缺省=非完全权限弹卡，完全权限看用户最近一句是否要求/同意应用'},
                 dry_run: {type: 'boolean', description: '只预检不落盘：返回逐文件能否应用，不生成 .patch、不写索引、不弹卡（计划模式自动启用）'},
             },
             required: ['patch', 'summary'],
@@ -387,11 +398,11 @@ export const AI_TOOL_DEFS = {
         name: 'worktree_manage',
         description: [
             '管理本会话的隔离 git worktree（草稿工作区）：改动落在 .cadt/worktree/<slug>/，不直接碰主根，适合有风险的批量改动、大规模重构、不确定能成的试错。',
-            'action=create：创建（一个会话同时只能有一个）。创建后 <worktree> 块会给出前缀，之后所有文件改动都写到该前缀下、run_command 的 cwd 传该目录；不要写主根同名文件。主根已有的依赖目录（node_modules / .venv / venv）会以 junction 共享进隔离区，npm / pip 可直接使用。',
+            'action=create：创建（一个会话同时只能有一个；会弹审批卡请用户确认，含完全权限）。用户明确要求「基于 worktree / 用隔离区 / 在 worktree 里开发」时（开发环境要求，不是读方案文档），实施的第一步就先创建隔离区；计划模式下只在计划里写这一步、不创建。主根当前有未提交改动、且用户想让隔离区在改动之上试方案时带 carry=true。创建后 <worktree> 块会给出前缀，之后所有文件改动都写到该前缀下、run_command 的 cwd 默认就在隔离区；不要写主根同名文件。主根顶层的依赖目录（node_modules / .venv / venv）会以 junction 共享进隔离区，仓库根的 .worktreeinclude 清单会把 .env 这类被忽略文件拷进来；子目录依赖（如 frontend/node_modules）不会自动共享——缺依赖时在隔离区里装（npm install），绝不要手动 mklink 借主根目录。',
             'action=list：列出仓库现有 worktree（只读，附各隔离区的改动统计）。',
             'action=stat：只读查看本隔离区相对创建基准的改动统计（文件与增删行数）；不落补丁。',
             'action=export：把 worktree 里相对创建基准的全部改动（含新文件与删除）导出为补丁，交用户在审批卡里审阅后回灌主根。导出是全量语义：上一轮已回灌过的改动再次导出会预检报「不可应用」，属预期——应用成功后应 discard 收尾。worktree 里不要 commit。',
-            'action=discard：删除 worktree 与其隔离分支（不可恢复；未 export 的改动会丢）。回灌成功、或用户明确不要这轮试验时用它收尾。',
+            'action=discard：删除 worktree 与其隔离分支（不可恢复；未 export 的改动会丢；会弹审批卡请用户确认，含完全权限）。回灌成功、或用户明确不要这轮试验时用它收尾。',
             '何时不用：常规小改动直接 edit_file/write_file，不要为每次修改开 worktree。',
         ].join('\n'),
         parameters: {
@@ -399,6 +410,7 @@ export const AI_TOOL_DEFS = {
             properties: {
                 action: {type: 'string', enum: ['create', 'list', 'stat', 'export', 'discard'], description: 'create=创建隔离区 / list=列出（附改动统计） / stat=隔离区改动统计 / export=导出补丁回灌 / discard=删除'},
                 label: {type: 'string', description: 'create 时可选：用途短名（英文/数字/连字符，如 refactor-parser），用于派生目录与分支名'},
+                carry: {type: 'boolean', description: 'create 时可选：true=把主根当前未提交改动（含暂存划分与未跟踪文件）带入隔离区并打成快照 commit 作为基准——适合「用户带着半成品想试 AI 方案」；缺省 false=从主根 HEAD 干净检出'},
                 name: {type: 'string', description: 'export / stat / discard 可选：目标隔离区 slug；缺省=本会话自己的；可指定本会话派生的子代理隔离区（其他会话的会被拒绝）'},
             },
             required: ['action'],
@@ -432,7 +444,7 @@ export const AI_TOOL_DEFS = {
     },
     todo_write: {
         name: 'todo_write',
-        description: '维护任务清单以规划和展示多步工作；琐碎单步任务不用。开工前先为每个具体步骤各建一项；只要还有未完成的工作，保持恰好一项 in_progress（开始下一项前先把上一项标 completed）；每完成一项立即标 completed，不要攒到最后一次性更新。需「每次询问」「自动审批」或「完全权限」。',
+        description: '维护任务清单以规划和展示多步工作；琐碎单步任务不用。开工前先为每个具体步骤各建一项；只要还有未完成的工作，保持恰好一项 in_progress（开始下一项前先把上一项标 completed）；每完成一项立即标 completed，不要攒到最后一次性更新。这是**会话内的执行进度**（每轮自动注入、随会话存档），不是用户「快捷便签」面板里的内容——往用户便签里记事/改状态用 app_control 的 get_memo / add_memo / update_memo 动作。需「每次询问」「自动审批」或「完全权限」。',
         parameters: {
             type: 'object',
             properties: {
@@ -454,12 +466,12 @@ export const AI_TOOL_DEFS = {
     },
     run_command: {
         name: 'run_command',
-        description: '在终端执行一条命令并返回退出码、stdout、stderr。shell 优先级：Git Bash → PowerShell 7 → Windows PowerShell → cmd。用于测试、构建、git 查看等；不要运行交互式或长驻命令（改用 background_command）；不要用 sleep、ping 这类命令空等凑时长——需要「过一段时间再继续」（等构建/下载/生成完成）用 start_timer 倒计时，到点自动唤醒。每条命令都在独立进程中执行、工作目录由 cwd 参数决定（默认范围根），cd 不会保留到后续命令，不要用 cd/pwd/echo %CD% 探测目录。审批：只读命令（ls/cat/grep/git status 等）在自动审批档直接执行；已知命令族（git/go/npm/pnpm/dotnet/cargo 的低风险子命令）同样自动放行；rm -rf、git reset --hard 等危险命令只单次确认；其余按项目权限规则逐条审批。完全权限免审批。',
+        description: '在终端执行一条命令并返回退出码、stdout、stderr。shell 优先级：Git Bash → PowerShell 7 → Windows PowerShell → cmd。用于测试、构建、git 查看等；不要运行交互式或长驻命令（改用 background_command）；不要用 sleep、ping 这类命令空等凑时长——需要「过一段时间再继续」（等构建/下载/生成完成）用 start_timer 倒计时，到点自动唤醒。每条命令都在独立进程中执行、工作目录由 cwd 参数决定（默认范围根；会话开启隔离工作区时默认落在隔离区，要看主根显式传 cwd=\'.\'），cd 不会保留到后续命令，不要用 cd/pwd/echo %CD% 探测目录。输出已由工具捕获并返回，不要用重定向（>、2>&1）把测试/构建日志写进文件再读——重定向会让命令变成无法静态分析的复合命令、转人工审批；需要保留长输出用 background_command + check_command。审批：只读命令（ls/cat/grep/git status 等）在自动审批档直接执行；已知命令族（git/go/npm/pnpm/dotnet/cargo 的低风险子命令）同样自动放行；rm -rf、git reset --hard 等危险命令只单次确认；其余按项目权限规则逐条审批。完全权限免审批。',
         parameters: {
             type: 'object',
             properties: {
                 command: {type: 'string', description: '要执行的完整命令'},
-                cwd: {type: 'string', description: '工作目录，默认范围根；完全权限下可为绝对路径'},
+                cwd: {type: 'string', description: '工作目录，默认范围根（隔离会话默认隔离区，要看主根传 .）；完全权限下可为绝对路径'},
                 timeoutMs: {type: 'integer', description: '超时毫秒，默认 60000，最大 600000；到点强杀并返回已捕获输出，长任务请用 background_command'},
             },
             required: ['command'],
@@ -467,12 +479,12 @@ export const AI_TOOL_DEFS = {
     },
     background_command: {
         name: 'background_command',
-        description: '在后台启动一条耗时或长驻命令（构建、watch、本地服务器、长测试），立即返回 jobId，不阻塞对话。启动后用 check_command 轮询状态与增量输出，结束后向用户汇报结果；需要提前终止用 stop_command。会很快结束的短命令请改用 run_command；需要持续交互（REPL、ssh）或想让用户看到现场的长驻程序改用 terminal。工作目录由 cwd 参数决定，cd 不会保留。审批策略与 run_command 一致（启动时审批一次，查状态/停止不再审批）。',
+        description: '在后台启动一条耗时或长驻命令（构建、watch、本地服务器、长测试），立即返回 jobId，不阻塞对话。启动后用 check_command 轮询状态与增量输出，结束后向用户汇报结果；需要提前终止用 stop_command。会很快结束的短命令请改用 run_command；需要持续交互（REPL、ssh）或想让用户看到现场的长驻程序改用 terminal。工作目录由 cwd 参数决定（默认范围根；隔离会话里默认隔离区，要看主根显式传 cwd=\'.\'），cd 不会保留。审批策略与 run_command 一致（启动时审批一次，查状态/停止不再审批）。',
         parameters: {
             type: 'object',
             properties: {
                 command: {type: 'string', description: '要执行的完整命令'},
-                cwd: {type: 'string', description: '工作目录，默认范围根；完全权限下可为绝对路径'},
+                cwd: {type: 'string', description: '工作目录，默认范围根（隔离会话默认隔离区，要看主根传 .）；完全权限下可为绝对路径'},
             },
             required: ['command'],
         },
@@ -548,7 +560,7 @@ export const AI_TOOL_DEFS = {
     },
     spawn_agent: {
         name: 'spawn_agent',
-        description: '派出一个子代理独立完成子任务（并行探索 / 多视角审查 / 长任务隔离）。默认阻塞：等它跑完，把最终结论作为工具结果返回。mode=background 时派单即返回（不回等），做完自动通知你、期间你可以继续干活——适合一轮里同时派多个方向；需要结论时用 wait_agent 汇总。子代理默认只读探索（列目录 / 读文件 / 看图片 / 搜索 / 联网 / 记忆读取 / 技能 / 再派子代理），不能写文件或执行命令。isolation=worktree 时给子代理建一个独立隔离 git worktree：挂上 write_file / edit_file，写效应圈定在它自己的 .cadt/worktree/<slug>/ 前缀内（前缀外会被拒绝）、写操作自动应用——适合「多个方向并行试改，看结果再定」；它的改动不会进主根，完成后你用 worktree_manage 的 export（带 name=<slug>）导出补丁审阅回灌，或 discard 丢弃。子代理总数（含递归派出的全部层级）与递归层级受「设置 → AI 助手 → 子代理」限制：阻塞模式到上限会等空位，后台模式直接报错让你稍后再派。',
+        description: '派出一个子代理独立完成子任务（并行探索 / 多视角审查 / 长任务隔离）。默认阻塞：等它跑完，把最终结论作为工具结果返回。mode=background 时派单即返回（不回等），做完自动通知你、期间你可以继续干活——适合一轮里同时派多个方向；要停下等回报就用 wait_agent（等的是自己收件箱里的新输入）。子代理默认只读探索（列目录 / 读文件 / 看图片 / 搜索 / 联网 / 记忆读取 / 技能 / 再派子代理），不能写文件或执行命令。isolation=worktree 时给子代理建一个独立隔离 git worktree：挂上 write_file / edit_file，写效应圈定在它自己的 .cadt/worktree/<slug>/ 前缀内（前缀外会被拒绝）、写操作自动应用——适合「多个方向并行试改，看结果再定」；它的改动不会进主根，完成后你用 worktree_manage 的 export（带 name=<slug>）导出补丁审阅回灌，或 discard 丢弃。子代理并发数（所有层级同时运行中的子代理总和）与层级上限（整棵树最多几层，主代理算第 1 层，你直接派出的子代理是第 2 层）受「设置 → AI 助手 → 子代理」限制：阻塞模式到并发上限会等空位，后台模式直接报错让你稍后再派（可等现有子代理完成再试）。',
         parameters: {
             type: 'object',
             properties: {
@@ -576,7 +588,7 @@ export const AI_TOOL_DEFS = {
     },
     agent_send: {
         name: 'agent_send',
-        description: '向子代理发消息补充线索或纠正方向。运行中的子代理默认排队（它当前轮结束、下一轮开始时可见）；urgent=true 插队（打断它当前的模型调用，消息在下一步最前注入，它不会因此终止）。对已完成的子代理发消息会唤醒它继续工作（沿用原上下文）。带 askId 时是回答该子代理的提问。',
+        description: '向子代理发消息补充线索或纠正方向。运行中的子代理默认排队（它当前轮结束、下一轮开始时可见）；urgent=true 插队（打断它当前的模型调用，消息在下一步最前注入，它不会因此终止）。对已完成的子代理发消息会唤醒它继续工作（沿用原上下文）。带 askId 时是回答该子代理的提问。子代理层同样可用：只能发给自己派出的下级（回答它们的提问 / 补线索），向上汇报请写在最终结论里。',
         parameters: {
             type: 'object',
             properties: {
@@ -588,15 +600,22 @@ export const AI_TOOL_DEFS = {
             required: ['agentId', 'message'],
         },
     },
+    agent_tree: {
+        name: 'agent_tree',
+        description: '查看自己所在的智能体团队树（只读）：主代理看到整棵任务树（含孙代理与更深层级），子代理只看到自己这一支；每行带代理 id、名称、层级、状态、沙箱档、轮次与任务摘要，并标注「你」是哪一行。要 agent_send / agent_stop / agent_compact 某个嵌套代理但手上没有它的 id 时先调用它；只是想停掉所有在跑的代理，直接用不带 id 的 agent_stop 即可。',
+        parameters: {
+            type: 'object',
+            properties: {},
+        },
+    },
     agent_stop: {
         name: 'agent_stop',
-        description: '停止一个子代理并收集它的过程记录（当前进度、最终输出、最近工具调用）。对已完成 / 已失败的子代理返回历史摘要，不会报错。停止只是终止这一轮，不丢弃它的收件箱内容。',
+        description: '停止子代理并收集过程记录（当前进度、最终输出、最近工具调用）。给 agentId = 停止该代理及其全部下级（子代理 / 孙代理递归级联）；省略 agentId = 停止本会话任务树里所有仍在运行的代理（含各层级）。对已完成 / 已失败的代理返回历史摘要，不会报错。停止只是终止这一轮，不丢弃收件箱内容。',
         parameters: {
             type: 'object',
             properties: {
-                agentId: {type: 'string', description: '子代理 id'},
+                agentId: {type: 'string', description: '要停止的代理 id（来自 spawn_agent 回执或 agent_tree）；省略则停止本会话树内所有运行中的代理（含嵌套层级）'},
             },
-            required: ['agentId'],
         },
     },
     session_list: {
@@ -639,12 +658,11 @@ export const AI_TOOL_DEFS = {
     },
     wait_agent: {
         name: 'wait_agent',
-        description: '阻塞等待子代理结束并直接返回它的结论。省略 agentId 时等任一运行中的子代理（谁先完成返回谁）。用于「并行派出多个方向后汇总」：不用等全部结束就能拿到第一个可用结论。超时返回当前状态快照（不报错），之后它完成仍会通知你。',
+        description: '等你自己下一步的新输入：子代理完成通知、其他代理的消息、用户插话。不指向具体代理——收件箱里谁来消息都会唤醒你。返回 {timedOut}：false = 已有待读输入（本轮结束后在下一轮开头注入上下文），true = 超时或被停止。用于「并行派出多个方向后停下等回报」；也可以不 wait，通知照样会在下一轮注入。收尾轮（轮次预算用尽）不再消费新输入，会立即返回超时。',
         parameters: {
             type: 'object',
             properties: {
-                agentId: {type: 'string', description: '要等的子代理 id；省略 = 任一运行中的子代理'},
-                timeoutSec: {type: 'number', description: '最长等待秒数 0–600，默认 120；0 = 不限时（不建议）'},
+                timeoutSec: {type: 'number', description: '最长等待秒数 0–600，默认 60；0 = 不限时（不建议）'},
             },
         },
     },
@@ -871,6 +889,43 @@ export const AI_TOOL_DEFS = {
     },
 };
 
+// spawn_agent 的 per-call 模型档：候选非空时才把 model 参数与候选清单拼进 def。
+// AI_TOOL_DEFS 是模块级常量（工具表原样发给 API），必须 clone——就地改会让「一个会话开了
+// 自选」污染其它会话与测试。候选为空直接返回同一个常量对象（零分配，请求载荷也不变）。
+// spawn_agent 的 def：两个动态项——自选模型候选（第三个参数位）与默认轮次预算（设置项）。
+// def 是每次组装工具表时新建的（不污染 AI_TOOL_DEFS 常量），模型看到的是当前真实默认值。
+export function buildSpawnAgentDef(choices, defaultRounds) {
+    const list = Array.isArray(choices) ? choices.filter((choice) => choice && choice.ref) : [];
+    const base = AI_TOOL_DEFS.spawn_agent;
+    const rounds = Math.round(Number(defaultRounds));
+    // 静态基线里写的是「默认 50」，有设置值时替换掉——模型只信这段文字，不能让它看到旧默认。
+    const withRounds = (desc) => (Number.isFinite(rounds) && rounds > 0)
+        ? desc.replace('默认 50', '默认 ' + rounds)
+        : desc;
+    const properties = {
+        ...base.parameters.properties,
+        maxRounds: {
+            ...base.parameters.properties.maxRounds,
+            description: withRounds(base.parameters.properties.maxRounds.description),
+        },
+    };
+    let description = withRounds(base.description);
+    if (list.length) {
+        const options = list
+            .map((choice) => (choice.model ? `「${choice.model}」（${choice.label}）` : `「${choice.label}」`))
+            .join(' / ');
+        description += ' model 可选：从这几个候选里给子代理挑模型 —— ' + options
+            + '；省略 = 用设置里的默认子代理模型。搜索、汇总这类「读得多、结论短」的活儿挑便宜快的，'
+            + '审查与方案评估不要降档；候选之外的值会直接报错。';
+        properties.model = {type: 'string', description: '子代理用哪个模型；取值见工具描述里的候选清单，省略 = 默认'};
+    }
+    return {
+        ...base,
+        description,
+        parameters: {...base.parameters, properties},
+    };
+}
+
 // 工具目录数据：<tool_catalog> 段的分组归属与一句话调度文案（模型靠目录学调度语义）。
 // 与 AI_TOOL_DEFS 按 name 一一对应，key 顺序即各组内的展示顺序；同组内文案相同的相邻条目
 // 渲染时合并成一行「name1 / name2：文案」。独立成表而不是内联进 def：def 对象会被原样发给
@@ -912,7 +967,7 @@ export const AI_TOOL_CATALOG = {
     browser_evaluate: {group: 'browser', blurb: '在页面里执行脚本（完全权限）'},
     browser_resize: {group: 'browser', blurb: '调整视口宽高（模拟手机/平板等尺寸测响应式）'},
     browser_close: {group: 'browser', blurb: '关闭标签页'},
-    app_control: {group: 'app', blurb: '操作/读取应用本身：标签、视图、主题、设置、面板、AI 会话、MCP 服务器代配与内置示例安装、窗口截图、操作留痕、补丁视图状态与目标目录（先 skill_use cadt-ui 取动作表）'},
+    app_control: {group: 'app', blurb: '操作/读取应用本身：标签、视图、主题、设置、面板、AI 会话、MCP 服务器代配与内置示例安装、窗口截图、操作留痕、补丁视图状态、用户快捷便签的读写（先 skill_use cadt-ui 取动作表）'},
     memory_list: {group: 'memory', blurb: '跨会话事实与结论；写后更新 MEMORY.md 索引'},
     memory_read: {group: 'memory', blurb: '跨会话事实与结论；写后更新 MEMORY.md 索引'},
     memory_write: {group: 'memory', blurb: '跨会话事实与结论；写后更新 MEMORY.md 索引'},
@@ -924,14 +979,15 @@ export const AI_TOOL_CATALOG = {
     write_worklog: {group: 'memory', blurb: '完成任务后追加工作日志（标题进月份索引，摘要进当日正文）'},
     env_list: {group: 'env', blurb: '看名称与描述（值永远不可见）；命令里直接引用 $名称 / %名称%'},
     env_create: {group: 'env', blurb: '登记新变量，值由用户在弹窗里填写'},
-    todo_write: {group: 'task', blurb: '多步任务的进度清单，完成一步更新一步'},
-    plan_mode: {group: 'task', blurb: '实现类任务先只读规划，等用户批准再动手'},
-    submit_plan: {group: 'task', blurb: '计划模式下把完整计划作为文档提交审批（正文不用重复）'},
+    todo_write: {group: 'task', blurb: '多步任务的会话内进度清单（每轮注入），完成一步更新一步；用户「快捷便签」用 app_control 的 memo 动作'},
+    plan_mode: {group: 'task', blurb: '仅当用户要求先规划或方案要用户拍板时，先只读规划再等批准'},
+    submit_plan: {group: 'task', blurb: '进入计划模式后用它分节提交计划文档（未进计划模式会被拒）'},
     ask_user: {group: 'task', blurb: '必须由用户拍板的关键选择'},
     spawn_agent: {group: 'task', blurb: '并行调查 / 多视角审查（只读子代理；isolation=worktree 给它独立草稿区可写，回灌仍要你 export 审阅）'},
     agent_send: {group: 'task', blurb: '给子代理补线索（排队）/ 插队纠正 / 唤醒已完成子代理继续'},
-    agent_stop: {group: 'task', blurb: '停止子代理并收集它的过程记录'},
-    wait_agent: {group: 'task', blurb: '阻塞等子代理结论（并行派出后汇总用）'},
+    agent_tree: {group: 'task', blurb: '查看团队树（各层级 id / 状态 / 你是哪一行）'},
+    agent_stop: {group: 'task', blurb: '停止子代理（可级联下级 / 省略 id 全停）并收集过程记录'},
+    wait_agent: {group: 'task', blurb: '阻塞等下一步输入（新消息 / 完成通知）'},
     agent_compact: {group: 'task', blurb: '压缩子代理上下文，长任务续跑前腾空间'},
     session_list: {group: 'session', blurb: '会话间投递'},
     session_send: {group: 'session', blurb: '会话间投递'},
@@ -970,6 +1026,8 @@ export const AI_TOOL_GROUPS = [
 
 export function createAIToolDefs(ctx) {
     const appControlOn = ctx.appControlOn;
+    // 子代理默认轮次（设置项）：拼进 spawn_agent 的描述，缺省 0 表示「用内置默认」。
+    const subAgentRounds = typeof ctx.subAgentRounds === 'function' ? ctx.subAgentRounds : () => 0;
     // read_video 会把视频内容段塞进请求，只有「能接收视频的会话」才该拿到这个工具。
     // 判定由 ctx.videoCapableOf(session) 提供（ai-config-model.modelVideoInputEnabled 的
     // 活引用）；缺省恒 true——测试与无会话上下文的调用（如 token 估算）保持旧行为。
@@ -995,8 +1053,10 @@ export function createAIToolDefs(ctx) {
             AI_TOOL_DEFS.ask_user,
             AI_TOOL_DEFS.env_list,
             AI_TOOL_DEFS.plan_mode,
-            // 提交计划：计划模式下把计划作为文档提交（正文不承载计划，落盘用参数）
-            ...(planMode ? [AI_TOOL_DEFS.submit_plan] : []),
+            // 提交计划：始终下发——plan_mode(true) 执行时 session.planMode 当轮即置位，
+            // submit_plan 同一轮就能用（否则模型会纠结「规则要求提交、工具列表里却没有它」）；
+            // 未进计划模式时调用会被 executeTool 明确拒绝并引导先 plan_mode(true)。
+            AI_TOOL_DEFS.submit_plan,
             AI_TOOL_DEFS.schedule_list,
             AI_TOOL_DEFS.reminder_list,
             // 计时器：纯会话态（不碰工作区文件、不产生进程），到点经系统消息唤醒，所有范围档可用
@@ -1051,8 +1111,10 @@ export function createAIToolDefs(ctx) {
         // 子代理：写权限档与计划模式可用（子代理只读探索正是计划模式的刚需）。
         // agent_send / agent_stop 与 spawn_agent 同档：能派就能补线索与收回，否则后台派单无法治理。
         if (AI_WRITE_SCOPES.includes(scope) || planMode) {
-            list.push(AI_TOOL_DEFS.spawn_agent, AI_TOOL_DEFS.agent_send, AI_TOOL_DEFS.agent_stop,
-                AI_TOOL_DEFS.wait_agent, AI_TOOL_DEFS.agent_compact);
+            // spawn_agent 的 def 按「自选模型候选」动态生成：候选全空时返回同一个常量对象
+            const subAgentChoices = typeof ctx.subAgentModelChoices === 'function' ? ctx.subAgentModelChoices() : [];
+            list.push(buildSpawnAgentDef(subAgentChoices, subAgentRounds()), AI_TOOL_DEFS.agent_tree, AI_TOOL_DEFS.agent_send,
+                AI_TOOL_DEFS.agent_stop, AI_TOOL_DEFS.wait_agent, AI_TOOL_DEFS.agent_compact);
             // 会话间投递：跨会话唤醒是编排类重能力，与 spawn_agent 同档
             list.push(AI_TOOL_DEFS.session_list, AI_TOOL_DEFS.session_send);
         }
@@ -1110,10 +1172,11 @@ export function createAIToolDefs(ctx) {
             '- 有专用工具就不要用 run_command 绕：列目录 / 读文件 / 搜索 / 找文件用 list_dir / read_file / search_text / glob；工作区外路径也能直接传（已授权或会弹审批），不要拼 shell 命令去搜——引号与编码转义容易出错。',
             '- 工作区外的路径：用户明确给过路径的直接读/搜；没给过时 read/edit 档会请求批准（批准过的目录免询问）、auto/full 档可直接访问。search_text / glob 传 path 与 read_file 同权。被拒绝的路径不要反复尝试。',
             '- 要网页交互用内嵌浏览器；操作或查看应用本身用 app_control。',
+            '- todo_write 是你会话内的执行进度（每轮自动注入、随会话存档）；用户的「快捷便签」是另一个面板（分组/状态/贴图，跨轮留存）——往便签里记事、改状态、删除用 app_control 的 get_memo / add_memo / update_memo / remove_memo，别把执行计划塞进便签。',
             '- 改动尽量最小、可回滚；写完说明改了什么、怎么验证。',
             '- 工具报错先修正参数或换路径，不要原样重试；连续失败就停下来说明情况。',
-            '- 值得并行的多项调查用 spawn_agent(mode=\'background\') 一次派出、期间继续自己的工作，完成会逐个通知，需要汇总时 wait_agent；单一简单委派仍用默认阻塞模式，简单问题直接自己做。',
-            '- 子代理跑得很长（轮次多、迟迟不出结论）时可以 agent_compact 压缩它的上下文再让它继续；要收回就 agent_stop，它会连过程记录一起返回。',
+            '- 值得并行的多项调查用 spawn_agent(mode=\'background\') 一次派出、期间继续自己的工作，完成会逐个通知，要停下等回报就用 wait_agent（等自己收件箱的新输入，不指定对象）；单一简单委派仍用默认阻塞模式，简单问题直接自己做。',
+            '- 子代理跑得很长（轮次多、迟迟不出结论）时可以 agent_compact 压缩它的上下文再让它继续；要收回就 agent_stop（带 id 会连它的下级一起停；用户说「全停」时省略 id，连孙代理一起收）；不知道嵌套代理的 id 就先 agent_tree 看一眼团队树。',
             '- 需要让另一个会话知道某件事：session_list 查 id → session_send 单播（能单播不要组播，收到「信箱已满」即停）；对方的回复不是必须，不要互相刷消息。',
         );
         const hasAll = (names) => names.every((name) => available.has(name));
@@ -1130,7 +1193,7 @@ export function createAIToolDefs(ctx) {
             {need: ['app_control'], text: '应用界面：app_control get_state → screenshot 看图核对 → 改视图/设置 → get_state 复核'},
             {need: ['app_control'], text: '配置 MCP 服务器：skill_use cadt-mcp-config → app_control get_mcp_servers → set_mcp_server（用户确认本机命令）→ 提醒用户在设置里勾选工具/填环境变量'},
             {need: ['app_control'], text: '缺本地 TTS / OCR / ASR：skill_use cadt-mcp-samples → list_mcp_samples → install_mcp_sample（用户确认）→ 提醒绑定能力并填环境变量'},
-            {need: ['spawn_agent'], text: '并行调查：spawn_agent(mode=background) 一次派出多个方向 → 继续自己的工作 → wait_agent 汇总或等完成通知'},
+            {need: ['spawn_agent'], text: '并行调查：spawn_agent(mode=background) 一次派出多个方向 → 继续自己的工作 → wait_agent 等回报（等的是自己收件箱的新输入）'},
         ].filter((chain) => hasAll(chain.need));
         if (chains.length) {
             lines.push('典型任务 → 工具链：', ...chains.map((chain) => '- ' + chain.text));

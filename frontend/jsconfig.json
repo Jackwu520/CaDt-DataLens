@@ -1,0 +1,14 @@
+{
+    "compilerOptions": {
+        "checkJs": false,
+        "allowJs": true,
+        "target": "ES2022",
+        "module": "ESNext",
+        "moduleResolution": "bundler",
+        "resolveJsonModule": true,
+        "baseUrl": ".",
+        "lib": ["ES2022", "DOM", "DOM.Iterable"]
+    },
+    "include": ["src/**/*"],
+    "exclude": ["node_modules", "dist", "wailsjs"]
+}

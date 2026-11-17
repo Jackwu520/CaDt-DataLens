@@ -2844,6 +2844,8 @@ aside[data-sidebar-view="chats"] #ai-sessions-panel { display: flex; flex: 1; mi
     gap: 2px;
 }
 .ai-session-item {
+    /* .ai-session-stop 以行为定位上下文（right:22px/top:…）；缺了这条它会逃到 #sidebar 顶部 */
+    position: relative;
     display: flex;
     align-items: flex-start;
     gap: 4px;
@@ -3119,7 +3121,8 @@ aside[data-sidebar-view="chats"] #ai-sessions-panel { display: flex; flex: 1; mi
 .ai-session-stop {
     position: absolute;
     right: 22px;
-    top: 6px;
+    /* 垂直中心对齐右侧 20px 的「⋯」槽（内容顶 7px + (20-16)/2） */
+    top: 9px;
     width: 16px;
     height: 16px;
     display: grid;
@@ -6750,6 +6753,15 @@ div.jsoneditor-tree textarea { user-select: text; }
     gap: 1px;
 }
 .ai-slash.hidden { display: none; }
+/* 分区标题：指令固定在前、技能在后（对齐参考面板样式） */
+.ai-slash-header {
+    padding: 4px 8px 2px;
+    color: var(--muted);
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    user-select: none;
+}
 .ai-slash-item {
     display: flex;
     align-items: baseline;
@@ -6764,10 +6776,16 @@ div.jsoneditor-tree textarea { user-select: text; }
     font-size: 11.5px;
     text-align: left;
     cursor: pointer;
+    white-space: nowrap;
 }
+/* 名称不收缩不换行；描述占剩余宽度、超长省略号截断 */
+.ai-slash-item > span:first-child { flex: none; }
 .ai-slash-item.selected { background: var(--accent-weak); color: var(--accent); }
 .ai-slash-item .ai-slash-desc {
     margin-left: auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
     color: var(--muted);
     font-size: 10.5px;
     white-space: nowrap;
@@ -6837,6 +6855,11 @@ div.jsoneditor-tree textarea { user-select: text; }
 .ai-takeover-bar-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ai-takeover-bar .ai-takeover-collapse { width: 18px; height: 18px; margin-left: 0; }
 .ai-takeover-bar .ai-takeover-collapse svg { transform: rotate(180deg); width: 13px; height: 13px; }
+/* 提问卡收起：头部有倒计时时由倒计时的 auto 外边距推右，收起按钮紧随其后（两个 auto 会把倒计时挤到中间）；
+   无倒计时（wait 模式）时收起按钮按默认 auto 推到最右。收起细条沿用 .ai-takeover-bar，
+   里面的倒计时去掉块级上边距、不参与伸缩 */
+.ai-ask-takeover .ai-takeover-head .ai-ask-countdown + .ai-takeover-collapse { margin-left: 0; }
+.ai-takeover-bar .ai-ask-countdown { margin: 0; flex: none; white-space: nowrap; }
 .ai-takeover-head {
     display: flex;
     align-items: center;
@@ -6944,6 +6967,28 @@ div.jsoneditor-tree textarea { user-select: text; }
     flex: none;
     margin-top: 0;
 }
+/* 隔离工作区动作审批（AI 主动 create / discard）：纯文字说明，无 diff */
+.ai-worktree-approval-text {
+    padding: 2px;
+    color: var(--text);
+    font-size: 12px;
+    line-height: 1.7;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+.ai-worktree-approval-stat {
+    margin: 6px 0 0;
+    padding: 6px 8px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--panel2);
+    color: var(--muted);
+    font-family: var(--editor-font-family);
+    font-size: 10.5px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    overflow-x: auto;
+}
 /* ===== 补丁审批（propose_patch，多文件） ===== */
 .ai-patch-takeover .ai-takeover-title {
     flex: 0 1 auto;
@@ -6952,6 +6997,9 @@ div.jsoneditor-tree textarea { user-select: text; }
     text-overflow: ellipsis;
     white-space: nowrap;
 }
+/* 统计块自己带 margin-left:auto 顶到右侧；收起按钮不能再带 auto（两个 auto 会平分剩余空间，
+   统计就停在卡片中间了）——它紧跟统计块右边 */
+.ai-patch-takeover .ai-takeover-head .ai-takeover-collapse { margin-left: 0; }
 .ai-takeover-stat {
     flex: none;
     display: inline-flex;
@@ -7109,6 +7157,7 @@ div.jsoneditor-tree textarea { user-select: text; }
     place-items: center;
     color: var(--accent);
 }
+/* 计划审批卡预览：渲染 Markdown（挂 .ai-md 走 AI 回复同款排版），末元素贴住内边距 */
 .ai-plan-preview {
     max-height: 280px;
     padding: 8px 10px;
@@ -7118,10 +7167,10 @@ div.jsoneditor-tree textarea { user-select: text; }
     color: var(--text);
     font-size: 12px;
     line-height: 1.55;
-    white-space: pre-wrap;
     overflow-wrap: anywhere;
     overflow-y: auto;
 }
+.ai-plan-preview > :last-child { margin-bottom: 0; }
 /* 计划正文已落盘：卡里只放文件入口（正文去标签页看，不在对话里铺长文） */
 .ai-plan-preview.is-file {
     max-height: none;
@@ -7265,6 +7314,25 @@ div.jsoneditor-tree textarea { user-select: text; }
     padding: 0;
 }
 .ai-queue-icon svg { display: block; }
+/* 队列行拖动排序：3×3 点阵手柄 + 落点提示线 */
+.ai-queue-drag {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 14px;
+    height: 18px;
+    color: var(--muted);
+    cursor: grab;
+    opacity: 0.7;
+    user-select: none;
+}
+.ai-queue-drag:hover { color: var(--text); opacity: 1; }
+.ai-queue-drag:active { cursor: grabbing; }
+.ai-queue-drag svg { display: block; pointer-events: none; }
+.ai-queue-row.dragging { opacity: 0.45; }
+.ai-queue-row.drop-before { box-shadow: inset 0 2px 0 var(--accent); }
+.ai-queue-row.drop-after { box-shadow: inset 0 -2px 0 var(--accent); }
 .ai-composer-top { display: flex; align-items: center; gap: 8px; }
 .ai-profile-select {
     flex: 1;
@@ -7817,11 +7885,17 @@ div.jsoneditor-tree textarea { user-select: text; }
 .ai-tool-link { cursor: pointer; }
 .ai-tool-link:hover { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
 .ai-tool-dir { flex: none; max-width: 30%; color: var(--muted); font-size: 10.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ai-tool-stat { flex: none; font-variant-numeric: tabular-nums; }
+/* 卡头 ± 统计：不用 tabular-nums——Inter 的表格数字在 11.5px 小字号下
+   字形间距略大于字宽，+ 号与数字之间看着像多描了一道（截图放大才看得清）。
+   换成等宽字体的比例数字，间距与字形严格对齐，不再有「重影」感。 */
+.ai-tool-stat { flex: none; font-family: var(--editor-font-family); font-size: 11px; letter-spacing: 0; }
 .ai-tool-stat.add { color: var(--green); }
 .ai-tool-stat.del { color: var(--red); }
 /* 卡片头上的来源/属性徽标：用 muted 半透明底，压不住 head:hover 的 --hover 纯色底 */
 .ai-tool-tag { flex: none; padding: 0 4px; border-radius: 3px; background: color-mix(in srgb, var(--muted) 18%, transparent); color: var(--muted); font-size: 9.5px; }
+/* submit_plan 工具卡「查看计划」小按钮：贴着卡头文字，hover 分色（对齐 tooltip 悬停语义） */
+.ai-tool-plan-open { flex: none; margin-left: 4px; padding: 0 5px; border: 1px solid var(--border); border-radius: 3px; background: transparent; color: var(--muted); font-size: 10px; cursor: pointer; }
+.ai-tool-plan-open:hover { color: var(--accent); border-color: var(--accent); }
 .ai-tool-state { flex: none; margin-left: auto; font-size: 10px; }
 .ai-tool-card.running .ai-tool-state { color: var(--accent); }
 .ai-tool-card.error .ai-tool-state { color: var(--red); }
@@ -8197,7 +8271,16 @@ div.jsoneditor-tree textarea { user-select: text; }
 .ai-diff-line.add { background: color-mix(in srgb, var(--green) 13%, transparent); color: var(--green); }
 .ai-diff-line.del { background: color-mix(in srgb, var(--red) 13%, transparent); color: var(--red); }
 .ai-diff-line.ctx { color: var(--muted); }
-.ai-diff-line.gap { justify-content: center; background: var(--panel2); color: var(--muted); font-size: 9px; }
+/* 折叠间隔行：不再铺 --panel2 整条底色（横贯的灰带在深色主题里比改动本身还抢眼），
+   改成无底色 + 居中的淡中点，靠留白表示「这里省略了一段」。 */
+.ai-diff-line.gap {
+    justify-content: center;
+    background: transparent;
+    color: color-mix(in srgb, var(--muted) 55%, transparent);
+    font-size: 12px;
+    line-height: 20px;
+    user-select: none;
+}
 .ai-diff-sign { flex: none; width: 12px; opacity: .8; }
 .ai-diff-text { white-space: pre; }
 .ai-approval-more { margin-top: 3px; color: var(--muted); font-size: 10px; }
@@ -8306,24 +8389,29 @@ div.jsoneditor-tree textarea { user-select: text; }
 .ai-plan-grant-title { color: var(--muted); font-size: 10.5px; margin-bottom: 4px; }
 .ai-plan-grant-item { display: inline-flex; align-items: center; gap: 4px; margin: 2px 12px 2px 0; font-size: 10.5px; color: var(--text); cursor: pointer; }
 .ai-plan-grant-item code { padding: 0 4px; border-radius: 3px; background: var(--accent-weak); color: var(--accent); font-family: var(--editor-font-family); font-size: 10px; }
-.ai-pref-list { flex: 1; min-width: 0; max-height: 132px; overflow: auto; display: flex; flex-direction: column; gap: 3px; }
-.ai-pref-list.standalone { max-height: 380px; margin: 2px 0 8px; gap: 2px; padding: 2px; }
-.ai-pref-list.standalone .ai-pref-row { padding: 6px 8px; }
-.ai-pref-list.standalone .ai-pref-text { font-size: 12px; }
-.ai-pref-list.standalone .ai-pref-empty { padding: 10px 6px; }
-.ai-pref-empty { color: var(--muted); font-size: 11px; }
-.ai-pref-row { display: flex; align-items: center; gap: 6px; padding: 2px 4px; border-radius: 4px; font-size: 11.5px; }
+/* 设置 → AI → 用户偏好：列表视图（工具栏 + 表头 + 列对齐的数据行）。
+   列宽用变量统一表头与数据行；内容列 minmax(0,1fr) 吸收剩余宽度，其余固定。 */
+.ai-pref-view { --pref-cols: 52px minmax(0, 1fr) 56px 56px; padding-bottom: 10px; }
+.ai-pref-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: nowrap; padding: 10px 0; }
+.ai-pref-toolbar .ai-settings-input { flex: 1 1 210px; width: auto; min-width: 120px; }
+.ai-pref-count, .ai-pref-add { flex: none; }
+.ai-pref-table { border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.ai-pref-thead, .ai-pref-row { display: grid; grid-template-columns: var(--pref-cols); align-items: center; }
+.ai-pref-thead { background: var(--panel2); border-bottom: 1px solid var(--border); }
+.ai-pref-th { padding: 7px 10px; font-size: 10.5px; color: var(--muted); font-weight: 600; white-space: nowrap; }
+.ai-pref-th-src, .ai-pref-th-ops { text-align: center; }
+.ai-pref-list { max-height: 380px; overflow: auto; }
+.ai-pref-row { border-bottom: 1px solid var(--border); font-size: 12px; }
+.ai-pref-row:last-child { border-bottom: none; }
 .ai-pref-row:hover { background: var(--hover); }
-.ai-pref-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ai-pref-src { flex: none; padding: 0 5px; height: 15px; line-height: 15px; border-radius: 7px; background: var(--muted-weak, var(--hover)); color: var(--muted); font-size: 9.5px; }
+.ai-pref-idx { padding: 8px 10px; color: var(--muted); font-size: 10.5px; font-variant-numeric: tabular-nums; }
+.ai-pref-text { min-width: 0; padding: 8px 10px; line-height: 1.5; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; word-break: break-all; }
+.ai-pref-src { justify-self: center; padding: 0 5px; height: 15px; line-height: 15px; border-radius: 7px; background: var(--muted-weak, var(--hover)); color: var(--muted); font-size: 9.5px; }
 /* AI 记录的偏好用强调色徽标（对齐 .ai-sched-badge.on），「你」保持中性色 */
 .ai-pref-src.on { background: var(--accent-weak); color: var(--accent); }
-.ai-pref-actions { flex: none; display: flex; gap: 3px; }
-/* 筛选行：搜索框与计数锁定一行 —— set-control 默认 wrap + 输入框 flex-basis 320px，
-   窄面板下会把「N 条」计数挤到搜索框下面第二行（150% 缩放必现），这里强制不换行 */
-.set-control.ai-pref-filter { flex-wrap: nowrap; }
-.set-control.ai-pref-filter .ai-settings-input { flex: 1 1 210px; width: auto; min-width: 140px; }
-.set-control.ai-pref-filter .popover-value { flex: none; }
+.ai-pref-actions { justify-self: center; display: flex; gap: 3px; }
+.ai-pref-empty { padding: 20px 10px; text-align: center; color: var(--muted); font-size: 11px; }
+.ai-pref-foot { margin-top: 8px; color: var(--muted); font-size: 11px; line-height: 1.6; }
 .ai-pref-btn { flex: none; width: 18px; height: 18px; display: grid; place-items: center; padding: 0; border: none; border-radius: 3px; background: none; color: var(--muted); cursor: pointer; }
 .ai-pref-btn:hover { background: var(--hover); color: var(--text); }
 /* 设置 → AI → 定时任务 */
@@ -8760,6 +8848,13 @@ body.console-only > :not(.dbg-console) { display: none !important; }
 }
 .ai-pill:hover { color: var(--text); border-color: var(--accent); }
 .ai-pill.active { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
+/* 权限胶囊是选择器（点开菜单）：文字 + 下拉箭头，和「计划」这种点亮式开关区分开 */
+#ai-permission.ai-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    padding: 0 6px 0 9px;
+}
 .ai-model-pill { margin-left: auto; }
 
 /* 单行模型 chip：图标 + 模型名 + 推理等级 + 展开箭头 */
@@ -9153,6 +9248,36 @@ body.console-only > :not(.dbg-console) { display: none !important; }
 .ai-send-btn.hidden { display: none; }
 .ai-send-btn svg { width: 15px; height: 15px; display: block; }
 .ai-send-btn.ai-stop { background: var(--red); }
+
+/* composer 底栏窄宽度降级（2026-11-17，对齐 ZCode 权限弹窗）：
+   发送/停止永远可见，分两级降级、每级内都不出省略号：
+   ① 内容宽 ≤400px：模型 chip 收成单图标（名字/推理等级/上限/箭头全部隐藏，模型名在 tooltip 里）；
+   ② 内容宽 ≤330px：「计划」「隔离」两个 pill 收起（入口移进权限弹窗的会话模式两行，
+      见 ai-panel.js 的 showPermissionMenu），计划已开用权限胶囊上的圆点提示。 */
+.ai-composer-bottom { min-width: 0; flex-wrap: nowrap; }
+.ai-pill { flex: 0 1 auto; min-width: 40px; }
+#ai-model-chip.ai-model-pill { flex: 0 1 auto; min-width: 30px; }
+.ai-composer { container-type: inline-size; }
+/* ① 模型单图标 */
+@container (max-width: 400px) {
+    .ai-model-name, .ai-model-effort, .ai-model-cap { display: none; }
+    #ai-model-chip.ai-model-pill { padding: 0 6px; }
+    #ai-model-chip .ai-chip-chev { display: none; }
+}
+/* ② 计划 / 隔离 pill 收进权限弹窗；计划已开用权限胶囊上的圆点提示 */
+@container (max-width: 330px) {
+    #ai-plan, #ai-worktree { display: none; }
+    #ai-permission { padding: 0 6px; }
+    #ai-permission.plan-on::after {
+        content: '';
+        flex: none;
+        width: 5px;
+        height: 5px;
+        margin-left: 1px;
+        border-radius: 50%;
+        background: var(--accent);
+    }
+}
 #ai-panel.ai-fullscreen {
     position: absolute;
     inset: 0;
@@ -10098,7 +10223,29 @@ html[data-writing="on"][data-writing-paper="dim"] .jsoneditor textarea.jsonedito
 .ai-head-compact #ai-head-search { display: none; }
 /* chips 弹层（复用 .ai-popover 容器） */
 #ai-chips-pop { width: 320px; }
-.ai-chips-pop-title { padding: 2px 5px 5px; color: var(--muted); font-size: 10.5px; font-weight: 600; }
+.ai-chips-pop-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 2px 5px 5px;
+    color: var(--muted);
+    font-size: 10.5px;
+    font-weight: 600;
+}
+.ai-chips-pop-title > span { flex: 1; min-width: 0; }
+.ai-chips-pop-action {
+    flex: none;
+    padding: 1px 6px;
+    border: none;
+    border-radius: 4px;
+    background: none;
+    color: var(--accent);
+    font: inherit;
+    font-size: 10.5px;
+    font-weight: 600;
+    cursor: pointer;
+}
+.ai-chips-pop-action:hover { background: var(--accent-weak); }
 .ai-chips-row {
     display: flex;
     align-items: center;
@@ -10129,6 +10276,13 @@ html[data-writing="on"][data-writing-paper="dim"] .jsoneditor textarea.jsonedito
 .ai-agent-stopped { background: color-mix(in srgb, var(--muted) 16%, transparent); color: var(--muted); }
 /* 收件箱有待处理消息 / 等待主代理回答：橙色提醒，与 running 的蓝并列出现 */
 .ai-agent-waiting { background: color-mix(in srgb, var(--orange) 18%, transparent); color: var(--orange); }
+/* 命令沙箱档位胶囊（只读 / 可写 / 完全）：描边形态（inset 阴影不占布局高度），
+   只读中性，可写强调色，完全橙色警示。 */
+.ai-sandbox-badge { background: transparent; color: var(--muted); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--muted) 35%, transparent); }
+.ai-sandbox-badge.ai-sandbox-workspace-write { color: var(--accent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent); }
+.ai-sandbox-badge.ai-sandbox-danger-full-access { color: var(--orange); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--orange) 45%, transparent); }
+/* 嵌在副标题行里的紧凑形态：与 10px 文字同高、垂直居中，不撑高行距 */
+.ai-chips-sub .ai-sandbox-badge { font-size: 9px; line-height: 12px; padding: 0 5px; vertical-align: middle; margin-right: 3px; }
 .ai-chips-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; overflow: hidden; }
 .ai-chips-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ai-chips-sub { color: var(--muted); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -10140,6 +10294,62 @@ html[data-writing="on"][data-writing-paper="dim"] .jsoneditor textarea.jsonedito
 .ai-status-stopped, .ai-status-notfound { color: var(--muted); }
 .ai-chips-go { flex: none; display: grid; place-items: center; color: var(--muted); }
 .ai-chips-go svg { width: 12px; height: 12px; display: block; }
+/* 智能体团队：嵌套树（缩进 + 竖线 rail）。基础 .ai-chips-row 与计时器 / 定时任务共用，
+   树形样式只挂 .ai-agent-tree-row 等新类，不改基础规则。 */
+.ai-agent-tree-row {
+    position: relative;
+    /* 每层缩进 = 折叠箭头宽 14 + 行内 gap 6：子节点箭头正好从父节点正文起点开始。
+       层级由 JS 封顶（AGENT_TREE_MAX_INDENT），视野不够时不让行内固定件把内容挤出弹层 */
+    padding-left: calc(6px + var(--ai-lv, 0) * 20px);
+    overflow: hidden;
+    cursor: default;
+}
+.ai-agent-tree-row[data-nested="1"]::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: calc(13px + (var(--ai-lv, 1) - 1) * 20px);
+    border-left: 1px solid var(--border);
+    pointer-events: none;
+}
+.ai-chips-toggle,
+.ai-chips-toggle-spacer {
+    flex: none;
+    display: grid;
+    place-items: center;
+    width: 14px;
+    height: 16px;
+    padding: 0;
+}
+.ai-chips-toggle {
+    border: none;
+    border-radius: 3px;
+    background: none;
+    color: var(--muted);
+    cursor: pointer;
+}
+.ai-chips-toggle:hover { color: var(--text); background: var(--hover); }
+.ai-chips-toggle svg { width: 12px; height: 12px; display: block; transition: transform 120ms ease; }
+.ai-chips-toggle.open svg { transform: rotate(90deg); }
+@media (prefers-reduced-motion: reduce) {
+    .ai-chips-toggle svg { transition: none; }
+}
+.ai-chips-row-main {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0;
+    border: none;
+    background: none;
+    color: inherit;
+    font: inherit;
+    font-size: 11px;
+    text-align: left;
+    cursor: pointer;
+}
 .ai-chips-empty { padding: 10px 6px; color: var(--muted); font-size: 11px; line-height: 1.6; }
 /* 子代理详情视图（覆盖消息区，返回按钮回主代理）。主窗口改在内容区标签页打开，
    这里只剩悬浮窗与不支持标签页的宿主在用。 */
@@ -10301,6 +10511,309 @@ html[data-writing="on"][data-writing-paper="dim"] .jsoneditor textarea.jsonedito
 .agentview-root .ai-agv-msg { font-size: 12.5px; line-height: 1.7; }
 .agentview-root .ai-agv-user { font-size: 12.5px; line-height: 1.7; }
 .agentview-root .ai-agv-tool pre { max-height: 260px; }
+
+/* ===== 快捷便签面板（bridge-memo-view）===== */
+.memo-pane { padding: 0; }
+.jsoneditor-pane.active.memo-pane { display: flex; flex-direction: column; }
+.memo-root {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg);
+    color: var(--text);
+}
+.memo-top {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+}
+.memo-seg {
+    flex: none;
+    display: inline-flex;
+    padding: 2px;
+    border-radius: 8px;
+    background: var(--panel2);
+    border: 1px solid var(--border);
+}
+.memo-seg-btn {
+    appearance: none;
+    border: 0;
+    background: transparent;
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1;
+    padding: 5px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+}
+.memo-seg-btn.active { background: var(--hover); color: var(--text); }
+.memo-summary { flex: none; font-size: 12px; color: var(--muted); }
+.memo-top-spacer { flex: 1; }
+.memo-body {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    padding: 10px 12px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+.memo-empty {
+    padding: 22px 8px;
+    color: var(--muted);
+    font-size: 12.5px;
+    text-align: center;
+    line-height: 1.7;
+}
+.memo-footer {
+    flex: none;
+    padding: 8px 12px;
+    border-top: 1px solid var(--border);
+    display: flex;
+}
+.memo-block {
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--panel);
+    overflow: hidden;
+}
+.memo-block-head { display: flex; align-items: center; gap: 8px; padding: 7px 10px; }
+.memo-chev {
+    flex: none;
+    display: grid;
+    place-items: center;
+    width: 20px;
+    height: 20px;
+    border: 0;
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+    border-radius: 4px;
+    padding: 0;
+}
+.memo-chev:hover { background: var(--hover); color: var(--text); }
+.memo-block .memo-chev svg { transform: rotate(90deg); transition: transform .12s; }
+.memo-block.collapsed .memo-chev svg { transform: rotate(0deg); }
+.memo-block-title {
+    flex: 1;
+    min-width: 0;
+    font-size: 12.5px;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    user-select: none;
+    cursor: text;
+}
+.memo-block-count {
+    flex: none;
+    font-size: 11px;
+    color: var(--muted);
+    background: var(--panel2);
+    border-radius: 8px;
+    padding: 1px 7px;
+}
+.memo-block-actions { flex: none; display: inline-flex; gap: 2px; opacity: 0; transition: opacity .12s; }
+.memo-block-head:hover .memo-block-actions,
+.memo-block-head:focus-within .memo-block-actions { opacity: 1; }
+.memo-btn {
+    appearance: none;
+    border: 0;
+    background: transparent;
+    color: var(--muted);
+    font-size: 13px;
+    line-height: 1;
+    width: 22px;
+    height: 22px;
+    border-radius: 5px;
+    cursor: pointer;
+    padding: 0;
+}
+.memo-btn:hover { background: var(--hover); color: var(--text); }
+.memo-block-items { display: flex; flex-direction: column; padding: 2px 6px 8px; gap: 2px; }
+.memo-item { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px; padding: 5px 6px; border-radius: 7px; }
+.memo-item:hover { background: var(--hover); }
+.memo-dot {
+    flex: none;
+    width: 14px;
+    height: 14px;
+    margin-top: 2px;
+    border-radius: 50%;
+    border: 1.5px solid var(--muted);
+    background: transparent;
+    cursor: pointer;
+    padding: 0;
+}
+.memo-item.st-in_progress .memo-dot { border-color: var(--accent); background: var(--accent); }
+.memo-item.st-completed .memo-dot { border-color: var(--green); background: var(--green); }
+.memo-item-text {
+    flex: 1;
+    min-width: 0;
+    font-size: 12.5px;
+    line-height: 1.6;
+    word-break: break-word;
+    white-space: pre-wrap;
+    user-select: none;
+    cursor: text;
+}
+.memo-item-text.empty { color: var(--muted); font-style: italic; }
+.memo-item.st-completed .memo-item-text { color: var(--muted); text-decoration: line-through; }
+.memo-item-thumbs {
+    flex-basis: 100%;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 2px 0 2px 22px;
+}
+.memo-thumb { position: relative; display: inline-block; }
+.memo-thumb img {
+    display: block;
+    width: 56px;
+    height: 42px;
+    object-fit: cover;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    cursor: zoom-in;
+}
+.memo-thumb-del {
+    position: absolute;
+    top: -5px;
+    right: -5px;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    border: 1px solid var(--border);
+    background: var(--panel2);
+    color: var(--muted);
+    font-size: 10px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0;
+    opacity: 0;
+    transition: opacity .12s;
+}
+.memo-thumb:hover .memo-thumb-del,
+.memo-thumb-del:focus-visible { opacity: 1; }
+.memo-item-actions { flex: none; margin-left: auto; display: inline-flex; opacity: 0; transition: opacity .12s; }
+.memo-item:hover .memo-item-actions,
+.memo-item:focus-within .memo-item-actions { opacity: 1; }
+.memo-inline-edit { width: 100%; font-size: 12.5px; }
+@media (prefers-reduced-motion: reduce) {
+    .memo-block .memo-chev svg,
+    .memo-block-actions,
+    .memo-item-actions,
+    .memo-thumb-del { transition: none; }
+}
+
+/* 智能体团队详情标签页（内容区）：主代理 + 子代理树的纵向卡片图。
+   左缩进每层 24px，竖线 + 横向短枝形成连接；--atl 由 JS 写入（层级封顶 8）。 */
+.agentteam-pane { padding: 0; }
+.jsoneditor-pane.active.agentteam-pane { display: flex; flex-direction: column; }
+.agentteam-root {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    padding: 14px 18px 24px;
+    background: var(--bg);
+}
+.agentteam-root.empty { padding: 18px; color: var(--muted); font-size: 12px; }
+.agentteam-head {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    padding: 0 2px 12px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 14px;
+}
+.agentteam-head-main { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 10px; }
+.agentteam-head-title { font-size: 13px; font-weight: 600; color: var(--text); }
+.agentteam-head-session {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--muted);
+    font-size: 12px;
+}
+.agentteam-stats { flex: none; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.agentteam-tree { display: flex; flex-direction: column; gap: 8px; }
+.agentteam-empty { padding: 6px 2px; color: var(--muted); font-size: 12px; }
+.agentteam-row {
+    position: relative;
+    padding-left: calc(var(--atl, 0) * 24px);
+}
+.agentteam-row[data-nested="1"]::before {
+    content: '';
+    position: absolute;
+    top: -8px;
+    bottom: -8px;
+    left: calc((var(--atl, 1) - 1) * 24px + 8px);
+    border-left: 1px solid var(--border);
+    pointer-events: none;
+}
+.agentteam-row[data-nested="1"]::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: calc((var(--atl, 1) - 1) * 24px + 8px);
+    width: 16px;
+    border-top: 1px solid var(--border);
+    pointer-events: none;
+}
+.agentteam-card {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    width: 100%;
+    padding: 8px 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--panel);
+    color: var(--text);
+    font: inherit;
+    font-size: 12px;
+    text-align: left;
+}
+button.agentteam-card { cursor: pointer; }
+button.agentteam-card:hover { border-color: var(--accent-weak); background: var(--panel2); }
+.agentteam-card-main { background: var(--panel2); border-color: var(--accent-weak); }
+.agentteam-card-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.agentteam-name { flex: none; font-weight: 600; font-size: 12.5px; }
+.agentteam-main-title {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text);
+    font-size: 12px;
+}
+.agentteam-card-meta-inline {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--muted);
+    font-size: 11px;
+}
+.agentteam-go { flex: none; display: grid; place-items: center; color: var(--muted); }
+.agentteam-go svg { width: 12px; height: 12px; display: block; }
+.agentteam-card-meta { color: var(--muted); font-size: 11.5px; }
+.agentteam-card-task,
+.agentteam-card-summary {
+    color: var(--muted);
+    font-size: 11.5px;
+    line-height: 1.55;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.agentteam-card-summary { color: var(--text); opacity: .82; }
 
 /* 支线对话标签页（内容区）：标题条 + 消息区。消息排版沿用 .ai-messages / .ai-msg
    全局类，这里只补外壳、滚动与标题条；内容区比面板宽，左右留白略放大。 */
@@ -10751,6 +11264,20 @@ body.bgterm-dragging { cursor: row-resize; user-select: none; }
 }
 .patch-tag.danger { background: color-mix(in srgb, var(--red) 16%, transparent); color: var(--red); }
 .patch-actions { flex: none; margin-left: auto; display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+/* 只读开关：紧凑勾选，与「应用模式」并排；开启后整行应用入口会隐藏，只剩它自己 */
+.patch-readonly-toggle {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    color: var(--muted);
+    font-size: 11px;
+    white-space: nowrap;
+    cursor: pointer;
+    user-select: none;
+}
+.patch-readonly-toggle input { margin: 0; cursor: pointer; }
+.patch-readonly-toggle input:disabled { cursor: default; }
 .patch-mode { flex: none; display: inline-flex; align-items: center; gap: 5px; color: var(--muted); font-size: 11px; white-space: nowrap; }
 .patch-actions .dlg-btn { flex: none; white-space: nowrap; }
 .patch-mode-select {
@@ -10922,6 +11449,8 @@ body.bgterm-dragging { cursor: row-resize; user-select: none; }
 .set-row-top .set-main { margin-bottom: 8px; }
 .set-control { flex: none; display: flex; align-items: center; gap: 8px; max-width: 55%; }
 .set-control .opt-select { width: 190px; }
+/* 子代理自选模型的三个候选并排：窄一些才塞得进一行（.set-control 会 wrap） */
+.set-control .sub-agent-choice { width: 148px; }
 .set-control .ai-settings-input { width: 210px; }
 .set-control .extcap-key-input { width: 260px; }
 .set-control .extcap-base-url { width: 320px; }
@@ -11410,4 +11939,170 @@ textarea.dlg-input:focus {
     .quick-switch-mask, .quick-switch-mask .quick-switch, .tb-pop {
         animation: none !important;
     }
+}
+
+/* ---- Git 图谱：与终端 / 调试控制台 / 运行面板共用 #terminal-panel 容器 ---- */
+/* 泳道配色：按 lane index 循环，深浅主题各给一套（取自分支色板惯例） */
+:root {
+    --gg-lane-0: #548af7;
+    --gg-lane-1: #57c15e;
+    --gg-lane-2: #d98a3d;
+    --gg-lane-3: #b569d6;
+    --gg-lane-4: #4cb8c4;
+    --gg-lane-5: #d65a7a;
+    --gg-lane-6: #a3a832;
+    --gg-lane-7: #8a93a8;
+}
+#git-graph-view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+#git-graph-view.hidden { display: none; }
+.gg-root { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+
+.gg-head {
+    display: flex; align-items: center; gap: 6px;
+    padding: 3px 8px;
+    border-bottom: 1px solid var(--border);
+    flex: none;
+}
+.gg-filter {
+    flex: 1; min-width: 120px; max-width: 360px;
+    height: 22px; padding: 0 7px; box-sizing: border-box;
+    border: 1px solid var(--border); border-radius: 4px;
+    background: transparent; color: var(--text);
+    font: inherit; font-size: 11.5px; outline: none;
+}
+.gg-filter:focus { border-color: var(--accent); }
+.gg-head-actions { display: flex; gap: 2px; margin-left: auto; }
+.gg-btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 22px; height: 22px; padding: 0;
+    border: none; border-radius: 4px;
+    background: transparent; color: var(--muted);
+    cursor: pointer;
+}
+.gg-btn:hover { background: var(--panel2); color: var(--text); }
+
+.gg-body { flex: 1; min-height: 0; display: flex; overflow: hidden; }
+
+/* 左栏：ref 树 */
+.gg-refs {
+    flex: 0 0 180px; min-width: 0;
+    overflow-y: auto; overflow-x: hidden;
+    border-right: 1px solid var(--border);
+    padding: 4px 0;
+    font-size: 11.5px;
+}
+.gg-refs-empty { padding: 8px; color: var(--muted); }
+.gg-ref-group { margin-bottom: 2px; }
+.gg-ref-group-head {
+    display: flex; align-items: center; gap: 4px;
+    padding: 2px 6px; cursor: pointer; user-select: none;
+    color: var(--muted);
+}
+.gg-ref-group-head:hover { color: var(--text); }
+.gg-ref-group-title { font-weight: 600; }
+.gg-chev {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 16px; height: 16px; padding: 0;
+    border: none; background: transparent; color: inherit; cursor: pointer;
+}
+.gg-ref-row {
+    display: flex; align-items: center; gap: 6px;
+    padding: 2px 6px 2px 24px;
+    cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.gg-ref-row:hover { background: var(--panel2); }
+.gg-ref-row.current { color: var(--accent); font-weight: 600; }
+.gg-ref-name { overflow: hidden; text-overflow: ellipsis; }
+.gg-ref-wt { color: var(--muted); font-size: 10.5px; flex: none; }
+
+/* 中栏：泳道 + 提交列表（虚拟滚动）
+   泳道 SVG 覆盖整页高度（提交数 × 行高），必须与文字列左右并排、随同一滚动容器滚动；
+   若用 flex column 会把文字挤到 SVG 下方（滚动区外），表现为「只看见泳道看不见文字」。 */
+.gg-commits {
+    flex: 1; min-width: 0;
+    overflow-y: auto; overflow-x: hidden;
+    position: relative;
+}
+.gg-lane-col {
+    position: absolute; top: 0; left: 0;
+    width: var(--gg-lane-col-w, 200px);
+    pointer-events: none; /* 泳道只是装饰，点击穿透到提交行 */
+}
+.gg-lane-svg { display: block; }
+.gg-line { fill: none; stroke-width: 2; stroke-opacity: .55; }
+.gg-curve { fill: none; stroke-width: 2; stroke-opacity: .7; }
+.gg-dot { stroke: var(--panel); stroke-width: 1.5; }
+.gg-list-col { position: relative; padding-left: var(--gg-lane-col-w, 200px); }
+.gg-row {
+    display: flex; align-items: center; gap: 10px;
+    padding: 0 8px;
+    cursor: pointer; user-select: none;
+    font-size: 11.5px;
+    box-sizing: border-box;
+}
+.gg-row:hover { background: var(--panel2); }
+.gg-row.selected { background: var(--accent-weak); }
+.gg-msg { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+.gg-refs-deco { flex: none; color: var(--accent); font-size: 10.5px; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gg-author { flex: none; color: var(--muted); max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gg-date { flex: none; color: var(--muted); font-variant-numeric: tabular-nums; }
+.gg-load-more { padding: 6px 8px; color: var(--muted); font-size: 11px; text-align: center; }
+
+/* 右栏：详情（JetBrains 式：消息正文主视觉 → 作者信息行 → 分支信息 → 操作按钮） */
+.gg-detail {
+    flex: 0 0 280px; min-width: 0;
+    overflow-y: auto;
+    border-left: 1px solid var(--border);
+    padding: 10px 12px;
+    font-size: 11.5px;
+    position: relative;
+}
+.gg-detail-empty { color: var(--muted); padding-top: 20px; text-align: center; }
+.gg-detail-close {
+    position: absolute; top: 6px; right: 6px;
+    z-index: 1;
+}
+.gg-detail-msg {
+    font-size: 12px; line-height: 1.55; color: var(--text);
+    white-space: pre-wrap; word-break: break-word;
+    margin-bottom: 12px; padding-right: 20px;
+}
+.gg-detail-author {
+    display: flex; align-items: flex-start; gap: 6px;
+    margin-bottom: 8px; line-height: 1.4;
+}
+.gg-avatar {
+    flex: none; width: 14px; height: 14px; border-radius: 3px;
+    margin-top: 1px;
+}
+.gg-author-text { color: var(--muted); word-break: break-all; }
+.gg-detail-branch {
+    color: var(--muted); font-size: 11px; line-height: 1.4;
+    margin-bottom: 10px; word-break: break-word;
+}
+.gg-branch-list { color: var(--accent); }
+.gg-detail-actions { display: flex; flex-wrap: wrap; gap: 4px; }
+.gg-action-btn {
+    height: 22px; padding: 0 8px;
+    border: 1px solid var(--border); border-radius: 4px;
+    background: transparent; color: var(--text);
+    font: inherit; font-size: 11px; cursor: pointer;
+}
+.gg-action-btn:hover { border-color: var(--accent); color: var(--accent); }
+.gg-action-btn.danger:hover { border-color: #d65a7a; color: #d65a7a; }
+.gg-reset-group { display: flex; gap: 4px; width: 100%; }
+
+.gg-hint { padding: 8px; color: var(--muted); font-size: 11.5px; }
+.gg-hint.hidden { display: none; }
+
+/* 浅色主题：泳道配色微调（对比度） */
+html[data-theme="light"] {
+    --gg-lane-0: #3574f0;
+    --gg-lane-1: #3d9a44;
+    --gg-lane-2: #c26a1e;
+    --gg-lane-3: #9a4fb8;
+    --gg-lane-4: #1f97a3;
+    --gg-lane-5: #c23a5e;
+    --gg-lane-6: #7d8220;
+    --gg-lane-7: #6b7385;
 }

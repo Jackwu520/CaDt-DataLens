@@ -5,6 +5,9 @@
 // 所有解析与写入都走 Go 侧（PatchParseText / PatchPreviewFile / PatchApply / PatchRevert），
 // 本模块只负责渲染与交互，不重复实现补丁逻辑。
 
+import {createCheckbox, createSelect} from '../core/form-controls.js';
+import {isTabReadOnlyFixed, isTabReadOnlyLocked} from '../core/readonly.js';
+
 const MODE_ATOMIC = 'atomic';
 const MODE_PARTIAL = 'partial';
 
@@ -59,12 +62,19 @@ export function patchViewState(doc) {
             root: '',
             ignoreWhitespace: false,
             allowOffset: false,
-            // 只读审阅快照：不做预检、不生成 planId、不显示任何应用入口
+            // 只读审阅快照（doc.patchReview）：硬只读、不可解锁，永久走纯 diff 展示。
+            // 标签只读锁（readOnlyFixed/readOnlyLocked）可随时开关，不缓存，每轮经 plainDiff() 重算。
             review: !!doc.patchReview,
             reviewNotes: Array.isArray(doc.reviewNotes) ? doc.reviewNotes : [],
         };
     }
     return doc.patchState;
+}
+
+// 补丁视图是否退化为纯 diff 展示（不预检、不报红、不显示应用入口）。
+// 两条来源：审阅快照（硬只读，缓存在 st.review）与标签只读锁（可随时开关，每轮重算）。
+function plainDiff(doc, st) {
+    return !!(st.review || doc.readOnlyFixed || doc.readOnlyLocked);
 }
 
 export function disposePatchView(doc) {
@@ -139,7 +149,7 @@ function sanitizeReviewPlan(plan) {
 async function loadPreview(doc, ctx, options) {
     const st = patchViewState(doc);
     const opts = options || {};
-    if (st.review) {
+    if (plainDiff(doc, st)) {
         st.loading = true;
         st.error = '';
         render(doc, ctx);
@@ -228,6 +238,7 @@ function render(doc, ctx) {
 
     const plan = st.plan;
     const review = !!st.review;
+    const plain = plainDiff(doc, st);  // 纯 diff 模式：审阅快照 + 标签只读锁
     const bar = el('div', 'patch-bar');
     const title = el('div', 'patch-title');
     title.appendChild(el('span', 'patch-name', doc.name || '补丁'));
@@ -239,28 +250,43 @@ function render(doc, ctx) {
     }
     title.appendChild(stats);
     if (review) title.appendChild(el('span', 'patch-tag', '只读快照'));
+    else if (plain) title.appendChild(el('span', 'patch-tag', '只读'));
     else if (plan && plan.external) title.appendChild(el('span', 'patch-tag', '外部补丁'));
     bar.appendChild(title);
 
     const actions = el('div', 'patch-actions');
-    if (plan && !review) {
+    // 只读开关：常显（开只读后应用行会整块隐藏，开关必须留在外面才关得掉）。
+    // 审阅快照是硬只读，不给开关。
+    if (!review) {
+        const locked = isTabReadOnlyLocked(doc);
+        const ro = createCheckbox({
+            checked: locked,
+            label: '只读',
+            title: locked ? '取消只读，恢复预检与应用入口' : '只读：不预检、不报红，只按 diff 展示',
+            onChange: () => ctx.setDocReadOnly(doc, !isTabReadOnlyLocked(doc)),
+        });
+        if (isTabReadOnlyFixed(doc)) ro.control.disabled = true;
+        ro.element.classList.add('patch-readonly-toggle');
+        actions.appendChild(ro.element);
+    }
+    let modeSelectEl = null;
+    if (plan && !plain) {
         const modeWrap = el('label', 'patch-mode');
         modeWrap.appendChild(el('span', 'patch-mode-label', '应用模式'));
-        const select = document.createElement('select');
-        select.className = 'patch-mode-select';
-        for (const [value, label] of [[MODE_ATOMIC, '整体成功'], [MODE_PARTIAL, '允许部分成功']]) {
-            const opt = document.createElement('option');
-            opt.value = value;
-            opt.textContent = label;
-            if (st.mode === value) opt.selected = true;
-            select.appendChild(opt);
-        }
-        select.addEventListener('change', () => {
-            st.mode = select.value;
-            render(doc, ctx);
+        const mode = createSelect({
+            className: 'patch-mode-select',
+            options: [
+                {value: MODE_ATOMIC, label: '整体成功', selected: st.mode === MODE_ATOMIC},
+                {value: MODE_PARTIAL, label: '允许部分成功', selected: st.mode === MODE_PARTIAL},
+            ],
+            onChange: () => {
+                st.mode = mode.control.value;
+                render(doc, ctx);
+            },
         });
-        modeWrap.appendChild(select);
+        modeWrap.appendChild(mode.element);
         actions.appendChild(modeWrap);
+        modeSelectEl = mode.control;
 
         const revertable = !!plan.patchId && !plan.external;
         const btnRevert = el('button', 'dlg-btn', '撤销');
@@ -288,8 +314,11 @@ function render(doc, ctx) {
     const head = el('div', 'patch-head');
     head.appendChild(bar);
     host.appendChild(head);
+    // 去掉浏览器原生下拉外观：设置页同款触发器 + 浮层（原生 select 仍是值真源）。
+    // 必须在 append 进 DOM 之后调，增强器要读布局算浮层位置。
+    if (modeSelectEl && typeof ctx.enhanceSelect === 'function') ctx.enhanceSelect(modeSelectEl);
 
-    if (plan && !review) {
+    if (plan && !plain) {
         const toolbar = el('div', 'patch-subbar');
         const rootWrap = el('span', 'patch-root-wrap');
         rootWrap.appendChild(el('span', 'patch-root-label', '目标：'));
@@ -330,12 +359,12 @@ function render(doc, ctx) {
     }
 
     if (st.loading) {
-        host.appendChild(el('div', 'patch-note', review ? '正在解析差异…' : '正在预检…'));
+        host.appendChild(el('div', 'patch-note', plain ? '正在解析差异…' : '正在预检…'));
         return;
     }
     if (st.error) {
         const box = el('div', 'patch-error');
-        box.appendChild(el('div', 'patch-error-title', review ? '无法解析该差异' : '无法解析该补丁'));
+        box.appendChild(el('div', 'patch-error-title', plain ? '无法解析该差异' : '无法解析该补丁'));
         box.appendChild(el('pre', 'patch-error-detail', st.error));
         host.appendChild(box);
         return;
@@ -352,19 +381,19 @@ function render(doc, ctx) {
         if (!(plan.files || []).length) {
             host.appendChild(el('div', 'patch-note', '本轮改动没有可展示的 Git 差异（文件可能未被 Git 跟踪）。'));
         }
-    } else if (!(plan.files || []).some((f) => f.status === 'ok')) {
+    } else if (!plain && !(plan.files || []).some((f) => f.status === 'ok')) {
         host.appendChild(el('div', 'patch-note warn', '没有可直接应用的文件：请按下方原因处理后重新预检。'));
     }
 
-    if (!review && st.result) host.appendChild(renderResult(st.result));
+    if (!plain && st.result) host.appendChild(renderResult(st.result));
 
     const list = el('div', 'patch-files');
     for (const file of plan.files || []) {
-        list.appendChild(renderFile(doc, ctx, file, st, review));
+        list.appendChild(renderFile(doc, ctx, file, st, review, plain));
     }
     host.appendChild(list);
 
-    if (!review) {
+    if (!plain) {
         const hint = el('div', 'patch-footnote', '应用是两阶段操作：先预检，再写入；写入前会把原始文件备份到 .cadt/patches/backup/，可随时撤销。');
         host.appendChild(hint);
     }
@@ -519,10 +548,10 @@ function renderRootSuggestion(doc, ctx, plan) {
     return box;
 }
 
-function renderFile(doc, ctx, file, st, review) {
-    const card = el('div', 'patch-file ' + (review ? '' : (file.status || '')));
+function renderFile(doc, ctx, file, st, review, plain) {
+    const card = el('div', 'patch-file ' + (plain ? '' : (file.status || '')));
     const head = el('div', 'patch-file-head');
-    if (!review) {
+    if (!plain) {
         const box = document.createElement('input');
         box.type = 'checkbox';
         box.className = 'patch-file-check';
@@ -549,7 +578,7 @@ function renderFile(doc, ctx, file, st, review) {
     const stat = el('span', 'patch-file-stat');
     stat.append(el('span', 'patch-add', formatCount(file.added)), el('span', 'patch-del', '−' + file.removed));
     head.appendChild(stat);
-    if (!review) head.appendChild(el('span', 'patch-file-status ' + (file.status || ''), STATUS_LABEL[file.status] || file.status));
+    if (!plain) head.appendChild(el('span', 'patch-file-status ' + (file.status || ''), STATUS_LABEL[file.status] || file.status));
 
     const fold = el('button', 'patch-fold', st.collapsed.has(file.relPath) ? '展开' : '收起');
     fold.type = 'button';
@@ -561,7 +590,7 @@ function renderFile(doc, ctx, file, st, review) {
     head.appendChild(fold);
     card.appendChild(head);
 
-    if (!review && file.reason) {
+    if (!plain && file.reason) {
         const reason = el('div', 'patch-file-reason', file.reason);
         card.appendChild(reason);
         const fix = suggestFor(file);
@@ -577,7 +606,7 @@ function renderFile(doc, ctx, file, st, review) {
                 body.appendChild(el('div', 'patch-note', '…内容较多，点击「展开」查看全部'));
                 break;
             }
-            body.appendChild(renderHunk(doc, ctx, hunk, file, st, review));
+            body.appendChild(renderHunk(doc, ctx, hunk, file, st, review, plain));
             budget -= (hunk.lines || []).length + 1;
         }
         if (!expanded && budget <= 0) {
@@ -594,14 +623,14 @@ function renderFile(doc, ctx, file, st, review) {
     return card;
 }
 
-function renderHunk(doc, ctx, hunk, file, st, review) {
-    const wrap = el('div', 'patch-hunk ' + (review ? '' : (hunk.status || '')));
+function renderHunk(doc, ctx, hunk, file, st, review, plain) {
+    const wrap = el('div', 'patch-hunk ' + (plain ? '' : (hunk.status || '')));
     const head = el('div', 'patch-hunk-head');
     head.appendChild(el('span', 'patch-hunk-range', hunk.header || `@@ -${hunk.oldStart} +${hunk.newStart} @@`));
-    if (!review && hunk.status === 'ok' && hunk.applyAtLine) {
+    if (!plain && hunk.status === 'ok' && hunk.applyAtLine) {
         head.appendChild(el('span', 'patch-hunk-at', '落到第 ' + hunk.applyAtLine + ' 行'));
     }
-    if (!review && hunk.status !== 'ok' && hunk.reason) {
+    if (!plain && hunk.status !== 'ok' && hunk.reason) {
         head.appendChild(el('span', 'patch-hunk-reason', hunk.reason));
     }
     wrap.appendChild(head);

@@ -40,6 +40,8 @@ const rawIcons = {
     'refresh': '<path d="M13.2 8a5.2 5.2 0 1 1-1.5-3.7"/><path d="M13.3 1.7v3h-3"/>',
     'play': '<path fill="currentColor" stroke="none" d="M5.3 3.5l7 4.5-7 4.5V3.5z"/>',
     'pause': '<rect x="4.6" y="3.5" width="2.3" height="9" rx="0.6" fill="currentColor" stroke="none"/><rect x="9.1" y="3.5" width="2.3" height="9" rx="0.6" fill="currentColor" stroke="none"/>',
+    // 停止（结束运行）：实心圆角方块，与输入区 #ai-stop 的停止字形一致
+    'stop': '<rect x="4" y="4" width="8" height="8" rx="1.3" fill="currentColor" stroke="none"/>',
     'shield': '<path d="M8 1.9l5 1.9v3.6c0 3.1-2 5.2-5 6.6-3-1.4-5-3.5-5-6.6V3.8l5-1.9z"/>',
     'shield-plus': '<path d="M8 1.9l5 1.9v3.6c0 3.1-2 5.2-5 6.6-3-1.4-5-3.5-5-6.6V3.8l5-1.9z"/><path d="M8 5.7v3.4M6.3 7.4h3.4"/>',
     'zap': '<path d="M8.7 1.9L4 8.3h3.1l-.8 5.8 4.7-6.4H7.9l.8-5.8z"/>',
@@ -53,7 +55,10 @@ const rawIcons = {
     'eraser': '<path d="M9.5 2.7l3.8 3.8-6 6H4.5L2.6 10.6l6.9-6.9z"/><path d="M6.1 6.2l3.7 3.7"/><path d="M2.6 13.6h8.6"/>',
     'terminal': '<rect x="1.9" y="2.8" width="12.2" height="10.4" rx="1.4"/><path d="M4.5 6.3l2.3 2-2.3 2"/><path d="M8.6 10.6h3"/>',
     'browser': '<rect x="2.1" y="2.8" width="11.8" height="10.4" rx="1.2"/><path d="M2.1 5.4h11.8"/><path d="M4.2 4.1h.1M5.8 4.1h.1M7.4 4.1h.1"/>',
+    'memo': '<path d="M2.6 3.2l1.5 1.5L6.4 2.2"/><path d="M9.4 3.6h4M2.6 8h2.6M9.4 8h4M2.6 12.6h2.6M9.4 12.6h4"/>',
     'more': '<circle cx="3.4" cy="8" r="1.15" fill="currentColor" stroke="none"/><circle cx="8" cy="8" r="1.15" fill="currentColor" stroke="none"/><circle cx="12.6" cy="8" r="1.15" fill="currentColor" stroke="none"/>',
+    // 拖动排序手柄（3×3 点阵，实心）
+    'grip': '<g fill="currentColor" stroke="none"><circle cx="5" cy="4" r="1.05"/><circle cx="8" cy="4" r="1.05"/><circle cx="11" cy="4" r="1.05"/><circle cx="5" cy="8" r="1.05"/><circle cx="8" cy="8" r="1.05"/><circle cx="11" cy="8" r="1.05"/><circle cx="5" cy="12" r="1.05"/><circle cx="8" cy="12" r="1.05"/><circle cx="11" cy="12" r="1.05"/></g>',
     'camera': '<path d="M2.6 5.4h2.1l.8-1.4h5l.8 1.4h2.1v6.5c0 .6-.5 1.1-1.1 1.1H3.7c-.6 0-1.1-.5-1.1-1.1V5.4z"/><circle cx="8" cy="8.7" r="2"/>',
     // 生图与视频（设置导航）：相框 + 太阳 + 山形
     'image': '<rect x="2.6" y="2.9" width="10.8" height="10.2" rx="1.2"/><circle cx="5.9" cy="6.2" r="1.1"/><path d="M3.2 11.3l3-2.9 2.6 2.4 2.3-2.1 1.9 1.8"/>',

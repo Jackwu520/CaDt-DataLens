@@ -12,6 +12,12 @@ import {buildWidgetPlaceholder, widgetKindOf} from './widget.js';
 // DOMPurify 3.4.x 会整体丢弃属性值含换行的属性（mXSS 加固），而 mermaid 源码必含换行：
 // 明文存 data-src 会被 sanitize 静默剥掉，占位永远空白且无报错。base64 值不含换行可存活，
 // 渲染端（writing-ui.renderMermaidBlocks）解码后交给 mermaid.render。
+/**
+ * 把 mermaid 源码编码成 UTF-8 安全的 base64（DOMPurify 会丢弃属性值含换行的属性，
+ * base64 值不含换行可存活；渲染端解码后交给 mermaid.render）。
+ * @param {string} text mermaid 源码
+ * @returns {string} base64 编码串
+ */
 export function encodeMermaidSource(text) {
     const bytes = new TextEncoder().encode(String(text || ''));
     let bin = '';
@@ -19,6 +25,11 @@ export function encodeMermaidSource(text) {
     return btoa(bin);
 }
 
+/**
+ * 解码 encodeMermaidSource 编码的 mermaid 源码。
+ * @param {string} encoded base64 编码串
+ * @returns {string} 原始 mermaid 源码
+ */
 export function decodeMermaidSource(encoded) {
     const bin = atob(String(encoded || ''));
     const bytes = new Uint8Array(bin.length);
@@ -26,9 +37,15 @@ export function decodeMermaidSource(encoded) {
     return new TextDecoder().decode(bytes);
 }
 
-// createMarkdownRenderer 创建渲染器。
-// deps.mdLineNumbers(): boolean —— 代码块是否带行号（实时读取设置）
-// deps.mermaidPlaceholder(text): string —— mermaid 围栏占位 HTML（mermaid 归 main.js 管）
+/**
+ * 创建共享 Markdown 渲染器（阅读模式与主界面 md 预览共用同一实例与 sanitize 规则）。
+ * @param {object} [deps] 依赖注入
+ * @param {Function} [deps.mdLineNumbers] 返回 boolean，代码块是否带行号（实时读取设置）
+ * @param {Function} [deps.mermaidPlaceholder] (code: string) => string，mermaid 围栏占位 HTML（mermaid 归 main.js 管）
+ * @returns {{markdownRenderer: MarkdownIt, renderMarkdownHtml: Function, renderMarkdownCodeBlock: Function}}
+ *   markdownRenderer 为配置好的 markdown-it 实例；renderMarkdownHtml(text, env) 返回 sanitize 后的 HTML；
+ *   renderMarkdownCodeBlock(text, info, env) 渲染单个代码块
+ */
 export function createMarkdownRenderer(deps) {
     const getLineNumbers = deps && typeof deps.mdLineNumbers === 'function'
         ? deps.mdLineNumbers

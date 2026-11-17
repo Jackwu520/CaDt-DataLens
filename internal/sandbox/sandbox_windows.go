@@ -61,6 +61,7 @@ const (
 	mandatoryACEOverhead = 8 // ACE 头 4 + 掩码 4
 
 	seFileObject             = 1
+	ownerSecurityInformation = 0x00000001
 	daclSecurityInformation  = 0x00000004
 	labelSecurityInformation = 0x00000010
 )
@@ -142,12 +143,12 @@ func New(p Policy) (*Sandbox, error) {
 	if p.Mode == WorkspaceWrite && s.workspaceSID != nil {
 		if err := grantWrite(s.workspace, s.workspaceSID, lowSID, worldSID); err != nil {
 			_ = s.Close()
-			return nil, fmt.Errorf("%w: 授权写根 %s: %v", ErrUnavailable, s.workspace, err)
+			return nil, fmt.Errorf("%w: 授权写根 %s: %v%s", ErrUnavailable, s.workspace, err, diagnoseGrantFailure(s.workspace))
 		}
 		if s.tempSID != nil && s.tempDir != "" {
 			if err := grantWrite(s.tempDir, s.tempSID, lowSID, worldSID); err != nil {
 				_ = s.Close()
-				return nil, fmt.Errorf("%w: 授权临时目录 %s: %v", ErrUnavailable, s.tempDir, err)
+				return nil, fmt.Errorf("%w: 授权临时目录 %s: %v%s", ErrUnavailable, s.tempDir, err, diagnoseGrantFailure(s.tempDir))
 			}
 			s.tempGranted = true
 		}
@@ -838,6 +839,74 @@ func buildACL(aces [][]byte) ([]byte, *windows.ACL, error) {
 		}
 	}
 	return buf, acl, nil
+}
+
+// ---------- 授权失败诊断 ----------
+//
+// workspace-write 要在写根上写 DACL（能力 SID 的 allow ACE + Everyone 的 deny ACE）与
+// 完整性标签，这需要该目录的 WRITE_DAC —— 目录所有者天然持有，别人得被显式授予。
+// 工作区由另一个账户创建时（例如本地 admin 建的目录、当前登录的是 Microsoft 账户），
+// 当前账户拿到的往往只是继承来的 Modify，而 Modify 不含「更改权限」，于是 grantWrite 报
+// 裸的 Access is denied。这种情况下重试一万次也一样，只能把「缺什么、怎么补」翻出来。
+
+// ownerSIDStringOf 取目录所有者 SID 字符串（S-1-5-21-…），用于与当前账户比对。
+func ownerSIDStringOf(path string) (string, error) {
+	name, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return "", err
+	}
+	var owner *windows.SID
+	var sd uintptr
+	r, _, callErr := procGetNamedSecurityInfoW.Call(
+		uintptr(unsafe.Pointer(name)), seFileObject, ownerSecurityInformation,
+		uintptr(unsafe.Pointer(&owner)), 0, 0, 0,
+		uintptr(unsafe.Pointer(&sd)),
+	)
+	if r != 0 {
+		return "", fmt.Errorf("GetNamedSecurityInfoW(%s): %v", path, winErr(r, callErr))
+	}
+	defer windows.LocalFree(windows.Handle(sd))
+	if owner == nil {
+		return "", fmt.Errorf("目录没有所有者")
+	}
+	return owner.String(), nil
+}
+
+// currentUserSIDString 取当前进程令牌的用户 SID；拿不到返回空串（诊断退化为通用文案）。
+func currentUserSIDString() string {
+	var token windows.Token
+	if err := windows.OpenProcessToken(windows.CurrentProcess(), tokenQuery, &token); err != nil {
+		return ""
+	}
+	defer token.Close()
+	var needed uint32
+	_ = windows.GetTokenInformation(token, windows.TokenUser, nil, 0, &needed)
+	if needed == 0 {
+		return ""
+	}
+	buf := make([]byte, needed)
+	if err := windows.GetTokenInformation(token, windows.TokenUser, &buf[0], needed, &needed); err != nil {
+		return ""
+	}
+	info := (*windows.Tokenuser)(unsafe.Pointer(&buf[0]))
+	if info.User.Sid == nil {
+		return ""
+	}
+	return info.User.Sid.String()
+}
+
+// diagnoseGrantFailure 把「改不了这个目录的 ACL」翻成可操作的说明，附在 ErrUnavailable 后面。
+func diagnoseGrantFailure(path string) string {
+	owner, ownerErr := ownerSIDStringOf(path)
+	me := currentUserSIDString()
+	switch {
+	case ownerErr != nil || owner == "" || me == "":
+		return "（无法读取目录所有者，无法判断是否缺「更改权限」）"
+	case owner == me:
+		return "（当前账户就是该目录的所有者却仍被拒绝：检查安全软件拦截、目录只读属性或 ACL 保护）"
+	}
+	return "（该目录属于另一个账户，写 ACL 需要它的「更改权限」(WRITE_DAC)：" +
+		"请以所有者身份运行本应用，或由管理员执行 icacls \"" + path + "\" /grant \"*" + me + ":(OI)(CI)WD\"）"
 }
 
 // ---------- Job ----------

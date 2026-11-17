@@ -3,11 +3,38 @@
 // 以及「新增工具必须写进目录」的作者规则（.cadt/memory/ai-tool-catalog-rule.md）。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {AI_TOOL_CATALOG, AI_TOOL_DEFS, AI_TOOL_GROUPS, createAIToolDefs} from '../../src/ai/ai-tool-defs.js';
+import {AI_TOOL_CATALOG, AI_TOOL_DEFS, AI_TOOL_GROUPS, buildSpawnAgentDef, createAIToolDefs} from '../../src/ai/ai-tool-defs.js';
 import {externalCapabilityUsable} from '../../src/ai/ai-external-tools.js';
 
 const {toolsForScope} = createAIToolDefs({appControlOn: () => false});
 const names = (scope, planMode) => toolsForScope(scope, planMode).map((t) => t.name);
+
+test('buildSpawnAgentDef：默认轮次取自设置，模型看到的是真实值而不是写死的 50', () => {
+    const with120 = buildSpawnAgentDef([], 120);
+    assert.ok(with120.parameters.properties.maxRounds.description.includes('默认 120'),
+        '设置改了默认轮次，工具描述必须跟着变');
+    assert.ok(!with120.parameters.properties.maxRounds.description.includes('默认 50'),
+        '不能同时留着旧默认值');
+    // 无设置值（0 / 未传）时保留静态基线
+    for (const value of [undefined, 0, null]) {
+        const base = buildSpawnAgentDef([], value);
+        assert.ok(base.parameters.properties.maxRounds.description.includes('默认 50'), '缺省仍是 50');
+    }
+    // 不污染常量对象：def 是新建的，AI_TOOL_DEFS.spawn_agent 保持原样
+    assert.ok(AI_TOOL_DEFS.spawn_agent.parameters.properties.maxRounds.description.includes('默认 50'));
+    // 没候选时不出现 model 参数；有候选才拼进去
+    assert.equal(with120.parameters.properties.model, undefined);
+    const withModel = buildSpawnAgentDef([{ref: 'a|b', label: '便宜模型', model: 'm1'}], 60);
+    assert.ok(withModel.parameters.properties.model, '有候选要加 model 参数');
+    assert.ok(withModel.description.includes('「m1」（便宜模型）'), '候选清单要写进描述');
+    assert.ok(withModel.parameters.properties.maxRounds.description.includes('默认 60'));
+});
+
+test('buildSpawnAgentDef：def 仍是纯 name/description/parameters 载荷', () => {
+    const def = buildSpawnAgentDef([{ref: 'a|b', label: 'L', model: 'm'}], 80);
+    assert.deepEqual(Object.keys(def).sort(), ['description', 'name', 'parameters']);
+    assert.deepEqual(Object.keys(def.parameters).sort(), ['properties', 'required', 'type']);
+});
 
 test('目录一致性：每个工具定义必须写进目录，目录条目必须指向存在的工具', () => {
     const defs = Object.keys(AI_TOOL_DEFS);

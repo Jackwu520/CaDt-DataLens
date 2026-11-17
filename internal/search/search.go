@@ -123,21 +123,29 @@ func searchNameHit(name, needle string, caseSensitive bool) bool {
 }
 
 // sortSearchTier 档内排序：文件名命中优先，其后路径/行/列升序。
-// 命中数受 maxResults 约束（≤ 千级），排序开销可忽略。
-func sortSearchTier(hits []SearchHit, needle string, caseSensitive bool) {
+// 模糊模式下文件名命中按子序列判断，并追加一档：字面（连续）命中排在
+// 子序列（离散）命中之前。命中数受 maxResults 约束（≤ 千级），排序开销可忽略。
+func sortSearchTier(hits []SearchHit, needle string, caseSensitive, fuzzy bool) {
 	if len(hits) < 2 {
 		return
 	}
 	nameHit := make(map[string]bool, 8)
 	for _, h := range hits {
 		if _, ok := nameHit[h.Path]; !ok {
-			nameHit[h.Path] = searchNameHit(h.Name, needle, caseSensitive)
+			if fuzzy {
+				nameHit[h.Path] = fuzzySubsequence(h.Name, needle, caseSensitive)
+			} else {
+				nameHit[h.Path] = searchNameHit(h.Name, needle, caseSensitive)
+			}
 		}
 	}
 	sort.SliceStable(hits, func(i, j int) bool {
 		a, b := hits[i], hits[j]
 		if an, bn := nameHit[a.Path], nameHit[b.Path]; an != bn {
 			return an
+		}
+		if a.fuzzySplit != b.fuzzySplit {
+			return !a.fuzzySplit
 		}
 		if a.Path != b.Path {
 			return a.Path < b.Path
@@ -159,6 +167,8 @@ type SearchHit struct {
 	Preview    string `json:"preview"`
 	MatchStart int    `json:"matchStart"`
 	MatchEnd   int    `json:"matchEnd"`
+	// fuzzySplit 标记子序列（离散）命中，仅用于排序分档，不进 JSON。
+	fuzzySplit bool
 }
 
 type SearchResult struct {
@@ -272,7 +282,7 @@ type searchFileResult struct {
 	overBudget bool
 }
 
-func scanSearchFile(job searchFileJob, needle string, needleASCII, caseSensitive bool, deadline time.Time) searchFileResult {
+func scanSearchFile(job searchFileJob, needle string, needleASCII, caseSensitive, fuzzy bool, deadline time.Time) searchFileResult {
 	var out searchFileResult
 	if time.Now().After(deadline) {
 		out.overBudget = true
@@ -314,6 +324,7 @@ func scanSearchFile(job searchFileJob, needle string, needleASCII, caseSensitive
 		if !caseSensitive && !foldASCII {
 			haystack = strings.ToLower(line)
 		}
+		hitsBefore := len(out.hits)
 		searchFrom := 0
 		for {
 			var idx int
@@ -346,23 +357,52 @@ func scanSearchFile(job searchFileJob, needle string, needleASCII, caseSensitive
 				break
 			}
 		}
+		// 模糊模式：整行没有字面命中时才做子序列匹配，每行至多一条（fzf 语义）
+		if fuzzy && len(out.hits) == hitsBefore {
+			if start, end, ok := fuzzyFind(line, needle, caseSensitive); ok {
+				preview, mStart, mEnd := buildSearchPreview(line, start, end-start)
+				out.hits = append(out.hits, SearchHit{
+					Path:       job.path,
+					Name:       job.name,
+					Dir:        job.relDir,
+					Line:       lineNo,
+					Column:     utf16Len(line[:start]) + 1,
+					Length:     utf16Len(line[start:end]),
+					Preview:    preview,
+					MatchStart: mStart,
+					MatchEnd:   mEnd,
+					fuzzySplit: true,
+				})
+				if len(out.hits) >= searchMaxPerFile {
+					return out
+				}
+			}
+		}
 	}
 	return out
 }
 
 // SearchWorkspace 流式扫描工作区文本文件，不建索引；命中数/单文件命中/耗时均有限额。
 func (s *Searcher) SearchWorkspace(root, query string, caseSensitive bool, maxResults int) (*SearchResult, error) {
-	return s.searchWorkspace(root, query, caseSensitive, maxResults, "")
+	return s.searchWorkspace(root, query, caseSensitive, maxResults, "", false)
+}
+
+// SearchWorkspaceFuzzy 在 SearchWorkspace 的扫描与限额之上启用 fzf 式子序列匹配：
+// 每行先找字面命中（与普通模式完全一致），整行没有字面命中时再找「字符按序出现」
+// 的最小窗口；窗口超过 fuzzyMaxWindow 个字符视为无意义命中，直接丢弃。
+// 子序列匹配没有 rg 对应能力，此模式固定走内置扫描（共用同一个 searchBudget）。
+func (s *Searcher) SearchWorkspaceFuzzy(root, query string, caseSensitive bool, maxResults int) (*SearchResult, error) {
+	return s.searchWorkspace(root, query, caseSensitive, maxResults, "", true)
 }
 
 // SearchWorkspaceFiltered 与 SearchWorkspace 同源，但只保留 filePattern 通配匹配的文件命中。
 // pattern 语义与 globMatchPath 一致；AI 的 search_text 把 filePattern 下推到这里，
 // 避免无关文件的命中先占满结果窗口（前端仍保留一次兜底过滤）。
 func (s *Searcher) SearchWorkspaceFiltered(root, query string, caseSensitive bool, maxResults int, pattern string) (*SearchResult, error) {
-	return s.searchWorkspace(root, query, caseSensitive, maxResults, strings.TrimSpace(pattern))
+	return s.searchWorkspace(root, query, caseSensitive, maxResults, strings.TrimSpace(pattern), false)
 }
 
-func (s *Searcher) searchWorkspace(root, query string, caseSensitive bool, maxResults int, pattern string) (*SearchResult, error) {
+func (s *Searcher) searchWorkspace(root, query string, caseSensitive bool, maxResults int, pattern string, fuzzy bool) (*SearchResult, error) {
 	root = strings.TrimSpace(root)
 	if root == "" {
 		return nil, errors.New("未打开工作区目录")
@@ -380,7 +420,7 @@ func (s *Searcher) searchWorkspace(root, query string, caseSensitive bool, maxRe
 	if maxResults <= 0 || maxResults > 1000 {
 		maxResults = searchMaxResults
 	}
-	if os.Getenv("DATALENS_NO_RG") == "" {
+	if !fuzzy && os.Getenv("DATALENS_NO_RG") == "" {
 		if res, ok := searchWithRipgrep(root, query, caseSensitive, maxResults, pattern); ok {
 			return res, nil
 		}
@@ -443,12 +483,12 @@ func (s *Searcher) searchWorkspace(root, query string, caseSensitive bool, maxRe
 		return nil, walkErr
 	}
 	// 两阶段扫描：源码档先占预算，未被挤满才补产物档（共享同一个绝对 deadline）
-	srcHits, srcScanned, truncated := scanSearchJobs(srcJobs, needle, needleASCII, caseSensitive, deadline, maxResults)
-	sortSearchTier(srcHits, needle, caseSensitive)
+	srcHits, srcScanned, truncated := scanSearchJobs(srcJobs, needle, needleASCII, caseSensitive, fuzzy, deadline, maxResults)
+	sortSearchTier(srcHits, needle, caseSensitive, fuzzy)
 	result := &SearchResult{Hits: srcHits, Files: srcScanned}
 	if len(result.Hits) < maxResults && len(artJobs) > 0 {
-		artHits, artScanned, artTrunc := scanSearchJobs(artJobs, needle, needleASCII, caseSensitive, deadline, maxResults-len(result.Hits))
-		sortSearchTier(artHits, needle, caseSensitive)
+		artHits, artScanned, artTrunc := scanSearchJobs(artJobs, needle, needleASCII, caseSensitive, fuzzy, deadline, maxResults-len(result.Hits))
+		sortSearchTier(artHits, needle, caseSensitive, fuzzy)
 		result.Hits = append(result.Hits, artHits...)
 		result.Files += artScanned
 		truncated = truncated || artTrunc
@@ -461,7 +501,7 @@ func (s *Searcher) searchWorkspace(root, query string, caseSensitive bool, maxRe
 
 // scanSearchJobs 并行扫描一组文件，命中按 jobs 顺序回收；到 hitCap 或超预算即截断。
 // 每个文件只扫一遍，排序只在 ≤ hitCap 条命中上做。
-func scanSearchJobs(jobs []searchFileJob, needle string, needleASCII, caseSensitive bool, deadline time.Time, hitCap int) ([]SearchHit, int, bool) {
+func scanSearchJobs(jobs []searchFileJob, needle string, needleASCII, caseSensitive, fuzzy bool, deadline time.Time, hitCap int) ([]SearchHit, int, bool) {
 	if len(jobs) == 0 || hitCap <= 0 {
 		return nil, 0, len(jobs) > 0
 	}
@@ -487,7 +527,7 @@ func scanSearchJobs(jobs []searchFileJob, needle string, needleASCII, caseSensit
 				if stop.Load() {
 					continue
 				}
-				res := scanSearchFile(jobs[idx], needle, needleASCII, caseSensitive, deadline)
+				res := scanSearchFile(jobs[idx], needle, needleASCII, caseSensitive, fuzzy, deadline)
 				if res.scanned {
 					atomic.AddInt64(&filesScanned, 1)
 				}

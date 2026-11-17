@@ -85,6 +85,71 @@ test('createAITimer：导出 ai-panel 依赖的全部 API', () => {
     }
 });
 
+// start 的会话归属：AI 工具必须显式传「发起调用的会话」，缺省才回落面板当前会话。
+// （后台会话运行中用户切到别的对话时，拿可见会话记归属会让到点唤醒与 5 个上限都错到别的会话上。）
+function makeStartBackend() {
+    const running = [];
+    let seq = 0;
+    return {
+        running,
+        async StartTimer(mode, seconds, label) {
+            const now = Date.now();
+            const created = {id: 'tm' + (++seq), mode, label, startMs: now, endMs: now + seconds * 1000};
+            running.push(created);
+            return {list: running.slice(), created};
+        },
+    };
+}
+
+// 用例结束必须把本地注册表清空：render 在无计时器时才收掉秒表 interval，否则 node --test 不退出
+function drainTimers(api, backend) {
+    for (const t of backend.running) api.onStopped({id: t.id});
+}
+
+test('createAITimer.start：显式归属优先于面板当前会话（后台会话启动的计时器唤醒自己）', async () => {
+    const backend = makeStartBackend();
+    const fired = [];
+    const api = createAITimer({
+        getBackend: () => backend,
+        getSessionId: () => 'sess-visible',
+        getChip: () => null,
+        onFire: (payload) => fired.push(payload),
+    });
+    const created = await api.start('countdown', 30, '后台会话的等待', 'sess-background');
+    assert.deepEqual(api.snapshot(['sess-background']).map((t) => t.id), [created.id]);
+    assert.equal(api.snapshot(['sess-visible']).length, 0, '不能记到面板当前会话上');
+    api.onFired({id: created.id, label: created.label});
+    assert.equal(fired.length, 1);
+    assert.equal(fired[0].sessionId, 'sess-background', '到点唤醒的目标是发起会话');
+});
+
+test('createAITimer.start：缺省归属回落到面板当前会话（手动创建）', async () => {
+    const backend = makeStartBackend();
+    const api = createAITimer({
+        getBackend: () => backend,
+        getSessionId: () => 'sess-visible',
+        getChip: () => null,
+    });
+    const created = await api.start('countup', 0, '手动正计时');
+    assert.deepEqual(api.snapshot(['sess-visible']).map((t) => t.id), [created.id]);
+    assert.equal(api.snapshot(['sess-background']).length, 0);
+    drainTimers(api, backend);
+});
+
+test('createAITimer.start：会话内上限按归属会话计数，不误伤面板当前会话', async () => {
+    const backend = makeStartBackend();
+    const api = createAITimer({
+        getBackend: () => backend,
+        getSessionId: () => 'sess-visible',
+        getChip: () => null,
+    });
+    for (let i = 0; i < 5; i += 1) await api.start('countdown', 60, '后台 ' + i, 'sess-background');
+    await assert.rejects(() => api.start('countdown', 60, '第六个', 'sess-background'), /上限/);
+    // 面板当前会话一个计时器都没有：不应被后台会话的 5 个拦下
+    await api.start('countdown', 60, '可见会话自己建的', 'sess-visible');
+    drainTimers(api, backend);
+});
+
 // secondsUntilClock：到点时刻 → 距现在的秒数（创建对话框选时刻替代手输秒）。
 test('secondsUntilClock：当天未到 / 已过按明天 / 非法格式', () => {
     // 固定 now：2026-11-15 10:00:00 本地时间

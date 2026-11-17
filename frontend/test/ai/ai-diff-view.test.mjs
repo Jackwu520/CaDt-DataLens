@@ -76,10 +76,32 @@ test('buildDiffPreview：改动行前后各留 2 行上下文，长间隔插入�
     assert.ok(preview2.lines.some((line) => line.t === '…'));
 });
 
+test('buildDiffPreview：行号按完整 diff 计数，裁剪与省略号不重置', () => {
+    const ops = [];
+    for (let i = 0; i < 30; i++) ops.push({t: ' ', text: 'head' + i});
+    ops.push({t: '-', text: 'old'});
+    ops.push({t: '+', text: 'new'});
+    for (let i = 0; i < 20; i++) ops.push({t: ' ', text: 'mid' + i});
+    ops.push({t: '+', text: 'tail'});
+    const preview = buildDiffPreview(ops);
+    // 前 2 行上下文从第 29/30 行开始（不是 1）；省略号之后的行号继续按完整 diff 推进
+    assert.deepEqual(preview.lines.slice(0, 3), [
+        {t: ' ', text: 'head28', oldLine: 29, newLine: 29},
+        {t: ' ', text: 'head29', oldLine: 30, newLine: 30},
+        {t: '-', text: 'old', oldLine: 31, newLine: 0},
+    ]);
+    assert.ok(preview.lines.some((line) => line.t === '…'));
+    assert.deepEqual(preview.lines.slice(-3), [
+        {t: ' ', text: 'mid18', oldLine: 50, newLine: 50},
+        {t: ' ', text: 'mid19', oldLine: 51, newLine: 51},
+        {t: '+', text: 'tail', oldLine: 0, newLine: 52},
+    ]);
+});
+
 test('buildDiffPreview：无改动时保留首行；空 ops 返回空', () => {
     const unchanged = computeLineDiff('a\nb', 'a\nb');
     const preview = buildDiffPreview(unchanged);
     assert.equal(preview.lines.length, 1);
-    assert.deepEqual(preview.lines[0], {t: ' ', text: 'a'});
+    assert.deepEqual(preview.lines[0], {t: ' ', text: 'a', oldLine: 1, newLine: 1});
     assert.deepEqual(buildDiffPreview([]), {lines: [], truncated: false});
 });

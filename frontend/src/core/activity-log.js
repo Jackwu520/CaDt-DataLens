@@ -50,7 +50,13 @@ function sanitizeValue(value, depth) {
     return out;
 }
 
-// sanitizeDetail 实施方案第 5 节脱敏：秘密键打码、长文本截断、对象降维、整体尺寸封顶。
+/**
+ * 对操作留痕的 detail 实施脱敏（方案第 5 节）：秘密键打码、长文本截断、
+ * 对象降维（数组只记 length）、整体序列化尺寸封顶。
+ * @param {*} detail 任意操作详情（原始值 / 对象 / 数组）
+ * @returns {object|undefined} 脱敏后的 detail；原始值为 null/undefined 时返回 undefined；
+ *   非对象原始值包成 {value}；超尺寸返回 {truncated: true}
+ */
 export function sanitizeDetail(detail) {
     if (detail == null) return undefined;
     if (typeof detail !== 'object') {
@@ -70,8 +76,18 @@ export function sanitizeDetail(detail) {
     return sanitized;
 }
 
-// createActivityLog 主入口。settings 传对象或 () => settings 的 getter；
-// relativize(path) 可选，把 target 里的绝对路径转成相对工作区路径。
+/**
+ * 创建操作留痕服务（主入口）：状态改变类操作格式化成结构化记录，脱敏后攒批交给 Go 落盘。
+ * 写失败静默（不打断用户操作），开关关闭时 log() 直接返回。
+ * @param {object} [deps] 依赖注入
+ * @param {object} [deps.backend] 后端绑定对象，需含 ActivityAppend(payload) 方法
+ * @param {object|Function} [deps.settings] 设置对象或 () => settings 的 getter；activityLog !== false 时启用，
+ *   activityRetentionMonths 控制保留月数（1–60，默认 12）
+ * @param {Function} [deps.relativize] 可选，把 target 里的绝对路径转成相对工作区路径
+ * @returns {{log: Function, flush: Function, isEnabled: Function}}
+ *   log(action, target, detail, opts) 记一条；opts.actor / opts.source 默认 'user'，opts.noRel 保持 target 原样；
+ *   flush() 立即清空攒批队列；isEnabled() 返回当前开关状态
+ */
 export function createActivityLog({backend, settings, relativize} = {}) {
     const conf = typeof settings === 'function' ? settings : () => settings || {};
     let pending = [];

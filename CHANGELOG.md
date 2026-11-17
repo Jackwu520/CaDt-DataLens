@@ -4,14 +4,218 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 
 ## 未发布
 
+### 修复（AI 会话结构 · 宿主环境块不再污染定位条）
+
+- **预览先拆 `<system-reminder>` 环境块再取正文**（`frontend/src/ai/session-outline.js`）：环境块随用户消息一起落盘，定位条此前直接拿 `content` 做预览，开着文件的那几轮整行显示成 `<system-reminder> <workspace_context>…`，用户自己的话被挤出可见范围。现在与气泡渲染同一口径走 `splitTurnReminderPrefix`。
+- **纯注入消息不占行**：只有环境块、没有正文也没有图片/视频的消息没有可定位内容，不再计入轮号；带媒体的仍按数量兜底（补齐视频，此前会被标成「图片」）。历史会话的静默注入（`silent`，含旧 `task_todos_check` 回填）与 systemNote / app / 模型切换留痕一样跳过。
+- 护栏：`test/ai/session-outline.test.mjs` 新增拆块预览、纯注入跳过、媒体兜底三组用例。
+
+### 新功能（AI 子代理 · 默认轮次预算可配置）
+
+- **设置 → AI 助手 → 子代理新增「默认轮次」**：默认 50，范围 3–200。子代理的轮次预算此前是硬编码常量 `AI_SUB_ROUNDS_DEFAULT`，想改只能改代码；现在可在设置里调，`spawn_agent` 未指定 `maxRounds` 时用它。一轮 = 一次模型请求（一轮里可并行多个工具调用）。
+- **配置值与单次点名走同一个纯函数**（`resolveSubAgentRounds`，`frontend/src/ai/ai-subagents.js`）：两者都缺省才用内置 50；`null` / `''` 一律回落而不是被 `aiClampInt` 算成 0 再钳到下限 3（与 `resolveWaitTimeoutSec` 同一个坑，这次一开始就避开）。
+- **工具描述跟着变**：`buildSpawnAgentDef` 现在总是新建 def 并把 `maxRounds` 描述里的「默认 50」替换成当前设置值——否则模型会按写死的旧默认规划预算。没有自选模型候选时也不会再早退返回常量对象（否则该项永远显示 50）。
+- 导入导出同步该字段（`ai-settings-io.js`）；旧配置缺字段零迁移（回落 50）。冷唤醒仍沿用记录里原来那个 `maxRounds`，不受后续改设置影响。
+- 护栏：`test/ai/ai-subagents.test.mjs`（`resolveSubAgentRounds` 的缺省 / 越界 / 字符串 / 非法值）、`test/ai/ai-tool-defs.test.mjs`（描述随设置变、不污染 `AI_TOOL_DEFS` 常量、无候选时不出现 `model` 参数、def 仍是纯载荷）。
+
+### 新功能（AI 隔离区 · 参照 ZCode managed-worktree 补齐）
+
+- **隔离会话的补丁卡全档必弹**：`patchAllowApply` 新增 `worktreeActive` 维度——隔离区开启期间 `propose_patch` 无论档位都弹审批卡（`apply=false` 仍可只产出文件）。理由：主根只读闸下补丁回灌是唯一能写主根的通道，与 `worktree_manage(export)` 的回灌卡同一条人工审阅红线；工具描述与 cadt-ui 技能档位表同步。
+- **`.worktreeinclude` 被忽略文件拷贝**（对齐 ZCode §3.4）：创建隔离区时若仓库根有 `.worktreeinclude`（gitignore 语法），把「被 git 忽略 **且** 匹配清单」的文件（`.env` 这类 dotfiles——junction 只能共享目录、覆盖不了它们）从主根拷进隔离区：只拷普通文件、不覆盖已存在、junction 父目录下跳过（已共享）、并发 8；结果带 `includeCopied` / `includeErrors`，不致命。新增 `TestWorktreeIncludeCopy`。
+- **`carry=true` 带入主根未提交改动**（对齐 ZCode fork 的 binary patch 做法）：`worktree_manage(create, carry=true)` / 面板直连创建可选——暂存补丁（`--index` 保留暂存划分）→ 未暂存补丁 → 未跟踪文件拷贝 → **打一个机器快照 commit 并把 baseSha 推进到它**，export 的 diff 语义保持「只含 AI 的草稿改动」；带入失败整个创建失败并回滚（carry-failed）。创建审批卡会写明「将带入主根未提交改动」。新增 `TestWorktreeCarryChanges`。
+- **丢弃前查终端占用**（对齐 ZCode §3.11）：`TermList` 里初始 cwd 落在隔离区内且还活着的终端（底部终端与 AI 终端统一查）会阻止丢弃——AI 路径报 `WORKTREE_TERMINAL`，用户路径 flash 提示「请先关闭」；已退出的终端不算占用。
+- **git 环境隔离**：`gitRun` 逐项剔除 `GIT_DIR` / `GIT_WORK_TREE` / `GIT_INDEX_FILE` / `GIT_OBJECT_DIRECTORY` / `GIT_ALTERNATE_OBJECT_DIRECTORIES` / `GIT_COMMON_DIR` / `GIT_NAMESPACE` / `GIT_CEILING_DIRECTORIES`（用户从带这些变量的终端拉起应用时，它们会让 `cmd.Dir` 失效、git 跑到别的仓库）。新增 `TestGitRunEnvIsolation`。
+- **隔离区生命周期写进会话历史**：用户手点的创建/丢弃合成一条 `worktree_manage` 工具卡消息对（同 `/init` 的做法）——重启后对话里能看到隔离区何时建、何时丢（对齐 ZCode 的「已创建 worktree」timeline part）；AI 路径本来就有工具卡，不受影响。
+
+
+### 新功能（AI 斜杠补全 · 指令在前技能在后，/技能名 带参直调）
+
+- **`/` 补全面板分区显示技能**：固定指令保持在前列出，后接「技能」分区标题与技能条目（`/技能名` + 来源标签 · 描述，如 `/app-error-log  用户·通用 · 查询生产库错误记录`）。技能列表经 `listSkills`（5s 缓存）异步预热，已禁用技能不显示；键盘 ↑↓/Tab/点击与固定指令同一条交互。
+- **`/技能名 参数` 直接调用**：非固定指令的斜杠输入先按技能名匹配（大小写不敏感）——带参数时附加技能全文并**立即发送**原文（如 `/app-error-log 123`，生成中自动排队，消息保留 `/技能名 参数` 原文便于模型对应技能描述里的触发约定）；无参数时只附加技能并提示继续输入需求（与 `/skill <名字>` 手感一致）。未知命令的提示同步改为指向 `/` 补全与 `/help`。
+- 实现：`ai-slash.js` 分区渲染 + `invokeSkillItem`（纯函数 `filterSlashCommands` / `filterSlashSkills` / `extractSlashArgs` 导出供测试）；`ai-composer.js` 新 `sendComposerMessage` 直发/排队统一出口；`ai-message-queue.js` 排队三函数加 `plain` 旁路（跳过「/ 开头转斜杠命令」检查，否则技能带参排队会转回 `handleSlashText` 死循环）；`/help` 文案补技能调用说明。护栏：`test/ai/ai-slash.test.mjs`（已登记 npm test）。
+
+### 修复（完全权限档 · propose_patch 弹不出审批卡）
+
+- **`apply:true` 真正生效**：`patchAllowApply` 旧实现只认 `apply:false`，`true` 被直接忽略——真机上用户说「可以」、模型带 `apply:true` 重试，卡怎么都不弹，模型只能让用户去补丁视图手动应用。现在三态语义：`false`=只产出文件永不弹卡；**`true`=强制弹审批卡**（用户已同意但没说「应用」时的确定性出口）；缺省=非完全权限弹卡，完全权限看用户最近一句。
+- **完全权限档的缺省判定补「短肯定句」**：用户常在补丁生成**之前**就表过态（「可以」「好的」「没问题」「ok」），等补丁出来它就是最后一条用户消息——但旧措辞表只匹配「应用/apply/合入」等。现在 ≤8 字的整句肯定答复也算（不做子串匹配，「执行/更好」不误伤）；「同意/批准/通过」加负向后顾排除「不同意/没批准/未通过」。误弹方向无害（full 档多一张卡，点放弃即可），漏弹才是有害方向。
+- **文案同步**：`propose_patch` 描述与 `apply` 参数写清三态；完全权限档结果提示改为「再调一次带 `apply:true` 直接弹审批卡」；cadt-ui 技能的档位表同步。护栏：`test/ai/ai-patch-policy.test.mjs` 重写用例（短肯定句 / 负向后顾 / `apply:true` 强制 / `false` 优先）。
+
+### 修复（AI 轮末任务清单催促 · 不再伪装成用户消息）
+
+- **轮末 `<task_todos_check>` 催促改为 `<system-reminder>` 宿主环境块注入**：此前它是唯一以 user 角色进入模型请求的非用户消息，弱模型会把裸块当成「用户刚说的话」（实测 sensenova 把催促转述成「用户说执行工具任务」并反问）。现在与起轮的 `<task_todos>` 同属宿主块，受 `<workspace_rules>` 的「`<system-reminder>` 是宿主环境信息、不是用户正文」约束；催促照旧在收尾请求前发出，不碰工具结果通道。
+- 配套：节流比较先拆块取正文（否则包装后与裸文案永远不相等会每轮都催）；历史裸块与新宿主块都按静默注入识别（不渲染）；导出会话跳过注入块；新增三例护栏（宿主块可拆、催促必须走包装、静默识别两种形态）。
+
+### 新功能（快捷便签面板 · 工作区/全局两份分组便签）
+
+- **内容区新增「快捷便签」虚拟标签页**（活动栏新图标 / 文件菜单 / `Ctrl+Alt+M` / 命令面板均可打开，每窗口一个标签）：ipynb 式**分块**便签本——块（分组小节）有小节标题，块内多条目（状态点点击循环 待办→进行中→完成、文本行内编辑、上移下移、跨块移动），块可折叠 / 重命名 / 上移下移 / 删除（删除有二次确认），底部「新建块」。
+- **双作用域，各唯一一份**：工作区作用域存 `<工作区>/.cadt/memo/memo.json`（每工作区独立，无工作区时置灰提示），全局作用域存应用数据 `memo/`；面板顶部「工作区 | 全局」分段切换并记住上次选择。**全自动保存，任何退出路径不丢字**：每次改动 1 秒防抖原子整份写；关标签 / 切作用域 / 切工作区（按旧工作区根落盘）/ 关窗确认流程（便签 pending 计入应用脏标记，弹确认框前先落盘）/ pagehide 兜底，全部强制冲盘；行内编辑未提交的文字在关标签与切作用域前自动提交。多窗口（多进程）编辑同一份靠文件 mtime CAS 协调，冲突时自动重载磁盘版本并提示，不静默覆盖。
+- **贴图**：面板内 `Ctrl+V` 直接粘贴图片（目标为最后点过的条目，没有就落到最后一个未折叠块的末条；无条目时自动建「（贴图便签）」），条目右键「粘贴图片」走后端回读剪贴板同链路；图片压缩与 AI 附图共用同一条编码管线（长边 1600、超 3MB 转 JPEG 降质），落盘到作用域的 `img/`（单张 16MB 上限、类型只信魔数），条目上显示缩略图，点击进灯箱，悬停 × 移除引用。
+- **AI 读写走 app_control**：新增 `get_memo / add_memo / update_memo / remove_memo / open_memo_panel` 五个动作（与界面同一套变更通路——AI 改完立即防抖保存并刷新打开中的面板）；读不受计划模式限制，三个写动作在计划模式下被 per-action 拦截。便签内容不自动注入对话上下文，AI 按需 `get_memo`；与 todo_write（会话内执行进度）是两个本子，描述与调度原则双向写明分工。
+- 存储：工作区 `.cadt/memo` 与应用数据 `memo/` 已登记进「设置 → 存储与清理」（清除数据按勾选处理、送回收站）。
+
+### 修复（AI 隔离区 · 新会话残留隔离芯片）
+
+- **从隔离区会话点「新建对话」不再残留「隔离 · 开」**：隔离状态是会话级的（`session.worktree`，一会话一个），新会话本就不带登记，但 `newSession` 的全新创建分支不走 `switchSession`，头部胶囊与输入区开关停留在上一个隔离会话的显示，要切到别的会话才被修正。隔离边界本身（写闸 / 注入块）一直是按会话取值的，此问题只在显示层。
+- **会话级 chrome 统一刷新收口**：新增 `syncActiveSessionUI(keepScroll)`（`frontend/src/ai/ai-panel.js`）——消息区、输入区、发送/停止按钮、提醒徽标、计时胶囊、隔离芯片、系统提示词估算八项「跟着当前会话走」的显示状态收成单一入口；`switchSession`（原手写清单）、`newSession`、`deleteSession` 兜底空白会话、跨窗口重载兜底（`applyLoadedSessions`）、启动加载（`refreshSessionUI`）与 `init` 全部改走它——跨窗口重载 / 启动兜底路径此前连计时胶囊、提醒徽标也不刷（相邻缺口一并收口）。
+- 护栏：新增 `test/ai/ai-session-ui-sync.test.mjs`（已登记 npm test）——统一入口必须含全部八项刷新、六条路径必须调用、`switchSession` 不许再手写芯片清单；以后加会话级芯片漏了统一入口会直接红。
+
+### 调整（AI 计划审批卡 · 预览渲染 Markdown）
+
+- **计划等待批准的预览从原始文本改为渲染 Markdown**：标题 / 加粗 / 列表 / 代码块正常显示，与 AI 回复走同一条共享渲染链（markdown-it → DOMPurify → hljs），原始 HTML 不执行；预览区沿用 `.ai-md` 排版。
+- **截断改为结构感知**（`planPreviewSlice` 纯函数，`frontend/src/ai/ai-plan-file.js`）：只在行边界、围栏代码块外切——围栏要么整体保留要么整体丢弃（围栏内形如 ```` ```js ```` 的行不算闭合），不再出现切半行或悬空围栏；截断补省略行，「查看完整计划」入口不变。
+
+### 新功能（AI 助手 · 提问卡可折叠收起）
+
+- **AI 提问卡支持临时折叠**：头部新增收起按钮，整卡折成单行细条（标题 + 当前问题文本），方便先看上方消息；细条上保留超时倒计时（到点仍按设置结算），不显示「跳过 / 提交回答」按钮，点击细条恢复完整卡。已选选项与题目进度在收起期间保留。
+- **倒计时文案去掉「（本次自定义 N 秒）」**：超时动作说明保持「超时后按 AI 推荐项继续 · 剩余 4:24」这样的原样，不再因本次超时秒数由 AI 定制而附加括号说明。
+
+### 修复（AI 子代理 · 层级编号与并发上限文案）
+
+- **层号统一为「含主代理」口径**：主代理第 1 层，它直接派出的子代理第 2 层，依此类推。此前各处直接印内部 `depth`（主代理=0），`agent_tree` 的「第 2 层」实际是二级子代理，比人的层号小 1；一级子代理还完全不显示层号。层号文案收成单一来源 `agentLevelText()`（`frontend/src/ai/ai-team-model.js`），团队详情卡、HUD 胶囊、工具卡、`agent_tree` 文本、`spawn_agent` 回执与停止摘要六处统一走它。
+- **设置项「递归层级」改为「层级上限」并同口径**：说明写清「含主代理，1 = 只允许主代理」；判定按层号换算，实际允许的层数与文案一致（此前设为 N 时实际能多派一层）。旧配置数值无需迁移，默认 0 = 不设限不变。
+- **并发上限的文案改正**：错误信息与设置标题从「子代理总数上限」改为「子代理并发上限」。`activeSubCount` 只数运行中的子代理，不累计历史——5 层满员树（2/4/8/16 共 30 个子代理）连续跑通即证明它不是累计上限；超限发生在同时运行数达 20 时，等一个结束重试即可。
+- 护栏：`test/ai/ai-team-model.test.mjs` 新增 `agentLevelText` 用例，层号断言改为含主代理口径。
+
+### 重构（AI 子代理 · `wait_agent` 语义对齐 dsh：改为等自己的收件箱）
+
+- **语义变更**：`wait_agent` 不再「等某个子代理出终态并直接返回它的结论」，改为等**调用方自己下一步的新输入**——子代理完成通知 / 其他代理的消息 / 用户插话；返回 `{timedOut}`，内容在下一轮开头注入上下文。参数只剩 `timeoutSec`（0–600，默认 60），`agentId` 已移除；被不想等的代理唤醒时可继续 `wait_agent` 等目标。
+- **为什么改**：旧实现必须靠守卫逐个补三类坑——子代理把自己算进「可等候选」导致自等满超时（2026-11-17 五层嵌套实测两支各踩一次，单轮 253 秒以上，还丢了一个结论）、跨支定向等被拒、终态记录被 LRU 回收后结论取不到。等自己的收件箱从定义上没有这些：入队即唤醒、谁完成谁入队、结论不会丢。参照 `deepseek-harness` 的 `packages/subagent/tool-subagent-control/src/wait-agent.ts`。
+- **新增等待原语** `frontend/src/ai/ai-inbox-wait.js`：`wait / notify / cancel`，事件驱动；落地即有输入时立即返回、不发定时器；250ms 心跳只用于检查「调用方已被停止」（用户停止 / agent_stop 立刻返回，不空等满超时）；竞态按「先注册再查」闭合。
+- **三处入队即唤醒**：会话信箱（`deliverAgentNotice`）、子代理收件箱（`queueSubAgentMessage` / `steerSubAgent`）、用户插话与排队消息（`createQueueModel` 新增可选 `onChange` 钩子）。notify 只表示「有新东西排队」，注入仍在轮边界——把 notify 当立即注入会破坏轮次模型。
+- **顺带修掉一个真缺陷（嵌套回报全丢）**：结算与提问通知此前用 `sessionById(parentSessionId)` 取父会话，而子代理会话不进 `sessions` 表，该调用对嵌套代理恒为 `null`，第 2 层起的回报**静默丢失**（就是「层5-A2a 结论没回到层4-A2」的机制）。新增 `deliverToParent()`：父是运行中的子代理就投它的收件箱（来源前缀新增「下级代理回报」），否则走会话信箱。
+- **收尾轮守卫**：子代理收尾轮不消费收件箱（`runSubRound` 的 `!s.wrapUp` 守卫），此时 `wait_agent` 立即返回并提示「预算已尽，别再等，直接给结论」，不再空等满超时。
+- **审查后补的四处（同批，均有护栏）**：
+  - **`timeoutSec` 传 `null` / `""` 不再变成「不限时」**。`aiClampInt` 用 `Math.round(Number(x))`，`null`/`''`/`false` 都变成 0 且都是 finite（不走 fallback），而 0 曾表示「不限时」——没有 deadline，一次失败收尾就能让工具调用**永久悬挂**（250ms 定时器还一直跑）。现在抽成 `resolveWaitTimeoutSec()`：缺省 60、最小 5，「不限时」取消。
+  - **同一轮内重复 `wait_agent` 不再自旋**。注入只在轮边界发生，计数本轮不会变，所以第二次调用会立刻又返回「有新输入」，主代理又没有逐轮硬上限——可以烧到用户手动停。现按 `stream` 记「本轮已报告过」的 pending 数（对齐 dsh 的 seen 集合），第二次起直接回「已报告过，直接结束本轮」。
+  - **`hasQueuedInput` 接线修正**：它曾被写进子代理模块 ctx、却从**工具 ctx**（只有 `session/toolMessage/stream`）读取，恒为 `undefined`，等于把「队列里已有用户消息」这条判定关掉——注释宣称修好的场景其实没修。
+  - **停止即放行**：`stopGeneration` / `stopSubAgent` 现在直接 `inboxWaiters.cancel()`，不再依赖 250ms 心跳；`isStopped` additionally 认 `stream.finished`（`finishStream` 只置 finished 不置 stopped，漏了会白等满超时）。`cancel` / `clear` 因此不再是死代码。
+- **投递失败不再静默**：`deliverToParent` 返回 false（父会话已结束 / 已归档）时 flash 提示「结论未能投递」。
+- 删除随旧语义一起作废的 `agentCanBeWaitedBy` / `agentUnderSessionBy`（定向等待的祖先判定）与 `subSettledText` / `subRunningSnapshot`。
+- 护栏：新增 `test/ai/ai-inbox-wait.test.mjs`（落地即有输入 / notify 唤醒 / 超时 / 被停止 / 注册前入队不丢 / owner 隔离 / cancel 与 clear 清干净）；`ai-subagents.test.mjs` 新增 `resolveWaitTimeoutSec`（null/空串/false/0 的钳制）与 `pendingInboxCount`（ask 不算可注入输入）；`ai-agent-notices.test.mjs` 新增「入队即 notify 且 ownerId 是会话 id」（key 写错在端到端里看不见）；`ai-subagent-sandbox.test.mjs` 新增 P10（嵌套投递归 `deliverToParent`）、P11（来源前缀三方可辨），P7 改写为「等自己的收件箱、不许轮询、收尾轮守卫、不许从工具 ctx 读队列判定、两处停止都要 cancel」；`ai-turn-steer-wiring.test.mjs` 的 `createQueueModel` 签名断言同步。
+- **嵌套提问现在真的有人能答了**：`agent_send` 从「只有主代理有」扩到「能派单的层都有」（与 `spawn_agent` / `wait_agent` 同批）。此前 `buildAskNotice` 教父代理用 `agent_send(askId=…)` 作答，但嵌套时父是子代理、手里没有这个工具，提问只能等 120s 超时按 `ai_decide` 放行。方向限死为**只能发给自己派出的下级**（回答提问 / 补线索 / 冷唤醒），不能给祖先或兄弟喊话——守卫生成 `agentDescendsFrom()`（从上级起追，天然排除自身，不复刻当年 `agentUnderSessionBy` 的自等坑）；向上汇报仍走最终结论。
+- **收件箱来源前缀改为三方且不再说「主代理」**：`［用户插话］` / `［上级代理消息］` / `［下级代理回报］`。嵌套时父是子代理，第 3 层看到「主代理消息」会认错来源；详情视图输入行同步为「用户 / 上级 / 下级」。
+- **收尾轮现在真的不带工具**：此前注释写「收尾轮不带工具（模型只能输出文本）」，但每次请求照旧下发完整工具表，模型在收尾轮仍能调 `read_file` / `spawn_agent`，调 `ask_user` 还会空等父代理 120s。现在 `wrapUp` 时工具表传 `[]`（Go 侧三套 body 都是 `if len(tools) > 0` 才写该字段，空数组等价于无工具，不会让服务商报错）；万一模型仍幻觉出工具调用，`runSubToolRound` 一律拒绝并**立即收尾**——否则「拒绝 → 再请求」在收尾轮没有轮次上限兜底。
+- **未做（记在方案文档 §5）**：终态记录 LRU 20 与并发上限仍按全窗口计。
+
+### 新功能（AI 子代理 · 团队树工具与级联停止）
+
+- **新增只读工具 `agent_tree`**：返回调用者所在的智能体团队树——主代理看到整棵任务树，子代理只看到自己这一支；每行带各层级代理 id、名称、层级、状态、沙箱档、轮次与任务摘要，并标注「你」是哪一行。嵌套代理的 id 因此能回到主代理手上，可据此 `agent_send` / `agent_stop` / `agent_compact` 指定目标。
+- **`agent_stop` 支持级联与全停**：带 `agentId` 时连同它的全部下级（子代理 / 孙代理 / 更深层级）递归停止；省略 `agentId` 时停掉本会话任务树里所有仍在运行的代理（含嵌套层级），结束语列出每个被停代理。此前主代理只拿得到直接下级的 id，孙代理停不了。
+- **用户手动停止同样递归**：详情视图的停止按钮会连同该代理派出的下级一起停；主会话停止原本就按根会话全量停。代理自身正常收尾 / 循环守卫自动停止仍是单点停止，不级联。
+- 护栏：`test/ai/ai-team-model.test.mjs`（团队树文本 / 自身标注 / 子代理视角裁剪）、`test/ai/ai-subagents.test.mjs`（`subTreeIdsOf` 多级 / 成环 / 脏数据）；工具接线由 `ai-tool-wiring.test.mjs` 全量对账。
+
+### 新功能（AI 响应空闲超时可配置）
+
+- **设置 → AI 助手 → 超时与重试新增「响应空闲超时」**：默认 120 秒，可选 30 秒 / 1 / 2 / 5 / 10 / 30 / 60 分钟。此前 120 秒是硬编码常量，慢模型或长思考一旦连续 120 秒无输出就被误杀；现在可调大，最长 60 分钟。语义仍是「连续无数据才中断，收到数据重新计时」，工具执行 / 等待提问期间照常喂看门狗不会误杀。
+- 超时随请求下发（`aitransport.Config.IdleTimeoutSec`），主对话、子代理、群聊全路径覆盖；Go 侧二次钳制到 [30, 3600] 秒，导入导出同步该字段，旧配置缺字段零迁移。超时错误文案改为带实际秒数（如「AI 响应超时（300 秒无数据）」）。
+
+### 调整（AI 计划模式 · 判定收敛为两条门槛）
+
+- **不再按「新增功能 / 跨多文件」触发计划模式**：进入计划模式只保留两种情况——用户明确要求先规划（「先规划 / 给方案 / 别动手」），或动工前必须由用户拍板方案（多种架构路线取舍、接口 / 数据格式 / 交互形态有实质分歧、需求歧义大到不探索无法圈定范围）。新增功能、改动跨多个文件、加设置项一律直接动手；拿不准时也直接动手（用户可随时叫停），模型不再为「要不要进计划模式」反复权衡。
+- 系统提示词守则（`ai-system-context.js`）、`plan_mode` 工具描述与工具目录文案三处同步，口径一致。
+
+### 新功能（AI 子代理 · 可选专用模型）
+
+- **设置 → AI 助手 → 子代理新增「子代理模型」**：默认「跟随当前模型」，也可指定任一已配置的模型条目。搜索、审查这类「读得多、结论短」的子代理因此可以用便宜快模型跑，不必和主对话抢同一个贵模型。
+- **引用格式与分类器模型同款**（`账号id|模型id`）：解析抽成 `resolveModelRefTarget`（`frontend/src/ai/ai-config-model.js`），所选配置被删除 / 导入半程时自动回退为跟随，不会留下悬空 id。
+- **模型在派单那一刻定死**：`spawn_agent` 时写进子代理会话的 `profileId` / `modelId`，因此上下文窗口基数（决定 auto-compact 阈值）、`read_video` 视频能力与真正发出的请求同源——只在请求侧换模型会让窗口基数停在旧值。冷唤醒沿用原记录里的账号 / 条目，中途改设置不会给已派出的子代理换模型。
+- **逐次点名（白名单）**：同一张卡片里可再勾 1–3 个候选模型，勾了之后主代理能在 `spawn_agent` 里用 `model` 参数给单个子代理点模型（探索用便宜快的、审查用强的）。只接受候选里的值——模型名、`模型名 · 账号名` 标签、`账号id|模型id` 三种写法都认，同名模型造成的歧义与候选外取值一律**报错并附合法清单**，绝不静默回落成别的模型。三个候选全空 = 关闭，此时 `spawn_agent` 的 def 里连 `model` 参数都不出现（不占 token）。
+- **三级优先**：本次点名的 > 设置里的默认子代理模型 > 跟随派出它的会话。孙代理看到的候选清单与主代理同一份（`buildSpawnAgentDef` 动态生成 def，不改模块级常量）。
+- 导入导出同步两个字段（自选候选在导出方缺失时保留本地设置）；护栏 `test/ai/ai-config-model.test.mjs` 覆盖引用解析、候选清单去重与失效剔除、三种写法的匹配与歧义处理。
+
+### 修复（子代理 · 嵌套时 background 派单收不回结论）
+
+- **子代理与孙代理现在也有 `wait_agent`**：此前它只在主代理工具表里，子代理用 `mode='background'` 派单后唯一回收路径是结算通知（把结论投回子代理会话再唤醒），实测并不可靠——嵌套测试里一条支线的第 5 层汇报直接丢了。现在「能派单的层」同时挂 `spawn_agent` + `wait_agent`（`ai-subagents.js` 的 `subToolsForScope`）。
+- 子代理系统提示补一条纪律：报「授权写根 … Access is denied」是宿主机目录权限问题，改用只读工具并在结论里注明未用命令验证。
+
+### 修复（子代理沙箱 · workspace-write 授权失败只报裸的 Access is denied）
+
+- **失败原因翻成可操作说明**：写根授权失败时新增「目录所有者 ↔ 当前账户」比对（`sandbox_windows.go` 的 `diagnoseGrantFailure`），三种结果分别给出——同一账户仍被拒（查安全软件 / 只读属性 / ACL 保护）、读不到所有者（通用提示）、**目录属于另一个账户**（写 ACL 需要它的「更改权限」WRITE_DAC，附 `icacls "<目录>" /grant "*<当前账户SID>:(OI)(CI)WD"` 补救命令）。
+- 触发条件实测：工作区目录由本地 `admin` 账户创建、应用以 Microsoft 账户运行，继承来的 `Modify` 不含 WRITE_DAC，于是每次 `auto` 档子代理执行命令都报「沙箱不可用，命令未执行」。这类目录改不动 ACL 是环境事实，代码只能把原因与补救说清（fail-closed 语义不变，不降级裸跑）。
+
+### 新功能（智能体团队 · 嵌套树折叠视图）
+
+- **「智能体团队」弹层改成树形**：主代理直接派出的子代理、子代理再派出的孙代理按父子缩进 + 竖向细线展示，父行带展开/收起箭头（默认全展开），嵌套关系一眼可见；不再靠副标题里的「第 2 层」辨认。收起父行时副标题显示「N 个下级」，叶子行仍可直接点开详情标签页。列表里没有嵌套（全是第 1 层子代理）时不预留箭头列，保持原来的紧凑排版。
+- 父子关系按 `parentSessionId` ↔ 子代理会话 id 还原（运行态 / 终态记录 / 注册表三个来源都带）；父代理已不在列表时回落为顶层并保留层号，脏数据成环不会挂死渲染。纯函数在 `frontend/src/ai/ai-agent-tree.js`，护栏 `test/ai/ai-agent-tree.test.mjs`。
+- **深层缩进封顶**：缩进最多到第 4 层（80px，弹层仅 320px 宽），第 5 层起不再右推、改由副标题「第 N 层」标明真实深度，名称列始终留有可读宽度；行内 overflow 兜底，深层长内容不会把弹层撑出横向滚动条。
+- **弹层开着时实时刷新**：子代理派出 / 状态变化 / 收尾时直接重绘弹层内容（120ms 节流合并连续事件），不用关掉重开；重建时保留折叠状态、滚动位置与键盘焦点（焦点恢复用 `preventScroll`，不会把列表拽回去）。
+- 计时器 / 定时任务共用的 chips 行基础样式未改动，树形样式只作用于智能体团队。
+- **「查看详情」→ 团队拓扑标签页**：弹层标题右侧新增入口（悬浮窗没有内容区，不显示），在内容区标签页画**主代理 + 全部子代理**的纵向卡片图：主代理卡带生成状态 / 模型 / 权限档，子代理卡带状态、沙箱档、轮次 / 用时 / token、任务与结论摘要，层级用缩进 + 连接线表达（缩进封顶 8 层，更深靠「第 N 层」补足）；点子代理卡片打开它原有的实时详情标签页。标签页按会话打开、同一会话复用；切走会话后仍显示原会话的团队；状态变化实时重绘并保持滚动位置。纯模型在 `frontend/src/ai/ai-team-model.js`（护栏 `test/ai/ai-team-model.test.mjs`），视图在 `ai-team-view.js`，标签页桥 `bridge/bridge-team-view.js`。
+
+### 新功能（AI 插话 · 真 steer：不打断当前轮，在下一个工具边界注入）
+
+- **生成中三手势**：Enter 排队（现状）、**Ctrl+Enter 插话（steer，不打断）**、**Ctrl+Shift+Enter 抢占（preempt，原「插话」语义：停掉当前轮再发）**；Shift+Enter / Alt+Enter 仍是换行。Ctrl+点击发送 = 插话，Ctrl+Shift+点击 = 抢占。空闲时完全遵循「发送快捷键」设置，不引入抢占。
+- **插话不再作废已完成的工作**：steer 条目以 `delivery: 'steer'` 留在消息队列，在**当前轮下一次 model request 边界**（`startRound` 的第 2 次及以后请求）注入——工具批次全部执行完、新的 assistant 占位就位后才落进 `session.messages`，不跳过任何正在执行的工具。请求里包 `user_steer` 模板（「The user sent a new message while you were working…」），**落盘与会话气泡仍是用户原文**（带 `steer: true` 标记，重放 / 导出 / 搜索不受影响）。
+- **纯文本回复收尾也续轮**：模型给出 no-tool final response 但队列里还有 pending steer 时不结束本轮——新建 assistant 占位后再发一次请求（不复用已完成的 assistant），插话不会被静默吞掉。
+- **窗口竞态静默降级**：轮已结束时插话条目自动改回排队；用户停止 / 抢占则丢弃 pending steer（放弃当前任务），排队消息照旧保留。**停止后的 1.2s 收尾窗口**（流还登记着但已 `stopped`）按轮已结束处理——降级为排队并登记待冲刷，不会入队后又被收尾清掉。压缩中、带文件 / 技能 / 选区附件、以及视频输入不被当前协议支持时，一律降级为排队并提示（避免轮中重组 `<attachments>` 环境块或留下每轮都被拒收的视频消息）。
+- **预算保护**：drain 后若请求预计超过上下文窗口 90%，本批插话回滚为排队并提示，不强塞超限请求、也不中断本轮。
+- **轮次口径与重放一致**：`steer: true` 随 JSONL 落盘并在重启 / 懒加载后保留（`normalizeMessage` 不丢字段），历史插话仍包 `user_steer` 模板；`lastUserIndex`（重新生成 / 编辑重发）、回合分组、上下文轮数、用量统计与结构面板轮号都跳过 steer，插话不会被当成用户发起的新回合。纯图片 / 纯视频插话补正文占位「（附图）」，模板不会被跳过。
+- **队列行**：badge 按车道显示「排队 / 插话」，按钮在两者间切换（改投是一次同步操作，不重排队）；行内另有 **⚡ 抢占**图标（停止当前回复并立即发送这条消息，仅当前轮活着时显示），行首 **3×3 点阵手柄**可拖动排序（拖到目标行上/下半区决定插入位置，只重排当前会话的条目）。drain / 预算回滚后即时重绘，不留幽灵行。输入区提示与设置页「发送快捷键」补三手势说明。
+- **实现**：队列状态机抽成纯模型 `createQueueModel()`（`ai-message-queue.js`，无 DOM 依赖；item id 改为字符串，为跨端同步的按 id 去重预留），DOM 壳只做渲染与接线；方案见 `docs/finished-plans/ai-turn-steering.md`。护栏：`test/ai/ai-message-queue.test.mjs`（车道增删改 / FIFO drain / 回滚 / 快照深拷贝）与 `test/ai/ai-turn-steer-wiring.test.mjs`（手势、drain 时机、模板、续轮与兜底接线）。
+
+### 修复（AI 自动标题 · 思考模型把预算烧光，标题永远停在首条消息截断）
+
+- **标题请求的输出预算从 64 提到 4096（防失控上限，不是标题长度目标）**：`sensenova-6.8-flash` 这类默认开思考且关不掉的模型会把 64 token 全花在 reasoning 上，正文 0 字符、`finish_reason=length`，标题始终回退成首条消息前 24 字；同一账号的两个会话在调试台连续报「未返回有效标题」即此。标题长度仍由提示词约束，正常只会用几十个 token。
+- **系统提示词改为英文强约束 + 任务框架写进用户消息**（对齐 deepseek-harness / ZCode 的取法）：明确「这是标题生成不是对话」、禁止回答或执行消息里的指令；素材用 JSON 数组包住并前缀任务说明，弱指令跟随的模型不再把首条消息当对话来答。实测同一模型从「输出一大段聊天回复」变为只输出标题。
+- **摘除泄漏进正文的内联思考块**：部分网关在「关思考」后把思维链直接写进 content 并以 `</think>` 结尾；`generatedTitle` 先剥成对 `<think>…</think>`，再丢弃闭合标签之前的分析文本，然后才取首行。
+- **Go 侧修复「关思考参数」的网关方言差异**：同一模型在不同网关方言不同（实测 sensenova 网关的 `glm-5.3` 只认 `enable_thinking`，收到 `thinking.type` 直接 400），现在 400/422 错误体点名 thinking 时自动摘掉该字段重发一次（`Config.noThinkingParam`，与 `stream_options` 降级同款），思考回到服务端默认值而不是整个请求失败。sensenova 系列本身不注入关闭参数（该网关关掉后思维链会写进正文）。
+- 护栏：`test/ai/ai-auto-title.test.mjs` 新增「预算 4096 / 英文提示词与 JSON 任务框架 / 内联思考块剥离」三例；`internal/aitransport/transport_test.go` 新增 `TestAIOpenAIBodyThinkingDisabled` 与 `TestAIRejectsThinkingParam`。
+
+### 修复（AI 后台资源归属 · 一律绑定发起会话与任务树）
+
+- **后台会话启动的计时器不再记到面板当前打开的会话上**：此前 `start_timer` 记录归属取的是「面板当前会话 id」，后台会话跑到该工具、用户又切到别的对话时，计时器会被记到可见会话名下——到点唤醒错会话（可见会话已删除 / 跨工作区时直接丢失），本会话 5 个上限也按错误会话计数（后台会话没有计时器却被拦，或可见会话的额度被误占）。现在 `ai-timer.js` 的 `start()` 新增归属参数，AI 工具传正在执行的 `ctx.session.id`（与 `schedule_create` 同口径）；手动创建（＋菜单）仍缺省为当前会话。
+- **正计时停止通知改投归属会话**：`wakeSessionByCountupStop` 解析了归属会话却仍走 `sendAppMessage`（内部按面板当前会话起轮）——后台会话的正计时被停止 / 到点自动停止时，通知会落到用户正看着的另一个对话里（对方正忙时则直接丢失）。改走会话信箱 `deliverAgentNotice(归属会话, …)`：忙则排队、闲则静默起一轮，与计时器到点 / 定时任务同一通道。
+- **`stop_timer` 只能停本会话树启动的计时器**：省略 id 时此前按整个窗口「唯一运行中」找目标、显式 id 也不校验归属——别的会话可掐掉你的计时器，还会把它应得的正计时停止通知一起抑制。现在与 `timer_list` 同一可见口径（自身 / 父 / 根 / 最初发起会话），越界明确拒绝；工具描述同步。
+- **后台命令与生成任务按任务树查询**：`check_command` 补上与 `stop_command` 相同的归属校验（作业编号 `bg-<序号>` 可猜，输出可能含敏感信息）；`check_gen` 只允许启动会话查询自己的任务。
+- **子代理操作按根会话校验**：`agent_send` / `agent_stop` / `agent_compact` 与 `wait_agent` 统一走新纯函数 `subTreeOwned`（根会话 id 相等才放行），别的会话的 agentId 不能投递 / 停止 / 压缩。
+- 护栏：`test/ai/ai-timer.test.mjs` 新增「显式归属优先 / 缺省回落当前会话 / 上限按归属会话计数」三例；`test/ai/ai-subagents.test.mjs` 新增 `subTreeOwned` 判定用例。
+
+### 新功能（全局搜索 · fzf 式子序列模糊匹配）
+
+- **全局搜索新增「模糊」勾选（默认关闭）**：范围行里勾上后，查询词按字符顺序出现即可命中（`gsrch` 能搜到 `globalSearch`），适合记不全拼写时找内容。只作用于「工作区文件」，未勾该分类时禁用。
+- **先精确后模糊**：同一行先找字面命中（与普通模式完全一致，多命中照旧全部列出）；整行没有字面命中才做子序列匹配，每行至多一条，匹配窗口取「首尾收紧」的最小范围并整体高亮、点击仍精确选区跳转；窗口首尾相隔超过 200 字符视为无意义命中直接丢弃（防长行噪音与预览撑爆）。
+- **结果分档排序**：文件名子序列命中 → 字面（连续）命中 → 子序列（离散）命中 → 路径/行号；源码档/产物档的预算分档不变（产物仍垫底、只补空位）。子序列匹配没有 rg 对应能力，模糊模式固定走内置 Go 扫描——共用同一个 3.5 秒预算与 400 条上限，超出仍标「已截断」，大工作区会比对字面搜索慢。
+- 实现：`internal/search/fuzzy.go`（正向贪婪 + 反向收紧的最小窗口匹配）与 `SearchWorkspaceFuzzy` 绑定；前端 `explorer/global-search.js` 勾选接线；`core/form-controls.js` 补紧凑行内复选框工厂 `createCheckbox`，该范围行三个勾选一并迁入工厂（裸控件基线 2→0）。护栏：`internal/search/fuzzy_test.go`（窗口收紧 / 大小写 / 中文 / 窗口上限 / 字面优先 / 文件名档位）、`test/explorer/global-search.test.mjs`（勾模糊走模糊接口、取消工作区文件时禁用）、`test/core/form-controls-factory.test.mjs`。
+
+### 修复（权限胶囊 · 菜单贴合展开、去掉多余 tooltip）
+
+- **权限档菜单与「+」附件菜单改为按实测高度贴合触发器向上展开**：此前分别用写死的 `rect.top - 280` / `rect.top - 240` 估算菜单高度，实际菜单高度随内容与缩放变化（权限菜单差出约 80px 空档，附件菜单则可能反过来盖住输入区）。现在共享右键菜单支持 `anchorAbove`——渲染完按实测高度把菜单底边贴到触发器顶边（6px 间隙），视口夹取逻辑不变；定位数学收敛为纯函数 `computeMenuPosition`。
+- **「只读访问 / 自动审批 / …」胶囊不再挂 tooltip**：档位说明由菜单本身承担，悬浮气泡只会挡住输入区；`aria-label` 随当前档位同步更新。
+- **权限胶囊补上下拉箭头**：它是选择器（点开菜单），不是「计划」那样的点亮式开关——文字后现在固定带 12px 下箭头，与模型 chip 的展开箭头同款。
+- 护栏：`test/shell/menu-position.test.mjs`（上翻贴合 / 上方放不下夹取 / 常规 x,y 与越界夹取）。
+
+### 新功能（Git 图谱 · 底部面板新视图）
+
+- **底部面板新增「Git 图谱」视图**（参考 JetBrains Git Log 面板）：左下活动栏新增 `#ab-git-graph` 按钮，点击在底部面板（与终端 / 调试控制台 / 运行面板共用容器）切换到图谱。三栏布局——左栏 ref 树（HEAD / 本地分支 / 远程分支 / 标签 / Worktree，点分支即过滤）、中栏带泳道拓扑的提交列表、右栏提交详情。
+- **泳道拓扑在 Go 侧计算**：`internal/gitinfo/graph.go` 的 `assignLanes` 用「最小空闲泳道」算法算好每行提交的 `lane` 与 `throughLanes`（穿线），前端只负责渲染 SVG（竖线 / 分支拐点弧线 / 圆点，按 lane index 循环取主题色板）。已验证直线 / 分叉后合并 / 两条独立分支并行 / 八叉合并（octopus）等拓扑。
+- **分页懒加载，默认 500 条/页**：`GitGraphCommits(dir, ref, limit, skip)` 多取一条判断 `hasMore`，滚动到底自动续拉；首次切到该视图才拉数据。提交列表虚拟滚动只渲染可见区。跨页泳道连续性一期不保证（每页独立起 lane，页边界可能有断线）。
+- **完整操作集（签出 / 重置 / cherry-pick）**：详情面板提供签出（detached HEAD 会提示）、cherry-pick、重置 soft / mixed / hard（hard 明确警示丢工作区改动）。均为**用户主动 UI 操作**，走只读锁 + 确认弹窗，成功后刷新图谱与 git 状态；不进 AI 的 auto 审批链（`GIT_FLOW_SAFE_SUBCOMMANDS` 是 AI 经 run_command 执行时的令牌，与此无关）。
+- **过滤**：顶栏输入框按 subject / sha / author 过滤提交（过滤时泳道列隐藏，因过滤会打乱 lane 连续性）。
+- Go 引擎与测试：`internal/gitinfo/graph.go` + `graph_test.go`（泳道算法表驱动、porcelain 解析、写操作参数校验、集成用例）；绑定 `gitinfo_app.go` 五转发；前端域模块 `git-graph/git-graph.js`（factory + deps 注入）+ `test/git-graph/git-graph-lane.test.mjs`（泳道 SVG 几何）；mock-backend 五 mock；`wailsjs` 绑定。
+
+### 修复（AI 编辑卡 diff 行号 · 对齐原文件）
+
+- **编辑 / 写入工具卡的 diff 预览显示真实文件行号**：预览只保留改动行前后各 2 行上下文、中间用「…」跳过，渲染端却从 1 连数——文件中间或末尾的改动会被标成第 1、2 行（如 `mock-backend.js` 尾部的改动显示为 1–23）。现在 `buildDiffPreview` 按完整 diff 连好 `oldLine` / `newLine` 随行下发，裁剪与省略号不再重置行号；旧会话没有这两个字段时退回原连数逻辑。`normalizeApproval` 重载会话时保留该字段。
+- 护栏：`test/ai/ai-diff-view.test.mjs` 新增「行号按完整 diff 计数，裁剪与省略号不重置」用例。
+
 ### AI 面板（查看指令：环境块弱化）
 
 - **应用消息的「查看指令」里，宿主环境块（`<system-reminder>`：任务清单 / workspace_context / 提醒 / 附件）改为弱化显示**：此前展开「查看指令」时，投递唤醒等应用消息的环境块与正文同样式混排，一展开先是一大段注入文本、看不清真正的指令正文。现在环境块单独渲染为灰色小字分区（左侧细边框、更暗背景、最大高度 160px 内滚动），正文保持原样式——**内容一字不删**（「查看指令」的用途就是核对实际发给模型的内容，环境块正是要核对的对象）。判定复用 `splitTurnReminderPrefix`（仅严格形状拆出），非严格形状原样全量显示。实现：`ai-panel.js`（应用消息卡渲染）、`style.css`（`.ai-app-msg-env`）。
+
+### AI 面板（流式工具卡 · 零字节不再显示「接收中 0 B」）
+
+- **参数还没到时不报 0 B，改报「等待参数…」**：工具调用头（name）通常远早于参数字节到达，而部分模型端点会把整段工具参数憋完再回放（实测 `token.sensenova.cn` 的 `sensenova-6.8-flash`：参数静默 8–15 秒后 3.7 KB 在 244 ms 内刷完，同账号 `deepseek-flash` 与 DeepSeek 官方则持续增量）——这段时间原先恒定显示「接收中 0 B」，看着像计数器坏了 / 卡死。现在零字节显示「等待参数…」，收到首块后照旧报体积（`+N −M` 的 ± 同样是参数到达后才可算，节奏由端点决定）。实现：`ai-tool-cards.js` 新增 `liveToolStateText()`（`liveToolParts` 补 `chars` 原始长度，不用格式化后的 `size` 反推），占位行建行与原地更新两处共用；护栏 `test/ai/ai-tool-cards.test.mjs` 新增 1 例。
 
 ### 修复（模型账号编辑器 · 下拉不再露出系统原生菜单）
 
 - **「接口协议 / 代理 / 推理强度」改用统一的浮层下拉**：这三个 select 是 `index.html` 里的静态原生控件，只有 `.mcfg-select` 外观类、从未走设置页的 `enhanceSelect` 增强（扫描器只覆盖 `.settings-pane select`），展开时露出 WebView2 的系统菜单，和弹窗里的自绘控件像两套。现在打开编辑器时增强成与设置页同款触发器（宽高、圆角、底色对齐 `.mcfg-input`），并给三个控件补了 `aria-label`。
 - **重复增强改为同步触发器文本**：程序化改 `select.value` 不派发 change，此前触发器标签会停在旧值。`enhanceSelect` 对已增强的 select 再调一次时改为刷新标签（仍幂等、不重复包装），面板刷新后可补一次调用。
+
+### 修复（会话快照不落盘 · 关掉的标签重启又回来）
+
+- **关掉标签后重启，标签不再复活**：`createEditorGroups` 的导出对象在 98365fb 的前端拆分中丢了 `editorGroups` getter，`main.js` 注入给 `session-restore` 的是 `undefined`；`serializeSession` 遍历它时抛 `TypeError`，被 `saveSessionNow` 的空 catch 静默吞掉——此后**每次会话保存都失败**，localStorage 里永远是拆分前的旧快照（含已关闭的 wav / mp4 标签），重启就从旧快照恢复。
+- **保存失败不再静默、调试台可见**：`saveSessionNow` 的异常分支改为记一条 `会话保存失败：…`（带 stack）warn；同时 `logFrontend` 从「只写应用日志文件」改为**双写应用日志 + 调试台**——此前模块里直接 `logFrontend('warn'/'error')` 的失败（插件市场、更新检查、会话恢复…）在调试台里完全是黑箱。`console.*` 补丁与全局错误钩子带 `fromConsole` 标记，不会重复入面板。
+- 护栏：`test/shell/session-restore.test.mjs` 新增「editorGroups 必须是活引用导出」接线断言、「保存失败写 warn 并返回 false」与「logFrontend 双写调试台」三例；测试 harness 同步改为 getter 注入，与 main.js 一致。
 
 ### 修复（媒体文件默认视图 · 重开不再落到二进制）
 
@@ -31,7 +235,7 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 - **沙箱里没有 bash**：实测 Git Bash（Cygwin）在受限令牌下无法启动——它要在 `\BaseNamedObjects` 建目录对象、按用户 SID 建共享内存，而 restricting 列表里没有用户 SID。所以沙箱档的 shell 固定为 PowerShell（回退 `cmd`），卡片与工具结果如实显示实际 shell（`PowerShell 7` / `Windows PowerShell` / `Command Prompt`）与 `沙箱：workspace-write（partial）· 写根：…`；子代理系统提示也提前声明「用 PowerShell 语法，不要用 ls / grep / sed」。
 - **不可用就不跑（fail-closed）**：受限令牌、ACL 或 Job 建不起来时直接报「沙箱不可用，命令未执行」，绝不降级裸跑。后台作业退出后自动撤销临时目录授权并删除目录。
 - **操作记录可查**：`ai.tool` 新增两种 status —— `sandbox-denied`（命令失败且 stderr 命中「拒绝访问 / Access is denied / Permission denied」等特征，识别 UTF-8 与 GBK 两种输出）与 `sandbox-unavailable`（沙箱建不起来）；成功执行记 `done` 并附 `sandbox` 档位。**后台作业同样能分类**：作业退出时按缓冲里的 stderr 行判定，结论走 `AICommandJobStatus.sandboxDenied`，`check_command` 轮询到就把这次调用记成 `sandbox-denied` 并在结果里说明。子代理的工具执行此前**只在「超出只读范围被拒」时留痕**，现在每次执行都记（子代理命令无人可问，留痕是唯一审计面）。
-- **看得见、也掐得断**：团队弹层里每个子代理的副标题显示 `沙箱 只读 / 可写 / 完全`（读派出时定死的档位，未知值原样回显）；`stop_command` 增加归属校验——只能停**本任务树**起的后台作业，子代理不能顺手掐掉别的会话的作业（越界确定性拒绝）。
+- **看得见、也掐得断**：团队弹层里每个子代理的副标题在原来「沙箱 …」文字的位置显示一枚描边档位胶囊 `只读 / 可写 / 完全`（读派出时定死的档位，未知值原样回显；只读中性、可写强调色、完全橙色警示）；`stop_command` 增加归属校验——只能停**本任务树**起的后台作业，子代理不能顺手掐掉别的会话的作业（越界确定性拒绝）。
 - **授权残留可自己清**：`workspace-write` 会给工作区目录留下能力 SID 的授权 ACE、Everyone 的「禁止删除子项」deny 与 Low 完整性标签，跨会话复用、不随退出撤销（撤销会让下次重新传播整棵树）。这些痕迹 **`icacls` 撤不掉**（能力 SID 是派生的 `S-1-4-x-y`，解析失败报 1332），现在可在 设置 → 权限 →「子代理命令沙箱」检查并清除；清除只删完全匹配本应用的条目，用户自己的权限原样保留。
 - 已知代价（如实说明）：工作区树被打上 **Low 完整性标签**后，其它以 Low IL 运行的进程也能写它；首次授权是 eager 全树传播（大目录几十秒）；FAT / exFAT 卷不能作为写根；硬链接别名可绕过能力 SID。
 - 护栏：Go `internal/sandbox` 13 例（令牌 / 授权 / 幂等 / Job / 扫描撤销）+ `internal/cmdbridge` 10 例（前台与后台沙箱执行、写根外拒绝、拒绝分类、后台拒绝标记）；前端 `test/ai/ai-subagent-sandbox.test.mjs` 11 例（档位映射、写根来源、工具挂载、执行分支、留痕、残留文案、HUD 与归属校验）。
@@ -139,8 +343,20 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 
 ### AI 隔离工作区（git worktree）
 
-- **二期：依赖共享 / 子代理并行 / 改动统计 / 孤儿回收**。① **依赖目录 junction**：创建隔离区时自动把主根的 `node_modules` / `.venv` / `venv`（白名单，只共享通常 gitignore 的目录；git 跟踪的 vendor 不碰）以 `mklink /J` 联接进 worktree（免管理员权限），创建结果告知 AI 已共享哪些——隔离区里 `npm test` / `pip` 可直接跑（写入的就是主根依赖目录，双向共享）；删除侧先按白名单摘 reparse 点再交 git，**删除 worktree 绝不伤主根依赖**（测试断言）。实施实测：Go 1.27 Windows 下 `os.Lstat` 对 junction 不报 symlink/dir 位（`WalkDir`/`ReadDir` 把它当非目录条目、不下钻——遍历天然安全），reparse 点判定必须走 `FILE_ATTRIBUTE_REPARSE_POINT`；`<worktree>` 提示词块同步改为「依赖已共享」。② **子代理并行隔离区（`spawn_agent` 新增 `isolation: 'worktree'`）**：给子代理建独立隔离 git worktree（创建失败让派单直接报错，不静默降级成写主根），挂 `write_file` / `edit_file`，写效应圈定在它自己的 `.cadt/worktree/<slug>/` 前缀内（`agentWorktreeWriteVerdict` 纯函数闸：前缀内确定性放行自动应用——隔离区即审批边界，子代理永不弹卡；前缀外确定性拒绝）；`run_command` 仍不给子代理（命令通道归 OS 沙箱方案）；主代理用 `worktree_manage` 的 `export` / `stat` / `discard`（新增可选 `name`，只认本会话自己的或本会话派生子代理的隔离区，归属外拒绝）审阅回灌或丢弃。③ **改动统计（对比 lite）**：Go 新绑定 `GitWorktreeStat`（baseSha 有效对比创建基准，否则对比该 worktree 自己的 HEAD）；`worktree_manage` 新增 `stat` 动作、`list` 给每个隔离区附一行未提交改动统计、头部胶囊弹层显示统计。④ **孤儿隔离区回收**：设置 → 存储与清理 新条目「AI 隔离 worktree（孤儿）」（危险类，走回收站）——只清「没有任何会话登记」的孤儿检出副本，活跃会话登记的隔离区不在范围（宿主从会话 meta 收登记路径注入，钩子未注入时一律不清，fail-safe）；git 管理记录由启动 prune 收敛，分支残留写进条目说明。
+- **修复确认弹层「动作执行了但窗口不消失」（2026-11-17 真机）**：`ai-worktree.js` 的 `confirmDialog` 按钮回调只 resolve 不 `closeDialog()`，且 `settled` 守卫会吞掉后续点击——表现为点「创建」后 slug 已建好但弹层不动、点「取消」也没反应、丢弃同理。现在 `done()` 先关窗再落定（仓库惯例，与 ai-reminders / ai-schedule 一致），创建 / 丢弃 / 信息卡共用同一修复。
+- **头部「隔离区」胶囊：补图标 + 点击改为信息卡**：compact 档（标题行 <420px）会隐藏 chip 文字，而 worktree chip 从未注入图标，只剩空白圆——现在注入 folder 图标并设置 tooltip。点击胶囊不再是直接进入丢弃确认，改为**信息卡**：显示路径、分支、改动统计与回灌指引，底部两个显式按钮【关闭】【丢弃隔离区】；权限弹窗里「隔离工作区」行在已开启时同样进入信息卡（点一下不会退出），未开启时创建。
+- **修复「已开完全权限仍弹命令审批卡」的档位竞态**：分类器判定最长等 12s，期间把档位切到完全权限后，迟到的 ask 会照弹。现在 `requestCommandApproval` 在弹卡前按当前档位重判（`scopeUpgradedToFull` 纯函数）：full 下除**项目 ask 规则**（有意压过 full）外一律自动放行并留痕「审批等待期间已提升到完全权限」；项目 ask 仍按原样弹卡。命令通道的四个询问点补了 `source` 供区分。
+- **补丁审批卡头部统计贴右**：`+26 −25 3 文件` 此前停在卡片中间而不是收起图标左边——`.ai-takeover-stat` 与 `.ai-takeover-collapse` 都带 `margin-left: auto`，Flex 把剩余空间在两个 auto 边距间平分了。现在补丁卡内收起按钮改为 `margin-left: 0`（auto 只由统计块持有），统计块紧贴右侧、收起图标紧随其后；单文件审批等其他接管卡布局不变（`style.css`）。
+- **隔离区临时文件与输出重定向指引**：worktree 检出里没有主根 `.cadt/`，AI 之前会猜 `../.cadt/tmp` 并在 worktree 内部自建目录、再用 `> log` + `sed` 读日志——重定向使命令变成无法静态分析的复合命令，auto 档只能转人工（分类器 ask / 超时），这不是权限 bug。现在 `<worktree>` 块写明：工具路径一律相对范围根（主根）、隔离区没有主根 `.cadt`、临时产物用 `write_file` 写主根 `.cadt/tmp/`（auto 档免审）、不要用 `../` 猜路径；`run_command` 描述补充「输出已捕获，不要用重定向写日志再读，长日志用 background_command + check_command」。
+- **输入区窄宽度两级降级（对齐 ZCode 权限弹窗）**：此前面板拖窄时底栏放不下，发送/停止会被挤出可视区、pill 全变省略号。现在：① 内容宽 ≤400px 时**模型 chip 收成单图标**（名字/推理等级/上下文上限/箭头隐藏，模型名与等级进入 tooltip / aria-label）；② ≤330px 时**「计划」「隔离」两个 pill 收起，入口移进权限模式弹窗**的「会话模式」两行——计划模式 / 隔离工作区（带勾选、描述、任何宽度都保留在菜单里，宽档 pill 与菜单并存），计划已开用权限胶囊上的强调色圆点提示以免状态丢失；③ 发送/停止始终固定可见。两级之间都不出省略号。实现：`style.css` 容器查询段（`.ai-composer` 已是 `container-type: inline-size`）、`ai-panel.js` 的 `showPermissionMenu` / `updateScopeUI` / `renderModelChip`、`ai-worktree.js` 的 `toggleForSession`（pill 开关与运行中守卫）；权限菜单行：未开启=创建、已开启=信息卡。
+- **输入区常驻「隔离」开关（对齐 ZCode 的 worktree 勾选）**：AI 输入框底部工具栏新增 `隔离` pill（与「计划」同排、同 `.active` 样式）——勾上即创建隔离区（确认卡按权限档出、完全权限免），取消即弹确认丢弃（含改动统计）；轮次运行中禁用切换（写效应正在产生），只读档点击提示先切权限档；会话切换/启动自动同步状态。worktree 从此是用户显式控制的会话开关，不再只靠 `/worktree` 或模型自觉；AI 侧仍可经 `worktree_manage` 建议创建。
+- **修复「用户说了基于 worktree，AI 仍在主根开发」**（2026-11-17 实测）：此前守则里没有把用户的 worktree 表态绑定到工具调用——模型把「基于 worktree」理解成「参考 worktree 方案文档」，且计划模式下 `worktree_manage` 按设计不可见、更不会创建。现在：① `<workspace_rules>` 写档守则要求「用户以『基于 worktree / 用隔离区 / 在 worktree 里开发』措辞要求时，实施第一步先 `worktree_manage(action=create)`，并声明这不是读方案文档；只是讨论方案文档时不要创建」；② 计划模式守则与 `<plan_mode>` 块要求「计划 steps 第一项写创建隔离区，批准后才执行」；③ 工具 create 描述同步；④ `/worktree` 从「填提示词」改为**面板直连创建**（`createForSession`：确认卡按档位出后立即 `GitWorktreeAdd`、登记会话、出胶囊），不依赖模型回合的确定性入口。提示词是行为依据不是硬约束——要 100% 确定就勾「隔离」或先 `/worktree` 再让 AI 干活。
+- **二期：依赖共享 / 子代理并行 / 改动统计 / 孤儿回收**。① **依赖目录 junction**：创建隔离区时自动把主根的 `node_modules` / `.venv` / `venv`（白名单，只共享通常 gitignore 的目录；git 跟踪的 vendor 不碰）以目录联接（junction）接进 worktree（原生 FSCTL 创建，免管理员权限、不经 cmd.exe），创建结果告知 AI 已共享哪些——隔离区里 `npm test` / `pip` 可直接跑（写入的就是主根依赖目录，双向共享）；删除侧递归摘掉全部 reparse 点再交 git，**删除 worktree 绝不伤主根依赖**（测试断言）。实施实测：Go 1.27 Windows 下 `os.Lstat` 对 junction 不报 symlink/dir 位（`WalkDir`/`ReadDir` 把它当非目录条目、不下钻——遍历天然安全），reparse 点判定按 reparse tag 精确识别（MOUNT_POINT / SYMLINK）。② **子代理并行隔离区（`spawn_agent` 新增 `isolation: 'worktree'`）**：给子代理建独立隔离 git worktree（创建失败让派单直接报错，不静默降级成写主根），挂 `write_file` / `edit_file`，写效应圈定在它自己的 `.cadt/worktree/<slug>/` 前缀内（`agentWorktreeWriteVerdict` 纯函数闸：前缀内确定性放行自动应用——隔离区即审批边界，子代理永不弹卡；前缀外确定性拒绝）；命令通道由同期落地的 OS 沙箱承载（写效应圈在 cwd / 隔离 worktree 内）；主代理用 `worktree_manage` 的 `export` / `stat` / `discard`（新增可选 `name`，只认本会话自己的或本会话派生子代理的隔离区，归属外拒绝）审阅回灌或丢弃。③ **改动统计（对比 lite）**：Go 新绑定 `GitWorktreeStat`（baseSha 有效对比创建基准，否则对比该 worktree 自己的 HEAD）；`worktree_manage` 新增 `stat` 动作、`list` 给每个隔离区附一行未提交改动统计、头部胶囊弹层显示统计。④ **孤儿隔离区回收**：设置 → 存储与清理 新条目「AI 隔离 worktree（孤儿）」（危险类，走回收站）——只清「没有任何会话登记」的孤儿检出副本，活跃会话登记的隔离区不在范围（宿主从会话 meta 收登记路径注入，钩子未注入时一律不清，fail-safe）；git 管理记录由启动 prune 收敛，分支残留写进条目说明。
 
+- **修复「补丁回灌失败时 AI 直接改主根」（2026-11-17 真机）**：`worktree export` 的补丁预检有冲突时，模型会自作主张「直接对主根做同样的替换」——真机上在完全权限档 `edit_file` 改了主根 `frontend/src/style.css`（+23 −18），绕过回灌审批卡。现在主会话在隔离期间**主根只读**：`applyWorkspaceWrite` 用纯函数 `mainRootWriteVerdict` 判定，只允许写自己的 `.cadt/worktree/<slug>/` 前缀与 `.cadt/tmp/` 临时产物，其余主根路径确定性拒绝（**全档生效，含完全权限**；`/init` 是应用代发的用户动作，豁免），拒绝文案指引「改隔离区路径、冲突在隔离区修正后重新 export」。同时 `run_command` / `background_command` 未显式传 `cwd` 时**默认在隔离区里执行**（`commandCwdOf`），要看主根需显式 `cwd='.'`；`<worktree>` 块补「主根只读 + 导出冲突处理」指引。护栏：`test/ai/ai-worktree.test.mjs` 新增 `mainRootWriteVerdict` 用例（隔离前缀 / `.cadt/tmp` / 主根文件 / 近似前缀 / 范围外绝对路径 / 无登记）与提示词块断言。
+- **AI 主动进入 / 退出隔离区改为输入区审批卡（2026-11-17 真机）**：此前 `worktree_manage(create/discard)` 走居中二次确认弹窗（且 full 档创建直接免确认）。现在 AI 发起的 create / discard 一律弹**接管 composer 的审批卡**（新增 `approval.kind = 'worktree'`，与写/命令审批共用 `pendingApprovals` 通道）：创建卡说明位置/分支/用途与「拒绝后只能主根常规流程」，丢弃卡附改动统计与「未导出改动会丢失」，底部【取消/保留】【创建隔离区/丢弃隔离区】，支持临时收起；**全档必弹（含完全权限）**——会话级状态变更不随逐写档位静默执行。用户自己点的「隔离」开关与胶囊信息卡仍走居中确认弹窗（那是用户发起、不是 AI 请求）。审批记录按 `worktree` 来源落痕。实现：`ai-takeover.js` 的 `renderWorktreeTakeover`、`ai-panel.js` 的 `requestWorktreeApproval` / `decideApproval` 分支、`ai-worktree.js` 的 `manageCreate` / `manageDiscard`；工具描述同步「会弹审批卡」。
+- **修复「丢弃隔离区后主根 frontend/node_modules 被清空」（2026-11-17 真机）**：AI 在隔离区里手动 `mklink /J frontend/node_modules <主根>/frontend/node_modules` 借依赖（根层没有可自动共享的 node_modules，旧提示词仍说「依赖已共享」误导了它）；`WorktreeRemove` 之前只摘 worktree **根一层**白名单里的 junction，扫不到嵌套链接，随后 `git worktree remove --force` 在 Windows 上**跟进 junction** 递归删除目标内容——主根 `frontend/node_modules` 被直接删空（用户 `npm install` 后才恢复）。现在删除前 `unlinkReparsePoints` 递归遍历 worktree（`WalkDir` 对 junction 不下钻），摘掉**所有** reparse point（junction / 符号链接，只删链接、绝不动目标）再交 git；`<worktree>` 块与工具描述改为「只共享主根**顶层** node_modules/.venv/venv，子目录依赖不会共享——缺依赖在隔离区里装，绝不要手动 mklink 借主根」。护栏：`internal/gitinfo/worktree_test.go` 新增 `TestWorktreeRemoveNestedJunction`（嵌套 junction 删除后主根依赖内容完好）；已用临时仓库复现「git 跟进 junction 删空目标」，确认根因。
+- **复查加固（2026-11-17，子代理三轮只读复审）**：① **主根只读闸补根相对/UNC 绕过**：`aiNormalizePath` 会把 `\\server\share` 与 `\\?\D:\...` 折成单斜杠（`/server/share`、`/?/D:/...`），旧闸把 `/` 开头当「范围外绝对路径」放行——Win32 会解析到当前盘根，工作区在该盘时即可命中主根。现在隔离期间单斜杠/反斜杠开头一律拒绝，临时产物统一引导到 `.cadt/tmp/`；测试改按生产形状（归一后的单斜杠）断言。② **审批后失败/停止不再假成功**：create/discard/export 在审批通过后遇到 `GitWorktreeAdd/Remove/PatchApply` 报错或用户停止时，把 `approval.state` 落成 `failed/cancelled` 并写 `error`，工具卡与状态文字不再显示「已创建/已丢弃」；补丁卡异常不再永久停在「正在应用补丁…」。③ **停止竞态防幽灵卡**：`requestWorktreeApproval` 与 `requestPatchApproval` 在注册前检查 `toolHalted`，避免「已死轮次」的 pending 卡永久挂起并顶掉下一轮审批。④ **入口护栏补齐**：`createForSession`（/worktree、权限菜单）与胶囊信息卡的丢弃都补运行中守卫；同会话 create 加互斥标记并在审批返回后复查 `session.worktree`，防止审批等待期间从另一入口建出第二个隔离区（后者覆盖登记、前者成孤儿）；非当前会话完成创建/丢弃只清/刷新自己的胶囊，不再把别会话的隔离状态画到当前会话。⑤ **Go 删除加固**：worktree 根本身是链接时 fail-closed 拒绝删除（git 会跟进删空目标）；`isReparsePoint` 改按 reparse tag 精确判定（只认 junction/symlink，不误伤云占位符/去重/ProjFS）；不再跳过嵌套 `.git`；`createJunction` 改用 `FSCTL_SET_REPARSE_POINT` 原生创建（不再经 cmd.exe，杜绝路径元字符注入/假成功）；`git add -N` 对 junction 路径加 exclude pathspec（防止未 gitignore 的依赖目标被打进导出补丁）；重复 discard 幂等并清分支、目录已被手动删除时也按成功收尾；创建后取 HEAD 失败会回滚目录与分支。新增 Go 用例：重复 discard、根链接拒绝、junction 元字符路径、导出排除 junction 目标；前端新增 create/discard 审批闸用例。⑥ **文案/文档对齐**：`run_command` / `background_command` 描述补充「隔离会话默认 cwd 落隔离区」；审批记录补 `worktree` 类型与 `worktree-isolation` / `agent-worktree` / `confirm` 来源标签；CHANGELOG/README/方案 §6.4 审批矩阵与 §8/§9 同步。
 - **新增 AI 的隔离 git worktree（一期）**：AI 的有风险批量改动、大规模重构、试错可以在独立 worktree 里做——改动落在 `<主根>/.cadt/worktree/<slug>/`（新分支 `cadt/wt/<slug>`，slug 由用途名 + 会话 id 在 Go 侧派生），主根全程零改动；完成后导出补丁交用户在审批卡逐文件审阅后回灌主根，**回灌审批卡全档必弹（含完全权限档）**——人工审阅闸门是本功能的红线，不做任何自动 merge。会话独占（一会话一个 worktree，fork / 支线 / 会话投递不继承）；丢弃时 `worktree remove --force` + 删隔离分支。入口：AI 工具 `worktree_manage` 与输入框 `/worktree` 斜杠命令；会话持有活跃隔离区时头部出「隔离区」胶囊、系统提示词每轮注入 `<worktree>` 块。权限面全部走既有机制：auto 档对 `.cadt/worktree/` 精确前缀豁免逐写审批（脏文件仍确认、write-guard 与项目规则照常、`.cadt/permissions.json` 等仍 risky），edit 档照常逐写显示 diff；**git 快捷操作令牌豁免在 worktree cwd 下失效**（防令牌被拿去静默提交草稿分支）；项目规则对 `.cadt/worktree` 加 deny 即整域硬禁。五处护栏配套：文件监听跳过 worktree 子树（防事件洪峰冲 overflow）、检索两路径跳过（内置 WalkDir 加 `search.SkipPath`；rg 路径 glob 尽力剪枝 + `skipRgHit` 命中二次过滤保底——Windows 上路径型 glob 实测不可靠）、AI list_dir 与目录结构树导出整棵跳过（从隔离区自身发起的遍历/导出不受影响）。已知限制：重复 export 是全量语义（已回灌的 hunk 预检如实报「不可应用」），文案引导 export 后 discard 收尾；二进制改动不可回灌（预检如实报「不可应用」）。实现落点：`internal/gitinfo/worktree.go`（新，配 `worktree_test.go`：slug 派生 / 生命周期 / 隔离性 / diff 含未跟踪与删除 / patch 引擎可解析 / 冲突后缀 / junction 共享与删除安全 / prune）、`gitinfo_app.go` 转发、`internal/search`（`SkipPath` + rg 兜底）、`internal/watch`、`internal/fsops`、`internal/structuredir`、`internal/storage`（孤儿条目 + 会话登记钩子）、`ai-worktree.js`（新，配 `ai-worktree.test.mjs`）、`ai-tool-defs.js` / `ai-command-rules.js` / `ai-session-store.js` / `ai-system-context.js` / `ai-slash.js` / `ai-constants.js` / `ai-subagents.js`（隔离子代理） / `ai-panel.js` / `mock-backend.js`。方案见 `docs/unfinished-plans/git-worktree.md`。
 
 ### AI 对话（轮次过程折叠）

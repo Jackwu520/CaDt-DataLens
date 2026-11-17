@@ -282,6 +282,14 @@ export function decidePermission(input) {
     return {decision: 'ask', source: 'scope'};
 }
 
+// 审批卡等待期间档位可能被提升到完全权限（分类器最长 12s）：卡片发起前按当前档位重判。
+// 项目 ask 规则有意压过 full（用户显式要求该命令必问），其余来源（scope / dangerous /
+// classifier）在 full 下都应直接放行——否则会出现「已经开了完全权限还弹卡」的竞态
+// （2026-11-17 实测：auto 下发起的 sed 判定在切到 full 后返回 ask，卡片照弹）。
+export function scopeUpgradedToFull(scope, source) {
+    return scope === 'full' && String(source || '') !== 'project';
+}
+
 // ---------- 端侧命令分类器：严格度阈值 ----------
 
 // 严格度三档的 allow 阈值（危险概率 score < T 才放行）。三档共用同一语义：

@@ -79,7 +79,7 @@ const CSV_ROW_NUM_WIDTH = 44;
 const CSV_COL_MIN_WIDTH = 56;
 
 function viewOptionsFor(fmt, doc) {
-    if (doc && (doc.browser || doc.bgTerm || doc.agentView || doc.sideChat || doc.groupChat)) return [];
+    if (doc && (doc.browser || doc.bgTerm || doc.agentView || doc.agentTeam || doc.sideChat || doc.groupChat || doc.memo)) return [];
     if (fmt && fmt.image) return IMAGE_VIEWS;
     if (fmt && fmt.video) return VIDEO_VIEWS;
     if (fmt && fmt.audio) return AUDIO_VIEWS;
@@ -237,7 +237,8 @@ function updateWindowTitle() {
 }
 
 function anyDirty() {
-    return deps.docs.some((d) => d.dirty);
+    // 快捷便签的防抖窗口也算未保存：关窗拦截据此走确认流程（memoHasPending 由组合根注入）
+    return deps.docs.some((d) => d.dirty) || !!(deps.memoHasPending && deps.memoHasPending());
 }
 
 function updateBackendDirty() {

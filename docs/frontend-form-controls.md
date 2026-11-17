@@ -9,7 +9,8 @@
 
 | 控件 | 动态创建（JS） | 静态 HTML |
 | --- | --- | --- |
-| 开关 / 复选框 | `createSwitch()` | `label.set-switch` 三段结构 |
+| 开关 | `createSwitch()` | `label.set-switch` 三段结构 |
+| 紧凑行内复选框（文字在 label 内） | `createCheckbox()` | `label.set-check` 内含原生 checkbox + 文字 |
 | 下拉 | `createSelect()`；设置页行式下拉用 `createSettingsSelect()` | `select.opt-select`（设置页内自动自绘） |
 | 单行输入 | `createInput()` | `input.dlg-input` / `input.ai-settings-input` |
 | 多行输入 | `createTextarea()` | `textarea.dlg-input` / `textarea.ai-settings-input.ai-settings-textarea` |
@@ -23,10 +24,13 @@
 ### 动态创建
 
 ```js
-import {createSwitch, createSelect, createInput, createTextarea} from '../core/form-controls.js';
+import {createSwitch, createCheckbox, createSelect, createInput, createTextarea} from '../core/form-controls.js';
 
 const enabled = createSwitch({id: 'foo-enabled', checked: true, onChange: save});
 row.appendChild(enabled.element);          // 读值：enabled.control.checked
+
+const compact = createCheckbox({id: 'foo-fuzzy', label: '模糊', checked: false, onChange: save});
+row.appendChild(compact.element);          // 读值：compact.control.checked
 
 const scope = createSelect({
     id: 'foo-scope',
@@ -53,6 +57,7 @@ const prompt = createTextarea({id: 'foo-prompt', rows: 5, spellcheck: false});
 ## 3. 这些封装各自负责什么
 
 - `.set-switch`：隐藏原生 checkbox，用 `.set-switch-track` / `.set-switch-thumb` 自绘（`style.css` 约 9643 行）。
+- `.set-check`：紧凑行内复选框，label 内放原生 checkbox + 文字，外观沿用下方 `:where()` 全局兜底（不与 34×20 的开关混用）。
 - `.settings-content select` / `.opt-select`：`appearance:none` + SVG 箭头；设置页行式下拉由 `settings/settings-select.js` 增强成触发器 + 浮层，被增强的原生 select 加 `.set-select-native` 后隐藏。
 - `.dlg-input` / `.ai-settings-input`：统一边框、圆角、常态与聚焦背景、外发光。
 - `.ai-settings-textarea`：多行编辑器的字体、行高、最小高度；聚焦保持常态背景，不整块铺色。
@@ -66,7 +71,7 @@ const prompt = createTextarea({id: 'foo-prompt', rows: 5, spellcheck: false});
 - 新增 UI 与提交前都跑 `npm test`（见 `AGENTS.md`「验证与提交」）。
 - 迁移存量优先从动态创建点下手：`ai/ai-panel.js`、`ai/ai-takeover.js`、`ai/ai-tool-cards.js`、`editor/patch-view.js`、`explorer/global-search.js`、`settings/settings-pane-envvars.js`、`settings/settings-pane-plugins.js`、`terminal/terminal-ui.js` 等；每迁一处把对应基线数字减一。
 - **首轮已迁移（2026-11-15）**：`ai/ai-manage-dialogs.js`（1 个 select、1 个 textarea、3 个 input）与 `explorer/global-search.js`（1 个 select）改用工厂，基线相应从 6→1、3→2。迁移时给 `createInput` 传 `className` 覆盖默认 `.dlg-input`，保持各域原有外观零变化。
-- **暂留一类**：带文字的紧凑行内复选框（技能列表、变量列表、全局搜索分类勾选等）与 34×20 的开关尺寸/语义不同，先按存量豁免；新 UI 仍一律用 `createSwitch`，不要新写裸 checkbox。这一轮单独处理（可能需要给工厂补紧凑变体）。
+- **暂留一类**：带文字的紧凑行内复选框（技能列表、变量列表等）先按存量豁免。2026-11-17 工厂已补紧凑变体 `createCheckbox()`，`explorer/global-search.js` 的分类勾选已迁移（基线 2→0）；其余存量新写一律用 `createCheckbox`（或改用 `createSwitch` 的开关语义），不要新写裸 checkbox。
 
 ## 5. 易错点
 

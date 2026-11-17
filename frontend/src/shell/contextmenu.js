@@ -7,6 +7,17 @@ function el(tag, className, text) {
     return node;
 }
 
+// 菜单左上角定位（纯函数，便于单测）：anchorAbove 有值时菜单底边贴锚点顶边（留 gap），
+// 否则用调用方给的 x / y；最后统一夹进视口（menus 比视口还大时靠 margin 兜底）。
+export function computeMenuPosition(opts) {
+    const {x, y, width, height, viewportWidth, viewportHeight, margin, anchorAbove, gap = 6} = opts;
+    let left = anchorAbove ? anchorAbove.left : x;
+    let top = anchorAbove ? anchorAbove.top - height - gap : y;
+    left = Math.max(margin, Math.min(left, viewportWidth - width - margin));
+    top = Math.max(margin, Math.min(top, viewportHeight - height - margin));
+    return {left, top};
+}
+
 export function createContextMenu() {
     const root = el('div', 'ctx-menu hidden');
     document.body.appendChild(root);
@@ -35,7 +46,7 @@ export function createContextMenu() {
         }
     }
 
-    function place(panel, x, y) {
+    function place(panel, x, y, options) {
         panel.classList.remove('hidden');
         panel.style.left = '0px';
         panel.style.top = '0px';
@@ -52,12 +63,24 @@ export function createContextMenu() {
             height = maxH;
             width = panel.offsetWidth;
         }
-        let left = Math.min(x, window.innerWidth - width - margin);
-        let top = Math.min(y, window.innerHeight - height - margin);
-        left = Math.max(margin, left);
-        top = Math.max(margin, top);
-        panel.style.left = left + 'px';
-        panel.style.top = top + 'px';
+        // 上翻锚定（options.anchorAbove）：菜单底边贴锚点顶边。菜单高度随描述行数 / 缩放变化，
+        // 调用方算不出偏移，必须等渲染完拿到实测高度再定（权限胶囊原先写死 top - 280，实测高度
+        // 不同就会飘出一大截空档）。
+        const anchorRect = options && options.anchorAbove && options.anchor && options.anchor.nodeType === 1
+            ? options.anchor.getBoundingClientRect()
+            : null;
+        const pos = computeMenuPosition({
+            x,
+            y,
+            width,
+            height,
+            viewportWidth: window.innerWidth,
+            viewportHeight: window.innerHeight,
+            margin,
+            anchorAbove: anchorRect,
+        });
+        panel.style.left = pos.left + 'px';
+        panel.style.top = pos.top + 'px';
     }
 
     function placeSubmenu(panel, anchor) {
@@ -174,7 +197,7 @@ export function createContextMenu() {
         openOptions._origin = openOptions.anchor || lastPointerTarget;
         lastPointerTarget = null;
         render(root, items, 0);
-        place(root, x == null ? 24 : x, y == null ? 24 : y);
+        place(root, x == null ? 24 : x, y == null ? 24 : y, openOptions);
     }
 
     document.addEventListener('pointerdown', (e) => {

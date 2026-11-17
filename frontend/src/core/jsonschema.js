@@ -50,6 +50,17 @@ function deepEqual(a, b) {
     }
 }
 
+/**
+ * 用 JSON Schema 常用关键字校验数据，返回错误清单。
+ * 支持：type / const / enum / 数值与字符串长度约束 / pattern / 数组项与唯一性 /
+ * 对象必填与属性数 / properties / patternProperties / additionalProperties /
+ * allOf / anyOf / oneOf / not / if-then-else / 本地 $ref（# 开头的 JSON Pointer）。
+ * @param {*} data 待校验数据
+ * @param {object} schema JSON Schema 对象
+ * @param {object} [options] 选项
+ * @param {number} [options.maxErrors=200] 最多收集的错误条数（1–1000）
+ * @returns {Array<{path: string, keyword: string, message: string}>} 错误数组，path 为 JSONPath，空数组表示校验通过
+ */
 export function validateJsonSchema(data, schema, options = {}) {
     const errors = [];
     const root = schema && typeof schema === 'object' ? schema : {};

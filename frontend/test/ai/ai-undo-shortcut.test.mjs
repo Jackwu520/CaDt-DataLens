@@ -39,8 +39,9 @@ test('全局豁免只放行普通输入控件，Ace / jsoneditor 仍走编辑器
 
 test('全局冒泡层与捕获层都要调用豁免判定', () => {
     const main = read('main.js');
-    assert.match(main, /e\.ctrlKey && !e\.shiftKey && e\.key\.toLowerCase\(\) === 'z'\) \{\s*if \(isPlainTextUndoTarget\(\)\) return;/);
-    assert.match(main, /e\.ctrlKey && \(e\.key\.toLowerCase\(\) === 'y' \|\| \(e\.shiftKey && e\.key\.toLowerCase\(\) === 'z'\)\)\) \{\s*if \(isPlainTextUndoTarget\(\)\) return;/);
+    // 撤销 / 重做走快捷键风格查表（core/keymap.js），条件是「keymap.is(kb, 'edit.undo')」
+    assert.match(main, /keymap\.is\(kb, 'edit\.undo'\)\) \{\s*if \(isPlainTextUndoTarget\(\)\) return;/);
+    assert.match(main, /keymap\.is\(kb, 'edit\.redo'\)\) \{\s*if \(isPlainTextUndoTarget\(\)\) return;/);
     // 捕获层：代码模式空撤销栈回退保存态的拦截器，同样不能在输入框里触发
     const capture = main.match(/window\.addEventListener\('keydown', \(e\) => \{\s*if \(!e\.ctrlKey \|\| e\.shiftKey \|\| e\.altKey\) return;[\s\S]*?\}, true\);/);
     assert.ok(capture, 'Ctrl+Z 捕获拦截器应存在');

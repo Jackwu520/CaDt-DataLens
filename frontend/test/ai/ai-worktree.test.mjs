@@ -8,7 +8,9 @@ import {
     worktreeBlockText,
     formatWorktreeList,
     agentWorktreeWriteVerdict,
+    mainRootWriteVerdict,
     resolveWorktreeTarget,
+    createAIWorktree,
 } from '../../src/ai/ai-worktree.js';
 
 test('normalizeWorktreeState：合法 / 缺 name / 非对象', () => {
@@ -117,6 +119,38 @@ test('agentWorktreeWriteVerdict：子代理写闸——前缀内放行、前缀�
     assert.ok(agentWorktreeWriteVerdict(wt, 'src/main.js').message.includes('WORKTREE_SCOPE'));
 });
 
+test('mainRootWriteVerdict：隔离期间主根只读——只有自己的隔离前缀与 .cadt/tmp 能写', () => {
+    const wt = {name: 'demo-ab12'};
+    // 自己的隔离前缀（大小写 / 正反斜杠经 aiRelPath 归一后为 /）
+    assert.equal(mainRootWriteVerdict(wt, '.cadt/worktree/demo-ab12/src/a.js').verdict, 'allow');
+    assert.equal(mainRootWriteVerdict(wt, '.CADT/WORKTREE/DEMO-AB12').verdict, 'allow');
+    // 临时产物区
+    assert.equal(mainRootWriteVerdict(wt, '.cadt/tmp/build.log').verdict, 'allow');
+    assert.equal(mainRootWriteVerdict(wt, '.cadt/tmp').verdict, 'allow');
+    // 主根项目文件（真机案例：补丁冲突后直接改 style.css）→ 拒绝
+    const denied = mainRootWriteVerdict(wt, 'frontend/src/style.css');
+    assert.equal(denied.verdict, 'deny');
+    assert.ok(denied.message.includes('WORKTREE_MAIN_READONLY'));
+    assert.ok(denied.message.includes('.cadt/worktree/demo-ab12/frontend/src/style.css'));
+    assert.ok(denied.message.includes('action=export'));
+    // 其他主根路径 / 别的隔离区 / 近似前缀
+    assert.equal(mainRootWriteVerdict(wt, 'AGENTS.md').verdict, 'deny');
+    assert.equal(mainRootWriteVerdict(wt, '.cadt/worktree/other/a.js').verdict, 'deny');
+    assert.equal(mainRootWriteVerdict(wt, '.cadt/worktree/demo-ab12-x/a.js').verdict, 'deny');
+    assert.equal(mainRootWriteVerdict(wt, '.cadt/patches/x.patch').verdict, 'deny');
+    // 范围外盘符绝对路径（full 档）不属于主根，放行
+    assert.equal(mainRootWriteVerdict(wt, 'D:/elsewhere/tmp.log').verdict, 'allow');
+    // 单斜杠开头（根相对 / UNC / \\?\ 归一后的形状）Win32 会解析到当前盘根，
+    // 可能正好命中主根：隔离期间一律拒绝（2026-11-17 复查实测）
+    assert.equal(mainRootWriteVerdict(wt, '/tmp/x.log').verdict, 'deny');
+    assert.equal(mainRootWriteVerdict(wt, '/frontend/src/style.css').verdict, 'deny');
+    assert.equal(mainRootWriteVerdict(wt, '\\\\server\\share\\x.txt').verdict, 'deny');
+    assert.equal(mainRootWriteVerdict(wt, '//?/D:/repo/frontend/src/a.js').verdict, 'deny');
+    // 没有隔离区 → 不设限
+    assert.equal(mainRootWriteVerdict(null, 'frontend/src/style.css').verdict, 'allow');
+    assert.equal(mainRootWriteVerdict({}, 'frontend/src/style.css').verdict, 'allow');
+});
+
 test('resolveWorktreeTarget：by-name 只认本会话拥有的隔离区', () => {
     const own = {name: 'mine-ab12', branch: 'cadt/wt/mine-ab12', path: 'D:/r/.cadt/worktree/mine-ab12', baseSha: 'sha-own'};
     const subs = [{name: 'sub-1', baseSha: 'sha-1'}, {name: 'sub-2', baseSha: 'sha-2'}];
@@ -139,4 +173,169 @@ test('resolveWorktreeTarget：by-name 只认本会话拥有的隔离区', () => 
     assert.equal(resolveWorktreeTarget(null, subs, 'sub-1').wt.name, 'sub-1');
     // baseSha 缺失的登记不可信（不进命中）
     assert.equal(resolveWorktreeTarget(own, [{name: 'sub-3'}], 'sub-3'), null);
+});
+
+test('worktreeBlockText：临时文件与重定向指引（2026-11-17 实测补）', () => {
+    const block = worktreeBlockText({name: 'demo-ab12', branch: 'cadt/wt/demo-ab12'});
+    // 隔离区没有主根 .cadt；路径一律相对主根，与命令 cwd 无关
+    assert.ok(block.includes('隔离区里没有主根的 .cadt/'));
+    assert.ok(block.includes('相对范围根（主根）'));
+    // 临时产物用 write_file 写主根 .cadt/tmp，不要用 ../ 猜
+    assert.ok(block.includes('write_file 写到主根 .cadt/tmp/'));
+    assert.ok(block.includes('不要在命令里用 ../ 猜路径'));
+    // 不要用重定向把测试日志写文件再读（否则复合命令转人工）
+    assert.ok(block.includes('不要用输出重定向把日志写文件再 sed 读'));
+});
+
+test('worktreeBlockText：主根只读与导出冲突指引（2026-11-17 真机补）', () => {
+    const block = worktreeBlockText({name: 'demo-ab12', branch: 'cadt/wt/demo-ab12'});
+    // 主根只读：写工具拒绝（.cadt/tmp 例外）
+    assert.ok(block.includes('隔离期间主根只读'));
+    assert.ok(block.includes('write_file / edit_file 写主根其他路径会被拒绝'));
+    // 命令默认 cwd 落在隔离区；要看主根需显式 cwd=.
+    assert.ok(block.includes('未显式传 cwd 时默认在 .cadt/worktree/demo-ab12 里执行'));
+    assert.ok(block.includes('显式传 cwd=.'));
+    // 导出预检冲突时在隔离区修正，不要直接改主根
+    assert.ok(block.includes('在隔离区里按主根当前内容修正该文件后重新 export'));
+    assert.ok(block.includes('绝不要直接编辑主根绕过审阅'));
+});
+
+// ---- worktree_manage AI 动作审批闸（2026-11-17 真机：AI 主动进出隔离区要接管 composer） ----
+
+function makeWorktreeMod({scope = 'full', approval = {approved: true}, backend = {}, session = {id: 's1', title: '会话'}, calls = []} = {}) {
+    const mod = createAIWorktree({
+        backend: {
+            GitWorktreeAdd: async (...args) => {
+                calls.push({kind: 'add', args});
+                return {
+                    name: 'demo-ab12',
+                    branch: 'cadt/wt/demo-ab12',
+                    path: 'D:/repo/.cadt/worktree/demo-ab12',
+                    baseSha: 'abcdef1234',
+                    deps: [],
+                    includeCopied: 0,
+                    includeErrors: [],
+                    carried: args[3] ? 3 : 0,
+                };
+            },
+            GitWorktreeRemove: async (...args) => { calls.push({kind: 'remove', args}); },
+            GitWorktreeStat: async () => ' frontend/index.html | 3 +++\n 1 file changed, 3 insertions(+)',
+            ...backend,
+        },
+        getScopeRoot: () => 'D:/repo',
+        currentSession: () => session,
+        currentScopeOf: () => scope,
+        persistSessions() {},
+        flash() {},
+        requestPatchApproval: async () => ({approved: false}),
+        requestWorktreeApproval: async (s, tm, info) => {
+            calls.push({kind: 'approval', info});
+            // 模拟 registerPendingApproval + decideApproval 的落点：批准后 approval 已在 toolMessage 上
+            if (approval && approval.approved && tm) tm.approval = {kind: 'worktree', state: 'approved', action: info.action};
+            return approval;
+        },
+        persistApprovalMutation(session, tm) { calls.push({kind: 'persist', state: tm.approval && tm.approval.state}); },
+        patchResultText: () => '',
+        recordChange() {},
+        notifyFileChanged() {},
+        refreshToolWrap() {},
+        toolHalted: () => false,
+        logPermission() {},
+        getSessions: () => [session],
+        getSubWorktrees: () => [],
+        joinPath: (...parts) => parts.join('/'),
+        openDialog() {},
+        closeDialog() {},
+        dialogNode: () => null,
+        dialogButton: () => null,
+        dialogEl: null,
+        isRunning: () => false,
+    });
+    return {mod, session};
+}
+
+test('manageTool(create)：AI 主动创建走审批卡（full 档同样）、批准后才建', async () => {
+    const calls = [];
+    const {mod, session} = makeWorktreeMod({scope: 'full', calls});
+    const out = await mod.manageTool({session, toolMessage: {toolCallId: 'c1'}}, {action: 'create', label: 'demo'});
+    // 顺序：先审批卡，后 GitWorktreeAdd
+    assert.equal(calls[0].kind, 'approval');
+    assert.equal(calls[0].info.action, 'create');
+    assert.equal(calls[0].info.label, 'demo');
+    assert.equal(calls[1].kind, 'add');
+    assert.equal(session.worktree.name, 'demo-ab12');
+    assert.ok(out.includes('已创建隔离工作区'));
+});
+
+test('manageTool(create)：审批拒绝/取消时不建 worktree', async () => {
+    const calls = [];
+    const {mod, session} = makeWorktreeMod({approval: {approved: false}, calls});
+    const out = await mod.manageTool({session, toolMessage: {toolCallId: 'c2'}}, {action: 'create', label: 'demo'});
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].kind, 'approval');
+    assert.equal(session.worktree, undefined);
+    assert.ok(out.includes('取消了隔离工作区创建'));
+});
+
+test('manageTool(discard)：AI 主动丢弃走审批卡并附改动统计，批准后才删', async () => {
+    const calls = [];
+    const {mod, session} = makeWorktreeMod({calls});
+    session.worktree = {name: 'demo-ab12', branch: 'cadt/wt/demo-ab12', path: 'D:/repo/.cadt/worktree/demo-ab12', baseSha: 'abcdef1234', createdAt: 1};
+    const out = await mod.manageTool({session, toolMessage: {toolCallId: 'c3'}}, {action: 'discard'});
+    assert.equal(calls[0].kind, 'approval');
+    assert.equal(calls[0].info.action, 'discard');
+    assert.equal(calls[0].info.name, 'demo-ab12');
+    assert.ok(calls[0].info.stat.includes('1 file changed'));
+    assert.equal(calls[1].kind, 'remove');
+    assert.equal(session.worktree, null);
+    assert.ok(out.includes('已丢弃隔离工作区'));
+});
+
+test('manageTool(create)：审批通过后创建失败要把 approval 落成 failed（不再假成功）', async () => {
+    const calls = [];
+    const {mod, session} = makeWorktreeMod({
+        calls,
+        backend: {
+            GitWorktreeAdd: async () => {
+                throw new Error('boom');
+            },
+        },
+    });
+    const tm = {toolCallId: 'c4'};
+    const out = await mod.manageTool({session, toolMessage: tm}, {action: 'create'});
+    assert.equal(tm.approval.state, 'failed');
+    assert.equal(tm.approval.error, 'boom');
+    // 落定必须经过 persistApprovalMutation（卡片/持久化同步）
+    assert.ok(calls.some((c) => c.kind === 'persist' && c.state === 'failed'));
+    assert.ok(out.includes('创建失败'));
+});
+
+test('manageTool(create)：carry=true 传给后端，结果说明带入量与快照基准', async () => {
+    const calls = [];
+    const {mod, session} = makeWorktreeMod({calls});
+    const out = await mod.manageTool({session, toolMessage: {toolCallId: 'c6'}}, {action: 'create', carry: true});
+    const addCall = calls.find((c) => c.kind === 'add');
+    assert.equal(addCall.args[3], true, 'carry 应作为第 4 参传给 GitWorktreeAdd');
+    assert.ok(out.includes('带入 3 个未提交改动'), out);
+    assert.ok(out.includes('快照'), out);
+});
+
+test('manageTool(discard)：隔离区内有活终端时拒绝，不进审批也不删', async () => {
+    const calls = [];
+    const wtPath = 'D:/repo/.cadt/worktree/demo-ab12';
+    const {mod, session} = makeWorktreeMod({
+        calls,
+        backend: {
+            TermList: async () => [
+                {id: 't1', shell: 'pwsh', cwd: wtPath + String.fromCharCode(92) + 'frontend', exited: false},
+                {id: 't2', shell: 'pwsh', cwd: 'D:/elsewhere', exited: false},
+                {id: 't3', shell: 'pwsh', cwd: wtPath, exited: true}, // 已退出的不算占用
+            ],
+        },
+    });
+    session.worktree = {name: 'demo-ab12', branch: 'cadt/wt/demo-ab12', path: wtPath, baseSha: 'sha', createdAt: 1};
+    const out = await mod.manageTool({session, toolMessage: {toolCallId: 'c7'}}, {action: 'discard'});
+    assert.ok(out.includes('WORKTREE_TERMINAL'), out);
+    assert.ok(!calls.some((c) => c.kind === 'approval'), '不应进入审批卡');
+    assert.ok(!calls.some((c) => c.kind === 'remove'), '不应执行删除');
 });

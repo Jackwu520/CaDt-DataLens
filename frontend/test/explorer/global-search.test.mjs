@@ -82,7 +82,7 @@ function installDom() {
     };
 }
 
-function setup({workspaceFolder = null, file = null, hits = []} = {}) {
+function setup({workspaceFolder = null, file = null, hits = [], fuzzyHits = [], controls = false} = {}) {
     installDom();
     const els = {
         gsInput: makeEl('input'),
@@ -91,11 +91,24 @@ function setup({workspaceFolder = null, file = null, hits = []} = {}) {
         gsList: makeEl('div'),
         gsMask: makeEl('div'),
     };
-    const calls = {workspace: [], sessions: []};
+    // controls=true 时补出 #gs-panel 链，让 ensureAISearchControls 真正注入范围控件行
+    const panel = makeEl('div');
+    if (controls) {
+        const row = makeEl('div');
+        row.parentElement = panel;
+        els.gsInput.parentElement = row;
+        els.gsInput.closest = (sel) => (sel === '#gs-panel' ? panel : null);
+        panel.insertBefore = (node) => { panel.controlsRow = node; };
+    }
+    const calls = {workspace: [], fuzzy: [], sessions: []};
     const backend = {
         async SearchWorkspace(...args) {
             calls.workspace.push(args);
             return {hits, truncated: false};
+        },
+        async SearchWorkspaceFuzzy(...args) {
+            calls.fuzzy.push(args);
+            return {hits: fuzzyHits, truncated: false};
         },
         async AISessionSearchScoped(...args) {
             calls.sessions.push(args);
@@ -118,7 +131,17 @@ function setup({workspaceFolder = null, file = null, hits = []} = {}) {
         get switchMode() { return () => {}; },
         get waitUntil() { return async () => true; },
     };
-    return {els, calls, state, deps};
+    return {els, panel, calls, state, deps};
+}
+
+function findById(node, id) {
+    if (!node) return null;
+    if (node.id === id) return node;
+    for (const child of node.children || []) {
+        const hit = findById(child, id);
+        if (hit) return hit;
+    }
+    return null;
 }
 
 async function waitFor(condition, timeout = 2000) {
@@ -182,4 +205,32 @@ test('aiOnly 打开时只搜会话，不发起工作区文件搜索', async () =
     assert.equal(calls.workspace.length, 0);
     assert.equal(calls.sessions[0][0], 'needle');
     assert.equal(els.gsCount.textContent, '0 个结果');
+});
+
+test('勾选「模糊」后改走 SearchWorkspaceFuzzy；取消工作区文件时模糊框禁用', async () => {
+    const {els, panel, calls, deps} = setup({workspaceFolder: 'D:\\ws\\demo', controls: true});
+    const {openGlobalSearch} = createGlobalSearch(deps);
+    openGlobalSearch();
+    const row = panel.controlsRow;
+    assert.ok(row, '搜索范围控件行应已注入');
+    const filesBox = findById(row, 'gs-files-enabled');
+    const fuzzyBox = findById(row, 'gs-fuzzy-enabled');
+    assert.ok(filesBox && fuzzyBox, '应有工作区文件与模糊两个勾选框');
+    // 默认关闭、工作区文件勾选时可用
+    assert.equal(fuzzyBox.checked, false);
+    assert.equal(fuzzyBox.disabled, false);
+    fuzzyBox.checked = true;
+    fuzzyBox.fire('change');
+    els.gsInput.value = 'gsrch';
+    els.gsInput.fire('input');
+    await waitFor(() => calls.fuzzy.length === 1);
+    assert.equal(calls.workspace.length, 0, '模糊模式下不应走字面搜索');
+    assert.deepEqual(calls.fuzzy[0], ['D:\\ws\\demo', 'gsrch', false, 400]);
+    // 取消「工作区文件」：模糊框禁用，也不再发起工作区搜索
+    filesBox.checked = false;
+    filesBox.fire('change');
+    assert.equal(fuzzyBox.disabled, true);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.equal(calls.fuzzy.length, 1);
+    assert.equal(calls.workspace.length, 0);
 });

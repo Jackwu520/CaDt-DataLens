@@ -1,45 +1,34 @@
-// ai-plan-file 纯函数测试：计划文件命名 / 落盘判定 / 展示摘要。
-// 重点锁住三件事：同一消息算出的路径必须稳定（重渲染与重启重放要指向同一文件）、
-// 文件名不能出现 Windows 非法字符、非最终稿（工具轮 / 半成品）不得当计划落盘。
+// ai-plan-file 纯函数测试：分节拼装 / 固定命名 / activePlan 归一 / 回注块。
+// 重点锁住四件事：同会话固定路径（修订轮覆盖同一份）、planMarkdownFrom 的分节拼装
+// （body 自由 Markdown、顶层 ## 降级）、normalizePlanSections 归一、planReferenceBlock 只认 activePlan。
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
     PLAN_DIR_REL,
-    isPlanMessage,
+    PLAN_PREVIEW_CHARS,
     planDigest,
     planDisplayPath,
     planFileBody,
     planFileRelPath,
+    planMarkdownFrom,
+    planPreviewSlice,
     planReferenceBlock,
+    normalizeActivePlan,
+    normalizePlanSections,
+    planSectionsChars,
     planSessionSlug,
-    planSlug,
     planStamp,
     planTitleOf,
 } from '../../src/ai/ai-plan-file.js';
 
-const PLAN_TEXT = '# 计划: 补齐 AI 工具的三块短板（终端 / glob / 会话搜索）\n\n## 0. 现状事实\n\n- 内置终端后端\n';
+const PLAN_TEXT = '# 底部面板新视图「Git 图谱」一期\n\n## 目标与现状\n\n在底部面板加一个泳道视图。\n';
 
 test('planTitleOf 取首个 ATX 标题，退化到首行非空文本', () => {
-    assert.equal(planTitleOf(PLAN_TEXT), '计划: 补齐 AI 工具的三块短板（终端 / glob / 会话搜索）');
+    assert.equal(planTitleOf(PLAN_TEXT), '底部面板新视图「Git 图谱」一期');
     assert.equal(planTitleOf('先做 A，再做 B\n\n- 细节'), '先做 A，再做 B');
     assert.equal(planTitleOf('- 第一步：读代码'), '第一步：读代码');
     assert.equal(planTitleOf('   \n\n'), '');
     assert.equal(planTitleOf(null), '');
-});
-
-test('planSlug：去 Markdown 记号 + 剔除 Windows 非法字符 + 长度截断', () => {
-    // 大小写保留（AI / glob 原样，便于人读文件名）
-    assert.equal(planSlug(PLAN_TEXT), '计划-补齐-AI-工具的三块短板（终端-glob-会话搜索）');
-    // 非法字符 / 强调记号 / 链接语法
-    assert.equal(planSlug('# **a/b:c**\\d `e`'), 'a-b-c-d-e');
-    assert.equal(planSlug('# [标题](https://example.com/x)'), '标题');
-    // 空标题与保留设备名
-    assert.equal(planSlug(''), 'plan');
-    assert.equal(planSlug('#   '), 'plan');
-    assert.equal(planSlug('# nul'), 'nul-plan');
-    // 超长截断且不留尾随连字符
-    const long = planSlug('# ' + 'a'.repeat(80));
-    assert.equal(long.length, 40);
 });
 
 test('planStamp：本地时间秒级（只用于来源注释，不参与文件名）', () => {
@@ -58,115 +47,168 @@ test('planSessionSlug：清洗为文件名安全字符，空值回落 session', 
 test('planFileRelPath：按会话固定路径（同会话永远覆盖同一份）', () => {
     const rel = planFileRelPath('sess_plan-1');
     assert.equal(rel, PLAN_DIR_REL + '/plan-sess_plan-1.md');
-    // 同一会话算出同一路径（不随时间 / 标题漂移）
-    assert.equal(planFileRelPath('sess_plan-1'), rel);
+    assert.equal(planFileRelPath('sess_plan-1'), rel, '同一会话算出同一路径（不随时间 / 标题漂移）');
     assert.equal(planFileRelPath(''), PLAN_DIR_REL + '/plan-session.md');
 });
 
 test('planDisplayPath：绝对路径切出 .cadt/plan 一段，其它回落文件名', () => {
-    assert.equal(planDisplayPath('D:\\ws\\.cadt\\plan\\20261116-052307-x.md'), '.cadt/plan/20261116-052307-x.md');
+    assert.equal(planDisplayPath('D:\\ws\\.cadt\\plan\\plan-s1.md'), '.cadt/plan/plan-s1.md');
     assert.equal(planDisplayPath('/home/u/ws/.cadt/plan/a.md'), '.cadt/plan/a.md');
     assert.equal(planDisplayPath('D:\\ws\\notes\\a.md'), 'a.md');
     assert.equal(planDisplayPath(''), '');
 });
 
-test('planDigest：行数与去空白字数', () => {
+test('planDigest：标题 / 行数 / 去空白字数', () => {
     const d = planDigest(PLAN_TEXT);
-    assert.equal(d.lines, 6);
-    assert.equal(d.chars, PLAN_TEXT.replace(/\s+/g, '').length);
+    assert.equal(d.title, '底部面板新视图「Git 图谱」一期');
     assert.equal(planDigest('').lines, 0);
     assert.equal(planDigest('').chars, 0);
 });
 
 test('planFileBody：正文保留原文并附来源注释', () => {
-    const body = planFileBody(PLAN_TEXT, {ts: new Date(2026, 10, 16, 5, 23, 7).getTime(), title: '会话 A', model: 'gpt-x'});
-    assert.ok(body.startsWith('# 计划:'));
-    assert.ok(body.includes('<!-- 计划由 CaDt-DataLens 生成 · 20261116-052307 · 会话「会话 A」 · gpt-x -->'));
-    // 无元信息也要有换行收尾（否则文件末尾会和原文粘在一起）
+    const body = planFileBody(PLAN_TEXT, {ts: new Date(2026, 10, 16, 5, 23, 7).getTime(), title: '会话 A'});
+    assert.ok(body.startsWith('# 底部面板新视图「Git 图谱」一期'));
+    assert.ok(body.includes('<!-- 计划由 CaDt-DataLens 生成 · 20261116-052307 · 会话「会话 A」 -->'));
     assert.ok(planFileBody('正文').endsWith('\n'));
 });
 
-test('isPlanMessage：只有计划模式的最终答复才算计划', () => {
-    const base = {role: 'assistant', planMode: true, status: 'done', content: PLAN_TEXT, toolCalls: []};
-    assert.equal(isPlanMessage(base), true);
-    assert.equal(isPlanMessage({...base, planMode: false}), false, '非计划模式不落盘');
-    assert.equal(isPlanMessage({...base, status: 'streaming'}), false, '流式中不落盘');
-    assert.equal(isPlanMessage({...base, status: 'stopped'}), false, '用户停止的半成品不落盘');
-    assert.equal(isPlanMessage({...base, status: 'error'}), false, '失败不落盘');
-    assert.equal(isPlanMessage({...base, toolCalls: [{id: 'c', name: 'read_file', arguments: '{}'}]}), false,
-        '带工具调用的中间轮不是计划');
-    assert.equal(isPlanMessage({...base, content: '   '}), false, '空正文不落盘');
-    assert.equal(isPlanMessage({role: 'user', planMode: true, status: 'done', content: 'x', toolCalls: []}), false);
-    assert.equal(isPlanMessage(null), false);
+test('planMarkdownFrom：分节拼成完整文档，body 内可自由用子标题', () => {
+    const md = planMarkdownFrom({
+        title: 'Git 图谱',
+        sections: [
+            {heading: '目标与现状', body: '在底部面板加 Git 图谱视图。现有 agent 卡片只能看单代理。'},
+            {
+                heading: '实现',
+                body: '### 1. 纯函数 ai-team-model.js（新增）\n- buildTeamTree(mainAgent, agents) 复用 buildAgentTree\n### 2. 视图 ai-team-view.js\n- mountTeamView 建视图并渲染',
+            },
+            {heading: '实施步骤', body: '- Go 侧算泳道拓扑\n- 前端渲染 SVG\n- 接入底部面板'},
+            {heading: '验证方式', body: '- go test ./internal/gitinfo\n- 手动打开面板核对'},
+        ],
+    });
+    assert.ok(md.startsWith('# Git 图谱'));
+    assert.ok(md.includes('## 目标与现状'));
+    assert.ok(md.includes('## 实现'));
+    // body 内的 ### 子标题原样保留（层级更深，像 ZCode 的按组件分节）
+    assert.ok(md.includes('### 1. 纯函数 ai-team-model.js（新增）'));
+    assert.ok(md.includes('- buildTeamTree(mainAgent, agents) 复用 buildAgentTree'));
+    assert.ok(md.includes('## 实施步骤'));
+    assert.ok(md.includes('## 验证方式'));
+    // body 里模型失误写了顶层 ## 会被降为 ###（# 标题之外不出现同级标题）
+    const md2 = planMarkdownFrom({title: 'T', sections: [{heading: 'A', body: 'x\n## 跑飞了\ny'}]});
+    assert.ok(!/^## 跑飞了$/m.test(md2), 'body 里的 ## 必须降级');
+    assert.ok(md2.includes('### 跑飞了'));
+    // 缺 title 回落到首节内容的标题
+    const md3 = planMarkdownFrom({sections: [{heading: 'A', body: '给设置页换列表视图'}]});
+    assert.ok(md3.startsWith('# 给设置页换列表视图'));
+    assert.ok(planMarkdownFrom(null).startsWith('# 实施计划'));
 });
 
-function planMsg(content, planFile) {
-    return {role: 'assistant', planMode: true, status: 'done', content, toolCalls: [], planFile: planFile || ''};
+test('normalizePlanSections：heading 清洗、空节剔除、body 非法 ## 降级', () => {
+    const sections = normalizePlanSections([
+        {heading: '## 已经带了井号', body: '内容 A'},
+        {heading: '  ', body: '内容 B'},
+        {heading: '空 body', body: '   '},
+        null,
+        {heading: '正常', body: '内容 C'},
+    ]);
+    assert.equal(sections.length, 3);
+    assert.equal(sections[0].heading, '已经带了井号');
+    assert.equal(sections[1].heading, '未命名小节');
+    assert.equal(sections[2].heading, '正常');
+    assert.deepEqual(normalizePlanSections(null), []);
+    assert.deepEqual(normalizePlanSections('不是数组'), []);
+});
+
+test('planSectionsChars：合计去空白字数', () => {
+    assert.equal(planSectionsChars([{heading: 'A', body: 'a b\nc'}]), 3);
+    assert.equal(planSectionsChars(null), 0);
+    assert.equal(planSectionsChars([{heading: 'A', body: ''}]), 0);
+});
+
+test('normalizeActivePlan：白名单归一，markdown 为空视为没有计划', () => {
+    const plan = normalizeActivePlan({
+        title: 'Git 图谱', markdown: PLAN_TEXT, status: 'weird', ts: 123,
+        fileRel: '.cadt/plan/plan-s1.md', extraField: 1,
+    });
+    assert.equal(plan.status, 'pending', 'status 只认 approved，其余回落 pending');
+    assert.equal('extraField' in plan, false, '白名单外字段不得透传');
+    assert.equal(plan.ts, 123);
+    assert.equal(plan.title, 'Git 图谱');
+    assert.equal(normalizeActivePlan(null), null);
+    assert.equal(normalizeActivePlan({markdown: '   '}), null, '空正文不算计划');
+});
+
+function mkPlan(overrides) {
+    return Object.assign({
+        title: 'Git 图谱',
+        markdown: PLAN_TEXT,
+        status: 'pending',
+        ts: 123,
+    }, overrides);
 }
 
-test('planReferenceBlock：未压缩（无 summary）不注入——计划全文还在历史里', () => {
+test('planReferenceBlock：未压缩（无 summary）不注入——计划还在对话上下文里', () => {
     assert.equal(planReferenceBlock(null), '');
-    assert.equal(planReferenceBlock({summary: null, messages: [planMsg(PLAN_TEXT)]}), '');
-    assert.equal(planReferenceBlock({summary: {text: '  '}, messages: [planMsg(PLAN_TEXT)]}), '');
+    assert.equal(planReferenceBlock({summary: null, activePlan: mkPlan()}), '');
+    assert.equal(planReferenceBlock({summary: {text: '  '}, activePlan: mkPlan()}), '');
 });
 
-test('planReferenceBlock：压缩后注入最近一条计划（archived 与 messages 都搜）', () => {
-    const session = {
-        summary: {text: '摘要'},
-        archived: [planMsg('# 旧计划\n内容 A', 'D:/ws/.cadt/plan/plan-s1.md')],
-        messages: [{role: 'user', content: 'hi'}, planMsg('# 新计划\n内容 B')],
-    };
-    const block = planReferenceBlock(session);
+test('planReferenceBlock：压缩后注入 activePlan 文档，按状态区分提示', () => {
+    const block = planReferenceBlock({summary: {text: '摘要'}, activePlan: mkPlan()});
     assert.ok(block.startsWith('<plan_reference>') && block.endsWith('</plan_reference>'));
-    // 取的是最近一条（messages 里的新计划），不是 archived 里的旧计划
-    assert.ok(block.includes('内容 B'));
-    assert.ok(!block.includes('内容 A'));
-    // 新计划未批准（无 planFile）→ 未落盘提示；旧计划的路径不能串进来
-    assert.ok(block.includes('尚未保存为文件'));
-    assert.ok(!block.includes('.cadt/plan/plan-s1.md'));
-    assert.ok(block.includes('不要重新规划'));
+    assert.ok(block.includes(PLAN_TEXT), '回注的是 activePlan.markdown');
+    assert.ok(block.includes('尚未批准'));
+    // 已批准：提示文件路径
+    const approved = planReferenceBlock({summary: {text: '摘要'}, activePlan: mkPlan({status: 'approved'})});
+    assert.ok(approved.includes(PLAN_DIR_REL + '/plan-session.md'));
+    assert.ok(!approved.includes('尚未批准'));
+    // 没有 activePlan（或 markdown 为空）则不注入
+    assert.equal(planReferenceBlock({summary: {text: '摘要'}, messages: [{role: 'user', content: 'x'}]}), '');
+    assert.equal(planReferenceBlock({summary: {text: '摘要'}, activePlan: {markdown: '  '}}), '');
 });
 
-test('planReferenceBlock：已批准计划带文件路径提示', () => {
-    const session = {
-        summary: {text: '摘要'},
-        messages: [planMsg(PLAN_TEXT, 'D:/ws/.cadt/plan/plan-s2.md')],
-    };
-    const block = planReferenceBlock(session);
-    assert.ok(block.includes('已保存到工作区文件：D:/ws/.cadt/plan/plan-s2.md'));
-    assert.ok(block.includes(PLAN_TEXT));
+// ---- planPreviewSlice：审批卡预览的结构感知截断 ----
+test('planPreviewSlice：短文原样返回；超预算按行边界截断，不切半行', () => {
+    const short = '# 计划\n\n## 目标\n\n做 A。';
+    assert.deepEqual(planPreviewSlice(short, 100), {text: short, truncated: false});
+    const text = 'line1\nline2\nline3\nline4';
+    const slice = planPreviewSlice(text, 12);
+    assert.equal(slice.truncated, true);
+    assert.equal(slice.text, 'line1\nline2', '切在整行边界，kept 长度不超预算');
+    for (const line of slice.text.split('\n')) assert.ok(text.includes(line), '保留的都是完整行');
 });
 
-test('isPlanMessage：submit_plan 形态（计划在 planText，正文可空、带 toolCalls）', () => {
-    const submitted = {
-        role: 'assistant', planMode: true, status: 'done', content: '', planText: PLAN_TEXT,
-        toolCalls: [{id: 'c1', name: 'submit_plan', arguments: '{}'}],
-    };
-    assert.equal(isPlanMessage(submitted), true, 'planText 有值即计划消息');
-    assert.equal(isPlanMessage({...submitted, status: 'streaming'}), false, '流式中不算');
-    assert.equal(isPlanMessage({...submitted, planText: '  '}), false, '无 planText 且正文为空不算');
+test('planPreviewSlice：围栏代码块要么整体保留要么整体丢弃，不悬空', () => {
+    const text = '# 计划\n\n```js\nconst a = 1;\nconst b = 2;\n```\n\n## 目标\n收尾。';
+    // 预算落在围栏中间：整体回退到开栏之前
+    const mid = planPreviewSlice(text, 30);
+    assert.equal(mid.truncated, true);
+    assert.ok(!mid.text.includes('const a = 1;'), '围栏内容整体丢弃');
+    assert.ok(!mid.text.includes('```'), '不悬空围栏标记');
+    assert.ok(mid.text.startsWith('# 计划'));
+    // 预算足够：围栏整体保留（真闭合行放下之后才继续往后切）
+    const fit = planPreviewSlice(text, 45);
+    assert.equal(fit.truncated, true);
+    assert.ok(fit.text.includes('const b = 2;'));
+    assert.ok(fit.text.trimEnd().endsWith('```'), '围栏带闭合行整体保留');
+    assert.ok(!fit.text.includes('## 目标'), '围栏之后的行截掉');
 });
 
-test('planReferenceBlock：submit_plan 形态优先用 planText 回注', () => {
-    const session = {
-        summary: {text: '摘要'},
-        messages: [{
-            role: 'assistant', planMode: true, status: 'done', content: '（计划已提交）',
-            planText: '# 计划\n只读正文在参数里', planFile: 'D:/ws/.cadt/plan/plan-s3.md',
-            toolCalls: [{id: 'c1', name: 'submit_plan', arguments: '{}'}],
-        }],
-    };
-    const block = planReferenceBlock(session);
-    assert.ok(block.includes('只读正文在参数里'), '回注的是 planText 而非对话正文');
-    assert.ok(!block.includes('（计划已提交）'));
-    assert.ok(block.includes('.cadt/plan/plan-s3.md'));
+test('planPreviewSlice：围栏内形如 ```js 的行不是闭合，真闭合行整体放得下才保留', () => {
+    const text = 'a\n```py\nx = 1\n```js\n```\nb';
+    const small = planPreviewSlice(text, 20);
+    assert.equal(small.text, 'a', '假闭合不算闭合，围栏整体丢弃');
+    const full = planPreviewSlice(text, 24);
+    assert.equal(full.truncated, true);
+    assert.ok(full.text.includes('```js'), '假闭合行作为内容保留');
+    assert.ok(full.text.trimEnd().endsWith('```'), '真闭合行保留');
+    assert.ok(!full.text.includes('b'), '围栏之后的行截掉');
 });
 
-test('planReferenceBlock：压缩后没有计划消息则不注入', () => {
-    const session = {
-        summary: {text: '摘要'},
-        archived: [{role: 'user', content: 'x'}],
-        messages: [{role: 'assistant', planMode: true, status: 'stopped', content: '半成品', toolCalls: []}],
-    };
-    assert.equal(planReferenceBlock(session), '');
+test('planPreviewSlice：null / 空串 / 预算极小兜底', () => {
+    assert.deepEqual(planPreviewSlice(null, 100), {text: '', truncated: false});
+    assert.deepEqual(planPreviewSlice('', 0), {text: '', truncated: false});
+    const tiny = planPreviewSlice('# 很长的标题\n\n正文', 2);
+    assert.equal(tiny.truncated, true);
+    assert.equal(tiny.text, '', '一行都放不下时返回空正文');
 });

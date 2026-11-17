@@ -273,7 +273,7 @@ test('AI 子代理域在 mock ctx 下可构造（捕获工厂执行期的 Refere
         // 覆盖三个域：运行时核心 / 头部 HUD / 详情视图（返回面 55 键的代表性子集）
         const required = [
             'startSubAgent', 'runSubAgent', 'runSubRound', 'handleSubEvent', 'finalizeSubAgent',
-            'stopSubAgent', 'reviveSubAgent', 'sendToSubAgent', 'waitForSubAgent',
+            'stopSubAgent', 'reviveSubAgent', 'sendToSubAgent', 'waitForInbox',
             'maybeStartSubCompact', 'startSubCompact', 'handleSubCompactEvent',
             'runSubAskQuestion', 'answerSubAsk', 'handleAgentTool',
             'updateHeadHud', 'refreshHeadChips', 'listAgentsForHud', 'renderChipsPop', 'initHud',

@@ -9,6 +9,7 @@ import {createExplorer} from './explorer/explorer.js';
 import {createStructurePanel, parseStructure} from './editor/structure.js';
 import {createContextMenu} from './shell/contextmenu.js';
 import {copyImageBlobToClipboard} from './core/image-clipboard.js';
+import {prepareImagePayload} from './ai/ai-image-encode.js';
 import {CODE_SHOT_RADII, CODE_SHOT_SCALES} from './core/code-shot.js';
 import {createDebugConsole} from './terminal/debugconsole.js';
 import {createActivityLog} from './core/activity-log.js';
@@ -53,6 +54,9 @@ import {createSchemaPanel} from './editor/schema-panel.js';
 import {createDiffDialog} from './editor/diff-dialog.js';
 import {createJsonQuery} from './editor/json-query.js';
 import {createGlobalSearch} from './explorer/global-search.js';
+import {createShiftDoubleTap} from './core/shift-double-tap.js';
+import {keymap} from './core/keymap.js';
+import {DOUBLE_SHIFT, DEFAULT_KEY_STYLE, isValidKeyStyleId, getShortcut} from './core/keybindings.js';
 import {createMessageCenter} from './shell/message-center.js';
 import {createFindBar} from './editor/find-bar.js';
 import {createActivityPane} from './settings/activity-pane.js';
@@ -96,6 +100,14 @@ if (hasWails) {
 }
 // 暴露给插件作者与调试：生产环境插件同样可以直接访问 window.go
 window.__backend = backend;
+
+// ===== 快捷便签：启动期事件（focus / workspace-changed / pagehide / initAIPanel）
+// 可能早于 bridgeUI 的解构（约 5100 行）执行，一律先经这些早期 let 间接层，
+// 解构完成后再绑真钩子——直接引用解构出的 const 会 TDZ（2026-11-18 实测未捕获异常）。
+let memoFocusHook = null;          // 窗口聚焦 → 全局便签静默对账
+let memoWorkspaceEventHook = null; // workspace-changed → 工作区便签重读
+let memoFlushHook = null;          // 关窗 / 页面隐藏 → 冲掉防抖保存
+let memoPendingFlag = false;       // 有未落盘修改（writing-ui 的 anyDirty 经 getter 读它）
 
 let developerMode = false;
 
@@ -208,11 +220,15 @@ function startConsoleWindowMode() {
     dc.open();
 }
 
-function logFrontend(level, message) {
+// 诊断日志单一入口：应用日志文件 + 调试台。此前它只写文件，模块里直接调
+// logFrontend('warn'/'error') 的失败（如「会话保存失败」）在调试台里是黑箱，
+// 排障时什么都看不到。fromConsole 由 console 补丁传 true（原文已 push 过，防重复）。
+function logFrontend(level, message, opts) {
     try {
-        if (!backend || !backend.LogFrontend) return;
         const text = String(message == null ? '' : message);
         if (!text) return;
+        if (!(opts && opts.fromConsole)) debugConsole.push(level, [text]);
+        if (!backend || !backend.LogFrontend) return;
         const capped = text.length > 16000 ? text.slice(0, 16000) + '…' : text;
         Promise.resolve(backend.LogFrontend(level, capped)).catch(() => {});
     } catch (e) {}
@@ -225,7 +241,7 @@ for (const level of ['log', 'info', 'debug', 'warn', 'error']) {
         // 调试控制台不按开发者模式过滤：打开面板即回放缓冲（含历史）
         debugConsole.push(level, args);
         if ((level === 'log' || level === 'info' || level === 'debug') && !developerMode) return;
-        logFrontend(level, args.map(formatLogArg).join(' '));
+        logFrontend(level, args.map(formatLogArg).join(' '), {fromConsole: true});
     };
 }
 
@@ -233,13 +249,13 @@ window.addEventListener('error', (event) => {
     const err = event.error;
     const detail = (err && (err.stack || err.message)) || event.message || '未知错误';
     debugConsole.push('error', ['未捕获异常：' + detail]);
-    logFrontend('error', '未捕获异常：' + detail);
+    logFrontend('error', '未捕获异常：' + detail, {fromConsole: true});
 });
 window.addEventListener('unhandledrejection', (event) => {
     const reason = event.reason;
     const detail = (reason && (reason.stack || reason.message)) || String(reason);
     debugConsole.push('error', ['未处理的 Promise 拒绝：' + detail]);
-    logFrontend('error', '未处理的 Promise 拒绝：' + detail);
+    logFrontend('error', '未处理的 Promise 拒绝：' + detail, {fromConsole: true});
 });
 
 async function refreshDeveloperMode() {
@@ -361,11 +377,13 @@ const els = {
     abStructure: document.getElementById('ab-structure'),
     abSearch: document.getElementById('ab-search'),
     abBrowser: document.getElementById('ab-browser'),
+    abMemo: document.getElementById('ab-memo'),
     abMore: document.getElementById('ab-more'),
     abTerminal: document.getElementById('ab-terminal'),
     tbRun: document.getElementById('tb-run'),
     editorCollapseStrip: document.getElementById('editor-collapse-strip'),
     abDebug: document.getElementById('ab-debug'),
+    abGitGraph: document.getElementById('ab-git-graph'),
     abGit: document.getElementById('ab-git'),
     abAi: document.getElementById('ab-ai'),
     abChats: document.getElementById('ab-chats'),
@@ -453,7 +471,7 @@ const APP_ACTIONS = [
     'set_view', 'goto_line', 'toggle_sidebar', 'set_sidebar_view', 'toggle_terminal', 'toggle_ai_panel',
     'toggle_fullscreen', 'toggle_always_on_top', 'set_theme', 'open_settings', 'set_setting',
     'ai_new_session', 'ai_switch_session', 'ai_rename_session', 'flash', 'refresh_explorer', 'type_text', 'press_key',
-    'open_browser_tab', 'close_browser_tab',
+    'open_browser_tab', 'close_browser_tab', 'open_memo_panel', 'get_memo', 'add_memo', 'update_memo', 'remove_memo',
     'get_settings', 'get_editor', 'get_content', 'get_git', 'get_ai', 'get_explorer', 'get_plugins', 'get_terminal',
     'get_activity', 'get_patch', 'patch_set_root', 'patch_repreview',
     'get_gen_models', 'set_gen_model', 'delete_gen_model',
@@ -887,6 +905,27 @@ async function runAppAction(action, params, scope, callerSessionId) {
             closeDocNow(target, false);
             return {closed: true};
         }
+        // ===== 快捷便签（数据与变更通路在 bridge-memo-view 的 memoApi，AI 与界面同源）=====
+        case 'open_memo_panel': {
+            return {opened: true, message: memoApi.open(p.scope)};
+        }
+        case 'get_memo': {
+            // 返回紧凑文本清单（含条目/块 id），模型后续 update/remove 直接引用
+            return {scope: p.scope === 'global' ? 'global' : 'workspace', text: await memoApi.list(p.scope)};
+        }
+        case 'add_memo': {
+            return {result: await memoApi.add(p.scope, p.kind, p.block_id, String(p.text == null ? '' : p.text))};
+        }
+        case 'update_memo': {
+            const patch = {};
+            if (p.text != null) patch.text = String(p.text);
+            if (p.status != null) patch.status = p.status;
+            if (p.index != null) patch.index = Number(p.index);
+            return {result: await memoApi.update(p.scope, String(p.id == null ? '' : p.id), patch)};
+        }
+        case 'remove_memo': {
+            return {result: await memoApi.remove(p.scope, String(p.id == null ? '' : p.id))};
+        }
         case 'toggle_ai_panel': {
             if (!aiPanel) throw new Error('AI 面板未初始化');
             if (p.open == null) aiPanel.toggle();
@@ -1293,6 +1332,9 @@ const defaultSettings = {
     readOnlyMode: false,
     theme: 'dark',
     codeStyle: CODE_STYLE_AUTO,
+    // 快捷键风格（candysweet / jetbrains / vscode）：键位单一来源在 core/keybindings.js，
+    // 运行时索引在 core/keymap.js；切换立即生效。
+    keyStyle: DEFAULT_KEY_STYLE,
     uiFont: 'inter',
     uiCjkFont: 'auto',
     editorFontFamily: 'jetbrains',
@@ -1385,6 +1427,9 @@ if (legacyThemeMigration) {
     settings.codeStyle = legacyThemeMigration.codeStyle;
 }
 if (!uiFonts.some((f) => f.id === settings.uiFont)) settings.uiFont = 'inter';
+// 快捷键风格：非法值回落默认，并把运行时索引切到生效风格（按键链查表用）。
+if (!isValidKeyStyleId(settings.keyStyle)) settings.keyStyle = DEFAULT_KEY_STYLE;
+keymap.setStyle(settings.keyStyle);
 if (!editorFonts.some((f) => f.id === settings.editorFontFamily)) settings.editorFontFamily = 'jetbrains';
 if (!cjkFonts.some((f) => f.id === settings.uiCjkFont)) settings.uiCjkFont = 'auto';
 if (!cjkFonts.some((f) => f.id === settings.editorCjkFont)) settings.editorCjkFont = 'auto';
@@ -1627,6 +1672,8 @@ const writingUI = createWritingUI({
     get updateStatus() { return updateStatus; },
     get updateWindowTitle() { return updateWindowTitle; },
     get workspaceFolder() { return workspaceFolder; },
+    // 关窗脏标记把便签的防抖窗口算进去（anyDirty 可能在 bridgeUI 解构前被调用，读早期 flag 防 TDZ）
+    get memoHasPending() { return () => memoPendingFlag; },
 });
 const {CSV_COL_MIN_WIDTH, CSV_ROW_NUM_WIDTH, INDENTS, LANG_DEFS, TREE_MAX_CHILDREN, applyWritingFormat, applyWritingMode, canSplitDoc, cancelAutoSave, closeFootPopover, editorLocale, effectiveToolEnv, flash, fmtSize, formatDisplayName, insertSceneSeparator, isSqlSupportedDoc, isSvgDoc, jumpToPosition, markdownRenderer, mdPreviewWidthLabel, normalizeLegacySqlMode, openConfirmDialog, openGotoDialog, openWritingNameDialog, renderEnvVarsPane, renderFmtTable, renderFormatPane, renderLangPane, renderMarkdownHtml, renderMermaidBlocks, renderPluginsPane, renderRunPane, resolveMarkdownImages, scheduleAutoSave, scheduleCursorPosition, scheduleWritingCaret, setDirty, splitKindFor, toggleWritingMode, toolEnvFor, updateAiWidthWidget, updateBackendDirty, updateCursorPosition, updateTabDirty, updateWindowTitle, updateWritingStats, viewDisabled, viewLabel, viewOptionsFor, writingFormatable} = writingUI;
 const editorGroupsMod = createEditorGroups({
@@ -1650,11 +1697,15 @@ const editorGroupsMod = createEditorGroups({
     get closeDialogs() { return closeDialogs; },
     get closedTabs() { return closedTabs; },
     get closeFootPopover() { return closeFootPopover; },
+    // 原生 select 的浮层增强（设置页同款触发器 + Portal 浮层），补丁视图的「应用模式」用它去掉浏览器原生外观
+    get enhanceSelect() { return settingsUI.enhanceSelect; },
     get copyText() { return copyText; },
     get createAgentView() { return createAgentView; },
+    get createAgentTeamView() { return createAgentTeamView; },
     get createSideChatView() { return createSideChatView; },
     get createGroupChatView() { return createGroupChatView; },
     get createBgTermView() { return createBgTermView; },
+    get createMemoView() { return createMemoView; },
     get CSV_COL_MIN_WIDTH() { return CSV_COL_MIN_WIDTH; },
     get CSV_ROW_NUM_WIDTH() { return CSV_ROW_NUM_WIDTH; },
     get ctxMenu() { return ctxMenu; },
@@ -2055,6 +2106,11 @@ function setDocReadOnly(doc, locked, opts = {}) {
     doc.readOnlyLocked = !!locked;
     applyReadOnlyToDoc(doc);
     syncTabReadOnly(doc);
+    // 补丁视图对只读锁是呈现敏感的（可应用 ↔ 纯 diff 两种形态），锁一变必须重渲染：
+    // 从锁→解锁要把应用入口带回来（需要重新预检），从解锁→锁要退化成纯 diff。
+    if (doc.format && doc.format.patch && doc.patchState) {
+        refreshPatchView(doc, patchViewContext()).catch(() => {});
+    }
     if (doc === file) {
         updateStatus();
         syncRunButtonState();
@@ -2096,7 +2152,9 @@ async function selectLineInDoc(doc, line, column = 0) {
         const requestedColumn = Math.max(1, Math.round(Number(column) || 1));
         const columnNo = Math.min(requestedColumn, lineText.length + 1);
         ace.gotoLine(lineNo, columnNo - 1, false);
-        ace.selection.selectLine();
+        // 只定位、不选中：跳过来就整行高亮，看起来像误触了选中（用户报的就是这个）。
+        // 需要高亮区间时由调用方自己加 marker，不靠选区顶替。
+        ace.clearSelection();
         ace.scrollToLine(lineNo, true, true, () => {});
         ace.focus();
         return {
@@ -2117,9 +2175,9 @@ async function selectLineInDoc(doc, line, column = 0) {
     const index = Math.min(requestedLine - 1, lines.length - 1);
     let start = 0;
     for (let i = 0; i < index; i++) start += lines[i].length + 1;
-    const end = start + lines[index].length;
     textarea.focus();
-    textarea.setSelectionRange(start, end);
+    // 同上：光标落在行首即可，不把整行选成选区
+    textarea.setSelectionRange(start, start);
     const lineHeight = Number.parseFloat(getComputedStyle(textarea).lineHeight) || 18;
     textarea.scrollTop = Math.max(0, index * lineHeight - textarea.clientHeight / 2);
     return {
@@ -2239,6 +2297,8 @@ function openFolderWorkspace(dir) {
         saveSessionNow();
     }
     workspaceFolder = dir;
+    // 快捷便签：工作区变了，丢弃旧工作区的缓存并刷新打开中的面板
+    if (memoWorkspaceChanged) memoWorkspaceChanged();
     toggleSidebarFilter(false);
     scheduleSessionSave();
     rememberRecentOpen(dir, baseNameOf(dir) || dir, true);
@@ -2285,6 +2345,7 @@ function closeFolder() {
     if (!workspaceFolder) return;
     saveSessionNow({allowEmpty: true});
     workspaceFolder = null;
+    if (memoWorkspaceChanged) memoWorkspaceChanged();
     if (explorer) explorer.setRoot(null);
     syncWorkspaceWatcher();
     gitStateCache.available = false;
@@ -2397,8 +2458,11 @@ function initActivityBar() {
     if (els.tbRun) els.tbRun.addEventListener('click', () => runController.run());
     // 新建浏览器标签页：活动栏是「一次性动作」而非面板开关，故无 aria-pressed
     if (els.abBrowser) els.abBrowser.addEventListener('click', () => openBrowserTab('about:blank'));
+    // 快捷便签面板：同上，一次性打开成内容区标签页
+    if (els.abMemo) els.abMemo.addEventListener('click', () => openMemoTab());
     if (els.editorCollapseStrip) els.editorCollapseStrip.addEventListener('click', () => toggleEditorCollapsed());
     if (els.abTerminal) els.abTerminal.addEventListener('click', () => toggleDockView('terminal'));
+    if (els.abGitGraph) els.abGitGraph.addEventListener('click', () => toggleDockView('graph'));
     if (els.abDebug) els.abDebug.addEventListener('click', () => toggleDockView('debug'));
     if (els.abGit) els.abGit.addEventListener('click', () => toggleSidebarView('git'));
     if (els.abChats) els.abChats.addEventListener('click', () => toggleSidebarView('chats'));
@@ -2658,6 +2722,8 @@ function initAIPanel() {
         },
         // 子代理详情视图：在内容区标签页打开（不遮挡面板；悬浮窗由面板自己退回覆盖层）
         openAgentTab: (...args) => openAgentTab(...args),
+        // 智能体团队详情：内容区标签页（主代理 + 子代理树）
+        openAgentTeamTab: (...args) => openAgentTeamTab(...args),
         // 支线对话标签页：完整会话渲染在内容区，面板继续显示主对话
         openSideChatTab: (...args) => openSideChatTab(...args),
         runAppAction,
@@ -3770,6 +3836,10 @@ const globalSearch = createGlobalSearch({
 });
 const {isGlobalSearchOpen, openGlobalSearch} = globalSearch;
 
+// 全局搜索的「双击 Shift」触发判定（JetBrains 式）：两次干净轻按 + 中间无其它键 + 输入法隔离。
+// 触发在 keyup 结算，见下方 keydown / keyup 两个捕获监听。
+const shiftDoubleTap = createShiftDoubleTap();
+
 // 全局搜索「搜索 AI 会话」命中跳转：打开 AI 面板 → 切到该会话 → 按 mid 定位消息并高亮。
 // mid 在面板里找不到时（索引滞后）退回按 liveIndex 兜底，找不到就只切会话。
 async function openAISessionHit(hit) {
@@ -4002,6 +4072,7 @@ function menuItems(kind) {
                 {label: '新建窗口', shortcut: 'Ctrl+Shift+N', icon: 'E8A7', action: openNewWindow},
                 {label: '新建浏览器标签页', shortcut: 'Ctrl+Alt+B', icon: 'browser', action: () => openBrowserTab('about:blank')},
                 {label: '打开我的浏览器（保留登录）', icon: 'browser', action: () => openBrowserTab('about:blank', '', {personal: true})},
+                {label: '快捷便签面板', shortcut: 'Ctrl+Alt+T', icon: 'memo', action: () => openMemoTab()},
                 {sep: true},
                 {label: '打开…', shortcut: 'Ctrl+O', icon: 'E8E5', action: openDialog},
                 {label: '打开文件夹…', icon: 'E8B7', action: openFolderDialog},
@@ -4054,7 +4125,7 @@ function menuItems(kind) {
                 {label: '重做', shortcut: 'Ctrl+Y', icon: 'E7A6', action: doRedo},
                 {sep: true},
                 {label: '查找…', shortcut: 'Ctrl+F', icon: 'E721', disabled: !findTarget(), action: openFindBar},
-                {label: '全局搜索…', shortcut: '连按 3 次 Shift', icon: 'E721', action: openGlobalSearch},
+                {label: '全局搜索…', shortcut: getShortcut('edit.globalSearch', keymap.style), icon: 'E721', action: openGlobalSearch},
             ];
         case 'format':
             return [
@@ -4437,26 +4508,19 @@ document.addEventListener('cut', (e) => {
     else setFileClipboard(selected, true);
 }, true);
 
-let gsShiftCount = 0;
-let gsShiftAt = 0;
-
 window.addEventListener('keydown', (e) => {
     if (isGlobalSearchOpen()) return;
+    // 双击 Shift 判定：每个 keydown 都喂给状态机（中间按任意键要能清零配对）。
+    // 这里只更新状态，真正触发在 keyup 结算——保证是两次完整的「按下 + 抬起」。
+    shiftDoubleTap.onKeyDown(e);
     if (e.key === 'Shift' && !e.ctrlKey && !e.altKey && !e.metaKey && !e.repeat) {
-        const now = Date.now();
-        if (now - gsShiftAt > 600) gsShiftCount = 0;
-        gsShiftCount++;
-        gsShiftAt = now;
-        if (gsShiftCount >= 3) {
-            gsShiftCount = 0;
-            if (!quickSwitch.open) {
-                e.preventDefault();
-                openGlobalSearch();
-            }
-        }
         return;
     }
-    if (e.ctrlKey && !e.altKey && !e.shiftKey && (e.code === 'Backquote' || e.key === '`')) {
+    // 快捷键风格查表：事件归一化成 'Ctrl+Shift+P' 这样的组合串，再按当前风格命中动作。
+    // 风格（settings.keyStyle）切换后索引重建，这里立即按新风格生效；
+    // 键位单一来源在 core/keybindings.js，与设置页文案同源。
+    const kb = keymap.combo(e);
+    if (keymap.is(kb, 'view.quickSwitch')) {
         if (isDialogOpen()) return;
         e.preventDefault();
         e.stopPropagation();
@@ -4479,13 +4543,21 @@ window.addEventListener('keydown', (e) => {
         openMenuByKind(menuKeyMap[e.code]);
         return;
     }
-    if (e.ctrlKey && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'p') {
+    if (keymap.is(kb, 'view.palette')) {
         e.preventDefault();
         e.stopPropagation();
         palette.toggle();
         return;
     }
-    if (e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey && e.key.toLowerCase() === 'b') {
+    // 全局搜索：VS Code 风格下是 Ctrl+P / Ctrl+Shift+F；
+    // CandySweet / IDEA 风格走双击 Shift（在 keyup 里结算，见下方监听）。
+    if (keymap.is(kb, 'edit.globalSearch')) {
+        e.preventDefault();
+        e.stopPropagation();
+        openGlobalSearch();
+        return;
+    }
+    if (keymap.is(kb, 'view.sidebar')) {
         e.preventDefault();
         e.stopPropagation();
         toggleSidebar();
@@ -4521,153 +4593,154 @@ window.addEventListener('keydown', (e) => {
             return;
         }
     }
-    if (!isDialogOpen() && e.key === 'F5' && !e.ctrlKey && !e.altKey) {
+    if (!isDialogOpen() && (keymap.is(kb, 'run.current') || keymap.is(kb, 'run.stop'))) {
         e.preventDefault();
         e.stopPropagation();
-        if (e.shiftKey) runController.stop();
+        if (keymap.is(kb, 'run.stop')) runController.stop();
         else runController.run();
         return;
     }
-    if (!isDialogOpen() && e.ctrlKey && !e.shiftKey && !e.altKey && e.key === 'F5') {
+    if (!isDialogOpen() && keymap.is(kb, 'run.project')) {
         e.preventDefault();
         e.stopPropagation();
         startRunProject();
         return;
     }
-    if (!isDialogOpen() && e.altKey && !e.ctrlKey && !e.shiftKey && e.key === 'F11') {
+    if (!isDialogOpen() && keymap.is(kb, 'run.panel')) {
         e.preventDefault();
         e.stopPropagation();
         toggleDockView('run');
         return;
     }
-    if (e.altKey && !e.ctrlKey && !e.shiftKey && (e.code === 'Digit1' || e.key === '1')) {
-        e.preventDefault();
-        e.stopPropagation();
-        toggleSidebar();
-    } else if (e.altKey && !e.ctrlKey && !e.shiftKey && (e.code === 'Digit7' || e.key === '7')) {
+    if (keymap.is(kb, 'view.structure')) {
         e.preventDefault();
         e.stopPropagation();
         toggleSidebarView('structure');
-    } else if (e.altKey && !e.ctrlKey && !e.shiftKey && (e.code === 'Digit8' || e.key === '8')) {
+    } else if (keymap.is(kb, 'view.chats')) {
         e.preventDefault();
         e.stopPropagation();
         toggleSidebarView('chats');
-    } else if (e.altKey && !e.ctrlKey && !e.shiftKey && (e.code === 'Digit9' || e.key === '9')) {
+    } else if (keymap.is(kb, 'ai.togglePanel')) {
         e.preventDefault();
         e.stopPropagation();
         toggleAIPanel();
-    } else if (e.shiftKey && e.key === 'F4') {
+    } else if (keymap.is(kb, 'file.openInNewWindow')) {
         e.preventDefault();
         e.stopPropagation();
         if (file && file.path) openInNewWindows([file.path]);
-    } else if (e.key === 'F2' && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+    } else if (keymap.is(kb, 'edit.nextBookmark')) {
         e.preventDefault();
         e.stopPropagation();
         jumpBookmark(1);
-    } else if (e.shiftKey && e.key === 'F2' && !e.ctrlKey && !e.altKey) {
+    } else if (keymap.is(kb, 'edit.prevBookmark')) {
         e.preventDefault();
         e.stopPropagation();
         jumpBookmark(-1);
-    } else if (e.key === 'Delete' && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+    } else if (keymap.is(kb, 'tree.delete')) {
         const selected = treeShortcutSelection();
         if (selected && selected.length) {
             e.preventDefault();
             e.stopPropagation();
             deleteExplorerEntries(selected);
         }
-    } else if (e.ctrlKey && !e.shiftKey && !e.altKey && (key === 'c' || key === 'x' || key === 'v')) {
+    } else if (keymap.is(kb, 'tree.copy') || keymap.is(kb, 'tree.cut') || keymap.is(kb, 'tree.paste')) {
         const selected = treeShortcutSelection();
         if (selected) {
             e.preventDefault();
             e.stopPropagation();
-            if (key === 'c') setFileClipboard(selected, false);
-            else if (key === 'x') {
+            if (keymap.is(kb, 'tree.copy')) setFileClipboard(selected, false);
+            else if (keymap.is(kb, 'tree.cut')) {
                 if (settings.readOnlyMode) flash('只读模式下不能剪切', true);
                 else setFileClipboard(selected, true);
-            } else if (key === 'v') {
+            } else {
                 if (settings.readOnlyMode) flash('只读模式下不能粘贴', true);
                 else pasteFileClipboard(explorer.getAnchor() || selected[selected.length - 1]);
             }
         }
-    } else if (e.ctrlKey && !e.shiftKey && !e.altKey && key === 'g') {
+    } else if (keymap.is(kb, 'edit.gotoLine')) {
         if ((currentMode === 'code' || currentMode === 'text') && file && !isDialogOpen()) {
             e.preventDefault();
             e.stopPropagation();
             openGotoDialog();
         }
-    } else if (e.ctrlKey && e.altKey && (key === 'l' || e.code === 'KeyL')) {
+    } else if (keymap.is(kb, 'edit.format')) {
         e.preventDefault();
         e.stopPropagation();
         formatDocument();
-    } else if (e.ctrlKey && e.altKey && !e.shiftKey && (key === 'b' || e.code === 'KeyB')) {
+    } else if (keymap.is(kb, 'file.newBrowserTab')) {
         // 新建浏览器标签页（与活动栏图标、文件菜单同一入口）
         e.preventDefault();
         e.stopPropagation();
         openBrowserTab('about:blank');
-    } else if (e.ctrlKey && e.shiftKey && key === 's') {
+    } else if (keymap.is(kb, 'file.newMemo')) {
+        // 快捷便签面板（与活动栏图标、文件菜单同一入口）
+        e.preventDefault();
+        e.stopPropagation();
+        openMemoTab();
+    } else if (keymap.is(kb, 'file.saveAs')) {
         e.preventDefault();
         e.stopPropagation();
         saveAs();
-    } else if (e.ctrlKey && !e.shiftKey && key === 's') {
+    } else if (keymap.is(kb, 'file.save')) {
         e.preventDefault();
         e.stopPropagation();
         save();
-    } else if (e.ctrlKey && e.shiftKey && key === 'n') {
+    } else if (keymap.is(kb, 'file.newWindow')) {
         e.preventDefault();
         e.stopPropagation();
         openNewWindow();
-    } else if (e.ctrlKey && e.shiftKey && key === 't') {
+    } else if (keymap.is(kb, 'file.reopenTab')) {
         e.preventDefault();
         e.stopPropagation();
         reopenClosedTab();
-    } else if (e.ctrlKey && e.shiftKey && !e.altKey && key === 'j') {
+    } else if (keymap.is(kb, 'view.jsonQuery')) {
         e.preventDefault();
         e.stopPropagation();
         openJsonQuery();
-    } else if (e.ctrlKey && !e.shiftKey && key === 'n') {
+    } else if (keymap.is(kb, 'file.new')) {
         e.preventDefault();
         e.stopPropagation();
         newDocument();
-    } else if (e.ctrlKey && !e.shiftKey && key === 'w') {
+    } else if (keymap.is(kb, 'file.closeTab')) {
         e.preventDefault();
         e.stopPropagation();
         if (file) requestCloseDoc(file);
-    } else if (e.ctrlKey && e.key === ',') {
+    } else if (keymap.is(kb, 'file.settings')) {
         e.preventDefault();
         e.stopPropagation();
         openSettings('general');
-    } else if (e.key === 'F11' && !e.ctrlKey && !e.altKey) {
+    } else if (keymap.is(kb, 'edit.toggleBookmark')) {
         // F11：切换行书签（全屏不再绑定快捷键）
         e.preventDefault();
         e.stopPropagation();
         toggleBookmark();
-    } else if (e.altKey && e.key === 'F12') {
+    } else if (keymap.is(kb, 'view.terminal')) {
         e.preventDefault();
         e.stopPropagation();
         toggleDockView('terminal');
-    } else if (!e.altKey && !e.ctrlKey && !e.shiftKey && e.key === 'F12') {
+    } else if (keymap.is(kb, 'view.debug')) {
         // F12：底部面板切换到调试控制台（仅开发者模式）
         if (!developerMode) return;
         e.preventDefault();
         e.stopPropagation();
         toggleDockView('debug');
-    } else if (e.ctrlKey && key === 'o') {
+    } else if (keymap.is(kb, 'file.open')) {
         e.preventDefault();
         e.stopPropagation();
         openDialog();
-    } else if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === 'z') {
+    } else if (keymap.is(kb, 'edit.undo')) {
         if (isPlainTextUndoTarget()) return;
         if (handleExplorerUndoKey(e)) return;
         e.preventDefault();
         e.stopPropagation();
         doUndo();
-    } else if (e.ctrlKey && (e.key.toLowerCase() === 'y' || (e.shiftKey && e.key.toLowerCase() === 'z'))) {
+    } else if (keymap.is(kb, 'edit.redo')) {
         if (isPlainTextUndoTarget()) return;
         if (handleExplorerUndoKey(e)) return;
         e.preventDefault();
         e.stopPropagation();
         doRedo();
-    } else if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'f') {
+    } else if (keymap.is(kb, 'edit.find')) {
         if (isDialogOpen()) return;
         const active = document.activeElement;
         const inFind = active === els.findInput;
@@ -4725,6 +4798,19 @@ window.addEventListener('keydown', (e) => {
     }
 }, {capture: true});
 
+// 全局搜索：双击 Shift 的第二次「抬起」在此结算。keydown 只登记，keyup 才触发，
+// 以保证两次都是完整轻按、且中间没有被别的按键打断（防线见 core/shift-double-tap.js）。
+window.addEventListener('keyup', (e) => {
+    if (isGlobalSearchOpen()) return;
+    const tapped = shiftDoubleTap.onKeyUp(e);
+    if (!tapped || quickSwitch.open) return;
+    // 双击 Shift 只在「当前风格把它列为全局搜索触发方式」时才生效
+    // （VS Code 风格改用 Ctrl+P / Ctrl+Shift+F 组合键）。
+    if (!keymap.hasSpecial('edit.globalSearch', DOUBLE_SHIFT)) return;
+    e.preventDefault();
+    openGlobalSearch();
+}, {capture: true});
+
 for (const type of ['dragenter', 'dragover', 'dragleave', 'drop']) {
     window.addEventListener(type, (e) => {
         if (e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files')) {
@@ -4744,6 +4830,8 @@ if (rt) {
     rt.EventsOn('workspace-changed', (payload) => {
         if (explorer && typeof explorer.handleExternalChanges === 'function') explorer.handleExternalChanges(payload);
         handleExternalDocChanges(payload);
+        // 快捷便签：其他窗口/外部改了 .cadt/memo/memo.json 时重读（面板开着才生效）
+        if (memoWorkspaceEventHook) memoWorkspaceEventHook(payload);
     });
     // Wails 文件拖放：注册窗口级 dragover/drop 监听（不注册就收不到任何外部拖放），
     // useDropTarget=false 让整个窗口都接受；回调拿到的路径已由 Go 侧解析好
@@ -4762,6 +4850,8 @@ if (rt) {
     }
     rt.EventsOn('confirm-close', (reasons) => {
         flushCsvCellEditor();
+        // 快捷便签：挂着的防抖保存在弹确认框前先落盘（自动保存语义，之后无论选哪个退出按钮都不丢）
+        if (memoFlushHook) memoFlushHook();
         const r = reasons || {};
         if (r.aiRunning) {
             openConfirmDialog(
@@ -4948,6 +5038,10 @@ const bridgeUI = createBridgeUI({
     get autoCheckUpdateOnStart() { return autoCheckUpdateOnStart; },
     get backend() { return backend; },
     get closeDocNow() { return closeDocNow; },
+    // 快捷便签面板（bridge-memo-view）需要的跨界依赖：右键菜单、贴图压缩、pending 翻转刷关窗脏标记
+    get ctxMenu() { return ctxMenu; },
+    get prepareImagePayload() { return prepareImagePayload; },
+    get onPendingChange() { return memoPendingChanged; },
     get consoleWindowMode() { return consoleWindowMode; },
     get copyText() { return copyText; },
     get createDoc() { return createDoc; },
@@ -4984,5 +5078,18 @@ const bridgeUI = createBridgeUI({
     get updateBrowserTitle() { return updateBrowserTitle; },
     get workspaceFolder() { return workspaceFolder; },
 });
-const {createAgentView, createSideChatView, createGroupChatView, openGroupChatTab, createBgTermView, gitGroupCollapsed, gitRootDir, gitStateCache, gitUncheckedFiles, notifyAIGitEntry, openAgentTab, openSideChatTab, openBgTermTab, openBrowserTab, openVirtualDoc, refreshGitStatus, showGitDiff, showGitFileHistory, showGitRecentLog, gitRollbackPaths} = bridgeUI;
+const {createAgentView, createAgentTeamView, createSideChatView, createGroupChatView, openGroupChatTab, createBgTermView, gitGroupCollapsed, gitRootDir, gitStateCache, gitUncheckedFiles, notifyAIGitEntry, openAgentTab, openAgentTeamTab, openSideChatTab, openBgTermTab, openBrowserTab, openVirtualDoc, refreshGitStatus, showGitDiff, showGitFileHistory, showGitRecentLog, gitRollbackPaths,
+    openMemoTab, createMemoView, memoApi, memoHasPending, memoOnWorkspaceEvent, memoOnWindowFocus, memoWorkspaceChanged} = bridgeUI;
+
+// 绑定便签真钩子（顶部早期 let 间接层的落点）：启动期事件先到也只摸到 null，不摸未初始化的 const
+memoFocusHook = () => { if (memoOnWindowFocus) memoOnWindowFocus(); };
+memoWorkspaceEventHook = (payload) => { if (memoOnWorkspaceEvent) memoOnWorkspaceEvent(payload); };
+memoFlushHook = () => { if (memoApi && memoApi.flushAll) memoApi.flushAll().catch(() => {}); };
+
+// 便签 pending 翻转回调（bridge-memo-view 经 deps 注入取用）：记下标志位并刷新应用关窗脏标记，
+// 让 Go 侧 beforeClose 在防抖窗口内也走 confirm-close 流程而不是静默关窗。
+function memoPendingChanged() {
+    memoPendingFlag = !!memoApi.hasPending();
+    updateBackendDirty();
+}
 

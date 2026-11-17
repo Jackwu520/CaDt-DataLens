@@ -14,6 +14,11 @@ const sessionKey = 'cadt.session.v1';
 const workspaceSessionsKey = 'cadt.workspace-sessions.v1';
 const WORKSPACE_SESSION_LIMIT = 30;
 let sessionTimer = 0;
+// allowEmpty 是「本次保存由用户主动关标签触发」的粘滞标志：一旦置上就保持到真正
+// 写入那一刻，不能被随后 renderEditorLayout 的无参 scheduleSessionSave 覆盖掉。
+// 否则关到空标签时空快照保护会误判为「过程性保存」而跳过，旧标签在 workspace
+// 快照里残留，下次从该目录启动又被 openPathsHere 恢复出来。
+let allowEmptyPending = false;
 // 每个文件的光标/滚动/折叠/书签：随会话保存，未激活的文档沿用上次读到的视图
 let knownDocViews = new Map();
 let pendingDocViews = new Map();
@@ -150,18 +155,23 @@ function auxWindowNoSession() {
 
 function scheduleSessionSave(options) {
     if (auxWindowNoSession()) return;
+    // 粘滞：本次调度链里只要有一次显式 allowEmpty（用户关标签），后续无参调度不清除。
+    if (options && options.allowEmpty) allowEmptyPending = true;
     clearTimeout(sessionTimer);
-    sessionTimer = setTimeout(() => saveSessionNow(options), 500);
+    sessionTimer = setTimeout(() => saveSessionNow(), 500);
 }
 
 function saveSessionNow(options) {
     if (auxWindowNoSession()) return false;
     sessionTimer = 0;
+    // 读后即清：粘滞标志只对这一轮实际写入生效。
+    const allowEmpty = allowEmptyPending || !!(options && options.allowEmpty);
+    allowEmptyPending = false;
     try {
         const sess = serializeSession();
         if (sess) {
             const tabs = countSessionTabs(sess);
-            if (!tabs && !(options && options.allowEmpty)) {
+            if (!tabs && !allowEmpty) {
                 const prev = readSession();
                 if (countSessionTabs(prev) > 0 &&
                     sessionPathKey(prev && prev.workspace) === sessionPathKey(sess.workspace)) {
@@ -176,7 +186,13 @@ function saveSessionNow(options) {
             localStorage.removeItem(sessionKey);
         }
         return true;
-    } catch (e) { return false; }
+    } catch (e) {
+        // 序列化依赖任何一项缺失（如 getter 未导出）都会走到这里；不能静默失败，
+        // 否则旧快照原地残留，重启后「关掉的标签又回来」且没有任何线索。
+        // 带上 stack（文件:行）——这类接线断裂靠 message 往往定位不到源头。
+        deps.logFrontend('warn', '会话保存失败：' + ((e && (e.stack || e.message)) || e));
+        return false;
+    }
 }
 
 function countSessionTabs(sess) {
@@ -259,7 +275,7 @@ async function restoreSession(sess) {
         deps.logFrontend('info', '会话恢复：保存 ' + want + ' 个标签页，实际打开 ' + deps.docs.length + ' 个文件');
         deps.flash('已恢复上次会话');
     } catch (e) {
-        deps.logFrontend('warn', '会话恢复失败：' + (e && e.message || e));
+        deps.logFrontend('warn', '会话恢复失败：' + ((e && (e.stack || e.message)) || e));
     }
 }
 

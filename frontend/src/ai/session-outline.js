@@ -2,6 +2,7 @@
 // 把当前 AI 会话里的每一轮用户消息渲染成一行可点击的定位项，点一下跳到那条消息。
 // 数据由 ai-panel 的 bridgeSessionOutline() 提供，跳转也由 ai-panel 执行（消息窗口、
 // 滚动与高亮都在那边），本模块只做渲染与键盘/点击交互。
+import {splitTurnReminderPrefix} from './ai-turn-reminder.js';
 
 const MAX_TEXT = 160;
 const MAX_ITEMS = 400;
@@ -33,7 +34,10 @@ function shortTime(ts) {
 }
 
 // 把 session.messages 压成定位项：只留用户真正说过的话。
-// 系统注记（systemNote）、应用注入的指令（app）、模型切换记录都不算一轮。
+// 系统注记（systemNote）、静默注入（silent）、应用注入的指令（app）、模型切换记录都不算一轮。
+// 预览只取正文：开头的 <system-reminder> 宿主环境块随用户消息一起落盘，直接预览会
+// 把整行显示成注记（workspace_context 等）；只有环境块、没有正文也没有图片/视频的
+// 纯注入消息没有可定位的内容，不占行。
 // options.max 限制最多返回多少条（保留最近的），返回里带 total / truncated。
 export function buildSessionOutlineItems(messages, options) {
     const opts = options || {};
@@ -44,15 +48,21 @@ export function buildSessionOutlineItems(messages, options) {
     for (let i = 0; i < list.length; i += 1) {
         const message = list[i];
         if (!message || message.role !== 'user') continue;
-        if (message.systemNote || message.app || message.kind === 'model-switch') continue;
-        round += 1;
-        const text = String(message.content == null ? '' : message.content).replace(/\s+/g, ' ').trim();
+        if (message.systemNote || message.silent || message.app || message.kind === 'model-switch') continue;
+        // 插话（steer）不是新回合，不占轮号（与 groupTurns / 列表排序同一口径）
+        if (message.steer) continue;
+        const text = splitTurnReminderPrefix(message.content == null ? '' : String(message.content))
+            .body.replace(/\s+/g, ' ').trim();
         const images = Array.isArray(message.images) ? message.images.length : 0;
+        const videos = Array.isArray(message.videos) ? message.videos.length : 0;
+        const media = images ? '（' + images + ' 张图片）' : (videos ? '（' + videos + ' 个视频）' : '');
+        if (!text && !media) continue;
+        round += 1;
         all.push({
             index: i,
             round,
             ts: Number(message.ts) || Number(message.turnStartedAt) || 0,
-            text: text || (images ? '（' + images + ' 张图片）' : ''),
+            text: text || media,
         });
     }
     const items = all.length > max ? all.slice(all.length - max) : all;

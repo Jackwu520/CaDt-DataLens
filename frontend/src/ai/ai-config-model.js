@@ -10,6 +10,10 @@ export const OUTPUT_WINDOW_MIN = 1;
 export const OUTPUT_WINDOW_MAX = 2097152; // 2M tokens
 export const THINKING_BUDGET_MIN = 1024;
 export const THINKING_BUDGET_MAX = 393215;
+// 响应空闲超时的可配置范围（秒）与默认值：连续这么久无数据即中断请求。
+export const IDLE_TIMEOUT_MIN_SEC = 30;
+export const IDLE_TIMEOUT_MAX_SEC = 3600;
+export const IDLE_TIMEOUT_DEFAULT_SEC = 120;
 
 // 「本次会话上下文上限」候选档位（模型选择器下拉可选的会话级窗口上限）。
 // 只列出 < 模型 contextWindow 的档位；模型窗口不大于最小档时整个设置不出现。
@@ -236,7 +240,8 @@ export function reasoningLevelInfo(account, entry) {
 }
 
 // 组装发请求用的 AIConfig：连接类字段取账号，模型类字段取条目。
-export function configForModel(account, entry) {
+// idleTimeoutSec 为全局「响应空闲超时」（秒），缺省 120；Go 侧会再钳到 [30, 3600]。
+export function configForModel(account, entry, idleTimeoutSec) {
     const provider = ['anthropic', 'responses'].includes(account && account.provider) ? account.provider : 'openai';
     return {
         provider,
@@ -253,6 +258,9 @@ export function configForModel(account, entry) {
         reasoningEffort: provider === 'anthropic' ? '' : (entry ? (entry.reasoningEffort || '') : ''),
         // 限流阈值随请求下发到 Go 侧（Config.RPMLimit），0 = 不限
         rpmLimit: entry ? (Number(entry.rpm) || 0) : 0,
+        // 响应空闲超时随请求下发到 Go 侧（Config.IdleTimeoutSec），缺省 120 秒
+        idleTimeoutSec: Number.isFinite(Number(idleTimeoutSec)) && Number(idleTimeoutSec) > 0
+            ? Number(idleTimeoutSec) : IDLE_TIMEOUT_DEFAULT_SEC,
     };
 }
 
@@ -290,6 +298,59 @@ export function resolveModelRef(rawRef, profiles) {
         return models.some((entry) => entry && entry.id === modelId) ? ref : '';
     }
     return models[0] ? accountId + '|' + models[0].id : '';
+}
+
+// 把 '账号id|模型id' 解析成 {account, entry} 对象对：分类器 / 子代理等「按引用取连接」的场景用。
+// 校验口径与 resolveModelRef 完全一致（先跑它归一），失效 / 已删除返回 null，由调用方回落。
+export function resolveModelRefTarget(rawRef, profiles) {
+    const ref = resolveModelRef(rawRef, profiles);
+    if (!ref) return null;
+    const sep = ref.indexOf('|');
+    if (sep < 0) return null;
+    const account = (Array.isArray(profiles) ? profiles : [])
+        .find((p) => p && typeof p === 'object' && p.id === ref.slice(0, sep));
+    const entry = account ? findModelEntry(account, ref.slice(sep + 1)) : null;
+    return account && entry ? {account, entry} : null;
+}
+
+// 子代理自选模型的候选清单（设置 → AI 助手 → 子代理 · 自选模型）：配置里的
+// '账号id|模型id' 数组 → [{ref, model, label}]。失效引用（账号或条目被删）直接丢弃，
+// 不留悬空候选——候选为空即「未启用自选」，请求里连 model 参数都不出现。
+export function subAgentModelChoicesFrom(refs, profiles) {
+    const out = [];
+    const seen = new Set();
+    for (const raw of Array.isArray(refs) ? refs : []) {
+        const target = resolveModelRefTarget(raw, profiles);
+        if (!target) continue;
+        const ref = target.account.id + '|' + target.entry.id;
+        if (seen.has(ref)) continue;
+        seen.add(ref);
+        out.push({
+            ref,
+            model: String(target.entry.model || '').trim(),
+            label: modelRefLabel(target.account, target.entry) || ref,
+        });
+    }
+    return out;
+}
+
+// 主代理写进 spawn_agent 的 model 值 → 候选里的一条。三种写法都收：
+//   1) '账号id|模型id' 精确匹配（留给程序与高级用户）
+//   2) 模型名（entry.model，如 deepseek-chat），候选里唯一才算命中
+//   3) 下拉里显示的『模型名 · 账号名』标签，唯一才算命中
+// 歧义或未命中返回 null——由调用方报错并附完整清单，绝不猜一个近似的。
+export function matchSubAgentModelChoice(raw, choices) {
+    const wanted = String(raw == null ? '' : raw).trim();
+    const list = Array.isArray(choices) ? choices.filter(Boolean) : [];
+    if (!wanted || !list.length) return null;
+    const exact = list.find((choice) => choice.ref === wanted);
+    if (exact) return exact;
+    const lower = wanted.toLowerCase();
+    for (const field of ['model', 'label']) {
+        const hits = list.filter((choice) => String(choice[field] || '').trim().toLowerCase() === lower);
+        if (hits.length === 1) return hits[0];
+    }
+    return null;
 }
 
 // 下拉 / 菜单选项标签：模型名 · 账号名（与模型菜单一致）；缺模型名时退回账号名。

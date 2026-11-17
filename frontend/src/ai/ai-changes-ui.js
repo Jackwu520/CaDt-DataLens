@@ -274,7 +274,7 @@ export function createAIChangesUI(ctx) {
             const more = document.createElement('button');
             more.type = 'button';
             more.className = 'ai-changes-card-more';
-            more.textContent = expanded ? '收起' : '再显示 ' + (changes.length - AI_CHANGES_SUMMARY_VISIBLE) + ' 个文件';
+            more.textContent = expanded ? '收起' : '查看全部';
             more.addEventListener('click', () => {
                 const next = !expanded;
                 changesSummaryFold.set(foldKey, next);

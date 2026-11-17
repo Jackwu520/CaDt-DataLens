@@ -8,7 +8,8 @@
 //
 // deps 由 ai-panel 显式传入（getter 延迟求值）：
 // - getBackend(): Wails 后端（StartTimer / StopTimer / ListTimers）
-// - getSessionId(): 当前会话 id（启动时归属记录，到点时据此找会话）
+// - getSessionId(): 面板当前打开的会话 id（显示过滤口径 + 手动创建的缺省归属；AI 工具启动的
+//   计时器由 start 的 ownerSessionId 显式传发起会话，不能用这个）
 // - getChip(): 头部计时胶囊（index.html 的 #ai-chip-timers）
 // - togglePop(chip): 开关计时器弹层（ai-panel 转发到 subagents 的 chips-pop 机制）
 // - onTimersChanged(): 计时器集合/视图变化通知（弹层开着时由 ai-panel 原位刷新）
@@ -575,11 +576,14 @@ export function createAITimer(ctx) {
     }
 
     // start 启动计时器；返回新建的计时器信息（供工具结果描述）。
-    async function start(mode, seconds, label) {
+    // ownerSessionId 是发起这次创建的会话（AI 工具传正在执行的 ctx.session.id）；缺省才回落到
+    // 面板当前打开的会话（手动创建）。后台会话运行中前台可能已切走，不能拿可见会话记归属——
+    // 否则到点唤醒与会话内上限都会算到错误会话上。
+    async function start(mode, seconds, label, ownerSessionId) {
         const backend = ctx.getBackend();
         if (!backend || typeof backend.StartTimer !== 'function') throw new Error('当前版本不支持计时工具');
         // 会话内上限（done 不计入——注册表里只有运行中的）：AI 工具与手动创建同走这里
-        const sid = ctx.getSessionId ? ctx.getSessionId() : '';
+        const sid = String(ownerSessionId || (ctx.getSessionId ? ctx.getSessionId() : '') || '');
         if (countSessionTimers(timers, (id) => sessions.get(id) || '', sid) >= AI_TIMER_SESSION_MAX) {
             throw new Error('本会话运行中的计时器已达上限（' + AI_TIMER_SESSION_MAX + ' 个），请先停止部分计时器');
         }
@@ -588,7 +592,7 @@ export function createAITimer(ctx) {
             Math.max(0, Math.round(Number(seconds) || 0)), String(label || '').slice(0, 60));
         const list = (result && result.list) || [];
         const created = (result && result.created) || {};
-        sessions.set(created.id, ctx.getSessionId ? ctx.getSessionId() : '');
+        sessions.set(created.id, sid);
         sync(list);
         return created;
     }

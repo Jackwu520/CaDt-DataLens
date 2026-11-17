@@ -808,7 +808,7 @@
                         <div class="set-group-title">聊天行为</div>
                         <div class="set-card">
                             <div class="set-row">
-                                <div class="set-main"><div class="set-title">发送快捷键</div></div>
+                                <div class="set-main"><div class="set-title">发送快捷键</div><div class="set-desc">生成中固定：Enter 排队 · Ctrl+Enter 插话（不打断）· Ctrl+Shift+Enter 抢占（停掉重来）</div></div>
                                 <div class="set-control">
                                     <select id="ai-opt-sendkey" class="opt-select">
                                         <option value="enter">Enter 发送 / Shift+Enter 换行</option>
@@ -931,15 +931,35 @@
                         <div class="set-group-title">子代理</div>
                         <div class="set-card">
                             <div class="set-row">
-                                <div class="set-main"><div class="set-title">子代理总数上限</div><div class="set-desc">统计所有层级的运行中子代理，不含主代理</div></div>
+                                <div class="set-main"><div class="set-title">子代理并发上限</div><div class="set-desc">同时运行中的子代理数（含各层级递归派出的），不含主代理</div></div>
                                 <div class="set-control">
                                     <input type="number" id="ai-opt-subagent-max" class="ai-settings-input ai-font-size-num" min="1" max="20" step="1" value="20">
                                 </div>
                             </div>
                             <div class="set-row">
-                                <div class="set-main"><div class="set-title">递归层级<button type="button" class="info-tip" data-tip="上限统计所有层级正在运行的子代理（含子代理递归派出的），不含主代理；达到上限后主代理等待空位，子代理再派会被拒绝。层级 1–20 = 最多再往下派几层。" aria-label="递归层级说明"></button></div><div class="set-desc">0 = 不设限；达到上限后等待空位</div></div>
+                                <div class="set-main"><div class="set-title">层级上限<button type="button" class="info-tip" data-tip="整棵树最多几层，层级编号含主代理：主代理第 1 层，它直接派出的子代理第 2 层，依此类推。通过层号编排任务时按这个口径算。1 = 只允许主代理（不再派子代理）。" aria-label="层级上限说明"></button></div><div class="set-desc">0 = 不设限；主代理算第 1 层</div></div>
                                 <div class="set-control">
                                     <input type="number" id="ai-opt-subagent-depth" class="ai-settings-input ai-font-size-num" min="0" max="20" step="1" value="0">
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">默认轮次<button type="button" class="info-tip" data-tip="spawn_agent 没指定 maxRounds 时用这个预算，范围 3–200。一轮 = 一次模型请求，一轮里可以并行多个工具调用。预算用尽会补一轮无工具收尾，让模型把结论写完——给少了不丢结果，但结论质量会下降。复杂探索 / 规划给 50–150，极轻量的小问题 5–10 轮够。" aria-label="子代理默认轮次说明"></button></div><div class="set-desc">spawn_agent 未指定时使用；只影响之后派出的子代理</div></div>
+                                <div class="set-control">
+                                    <input type="number" id="ai-opt-subagent-rounds" class="ai-settings-input ai-font-size-num" min="3" max="200" step="1" value="50">
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">子代理模型<button type="button" class="info-tip" data-tip="派出的子代理改用它请求（含该配置的 provider / 地址 / 密钥 / 代理）。搜索、审查这类「读得多、结论短」的活儿用便宜快模型就够；默认跟随派出它的会话模型，所选配置被删除后自动回退。" aria-label="子代理模型说明"></button></div><div class="set-desc">默认跟随当前模型；只影响之后派出的子代理</div></div>
+                                <div class="set-control">
+                                    <select id="ai-opt-subagent-model" class="opt-select"></select>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">允许主代理自选模型<button type="button" class="info-tip" data-tip="勾选候选后，主代理可以在 spawn_agent 里用 model 参数给单个子代理点模型（探索用便宜快的、审查用强的）。只接受这里勾选的候选，候选之外的值直接报错并列出可选项。三个都留空 = 关闭，请求里不会出现 model 参数。" aria-label="子代理自选模型说明"></button></div><div class="set-desc">三个都留空 = 关闭；填了才允许主代理逐次点名</div></div>
+                                <div class="set-control">
+                                    <select id="ai-opt-subagent-choice1" class="opt-select sub-agent-choice"></select>
+                                    <select id="ai-opt-subagent-choice2" class="opt-select sub-agent-choice"></select>
+                                    <select id="ai-opt-subagent-choice3" class="opt-select sub-agent-choice"></select>
                                 </div>
                             </div>
                         </div>
@@ -991,8 +1011,22 @@
                             </div>
                         </div>
 
-                        <div class="set-group-title">AskQuestion 与重试</div>
+                        <div class="set-group-title">超时与重试</div>
                         <div class="set-card">
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">响应空闲超时<button type="button" class="info-tip" data-tip="模型连续这么久没有任何输出（含思考）就中断本轮请求；收到数据会重新计时。工具执行 / 等待你回答期间不会误杀。慢模型或长思考可调大，最长 60 分钟。" aria-label="响应空闲超时说明"></button></div><div class="set-desc">连续无数据多久判定请求卡死</div></div>
+                                <div class="set-control">
+                                    <select id="ai-opt-idle-timeout" class="opt-select">
+                                        <option value="30">30 秒</option>
+                                        <option value="60">1 分钟</option>
+                                        <option value="120">2 分钟（默认）</option>
+                                        <option value="300">5 分钟</option>
+                                        <option value="600">10 分钟</option>
+                                        <option value="1800">30 分钟</option>
+                                        <option value="3600">60 分钟</option>
+                                    </select>
+                                </div>
+                            </div>
                             <div class="set-row">
                                 <div class="set-main"><div class="set-title">提问超时时长</div><div class="set-desc">仅对 ask_user 提问生效</div></div>
                                 <div class="set-control">
@@ -1245,26 +1279,22 @@
                     </div>
                     <div class="settings-pane hidden" data-pane="preferences">
                         <div class="set-group-title">用户偏好</div>
-                        <div class="set-card">
-                            <div class="set-row">
-                                <div class="set-main"><div class="set-title">筛选</div></div>
-                                <div class="set-control ai-pref-filter">
-                                    <input id="ai-opt-pref-filter" class="ai-settings-input" type="text" placeholder="搜索偏好内容…" spellcheck="false" autocomplete="off">
-                                    <span class="popover-value" id="ai-opt-pref-count">0 条</span>
+                        <div class="set-card ai-pref-view">
+                            <div class="ai-pref-toolbar">
+                                <input id="ai-opt-pref-filter" class="ai-settings-input" type="text" placeholder="搜索偏好内容…" spellcheck="false" autocomplete="off">
+                                <span class="popover-value ai-pref-count" id="ai-opt-pref-count">0 条</span>
+                                <button type="button" id="ai-opt-pref-add" class="dlg-btn ai-pref-add">添加偏好…</button>
+                            </div>
+                            <div class="ai-pref-table">
+                                <div class="ai-pref-thead">
+                                    <span class="ai-pref-th ai-pref-th-idx">序号</span>
+                                    <span class="ai-pref-th ai-pref-th-text">偏好内容</span>
+                                    <span class="ai-pref-th ai-pref-th-src">来源</span>
+                                    <span class="ai-pref-th ai-pref-th-ops">操作</span>
                                 </div>
+                                <div id="ai-opt-prefs" class="ai-pref-list"></div>
                             </div>
-                            <div class="set-row-top">
-                                <div id="ai-opt-prefs" class="ai-pref-list standalone"></div>
-                            </div>
-                            <div class="set-row">
-                                <div class="set-main"><div class="set-title">添加偏好</div><div class="set-desc">每条一句话（≤500 字），最多 100 条；「你 / AI」标出来源</div></div>
-                                <div class="set-control">
-                                    <button type="button" id="ai-opt-pref-add" class="dlg-btn">添加偏好…</button>
-                                </div>
-                            </div>
-                            <div class="set-row">
-                                <div class="set-main"><div class="set-desc">长期生效的偏好会注入每轮对话的系统上下文；AI 也能通过 preference_list / preference_write / preference_remove 工具读取、新增、修改与删除。偏好随 AI 配置一起导出 / 导入。</div></div>
-                            </div>
+                            <div class="ai-pref-foot">每条一句话（≤500 字），最多 100 条；长期生效的偏好会注入每轮对话的系统上下文，AI 也能通过 preference_list / preference_write / preference_remove 工具读取、新增、修改与删除。偏好随 AI 配置一起导出 / 导入。</div>
                         </div>
                     </div>
                     <div class="settings-pane hidden" data-pane="schedules">
@@ -1602,51 +1632,14 @@
                         </div>
                     </div>
                     <div class="settings-pane hidden" data-pane="shortcuts">
-                        <div class="popover-shortcuts">
-                            <div class="settings-section-title">文件</div>
-                            <div><span>新建 / 新建窗口</span><span class="kbd">Ctrl+N / Ctrl+Shift+N</span></div>
-                            <div><span>新建浏览器标签页</span><span class="kbd">Ctrl+Alt+B</span></div>
-                            <div><span>打开</span><span class="kbd">Ctrl+O</span></div>
-                            <div><span>保存 / 另存为</span><span class="kbd">Ctrl+S / Ctrl+Shift+S</span></div>
-                            <div><span>关闭标签</span><span class="kbd">Ctrl+W</span></div>
-                            <div><span>重新打开关闭的标签页</span><span class="kbd">Ctrl+Shift+T</span></div>
-                            <div><span>设置</span><span class="kbd">Ctrl+,</span></div>
-                            <div class="settings-section-title">编辑</div>
-                            <div><span>撤销 / 重做</span><span class="kbd">Ctrl+Z / Ctrl+Y</span></div>
-                            <div><span>格式化</span><span class="kbd">Ctrl+Alt+L</span></div>
-                            <div><span>搜索</span><span class="kbd">Ctrl+F</span></div>
-                            <div><span>全局搜索</span><span class="kbd">连按 3 次 Shift</span></div>
-                            <div><span>代码/文本视图转到行:列</span><span class="kbd">Ctrl+G</span></div>
-                            <div class="settings-section-title">运行</div>
-                            <div><span>运行当前文件</span><span class="kbd">F5</span></div>
-                            <div><span>停止运行</span><span class="kbd">Shift+F5</span></div>
-                            <div><span>运行项目</span><span class="kbd">Ctrl+F5</span></div>
-                            <div><span>运行面板</span><span class="kbd">Alt+F11</span></div>
-                            <div class="settings-section-title">视图与窗口</div>
-                            <div><span>文件侧边栏</span><span class="kbd">Ctrl+B</span></div>
-                            <div><span>结构视图</span><span class="kbd">Alt+7</span></div>
-                            <div><span>终端</span><span class="kbd">Alt+F12</span></div>
-                            <div><span>调试控制台</span><span class="kbd">F12</span></div>
-                            <div><span>快速切换</span><span class="kbd">Ctrl+`</span></div>
-                            <div><span>编辑器字号</span><span class="kbd">Ctrl+滚轮</span></div>
-                            <div><span>全屏 / 退出全屏</span><span class="kbd">F11</span></div>
-                            <div class="settings-section-title">AI 助手</div>
-                            <div><span>打开 / 关闭 AI 面板</span><span class="kbd">Alt+9</span></div>
-                            <div><span>发送 / 换行</span><span class="kbd">Enter / Shift+Enter</span></div>
-                            <div><span>切换为 Ctrl+Enter 发送</span><span class="kbd">设置 · AI 助手</span></div>
-                            <div class="settings-section-title">文件树</div>
-                            <div><span>打开 / 展开</span><span class="kbd">双击</span></div>
-                            <div><span>展开 / 收起目录</span><span class="kbd">单击箭头</span></div>
-                            <div><span>多选</span><span class="kbd">Ctrl+单击</span></div>
-                            <div><span>连续选择</span><span class="kbd">Shift+单击</span></div>
-                            <div><span>追加范围选择</span><span class="kbd">Ctrl+Shift+单击</span></div>
-                            <div><span>重命名</span><span class="kbd">F2 / Shift+F6</span></div>
-                            <div><span>复制 / 剪切 / 粘贴</span><span class="kbd">Ctrl+C / Ctrl+X / Ctrl+V</span></div>
-                            <div class="settings-section-title">编辑器</div>
-                            <div><span>多光标（添加 / 列光标）</span><span class="kbd">Alt+单击 / 中键拖动</span></div>
-                            <div><span>展开 / 收起节点</span><span class="kbd">Ctrl+= / Ctrl+-</span></div>
-                            <div><span>全部展开 / 收起</span><span class="kbd">Ctrl+Shift+= / -</span></div>
+                        <div class="set-row">
+                            <div class="set-main"><div class="set-title">快捷键风格<button type="button" class="info-tip" data-tip="整套切换键位方案：文件 / 编辑 / 运行 / 视图 / 文件树。默认 CandySweet 是软件当前实际生效的混合键位；IDEA / JetBrains 与 VS Code 按两大主流 IDE 的习惯排布。切换立即生效，下面的表格同步刷新。" aria-label="快捷键风格说明"></button></div><div class="set-desc">整套键位方案，切换立即生效</div></div>
+                            <div class="set-control">
+                                <select id="opt-key-style" class="opt-select"></select>
+                            </div>
                         </div>
+                        <!-- 内容由 core/keybindings.js 的 renderShortcutsTable() 注入，避免手抄别名与真实绑定漂移 -->
+                        <div class="popover-shortcuts" id="shortcuts-table"></div>
                     </div>
                     <div class="settings-pane hidden" data-pane="integration">
                         <div class="set-group-title">系统集成</div>
@@ -2378,6 +2371,9 @@
                 <button type="button" id="ab-browser" class="ab-btn" data-tip="新建浏览器标签页 (Ctrl+Alt+B)" aria-label="新建浏览器标签页">
                     <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="6.3" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M3.7 10h12.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M10 3.7c1.8 1.8 2.7 4 2.7 6.3S11.8 14.5 10 16.3C8.2 14.5 7.3 12.3 7.3 10S8.2 5.5 10 3.7z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>
                 </button>
+                <button type="button" id="ab-memo" class="ab-btn" data-tip="快捷便签 面板 (Ctrl+Alt+T)" aria-label="快捷便签 面板">
+                    <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3.6 4.2l1.9 1.9 3.1-3.7" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M11.6 4.4h5M3.6 10h2.9M11.6 10h5M3.6 15.4h2.9M11.6 15.4h5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+                </button>
                 <button type="button" id="ab-git" class="ab-btn" data-tip="Git：变更列表" aria-label="Git">
                     <span class="ab-dot" aria-hidden="true"></span>
                     <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="6" cy="5" r="1.9" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="6" cy="15" r="1.9" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="14" cy="9" r="1.9" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M6 7v6M6 9.4c0-2.2 2.4-2.2 5.6-2.3M14 11v.6c0 2-1.6 3.4-4.6 3.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><circle cx="6" cy="10" r=".1" fill="none"/></svg>
@@ -2401,6 +2397,9 @@
                 </button>
                 <button type="button" id="ab-terminal" class="ab-btn" data-tip="终端 (Alt+F12)" aria-label="终端" aria-pressed="false">
                     <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m4 6.2 4 3.8-4 3.8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M10.6 13.8H16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+                </button>
+                <button type="button" id="ab-git-graph" class="ab-btn" data-tip="Git 图谱" aria-label="Git 图谱" aria-pressed="false">
+                    <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="5" cy="5" r="1.6" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="5" cy="15" r="1.6" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="14" cy="10" r="1.6" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M5 6.6v6.8" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M5 8c0 2 3 2 5 2s4 0 4-1.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
                 </button>
                 <button type="button" id="ab-settings" class="ab-btn" data-tip="设置 (Ctrl+,)" aria-label="设置">
                     <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 6.5h3.6M9.4 6.5H17M3 13.5h7M13 13.5h4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M7 4.8v3.4M13 11.8v3.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
@@ -2621,8 +2620,9 @@
                 <textarea id="ai-input" class="ai-input" rows="2" placeholder="发消息或粘贴图片；/ 调用指令，@ 提及文件" spellcheck="false" autocomplete="off"></textarea>
                 <div class="ai-composer-bottom">
                     <button type="button" id="ai-attach-btn" class="ai-plus-btn" data-tip="添加附件或指令" aria-label="添加附件或指令">+</button>
-                    <button type="button" id="ai-permission" class="ai-pill" data-tip="权限：只读访问" aria-label="权限：只读访问">只读访问</button>
+                    <button type="button" id="ai-permission" class="ai-pill" aria-label="权限：只读访问">只读访问</button>
                     <button type="button" id="ai-plan" class="ai-pill" data-tip="计划模式：先只读探索并给出计划，批准后执行" aria-label="计划模式：先只读探索并给出计划，批准后执行" aria-pressed="false">计划</button>
+                    <button type="button" id="ai-worktree" class="ai-pill" data-tip="隔离工作区：在 git worktree 里开发，改动只落在 .cadt/worktree/&lt;slug&gt;/，完成后经补丁审阅回灌" aria-label="隔离工作区：在 git worktree 里开发" aria-pressed="false">隔离</button>
                     <span id="ai-hint" class="ai-hint"></span>
                     <button type="button" id="ai-model-chip" class="ai-pill ai-model-pill" data-tip="切换模型与推理等级" aria-label="切换模型与推理等级">选择模型</button>
                     <button type="button" id="ai-stop" class="ai-send-btn ai-stop hidden" data-tip="停止生成" aria-label="停止生成">
@@ -2740,6 +2740,7 @@
             </div>
             <div class="term-body" id="term-body"></div>
             <div id="debug-view" class="hidden"></div>
+            <div id="git-graph-view" class="hidden"></div>
             <div id="run-view" class="hidden">
                 <div class="run-head">
                     <span class="run-title">运行</span>

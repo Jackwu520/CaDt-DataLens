@@ -493,6 +493,14 @@ function groupChatTabIcon() {
     return span;
 }
 
+// 快捷便签 面板：清单图标
+function memoTabIcon() {
+    const span = document.createElement('span');
+    span.className = 'tab-icon';
+    span.innerHTML = iconSvg('memo', 13);
+    return span;
+}
+
 function tabTooltip(doc) {
     const lockTip = isTabReadOnlyFixed(doc) ? '\n（只读快照，不可解锁）'
         : isTabReadOnlyLocked(doc) ? '\n（本标签只读锁定，右键可解除）' : '';
@@ -530,8 +538,8 @@ function buildGroupTab(g, doc, strip) {
     tab.className = 'tab' + (doc.id === g.activeId ? ' active' : '') + (doc.dirty ? ' dirty' : '') + (doc.staleOnDisk ? ' stale' : '') + (isTabReadOnlyLocked(doc) ? ' tab-readonly' : '');
     tab.dataset.docId = String(doc.id);
     tab.dataset.tip = tabTooltip(doc);
-    // 后台终端 / 子代理详情标签页用固定图标（非文件，没有扩展名图标）
-    const icon = doc.bgTerm ? bgTermTabIcon() : doc.agentView ? agentViewTabIcon() : doc.sideChat ? sideChatTabIcon() : doc.groupChat ? groupChatTabIcon() : createFileIcon(doc.name, 'tab-icon');
+    // 后台终端 / 子代理详情 / 团队详情标签页用固定图标（非文件，没有扩展名图标）
+    const icon = doc.bgTerm ? bgTermTabIcon() : (doc.agentView || doc.agentTeam) ? agentViewTabIcon() : doc.sideChat ? sideChatTabIcon() : doc.groupChat ? groupChatTabIcon() : doc.memo ? memoTabIcon() : createFileIcon(doc.name, 'tab-icon');
     const dot = document.createElement('span');
     dot.className = 'tab-dot';
     const name = document.createElement('span');
@@ -1013,6 +1021,10 @@ function patchViewContext() {
         },
         notifyChanged: (files) => { reloadAfterPatch(files); },
         flash: (msg, isErr) => deps.flash(msg, isErr),
+        // 补丁视图的「只读」开关：改标签只读锁（与右键菜单同一状态），锁变化会触发本视图重渲染
+        setDocReadOnly: (doc, locked) => deps.setDocReadOnly(doc, locked),
+        // 原生 select 的浮层增强（设置页同款），用于去掉「应用模式」的浏览器原生下拉外观
+        enhanceSelect: (sel) => deps.enhanceSelect(sel),
         openConfirmDialog: (message, action, okLabel, title, variant) => deps.openConfirmDialog(message, action, okLabel, title, variant),
     };
     return patchViewHostCtx;
@@ -1066,6 +1078,12 @@ function createDocEditor(doc) {
         deps.createAgentView(doc);
         return;
     }
+    // 智能体团队详情标签页：主代理 + 子代理树（按打开时的会话取数）
+    if (doc.agentTeam) {
+        if (doc.pane) return;
+        deps.createAgentTeamView(doc);
+        return;
+    }
     // 支线对话标签页：完整会话渲染在内容区（面板保持显示主对话）
     if (doc.sideChat) {
         if (doc.pane) return;
@@ -1081,6 +1099,12 @@ function createDocEditor(doc) {
     if (doc.bgTerm) {
         if (doc.pane) return;
         deps.createBgTermView(doc);
+        return;
+    }
+    // 快捷便签面板：每窗口一个标签，数据在 bridge 域 memo-store（AI 经 app_control 走同一套变更通路）
+    if (doc.memo) {
+        if (doc.pane) return;
+        deps.createMemoView(doc);
         return;
     }
     const fmt = doc.format;
@@ -1581,6 +1605,11 @@ function closeDocNow(doc, remember = true) {
         doc.agentViewUnmount();
         doc.agentViewUnmount = null;
     }
+    // 团队详情标签页：注销视图（代理继续跑，重开标签页重建）
+    if (doc.agentTeam && doc.agentTeamUnmount) {
+        doc.agentTeamUnmount();
+        doc.agentTeamUnmount = null;
+    }
     if (doc.sideChat && doc.sideChatUnmount) {
         doc.sideChatUnmount();
         doc.sideChatUnmount = null;
@@ -1589,6 +1618,11 @@ function closeDocNow(doc, remember = true) {
     if (doc.groupChat && doc.groupChatUnmount) {
         doc.groupChatUnmount();
         doc.groupChatUnmount = null;
+    }
+    // 快捷便签 面板：退订变更广播并冲掉未落盘的修改
+    if (doc.memo && doc.memoUnmount) {
+        doc.memoUnmount();
+        doc.memoUnmount = null;
     }
     deps.docs.splice(idx, 1);
     if (doc.editor) {
@@ -1678,5 +1712,5 @@ function reopenClosedTab() {
     function setFocusedGroupId(v) { focusedGroupId = v; }
     function setSplitRoot(v) { splitRoot = v; }
 
-    return {activateDoc, setFocusedGroupId, setSplitRoot, addDocToFocusedGroup, applyAceMode, applyCsvTableZoom, applyImageZoom, browserViewportLabel, closeDocNow, closeDocsWithConfirm, closeSqlView, createDoc, createDocEditor, createGroup, dismissBanner, doRedo, doUndo, enterAudioView, enterBinaryView, enterCsvTable, enterImageView, enterMarkdownPreview, enterSplitView, enterSqlView, enterSvgRender, enterTextView, enterVideoView, exitSplitView, expandAllWithGuard, flushCsvCellEditor, get focusedGroupId() { return focusedGroupId; }, groupDocs, groupOfDoc, handleAIWorkspaceFileChanged, handleExternalDocChanges, hideAudioView, hideBanner, hideSvgRender, hideVideoView, hookCodeFoldRanges, hookMultiCursor, humanizeCounts, initCodeFoldHover, jumpBookmark, leaveCsvTable, leaveMarkdownPreview, markDocDirty, mdSyncScrollFromAce, moveTabInGroup, openWithDefaultApp, patchViewContext, refreshPatchMarkers, rememberDocView, renderBookmarks, renderBreadcrumb, renderCsvTableView, renderEditorLayout, renderMarkdownPreview, renderTabs, reopenClosedTab, releaseAudio, releaseVideo, requestCloseDoc, revertDocToSaved, scheduleGitGutter, setBrowserViewport, setFilename, showBanner, showImageMenu, showMdPreviewMenu, showPathInFolder, showSvgMenu, get splitRoot() { return splitRoot; }, syncAllBrowserTabs, syncBrowserTab, syncTabReadOnly, textArea, toggleBookmark, toggleFocusedNode, updateBrowserTitle, updateDocChrome, updateStatus, zoomCsvTable, zoomImageBy, zoomSvgRenderBy};
+    return {activateDoc, setFocusedGroupId, setSplitRoot, addDocToFocusedGroup, get editorGroups() { return editorGroups; }, applyAceMode, applyCsvTableZoom, applyImageZoom, browserViewportLabel, closeDocNow, closeDocsWithConfirm, closeSqlView, createDoc, createDocEditor, createGroup, dismissBanner, doRedo, doUndo, enterAudioView, enterBinaryView, enterCsvTable, enterImageView, enterMarkdownPreview, enterSplitView, enterSqlView, enterSvgRender, enterTextView, enterVideoView, exitSplitView, expandAllWithGuard, flushCsvCellEditor, get focusedGroupId() { return focusedGroupId; }, groupDocs, groupOfDoc, handleAIWorkspaceFileChanged, handleExternalDocChanges, hideAudioView, hideBanner, hideSvgRender, hideVideoView, hookCodeFoldRanges, hookMultiCursor, humanizeCounts, initCodeFoldHover, jumpBookmark, leaveCsvTable, leaveMarkdownPreview, markDocDirty, mdSyncScrollFromAce, moveTabInGroup, openWithDefaultApp, patchViewContext, refreshPatchMarkers, rememberDocView, renderBookmarks, renderBreadcrumb, renderCsvTableView, renderEditorLayout, renderMarkdownPreview, renderTabs, reopenClosedTab, releaseAudio, releaseVideo, requestCloseDoc, revertDocToSaved, scheduleGitGutter, setBrowserViewport, setFilename, showBanner, showImageMenu, showMdPreviewMenu, showPathInFolder, showSvgMenu, get splitRoot() { return splitRoot; }, syncAllBrowserTabs, syncBrowserTab, syncTabReadOnly, textArea, toggleBookmark, toggleFocusedNode, updateBrowserTitle, updateDocChrome, updateStatus, zoomCsvTable, zoomImageBy, zoomSvgRenderBy};
 }

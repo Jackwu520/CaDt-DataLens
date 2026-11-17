@@ -60,6 +60,21 @@ export function createSwitch(o = {}) {
     return {element, control};
 }
 
+// 紧凑行内复选框（文字在 label 内）：用于「勾选框 + 文字」挤在一行的窄场景
+// （全局搜索的分类勾选等）。外观保持原生 checkbox（全局 :where() 兜底统一），
+// 不走 .set-switch 的 34×20 开关尺寸。
+export function createCheckbox(o = {}) {
+    const element = document.createElement('label');
+    element.className = 'set-check';
+    const control = document.createElement('input');
+    control.type = 'checkbox';
+    control.checked = !!o.checked;
+    applyCommon(control, o);
+    if (o.title != null) element.dataset.tip = String(o.title);
+    element.append(control, document.createTextNode(String(o.label == null ? '' : o.label)));
+    return {element, control};
+}
+
 export function createSelect(o = {}) {
     const control = document.createElement('select');
     control.className = CONTROL_CLASS.select;

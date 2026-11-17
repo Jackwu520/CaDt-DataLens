@@ -331,9 +331,14 @@ export const videoExtensions = ['mp4', 'm4v', 'webm', 'mov', 'mkv'];
 // RIFF-WAVE / fLaC / OggS / ID3 魔数）。只收 WebView2 能解码的格式。
 export const audioExtensions = ['wav', 'mp3', 'ogg', 'oga', 'opus', 'flac', 'm4a', 'aac', 'weba'];
 
-// 媒体文档（图片 / 视频 / 音频）的首屏视图单一来源：有对应媒体就先给它自己的视图，
-// binary / text 只是手动备份视图。createDoc 的初始 mode 与启动恢复都走这里——
-// 持久化下来的 binary（历史版本或播放失败自动回退留下的）不能变成「默认视图」。
+/**
+ * 判定媒体文档（图片 / 视频 / 音频）的首屏视图。
+ * 有对应媒体就先给它自己的视图，binary / text 只是手动备份视图。
+ * createDoc 的初始 mode 与启动恢复都走这里——持久化下来的 binary
+ * （历史版本或播放失败自动回退留下的）不能变成「默认视图」。
+ * @param {object|null} source 格式驱动对象，可含 image / video / audio 布尔字段
+ * @returns {string} 'image' | 'video' | 'audio' | ''（非媒体返回空串）
+ */
 export function defaultMediaMode(source) {
     if (!source) return '';
     if (source.video) return 'video';
@@ -343,8 +348,15 @@ export function defaultMediaMode(source) {
 }
 
 // 插件注册的自定义格式；内置格式优先，插件格式不能覆盖内置格式
+/** @type {Array<object>} */
 export const pluginFormats = [];
 
+/**
+ * 注册插件自定义格式驱动。
+ * @param {object} driver 格式驱动对象，需含 id / name / extensions / parse / stringify
+ * @returns {object} 归一化后的格式驱动（extensions 已转小写、去前导点）
+ * @throws {Error} id 无效、与内置冲突、缺 extensions / parse / stringify 时抛错
+ */
 export function registerPluginFormat(driver) {
     if (!driver || typeof driver !== 'object') {
         throw new Error('registerFormat 需要一个格式对象');
@@ -375,10 +387,19 @@ export function registerPluginFormat(driver) {
     return normalized;
 }
 
+/**
+ * 清空所有插件注册的自定义格式（用于插件卸载 / 重载）。
+ * @returns {void}
+ */
 export function unregisterAllPluginFormats() {
     pluginFormats.length = 0;
 }
 
+/**
+ * 判定文件名是否属于可打开的受支持类型（内置格式 / 媒体扩展名 / 插件格式 / 已知文件名）。
+ * @param {string} name 文件名（可含路径，取末段 base 判定）
+ * @returns {boolean} true = 文件树可点击打开
+ */
 export function isSupportedFile(name) {
     const base = String(name || '').split(/[\\/]/).pop();
     if (knownFileNames.has(base.toLowerCase())) return true;
@@ -397,6 +418,12 @@ export const openFileFilters = [
     {display: '所有文件 (*.*)', pattern: '*.*'},
 ];
 
+/**
+ * 按文件名探测格式驱动，并对 XML 补上带 XML 声明的 stringify。
+ * @param {string} fileName 文件名（按扩展名匹配内置格式，未命中再匹配插件格式，兜底 text）
+ * @param {string} content 文件内容（仅用于判断 XML 是否带 <?xml ?> 声明）
+ * @returns {object} 格式驱动的浅拷贝（XML 会重写 stringify 以按需补声明）
+ */
 export function detectFormat(fileName, content) {
     const ext = String(fileName || '').split('.').pop().toLowerCase();
     let driver = formats.text;
@@ -427,6 +454,11 @@ export function detectFormat(fileName, content) {
     return {...driver};
 }
 
+/**
+ * 取格式驱动的显示名，空值兜底为「未知」。
+ * @param {object|null} driver 格式驱动对象
+ * @returns {string} 格式名（如 'JSON' / 'YAML'）
+ */
 export function formatName(driver) {
     return driver ? driver.name : '未知';
 }
@@ -467,6 +499,13 @@ const fileNameAceModes = {
     '.babelrc': 'json', '.prettierrc': 'json', '.eslintrc': 'json',
 };
 
+/**
+ * 解析文件名对应的 Ace 语法高亮模式。
+ * 优先级：整体文件名（Makefile / .gitignore 这类）→ 扩展名 → 格式驱动的 aceMode → 纯文本。
+ * @param {string} fileName 文件名（可含路径）
+ * @param {object|null} driver detectFormat 返回的格式驱动，可含 aceMode 字段
+ * @returns {string} 完整 Ace 模式串，如 'ace/mode/json'
+ */
 export function aceModeFor(fileName, driver) {
     const base = String(fileName || '').split(/[\\/]/).pop().toLowerCase();
     const nameMode = fileNameAceModes[base] || fileNameAceModes[base.replace(/\.[^.]*$/, '')];
@@ -475,8 +514,12 @@ export function aceModeFor(fileName, driver) {
     return 'ace/mode/' + (nameMode || extensionAceModes[ext] || (driver && driver.aceMode) || 'text');
 }
 
-// CMakeLists.txt / Makefile / .gitignore / .env 这类「已知代码 / 配置文件名」：
-// 扩展名虽是 .txt（或无扩展名），但应按代码视图打开并语法高亮，不算纯文本。
+/**
+ * 判定「已知代码 / 配置文件名」：扩展名虽是 .txt（或无扩展名），
+ * 但应按代码视图打开并语法高亮，不算纯文本。
+ * @param {string} fileName 文件名（可含路径）
+ * @returns {boolean} true = 按代码视图打开
+ */
 export function isKnownCodeFileName(fileName) {
     const base = String(fileName || '').split(/[\\/]/).pop().toLowerCase();
     return knownFileNames.has(base) || !!fileNameAceModes[base];

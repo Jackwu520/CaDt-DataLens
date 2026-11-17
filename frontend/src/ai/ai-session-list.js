@@ -138,14 +138,9 @@ export function createAISessionList(ctx) {
             if (message.ask && message.ask.state === 'pending') return true;
             if (message.envAsk && message.envAsk.state === 'pending') return true;
         }
-        // 计划模式：最后一条是待批准的计划（用户还没批准 / 放弃）。
-        // submit_plan 形态下正文为空、计划在 planText，两者都要认。
-        if (session.planMode && session.messages.length) {
-            const last = session.messages[session.messages.length - 1];
-            if (last && last.role === 'assistant' && last.planMode && last.status === 'done' &&
-                String(last.planText || last.content || '').trim()) {
-                return true;
-            }
+        // 计划模式：有待批准的计划（计划唯一真源是 session.activePlan）
+        if (session.planMode && session.activePlan && session.activePlan.status === 'pending') {
+            return true;
         }
         return false;
     }
@@ -296,7 +291,7 @@ export function createAISessionList(ctx) {
                 stopBtn.className = 'ai-session-stop';
                 stopBtn.dataset.tip = '停止这个会话的运行';
                 stopBtn.setAttribute('aria-label', '停止会话运行');
-                stopBtn.innerHTML = iconSvg('pause', 12);
+                stopBtn.innerHTML = iconSvg('stop', 12);
                 stopBtn.addEventListener('click', (e) => {
                     e.stopPropagation();
                     stopSessionTurn(session.id);

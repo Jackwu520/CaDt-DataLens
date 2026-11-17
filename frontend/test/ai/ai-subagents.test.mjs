@@ -3,7 +3,7 @@
 // 这里锁住「改一处就会悄悄变味」的三条判定。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {takeInboxBatch, inboxMessageText, canReviveRecord, isStaleRecord, subAgentScopeOf, agentMessageBlocks, agentRecordBlocks, agentTranscriptBlocks, agentBlockSig, agentToolArgBrief} from '../../src/ai/ai-subagents.js';
+import {takeInboxBatch, inboxMessageText, canReviveRecord, isStaleRecord, subAgentScopeOf, subTreeOwned, subTreeIdsOf, resolveWaitTimeoutSec, resolveSubAgentRounds, pendingInboxCount, agentDescendsFrom, parentSessionIdOf, agentMessageBlocks, agentRecordBlocks, agentTranscriptBlocks, agentBlockSig, agentToolArgBrief} from '../../src/ai/ai-subagents.js';
 
 test('takeInboxBatch：插队（step）先于排队（turn），各自保持入队顺序', () => {
     const inbox = {
@@ -25,11 +25,12 @@ test('takeInboxBatch：空收件箱与缺字段都安全', () => {
     assert.deepEqual(takeInboxBatch({step: [{text: 'x'}]}).length, 1);
 });
 
-test('inboxMessageText：主代理消息与用户插话前缀可辨', () => {
-    assert.equal(inboxMessageText({text: '换一个方向', from: 'agent'}), '［主代理消息］ 换一个方向');
-    assert.equal(inboxMessageText({text: '看下这个文件', from: 'user'}), '［用户插话］ 看下这个文件');
-    // 缺 from 时按主代理消息处理（agent_send 是默认发送方）
-    assert.equal(inboxMessageText({text: '补充'}), '［主代理消息］ 补充');
+test('inboxMessageText：三方来源前缀可辨（用户 / 上级代理 / 下级回报）', () => {
+    assert.equal(inboxMessageText({text: '补充线索'}), '［上级代理消息］ 补充线索');
+    assert.equal(inboxMessageText({text: '插一句', from: 'user'}), '［用户插话］ 插一句');
+    // 嵌套时父是子代理：不能用「主代理」字眼，否则第 3 层会认错来源
+    assert.equal(inboxMessageText({text: '已完成', from: 'subagent'}), '［下级代理回报］ 已完成');
+    assert.equal(inboxMessageText(null), '［上级代理消息］ ');
 });
 
 test('canReviveRecord：done 可续，失败/停止/已回收都拒绝', () => {
@@ -56,6 +57,112 @@ test('isStaleRecord：唤醒前的记录算陈旧，唤醒后落账的不算', (
     for (const [name, record, expected] of cases) {
         assert.equal(isStaleRecord(record), expected, name);
     }
+});
+
+// 子代理记录按任务树归属（wait_agent / agent_send / agent_stop / agent_compact 共用）：
+// 别的会话的 agentId 不能被投递或停止。任一侧为空时放行（兼容旧记录）。
+test('subTreeOwned：根会话不同拒绝，缺字段放行', () => {
+    assert.equal(subTreeOwned('root-a', 'root-a'), true);
+    assert.equal(subTreeOwned('root-a', 'root-b'), false, '别的会话的任务树一律拒绝');
+    assert.equal(subTreeOwned('root-a', ''), true, '记录缺 rootSessionId（旧数据）放行');
+    assert.equal(subTreeOwned('', 'root-b'), true, '调用方无会话（系统路径）放行');
+    assert.equal(subTreeOwned(undefined, undefined), true);
+});
+
+test('subTreeIdsOf：按 parentSessionId 链展开整棵子树（含多级、不含根与兄弟）', () => {
+    const subs = [
+        {id: 'A', parentSessionId: 'main'},
+        {id: 'A1', parentSessionId: 'A'},
+        {id: 'A11', parentSessionId: 'A1'},
+        {id: 'A111', parentSessionId: 'A11'},
+        {id: 'A2', parentSessionId: 'A'},
+        {id: 'B', parentSessionId: 'main'},
+        {id: 'B1', parentSessionId: 'B'},
+    ];
+    assert.deepEqual(subTreeIdsOf(subs, 'A'), ['A1', 'A2', 'A11', 'A111']);
+    assert.deepEqual(subTreeIdsOf(subs, 'A1'), ['A11', 'A111']);
+    assert.deepEqual(subTreeIdsOf(subs, 'B'), ['B1']);
+    assert.deepEqual(subTreeIdsOf(subs, 'main'), ['A', 'B', 'A1', 'A2', 'B1', 'A11', 'A111']);
+    assert.deepEqual(subTreeIdsOf(subs, 'missing'), []);
+    assert.deepEqual(subTreeIdsOf(null, 'A'), []);
+    assert.deepEqual(subTreeIdsOf(subs, ''), []);
+});
+
+test('subTreeIdsOf：脏数据成环不死循环，非字符串 id 归一', () => {
+    const cyclic = [
+        {id: 'A', parentSessionId: 'B'},
+        {id: 'B', parentSessionId: 'A'},
+        {id: 'C', parentSessionId: 'A'},
+    ];
+    const ids = subTreeIdsOf(cyclic, 'A');
+    assert.ok(ids.includes('C'));
+    assert.ok(ids.length <= 2);
+    assert.deepEqual(subTreeIdsOf([{id: 7, parentSessionId: 'A'}], 'A'), ['7']);
+});
+
+test('resolveWaitTimeoutSec：null / 空串 / false 不许变成「不限时」（会永久悬挂）', () => {
+    // aiClampInt(null) 会给出 0，而 0 是不建 deadline 的「不限时」——工具调用会永不返回。
+    assert.equal(resolveWaitTimeoutSec(null), 60, 'null 要回落默认，不能是 0');
+    assert.equal(resolveWaitTimeoutSec(undefined), 60);
+    assert.equal(resolveWaitTimeoutSec(''), 60, '空串同样不能当 0');
+    assert.equal(resolveWaitTimeoutSec(false), 5, 'false=0 也要被抬到最短 5 秒，不能是不限时');
+    assert.equal(resolveWaitTimeoutSec(0), 5, '显式 0 也抬到最短值：不再保留「不限时」');
+    assert.equal(resolveWaitTimeoutSec(-30), 5);
+    assert.equal(resolveWaitTimeoutSec('30'), 30, '数字字符串照常解析');
+    assert.equal(resolveWaitTimeoutSec(9999), 600, '上限 600');
+    assert.equal(resolveWaitTimeoutSec('abc'), 60, '解析不了回落默认');
+});
+
+test('pendingInboxCount：只数会被轮边界注入的 step+turn，ask 不算', () => {
+    assert.equal(pendingInboxCount(null), 0);
+    assert.equal(pendingInboxCount({}), 0);
+    assert.equal(pendingInboxCount({inbox: {step: [], turn: []}}), 0);
+    assert.equal(pendingInboxCount({inbox: {step: [{text: 'a'}], turn: [{text: 'b'}, {text: 'c'}]}}), 3);
+    // ask 由 answerSubAsk 就地落定，不进队列；算进来会让 wait_agent 误报「有新输入」
+    assert.equal(pendingInboxCount({inbox: {step: [], turn: [], ask: {askId: 'x'}}}), 0);
+});
+
+test('agentDescendsFrom：只能发给自己的下级（排除自身 / 兄弟 / 祖先）', () => {
+    // 任务树：main → A1 → A1-1 → A1-1-1；A1 → A1-2；main → B1
+    const parents = {'A1': 'main', 'A1-1': 'A1', 'A1-1-1': 'A1-1', 'A1-2': 'A1', 'B1': 'main'};
+    const lookup = (id) => parents[id] || '';
+    assert.equal(agentDescendsFrom('A1-1', 'A1', lookup), true, '直接下级');
+    assert.equal(agentDescendsFrom('A1-1-1', 'A1', lookup), true, '隔代下级');
+    assert.equal(agentDescendsFrom('A1', 'A1', lookup), false, '自身必须排除（旧实现的坑）');
+    assert.equal(agentDescendsFrom('A1-2', 'A1-1', lookup), false, '兄弟不行');
+    assert.equal(agentDescendsFrom('A1', 'A1-1', lookup), false, '祖先不行（防互等 / 乱喊话）');
+    assert.equal(agentDescendsFrom('B1', 'A1', lookup), false, '别的根分支不行');
+    assert.equal(agentDescendsFrom('gone', 'A1', lookup), false, '记录被回收一律当不是我的');
+    assert.equal(agentDescendsFrom('A1-1', '', lookup), false, '没有祖先会话时不放行');
+    assert.equal(agentDescendsFrom('A1-1', 'A1', null), false, '缺 lookup 保守返回 false');
+    // 脏数据成环不能死循环
+    const cyclic = (id) => (id === 'X' ? 'Y' : (id === 'Y' ? 'X' : ''));
+    assert.equal(agentDescendsFrom('X', 'Z', cyclic), false);
+});
+
+test('parentSessionIdOf：运行态优先，终态记录兜底', () => {
+    const live = new Map([['a', {parentSessionId: 'main'}]]);
+    const records = new Map([['b', {parentSessionId: 'a'}]]);
+    assert.equal(parentSessionIdOf('a', live, records), 'main');
+    assert.equal(parentSessionIdOf('b', live, records), 'a', '运行态查不到时退回记录');
+    assert.equal(parentSessionIdOf('c', live, records), '', '都没有时返回空串');
+    assert.equal(parentSessionIdOf('a', null, null), '');
+});
+
+test('resolveSubAgentRounds：配置缺省 → 内置 50；单次缺省 → 配置值；不许把「没给」当 3 轮', () => {
+    // 与 resolveWaitTimeoutSec 同一个坑：aiClampInt(null) 会算成 0 再钳到下限
+    assert.equal(resolveSubAgentRounds(undefined, undefined), 50, '两者都缺省 = 内置默认');
+    assert.equal(resolveSubAgentRounds(null, null), 50, 'null 要回落，不能变成 3');
+    assert.equal(resolveSubAgentRounds('', ''), 50);
+    assert.equal(resolveSubAgentRounds(undefined, 120), 120, '设置里的值生效');
+    assert.equal(resolveSubAgentRounds(null, 120), 120, '单次没给就吃配置');
+    assert.equal(resolveSubAgentRounds(30, 120), 30, '单次点名优先');
+    assert.equal(resolveSubAgentRounds(1, 120), 3, '低于下限钳到 3');
+    assert.equal(resolveSubAgentRounds(9999, 120), 200, '高于上限钳到 200');
+    assert.equal(resolveSubAgentRounds(undefined, 9999), 200, '配置越界也钳');
+    assert.equal(resolveSubAgentRounds(undefined, 1), 3, '配置低于下限钳到 3');
+    assert.equal(resolveSubAgentRounds('80', 120), 80, '数字字符串照常解析');
+    assert.equal(resolveSubAgentRounds('abc', 120), 120, '解析不了回落配置值');
 });
 
 test('subAgentScopeOf：权限档继承父会话，只读由工具白名单保证', () => {

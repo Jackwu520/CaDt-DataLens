@@ -4,6 +4,7 @@
 // 一会话一个（独占）；回灌 = Go 导出 diff → PatchSave(主根) → patch 审批卡（全档必弹）→ 应用；
 // 丢弃 = worktree remove --force + 删隔离分支。路径一律显式长路径，不做前缀注入。
 import {aiTextOf} from './ai-constants.js';
+import {iconSvg} from '../core/icons.js';
 
 export const WORKTREE_REL_DIR = '.cadt/worktree';
 // 补丁超过此长度拒绝导出（与 propose_patch 的传输上限一致，防一次导出撑爆上下文）
@@ -44,6 +45,41 @@ export function agentWorktreeWriteVerdict(wt, relPath) {
     };
 }
 
+// 主会话隔离写闸（纯函数）：隔离区开启期间主根只读——只允许写自己的隔离前缀与 .cadt/tmp
+// 临时区；其余主根路径确定性拒绝（全档生效，含完全权限）。回灌必须走 worktree_manage(export)
+// 的补丁审批卡，否则模型会在导出预检冲突时「直接改主根对齐」，绕过人工审阅（2026-11-17 真机）。
+// 范围外的绝对路径（full 档）不在主根，不属于隔离边界，放行。
+export function mainRootWriteVerdict(wt, relPath) {
+    if (!wt || !wt.name) return {verdict: 'allow'};
+    const prefix = (WORKTREE_REL_DIR + '/' + wt.name).toLowerCase();
+    const rel = String(relPath == null ? '' : relPath);
+    const lower = rel.toLowerCase();
+    if (lower === prefix || lower.startsWith(prefix + '/')) return {verdict: 'allow'};
+    // .cadt/tmp 是约定的临时产物区（<worktree> 块让模型把日志/中间产物写这里）
+    if (lower === '.cadt/tmp' || lower.startsWith('.cadt/tmp/')) return {verdict: 'allow'};
+    // 范围外盘符绝对路径（full 档）：落在主根内的已被 aiRelPath 转成相对路径，这里只剩真正
+    // 的范围外路径，放行（如 C:/Users/.../Temp）。
+    if (/^[a-zA-Z]:[\\/]/.test(rel)) return {verdict: 'allow'};
+    // 单斜杠/反斜杠开头一律拒绝（根相对、UNC、\\?\ 扩展前缀）：aiNormalizePath 会把
+    // \\server\share 与 \\?\D:\... 折成 /server/share、/?/D:/...（单斜杠），Win32 又把它
+    // 解析到「当前盘根」——若工作区恰在该盘，即可命中主根。解析口径不可靠，隔离期间不开后门。
+    if (rel.startsWith('/') || rel.startsWith('\\')) {
+        return {
+            verdict: 'deny',
+            message: '【worktree:error】WORKTREE_MAIN_READONLY：隔离期间不接受根相对 / UNC / 扩展长度路径（' + rel
+                + '）。请用相对范围根的路径写到 ' + worktreeRelPath(wt.name) + '/…；临时产物写主根 .cadt/tmp/'
+                + '（范围外临时目录请用带盘符的绝对路径，如 C:/Users/.../Temp）。',
+        };
+    }
+    return {
+        verdict: 'deny',
+        message: '【worktree:error】WORKTREE_MAIN_READONLY：本会话开启隔离工作区（' + worktreeRelPath(wt.name)
+            + '），隔离期间主根只读——回灌必须经补丁审批卡，不能直接改主根文件。请把改动写到 '
+            + worktreeRelPath(wt.name) + '/' + rel + '；导出预检冲突时在隔离区里修正后重新 '
+            + 'worktree_manage(action=export)。要放弃隔离直接改主根，先由用户丢弃隔离区。',
+    };
+}
+
 // worktree_manage by-name 目标解析（纯函数）：own 为会话自己的隔离区登记，subWorktrees
 // 为本会话派生子代理的隔离区登记。缺省（不带 name）= 自己的；带 name 只认本会话拥有的；
 // 其余（其他会话的隔离区）返回 null——归属外不可触碰。
@@ -62,10 +98,13 @@ export function worktreeBlockText(wt) {
     if (!wt || !wt.name) return '';
     return [
         '<worktree>',
-        '本会话正在隔离工作区中改代码：所有文件改动写到 ' + worktreeRelPath(wt.name) + '/…（相对范围根），不要改主根同名文件。',
-        '- run_command 的 cwd 传 ' + worktreeRelPath(wt.name) + '；git 命令会自动作用于该 worktree 的分支 ' + (wt.branch || '隔离分支') + '。',
-        '- 依赖目录（node_modules / .venv / venv）已通过 junction 共享主根：npm / pip 可直接使用与安装（写的就是主根依赖目录）；Go 无需共享（模块与构建缓存在用户级）。测试仍可能因环境差异失败，不要反复重装依赖。',
+        '本会话正在隔离工作区中改代码：所有文件改动写到 ' + worktreeRelPath(wt.name) + '/…（相对范围根=主根），不要改主根同名文件。隔离期间主根只读——write_file / edit_file 写主根其他路径会被拒绝（.cadt/tmp/ 临时产物除外），回灌只能经补丁审批卡。',
+        '- run_command / background_command 未显式传 cwd 时默认在 ' + worktreeRelPath(wt.name) + ' 里执行；git 命令会自动作用于该 worktree 的分支 ' + (wt.branch || '隔离分支') + '。要在主根执行只读命令请显式传 cwd=.。',
+        '- 依赖共享只覆盖主根顶层的 node_modules / .venv / venv（junction，写入即主根目录）；子目录依赖（如 frontend/node_modules）不会共享——缺依赖时在隔离区里装（npm install），绝不要手动 mklink 借主根目录（删除隔离区时 git 会跟进 junction 把主根依赖删空）。Go 无需共享（模块与构建缓存在用户级）。',
+        '- 隔离区里没有主根的 .cadt/，工具的路径一律相对范围根（主根），与命令 cwd 无关：临时日志/中间产物用 write_file 写到主根 .cadt/tmp/（auto 档免审批）；不要在命令里用 ../ 猜路径，也不要用 / 开头或 UNC 路径（隔离期间会被拒绝，Win32 会把它解析到当前盘根）。',
+        '- 跑测试直接用 run_command，输出会自动返回；不要用输出重定向把日志写文件再 sed 读（会变成无法静态分析的复合命令而转人工审批）。长日志用 background_command + check_command。',
         '- 完成后调 worktree_manage(action=export) 生成补丁交用户审阅回灌主根；应用成功后建议 discard 收尾。不要 commit 到隔离分支：worktree 是草稿区，分支不保留。',
+        '- 导出预检有冲突（「上下文不匹配」/ hunk 行号偏移）时：在隔离区里按主根当前内容修正该文件后重新 export，或把冲突行号与原因告知用户；绝不要直接编辑主根绕过审阅（写工具会拒绝，这不是权限档能放开的）。',
         '</worktree>',
     ].join('\n');
 }
@@ -104,6 +143,8 @@ export function createAIWorktree(deps) {
     const persistSessions = () => deps.persistSessions();
     const flash = deps.flash || (() => {});
     const requestPatchApproval = (...args) => deps.requestPatchApproval(...args);
+    // AI 主动 create / discard 的审批卡（接管 composer；用户手点的开关仍走居中确认弹窗）
+    const requestWorktreeApproval = (...args) => deps.requestWorktreeApproval(...args);
     const patchResultText = (...args) => deps.patchResultText(...args);
     const recordChange = (...args) => deps.recordChange(...args);
     const notifyFileChanged = (...args) => deps.notifyFileChanged(...args);
@@ -119,16 +160,41 @@ export function createAIWorktree(deps) {
     const dialogNode = deps.dialogNode;
     const dialogButton = deps.dialogButton;
     const chip = deps.chip || null;
+    // 输入区常驻开关（对齐 ZCode 的 worktree 勾选）：勾上=本会话用隔离区，取消=确认丢弃
+    const toggle = deps.toggle || null;
+    const isRunning = (...args) => deps.isRunning ? deps.isRunning(...args) : false;
+    // 用户手点的创建/丢弃合成 worktree_manage 消息对写进会话历史（AI 路径天然有工具卡）
+    const recordToolEvent = (...args) => deps.recordToolEvent ? deps.recordToolEvent(...args) : undefined;
+    // 同一会话的隔离区增删互斥：审批等待期间用户可能从 /worktree 或权限菜单再建一个，
+    // 两次 GitWorktreeAdd 都成功 → 后者覆盖登记、前者成孤儿；双击/并发删除同理。
+    const worktreeBusy = new Set();
+
+    // 审批裁定后失败/取消的落定：只改 approval.state 不够——工具卡与状态文字会继续按
+    // approved 显示「已创建/已丢弃」，与错误正文矛盾（2026-11-17 复查）。
+    function settleWorktreeApproval(session, toolMessage, state, message) {
+        const approval = toolMessage && toolMessage.approval;
+        if (!approval) return;
+        approval.state = state;
+        if (message) approval.error = message;
+        try {
+            if (deps.persistApprovalMutation) deps.persistApprovalMutation(session, toolMessage);
+            else persistSessions();
+        } catch (e) {}
+        refreshToolWrap(session, toolMessage);
+    }
 
     // ---------- 确认弹窗（Promise 化；Esc / 关闭 / 取消都按放弃处理） ----------
-    // message 可传字符串或 Promise<string>（如胶囊弹层先取改动统计再渲染文案）。
-    function confirmDialog({title, message, messagePromise, confirmLabel, danger}) {
+    // message 可传字符串或 Promise<string>（如信息卡先取改动统计再渲染文案）。
+    // 按钮回调必须先 closeDialog 再落定（仓库惯例，见 ai-reminders / ai-schedule）：漏掉这步
+    // 会出现「动作已执行但弹层不消失、再点按钮被 settled 守卫吞掉」的假死（2026-11-17 实测）。
+    function confirmDialog({title, message, messagePromise, cancelLabel, confirmLabel, danger}) {
         return new Promise((resolve) => {
             let settled = false;
             const done = (value) => {
                 if (settled) return;
                 settled = true;
                 if (observer) observer.disconnect();
+                try { if (typeof closeDialog === 'function') closeDialog(); } catch (e) {}
                 resolve(value);
             };
             // 居中弹窗可能被 Esc / 右上角 × 关闭（ai-panel 直接加 hidden）：监听后按放弃收敛
@@ -142,68 +208,173 @@ export function createAIWorktree(deps) {
             Promise.resolve(messagePromise || message).then((text) => {
                 if (settled) return;
                 openDialog(title, [dialogNode('div', 'ai-dialog-text', text)], [
-                    dialogButton('取消', 'dlg-btn', () => done(false)),
+                    dialogButton(cancelLabel || '取消', 'dlg-btn', () => done(false)),
                     dialogButton(confirmLabel, 'dlg-btn ' + (danger ? 'danger' : 'primary'), () => done(true)),
                 ]);
             }).catch(() => done(false));
         });
     }
 
-    // ---------- 会话态与胶囊 ----------
+    // ---------- 会话态与胶囊 / 开关 ----------
 
     function syncChip(session) {
-        if (!chip) return;
-        const wt = session && session.worktree;
-        if (!wt || !wt.name) {
-            chip.classList.add('hidden');
-            return;
+        const wt = normalizeWorktreeState(session && session.worktree);
+        if (chip) {
+            if (!wt) {
+                chip.classList.add('hidden');
+            } else {
+                chip.classList.remove('hidden');
+                // 图标只注入一次：compact 档（标题行 <420px）会隐藏 label，没有图标就只剩空白圆
+                const iconEl = chip.querySelector('.ai-chip-icon');
+                if (iconEl && !iconEl.dataset.ready) {
+                    iconEl.dataset.ready = '1';
+                    iconEl.innerHTML = iconSvg('folder', 12);
+                }
+                const label = chip.querySelector('.ai-chip-label');
+                if (label) label.textContent = '隔离区 ' + wt.name;
+                chip.dataset.tip = '隔离区 ' + wt.name + '（点击查看信息与丢弃）';
+            }
         }
-        chip.classList.remove('hidden');
-        const label = chip.querySelector('.ai-chip-label');
-        if (label) label.textContent = '隔离区 ' + wt.name;
+        if (toggle) {
+            const on = !!wt;
+            toggle.classList.toggle('active', on);
+            toggle.setAttribute('aria-pressed', String(on));
+            toggle.textContent = on ? '隔离 · 开' : '隔离';
+            toggle.dataset.tip = on
+                ? '隔离区已开启：改动只落在 ' + worktreeRelPath(wt.name) + '/（点击关闭 = 丢弃隔离区）'
+                : '隔离工作区：在 git worktree 里开发，改动只落在 .cadt/worktree/<slug>/，完成后经补丁审阅回灌';
+        }
     }
 
-    function openChipDialog() {
-        const session = currentSession();
-        const wt = session && session.worktree;
-        if (!wt || !wt.name) return;
-        // 只读取一次改动统计（尽力而为）：让用户在弹层里先看隔离区改了什么再决定丢弃
-        let statText = '';
+    // 终端占用检查（对齐 ZCode §3.11「请先关闭在该目录中运行的终端」）：初始 cwd 落在
+    // 隔离区内且还活着的终端会话，丢弃隔离区会连它们的进程一起带走。AI 终端工具与
+    // 底部终端都走同一个 TermList，这里统一查。
+    async function terminalsInWorktree(wt) {
+        if (!backend.TermList) return [];
+        try {
+            const list = await backend.TermList();
+            // Windows 终端报的 cwd 是反斜杠：统一转正斜杠再比前缀
+            const norm = (p) => String(p || '').toLowerCase().replace(/[\\/]+/g, '/').replace(/\/+$/, '');
+            const root = norm(wt.path);
+            if (!root) return [];
+            return (list || []).filter((t) => {
+                if (!t || t.exited || !t.cwd) return false;
+                const cwd = norm(t.cwd);
+                return cwd === root || cwd.startsWith(root + '/');
+            });
+        } catch (e) {
+            return []; // 查不到就不拦（尽力而为；删除仍受 git 层保护）
+        }
+    }
+
+    // 实际删除（无二次确认）：清登记、持久化、刷新胶囊/开关。调用方负责弹窗确认。
+    // 运行中/并发保护放在这里（胶囊信息卡的【丢弃】也走本函数，不能只靠 pill 的 toggle 守卫）。
+    async function removeWorktreeNow(session, wt) {
+        if (isRunning(session.id)) {
+            flash('当前轮次运行中：结束或停止后再丢弃隔离区', true);
+            return false;
+        }
+        if (worktreeBusy.has(session.id)) {
+            flash('隔离区操作正在进行中，请稍候', true);
+            return false;
+        }
+        const occupying = await terminalsInWorktree(wt);
+        if (occupying.length) {
+            flash('有 ' + occupying.length + ' 个终端在这个隔离区中运行：请先关闭后再丢弃', true);
+            return false;
+        }
+        worktreeBusy.add(session.id);
+        try {
+            await backend.GitWorktreeRemove(getScopeRoot(), wt.name, true);
+        } catch (e) {
+            flash('丢弃失败：' + ((e && e.message) || e), true);
+            return false;
+        } finally {
+            worktreeBusy.delete(session.id);
+        }
+        if (session.worktree && session.worktree.name === wt.name) {
+            session.worktree = null;
+            persistSessions();
+        }
+        syncChip(currentSession() === session ? session : null);
+        flash('已丢弃隔离工作区 ' + wt.name);
+        // 写进会话历史：丢弃也是隔离区生命周期的一部分，重启后对话里可查
+        recordToolEvent(session, {action: 'discard', name: wt.name},
+            '已丢弃隔离工作区 ' + worktreeRelPath(wt.name) + '（含分支 ' + (wt.branch || '隔离分支') + '）。');
+        return true;
+    }
+
+    // 丢弃确认（输入区「隔离」pill 取消勾选时用；返回是否真的丢弃）
+    async function discardForSession(session) {
+        const wt = normalizeWorktreeState(session && session.worktree);
+        if (!wt) return false;
         const statPromise = backend.GitWorktreeStat
             ? backend.GitWorktreeStat(getScopeRoot(), wt.name, wt.baseSha).catch(() => '')
             : Promise.resolve('');
-        statPromise.then((stat) => {
-            statText = stat;
-        });
-        confirmDialog({
-            title: '隔离工作区',
+        const confirmed = await confirmDialog({
+            title: '丢弃隔离工作区',
             messagePromise: statPromise.then((stat) => '本会话的改动落在 ' + worktreeRelPath(wt.name) + '/（分支 ' + (wt.branch || '隔离分支') + '）。\n'
                 + (stat ? '改动统计：\n' + stat + '\n\n' : '')
                 + '让 AI 执行 worktree_manage(action=export) 生成补丁审阅回灌；丢弃将删除 worktree 与分支，未导出的改动会丢失。'),
             confirmLabel: '丢弃隔离区',
             danger: true,
-        }).then(async (ok) => {
-            if (!ok) return;
-            const root = getScopeRoot();
-            try {
-                await backend.GitWorktreeRemove(root, wt.name, true);
-            } catch (e) {
-                flash('丢弃失败：' + ((e && e.message) || e), true);
-                return;
-            }
-            const target = currentSession();
-            if (target && target.worktree && target.worktree.name === wt.name) {
-                target.worktree = null;
-                persistSessions();
-                syncChip(target);
-            }
-            flash('已丢弃隔离工作区 ' + wt.name);
         });
+        logPermission('worktree', worktreeRelPath(wt.name), confirmed ? 'approved' : 'denied', 'confirm', '');
+        if (!confirmed) return false;
+        // 运行中允许查看信息，但丢弃要等轮次结束（写效应正在产生，与输入区开关守卫一致）
+        if (isRunning(session.id)) {
+            flash('当前轮次运行中：结束或停止后再丢弃隔离区');
+            return false;
+        }
+        return removeWorktreeNow(session, wt);
+    }
+
+    // 头部胶囊 / 权限菜单「隔离工作区」行：查看信息（路径 / 分支 / 改动统计 / 回灌指引），
+    // 底部两个显式按钮【关闭】【丢弃隔离区】——点击本身不再直接进入丢弃流程。
+    async function openChipDialog() {
+        const session = currentSession();
+        const wt = normalizeWorktreeState(session && session.worktree);
+        if (!wt) return false;
+        const statPromise = backend.GitWorktreeStat
+            ? backend.GitWorktreeStat(getScopeRoot(), wt.name, wt.baseSha).catch(() => '')
+            : Promise.resolve('');
+        const confirmed = await confirmDialog({
+            title: '隔离工作区 ' + wt.name,
+            cancelLabel: '关闭',
+            messagePromise: statPromise.then((stat) => '路径：' + worktreeRelPath(wt.name) + '/（分支 ' + (wt.branch || '隔离分支') + '）\n'
+                + (stat ? '改动统计：\n' + stat + '\n\n' : '（暂无改动）\n\n')
+                + '回灌：让 AI 执行 worktree_manage(action=export)，在审批卡里逐文件审阅后应用。\n'
+                + '丢弃将删除 worktree 与分支，未导出的改动会丢失。'),
+            confirmLabel: '丢弃隔离区',
+            danger: true,
+        });
+        logPermission('worktree', worktreeRelPath(wt.name), confirmed ? 'approved' : 'denied', 'confirm', '');
+        if (!confirmed) return false;
+        return removeWorktreeNow(session, wt);
+    }
+
+    // 会话级开关（输入区「隔离」pill 与权限菜单「隔离工作区」行共用）：勾上=创建（确认卡），
+    // 取消=确认丢弃；轮次运行中不许切换（写效应正在产生）。
+    async function toggleForSession(session) {
+        if (!session) return;
+        if (isRunning(session.id)) {
+            flash('当前轮次运行中：结束或停止后再切换隔离区');
+            syncChip(session);
+            return;
+        }
+        const wt = normalizeWorktreeState(session.worktree);
+        if (!wt) await createForSession(session, '');
+        else await discardForSession(session);
+        syncChip(currentSession() === session ? session : null);
+    }
+
+    function onToggleClick() {
+        return toggleForSession(currentSession());
     }
 
     function mountChip() {
-        if (!chip) return;
-        chip.addEventListener('click', openChipDialog);
+        if (chip) chip.addEventListener('click', openChipDialog);
+        if (toggle) toggle.addEventListener('click', onToggleClick);
     }
 
     // 启动 reconcile：清 git 侧失效 worktree 记录（不动现存目录）。尽力而为。
@@ -286,27 +457,42 @@ export function createAIWorktree(deps) {
             return deny('WORKTREE_EXISTS', '本会话已有隔离工作区 ' + worktreeRelPath(wt.name)
                 + '（一会话一个）', '先 export 回灌或 discard 丢弃后再创建新的');
         }
-        const label = aiTextOf(input && input.label).trim().slice(0, 80);
-        // 确认卡：创建 = 大量写盘 + 建分支。full 档免（写 .cadt/worktree 在档位契约内），其余确认。
-        const scope = currentScopeOf(session);
-        let confirmed = true;
-        if (scope !== 'full') {
-            confirmed = await confirmDialog({
-                title: '创建隔离工作区',
-                message: 'AI 请求创建隔离 git worktree：改动将落在 ' + WORKTREE_REL_DIR + '/<slug>/（新分支 cadt/wt/<slug>），'
-                    + '不影响主根；产物经补丁审批卡回灌。',
-                confirmLabel: '创建',
-                danger: false,
-            });
-            logPermission('worktree', WORKTREE_REL_DIR, confirmed ? 'approved' : 'denied', 'confirm', '');
-            if (!confirmed) return '用户取消了隔离工作区创建。如仍有需要，请说明用途后再次请求。';
+        if (worktreeBusy.has(session.id)) {
+            return deny('WORKTREE_BUSY', '本会话已有隔离区创建/删除在进行中', '等它完成后再试，避免建出两个隔离区');
         }
-        if (toolHalted(toolMessage)) return '用户已停止生成，创建已取消。';
+        const label = aiTextOf(input && input.label).trim().slice(0, 80);
+        // carry=true：把主根当前未提交改动带入隔离区（binary patch + 未跟踪拷贝，
+        // 打快照 commit 推进 baseSha——export 只含 AI 的草稿改动）
+        const carry = input && input.carry === true;
+        // 审批卡（接管 composer）：AI 主动创建 = 写盘 + 建分支 + 改变会话工作方式。
+        // 全档必弹（含完全权限）——这是会话级状态变更，不是逐写风险判定；用户手点的「隔离」
+        // 开关仍走居中确认弹窗（用户自己发起的动作）。
+        const decision = await requestWorktreeApproval(session, toolMessage, {action: 'create', label, carry});
+        if (!decision.approved) {
+            return decision.cancelled
+                ? '用户已停止生成，隔离工作区未创建。'
+                : '用户取消了隔离工作区创建。如仍有需要，请说明用途后再次请求。';
+        }
+        // 审批等待期间用户可能已从 /worktree 或权限菜单建了一个：复查，避免第二个覆盖登记
+        const raced = normalizeWorktreeState(session.worktree);
+        if (raced) {
+            return deny('WORKTREE_EXISTS', '审批期间本会话已创建隔离工作区 ' + worktreeRelPath(raced.name),
+                '直接使用现有隔离区，不要重复创建');
+        }
+        if (toolHalted(toolMessage)) {
+            settleWorktreeApproval(session, toolMessage, 'cancelled', '用户已停止生成');
+            return '用户已停止生成，创建已取消。';
+        }
+        worktreeBusy.add(session.id);
         let added;
         try {
-            added = await backend.GitWorktreeAdd(root, label, session.id || '');
+            added = await backend.GitWorktreeAdd(root, label, session.id || '', carry);
         } catch (e) {
-            return deny('WORKTREE_ADD', '创建失败', String((e && e.message) || e));
+            const msg = String((e && e.message) || e);
+            settleWorktreeApproval(session, toolMessage, 'failed', msg);
+            return deny('WORKTREE_ADD', '创建失败', msg);
+        } finally {
+            worktreeBusy.delete(session.id);
         }
         session.worktree = normalizeWorktreeState({
             name: added.name,
@@ -316,22 +502,115 @@ export function createAIWorktree(deps) {
             createdAt: Date.now(),
         });
         persistSessions();
-        syncChip(session);
+        syncChip(currentSession() === session ? session : null);
         flash('已创建隔离工作区 ' + added.name);
-        const depsNote = Array.isArray(added.deps) && added.deps.length
-            ? '- 已 junction 共享主根依赖：' + added.deps.join('、') + '（npm / pip 可直接使用；写入的就是主根依赖目录）。\n'
-            : '';
-        const depErrNote = Array.isArray(added.depErrors) && added.depErrors.length
-            ? '- 依赖共享失败项：' + added.depErrors.join('；') + '（不阻塞，可手动处理）。\n'
-            : '';
         return [
             '已创建隔离工作区：' + worktreeRelPath(added.name) + '/（分支 ' + added.branch + '，基准 ' + added.baseSha.slice(0, 10) + '）。',
             '从现在起：',
             '- 所有文件改动写到 ' + worktreeRelPath(added.name) + '/…（相对范围根），不要改主根同名文件。',
-            '- run_command 的 cwd 传 ' + worktreeRelPath(added.name) + '；git 命令会作用于该 worktree 的分支。',
-            depsNote + depErrNote +
+            '- run_command / background_command 未显式传 cwd 时默认就在 ' + worktreeRelPath(added.name) + ' 里执行；要看主根用 cwd=\'.\'。',
+            depsNoteOf(added),
             '- 完成后调 worktree_manage(action=export) 生成补丁交用户审阅回灌；不要 commit 到隔离分支。',
-        ].join('\n');
+        ].filter(Boolean).join('\n');
+    }
+
+    // 依赖共享 / .worktreeinclude / carry 的结果说明（manageCreate 的工具结果用）
+    function depsNoteOf(added) {
+        const lines = [];
+        if (Array.isArray(added.deps) && added.deps.length) {
+            lines.push('- 已 junction 共享主根依赖：' + added.deps.join('、') + '（npm / pip 可直接使用；写入的就是主根依赖目录）。');
+        }
+        if (Array.isArray(added.depErrors) && added.depErrors.length) {
+            lines.push('- 依赖共享失败项：' + added.depErrors.join('；') + '（不阻塞；需要依赖时在隔离区里自行安装，不要手动 mklink 借主根目录）。');
+        }
+        if (added.includeCopied > 0) {
+            lines.push('- 已按 .worktreeinclude 从主根拷贝 ' + added.includeCopied + ' 个被忽略文件（.env 等）。');
+        }
+        if (Array.isArray(added.includeErrors) && added.includeErrors.length) {
+            lines.push('- .worktreeinclude 拷贝失败项：' + added.includeErrors.join('；') + '（不阻塞；用户可能需要手动补）。');
+        }
+        if (added.carried > 0) {
+            lines.push('- 已从主根带入 ' + added.carried + ' 个未提交改动（含暂存划分与未跟踪文件），并打成快照 commit 作为基准——export 的 diff 只含你的草稿改动。');
+        }
+        return lines.join('\n');
+    }
+
+    // 面板直连创建（/worktree 斜杠命令）：不依赖模型回合与 toolMessage，
+    // 确认卡走当前档位（full 免），创建后胶囊同步；并把「已创建隔离区」写进会话历史。
+    // opts.carry=true 时同时带入主根未提交改动。返回 {name, branch, path, baseSha} 或 null。
+    async function createForSession(session, label, opts) {
+        const missing = requireWriteSession(session);
+        if (missing) {
+            flash(missing, true);
+            return null;
+        }
+        // 运行中一律不许切换（写效应正在产生）：此前的守卫只挂在输入区 pill 上，
+        // /worktree 与权限菜单直连这里会绕过（2026-11-17 复查）。
+        if (isRunning(session.id)) {
+            flash('当前轮次运行中：结束或停止后再切换隔离区', true);
+            return null;
+        }
+        if (worktreeBusy.has(session.id)) {
+            flash('隔离区操作正在进行中，请稍候', true);
+            return null;
+        }
+        // 只读档没有写工具，建了也没法用：先提示切档
+        if (currentScopeOf(session) === 'read') {
+            flash('只读访问档不能隔离开发：先把权限切到「每次询问」及以上', true);
+            return null;
+        }
+        if (session.worktree && normalizeWorktreeState(session.worktree)) {
+            flash('本会话已有隔离工作区：' + worktreeRelPath(session.worktree.name));
+            return null;
+        }
+        const scope = currentScopeOf(session);
+        let confirmed = true;
+        if (scope !== 'full') {
+            confirmed = await confirmDialog({
+                title: '创建隔离工作区',
+                message: '在当前工作区建一个隔离 git worktree：之后的改动落在 ' + WORKTREE_REL_DIR + '/<slug>/（新分支 cadt/wt/<slug>），'
+                    + '不影响主根；完成后经补丁审批卡审阅回灌。',
+                confirmLabel: '创建',
+                danger: false,
+            });
+            logPermission('worktree', WORKTREE_REL_DIR, confirmed ? 'approved' : 'denied', 'confirm', '');
+        }
+        if (!confirmed) return null;
+        // 确认/审批等待期间可能已建好（另一入口）：复查防重复
+        if (normalizeWorktreeState(session.worktree)) {
+            flash('本会话已有隔离工作区：' + worktreeRelPath(session.worktree.name));
+            return null;
+        }
+        worktreeBusy.add(session.id);
+        const carry = !!(opts && opts.carry);
+        let added;
+        try {
+            added = await backend.GitWorktreeAdd(getScopeRoot(), aiTextOf(label).trim().slice(0, 80), session.id || '', carry);
+        } catch (e) {
+            flash('创建隔离工作区失败：' + ((e && e.message) || e), true);
+            return null;
+        } finally {
+            worktreeBusy.delete(session.id);
+        }
+        session.worktree = normalizeWorktreeState({
+            name: added.name,
+            branch: added.branch,
+            path: added.path,
+            baseSha: added.baseSha,
+            createdAt: Date.now(),
+        });
+        persistSessions();
+        syncChip(currentSession() === session ? session : null);
+        flash('已创建隔离工作区 ' + added.name);
+        // 会话历史留痕（对齐 ZCode 的「已创建 worktree」timeline part）：重启后可查来龙去脉
+        const summaryLines = [
+            '已创建隔离工作区：' + worktreeRelPath(added.name) + '/（分支 ' + added.branch + '，基准 ' + String(added.baseSha || '').slice(0, 10) + '）。',
+            '改动只落在隔离区，主根零改动；完成后 AI 经 worktree_manage(action=export) 生成补丁审阅回灌。',
+        ];
+        if (carry && added.carried > 0) summaryLines.push('已带入主根未提交改动 ' + added.carried + ' 个文件（快照 commit 作为基准）。');
+        if (added.includeCopied > 0) summaryLines.push('已按 .worktreeinclude 拷贝 ' + added.includeCopied + ' 个被忽略文件。');
+        recordToolEvent(session, {action: 'create', label: aiTextOf(label).trim().slice(0, 80), carry}, summaryLines.join('\n'));
+        return added;
     }
 
     // 单个 worktree 的未提交改动统计尾行（尽力而为，失败返回空串）
@@ -417,6 +696,12 @@ export function createAIWorktree(deps) {
                 '请把批量改动拆成多轮，每轮 export 后 discard 再开新的隔离区');
         }
         if (toolHalted(toolMessage)) return '用户已停止生成，导出已取消。';
+        // dev mock 只实现了 GitWorktree*，没有补丁后端：给明确原因，别让 TypeError 被
+        // 下面的 catch 误报成「补丁无法解析」。
+        if (typeof backend.PatchSave !== 'function' || typeof backend.PatchApply !== 'function') {
+            return deny('WORKTREE_NO_PATCH', '当前环境缺少补丁后端（dev mock 不支持回灌）',
+                '请在完整应用里验证 export；这里只能 create/stat/discard。');
+        }
         let preview;
         try {
             preview = await backend.PatchSave(root, 'worktree 回灌：' + wt.name, diffText);
@@ -437,7 +722,10 @@ export function createAIWorktree(deps) {
                 ? deny('WORKTREE_DENIED', '用户停止了生成，补丁未应用', '补丁文件已保留：' + (preview.patchPath || ''))
                 : deny('WORKTREE_DENIED', '用户放弃了本次回灌，主根未修改', '补丁文件已保留：' + (preview.patchPath || ''));
         }
-        if (toolHalted(toolMessage)) return deny('WORKTREE_DENIED', '用户停止了生成，补丁未应用', '补丁文件已保留：' + (preview.patchPath || ''));
+        if (toolHalted(toolMessage)) {
+            settleWorktreeApproval(session, toolMessage, 'cancelled', '用户已停止生成');
+            return deny('WORKTREE_DENIED', '用户停止了生成，补丁未应用', '补丁文件已保留：' + (preview.patchPath || ''));
+        }
         const approvalRef = toolMessage.approval || {};
         const mode = approvalRef.mode === 'atomic' ? 'atomic' : 'partial';
         const selected = Array.isArray(approvalRef.selected) && approvalRef.selected.length
@@ -450,7 +738,12 @@ export function createAIWorktree(deps) {
         try {
             result = await backend.PatchApply(approvalRef.planId, selected, null, mode);
         } catch (e) {
-            return deny('PATCH_APPLY_IO', '回灌写入失败', String((e && e.message) || e));
+            const msg = String((e && e.message) || e);
+            // 补丁卡读 approval.result 判断「正在应用」还是结果；异常不落 failed 会永久转圈
+            toolMessage.approval = toolMessage.approval || {};
+            toolMessage.approval.result = {applied: 0, skipped: 0, files: [], message: msg};
+            settleWorktreeApproval(session, toolMessage, 'failed', msg);
+            return deny('PATCH_APPLY_IO', '回灌写入失败', msg);
         }
         if (toolMessage.approval) {
             toolMessage.approval.result = result;
@@ -482,31 +775,55 @@ export function createAIWorktree(deps) {
             return deny('WORKTREE_NONE', '本会话没有隔离工作区');
         }
         const wt = target.wt;
-        // 销毁性动作全档确认（含 full），对齐 git-worktree-force 危险语义
-        const confirmed = await confirmDialog({
-            title: '丢弃隔离工作区',
-            message: '删除 ' + worktreeRelPath(wt.name) + '/ 与分支 ' + (wt.branch || '隔离分支') + '？未导出的改动会丢失。',
-            confirmLabel: '丢弃',
-            danger: true,
+        if (worktreeBusy.has(session.id)) {
+            return deny('WORKTREE_BUSY', '本会话已有隔离区创建/删除在进行中', '等它完成后再试');
+        }
+        // 终端占用（对齐 ZCode §3.11）：初始 cwd 在隔离区内的活终端会随删除一起被杀
+        const occupying = await terminalsInWorktree(wt);
+        if (occupying.length) {
+            return deny('WORKTREE_TERMINAL', '有 ' + occupying.length + ' 个终端在这个隔离区中运行',
+                '请让用户先关闭这些终端（或等它们退出）后再 discard');
+        }
+        // 销毁性动作：接管 composer 的审批卡（全档必弹，含完全权限），卡片里附改动统计
+        const stat = backend.GitWorktreeStat
+            ? await backend.GitWorktreeStat(getScopeRoot(), wt.name, wt.baseSha).catch(() => '')
+            : '';
+        const decision = await requestWorktreeApproval(session, toolMessage, {
+            action: 'discard',
+            name: wt.name,
+            relPath: worktreeRelPath(wt.name),
+            branch: wt.branch || '',
+            stat: String(stat || ''),
         });
-        logPermission('worktree', worktreeRelPath(wt.name), confirmed ? 'approved' : 'denied', 'confirm', '');
-        if (!confirmed) return '用户保留了隔离工作区 ' + wt.name + '。';
-        if (toolHalted(toolMessage)) return '用户已停止生成，丢弃已取消。';
+        if (!decision.approved) {
+            return decision.cancelled
+                ? '用户已停止生成，隔离工作区保留。'
+                : '用户保留了隔离工作区 ' + wt.name + '。';
+        }
+        if (toolHalted(toolMessage)) {
+            settleWorktreeApproval(session, toolMessage, 'cancelled', '用户已停止生成');
+            return '用户已停止生成，丢弃已取消。';
+        }
         const root = getScopeRoot();
+        worktreeBusy.add(session.id);
         try {
             await backend.GitWorktreeRemove(root, wt.name, true);
         } catch (e) {
-            return deny('WORKTREE_REMOVE', '删除失败', String((e && e.message) || e));
+            const msg = String((e && e.message) || e);
+            settleWorktreeApproval(session, toolMessage, 'failed', msg);
+            return deny('WORKTREE_REMOVE', '删除失败', msg);
+        } finally {
+            worktreeBusy.delete(session.id);
         }
         if (target.own) {
             // 只清本会话自己的登记；丢的是子代理隔离区时不动 session.worktree
             session.worktree = null;
             persistSessions();
-            syncChip(session);
+            syncChip(currentSession() === session ? session : null);
         }
         flash('已丢弃隔离工作区 ' + wt.name);
         return '已丢弃隔离工作区 ' + worktreeRelPath(wt.name) + '（含分支）。主根不受影响；需要时重新 create。';
     }
 
-    return {manageTool, mountChip, syncChip, pruneStartup, blockFor, openChipDialog};
+    return {manageTool, mountChip, syncChip, pruneStartup, blockFor, openChipDialog, createForSession, toggleForSession};
 }

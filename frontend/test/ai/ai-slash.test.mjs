@@ -1,0 +1,48 @@
+// ai-slash 测试：斜杠补全的过滤分组与技能带参调用解析（纯函数，无 DOM）。
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {AI_COMMANDS} from '../../src/ai/ai-constants.js';
+import {
+    extractSlashArgs,
+    filterSlashCommands,
+    filterSlashSkills,
+} from '../../src/ai/ai-slash.js';
+
+const SKILLS = [
+    {name: 'app-error-log', source: 'workspace-agents', description: '查询生产库错误记录'},
+    {name: 'app-local-log', source: 'user-agents', description: '查询本地行为日志包'},
+    {name: 'cadt-datalens', source: 'builtin', description: '打开本地数据文件'},
+];
+
+test('filterSlashCommands：按前缀过滤固定指令，大小写不敏感', () => {
+    assert.deepEqual(filterSlashCommands(AI_COMMANDS, 'co').map((c) => c.name), ['/context', '/compact']);
+    assert.deepEqual(filterSlashCommands(AI_COMMANDS, 'CLEAR').map((c) => c.name), ['/clear']);
+    assert.equal(filterSlashCommands(AI_COMMANDS, 'zzz').length, 0);
+    assert.equal(filterSlashCommands(AI_COMMANDS, '').length, AI_COMMANDS.length, '空查询 = 全部指令');
+});
+
+test('filterSlashSkills：技能名 includes 匹配（/err 命中 app-error-log），大小写不敏感', () => {
+    assert.deepEqual(filterSlashSkills(SKILLS, 'err').map((s) => s.name), ['app-error-log']);
+    assert.deepEqual(filterSlashSkills(SKILLS, 'APP').map((s) => s.name), ['app-error-log', 'app-local-log']);
+    assert.deepEqual(filterSlashSkills(SKILLS, 'cadt').map((s) => s.name), ['cadt-datalens']);
+    assert.equal(filterSlashSkills(SKILLS, 'zzz').length, 0);
+});
+
+test('extractSlashArgs：提取 /技能名 之后的参数，大小写不敏感', () => {
+    assert.equal(extractSlashArgs('/app-error-log 123', 'app-error-log'), '123');
+    assert.equal(extractSlashArgs('/APP-ERROR-LOG 123 多个词', 'app-error-log'), '123 多个词');
+    assert.equal(extractSlashArgs('/app-error-log', 'app-error-log'), '', '无参数');
+    assert.equal(extractSlashArgs('/app-error-log   ', 'app-error-log'), '', '纯空白当无参数');
+    assert.equal(extractSlashArgs('/app 123', 'app-error-log'), '', '首 token 不是完整技能名 → 无参数');
+    assert.equal(extractSlashArgs('/compact 保住补丁库', 'app-error-log'), '', '别的命令文本');
+    assert.equal(extractSlashArgs('', 'app-error-log'), '');
+});
+
+test('extractSlashArgs + filterSlashSkills 组合：带参技能调用的完整解析链', () => {
+    const typed = '/app-local-log --list';
+    const firstToken = typed.trim().split(/\s+/)[0];
+    const hit = filterSlashSkills(SKILLS, firstToken.slice(1).toLowerCase());
+    assert.deepEqual(hit.map((s) => s.name), ['app-local-log']);
+    const skill = hit[0];
+    assert.equal(extractSlashArgs(typed, skill.name), '--list');
+});

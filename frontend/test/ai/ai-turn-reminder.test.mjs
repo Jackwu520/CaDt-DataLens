@@ -1,7 +1,12 @@
 // ai-turn-reminder 纯函数测试：包装 / 拆出严格形状 / 内容里闭合标签的中和。
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+import {join, dirname} from 'node:path';
+import {fileURLToPath} from 'node:url';
 import {wrapTurnReminder, splitTurnReminderPrefix, neutralizeTurnReminderText} from '../../src/ai/ai-turn-reminder.js';
+
+const SRC = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'src');
 
 test('wrapTurnReminder：空内容不生成包装，非空包一层 <system-reminder>', () => {
     assert.equal(wrapTurnReminder(''), '');
@@ -40,6 +45,25 @@ test('splitTurnReminderPrefix：严格形状——用户手写的同名标签不
         assert.equal(parsed.reminder, '', '不应匹配：' + content.slice(0, 30));
         assert.equal(parsed.body, content);
     }
+});
+
+test('splitTurnReminderPrefix：轮末清单催促（task_todos_check）属于已知宿主子块', () => {
+    // 催促块以宿主环境块形态注入（不是裸 user 文本），拆块后正文为空
+    const inner = '<task_todos_check>任务清单现状：共 2 项，1 项已完成、1 项进行中。</task_todos_check>';
+    const parsed = splitTurnReminderPrefix(wrapTurnReminder(inner));
+    assert.ok(parsed.reminder.startsWith('<system-reminder>\n<task_todos_check>'));
+    assert.equal(parsed.body, '');
+});
+
+test('ai-panel：轮末催促必须包成 <system-reminder> 宿主块，不许裸 user 文本', () => {
+    // 2026-11-17 实证：裸 <task_todos_check> 会被弱模型当成「用户刚说的话」并据此反问。
+    // 回归护栏：注入内容必须走 wrapTurnReminder，角色仍是 user + systemNote + dedupeKey。
+    const panelSrc = readFileSync(join(SRC, 'ai', 'ai-panel.js'), 'utf8');
+    const block = panelSrc.match(/session\.messages\.push\(\{\s*role: 'user',\s*content: wrapTurnReminder\(checkText\),[\s\S]*?dedupeKey: 'task_todos_check'[\s\S]*?\}\);/);
+    assert.ok(block, '找到轮末催促注入块');
+    assert.match(block[0], /systemNote: true/);
+    // 节流比较必须先拆块取正文，否则包装后的内容与裸文案永远不相等
+    assert.match(panelSrc, /lastCheckText = splitTurnReminderPrefix\(String\(session\.messages\[i\]\.content \|\| ''\)\)\.body/);
 });
 
 test('neutralizeTurnReminderText：大小写与空格变体同样中和', () => {

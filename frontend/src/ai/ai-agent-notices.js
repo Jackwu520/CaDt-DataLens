@@ -88,6 +88,9 @@ export function createAIAgentNotices(ctx) {
     const getPendingEdit = ctx.getPendingEdit || (() => null);
     const getSessions = ctx.getSessions || (() => []);
     const workspaceKeyOf = ctx.workspaceKeyOf || (() => '');
+    // 等待原语（ai-inbox-wait.js）：入队即唤醒正在 wait_agent 的调用方。
+    // 只表示「有新东西排队」，不在这里注入——注入仍在轮边界（foldNotices / wakeWith）。
+    const inboxWaiters = ctx.inboxWaiters;
 
     // sessionId -> notice[]（入队顺序即消费顺序；urgent 插队首，见 §4.12.2）
     const notices = new Map();
@@ -124,6 +127,11 @@ export function createAIAgentNotices(ctx) {
         if (urgent) list.unshift(notice);
         else list.push(notice);
         return list.length;
+    }
+
+    // 唤醒正在这一会话上 wait_agent 的调用方（它多半就是在等这条）。
+    function notifyWaiters(sessionId) {
+        if (inboxWaiters && typeof inboxWaiters.notify === 'function') inboxWaiters.notify(sessionId);
     }
 
     // 把通知折叠成会话里的 user 消息（工具轮边界用：此刻流还在跑，不能起新轮）。
@@ -215,10 +223,13 @@ export function createAIAgentNotices(ctx) {
             } else {
                 enqueue(session.id, item, false);
             }
+            notifyWaiters(session.id);
             renderSessionList();
             return {ok: true, reason: 'merged', messageId: item.messageId, woke: false};
         }
         enqueue(session.id, item, !!notice.urgent);
+        // 入队即唤醒 wait_agent：内容仍在下面的轮边界注入，这里只让等待方别再睡。
+        notifyWaiters(session.id);
         // 目标忙 → 排队等下一边界；目标空闲 → 立刻唤醒（单飞，冲突则留在队列里）。
         if (streamOf(session.id) || compactOf(session.id)) {
             renderSessionList();

@@ -18,7 +18,8 @@ import {
 } from './ai-constants.js';
 import {
     CONTEXT_WINDOW_MAX, CONTEXT_WINDOW_MIN, OUTPUT_WINDOW_MAX, OUTPUT_WINDOW_MIN,
-    configForModel, formatTokenAmount, modelEntryOf, modelRefLabel, resolveModelRef, windowValue,
+    configForModel, formatTokenAmount, modelEntryOf, modelRefLabel, resolveModelRef, resolveModelRefTarget,
+    subAgentModelChoicesFrom, windowValue,
 } from './ai-config-model.js';
 import {
     PERMISSION_VERSION, countPermissionRules, emptyPermissionRules, formatRuleLines,
@@ -335,6 +336,46 @@ export function createAISettingsDialog(ctx) {
         modelMod.renderModelEntries();
     }
 
+    // 子代理模型下拉：跟随当前模型（默认）+ 所有账号下的模型条目；自选模型的三个候选
+    // 共用同一份条目，只是首项是「（不使用）」。refreshChatSettings 打开设置时就会跑，
+    // 用签名比对避免重建下拉打断交互。
+    function renderSubAgentModelOptions() {
+        const profiles = getConfig().profiles || [];
+        const signature = profiles.map((account) =>
+            account.id + ':' + (account.models || []).map((entry) =>
+                entry.id + ':' + (modelRefLabel(account, entry) || '')).join(',')).join('|');
+        const fill = (select, followLabel) => {
+            if (!select) return;
+            if (select.dataset.optionsSig === signature) return;
+            select.dataset.optionsSig = signature;
+            select.innerHTML = '';
+            const follow = document.createElement('option');
+            follow.value = '';
+            follow.textContent = followLabel;
+            select.appendChild(follow);
+            for (const account of profiles) {
+                for (const entry of (account.models || [])) {
+                    const option = document.createElement('option');
+                    option.value = account.id + '|' + entry.id;
+                    option.textContent = modelRefLabel(account, entry) || (account.id + '|' + entry.id);
+                    select.appendChild(option);
+                }
+            }
+        };
+        if (opt.subAgentModel) {
+            fill(opt.subAgentModel, '跟随当前模型（默认）');
+            const wanted = resolveModelRef(getConfig().subAgentModel, profiles);
+            if (opt.subAgentModel.value !== wanted) opt.subAgentModel.value = wanted;
+        }
+        const choices = subAgentModelChoicesFrom(getConfig().subAgentModelChoices, profiles);
+        [opt.subAgentChoice1, opt.subAgentChoice2, opt.subAgentChoice3].forEach((select, index) => {
+            if (!select) return;
+            fill(select, '（不使用）');
+            const wanted = choices[index] ? choices[index].ref : '';
+            if (select.value !== wanted) select.value = wanted;
+        });
+    }
+
     function refreshChatSettings() {
         if (opt.displayMode) opt.displayMode.value = settings.aiFloatMode === 'fullscreen' ? 'fullscreen' : 'dock';
         if (opt.sendKey) opt.sendKey.value = settings.aiSendKey === 'ctrl-enter' ? 'ctrl-enter' : 'enter';
@@ -375,6 +416,8 @@ export function createAISettingsDialog(ctx) {
         if (opt.retryMax) opt.retryMax.value = String(getConfig().retryMax);
         if (opt.subAgentMax) opt.subAgentMax.value = String(getConfig().subAgentMax);
         if (opt.subAgentMaxDepth) opt.subAgentMaxDepth.value = String(getConfig().subAgentMaxDepth);
+        if (opt.subAgentRounds) opt.subAgentRounds.value = String(aiClampInt(getConfig().subAgentRounds, 3, 200, 50));
+        renderSubAgentModelOptions();
         if (opt.skillIndexMax) opt.skillIndexMax.value = String(aiClampInt(getConfig().skillIndexMaxUser, 1, 100, 100));
         if (opt.notifyError) opt.notifyError.checked = getConfig().notifyError !== false;
         if (opt.notifyAsk) opt.notifyAsk.checked = getConfig().notifyAsk !== false;
@@ -382,6 +425,7 @@ export function createAISettingsDialog(ctx) {
         if (opt.notifySound) opt.notifySound.checked = getConfig().notifySound !== false;
         if (opt.askTimeout) opt.askTimeout.value = String(aiClampInt(getConfig().askTimeout, 0, 3600, 300));
         if (opt.askTimeoutAction) opt.askTimeoutAction.value = getConfig().askTimeoutAction || 'recommended';
+        if (opt.idleTimeout) opt.idleTimeout.value = String(aiClampInt(getConfig().idleTimeoutSec, 30, 3600, 120));
         if (opt.logPath) {
             opt.logPath.textContent = '统计中…';
             getAILogRoot().then((dir) => {
@@ -825,16 +869,51 @@ export function createAISettingsDialog(ctx) {
             getConfig().subAgentMax = aiClampInt(opt.subAgentMax.value, 1, 20, 20);
             opt.subAgentMax.value = String(getConfig().subAgentMax);
             saveAIConfig();
-            setSettingsStatus('子代理总数上限：' + getConfig().subAgentMax + '（含递归层级，不含主代理）', 'ok');
+            setSettingsStatus('子代理并发上限：' + getConfig().subAgentMax + '（同时运行中，含各层级，不含主代理）', 'ok');
         });
         if (opt.subAgentMaxDepth) opt.subAgentMaxDepth.addEventListener('change', () => {
             getConfig().subAgentMaxDepth = aiClampInt(opt.subAgentMaxDepth.value, 0, 20, 0);
             opt.subAgentMaxDepth.value = String(getConfig().subAgentMaxDepth);
             saveAIConfig();
             setSettingsStatus(getConfig().subAgentMaxDepth > 0
-                ? '子代理递归层级：最多 ' + getConfig().subAgentMaxDepth + ' 层'
-                : '子代理递归层级：不设限', 'ok');
+                ? '子代理层级上限：最多 ' + getConfig().subAgentMaxDepth + ' 层（含主代理）'
+                : '子代理层级上限：不设限', 'ok');
         });
+        if (opt.subAgentRounds) opt.subAgentRounds.addEventListener('change', () => {
+            getConfig().subAgentRounds = aiClampInt(opt.subAgentRounds.value, 3, 200, 50);
+            opt.subAgentRounds.value = String(getConfig().subAgentRounds);
+            saveAIConfig();
+            setSettingsStatus('子代理默认轮次：' + getConfig().subAgentRounds + ' 轮' +
+                '（spawn_agent 未指定 maxRounds 时使用）', 'ok');
+        });
+        if (opt.subAgentModel) opt.subAgentModel.addEventListener('change', () => {
+            const wanted = resolveModelRef(opt.subAgentModel.value, getConfig().profiles);
+            opt.subAgentModel.value = wanted;
+            getConfig().subAgentModel = wanted;
+            saveAIConfig();
+            const target = resolveModelRefTarget(wanted, getConfig().profiles);
+            const label = target ? (modelRefLabel(target.account, target.entry) || wanted) : '当前模型';
+            setSettingsStatus('子代理模型：' + label, 'ok');
+        });
+        // 自选模型候选（最多 3 个）：勾了就允许主代理在 spawn_agent 里点名，全空 = 关闭。
+        // 去重后重画——两个下拉选同一条时后一个会被清空，不能留下「看起来选中但没生效」。
+        const subAgentChoiceChanged = () => {
+            const picked = [];
+            for (const select of [opt.subAgentChoice1, opt.subAgentChoice2, opt.subAgentChoice3]) {
+                if (!select) continue;
+                const ref = resolveModelRef(select.value, getConfig().profiles);
+                if (ref && !picked.includes(ref)) picked.push(ref);
+            }
+            getConfig().subAgentModelChoices = picked.slice(0, 3);
+            saveAIConfig();
+            renderSubAgentModelOptions();
+            setSettingsStatus(picked.length
+                ? '子代理自选模型：' + picked.length + ' 个候选（主代理可在 spawn_agent 里点名）'
+                : '子代理自选模型：关闭（请求里不带 model 参数）', 'ok');
+        };
+        for (const select of [opt.subAgentChoice1, opt.subAgentChoice2, opt.subAgentChoice3]) {
+            if (select) select.addEventListener('change', subAgentChoiceChanged);
+        }
         if (opt.skillIndexMax) opt.skillIndexMax.addEventListener('change', () => {
             getConfig().skillIndexMaxUser = aiClampInt(opt.skillIndexMax.value, 1, 100, 100);
             opt.skillIndexMax.value = String(getConfig().skillIndexMaxUser);
@@ -856,6 +935,13 @@ export function createAISettingsDialog(ctx) {
             saveAIConfig();
             const labels = {recommended: '按 AI 推荐项继续', wait: '继续阻塞等待', abort: '直接停止本轮', ai_decide: '交给 AI 决定'};
             setSettingsStatus('AskQuestion 超时处理：' + labels[getConfig().askTimeoutAction], 'ok');
+        });
+        if (opt.idleTimeout) opt.idleTimeout.addEventListener('change', () => {
+            getConfig().idleTimeoutSec = aiClampInt(opt.idleTimeout.value, 30, 3600, 120);
+            opt.idleTimeout.value = String(getConfig().idleTimeoutSec);
+            saveAIConfig();
+            const sec = getConfig().idleTimeoutSec;
+            setSettingsStatus('响应空闲超时：' + (sec >= 60 ? (sec / 60) + ' 分钟' : sec + ' 秒'), 'ok');
         });
         if (opt.openLogs) opt.openLogs.addEventListener('click', openAILogDir);
         if (opt.approvedClear) opt.approvedClear.addEventListener('click', () => {

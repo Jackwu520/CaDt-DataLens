@@ -1,7 +1,7 @@
 // AI 设置 → 导入导出：配置导出（可选是否含密钥）与导入（合并/覆盖、旧格式兼容）。
 // 从 ai-settings-dialog.js 拆出；renderModelList / refreshPromptSettings / aiAddUnique 等由兄弟模块注入。
 import {
-    findModelEntry, resolveModelId, resolveModelRef,
+    findModelEntry, resolveModelId, resolveModelRef, subAgentModelChoicesFrom,
 } from './ai-config-model.js';
 import {
     AI_PREF_LIMIT, AI_PREF_TEXT_LIMIT, aiClamp, aiClampInt, aiNowId, aiTextOf,
@@ -78,6 +78,9 @@ export function createAISettingsIO(ctx, extras) {
             worklogEnabled: getConfig().worklogEnabled !== false,
             subAgentMax: getConfig().subAgentMax,
             subAgentMaxDepth: getConfig().subAgentMaxDepth,
+            subAgentRounds: getConfig().subAgentRounds,
+            subAgentModel: getConfig().subAgentModel || '',
+            subAgentModelChoices: (getConfig().subAgentModelChoices || []).slice(),
             notifyInApp: getConfig().notifyInApp === true,
             notifySystem: getConfig().notifySystem === true,
             notifyFinish: getConfig().notifyFinish !== false,
@@ -87,6 +90,7 @@ export function createAISettingsIO(ctx, extras) {
             notifySound: getConfig().notifySound !== false,
             askTimeout: getConfig().askTimeout,
             askTimeoutAction: getConfig().askTimeoutAction,
+            idleTimeoutSec: getConfig().idleTimeoutSec,
         };
         if (includePersona) data.persona = normalizePersona(getConfig().persona);
         const json = JSON.stringify(data, null, 2);
@@ -183,12 +187,25 @@ export function createAISettingsIO(ctx, extras) {
             if (typeof data.worklogEnabled === 'boolean') getConfig().worklogEnabled = data.worklogEnabled;
             getConfig().subAgentMax = aiClampInt(data.subAgentMax, 1, 20, getConfig().subAgentMax);
             getConfig().subAgentMaxDepth = aiClampInt(data.subAgentMaxDepth, 0, 20, getConfig().subAgentMaxDepth);
+            getConfig().subAgentRounds = aiClampInt(data.subAgentRounds, 3, 200, getConfig().subAgentRounds);
+            getConfig().subAgentModel = resolveModelRef(aiTextOf(data.subAgentModel), getConfig().profiles);
+            // 自选候选：**字段缺失时保留本地**（导出方没开这项不代表要关掉本地的），
+            // 有字段则逐条校验，失效引用剔掉
+            if (Array.isArray(data.subAgentModelChoices)) {
+                getConfig().subAgentModelChoices = data.subAgentModelChoices
+                    .map((ref) => resolveModelRef(aiTextOf(ref), getConfig().profiles))
+                    .filter(Boolean)
+                    .slice(0, 3);
+            }
             for (const key of ['notifyInApp', 'notifySystem', 'notifyFinish', 'notifyError', 'notifyAsk', 'notifyApprove', 'notifySound']) {
                 if (typeof data[key] === 'boolean') getConfig()[key] = data[key];
             }
             if (Number.isFinite(Number(data.askTimeout))) getConfig().askTimeout = aiClampInt(data.askTimeout, 0, 3600, 300);
             if (['recommended', 'wait', 'abort', 'ai_decide'].includes(data.askTimeoutAction)) {
                 getConfig().askTimeoutAction = data.askTimeoutAction;
+            }
+            if (Number.isFinite(Number(data.idleTimeoutSec))) {
+                getConfig().idleTimeoutSec = aiClampInt(data.idleTimeoutSec, 30, 3600, 120);
             }
             // 个性化：字段级合并——导出时未勾选「含个性化设定」的旧文件不会冲掉本地设定
             if (data.persona && typeof data.persona === 'object') {
@@ -237,6 +254,9 @@ export function createAISettingsIO(ctx, extras) {
                 getConfig().activeModelId = '';
             }
             getConfig().autoClassifierModel = resolveModelRef(getConfig().autoClassifierModel, getConfig().profiles);
+            getConfig().subAgentModel = resolveModelRef(getConfig().subAgentModel, getConfig().profiles);
+            getConfig().subAgentModelChoices = subAgentModelChoicesFrom(
+                getConfig().subAgentModelChoices, getConfig().profiles).map((choice) => choice.ref).slice(0, 3);
             saveAIConfig();
             invalidateSkillsCache();
             extras.refreshSettingsPane();

@@ -11,6 +11,8 @@ import {createSettingsDialogs} from './settings-dialogs.js';
 import {createSettingsSearch} from './settings-search.js';
 import {createSettingsSelect} from './settings-select.js';
 import {CODE_STYLE_AUTO, CODE_STYLES, currentCodeStyleName, isValidCodeStyleId} from './code-styles.js';
+import {renderShortcutsTable, KEY_STYLES, DEFAULT_KEY_STYLE, isValidKeyStyleId, keyStyleName} from '../core/keybindings.js';
+import {keymap} from '../core/keymap.js';
 
 export function createSettingsUI(deps) {
 
@@ -132,6 +134,16 @@ const elsSettings = {
     clearActivity: document.getElementById('opt-clear-activity'),
 };
 
+// 快捷键表：由 core/keybindings.js 单一来源渲染，不再在 index.html 手抄一份。
+// 表内容跟随当前快捷键风格（keymap.style），切换风格后立刻重绘。
+const shortcutsTable = document.getElementById('shortcuts-table');
+function renderShortcuts() {
+    if (shortcutsTable) shortcutsTable.innerHTML = renderShortcutsTable(keymap.style);
+}
+renderShortcuts();
+// 风格一变（设置页切换，或 main.js 启动时按存档切换）就重绘文案表。
+keymap.subscribe(() => renderShortcuts());
+
 function fillFontSelect(select, list) {
     select.textContent = '';
     for (const face of list) {
@@ -157,6 +169,19 @@ if (elsSettings.codeStyle) {
         csSel.appendChild(opt);
     }
     csSel.addEventListener('change', () => setCodeStyle(csSel.value));
+}
+// 快捷键风格下拉：选项来自 core/keybindings.js 单一来源（同代码主题下拉），
+// 必须早于 createSettingsSelect 的行式下拉增强（增强时会读取 options 生成自定义面板）。
+const keyStyleSelect = document.getElementById('opt-key-style');
+if (keyStyleSelect) {
+    keyStyleSelect.textContent = '';
+    for (const style of KEY_STYLES) {
+        const opt = document.createElement('option');
+        opt.value = style.id;
+        opt.textContent = style.name;
+        keyStyleSelect.appendChild(opt);
+    }
+    keyStyleSelect.addEventListener('change', () => setKeyStyle(keyStyleSelect.value));
 }
 // 代码截图样式（渲染档位单一来源在 core/code-shot.js 的 CODE_SHOT_RADII / CODE_SHOT_SCALES）
 elsSettings.codeShotTitle.addEventListener('change', () => {
@@ -304,6 +329,19 @@ function setCodeStyle(id) {
     // 不改窗口底色，hljs / Ace 靠 CSS 变量自动生效，无需重新高亮。
     applySettings();
     deps.flash('代码主题：' + currentCodeStyleName(deps.settings.theme, value));
+}
+
+// 快捷键风格：切换整套键位方案（settings.keyStyle）。
+// 运行时索引在 core/keymap.js（全局单例，main.js 的按键链查同一份），
+// 这里切完立即生效；文案表同步重绘，两者同源（core/keybindings.js 一张表）。
+function setKeyStyle(id) {
+    const value = String(id || '');
+    if (!isValidKeyStyleId(value)) return;
+    deps.settings.keyStyle = value;
+    keymap.setStyle(value);   // 运行时索引立即切换，行为随之生效；文案表由订阅回调重绘
+    if (keyStyleSelect) keyStyleSelect.value = value;
+    applySettings();
+    deps.flash('快捷键风格：' + keyStyleName(value));
 }
 
 function setTheme(id) {
@@ -488,6 +526,7 @@ function applySettings() {
     syncAboutBannerByTime();
     applyTheme();
     applyCodeStyle();
+    if (keyStyleSelect) keyStyleSelect.value = String(deps.settings.keyStyle || DEFAULT_KEY_STYLE);
     if (typeof deps.syncTerminalTheme === 'function') {
         try {
             deps.syncTerminalTheme();

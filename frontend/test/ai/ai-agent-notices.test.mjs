@@ -8,11 +8,14 @@ import {buildSettlementNotice, buildAskNotice, createAIAgentNotices, NOTICE_DEPT
 function makeHarness(overrides) {
     const opts = overrides || {};
     const sessions = new Map();
-    const calls = {turns: [], unread: [], notices: [], flashes: [], desktop: []};
+    const calls = {turns: [], unread: [], notices: [], flashes: [], desktop: [], notified: []};
     const session = {id: 's1', title: '会话一', messages: [], archivedAt: 0};
     sessions.set('s1', session);
     let busy = !!opts.busy;
     const notices = createAIAgentNotices({
+        // 等待原语的假实现：这里只关心「入队后有没有按正确的 ownerId notify」——
+        // key 写错（session.id → item.id）在端到端里完全看不见，只能在这里抓。
+        inboxWaiters: {notify: (ownerId) => calls.notified.push(ownerId)},
         sessionById: (id) => sessions.get(id) || null,
         streamOf: () => (busy ? {sessionId: 's1'} : null),
         compactOf: () => null,
@@ -80,6 +83,23 @@ test('buildAskNotice：提问通知带 askId 与作答方式，问题与选项�
     assert.ok(notice.content.includes('可选：包含 / 不包含'));
     assert.ok(notice.content.includes('Q2：目标是小程序还是网页？'));
     assert.ok(notice.content.includes("agent_send(agentId='sub-9'"), '要给出可直接照抄的作答形式');
+});
+
+test('投递：入队即 notify 等待方（ownerId 必须是会话 id，不是消息 id）', async () => {
+    const h = makeHarness({busy: true});
+    h.notices.deliverAgentNotice(h.session, {kind: 'subagent', label: '子代理通知 · A', content: '完成'});
+    // notify 的 key 写错在端到端里完全看不见（wait_agent 只会白等到超时），这里必须锁死
+    assert.deepEqual(h.calls.notified, ['s1'], '入队后按会话 id 唤醒');
+    h.calls.notified.length = 0;
+
+    // 合并分支（信箱已满 + 结算类只合并不丢弃）同样要 notify：内容变了模型该醒
+    for (let i = 0; i < NOTICE_DEPTH_MAX; i++) {
+        h.notices.deliverAgentNotice(h.session, {kind: 'subagent', label: '通知 ' + i, content: '第 ' + i + ' 条'});
+    }
+    h.calls.notified.length = 0;
+    const merged = h.notices.deliverAgentNotice(h.session, {kind: 'subagent', label: '通知 X', content: '溢出的一条'});
+    assert.equal(merged.reason, 'merged');
+    assert.deepEqual(h.calls.notified, ['s1'], '合并也算有新内容，必须唤醒');
 });
 
 test('投递：空闲会话立刻唤醒，忙则排队', async () => {

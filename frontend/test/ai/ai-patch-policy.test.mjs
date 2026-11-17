@@ -29,17 +29,44 @@ test('patchAllowApply：非完全权限档保持弹卡', () => {
     }
 });
 
-test('patchAllowApply：完全权限档只有明确要求「应用」才弹卡', () => {
+test('patchAllowApply：完全权限档缺省看用户最近一句（应用措辞或短肯定句）', () => {
     const cases = [
         ['把补丁应用上去', true],
         ['先给 patch，然后 apply 一下', true],
         ['这个补丁合入吧', true],
+        ['可以', true],        // 事先同意，补丁生成后它就是最后一句（2026-11-18 真机）
+        ['好的', true],
+        ['没问题', true],
+        ['ok', true],
+        ['好的，就这么办', true],
+        ['我不同意这个方案', false], // 负向后顾：不/没 前缀不算同意
         ['给我一份 patch 我要转给同事', false], // 要分享 → 只产出文件
         ['顺手改掉就行', false],
         ['', false],
     ];
     for (const [text, want] of cases) {
-        assert.equal(patchAllowApply({apply: true}, 'full', text), want, text);
+        assert.equal(patchAllowApply({}, 'full', text), want, text);
     }
     assert.equal(patchAllowApply({}, 'full', null), false);
+});
+
+test('patchAllowApply：apply:true 强制弹卡（用户事先同意时的确定性出口）', () => {
+    // 旧实现只认 apply:false，true 被忽略——模型带 true 重试也弹不出卡（2026-11-18 真机）
+    for (const text of ['可以', '给我一份 patch 我要转给同事', '', '顺手改掉就行']) {
+        assert.equal(patchAllowApply({apply: true}, 'full', text), true, text);
+    }
+    // false 仍优先：显式「不要弹」压过一切
+    assert.equal(patchAllowApply({apply: false}, 'full', '应用这个补丁'), false);
+});
+
+test('patchAllowApply：隔离工作区开启时全档必弹（apply=false 仍只产出文件）', () => {
+    // 主根只读闸下 propose_patch 是唯一能写主根的通道——回灌必须过人工审阅，
+    // 与 worktree_manage(export) 的回灌卡同一条红线（2026-11-18 用户决策）
+    for (const scope of ['edit', 'auto', 'full']) {
+        assert.equal(patchAllowApply({}, scope, '', true), true, scope);
+        assert.equal(patchAllowApply({}, scope, '给我一份 patch 我要转给同事', true), true, scope);
+    }
+    assert.equal(patchAllowApply({apply: false}, 'full', '应用这个补丁', true), false);
+    // worktreeActive=false 走原逻辑：full 缺省不弹
+    assert.equal(patchAllowApply({}, 'full', '', false), false);
 });

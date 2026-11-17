@@ -47,3 +47,27 @@ export async function copyImageUrlToClipboard(url) {
         return false;
     }
 }
+
+// dataUrlToFile data URL → File：右键菜单的「粘贴」拿不到 paste 事件，后端回读的
+// 剪贴板图片先转成 File，再走与 Ctrl+V 相同的压缩管线（AI 输入框与快捷便签共用）。
+export function dataUrlToFile(dataUrl, name) {
+    const raw = String(dataUrl || '');
+    const comma = raw.indexOf(',');
+    if (comma < 0) return null;
+    const header = raw.slice(0, comma);
+    const mime = (header.slice(header.indexOf(':') + 1).split(';')[0] || 'image/png').trim() || 'image/png';
+    let binary = '';
+    try {
+        binary = atob(raw.slice(comma + 1));
+    } catch (e) {
+        return null;
+    }
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    if (!bytes.length) return null;
+    try {
+        return new File([bytes], name || '粘贴的图片', {type: mime});
+    } catch (e) {
+        return null;
+    }
+}

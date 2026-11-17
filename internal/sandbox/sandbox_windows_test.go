@@ -318,3 +318,28 @@ func TestRevokeNoopOnCleanDir(t *testing.T) {
 		t.Fatalf("干净目录上不该有残留: %+v", state)
 	}
 }
+
+// 授权失败要把「缺 WRITE_DAC」翻成可操作说明：裸的 Access is denied 只会让人反复重试。
+func TestDiagnoseGrantFailure(t *testing.T) {
+	me := currentUserSIDString()
+	if me == "" {
+		t.Fatal("取不到当前用户 SID，诊断会退化成通用文案")
+	}
+	owner, err := ownerSIDStringOf(t.TempDir())
+	if err != nil {
+		t.Fatalf("ownerSIDStringOf: %v", err)
+	}
+	if owner != me {
+		t.Fatalf("t.TempDir() 的所有者 %s 与当前账户 %s 不一致，本用例前提不成立", owner, me)
+	}
+
+	self := diagnoseGrantFailure(t.TempDir())
+	if !strings.Contains(self, "所有者") {
+		t.Errorf("自有目录的诊断应指出「当前账户就是所有者」：%q", self)
+	}
+
+	missing := diagnoseGrantFailure(filepath.Join(t.TempDir(), "not-there"))
+	if !strings.Contains(missing, "无法读取目录所有者") {
+		t.Errorf("读不到所有者时应用通用文案：%q", missing)
+	}
+}

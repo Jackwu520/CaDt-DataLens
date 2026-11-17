@@ -5,7 +5,8 @@ import {iconSvg} from '../core/icons.js';
 import {createFileIcon} from '../core/fileicons.js';
 import {enhanceWidgets} from '../core/widget.js';
 import {aiFormatTime, aiTextOf} from './ai-constants.js';
-import {isPlanMessage, planDigest, planDisplayPath} from './ai-plan-file.js';
+import {agentLevelText} from './ai-team-model.js';
+import './ai-plan-file.js';
 
 // 解码可能未闭合的 JSON 字符串字面量：截掉不完整转义、补收尾引号再 parse；
 // parse 仍失败（如截断的 \uXX）就退回手写替换。仅显示用，无需严格。
@@ -26,7 +27,9 @@ function decodePartialJsonString(frag) {
 export function liveToolParts(args) {
     const raw = String(args || '');
     const size = raw.length >= 1024 ? (raw.length / 1024).toFixed(1) + ' KB' : raw.length + ' B';
-    const parts = {path: '', dir: '', name: '', size, content: null, oldString: null, newString: null};
+    // chars = 已接收的参数字节数（原始长度）：占位行靠它区分「一个字都还没来」与「真收到了 0 B」，
+    // 别用 size 字符串反推（格式化后会丢精度）。
+    const parts = {path: '', dir: '', name: '', size, chars: raw.length, content: null, oldString: null, newString: null};
     const pathMatch = raw.match(/"path"\s*:\s*"((?:[^"\\]|\\.)*)/);
     if (pathMatch) {
         parts.path = decodePartialJsonString(pathMatch[1]);
@@ -48,6 +51,16 @@ export function liveToolSummary(args) {
     const parts = liveToolParts(args);
     if (!parts.path) return '参数接收中 ' + parts.size;
     return parts.path + ' · 参数接收中 ' + parts.size;
+}
+
+// 流式占位行右侧状态文案。工具调用头（name）通常远早于参数字节到达，而部分网关
+// （实测 sensenova-6.8-flash 走 token.sensenova.cn）把整段工具参数憋完再回放，
+// 中间十几秒零字节——这段时间显示「接收中 0 B」看着像卡死 / 计数器坏了。
+// 零字节统一显示「等待参数…」，收到首块后才报体积。
+// 导出供 ai-tool-cards.test.mjs 防回归。
+export function liveToolStateText(parts) {
+    if (!parts || !(parts.chars > 0)) return '等待参数…';
+    return '接收中 ' + parts.size;
 }
 
 // spinner 的 CSS 动画绑在 ::before 上：节点一旦被 remove + insert（哪怕同一父节点同一位置），
@@ -102,6 +115,30 @@ export function toolIsLive(message) {
     return message.status === 'running';
 }
 
+// 工具卡头真正指向本地文件的工具：这些卡的 primary 是文件名，可挂「点击打开」超链接。
+// list_dir 的 primary 是目录、search_text 是查询词、generate_* 是提示词——都不算文件。
+export function toolShowsFileLink(message) {
+    const n = message && message.name;
+    return n === 'read_file' || n === 'read_image' || n === 'write_file' ||
+        n === 'edit_file' || n === 'ocr' || n === 'transcribe_audio';
+}
+
+// 卡头文件名点击要打开的绝对路径。优先级：执行时记录的目标 > 审批里的落盘绝对路径 >
+// 参数里已是绝对路径 > 工作区根 + 卡头相对路径（历史会话 / 执行中兜底）。
+// 纯函数，root 由调用方从 getScopeRoot() 传入，便于测试。
+export function toolFileOpenTarget(message, info, root) {
+    if (!message || !info || info.remote || !info.primary || info.primary === '—') return '';
+    if (message.targetPath) return message.targetPath;
+    if (message.approval && message.approval.path) return message.approval.path;
+    let args = {};
+    try { args = JSON.parse(message.arguments || '{}') || {}; } catch (e) {}
+    const raw = aiTextOf(args.path).trim();
+    if (/^(?:[A-Za-z]:[\\/]|[\\/])/.test(raw)) return raw;
+    const rel = (info.dir ? info.dir + '/' : '') + info.primary;
+    const base = String(root || '').replace(/[\\/]+$/, '');
+    return base ? base + '/' + rel : rel;
+}
+
 export function createAIToolCards(ctx) {
     const copyText = ctx.copyText;
     const flash = ctx.flash;
@@ -112,8 +149,8 @@ export function createAIToolCards(ctx) {
     const openExternal = ctx.openExternal;
     // 打开文件并跳行（main.js 的 openTargets，经 ai-panel 透传）：read_file 卡路径超链接用
     const openTargets = typeof ctx.openTargets === 'function' ? ctx.openTargets : null;
-    // 计划卡「在标签页打开」：已批准开 .cadt/plan/ 的真文件，未批准开虚拟只读预览
-    const openPlanFile = typeof ctx.openPlanFile === 'function' ? ctx.openPlanFile : null;
+    // submit_plan 工具卡「查看计划」：已批准开 .cadt/plan/ 的真文件，未批准开虚拟只读预览
+    const openPlan = typeof ctx.openPlan === 'function' ? ctx.openPlan : null;
     const settings = ctx.settings;
     // 助手展示名（ai-panel 注入）：气泡角色标签跟随个性化命名，默认名时仍是「AI」行径不变
     const assistantName = typeof ctx.assistantName === 'function' ? ctx.assistantName : () => 'AI';
@@ -225,6 +262,35 @@ export function createAIToolCards(ctx) {
         }
     }
 
+    // 隔离工作区动作（worktree_manage 的 create / discard）：已裁决后的结果态。
+    // 没有 diff / 逐文件列表，只在工具卡里给一句结果；完整审批过程在 composer 接管卡。
+    function renderWorktreeApprovalBody(container, message, approval) {
+        if (approval.state === 'pending') {
+            renderPendingApprovalPlaceholder(container, approval);
+            return;
+        }
+        const discard = approval.action === 'discard';
+        const target = approval.relPath || approval.name || '';
+        const result = document.createElement('div');
+        result.className = 'ai-approval-result ' + approval.state;
+        result.textContent = approval.state === 'approved'
+            ? (toolIsLive(message)
+                ? (discard ? '正在丢弃隔离工作区…' : '正在创建隔离工作区…')
+                : (discard ? '已丢弃 ' + target : '已创建隔离工作区') + approvalTraceNote(approval))
+            : approval.state === 'denied'
+                ? (discard ? '已保留隔离工作区' : '已取消创建隔离工作区')
+                : (approval.state === 'failed'
+                    ? ((discard ? '丢弃失败：' : '创建失败：') + (approval.error || ''))
+                    : '操作已取消');
+        container.appendChild(result);
+        if (message.content) {
+            const output = document.createElement('div');
+            output.className = 'ai-approval-output';
+            output.textContent = message.content;
+            container.appendChild(output);
+        }
+    }
+
     function renderApprovalBody(container, message, approval, opts) {
         if (approval.state === 'pending') {
             renderPendingApprovalPlaceholder(container, approval);
@@ -236,6 +302,10 @@ export function createAIToolCards(ctx) {
         }
         if (approval.kind === 'patch') {
             renderPatchApprovalBody(container, message, approval);
+            return;
+        }
+        if (approval.kind === 'worktree') {
+            renderWorktreeApprovalBody(container, message, approval);
             return;
         }
         // skipMeta：工具卡头部已带路径与 diff 统计时，正文不再重复
@@ -501,9 +571,10 @@ export function createAIToolCards(ctx) {
             case 'schedule_toggle': return {verb: '启停定时任务', icon: 'refresh'};
             case 'spawn_agent': return {verb: '子代理', icon: 'agents'};
             case 'agent_send': return {verb: '通知子代理', icon: 'agents'};
+            case 'agent_tree': return {verb: '查看团队树', icon: 'agents'};
             case 'agent_stop': return {verb: '停止子代理', icon: 'close'};
             case 'agent_compact': return {verb: '压缩子代理', icon: 'eraser'};
-            case 'wait_agent': return {verb: '等待子代理', icon: 'agents'};
+            case 'wait_agent': return {verb: '等待新输入', icon: 'agents'};
             case 'memory_list': return {verb: '记忆目录', icon: 'book'};
             case 'memory_read': return {verb: '读取记忆', icon: 'book-open'};
             case 'memory_write': return {verb: '写入记忆', icon: 'book-plus'};
@@ -633,7 +704,8 @@ export function createAIToolCards(ctx) {
             message.name === 'write_file' || message.name === 'edit_file';
     }
 
-    // diff 视图（带行号：− 行显示旧行号，+/空白行显示新行号）
+    // diff 视图（带行号：− 行显示旧行号，+/空白行显示新行号；行号取 preview 里
+    // 按完整 diff 算好的真实文件行号，旧会话没有该字段时退回从 1 连数）
     function renderDiffInto(container, approval) {
         if (!approval.diff || !approval.diff.length) return;
         const diff = document.createElement('div');
@@ -644,7 +716,7 @@ export function createAIToolCards(ctx) {
             if (line.t === '…') {
                 const gap = document.createElement('div');
                 gap.className = 'ai-diff-line gap';
-                gap.textContent = '…';
+                gap.textContent = '⋯';
                 diff.appendChild(gap);
                 continue;
             }
@@ -652,9 +724,15 @@ export function createAIToolCards(ctx) {
             row.className = 'ai-diff-line ' + (line.t === '+' ? 'add' : (line.t === '-' ? 'del' : 'ctx'));
             const no = document.createElement('span');
             no.className = 'ai-diff-no';
-            no.textContent = line.t === '-' ? String(oldLine) : String(newLine);
-            if (line.t === '-') oldLine++;
-            else newLine++;
+            if (line.t === '-') {
+                if (line.oldLine > 0) oldLine = line.oldLine;
+                no.textContent = String(oldLine);
+                oldLine++;
+            } else {
+                if (line.newLine > 0) newLine = line.newLine;
+                no.textContent = String(newLine);
+                newLine++;
+            }
             const sign = document.createElement('span');
             sign.className = 'ai-diff-sign';
             sign.textContent = line.t === '+' ? '+' : (line.t === '-' ? '−' : ' ');
@@ -678,8 +756,6 @@ export function createAIToolCards(ctx) {
         const isCommand = message.name === 'run_command' || message.name === 'background_command';
         // 读取卡：不做展开，路径名即超链接（点击在标签页打开并跳到读取起始行）
         const isRead = message.name === 'read_file';
-        // 看图卡保留展开正文（尺寸 / 字节数），路径同样可点开图片
-        const isImageRead = message.name === 'read_image';
         // 内置技能卡：内容只注入模型上下文，不向用户展示（识别结果首行的来源标注「（内置）」，
         // 该文案来自 ai-panel skillSourceLabel('builtin') 单一来源）；工作区/用户技能照常可展开
         const isBuiltinSkill = message.name === 'skill_use' &&
@@ -722,21 +798,19 @@ export function createAIToolCards(ctx) {
             const primary = document.createElement('span');
             primary.className = 'ai-tool-primary';
             primary.textContent = info.primary;
-            if ((isRead || isImageRead) && !info.remote) {
-                // 路径名即超链接：点击在标签页打开，读取带 offset 时跳到对应行
-                primary.classList.add('ai-tool-link');
-                primary.dataset.tip = '点击打开文件' + (Number(message.targetLine) > 1 ? '（跳到读取起始行）' : '');
-                primary.addEventListener('click', (e) => {
-                    e.stopPropagation();
-                    let target = message.targetPath;
-                    if (!target) {
-                        // 历史会话恢复的旧卡没挂绝对路径：工作区根 + 卡头相对路径兜底
-                        const rel = (info.dir ? info.dir + '/' : '') + info.primary;
-                        const root = String(getScopeRoot() || '').replace(/\/+$/, '');
-                        target = root ? root + '/' + rel : rel;
-                    }
-                    openTargets([{path: target, line: Number(message.targetLine) || 1, column: 0}]);
-                });
+            if (toolShowsFileLink(message) && !info.remote && openTargets) {
+                // 文件名即超链接：hover 下划线、点击在标签页打开。读取带 offset 时跳对应行。
+                // 只对文件名加链接，卡头其余区域（箭头 / 动词 / 目录）照旧展开或折叠。
+                const root = typeof getScopeRoot === 'function' ? getScopeRoot() : '';
+                const target = toolFileOpenTarget(message, info, root);
+                if (target) {
+                    primary.classList.add('ai-tool-link');
+                    primary.dataset.tip = '点击打开文件' + (Number(message.targetLine) > 1 ? '（跳到读取起始行）' : '');
+                    primary.addEventListener('click', (e) => {
+                        e.stopPropagation(); // 别冒泡到卡头的折叠 toggle
+                        openTargets([{path: target, line: Number(message.targetLine) || 1, column: 0}]);
+                    });
+                }
             }
             head.appendChild(primary);
         }
@@ -746,6 +820,19 @@ export function createAIToolCards(ctx) {
             tag.className = 'ai-tool-tag';
             tag.textContent = '内置';
             head.appendChild(tag);
+        }
+        if (message.name === 'submit_plan' && openPlan) {
+            // 计划的对话区唯一入口：点开虚拟只读预览（未批准）或 .cadt/plan/ 文件（已批准）
+            const view = document.createElement('button');
+            view.type = 'button';
+            view.className = 'ai-tool-plan-open';
+            view.textContent = '查看计划';
+            view.dataset.tip = '在标签页查看这份计划（未批准为只读预览，批准后是工作区文件）';
+            view.addEventListener('click', (e) => {
+                e.stopPropagation(); // 别冒泡到卡头的折叠 toggle
+                openPlan(currentSession());
+            });
+            head.appendChild(view);
         }
         if (info.dir) {
             const dir = document.createElement('span');
@@ -840,7 +927,7 @@ export function createAIToolCards(ctx) {
             if (agent.state !== 'running' && agent.summary) {
                 const meta = document.createElement('div');
                 meta.className = 'ai-agent-meta';
-                meta.textContent = (agent.depth > 1 ? '第 ' + agent.depth + ' 层 · ' : '') +
+                meta.textContent = (agent.depth >= 1 ? agentLevelText(agent.depth) + ' · ' : '') +
                     '轮次 ' + (agent.rounds || 0) + ' · 用时 ' + Math.round((agent.ms || 0) / 1000) + 's' +
                     (agent.tokens ? ' · ' + agent.tokens + ' tokens' : '') +
                     (agent.state === 'error' ? ' · 失败' : (agent.state === 'stopped' ? ' · 已停止' : ''));
@@ -1239,7 +1326,7 @@ export function createAIToolCards(ctx) {
         }
         const state = document.createElement('span');
         state.className = 'ai-tool-state';
-        state.textContent = '接收中 ' + parts.size;
+        state.textContent = liveToolStateText(parts);
         row.appendChild(state);
         return row;
     }
@@ -1274,7 +1361,7 @@ export function createAIToolCards(ctx) {
                 setTextIfChanged(row.querySelector('.ai-tool-stat.del'), '−' + stats.removed);
             }
         }
-        setTextIfChanged(row.querySelector('.ai-tool-state'), '接收中 ' + parts.size);
+        setTextIfChanged(row.querySelector('.ai-tool-state'), liveToolStateText(parts));
     }
 
     // 占位区增量更新：按 key 复用行、按 live 顺序就位、消失的行移除；
@@ -1324,59 +1411,6 @@ export function createAIToolCards(ctx) {
             const last = box.lastElementChild;
             if (last) last.remove();
         }
-    }
-
-    // 计划卡：计划模式产出的计划不整篇铺进对话——只留「标题 + 位置 + 在标签页打开」。
-    // 已批准（planFile 有值）：位置是 .cadt/plan/ 固定文件；未落盘（未批准 / 写盘失败）：显示
-    // 「未保存到工作区」，打开走虚拟只读标签页（openPlanFile 内部分流），两种状态都不在对话里翻长文。
-    function renderPlanCard(md, message) {
-        md.textContent = '';
-        const text = String(message.planText || message.content || '');
-        const digest = planDigest(text);
-        const saved = !!String(message.planFile || '').trim();
-        const card = document.createElement('div');
-        card.className = 'ai-plan-card';
-        const head = document.createElement('div');
-        head.className = 'ai-plan-card-head';
-        const icon = document.createElement('span');
-        icon.className = 'ai-plan-card-icon';
-        icon.innerHTML = iconSvg('file', 14);
-        const title = document.createElement('span');
-        title.className = 'ai-plan-card-title';
-        title.textContent = digest.title || '执行计划';
-        const badge = document.createElement('span');
-        badge.className = 'ai-plan-card-badge';
-        badge.textContent = '计划';
-        head.append(icon, title, badge);
-        const foot = document.createElement('div');
-        foot.className = 'ai-plan-card-foot';
-        const path = document.createElement('code');
-        path.className = 'ai-plan-card-path';
-        if (saved) {
-            path.textContent = planDisplayPath(message.planFile);
-            path.dataset.tip = message.planFile;
-        } else {
-            path.textContent = '未保存到工作区';
-            path.dataset.tip = '计划还没写入 .cadt/plan/（批准「执行计划」时落盘）：点「在标签页打开」可预览全文';
-        }
-        const meta = document.createElement('span');
-        meta.className = 'ai-plan-card-meta';
-        meta.textContent = digest.lines + ' 行 · ' + digest.chars + ' 字';
-        const open = document.createElement('button');
-        open.type = 'button';
-        open.className = 'dlg-btn ai-plan-card-open';
-        open.textContent = '在标签页打开';
-        open.addEventListener('click', (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            if (openPlanFile) openPlanFile(message);
-        });
-        path.addEventListener('click', () => {
-            if (openPlanFile) openPlanFile(message);
-        });
-        foot.append(path, meta, open);
-        card.append(head, foot);
-        md.appendChild(card);
     }
 
     function updateAssistantElement(wrap, message, streaming, options) {
@@ -1458,26 +1492,14 @@ export function createAIToolCards(ctx) {
             // 工具参数接收帧里 content 往往不变，跳过整块 innerHTML 重写可避免
             // 打字点 / 代码块复制钮 / 图片 / widget 每 80ms 重建一次。
             const content = message.content || '';
-            // 计划消息（submit_plan 提交 / 旧式正文计划）非流式时一律渲染入口卡：签名带落盘状态与
-            // 落盘完成 / 重启重放都能稳定判等，不跟着正文长度每帧重建。
-            // 计划消息（submit_plan 提交 / 旧式正文计划）非流式时一律渲染入口卡：已批准落盘的带
-            // 文件路径，未批准的显示「未保存到工作区」（打开走虚拟只读预览）。签名带落盘状态与
-            // 计划正文摘要（新形态正文可为空，计划在 planText），批准落盘 / 重放都稳定判等。
-            const planCard = !streaming && isPlanMessage(message);
-            const planText = String(message.planText || '');
-            const mdSig = planCard
-                ? 'plancard:' + (message.planFile || '') + ':' + planText.length + ':' + content.length + ':' +
-                    (planText || content).slice(-64)
-                : (content
-                    ? (streaming ? 's' : 'd') + content.length + ':' + content.slice(-64)
-                    : (message.status === 'error' && !content ? 'e:' + (message.error || '') :
-                        (streaming ? 't' : (message.status === 'stopped' ? 'stop' : 'empty'))));
+            const mdSig = (content
+                ? (streaming ? 's' : 'd') + content.length + ':' + content.slice(-64)
+                : (message.status === 'error' && !content ? 'e:' + (message.error || '') :
+                    (streaming ? 't' : (message.status === 'stopped' ? 'stop' : 'empty'))));
             if (md.dataset.renderSig !== mdSig) {
                 md.dataset.renderSig = mdSig;
                 if (message.status === 'error' && !content) {
                     md.textContent = message.error ? ('请求失败：' + message.error) : '请求失败';
-                } else if (planCard) {
-                    renderPlanCard(md, message);
                 } else if (content) {
                     md.innerHTML = renderMarkdown(content);
                     enhanceAICodeBlocks(md);
@@ -1556,8 +1578,11 @@ export function createAIToolCards(ctx) {
         if (!streaming) appendActions(wrap, message, Number(wrap.dataset.aiIdx), currentSession());
     }
 
-    async function acceptPlan(session, message, families) {
-        if (!session || streamOf(session.id) || !session.planMode || !message || !message.planMode) return;
+    async function acceptPlan(session, families) {
+        // 注意：ai-panel 的包装层在调用前已落盘并把 activePlan 置为 approved，
+        // 所以这里不能再用 status==='pending' 做守卫（否则批准永远静默失败）。
+        // 也不做 streamOf 守卫：包装层已 stopGeneration，残余流由 submitText 的排队机制兜底。
+        if (!session || !session.activePlan || !session.planMode) return;
         if (currentScopeOf(session) === 'read') {
             flash('当前为「只读访问」，执行阶段无法修改文件', true);
             return;

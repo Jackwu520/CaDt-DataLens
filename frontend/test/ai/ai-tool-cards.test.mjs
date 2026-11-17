@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {liveToolSummary, liveToolParts, planLiveRowOrder, toolIsLive} from '../../src/ai/ai-tool-cards.js';
+import {liveToolSummary, liveToolParts, liveToolStateText, planLiveRowOrder, toolIsLive, toolShowsFileLink, toolFileOpenTarget} from '../../src/ai/ai-tool-cards.js';
 
 test('liveToolSummary：能从未闭合的参数 JSON 里捞出 path 与已接收体积', () => {
     // write_file 流式中途：content 字符串尚未闭合，path 已完整
@@ -56,6 +56,19 @@ test('liveToolParts：content 中途截断在转义序列上不抛异常', () =>
     // content 值以 \u 截断：decode 截掉悬空反斜杠后仍可能 parse 失败 → 退回手写替换
     const tricky = liveToolParts('{"path":"a.md","content":"x\\u00e9\\u0');
     assert.ok(typeof tricky.content === 'string');
+});
+
+test('liveToolStateText：零字节显示「等待参数…」，收到首块才报体积', () => {
+    // 工具调用头（name）先到、参数还在路上：显示「接收中 0 B」像计数器坏了
+    assert.equal(liveToolStateText(liveToolParts('')), '等待参数…');
+    assert.equal(liveToolStateText(liveToolParts(null)), '等待参数…');
+    // 有字节后按已接收体积上报（1 字节也要报，不能因为没 path 就退回等待态）
+    assert.equal(liveToolStateText(liveToolParts('{"path"')), '接收中 7 B');
+    assert.equal(liveToolStateText(liveToolParts('{"command":"git status"}')), '接收中 24 B');
+    assert.equal(liveToolStateText(liveToolParts('x'.repeat(2048))), '接收中 2.0 KB');
+    // chars 是原始长度：格式化后仍要能判定「是不是一字未到」
+    assert.equal(liveToolParts('').chars, 0);
+    assert.equal(liveToolParts('{"path":"a.md"}').chars, '{"path":"a.md"}'.length);
 });
 
 test('planLiveRowOrder：顺序不变时零 DOM 操作（spinner 不会每帧回弹）', () => {
@@ -172,6 +185,7 @@ test('生成卡正文渲染完整提示词：头部只有 60 字摘要，全文�
 });
 
 test('代码块工具条：思考链走 noBar 不建「语言 + 复制」栏，主回答区仍建', () => {
+
     const cards = readFileSync(new URL('../../src/ai/ai-tool-cards.js', import.meta.url), 'utf8');
     const fn = cards.slice(cards.indexOf('function enhanceAICodeBlocks'));
     // noBar 开关必须真的门住 bar 的创建，而不只是加个空类
@@ -189,4 +203,57 @@ test('代码块工具条：思考链走 noBar 不建「语言 + 复制」栏，�
     const panel = readFileSync(new URL('../../src/ai/ai-panel.js', import.meta.url), 'utf8');
     assert.match(panel, /enhanceAICodeBlocks\(body, \{noBar: true\}\)/,
         '思考链必须走 noBar——「js + 复制」栏在弱化的思考区里很突兀');
+});
+
+test('工具卡文件名超链接：read/write/edit/ocr/转写可点，非文件工具不挂链接', () => {
+    assert.equal(toolShowsFileLink({name: 'read_file'}), true);
+    assert.equal(toolShowsFileLink({name: 'read_image'}), true);
+    assert.equal(toolShowsFileLink({name: 'write_file'}), true);
+    assert.equal(toolShowsFileLink({name: 'edit_file'}), true);
+    assert.equal(toolShowsFileLink({name: 'ocr'}), true);
+    assert.equal(toolShowsFileLink({name: 'transcribe_audio'}), true);
+    // list_dir 的 primary 是目录、generate_* 是提示词、watch/计划等都不是文件路径
+    assert.equal(toolShowsFileLink({name: 'list_dir'}), false);
+    assert.equal(toolShowsFileLink({name: 'search_text'}), false);
+    assert.equal(toolShowsFileLink({name: 'generate_image'}), false);
+    assert.equal(toolShowsFileLink({name: 'run_command'}), false);
+    assert.equal(toolShowsFileLink(null), false);
+});
+
+test('toolFileOpenTarget：审批落盘绝对路径优先，历史卡用工作区根 + 相对路径兜底', () => {
+    const info = {primary: 'graph.go', dir: 'internal/gitinfo'};
+    // 写入/编辑卡：审批带落盘绝对路径（applyWorkspaceWrite 写入），直接用
+    const withApproval = {name: 'write_file', approval: {path: 'D:/proj/internal/gitinfo/graph.go'},
+        arguments: JSON.stringify({path: 'internal/gitinfo/graph.go'})};
+    assert.equal(toolFileOpenTarget(withApproval, info, 'D:/proj'), 'D:/proj/internal/gitinfo/graph.go');
+    // 历史卡：没有 approval.path，用工作区根 + 卡头相对路径
+    const history = {name: 'write_file', arguments: JSON.stringify({path: 'internal/gitinfo/graph.go'})};
+    assert.equal(toolFileOpenTarget(history, info, 'D:/proj/'), 'D:/proj/internal/gitinfo/graph.go');
+    // 读取卡：执行时挂的 targetPath 优先（含窗口起始行由调用方另取）
+    const read = {name: 'read_file', targetPath: 'D:/other/a.go', arguments: JSON.stringify({path: 'a.go'})};
+    assert.equal(toolFileOpenTarget(read, info, 'D:/proj'), 'D:/other/a.go');
+    // 参数里已是绝对路径（full 档）：不拼工作区根
+    const absolute = {name: 'write_file', arguments: JSON.stringify({path: 'D:/abs/x.go'})};
+    assert.equal(toolFileOpenTarget(absolute, {primary: 'x.go', dir: 'D:/abs'}, 'D:/proj'), 'D:/abs/x.go');
+    // 网图 / 无文件名：不挂链接
+    assert.equal(toolFileOpenTarget({name: 'read_image'}, {remote: true, primary: 'x', dir: ''}, 'D:/proj'), '');
+    assert.equal(toolFileOpenTarget({name: 'write_file'}, {primary: '—', dir: ''}, 'D:/proj'), '');
+});
+
+test('文件名链接只加在 primary，卡头其余区域照旧展开/折叠（stopPropagation 兜底）', () => {
+    const src = readFileSync(new URL('../../src/ai/ai-tool-cards.js', import.meta.url), 'utf8');
+    const fn = src.slice(src.indexOf('function renderToolMessage'), src.indexOf('function enhanceAnswerBody'));
+    assert.ok(fn.length > 100, 'renderToolMessage 源码切片失效');
+    assert.match(fn, /if \(toolShowsFileLink\(message\) && !info\.remote && openTargets\)/,
+        '文件链接判定必须统一走 toolShowsFileLink（含 write_file / edit_file）');
+    assert.match(fn, /primary\.classList\.add\('ai-tool-link'\)/, '链接类必须加在文件名上');
+    assert.match(fn, /e\.stopPropagation\(\); \/\/ 别冒泡到卡头的折叠 toggle/,
+        '点文件名不能触发卡头折叠');
+    // 卡头折叠 toggle 仍在（对其他区域生效）
+    assert.match(fn, /head\.addEventListener\('click', \(\) => \{[\s\S]*card\.classList\.toggle\('collapsed'\)/,
+        '卡头其余区域必须照旧展开/折叠');
+    // CSS 的 hover 下划线不能丢
+    const css = readFileSync(new URL('../../src/style.css', import.meta.url), 'utf8');
+    assert.match(css, /\.ai-tool-link:hover \{[^}]*text-decoration: underline/,
+        '.ai-tool-link 必须有 hover 下划线');
 });

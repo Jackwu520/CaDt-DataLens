@@ -20,9 +20,11 @@ import (
 )
 
 func StreamResponse(ctx context.Context, cancel context.CancelCauseFunc, id string, cfg Config, messages []Message, tools []ToolDef, emit Emitter, retryMax int) error {
-	watchdog := time.AfterFunc(IdleTimeout, func() { cancel(ErrIdleTimeout) })
+	idleTimeout := resolveIdleTimeout(cfg.IdleTimeoutSec)
+	timeoutErr := &idleTimeoutError{seconds: int(idleTimeout / time.Second)}
+	watchdog := time.AfterFunc(idleTimeout, func() { cancel(timeoutErr) })
 	defer watchdog.Stop()
-	touch := func() { watchdog.Reset(IdleTimeout) }
+	touch := func() { watchdog.Reset(idleTimeout) }
 	// 登记到流条目：工具执行/用户输入等长时间无网络数据时，前端经 AITouchStream 重置看门狗。
 	if AttachWatchdog != nil {
 		AttachWatchdog(id, watchdog)
@@ -33,6 +35,8 @@ func StreamResponse(ctx context.Context, cancel context.CancelCauseFunc, id stri
 	maxTokensAdjusted := false
 	// stream_options 兼容性降级：只允许降一次，之后即便再失败也如实报错。
 	streamUsageDropped := false
+	// 关思考参数的兼容性降级：方言因网关而异，被 400 拒收时也只摘一次。
+	thinkingParamDropped := false
 	for attempt := 0; ; attempt++ {
 		req, err := aiBuildChatRequest(ctx, cfg, messages, tools)
 		if err != nil {
@@ -149,6 +153,18 @@ func StreamResponse(ctx context.Context, cancel context.CancelCauseFunc, id stri
 					aiStatusErrorBodyText(resp.StatusCode, errBody))
 				touch()
 				continue
+			}
+			// 网关不接受按模型名猜出来的关思考参数（同一模型在不同网关方言不同）：
+			// 摘掉该字段重发一次。只对确实发过参数的 OpenAI 兼容请求尝试；Anthropic 不猜测。
+			if !thinkingParamDropped && !cfg.Thinking && ProviderOf(cfg) == ProviderOpenAI {
+				if key, _ := aiThinkingDisableParam(cfg.Model); key != "" && aiRejectsThinkingParam(resp.StatusCode, errBody) {
+					cfg.noThinkingParam = true
+					thinkingParamDropped = true
+					logf("warn", "网关不接受关思考参数 %s，已去掉该字段重试：%s", key,
+						aiStatusErrorBodyText(resp.StatusCode, errBody))
+					touch()
+					continue
+				}
 			}
 			return errors.New(aiStatusErrorBodyText(resp.StatusCode, errBody))
 		}
@@ -457,6 +473,32 @@ func aiRejectsStreamOptions(code int, body []byte) bool {
 	return strings.Contains(text, "stream_options") || strings.Contains(text, "include_usage")
 }
 
+// aiThinkingDisableParam 按模型名返回「关闭思考」的请求参数。关闭思考的字段名不是
+// OpenAI 规范的一部分，各家网关各认一套：智谱 GLM 用 thinking.type、阿里 Qwen 用
+// enable_thinking。同一模型在不同网关方言也可能不同（实测 sensenova 网关的 glm-5.3
+// 只认 enable_thinking，收到 thinking.type 直接 400），猜错时由 aiRejectsThinkingParam
+// 识别并摘掉参数重试；关不掉的思考模型靠调用方留足 max_tokens，不会饿死正文。
+func aiThinkingDisableParam(model string) (string, any) {
+	lower := strings.ToLower(model)
+	switch {
+	case strings.Contains(lower, "glm"):
+		return "thinking", map[string]any{"type": "disabled"}
+	case strings.Contains(lower, "qwen"), strings.Contains(lower, "qwq"):
+		return "enable_thinking", false
+	}
+	return "", nil
+}
+
+// aiRejectsThinkingParam：4xx 错误体点名 thinking，说明网关不接受按模型名猜出来的
+// 关思考参数。命中后由调用方置位 cfg.noThinkingParam 重发一次：思考回到服务端默认值
+// （走 reasoning 通道，不占正文），比整个请求 400 可用。
+func aiRejectsThinkingParam(code int, body []byte) bool {
+	if code != http.StatusBadRequest && code != http.StatusUnprocessableEntity {
+		return false
+	}
+	return strings.Contains(strings.ToLower(aiStatusErrorBodyText(code, body)), "thinking")
+}
+
 func aiBuildOpenAIBody(cfg Config, messages []Message, tools []ToolDef) (map[string]any, error) {
 	passReasoning := strings.Contains(strings.ToLower(cfg.Model), "deepseek")
 	converted, err := aiOpenAIMessages(messages, passReasoning)
@@ -486,14 +528,11 @@ func aiBuildOpenAIBody(cfg Config, messages []Message, tools []ToolDef) (map[str
 	// 思考关闭提示：Thinking=false 时按模型名给会「默认开思考」的国产兼容网下发关闭参数——
 	// 不发的话思考模型（GLM-4.5+/5.x 等）会把 reasoning_content 烧掉 max_tokens、正文为空
 	// （小预算请求如命令分类器 120 tok 首当其冲，表现为「分类器输出为空」）。
-	// GLM（bigmodel）用 thinking.type；Qwen（DashScope 兼容模式）用 enable_thinking。
-	// 只对模型名明确的网关发：DeepSeek chat 本不思考、reasoner 关不掉，其他聚合网不发未知参数防 400。
-	if !cfg.Thinking {
-		lower := strings.ToLower(cfg.Model)
-		if strings.Contains(lower, "glm") {
-			body["thinking"] = map[string]any{"type": "disabled"}
-		} else if strings.Contains(lower, "qwen") || strings.Contains(lower, "qwq") {
-			body["enable_thinking"] = false
+	// 方言由 aiThinkingDisableParam 统一给出；猜错被网关 400 拒收时摘掉参数重试。
+	// 只对模型名明确的系列发：DeepSeek chat 本不思考、reasoner 关不掉，其他聚合网不发未知参数防 400。
+	if !cfg.Thinking && !cfg.noThinkingParam {
+		if key, value := aiThinkingDisableParam(cfg.Model); key != "" {
+			body[key] = value
 		}
 	}
 	if len(tools) > 0 {

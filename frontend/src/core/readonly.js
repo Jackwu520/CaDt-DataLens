@@ -10,6 +10,12 @@
 // 不要再各处散写 deps.settings.readOnlyMode —— 那样会漏掉标签页锁。
 // 文件树上的增删改（重命名 / 删除 / 剪贴板）只受全局锁约束，不走这个函数。
 
+/**
+ * 判定当前文档是否只读（综合四层只读来源）。
+ * @param {object|null} doc 文档对象，可含 readOnlyFixed / readOnlyLocked / large / binary 字段
+ * @param {object|null} settings 应用设置，可含 readOnlyMode（全局只读锁）
+ * @returns {boolean} true = 文档不可编辑/保存/运行/自动保存
+ */
 export function isDocReadOnly(doc, settings) {
     if (settings && settings.readOnlyMode) return true;
     if (!doc) return false;
@@ -17,11 +23,21 @@ export function isDocReadOnly(doc, settings) {
 }
 
 // 固定只读：连「解除」入口都不该出现，setDocReadOnly 也必须拒绝解锁。
+/**
+ * 判定标签是否被固定只读（不可解锁，如审阅快照）。
+ * @param {object|null} doc 文档对象
+ * @returns {boolean} true = 连「解除」入口都不该出现
+ */
 export function isTabReadOnlyFixed(doc) {
     return !!(doc && doc.readOnlyFixed);
 }
 
-// 标签是否被锁（普通锁或固定锁），用于状态栏文案与标签角标；不含全局锁 / 大文件。
+/**
+ * 判定标签是否被锁（普通锁或固定锁），用于状态栏文案与标签角标。
+ * 不含全局锁 / 大文件。
+ * @param {object|null} doc 文档对象
+ * @returns {boolean} true = 标签显示锁角标
+ */
 export function isTabReadOnlyLocked(doc) {
     return !!(doc && (doc.readOnlyLocked || doc.readOnlyFixed));
 }

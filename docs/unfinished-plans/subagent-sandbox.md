@@ -141,6 +141,8 @@ ZCode **没有 OS 级沙箱实现**——`ExecutionSandboxPolicy`（`packages/co
 - **永久副作用**：workspace 树被打上 Low 完整性标签且 `dispose` 不撤销，此后**任何** Low IL 进程（别家沙箱、Protected Mode 阅读器）都能写它；`icacls` 无法撤销（`ERROR_NONE_MAPPED 1332`，能力 SID 是派生值解析不了），只能走本包的 `sandbox.Revoke`（设置 → 权限 → 子代理命令沙箱 → 清除授权）。首次授予是 eager 全树传播，大树几十秒。
 - **shell 分裂**：沙箱档不能用 Git Bash（§8.2 实测），命令语义在档位间不同。这是本方案最贵的产品代价，靠提示词与卡片如实显示兜住。
 - **介质**：FAT/exFAT 卷作为写根直接失败（移动盘常见）；NULL-DACL 目录在 grant/revoke 往返后不等价；写根目录需 caller-owned 且有 `WRITE_OWNER`（仅 Modify 的目录会响亮失败）。
+  > 实测补充（子代理 5 层嵌套测试）：失败场景是**工作区目录归另一个账户所有**——目录由本地 `admin` 账户创建、应用以 Microsoft 账户运行，继承来的 `Modify` 不含 `WRITE_DAC`，于是 `auto` 档每个子代理的 `run_command` 都报「沙箱不可用，命令未执行：… 授权写根 … Access is denied」。`t.TempDir()` 下的单测全过（该目录的所有者就是当前账户），说明这不是特权问题（写 SACL 无 `SeSecurityPrivilege` 也可行），而是该目录的 ACL 改不动。
+  > 现状：`diagnoseGrantFailure`（`sandbox_windows.go`）把失败翻成三种可读结论，其中「目录属于另一个账户」会附补救命令 `icacls "<目录>" /grant "*<当前账户SID>:(OI)(CI)WD"`（需管理员）。**语义不变**——仍 fail-closed，不降级裸跑、也不静默降成 read-only。
 - **工具链子集**：命名管道受限，libuv 的 piped stdio 孙进程可能 EPERM；`go build` / `npm` 的失败面要靠实测收敛并写进文档。
 - **体积**：0 新依赖。
 
@@ -150,7 +152,7 @@ ZCode **没有 OS 级沙箱实现**——`ExecutionSandboxPolicy`（`packages/co
 2. ~~沙箱不可用的兜底~~ → **已拍板：fail-closed 报错**（§3.3-7）。
 3. **主会话命令是否同样接入沙箱**：阶段 D 单独评估（auto 档收益最大，代价是兼容性回归面）。
 4. **命令族白名单是否还要**：v1 不加（效应兜底已够，分类器是启发式不是边界）。若 P2 要加，必须遵守 ZCode 那条约束（§1.2b）：**分类判定要带 shell 上下文**——沙箱档命令跑在 PowerShell 里，bash 的 AST 只读白名单在这里不成立。
-5. ~~隔离 worktree 子代理的 cwd~~ → **已定（2026-11-17）**：worktree 本来就是「显式长路径、不做前缀注入」（`ai-worktree.js` 文件头），`<worktree>` 注入块已经要求模型把 `run_command` 的 cwd 传成 `.cadt/worktree/<slug>`。所以写根就是 `wt.path` 那一个目录，不需要两个根，也不用改 `applyWorkspaceWrite`。
+5. ~~隔离 worktree 子代理的 cwd~~ → **已定（2026-11-17）**：worktree 本来就是「显式长路径、不做前缀注入」（`ai-worktree.js` 文件头），写根就是 `wt.path` 那一个目录，不需要两个根。**补充（同日复查后）**：`run_command` / `background_command` 在隔离会话里未显式传 cwd 时已默认落在 `.cadt/worktree/<slug>`（`commandCwdOf`），模型无需再手动传；主根命令显式 `cwd='.'`。
 
 ## 7. 原复核意见（2026-11-17，已被决策推翻，保留过程记录）
 

@@ -36,6 +36,8 @@ export function createAIAgentView(ctx, extras) {
     const queueSubAgentMessage = extras.queueSubAgentMessage;
     const reviveSubAgent = extras.reviveSubAgent;
     const stopSubAgent = extras.stopSubAgent;
+    // 用户手动停止：连同它派出的下级一起停（自停 / 循环守卫自动停止不走这里）
+    const stopSubAgentDeep = typeof extras.stopSubAgentDeep === 'function' ? extras.stopSubAgentDeep : stopSubAgent;
     const startSubCompact = extras.startSubCompact;
     const agentStateBadge = extras.agentStateBadge;
 
@@ -94,7 +96,8 @@ export function createAIAgentView(ctx, extras) {
         const turnN = (inbox.turn || []).length;
         if (!stepN && !turnN && !inbox.ask) return null;
         const lines = [...(inbox.step || []), ...(inbox.turn || [])].slice(0, 3).map((item) =>
-            (item.from === 'user' ? '用户：' : '主代理：') + String(item.text || '').slice(0, 90));
+            (item.from === 'user' ? '用户：' : (item.from === 'subagent' ? '下级：' : '上级：')) +
+            String(item.text || '').slice(0, 90));
         const ask = inbox.ask ? '等待主代理回答提问（askId=' + (inbox.ask.askId || '') + '）' : '';
         return {
             key: 'inbox',
@@ -390,9 +393,10 @@ export function createAIAgentView(ctx, extras) {
             stopBtn.type = 'button';
             stopBtn.className = 'ai-icon-btn ai-agv-stop';
             stopBtn.setAttribute('aria-label', '停止子代理');
-            stopBtn.innerHTML = iconSvg('pause', 13);
+            stopBtn.innerHTML = iconSvg('stop', 13);
             stopBtn.addEventListener('click', () => {
-                stopSubAgent(liveSub, '用户在详情视图停止');
+                // 手动停止 = 连同它派出的子代理 / 孙代理递归停掉，避免留下没人收结论的孤儿任务
+                stopSubAgentDeep(liveSub, '用户在详情视图停止');
                 renderAgentView(view);
             });
             head.appendChild(stopBtn);

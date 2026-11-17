@@ -518,6 +518,67 @@ func TestAIOpenAIBodyReasoningEffort(t *testing.T) {
 	}
 }
 
+func TestAIOpenAIBodyThinkingDisabled(t *testing.T) {
+	cases := []struct {
+		model string
+		key   string
+	}{
+		{"glm-5.3", "thinking"},
+		{"Qwen3.8-27B", "enable_thinking"},
+		// sensenova 系关思考后会把思维链直接写进 content（实测），不发关闭参数
+		{"sensenova-6.8-flash", ""},
+		{"deepseek-flash", ""},
+	}
+	for _, c := range cases {
+		cfg := Config{Provider: "openai", Model: c.model, Temperature: 0.2, MaxTokens: 64}
+		body, err := aiBuildOpenAIBody(cfg, []Message{{Role: "user", Content: "q"}}, nil)
+		if err != nil {
+			t.Fatalf("%s: aiBuildOpenAIBody: %v", c.model, err)
+		}
+		if c.key == "" {
+			if _, ok := body["thinking"]; ok {
+				t.Fatalf("%s: 不该发 thinking：%#v", c.model, body["thinking"])
+			}
+			if _, ok := body["enable_thinking"]; ok {
+				t.Fatalf("%s: 不该发 enable_thinking", c.model)
+			}
+			continue
+		}
+		if _, ok := body[c.key]; !ok {
+			t.Fatalf("%s: 应发 %s：%#v", c.model, c.key, body)
+		}
+	}
+
+	// 开启思考 / 参数被网关拒收后的降级重试：都不发关闭参数
+	for _, cfg := range []Config{
+		{Provider: "openai", Model: "glm-5.3", Thinking: true, Temperature: 0.2},
+		{Provider: "openai", Model: "glm-5.3", noThinkingParam: true, Temperature: 0.2},
+	} {
+		body, err := aiBuildOpenAIBody(cfg, []Message{{Role: "user", Content: "q"}}, nil)
+		if err != nil {
+			t.Fatalf("aiBuildOpenAIBody: %v", err)
+		}
+		if _, ok := body["thinking"]; ok {
+			t.Fatalf("Thinking=%v noThinkingParam=%v：不应发关闭参数", cfg.Thinking, cfg.noThinkingParam)
+		}
+	}
+}
+
+func TestAIRejectsThinkingParam(t *testing.T) {
+	if !aiRejectsThinkingParam(400, []byte(`{"error":{"message":"field Thinking.Type invalid, should be one of: enabled"}}`)) {
+		t.Fatal("thinking 方言 400 应命中")
+	}
+	if !aiRejectsThinkingParam(422, []byte(`{"error":{"message":"unknown field enable_thinking"}}`)) {
+		t.Fatal("enable_thinking 422 应命中")
+	}
+	if aiRejectsThinkingParam(400, []byte(`{"error":{"message":"invalid api key"}}`)) {
+		t.Fatal("无关 400 不应命中")
+	}
+	if aiRejectsThinkingParam(500, []byte(`thinking`)) {
+		t.Fatal("非 400/422 不应命中")
+	}
+}
+
 func TestAIOpenAIMessages(t *testing.T) {
 	out, err := aiOpenAIMessages([]Message{
 		{Role: "system", Content: "sys"},
@@ -1338,6 +1399,69 @@ func TestAIStreamDropsStreamOptionsWhenRejected(t *testing.T) {
 	}
 }
 
+// 关思考参数被网关拒收（同一模型在不同网关方言不同）：摘掉该字段重发一次。
+func TestAIStreamDropsThinkingParamWhenRejected(t *testing.T) {
+	var requestCount int32
+	var firstBody, secondBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := atomic.AddInt32(&requestCount, 1)
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if n == 1 {
+			firstBody = body
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = fmt.Fprint(w, `{"error":{"message":"field Thinking.Type invalid, should be one of: enabled"}}`)
+			return
+		}
+		secondBody = body
+		w.Header().Set("Content-Type", "text/event-stream")
+		writeSSEJSON(w, map[string]any{"choices": []any{map[string]any{
+			"delta": map[string]any{"content": "测试新版Plan模式"}, "finish_reason": "stop",
+		}}})
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	cfg := Config{BaseURL: server.URL + "/v1", APIKey: "k", Model: "glm-5.3", Temperature: 0.2, Proxy: "direct"}
+	events, err := runAIStreamForTestRetry(cfg, []Message{{Role: "user", Content: "hi"}}, nil, 0)
+	if err != nil {
+		t.Fatalf("StreamResponse: %v", err)
+	}
+	if _, ok := firstBody["thinking"]; !ok {
+		t.Fatalf("首个请求应带按模型名猜出的 thinking 参数：%#v", firstBody)
+	}
+	if _, ok := secondBody["thinking"]; ok {
+		t.Fatalf("重发请求不该再带 thinking：%#v", secondBody)
+	}
+	if got := atomic.LoadInt32(&requestCount); got != 2 {
+		t.Fatalf("请求数 = %d，想要 2（400 后摘参数重发）", got)
+	}
+	if got := aiJoinedDelta(events, EventChunk); !strings.Contains(got, "测试新版Plan模式") {
+		t.Fatalf("重发后正文缺失：%q", got)
+	}
+}
+
+// 本来就没发关思考参数的模型（sensenova 系）遇到点名 thinking 的 400 不许重发。
+func TestAIStreamNoThinkingDropWithoutParam(t *testing.T) {
+	var requestCount int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&requestCount, 1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = fmt.Fprint(w, `{"error":{"message":"thinking budget invalid"}}`)
+	}))
+	defer server.Close()
+
+	cfg := Config{BaseURL: server.URL + "/v1", APIKey: "k", Model: "sensenova-6.8-flash", Proxy: "direct"}
+	if _, err := runAIStreamForTestRetry(cfg, []Message{{Role: "user", Content: "hi"}}, nil, 0); err == nil {
+		t.Fatal("应如实报错")
+	}
+	if got := atomic.LoadInt32(&requestCount); got != 1 {
+		t.Fatalf("没发参数就不该重发，请求数 = %d", got)
+	}
+}
+
 // 与 stream_options 无关的 400 不许被当成兼容问题循环重发。
 func TestAIStreamNoDropForUnrelated400(t *testing.T) {
 	var requestCount int32
@@ -1355,5 +1479,41 @@ func TestAIStreamNoDropForUnrelated400(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&requestCount); got != 1 {
 		t.Fatalf("无关 400 不该重发，请求数 = %d", got)
+	}
+}
+
+// 空闲超时可配置：resolveIdleTimeout 把秒数钳到 [30, 3600]，缺省取 120 秒。
+func TestResolveIdleTimeout(t *testing.T) {
+	tests := []struct {
+		name string
+		sec  int
+		want time.Duration
+	}{
+		{"缺省取 120 秒", 0, 120 * time.Second},
+		{"负数取默认", -5, 120 * time.Second},
+		{"低于下限钳到 30 秒", 10, 30 * time.Second},
+		{"正常值原样", 300, 300 * time.Second},
+		{"超过上限钳到 3600 秒", 7200, 3600 * time.Second},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := resolveIdleTimeout(tc.sec); got != tc.want {
+				t.Fatalf("resolveIdleTimeout(%d) = %v，期望 %v", tc.sec, got, tc.want)
+			}
+		})
+	}
+}
+
+// 超时错误文案带实际秒数，同时保留 ErrIdleTimeout 哨兵供 errors.Is 判定。
+func TestIdleTimeoutErrorCarriesSeconds(t *testing.T) {
+	err := &idleTimeoutError{seconds: 300}
+	if got := err.Error(); got != "AI 响应超时（300 秒无数据）" {
+		t.Fatalf("错误文案 = %q", got)
+	}
+	if !errors.Is(err, ErrIdleTimeout) {
+		t.Fatal("errors.Is 应命中 ErrIdleTimeout 哨兵")
+	}
+	if errors.Is(errors.New("其它错误"), ErrIdleTimeout) {
+		t.Fatal("无关错误不应命中 ErrIdleTimeout")
 	}
 }

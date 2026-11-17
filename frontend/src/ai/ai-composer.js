@@ -1,11 +1,13 @@
 // ai-composer.js：AI 面板输入区与附件域（附件条 / 图片准备 / 引用与技能附加 / 输入框交互 / 排队草稿捕获）。
 // 从 ai-panel.js 拆出（docs/unfinished-plans/structure-cleanup.md 阶段 3），函数体逐字搬移。
-// attachments 与 queueSeq 为本域私有 let（attachments 经 getAttachments/setAttachments 供面板与消息队列访问）；
-// attachSeq 留在面板（executeTool /clear 会重置），经 nextAttachSeq() 取号。
+// attachments 为本域私有 let（经 getAttachments/setAttachments 供面板与消息队列访问）；
+// 排队 item 的 id 由队列模型生成（ai-message-queue.js）；attachSeq 留在面板（executeTool /clear 会重置），
+// 经 nextAttachSeq() 取号。
 import {aiTextOf, aiImageSrc, AI_IMAGE_LIMIT, AI_IMAGE_MAX_BASE64, AI_IMAGE_MAX_DIM, AI_IMAGE_MAX_INPUT_BYTES, AI_IMAGE_MESSAGE_BUDGET,
     AI_VIDEO_LIMIT, AI_VIDEO_MAX_INPUT_BYTES, AI_VIDEO_MAX_BASE64, AI_VIDEO_MIMES, aiVideoFromSrc, bufferToBase64, isReadableVideoPath} from './ai-constants.js';
 import {prepareImagePayload} from './ai-image-encode.js';
 import {AI_QUOTE_KIND, quoteChipLabel, quoteExcerpt} from './ai-quote.js';
+import {dataUrlToFile} from '../core/image-clipboard.js';
 
 export function createAIComposer(ctx) {
     const el = ctx.el;
@@ -31,6 +33,7 @@ export function createAIComposer(ctx) {
     const handleSlashText = ctx.handleSlashText;
     const enqueueComposerMessage = ctx.enqueueComposerMessage;
     const interjectComposerMessage = ctx.interjectComposerMessage;
+    const preemptComposerMessage = ctx.preemptComposerMessage;
     const renderMessageQueue = ctx.renderMessageQueue;
     const entryOf = ctx.entryOf;
     const sessionImageBytes = ctx.sessionImageBytes;
@@ -43,7 +46,6 @@ export function createAIComposer(ctx) {
 
     // —— 随域迁入的输入区状态（原 ai-panel.js 闭包级）——
     let attachments = [];
-    let queueSeq = 0;
 
     function renderAttachments() {
         if (!el.attach) return;
@@ -441,7 +443,8 @@ export function createAIComposer(ctx) {
         el.input.style.height = Math.min(max, Math.max(44, el.input.scrollHeight)) + 'px';
     }
 
-    // ev：点击事件可带 Ctrl/Meta——生成中点发送按钮 = 排队，按住 Ctrl 点 = 插话（与 Ctrl+Enter 同路）。
+    // ev：点击事件可带 Ctrl/Meta——生成中点发送按钮 = 排队，按住 Ctrl 点 = 插话（与 Ctrl+Enter 同路），
+    // Ctrl+Shift 点 = 抢占（停掉当前轮，与 Ctrl+Shift+Enter 同路）。
     function submitFromComposer(ev) {
         if (!el.input) return;
         const text = el.input.value;
@@ -451,13 +454,27 @@ export function createAIComposer(ctx) {
             handleSlashText(trimmed);
             return;
         }
+        sendComposerMessage(text, ev);
+    }
+
+    // 直发/排队统一出口：submitFromComposer 与斜杠技能调用（ai-slash.js）共用。
+    // ev：来自输入区手势（Enter/发送按钮）时用于生成中的排队/插话/抢占分流；
+    // 斜杠技能调用传 null（只排队不抢占）。排队一律 plain: true——技能调用文本以 / 开头
+    // 但已是待发消息，不能再转回 handleSlashText（会死循环）。
+    function sendComposerMessage(text, ev) {
+        if (!el.input) return;
+        el.input.value = text;
+        resizeInput();
+        updateSendState();
         // 只有本会话在生成 / 压缩时才并入排队；别的会话在跑不影响本会话直接发送。
         if (syncStreamView() || compactOf((currentSession() || {}).id)) {
-            const interject = !!(ev && (ev.ctrlKey || ev.metaKey));
-            if (interject) {
-                interjectComposerMessage();
+            const ctrl = !!(ev && (ev.ctrlKey || ev.metaKey));
+            if (ctrl && ev.shiftKey) {
+                preemptComposerMessage({plain: true});
+            } else if (ctrl) {
+                interjectComposerMessage({plain: true});
             } else {
-                enqueueComposerMessage();
+                enqueueComposerMessage({plain: true});
             }
             return;
         }
@@ -509,10 +526,16 @@ export function createAIComposer(ctx) {
             return;
         }
         if (e.key !== 'Enter') return;
+        // 生成中三手势（方案 §4.1）：Enter 排队 / Ctrl+Enter 插话（不打断）/
+        // Ctrl+Shift+Enter 抢占（停掉重来）；Shift+Enter 与 Alt+Enter 保持换行（现状）。
         if (syncStreamView() || compactOf((currentSession() || {}).id)) {
-            if (e.shiftKey || e.altKey) return;
+            if (e.altKey) return;
+            const ctrl = e.ctrlKey || e.metaKey;
+            if (!ctrl && e.shiftKey) return;   // Shift+Enter 换行
             e.preventDefault();
-            if (e.ctrlKey || e.metaKey) {
+            if (ctrl && e.shiftKey) {
+                preemptComposerMessage();
+            } else if (ctrl) {
                 interjectComposerMessage();
             } else {
                 enqueueComposerMessage();
@@ -538,12 +561,11 @@ export function createAIComposer(ctx) {
         if (!text && !items.length) return null;
         const session = currentSession();
         if (!session) return null;
-        const item = {
-            id: ++queueSeq,
+        // id / ts / delivery 由队列模型生成（跨端合并按字符串 id 去重）
+        const payload = {
             sessionId: session.id,
             text,
             attachments: items,
-            ts: Date.now(),
         };
         el.input.value = '';
         resizeInput();
@@ -551,7 +573,7 @@ export function createAIComposer(ctx) {
         renderAttachments();
         hideSlash();
         updateSendState();
-        return item;
+        return payload;
     }
 
     function editQueuedMessage(item) {
@@ -564,12 +586,10 @@ export function createAIComposer(ctx) {
         const draftAttachments = attachments.slice();
         let queuedDraft = false;
         if (draftText || draftAttachments.length) {
-            queue.pushItem({
-                id: ++queueSeq,
+            queue.enqueue({
                 sessionId: session.id,
                 text: draftText,
                 attachments: draftAttachments,
-                ts: Date.now(),
             });
             el.input.value = '';
             attachments = [];
@@ -603,28 +623,7 @@ export function createAIComposer(ctx) {
         }
     }
 
-    // data URL → File：右键菜单粘贴到的图片由后端以 data URL 返回，复用粘贴/拖拽的压缩管线。
-    function dataUrlToFile(dataUrl, name) {
-        const raw = String(dataUrl || '');
-        const comma = raw.indexOf(',');
-        if (comma < 0) return null;
-        const header = raw.slice(0, comma);
-        const mime = (header.slice(header.indexOf(':') + 1).split(';')[0] || 'image/png').trim() || 'image/png';
-        let binary = '';
-        try {
-            binary = atob(raw.slice(comma + 1));
-        } catch (e) {
-            return null;
-        }
-        const bytes = new Uint8Array(binary.length);
-        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-        if (!bytes.length) return null;
-        try {
-            return new File([bytes], name || '粘贴的图片', {type: mime});
-        } catch (e) {
-            return null;
-        }
-    }
+    // dataUrlToFile 抽到 core/image-clipboard.js（快捷便签面板共用同一份）。
 
     // 右键菜单的「粘贴」拿不到 paste 事件（菜单点击不会触发剪贴板事件），
     // 图片只能请后端回读系统剪贴板，再走和 Ctrl+V 一样的附件流程。
@@ -712,6 +711,7 @@ export function createAIComposer(ctx) {
         attachSkillByName,
         resizeInput,
         submitFromComposer,
+        sendComposerMessage,
         handleComposerKey,
         currentQueueItems,
         captureComposerMessage,

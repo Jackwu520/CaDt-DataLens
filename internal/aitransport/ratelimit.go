@@ -106,8 +106,8 @@ func resetRateLimiter() {
 // acquireSlot 在真正发请求前拿名额；被限流时排队等待。
 //
 // 三个必须遵守的点：
-//   - 等待中必须持续 touch 看门狗，否则 120s IdleTimeout（types.go 的 ErrIdleTimeout）
-//     会把「排队中」的请求当成卡死直接杀掉；
+//   - 等待中必须持续 touch 看门狗，否则空闲超时（types.go 的 ErrIdleTimeout，默认 120s、
+//     可在设置里配置）会把「排队中」的请求当成卡死直接杀掉；
 //   - 等待必须能响应 ctx，否则用户点停止之后请求还会在队列里等着发出去；
 //   - 排队时长要通知前端（ai-queue），否则用户看到的是纯空转，比 429 更像卡死。
 func acquireSlot(ctx context.Context, cfg Config, id string, emit Emitter, touch func()) error {

@@ -5,13 +5,79 @@
 // （bridge-agent-view.js），悬浮窗退回面板内覆盖层 #ai-agent-view。
 import {createAIAgentView} from './ai-agent-view.js';
 import {createAIHeadHud} from './ai-head-hud.js';
+import {createAITeamView} from './ai-team-view.js';
+import {agentTreeText} from './ai-team-model.js';
 import {normalizeWorktreeState} from './ai-worktree.js';
 import {aiClampInt, aiNowId, aiTextOf, AI_COMPACT_SYSTEM_PROMPT} from './ai-constants.js';
-import {AI_TOOL_DEFS} from './ai-tool-defs.js';
+import {AI_TOOL_DEFS, buildSpawnAgentDef} from './ai-tool-defs.js';
 import {inspectToolArguments} from './ai-tool-args.js';
 import {buildSettlementNotice, buildAskNotice} from './ai-agent-notices.js';
 import {compactTranscriptOf, computeCompactCutoff, buildCompactSummary, applyCompactToSession, buildCompactMessages, compactThresholdOf, COMPACT_KEEP_TAIL} from './ai-compact.js';
 import {createLoopGuard} from './ai-loop-guard.js';
+
+// target 是否在 ancestorSessionId 的后代里（`agent_send` 的方向守卫）。
+// 从 lookup(target) 的**上级**开始追，因此天然排除自身——`agentUnderSessionBy` 当年从 target
+// 起点追，「起点就是祖先」也命中，才引出子代理自等的坑（2026-11-17 实测），这里不再重演。
+// lookup(id) 返回该代理的 parentSessionId，查不到返回空串（记录被 LRU 回收即如此）；
+// 查不到一律当「不是我的下级」——宁可让模型重派，也不让它把消息投进别人的树。
+export function agentDescendsFrom(agentId, ancestorSessionId, lookup) {
+    if (!ancestorSessionId) return false;
+    const self = String(agentId || '');
+    if (!self || self === ancestorSessionId) return false;
+    const find = typeof lookup === 'function' ? lookup : () => '';
+    let cur = String(find(self) || '');
+    for (let guard = 0; cur && guard < 32; guard++) {
+        if (cur === ancestorSessionId) return true;
+        cur = String(find(cur) || '');
+    }
+    return false;
+}
+
+// 某代理的直属上级会话：运行态优先，终态记录兜底。
+export function parentSessionIdOf(agentId, liveOf, recordOf) {
+    const live = liveOf ? liveOf.get(agentId) : null;
+    if (live && live.parentSessionId) return live.parentSessionId;
+    const rec = recordOf ? recordOf.get(agentId) : null;
+    return (rec && rec.parentSessionId) || '';
+}
+
+// wait_agent 默认与最短等待时长（对齐 dsh：等的是「我自己下一步的新输入」）。
+// 最短 5 秒是防呆：0 曾表示「不限时」，不建 deadline 时会永久悬挂（见 resolveWaitTimeoutSec）。
+export const AI_INBOX_WAIT_DEFAULT_SEC = 60;
+export const AI_INBOX_WAIT_MIN_SEC = 5;
+
+// 子代理轮次预算：一轮 = 一次模型请求（一轮里可并行多个工具调用）。
+// 默认值可在 设置 → AI 助手 → 子代理 → 默认轮次 调整；单次派单用 spawn_agent 的 maxRounds 覆盖。
+export const AI_SUB_ROUNDS_MIN = 3;
+export const AI_SUB_ROUNDS_MAX = 200;
+export const AI_SUB_ROUNDS_DEFAULT = 50;
+
+// 轮次预算的统一解析：配置值缺省 → 内置默认；单次显式值缺省 → 配置值。
+// 不能直接用 aiClampInt(explicit, min, max, fallback)：它把 null / '' 算成 0 再 clamp 到 3，
+// 于是「没给」会变成「只跑 3 轮」（同 resolveWaitTimeoutSec 的坑）。
+export function resolveSubAgentRounds(explicit, configured) {
+    const base = (configured === null || configured === undefined || configured === '')
+        ? AI_SUB_ROUNDS_DEFAULT
+        : aiClampInt(configured, AI_SUB_ROUNDS_MIN, AI_SUB_ROUNDS_MAX, AI_SUB_ROUNDS_DEFAULT);
+    if (explicit === null || explicit === undefined || explicit === '') return base;
+    return aiClampInt(explicit, AI_SUB_ROUNDS_MIN, AI_SUB_ROUNDS_MAX, base);
+}
+
+// wait_agent 的 timeoutSec 解析（导出供单测——这里是「永久悬挂」的唯一入口）。
+// 不能用裸 aiClampInt：它走 Math.round(Number(x))，null / '' / false 全部变成 0 且都是
+// finite（不会走 fallback），而 0 是不限时。2026-11-17 审查实测：模型传 "timeoutSec": null
+// 就会让工具调用永不返回（没有 deadline，只能等 notify 或停止）。
+export function resolveWaitTimeoutSec(value) {
+    if (value === null || value === undefined || value === '') return AI_INBOX_WAIT_DEFAULT_SEC;
+    return aiClampInt(value, AI_INBOX_WAIT_MIN_SEC, 600, AI_INBOX_WAIT_DEFAULT_SEC);
+}
+
+// 某子代理收件箱里「会被轮边界注入」的条数。ask 不算：它由 answerSubAsk 就地落定，不进队列。
+export function pendingInboxCount(sub) {
+    const inbox = sub && sub.inbox;
+    if (!inbox) return 0;
+    return (inbox.step || []).length + (inbox.turn || []).length;
+}
 
 // 收件箱双队列的纯函数部分（导出供单测：消费顺序与来源前缀是「插队优先、主/用户可辨」的
 // 唯一依据，闭包里改动不易测，这里单独留出来）。
@@ -21,9 +87,14 @@ export function takeInboxBatch(inbox) {
     return [...(inbox.step || []).splice(0), ...(inbox.turn || []).splice(0)];
 }
 
-// 来源前缀：主代理消息与用户插话在子代理上下文里必须能区分（agentView 输入行）。
+// 来源前缀：三方来源在子代理上下文里必须能区分（agentView 输入行）——
+// user = 用户插话；subagent = 下级代理的结算/提问回报（嵌套第 2 层起走这条）；
+// 其余（agent）= 派我的那个代理。**不写「主代理」**：嵌套时父是子代理，第 3 层看到
+// 「主代理消息」会认错来源（2026-11-17 审查）。
 export function inboxMessageText(item) {
-    const prefix = item && item.from === 'user' ? '［用户插话］' : '［主代理消息］';
+    const source = item && item.from;
+    const prefix = source === 'user' ? '［用户插话］'
+        : (source === 'subagent' ? '［下级代理回报］' : '［上级代理消息］');
     return prefix + ' ' + String((item && item.text) || '');
 }
 
@@ -36,11 +107,49 @@ export function canReviveRecord(record) {
 }
 
 // 记录是否诞生于本次唤醒之前（陈旧）：冷唤醒给旧记录打 revivedAt，新一轮落账时
-// finishedAt 会超过它。wait_agent 只有确认不陈旧才允许把 record 当结论返回，
-// 否则会把上一轮的结果当成本轮结果交给主代理（2026-11-15 实测缺陷）。
+// finishedAt 会超过它。**目前无生产调用者**——wait_agent 改成等收件箱后不再拿 record 当结论；
+// 保留是因为冷唤醒的「旧结论 vs 新一轮」判定仍需要这个语义（将来若加「等冷却唤醒完成」会用到）。
 export function isStaleRecord(record) {
     if (!record || !record.revivedAt) return false;
     return (Number(record.finishedAt) || 0) < record.revivedAt;
+}
+
+// 子代理记录按「根会话」归属（wait_agent / agent_send / agent_stop / agent_compact 共用口径）：
+// 任一侧为空时放行（兼容旧记录与尚未填充 rootSessionId 的运行），都填了就必须相等。
+// 别的任务树的 agentId 不能被投递 / 停止 / 压缩——那会消费对方收件箱或掐掉对方在跑的任务。
+export function subTreeOwned(ownerRootId, recordRootId) {
+    if (!ownerRootId || !recordRootId) return true;
+    return ownerRootId === recordRootId;
+}
+
+// 某代理的整棵子树（全部层级的孙代理 / 曾孙代理），返回 id 列表（不含 rootId）。
+// 用于 agent_stop 级联：主代理手上只有直接下级的 id，嵌套代理的 id 它看不到。
+// subs 是运行态 / 记录条目数组（需带 id 与 parentSessionId），BFS 按 parentSessionId 链展开。
+export function subTreeIdsOf(subs, rootId) {
+    const root = String(rootId || '');
+    const list = subs ? [...subs] : [];
+    if (!root || !list.length) return [];
+    const byParent = new Map();
+    for (const sub of list) {
+        if (!sub || !sub.id) continue;
+        const pid = String(sub.parentSessionId || '');
+        if (!pid) continue;
+        if (!byParent.has(pid)) byParent.set(pid, []);
+        byParent.get(pid).push(String(sub.id));
+    }
+    const out = [];
+    const seen = new Set([root]);
+    const queue = [root];
+    while (queue.length) {
+        const pid = queue.shift();
+        for (const id of byParent.get(pid) || []) {
+            if (seen.has(id)) continue;
+            seen.add(id);
+            out.push(id);
+            queue.push(id);
+        }
+    }
+    return out;
 }
 
 // 子代理权限档：**继承父会话**，不写死 readonly。
@@ -174,6 +283,15 @@ export function createAISubagents(ctx) {
     // read_video 下发按会话视频能力裁剪（与主会话同判定）；缺省恒 true 兼容无该依赖的测试
     const videoCapableOf = typeof ctx.videoCapableOf === 'function' ? ctx.videoCapableOf : (() => true);
     const configForProfile = ctx.configForProfile;
+    // 子代理请求配置（模型档）：设置 → AI 助手 → 子代理里指定了专用模型就走它，否则跟随
+    // 派出方的模型。缺省回退 configForProfile，兼容不含该依赖的测试上下文。
+    const subAgentConfigFor = typeof ctx.subAgentConfigFor === 'function' ? ctx.subAgentConfigFor : configForProfile;
+    // 子代理模型档目标（null = 跟随派出方）。缺省返回 null，兼容不含该依赖的测试上下文。
+    const subAgentModelTarget = typeof ctx.subAgentModelTarget === 'function' ? ctx.subAgentModelTarget : () => null;
+    // 本次派单点名的模型（白名单校验在 ai-panel 一侧完成；候选外的值直接抛错）。
+    const subAgentModelPick = typeof ctx.subAgentModelPick === 'function' ? ctx.subAgentModelPick : () => null;
+    // 自选模型候选清单：孙代理的 spawn_agent 也要看到同一份候选（def 动态生成）。
+    const subAgentModelChoices = typeof ctx.subAgentModelChoices === 'function' ? ctx.subAgentModelChoices : () => [];
     const executeTool = ctx.executeTool;
     // read_image 把画面挂成独立 user 消息：必须在工具批次结束后落盘（批次中途 push 会拆开
     // assistant(tool_calls) 与 tool 结果），与主循环共用面板那一份 flush。
@@ -205,15 +323,22 @@ export function createAISubagents(ctx) {
     // 压缩判定需要「窗口大小」与「当前上下文估算」——与主会话同一口径，不另立一套
     const contextWindowOf = ctx.contextWindowOf;
     const estimateApiMessagesTokens = ctx.estimateApiMessagesTokens;
+    // 等待原语（ai-inbox-wait.js）：子代理收件箱入队即唤醒在该代理上 wait_agent 的调用方
+    // （典型是父代理在等这个下级回报）。内容仍在轮边界由 consumeSubInbox 注入。
+    const inboxWaiters = ctx.inboxWaiters;
+    // 主会话「队列里已有用户插话 / 排队消息」的判定。**必须在这里取**：工具 ctx 只有
+    // {session, toolMessage, stream}，从那里读恒为 undefined（等于把这个判定关掉）。
+    const hasQueuedInput = ctx.hasQueuedInput;
 
     // —— 随域迁入的子代理状态与限额常量（原 ai-panel.js 闭包级）——
     const AI_SUB_LIMIT_DEFAULT = 20;
     const AI_SUB_LIMIT_MAX = 20;
     const AI_SUB_DEPTH_MAX = 20;
-    // 主对话没有逐轮硬上限（靠 auto-compact 控体量）；子代理暂无压缩机制，
-    // 硬上限是唯一闸门——按重型只读探索/规划的真实体量放宽（1M 窗口模型
-    // 数百条消息仍远未满），撞顶时由强制收尾轮产出结论（见 runSubRound）。
-    const AI_SUB_ROUNDS_DEFAULT = 50;
+    // wait_agent 的默认 / 最短时长在模块级（AI_INBOX_WAIT_DEFAULT_SEC / _MIN_SEC），
+    // 因为 resolveWaitTimeoutSec 是导出的纯函数，两者必须同一来源。
+    // 主对话没有逐轮硬上限（靠 auto-compact 控体量）；子代理的轮次预算可在设置里调
+    // （AI_SUB_ROUNDS_DEFAULT 是内置默认），撞顶时由强制收尾轮产出结论（见 runSubRound）。
+    // AI_SUB_MESSAGES_MAX 是第二道闸门：工具调用多时可能先撞消息数而不是轮次。
     const AI_SUB_MESSAGES_MAX = 400;
     // 终态记录保留上限（LRU）：超出先降级为「仅状态 + 结论摘要、不可续」，再超就删最早的。
     // 冷唤醒与子代理压缩都需要活引用（sub.session / profile / entry），不能 done 即删。
@@ -248,6 +373,8 @@ export function createAISubagents(ctx) {
         queueSubAgentMessage: (...args) => queueSubAgentMessage(...args),
         reviveSubAgent: (...args) => reviveSubAgent(...args),
         stopSubAgent: (...args) => stopSubAgent(...args),
+        // 详情视图的手动停止：级联停掉该代理派出的全部下级（自停 / 自动停止仍走 stopSubAgent）
+        stopSubAgentDeep: (...args) => stopSubTree(...args),
         startSubCompact: (...args) => startSubCompact(...args),
         agentStateBadge: (...args) => agentStateBadge(...args),
     });
@@ -259,6 +386,10 @@ export function createAISubagents(ctx) {
     const mountAgentView = (...args) => viewMod.mountAgentView(...args);
     const unmountAgentView = (...args) => viewMod.unmountAgentView(...args);
 
+    // 团队详情视图（内容区标签页）：数据取自 HUD 的同源条目（listAgentsForHud 支持指定会话）。
+    // 与 HUD 互引：teamMod 先声明、后赋值，HUD 的 onAgentsChanged 经闭包延迟读取。
+    let teamMod = null;
+
     // 头部 HUD（phase3 A4b 拆出的同域兄弟模块）：ctx 同源直传；运行态注册表（const Map 活引用）
     // 与运行时动作 / 视图入口经 extras 注入。留守侧调用点（运行时刷新 / 派单归属判定）与
     // 返回面经同名惰性别名零改动。
@@ -266,6 +397,9 @@ export function createAISubagents(ctx) {
         subAgents, subAgentRecords,
         unseenInboxCount: (...args) => unseenInboxCount(...args),
         openAgentView: (...args) => openAgentView(...args),
+        onAgentsChanged: () => {
+            if (teamMod) teamMod.refreshTeamViewsIfOpen();
+        },
     });
     const sessionTitleOf = (...args) => hudMod.sessionTitleOf(...args);
     const sessionTitleById = (...args) => hudMod.sessionTitleById(...args);
@@ -293,6 +427,13 @@ export function createAISubagents(ctx) {
     const renderChipsPop = (...args) => hudMod.renderChipsPop(...args);
     const toggleChipsPop = (...args) => hudMod.toggleChipsPop(...args);
     const initHud = (...args) => hudMod.initHud(...args);
+    // HUD 就绪后建团队视图（依赖 listAgentsForHud，故排在 hudMod 之后）
+    teamMod = createAITeamView(ctx, {
+        listAgentsForHud: (...args) => listAgentsForHud(...args),
+        openAgentView: (...args) => openAgentView(...args),
+    });
+    const mountTeamView = (...args) => teamMod.mountTeamView(...args);
+    const unmountTeamView = (...args) => teamMod.unmountTeamView(...args);
     // 收件箱（阶段 C 起启用）：排队 / 插队 / 提问挂起。这里先建结构，B 阶段不消费。
     function newSubInbox() {
         return {step: [], turn: [], ask: null};
@@ -303,14 +444,22 @@ export function createAISubagents(ctx) {
         return aiClampInt(getConfig().subAgentMax, 1, AI_SUB_LIMIT_MAX, AI_SUB_LIMIT_DEFAULT);
     }
 
-    // 0 = 不设限；N = 子代理最多再往下递归 N 层（depth 从主代理派出的第 1 层开始计）。
+    // 0 = 不设限；N = 整棵树最多 N 层（**含主代理**：主代理第 1 层，直接派出的子代理第 2 层）。
+    // 内部 depth 仍以主代理为 0，判定时 +1 换算成层号，与界面/工具文案同一口径。
+    // 设置里的默认轮次预算（spawn_agent 未点名 maxRounds 时用）。值经纯函数钳制，
+    // 也顺手喂给工具描述，让模型看到的是真实默认值而不是写死的 50。
+    function subAgentRoundsDefault() {
+        return resolveSubAgentRounds(undefined, getConfig().subAgentRounds);
+    }
+
     function subAgentMaxDepth() {
         return aiClampInt(getConfig().subAgentMaxDepth, 0, AI_SUB_DEPTH_MAX, 0);
     }
 
+    // depth 是当前代理自己的 depth；它派出的子代理层号是 depth + 2。
     function subAgentCanSpawn(depth) {
         const maxDepth = subAgentMaxDepth();
-        return !maxDepth || depth < maxDepth;
+        return !maxDepth || depth + 1 < maxDepth;
     }
 
     function subSystemPromptFor(depth, mode, hasWorktree) {
@@ -320,7 +469,12 @@ export function createAISubagents(ctx) {
             text += '\n关键决策点可以用 ask_user 向主代理提问（由主代理决定答案，或转询用户）：等待回答期间你的轮次暂停，约 2 分钟没有回答就请基于现有上下文自行决定并继续。';
         }
         if (subAgentCanSpawn(depth)) {
-            text += '\n需要并行 / 隔离调查时可以再用 spawn_agent 派下一层只读子代理（总数与层级受设置限制）；简单问题直接自己做。';
+            text += '\n需要并行 / 隔离调查时可以再用 spawn_agent 派下一层只读子代理（并发数与层级受设置限制）；简单问题直接自己做。'
+                + '\n用 mode=\'background\' 派出后可以 wait_agent 等下一步输入：下级的完成通知会进你的收件箱，'
+                + '任一回报到达时 wait 立即返回，你在下一轮开头读到；不 wait 也可以，通知同样会在下一轮注入。'
+                + '\n下级向你提问时（收件箱里的「［子代理提问 · X］… askId=…」）用 agent_send(agentId=…, askId=…, message=…) 作答；'
+                + '也可以 agent_send 给运行中的下级补线索（urgent=true 插队纠正方向）。你只能发给自己派出的下级——'
+                + '要向上汇报请写在最终结论里，主代理会收到。';
         }
         if (hasWorktree) {
             text += '\n你有一个隔离 git worktree 作为草稿工作区：所有文件改动写到 .cadt/worktree/<slug>/…（相对范围根，路径见派单信息），隔离前缀之外的写会被拒绝；写操作自动应用（隔离区即审批边界），隔离前缀之外一律不要写。'
@@ -335,7 +489,9 @@ export function createAISubagents(ctx) {
             + '，其余写入由系统拒绝。'
             + '\n**沙箱里的 shell 是 PowerShell，不是 bash**：用 PowerShell 语法（Get-ChildItem / Select-String / Test-Path），不要用 ls / grep / sed / awk；git、go、npm 等外部命令本身不受影响。'
             + '\n耗时任务（构建、长测试、watch）用 background_command 起、check_command 轮询、stop_command 收尾，别用 run_command 干等。'
-            + '\n被沙箱拒绝或提示「沙箱不可用」时不要重试、不要绕道用别的工具改文件，在结论里如实写「因沙箱限制未验证」。';
+            + '\n被沙箱拒绝或提示「沙箱不可用」时不要重试、不要绕道用别的工具改文件，在结论里如实写「因沙箱限制未验证」。'
+            + '\n其中报「授权写根 … Access is denied」是宿主机权限问题（工作区目录属于另一个账户，当前账户没有它的「更改权限」），'
+            + '本次会话的命令通道不可用：改用只读工具完成调查，并在结论里说明哪些结论未用命令验证。';
         return text;
     }
 
@@ -346,12 +502,19 @@ export function createAISubagents(ctx) {
             AI_TOOL_DEFS.memory_list, AI_TOOL_DEFS.memory_read,
             // 主会话计时器的只读快照：子代理与孙代理共享本表，只有读权（不能启动 / 停止 / 打标记）
             AI_TOOL_DEFS.timer_list,
+            // 团队树只读：子代理看到自己这一支（含自己派出的下级），用于汇报结构 / 拿下级 id
+            AI_TOOL_DEFS.agent_tree,
             AI_TOOL_DEFS.skill_use, AI_TOOL_DEFS.env_list,
         ];
         // ask_user 只在后台模式挂载（§4.5 原语 6 的实现陷阱）：阻塞模式的父回合被 await
         // 占住，没人能回答，挂上去必然 120s 超时——按模式硬性区分，不靠提示词自觉。
         if (mode === 'background') list.push(AI_TOOL_DEFS.ask_user);
-        if (subAgentCanSpawn(depth)) list.push(AI_TOOL_DEFS.spawn_agent);
+        if (subAgentCanSpawn(depth)) list.push(buildSpawnAgentDef(subAgentModelChoices(), subAgentRoundsDefault()), AI_TOOL_DEFS.wait_agent);
+        // agent_send 与 spawn/wait 同批挂：能派单就必须能收回报、也能回答下级的提问。
+        // 此前只有主代理有它，于是嵌套提问（层3 问 → 层2 答）在层2 手里没有作答工具，
+        // 只能等 120s 超时按 ai_decide 放行（2026-11-17 审查发现，方案文档 §5）。
+        // 只有「还能派单的层」才可能有下级，到层级上限的层给了也没对象；方向限死为自己的下级。
+        if (subAgentCanSpawn(depth)) list.push(AI_TOOL_DEFS.agent_send);
         // 隔离 worktree 子代理：挂写工具（写效应圈定在自己的隔离前缀内，applyWorkspaceWrite
         // 里闸；审批链不适用于子代理——隔离区即审批边界，回灌由主代理 export 走人工 patch 卡）。
         if (hasWorktree) list.push(AI_TOOL_DEFS.write_file, AI_TOOL_DEFS.edit_file);
@@ -452,20 +615,22 @@ export function createAISubagents(ctx) {
         const name = aiTextOf(input.name).trim() || '子代理';
         const task = aiTextOf(input.task).trim();
         if (!task) throw new Error('task 不能为空');
-        const maxRounds = aiClampInt(input.maxRounds, 3, 200, AI_SUB_ROUNDS_DEFAULT);
+        const maxRounds = resolveSubAgentRounds(input && input.maxRounds, getConfig().subAgentRounds);
         const parentDepth = aiClampInt(ctx && ctx.agentDepth, 0, AI_SUB_DEPTH_MAX, 0);
         const depth = parentDepth + 1;
         const maxDepth = subAgentMaxDepth();
-        if (maxDepth && depth > maxDepth) {
-            throw new Error('子代理递归层级已达上限（最多 ' + maxDepth + ' 层）');
+        // 层号含主代理（主代理 = 第 1 层），depth 从主代理派出的第 1 层子代理开始算。
+        if (maxDepth && depth + 1 > maxDepth) {
+            throw new Error('子代理层级已达上限（最多 ' + maxDepth + ' 层，含主代理）');
         }
-        // 总数上限覆盖全部层级：主代理派单时等待空位，子代理再派直接拒绝（否则会与祖先互相等待）。
+        // 并发上限覆盖全部层级：主代理派单时等待空位，子代理再派直接拒绝（否则会与祖先互相等待）。
+        // activeSubCount 只数「运行中」，历史记录不计——所以这是**并发**上限，不是累计总数上限。
         // 后台模式不等待：排到队尾再等空位等于把工具调用变回阻塞，直接让模型稍后重试或改阻塞模式。
         const limit = subAgentLimit();
         if (activeSubCount() >= limit) {
-            if (depth > 1) throw new Error('子代理总数已达上限 ' + limit + '（含各层级），无法继续派出');
+            if (depth > 1) throw new Error('子代理并发已达上限 ' + limit + '（含各层级运行中的），无法继续派出');
             if (mode === 'background') {
-                throw new Error('子代理总数已达上限 ' + limit + '，暂时无法派出后台子代理（可等现有子代理完成后再派，或改用阻塞模式排队）');
+                throw new Error('子代理并发已达上限 ' + limit + '，暂时无法派出后台子代理（可等现有子代理完成后再派，或改用阻塞模式排队）');
             }
             while (activeSubCount() >= limit) await aiDelay(300);
         }
@@ -476,9 +641,14 @@ export function createAISubagents(ctx) {
         // 计时器只读共享用：派单时把「最初发起任务的主会话 id」逐层透传。
         // 递归派单时 parentSessionId 会变成上一层子代理 id，支线会话里光靠 rootSessionId 会丢主会话。
         const originSessionId = parentSession.originSessionId || parentSession.id;
-        // 子代理继承「发起它的会话」的模型，而不是窗口默认
-        const profile = profileOf(parentSession);
-        const entry = entryOf(parentSession);
+        // 子代理继承「发起它的会话」的模型；设置里指定了子代理专用模型（模型档）时改用那个。
+        // 「派出时定死」与沙箱档位同一处理：窗口 / 视频能力 / 压缩基数 / 请求模型全部同源。
+        // 模型档三级优先：本次调用点名的（已过白名单，候选外直接抛错）> 设置里的默认子代理模型
+        // > 跟随派出它的会话。抛错即派单失败，错误信息里带合法候选清单。
+        const pickedModel = subAgentModelPick(input && input.model);
+        const modelTarget = pickedModel || subAgentModelTarget();
+        const profile = modelTarget ? modelTarget.account : profileOf(parentSession);
+        const entry = modelTarget ? modelTarget.entry : entryOf(parentSession);
         if (!profile) throw new Error('无可用 AI 配置');
         const toolMessage = ctx.toolMessage;
         const sub = {
@@ -524,7 +694,10 @@ export function createAISubagents(ctx) {
             rootSessionId,
             originSessionId,
             workspace: parentSession.workspace || '',
-            profileId: parentSession.profileId,
+            // 模型 pin 到本次派单实际要用的账号/条目（模型档或父会话）：上下文窗口最窄处
+            // （contextWindowOf）与视频能力都从这里解析，不能在请求侧换模型而不改这里。
+            profileId: profile.id,
+            modelId: entry ? entry.id : '',
             // 继承母会话的「本次会话上下文上限」：省占用的意图覆盖整个会话活动
             //（子代理 auto-compact 的窗口基数随 contextWindowOf 一并收窄）
             ctxLimit: Number(parentSession.ctxLimit) || 0,
@@ -584,7 +757,7 @@ export function createAISubagents(ctx) {
             stopped: false,
             wrapUp: false,
             toolCalls: new Map(),
-            profileCfg: configForProfile(profile, entry),
+            profileCfg: subAgentConfigFor(profile, entry),
             systemPrompt: subSystemPromptFor(depth, mode, !!sub.worktree),
             usage: null,
         };
@@ -631,7 +804,10 @@ export function createAISubagents(ctx) {
         if (!s.wrapUp && (s.roundNo >= sub.maxRounds || sub.session.messages.length > AI_SUB_MESSAGES_MAX)) {
             // 预算用尽不再直接收尾：先跑一轮「无工具强制总结」——探索成果不能扔，
             // 占位符只会让主代理拿不到任何可用结论（2026-11-14 实测）。
-            // 收尾轮不带工具（模型只能输出文本），roundId 继续递增保唯一。
+            // 收尾轮不下发任何工具：模型只能输出文本（工具表的选择见 runSubRound 里的 tools；
+            // Go 侧空数组不下发 tools 字段）。万一模型仍幻觉出工具调用，runSubToolRound
+            // 直接拒绝并立即收尾——否则「拒绝 → 再请求 → 再幻觉」在收尾轮会没有轮次上限兜底。
+            // roundId 继续递增保唯一。
             s.wrapUp = true;
             sub.session.messages.push({
                 role: 'user',
@@ -660,8 +836,11 @@ export function createAISubagents(ctx) {
             return;
         }
         const apiMessages = buildApiMessages(sub.session, index, s.systemPrompt);
+        // 收尾轮明确不下发工具（注释承诺的「模型只能输出文本」）。Go 侧三套 body 都是
+        // `if len(tools) > 0` 才写 tools 字段，空数组等价于「无工具」，不会让服务商报错。
+        const tools = s.wrapUp ? [] : subToolsForScope(sub.depth, sub.mode, !!sub.worktree, sub.session);
         try {
-            const request = backend.AISendChat(s.roundId, s.profileCfg, apiMessages, subToolsForScope(sub.depth, sub.mode, !!sub.worktree, sub.session), getConfig().retryMax);
+            const request = backend.AISendChat(s.roundId, s.profileCfg, apiMessages, tools, getConfig().retryMax);
             if (request && typeof request.then === 'function') {
                 request.catch((e) => finalizeSubAgent(sub, 'error', (e && e.message) || String(e || '请求失败')));
             }
@@ -672,6 +851,26 @@ export function createAISubagents(ctx) {
 
     async function runSubToolRound(sub, calls, argErrors) {
         const s = sub.flow;
+        // 收尾轮本就不下发工具（见 runSubRound 的 tools 选择）。模型仍幻觉出工具调用时
+        // 一律拒绝并**立即收尾**——否则「拒绝 → 再请求 → 再幻觉」会在收尾轮无限循环，
+        // 而 wrapUp 已没有轮次上限兜底（模型此刻该做的是写总结，不是再要工具）。
+        if (s.wrapUp) {
+            for (const call of calls) {
+                sub.session.messages.push({
+                    role: 'tool',
+                    toolCallId: call.id,
+                    name: call.name,
+                    arguments: call.arguments,
+                    content: '收尾轮不再执行工具（轮次预算已用尽）：请直接输出最终结论。',
+                    status: 'error',
+                    ts: Date.now(),
+                });
+            }
+            subTranscriptPush(sub, {role: 'tool', name: (calls[0] && calls[0].name) || 'tool',
+                text: '收尾轮拒绝工具调用，直接收尾'});
+            finalizeSubAgent(sub, 'done');
+            return;
+        }
         // 子代理工具执行期间喂自己的流看门狗（与主流工具心跳同理）
         if (!sub.heartbeat && backend.AITouchStream) {
             sub.heartbeat = setInterval(() => {
@@ -940,6 +1139,27 @@ export function createAISubagents(ctx) {
         return record;
     }
 
+    // 投向「发起方」的唯一入口（结算与提问共用）。
+    // 关键：子代理会话**不进 sessions 表**（见 ai-panel.js 的子会话判据），所以
+    // sessionById(parentSessionId) 对嵌套代理恒为 null——第 2 层起的结算 / 提问通知
+    // 曾因此全部静默丢失（2026-11-17 五层嵌套实测：层5-A2a 的结论没回到层4-A2）。
+    // 父是运行中的子代理时投它的收件箱（下一轮边界消费），否则走会话信箱。
+    // 返回是否投出，供调用方决定要不要降级提示。
+    function deliverToParent(sub, notice) {
+        if (!sub || !sub.parentSessionId) return false;
+        const parentSub = subAgents.get(sub.parentSessionId);
+        if (parentSub && parentSub.state === 'running') {
+            queueSubAgentMessage(parentSub, notice.content, {from: 'subagent'});
+            return true;
+        }
+        const parent = sessionById(sub.parentSessionId);
+        if (!parent) return false;
+        const hub = noticesLike();
+        if (!hub) return false;
+        const receipt = hub.deliverAgentNotice(parent, notice);
+        return !!(receipt && receipt.ok);
+    }
+
     function finalizeSubAgent(sub, state, note, options) {
         if (sub.state !== 'running') return;
         sub.state = state;
@@ -1010,14 +1230,14 @@ export function createAISubagents(ctx) {
         if (session && sub.parentToolMessage) refreshToolWrap(session, sub.parentToolMessage);
         // 结算通知（原语 5 / 7）：后台模式专属——阻塞模式的结论已经作为工具结果交给主代理，
         // 再注入一份就是重复上下文。stopped 由发起方（用户 / agent_stop）自己知道，不发通知。
-        if (sub.mode === 'background' && (state === 'done' || state === 'error') && session) {
-            const hub = noticesLike();
-            if (hub) {
-                hub.deliverAgentNotice(session, buildSettlementNotice({
-                    name: sub.name, agentId: sub.id, state, summary, note,
-                    unconsumed: unseenInboxCount(sub),
-                }));
-            }
+        if (sub.mode === 'background' && (state === 'done' || state === 'error')) {
+            // 嵌套时父是子代理：投它的收件箱，由它下一轮边界消费（deliverToParent 判）。
+            const delivered = deliverToParent(sub, buildSettlementNotice({
+                name: sub.name, agentId: sub.id, state, summary, note,
+                unconsumed: unseenInboxCount(sub),
+            }));
+            // 投不出去不能静默：父会话已结束 / 已归档时结论就此蒸发（嵌套里尤其难察觉）。
+            if (!delivered) flash('子代理「' + sub.name + '」的结论未能投递（父会话已结束或已归档）', true);
         }
         if (state === 'error') flash('子代理「' + sub.name + '」失败：' + (note || '执行出错'), true);
         else if (state === 'stopped') flash('子代理「' + sub.name + '」已停止');
@@ -1046,6 +1266,13 @@ export function createAISubagents(ctx) {
 
     // ---- 子代理收件箱（对齐 dsh 的双队列：step 插队 / turn 排队）----
 
+    // 入队即唤醒在 `sub.id` 上 wait_agent 的调用方（父代理等下级回报走这条）。
+    // 只唤醒不注入：注入仍是轮边界 consumeSubInbox 的事。
+    function notifyInbox(sub) {
+        if (!sub || !inboxWaiters) return;
+        if (typeof inboxWaiters.notify === 'function') inboxWaiters.notify(sub.id);
+    }
+
     // 唯一消费点。step 在前、turn 在后（插队优先），消费后清空。
     // 每条都落一条 notice user 消息，并同步进转录供详情视图查看。
     function consumeSubInbox(sub) {
@@ -1065,16 +1292,19 @@ export function createAISubagents(ctx) {
     function queueSubAgentMessage(sub, text, opts) {
         const item = {text: String(text || ''), from: (opts && opts.from) || 'agent', ts: Date.now()};
         sub.inbox.turn.push(item);
+        notifyInbox(sub);
         refreshHeadChips();
         refreshAgentViewIfOpen(sub.key);
         return item;
     }
 
-    // 插队：插到队首并打断当前在飞模型调用（对齐主对话「停止当前回复并立即发送」）。
+    // 插队：插到队首并打断当前在飞模型调用。注意与主对话不同——主对话的「插话」已改为
+    // 不打断（turn steering），子代理的插队仍是抢占语义（对齐旧的「停止当前回复并立即发送」）。
     // 压缩中降级为排队——压缩流正拿摘要，AIStop 会连摘要一起丢（§4.10.4）。
     function steerSubAgent(sub, text, opts) {
         const item = {text: String(text || ''), from: (opts && opts.from) || 'agent', ts: Date.now()};
         sub.inbox.step.unshift(item);
+        notifyInbox(sub);
         refreshHeadChips();
         refreshAgentViewIfOpen(sub.key);
         if (sub.compacting) return {item, kicked: false, degraded: true};
@@ -1089,6 +1319,9 @@ export function createAISubagents(ctx) {
     // 保留收件箱内容（停止当前轮 ≠ 清空队列），并把未消费条数写进结算文案。
     function stopSubAgent(sub, reason, options) {
         if (!sub || sub.state !== 'running') return false;
+        // 先放行它自己身上的 wait_agent：停止必须立刻返回，而不是等 250ms 心跳
+        // （心跳只是兜底——会话被删 / 流已摘除时没有别的唤醒源）。
+        if (inboxWaiters && typeof inboxWaiters.cancel === 'function') inboxWaiters.cancel(sub.id);
         // 插队标记必须清掉：否则 AIStop 引发的事件会被误判成「插队续轮」
         sub.steerKick = false;
         // 挂起中的提问先落定：否则 ask_user 那个 await 会一直悬着（工具轮不算结束）
@@ -1176,7 +1409,7 @@ export function createAISubagents(ctx) {
             stopped: false,
             wrapUp: false,
             toolCalls: new Map(),
-            profileCfg: configForProfile(record.profile, record.entry),
+            profileCfg: subAgentConfigFor(record.profile, record.entry),
             systemPrompt: subSystemPromptFor(record.depth, record.mode, !!record.worktree),
             usage: null,
         };
@@ -1212,15 +1445,27 @@ export function createAISubagents(ctx) {
     }
 
     // agent_send 执行体：运行中排队 / 插队，已完成冷唤醒，失败记录拒绝。
-    function sendToSubAgent(input, ctx) {
+    function sendToSubAgent(input, ctx, owned) {
         const agentId = aiTextOf(input && input.agentId).trim();
         const message = aiTextOf(input && input.message).trim();
         if (!agentId) throw new Error('agentId 不能为空');
         if (!message) throw new Error('message 不能为空');
+        // 方向守卫：子代理只能给自己派出的下级发（回答它们的提问 / 补线索 / 冷唤醒）。
+        // 放开给祖先或兄弟会让整棵树变成可以互相喊话的聊天室，且与「父等子」的等待模型纠缠。
+        const viewer = ctx && ctx.session;
+        if (viewer && viewer.parentSessionId) {
+            const under = agentDescendsFrom(agentId, viewer.id,
+                (id) => parentSessionIdOf(id, subAgents, subAgentRecords));
+            if (!under) {
+                throw new Error('子代理只能给自己派出的下级发消息：' + agentId + ' 不是你的下级' +
+                    '（要向上汇报请在最终结论里写，主代理会收到）');
+            }
+        }
         const urgent = input && input.urgent === true;
         const askId = aiTextOf(input && input.askId).trim();
         const live = subAgents.get(agentId);
         if (live) {
+            if (owned && !owned(live.rootSessionId)) throw new Error('子代理 ' + agentId + ' 不属于当前会话，无法投递');
             // 提问回答（阶段 D）：命中挂起中的 askId 就地落定，不再走队列
             const answered = answerSubAsk(live, askId, message);
             if (answered) return answered;
@@ -1234,6 +1479,7 @@ export function createAISubagents(ctx) {
         }
         const record = subAgentRecords.get(agentId);
         if (!record) throw new Error('找不到子代理 ' + agentId + '（可能已被清理）：可用 wait_agent 或重新 spawn_agent');
+        if (owned && !owned(record.rootSessionId)) throw new Error('子代理 ' + agentId + ' 不属于当前会话，无法投递');
         const gate = canReviveRecord(record);
         if (!gate.ok) {
             if (gate.reason === 'terminated') {
@@ -1252,27 +1498,69 @@ export function createAISubagents(ctx) {
     }
 
     // agent_stop 执行体：停止运行中的子代理并收集过程记录；对终态记录返回历史摘要。
-    function stopSubAgentByInput(input) {
+    // 停止目标及其整棵子树（全部层级的孙代理 / 曾孙代理）：主代理只有直接下级的 id，
+    // 不能要求它逐个点名嵌套代理。按层级从深到浅停，父代理收尾时下级已经落定。
+    function stopSubTree(sub, reason) {
+        const all = [...subAgents.values()];
+        const ids = [sub.id, ...subTreeIdsOf(all, sub.id)];
+        const targets = ids
+            .map((id) => subAgents.get(id))
+            .filter((item) => item && item.state === 'running')
+            .sort((a, b) => (b.depth || 0) - (a.depth || 0));
+        for (const item of targets) stopSubAgent(item, reason || '主代理停止');
+        return targets;
+    }
+
+    function stopSubAgentByInput(input, ctx, owned) {
         const agentId = aiTextOf(input && input.agentId).trim();
-        if (!agentId) throw new Error('agentId 不能为空');
+        // 省略 agentId：停掉本会话任务树里所有运行中的子代理（含孙代理与更深层级）。
+        // 这是「把子代理和孙代理全停了」的入口——嵌套代理的 id 从来不会回到主代理手上。
+        // 调用者本身是子代理时只看自己这一支（防将来给子代理放开 agent_stop 时误停兄弟 / 祖先）。
+        if (!agentId) {
+            const all = [...subAgents.values()];
+            const caller = ctx && ctx.session;
+            const scope = caller && caller.parentSessionId ? new Set(subTreeIdsOf(all, caller.id)) : null;
+            const running = all
+                .filter((sub) => sub.state === 'running'
+                    && (!scope || scope.has(sub.id))
+                    && (!owned || owned(sub.rootSessionId || sub.parentSessionId)))
+                .sort((a, b) => (b.depth || 0) - (a.depth || 0));
+            if (!running.length) return '当前没有运行中的子代理可停止。';
+            const lines = running.map((sub) => '- 「' + sub.name + '」'
+                + (sub.depth >= 1 ? '（第 ' + (sub.depth + 1) + ' 层）' : ''));
+            for (const sub of running) stopSubAgent(sub, '主代理停止');
+            return '已停止 ' + running.length + ' 个子代理（含各层级）：\n' + lines.join('\n');
+        }
         const live = subAgents.get(agentId);
         if (live) {
+            if (owned && !owned(live.rootSessionId)) throw new Error('子代理 ' + agentId + ' 不属于当前会话，未停止');
             const unconsumed = unseenInboxCount(live);
             const name = live.name;
             const key = live.key;
-            stopSubAgent(live, '主代理停止');
+            const stopped = stopSubTree(live, '主代理停止');
             const record = subAgentRecords.get(agentId);
             const summary = (record && record.summary) || '';
+            const cascaded = stopped.filter((sub) => sub.id !== live.id);
             return '已停止子代理「' + name + '」' +
+                (cascaded.length ? '及其 ' + cascaded.length + ' 个下级（含各层级）' : '') +
                 (unconsumed ? '（停止时仍有 ' + unconsumed + ' 条未消费消息）' : '') + '。\n' +
+                (cascaded.length ? '一并停止：' + cascaded.map((sub) => '「' + sub.name + '」').join('、') + '\n' : '') +
                 (summary ? '进度与结论：\n' + summary + '\n' : '') +
                 '过程记录：\n' + subRunDigest(key);
         }
         const record = subAgentRecords.get(agentId);
         if (!record) throw new Error('找不到子代理 ' + agentId + '（可能已被清理）');
+        if (owned && !owned(record.rootSessionId)) throw new Error('子代理 ' + agentId + ' 不属于当前会话，未停止');
+        // 父代理已结束、它派出的下级可能还在跑：按记录 id 继续级联停掉
+        const cascadeIds = new Set(subTreeIdsOf([...subAgents.values()], record.id));
+        const cascaded = [...subAgents.values()]
+            .filter((sub) => sub.state === 'running' && cascadeIds.has(sub.id))
+            .sort((a, b) => (b.depth || 0) - (a.depth || 0));
+        for (const sub of cascaded) stopSubAgent(sub, '主代理停止');
         const stateText = {done: '已完成', error: '已失败', stopped: '已停止'}[record.state] || record.state;
         return '子代理「' + record.name + '」' + stateText +
-            '（轮次 ' + (record.rounds || 0) + ' · 用时 ' + Math.round((record.ms || 0) / 1000) + 's）。\n' +
+            '（轮次 ' + (record.rounds || 0) + ' · 用时 ' + Math.round((record.ms || 0) / 1000) + 's）' +
+            (cascaded.length ? '；它的 ' + cascaded.length + ' 个下级仍在运行，已一并停止' : '') + '。\n' +
             '结论：\n' + (record.summary || '（无结论）') + '\n' +
             '过程记录：\n' + subRunDigest(record.key);
     }
@@ -1334,7 +1622,7 @@ export function createAISubagents(ctx) {
         refreshHeadChips();
         if (live) refreshAgentViewIfOpen(live.key);
         const messages = buildCompactMessages(target.session, AI_COMPACT_SYSTEM_PROMPT, (opts && opts.instruction) || '');
-        const flowCfg = (live && live.flow && live.flow.profileCfg) || configForProfile(profile, entry);
+        const flowCfg = (live && live.flow && live.flow.profileCfg) || subAgentConfigFor(profile, entry);
         try {
             const req = backend.AISendChat(id, flowCfg, messages, [], getConfig().retryMax);
             if (req && typeof req.then === 'function') {
@@ -1415,11 +1703,12 @@ export function createAISubagents(ctx) {
     }
 
     // agent_compact 执行体：运行中 → 请求在下一轮边界执行；done 可续记录 → 立即压缩。
-    function compactSubAgentByInput(input) {
+    function compactSubAgentByInput(input, owned) {
         const agentId = aiTextOf(input && input.agentId).trim();
         if (!agentId) throw new Error('agentId 不能为空');
         const live = subAgents.get(agentId);
         if (live) {
+            if (owned && !owned(live.rootSessionId)) throw new Error('子代理 ' + agentId + ' 不属于当前会话，未压缩');
             if (live.compacting) return '子代理「' + live.name + '」正在压缩上下文，本次请求已合并。';
             live.compactRequested = true;
             return '已请求压缩子代理「' + live.name + '」：将在当前工具轮结束后的轮边界执行（不打断在飞工作）。' +
@@ -1427,6 +1716,7 @@ export function createAISubagents(ctx) {
         }
         const record = subAgentRecords.get(agentId);
         if (!record) throw new Error('找不到子代理 ' + agentId + '（可能已被清理）');
+        if (owned && !owned(record.rootSessionId)) throw new Error('子代理 ' + agentId + ' 不属于当前会话，未压缩');
         const gate = canReviveRecord(record);
         if (!gate.ok) {
             throw new Error(gate.reason === 'terminated'
@@ -1445,86 +1735,110 @@ export function createAISubagents(ctx) {
             '完成后 agent_send 唤醒将以精简上下文继续；结果可在它的详情视图查看。';
     }
 
-    // wait_agent 执行体：阻塞等指定 / 任一子代理终态，直接返回它的结论（原语 1 的「汇总」
-    // 最短路径）。轮询而非 await promise：等待期间必须能看见「用户停止了主回合」，
-    // 否则停止后最长 600s 才有响应，形同悬挂（§7 风险表）。
-    function subSettledText(record) {
-        const stateText = {done: '已完成', error: '失败', stopped: '已停止'}[record.state] || record.state;
-        return '子代理「' + record.name + '」' + stateText +
-            '（轮次 ' + (record.rounds || 0) + ' · 用时 ' + Math.round((record.ms || 0) / 1000) + 's' +
-            (record.tokens ? ' · ' + record.tokens + ' tokens' : '') + '）\n' +
-            (record.summary || '（无结论）');
-    }
+    // wait_agent 执行体（对齐 dsh：等「我自己下一步的新输入」，不指向具体代理）。
+    // 工具结果是一句话说明（模型读的是文案，不是 JSON）。
+    // 为什么不再等「某个子代理的终态」（2026-11-17 五层嵌套实测）：旧实现必须靠守卫补
+    // 自等超时 / 跨支误拒 / 记录被 LRU 回收后结论取不到三类坑；等自己的收件箱从定义上没有这些。
+    //
+    // reportedPending：同一轮内「已经报告过有新输入」的记录（对齐 dsh wait-agent 的 seen 集合）。
+    // 没有它时，模型在同一轮里重复调 wait_agent 会每次都立刻拿到「有新输入」（注入只在轮边界，
+    // 计数本轮不会变），于是可以自旋到用户手动停——主代理没有逐轮硬上限。
+    const reportedPending = new WeakMap();  // stream -> {ownerId, count}
 
-    function subRunningSnapshot(sub) {
-        return '子代理「' + sub.name + '」仍在运行（轮次 ' + ((sub.flow && sub.flow.roundNo) || 0) +
-            '，已用 ' + Math.round((Date.now() - sub.startedAt) / 1000) + 's' +
-            (unseenInboxCount(sub) ? '，收件箱待处理 ' + unseenInboxCount(sub) + ' 条' : '') + '）。';
-    }
-
-    async function waitForSubAgent(input, ctx) {
-        const agentId = aiTextOf(input && input.agentId).trim();
-        const timeoutSec = aiClampInt(input && input.timeoutSec, 0, 600, 120);
-        const owner = ctx && ctx.session ? rootSessionIdOf(ctx.session) : '';
-        const belongs = (sessionId) => !owner || !sessionId || sessionId === owner;
-        const live = agentId ? subAgents.get(agentId) : null;
-        const settledRecord = agentId ? subAgentRecords.get(agentId) : null;
-        // 冷唤醒后立刻 wait：live 可能已消失（唤醒轮很短），而手上这份 record 还是唤醒
-        // 前的旧结论。这种情况不能直接返回，转为「等新一轮落账」。
-        const waitingRevive = !!(agentId && !live && settledRecord && isStaleRecord(settledRecord));
-        if (agentId && !live && !waitingRevive) {
-            if (!settledRecord) throw new Error('找不到子代理 ' + agentId + '（可能已被清理）');
-            return '（该子代理此前已结束，无需等待）\n' + subSettledText(settledRecord);
+    async function waitForInbox(input, ctx) {
+        const viewer = ctx && ctx.session;
+        if (!viewer) throw new Error('当前没有会话上下文');
+        // timeoutSec 的缺省必须自己判：aiClampInt 用 Math.round(Number(x))，
+        // null / '' / false 都会变成 0 并且是 finite（不走 fallback），而 0 曾表示「不限时」
+        // ——不建 deadline，一旦 notify 与停止都不来就永久悬挂。现在最小 5 秒、缺省 60 秒，
+        // 不再保留「不限时」：等不到就返回，让模型自己决定下一步。
+        const rawTimeout = input ? input.timeoutSec : undefined;
+        const timeoutSec = resolveWaitTimeoutSec(rawTimeout);
+        const sub = subAgents.get(viewer.id);
+        // 收尾轮不消费收件箱（runSubRound 的 !s.wrapUp 守卫）：等下去永远拿不到输入。
+        if (sub && sub.flow && sub.flow.wrapUp) {
+            return '轮次预算已用尽（收尾轮不再消费新输入）：不要再等待，立即基于现有上下文输出最终结论。';
         }
-        const watched = agentId
-            ? [live].filter(Boolean)
-            : [...subAgents.values()].filter((sub) => belongs(sub.rootSessionId || sub.parentSessionId));
-        if (!watched.length && !waitingRevive) {
-            return '当前没有运行中的子代理可等待。可用 spawn_agent(mode=\'background\') 派出，或 agent_send 唤醒已完成的。';
+        // caller 是子代理会话但已不在运行态（被停止 / 记录回收）：它没有信箱也不会有新输入。
+        if (!sub && viewer.parentSessionId) {
+            return '你这一轮已经结束（上下文可能已回收），不会有新输入进来：不要再等待。';
         }
-        const deadline = timeoutSec > 0 ? Date.now() + timeoutSec * 1000 : 0;
-        const stopSeen = () => !!(ctx && ctx.stream && ctx.stream.stopped);
-        for (;;) {
-            // 用户停止主回合：立即返回状态快照（不是等超时）
-            if (stopSeen()) {
-                if (waitingRevive) {
-                    return '等待被用户停止。子代理「' + (settledRecord.name || '') + '」冷唤醒后的新一轮尚未落账；' +
-                        '可稍后再 wait_agent，或等它的完成通知。';
-                }
-                const alive = watched.filter((sub) => subAgents.has(sub.id));
-                return '等待被用户停止。' + (alive.length ? alive.map(subRunningSnapshot).join(' ') : '子代理均已结束。') +
-                    '\n可稍后再 wait_agent，或让它们完成时通知你。';
+        if (!inboxWaiters) return '当前版本不支持等待原语：请直接继续工作，或结束本轮等新消息。';
+        const hub = noticesLike();
+        // 注意：这是**模块 ctx**取到的 getter（工具 ctx 只有 session/toolMessage/stream，
+        // 拿不到它）；改成从工具 ctx 读会恒为 undefined，判定等于关掉。
+        const queuedOf = typeof hasQueuedInput === 'function' ? hasQueuedInput : () => false;
+        const countPending = () => {
+            if (sub) return pendingInboxCount(sub);
+            const noticeCount = hub && typeof hub.pendingCount === 'function' ? hub.pendingCount(viewer.id) : 0;
+            return noticeCount + (queuedOf(viewer.id) ? 1 : 0);
+        };
+        const isStopped = () => {
+            if (sub) return sub.state !== 'running';
+            if (!ctx.stream) return true;
+            // finished 也要算停止：finishStream 只置 finished 并摘流（不置 stopped），
+            // 漏了它会让等待跑满整个 timeoutSec。
+            return !!(ctx.stream.stopped || ctx.stream.finished);
+        };
+        const roundKey = ctx.stream || null;
+        const countNow = countPending();
+        if (roundKey) {
+            const prev = reportedPending.get(roundKey);
+            if (prev && prev.ownerId === viewer.id && prev.count === countNow) {
+                return '这些输入本轮已经报告过了（注入发生在轮边界，本轮内不会再变）：' +
+                    '不要再 wait_agent，直接结束本轮即可读到。';
             }
-            // 冷唤醒等待：新一轮落账（finishedAt 超过 revivedAt）之后才允许返回结论，
-            // 否则返回的就是唤醒前那份旧结果（2026-11-15 实测缺陷）。
-            if (waitingRevive) {
-                const revived = subAgentRecords.get(agentId);
-                if (revived && !isStaleRecord(revived)) return subSettledText(revived);
-            }
-            for (const sub of watched) {
-                if (subAgents.has(sub.id)) continue;
-                const record = subAgentRecords.get(sub.id);
-                if (record) return subSettledText(record);
-                return '子代理「' + sub.name + '」已结束但记录不可用（可能被清理）。';
-            }
-            if (deadline && Date.now() >= deadline) {
-                if (waitingRevive) {
-                    return '等待超时（' + timeoutSec + 's）：子代理「' + (settledRecord.name || '') +
-                        '」冷唤醒后的新一轮尚未落账，未返回上一轮的旧结论。可稍后再 wait_agent，或等它的完成通知。';
-                }
-                return '等待超时（' + timeoutSec + 's）：' + watched.map(subRunningSnapshot).join(' ') +
-                    '\n可继续 wait_agent，或先做别的——它完成时会通知你。';
-            }
-            await aiDelay(250);
         }
+        const result = await inboxWaiters.wait(viewer.id, {
+            timeoutMs: timeoutSec * 1000,
+            hasPending: () => countPending() > 0,
+            isStopped,
+        });
+        if (result && result.stopped) {
+            return '等待被停止：可稍后再 wait_agent，或等新消息进来时再继续。';
+        }
+        if (!result || result.timedOut) {
+            return '等待超时（' + timeoutSec + 's）：下一步还没有新输入。可继续 wait_agent，或先做别的——' +
+                '子代理完成 / 别人投递 / 用户插话都会进你的收件箱。';
+        }
+        if (roundKey) reportedPending.set(roundKey, {ownerId: viewer.id, count: countPending()});
+        return '收件箱有新输入（子代理完成通知 / 其他代理的消息 / 用户插话）。' +
+            '本轮结束后它们会在下一轮开头注入上下文——不要空转，直接结束本轮即可读到。';
     }
 
     // 工具分发薄壳（panel 的 agent_tool case 转调；各阶段在此追加）
+    // agent_tree：把自己所在的团队树交给模型（含各层级 id、状态、任务摘要与「你」的标注）。
+    // 主代理看到整棵任务树，子代理只看自己这一支——嵌套代理的 id 只有这里才会回到主代理手上。
+    function agentTreeOf(ctx) {
+        const viewerSession = ctx && ctx.session;
+        if (!viewerSession) throw new Error('当前没有会话上下文');
+        const owner = rootSessionIdOf(viewerSession);
+        const isMain = !viewerSession.parentSessionId;
+        const live = subAgents.get(viewerSession.id);
+        // 自查深度：运行态优先；已结束（冷唤醒窗口 / 只留终态记录）退回记录里的 depth，
+        // 缺两者时才兜底 1——否则第 5 层的代理会把自己标成「第 2 层」。
+        const record = live ? null : subAgentRecords.get(viewerSession.id);
+        const viewer = isMain
+            ? {isMain: true, id: viewerSession.id, title: viewerSession.title || ''}
+            : {
+                isMain: false,
+                id: viewerSession.id,
+                name: (live && live.name) || viewerSession.title || '子代理',
+                depth: live ? live.depth : ((record && record.depth) || 1),
+            };
+        return agentTreeText(viewer, listAgentsForHud(owner));
+    }
+
     function handleAgentTool(name, input, ctx) {
-        if (name === 'agent_send') return sendToSubAgent(input, ctx);
-        if (name === 'agent_stop') return stopSubAgentByInput(input);
-        if (name === 'wait_agent') return waitForSubAgent(input, ctx);
-        if (name === 'agent_compact') return compactSubAgentByInput(input);
+        // 子代理记录按任务树隔离（与 wait_agent / stop_command 同一口径）：别的会话的 agentId
+        // 不能投递 / 停止 / 压缩——投递会消费对方收件箱，停止会掐掉对方在跑的任务。
+        const owner = ctx && ctx.session ? rootSessionIdOf(ctx.session) : '';
+        const owned = (rootId) => subTreeOwned(owner, rootId);
+        if (name === 'agent_tree') return agentTreeOf(ctx);
+        if (name === 'agent_send') return sendToSubAgent(input, ctx, owned);
+        if (name === 'agent_stop') return stopSubAgentByInput(input, ctx, owned);
+        if (name === 'wait_agent') return waitForInbox(input, ctx);
+        if (name === 'agent_compact') return compactSubAgentByInput(input, owned);
         throw new Error('工具「' + name + '」尚未启用');
     }
 
@@ -1587,13 +1901,10 @@ export function createAISubagents(ctx) {
         const askId = (ctx.toolMessage && ctx.toolMessage.toolCallId) || aiNowId('ask-');
         const entry = {askId, questions, resolve: null, timer: 0, createdAt: Date.now()};
         sub.inbox.ask = entry;
-        const parent = sessionById(sub.parentSessionId);
-        if (parent) {
-            const hub = noticesLike();
-            if (hub) hub.deliverAgentNotice(parent, buildAskNotice({
-                name: sub.name, agentId: sub.id, askId, questions,
-            }));
-        }
+        // 嵌套时父是子代理（deliverToParent 判）：提问同样要能到达它。
+        deliverToParent(sub, buildAskNotice({
+            name: sub.name, agentId: sub.id, askId, questions,
+        }));
         refreshHeadChips();
         refreshAgentViewIfOpen(sub.key);
         const timeoutMs = SUB_ASK_TIMEOUT_SEC * 1000;
@@ -1656,11 +1967,12 @@ export function createAISubagents(ctx) {
         openBgTermInContent, renderChipsPop, toggleChipsPop,
         // 详情视图：openAgentView 由面板内部（chips 弹层）调用；mount/unmount 给内容区标签页用
         openAgentView, mountAgentView, unmountAgentView, renderAgentView,
+        mountTeamView, unmountTeamView,
         parentSessionOfSub, runSubAgent, startSubAgent, runSubRound, handleSubEvent, finalizeSubAgent, stopSubAgentsOf, initHud,
         pushSubAgentRecord, unseenInboxCount, dropSubAgentRecordsOf,
         consumeSubInbox, queueSubAgentMessage, steerSubAgent, stopSubAgent, subRunDigest,
         reviveSubAgent, sendToSubAgent, stopSubAgentByInput, handleAgentTool, answerSubAsk,
-        runSubAskQuestion, settleSubAsk, waitForSubAgent,
+        runSubAskQuestion, settleSubAsk, waitForInbox,
         compactSubAgentByInput, maybeStartSubCompact, startSubCompact, handleSubCompactEvent,
         worktreeNamesForSession,
         subCompacts,

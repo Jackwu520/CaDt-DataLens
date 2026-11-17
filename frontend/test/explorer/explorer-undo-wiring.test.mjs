@@ -51,8 +51,9 @@ test('Ctrl+Z/Y 在文件树焦点时改走 explorerOps，不让编辑器撤销',
     assert.match(main, /function isExplorerUndoTarget\(\)[\s\S]*?explorer\.hasFocus\(\)/);
     const handler = `function handleExplorerUndoKey(e) {`;
     assert.ok(norm(main).includes(norm(handler)), '应有文件树快捷键统一入口');
-    assert.match(main, /e\.ctrlKey && !e\.shiftKey && e\.key\.toLowerCase\(\) === 'z'\) \{\s*if \(isPlainTextUndoTarget\(\)\) return;\s*if \(handleExplorerUndoKey\(e\)\) return;/);
-    assert.match(main, /e\.key\.toLowerCase\(\) === 'z'\)\)\) \{\s*if \(isPlainTextUndoTarget\(\)\) return;\s*if \(handleExplorerUndoKey\(e\)\) return;/);
+    // 撤销 / 重做走快捷键风格查表（core/keymap.js），命中条件在表里
+    assert.match(main, /keymap\.is\(kb, 'edit\.undo'\)\) \{\s*if \(isPlainTextUndoTarget\(\)\) return;\s*if \(handleExplorerUndoKey\(e\)\) return;/);
+    assert.match(main, /keymap\.is\(kb, 'edit\.redo'\)\) \{\s*if \(isPlainTextUndoTarget\(\)\) return;\s*if \(handleExplorerUndoKey\(e\)\) return;/);
     // 捕获层（Ace 空栈回退）也必须让开文件树
     const capture = main.match(/window\.addEventListener\('keydown', \(e\) => \{\s*if \(!e\.ctrlKey \|\| e\.shiftKey \|\| e\.altKey\) return;[\s\S]*?\}, true\);/);
     assert.ok(capture, 'Ctrl+Z 捕获拦截器应存在');

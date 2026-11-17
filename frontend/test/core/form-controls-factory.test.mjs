@@ -16,6 +16,7 @@ import {
     createSelect,
     createInput,
     createTextarea,
+    createCheckbox,
 } from '../../src/core/form-controls.js';
 
 const FRONTEND = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -27,6 +28,7 @@ function fakeEl(tag) {
         className: '',
         children: [],
         attrs: {},
+        dataset: {},
         listeners: {},
         append(...nodes) { this.children.push(...nodes); },
         appendChild(node) { this.children.push(node); return node; },
@@ -34,7 +36,10 @@ function fakeEl(tag) {
         addEventListener(type, fn) { (this.listeners[type] ||= []).push(fn); },
     };
 }
-globalThis.document = {createElement: (tag) => fakeEl(tag)};
+globalThis.document = {
+    createElement: (tag) => fakeEl(tag),
+    createTextNode: (text) => ({textContent: String(text)}),
+};
 
 test('createSwitch 生成 .set-switch 三段结构，control 是值真源', () => {
     const {element, control} = createSwitch({id: 'foo-enabled', checked: true});
@@ -87,6 +92,23 @@ test('createInput / createTextarea 带封装 class 且透传常用属性与事�
     assert.equal(legacy.control.className, 'ai-settings-input');
 });
 
+test('createCheckbox 生成紧凑行内勾选（label 内带文字），control 是值真源', () => {
+    const onChange = () => {};
+    const {element, control} = createCheckbox({
+        id: 'gs-fuzzy-enabled', label: '模糊', checked: true,
+        disabled: true, title: '提示', onChange,
+    });
+    assert.equal(element.className, 'set-check');
+    assert.equal(control.type, 'checkbox');
+    assert.equal(control.checked, true);
+    assert.equal(control.disabled, true);
+    assert.equal(control.id, 'gs-fuzzy-enabled');
+    assert.equal(element.dataset.tip, '提示');
+    assert.equal(element.children[0], control);
+    assert.equal(element.children[1].textContent, '模糊');
+    assert.deepEqual(control.listeners.change, [onChange]);
+});
+
 // ---- 静态防线 ----
 
 // 2026-11-15 存量快照。迁移一处就把对应数字减一；新增一处会让测试失败。
@@ -109,7 +131,6 @@ const BASELINE = {
     'src/editor/editor-sql-view.js': 2,
     'src/editor/foot-menus.js': 1,
     'src/editor/patch-view.js': 4,
-    'src/explorer/global-search.js': 2,
     'src/reading/reading.js': 1,
     'src/settings/settings-pane-envvars.js': 1,
     'src/settings/settings-pane-lang.js': 3,

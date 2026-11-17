@@ -24,6 +24,11 @@ export function createAIPatchCard(ctx, extras) {
     const updateComposerTakeover = extras.updateComposerTakeover;
 
     function requestPatchApproval(session, toolMessage, preview, allowApply) {
+        // 停止竞态：PatchSave / 导出等 await 期间用户可能已停止本工具；此时再注册 pending
+        // 卡会永久挂起并顶掉下一轮的审批（2026-11-17 复查）。
+        if (toolMessage && toolMessage.interrupted) {
+            return Promise.resolve({approved: false, cancelled: true});
+        }
         const approval = {
             kind: 'patch',
             state: 'pending',
