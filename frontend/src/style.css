@@ -11236,3 +11236,7 @@ textarea.dlg-input:focus {
 .gc-task-add > * { flex: 1; min-width: 0; }
 .gc-drawer-task-title { flex: 1; min-width: 0; }
 .gc-member-role { margin-top: 4px; font-size: 12px; }
+
+/* 侧栏列表模式切换：.hidden 在仓库里按「.组件.hidden」逐条声明（无全局兜底），
+   ai-session-list / ai-session-actions 必须补变体，否则「会话 | 群聊」切换后两块都显示 */
+.ai-session-list.hidden, .ai-session-actions.hidden { display: none; }
