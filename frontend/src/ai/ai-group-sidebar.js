@@ -307,7 +307,8 @@ export function createAIGroupSidebar(deps) {
             [estLine, statusLine, cancelBtn, createBtn],
             {top: true, wide: true});
         if (typeof enhanceSelect === 'function') {
-            for (const ctl of [goalCtl, chairKindCtl, chairAgentCtl, policyCtl, roundsCtl, timeoutCtl]) {
+            // 与设置页/面板弹窗同一套行式下拉（原生 select 会露出系统下拉，和自绘控件混成两套）
+            for (const ctl of [goalCtl, modeCtl, presetCtl, chairKindCtl, chairAgentCtl, policyCtl, roundsCtl, timeoutCtl]) {
                 enhanceSelect(ctl.control);
             }
         }

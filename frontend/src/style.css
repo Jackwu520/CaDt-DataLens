@@ -12106,3 +12106,11 @@ html[data-theme="light"] {
     --gg-lane-6: #7d8220;
     --gg-lane-7: #6b7385;
 }
+
+/* 新建群聊弹窗：.hidden 在仓库里按组件逐条声明（无全局兜底）——辩论预设的角色输入框
+   与「一键创建默认主持人」按钮都靠 classList hidden 切换，必须补变体，否则常驻占位把
+   成员行挤成一字一行。另加固成员行：dot/徽标/开关不参与收缩，文本框拿剩余宽度。 */
+.gc-member-role.hidden, .dlg-btn.hidden { display: none; }
+.gc-member-item > .gc-dot, .gc-member-item > .gc-badge, .gc-member-item > .set-switch { flex: none; }
+.gc-member-item > .gc-member-text { flex: 1; min-width: 0; }
+.gc-member-role { flex: 0 1 220px; min-width: 120px; }
