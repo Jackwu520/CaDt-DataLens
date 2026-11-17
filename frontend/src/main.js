@@ -2938,6 +2938,8 @@ function initAIPanel() {
         },
         flash: (...args) => flash(...args),
         confirm: (message, action, okLabel, title) => openConfirmDialog(message, action, okLabel, title),
+        // 新建群聊弹窗左下角的齿轮：直达 设置 → AI → 智能体（成员管理）
+        openSettings: (pane) => openSettings(pane),
         dialog: aiPanel.aiGroupApi
             ? {
                 open: (...args) => aiPanel.aiGroupApi.openDialog(...args),

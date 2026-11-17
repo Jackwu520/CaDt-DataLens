@@ -3,6 +3,7 @@
 // 表单控件一律走 core/form-controls.js（表单控件硬规范）。
 // 预检纯函数与内置主持人模板在 ai-group-model.js。
 import {createInput, createSelect, createSwitch, createTextarea} from '../core/form-controls.js';
+import {iconSvg} from '../core/icons.js';
 import {aiNowId} from './ai-constants.js';
 import {AGENT_COLOR_HEX} from './ai-agent-model.js';
 import {agentsUpsert} from './ai-agent-model.js';
@@ -32,6 +33,8 @@ export function createAIGroupSidebar(deps) {
     });
     const dialogButton = dialog.button || null;
     const enhanceSelect = dialog.enhanceSelect || null;
+    // 弹窗左下角齿轮：直达 设置 → AI → 智能体（宿主注入 openSettings）
+    const openSettings = typeof deps.openSettings === 'function' ? deps.openSettings : null;
 
     const els = {
         segment: document.getElementById('ai-list-segment'),
@@ -301,10 +304,22 @@ export function createAIGroupSidebar(deps) {
             createControls = null;
             closeDialog();
         });
+        // 左下角齿轮：先去设置里把智能体备齐，再回来建群（跳到 设置 → AI → 智能体）
+        const settingsBtn = node('button', 'dlg-btn gc-settings-btn');
+        settingsBtn.type = 'button';
+        settingsBtn.dataset.tip = '设置 → AI → 智能体';
+        settingsBtn.setAttribute('aria-label', '打开设置 · 智能体');
+        settingsBtn.innerHTML = iconSvg('gear', 14);
+        settingsBtn.addEventListener('click', () => {
+            if (!openSettings) return;
+            createControls = null;
+            closeDialog();
+            openSettings('agents');
+        });
 
         openDialog('新建群聊',
             [body],
-            [estLine, statusLine, cancelBtn, createBtn],
+            [settingsBtn, estLine, statusLine, cancelBtn, createBtn],
             {top: true, wide: true});
         if (typeof enhanceSelect === 'function') {
             // 与设置页/面板弹窗同一套行式下拉（原生 select 会露出系统下拉，和自绘控件混成两套）
