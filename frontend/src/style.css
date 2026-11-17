@@ -11140,9 +11140,12 @@ textarea.dlg-input:focus {
 .agent-switch-text .set-desc { font-size: 11px; }
 
 /* ===== AI 群聊（ai-group-*：侧栏列表 / 新建弹窗 / 群聊标签页 G1 壳） ===== */
-.ai-list-segment { display: flex; gap: 4px; padding: 8px 10px 2px; }
-.ai-list-segment button { flex: 1; padding: 4px 0; font-size: 12px; border: 1px solid var(--border); border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer; }
-.ai-list-segment button.active { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+/* 会话 | 群聊：紧凑分段控件——共用一条填充底槽、无任何边框，和下方「新建会话/自动化/投递」
+   描边大按钮拉开层级；激活态用强调色内嵌块 + 强调色字，不靠加粗边框区分 */
+.ai-list-segment { display: flex; gap: 2px; margin: 7px 10px 2px; padding: 2px; border: none; border-radius: 7px; background: color-mix(in srgb, var(--border) 45%, transparent); }
+.ai-list-segment button { flex: 1; padding: 2px 0; font-size: 11.5px; line-height: 18px; border: none; border-radius: 5px; background: transparent; color: var(--muted); cursor: pointer; transition: color 120ms ease, background 120ms ease; }
+.ai-list-segment button:hover { color: var(--text); }
+.ai-list-segment button.active { color: var(--accent); background: color-mix(in srgb, var(--accent) 16%, transparent); }
 .gc-list-empty { padding: 18px 12px; font-size: 12px; line-height: 1.6; color: var(--muted); }
 .gc-list-row { cursor: pointer; }
 .gc-list-head { display: flex; align-items: center; gap: 6px; min-width: 0; }
