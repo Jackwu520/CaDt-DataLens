@@ -285,6 +285,8 @@ export const AI_BUILTIN_SKILLS = [
             '- ai_new_session {title?,message?}：新建 AI 会话（本面板），message 非空会立刻发送（真实触发一次模型调用）；当前会话还没发过消息时不会重复创建，而是复用并重命名该会话。',
             '- ai_switch_session {id}：切换 AI 会话。',
             '- ai_rename_session {id,title}：重命名指定 AI 会话（id 从 get_ai 的会话信息或跨会话搜索结果获取；title 非空、超 60 字符截断）。当前会话改名即时生效，其他会话改名后下次打开用新标题。',
+            '- get_agents：智能体（群聊成员）列表——id / 名字 / 模型（ref 与展示名）/ 职责 / 主持人标记 / 启用状态，并附全部可用模型清单（ref + 展示名）。用户让你「建一个智能体 / 加个群成员」时先看这里。',
+            '- create_agent {name,model,role?,persona?,style?,chair?,color?,temperature?,slowTier?,enabled?}：新建智能体（群聊成员）。名字 1–32 字符、无空白与 @、全局唯一，保留词 all / everyone / 全体成员 / 所有人 不可用；model 可传模型名（如 deepseek-chat）、「账号名/模型名」或 get_agents 里的 ref，多命中会报候选让你明确；chair=true 表示可被群聊选为主持人；style 取回复风格 id（default / professional / friendly / direct / imaginative / efficient / snarky / socratic / tangerine）；slowTier=true 给不暴露 reasoning 的兼容端点按思考档计时。只新建，不修改/删除已有智能体（那由用户在设置页操作）。',
             '- open_browser_tab {url?, profileKey?}：在内容区打开内嵌浏览器标签页并返回 tab id（file:// 走与 browser_navigate 同一条读权限链）。',
             '- close_browser_tab {id|name|url}：关闭指定内嵌浏览器标签页。',
             '- get_gen_models：生图/视频生成条目列表（kind/enabled/baseURL/path/editPath/editFormat/默认模型与尺寸/hasKey，不含密钥）与各类型缺省条目名。',

@@ -190,3 +190,49 @@ export function agentCapability(agent, profiles) {
 export function chairAgents(agents) {
     return (Array.isArray(agents) ? agents : []).filter((agent) => agent && agent.chair && agent.enabled);
 }
+
+// ==================== AI 代建智能体（app_control get_agents / create_agent） ====================
+
+// 可用模型清单（ref = '账号id|模型id'）：get_agents 下发给模型选型，create_agent 解析后写回。
+export function listModelOptions(profiles) {
+    const out = [];
+    for (const profile of Array.isArray(profiles) ? profiles : []) {
+        if (!profile || typeof profile !== 'object') continue;
+        for (const entry of Array.isArray(profile.models) ? profile.models : []) {
+            if (!entry || !entry.id) continue;
+            out.push({
+                ref: String(profile.id || '') + '|' + entry.id,
+                label: modelRefLabel(profile, entry) || entry.model || entry.id,
+                model: String(entry.model || ''),
+                account: String(profile.name || profile.id || ''),
+            });
+        }
+    }
+    return out;
+}
+
+// 按关键词解析唯一模型，优先级：精确 ref → 「账号名/模型名」（/ ／ : ：皆可）→
+// 模型名/展示名精确 → 唯一子串。多命中/未命中一律返回候选让调用方报错，绝不静默取第一个。
+export function resolveModelByKeyword(profiles, keyword) {
+    const raw = String(keyword == null ? '' : keyword).trim();
+    const options = listModelOptions(profiles);
+    if (!raw) return {ok: false, reason: 'empty', candidates: []};
+    const byRef = options.find((option) => option.ref === raw);
+    if (byRef) return {ok: true, option: byRef};
+    const lower = raw.toLowerCase();
+    const sep = /^(.+?)[/／:：](.+)$/.exec(raw);
+    if (sep) {
+        const account = sep[1].trim().toLowerCase();
+        const model = sep[2].trim().toLowerCase();
+        const hits = options.filter((option) => option.account.toLowerCase() === account && option.model.toLowerCase() === model);
+        if (hits.length === 1) return {ok: true, option: hits[0]};
+        if (hits.length > 1) return {ok: false, reason: 'ambiguous', candidates: hits};
+    }
+    const exact = options.filter((option) => option.model.toLowerCase() === lower || option.label.toLowerCase() === lower);
+    if (exact.length === 1) return {ok: true, option: exact[0]};
+    if (exact.length > 1) return {ok: false, reason: 'ambiguous', candidates: exact};
+    const contains = options.filter((option) => option.model.toLowerCase().includes(lower));
+    if (contains.length === 1) return {ok: true, option: contains[0]};
+    if (contains.length > 1) return {ok: false, reason: 'ambiguous', candidates: contains};
+    return {ok: false, reason: 'not_found', candidates: []};
+}

@@ -12,9 +12,11 @@ import {
     agentThinkingTier,
     agentsRemove,
     agentsUpsert,
+    listModelOptions,
     normalizeAgentName,
     normalizeAgents,
     resolveAgentModel,
+    resolveModelByKeyword,
 } from '../../src/ai/ai-agent-model.js';
 
 const profiles = [
@@ -163,4 +165,55 @@ test('配置 roundtrip：normalizeAgents 自反稳定（id/名字/字段不变�
     ], () => 'g');
     const again = normalizeAgents(JSON.parse(JSON.stringify(list)), () => 'g');
     assert.deepEqual(again.map((a) => ({...a})), list.map((a) => ({...a})));
+});
+
+// ==================== app_control 代建智能体：模型清单与关键词解析 ====================
+
+test('listModelOptions：全部账号×模型条目，ref/label/account 齐全', () => {
+    const options = listModelOptions(profiles);
+    assert.equal(options.length, 3);
+    assert.deepEqual(options.map((o) => o.ref), ['p1|m1', 'p1|m2', 'p2|m1']);
+    assert.equal(options[0].model, 'gpt-x');
+    assert.equal(options[0].account, '账号一');
+    assert.ok(options[0].label.includes('gpt-x'));
+});
+
+test('resolveModelByKeyword：ref 精确 / 账号名/模型名 / 模型名精确 / 唯一子串', () => {
+    // 精确 ref
+    let hit = resolveModelByKeyword(profiles, 'p1|m2');
+    assert.equal(hit.ok, true);
+    assert.equal(hit.option.model, 'o-x');
+    // 账号名/模型名（全角与半角分隔符都支持）
+    hit = resolveModelByKeyword(profiles, '账号二/claude-x');
+    assert.equal(hit.ok, true);
+    assert.equal(hit.option.ref, 'p2|m1');
+    hit = resolveModelByKeyword(profiles, '账号一：o-x');
+    assert.equal(hit.ok, true);
+    assert.equal(hit.option.ref, 'p1|m2');
+    // 模型名精确
+    hit = resolveModelByKeyword(profiles, 'claude-x');
+    assert.equal(hit.ok, true);
+    assert.equal(hit.option.ref, 'p2|m1');
+    // 唯一子串 + 大小写不敏感
+    hit = resolveModelByKeyword(profiles, 'CLAUDE');
+    assert.equal(hit.ok, true);
+});
+
+test('resolveModelByKeyword：多命中报 ambiguous 并给候选；未命中/空报原因', () => {
+    // 两个账号都有模型名含 "小窗" 的情况：构造一个同名模型
+    const dupProfiles = [
+        {id: 'a', name: '甲账号', models: [{id: 'm1', model: 'shared-model'}]},
+        {id: 'b', name: '乙账号', models: [{id: 'm1', model: 'shared-model'}]},
+    ];
+    const ambiguous = resolveModelByKeyword(dupProfiles, 'shared-model');
+    assert.equal(ambiguous.ok, false);
+    assert.equal(ambiguous.reason, 'ambiguous');
+    assert.equal(ambiguous.candidates.length, 2);
+    // 账号名消歧后唯一
+    const disambiguated = resolveModelByKeyword(dupProfiles, '乙账号/shared-model');
+    assert.equal(disambiguated.ok, true);
+    assert.equal(disambiguated.option.ref, 'b|m1');
+    // 未命中 / 空
+    assert.equal(resolveModelByKeyword(profiles, 'no-such-model').reason, 'not_found');
+    assert.equal(resolveModelByKeyword(profiles, '  ').reason, 'empty');
 });

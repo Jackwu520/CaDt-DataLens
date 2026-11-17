@@ -37,6 +37,9 @@ import {createBridgeUI} from './bridge/bridge-ui.js';
 import {createAIGroupRuntime} from './ai/ai-group-runtime.js';
 import {createAIGroupSidebar} from './ai/ai-group-sidebar.js';
 import {createAIGroupView} from './ai/ai-group-view.js';
+// app_control 代建智能体：数据层纯函数（模型清单/关键词解析/校验）+ 唯一 id 生成
+import {agentsUpsert, listModelOptions, resolveModelByKeyword} from './ai/ai-agent-model.js';
+import {aiNowId} from './ai/ai-constants.js';
 import {createCursorThemes} from './shell/cursor-themes.js';
 import {createTerminalUI} from './terminal/terminal-ui.js';
 import {createFormatConvert} from './editor/format-convert.js';
@@ -454,6 +457,7 @@ const APP_ACTIONS = [
     'get_settings', 'get_editor', 'get_content', 'get_git', 'get_ai', 'get_explorer', 'get_plugins', 'get_terminal',
     'get_activity', 'get_patch', 'patch_set_root', 'patch_repreview',
     'get_gen_models', 'set_gen_model', 'delete_gen_model',
+    'get_agents', 'create_agent',
     'get_mcp_servers', 'list_mcp_samples', 'install_mcp_sample', 'set_mcp_server', 'delete_mcp_server',
 ];
 
@@ -577,6 +581,32 @@ function appActionTermTail(term, maxLines) {
         lines.push(line ? line.translateToString(true) : '');
     }
     return lines.join('\n');
+}
+
+// —— AI 智能体（app_control get_agents / create_agent）——
+// 智能体配置的真源在 AI 面板（ai-config.json 的 agents[]，经 panel 的 aiGroupApi 读写）；
+// 这里只做参数整理与快照整形，校验/去重/编号全走 ai-agent-model 的纯函数。
+function appActionAIConfig() {
+    if (!aiPanel || !aiPanel.aiGroupApi) throw new Error('AI 面板未初始化');
+    return aiPanel.aiGroupApi.getConfig();
+}
+
+function appActionAgentSnapshot() {
+    const config = appActionAIConfig();
+    const options = listModelOptions(config.profiles);
+    const labelByRef = new Map(options.map((option) => [option.ref, option.label]));
+    const agents = (config.agents || []).map((agent) => ({
+        id: agent.id,
+        name: agent.name,
+        role: agent.role,
+        modelRef: agent.modelRef,
+        model: labelByRef.get(agent.modelRef) || '模型不可用',
+        style: agent.replyStyle,
+        chair: !!agent.chair,
+        slowTier: !!agent.slowTier,
+        enabled: agent.enabled !== false,
+    }));
+    return {agents, models: options.map((option) => ({ref: option.ref, label: option.label}))};
 }
 
 async function runAppAction(action, params, scope) {
@@ -992,6 +1022,52 @@ async function runAppAction(action, params, scope) {
         case 'delete_gen_model': {
             if (!aiPanel || !aiPanel.bridgeGenModelDelete) throw new Error('AI 面板未初始化');
             return aiPanel.bridgeGenModelDelete(p.ref);
+        }
+        // —— 智能体（群聊成员）：get_agents 只读快照 / create_agent 代建 ——
+        // 智能体存 ai-config.json 的 agents[]（面板 aiGroupApi 持有配置与持久化）
+        case 'get_agents': {
+            return appActionAgentSnapshot();
+        }
+        case 'create_agent': {
+            const config = appActionAIConfig();
+            const name = String(p.name == null ? '' : p.name).trim();
+            if (!name) throw new Error('create_agent 需要 name');
+            const resolved = resolveModelByKeyword(config.profiles, p.model);
+            if (!resolved.ok) {
+                if (resolved.reason === 'ambiguous') {
+                    throw new Error('模型名有多个匹配，请用「账号名/模型名」明确一个：' +
+                        resolved.candidates.map((c) => c.label + '（' + c.account + '）').join('；'));
+                }
+                if (resolved.reason === 'empty') throw new Error('create_agent 需要 model（可用模型见 get_agents 的 models）');
+                const options = listModelOptions(config.profiles);
+                throw new Error('找不到模型：' + p.model + '；可用模型：' +
+                    (options.map((o) => o.label).join('、') || '（暂无，先在 设置 → AI → 模型 添加账号与模型）'));
+            }
+            const result = agentsUpsert(config.agents || [], {
+                name,
+                modelRef: resolved.option.ref,
+                role: p.role,
+                personaText: p.persona,
+                replyStyle: p.style,
+                temperature: p.temperature,
+                chair: p.chair === true,
+                slowTier: p.slowTier === true,
+                enabled: p.enabled !== false,
+                color: p.color,
+            }, () => aiNowId('agent-'));
+            if (!result.ok) throw new Error(result.error);
+            if (aiPanel && aiPanel.aiGroupApi) aiPanel.aiGroupApi.saveConfig();
+            return {
+                created: {
+                    id: result.agent.id,
+                    name: result.agent.name,
+                    model: resolved.option.label,
+                    role: result.agent.role,
+                    chair: result.agent.chair,
+                    enabled: result.agent.enabled,
+                },
+                note: '已创建智能体；人设/角色可在 设置 → AI → 智能体 再编辑，或直接在「新建群聊」里选用它',
+            };
         }
         case 'flash': {
             const message = String(p.message || '').trim();
