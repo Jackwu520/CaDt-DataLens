@@ -11809,7 +11809,8 @@ textarea.dlg-input:focus {
     .ai-list-segment-thumb { transition: none; }
 }
 .gc-list-empty { padding: 18px 12px; font-size: 12px; line-height: 1.6; color: var(--muted); }
-.gc-list-row { cursor: pointer; }
+/* .ai-session-item 是 flex 行；群聊行自己排三段（标题/彩点/元信息），改回纵向块流 */
+.gc-list-row { cursor: pointer; display: block; }
 .gc-list-head { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .gc-list-title { font-size: 12.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .gc-list-dots { display: flex; gap: 3px; margin: 4px 0 0; flex-wrap: wrap; }

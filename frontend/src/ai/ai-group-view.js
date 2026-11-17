@@ -238,10 +238,9 @@ export function createAIGroupView(deps) {
 
     function renderMessages(state, g) {
         const messages = g.messages || [];
-        const config = getAIConfig();
         while (state.renderedCount < messages.length) {
             const msg = messages[state.renderedCount];
-            const node = messageNode(msg, config, g.meta, state);
+            const node = messageNode(msg, getAIConfig, g.meta, state);
             state.list.appendChild(node);
             state.renderedCount++;
             if (msg.kind === 'minutes') {
