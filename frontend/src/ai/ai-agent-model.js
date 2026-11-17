@@ -11,6 +11,11 @@ export const AGENT_MAX_COUNT = 32;
 export const AGENT_NAME_MAX = 32;
 export const AGENT_ROLE_MAX = 120;
 export const AGENT_MODELREF_MAX = 200;
+// 分组：agents[].group 的必有值字段（不选归「默认」），组列表 = 字段去重集合；
+// 无独立存储实体，空组随最后一个成员离开而消失（feature-evaluations 2026-11-18 §3）。
+export const AGENT_GROUP_MAX = 12;
+export const AGENT_GROUP_NAME_MAX = 16;
+export const AGENT_DEFAULT_GROUP = '默认';
 // 点名保留词：@all 语义冲突，这些名字不能用于智能体（§6.1）
 export const AGENT_RESERVED_NAMES = ['all', 'everyone', '全体成员', '所有人'];
 // 头像圆点调色板：颜色名对应 style.css 的 .gc-dot-<name>；HEX 表供无 CSS 处（设置行内圆点）取色
@@ -49,6 +54,25 @@ function validReplyStyle(id) {
     return REPLY_STYLES.some((style) => style && style.id === id);
 }
 
+// 组名归一化：NFC + 去两端空白 + 限长；空 = 未选 → 调用方落「默认」。
+export function normalizeGroupName(raw) {
+    return String(raw == null ? '' : raw).normalize('NFC').trim().slice(0, AGENT_GROUP_NAME_MAX).trim();
+}
+
+// 新组名校验（设置页「新建分组」/ AI 代建）：'' = 合法，否则错误文案。
+// 组名与成员名是两个命名空间：保留词 / @ 规则不适用；只禁空白两端与超长（去重另查）。
+export function groupNameError(name, agents, excludeId) {
+    const trimmed = String(name == null ? '' : name).normalize('NFC').trim();
+    if (!trimmed) return '分组名不能为空';
+    if (trimmed.length > AGENT_GROUP_NAME_MAX) return '分组名不能超过 ' + AGENT_GROUP_NAME_MAX + ' 字符';
+    const final = trimmed.slice(0, AGENT_GROUP_NAME_MAX);
+    const list = Array.isArray(agents) ? agents : [];
+    const dup = list.some((agent) => agent && agent.id !== excludeId &&
+        normalizeGroupName(agent.group).toLowerCase() === final.toLowerCase());
+    if (dup) return '分组「' + final + '」已存在';
+    return '';
+}
+
 // 单条归一化：name/id 全空的原始数据丢弃（返回 null），其余字段 clamp 到边界。
 export function normalizeAgent(raw, index, idGen) {
     const source = raw && typeof raw === 'object' ? raw : {};
@@ -66,6 +90,7 @@ export function normalizeAgent(raw, index, idGen) {
         name: name || ('智能体 ' + ((index || 0) + 1)),
         color: AGENT_COLORS.includes(source.color) ? source.color : AGENT_COLORS[(index || 0) % AGENT_COLORS.length],
         role: clampText(source.role, AGENT_ROLE_MAX),
+        group: normalizeGroupName(source.group) || AGENT_DEFAULT_GROUP,
         modelRef: clampText(source.modelRef, AGENT_MODELREF_MAX),
         personaText: clampText(source.personaText, PERSONA_TEXT_MAX),
         replyStyle: validReplyStyle(source.replyStyle) ? source.replyStyle : 'default',
@@ -109,6 +134,11 @@ export function agentsUpsert(agents, raw, idGen) {
     const draft = normalizeAgent(source, list.length, idGen);
     if (!draft) return {ok: false, error: '智能体数据无效'};
     const editingId = String(source.id || '').trim();
+    // 组数上限：本次写入会引入「新组名」且总数超限时拒绝（空组随成员离开自动消失）
+    const existingGroups = agentGroups(list);
+    if (!existingGroups.includes(draft.group) && existingGroups.length >= AGENT_GROUP_MAX) {
+        return {ok: false, error: '分组最多 ' + AGENT_GROUP_MAX + ' 个'};
+    }
     if (editingId) {
         const existing = list.find((agent) => agent && agent.id === editingId);
         if (!existing) return {ok: false, error: '智能体不存在或已被删除'};
@@ -138,6 +168,29 @@ export function agentsRemove(agents, id) {
 export function agentById(agents, id) {
     const key = String(id || '');
     return (Array.isArray(agents) ? agents : []).find((agent) => agent && agent.id === key) || null;
+}
+
+// 组名清单：「默认」恒在且居首，其余按首次出现保序去重。
+export function agentGroups(agents) {
+    const list = Array.isArray(agents) ? agents : [];
+    const out = [];
+    for (const agent of list) {
+        const group = normalizeGroupName(agent && agent.group) || AGENT_DEFAULT_GROUP;
+        if (group !== AGENT_DEFAULT_GROUP && !out.includes(group)) out.push(group);
+    }
+    return [AGENT_DEFAULT_GROUP, ...out];
+}
+
+// 按组分区聚合（默认组居首；只返回有成员的组），供设置页列表与新建群聊成员区共用。
+export function agentsByGroup(agents) {
+    const list = Array.isArray(agents) ? agents : [];
+    const out = [];
+    for (const group of agentGroups(list)) {
+        const bucket = list.filter((agent) =>
+            (normalizeGroupName(agent && agent.group) || AGENT_DEFAULT_GROUP) === group);
+        if (bucket.length) out.push({group, agents: bucket});
+    }
+    return out;
 }
 
 // 解析 modelRef：失效（账号/模型被删）返回 null，调用方显示「模型不可用」。

@@ -1,20 +1,27 @@
 // ai-agent-model.test.mjs：智能体数据层护栏——名字校验（空白/@/保留词/重名）、归一化
-// 去重与上限、增删改 roundtrip、modelRef 失效、能力快照与 slowTier 超时档。
-// 方案 docs/unfinished-plans/ai-group-chat.md §6.1 / §16.12。
+// 去重与上限、增删改 roundtrip、modelRef 失效、能力快照与 slowTier 超时档、分组
+//（group 归一落默认 / 组清单保序 / 分区聚合 / 组数上限 / 组名校验）。
+// 方案 docs/finished-plans/ai-group-chat.md §6.1 / §16.12 / feature-evaluations §3。
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+    AGENT_DEFAULT_GROUP,
+    AGENT_GROUP_MAX,
     AGENT_MAX_COUNT,
     AGENT_RESERVED_NAMES,
     agentById,
     agentCapability,
+    agentGroups,
     agentNameError,
+    agentsByGroup,
     agentThinkingTier,
     agentsRemove,
     agentsUpsert,
+    groupNameError,
     listModelOptions,
     normalizeAgentName,
     normalizeAgents,
+    normalizeGroupName,
     resolveAgentModel,
     resolveModelByKeyword,
 } from '../../src/ai/ai-agent-model.js';
@@ -216,4 +223,90 @@ test('resolveModelByKeyword：多命中报 ambiguous 并给候选；未命中/�
     // 未命中 / 空
     assert.equal(resolveModelByKeyword(profiles, 'no-such-model').reason, 'not_found');
     assert.equal(resolveModelByKeyword(profiles, '  ').reason, 'empty');
+});
+
+// ==================== 智能体分组（feature-evaluations 2026-11-18 §3） ====================
+
+test('分组归一：无 group 落「默认」，trim/限长/NFC，roundtrip 稳定', () => {
+    assert.equal(normalizeGroupName('  写作  '), '写作');
+    assert.equal(normalizeGroupName('g'.repeat(20)).length, 16);
+    assert.equal(normalizeGroupName(''), '');
+    const list = normalizeAgents([
+        {id: 'a1', name: '甲'},
+        {id: 'a2', name: '乙', group: ' 编码 '},
+        {id: 'a3', name: '丙', group: 'x'.repeat(20)},
+    ], () => 'g');
+    assert.equal(list[0].group, AGENT_DEFAULT_GROUP);
+    assert.equal(list[1].group, '编码');
+    assert.equal(list[2].group, 'x'.repeat(16));
+    // 旧配置零迁移：归一化自反稳定
+    const again = normalizeAgents(JSON.parse(JSON.stringify(list)), () => 'g');
+    assert.deepEqual(again.map((a) => ({...a})), list.map((a) => ({...a})));
+});
+
+test('agentGroups：「默认」恒在居首，其余首次出现保序去重', () => {
+    assert.deepEqual(agentGroups([]), [AGENT_DEFAULT_GROUP]);
+    const list = normalizeAgents([
+        {id: 'a1', name: '甲', group: '写作'},
+        {id: 'a2', name: '乙', group: '编码'},
+        {id: 'a3', name: '丙', group: '写作'},
+        {id: 'a4', name: '丁'},
+    ], () => 'g');
+    assert.deepEqual(agentGroups(list), [AGENT_DEFAULT_GROUP, '写作', '编码']);
+    // 全员都有组时「默认」仍在（供下拉缺省项）
+    const named = normalizeAgents([{id: 'b1', name: '戊', group: '评审'}], () => 'g');
+    assert.deepEqual(agentGroups(named), [AGENT_DEFAULT_GROUP, '评审']);
+});
+
+test('agentsByGroup：默认组居首、组内沿用现有顺序、空组不出现', () => {
+    const list = normalizeAgents([
+        {id: 'a1', name: '甲', group: '写作'},
+        {id: 'a2', name: '乙'},
+        {id: 'a3', name: '丙', group: '写作'},
+        {id: 'a4', name: '丁', group: '编码'},
+    ], () => 'g');
+    const parts = agentsByGroup(list);
+    assert.deepEqual(parts.map((p) => p.group), [AGENT_DEFAULT_GROUP, '写作', '编码']);
+    assert.deepEqual(parts[0].agents.map((a) => a.id), ['a2']);
+    assert.deepEqual(parts[1].agents.map((a) => a.id), ['a1', 'a3']);
+    assert.deepEqual(parts[2].agents.map((a) => a.id), ['a4']);
+});
+
+test('groupNameError：空/超长/重名；「默认」重名被拒', () => {
+    const list = normalizeAgents([
+        {id: 'a1', name: '甲', group: '写作'},
+        {id: 'a2', name: '乙'},
+    ], () => 'g');
+    assert.equal(groupNameError('', list, ''), '分组名不能为空');
+    assert.equal(groupNameError('g'.repeat(17), list, ''), '分组名不能超过 16 字符');
+    assert.equal(groupNameError('写作', list, ''), '分组「写作」已存在');
+    // 「默认」是保留组名：现有成员落默认 → 新建同名被拒
+    assert.equal(groupNameError('默认', list, ''), '分组「默认」已存在');
+    assert.equal(groupNameError('评审', list, ''), '');
+    // 组名与成员名两个命名空间：保留词可用于组名
+    assert.equal(groupNameError('全体成员', list, ''), '');
+});
+
+test('agentsUpsert：group 透传；新组数超上限拒绝；旧组不受限', () => {
+    const list = normalizeAgents([{id: 'a1', name: '甲', group: '写作'}], () => 'g');
+    // 缺省归默认
+    const created = agentsUpsert(list, {name: '乙', modelRef: 'p1|m1'}, () => 'n1');
+    assert.equal(created.ok, true);
+    assert.equal(created.agent.group, AGENT_DEFAULT_GROUP);
+    // 指定组透传
+    const named = agentsUpsert(list, {name: '丙', group: '编码', modelRef: 'p1|m1'}, () => 'n2');
+    assert.equal(named.ok, true);
+    assert.equal(named.agent.group, '编码');
+    // 编辑改组
+    const moved = agentsUpsert(list, {id: 'n1', name: '乙', group: '评审', modelRef: 'p1|m1'}, () => 'x');
+    assert.equal(moved.ok, true);
+    assert.equal(agentById(list, 'n1').group, '评审');
+    // 组数上限：已满 12 组时再引入新组被拒；用旧组不受限
+    const manyGroups = Array.from({length: AGENT_GROUP_MAX - 1}, (_, i) => ({
+        id: 'g' + i, name: '成员' + i, group: '组' + i,
+    }));
+    const agents = normalizeAgents(manyGroups, () => 'g'); // 组0..组10 + 默认 = 12 组
+    assert.equal(agentGroups(agents).length, AGENT_GROUP_MAX);
+    assert.match(agentsUpsert(agents, {name: '新人', group: '新组'}, () => 'x').error, /分组最多/);
+    assert.equal(agentsUpsert(agents, {name: '新人', group: '组0'}, () => 'x').ok, true);
 });

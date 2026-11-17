@@ -5,7 +5,7 @@
 import {createInput, createSelect, createSwitch, createTextarea} from '../core/form-controls.js';
 import {iconSvg} from '../core/icons.js';
 import {aiNowId} from './ai-constants.js';
-import {AGENT_COLOR_HEX} from './ai-agent-model.js';
+import {AGENT_COLOR_HEX, agentGroups, agentsByGroup} from './ai-agent-model.js';
 import {agentsUpsert} from './ai-agent-model.js';
 import {
     BRIEF_BOARD_TOKEN_BUDGET,
@@ -192,37 +192,68 @@ export function createAIGroupSidebar(deps) {
             {value: 'review', label: '评审团'},
         ]}));
 
-        // 成员勾选（开关列表 + 能力徽标）
+        // 成员勾选（开关列表 + 能力徽标）：按智能体分组分区渲染；组多时顶部给过滤下拉
+        const groups = agentGroups(agents);
         const memberWrap = node('div', 'gc-member-list');
         const memberSwitches = [];
         const roleInputs = {};
-        for (const agent of agents) {
-            const item = node('div', 'gc-member-item');
-            const dot = node('span', 'gc-dot gc-dot-lg');
-            dot.style.backgroundColor = AGENT_COLOR_HEX[agent.color] || '#989898';
-            item.appendChild(dot);
-            const textCol = node('div', 'gc-member-text');
-            textCol.appendChild(node('div', 'set-title', agent.name));
-            textCol.appendChild(node('div', 'set-desc', agent.role || agentCapabilityLabel(agent, profiles)));
-            item.appendChild(textCol);
-            const cap = preflightGroup({agents, profiles, memberIds: [agent.id], sharedTokens: 0, boardTokens: BRIEF_BOARD_TOKEN_BUDGET})[0];
-            const badge = node('span', 'gc-badge gc-level-' + (cap ? cap.level : 'red'), cap ? capLevelText(cap.level) : '红');
-            item.appendChild(badge);
-            const sw = createSwitch({checked: false});
-            item.appendChild(sw.element);
-            // 辩论/评审预设的角色输入（勾选后显示；占位按序号给正/反/评审提示）
-            const roleInput = createInput({placeholder: '角色（如 正方 / 反方 / 评审）', maxlength: '80'});
-            roleInput.element.classList.add('gc-member-role');
-            roleInput.element.classList.add('hidden');
-            item.appendChild(roleInput.element);
-            roleInputs[agent.id] = roleInput;
-            memberSwitches.push({agentId: agent.id, control: sw.control, index: memberSwitches.length});
-            sw.control.addEventListener('change', () => {
-                roleInput.element.classList.toggle('hidden', !sw.control.checked);
-                if (!sw.control.checked) roleInput.control.value = '';
-                refreshDerived();
+        const memberItems = []; // {agentId, group, item}
+        for (const part of agentsByGroup(agents)) {
+            const head = node('div', 'gc-group-head');
+            head.appendChild(node('span', 'gc-group-name', part.group));
+            head.appendChild(node('span', 'gc-group-count', String(part.agents.length)));
+            head.dataset.group = part.group;
+            memberWrap.appendChild(head);
+            for (const agent of part.agents) {
+                const item = node('div', 'gc-member-item');
+                item.dataset.group = part.group;
+                const dot = node('span', 'gc-dot gc-dot-lg');
+                dot.style.backgroundColor = AGENT_COLOR_HEX[agent.color] || '#989898';
+                item.appendChild(dot);
+                const textCol = node('div', 'gc-member-text');
+                textCol.appendChild(node('div', 'set-title', agent.name));
+                textCol.appendChild(node('div', 'set-desc', agent.role || agentCapabilityLabel(agent, profiles)));
+                item.appendChild(textCol);
+                const cap = preflightGroup({agents, profiles, memberIds: [agent.id], sharedTokens: 0, boardTokens: BRIEF_BOARD_TOKEN_BUDGET})[0];
+                const badge = node('span', 'gc-badge gc-level-' + (cap ? cap.level : 'red'), cap ? capLevelText(cap.level) : '红');
+                item.appendChild(badge);
+                const sw = createSwitch({checked: false});
+                item.appendChild(sw.element);
+                // 辩论/评审预设的角色输入（勾选后显示；占位按序号给正/反/评审提示）
+                const roleInput = createInput({placeholder: '角色（如 正方 / 反方 / 评审）', maxlength: '80'});
+                roleInput.element.classList.add('gc-member-role');
+                roleInput.element.classList.add('hidden');
+                item.appendChild(roleInput.element);
+                roleInputs[agent.id] = roleInput;
+                memberSwitches.push({agentId: agent.id, control: sw.control, index: memberSwitches.length});
+                memberItems.push({agentId: agent.id, group: part.group, item});
+                sw.control.addEventListener('change', () => {
+                    roleInput.element.classList.toggle('hidden', !sw.control.checked);
+                    if (!sw.control.checked) roleInput.control.value = '';
+                    refreshDerived();
+                });
+                memberWrap.appendChild(item);
+            }
+        }
+        let filterCtl = null;
+        if (groups.length > 4) {
+            // 分组过滤（纯展示）：选组只显示该组成员，组头随成员可见性收起
+            filterCtl = createSelect({
+                options: [{value: '', label: '全部分组'}].concat(groups.map((group) => ({value: group, label: group}))),
             });
-            memberWrap.appendChild(item);
+            filterCtl.control.addEventListener('change', () => {
+                const picked = filterCtl.control.value;
+                const visibleByGroup = new Map();
+                for (const entry of memberItems) {
+                    const visible = !picked || entry.group === picked;
+                    entry.item.classList.toggle('hidden', !visible);
+                    if (visible) visibleByGroup.set(entry.group, true);
+                }
+                for (const head of memberWrap.querySelectorAll('.gc-group-head')) {
+                    head.classList.toggle('hidden', !visibleByGroup.get(head.dataset.group));
+                }
+            });
+            body.appendChild(wrapRow('分组', filterCtl.element, 'gc-form-row'));
         }
         body.appendChild(wrapRow('成员', memberWrap, 'gc-form-row-top'));
 
@@ -323,7 +354,9 @@ export function createAIGroupSidebar(deps) {
             {top: true, wide: true});
         if (typeof enhanceSelect === 'function') {
             // 与设置页/面板弹窗同一套行式下拉（原生 select 会露出系统下拉，和自绘控件混成两套）
-            for (const ctl of [goalCtl, modeCtl, presetCtl, chairKindCtl, chairAgentCtl, policyCtl, roundsCtl, timeoutCtl]) {
+            const enhances = [goalCtl, modeCtl, presetCtl, chairKindCtl, chairAgentCtl, policyCtl, roundsCtl, timeoutCtl];
+            if (filterCtl) enhances.push(filterCtl);
+            for (const ctl of enhances) {
                 enhanceSelect(ctl.control);
             }
         }

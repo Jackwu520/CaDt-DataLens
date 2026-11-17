@@ -8,7 +8,8 @@ import {aiNowId} from './ai-constants.js';
 import {modelRefLabel} from './ai-config-model.js';
 import {REPLY_STYLES} from './ai-persona.js';
 import {
-    AGENT_COLOR_HEX, AGENT_COLORS, agentsRemove, agentsUpsert, agentCapability,
+    AGENT_COLOR_HEX, AGENT_COLORS, AGENT_DEFAULT_GROUP, agentsRemove, agentsUpsert, agentCapability,
+    agentGroups, agentsByGroup, groupNameError,
 } from './ai-agent-model.js';
 
 export function createAIAgentSettings(ctx, extras) {
@@ -79,9 +80,22 @@ export function createAIAgentSettings(ctx, extras) {
             listEl.appendChild(card);
             return;
         }
-        for (const agent of list) {
-            listEl.appendChild(agentRow(agent));
+        // 按组分区：只有「默认」一组时不加组头（避免唯一标签的噪音）
+        const parts = agentsByGroup(list);
+        const showHeaders = parts.length > 1;
+        for (const part of parts) {
+            if (showHeaders) listEl.appendChild(groupHead(part.group, part.agents.length));
+            for (const agent of part.agents) {
+                listEl.appendChild(agentRow(agent));
+            }
         }
+    }
+
+    function groupHead(group, count) {
+        const head = node('div', 'agent-group-head');
+        head.appendChild(node('span', 'agent-group-name', group));
+        head.appendChild(node('span', 'agent-group-count', String(count)));
+        return head;
     }
 
     function agentRow(agent) {
@@ -152,6 +166,35 @@ export function createAIAgentSettings(ctx, extras) {
         const modelCtl = createSelect({options: modelOptions(agent ? agent.modelRef : '')});
         rowModel.appendChild(modelCtl.element);
         wrap.appendChild(rowModel);
+
+        // 分组：必有值字段（空 → 默认）；「＋新建分组…」选中时展开行内命名输入，
+        // 保存时落为该组名（不嵌套弹窗）。
+        const NEW_GROUP = '__new__';
+        const rowGroup = node('div', 'agent-form-row');
+        rowGroup.appendChild(fieldLabel('分组'));
+        const groupCtl = createSelect({
+            options: agentGroups(agents()).map((group) => ({
+                value: group,
+                label: group,
+                selected: agent ? agent.group === group : group === AGENT_DEFAULT_GROUP,
+            })).concat([{value: NEW_GROUP, label: '＋新建分组…'}]),
+        });
+        rowGroup.appendChild(groupCtl.element);
+        wrap.appendChild(rowGroup);
+        const rowNewGroup = node('div', 'agent-form-row agent-form-row-newgroup hidden');
+        rowNewGroup.appendChild(fieldLabel('新分组名'));
+        const newGroupCtl = createInput({
+            value: '',
+            placeholder: '如 写作 / 编码（≤16 字符，重名会被拒）',
+            spellcheck: false,
+            autocomplete: 'off',
+        });
+        rowNewGroup.appendChild(newGroupCtl.element);
+        wrap.appendChild(rowNewGroup);
+        groupCtl.control.addEventListener('change', () => {
+            rowNewGroup.classList.toggle('hidden', groupCtl.control.value !== NEW_GROUP);
+            if (groupCtl.control.value === NEW_GROUP) newGroupCtl.control.focus();
+        });
 
         const rowRole = node('div', 'agent-form-row');
         rowRole.appendChild(fieldLabel('职责'));
@@ -227,7 +270,7 @@ export function createAIAgentSettings(ctx, extras) {
             saveAgentEditor(collectDraft(), statusLine);
         });
 
-        editorControls = {name: nameCtl, model: modelCtl, role: roleCtl, persona: personaCtl,
+        editorControls = {name: nameCtl, model: modelCtl, group: groupCtl, newGroup: newGroupCtl, role: roleCtl, persona: personaCtl,
             style: styleCtl, temperature: tempCtl, color: colorCtl,
             chair: chairCtl, slow: slowCtl, enabled: enabledCtl};
 
@@ -235,7 +278,7 @@ export function createAIAgentSettings(ctx, extras) {
             [wrap], [statusLine, cancelBtn, saveBtn], {top: true, wide: true});
         // 与生成条目编辑器同款：下拉在入 DOM 后再增强，否则露原生外观
         if (typeof enhanceSelect === 'function') {
-            for (const ctl of [modelCtl, styleCtl, colorCtl]) enhanceSelect(ctl.control);
+            for (const ctl of [modelCtl, groupCtl, styleCtl, colorCtl]) enhanceSelect(ctl.control);
         }
     }
 
@@ -257,10 +300,15 @@ export function createAIAgentSettings(ctx, extras) {
     function collectDraft() {
         const controls = editorControls || {};
         const temperatureRaw = String((controls.temperature && controls.temperature.control.value) || '').trim();
+        const groupRaw = String((controls.group && controls.group.control.value) || '');
+        const group = groupRaw === '__new__'
+            ? String((controls.newGroup && controls.newGroup.control.value) || '')
+            : groupRaw;
         return {
             id: editorState && editorState.editingId ? editorState.editingId : '',
             name: String((controls.name && controls.name.control.value) || ''),
             modelRef: String((controls.model && controls.model.control.value) || ''),
+            group,
             role: String((controls.role && controls.role.control.value) || ''),
             personaText: String((controls.persona && controls.persona.control.value) || ''),
             replyStyle: String((controls.style && controls.style.control.value) || 'default'),
@@ -273,6 +321,15 @@ export function createAIAgentSettings(ctx, extras) {
     }
 
     function saveAgentEditor(draft, statusLine) {
+        // 新建分组：组名在保存前显式校验（归一化只静默限长，这里要给出可读错误）
+        if (editorControls && editorControls.group.control.value === '__new__') {
+            const groupError = groupNameError(draft.group, agents(), editorState ? editorState.editingId : '');
+            if (groupError) {
+                statusLine.textContent = groupError;
+                editorControls.newGroup.control.focus();
+                return;
+            }
+        }
         const result = agentsUpsert(agents(), draft, () => aiNowId('agent-'));
         if (!result.ok) {
             statusLine.textContent = result.error || '保存失败';
