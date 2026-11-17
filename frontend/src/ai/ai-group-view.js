@@ -131,7 +131,7 @@ export function createAIGroupView(deps) {
         boardBtn.addEventListener('click', () => {
             state.drawer.classList.toggle('hidden');
         });
-        state.discButtons = {startBtn, pauseBtn, resumeBtn, endBtn, polishBtn};
+        state.discButtons = {startBtn, pauseBtn, resumeBtn, endBtn, polishBtn, boardBtn};
         discRow.append(startBtn, pauseBtn, resumeBtn, endBtn, compressBtn, polishBtn, boardBtn);
         state.discStatusEl = el('span', 'gc-disc-status');
         discRow.appendChild(state.discStatusEl);
@@ -214,8 +214,10 @@ export function createAIGroupView(deps) {
             state.lastMetaStamp = meta.updatedAt;
             state.titleEl.textContent = meta.title || '未命名群聊';
             state.chipsEl.innerHTML = '';
-            state.chipsEl.appendChild(el('span', 'gc-badge', meta.mode === 'task' ? '任务' : '圆桌'));
-            state.chipsEl.appendChild(el('span', 'gc-badge', `第 ${Math.max(1, (meta.discussion && meta.discussion.round) || 1)}/${meta.maxRounds} 轮`));
+            state.chipsEl.appendChild(el('span', 'gc-badge', meta.mode === 'task' ? '任务' : (meta.mode === 'free' ? '自由' : '圆桌')));
+            if (meta.mode !== 'free') {
+                state.chipsEl.appendChild(el('span', 'gc-badge', `第 ${Math.max(1, (meta.discussion && meta.discussion.round) || 1)}/${meta.maxRounds} 轮`));
+            }
             state.topicEl.textContent = meta.topic || '';
         }
         const config = getAIConfig();
@@ -250,6 +252,10 @@ export function createAIGroupView(deps) {
     }
 
     function messageNode(msg, getAIConfig, meta, state) {
+        if (msg.role === 'system') {
+            // 系统通知（成员模型失效 / 无可用成员等）：不进成员上下文，微信式居中灰条
+            return el('div', 'gc-msg-system', String(msg.content || ''));
+        }
         const config = getAIConfig();
         const agents = (config && Array.isArray(config.agents)) ? config.agents : [];
         const isMinutes = msg.kind === 'minutes';
@@ -376,28 +382,35 @@ export function createAIGroupView(deps) {
         state.streamNoteEl.textContent = stream.statusNote || (stream.thinking && !stream.content ? '思考中…' : '正在输入…');
     }
 
-    // 讨论控制按钮的可见性随状态切换（§3.9 暂停/继续/结束）
+    // 讨论控制按钮的可见性随状态切换（§3.9 暂停/继续/结束）；自由模式没有讨论循环，
+    // 只留压缩（共享对话仍会膨胀），发消息即唤醒成员
     function renderDiscussionControls(state, g) {
+        const free = g.meta.mode === 'free';
         const disc = runtime.discussionSnapshot(state.groupId);
-        const phase = disc ? disc.phase + (disc.running ? ':run' : '') + (disc.paused ? ':paused' : '') : 'none';
+        const phase = free ? 'free' : disc ? disc.phase + (disc.running ? ':run' : '') + (disc.paused ? ':paused' : '') : 'none';
         if (state.lastDiscPhase === phase) return;
         state.lastDiscPhase = phase;
-        const {startBtn, pauseBtn, resumeBtn, endBtn, polishBtn} = state.discButtons;
+        const {startBtn, pauseBtn, resumeBtn, endBtn, polishBtn, boardBtn} = state.discButtons;
         const running = !!(disc && disc.running);
         const paused = !!(disc && disc.paused);
-        startBtn.classList.toggle('hidden', running || paused);
-        startBtn.textContent = (g.meta.discussion && g.meta.discussion.round > 0) && !g.meta.minutes ? '继续讨论' : '开始讨论';
-        pauseBtn.classList.toggle('hidden', !running);
-        resumeBtn.classList.toggle('hidden', !paused);
-        endBtn.classList.toggle('hidden', !running && !paused);
-        polishBtn.classList.toggle('hidden', !g.meta.minutes);
+        startBtn.classList.toggle('hidden', free || running || paused);
+        if (!free) startBtn.textContent = (g.meta.discussion && g.meta.discussion.round > 0) && !g.meta.minutes ? '继续讨论' : '开始讨论';
+        pauseBtn.classList.toggle('hidden', free || !running);
+        resumeBtn.classList.toggle('hidden', free || !paused);
+        endBtn.classList.toggle('hidden', free || (!running && !paused));
+        polishBtn.classList.toggle('hidden', free || !g.meta.minutes);
+        if (state.boardBtn) state.boardBtn.classList.toggle('hidden', free);
         if (state.discStatusEl) {
-            const spoken = disc ? `${disc.speeches} 次发言` : '';
-            state.discStatusEl.textContent = running
-                ? `讨论中 · ${spoken}`
-                : paused
-                    ? '已暂停 · ' + (disc.error || '点「继续」接着讨论')
-                    : (g.meta.minutes ? '本场已产出纪要' : '');
+            if (free) {
+                state.discStatusEl.textContent = '自由聊天 · 发消息即回，@点名谁谁回，@全体成员人人回';
+            } else {
+                const spoken = disc ? `${disc.speeches} 次发言` : '';
+                state.discStatusEl.textContent = running
+                    ? `讨论中 · ${spoken}`
+                    : paused
+                        ? '已暂停 · ' + (disc.error || '点「继续」接着讨论')
+                        : (g.meta.minutes ? '本场已产出纪要' : '');
+            }
         }
     }
 

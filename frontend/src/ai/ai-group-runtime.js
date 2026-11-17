@@ -5,6 +5,7 @@
 // 标签页视图经 subscribe 拿快照。
 import {aiClampInt, aiEstimateTokens, aiNowId} from './ai-constants.js';
 import {
+    FREE_CHAT_CAPS,
     GROUP_MEMBER_MAX,
     GROUP_MEMBER_MIN,
     GROUP_OUTPUT_RESERVE_TOKENS,
@@ -23,6 +24,7 @@ import {
     parseChairContract,
     parseGroupBlock,
     parseMentions,
+    relayWakes,
     sanitizeChairPlan,
     stripGroupBlock,
 } from './ai-group-model.js';
@@ -51,6 +53,9 @@ export function createAIGroupRuntime(deps) {
     // roundId → 流记录（发言中）；结束后移除
     const streams = new Map();
     const groupSeq = new Map();
+    // 自由聊天（QQ/微信群式）：groupId → {pending:[用户消息], running, abort}；无 @ 时的轮换接话人游标
+    const chatQueues = new Map();
+    const chatCursors = new Map();
     let listMode = 'sessions';
     let initPromise = null;
     const listeners = new Set();
@@ -182,7 +187,7 @@ export function createAIGroupRuntime(deps) {
             topic: source.topic || '',
             goal: source.goal,
             memberIds,
-            mode: source.mode === 'task' ? 'task' : 'roundtable',
+            mode: source.mode === 'task' ? 'task' : (source.mode === 'free' ? 'free' : 'roundtable'),
             chair: normalizeChair(chairSpec),
             maxRounds: source.maxRounds,
             roundMode: 'sequential',
@@ -211,6 +216,8 @@ export function createAIGroupRuntime(deps) {
             return {ok: false};
         }
         groups.delete(id);
+        chatQueues.delete(id);
+        chatCursors.delete(id);
         notify();
         return {ok: true};
     }
@@ -589,14 +596,163 @@ export function createAIGroupRuntime(deps) {
             meta.messageCount = (meta.messageCount || 0) + 1;
             meta.lastMessageId = gid;
         });
-        // 用户点名（§3.9）：@A / @全体成员 → 强制进下一次调度
-        noteMentions(groupId, content);
+        const d = discussionOf(groupId);
+        if (d.running || d.paused) {
+            // 讨论进行中（§3.9）：@A / @全体成员 → 强制进下一次调度，消息由主持人吸收
+            noteMentions(groupId, content);
+        } else {
+            // 闲时（QQ/微信群式）：消息即唤醒——@点名谁谁回，无 @ 轮换一位成员接话；
+            // 自由模式成员输出里的 @ 继续接力（受 §12 上限约束）。不 await：发送立即返回。
+            runChatDispatch(groupId, msg).catch((e) => flash('群聊消息调度失败：' + ((e && e.message) || e), true));
+        }
         return {ok: true, gid};
     }
 
+    // ---------- 自由聊天路径（消息即唤醒；§4 / §12） ----------
+
+    function chatQueueOf(groupId) {
+        let q = chatQueues.get(groupId);
+        if (!q) {
+            q = {pending: [], running: false, abort: false};
+            chatQueues.set(groupId, q);
+        }
+        return q;
+    }
+
+    // 群聊里的系统通知（role:'system' 不进成员上下文，仅用户可见；WeChat 式灰条）
+    async function systemNotice(groupId, text) {
+        const g = groups.get(groupId);
+        if (!g) return;
+        const msg = {
+            gid: aiNowId('gm-'),
+            role: 'system',
+            agentId: '',
+            agentName: '',
+            agentColor: '',
+            model: '',
+            content: text,
+            ts: Date.now(),
+            turnId: '',
+            round: currentRound(g.meta),
+            replyTo: '',
+            addressedTo: [],
+            stance: '',
+            groupBlock: null,
+            usage: null,
+            hasPrivate: false,
+            timing: null,
+            timeout: false,
+            status: 'done',
+            error: '',
+        };
+        try {
+            await store.append(groupId, encodeGroupMessage(msg) + '\n');
+        } catch (e) {
+            console.error('系统通知落盘失败', e);
+        }
+        g.messages.push(msg);
+        await saveMeta(groupId, (meta) => {
+            meta.messageCount = (meta.messageCount || 0) + 1;
+            meta.lastMessageId = msg.gid;
+        });
+    }
+
+    // 串行队列：用户连发消息按序处理，前一批回复完才跑下一批
+    async function runChatDispatch(groupId, userMsg) {
+        const q = chatQueueOf(groupId);
+        q.pending.push(userMsg);
+        if (q.running) return;
+        q.running = true;
+        try {
+            while (q.pending.length && !q.abort) {
+                const next = q.pending.shift();
+                await runChatTurn(groupId, next);
+            }
+        } finally {
+            q.running = false;
+            q.abort = false;
+        }
+    }
+
+    async function runChatTurn(groupId, userMsg) {
+        const g = groups.get(groupId);
+        if (!g) return;
+        const d = discussionOf(groupId);
+        if (d.running || d.paused) return; // 讨论已开始：点名走 forcedIds，不走闲时唤醒
+        const config = getAIConfig();
+        const agents = agentsOf(config);
+        const members = g.meta.memberIds
+            .map((id) => agents.find((item) => item && item.id === id))
+            .filter((agent) => agent && agent.enabled && !(g.meta.mutedAgentIds || []).includes(agent.id));
+        if (!members.length) {
+            await systemNotice(groupId, '群里没有可用成员：先到 设置 → AI → 智能体 启用成员');
+            return;
+        }
+        // 首批响应者：@点名（全体 = 每人一次）；无 @ → 轮换一位成员接话（§4 默认接话人）
+        const mentions = parseMentions(String(userMsg.content || ''), members.map((m) => m.name));
+        const queue = [];
+        if (mentions.all) {
+            for (const m of members) queue.push({id: m.id, gen: 0});
+        } else if (mentions.names.length) {
+            for (const name of mentions.names) {
+                const agent = members.find((m) => m.name === name);
+                if (agent && !queue.some((item) => item.id === agent.id)) queue.push({id: agent.id, gen: 0});
+            }
+        } else {
+            const cursor = (chatCursors.get(groupId) || 0) % members.length;
+            chatCursors.set(groupId, cursor + 1);
+            queue.push({id: members[cursor].id, gen: 0});
+        }
+        if (!queue.length) {
+            await systemNotice(groupId, '没有匹配的成员可回应这条消息');
+            return;
+        }
+        const isFree = g.meta.mode === 'free';
+        const turn = {
+            replies: 0,
+            tokens: 0,
+            pairCounts: new Map(),
+            perAgent: new Map(),
+        };
+        while (queue.length && turn.replies < FREE_CHAT_CAPS.maxRepliesPerTurn && turn.tokens < FREE_CHAT_CAPS.maxTokensPerTurn && !chatQueueOf(groupId).abort) {
+            if (d.running || d.paused) break; // 讨论中途开始：闲时唤醒让位（点名走 forcedIds）
+            const {id, gen} = queue.shift();
+            const r = await speak(groupId, id, {focus: gen > 0 ? '群成员在消息里 @ 了你，请回应' : ''});
+            if (!r.ok) {
+                // 模型不可用 / 上下文不足等：群里明示原因（不静默吞掉）
+                await systemNotice(groupId, r.error || '成员调用失败');
+                continue;
+            }
+            const result = await r.done;
+            if (result.status !== 'done') continue; // 超时/停止：消息已按 interrupted/error 归档
+            turn.replies++;
+            turn.perAgent.set(id, (turn.perAgent.get(id) || 0) + 1);
+            turn.tokens += (result.usage && result.usage.totalTokens) || 0;
+            if (!isFree || gen >= FREE_CHAT_CAPS.maxHops) continue;
+            // 自由模式接力：成员输出里的 @ 继续唤醒（单条 ≤2 人、乒乓/单成员/总回复有上限）
+            const last = g.messages[g.messages.length - 1];
+            if (!last || last.agentId !== id) continue;
+            const wakes = relayWakes(last.content, {
+                speakerId: id,
+                memberNames: members.map((m) => ({id: m.id, name: m.name})),
+                generation: gen,
+                pairCounts: turn.pairCounts,
+                perAgentCounts: turn.perAgent,
+            });
+            for (const wakeId of wakes) {
+                const pairKey = [id, wakeId].sort().join('|');
+                turn.pairCounts.set(pairKey, (turn.pairCounts.get(pairKey) || 0) + 1);
+                queue.push({id: wakeId, gen: gen + 1});
+            }
+        }
+    }
+
     // 停止整场：roundId 都以 groupId# 开头，Go 侧前缀匹配全部取消（取消路径补发
-    // ai-done finishReason=stopped → finishStream 归档）
+    // ai-done finishReason=stopped → finishStream 归档）；自由聊天的排队消息一并清空
     function stopAll(groupId) {
+        const q = chatQueues.get(groupId);
+        if (q && q.running) q.abort = true;
+        if (q) q.pending = [];
         try {
             backend.AIStop(groupId);
         } catch (e) {

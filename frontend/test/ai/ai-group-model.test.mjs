@@ -9,6 +9,7 @@ import {
     estimateDiscussionCalls,
     normalizeGroupMeta,
     preflightGroup,
+    relayWakes,
     resolveChairModel,
 } from '../../src/ai/ai-group-model.js';
 import {agentsUpsert} from '../../src/ai/ai-agent-model.js';
@@ -269,4 +270,34 @@ test('outputLanguageRuleText：三档语义', () => {
     assert.match(outputLanguageRuleText('en'), /English/);
     assert.match(outputLanguageRuleText('auto'), /相同的语言/);
     assert.ok(GROUP_RULES_TEXT.includes('不得 @全体成员'));
+});
+
+// ==================== 自由聊天（消息即唤醒；§4 / §12） ====================
+
+test('normalizeGroupMeta：free 模式通过归一', () => {
+    const meta = normalizeGroupMeta({id: 'g1', mode: 'free', memberIds: ['a1', 'a2']});
+    assert.equal(meta.mode, 'free');
+    assert.equal(normalizeGroupMeta({mode: 'weird'}).mode, 'roundtable');
+});
+
+test('relayWakes：@B 唤醒、@all 禁止、单条 ≤2 人、不唤醒自己', () => {
+    const memberNames = [{id: 'a1', name: '架构师'}, {id: 'a2', name: '审查员'}, {id: 'a3', name: '评审'}];
+    const base = {speakerId: 'a1', memberNames, generation: 0, pairCounts: new Map(), perAgentCounts: new Map()};
+    assert.deepEqual(relayWakes('@审查员 你怎么看？', base), ['a2']);
+    assert.deepEqual(relayWakes('@审查员 @评审 @架构师 都说说', base), ['a2', 'a3']);
+    assert.deepEqual(relayWakes('@全体成员 集合', base), []);
+    assert.deepEqual(relayWakes('@架构师 收到', base), []);
+    assert.deepEqual(relayWakes('@路人 你好', base), []);
+    assert.deepEqual(relayWakes('看这段：```json
+{"a":"@审查员"}
+```', base), []);
+});
+
+test('relayWakes：乒乓/单成员/链深上限', () => {
+    const memberNames = [{id: 'a1', name: '架构师'}, {id: 'a2', name: '审查员'}];
+    const pairCounts = new Map([['a1|a2', 2]]);
+    assert.deepEqual(relayWakes('@审查员 再说说', {speakerId: 'a1', memberNames, generation: 0, pairCounts, perAgentCounts: new Map()}), []);
+    const perAgent = new Map([['a2', 3]]);
+    assert.deepEqual(relayWakes('@审查员 来', {speakerId: 'a1', memberNames, generation: 0, pairCounts: new Map(), perAgentCounts: perAgent}), []);
+    assert.deepEqual(relayWakes('@审查员 来', {speakerId: 'a1', memberNames, generation: 6, pairCounts: new Map(), perAgentCounts: new Map()}), []);
 });

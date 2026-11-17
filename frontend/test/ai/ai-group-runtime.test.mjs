@@ -95,7 +95,16 @@ async function settle(ms = 40) {
     await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-test('创建 → 用户插话 → 指定成员发言（流式）→ 落盘', async () => {
+async function waitFor(fn, ms = 4000) {
+    const start = Date.now();
+    while (Date.now() - start < ms) {
+        if (fn()) return true;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    return false;
+}
+
+test('创建 → 用户插话（自动唤醒轮换接话人）→ 流式 → 落盘 → 点名发言带焦点', async () => {
     const backend = makeBackend();
     const {runtime} = makeRuntime(backend);
     const groupId = await makeGroup(runtime);
@@ -106,15 +115,11 @@ test('创建 → 用户插话 → 指定成员发言（流式）→ 落盘', asy
     assert.equal(g.messages.length, 1);
     assert.equal(g.messages[0].role, 'user');
 
-    const speak = await runtime.speak(groupId, 'a1', {focus: '回应拆库成本'});
-    assert.equal(speak.ok, true, speak.error);
-    assert.ok(speak.roundId.startsWith(groupId + '#'));
-    // 请求形状：system 在首、user 尾巴收尾；tools 空；焦点进了系统段
-    assert.equal(backend.sent.length, 1);
+    // 消息即唤醒：无 @ → 轮换接话人（第一条落到 a1）自动发言；请求形状：system 在首、user 尾巴收尾
+    assert.equal(await waitFor(() => backend.sent.length >= 1), true, '插话应自动唤醒接话人');
     const req = backend.sent[0];
+    assert.ok(req.roundId.startsWith(groupId + '#a1'));
     assert.equal(req.messages[0].role, 'system');
-    assert.match(req.messages[0].content, /<chair_focus>/);
-    assert.match(req.messages[0].content, /回应拆库成本/);
     assert.match(req.messages[0].content, /<participants>/);
     assert.equal(req.messages[req.messages.length - 1].role, 'user');
     assert.match(req.messages[req.messages.length - 1].content, /轮到你（架构师）发言/);
@@ -125,11 +130,12 @@ test('创建 → 用户插话 → 指定成员发言（流式）→ 落盘', asy
     assert.ok(userTurn);
     assert.match(userTurn.content, /^\[用户\]/);
 
-    // 流事件：chunk → done
-    runtime.handleEvent('ai-chunk', {id: speak.roundId, delta: '我'});
-    runtime.handleEvent('ai-chunk', {id: speak.roundId, delta: '同意拆库'});
-    runtime.handleEvent('ai-think', {id: speak.roundId, delta: '思考'});
-    runtime.handleEvent('ai-done', {id: speak.roundId, finishReason: 'stop', usage: {promptTokens: 100, completionTokens: 10, totalTokens: 110}});
+    // 流事件：chunk → done（落盘）
+    const autoRoundId = req.roundId;
+    runtime.handleEvent('ai-chunk', {id: autoRoundId, delta: '我'});
+    runtime.handleEvent('ai-chunk', {id: autoRoundId, delta: '同意拆库'});
+    runtime.handleEvent('ai-think', {id: autoRoundId, delta: '思考'});
+    runtime.handleEvent('ai-done', {id: autoRoundId, finishReason: 'stop', usage: {promptTokens: 100, completionTokens: 10, totalTokens: 110}});
     await settle();
 
     g = runtime.groupById(groupId);
@@ -147,6 +153,15 @@ test('创建 → 用户插话 → 指定成员发言（流式）→ 落盘', asy
     assert.match(priv, /"kind":"thinking"/);
     // 流结束
     assert.equal(runtime.activeStreamOf(groupId), null);
+
+    // 指定成员发言（请发言路径）：<chair_focus> 焦点段进系统提示
+    const speak = await runtime.speak(groupId, 'a2', {focus: '回应拆库成本'});
+    assert.equal(speak.ok, true, speak.error);
+    const req2 = backend.sent[1];
+    assert.match(req2.messages[0].content, /<chair_focus>/);
+    assert.match(req2.messages[0].content, /回应拆库成本/);
+    runtime.handleEvent('ai-done', {id: speak.roundId, finishReason: 'stop'});
+    await settle();
 });
 
 test('超时：等待期内无输出 → AIStop → stopped 归一 timeout', async () => {

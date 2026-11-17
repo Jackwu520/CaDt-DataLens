@@ -169,12 +169,14 @@ export function createAIGroupSidebar(deps) {
         }
 
         const body = node('div', 'gc-create-form');
-        // factory 是 core/form-controls 的 {element, control}：挂 .element，返回 factory 供取值
+        // factory 是 core/form-controls 的 {element, control}：挂 .element，返回 factory 供取值；
+        // wrap 存 factory.wrapEl（模式切换要整行显隐）
         const row = (labelText, factory, className) => {
             const wrap = node('div', 'gc-form-row' + (className ? ' ' + className : ''));
             wrap.appendChild(node('span', 'gc-form-label', labelText));
             wrap.appendChild(factory.element);
             body.appendChild(wrap);
+            factory.wrapEl = wrap;
             return factory;
         };
 
@@ -184,6 +186,7 @@ export function createAIGroupSidebar(deps) {
         const modeCtl = row('模式', createSelect({options: [
             {value: 'roundtable', label: '圆桌讨论（推荐）', selected: true},
             {value: 'task', label: '任务协作（主持人拆任务板）'},
+            {value: 'free', label: '自由聊天（像微信群：@谁谁回）'},
         ]}));
         // 预设（§1.4）：辩论/评审给成员分配角色，发言顺序按 正 → 反 → 评审 交替
         const presetCtl = row('预设', createSelect({options: [
@@ -307,10 +310,12 @@ export function createAIGroupSidebar(deps) {
 
         createControls = {title: titleCtl, topic: topicCtl, goal: goalCtl, mode: modeCtl, preset: presetCtl,
             memberSwitches, roleInputs,
-            chairKind: chairKindCtl, chairAgent: chairAgentCtl, policy: policyCtl,
+            chairKind: chairKindCtl, chairAgent: chairAgentCtl, chairAgentWrap,
+            policy: policyCtl,
             rounds: roundsCtl, timeout: timeoutCtl};
 
         const refreshDerived = () => {
+            refreshModeVisibility();
             refreshChairVisibility();
             refreshPresetDefaults();
             refreshPreflight(preflightBox, estLine, agents, profiles);
@@ -382,6 +387,17 @@ export function createAIGroupSidebar(deps) {
         void 0; // kind=ai 与 member 共用同一选择器，选项含义在 change 时重算
     }
 
+    // 自由聊天没有主持人/预设/策略/轮数（消息即唤醒，无讨论循环）——整行隐藏
+    function refreshModeVisibility() {
+        if (!createControls) return;
+        const free = createControls.mode.control.value === 'free';
+        for (const ctl of [createControls.preset, createControls.chairKind, createControls.policy, createControls.rounds]) {
+            if (ctl && ctl.wrapEl) ctl.wrapEl.classList.toggle('hidden', free);
+        }
+        const chairRow = createControls.chairAgentWrap;
+        if (chairRow) chairRow.classList.toggle('hidden', free);
+    }
+
     // 辩论/评审预设（§1.4）：切预设时按勾选顺序填默认角色（正方/反方/评审…）并调目标
     function refreshPresetDefaults() {
         if (!createControls) return;
@@ -449,12 +465,19 @@ export function createAIGroupSidebar(deps) {
         }
         box.appendChild(detail);
         if (estLine) {
-            const policy = createControls ? createControls.policy.control.value : 'round-plan';
-            const rounds = createControls ? Number(createControls.rounds.control.value) || 2 : 2;
-            const calls = estimateDiscussionCalls(memberIds.length, rounds, policy);
-            estLine.textContent = memberIds.length >= 2
-                ? `预计调用量：约 ${calls} 次（${memberIds.length} 成员 × ${rounds} 轮）`
-                : '勾选 2–8 位成员后开始讨论';
+            const free = createControls && createControls.mode.control.value === 'free';
+            if (free) {
+                estLine.textContent = memberIds.length >= 1
+                    ? `自由聊天按消息唤醒：每条消息至少 1 次调用，@全体成员 ≈ ${memberIds.length} 次/条`
+                    : '勾选 2–8 位成员后开始聊天';
+            } else {
+                const policy = createControls ? createControls.policy.control.value : 'round-plan';
+                const rounds = createControls ? Number(createControls.rounds.control.value) || 2 : 2;
+                const calls = estimateDiscussionCalls(memberIds.length, rounds, policy);
+                estLine.textContent = memberIds.length >= 2
+                    ? `预计调用量：约 ${calls} 次（${memberIds.length} 成员 × ${rounds} 轮）`
+                    : '勾选 2–8 位成员后开始讨论';
+            }
         }
     }
 

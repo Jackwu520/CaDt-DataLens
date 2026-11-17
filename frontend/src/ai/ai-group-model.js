@@ -361,7 +361,7 @@ export function buildMemberMessages({member, group, sharedMessages, ownSteps, pa
     const systemPrompt = buildMemberSystemPrompt({
         agent: member,
         participantsText,
-        modeLabel: meta.mode === 'task' ? '任务协作' : '圆桌讨论',
+        modeLabel: meta.mode === 'task' ? '任务协作' : (meta.mode === 'free' ? '自由聊天' : '圆桌讨论'),
         round: (meta.discussion && meta.discussion.round) || 1,
         goal: meta.goal,
         boardText,
@@ -706,7 +706,9 @@ export function parseMentions(text, memberNames) {
     const names = (Array.isArray(memberNames) ? memberNames : []).filter(Boolean);
     let all = false;
     const hit = [];
-    if (/@(全体成员|所有人|all|everyone)\b/i.test(cleaned)) all = true;
+    // \b 是 ASCII 词边界，跟在 CJK 后永不成立（@全体成员 后跟空格/标点/汉字都判不了界）；
+    // CJK 两个别名用「后不跟 ASCII 词字符」判定，all/everyone 保留 \b
+    if (/@(全体成员|所有人)(?!\w)|@(all|everyone)\b/i.test(cleaned)) all = true;
     const sorted = [...names].sort((a, b) => b.length - a.length);
     let rest = cleaned;
     for (const name of sorted) {
@@ -718,6 +720,41 @@ export function parseMentions(text, memberNames) {
         }
     }
     return {all, names: hit};
+}
+// ==================== 自由聊天（QQ/微信群式：消息即唤醒，§4 / §12 保留 v1 上限） ====================
+
+// 自由聊天上限（§12 默认值）：一条用户消息引发的回复链全部受此约束
+export const FREE_CHAT_CAPS = {
+    maxRepliesPerTurn: 12,       // 回合回复总数
+    maxHops: 6,                  // 接力链深度（成员→成员为一代）
+    maxMentionsPerMessage: 2,    // 成员单条最多 @2 人
+    maxRepliesPerAgent: 3,       // 单成员单回合回复次数
+    maxPairPingPong: 2,          // 同一对成员互相唤醒次数
+    maxTokensPerTurn: 120000,    // 回合 token 预算
+};
+
+// 成员消息的接力唤醒解析（纯函数）：成员不能 @all（静默不接力）；单条最多 @2 人；
+// 不唤醒自己；同对成员互相唤醒 ≤ maxPairPingPong 次；被点名者本回合回复 ≤ maxRepliesPerAgent 次。
+// ctx: {speakerId, memberNames:[{id,name}], generation, pairCounts:Map, perAgentCounts:Map}
+// 返回要唤醒的成员 id（保序去重）；调用方负责按返回值更新 pairCounts。
+export function relayWakes(text, ctx) {
+    const c = ctx || {};
+    if ((c.generation || 0) >= FREE_CHAT_CAPS.maxHops) return [];
+    const mentions = parseMentions(text, (c.memberNames || []).map((m) => m && m.name));
+    if (mentions.all) return []; // 智能体 @all 禁止（§12）
+    const byName = new Map((c.memberNames || []).map((m) => [m.name, m.id]));
+    const wakes = [];
+    for (const name of mentions.names) {
+        const id = byName.get(name);
+        if (!id || id === c.speakerId) continue; // 自己/非成员不算 @ 名额
+        if (wakes.includes(id)) continue;
+        if ((c.perAgentCounts && c.perAgentCounts.get(id) || 0) >= FREE_CHAT_CAPS.maxRepliesPerAgent) continue;
+        const pairKey = [c.speakerId, id].sort().join('|');
+        if ((c.pairCounts && c.pairCounts.get(pairKey) || 0) >= FREE_CHAT_CAPS.maxPairPingPong) continue;
+        wakes.push(id);
+        if (wakes.length >= FREE_CHAT_CAPS.maxMentionsPerMessage) break; // 单条最多 @2 人
+    }
+    return wakes;
 }
 
 // 主持人超时档（§3.12）：思考主持按 chairThinkingMs，标准按 chairMs
