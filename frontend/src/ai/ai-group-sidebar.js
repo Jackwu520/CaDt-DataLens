@@ -166,12 +166,13 @@ export function createAIGroupSidebar(deps) {
         }
 
         const body = node('div', 'gc-create-form');
-        const row = (labelText, control, className) => {
+        // factory 是 core/form-controls 的 {element, control}：挂 .element，返回 factory 供取值
+        const row = (labelText, factory, className) => {
             const wrap = node('div', 'gc-form-row' + (className ? ' ' + className : ''));
             wrap.appendChild(node('span', 'gc-form-label', labelText));
-            wrap.appendChild(control);
+            wrap.appendChild(factory.element);
             body.appendChild(wrap);
-            return control;
+            return factory;
         };
 
         const titleCtl = row('群名', createInput({value: '', placeholder: '例如：存储方案评审', maxlength: String(60)}));
