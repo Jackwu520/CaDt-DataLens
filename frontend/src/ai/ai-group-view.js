@@ -399,7 +399,7 @@ export function createAIGroupView(deps) {
         resumeBtn.classList.toggle('hidden', free || !paused);
         endBtn.classList.toggle('hidden', free || (!running && !paused));
         polishBtn.classList.toggle('hidden', free || !g.meta.minutes);
-        if (state.boardBtn) state.boardBtn.classList.toggle('hidden', free);
+        boardBtn.classList.toggle('hidden', free);
         if (state.discStatusEl) {
             if (free) {
                 state.discStatusEl.textContent = '自由聊天 · 发消息即回，@点名谁谁回，@全体成员人人回';

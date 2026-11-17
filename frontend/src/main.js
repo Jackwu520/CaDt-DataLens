@@ -2916,6 +2916,8 @@ function initAIPanel() {
     aiGroupRuntime = createAIGroupRuntime({
         backend,
         getAIConfig: () => (aiPanel && aiPanel.aiGroupApi ? aiPanel.aiGroupApi.getConfig() : null),
+        // modelRef → 请求配置（漏传则每次发言都报「模型不可用」——群聊 G2 接线事故修复）
+        resolveModel: (ref) => (aiPanel && aiPanel.aiGroupApi ? aiPanel.aiGroupApi.resolveModel(ref) : null),
         flash: (...args) => flash(...args),
         openGroupTab: (...args) => openGroupChatTab(...args),
         getWorkspace: () => (workspaceFolder || ''),
@@ -2965,7 +2967,9 @@ function initAIPanel() {
     });
     window.__lens.aiGroupRuntime = aiGroupRuntime;
     window.__mockAiEmit = (name, payload) => {
+        // dev mock 的 ai-* 事件与真实 Wails EventsOn 同语义：面板与群聊运行时都要认领
         if (aiPanel) aiPanel.handleEvent(name, payload);
+        if (aiGroupRuntime) aiGroupRuntime.handleEvent(name, payload);
     };
     if (rt) {
         // 新增 Go 侧 aiEvent* 常量时必须同步加进这里，否则事件发出后前端无人接收
