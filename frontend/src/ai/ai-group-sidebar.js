@@ -72,6 +72,8 @@ export function createAIGroupSidebar(deps) {
     function applyListMode(mode) {
         const groups = mode === 'groups';
         if (els.segment) {
+            // 分段控件的滑动指示块由 data-mode 驱动（thumb 的 transform 过渡）
+            els.segment.dataset.mode = groups ? 'groups' : 'sessions';
             for (const button of els.segment.querySelectorAll('button[data-list]')) {
                 button.classList.toggle('active', button.dataset.list === mode);
             }

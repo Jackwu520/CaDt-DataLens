@@ -11141,11 +11141,17 @@ textarea.dlg-input:focus {
 
 /* ===== AI 群聊（ai-group-*：侧栏列表 / 新建弹窗 / 群聊标签页 G1 壳） ===== */
 /* 会话 | 群聊：紧凑分段控件——共用一条填充底槽、无任何边框，和下方「新建会话/自动化/投递」
-   描边大按钮拉开层级；激活态用强调色内嵌块 + 强调色字，不靠加粗边框区分 */
-.ai-list-segment { display: flex; gap: 2px; margin: 7px 10px 2px; padding: 2px; border: none; border-radius: 7px; background: color-mix(in srgb, var(--border) 45%, transparent); }
-.ai-list-segment button { flex: 1; padding: 2px 0; font-size: 11.5px; line-height: 18px; border: none; border-radius: 5px; background: transparent; color: var(--muted); cursor: pointer; transition: color 120ms ease, background 120ms ease; }
+   描边大按钮拉开层级。激活态是底槽里一块**滑动指示块**（thumb），切模式时横向滑动过渡；
+   按钮本身透明，文字颜色靠 .active 切换 */
+.ai-list-segment { position: relative; display: flex; gap: 2px; margin: 7px 10px 2px; padding: 2px; border: none; border-radius: 7px; background: color-mix(in srgb, var(--border) 45%, transparent); }
+.ai-list-segment-thumb { position: absolute; top: 2px; bottom: 2px; left: 2px; width: calc(50% - 3px); border-radius: 5px; background: color-mix(in srgb, var(--accent) 16%, transparent); pointer-events: none; transition: transform 180ms cubic-bezier(.2, .7, .3, 1); }
+.ai-list-segment[data-mode="groups"] .ai-list-segment-thumb { transform: translateX(calc(100% + 2px)); }
+.ai-list-segment button { position: relative; z-index: 1; flex: 1; padding: 2px 0; font-size: 11.5px; line-height: 18px; border: none; border-radius: 5px; background: transparent; color: var(--muted); cursor: pointer; transition: color 140ms ease; }
 .ai-list-segment button:hover { color: var(--text); }
-.ai-list-segment button.active { color: var(--accent); background: color-mix(in srgb, var(--accent) 16%, transparent); }
+.ai-list-segment button.active { color: var(--accent); background: transparent; }
+@media (prefers-reduced-motion: reduce) {
+    .ai-list-segment-thumb { transition: none; }
+}
 .gc-list-empty { padding: 18px 12px; font-size: 12px; line-height: 1.6; color: var(--muted); }
 .gc-list-row { cursor: pointer; }
 .gc-list-head { display: flex; align-items: center; gap: 6px; min-width: 0; }
@@ -11243,11 +11249,3 @@ textarea.dlg-input:focus {
 /* 侧栏列表模式切换：.hidden 在仓库里按「.组件.hidden」逐条声明（无全局兜底），
    ai-session-list / ai-session-actions 必须补变体，否则「会话 | 群聊」切换后两块都显示 */
 .ai-session-list.hidden, .ai-session-actions.hidden { display: none; }
-
-/* 会话 | 群聊切换动画：容器从 display:none 变回 flex 会重启 CSS 动画，天然只对
-   「切进来的那一块」生效；两向切换统一用中性方向（淡入 + 轻微上移），不猜左右 */
-@keyframes ai-list-switch-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
-.ai-session-list:not(.hidden), .ai-session-actions:not(.hidden) { animation: ai-list-switch-in 150ms ease-out; }
-@media (prefers-reduced-motion: reduce) {
-    .ai-session-list:not(.hidden), .ai-session-actions:not(.hidden) { animation: none; }
-}
