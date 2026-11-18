@@ -24,6 +24,15 @@ func skipWorktreeEvent(path string) bool {
 	return rel == worktreeSkipPrefix || strings.HasPrefix(rel, worktreeSkipPrefix+"/")
 }
 
+// watchEvent 单条目录通知。Removed 标记「消失」类动作（FILE_ACTION_REMOVED /
+// RENAMED_OLD_NAME——文件被删或被 rename 走），与「出现/修改」类区分：wipe-guard 的
+// 删除计数只认前者，原子写（temp→rename）与补丁回灌产生的是 added/renamed_new/modified，
+// 几十个文件的合法写入不该计入破坏判定。Windows 实现填充本字段，其它平台恒 false。
+type watchEvent struct {
+	Path    string
+	Removed bool
+}
+
 // WatchWorkspace 递归监听工作区，变化时通过 workspace-changed 事件推给前端；
 // 监听失败时前端仍保留轮询兜底。
 func (w *Watcher) WatchWorkspace(root string) error {
@@ -50,18 +59,26 @@ func (w *Watcher) WatchWorkspace(root string) error {
 	logf("info", "文件监听：%s", root)
 	go func() {
 		defer close(done)
-		err := watchDirectory(root, stop, func(paths []string, overflow bool) {
-			filtered := make([]string, 0, len(paths))
-			for _, p := range paths {
-				if skipWorktreeEvent(p) {
+		err := watchDirectory(root, stop, func(events []watchEvent, overflow bool) {
+			filtered := make([]string, 0, len(events))
+			removed := make([]string, 0, len(events))
+			for _, e := range events {
+				if skipWorktreeEvent(e.Path) {
 					continue
 				}
-				filtered = append(filtered, p)
+				filtered = append(filtered, e.Path)
+				if e.Removed {
+					// 「消失」类动作（被删 / rename 走）单独成组：wipe-guard 的删除计数
+					// 只认它——原子写与补丁回灌产生的是 added/renamed_new/modified，
+					// 几十个文件的合法写入不该触发破坏告警。
+					removed = append(removed, e.Path)
+				}
 			}
 			if overflow || len(filtered) > 0 {
 				emit("workspace-changed", map[string]interface{}{
 					"root":     root,
 					"paths":    filtered,
+					"removed":  removed,
 					"overflow": overflow,
 				})
 			}

@@ -186,9 +186,14 @@ export function createAIMessageQueue(ctx) {
     // 在工具调用中间插消息会破坏轮次模型。
     const model = createQueueModel({
         onChange: (item) => {
+            // 只有插话（steer）唤醒 wait_agent：排队消息（queue）不打扰等待——它按排队
+            // 语义在本轮结束后由 flushMessageQueue 送达，唤醒只会让等待白醒一轮
+            //（注入仍只在轮边界，wait 拿不到排队消息的内容）。来源随 notify 带回，
+            // 供 waitForInbox 按来源分文案。
             const waiter = ctx.inboxWaiters;
-            if (waiter && typeof waiter.notify === 'function' && item && item.sessionId) {
-                waiter.notify(item.sessionId);
+            if (waiter && typeof waiter.notify === 'function' && item && item.sessionId
+                && item.delivery === 'steer') {
+                waiter.notify(item.sessionId, 'steer');
             }
         },
     });
@@ -448,6 +453,10 @@ export function createAIMessageQueue(ctx) {
         }
         const payload = captureComposerMessage();
         if (!payload) return false;
+        // 停止收尾窗口（流还登记着但已 stopped/finished）：本轮收尾的 shouldFlush 只认
+        // interjectPending，不登记的话这条排队消息会滞留到下次切换会话才有机会发出。
+        const session = currentSession();
+        if (session && !liveSteerableStream(session.id)) interjectPending.add(session.id);
         const item = model.enqueue(payload);
         renderMessageQueue();
         flash('已加入排队：' + (item.text ? item.text.slice(0, 24) : '图片'));
@@ -577,7 +586,9 @@ export function createAIMessageQueue(ctx) {
         flushMessageQueue(sessionId);
     }
 
-    async function flushMessageQueue(sessionId) {
+    // 冲刷排队消息（一轮一条，队首优先）。opts.fromRetry：失败自动重试的那次调用——
+    // 防止重试自身失败后再排下一次（避免对 over_budget 这类持续失败无限打转）。
+    async function flushMessageQueue(sessionId, opts) {
         if (!sessionId || streams.has(sessionId) || compactOf(sessionId)) return;
         const session = currentSession();
         if (!session || session.id !== sessionId || session.archivedAt) return;
@@ -605,6 +616,11 @@ export function createAIMessageQueue(ctx) {
             resizeInput();
             renderMessageQueue();
             updateSendState();
+            // 起轮失败多为瞬态（回合租约释放 / 写盘排空的时序差）：延 2.5s 自愈重试一次。
+            // 既有守卫（忙 / 草稿 / 接管卡）让重试天然防重入；持续失败由下一次自然触发点兜底。
+            if (!(opts && opts.fromRetry)) {
+                setTimeout(() => { flushMessageQueue(sessionId, {fromRetry: true}); }, 2500);
+            }
         }
     }
 

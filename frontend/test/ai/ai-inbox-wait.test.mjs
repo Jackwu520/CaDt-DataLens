@@ -74,6 +74,25 @@ test('notify 唤醒：等待中的 waiter 立刻拿到「有新输入」', async
     assert.equal(waiters.notify('s1'), 0, '重复 notify 幂等');
 });
 
+test('notify 带 source：来源随结果带回（排队不打扰等待，只有插话/通知会唤醒）', async () => {
+    const {clock, waiters} = makeWaiters();
+    const steer = waiters.wait('s1', {timeoutMs: 10000, hasPending: () => false});
+    assert.equal(waiters.notify('s1', 'steer'), 1);
+    assert.deepEqual(await steer, {timedOut: false, source: 'steer'});
+
+    const notice = waiters.wait('s2', {timeoutMs: 10000, hasPending: () => false});
+    assert.equal(waiters.notify('s2', 'notice'), 1);
+    assert.deepEqual(await notice, {timedOut: false, source: 'notice'});
+
+    const agent = waiters.wait('s3', {timeoutMs: 10000, hasPending: () => false});
+    assert.equal(waiters.notify('s3', 'agent'), 1);
+    assert.deepEqual(await agent, {timedOut: false, source: 'agent'});
+
+    // 落地即有输入 / 心跳结算的路径没有 notify 来源：结果保持旧形状（无 source 键）。
+    assert.deepEqual(await waiters.wait('s4', {timeoutMs: 1000, hasPending: () => true}), {timedOut: false});
+    assert.equal(clock.pending(), 0, '所有等待结算后不留定时器');
+});
+
 test('超时：到点返回 timedOut:true，且不留定时器', async () => {
     const {clock, waiters} = makeWaiters();
     const pending = waiters.wait('s1', {timeoutMs: 1000, hasPending: () => false});

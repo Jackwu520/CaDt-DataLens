@@ -38,6 +38,8 @@ export function createAIManageDialogs(ctx) {
     const getConfig = ctx.getConfig;
     const setMemoryFallbackNotified = ctx.setMemoryFallbackNotified;
     const getAttachments = ctx.getAttachments;
+    // 实测 usage 锚点由面板的 buildApiMessages 侧信道提供（拿不到就退回纯估算）
+    const getBuildAnchor = ctx.getBuildAnchor;
     // 发送门禁回写宿主（ai-panel 的 updateSendState / submitText 读同一份状态）
     const setCtxGate = ctx.setCtxGate;
 
@@ -516,12 +518,41 @@ export function createAIManageDialogs(ctx) {
         return tokens;
     }
 
+    // 上下文占用的**实测锚点**：最近一条已成功发送的 assistant 的 usage。
+    // 六个参照 harness（opencode/pi/ZCode/cline/codex/dsh）都优先用 provider 返回的用量，
+    // 缺失时才退回字符估算——纯字符估算在工具 schema / 思考链 / CJK 场景系统性偏低，
+    // 会出现「估算没到阈值、实际早已超窗」。Anthropic 的 promptTokens 已含 cache 读写。
+    function usageContextTokens(usage) {
+        if (!usage) return 0;
+        const total = Number(usage.totalTokens) || 0;
+        if (total > 0) return total;
+        return Math.max(0, Number(usage.promptTokens) || 0) +
+            Math.max(0, Number(usage.completionTokens) || 0);
+    }
+
+    // anchor = {index, usage}：buildApiMessages 记下的「最后一条带 usage 的 assistant」
+    // 在发送数组里的位置。实测值 + 其后的增量估算 = 本轮真实上下文占用。
+    function estimateApiMessagesContext(messages, anchor) {
+        const list = Array.isArray(messages) ? messages : [];
+        let measured = 0;
+        let from = 0;
+        if (anchor && Number.isInteger(anchor.index) && anchor.index >= 0 && anchor.index < list.length) {
+            measured = usageContextTokens(anchor.usage);
+            if (measured > 0) from = anchor.index + 1;
+        }
+        let estimated = 0;
+        for (let i = from; i < list.length; i++) estimated += estimateMessageTokens(list[i]);
+        return {tokens: measured + estimated, measured, estimated};
+    }
+
     // sessionOverride：支线标签页的统计行按指定会话估算（附件只属于面板输入框，不计入）；
     // 无参调用 = 面板当前会话，行为不变。
     function estimateCurrentTokens(sessionOverride) {
         const session = sessionOverride || currentSession();
         const messages = buildApiMessages(session, null, promptTextOf(session && session.id));
-        let tokens = estimateApiMessagesTokens(messages);
+        // 有实测锚点就用锚点 + 增量，否则退回全量字符估算（与旧行为一致）
+        const built = estimateApiMessagesContext(messages, getBuildAnchor ? getBuildAnchor() : null);
+        let tokens = built.tokens;
         for (const item of sessionOverride ? [] : getAttachments()) {
             if (item.kind === 'image') tokens += aiEstimateImageTokens(item);
             else if (item.kind === 'video') tokens += aiEstimateVideoTokens();
@@ -575,5 +606,5 @@ export function createAIManageDialogs(ctx) {
     }
     return {showPromptDialog, showMemoryDialog, createAppSkill, showSkillsDialog, updateCtxBanner, dismissCtxBanner,
         openAIDialog, closeAIDialog, dialogNode, dialogButton,
-        showArchivedDialog, estimateMessageTokens, estimateApiMessagesTokens, estimateCurrentTokens};
+        showArchivedDialog, estimateMessageTokens, estimateApiMessagesTokens, estimateApiMessagesContext, estimateCurrentTokens};
 }

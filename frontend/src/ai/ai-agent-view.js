@@ -3,6 +3,7 @@
 // 块模型纯函数与运行态注册表（const Map 活引用）、运行时动作经 extras 注入。函数体逐字搬移。
 import {iconSvg} from '../core/icons.js';
 import {createTextarea} from '../core/form-controls.js';
+import {agentLevelText} from './ai-team-model.js';
 
 export function createAIAgentView(ctx, extras) {
     const el = ctx.el;
@@ -325,6 +326,27 @@ export function createAIAgentView(ctx, extras) {
             .catch(() => {});
     }
 
+    // 子代理的父级信息（详情头部面包屑 + 标签页 tooltip 共用）：嵌套时父是另一个子代理，
+    // 顶层时父是主会话。查不到（记录被 LRU 回收 / 重启后只剩摘要）就退回「父会话」。
+    function agentParentInfo(view) {
+        const sub = view && view.subId ? subAgents.get(view.subId) : null;
+        const rec = !sub && view && view.subId ? subAgentRecords.get(view.subId) : null;
+        const source = sub || rec;
+        const depth = (source && source.depth) || (view && view.depth) || 1;
+        const parentId = String((source && source.parentSessionId) || (view && view.parentSessionId) || '');
+        if (!parentId) return {label: '', depth};
+        const parentSub = subAgents.get(parentId);
+        if (parentSub && parentSub.name) return {label: parentSub.name, depth, nested: true};
+        const parentRec = subAgentRecords.get(parentId);
+        if (parentRec && parentRec.name) return {label: parentRec.name, depth, nested: true};
+        const parentSession = sessionById(parentId);
+        if (parentSession) {
+            const title = String(parentSession.title || '').trim() || '新会话';
+            return {label: title, depth, nested: false};
+        }
+        return {label: '父会话', depth};
+    }
+
     // 头部每次重建（按钮随状态增删，代价很小）；正文与输入行是持久节点，正文内部再按块增量。
     function renderAgentHead(view, head) {
         head.textContent = '';
@@ -340,10 +362,30 @@ export function createAIAgentView(ctx, extras) {
             back.addEventListener('click', closeAgentView);
             head.appendChild(back);
         }
+        const nameWrap = document.createElement('span');
+        nameWrap.className = 'ai-agent-view-title';
         const nameSpan = document.createElement('span');
         nameSpan.className = 'ai-agent-view-name';
         nameSpan.textContent = view.name;
-        head.appendChild(nameSpan);
+        nameWrap.appendChild(nameSpan);
+        const parent = agentParentInfo(view);
+        if (parent.label) {
+            const crumb = document.createElement('span');
+            crumb.className = 'ai-agent-view-parent';
+            crumb.dataset.tip = parent.nested ? '父代理' : '所属会话';
+            crumb.textContent = parent.label;
+            nameWrap.appendChild(crumb);
+        }
+        // 层号走 agentLevelText 单一来源（内部 depth 主代理为 0，人读层号 +1）。
+        // 徽标判定与标签 ↳ 记号同一口径：有父级（非主代理）就显示，避免「tooltip 有父级行但标签无 ↳」。
+        if (parent.depth >= 1) {
+            const lvl = document.createElement('span');
+            lvl.className = 'ai-agent-view-depth';
+            lvl.dataset.tip = '嵌套层级';
+            lvl.textContent = agentLevelText(parent.depth);
+            nameWrap.appendChild(lvl);
+        }
+        head.appendChild(nameWrap);
         if (meta) head.appendChild(agentStateBadge(meta.state));
         const liveSub = view.subId ? subAgents.get(view.subId) : null;
         const metaLine = document.createElement('span');
@@ -531,6 +573,11 @@ export function createAIAgentView(ctx, extras) {
             name: String((spec && spec.name) || '子代理'),
             // 详情所在的会话：头部状态兜底要靠它的正文（懒加载下别的会话可能只有 meta）
             sessionId: String((spec && spec.sessionId) || ''),
+            // 父级信息（openAgentView 已算好；直接 mount 时 renderAgentHead 会自己再算一次）
+            parentLabel: String((spec && spec.parentLabel) || ''),
+            depth: Number((spec && spec.depth) || 0) || 0,
+            // 记录被 LRU 回收后 agentParentInfo 靠它回落到父会话标题
+            parentSessionId: String((spec && spec.parentSessionId) || ''),
             timer: 0,
             head: null,
             body: null,
@@ -568,6 +615,16 @@ export function createAIAgentView(ctx, extras) {
             sessionId: String((spec && spec.sessionId) || ''),
         };
         if (!target.toolCallId && !target.subId) return;
+        // 父级信息（标签页 tooltip / 详情头部面包屑共用）：调用方（HUD chips / 团队视图）不必各自算
+        const parent = agentParentInfo(target);
+        target.parentLabel = parent.label;
+        target.depth = parent.depth;
+        // 透传 parentSessionId：记录被 LRU 回收后 agentParentInfo 仍能靠它回落到父会话标题
+        const source = target.subId ? (subAgents.get(target.subId) || subAgentRecords.get(target.subId)) : null;
+        target.parentSessionId = String((source && source.parentSessionId) || '');
+        const liveSub = target.subId ? subAgents.get(target.subId) : null;
+        const rec = !liveSub && target.subId ? subAgentRecords.get(target.subId) : null;
+        target.task = String((liveSub && liveSub.task) || (rec && rec.task) || '');
         if (!isFloatWindow() && typeof openAgentTab === 'function') {
             if (openAgentTab(target)) return;
         }

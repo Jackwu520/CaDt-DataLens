@@ -158,6 +158,7 @@ func (a *App) beforeClose(ctx context.Context) bool {
 	if a.forceClose || (!a.dirty && !a.aiRunning && terms == 0 && bgJobs == 0) {
 		a.stopTray()
 		a.mcpCloseAll() // MCP 子进程全量关闭（总预算 8s，超时靠 taskkill 兜底）
+		a.AppServices.StopAll() // 插件后台服务全量停止（取消即杀整棵进程树）
 		a.UnwatchWorkspace()
 		return false
 	}
@@ -174,6 +175,7 @@ func (a *App) ForceClose() {
 	a.quitRequested.Store(true)
 	a.stopTray()
 	a.mcpCloseAll()
+	a.AppServices.StopAll()
 	a.UnwatchWorkspace()
 	runtime.Quit(a.ctx)
 }

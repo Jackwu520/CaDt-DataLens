@@ -232,7 +232,7 @@ WorkBuddy 20:38 留在工作区根的 4 个探针（`redteam_probe3-6.mjs`，均
 6. **取证缺口**：NTFS USN 日志是唯一能精确到秒记录删除的本地证据，但需管理员权限。下次排查此类事故，先以管理员 PowerShell 跑 `fsutil usn readjournal D: csv` 并离线保存。
 7. **AI 自己的报告也会说谎**：ZCode 子代理在事故后仍按"基于清空前读到的代码"给结论，而 `docs/reports/model-redteam-2026-11-18.md` 的多项"已修复"也未落到代码。**结论要能被当前代码复跑验证**，不能只信文档。
 
-> 防线的具体设计（写前备份 / 结构指纹 / 可选快照，含盲区与代价）见 **`docs/unfinished-plans/workspace-wipe-guard.md`**。
+> 防线的具体设计（写前快照 / watcher 检测 / 定期状态快照，含盲区与代价）见 **`docs/finished-plans/workspace-wipe-guard.md`**——**已于 2026-11-19 实施**（`internal/wipeguard/` + 前端 `ai-wipeguard.js`，备份在应用数据目录 `wipe-guard/`、套 deny-delete ACL，恢复出口在 设置 → 存储与清理 → 工作区防护）。
 
 ---
 

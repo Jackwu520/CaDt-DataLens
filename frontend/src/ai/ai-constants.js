@@ -326,9 +326,9 @@ export const AI_BUILTIN_SKILLS = [
             '- open_browser_tab {url?, profileKey?}：在内容区打开内嵌浏览器标签页并返回 tab id（file:// 走与 browser_navigate 同一条读权限链）。',
             '- close_browser_tab {id|name|url}：关闭指定内嵌浏览器标签页。',
             '- open_memo_panel {scope?}：在内容区打开用户的「快捷便签」面板标签页（scope=workspace/global，缺省 workspace）。只开面板不写内容没有意义，登记完再打开。',
-            '- get_memo {scope?, block_id?, status?, q?}：读快捷便签，返回紧凑文本（含各条 id）。默认读全部；可只读某分组（block_id）、某状态（status=pending/in_progress/completed）或按文本包含过滤（q）——便签多时优先用过滤，首行会汇报全局面板计数。用户提到「便签/记事/我的便签上有什么」先读它；用户消息里出现便签定位点（形如 cadt-memo://workspace/item/it-xxx，用户在面板里「复制定位点」得到）时，按其中的 scope 调 get_memo，再按 id 在清单里定位到对应块/条目，后续 update_memo/remove_memo 直接用这个 id。',
+            '- get_memo {scope?, block_id?, status?, q?}：读快捷便签，返回紧凑文本（含各条 id 与标签 {a/b}）。默认读全部；可只读某分组（block_id）、某状态（status=pending/in_progress/completed）或按文本包含过滤（q）——便签多时优先用过滤，首行会汇报全局面板计数。用户提到「便签/记事/我的便签上有什么」先读它；用户消息里出现便签定位点（形如 cadt-memo://workspace/item/it-xxx，用户在面板里「复制定位点」得到）时，按其中的 scope 调 get_memo，再按 id 在清单里定位到对应块/条目，后续 update_memo/remove_memo 直接用这个 id。',
             '- add_memo {scope?,kind,block_id?,text}：往便签添加内容：kind=item 在指定块末尾加一条（block_id 缺省第一个块，没有块时自动建「便签」块兜底）；kind=block 新建分组小节（text 即标题）。改完立即保存并刷新面板。',
-            '- update_memo {scope?,id,text?,status?,index?}：改一个条目或块（id 从 get_memo 拿，it- 开头是条目、blk- 开头是块）：条目改文本/状态（pending/in_progress/completed）；块的 text 即标题。index 可选移到该位置（0 起）。',
+            '- update_memo {scope?,id,text?,status?,kind?,tags?,index?}：改一个条目或块（id 从 get_memo 拿，it- 开头是条目、blk- 开头是块）：条目改文本/状态/渲染类型（kind=text|md|term，term 是终端条目：正文为命令，用户在面板里手动运行）/标签（tags 数组整体替换，≤4 个每个 ≤12 字）；块的 text 即标题。index 可选移到该位置（0 起）。',
             '- remove_memo {scope?,id}：删一个条目或块（删块连带块内全部条目，不可恢复，删块前先和用户确认）。',
             '- get_gen_models：生图/视频生成条目列表（回显全部非密钥配置字段：baseURL/path/bodyTemplate/resultPath/resultType/headers/editPath/editFormat/默认参数等，便于自检与排障；hasKey 只标记是否填了密钥，密钥本身永不返回）与各类型缺省条目名。',
             '- set_gen_model {entry}：新建/更新生成条目（按 name 或 id 匹配，**未传的字段沿用原值**；name 建议直接用服务商模型 id）。字段与示例见 cadt-gen-models 技能。apiKey 不可写：已填的保留，留空的留给用户填。',
@@ -977,6 +977,28 @@ export function aiCtxBannerShow(percent, threshold, dismissedAt) {
 // 发送硬门槛（占上下文窗口的比例）：估算占比达到该值即拒绝起轮（startSessionTurn 预检、
 // 提醒条转红、发送按钮禁用三处共用同一口径，避免 UI 状态与实际拦截不一致）。
 export const AI_CTX_SEND_BLOCK_RATIO = 0.9;
+
+// 服务商「上下文超窗」错误识别：命中后强制压缩一次再重试本轮。
+// 六份参照实现都有这条分支（opencode recoverOverflow / pi context_edit / cline
+// overflowRecovery / ZCode reactive compact / codex ContextWindowExceeded / dsh
+// agent/request-error）。只认明确的超窗措辞，避免把 401/429/配额错误当成需要压缩。
+const AI_CONTEXT_OVERFLOW_RULES = [
+    /context[ _-]?length[ _-]?exceeded/i,
+    /maximum context length/i,
+    /exceeds? (the )?(maximum )?context/i,
+    /context window.*(exceed|full|too small)/i,
+    /(prompt|input|request) is too long/i,
+    /too many tokens/i,
+    /reduce the length of the message/i,
+    /上下文(长度|窗口).{0,8}(超|上限|过长|已满)/,
+    /(超出|超过)模型.{0,8}(上限|窗口)/,
+];
+
+export function aiIsContextOverflowError(text) {
+    const value = String(text == null ? '' : text);
+    if (!value) return false;
+    return AI_CONTEXT_OVERFLOW_RULES.some((rule) => rule.test(value));
+}
 
 // 千分位整数（提醒条文本用）；非有限值按 0 处理。
 function aiGroupDigits(value) {

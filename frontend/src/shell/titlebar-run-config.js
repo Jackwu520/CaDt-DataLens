@@ -178,8 +178,6 @@ function syncRunConfigWidget() {
     const docName = currentDocName();
     const label = resolveRunWidgetLabel(cfg, docName);
     deps.els.tbRunName.textContent = label;
-    if (label.length >= 16) deps.els.tbRunName.dataset.tip = label;
-    else delete deps.els.tbRunName.dataset.tip;
     const badge = deps.els.tbRunBadge;
     if (badge) {
         if (cfg) {
@@ -191,11 +189,6 @@ function syncRunConfigWidget() {
             badge.style.background = '';
             badge.innerHTML = docName && deps.fileIconSpec ? deps.fileIconSpec(docName).svg : '';
         }
-    }
-    if (deps.els.tbRunConfig) {
-        deps.els.tbRunConfig.dataset.tip = cfg
-            ? '运行配置：' + cfg.name
-            : (docName ? '运行当前文件，点开可选配置' : '选择运行配置');
     }
 }
 

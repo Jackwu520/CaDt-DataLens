@@ -611,6 +611,11 @@ const mockBackend = {
     async AISessionList() {
         return Array.from(mockAISessions.values()).map((item) => item.meta);
     },
+    async AISessionPath(id) {
+        const item = mockAISessions.get(String(id));
+        if (!item) throw new Error('session-gone: 会话已被删除');
+        return 'C:\\mock\\ai-sessions\\_unbound\\' + String(id) + '\\session.v1.jsonl';
+    },
     async AISessionRead(id) {
         const item = mockAISessions.get(String(id));
         return item ? item.log : '';
@@ -720,14 +725,14 @@ const mockBackend = {
         }
         return {acquired: false, busy: false, stat: await this.AISessionStat(key)};
     },
-    async AISessionSaveImage(id, name, dataURL) {
+    async AISessionSaveImage(id, name, dataURL, workspace) {
         mockAISessionImages.set(String(id) + '/' + name, dataURL);
         return 'images/' + name;
     },
     async AISessionReadImage(id, name) {
         return mockAISessionImages.get(String(id) + '/' + name) || '';
     },
-    async AISessionSaveVideo(id, name, dataURL) {
+    async AISessionSaveVideo(id, name, dataURL, workspace) {
         mockAISessionImages.set(String(id) + '/videos/' + name, dataURL);
         return 'videos/' + name;
     },
@@ -1584,6 +1589,41 @@ const mockBackend = {
     async TermClose() {},
     async RunCommandSync(exe, args, cwd, timeoutMs) {
         return {code: 0, stdout: '[mock] ' + exe + ' ' + (args || []).join(' ') + (cwd ? ' (cwd ' + cwd + ')' : ''), stderr: ''};
+    },
+    // 插件后台服务（mock）：状态存内存，供插件设置面板/服务 API 在 dev 模式调试。
+    async AppServiceSync(specs) {
+        const st = window.__mockAppServices || (window.__mockAppServices = {});
+        const wanted = new Set((specs || []).map((s) => s.id));
+        for (const id of Object.keys(st)) if (!wanted.has(id)) delete st[id];
+        for (const s of specs || []) {
+            if (!st[s.id]) st[s.id] = {id: s.id, state: 'stopped', pid: 0, healthOK: !s.healthURL, logs: [], spec: s};
+        }
+    },
+    async AppServiceStart(id) {
+        const st = window.__mockAppServices || (window.__mockAppServices = {});
+        const svc = st[id] || (st[id] = {id, state: 'stopped', pid: 0, healthOK: false, logs: []});
+        svc.state = 'running';
+        svc.pid = 4242 + Object.keys(st).length;
+        svc.healthOK = true;
+        svc.logs.push('[mock] service started');
+    },
+    async AppServiceStop(id) {
+        const st = window.__mockAppServices || {};
+        if (st[id]) { st[id].state = 'stopped'; st[id].pid = 0; st[id].logs.push('[mock] service stopped'); }
+    },
+    async AppServiceStatus(id) {
+        const st = window.__mockAppServices || {};
+        const svc = st[id];
+        if (!svc) return {id, state: 'stopped', pid: 0, healthOK: false};
+        return {id: svc.id, state: svc.state, pid: svc.pid, healthOK: svc.healthOK};
+    },
+    async AppServiceList() {
+        const st = window.__mockAppServices || {};
+        return Object.values(st).map((s) => ({id: s.id, state: s.state, pid: s.pid, healthOK: s.healthOK}));
+    },
+    async AppServiceLogs(id) {
+        const st = window.__mockAppServices || {};
+        return st[id] ? [...st[id].logs] : [];
     },
     async GetEnvVars() {
         if (!window.__mockEnvVars) {
@@ -2468,6 +2508,45 @@ const mockBackend = {
         const prev = await this.WebToolsConfigGet();
         window.__mockExternalTools = Object.assign({}, prev, {apiKeySet: false});
     },
+    // ---- wipe-guard（工作区破坏防护）：内存态 mock，够 dev 模式冒烟 ----
+    async WipeGuardConfigure(settings) {
+        window.__mockWipeGuard = Object.assign({enabled: true, snapshots: true, backupRoot: ''}, window.__mockWipeGuard, settings || {});
+        return window.__mockWipeGuard;
+    },
+    async WipeGuardFingerprint(ws) {
+        return {rootEntries: 8, depth1Dirs: 5, markers: {'.git': true, 'go.mod': true}, fileCount: 1611, sampled: false};
+    },
+    async WipeGuardCompare(before, after) {
+        if (after && before && after.rootEntries <= 1 && before.rootEntries >= 5) {
+            return {level: 'critical', reason: '整仓顶层条目被清空（' + before.rootEntries + ' → ' + after.rootEntries + '）'};
+        }
+        return {level: '', reason: ''};
+    },
+    async WipeGuardAlarm(level, reason, detail) {
+        window.__mockWipeGuardAlarms = window.__mockWipeGuardAlarms || [];
+        window.__mockWipeGuardAlarms.push({level, reason, detail, at: Date.now()});
+    },
+    async WipeGuardBackup(call) {
+        window.__mockWipeGuardRows = window.__mockWipeGuardRows || [];
+        const row = {
+            id: 'b-' + Date.now() + '-mock',
+            ws: 'mock0000', session: call && call.sessionId, tool: (call && call.tool) || 'write_file',
+            rel: (call && call.relPath) || '', blob: (call && call.existed) ? '9f86d081884c7d65' : '',
+            bytes: call && call.existed ? (call.content || '').length : 0,
+            at: Date.now(), skipped: (call && call.existed && (call.content || '').length > 4 * 1024 * 1024) ? 'too-large' : '',
+        };
+        window.__mockWipeGuardRows.push(row);
+        return {entryId: row.id, skipped: row.skipped, bytes: row.bytes};
+    },
+    async WipeGuardList(ws) { return (window.__mockWipeGuardRows || []).slice().reverse(); },
+    async WipeGuardRestore(entryId, ws) { return 'D:\\mock\\' + entryId; },
+    async WipeGuardClear() { window.__mockWipeGuardRows = []; },
+    async WipeGuardStatus(ws) { return {mode: 'git', reason: '有版本控制'}; },
+    async WipeGuardSnapshot(ws) { return {mode: 'git', name: '20260119-010000.tar', path: 'D:\\mock\\snap.tar', files: -1, bytes: 550000}; },
+    async WipeGuardSnapshotList(ws) {
+        return [{name: '20260119-010000.tar', kind: 'tar', at: Date.now() - 600000, bytes: 550000}];
+    },
+    async WipeGuardSnapshotRestore(ws, name) { return 'D:\\mock\\' + name; },
     async MCPSamplesList() {
         const installed = window.__mockMcpInstalled || new Set();
         const base = [
@@ -3318,6 +3397,9 @@ const mockRt = {
     BrowserOpenURL(url) { window.__mockOpenUrl = url; this._calls.push('url:' + url); },
 };
 // 调试/测试用：暴露 mock 运行时（仅 mock 场景存在）
+// 裸 rt 别名：mockBackend 里 RunExec / term-out / cmd-exit 等事件都写 ，
+// 模块里此前没有 rt 绑定（浏览器 dev 下静默 ReferenceError，事件从未发出）。统一指向 mockRt。
+const rt = mockRt;
 window.__mockRt = mockRt;
 
 export {mockBackend, mockRt};

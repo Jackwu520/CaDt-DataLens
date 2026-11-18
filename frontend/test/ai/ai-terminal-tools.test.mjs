@@ -6,6 +6,7 @@ import {
     formatTerminalList,
     formatTerminalRead,
     formatWaitDuration,
+    friendlyRetryReason,
     normalizeTermText,
     stripAnsi,
     terminalSendLabel,
@@ -65,9 +66,10 @@ test('terminalSendLabel：回车换成可见符号并截断', () => {
     assert.equal(terminalSendLabel('x'.repeat(500), 10), 'xxxxxxxxxx…');
 });
 
-test('formatWaitDuration：秒 / 分钟 / 小时三档，非法与 0 返回空', () => {
-    assert.equal(formatWaitDuration(9400), '9.4 秒');
-    assert.equal(formatWaitDuration(42000), '42.0 秒');
+test('formatWaitDuration：秒档取整 / 分钟 / 小时三档，非法与 0 返回空', () => {
+    // 秒档取整：倒计时提示里的小数秒没有信息量（还会逼着表针每 100ms 重写文案）
+    assert.equal(formatWaitDuration(9400), '9 秒');
+    assert.equal(formatWaitDuration(42000), '42 秒');
     assert.equal(formatWaitDuration(60000), '1.0 分钟');
     assert.equal(formatWaitDuration(510000), '8.5 分钟');
     assert.equal(formatWaitDuration(3000000), '50 分钟');
@@ -77,6 +79,17 @@ test('formatWaitDuration：秒 / 分钟 / 小时三档，非法与 0 返回空',
     assert.equal(formatWaitDuration(undefined), '');
     assert.equal(formatWaitDuration(-1), '');
     assert.equal(formatWaitDuration('abc'), '');
+});
+
+test('friendlyRetryReason：HTTP 429 / 5xx 翻译成人话，其余原样透传', () => {
+    assert.equal(friendlyRetryReason('HTTP 429'), '服务商限流');
+    assert.equal(friendlyRetryReason('HTTP 500'), '服务商暂时不可用（HTTP 500）');
+    assert.equal(friendlyRetryReason('HTTP 503'), '服务商暂时不可用（HTTP 503）');
+    // 可重试的只有 429 与 5xx（aiRetryableStatus），4xx 理论上不会出现，兜底原样
+    assert.equal(friendlyRetryReason('HTTP 400'), 'HTTP 400');
+    assert.equal(friendlyRetryReason('网络错误'), '网络错误');
+    assert.equal(friendlyRetryReason(''), '请求失败');
+    assert.equal(friendlyRetryReason(null), '请求失败');
 });
 
 test('formatCommandDuration：秒 / 分钟进位 / 非法输入返回空', () => {

@@ -199,6 +199,8 @@ func TestMustNotBeCached(t *testing.T) {
 	for _, id := range []string{
 		"ai-sessions", "ai-memory", "ai-schedule", "activity", "classifier",
 		"ws-memory", "ws-patches", "ws-plan", "ws-gen", "ws-answers", "ui-state", "app-config",
+		// wipe-guard 是破坏防护的备份库：例行清缓存拆掉保险 = 没有防护（方案 §4.3 的负向断言）
+		"wipe-guard",
 	} {
 		if containsID(New(Deps{}).CacheIDs(), id) {
 			t.Errorf("%s 绝不能进「清除缓存」一键范围", id)

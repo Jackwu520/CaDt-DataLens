@@ -5,6 +5,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
     computeCompactCutoff,
+    computeCompactCutoffByBudget,
+    compactRetainBudget,
+    COMPACT_RETAIN_RATIO,
     buildCompactSummary,
     applyCompactToSession,
     compactTranscriptOf,
@@ -38,6 +41,44 @@ test('computeCompactCutoff：全是 assistant 时退到 0（宁可全压也不�
     assert.equal(computeCompactCutoff(messages, 1), 0);
     assert.equal(computeCompactCutoff(null), 0);
     assert.equal(COMPACT_KEEP_TAIL, 6);
+});
+
+test('compactRetainBudget：窗口−输出预留 后取 16%（与 dsh retainRatio 对齐）', () => {
+    assert.equal(COMPACT_RETAIN_RATIO, 0.16);
+    assert.equal(compactRetainBudget(200000, 32000), Math.floor(168000 * 0.16));
+    // 窗口未知：0（调用方回退按条数）
+    assert.equal(compactRetainBudget(0, 1000), 0);
+    assert.equal(compactRetainBudget(null, null), 0);
+    // 输出预留最多占一半：填成等于窗口也不会把预算清零
+    assert.equal(compactRetainBudget(100000, 999999), Math.floor(50000 * 0.16));
+    // 负预留按 0
+    assert.equal(compactRetainBudget(100000, -5), Math.floor(100000 * 0.16));
+});
+
+test('computeCompactCutoffByBudget：按 token 累加到预算，再回退到 user 轮边界', () => {
+    // 每个 user 100 token、assistant 50：预算 260 → 从尾部累加
+    // assistant(50) user(100) assistant(50) user(100) = 300 ≥ 260 → 切在倒数第二个 user
+    const messages = [
+        msg('user', {tokens: 100}), msg('assistant', {tokens: 50}),
+        msg('user', {tokens: 100}), msg('assistant', {tokens: 50}),
+        msg('user', {tokens: 100}), msg('assistant', {tokens: 50}),
+    ];
+    const estimate = (m) => m.tokens;
+    assert.equal(computeCompactCutoffByBudget(messages, 260, estimate), 2);
+    // 预算很大：全部保留（cutoff 0）
+    assert.equal(computeCompactCutoffByBudget(messages, 100000, estimate), 0);
+    // 落点是 tool：回退到本轮 user 起点
+    const withTool = [msg('user', {tokens: 10}), msg('assistant', {tokens: 10}), msg('tool', {tokens: 10}),
+        msg('user', {tokens: 10}), msg('assistant', {tokens: 10}), msg('tool', {tokens: 10})];
+    assert.equal(computeCompactCutoffByBudget(withTool, 15, (m) => m.tokens), 3);
+});
+
+test('computeCompactCutoffByBudget：预算缺失时回退按条数（旧口径）', () => {
+    const messages = [msg('user'), msg('assistant'), msg('user'), msg('assistant'),
+        msg('user'), msg('assistant'), msg('user'), msg('assistant')];
+    assert.equal(computeCompactCutoffByBudget(messages, 0, () => 1, 3), computeCompactCutoff(messages, 3));
+    assert.equal(computeCompactCutoffByBudget(messages, 100, null, 3), computeCompactCutoff(messages, 3));
+    assert.equal(computeCompactCutoffByBudget(null, 100, () => 1), 0);
 });
 
 test('buildCompactSummary：summary 形状固定（upTo / trigger / before）', () => {

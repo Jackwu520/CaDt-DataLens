@@ -71,7 +71,9 @@ export function createImageLightbox(host, options = {}) {
             if (!opened) return;
             e.preventDefault();
             e.stopPropagation();
-            if (onContextMenu) onContextMenu(image, e.clientX, e.clientY);
+            // 回调拿 image 对象（AI 面板传了）；宿主没传时退回当前的 <img>，
+            // 否则调用方按 target.src 取图会拿到 null，菜单静默不弹。
+            if (onContextMenu) onContextMenu(image || img, e.clientX, e.clientY);
         });
         stage.addEventListener('wheel', (e) => {
             if (!opened || !naturalW || !naturalH || !e.deltaY) return;
@@ -181,23 +183,40 @@ export function createImageLightbox(host, options = {}) {
         titleNode.dataset.tip = title || '';
         zoomNode.textContent = '';
         img.alt = title || '';
+        // 上一张图残留的内联尺寸会带进新图（解码慢时先看到旧尺寸），开局一律清掉。
+        img.style.width = '';
+        img.style.height = '';
         root.classList.remove('hidden');
         stage.scrollLeft = 0;
         stage.scrollTop = 0;
-        img.src = src;
-        const ready = () => {
-            if (seq !== openSeq || !opened) return;
+        // load / error 两条都收：解码失败（坏 data URL、超限图）时不再停在
+        // 「既没放大也没提示」的黑屏——缩放开局不可用，右上角明确写「无法显示」。
+        // settled 保证成功后只结算一次：load 与 decode() 常常先后都到，重复结算会把用户
+        // 已经滚轮放大的比例重置回「适应区域」。失败不锁定，留给迟到的 load 一次修正机会。
+        let settled = false;
+        const settle = () => {
+            if (settled || seq !== openSeq || !opened) return;
             naturalW = img.naturalWidth || 0;
             naturalH = img.naturalHeight || 0;
             if (naturalW && naturalH) {
+                settled = true;
                 computeFit();
-            } else {
-                img.style.width = '';
-                img.style.height = '';
+                return;
             }
+            img.style.width = '';
+            img.style.height = '';
+            zoomNode.textContent = '无法显示';
         };
-        if (img.complete && img.naturalWidth) ready();
-        else img.addEventListener('load', ready, {once: true});
+        img.addEventListener('load', settle, {once: true});
+        img.addEventListener('error', settle, {once: true});
+        img.src = src;
+        if (img.complete && img.naturalWidth) {
+            settle(); // 命中内存缓存：load 不会再排
+        } else if (typeof img.decode === 'function') {
+            // 坏 data URL / 解码失败时 error 事件不保证派发（WebView2 实测只把 complete 置 true、
+            // naturalWidth 留 0），decode() 的 reject 是更可靠的那一路。
+            img.decode().then(settle, settle);
+        }
     }
 
     function close() {

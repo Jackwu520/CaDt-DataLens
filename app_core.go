@@ -16,6 +16,7 @@ import (
 	"datalens/internal/aischedule"
 	"datalens/internal/aitimer"
 	"datalens/internal/appconfig"
+	"datalens/internal/appservices"
 	"datalens/internal/browser"
 	"datalens/internal/cmdbridge"
 	"datalens/internal/convertcli"
@@ -53,8 +54,9 @@ type App struct {
 	*terminal.Terminal     // 内置终端后端（internal/terminal）
 	*toolchain.Toolchain   // 语言环境检测（internal/toolchain）
 	*aiconfig.Store        // AI 配置文件读写（internal/aiconfig）
-	*plugins.Manager       // 插件与市场（internal/plugins）
-	*skills.Skills         // 内置技能与 agent 技能注册（internal/skills）
+	*plugins.Manager        // 插件与市场（internal/plugins）
+	AppServices *appservices.Registry // 插件后台服务托管（internal/appservices）
+	*skills.Skills          // 内置技能与 agent 技能注册（internal/skills）
 	*screenshot.Capturer   // 应用窗口截图（internal/screenshot）
 	*notify.Notifier       // 系统通知（internal/notify）
 	*watch.Watcher         // 工作区文件监听（internal/watch）
@@ -92,7 +94,7 @@ type App struct {
 type FileData = fileio.FileData
 
 func NewApp() *App {
-	return &App{Reader: &reading.Reader{}, Runner: &run.Runner{}, Host: &browser.Host{}, Searcher: &search.Searcher{}, Scheduler: &aischedule.Scheduler{}, Bridge: &cmdbridge.Bridge{}, Terminal: &terminal.Terminal{}, Toolchain: &toolchain.Toolchain{}, Store: &aiconfig.Store{}, Manager: &plugins.Manager{}, Skills: &skills.Skills{}, Capturer: &screenshot.Capturer{}, Notifier: &notify.Notifier{}, Watcher: &watch.Watcher{}, Samples: &mcpsamples.Samples{}, Files: &fileio.Files{}, FS: &fsops.FS{}, Registrar: &integration.Registrar{}, Console: &debugconsole.Console{}, Chat: &aichat.Chat{}, Service: &sessionstore.Service{}, GroupStore: &aigroups.GroupStore{}, Client: &mcp.Client{}}
+	return &App{Reader: &reading.Reader{}, Runner: &run.Runner{}, Host: &browser.Host{}, Searcher: &search.Searcher{}, Scheduler: &aischedule.Scheduler{}, Bridge: &cmdbridge.Bridge{}, Terminal: &terminal.Terminal{}, Toolchain: &toolchain.Toolchain{}, Store: &aiconfig.Store{}, Manager: &plugins.Manager{}, AppServices: appservices.New(), Skills: &skills.Skills{}, Capturer: &screenshot.Capturer{}, Notifier: &notify.Notifier{}, Watcher: &watch.Watcher{}, Samples: &mcpsamples.Samples{}, Files: &fileio.Files{}, FS: &fsops.FS{}, Registrar: &integration.Registrar{}, Console: &debugconsole.Console{}, Chat: &aichat.Chat{}, Service: &sessionstore.Service{}, GroupStore: &aigroups.GroupStore{}, Client: &mcp.Client{}}
 }
 
 func (a *App) startup(ctx context.Context) {
@@ -148,6 +150,9 @@ func (a *App) startup(ctx context.Context) {
 	}
 	// AI 定时任务调度器：主窗口与 AI 悬浮窗进程各自扫描，执行去重由前端裁决
 	aischedule.Start()
+	// 插件后台服务：启动已声明且 autoStart 的服务（声明由前端加载插件后 Sync 推送；
+	// 此处对空注册表无害，保留以覆盖未来持久化声明的场景）。
+	a.AppServices.StartAll()
 	// MCP 客户端：仅主窗口进程初始化（浮窗/调试控制台不拉 MCP 子进程，避免同机双实例）
 	if !a.IsAIFloatWindow() && !a.IsDebugConsoleWindow() {
 		if err := mcp.InitClient(a.Client, func(event string, payload any) {

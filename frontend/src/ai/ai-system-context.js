@@ -102,9 +102,9 @@ export function createAISystemContext(ctx) {
         return [
             '<plan_mode>',
             '当前处于计划模式：只允许只读探索与 ask_user，write_file / edit_file / run_command 不可用。',
-            '规划流程（按顺序）：① 只读探索，先找可复用实现与现有模式；② 基于发现整理背景、涉及文件与约束；③ 核对用户意图——需求有歧义、存在多种可行方案，或出现会影响实现的关键取舍（接口形态、字段命名、边界行为、是否新增开关等）时，先用 ask_user 澄清再定稿；不要替用户假设，也不要把疑问写进计划；④ 形成最终计划；⑤ 用 submit_plan 分节提交（title + sections[{heading, body}]），应用拼成 Markdown 文档。',
+            '规划流程（按顺序）：① 只读探索，先找可复用实现与现有模式；② 基于发现整理背景、涉及文件与约束；③ 核对用户意图——需求有歧义、存在多种可行方案，或出现会影响实现的关键取舍（接口形态、字段命名、边界行为、是否新增开关等）时，先用 ask_user 澄清再定稿；不要替用户假设，也不要把疑问写进计划；④ 形成最终计划；⑤ 用 submit_plan 分节提交（title + sections[{heading, body}]；权限档需要审批时用 commands 申报执行期预计要跑的命令，应用会在批准卡上列出供用户勾选预授权——完全权限免审批，不要申报浪费 token），应用拼成 Markdown 文档。',
             '澄清走 ask_user，审批走 submit_plan：疑问不要用普通文本提问，也不要用 ask_user 问「这个计划行不行」——那是用户点「执行计划」的职责。问题要具体、带推荐选项；能自己查证的信息不要问。',
-            'submit_plan 的分节按设计逻辑自由组织（如：目标与现状 / 实现——可按组件再分小节 / 实施步骤 / 验证方式），每节 body 写实写全：涉及文件逐行列出、实施步骤按顺序、组件级细节（函数与职责）不省略。内容太薄会被拒。不要交摘要、状态说明或「计划已提交」这类话。',
+            'submit_plan 的分节按设计逻辑自由组织（如：目标与现状 / 实现——可按组件再分小节 / 实施步骤 / 验证方式），每节 body 写实写全：涉及文件逐行列出、实施步骤按顺序、组件级细节（函数与职责）不省略。内容太薄会被拒。不要交摘要、状态说明或「计划已提交」这类话。commands 申报（预计要跑 go test / npm test 等验证命令时务必带上）：只收单条简单命令（管道 / 重定向 / 命令串联的复合命令不预授权），危险命令照实申报供用户知情——不会预授权，执行时仍单次确认；执行期尽量按申报原文运行已获批的命令。',
             '提交 ≠ 批准：submit_plan 成功只代表计划交上去了，用户必须点「执行计划」才算批准。提交后立即停止本轮——不要开始执行、不要建 todo 任务清单、不要继续读代码或写文件，也不要在正文里说「用户已批准」。',
             '对话正文不承载计划：提交后正文留空或只写一句话，不要在正文里重复计划内容；开场白、探索过程叙述、结尾问句一律不要出现。',
             '用户发送补充意见 = 要求修订当前计划：基于原计划修改后重新用 submit_plan 提交完整修订版（未涉及的部分保持原样），不要抛开原计划另起炉灶。',
@@ -244,6 +244,7 @@ export function createAISystemContext(ctx) {
                 }
             }
             let injectedFiles = 0;
+            let injectedViews = 0;
             if (ctx.settings.aiInjectOpenFiles !== false) {
                 const allOpenFiles = Array.isArray(context.openFiles) ? context.openFiles : [];
                 const openFiles = allOpenFiles.slice(0, 20);
@@ -256,10 +257,25 @@ export function createAISystemContext(ctx) {
                     if (allOpenFiles.length > openFiles.length) contextParts.push('…（仅列前 20 个）');
                     injectedFiles = openFiles.length;
                 }
+                // 应用内标签页（浏览器 / 快捷便签 / 计划文档…）：它们没有文件路径，与文件分开
+                // 一行说明——混进上面的清单会被显示成「（范围外）xxx」，模型会以为工作区外
+                // 还有同名文件可读
+                const allViews = Array.isArray(context.openViews) ? context.openViews : [];
+                const openViews = allViews.slice(0, 12);
+                if (openViews.length) {
+                    const items = openViews.map((view) => {
+                        const label = aiTextOf(view && view.label).trim() || '标签页';
+                        const name = aiTextOf(view && view.name).trim();
+                        const shown = name.length > 48 ? name.slice(0, 48) + '…' : name;
+                        return shown && shown !== label ? label + '「' + shown + '」' : label;
+                    });
+                    contextParts.push('其他已打开的标签页（应用内视图，不是文件、没有路径可读）：' + items.join('、'));
+                    injectedViews = openViews.length;
+                }
             }
             if (contextParts.length) {
                 blocks.push(['<workspace_context>', ...contextParts, '</workspace_context>'].join('\n'));
-                meta.workspace = {loaded: true, files: injectedFiles};
+                meta.workspace = {loaded: true, files: injectedFiles, views: injectedViews};
             }
         }
 

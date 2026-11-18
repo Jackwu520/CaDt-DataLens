@@ -1025,9 +1025,7 @@ export function collectCommandFamilies(text) {
     const found = [];
     const seen = new Set();
     for (const raw of candidates) {
-        let line = String(raw || '').trim();
-        line = line.replace(/^`+/, '').replace(/`+$/, '').trim();
-        line = line.replace(/^[$#>]\s*/, '').replace(/^[-*+]\s+/, '').replace(/^\d+[.)]\s*/, '').trim();
+        const line = cleanCommandCandidateLine(raw);
         if (!line || line.length > 200) continue;
         const signature = commandFamilySignature(line);
         if (!signature || seen.has(signature.signature)) continue;
@@ -1036,4 +1034,93 @@ export function collectCommandFamilies(text) {
         if (found.length >= 6) break;
     }
     return found;
+}
+
+// 清洗候选命令行：剥反引号、$ # > 提示符前缀、列表符与序号（正文扫描与申报命令共用）。
+function cleanCommandCandidateLine(raw) {
+    let line = String(raw == null ? '' : raw).trim();
+    line = line.replace(/^`+/, '').replace(/`+$/, '').trim();
+    line = line.replace(/^[$#>]\s*/, '').replace(/^[-*+]\s+/, '').replace(/^\d+[.)]\s*/, '').trim();
+    return line;
+}
+
+/**
+ * submit_plan 申报命令的归一与静态预判（批准卡展示 + 预授权形态判定）。
+ * 预判只决定「能否预授权与卡片标注」，不改执行期判定链（dangerous 短路仍在会话规则之前）。
+ * 返回条目：{command, purpose, mode, signature, dangerous, dangerLabel, reason}
+ *   mode: 'family' 同类放行签名 / 'exact' 全文精确匹配 / null 不预授权（复合命令或危险命令）。
+ * 最多 8 条；与 mergePlanGrantItems（批准卡合并）配套。
+ */
+export function normalizePlanDeclaredCommands(rawCommands) {
+    const list = Array.isArray(rawCommands) ? rawCommands : [];
+    const found = [];
+    const seen = new Set();
+    for (const raw of list) {
+        if (found.length >= 8) break;
+        // 容错：模型可能把条目写成纯字符串（schema 要求 {command}，但不为它多耗一轮重试）。
+        const item = typeof raw === 'string' ? {command: raw} : (raw && typeof raw === 'object' ? raw : {});
+        const cleaned = cleanCommandCandidateLine(item.command);
+        if (!cleaned || cleaned.length > 200) continue;
+        const entry = {
+            command: cleaned,
+            purpose: String(item.purpose == null ? '' : item.purpose).trim().replace(/\s+/g, ' ').slice(0, 80),
+            mode: null,
+            signature: '',
+            dangerous: false,
+            dangerLabel: '',
+            reason: '',
+        };
+        const tokens = commandTokens(cleaned);
+        const danger = analyzeDangerousCommand(cleaned);
+        if (danger.dangerous) {
+            // 危险命令（含复合命令里藏的危险段）只展示不预授权：执行期仍逐次单次确认。
+            entry.dangerous = true;
+            entry.dangerLabel = danger.label || danger.ruleId || '';
+            entry.reason = '危险命令执行时仍需单次确认';
+        } else if (!tokens) {
+            entry.reason = '含管道 / 重定向 / 命令串联，不做预授权';
+        } else {
+            const family = commandFamilySignature(cleaned);
+            if (family) {
+                entry.mode = 'family';
+                entry.signature = family.signature;
+            } else {
+                // 白名单外的单条简单命令（含解释器跑脚本）退到 exact 全文匹配。
+                entry.mode = 'exact';
+            }
+        }
+        const key = entry.mode === 'family' ? 'f:' + entry.signature
+            : entry.mode === 'exact' ? 'e:' + entry.command
+                : 'x:' + entry.command;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        found.push(entry);
+    }
+    return found;
+}
+
+/**
+ * 批准卡命令清单合并：AI 申报条目（权威，带 purpose）在前，正文扫描出的同类签名（兜底）补后，
+ * 去重、总上限 10。扫描签名与申报的 family 签名相同则丢弃（申报优先）。
+ */
+export function mergePlanGrantItems(declared, scrapedSignatures) {
+    const items = [];
+    const seen = new Set();
+    for (const entry of Array.isArray(declared) ? declared : []) {
+        if (!entry || typeof entry !== 'object') continue;
+        const key = entry.mode === 'family' ? 'f:' + entry.signature
+            : entry.mode === 'exact' ? 'e:' + entry.command
+                : 'x:' + entry.command;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        items.push(entry);
+        if (items.length >= 10) return items;
+    }
+    for (const signature of Array.isArray(scrapedSignatures) ? scrapedSignatures : []) {
+        if (!signature || seen.has('f:' + signature)) continue;
+        seen.add('f:' + signature);
+        items.push({command: signature, purpose: '', mode: 'family', signature, dangerous: false, dangerLabel: '', reason: ''});
+        if (items.length >= 10) return items;
+    }
+    return items;
 }

@@ -1,13 +1,13 @@
 # 工作区破坏防护：写前快照 + watcher 检测（方案）
 
-> 状态：**待开工**（2026-11-18 初稿，源自工作区被清空事故的复盘；同日经评审与业界调研修订——检测改「watcher + canary + 指纹」三信号，存储改内容寻址，原 L3/L4 合并）
+> 状态：**已实施**（2026-11-18 初稿；同日经评审与业界调研修订——存储改内容寻址，原 L3/L4 合并；2026-11-19 落地。落地当日修订两处：检测砍掉 canary 诱饵（作者裁定工作区零足迹，§5.2），watcher 删除计数排除构建产物目录）
 > 事故依据：`docs/reports/incident-2026-11-18-workspace-wipe.md`
 > 决策：
-> 1. **检测与恢复分离**。恢复（L1）走写前快照；检测（L2）以工作区 watcher 实时事件为**主信号**，canary 诱饵为**确定性信号**，结构指纹为**周期校准与兜底**。
+> 1. **检测与恢复分离**。恢复（L1）走写前快照；检测（L2）以工作区 watcher 实时事件为**主信号**，结构指纹为**周期校准与兜底**。（canary 诱饵 2026-11-19 落地当日砍掉——作者裁定工作区零足迹，见 §5.2。）
 > 2. **存储内容寻址**：blob 按 sha256 命名 + 追加式行索引，L1 与定期快照共用同一存储（去重与完整性自校验免费）。
 > 3. **不做**文件系统级拦截（minifilter / ETW / USN），**不做** shadow git（依赖 git 二进制）。原 L3/L4 合并为「定期状态快照」，按工作区形态三态选择。
 > 4. **防线自身防删**：备份目录对同用户子进程 deny-delete（Windows ACL）——威胁模型是「同用户任意子进程」，不是「AI 读类工具」。
-> 范围：`internal/wipeguard` 新包 · `executeTool` 写路径与 watcher 事件接线 · canary · 定期状态快照 · 设置项与清理条目 · deny-delete ACL
+> 范围：`internal/wipeguard` 新包 · `executeTool` 写路径与 watcher 事件接线 · 定期状态快照 · 设置项与清理条目 · deny-delete ACL
 > 非范围：修订 `analyzeDangerousCommand` 规则（`find -delete` 本来就拦得住）· 拦截脚本内 `execSync`（进程边界外，规则层不可达）· 自动还原（只提供还原出口，不做无人确认的回滚）· `run_command` 沙箱化（接 `internal/sandbox` 受限令牌，对齐 Codex CLI 路线，**另立项**）
 
 ## 1. 背景与代码事实
@@ -62,7 +62,7 @@ run_command("node .cadt/tmp/redteam-rt8.mjs")    ← 应用只审这一条文本
 
 ### 1.4 设计依据
 
-业界对照见 §12。一句话：恢复层取 Claude Code / Gemini CLI / Cursor 的「自有快照」路线（时机学 Gemini、存储学 git 系内容寻址模型）；检测层取反勒索界的 canary + 实时监听、Tripwire 的周期校准；保留策略学 Syncthing。
+业界对照见 §12。一句话：恢复层取 Claude Code / Gemini CLI / Cursor 的「自有快照」路线（时机学 Gemini、存储学 git 系内容寻址模型）；检测层取实时监听（反勒索界 canary 评估后未采纳，§5.2）、Tripwire 的周期校准；保留策略学 Syncthing。
 
 ## 2. 目标与非目标
 
@@ -89,7 +89,7 @@ run_command("node .cadt/tmp/redteam-rt8.mjs")    ← 应用只审这一条文本
 
 ```text
 L1 写前快照（pre-image）       必做   命中：write_file / edit_file / 补丁应用
-L2 检测（watcher+canary+指纹）  必做   命中：任何来源的大范围消失，秒级
+L2 检测（watcher+指纹）  必做   命中：任何来源的大范围消失，秒级
 L3 定期状态快照                 可选   git archive（有 git）/ 增量 CAS（无 git 且小）/ 不保护（超阈值）
 ```
 
@@ -103,7 +103,7 @@ L3 三态判定在打开工作区时做一次，写进 `config.json` 的 `wipeGu
 | AI `edit_file` 改坏一处 | ✅ 完整恢复 | ⚠️ 只知变了 | ✅ |
 | 补丁应用出错 | ✅ | ✅ | ✅ |
 | `run_command` 内 `rm`/`find -delete` 局部 | ❌ | ✅ watcher 秒级 | ✅ |
-| `run_command` 内整仓删除（本次事故） | ❌ | ✅ canary/watcher 秒级 | ✅ 有 git 或项目够小 |
+| `run_command` 内整仓删除（本次事故） | ❌ | ✅ watcher 秒级 | ✅ 有 git 或项目够小 |
 | 工具返回后**存活的子进程**继续删（探针里有 `sleep 999999`） | ❌ | ✅ watcher（工具前后指纹抓不到——这正是改事件驱动的原因） | ✅ |
 | 用户自己误删 | ❌ | ✅ 提醒（无 AI 活跃时不停会话） | ✅ |
 | 备份目录被 `rm -rf` | — | — | deny-delete ACL 拒绝 unlink |
@@ -115,6 +115,26 @@ L3 三态判定在打开工作区时做一次，写进 `config.json` 的 `wipeGu
 - 大项目不可行（用户可能打开 100 GB 的数据目录，CaDt-DataLens 本身是数据查看器）。
 - 无 git 时无法算增量，全量重复写盘会拖垮磁盘。
 - L1 的成本是**单文件大小**，与被打开的项目规模完全无关——这是它能无条件启用的原因。
+
+### 3.4 设置项与默认值
+
+只做 **3 个开关 + 1 个路径**，全部默认开（本方案源自事故复盘，默认关 = 重演"以为有保护"）。存放进 `config.json` 的 `wipeGuard` 段，UI 放设置 → 存储与清理的 wipe-guard 条目区（与 §4.5 查看备份、§6.3 风险提示同处），表单控件走 `core/form-controls.js`：
+
+```jsonc
+{
+  "enabled": true,      // 总开关：false 时 L1/L2/L3 全停（不备份、不检测）；已有备份保留，可查看/还原/清理
+  "snapshots": true,    // L3 定期状态快照；false 只留 L1+L2
+  "backupRoot": ""      // 空 = 默认 <appdata>/wipe-guard；非空 = 自定义根（校验见 §4.1）
+}
+```
+
+| 项 | 默认 | 为什么可关 | 为什么默认开 |
+|---|---|---|---|
+| `enabled` 总开关 | 开 | 用户明确不想要任何防护/写盘 | 主价值所在 |
+| `snapshots` 定期快照 | 开 | 定期写盘（git archive / CAS 扫描），备份洁癖者可关 | 有 git 时 0.19 s/次、增量 KB 级 |
+| `backupRoot` 路径 | 空（appdata） | — | 大项目用户把备份指到其他盘（§4.1 校验） |
+
+**刻意不做成设置项的**（全是工程参数，不是用户决策；改 `config.json` 可调，不进 UI）：删除计数阈值（40 条/10s）、保留期（7 天 / 200 MB / staggered 桶）、AI 活跃窗口（60s）、指纹节奏（10 分钟）、critical 停会话动作（是 critical 语义的一部分，单列出来只会被误关掉）。L3 的 git/CAS/不保护三态是**派生结果**，不是设置——用户只管开不开 `snapshots`，选哪态由工作区形态自动判定。
 
 ## 4. L1：写前快照 `internal/wipeguard`
 
@@ -136,7 +156,7 @@ L3 三态判定在打开工作区时做一次，写进 `config.json` 的 `wipeGu
 {"id":"b-0007-a1b2","ws":"d3b0738f","session":"session-mwm5...","tool":"edit_file","rel":"frontend/src/ai/ai-panel.js","blob":"9f86d08...","bytes":900191,"at":1795008261466,"skipped":""}
 ```
 
-- 行带 `ws`（工作区解析根的短哈希）：多个工作区共享同一 wipe-guard 根，`rel` 配上 `ws` 才有归属；`objects/` 全局不分——同一内容跨工作区只存一份。
+- 行带 `ws`（工作区解析根的短哈希）：多个工作区共享同一 wipe-guard 根，`rel` 配上 `ws` 才有归属；`objects/` 全局不分——同一内容跨工作区只存一份。哈希口径与 `session-workspace-buckets.md` 的会话分桶同一约定。
 
 - 超上限（默认 > 4 MB）跳过，索引记 `skipped:"too-large"`，UI 可见。（AI 写工具本身限 256KB；4 MB 阈值主要服务补丁路径；>10 MB 只读上限之上的文件本就打不开。）
 
@@ -211,15 +231,19 @@ func (s *Service) Store(absPath string, content []byte) error
 - `internal/watch` 的 `workspace-changed` 已递归监听并带 paths / overflow——`ReadDirectoryChangesW` 是内核级，**AI 工具、`run_command` 子进程、工具返回后存活的进程、用户的删除全部可见**，且对检测零新增扫描。这是把检测从「工具调用前后取指纹」（初稿）改成事件驱动的原因：事故探针里有 `sleep 999999`，工具返回后存活的子进程只有 watcher 抓得住。
 - 控制器：`frontend/src/ai/ai-wipeguard.js` 经 deps 订阅同一事件（main.js 已把 `workspace-changed` 路由给 explorer，不新增监听器）。
 - **排除子树**：`searchSkipDirs` + `.git` + `.cadt`——`git gc` 清 loose objects、npm 重装 `node_modules` 是合法 churn；`.git` 目录是否整体消失交给指纹 markers 判定（§5.3）。
-- 判定（纯函数，表驱动测试）：10 秒滚动窗口内（排除子树后的）删除/移走类事件 **≥ 40 条** → 告警候选。
+- **排除临时/机械文件**（2026-11-19 补丁应用误报实录）：原子写 temp（atomfile `<name>.<pid>.<nanos>.tmp` 与 `<name>.tmp.<pid>.<hash>` 两种命名）、补丁写入 temp（`.cadt-patch-*.tmp`）、锁文件（`.lock` / `.gate`）——它们的「消失」是写入流程的正常半程（temp→rename），不是文件被删；一次 7 文件的补丁应用能堆出 40+ 条删除事件直接爆阈值。按 basename 形态排除。
+- **窗口内同路径去重**（同日实录）：ReadDirectoryChangesW 对一次 rename 推多条 action（temp 消失 + 目标出现 + 父目录变更），41 条事件去重后只有 ~10 个真实文件——重复计数把量级抬高 3-5 倍。
+- **只计「消失」类事件**（2026-11-19 二次误报后定的治本口径）：Go 侧 `parseNotifyBuffer` 解析 `FILE_NOTIFY_INFORMATION` 的 action，`FILE_ACTION_REMOVED` / `FILE_ACTION_RENAMED_OLD_NAME`（被删 / rename 走）单独成组随 `workspace-changed` 的 `removed` 字段下发；前端删除计数只消费 `removed`。此前「paths 全量计数」把补丁回灌 / worktree 回灌的 added/modified 也算进去——70 文件的隔离树回灌照样爆 40 阈值，而它一个文件都没删。
+- 判定（纯函数，表驱动测试）：10 秒滚动窗口内（removed 口径 + 排除子树 + 排除临时文件 + 同路径去重后的）删除类事件 **≥ 40 条** → 告警候选。
 - `overflow` 事件 → 立即触发一次全量指纹重扫（事件丢了靠校准补）。
 
-### 5.2 信号二（确定性）：canary 诱饵
+### 5.2 信号二：canary 诱饵（**已砍**——工作区零足迹）
 
-- 工作区顶层各目录撒 `.cadt-canary-<8hex>`（内容 = 随机 token + 一句话说明「本文件是 CaDt-DataLens 防护诱饵，删除它会触发告警」），上限 12 个；跳过 `searchSkipDirs` / `.git` / `.cadt`；Windows 设 hidden 属性。
-- 建立：`WipeGuardEnsureCanaries(ws)`（打开工作区时、告警后重建）。
-- 检测：watcher 删除事件 basename 前缀匹配 → **立即告警候选**；周期指纹顺带核对存在性。成本≈0，对整仓删除是最早的确定性信号（反勒索界标配）。
-- 误报处置：用户手动删也会告警（文案注明诱饵身份）；设置页可关。
+> **2026-11-19 裁定**：诱饵机制整个砍掉，工作区保持零足迹（作者有工作区文件洁癖，任何应用自建文件都不可接受）。初版落地当天暴露的问题也佐证了这个决定：幂等检查用「随机 token 文名 + Stat」——token 每次重生成、Stat 永远 miss，每调用一次新增一整排诱饵（本仓库一天积到 297 个）；且布点含 `build/` 等构建目录，被构建链清掉就弹「大范围文件消失」。修复过程中补的两条经验仍然有效：
+> 1. **watcher 删除计数排除构建产物目录**（保留）：vite/wails 清 `dist`/`build` 是合法 churn，两级路径口径排除出 40 阈值计数。
+> 2. **确定性信号的职责由指纹标记承担**（原有）：`.git` / `go.mod` / `package.json` 消失 → critical；顶层条目清空 / 文件数腰斩 → 指纹兜底。对 2026-11-18 事故形态（`find . -delete`）watcher 数量阈值秒级命中，canary 的边际价值≈0。
+>
+> 曾实现并保留过的缓解设计（记录备查）：诱饵 hidden 属性 + 登记 `.git/info/exclude`、布点跳过易失目录、单诱饵消失静默重建、幂等按布点清点。全部随机制一并移除，代码不保留（`canary*.go` / `WipeGuardEnsureCanaries` 绑定 / 前端 canary 通道 / 设置开关）。
 
 ### 5.3 信号三（兜底）：结构指纹
 
@@ -257,14 +281,14 @@ func ShouldWarn(before, after Fingerprint) (bool, string)
 
 只判"减少"，不看"新增"——新增是正常开发。
 
-watch 侧判定纯函数（JS）：`registerDeleteEvents` / `shouldAlarmFromWatch`（滚动窗口 + canary 匹配 + 排除子树），配 `frontend/test/ai/ai-wipeguard.test.mjs`。
+watch 侧判定纯函数（JS）：`registerDeleteEvents` / `shouldAlarmFromWatch`（滚动窗口 + 排除子树与产物目录），配 `frontend/test/ai/ai-wipeguard.test.mjs`。
 
 ### 5.5 告警动作
 
 | 级别 | 条件 | 动作 |
 |---|---|---|
-| **critical** | 告警候选 **且 AI 活跃**（任一会话最近 60s 内有工具执行或正在流式） | 状态栏红条 + notify + **停本会话生成与子代理**（`agent_stop` 等价）+ 禁用本轮后续写命令（full 档自动放行一并熔断）+ 操作留痕 |
-| **critical** | 告警候选，但会话空闲 | 红条 + notify + 留痕，**不停会话**（用户手动批量删除不被误伤） |
+| **critical** | 告警候选 **且被告警工作区上有 AI 活跃**（该工作区最近 60s 内有工具执行或正在流式） | 状态栏红条 + notify + **只停挂在该工作区上的生成与子代理**（2026-11-19 收窄：初版停全窗口所有会话，误报时把别的后台会话一起陪葬；workspace 为空的会话不可归因，保守一并停）+ 熔断该工作区本轮后续写命令（`startSessionTurn` 解除；`isWriteBlocked(root)` 按工作区匹配，别的后台会话不受牵连）+ 操作留痕 |
+| **critical** | 告警候选，但被告警工作区无 AI 活跃 | 红条 + notify + 留痕，**不停会话**（用户手动批量删除不被误伤）；已有熔断不被空闲告警撤销 |
 | warn | 指纹文件数腰斩等 | 黄条 + 调试日志，不打断 |
 
 - 停止是安全的：它只终止 AI 的生成，不丢用户的任何东西。
@@ -334,12 +358,12 @@ const (
 
 ### P1 · L2 检测（先落地：风险最低、收益最快）
 
-1. `internal/wipeguard/fingerprint.go`：`Take()` + `ShouldWarn()`（纯函数）；`canary.go`：`EnsureCanaries()`（hidden 属性在平台对内处理）；
-2. `internal/wipeguard/*_test.go`：表驱动覆盖 §5.4 四条件 + 采样降级 + 空目录 + canary 建立与清单；
+1. `internal/wipeguard/fingerprint.go`：`Take()` + `ShouldWarn()`（纯函数）；
+2. `internal/wipeguard/*_test.go`：表驱动覆盖 §5.4 四条件 + 采样降级 + 空目录；
 3. `wipeguard_app.go`：`WipeGuardFingerprint` / `WipeGuardEnsureCanaries` / `WipeGuardAlarm` 绑定；
 4. `frontend/wailsjs/` 三件 + `dev/mock-backend.js` 同名 mock；
-5. `frontend/src/ai/ai-wipeguard.js`：订阅 `workspace-changed`（deps 注入）+ 滚动窗口判定 + canary 匹配 + critical 停会话/熔断；`ai-panel.js` 的 `run_command` / `background_command` 分支挂工具前后指纹（保底）；
-6. `frontend/test/ai/ai-wipeguard.test.mjs`（窗口判定 / canary 匹配 / AI 活跃上下文 / 去抖纯函数），登记 `npm test`。
+5. `frontend/src/ai/ai-wipeguard.js`：订阅 `workspace-changed`（deps 注入）+ 滚动窗口判定 + critical 停会话/熔断；`ai-panel.js` 的 `run_command` / `background_command` 分支挂工具前后指纹（保底）；
+6. `frontend/test/ai/ai-wipeguard.test.mjs`（窗口判定 / AI 活跃上下文 / 去抖纯函数），登记 `npm test`。
 
 ### P2 · L1 写前快照
 
@@ -353,7 +377,7 @@ const (
 
 ### P3 · 恢复出口 UI
 
-1. 新 `frontend/src/settings/settings-pane-wipeguard.js`（按文件分组时间线 + 还原 + danger 确认 + 路径校验）；
+1. 新 `frontend/src/settings/settings-pane-wipeguard.js`（§3.4 开关组与备份根选择 + 按文件分组时间线 + 还原 + danger 确认 + 路径校验；表单控件走 `core/form-controls.js`）；
 2. 纯函数（分组、排序、截断、路径校验）配 `*.test.mjs` 并登记。
 
 ### P4 · L3 定期快照（可选，缓做）
@@ -389,7 +413,6 @@ Go 测试一律后台执行、显式带 `-timeout`（AGENTS.md 约定）。
 | 备份拖慢写入 | 单文件 hash + temp rename；失败不阻断写入 |
 | watcher churn 误报（git gc / npm 重装） | 计数排除 `searchSkipDirs` + `.git` + `.cadt` 子树；阈值 40/10s |
 | 用户手动批量删除误停会话 | AI 活动上下文区分：无活跃只强提醒，不停会话 |
-| canary 误报（用户删诱饵） | 文案注明诱饵身份；告警后自动重建；设置可关 |
 | watch 事件丢失 / 监听失败 | overflow → 指纹重扫；工具前后指纹保底 |
 | ACL 妨碍清理与还原 | 服务以 owner 临时开放，操作完恢复；集成测试覆盖 |
 | 索引膨胀 | 清理时压缩重写 |
@@ -426,7 +449,7 @@ Go 测试一律后台执行、显式带 `-timeout`（AGENTS.md 约定）。
 | Cline / Roo Code | 存储与项目 `.git` 完全隔离；其踩坑（cline#4388）劝退 shadow git | L1 隔离原则 |
 | JetBrains Local History | 按文件时间线 + 还原的恢复出口形态；保留期区间（5 个工作日） | P3 UI + 清理 |
 | Syncthing versioning | trashcan / staggered 保留策略 | L1 trashcan+7 天；L3 staggered |
-| 反勒索产品（Vectra / Sophos 等） | canary/诱饵确定性检测 | L2 canary |
+| 反勒索产品（Vectra / Sophos 等） | canary/诱饵确定性检测 | 未采纳——工作区零足迹（作者裁定），watcher + 指纹已覆盖 |
 | Tripwire / AIDE | 周期完整性校准 + 事件丢失重扫 | L2 指纹兜底 |
 | git 对象模型（restic / kopia / Borg 蓝图） | 内容寻址 + manifest，只抄设计不引库 | L1/L3 存储 |
 | Codex CLI 沙箱 | Windows 受限令牌路线（预防层） | 后续立项：`run_command` 接 `internal/sandbox` |

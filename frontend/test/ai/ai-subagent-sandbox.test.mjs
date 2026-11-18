@@ -109,10 +109,14 @@ test('P7 子代理挂 wait_agent，且等的是自己的收件箱（不指向具
     assert.ok(!waitFn.includes('aiDelay('), '不许退化成轮询等待');
     // 收尾轮不消费收件箱（runSubRound 的 !s.wrapUp）：此时必须立即返回，否则空等满超时。
     assert.ok(waitFn.includes('wrapUp'), '收尾轮守卫必须在，否则最后一步改进程会白等');
-    // 2026-11-17 审查抓到：hasQueuedInput 曾从**工具 ctx** 取（那里只有 session/toolMessage/stream），
-    // 恒为 undefined ⇒ 队列判定等于关掉。它必须来自模块 ctx。
-    assert.ok(!waitFn.includes('ctx.hasQueuedInput'), 'hasQueuedInput 不能从工具 ctx 取（那里没有）');
-    assert.ok(text.includes('const hasQueuedInput = ctx.hasQueuedInput'), '要从模块 ctx 解包一次供闭包使用');
+    // 2026-11-17 审查抓到：车道快照曾从**工具 ctx** 取（那里只有 session/toolMessage/stream），
+    // 恒为 undefined ⇒ 判定等于关掉。它必须来自模块 ctx。
+    assert.ok(!waitFn.includes('ctx.queueLanesOf'), 'queueLanesOf 不能从工具 ctx 取（那里没有）');
+    assert.ok(text.includes('const queueLanesOf = ctx.queueLanesOf'), '要从模块 ctx 解包一次供闭包使用');
+    // 2026-11-19 排队语义重设计：排队车道不算待消费输入（不打扰等待，唤醒也读不到内容），
+    // 只有 steer 算；queue 只在超时检查点提示「输入框有排队消息」。
+    assert.ok(waitFn.includes('lanesOf(viewer.id).steer'), 'countPending 只认 steer 车道');
+    assert.ok(waitFn.includes('lanesOf(viewer.id).queue'), '超时检查点要提示排队消息');
     // 停止要立刻生效：两处统一停止入口都必须调 cancel
     assert.ok(text.includes('inboxWaiters.cancel(sub.id)'), 'stopSubAgent 必须放行等待（不等心跳）');
     const panel = sourceOf('ai/ai-panel.js');

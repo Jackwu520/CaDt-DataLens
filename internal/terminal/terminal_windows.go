@@ -158,9 +158,11 @@ func startTermSession(id, shell string, cols, rows int, cwd string, emit func(ev
 	conPty := p.(pty.ConPty)
 	outPipe := conPty.OutputPipe()
 
-	// 输出读取：分块推给前端
+	// 输出读取：分块推给前端。跨块被截断的多字节 UTF-8 尾巴先攒住与下一块拼回，
+	// 否则 ToValidUTF8 会把跨块的中文字符替换成 U+FFFD（渲染乱码）。
 	go func() {
 		buf := make([]byte, 4096)
+		var carry []byte
 		for {
 			select {
 			case <-ctx.Done():
@@ -169,13 +171,27 @@ func startTermSession(id, shell string, cols, rows int, cwd string, emit func(ev
 			}
 			n, readErr := outPipe.Read(buf)
 			if n > 0 {
-				data := strings.ToValidUTF8(string(buf[:n]), "\ufffd")
-				// 先入 AI 读的滚动缓冲，再推给前端：两边看到的是同一份数据流
-				session.append(data)
-				emit("term-out", map[string]string{
-					"id":   id,
-					"data": data,
-				})
+				chunk := buf[:n]
+				if len(carry) > 0 {
+					chunk = append(carry, chunk...)
+					carry = nil
+				}
+				// 流还没结束（后面还有块）才攒尾巴；readErr 时已经没有下一块了
+				if readErr == nil {
+					if tail := utf8IncompleteTail(chunk); tail > 0 {
+						carry = append([]byte(nil), chunk[len(chunk)-tail:]...)
+						chunk = chunk[:len(chunk)-tail]
+					}
+				}
+				if len(chunk) > 0 {
+					data := strings.ToValidUTF8(string(chunk), "\ufffd")
+					// 先入 AI 读的滚动缓冲，再推给前端：两边看到的是同一份数据流
+					session.append(data)
+					emit("term-out", map[string]string{
+						"id":   id,
+						"data": data,
+					})
+				}
 			}
 			if readErr != nil {
 				return
@@ -213,6 +229,38 @@ func (s *termSession) write(data string) error {
 	}
 	_, err := s.p.Write([]byte(data))
 	return err
+}
+
+// utf8IncompleteTail 返回 b 尾部不完整 UTF-8 序列的长度（0~3）：多字节字符被
+// 分块边界截断时，这几个字节要等下一块拼回后再解码，否则会被 ToValidUTF8
+// 替换成 U+FFFD。ASCII 起点、非法首字节、纯续字节尾巴一律返回 0（交给清洗）。
+func utf8IncompleteTail(b []byte) int {
+	n := len(b)
+	for i := n - 1; i >= 0 && i >= n-3; i-- {
+		c := b[i]
+		if c < 0x80 {
+			return 0 // 序列不可能跨过 ASCII 字节
+		}
+		if c&0xC0 == 0x80 {
+			continue // 续字节，继续向前找序列起点
+		}
+		var want int
+		switch {
+		case c&0xE0 == 0xC0:
+			want = 2
+		case c&0xF0 == 0xE0:
+			want = 3
+		case c&0xF8 == 0xF0:
+			want = 4
+		default:
+			return 0 // 非法首字节
+		}
+		if n-i < want {
+			return n - i
+		}
+		return 0
+	}
+	return 0
 }
 
 func (s *termSession) resize(cols, rows int) error {

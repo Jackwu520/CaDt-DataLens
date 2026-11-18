@@ -5,8 +5,10 @@ import {iconSvg} from '../core/icons.js';
 import {createFileIcon} from '../core/fileicons.js';
 import {enhanceWidgets} from '../core/widget.js';
 import {aiFormatTime, aiTextOf} from './ai-constants.js';
+import {diffNoDigits} from './ai-diff-view.js';
 import {agentLevelText} from './ai-team-model.js';
 import {formatCommandDuration} from './ai-terminal-tools.js';
+import {answerThinkingDefaultCollapsed} from './ai-always-collapse.js';
 import './ai-plan-file.js';
 
 // 解码可能未闭合的 JSON 字符串字面量：截掉不完整转义、补收尾引号再 parse；
@@ -559,6 +561,14 @@ export function createAIToolCards(ctx) {
     // 工具卡 ZCode 风格：动词 + 图标 + 主参数（文件名/路径/命令）+ 目录 + diff 统计 + 状态
     // 每个动作使用独立图标，便于一眼区分「读取 / 搜索 / 写入」等不同操作。
     function toolMeta(name, approval) {
+        // 插件工具（plugin__<pluginId>__<toolName>）：卡头显示「插件 · 工具短名」，
+        // 不把完整命名空间摊在卡头上；来源由审批卡与目录另行标注。
+        if (typeof name === 'string' && name.startsWith('plugin__')) {
+            const rest = name.slice('plugin__'.length);
+            const idx = rest.indexOf('__');
+            const shortName = idx > 0 ? rest.slice(idx + 2) : rest;
+            return {verb: '插件 · ' + (shortName || name), icon: 'download'};
+        }
         switch (name) {
             case 'read_file': return {verb: '读取', icon: 'eye'};
             case 'read_image': return {verb: '看图', icon: 'image'};
@@ -709,6 +719,35 @@ export function createAIToolCards(ctx) {
                 return {primary: aiTextOf(args.name).trim() || '—', dir: ''};
             case 'memory_list':
                 return {primary: '记忆目录', dir: ''};
+            // 等待 / 协作 / 会话类：卡头只给「做什么、等多久、对谁」，不把参数 JSON 原样摆出来
+            case 'wait_agent': {
+                const sec = Math.round(Number(args.timeoutSec) || 0);
+                return {primary: sec > 0 ? '最多 ' + Math.max(1, Math.round(sec / 60)) + ' 分钟' : '等待新消息', dir: ''};
+            }
+            case 'agent_send': case 'agent_stop': case 'agent_compact':
+                return {primary: aiTextOf(args.agentId).trim() || '子代理', dir: ''};
+            case 'agent_tree':
+                return {primary: '', dir: ''};
+            case 'notify_send':
+                return {primary: aiTextOf(args.title).trim().slice(0, 60), dir: ''};
+            case 'session_search': case 'session_history':
+                return {primary: aiTextOf(args.query).trim().slice(0, 60), dir: ''};
+            case 'session_read':
+                return {primary: aiTextOf(args.id).trim(), dir: ''};
+            case 'session_send':
+                return {primary: '会话投递', dir: ''};
+            case 'session_list':
+                return {primary: '', dir: ''};
+            case 'start_timer':
+                return {primary: aiTextOf(args.label).trim().slice(0, 40), dir: ''};
+            case 'stop_timer':
+                return {primary: aiTextOf(args.id).trim(), dir: ''};
+            case 'reminder_add': case 'reminder_update': case 'reminder_remove':
+                return {primary: aiTextOf(args.title || args.id).trim().slice(0, 60), dir: ''};
+            case 'reminder_list': case 'env_list':
+                return {primary: '', dir: ''};
+            case 'env_create':
+                return {primary: aiTextOf(args.name).trim(), dir: ''};
             case 'preference_write': case 'preference_remove':
                 return {primary: aiTextOf(args.text || args.id).trim().slice(0, 80) || '—', dir: ''};
             case 'preference_list':
@@ -735,6 +774,10 @@ export function createAIToolCards(ctx) {
         if (!approval.diff || !approval.diff.length) return;
         const diff = document.createElement('div');
         diff.className = 'ai-diff';
+        // 行号列宽随最大行号位数走（style.css 以 max(22px, var(--ai-diff-no-w)) 消费）：
+        // 固定 22px 只装得下 3 位数，四位数行号会被继承的 overflow-wrap: anywhere
+        // 从数字中间断行（3091 → 309/1 两行）
+        diff.style.setProperty('--ai-diff-no-w', diffNoDigits(approval.diff) + 'ch');
         let oldLine = 1;
         let newLine = 1;
         for (const line of approval.diff) {
@@ -770,7 +813,9 @@ export function createAIToolCards(ctx) {
         container.appendChild(diff);
     }
 
-    function renderToolMessage(wrap, message) {
+    // session：这张卡属于哪个会话（渲染目标会话，不一定是面板当前查看的会话）。
+    // 支线对话标签页复用同一套渲染，卡内动作（查看计划）必须按它取，不能用 currentSession。
+    function renderToolMessage(wrap, message, options, session) {
         if (message.ask) {
             renderAskCard(wrap, message);
             return;
@@ -794,6 +839,9 @@ export function createAIToolCards(ctx) {
         card.className = 'ai-tool-card ' + cardState + (approval ? ' has-approval' : '') + (envAsk ? ' has-approval' : '') + (isCommand ? ' command' : '') + (message.name === 'spawn_agent' ? ' agent' : '') + (message.interrupted ? ' interrupted' : '');
         if ((approval && approval.state === 'pending') || (envAsk && envAsk.state === 'pending')) card.classList.add('approval-pending');
         wrap.appendChild(card);
+        // 没有可展开正文的卡（只有「执行中…」/「（无输出）」这类状态占位）不摆折叠箭头：
+        // 箭头展开只有一行字，头部状态徽标已经把话说完了。赋值点见下方的通用分支。
+        let statusOnlyBody = false;
         const head = document.createElement('button');
         head.type = 'button';
         head.className = 'ai-tool-head';
@@ -855,7 +903,7 @@ export function createAIToolCards(ctx) {
             view.dataset.tip = '在标签页查看这份计划（未批准为只读预览，批准后是工作区文件）';
             view.addEventListener('click', (e) => {
                 e.stopPropagation(); // 别冒泡到卡头的折叠 toggle
-                openPlan(currentSession());
+                openPlan(session || currentSession());
             });
             head.appendChild(view);
         }
@@ -914,6 +962,7 @@ export function createAIToolCards(ctx) {
         head.append(state);
         if (!isRead && !isBuiltinSkill) {
             head.addEventListener('click', () => {
+                if (statusOnlyBody) return; // 无正文可展开，别把它当折叠开关
                 card.dataset.userToggled = '1';
                 card.classList.toggle('collapsed');
                 if (message.toolCallId) toolFoldState.set(message.toolCallId, card.classList.contains('collapsed'));
@@ -1155,9 +1204,13 @@ export function createAIToolCards(ctx) {
         } else if (isRead) {
             // 读取卡不做展开：内容不渲染，路径超链接即全部交互
         } else {
-            body.textContent = message.content || (live ? '执行中…' : '（无输出）');
+            const inlineText = String(message.content == null ? '' : message.content);
+            // 只剩状态占位（执行中 / 无输出）就不是「可展开的正文」：不建 body、不摆箭头。
+            // 等它真出内容时（如 wait_agent 返回结算）下一次渲染会带上 body 与箭头。
+            statusOnlyBody = !inlineText.trim();
+            body.textContent = inlineText || (live ? '执行中…' : '（无输出）');
         }
-        if (isRead || isBuiltinSkill) card.appendChild(head);
+        if (isRead || isBuiltinSkill || statusOnlyBody) card.appendChild(head);
         else card.append(head, body);
         if ((approval && approval.state === 'pending') || (envAsk && envAsk.state === 'pending')) return;
         // 终端命令默认只显示一行摘要（命令 + 状态），点击展开完整输出。
@@ -1171,16 +1224,17 @@ export function createAIToolCards(ctx) {
         if (fileToolCard) {
             card.classList.add('collapsed');
         }
-        if (!isRead && !isBuiltinSkill && !fileToolCard && !live && message.status !== 'error') card.classList.add('collapsed');
+        if (!isRead && !isBuiltinSkill && !fileToolCard && !live && message.status !== 'error' && !statusOnlyBody) card.classList.add('collapsed');
         // 生成卡：进行中或已有产物时不默认折叠（缩略图是主要反馈）；用户手动折叠过的仍以其偏好为准
         if (message.gen && (message.gen.status === 'running' || (message.gen.files || []).length)) {
             card.classList.remove('collapsed');
         }
         // 用户手动展开/收起过的卡片以偏好为准，覆盖上面的默认折叠规则。
-        if (!isRead && !isBuiltinSkill && message.toolCallId) {
+        if (!isRead && !isBuiltinSkill && !statusOnlyBody && message.toolCallId) {
             const storedFold = toolFoldState.get(message.toolCallId);
             if (storedFold !== undefined) card.classList.toggle('collapsed', storedFold);
         }
+        if (statusOnlyBody) chev.remove(); // 无正文：折叠箭头不出现（与读取卡同一口径）
     }
 
     // AI 正文的完整增强链：代码块复制钮 + 本地图片解析 + 可视化卡片（mermaid / echarts / svg /
@@ -1474,8 +1528,12 @@ export function createAIToolCards(ctx) {
             }
         }
 
+        // 占位条件：有思考内容照常显示；流式中还没内容时显示「等待模型响应」占位（限流
+        // 重试 / 排队期间不该谎报「正在思考」）；正文一旦开始流式（不思考的模型）就撤掉，
+        // 与轮结束时的移除条件（无 reasoning 即移除）保持同一口径，避免收尾时跳变。
         let think = wrap.querySelector('.ai-think');
-        if (settings.aiShowThinking !== false && !hideThinking && (message.reasoning || streaming)) {
+        if (settings.aiShowThinking !== false && !hideThinking &&
+            (message.reasoning || (streaming && !message.content))) {
             const thinkKey = aiThinkKey(message, Number(wrap.dataset.aiIdx));
             if (!think) {
                 think = document.createElement('div');
@@ -1509,8 +1567,8 @@ export function createAIToolCards(ctx) {
             renderThinkBody(think.querySelector('.ai-think-body'), message, !!streaming);
             const storedThink = thinkFoldState.get(thinkKey);
             if (storedThink !== undefined) think.classList.toggle('collapsed', storedThink);
-            else if (!streaming && !expandThinking) think.classList.add('collapsed');
-            else think.classList.remove('collapsed');
+            else think.classList.toggle('collapsed',
+                answerThinkingDefaultCollapsed(!!streaming, expandThinking, settings.aiAlwaysCollapse === true));
             // 思考卡头部不给 tooltip：标签 + 箭头已经把「点一下展开 / 收起点思考」说清楚了
         } else if (think) {
             think.remove();
@@ -1609,10 +1667,14 @@ export function createAIToolCards(ctx) {
         wrap.classList.toggle('error', message.status === 'error');
 
         // 用量不再单独占一行：并进操作行的「用量」徽标（点开是本轮明细）
-        if (!streaming) appendActions(wrap, message, Number(wrap.dataset.aiIdx), currentSession());
+        // 卡片所属会话（options.session；缺省=面板当前会话）：支线标签页渲染时若不认目标会话，
+        // 「最后一条 / 该会话是否在生成」会按面板会话算，操作按钮会出现在错的条目上。
+        if (!streaming) appendActions(wrap, message, Number(wrap.dataset.aiIdx), (options && options.session) || currentSession());
     }
 
-    async function acceptPlan(session, families) {
+    // grantItems：批准卡勾选的条目（{mode:'family', signature} / {mode:'exact', command}）。
+    // 危险 / 复合条目（mode null）不会进勾选集合，这里再兜一层——危险命令永不落会话规则。
+    async function acceptPlan(session, grantItems) {
         // 注意：ai-panel 的包装层在调用前已落盘并把 activePlan 置为 approved，
         // 所以这里不能再用 status==='pending' 做守卫（否则批准永远静默失败）。
         // 也不做 streamOf 守卫：包装层已 stopGeneration，残余流由 submitText 的排队机制兜底。
@@ -1622,9 +1684,14 @@ export function createAIToolCards(ctx) {
             return;
         }
         const cwd = getScopeRoot() || '';
-        if (Array.isArray(families) && cwd) {
-            for (const signature of families) {
-                if (signature) addCommandApprovalRule(session, {mode: 'family', signature, cwd});
+        if (Array.isArray(grantItems) && cwd) {
+            for (const item of grantItems) {
+                if (!item || item.dangerous) continue;
+                if (item.mode === 'family' && item.signature) {
+                    addCommandApprovalRule(session, {mode: 'family', signature: item.signature, cwd});
+                } else if (item.mode === 'exact' && item.command) {
+                    addCommandApprovalRule(session, {mode: 'exact', command: item.command, cwd});
+                }
             }
         }
         session.planMode = false;

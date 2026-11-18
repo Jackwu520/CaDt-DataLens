@@ -6,6 +6,7 @@ const ICONS = {
     tree: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 3.2v9.6M3 6h4.2M3 11.8h4.2" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><path d="M7.2 4.6h5.2v2.8H7.2zM7.2 10.4h5.2v2.8H7.2z" fill="none" stroke="currentColor" stroke-width="1.1"/></svg>',
     filter: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 3.2h11L9.6 8.4v4.2l-3.2 1.6V8.4z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>',
     refresh: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M12.8 8a4.8 4.8 0 1 1-1.4-3.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M12.8 2.6v3.2H9.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    reveal: '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.6" fill="none" stroke="currentColor" stroke-width="1.2"/><circle cx="8" cy="8" r="1.5" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M8 1.4v2.2M8 12.4v2.2M1.4 8h2.2M12.4 8h2.2" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>',
 };
 function normalizePath(path) {
     return String(path || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
@@ -143,7 +144,7 @@ function revealRowVertically(container, row) {
 
 export function createExplorer(options) {
     const {
-        body, titleEl, refreshBtn, listBtn, treeBtn, filterBtn, onToggleFilter,
+        body, titleEl, refreshBtn, revealBtn, listBtn, treeBtn, filterBtn, onToggleFilter,
         readDir, dirMtime, openPath, openFolder, openFileDialog, isSupported,
         onModeChange, onContextMenu, onMove, onExternalDrop, canDrag,
         readLimit = 1000, listReadLimit = 5000,
@@ -722,14 +723,20 @@ export function createExplorer(options) {
 
     // 展开到指定路径并选中（app_control reveal_in_explorer）：与跟随活动文件同一条展开链，
     // 目标可以是文件或目录；不在根内返回 false（调用方给错误）。
+    // 沿途逐层**强制重读**（而不是整树重建）：新建的文件/目录也要能被找到，
+    // 同时其它已展开目录与滚动位置保持不变。
     async function revealPath(targetPath) {
         const target = String(targetPath || '');
-        if (!tree || !target || !isWithin(tree.path, target)) return false;
+        if (!target) return false;
+        ensureTree();
+        if (!tree || !isWithin(tree.path, target)) return false;
         const seq = ++revealSeq;
         let node = tree;
         node.expanded = true;
         while (node && node.isDir) {
-            await loadNode(node, treeSeq);
+            if (!node.loaded) await loadNode(node, treeSeq);
+            else if (node.loadPromise) await node.loadPromise;
+            else await refreshNodeChildren(node, true);
             if (seq !== revealSeq) return false;
             if (samePath(node.path, target) || samePath(node.path, parentPath(target))) break;
             const next = node.children.find((child) => child.isDir && isWithin(child.path, target));
@@ -802,11 +809,14 @@ export function createExplorer(options) {
         }
     }
 
-    function setActive(path) {
+    function setActive(path, opts = {}) {
         activePath = path || null;
         if (!visible) return;
+        // reveal 默认 true：显式要求「把当前文件摆到眼前」的调用（显示侧栏 / 切工作区）才滚动；
+        // 切换标签页传 false —— 对齐 JetBrains，切标签不动文件树的展开态与滚动位置。
+        const reveal = opts.reveal !== false;
         if (mode === 'list') {
-            requestListReveal();
+            if (reveal) requestListReveal();
             const root = listRootPath();
             if (selection.length) {
                 selection = selection.filter((item) => root && samePath(parentPath(item.path), root));
@@ -822,13 +832,27 @@ export function createExplorer(options) {
                 renderTree();
             } else if (!prevRoot || !samePath(prevRoot, tree.path)) {
                 renderTree();
-                revealActive();
+                if (reveal) revealActive();
             } else {
                 updateActiveHighlight();
-                revealActive();
+                if (reveal) revealActive();
             }
             updateTitle();
         }
+    }
+
+    // 宿主入口（侧栏「定位当前文件」按钮 / AI reveal_in_explorer）：展开到活动文件并滚进视野
+    function revealActiveFile() {
+        if (!activePath) return false;
+        if (mode === 'list') {
+            requestListReveal();
+            loadList(false);
+            return true;
+        }
+        ensureTree();
+        if (!tree) return false;
+        revealActive();
+        return true;
     }
 
     function refresh() {
@@ -887,6 +911,30 @@ export function createExplorer(options) {
         }
     }
 
+    // 保留展开态的重建：只有外部大批量变更（文件监听溢出）才需要整树重读，
+    // 但不能让用户刚展开的目录全部折叠——重建后按记录的路径逐层展开回去。
+    // 注意：刷新按钮 / 切工作区仍走各自的路径（前者是用户显式要求重建，后者根变了）。
+    async function rebuildTreeKeepingExpansion() {
+        const expanded = new Set();
+        if (tree) collectExpanded(tree, []).forEach((node) => expanded.add(normalizePath(node.path)));
+        tree = null;
+        treeSeq++;
+        revealSeq++;
+        ensureTree();
+        if (!tree) return;
+        const seq = treeSeq;
+        const restore = async (node) => {
+            if (!node || !node.isDir) return;
+            if (node !== tree) node.expanded = expanded.has(normalizePath(node.path));
+            if (!node.expanded) return;
+            if (!node.loaded) await loadNode(node, seq);
+            if (seq !== treeSeq) return;
+            for (const child of node.children || []) await restore(child);
+        };
+        await restore(tree);
+        if (visible && mode === 'tree') renderTree();
+    }
+
     async function refreshTreeSilently() {
         if (!tree) return;
         const targets = [];
@@ -932,13 +980,7 @@ export function createExplorer(options) {
         if (externalOverflow) {
             externalOverflow = false;
             externalDirs.clear();
-            tree = null;
-            treeSeq++;
-            revealSeq++;
-            if (visible && mode === 'tree') {
-                ensureTree();
-                renderTree();
-            }
+            await rebuildTreeKeepingExpansion();
             return;
         }
         const nodes = [];
@@ -1001,6 +1043,15 @@ export function createExplorer(options) {
         const full = String(path || '').replace(/\\/g, '/').replace(/\/+$/, '');
         if (!full) return;
         externalDirs.add(parentPath(full));
+        scheduleExternalRefresh();
+    }
+
+    // 同上，但直接标脏目录本身（复制 / 移动等「作用在某个目录里」的写盘操作用它，
+    // 免得去构造一个假的子路径）
+    function notifyDirChange(dir) {
+        const full = String(dir || '').replace(/\\/g, '/').replace(/\/+$/, '');
+        if (!full) return;
+        externalDirs.add(full);
         scheduleExternalRefresh();
     }
 
@@ -1169,6 +1220,12 @@ export function createExplorer(options) {
         }
         refreshBtn.addEventListener('click', refresh);
     }
+    if (revealBtn) {
+        revealBtn.innerHTML = ICONS.reveal;
+        revealBtn.dataset.tip = '定位当前文件';
+        revealBtn.setAttribute('aria-label', '定位当前文件');
+        revealBtn.addEventListener('click', () => revealActiveFile());
+    }
     if (listBtn) {
         listBtn.innerHTML = ICONS.list;
         listBtn.addEventListener('click', () => setMode('list'));
@@ -1200,12 +1257,14 @@ export function createExplorer(options) {
         setRoot,
         getRoot: currentRoot,
         setActive,
+        revealActiveFile,
         refresh,
         toggleNode,
         refreshDir,
         pathRenamed,
         handleExternalChanges,
         notifyFileChange,
+        notifyDirChange,
         removePath,
         getSelection: () => selection.map((item) => ({...item})),
         getAnchor: () => {

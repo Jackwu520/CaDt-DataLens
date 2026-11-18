@@ -104,6 +104,16 @@ test('接线：有内容打开时解开收起态（含 AI 打开文件 / 浏览�
     assert.match(main, /if \(running\) autoCollapseSuppressed = false;/, '粘性位必须是回合级，不能跨回合永久锁');
 });
 
+test('接线：同一文档重新激活也要解开收起态（单例虚拟文档入口 / 点已激活标签页）', () => {
+    const groups = read('src/editor/editor-groups.js');
+    // activateDoc 对 doc === deps.file 早退、不走 updateDocChrome——便签是每窗口单例，
+    // 已激活时再点活动栏便签按钮 / Ctrl+Alt+T / AI 的 open_memo_panel 都落进这条分支；
+    // 收起不是固定锁，「再看一次」的意图必须仍然通知宿主展开，否则点了毫无反应。
+    const fn = groups.slice(groups.indexOf('async function activateDoc'));
+    const body = fn.slice(0, fn.indexOf('\n}'));
+    assert.match(body, /if \(deps\.onDocVisible\) deps\.onDocVisible\(doc\)/, 'activateDoc 早退分支未通知宿主解开收起态');
+});
+
 test('接线：AI 面板在流注册/注销处广播回合状态', () => {
     const code = read('src/ai/ai-panel.js');
     assert.match(code, /const onTurnStateChange = typeof opts\.onTurnStateChange/, '未接宿主回调');

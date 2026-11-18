@@ -59,7 +59,9 @@ function applySwitchMode(mode) {
         return;
     }
     if (mode === 'preview') {
+        // 'preview' 对两种文档复用：Markdown 渲染预览 / HTML iframe 预览
         if (doc && doc.format.preview) deps.enterMarkdownPreview(doc);
+        else if (doc && deps.isHtmlDoc(doc)) deps.enterHtmlPreview(doc);
         return;
     }
     if (mode === 'render') {
@@ -92,7 +94,10 @@ function applySwitchMode(mode) {
         }
     }
     if (deps.currentMode === 'preview') {
-        if (doc) deps.leaveMarkdownPreview(doc, mode);
+        if (doc) {
+            if (deps.isHtmlDoc(doc)) deps.leaveHtmlPreview(doc, mode);
+            else deps.leaveMarkdownPreview(doc, mode);
+        }
         return;
     }
     if (mode === 'patch') {

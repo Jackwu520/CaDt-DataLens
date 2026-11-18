@@ -2,6 +2,15 @@
 // 与 main.js 通过 initPluginRuntime(hooks) 单向注入，避免循环依赖。
 import {registerPluginFormat, unregisterAllPluginFormats} from '../core/formats.js';
 import {clearPluginAIProviders, getPluginAIProviders, registerPluginAIProvider} from './plugin-ai-providers.js';
+import {normalizePluginCommand} from './plugin-commands-model.js';
+import {
+    bindServiceBackend, buildServiceSpecs, clearPluginServices, registerPluginService,
+    serviceLogs, serviceStatus, startService, stopService,
+} from './plugin-services.js';
+import {
+    clearPluginSettingsPanels, getPluginSettingsPanels, registerPluginSettingsPanel,
+} from './plugin-settings-panels.js';
+import {clearPluginTools, registerPluginTool} from './plugin-tools.js';
 
 const host = {
     flash: () => {},
@@ -50,6 +59,10 @@ export function getPluginAIProviderList() {
     return getPluginAIProviders();
 }
 
+export function getPluginSettingsPanelList() {
+    return getPluginSettingsPanels();
+}
+
 // 最近一次 loadPlugins 的加载错误（每个插件一条「名称：原因」），供诊断 UI 区分
 // 「插件未安装」与「已安装但加载失败」——端侧分类器状态行据此不再误报「未安装」。
 let lastLoadErrors = [];
@@ -71,23 +84,19 @@ function apiFor(plugin) {
             }
             return registerPluginFormat({...driver, pluginId: plugin.id});
         },
-        // 注册工具菜单命令：{id, label, run()}
+        // 注册命令：{id, label, run, icon?, description?, category?, contexts?, when?, shortcut?}
+        // 归一化与校验在 plugin-commands-model.js（纯函数）；宿主按 contexts 决定进哪些入口。
         addCommand(spec) {
-            if (!spec || typeof spec !== 'object') {
-                throw pluginError(plugin, 'addCommand 需要一个命令对象');
+            let cmd;
+            try {
+                cmd = normalizePluginCommand(plugin.id, plugin.name, spec);
+            } catch (e) {
+                throw pluginError(plugin, (e && e.message) || e);
             }
-            const id = String(spec.id || '').trim();
-            const label = String(spec.label || '').trim();
-            if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(id)) {
-                throw pluginError(plugin, `命令 id 无效：${JSON.stringify(spec.id)}`);
+            if (commands.some((c) => c.id === cmd.id)) {
+                throw pluginError(plugin, `命令 ${spec && spec.id} 已注册`);
             }
-            if (!label || typeof spec.run !== 'function') {
-                throw pluginError(plugin, '命令缺少 label 或 run');
-            }
-            if (commands.some((c) => c.id === `${plugin.id}:${id}`)) {
-                throw pluginError(plugin, `命令 ${id} 已注册`);
-            }
-            commands.push({id: `${plugin.id}:${id}`, pluginId: plugin.id, label, run: spec.run});
+            commands.push(cmd);
         },
         // 注册文件图标主题：{id, name, icons: {json: '<svg…>', default_file: '<svg…>', …}}
         // icons 缺失的类型自动回退到内置文字缩写图标
@@ -162,6 +171,35 @@ function apiFor(plugin) {
         registerAIProvider(spec) {
             return registerPluginAIProvider(plugin.id, spec);
         },
+        // 注册 AI 工具：{name, description, parameters?, readOnly?, timeoutMs?, execute(args, ctx)}。
+        // 默认关闭，须用户在 设置 → AI → 权限 → 插件工具 授权后才下发给模型；
+        // 安全模型见 docs/unfinished-plans/plugin-tool-security.md。
+        registerTool(spec) {
+            try {
+                return registerPluginTool(plugin.id, plugin.name, spec);
+            } catch (e) {
+                throw pluginError(plugin, (e && e.message) || e);
+            }
+        },
+        // 返回本插件的安装目录（绝对路径）；插件可用它拼自己的资源/脚本路径。
+        getPluginDir() {
+            return String(plugin.dir || '');
+        },
+        // 注册后台服务：{id, exe, args, cwd?, healthURL?, autoStart?, pollIntervalMs?, logCapBytes?}。
+        // 进程启停/健康检查/退出清理由 Go 侧统一托管，详见 docs/plugins/README.md「注册后台服务」。
+        registerService(spec) {
+            return registerPluginService(plugin.id, plugin.dir, spec);
+        },
+        // 注册插件专属设置面板：{id, label, render(container, ctx)}。
+        // ctx 提供 flash 与本插件服务操作，详见 docs/plugins/README.md「插件专属设置面板」。
+        registerSettingsPanel(spec) {
+            return registerPluginSettingsPanel(plugin.id, spec);
+        },
+        // 服务操作（按本插件内的短 id）。返回 Promise。
+        startService(id) { return startService(plugin.id, id); },
+        stopService(id) { return stopService(plugin.id, id); },
+        getServiceStatus(id) { return serviceStatus(plugin.id, id); },
+        getServiceLogs(id) { return serviceLogs(plugin.id, id); },
         // 注册文档格式转换器：{id, label, extensions, convert(ctx)}——通用导出能力，
         // 各导出场景（便签面板 / AI 回答另存 / 阅读导出…）把内容组装成统一 ctx 后调用
         // convert；Word/PDF 等生成依赖全在插件侧随插件分发。ctx：{title, suggestedName,
@@ -232,6 +270,10 @@ function notifyPluginsLoaded() {
 export async function loadPlugins(backend) {
     unregisterAllPluginFormats();
     clearPluginAIProviders();
+    clearPluginServices();
+    clearPluginSettingsPanels();
+    clearPluginTools();
+    bindServiceBackend(backend);
     for (const style of themeStyles.values()) {
         style.remove();
     }
@@ -258,11 +300,20 @@ export async function loadPlugins(backend) {
     const errors = [];
     for (const source of sources) {
         try {
-            const api = apiFor({id: source.id, name: source.name});
+            const api = apiFor({id: source.id, name: source.name, dir: source.dir || ''});
             new Function('cadt', `"use strict";\n${source.code || ''}`)(api);
         } catch (e) {
             const message = `${source.name || source.id}：${(e && e.message) || e}`;
             errors.push(message);
+        }
+    }
+    // 所有插件重放完成后，一次性把服务声明推给 Go：新增/变更的自启服务拉起，
+    // 被禁用/卸载插件的服务停止。Sync 失败只记诊断，不阻断插件加载。
+    if (backend && typeof backend.AppServiceSync === 'function') {
+        try {
+            await backend.AppServiceSync(buildServiceSpecs());
+        } catch (e) {
+            console.warn('[plugins] 后台服务同步失败：' + ((e && e.message) || e));
         }
     }
     lastLoadErrors = [...errors];
@@ -271,6 +322,8 @@ export async function loadPlugins(backend) {
     console.info('[plugins] 加载完成：源 ' + sources.length + ' 个（' +
         sources.map((s) => s.id).join('、') + '）· 命令分类器 ' + commandClassifiers.size +
         ' 个 · AI provider ' + getPluginAIProviders().length +
+        ' 个 · 服务 ' + buildServiceSpecs().length +
+        ' 个 · 设置面板 ' + getPluginSettingsPanels().length +
         ' 个 · 错误 ' + errors.length + (errors.length ? '：' + errors.join('；') : ''));
     host.onPluginsChanged();
     notifyPluginsLoaded();

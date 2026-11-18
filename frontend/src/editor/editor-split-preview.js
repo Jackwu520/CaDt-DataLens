@@ -344,6 +344,86 @@ function renderHtmlPreview(doc) {
     ensureHtmlPreviewRoot(doc).then(apply).catch(() => apply());
 }
 
+// ---- HTML 纯预览视图（与 Markdown 的 preview 同一套语义：占满内容区、底层编辑器留 code） ----
+
+function showHtmlPreview(doc) {
+    if (!doc) return;
+    createHtmlPreviewView(doc);
+    if (doc.pane) doc.pane.classList.add('html-preview-active');
+    renderHtmlPreview(doc);
+}
+
+function hideHtmlPreview(doc) {
+    if (!doc || !doc.pane) return;
+    doc.pane.classList.remove('html-preview-active');
+    if (doc === deps.file && doc.editor && doc.editor.aceEditor) {
+        try {
+            doc.editor.aceEditor.resize();
+        } catch (e) {}
+    }
+}
+
+function enterHtmlPreview(doc) {
+    if (!doc || !doc.editor) return;
+    if (doc.large) {
+        deps.flash('大文件不支持 HTML 预览', true);
+        return;
+    }
+    const text = doc.editor.getText();
+    doc.loading = true;
+    try {
+        doc.editor.setMode('code');
+        doc.editor.setText(text);
+        doc.text = text;
+        if (!doc.dirty && doc.bases.preview == null) doc.bases.preview = text;
+        doc.mode = 'preview';
+        deps.currentMode = 'preview';
+        showHtmlPreview(doc);
+        deps.updateStatus();
+        deps.updateSearchState();
+    } catch (e) {
+        deps.flash('切换预览失败：' + e.message, true);
+    } finally {
+        doc.loading = false;
+    }
+}
+
+function leaveHtmlPreview(doc, mode) {
+    if (!doc || !doc.editor) return;
+    hideHtmlPreview(doc);
+    doc.mode = mode;
+    deps.currentMode = mode;
+    const loading = doc.loading;
+    doc.loading = true;
+    try {
+        doc.editor.setMode(mode);
+    } catch (e) {
+        deps.flash('切换视图失败：' + e.message, true);
+    } finally {
+        doc.loading = loading;
+    }
+    // 预览底层编辑器一直是 code：setMode('code') 不触发 onModeChange，语法模式要显式应用
+    if (doc === deps.file && mode === 'code') deps.applyAceMode(true);
+    deps.updateStatus();
+    deps.updateSearchState();
+}
+
+// 关闭标签页时释放 iframe（srcdoc 里的脚本 / 定时器随 iframe 一起退场）
+function releaseHtmlPreview(doc) {
+    if (!doc) return;
+    const frame = doc.htmlFrame;
+    doc.htmlFrame = null;
+    doc.htmlPreviewEl = null;
+    doc.htmlPreviewRoot = null;
+    doc.htmlRootTried = false;
+    if (frame) {
+        try {
+            frame.srcdoc = '';
+            frame.remove();
+        } catch (e) {}
+    }
+}
+
 // SVG 渲染用的源文本：渲染视图下 jsoneditor 可能已把树值序列化成 JSON 填进编辑器，
 // 真源保存在 _svgSrcText；其余情况以编辑器文本为准，最后回退打开时的原文。
 function svgSourceFor(doc) {
@@ -454,7 +534,7 @@ function enterSplitView(doc) {
         doc.mode = 'code';
         deps.currentMode = 'code';
         if (doc.pane) {
-            doc.pane.classList.remove('preview-active', 'svg-render-active');
+            doc.pane.classList.remove('preview-active', 'svg-render-active', 'html-preview-active');
             doc.pane.classList.add('split-active');
             doc.pane.classList.toggle('split-markdown', kind === 'markdown');
             doc.pane.classList.toggle('split-svg', kind === 'svg');
@@ -1209,6 +1289,11 @@ function enterTextView(doc) {
         unhookSplitScrollSync,
         createHtmlPreviewView,
         renderHtmlPreview,
+        showHtmlPreview,
+        hideHtmlPreview,
+        enterHtmlPreview,
+        leaveHtmlPreview,
+        releaseHtmlPreview,
         svgSourceFor,
         looksLikeSvg,
         setSvgRenderError,

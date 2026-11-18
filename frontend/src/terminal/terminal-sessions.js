@@ -1,8 +1,130 @@
 // 终端会话管理与菜单：新建/激活/关闭/移除标签页、主题同步、shell 与标签右键菜单、重命名。
 // 从 terminal-ui.js 拆出；terminalUI 状态、shell 标签、cwd/theme、runGitCommit 由宿主经 deps 注入。
 import {iconSvg} from '../core/icons.js';
+import {termKeyAction} from './term-keys.js';
+import {matchLinks, linkRangeInRows} from './term-links.js';
 
 export function createTerminalSessions(deps) {
+
+// —— term-out 先于 UI 注册到达的兜底 ——
+// Go 在 TermCreate 返回前后就开始读 ConPTY 并推 term-out（banner 很快），前端要等
+// await TermCreate resolve 后才把 session 注册进 map：先到的事件原先被静默丢弃，
+// 首屏 banner/提示符残缺，转义序列被拦腰截断会一直乱下去。现在先暂存，
+// attachTermSession 注册后按序回放。
+const pendingTermOut = new Map();
+const PENDING_TERM_OUT_MAX = 256 * 1024;
+
+function writeTermOut(data) {
+    if (!data || !data.id) return;
+    const s = deps.terminalUI.sessions.get(data.id);
+    if (s) {
+        s.term.write(data.data || '');
+        return;
+    }
+    let buf = (pendingTermOut.get(data.id) || '') + (data.data || '');
+    if (buf.length > PENDING_TERM_OUT_MAX) buf = buf.slice(-PENDING_TERM_OUT_MAX);
+    pendingTermOut.set(data.id, buf);
+}
+
+function flushPendingTermOut(id) {
+    const buf = pendingTermOut.get(id);
+    if (!buf) return;
+    pendingTermOut.delete(id);
+    const s = deps.terminalUI.sessions.get(id);
+    if (s) s.term.write(buf);
+}
+
+// 粘贴进终端：优先走 Go 绑定（WebView2 下 navigator.clipboard.readText 不保证放行）
+async function pasteClipboardTo(term) {
+    let text = '';
+    try {
+        if (deps.backend.GetClipboardText) text = String((await deps.backend.GetClipboardText()) || '');
+        else if (navigator.clipboard && navigator.clipboard.readText) text = await navigator.clipboard.readText();
+    } catch (e) {
+        deps.flash('读取剪贴板失败：' + e, true);
+        return;
+    }
+    if (!text) return;
+    try {
+        term.paste(text);
+    } catch (e) {}
+}
+
+// —— 终端内链接：hover 下划线 + 手型光标由 xterm 对已注册链接的默认装饰提供，
+// Ctrl/Cmd+单击用系统默认程序打开（普通点击留给选区，不动作）。检测纯函数在
+// term-links.js；linkHandler 同时接管应用经 OSC 8 转义序列发的真链接的激活。
+function registerTermLinks(term) {
+    if (!term.registerLinkProvider) return;
+    term.registerLinkProvider({
+        provideLinks: (y, callback) => {
+            let links;
+            try {
+                links = termLinksAtRow(term, y);
+            } catch (e) {
+                links = undefined;
+            }
+            callback(links || []);
+        },
+    });
+}
+
+// provideLinks 的 y 是 1-based 缓冲绝对行号（xterm LinkManager：视口行 + ydisp）；
+// range 坐标与内置 OscLinkProvider 同约定：x 为 1-based cell 列、end 含端点、y 1-based。
+function termLinksAtRow(term, y) {
+    const buffer = term.buffer.active;
+    const idx = y - 1;
+    if (idx < 0 || !buffer.getLine(idx)) return undefined;
+    // 软换行序列：isWrapped = 本行是上一行的延续——向上找序列起点、向下找终点，
+    // 长 URL 被换行拆开时跨行拼出完整链接
+    let firstIdx = idx;
+    while (firstIdx > 0) {
+        const prev = buffer.getLine(firstIdx - 1), cur = buffer.getLine(firstIdx);
+        if (!prev || !cur || !cur.isWrapped) break;
+        firstIdx--;
+    }
+    let lastIdx = idx;
+    for (;;) {
+        const next = buffer.getLine(lastIdx + 1);
+        if (!next || !next.isWrapped) break;
+        lastIdx++;
+    }
+    const rows = [];
+    for (let i = firstIdx; i <= lastIdx; i++) rows.push(termRowData(buffer.getLine(i), i + 1));
+    const links = matchLinks(rows.map((r) => r.text).join(''));
+    if (!links.length) return undefined;
+    return links.map((m) => ({
+        text: m.text,
+        range: linkRangeInRows(rows, m),
+        activate: (ev) => activateTermLink(ev, m.text),
+    }));
+}
+
+// 行数据：裁尾文本 + 「字符串偏移 → cell 列」映射。宽字符占 2 cell，字符串索引
+// 与 cell 列不等（URL 里含中文路径 / 行首是中文时不能按字符串偏移当列号），
+// 逐 cell 扫描建立映射；chars 为空的是宽字符后半占位或 null cell，跳过。
+function termRowData(line, y) {
+    if (!line) return {y, text: '', colOf: null, wideAt: null};
+    const colOf = [];
+    const wideAt = new Set();
+    let off = 0;
+    for (let c = 0; c < line.length; c++) {
+        const cell = line.getCell(c);
+        if (!cell.chars) continue;
+        for (let k = 0; k < cell.chars.length; k++) colOf[off + k] = c;
+        if (cell.width === 2) wideAt.add(off);
+        off += cell.chars.length;
+    }
+    return {y, text: line.translateToString(true), colOf, wideAt};
+}
+
+// 激活：Ctrl/Cmd+单击 → Wails BrowserOpenURL（系统默认程序）；普通点击不动作
+function activateTermLink(ev, text) {
+    if (!ev || (!ev.ctrlKey && !ev.metaKey)) return;
+    const url = String(text || '');
+    if (!/^https?:\/\//i.test(url)) return;
+    if (deps.rt && deps.rt.BrowserOpenURL) deps.rt.BrowserOpenURL(url);
+    else window.open(url, '_blank', 'noopener'); // 无 Wails runtime（dev 浏览器调试）时的降级
+}
 
 async function createTermSession(shell = '', meta = null) {
     if (!deps.backend.TermCreate) {
@@ -41,15 +163,38 @@ function attachTermSession(id, usedShell, opts = {}) {
         scrollback: 2000,
         cursorBlink: true,
         theme: deps.termTheme(),
+        // 应用经 OSC 8 发的真链接（如 git/gh 出的 hyperlink）也走统一的 Ctrl+单击语义
+        linkHandler: {activate: (ev, text) => activateTermLink(ev, text)},
     });
     const fit = new window.FitAddon.FitAddon();
     term.loadAddon(fit);
     term.open(host);
+    registerTermLinks(term);
     try {
         fit.fit();
     } catch (e) {}
     term.onData((data) => {
         deps.backend.TermWrite(id, data).catch(() => {});
+    });
+    // Ctrl+C 语义分流（term-keys.js）：有选中时复制而不是把 \x03 发给 shell；
+    // 无选中照常中断前台程序。Ctrl+Shift+V 显式粘贴。
+    term.attachCustomKeyEventHandler((ev) => {
+        if (ev.type !== 'keydown') return true;
+        let action;
+        try {
+            action = termKeyAction(ev, term.hasSelection());
+        } catch (e) {
+            return true;
+        }
+        if (action === 'copy') {
+            deps.copyText(term.getSelection(), '选中内容');
+            return false;
+        }
+        if (action === 'paste') {
+            pasteClipboardTo(term);
+            return false;
+        }
+        return true;
     });
     // 页签命名仿 JetBrains：默认 shell 叫「本地」，重复时加 (2)/(3)；显式选择的 shell 用名字
     const baseName = opts.explicitShell ? (deps.TERM_SHELL_LABELS[usedShell] || usedShell) : '本地';
@@ -92,16 +237,24 @@ function attachTermSession(id, usedShell, opts = {}) {
     });
     document.getElementById('term-tabs').appendChild(tab);
     const session = {id, term, fit, host, tab, shell: usedShell, baseName,
-        defaultLabel: label.textContent, defaultTitle: label.title, customName: ''};
+        defaultLabel: label.textContent, defaultTitle: label.title, customName: '',
+        syncedCols: 0, syncedRows: 0, resizeTimer: null};
     // AI 来源标记（terminal 工具 open 传入发起会话 id）：term-exit 时 main.js 据此把
     // 「shell 已退出」投给 AI 会话信箱；用户自己开的终端没有该标记，退出不打扰会话。
     if (opts.aiSessionId) session.aiSessionId = opts.aiSessionId;
     deps.terminalUI.sessions.set(id, session);
+    flushPendingTermOut(id);
     deps.terminalUI.order.push(id);
+    // 终端区域右键菜单：复制选中 / 粘贴 / 清屏（挡掉 WebView2 默认菜单）
+    host.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        showTermAreaMenu(session, e.clientX, e.clientY);
+    });
     activateTermSession(id);
     setTimeout(() => {
         try {
-            fit.fit();
+            fitTerm(session);
             term.focus();
         } catch (e) {}
     }, 80);
@@ -116,6 +269,32 @@ function termDefaultRows() {
     return 24;
 }
 
+// xterm 行列与 ConPTY 同步：fit 之后如果行列变了，防抖调 TermResize 让 PTY 跟上。
+// 之前只 fit 不 resize：ConPTY 停在创建时的 80x24，shell 按 80 列输出/重绘、
+// xterm 按面板实际宽度渲染，错位与重绘残留就是这么来的。拖面板时 mousemove
+// 每步都 fit，防抖避免每步都发 TermResize。
+function syncTermSize(s) {
+    if (!s || !deps.backend.TermResize) return;
+    if (s.term.cols === s.syncedCols && s.term.rows === s.syncedRows) return;
+    if (s.resizeTimer) clearTimeout(s.resizeTimer);
+    s.resizeTimer = setTimeout(() => {
+        s.resizeTimer = null;
+        const cols = s.term.cols, rows = s.term.rows;
+        if (!deps.terminalUI.sessions.has(s.id) || (cols === s.syncedCols && rows === s.syncedRows)) return;
+        s.syncedCols = cols;
+        s.syncedRows = rows;
+        deps.backend.TermResize(s.id, cols, rows).catch(() => {}); // 尽力而为：PTY 已退出时 resize 失败无碍
+    }, 120);
+}
+
+// fit + 尺寸同步的统一入口（fit 在宿主隐藏时 measure 不到会抛错，照旧吞掉）
+function fitTerm(s) {
+    try {
+        s.fit.fit();
+    } catch (e) {}
+    syncTermSize(s);
+}
+
 function activateTermSession(id) {
     deps.terminalUI.activeId = id;
     for (const [sid, s] of deps.terminalUI.sessions) {
@@ -125,7 +304,7 @@ function activateTermSession(id) {
     const s = deps.terminalUI.sessions.get(id);
     if (s) {
         try {
-            s.fit.fit();
+            fitTerm(s);
             s.term.focus();
         } catch (e) {}
     }
@@ -133,11 +312,7 @@ function activateTermSession(id) {
 
 function fitActiveTerm() {
     const s = deps.terminalUI.sessions.get(deps.terminalUI.activeId);
-    if (s) {
-        try {
-            s.fit.fit();
-        } catch (e) {}
-    }
+    if (s) fitTerm(s);
 }
 
 async function closeTermSession(id) {
@@ -152,12 +327,14 @@ async function closeTermSession(id) {
 function removeTermSession(id) {
     const s = deps.terminalUI.sessions.get(id);
     if (s) {
+        if (s.resizeTimer) clearTimeout(s.resizeTimer);
         try {
             s.term.dispose();
         } catch (e) {}
         s.tab.remove();
         s.host.remove();
     }
+    pendingTermOut.delete(id);
     deps.terminalUI.sessions.delete(id);
     deps.terminalUI.order = deps.terminalUI.order.filter((x) => x !== id);
 }
@@ -224,12 +401,28 @@ async function showTermShellMenu() {
 }
 if (deps.els.termPanelClose) deps.els.termPanelClose.addEventListener('click', () => deps.toggleTerminalPanel(false));
 
+// 终端区域右键菜单：复制选中（无选中置灰）/ 粘贴 / 清屏
+function showTermAreaMenu(s, x, y) {
+    if (!deps.ctxMenu) return;
+    let hasSel = false;
+    try {
+        hasSel = s.term.hasSelection();
+    } catch (e) {}
+    deps.ctxMenu.open([
+        {label: '复制', icon: 'E8C8', shortcut: 'Ctrl+C', disabled: !hasSel,
+            action: () => { try { deps.copyText(s.term.getSelection(), '选中内容'); } catch (e) {} }},
+        {label: '粘贴', icon: 'E77F', shortcut: 'Ctrl+V', action: () => pasteClipboardTo(s.term)},
+        {sep: true},
+        {label: '清屏', icon: 'eraser', action: () => { try { s.term.clear(); s.term.focus(); } catch (e) {} }},
+    ], x, y);
+}
+
 // 终端标签页右键菜单（JetBrains 风格）：新建/重命名/清屏/关闭
 async function showTermTabMenu(id, x, y) {
     if (!deps.ctxMenu) return;
     const s = deps.terminalUI.sessions.get(id);
     if (!s) return;
-    const others = [...terminalUI.sessions.values()].filter((v) => v.id !== id);
+    const others = [...deps.terminalUI.sessions.values()].filter((v) => v.id !== id);
     let shells = [];
     try {
         shells = deps.backend.TermShells ? await deps.backend.TermShells() : [];
@@ -250,7 +443,7 @@ async function showTermTabMenu(id, x, y) {
         {sep: true},
         {label: '关闭', shortcut: 'Shift+点击', icon: 'E8BB', action: () => closeTermSession(id)},
         {label: '关闭其他标签页', disabled: !others.length, action: () => { for (const o of others) closeTermSession(o.id); }},
-        {label: '关闭所有标签页', action: () => { for (const o of [...terminalUI.sessions.values()]) closeTermSession(o.id); }},
+        {label: '关闭所有标签页', action: () => { for (const o of [...deps.terminalUI.sessions.values()]) closeTermSession(o.id); }},
     );
     deps.ctxMenu.open(items, x, y);
 }
@@ -318,5 +511,5 @@ function terminalHostApi() {
 
 return {activateTermSession, closeTermSession, createTermSession, fitActiveTerm, removeTermSession,
         renameTermSession, showTermShellMenu, showTermTabMenu, syncTerminalTheme, terminalHostApi,
-        termDefaultCols, termDefaultRows};
+        termDefaultCols, termDefaultRows, writeTermOut};
 }

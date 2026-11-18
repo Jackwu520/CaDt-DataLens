@@ -96,7 +96,7 @@ cmd   CR     : "Aecho B\r\n" ← 不分隔
 
 ## 六、流程问题
 
-1. **红队4 的事故是流程问题，不是模型问题**：`execSync('bash -c "find . -delete"')` 未传 `cwd`，在 full 档下递归删了整个仓库。已有 `docs/reports/incident-2026-11-18-workspace-wipe.md` 与 `docs/unfinished-plans/workspace-wipe-guard.md`。建议：红队探针一律在**仓库外**临时目录建，且默认 `read-only` 沙箱档。
+1. **红队4 的事故是流程问题，不是模型问题**：`execSync('bash -c "find . -delete"')` 未传 `cwd`，在 full 档下递归删了整个仓库。已有 `docs/reports/incident-2026-11-18-workspace-wipe.md` 与 `docs/finished-plans/workspace-wipe-guard.md`。建议：红队探针一律在**仓库外**临时目录建，且默认 `read-only` 沙箱档。
 2. **`.cadt/tmp/` 还留着 28 个探针脚本**（含元凶 `redteam-rt8.mjs`），以及本轮的 `rt-*.mjs`。建议整体移到 `docs/reports/` 附档或删除，但需你确认——我不动别人的文件。
 3. **修复写进报告、没写进代码**是本轮最大的效率损失：四个红队中有三个在重复发现同一批问题。建议立一条规矩——报告里的「修复」必须附 commit 号，否则只能写「建议」。
 

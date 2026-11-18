@@ -5,6 +5,49 @@
 // 工作区那个会话，面板直接恢复成别人的对话（再经 syncWorkspaceToSession 把工作区切回去）。
 // 判定放这里便于单测；绑定 / 切换 / 建空会话这些副作用留在 ai-panel。
 
+import {aiTextOf} from './ai-constants.js';
+
+// 与 Go 侧 normalizeWorkspacePath（internal/sessionstore/sessionstore.go）语义一致：
+// 反斜杠归一为正斜杠、叠斜杠与 . / .. 段清理、协议或盘符前缀保留。
+// 从 ai-panel.js 移出：ai-panel 35 处引用经 import 别名沿用原名，会话工作区归一
+// 的哈希向量测试两端各锁一遍（frontend/test/ai/ai-session-scope.test.mjs ↔
+// internal/sessionstore/sessionstore_test.go 的 TestWorkspaceBucketKeyVectors）。
+export function normalizePath(value) {
+    const raw = aiTextOf(value).replace(/\\/g, '/');
+    if (!raw) return '';
+    const scheme = raw.match(/^([a-z][a-z0-9+.-]*):\/\//i);
+    let prefix = '';
+    let rest = raw;
+    if (scheme) {
+        prefix = scheme[1] + '://';
+        rest = raw.slice(scheme[0].length);
+    } else {
+        const drive = raw.match(/^[A-Za-z]:/);
+        if (drive) {
+            prefix = drive[0];
+            rest = raw.slice(2);
+        }
+    }
+    const absolute = rest.startsWith('/');
+    const parts = [];
+    for (const segment of rest.split('/')) {
+        if (!segment || segment === '.') continue;
+        if (segment === '..') {
+            if (parts.length) parts.pop();
+            continue;
+        }
+        parts.push(segment);
+    }
+    return prefix + (absolute ? '/' : '') + parts.join('/');
+}
+
+// 会话工作区归一 key：去首尾空白 → 归一路径 → 去尾斜杠 → 小写（Windows 盘符大小写
+// 不敏感）。Go 侧分桶哈希 WorkspaceBucketKey 以同一语义的 key 为输入（trim 在 key 这层，
+// 不进 normalizePath——路径工具保持原语义）。
+export function workspaceKey(value) {
+    return normalizePath(aiTextOf(value).trim()).replace(/\/+$/, '').toLowerCase();
+}
+
 // 能成为「面板当前会话」的候选：未归档、非支线（支线有独立标签页承载）。
 function isCandidate(session) {
     if (!session || session.archivedAt) return false;

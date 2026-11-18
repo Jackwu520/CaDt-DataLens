@@ -3,11 +3,14 @@
 package sessionstore
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -19,7 +22,9 @@ import (
 )
 
 // AI 会话磁盘存储：每个会话一个目录，正文为追加式 JSONL，元数据为原子替换的 meta.json。
-// 布局：<appdata>/ai-sessions/<id>/{meta.json,session.v1.jsonl,images/,videos/}
+// 平铺布局（New）： <root>/<id>/{meta.json,session.v1.jsonl,images/,videos/}
+// 分桶布局（NewBucketed）：工作区短哈希作父目录——<root>/<ws8>/<id>/...，
+// 桶名规则见 WorkspaceBucketKey；aigroups 复用同一引擎按 groupId 平铺，桶化必须 opt-in。
 const (
 	SessionsDirName    = "ai-sessions"
 	aiSessionMetaName  = "meta.json"
@@ -33,6 +38,11 @@ const (
 	aiSessionIDMax     = 128
 	aiSessionImageMax  = 120
 	aiSessionVideoMax  = 40
+
+	// 无工作区会话的桶名（_ 开头与 8 hex 哈希桶名天然区分）。
+	UnboundBucketName = "_unbound"
+	// 桶内说明文件：记录该桶对应的工作区路径（哈希目录名在资源管理器里不可读）。
+	bucketInfoName = "ws.json"
 
 	// 锁文件放在被保护目录之外：会话目录被删除/移走时锁仍然有效。
 	sessionLockDirName = ".locks"
@@ -51,6 +61,8 @@ var ErrSessionGone = errors.New("session-gone: 会话已被删除")
 type Store struct {
 	Root     string
 	DeleteFn func(string) error
+	// bucketed=true 时会话目录按工作区短哈希分桶（仅 ai-sessions 用；aigroups 保持平铺）。
+	bucketed bool
 }
 
 // 同进程内所有 App 方法各建一个 store，追加互斥必须是包级的。
@@ -58,6 +70,82 @@ var appendMu sync.Mutex
 
 func New(root string) *Store {
 	return &Store{Root: root, DeleteFn: recycle.Move}
+}
+
+// NewBucketed 启用工作区分桶布局：<root>/<ws8>/<id>/。桶归属以 meta.workspace 为
+// 真源，桶名只是磁盘布局；查找按 id 扫桶（桶数 = 工作区数，个位/十位）。
+func NewBucketed(root string) *Store {
+	return &Store{Root: root, DeleteFn: recycle.Move, bucketed: true}
+}
+
+// 工作区路径归一的两条正则，语义与前端 aiNormalizePath（ai-panel.js）对齐。
+var (
+	wsSchemeRe = regexp.MustCompile(`(?i)^([a-z][a-z0-9+.-]*)://`)
+	wsDriveRe  = regexp.MustCompile(`^[A-Za-z]:`)
+)
+
+// normalizeWorkspacePath 与前端 aiNormalizePath 语义一致：反斜杠归一为正斜杠、
+// 叠斜杠与 . / .. 段清理、协议或盘符前缀保留、去首段绝对斜杠标记。
+func normalizeWorkspacePath(value string) string {
+	raw := strings.ReplaceAll(strings.TrimSpace(value), "\\", "/")
+	if raw == "" {
+		return ""
+	}
+	prefix := ""
+	rest := raw
+	if m := wsSchemeRe.FindStringSubmatch(raw); m != nil {
+		prefix = m[1] + "://"
+		rest = raw[len(m[0]):]
+	} else if m := wsDriveRe.FindString(raw); m != "" {
+		prefix = m
+		rest = raw[len(m):]
+	}
+	absolute := strings.HasPrefix(rest, "/")
+	parts := make([]string, 0, 8)
+	for _, seg := range strings.Split(rest, "/") {
+		switch {
+		case seg == "" || seg == ".":
+		case seg == "..":
+			if len(parts) > 0 {
+				parts = parts[:len(parts)-1]
+			}
+		default:
+			parts = append(parts, seg)
+		}
+	}
+	joined := strings.Join(parts, "/")
+	if absolute {
+		joined = "/" + joined
+	}
+	return prefix + joined
+}
+
+// WorkspaceBucketKey 把工作区路径映射成桶名：归一化 key（与前端 aiWorkspaceKey 一致：
+// 去首尾空白 → 归一路径 → 去尾斜杠 → 小写）的 sha256 前 8 hex；无工作区落 _unbound。
+// 8 hex 的碰撞后果仅是磁盘混桶（meta.workspace 仍为归属真源），桌面工作区量级下接受。
+func WorkspaceBucketKey(workspace string) string {
+	key := strings.ToLower(strings.TrimRight(normalizeWorkspacePath(strings.TrimSpace(workspace)), "/"))
+	if key == "" {
+		return UnboundBucketName
+	}
+	sum := sha256.Sum256([]byte(key))
+	return hex.EncodeToString(sum[:4])
+}
+
+// isBucketDirName 桶目录名：8 hex 短哈希或 _unbound。List/查找据此区分桶与杂物。
+func isBucketDirName(name string) bool {
+	if name == UnboundBucketName {
+		return true
+	}
+	if len(name) != 8 {
+		return false
+	}
+	for _, ch := range name {
+		if !(ch >= '0' && ch <= '9' || ch >= 'a' && ch <= 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // AppDataDir 宿主注入：应用数据根目录（main/appdata.go 的 appDataRoot）。
@@ -71,7 +159,7 @@ func Default() (*Store, error) {
 	if base == "" {
 		return nil, errors.New("无法定位应用数据目录")
 	}
-	return New(filepath.Join(base, SessionsDirName)), nil
+	return NewBucketed(filepath.Join(base, SessionsDirName)), nil
 }
 
 // ValidSessionID 限制会话 id 可安全拼进路径：不含分隔符、不以点开头、不是 . / ..。
@@ -120,7 +208,102 @@ func (s *Store) sessionDir(id string) (string, error) {
 	if s.Root == "" {
 		return "", errors.New("会话存储目录为空")
 	}
-	return filepath.Join(s.Root, id), nil
+	if !s.bucketed {
+		return filepath.Join(s.Root, id), nil
+	}
+	return s.resolveBucketedDir(id)
+}
+
+// BodyPath 返回会话正文 JSONL 的磁盘绝对路径（诊断 / 前端「复制会话路径」用）。
+// 只读解析：桶化模式按 id 扫桶定位现存目录，平铺模式补一次存在性检查；
+// 找不到一律 ErrSessionGone，绝不创建目录复活已删除会话。
+func (s *Store) BodyPath(id string) (string, error) {
+	dir, err := s.sessionDir(id)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", fmt.Errorf("%w：%s", ErrSessionGone, id)
+		}
+		return "", err
+	}
+	if !s.bucketed {
+		if info, statErr := os.Stat(dir); statErr != nil || !info.IsDir() {
+			return "", fmt.Errorf("%w：%s", ErrSessionGone, id)
+		}
+	}
+	return filepath.Join(dir, aiSessionLogName), nil
+}
+
+// resolveBucketedDir 桶化模式下按 id 扫桶定位会话目录。桶数 = 工作区数（个位/十位），
+// 每桶一次 Stat，代价可忽略；找不到返回 os.ErrNotExist，由调用方决定语义。
+func (s *Store) resolveBucketedDir(id string) (string, error) {
+	entries, err := os.ReadDir(s.Root)
+	if err != nil {
+		return "", err
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() || !isBucketDirName(entry.Name()) {
+			continue
+		}
+		candidate := filepath.Join(s.Root, entry.Name(), id)
+		if info, statErr := os.Stat(candidate); statErr == nil && info.IsDir() {
+			return candidate, nil
+		}
+	}
+	return "", os.ErrNotExist
+}
+
+// ensureBucketDir 取工作区对应的桶目录，必要时创建并写 ws.json 说明文件。
+func (s *Store) ensureBucketDir(workspace string) (string, error) {
+	name := WorkspaceBucketKey(workspace)
+	dir := filepath.Join(s.Root, name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", fmt.Errorf("创建会话桶目录失败：%w", err)
+	}
+	// ws.json 是桶的说明文件（资源管理器可读、迁移核对用），尽力而为：
+	// 写失败不影响会话落位，忽略该错误。
+	if trimmed := strings.TrimSpace(workspace); trimmed != "" {
+		if raw, err := json.Marshal(map[string]string{"workspace": trimmed}); err == nil {
+			_ = atomfile.WriteFileAtomic(filepath.Join(dir, bucketInfoName), raw)
+		}
+	}
+	return dir, nil
+}
+
+// lockSessionDir 在根共享 + 会话独占租约之下解析会话目录：
+//   - 桶化模式先扫桶找现存目录（已在的目录永远赢，附件先落盘/重建兜底都靠它）；
+//   - allowCreate 且找不到时按 workspace 派生桶落位（新会话）；
+//   - 非创建路径找不到一律 ErrSessionGone，绝不 MkdirAll 复活已删除会话。
+func (s *Store) lockSessionDir(id, workspace string, allowCreate bool) (string, error) {
+	if !s.bucketed {
+		dir := filepath.Join(s.Root, id)
+		if allowCreate {
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				return "", fmt.Errorf("创建会话目录失败：%w", err)
+			}
+			return dir, nil
+		}
+		if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+			return "", fmt.Errorf("%w：%s", ErrSessionGone, id)
+		}
+		return dir, nil
+	}
+	if dir, err := s.resolveBucketedDir(id); err == nil {
+		return dir, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	if !allowCreate {
+		return "", fmt.Errorf("%w：%s", ErrSessionGone, id)
+	}
+	bucket, err := s.ensureBucketDir(workspace)
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(bucket, id)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", fmt.Errorf("创建会话目录失败：%w", err)
+	}
+	return dir, nil
 }
 
 func (s *Store) ensureSessionDir(id string) (string, error) {
@@ -177,12 +360,13 @@ func wrapLeaseErr(err error) error {
 // withSessionLock 按固定层级取锁：根共享 -> 会话独占 -> .session.lock。
 //
 // 读取不加锁；只有追加/整份重写/写 meta/图片视频落盘这类写操作需要。
-// allowCreate=true 只给“新建会话首次落 header”用；其它写路径在目录/墓碑缺失时
-// 一律返回 ErrSessionGone，避免另一窗口的扇出写把已删除会话复活。
-func (s *Store) withSessionLock(id string, allowCreate bool, fn func(dir string) error) error {
-	dir, err := s.sessionDir(id)
-	if err != nil {
-		return err
+// workspace 只在桶化 + allowCreate 且目录尚不存在时用于派生桶（新会话落位）；
+// 现存目录永远按 id 扫桶定位，workspace 不参与。allowCreate=true 只给“新建会话
+// 首次落 header”与附件先落盘用；其它写路径在目录/墓碑缺失时一律返回 ErrSessionGone，
+// 避免另一窗口的扇出写把已删除会话复活。
+func (s *Store) withSessionLock(id, workspace string, allowCreate bool, fn func(dir string) error) error {
+	if !ValidSessionID(id) {
+		return fmt.Errorf("非法会话 id：%q", id)
 	}
 	if err := s.EnsureRoot(); err != nil {
 		return err
@@ -207,12 +391,9 @@ func (s *Store) withSessionLock(id string, allowCreate bool, fn func(dir string)
 	if s.gone(id) {
 		return fmt.Errorf("%w：%s", ErrSessionGone, id)
 	}
-	if allowCreate {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return fmt.Errorf("创建会话目录失败：%w", err)
-		}
-	} else if info, statErr := os.Stat(dir); statErr != nil || !info.IsDir() {
-		return fmt.Errorf("%w：%s", ErrSessionGone, id)
+	dir, err := s.lockSessionDir(id, workspace, allowCreate)
+	if err != nil {
+		return err
 	}
 	lock, err := sessionlock.LockFile(filepath.Join(dir, aiSessionLockName), aiSessionLockWait)
 	if err != nil {
@@ -313,26 +494,61 @@ func (s *Store) List() ([]string, error) {
 	if err := s.EnsureRoot(); err != nil {
 		return nil, err
 	}
-	entries, err := os.ReadDir(s.Root)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]string, 0, len(entries))
-	for _, entry := range entries {
-		if !entry.IsDir() || !ValidSessionID(entry.Name()) {
-			continue
+	if !s.bucketed {
+		entries, err := os.ReadDir(s.Root)
+		if err != nil {
+			return nil, err
 		}
-		raw, err := os.ReadFile(filepath.Join(s.Root, entry.Name(), aiSessionMetaName))
-		if err != nil || len(raw) == 0 || len(raw) > aiSessionMetaLimit || !json.Valid(raw) {
-			// meta 丢失/损坏时用正文首行 header 兜底，避免整段会话从列表里消失。
-			raw = synthesizeMetaFromHeader(filepath.Join(s.Root, entry.Name(), aiSessionLogName), entry.Name())
+		out := make([]string, 0, len(entries))
+		for _, entry := range entries {
+			if !entry.IsDir() || !ValidSessionID(entry.Name()) {
+				continue
+			}
+			raw := s.sessionMetaRaw(filepath.Join(s.Root, entry.Name()), entry.Name())
 			if len(raw) == 0 {
 				continue
 			}
+			out = append(out, string(raw))
 		}
-		out = append(out, string(raw))
+		return out, nil
+	}
+	// 桶化布局：根层是工作区桶（8 hex / _unbound），会话目录在桶内一层。
+	buckets, err := os.ReadDir(s.Root)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, 64)
+	for _, bucket := range buckets {
+		if !bucket.IsDir() || !isBucketDirName(bucket.Name()) {
+			continue
+		}
+		sessions, err := os.ReadDir(filepath.Join(s.Root, bucket.Name()))
+		if err != nil {
+			// 桶层读取失败只跳过该桶（另一窗口正在建/删桶的竞态），不拖垮整个列表。
+			continue
+		}
+		for _, entry := range sessions {
+			if !entry.IsDir() || !ValidSessionID(entry.Name()) {
+				continue
+			}
+			raw := s.sessionMetaRaw(filepath.Join(s.Root, bucket.Name(), entry.Name()), entry.Name())
+			if len(raw) == 0 {
+				continue
+			}
+			out = append(out, string(raw))
+		}
 	}
 	return out, nil
+}
+
+// sessionMetaRaw 读单个会话目录的 meta.json；meta 丢失/损坏时用正文首行 header 兜底，
+// 避免整段会话从列表里消失。两者都拿不到时返回 nil。
+func (s *Store) sessionMetaRaw(dir, id string) []byte {
+	raw, err := os.ReadFile(filepath.Join(dir, aiSessionMetaName))
+	if err != nil || len(raw) == 0 || len(raw) > aiSessionMetaLimit || !json.Valid(raw) {
+		raw = synthesizeMetaFromHeader(filepath.Join(dir, aiSessionLogName), id)
+	}
+	return raw
 }
 
 // synthesizeMetaFromHeader 从正文首行 header 重建最小 meta（用于 meta 丢失/损坏的会话）。
@@ -417,7 +633,13 @@ func (s *Store) AppendWithCreate(id string, payload string, allowCreate bool) er
 	if !strings.HasSuffix(payload, "\n") {
 		payload += "\n"
 	}
-	return s.withSessionLock(id, allowCreate, func(dir string) error {
+	// 新会话首次落盘的载荷以 header 开头（ai-session-disk.js 的 ensureHeaderEvent
+	// / runPersistSession 保证），桶归属从 header.workspace 解析；解析不出按无工作区落 _unbound。
+	workspace := ""
+	if s.bucketed && allowCreate {
+		workspace = workspaceFromHeader(payload)
+	}
+	return s.withSessionLock(id, workspace, allowCreate, func(dir string) error {
 		path := filepath.Join(dir, aiSessionLogName)
 		appendMu.Lock()
 		defer appendMu.Unlock()
@@ -451,15 +673,32 @@ func (s *Store) AppendWithCreate(id string, payload string, allowCreate bool) er
 	})
 }
 
+// workspaceFromHeader 取追加载荷首行 header 里的 workspace；首行不是 header 时给空
+//（落 _unbound，只在载荷异常时发生，不丢数据）。
+func workspaceFromHeader(payload string) string {
+	line := payload
+	if i := strings.IndexByte(line, '\n'); i >= 0 {
+		line = line[:i]
+	}
+	var header struct {
+		T         string `json:"t"`
+		Workspace string `json:"workspace"`
+	}
+	if json.Unmarshal([]byte(line), &header) != nil || header.T != "header" {
+		return ""
+	}
+	return header.Workspace
+}
+
 // rewrite 原子替换整个正文（迁移、清空、状态与日志不一致时的兜底）。
 func (s *Store) Rewrite(id string, payload string) error {
-	return s.withSessionLock(id, false, func(dir string) error {
+	return s.withSessionLock(id, "", false, func(dir string) error {
 		return atomfile.WriteFileAtomic(filepath.Join(dir, aiSessionLogName), []byte(payload))
 	})
 }
 
 func (s *Store) WriteMeta(id string, payload string) error {
-	return s.withSessionLock(id, false, func(dir string) error {
+	return s.withSessionLock(id, "", false, func(dir string) error {
 		return atomfile.WriteFileAtomic(filepath.Join(dir, aiSessionMetaName), []byte(payload))
 	})
 }
@@ -497,6 +736,10 @@ func LockRootForClear() (func(), error) {
 func (s *Store) Remove(id string) error {
 	dir, err := s.sessionDir(id)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			// 桶化扫桶未命中：目录已经不在，仍然写墓碑，防止扇出写把它重建出来。
+			return s.markGone(id)
+		}
 		return err
 	}
 	info, err := os.Stat(dir)

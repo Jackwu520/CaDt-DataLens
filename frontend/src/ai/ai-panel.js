@@ -13,9 +13,10 @@ import {
 } from './ai-mascot-phrases.js';
 import {createModelCatalogStore} from './model-catalog.js';
 import {replaySessionLog, isSilentInjection, isTurnBoundaryMessage, sessionActivityTs} from './ai-session-store.js';
-import {decideSessionForWorkspace} from './ai-session-scope.js';
+import {decideSessionForWorkspace, normalizePath as aiNormalizePath, workspaceKey as aiWorkspaceKey} from './ai-session-scope.js';
 import {formatSessionSearchResult, sessionLogDigest} from './ai-session-tools.js';
-import {formatTerminalList, formatTerminalRead, formatWaitDuration, terminalSendLabel} from './ai-terminal-tools.js';
+import {pruneToolResult, recentTurnStart, slimBreakdownParts} from './ai-context-slim.js';
+import {formatTerminalList, formatTerminalRead, formatWaitDuration, friendlyRetryReason, terminalSendLabel} from './ai-terminal-tools.js';
 import {
     globMatchPath,
     humanSizeBytes,
@@ -30,6 +31,11 @@ import {
 } from './ai-search-advanced.js';
 import {redactScopePaths} from './ai-scope-redact.js';
 import {createLoopGuard} from './ai-loop-guard.js';
+import {
+    turnProcessDefaultExpanded,
+    processThinkingDefaultCollapsed,
+    shouldEnsureBody,
+} from './ai-always-collapse.js';
 import {createSystemTakeoverHost} from './ai-system-takeover.js';
 import {buildNotifyActivationPayload, desktopNotifyTargets} from './ai-notify-policy.js';
 import {prepareImagePayload} from './ai-image-encode.js';
@@ -63,6 +69,7 @@ import {
     commandText,
     gitFlowSafeCommand,
     matchCommandRule,
+    normalizePlanDeclaredCommands,
     shellScriptPolicy,
 } from './ai-command-rules.js';
 import {
@@ -215,6 +222,7 @@ import {
     aiMsgActionsStepMode,
     aiSafeFileStem,
     AI_CTX_SEND_BLOCK_RATIO,
+    aiIsContextOverflowError,
 } from './ai-constants.js';
 import {recordRead, recordWrite, checkWriteFresh} from './ai-write-guard.js';
 import {createAIToolDefs} from './ai-tool-defs.js';
@@ -258,7 +266,7 @@ import {createAIAgentNotices, buildBgJobExitNotice, buildTerminalExitNotice} fro
 import {createAISidechat} from './ai-sidechat.js';
 import {forkMessages, forkSettings} from './ai-session-fork.js';
 import {createAISessionSend} from './ai-session-send.js';
-import {compactTranscriptOf, computeCompactCutoff, buildCompactSummary, applyCompactToSession, buildCompactMessages, compactThresholdOf, COMPACT_KEEP_TAIL} from './ai-compact.js';
+import {compactTranscriptOf, computeCompactCutoff, computeCompactCutoffByBudget, compactRetainBudget, buildCompactSummary, applyCompactToSession, buildCompactMessages, compactThresholdOf, COMPACT_KEEP_TAIL} from './ai-compact.js';
 import {createAIMcp} from './ai-mcp.js';
 import {mcpConfigView, mcpServerCommandPreview, mergeMcpServerConfig, planMcpServerDelete} from './ai-mcp-config.js';
 import {createAIMcpSettings} from './ai-mcp-settings.js';
@@ -274,6 +282,12 @@ export function createAIPanel(options) {
     const overlayParent = opts.overlayParent;
     const backend = opts.backend || {};
     const settings = opts.settings || {};
+    // 工作区破坏防护控制器（main.js 创建传入，见 ai-wipeguard.js）：写前备份 / 指纹兜底 /
+    // 熔断判定。备份与检测都尽力而为，任何失败只进调试日志，不阻断工具执行。
+    const wipeguardRef = () => opts.wipeguard || null;
+    // AI 活跃度（critical 是否停会话用）：在途工具数 + 最近活动时间戳
+    let wipeguardBusyTools = 0;
+    let wipeguardLastToolAt = 0;
     const saveSettings = typeof opts.saveSettings === 'function' ? opts.saveSettings : () => {};
     // 模型配置表（内置快照 + 远端缓存）：同步、过期判断、合并全在 model-catalog.js，
     // 这里只持有实例，设置页与模型编辑器都经 ctx 拿它。
@@ -304,6 +318,8 @@ export function createAIPanel(options) {
     // 面板状态（开合 / 显示方式 / 消息流）变化的宿主通知：结构面板据此决定
     // 「文件结构 / 会话结构」的可见性与内容
     const onPanelStateChange = typeof opts.onPanelStateChange === 'function' ? opts.onPanelStateChange : null;
+    // 活动栏「AI 会话」图标状态点的宿主回调：会话列表域算好后推送，宿主据此切换点的颜色
+    const onSessionBadgeChange = typeof opts.onSessionBadgeChange === 'function' ? opts.onSessionBadgeChange : () => {};
     // 会话回合开始 / 结束的宿主通知（attachStream / detachStream 处触发，零延迟）。
     // 宿主据此做布局让位（编辑区自动收起）。isCurrent 表示这个回合是否属于用户正在查看的
     // 会话——后台会话在跑不该改变当前布局，由宿主自行决定是否理会。
@@ -469,6 +485,7 @@ export function createAIPanel(options) {
         ctxTokTools: panel.querySelector('#ai-ctx-tok-tools'),
         ctxTokMessages: panel.querySelector('#ai-ctx-tok-messages'),
         ctxTokSaved: panel.querySelector('#ai-ctx-tok-saved'),
+        ctxSavedTip: panel.querySelector('#ai-ctx-saved-tip'),
         ctxPopCompact: panel.querySelector('#ai-ctx-pop-compact'),
     };
     if (el.gitBtn) el.gitBtn.innerHTML = iconSvg('git', 14);
@@ -562,6 +579,7 @@ export function createAIPanel(options) {
         chatFontCjk: document.getElementById('ai-opt-chatfont-cjk'),
         chatFontCode: document.getElementById('ai-opt-chatfont-code'),
         showThinking: document.getElementById('ai-opt-show-thinking'),
+        alwaysCollapse: document.getElementById('ai-opt-always-collapse'),
         showUsage: document.getElementById('ai-opt-show-usage'),
         msgActions: document.getElementById('ai-opt-msg-actions'),
         turnMetaAll: document.getElementById('ai-opt-turn-meta-all'),
@@ -772,6 +790,9 @@ export function createAIPanel(options) {
     let archiveOverflowAt = 0;
     let autoCompactCount = new Map();
     let autoCompactWarnedAt = 0;
+    // 上下文溢出恢复计数（sessionId → {count, at}）：60s 窗口内最多自动恢复 2 次，
+    // 防止「压缩后仍然超窗」时反复压缩-重试把请求预算烧光。
+    let overflowRecoveryCount = new Map();
 
     // ---------- 配置与会话持久化 ----------
 
@@ -1481,6 +1502,9 @@ export function createAIPanel(options) {
             // 插话（steer）标记：随 JSONL 落盘，重放 / 懒加载补正文后仍要保留——
             // 否则重启后历史 steer 不再包 user_steer 模板，轮次口径也会失真。
             if (raw.steer === true) message.steer = true;
+            // 信箱折叠注入标记：与 steer 同理随 JSONL 保留——瘦身轮次口径靠它
+            // 识别「不是用户发起的轮」（app 标记虽也在，notice 语义更精确）。
+            if (raw.notice === true) message.notice = true;
             // 历史会话没有 silent 字段：按内容识别机械提醒注入块并回填，旧数据同样隐藏
             message.silent = raw.silent === true || isSilentInjection(message.content);
             message.dedupeKey = aiTextOf(raw.dedupeKey).slice(0, 40);
@@ -2610,6 +2634,15 @@ export function createAIPanel(options) {
         return effectiveContextWindow((entry && entry.contextWindow) || 128000, target && target.ctxLimit);
     }
 
+    // 压缩保留预算的「输出预留」：与 dsh 的 reservedCompletionTokens 同义（模型条目的
+    // 输出窗口，缺省用全局 maxTokens）。保留预算 = (窗口 − 预留) × 16%。
+    function outputReserveOf(session) {
+        const entry = entryOf(session === undefined ? currentSession() : session);
+        const entryOutput = Number(entry && entry.outputWindow) || 0;
+        if (entryOutput > 0) return entryOutput;
+        return Number(config.maxTokens) || 0;
+    }
+
     // 把选择固定到会话上（发送时 / 手动切换模型时）。
     function pinSessionModel(session, profile, entry) {
         if (!session) return;
@@ -2974,6 +3007,7 @@ export function createAIPanel(options) {
         pendingNoticeCount: (...args) => noticesMod.pendingCount(...args),
         // 后台轮次的停止入口（§4.14.2）：streams 按会话隔离，停谁都不用切视图
         flash,
+        copyText,
         stopSessionTurn: (sessionId) => {
             const target = streamOf(sessionId);
             if (target) stopGeneration(target);
@@ -3010,6 +3044,7 @@ export function createAIPanel(options) {
         showContextMenu,
         getSessions: () => sessions,
         setStickBottom: (value) => { stickBottom = value; },
+        onBadgeChange: (...args) => onSessionBadgeChange(...args),
     });
     const renderProfileSelect = () => sessionListMod.renderProfileSelect();
     const sessionActivity = (...args) => sessionListMod.sessionActivity(...args);
@@ -4103,7 +4138,11 @@ export function createAIPanel(options) {
     function aiThinkLabel(message, streaming) {
         const guard = loopGuardLabel(message);
         const suffix = guard ? ' · ' + guard : '';
-        if (streaming) return '正在思考…' + suffix;
+        if (streaming) {
+            // 还没收到任何思考 token 时别谎报「正在思考」：此时请求可能正卡在限流重试 /
+            // 本地排队（429 冻结可达数小时），诚实说「等待模型响应」。
+            return (message && message.reasoning ? '正在思考…' : '等待模型响应…') + suffix;
+        }
         const chars = String(message && message.reasoning || '').length;
         const ms = Number(message && message.thinkMs) || 0;
         const time = ms > 0 ? (ms < 1000 ? '<1 秒' : Math.max(1, Math.round(ms / 1000)) + ' 秒') : '';
@@ -4293,7 +4332,13 @@ export function createAIPanel(options) {
         think.className = 'ai-think';
         const key = aiThinkKey(message, index);
         think.dataset.thinkKey = key;
-        if (thinkFoldState.get(key) === true) think.classList.add('collapsed');
+        // 手动记忆优先（含 false=用户手动展开），与回答气泡内思考块同构；
+        // 只有没手动碰过时才用始终折叠的默认值。
+        const storedThink = thinkFoldState.get(key);
+        const collapsed = storedThink !== undefined
+            ? storedThink
+            : processThinkingDefaultCollapsed(settings.aiAlwaysCollapse === true);
+        if (collapsed) think.classList.add('collapsed');
         const head = document.createElement('button');
         head.type = 'button';
         head.className = 'ai-think-head';
@@ -4419,9 +4464,10 @@ export function createAIPanel(options) {
                 processFoldTouched.delete(key);
                 processFoldState.delete(key);
             }
-            const expanded = turnRunning
-                ? (processFoldState.has(key) ? processFoldState.get(key) : true)
-                : (processFoldState.has(key) ? processFoldState.get(key) : !finalHasBody);
+            const stored = processFoldState.has(key) ? processFoldState.get(key) : undefined;
+            const expanded = stored !== undefined
+                ? stored
+                : turnProcessDefaultExpanded(turnRunning, finalHasBody, settings.aiAlwaysCollapse === true);
             fold.classList.toggle('collapsed', !expanded);
             let body = null;
             const ensureBody = () => {
@@ -4470,7 +4516,9 @@ export function createAIPanel(options) {
                 });
                 fold.appendChild(head);
             }
-            if (expanded && hasBody) ensureBody();
+            // 始终折叠 + 流式：即使默认收起也预建 body，增量更新才找得到节点，
+            // 用户中途点开折叠头看到的是当前内容而非空白/旧签名（R1 护栏）。
+            if (hasBody && shouldEnsureBody(expanded, turnRunning, settings.aiAlwaysCollapse === true)) ensureBody();
             host.appendChild(fold);
         });
         if (finalItem) {
@@ -4690,7 +4738,8 @@ export function createAIPanel(options) {
         }
     }
 
-    // 对话内模型切换记录：分隔线 + 文案 + 信息图标（悬停看账号 / 推理等级 / 时间）。
+    // 对话内模型切换记录：分隔线 + 文案 + 信息图标（悬停看账号 / 推理等级 / 切换时间，
+    // 走全局 tooltip 的 data-tip 通道；之前只挂了 aria-label，图标是个摆设）。
     function renderModelSwitchNote(wrap, message) {
         const note = message.modelNote && typeof message.modelNote === 'object' ? message.modelNote : {};
         const row = document.createElement('div');
@@ -4702,6 +4751,15 @@ export function createAIPanel(options) {
         info.className = 'ai-model-switch-info';
         info.innerHTML = iconSvg('info', 12);
         info.setAttribute('aria-label', '模型切换信息');
+        const tipLines = [];
+        if (note.account) tipLines.push('账号：' + note.account);
+        if (note.effort) tipLines.push('推理等级：' + note.effort);
+        if (message.ts) {
+            const at = new Date(Number(message.ts) || 0);
+            const pad = (n) => String(n).padStart(2, '0');
+            tipLines.push('切换时间：' + pad(at.getHours()) + ':' + pad(at.getMinutes()));
+        }
+        if (tipLines.length) info.dataset.tip = tipLines.join('\n');
         row.append(text, info);
         wrap.appendChild(row);
     }
@@ -4728,6 +4786,9 @@ export function createAIPanel(options) {
         // silent 机械提醒（给模型的注入块）：保留 DOM 与索引（buildApiMessages / 定位都用），
         // 视觉隐藏——用户不需要看模型上下文的内部维护信息
         if (message.silent) wrap.classList.add('msg-silent');
+        // 系统注记（轮次提醒 / 待办检查等 user 注入）同理藏视觉：只留在数据层参与请求
+        // 与回合切分。模型切换留痕（kind=model-switch）是给用户看的分隔线，例外保留。
+        if (message.systemNote && message.kind !== 'model-switch') wrap.classList.add('msg-silent');
         // 归档回看：索引指向的是「当前 messages」，直接复用会让复制/编辑重发/重新生成
         // 打到错误的条目。标记只读并清掉索引，appendActions 会据此跳过全部操作按钮。
         const archivedView = !!(options && options.archived);
@@ -4743,7 +4804,8 @@ export function createAIPanel(options) {
             return wrap;
         }
         if (message.role === 'tool') {
-            renderToolMessage(wrap, message, options);
+            // 带上这张卡所属的会话：支线标签页渲染时 card 内动作（查看计划）不能落到面板会话
+            renderToolMessage(wrap, message, options, session);
         } else if (message.role === 'assistant') {
             if (message.status === 'error') wrap.classList.add('error');
             if (message.status === 'streaming') wrap.classList.add('streaming');
@@ -4768,7 +4830,7 @@ export function createAIPanel(options) {
             md.className = 'ai-md';
             bubble.appendChild(md);
             wrap.appendChild(bubble);
-            updateAssistantElement(wrap, message, message.status === 'streaming', options);
+            updateAssistantElement(wrap, message, message.status === 'streaming', Object.assign({}, options, {session}));
         } else if (message.kind === 'model-switch') {
             wrap.classList.add('model-switch');
             renderModelSwitchNote(wrap, message);
@@ -4776,7 +4838,7 @@ export function createAIPanel(options) {
             renderAppMessage(wrap, message, index, session);
         } else {
             const bubble = document.createElement('div');
-            bubble.className = 'ai-user-bubble' + (message.systemNote ? ' system-note' : '');
+            bubble.className = 'ai-user-bubble';
             appendUserImages(bubble, message.images);
             appendUserVideos(bubble, message.videos);
             // 环境块（<system-reminder>）是宿主注入的每轮状态，不展示；引用块拆出来单独渲染。
@@ -5371,12 +5433,17 @@ export function createAIPanel(options) {
 
     // ---------- 上下文估算 ----------
 
-    // 最近一次 buildApiMessages 的实时瘦身省略量（token 估算，统计浮层展示用）。
+    // 最近一次 buildApiMessages 的实时瘦身省略量（token 估算，分类记账，统计浮层展示用）。
     // 每次组装重置——浮层打开时自己会组装一遍，读到的就是当前会话的新鲜值。
-    let lastBuildSavedTokens = 0;
+    let lastBuildSavedTokens = null;
+    // 最近一次 buildApiMessages 产出的「实测 usage 锚点」：最后一条带 usage 的 assistant
+    // 在发送数组里的下标 + 它的用量。上下文占用 = 实测值 + 其后的增量估算（六份参照
+    // harness 同口径），纯字符估算独自用会系统性偏低。
+    let lastBuildAnchor = null;
 
     function buildApiMessages(session, endIndex, systemText) {
         const messages = [{role: 'system', content: systemText || AI_DEFAULT_SYSTEM_PROMPT}];
+        lastBuildAnchor = null;
         if (!session) return messages;
         if (session.summary && aiTextOf(session.summary.text).trim()) {
             messages.push({
@@ -5403,24 +5470,11 @@ export function createAIPanel(options) {
         let pendingCalls = new Set();
         // —— 实时瘦身（组装视角剔除，会话历史原样保留）——
         // 总开关 settings.aiContextSlim（默认开，dsh 同款思路：清理是部署策略恒开）。
-        // 轮起点 = 用户消息（非 systemNote）；保留最近 2 轮原文，更早的算「过时区」。
+        // 轮次口径在 ai-context-slim.js：只有用户亲手键入的消息算一轮，注入类
+        // （systemNote / steer / notice / app 自动附图与后台唤醒）不推保留窗口。
         const slim = settings.aiContextSlim !== false;
-        let recentStart = slim ? 0 : -1; // -1 = 全部视为「当轮」，各剔除点自然全跳过
-        let userTurnsSeen = 0;
-        let savedTokens = 0; // 本次组装剔除的 token（旧思考 / stub 工具结果 / 过期注入）
-        if (slim) {
-            for (let i = limit - 1; i >= 0; i--) {
-                const m = session.messages[i];
-                // 插话（steer）是本轮补充指示，不算新的一轮：否则「保留最近 2 轮原文」会被它挤掉。
-                if (m && m.role === 'user' && !m.systemNote && !m.steer) {
-                    userTurnsSeen += 1;
-                    if (userTurnsSeen === 3) {
-                        recentStart = i + 1;
-                        break;
-                    }
-                }
-            }
-        }
+        const recentStart = slim ? recentTurnStart(session.messages, limit) : -1; // -1 = 全部视为「当轮」，各剔除点自然全跳过
+        let savedTokens = {reasoning: 0, transient: 0, notes: 0, toolPrune: 0}; // 本次组装剔除的 token，分类记账
         for (let i = 0; i < limit; i++) {
             const message = session.messages[i];
             if (!message) continue;
@@ -5431,13 +5485,13 @@ export function createAIPanel(options) {
             // 瞬态注入块的旧条目：只发最新一条（见 lastTransient）。瘦身关闭时仍去重——
             // 同内容多份纯冗余，与「是否清理上下文」是两回事
             if (message.dedupeKey && lastTransient.get(message.dedupeKey) !== i) {
-                savedTokens += aiEstimateTokens(aiTextOf(message.content));
+                savedTokens.transient += aiEstimateTokens(aiTextOf(message.content));
                 continue;
             }
             // 轮次提醒注记（如「工具调用轮次已达 N」）：只在产生时随下一请求有效，
             // 之后是纯噪音，历史里不再发
             if (slim && message.systemNote && !message.dedupeKey) {
-                savedTokens += aiEstimateTokens(aiTextOf(message.content));
+                savedTokens.notes += aiEstimateTokens(aiTextOf(message.content));
                 continue;
             }
             if (message.role === 'tool') {
@@ -5445,18 +5499,14 @@ export function createAIPanel(options) {
                 if (!pendingCalls.has(message.toolCallId)) continue;
                 pendingCalls.delete(message.toolCallId);
                 let toolContent = message.content || '';
-                // 过时的大工具结果修剪（参数对齐 dsh tool-result-pruner 默认值：阈值
-                // 8192 字符、保留头 4096 + 尾 1024，中间打标记——头部上下文重要，
-                // 命令/搜索的结论常在尾部，read_file 的结构信息在头部）。
-                if (slim && i < recentStart && toolContent.length > 8192 &&
-                    (message.name === 'read_file' || message.name === 'web_fetch' ||
-                        message.name === 'run_command' || message.name === 'background_command' ||
-                        message.name === 'search_text')) {
-                    const before = toolContent.length;
-                    toolContent = toolContent.slice(0, 4096) +
-                        '\n\n[... 中间内容已修剪：原文 ' + before + ' 字符，读取于较早轮次、大概率已过时，如需请重新读取 ...]\n\n' +
-                        toolContent.slice(-1024);
-                    savedTokens += aiEstimateTokens('x'.repeat(Math.max(0, before - toolContent.length)));
+                // 过时的大工具结果修剪（阈值与头尾预算在 ai-context-slim.js，
+                // 参数对齐 dsh tool-result-pruner；命令类尾部预算放宽到 2048）。
+                if (slim && i < recentStart) {
+                    const pruned = pruneToolResult(message.name, toolContent);
+                    if (pruned != null) {
+                        savedTokens.toolPrune += aiEstimateTokens('x'.repeat(Math.max(0, toolContent.length - pruned.length)));
+                        toolContent = pruned;
+                    }
                 }
                 messages.push({
                     role: 'tool',
@@ -5496,7 +5546,7 @@ export function createAIPanel(options) {
                 item.thinking = message.reasoning;
                 item.thinkingSignature = message.thinkingSignature || '';
             } else if (message.role === 'assistant' && message.reasoning) {
-                savedTokens += aiEstimateTokens(message.reasoning);
+                savedTokens.reasoning += aiEstimateTokens(message.reasoning);
             }
             // 只保留「确有 tool 响应」的调用：多工具批次中途停止/中断会留下残缺批次
             // （如 2 个 calls 只有 1 个执行），OpenAI/Anthropic 会以
@@ -5525,6 +5575,10 @@ export function createAIPanel(options) {
                 }
             }
             messages.push(item);
+            // 实测锚点：只认真正发出去的 assistant（错误/空消息已被上面的 continue 跳过）
+            if (message.role === 'assistant' && message.usage) {
+                lastBuildAnchor = {index: messages.length - 1, usage: message.usage};
+            }
             // 维护「待响应工具调用」集合：assistant 重置为可用 calls，user 清空。
             // 被跳过的 assistant（空内容/错误）不更新集合，其后的孤立 tool 消息自然被跳过。
             if (message.role === 'assistant') {
@@ -5551,7 +5605,8 @@ export function createAIPanel(options) {
             chars += text.length;
             for (const ch of text) if (aiIsCJK(ch.codePointAt(0))) cjk++;
         }
-        const tokens = estimateApiMessagesTokens(apiMessages);
+        const tokenView = estimateApiMessagesContext(apiMessages, lastBuildAnchor);
+        const tokens = tokenView.tokens;
         const imageStats = aiImageStats(apiMessages);
         const totalTokens = tokens;
         const windowSize = contextWindowOf(session);
@@ -5574,7 +5629,10 @@ export function createAIPanel(options) {
             '消息：' + userCount + ' 条用户 / ' + assistantCount + ' 条助手 / ' + toolCount + ' 条工具结果（共 ' + apiMessages.length + ' 条发送项，含 system）',
             '字符：' + chars + '（其中 CJK ' + cjk + '）',
             '图片：' + imageStats.count + ' 张（估算 ' + imageStats.tokens + ' tokens）',
-            '估算 tokens：' + totalTokens + ' / 窗口 ' + windowSize + '（' + percent.toFixed(1) + '%）',
+            '估算 tokens：' + totalTokens + ' / 窗口 ' + windowSize + '（' + percent.toFixed(1) + '%）' +
+                (tokenView.measured > 0
+                    ? '＝ 实测锚点 ' + tokenView.measured + ' + 增量 ' + tokenView.estimated
+                    : '（纯估算，尚无 usage 锚点）'),
             '系统注入：AGENTS.md ' + (bundle.meta.agents.loaded ? '✓ ' + bundle.meta.agents.chars + ' 字符' : '—') +
                 ' · 记忆 ' + (bundle.meta.memory.loaded
                     ? '✓ ' + bundle.meta.memory.mode + ' ' + bundle.meta.memory.chars + ' 字符' + (bundle.meta.memory.placeholder ? '（空索引占位）' : '')
@@ -5745,39 +5803,24 @@ export function createAIPanel(options) {
         if (el.ctxTokSystem) el.ctxTokSystem.textContent = '~' + aiFormatCompactTokens(systemTokens);
         if (el.ctxTokTools) el.ctxTokTools.textContent = '~' + aiFormatCompactTokens(toolTokens);
         if (el.ctxTokMessages) el.ctxTokMessages.textContent = '~' + aiFormatCompactTokens(messageTokens);
-        if (el.ctxTokSaved) el.ctxTokSaved.textContent = '~' + aiFormatCompactTokens(lastBuildSavedTokens);
+        if (el.ctxTokSaved) {
+            const parts = slimBreakdownParts(lastBuildSavedTokens);
+            el.ctxTokSaved.textContent = '~' + aiFormatCompactTokens(parts.reduce((sum, part) => sum + part.tokens, 0));
+            if (el.ctxSavedTip) {
+                // 明细收进 ⓘ tooltip（第一行分类数字，第二行语义说明）：
+                // 行位留给布局本身，构成按需展开
+                el.ctxSavedTip.dataset.tip = (parts.length
+                    ? '本次剔除：' + parts.map((part) => part.label + ' ' + aiFormatCompactTokens(part.tokens)).join(' · ') + '\n'
+                    : '') + '旧轮思考、过时的大文件/命令输出、过期注入块在组装请求时被剔除的量（会话里仍保留）';
+            }
+        }
     }
 
     // ---------- 路径 / 记忆 / 技能 ----------
 
-    function aiNormalizePath(value) {
-        const raw = aiTextOf(value).replace(/\\/g, '/');
-        if (!raw) return '';
-        const scheme = raw.match(/^([a-z][a-z0-9+.-]*):\/\//i);
-        let prefix = '';
-        let rest = raw;
-        if (scheme) {
-            prefix = scheme[1] + '://';
-            rest = raw.slice(scheme[0].length);
-        } else {
-            const drive = raw.match(/^[A-Za-z]:/);
-            if (drive) {
-                prefix = drive[0];
-                rest = raw.slice(2);
-            }
-        }
-        const absolute = rest.startsWith('/');
-        const parts = [];
-        for (const segment of rest.split('/')) {
-            if (!segment || segment === '.') continue;
-            if (segment === '..') {
-                if (parts.length) parts.pop();
-                continue;
-            }
-            parts.push(segment);
-        }
-        return prefix + (absolute ? '/' : '') + parts.join('/');
-    }
+    // aiNormalizePath / aiWorkspaceKey 已移到 ai-session-scope.js（经上方 import 别名
+    // 沿用原名）：会话工作区归一与 Go 侧分桶哈希（WorkspaceBucketKey）共用同一语义，
+    // 哈希向量测试两端各锁一遍（test/ai/ai-session-scope.test.mjs ↔ sessionstore_test.go）。
 
     function aiPathDir(value) {
         return aiTextOf(value).replace(/[\\/][^\\/]*$/, '');
@@ -5802,10 +5845,6 @@ export function createAIPanel(options) {
         if (workspace) return workspace;
         if (context.activeFile && context.activeFile.path) return aiPathDir(context.activeFile.path);
         return getScopeRoot() || '';
-    }
-
-    function aiWorkspaceKey(value) {
-        return aiNormalizePath(value).replace(/\/+$/, '').toLowerCase();
     }
 
     // ---- 计划落盘（批准时写 <工作区>/.cadt/plan/plan-<会话id>.md；未批准不落盘） ----
@@ -5871,7 +5910,7 @@ export function createAIPanel(options) {
             return false;
         }
         // 标题通常自带「计划：」前缀，直接用，避免「计划 · 计划：…」的重复观感
-        openVirtualDoc((plan.title || '计划') + '.md', plan.markdown, {readOnlyFixed: true});
+        openVirtualDoc((plan.title || '计划') + '.md', plan.markdown, {readOnlyFixed: true, viewKind: 'plan'});
         return true;
     }
 
@@ -6421,6 +6460,12 @@ export function createAIPanel(options) {
         closeAIDialog,
         dialogButton,
     });
+    // 插件 AI 工具（shell/plugin-tools.js）：注册表与三层授权判定都在纯模块里，
+    // 面板只提供两个读口 + 一份授权快照。宿主未注入时降级为「无插件工具」。
+    const pluginToolsMod = opts.pluginTools || null;
+    const pluginToolAuth = () => (config && config.pluginTools && typeof config.pluginTools === 'object')
+        ? config.pluginTools
+        : {};
     const toolDefsMod = createAIToolDefs({
         appControlOn,
         // read_video 按会话视频能力裁剪：不支持的协议/模型连工具定义都不下发
@@ -6436,6 +6481,12 @@ export function createAIPanel(options) {
         // 设置里的子代理默认轮次：拼进工具描述，让模型看到真实默认值而不是写死的 50。
         // 直接读 config（工具表在 subagentsMod 之前构造，别在这里引用它的成员）。
         subAgentRounds: () => resolveSubAgentRounds(undefined, config.subAgentRounds),
+        // 插件工具：下发条件（三层授权 + readOnly 的只读档子开关 + 非计划模式）由纯模块统一判定
+        pluginToolDefs: (scope, planMode) => (pluginToolsMod
+            ? pluginToolsMod.authorizedPluginToolDefs(pluginToolAuth(), scope, planMode)
+            : []),
+        // 工具目录分组：让模型知道某能力属于哪个第三方插件
+        pluginToolCatalog: () => (pluginToolsMod ? pluginToolsMod.pluginToolsByPlugin() : []),
     });
     const toolsForScope = (scope, planMode, session) => toolDefsMod.toolsForScope(scope, planMode, session);
     // 系统提示词组装域（ai-system-context.js）：面板闭包状态经 getter 注入——config 是可变 let、
@@ -8283,6 +8334,85 @@ function requestApproval(session, toolMessage, info) {
         return result.ok ? result.text : result.message;
     }
 
+    // 插件 AI 工具：审批口径与 MCP 完全对齐（kind:'write' + 同一张审批卡），
+    // 区别只有「执行体在插件侧」与「超时保护」。安全模型见 plugin-tool-security.md。
+    async function executePluginTool(name, input, ctx) {
+        const tool = pluginToolsMod ? pluginToolsMod.getPluginTool(name) : null;
+        if (!tool) throw new Error('插件工具不存在或插件已卸载：' + name);
+        const session = ctx && ctx.session;
+        const scope = currentScopeOf(session);
+        // 下发时已按授权过滤，这里再判一次：档位可能在回合中途变化、插件可能被卸载、
+        // 授权也可能被用户改动——执行前重判是最后一道闸。
+        if (!pluginToolsMod.toolIsAvailable(tool, pluginToolAuth(), scope, !!(session && session.planMode))) {
+            throw new Error('插件工具未授权或当前档位不可用：' + name + '（设置 → AI → 权限 → 插件工具）');
+        }
+        const rules = await ensureProjectRules(false);
+        const decision = decidePermission({
+            scope,
+            kind: 'write',
+            rules,
+            subject: name,
+            sessionAllow: !!(session && matchCommandRule(commandRulesFor(session), name, '插件工具')),
+        });
+        logPermission('write', name, decision.decision, decision.source, decision.rule);
+        if (decision.decision === 'deny') {
+            throw new Error('项目权限规则禁止调用：' + name + '（规则 ' + decision.rule + '）');
+        }
+        if (decision.decision === 'ask') {
+            if (!session || !ctx.toolMessage) throw new Error('插件工具缺少会话上下文，无法请求审批');
+            const argsPreview = JSON.stringify(input || {}).slice(0, 2048);
+            const answer = await requestCommandApproval(session, ctx.toolMessage, {
+                command: '插件「' + tool.pluginName + '」· ' + tool.name
+                    + (argsPreview === '{}' ? '' : ' ' + argsPreview),
+                cwd: '插件工具 · ' + tool.pluginId,
+                tool: 'plugin_tool',
+            });
+            if (!answer.approved) {
+                throw new Error(answer.cancelled
+                    ? '用户已停止生成，未调用插件工具。'
+                    : '用户未允许调用插件工具：' + name);
+            }
+        }
+        // 超时保护：插件可能卡在外部请求上。超时只丢弃结果、不强制中断插件侧逻辑
+        //（插件可能在做不可中断的外部调用），与设计稿 D7 一致。
+        let timer = 0;
+        try {
+            const timeout = new Promise((_, reject) => {
+                timer = setTimeout(() => reject(new Error(
+                    '插件工具超时（' + Math.round(tool.timeoutMs / 1000) + ' 秒）：' + name)), tool.timeoutMs);
+            });
+            const result = await Promise.race([
+                Promise.resolve(tool.execute(input, {
+                    sessionId: session && session.id ? session.id : '',
+                    scope,
+                    signal: ctx && ctx.signal,
+                })),
+                timeout,
+            ]);
+            return formatPluginToolResult(result);
+        } finally {
+            if (timer) clearTimeout(timer);
+        }
+    }
+
+    // 插件工具返回值归一：string 直通；{text} 取正文；其余尽力序列化。
+    // images 暂不注入对话（需走 read_image 的附件通道），仅在正文里如实说明。
+    function formatPluginToolResult(result) {
+        if (result == null) return '（插件工具无输出）';
+        if (typeof result === 'string') return result;
+        if (typeof result === 'object' && typeof result.text === 'string') {
+            const hasImages = Array.isArray(result.images) && result.images.length > 0;
+            return hasImages
+                ? result.text + '\n\n（该工具还返回了 ' + result.images.length + ' 张图片，当前版本未注入对话）'
+                : result.text;
+        }
+        try {
+            return JSON.stringify(result);
+        } catch (e) {
+            return String(result);
+        }
+    }
+
     // 能力来源=MCP：调用户绑定的 MCP 公开工具；调用前校验绑定仍在快照里。
     async function invokeExternalMcp(capability, input, ctx) {
         const binding = String((externalToolsConfig.mcpBindings || {})[capability] || '');
@@ -8786,15 +8916,19 @@ function requestApproval(session, toolMessage, info) {
     async function executeTool(name, args, ctx) {
         const input = args && typeof args === 'object' ? args : {};
         if (ctx && ctx.session && ctx.session.planMode === true &&
-            (PLAN_MODE_DENIED_TOOLS.has(name) || name.startsWith('mcp__'))) {
+            (PLAN_MODE_DENIED_TOOLS.has(name) || name.startsWith('mcp__') || name.startsWith('plugin__'))) {
+            // 文案只说「现在是计划模式、这一步不许做」：计划模式下往往一张计划都还没提交，
+            // 写「计划还没批准」会让人以为在等一张并不存在的批准卡（实测误读率很高）。
             if (name === 'todo_write') {
-                throw new Error('计划还没批准：任务清单属于执行阶段。请停下等待用户点「执行计划」，批准后再建 todo。');
+                throw new Error('计划模式下禁止建立任务清单：todo_write 属于执行阶段，先用 submit_plan 提交计划，用户点「执行计划」后再建。');
             }
             throw new Error('计划模式只允许只读探索：' + name +
                 ' 不可用。请先用 submit_plan 提交完整计划，用户批准后再执行。');
         }
         // MCP 转发：公开名 mcp__ 前缀走审批判定后直通 Go 路由（查表发原始名），零侵入现有 switch
         if (name.startsWith('mcp__')) return executeMcpTool(name, input, ctx);
+        // 插件工具：同样零侵入 switch，审批口径与 MCP 对齐（见 plugin-tool-security.md）
+        if (name.startsWith('plugin__')) return executePluginTool(name, input, ctx);
         // 外部工具执行前确保来源配置已读入（缓存命中时只是微任务；首次失败会重试）
         if (name === 'web_search' || name === 'web_fetch' || name === 'ocr' ||
             name === 'text_to_speech' || name === 'transcribe_audio') {
@@ -9509,7 +9643,7 @@ function requestApproval(session, toolMessage, info) {
                 if (ctx.session.planMode === enabled) {
                     return enabled ? '当前已处于计划模式。' : '当前不在计划模式。';
                 }
-                const ok = setPlanMode(enabled, false, true);
+                const ok = setPlanMode(enabled, false, true, ctx.session);
                 if (!ok) throw new Error('切换失败（会话不存在或正在生成）');
                 return enabled
                     ? '已进入计划模式：下一轮起只保留只读探索与规划类工具；请用 submit_plan 提交完整计划并等待用户批准。'
@@ -9551,17 +9685,41 @@ function requestApproval(session, toolMessage, info) {
                     throw new Error('计划过短（' + planShape.lines + ' 行 · ' + planShape.chars +
                         ' 字）：这不像一份可执行的计划。请把目标、涉及文件（逐行）、实施步骤、验证方式写全。');
                 }
+                // 命令申报预判（批准卡展示 + 预授权形态）：预判只影响展示与预授权清单，
+                // 执行期判定链不变。full 档免审批、申报无意义——直接丢弃不处理，也不回预判。
+                let declaredCommands = null;
+                let commandNotes = '';
+                if (Array.isArray(input.commands) && input.commands.length &&
+                    currentScopeOf(ctx.session) !== 'full') {
+                    declaredCommands = normalizePlanDeclaredCommands(input.commands);
+                    if (declaredCommands.length) {
+                        const grants = [];
+                        const withheld = [];
+                        for (const item of declaredCommands) {
+                            if (item.mode === 'family') grants.push('`' + item.signature + '`（同类）');
+                            else if (item.mode === 'exact') grants.push('`' + item.command + '`（精确）');
+                            else withheld.push('`' + item.command + '`（' +
+                                (item.dangerous ? '危险：' + (item.dangerLabel || '执行时单次确认') : (item.reason || '不做预授权')) + '）');
+                        }
+                        const noteParts = [];
+                        if (grants.length) noteParts.push('批准卡将列出预授权：' + grants.join('、'));
+                        if (withheld.length) noteParts.push('不预授权：' + withheld.join('、') + '——执行时按正常审批处理');
+                        if (noteParts.length) commandNotes = '命令申报预判：' + noteParts.join('；') + '。';
+                    }
+                }
                 // 计划的唯一真源：session.activePlan（审批卡 / 落盘 / 回注 / 列表角标都读它）。
                 // 消息不再承载计划内容——对话区只留 submit_plan 工具卡。
                 ctx.session.activePlan = normalizeActivePlan({
                     title: aiTextOf(input.title).replace(/\s+/g, ' ').trim().slice(0, 120),
                     markdown: planText,
+                    declaredCommands: declaredCommands || undefined,
                     status: 'pending',
                     ts: Date.now(),
                 });
                 persistSessions();
                 if (isOpen() && currentSession() === ctx.session) renderMessages(true);
                 return '计划已提交（' + planShape.lines + ' 行 · ' + planShape.chars + ' 字），但「用户尚未批准」。' +
+                    commandNotes +
                     '请立即停止本轮：不要开始执行、不要调用 todo_write 建任务清单、不要继续读代码或写文件，' +
                     '也不要在正文里重复计划内容。等用户点「执行计划」或发送补充意见。';
             }
@@ -9573,21 +9731,21 @@ function requestApproval(session, toolMessage, info) {
                 // 快捷便签的写动作：用户可见的面板，批准计划前写入会误导用户（get_memo 只读不受限）
                 if (ctx && ctx.session && ctx.session.planMode === true &&
                     (action === 'add_memo' || action === 'update_memo' || action === 'remove_memo')) {
-                    throw new Error('计划还没批准：快捷便签面板是用户可见的，属于执行阶段。等待用户批准计划后再写（读取用 get_memo，不受限）。');
+                    throw new Error('计划模式下禁止写快捷便签：面板用户可见，属于执行阶段，等用户批准计划后再写（读取用 get_memo 不受限）。');
                 }
                 // 书签是用户可见的编辑器状态：计划模式下只许看和跳，不许增删
                 if (ctx && ctx.session && ctx.session.planMode === true &&
                     (action === 'add_bookmark' || action === 'remove_bookmark' || action === 'clear_bookmarks')) {
-                    throw new Error('计划还没批准：书签是用户可见的编辑器状态，属于执行阶段。等待用户批准计划后再改（list_bookmarks / goto_bookmark 不受限）。');
+                    throw new Error('计划模式下禁止增删书签：书签是用户可见的编辑器状态，属于执行阶段，等用户批准计划后再改（list_bookmarks / goto_bookmark 不受限）。');
                 }
                 // 界面点击是执行阶段：可能真实改变应用状态（保存 / 删除 / 切换数据），批准计划前不许
                 if (ctx && ctx.session && ctx.session.planMode === true && action === 'click') {
-                    throw new Error('计划还没批准：界面点击会真实改变应用状态，属于执行阶段；批准后再点（get_state / screenshot 不受限）。');
+                    throw new Error('计划模式下禁止界面点击：点击会真实改变应用状态，属于执行阶段，等用户批准计划后再点（get_state / screenshot 不受限）。');
                 }
                 // 设置写入 / 群聊发言 / 插件安装卸载都会真实改变状态或触发模型调用：批准计划前不许
                 if (ctx && ctx.session && ctx.session.planMode === true &&
                     ['set_setting_row', 'send_group_message', 'install_plugin', 'uninstall_plugin'].includes(action)) {
-                    throw new Error('计划还没批准：该动作会真实改变应用状态或触发模型调用，属于执行阶段；批准后再执行（设置树 / 群列表等只读动作不受限）。');
+                    throw new Error('计划模式下禁止 ' + action + '：该动作会真实改变应用状态或触发模型调用，属于执行阶段，等用户批准计划后再执行（设置树 / 群列表等只读动作不受限）。');
                 }
                 const params = (input.params && typeof input.params === 'object' && !Array.isArray(input.params)) ? input.params : {};
                 // open_browser_tab 的 file:// 与 browser_navigate 同一条读权限链：这条 UI 动作
@@ -9978,6 +10136,9 @@ function requestApproval(session, toolMessage, info) {
                 return worktreeMod.manageTool(ctx, input);
             case 'write_file': {
                 if (!ctx || !ctx.session || !ctx.toolMessage) throw new Error('写操作缺少会话上下文');
+                if (wipeguardRef() && wipeguardRef().isWriteBlocked(getScopeRoot())) {
+                    return '工作区防护已熔断：本工作区检测到大范围文件消失，写操作已暂停。可继续对话或发送新消息（自动解除）。';
+                }
                 const path = aiResolveScopePath(input.path, ctx.session);
                 const relPath = aiRelPath(getScopeRoot(), path);
                 const content = aiTextOf(input.content);
@@ -9994,6 +10155,18 @@ function requestApproval(session, toolMessage, info) {
                         size: existing.data && existing.data.size,
                     }, relPath);
                     if (!fresh.ok) throw new Error(fresh.message);
+                }
+                // wipe-guard 写前快照（方案 §4.6）：原文本已在内存，只多一次落盘。
+                // 备份尽力而为（失败不阻断写入），落盘前必须完成——否则快到的可能是写入后内容。
+                if (wipeguardRef() && existing.exists) {
+                    await wipeguardRef().backupWrite({
+                        sessionId: ctx.session.id,
+                        tool: 'write_file',
+                        ws: getScopeRoot(),
+                        relPath,
+                        absPath: path,
+                        content: oldText,
+                    });
                 }
                 const ops = computeLineDiff(oldText, content);
                 const stats = diffStats(ops);
@@ -10016,6 +10189,9 @@ function requestApproval(session, toolMessage, info) {
             }
             case 'edit_file': {
                 if (!ctx || !ctx.session || !ctx.toolMessage) throw new Error('写操作缺少会话上下文');
+                if (wipeguardRef() && wipeguardRef().isWriteBlocked(getScopeRoot())) {
+                    return '工作区防护已熔断：本工作区检测到大范围文件消失，写操作已暂停。可继续对话或发送新消息（自动解除）。';
+                }
                 const path = aiResolveScopePath(input.path, ctx.session);
                 const relPath = aiRelPath(getScopeRoot(), path);
                 const oldString = aiTextOf(input.oldString);
@@ -10026,6 +10202,17 @@ function requestApproval(session, toolMessage, info) {
                 const existing = await readOptionalText(path);
                 if (!existing.exists) throw new Error('文件不存在：' + relPath + '（新建文件请用 write_file）');
                 const text = existing.text;
+                // wipe-guard 写前快照（原文本已在内存；备份尽力而为，失败不阻断修改）
+                if (wipeguardRef()) {
+                    await wipeguardRef().backupWrite({
+                        sessionId: ctx.session.id,
+                        tool: 'edit_file',
+                        ws: getScopeRoot(),
+                        relPath,
+                        absPath: path,
+                        content: text,
+                    });
+                }
                 const located = locateEditTarget(text, oldString, newString, !!input.replaceAll);
                 if (located.error) throw new Error(located.error);
                 const next = located.next;
@@ -10193,6 +10380,9 @@ function requestApproval(session, toolMessage, info) {
                 // 审批 / 分类器 await 期间用户可能已按停止：命令绝不能在停止之后才拉起进程。
                 // 旧实现漏了这道闸，进程照跑而结算分支被 s.stopped 拦住 → 卡片永久「执行中」+ spinner。
                 if (toolHalted(ctx.toolMessage)) return '用户已停止生成，命令未执行。';
+                // wipe-guard 指纹保底（方案 §5.3）：命令前后各取一次，大范围消失立刻判 critical。
+                // 判定单一来源在 Go（WipeGuardCompare）；主信号仍是 watcher（存活的子进程只有它看得见）。
+                const wgFpBefore = wipeguardRef() ? await wipeguardRef().preCommand(getScopeRoot()) : null;
                 ctx.toolMessage.status = 'running';
                 ctx.toolMessage.content = '执行中…';
                 // runId 注册到 Go 取消注册表：用户停止会话时按 id 杀进程树（AIStopShellRun）
@@ -10253,6 +10443,8 @@ function requestApproval(session, toolMessage, info) {
                 if (stdout) lines.push('stdout：\n' + stdout);
                 if (stderr) lines.push('stderr：\n' + stderr);
                 if (!stdout && !stderr) lines.push('（无输出）');
+                // wipe-guard：命令结束做前后指纹对比（早退路径交给 watcher 覆盖）
+                if (wipeguardRef()) await wipeguardRef().postCommand(getScopeRoot(), wgFpBefore);
                 return lines.join('\n');
             }
             case 'background_command': {
@@ -10284,6 +10476,8 @@ function requestApproval(session, toolMessage, info) {
                 }
                 // 同 run_command：停止之后不再拉起后台作业
                 if (toolHalted(ctx.toolMessage)) return '用户已停止生成，命令未启动。';
+                // wipe-guard 指纹保底：后台命令只取「前」基线（进程存活期间 / 结束后的变化由 watcher 覆盖）
+                if (wipeguardRef()) await wipeguardRef().preCommand(getScopeRoot());
                 ctx.toolMessage.status = 'running';
                 ctx.toolMessage.content = '正在启动…';
                 refreshToolWrap(ctx.session, ctx.toolMessage);
@@ -10473,7 +10667,7 @@ function requestApproval(session, toolMessage, info) {
                     const started = await startSubAgent(ctx, input);
                     const sub = started.sub;
                     return '已派出后台子代理「' + sub.name + '」（id=' + sub.id + '，' + agentLevelText(sub.depth) + '，轮次上限 ' +
-                        sub.maxRounds + '）。\n完成后会自动通知你（进你的收件箱）；期间可继续其他工作，需要补充线索就 agent_send' +
+                        sub.maxRounds + '，权限档 ' + (sub.session.scope || 'read') + '）。\n完成后会自动通知你（进你的收件箱）；期间可继续其他工作，需要补充线索就 agent_send' +
                         '（urgent=true 插队）。要停下等回报用 wait_agent；不需要了用 agent_stop 停止并收集记录。';
                 }
                 const outcome = await runSubAgent(ctx, input);
@@ -10534,7 +10728,7 @@ function requestApproval(session, toolMessage, info) {
             el.input.placeholder = compact
                 ? '正在压缩上下文：消息将排队'
                 : busy
-                    ? '输入消息：Enter 排队 · Ctrl+Enter 插话（不打断）· Ctrl+Shift+Enter 抢占（停掉重来）'
+                    ? '输入消息：Enter 排队 · Ctrl+Enter 插话 · Ctrl+Shift+Enter 抢占'
                     : '发消息或粘贴图片；/ 调用指令，@ 提及文件';
         }
         updateSendState();
@@ -10609,7 +10803,7 @@ function requestApproval(session, toolMessage, info) {
                             : (ctxOverLimit ? (ctxGate.compactBlocked
                                     ? '上下文超过模型上限：请切换更大上下文的模型'
                                     : '上下文超过发送上限：请先压缩上下文（/compact）')
-                                : (hasProfile ? (others ? '其他会话正在生成（' + others + ' 个）· Enter 发送到本会话' : '') : '未配置 AI')))));
+                                : (hasProfile ? (others ? '其他会话正在生成（' + others + ' 个）' : '') : '未配置 AI')))));
         }
     }
 
@@ -10631,7 +10825,7 @@ function requestApproval(session, toolMessage, info) {
             for (const [key, call] of s.toolCalls.entries()) {
                 if (call.name) liveTools.push({key, name: call.name, arguments: call.arguments});
             }
-            updateAssistantElement(wrap, s.assistant, true, liveTools.length ? {liveTools} : undefined);
+            updateAssistantElement(wrap, s.assistant, true, liveTools.length ? {liveTools, session} : {session});
             positionOverlays();
             if (stickBottom) scrollToBottom(false);
             else updateScrollButton();
@@ -10676,7 +10870,7 @@ function requestApproval(session, toolMessage, info) {
         const wrap = document.createElement('div');
         wrap.className = 'ai-msg tool';
         wrap.dataset.aiIdx = String(index);
-        renderToolMessage(wrap, toolMessage);
+        renderToolMessage(wrap, toolMessage, undefined, session);
         // 流式状态条（看板娘条）钉在消息区最底：新工具卡插到它之前，别把它顶上去
         const bar = host.querySelector('.ai-streaming-bar');
         if (bar) host.insertBefore(wrap, bar);
@@ -10705,7 +10899,7 @@ function requestApproval(session, toolMessage, info) {
             return;
         }
         wrap.innerHTML = '';
-        renderToolMessage(wrap, toolMessage);
+        renderToolMessage(wrap, toolMessage, undefined, session);
         // 卡片原位更新后高度可能变化（如 diff 展开）：跟随底部，避免把文档末尾的流式状态条顶出视口
         if (forPanel) {
             if (stickBottom) scrollToBottom(false);
@@ -10730,6 +10924,8 @@ function requestApproval(session, toolMessage, info) {
     // 全部走这条路径。submitText 只保留 UI 部分（读输入区附件、清空、渲染当前会话）后转调。
     // 返回 {ok, reason, run, ended}：reason 供调用方决定提示文案（内核不 flash 校验类错误）。
     async function startSessionTurn(session, text, options) {
+        // wipe-guard 熔断在回合边界解除（方案 §5.5：只禁「本轮后续写命令」）
+        if (wipeguardRef() && wipeguardRef().clearBlocked) wipeguardRef().clearBlocked();
         const opts = options || {};
         let value = String(text == null ? '' : text).trim();
         const source = opts.attachments || {};
@@ -10776,7 +10972,8 @@ function requestApproval(session, toolMessage, info) {
         try {
             const previewBundle = await assembleSystemContext(session, textAttachments);
             const previewMessages = buildApiMessages(session, cut != null && cut >= 0 ? cut : null, previewBundle.text);
-            let previewTokens = estimateApiMessagesTokens(previewMessages) +
+            // 上下文占用用实测 usage 锚点 + 增量估算（与提醒条、auto-compact 同口径）
+            let previewTokens = estimateApiMessagesContext(previewMessages, lastBuildAnchor).tokens +
                 aiEstimateTokens(value);
             for (const item of imageAttachments) previewTokens += aiEstimateImageTokens(item);
             for (const item of videoAttachments) previewTokens += aiEstimateVideoTokens();
@@ -11087,6 +11284,8 @@ function requestApproval(session, toolMessage, info) {
         // 停止只由用户中止、上下文压缩或模型自然结束触发。
         if (s.roundNo > 0 && s.roundNo % AI_TOOL_ROUND_LIMIT === 0 && s.lastRoundNote !== s.roundNo) {
             s.lastRoundNote = s.roundNo;
+            // 只进数据层（随请求发给模型 + 回合切分口径），对话区不渲染（msg-silent），
+            // 也不再弹 transient 提示——2026-11-19 作者裁定：这是模型的内部维护信息，不是对话内容
             session.messages.push({
                 role: 'user',
                 content: '（系统提示）工具调用轮次已达 ' + s.roundNo + '。长任务可以继续执行；如已接近完成，建议适时总结收尾。',
@@ -11094,7 +11293,6 @@ function requestApproval(session, toolMessage, info) {
                 ts: Date.now(),
                 systemNote: true,
             });
-            noteForSession(s.sessionId, '工具轮次已达 ' + s.roundNo + '，长任务可继续…');
         }
         s.roundNo += 1;
         s.roundId = session.id + '#' + s.baseRound + '-' + s.roundNo;
@@ -11164,13 +11362,13 @@ function requestApproval(session, toolMessage, info) {
         }
         if (isOpen() && currentSession() === session) {
             const wrap = el.messages.querySelector('.ai-msg.assistant[data-ai-idx="' + index + '"]');
-            if (wrap) updateAssistantElement(wrap, s.assistant, true);
+            if (wrap) updateAssistantElement(wrap, s.assistant, true, {session});
         }
         let apiMessages = buildApiMessages(session, index, s.systemPrompt);
         // steer 会增加请求体积：超过窗口 90% 时把这批插话改回排队（不中断本轮，也不强塞超限请求）。
         if (drainedSteerMessages && drainedSteerMessages.length) {
             const windowSize = contextWindowOf(session);
-            const tokens = estimateApiMessagesTokens(apiMessages) + toolsTokenEstimate(session);
+            const tokens = estimateApiMessagesContext(apiMessages, lastBuildAnchor).tokens + toolsTokenEstimate(session);
             if (windowSize > 0 && tokens > windowSize * 0.9) {
                 const inserted = new Set(drainedSteerMessages);
                 session.messages = session.messages.filter((message) => !inserted.has(message));
@@ -11199,9 +11397,62 @@ function requestApproval(session, toolMessage, info) {
     function finishStreamError(message, target) {
         const current = target || syncStreamView();
         if (!current) return;
+        const text = String(message || '请求失败');
+        const session = sessionById(current.sessionId);
+        // 上下文溢出：先收尾这一轮（释放租约 / 落盘），再强制压缩 + 重发本轮，
+        // 不把「错误卡」留成死路（六份参照 harness 都有这条恢复分支）。
+        const recover = !!session && !current.stopped && !current.overflowRecovered &&
+            aiIsContextOverflowError(text);
+        if (recover) current.overflowRecovered = true;
         current.assistant.status = 'error';
-        current.assistant.error = String(message || '请求失败');
+        current.assistant.error = text;
         finishStream(current);
+        if (recover) recoverContextOverflow(session);
+    }
+
+    // 等「本进程不再持有、也没有别的窗口占用」再继续：回合 / 压缩租约都是异步释放的，
+    // 立刻起下一步会被 AISessionLeaseAcquire 判成 busy（表现为「另一窗口正在运行」）。
+    // tries = 轮询次数（每次 200ms），耗尽即放弃（调用方不必再处理）。
+    function whenSessionLeaseFree(sessionId, run, tries) {
+        const left = Number(tries) || 0;
+        if (streamOf(sessionId) || compactOf(sessionId) || compactStarting) {
+            if (left > 0) setTimeout(() => whenSessionLeaseFree(sessionId, run, left - 1), 200);
+            return;
+        }
+        const status = backend.AISessionLeaseStatus
+            ? backend.AISessionLeaseStatus(sessionId)
+            : Promise.resolve({busy: false, acquired: false});
+        Promise.resolve(status).then((st) => {
+            if (st && (st.busy || st.acquired)) {
+                if (left > 0) setTimeout(() => whenSessionLeaseFree(sessionId, run, left - 1), 200);
+                return;
+            }
+            run();
+        }).catch(() => {});
+    }
+
+    // 上下文溢出恢复：provider 报超窗 → 强制压缩一次 → 重发本轮（不新增用户消息）。
+    // 没有这条分支时，「估算没到阈值但实际已超窗」的会话会卡在错误卡上，只能手动 /compact。
+    function recoverContextOverflow(session, attempt) {
+        if (!session) return;
+        const tries = Number(attempt) || 0;
+        if (tries === 0) {
+            const now = Date.now();
+            const last = overflowRecoveryCount.get(session.id);
+            const recent = last && now - last.at < 60000;
+            if (recent && last.count >= 2) {
+                flash('上下文连续溢出，已停止自动恢复：请切换更大上下文的模型，或开启新会话', true);
+                return;
+            }
+            overflowRecoveryCount.set(session.id, {count: (recent ? last.count : 0) + 1, at: now});
+            if (isOpen() && currentSession() === session) {
+                showNote('上下文超出模型窗口，正在压缩并自动重试本轮…');
+            }
+        }
+        whenSessionLeaseFree(session.id, () => {
+            const started = startCompact({auto: true, force: true, session, retryAfter: true});
+            if (!started && tries < 3) setTimeout(() => recoverContextOverflow(session, tries + 1), 400);
+        }, 8);
     }
 
     // 流中途被网关掐断（ai-error.retryable）的自动重试：把本轮已收到的半截正文 /
@@ -11456,6 +11707,7 @@ function requestApproval(session, toolMessage, info) {
         // 一轮结束后检查上下文预算：超阈值则自动压缩（不打断生成，此处已无 stream）。
         if (session && !current.stopped && current.assistant.status === 'done') {
             autoCompactCount.delete(session.id);
+            overflowRecoveryCount.delete(session.id);
             setTimeout(() => {
                 if (!anyStreaming() && !oneShot && !currentQueueItems().length) maybeAutoCompact(session);
             }, 0);
@@ -11544,7 +11796,15 @@ function requestApproval(session, toolMessage, info) {
             try {
                 if (!allowedTools.has(call.name)) throw new Error('当前范围不允许工具：' + call.name);
                 const parsed = call.arguments ? JSON.parse(call.arguments) : {};
-                result = await executeTool(call.name, parsed, {session, toolMessage, stream: s});
+                // wipe-guard AI 活跃度：在途工具计数（critical 判停用）
+                wipeguardBusyTools++;
+                wipeguardLastToolAt = Date.now();
+                try {
+                    result = await executeTool(call.name, parsed, {session, toolMessage, stream: s});
+                } finally {
+                    wipeguardBusyTools--;
+                    wipeguardLastToolAt = Date.now();
+                }
             } catch (e) {
                 if (streams.get(s.sessionId) === s) {
                     toolMessage.status = 'error';
@@ -11687,15 +11947,19 @@ function requestApproval(session, toolMessage, info) {
         if (note) note.remove();
     }
 
-    // 重试倒计时原位刷新：note.dataset.retryAt 记录到点时刻，表针每 100ms 重写剩余秒数
+    // 重试倒计时原位刷新：note.dataset.retryAt 记录到点时刻，表针每 100ms 重算剩余时长。
+    // 剩余时长走 formatWaitDuration（秒档取整）：显示 4.9 小时 / 42 秒，小数秒没有信息量。
     function tickRetryNote(bar) {
         const note = bar.querySelector('.ai-retry-note');
         if (!note) return;
         const retryAt = Number(note.dataset.retryAt) || 0;
         if (!retryAt) return;
-        const remain = Math.max(0, (retryAt - Date.now()) / 1000);
+        const remain = Math.max(0, retryAt - Date.now());
         const label = note.querySelector('.ai-retry-text');
-        if (label) label.textContent = (note.dataset.reason || '请求失败') + ' · ' + remain.toFixed(1) + ' 秒后重试 ' + (note.dataset.attempt || 1) + '/' + (note.dataset.max || 1);
+        if (!label) return;
+        const text = (note.dataset.reason || '请求失败') + ' · ' + (formatWaitDuration(remain) || '片刻') + '后重试 ' +
+            (note.dataset.attempt || 1) + '/' + (note.dataset.max || 1);
+        if (label.textContent !== text) label.textContent = text;
     }
 
     function showRetryNote(payload) {
@@ -11715,14 +11979,16 @@ function requestApproval(session, toolMessage, info) {
         const attempt = Math.max(1, Math.round(Number(payload && payload.attempt) || 1));
         const max = Math.max(1, Math.round(Number(payload && payload.max) || 1));
         const delayMs = Math.max(0, Number(payload && payload.delayMs) || 0);
-        const reason = String((payload && payload.reason) || '').trim() || '请求失败';
+        // 原始 reason 是「HTTP 429」这类协议描述：进 UI 前翻译成用户能懂的说法，dataset 里
+        // 存的也是翻译结果，倒计时刷新直接复用（原始值只在这里看一次）。
+        const reason = friendlyRetryReason(payload && payload.reason);
         note.dataset.reason = reason;
         note.dataset.attempt = String(attempt);
         note.dataset.max = String(max);
         note.dataset.retryAt = String(Date.now() + delayMs);
         const label = note.querySelector('.ai-retry-text') || document.createElement('span');
         label.className = 'ai-retry-text';
-        label.textContent = reason + ' · ' + (delayMs / 1000).toFixed(1) + ' 秒后重试 ' + attempt + '/' + max;
+        label.textContent = reason + ' · ' + (formatWaitDuration(delayMs) || '片刻') + '后重试 ' + attempt + '/' + max;
         if (!label.parentNode) note.append(label);
     }
 
@@ -12091,7 +12357,7 @@ function requestApproval(session, toolMessage, info) {
                     const session = sessionById(current.sessionId);
                     const idx = session ? session.messages.indexOf(current.assistant) : -1;
                     const wrap = idx >= 0 && onScreen ? el.messages.querySelector('.ai-msg.assistant[data-ai-idx="' + idx + '"]') : null;
-                    if (wrap) updateAssistantElement(wrap, current.assistant, false);
+                    if (wrap) updateAssistantElement(wrap, current.assistant, false, {session});
                     handleToolRound(current, calls, argErrors);
                     return;
                 }
@@ -12181,6 +12447,8 @@ function requestApproval(session, toolMessage, info) {
 
     // 终止一个会话里所有运行中的工具卡：run_command 按 runId 杀进程（AIStopShellRun），
     // 其余标 error + interrupted（spawn_agent 由 stopSubAgentsOf 管理、后台命令有意跨会话存活，均跳过）。
+    // wait_agent 的中断文案单独给：这张卡的结果模型下回合会读到，「等待被停止」比通用的
+    // 「用户已停止生成」更能让它理解自己停在等待上是被中断，不是等待出了问题。
     function stopRunningToolMessages(sessionId, reason) {
         const session = sessionById(sessionId);
         if (!session) return;
@@ -12191,8 +12459,10 @@ function requestApproval(session, toolMessage, info) {
                 try { backend.AIStopShellRun(message.runId); } catch (e) {}
             }
             message.status = 'error';
-            message.error = reason || '用户已停止';
-            message.content = reason || '用户已停止';
+            message.error = message.name === 'wait_agent'
+                ? '等待被停止：用户中断了本轮'
+                : (reason || '用户已停止');
+            message.content = message.error;
             message.interrupted = true;
             refreshToolWrap(session, message);
         }
@@ -12282,6 +12552,8 @@ function requestApproval(session, toolMessage, info) {
             el.permission.appendChild(chev);
             el.permission.setAttribute('aria-label', '权限：' + scopeLabel(scope));
             el.permission.classList.toggle('active', scope === 'auto' || scope === 'full');
+            // 完全权限是高危档：胶囊用警告红（而非 accent 蓝），与权限菜单里的 danger 项一致
+            el.permission.classList.toggle('danger', scope === 'full');
             // 窄档「计划」pill 会被收起：用圆点让「计划已开」仍可见（宽档不显示，见 CSS）
             el.permission.classList.toggle('plan-on', !!(session && session.planMode));
         }
@@ -12371,16 +12643,25 @@ function requestApproval(session, toolMessage, info) {
         applyScope(scope);
     }
 
-    function setPlanMode(on, announce, force) {
-        const session = currentSession();
+    // target：要改的会话。省略=面板当前查看的会话（按钮 / 斜杠命令）。
+    // plan_mode 工具必须显式传 ctx.session——后台会话（子代理、切走后仍在跑的会话）
+    // 调它时，面板当前会话往往是另一条，按 currentSession() 改会把计划模式开到别人头上。
+    function setPlanMode(on, announce, force, target) {
+        const viewed = currentSession();
+        const session = target || viewed;
         if (!session) return false;
-        syncStreamView();
-        if ((stream || compactOf(session.id)) && force !== true) {
+        const isViewed = session === viewed;
+        if (isViewed) syncStreamView();
+        // 「生成中」按目标会话自己的流判定，不用面板镜像：后台会话切换不该看前台的脸
+        if ((streams.has(session.id) || compactOf(session.id)) && force !== true) {
             if (announce !== false) flash('生成中不能切换计划模式', true);
             return false;
         }
         session.planMode = !!on;
         persistSessions();
+        // 面板 UI（权限 pill / 计划开关 / 消息区）只反映当前查看的会话：
+        // 后台会话改自己的状态时只落盘，切回去时 syncActiveSessionUI → updateScopeUI 自会刷新。
+        if (!isViewed) return true;
         updateScopeUI();
         updateSendState();
         if (!stream) renderMessages(true);
@@ -12502,7 +12783,7 @@ function requestApproval(session, toolMessage, info) {
         el.modelChip.append(chev);
         // 窄档只显示单图标（容器查询隐藏 name/effort/cap）——把模型名放进 tooltip / aria-label，
         // 否则图标形态下当前模型不可发现
-        const tipText = '模型：' + model + (effort ? ' · ' + effort : '') + '（点击切换模型与推理等级）';
+        const tipText = '模型：' + model + (effort ? ' · ' + effort : '');
         el.modelChip.dataset.tip = tipText;
         el.modelChip.setAttribute('aria-label', tipText);
     }
@@ -12914,6 +13195,12 @@ function requestApproval(session, toolMessage, info) {
                     {label: '停靠分屏（无文件时占满）', checked: mode === 'dock', action: () => setMode('dock')},
                     {label: '全屏（仅覆盖文件内容区）', checked: mode === 'fullscreen', action: () => setMode('fullscreen')},
                     {label: '在独立悬浮窗打开', action: () => setMode('float')},
+                    {sep: true},
+                    {label: '过程区始终折叠', checked: settings.aiAlwaysCollapse === true, action: () => {
+                        settings.aiAlwaysCollapse = settings.aiAlwaysCollapse !== true;
+                        saveSettings();
+                        if (isOpen() && currentSession()) renderMessages(true);
+                    }},
                 ]},
             );
             // 群聊（G6 面板化）：侧栏不在 chats 视图时也能从这里切群 / 建群
@@ -14018,7 +14305,9 @@ function requestApproval(session, toolMessage, info) {
         const memory = meta.memory && meta.memory.loaded
             ? '✓ ' + meta.memory.mode + ' ' + meta.memory.chars + ' 字符' + (meta.memory.placeholder ? '（占位）' : '')
             : '—';
-        const workspace = meta.workspace && meta.workspace.loaded ? '✓ ' + meta.workspace.files + ' 个文件' : '—';
+        const workspace = meta.workspace && meta.workspace.loaded
+            ? '✓ ' + meta.workspace.files + ' 个文件' + (meta.workspace.views ? ' · ' + meta.workspace.views + ' 个标签页' : '')
+            : '—';
         const skills = meta.skills ? meta.skills.count + ' 个' : '0 个';
         return '注入状态：AGENTS.md ' + agents + ' · 记忆 ' + memory + ' · 技能 ' + skills + ' · 上下文 ' + workspace;
     }
@@ -14060,6 +14349,8 @@ function requestApproval(session, toolMessage, info) {
         getConfig: () => config,
         setMemoryFallbackNotified: (value) => { memoryFallbackNotified = value; },
         getAttachments: (...args) => getAttachments(...args),
+        // 实测 usage 锚点（buildApiMessages 侧信道）：上下文估算与发送门禁同口径
+        getBuildAnchor: () => lastBuildAnchor,
         // 上下文提醒条 → 发送门禁回写（updateSendState 读 ctxGate 决定按钮禁用与提示行）
         setCtxGate: (next) => setCtxGate(next),
     });
@@ -14071,6 +14362,7 @@ function requestApproval(session, toolMessage, info) {
     const showArchivedDialog = (...args) => dialogsMod.showArchivedDialog(...args);
     const estimateMessageTokens = (...args) => dialogsMod.estimateMessageTokens(...args);
     const estimateApiMessagesTokens = (...args) => dialogsMod.estimateApiMessagesTokens(...args);
+    const estimateApiMessagesContext = (...args) => dialogsMod.estimateApiMessagesContext(...args);
     const estimateCurrentTokens = (...args) => dialogsMod.estimateCurrentTokens(...args);
 
     // 压缩转录与请求组装已归位 ai-compact.js（主会话与子代理共用一份）
@@ -14132,7 +14424,9 @@ function requestApproval(session, toolMessage, info) {
         const triggerEntry = entryOf(session);
         // 压缩请求 = 摘要提示 + 整段会话一起发给模型：估算 ≥ 窗口时必被服务商拒收。
         // 提前给出与提醒条一致的出路，不再等 API 报错（分段压缩预留见方案文档）。
-        if (triggerWindow > 0 && triggerEstimate >= triggerWindow) {
+        // force：上下文溢出恢复路径——此刻「整段会话」本来就已经超窗，但压缩请求只发
+        // 摘要提示 + 截断后的转录（TRANSCRIPT_MAX），照发不误；不 force 会在这里自锁。
+        if (triggerWindow > 0 && triggerEstimate >= triggerWindow && !(options && options.force)) {
             notify('上下文已超过模型上限，压缩请求无法发送：请先切换更大上下文的模型（分段压缩尚未实装）。', true);
             return false;
         }
@@ -14146,8 +14440,11 @@ function requestApproval(session, toolMessage, info) {
             oneShot = {
                 id, kind: 'compact', sessionId: session.id, buffer: '', startedAt: Date.now(), auto,
                 leaseHeld: true,
+                // 溢出恢复：压缩成功后自动重发本轮（finishCompact 末尾消费）
+                retryAfter: !!(options && options.retryAfter),
                 trigger: {
                     kind: auto ? 'auto' : 'manual',
+                    force: !!(options && options.force),
                     windowSize: triggerWindow,
                     threshold: triggerThreshold,
                     estimate: triggerEstimate,
@@ -14286,7 +14583,7 @@ function requestApproval(session, toolMessage, info) {
         const threshold = compactThresholdOf(config);
         const bundle = promptTextOf(target.id);
         const apiMessages = buildApiMessages(target, null, bundle);
-        let tokens = estimateApiMessagesTokens(apiMessages);
+        let tokens = estimateApiMessagesContext(apiMessages, lastBuildAnchor).tokens;
         tokens += toolsTokenEstimate(target);
         if (tokens < windowSize * threshold) return false;
         const c = autoCompactCount.get(target.id) || 0;
@@ -14331,8 +14628,12 @@ function requestApproval(session, toolMessage, info) {
             releaseOneShot();
             return;
         }
-        // cutoff / summary 形状 / 裁剪内核在 ai-compact.js（子代理压缩共用同一份）
-        const cutoff = computeCompactCutoff(session.messages, COMPACT_KEEP_TAIL);
+        // cutoff / summary 形状 / 裁剪内核在 ai-compact.js（子代理压缩共用同一份）。
+        // 保留预算按 token 计（窗口−输出预留 的 16%，与 dsh 的 retainRatio 对齐）：
+        // 按条数保留会被「很多条短消息」或「几条超长工具结果」两头坑到。
+        const retainBudget = compactRetainBudget(contextWindowOf(session), outputReserveOf(session));
+        const cutoff = computeCompactCutoffByBudget(
+            session.messages, retainBudget, estimateMessageTokens, COMPACT_KEEP_TAIL);
         const archived = session.messages.slice(0, cutoff);
         const summary = buildCompactSummary(text, cutoff, current.trigger, archived.length + session.messages.length);
         // 归档事件要在裁剪内存之前登记：内部捕获的是裁剪前的消息快照。
@@ -14347,10 +14648,20 @@ function requestApproval(session, toolMessage, info) {
         if (viewed) {
             updateContextCount();
             updateComposerTakeover(true);
-            showNote('已压缩上下文：摘要 ' + text.length + ' 字符，保留最近 ' + session.messages.length + ' 条，归档 ' + archived.length + ' 条。');
+            showNote('已压缩上下文：摘要 ' + text.length + ' 字符，保留最近 ' + session.messages.length +
+                ' 条（预留预算约 ' + retainBudget + ' tokens），归档 ' + archived.length + ' 条。');
         }
         flushMessageQueue(session.id);
         releaseOneShot();
+        // 上下文溢出恢复：压缩完成后自动重发本轮（六份参照 harness 的「压缩 → 重试」分支）。
+        // 队列里还有待发消息时不抢：flushMessageQueue 已经起了一轮，重试交给用户。
+        if (current.retryAfter) {
+            // 压缩租约同样是异步释放的：等空闲再重发，否则会被判成「租约失败」
+            whenSessionLeaseFree(session.id, () => {
+                if (session.archivedAt) return;
+                regenerateLast(session);
+            }, 8);
+        }
     }
 
     function cancelOneShot() {
@@ -15879,11 +16190,15 @@ function requestApproval(session, toolMessage, info) {
         currentSession,
         persistSessions,
         sessionById,
-        // wait_agent 的「已有待消费输入」判定：主会话的用户插话/排队消息也算（否则队列里
-        // 已有消息时调 wait_agent 会白等到超时）。
-        hasQueuedInput: (sessionId) => {
-            const list = queueMod.itemsForSession(sessionId);
-            return !!(list && list.length);
+        // wait_agent 的两条车道快照 {queue, steer}：只有插话（steer）算「待消费输入」——
+        // 排队不打扰等待（本轮结束后由 flushMessageQueue 送达，唤醒也读不到内容），
+        // queue 只供超时文案提示「输入框有排队消息」。
+        queueLanesOf: (sessionId) => {
+            const list = queueMod.itemsForSession(sessionId) || [];
+            return {
+                queue: list.some((item) => item.delivery !== 'steer'),
+                steer: list.some((item) => item.delivery === 'steer'),
+            };
         },
         // 子代理详情头部兜底：所属会话还是懒加载占位时只补它一个（见 ai-subagents 的
         // requestAgentRecordHydrate），不为了一个徽标扫全部会话的正文
@@ -15926,7 +16241,10 @@ function requestApproval(session, toolMessage, info) {
         },
         getConfig: () => config,
         contextWindowOf,
+        outputReserveOf,
         estimateApiMessagesTokens: (...args) => estimateApiMessagesTokens(...args),
+        estimateApiMessagesContext: (...args) => estimateApiMessagesContext(...args),
+        getBuildAnchor: () => lastBuildAnchor,
         // 结算通知走会话信箱（惰性：noticesMod 构造在上方，运行时才取值，无 TDZ 风险）
         getNotices: () => noticesMod,
     });
@@ -16080,13 +16398,13 @@ function requestApproval(session, toolMessage, info) {
         session.activePlan.fileRel = target.rel;
         persistSessions();
     }
-    const acceptPlan = async (session, families) => {
+    const acceptPlan = async (session, grantItems) => {
         // 批准意图明确：模型若还在收尾输出（提示词要求它提交后停轮，但可能没停干净），
         // 直接停掉再批准——否则用户点按钮无反应，只能干等或手动停止。
         const live = session && streamOf(session.id);
         if (live) stopGeneration(live);
         await writePlanFileForApproval(session);
-        return toolCardsMod.acceptPlan(session, families);
+        return toolCardsMod.acceptPlan(session, grantItems);
     };
     const askStateLabel = (...args) => toolCardsMod.askStateLabel(...args);
     const askResultText = (...args) => toolCardsMod.askResultText(...args);
@@ -16120,9 +16438,34 @@ function requestApproval(session, toolMessage, info) {
         toggle,
         open,
         isOpen,
+        // wipe-guard（工作区破坏防护）：AI 活跃度判定（critical 是否停会话），main.js 的
+        // wipeguard 控制器经懒 getter 调用。按工作区判定：本窗口的工具只跑在本窗口工作区
+        // （getScopeRoot），root 不匹配即本工作区静默，不该停任何会话
+        wipeguardIsAIActive: (root) => {
+            if (root && aiWorkspaceKey(root) !== aiWorkspaceKey(getScopeRoot())) return false;
+            return wipeguardBusyTools > 0 || (Date.now() - wipeguardLastToolAt < 60000);
+        },
+        // wipe-guard critical 止血：只停「挂在被告警工作区上」的生成与子代理（stopGeneration
+        // 已含子代理停止 / 审批取消 / 系统接管取消的全套收尾）。workspace 为空的会话不可
+        // 归因，保守一并停；别的后台会话（其它工作区）不受牵连
+        wipeguardStopForWorkspace: (root) => {
+            let stopped = 0;
+            const key = root ? aiWorkspaceKey(root) : '';
+            for (const stream of Array.from(streams.values())) {
+                const sess = sessionById(stream.sessionId);
+                const sessKey = sess && sess.workspace ? aiWorkspaceKey(sess.workspace) : '';
+                if (!root || !key || !sessKey || sessKey === key) {
+                    stopGeneration(stream);
+                    stopped++;
+                }
+            }
+            return stopped;
+        },
         // 消息中心 / 系统通知点击跳会话用（main.js focusSession）：不导出的话调用抛
         // TypeError 被 try/catch 吞掉，面板开了却永远停在原会话——「toast 点了没反应」的根因
         switchSession,
+        // 活动栏会话图标状态点：宿主在工作区切换后主动重算（会话列表域统一计算并推回调）
+        refreshSessionBadge: () => sessionListMod.refreshBadge(),
         whenReady: () => Promise.all([whenConfigReady(), whenSessionsReady()]).then(() => undefined),
         setMode,
         applySettings: applyPanelSettings,

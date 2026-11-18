@@ -111,3 +111,19 @@ export function buildDiffPreview(ops) {
     }
     return {lines, truncated};
 }
+
+// 行号列的位数预算：取整份 diff 里最大的真实行号。渲染端据此设行号列宽——
+// 固定 22px 只装得下 3 位数，四位数行号（如 main.js 3091）会被继承的
+// overflow-wrap: anywhere 从数字中间截断换行（309/1 两行）。
+export function diffNoDigits(lines) {
+    const list = Array.isArray(lines) ? lines : [];
+    let maxNo = 0;
+    for (const line of list) {
+        const no = Math.max(Number(line && line.oldLine) || 0, Number(line && line.newLine) || 0);
+        if (no > maxNo) maxNo = no;
+    }
+    // 旧会话没有行号字段：渲染端从 1 连数，上限即行数
+    if (!maxNo) maxNo = list.length;
+    // 少于 3 位仍保 3 位基线宽（22px），短行号的 diff 不缩列
+    return Math.max(3, String(maxNo).length);
+}

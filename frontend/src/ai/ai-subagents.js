@@ -12,7 +12,7 @@ import {aiClampInt, aiNowId, aiTextOf, AI_COMPACT_SYSTEM_PROMPT} from './ai-cons
 import {AI_TOOL_DEFS, buildSpawnAgentDef} from './ai-tool-defs.js';
 import {inspectToolArguments} from './ai-tool-args.js';
 import {buildSettlementNotice, buildAskNotice} from './ai-agent-notices.js';
-import {compactTranscriptOf, computeCompactCutoff, buildCompactSummary, applyCompactToSession, buildCompactMessages, compactThresholdOf, COMPACT_KEEP_TAIL} from './ai-compact.js';
+import {compactTranscriptOf, computeCompactCutoffByBudget, compactRetainBudget, buildCompactSummary, applyCompactToSession, buildCompactMessages, compactThresholdOf, COMPACT_KEEP_TAIL} from './ai-compact.js';
 import {createLoopGuard} from './ai-loop-guard.js';
 
 // target 是否在 ancestorSessionId 的后代里（`agent_send` 的方向守卫）。
@@ -79,6 +79,31 @@ export function pendingInboxCount(sub) {
     const inbox = sub && sub.inbox;
     if (!inbox) return 0;
     return (inbox.step || []).length + (inbox.turn || []).length;
+}
+
+// wait_agent 唤醒文案（导出供单测）。结果是一句话说明，模型读的是文案不是 JSON。
+// 来源语义（2026-11-19 重设计，方案 docs/finished-plans/ai-wait-input-gestures.md）：
+// 排队消息不打扰等待——只有插话（steer）与代理通知会唤醒，两种来源给不同的行动指令；
+// 排队消息只在超时检查点提示（waitTimeoutText）。无来源（心跳 hasPending 兜底结算）时
+// 按通用通知文案处理——排队车道不会走到这里。
+export function waitWakeText(source) {
+    if (source === 'steer') {
+        return '用户插话了一条消息（不打断你的任务）：它会在下一条请求的轮边界注入你的上下文，'
+            + '继续当前工作即可读到，无需结束本轮。';
+    }
+    return '收件箱有新输入（子代理完成通知 / 其他代理的消息），已随下一轮上下文注入——'
+        + '读完按需继续；若无事可做可直接结束本轮。';
+}
+
+// wait_agent 超时文案。hasQueued：输入框是否有排队消息——排队不打扰等待，但模型该在
+// 超时检查点知道有消息在等，工作告一段落时可自行收轮去接收（延迟上界 ≈ 一个 timeout），
+// 而不是每次都把「超时」理解成「用户没来」继续干等。
+export function waitTimeoutText(timeoutSec, hasQueued) {
+    const base = '等待超时（' + timeoutSec + 's）：下一步还没有新输入。可继续 wait_agent，或先做别的——'
+        + '子代理完成 / 别人投递 / 用户插话都会唤醒你。';
+    if (!hasQueued) return base;
+    return base + '\n另外：输入框有用户排队的消息（排队不打扰等待，结束本轮后它会作为正式用户消息'
+        + '送达）——若当前工作已告一段落，可直接结束本轮去接收。';
 }
 
 // 收件箱双队列的纯函数部分（导出供单测：消费顺序与来源前缀是「插队优先、主/用户可辨」的
@@ -162,6 +187,19 @@ export function subTreeIdsOf(subs, rootId) {
 const SUB_SCOPES = ['read', 'edit', 'auto', 'full'];
 export function subAgentScopeOf(parentScope) {
     return SUB_SCOPES.includes(parentScope) ? parentScope : 'read';
+}
+
+// 权限档严格度（数值越大越严）：full < auto < edit < read。
+// 单向降档的唯一判据——「请求档」不比「父档」宽才生效，否则忽略，守住模型不能自我提权。
+const SCOPE_STRICTNESS = Object.freeze({full: 0, auto: 1, edit: 2, read: 3});
+
+// 单向降档（spawn_agent 的 sandbox 参数）：取「父档」与「请求档」中更严的一个。
+// 请求档比父档宽（或非法 / 缺省）→ 回退父档，绝不升档。这是纯函数，供派单与测试共用。
+export function subScopeDowngrade(parentScope, requested) {
+    const parent = subAgentScopeOf(parentScope);
+    const req = SUB_SCOPES.includes(requested) ? requested : null;
+    if (!req) return parent;
+    return SCOPE_STRICTNESS[req] >= SCOPE_STRICTNESS[parent] ? req : parent;
 }
 
 // 父权限档 → 子代理沙箱档（方案 docs/finished-plans/subagent-sandbox.md §3.1）。
@@ -324,13 +362,20 @@ export function createAISubagents(ctx) {
     const logActivity = ctx.logActivity;
     // 压缩判定需要「窗口大小」与「当前上下文估算」——与主会话同一口径，不另立一套
     const contextWindowOf = ctx.contextWindowOf;
+    // 保留预算的输出预留（模型条目 outputWindow / 全局 maxTokens），与主会话同源
+    const outputReserveOf = ctx.outputReserveOf || (() => 0);
     const estimateApiMessagesTokens = ctx.estimateApiMessagesTokens;
+    // 实测 usage 锚点：与主会话同一口径（锚点由面板的 buildApiMessages 侧信道提供）
+    const estimateApiMessagesContext = ctx.estimateApiMessagesContext;
+    const getBuildAnchor = ctx.getBuildAnchor || (() => null);
     // 等待原语（ai-inbox-wait.js）：子代理收件箱入队即唤醒在该代理上 wait_agent 的调用方
     // （典型是父代理在等这个下级回报）。内容仍在轮边界由 consumeSubInbox 注入。
     const inboxWaiters = ctx.inboxWaiters;
-    // 主会话「队列里已有用户插话 / 排队消息」的判定。**必须在这里取**：工具 ctx 只有
-    // {session, toolMessage, stream}，从那里读恒为 undefined（等于把这个判定关掉）。
-    const hasQueuedInput = ctx.hasQueuedInput;
+    // 主会话「消息队列两条车道」的快照：{queue: 有排队消息, steer: 有待注入插话}。
+    // **必须在这里取**：工具 ctx 只有 {session, toolMessage, stream}，从那里读恒为 undefined
+    // （等于把这个判定关掉）。排队不打扰等待——只有 steer 算 wait_agent 的待消费输入；
+    // queue 只用于超时检查点提示「输入框有排队消息」（见 waitForInbox 超时分支）。
+    const queueLanesOf = ctx.queueLanesOf;
 
     // —— 随域迁入的子代理状态与限额常量（原 ai-panel.js 闭包级）——
     const AI_SUB_LIMIT_DEFAULT = 20;
@@ -595,9 +640,12 @@ export function createAISubagents(ctx) {
         return st || null;
     }
 
-    // 子代理的父会话（嵌套时取中间那层；找不到就回落当前会话）
+    // 子代理的父会话（嵌套时取中间那层，否则取根）。
+    // 父与根都被删除时返回 null——这里只剩「模型档案 / 条目回落」用途（profileOf/entryOf
+    // 对 null 安全），绝不能拿面板当前会话顶上：那会把子代理的结算与记录挂到用户正看着的
+    // 另一个对话上，而父会话没了这条子代理本来也没有归宿。
     function parentSessionOfSub(sub) {
-        return sessionById(sub && sub.parentSessionId) || sessionById(sub && sub.rootSessionId) || currentSession();
+        return sessionById(sub && sub.parentSessionId) || sessionById(sub && sub.rootSessionId) || null;
     }
 
     // 会话信箱（面板后构造，惰性取）：结算与提问通知都经它投递，本模块不持有队列。
@@ -716,9 +764,9 @@ export function createAISubagents(ctx) {
             ctxLimit: Number(parentSession.ctxLimit) || 0,
             systemPrompt: parentSession.systemPrompt || '',
             promptTemplateId: parentSession.promptTemplateId || '',
-            // 权限档继承父会话（子代理不再无条件 readonly）：完全权限下才能读到工作区外，
-            // 否则 read_file 的绝对路径会被按「路径超出工作区范围」拒掉。
-            scope: subAgentScopeOf(parentSession.scope),
+            // 权限档：默认继承父会话，spawn_agent 点名 sandbox 时单向降档（只严不宽）。
+            // 完全权限下才能读到工作区外，否则 read_file 的绝对路径会被按「路径超出工作区范围」拒掉。
+            scope: subScopeDowngrade(parentSession.scope, input && input.sandbox),
             planMode: false,
             // from:'agent'：派单 task 是主代理模型写的，不是用户输入——「用户点名路径」判定
             // （ai-read-roots.js userNamedPath）据此排除，防止注入经派单文本伪造点名。
@@ -1349,7 +1397,7 @@ export function createAISubagents(ctx) {
     // 只唤醒不注入：注入仍是轮边界 consumeSubInbox 的事。
     function notifyInbox(sub) {
         if (!sub || !inboxWaiters) return;
-        if (typeof inboxWaiters.notify === 'function') inboxWaiters.notify(sub.id);
+        if (typeof inboxWaiters.notify === 'function') inboxWaiters.notify(sub.id, 'agent');
     }
 
     // 唯一消费点。step 在前、turn 在后（插队优先），消费后清空。
@@ -1650,7 +1698,11 @@ export function createAISubagents(ctx) {
         const s = sub.flow;
         if (!s) return 0;
         try {
-            return estimateApiMessagesTokens(buildApiMessages(sub.session, null, s.systemPrompt));
+            const built = buildApiMessages(sub.session, null, s.systemPrompt);
+            if (typeof estimateApiMessagesContext === 'function') {
+                return estimateApiMessagesContext(built, getBuildAnchor()).tokens;
+            }
+            return estimateApiMessagesTokens(built);
         } catch (e) {
             return 0;
         }
@@ -1761,7 +1813,10 @@ export function createAISubagents(ctx) {
         const record = subAgentRecords.get(job.subId) || null;
         const session = (sub && sub.session) || (record && record.session) || null;
         if (!session) return;
-        const cutoff = computeCompactCutoff(session.messages, COMPACT_KEEP_TAIL);
+        // 保留预算按 token 计（窗口−输出预留 的 16%，与 dsh 的 retainRatio 对齐）
+        const retainBudget = compactRetainBudget(contextWindowOf(session), outputReserveOf(session));
+        const cutoff = computeCompactCutoffByBudget(
+            session.messages, retainBudget, (message) => estimateApiMessagesTokens([message]), COMPACT_KEEP_TAIL);
         if (cutoff > 0) {
             const summary = buildCompactSummary(text, cutoff,
                 {kind: job.auto ? 'auto' : 'manual', scope: 'subagent'}, session.messages.length);
@@ -1846,11 +1901,13 @@ export function createAISubagents(ctx) {
         const hub = noticesLike();
         // 注意：这是**模块 ctx**取到的 getter（工具 ctx 只有 session/toolMessage/stream，
         // 拿不到它）；改成从工具 ctx 读会恒为 undefined，判定等于关掉。
-        const queuedOf = typeof hasQueuedInput === 'function' ? hasQueuedInput : () => false;
+        const lanesOf = typeof queueLanesOf === 'function' ? queueLanesOf : () => ({queue: false, steer: false});
         const countPending = () => {
             if (sub) return pendingInboxCount(sub);
             const noticeCount = hub && typeof hub.pendingCount === 'function' ? hub.pendingCount(viewer.id) : 0;
-            return noticeCount + (queuedOf(viewer.id) ? 1 : 0);
+            // 排队车道（queue）不计入待消费输入：排队不打扰等待（本轮结束后由 flush 送达），
+            // 算进去只会让排队一条消息就把等待白白唤醒一轮（唤醒了也读不到内容）。
+            return noticeCount + (lanesOf(viewer.id).steer ? 1 : 0);
         };
         const isStopped = () => {
             if (sub) return sub.state !== 'running';
@@ -1877,12 +1934,15 @@ export function createAISubagents(ctx) {
             return '等待被停止：可稍后再 wait_agent，或等新消息进来时再继续。';
         }
         if (!result || result.timedOut) {
-            return '等待超时（' + timeoutSec + 's）：下一步还没有新输入。可继续 wait_agent，或先做别的——' +
-                '子代理完成 / 别人投递 / 用户插话都会进你的收件箱。';
+            // 超时检查点顺带提示「输入框有排队消息」：排队不打扰等待，但模型该知道有消息
+            // 在等，工作告一段落时可自行收轮去接收（只有主会话有输入框排队，子代理恒无）。
+            return waitTimeoutText(timeoutSec, lanesOf(viewer.id).queue);
         }
         if (roundKey) reportedPending.set(roundKey, {ownerId: viewer.id, count: countPending()});
-        return '收件箱有新输入（子代理完成通知 / 其他代理的消息 / 用户插话）。' +
-            '本轮结束后它们会在下一轮开头注入上下文——不要空转，直接结束本轮即可读到。';
+        // 唤醒来源分文案：notify 带回的 source 优先；心跳 / 落地即有的兜底结算没有 source，
+        // 按当前车道推断（steer 挂着给插话文案，否则通用通知文案——排队不唤醒等不到这）。
+        const wakeSource = (result && result.source) || (lanesOf(viewer.id).steer ? 'steer' : '');
+        return waitWakeText(wakeSource);
     }
 
     // 工具分发薄壳（panel 的 agent_tool case 转调；各阶段在此追加）

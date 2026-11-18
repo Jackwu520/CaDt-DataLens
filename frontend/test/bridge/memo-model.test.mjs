@@ -285,6 +285,41 @@ test('formatMemoForAI：md 条目带 [md] 标记', () => {
     assert.match(text, /\[md\] \[it-[^\]]+\] # 小节/);
 });
 
+// ===== 终端条目（kind=term）=====
+
+test('kind=term：addItem / normalize / updateById 全链路放行', () => {
+    // addItem 带回 kind
+    const base = sampleDoc();
+    const blk = base.doc.blocks[0];
+    const term = addItem(base.doc, blk.id, 'git status', {kind: 'term'});
+    assert.ok(term.ok);
+    assert.equal(term.doc.blocks[0].items[term.doc.blocks[0].items.length - 1].kind, 'term');
+    // normalizeMemoData 保留 term，非法值仍纠正为 text
+    const norm = normalizeMemoData({blocks: [{items: [{text: 'a', kind: 'term'}, {text: 'b', kind: 'bogus'}]}]});
+    assert.equal(norm.blocks[0].items[0].kind, 'term');
+    assert.equal(norm.blocks[0].items[1].kind, 'text');
+    // updateById 三向转换 + 非法 kind 报错文案
+    const u1 = updateById(base.doc, blk.items[0].id, {kind: 'term'});
+    assert.ok(u1.ok && u1.doc.blocks[0].items[0].kind === 'term');
+    const u2 = updateById(base.doc, blk.items[0].id, {kind: 'wat'});
+    assert.ok(!u2.ok && /text \/ md \/ term/.test(u2.error));
+});
+
+test('formatMemoForAI：term 条目带 [终端] 标记（命令原文可读）', () => {
+    const base = sampleDoc();
+    const blk = base.doc.blocks[0];
+    const term = addItem(base.doc, blk.id, 'git status --short', {kind: 'term'});
+    const text = formatMemoForAI(term.doc, '工作区快捷便签');
+    assert.match(text, /\[终端\] \[it-[^\]]+\] git status --short/);
+});
+
+test('exportMemoMarkdown：term 条目按普通清单条目导出（命令原文，不含输出）', () => {
+    let doc = addBlock(defaultMemoData(), '部署').doc;
+    doc = addItem(doc, doc.blocks[0].id, 'npm run build', {kind: 'term'}).doc;
+    const out = exportMemoMarkdown(doc, '工作区');
+    assert.match(out.content, /- \[ \] npm run build/);
+});
+
 test('collectImageRefs：item.images 与正文占位符合并收集', () => {
     const base = sampleDoc();
     const blk = base.doc.blocks[0];
@@ -378,10 +413,16 @@ test('textMax：便签正文上限放宽到长笔记量级（>= 1 万字符）',
 });
 
 // 守卫：便签全量重渲染必须保留 .memo-body 滚动位置，否则勾选待办/加条目/折叠后都跳回顶部。
+// 顺序敏感：footer 必须在 scrollTop 恢复之前入树——footer 缺席时 .memo-body 被 flex 撑高一个
+// footer 的高度，恢复的 scrollTop 会被 clamp 到偏小的 max（滚动条偏移 43px bug 的根因）。
 test('bridge-memo-view：render 保留滚动位置', () => {
     const src = readFileSync(new URL('../../src/bridge/bridge-memo-view.js', import.meta.url), 'utf8');
     assert.ok(/prevBody\?\.scrollTop|\.scrollTop/.test(src), 'render 应读取并还原 .memo-body 的 scrollTop');
     assert.ok(/body\.scrollTop\s*=\s*scrollTop/.test(src), '重建后应把 scrollTop 还原到新 body');
+    const footerAt = src.indexOf('root.appendChild(footer)');
+    const restoreAt = src.indexOf('body.scrollTop = scrollTop');
+    assert.ok(footerAt >= 0 && restoreAt >= 0, '应找到 footer 入树与滚动恢复两处代码');
+    assert.ok(footerAt < restoreAt, 'footer 必须在滚动恢复之前入树（否则恢复值被 clamp，视口上移约 43px）');
 });
 
 // 守卫：块右键菜单的「折叠/展开」项必须可点（曾因误加 disabled 导致整个折叠功能不可用）。
@@ -419,4 +460,36 @@ test('shouldFoldMemoItem：超过 1 个视窗高度才折叠', () => {
     assert.equal(shouldFoldMemoItem('x'.repeat(120), vh), false, '视窗省略时用默认 600');
     // 换行多的短文本也能触发折叠
     assert.equal(shouldFoldMemoItem(Array(31).fill('a').join('\n'), vh), true);
+});
+
+test('normalizeMemoData / updateById：tags 数据层（截断/去重/上限/替换）', () => {
+    const doc = normalizeMemoData({blocks: [{items: [
+        {text: 'a', tags: ['重要', ' 重要 ', '', '重要', '紧急', 'extra', 'more', 'even-more']},
+    ]}]});
+    const tags = doc.blocks[0].items[0].tags;
+    assert.deepEqual(tags, ['重要', '紧急', 'extra', 'more'], 'trim/去空/去重/上限 4 个');
+
+    const base = sampleDoc();
+    const it = base.doc.blocks[0].items[0];
+    const u = updateById(base.doc, it.id, {tags: ['灵感', '资料']});
+    assert.deepEqual(u.doc.blocks[0].items[0].tags, ['灵感', '资料'], '整体替换');
+    assert.equal(updateById(base.doc, it.id, {tags: '不是数组'}).ok, false, '非数组拒绝');
+});
+
+test('updateById：kind 转换（text ↔ md）', () => {
+    const base = sampleDoc();
+    const it = base.doc.blocks[0].items[0];
+    const u1 = updateById(base.doc, it.id, {kind: 'md'});
+    assert.equal(u1.doc.blocks[0].items[0].kind, 'md');
+    const u2 = updateById(u1.doc, it.id, {kind: 'text'});
+    assert.equal(u2.doc.blocks[0].items[0].kind, 'text');
+    assert.equal(updateById(base.doc, it.id, {kind: 'html'}).ok, false, '非法 kind 拒绝');
+});
+
+test('formatMemoForAI：tags 显示 {a/b}', () => {
+    const base = sampleDoc();
+    const it = base.doc.blocks[0].items[0];
+    const doc = updateById(base.doc, it.id, {tags: ['重要', '紧急']}).doc;
+    const text = formatMemoForAI(doc, '工作区');
+    assert.match(text, /\[it-[^\]]+\] \{重要\/紧急\}/);
 });

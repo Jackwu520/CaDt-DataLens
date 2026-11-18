@@ -425,3 +425,30 @@ func TestHasAliveDescendantRealProcess(t *testing.T) {
 	}
 	t.Fatal("进程树结束后应判定无活后代")
 }
+
+func TestUtf8IncompleteTail(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want int
+	}{
+		{"空串", "", 0},
+		{"纯 ASCII", "abc 123", 0},
+		{"完整 3 字节字符", "ab\xe4\xb8\xad", 0},
+		{"块尾恰好对齐完整字符", "\xe4\xb8\xad", 0},
+		{"3 字节截断剩 2", "ab\xe4\xb8", 2},
+		{"3 字节截断剩 1", "ab\xe4", 1},
+		{"4 字节完整表情", "\xf0\x9f\x98\x80", 0},
+		{"4 字节截断剩 3", "\xf0\x9f\x98", 3},
+		{"4 字节截断剩 2", "\xf0\x9f", 2},
+		{"2 字节截断剩 1", "a\xc3", 1},
+		{"非法首字节", "\xff", 0},
+		{"纯续字节尾巴", "\x80\x80", 0},
+		{"中文跨块场景", "路径 D:/data\xe4\xb8", 2},
+	}
+	for _, c := range cases {
+		if got := utf8IncompleteTail([]byte(c.in)); got != c.want {
+			t.Errorf("%s: utf8IncompleteTail(%q) = %d, want %d", c.name, c.in, got, c.want)
+		}
+	}
+}

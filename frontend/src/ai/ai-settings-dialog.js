@@ -396,6 +396,7 @@ export function createAISettingsDialog(ctx) {
             if (!opt.chatFontCode.value) opt.chatFontCode.value = 'follow';
         }
         if (opt.showThinking) opt.showThinking.checked = settings.aiShowThinking !== false;
+        if (opt.alwaysCollapse) opt.alwaysCollapse.checked = settings.aiAlwaysCollapse === true;
         if (opt.showUsage) opt.showUsage.checked = settings.aiShowUsage === true;
         if (opt.msgActions) opt.msgActions.value = settings.aiMsgActions || 'full';
         if (opt.turnMetaAll) opt.turnMetaAll.checked = settings.aiShowEveryTurnMeta === true;
@@ -441,6 +442,7 @@ export function createAISettingsDialog(ctx) {
         if (opt.threshold) opt.threshold.value = String(aiClamp(Number(getConfig().autoCompactThreshold) || 0.8, 0.5, 0.95));
         if (opt.autoCompact) opt.autoCompact.checked = getConfig().autoCompact !== false;
         permMod.renderApprovedSettings();
+        permMod.renderPluginToolSettings();
         prefMod.renderPreferenceSettings();
         permMod.renderPermissionSettings();
         permMod.refreshPermissionEditors().catch(() => {});
@@ -756,6 +758,12 @@ export function createAISettingsDialog(ctx) {
             settings.aiShowThinking = !!opt.showThinking.checked;
             saveSettings();
             applyPanelSettings();
+        });
+        if (opt.alwaysCollapse) opt.alwaysCollapse.addEventListener('change', () => {
+            settings.aiAlwaysCollapse = !!opt.alwaysCollapse.checked;
+            saveSettings();
+            if (isOpen() && currentSession()) renderMessages(true);
+            setSettingsStatus('过程区始终折叠：' + (opt.alwaysCollapse.checked ? '开' : '关'), 'ok');
         });
         if (opt.showUsage) opt.showUsage.addEventListener('change', () => {
             settings.aiShowUsage = !!opt.showUsage.checked;

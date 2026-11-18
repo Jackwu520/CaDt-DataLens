@@ -103,6 +103,18 @@ test('spinner 相位接线：CSS 周期与 JS 常量一致，且接受 --ai-spin
     assert.match(rule[0], /animation-delay:\s*var\(--ai-spin-phase/, '负 delay 变量不能丢，否则重建仍会回弹');
 });
 
+test('审批正文：低优先级项被 flex 压缩时不能压成「一行都看不见」', () => {
+    // .ai-tool-body.ai-tool-approval-body 是 max-height + overflow:hidden 的纵向 flex，
+    // 命令块与结果输出是 flex: 0 1 auto（可缩）。不设 min-height 时，长 diff 会把它们
+    // 压到几 px —— 表现为卡片底部「已应用更改…」只剩半行（2026-11-19 用户报告）。
+    const css = readFileSync(new URL('../../src/style.css', import.meta.url), 'utf8');
+    for (const sel of ['.ai-tool-approval-body .ai-command-line', '.ai-tool-approval-body .ai-approval-output']) {
+        const rule = css.match(new RegExp(sel.replace(/\./g, '\\.') + '\\s*\\{[^}]*\\}'));
+        assert.ok(rule, '找不到规则 ' + sel);
+        assert.match(rule[0], /min-height:\s*[\d.]+em/, sel + ' 必须留 min-height 保底一行');
+    }
+});
+
 test('toolIsLive：interrupted 是终止态最高优先级（「已停止」的卡片不许再算运行中）', () => {
     // 用户停止时先落 interrupted，status 可能被迟到的审批/分类器回调改回 running：
     // 只看 status 会让 spinner 继续转、正文继续写「执行中…」，与头部「已停止」自相矛盾。
@@ -256,4 +268,30 @@ test('文件名链接只加在 primary，卡头其余区域照旧展开/折叠�
     const css = readFileSync(new URL('../../src/style.css', import.meta.url), 'utf8');
     assert.match(css, /\.ai-tool-link:hover \{[^}]*text-decoration: underline/,
         '.ai-tool-link 必须有 hover 下划线');
+});
+
+// 没有可展开正文的卡（wait_agent 执行中只有一行「执行中…」）不该有折叠箭头：
+// 箭头展开只有一行字，属于纯噪音（头部状态徽标已经说明结果）。
+test('无正文的工具卡不摆折叠箭头与空 body', () => {
+    const src = readFileSync(new URL('../../src/ai/ai-tool-cards.js', import.meta.url), 'utf8');
+    const fn = src.slice(src.indexOf('function renderToolMessage'), src.indexOf('function enhanceAnswerBody'));
+    assert.ok(fn.length > 100, 'renderToolMessage 源码切片失效');
+    assert.match(fn, /statusOnlyBody = !inlineText\.trim\(\)/,
+        '通用分支必须记下「正文只有状态占位」');
+    assert.match(fn, /if \(isRead \|\| isBuiltinSkill \|\| statusOnlyBody\) card\.appendChild\(head\);/,
+        '无正文时不要 append body（否则展开只有「执行中…」）');
+    assert.match(fn, /if \(statusOnlyBody\) chev\.remove\(\)/, '无正文时不显示折叠箭头');
+    assert.match(fn, /if \(statusOnlyBody\) return; \/\/ 无正文可展开/,
+        '无正文时点卡头不做折叠 toggle');
+});
+
+// 卡头参数摘要：等待 / 协作 / 会话类工具落 default 会把参数 JSON 原样摆出来
+// （截图里就是「等待新输入 {"timeoutSec":300}」），各自给一句人话。
+test('等待 / 协作 / 会话类工具卡头给人话，不摆原始参数 JSON', () => {
+    const src = readFileSync(new URL('../../src/ai/ai-tool-cards.js', import.meta.url), 'utf8');
+    assert.match(src, /case 'wait_agent': \{[\s\S]{0,200}?最多 ' \+ Math\.max\(1, Math\.round\(sec \/ 60\)\) \+ ' 分钟'/,
+        'wait_agent 卡头应显示等多久，而不是 {"timeoutSec":300}');
+    for (const name of ['agent_send', 'agent_stop', 'agent_compact', 'notify_send', 'session_send', 'start_timer']) {
+        assert.match(src, new RegExp("case '" + name + "':"), name + ' 需要自己的 primary 分支');
+    }
 });

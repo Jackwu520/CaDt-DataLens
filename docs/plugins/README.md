@@ -77,21 +77,61 @@ cadt.registerFormat({
 - 注册后即刻生效：之后打开的匹配文件会使用该格式；已打开的文件不受影响。
 - 格式会出现在 设置 → 文件格式 树里，可获得独立的编码/缩进/换行/默认视图配置。
 
-### `cadt.addCommand({id, label, run})`
+### `cadt.addCommand(spec)`
 
-在菜单栏 **工具(U)** 里注册命令。
+注册命令。默认进菜单栏 **工具(U)**，同时自动出现在命令面板（Ctrl+Shift+P）。
 
 ```js
 cadt.addCommand({
     id: 'char-count',          // 插件内唯一，会加插件前缀
     label: '统计当前文件字符数',
-    run() {
-        const file = cadt.getActiveFile();
+    run(env) {
         const text = cadt.getActiveText();
-        cadt.flash((file ? file.name : '无文件') + ' 共 ' + (text ? text.length : 0) + ' 字符');
+        cadt.flash((env.hasFile ? env.formatId : '无文件') + ' · ' + (text ? text.length : 0) + ' 字符');
     },
 });
 ```
+
+**可选字段**（都可省略，向后兼容旧写法）：
+
+| 字段 | 说明 |
+| --- | --- |
+| `icon` | 菜单图标名（`core/icons.js` 里注册的名称），缺省不显示 |
+| `description` | 一句话说明，显示在右键菜单的副行 |
+| `category` | 命令面板分组：`file` / `edit` / `format` / `view` / `tools` / `plugin`（默认 `plugin`） |
+| `contexts` | 出现在哪些入口，取值 `tools` / `editorContext`（默认 `['tools']`）；命令面板对所有命令开放，无需声明 |
+| `when` | `(env) => boolean`，返回 false 时该项变灰不执行（`editorContext` 里直接不出现）；抛错按不满足处理 |
+| `shortcut` | `{key: 'Ctrl+Alt+F', when?: 'editorFocus'}`，`when` 只支持 `'editorFocus'`（编辑器聚焦时才生效） |
+
+```js
+cadt.addCommand({
+    id: 'fmt-sql', label: '格式化 SQL', icon: 'wand',
+    description: '格式化选中或全文的 SQL',
+    category: 'format',
+    contexts: ['tools', 'editorContext'],
+    when: (env) => env.formatId === 'sql' && !env.readonly,
+    shortcut: {key: 'Ctrl+Alt+F', when: 'editorFocus'},
+    run(env) { /* … */ },
+});
+```
+
+`run(env)` 与 `when(env)` 收到同一份上下文快照：
+
+| 字段 | 说明 |
+| --- | --- |
+| `hasFile` | 是否有活动文件 |
+| `formatId` | 当前格式 id（如 `json` / `csv`），无文件为空串 |
+| `hasSelection` | 是否有选中文本 |
+| `readonly` | 当前文档是否只读（全局只读锁或标签锁） |
+| `workspace` | 当前工作区目录，未打开工作区为空串 |
+| `editorFocused` | 编辑器是否有焦点 |
+
+规则与边界：
+
+- **快捷键不抢占内置键位**：内置动作优先匹配，只有没命中任何内置键时才会落到插件命令；同键多插件命令时先注册者生效。
+- 对话框打开或正在输入框里打字时，插件快捷键不触发。
+- `contexts` 里的未知值会被静默剔除；全部无效时按 `['tools']` 处理。
+- `when` 抛异常一律当「条件不满足」，一条坏命令不会阻断整个菜单渲染。
 
 ### `cadt.addTheme({id, name, bg, accent, css})`
 
@@ -174,6 +214,120 @@ cadt.registerAIProvider({
 - `responses` 走 OpenAI Responses API：消息映射成 `input`（system → `instructions`、工具结果 → `function_call_output`、assistant 工具调用 → `function_call`），工具是扁平的 `{type,name,description,parameters}`；流事件解析 `output_text.delta` / `reasoning_text.delta` / `output_item.done` / `completed`。**依赖 data JSON 里的 `type` 字段**；工具参数取 `output_item.done` 的完整 `arguments`，不拼接 `function_call_arguments.delta` 增量。
 - 典型用途：按会话派生关联 ID、给特定网关补 `tool_choice` / 工具声明、注入租户标记等。不适合做协议级改写或出口 IP 轮换（代理应走 `account.proxy` 或系统代理）。
 - 完整可运行示例见 [`examples/ai-provider-demo/`](examples/ai-provider-demo/)。
+
+### `cadt.registerTool(spec)`
+
+让插件向 **AI** 提供工具。**默认关闭**：注册只是登记能力，必须由用户在 设置 → AI → 权限 → 插件工具 逐层授权后，工具定义才会下发给模型。
+
+```js
+cadt.registerTool({
+    name: 'query_jira',                  // 插件内唯一，^[a-z0-9_]{1,40}$
+    description: '按 JQL 查询 Jira 工单并返回摘要（何时用 / 何时不用 / 与相邻工具的分工，模型只看这段）',
+    parameters: {
+        type: 'object',
+        properties: {jql: {type: 'string', description: 'JQL 表达式'}},
+        required: ['jql'],
+    },
+    readOnly: true,                      // 声明「只读」——只是候选资格，见下
+    timeoutMs: 60000,                    // 可选，默认 60s，上限 300s
+    async execute(args, ctx) {
+        // ctx: {sessionId, scope（权限档）, signal（AbortSignal）}
+        return JSON.stringify(await fetchJira(args.jql));
+    },
+});
+```
+
+**三层授权**（缺一不可，都在 设置 → AI → 权限 → 插件工具）：
+
+1. **全局总闸**：关掉后所有插件工具都不下发。
+2. **插件级**：允许此插件向 AI 提供工具。
+3. **工具级**：逐个工具开关。
+
+`readOnly: true` 只是**候选资格**，不等于能在只读档使用：还需用户在该工具旁显式勾上「只读档可用」（默认关）。作者声明意图、用户确认授权，是双人复核——插件不能自己给自己发通行证。
+
+规则与边界：
+
+- **下发条件**：三层授权全开 + 非计划模式 +（普通工具须 `edit` / `auto` / `full` 档；`readOnly` 工具在用户勾了「只读档可用」后，`read` 档也给）。
+- **执行一律走审批链**：与 MCP 工具同一套判定与同一张审批卡，按权限档、项目规则、端侧分类器决定放行或转人工。`readOnly` 只影响下发，不影响审批。
+- **工具名带来源**：对外公开名是 `plugin__<插件id>__<工具名>`，工具卡显示「插件 · 工具名」并标出插件来源。
+- **子代理默认看不到**插件工具（副作用在子代理里发生更难归因）；需要时在主会话调用。
+- **上限**：单插件 ≤ 20 个、全局 ≤ 50 个；`description` ≤ 2000 字符；`parameters` ≤ 16 KiB。超限**注册时报错**（进插件加载错误，不会静默丢弃）。
+- **计划模式**：一律拒绝，与内置写工具、MCP 同口径。
+- **返回值**：`string` 直接作为工具结果；`{text, images}` 取 `text`（当前版本不把 images 注入对话，会在正文里注明）。
+
+> **必须知道的限制**：审批只约束「**AI 调用插件工具**」这一条路径，**约束不了插件代码自己干活**。插件以 `new Function` 在主文档执行，加载那一刻就拥有与本应用相同的权限（可 `cadt.runCommand` 起进程、可读写本机文件）。所以插件工具授权的作用是**收窄 AI 的能力面**，不是把插件关进沙箱——真正的防线仍然是「只安装可信来源的插件」。详见 `docs/unfinished-plans/plugin-tool-security.md`。
+
+### `cadt.getPluginDir()`
+
+返回当前插件的安装目录（绝对路径，字符串）。插件可用它拼自己的资源 / 脚本路径，例如把配套服务源码放在插件目录下的 `server/`：
+
+```js
+const dir = cadt.getPluginDir();          // 如 D:\...\plugins\my-plugin
+const serverDir = dir.replace(/[\\/]+$/, '') + '/server';
+```
+
+### `cadt.registerService(spec)`
+
+注册一个**后台服务**，交给应用统一托管：软件启动时自动拉起（可选）、定期健康检查、退出时自动停掉整棵进程树。插件不持有进程句柄、不做守护——进程的启停 / 探活 / 日志缓冲 / 退出清理全在应用内置的 `appservices` 引擎里。
+
+```js
+cadt.registerService({
+    id: 'server',                          // 插件内唯一，^[a-z0-9][a-z0-9-]{0,63}$
+    exe: 'python',                         // 可执行文件（在 PATH 里或完整路径）
+    args: ['main.py', 'serve'],            // 参数（≤128 个）
+    cwd: cadt.getPluginDir() + '/server',  // 工作目录；留空 = 插件目录
+    healthURL: 'http://127.0.0.1:3000/v1/models', // 可选：探活地址（http/https）
+    autoStart: true,                       // 软件启动时自动拉起
+    pollIntervalMs: 5000,                  // 可选：探活间隔（≥500ms，默认 3000）
+    logCapBytes: 262144,                   // 可选：日志环形缓冲上限（默认 256 KiB）
+});
+```
+
+规则与边界：
+
+- 服务在插件加载完成后统一同步给应用：新增 / 变更的 `autoStart` 服务拉起，被禁用 / 卸载插件的服务自动停止。
+- `healthURL` 非空时定期 GET 探活（超时 2s，2xx–4xx 视为存活），连续 5 次失败标记 `failed`；留空则只按进程存活判定。
+- 状态机：`stopped` / `starting` / `running` / `failed`；进程意外退出自动转 `failed` 并记录原因。
+- 日志按行收进环形缓冲（默认 256 KiB，超出丢最早的），可用 `cadt.getServiceLogs(id)` 或设置面板的 ctx 读取。
+- 服务声明只在内存里，不落盘；exe / args / cwd 的合法性由插件负责，应用只做启停与健康检查，**不做沙箱**。只托管可信来源的插件服务。
+- 操作 API（均返回 Promise）：`cadt.startService(id)` / `cadt.stopService(id)` / `cadt.getServiceStatus(id)` / `cadt.getServiceLogs(id)`，其中 `id` 是插件内短 id。
+
+### `cadt.registerSettingsPanel(spec)`
+
+注册一个**插件专属设置面板**：在 设置 → 插件设置 下出现独立导航项，适合放服务开关、状态、日志、说明等自定义内容。
+
+```js
+cadt.registerSettingsPanel({
+    id: 'zcode',                 // 插件内唯一，^[a-z0-9][a-z0-9-]{0,63}$
+    label: 'ZCode 反代',          // 导航项与插件卡片按钮文字（≤40 字）
+    render(container, ctx) {     // 同步渲染；容器是空的 div，可自由 append DOM
+        const st = document.createElement('div');
+        container.appendChild(st);
+        ctx.getServiceStatus('server').then((s) => { st.textContent = s.state; });
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.textContent = '启动服务';
+        btn.addEventListener('click', () => ctx.startService('server'));
+        container.appendChild(btn);
+    },
+});
+```
+
+`ctx` 提供：
+
+| 成员 | 说明 |
+| --- | --- |
+| `flash(msg, isErr)` | 状态栏提示 |
+| `startService(id)` / `stopService(id)` | 启停本插件服务（Promise） |
+| `getServiceStatus(id)` / `getServiceLogs(id)` | 查状态 / 读日志（Promise） |
+| `openExternal(url)` | 用系统浏览器打开链接 |
+
+规则与边界：
+
+- 面板只在内存里；插件禁用 / 卸载后导航项与面板自动消失。
+- `render` 必须同步返回；异步数据自行 `.then()` 填充。重渲染时请自己清理上一次的定时器 / 监听（容器会被复用）。
+- 面板内表单控件遵循全局表单规范：动态控件用 `core/form-controls.js` 的 `createSwitch` / `createSelect` / `createInput` / `createTextarea`，不要写裸 `<input>`。
+- 完整可运行示例见随仓库分发的 `plugins/zcode2api/`（注册虚拟账号 + 后台服务 + 设置面板三合一）。
 
 ### `cadt.registerDocConverter(spec)`
 

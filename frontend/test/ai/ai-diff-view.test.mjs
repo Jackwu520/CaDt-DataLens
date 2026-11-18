@@ -3,7 +3,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {diffLinesOf, computeLineDiff, diffStats, buildDiffPreview} from '../../src/ai/ai-diff-view.js';
+import {diffLinesOf, computeLineDiff, diffStats, buildDiffPreview, diffNoDigits} from '../../src/ai/ai-diff-view.js';
 
 test('diffLinesOf：CRLF / CR 归一、去尾部空行、空输入', () => {
     assert.deepEqual(diffLinesOf('a\r\nb\r\n'), ['a', 'b']);
@@ -104,4 +104,24 @@ test('buildDiffPreview：无改动时保留首行；空 ops 返回空', () => {
     assert.equal(preview.lines.length, 1);
     assert.deepEqual(preview.lines[0], {t: ' ', text: 'a', oldLine: 1, newLine: 1});
     assert.deepEqual(buildDiffPreview([]), {lines: [], truncated: false});
+});
+
+test('diffNoDigits：取整份 diff 最大行号的位数，少于 3 位保 3 位基线', () => {
+    // 事故场景：main.js 3091 行附近，4 位行号把 22px 行号列撑爆
+    assert.equal(diffNoDigits([{t: ' ', text: '}', oldLine: 3091, newLine: 3091}]), 4);
+    // 删行看 oldLine、加行看 newLine，两侧取最大
+    assert.equal(diffNoDigits([
+        {t: '-', text: 'x', oldLine: 999, newLine: 0},
+        {t: '+', text: 'y', oldLine: 0, newLine: 1001},
+    ]), 4);
+    // 五位数（万行大文件）也要撑开
+    assert.equal(diffNoDigits([{t: '+', text: 'x', oldLine: 0, newLine: 12000}]), 5);
+    // 两位行号不缩列
+    assert.equal(diffNoDigits([{t: '+', text: 'x', oldLine: 0, newLine: 42}]), 3);
+    // 旧会话无行号字段：退回行数连数的上限
+    assert.equal(diffNoDigits([{t: '+', text: 'x'}]), 3);
+    assert.equal(diffNoDigits(new Array(1000).fill({t: '+'})), 4);
+    // 空与异常输入：基线 3 位
+    assert.equal(diffNoDigits([]), 3);
+    assert.equal(diffNoDigits(null), 3);
 });

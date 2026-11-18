@@ -678,6 +678,35 @@ func TestAIMessageImageValidation(t *testing.T) {
 	}
 }
 
+// 条数不再设限：长任务的几百轮工具调用是正常形态（六个参照 harness 都不设条数上限），
+// 只有真实体积才该被拒。
+func TestValidateMessagesHasNoCountLimit(t *testing.T) {
+	messages := make([]Message, 0, 1500)
+	for i := 0; i < 1500; i++ {
+		messages = append(messages, Message{Role: "user", Content: "ok"})
+	}
+	if err := ValidateMessages(messages); err != nil {
+		t.Fatalf("1500 条短消息不该被拒: %v", err)
+	}
+	// 体积兜底：单条超限即拒（内容 + 附件一起算）
+	huge := strings.Repeat("x", aiMaxRequestBytes+1)
+	if err := ValidateMessages([]Message{{Role: "user", Content: huge}}); err == nil ||
+		!strings.Contains(err.Error(), "请求体积") {
+		t.Fatalf("超体积请求应被拒: %v", err)
+	}
+}
+
+// 工具定义数量不设上限：77 个工具是当前真实规模，历史上也出现过更多。
+func TestValidateToolsHasNoCountLimit(t *testing.T) {
+	tools := make([]ToolDef, 0, 300)
+	for i := 0; i < 300; i++ {
+		tools = append(tools, ToolDef{Name: fmt.Sprintf("tool_%d", i), Parameters: []byte(`{"type":"object"}`)})
+	}
+	if err := ValidateTools(tools); err != nil {
+		t.Fatalf("300 个工具不该被拒: %v", err)
+	}
+}
+
 func TestSanitizeAIMessagesToolArguments(t *testing.T) {
 	messages := []Message{
 		{Role: "assistant", ToolCalls: []ToolCall{

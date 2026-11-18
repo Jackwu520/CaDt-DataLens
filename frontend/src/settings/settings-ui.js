@@ -722,6 +722,7 @@ function selectSettingsPane(pane) {
     else if (String(pane).startsWith('fmt-')) deps.renderFormatPane(pane.slice(4));
     else if (String(pane).startsWith('lang-')) deps.renderLangPane(pane.slice(5));
     else if (pane === 'plugins') deps.renderPluginsPane();
+    else if (String(pane).startsWith('plugin-') && deps.renderPluginSettingsPane) deps.renderPluginSettingsPane(pane);
     else if (pane === 'run') deps.renderRunPane();
     else if (pane === 'envvars') deps.renderEnvVarsPane();
     else if (pane === 'activity') deps.renderActivityPane();

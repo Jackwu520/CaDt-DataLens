@@ -108,7 +108,12 @@ async function copyExternalIntoDir(paths, destDir) {
             failed++;
         }
     }
-    if (deps.explorer && deps.explorer.refresh) deps.explorer.refresh();
+    // 复制进来的文件属于「自己写盘」：只重读目标目录 + 把该目录标脏走差量刷新，
+    // 不做整树重建（那会丢展开态、还会闪一下）。
+    if (deps.explorer) {
+        if (ok && typeof deps.explorer.refreshDir === 'function') await deps.explorer.refreshDir(destDir);
+        if (typeof deps.explorer.notifyDirChange === 'function') deps.explorer.notifyDirChange(destDir);
+    }
     if (ok) deps.flash('已复制 ' + ok + ' 项到 ' + (deps.baseNameOf(destDir) || destDir));
     if (failed) deps.flash(failed + ' 项复制失败', true);
 }

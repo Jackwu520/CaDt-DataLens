@@ -4,6 +4,8 @@ import {iconSvg} from '../core/icons.js';
 
 import {formats} from '../core/formats.js';
 import {initPluginRuntime, loadPlugins} from '../shell/plugins.js';
+import {getPluginSettingsPanel, getPluginSettingsPanels, panelsOfPlugin} from '../shell/plugin-settings-panels.js';
+import {serviceLogs, serviceStatus, startService, stopService} from '../shell/plugin-services.js';
 
 export function createSettingsPanePlugins(deps) {
 
@@ -23,9 +25,92 @@ function refreshPluginUI() {
     }
     deps.setupFormatSettings();
     deps.setupLanguageSettings();
+    setupPluginSettingsNav();
     if (deps.elsDialogs.settings && !deps.elsDialogs.settings.classList.contains('hidden')) {
         const active = document.querySelector('.snav-item.active');
         if (active && active.dataset.pane === 'plugins') renderPluginsPane();
+    }
+}
+
+// 插件专属设置页：动态建导航项与面板容器（仿 settings-pane-lang.js 的范式）。
+// 每次插件重载调用，先清旧节点再按当前注册表重建，禁用/卸载插件的面板随之消失。
+function setupPluginSettingsNav() {
+    const navRoot = document.querySelector('button.snav-item[data-pane="plugins"]');
+    const content = document.querySelector('.settings-content');
+    if (!navRoot || !content) return;
+    const panels = getPluginSettingsPanels();
+    const valid = new Set(panels.map((p) => p.key));
+    for (const nav of [...document.querySelectorAll('.snav-plugin-panel')]) {
+        if (!valid.has(nav.dataset.pane)) {
+            const pane = content.querySelector(`.settings-pane[data-pane="${nav.dataset.pane}"]`);
+            if (pane) pane.remove();
+            nav.remove();
+        }
+    }
+    let group = document.getElementById('snav-plugin-panels');
+    if (!panels.length) {
+        if (group) group.remove();
+        return;
+    }
+    if (!group) {
+        group = document.createElement('div');
+        group.id = 'snav-plugin-panels';
+        group.className = 'snav-group expanded';
+        const parent = document.createElement('button');
+        parent.type = 'button';
+        parent.className = 'snav-item snav-parent';
+        parent.setAttribute('aria-expanded', 'true');
+        // 与静态分组（snav-ai/snav-formats）同构：chev 折叠箭头 + 图标；
+        // 图标直接内联填充——data-icon 注水只在设置弹窗打开时跑一次，动态节点晚于它就永远空白
+        parent.innerHTML = '<span class="snav-chev" aria-hidden="true"></span><span class="snav-ic">' + iconSvg('puzzle', 13) + '</span><span>插件设置</span>';
+        const children = document.createElement('div');
+        children.className = 'snav-children';
+        group.append(parent, children);
+        navRoot.parentNode.insertBefore(group, navRoot.nextSibling);
+    }
+    const children = group.querySelector('.snav-children');
+    for (const p of panels) {
+        if (!children.querySelector(`[data-pane="${p.key}"]`)) {
+            const nav = document.createElement('button');
+            nav.type = 'button';
+            nav.className = 'snav-item snav-child snav-plugin-panel';
+            nav.dataset.pane = p.key;
+            nav.textContent = p.label;
+            children.appendChild(nav);
+        }
+        if (!content.querySelector(`.settings-pane[data-pane="${p.key}"]`)) {
+            const pane = document.createElement('div');
+            pane.className = 'settings-pane hidden';
+            pane.dataset.pane = p.key;
+            content.appendChild(pane);
+        }
+    }
+}
+
+// 渲染某个插件设置面板；由 settings-ui 的 selectSettingsPane 分支调用。
+function renderPluginSettingsPane(key) {
+    const pane = document.querySelector(`.settings-pane[data-pane="${key}"]`);
+    const spec = getPluginSettingsPanel(key);
+    if (!pane || !spec) return;
+    pane.textContent = '';
+    const ctx = {
+        flash: (msg, isErr) => deps.flash(String(msg), !!isErr),
+        startService: (id) => startService(spec.pluginId, id),
+        stopService: (id) => stopService(spec.pluginId, id),
+        getServiceStatus: (id) => serviceStatus(spec.pluginId, id),
+        getServiceLogs: (id) => serviceLogs(spec.pluginId, id),
+        openExternal: (url) => {
+            if (deps.rt && deps.rt.BrowserOpenURL) deps.rt.BrowserOpenURL(url);
+            else window.open(url, '_blank', 'noopener');
+        },
+    };
+    try {
+        spec.render(pane, ctx);
+    } catch (e) {
+        const err = document.createElement('div');
+        err.className = 'plugin-warn';
+        err.textContent = '插件面板渲染失败：' + ((e && e.message) || e);
+        pane.appendChild(err);
     }
 }
 
@@ -339,6 +424,19 @@ async function renderPluginsPane() {
                     'danger'
                 );
             });
+            // 插件专属设置面板入口（每个面板一个按钮）
+            const myPanels = panelsOfPlugin(p.id);
+            for (const panel of myPanels) {
+                const settingsBtn = document.createElement('button');
+                settingsBtn.type = 'button';
+                settingsBtn.className = 'dlg-btn plugin-settings';
+                settingsBtn.textContent = panel.label;
+                settingsBtn.addEventListener('click', () => {
+                    if (deps.openSettings) deps.openSettings(panel.key);
+                    else deps.flash('当前版本不支持插件设置面板', true);
+                });
+                head.append(settingsBtn);
+            }
             head.append(name, ver, author, license, enabledLabel, del);
             const desc = document.createElement('div');
             desc.className = 'plugin-desc';
@@ -643,5 +741,5 @@ setupPluginsSettings();
 // ---- 设置：环境变量（私密值注入终端/命令桥；AI 只见名称与描述） ----
 
 
-return {pluginMarketCache, refreshPluginUI, renderPluginMarket, renderPluginMarketList, renderPluginsPane, setupPluginsSettings};
+return {pluginMarketCache, refreshPluginUI, renderPluginMarket, renderPluginMarketList, renderPluginsPane, renderPluginSettingsPane, setupPluginsSettings, setupPluginSettingsNav};
 }

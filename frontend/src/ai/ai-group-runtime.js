@@ -4,6 +4,7 @@
 // main.js 把 ai-* 事件转发到 handleEvent（payload.id === roundId 精确认领）；侧栏与
 // 标签页视图经 subscribe 拿快照。
 import {aiClampInt, aiEstimateTokens, aiNowId} from './ai-constants.js';
+import {friendlyRetryReason} from './ai-terminal-tools.js';
 import {
     FREE_CHAT_CAPS,
     GROUP_LAST_PREVIEW_MAX,
@@ -550,7 +551,8 @@ export function createAIGroupRuntime(deps) {
             stream.thinking += String((payload && payload.delta) || '');
             touch(stream);
         } else if (name === 'ai-retry') {
-            stream.statusNote = `重试 ${payload.attempt}/${payload.max}：${payload.reason || ''}`;
+            // reason 是「HTTP 429」这类协议描述，进气泡状态前先翻译成人话
+            stream.statusNote = `重试 ${payload.attempt}/${payload.max}：${friendlyRetryReason(payload.reason)}`;
         } else if (name === 'ai-queue') {
             // 冻结（服务端 429 配额）与本地窗口排队要分开说，后者几十秒、前者可能几小时
             if (!payload || !payload.waitMs) stream.statusNote = '';

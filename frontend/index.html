@@ -898,6 +898,12 @@
                                 </div>
                             </div>
                             <div class="set-row">
+                                <div class="set-main"><div class="set-title">过程区始终折叠</div><div class="set-desc">开启后思考链与工具卡从流式开始就收起，只显示最终结果；点折叠头可展开查看</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="ai-opt-always-collapse"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                </div>
+                            </div>
+                            <div class="set-row">
                                 <div class="set-main"><div class="set-title">显示 Token 用量</div></div>
                                 <div class="set-control">
                                     <label class="set-switch"><input type="checkbox" id="ai-opt-show-usage"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
@@ -1501,6 +1507,23 @@
                             <div class="set-row-top">
                                 <div class="set-main"><div class="set-title">最近审批</div></div>
                                 <div id="ai-opt-perm-log" class="ai-approved-list ai-perm-log ai-perm-list-box"></div>
+                            </div>
+                        </div>
+
+                        <div class="set-group-title">插件工具</div>
+                        <div class="set-card">
+                            <div class="set-row">
+                                <div class="set-main">
+                                    <div class="set-title">允许插件向 AI 提供工具<button type="button" class="info-tip" data-tip="插件代码拥有与本应用相同的权限（可读写本机文件、执行命令）。这里的开关只影响 AI 能否调用插件工具，不会限制插件本身的能力——请只安装可信来源的插件。" aria-label="插件工具说明"></button></div>
+                                    <div class="set-desc">关闭时所有插件工具都不下发；开启后仍需逐个插件、逐个工具授权</div>
+                                </div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="ai-opt-plugin-tools"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                </div>
+                            </div>
+                            <div class="set-row-top">
+                                <div class="set-main"><div class="set-desc" id="ai-plugin-tools-empty">（暂无插件注册 AI 工具）</div></div>
+                                <div id="ai-plugin-tools-list" class="ai-approved-list"></div>
                             </div>
                         </div>
 
@@ -2436,6 +2459,7 @@
                     <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3.2l1.1 3.1 3.1 1.1-3.1 1.1L10 11.6 8.9 8.5 5.8 7.4l3.1-1.1z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M15.2 12.3l.6 1.7 1.7.6-1.7.6-.6 1.7-.6-1.7-1.7-.6 1.7-.6zM5.1 12.9l.5 1.4 1.4.5-1.4.5-.5 1.4-.5-1.4-1.4-.5 1.4-.5z" fill="currentColor"/></svg>
                 </button>
                 <button type="button" id="ab-chats" class="ab-btn" data-tip="AI 会话 (Alt+8)" aria-label="AI 会话" aria-pressed="false">
+                    <span class="ab-dot" aria-hidden="true"></span>
                     <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3.2 5.2c0-.8.6-1.4 1.4-1.4h7.1c.8 0 1.4.6 1.4 1.4v4.2c0 .8-.6 1.4-1.4 1.4H7.4l-2.7 2.1V10.8h-.1c-.8 0-1.4-.6-1.4-1.4z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M8.2 12.2v2.2c0 .8.6 1.4 1.4 1.4h4.2l2.4 1.8v-1.8c.8 0 1.4-.6 1.4-1.4V9.9c0-.8-.6-1.4-1.4-1.4h-2.4" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>
                 </button>
                 <button type="button" id="ab-more" class="ab-btn" data-tip="视图与工具窗口" aria-label="更多">
@@ -2471,6 +2495,7 @@
                     <button type="button" id="sb-mode-list" class="sb-tool" data-tip="文件列表" aria-label="文件列表" aria-pressed="false"></button>
                     <button type="button" id="sb-mode-tree" class="sb-tool" data-tip="文件树" aria-label="文件树" aria-pressed="true"></button>
                     <button type="button" id="sb-filter-btn" class="sb-tool" data-tip="过滤文件名" aria-label="过滤文件名" aria-pressed="false"></button>
+                    <button type="button" id="sb-reveal" class="sb-tool" data-tip="定位当前文件" aria-label="定位当前文件"></button>
                     <button type="button" id="sb-refresh" class="sb-tool" data-tip="刷新" aria-label="刷新"></button>
                 </div>
             </div>
@@ -2724,7 +2749,7 @@
                     <button type="button" id="ai-plan" class="ai-pill" data-tip="计划模式：先只读探索并给出计划，批准后执行" aria-label="计划模式：先只读探索并给出计划，批准后执行" aria-pressed="false">计划</button>
                     <button type="button" id="ai-worktree" class="ai-pill" data-tip="隔离工作区：在 git worktree 里开发，改动只落在 .cadt/worktree/&lt;slug&gt;/，完成后经补丁审阅回灌" aria-label="隔离工作区：在 git worktree 里开发" aria-pressed="false">隔离</button>
                     <span id="ai-hint" class="ai-hint"></span>
-                    <button type="button" id="ai-model-chip" class="ai-pill ai-model-pill" data-tip="切换模型与推理等级" aria-label="切换模型与推理等级">选择模型</button>
+                    <button type="button" id="ai-model-chip" class="ai-pill ai-model-pill">选择模型</button>
                     <button type="button" id="ai-stop" class="ai-send-btn ai-stop hidden" data-tip="停止生成" aria-label="停止生成">
                         <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="4" y="4" width="8" height="8" rx="1.3" fill="currentColor"/></svg>
                     </button>
@@ -2797,7 +2822,7 @@
                         <div class="ai-ctx-row"><i class="ai-ctx-dot system"></i><span>系统提示词</span><b id="ai-ctx-tok-system">~0</b></div>
                         <div class="ai-ctx-row"><i class="ai-ctx-dot tools"></i><span>工具定义</span><b id="ai-ctx-tok-tools">~0</b></div>
                         <div class="ai-ctx-row"><i class="ai-ctx-dot messages"></i><span>对话消息</span><b id="ai-ctx-tok-messages">~0</b></div>
-                        <div class="ai-ctx-row ai-ctx-row-saved"><i class="ai-ctx-dot saved"></i><span>实时瘦身已省</span><button type="button" class="info-tip" data-tip="旧轮思考、过时的大文件/命令输出、过期注入块在组装请求时被剔除的量（会话里仍保留）" data-tip-actions='[{"label":"去关闭","action":"ai:context-slim"}]' aria-label="实时瘦身已省说明"></button><b id="ai-ctx-tok-saved">~0</b></div>
+                        <div class="ai-ctx-row ai-ctx-row-saved"><i class="ai-ctx-dot saved"></i><span>实时瘦身已省</span><button type="button" id="ai-ctx-saved-tip" class="info-tip" data-tip="旧轮思考、过时的大文件/命令输出、过期注入块在组装请求时被剔除的量（会话里仍保留）" data-tip-actions='[{"label":"去关闭","action":"ai:context-slim"}]' aria-label="实时瘦身已省说明"></button><b id="ai-ctx-tok-saved">~0</b></div>
                     </div>
                     <button type="button" id="ai-ctx-pop-compact" class="dlg-btn ai-ctx-compact">压缩上下文</button>
                 </div>

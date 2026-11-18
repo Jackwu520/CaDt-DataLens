@@ -261,10 +261,14 @@ export function createAIHeadHud(ctx, extras) {
         return span;
     }
 
-    function agentStatusIcon(state) {
+    // 后台作业状态图标：退出码区分成功 / 失败；「已停止」用实心方块（stop，与输入区停止按钮
+    // 同字形）——|| 读起来像「暂停、可以继续」，而后台作业停下就是结束了，不会再跑。
+    // notfound 是「查不到这个作业了」（应用重启后快照丢失），用中性 ⓘ 而不是任何终态图标。
+    function agentStatusIcon(state, code) {
         if (state === 'running') return iconSvg('refresh', 12);
-        if (state === 'exited') return iconSvg('check', 12);
-        if (state === 'stopped' || state === 'notfound') return iconSvg('pause', 12);
+        if (state === 'exited') return Number(code) ? iconSvg('close', 12) : iconSvg('check', 12);
+        if (state === 'stopped') return iconSvg('stop', 12);
+        if (state === 'notfound') return iconSvg('info', 12);
         return iconSvg('warn', 12);
     }
 
@@ -431,12 +435,15 @@ export function createAIHeadHud(ctx, extras) {
             for (const entry of jobs) {
                 rows++;
                 const state = bgJobStateOf(entry);
+                const code = (entry.message && entry.message.bg && entry.message.bg.code);
+                // 非 0 退出是失败（不是「跑完了」）：图标与颜色都要与成功区分开
+                const failedExit = state === 'exited' && Number(code) !== 0;
                 const row = document.createElement('button');
                 row.type = 'button';
                 row.className = 'ai-chips-row';
                 const icon = document.createElement('span');
-                icon.className = 'ai-chips-status ai-status-' + state;
-                icon.innerHTML = agentStatusIcon(state);
+                icon.className = 'ai-chips-status ai-status-' + (failedExit ? 'failed' : state);
+                icon.innerHTML = agentStatusIcon(state, code);
                 row.appendChild(icon);
                 const main = document.createElement('span');
                 main.className = 'ai-chips-main';

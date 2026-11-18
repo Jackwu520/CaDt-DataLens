@@ -1,12 +1,13 @@
 # AI 会话存储按工作区短哈希分桶（方案）
 
-> 状态：**待开工**（2026-11-19 初稿）
+> 状态：**已实施**（2026-11-19 初稿并当日落地；迁移不进程序——由作者用 `tools/migrate-session-buckets` 在应用关闭后手动执行一次，不向前兼容旧布局）
 > 动机：`<appdata>/ai-sessions` 现为全平铺，资源管理器里分不清哪个会话属于哪个项目，也无法按项目整体备份/删除/迁移。
 > 决策：
 > 1. **桶名 = 工作区解析根的短哈希**（sha256 前 8 hex），与 `workspace-wipe-guard.md` §4.1 的 `ws` 字段（`"ws":"d3b0738f"`）**同一约定同一算法**——两处按工作区分命名空间的数据共享一条规则。
-> 2. **桶化 opt-in**：`internal/aigroups` 复用 `sessionstore.New` 且目录按 groupId 平铺（`internal/aigroups/aigroups.go:6`），桶化逻辑不能无条件烘焙进引擎。
+> 2. **桶化 opt-in**：`internal/aigroups` 复用 `sessionstore.New` 且目录按 groupId 平铺（`internal/aigroups/aigroups.go:47`），桶化逻辑不能无条件烘焙进引擎。
 > 3. **meta.workspace 仍是归属真源**：桶只是磁盘布局，UI 分组 / 串台护栏 / 跨工作区搜索全走 meta，哈希碰撞不产生逻辑错误。
-> 范围：`internal/sessionstore`（桶化布局 + 迁移 + 双读）· `resource_watch_app.go`（监听路径）· `internal/storage`（统计遍历）
+> 4. **无迁移代码、无双读兼容**（作者裁定）：写恒入桶；查找按 id 扫桶，「现存目录永远赢」——载荷/参数里的 workspace 只在目录尚不存在时参与落位。
+> 范围：`internal/sessionstore`（桶化布局）· `AISessionSaveImage/SaveVideo` 加 workspace 参数 · `ai-session-disk.js` 传参 · 前端 `aiNormalizePath/aiWorkspaceKey` 移出 ai-panel 到 `ai-session-scope.js`（可测）· 哈希向量两端测试互锁
 > 非范围：把会话存进工作区目录（隔离在工作区破坏半径之外，平铺方案已论证）· 修改 UI 分组逻辑（`ai-session-list.js` 已按工作区分组，不动）· 群聊存储布局（`ai-groups` 按 groupId 平铺维持现状）· 桶名转义路径（见 §9）
 
 ## 1. 背景与代码事实
@@ -52,41 +53,44 @@
 - **空工作区**：key 为空的会话落 `_unbound`（`_` 开头与 8 hex 桶名天然区分）。
 - **`ws.json` 说明文件**：桶内放工作区原路径，解决「哈希目录名在资源管理器里不可读」；创建桶时写入，若内容与计算不一致视为校验信号（日志告警，不阻断）。
 
-## 4. Go 侧改动
+## 4. Go 侧改动（已落地）
 
-- **引擎 opt-in**：`sessionstore.New(root)` 保持平铺语义不动（aigroups 继续用）；新增 `NewBucketed(root)`（或等价 option）供 `sessionstore_app.go` 挂载 ai-sessions 时启用。桶化只改三个点：
-  1. `dir(id)`：id → 目录的解析。List 时顺带建 `id → 桶目录` 内存索引；miss（如冷启动直接 `AISessionWatch(id)`）时扫桶层兜底。桶数为工作区数，个位/十位，扫描代价可忽略。
-  2. `List`：两层遍历——桶层全扫 + 根层散落 `session-*`（兼容双读，见 §6）。
-  3. 新建会话：按 meta.workspace 算桶落位；桶不存在则建目录 + 写 `ws.json`。
-- 不动：锁与租约（`sessionstore.go:159` 全在根层）、`atomfile` 原子替换、回收站删除、`synthesizeMetaFromHeader`（迁移时复用）。
-- 调用方跟进：`resource_watch_app.go` 的 `AISessionWatch/Unwatch` 路径解析（`AISessionStat` 等按 id 走引擎方法，自动跟随）；`internal/storage` 的占用统计改为遍历桶层；`sessionindex` 走 `List` 最小接口，透明。
-- 归属 Go 的哈希函数：`WorkspaceBucketKey(ws string) string` 放 `internal/sessionstore`，与前端共享测试向量。
+- **引擎 opt-in**：`sessionstore.New(root)` 保持平铺语义不动（aigroups 继续用）；`NewBucketed(root)` 供 `Default()`（ai-sessions）启用。桶化只改四个点：
+  1. `dir(id)`：平铺直拼；桶化按 id 扫桶（`resolveBucketedDir`，每桶一次 Stat，桶数 = 工作区数）。
+  2. `withSessionLock(id, workspace, allowCreate, fn)`：**现存目录永远赢**（先扫桶，命中即用，workspace 不参与）；`allowCreate` 且扫桶未命中才按 workspace 派生桶落位（`ensureBucketDir` 建桶 + 写 `ws.json`）；非创建路径未命中一律 `ErrSessionGone`，绝不复活目录。平铺分支行为不变。
+  3. `AppendWithCreate`：桶化 + allowCreate 时从载荷**首行 header 解析 workspace**（`workspaceFromHeader`；前端保证新会话首次落盘必以 header 开头），解析不出落 `_unbound`。
+  4. `List`：桶化下两层遍历（桶 → 会话），meta 缺失仍走 `synthesizeMetaFromHeader` 兜底。
+- **附件落盘的时序坑（实测发现）**：新会话带附件时 `prepareImages` 让 `AISessionSaveImage/SaveVideo` **先于**正文 header 落盘——归属只能由调用方传入。两个绑定加第 4 参 `workspace`，且**路径解析挪进锁内**（锁外扫桶对新会话必然失败）；随后的 header 追加靠「现存目录赢」收敛到同一目录（`TestServiceBucketedImageFirstPersist` 钉住）。
+- 不动：锁与租约（全在根层 `<root>/.locks/`）、`atomfile` 原子替换、回收站删除、`RemoveAll` 整根改名回收、`resource_watch` 的 `AISessionWatch`（走 `SessionDir(id)` 自动跟随）、`internal/storage`（`filepath.WalkDir` 递归统计天然兼容）、`sessionindex`（只依赖 `List/Read`，行内存 workspace 字符串）。
+- `WorkspaceBucketKey` 导出在包内，迁移工具与测试共用。
 
-## 5. 迁移（存量收编）
+## 5. 迁移（手动一次性，不进程序）
 
-- 时机：首个实例 startup，桶化引擎初始化时执行一次。
-- 步骤：根门闩（`<root>.gate` 写权）下扫根层 `session-*` → 读 `meta.json` 取 workspace（缺 meta 则 `synthesizeMetaFromHeader` 从 header 补）→ 算桶 → `os.Rename` 进桶 → 空桶补写 `ws.json`。
-- 占用跳过：Windows 下目录有打开句柄时 rename 报 sharing violation——跳过该目录留待下次启动再收编（另一实例正开着这个会话，跳过是唯一正确动作）。
-- 幂等与标记：`layout-buckets-v1` 标记文件免每次重扫；标记写入前崩溃 = 下次重扫，rename 幂等故无害；迁移中途失败不阻断启动（日志 + 下次重试）。
-- 收尾：迁移完成后 `sessionindex` 无需重建（行内是 workspace 路径，值未变）；核对一次即可。
+- 时机：新 exe 构建通过后、首次启动前，**应用关闭**状态下由作者手动执行。
+- 工具：`tools/migrate-session-buckets`（`go run ./tools/migrate-session-buckets` 演练，`-apply` 实际搬移）——导入包内 `WorkspaceBucketKey` 保证与引擎同一哈希；读 meta.json 的 workspace（缺失回退正文首行 header），建桶 + 写 `ws.json` + rename；占用目录（另一实例开着）报失败跳过，等下次执行补收。
+- 迁移后核对：桶数、每桶 `ws.json`、`_unbound` 里无意外会话。
 
-## 6. 新旧版本兼容
+## 6. 兼容性（不向前兼容）
 
-- **新 exe 读旧布局**：List 永远附带扫根层散落 `session-*`（成本：根层通常为空，一次 readdir）。旧 exe 混用期间新写的会话落在根层，下次新 exe 启动被收编进桶。
-- **旧 exe 读新布局**：旧版只扫根层，桶内会话不可见（列表为空）。便携单 exe 新旧混用属少见场景，**接受**并在 CHANGELOG 注明；不做「写双份」。
-- 写方向恒定：新 exe 一律写桶层，不写根层。
+- 无迁移代码、无双读：List 只认桶层（`_unbound` + 8 hex）；根层散落的旧布局会话对新 exe **不可见**。因此顺序铁律：**先迁移、后启动新 exe**。
+- 旧 exe 读新布局同样不可见（只扫根层）——便携单 exe 混用旧版本会「丢」会话，已在 CHANGELOG 注明。
+- 「现存目录永远赢」的扫桶解析天然容忍目录被外部挪动：迁移后旧 id 继续可解析。
 
 ## 7. 测试
 
-- Go 表驱动 `sessionstore`：哈希向量（含大写/反斜杠/尾斜杠/空串→`_unbound`）、两层 List、新建落位、`ws.json` 写入、迁移幂等（跑两遍结果一致）、rename 失败（模拟占用）跳过待下次、双读（根层 + 桶层混存）。
-- 前端 `test/ai/`：同一条共享测试向量断言 `aiWorkspaceKey` 语义与 Go 端一致（锁两端不漂移）。
-- `crossplatform_guard_test.go` + `tools\check-crossbuild.cmd` 照例守平台无关性（哈希与 rename 均为平台无关代码）。
+- `internal/sessionstore/bucket_test.go`：哈希向量（反斜杠/尾斜杠/大小写/叠斜杠/点段/URL scheme/空白→`_unbound`/裸根斜杠→`_unbound`）、`isBucketDirName`、两层 List、现存目录赢、附件先落盘收敛同桶、非创建路径 `ErrSessionGone` 不建目录、Remove 幂等 + 墓碑、平铺回归。
+- `service_test.go`：Service 层附件先落盘端到端（`TestServiceBucketedImageFirstPersist`）+ SaveImage/SaveVideo 新签名。
+- 前端 `test/ai/ai-session-scope.test.mjs`：同一向量表用 `node:crypto` 复算 sha256 前 8 hex，与 Go 侧互为镜像（改任一侧必须同步另一侧）；`aiNormalizePath/aiWorkspaceKey` 移出到 `ai-session-scope.js` 后可测。
+- 平台无关代码照例受 `crossplatform_guard_test.go` + `tools\check-crossbuild.cmd` 守护。
 
-## 8. 实施步骤
+## 8. 实施记录（2026-11-19 当日完成）
 
-1. **P1 引擎**：`WorkspaceBucketKey` + `NewBucketed`（dir 解析 / 两层 List / 新建落位 / `ws.json`）+ Go 测试。
-2. **P2 迁移与兼容**：startup 收编流程 + 标记文件 + 双读 + 前端共享向量测试。
-3. **P3 收口**：`resource_watch_app.go` 路径、`internal/storage` 统计遍历、`sessionindex` 核对、CHANGELOG；随手验证存储清理对桶层的删除。
+1. 引擎：`WorkspaceBucketKey` + `NewBucketed` + 扫桶解析 + 现存目录赢 + 两层 List。
+2. 绑定：`AISessionSaveImage/SaveVideo` 加 workspace、路径解析进锁内；前端 `ai-session-disk.js` 传 `session.workspace`。
+3. 前端纯函数：`aiNormalizePath/aiWorkspaceKey` 移出 ai-panel 到 `ai-session-scope.js`（ai-panel 经 import 别名沿用原名）。
+4. mock-backend 两个签名补第 4 参。
+5. 测试全绿（Go 全量 54 包 / 前端 1451 项）→ 构建 → 手动迁移存量会话。
+6. 迁移执行记录（2026-11-19 00:48，应用已关闭）：130 个会话全数入桶（`35dc7bd8` ×127 本项目、`00ecb8f9` ×3 日记星辰）、0 跳过；`-verify` 走真实引擎核对 List 130 / 按 workspace 反算桶名零错位。
 
 ## 9. 明确否决的方案
 

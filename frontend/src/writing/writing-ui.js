@@ -48,7 +48,7 @@ const PATCH_VIEWS = [['patch', '补丁视图'], ['code', '代码视图'], ['text
 const CSV_VIEWS = [['table', '表格视图'], ['sql', 'SQL 查询'], ['tree', '树视图'], ['text', '文本视图']];
 const JSONL_VIEWS = [['tree', '树视图'], ['code', '代码视图'], ['text', '文本视图'], ['sql', 'SQL 查询']];
 const MARKDOWN_VIEWS = [['split', '分屏'], ['preview', '预览'], ['code', '代码视图'], ['text', '文本视图']];
-const HTML_VIEWS = [['split', '分屏'], ['code', '代码视图'], ['text', '文本视图']];
+const HTML_VIEWS = [['split', '分屏'], ['preview', '预览'], ['code', '代码视图'], ['text', '文本视图']];
 const IMAGE_VIEWS = [['image', '图片视图'], ['binary', '二进制视图'], ['text', '文本视图']];
 const VIDEO_VIEWS = [['video', '视频视图'], ['binary', '二进制视图'], ['text', '文本视图']];
 const AUDIO_VIEWS = [['audio', '音频视图'], ['binary', '二进制视图'], ['text', '文本视图']];
@@ -115,7 +115,10 @@ function viewDisabled(mode) {
     if (mode === 'binary') return !deps.file.binary;
     if (mode === 'tree') return !deps.file.treeAvailable;
     if (mode === 'text') return false;
-    if (mode === 'preview') return !(deps.file.format && deps.file.format.preview) || !!deps.file.large;
+    if (mode === 'preview') {
+        const previewable = !!(deps.file.format && deps.file.format.preview) || isHtmlDoc(deps.file);
+        return !previewable || !!deps.file.large;
+    }
     if (mode === 'render') return !isSvgDoc(deps.file);
     if (mode === 'split') return !canSplitDoc(deps.file);
     if (mode === 'sql') return !isSqlSupportedDoc(deps.file);
@@ -331,11 +334,17 @@ plugDeps.flash = flash;
 plugDeps.openConfirmDialog = wmMod.openConfirmDialog;
 plugDeps.setupFormatSettings = langMod.setupFormatSettings;
 plugDeps.setupLanguageSettings = langMod.setupLanguageSettings;
+// main.js 的 deps 对 openSettings / rt 用的是 getter-only 注入——Object.create 链上的普通赋值
+// 在 ESM 严格模式直接 TypeError（Cannot set property ... has only a getter），createWritingUI
+// 一炸整个 main.js 启动链中断。用 defineProperty 建自有属性，绕开原型访问器（读值语义不变）。
+// 注意：deps 的 getter 集以后还会变——给 plugDeps 补自有属性一律用 defineProperty，别用 `=`。
+Object.defineProperty(plugDeps, 'openSettings', {value: deps.openSettings, enumerable: true, writable: true, configurable: true});
+Object.defineProperty(plugDeps, 'rt', {value: deps.rt, enumerable: true, writable: true, configurable: true});
 const plugMod = createSettingsPanePlugins(plugDeps);
 
     return {
         ...runMod, ...plugMod, ...envMod, ...langMod,
         ...wmMod, ...mmMod, ...fmMod,
-        CSV_COL_MIN_WIDTH, CSV_ROW_NUM_WIDTH, INDENTS, LANG_DEFS, TREE_MAX_CHILDREN, canSplitDoc, cancelAutoSave, editorLocale, flash, formatDisplayName, isSqlSupportedDoc, isSvgDoc, normalizeLegacySqlMode, scheduleAutoSave, setDirty, splitKindFor, updateBackendDirty, updateTabDirty, updateWindowTitle, viewDisabled, viewLabel, viewOptionsFor,
+        CSV_COL_MIN_WIDTH, CSV_ROW_NUM_WIDTH, INDENTS, LANG_DEFS, TREE_MAX_CHILDREN, canSplitDoc, cancelAutoSave, editorLocale, flash, formatDisplayName, isHtmlDoc, isSqlSupportedDoc, isSvgDoc, normalizeLegacySqlMode, scheduleAutoSave, setDirty, splitKindFor, updateBackendDirty, updateTabDirty, updateWindowTitle, viewDisabled, viewLabel, viewOptionsFor,
     };
 }

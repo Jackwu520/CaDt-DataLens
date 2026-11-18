@@ -3,7 +3,7 @@
 // 这里锁住「改一处就会悄悄变味」的三条判定。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {takeInboxBatch, inboxMessageText, canReviveRecord, isStaleRecord, subAgentScopeOf, subTreeOwned, subTreeIdsOf, resolveWaitTimeoutSec, resolveSubAgentRounds, pendingInboxCount, agentDescendsFrom, parentSessionIdOf, agentMessageBlocks, agentRecordBlocks, agentTranscriptBlocks, agentBlockSig, agentToolArgBrief} from '../../src/ai/ai-subagents.js';
+import {takeInboxBatch, inboxMessageText, canReviveRecord, isStaleRecord, subAgentScopeOf, subScopeDowngrade, subTreeOwned, subTreeIdsOf, resolveWaitTimeoutSec, resolveSubAgentRounds, pendingInboxCount, waitWakeText, waitTimeoutText, agentDescendsFrom, parentSessionIdOf, agentMessageBlocks, agentRecordBlocks, agentTranscriptBlocks, agentBlockSig, agentToolArgBrief} from '../../src/ai/ai-subagents.js';
 
 test('takeInboxBatch：插队（step）先于排队（turn），各自保持入队顺序', () => {
     const inbox = {
@@ -111,6 +111,33 @@ test('resolveWaitTimeoutSec：null / 空串 / false 不许变成「不限时」�
     assert.equal(resolveWaitTimeoutSec('30'), 30, '数字字符串照常解析');
     assert.equal(resolveWaitTimeoutSec(9999), 600, '上限 600');
     assert.equal(resolveWaitTimeoutSec('abc'), 60, '解析不了回落默认');
+});
+
+test('waitWakeText：按唤醒来源给不同的行动指令（排队不打扰等待，不会作为来源出现）', () => {
+    // 插话：明确「无需结束本轮」——结束反而会把它降级成排队（fallbackSteerToQueue）
+    const steer = waitWakeText('steer');
+    assert.ok(steer.includes('插话'), '要点名来源是用户插话');
+    assert.ok(steer.includes('无需结束本轮'), '插话不许指挥模型收轮');
+    // 通知 / 子代理收件箱 / 无来源兜底：同一条通用文案（内容已随下一轮上下文注入）
+    for (const source of ['notice', 'agent', '', undefined]) {
+        const text = waitWakeText(source);
+        assert.ok(text.includes('收件箱有新输入'), '通用文案要说明输入已在收件箱');
+        assert.ok(text.includes('下一轮上下文注入'), '要说明注入时机');
+        assert.ok(!text.includes('插话'), '通用文案不冒充插话');
+    }
+});
+
+test('waitTimeoutText：有排队消息时在超时检查点提示，没有就保持原口径', () => {
+    const base = waitTimeoutText(60, false);
+    assert.ok(base.includes('等待超时（60s）'), '基础文案不变');
+    assert.ok(!base.includes('排队'), '无排队消息不提示');
+
+    const queued = waitTimeoutText(60, true);
+    assert.ok(queued.startsWith(base), '提示追加在基础文案之后');
+    assert.ok(queued.includes('排队的消息'), '要提示输入框有排队消息');
+    assert.ok(queued.includes('结束本轮'), '给出出口：可结束本轮去接收');
+    // 排队语义的核心约束：提示只能「建议」，不能像插话唤醒那样指挥（排队 = 不打扰）
+    assert.ok(!queued.includes('立即结束'), '不许指挥模型立即收轮');
 });
 
 test('pendingInboxCount：只数会被轮边界注入的 step+turn，ask 不算', () => {
@@ -256,4 +283,39 @@ test('agentToolArgBrief：取点名到对象的字段，畸形 JSON 与空值返
     assert.equal(agentToolArgBrief('{}'), '');
     assert.equal(agentToolArgBrief(''), '');
     assert.equal(agentToolArgBrief('{"path":"   "}'), '');
+});
+
+test('subScopeDowngrade：只严不宽，父档更宽时降档生效', () => {
+    // 降档生效：请求档比父档严
+    assert.equal(subScopeDowngrade('full', 'auto'), 'auto');
+    assert.equal(subScopeDowngrade('full', 'read'), 'read');
+    assert.equal(subScopeDowngrade('auto', 'read'), 'read');
+    assert.equal(subScopeDowngrade('auto', 'edit'), 'edit');
+    assert.equal(subScopeDowngrade('edit', 'read'), 'read');
+});
+
+test('subScopeDowngrade：请求档比父档宽时被忽略（不升档红线）', () => {
+    // 不升档：父档更严，请求更宽一律回退父档
+    assert.equal(subScopeDowngrade('read', 'full'), 'read');
+    assert.equal(subScopeDowngrade('read', 'auto'), 'read');
+    assert.equal(subScopeDowngrade('read', 'edit'), 'read');
+    assert.equal(subScopeDowngrade('edit', 'full'), 'edit');
+    assert.equal(subScopeDowngrade('edit', 'auto'), 'edit');
+    assert.equal(subScopeDowngrade('auto', 'full'), 'auto');
+});
+
+test('subScopeDowngrade：同档、缺省与非法值都回退父档', () => {
+    // 同档：请求等于父档，原样返回
+    for (const scope of ['read', 'edit', 'auto', 'full']) {
+        assert.equal(subScopeDowngrade(scope, scope), scope);
+    }
+    // 缺省 / 非法：回退父档（继承）
+    assert.equal(subScopeDowngrade('auto', undefined), 'auto');
+    assert.equal(subScopeDowngrade('auto', null), 'auto');
+    assert.equal(subScopeDowngrade('auto', ''), 'auto');
+    assert.equal(subScopeDowngrade('auto', 'danger-full-access'), 'auto');
+    assert.equal(subScopeDowngrade('auto', 'read-only'), 'auto');
+    // 父档本身非法时先归一成 read，再降档仍 read
+    assert.equal(subScopeDowngrade('weird', 'full'), 'read');
+    assert.equal(subScopeDowngrade('weird', 'read'), 'read');
 });

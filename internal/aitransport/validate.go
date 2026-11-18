@@ -128,8 +128,10 @@ func ValidateMessages(messages []Message) error {
 	if len(messages) == 0 {
 		return errors.New("消息为空")
 	}
-	if len(messages) > 1000 {
-		return errors.New("消息数量超过上限")
+	// 不设条数上限（六份参照 harness 都不设）：条数与真实体积无关，容量控制由前端的
+	// token 预算 + 压缩负责。这里只做体积兜底，拦住不可能被任何服务商接受的请求。
+	if size := messagesPayloadBytes(messages); size > aiMaxRequestBytes {
+		return fmt.Errorf("请求体积超过上限（%d MB）：请先压缩上下文（/compact）或减少附件", aiMaxRequestBytes>>20)
 	}
 	for i, m := range messages {
 		role := strings.ToLower(strings.TrimSpace(m.Role))
@@ -192,7 +194,7 @@ func ValidateMessages(messages []Message) error {
 				}
 			}
 		}
-		if len(m.ToolCalls) > aiMaxToolDefs {
+		if len(m.ToolCalls) > aiMaxToolCallsPerMessage {
 			return fmt.Errorf("第 %d 条消息的工具调用过多", i+1)
 		}
 		for j, call := range m.ToolCalls {
@@ -207,10 +209,33 @@ func ValidateMessages(messages []Message) error {
 	return nil
 }
 
-func ValidateTools(tools []ToolDef) error {
-	if len(tools) > aiMaxToolDefs {
-		return fmt.Errorf("工具数量超过上限（%d）", aiMaxToolDefs)
+// messagesPayloadBytes 估算请求体的序列化体积：正文 + 思考 + 工具参数 + 附件 base64。
+// 用于代替「消息条数」上限——条数和体积没有相关性，超限判定必须看真实体积。
+// 超过 aiMaxRequestBytes 立刻返回（不必算完整份历史）。
+func messagesPayloadBytes(messages []Message) int {
+	total := 0
+	for i := range messages {
+		m := &messages[i]
+		total += len(m.Content) + len(m.ToolCallId) + len(m.Name) + len(m.Thinking)
+		for j := range m.ToolCalls {
+			total += len(m.ToolCalls[j].Id) + len(m.ToolCalls[j].Name) + len(m.ToolCalls[j].Arguments)
+		}
+		for j := range m.Images {
+			total += len(m.Images[j].Data)
+		}
+		for j := range m.Videos {
+			total += len(m.Videos[j].Data)
+		}
+		if total > aiMaxRequestBytes {
+			return total
+		}
 	}
+	return total
+}
+
+func ValidateTools(tools []ToolDef) error {
+	// 工具定义数量不设上限（与六份参照 harness 一致）：控制工具开销靠延迟暴露/工具搜索，
+	// 而不是砍数量。这里只校验单个定义的名称与 schema 合法性。
 	seen := map[string]bool{}
 	for i, tool := range tools {
 		name := strings.TrimSpace(tool.Name)

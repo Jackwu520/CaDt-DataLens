@@ -140,7 +140,9 @@ export function createSessionDiskStore(options) {
         if (mid && session._mids[index] === mid) session._mids[index] = '';
     }
 
-    async function saveImageFile(sessionId, image) {
+    // 附件落盘带 workspace：新会话带附件时图片/视频先于正文 header 落盘，
+    // 桶归属（Go 侧按工作区短哈希分桶）只能由调用方传入。
+    async function saveImageFile(sessionId, workspace, image) {
         if (!image || typeof image !== 'object') return;
         if (!image.data || image.file) return;
         if (!backend.AISessionSaveImage) return; // 旧后端：保留内嵌 base64，不丢图
@@ -148,12 +150,13 @@ export function createSessionDiskStore(options) {
             sessionId,
             safeImageName(image),
             'data:' + (image.mime || 'image/png') + ';base64,' + image.data,
+            textOf(workspace),
         );
         if (rel) image.file = rel;
     }
 
     // 会话视频落盘（<id>/videos/）：与图片同构，只是换 Go 绑定与安全名。
-    async function saveVideoFile(sessionId, video) {
+    async function saveVideoFile(sessionId, workspace, video) {
         if (!video || typeof video !== 'object') return;
         if (!video.data || video.file) return;
         if (!backend.AISessionSaveVideo) return; // 旧后端：保留内嵌 base64，不丢视频
@@ -161,6 +164,7 @@ export function createSessionDiskStore(options) {
             sessionId,
             safeVideoName(video),
             'data:' + (video.mime || 'video/mp4') + ';base64,' + video.data,
+            textOf(workspace),
         );
         if (rel) video.file = rel;
     }
@@ -171,7 +175,7 @@ export function createSessionDiskStore(options) {
             if (Array.isArray(message.images)) {
                 for (const image of message.images) {
                     try {
-                        await saveImageFile(session.id, image);
+                        await saveImageFile(session.id, session.workspace, image);
                     } catch (e) {
                         // 落盘失败时保留 base64，事件里继续内嵌，保证图片不丢。
                     }
@@ -180,7 +184,7 @@ export function createSessionDiskStore(options) {
             if (Array.isArray(message.videos)) {
                 for (const video of message.videos) {
                     try {
-                        await saveVideoFile(session.id, video);
+                        await saveVideoFile(session.id, session.workspace, video);
                     } catch (e) {
                         // 落盘失败时保留 base64，事件里继续内嵌，保证视频不丢。
                     }
@@ -357,7 +361,10 @@ export function createSessionDiskStore(options) {
             session._fps = fps;
             if (events.length) {
                 ensureHeaderEvent(session, events);
-                await backend.AISessionAppend(session.id, encodeSessionLines(events), !session._logCreated);
+                // allowCreate 用进门时的快照：新会话首落盘此处 _logCreated 已被上面的
+                // header unshift 置 true，再用它取反会把首落盘也当成扇出写（allowCreate
+                // =false），目录缺失 → session-gone 死循环（ed23473 引入，02:17 实测炸）。
+                await backend.AISessionAppend(session.id, encodeSessionLines(events), !state.logCreated);
             }
         } catch (e) {
             restoreLogState(session, state);
@@ -449,7 +456,9 @@ export function createSessionDiskStore(options) {
                 session._mids = mids.slice(keepCount);
                 session._archivedMids = archivedMids.concat(mids.slice(0, keepCount));
                 ensureHeaderEvent(session, events);
-                await backend.AISessionAppend(session.id, encodeSessionLines(events), !session._logCreated);
+                // 同 runPersistSession：allowCreate 看进门快照，不能用已被 header unshift
+                // 置位的 _logCreated（否则归档路径的首落盘同样进 GONE 死循环）。
+                await backend.AISessionAppend(session.id, encodeSessionLines(events), !state.logCreated);
             } catch (e) {
                 restoreLogState(session, state);
                 throw e;

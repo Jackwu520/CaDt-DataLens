@@ -155,19 +155,44 @@ export function planSectionsChars(sections) {
             .replace(/\s+/g, '').length, 0);
 }
 
+// submit_plan 申报命令条目归一（activePlan.declaredCommands 会随会话落盘）：字段白名单 +
+// 长度兜底，脏数据不炸、不放大。mode family 必须 带 signature，缺了降级为不预授权。
+function normalizeDeclaredCommand(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    const command = String(raw.command == null ? '' : raw.command).trim();
+    if (!command || command.length > 200) return null;
+    let mode = raw.mode === 'family' || raw.mode === 'exact' ? raw.mode : null;
+    const signature = mode === 'family' ? String(raw.signature || '') : '';
+    if (mode === 'family' && !signature) mode = null;
+    return {
+        command,
+        purpose: String(raw.purpose == null ? '' : raw.purpose).trim().replace(/\s+/g, ' ').slice(0, 80),
+        mode,
+        signature,
+        dangerous: raw.dangerous === true,
+        dangerLabel: String(raw.dangerLabel == null ? '' : raw.dangerLabel).trim().slice(0, 80),
+        reason: String(raw.reason == null ? '' : raw.reason).trim().slice(0, 80),
+    };
+}
+
 // session.activePlan 归一（读盘 / 组装请求时用）：字段白名单 + 长度兜底，脏数据不炸。
 // markdown 为空视为没有计划（返回 null）——状态只有 pending / approved 两种。
 export function normalizeActivePlan(raw) {
     if (!raw || typeof raw !== 'object') return null;
     const markdown = String(raw.markdown == null ? '' : raw.markdown).trim();
     if (!markdown) return null;
-    return {
+    const declared = Array.isArray(raw.declaredCommands)
+        ? raw.declaredCommands.map(normalizeDeclaredCommand).filter(Boolean).slice(0, 8)
+        : null;
+    const plan = {
         title: String(raw.title == null ? '' : raw.title).trim().replace(/\s+/g, ' ').slice(0, 120),
         markdown: markdown.slice(0, PLAN_MAX_CHARS),
         status: raw.status === 'approved' ? 'approved' : 'pending',
         ts: Number(raw.ts) || 0,
         fileRel: String(raw.fileRel == null ? '' : raw.fileRel).trim(),
     };
+    if (declared && declared.length) plan.declaredCommands = declared;
+    return plan;
 }
 
 // compact 后的计划回注块（对齐 ZCode 的 plan_file_reference）：压缩把前段消息移入

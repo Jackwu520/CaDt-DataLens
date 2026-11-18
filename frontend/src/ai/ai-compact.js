@@ -9,8 +9,21 @@ import {aiTextOf} from './ai-constants.js';
 
 // 摘要里保留的尾部条数下限（压缩后至少留这么多条，保证「当前正在做什么」还在上下文里）
 export const COMPACT_KEEP_TAIL = 6;
+// 压缩后保留的尾部预算占「消息预算」的比例：与 deepseek-harness 的 retainRatio 对齐
+// （0.16）。按 token 计而不是按条数计——6 条消息可能只有 2k token，也可能有 60k。
+export const COMPACT_RETAIN_RATIO = 0.16;
 // 压缩转录的硬上限（提示词输入，不随会话无界增长）
 const TRANSCRIPT_MAX = 120000;
+
+// 保留预算（tokens）：messageBudget = 窗口 − 输出预留，再取 retainRatio。
+// 与 dsh 的 `retainTokens = floor(messageBudget * 0.16)` 同口径；窗口未知返回 0（回退按条数）。
+export function compactRetainBudget(windowSize, reservedOutputTokens) {
+    const window = Number(windowSize) || 0;
+    if (!(window > 0)) return 0;
+    // 输出预留最多占窗口一半：防止模型条目把 outputWindow 填成等于窗口时预算被清零
+    const reserved = Math.max(0, Math.min(Number(reservedOutputTokens) || 0, window * 0.5));
+    return Math.max(0, Math.floor((window - reserved) * COMPACT_RETAIN_RATIO));
+}
 
 // cutoff：保留最近 N 条，并**回退到最近的 user 轮边界**——一轮不能从 assistant / tool
 // 中间切开，否则压缩后首条是工具结果，模型看不懂自己在干什么。
@@ -20,6 +33,27 @@ export function computeCompactCutoff(messages, keepTail) {
     let cutoff = Math.max(0, list.length - keep);
     while (cutoff > 0 && list[cutoff] && list[cutoff].role !== 'user') cutoff--;
     return cutoff;
+}
+
+// token 预算版 cutoff：从尾部按 estimate(message) 累加到预算为止，再回退到 user 轮边界。
+// budgetTokens <= 0 或没给 estimate 时退回按条数（旧口径），保证调用方永远拿得到切点。
+export function computeCompactCutoffByBudget(messages, budgetTokens, estimate, keepTail) {
+    const list = Array.isArray(messages) ? messages : [];
+    const budget = Number(budgetTokens) || 0;
+    if (!(budget > 0) || typeof estimate !== 'function') {
+        return computeCompactCutoff(list, keepTail);
+    }
+    let used = 0;
+    let cut = 0;
+    for (let i = list.length - 1; i >= 0; i--) {
+        used += Math.max(0, Number(estimate(list[i])) || 0);
+        if (used >= budget) {
+            cut = i;
+            break;
+        }
+    }
+    while (cut > 0 && list[cut] && list[cut].role !== 'user') cut--;
+    return cut;
 }
 
 // summary 形状：磁盘 meta 与 buildApiMessages 的 `<conversation_summary>` 注入都认这个形状。

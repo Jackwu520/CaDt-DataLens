@@ -60,7 +60,11 @@ func (w *ResourceWatcher) Watch(kind, key, dir string) error {
 	logf("info", "资源监听：%s %s -> %s", kind, key, dir)
 	go func() {
 		defer close(done)
-		err := watchDirectory(dir, stop, func(paths []string, overflow bool) {
+		err := watchDirectory(dir, stop, func(events []watchEvent, overflow bool) {
+			paths := make([]string, 0, len(events))
+			for _, e := range events {
+				paths = append(paths, e.Path)
+			}
 			if w.OnEvent != nil {
 				w.OnEvent(kind, key, paths, overflow)
 			}

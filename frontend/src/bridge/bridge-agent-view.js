@@ -47,6 +47,10 @@ function openAgentTab(spec) {
             name: String((spec && spec.name) || '子代理'),
             // 详情所在的会话（头部状态兜底用它精确补正文，不扫全部会话）
             sessionId: String((spec && spec.sessionId) || ''),
+            // 父级信息（openAgentView 算好传进来）：标签页 tooltip 与详情头部面包屑共用
+            parentLabel: String((spec && spec.parentLabel) || ''),
+            depth: Number((spec && spec.depth) || 0) || 0,
+            task: String((spec && spec.task) || ''),
         },
         mode: 'agentview',
         treeAvailable: false,

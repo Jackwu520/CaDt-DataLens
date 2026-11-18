@@ -185,7 +185,7 @@ export function createAIAgentNotices(ctx) {
 
     // 唤醒正在这一会话上 wait_agent 的调用方（它多半就是在等这条）。
     function notifyWaiters(sessionId) {
-        if (inboxWaiters && typeof inboxWaiters.notify === 'function') inboxWaiters.notify(sessionId);
+        if (inboxWaiters && typeof inboxWaiters.notify === 'function') inboxWaiters.notify(sessionId, 'notice');
     }
 
     // 把通知折叠成会话里的 user 消息（工具轮边界用：此刻流还在跑，不能起新轮）。

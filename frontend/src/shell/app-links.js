@@ -24,13 +24,14 @@ function openExternalUrl(url) {
 }
 
 // openBundledDoc 按 bundledDoc 键复用已打开的虚拟文档，否则新建一个并打上该标记。
-function openBundledDoc(key, name, text) {
+// readOnlyFixed：虚拟文档没有真实路径、无法保存，法律文本以固定只读打开（不可解锁）。
+function openBundledDoc(key, name, text, readOnlyFixed) {
     const existing = deps.docs.find((d) => d.bundledDoc === key);
     if (existing) {
         deps.activateDoc(existing);
         return existing;
     }
-    const doc = deps.openVirtualDoc(name, text);
+    const doc = deps.openVirtualDoc(name, text, readOnlyFixed ? {readOnlyFixed: true} : undefined);
     doc.bundledDoc = key;
     return doc;
 }
@@ -40,11 +41,11 @@ function showChangelog() {
 }
 
 function showTerms() {
-    openBundledDoc('terms', '用户协议.md', termsText);
+    openBundledDoc('terms', '用户协议.md', termsText, true);
 }
 
 function showPrivacy() {
-    openBundledDoc('privacy', '隐私协议.md', privacyText);
+    openBundledDoc('privacy', '隐私协议.md', privacyText, true);
 }
 
 async function openDevTools() {

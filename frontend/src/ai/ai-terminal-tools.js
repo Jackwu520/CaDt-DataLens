@@ -82,17 +82,31 @@ export function formatTerminalList(local, backendList) {
     return lines.join('\n');
 }
 
-// 排队等待时长的用户可读格式（ai-queue 提示用）：9.4 s / 42 s / 8.5 min / 9.9 h。
+// 排队等待时长的用户可读格式（ai-queue / ai-retry 提示用）：9 秒 / 42 秒 / 8.5 分钟 / 9.9 小时。
 // 与 formatCommandDuration 分开：那是「已经花了多久」（毫秒精度、英文单位），
 // 这是「还要等多久」（可能长达数小时，需要小时档，且 429 冻结常常是几十分钟起）。
+// 秒档取整：等待提示里的小数秒没有信息量，还逼着倒计时每 100ms 重写文案。
 export function formatWaitDuration(ms) {
     if (ms == null) return '';
     const n = Number(ms);
     if (!Number.isFinite(n) || n <= 0) return '';
     const s = n / 1000;
-    if (s < 60) return s.toFixed(1) + ' 秒';
+    if (s < 60) return Math.round(s) + ' 秒';
     if (s < 3600) return (s / 60).toFixed(s < 600 ? 1 : 0) + ' 分钟';
     return (s / 3600).toFixed(1) + ' 小时';
+}
+
+// ai-retry 原因的用户可读文案：Go 侧给的是「HTTP 429」/「网络错误」这类原始描述，
+// 原样拼进提示条用户看不懂。可重试的只有 429 与 5xx（aiRetryableStatus），
+// 按类翻译；其余状态码理论上不会出现，原样透传兜底。
+export function friendlyRetryReason(reason) {
+    const raw = String(reason || '').trim() || '请求失败';
+    const m = /^HTTP (\d{3})$/.exec(raw);
+    if (!m) return raw;
+    const code = Number(m[1]);
+    if (code === 429) return '服务商限流';
+    if (code >= 500) return '服务商暂时不可用（HTTP ' + code + '）';
+    return 'HTTP ' + code;
 }
 
 // 命令耗时格式化（run_command 工具卡头部徽标用）：ms → 1.25 s / 12.3 s / 2 m 05 s。

@@ -124,7 +124,7 @@ test('计划模式：只读/写档都给 propose_patch（预检用），但不�
     for (const scope of ['read', 'edit', 'auto', 'full']) {
         const list = names(scope, true);
         assert.ok(list.includes('propose_patch'), scope + ' 计划模式应可用 propose_patch');
-        for (const tool of ['write_file', 'edit_file', 'run_command', 'background_command', 'browser_click']) {
+        for (const tool of ['write_file', 'edit_file', 'run_command', 'background_command', 'browser_click', 'todo_write']) {
             assert.ok(!list.includes(tool), scope + ' 计划模式不应下发 ' + tool);
         }
     }

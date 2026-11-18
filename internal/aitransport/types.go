@@ -22,14 +22,21 @@ const (
 	IdleTimeoutMaxSec     = 3600
 	DefaultIdleTimeoutSec = 120
 	aiDialTimeout         = 10 * time.Second
-	aiErrorBodyLimit   = 64 << 10
-	aiErrorTextLimit   = 500
-	aiDefaultMaxTokens = 4096
-	aiMaxExtraHeaders  = 8
+	aiErrorBodyLimit      = 64 << 10
+	aiErrorTextLimit      = 500
+	aiDefaultMaxTokens    = 4096
+	aiMaxExtraHeaders     = 8
 	// 插件 provider 每轮注入的请求体补丁上限（与前端 plugin-ai-providers.js 对齐）
-	aiMaxExtraBodyKeys    = 32
-	aiMaxExtraBodyBytes   = 64 << 10
-	aiMaxToolDefs         = 128
+	aiMaxExtraBodyKeys  = 32
+	aiMaxExtraBodyBytes = 64 << 10
+	// 单条 assistant 消息携带的工具调用数上限：防的是畸形历史（一条消息挂几百个 call），
+	// 不是工具清单规模——工具定义数量本身不设上限（与 opencode / pi / ZCode / cline /
+	// codex / deepseek-harness 一致，容量控制走 token 预算 + 压缩）。
+	aiMaxToolCallsPerMessage = 128
+	// 单次请求体积兜底（仅防爆）：同样六个参照 harness 都不设消息条数上限，条数与体积无关
+	// （1000 条短消息可能很小，200 条带图消息可能上百 MB）。这里只拦「序列化后大到任何服务商
+	// 都不可能接受」的请求，避免把几百 MB 的 base64 塞进 HTTP 客户端。
+	aiMaxRequestBytes     = 128 << 20
 	aiMaxModels           = 500
 	aiMaxImagesPerMessage = 6
 	aiMaxImageBase64      = 8 << 20

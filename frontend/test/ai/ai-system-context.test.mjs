@@ -84,6 +84,56 @@ test('注入开关逐段生效，关闭时不留空壳', async () => {
     assert.equal(meta.workspace.loaded, false);
 });
 
+test('workspace_context：应用内标签页（浏览器 / 便签 / 计划视图）与文件分开列出，不标「范围外」', async () => {
+    const mod = createAISystemContext(makeCtx({
+        settings: {aiInjectOpenFiles: true},
+        ctx: {
+            getWorkspaceContext: () => ({
+                activeFile: null,
+                openFiles: ['/w/demo.txt'],
+                openViews: [
+                    {kind: 'browser', label: '浏览器', name: 'lightbox probe'},
+                    {kind: 'memo', label: '快捷便签', name: '快捷便签'},
+                    {kind: 'plan', label: '计划文档', name: 'spawn_agent 单向降档.md'},
+                ],
+            }),
+            getScopeRoot: () => '/w',
+        },
+    }));
+    const {turnBlock, meta} = await mod.assembleSystemContext({todos: []}, []);
+    const wc = sectionOf(turnBlock, 'workspace_context');
+    assert.ok(wc, '应注入 workspace_context');
+    assert.ok(wc.includes('已打开文件（1 个）：'), '虚拟标签页不应计入文件数：' + wc);
+    assert.ok(wc.includes('- /w/demo.txt'));
+    assert.ok(wc.includes('浏览器「lightbox probe」'), '浏览器标签页应单独列出：' + wc);
+    assert.ok(wc.includes('快捷便签'), '便签面板无独立标题时只显示类型名');
+    assert.ok(wc.includes('计划文档「spawn_agent 单向降档.md」'));
+    assert.ok(!wc.includes('范围外'), '视图不是文件，不该出现范围标注');
+    assert.equal(meta.workspace.files, 1);
+    assert.equal(meta.workspace.views, 3);
+});
+
+test('workspace_context：openViews 超过 12 个截断，缺 openViews 字段不报错', async () => {
+    const views = [];
+    for (let i = 0; i < 15; i++) views.push({kind: 'browser', label: '浏览器', name: '页 ' + i});
+    const mod = createAISystemContext(makeCtx({
+        settings: {aiInjectOpenFiles: true},
+        ctx: {getWorkspaceContext: () => ({activeFile: null, openFiles: [], openViews: views})},
+    }));
+    const {turnBlock, meta} = await mod.assembleSystemContext({todos: []}, []);
+    const wc = sectionOf(turnBlock, 'workspace_context');
+    assert.ok(wc.includes('页 11」'), '应列前 12 个');
+    assert.ok(!wc.includes('页 12」'), '第 13 个起截断');
+    assert.equal(meta.workspace.views, 12);
+    // 旧宿主（无 openViews 字段）兼容：不出错也不出空行
+    const legacy = createAISystemContext(makeCtx({
+        settings: {aiInjectOpenFiles: true},
+        ctx: {getWorkspaceContext: () => ({activeFile: null, openFiles: []})},
+    }));
+    const r2 = await legacy.assembleSystemContext({todos: []}, []);
+    assert.equal(sectionOf(r2.turnBlock, 'workspace_context'), null, '没有任何内容时不注入空壳');
+});
+
 test('技能 / 环境变量在系统提示词，任务清单 / 提醒随环境块', async () => {
     const mod = createAISystemContext(makeCtx({
         settings: {aiInjectSkills: true, aiInjectEnvVars: true},

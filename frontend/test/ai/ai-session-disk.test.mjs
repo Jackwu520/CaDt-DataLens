@@ -220,3 +220,31 @@ test('reloadSession 对已存在会话的空日志抛 session-gone（不复活�
     const session = {id: 's1', title: 'T', workspace: 'D:/w', messages: [], archived: [], _logCreated: true};
     await assert.rejects(() => store.reloadSession(session), /session-gone/);
 });
+
+// 首落盘 allowCreate 语义（ed23473 回归护栏）：append 的第三参必须用进门时的
+// _logCreated 快照判定——新会话首落盘时 _logCreated 已被 header unshift 置位，
+// 拿它取反会把首落盘当成扇出写（allowCreate=false）→ session-gone 死循环。
+test('新会话首落盘 allowCreate=true；已有会话追加 allowCreate=false', async () => {
+    const calls = [];
+    const store = createSessionDiskStore({
+        get backend() {
+            return {
+                AISessionList: async () => [],
+                AISessionRead: async () => '',
+                AISessionWriteMeta: async () => {},
+                AISessionRewrite: async () => {},
+                AISessionDelete: async () => {},
+                AISessionAppend: async (id, lines, allowCreate) => { calls.push(allowCreate); },
+            };
+        },
+    });
+    const session = {
+        id: 's-new', title: 'T', workspace: 'D:/w', _unsaved: true,
+        messages: [{role: 'user', content: '你好', ts: 1}],
+        archived: [],
+    };
+    await store.persistSession(session);
+    session.messages.push({role: 'assistant', content: '嗯', ts: 2});
+    await store.persistSession(session);
+    assert.deepEqual(calls, [true, false], '首落盘必须允许建目录，之后的追加必须是扇出写');
+});

@@ -55,6 +55,16 @@ func (s *Service) AISessionRead(id string) (string, error) {
 	return store.Read(id)
 }
 
+// AISessionPath 返回会话正文 JSONL 的磁盘绝对路径（前端「复制会话路径」用）。
+// 只读解析不落盘：找不到报 ErrSessionGone，由前端转成「会话尚未落盘」等人话。
+func (s *Service) AISessionPath(id string) (string, error) {
+	store, err := s.store()
+	if err != nil {
+		return "", err
+	}
+	return store.BodyPath(id)
+}
+
 func (s *Service) AISessionAppend(id string, lines string, allowCreate bool) error {
 	store, err := s.store()
 	if err != nil {
@@ -98,29 +108,37 @@ func (s *Service) AISessionWriteMeta(id string, data string) error {
 }
 
 // AISessionSaveImage 把会话图片写进 <id>/images/，返回相对路径 images/<name>。
+// workspace 用于桶化布局下的首次建目录（新会话带附件时图片落盘先于正文 header，
+// 归属只能由调用方传入）；目录已存在时按 id 扫桶定位，workspace 不参与。
+// 路径解析必须在锁内：目录尚不存在时锁外扫桶会直接失败。
 // 写盘走 withSessionLock：别的窗口正在跑这个会话时返回 ErrSessionBusy。
-func (s *Service) AISessionSaveImage(id, name, dataURL string) (string, error) {
+func (s *Service) AISessionSaveImage(id, name, dataURL, workspace string) (string, error) {
 	store, err := s.store()
 	if err != nil {
 		return "", err
 	}
-	path, err := store.ImagePath(id, name)
-	if err != nil {
-		return "", err
+	if !validSessionImageName(name) {
+		return "", fmt.Errorf("非法图片名：%q", name)
 	}
 	if len(dataURL) > 16<<20 {
 		return "", fmt.Errorf("图片数据过大（>16 MB）")
 	}
-	err = store.withSessionLock(id, true, func(dir string) error {
+	rel := ""
+	err = store.withSessionLock(id, workspace, true, func(dir string) error {
+		path := filepath.Join(dir, ImagesDir, name)
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			return err
 		}
-		return (&fsops.FS{}).SaveDataURL(path, dataURL)
+		if err := (&fsops.FS{}).SaveDataURL(path, dataURL); err != nil {
+			return err
+		}
+		rel = ImagesDir + "/" + name
+		return nil
 	})
 	if err != nil {
 		return "", err
 	}
-	return ImagesDir + "/" + name, nil
+	return rel, nil
 }
 
 // AISessionReadImage 读取会话图片为 data URL；name 只允许单个文件名，拒绝路径穿越。
@@ -138,28 +156,34 @@ func (s *Service) AISessionReadImage(id, name string) (string, error) {
 
 // AISessionSaveVideo 会话视频落盘（与图片同构，落 <id>/videos/）。视频单文件大，
 // dataURL 上限放宽到 24 MB，与传输层 aiMaxVideoBase64 对齐；name 由前端 safeVideoName 生成（<id>.mp4）。
-func (s *Service) AISessionSaveVideo(id, name, dataURL string) (string, error) {
+// workspace 与锁内路径解析的语义同 AISessionSaveImage。
+func (s *Service) AISessionSaveVideo(id, name, dataURL, workspace string) (string, error) {
 	store, err := s.store()
 	if err != nil {
 		return "", err
 	}
-	path, err := store.VideoPath(id, name)
-	if err != nil {
-		return "", err
+	if !validSessionImageName(name) {
+		return "", fmt.Errorf("非法视频名：%q", name)
 	}
 	if len(dataURL) > 24<<20 {
 		return "", fmt.Errorf("视频数据过大（>24 MB）")
 	}
-	err = store.withSessionLock(id, true, func(dir string) error {
+	rel := ""
+	err = store.withSessionLock(id, workspace, true, func(dir string) error {
+		path := filepath.Join(dir, VideosDir, name)
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			return err
 		}
-		return (&fsops.FS{}).SaveDataURL(path, dataURL)
+		if err := (&fsops.FS{}).SaveDataURL(path, dataURL); err != nil {
+			return err
+		}
+		rel = VideosDir + "/" + name
+		return nil
 	})
 	if err != nil {
 		return "", err
 	}
-	return VideosDir + "/" + name, nil
+	return rel, nil
 }
 
 // AISessionReadVideo 读取会话视频为 data URL；name 只允许单个文件名，拒绝路径穿越。

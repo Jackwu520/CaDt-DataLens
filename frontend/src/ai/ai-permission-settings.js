@@ -12,6 +12,9 @@ import {
     writeRuleSubject,
 } from './ai-permissions.js';
 import {describeSandboxGrant, sandboxHasResidue} from './ai-sandbox-grant.js';
+import {createSwitch} from '../core/form-controls.js';
+// 插件 AI 工具注册表（纯逻辑，无 DOM）：权限面板据此渲染三层授权开关
+import * as pluginToolsMod from '../shell/plugin-tools.js';
 
 // 沙箱授权残留的可读描述来自 ai-sandbox-grant.js（纯模块：本文件顶层挂了 window 监听，
 // 测试不能直接 import 这里的纯函数）。
@@ -80,6 +83,127 @@ let semanticAutoRecheckDone = false; // 注册表空时的自动补扫，每会�
             }
         }
         if (opt.approvedClear) opt.approvedClear.disabled = !(getConfig().approvedPaths || []).length;
+    }
+
+    // 插件 AI 工具授权：三层开关（全局总闸 / 插件级 / 工具级）。
+    // readOnly 工具多一个「只读档可用」子开关——插件声明只是候选资格，放行必须由用户勾。
+    // 安全模型见 docs/unfinished-plans/plugin-tool-security.md（M2 定稿）。
+    function ensurePluginToolAuth() {
+        const cfg = getConfig();
+        if (!cfg.pluginTools || typeof cfg.pluginTools !== 'object') {
+            cfg.pluginTools = {enabled: false, plugins: {}};
+        }
+        const auth = cfg.pluginTools;
+        if (!auth.plugins || typeof auth.plugins !== 'object') auth.plugins = {};
+        return auth;
+    }
+
+    function renderPluginToolSettings() {
+        const listEl = document.getElementById('ai-plugin-tools-list');
+        const emptyEl = document.getElementById('ai-plugin-tools-empty');
+        const masterEl = document.getElementById('ai-opt-plugin-tools');
+        const mod = pluginToolsMod;
+        if (!listEl || !masterEl || !mod || typeof mod.pluginToolsByPlugin !== 'function') return;
+
+        const auth = ensurePluginToolAuth();
+        if (!masterEl.dataset.boundPluginTools) {
+            masterEl.addEventListener('change', () => {
+                ensurePluginToolAuth().enabled = masterEl.checked === true;
+                saveAIConfig();
+                renderPluginToolSettings();
+            });
+            masterEl.dataset.boundPluginTools = '1';
+        }
+        masterEl.checked = auth.enabled === true;
+
+        const groups = mod.pluginToolsByPlugin() || [];
+        listEl.textContent = '';
+        if (emptyEl) emptyEl.style.display = groups.length ? 'none' : '';
+
+        for (const group of groups) {
+            const pid = group.pluginId;
+            const ensurePlugin = () => {
+                const store = ensurePluginToolAuth();
+                if (!store.plugins[pid] || typeof store.plugins[pid] !== 'object') {
+                    store.plugins[pid] = {allow: false, tools: {}};
+                }
+                const entry = store.plugins[pid];
+                if (!entry.tools || typeof entry.tools !== 'object') entry.tools = {};
+                return entry;
+            };
+            const pluginState = ensurePlugin();
+
+            const head = document.createElement('div');
+            head.className = 'ai-approved-row';
+            const nameEl = document.createElement('span');
+            nameEl.className = 'ai-approved-path';
+            nameEl.textContent = group.pluginName + '（' + group.tools.length + ' 个工具）';
+            const allowSwitch = createSwitch({
+                checked: pluginState.allow === true,
+                onChange() {
+                    ensurePlugin().allow = this.checked === true;
+                    saveAIConfig();
+                    renderPluginToolSettings();
+                },
+            });
+            head.append(nameEl, allowSwitch.element);
+            listEl.appendChild(head);
+
+            for (const tool of group.tools) {
+                const ensureTool = () => {
+                    const plugin = ensurePlugin();
+                    if (!plugin.tools[tool.name] || typeof plugin.tools[tool.name] !== 'object') {
+                        plugin.tools[tool.name] = {on: false, readOnlyOk: false};
+                    }
+                    return plugin.tools[tool.name];
+                };
+                const entry = ensureTool();
+
+                const row = document.createElement('div');
+                row.className = 'ai-approved-row';
+                row.style.paddingLeft = '18px';
+                const main = document.createElement('div');
+                main.className = 'set-main';
+                const title = document.createElement('div');
+                title.className = 'set-title';
+                title.textContent = tool.name + (tool.readOnly ? '（声明只读）' : '');
+                const desc = document.createElement('div');
+                desc.className = 'set-desc';
+                desc.textContent = tool.description.length > 80
+                    ? tool.description.slice(0, 80) + '…'
+                    : tool.description;
+                main.append(title, desc);
+
+                const ctrl = document.createElement('div');
+                ctrl.className = 'set-control';
+                const toolSwitch = createSwitch({
+                    checked: entry.on === true,
+                    disabled: pluginState.allow !== true,
+                    title: pluginState.allow === true ? '' : '先允许该插件',
+                    onChange() {
+                        ensureTool().on = this.checked === true;
+                        saveAIConfig();
+                        renderPluginToolSettings();
+                    },
+                });
+                ctrl.appendChild(toolSwitch.element);
+                if (tool.readOnly) {
+                    const roSwitch = createSwitch({
+                        checked: entry.readOnlyOk === true,
+                        disabled: pluginState.allow !== true || entry.on !== true,
+                        title: '允许在只读档使用（默认关闭）',
+                        onChange() {
+                            ensureTool().readOnlyOk = this.checked === true;
+                            saveAIConfig();
+                            renderPluginToolSettings();
+                        },
+                    });
+                    ctrl.appendChild(roSwitch.element);
+                }
+                row.append(main, ctrl);
+                listEl.appendChild(row);
+            }
+        }
     }
 
     const PERMISSION_KIND_LABELS = {command: 'Bash', write: 'Write', web: 'Web', read: 'Read', worktree: '隔离工作区'};
@@ -675,6 +799,7 @@ return {
         renderLocalClassifierSettings,
         renderLocalClassifierStatus,
         renderPermissionSettings,
+        renderPluginToolSettings,
         renderProjectRuleTable,
         renderSemanticModelOptions,
         runLocalClassifierTest,

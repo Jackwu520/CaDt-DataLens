@@ -1,7 +1,7 @@
 // ai-constants.test.mjs：正文图片 data URL 反解（aiImageFromSrc）与 aiImageSrc 的往返。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {aiCtxBannerShow, aiCtxBannerState, aiImageExt, aiImageFromSrc, aiImageSrc, aiMsgActionsStepMode} from '../../src/ai/ai-constants.js';
+import {aiCtxBannerShow, aiCtxBannerState, aiImageExt, aiImageFromSrc, aiImageSrc, aiIsContextOverflowError, aiMsgActionsStepMode} from '../../src/ai/ai-constants.js';
 
 test('aiImageFromSrc: 与 aiImageSrc 往返一致', () => {
     const image = aiImageFromSrc('data:image/png;base64,AAAA', 'seal.png');
@@ -105,4 +105,20 @@ test('aiMsgActionsStepMode: 三档颗粒度只作用于中间步骤，最后一�
     // 非法档位回落 full
     assert.equal(aiMsgActionsStepMode('bogus', false), 'full');
     assert.equal(aiMsgActionsStepMode(undefined, false), 'full');
+});
+
+test('aiIsContextOverflowError: 只认超窗措辞，不误伤鉴权/限流错误', () => {
+    // 各协议服务商的真实措辞
+    assert.equal(aiIsContextOverflowError('This model\'s maximum context length is 128000 tokens'), true);
+    assert.equal(aiIsContextOverflowError('context_length_exceeded'), true);
+    assert.equal(aiIsContextOverflowError('Prompt is too long: 210000 tokens'), true);
+    assert.equal(aiIsContextOverflowError('Input is too long for requested model'), true);
+    assert.equal(aiIsContextOverflowError('上下文长度超过模型上限'), true);
+    assert.equal(aiIsContextOverflowError('请求的上下文窗口已满'), true);
+    // 非超窗错误不能被误判成「该压缩」
+    assert.equal(aiIsContextOverflowError('HTTP 401: invalid api key'), false);
+    assert.equal(aiIsContextOverflowError('429 rate limit exceeded'), false);
+    assert.equal(aiIsContextOverflowError('invalid request: messages[2].role'), false);
+    assert.equal(aiIsContextOverflowError(''), false);
+    assert.equal(aiIsContextOverflowError(null), false);
 });

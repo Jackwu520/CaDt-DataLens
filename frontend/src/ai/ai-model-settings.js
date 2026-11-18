@@ -9,6 +9,7 @@ import {
 import {
     aiNowId,
 } from './ai-constants.js';
+import {iconSvg} from '../core/icons.js';
 
 export function createAIModelSettings(ctx, extras) {
 
@@ -45,7 +46,82 @@ export function createAIModelSettings(ctx, extras) {
             : (profile && profile.provider === 'responses' ? '/responses' : '/chat/completions');
     }
 
+    // 手动排序：数组顺序即持久化顺序（saveAIConfig 存整个 profiles），拖拽与上移/下移都走这里。
+    // 返回是否真的移动了（首/末张往边界移是 no-op）。
+    function moveProfile(id, toIndex) {
+        const profiles = getConfig().profiles;
+        const from = profiles.findIndex((item) => item.id === id);
+        if (from < 0) return false;
+        const target = Math.max(0, Math.min(profiles.length - 1, Math.round(Number(toIndex))));
+        if (target === from) return false;
+        const [moved] = profiles.splice(from, 1);
+        profiles.splice(target, 0, moved);
+        saveAIConfig();
+        extras.refreshSettingsPane();
+        renderProfileSelect();
+        renderModelList();
+        return true;
+    }
+
+    // 拖拽排序：dragover 按指针在目标卡的上/下半决定插到它前还是后，让位提示用 CSS 类。
+    function setupCardDrag(card, profile) {
+        card.draggable = true;
+        card.dataset.profileId = profile.id;
+        card.addEventListener('dragstart', (event) => {
+            dragProfileId = profile.id;
+            if (event.dataTransfer) {
+                event.dataTransfer.effectAllowed = 'move';
+                try { event.dataTransfer.setData('text/plain', profile.id); } catch (_) { /* IE 兼容，忽略 */ }
+            }
+            card.classList.add('dragging');
+        });
+        card.addEventListener('dragend', () => {
+            dragProfileId = '';
+            card.classList.remove('dragging');
+            for (const node of opt.modelList.querySelectorAll('.drop-before, .drop-after')) {
+                node.classList.remove('drop-before', 'drop-after');
+            }
+        });
+        card.addEventListener('dragover', (event) => {
+            if (!dragProfileId || dragProfileId === profile.id) return;
+            event.preventDefault();
+            if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+            const rect = card.getBoundingClientRect();
+            const offset = event.clientY - rect.top - rect.height / 2;
+            const after = offset > 0;
+            // 滞回：让位 margin 会移动下一次的中线，指针停在中线附近会在两态间来回跳。
+            // 已处于某态时，指针要越过中线 8px 才切换。
+            const hysteresis = 8;
+            if (card.classList.contains('drop-before') && offset > -hysteresis) return;
+            if (card.classList.contains('drop-after') && offset < hysteresis) return;
+            card.classList.toggle('drop-after', after);
+            card.classList.toggle('drop-before', !after);
+        });
+        card.addEventListener('dragleave', (event) => {
+            if (card.contains(event.relatedTarget)) return;
+            card.classList.remove('drop-before', 'drop-after');
+        });
+        card.addEventListener('drop', (event) => {
+            event.preventDefault();
+            const after = card.classList.contains('drop-after');
+            card.classList.remove('drop-before', 'drop-after');
+            if (!dragProfileId || dragProfileId === profile.id) return;
+            const profiles = getConfig().profiles;
+            const from = profiles.findIndex((item) => item.id === dragProfileId);
+            const to = profiles.findIndex((item) => item.id === profile.id);
+            dragProfileId = '';
+            if (from < 0 || to < 0) return;
+            // 从前往后移时删掉原位后目标下标会左移一位，按 after 补回
+            moveProfile(profiles[from].id, to + (after ? 1 : 0));
+        });
+    }
+
+    let dragProfileId = '';
+
     function renderModelList() {
+        // 拖拽中若被别处触发重渲染（表单变更 / refreshSettings），原 card 节点销毁会让 dragend
+        // 永不触发——残留的 dragProfileId 与让位类会卡住下一个拖拽，重建前一并清掉。
+        dragProfileId = '';
         if (!opt.modelList) return;
         opt.modelList.innerHTML = '';
         if (!getConfig().profiles.length) {
@@ -55,12 +131,18 @@ export function createAIModelSettings(ctx, extras) {
             opt.modelList.appendChild(empty);
             return;
         }
-        for (const profile of getConfig().profiles) {
+        const profiles = getConfig().profiles;
+        profiles.forEach((profile, index) => {
             const entry = modelEntryOf(profile, profile.id === getConfig().activeProfileId ? getConfig().activeModelId : profile.lastModelId);
             const card = document.createElement('div');
             card.className = 'ai-model-card' + (profile.id === getConfig().activeProfileId ? ' active' : '');
             const head = document.createElement('div');
             head.className = 'ai-model-card-head';
+            const grip = document.createElement('span');
+            grip.className = 'ai-model-grip';
+            grip.dataset.tip = '拖动调整顺序';
+            grip.innerHTML = iconSvg('grip', 14);
+            head.appendChild(grip);
             const name = document.createElement('span');
             name.className = 'ai-model-name';
             name.textContent = profile.name || '未命名账号';
@@ -83,6 +165,18 @@ export function createAIModelSettings(ctx, extras) {
             ].join(' · ');
             const actions = document.createElement('div');
             actions.className = 'ai-model-actions';
+            const upBtn = dialogButton('', 'dlg-btn ai-model-move', () => moveProfile(profile.id, index - 1));
+            upBtn.setAttribute('aria-label', '上移');
+            upBtn.dataset.tip = '上移';
+            upBtn.innerHTML = iconSvg('chevron-up', 13);
+            upBtn.disabled = index === 0;
+            actions.appendChild(upBtn);
+            const downBtn = dialogButton('', 'dlg-btn ai-model-move', () => moveProfile(profile.id, index + 1));
+            downBtn.setAttribute('aria-label', '下移');
+            downBtn.dataset.tip = '下移';
+            downBtn.innerHTML = iconSvg('chevron-down', 13);
+            downBtn.disabled = index === profiles.length - 1;
+            actions.appendChild(downBtn);
             if (profile.id !== getConfig().activeProfileId) {
                 actions.appendChild(dialogButton('设为当前', 'dlg-btn', () => switchProfile(profile.id)));
             }
@@ -91,8 +185,9 @@ export function createAIModelSettings(ctx, extras) {
             actions.appendChild(dialogButton('复制', 'dlg-btn', () => duplicateModel(profile.id)));
             actions.appendChild(dialogButton('删除', 'dlg-btn', () => deleteModel(profile.id)));
             card.append(head, meta, actions);
+            setupCardDrag(card, profile);
             opt.modelList.appendChild(card);
-        }
+        });
     }
 
     function setActiveModel(id) {
@@ -357,6 +452,7 @@ return {
         deleteModel,
         duplicateModel,
         editorEntryOf,
+        moveProfile,
         openModelEditor,
         providerLabelFor,
         renderModelEntries,

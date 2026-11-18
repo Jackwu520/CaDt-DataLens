@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -35,19 +36,43 @@ func utf16Encode(s string) []uint16 {
 }
 
 func TestParseNotifyBuffer(t *testing.T) {
-	buf := make([]byte, 256)
+	buf := make([]byte, 512)
 	firstLen := 12 + len(utf16Encode("a.txt"))*2
-	next := writeNotifyEntry(buf, 0, uint32(firstLen), "a.txt", 1)
-	writeNotifyEntry(buf, next, 0, "子目录\\b.json", 3)
-	paths, overflow := parseNotifyBuffer(buf, uint32(next+12+len(utf16Encode("子目录\\b.json"))*2))
+	next := writeNotifyEntry(buf, 0, uint32(firstLen), "a.txt", syscall.FILE_ACTION_ADDED)
+	next = writeNotifyEntry(buf, next, 0, "子目录\\b.json", syscall.FILE_ACTION_MODIFIED)
+	events, overflow := parseNotifyBuffer(buf, uint32(next))
 	if overflow {
 		t.Fatal("unexpected overflow")
 	}
-	if len(paths) != 2 || paths[0] != "a.txt" || paths[1] != "子目录\\b.json" {
-		t.Fatalf("unexpected paths: %#v", paths)
+	if len(events) != 2 || events[0].Path != "a.txt" || events[1].Path != "子目录\\b.json" {
+		t.Fatalf("unexpected events: %#v", events)
+	}
+	if events[0].Removed || events[1].Removed {
+		t.Fatalf("added/modified 不应标记 Removed: %#v", events)
 	}
 	if _, overflow := parseNotifyBuffer(nil, 0); !overflow {
 		t.Fatal("zero-size batch should mark overflow")
+	}
+}
+
+// TestParseNotifyBufferRemoved 「消失」类动作（removed / renamed_old_name）标 Removed=true——
+// wipe-guard 的删除计数只认这组（方案 §5.1）。
+func TestParseNotifyBufferRemoved(t *testing.T) {
+	buf := make([]byte, 512)
+	firstLen := 12 + len(utf16Encode("gone.txt"))*2
+	secondLen := 12 + len(utf16Encode("moved-away.txt"))*2
+	next := writeNotifyEntry(buf, 0, uint32(firstLen), "gone.txt", syscall.FILE_ACTION_REMOVED)
+	next = writeNotifyEntry(buf, next, uint32(secondLen), "moved-away.txt", syscall.FILE_ACTION_RENAMED_OLD_NAME)
+	next = writeNotifyEntry(buf, next, 0, "renamed-in.txt", syscall.FILE_ACTION_RENAMED_NEW_NAME)
+	events, _ := parseNotifyBuffer(buf, uint32(next))
+	if len(events) != 3 {
+		t.Fatalf("unexpected events: %#v", events)
+	}
+	if !events[0].Removed || !events[1].Removed {
+		t.Fatalf("removed/renamed_old 应标记 Removed: %#v", events)
+	}
+	if events[2].Removed {
+		t.Fatalf("renamed_new 是「出现」不是消失: %#v", events)
 	}
 }
 
@@ -58,10 +83,10 @@ func TestWatchDirectoryReceivesCreate(t *testing.T) {
 	events := make(chan string, 8)
 	go func() {
 		defer close(done)
-		_ = watchDirectory(dir, stop, func(paths []string, overflow bool) {
-			for _, path := range paths {
+		_ = watchDirectory(dir, stop, func(list []watchEvent, overflow bool) {
+			for _, e := range list {
 				select {
-				case events <- path:
+				case events <- e.Path:
 				default:
 				}
 			}

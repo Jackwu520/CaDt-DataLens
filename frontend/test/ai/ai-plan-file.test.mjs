@@ -138,6 +138,38 @@ test('normalizeActivePlan：白名单归一，markdown 为空视为没有计划'
     assert.equal(normalizeActivePlan({markdown: '   '}), null, '空正文不算计划');
 });
 
+test('normalizeActivePlan：declaredCommands 条目归一与脏数据兜底', () => {
+    const plan = normalizeActivePlan({
+        markdown: PLAN_TEXT,
+        declaredCommands: [
+            {command: 'go test ./...', purpose: '后端测试', mode: 'family', signature: 'go test'},
+            {command: 'node scripts/x.mjs', mode: 'exact', dangerous: false, junk: 1},
+            {command: 'rm -rf /', mode: null, dangerous: true, dangerLabel: '递归强删', reason: '危险命令执行时仍需单次确认'},
+            {command: '   ', mode: 'exact'},
+            {command: 'x'.repeat(201)},
+            'not-an-object',
+            null,
+            {mode: 'family', signature: 'go test'},
+            {command: 'go vet ./...', mode: 'family'},
+        ],
+    });
+    assert.equal(plan.declaredCommands.length, 4);
+    assert.equal(plan.declaredCommands[0].signature, 'go test');
+    assert.equal(plan.declaredCommands[0].purpose, '后端测试');
+    assert.equal(plan.declaredCommands[1].mode, 'exact');
+    assert.equal('junk' in plan.declaredCommands[1], false, '条目内白名单外字段不得透传');
+    assert.equal(plan.declaredCommands[2].dangerous, true);
+    assert.equal(plan.declaredCommands[2].dangerLabel, '递归强删');
+    assert.equal(plan.declaredCommands[3].mode, null, 'family 缺 signature 降级为不预授权');
+    const bare = normalizeActivePlan({markdown: PLAN_TEXT});
+    assert.equal('declaredCommands' in bare, false, '无申报时不出字段');
+    const over = normalizeActivePlan({
+        markdown: PLAN_TEXT,
+        declaredCommands: Array.from({length: 12}, (_, i) => ({command: 'node scripts/t' + i + '.mjs', mode: 'exact'})),
+    });
+    assert.equal(over.declaredCommands.length, 8, '申报上限 8 条');
+});
+
 function mkPlan(overrides) {
     return Object.assign({
         title: 'Git 图谱',

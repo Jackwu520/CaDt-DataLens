@@ -191,6 +191,13 @@ func (s *Service) specs() []spec {
 			targets: []target{workspaceTarget("tmp")},
 		},
 		{
+			// wipe-guard 是破坏防护的备份库：**刻意不进「一键清缓存」**（inCache=false）——
+			// 用户例行清缓存不应顺手拆掉保险（方案 §4.3）；只在勾选清理里出现，删除前摘 ACL。
+			id: "wipe-guard", label: "工作区破坏防护备份", scope: ScopeApp, kind: KindCache, inCache: false,
+			note:    "AI 写操作前的原文件快照与定期状态快照（wipe-guard/）。删了不丢当前内容，但失去对事故的恢复能力；设置 → 存储与清理的「工作区防护」区可查看与还原。",
+			targets: []target{appDirTarget("wipe-guard")},
+		},
+		{
 			id: "ws-worktrees", label: "AI 隔离 worktree（孤儿）", scope: ScopeWorkspace, kind: KindDanger,
 			note: "工作区 .cadt/worktree 下没有会话登记的孤儿隔离区（AI 的 git worktree 草稿区全量检出副本，通常是被删会话或手动清理目录留下的）。活跃会话登记的隔离区不在本条目范围，正在试错的草稿不会被动到；删除走回收站，git 侧管理记录由下次启动的 worktree prune 收敛，其分支（cadt/wt/<slug>）不随之删除。",
 			targets: []target{func() target {

@@ -6,6 +6,32 @@ import {iconSvg} from '../core/icons.js';
 import {aiTextOf, aiFormatSessionTime} from './ai-constants.js';
 import {sessionActivityTs} from './ai-session-store.js';
 
+// 活动栏「AI 会话」图标状态点的聚合（纯函数，env 注入判定，便于单测）：
+// 只统计当前工作区的非归档会话，按 error > pending > done 取最高优先级的一个；
+// running / '' 不产生点。当前工作区键为空时一律不显示（未打开工作区）。
+export function aggregateSessionBadge(sessions, env) {
+    const list = Array.isArray(sessions) ? sessions : [];
+    const statusOf = typeof env.sessionStatus === 'function' ? env.sessionStatus : () => '';
+    const keyOf = typeof env.workspaceKeyOf === 'function' ? env.workspaceKeyOf : () => '';
+    const currentKey = typeof env.currentWorkspaceKey === 'function' ? env.currentWorkspaceKey() : '';
+    if (!currentKey) return '';
+    let hasError = false;
+    let hasPending = false;
+    let hasDone = false;
+    for (const session of list) {
+        if (!session || session.archivedAt) continue;
+        if (keyOf(session) !== currentKey) continue;
+        const status = statusOf(session);
+        if (status === 'error') hasError = true;
+        else if (status === 'pending') hasPending = true;
+        else if (status === 'done') hasDone = true;
+    }
+    if (hasError) return 'error';
+    if (hasPending) return 'pending';
+    if (hasDone) return 'done';
+    return '';
+}
+
 // 支线紧跟母会话：按传入顺序（已按活跃度排序）铺平，再把每条支线插到它的母会话之后。
 // 母会话已删除、或 sideOf 成环时按普通会话处理——渲染不能因为元数据坏了就少一条会话。
 export function orderSessionsWithSides(list) {
@@ -35,6 +61,32 @@ export function orderSessionsWithSides(list) {
     return out;
 }
 
+// 会话右键菜单项组装（纯函数，配 ai-session-list.test.mjs）：act 是符号动作键，
+// showSessionMenu 负责映射成真实闭包。显隐规则——不适用的项直接不出现：
+// 支线才有「提升为独立会话」、信箱有积压才有「清空信箱」、
+// 磁盘存储才有「复制会话路径」（内存/legacy 模式没有磁盘路径可复制）。
+export function buildSessionMenuItems(session, env) {
+    const pending = Math.max(0, Number(env.pendingNoticeCount(session.id)) || 0);
+    const items = [
+        {label: '新建会话', act: 'new'},
+        {label: '新建支线对话', act: 'newSide'},
+        {sep: true},
+        {label: session.pinned ? '取消置顶' : '置顶会话', disabled: !!session.archivedAt, act: 'togglePin'},
+        {label: '重命名会话…', act: 'rename'},
+        {label: '导出会话…', act: 'export'},
+        {label: '会话数据诊断…', act: 'diagnostics'},
+    ];
+    if (session.sideOf) items.push({label: '提升为独立会话', act: 'promote'});
+    if (pending > 0) items.push({label: '清空信箱（' + pending + ' 条）', act: 'clearMailbox'});
+    items.push({label: session.archivedAt ? '取消归档' : '归档会话', act: 'archive'});
+    items.push({sep: true});
+    items.push({label: '复制会话ID', act: 'copyId'});
+    if (env.diskStorage) items.push({label: '复制会话路径', act: 'copyPath'});
+    items.push({sep: true});
+    items.push({label: '删除会话', danger: true, act: 'remove'});
+    return items;
+}
+
 export function createAISessionList(ctx) {
     const el = ctx.el;
     const sessionListEl = ctx.sessionListEl;
@@ -54,6 +106,7 @@ export function createAISessionList(ctx) {
     const pendingNoticeCount = typeof ctx.pendingNoticeCount === 'function' ? ctx.pendingNoticeCount : () => 0;
     const stopSessionTurn = typeof ctx.stopSessionTurn === 'function' ? ctx.stopSessionTurn : () => {};
     const listFlash = typeof ctx.flash === 'function' ? ctx.flash : () => {};
+    const copyText = typeof ctx.copyText === 'function' ? ctx.copyText : async () => {};
     const currentSession = ctx.currentSession;
     // 首次读盘未完成（磁盘模式的启动瞬间）：sessions 还是占位，不能当真实列表画出来
     const sessionsPending = typeof ctx.sessionsPending === 'function' ? ctx.sessionsPending : () => false;
@@ -83,6 +136,8 @@ export function createAISessionList(ctx) {
     const showContextMenu = ctx.showContextMenu;
     const getSessions = ctx.getSessions;
     const setStickBottom = ctx.setStickBottom;
+    // 活动栏会话图标状态点：宿主注入的回调（缺省空操作），由本域统一计算并推送
+    const onBadgeChange = typeof ctx.onBadgeChange === 'function' ? ctx.onBadgeChange : () => {};
 
     // —— 随域迁入的列表状态（原 ai-panel.js 闭包级）；会话搜索框已删（并入全局搜索的「AI 会话」分类）——
     let archivedExpanded = false;
@@ -161,6 +216,20 @@ export function createAISessionList(ctx) {
         return '';
     }
 
+    // 活动栏会话图标状态点：复用逐条状态判定（含「正在查看时抑制未读」的语义），
+    // running 归一为空（活动栏不提示运行中），再交给纯函数按工作区与优先级聚合。
+    function refreshBadge() {
+        const kind = aggregateSessionBadge(getSessions(), {
+            sessionStatus: (session) => {
+                const status = sessionEntryStatus(session, false);
+                return status === 'running' ? '' : status;
+            },
+            workspaceKeyOf: (session) => aiWorkspaceKey(sessionWorkspacePath(session)),
+            currentWorkspaceKey: () => aiWorkspaceKey(currentWorkspacePath()),
+        });
+        onBadgeChange(kind);
+    }
+
     // 后台结束的会话标一个「未查看」；落盘进 meta，重启后仍然保留。
     function setSessionUnread(session, kind) {
         if (!session || session.archivedAt) return;
@@ -188,6 +257,8 @@ export function createAISessionList(ctx) {
         // 头部身份（会话标题）与 chips 角标跟随会话列表刷新点（改名/切换/自动标题都会走到这里）
         // 读盘中不给——占位会话的「新会话」标题闪一下没有意义
         if (!sessionsPending()) updateHeadHud();
+        // 活动栏状态点跟随每次列表刷新（读盘期间也重算一次，占位会话不产生点）
+        refreshBadge();
         if (!sessionListEl) return;
         const scrollTop = sessionListEl.scrollTop;
         sessionListEl.innerHTML = '';
@@ -502,30 +573,38 @@ export function createAISessionList(ctx) {
 
     function showSessionMenu(session, x, y) {
         if (!showContextMenu) return;
-        const side = !!(session && session.sideOf);
-        showContextMenu([
-            {label: '新建会话', action: () => { ensureOpen(); newSession(); }},
-            {label: '新建支线对话', action: () => { ensureOpen(); openSideChat({session}); }},
-            {sep: true},
-            {label: session.pinned ? '取消置顶' : '置顶会话', disabled: !!session.archivedAt, action: () => toggleSessionPin(session)},
-            {label: '重命名会话…', action: () => renameSession(session)},
-            {label: '导出会话…', action: () => exportSession(session)},
-            {label: '会话数据诊断…', action: () => showSessionDiagnostics(session)},
-            // 支线专用：清掉 sideOf，此后它就是独立会话（母会话删除也不影响）
-            {label: '提升为独立会话', disabled: !side, action: () => promoteSideChat(session)},
-            // 信箱积压：跨会话/后台注入的消息还没被消费时给个清空口（防环治理的手动兜底）
-            (() => {
-                const pending = pendingNoticeCount(session.id);
-                return {
-                    label: '清空信箱' + (pending ? '（' + pending + ' 条）' : ''),
-                    disabled: !pending,
-                    action: () => { clearMailbox(session.id); },
-                };
-            })(),
-            {label: session.archivedAt ? '取消归档' : '归档会话', action: () => archiveSession(session, !session.archivedAt)},
-            {sep: true},
-            {label: '删除会话', danger: true, action: () => deleteSession(session)},
-        ], x, y);
+        const actions = {
+            new: () => { ensureOpen(); newSession(); },
+            newSide: () => { ensureOpen(); openSideChat({session}); },
+            togglePin: () => toggleSessionPin(session),
+            rename: () => renameSession(session),
+            export: () => exportSession(session),
+            diagnostics: () => showSessionDiagnostics(session),
+            promote: () => promoteSideChat(session),
+            clearMailbox: () => { clearMailbox(session.id); },
+            archive: () => archiveSession(session, !session.archivedAt),
+            copyId: () => { copyText(session.id, '会话ID'); },
+            // 磁盘路径找 Go 侧解析（桶名 = 工作区短哈希，前端不复刻规则）；
+            // 尚未落盘的会话把 session-gone 转成人话，不弹原始错误
+            copyPath: async () => {
+                let path = '';
+                try {
+                    path = await backend.AISessionPath(session.id) || '';
+                } catch (e) {
+                    const msg = String((e && e.message) || e);
+                    listFlash(msg.includes('session-gone') ? '会话尚未落盘' : '取会话路径失败：' + msg, true);
+                    return;
+                }
+                if (path) await copyText(path, '会话路径');
+            },
+            remove: () => deleteSession(session),
+        };
+        // act 是符号动作键：菜单结构由纯函数组装（可单测），这里只映射成真实闭包
+        const items = buildSessionMenuItems(session, {
+            pendingNoticeCount,
+            diskStorage: !!sessionUseDisk(),
+        }).map((item) => (item.act && actions[item.act]) ? {...item, action: actions[item.act]} : item);
+        showContextMenu(items, x, y);
     }
 
     function showSessionListMenu(x, y) {
@@ -562,5 +641,6 @@ export function createAISessionList(ctx) {
         showSessionMenu,
         showSessionListMenu,
         clearSessionUnread,
+        refreshBadge,
     };
 }

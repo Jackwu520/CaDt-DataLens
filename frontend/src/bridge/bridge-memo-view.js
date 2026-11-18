@@ -6,6 +6,7 @@ import {iconSvg} from '../core/icons.js';
 import {copyImageUrlToClipboard, dataUrlToFile} from '../core/image-clipboard.js';
 import {createInput, createTextarea} from '../core/form-controls.js';
 import {createImageLightbox} from '../shell/image-lightbox.js';
+import {getPluginDocConverters} from '../shell/plugins.js';
 import {memoDocxBase64} from './memo-docx.js';
 import {
     MEMO_LIMITS,
@@ -13,7 +14,6 @@ import {
     addItem,
     attachImage,
     collectImageRefs,
-    cycleStatus,
     exportMemoMarkdown,
     formatMemoForAI,
     moveItemToBlock,
@@ -23,6 +23,7 @@ import {
     updateById,
 } from './memo-model.js';
 import {createMemoStore} from './memo-store.js';
+import {createMemoTerm, formatTermStatus} from './memo-term.js';
 
 export function createBridgeMemoView(deps) {
 
@@ -37,6 +38,20 @@ const store = createMemoStore({
     onPendingChange: deps.onPendingChange,
     // 贴图 GC 定位：用缓存捕获的 workspace 解析作用域根（换过工作区也删对文件）
     resolveRoot: memoRootDirFor,
+});
+
+// 终端条目运行时：命令走 RunExec 通道（120s 超时/停止/杀树），输出是内存态。
+// findRow 给活更新定位条目行（流式 append 不整面板重渲染，避免打断行内编辑）；
+// normalizeTermText 从组合根注入（ai 域纯函数，bridge 域不直接 import ai 域）。
+const term = createMemoTerm({
+    backend: deps.backend,
+    flash: deps.flash,
+    rt: deps.rt,
+    normalizeTermText: deps.normalizeTermText,
+    findRow: (itemId) => {
+        const view = findOpenView();
+        return view ? view.root.querySelector('.memo-item[data-item-id="' + cssEscape(itemId) + '"]') : null;
+    },
 });
 
 // 图片 data URL 缓存：key = scope + '|' + 相对路径，重渲染不发重复请求。
@@ -57,6 +72,8 @@ function setCurrentScope(scope) {
 // ===== 视图实例表 =====
 const views = new Set();
 let lightbox = null; // 每窗口共用一个灯箱，宿主为内容区
+// 灯箱当前展示的是哪张便签贴图（右键菜单要据此给「另存为…」一个像样的默认文件名）。
+let lightboxCtx = null;
 
 // 超长条目默认折叠：手动展开过的条目 id 记这里，重渲染不弹回（内存即可，重启恢复默认折叠）。
 const itemFoldExpanded = new Set();
@@ -150,6 +167,8 @@ function createMemoView(doc) {
         root.removeEventListener('paste', onPaste);
         root.removeEventListener('contextmenu', onContextMenu);
         views.delete(view);
+        // 终端条目输出是会话内存态：关面板停掉仍在跑的运行并清空（下次开面板重新运行）
+        term.stopAll().catch(() => {});
         if (view.watchingGlobal && deps.backend && deps.backend.MemoUnwatch) {
             Promise.resolve(deps.backend.MemoUnwatch('global', '')).catch(() => {});
         }
@@ -232,9 +251,10 @@ function render(view) {
     }
     doc.blocks.forEach((block) => body.appendChild(buildBlock(view, block)));
     root.appendChild(body);
-    // 还原滚动位置（内容变短时浏览器会自动 clamp 到新的最大滚动量）
-    if (scrollTop) body.scrollTop = scrollTop;
 
+    // footer 必须在滚动恢复之前入树：body 是 flex:1，footer 缺席时 body 会被撑高一个
+    // footer 的高度，恢复的 scrollTop 就被 clamp 到偏小的 max（视口上移约 43px，滚动条
+    // 偏移 bug 的根因），footer 补上后 body 缩回但 scrollTop 不会自己涨回来。
     const footer = document.createElement('div');
     footer.className = 'memo-footer';
     const newBlock = document.createElement('button');
@@ -256,6 +276,9 @@ function render(view) {
     onButton(jumpBtn, (x, y) => openJumpMenu(view, x, y));
     footer.appendChild(jumpBtn);
     root.appendChild(footer);
+
+    // 还原滚动位置（footer/top 都已入树，clientHeight 与重渲染前一致，clamp 才是真实 max）
+    if (scrollTop) body.scrollTop = scrollTop;
 }
 
 function hintBox(text) {
@@ -500,9 +523,113 @@ function buildBlock(view, block) {
         const items = document.createElement('div');
         items.className = 'memo-block-items';
         block.items.forEach((item) => items.appendChild(buildItem(view, block, item)));
+        // 块尾快捷新建：居中三个按钮，点击在该分组末尾创建对应类型条目并进入编辑
+        const addRow = document.createElement('div');
+        addRow.className = 'memo-item-add';
+        [['text', '文本'], ['md', 'Markdown'], ['term', '终端']].forEach(([kind, label]) => {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'memo-item-add-btn';
+            btn.textContent = label;
+            onButton(btn, () => quickAddToBlock(view, block.id, kind));
+            addRow.appendChild(btn);
+        });
+        items.appendChild(addRow);
         box.appendChild(items);
     }
     return box;
+}
+
+// ---- 标签 ----
+const TAG_PRESETS = ['进行中', '重要', '紧急', '灵感', '资料', '稍后'];
+const TAG_COLORS = ['#548af7', '#2e7d32', '#bf6a02', '#a855f7', '#e25555', '#0f9b8e', '#b56ac4', '#8a8a8a'];
+
+// tagChipColor 标签着色：字符串哈希 → 固定色板（确定性，重渲染不变色）
+function tagChipColor(tag) {
+    let h = 0;
+    for (let i = 0; i < tag.length; i++) h = (h * 31 + tag.charCodeAt(i)) >>> 0;
+    return TAG_COLORS[h % TAG_COLORS.length];
+}
+
+function tagChip(view, itemId, tag) {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'memo-tag';
+    chip.style.color = tagChipColor(tag);
+    chip.textContent = tag;
+    chip.setAttribute('data-tip', '标签：' + tag + '（点击管理）');
+    onButton(chip, (x, y) => openTagMenu(view, itemId, x, y));
+    return chip;
+}
+
+// openTagMenu 标签管理：预设 toggle + 自定义输入（行内）+ 清空
+function openTagMenu(view, itemId, x, y) {
+    const doc = store.cached(view.scope);
+    if (!doc) return;
+    const item = findItemIn(doc, itemId);
+    if (!item) return;
+    const tags = item.tags || [];
+    const toggle = (tag) => () => {
+        const has = tags.indexOf(tag) >= 0;
+        const next = has ? tags.filter((t) => t !== tag)
+            : (tags.length >= MEMO_LIMITS.tagsPerItem ? null : tags.concat([tag]));
+        if (next === null) { deps.flash('标签最多 ' + MEMO_LIMITS.tagsPerItem + ' 个', true); return; }
+        run(view, (d) => updateById(d, itemId, {tags: next})).then((res) => {
+            if (!res.ok) deps.flash(res.error, true);
+        });
+    };
+    const presetItems = TAG_PRESETS.map((tag) => ({
+        label: (tags.indexOf(tag) >= 0 ? '✓ ' : '') + tag,
+        checked: tags.indexOf(tag) >= 0,
+        action: toggle(tag),
+    }));
+    deps.ctxMenu.open([
+        ...presetItems,
+        {sep: true},
+        {label: '自定义标签…', icon: 'E710', action: () => startTagInlineEdit(view, itemId)},
+        {label: '清空标签', disabled: !tags.length, action: () =>
+            run(view, (d) => updateById(d, itemId, {tags: []}))},
+    ], x, y);
+}
+
+// startTagInlineEdit 在条目标签区插入行内输入，Enter 提交为新增标签。
+function startTagInlineEdit(view, itemId) {
+    const row = view.root.querySelector('.memo-item[data-item-id="' + cssEscape(itemId) + '"]');
+    const wrap = row && row.querySelector('.memo-item-tags');
+    if (!wrap) return;
+    if (wrap.querySelector('.memo-tag-input')) return;
+    const editor = createInput({placeholder: '新标签，回车确认'});
+    editor.element.className = 'dlg-input memo-tag-input';
+    const commit = () => {
+        const value = editor.control.value.trim().slice(0, MEMO_LIMITS.tagMax);
+        editor.element.remove();
+        if (!value) return;
+        const doc2 = store.cached(view.scope);
+        const item = findItemIn(doc2, itemId);
+        const current = item ? (item.tags || []) : [];
+        if (current.indexOf(value) >= 0) return;
+        if (current.length >= MEMO_LIMITS.tagsPerItem) { deps.flash('标签最多 ' + MEMO_LIMITS.tagsPerItem + ' 个', true); return; }
+        run(view, (d) => updateById(d, itemId, {tags: current.concat([value])})).then((res) => {
+            if (!res.ok) deps.flash(res.error, true);
+        });
+    };
+    editor.element.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); commit(); }
+        else if (e.key === 'Escape') { e.preventDefault(); editor.element.remove(); }
+    });
+    editor.element.addEventListener('blur', commit);
+    editor.element.addEventListener('click', (e) => e.stopPropagation());
+    wrap.appendChild(editor.element);
+    editor.element.focus();
+}
+
+// quickAddToBlock 在指定分组末尾新建条目（kind: 'text' | 'md' | 'term'）并进入编辑。
+function quickAddToBlock(view, blockId, kind) {
+    commitActive(view);
+    store.mutate(view.scope, (doc) => addItem(doc, blockId, '', {allowEmpty: true, kind})).then((res) => {
+        if (res.ok) requestAnimationFrame(() => startItemTextEdit(view, res.id));
+        else deps.flash(res.error, true);
+    }).catch(() => {});
 }
 
 function buildItem(view, block, item) {
@@ -510,22 +637,29 @@ function buildItem(view, block, item) {
     row.className = 'memo-item st-' + item.status;
     row.dataset.itemId = item.id;
 
-    const dot = document.createElement('button');
-    dot.type = 'button';
-    dot.className = 'memo-dot';
-    dot.setAttribute('data-tip', '切换状态');
-    onButton(dot, () => {
-        commitActive(view);
-        run(view, (doc) => {
-            const it = findItemIn(doc, item.id);
-            return updateById(doc, item.id, {status: cycleStatus(it ? it.status : item.status)});
-        });
-    });
-    row.appendChild(dot);
+    // 终端条目：行首 ▶/⏹ 运行按钮（点击运行/停止，输出渲染在条目下方）
+    if (item.kind === 'term') row.appendChild(buildRunButton(view, item));
+
+    // 标签芯片（替代状态点）：自定义 tag，点击芯片弹管理菜单；没有标签时显示「＋标签」入口
+    const tagWrap = document.createElement('span');
+    tagWrap.className = 'memo-item-tags';
+    (item.tags || []).forEach((tag) => tagWrap.appendChild(tagChip(view, item.id, tag)));
+    const addTag = document.createElement('button');
+    addTag.type = 'button';
+    addTag.className = 'memo-tag-add';
+    addTag.textContent = '＋';
+    addTag.setAttribute('data-tip', '添加标签');
+    onButton(addTag, (x, y) => openTagMenu(view, item.id, x, y));
+    tagWrap.appendChild(addTag);
+    row.appendChild(tagWrap);
 
     const text = document.createElement('div');
     text.className = 'memo-item-text' + (item.text ? '' : ' empty');
-    if (item.kind === 'md' && item.text) {
+    if (item.kind === 'term') {
+        // 终端条目：正文即命令，等宽展示；点击编辑命令（输出渲染在下方 buildTermResult）
+        text.classList.add('memo-term-cmd');
+        text.textContent = item.text || '输入命令…';
+    } else if (item.kind === 'md' && item.text) {
         // Markdown 条目：失焦即渲染，点击回到源码编辑（renderMarkdownHtml 已过 DOMPurify）
         text.classList.add('memo-md');
         text.innerHTML = '<div class="ai-md">' + deps.renderMarkdownHtml(item.text, {}) + '</div>';
@@ -538,13 +672,16 @@ function buildItem(view, block, item) {
         text.textContent = item.text || (item.kind === 'md' ? '输入 Markdown…' : '输入便签…');
     }
     text.addEventListener('click', (e) => {
-        // 点内联贴图（文本占位符渲染 / md 渲染图）→ 放大预览；点文字 → 编辑源码
+        // 点内联贴图（文本占位符渲染 / md 渲染图）→ 放大预览；点文字 → 编辑源码。
+        // 只要点到的确实是图片就放大：判定过严（只认 img/ 前缀）会让 ./img/、绝对路径
+        // 这类引用一点就静默进入编辑，用户看到的就是「放大不了也没报错」。
         const img = e.target && e.target.tagName === 'IMG' ? e.target : null;
         if (img) {
             const rel = img.getAttribute('data-memo-img') || img.getAttribute('data-ai-src') || '';
-            if (rel.indexOf('img/') === 0) {
+            const src = img.getAttribute('src') || '';
+            if (normalizeMemoRel(rel) || src) {
                 e.stopPropagation();
-                openThumbLightbox(view, item, rel);
+                openThumbLightbox(view, item, rel, src);
                 return;
             }
         }
@@ -588,6 +725,10 @@ function buildItem(view, block, item) {
         row.appendChild(thumbs);
     }
 
+    // 终端条目的运行输出（内存态）：有运行记录才渲染，状态行 + 输出块
+    const termEntry = term.entryOf(item.id);
+    if (item.kind === 'term' && termEntry) row.appendChild(buildTermResult(termEntry));
+
     const actions = document.createElement('span');
     actions.className = 'memo-item-actions';
     actions.appendChild(actionButton('⋯', (x, y) => openItemMenu(view, item.id, x, y), '条目操作'));
@@ -604,6 +745,66 @@ function buildItem(view, block, item) {
 }
 
 function imageKey(scope, rel) { return scope + '|' + rel; }
+
+// leaveTermRun 终端条目转出 kind（转为文本/Markdown）或删除时调用：停掉运行并清掉
+// 内存态输出——否则进程继续跑到超时、run-exit 到达时还会给非终端条目就地插结果块。
+function leaveTermRun(itemId, kind) {
+    if (kind !== 'term') return;
+    term.stop(itemId);
+    term.clear(itemId);
+}
+
+// buildRunButton 终端条目行首的 ▶/⏹：点击时读实时状态（防重入与停止都在这里分流），
+// 按钮视觉由 memo-term 的 paintLive 在状态翻转时原位换（不整面板重渲染）。
+function buildRunButton(view, item) {
+    const entry = term.entryOf(item.id);
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'memo-run-btn' + (entry && entry.state === 'running' ? ' running' : '');
+    btn.textContent = entry && entry.state === 'running' ? '⏹' : '▶';
+    btn.setAttribute('data-tip', entry && entry.state === 'running' ? '停止运行' : '运行命令');
+    onButton(btn, () => {
+        const cur = term.entryOf(item.id);
+        if (cur && cur.state === 'running') {
+            term.stop(item.id);
+            return;
+        }
+        // 行内编辑未提交时点 ▶：onButton 的 mousedown+preventDefault 不会触发 blur 提交，
+        // 闭包里的 item.text 是上次提交的正文——草稿才是用户此刻要跑的命令。取编辑框
+        // 实时值，先 commit 入库再运行（所见即所跑），避免跑出去的是旧命令。
+        const editor = row.querySelector('.memo-inline-area');
+        const text = editor ? editor.value : item.text;
+        if (!String(text || '').trim()) {
+            // 空命令先去编辑，别让用户对着「命令为空」的报错找原因
+            startItemTextEdit(view, item.id);
+            return;
+        }
+        if (editor) commitActive(view);
+        term.run(item.id, text, deps.workspaceFolder || '');
+    });
+    return btn;
+}
+
+// buildTermResult 终端条目的运行结果块：状态行在上（一眼看到运行中/退出码），输出块在下。
+// 行内容由 memo-term 的流式事件活更新（.memo-term-out），整渲染时从 entry.lines 恢复。
+function buildTermResult(entry) {
+    const box = document.createElement('div');
+    box.className = 'memo-term-result';
+    const status = document.createElement('div');
+    status.className = 'memo-term-status st-' + entry.state;
+    status.textContent = formatTermStatus(entry);
+    box.appendChild(status);
+    const out = document.createElement('div');
+    out.className = 'memo-term-out';
+    for (const line of entry.lines) {
+        const div = document.createElement('div');
+        div.className = 'memo-term-line' + (line.stream === 'err' ? ' err' : '');
+        div.textContent = line.text;
+        out.appendChild(div);
+    }
+    box.appendChild(out);
+    return box;
+}
 
 function buildThumb(view, item, rel) {
     const box = document.createElement('span');
@@ -670,8 +871,8 @@ function renderTextWithImages(content) {
 // attr：文本条目占位符用 data-memo-img；md 条目走共享渲染器的 data-ai-src（相对 img/ 路径）。
 function loadInlineImages(view, scopeEl, attr) {
     scopeEl.querySelectorAll('img[' + attr + ']').forEach((img) => {
-        const rel = img.getAttribute(attr) || '';
-        if (!rel || rel.indexOf('img/') !== 0) return;
+        const rel = normalizeMemoRel(img.getAttribute(attr) || '');
+        if (!rel) return;
         resolveImage(view, rel).then((url) => {
             if (url) img.src = url;
         }).catch(() => {});
@@ -835,33 +1036,55 @@ function totalsOfDoc(doc) {
     return {items, done, doing};
 }
 
-function openThumbLightbox(view, item, rel) {
-    resolveImage(view, rel).then((url) => {
-        if (!url) { deps.flash('贴图读取失败：' + rel, true); return; }
-        if (!lightbox) lightbox = createImageLightbox(deps.els.editor);
-        const label = item.text || '贴图';
-        const short = label.length > 24 ? label.slice(0, 24) + '…' : label;
-        lightbox.open(null, url, short + ' · ' + rel.split('/').pop());
-    }).catch((e) => deps.flash('贴图读取失败：' + ((e && e.message) || e), true));
+function openThumbLightbox(view, item, rel, fallbackSrc) {
+    if (!view || view.disposed) return;
+    const known = normalizeMemoRel(rel);
+    const label = (item && item.text) || '贴图';
+    const short = label.length > 24 ? label.slice(0, 24) + '…' : label;
+    const present = (src, name) => {
+        lightboxCtx = {rel: known, name: name || ''};
+        if (!lightbox) {
+            // 灯箱自己会吞掉原生右键（preventDefault），不接回调 = 右键完全没有菜单。
+            lightbox = createImageLightbox(deps.els.editor, {
+                onContextMenu: (target, x, y) => openLightboxMenu(target, x, y),
+            });
+        }
+        lightbox.open(null, src, short + (name ? ' · ' + name : ''));
+    };
+    if (known) {
+        resolveImage(view, known).then((url) => {
+            if (!url) { deps.flash('贴图读取失败：' + known, true); return; }
+            present(url, known.split('/').pop());
+        }).catch((e) => deps.flash('贴图读取失败：' + ((e && e.message) || e), true));
+        return;
+    }
+    // 拿不到 img/ 引用（md 里写成绝对路径、原始 <img> 等）：用图片自身的 src 开，
+    // 至少让「点了一点反应都没有」变成能看大图；右键仍能复制 / 另存为。
+    if (fallbackSrc) {
+        present(fallbackSrc, '');
+        return;
+    }
+    deps.flash('这张图片没有可定位的文件：' + (rel || '空路径'), true);
 }
 
-// openThumbMenu 贴图右键：复制到系统剪贴板 / 另存为（SaveFileDialog + SaveDataURL）。
-function openThumbMenu(view, item, rel, x, y) {
-    deps.ctxMenu.open([
+// imageMenuItems 图片右键菜单（便签贴图与灯箱共用）：复制到系统剪贴板 / 另存为。
+function imageMenuItems(getSrc, defaultName) {
+    const name = defaultName || '贴图.png';
+    return [
         {label: '复制图片', icon: 'E8C8', action: async () => {
-            const url = await resolveImage(view, rel);
-            if (!url) { deps.flash('贴图读取失败：' + rel, true); return; }
+            const url = await getSrc();
+            if (!url) { deps.flash('贴图读取失败', true); return; }
             const ok = await copyImageUrlToClipboard(url);
             if (ok) deps.flash('已复制图片到剪贴板');
             else deps.flash('复制失败：当前环境不支持写图片剪贴板', true);
         }},
         {label: '另存为…', icon: 'E74E', action: async () => {
-            const url = await resolveImage(view, rel);
-            if (!url) { deps.flash('贴图读取失败：' + rel, true); return; }
+            const url = await getSrc();
+            if (!url) { deps.flash('贴图读取失败', true); return; }
             if (!deps.backend.SaveFileDialog) { deps.flash('当前环境不支持保存对话框', true); return; }
             let path = '';
             try {
-                path = await deps.backend.SaveFileDialog(rel.split('/').pop() || '贴图.png');
+                path = await deps.backend.SaveFileDialog(name);
             } catch (e) {
                 return; // 用户取消对话框时 Wails 会 reject，静默退出
             }
@@ -873,7 +1096,25 @@ function openThumbMenu(view, item, rel, x, y) {
                 deps.flash('保存失败：' + ((e && e.message) || e), true);
             }
         }},
-    ], x, y);
+    ];
+}
+
+// openThumbMenu 条目贴图右键：复制到系统剪贴板 / 另存为（SaveFileDialog + SaveDataURL）。
+function openThumbMenu(view, item, rel, x, y) {
+    const known = normalizeMemoRel(rel);
+    const name = (known || rel || '').split('/').pop() || '贴图.png';
+    const getSrc = () => (known ? resolveImage(view, known) : Promise.resolve(''));
+    deps.ctxMenu.open(imageMenuItems(getSrc, name), x, y);
+}
+
+// openLightboxMenu 放大层里的右键：图已在 DOM 里（data URL），直接按 src 处理。
+function openLightboxMenu(target, x, y) {
+    const src = (target && target.src) || '';
+    if (!src) return;
+    const ext = imageExtFromSrc(src);
+    const name = (lightboxCtx && lightboxCtx.rel ? lightboxCtx.rel.split('/').pop() : '') ||
+        '图片' + (ext ? '.' + ext : '.png');
+    deps.ctxMenu.open(imageMenuItems(() => src, name), x, y);
 }
 
 // ===== 菜单 =====
@@ -914,10 +1155,10 @@ function openBlockMenu(view, blockId, x, y) {
 function openItemMenu(view, itemId, x, y) {
     const doc = store.cached(view.scope);
     if (!doc) return;
-    let hostBlock = null, idx = -1;
+    let hostBlock = null, item = null, idx = -1;
     for (const block of doc.blocks) {
         const i = block.items.findIndex((it) => it.id === itemId);
-        if (i >= 0) { hostBlock = block; idx = i; break; }
+        if (i >= 0) { hostBlock = block; item = block.items[i]; idx = i; break; }
     }
     if (!hostBlock) return;
     const otherBlocks = doc.blocks.filter((b) => b.id !== hostBlock.id);
@@ -926,6 +1167,28 @@ function openItemMenu(view, itemId, x, y) {
         {label: '粘贴图片', icon: 'E77F', action: () => pasteImageInto(view, itemId)},
         {label: '复制定位点', icon: 'E8C8', title: '复制给 AI / CLI 的定位串', action: () =>
             deps.copyText(memoLocator(view.scope, 'item', itemId), '定位点')},
+        {label: '转为…', icon: 'E72C',
+            title: '文本=原样 + 内联贴图；Markdown=完整渲染；终端=命令可运行',
+            submenu: [
+                {label: '文本条目', disabled: item.kind === 'text', action: () => {
+                    leaveTermRun(itemId, item.kind);
+                    run(view, (d) => updateById(d, itemId, {kind: 'text'})).then((res) => {
+                        if (!res.ok) deps.flash(res.error, true);
+                    });
+                }},
+                {label: 'Markdown 条目', disabled: item.kind === 'md', action: () => {
+                    leaveTermRun(itemId, item.kind);
+                    run(view, (d) => updateById(d, itemId, {kind: 'md'})).then((res) => {
+                        if (!res.ok) deps.flash(res.error, true);
+                    });
+                }},
+                {label: '终端条目', disabled: item.kind === 'term', action: () =>
+                    run(view, (d) => updateById(d, itemId, {kind: 'term'})).then((res) => {
+                        if (!res.ok) deps.flash(res.error, true);
+                    })},
+            ]},
+        ...(term.entryOf(itemId) ? [{label: '清除运行输出', icon: 'E74D', action: () => term.clear(itemId)}] : []),
+        {label: '标签…', icon: 'E721', action: () => openTagMenu(view, itemId, x, y)},
         {sep: true},
         {label: '上移', icon: 'E70E', disabled: idx <= 0, action: () => {
             run(view, (doc2) => updateById(doc2, itemId, {index: idx - 1}));
@@ -949,6 +1212,11 @@ function openItemMenu(view, itemId, x, y) {
                 ? (item.text.length > 30 ? item.text.slice(0, 30) + '…' : item.text)
                 : '（空）';
             deps.openConfirmDialog('删除条目「' + snippet + '」？', () => {
+                // 正在运行的终端条目先停掉再删：进程不残留（否则跑到超时/退出才结束）
+                if (item.kind === 'term') {
+                    term.stop(itemId);
+                    term.clear(itemId);
+                }
                 run(view, (doc2) => removeById(doc2, itemId)).then((res) => {
                     if (!res.ok) deps.flash(res.error, true);
                 });
@@ -1371,10 +1639,21 @@ function openJumpMenu(view, x, y) {
     if (!doc || !doc.blocks.length) { deps.flash('当前便签还没有内容'); return; }
     const items = [];
     doc.blocks.forEach((block, bi) => {
+        // 分组行 = 子菜单（行首 chevron 只指示展开子菜单；「展开/折叠」在子菜单里分立可点，
+        // 菜单行无法像面板 chevron 那样做行内分立点击）
         items.push({
             label: (bi + 1) + '. ' + block.title + '（分组，' + block.items.length + ' 项）',
             icon: block.collapsed ? 'E70D' : 'E70E',
-            action: () => jumpToBlock(view, block.id),
+            submenu: [
+                {label: '跳转到该分组', icon: 'E8E5', action: () => jumpToBlock(view, block.id)},
+                {
+                    label: block.collapsed ? '展开该分组' : '折叠该分组',
+                    icon: block.collapsed ? 'E70D' : 'E70E',
+                    action: () => run(view, (d) => updateById(d, block.id, {collapsed: !block.collapsed})),
+                },
+                {label: '复制定位点', icon: 'E8C8', action: () =>
+                    deps.copyText(memoLocator(view.scope, 'block', block.id), '定位点')},
+            ],
         });
         if (!block.collapsed) {
             block.items.forEach((item) => {
@@ -1584,4 +1863,23 @@ return {
     memoOnResourceEvent,
     memoWorkspaceChanged,
 };
+}
+
+// normalizeMemoRel 便签贴图相对引用归一：去 ./ 前缀、反斜杠转正斜杠，只认 img/ 开头
+// （拼 memo 根时不允许 ../ 之类逃出作用域目录）。不是贴图引用时返回 ''。
+// 放在 createBridgeMemoView 之外是为了可直接单测（frontend/test/bridge/memo-image.test.mjs）。
+export function normalizeMemoRel(rel) {
+    const raw = String(rel || '').trim().replace(/\\/g, '/').replace(/^\.\//, '');
+    return raw.indexOf('img/') === 0 ? raw : '';
+}
+
+// imageExtFromSrc 从 data URL 的 mime 推扩展名：另存为的默认文件名要与真实字节对得上
+// （贴图管线会把大图转成 jpeg，写死 .png 会让「另存为」出来的文件扩展名与内容不符）。
+export function imageExtFromSrc(src) {
+    const m = String(src || '').match(/^data:image\/([a-z0-9.+-]+)/i);
+    const mime = m ? m[1].toLowerCase() : '';
+    if (mime === 'jpeg' || mime === 'jpg') return 'jpg';
+    if (mime === 'svg+xml') return 'svg';
+    if (mime === 'png' || mime === 'gif' || mime === 'webp' || mime === 'bmp') return mime;
+    return '';
 }

@@ -520,7 +520,10 @@ async function performDelete(items, opts) {
         if (deps.explorer) {
             for (const item of deleted) deps.explorer.removePath(item.path);
             deps.explorer.setCutPaths(deps.fileClipboard && deps.fileClipboard.cut ? deps.fileClipboard.items.map((item) => item.path) : []);
-            deps.explorer.refresh();
+            // 删除已在树里就地摘掉；这里只把该目录标脏走差量刷新（列表模式靠它重扫）。
+            // 绝不能调 explorer.refresh()：那是「点刷新按钮」的全量重建（tree=null → 逐级重载），
+            // 会把展开态与滚动位置一起丢掉，看起来就是整棵树闪一下又折叠回去。
+            for (const item of deleted) deps.explorer.notifyFileChange(item.path);
         }
         // 操作留痕：逐项记录（回收站可撤销，故记路径而非仅计数）。回放不重复记。
         if (!skipLog) {

@@ -66,6 +66,10 @@ const renderMarkdownPreview = (...a) => splitPreview.renderMarkdownPreview(...a)
 const showMarkdownPreview = (...a) => splitPreview.showMarkdownPreview(...a);
 const enterMarkdownPreview = (...a) => splitPreview.enterMarkdownPreview(...a);
 const leaveMarkdownPreview = (...a) => splitPreview.leaveMarkdownPreview(...a);
+const showHtmlPreview = (...a) => splitPreview.showHtmlPreview(...a);
+const enterHtmlPreview = (...a) => splitPreview.enterHtmlPreview(...a);
+const leaveHtmlPreview = (...a) => splitPreview.leaveHtmlPreview(...a);
+const releaseHtmlPreview = (...a) => splitPreview.releaseHtmlPreview(...a);
 const mdSyncScrollFromAce = (...a) => splitPreview.mdSyncScrollFromAce(...a);
 const scheduleSplitPreview = (...a) => splitPreview.scheduleSplitPreview(...a);
 const enterSplitView = (...a) => splitPreview.enterSplitView(...a);
@@ -483,7 +487,10 @@ function viewDisabledFor(doc, mode) {
     if (mode === 'audio') return !doc.audio;
     if (mode === 'binary') return !doc.binary;
     if (mode === 'tree') return !doc.treeAvailable;
-    if (mode === 'preview') return !(doc.format && doc.format.preview) || !!doc.large;
+    if (mode === 'preview') {
+        const previewable = !!(doc.format && doc.format.preview) || !!(deps.isHtmlDoc && deps.isHtmlDoc(doc));
+        return !previewable || !!doc.large;
+    }
     if (mode === 'table') return !(doc.format && doc.format.table);
     if (mode === 'render') return !deps.isSvgDoc(doc);
     if (mode === 'patch') return !(doc.format && doc.format.patch);
@@ -610,7 +617,25 @@ function memoTabIcon() {
 function tabTooltip(doc) {
     const lockTip = isTabReadOnlyFixed(doc) ? '\n（只读快照，不可解锁）'
         : isTabReadOnlyLocked(doc) ? '\n（本标签只读锁定，右键可解除）' : '';
+    // 子代理详情：多行显示父级与任务摘要，让标签栏里看不出归属的纯文本在悬停时说清来路
+    if (doc.agentView && doc.agentViewSpec) {
+        const spec = doc.agentViewSpec;
+        const bits = [doc.name];
+        if (spec.parentLabel) bits.push('父：' + spec.parentLabel);
+        // 层号 = depth+1（内部 depth 主代理为 0，人读层号以主代理为第 1 层，与 HUD/团队树一致）。
+        // editor-groups 不 import ai 域（单向依赖），这里按同一口径就地算。
+        if (spec.depth >= 1) bits.push('第 ' + (spec.depth + 1) + ' 层');
+        if (spec.task) bits.push(taskSnippetForTab(spec.task));
+        return bits.join('\n') + lockTip;
+    }
     return (doc.path || doc.name) + (doc.staleOnDisk ? '\n（已在外部修改）' : '') + lockTip;
+}
+
+// 标签 tooltip 里的任务摘要：单行、截断（与 AI 侧 taskSnippet 同口径，这里不引 AI 模块避免反向依赖）
+function taskSnippetForTab(task) {
+    const line = String(task || '').replace(/\s+/g, ' ').trim();
+    if (!line) return '';
+    return line.length > 90 ? line.slice(0, 90) + '…' : line;
 }
 
 function tabLockTitle(doc) {
@@ -650,7 +675,14 @@ function buildGroupTab(g, doc, strip) {
     dot.className = 'tab-dot';
     const name = document.createElement('span');
     name.className = 'tab-name';
-    name.textContent = doc.name;
+    // 子代理详情：有父级（非主代理，depth>=1）名字前加层级记号，与 tooltip 的父级行同一口径
+    if (doc.agentView && doc.agentViewSpec && doc.agentViewSpec.depth >= 1) {
+        const nest = document.createElement('span');
+        nest.className = 'tab-nest';
+        nest.textContent = '↳';
+        name.appendChild(nest);
+    }
+    name.appendChild(document.createTextNode(doc.name));
     const close = document.createElement('button');
     close.type = 'button';
     close.className = 'tab-close';
@@ -1218,7 +1250,9 @@ function createDocEditor(doc) {
     const showJsonErrors = fmt.id === 'json' && /\.json$/i.test(doc.name || '');
     const patchRequested = !!fmt.patch && (doc.mode === 'patch' || !doc.mode);
     const tableRequested = !!fmt.table && doc.mode === 'table';
-    const previewRequested = !!fmt.preview && doc.mode === 'preview';
+    // HTML 与 Markdown 共用 'preview' 模式名：前者是 iframe 纯预览，后者是 Markdown 渲染
+    const htmlPreviewRequested = !!(deps.isHtmlDoc && deps.isHtmlDoc(doc)) && doc.mode === 'preview';
+    const previewRequested = (!!fmt.preview || htmlPreviewRequested) && doc.mode === 'preview';
     const splitRequested = doc.mode === 'split' && !!deps.splitKindFor(doc);
     const imageRequested = !!fmt.image && doc.mode === 'image';
     const videoRequested = !!fmt.video && doc.mode === 'video';
@@ -1349,7 +1383,8 @@ function createDocEditor(doc) {
     if (fmt.audio) createAudioView(doc);
     if (patchRequested) showPatchView(doc, patchViewContext());
     if (tableRequested) showCsvTableView(doc);
-    if (previewRequested) showMarkdownPreview(doc);
+    if (htmlPreviewRequested) showHtmlPreview(doc);
+    else if (previewRequested) showMarkdownPreview(doc);
     if (imageRequested) showImageView(doc);
     if (videoRequested) showVideoView(doc);
     if (audioRequested) showAudioView(doc);
@@ -1537,6 +1572,10 @@ async function activateDoc(doc) {
     if (doc === deps.file) {
         const g0 = groupOfDoc(doc.id);
         if (g0) { g0.activeId = doc.id; focusedGroupId = g0.id; }
+        // 同一文档重新激活（单例虚拟文档的入口按钮如活动栏便签 / 点已激活的标签页）：
+        // updateDocChrome 不走，但「要看到这份内容」的意图是真的——仍要通知宿主解开
+        // 编辑区收起态，否则 AI 让位收起后，点便签按钮 / 点当前标签页毫无反应。
+        if (deps.onDocVisible) deps.onDocVisible(doc);
         return;
     }
     // 切换标签时先暂停上一个标签的视频/音频：面板只是被隐藏，不会自动停音频
@@ -1584,7 +1623,7 @@ async function activateDoc(doc) {
             }
         }, 0);
     }
-    deps.syncExplorerActive();
+    deps.syncExplorerActive({reveal: false});
     if (deps.structurePanel) deps.structurePanel.setDoc(doc);
     // 操作留痕：标签切换，同一标签 2s 内去重（避免连点噪音）。
     const now = Date.now();
@@ -1693,6 +1732,7 @@ function closeDocNow(doc, remember = true) {
     // 视频视图：先断源再摘节点，否则解码器与文件句柄要等 GC 才释放
     releaseVideo(doc);
     releaseAudio(doc);
+    releaseHtmlPreview(doc);
     const wasActive = doc === deps.file;
     if (doc.path && remember) {
         deps.closedTabs.push({path: doc.path, name: doc.name});
@@ -1818,5 +1858,5 @@ function reopenClosedTab() {
     function setFocusedGroupId(v) { focusedGroupId = v; }
     function setSplitRoot(v) { splitRoot = v; }
 
-    return {activateDoc, setFocusedGroupId, setSplitRoot, addDocToFocusedGroup, get editorGroups() { return editorGroups; }, applyAceMode, applyCsvTableZoom, applyImageZoom, browserViewportLabel, closeDocNow, closeDocsWithConfirm, closeSqlView, createDoc, createDocEditor, createGroup, dismissBanner, doRedo, doUndo, enterAudioView, enterBinaryView, enterCsvTable, enterImageView, enterMarkdownPreview, enterSplitView, enterSqlView, enterSvgRender, enterTextView, enterVideoView, exitSplitView, expandAllWithGuard, flushCsvCellEditor, get focusedGroupId() { return focusedGroupId; }, groupDocs, groupOfDoc, groupSnapshot, focusEditorGroup, moveDocToGroup, splitDocToGroup, mergeEditorGroup, handleAIWorkspaceFileChanged, handleExternalDocChanges, hideAudioView, hideBanner, hideSvgRender, hideVideoView, hookCodeFoldRanges, hookMultiCursor, humanizeCounts, initCodeFoldHover, jumpBookmark, addBookmarkAt, removeBookmarkAt, clearDocBookmarks, leaveCsvTable, leaveMarkdownPreview, markDocDirty, mdSyncScrollFromAce, moveTabInGroup, openWithDefaultApp, patchViewContext, refreshPatchMarkers, rememberDocView, renderBookmarks, renderBreadcrumb, renderCsvTableView, renderEditorLayout, renderMarkdownPreview, renderTabs, reopenClosedTab, releaseAudio, releaseVideo, requestCloseDoc, revertDocToSaved, scheduleGitGutter, setBrowserViewport, setFilename, showBanner, showImageMenu, showMdPreviewMenu, showPathInFolder, showSvgMenu, get splitRoot() { return splitRoot; }, syncAllBrowserTabs, syncBrowserTab, syncTabReadOnly, textArea, toggleBookmark, toggleFocusedNode, updateBrowserTitle, updateDocChrome, updateStatus, zoomCsvTable, zoomImageBy, zoomSvgRenderBy};
+    return {activateDoc, setFocusedGroupId, setSplitRoot, addDocToFocusedGroup, get editorGroups() { return editorGroups; }, applyAceMode, applyCsvTableZoom, applyImageZoom, browserViewportLabel, closeDocNow, closeDocsWithConfirm, closeSqlView, createDoc, createDocEditor, createGroup, dismissBanner, doRedo, doUndo, enterAudioView, enterBinaryView, enterCsvTable, enterHtmlPreview, enterImageView, enterMarkdownPreview, enterSplitView, enterSqlView, enterSvgRender, enterTextView, enterVideoView, exitSplitView, expandAllWithGuard, flushCsvCellEditor, get focusedGroupId() { return focusedGroupId; }, groupDocs, groupOfDoc, groupSnapshot, focusEditorGroup, moveDocToGroup, splitDocToGroup, mergeEditorGroup, handleAIWorkspaceFileChanged, handleExternalDocChanges, hideAudioView, hideBanner, hideHtmlPreview, hideSvgRender, hideVideoView, hookCodeFoldRanges, hookMultiCursor, humanizeCounts, initCodeFoldHover, jumpBookmark, addBookmarkAt, removeBookmarkAt, clearDocBookmarks, leaveCsvTable, leaveHtmlPreview, leaveMarkdownPreview, markDocDirty, mdSyncScrollFromAce, moveTabInGroup, openWithDefaultApp, patchViewContext, refreshPatchMarkers, rememberDocView, renderBookmarks, renderBreadcrumb, renderCsvTableView, renderEditorLayout, renderMarkdownPreview, renderTabs, reopenClosedTab, releaseAudio, releaseVideo, requestCloseDoc, revertDocToSaved, scheduleGitGutter, setBrowserViewport, setFilename, showBanner, showHtmlPreview, showImageMenu, showMdPreviewMenu, showPathInFolder, showSvgMenu, get splitRoot() { return splitRoot; }, syncAllBrowserTabs, syncBrowserTab, syncTabReadOnly, textArea, toggleBookmark, toggleFocusedNode, updateBrowserTitle, updateDocChrome, updateStatus, zoomCsvTable, zoomImageBy, zoomSvgRenderBy};
 }

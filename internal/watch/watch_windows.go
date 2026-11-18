@@ -5,21 +5,22 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"syscall"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
 
-// parseNotifyBuffer 解析 FILE_NOTIFY_INFORMATION 链，返回相对路径列表。
-func parseNotifyBuffer(buf []byte, size uint32) ([]string, bool) {
+func parseNotifyBuffer(buf []byte, size uint32) ([]watchEvent, bool) {
 	if size == 0 {
 		// 缓冲区溢出：内核丢弃了后续事件，调用方应退化为全量刷新
 		return nil, true
 	}
-	var paths []string
+	var events []watchEvent
 	offset := 0
 	for offset+12 <= int(size) {
 		next := binary.LittleEndian.Uint32(buf[offset:])
+		action := binary.LittleEndian.Uint32(buf[offset+4:])
 		nameLen := binary.LittleEndian.Uint32(buf[offset+8:])
 		if offset+12+int(nameLen) > int(size) {
 			break
@@ -27,17 +28,18 @@ func parseNotifyBuffer(buf []byte, size uint32) ([]string, bool) {
 		nameUnits := unsafe.Slice((*uint16)(unsafe.Pointer(&buf[offset+12])), nameLen/2)
 		name := windows.UTF16ToString(nameUnits)
 		if name != "" {
-			paths = append(paths, name)
+			removed := action == syscall.FILE_ACTION_REMOVED || action == syscall.FILE_ACTION_RENAMED_OLD_NAME
+			events = append(events, watchEvent{Path: name, Removed: removed})
 		}
 		if next == 0 {
 			break
 		}
 		offset += int(next)
 	}
-	return paths, false
+	return events, false
 }
 
-func watchDirectory(root string, stop <-chan struct{}, emit func(paths []string, overflow bool)) error {
+func watchDirectory(root string, stop <-chan struct{}, emit func(events []watchEvent, overflow bool)) error {
 	ptr, err := windows.UTF16PtrFromString(root)
 	if err != nil {
 		return err
@@ -113,13 +115,13 @@ func watchDirectory(root string, stop <-chan struct{}, emit func(paths []string,
 			}
 			return fmt.Errorf("读取目录通知失败：%w", err)
 		}
-		paths, overflow := parseNotifyBuffer(buf, returned)
+		events, overflow := parseNotifyBuffer(buf, returned)
 		if overflow {
 			emit(nil, true)
 			continue
 		}
-		if len(paths) > 0 {
-			emit(paths, false)
+		if len(events) > 0 {
+			emit(events, false)
 		}
 	}
 }

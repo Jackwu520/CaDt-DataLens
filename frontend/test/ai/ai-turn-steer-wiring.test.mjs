@@ -103,6 +103,25 @@ test('preemptComposerMessage：停轮 + 队首 + 抢占待发标记', () => {
     assert.match(preempt, /stopGeneration\(\)/);
 });
 
+test('wait_agent 唤醒语义：排队不打扰等待，只有 steer 唤醒并带来源', () => {
+    // 方案 docs/finished-plans/ai-wait-input-gestures.md：排队消息按排队语义本轮结束后送达，
+    // 唤醒只会让等待白醒一轮（注入仍只在轮边界，wait 拿不到排队消息内容）。
+    const onChange = sliceBetween(queue, 'const model = createQueueModel({', '});');
+    assert.match(onChange, /item\.delivery === 'steer'/, '只有 steer 车道唤醒');
+    assert.match(onChange, /notify\(item\.sessionId, 'steer'\)/, '唤醒要带来源');
+    // 排队入队路径（Enter）不得出现 notify
+    const enqueue = sliceFunction(queue, 'function enqueueComposerMessage(opts) {');
+    assert.equal(enqueue.includes('notify'), false, '排队不打扰等待');
+    // 停止收尾窗口内排队也要登记待冲刷：shouldFlush 只认 interjectPending
+    assert.match(enqueue, /!liveSteerableStream\(session\.id\)\) interjectPending\.add\(session\.id\)/);
+});
+
+test('flushMessageQueue：起轮失败自动重试一次（瞬态失败自愈，不无限打转）', () => {
+    const flush = sliceFunction(queue, 'async function flushMessageQueue(sessionId, opts) {');
+    assert.match(flush, /opts && opts\.fromRetry/, '重试那次调用必须带标记');
+    assert.match(flush, /setTimeout\(\(\) => \{ flushMessageQueue\(sessionId, \{fromRetry: true\}\); \}, 2500\)/);
+});
+
 test('队列行按钮：按 delivery 切换插话 / 排队，改投是同步 setDelivery', () => {
     assert.match(queue, /model\.setDelivery\(item, 'steer'\)/);
     assert.match(queue, /model\.setDelivery\(item, 'queue'\)/);
@@ -243,7 +262,7 @@ test('接线：composer 拿到 preempt，队列壳导出 steer 车道与手势 A
         'hasSteer', 'drainSteer', 'restoreItems', 'setDelivery', 'reorderSession', 'fallbackSteerToQueue', 'clearSteer', 'snapshot']) {
         assert.equal(typeof shell[api], 'function', '队列壳缺少导出：' + api);
     }
-    // 纯模型现在接受可选的 {onChange}（入队即唤醒 wait_agent 的调用方），签名不再是无参
+    // 纯模型现在接受可选的 {onChange}（steer 入队即唤醒 wait_agent 的调用方），签名不再是无参
     assert.match(queue, /export function createQueueModel\(options\)/);
     // 引用 kind 的单一来源
     assert.match(queue, /import \{AI_QUOTE_KIND\} from '\.\/ai-quote\.js';/);

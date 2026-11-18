@@ -50,6 +50,9 @@ function openVirtualDoc(name, content, opts) {
         reviewNotes: options.reviewNotes || [],
     });
     doc.untitled = true;
+    // 视图类型（plan / diff / document）：只供 AI 的 workspace_context 区分「应用内视图」
+    // 与「工作区文件」——虚拟文档没有路径，混进已打开文件会被显示成「（范围外）xxx」
+    doc.viewKind = options.viewKind || 'document';
     deps.docs.push(doc);
     deps.activateDoc(doc);
     return doc;

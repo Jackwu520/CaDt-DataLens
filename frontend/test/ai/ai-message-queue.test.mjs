@@ -200,6 +200,19 @@ test('DOM 壳：clearQueueForSession 同时清 steer 与抢占待发标记', () 
     assert.equal(shell.itemsForSession('s2').length, 1);
 });
 
+test('入队唤醒 wait_agent：只有 steer 车道 notify 且带来源，排队不打扰等待', () => {
+    // 方案 docs/finished-plans/ai-wait-input-gestures.md：排队按语义本轮结束后送达，
+    // 唤醒只会让等待白醒一轮；插话才唤醒（wait 返回后紧接的轮边界就会 drain）。
+    const calls = [];
+    const shell = createAIMessageQueue({
+        el: {},
+        inboxWaiters: {notify: (sessionId, source) => calls.push([sessionId, source])},
+    });
+    shell.enqueueItem({sessionId: 's1', text: '排队'});
+    shell.enqueueItem({sessionId: 's1', text: '插话', delivery: 'steer'});
+    assert.deepEqual(calls, [['s1', 'steer']], '排队不 notify；steer notify 带来源');
+});
+
 test('队列行抢占：改投 queue、移到队首、停轮并登记待冲刷', () => {
     let stopped = 0;
     const live = {sessionId: 's1', stopped: false, finished: false, roundId: 'r'};

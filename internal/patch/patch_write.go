@@ -192,6 +192,11 @@ func ApplyPatchPlan(plan *patchPlan, files []string, hunksByFile map[string][]in
 			res.Message = "备份失败：" + rerr.Error()
 			return res, nil
 		}
+		// wipe-guard 写前快照：撤销快照已读进内存，顺手持久化成可跨会话恢复的备份
+		//（尽力而为，失败不影响补丁应用；见 docs/unfinished-plans/workspace-wipe-guard.md §4.2）
+		if OnWriteBackup != nil {
+			OnWriteBackup(plan.Root, pf.RelPath, pf.Abs, raw)
+		}
 		if werr := os.WriteFile(dest, raw, 0o644); werr != nil {
 			res.Code = PatchErrNoBackup
 			res.Message = "备份失败：" + werr.Error()

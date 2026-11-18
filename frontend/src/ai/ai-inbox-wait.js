@@ -57,7 +57,8 @@ export function createInboxWaiters(opts) {
     //   timeoutMs：最长等待毫秒数，0 = 不限时
     //   hasPending()：调用方判断「现在有没有待消费输入」（主代理查信箱、子代理查收件箱）
     //   isStopped()：调用方是否已被停止（用户停止 / agent_stop）
-    // 返回 {timedOut}：false = 有新输入可消费；true = 超时或被停止（stopped 标记区分）。
+    // 返回 {timedOut, source?}：false = 有新输入可消费（经 notify 唤醒时 source 标明来源）；
+    // true = 超时或被停止（stopped 标记区分）。
     function wait(ownerId, config) {
         const cfg = config || {};
         const hasPending = typeof cfg.hasPending === 'function' ? cfg.hasPending : () => false;
@@ -98,12 +99,16 @@ export function createInboxWaiters(opts) {
     // 有新输入入队：唤醒该 owner 的全部 waiter（多个 waiter 同时等同一会话是合法的）。
     // 注意语义：notify 只表示「有新东西排队」，真正的注入仍在轮边界做——
     // 若把 notify 当成「立即注入」，会破坏轮次模型（消息在工具调用中间插进上下文）。
-    function notify(ownerId) {
+    // source：唤醒来源（'steer' 用户插话 / 'notice' 代理通知 / 'agent' 子代理收件箱），
+    // 随结果带回给调用方分文案；排队车道（queue）不打扰等待，不走 notify。
+    function notify(ownerId, source) {
         const set = waiters.get(String(ownerId || ''));
         if (!set || !set.size) return 0;
+        // source 缺省时保持旧结果形状（不带 source 键）：消费方与既有断言都不受影响。
+        const result = source === undefined ? {timedOut: false} : {timedOut: false, source};
         let n = 0;
         for (const waiter of [...set]) {
-            if (settle(waiter, {timedOut: false})) n++;
+            if (settle(waiter, result)) n++;
         }
         return n;
     }

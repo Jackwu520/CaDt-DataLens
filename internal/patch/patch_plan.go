@@ -508,6 +508,10 @@ type PatchPlanOptions struct {
 var (
 	AppDataDir func() string
 	Logf       func(level, format string, args ...any)
+	// OnWriteBackup 两阶段写入备份点的持久化钩子（wipe-guard 写前快照，方案 §4.2）：
+	// 撤销用的字节快照已经读进内存，宿主顺手把它存进可跨会话恢复的备份库。
+	// 参数（工作区根 / 相对路径 / 绝对路径 / 原字节）；nil 安全（CLI/测试环境）。
+	OnWriteBackup func(root, rel, abs string, content []byte)
 )
 
 // logf 宿主日志钩子的 nil 安全包装；未注入时静默（CLI/测试环境）。

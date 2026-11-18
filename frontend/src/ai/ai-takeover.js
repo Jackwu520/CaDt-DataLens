@@ -6,7 +6,7 @@
 import {iconSvg} from '../core/icons.js';
 import {AI_WRITE_SCOPES} from './ai-constants.js';
 import {isWebApproval} from './ai-permissions.js';
-import {collectCommandFamilies, commandFamilySignature} from './ai-command-rules.js';
+import {collectCommandFamilies, commandFamilySignature, mergePlanGrantItems} from './ai-command-rules.js';
 import {planDigest, planPreviewSlice, PLAN_PREVIEW_CHARS} from './ai-plan-file.js';
 import {worktreeRelPath, worktreeStatNode} from './ai-worktree.js';
 import {createAIAskCards} from './ai-ask-cards.js';
@@ -712,34 +712,66 @@ export function createAITakeover(ctx) {
         openFullRow.append(note, openFull);
         body.appendChild(preview);
         body.appendChild(openFullRow);
-        // 计划里出现的同类命令可在批准时一并授权，减少执行期的重复审批。
-        const families = collectCommandFamilies(text);
-        const selectedFamilies = new Set(families);
-        if (families.length && AI_WRITE_SCOPES.includes(currentScopeOf(session))) {
+        // 批准时可一并授权的命令清单：AI 申报（submit_plan commands，权威、带 purpose）在前，
+        // 正文扫描出的同类签名（collectCommandFamilies）兜底。危险命令只展示不预授权——
+        // 执行期仍逐次单次确认（dangerous 短路在会话规则之前，安全不变式不动）。
+        const grantItems = mergePlanGrantItems(plan.declaredCommands, collectCommandFamilies(text));
+        const selectedGrants = new Map();
+        if (grantItems.length && AI_WRITE_SCOPES.includes(currentScopeOf(session))) {
             const grant = document.createElement('div');
             grant.className = 'ai-plan-grant';
             const grantTitle = document.createElement('div');
             grantTitle.className = 'ai-plan-grant-title';
-            grantTitle.textContent = '批准后本会话允许同类命令（可取消勾选）';
+            grantTitle.textContent = '批准后本会话允许的命令（可取消勾选）';
             grant.appendChild(grantTitle);
-            for (const signature of families) {
+            let withheldCount = 0;
+            for (const item of grantItems) {
+                const grantable = !item.dangerous && (item.mode === 'family' || item.mode === 'exact');
+                const shown = item.mode === 'family' ? item.signature : item.command;
+                if (!grantable) withheldCount += 1;
                 const label = document.createElement('label');
-                label.className = 'ai-plan-grant-item';
-                const box = document.createElement('input');
-                box.type = 'checkbox';
-                box.checked = true;
-                box.addEventListener('change', () => {
-                    if (box.checked) selectedFamilies.add(signature);
-                    else selectedFamilies.delete(signature);
-                });
-                const code = document.createElement('code');
-                code.textContent = signature;
-                label.append(box, code);
+                label.className = 'ai-plan-grant-item' + (grantable ? '' : ' ai-plan-grant-item-off') +
+                    (item.dangerous ? ' ai-plan-grant-item-danger' : '');
+                if (grantable) {
+                    const key = item.mode + ':' + shown;
+                    selectedGrants.set(key, item);
+                    const box = document.createElement('input');
+                    box.type = 'checkbox';
+                    box.checked = true;
+                    box.addEventListener('change', () => {
+                        if (box.checked) selectedGrants.set(key, item);
+                        else selectedGrants.delete(key);
+                    });
+                    const code = document.createElement('code');
+                    code.textContent = shown;
+                    if (item.mode === 'exact') {
+                        // 精确匹配存的是完整命令，可能超宽：CSS 截断 + tooltip 补全文。
+                        code.classList.add('ai-plan-grant-cmd');
+                        code.dataset.tip = item.command;
+                    }
+                    label.append(box, code);
+                } else {
+                    const code = document.createElement('code');
+                    code.textContent = shown;
+                    const why = document.createElement('span');
+                    why.className = 'ai-plan-grant-why';
+                    why.textContent = item.dangerous
+                        ? (item.dangerLabel || '危险命令') + '，执行时仍需单次确认'
+                        : (item.reason || '不做预授权');
+                    label.append(code, why);
+                }
+                if (item.purpose) {
+                    const purpose = document.createElement('span');
+                    purpose.className = 'ai-plan-grant-purpose';
+                    purpose.textContent = item.purpose;
+                    label.appendChild(purpose);
+                }
                 grant.appendChild(label);
             }
             const grantHint = document.createElement('div');
             grantHint.className = 'ai-approval-more';
-            grantHint.textContent = '只对同工作目录、不含管道 / 重定向 / 命令串联的简单命令生效。';
+            grantHint.textContent = '只对同工作目录、不含管道 / 重定向 / 命令串联的简单命令生效。' +
+                (withheldCount ? '灰项不预授权：危险命令执行时仍逐次确认。' : '');
             grant.appendChild(grantHint);
             body.appendChild(grant);
         }
@@ -775,7 +807,7 @@ export function createAITakeover(ctx) {
         accept.type = 'button';
         accept.className = 'dlg-btn primary';
         accept.textContent = '执行计划';
-        accept.addEventListener('click', () => acceptPlan(session, Array.from(selectedFamilies)));
+        accept.addEventListener('click', () => acceptPlan(session, Array.from(selectedGrants.values())));
         foot.append(hint, continueBtn, accept);
         card.append(head, body, foot);
         el.takeover.appendChild(card);
