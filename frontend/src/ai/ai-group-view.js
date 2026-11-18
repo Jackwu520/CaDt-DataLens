@@ -6,10 +6,11 @@ import {createInput, createTextarea} from '../core/form-controls.js';
 import {iconSvg} from '../core/icons.js';
 import {STANCE_LABELS} from './ai-group-model.js';
 import {
-    applyMention,
+    buildRichHtml,
     dateLabel,
     discussionActionLabel,
     eventLineText,
+    expandDeletionRange,
     filterMentionCandidates,
     groupStatusText,
     memberColorHex,
@@ -17,6 +18,7 @@ import {
     mentionQuery,
     needsDateBreak,
     needsRoundBreak,
+    scanMentions,
     shouldMerge,
     statusLineOf,
     timeLabel,
@@ -199,12 +201,17 @@ export function createAIGroupView(deps) {
 
         bindScrollFollow(state, scroll);
 
-        // 输入区：@ 补全弹层 + 自增高输入框 + 发送/停止
+        // 输入区：@ 补全弹层 + 自增高输入框（镜像层画 @ 胶囊）+ 发送/停止
         const composerWrap = el('div', 'gc-composer-wrap');
         state.mentionPop = el('div', 'gc-mention-pop hidden');
         const composer = el('div', 'gc-composer');
+        // QQ 式 @ 胶囊：textarea 文字透明，绝对定位镜像层按相同度量渲染文本 + 胶囊 span；
+        // 文本仍是纯文本（复制/粘贴/选区/IME 全走原生），Backspace/Delete 命中胶囊时整段删
+        state.inputWrap = el('div', 'gc-input-wrap');
+        state.inputMirror = el('div', 'gc-input-mirror', '\u200b');
         state.composerCtl = createTextarea({rows: 1, placeholder: '发消息，@ 点名成员，@全体成员 全员回应'});
         state.composerCtl.element.classList.add('gc-input');
+        state.inputWrap.append(state.inputMirror, state.composerCtl.element);
         const sendBtn = el('button', 'gc-send-btn');
         sendBtn.type = 'button';
         sendBtn.dataset.tip = '发送 (Enter)';
@@ -222,7 +229,7 @@ export function createAIGroupView(deps) {
             if (stream) runtime.stopOne(state.groupId, stream.agentId);
         });
         state.stopBtn = stopBtn;
-        composer.append(state.composerCtl.element, stopBtn, sendBtn);
+        composer.append(state.inputWrap, stopBtn, sendBtn);
         composerWrap.append(state.mentionPop, composer);
         shell.appendChild(composerWrap);
         bindComposer(state);
@@ -644,12 +651,12 @@ export function createAIGroupView(deps) {
             atAction.dataset.tip = '@TA';
             atAction.textContent = '@';
             atAction.addEventListener('click', () => {
-                if (!state.composerCtl) return;
+                if (!state.composerCtl || state.dead) return;
                 const control = state.composerCtl.control;
                 const value = String(control.value || '');
                 const add = value && !value.endsWith(' ') ? ' ' : '';
-                control.value = value + add + '@' + (msg.agentName || (agent && agent.name) || '') + ' ';
-                control.dispatchEvent(new Event('input', {bubbles: true}));
+                // 走 execCommand 插入：可撤销且自然触发 input → 重扫 @ 胶囊
+                insertComposerText(state, value.length, value.length, add + '@' + (msg.agentName || (agent && agent.name) || '') + ' ');
                 try { control.focus(); } catch (e) { /* 焦点失败不影响 */ }
             });
             hover.appendChild(atAction);
@@ -727,14 +734,39 @@ export function createAIGroupView(deps) {
 
     function bindComposer(state) {
         const control = state.composerCtl.control;
+        syncMirrorStyles(state);
         const refresh = () => {
             autoGrow(control);
+            // @ 胶囊：文本是唯一真源，每次输入重扫（改到胶囊中间会自然溶解回纯文本）
+            rescanPills(state);
             updateMentionPop(state);
             state.sendBtn.classList.toggle('disabled', !String(control.value || '').trim());
         };
         control.addEventListener('input', refresh);
+        // 镜像层随文本域滚动（内容超过 6 行出现滚动条后保持对齐）
+        control.addEventListener('scroll', () => {
+            state.inputMirror.scrollTop = control.scrollTop;
+            state.inputMirror.scrollLeft = control.scrollLeft;
+        });
         control.addEventListener('keydown', (e) => {
             if (state.mentionOpen && handleMentionKeys(state, e)) return;
+            // QQ 式原子删除：Backspace/Delete 命中胶囊整段删（execCommand 参与原生撤销栈）
+            if ((e.key === 'Backspace' || e.key === 'Delete') && !e.isComposing) {
+                const range = expandDeletionRange(state.pills, control.selectionStart, control.selectionEnd,
+                    e.key === 'Backspace' ? 'backspace' : 'delete');
+                if (range) {
+                    e.preventDefault();
+                    try {
+                        control.setSelectionRange(range.start, range.end);
+                        if (!document.execCommand('delete')) throw new Error('execCommand 不可用');
+                    } catch (err) {
+                        // 兜底：setRangeText 直接改值（丢撤销栈，输入事件手动补发）
+                        control.setRangeText('', range.start, range.end, 'end');
+                        control.dispatchEvent(new Event('input', {bubbles: true}));
+                    }
+                    return;
+                }
+            }
             if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
                 e.preventDefault();
                 sendComposer(state);
@@ -742,6 +774,72 @@ export function createAIGroupView(deps) {
         });
         state.sendBtn.classList.add('disabled');
         refresh();
+    }
+
+    // 成员名单（胶囊识别用：全部成员，静音与否由 runtime 决定回不回）
+    function memberNamesOf(meta) {
+        if (!meta) return [];
+        const config = getAIConfig();
+        const agents = (config && Array.isArray(config.agents)) ? config.agents : [];
+        return meta.memberIds
+            .map((id) => agentOf(agents, id))
+            .filter((agent) => agent)
+            .map((agent) => agent.name)
+            .concat([MENTION_ALL]);
+    }
+
+    function rescanPills(state) {
+        const control = state.composerCtl.control;
+        if (!control || state.dead) return;
+        const meta = (runtime.groupById(state.groupId) || {}).meta;
+        state.pills = scanMentions(String(control.value || ''), memberNamesOf(meta));
+        renderMirror(state);
+    }
+
+    // 镜像层样式与文本域对齐（逐项 longhand 比 font 简写更可靠），只同步一次，主题变量跟随 CSS
+    function syncMirrorStyles(state) {
+        const control = state.composerCtl.control;
+        const mirror = state.inputMirror;
+        if (!control || !mirror) return;
+        const cs = getComputedStyle(control);
+        const box = (prop, extra) => (parseFloat(cs[prop]) || 0) + (extra || 0);
+        mirror.style.fontFamily = cs.fontFamily;
+        mirror.style.fontSize = cs.fontSize;
+        mirror.style.fontWeight = cs.fontWeight;
+        mirror.style.fontStyle = cs.fontStyle;
+        mirror.style.lineHeight = cs.lineHeight;
+        mirror.style.letterSpacing = cs.letterSpacing;
+        mirror.style.whiteSpace = 'pre-wrap';
+        mirror.style.overflowWrap = 'anywhere';
+        mirror.style.wordBreak = cs.wordBreak === 'normal' ? 'normal' : cs.wordBreak;
+        mirror.style.padding = [
+            box('paddingTop', box('borderTopWidth')),
+            box('paddingRight', box('borderRightWidth')),
+            box('paddingBottom', box('borderBottomWidth')),
+            box('paddingLeft', box('borderLeftWidth')),
+        ].map((n) => n + 'px').join(' ');
+    }
+
+    function renderMirror(state) {
+        const control = state.composerCtl.control;
+        const mirror = state.inputMirror;
+        if (!control || !mirror) return;
+        mirror.innerHTML = buildRichHtml(String(control.value || ''), state.pills);
+        mirror.scrollTop = control.scrollTop;
+        mirror.scrollLeft = control.scrollLeft;
+    }
+
+    // 用 execCommand 插入文本：参与原生撤销栈并自然触发 input（失败回落直接赋值）
+    function insertComposerText(state, start, end, text) {
+        const control = state.composerCtl.control;
+        control.focus();
+        try {
+            control.setSelectionRange(start, end);
+            if (document.execCommand('insertText', false, text)) return true;
+        } catch (err) { /* execCommand 不可用走兜底 */ }
+        control.setRangeText(text, start, end, 'end');
+        control.dispatchEvent(new Event('input', {bubbles: true}));
+        return false;
     }
 
     function autoGrow(control) {
@@ -756,6 +854,7 @@ export function createAIGroupView(deps) {
         runtime.sendUserMessage(state.groupId, text).then((result) => {
             if (result.ok) {
                 control.value = '';
+                rescanPills(state);
                 autoGrow(control);
                 state.sendBtn.classList.add('disabled');
                 closeMentionPop(state);
@@ -827,10 +926,12 @@ export function createAIGroupView(deps) {
 
     function applyMentionChoice(state, name) {
         const control = state.composerCtl.control;
-        const result = applyMention(String(control.value || ''), control.selectionStart, name);
-        control.value = result.text;
-        try { control.setSelectionRange(result.caret, result.caret); } catch (e) { /* 部分输入法不支持 */ }
+        // 弹层打开时的补全区（@xxx）；execCommand 替换可撤销且自然触发 input → 重扫胶囊
+        const parsed = state.mentionQuery || mentionQuery(String(control.value || ''), control.selectionStart);
+        const caret = control.selectionStart;
         closeMentionPop(state);
+        if (!parsed) return;
+        insertComposerText(state, parsed.start, caret, '@' + String(name || '') + ' ');
         autoGrow(control);
         state.sendBtn.classList.toggle('disabled', !String(control.value || '').trim());
         try { control.focus(); } catch (e) { /* 已卸载时忽略 */ }

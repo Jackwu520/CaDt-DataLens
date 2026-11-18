@@ -1083,6 +1083,7 @@ UI：成员行显示 `256K`、`1M`、`思考`、速度徽标；群创建时给�
 - 气泡：成员左侧彩色首字头像（主持人描边、静音降透明）+ 名字/时间 + `--panel2` 圆角气泡；用户右侧 accent 气泡纯文本；纪要卡 / 立场卡保留；失败 / 超时 / 停止用气泡下小状态行（`.gc-msg-status`，不再让 `.gc-msg-error` 命中消息壳）；模型 / 角色 / 首字耗时收进名字 hover tooltip。
 - 滚动：复用 `ai-scroll-follow`（`createScrollGesture` / `createShrinkBurst` / `nextStickState`）——贴底跟随、用户上翻不抢滚动、「回到底部 · N」未读按钮。
 - 输入区：`createTextarea` 工厂自动增高（1–6 行）；Enter 发送 / Shift+Enter 换行 / IME `isComposing` 保护；`@` 成员补全弹层（成员 + 全体成员，@ 紧跟文字也触发，↑↓/Enter/Tab/Esc 键盘操作，`mentionQuery` / `applyMention` 纯函数可单测）；流式时显示停止按钮（`stopOne`）。
+- @ 胶囊（QQ 式）：补全选中后输入框里渲染胶囊——真实 textarea 文字透明 + 同度量镜像层按 scanMentions 的 range 画 span（胶囊覆盖的字符与原文严格一致，含尾随空格），复制/粘贴/选区/IME 全走原生不受影响；Backspace/Delete 命中胶囊整段删（execCommand 参与原生撤销栈），改坏名字自动溶解回纯文本，手打 @合法成员名 也会自动成胶囊；补全与 @TA 插入都走 execCommand（可撤销）。纯函数 `scanMentions` / `buildRichHtml` / `expandDeletionRange` 可单测。
 - 讨论控制收敛：主按钮随状态切换「开始讨论 / 暂停 / 继续」；⋯ 菜单收纳结束并总结 / 压缩 / 润色 / 导出纪要 / 群设置 / 切群 / 新建；看板独立图标，改为右侧覆盖层（不挤压消息）；状态文案每帧更新（修掉 phase 早退导致「N 次发言」冻结的存量 bug）。
 - 空态 / 群已删除态；侧栏群列表重做（最近消息预览 `meta.lastPreview`、头像堆、运行脉冲点、当前群高亮、hover 删除）。
 

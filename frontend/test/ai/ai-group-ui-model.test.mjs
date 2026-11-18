@@ -4,9 +4,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
     applyMention,
+    buildRichHtml,
     dateLabel,
     discussionActionLabel,
     eventLineText,
+    expandDeletionRange,
     filterMentionCandidates,
     groupStatusText,
     memberInitial,
@@ -14,6 +16,7 @@ import {
     needsDateBreak,
     needsRoundBreak,
     previewOfMessage,
+    scanMentions,
     shouldMerge,
     statusLineOf,
     timeLabel,
@@ -122,4 +125,55 @@ test('eventLineText / statusLineOf / memberInitial / previewOfMessage', () => {
     assert.equal(previewOfMessage(msg({kind: 'minutes'})), '纪要：正文');
     assert.equal(previewOfMessage(msg({content: 'x'.repeat(300)})).length, 100);
     assert.equal(previewOfMessage(msg({content: '   '})), '');
+});
+
+test('scanMentions：@合法名扫成胶囊 range（长名优先、不重叠、@全体成员）', () => {
+    const names = ['架构师', '审查员', '审查员长', '全体成员'];
+    assert.deepEqual(scanMentions('请@审查员 看看', names), [{start: 1, end: 5, name: '审查员'}]);
+    // 长名优先：@审查员长 整体是一颗胶囊，而不是 审查员 + 残字
+    assert.deepEqual(scanMentions('@审查员长 到了', names), [{start: 0, end: 5, name: '审查员长'}]);
+    assert.deepEqual(scanMentions('@全体成员 集合', names), [{start: 0, end: 5, name: '全体成员'}]);
+    // 不合法的 @ 不产胶囊
+    assert.deepEqual(scanMentions('邮箱 a@b.com 与 @路人', names), []);
+    // 相邻两颗
+    assert.deepEqual(scanMentions('@架构师@审查员', names), [
+        {start: 0, end: 4, name: '架构师'},
+        {start: 4, end: 8, name: '审查员'},
+    ]);
+    assert.deepEqual(scanMentions('', names), []);
+});
+
+test('buildRichHtml：胶囊 span 占据与原文一致的字符（含尾随空格）、转义、尾换行占位', () => {
+    const ranges = [{start: 1, end: 5, name: '审查员'}];
+    const html = buildRichHtml('请@审查员 看看', ranges);
+    assert.equal(html, '请<span class="gc-pill" data-name="审查员">@审查员 </span>看看');
+    // HTML 注入被转义
+    const evil = buildRichHtml('<img src=x onerror=1>', []);
+    assert.equal(evil.includes('<img'), false);
+    assert.equal(evil.includes('&lt;img'), true);
+    // 尾换行补零宽占位，镜像层行数与文本域一致
+    assert.equal(buildRichHtml('第一行\n', []).endsWith('\u200b'), true);
+    // range 越界/重叠防御
+    assert.equal(buildRichHtml('abc', [{start: 2, end: 9, name: 'x'}]), 'ab' + '<span class="gc-pill" data-name="x">c</span>');
+});
+
+test('expandDeletionRange：Backspace/Delete 命中胶囊整段删、选区扩到完整胶囊', () => {
+    const pills = [{start: 1, end: 5, name: '审查员'}]; // '请@审查员 '
+    // 光标在胶囊尾（@审查员 之后、空格之前）→ 整颗删
+    assert.deepEqual(expandDeletionRange(pills, 5, 5, 'backspace'), {start: 1, end: 5});
+    // 光标在胶囊中间（改字后想删）→ 也是整颗删
+    assert.deepEqual(expandDeletionRange(pills, 3, 3, 'backspace'), {start: 1, end: 5});
+    // 光标在胶囊头 → 不命中（删前面的字，交给浏览器）
+    assert.equal(expandDeletionRange(pills, 1, 1, 'backspace'), null);
+    // 光标在胶囊尾之后（隔着空格）→ 不命中
+    assert.equal(expandDeletionRange(pills, 6, 6, 'backspace'), null);
+    // Delete：光标在胶囊头 → 整颗删
+    assert.deepEqual(expandDeletionRange(pills, 1, 1, 'delete'), {start: 1, end: 5});
+    // Delete：光标在胶囊尾 → 不命中（删后面的字）
+    assert.equal(expandDeletionRange(pills, 5, 5, 'delete'), null);
+    // 选区跨进胶囊 → 扩到整颗
+    assert.deepEqual(expandDeletionRange(pills, 4, 8, 'backspace'), {start: 1, end: 8});
+    // 纯文本选区不扩
+    assert.equal(expandDeletionRange(pills, 7, 9, 'backspace'), null);
+    assert.equal(expandDeletionRange([], 1, 1, 'backspace'), null);
 });

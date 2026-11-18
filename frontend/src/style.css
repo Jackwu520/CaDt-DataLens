@@ -12634,23 +12634,59 @@ textarea.dlg-input:focus {
 }
 .gc-scroll-btn:hover { color: var(--text); border-color: var(--accent); }
 .gc-scroll-btn.hidden { display: none; }
-/* 输入区 */
+/* 输入区（QQ 式 @ 胶囊）：边框底色挂在 wrap 上，textarea 文字透明、镜像层负责渲染文本与胶囊；
+   文本仍是纯文本 —— 复制/粘贴/选区/IME 全走原生，Backspace/Delete 命中胶囊整段删 */
 .gc-composer-wrap { position: relative; flex: none; padding: 8px 10px 10px; border-top: 1px solid var(--border); background: var(--panel); }
 .gc-composer { display: flex; align-items: flex-end; gap: 8px; }
+.gc-input-wrap {
+    position: relative;
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    background: var(--panel2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+}
+.gc-input-wrap:focus-within { border-color: var(--accent); }
 .gc-composer .gc-input {
+    position: relative;
+    z-index: 1;
     flex: 1;
     min-width: 0;
     resize: none;
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    background: var(--panel2);
-    color: var(--text);
+    border: none;
+    background: transparent;
+    /* 文字交给镜像层画：透明 + 光标可见；::placeholder/::selection 单独给色保持可见 */
+    color: transparent;
+    caret-color: var(--text);
     font: inherit;
     font-size: 12.5px;
     line-height: 1.55;
     padding: 6px 10px;
 }
-.gc-composer .gc-input:focus { outline: none; border-color: var(--accent); }
+.gc-composer .gc-input:focus { outline: none; }
+.gc-composer .gc-input::placeholder { color: var(--muted); opacity: 1; }
+.gc-composer .gc-input::selection { background: color-mix(in srgb, var(--accent) 32%, transparent); }
+.gc-input-mirror {
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    overflow: hidden;
+    color: var(--text);
+    pointer-events: none;
+    user-select: none;
+    font-size: 12.5px;
+    line-height: 1.55;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+/* @ 胶囊：span 覆盖的字符与原文严格一致（含尾随空格），不改排版才能与光标对齐 */
+.gc-pill {
+    background: color-mix(in srgb, var(--accent) 18%, transparent);
+    color: var(--accent);
+    border-radius: 999px;
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 32%, transparent);
+}
 .gc-send-btn {
     flex: none;
     display: inline-flex;

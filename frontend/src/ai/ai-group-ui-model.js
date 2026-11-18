@@ -156,3 +156,79 @@ export function previewOfMessage(msg, max) {
     if (!text) return '';
     return (who + '：' + text).slice(0, Math.max(1, Number(max) || GROUP_LAST_PREVIEW_MAX));
 }
+
+// ---------- @ 胶囊（QQ 式）：文本域保持纯文本，镜像层按 range 画胶囊 ----------
+
+// 扫描文本里的 @提及（与 parseMentions 同语义：@ 后跟合法成员名，长名优先、不重叠）。
+// 返回 [{start, end, name}]（end 不含紧随的空格）；文本是唯一真源，胶囊只是渲染。
+export function scanMentions(text, names) {
+    const value = String(text || '');
+    const sorted = [...new Set((names || []).map((n) => String(n || '').trim()).filter(Boolean))]
+        .sort((a, b) => b.length - a.length);
+    const out = [];
+    let i = 0;
+    while (i < value.length) {
+        if (value[i] !== '@') { i += 1; continue; }
+        let matched = null;
+        for (const name of sorted) {
+            if (value.startsWith(name, i + 1)) { matched = name; break; }
+        }
+        if (!matched) { i += 1; continue; }
+        out.push({start: i, end: i + 1 + matched.length, name: matched});
+        i += 1 + matched.length;
+    }
+    return out;
+}
+
+// 镜像层 HTML：与文本域同字体同度量，胶囊 span 占据的字符与原文完全一致（不改变排版）。
+// 胶囊把紧随的空格一并盖住（右边距感），换行结尾补零宽字符保持行数一致。
+export function buildRichHtml(text, ranges) {
+    const value = String(text || '').replace(/\r\n/g, '\n');
+    const esc = (s) => String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    const parts = [];
+    let cursor = 0;
+    for (const r of ranges || []) {
+        if (!r || r.start < cursor || r.start >= value.length) continue;
+        if (r.start > cursor) parts.push(esc(value.slice(cursor, r.start)));
+        const withSpace = value[r.end] === ' ' ? r.end + 1 : r.end;
+        const label = value.slice(r.start, withSpace);
+        parts.push(`<span class="gc-pill" data-name="${esc(r.name)}">${esc(label)}</span>`);
+        cursor = withSpace;
+    }
+    parts.push(esc(value.slice(cursor)));
+    let html = parts.join('');
+    if (html.endsWith('\n')) html += '\u200b';
+    return html;
+}
+
+// 原子删除范围：Backspace/Delete 命中胶囊时整段删（返回 null = 交给浏览器默认行为）。
+// 折叠光标：Backspace 命中「胶囊内或紧贴胶囊尾」删整颗；Delete 对称（胶囊头或胶囊内）。
+// 选区：扩到所有与之相交的胶囊的完整范围。
+export function expandDeletionRange(ranges, start, end, direction) {
+    const list = Array.isArray(ranges) ? ranges : [];
+    const s = Math.max(0, Math.round(Number(start) || 0));
+    const e = Math.max(0, Math.round(Number(end) || 0));
+    if (s === e) {
+        const pos = s;
+        const hit = direction === 'delete'
+            ? list.find((r) => r.start <= pos && pos < r.end)
+            : list.find((r) => r.start < pos && pos <= r.end);
+        if (!hit) return null;
+        return {start: hit.start, end: hit.end};
+    }
+    let lo = Math.min(s, e);
+    let hi = Math.max(s, e);
+    let touched = false;
+    for (const r of list) {
+        if (r.start < hi && r.end > lo) {
+            lo = Math.min(lo, r.start);
+            hi = Math.max(hi, r.end);
+            touched = true;
+        }
+    }
+    return touched ? {start: lo, end: hi} : null;
+}
