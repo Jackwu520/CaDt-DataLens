@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"datalens/internal/aitransport"
 )
 
 func TestAiGenResolveDir(t *testing.T) {
@@ -118,6 +120,44 @@ func TestAiGenRedactError(t *testing.T) {
 	}
 	if got := aiGenRedactError("普通错误"); got != "普通错误" {
 		t.Fatalf("无 URL 错误被改动：%q", got)
+	}
+}
+
+func TestAiGenDownloadErrorIncludesResponseHint(t *testing.T) {
+	// 非 200 的产物下载要把服务端响应片段带进错误（实测「HTTP 400」其实是上游请求体问题，
+	// 响应体里有线索）；片段压成单行、限长，且查询串密钥打码。
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"message":"bad prompt at https://x/api?api_key=sk-secret"}}` + "\n\t noise"))
+	}))
+	defer server.Close()
+	client, err := aitransport.NewHTTPClient(aitransport.Config{Proxy: "direct"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = aiGenDownloadURL(client, ProductItem{Type: "url", URL: server.URL + "/x"}, 30, 1<<20, nil)
+	if err == nil {
+		t.Fatal("非 200 应报错")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "HTTP 400") || !strings.Contains(msg, "服务端响应") || !strings.Contains(msg, "bad prompt") {
+		t.Fatalf("错误应带状态码与响应片段：%q", msg)
+	}
+	if strings.Contains(msg, "sk-secret") || !strings.Contains(msg, "=***") {
+		t.Fatalf("响应片段里的密钥查询串未打码：%q", msg)
+	}
+	if strings.Contains(msg, "\n") || strings.Contains(msg, "\t") {
+		t.Fatalf("响应片段应压成单行：%q", msg)
+	}
+}
+
+func TestAiGenSnippet(t *testing.T) {
+	if got := aiGenSnippet("  a\n\t b  "); got != "a b" {
+		t.Fatalf("控制字符应压成单空格：%q", got)
+	}
+	long := strings.Repeat("x", 500)
+	if got := aiGenSnippet(long); len(got) > 200 {
+		t.Fatalf("片段应限长 200，实际 %d", len(got))
 	}
 }
 

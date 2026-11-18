@@ -21,6 +21,8 @@ import {
     removeById,
     removeImageById,
     memoId,
+    memoItemFoldHeight,
+    shouldFoldMemoItem,
     updateById,
 } from '../../src/bridge/memo-model.js';
 
@@ -342,4 +344,79 @@ test('formatMemoForAI：按 blockId 只读某分组 + 按 q 文本包含（不�
 
     const none = formatMemoForAI(doc, '工作区', {q: '不存在的内容xyz'});
     assert.match(none, /没有匹配过滤条件的条目（面板总数不变：2 项）/, '无命中也汇报总口径');
+});
+
+test('addItem：往折叠块加条目自动展开（新条目不能藏在折叠里）', () => {
+    const base = sampleDoc();
+    const folded = updateById(base.doc, base.doc.blocks[0].id, {collapsed: true});
+    assert.equal(folded.doc.blocks[0].collapsed, true);
+    const added = addItem(folded.doc, base.doc.blocks[0].id, '新条目');
+    assert.ok(added.ok);
+    assert.equal(added.doc.blocks[0].collapsed, false, '加条目后块应展开');
+    assert.equal(added.doc.blocks[0].items.at(-1).text, '新条目');
+});
+
+test('moveItemToBlock：移到折叠块自动展开', () => {
+    let doc = addBlock(defaultMemoData(), 'A').doc;
+    const aId = doc.blocks[0].id;
+    doc = addBlock(doc, 'B').doc;
+    const bId = doc.blocks[1].id;
+    doc = addItem(doc, aId, '要挪的').doc;
+    const itemId = doc.blocks[0].items[0].id;
+    doc = updateById(doc, bId, {collapsed: true}).doc;
+    const moved = moveItemToBlock(doc, itemId, bId);
+    assert.ok(moved.ok);
+    assert.equal(moved.doc.blocks[1].collapsed, false, '移入后目标块应展开');
+    assert.equal(moved.doc.blocks[1].items.length, 1);
+});
+
+test('textMax：便签正文上限放宽到长笔记量级（>= 1 万字符）', () => {
+    assert.ok(MEMO_LIMITS.textMax >= 10000, 'textMax 应足够放下报错栈/配置等长文本');
+    const long = 'x'.repeat(3000);
+    const added = addItem(defaultMemoData(), '', long);
+    assert.equal(added.doc.blocks[0].items[0].text.length, long.length, '长文本不应被截断到 500');
+});
+
+// 守卫：便签全量重渲染必须保留 .memo-body 滚动位置，否则勾选待办/加条目/折叠后都跳回顶部。
+test('bridge-memo-view：render 保留滚动位置', () => {
+    const src = readFileSync(new URL('../../src/bridge/bridge-memo-view.js', import.meta.url), 'utf8');
+    assert.ok(/prevBody\?\.scrollTop|\.scrollTop/.test(src), 'render 应读取并还原 .memo-body 的 scrollTop');
+    assert.ok(/body\.scrollTop\s*=\s*scrollTop/.test(src), '重建后应把 scrollTop 还原到新 body');
+});
+
+// 守卫：块右键菜单的「折叠/展开」项必须可点（曾因误加 disabled 导致整个折叠功能不可用）。
+test('bridge-memo-view：块菜单折叠项不带 disabled', () => {
+    const src = readFileSync(new URL('../../src/bridge/bridge-memo-view.js', import.meta.url), 'utf8');
+    const lines = src.split('\n');
+    const foldLine = lines.find((l) => l.includes("'展开' : '折叠'") || l.includes('展开\' : \'折叠'));
+    assert.ok(foldLine, '应找到折叠/展开菜单项定义');
+    assert.ok(!/disabled\s*:/.test(foldLine), '折叠项不得带 disabled，否则整个折叠功能被禁用');
+    assert.ok(/collapsed:\s*!block\.collapsed/.test(foldLine + lines[lines.indexOf(foldLine) + 1]), '折叠项应切换 collapsed');
+});
+
+// 守卫：便签面板右键必须掐断冒泡，否则事件冒到 mainPane 会弹出编辑器通用菜单
+// （撤销/折叠/书签…），把便签自己的块/条目菜单覆盖掉——用户看到的是灰掉的「折叠」。
+test('bridge-memo-view：root 的 contextmenu 阻止冒泡到编辑器', () => {
+    const src = readFileSync(new URL('../../src/bridge/bridge-memo-view.js', import.meta.url), 'utf8');
+    assert.ok(/addEventListener\('contextmenu',\s*onContextMenu\)/.test(src), 'root 应挂 contextmenu 处理器');
+    assert.ok(/onContextMenu[\s\S]{0,200}stopPropagation\(\)/.test(src), '处理器必须 stopPropagation 掐断冒泡');
+    assert.ok(/removeEventListener\('contextmenu',\s*onContextMenu\)/.test(src), '卸载时要解绑');
+});
+
+test('memoItemFoldHeight：按换行与每行字数估算渲染高度', () => {
+    assert.equal(memoItemFoldHeight(''), 20, '空文本按一行算');
+    assert.equal(memoItemFoldHeight('短文本'), 20, '一行内 20px');
+    assert.equal(memoItemFoldHeight('a\nb\nc'), 60, '三行 60px');
+    assert.equal(memoItemFoldHeight('x'.repeat(120)), 40, '120 字折两行 40px');
+});
+
+test('shouldFoldMemoItem：超过 1 个视窗高度才折叠', () => {
+    const vh = 600; // 模拟 memo-body 可视高度
+    assert.equal(shouldFoldMemoItem('短文本', vh), false);
+    assert.equal(shouldFoldMemoItem('', vh), false);
+    assert.equal(shouldFoldMemoItem('x'.repeat(1800), vh), false, '1800 字=30 行=600px，等于视窗不折叠');
+    assert.equal(shouldFoldMemoItem('x'.repeat(1860), vh), true, '1860 字=31 行=620px，超过视窗折叠');
+    assert.equal(shouldFoldMemoItem('x'.repeat(120), vh), false, '视窗省略时用默认 600');
+    // 换行多的短文本也能触发折叠
+    assert.equal(shouldFoldMemoItem(Array(31).fill('a').join('\n'), vh), true);
 });

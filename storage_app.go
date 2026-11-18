@@ -22,6 +22,7 @@ import (
 	"datalens/internal/envvars"
 	"datalens/internal/fsops"
 	"datalens/internal/mcp"
+	"datalens/internal/memo"
 	"datalens/internal/run"
 	"datalens/internal/sessionindex"
 	"datalens/internal/sessionstore"
@@ -34,10 +35,14 @@ var storageService = storage.New(storage.Deps{
 	ActiveBrowserProfiles: browser.ActiveProfileDirs,
 	// AI 隔离 worktree 的孤儿判定：从会话 meta 里收「有会话登记」的隔离区路径
 	KeepWorktreeNames: registeredWorktreePaths,
-	BeforeClear: map[string]func(){
+	BeforeClear: map[string]func(string) (func(), error){
 		// 派生 SQLite 打开状态下删不掉，清除前先释放本进程句柄
-		"session-index": sessionindex.ResetFiles,
-		"ai-schedule":   aischedule.Close,
+		"session-index": func(string) (func(), error) { sessionindex.ResetFiles(); return nil, nil },
+		"ai-schedule":   func(string) (func(), error) { aischedule.Close(); return nil, nil },
+		// 多实例：持有写权/回合的资源正在被另一窗口使用时，拒绝清理（见 multi-instance-sync.md）
+		"ai-sessions": func(string) (func(), error) { return sessionstore.LockRootForClear() },
+		"memo":        func(string) (func(), error) { return memo.LockForClear("global", "") },
+		"ws-memo":     func(ws string) (func(), error) { return memo.LockForClear("workspace", ws) },
 	},
 })
 

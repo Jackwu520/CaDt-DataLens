@@ -98,6 +98,7 @@ func (s *Service) AISessionWriteMeta(id string, data string) error {
 }
 
 // AISessionSaveImage 把会话图片写进 <id>/images/，返回相对路径 images/<name>。
+// 写盘走 withSessionLock：别的窗口正在跑这个会话时返回 ErrSessionBusy。
 func (s *Service) AISessionSaveImage(id, name, dataURL string) (string, error) {
 	store, err := s.store()
 	if err != nil {
@@ -107,13 +108,16 @@ func (s *Service) AISessionSaveImage(id, name, dataURL string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return "", err
-	}
 	if len(dataURL) > 16<<20 {
 		return "", fmt.Errorf("图片数据过大（>16 MB）")
 	}
-	if err := (&fsops.FS{}).SaveDataURL(path, dataURL); err != nil {
+	err = store.withSessionLock(id, func(dir string) error {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return err
+		}
+		return (&fsops.FS{}).SaveDataURL(path, dataURL)
+	})
+	if err != nil {
 		return "", err
 	}
 	return ImagesDir + "/" + name, nil
@@ -143,13 +147,16 @@ func (s *Service) AISessionSaveVideo(id, name, dataURL string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return "", err
-	}
 	if len(dataURL) > 24<<20 {
 		return "", fmt.Errorf("视频数据过大（>24 MB）")
 	}
-	if err := (&fsops.FS{}).SaveDataURL(path, dataURL); err != nil {
+	err = store.withSessionLock(id, func(dir string) error {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return err
+		}
+		return (&fsops.FS{}).SaveDataURL(path, dataURL)
+	})
+	if err != nil {
 		return "", err
 	}
 	return VideosDir + "/" + name, nil

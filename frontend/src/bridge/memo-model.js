@@ -10,10 +10,32 @@ export const MEMO_LIMITS = {
   blocks: 50,
   itemsPerBlock: 100,
   itemsTotal: 300,
-  textMax: 500,
+  textMax: 100000, // 便签按长笔记用（报错栈/配置/长文），放宽到 10 万字符；保留兜底防极端超大内容
   blockTitleMax: 60,
   imagesPerItem: 6,
 };
+
+// 超长条目默认折叠的高度估算常量（与 .memo-item-text 的 12.5px×1.6 行高对齐）。
+const MEMO_ITEM_LINE_HEIGHT = 20;
+const MEMO_ITEM_CHARS_PER_LINE = 60; // 便签面板较窄，保守按每行 60 字估算
+
+// memoItemFoldHeight 估算条目文本的渲染高度（px）：按换行 + 每行字数折行累加。
+// 纯函数、不依赖 DOM，便于单测；视图拿它和 memo-body 可视高度比对决定是否折叠。
+export function memoItemFoldHeight(text) {
+  const lines = String(text == null ? '' : text).split('\n');
+  let renderedLines = 0;
+  for (const line of lines) {
+    renderedLines += Math.max(1, Math.ceil(line.length / MEMO_ITEM_CHARS_PER_LINE));
+  }
+  return renderedLines * MEMO_ITEM_LINE_HEIGHT;
+}
+
+// shouldFoldMemoItem 超过 1 个视窗高度才折叠（viewportHeight 传 memo-body 的 clientHeight）。
+export function shouldFoldMemoItem(text, viewportHeight) {
+  if (!text) return false;
+  const vh = Number(viewportHeight) > 0 ? Number(viewportHeight) : 600;
+  return memoItemFoldHeight(text) > vh;
+}
 
 let idSeq = 0;
 
@@ -158,6 +180,8 @@ export function addItem(doc, blockId, text, opts) {
   if (block.items.length >= MEMO_LIMITS.itemsPerBlock) {
     return {ok: false, error: '该块已有 ' + MEMO_LIMITS.itemsPerBlock + ' 项，已达上限'};
   }
+  // 往折叠块加条目时自动展开——否则新条目藏在折叠里，用户以为没加上。
+  block.collapsed = false;
   const item = {
     id: memoId('it'),
     text: value,
@@ -252,6 +276,7 @@ export function moveItemToBlock(doc, itemId, targetBlockId) {
   const dst = next.blocks.find((b) => b.id === targetBlockId);
   src.block.items.splice(src.itemIndex, 1);
   dst.items.push(src.item);
+  dst.collapsed = false; // 移到折叠块同样展开，保证条目可见
   stamp(next);
   return {ok: true, doc: next};
 }

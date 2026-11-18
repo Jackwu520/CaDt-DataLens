@@ -19,6 +19,7 @@ import {
     moveItemToBlock,
     removeById,
     removeImageById,
+    shouldFoldMemoItem,
     updateById,
 } from './memo-model.js';
 import {createMemoStore} from './memo-store.js';
@@ -56,6 +57,9 @@ function setCurrentScope(scope) {
 // ===== 视图实例表 =====
 const views = new Set();
 let lightbox = null; // 每窗口共用一个灯箱，宿主为内容区
+
+// 超长条目默认折叠：手动展开过的条目 id 记这里，重渲染不弹回（内存即可，重启恢复默认折叠）。
+const itemFoldExpanded = new Set();
 
 // ===== doc 工厂（虚拟文档，守卫要求创建点在 bridge 里）=====
 function openMemoTab() {
@@ -115,6 +119,28 @@ function createMemoView(doc) {
     });
     const onPaste = (e) => { handlePaste(view, e); };
     root.addEventListener('paste', onPaste);
+    // 右键拦截：块/条目自己的 contextmenu 处理器会打开便签菜单，但事件仍会冒泡到
+    // mainPane 的通用处理器，弹出编辑器的「撤销/折叠/书签…」菜单覆盖掉便签菜单
+    // （那个灰掉的「折叠」就是编辑器的 disabled 项）。这里统一掐断冒泡；空白处右键
+    // 给一个「新建块」兜底菜单，保证便签面板右键永远是便签自己的菜单。
+    const onContextMenu = (e) => {
+        e.stopPropagation();
+        // 块/条目处理器已经 preventDefault + 开菜单，这里只处理没被它们接住的空白区
+        if (e.defaultPrevented) return;
+        e.preventDefault();
+        deps.ctxMenu.open([
+            {label: '新建块', icon: 'E710', action: () => {
+                commitActive(view);
+                run(view, (doc2) => addBlock(doc2, '')).then((res) => {
+                    if (res.ok) requestAnimationFrame(() => startBlockTitleEdit(view, res.id));
+                    else deps.flash(res.error, true);
+                }).catch(() => {});
+            }},
+            {label: '新建文本条目', icon: 'E710', action: () => quickAdd(view, 'text')},
+            {label: '新建 Markdown 条目', icon: 'E710', action: () => quickAdd(view, 'md')},
+        ], e.clientX, e.clientY);
+    };
+    root.addEventListener('contextmenu', onContextMenu);
 
     render(view);
 
@@ -122,12 +148,29 @@ function createMemoView(doc) {
         view.disposed = true;
         unsubscribe();
         root.removeEventListener('paste', onPaste);
+        root.removeEventListener('contextmenu', onContextMenu);
         views.delete(view);
-        // 关面板前把未落盘的修改冲掉（flush 会清掉挂着的防抖定时器）
+        if (view.watchingGlobal && deps.backend && deps.backend.MemoUnwatch) {
+            Promise.resolve(deps.backend.MemoUnwatch('global', '')).catch(() => {});
+        }
+        // 关面板前把未落盘的修改冲掉；成功才让出写权（失败保持锁，避免半成品交接）
         store.flush(view.scope).then((res) => {
-            if (!res.ok && deps.flash) deps.flash('快捷便签 保存失败：' + res.error, true);
+            if (res && !res.ok) {
+                if (deps.flash) deps.flash('快捷便签 保存失败：' + res.error, true);
+                return;
+            }
+            return store.releaseLease(view.scope).then((rel) => {
+                if (rel && !rel.ok && deps.flash) deps.flash('快捷便签 让出写权失败：' + rel.error, true);
+            });
         }).catch(() => {});
     };
+}
+
+// pagehide 兜底：页面被销毁前尽力 flush + 释放；进程退出时内核还会兜底。
+if (typeof window !== 'undefined' && window.addEventListener) {
+    window.addEventListener('pagehide', () => {
+        store.flushAll().then(() => store.releaseAll()).catch(() => {});
+    });
 }
 
 // ===== 变更通路：UI 与 AI 共用 store.mutate =====
@@ -157,8 +200,16 @@ function onButton(btn, onClick, tip) {
 function render(view) {
     if (view.disposed || !view.root.isConnected) return;
     const root = view.root;
+    // 全量重建会换掉 .memo-body 滚动容器，导致任何改动后跳回顶部。
+    // 重建前记下滚动位置，重建后原地还原（切作用域/首次加载时 body 不存在，记 0）。
+    const prevBody = root.querySelector('.memo-body');
+    const scrollTop = prevBody ? prevBody.scrollTop : 0;
     root.textContent = '';
+    syncMemoWatch(view);
+    const lease = store.state(view.scope);
+    root.classList.toggle('memo-readonly', !!lease.readOnly);
     root.appendChild(buildTopBar(view));
+    if (lease.readOnly) root.appendChild(readOnlyBanner(lease.owner));
 
     if (view.scope === 'workspace' && !(deps.workspaceFolder || '')) {
         root.appendChild(hintBox('没有打开的工作区——工作区快捷便签 需要先打开一个文件夹；全局快捷便签 可直接使用。'));
@@ -179,6 +230,8 @@ function render(view) {
     }
     doc.blocks.forEach((block) => body.appendChild(buildBlock(view, block)));
     root.appendChild(body);
+    // 还原滚动位置（内容变短时浏览器会自动 clamp 到新的最大滚动量）
+    if (scrollTop) body.scrollTop = scrollTop;
 
     const footer = document.createElement('div');
     footer.className = 'memo-footer';
@@ -211,7 +264,7 @@ function hintBox(text) {
 }
 
 function loadAndRender(view) {
-    store.load(view.scope).then((res) => {
+    store.load(view.scope, {acquire: true}).then((res) => {
         if (view.disposed) return;
         if (res.error) {
             view.root.textContent = '';
@@ -220,6 +273,35 @@ function loadAndRender(view) {
         }
         if (view.scope === currentScope()) render(view);
     }).catch(() => {});
+}
+
+function readOnlyBanner(owner) {
+    const box = document.createElement('div');
+    box.className = 'memo-readonly-banner';
+    const pid = owner && owner.pid;
+    box.textContent = '只读：快捷便签正在另一窗口编辑' + (pid ? '（PID ' + pid + '）' : '') +
+        '。关闭那边的面板后可在此编辑。';
+    return box;
+}
+
+// syncMemoWatch：全局作用域补目录 watch；工作区已有 workspace-changed，不重复监听。
+function syncMemoWatch(view) {
+    if (!view || view.disposed || !deps.backend) return;
+    const want = view.scope === 'global';
+    if (view.watchingGlobal === want) return;
+    view.watchingGlobal = want;
+    if (want) {
+        if (deps.backend.MemoWatch) {
+            Promise.resolve(deps.backend.MemoWatch('global', '')).catch(() => {
+                // 目录还不存在（首次使用）等：下次 render 再试
+                view.watchingGlobal = false;
+            });
+        } else {
+            view.watchingGlobal = false;
+        }
+    } else if (deps.backend.MemoUnwatch) {
+        Promise.resolve(deps.backend.MemoUnwatch('global', '')).catch(() => {});
+    }
 }
 
 function buildTopBar(view) {
@@ -335,13 +417,26 @@ function smartInsertTarget(view) {
 
 function switchScope(view, next) {
     if (view.scope === next) return;
-    // 切走前先提交正在输入的行内编辑，再冲掉未保存的修改（flush 内部清定时器并立即保存；冲突已在 store 侧重载广播）
+    // 切走前先提交正在输入的行内编辑，再冲掉未保存的修改（flush 内部清定时器并立即保存；
+    // 冲突已在 store 侧重载广播）。冲盘失败时不切、保持写权，避免把半成品让出去。
     if (view.activeCommit) view.activeCommit();
-    store.flush(view.scope).then((res) => {
-        if (res && !res.ok && deps.flash) deps.flash('快捷便签 保存失败：' + res.error, true);
-        view.scope = next;
-        setCurrentScope(next);
-        render(view);
+    const old = view.scope;
+    store.flush(old).then((res) => {
+        if (res && !res.ok) {
+            if (deps.flash) deps.flash('快捷便签 保存失败：' + res.error, true);
+            return;
+        }
+        return store.releaseLease(old).then((rel) => {
+            if (rel && !rel.ok && deps.flash) deps.flash('快捷便签 让出写权失败：' + rel.error, true);
+            view.scope = next;
+            setCurrentScope(next);
+            if (store.cached(next)) {
+                // 已缓存的作用域可能是上次的只读副本：先尝试接管再渲染。
+                store.retryAcquire(next).then(() => render(view)).catch(() => render(view));
+            } else {
+                render(view);
+            }
+        });
     }).catch(() => {
         view.scope = next;
         setCurrentScope(next);
@@ -452,6 +547,35 @@ function buildItem(view, block, item) {
         startItemTextEdit(view, item.id);
     });
     row.appendChild(text);
+
+    // 超长条目默认折叠：渲染高度超过 1 个视窗（memo-body 可视高度）时，先只显示一屏 + 渐隐，
+    // 点「展开全文」看完整内容。展开状态按条目 id 记忆，重渲染不弹回。
+    const body = view.root && view.root.querySelector('.memo-body');
+    const viewportH = (body && body.clientHeight) || window.innerHeight || 600;
+    if (shouldFoldMemoItem(item.text, viewportH)) {
+        const foldKey = item.id;
+        text.classList.add('memo-item-foldable');
+        // 折叠高度比可视区略小，给浮在底部的「展开全文」按钮留出空间，避免按钮被挤出屏幕。
+        text.style.setProperty('--memo-fold-h', Math.max(120, viewportH - 48) + 'px');
+        text.classList.toggle('folded', !itemFoldExpanded.has(foldKey));
+        const toggle = document.createElement('button');
+        toggle.type = 'button';
+        toggle.className = 'memo-item-fold-btn';
+        const syncToggle = () => {
+            const folded = text.classList.contains('folded');
+            toggle.innerHTML = '<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true" style="transform:rotate(' + (folded ? '0' : '180') + 'deg)"><path d="M4.5 6.5L8 10l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg><span>' + (folded ? '展开全文' : '收起') + '</span>';
+        };
+        syncToggle();
+        toggle.addEventListener('click', (e) => {
+            e.stopPropagation(); // 别触发 text 的编辑
+            const nowFolded = text.classList.contains('folded');
+            if (nowFolded) itemFoldExpanded.add(foldKey);
+            else itemFoldExpanded.delete(foldKey);
+            text.classList.toggle('folded', !nowFolded);
+            syncToggle();
+        });
+        row.appendChild(toggle);
+    }
 
     if (item.images.length) {
         const thumbs = document.createElement('div');
@@ -1200,10 +1324,11 @@ async function jumpToLocator(locator) {
     if (!view || view.disposed) return '面板不可用';
     if (view.scope !== scope) {
         await store.flush(view.scope).catch(() => {});
+        await store.releaseLease(view.scope).catch(() => {});
         view.scope = scope;
         setCurrentScope(scope);
     }
-    const res = await store.load(scope);
+    const res = await store.load(scope, {acquire: true});
     if (res.error) { deps.flash('便签加载失败：' + res.error, true); return '加载失败'; }
     render(view);
 
@@ -1376,13 +1501,62 @@ function memoOnWorkspaceEvent(payload) {
         const norm = String(p).replace(/[\\/]+/g, '/').toLowerCase();
         return norm.endsWith('/.cadt/memo/memo.json');
     });
-    if (hit) store.reloadExternal('workspace').catch(() => {});
+    if (hit) {
+        const view = findOpenView();
+        if (view && view.scope === 'workspace' && store.state('workspace').readOnly) {
+            store.retryAcquire('workspace').then((res) => {
+                if (res && res.ok) {
+                    if (view && !view.disposed) render(view);
+                    return;
+                }
+                // 仍被占：作为只读副本把另一窗口刚写的内容读回来
+                return store.reloadExternal('workspace').then(() => {
+                    if (view && !view.disposed) render(view);
+                });
+            }).catch(() => {});
+            return;
+        }
+        store.reloadExternal('workspace').catch(() => {});
+    }
 }
 
-// memoOnWindowFocus：全局作用域没有文件 watch，窗口拿回焦点时静默对账一次。
+// memoOnWindowFocus：窗口拿回焦点时对账；全局作用域没有文件 watch，只读态顺带重试接管。
 function memoOnWindowFocus() {
     const view = findOpenView();
-    if (!view || view.scope !== 'global') return;
+    if (!view) return;
+    if (store.state(view.scope).readOnly) {
+        store.retryAcquire(view.scope).then((res) => {
+            if (res && res.ok) {
+                if (!view.disposed) render(view);
+                return;
+            }
+            return store.reloadExternal(view.scope).then(() => {
+                if (!view.disposed) render(view);
+            });
+        }).catch(() => {});
+        return;
+    }
+    if (view.scope === 'global') store.reloadExternal('global').catch(() => {});
+}
+
+// memoOnResourceEvent：Go 侧资源目录 watch（目前只对全局便签注册）。
+function memoOnResourceEvent(payload) {
+    if (!payload || payload.kind !== 'memo') return;
+    const view = findOpenView();
+    if (!view || view.disposed) return;
+    if (view.scope !== 'global' || payload.key !== 'global') return;
+    if (store.state('global').readOnly) {
+        store.retryAcquire('global').then((res) => {
+            if (res && res.ok) {
+                if (!view.disposed) render(view);
+                return;
+            }
+            return store.reloadExternal('global').then(() => {
+                if (!view.disposed) render(view);
+            });
+        }).catch(() => {});
+        return;
+    }
     store.reloadExternal('global').catch(() => {});
 }
 
@@ -1403,6 +1577,7 @@ return {
     memoApi,
     memoOnWorkspaceEvent,
     memoOnWindowFocus,
+    memoOnResourceEvent,
     memoWorkspaceChanged,
 };
 }

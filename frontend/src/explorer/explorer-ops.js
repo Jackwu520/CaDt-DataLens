@@ -395,14 +395,10 @@ function openCreateEntryDialog(dirPath, isDir, suggestedName, title, initialCont
     });
 }
 
-// 打开「通用设置」并滚到「新建菜单」小节（右键子菜单底部的「配置菜单…」入口）。
+// 打开「菜单管理」设置页（右键子菜单底部的「配置菜单…」入口）。
 function openNewFileMenuSettings() {
     if (!deps.openSettings) return;
-    deps.openSettings('general');
-    requestAnimationFrame(() => {
-        const section = document.getElementById('new-file-menu-settings');
-        if (section && typeof section.scrollIntoView === 'function') section.scrollIntoView({block: 'start'});
-    });
+    deps.openSettings('new-file-menu');
 }
 
 // newFileMenuItems：按 settings.newFileMenu 合成「新建」子菜单。

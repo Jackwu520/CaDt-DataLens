@@ -579,6 +579,24 @@ function applyMockStorageClear(ids, workspaceRoot) {
     return report;
 }
 
+// 显式 shell → 展示名（与 Go 侧 aiShellInvocation 的 shellName 对齐；空串 = 自动档）
+function mockShellLabel(shell) {
+    switch (String(shell || '').trim().toLowerCase()) {
+        case 'gitbash':
+        case 'bash':
+            return 'Git Bash';
+        case 'pwsh':
+            return 'PowerShell 7';
+        case 'powershell':
+            return 'Windows PowerShell';
+        case 'cmd':
+        case 'cmd.exe':
+            return 'Command Prompt';
+        default:
+            return '';
+    }
+}
+
 const mockBackend = {
     async AIConfigRead() {
         return mockAIConfigText;
@@ -601,6 +619,10 @@ const mockBackend = {
         const key = String(id);
         const item = mockAISessions.get(key) || {meta: '{}', log: ''};
         item.log += lines;
+        item.mtimeMs = Date.now();
+        item.bytes = item.log.length;
+        item.mtimeMs = Date.now();
+        item.bytes = item.log.length;
         mockAISessions.set(key, item);
         return null;
     },
@@ -608,6 +630,10 @@ const mockBackend = {
         const key = String(id);
         const item = mockAISessions.get(key) || {meta: '{}', log: ''};
         item.log = content;
+        item.mtimeMs = Date.now();
+        item.bytes = item.log.length;
+        item.mtimeMs = Date.now();
+        item.bytes = item.log.length;
         mockAISessions.set(key, item);
         return null;
     },
@@ -617,6 +643,80 @@ const mockBackend = {
         item.meta = data;
         mockAISessions.set(key, item);
         return null;
+    },
+    async AISessionStat(id) {
+        const item = mockAISessions.get(String(id));
+        if (!item) return {exists: false, mtimeMs: 0, size: 0};
+        return {exists: true, mtimeMs: Number(item.mtimeMs) || 0, size: Number(item.bytes) || 0};
+    },
+    // mock：会话回合租约。window.__mockSessionLeaseBusy=true 可模拟另一窗口正在跑。
+    async AISessionLeaseAcquire(id, purpose, label, timeoutMs) {
+        const key = String(id);
+        if (window.__mockSessionLeaseBusy) {
+            return {acquired: false, busy: true, owner: {pid: 999, label: '另一窗口'}, stat: await this.AISessionStat(key)};
+        }
+        window.__mockSessionLeases = window.__mockSessionLeases || {};
+        window.__mockSessionLeases[key] = (window.__mockSessionLeases[key] || 0) + 1;
+        return {
+            acquired: true,
+            busy: false,
+            owner: {pid: 1, label: String(label || 'mock')},
+            stat: await this.AISessionStat(key),
+        };
+    },
+    async AISessionLeaseRelease(id) {
+        const key = String(id);
+        const leases = window.__mockSessionLeases = window.__mockSessionLeases || {};
+        if (leases[key] > 0) leases[key]--;
+        return null;
+    },
+    async AISessionLeaseStatus(id) {
+        const key = String(id);
+        const leases = window.__mockSessionLeases = window.__mockSessionLeases || {};
+        if (leases[key] > 0) {
+            return {acquired: true, busy: false, owner: {pid: 1, label: 'mock'}, stat: await this.AISessionStat(key)};
+        }
+        if (window.__mockSessionLeaseBusy) {
+            return {acquired: false, busy: true, owner: {pid: 999, label: '另一窗口'}, stat: await this.AISessionStat(key)};
+        }
+        return {acquired: false, busy: false, stat: await this.AISessionStat(key)};
+    },
+    async AISessionStat(id) {
+        const item = mockAISessions.get(String(id));
+        if (!item) return {exists: false, mtimeMs: 0, size: 0};
+        return {exists: true, mtimeMs: Number(item.mtimeMs) || 0, size: Number(item.bytes) || 0};
+    },
+    // mock：会话回合租约。window.__mockSessionLeaseBusy=true 可模拟另一窗口正在跑。
+    async AISessionLeaseAcquire(id, purpose, label, timeoutMs) {
+        const key = String(id);
+        if (window.__mockSessionLeaseBusy) {
+            return {acquired: false, busy: true, owner: {pid: 999, label: '另一窗口'}, stat: await this.AISessionStat(key)};
+        }
+        window.__mockSessionLeases = window.__mockSessionLeases || {};
+        window.__mockSessionLeases[key] = (window.__mockSessionLeases[key] || 0) + 1;
+        return {
+            acquired: true,
+            busy: false,
+            owner: {pid: 1, label: String(label || 'mock')},
+            stat: await this.AISessionStat(key),
+        };
+    },
+    async AISessionLeaseRelease(id) {
+        const key = String(id);
+        const leases = window.__mockSessionLeases = window.__mockSessionLeases || {};
+        if (leases[key] > 0) leases[key]--;
+        return null;
+    },
+    async AISessionLeaseStatus(id) {
+        const key = String(id);
+        const leases = window.__mockSessionLeases = window.__mockSessionLeases || {};
+        if (leases[key] > 0) {
+            return {acquired: true, busy: false, owner: {pid: 1, label: 'mock'}, stat: await this.AISessionStat(key)};
+        }
+        if (window.__mockSessionLeaseBusy) {
+            return {acquired: false, busy: true, owner: {pid: 999, label: '另一窗口'}, stat: await this.AISessionStat(key)};
+        }
+        return {acquired: false, busy: false, stat: await this.AISessionStat(key)};
     },
     async AISessionSaveImage(id, name, dataURL) {
         mockAISessionImages.set(String(id) + '/' + name, dataURL);
@@ -1364,6 +1464,12 @@ const mockBackend = {
         return window.__mockOpenMode;
     },
     async SetOpenMode(mode) { window.__mockOpenMode = mode; },
+    async GetCloseAction() {
+        if (!window.__mockCloseAction) window.__mockCloseAction = 'exit';
+        return window.__mockCloseAction;
+    },
+    async SetCloseAction(action) { window.__mockCloseAction = action === 'tray' ? 'tray' : 'exit'; },
+    async QuitApp() { this._calls.push('quit-app'); },
     async GetIntegrationStatus() {
         if (!window.__mockIntegration) {
             window.__mockIntegration = {fileAssoc: false, contextMenu: false};
@@ -1497,12 +1603,17 @@ const mockBackend = {
         window.__mockEnvVars.encrypted = !!on;
         return null;
     },
-    async AIRunShellCommand(command, cwd, timeoutMs) {
-        (window.__mockShellLog || (window.__mockShellLog = [])).push({command, cwd, timeoutMs});
+    async AIRunShellCommand(command, cwd, timeoutMs, runId, shell) {
+        (window.__mockShellLog || (window.__mockShellLog = [])).push({command, cwd, timeoutMs, shell});
         await new Promise((resolve) => setTimeout(resolve, 200));
+        // 显式 shell 时如实回显该 shell（与真后端一致：指定了就一定用它）
+        const explicit = mockShellLabel(shell);
         return {
-            shell: 'Git Bash',
-            exe: 'C:/Program Files/Git/bin/bash.exe',
+            shell: explicit || 'Git Bash',
+            exe: explicit === 'PowerShell 7' ? 'C:/Program Files/PowerShell/7/pwsh.exe'
+                : explicit === 'Windows PowerShell' ? 'C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe'
+                    : explicit === 'Command Prompt' ? 'C:/Windows/System32/cmd.exe'
+                        : 'C:/Program Files/Git/bin/bash.exe',
             code: 0,
             stdout: '[mock] ' + command + (cwd ? '\n(cwd ' + cwd + ')' : ''),
             stderr: '',
@@ -1510,13 +1621,14 @@ const mockBackend = {
             durationMs: 200,
         };
     },
-    async AIRunShellCommandConfined(command, cwd, timeoutMs, runId, mode, workspaceRoot) {
-        (window.__mockShellLog || (window.__mockShellLog = [])).push({command, cwd, timeoutMs, mode, workspaceRoot});
+    async AIRunShellCommandConfined(command, cwd, timeoutMs, runId, mode, workspaceRoot, shell) {
+        (window.__mockShellLog || (window.__mockShellLog = [])).push({command, cwd, timeoutMs, mode, workspaceRoot, shell});
         await new Promise((resolve) => setTimeout(resolve, 200));
         const sandboxed = mode !== 'danger-full-access';
+        const explicit = mockShellLabel(shell);
         return {
             // 沙箱档的 shell 是 PowerShell（Git Bash 在受限令牌下起不来），如实回显
-            shell: sandboxed ? 'PowerShell 7' : 'Git Bash',
+            shell: sandboxed ? (explicit || 'PowerShell 7') : (explicit || 'Git Bash'),
             exe: sandboxed ? 'C:/Program Files/PowerShell/7/pwsh.exe' : 'C:/Program Files/Git/bin/bash.exe',
             code: 0,
             stdout: '[mock] ' + command + (cwd ? '\n(cwd ' + cwd + ')' : ''),
@@ -1533,7 +1645,7 @@ const mockBackend = {
         // mock 里没有真实 ACL：直接回一个「已清空」的状态
         return {root, workspaceSid: 'S-1-4-1001-2002', granted: false, denyPresent: false, labeled: false};
     },
-    async AICommandStart(command, cwd) {
+    async AICommandStart(command, cwd, shell) {
         const jobs = window.__mockBgJobs || (window.__mockBgJobs = new Map());
         const id = 'bg-mock-' + nextMockBgSeq();
         const job = {id, state: 'running', code: null, output: [], startedAtMs: Date.now()};
@@ -1560,16 +1672,16 @@ const mockBackend = {
             job.code = 0;
             emit('cmd-exit', {id, code: '0'});
         }, 950);
-        return {jobId: id, shell: 'Git Bash'};
+        return {jobId: id, shell: mockShellLabel(shell) || 'Git Bash'};
     },
-    async AICommandStartConfined(command, cwd, mode, workspaceRoot) {
+    async AICommandStartConfined(command, cwd, mode, workspaceRoot, shell) {
         // 沙箱档的后台作业：结构与 AICommandStart 相同，额外回显档位与写根
-        const started = await this.AICommandStart(command, cwd);
+        const started = await this.AICommandStart(command, cwd, shell);
         const sandboxed = mode !== 'danger-full-access';
         if (!sandboxed) return started;
         return {
             ...started,
-            shell: 'PowerShell 7',
+            shell: mockShellLabel(shell) || 'PowerShell 7',
             sandboxMode: mode,
             enforcement: 'partial',
             tempDir: 'C:/Temp/cadt-sandbox-mock',
@@ -2240,6 +2352,52 @@ const mockBackend = {
         window.__mockMemoImages = window.__mockMemoImages || [];
         window.__mockMemoImages.push({scope, workspace, bytes: String(dataURL || '').length});
         return 'img/img-' + Date.now().toString(36) + '.png';
+    },
+    // mock：便签写权租约。window.__mockMemoLeaseBusy=true 可模拟另一窗口正在编辑。
+    async MemoLeaseAcquire(scope, workspace, label) {
+        const key = scope + '|' + (workspace || '');
+        if (window.__mockMemoLeaseBusy) {
+            return {acquired: false, busy: true, owner: {pid: 999, label: '另一窗口'}};
+        }
+        window.__mockMemoLeases = window.__mockMemoLeases || {};
+        window.__mockMemoLeases[key] = (window.__mockMemoLeases[key] || 0) + 1;
+        return {acquired: true, busy: false, owner: {pid: 1, label: String(label || 'mock')}};
+    },
+    async MemoLeaseRelease(scope, workspace) {
+        const key = scope + '|' + (workspace || '');
+        const leases = window.__mockMemoLeases = window.__mockMemoLeases || {};
+        if (leases[key] > 0) leases[key]--;
+        return null;
+    },
+    async MemoLeaseStatus(scope, workspace) {
+        const key = scope + '|' + (workspace || '');
+        const leases = window.__mockMemoLeases = window.__mockMemoLeases || {};
+        if (leases[key] > 0) return {acquired: true, busy: false, owner: {pid: 1, label: 'mock'}};
+        if (window.__mockMemoLeaseBusy) return {acquired: false, busy: true, owner: {pid: 999, label: '另一窗口'}};
+        return {acquired: false, busy: false};
+    },
+    // mock：便签写权租约。window.__mockMemoLeaseBusy=true 可模拟另一窗口正在编辑。
+    async MemoLeaseAcquire(scope, workspace, label) {
+        const key = scope + '|' + (workspace || '');
+        if (window.__mockMemoLeaseBusy) {
+            return {acquired: false, busy: true, owner: {pid: 999, label: '另一窗口'}};
+        }
+        window.__mockMemoLeases = window.__mockMemoLeases || {};
+        window.__mockMemoLeases[key] = (window.__mockMemoLeases[key] || 0) + 1;
+        return {acquired: true, busy: false, owner: {pid: 1, label: String(label || 'mock')}};
+    },
+    async MemoLeaseRelease(scope, workspace) {
+        const key = scope + '|' + (workspace || '');
+        const leases = window.__mockMemoLeases = window.__mockMemoLeases || {};
+        if (leases[key] > 0) leases[key]--;
+        return null;
+    },
+    async MemoLeaseStatus(scope, workspace) {
+        const key = scope + '|' + (workspace || '');
+        const leases = window.__mockMemoLeases = window.__mockMemoLeases || {};
+        if (leases[key] > 0) return {acquired: true, busy: false, owner: {pid: 1, label: 'mock'}};
+        if (window.__mockMemoLeaseBusy) return {acquired: false, busy: true, owner: {pid: 999, label: '另一窗口'}};
+        return {acquired: false, busy: false};
     },
     async ForceClose() { window.__mockForceClosed = (window.__mockForceClosed || 0) + 1; },
     async WebSearch(query, maxResults) {

@@ -33,6 +33,9 @@ export function createSessionDiskStore(options) {
     const onError = typeof options.onError === 'function' ? options.onError : () => {};
     const queues = new Map();
     const pending = new Set();
+    // 每个会话最后一次写盘错误：enqueue 的 catch 会把错误吞成 resolved promise，
+    // whenIdle 只能靠这张表判断“队列排空但实际失败”。下一次任务开始即清除。
+    const lastErrors = new Map();
 
     function requireBackend() {
         for (const name of ['AISessionList', 'AISessionRead', 'AISessionAppend', 'AISessionRewrite', 'AISessionWriteMeta', 'AISessionDelete']) {
@@ -43,7 +46,12 @@ export function createSessionDiskStore(options) {
     function enqueue(id, task) {
         const key = textOf(id);
         const prev = queues.get(key) || Promise.resolve();
-        const next = prev.then(task, task).catch((err) => {
+        const run = () => {
+            lastErrors.delete(key);
+            return task();
+        };
+        const next = prev.then(run, run).catch((err) => {
+            lastErrors.set(key, err);
             onError(err);
         });
         queues.set(key, next);
@@ -56,6 +64,24 @@ export function createSessionDiskStore(options) {
         while (pending.size) {
             await Promise.all(Array.from(pending));
         }
+    }
+
+    // whenIdle 等某个会话的写队列真正排空，并带回最后一次写盘错误。
+    // 交接协议（释放回合租约前）必须用它，不能只看 persistSession 的返回值：
+    // pending 时 persistSession 直接 resolve，flush 又感知不到被 catch 的错误。
+    async function whenIdle(id) {
+        const key = textOf(id);
+        for (;;) {
+            const tail = queues.get(key);
+            if (!tail) break;
+            await tail;
+            if (queues.get(key) === tail) {
+                queues.delete(key);
+                break;
+            }
+        }
+        const err = lastErrors.get(key);
+        return err ? {ok: false, error: String((err && err.message) || err)} : {ok: true};
     }
 
     function newMid() {
@@ -279,6 +305,7 @@ export function createSessionDiskStore(options) {
                 throw e;
             }
             await writeMetaIfChanged(session, true);
+            await refreshStat(session);
             return;
         }
         await prepareImages(session, messages);
@@ -336,7 +363,10 @@ export function createSessionDiskStore(options) {
             restoreLogState(session, state);
             throw e;
         }
-        await writeMetaIfChanged(session, events.length > 0);
+        const wrote = events.length > 0;
+        await writeMetaIfChanged(session, wrote);
+        // 只有真的写了日志才刷新 _logStat；meta-only 的扇出写不额外打一次 Wails 往返。
+        if (wrote) await refreshStat(session);
     }
 
     // 归档必须先于调用方裁剪 messages 执行：这里捕获裁剪前的快照，
@@ -381,6 +411,7 @@ export function createSessionDiskStore(options) {
                     throw e;
                 }
                 await writeMetaIfChanged(session, true);
+                await refreshStat(session);
                 return;
             }
             const mids = midsNow;
@@ -424,6 +455,7 @@ export function createSessionDiskStore(options) {
                 throw e;
             }
             await writeMetaIfChanged(session, true);
+            await refreshStat(session);
         });
     }
 
@@ -447,6 +479,7 @@ export function createSessionDiskStore(options) {
                 throw e;
             }
             await writeMetaIfChanged(session, true);
+            await refreshStat(session);
         });
     }
 
@@ -465,6 +498,7 @@ export function createSessionDiskStore(options) {
                 throw e;
             }
             await writeMetaIfChanged(session, true);
+            await refreshStat(session);
         });
     }
 
@@ -502,6 +536,7 @@ export function createSessionDiskStore(options) {
         session._loadError = loadError;
         session._metaSig = metaSignature(buildSessionMeta(session));
         await hydrateImages(session);
+        await refreshStat(session);
         return session;
     }
 
@@ -613,6 +648,7 @@ export function createSessionDiskStore(options) {
         delete session._msgCount;
         delete session._archivedCount;
         await hydrateImages(session);
+        await refreshStat(session);
         return true;
     }
 
@@ -634,6 +670,57 @@ export function createSessionDiskStore(options) {
         for (let i = 0; i < lanes; i++) workers.push(worker());
         await Promise.all(workers);
         return done;
+    }
+
+    // refreshStat 刷新会话正文的磁盘基线；交接协议比较它判断“另一个窗口写过”。
+    async function refreshStat(session) {
+        if (!session || !session.id || !backend.AISessionStat) return null;
+        try {
+            session._logStat = await backend.AISessionStat(session.id) || null;
+        } catch (e) {
+            session._logStat = null;
+        }
+        return session._logStat;
+    }
+
+    // reloadSession 在拿到回合租约、发现日志 stat 与内存基线不一致时整份重放。
+    // 不能只追加：retry/edit 的 truncate 依赖 _mids 与磁盘一致，旧前缀会截掉
+    // 另一个窗口已经提交的消息。
+    async function reloadSession(session) {
+        if (!session || !session.id) return false;
+        requireBackend();
+        const bodyText = await backend.AISessionRead(session.id);
+        const replay = replaySessionLog(bodyText);
+        const normalize = typeof options.normalizeMessage === 'function' ? options.normalizeMessage : null;
+        const messages = normalize ? replay.messages.map(normalize).filter(Boolean) : replay.messages;
+        session.messages = messages;
+        session.archived = replay.archived || [];
+        if (replay.summary) session.summary = replay.summary;
+        session._recovered = messages.some((message) => message && message._recovered);
+        // 归一化可能丢掉无效消息，_mids 必须按归一化后的顺序重建。
+        session._mids = messages.map((message) => textOf(message && message._mid));
+        session._archivedMids = session.archived.map((message) => textOf(message && message._mid));
+        resetFingerprints(session, messages);
+        session._logMeta = {title: textOf(session.title), workspace: textOf(session.workspace)};
+        session._logCreated = !!replay.header;
+        session._needsRewrite = !!session._recovered || messages.length !== replay.messages.length;
+        session._metaSig = metaSignature(buildSessionMeta(session));
+        session._loadError = '';
+        delete session._stub;
+        delete session._msgCount;
+        delete session._archivedCount;
+        await hydrateImages(session);
+        await refreshStat(session);
+        return true;
+    }
+
+    // sameLogStat 供交接协议比较 AISessionStat 与内存基线。
+    function sameLogStat(a, b) {
+        const left = a || {};
+        const right = b || {};
+        return !!left.exists === !!right.exists
+            && Number(left.mtimeMs) === Number(right.mtimeMs)
+            && Number(left.size) === Number(right.size);
     }
 
     async function hydrateImages(session) {
@@ -698,6 +785,10 @@ export function createSessionDiskStore(options) {
         removeSession,
         removeAll,
         flush,
+        whenIdle,
+        refreshStat,
+        reloadSession,
+        sameLogStat,
         hydrateImages,
         newMid,
     };

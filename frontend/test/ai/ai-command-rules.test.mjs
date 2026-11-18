@@ -10,6 +10,8 @@ import {
     gitFlowSafeCommand,
     matchCommandRule,
     splitCommandSegments,
+    shellScriptPolicy,
+    SHELL_VALUES,
 } from '../../src/ai/ai-command-rules.js';
 
 test('同类签名：白名单开发命令', () => {
@@ -493,4 +495,80 @@ test('Git 流程豁免：隔离 worktree cwd 内令牌豁免失效（回退逐�
     assert.equal(gitFlowSafeCommand('git commit -m "x"', root, 'D:/repo/.cadt/worktree-x'), true);
     // 大小写 / 反斜杠归一
     assert.equal(gitFlowSafeCommand('git commit -m "x"', root, 'D:/REPO/.CADT/WORKTREE/demo'), false);
+});
+
+// 显式 shell（run_command / background_command 的 shell 入参）分三层判定：
+// ① 脚本特征表命中 → 单次确认；② 端侧分类器只拦不放；③ AI 分类器决定能否放行。
+// 这里锁住 ①：破坏脚本必须确定性拦住，只读脚本必须留给分类器（否则白名单外一律打扰）。
+test('显式 shell：gitbash / 空串不进脚本分支（旧语义零变化）', () => {
+    for (const shell of ['', '  ', null, undefined, 'gitbash', 'GitBash']) {
+        const policy = shellScriptPolicy(shell, 'rm -rf /');
+        assert.equal(policy.script, false, String(shell));
+        assert.equal(policy.danger, null, String(shell));
+    }
+});
+
+test('PowerShell 只读脚本不判危险（交分类器），破坏脚本确定性拦截', () => {
+    const safe = [
+        'Get-ChildItem -Recurse -Depth 1 .',
+        'Get-NetTCPConnection -LocalPort 11437 | Select-Object LocalAddress,LocalPort,State',
+        'Get-Process | Select-Object -First 5',
+        'Get-Content .\\a.txt -TotalCount 20',
+        'Get-ChildItem .\\src | Format-Table -AutoSize',
+        'Test-Path C:\\work',
+        // 截图现场那条：变量 + 分号 + if 块，属于只读查询
+        '$c=Get-NetTCPConnection -LocalPort 11437 -ErrorAction SilentlyContinue\nif($c){$c | Format-Table -AutoSize}',
+    ];
+    for (const command of safe) {
+        const policy = shellScriptPolicy('pwsh', command);
+        assert.equal(policy.script, true, command);
+        assert.equal(policy.danger, null, command + '：不该判危险（应交给分类器）');
+    }
+
+    const danger = [
+        ['Remove-Item -Recurse -Force .\\build', 'ps-file-delete'],
+        ['ri -r -fo .\\build', 'ps-file-delete'],
+        ['Get-ChildItem -Recurse | Remove-Item -Force', 'ps-file-delete'],
+        ['Where-Object { Remove-Item $_ }', 'ps-file-delete'],
+        ['Set-Content out.txt "x"', 'ps-file-write'],
+        ['Add-Content log.txt x', 'ps-file-write'],
+        ['"x" > out.txt', 'ps-file-write'],
+        ['Get-Process | Out-File p.txt', 'ps-file-write'],
+        ['iex (Get-Content x)', 'ps-code-exec'],
+        ['Invoke-Expression $c', 'ps-code-exec'],
+        ['Start-Process notepad', 'ps-code-exec'],
+        ['Stop-Process -Id 1234', 'ps-code-exec'],
+        ['& "C:\\x\\run.exe"', 'ps-code-exec'],
+        ['. .\\profile.ps1', 'ps-code-exec'],
+        ['Stop-Service wuauserv', 'ps-persistence'],
+        ['sc.exe delete wuauserv', 'ps-persistence'],
+        ['Set-Acl .\\x $acl', 'ps-persistence'],
+        ['New-LocalUser -Name x', 'ps-persistence'],
+        ['Clear-EventLog -LogName System', 'forensics-clear'],
+        ['Start-Transcript -Path t.txt', 'ps-file-write'],
+        ['reg delete HKCU\\Software\\X /f', 'ps-persistence'],
+        ['Format-Volume -DriveLetter D', 'disk-destructive'],
+        ['Set-ExecutionPolicy Bypass', 'security-disable'],
+        ['Restart-Computer', 'shutdown'],
+        ['[IO.File]::WriteAllText("a.txt","x")', 'ps-reflection'],
+        ['Add-Type -TypeDefinition $code', 'ps-reflection'],
+    ];
+    for (const [command, ruleId] of danger) {
+        const policy = shellScriptPolicy('pwsh', command);
+        assert.equal(policy.script, true, command);
+        assert.ok(policy.danger && policy.danger.dangerous, command + '：应判危险');
+        assert.equal(policy.danger.ruleId, ruleId, command);
+    }
+
+    // cmd 档复用既有 argv 级规则（语义贴近 bash），不套 PowerShell 特征表
+    assert.equal(shellScriptPolicy('cmd', 'dir /b').danger, null);
+    assert.equal(shellScriptPolicy('cmd', 'del /s /q build').danger.ruleId, 'del-force');
+});
+
+test('显式 shell 取值清单与审批口径一致', () => {
+    assert.deepEqual([...SHELL_VALUES].sort(), ['cmd', 'gitbash', 'powershell', 'pwsh']);
+    // gitbash 之外的每个可取值都必须进脚本分支（否则有一条 shell 能绕过脚本判定）
+    for (const shell of SHELL_VALUES) {
+        assert.equal(shellScriptPolicy(shell, 'Get-ChildItem').script, shell !== 'gitbash', shell);
+    }
 });

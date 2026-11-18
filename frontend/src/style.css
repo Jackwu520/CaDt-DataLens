@@ -10902,6 +10902,26 @@ html[data-writing="on"][data-writing-paper="dim"] .jsoneditor textarea.jsonedito
 .memo-seg-btn.active { background: var(--hover); color: var(--text); }
 .memo-summary { flex: none; font-size: 12px; color: var(--muted); }
 .memo-top-spacer { flex: 1; }
+.memo-readonly-banner {
+    flex: none;
+    padding: 6px 12px;
+    font-size: 12px;
+    color: var(--muted);
+    background: var(--panel2);
+    border-bottom: 1px solid var(--border);
+}
+.memo-readonly .memo-quick-btn,
+.memo-readonly .memo-block-actions,
+.memo-readonly .memo-item-actions,
+.memo-readonly .memo-chev,
+.memo-readonly .memo-dot,
+.memo-readonly .memo-new-block,
+.memo-readonly .memo-thumb-del {
+    pointer-events: none;
+    opacity: .45;
+}
+.memo-readonly textarea,
+.memo-readonly input { pointer-events: none; }
 .memo-body {
     flex: 1;
     min-height: 0;
@@ -10923,8 +10943,10 @@ html[data-writing="on"][data-writing-paper="dim"] .jsoneditor textarea.jsonedito
     padding: 8px 12px;
     border-top: 1px solid var(--border);
     display: flex;
+    justify-content: space-between; /* 新建块贴左、跳转贴右 */
 }
 .memo-block {
+    flex: none; /* 块按内容自然撑高，别在 .memo-body 的 column flex 里被压缩裁切 */
     border: 1px solid var(--border);
     border-radius: 10px;
     background: var(--panel);
@@ -10984,7 +11006,7 @@ html[data-writing="on"][data-writing-paper="dim"] .jsoneditor textarea.jsonedito
 }
 .memo-btn:hover { background: var(--hover); color: var(--text); }
 .memo-block-items { display: flex; flex-direction: column; padding: 2px 6px 8px; gap: 2px; }
-.memo-item { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px; padding: 5px 6px; border-radius: 7px; }
+.memo-item { position: relative; display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px; padding: 5px 6px; border-radius: 7px; }
 .memo-item:hover { background: var(--hover); }
 .memo-dot {
     flex: none;
@@ -11011,6 +11033,39 @@ html[data-writing="on"][data-writing-paper="dim"] .jsoneditor textarea.jsonedito
 }
 .memo-item-text.empty { color: var(--muted); font-style: italic; }
 .memo-item.st-completed .memo-item-text { color: var(--muted); text-decoration: line-through; }
+/* 超长条目默认折叠：超过 1 个视窗高度时只显示一屏 + 尾部渐隐，点「展开全文」看完整内容 */
+.memo-item-text.memo-item-foldable.folded {
+    max-height: var(--memo-fold-h, 600px);
+    overflow: hidden;
+    -webkit-mask-image: linear-gradient(to bottom, #000 88%, transparent 100%);
+    mask-image: linear-gradient(to bottom, #000 88%, transparent 100%);
+}
+.memo-item-fold-btn {
+    position: absolute;
+    left: 22px;
+    bottom: 6px;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 8px;
+    border: 1px solid var(--border);
+    background: var(--panel2);
+    color: var(--accent);
+    font: inherit;
+    font-size: 11.5px;
+    line-height: 1.4;
+    cursor: pointer;
+    border-radius: 6px;
+    box-shadow: 0 2px 8px var(--shadow, rgba(0,0,0,.4));
+}
+.memo-item-fold-btn:hover { background: color-mix(in srgb, var(--accent) 14%, var(--panel2)); }
+.memo-item-fold-btn svg { flex: none; display: block; }
+/* 展开后按钮回到文本流末尾（不再是浮层），避免遮挡全文 */
+.memo-item-text.memo-item-foldable:not(.folded) + .memo-item-fold-btn {
+    position: static;
+    margin: 2px 0 0 22px;
+    box-shadow: none;
+}
 .memo-item-thumbs {
     flex-basis: 100%;
     display: flex;

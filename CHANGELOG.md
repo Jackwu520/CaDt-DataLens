@@ -4,6 +4,22 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 
 ## 未发布
 
+### 新功能（AI 命令 · 可选 shell / 脚本审批三层）
+
+- **`run_command` / `background_command` 新增 `shell` 参数**（`gitbash` / `pwsh` / `powershell` / `cmd`）：缺省行为不变（Git Bash → PowerShell 7 → Windows PowerShell → cmd）；显式指定后命令直接交给该 shell，不再经 bash——修掉「在默认 Git Bash 档里写 `powershell -Command "…"` 时，双引号内的 `$变量` / `$_` 被 bash 先展开、PowerShell 收到残缺脚本」的老问题。本机没装指定 shell 时直接报错、不静默回退（静默回退正是「以为在 bash 其实不是」的来源）；子代理的沙箱档请求 Git Bash 也明确报错（Cygwin 在受限令牌下起不来）。Go 侧 `aiShellInvocation` 与四个绑定加尾参，命令卡片与审批卡如实显示 shell 名。
+- **脚本档审批三层**：① 新增 PowerShell 破坏特征表（`ai-command-rules.js` 的 `psScriptDanger`）**全文**扫描——删除 / 移动 / 改名、写文件与重定向、`iex` / 调用操作符 `&` / 点源、服务·计划任务·注册表·账户·ACL、磁盘、反射（`[IO.*]`、`[System.*]`、`Add-Type`）、关机、日志清理，含 `ri` / `gci` / `sc` / `-OutFile` 等别名与简写，命中即单次确认；② 端侧分类器对脚本**只拦不放**（判「安全」也不放行，且不把它的结论注入 AI 提示词）；③ AI 分类器 `allow` 才自动执行，未开启则转人工。默认档（不传 `shell`）行为零变化，只读判定 / 会话授权 / 命令族 / Git 快捷豁免在脚本档一律不作数（否则等于用新参数开降级审批的后门）。
+- 同步：工具描述（`run_command` / `background_command`）、系统提示词守则（改用 `shell="pwsh"` 而不是拼 `powershell -Command`，环境变量说明补 PowerShell 的 `$env:名称`）、README 对应小节。护栏：`ai-command-rules.test.mjs` 钉住 24 条破坏样本与只读样本的误报基线，Go 侧 `TestAIRunShellCommandExplicitShellKeepsDollar` 覆盖多行 + 双引号 + `$变量` 原样送达。
+
+### 新功能（多实例同步 · 资源写权租约）
+
+- **新包 `internal/resourcelease`**：跨进程写权租约——per-key refcount（同进程面板 + AI 工具 + 后台任务不会自锁）、共享/独占模式、`owner` 提示文件、`Probe`、`AcquireNoShare`（删除/清理用，本进程有任何 ref 也拒绝）。底层复用 `internal/sessionlock`，并补了 `TryLockFile` / `TryLockFileShared` / `ErrLocked`；锁文件放在被保护目录**之外**，目录被删除/移动/回收不会出现“新目录新锁文件”的双写者。
+- **快捷便签改为单写者**：打开面板即取写权，第二个窗口只读并在顶部显示“另一窗口正在编辑（PID）”；关闭编辑窗口的面板后，另一窗口在 focus/watch 时自动接管并重读。全局便签新增目录 watch；`memo.Save` / `SaveImage` 在 Go 侧也做同一把锁兜底，AI 的 `add_memo` / `update_memo` / `remove_memo` 在面板未持锁时用短租约、拿不到就报忙。mtime CAS 保留为外部手改/异常路径的兜底；`SaveResult.Busy` 与 `Conflict` 分开，busy 不再删缓存丢本窗口内容。
+- **AI 会话改为回合锁**：同一会话同时只允许一个回合（根门闩共享 + 会话独占）；打开/阅读不受限，第二个窗口发送会明确提示“另一窗口运行中”。新回合拿锁后按日志 `{mtime,size}` 做交接检查，另一个窗口写过就**先整份重读再改内存**，避免 retry/edit 的 truncate 截掉对方消息；终态写盘（`whenIdle`）完成后才释放，失败则保持锁并提示。
+- **写路径兜底与清理保护**：`sessionstore` 的 append/rewrite/meta/图片/视频写路径统一取“根共享 + 会话独占”短租约；`persistSessions` 的扇出写遇到别的窗口正在跑的会话会跳过而不是覆盖。`AISessionDelete` / `AISessionDeleteAll` / 存储清理 `ai-sessions` / `memo` / `ws-memo` 都先取对应门闩，busy 时拒绝清理；存储清理通过注入钩子接入，不改 `internal/storage` 的条目表。
+- **刷新**：新增 `resource-changed` 事件与 `internal/watch.ResourceWatcher`；全局便签 watch、当前 AI 会话目录 watch（流式消息不落盘，租约空闲后重读），watch 到的会话变更同时异步给派生搜索索引标脏。
+- **行为变化**：多窗口下不再允许两个窗口同时写同一份便签；同一会话不再允许两个窗口同时跑回合。单窗口行为不变。实现与边界见 `docs/unfinished-plans/multi-instance-sync.md`。
+- **验证**：Go 全量测试、前端 1397 项测试、Vite 构建、linux/darwin 交叉编译全部通过；新增 resourcelease / sessionstore / memo / storage 的租约与门闩测试。
+
 ### 修复（子代理 · 孤儿结论投递 / 预算继承 / 默认轮次）
 
 - **孤儿接管**：父代理走到终态（done / error / stopped）仍不级联停下级（done 的下级结论可能还有价值，agent_stop 才显式级联），但终态时会把仍在运行的直属下级**改挂到最近的运行中祖先**（祖父，收件箱投递可达）；没有运行中祖先就改挂根会话（信箱投递可达），孙代理随直属下级自然保持成树。接管时 flash 一条提示（「N 个运行中的下级改由『X』接管」）。此前 bug-hunt 实测：层3 子代理轮次耗尽自动 done 后，它派出的三个层4 后台子代理结算时 `deliverToParent` 两头落空（父不在运行表、子代理会话不进 sessions 表），四条「结论未能投递」flash、结论就地蒸发。`deliverToParent` 另加兜底：父 id 不在 sessions 表且未被接管时，按终态记录回落 `rootSessionId` 投根会话信箱。结算/提问通知的 tool 卡片刷新加归属校验（孤儿改挂后 `indexOf` 落空会退化成整屏重渲染）。护栏 `ai-subagent-sandbox.test.mjs` P14。

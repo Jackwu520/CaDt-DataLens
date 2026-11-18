@@ -545,6 +545,11 @@ export const DANGER_LABELS = {
     'git-update-ref-delete': '删除 Git 引用（update-ref -d）',
     'robocopy-mirror': '镜像目录（会删除目标端多余文件）',
     'interpreter-inline-code': '解释器内联代码执行（-e / -c / -Command）',
+    'ps-file-delete': '删除 / 移动 / 改名文件（PowerShell）',
+    'ps-file-write': '写入或覆盖文件（PowerShell）',
+    'ps-code-exec': '动态执行代码 / 启动或终止进程（PowerShell）',
+    'ps-persistence': '修改服务 / 计划任务 / 注册表 / 账户（PowerShell）',
+    'ps-reflection': '反射调用 .NET 类型（PowerShell）',
     'secret-env-exposure': '环境变量值泄漏（软件存储的密钥类变量）',
 };
 
@@ -750,6 +755,97 @@ export function analyzeDangerousCommand(command) {
         }
     }
     return {dangerous: false, ruleId: '', label: ''};
+}
+
+// ---------- 显式 shell（run_command / background_command 的 shell 入参） ----------
+//
+// 指定 shell 后，command 正文是那个 shell 的脚本语言，argv 级的只读 / 危险分析看不见内容
+// （与「解释器 + 内联代码」同理，见 isInterpreterInlineCode）。分三层判定：
+//
+//   1) 本模块的 psScriptDanger：**全文**扫已知破坏特征（含 PowerShell 别名），命中即单次确认，
+//      不问分类器。这一层要确定性——误报只多一次点击，漏报是事故。
+//   2) 端侧分类器：只拦不放（训练语料里 PowerShell 安全样本极薄、别名又追不全，
+//      见 ai-panel.js 的 shellPolicy.script 分支）。
+//   3) AI 分类器：真正决定「只读脚本能不能免点」，它认识 ri / gci / sc 这些别名。
+//
+// 除 gitbash 外一律按脚本处理：不套会话 / 命令族授权、不走 Git 快捷豁免，否则等于用新参数
+// 开了一条降级审批的后门。缺省（空串）与 gitbash 不进这个分支：自动档就是本机 bash。
+export const SHELL_VALUES = ['gitbash', 'pwsh', 'powershell', 'cmd'];
+
+// 语句起始位置（行首 / 空白 / 分号 / 管道 / 脚本块 / 子表达式之后）——避免子串误判
+// （`-Recurse` 里的 rd、`Format-Table` 里的 format 都不能算破坏命令）。
+const PS_STMT = '(^|[\\s;|{(&])';
+// 末尾用 (?![\w.-]) 而不是 \b：`format` 不能匹配 `format-table`、`sc` 不能匹配 `sc.exe`
+// （后者是服务控制器，单独列进持久化规则）、`reg` 不能匹配 `reg.exe`。
+function psNames(names) {
+    return new RegExp(PS_STMT + ' *(' + names.join('|') + ')(?![\\w.-])', 'i');
+}
+
+// 危险特征表：顺序即优先级，先命中先报（标签越具体越好）。
+const PS_DANGER_RULES = [
+    // 删除 / 移动 / 改名 / 清空内容（含 cmd 同名命令与 PowerShell 别名）
+    [psNames(['remove-item', 'ri', 'rm', 'rmdir', 'rd', 'del', 'erase', 'move-item', 'mv', 'move',
+        'rename-item', 'ren', 'clear-content', 'clc']), 'ps-file-delete'],
+    // 写文件 / 覆盖内容（含别名 sc / ac / ni / si / sp / rp 与 cmd 同名 copy / mkdir）
+    [psNames(['set-content', 'sc', 'add-content', 'ac', 'out-file', 'tee-object', 'export-csv', 'export-clixml',
+        'new-item', 'ni', 'set-item', 'si', 'set-itemproperty', 'sp', 'new-itemproperty', 'remove-itemproperty', 'rp',
+        'copy-item', 'copy', 'cpi', 'mkdir', 'md', 'start-transcript']), 'ps-file-write'],
+    // 重定向写盘（> / >> / 2> / *>）：PowerShell 里 > 是重定向，不是比较运算
+    [/[0-9*]?>>?/, 'ps-file-write'],
+    // 下载落地到文件
+    [/\s-outfile\b/i, 'download-exec'],
+    // 动态执行 / 启动或终止进程
+    [psNames(['invoke-expression', 'iex', 'invoke-command', 'icm', 'start-process', 'saps', 'stop-process', 'kill',
+        'spps', 'start-job', 'sajb', 'debug-process']), 'ps-code-exec'],
+    // 调用操作符 & 与点源 .（两者都能执行任意命令）。`.` 后面必须跟空白再接路径
+    // （`. .\profile.ps1`）——`.\src` 这种相对路径参数因此不会被误判。
+    [new RegExp(PS_STMT + ' *&'), 'ps-code-exec'],
+    [new RegExp(PS_STMT + ' *\\.\\s+[\\w$@\'"\\\\./]'), 'ps-code-exec'],
+    // 服务 / 计划任务 / 注册表 / 账户 / 权限 / 日志
+    [psNames(['set-service', 'new-service', 'remove-service', 'stop-service', 'start-service', 'restart-service',
+        'suspend-service', 'resume-service', 'sc.exe', 'schtasks', 'register-scheduledtask',
+        'new-scheduledtaskaction', 'unregister-scheduledtask', 'reg', 'reg.exe', 'wevtutil', 'vssadmin',
+        'bcdedit', 'set-acl', 'takeown', 'icacls', 'new-localuser', 'remove-localuser',
+        'add-localgroupmember', 'remove-localgroupmember']), 'ps-persistence'],
+    [psNames(['clear-eventlog']), 'forensics-clear'],
+    [/\bnet\s+(user|localgroup|share|stop|start|session)\b/i, 'persistence'],
+    // 磁盘 / 分区（format 后不能跟 -，否则 Format-Table 会误报）
+    [psNames(['format-volume', 'format', 'clear-disk', 'initialize-disk', 'remove-partition', 'new-partition',
+        'resize-partition', 'set-disk', 'diskpart']), 'disk-destructive'],
+    // 安全基线 / 关机 / 凭据
+    [/\b(set|add)-mppreference\b|set-executionpolicy/i, 'security-disable'],
+    [psNames(['stop-computer', 'restart-computer', 'shutdown']), 'shutdown'],
+    [/mimikatz/i, 'credential-dump'],
+    // 反射 / 动态类型：唯一能绕开 cmdlet 名检测的路径（[IO.File]::WriteAllText / Add-Type 编译执行）
+    [/\[\s*(io|system|microsoft)\./i, 'ps-reflection'],
+    [/\badd-type\b/i, 'ps-reflection'],
+];
+
+/**
+ * PowerShell 脚本的危险特征扫描（**全文**，不依赖分段）：破坏力常藏在管道、脚本块与别名里
+ * （`gci -r | ri -fo`、`Where-Object { Remove-Item $_ }`），只看段首会漏。
+ * 未命中不代表安全，只表示「没有已知破坏特征」——由分类器复核。
+ */
+export function psScriptDanger(command) {
+    const text = commandText(command);
+    if (!text) return {dangerous: false, ruleId: '', label: ''};
+    for (const [pattern, ruleId] of PS_DANGER_RULES) {
+        if (pattern.test(text)) return {dangerous: true, ruleId, label: DANGER_LABELS[ruleId] || ruleId};
+    }
+    return {dangerous: false, ruleId: '', label: ''};
+}
+
+/**
+ * 显式 shell 的审批口径。
+ * - script=true：命令是目标 shell 的脚本，只读 / 会话 / 命令族 / Git 豁免全部作废；
+ * - danger=null：没有已知破坏特征，交给分类器（端侧只拦不放，AI 分类器才可放行）。
+ */
+export function shellScriptPolicy(shell, command) {
+    const value = String(shell || '').trim().toLowerCase();
+    if (!value || value === 'gitbash') return {script: false, danger: null};
+    // cmd 与 bash 同属 argv 风格，复用现有危险规则；PowerShell 走脚本特征扫描。
+    const danger = value === 'cmd' ? analyzeDangerousCommand(command) : psScriptDanger(command);
+    return {script: true, danger: danger.dangerous ? danger : null};
 }
 
 // ---------- 环境变量值泄漏（作者拍板口径，2026-11-16） ----------

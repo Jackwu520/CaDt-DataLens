@@ -12,7 +12,10 @@ import (
 )
 
 func TestAIShellPriority(t *testing.T) {
-	shell, exe, args := aiShellInvocation("echo hi", false)
+	shell, exe, args, err := aiShellInvocation("echo hi", "", false)
+	if err != nil {
+		t.Fatalf("自动选择不应报错: %v", err)
+	}
 	switch {
 	case shellpath.FindGitBash() != "":
 		if shell != "Git Bash" || !strings.Contains(strings.ToLower(exe), "bash") {
@@ -32,9 +35,81 @@ func TestAIShellPriority(t *testing.T) {
 	}
 }
 
+// 显式 shell 优先于自动优先级；不可用的 shell 必须报错——静默回退会让人以为命令
+// 跑在别的语言环境里（「在 Git Bash 里写 powershell -Command」那类坑就是这么来的）。
+func TestAIShellExplicitSelection(t *testing.T) {
+	if shellpath.FindPwsh() != "" {
+		name, exe, args, err := aiShellInvocation("Get-Date", "pwsh", false)
+		if err != nil {
+			t.Fatalf("显式 pwsh 应成功: %v", err)
+		}
+		if name != "PowerShell 7" || !strings.Contains(strings.ToLower(exe), "pwsh") {
+			t.Fatalf("显式 pwsh 选错 shell: %s (%s)", name, exe)
+		}
+		if len(args) < 2 || args[len(args)-2] != "-Command" {
+			t.Fatalf("PowerShell 参数异常: %v", args)
+		}
+		if shellpath.FindGitBash() != "" {
+			// 本机同时有 Git Bash：显式指定必须压过它，否则等于没指定
+			shell, bashExe, _, _ := aiShellInvocation("echo hi", "", false)
+			if shell != "Git Bash" {
+				t.Fatalf("前提不成立：自动档应优先 Git Bash，实际 %s (%s)", shell, bashExe)
+			}
+		}
+	} else {
+		if _, _, _, err := aiShellInvocation("Get-Date", "pwsh", false); err == nil {
+			t.Fatal("本机没有 pwsh 时应报错，而不是回退到别的 shell")
+		}
+	}
+
+	if _, _, _, err := aiShellInvocation("echo hi", "zsh", false); err == nil {
+		t.Fatal("未知 shell 应被拒绝")
+	}
+	if shellpath.FindGitBash() != "" {
+		name, _, _, err := aiShellInvocation("echo hi", "gitbash", false)
+		if err != nil || name != "Git Bash" {
+			t.Fatalf("显式 gitbash 应成功: %s err=%v", name, err)
+		}
+	}
+	// 沙箱档永不允许 Git Bash（受限令牌下 Cygwin 起不来）：显式请求也只能报错，
+	// 不允许悄悄换一个 shell 继续跑。
+	if _, _, _, err := aiShellInvocation("echo hi", "gitbash", true); err == nil {
+		t.Fatal("沙箱档请求 Git Bash 应报错")
+	}
+	if _, _, _, err := aiShellInvocation("echo hi", "cmd", true); err != nil {
+		t.Fatalf("沙箱档 cmd 应可用: %v", err)
+	}
+}
+
+// 回归用例（Clipboard_Screenshot 那个现场）：显式 PowerShell 时命令里的 `$c` / `$_`
+// 必须原样到达 PowerShell。走默认的 Git Bash 档时 `$c` 会被 bash 先展开成空串，
+// PowerShell 只会收到残缺脚本——这就是要 shell 参数的原因。
+func TestAIRunShellCommandExplicitShellKeepsDollar(t *testing.T) {
+	if shellpath.FindPwsh() == "" && findExe("powershell.exe") == "" {
+		t.Skip("本机没有 PowerShell")
+	}
+	shell := "pwsh"
+	if shellpath.FindPwsh() == "" {
+		shell = "powershell"
+	}
+	app := &Bridge{}
+	// 多行 + 双引号字符串 + $变量：三者同时覆盖「argv 单参数传递」是否会被二次转义破坏
+	script := "$c = 41\nWrite-Output ('DOLLAR_OK_' + ($c + 1))\nWrite-Output \"QUOTE_OK\""
+	res, err := app.AIRunShellCommand(script, "", 30000, "", shell)
+	if err != nil {
+		t.Fatalf("执行失败: %v", err)
+	}
+	if res.Code != 0 || !strings.Contains(res.Stdout, "DOLLAR_OK_42") || !strings.Contains(res.Stdout, "QUOTE_OK") {
+		t.Fatalf("脚本未原样送达（被外层 shell 展开或引号被破坏？）code=%d stdout=%q stderr=%q", res.Code, res.Stdout, res.Stderr)
+	}
+	if strings.Contains(strings.ToLower(res.Exe), "bash") {
+		t.Fatalf("显式 %s 却走了 Git Bash: %s", shell, res.Exe)
+	}
+}
+
 func TestAIRunShellCommandEcho(t *testing.T) {
 	app := &Bridge{}
-	res, err := app.AIRunShellCommand("echo CADT_AI_CMD_OK_9137", "", 20000, "")
+	res, err := app.AIRunShellCommand("echo CADT_AI_CMD_OK_9137", "", 20000, "", "")
 	if err != nil {
 		t.Fatalf("执行失败: %v", err)
 	}
@@ -51,10 +126,10 @@ func TestAIRunShellCommandEcho(t *testing.T) {
 
 func TestAIRunShellCommandValidation(t *testing.T) {
 	app := &Bridge{}
-	if _, err := app.AIRunShellCommand("   ", "", 0, ""); err == nil {
+	if _, err := app.AIRunShellCommand("   ", "", 0, "", ""); err == nil {
 		t.Fatal("空命令应被拒绝")
 	}
-	if _, err := app.AIRunShellCommand("echo hi", `C:\__cadt_missing_dir__`, 0, ""); err == nil {
+	if _, err := app.AIRunShellCommand("echo hi", `C:\__cadt_missing_dir__`, 0, "", ""); err == nil {
 		t.Fatal("不存在的 cwd 应被拒绝")
 	}
 }
@@ -64,7 +139,7 @@ func TestAIRunShellCommandStopByRunID(t *testing.T) {
 	app := &Bridge{}
 	done := make(chan error, 1)
 	go func() {
-		_, err := app.AIRunShellCommand("ping -n 30 127.0.0.1", "", 60000, "test-run-stop-1")
+		_, err := app.AIRunShellCommand("ping -n 30 127.0.0.1", "", 60000, "test-run-stop-1", "")
 		done <- err
 	}()
 	time.Sleep(300 * time.Millisecond)
@@ -83,7 +158,7 @@ func TestAIRunShellCommandStopByRunID(t *testing.T) {
 
 func TestAICommandStartStatusStop(t *testing.T) {
 	app := &Bridge{}
-	started, err := app.AICommandStart("echo CADT_BG_OK_6211", "")
+	started, err := app.AICommandStart("echo CADT_BG_OK_6211", "", "")
 	if err != nil {
 		t.Fatalf("启动失败: %v", err)
 	}
@@ -123,13 +198,13 @@ func TestAICommandStartStatusStop(t *testing.T) {
 }
 
 func TestAICommandStopRunning(t *testing.T) {
-	shell, _, _ := aiShellInvocation("", false)
+	shell, _, _, _ := aiShellInvocation("", "", false)
 	if shell != "Git Bash" {
 		t.Skipf("停止用例依赖 Git Bash（read -t 无子进程、可被干净终止），当前 shell: %s", shell)
 	}
 	app := &Bridge{}
 	// 纯 bash 内建循环阻塞（无长命子进程，stdin EOF 也不影响），确保停止时仍在运行
-	started, err := app.AICommandStart("echo bg-started; for ((i=0;i<300;i++)); do sleep 0.1; done", "")
+	started, err := app.AICommandStart("echo bg-started; for ((i=0;i<300;i++)); do sleep 0.1; done", "", "")
 	if err != nil {
 		t.Fatalf("启动失败: %v", err)
 	}
@@ -148,10 +223,10 @@ func TestAICommandStopRunning(t *testing.T) {
 
 func TestAICommandStartValidation(t *testing.T) {
 	app := &Bridge{}
-	if _, err := app.AICommandStart("   ", ""); err == nil {
+	if _, err := app.AICommandStart("   ", "", ""); err == nil {
 		t.Fatal("空命令应被拒绝")
 	}
-	if _, err := app.AICommandStart("echo hi", `C:\__cadt_missing_dir__`); err == nil {
+	if _, err := app.AICommandStart("echo hi", `C:\__cadt_missing_dir__`, ""); err == nil {
 		t.Fatal("不存在的 cwd 应被拒绝")
 	}
 	if _, err := app.AICommandStatus("", 0); err == nil {
@@ -188,7 +263,7 @@ func TestAICommandStartEmitsEventPayload(t *testing.T) {
 	}
 	defer func() { Emit = prev }()
 
-	started, err := app.AICommandStart("echo CADT_BG_EVT_7701", "")
+	started, err := app.AICommandStart("echo CADT_BG_EVT_7701", "", "")
 	if err != nil {
 		t.Fatalf("启动失败: %v", err)
 	}

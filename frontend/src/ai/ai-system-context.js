@@ -66,6 +66,7 @@ export function createAISystemContext(ctx) {
                     '- edit_file 的 oldString 必须逐字复制且只出现一次；多处命中时请扩大上下文使其唯一，未命中时重新读取文件。',
                     '- 不要修改 .git 等版本库内部文件。',
                     '- 用户以「基于 worktree / 用隔离区 / 在 worktree 里开发」等措辞要求隔离开发时（这是开发环境要求，不是让你去读 worktree 方案文档）：实施的第一步先 worktree_manage(action=create) 创建隔离区，之后所有文件改动写到 <worktree> 块给出的前缀下，不要在主根直接改；用户只是讨论 worktree 方案文档本身时不要创建。',
+                    '- run_command / background_command 缺省在本机 Git Bash 里执行：需要 PowerShell 语法（cmdlet、$变量、$_）时传 shell="pwsh"（或 "powershell"），command 里直接写 PowerShell 语句——不要在默认档里拼 powershell -Command "…"，bash 会先把双引号内的 $变量 展开成空串（症状：退出码非 0、stderr 出现被吃掉变量后的残句）。shell="cmd" 同理直接写 cmd 命令。指定 shell 的脚本按脚本审批：删除 / 写文件 / iex / 改服务等破坏特征单次确认，只读脚本在自动审批档交分类器判定。',
                 ]),
                 '- 多步任务先用 todo_write 规划，并在每完成一步后更新任务状态（todo_write 是会话内进度；用户「快捷便签」面板是另一个本子，记事/改状态走 app_control 的 memo 动作，别把执行计划塞进便签）。',
                 ...(full && !planMode ? ['- 完全权限下没有审批兜底（含终端命令）：破坏性操作前先向用户说明。'] : []),
@@ -418,7 +419,7 @@ export function createAISystemContext(ctx) {
                 if (vars.length) {
                     parts.push([
                         '<env_vars>',
-                        '以下环境变量由用户在本应用中配置，值不会提供给模型；终端与 run_command 已注入它们，命令里可直接引用（Bash 用 $名称，cmd 用 %名称%）：',
+                        '以下环境变量由用户在本应用中配置，值不会提供给模型；终端与 run_command 已注入它们，命令里可直接引用（Bash 用 $名称，cmd 用 %名称%，PowerShell 用 $env:名称）：',
                         ...vars.map((v) => '- ' + v.name + (v.description ? ' — ' + v.description : '')),
                         '</env_vars>',
                     ].join('\n'));

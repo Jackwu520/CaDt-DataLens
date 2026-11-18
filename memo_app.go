@@ -23,3 +23,18 @@ func (a *App) MemoSave(scope, workspace, doc string, baseMtimeMs int64) memo.Sav
 func (a *App) MemoSaveImage(scope, workspace, dataURL string) (string, error) {
 	return memo.SaveImage(scope, workspace, dataURL)
 }
+
+// MemoLeaseAcquire 取便签写权（打开面板时调用）；busy 返回 owner，不报错。
+func (a *App) MemoLeaseAcquire(scope, workspace, label string) (memo.LeaseStatus, error) {
+	return memo.AcquireLease(scope, workspace, label)
+}
+
+// MemoLeaseRelease 释放便签写权（关闭面板/切作用域/关窗时调用）。
+func (a *App) MemoLeaseRelease(scope, workspace string) error {
+	return memo.ReleaseLease(scope, workspace)
+}
+
+// MemoLeaseStatus 探测便签写权（只读横幅/定时接管用，不用于写决策）。
+func (a *App) MemoLeaseStatus(scope, workspace string) (memo.LeaseStatus, error) {
+	return memo.LeaseStatusFor(scope, workspace)
+}

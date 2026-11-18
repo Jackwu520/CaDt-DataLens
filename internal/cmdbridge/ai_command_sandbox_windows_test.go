@@ -18,11 +18,11 @@ func TestAIShellSandboxNeverUsesGitBash(t *testing.T) {
 	if shellpath.FindGitBash() == "" {
 		t.Skip("本机没有 Git Bash，无法验证「沙箱档不选它」")
 	}
-	shell, exe, _ := aiShellInvocation("echo hi", false)
+	shell, exe, _, _ := aiShellInvocation("echo hi", "", false)
 	if shell != "Git Bash" {
 		t.Fatalf("非沙箱档应优先 Git Bash，实际 %s (%s)", shell, exe)
 	}
-	shell, exe, _ = aiShellInvocation("echo hi", true)
+	shell, exe, _, _ = aiShellInvocation("echo hi", "", true)
 	if strings.Contains(strings.ToLower(exe), "bash") || shell == "Git Bash" {
 		t.Fatalf("沙箱档仍在用 Git Bash：%s (%s)", shell, exe)
 	}
@@ -33,7 +33,7 @@ func TestAIShellSandboxNeverUsesGitBash(t *testing.T) {
 
 func TestAIRunShellCommandConfinedReadOnly(t *testing.T) {
 	app := &Bridge{}
-	res, err := app.AIRunShellCommandConfined("Write-Output SANDBOX_CMD_OK_5521", "", 30000, "", "read-only", "")
+	res, err := app.AIRunShellCommandConfined("Write-Output SANDBOX_CMD_OK_5521", "", 30000, "", "read-only", "", "")
 	if err != nil {
 		t.Fatalf("执行失败: %v", err)
 	}
@@ -60,7 +60,7 @@ func TestAIRunShellCommandConfinedWorkspaceWrite(t *testing.T) {
 	app := &Bridge{}
 
 	cmd := "Set-Content -LiteralPath '" + target + "' -Value probe"
-	res, err := app.AIRunShellCommandConfined(cmd, root, 30000, "", "workspace-write", root)
+	res, err := app.AIRunShellCommandConfined(cmd, root, 30000, "", "workspace-write", root, "")
 	if err != nil {
 		t.Fatalf("执行失败: %v", err)
 	}
@@ -87,7 +87,7 @@ func TestAIRunShellCommandConfinedDeniesOutside(t *testing.T) {
 	app := &Bridge{}
 
 	cmd := "Set-Content -LiteralPath '" + outside + "' -Value leak"
-	res, err := app.AIRunShellCommandConfined(cmd, root, 30000, "", "workspace-write", root)
+	res, err := app.AIRunShellCommandConfined(cmd, root, 30000, "", "workspace-write", root, "")
 	if err != nil {
 		// 允许把「拒绝访问」当退出失败返回，但绝不能真的写成功
 		t.Logf("命令返回错误（可接受）: %v", err)
@@ -123,7 +123,7 @@ func TestDetectSandboxDenial(t *testing.T) {
 
 func TestAIRunShellCommandConfinedBadMode(t *testing.T) {
 	app := &Bridge{}
-	if _, err := app.AIRunShellCommandConfined("echo hi", "", 5000, "", "yolo", ""); err == nil {
+	if _, err := app.AIRunShellCommandConfined("echo hi", "", 5000, "", "yolo", "", ""); err == nil {
 		t.Fatal("非法档位应报错")
 	}
 }
@@ -131,7 +131,7 @@ func TestAIRunShellCommandConfinedBadMode(t *testing.T) {
 // danger-full-access 不圈定：直接走普通链路（可能仍是 Git Bash），且不带沙箱字段。
 func TestAIRunShellCommandConfinedDangerFullAccess(t *testing.T) {
 	app := &Bridge{}
-	res, err := app.AIRunShellCommandConfined("echo FULL_ACCESS_OK", "", 30000, "", "danger-full-access", "")
+	res, err := app.AIRunShellCommandConfined("echo FULL_ACCESS_OK", "", 30000, "", "danger-full-access", "", "")
 	if err != nil {
 		t.Fatalf("执行失败: %v", err)
 	}
@@ -147,7 +147,7 @@ func TestAIRunShellCommandConfinedDangerFullAccess(t *testing.T) {
 func TestAICommandStartConfinedRunsAndReports(t *testing.T) {
 	root := t.TempDir()
 	app := &Bridge{}
-	job, err := app.AICommandStartConfined("Write-Output BG_SANDBOX_OK_7731", root, "workspace-write", root)
+	job, err := app.AICommandStartConfined("Write-Output BG_SANDBOX_OK_7731", root, "workspace-write", root, "")
 	if err != nil {
 		t.Fatalf("启动失败: %v", err)
 	}
@@ -189,7 +189,7 @@ func TestAICommandStartConfinedRunsAndReports(t *testing.T) {
 
 func TestAICommandStartConfinedBadMode(t *testing.T) {
 	app := &Bridge{}
-	if _, err := app.AICommandStartConfined("Write-Output hi", "", "yolo", ""); err == nil {
+	if _, err := app.AICommandStartConfined("Write-Output hi", "", "yolo", "", ""); err == nil {
 		t.Fatal("非法档位应报错")
 	}
 }
@@ -200,7 +200,7 @@ func TestAICommandStartConfinedMarksSandboxDenied(t *testing.T) {
 	outside := filepath.Join(os.TempDir(), "cadt-bg-denied-"+filepath.Base(root)+".txt")
 	defer os.Remove(outside)
 	app := &Bridge{}
-	job, err := app.AICommandStartConfined("Set-Content -LiteralPath '"+outside+"' -Value leak", root, "workspace-write", root)
+	job, err := app.AICommandStartConfined("Set-Content -LiteralPath '"+outside+"' -Value leak", root, "workspace-write", root, "")
 	if err != nil {
 		t.Fatalf("启动失败: %v", err)
 	}

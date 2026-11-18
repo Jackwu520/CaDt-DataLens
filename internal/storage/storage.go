@@ -71,8 +71,9 @@ type Deps struct {
 	// 孤儿判定用：登记之外的才算孤儿。nil 时隔离区条目一律不删（宁可不清，也不能把活跃
 	// 会话的草稿当孤儿清掉）。
 	KeepWorktreeNames func() []string
-	// BeforeClear 按条目 id 在删除前释放本进程句柄（派生 SQLite 开着就删不掉）。
-	BeforeClear map[string]func()
+	// BeforeClear 按条目 id 在删除前取门闩/释放本进程句柄；返回的 release 在删除后执行。
+	// 返回 error 表示资源正在使用（例如另一窗口正在编辑便签/跑会话），本轮跳过该条目。
+	BeforeClear map[string]func(workspaceRoot string) (release func(), err error)
 }
 
 // Service 是一张条目表加上宿主能力。可以安全并发调用（清除期间串行）。

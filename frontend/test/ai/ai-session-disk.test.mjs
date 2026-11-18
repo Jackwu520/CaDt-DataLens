@@ -143,3 +143,65 @@ test('hydrateSession 读失败：清占位 + 打 _loadError（等于禁止写盘
     assert.equal(writes.append, 0);
     assert.equal(writes.rewrite, 0);
 });
+
+test('sameLogStat 比较 exists/mtime/size', () => {
+    const {store} = makeStore({a: 0});
+    assert.equal(store.sameLogStat({exists: true, mtimeMs: 1, size: 2}, {exists: true, mtimeMs: 1, size: 2}), true);
+    assert.equal(store.sameLogStat({exists: true, mtimeMs: 1, size: 2}, {exists: true, mtimeMs: 2, size: 2}), false);
+    assert.equal(store.sameLogStat({exists: true, mtimeMs: 1, size: 2}, {exists: false, mtimeMs: 1, size: 2}), false);
+    assert.equal(store.sameLogStat(null, {exists: false, mtimeMs: 0, size: 0}), false, '未知基线不能当成“相同”');
+});
+
+test('whenIdle 等写队列排空后再返回成功', async () => {
+    let releaseAppend;
+    const appendGate = new Promise((resolve) => { releaseAppend = resolve; });
+    const backend = {
+        AISessionList: async () => [],
+        AISessionRead: async () => '',
+        AISessionAppend: async () => { await appendGate; },
+        AISessionRewrite: async () => {},
+        AISessionWriteMeta: async () => {},
+        AISessionDelete: async () => {},
+        AISessionStat: async () => ({exists: true, mtimeMs: 1, size: 2}),
+    };
+    const store = createSessionDiskStore({backend});
+    const session = {
+        id: 's1', title: 'T', workspace: 'D:/w',
+        messages: msgsOf(1), archived: [],
+        _mids: [], _archivedMids: [], _fps: new Map(),
+        _logCreated: true, _logMeta: {title: 'T', workspace: 'D:/w'},
+    };
+    const saved = store.persistSession(session);
+    let settled = false;
+    const idle = store.whenIdle('s1').then((res) => { settled = true; return res; });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(settled, false, '写队列未排空时 whenIdle 不应提前返回');
+    releaseAppend();
+    await saved;
+    const res = await idle;
+    assert.equal(res.ok, true);
+});
+
+test('whenIdle 带回最后一次写盘错误（enqueue 会吞错）', async () => {
+    const backend = {
+        AISessionList: async () => [],
+        AISessionRead: async () => '',
+        AISessionAppend: async () => { throw new Error('disk full'); },
+        AISessionRewrite: async () => {},
+        AISessionWriteMeta: async () => {},
+        AISessionDelete: async () => {},
+        AISessionStat: async () => ({exists: true, mtimeMs: 1, size: 2}),
+    };
+    const store = createSessionDiskStore({backend, onError: () => {}});
+    const session = {
+        id: 's1', title: 'T', workspace: 'D:/w',
+        messages: msgsOf(1), archived: [],
+        _mids: [], _archivedMids: [], _fps: new Map(),
+        _logCreated: true, _logMeta: {title: 'T', workspace: 'D:/w'},
+    };
+    const saved = store.persistSession(session);
+    const res = await store.whenIdle('s1');
+    await saved;
+    assert.equal(res.ok, false);
+    assert.match(res.error, /disk full/);
+});

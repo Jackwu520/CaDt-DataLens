@@ -212,7 +212,8 @@ export function createAIToolCards(ctx) {
         meta.className = 'ai-approval-meta';
         const label = document.createElement('span');
         label.className = 'ai-approval-path';
-        label.textContent = '终端命令';
+        // 显式指定了 shell 时如实标出来：审批的人要知道这条命令是在 bash 还是 PowerShell 里跑
+        label.textContent = approval.shell ? '终端命令 · ' + approval.shell : '终端命令';
         meta.appendChild(label);
         if (approval.cwd) {
             const cwd = document.createElement('span');

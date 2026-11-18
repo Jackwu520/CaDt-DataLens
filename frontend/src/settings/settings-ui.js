@@ -97,6 +97,7 @@ const elsSettings = {
     showBanners: document.getElementById('opt-show-banners'),
     autoSave: document.getElementById('opt-auto-save'),
     openMode: document.getElementById('opt-open-mode'),
+    closeAction: document.getElementById('opt-close-action'),
     codeStyle: document.getElementById('opt-code-style'),
     tabClose: document.getElementById('opt-tab-close'),
     dblClickClose: document.getElementById('opt-dblclick-close'),
@@ -281,6 +282,24 @@ function syncOpenMode() {
     if (deps.backend && deps.backend.SetOpenMode) {
         try {
             deps.backend.SetOpenMode(deps.settings.openMode);
+        } catch (e) {}
+    }
+}
+
+// 关闭行为（exit / tray）：判定在后端 beforeClose，所以每次变化都要推过去落盘。
+// 首次 applySettings 只记快照不推送——启动时后端已从 config.json 读到同一个值。
+let syncedCloseAction = null;
+function syncCloseAction() {
+    const value = deps.settings.closeAction === 'tray' ? 'tray' : 'exit';
+    if (syncedCloseAction === null) {
+        syncedCloseAction = value;
+        return;
+    }
+    if (syncedCloseAction === value) return;
+    syncedCloseAction = value;
+    if (deps.backend && deps.backend.SetCloseAction) {
+        try {
+            deps.backend.SetCloseAction(value);
         } catch (e) {}
     }
 }
@@ -580,6 +599,7 @@ function applySettings() {
     if (elsSettings.treeExpand) elsSettings.treeExpand.value = deps.settings.treeExpandDefault;
     elsSettings.showBanners.checked = !!deps.settings.showBanners;
     elsSettings.openMode.value = deps.settings.openMode;
+    if (elsSettings.closeAction) elsSettings.closeAction.value = deps.settings.closeAction === 'tray' ? 'tray' : 'exit';
     if (elsSettings.activityLog) elsSettings.activityLog.checked = deps.settings.activityLog !== false;
     if (elsSettings.activityRetention) elsSettings.activityRetention.value = String(deps.settings.activityRetentionMonths || 12);
     document.documentElement.dataset.tabClose = deps.settings.tabCloseMode;
@@ -587,6 +607,7 @@ function applySettings() {
     if (elsSettings.dblClickClose) elsSettings.dblClickClose.checked = !!deps.settings.dblClickClose;
     if (elsSettings.shiftClickClose) elsSettings.shiftClickClose.checked = deps.settings.shiftClickClose !== false;
     syncOpenMode();
+    syncCloseAction();
     document.documentElement.style.setProperty('--editor-font', deps.settings.editorFont + 'px');
     document.documentElement.style.setProperty('--sidebar-font', deps.settings.sidebarFont + 'px');
     const uiFace = deps.uiFonts.find((f) => f.id === deps.settings.uiFont) || deps.uiFonts[0];
@@ -664,8 +685,8 @@ async function fillAboutVersion() {
 
 function selectSettingsPane(pane) {
     searchMod.resetSettingsSearch();
-    // 新建菜单是动态行：进「通用」时重建一次，保证显隐/顺序/模板改动立刻可见
-    if (pane === 'general' && deps.newFileMenuPane && typeof deps.newFileMenuPane.renderNewFileMenuPane === 'function') {
+    // 菜单管理是动态行：进本页时重建一次，保证显隐/顺序/模板改动立刻可见
+    if (pane === 'new-file-menu' && deps.newFileMenuPane && typeof deps.newFileMenuPane.renderNewFileMenuPane === 'function') {
         deps.newFileMenuPane.renderNewFileMenuPane();
     }
     document.querySelectorAll('.snav-item').forEach((b) => b.classList.toggle('active', b.dataset.pane === pane));

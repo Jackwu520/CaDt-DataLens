@@ -5,6 +5,7 @@
 package storage
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -83,7 +84,7 @@ func (e *testEnv) newService(withRecycleBin bool) *Service {
 			return ""
 		},
 		ActiveBrowserProfiles: func() map[string]bool { return e.blocked },
-		BeforeClear:           map[string]func(){},
+		BeforeClear:           map[string]func(string) (func(), error){},
 	}
 	if withRecycleBin {
 		deps.RemoveToRecycleBin = func(path string) error {
@@ -575,5 +576,28 @@ func TestOrphanWorktreeTargets(t *testing.T) {
 	got := namesOf(svc.targetFiles(targetOfID(svc), root))
 	if strings.Join(got, ",") != "orphan" {
 		t.Fatalf("孤儿过滤不对，实际 %v", got)
+	}
+}
+
+// 清理前门闩返回 busy 时，条目必须原样保留（正在被另一窗口使用）。
+func TestClearBeforeClearBusySkips(t *testing.T) {
+	env := newTestEnv(t)
+	env.service.deps.BeforeClear["ai-sessions"] = func(string) (func(), error) {
+		return nil, errors.New("session-busy: 会话正在另一窗口运行")
+	}
+	dir := filepath.Join(env.appRoot, "ai-sessions")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "session.v1.jsonl"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	report := env.service.Clear([]string{"ai-sessions"}, "")
+	res := resultByID(t, report, "ai-sessions")
+	if !strings.Contains(res.Reason, "session-busy") {
+		t.Fatalf("应返回 busy 原因：%+v", res)
+	}
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatalf("busy 时不应删除目录：%v", err)
 	}
 }

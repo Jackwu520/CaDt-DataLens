@@ -153,7 +153,7 @@ const PROSE_TOKENS = {
     id: '返回值里的会话 / 任务标识',
     jobId: '返回值里的作业标识',
     status: '命令名（git status）与退出状态',
-    shell: '解释 shell 优先级，不是入参',
+    shell: 'run_command / background_command 已声明该入参；其余工具描述里只是解释 shell 优先级',
     cwd: '多数工具是 run_command 的参数，此处只是引用 / 归其他工具声明',
     depth: 'list_dir 的参数，glob 描述里指引去用它',
     oldString: 'edit_file 的参数，read_file 描述里提醒不要带行号',

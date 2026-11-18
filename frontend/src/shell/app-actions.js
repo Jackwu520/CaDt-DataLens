@@ -13,6 +13,13 @@ import {fileIconSpec} from '../core/fileicons.js';
 export function createAppActions(deps) {
 
 function exitApp() {
+    // 「退出」是显式退出（菜单）：走 QuitApp 绕开「最小化到托盘」——只有点 X 才是隐藏。
+    if (deps.backend && deps.backend.QuitApp) {
+        try {
+            deps.backend.QuitApp();
+            return;
+        } catch (e) {}
+    }
     if (deps.rt && deps.rt.Quit) deps.rt.Quit();
     else if (deps.rt && deps.rt.WindowClose) deps.rt.WindowClose();
     else window.close();

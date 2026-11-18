@@ -236,7 +236,8 @@ export function createAITakeover(ctx) {
         if (isCommand) {
             const cwd = document.createElement('span');
             cwd.className = 'ai-command-cwd';
-            cwd.textContent = approval.cwd || '终端命令';
+            // 显式指定 shell 时前置标出（bash / pwsh 的语言规则完全不同，审批的人要看得见）
+            cwd.textContent = (approval.shell ? approval.shell + ' · ' : '') + (approval.cwd || '终端命令');
             head.appendChild(cwd);
         } else {
             const path = document.createElement('span');

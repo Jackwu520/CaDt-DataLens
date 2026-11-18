@@ -35,3 +35,58 @@ func TestSaveReadRoundTrip(t *testing.T) {
 		t.Fatalf("config.json 未写入: %v", err)
 	}
 }
+
+func TestCloseActionDefaultAndRoundTrip(t *testing.T) {
+	t.Setenv("AppData", t.TempDir())
+	// 缺省是「直接退出」：没配置过不能把窗口藏进托盘
+	if got := CloseAction(); got != CloseActionExit {
+		t.Fatalf("默认关闭行为不符: %q", got)
+	}
+	if err := SaveCloseAction(CloseActionTray); err != nil {
+		t.Fatal(err)
+	}
+	if got := CloseAction(); got != CloseActionTray {
+		t.Fatalf("读回关闭行为不符: %q", got)
+	}
+	// 只改关闭行为不能把别的字段冲掉
+	cfg := Read()
+	cfg.OpenMode = "window"
+	cfg.DeveloperMode = true
+	if err := Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveCloseAction(CloseActionExit); err != nil {
+		t.Fatal(err)
+	}
+	back := Read()
+	if back.CloseAction != CloseActionExit || back.OpenMode != "window" || !back.DeveloperMode {
+		t.Fatalf("SaveCloseAction 丢了其它字段: %+v", back)
+	}
+}
+
+func TestNormalizeCloseAction(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"tray", CloseActionTray},
+		{"exit", CloseActionExit},
+		{"", CloseActionExit},
+		{"TRAY", CloseActionExit}, // 大小写不认：不猜用户意图，回落最安全的退出
+		{"minimize", CloseActionExit},
+	} {
+		if got := NormalizeCloseAction(tc.in); got != tc.want {
+			t.Errorf("NormalizeCloseAction(%q) = %q，期望 %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestCloseActionIgnoresBrokenStorage(t *testing.T) {
+	t.Setenv("AppData", t.TempDir())
+	if err := os.MkdirAll(filepath.Dir(Path()), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(Path(), []byte(`{"closeAction":"tray","openMode":`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := CloseAction(); got != CloseActionExit {
+		t.Fatalf("坏配置必须回落默认值，得到 %q", got)
+	}
+}

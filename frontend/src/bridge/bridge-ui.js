@@ -174,6 +174,17 @@ function openBrowserTab(url, profileKey, opts) {
             }
         } catch (e) {}
     }
+    // 关闭行为（点 X 直接退出 / 最小化到托盘）：真相在 config.json，回读一次覆盖本机
+    // localStorage，免得换了窗口或清了缓存后设置页显示与后端实际行为不一致。
+    if (deps.backend.GetCloseAction) {
+        try {
+            const action = await deps.backend.GetCloseAction();
+            if (action === 'tray' || action === 'exit') {
+                deps.settings.closeAction = action;
+                deps.applySettings();
+            }
+        } catch (e) {}
+    }
     if (deps.backend.GetPluginSources) {
         try {
             const errors = await loadPlugins(deps.backend);

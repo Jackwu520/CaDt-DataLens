@@ -6,6 +6,9 @@
 // frontend/test/ai/ai-tool-wiring.test.mjs（目录 ↔ 档位下发 ↔ executeTool 分支 ↔ 工具卡元数据 ↔ 图标注册）。
 // appControlOn（设置 → AI → 权限 → AI 工具权限开关）与 mcpToolDefs（ai-mcp.js 缓存快照）经 ctx 注入。
 import {AI_WRITE_SCOPES} from './ai-constants.js';
+// 显式 shell 的取值清单与审批口径同源：shellScriptPolicy 就按这份清单判定哪些值意味着
+// 「命令是脚本、内容不可静态分析」。Go 侧（aiShellInvocation 的 normalizeAIShell）对齐同一组名字。
+import {SHELL_VALUES} from './ai-command-rules.js';
 
 export const AI_TOOL_DEFS = {
     list_dir: {
@@ -472,25 +475,27 @@ export const AI_TOOL_DEFS = {
     },
     run_command: {
         name: 'run_command',
-        description: '在终端执行一条命令并返回退出码、stdout、stderr。shell 优先级：Git Bash → PowerShell 7 → Windows PowerShell → cmd。用于测试、构建、git 查看等；不要运行交互式或长驻命令（改用 background_command）；不要用 sleep、ping 这类命令空等凑时长——需要「过一段时间再继续」（等构建/下载/生成完成）用 start_timer 倒计时，到点自动唤醒。每条命令都在独立进程中执行、工作目录由 cwd 参数决定（默认范围根；会话开启隔离工作区时默认落在隔离区，要看主根显式传 cwd=\'.\'），cd 不会保留到后续命令，不要用 cd/pwd/echo %CD% 探测目录。输出已由工具捕获并返回，不要用重定向（>、2>&1）把测试/构建日志写进文件再读——重定向会让命令变成无法静态分析的复合命令、转人工审批；需要保留长输出用 background_command + check_command。审批：只读命令（ls/cat/grep/git status 等）在自动审批档直接执行；已知命令族（git/go/npm/pnpm/dotnet/cargo 的低风险子命令）同样自动放行；rm -rf、git reset --hard 等危险命令只单次确认；其余按项目权限规则逐条审批。完全权限免审批。',
+        description: '在终端执行一条命令并返回退出码、stdout、stderr。缺省 shell 优先级：Git Bash → PowerShell 7 → Windows PowerShell → cmd，可用 shell 参数强制指定。用于测试、构建、git 查看等；不要运行交互式或长驻命令（改用 background_command）；不要用 sleep、ping 这类命令空等凑时长——需要「过一段时间再继续」（等构建/下载/生成完成）用 start_timer 倒计时，到点自动唤醒。每条命令都在独立进程中执行、工作目录由 cwd 参数决定（默认范围根；会话开启隔离工作区时默认落在隔离区，要看主根显式传 cwd=\'.\'），cd 不会保留到后续命令，不要用 cd/pwd/echo %CD% 探测目录。输出已由工具捕获并返回，不要用重定向（>、2>&1）把测试/构建日志写进文件再读——重定向会让命令变成无法静态分析的复合命令、转人工审批；需要保留长输出用 background_command + check_command。审批：只读命令（ls/cat/grep/git status 等）在自动审批档直接执行；已知命令族（git/go/npm/pnpm/dotnet/cargo 的低风险子命令）同样自动放行；rm -rf、git reset --hard 等危险命令只单次确认；其余按项目权限规则逐条审批；指定了 shell 的命令按脚本处理——脚本里出现删除/写文件/执行代码/改服务等破坏特征直接单次确认，只读脚本在自动审批档交分类器判定（未开启分类器则逐次询问）。完全权限免审批。',
         parameters: {
             type: 'object',
             properties: {
                 command: {type: 'string', description: '要执行的完整命令'},
                 cwd: {type: 'string', description: '工作目录，默认范围根（隔离会话默认隔离区，要看主根传 .）；完全权限下可为绝对路径'},
                 timeoutMs: {type: 'integer', description: '超时毫秒，默认 60000，最大 600000；到点强杀并返回已捕获输出，长任务请用 background_command'},
+                shell: {type: 'string', enum: SHELL_VALUES, description: '执行命令的 shell：gitbash（Git Bash）/ pwsh（PowerShell 7）/ powershell（Windows PowerShell）/ cmd（命令提示符）；省略则按优先级自动选择。需要 PowerShell 语法（cmdlet、$变量、$_）时传 pwsh，command 里直接写 PowerShell 语句——不要在命令里再包一层 powershell -Command "…"，缺省档的 Git Bash 会先把双引号内的 $变量展开掉；本机没有该 shell 时直接报错，不会回退'},
             },
             required: ['command'],
         },
     },
     background_command: {
         name: 'background_command',
-        description: '在后台启动一条耗时或长驻命令（构建、watch、本地服务器、长测试），立即返回 jobId，不阻塞对话。作业结束时会收到后台通知唤醒本会话（带退出码），届时用 check_command 读最终输出并向用户汇报；中途想看进度也可以主动 check_command。需要提前终止用 stop_command。会很快结束的短命令请改用 run_command；需要持续交互（REPL、ssh）或想让用户看到现场的长驻程序改用 terminal。工作目录由 cwd 参数决定（默认范围根；隔离会话里默认隔离区，要看主根显式传 cwd=\'.\'），cd 不会保留。审批策略与 run_command 一致（启动时审批一次，查状态/停止不再审批）。',
+        description: '在后台启动一条耗时或长驻命令（构建、watch、本地服务器、长测试），立即返回 jobId，不阻塞对话。作业结束时会收到后台通知唤醒本会话（带退出码），届时用 check_command 读最终输出并向用户汇报；中途想看进度也可以主动 check_command。需要提前终止用 stop_command。会很快结束的短命令请改用 run_command；需要持续交互（REPL、ssh）或想让用户看到现场的长驻程序改用 terminal。工作目录由 cwd 参数决定（默认范围根；隔离会话里默认隔离区，要看主根显式传 cwd=\'.\'），cd 不会保留。缺省 shell 优先级与 run_command 相同（Git Bash 优先），可用 shell 参数强制指定；写 PowerShell 脚本时传 shell=\'pwsh\' 并直接写语句，不要在命令里包 powershell -Command "…"（缺省的 Git Bash 会先展开双引号里的 $变量）。审批策略与 run_command 一致（启动时审批一次，查状态/停止不再审批）。',
         parameters: {
             type: 'object',
             properties: {
                 command: {type: 'string', description: '要执行的完整命令'},
                 cwd: {type: 'string', description: '工作目录，默认范围根（隔离会话默认隔离区，要看主根传 .）；完全权限下可为绝对路径'},
+                shell: {type: 'string', enum: SHELL_VALUES, description: '执行命令的 shell：gitbash / pwsh / powershell / cmd；省略按优先级自动选择。需要 PowerShell 语法时传 pwsh，command 里直接写 PowerShell 语句；本机没有该 shell 时直接报错，不会回退'},
             },
             required: ['command'],
         },
@@ -706,6 +711,7 @@ export const AI_TOOL_DEFS = {
                 model: {type: 'string', description: '生图模型条目名或 id；省略用「生图」组里优先级最高（列表第一个启用）的条目'},
                 size: {type: 'string', description: '尺寸，如 1024x1024；省略用条目默认值'},
                 n: {type: 'integer', description: '张数 1-4，缺省 1'},
+                seed: {type: 'integer', description: '随机种子（控制复现）：不指定则软件自动随机填充，相同提示词也会出不同结果；需固定同一张图时传具体数值（条目模板须含 {{seed}} 才生效）'},
                 outputPath: {type: 'string', description: '产物保存目录（工作区相对路径）；缺省 .cadt/gen/image/按月归档'},
                 reference: {
                     type: 'array',
@@ -727,6 +733,7 @@ export const AI_TOOL_DEFS = {
                 prompt: {type: 'string', description: '视频内容描述（发给视频服务的提示词）'},
                 model: {type: 'string', description: '视频模型条目名或 id；省略用「视频」组里优先级最高（列表第一个启用）的条目'},
                 size: {type: 'string', description: '分辨率等参数（按条目模板的语义传递）；省略用条目默认值'},
+                seed: {type: 'integer', description: '随机种子（控制复现）：不指定则软件自动随机填充，相同提示词也会出不同结果；需固定同一段视频时传具体数值（条目模板须含 {{seed}} 才生效）'},
                 outputPath: {type: 'string', description: '产物保存目录（工作区相对路径）；缺省 .cadt/gen/video/按月归档'},
             },
             required: ['prompt'],

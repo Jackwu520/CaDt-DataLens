@@ -134,13 +134,16 @@ test('接线：explorer-ops 按配置合成菜单，保留只读判定并写模�
     assert.match(ops, /disabled: readOnly/);
     assert.match(ops, /deps\.backend\.SaveFile\(target, body/);
     assert.match(ops, /label: '配置菜单…'/);
-    assert.match(ops, /openSettings\('general'\)/);
+    assert.match(ops, /openSettings\('new-file-menu'\)/);
 });
 
-test('接线：设置页有容器、有渲染入口，控件走 form-controls', () => {
+test('接线：设置页有独立「菜单管理」页、容器与渲染入口，控件走 form-controls', () => {
     assert.match(html, /id="new-file-menu-settings"/);
+    // 独立导航项 + 独立 pane；容器不再嵌在通用 pane 内
+    assert.match(html, /class="snav-item" data-pane="new-file-menu"/);
+    assert.match(html, /class="settings-pane hidden" data-pane="new-file-menu"/);
     const ui = src('settings/settings-ui.js');
-    assert.match(ui, /pane === 'general' && deps\.newFileMenuPane/);
+    assert.match(ui, /pane === 'new-file-menu' && deps\.newFileMenuPane/);
     const pane = src('settings/settings-pane-new-file-menu.js');
     assert.match(pane, /from '\.\.\/core\/form-controls\.js'/);
     assert.match(pane, /createSwitch\(/);

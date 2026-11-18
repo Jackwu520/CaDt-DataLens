@@ -1,7 +1,12 @@
 // memo-store.js：快捷便签的状态层——按作用域缓存文档，统一读写与防抖保存。
 // 视图（bridge-todo-view.js）与 AI 工具（ai-panel.js）都经这里改数据：
 // mutate(fn) 改内存 doc → 1s 防抖 MemoSave（带 mtime CAS）。多窗口是多进程，
-// 冲突由 Go 侧 CAS 判定，这里收到冲突就重载磁盘版本并广播，不做合并。
+// 写权由 Go 侧 resourcelease 租约判定；冲突/忙分开处理，不做合并。
+//
+// 租约模型（docs/unfinished-plans/multi-instance-sync.md §5）：
+// - 面板打开时 acquire，持有到关闭/切作用域；只读窗口保留文档但拒绝 mutate。
+// - 没开面板的 AI 写入用短租约：变更 → 立即 flush → 释放，拿不到就报忙。
+// - busy 不清缓存（那会丢本窗口内容）；只有 mtime CAS 的 conflict 才重读磁盘。
 
 import {parseMemoDoc, defaultMemoData, collectImageRefs} from './memo-model.js';
 
@@ -16,7 +21,7 @@ const SAVE_DEBOUNCE_MS = 1000;
 // - resolveRoot(scope, workspace)：作用域根目录绝对路径（贴图 GC 定位 img/ 用），
 //   必须用缓存捕获的 workspace 而非当前值——换过工作区也要删对文件。
 export function createMemoStore(deps) {
-  // caches: key → {doc, mtimeMs, dirty, timer, scope, workspace}
+  // caches: key → {doc, mtimeMs, dirty, timer, scope, workspace, writer, readOnly, owner}
   const caches = new Map();
   const changeListeners = new Set();
   // 贴图 GC 基准：scopeKey → Set<rel>（上次成功保存/载入时的全量引用集）。
@@ -33,6 +38,16 @@ export function createMemoStore(deps) {
     return scope === 'workspace' ? normKey(ws) : '';
   }
 
+  function leaseLabel(workspace) {
+    const ws = String(workspace || '').trim();
+    return ws ? ('快捷便签 · ' + ws) : '快捷便签';
+  }
+
+  function busyMessage(owner) {
+    const pid = owner && owner.pid;
+    return '快捷便签正在另一窗口编辑' + (pid ? '（PID ' + pid + '）' : '');
+  }
+
   function notify(scope) {
     for (const fn of changeListeners) {
       try { fn(scope); } catch (e) { /* 单个订阅者出错不打断其余通知 */ }
@@ -44,30 +59,178 @@ export function createMemoStore(deps) {
     return () => changeListeners.delete(fn);
   }
 
-  // load 读盘并缓存（幂等：已缓存的直接返回，force 时重读）。
-  // 返回 {doc, scope, workspace, error?, changed?}（changed=内容与缓存不同，外部修改用）。
-  async function load(scope, opts) {
-    const workspace = resolveWorkspace(scope, opts && opts.workspace);
-    const key = scopeKey(scope, workspace);
-    const cached = caches.get(key);
-    if (cached && !(opts && opts.force)) {
-      return {doc: cached.doc, scope, workspace};
+  function hasLeaseBackend() {
+    return !!(deps.backend && typeof deps.backend.MemoLeaseAcquire === 'function');
+  }
+
+  // releaseAcquiredLease 释放一次“临时/短租约”获取的写权。
+  // 不能走 releaseLease：它按 cache.writer 判断，临时租约并不把 cache 标成 writer。
+  async function releaseAcquiredLease(scope, workspace) {
+    if (!deps.backend || typeof deps.backend.MemoLeaseRelease !== 'function') return {ok: true};
+    try {
+      await deps.backend.MemoLeaseRelease(scope, workspace);
+      return {ok: true};
+    } catch (e) {
+      return {ok: false, error: String((e && e.message) || e)};
     }
+  }
+
+  // acquireLease 调 Go 侧租约；后端缺失时按单窗口语义直接视为 acquired。
+  async function acquireLease(scope, workspace) {
+    if (!hasLeaseBackend()) return {acquired: true, owner: null};
+    try {
+      const st = await deps.backend.MemoLeaseAcquire(scope, workspace, leaseLabel(workspace));
+      if (st && st.acquired) return {acquired: true, owner: st.owner || null};
+      return {acquired: false, busy: !!(st && st.busy), owner: (st && st.owner) || null};
+    } catch (e) {
+      return {acquired: false, busy: false, error: String((e && e.message) || e)};
+    }
+  }
+
+  function resultOf(cache, extra) {
+    return Object.assign({
+      doc: cache.doc,
+      scope: cache.scope,
+      workspace: cache.workspace,
+      readOnly: !!cache.readOnly,
+      owner: cache.owner || null,
+    }, extra || {});
+  }
+
+  // readInto 读盘并写入缓存；lease 非空时用它决定 writer/readOnly。
+  async function readInto(scope, workspace, key, cached, lease) {
     let envelope;
     try {
       envelope = JSON.parse(await deps.backend.MemoLoad(scope, workspace));
     } catch (e) {
-      return {doc: defaultMemoData(), scope, workspace, error: String(e && e.message || e)};
+      return {doc: defaultMemoData(), scope, workspace, error: String((e && e.message) || e)};
     }
     const doc = parseMemoDoc(envelope.data);
     const json = JSON.stringify(doc);
     const changed = !!cached && JSON.stringify(cached.doc) !== json;
-    caches.set(key, {doc, mtimeMs: Number(envelope.mtimeMs) || 0, dirty: false, timer: cached ? cached.timer : 0, scope, workspace});
+    const entry = {
+      doc,
+      mtimeMs: Number(envelope.mtimeMs) || 0,
+      dirty: false,
+      timer: cached ? cached.timer : 0,
+      scope,
+      workspace,
+      writer: lease ? !!lease.acquired : !!(cached && cached.writer),
+      readOnly: lease ? !lease.acquired : !!(cached && cached.readOnly),
+      owner: lease ? (lease.owner || null) : (cached ? cached.owner : null),
+    };
+    caches.set(key, entry);
     // 磁盘现状就是贴图 GC 的基准：重载（冲突恢复 / 外部变更）后引用集跟着重置，
     // 别的窗口保住的图不会被我方后续保存误删
     lastSavedImageRefs.set(key, collectImageRefs(doc));
     if (changed) notify(scope);
-    return {doc, scope, workspace, changed};
+    return resultOf(entry, {changed, leaseBusy: !!(lease && lease.busy), error: lease && lease.error});
+  }
+
+  // load 读盘并缓存（幂等：已缓存且不 force 时直接返回）。
+  // opts.acquire=true：面板打开路径，读盘前先取写权；拿不到就只读加载。
+  async function load(scope, opts) {
+    const workspace = resolveWorkspace(scope, opts && opts.workspace);
+    const key = scopeKey(scope, workspace);
+    const cached = caches.get(key);
+    const wantAcquire = !!(opts && opts.acquire);
+
+    if (cached && !(opts && opts.force)) {
+      if (!wantAcquire || cached.writer) return resultOf(cached);
+      const lease = await acquireLease(scope, workspace);
+      if (!lease.acquired) {
+        cached.readOnly = true;
+        cached.owner = lease.owner || null;
+        return resultOf(cached, {leaseBusy: !!lease.busy, error: lease.error});
+      }
+      cached.writer = true;
+      cached.readOnly = false;
+      cached.owner = null;
+      const fresh = await readInto(scope, workspace, key, cached, lease);
+      if (fresh.error) {
+        // 读盘失败：把刚拿到的写权还回去，别留下“有锁无缓存”的占用。
+        const rel = await releaseLease(scope, {workspace});
+        if (!rel || rel.ok) {
+          cached.writer = false;
+          cached.readOnly = true;
+          cached.owner = null;
+        }
+      }
+      return fresh;
+    }
+
+    const lease = wantAcquire ? await acquireLease(scope, workspace) : null;
+    const res = await readInto(scope, workspace, key, cached, lease);
+    if (res.error && lease && lease.acquired) {
+      // 没有缓存可挂 writer 状态：直接释放这次获取的短租约，避免泄漏。
+      await releaseAcquiredLease(scope, workspace);
+    }
+    return res;
+  }
+
+  // retryAcquire 只读窗口在 focus/watch 时尝试接管；成功则强制重读磁盘再放开编辑。
+  async function retryAcquire(scope, opts) {
+    const workspace = resolveWorkspace(scope, opts && opts.workspace);
+    const key = scopeKey(scope, workspace);
+    const cache = caches.get(key);
+    if (!cache) return {ok: false, error: '快捷便签 未加载'};
+    if (cache.writer) return {ok: true};
+    const lease = await acquireLease(scope, workspace);
+    if (!lease.acquired) {
+      cache.readOnly = true;
+      cache.owner = lease.owner || null;
+      return {ok: false, busy: !!lease.busy, owner: cache.owner, error: lease.error};
+    }
+    cache.writer = true;
+    cache.readOnly = false;
+    cache.owner = null;
+    const fresh = await readInto(scope, workspace, key, cache, lease);
+    if (fresh.error) {
+      const rel = await releaseLease(scope, {workspace});
+      if (!rel || rel.ok) {
+        cache.writer = false;
+        cache.readOnly = true;
+        cache.owner = null;
+      }
+      return {ok: false, error: fresh.error};
+    }
+    notify(scope);
+    return {ok: true};
+  }
+
+  // releaseLease 让出写权；调用方必须先 flush 成功。release 失败时保留 writer。
+  async function releaseLease(scope, opts) {
+    const workspace = resolveWorkspace(scope, opts && opts.workspace);
+    const key = scopeKey(scope, workspace);
+    const cache = caches.get(key);
+    if (!cache || !cache.writer) return {ok: true};
+    if (deps.backend && typeof deps.backend.MemoLeaseRelease === 'function') {
+      try {
+        await deps.backend.MemoLeaseRelease(scope, workspace);
+      } catch (e) {
+        return {ok: false, error: String((e && e.message) || e)};
+      }
+    }
+    cache.writer = false;
+    cache.readOnly = false;
+    cache.owner = null;
+    return {ok: true};
+  }
+
+  // releaseAll 关窗/pagehide 兜底：flush 成功后释放本窗口持有的全部便签写权。
+  async function releaseAll() {
+    const jobs = [];
+    for (const cache of Array.from(caches.values())) {
+      if (cache.writer) jobs.push(releaseLease(cache.scope, {workspace: cache.workspace}));
+    }
+    await Promise.all(jobs);
+  }
+
+  // state 给视图渲染只读横幅/禁用控件用。
+  function state(scope) {
+    const {cache} = findCache(scope);
+    if (!cache) return {writer: false, readOnly: false, owner: null};
+    return {writer: !!cache.writer, readOnly: !!cache.readOnly, owner: cache.owner || null};
   }
 
   function cached(scope) {
@@ -81,12 +244,13 @@ export function createMemoStore(deps) {
     return {key, cache: caches.get(key)};
   }
 
-  // flush 立即保存（关面板/切作用域前调用），返回 {ok, error?, conflict?}。
+  // flush 立即保存（关面板/切作用域前调用），返回 {ok, error?, conflict?, busy?}。
   async function flush(scope) {
     const {key, cache} = findCache(scope);
     if (!cache) return {ok: true};
     if (cache.timer) { clearTimeout(cache.timer); cache.timer = 0; }
     if (!cache.dirty) return {ok: true};
+    if (!cache.writer) return {ok: false, busy: true, error: busyMessage(cache.owner)};
     cache.dirty = false;
     return saveCache(key, cache);
   }
@@ -100,10 +264,18 @@ export function createMemoStore(deps) {
         cache.dirty = true;
         return {ok: false, error: String(e && e.message || e)};
       }
+      if (res && res.busy) {
+        // 写权在另一窗口：保留缓存与 dirty，不能走 conflict 的“删缓存重载”路径。
+        cache.dirty = true;
+        cache.writer = false;
+        cache.readOnly = true;
+        cache.owner = null;
+        return {ok: false, busy: true, error: res.error || busyMessage(null)};
+      }
       if (res && res.conflict) {
         // 别的窗口先写了：放弃本次缓存，重读磁盘版本并广播（刷新所有打开的面板）
         caches.delete(key);
-        const fresh = await load(cache.scope, {workspace: cache.workspace, force: true});
+        const fresh = await load(cache.scope, {workspace: cache.workspace, force: true, acquire: false});
         notify(cache.scope);
         return {ok: false, conflict: true, error: res.error, doc: fresh.doc};
       }
@@ -173,30 +345,54 @@ export function createMemoStore(deps) {
     cache.timer = setTimeout(async () => {
       cache.timer = 0;
       if (!cache.dirty) return;
+      if (!cache.writer) return;
       cache.dirty = false;
       const res = await saveCache(scopeKey(cache.scope, cache.workspace), cache);
-      if (!res.ok && !res.conflict && deps.flash) deps.flash('快捷便签 保存失败：' + res.error, true);
+      if (!res.ok && !res.conflict && !res.busy && deps.flash) deps.flash('快捷便签 保存失败：' + res.error, true);
       if (res.conflict && deps.flash) deps.flash('快捷便签 已在其他窗口修改，已刷新为磁盘版本', true);
+      if (res.busy && deps.flash) deps.flash('快捷便签正在另一窗口编辑，稍后重试', true);
     }, SAVE_DEBOUNCE_MS);
   }
 
   // mutate 统一变更入口：fn(doc) → {ok, doc?, error?}（memo-model 的变更函数）。
-  // 成功则更新缓存、防抖保存并广播；失败原样返回（调用方决定怎么提示）。
-  // 文档不在缓存时先 load，加载失败（如未开工作区）把错误如实带回。
-  async function mutate(scope, fn) {
+  // opts.temporary=true：AI 工具在面板未持锁时用短租约，变更后立即 flush 再释放。
+  async function mutate(scope, fn, opts) {
+    const temporary = !!(opts && opts.temporary);
     const workspace = resolveWorkspace(scope);
     if (!findCache(scope).cache) {
-      const loaded = await load(scope, {workspace});
+      const loaded = await load(scope, {workspace, acquire: !temporary});
       if (loaded.error) return {ok: false, error: loaded.error};
     }
     const entry = findCache(scope);
     if (!entry.cache) return {ok: false, error: '快捷便签 未加载'};
-    const result = fn(entry.cache.doc);
-    if (!result || !result.ok) return result;
-    entry.cache.doc = result.doc;
-    scheduleSave(scope);
-    notify(scope);
-    return result;
+    const cache = entry.cache;
+    let tempWriter = false;
+    if (temporary && !cache.writer) {
+      const lease = await acquireLease(scope, cache.workspace);
+      if (!lease.acquired) {
+        return {ok: false, busy: true, error: busyMessage(lease.owner), owner: lease.owner || null};
+      }
+      tempWriter = true;
+    } else if (!cache.writer) {
+      return {ok: false, busy: true, error: busyMessage(cache.owner), owner: cache.owner || null};
+    }
+    try {
+      const result = fn(cache.doc);
+      if (!result || !result.ok) return result;
+      cache.doc = result.doc;
+      if (tempWriter) {
+        if (cache.timer) { clearTimeout(cache.timer); cache.timer = 0; }
+        cache.dirty = true;
+        const saved = await saveCache(entry.key, cache);
+        if (!saved.ok) return {ok: false, error: saved.error, busy: !!saved.busy};
+      } else {
+        scheduleSave(scope);
+      }
+      notify(scope);
+      return result;
+    } finally {
+      if (tempWriter) await releaseAcquiredLease(scope, cache.workspace);
+    }
   }
 
   // rootFor 作用域缓存捕获的工作区根（导出复制贴图用；未加载返回当前解析值）。
@@ -211,7 +407,7 @@ export function createMemoStore(deps) {
     const jobs = [];
     for (const [key, cache] of Array.from(caches.entries())) {
       if (cache.timer) { clearTimeout(cache.timer); cache.timer = 0; }
-      if (!cache.dirty) continue;
+      if (!cache.dirty || !cache.writer) continue;
       cache.dirty = false;
       jobs.push(saveCache(key, cache));
     }
@@ -225,7 +421,7 @@ export function createMemoStore(deps) {
     const {cache} = findCache(scope);
     if (!cache) return false; // 面板没打开/没加载过，不打扰
     if (cache.dirty) return false;
-    const res = await load(scope, {force: true});
+    const res = await load(scope, {force: true, acquire: false});
     if (res.error) {
       if (deps.flash) deps.flash('快捷便签 重载失败：' + res.error, true);
       return false;
@@ -243,18 +439,40 @@ export function createMemoStore(deps) {
   // 未落盘的修改先按缓存捕获的旧工作区根落盘——自动保存语义，切工作区不丢字。
   async function forgetWorkspace() {
     const jobs = [];
+    const releases = [];
     for (const [key, cache] of Array.from(caches.entries())) {
       if (cache.scope !== 'workspace') continue;
       if (cache.timer) { clearTimeout(cache.timer); cache.timer = 0; }
-      if (cache.dirty) {
+      if (cache.dirty && cache.writer) {
         cache.dirty = false;
         jobs.push(saveCache(key, cache));
+      }
+      if (cache.writer) {
+        releases.push(releaseLease(cache.scope, {workspace: cache.workspace}));
       }
       caches.delete(key);
     }
     await Promise.all(jobs);
+    await Promise.all(releases);
     emitPending();
   }
 
-  return {load, cached, mutate, flush, flushAll, hasPending, scheduleSave, reloadExternal, saveImage, onChange, forgetWorkspace, rootFor};
+  return {
+    load,
+    cached,
+    mutate,
+    flush,
+    flushAll,
+    hasPending,
+    scheduleSave,
+    reloadExternal,
+    retryAcquire,
+    releaseLease,
+    releaseAll,
+    state,
+    saveImage,
+    onChange,
+    forgetWorkspace,
+    rootFor,
+  };
 }

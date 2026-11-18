@@ -310,3 +310,26 @@ test('workspace_rules：memory 守则与涉密引导在，env/spawn 重复行已
     assert.ok(!rules.includes('write_file 用于新建文件或整体覆盖'), '覆盖前必读语义已收敛到工具描述');
     assert.ok(rules.includes('不要修改 .git 等版本库内部文件'), '.git 红线保留（写档守则）');
 });
+
+// 命令 shell 守则（2026-11-18）：模型习惯在默认 Git Bash 档里拼 powershell -Command，
+// 双引号内的 $变量 会被 bash 先展开成空串。守则必须写清「怎么用」与「别怎么写」，
+// 且只在提供 run_command 的档位出现（只读档没有该工具）。
+test('workspace_rules：指定 shell 的守则（写档有、只读档无）', async () => {
+    const writable = createAISystemContext(makeCtx({ctx: {currentScopeOf: () => 'auto'}}));
+    const rules = sectionOf((await writable.assembleSystemContext({todos: []}, [])).text, 'workspace_rules');
+    assert.ok(rules.includes('shell="pwsh"'), '缺少指定 shell 的守则（模型会继续拼 powershell -Command）');
+    assert.ok(rules.includes('powershell -Command'), '守则要写出错误用法，否则模型不知道要避免什么');
+    assert.ok(rules.includes('展开成空串'), '守则要给出症状，便于模型自查');
+
+    const readOnly = createAISystemContext(makeCtx());
+    const readRules = sectionOf((await readOnly.assembleSystemContext({todos: []}, [])).text, 'workspace_rules');
+    assert.ok(!readRules.includes('shell="pwsh"'), '只读档不提供 run_command，不该注入这条');
+});
+
+test('env_vars 说明覆盖三种 shell 的引用写法', async () => {
+    const mod = createAISystemContext(makeCtx({settings: {aiInjectEnvVars: true}}));
+    const {text} = await mod.assembleSystemContext({todos: []}, []);
+    assert.ok(text.includes('Bash 用 $名称'));
+    assert.ok(text.includes('cmd 用 %名称%'));
+    assert.ok(text.includes('PowerShell 用 $env:名称'), 'PowerShell 档已支持，说明不能漏');
+});

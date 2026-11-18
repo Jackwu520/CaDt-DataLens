@@ -167,6 +167,28 @@ export function mergeGenModelEntry(existing, incoming, idGen) {
     return merged;
 }
 
+// AI 可回读的条目字段（get_gen_models / set_gen_model 回执共用单一来源）。
+// 只排除 apiKey——AI 读不到也写不了密钥；其余配置字段必须回显，否则 AI 改完无法自检、
+// 排查「条目缺 bodyTemplate / resultPath」这类问题时只能盲改（实测踩坑）。
+const GEN_ECHO_FIELDS = [
+    'id', 'name', 'kind', 'enabled', 'baseURL', 'path', 'editPath', 'editImageWrap', 'editFormat',
+    'proxy', 'timeoutSec', 'headers', 'bodyTemplate', 'resultType', 'resultPath', 'errorPath',
+    'defaultModel', 'defaultSize', 'defaultN',
+    'submitPath', 'jobIdPath', 'pollPath', 'statusPath', 'doneValue', 'failedValue',
+    'pollIntervalSec', 'maxPolls', 'probePath',
+];
+
+// 生成条目的可回显视图：深拷贝非密钥字段（headers 是数组，不能共享引用），绝不携带 apiKey。
+export function genModelEcho(entry) {
+    const source = entry && typeof entry === 'object' ? entry : {};
+    const out = {};
+    for (const key of GEN_ECHO_FIELDS) {
+        const value = source[key];
+        out[key] = value && typeof value === 'object' ? JSON.parse(JSON.stringify(value)) : value;
+    }
+    return out;
+}
+
 // 该条目是否为异步型（配了提交端点即走 submit/poll 引擎）。
 export function isAsyncGenModel(entry) {
     return !!(entry && entry.submitPath && entry.jobIdPath && entry.pollPath);
@@ -350,20 +372,38 @@ export function genJoinURL(base, path) {
     return b + (p.startsWith('/') ? '' : '/') + p;
 }
 
-// 工具参数 + 条目缺省值合并成占位符词表；n/seed 归一为数字（缺省 seed 渲染为 null）。
+// 随机 seed：31 位非负整数（多数生图/视频 API 的 seed 形态，避开 int32 溢出）。
+// 优先用 Web Crypto（浏览器 / Node 20+ 全局可用），失败回落 Math.random。
+// 用途：用户未指定 seed 时自动填充——不少服务（如 Qwen-Image）缺省 seed 固定，
+// 相同提示词会出完全一样的结果；随机 seed 让每次生成都有变化。
+export function randomGenSeed() {
+    try {
+        if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
+            const buf = new Uint32Array(1);
+            crypto.getRandomValues(buf);
+            return buf[0] & 0x7fffffff;
+        }
+    } catch (e) {
+        // 环境无 Web Crypto（如老 WebView2）时回落，下面用 Math.random。
+    }
+    return Math.floor(Math.random() * 0x80000000);
+}
+
+// 工具参数 + 条目缺省值合并成占位符词表；n/seed 归一为数字。
+// seed 未指定时随机填充（见 randomGenSeed），不再渲染 null——模板放 {{seed}} 即发出随机值。
 export function buildGenVars(entry, params) {
     const source = params && typeof params === 'object' ? params : {};
     const prompt = String(source.prompt || '').trim();
     if (!prompt) throw new Error('生成提示词（prompt）为空');
     if (prompt.length > GEN_PROMPT_LIMIT) throw new Error('生成提示词超过 ' + GEN_PROMPT_LIMIT + ' 字符上限');
     const seedRaw = source.seed;
-    const seed = seedRaw === undefined || seedRaw === null || seedRaw === '' ? null : Number(seedRaw);
+    const seed = seedRaw === undefined || seedRaw === null || seedRaw === '' ? randomGenSeed() : Number(seedRaw);
     return {
         prompt,
         model: String(source.model || entry.defaultModel || ''),
         size: String(source.size || entry.defaultSize || ''),
         n: Math.max(1, Math.min(4, Math.round(Number(source.n) || entry.defaultN || 1))),
-        seed: seed !== null && Number.isFinite(seed) ? seed : null,
+        seed: Number.isFinite(seed) ? Math.max(0, Math.floor(seed)) : randomGenSeed(),
         apiKey: String(entry.apiKey || ''),
         jobId: String(source.jobId || ''),
         // 参考图由调用方先解析成 Data URL / URL（params.references），这里只负责渲染成字面量

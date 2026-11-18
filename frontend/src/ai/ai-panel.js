@@ -63,6 +63,7 @@ import {
     commandText,
     gitFlowSafeCommand,
     matchCommandRule,
+    shellScriptPolicy,
 } from './ai-command-rules.js';
 import {
     PERMISSION_VERSION,
@@ -129,8 +130,10 @@ import {
     GEN_REF_BYTES_LIMIT,
     GEN_REF_LIMIT,
     genModelByRef,
+    genModelEcho,
     isAsyncGenModel,
     mergeGenModelEntry,
+    randomGenSeed,
     normalizeGenModels,
     normalizeGenSnapshot,
 } from './ai-gen-model.js';
@@ -659,6 +662,8 @@ export function createAIPanel(options) {
     const streams = new Map();
     let stream = null;
     let oneShot = null;
+    // 压缩的租约获取是异步的：oneShot 还没挂上时用这个标志挡住重复发起。
+    let compactStarting = false;
     let titleJob = null;
     // 自动标题最多尝试 2 次：失败（4xx / 空回复 / 被取消）后下一轮还能补，但不会每轮白跑请求。
     // 用计数而非「试过就永久跳过」——原逻辑把一次偶发失败变成该会话永久停留在首条消息截断。
@@ -1855,6 +1860,9 @@ export function createAIPanel(options) {
 
     let sessionStoreErrorAt = 0;
     function notifySessionStoreError(error) {
+        const text = String((error && error.message) || error || '');
+        // 另一窗口持有回合锁时写路径返回 session-busy：这是预期的跳过，不提示“保存失败”。
+        if (text.includes('session-busy')) return;
         const now = Date.now();
         if (now - sessionStoreErrorAt < 30000) return;
         sessionStoreErrorAt = now;
@@ -1943,6 +1951,7 @@ export function createAIPanel(options) {
         if (isOpen()) syncActiveSessionUI(true);
         updateScopeUI();
         updateSendState();
+        if (config.activeSessionId) syncSessionWatch(config.activeSessionId);
     }
 
     function whenSessionsReady() {
@@ -2332,6 +2341,164 @@ export function createAIPanel(options) {
             const viewed = currentSession();
             notifyTurnState(false, next.sessionId, !!(viewed && viewed.id === next.sessionId));
         }
+    }
+
+    // ---------- 多实例回合租约 ----------
+    // 拿到 lease 才能改会话/落盘；终态写盘完成后才释放。写盘失败时保持租约并
+    // 定时重试释放，宁可让资源暂时不可写，也不交接半成品（详见 multi-instance-sync.md）。
+    const leaseWarned = new Set();
+    const leaseReleaseTimers = new Map();
+
+    function leaseOwnerLabel() {
+        try {
+            const ws = String(currentWorkspacePath() || '').trim();
+            return ws ? ('AI · ' + ws) : 'AI';
+        } catch (e) {
+            return 'AI';
+        }
+    }
+
+    function releaseLeaseNow(sessionId) {
+        const id = String(sessionId || '').trim();
+        if (!id || !backend.AISessionLeaseRelease) return Promise.resolve();
+        return Promise.resolve(backend.AISessionLeaseRelease(id)).catch(() => {});
+    }
+
+    function releaseTurnLease(sessionId) {
+        const id = String(sessionId || '').trim();
+        if (!id || !backend.AISessionLeaseRelease) return;
+        const attempt = () => {
+            leaseReleaseTimers.delete(id);
+            const wait = (sessionStore && typeof sessionStore.whenIdle === 'function')
+                ? sessionStore.whenIdle(id)
+                : Promise.resolve({ok: true});
+            Promise.resolve(wait).then((res) => {
+                if (res && res.ok === false) {
+                    const session = sessionById(id);
+                    if (session && sessionStore && typeof sessionStore.persistSession === 'function') {
+                        Promise.resolve(sessionStore.persistSession(session)).catch(() => {});
+                    }
+                    if (!leaseWarned.has(id)) {
+                        leaseWarned.add(id);
+                        try { showNote('会话保存失败，已阻止其他窗口写入：' + (res.error || '未知错误'), true); } catch (e) {}
+                    }
+                    if (!leaseReleaseTimers.has(id)) {
+                        leaseReleaseTimers.set(id, setTimeout(attempt, 3000));
+                    }
+                    return;
+                }
+                leaseWarned.delete(id);
+                return Promise.resolve(backend.AISessionLeaseRelease(id)).catch((e) => {
+                    // 释放失败保持锁，进程退出兜底；只记诊断，不制造重试风暴。
+                    try { console.warn('AISessionLeaseRelease 失败', id, e); } catch (err) {}
+                });
+            }).catch(() => {
+                if (!leaseReleaseTimers.has(id)) {
+                    leaseReleaseTimers.set(id, setTimeout(attempt, 3000));
+                }
+            });
+        };
+        attempt();
+    }
+
+    // ---------- 多实例：当前会话的目录 watch ----------
+    let sessionWatchId = '';
+    let sessionWatchReady = false;
+
+    function syncSessionWatch(sessionId) {
+        const id = String(sessionId || '').trim();
+        if (!sessionUseDisk()) {
+            if (sessionWatchId && backend.AISessionUnwatch) {
+                Promise.resolve(backend.AISessionUnwatch(sessionWatchId)).catch(() => {});
+            }
+            sessionWatchId = '';
+            sessionWatchReady = false;
+            return;
+        }
+        if (!id) {
+            if (sessionWatchId && backend.AISessionUnwatch) {
+                Promise.resolve(backend.AISessionUnwatch(sessionWatchId)).catch(() => {});
+            }
+            sessionWatchId = '';
+            sessionWatchReady = false;
+            return;
+        }
+        if (sessionWatchId === id && sessionWatchReady) return;
+        if (sessionWatchId && sessionWatchId !== id && backend.AISessionUnwatch) {
+            Promise.resolve(backend.AISessionUnwatch(sessionWatchId)).catch(() => {});
+        }
+        sessionWatchId = id;
+        sessionWatchReady = false;
+        if (!backend.AISessionWatch) return;
+        Promise.resolve(backend.AISessionWatch(id)).then(() => {
+            if (sessionWatchId === id) sessionWatchReady = true;
+        }).catch(() => {
+            // 新会话目录还没建：等首轮落盘后由 finishStream 再试。
+        });
+    }
+
+    // handleResourceChange：别的窗口写了当前会话的日志/meta 时，等租约释放后重读。
+    // 流式消息不落盘，所以中途不整份重载；busy 时短轮询几次，拿不到就等下一次事件/focus。
+    function handleResourceChange(payload) {
+        if (!sessionUseDisk()) return;
+        if (!payload || payload.kind !== 'ai-session') return;
+        const id = String(payload.key || '').trim();
+        if (!id) return;
+        const session = sessionById(id);
+        if (!session) return;
+        if (config.activeSessionId !== id) {
+            renderSessionList();
+            return;
+        }
+        if (streamOf(id) || compactOf(id)) return;
+        if (!backend.AISessionStat || !sessionStore || !sessionStore.sameLogStat) return;
+        const before = session._logStat || null;
+        const check = (retries) => {
+            if (streamOf(id) || compactOf(id)) return;
+            const status = backend.AISessionLeaseStatus
+                ? backend.AISessionLeaseStatus(id)
+                : Promise.resolve({busy: false});
+            Promise.resolve(status).then((st) => {
+                if (st && st.busy) {
+                    if (retries > 0) setTimeout(() => check(retries - 1), 1500);
+                    return;
+                }
+                return Promise.resolve(backend.AISessionStat(id)).then((stat) => {
+                    if (sessionStore.sameLogStat(before, stat)) return;
+                    return sessionStore.reloadSession(session).then(() => {
+                        if (isOpen() && currentSession() === session) renderMessages(true);
+                        renderSessionList();
+                    });
+                });
+            }).catch(() => {});
+        };
+        check(4);
+    }
+
+    // 起轮失败的用户提示：多实例的 busy 与普通同进程 busy 分开说。
+    function flashTurnStartFailure(result) {        if (!result || result.ok) return;
+        if (result.reason === 'other_window') {
+            const pid = result.owner && result.owner.pid;
+            flash('该会话正在另一窗口运行' + (pid ? '（PID ' + pid + '）' : '') + '，请稍后再试', true);
+            return;
+        }
+        if (result.reason === 'session_deleted') {
+            flash('该会话已被删除，请从列表重新打开', true);
+            return;
+        }
+        if (result.reason === 'stale_reload') {
+            flash('会话已被其他窗口更新，重读失败：' + (result.error || '未知错误'), true);
+            return;
+        }
+        if (result.reason === 'save_failed') {
+            flash('上一次会话保存失败，暂不能开始新回合：' + (result.error || '未知错误'), true);
+            return;
+        }
+        if (result.reason === 'lease_failed') {
+            flash('无法获取会话写权：' + (result.error || '另一窗口正在使用'), true);
+            return;
+        }
+        flash('发送失败：' + (result.reason || 'unknown'), true);
     }
 
     // ---------- 每会话系统提示词缓存 ----------
@@ -6718,25 +6885,33 @@ function requestApproval(session, toolMessage, info) {
 
     // run_command / background_command 共用审批：项目规则 → 危险命令单次确认 → 会话/项目放行
     // → 完全权限 → 自动审批（只读命令 / 已知命令族 / Git 快捷操作豁免 / 可选分类器）→ 逐次询问.
-    async function approveCommandForRun(session, toolMessage, command, cwd, toolName) {
+    async function approveCommandForRun(session, toolMessage, command, cwd, toolName, shell) {
         // 判定胶囊一律按会话归属投递：后台会话在跑命令时，别的会话不该冒出它的放行/转人工提示。
         const note = (text) => noteForSession(session && session.id, text);
         const scope = currentScopeOf(session);
         const rules = await ensureProjectRules(false);
-        const readOnly = analyzeReadOnlyCommand(command).readOnly;
-        const dangerBase = analyzeDangerousCommand(command);
+        // 显式 shell（pwsh / powershell / cmd）：命令是那个 shell 的脚本，argv 级分析看不见内容。
+        // 与「解释器 + 内联代码」同口径：只读判定作废、不套会话与命令族授权、不走 Git 快捷豁免，
+        // 否则等于用一个新参数换来更松的审批。危险与否先由脚本特征表判（命中即单次确认），
+        // 没命中才交分类器——且端侧分类器对脚本档只拦不放（见下方 classify 分支）。
+        const shellPolicy = shellScriptPolicy(shell, command);
+        const readOnly = !shellPolicy.script && analyzeReadOnlyCommand(command).readOnly;
+        const dangerBase = shellPolicy.script
+            ? (shellPolicy.danger || {dangerous: false, ruleId: '', label: ''})
+            : analyzeDangerousCommand(command);
         // 作者拍板（2026-11-16）：命令引用 env_list 存储的变量名或整表 dump 环境变量时
         // 强制人工审批——并入 dangerous 通道，decidePermission 在会话/项目授权与分类器
         // 之前直接 ask singleUse，端侧与 AI 分类器均无权放行；没存在软件里的变量走正常流程。
+        // 脚本档同样适用（规则本身已覆盖 $env:NAME / Env: NAME 写法）：脚本里 echo 密钥一样要拦。
         const envLeak = analyzeEnvValueExposure(command, await managedEnvVarNames());
         const danger = dangerBase.dangerous ? dangerBase : envLeak;
-        const sessionRule = matchCommandApproval(session, command, cwd);
-        const family = commandFamilySignature(command);
+        const sessionRule = shellPolicy.script ? null : matchCommandApproval(session, command, cwd);
+        const family = shellPolicy.script ? '' : commandFamilySignature(command);
         // Git 快捷操作一次性窄豁免：令牌有效 + 命令静态安全（危险检测与项目规则已在上方判定）。
         // 显式排除 terminal 通道——它走同一审批链但 cwd 实参是「终端 <id>」而非路径，
         // 不能依赖「cwd 不是路径」这一偶然事实挡住豁免。
         const gitToken = gitFlowTokenFor(session && session.id);
-        const gitFlowSafe = toolName !== 'terminal' && !!(gitToken && gitFlowSafeCommand(command, gitToken.root, cwd));
+        const gitFlowSafe = !shellPolicy.script && toolName !== 'terminal' && !!(gitToken && gitFlowSafeCommand(command, gitToken.root, cwd));
         const decision = decidePermission({
             scope,
             kind: 'command',
@@ -6788,27 +6963,36 @@ function requestApproval(session, toolMessage, info) {
             } else {
                 console.debug('[classifier:local] cmd=' + commandText(command).slice(0, 120) + ' final=unavailable');
             }
-            if (local && local.allow) {
+            // 脚本档（显式 shell）：端侧**只拦不放**。它对目标 shell 的脚本没有可靠训练
+            // （PowerShell 安全样本极少、别名 ri/gci/sc 又追不全，见 ai-command-rules 的注释），
+            // 判「安全」不能作为放行依据；放行只由 AI 分类器做（它读得懂别名）。
+            const scriptShell = shellPolicy.script;
+            if (local && local.allow && !scriptShell) {
                 const localNote = local.sourceLabel + ' score=' + local.score.toFixed(2) +
                     (local.reason ? '：' + local.reason : '') +
                     (local.classifierCount > 1 ? '（' + local.classifierCount + ' 个分类器合并）' : '');
                 logPermission('command', command, 'allow', 'local-classifier', 'score=' + local.score.toFixed(2));
                 note('端侧分类器已放行：' + localNote);
-                markCommandAutoApproved(session, toolMessage, command, cwd, toolName, 'local-classifier', localNote);
+                markCommandAutoApproved(session, toolMessage, command, cwd, toolName, 'local-classifier', localNote, shell);
                 return {approved: true};
             }
             if (local) {
-                // 端侧未放行：远程分类器启用时交大模型二次判定（提示词注入端侧结果供参考）；
+                // 端侧未放行（脚本档另含「判安全但无权放行」）：远程分类器启用时交大模型判定；
                 // 远程未启用 → 直接转人工（fail-closed）。
-                const localSummary = local.sourceLabel + ' score=' + local.score.toFixed(2) + ' ≥ 阈值 ' + local.threshold +
-                    (local.reason ? '（' + local.reason + '）' : '');
+                const localSummary = local.allow
+                    ? local.sourceLabel + ' score=' + local.score.toFixed(2) + '（端侧判安全，脚本档不作放行依据）'
+                    : local.sourceLabel + ' score=' + local.score.toFixed(2) + ' ≥ 阈值 ' + local.threshold +
+                        (local.reason ? '（' + local.reason + '）' : '');
+                if (local.allow && scriptShell) note('端侧判安全，但脚本档不由端侧放行（继续交 AI 分类器 / 人工）');
                 if (config.autoClassifier === true) {
-                    const verdict = await classifyCommandForAuto(session, command, cwd, {
+                    // 脚本档不把端侧结论注入提示词：端侧对脚本不可靠，注入只会把 AI 往「安全」带。
+                    const hint = local.allow && scriptShell ? null : {
                         source: local.sourceLabel,
                         score: local.score,
                         threshold: local.threshold,
                         reason: local.reason,
-                    });
+                    };
+                    const verdict = await classifyCommandForAuto(session, command, cwd, hint);
                     // 调试探针：远程 AI 分类器复核结果输出到调试控制台。
                     // 端侧判险但这里 allow 时，就是「端侧拦截、远程放行」的现场。
                     console.debug('[classifier:ai] cmd=' + commandText(command).slice(0, 120) +
@@ -6818,14 +7002,17 @@ function requestApproval(session, toolMessage, info) {
                     logPermission('command', command, verdict.allow ? 'allow' : 'ask', 'classifier',
                         localSummary + ' · 复核' + (verdict.allow ? '放行' : '未放行'));
                     if (verdict.allow) {
-                        note('端侧未放行（' + localSummary + '），AI 分类器复核放行：' + (verdict.reason || '未说明原因'));
-                        markCommandAutoApproved(session, toolMessage, command, cwd, toolName, 'classifier', '端侧未放行，AI 复核放行：' + (verdict.reason || ''));
+                        note((local.allow && scriptShell ? '脚本档（' + (shell || '') + '）' : '端侧未放行（' + localSummary + '）') +
+                            '，AI 分类器放行：' + (verdict.reason || '未说明原因'));
+                        markCommandAutoApproved(session, toolMessage, command, cwd, toolName, 'classifier',
+                            (local.allow && scriptShell ? '脚本档，AI 分类器放行：' : '端侧未放行，AI 复核放行：') + (verdict.reason || ''), shell);
                         return {approved: true};
                     }
                     note('端侧（' + localSummary + '）与 AI 分类器复核均未放行：' + (verdict.reason || '转人工'));
                     return await requestCommandApproval(session, toolMessage, {
                         command,
                         cwd,
+                        shell,
                         tool: toolName || 'run_command',
                         // source：档位在分类器等待期间被提升到 full 时用于重判（项目 ask 除外）
                         source: 'classifier',
@@ -6843,10 +7030,13 @@ function requestApproval(session, toolMessage, info) {
                     });
                 }
                 logPermission('command', command, 'ask', 'local-classifier', 'score=' + local.score.toFixed(2) + ' ≥ ' + local.threshold);
-                note('端侧分类器转人工：' + localSummary);
+                note(local.allow && scriptShell
+                    ? '脚本档（' + (shell || '') + '）未开启 AI 分类器，转人工审批'
+                    : '端侧分类器转人工：' + localSummary);
                 return await requestCommandApproval(session, toolMessage, {
                     command,
                     cwd,
+                    shell,
                     tool: toolName || 'run_command',
                     source: 'local-classifier',
                     classifyNote: localSummary,
@@ -6866,13 +7056,14 @@ function requestApproval(session, toolMessage, info) {
             logPermission('command', command, verdict.allow ? 'allow' : 'ask', 'classifier', verdict.reason);
             if (verdict.allow) {
                 note('AI 分类器已放行：' + (verdict.reason || '未说明原因'));
-                markCommandAutoApproved(session, toolMessage, command, cwd, toolName, 'classifier', verdict.reason);
+                markCommandAutoApproved(session, toolMessage, command, cwd, toolName, 'classifier', verdict.reason, shell);
                 return {approved: true};
             }
             note('AI 分类器未放行：' + (verdict.reason || '转人工审批'));
             return await requestCommandApproval(session, toolMessage, {
                 command,
                 cwd,
+                shell,
                 tool: toolName || 'run_command',
                 source: 'classifier',
                 classifyNote: verdict.reason,
@@ -6880,12 +7071,13 @@ function requestApproval(session, toolMessage, info) {
             });
         }
         if (decision.decision === 'allow') {
-            markCommandAutoApproved(session, toolMessage, command, cwd, toolName, decision.source);
+            markCommandAutoApproved(session, toolMessage, command, cwd, toolName, decision.source, '', shell);
             return {approved: true};
         }
         return await requestCommandApproval(session, toolMessage, {
             command,
             cwd,
+            shell,
             tool: toolName || 'run_command',
             // 项目 ask 规则在 full 档也保留（source='project' 不参与档位重判）
             source: decision.source,
@@ -7104,13 +7296,15 @@ function requestApproval(session, toolMessage, info) {
         return promise;
     }
 
-    function markCommandAutoApproved(session, toolMessage, command, cwd, toolName, source, detail) {
+    function markCommandAutoApproved(session, toolMessage, command, cwd, toolName, source, detail, shell) {
         toolMessage.approval = {
             state: 'approved',
             kind: 'command',
             tool: toolName || 'run_command',
             command,
             cwd,
+            // 显式指定的 shell（空串 = 自动档）；卡片头部据此如实显示语言环境
+            shell: aiTextOf(shell),
             remember: 'pre',
             autoRule: source,
             actor: 'auto',
@@ -7159,6 +7353,8 @@ function requestApproval(session, toolMessage, info) {
             web: info.web === true,
             command: info.command,
             cwd: info.cwd,
+            // 显式指定的 shell（空串 = 自动档）：审批卡如实显示要在哪个语言环境里跑
+            shell: aiTextOf(info.shell),
             remember: '',
             danger,
             singleUse: info.singleUse === true || !!danger,
@@ -8292,6 +8488,11 @@ function requestApproval(session, toolMessage, info) {
                     : '用户未允许' + genKindLabel(kind) + '生成：' + brief;
             }
         }
+        // seed 未指定时随机生成并固化到 params：模板放 {{seed}} 就发出随机值，让相同提示词
+        // 每次出图不同（不少服务缺省 seed 固定，如 Qwen-Image 会出完全一样的结果）；异步任务
+        // submit/poll 共用同一 params，seed 固化后不会在轮询时二次随机。显式 seed 原样尊重。
+        const seedRaw = input.seed;
+        const seed = seedRaw === undefined || seedRaw === null || seedRaw === '' ? randomGenSeed() : Number(seedRaw);
         const params = {
             prompt: aiTextOf(input.prompt),
             // model 必须填服务商模型 id（entry.defaultModel），不是条目内部 id（entry.id）：
@@ -8300,6 +8501,7 @@ function requestApproval(session, toolMessage, info) {
             model: entry.defaultModel || entry.id,
             size: aiTextOf(input.size),
             n: input.n,
+            seed: Number.isFinite(seed) ? Math.max(0, Math.floor(seed)) : randomGenSeed(),
             outputPath: aiTextOf(input.outputPath),
             // 参考图的值（Data URL / URL）只进请求体：不落日志、不进模型上下文
             references: refs.values,
@@ -8311,6 +8513,7 @@ function requestApproval(session, toolMessage, info) {
                 promptLen: params.prompt.length,
                 size: params.size || entry.defaultSize || '',
                 n: kind === 'image' ? Math.max(1, Math.round(Number(input.n) || entry.defaultN || 1)) : undefined,
+                seed: params.seed,
                 refCount: refs.labels.length || undefined,
                 output: params.outputPath || '',
             }, {actor: 'ai', noRel: true});
@@ -8340,7 +8543,8 @@ function requestApproval(session, toolMessage, info) {
         }
         const lines = files.map((file) => '- ' + file.path + '（' + file.mime + '，' + file.bytes + ' 字节）').join('\n');
         return '已生成 ' + files.length + ' 个产物（' + (entry.name || entry.id) +
-            (refs.labels.length ? ' · 参考图 ' + refs.labels.length + ' 张（走编辑端点 ' + entry.editPath + '）' : '') + '）：\n' + lines +
+            (refs.labels.length ? ' · 参考图 ' + refs.labels.length + ' 张（走编辑端点 ' + entry.editPath + '）' : '') +
+            ' · seed=' + params.seed + '）：\n' + lines +
             (reviewNote ? '\n' + reviewNote : '') +
             '\n可在回复中用 Markdown 图片语法（![](' + '相对路径)）向用户展示产物。';
     }
@@ -9931,6 +10135,9 @@ function requestApproval(session, toolMessage, info) {
                 if (!backend.AIRunShellCommand) throw new Error('当前版本不支持执行命令');
                 const cwd = commandCwdOf(ctx.session, input.cwd);
                 const timeoutMs = aiClampInt(input.timeoutMs, 1000, 600000, 60000);
+                // 显式 shell（gitbash / pwsh / powershell / cmd）：空串 = 按旧优先级自动选择。
+                // 合法性由 Go 侧统一判定（不可用直接报错，绝不静默换一个 shell）。
+                const shell = aiTextOf(input.shell).trim();
                 // 子代理：一律走 OS 沙箱，且永不弹审批（没人可答；沙箱即边界，对齐 dsh 的
                 // approval pin never）。主会话：审批链照旧，行为零变化。
                 const sandbox = subSandboxPolicy(ctx.session, getScopeRoot());
@@ -9943,7 +10150,7 @@ function requestApproval(session, toolMessage, info) {
                         return '命令被项目权限规则禁止，未执行（规则 ' + denyHit.rule + '）。';
                     }
                 } else {
-                    const decision = await approveCommandForRun(ctx.session, ctx.toolMessage, command, cwd, 'run_command');
+                    const decision = await approveCommandForRun(ctx.session, ctx.toolMessage, command, cwd, 'run_command', shell);
                     if (!decision.approved) {
                         return decision.denied
                             ? '命令被项目权限规则禁止，未执行（规则 ' + decision.rule + '）。'
@@ -9963,8 +10170,8 @@ function requestApproval(session, toolMessage, info) {
                 let result;
                 try {
                     result = sandbox
-                        ? await backend.AIRunShellCommandConfined(command, cwd, timeoutMs, ctx.toolMessage.runId, sandbox.mode, sandbox.workspaceRoot)
-                        : await backend.AIRunShellCommand(command, cwd, timeoutMs, ctx.toolMessage.runId);
+                        ? await backend.AIRunShellCommandConfined(command, cwd, timeoutMs, ctx.toolMessage.runId, sandbox.mode, sandbox.workspaceRoot, shell)
+                        : await backend.AIRunShellCommand(command, cwd, timeoutMs, ctx.toolMessage.runId, shell);
                 } catch (e) {
                     if (ctx.toolMessage.interrupted) {
                         // 用户已停止：进程已被 AIStopShellRun 杀掉，卡片保持终止态，不再标注失败细节
@@ -10023,6 +10230,8 @@ function requestApproval(session, toolMessage, info) {
                 if (!command) throw new Error('命令不能为空');
                 if (!backend.AICommandStart) throw new Error('当前版本不支持后台命令');
                 const cwd = commandCwdOf(ctx.session, input.cwd);
+                // 显式 shell 与 run_command 同参数、同语义（空串 = 自动档）
+                const shell = aiTextOf(input.shell).trim();
                 // 与 run_command 同口径：子代理走沙箱、永不弹审批，只过项目 deny 规则；
                 // 主会话审批链不变。
                 const sandbox = subSandboxPolicy(ctx.session, getScopeRoot());
@@ -10033,7 +10242,7 @@ function requestApproval(session, toolMessage, info) {
                         return '命令被项目权限规则禁止，未启动（规则 ' + denyHit.rule + '）。';
                     }
                 } else {
-                    const decision = await approveCommandForRun(ctx.session, ctx.toolMessage, command, cwd, 'background_command');
+                    const decision = await approveCommandForRun(ctx.session, ctx.toolMessage, command, cwd, 'background_command', shell);
                     if (!decision.approved) {
                         return decision.denied
                             ? '命令被项目权限规则禁止，未启动（规则 ' + decision.rule + '）。'
@@ -10050,8 +10259,8 @@ function requestApproval(session, toolMessage, info) {
                 let job;
                 try {
                     job = sandbox
-                        ? await backend.AICommandStartConfined(command, cwd, sandbox.mode, sandbox.workspaceRoot)
-                        : await backend.AICommandStart(command, cwd);
+                        ? await backend.AICommandStartConfined(command, cwd, sandbox.mode, sandbox.workspaceRoot, shell)
+                        : await backend.AICommandStart(command, cwd, shell);
                 } catch (e) {
                     if (sandbox && String((e && e.message) || e).includes('沙箱不可用')) {
                         ctx.toolMessage.sandbox = sandbox.mode;
@@ -10556,6 +10765,60 @@ function requestApproval(session, toolMessage, info) {
         // 把这个窗口关死；队列冲刷对 busy 会自动重新入队，不会丢消息。
         if (streamOf(session.id) || compactOf(session.id)) return {ok: false, reason: 'busy'};
 
+        // 同进程上一轮的终态写盘可能还在队列里：先等它排空再拿 stat/重读。
+        // 否则会把上一轮尚未落盘的消息从内存里重读掉，随后队列按新内存写盘。
+        if (sessionUseDisk() && sessionStore && typeof sessionStore.whenIdle === 'function') {
+            let idle = await sessionStore.whenIdle(session.id);
+            if (idle && idle.ok === false) {
+                // 上一次写盘失败：给一次重试机会（磁盘瞬时错误/占用），仍失败才拒绝起轮。
+                try { await sessionStore.persistSession(session); } catch (e) {}
+                idle = await sessionStore.whenIdle(session.id);
+                if (idle && idle.ok === false) {
+                    return {ok: false, reason: 'save_failed', error: idle.error};
+                }
+            }
+        }
+
+        // 多实例：拿到回合租约才能继续。锁后先做交接检查——另一个窗口在上次回合后
+        // 写过日志时，内存里的 _mids 已过期，retry/edit 的 truncate 会截掉对方消息。
+        let leaseHeld = false;
+        if (backend.AISessionLeaseAcquire && sessionUseDisk()) {
+            let lease = null;
+            try {
+                lease = await backend.AISessionLeaseAcquire(session.id, 'turn', leaseOwnerLabel(), 0);
+            } catch (e) {
+                return {ok: false, reason: 'lease_failed', error: (e && e.message) || String(e)};
+            }
+            if (!lease || !lease.acquired) {
+                return {
+                    ok: false,
+                    reason: lease && lease.busy ? 'other_window' : 'lease_failed',
+                    owner: lease && lease.owner,
+                };
+            }
+            leaseHeld = true;
+            const leaseStat = lease.stat || null;
+            const known = session._logStat || null;
+            if (leaseStat && !leaseStat.exists && session._logCreated) {
+                await releaseLeaseNow(session.id);
+                return {ok: false, reason: 'session_deleted'};
+            }
+            const isNew = !session._logCreated && (!leaseStat || !leaseStat.exists);
+            if (!isNew && (!known || !sessionStore.sameLogStat(known, leaseStat))) {
+                try {
+                    const ok = await sessionStore.reloadSession(session);
+                    if (!ok) throw new Error('会话重读失败');
+                } catch (e) {
+                    await releaseLeaseNow(session.id);
+                    return {ok: false, reason: 'stale_reload', error: (e && e.message) || String(e)};
+                }
+                if (isOpen() && currentSession() === session) renderMessages(true);
+            }
+            if (leaseStat) session._logStat = leaseStat;
+        }
+
+        let run = null;
+        try {
         if (cut != null && cut >= 0) session.messages = session.messages.slice(0, cut);
         if (opts.allowPendingEdit) pendingEdit = null;
         // 上一次切换的模型从这条消息开始生效：先把切换记录落到本条消息之前
@@ -10607,7 +10870,7 @@ function requestApproval(session, toolMessage, info) {
         session.round = (Number(session.round) || 0) + 1;
         const baseRound = session.round;
 
-        const run = attachStream({
+        run = attachStream({
             sessionId: session.id,
             baseRound,
             roundNo: 0,
@@ -10632,7 +10895,17 @@ function requestApproval(session, toolMessage, info) {
             baseSystemPrompt: AI_DEFAULT_SYSTEM_PROMPT,
             scope,
             plan: !!session.planMode,
+            leaseHeld,
         });
+        } catch (e) {
+            // 起轮前半段抛错：把还没挂到 stream 上的租约还回去，避免泄漏到进程退出。
+            if (run && run.leaseHeld) run.leaseHeld = false;
+            if (leaseHeld) {
+                leaseHeld = false;
+                await releaseLeaseNow(session.id);
+            }
+            throw e;
+        }
         // 只渲染「用户正在看的会话」：后台注入不改用户视图、不强开面板，
         // 完成经会话列表未读标记提示（§4.13.2）。
         const viewed = isOpen() && currentSession() === session;
@@ -10673,6 +10946,10 @@ function requestApproval(session, toolMessage, info) {
                 run.assistant.status = 'stopped';
                 persistSessions();
                 if (isOpen() && currentSession() && currentSession().id === session.id) renderMessages();
+            }
+            if (run.leaseHeld) {
+                run.leaseHeld = false;
+                releaseTurnLease(session.id);
             }
             return {ok: true, run, ended: true};
         }
@@ -10737,6 +11014,10 @@ function requestApproval(session, toolMessage, info) {
                         ' 的 ' + Math.round(AI_CTX_SEND_BLOCK_RATIO * 100) + '%），请先 /compact 压缩上下文或减少附加内容', true);
             } else if (result.reason === 'video_protocol') {
                 flash('当前模型或协议不支持视频输入：需 OpenAI 兼容协议且模型条目勾选了「视频输入」，请换模型或移除视频附件', true);
+            } else if (result.reason === 'other_window' || result.reason === 'session_deleted' ||
+                       result.reason === 'stale_reload' || result.reason === 'lease_failed' ||
+                       result.reason === 'save_failed') {
+                flashTurnStartFailure(result);
             }
             return false;
         }
@@ -11105,6 +11386,12 @@ function requestApproval(session, toolMessage, info) {
         renderSessionList();
         queueLogSave(session);
         if (session) maybeAutoTitle(session);
+        // 终态写盘已入队：whenIdle 等队列排空后再释放回合租约；失败则保持锁。
+        if (current.leaseHeld) {
+            current.leaseHeld = false;
+            releaseTurnLease(current.sessionId);
+        }
+        if (config.activeSessionId === current.sessionId) syncSessionWatch(current.sessionId);
         if (session && wasViewed && isOpen()) {
             // 正在看的这一轮结束了才重建消息区；后台会话只更新列表与未读标记。
             renderMessages(true);
@@ -12747,7 +13034,9 @@ function requestApproval(session, toolMessage, info) {
                     images: media.filter((item) => item.kind === 'image'),
                     videos: media.filter((item) => item.kind === 'video'),
                 },
-            });
+            }).then((result) => {
+                if (result && !result.ok) flashTurnStartFailure(result);
+            }).catch(() => {});
             return;
         }
         setAttachments(media);
@@ -13151,6 +13440,7 @@ function requestApproval(session, toolMessage, info) {
             discardVirginOnLeave(previous);
         }
         config.activeSessionId = id;
+        syncSessionWatch(id);
         // 切会话即「我改用这个模型了」：窗口默认同步成该会话的账号+条目，新会话才继承得对
         syncActiveFromSession(target);
         saveAIConfig();
@@ -13718,36 +14008,135 @@ function requestApproval(session, toolMessage, info) {
             notify('上下文已超过模型上限，压缩请求无法发送：请先切换更大上下文的模型（分段压缩尚未实装）。', true);
             return false;
         }
-        oneShot = {
-            id, kind: 'compact', sessionId: session.id, buffer: '', startedAt: Date.now(), auto,
-            trigger: {
-                kind: auto ? 'auto' : 'manual',
-                windowSize: triggerWindow,
-                threshold: triggerThreshold,
-                estimate: triggerEstimate,
-                profileName: profile.name || '',
-                model: triggerEntry && triggerEntry.model ? triggerEntry.model : '',
-                instruction: instruction || '',
-            },
-        };
-        notify(auto ? '上下文接近上限，正在自动压缩…' : '正在压缩上下文…（可点停止取消）');
-        setStreamingUI(true);
-        updateSendState();
-        const messages = buildCompactMessages(session, AI_COMPACT_SYSTEM_PROMPT, instruction);
-        Promise.resolve(backend.AISendChat(id, configForProfile(profile, entryOf(session)), messages, [], config.retryMax)).catch((e) => {
-            if (!oneShot || oneShot.id !== id) return;
-            const message = (e && e.message) || String(e);
-            const wasAuto = oneShot.auto;
-            oneShot = null;
-            setStreamingUI(false);
+        if (compactStarting) {
+            if (!auto) notify('正在准备压缩…', true);
+            return false;
+        }
+        compactStarting = true;
+        const begin = () => {
+            compactStarting = false;
+            oneShot = {
+                id, kind: 'compact', sessionId: session.id, buffer: '', startedAt: Date.now(), auto,
+                leaseHeld: true,
+                trigger: {
+                    kind: auto ? 'auto' : 'manual',
+                    windowSize: triggerWindow,
+                    threshold: triggerThreshold,
+                    estimate: triggerEstimate,
+                    profileName: profile.name || '',
+                    model: triggerEntry && triggerEntry.model ? triggerEntry.model : '',
+                    instruction: instruction || '',
+                },
+            };
+            try {
+            notify(auto ? '上下文接近上限，正在自动压缩…' : '正在压缩上下文…（可点停止取消）');
+            setStreamingUI(true);
             updateSendState();
-            if (wasAuto) {
-                try {
-                    if (typeof flash === 'function') flash('自动压缩失败：' + message, true);
-                } catch (err) {}
-            } else {
-                showNote('压缩失败：' + message, true);
+            const messages = buildCompactMessages(session, AI_COMPACT_SYSTEM_PROMPT, instruction);
+            Promise.resolve(backend.AISendChat(id, configForProfile(profile, entryOf(session)), messages, [], config.retryMax)).catch((e) => {
+                if (!oneShot || oneShot.id !== id) return;
+                const message = (e && e.message) || String(e);
+                const failed = oneShot;
+                const wasAuto = failed.auto;
+                oneShot = null;
+                setStreamingUI(false);
+                updateSendState();
+                if (failed.leaseHeld) {
+                    failed.leaseHeld = false;
+                    releaseTurnLease(failed.sessionId);
+                }
+                if (wasAuto) {
+                    try {
+                        if (typeof flash === 'function') flash('自动压缩失败：' + message, true);
+                    } catch (err) {}
+                } else {
+                    showNote('压缩失败：' + message, true);
+                }
+            });
+            } catch (e) {
+                // 起压缩前半段抛错：oneShot 已挂上但请求没发出去，释放租约避免泄漏。
+                const failed = oneShot;
+                oneShot = null;
+                setStreamingUI(false);
+                updateSendState();
+                if (failed && failed.leaseHeld) {
+                    failed.leaseHeld = false;
+                    releaseLeaseNow(session.id);
+                }
+                try { notify('压缩未开始：' + ((e && e.message) || e), true); } catch (err) {}
             }
+        };
+        const startLease = () => {
+            if (!sessionUseDisk() || !backend.AISessionLeaseAcquire) {
+                begin();
+                return;
+            }
+            let leaseAcquired = false;
+            Promise.resolve(backend.AISessionLeaseAcquire(session.id, 'compact', leaseOwnerLabel(), 0)).then((lease) => {
+                if (!lease || !lease.acquired) {
+                    compactStarting = false;
+                    notify(lease && lease.busy
+                        ? '该会话正在另一窗口运行，稍后再压缩。'
+                        : '无法获取会话写权，压缩未开始。', true);
+                    return;
+                }
+                leaseAcquired = true;
+                const stat = lease.stat || null;
+                const known = session._logStat || null;
+                if (stat && !stat.exists && session._logCreated) {
+                    compactStarting = false;
+                    notify('该会话已被删除，压缩未开始。', true);
+                    return releaseLeaseNow(session.id).then(() => { leaseAcquired = false; });
+                }
+                if (!session._logCreated && (!stat || !stat.exists)) {
+                    session._logStat = stat;
+                    begin();
+                    return;
+                }
+                if (known && sessionStore.sameLogStat(known, stat)) {
+                    session._logStat = stat;
+                    begin();
+                    return;
+                }
+                // 与回合同一交接协议：另一个窗口写过 -> 先整份重读再压缩。
+                return sessionStore.reloadSession(session).then((ok) => {
+                    if (!ok) throw new Error('会话重读失败');
+                    session._logStat = stat;
+                    if (isOpen() && currentSession() === session) renderMessages(true);
+                    begin();
+                });
+            }).catch((e) => {
+                compactStarting = false;
+                if (leaseAcquired && (!oneShot || oneShot.id !== id)) {
+                    leaseAcquired = false;
+                    releaseLeaseNow(session.id);
+                }
+                notify('压缩未开始：' + ((e && e.message) || e), true);
+            });
+        };
+        // 同进程上一轮的终态写盘可能还在队列里：先等排空再拿锁/重读。
+        const idle = (sessionUseDisk() && sessionStore && typeof sessionStore.whenIdle === 'function')
+            ? sessionStore.whenIdle(session.id)
+            : Promise.resolve({ok: true});
+        Promise.resolve(idle).then((res) => {
+            if (!res || res.ok !== false) {
+                startLease();
+                return;
+            }
+            // 上一次写盘失败：给一次重试机会，仍失败才拒绝压缩。
+            return Promise.resolve(sessionStore.persistSession(session))
+                .then(() => sessionStore.whenIdle(session.id))
+                .then((retry) => {
+                    if (retry && retry.ok === false) {
+                        compactStarting = false;
+                        notify('上一次保存失败，暂不能压缩：' + (retry.error || '未知错误'), true);
+                        return;
+                    }
+                    startLease();
+                });
+        }).catch(() => {
+            compactStarting = false;
+            notify('压缩未开始：等待会话写盘失败', true);
         });
         return true;
     }
@@ -13793,15 +14182,25 @@ function requestApproval(session, toolMessage, info) {
         const current = oneShot;
         if (!current || current.kind !== 'compact') return;
         const session = sessionById(current.sessionId);
+        const releaseOneShot = () => {
+            if (current && current.leaseHeld) {
+                current.leaseHeld = false;
+                releaseTurnLease(current.sessionId);
+            }
+        };
         oneShot = null;
         setStreamingUI(false);
         updateSendState();
-        if (!session) return;
+        if (!session) {
+            releaseOneShot();
+            return;
+        }
         const viewed = !!(currentSession() && currentSession().id === session.id);
         const text = String(current.buffer || '').trim();
         if (!text) {
             if (viewed) showNote('压缩失败：模型没有返回摘要。', true);
             else notifyDesktop({kind: 'error', title: '自动压缩失败', body: (session.title || '会话') + ' · 模型没有返回摘要', sessionId: session.id});
+            releaseOneShot();
             return;
         }
         // cutoff / summary 形状 / 裁剪内核在 ai-compact.js（子代理压缩共用同一份）
@@ -13823,6 +14222,7 @@ function requestApproval(session, toolMessage, info) {
             showNote('已压缩上下文：摘要 ' + text.length + ' 字符，保留最近 ' + session.messages.length + ' 条，归档 ' + archived.length + ' 条。');
         }
         flushMessageQueue(session.id);
+        releaseOneShot();
     }
 
     function cancelOneShot() {
@@ -13835,6 +14235,10 @@ function requestApproval(session, toolMessage, info) {
         setStreamingUI(false);
         updateSendState();
         showNote('已取消压缩。');
+        if (current.leaseHeld) {
+            current.leaseHeld = false;
+            releaseTurnLease(current.sessionId);
+        }
     }
 
     // 用户手点的隔离区操作（pill / 菜单 / /worktree / 胶囊丢弃）没有 AI 工具调用可落历史，
@@ -15548,6 +15952,8 @@ function requestApproval(session, toolMessage, info) {
             enhanceSelect: typeof enhanceSelect === 'function' ? enhanceSelect : null,
         },
         handleEvent,
+        // 多实例：别的窗口写了当前会话时由 main.js 的 resource-changed 转发进来
+        handleResourceChange,
         // localClassifierMod 不再进 return（红队链C）：经 main.js 的 window.__lens.aiPanel
         // 会把 recordDecision / classifyAll 连带暴露给插件运行时同窗 JS，可伪造 source 灌样本；
         // 设置页走注入的 localClassifier() getter，不需要这个引用。
@@ -15670,19 +16076,11 @@ function requestApproval(session, toolMessage, info) {
         // AI 可代填除 API Key 外的全部字段（mergeGenModelEntry 保证密钥只来自 existing）；
         // 新建后用户在设置里填 Key 并核对 baseURL。列表/返回值一律不带密钥。
         bridgeGenModelsList: () => {
+            // 回显全部非密钥配置字段（含 bodyTemplate / resultPath / headers 等）：AI 改完能自检，
+            // 排查「条目缺字段」时不用盲改。字段清单在 genModelEcho 单一来源，密钥永不入内。
             const models = (config.genModels || []).map((item) => ({
-                id: item.id,
-                name: item.name,
-                kind: item.kind,
+                ...genModelEcho(item),
                 enabled: item.enabled !== false,
-                baseURL: item.baseURL,
-                path: item.path,
-                editPath: item.editPath,
-                editImageWrap: item.editImageWrap,
-                editFormat: item.editFormat,
-                resultType: item.resultType,
-                defaultModel: item.defaultModel,
-                defaultSize: item.defaultSize,
                 hasKey: !!item.apiKey,
             }));
             const firstEnabled = (kind) => {
@@ -15709,13 +16107,7 @@ function requestApproval(session, toolMessage, info) {
             flash('AI 已' + (existing ? '更新' : '新建') + '生成条目「' + name + '」，请核对 baseURL' +
                 (merged.apiKey ? '' : ' 并在设置里填写 API Key'));
             return {
-                saved: {
-                    id: merged.id, name: merged.name, kind: merged.kind, enabled: merged.enabled !== false,
-                    baseURL: merged.baseURL, path: merged.path, editPath: merged.editPath,
-                    editFormat: merged.editFormat,
-                    resultType: merged.resultType,
-                    defaultModel: merged.defaultModel, defaultSize: merged.defaultSize,
-                },
+                saved: {...genModelEcho(merged), enabled: merged.enabled !== false},
                 apiKeyFilled: !!merged.apiKey,
                 note: merged.apiKey
                     ? 'API Key 已保留（AI 不可读写密钥）。'

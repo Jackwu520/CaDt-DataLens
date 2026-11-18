@@ -15,6 +15,7 @@ import (
 	"datalens/internal/aigroups"
 	"datalens/internal/aischedule"
 	"datalens/internal/aitimer"
+	"datalens/internal/appconfig"
 	"datalens/internal/browser"
 	"datalens/internal/cmdbridge"
 	"datalens/internal/convertcli"
@@ -36,6 +37,7 @@ import (
 	"datalens/internal/sqlview"
 	"datalens/internal/terminal"
 	"datalens/internal/toolchain"
+	"datalens/internal/tray"
 	"datalens/internal/watch"
 )
 
@@ -78,6 +80,12 @@ type App struct {
 	convert                *convertcli.Options
 	convertExitCode        int
 	convertDone            atomic.Bool
+
+	// 关闭行为：点窗口 X 是直接退出（exit）还是隐藏到托盘（tray）。见 app_close_action.go。
+	closeAction   string
+	quitRequested atomic.Bool // 显式「退出」（菜单 / 托盘右键 / ForceClose）时置位，绕开「最小化到托盘」
+	tray          *tray.Tray
+	trayHintShown bool
 }
 
 // FileData 兼容别名（实现已下沉 internal/fileio）。
@@ -89,6 +97,8 @@ func NewApp() *App {
 
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+	// 关闭行为（点 X 退出还是最小化到托盘）：配置在 config.json，前端设置页只负责推过来。
+	a.closeAction = appconfig.CloseAction()
 	reading.Emit = func(event string, data any) {
 		runtime.EventsEmit(ctx, event, data)
 	}
@@ -169,12 +179,12 @@ func (a *App) domReady(ctx context.Context) {
 func (a *App) secondInstance(data options.SecondInstanceData) {
 	if pane := launchargs.ParseOpenSettingsArg(data.Args); pane != "" {
 		runtime.EventsEmit(a.ctx, "app-open-settings", pane)
-		runtime.WindowShow(a.ctx)
+		a.secondInstanceShow()
 		return
 	}
 	if loc := launchargs.ParseMemoLocatorArg(data.Args); loc != "" {
 		runtime.EventsEmit(a.ctx, "app-open-memo", loc)
-		runtime.WindowShow(a.ctx)
+		a.secondInstanceShow()
 		return
 	}
 	targets := launchargs.ParseOpenTargets(data.Args)
@@ -186,7 +196,8 @@ func (a *App) secondInstance(data options.SecondInstanceData) {
 	}
 	// 只用 WindowShow：Windows 上 WindowUnminimise 走 WM_SYSCOMMAND/SC_RESTORE，
 	// 会把最大化的窗口还原成普通窗口；WindowShow 内部只在最小化时才恢复。
-	runtime.WindowShow(a.ctx)
+	// 顺带清掉托盘态（窗口可能正藏在通知区里，见 app_close_action.go）。
+	a.secondInstanceShow()
 }
 
 // onToastActivation 系统通知被点击（internal/notify 的 COM 激活回调，可能在任意 COM 线程触发）：
@@ -196,7 +207,7 @@ func (a *App) onToastActivation(payload string) {
 	if a.ctx == nil {
 		return
 	}
-	runtime.WindowShow(a.ctx)
+	a.secondInstanceShow()
 	if strings.TrimSpace(payload) != "" {
 		runtime.EventsEmit(a.ctx, "ai-notify-activate", payload)
 	}

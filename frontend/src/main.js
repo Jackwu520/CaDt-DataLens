@@ -116,6 +116,7 @@ window.__backend = backend;
 // 解构完成后再绑真钩子——直接引用解构出的 const 会 TDZ（2026-11-18 实测未捕获异常）。
 let memoFocusHook = null;          // 窗口聚焦 → 全局便签静默对账
 let memoWorkspaceEventHook = null; // workspace-changed → 工作区便签重读
+let memoResourceEventHook = null;  // resource-changed → 全局便签目录监听重读
 let memoFlushHook = null;          // 关窗 / 页面隐藏 → 冲掉防抖保存
 let memoJumpHook = null;           // --memo CLI / app-open-memo 事件 → 定位跳转
 let memoPendingFlag = false;       // 有未落盘修改（writing-ui 的 anyDirty 经 getter 读它）
@@ -1867,6 +1868,8 @@ const defaultSettings = {
     fixedKeys: true,
     autoSave: false,
     openMode: 'tab',
+    // 点窗口 X 的行为：exit 直接退出 / tray 最小化到托盘（后端 config.json 为真源）
+    closeAction: 'exit',
     sidebarMode: 'tree',
     sidebarView: 'files',
     // 结构面板在「文件 + AI 助手」同时存在时的来源偏好（file / session）
@@ -2021,6 +2024,9 @@ if (!cjkFonts.some((f) => f.id === settings.uiCjkFont)) settings.uiCjkFont = 'au
 if (!cjkFonts.some((f) => f.id === settings.editorCjkFont)) settings.editorCjkFont = 'auto';
 settings.autoSave = !!settings.autoSave;
 if (settings.openMode !== 'window') settings.openMode = 'tab';
+// 关闭行为（exit 直接退出 / tray 最小化到托盘）：非法值回落退出——藏窗口是不可见的坑，
+// 宁可退出也不要让用户找不到程序。真相在后端 config.json（见 SetCloseAction）。
+if (settings.closeAction !== 'tray') settings.closeAction = 'exit';
 if (settings.sidebarMode !== 'list') settings.sidebarMode = 'tree';
 if (!['files', 'git', 'structure', 'chats'].includes(settings.sidebarView)) settings.sidebarView = 'files';
 if (settings.structureSource !== 'session') settings.structureSource = 'file';
@@ -4283,13 +4289,13 @@ const settingsPaneStorage = createSettingsPaneStorage({
     get settings() { return settings; },
     get applySettings() { return applySettings; },
 });
-// 设置 → 通用 → 新建菜单：显隐 / 排序 / 模板，配置只在 settings.newFileMenu 一份
+// 设置 → 菜单管理：显隐 / 排序 / 模板，配置只在 settings.newFileMenu 一份
 const settingsPaneNewFileMenu = createSettingsPaneNewFileMenu({
     get settings() { return settings; },
     get applySettings() { return applySettings; },
     get flash() { return flash; },
 });
-// 先渲染一次，让设置搜索能索引到动态行（之后进「通用」时由 selectSettingsPane 重建）
+// 先渲染一次，让设置搜索能索引到动态行（之后进「菜单管理」时由 selectSettingsPane 重建）
 settingsPaneNewFileMenu.renderNewFileMenuPane();
 // 设置 → AI → 外部工具：能力来源矩阵 + 服务提供商配置（MCP 组由 index.html 迁入，绑定仍归 ai-panel）
 const settingsPaneExternalTools = createSettingsPaneExternalTools({
@@ -4317,6 +4323,12 @@ elsSettings.openMode.addEventListener('change', () => {
     settings.openMode = elsSettings.openMode.value;
     applySettings();
     renderTabs();
+});
+// 关闭窗口时：直接退出 / 最小化到托盘（applySettings 里的 syncCloseAction 推给后端落盘）
+elsSettings.closeAction.addEventListener('change', () => {
+    settings.closeAction = elsSettings.closeAction.value === 'tray' ? 'tray' : 'exit';
+    applySettings();
+    if (settings.closeAction === 'tray') flash('点 X 将最小化到托盘，右键托盘图标可退出');
 });
 elsSettings.width.addEventListener('input', () => {
     settings.keyWidth = Number(elsSettings.width.value);
@@ -5544,6 +5556,11 @@ if (rt) {
         // 快捷便签：其他窗口/外部改了 .cadt/memo/memo.json 时重读（面板开着才生效）
         if (memoWorkspaceEventHook) memoWorkspaceEventHook(payload);
     });
+    // 多实例资源目录监听（全局便签 / 当前 AI 会话）：只做重读，不做合并
+    rt.EventsOn('resource-changed', (payload) => {
+        if (memoResourceEventHook) memoResourceEventHook(payload);
+        if (aiPanel && typeof aiPanel.handleResourceChange === 'function') aiPanel.handleResourceChange(payload);
+    });
     // 快捷便签定位点跳转：CLI --memo（已在运行时 secondInstance 转发到这里）
     rt.EventsOn('app-open-memo', (locator) => {
         if (memoJumpHook) memoJumpHook(locator);
@@ -5818,12 +5835,14 @@ const bridgeUI = createBridgeUI({
     get workspaceFolder() { return workspaceFolder; },
 });
 const {createAgentView, createAgentTeamView, createSideChatView, createGroupChatView, openGroupChatTab, createBgTermView, gitGroupCollapsed, gitRootDir, gitStateCache, gitUncheckedFiles, notifyAIGitEntry, openAgentTab, openAgentTeamTab, openSideChatTab, openBgTermTab, openBrowserTab, openVirtualDoc, refreshGitStatus, showGitDiff, showGitFileHistory, showGitRecentLog, gitRollbackPaths,
-    openMemoTab, createMemoView, memoApi, memoHasPending, memoOnWorkspaceEvent, memoOnWindowFocus, memoWorkspaceChanged} = bridgeUI;
+    openMemoTab, createMemoView, memoApi, memoHasPending, memoOnWorkspaceEvent, memoOnWindowFocus, memoOnResourceEvent, memoWorkspaceChanged} = bridgeUI;
 
 // 绑定便签真钩子（顶部早期 let 间接层的落点）：启动期事件先到也只摸到 null，不摸未初始化的 const
 memoFocusHook = () => { if (memoOnWindowFocus) memoOnWindowFocus(); };
 memoJumpHook = (locator) => { if (memoApi && memoApi.jumpToLocator) memoApi.jumpToLocator(locator); };
 memoWorkspaceEventHook = (payload) => { if (memoOnWorkspaceEvent) memoOnWorkspaceEvent(payload); };
+memoResourceEventHook = (payload) => { if (memoOnResourceEvent) memoOnResourceEvent(payload); };
+memoResourceEventHook = (payload) => { if (memoOnResourceEvent) memoOnResourceEvent(payload); };
 memoFlushHook = () => { if (memoApi && memoApi.flushAll) memoApi.flushAll().catch(() => {}); };
 
 // 便签 pending 翻转回调（bridge-memo-view 经 deps 注入取用）：记下标志位并刷新应用关窗脏标记，

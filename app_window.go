@@ -140,12 +140,23 @@ func (a *App) SetWindowBg(r, g, b int) {
 }
 
 func (a *App) beforeClose(ctx context.Context) bool {
+	// 设置里选了「最小化到托盘」：点 X 只是把窗口藏起来，进程与后台任务（AI 回合、终端、
+	// 后台命令）全部照旧跑，所以这里不弹任何确认——真正退出时（菜单 / 托盘右键 /
+	// 系统关机）才走下面的确认流程。见 app_close_action.go。
+	// 多窗口下「藏」只属于最后一个窗口：先数一遍同 exe 还有没有别的应用窗口在跑。
+	// 转换模式（--convert）不参与：它没有用户可见的窗口，藏起来只会挡住 os.Exit。
+	if a.convert == nil && traySupported() &&
+		shouldHideOnClose(a.closeAction, isPortableWindowProcess(), a.forceClose, a.quitRequested.Load(), systemShuttingDown(), countOtherPortableWindows()) {
+		a.hideToTray()
+		return true
+	}
 	// 关窗二次确认的依据不止「AI 回合进行中」：终端会话（含用户自己开的，仅在 shell 里
 	// 真有命令进程在跑时才计数，空闲提示符放行）与 AI 后台命令作业（background_command，
 	// 回合结束后仍长驻）都会随窗口关闭被静默终止，一并计入。
 	terms := a.Terminal.RunningSessionCount()
 	bgJobs := cmdbridge.RunningAIJobCount()
 	if a.forceClose || (!a.dirty && !a.aiRunning && terms == 0 && bgJobs == 0) {
+		a.stopTray()
 		a.mcpCloseAll() // MCP 子进程全量关闭（总预算 8s，超时靠 taskkill 兜底）
 		a.UnwatchWorkspace()
 		return false
@@ -160,6 +171,8 @@ func (a *App) ForceClose() {
 	a.forceClose = true
 	a.dirty = false
 	a.aiRunning = false
+	a.quitRequested.Store(true)
+	a.stopTray()
 	a.mcpCloseAll()
 	a.UnwatchWorkspace()
 	runtime.Quit(a.ctx)

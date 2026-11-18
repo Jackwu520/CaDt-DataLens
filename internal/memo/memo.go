@@ -8,14 +8,17 @@ package memo
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"datalens/internal/atomfile"
+	"datalens/internal/resourcelease"
 )
 
 const (
@@ -27,6 +30,10 @@ const (
 	mtimeSlackMs    = 2000         // FAT 类文件系统秒级时间戳粒度的放宽（只对「文件更旧」方向生效）
 	conflictPrefix  = "conflict: " // SaveResult.Error 前缀：冲突错误（前端据此重载）
 )
+
+// ErrBusy 表示快捷便签正被另一个窗口编辑（跨进程写权被占）。
+// 前端按字符串前缀 memo-busy: 识别；SaveResult.Busy 是结构化版本。
+var ErrBusy = errors.New("memo-busy: 快捷便签正在另一窗口编辑")
 
 // imageExtByMIME 放行的贴图类型（只信魔数嗅探结果，剪贴板图片基本都是 PNG）。
 var imageExtByMIME = map[string]string{
@@ -49,13 +56,33 @@ var deps Deps
 func SetDeps(d Deps) { deps = d }
 
 // SaveResult 保存结果：Conflict 为真表示别的窗口先写了，前端应重载后重试；
+// Busy 为真表示写权被另一个窗口持有（前端应保留 dirty，不要当冲突重载）；
 // MtimeMs 是写入后文件的新修改时间，前端直接更新缓存，省一次 Load。
 type SaveResult struct {
 	OK       bool   `json:"ok"`
 	Conflict bool   `json:"conflict,omitempty"`
+	Busy     bool   `json:"busy,omitempty"`
 	Error    string `json:"error,omitempty"`
 	MtimeMs  int64  `json:"mtimeMs,omitempty"`
 }
+
+// LeaseStatus 是便签写权租约的获取/探测结果。
+type LeaseStatus struct {
+	Acquired bool                `json:"acquired"` // 本进程是否持有
+	Busy     bool                `json:"busy"`     // 是否被其它进程持有
+	Owner    resourcelease.Owner `json:"owner,omitempty"`
+}
+
+type memoLeaseEntry struct {
+	lease *resourcelease.Lease
+	refs  int
+	owner resourcelease.Owner
+}
+
+var (
+	memoLeaseMu sync.Mutex
+	memoLeases  = map[string]*memoLeaseEntry{}
+)
 
 // envelope Load 的返回信封：data 是 memo.json 原文，mtimeMs 用于写回时 CAS。
 type envelope struct {
@@ -99,6 +126,132 @@ func Load(scope, workspace string) (string, error) {
 	return envelopeJSON(data, info.ModTime().UnixMilli()), nil
 }
 
+// RootPath 返回作用域根目录（Worktree/资源监听用）；scope/workspace 校验与 Load/Save 共用 resolveRoot。
+func RootPath(scope, workspace string) (string, error) {
+	return resolveRoot(scope, workspace)
+}
+
+// LeasePath 返回作用域对应的写权租约文件路径。
+// 锁文件在被保护的 memo 目录之外（<root>.lock）：目录被移动/回收时不失效，
+// 新写者仍会撞同一把锁。
+func LeasePath(scope, workspace string) (string, error) {
+	root, err := resolveRoot(scope, workspace)
+	if err != nil {
+		return "", err
+	}
+	return root + ".lock", nil
+}
+
+// AcquireLease 取便签写权（面板打开期间持有；同进程重入走 refcount）。
+func AcquireLease(scope, workspace, label string) (LeaseStatus, error) {
+	path, err := LeasePath(scope, workspace)
+	if err != nil {
+		return LeaseStatus{}, err
+	}
+	memoLeaseMu.Lock()
+	if entry := memoLeases[path]; entry != nil {
+		entry.refs++
+		st := LeaseStatus{Acquired: true, Owner: entry.owner}
+		memoLeaseMu.Unlock()
+		return st, nil
+	}
+	memoLeaseMu.Unlock()
+
+	owner := resourcelease.Owner{PID: os.Getpid(), Label: label}
+	lease, err := resourcelease.Acquire(path, owner)
+	if err != nil {
+		if resourcelease.IsBusy(err) {
+			return LeaseStatus{Busy: true, Owner: resourcelease.BusyOwner(err)}, nil
+		}
+		return LeaseStatus{}, fmt.Errorf("获取快捷便签写锁失败：%w", err)
+	}
+	// 双检：并发 Acquire 可能已经入表；把本次多拿的 ref 还回去。
+	memoLeaseMu.Lock()
+	if entry := memoLeases[path]; entry != nil {
+		entry.refs++
+		st := LeaseStatus{Acquired: true, Owner: entry.owner}
+		memoLeaseMu.Unlock()
+		lease.Release()
+		return st, nil
+	}
+	memoLeases[path] = &memoLeaseEntry{lease: lease, refs: 1, owner: owner}
+	memoLeaseMu.Unlock()
+	return LeaseStatus{Acquired: true, Owner: owner}, nil
+}
+
+// ReleaseLease 释放本窗口对便签写权的引用；refs 归零才真正解锁。
+func ReleaseLease(scope, workspace string) error {
+	path, err := LeasePath(scope, workspace)
+	if err != nil {
+		return err
+	}
+	memoLeaseMu.Lock()
+	entry := memoLeases[path]
+	if entry == nil {
+		memoLeaseMu.Unlock()
+		return nil
+	}
+	entry.refs--
+	if entry.refs > 0 {
+		memoLeaseMu.Unlock()
+		return nil
+	}
+	delete(memoLeases, path)
+	memoLeaseMu.Unlock()
+	entry.lease.Release()
+	return nil
+}
+
+// LeaseStatusFor 探测便签写权：本进程持有 -> Acquired；别的进程持有 -> Busy + Owner；
+// 空闲 -> 两者都 false。只用于 UI 提示，不用于写决策。
+func LeaseStatusFor(scope, workspace string) (LeaseStatus, error) {
+	path, err := LeasePath(scope, workspace)
+	if err != nil {
+		return LeaseStatus{}, err
+	}
+	memoLeaseMu.Lock()
+	if entry := memoLeases[path]; entry != nil {
+		st := LeaseStatus{Acquired: true, Owner: entry.owner}
+		memoLeaseMu.Unlock()
+		return st, nil
+	}
+	memoLeaseMu.Unlock()
+	owner, busy, err := resourcelease.Probe(path)
+	if err != nil {
+		return LeaseStatus{}, err
+	}
+	return LeaseStatus{Busy: busy, Owner: owner}, nil
+}
+
+// LockForClear 供存储清理取便签独占写权；同进程面板持有时直接报忙（不能因为
+// refcount 共享就把面板正在编辑的目录删掉）。返回的 release 必须 defer 执行。
+func LockForClear(scope, workspace string) (func(), error) {
+	path, err := LeasePath(scope, workspace)
+	if err != nil {
+		return nil, err
+	}
+	memoLeaseMu.Lock()
+	busy := memoLeases[path] != nil && memoLeases[path].refs > 0
+	memoLeaseMu.Unlock()
+	if busy {
+		return nil, fmt.Errorf("%w（本窗口正在编辑）", ErrBusy)
+	}
+	lease, err := resourcelease.AcquireNoShare(path, resourcelease.Owner{
+		PID:   os.Getpid(),
+		Label: "storage-clear",
+	})
+	if err != nil {
+		if resourcelease.IsBusy(err) {
+			if owner := resourcelease.BusyOwner(err); owner.PID > 0 {
+				return nil, fmt.Errorf("%w（另一窗口 PID %d 正在编辑）", ErrBusy, owner.PID)
+			}
+			return nil, fmt.Errorf("%w（另一窗口正在编辑）", ErrBusy)
+		}
+		return nil, err
+	}
+	return func() { lease.Release() }, nil
+}
+
 // Save 整份写 memo.json。baseMtimeMs>0 时做 CAS：文件比读入时新（哪怕毫秒级）
 // 即视为其他窗口先写，返回 Conflict 让前端重载；「文件更旧」只在超出时间戳粒度
 // 放宽时才算冲突。baseMtimeMs==0 表示载入时还没有文件，此时若文件已存在也报冲突。
@@ -107,6 +260,23 @@ func Save(scope, workspace, doc string, baseMtimeMs int64) SaveResult {
 	if err != nil {
 		return SaveResult{Error: err.Error()}
 	}
+	// 写盘前取同一把写权租约：面板已持有时走 refcount，零成本；另一个窗口
+	// 持有时返回 Busy（不是 Conflict——前端不能删缓存重载，那会丢本窗口内容）。
+	lease, err := resourcelease.Acquire(root+".lock", resourcelease.Owner{
+		PID:   os.Getpid(),
+		Label: "memo-save",
+	})
+	if err != nil {
+		if resourcelease.IsBusy(err) {
+			msg := ErrBusy.Error()
+			if owner := resourcelease.BusyOwner(err); owner.PID > 0 {
+				msg = fmt.Sprintf("%s（PID %d）", msg, owner.PID)
+			}
+			return SaveResult{Busy: true, Error: msg}
+		}
+		return SaveResult{Error: "获取快捷便签写锁失败：" + err.Error()}
+	}
+	defer lease.Release()
 	doc = strings.TrimSpace(doc)
 	if doc == "" {
 		return SaveResult{Error: "没有可保存的内容"}
@@ -155,6 +325,20 @@ func SaveImage(scope, workspace, dataURL string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	lease, err := resourcelease.Acquire(root+".lock", resourcelease.Owner{
+		PID:   os.Getpid(),
+		Label: "memo-image",
+	})
+	if err != nil {
+		if resourcelease.IsBusy(err) {
+			if owner := resourcelease.BusyOwner(err); owner.PID > 0 {
+				return "", fmt.Errorf("%w（PID %d）", ErrBusy, owner.PID)
+			}
+			return "", ErrBusy
+		}
+		return "", fmt.Errorf("获取快捷便签写锁失败：%w", err)
+	}
+	defer lease.Release()
 	raw, ext, err := decodeImage(dataURL)
 	if err != nil {
 		return "", err

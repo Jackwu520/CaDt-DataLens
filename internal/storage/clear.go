@@ -104,8 +104,19 @@ func (s *Service) removeSpec(sp spec, workspaceRoot string) ClearResult {
 		result.Blocked += s.targetBlockedCount(t, t.resolve(s, workspaceRoot))
 	}
 	result.Skipped = result.Blocked
+	var release func()
+	var err error
 	if prepare := s.deps.BeforeClear[sp.id]; prepare != nil {
-		prepare()
+		release, err = prepare(workspaceRoot)
+		if err != nil {
+			result.Reason = err.Error()
+			result.Remaining = 1
+			result.Skipped = result.Blocked + 1
+			return result
+		}
+	}
+	if release != nil {
+		defer release()
 	}
 	for _, path := range paths {
 		if err := s.removePath(sp.kind, path); err != nil && result.Reason == "" {

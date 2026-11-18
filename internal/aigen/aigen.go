@@ -317,6 +317,13 @@ func aiGenDownloadURL(client *http.Client, item ProductItem, timeoutSec int, lim
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		// 附上服务端响应片段：产物地址错误 / 端点返回错误 JSON 时，光报 HTTP 码无法定位
+		// （实测「下载失败 HTTP 400」其实是上游请求体问题，响应体里有线索）。限长 + 脱敏。
+		preview, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		hint := strings.TrimSpace(string(preview))
+		if hint != "" {
+			return nil, "", fmt.Errorf("下载失败：HTTP %d，服务端响应：%s", resp.StatusCode, aiGenRedactError(aiGenSnippet(hint)))
+		}
 		return nil, "", fmt.Errorf("下载失败：HTTP %d", resp.StatusCode)
 	}
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
@@ -389,6 +396,28 @@ func aiGenClampTimeout(seconds int) int {
 		return aiGenMaxTimeout
 	}
 	return seconds
+}
+
+// aiGenSnippet 把服务端响应片段压成安全的一行摘要：去控制字符、限长，避免错误文案里塞进
+// 大段 HTML / 换行把工具卡撑爆。与 aiGenRedactError 串用（先压片段再打码密钥）。
+func aiGenSnippet(text string) string {
+	var b strings.Builder
+	space := false
+	for _, r := range strings.TrimSpace(text) {
+		if r <= 0x20 || r == 0x7f { // 含普通空格：连续空白（\n\t 与空格混排）只压成一个
+			space = true
+			continue
+		}
+		if space {
+			b.WriteByte(' ')
+			space = false
+		}
+		b.WriteRune(r)
+		if b.Len() >= 200 {
+			break
+		}
+	}
+	return b.String()
 }
 
 // aiGenRedactError 错误摘要脱敏：URL 查询串里的 key/token 类参数值打码（密钥可能出现在

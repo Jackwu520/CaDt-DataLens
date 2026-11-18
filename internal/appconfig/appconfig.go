@@ -17,15 +17,33 @@ import (
 // Config 是 config.json 的磁盘结构。
 type Config struct {
 	OpenMode        string   `json:"openMode"`
+	CloseAction     string   `json:"closeAction,omitempty"`
 	PluginsPathMode string   `json:"pluginsPathMode,omitempty"`
 	DisabledPlugins []string `json:"disabledPlugins,omitempty"`
 	DeveloperMode   bool     `json:"developerMode,omitempty"`
 	DataSource      string   `json:"dataSource,omitempty"`
 }
 
+// 点窗口关闭按钮（X）时的行为。
+const (
+	// CloseActionExit 直接退出程序。
+	CloseActionExit = "exit"
+	// CloseActionTray 隐藏窗口留在托盘，进程与后台任务（AI 回合、终端、后台命令）继续跑。
+	CloseActionTray = "tray"
+)
+
+// NormalizeCloseAction 归一化关闭行为取值，非法值回落「直接退出」
+// （宁可退出也别把窗口藏起来让人找不着）。
+func NormalizeCloseAction(action string) string {
+	if action == CloseActionTray {
+		return CloseActionTray
+	}
+	return CloseActionExit
+}
+
 // Default 返回无配置时的默认值。
 func Default() Config {
-	return Config{OpenMode: "tab", PluginsPathMode: "portable", DataSource: plugins.MarketSourceGitee}
+	return Config{OpenMode: "tab", CloseAction: CloseActionExit, PluginsPathMode: "portable", DataSource: plugins.MarketSourceGitee}
 }
 
 // Path 返回 config.json 的绝对路径（应用数据根目录不可用时返回空串）。
@@ -55,6 +73,7 @@ func Read() Config {
 	if stored.OpenMode == "window" {
 		cfg.OpenMode = "window"
 	}
+	cfg.CloseAction = NormalizeCloseAction(stored.CloseAction)
 	if stored.PluginsPathMode == "appdata" {
 		cfg.PluginsPathMode = "appdata"
 	}
@@ -85,4 +104,16 @@ func Save(cfg Config) error {
 // OpenMode 返回文件打开方式（tab / window）。
 func OpenMode() string {
 	return Read().OpenMode
+}
+
+// CloseAction 返回点窗口关闭按钮时的行为（exit / tray）。
+func CloseAction() string {
+	return Read().CloseAction
+}
+
+// SaveCloseAction 只改关闭行为，其余字段按当前磁盘值原样带过去再整份写回。
+func SaveCloseAction(action string) error {
+	cfg := Read()
+	cfg.CloseAction = NormalizeCloseAction(action)
+	return Save(cfg)
 }

@@ -12,6 +12,7 @@ import {
     genExtFor,
     GEN_IMAGE_WRAP_DEFAULT,
     genModelByRef,
+    genModelEcho,
     genRequestPath,
     GEN_MODEL_PRESETS,
     GEN_PLACEHOLDERS,
@@ -24,6 +25,7 @@ import {
     normalizeGenModel,
     normalizeGenModels,
     normalizeGenSnapshot,
+    randomGenSeed,
     renderGenImages,
     renderGenJson,
     renderGenText,
@@ -48,6 +50,47 @@ test('normalizeGenModel：缺省值与 clamp，kind 非法回落 image', () => {
     assert.equal(weird.pollIntervalSec, 2);
     assert.equal(weird.maxPolls, 240);
     assert.equal(normalizeGenModel(null, () => 'gen-y').id, 'gen-y', '空输入用 idGen 兜底');
+});
+
+test('genModelEcho：回显全部非密钥字段（含 bodyTemplate/resultPath/headers），绝不泄漏 apiKey', () => {
+    const entry = normalizeGenModel({
+        id: 'g1', name: 'sensenova', kind: 'image',
+        baseURL: 'https://token.sensenova.cn', path: '/v1/images/generations',
+        bodyTemplate: '{"prompt":{{prompt}}}', resultPath: 'data[*].b64_json', resultType: 'b64',
+        headers: [{key: 'Authorization', value: 'Bearer {{apiKey}}'}],
+        apiKey: 'sk-super-secret',
+    }, () => 'g');
+    const echo = genModelEcho(entry);
+    assert.equal(echo.bodyTemplate, '{"prompt":{{prompt}}}', 'bodyTemplate 必须回显（缺它曾导致下载 400 排查绕弯）');
+    assert.equal(echo.resultPath, 'data[*].b64_json');
+    assert.equal(echo.resultType, 'b64');
+    assert.deepEqual(echo.headers, [{key: 'Authorization', value: 'Bearer {{apiKey}}'}]);
+    assert.equal(Object.prototype.hasOwnProperty.call(echo, 'apiKey'), false, '密钥字段绝不出现');
+    assert.equal(JSON.stringify(echo).includes('sk-super-secret'), false, '序列化后也不含密钥明文');
+    echo.headers[0].value = 'tampered';
+    assert.equal(entry.headers[0].value, 'Bearer {{apiKey}}', 'headers 是深拷贝，改回显不影响原条目');
+});
+
+test('randomGenSeed：31 位非负整数，连续多次不全相同', () => {
+    for (let i = 0; i < 20; i++) {
+        const s = randomGenSeed();
+        assert.ok(Number.isInteger(s) && s >= 0 && s <= 0x7fffffff, 'seed 应为 31 位非负整数，实际 ' + s);
+    }
+    const set = new Set(Array.from({length: 30}, () => randomGenSeed()));
+    assert.ok(set.size > 1, '连续随机不应全相同');
+});
+
+test('buildGenVars：seed 未指定时随机填充，显式 seed 原样尊重', () => {
+    const entry = normalizeGenModel({name: 'x', bodyTemplate: '{"seed":{{seed}}}'}, () => 'g');
+    const a = buildGenVars(entry, {prompt: 'p'});
+    const b = buildGenVars(entry, {prompt: 'p'});
+    assert.ok(Number.isInteger(a.seed) && a.seed >= 0, '未指定 seed 应为随机整数');
+    assert.ok(Number.isInteger(b.seed) && b.seed >= 0);
+    // 模板渲染出数字字面量（不是 null），发给服务端才有效果
+    const body = JSON.parse(renderGenJson(entry.bodyTemplate, a));
+    assert.equal(typeof body.seed, 'number', '{{seed}} 应渲染成数字，不再渲染 null');
+    assert.equal(buildGenVars(entry, {prompt: 'p', seed: 12345}).seed, 12345, '显式 seed 原样尊重');
+    assert.equal(buildGenVars(entry, {prompt: 'p', seed: 0}).seed, 0, 'seed=0 是合法显式值，不当作未指定');
 });
 
 test('normalizeGenHeaders：数组 / 对象 / 行文本三种形态，去重去空键剥换行', () => {
