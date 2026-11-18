@@ -1,11 +1,20 @@
 package sessionstore
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// seedSession 建一个带 header 的会话目录；WriteMeta/Rewrite 现在要求目录已存在。
+func seedSession(t *testing.T, store *Store, id string) {
+	t.Helper()
+	if err := store.AppendWithCreate(id, "{}\n", true); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestValidAISessionID(t *testing.T) {
 	cases := []struct {
@@ -130,6 +139,9 @@ func TestAISessionStoreRewrite(t *testing.T) {
 
 func TestAISessionStoreMetaList(t *testing.T) {
 	store := New(t.TempDir())
+	seedSession(t, store, "s1")
+	seedSession(t, store, "s2")
+	seedSession(t, store, "s4")
 	if err := store.WriteMeta("s1", `{"id":"s1","title":"一"}`); err != nil {
 		t.Fatal(err)
 	}
@@ -195,6 +207,8 @@ func TestAISessionStoreDelete(t *testing.T) {
 func TestAISessionStoreDeleteAll(t *testing.T) {
 	store := New(t.TempDir())
 	store.DeleteFn = os.RemoveAll
+	seedSession(t, store, "s1")
+	seedSession(t, store, "s2")
 	if err := store.WriteMeta("s1", "{}"); err != nil {
 		t.Fatal(err)
 	}
@@ -211,6 +225,7 @@ func TestAISessionStoreDeleteAll(t *testing.T) {
 
 func TestAISessionStoreListFallsBackToHeader(t *testing.T) {
 	store := New(t.TempDir())
+	seedSession(t, store, "s1")
 	if err := store.WriteMeta("s1", `{"id":"s1","title":"正常"}`); err != nil {
 		t.Fatal(err)
 	}
@@ -278,5 +293,28 @@ func TestAISessionStoreImagePathRejectsTraversal(t *testing.T) {
 	}
 	if !strings.HasSuffix(got, filepath.Join("s1", ImagesDir, "img-1.png")) {
 		t.Fatalf("imagePath = %q", got)
+	}
+}
+
+func TestAISessionStoreTombstoneBlocksResurrection(t *testing.T) {
+	store := New(t.TempDir())
+	store.DeleteFn = os.RemoveAll
+	if err := store.Append("s1", "{}\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Remove("s1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Append("s1", "{}\n"); !errors.Is(err, ErrSessionGone) {
+		t.Fatalf("删除后 Append 应返回 ErrSessionGone，得到 %v", err)
+	}
+	if err := store.AppendWithCreate("s1", "{}\n", true); !errors.Is(err, ErrSessionGone) {
+		t.Fatalf("删除后 allowCreate 也必须被墓碑挡住，得到 %v", err)
+	}
+	if err := store.WriteMeta("s1", "{}"); !errors.Is(err, ErrSessionGone) {
+		t.Fatalf("删除后 WriteMeta 应返回 ErrSessionGone，得到 %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(store.Root, "s1")); !os.IsNotExist(err) {
+		t.Fatalf("墓碑存在时不应重建会话目录：%v", err)
 	}
 }

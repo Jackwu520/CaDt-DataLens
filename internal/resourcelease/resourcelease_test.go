@@ -295,3 +295,29 @@ func TestSharedBlockedByLocalExclusive(t *testing.T) {
 	}
 	shared.Release()
 }
+
+func TestNoShareBlocksLaterLocalAcquire(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "lease.test")
+	ns, err := AcquireNoShare(path, Owner{Label: "clear"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Acquire(path, Owner{}); !IsBusy(err) {
+		ns.Release()
+		t.Fatalf("NoShare 持有期间 Acquire 应 busy，得到 %v", err)
+	}
+	if _, err := AcquireWait(path, Owner{}, 100*time.Millisecond); !IsBusy(err) {
+		ns.Release()
+		t.Fatalf("NoShare 持有期间 AcquireWait 应 busy，得到 %v", err)
+	}
+	if _, err := AcquireShared(path); !IsBusy(err) {
+		ns.Release()
+		t.Fatalf("NoShare 持有期间 AcquireShared 应 busy，得到 %v", err)
+	}
+	ns.Release()
+	l, err := Acquire(path, Owner{})
+	if err != nil {
+		t.Fatalf("释放后 Acquire 失败：%v", err)
+	}
+	l.Release()
+}

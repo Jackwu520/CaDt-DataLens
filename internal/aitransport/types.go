@@ -203,10 +203,16 @@ type RetryPayload struct {
 }
 
 // QueuePayload 描述本地限流导致的排队。WaitMs 为 0 是「排队结束」的清除信号。
+//
+// Kind 必须区分两种性质完全不同的等待，否则前端只能把「配额已用尽 9.9 小时」
+// 也写成「RPM 限流」，用户会误以为是自己请求太密：
+//   - QueueKindRPM：本地滑动窗口满，等一个窗口即可（≤ 60s）
+//   - QueueKindFrozen：服务端 429 的 Retry-After 回灌出的冻结期，可能长达数小时
 type QueuePayload struct {
 	Id     string `json:"id"`
 	WaitMs int    `json:"waitMs"`
 	Reason string `json:"reason,omitempty"`
+	Kind   string `json:"kind,omitempty"`
 }
 
 // ParamAdjustPayload：一次请求内因服务端参数上限而自动降档的通知。

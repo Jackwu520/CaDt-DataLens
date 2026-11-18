@@ -121,11 +121,11 @@ func TestSessionIndexExcludesArchived(t *testing.T) {
 
 func TestSyncSessionIndexRebuildsDirty(t *testing.T) {
 	store := sessionstore.New(t.TempDir())
-	if err := store.WriteMeta("s1", `{"id":"s1","title":"同步会话","workspace":"D:/w","updatedAt":1,"messageCount":1}`); err != nil {
-		t.Fatal(err)
-	}
 	if err := store.Append("s1", `{"v":1,"t":"header","id":"s1","title":"同步会话"}`+"\n"+
 		`{"v":1,"t":"msg","mid":"m1","m":{"role":"user","content":"第一次同步","ts":1}}`+"\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.WriteMeta("s1", `{"id":"s1","title":"同步会话","workspace":"D:/w","updatedAt":1,"messageCount":1}`); err != nil {
 		t.Fatal(err)
 	}
 	db, trigram := newTestSessionIndex(t)

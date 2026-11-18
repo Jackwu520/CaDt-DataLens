@@ -103,6 +103,11 @@ func Acquire(lockPath string, owner Owner) (*Lease, error) {
 	}
 	owner = normalizeOwner(owner)
 	st.mu.Lock()
+	if st.noShare {
+		local := st.owner
+		st.mu.Unlock()
+		return nil, &BusyError{Owner: localOrFile(local, key)}
+	}
 	switch {
 	case st.exclusive > 0:
 		st.exclusive++
@@ -157,6 +162,7 @@ func AcquireNoShare(lockPath string, owner Owner) (*Lease, error) {
 	st.lock = lock
 	st.exclusive = 1
 	st.owner = owner
+	st.noShare = true
 	st.mu.Unlock()
 	writeOwner(key, owner)
 	return &Lease{path: key, mode: Exclusive, st: st}, nil
@@ -207,6 +213,11 @@ func AcquireWait(lockPath string, owner Owner, timeout time.Duration) (*Lease, e
 	}
 	owner = normalizeOwner(owner)
 	st.mu.Lock()
+	if st.noShare {
+		local := st.owner
+		st.mu.Unlock()
+		return nil, &BusyError{Owner: localOrFile(local, key)}
+	}
 	switch {
 	case st.exclusive > 0:
 		st.exclusive++

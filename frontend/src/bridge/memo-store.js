@@ -63,6 +63,10 @@ export function createMemoStore(deps) {
     return !!(deps.backend && typeof deps.backend.MemoLeaseAcquire === 'function');
   }
 
+  // acquiring 防止同一作用域的并发长租约获取：两个 trigger（focus + watch）同时到
+  // 时只允许一个走 RPC，另一个直接返回“重试”，避免 Go refcount 多 1。
+  const retryAcquiring = new Set();
+
   // releaseAcquiredLease 释放一次“临时/短租约”获取的写权。
   // 不能走 releaseLease：它按 cache.writer 判断，临时租约并不把 cache 标成 writer。
   async function releaseAcquiredLease(scope, workspace) {
@@ -137,6 +141,8 @@ export function createMemoStore(deps) {
 
     if (cached && !(opts && opts.force)) {
       if (!wantAcquire || cached.writer) return resultOf(cached);
+      // 同窗口另一个 retry 正在拿锁：等它完成后由 notify 触发重渲染，不重复 acquire。
+      if (retryAcquiring.has(key)) return resultOf(cached);
       const lease = await acquireLease(scope, workspace);
       if (!lease.acquired) {
         cached.readOnly = true;
@@ -175,27 +181,33 @@ export function createMemoStore(deps) {
     const cache = caches.get(key);
     if (!cache) return {ok: false, error: '快捷便签 未加载'};
     if (cache.writer) return {ok: true};
-    const lease = await acquireLease(scope, workspace);
-    if (!lease.acquired) {
-      cache.readOnly = true;
-      cache.owner = lease.owner || null;
-      return {ok: false, busy: !!lease.busy, owner: cache.owner, error: lease.error};
-    }
-    cache.writer = true;
-    cache.readOnly = false;
-    cache.owner = null;
-    const fresh = await readInto(scope, workspace, key, cache, lease);
-    if (fresh.error) {
-      const rel = await releaseLease(scope, {workspace});
-      if (!rel || rel.ok) {
-        cache.writer = false;
+    if (retryAcquiring.has(key)) return {ok: false, retry: true};
+    retryAcquiring.add(key);
+    try {
+      const lease = await acquireLease(scope, workspace);
+      if (!lease.acquired) {
         cache.readOnly = true;
-        cache.owner = null;
+        cache.owner = lease.owner || null;
+        return {ok: false, busy: !!lease.busy, owner: cache.owner, error: lease.error};
       }
-      return {ok: false, error: fresh.error};
+      cache.writer = true;
+      cache.readOnly = false;
+      cache.owner = null;
+      const fresh = await readInto(scope, workspace, key, cache, lease);
+      if (fresh.error) {
+        const rel = await releaseLease(scope, {workspace});
+        if (!rel || rel.ok) {
+          cache.writer = false;
+          cache.readOnly = true;
+          cache.owner = null;
+        }
+        return {ok: false, error: fresh.error};
+      }
+      notify(scope);
+      return {ok: true};
+    } finally {
+      retryAcquiring.delete(key);
     }
-    notify(scope);
-    return {ok: true};
   }
 
   // releaseLease 让出写权；调用方必须先 flush 成功。release 失败时保留 writer。
@@ -273,11 +285,11 @@ export function createMemoStore(deps) {
         return {ok: false, busy: true, error: res.error || busyMessage(null)};
       }
       if (res && res.conflict) {
-        // 别的窗口先写了：放弃本次缓存，重读磁盘版本并广播（刷新所有打开的面板）
-        caches.delete(key);
-        const fresh = await load(cache.scope, {workspace: cache.workspace, force: true, acquire: false});
-        notify(cache.scope);
-        return {ok: false, conflict: true, error: res.error, doc: fresh.doc};
+        // 冲突重载磁盘，但保留本窗口写权：租约仍在手里，删缓存会让 releaseLease no-op。
+        const lease = cache.writer ? {acquired: true, owner: cache.owner} : null;
+        const fresh = await readInto(cache.scope, cache.workspace, key, cache, lease);
+        // readInto 在内容变化时已经 notify；这里不再重复广播。
+        return {ok: false, conflict: true, error: res.error, doc: fresh.error ? cache.doc : fresh.doc};
       }
       if (!res || !res.ok) {
         cache.dirty = true;
@@ -384,7 +396,16 @@ export function createMemoStore(deps) {
         if (cache.timer) { clearTimeout(cache.timer); cache.timer = 0; }
         cache.dirty = true;
         const saved = await saveCache(entry.key, cache);
-        if (!saved.ok) return {ok: false, error: saved.error, busy: !!saved.busy};
+        if (!saved.ok) {
+          // 临时租约写入失败：按磁盘版本回滚，不能留下 dirty && !writer 的僵尸缓存
+          // （否则 hasPending 恒真、flush 永远 busy、关窗一直弹确认）。
+          const rollback = await readInto(scope, cache.workspace, entry.key, cache, null);
+          cache.dirty = false;
+          emitPending();
+          return {ok: false, error: saved.error, busy: !!saved.busy, doc: rollback.doc};
+        }
+        cache.dirty = false;
+        emitPending();
       } else {
         scheduleSave(scope);
       }

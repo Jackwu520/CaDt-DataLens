@@ -92,10 +92,21 @@ test('CandySweet 风格逐条等于软件当前真实生效的键位', () => {
         'run.current': 'F5', 'run.stop': 'Shift+F5', 'run.project': 'Ctrl+F5', 'run.panel': 'Alt+F11',
         'view.sidebar': 'Ctrl+B / Alt+1', 'view.terminal': 'Alt+F12', 'view.quickSwitch': 'Ctrl+`',
         'view.palette': 'Ctrl+Shift+P', 'ai.togglePanel': 'Alt+9',
+        'view.closeDockPanel': 'Shift+Escape',
     };
     for (const [id, combo] of Object.entries(expected)) {
         assert.equal(getShortcut(id), combo, `CandySweet 风格的 ${id} 键位变了`);
     }
+});
+
+test('关闭底部面板：三套风格同为 Shift+Esc，且 main.js 按面板开合状态分发', () => {
+    for (const style of KEY_STYLES) {
+        assert.equal(getShortcut('view.closeDockPanel', style.id), 'Shift+Escape',
+            `${style.id} 风格下关闭底部面板应为 Shift+Escape`);
+    }
+    const main = read('src/main.js');
+    assert.match(main, /keymap\.is\(kb, 'view\.closeDockPanel'\)[\s\S]{0,500}?toggleTerminalPanel\(false\)/,
+        'Shift+Esc 必须真正收起底部面板');
 });
 
 test('main.js 真实绑定与注册表对账（源码断言）', () => {

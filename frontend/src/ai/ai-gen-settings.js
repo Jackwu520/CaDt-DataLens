@@ -9,6 +9,7 @@ import {iconSvg} from '../core/icons.js';
 import {createInput, createSelect, createSwitch, createTextarea} from '../core/form-controls.js';
 import {aiNowId} from './ai-constants.js';
 import {
+    buildGenConfigExport,
     buildGenVars,
     extractGenPath,
     GEN_KINDS,
@@ -17,8 +18,10 @@ import {
     genHeaderMap,
     genJoinURL,
     isAsyncGenModel,
+    mergeGenConfigImport,
     moveGenModelWithinKind,
     normalizeGenModel,
+    parseGenConfigImport,
     renderGenJson,
 } from './ai-gen-model.js';
 
@@ -547,6 +550,83 @@ export function createAIGenSettings(ctx, extras) {
         }
     }
 
+    // ---------- 导入 / 导出配置 ----------
+
+    async function exportGenConfig() {
+        const includeKeys = !!(document.getElementById('ai-gen-export-keys') &&
+            document.getElementById('ai-gen-export-keys').checked);
+        const json = JSON.stringify(buildGenConfigExport(entries(), {includeKeys}), null, 2);
+        try {
+            let path = '';
+            if (backend.ShowSaveFileDialog) {
+                path = await backend.ShowSaveFileDialog('导出生成条目配置', 'cadt-gen-models.json', '*.json');
+            } else if (backend.SaveFileDialog) {
+                path = await backend.SaveFileDialog('cadt-gen-models.json');
+            } else {
+                throw new Error('当前版本不支持保存对话框');
+            }
+            if (!path) {
+                setSettingsStatus('已取消导出', 'ok');
+                return;
+            }
+            await backend.SaveFile(path, json, 'lf', false, 'utf-8');
+            setSettingsStatus('生成条目配置已导出：' + path + (includeKeys ? '（含密钥，请妥善保管）' : '（不含密钥）'), 'ok');
+        } catch (e) {
+            setSettingsStatus('导出失败：' + ((e && e.message) || e), 'error');
+        }
+    }
+
+    async function importGenConfig() {
+        if (!backend.ShowOpenFileDialog) {
+            setSettingsStatus('当前版本不支持导入对话框', 'error');
+            return;
+        }
+        let path = '';
+        try {
+            path = await backend.ShowOpenFileDialog('导入生成条目配置', '*.json');
+        } catch (e) {
+            setSettingsStatus('导入失败：' + ((e && e.message) || e), 'error');
+            return;
+        }
+        if (!path) {
+            setSettingsStatus('已取消导入', 'ok');
+            return;
+        }
+        let read;
+        try {
+            read = await ctx.readTextFile(path, 4 << 20);
+        } catch (e) {
+            setSettingsStatus('导入失败：读取文件出错——' + ((e && e.message) || e), 'error');
+            return;
+        }
+        let incoming;
+        try {
+            incoming = parseGenConfigImport(read.text, () => aiNowId('gen-'));
+        } catch (e) {
+            setSettingsStatus('导入失败：' + ((e && e.message) || e), 'error');
+            return;
+        }
+        const replaceMode = !!(document.getElementById('ai-gen-import-replace') &&
+            document.getElementById('ai-gen-import-replace').checked);
+        const confirmLabel = replaceMode
+            ? '导入 ' + incoming.length + ' 条生成条目，并替换当前全部条目？当前条目将被清除，此操作不可撤销。'
+            : '导入 ' + incoming.length + ' 条生成条目？同 id 条目将被覆盖，其余条目保留。';
+        askConfirm(confirmLabel, () => {
+            const result = mergeGenConfigImport(entries(), incoming, {
+                mode: replaceMode ? 'replace' : 'merge',
+                idGen: () => aiNowId('gen-'),
+            });
+            getConfig().genModels = result.list;
+            saveAIConfig();
+            renderGenList();
+            if (replaceMode) {
+                setSettingsStatus('已导入并替换：' + result.list.length + ' 条生成条目', 'ok');
+            } else {
+                setSettingsStatus('已导入生成条目：新增 ' + result.added + ' 条，更新 ' + result.updated + ' 条', 'ok');
+            }
+        });
+    }
+
     // ---------- 预设与新建 ----------
 
     function renderGenPresetSelect() {
@@ -563,6 +643,8 @@ export function createAIGenSettings(ctx, extras) {
     function bindGenPane() {
         const createBtn = document.getElementById('ai-gen-create');
         const presetAdd = document.getElementById('ai-gen-preset-add');
+        const exportBtn = document.getElementById('ai-gen-export');
+        const importBtn = document.getElementById('ai-gen-import');
         if (createBtn && !createBtn.dataset.bound) {
             createBtn.dataset.bound = '1';
             createBtn.addEventListener('click', () => openGenEditor(null, null));
@@ -573,6 +655,14 @@ export function createAIGenSettings(ctx, extras) {
                 const preset = GEN_MODEL_PRESETS.find((item) => item.key === (presetSelect && presetSelect.value)) || GEN_MODEL_PRESETS[0];
                 openGenEditor(null, preset);
             });
+        }
+        if (exportBtn && !exportBtn.dataset.bound) {
+            exportBtn.dataset.bound = '1';
+            exportBtn.addEventListener('click', () => exportGenConfig());
+        }
+        if (importBtn && !importBtn.dataset.bound) {
+            importBtn.dataset.bound = '1';
+            importBtn.addEventListener('click', () => importGenConfig());
         }
         renderGenPresetSelect();
         renderGenList();

@@ -44,6 +44,10 @@ const (
 // 前端按字符串前缀 session-busy: 识别；Wails 绑定只返回 error 文本。
 var ErrSessionBusy = errors.New("session-busy: 会话正在另一窗口运行")
 
+// ErrSessionGone 表示会话已被另一个窗口删除。写路径见到它只跳过/放弃，
+// 绝不通过 MkdirAll 把目录重建出来。
+var ErrSessionGone = errors.New("session-gone: 会话已被删除")
+
 type Store struct {
 	Root     string
 	DeleteFn func(string) error
@@ -173,8 +177,9 @@ func wrapLeaseErr(err error) error {
 // withSessionLock 按固定层级取锁：根共享 -> 会话独占 -> .session.lock。
 //
 // 读取不加锁；只有追加/整份重写/写 meta/图片视频落盘这类写操作需要。
-// 先拿会话锁再建目录，避免删除方移走目录后写方的 MkdirAll 把空目录“复活”。
-func (s *Store) withSessionLock(id string, fn func(dir string) error) error {
+// allowCreate=true 只给“新建会话首次落 header”用；其它写路径在目录/墓碑缺失时
+// 一律返回 ErrSessionGone，避免另一窗口的扇出写把已删除会话复活。
+func (s *Store) withSessionLock(id string, allowCreate bool, fn func(dir string) error) error {
 	dir, err := s.sessionDir(id)
 	if err != nil {
 		return err
@@ -199,8 +204,15 @@ func (s *Store) withSessionLock(id string, fn func(dir string) error) error {
 		return wrapLeaseErr(err)
 	}
 	defer sessionLease.Release()
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("创建会话目录失败：%w", err)
+	if s.gone(id) {
+		return fmt.Errorf("%w：%s", ErrSessionGone, id)
+	}
+	if allowCreate {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return fmt.Errorf("创建会话目录失败：%w", err)
+		}
+	} else if info, statErr := os.Stat(dir); statErr != nil || !info.IsDir() {
+		return fmt.Errorf("%w：%s", ErrSessionGone, id)
 	}
 	lock, err := sessionlock.LockFile(filepath.Join(dir, aiSessionLockName), aiSessionLockWait)
 	if err != nil {
@@ -208,6 +220,36 @@ func (s *Store) withSessionLock(id string, fn func(dir string) error) error {
 	}
 	defer lock.Release()
 	return fn(dir)
+}
+
+// tombstonePath 删除墓碑放在 .locks/ 而不是会话目录里：删目录不会把墓碑一起删掉，
+// 同 id 的扇出写会一直看到“已删除”。
+func (s *Store) tombstonePath(id string) (string, error) {
+	leasePath, err := s.LeasePath(id)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSuffix(leasePath, sessionLeaseSuffix) + ".deleted", nil
+}
+
+func (s *Store) gone(id string) bool {
+	path, err := s.tombstonePath(id)
+	if err != nil {
+		return false
+	}
+	_, statErr := os.Stat(path)
+	return statErr == nil
+}
+
+func (s *Store) markGone(id string) error {
+	path, err := s.tombstonePath(id)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return atomfile.WriteFileAtomic(path, []byte("1"))
 }
 
 func (s *Store) logPath(id string) (string, error) {
@@ -363,13 +405,19 @@ func (s *Store) Read(id string) (string, error) {
 // append 在文件末尾追加若干行；写入前修掉上次崩溃留下的半行，
 // 写入后 fsync；失败回滚到追加前的长度，避免半批事件留在日志里。
 func (s *Store) Append(id string, payload string) error {
+	return s.AppendWithCreate(id, payload, true)
+}
+
+// AppendWithCreate 追加正文；allowCreate=false 时会话目录/墓碑缺失返回 ErrSessionGone。
+// 前端按 session._logCreated 传入：新建会话首次落 header 才允许建目录。
+func (s *Store) AppendWithCreate(id string, payload string, allowCreate bool) error {
 	if payload == "" {
 		return nil
 	}
 	if !strings.HasSuffix(payload, "\n") {
 		payload += "\n"
 	}
-	return s.withSessionLock(id, func(dir string) error {
+	return s.withSessionLock(id, allowCreate, func(dir string) error {
 		path := filepath.Join(dir, aiSessionLogName)
 		appendMu.Lock()
 		defer appendMu.Unlock()
@@ -405,13 +453,13 @@ func (s *Store) Append(id string, payload string) error {
 
 // rewrite 原子替换整个正文（迁移、清空、状态与日志不一致时的兜底）。
 func (s *Store) Rewrite(id string, payload string) error {
-	return s.withSessionLock(id, func(dir string) error {
+	return s.withSessionLock(id, false, func(dir string) error {
 		return atomfile.WriteFileAtomic(filepath.Join(dir, aiSessionLogName), []byte(payload))
 	})
 }
 
 func (s *Store) WriteMeta(id string, payload string) error {
-	return s.withSessionLock(id, func(dir string) error {
+	return s.withSessionLock(id, false, func(dir string) error {
 		return atomfile.WriteFileAtomic(filepath.Join(dir, aiSessionMetaName), []byte(payload))
 	})
 }
@@ -454,7 +502,8 @@ func (s *Store) Remove(id string) error {
 	info, err := os.Stat(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil
+			// 目录已经不在：仍然写墓碑，防止另一窗口的扇出写把它重建出来。
+			return s.markGone(id)
 		}
 		return err
 	}
@@ -481,7 +530,12 @@ func (s *Store) Remove(id string) error {
 		return wrapLeaseErr(err)
 	}
 	defer sessionLease.Release()
-	return s.deletePath(dir)
+	if err := s.deletePath(dir); err != nil {
+		return err
+	}
+	// 删除成功后写墓碑：其它窗口基于旧内存的 Append/WriteMeta 会得到 ErrSessionGone，
+	// 不会再走 MkdirAll 复活这个会话。
+	return s.markGone(id)
 }
 
 // RemoveAll 清空全部会话目录（整根目录进回收站）。

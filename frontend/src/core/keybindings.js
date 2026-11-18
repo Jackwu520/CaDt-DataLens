@@ -76,6 +76,9 @@ export const KEY_BINDINGS = [
     {id: 'view.chats', group: '视图与窗口', label: '群聊侧栏', kind: 'key', keys: {candysweet: ['Alt+8'], jetbrains: ['Alt+8'], vscode: ['Alt+8']}},
     {id: 'view.terminal', group: '视图与窗口', label: '终端', kind: 'key', keys: {candysweet: ['Alt+F12'], jetbrains: ['Alt+F12'], vscode: ['Ctrl+`']}},
     {id: 'view.debug', group: '视图与窗口', label: '调试控制台（开发者模式）', kind: 'key', keys: {candysweet: ['F12'], jetbrains: ['F12'], vscode: ['F12']}},
+    // Shift+Esc 关闭底部面板：JetBrains 语义（工具窗口统一收起），三套风格同键——
+    // VS Code 默认把 Shift+Esc 绑在「面板最大化」，本应用无该动作，故不冲突。
+    {id: 'view.closeDockPanel', group: '视图与窗口', label: '关闭底部面板（终端 / 调试 / 运行 / Git 图谱）', kind: 'key', keys: {candysweet: ['Shift+Escape'], jetbrains: ['Shift+Escape'], vscode: ['Shift+Escape']}},
     {id: 'view.quickSwitch', group: '视图与窗口', label: '快速切换（主题 / 视图 / 字体）', kind: 'key', keys: {candysweet: ['Ctrl+`'], jetbrains: ['Ctrl+`'], vscode: ['Ctrl+Shift+`']}},
     {id: 'view.palette', group: '视图与窗口', label: '命令面板', kind: 'key', keys: {candysweet: ['Ctrl+Shift+P'], jetbrains: ['Ctrl+Shift+A'], vscode: ['Ctrl+Shift+P']}},
     {id: 'view.jsonQuery', group: '视图与窗口', label: 'JSON 查询', kind: 'key', keys: {candysweet: ['Ctrl+Shift+J'], jetbrains: ['Ctrl+Shift+J'], vscode: ['Ctrl+Shift+J']}},

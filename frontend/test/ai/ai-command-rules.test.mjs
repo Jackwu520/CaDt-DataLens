@@ -572,3 +572,39 @@ test('显式 shell 取值清单与审批口径一致', () => {
         assert.equal(shellScriptPolicy(shell, 'Get-ChildItem').script, shell !== 'gitbash', shell);
     }
 });
+
+// ---------- 红队回归：换行族分隔符（2026-11-18 红队报告 V-01 / F-9） ----------
+
+test('红队 V-01：CR / NEL / LS / PS 都是分段符，不再整条跳过段级检测', () => {
+    for (const sep of ['\r', '\r\n', '\u0085', '\u2028', '\u2029']) {
+        const command = 'git log -n 5' + sep + 'format C: /y';
+        const split = splitCommandSegments(command);
+        assert.ok(split, '应能分段：' + JSON.stringify(sep));
+        assert.deepEqual(split.segments, ['git log -n 5', 'format C: /y'], JSON.stringify(sep));
+        // 旧实现遇 CR 直接 return null，退到只有 4 条原文兜底，format 整体漏标
+        assert.equal(analyzeDangerousCommand(command).ruleId, 'disk-destructive', JSON.stringify(sep));
+    }
+});
+
+test('红队 V-01 / F-9：分段失败（重定向 / 命令替换）时兜底覆盖破坏族', () => {
+    const cases = [
+        ['echo hi > /dev/null && format C: /y', 'disk-destructive'],
+        ['echo hi > /dev/null && shutdown /s /t 0', 'shutdown'],
+        ['echo hi > /dev/null && Remove-Item -Recurse -Force C://data', 'rm-recursive-force'],
+        ['echo hi > /dev/null && del /f /s /q C://data', 'del-force'],
+        ['echo hi > /dev/null && rmdir /s /q C://data', 'rmdir-recursive'],
+        ['echo hi > /dev/null && dd if=/dev/zero of=/dev/sda', 'disk-destructive'],
+        ['echo hi > /dev/null && rm -r -f /tmp/x', 'rm-recursive-force'],
+        ['echo hi > /dev/null && cipher /w:C', 'fs-wipe'],
+        ['echo hi > /dev/null && bcdedit /set {default} safeboot minimal', 'boot-tamper'],
+    ];
+    for (const [command, ruleId] of cases) {
+        assert.equal(splitCommandSegments(command), null, '这条应无法分段：' + command);
+        assert.equal(analyzeDangerousCommand(command).ruleId, ruleId, command);
+    }
+});
+
+test('换行族分段不影响只读判定：多行只读命令仍整体只读，含危险行则否', () => {
+    assert.equal(analyzeReadOnlyCommand('ls -la\rgit status').readOnly, true);
+    assert.equal(analyzeReadOnlyCommand('ls -la\rrm -rf /tmp/x').readOnly, false);
+});

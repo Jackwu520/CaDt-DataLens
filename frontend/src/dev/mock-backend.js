@@ -615,9 +615,11 @@ const mockBackend = {
         const item = mockAISessions.get(String(id));
         return item ? item.log : '';
     },
-    async AISessionAppend(id, lines) {
+    async AISessionAppend(id, lines, allowCreate) {
         const key = String(id);
-        const item = mockAISessions.get(key) || {meta: '{}', log: ''};
+        const existing = mockAISessions.get(key);
+        if (!existing && allowCreate === false) throw new Error('session-gone: 会话已被删除');
+        const item = existing || {meta: '{}', log: ''};
         item.log += lines;
         item.mtimeMs = Date.now();
         item.bytes = item.log.length;

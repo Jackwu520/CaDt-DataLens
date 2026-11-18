@@ -2,6 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+    buildGenConfigExport,
     buildGenMultipart,
     buildGenVars,
     classifyGenRef,
@@ -19,12 +20,14 @@ import {
     GEN_REF_BYTES_LIMIT,
     GEN_REF_LIMIT,
     isAsyncGenModel,
+    mergeGenConfigImport,
     mergeGenModelEntry,
     moveGenModelWithinKind,
     normalizeGenHeaders,
     normalizeGenModel,
     normalizeGenModels,
     normalizeGenSnapshot,
+    parseGenConfigImport,
     randomGenSeed,
     renderGenImages,
     renderGenJson,
@@ -271,6 +274,61 @@ test('mergeGenModelEntry：AI 来源合并——字段覆盖，apiKey 只取 exi
     const junk = mergeGenModelEntry(existing, 'junk', () => 'gen-new3');
     assert.equal(junk.apiKey, 'sk-user-secret');
     assert.equal(junk.baseURL, 'https://old.example.com', '坏 incoming 不冲掉已有配置');
+});
+
+// ---------- 生成条目配置的导入 / 导出 ----------
+
+test('buildGenConfigExport：只导出 genModels，密钥默认脱敏，勾选才带明文', () => {
+    const list = [normalizeGenModel({id: 'g1', name: '甲', apiKey: 'sk-secret', baseURL: 'https://a.test'}, () => 'g')];
+    const plain = buildGenConfigExport(list, {now: 1700000000000});
+    assert.equal(plain.kind, 'cadt-gen-models');
+    assert.equal(plain.version, 1);
+    assert.equal(plain.exportedAt, new Date(1700000000000).toISOString());
+    assert.equal(plain.genModels[0].id, 'g1');
+    assert.equal(plain.genModels[0].apiKey, '', '默认脱敏');
+    assert.equal(JSON.stringify(plain).includes('sk-secret'), false);
+    const withKeys = buildGenConfigExport(list, {includeKeys: true, now: 1700000000000});
+    assert.equal(withKeys.genModels[0].apiKey, 'sk-secret', '勾选后带密钥');
+    assert.equal(Object.prototype.hasOwnProperty.call(withKeys, 'profiles'), false, '不夹带账号等其它配置');
+});
+
+test('parseGenConfigImport：完整导出对象与裸数组都接受，坏 JSON / 缺数组 / 无有效条目抛错', () => {
+    const exported = buildGenConfigExport([{id: 'g1', name: '甲', kind: 'video'}], {now: 1});
+    assert.deepEqual(parseGenConfigImport(JSON.stringify(exported), () => 'gen-x').map((e) => e.id), ['g1']);
+    assert.deepEqual(parseGenConfigImport('[{"id":"g2","name":"乙"}]', () => 'gen-x').map((e) => e.id), ['g2']);
+    assert.throws(() => parseGenConfigImport('not json', () => 'g'), /不是合法的 JSON/);
+    assert.throws(() => parseGenConfigImport('{"foo":1}', () => 'g'), /缺少 genModels/);
+    assert.throws(() => parseGenConfigImport('{"genModels":[1,null,"x"]}', () => 'g'), /没有有效的生成条目/);
+    // 无 id 的条目由 idGen 分配（不复用本地 id）
+    assert.equal(parseGenConfigImport('[{"name":"无 id"}]', () => 'gen-new')[0].id, 'gen-new');
+});
+
+test('mergeGenConfigImport：merge 按 id 覆盖 / 追加，空密钥保留本地；replace 整体替换', () => {
+    const local = [normalizeGenModel({id: 'g1', name: '甲', apiKey: 'sk-local', baseURL: 'https://old.test'}, () => 'g')];
+    const incoming = [
+        normalizeGenModel({id: 'g1', name: '甲新', apiKey: '', baseURL: 'https://new.test'}, () => 'g'),
+        normalizeGenModel({id: 'g2', name: '乙', apiKey: 'sk-2'}, () => 'g'),
+    ];
+    const merged = mergeGenConfigImport(local, incoming, {mode: 'merge'});
+    assert.equal(merged.list.length, 2);
+    assert.equal(merged.list[0].name, '甲新', '同 id 字段被覆盖');
+    assert.equal(merged.list[0].baseURL, 'https://new.test');
+    assert.equal(merged.list[0].apiKey, 'sk-local', '文件里空密钥不冲掉本地密钥');
+    assert.equal(merged.list[1].name, '乙');
+    assert.equal(merged.added, 1);
+    assert.equal(merged.updated, 1);
+    assert.equal(merged.replaced, false);
+    assert.equal(local[0].name, '甲', '不修改入参');
+
+    const withKey = mergeGenConfigImport(local, [normalizeGenModel({id: 'g1', name: '甲', apiKey: 'sk-file'}, () => 'g')], {mode: 'merge'});
+    assert.equal(withKey.list[0].apiKey, 'sk-file', '文件里带密钥则覆盖本地');
+
+    const replaced = mergeGenConfigImport(local, incoming, {mode: 'replace'});
+    assert.equal(replaced.list.length, 2);
+    assert.equal(replaced.list[0].apiKey, '', '替换模式下空密钥就是空（完整恢复文件状态）');
+    assert.equal(replaced.replaced, true);
+    assert.equal(replaced.added, 2);
+    assert.equal(replaced.updated, 0);
 });
 
 // ---------- 参考图（图生图 / edits） ----------

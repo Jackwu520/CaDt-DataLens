@@ -45,7 +45,7 @@ func TestSessionWriteSharesTurnLease(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer svc.AISessionLeaseRelease("s1")
-	if err := svc.AISessionAppend("s1", `{"t":"header"}`); err != nil {
+	if err := svc.AISessionAppend("s1", `{"t":"header"}`, true); err != nil {
 		t.Fatalf("同进程 Append 应共享租约：%v", err)
 	}
 	if err := svc.AISessionWriteMeta("s1", `{"title":"x"}`); err != nil {
@@ -57,7 +57,7 @@ func TestSessionWriteSharesTurnLease(t *testing.T) {
 func TestRemoveAllBlockedBySharedRootGate(t *testing.T) {
 	store := New(t.TempDir())
 	store.DeleteFn = os.RemoveAll
-	if err := store.WriteMeta("s1", "{}"); err != nil {
+	if err := store.Append("s1", "{}\n"); err != nil {
 		t.Fatal(err)
 	}
 	gate, err := resourcelease.AcquireShared(store.RootGatePath())
@@ -81,7 +81,7 @@ func TestRemoveAllBlockedBySharedRootGate(t *testing.T) {
 func TestRemoveBlockedBySameProcessLease(t *testing.T) {
 	store := New(t.TempDir())
 	store.DeleteFn = os.RemoveAll
-	if err := store.WriteMeta("s1", "{}"); err != nil {
+	if err := store.Append("s1", "{}\n"); err != nil {
 		t.Fatal(err)
 	}
 	path, err := store.LeasePath("s1")

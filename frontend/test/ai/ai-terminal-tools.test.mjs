@@ -5,6 +5,7 @@ import {
     formatCommandDuration,
     formatTerminalList,
     formatTerminalRead,
+    formatWaitDuration,
     normalizeTermText,
     stripAnsi,
     terminalSendLabel,
@@ -62,6 +63,20 @@ test('terminalSendLabel：回车换成可见符号并截断', () => {
     assert.equal(terminalSendLabel('npm run dev\r'), 'npm run dev⏎');
     assert.equal(terminalSendLabel('a\nb\r\nc'), 'a⏎b⏎c');
     assert.equal(terminalSendLabel('x'.repeat(500), 10), 'xxxxxxxxxx…');
+});
+
+test('formatWaitDuration：秒 / 分钟 / 小时三档，非法与 0 返回空', () => {
+    assert.equal(formatWaitDuration(9400), '9.4 秒');
+    assert.equal(formatWaitDuration(42000), '42.0 秒');
+    assert.equal(formatWaitDuration(60000), '1.0 分钟');
+    assert.equal(formatWaitDuration(510000), '8.5 分钟');
+    assert.equal(formatWaitDuration(3000000), '50 分钟');
+    assert.equal(formatWaitDuration(35517800), '9.9 小时');
+    assert.equal(formatWaitDuration(0), '');
+    assert.equal(formatWaitDuration(null), '');
+    assert.equal(formatWaitDuration(undefined), '');
+    assert.equal(formatWaitDuration(-1), '');
+    assert.equal(formatWaitDuration('abc'), '');
 });
 
 test('formatCommandDuration：秒 / 分钟进位 / 非法输入返回空', () => {

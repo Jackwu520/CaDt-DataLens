@@ -738,6 +738,22 @@
                             </div>
                         </div>
                         <div id="ai-gen-list"></div>
+                        <div class="set-card">
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">导出配置</div><div class="set-desc">只导出生成条目（不含模型账号、偏好等其它配置）；开关打开则连 API Key 明文一起导出，文件请妥善保管，默认不含密钥。</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch" aria-label="含密钥导出" data-tip="含密钥导出：文件里有 API Key 明文，请妥善保管"><input type="checkbox" id="ai-gen-export-keys"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                    <button type="button" id="ai-gen-export" class="dlg-btn">导出配置</button>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">导入配置</div><div class="set-desc">默认按 id 合并（同 id 覆盖、其余保留）；开关打开则替换当前全部条目，不可撤销。</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch" aria-label="替换全部导入" data-tip="替换全部：清除当前条目，只保留文件里的条目（不可撤销）"><input type="checkbox" id="ai-gen-import-replace"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                    <button type="button" id="ai-gen-import" class="dlg-btn">导入配置</button>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                     <div class="settings-pane hidden" data-pane="external-tools">
                         <div class="set-group-title">能力来源</div>

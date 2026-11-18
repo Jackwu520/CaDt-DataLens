@@ -15,7 +15,7 @@ import {createModelCatalogStore} from './model-catalog.js';
 import {replaySessionLog, isSilentInjection, isTurnBoundaryMessage, sessionActivityTs} from './ai-session-store.js';
 import {decideSessionForWorkspace} from './ai-session-scope.js';
 import {formatSessionSearchResult, sessionLogDigest} from './ai-session-tools.js';
-import {formatTerminalList, formatTerminalRead, terminalSendLabel} from './ai-terminal-tools.js';
+import {formatTerminalList, formatTerminalRead, formatWaitDuration, terminalSendLabel} from './ai-terminal-tools.js';
 import {
     globMatchPath,
     humanSizeBytes,
@@ -671,6 +671,8 @@ export function createAIPanel(options) {
     let oneShot = null;
     // 压缩的租约获取是异步的：oneShot 还没挂上时用这个标志挡住重复发起。
     let compactStarting = false;
+    // 资源 watch 正在整份重读的会话：重读期间禁止起新轮/压缩，避免覆盖刚 push 的消息。
+    const sessionReloading = new Set();
     let titleJob = null;
     // 自动标题最多尝试 2 次：失败（4xx / 空回复 / 被取消）后下一轮还能补，但不会每轮白跑请求。
     // 用计数而非「试过就永久跳过」——原逻辑把一次偶发失败变成该会话永久停留在首条消息截断。
@@ -1868,8 +1870,9 @@ export function createAIPanel(options) {
     let sessionStoreErrorAt = 0;
     function notifySessionStoreError(error) {
         const text = String((error && error.message) || error || '');
-        // 另一窗口持有回合锁时写路径返回 session-busy：这是预期的跳过，不提示“保存失败”。
-        if (text.includes('session-busy')) return;
+        // 另一窗口持有回合锁时写路径返回 session-busy；会话已被删除时返回 session-gone。
+        // 两者都是预期的跳过，不提示“保存失败”。
+        if (text.includes('session-busy') || text.includes('session-gone')) return;
         const now = Date.now();
         if (now - sessionStoreErrorAt < 30000) return;
         sessionStoreErrorAt = now;
@@ -2381,6 +2384,11 @@ export function createAIPanel(options) {
                 : Promise.resolve({ok: true});
             Promise.resolve(wait).then((res) => {
                 if (res && res.ok === false) {
+                    if (String(res.error || '').includes('session-gone')) {
+                        // 会话已被另一窗口删除：释放锁并停止重试，列表刷新会移除它。
+                        leaseWarned.delete(id);
+                        return Promise.resolve(backend.AISessionLeaseRelease(id)).catch(() => {});
+                    }
                     const session = sessionById(id);
                     if (session && sessionStore && typeof sessionStore.persistSession === 'function') {
                         Promise.resolve(sessionStore.persistSession(session)).catch(() => {});
@@ -2445,7 +2453,7 @@ export function createAIPanel(options) {
     }
 
     // handleResourceChange：别的窗口写了当前会话的日志/meta 时，等租约释放后重读。
-    // 流式消息不落盘，所以中途不整份重载；busy 时短轮询几次，拿不到就等下一次事件/focus。
+    // 自己的写入（本进程持有回合租约）不重读；流式消息不落盘，所以中途不整份重载。
     function handleResourceChange(payload) {
         if (!sessionUseDisk()) return;
         if (!payload || payload.kind !== 'ai-session') return;
@@ -2457,25 +2465,40 @@ export function createAIPanel(options) {
             renderSessionList();
             return;
         }
-        if (streamOf(id) || compactOf(id)) return;
+        // 只关心日志/meta；图片/视频等附件写入不触发重放。
+        const paths = Array.isArray(payload.paths) ? payload.paths : [];
+        if (paths.length && !paths.some((p) => /(^|[\\/])(session\.v1\.jsonl|meta\.json)$/i.test(String(p)))) return;
+        if (streamOf(id) || compactOf(id) || sessionReloading.has(id)) return;
         if (!backend.AISessionStat || !sessionStore || !sessionStore.sameLogStat) return;
-        const before = session._logStat || null;
         const check = (retries) => {
-            if (streamOf(id) || compactOf(id)) return;
+            if (streamOf(id) || compactOf(id) || sessionReloading.has(id)) return;
             const status = backend.AISessionLeaseStatus
                 ? backend.AISessionLeaseStatus(id)
                 : Promise.resolve({busy: false});
             Promise.resolve(status).then((st) => {
-                if (st && st.busy) {
+                // acquired = 本进程持有回合租约（自己的写入 / 释放尚未完成），不重读。
+                if (st && (st.busy || st.acquired)) {
                     if (retries > 0) setTimeout(() => check(retries - 1), 1500);
                     return;
                 }
                 return Promise.resolve(backend.AISessionStat(id)).then((stat) => {
-                    if (sessionStore.sameLogStat(before, stat)) return;
+                    if (stat && !stat.exists && session._logCreated) {
+                        // 会话已被另一窗口删除：绝不能 reload（空日志会清 _logCreated，
+                        // 随后的 Append 会把目录重建出来）。
+                        flash('该会话已被删除', true);
+                        renderSessionList();
+                        return;
+                    }
+                    // 基线在 stat 返回后重取：入口捕获的 before 可能已被本轮 refreshStat 推进。
+                    const baseline = session._logStat || null;
+                    if (sessionStore.sameLogStat(baseline, stat)) return;
+                    // reload 会整份替换 messages：再查一次忙，避免覆盖刚起的新一轮。
+                    if (streamOf(id) || compactOf(id) || sessionReloading.has(id)) return;
+                    sessionReloading.add(id);
                     return sessionStore.reloadSession(session).then(() => {
                         if (isOpen() && currentSession() === session) renderMessages(true);
                         renderSessionList();
-                    });
+                    }).finally(() => { sessionReloading.delete(id); });
                 });
             }).catch(() => {});
         };
@@ -2483,7 +2506,8 @@ export function createAIPanel(options) {
     }
 
     // 起轮失败的用户提示：多实例的 busy 与普通同进程 busy 分开说。
-    function flashTurnStartFailure(result) {        if (!result || result.ok) return;
+    function flashTurnStartFailure(result) {
+        if (!result || result.ok) return;
         if (result.reason === 'other_window') {
             const pid = result.owner && result.owner.pid;
             flash('该会话正在另一窗口运行' + (pid ? '（PID ' + pid + '）' : '') + '，请稍后再试', true);
@@ -10726,7 +10750,7 @@ function requestApproval(session, toolMessage, info) {
             if (!ok || session._stub) return {ok: false, reason: 'load_failed'};
         }
         // 只有「本会话」在生成 / 压缩时才拒绝；别的会话在跑不影响这里（各自独立）。
-        if (streamOf(session.id) || compactOf(session.id)) return {ok: false, reason: 'busy'};
+        if (streamOf(session.id) || compactOf(session.id) || compactStarting) return {ok: false, reason: 'busy'}
         if (session.archivedAt) return {ok: false, reason: 'archived'};
         if (!session.workspace) {
             const current = currentWorkspacePath();
@@ -10770,7 +10794,7 @@ function requestApproval(session, toolMessage, info) {
         // 双方都还没注册流），各自起轮后后者顶掉前者的流注册，落败方在下方守卫处退出——
         // 它的 assistant 占位没人收尾，永远停在流式「…」。真正落消息前再查一次忙，
         // 把这个窗口关死；队列冲刷对 busy 会自动重新入队，不会丢消息。
-        if (streamOf(session.id) || compactOf(session.id)) return {ok: false, reason: 'busy'};
+        if (streamOf(session.id) || compactOf(session.id) || compactStarting) return {ok: false, reason: 'busy'}
 
         // 同进程上一轮的终态写盘可能还在队列里：先等它排空再拿 stat/重读。
         // 否则会把上一轮尚未落盘的消息从内存里重读掉，随后队列按新内存写盘。
@@ -10822,6 +10846,16 @@ function requestApproval(session, toolMessage, info) {
                 if (isOpen() && currentSession() === session) renderMessages(true);
             }
             if (leaseStat) session._logStat = leaseStat;
+        }
+
+        // whenIdle / 租约获取两个 await 把“最终忙检查”到落用户消息之间拉开了窗口：
+        // 双发或压缩准备期撞车时，释放刚拿到的租约并返回 busy（队列会重新入队）。
+        if (streamOf(session.id) || compactOf(session.id) || compactStarting || sessionReloading.has(session.id)) {
+            if (leaseHeld) {
+                leaseHeld = false;
+                await releaseLeaseNow(session.id);
+            }
+            return {ok: false, reason: 'busy'};
         }
 
         let run = null;
@@ -11634,8 +11668,17 @@ function requestApproval(session, toolMessage, info) {
         note.dataset.waitMs = String(waitMs);
         const label = note.querySelector('.ai-queue-text') || document.createElement('span');
         label.className = 'ai-queue-text';
-        label.textContent = (String((payload && payload.reason) || '').trim() || '排队中')
-            + ' · 约 ' + (waitMs / 1000).toFixed(1) + ' 秒';
+        // 两种排队必须分开说：本地窗口满（≤60s，自己收手就好）与服务端 429 冻结
+        // （可能几小时后才恢复，删请求没用）。文案同源时用户会误判成因。
+        const wait = formatWaitDuration(waitMs);
+        const kind = String((payload && payload.kind) || '').trim();
+        if (kind === 'frozen') {
+            label.textContent = '服务商配额已用尽 · 约 ' + wait + '后恢复';
+            note.dataset.kind = 'frozen';
+        } else {
+            label.textContent = '排队中 · 约 ' + wait;
+            note.dataset.kind = 'rpm';
+        }
         if (!label.parentNode) note.append(label);
     }
 
@@ -11925,11 +11968,17 @@ function requestApproval(session, toolMessage, info) {
                 finishCompact(payload);
             } else if (name === 'ai-error') {
                 const message = String(payload.message || '请求失败');
-                const compactedId = oneShot.sessionId;
+                const failed = oneShot;
+                const compactedId = failed.sessionId;
                 const viewed = !!(currentSession() && currentSession().id === compactedId);
                 oneShot = null;
                 setStreamingUI();
                 updateSendState();
+                // 事件路径也必须归还回合租约；否则其他窗口永久 session-busy。
+                if (failed.leaseHeld) {
+                    failed.leaseHeld = false;
+                    releaseTurnLease(compactedId);
+                }
                 if (viewed) showNote('压缩失败：' + message, true);
             }
             return;
@@ -13037,7 +13086,7 @@ function requestApproval(session, toolMessage, info) {
     // composer——媒体附件随轮直接带给 startSessionTurn。
     function regenerateLast(sessionOverride) {
         const session = sessionOverride || currentSession();
-        if (!session || streamOf(session.id)) return;
+        if (!session || streamOf(session.id) || compactOf(session.id) || compactStarting) return;
         const assistantIndex = lastAssistantIndex(session);
         if (assistantIndex < 0) return;
         const userIndex = lastUserIndex(session);
@@ -13045,10 +13094,11 @@ function requestApproval(session, toolMessage, info) {
         const userMessage = session.messages[userIndex];
         const userText = userMessage.content;
         const media = attachmentsFromImages(userMessage.images).concat(attachmentsFromVideos(userMessage.videos));
-        session.messages = session.messages.slice(0, userIndex);
+        // 截断必须发生在拿到回合租约、按 stat 重读之后（startSessionTurn 的 truncateAt）；
+        // 这里不能先 slice + persist，否则会用旧前缀截掉另一窗口已提交的消息。
         if (sessionOverride) {
-            persistSessions();
             startSessionTurn(session, userText, {
+                truncateAt: userIndex,
                 attachments: {
                     images: media.filter((item) => item.kind === 'image'),
                     videos: media.filter((item) => item.kind === 'video'),
@@ -13060,7 +13110,6 @@ function requestApproval(session, toolMessage, info) {
         }
         setAttachments(media);
         renderAttachments();
-        persistSessions();
         submitText(userText, userIndex);
     }
 
@@ -13076,34 +13125,86 @@ function requestApproval(session, toolMessage, info) {
             flash('请先停止当前会话的生成', true);
             return;
         }
-        if (oneShot && oneShot.sessionId === target.id) {
+        if ((oneShot && oneShot.sessionId === target.id) || compactStarting) {
             flash('该会话正在压缩上下文，请先停止', true);
             return;
         }
         const messages = target.messages || [];
         if (!Number.isInteger(index) || index < 0 || index >= messages.length) return;
         if (!messages[index] || messages[index].role !== 'assistant') return;
+        const targetMid = messages[index]._mid || '';
         const removed = messages.length - (index + 1);
         if (removed <= 0) return;
-        askConfirm('回退到此轮？之后的 ' + removed + ' 条消息将被删除（已归档内容不受影响）。', () => {
-            // 内存截断后由持久化层追加 truncate 事件，磁盘历史同步裁掉。
-            target.messages = target.messages.slice(0, index + 1);
-            pendingEdit = null;
-            clearQueueForSession(target.id);
-            renderWindows.delete(target.id);
-            persistSessions();
-            queueLogSave(target);
-            if (currentSession() === target) {
-                stickBottom = true;
-                renderMessages(true);
-                updateContextCount();
-                updateComposerState();
-                updateComposerTakeover(true);
+        askConfirm('回退到此轮？之后的 ' + removed + ' 条消息将被删除（已归档内容不受影响）。', async () => {
+            let leaseHeld = false;
+            let cutIndex = index;
+            if (backend.AISessionLeaseAcquire && sessionUseDisk()) {
+                let lease = null;
+                try {
+                    lease = await backend.AISessionLeaseAcquire(target.id, 'rewind', leaseOwnerLabel(), 0);
+                } catch (e) {
+                    lease = null;
+                }
+                if (!lease || !lease.acquired) {
+                    flash(lease && lease.busy
+                        ? '该会话正在另一窗口运行，暂不能回退'
+                        : '无法获取会话写权，回退未执行', true);
+                    return;
+                }
+                leaseHeld = true;
+                const stat = lease.stat || null;
+                const known = target._logStat || null;
+                if (stat && !stat.exists && target._logCreated) {
+                    await releaseLeaseNow(target.id);
+                    flash('该会话已被删除，回退未执行', true);
+                    return;
+                }
+                const isNew = !target._logCreated && (!stat || !stat.exists);
+                if (!isNew && (!known || !sessionStore.sameLogStat(known, stat))) {
+                    try {
+                        const ok = await sessionStore.reloadSession(target);
+                        if (!ok) throw new Error('会话重读失败');
+                    } catch (e) {
+                        await releaseLeaseNow(target.id);
+                        flash('会话重读失败，回退未执行', true);
+                        return;
+                    }
+                    if (targetMid) {
+                        const found = target.messages.findIndex((m) => m && m._mid === targetMid);
+                        if (found < 0) {
+                            await releaseLeaseNow(target.id);
+                            flash('会话已被其他窗口改写，回退未执行', true);
+                            return;
+                        }
+                        cutIndex = found;
+                    }
+                }
+                if (stat) target._logStat = stat;
             }
-            // 会话在支线标签页里被回退：面板没显示它，上面的面板路径不会画，单独通知宿主重绘
-            notifySideChatHosts(target.id);
-            renderSessionList();
-            flash('已回退到该轮，删除 ' + removed + ' 条消息');
+            try {
+                const beforeCount = target.messages.length;
+                // 内存截断后由持久化层追加 truncate 事件，磁盘历史同步裁掉。
+                target.messages = target.messages.slice(0, cutIndex + 1);
+                pendingEdit = null;
+                clearQueueForSession(target.id);
+                renderWindows.delete(target.id);
+                persistSessions();
+                queueLogSave(target);
+                if (currentSession() === target) {
+                    stickBottom = true;
+                    renderMessages(true);
+                    updateContextCount();
+                    updateComposerState();
+                    updateComposerTakeover(true);
+                }
+                // 会话在支线标签页里被回退：面板没显示它，上面的面板路径不会画，单独通知宿主重绘
+                notifySideChatHosts(target.id);
+                renderSessionList();
+                flash('已回退到该轮，删除 ' + Math.max(0, beforeCount - target.messages.length) + ' 条消息');
+            } finally {
+                // 终态写盘完成后释放；whenIdle 会等 persistSessions 的队列尾。
+                if (leaseHeld) releaseTurnLease(target.id);
+            }
         }, '回退', '回退到该轮');
     }
 
@@ -14003,6 +14104,10 @@ function requestApproval(session, toolMessage, info) {
         const profile = profileOf(session);
         if (!session || !profile) {
             if (!auto) notify('请先配置 AI 并创建会话。', true);
+            return false;
+        }
+        if (sessionReloading.has(session.id)) {
+            if (!auto) notify('正在读取会话变更，稍后再压缩。', true);
             return false;
         }
         if (session.archivedAt) {

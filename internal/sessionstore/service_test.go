@@ -36,7 +36,7 @@ func TestServiceSessionLifecycle(t *testing.T) {
 	if info, err := os.Stat(root); err != nil || !info.IsDir() {
 		t.Fatalf("会话根目录未创建: %v", err)
 	}
-	if err := svc.AISessionAppend("s1", `{"t":"header"}`); err != nil {
+	if err := svc.AISessionAppend("s1", `{"t":"header"}`, true); err != nil {
 		t.Fatal(err)
 	}
 	if err := svc.AISessionRewrite("s1", `{"t":"header"}`+"\n"); err != nil {

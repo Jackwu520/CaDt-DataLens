@@ -220,8 +220,14 @@ export function matchCommandRule(rules, command, cwdKey) {
 // ---------- 只读 / 危险命令静态分析（对齐 zcode 的 argv 级策略） ----------
 
 /**
- * 把命令按顶层 `&&`、`||`、`;`、`|` 拆成片段。出现重定向、命令替换、反引号、
- * 换行、单个 `&`（后台执行）或未闭合引号时返回 null：这些一律不自动放行。
+ * 把命令按顶层 `&&`、`||`、`;`、`|`、换行族拆成片段。出现重定向、命令替换、反引号
+ * 或未闭合引号时返回 null：这些一律不自动放行。
+ *
+ * 换行族包含 `\n`、单独 `\r`、`\r\n`、NEL(U+0085)、LS(U+2028)、PS(U+2029)：
+ * PowerShell 词法把后四者都当行终止符。此前遇 `\r`/`\n` 直接 return null，等于
+ * **任何多行命令都跳过整套段级检测**、只跑 4 条原文兜底——`format C: /y`、
+ * `shutdown /s`、`Remove-Item -Recurse` 因此整体漏标（红队 V-01 / F-9）。
+ * 能切段就必须切段：段级规则的覆盖远好于原文兜底。
  */
 export function splitCommandSegments(command, options) {
     const text = commandText(command);
@@ -244,9 +250,11 @@ export function splitCommandSegments(command, options) {
         }
         if (ch === '`') return null;
         if (ch === '$' && (text[i + 1] === '(' || text[i + 1] === '{')) return null;
-        if (ch === '\n' || ch === '\r' || ch === '>' || ch === '<') return null;
+        if (ch === '>' || ch === '<') return null;
         let operatorLength = 0;
-        if (ch === '&' && text[i + 1] === '&') operatorLength = 2;
+        if (ch === '\r' && text[i + 1] === '\n') operatorLength = 2;
+        else if (ch === '\r' || ch === '\n' || ch === '\u0085' || ch === '\u2028' || ch === '\u2029') operatorLength = 1;
+        else if (ch === '&' && text[i + 1] === '&') operatorLength = 2;
         else if (ch === '|' && text[i + 1] === '|') operatorLength = 2;
         else if (ch === '|' || ch === ';') operatorLength = 1;
         else if (ch === '&') return null;
@@ -534,6 +542,7 @@ export const DANGER_LABELS = {
     'fs-wipe': '覆写清零磁盘数据',
     'privilege-grant': '添加用户 / 提权到管理员组',
     'find-delete': '批量删除文件（find -delete）',
+    'boot-tamper': '篡改引导配置（bcdedit / bootrec）',
     'git-reset-hard': '丢弃全部未提交修改（reset --hard）',
     'git-clean-force': '强制清理未跟踪文件（clean -f）',
     'git-push-force': '强制推送或删除远端分支',
@@ -744,11 +753,28 @@ export function analyzeDangerousCommand(command) {
         if (pipeExec.test(text)) {
             return {dangerous: true, ruleId: 'download-exec', label: DANGER_LABELS['download-exec'], segment: text};
         }
+        // 原文扫描也要跑完整规则表：分段失败不代表规则不适用（红队 F-9：
+        // `echo hi > /dev/null && format C: /y` 因 `>` 无法分段，只跑下面 4 条就漏了）
+        for (const [pattern, ruleId] of RAW_DANGER_RULES) {
+            if (pattern.test(text)) return {dangerous: true, ruleId, label: DANGER_LABELS[ruleId] || ruleId, segment: text};
+        }
         const rawRules = [
             [/\brm\s+(?:-[a-z]*r[a-z]*f|-[a-z]*f[a-z]*r|--recursive[^\n]*--force|--force[^\n]*--recursive)\b/i, 'rm-recursive-force'],
+            // 分开写的短标志（rm -r -f / rm -f -r）：上面的合并形态正则抓不到，兜底扫描必须补
+            [/\brm\b(?=[^\n]*\s(?:--recursive|-[a-z]*r)(?:\s|$))(?=[^\n]*\s(?:--force|-[a-z]*f)(?:\s|$))/i, 'rm-recursive-force'],
             [/\bgit\s+reset\s+[^\n]*--hard\b/i, 'git-reset-hard'],
             [/\bgit\s+clean\s+[^\n]*(?:-[a-z]*f|--force)\b/i, 'git-clean-force'],
             [/\bgit\s+push\s+[^\n]*(?:--force|--mirror|--delete|\s-f(?:\s|$)|\+[^\s]+:)/i, 'git-push-force'],
+            // 跨平台破坏族：这些在段级规则里有，但分段失败时曾整体漏标（format / shutdown /
+            // Remove-Item / del / dd 全部 0 命中，见红队 V-01 与 F-9 的对照表）
+            [/\bformat(\.com)?\s+(?:[a-z]:|\/dev\/|\\)/i, 'disk-destructive'],
+            [/\b(shutdown|reboot)\b[^\n]*?(?:\/s\b|\/r\b|\/p\b|\/h\b|-[srph]\b)/i, 'shutdown'],
+            [/\b(remove-item|ri)\b[^\n]*-recurse\b/i, 'rm-recursive-force'],
+            [/\b(del|erase)\b[^\n]*\/[fsq]\b/i, 'del-force'],
+            [/\b(rmdir|rd)\b[^\n]*\/s\b/i, 'rmdir-recursive'],
+            [/\bdd\b[^\n]*\bof=\/dev\//i, 'disk-destructive'],
+            [/\b(bcdedit|bootrec)\b[^\n]*\//i, 'boot-tamper'],
+            [/\bdiskpart\b[^\n]*\bclean\b/i, 'disk-destructive'],
         ];
         for (const [pattern, ruleId] of rawRules) {
             if (pattern.test(text)) return {dangerous: true, ruleId, label: DANGER_LABELS[ruleId] || ruleId, segment: text};

@@ -244,16 +244,18 @@ test('classifyAll：插件分类器与内置保守合并取 max(score)', async (
             id: 'sem-onnx',
             label: '语义分类器',
             classify: async (command) => {
-                return {score: command.includes('status') ? 0.9 : 0.01, reason: '语义判定'};
+                // 非 status 命令给 0 分：合并取 max 时一定由内置胜出，不依赖出厂权重的绝对分值
+                // （旧写法给 0.01，重训后内置安全命令降到 0.0006，测试就跟着红了）
+                return {score: command.includes('status') ? 0.9 : 0, reason: '语义判定'};
             },
         }],
     }));
-    // 插件高分（0.9）压过内置低分（git status ≈ 0.09）→ ask，来源为插件
+    // 插件高分（0.9）压过内置低分 → ask，来源为插件
     const asked = await mod.classifyAll('git status', {cwd: '/w'});
     assert.equal(asked.allow, false);
     assert.equal(asked.sourceId, 'plugin:sem-onnx');
     assert.ok(asked.score >= 0.9);
-    // 内置与插件都低分 → allow，来源为内置（0.09 > 插件 0.01）
+    // 内置与插件都低分 → allow，来源为内置（内置 sigmoid 恒 > 0，插件恰为 0）
     const allowed = await mod.classifyAll('ls -la src', {cwd: '/w'});
     assert.equal(allowed.allow, true);
     assert.equal(allowed.sourceId, 'builtin-linear');
@@ -390,6 +392,38 @@ test('lcSegment：shell 命令分隔符切段', async () => {
     assert.deepEqual(lcSegment('git status && rm -rf /'), ['git status', 'rm -rf /']);
     assert.deepEqual(lcSegment('a; b | c\nd'), ['a', 'b', 'c', 'd']);
     assert.deepEqual(lcSegment('  git status  '), ['git status']);
+});
+
+// 红队 V-01（2026-11-18）：只认 \r?\n 会让「良性前缀 \r 危险尾部」压成一整段，
+// PowerShell 词法把单独 CR / NEL / LS / PS 都当行终止符，必须同等切段。
+test('红队 V-01：CR / NEL / LS / PS 也作为行分隔符切段', async () => {
+    const {lcSegment} = await import('../../src/ai/ai-local-classifier.js');
+    for (const sep of ['\r', '\r\n', '\u0085', '\u2028', '\u2029']) {
+        assert.deepEqual(
+            lcSegment('git log -n 5' + sep + 'format C: /y'),
+            ['git log -n 5', 'format C: /y'],
+            JSON.stringify(sep),
+        );
+    }
+});
+
+test('红队 V-01：CR 链的危险尾部不再被良性前缀压到阈值下', async () => {
+    const {LOCAL_CLASSIFIER_WEIGHTS, LOCAL_CLASSIFIER_QUANT, LOCAL_CLASSIFIER_BIAS, LOCAL_CLASSIFIER_FEATURES} =
+        await import('../../src/ai/local-classifier-weights.mjs');
+    const {lcDequantize, lcScoreCommand} = await import('../../src/ai/ai-local-classifier.js');
+    const weights = lcDequantize(LOCAL_CLASSIFIER_WEIGHTS, LOCAL_CLASSIFIER_QUANT.scale, LOCAL_CLASSIFIER_FEATURES.dims);
+    const scoreOf = (command) => lcScoreCommand(command, weights, LOCAL_CLASSIFIER_BIAS, LOCAL_CLASSIFIER_FEATURES);
+    const prefix = 'git log --oneline -n 5';
+    const tail = 'format C: /y';
+    // 修复前实测 0.0165（三档全放行），与 \n 版本 0.9853 差 0.97
+    for (const sep of ['\r', '\u0085', '\u2028', '\u2029']) {
+        const score = scoreOf(prefix + sep + 'git diff --stat' + sep + tail);
+        assert.ok(score >= 0.5, '换行族链应判高危，实际 ' + score.toFixed(4) + '（' + JSON.stringify(sep) + '）');
+    }
+    // 与 \n 版本口径一致：切段后逐段取 max，分隔符形态不应影响结论
+    const lf = scoreOf(prefix + '\n' + 'git diff --stat\n' + tail);
+    const cr = scoreOf(prefix + '\r' + 'git diff --stat\r' + tail);
+    assert.ok(Math.abs(lf - cr) < 1e-9, 'CR 与 LF 口径必须一致：' + cr + ' vs ' + lf);
 });
 
 test('红队 P0：&& 链的 benign 前缀不再稀释危险段（切段推理）', async () => {
@@ -563,4 +597,46 @@ test('hasVerdictDisagreement：三层结论不一致才是用户学习点', () =
     assert.equal(hasVerdictDisagreement({linear: null, plugin: null, cloud: null}), false);
     assert.equal(hasVerdictDisagreement(null), false);
     assert.equal(hasVerdictDisagreement({linear: 'bogus', cloud: 'ask'}), false);
+});
+
+// ---------- 金丝雀三层：出厂权重守门（2026-11-18 语料审计） ----------
+// plain = 记忆层（一半是语料原文，只防权重跑飞）；adversarial = 泛化闸门（换分隔符/长度/上下文）；
+// regression = 本轮修掉的每条绕过，一条一个用例。训练器与这里读同一份清单，永不脱节。
+test('金丝雀三层：出厂权重在 plain / adversarial / regression 全部达标', async () => {
+    const {CANARIES, ADVERSARIAL_CANARIES, REGRESSION_CANARIES} =
+        await import('../../../scripts/classifier-corpus.mjs');
+    const {LOCAL_CLASSIFIER_THRESHOLDS} = await import('../../src/ai/ai-permissions.js');
+    const {LOCAL_CLASSIFIER_WEIGHTS, LOCAL_CLASSIFIER_QUANT, LOCAL_CLASSIFIER_BIAS, LOCAL_CLASSIFIER_FEATURES} =
+        await import('../../src/ai/local-classifier-weights.mjs');
+    const {lcDequantize, lcScoreCommand} = await import('../../src/ai/ai-local-classifier.js');
+    const weights = lcDequantize(LOCAL_CLASSIFIER_WEIGHTS, LOCAL_CLASSIFIER_QUANT.scale, LOCAL_CLASSIFIER_FEATURES.dims);
+    const scoreOf = (command) => lcScoreCommand(command, weights, LOCAL_CLASSIFIER_BIAS, LOCAL_CLASSIFIER_FEATURES);
+
+    const layers = [
+        ['plain', CANARIES],
+        ['adversarial', ADVERSARIAL_CANARIES],
+        ['regression', REGRESSION_CANARIES],
+    ];
+    const fails = [];
+    for (const [layer, set] of layers) {
+        for (const command of set.dangerous || []) {
+            const score = scoreOf(command);
+            if (score < 0.5 || score < LOCAL_CLASSIFIER_THRESHOLDS.loose) {
+                fails.push('[' + layer + '] 危险应高置信：' + JSON.stringify(command) + ' → ' + score.toFixed(3));
+            }
+        }
+        for (const command of set.gray || []) {
+            const score = scoreOf(command);
+            if (score < LOCAL_CLASSIFIER_THRESHOLDS.standard) {
+                fails.push('[' + layer + '] 灰色应转人工：' + JSON.stringify(command) + ' → ' + score.toFixed(3));
+            }
+        }
+        for (const command of set.safe || []) {
+            const score = scoreOf(command);
+            if (score >= LOCAL_CLASSIFIER_THRESHOLDS.standard) {
+                fails.push('[' + layer + '] 安全应放行：' + JSON.stringify(command) + ' → ' + score.toFixed(3));
+            }
+        }
+    }
+    assert.deepEqual(fails, [], '金丝雀未过：\n' + fails.join('\n'));
 });

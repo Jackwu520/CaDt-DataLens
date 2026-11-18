@@ -205,3 +205,18 @@ test('whenIdle 带回最后一次写盘错误（enqueue 会吞错）', async () 
     assert.equal(res.ok, false);
     assert.match(res.error, /disk full/);
 });
+
+test('reloadSession 对已存在会话的空日志抛 session-gone（不复活）', async () => {
+    const backend = {
+        AISessionList: async () => [],
+        AISessionRead: async () => '',
+        AISessionAppend: async () => {},
+        AISessionRewrite: async () => {},
+        AISessionWriteMeta: async () => {},
+        AISessionDelete: async () => {},
+        AISessionStat: async () => ({exists: false, mtimeMs: 0, size: 0}),
+    };
+    const store = createSessionDiskStore({backend});
+    const session = {id: 's1', title: 'T', workspace: 'D:/w', messages: [], archived: [], _logCreated: true};
+    await assert.rejects(() => store.reloadSession(session), /session-gone/);
+});

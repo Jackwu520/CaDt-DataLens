@@ -357,7 +357,7 @@ export function createSessionDiskStore(options) {
             session._fps = fps;
             if (events.length) {
                 ensureHeaderEvent(session, events);
-                await backend.AISessionAppend(session.id, encodeSessionLines(events));
+                await backend.AISessionAppend(session.id, encodeSessionLines(events), !session._logCreated);
             }
         } catch (e) {
             restoreLogState(session, state);
@@ -449,7 +449,7 @@ export function createSessionDiskStore(options) {
                 session._mids = mids.slice(keepCount);
                 session._archivedMids = archivedMids.concat(mids.slice(0, keepCount));
                 ensureHeaderEvent(session, events);
-                await backend.AISessionAppend(session.id, encodeSessionLines(events));
+                await backend.AISessionAppend(session.id, encodeSessionLines(events), !session._logCreated);
             } catch (e) {
                 restoreLogState(session, state);
                 throw e;
@@ -690,6 +690,13 @@ export function createSessionDiskStore(options) {
         if (!session || !session.id) return false;
         requireBackend();
         const bodyText = await backend.AISessionRead(session.id);
+        // 已有会话读到空日志 = 已被另一窗口删除；不能当成“新会话”重放，
+        // 否则 _logCreated 被清掉，下一次 Append 会把目录重建出来。
+        if (!bodyText && session._logCreated) {
+            const err = new Error('session-gone: 会话已被删除');
+            err.code = 'session-gone';
+            throw err;
+        }
         const replay = replaySessionLog(bodyText);
         const normalize = typeof options.normalizeMessage === 'function' ? options.normalizeMessage : null;
         const messages = normalize ? replay.messages.map(normalize).filter(Boolean) : replay.messages;

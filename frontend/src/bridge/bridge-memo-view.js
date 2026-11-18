@@ -217,8 +217,10 @@ function render(view) {
     }
 
     const doc = store.cached(view.scope);
-    if (!doc) {
-        root.appendChild(hintBox('正在加载…'));
+    // 缓存存在但既不是 writer 也不是 readOnly（面板关闭后释放、AI 先读过）时不能直接
+    // 画成“可编辑”：重新打开必须再拿一次租约，否则每次 mutate 都会被 busy 拒绝。
+    if (!doc || (!lease.writer && !lease.readOnly)) {
+        if (!doc) root.appendChild(hintBox('正在加载…'));
         loadAndRender(view);
         return;
     }
@@ -264,6 +266,8 @@ function hintBox(text) {
 }
 
 function loadAndRender(view) {
+    if (view.loading) return;
+    view.loading = true;
     store.load(view.scope, {acquire: true}).then((res) => {
         if (view.disposed) return;
         if (res.error) {
@@ -272,7 +276,7 @@ function loadAndRender(view) {
             return;
         }
         if (view.scope === currentScope()) render(view);
-    }).catch(() => {});
+    }).catch(() => {}).finally(() => { view.loading = false; });
 }
 
 function readOnlyBanner(owner) {

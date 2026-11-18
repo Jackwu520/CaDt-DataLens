@@ -517,6 +517,73 @@ export function buildGenMultipart(entry, vars, refs, options) {
     };
 }
 
+// ---------- 生成条目配置的导入 / 导出（设置页「导入配置 / 导出配置」） ----------
+// 导出只含 genModels[]，不碰账号 / 偏好 / 提示词等其它 AI 配置；密钥默认脱敏。
+// 导入按 id 合并（同 id 空密钥保留本地）或整体替换，条目一律经 normalizeGenModels 校验归一。
+
+export const GEN_CONFIG_KIND = 'cadt-gen-models';
+export const GEN_CONFIG_VERSION = 1;
+
+// 导出数据对象（调用方 JSON.stringify 后落盘）：includeKeys 为真才带 apiKey 明文。
+export function buildGenConfigExport(list, options) {
+    const includeKeys = !!(options && options.includeKeys);
+    const rawNow = options && options.now;
+    const now = rawNow === undefined ? new Date() : new Date(rawNow);
+    return {
+        kind: GEN_CONFIG_KIND,
+        version: GEN_CONFIG_VERSION,
+        exportedAt: Number.isNaN(now.getTime()) ? new Date().toISOString() : now.toISOString(),
+        genModels: normalizeGenModels(list).map((entry) => {
+            const out = {...entry};
+            if (!includeKeys) out.apiKey = '';
+            return out;
+        }),
+    };
+}
+
+// 解析导入文本：接受完整导出对象或裸 genModels 数组；结构不合法抛错（文案直接给用户看）。
+// idGen 由调用方注入（导入的无 id 条目要分配新 id，不能复用本地的 id 生成器撞车）。
+export function parseGenConfigImport(text, idGen) {
+    let data;
+    try {
+        data = JSON.parse(String(text == null ? '' : text));
+    } catch (e) {
+        throw new Error('不是合法的 JSON：' + ((e && e.message) || e));
+    }
+    const raw = Array.isArray(data) ? data : (data && typeof data === 'object' ? data.genModels : null);
+    if (!Array.isArray(raw)) throw new Error('缺少 genModels 数组（请选择本面板导出的 JSON）');
+    const entries = normalizeGenModels(raw, idGen);
+    if (!entries.length) throw new Error('文件里没有有效的生成条目');
+    return entries;
+}
+
+// 合并导入条目：mode='merge' 按 id 覆盖 / 追加（文件里空密钥保留本地密钥）；
+// mode='replace' 整体替换（用于完整恢复一套配置）。返回统计给状态栏。
+export function mergeGenConfigImport(local, incoming, options) {
+    const opts = options || {};
+    const idGen = opts.idGen;
+    const base = normalizeGenModels(local, idGen);
+    const entries = normalizeGenModels(incoming, idGen);
+    if (opts.mode === 'replace') {
+        return {list: entries, added: entries.length, updated: 0, replaced: true};
+    }
+    const out = base.slice();
+    let added = 0;
+    let updated = 0;
+    for (const entry of entries) {
+        const index = out.findIndex((item) => item.id === entry.id);
+        if (index < 0) {
+            out.push(entry);
+            added++;
+        } else {
+            // 文件里空密钥（导出时未勾选含密钥）不覆盖本地已填的密钥。
+            out[index] = entry.apiKey ? entry : {...entry, apiKey: out[index].apiKey};
+            updated++;
+        }
+    }
+    return {list: out, added, updated, replaced: false};
+}
+
 // ---------- 内置预设（初始值，不锁定；用户选后微调） ----------
 
 export const GEN_MODEL_PRESETS = [

@@ -17,16 +17,37 @@ func TestRateLimiterRPMWindow(t *testing.T) {
 	cfg := testCfg(2)
 	key := rateKey(cfg)
 	for i := 0; i < 2; i++ {
-		if wait, ok := aiRateLimiter.tryAcquire(key, cfg.RPMLimit); !ok {
+		if wait, ok, _ := aiRateLimiter.tryAcquire(key, cfg.RPMLimit); !ok {
 			t.Fatalf("第 %d 次应放行，却要求等 %v", i+1, wait)
 		}
 	}
-	wait, ok := aiRateLimiter.tryAcquire(key, cfg.RPMLimit)
+	wait, ok, kind := aiRateLimiter.tryAcquire(key, cfg.RPMLimit)
 	if ok {
 		t.Fatal("超过 RPM 上限仍放行")
 	}
 	if wait <= 0 || wait > rateWindow {
 		t.Fatalf("等待时长应落在 (0, 1min]，实际 %v", wait)
+	}
+	if kind != RateLimitKindRPM {
+		t.Fatalf("窗口满时应报 rpm 原因，实际 %q", kind)
+	}
+}
+
+// 冻结期的排队原因必须是 frozen：前端据此显示「配额已用尽」而不是「RPM 限流」。
+func TestFreezeReasonIsFrozen(t *testing.T) {
+	resetRateLimiter()
+	cfg := testCfg(60)
+	key := rateKey(cfg)
+	aiRateLimiter.freezeUntil(key, time.Now().Add(time.Hour))
+	wait, ok, kind := aiRateLimiter.tryAcquire(key, cfg.RPMLimit)
+	if ok {
+		t.Fatal("冻结期内不该放行")
+	}
+	if wait < time.Minute {
+		t.Fatalf("冻结等待应接近一小时，实际 %v", wait)
+	}
+	if kind != RateLimitKindFrozen {
+		t.Fatalf("冻结期应报 frozen 原因，实际 %q", kind)
 	}
 }
 
@@ -35,7 +56,7 @@ func TestRateLimiterUnlimitedTracksNothing(t *testing.T) {
 	cfg := testCfg(0)
 	key := rateKey(cfg)
 	for i := 0; i < 50; i++ {
-		if _, ok := aiRateLimiter.tryAcquire(key, cfg.RPMLimit); !ok {
+		if _, ok, _ := aiRateLimiter.tryAcquire(key, cfg.RPMLimit); !ok {
 			t.Fatal("不限速时应始终放行")
 		}
 	}
@@ -48,11 +69,11 @@ func TestRateLimiterKeyIsolatesModels(t *testing.T) {
 	resetRateLimiter()
 	a := testCfg(1)
 	b := Config{BaseURL: "https://rate.test/v1", Model: "other-model", RPMLimit: 1}
-	if _, ok := aiRateLimiter.tryAcquire(rateKey(a), a.RPMLimit); !ok {
+	if _, ok, _ := aiRateLimiter.tryAcquire(rateKey(a), a.RPMLimit); !ok {
 		t.Fatal("模型 A 首次应放行")
 	}
 	// 模型 A 已占满，不能影响模型 B
-	if _, ok := aiRateLimiter.tryAcquire(rateKey(b), b.RPMLimit); !ok {
+	if _, ok, _ := aiRateLimiter.tryAcquire(rateKey(b), b.RPMLimit); !ok {
 		t.Fatal("不同模型应各算一份配额")
 	}
 }
@@ -70,11 +91,11 @@ func TestFreezeBlocksUntilExpiry(t *testing.T) {
 	cfg := testCfg(60)
 	key := rateKey(cfg)
 	aiRateLimiter.freezeUntil(key, time.Now().Add(120*time.Millisecond))
-	if _, ok := aiRateLimiter.tryAcquire(key, cfg.RPMLimit); ok {
+	if _, ok, _ := aiRateLimiter.tryAcquire(key, cfg.RPMLimit); ok {
 		t.Fatal("冻结期内不该放行")
 	}
 	time.Sleep(150 * time.Millisecond)
-	if _, ok := aiRateLimiter.tryAcquire(key, cfg.RPMLimit); !ok {
+	if _, ok, _ := aiRateLimiter.tryAcquire(key, cfg.RPMLimit); !ok {
 		t.Fatal("冻结到期后应放行")
 	}
 }
@@ -98,7 +119,7 @@ func TestAcquireSlotRespectsContext(t *testing.T) {
 	resetRateLimiter()
 	cfg := testCfg(1)
 	key := rateKey(cfg)
-	if _, ok := aiRateLimiter.tryAcquire(key, cfg.RPMLimit); !ok {
+	if _, ok, _ := aiRateLimiter.tryAcquire(key, cfg.RPMLimit); !ok {
 		t.Fatal("占位请求应放行")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
@@ -117,7 +138,7 @@ func TestAcquireSlotEmitsQueueEvent(t *testing.T) {
 	resetRateLimiter()
 	cfg := testCfg(1)
 	key := rateKey(cfg)
-	if _, ok := aiRateLimiter.tryAcquire(key, cfg.RPMLimit); !ok {
+	if _, ok, _ := aiRateLimiter.tryAcquire(key, cfg.RPMLimit); !ok {
 		t.Fatal("占位请求应放行")
 	}
 	var got []QueuePayload

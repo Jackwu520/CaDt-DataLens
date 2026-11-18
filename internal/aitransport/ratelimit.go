@@ -30,6 +30,13 @@ const rateWindow = time.Minute
 // rateQueuePoll 是排队重试的最小粒度：既是 ctx 的响应间隔，也是看门狗的喂食间隔。
 const rateQueuePoll = 250 * time.Millisecond
 
+// 排队原因。两种等待的时间尺度差三个数量级，前端文案必须分开，
+// 否则「服务商配额用尽 9.9 小时」会被写成「RPM 限流」，用户只会去删请求而不是等配额。
+const (
+	RateLimitKindRPM    = "rpm"
+	RateLimitKindFrozen = "frozen"
+)
+
 type rateGate struct {
 	// stamps 是窗口内的请求时刻，按时间递增（追加顺序天然有序）。
 	stamps []time.Time
@@ -51,9 +58,9 @@ func rateKey(cfg Config) string {
 	return strings.ToLower(base) + "|" + strings.TrimSpace(cfg.Model)
 }
 
-// tryAcquire 判断此刻能否发请求。返回等待时长与是否放行；
+// tryAcquire 判断此刻能否发请求。返回等待时长、是否放行、以及排队原因（放行时为空）。
 // 放行时会记一次请求时刻（仅当 rpm > 0——不限速就不留账，避免无意义的内存增长）。
-func (l *rateLimiter) tryAcquire(key string, rpm int) (time.Duration, bool) {
+func (l *rateLimiter) tryAcquire(key string, rpm int) (time.Duration, bool, string) {
 	now := time.Now()
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -63,7 +70,7 @@ func (l *rateLimiter) tryAcquire(key string, rpm int) (time.Duration, bool) {
 		l.gates[key] = gate
 	}
 	if now.Before(gate.frozenUntil) {
-		return gate.frozenUntil.Sub(now), false
+		return gate.frozenUntil.Sub(now), false, RateLimitKindFrozen
 	}
 	if rpm > 0 {
 		cutoff := now.Add(-rateWindow)
@@ -76,11 +83,11 @@ func (l *rateLimiter) tryAcquire(key string, rpm int) (time.Duration, bool) {
 		gate.stamps = kept
 		if len(gate.stamps) >= rpm {
 			// 最早那次请求滑出窗口就能再发一次
-			return gate.stamps[0].Add(rateWindow).Sub(now), false
+			return gate.stamps[0].Add(rateWindow).Sub(now), false, RateLimitKindRPM
 		}
 		gate.stamps = append(gate.stamps, now)
 	}
-	return 0, true
+	return 0, true, ""
 }
 
 // freezeUntil 由 429 分支回灌：把该 key 的窗口冻结到服务端要求的时刻。
@@ -113,13 +120,14 @@ func resetRateLimiter() {
 func acquireSlot(ctx context.Context, cfg Config, id string, emit Emitter, touch func()) error {
 	key := rateKey(cfg)
 	announced := false
+	lastKind := ""
 	clear := func() {
 		if announced && emit != nil {
 			emit(EventQueue, QueuePayload{Id: id})
 		}
 	}
 	for {
-		wait, ok := aiRateLimiter.tryAcquire(key, cfg.RPMLimit)
+		wait, ok, kind := aiRateLimiter.tryAcquire(key, cfg.RPMLimit)
 		if ok {
 			clear()
 			return nil
@@ -127,10 +135,22 @@ func acquireSlot(ctx context.Context, cfg Config, id string, emit Emitter, touch
 		if wait < rateQueuePoll {
 			wait = rateQueuePoll
 		}
-		if !announced {
+		// 排队原因会变：429 冻结到期后可能仍卡在 RPM 窗口里。kind 一变就重发，
+		// 否则用户会一直看到「配额用尽」直到请求被放行。
+		if !announced || kind != lastKind {
 			announced = true
+			lastKind = kind
 			if emit != nil {
-				emit(EventQueue, QueuePayload{Id: id, WaitMs: int(wait.Milliseconds()), Reason: "RPM 限流"})
+				reason := "本地限流排队"
+				if kind == RateLimitKindFrozen {
+					reason = "服务商配额已用尽"
+				}
+				emit(EventQueue, QueuePayload{
+					Id:     id,
+					WaitMs: int(wait.Milliseconds()),
+					Reason: reason,
+					Kind:   kind,
+				})
 			}
 		}
 		step := wait

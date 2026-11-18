@@ -16,6 +16,7 @@ type keyState struct {
 	path      string
 	shared    int
 	exclusive int
+	noShare   bool // 破坏性独占：本进程后续 Acquire/AcquireWait/AcquireShared 一律 busy
 	lock      *sessionlock.FileLock
 	owner     Owner
 }
@@ -58,6 +59,7 @@ func (st *keyState) release(mode Mode) {
 		st.lock.Release()
 		st.lock = nil
 		st.owner = Owner{}
+		st.noShare = false
 	}
 	st.mu.Unlock()
 }

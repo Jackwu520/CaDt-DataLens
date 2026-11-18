@@ -238,3 +238,76 @@ test('正文占位符删除 → 保存成功 → 文件同样回收（GC 口径�
         backend.deleteCalls.filter((p) => p.includes('x3.png')),
         ['/ws/a/memo-root/img/x3.png'], '正文里删掉占位符即回收文件');
 });
+
+// withLease：给内存后端加 refcount 版 MemoLease*，用于覆盖多实例租约路径。
+function withLease(backend) {
+    backend.leaseRefs = 0;
+    backend.leaseAcquireCalls = 0;
+    backend.leaseReleaseCalls = 0;
+    backend.MemoLeaseAcquire = async () => {
+        backend.leaseAcquireCalls++;
+        backend.leaseRefs++;
+        return {acquired: true, busy: false, owner: {pid: 1, label: 'test'}};
+    };
+    backend.MemoLeaseRelease = async () => {
+        backend.leaseReleaseCalls++;
+        backend.leaseRefs = Math.max(0, backend.leaseRefs - 1);
+        return null;
+    };
+    return backend;
+}
+
+test('长租约：重开可再拿、CAS 冲突保留 writer、release 只释放一次', async () => {
+    const backend = withLease(makeBackend());
+    const store = makeStore(backend);
+    await store.load('workspace', {acquire: true});
+    assert.equal(store.state('workspace').writer, true);
+    assert.equal(backend.leaseRefs, 1);
+
+    const rel = await store.releaseLease('workspace');
+    assert.equal(rel.ok, true);
+    assert.equal(store.state('workspace').writer, false);
+    assert.equal(backend.leaseRefs, 0);
+
+    // 重开面板：缓存还在，但必须重新 acquire
+    await store.load('workspace', {acquire: true, force: true});
+    assert.equal(store.state('workspace').writer, true);
+    assert.equal(backend.leaseRefs, 1);
+
+    await store.mutate('workspace', (doc) => addItem(doc, '', '我的改动'));
+    const key = backend.keyOf('workspace', '/ws/a');
+    backend.files.set(key, {data: '{"version":1,"updatedAt":9,"blocks":[{"id":"blk-x","title":"别人的","items":[]}]}', mtimeMs: 999999});
+    const res = await store.flush('workspace');
+    assert.equal(res.conflict, true);
+    assert.equal(store.state('workspace').writer, true);
+    assert.equal(backend.leaseRefs, 1);
+
+    await store.releaseLease('workspace');
+    assert.equal(backend.leaseRefs, 0);
+});
+
+test('AI 临时租约：写成功清 dirty、release 成对', async () => {
+    const backend = withLease(makeBackend());
+    const store = makeStore(backend);
+    await store.load('workspace', {acquire: false});
+    const res = await store.mutate('workspace', (doc) => addItem(doc, '', 'AI 写入'), {temporary: true});
+    assert.equal(res.ok, true);
+    assert.equal(backend.leaseRefs, 0);
+    assert.equal(store.hasPending(), false);
+    assert.equal(store.state('workspace').writer, false);
+});
+
+test('并发 retryAcquire 单飞，不会多占一次租约', async () => {
+    const backend = withLease(makeBackend());
+    const store = makeStore(backend);
+    await store.load('workspace', {acquire: false});
+    const [a, b] = await Promise.all([
+        store.retryAcquire('workspace'),
+        store.retryAcquire('workspace'),
+    ]);
+    assert.equal(backend.leaseRefs, 1);
+    assert.equal(store.state('workspace').writer, true);
+    assert.equal(a.ok || (b && b.retry), true);
+    await store.releaseLease('workspace');
+    assert.equal(backend.leaseRefs, 0);
+});

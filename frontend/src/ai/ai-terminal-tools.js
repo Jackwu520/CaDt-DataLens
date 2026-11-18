@@ -82,6 +82,19 @@ export function formatTerminalList(local, backendList) {
     return lines.join('\n');
 }
 
+// 排队等待时长的用户可读格式（ai-queue 提示用）：9.4 s / 42 s / 8.5 min / 9.9 h。
+// 与 formatCommandDuration 分开：那是「已经花了多久」（毫秒精度、英文单位），
+// 这是「还要等多久」（可能长达数小时，需要小时档，且 429 冻结常常是几十分钟起）。
+export function formatWaitDuration(ms) {
+    if (ms == null) return '';
+    const n = Number(ms);
+    if (!Number.isFinite(n) || n <= 0) return '';
+    const s = n / 1000;
+    if (s < 60) return s.toFixed(1) + ' 秒';
+    if (s < 3600) return (s / 60).toFixed(s < 600 ? 1 : 0) + ' 分钟';
+    return (s / 3600).toFixed(1) + ' 小时';
+}
+
 // 命令耗时格式化（run_command 工具卡头部徽标用）：ms → 1.25 s / 12.3 s / 2 m 05 s。
 // 口径与 run.js 的 F5 运行计时一致（<10s 两位小数）；非法 / 负值返回 ''，调用方据此不渲染。
 export function formatCommandDuration(ms) {

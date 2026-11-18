@@ -39,12 +39,12 @@ func TestValidIDs(t *testing.T) {
 func TestSharedLogAppendReadMeta(t *testing.T) {
 	st, _, _ := newTestStore(t)
 	id := "group-t1"
+	if err := st.Append(id, `{"kind":"header","v":2}`+"\n"+`{"kind":"msg","gid":"gm-1"}`); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
 	meta := `{"v":2,"kind":"group","id":"group-t1","title":"评审"}`
 	if err := st.WriteMeta(id, meta); err != nil {
 		t.Fatalf("WriteMeta: %v", err)
-	}
-	if err := st.Append(id, `{"kind":"header","v":2}` + "\n" + `{"kind":"msg","gid":"gm-1"}`); err != nil {
-		t.Fatalf("Append: %v", err)
 	}
 	// 再追加一批（无尾换行也要正确落行）
 	if err := st.Append(id, `{"kind":"msg","gid":"gm-2"}`); err != nil {
@@ -70,7 +70,7 @@ func TestSharedLogRewrite(t *testing.T) {
 	if err := st.Append(id, "old\n"); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.Rewrite(id, `{"kind":"msg","gid":"gm-new"}` + "\n"); err != nil {
+	if err := st.Rewrite(id, `{"kind":"msg","gid":"gm-new"}`+"\n"); err != nil {
 		t.Fatalf("Rewrite: %v", err)
 	}
 	body, _ := st.Read(id)
@@ -113,7 +113,7 @@ func TestPrivateLogLifecycle(t *testing.T) {
 	if body, err := st.PrivateRead(group, agent); err != nil || body != "" {
 		t.Fatalf("空读：%q %v", body, err)
 	}
-	if err := st.PrivateAppend(group, agent, `{"gid":"gm-1","steps":[]}` + "\n" + `{"gid":"gm-2"}`); err != nil {
+	if err := st.PrivateAppend(group, agent, `{"gid":"gm-1","steps":[]}`+"\n"+`{"gid":"gm-2"}`); err != nil {
 		t.Fatalf("PrivateAppend: %v", err)
 	}
 	if err := st.PrivateAppend(group, agent, `{"gid":"gm-3"}`); err != nil {
@@ -131,7 +131,7 @@ func TestPrivateLogLifecycle(t *testing.T) {
 		t.Fatalf("私有日志路径不对：%v", err)
 	}
 	// rewrite
-	if err := st.PrivateRewrite(group, agent, `{"gid":"gm-clean"}` + "\n"); err != nil {
+	if err := st.PrivateRewrite(group, agent, `{"gid":"gm-clean"}`+"\n"); err != nil {
 		t.Fatalf("PrivateRewrite: %v", err)
 	}
 	body, _ = st.PrivateRead(group, agent)

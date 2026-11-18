@@ -98,12 +98,17 @@ export function lcDequantize(b64, scale, dims) {
     return out;
 }
 
-// 按 shell 命令分隔符切段：换行 / ; / && / || / | / 单个 &（后台执行）
+// 按 shell 命令分隔符切段：换行族 / ; / && / || / | / 单个 &（后台执行）
 // （红队 P0：多命令链的 benign 前缀会稀释危险段信号、&& 被语料装饰学成安全信号——
 // 切段逐段打分取 max 是根因级修复，且与「整条训练」自洽：危险段命中训练学到的正权 gram，
 // benign 段命中负权，max 取危险段。
 // 单个 & 必须单独处理：`git status & history -c` 曾两模型全档放行；用 lookbehind 排除
-// `2>&1` 这类重定向（>& 不是命令分隔符），否则会把一条命令切成无意义的碎片。）
+// `2>&1` 这类重定向（>& 不是命令分隔符），否则会把一条命令切成无意义的碎片。
+//
+// 换行族必须包含单独 CR、NEL(U+0085)、LS(U+2028)、PS(U+2029)：PowerShell 词法把这四个都当
+// 行终止符，只认 \r?\n 会让「良性前缀 \r 危险尾部」压成一整段，负权 n-gram 把危险尾部淹没
+// （红队 V-01 实测 0.0165 三档全放行）。切段必须发生在**原始文本**上：lcNormalize 的
+// \s+ → ' ' 会把这些字符折成空格，先归一化再切段等于把它们抹平。）
 // 提取命令替换（$() / 反引号 / 进程替换 <()）内的命令文本，递归处理嵌套。
 // 红队 F1：`echo "<良性洪泛>" "$(rm -rf /)"` 无分隔符，内层危险命令与洪泛同段，
 // 字符 n-gram 被数百个负权 gram 淹没到 0.02 级自动放行——内层命令必须切出来
@@ -158,7 +163,7 @@ function lcExtractSubcommands(text) {
 }
 
 export function lcSegment(command) {
-    const segs = String(command || '').split(/\r?\n|&&|\|\||;|\||(?<![>&])&/).map((seg) => seg.trim()).filter(Boolean);
+    const segs = String(command || '').split(/\r\n|\r|\n|\u0085|\u2028|\u2029|&&|\|\||;|\||(?<![>&])&/).map((seg) => seg.trim()).filter(Boolean);
     // 命令替换 / 反引号 / 进程替换内容作为独立段参与 max（红队 F1，见 lcExtractSubcommands）；
     // 外层段保留——subshell:eval 桶等外层结构信号仍在外层段口径里
     const subs = [];
@@ -603,9 +608,10 @@ export function createAILocalClassifier(ctx) {
         // 学习口径与推理对齐：推理逐段取 max，只有「决定判定」的最高分段该被学习
         const learnText = lcLearnSegment(sanitized, state.active, state.bias + state.biasDelta, state.featureCfg);
         // 破坏性命令的批准是单次授权，不进语料——否则同族变体会被字符 n-gram 迁移成安全。
-        // 护栏查**全量 sanitized** 而非最高分段（红队 F6 实测：curl|sh 被切段后最高分段只剩
-        // 下载器半截，管道落地壳在另一段里，分段口径护栏失明）
-        if (approved && lcLearnDenied(sanitized)) {
+        // 护栏查**脱敏前原文**：脱敏正则 `[^\s"']+` 会把紧跟秘密字面量的结构 token 一起打码
+        // （红队 V-04 实测 `echo password | sh` → `echo password *** sh`，管道落地壳消失、
+        // LC_LEARN_DENY_PIPE_SH 失明）。脱敏只用于落盘，判定一律看原文。
+        if (approved && lcLearnDenied(String(command || ''))) {
             if (!state.dangerSkipNotified && ctx.flash) {
                 state.dangerSkipNotified = true;
                 ctx.flash('破坏性命令只对本次生效，不会训练成自动放行', false);
@@ -720,13 +726,16 @@ export function createAILocalClassifier(ctx) {
         try {
             const result = await lcWithTimeout(Promise.resolve().then(() => fn(command, info)), CLASSIFY_TIMEOUT_MS);
             state.failures.delete(id);
-            if (!result || typeof result !== 'object' || !Number.isFinite(Number(result.score))) {
-                throw new Error('分类器输出缺少 score');
+            // 严格类型校验：Number(null|''|[]|false) 都是 0，用 Number() 转换会把坏插件
+            // 的畸形输出当成「安全 0 分」——不熔断、不计失败、不触发 degraded，
+            // 双模型冗余静默退化成线性单票（红队 V-03）。只接受真正的有限数。
+            if (!result || typeof result !== 'object' || typeof result.score !== 'number' || !Number.isFinite(result.score)) {
+                throw new Error('分类器输出 score 不是有限数值');
             }
             return {
                 id,
                 label: String(label || id),
-                score: Math.min(1, Math.max(0, Number(result.score))),
+                score: Math.min(1, Math.max(0, result.score)),
                 reason: String((result && result.reason) || '').replace(/\s+/g, ' ').trim().slice(0, 80),
             };
         } catch (e) {

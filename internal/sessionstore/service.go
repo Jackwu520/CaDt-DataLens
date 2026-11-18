@@ -55,12 +55,12 @@ func (s *Service) AISessionRead(id string) (string, error) {
 	return store.Read(id)
 }
 
-func (s *Service) AISessionAppend(id string, lines string) error {
+func (s *Service) AISessionAppend(id string, lines string, allowCreate bool) error {
 	store, err := s.store()
 	if err != nil {
 		return err
 	}
-	if err := store.Append(id, lines); err != nil {
+	if err := store.AppendWithCreate(id, lines, allowCreate); err != nil {
 		return err
 	}
 	if OnBodyChange != nil {
@@ -111,7 +111,7 @@ func (s *Service) AISessionSaveImage(id, name, dataURL string) (string, error) {
 	if len(dataURL) > 16<<20 {
 		return "", fmt.Errorf("图片数据过大（>16 MB）")
 	}
-	err = store.withSessionLock(id, func(dir string) error {
+	err = store.withSessionLock(id, true, func(dir string) error {
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			return err
 		}
@@ -150,7 +150,7 @@ func (s *Service) AISessionSaveVideo(id, name, dataURL string) (string, error) {
 	if len(dataURL) > 24<<20 {
 		return "", fmt.Errorf("视频数据过大（>24 MB）")
 	}
-	err = store.withSessionLock(id, func(dir string) error {
+	err = store.withSessionLock(id, true, func(dir string) error {
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			return err
 		}

@@ -8,8 +8,8 @@
 //   3) 安全类在标准档放行率 ≥ 0.85（避免过度打扰）。
 //
 // 运行：node scripts/train-local-classifier.mjs [--version factory-2026-11-14-1]
-import {generateCorpus, mulberry32, CANARIES} from './classifier-corpus.mjs';
-import {LC_FEATURES, lcExtractDims, lcScore, lcScoreCommand, lcDequantize} from '../frontend/src/ai/ai-local-classifier.js';
+import {generateCorpus, mulberry32, CANARIES, ADVERSARIAL_CANARIES, REGRESSION_CANARIES} from './classifier-corpus.mjs';
+import {LC_FEATURES, lcExtractDims, lcScore, lcSegment, lcScoreCommand, lcDequantize} from '../frontend/src/ai/ai-local-classifier.js';
 import {LOCAL_CLASSIFIER_THRESHOLDS} from '../frontend/src/ai/ai-permissions.js';
 import {writeFileSync} from 'node:fs';
 import {fileURLToPath} from 'node:url';
@@ -17,7 +17,10 @@ import {dirname, join} from 'node:path';
 
 const TRAIN_SEED = 20261114;   // 训练语料种子
 const VAL_SEED = 8675309;      // 验证语料种子（不同随机源 = 未见变体）
-const COUNTS = {safe: 400, dangerous: 400, gray: 130};
+// 400/400/130 时每条模板只剩 7 条样本，稀有族（侦察 / ACL / 中文 / prune）贴着决策边界抖，
+// 每加一批语料就有另一族掉下去（实测连续 4 轮「按下葫芦浮起瓢」）。提到 700/700/240 后
+// 每族约 12 条，权重才有足够更新次数站稳。训练仍是秒级。
+const COUNTS = {safe: 1200, dangerous: 1200, gray: 400};
 const EPOCHS = 60;
 const LR0 = 0.1;
 const DECAY = 0.9;
@@ -72,7 +75,15 @@ function quantize(weights) {
 }
 
 function evaluate(dataset, weights, bias) {
-    const rows = dataset.map((s) => ({command: s.command, y: s.y, cls: s.cls, score: lcScore(s.dims, weights, bias)}));
+    // 验收口径 = 线上口径：lcScoreCommand（切段取 max）。整条打分只留作对照列，
+    // 此前只用整条打分，公布的放行率比线上高约 6 个百分点（审计 2026-11-18 C-3）。
+    const rows = dataset.map((s) => ({
+        command: s.command,
+        y: s.y,
+        cls: s.cls,
+        score: lcScoreCommand(s.command, weights, bias, LC_FEATURES),
+        whole: lcScore(s.dims, weights, bias),
+    }));
     const summary = {};
     for (const cls of ['safe', 'dangerous', 'gray']) {
         const list = rows.filter((r) => r.cls === cls);
@@ -86,6 +97,10 @@ function evaluate(dataset, weights, bias) {
                 loose: list.filter((r) => r.score < LOCAL_CLASSIFIER_THRESHOLDS.loose).length / list.length,
                 standard: list.filter((r) => r.score < LOCAL_CLASSIFIER_THRESHOLDS.standard).length / list.length,
                 strict: list.filter((r) => r.score < LOCAL_CLASSIFIER_THRESHOLDS.strict).length / list.length,
+            },
+            // 对照：整条打分口径（旧验收口径），用来盯「公布的数」与「线上的数」差多少
+            allowWhole: {
+                standard: list.filter((r) => r.whole < LOCAL_CLASSIFIER_THRESHOLDS.standard).length / list.length,
             },
         };
     }
@@ -101,6 +116,31 @@ function evaluate(dataset, weights, bias) {
             strict: label1.filter((r) => r.score < LOCAL_CLASSIFIER_THRESHOLDS.strict).length,
         },
     };
+}
+
+// 训练样本按「段」展开：推理逐段打分取 max，训练就必须逐段学。
+// 整条训练有两个副作用：①「良性前缀 + 危险尾部」会把前缀里的安全 n-gram 一并推向危险侧
+// （反向污染，长洪泛样本尤其严重）；②「危险词被长前缀稀释」会被学成规律（审计 C-1）。
+// 合成样本自带按段标签；模板样本按类标签展开（curl|sh 两段都危险，cd x && ls 两段都安全）。
+function expandSamples(corpus) {
+    const out = [];
+    for (const s of corpus.samples) {
+        let parts;
+        if (Array.isArray(s.segments) && s.segments.length) {
+            // 洪泛合成可能有上百段填充：只抽样几段代表「良性上下文」，否则安全类被稀释
+            parts = s.segments.length > 12
+                ? s.segments.slice(0, 6).concat(s.segments.slice(-1))
+                : s.segments;
+        } else {
+            parts = lcSegment(s.command).map((text) => ({text, y: s.label}));
+        }
+        for (const part of parts) {
+            const text = String((part && part.text) || '').trim();
+            if (!text) continue;
+            out.push({command: text, dims: lcExtractDims(text, LC_FEATURES), y: part.y, cls: s.cls});
+        }
+    }
+    return out;
 }
 
 function main() {
@@ -122,7 +162,7 @@ function main() {
         return true;
     });
 
-    const trainSamples = trainCorpus.samples.map((s) => ({command: s.command, dims: lcExtractDims(s.command, LC_FEATURES), y: s.label, cls: s.cls}));
+    const trainSamples = expandSamples(trainCorpus);
     const valSamples = valRaw.map((s) => ({command: s.command, dims: lcExtractDims(s.command, LC_FEATURES), y: s.label, cls: s.cls}));
 
     const trained = train(trainSamples);
@@ -171,20 +211,27 @@ function main() {
         process.exit(1);
     }
 
-    // 金丝雀门槛：固定验收集逐条把关（与前端单测同一份清单，训练器与测试永不脱节）
+    // 金丝雀三层：plain（记忆层，防权重跑飞）/ adversarial（泛化闸门）/ regression（本轮修复不回退）
     const canaryFails = [];
-    for (const command of CANARIES.dangerous) {
-        const score = lcScoreCommand(command, dequantized, trained.bias, LC_FEATURES);
-        if (score < 0.5) canaryFails.push('危险应高置信（≥0.5）：' + command + ' → ' + score.toFixed(3));
-        if (score < LOCAL_CLASSIFIER_THRESHOLDS.loose) canaryFails.push('危险宽松档也必须拦：' + command + ' → ' + score.toFixed(3));
-    }
-    for (const command of CANARIES.safe) {
-        const score = lcScoreCommand(command, dequantized, trained.bias, LC_FEATURES);
-        if (score >= LOCAL_CLASSIFIER_THRESHOLDS.standard) canaryFails.push('安全应标准档放行：' + command + ' → ' + score.toFixed(3));
-    }
-    for (const command of CANARIES.gray) {
-        const score = lcScoreCommand(command, dequantized, trained.bias, LC_FEATURES);
-        if (score < LOCAL_CLASSIFIER_THRESHOLDS.standard) canaryFails.push('灰色应标准档转人工：' + command + ' → ' + score.toFixed(3));
+    const CANARY_LAYERS = [
+        ['plain', CANARIES],
+        ['adversarial', ADVERSARIAL_CANARIES],
+        ['regression', REGRESSION_CANARIES],
+    ];
+    for (const [layer, set] of CANARY_LAYERS) {
+        for (const command of (set && set.dangerous) || []) {
+            const score = lcScoreCommand(command, dequantized, trained.bias, LC_FEATURES);
+            if (score < 0.5) canaryFails.push('[' + layer + '] 危险应高置信（≥0.5）：' + command + ' → ' + score.toFixed(3));
+            else if (score < LOCAL_CLASSIFIER_THRESHOLDS.loose) canaryFails.push('[' + layer + '] 危险宽松档也必须拦：' + command + ' → ' + score.toFixed(3));
+        }
+        for (const command of (set && set.gray) || []) {
+            const score = lcScoreCommand(command, dequantized, trained.bias, LC_FEATURES);
+            if (score < LOCAL_CLASSIFIER_THRESHOLDS.standard) canaryFails.push('[' + layer + '] 灰色应标准档转人工：' + command + ' → ' + score.toFixed(3));
+        }
+        for (const command of (set && set.safe) || []) {
+            const score = lcScoreCommand(command, dequantized, trained.bias, LC_FEATURES);
+            if (score >= LOCAL_CLASSIFIER_THRESHOLDS.standard) canaryFails.push('[' + layer + '] 安全应标准档放行：' + command + ' → ' + score.toFixed(3));
+        }
     }
     if (canaryFails.length) {
         console.error('金丝雀未过，拒绝产出权重：\n  - ' + canaryFails.join('\n  - '));
