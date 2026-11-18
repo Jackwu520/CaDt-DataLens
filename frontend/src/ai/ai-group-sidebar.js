@@ -13,7 +13,9 @@ import {
     CHAIR_KINDS,
     CHAIR_POLICIES,
     GROUP_GOALS,
+    deriveMaxSpeeches,
     estimateDiscussionCalls,
+    normalizeGroupMeta,
     normalizeGroupMode,
     preflightGroup,
 } from './ai-group-model.js';
@@ -88,6 +90,33 @@ export function createAIGroupSidebar(deps) {
         if (els.groupActions) els.groupActions.classList.toggle('hidden', !groups);
     }
 
+    // 当前在 AI 面板打开的群（panel onViewChange 回填）：列表行高亮
+    let activeGroupId = '';
+
+    function setActiveGroup(id) {
+        const next = String(id || '');
+        if (activeGroupId === next) return;
+        activeGroupId = next;
+        renderGroupList(runtime.groupList());
+    }
+
+    function relativeTime(ts) {
+        const value = Number(ts) || 0;
+        if (!value) return '';
+        const diff = Date.now() - value;
+        if (diff < 60000) return '刚刚';
+        if (diff < 3600000) return Math.floor(diff / 60000) + ' 分钟前';
+        if (diff < 86400000) return Math.floor(diff / 3600000) + ' 小时前';
+        return new Date(value).toLocaleDateString();
+    }
+
+    // 运行指示：有流式发言或讨论（含暂停）时亮脉冲点
+    function groupRunning(meta) {
+        if (runtime.activeStreamOf(meta.id)) return true;
+        const disc = runtime.discussionSnapshot(meta.id);
+        return !!(disc && (disc.running || disc.paused));
+    }
+
     function renderGroupList(metas) {
         if (!els.groupList) return;
         els.groupList.innerHTML = '';
@@ -105,24 +134,31 @@ export function createAIGroupSidebar(deps) {
     }
 
     function groupRow(meta, agents) {
-        const row = node('div', 'ai-session-item gc-list-row');
+        const row = node('div', 'ai-session-item gc-list-row' + (meta.id === activeGroupId ? ' active' : ''));
         const head = node('div', 'gc-list-head');
         head.appendChild(node('span', 'gc-list-title', meta.title || '未命名群聊'));
         head.appendChild(node('span', 'gc-badge gc-badge-mode', modeLabel(meta.mode)));
-        if (meta.chair && meta.chair.kind === 'user') head.appendChild(node('span', 'gc-badge', '我主持'));
-        const dots = node('div', 'gc-list-dots');
-        for (const id of meta.memberIds) {
-            const agent = agents.find((item) => item && item.id === id);
-            const dot = node('span', 'gc-dot');
-            dot.style.backgroundColor = AGENT_COLOR_HEX[agent && agent.color] || '#989898';
-            dot.dataset.tip = agent ? agent.name : '已删除成员';
-            dots.appendChild(dot);
+        if (groupRunning(meta)) {
+            const pulse = node('span', 'gc-list-pulse');
+            pulse.dataset.tip = meta.mode === 'free' ? '有成员正在发言' : '讨论进行中';
+            head.appendChild(pulse);
         }
         row.appendChild(head);
-        row.appendChild(dots);
+        // 最近消息预览（meta.lastPreview 由 runtime 落盘时写入；老群回落成员数 + 目标）
+        const preview = String(meta.lastPreview || '').trim();
+        row.appendChild(node('div', 'gc-list-preview', preview || `${meta.memberIds.length} 成员 · ${goalLabel(meta.goal)}`));
         const foot = node('div', 'gc-list-foot');
-        foot.appendChild(node('span', 'gc-list-meta',
-            `${goalLabel(meta.goal)} · ${meta.memberIds.length} 成员 · ${new Date(meta.updatedAt || 0).toLocaleDateString()}`));
+        const avatars = node('div', 'gc-list-avatars');
+        for (const id of meta.memberIds) {
+            const agent = agents.find((item) => item && item.id === id);
+            const avatar = node('span', 'gc-avatar gc-avatar-sm');
+            avatar.textContent = (agent ? agent.name : '?').trim().charAt(0) || '?';
+            avatar.style.background = AGENT_COLOR_HEX[agent && agent.color] || '#989898';
+            avatar.dataset.tip = agent ? agent.name : '已删除成员';
+            avatars.appendChild(avatar);
+        }
+        foot.appendChild(avatars);
+        foot.appendChild(node('span', 'gc-list-meta', relativeTime(meta.updatedAt)));
         const del = node('button', 'gc-list-del', '删除');
         del.type = 'button';
         del.dataset.tip = '删除群聊（回收站可撤销）';
@@ -295,7 +331,14 @@ export function createAIGroupSidebar(deps) {
         body.appendChild(chairAgentWrap);
 
         const policyCtl = row('策略', createSelect({options: CHAIR_POLICIES.map((p) => ({value: p.id, label: p.label, selected: p.id === 'round-plan'}))}));
-        const roundsCtl = row('轮数', createSelect({options: [1, 2, 3].map((n) => ({value: String(n), label: n + ' 轮' + (n === 2 ? '（推荐）' : ''), selected: n === 2}))}));
+        // 轮数（G6）：0 = 不限轮次（手动结束），默认 5；发言上限由 runtime 按「成员数 × 轮数」自动推导
+        const roundsCtl = row('轮数', createSelect({options: [
+            {value: '3', label: '3 轮'},
+            {value: '5', label: '5 轮（推荐）', selected: true},
+            {value: '10', label: '10 轮'},
+            {value: '20', label: '20 轮'},
+            {value: '0', label: '不限轮次（手动结束）'},
+        ]}));
         const timeoutCtl = row('超时', createSelect({options: [
             {value: 'standard', label: '标准（首次 45s / 总 180s）', selected: true},
             {value: 'lenient', label: '宽松（首次 90s / 总 300s）'},
@@ -473,10 +516,12 @@ export function createAIGroupSidebar(deps) {
                     : '勾选 2–8 位成员后开始聊天';
             } else {
                 const policy = createControls ? createControls.policy.control.value : 'round-plan';
-                const rounds = createControls ? Number(createControls.rounds.control.value) || 2 : 2;
-                const calls = estimateDiscussionCalls(memberIds.length, rounds, policy);
+                // '0' = 不限轮次：按发言上限估算（estimateDiscussionCalls 自带该分支）
+                const rounds = createControls ? Number(createControls.rounds.control.value) : 5;
+                const calls = estimateDiscussionCalls(memberIds.length, rounds, policy, deriveMaxSpeeches(memberIds.length, rounds));
+                const roundsText = rounds === 0 ? '不限轮次' : `${memberIds.length} 成员 × ${rounds} 轮`;
                 estLine.textContent = memberIds.length >= 2
-                    ? `预计调用量：约 ${calls} 次（${memberIds.length} 成员 × ${rounds} 轮）`
+                    ? `预计调用量：约 ${calls} 次（${roundsText}；发言上限 ${deriveMaxSpeeches(memberIds.length, rounds)} 次）`
                     : '勾选 2–8 位成员后开始讨论';
             }
         }
@@ -500,7 +545,8 @@ export function createAIGroupSidebar(deps) {
             roles: collectRoles(),
             memberIds,
             chair: {kind: chairKind, agentId: chairKind === 'user' ? '' : chairAgentId, policy: createControls.policy.control.value},
-            maxRounds: Number(createControls.rounds.control.value) || 2,
+            // 轮数三值直传（'0' = 不限轮次；Number 而不是 ||，否则 0 会被兜成 2）
+            maxRounds: Number(createControls.rounds.control.value),
             timeoutPreset: createControls.timeout.control.value,
         };
     }
@@ -515,5 +561,70 @@ export function createAIGroupSidebar(deps) {
         return {ok: true, agent: result.agent};
     }
 
-    return {bindSidebar, renderGroupList, openCreateDialog};
+    // 群设置（G6）：群名 / 议题 / 目标 / 轮数（0=不限）/ 发言上限 / 讨论总时长；
+    // 保存走 normalizeGroupMeta 单一来源钳制后 saveMeta，头部与列表自动刷新。不改成员（静音在成员详情页）。
+    function openGroupSettingsDialog(groupId) {
+        const g = runtime.groupById(groupId);
+        if (!g) {
+            flash('群聊不存在或已删除');
+            return;
+        }
+        const meta = g.meta;
+        const titleCtl = createInput({value: meta.title || '', placeholder: '群名'});
+        const topicCtl = createTextarea({rows: 3, value: meta.topic || '', placeholder: '议题（发给成员的讨论背景）'});
+        const goalCtl = createSelect({options: GROUP_GOALS.map((item) => ({value: item.id, label: item.label, selected: item.id === meta.goal}))});
+        const roundOptions = [3, 5, 10, 20].map((n) => ({value: String(n), label: n + ' 轮', selected: Number(meta.maxRounds) === n}));
+        roundOptions.push({value: '0', label: '不限轮次（手动结束）', selected: Number(meta.maxRounds) === 0});
+        if (![3, 5, 10, 20, 0].includes(Number(meta.maxRounds))) {
+            roundOptions.unshift({value: String(meta.maxRounds), label: meta.maxRounds + ' 轮（当前）', selected: true});
+        }
+        const roundsCtl = createSelect({options: roundOptions});
+        const speechesCtl = createInput({type: 'number', value: meta.maxSpeeches || 12, min: 12, max: 200, step: 1});
+        const totalMinutes = Math.round((meta.timeouts && meta.timeouts.discussionTotalMs ? meta.timeouts.discussionTotalMs : 3600000) / 60000);
+        const minutesCtl = createInput({type: 'number', value: totalMinutes, min: 15, max: 180, step: 5});
+        const statusLine = node('div', 'set-desc');
+        statusLine.style.minHeight = '14px';
+
+        const body = node('div');
+        body.appendChild(wrapRow('群名', titleCtl.element));
+        body.appendChild(wrapRow('议题', topicCtl.element, 'gc-form-row-top'));
+        body.appendChild(wrapRow('目标', goalCtl.element));
+        body.appendChild(wrapRow('轮数', roundsCtl.element));
+        body.appendChild(wrapRow('发言上限', speechesCtl.element));
+        body.appendChild(wrapRow('总时长', minutesCtl.element));
+        body.appendChild(node('div', 'gc-est-line', '发言上限 12–200 次；不限轮次时到达上限 / 总时长会自动生成纪要，或点「结束并总结」手动收敛。'));
+
+        const cancelBtn = dialogButton ? dialogButton('取消', 'dlg-btn', () => closeDialog()) : node('button', 'dlg-btn', '取消');
+        if (!dialogButton) cancelBtn.type = 'button';
+        let saveBtn = dialogButton ? dialogButton('保存', 'dlg-btn primary', () => save()) : null;
+        if (!saveBtn) {
+            saveBtn = node('button', 'dlg-btn primary', '保存');
+            saveBtn.type = 'button';
+            saveBtn.addEventListener('click', () => save());
+        }
+
+        function save() {
+            const minutes = Math.round(Number(minutesCtl.control.value));
+            const merged = normalizeGroupMeta({
+                ...meta,
+                title: String(titleCtl.control.value || '').trim() || meta.title,
+                topic: String(topicCtl.control.value || '').trim(),
+                goal: goalCtl.control.value,
+                maxRounds: Number(roundsCtl.control.value),
+                maxSpeeches: Math.round(Number(speechesCtl.control.value)) || meta.maxSpeeches,
+                timeouts: {...(meta.timeouts || {}), discussionTotalMs: Math.min(180, Math.max(15, minutes)) * 60000},
+            });
+            runtime.saveMeta(groupId, (m) => Object.assign(m, merged));
+            closeDialog();
+            flash('群设置已保存');
+        }
+
+        openDialog('群设置 · ' + (meta.title || '未命名群聊'), [body, statusLine], [cancelBtn, saveBtn], {top: true});
+        if (typeof enhanceSelect === 'function') {
+            enhanceSelect(goalCtl.control);
+            enhanceSelect(roundsCtl.control);
+        }
+    }
+
+    return {bindSidebar, renderGroupList, openCreateDialog, setActiveGroup, openGroupSettingsDialog};
 }

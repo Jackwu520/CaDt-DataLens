@@ -8,7 +8,10 @@ import {
     GROUP_MEMBER_MAX,
     TIMEOUT_PRESETS,
     buildGroupDraft,
+    deriveMaxSpeeches,
     estimateDiscussionCalls,
+    isUnlimitedRounds,
+    maxRoundsOf,
     normalizeGroupMeta,
     normalizeGroupMode,
     preflightGroup,
@@ -42,7 +45,8 @@ test('normalizeGroupMeta：默认值与钳制', () => {
     assert.equal(meta.kind, 'group');
     assert.equal(meta.mode, 'roundtable');
     assert.equal(meta.goal, 'explore');
-    assert.equal(meta.maxRounds, 2);
+    // G6：默认 5 轮（0 = 不限轮次），不再钳死 1–3
+    assert.equal(meta.maxRounds, 5);
     assert.equal(meta.maxSpeeches, 12);
     assert.equal(meta.roundMode, 'sequential');
     assert.equal(meta.timeouts.memberTotalMs, 180000);
@@ -51,17 +55,55 @@ test('normalizeGroupMeta：默认值与钳制', () => {
     assert.equal(meta.chair.policy, 'round-plan');
     assert.deepEqual(meta.discussion.agenda, []);
     assert.equal(meta.sharedSummary, null);
-    // 非法值回默认
-    const bad = normalizeGroupMeta({maxRounds: 9, maxSpeeches: -5, goal: 'nope', mode: 'nope', roundMode: 'nope', timeouts: {memberTotalMs: -1}});
-    assert.equal(bad.maxRounds, 3);
+    // 非法值回默认；轮数上限 20、0 = 不限
+    const bad = normalizeGroupMeta({maxRounds: 21, maxSpeeches: -5, goal: 'nope', mode: 'nope', roundMode: 'nope', timeouts: {memberTotalMs: -1}});
+    assert.equal(bad.maxRounds, 20);
     assert.equal(bad.maxSpeeches, 1);
     assert.equal(bad.goal, 'explore');
     assert.equal(bad.mode, 'roundtable');
     assert.equal(bad.roundMode, 'sequential');
     assert.equal(bad.timeouts.memberTotalMs, 180000);
+    assert.equal(normalizeGroupMeta({maxRounds: 0}).maxRounds, 0);
+    assert.equal(normalizeGroupMeta({maxRounds: 9}).maxRounds, 9);
+    // 老群（轮数 1–3）原样保留
+    assert.equal(normalizeGroupMeta({maxRounds: 2}).maxRounds, 2);
     // 成员截断到上限
     const many = normalizeGroupMeta({memberIds: Array.from({length: GROUP_MEMBER_MAX + 3}, (_, i) => 'a' + i)});
     assert.equal(many.memberIds.length, GROUP_MEMBER_MAX);
+    // 侧栏预览截断（G6）
+    assert.equal(normalizeGroupMeta({lastPreview: 'x'.repeat(300)}).lastPreview.length, 100);
+});
+
+test('maxRoundsOf / deriveMaxSpeeches / estimateDiscussionCalls（G6 轮次预算）', () => {
+    assert.equal(maxRoundsOf({maxRounds: 0}), Infinity);
+    assert.equal(maxRoundsOf({maxRounds: 20}), 20);
+    assert.equal(maxRoundsOf({}), Infinity);
+    assert.equal(maxRoundsOf({maxRounds: 2}), 2);
+    assert.equal(isUnlimitedRounds({maxRounds: 0}), true);
+    assert.equal(isUnlimitedRounds({maxRounds: 5}), false);
+    // 5 人 5 轮 = 25 次发言，不再被固定 12 截断
+    assert.equal(deriveMaxSpeeches(5, 5), 25);
+    // 2 人 3 轮 → 12 下限兜底
+    assert.equal(deriveMaxSpeeches(2, 3), 12);
+    // 8 人 20 轮 → 160；超上限的轮数先被钳到 20 再推导
+    assert.equal(deriveMaxSpeeches(8, 20), 160);
+    assert.equal(deriveMaxSpeeches(8, 40), 160);
+    // 不限轮次 → 默认 100
+    assert.equal(deriveMaxSpeeches(5, 0), 100);
+    // 不限轮次（rounds=0）按发言上限折算：5 人 100 次 → 有效 20 轮做主持开销
+    assert.equal(estimateDiscussionCalls(5, 0, 'round-plan', 100), 100 + 2 * 20 + 1);
+});
+
+test('normalizeDiscussion：floorRequests 持久化（G6 看板重开不丢）', () => {
+    const meta = normalizeGroupMeta({
+        discussion: {
+            floorRequests: [{from: 'a1', fromName: '架构师', to: '主持人', reason: '需要目录', ts: 123}],
+        },
+    });
+    assert.equal(meta.discussion.floorRequests.length, 1);
+    assert.equal(meta.discussion.floorRequests[0].from, 'a1');
+    // 轮次号上限放宽（不限轮次时可一直涨）
+    assert.equal(normalizeGroupMeta({discussion: {round: 500}}).discussion.round, 500);
 });
 
 test('estimateDiscussionCalls：round-plan 13 / adaptive 17（4 成员 × 2 轮，§3.4）', () => {
@@ -323,17 +365,23 @@ function draftAgents() {
     ], () => 'g');
 }
 
-test('buildGroupDraft：缺省值（roundtable / decide / 2 轮 / 自动选主持人）', () => {
+test('buildGroupDraft：缺省值（roundtable / decide / 5 轮 / 自动选主持人）', () => {
     const draft = buildGroupDraft({agents: draftAgents(), params: {members: ['架构师', '审查员']}});
     assert.equal(draft.ok, true);
     assert.deepEqual(draft.spec.memberIds, ['a1', 'a2']);
     assert.equal(draft.spec.mode, 'roundtable');
     assert.equal(draft.spec.goal, 'decide');
-    assert.equal(draft.spec.maxRounds, 2);
+    // G6：默认 5 轮；发言上限按成员数×轮数推导（2 人 × 5 轮 → 12 下限兜底）
+    assert.equal(draft.spec.maxRounds, 5);
+    assert.equal(draft.spec.maxSpeeches, 12);
     assert.equal(draft.spec.timeoutPreset, 'standard');
     assert.deepEqual(draft.spec.chair, {kind: 'ai', agentId: 'a3', policy: 'round-plan'});
     assert.deepEqual(draft.members.map((m) => m.name), ['架构师', '审查员']);
     assert.deepEqual(draft.chair, {kind: 'ai', name: '主持人', policy: 'round-plan'});
+    // 显式轮数直传（含不限轮次 0）
+    assert.equal(buildGroupDraft({agents: draftAgents(), params: {members: ['架构师', '审查员'], rounds: 0}}).spec.maxRounds, 0);
+    assert.equal(buildGroupDraft({agents: draftAgents(), params: {members: ['架构师', '审查员'], rounds: 20}}).spec.maxSpeeches, 40);
+    assert.equal(buildGroupDraft({agents: draftAgents(), params: {members: ['架构师', '审查员'], rounds: 21}}).ok, false);
 });
 
 test('buildGroupDraft：free 模式缺省由用户主持；成员支持 id 去重', () => {
@@ -406,8 +454,10 @@ test('buildGroupDraft：非法 mode / goal / rounds / timeout / policy 明确报
     const base = {members: ['架构师', '审查员']};
     assert.match(buildGroupDraft({agents, params: {...base, mode: 'nope'}}).error, /mode/);
     assert.match(buildGroupDraft({agents, params: {...base, goal: 'nope'}}).error, /goal/);
-    assert.match(buildGroupDraft({agents, params: {...base, rounds: 0}}).error, /rounds/);
-    assert.match(buildGroupDraft({agents, params: {...base, rounds: 4}}).error, /rounds/);
+    // G6：rounds 合法域是 0（不限）–20；0 不再报错，21 / -1 / 非整数报错
+    assert.equal(buildGroupDraft({agents, params: {...base, rounds: 0}}).ok, true);
+    assert.match(buildGroupDraft({agents, params: {...base, rounds: 21}}).error, /rounds/);
+    assert.match(buildGroupDraft({agents, params: {...base, rounds: -1}}).error, /rounds/);
     assert.match(buildGroupDraft({agents, params: {...base, timeout: 'slow'}}).error, /timeout/);
     assert.match(buildGroupDraft({agents, params: {...base, policy: 'nope'}}).error, /policy/);
 });

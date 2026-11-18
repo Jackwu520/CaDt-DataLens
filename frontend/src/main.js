@@ -39,6 +39,7 @@ import {createBridgeUI} from './bridge/bridge-ui.js';
 import {createAIGroupRuntime} from './ai/ai-group-runtime.js';
 import {createAIGroupSidebar} from './ai/ai-group-sidebar.js';
 import {createAIGroupView} from './ai/ai-group-view.js';
+import {createAIGroupMemberView} from './ai/ai-group-member-view.js';
 // app_control 代建智能体 / 群聊：数据层纯函数（模型清单/关键词解析/校验/群草稿）+ 唯一 id 生成
 import {agentsUpsert, listModelOptions, resolveModelByKeyword} from './ai/ai-agent-model.js';
 import {buildGroupDraft} from './ai/ai-group-model.js';
@@ -449,10 +450,13 @@ let fileClipboard = null;
 let ctxMenu = null;
 let palette = null;
 let aiPanel = null;
-// AI 群聊域（ai-group-*）：运行时 + 侧栏 + 标签页视图；在 initAIPanel 内创建（依赖面板薄 API）
+// AI 群聊域（ai-group-*）：运行时 + 侧栏 + 面板群聊视图 + 成员详情视图；在 initAIPanel 内创建
+// （依赖面板薄 API）。openGroupMemberTabHook 在 bridge 工厂解构后回填（TDZ 规避，memo 钩子同款）。
 let aiGroupRuntime = null;
 let aiGroupSidebar = null;
 let aiGroupView = null;
+let aiGroupMemberView = null;
+let openGroupMemberTabHook = null;
 let closedTabs = [];
 
 // 应用操作桥：AI 面板 app_control 工具的执行端（仅当前窗口，语义化动作，不模拟 DOM 事件）。
@@ -2303,7 +2307,7 @@ const editorGroupsMod = createEditorGroups({
     get createAgentView() { return createAgentView; },
     get createAgentTeamView() { return createAgentTeamView; },
     get createSideChatView() { return createSideChatView; },
-    get createGroupChatView() { return createGroupChatView; },
+    get createGroupMemberView() { return createGroupMemberView; },
     get createBgTermView() { return createBgTermView; },
     get createMemoView() { return createMemoView; },
     get CSV_COL_MIN_WIDTH() { return CSV_COL_MIN_WIDTH; },
@@ -3395,6 +3399,22 @@ function initAIPanel() {
         openAgentTeamTab: (...args) => openAgentTeamTab(...args),
         // 支线对话标签页：完整会话渲染在内容区，面板继续显示主对话
         openSideChatTab: (...args) => openSideChatTab(...args),
+        // G6 面板化：群聊视图挂载与群切换枢纽。aiGroupView 在本函数后段才创建，
+        // 用惰性闭包取最新值；groupHub 供面板更多菜单与群聊视图切换弹层共用。
+        mountGroupChatView: (spec, host) => (aiGroupView ? aiGroupView.mountPanel(spec, host) : null),
+        groupHub: {
+            list: () => (aiGroupRuntime ? aiGroupRuntime.groupList() : []),
+            open: (groupId, title) => {
+                if (aiPanel && aiPanel.bridgeShowGroupView) aiPanel.bridgeShowGroupView({groupId, title});
+            },
+            create: () => {
+                if (aiGroupSidebar && aiGroupSidebar.openCreateDialog) aiGroupSidebar.openCreateDialog();
+            },
+        },
+        // 视图变化 → 侧栏高亮当前打开的群
+        onViewChange: (view, groupId) => {
+            if (aiGroupSidebar && aiGroupSidebar.setActiveGroup) aiGroupSidebar.setActiveGroup(view === 'group' ? groupId : '');
+        },
         runAppAction,
         hostAppActions: () => APP_ACTIONS,
         browserHost: {
@@ -3585,7 +3605,10 @@ function initAIPanel() {
         // modelRef → 请求配置（漏传则每次发言都报「模型不可用」——群聊 G2 接线事故修复）
         resolveModel: (ref) => (aiPanel && aiPanel.aiGroupApi ? aiPanel.aiGroupApi.resolveModel(ref) : null),
         flash: (...args) => flash(...args),
-        openGroupTab: (...args) => openGroupChatTab(...args),
+        // G6 面板化：点群聊行 / 创建群聊 → AI 面板切到群聊视图（不再开内容区标签页）
+        openGroupView: (spec) => {
+            if (aiPanel && aiPanel.bridgeShowGroupView) aiPanel.bridgeShowGroupView(spec);
+        },
         getWorkspace: () => (workspaceFolder || ''),
         // G4 纪要带回会话：走面板信箱（deliverToSessions）；会话 id 取面板当前会话
         deliverToSessions: aiPanel.aiGroupApi
@@ -3622,7 +3645,7 @@ function initAIPanel() {
             : {},
     });
     aiGroupSidebar.bindSidebar();
-    // 群聊标签页视图：消息 / 流式 / 输入区（bridge-group-view 只管标签页壳）
+    // 群聊视图（挂 AI 面板）+ 成员详情视图（内容区标签页）：消息 / 流式 / 输入区由视图模块负责
     aiGroupView = createAIGroupView({
         runtime: aiGroupRuntime,
         getAIConfig: () => (aiPanel && aiPanel.aiGroupApi ? aiPanel.aiGroupApi.getConfig() : null),
@@ -3630,6 +3653,42 @@ function initAIPanel() {
         enhanceAnswerBody: aiPanel.aiGroupApi && aiPanel.aiGroupApi.enhanceAnswerBody
             ? (root) => aiPanel.aiGroupApi.enhanceAnswerBody(root)
             : null,
+        flash: (...args) => flash(...args),
+        // 成员详情：头像 / 名字点击 → 内容区标签页（像子代理）；hook 在 bridge 工厂后回填
+        openMemberTab: (spec) => {
+            if (openGroupMemberTabHook) openGroupMemberTabHook(spec);
+            else flash('成员详情视图不可用：界面尚未就绪');
+        },
+        // 顶部「返回会话」：AI 面板切回会话视图
+        showSessions: () => {
+            if (aiPanel && aiPanel.bridgeShowSessionView) aiPanel.bridgeShowSessionView();
+        },
+        groupHub: {
+            list: () => aiGroupRuntime.groupList(),
+            open: (groupId, title) => {
+                if (aiPanel && aiPanel.bridgeShowGroupView) aiPanel.bridgeShowGroupView({groupId, title});
+            },
+            create: () => {
+                if (aiGroupSidebar && aiGroupSidebar.openCreateDialog) aiGroupSidebar.openCreateDialog();
+            },
+        },
+        // ⋯ 菜单里的「群设置…」：复用侧栏的面板对话框实现
+        openGroupSettings: (groupId) => {
+            if (aiGroupSidebar && aiGroupSidebar.openGroupSettingsDialog) aiGroupSidebar.openGroupSettingsDialog(groupId);
+        },
+    });
+    aiGroupMemberView = createAIGroupMemberView({
+        runtime: aiGroupRuntime,
+        getAIConfig: () => (aiPanel && aiPanel.aiGroupApi ? aiPanel.aiGroupApi.getConfig() : null),
+        renderMarkdown: aiPanel.aiGroupApi ? (text) => aiPanel.aiGroupApi.renderMarkdown(text) : null,
+        enhanceAnswerBody: aiPanel.aiGroupApi && aiPanel.aiGroupApi.enhanceAnswerBody
+            ? (root) => aiPanel.aiGroupApi.enhanceAnswerBody(root)
+            : null,
+        flash: (...args) => flash(...args),
+        // 成员详情页「打开群聊」：面板切回该群视图
+        openGroupView: (spec) => {
+            if (aiPanel && aiPanel.bridgeShowGroupView) aiPanel.bridgeShowGroupView(spec);
+        },
     });
     window.__lens.aiGroupRuntime = aiGroupRuntime;
     window.__mockAiEmit = (name, payload) => {
@@ -5437,6 +5496,13 @@ window.addEventListener('keydown', (e) => {
         e.preventDefault();
         e.stopPropagation();
         toggleBookmark();
+    } else if (keymap.is(kb, 'view.closeDockPanel')) {
+        // Shift+Esc（JetBrains 语义）：底部面板打开时收起，不论当前是终端 / 调试 / 运行 / Git 图谱。
+        // 面板未打开或对话框打开时不拦截，交还默认处理。
+        if (isDialogOpen() || !terminalUI.open) return;
+        e.preventDefault();
+        e.stopPropagation();
+        toggleTerminalPanel(false);
     } else if (keymap.is(kb, 'view.terminal')) {
         e.preventDefault();
         e.stopPropagation();
@@ -5784,9 +5850,11 @@ const bridgeUI = createBridgeUI({
     get activityLog() { return activityLog; },
     get addDocToFocusedGroup() { return addDocToFocusedGroup; },
     get aiPanel() { return aiPanel; },
-    // 群聊视图（bridge-group-view）：运行时与配置经惰性函数取，避免创建期 TDZ
+    // 群聊域惰性引用：运行时 / 面板群聊视图 / 成员详情视图（创建期 TDZ 规避）
     get aiGroupRuntime() { return () => aiGroupRuntime; },
     get aiGroupView() { return () => aiGroupView; },
+    // 成员详情视图（bridge-group-member-view）：同款惰性 getter
+    get aiGroupMemberView() { return () => aiGroupMemberView; },
     get getAIConfig() { return () => (aiPanel && aiPanel.aiGroupApi ? aiPanel.aiGroupApi.getConfig() : null); },
     get applySettings() { return applySettings; },
     get autoCheckUpdateOnStart() { return autoCheckUpdateOnStart; },
@@ -5834,8 +5902,10 @@ const bridgeUI = createBridgeUI({
     get updateBrowserTitle() { return updateBrowserTitle; },
     get workspaceFolder() { return workspaceFolder; },
 });
-const {createAgentView, createAgentTeamView, createSideChatView, createGroupChatView, openGroupChatTab, createBgTermView, gitGroupCollapsed, gitRootDir, gitStateCache, gitUncheckedFiles, notifyAIGitEntry, openAgentTab, openAgentTeamTab, openSideChatTab, openBgTermTab, openBrowserTab, openVirtualDoc, refreshGitStatus, showGitDiff, showGitFileHistory, showGitRecentLog, gitRollbackPaths,
+const {createAgentView, createAgentTeamView, createSideChatView, createGroupMemberView, openGroupMemberTab, createBgTermView, gitGroupCollapsed, gitRootDir, gitStateCache, gitUncheckedFiles, notifyAIGitEntry, openAgentTab, openAgentTeamTab, openSideChatTab, openBgTermTab, openBrowserTab, openVirtualDoc, refreshGitStatus, showGitDiff, showGitFileHistory, showGitRecentLog, gitRollbackPaths,
     openMemoTab, createMemoView, memoApi, memoHasPending, memoOnWorkspaceEvent, memoOnWindowFocus, memoOnResourceEvent, memoWorkspaceChanged} = bridgeUI;
+// 成员详情标签页出口回填（aiGroupView 的 openMemberTab 闭包在创建期引用本 hook，避免 TDZ）
+openGroupMemberTabHook = openGroupMemberTab;
 
 // 绑定便签真钩子（顶部早期 let 间接层的落点）：启动期事件先到也只摸到 null，不摸未初始化的 const
 memoFocusHook = () => { if (memoOnWindowFocus) memoOnWindowFocus(); };

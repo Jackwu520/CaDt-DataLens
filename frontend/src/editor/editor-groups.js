@@ -591,8 +591,8 @@ function sideChatTabIcon() {
     return span;
 }
 
-// 群聊标签页：双人像图标
-function groupChatTabIcon() {
+// 群聊成员详情标签页：双人像图标
+function groupMemberTabIcon() {
     const span = document.createElement('span');
     span.className = 'tab-icon';
     span.innerHTML = iconSvg('group', 13);
@@ -645,7 +645,7 @@ function buildGroupTab(g, doc, strip) {
     tab.dataset.docId = String(doc.id);
     tab.dataset.tip = tabTooltip(doc);
     // 后台终端 / 子代理详情 / 团队详情标签页用固定图标（非文件，没有扩展名图标）
-    const icon = doc.bgTerm ? bgTermTabIcon() : (doc.agentView || doc.agentTeam) ? agentViewTabIcon() : doc.sideChat ? sideChatTabIcon() : doc.groupChat ? groupChatTabIcon() : doc.memo ? memoTabIcon() : createFileIcon(doc.name, 'tab-icon');
+    const icon = doc.bgTerm ? bgTermTabIcon() : (doc.agentView || doc.agentTeam) ? agentViewTabIcon() : doc.sideChat ? sideChatTabIcon() : doc.groupMember ? groupMemberTabIcon() : doc.memo ? memoTabIcon() : createFileIcon(doc.name, 'tab-icon');
     const dot = document.createElement('span');
     dot.className = 'tab-dot';
     const name = document.createElement('span');
@@ -1196,10 +1196,10 @@ function createDocEditor(doc) {
         deps.createSideChatView(doc);
         return;
     }
-    // 群聊标签页：多智能体圆桌（消息 + 看板），数据在 ai-groups 独立存储
-    if (doc.groupChat) {
+    // 群聊成员详情标签页（G6 面板化）：像子代理详情一样开在内容区；群聊本体在 AI 面板
+    if (doc.groupMember) {
         if (doc.pane) return;
-        deps.createGroupChatView(doc);
+        deps.createGroupMemberView(doc);
         return;
     }
     if (doc.bgTerm) {
@@ -1720,10 +1720,10 @@ function closeDocNow(doc, remember = true) {
         doc.sideChatUnmount();
         doc.sideChatUnmount = null;
     }
-    // 群聊标签页：断开运行时订阅（讨论本身继续在后台，重开标签页恢复）
-    if (doc.groupChat && doc.groupChatUnmount) {
-        doc.groupChatUnmount();
-        doc.groupChatUnmount = null;
+    // 群聊成员详情标签页：退订 runtime（成员/讨论继续在后台，重开标签页恢复）
+    if (doc.groupMember && doc.groupMemberUnmount) {
+        doc.groupMemberUnmount();
+        doc.groupMemberUnmount = null;
     }
     // 快捷便签 面板：退订变更广播并冲掉未落盘的修改
     if (doc.memo && doc.memoUnmount) {

@@ -86,6 +86,22 @@ export function replayGroupLog(text) {
     return out;
 }
 
+// 私有日志 JSONL → 步骤记录数组（坏行跳过）：发言落盘时 runtime 与成员详情视图共用。
+export function parsePrivateSteps(text) {
+    const out = [];
+    for (const line of textOf(text).split('\n')) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        try {
+            const item = JSON.parse(trimmed);
+            if (item && item.gid) out.push(item);
+        } catch (e) {
+            continue; // 坏行跳过，不抛错
+        }
+    }
+    return out;
+}
+
 // Go 绑定薄封装：绑定缺失时立即抛错（dev mock 未接时给出可读信息，而不是 undefined is not a function）。
 export function createGroupStoreAdapter(backend) {
     const source = backend || {};

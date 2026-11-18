@@ -13,6 +13,15 @@ export const GROUP_MEMBER_MIN = 2;
 export const GROUP_MEMBER_MAX = 8;
 export const GROUP_TITLE_MAX = 60;
 export const GROUP_TOPIC_MAX = 2000;
+// 轮次预算（G6「说几句话就没了」修正）：0 = 不限轮次（手动结束），1–20 = 固定轮数，默认 5。
+export const GROUP_MAX_ROUNDS = 20;
+export const GROUP_UNLIMITED_ROUNDS = 0;
+export const GROUP_DEFAULT_ROUNDS = 5;
+export const GROUP_SPEECHES_MIN = 12;
+export const GROUP_SPEECHES_MAX = 200;
+// 不限轮次时的默认发言上限（≈ 5 人 × 20 轮），群设置可改
+export const GROUP_UNLIMITED_ROUNDS_SPEECHES = 100;
+export const GROUP_LAST_PREVIEW_MAX = 100;
 
 export const GROUP_MODES = [
     {id: 'roundtable', label: '圆桌'},
@@ -49,7 +58,8 @@ export const TIMEOUT_PRESETS = {
             memberThinkingTotalMs: 240000,
             chairMs: 60000,
             chairThinkingMs: 240000,
-            discussionTotalMs: 900000,
+            // 整场上限放宽到 60 / 120 分钟：轮次扩到 20/不限后，15 分钟会把长讨论拦腰截断
+            discussionTotalMs: 3600000,
         },
     },
     lenient: {
@@ -60,7 +70,7 @@ export const TIMEOUT_PRESETS = {
             memberThinkingTotalMs: 420000,
             chairMs: 120000,
             chairThinkingMs: 360000,
-            discussionTotalMs: 1800000,
+            discussionTotalMs: 7200000,
         },
     },
 };
@@ -140,7 +150,8 @@ function normalizeDiscussion(raw) {
     const d = raw && typeof raw === 'object' ? raw : {};
     const arr = (value) => (Array.isArray(value) ? value : []);
     return {
-        round: clampInt(d.round, 0, 99, 0),
+        // 不限轮次时轮次号会一直涨：上限从 99 放宽到 9999
+        round: clampInt(d.round, 0, 9999, 0),
         agenda: arr(d.agenda).map((item) => String(item || '').slice(0, 200)).filter(Boolean),
         positions: arr(d.positions),
         agreements: arr(d.agreements).map(String),
@@ -150,6 +161,8 @@ function normalizeDiscussion(raw) {
         actionItems: arr(d.actionItems),
         coveredPoints: arr(d.coveredPoints).map(String),
         lastRoundSummary: String(d.lastRoundSummary || ''),
+        // 请求发言（handoff）：mergeGroupBlock 动态加的；不归一化进默认值的话读盘后看板会丢
+        floorRequests: arr(d.floorRequests).slice(-50),
     };
 }
 
@@ -198,8 +211,9 @@ export function normalizeGroupMeta(raw) {
         chair: normalizeChair(source.chair),
         topic: clampText(source.topic, GROUP_TOPIC_MAX),
         goal: GROUP_GOALS.some((g) => g.id === source.goal) ? source.goal : 'explore',
-        maxRounds: clampInt(source.maxRounds, 1, 3, 2),
-        maxSpeeches: clampInt(source.maxSpeeches, 1, 200, 12),
+        // 0 = 不限轮次；老 meta（1–3）原样保留，新群默认 5
+        maxRounds: clampInt(source.maxRounds, GROUP_UNLIMITED_ROUNDS, GROUP_MAX_ROUNDS, GROUP_DEFAULT_ROUNDS),
+        maxSpeeches: clampInt(source.maxSpeeches, 1, GROUP_SPEECHES_MAX, GROUP_SPEECHES_MIN),
         maxTokensPerDiscussion: clampInt(source.maxTokensPerDiscussion, 0, 100000000, 0),
         roundMode: source.roundMode === 'parallel' ? 'parallel' : 'sequential',
         timeouts: normalizeTimeouts(source.timeouts),
@@ -210,17 +224,45 @@ export function normalizeGroupMeta(raw) {
         sharedSummary: normalizeSharedSummary(source.sharedSummary),
         minutes: source.minutes && typeof source.minutes === 'object' ? source.minutes : null,
         lastMessageId: String(source.lastMessageId || ''),
+        lastPreview: clampText(source.lastPreview, GROUP_LAST_PREVIEW_MAX),
         messageCount: Number(source.messageCount) || 0,
     };
 }
 
+// 轮次预算读取（G6）：maxRounds=0 表示不限轮次（手动结束），这里统一折算成 Infinity，
+// 引擎与提示词都只认这一个口径——不要再写 `meta.maxRounds || 2` 这类兜底（会把 0 变成 2）。
+export function maxRoundsOf(meta) {
+    const n = Math.round(Number(meta && meta.maxRounds));
+    if (!Number.isFinite(n) || n <= GROUP_UNLIMITED_ROUNDS) return Infinity;
+    return Math.min(GROUP_MAX_ROUNDS, n);
+}
+
+export function isUnlimitedRounds(meta) {
+    return maxRoundsOf(meta) === Infinity;
+}
+
+// 发言上限推导（G6）：固定轮数按「成员数 × 轮数」，不限轮次给一个较大的默认值；
+// 都钳在 [12, 200]。老群 meta 里已存的 12 原样保留，群设置可改。
+export function deriveMaxSpeeches(memberCount, rounds) {
+    const members = Math.max(1, Math.round(Number(memberCount)) || 1);
+    if (isUnlimitedRounds({maxRounds: rounds})) return GROUP_UNLIMITED_ROUNDS_SPEECHES;
+    const derived = members * maxRoundsOf({maxRounds: rounds});
+    return Math.min(GROUP_SPEECHES_MAX, Math.max(GROUP_SPEECHES_MIN, derived));
+}
+
 // 预计调用量（§3.4）：round-plan = 成员发言 + 每轮计划/复盘 + 1 次纪要；
 // adaptive = 每次发言前后各一次主持。4×2 → 13 / 17。
-export function estimateDiscussionCalls(memberCount, maxRounds, policy) {
-    const speeches = Math.max(1, memberCount) * Math.max(1, maxRounds);
+// 不限轮次（rounds=0）时按发言上限折算有效轮数来估主持开销。
+export function estimateDiscussionCalls(memberCount, maxRounds, policy, maxSpeeches) {
+    const members = Math.max(1, memberCount);
+    const unlimited = isUnlimitedRounds({maxRounds});
+    const speeches = unlimited
+        ? Math.max(1, Math.round(Number(maxSpeeches)) || GROUP_UNLIMITED_ROUNDS_SPEECHES)
+        : members * maxRoundsOf({maxRounds});
+    const roundsForChair = unlimited ? Math.max(1, Math.ceil(speeches / members)) : maxRoundsOf({maxRounds});
     return policy === 'adaptive'
         ? speeches * 2 + 1
-        : speeches + 2 * Math.max(1, maxRounds) + 1;
+        : speeches + 2 * roundsForChair + 1;
 }
 
 // 创建前兼容性预检（§3.16）：逐成员算「系统 + 人设 + 看板 + 全部共享对话」/ 可用预算。
@@ -793,7 +835,10 @@ export function buildChairMessages({chairAgent, meta, sharedMessages, chairSteps
     );
     const boardText = boardSummaryText(group, BOARD_TOKEN_BUDGET);
     if (boardText) systemParts.push(`<discussion_board>\n${boardText}\n</discussion_board>`);
-    systemParts.push(`<round_budget>\n第 ${Math.max(1, (group.discussion && group.discussion.round) || 1)}/${group.maxRounds || 2} 轮；上限 ${group.maxSpeeches || 12} 次发言。\n</round_budget>`);
+    const budgetLine = isUnlimitedRounds(group)
+        ? `第 ${Math.max(1, (group.discussion && group.discussion.round) || 1)} 轮（不限轮次，需要收敛时把 done 置 true）；上限 ${group.maxSpeeches || GROUP_UNLIMITED_ROUNDS_SPEECHES} 次发言。`
+        : `第 ${Math.max(1, (group.discussion && group.discussion.round) || 1)}/${maxRoundsOf(group)} 轮；上限 ${group.maxSpeeches || GROUP_SPEECHES_MIN} 次发言。`;
+    systemParts.push(`<round_budget>\n${budgetLine}\n</round_budget>`);
     systemParts.push(`<output_language>\n${outputLanguageRuleText(outputLanguage)}\n</output_language>`);
     if (chairAgent && chairAgent.personaText) {
         systemParts.push(`<chair_persona>\n${PERSONA_GUARD_DATA}\n${chairAgent.personaText}\n</chair_persona>`);
@@ -910,8 +955,12 @@ export function buildGroupDraft({agents, params}) {
     if (!GROUP_MODES.some((item) => item.id === mode)) return {ok: false, error: 'mode 只能是 roundtable / task / free'};
     const goal = String(p.goal == null ? '' : p.goal).trim() || 'decide';
     if (!GROUP_GOALS.some((item) => item.id === goal)) return {ok: false, error: 'goal 只能是 explore / decide / plan / review'};
-    const rounds = p.rounds == null || p.rounds === '' ? 2 : Number(p.rounds);
-    if (!Number.isInteger(rounds) || rounds < 1 || rounds > 3) return {ok: false, error: 'rounds 只能是 1 / 2 / 3'};
+    // 0 = 不限轮次（手动结束）；默认 5。发言上限按成员数×轮数推导（G6），
+    // AI 代建与新建弹窗共用同一推导，避免「5 人 3 轮被 12 次上限截断」
+    const rounds = p.rounds == null || p.rounds === '' ? GROUP_DEFAULT_ROUNDS : Number(p.rounds);
+    if (!Number.isInteger(rounds) || rounds < GROUP_UNLIMITED_ROUNDS || rounds > GROUP_MAX_ROUNDS) {
+        return {ok: false, error: 'rounds 只能是 0（不限轮次，手动结束）或 1–' + GROUP_MAX_ROUNDS};
+    }
     const timeoutPreset = String(p.timeout == null ? '' : p.timeout).trim() || 'standard';
     if (timeoutPreset !== 'standard' && timeoutPreset !== 'lenient') return {ok: false, error: 'timeout 只能是 standard / lenient'};
 
@@ -978,6 +1027,7 @@ export function buildGroupDraft({agents, params}) {
             memberIds,
             chair: chairSpec,
             maxRounds: rounds,
+            maxSpeeches: deriveMaxSpeeches(memberIds.length, rounds),
             timeoutPreset,
         },
         members,

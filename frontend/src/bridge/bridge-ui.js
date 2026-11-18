@@ -10,7 +10,7 @@ import {createBridgeTerminalView} from './bridge-terminal-view.js';
 import {createBridgeAgentView} from './bridge-agent-view.js';
 import {createBridgeTeamView} from './bridge-team-view.js';
 import {createBridgeSideChat} from './bridge-sidechat-view.js';
-import {createBridgeGroupView} from './bridge-group-view.js';
+import {createBridgeGroupMemberView} from './bridge-group-member-view.js';
 import {createBridgeMemoView} from './bridge-memo-view.js';
 
 export function createBridgeUI(deps) {
@@ -20,8 +20,8 @@ const agentMod = createBridgeAgentView(deps);
 // 智能体团队详情标签页：doc.agentTeam = 会话 id（正文渲染在面板 ai-team-view.js）
 const teamMod = createBridgeTeamView(deps);
 const sideChatMod = createBridgeSideChat(deps);
-// 群聊虚拟文档标签页：doc.groupChat = groupId；数据在 ai-groups 独立存储（不进会话列表）
-const groupMod = createBridgeGroupView(deps);
+// 群聊成员详情标签页：doc.groupMember = groupId:agentId；正文渲染在 ai/ai-group-member-view.js
+const groupMemberMod = createBridgeGroupMemberView(deps);
 // 快捷便签面板：虚拟标签页 + 数据 store（AI 经 app_control memo 动作走同一套变更通路）
 const memoMod = createBridgeMemoView(deps);
 // git 域要开虚拟文档标签：经 Object.create 委托原 deps（保持 getter 惰性），只补一个宿主函数
@@ -275,7 +275,7 @@ function openBrowserTab(url, profileKey, opts) {
 
 
     return {
-        ...termMod, ...agentMod, ...teamMod, ...sideChatMod, ...groupMod, ...memoMod, ...gitMod, ...cliMod,
+        ...termMod, ...agentMod, ...teamMod, ...sideChatMod, ...groupMemberMod, ...memoMod, ...gitMod, ...cliMod,
         openBrowserTab, openVirtualDoc,
     };
 }

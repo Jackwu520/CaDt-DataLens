@@ -6,16 +6,21 @@
 import {aiClampInt, aiEstimateTokens, aiNowId} from './ai-constants.js';
 import {
     FREE_CHAT_CAPS,
+    GROUP_LAST_PREVIEW_MAX,
     GROUP_MEMBER_MAX,
     GROUP_MEMBER_MIN,
     GROUP_OUTPUT_RESERVE_TOKENS,
+    GROUP_UNLIMITED_ROUNDS_SPEECHES,
     TIMEOUT_PRESETS,
     applyStatePatch,
     buildChairMessages,
     buildMemberMessages,
     chairTimeouts,
+    deriveMaxSpeeches,
     fallbackPlan,
     foldPrivateSteps,
+    isUnlimitedRounds,
+    maxRoundsOf,
     mergeGroupBlock,
     memberTimeouts,
     minutesFromBoard,
@@ -34,6 +39,7 @@ import {
     encodeGroupEvent,
     encodeGroupMessage,
     groupHeaderLine,
+    parsePrivateSteps,
     replayGroupLog,
 } from './ai-group-store.js';
 
@@ -43,7 +49,8 @@ export function createAIGroupRuntime(deps) {
     const getAIConfig = typeof deps.getAIConfig === 'function' ? deps.getAIConfig : (() => null);
     const resolveModel = typeof deps.resolveModel === 'function' ? deps.resolveModel : (() => null);
     const flash = deps.flash || (() => {});
-    const openGroupTab = deps.openGroupTab || null;
+    // G6 面板化：openGroupView 由 main 注入，把 AI 面板切到群聊视图（不再开内容区标签页）
+    const openGroupView = typeof deps.openGroupView === 'function' ? deps.openGroupView : null;
     const getWorkspace = deps.getWorkspace || (() => '');
     // G4：纪要带回会话（走面板信箱 deliverToSessions；会话 id 由宿主提供）
     const deliverToSessions = typeof deps.deliverToSessions === 'function' ? deps.deliverToSessions : null;
@@ -145,7 +152,7 @@ export function createAIGroupRuntime(deps) {
             flash('群聊记录读取失败：' + ((e && e.message) || e), true);
             return null;
         }
-        if (openGroupTab) openGroupTab({groupId: id, title: g.meta.title});
+        if (openGroupView) openGroupView({groupId: id, title: g.meta.title});
         return g;
     }
 
@@ -191,6 +198,10 @@ export function createAIGroupRuntime(deps) {
             mode: normalizeGroupMode(source.mode),
             chair: normalizeChair(chairSpec),
             maxRounds: source.maxRounds,
+            // 未显式给 maxSpeeches 时按「成员数 × 轮数」推导（G6），不再落回固定 12
+            maxSpeeches: Number.isFinite(Number(source.maxSpeeches)) && Number(source.maxSpeeches) > 0
+                ? Number(source.maxSpeeches)
+                : deriveMaxSpeeches(memberIds.length, source.maxRounds),
             roundMode: 'sequential',
             timeouts: preset.timeouts,
             roles: source.roles || {},
@@ -198,14 +209,16 @@ export function createAIGroupRuntime(deps) {
         });
         meta.updatedAt = Date.now();
         try {
-            await store.writeMeta(id, JSON.stringify(meta));
+            // 先落 header 再写 meta：sessionstore 的 WriteMeta 不再创建目录（防已删除会话复活），
+            // 目录由 Append 的 allowCreate 语义建立。
             await store.append(id, groupHeaderLine(meta) + '\n');
+            await store.writeMeta(id, JSON.stringify(meta));
         } catch (e) {
             return {ok: false, error: '群聊创建失败：' + ((e && e.message) || e)};
         }
         groups.set(id, {meta, messages: [], events: [], loaded: true});
         notify();
-        if (openGroupTab) openGroupTab({groupId: id, title: meta.title});
+        if (openGroupView) openGroupView({groupId: id, title: meta.title});
         return {ok: true, id};
     }
 
@@ -242,6 +255,17 @@ export function createAIGroupRuntime(deps) {
         return Math.max(1, (meta && meta.discussion && meta.discussion.round) || 1);
     }
 
+    // 侧栏列表的「最近一条」预览（G6）：落盘消息时随 meta 写 lastPreview，重启后仍有预览
+    function previewOfMessage(msg) {
+        if (!msg) return '';
+        const who = msg.kind === 'minutes'
+            ? '纪要'
+            : (msg.role === 'user' ? '你' : (msg.chair ? '主持人' : (msg.agentName || '成员')));
+        const text = String(msg.content || '').replace(/\s+/g, ' ').trim();
+        if (!text) return '';
+        return (who + '：' + text).slice(0, GROUP_LAST_PREVIEW_MAX);
+    }
+
     function participantsText(meta, agents, self) {
         const lines = ['用户：提出议题、随时插话、点名成员。'];
         for (const id of (meta && meta.memberIds) || []) {
@@ -252,21 +276,7 @@ export function createAIGroupRuntime(deps) {
         return lines.join('\n');
     }
 
-    // 私有日志 JSONL → 步骤记录数组（坏行跳过）
-    function parsePrivateSteps(text) {
-        const out = [];
-        for (const line of String(text || '').split('\n')) {
-            const trimmed = line.trim();
-            if (!trimmed) continue;
-            try {
-                const item = JSON.parse(trimmed);
-                if (item && item.gid) out.push(item);
-            } catch (e) {
-                continue;
-            }
-        }
-        return out;
-    }
+    // 私有日志解析已下沉 ai-group-store.js（parsePrivateSteps）：成员详情视图共用同一实现。
 
     async function appendSystemEvent(groupId, evt) {
         const g = groups.get(groupId);
@@ -461,6 +471,7 @@ export function createAIGroupRuntime(deps) {
             await saveMeta(stream.groupId, (meta) => {
                 meta.messageCount = (meta.messageCount || 0) + 1;
                 meta.lastMessageId = gid;
+                meta.lastPreview = previewOfMessage(msg);
             });
         } catch (e) {
             flash('群聊消息落盘失败：' + ((e && e.message) || e), true);
@@ -541,7 +552,10 @@ export function createAIGroupRuntime(deps) {
         } else if (name === 'ai-retry') {
             stream.statusNote = `重试 ${payload.attempt}/${payload.max}：${payload.reason || ''}`;
         } else if (name === 'ai-queue') {
-            stream.statusNote = payload.waitMs ? '排队等待限流…' : '';
+            // 冻结（服务端 429 配额）与本地窗口排队要分开说，后者几十秒、前者可能几小时
+            if (!payload || !payload.waitMs) stream.statusNote = '';
+            else if (payload.kind === 'frozen') stream.statusNote = '服务商配额已用尽，等待恢复…';
+            else stream.statusNote = '排队等待限流…';
         } else if (name === 'ai-param-adjust') {
             stream.statusNote = payload.message || '参数已自动调整';
         } else if (name === 'ai-done') {
@@ -596,6 +610,7 @@ export function createAIGroupRuntime(deps) {
         await saveMeta(groupId, (meta) => {
             meta.messageCount = (meta.messageCount || 0) + 1;
             meta.lastMessageId = gid;
+            meta.lastPreview = previewOfMessage(msg);
         });
         const d = discussionOf(groupId);
         if (d.running || d.paused) {
@@ -812,6 +827,9 @@ export function createAIGroupRuntime(deps) {
             phase: d.phase,
             round: currentRound(g.meta),
             maxRounds: g.meta.maxRounds,
+            // G6：maxRounds=0 = 不限轮次；视图据此显示「第 N 轮 · 不限」而不是 N/0
+            unlimitedRounds: isUnlimitedRounds(g.meta),
+            maxSpeeches: g.meta.maxSpeeches,
             speeches: d.speeches,
             spokenCount: d.spokenThisRound.size,
             memberCount: g.meta.memberIds.length,
@@ -962,6 +980,7 @@ export function createAIGroupRuntime(deps) {
                 meta.minutes = {text, createdAt: Date.now(), source: (source && source.source) || 'board'};
                 meta.messageCount = (meta.messageCount || 0) + 1;
                 meta.lastMessageId = gid;
+                meta.lastPreview = previewOfMessage(msg);
             });
         } catch (e) {
             flash('纪要落盘失败：' + ((e && e.message) || e), true);
@@ -989,7 +1008,7 @@ export function createAIGroupRuntime(deps) {
                     d.needMinutes = true;
                     break;
                 }
-                if (d.speeches >= (meta.maxSpeeches || 12)) {
+                if (d.speeches >= meta.maxSpeeches) {
                     await appendSystemEvent(groupId, {type: 'budget', text: `达到发言次数上限（${meta.maxSpeeches}），已停止并生成纪要`});
                     d.needMinutes = true;
                     break;
@@ -1101,7 +1120,8 @@ export function createAIGroupRuntime(deps) {
                         }
                     }
                     if (roundDone) {
-                        if (currentRound(meta) >= (meta.maxRounds || 2)) {
+                        // G6：maxRounds=0（不限轮次）只受发言上限 / 总时长 / 手动结束约束
+                        if (currentRound(meta) >= maxRoundsOf(meta)) {
                             d.needMinutes = true;
                             break;
                         }

@@ -343,6 +343,12 @@ export function createAIPanel(options) {
     // 支线对话的宿主出口（main.js 的 openSideChatTab）：完整会话渲染在内容区标签页，
     // 面板继续显示主对话——这是「支线不切走」的实现基础
     const openSideChatTab = typeof opts.openSideChatTab === 'function' ? opts.openSideChatTab : null;
+    // 群聊视图宿主（G6 面板化）：main.js 注入，把 ai-group-view 挂进 #ai-group-host；
+    // groupHub 提供群列表 / 打开 / 新建（更多菜单与群聊视图内的切换弹层共用）
+    const mountGroupChatView = typeof opts.mountGroupChatView === 'function' ? opts.mountGroupChatView : null;
+    const groupHub = (opts.groupHub && typeof opts.groupHub === 'object') ? opts.groupHub : null;
+    // 内容视图变化通知（main.js 转给侧栏，高亮当前打开的群）
+    const onViewChange = typeof opts.onViewChange === 'function' ? opts.onViewChange : null;
     const browserHost = opts.browserHost || null;
     // 可视化卡片里的外链交给系统浏览器（main.js 注入，走 BrowserOpenURL）
     const openExternal = typeof opts.openExternal === 'function'
@@ -390,6 +396,7 @@ export function createAIPanel(options) {
         headSearch: panel.querySelector('#ai-head-search'),
         chipsPop: panel.querySelector('#ai-chips-pop'),
         agentView: panel.querySelector('#ai-agent-view'),
+        groupHost: panel.querySelector('#ai-group-host'),
         close: panel.querySelector('#ai-close'),
         newBtn: panel.querySelector('#ai-new-session'),
         gitBtn: panel.querySelector('#ai-git'),
@@ -12860,6 +12867,18 @@ function requestApproval(session, toolMessage, info) {
                     {label: '在独立悬浮窗打开', action: () => setMode('float')},
                 ]},
             );
+            // 群聊（G6 面板化）：侧栏不在 chats 视图时也能从这里切群 / 建群
+            if (groupHub && typeof groupHub.list === 'function') {
+                const groupItems = (groupHub.list() || []).slice(0, 12).map((meta) => ({
+                    label: meta.title || '未命名群聊',
+                    icon: 'group',
+                    action: () => setPanelView('group', {groupId: meta.id, title: meta.title}),
+                }));
+                if (typeof groupHub.create === 'function') {
+                    groupItems.push({label: '新建群聊…', icon: 'plus', action: () => groupHub.create()});
+                }
+                items.push({label: '群聊', icon: 'group', submenu: groupItems.length ? groupItems : [{label: '还没有群聊', disabled: true}]});
+            }
         }
         // 头部宽度不足（浮窗最小宽 360 也会触发）时换侧按钮与 Git 入口都已收起，在菜单里补回
         const head = panel.querySelector('.ai-head-title-row');
@@ -13392,6 +13411,8 @@ function requestApproval(session, toolMessage, info) {
     function switchSession(id) {
         const target = sessions.find((s) => s.id === id);
         if (!target) return;
+        // 点会话即退出群聊视图（G6 面板化）：群讨论继续在 runtime 里跑，只是不显示
+        if (panelView !== 'session') setPanelView('session');
         // 懒加载会话：正文还没读上来（启动只补了当前会话 + 最近若干条）。先补正文再走切换流程，
         // 界面永远看不到「空对话」；同时避免任何一次写盘把还没读完的历史当成空内容写出去。
         if (target._stub) {
@@ -13463,6 +13484,8 @@ function requestApproval(session, toolMessage, info) {
     }
 
     function newSession() {
+        // 新建会话即回到会话视图（G6 面板化）
+        if (panelView !== 'session') setPanelView('session');
         const current = currentSession();
         // 当前会话还没发过消息时复用它，避免连点新建刷出一堆空会话。
         if (current && !current.archivedAt && !(current.messages || []).length) {
@@ -14486,6 +14509,80 @@ function requestApproval(session, toolMessage, info) {
         if (stick) scrollToBottom(true);
     }
 
+    // ---------- 内容视图：会话 | 群聊（G6 面板化） ----------
+
+    // 面板的内容视图只有两种：session（现有对话）/ group（群聊接管）。
+    // 显示形态（dock/fullscreen）归 applyMode 管，这里只管「显示哪套内容」。
+    // 群讨论/自由聊天都跑在 aiGroupRuntime 里，切回会话视图只是卸载 DOM，不停成员发言。
+    let panelView = 'session';
+    let panelGroupSpec = null; // {groupId, title}
+    let groupViewApi = null;   // mountGroupChatView 返回的 {dispose, focus}
+    let groupViewRelease = null;
+    let groupViewFocus = null;
+
+    function applyPanelViewDom() {
+        const group = panelView === 'group';
+        panel.classList.toggle('ai-group-mode', group);
+        if (el.groupHost) el.groupHost.classList.toggle('hidden', !group);
+        // 面板头标题随视图切换：会话视图固定「AI 助手」，群聊视图显示群名
+        if (el.headTitle) el.headTitle.textContent = group ? ((panelGroupSpec && panelGroupSpec.title) || '群聊') : 'AI 助手';
+    }
+
+    function notifyPanelView() {
+        if (!onViewChange) return;
+        try {
+            onViewChange(panelView, panelView === 'group' && panelGroupSpec ? panelGroupSpec.groupId : '');
+        } catch (e) { /* 宿主高亮失败不影响视图切换 */ }
+    }
+
+    function releaseGroupView() {
+        if (groupViewRelease) {
+            try { groupViewRelease(); } catch (e) { /* 卸载失败不阻断切换 */ }
+        }
+        groupViewRelease = null;
+        groupViewApi = null;
+        groupViewFocus = null;
+        if (el.groupHost) el.groupHost.textContent = '';
+    }
+
+    // 入口：bridgeShowGroupView（侧栏群行 / 更多菜单 / 群切换弹层 / AI 代建群）与
+    // bridgeShowSessionView（switchSession / newSession）。返回是否切换成功。
+    function setPanelView(next, spec) {
+        if (next === 'group') {
+            if (!mountGroupChatView || !el.groupHost) {
+                flash('群聊视图不可用（宿主未就绪）', true);
+                return false;
+            }
+            const nextSpec = {
+                groupId: String((spec && spec.groupId) || ''),
+                title: String((spec && spec.title) || ''),
+            };
+            if (!nextSpec.groupId) return false;
+            // 同群重复打开：不重建视图，只确保面板可见
+            if (panelView === 'group' && panelGroupSpec && panelGroupSpec.groupId === nextSpec.groupId && groupViewApi) {
+                open(true);
+                return true;
+            }
+            releaseGroupView();
+            panelView = 'group';
+            panelGroupSpec = nextSpec;
+            applyPanelViewDom();
+            const api = mountGroupChatView(nextSpec, el.groupHost) || null;
+            groupViewApi = api;
+            groupViewRelease = api && typeof api.dispose === 'function' ? api.dispose : null;
+            groupViewFocus = api && typeof api.focus === 'function' ? () => groupViewApi && groupViewApi.focus() : null;
+            open(true);
+            notifyPanelView();
+            return true;
+        }
+        releaseGroupView();
+        panelView = 'session';
+        panelGroupSpec = null;
+        applyPanelViewDom();
+        notifyPanelView();
+        return true;
+    }
+
     // ---------- 显示方式与几何 ----------
 
     function normalizeFloatMode(value) {
@@ -14747,22 +14844,28 @@ function requestApproval(session, toolMessage, info) {
             }
             panel.classList.remove('hidden');
             applyMode(mode, false);
-            // 面板重新可见时，当前会话视为已查看。
-            clearSessionUnread(currentSession());
-            renderSessionList();
-            renderProfileSelect();
-            stickBottom = true;
-            // 启动后几秒内点开面板时可能还在读盘：renderMessages 会自己退成加载态
-            renderMessages(false);
-            updateComposerState();
-            refreshSystemPromptEstimate();
-            positionOverlays();
-            refreshMemoryPath();
-            refreshGitEntry();
-            setTimeout(() => {
-                if (el.input) el.input.focus();
-                if (stickBottom) scrollToBottom(false);
-            }, 0);
+            if (panelView === 'group') {
+                // 群聊视图接管面板：会话列表 / 消息渲染 / 输入聚焦都跳过，聚焦群聊输入框
+                positionOverlays();
+                setTimeout(() => { if (groupViewFocus) groupViewFocus(); }, 0);
+            } else {
+                // 面板重新可见时，当前会话视为已查看。
+                clearSessionUnread(currentSession());
+                renderSessionList();
+                renderProfileSelect();
+                stickBottom = true;
+                // 启动后几秒内点开面板时可能还在读盘：renderMessages 会自己退成加载态
+                renderMessages(false);
+                updateComposerState();
+                refreshSystemPromptEstimate();
+                positionOverlays();
+                refreshMemoryPath();
+                refreshGitEntry();
+                setTimeout(() => {
+                    if (el.input) el.input.focus();
+                    if (stickBottom) scrollToBottom(false);
+                }, 0);
+            }
         } else {
             panel.classList.add('hidden');
             if (dockParent) dockParent.classList.remove('ai-dock-fill');
@@ -15951,6 +16054,13 @@ function requestApproval(session, toolMessage, info) {
             button: (label, className, onClick) => dialogButton(label, className, onClick),
             enhanceSelect: typeof enhanceSelect === 'function' ? enhanceSelect : null,
         },
+        // G6 面板化：内容视图切换（会话 ↔ 群聊）。侧栏群行 / 更多菜单 / AI 代建群都走这里。
+        bridgeShowGroupView: (spec) => setPanelView('group', spec),
+        bridgeShowSessionView: () => setPanelView('session'),
+        bridgePanelView: () => ({
+            view: panelView,
+            groupId: panelView === 'group' && panelGroupSpec ? panelGroupSpec.groupId : '',
+        }),
         handleEvent,
         // 多实例：别的窗口写了当前会话时由 main.js 的 resource-changed 转发进来
         handleResourceChange,
