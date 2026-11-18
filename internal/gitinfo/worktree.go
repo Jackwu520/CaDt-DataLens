@@ -420,6 +420,7 @@ func WorktreeStat(root, name, baseSha string) (string, error) {
 	if shaRe.MatchString(baseSha) {
 		base = baseSha
 	}
+	stageIntentToAdd(path)
 	out, code, err := gitRun(path, []string{"diff", "--no-renames", "--stat", base}, 30000)
 	if err != nil {
 		return "", err
@@ -428,6 +429,21 @@ func WorktreeStat(root, name, baseSha string) (string, error) {
 		return "", fmt.Errorf("git diff --stat 失败（worktree：%s）", name)
 	}
 	return strings.TrimRight(out, "\n"), nil
+}
+
+// stageIntentToAddArgs 给 worktree 的未跟踪文件登记 intent-to-add 的 git 参数
+// （未跟踪文件不进 diff/stat 的通用前置步骤，WorktreeDiff 与 WorktreeStat 共用）；
+// junction 路径照常排除——未 gitignore 的 junction 目标会被当成新文件索引（复查实测）。
+func stageIntentToAddArgs(path string) []string {
+	addArgs := []string{"add", "-N", "--", "."}
+	for _, rel := range reparseRelPaths(path) {
+		addArgs = append(addArgs, ":(exclude,literal)"+rel)
+	}
+	return addArgs
+}
+
+func stageIntentToAdd(path string) {
+	_, _, _ = gitRun(path, stageIntentToAddArgs(path), 30000)
 }
 
 // deriveSlug 由 label + 会话 id 派生 slug：小写、[^a-z0-9-] 折成 -、截断 32，拼会话 id
@@ -735,11 +751,7 @@ func WorktreeDiff(root, name, baseSha string) (string, error) {
 	}
 	// junction 目标若没被 .gitignore 覆盖，git add -N 会把主根依赖内容当新文件索引进
 	// 补丁（复查实测）；按 reparse 点加 exclude pathspec，导出只含草稿区真实改动。
-	addArgs := []string{"add", "-N", "--", "."}
-	for _, rel := range reparseRelPaths(path) {
-		addArgs = append(addArgs, ":(exclude,literal)"+rel)
-	}
-	if _, code, err := gitRun(path, addArgs, 30000); err != nil {
+	if _, code, err := gitRun(path, stageIntentToAddArgs(path), 30000); err != nil {
 		return "", err
 	} else if code != 0 {
 		return "", fmt.Errorf("git add -N 失败（worktree：%s）", name)

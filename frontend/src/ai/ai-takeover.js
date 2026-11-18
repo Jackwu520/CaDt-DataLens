@@ -8,8 +8,10 @@ import {AI_WRITE_SCOPES} from './ai-constants.js';
 import {isWebApproval} from './ai-permissions.js';
 import {collectCommandFamilies, commandFamilySignature} from './ai-command-rules.js';
 import {planDigest, planPreviewSlice, PLAN_PREVIEW_CHARS} from './ai-plan-file.js';
+import {worktreeRelPath, worktreeStatNode} from './ai-worktree.js';
 import {createAIAskCards} from './ai-ask-cards.js';
 import {createAIPatchCard} from './ai-patch-card.js';
+import {createAIActionApprovalCard} from './ai-action-approval-card.js';
 
 // 审批卡判定区的行描述（纯函数，ai-takeover.test.mjs 覆盖）：
 // info = {engine: '线性'|'语义'|插件短名, score, threshold, aiReason}。
@@ -147,6 +149,10 @@ export function createAITakeover(ctx) {
         // 提问卡折叠/展开走宿主分发器（与审批卡同口径：重定位浮层 + stickBottom 跟随）
         updateComposerTakeover: (...args) => updateComposerTakeover(...args),
     });
+    const actionApprovalCard = createAIActionApprovalCard(ctx, {
+        updateComposerTakeover: (...args) => updateComposerTakeover(...args),
+    });
+    const renderActionTakeover = (...args) => actionApprovalCard.renderActionTakeover(...args);
     const requestPatchApproval = (...args) => patchCards.requestPatchApproval(...args);
     const renderPatchTakeover = (...args) => patchCards.renderPatchTakeover(...args);
     const renderPatchApprovalBody = (...args) => patchCards.renderPatchApprovalBody(...args);
@@ -161,6 +167,10 @@ export function createAITakeover(ctx) {
         }
         if (entry && entry.approval && entry.approval.kind === 'worktree') {
             renderWorktreeTakeover(entry);
+            return;
+        }
+        if (entry && entry.approval && entry.approval.kind === 'action') {
+            renderActionTakeover(entry);
             return;
         }
         const toolMessage = entry.toolMessage;
@@ -478,29 +488,53 @@ export function createAITakeover(ctx) {
 
         const body = document.createElement('div');
         body.className = 'ai-takeover-body';
-        const text = document.createElement('div');
-        text.className = 'ai-worktree-approval-text';
+        // 结构化明细（对齐补丁卡清单的观感）：键值行 + 强调色提示条，替代纯文字墙
+        const detail = document.createElement('div');
+        detail.className = 'ai-worktree-detail';
+        const addRow = (key, value, mono = true) => {
+            const row = document.createElement('div');
+            row.className = 'ai-worktree-row';
+            const keyEl = document.createElement('span');
+            keyEl.className = 'ai-worktree-key';
+            keyEl.textContent = key;
+            const valEl = document.createElement('span');
+            valEl.className = 'ai-worktree-val' + (mono ? '' : ' plain');
+            if (value instanceof Node) valEl.appendChild(value);
+            else valEl.textContent = value;
+            row.append(keyEl, valEl);
+            detail.appendChild(row);
+        };
+        const addNote = (iconName, message, danger = false) => {
+            const note = document.createElement('div');
+            note.className = 'ai-worktree-note' + (danger ? ' danger' : '');
+            const noteIcon = document.createElement('span');
+            noteIcon.className = 'ai-worktree-note-icon';
+            noteIcon.innerHTML = iconSvg(iconName, 12);
+            const noteText = document.createElement('span');
+            noteText.textContent = message;
+            note.append(noteIcon, noteText);
+            body.appendChild(note);
+        };
         if (discard) {
-            text.textContent = 'AI 请求丢弃 ' + (approval.relPath || approval.name || '隔离工作区')
-                + '（分支 ' + (approval.branch || '隔离分支') + '）。\n'
-                + '未导出的改动会随 worktree 与分支一起删除；主根不受影响。';
-            body.appendChild(text);
-            if (approval.stat) {
-                const stat = document.createElement('pre');
-                stat.className = 'ai-worktree-approval-stat';
-                stat.textContent = '改动统计：\n' + approval.stat;
-                body.appendChild(stat);
-            }
+            addRow('位置', approval.relPath || approval.name || '');
+            addRow('分支', approval.branch || '隔离分支');
+            if (approval.stat) addRow('改动', worktreeStatNode(approval.stat));
+            addRow('影响', 'worktree 与分支一并删除；未导出的改动会丢失');
+            body.appendChild(detail);
+            addNote('warn', '删除不可恢复；主根不受影响。', true);
         } else {
-            const lines = [
-                'AI 请求为当前会话创建隔离 git worktree：改动只落在 .cadt/worktree/<slug>/'
-                    + '（新分支 cadt/wt/<slug>），主根不受影响；完成后经补丁审批卡回灌。',
-            ];
-            if (approval.label) lines.push('用途：' + approval.label);
-            if (approval.carry) lines.push('将把主根当前的未提交改动一并带入隔离区（打成快照作为基准），主根不受影响。');
-            lines.push('创建会写盘并新建分支；拒绝后 AI 只能在主根按常规流程继续。');
-            text.textContent = lines.join('\n');
-            body.appendChild(text);
+            // slug 由后端按「用途名-会话尾号」派生：这里按同一规则预测出真实路径给人看
+            // （同名冲突时 Go 会顺延 -2/-3，实际名以工具结果为准）
+            if (approval.slug) {
+                addRow('位置', worktreeRelPath(approval.slug) + '/');
+                addRow('分支', 'cadt/wt/' + approval.slug);
+            } else {
+                addRow('去向', '主根 .cadt/worktree/ 下的独立检出副本', false);
+            }
+            if (approval.label) addRow('用途', approval.label, false);
+            if (approval.carry) addRow('带入', '主根当前未提交改动 → 快照基准', false);
+            body.appendChild(detail);
+            addNote('info', '主根零改动；完成后 AI 经补丁审批卡回灌。拒绝后只能在主根按常规流程继续。');
         }
 
         const foot = document.createElement('div');

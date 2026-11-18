@@ -10,6 +10,12 @@ function loadImage(url) {
     });
 }
 
+/**
+ * 把任意图片 Blob 转成 PNG Blob（剪贴板只接受 image/png）。
+ * 已经是 PNG 的原样返回；否则经 Image 解码 + Canvas 重绘后编码为 PNG。
+ * @param {Blob|null} blob 源图片 Blob
+ * @returns {Promise<Blob|null>} PNG Blob；入参为空时返回 null
+ */
 export async function blobToPngBlob(blob) {
     if (!blob) return null;
     if (blob.type === 'image/png') return blob;
@@ -26,6 +32,12 @@ export async function blobToPngBlob(blob) {
     }
 }
 
+/**
+ * 把图片 Blob 写入系统剪贴板（自动转 PNG）。
+ * 浏览器剪贴板 API 不可用或用户未聚焦页面时返回 false，由调用方决定是否提示。
+ * @param {Blob} blob 源图片 Blob
+ * @returns {Promise<boolean>} true = 写入成功
+ */
 export async function copyImageBlobToClipboard(blob) {
     if (!navigator.clipboard || !window.ClipboardItem) return false;
     try {
@@ -38,6 +50,11 @@ export async function copyImageBlobToClipboard(blob) {
     }
 }
 
+/**
+ * 从 URL 拉取图片并写入系统剪贴板。
+ * @param {string} url 图片地址（公网 http(s) 或 data URL）
+ * @returns {Promise<boolean>} true = 写入成功
+ */
 export async function copyImageUrlToClipboard(url) {
     if (!url) return false;
     try {
@@ -50,6 +67,13 @@ export async function copyImageUrlToClipboard(url) {
 
 // dataUrlToFile data URL → File：右键菜单的「粘贴」拿不到 paste 事件，后端回读的
 // 剪贴板图片先转成 File，再走与 Ctrl+V 相同的压缩管线（AI 输入框与快捷便签共用）。
+/**
+ * 把 data URL 转成 File 对象，供右键「粘贴」走与 Ctrl+V 相同的压缩管线。
+ * 解码失败或空数据时返回 null。
+ * @param {string} dataUrl 图片 data URL
+ * @param {string} [name] 目标文件名，缺省用「粘贴的图片」
+ * @returns {File|null} File 对象；无法解析时返回 null
+ */
 export function dataUrlToFile(dataUrl, name) {
     const raw = String(dataUrl || '');
     const comma = raw.indexOf(',');

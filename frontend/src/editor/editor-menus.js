@@ -220,6 +220,17 @@ function showEditorMenu(x, y) {
             ],
         },
         {sep: true},
+        {
+            label: '书签',
+            icon: 'bookmark',
+            disabled: !editable,
+            submenu: [
+                {label: '切换当前行书签', shortcut: 'F11', action: deps.toggleBookmark},
+                {label: '书签总览…', shortcut: 'Shift+F11', action: deps.openBookmarkList},
+                {label: '清除本文档书签', action: deps.clearCurrentDocBookmarks},
+            ],
+        },
+        {sep: true},
         ...referenceItems,
         ...(referenceItems.length ? [{sep: true}] : []),
         {label: '复制文件路径', icon: 'E8C8', disabled: !hasPath, action: () => deps.copyText(deps.file.path, '路径')},

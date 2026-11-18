@@ -19,7 +19,7 @@ Python、whisper.cpp 与 ggml 模型仍由用户自备。
      - TTS：`pwsh` / `-NoProfile -ExecutionPolicy Bypass -File D:\...\tts-sapi.ps1`
      - OCR：`powershell` / `-NoProfile -ExecutionPolicy Bypass -File D:\...\ocr-windows.ps1`
      - ASR：`python` / `-u D:\...\asr-whisper.py`（环境变量见 asr-whisper.md）
-   - 服务器命令会在本机执行，等同于你自己运行它；保存前应用会要求确认。
+   - 服务器命令会在本机执行，等同于用户自己运行它；保存前应用会要求确认。
 2. 保存后在服务器行的「工具」面板勾选对应工具。
 3. 回「能力来源」把该能力设为「本地 MCP」，二级下拉选 `mcp__<名称>__<工具名>`。
 4. 来源=本地 MCP 时，AI 只在**写权限档（非计划模式）**能看到这些工具，调用走写工具审批

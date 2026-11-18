@@ -82,7 +82,7 @@ export function createAIAskCards(ctx, extras) {
         row.appendChild(input);
         const hint = document.createElement('div');
         hint.className = 'ai-approval-more';
-        hint.textContent = '值由你亲自输入，AI 看不到；保存后注入终端与命令桥。Enter 创建 · Esc 放弃。';
+        hint.textContent = '值由用户亲自输入，AI 看不到；保存后注入终端与命令桥。Enter 创建 · Esc 放弃。';
         const actions = document.createElement('div');
         actions.className = 'ai-approval-actions';
         const deny = document.createElement('button');

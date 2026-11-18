@@ -12,6 +12,7 @@ import (
 
 	"datalens/internal/appconfig"
 	"datalens/internal/clipboard"
+	"datalens/internal/cmdbridge"
 	"datalens/internal/launchargs"
 	"datalens/internal/newwindow"
 	"datalens/internal/shellexec"
@@ -139,12 +140,19 @@ func (a *App) SetWindowBg(r, g, b int) {
 }
 
 func (a *App) beforeClose(ctx context.Context) bool {
-	if a.forceClose || (!a.dirty && !a.aiRunning) {
+	// 关窗二次确认的依据不止「AI 回合进行中」：终端会话（含用户自己开的，仅在 shell 里
+	// 真有命令进程在跑时才计数，空闲提示符放行）与 AI 后台命令作业（background_command，
+	// 回合结束后仍长驻）都会随窗口关闭被静默终止，一并计入。
+	terms := a.Terminal.RunningSessionCount()
+	bgJobs := cmdbridge.RunningAIJobCount()
+	if a.forceClose || (!a.dirty && !a.aiRunning && terms == 0 && bgJobs == 0) {
 		a.mcpCloseAll() // MCP 子进程全量关闭（总预算 8s，超时靠 taskkill 兜底）
 		a.UnwatchWorkspace()
 		return false
 	}
-	runtime.EventsEmit(ctx, "confirm-close", map[string]bool{"dirty": a.dirty, "aiRunning": a.aiRunning})
+	runtime.EventsEmit(ctx, "confirm-close", map[string]interface{}{
+		"dirty": a.dirty, "aiRunning": a.aiRunning, "terms": terms, "bgJobs": bgJobs,
+	})
 	return true
 }
 

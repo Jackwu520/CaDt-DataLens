@@ -14,6 +14,15 @@
 
 export const DOUBLE_TAP_WINDOW_MS = 400;
 
+/**
+ * 建一个「双击 Shift」判定器（JetBrains 口径：两次干净 tap 且间隔极短）。
+ * 状态机只保存两个时刻，无定时器；reset() 可在失焦时手动清空。
+ * @param {object} [opts] 选项
+ * @param {number} [opts.windowMs] 两次 tap 的允许间隔（默认 DOUBLE_TAP_WINDOW_MS）
+ * @param {() => number} [opts.now] 时间源，便于测试注入假时钟
+ * @returns {{onKeyDown: Function, onKeyUp: Function, reset: Function, pendingDown: boolean, armed: boolean}}
+ *          事件入口与两个只读状态
+ */
 export function createShiftDoubleTap({windowMs = DOUBLE_TAP_WINDOW_MS, now = () => Date.now()} = {}) {
     let pendingDownAt = 0; // >0 表示一个干净 Shift keydown 正等待自己的 keyup
     let firstTapAt = 0;    // >0 表示第一次完整 tap 的完成时刻，等待第二次配对

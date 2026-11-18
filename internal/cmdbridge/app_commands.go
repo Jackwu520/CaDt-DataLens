@@ -64,7 +64,7 @@ func (b *Bridge) runCommandSyncRegistered(id, exe string, args []string, cwd str
 // runCommandSyncConfined 与 runCommandSyncRegistered 同语义，额外支持把子进程放进沙箱。
 // sb 为 nil 时行为与裸跑完全一致。
 //
-// 沙箱档有两条硬约束（见 docs/unfinished-plans/subagent-sandbox.md §3.3）：
+// 沙箱档有两条硬约束（见 docs/finished-plans/subagent-sandbox.md §3.3）：
 //   - 不能调用 executil.HideCommandWindow：它设的 CREATE_NO_WINDOW 会让受限令牌
 //     子进程死在 0xC0000142，启动标志由 Sandbox.Configure 统一给 DETACHED_PROCESS；
 //   - 环境块必须先由调用方合并好，Sandbox.Configure 只在其上重写 TMP/TEMP。
@@ -456,6 +456,24 @@ func (b *Bridge) AICommandStatus(jobId string, since int64) (*AICommandJobStatus
 		return nil, fmt.Errorf("jobId 不能为空")
 	}
 	return b.commandJobStatus(jobId, since), nil
+}
+
+// RunningAIJobCount 返回未退出的 AI 后台命令作业数（关窗二次确认用，见 app_window.go 的 beforeClose）。
+// commandJobs 只登记 AICommandStart / AICommandStartConfined 启动的作业，
+// 插件与 git 走的 StartCommand 不注册、不在计数内。
+func RunningAIJobCount() int {
+	commandJobsMu.Lock()
+	defer commandJobsMu.Unlock()
+	n := 0
+	for _, job := range commandJobs {
+		job.mu.Lock()
+		alive := !job.exited
+		job.mu.Unlock()
+		if alive {
+			n++
+		}
+	}
+	return n
 }
 
 // AICommandStop 终止后台作业并等待其退出（最多 4 s），返回包含全部缓冲输出的最终状态。

@@ -11,6 +11,8 @@ import {
     mainRootWriteVerdict,
     resolveWorktreeTarget,
     createAIWorktree,
+    predictWorktreeSlug,
+    worktreeStatTotals,
 } from '../../src/ai/ai-worktree.js';
 
 test('normalizeWorktreeState：合法 / 缺 name / 非对象', () => {
@@ -285,7 +287,7 @@ test('manageTool(discard)：AI 主动丢弃走审批卡并附改动统计，批�
     assert.equal(calls[0].kind, 'approval');
     assert.equal(calls[0].info.action, 'discard');
     assert.equal(calls[0].info.name, 'demo-ab12');
-    assert.ok(calls[0].info.stat.includes('1 file changed'));
+    assert.equal(calls[0].info.stat, '+3 −0 · 1 文件');
     assert.equal(calls[1].kind, 'remove');
     assert.equal(session.worktree, null);
     assert.ok(out.includes('已丢弃隔离工作区'));
@@ -338,4 +340,35 @@ test('manageTool(discard)：隔离区内有活终端时拒绝，不进审批也�
     assert.ok(out.includes('WORKTREE_TERMINAL'), out);
     assert.ok(!calls.some((c) => c.kind === 'approval'), '不应进入审批卡');
     assert.ok(!calls.some((c) => c.kind === 'remove'), '不应执行删除');
+});
+
+// ---- predictWorktreeSlug：创建卡显示真实路径（复刻 Go deriveSlug / alnumTail） ----
+
+test('predictWorktreeSlug：与 Go deriveSlug 同规则（清洗/截断/会话尾号）', () => {
+    assert.equal(predictWorktreeSlug('', 'mwki81a5gkdgj'), 'wt-1a5gkdgj');
+    assert.equal(predictWorktreeSlug('Refactor Parser', 'mwki81a5gkdgj'), 'refactor-parser-1a5gkdgj');
+    // CJK 折成 -（按码点，不能截 byte）：清洗后为空回落 wt
+    assert.equal(predictWorktreeSlug('器 物', 'mwki81a5gkdgj'), 'wt-1a5gkdgj');
+    // 连续分隔符折成一个 -、首尾 - 修剪
+    assert.equal(predictWorktreeSlug('refactor---', 'mwki81a5gkdgj'), 'refactor-1a5gkdgj');
+    // 超长截 32（不含会话尾号）
+    const long = predictWorktreeSlug('a'.repeat(40), '');
+    assert.equal(long.length, 32);
+    assert.equal(long, 'a'.repeat(32));
+    // 无会话 id：只有 base
+    assert.equal(predictWorktreeSlug('demo', ''), 'demo');
+});
+
+// ---- worktreeStatTotals：丢弃卡/信息卡的「+xx −xx · N 文件」紧凑汇总 ----
+
+test('worktreeStatTotals：多文件 / 单文件纯增删 / 空文本 / 解析失败', () => {
+    const multi = worktreeStatTotals(' frontend/index.html | 36 +++---\n frontend/src/style.css | 35 +++---\n 3 files changed, 45 insertions(+), 39 deletions(-)');
+    assert.deepEqual(multi, {files: 3, added: 45, removed: 39, label: '+45 −39 · 3 文件'});
+    // 单文件只有删除：summary 行没有 insertions 段
+    const delOnly = worktreeStatTotals(' a.txt | 1 -\n 1 file changed, 1 deletion(-)');
+    assert.deepEqual(delOnly, {files: 1, added: 0, removed: 1, label: '+0 −1 · 1 文件'});
+    assert.equal(worktreeStatTotals('').label, '');
+    assert.equal(worktreeStatTotals(null).label, '');
+    // 没有 summary 行（解析不出）→ 空串，不把逐文件行当数字
+    assert.equal(worktreeStatTotals(' frontend/src/style.css | 35 +++---').label, '');
 });

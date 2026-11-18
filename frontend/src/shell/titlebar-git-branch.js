@@ -342,6 +342,7 @@ function showBranchMenu(anchor) {
         return;
     }
     deps.closeProjectPopover();
+    if (deps.closeRunConfigPopover) deps.closeRunConfigPopover();
     const dir = deps.gitRootDir();
     if (!dir) {
         deps.flash('请先打开文件或目录', true);
@@ -601,9 +602,18 @@ document.addEventListener('pointerdown', (e) => {
     if (deps.isToolbarPopOpen(deps.els.gitBranchPop) && !deps.els.gitBranchPop.contains(target) && !deps.els.wsBranch.contains(target) && !gitBranchPopState.pinned) {
         closeGitBranchPopover();
     }
+    if (deps.isToolbarPopOpen(deps.els.runConfigPop) && deps.els.tbRunConfig && !deps.els.runConfigPop.contains(target) && !deps.els.tbRunConfig.contains(target)) {
+        deps.closeRunConfigPopover();
+    }
 }, true);
 
 document.addEventListener('keydown', (e) => {
+    if (deps.isToolbarPopOpen(deps.els.runConfigPop) && e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        deps.closeRunConfigPopover();
+        return;
+    }
     if (deps.isToolbarPopOpen(deps.els.projectPop) && e.key === 'Escape') {
         e.preventDefault();
         e.stopPropagation();
@@ -630,10 +640,12 @@ document.addEventListener('keydown', (e) => {
 window.addEventListener('blur', () => {
     deps.closeProjectPopover();
     closeGitBranchPopover();
+    if (deps.closeRunConfigPopover) deps.closeRunConfigPopover();
 });
 window.addEventListener('resize', () => {
     deps.closeProjectPopover();
     closeGitBranchPopover();
+    if (deps.closeRunConfigPopover) deps.closeRunConfigPopover();
 });
 
 

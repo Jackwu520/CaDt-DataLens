@@ -175,21 +175,24 @@ export function createAIPatchCard(ctx, extras) {
         const modeLabel = document.createElement('label');
         const modeText = document.createElement('span');
         modeText.textContent = '应用模式：';
-        const select = document.createElement('select');
-        select.className = 'patch-mode-select';
+        // 两段式切换钮（对齐接管卡按钮观感；裸 select 已按表单控件规范移除）
+        const modeGroup = document.createElement('div');
+        modeGroup.className = 'patch-mode-group';
         for (const [value, label] of [['partial', '允许部分成功'], ['atomic', '整体成功']]) {
-            const opt = document.createElement('option');
-            opt.value = value;
+            const opt = document.createElement('button');
+            opt.type = 'button';
+            opt.className = 'patch-mode-opt' + (approval.mode === value ? ' active' : '');
             opt.textContent = label;
-            if (approval.mode === value) opt.selected = true;
-            select.appendChild(opt);
+            opt.setAttribute('aria-pressed', String(approval.mode === value));
+            opt.addEventListener('click', () => {
+                if (approval.mode === value) return;
+                approval.mode = value;
+                persistSessions();
+                updateComposerTakeover(true);
+            });
+            modeGroup.appendChild(opt);
         }
-        select.addEventListener('change', () => {
-            approval.mode = select.value;
-            persistSessions();
-            updateComposerTakeover(true);
-        });
-        modeLabel.append(modeText, select);
+        modeLabel.append(modeText, modeGroup);
         modeRow.appendChild(modeLabel);
         body.appendChild(modeRow);
         card.appendChild(body);

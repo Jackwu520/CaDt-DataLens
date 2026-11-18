@@ -229,11 +229,12 @@ export function createAIMessageQueue(ctx) {
         return live;
     }
 
-    // 拖动排序的落点提示：清掉所有行的插入标记（重绘 / dragend / drop 都要清）。
-    function clearQueueDropMarks() {
+    // 拖动排序：对齐标签页的 JetBrains 式让位——目标位置让出一条插槽（margin 过渡），
+    // 不画描边 / 插入线。
+    function clearQueueDropGaps() {
         if (!el.queue) return;
-        for (const row of el.queue.querySelectorAll('.drop-before, .drop-after, .dragging')) {
-            row.classList.remove('drop-before', 'drop-after', 'dragging');
+        for (const row of el.queue.querySelectorAll('.drop-gap-before, .drop-gap-after')) {
+            row.classList.remove('drop-gap-before', 'drop-gap-after');
         }
     }
 
@@ -306,34 +307,44 @@ export function createAIMessageQueue(ctx) {
             });
             handle.addEventListener('dragend', () => {
                 draggingQueueId = '';
-                clearQueueDropMarks();
+                row.classList.remove('dragging');
+                clearQueueDropGaps();
             });
+            row.dataset.queueId = item.id;
             row.addEventListener('dragover', (e) => {
-                if (!draggingQueueId) return;
+                if (!draggingQueueId || row.dataset.queueId === draggingQueueId) return;
                 e.preventDefault();
                 if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
                 const rect = row.getBoundingClientRect();
-                const after = e.clientY > rect.top + rect.height / 2;
-                row.classList.toggle('drop-after', after);
-                row.classList.toggle('drop-before', !after);
-            });
-            row.addEventListener('dragleave', (e) => {
-                if (row.contains(e.relatedTarget)) return;
-                row.classList.remove('drop-before', 'drop-after');
+                const before = e.clientY < rect.top + rect.height / 2;
+                clearQueueDropGaps();
+                if (before) {
+                    row.classList.add('drop-gap-before');
+                } else {
+                    const next = row.nextElementSibling;
+                    // 向下拖时让下一行让位，插槽始终出现在「将要插入的位置」
+                    if (next && next.classList.contains('ai-queue-row') && next.dataset.queueId) {
+                        next.classList.add('drop-gap-before');
+                    } else {
+                        row.classList.add('drop-gap-after');
+                    }
+                }
             });
             row.addEventListener('drop', (e) => {
                 if (!draggingQueueId) return;
                 e.preventDefault();
                 const rect = row.getBoundingClientRect();
-                const after = e.clientY > rect.top + rect.height / 2;
+                const before = e.clientY < rect.top + rect.height / 2;
                 const draggedId = draggingQueueId;
                 draggingQueueId = '';
-                clearQueueDropMarks();
-                reorderQueueItem(draggedId, item.id, after);
+                clearQueueDropGaps();
+                if (draggedId !== row.dataset.queueId) reorderQueueItem(draggedId, row.dataset.queueId, !before);
             });
             const steering = item.delivery === 'steer';
             const badge = document.createElement('span');
             badge.className = 'ai-queue-badge';
+            // 两条车道用不同颜色：排队=蓝（accent），插话=琥珀（warn）
+            badge.classList.toggle('is-steer', steering);
             badge.textContent = steering ? '插话' : '排队';
             const text = document.createElement('span');
             text.className = 'ai-queue-text';

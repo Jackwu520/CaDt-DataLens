@@ -9,6 +9,7 @@ import (
 // 视为「无意义的分散命中」直接丢弃——既保住结果质量，也防止 preview 被长行撑爆。
 const fuzzyMaxWindow = 200
 
+// fuzzyRuneEq 比较两个字符是否等价（默认折叠大小写，只处理 unicode.ToLower）。
 func fuzzyRuneEq(a, b rune, caseSensitive bool) bool {
 	if a == b {
 		return true

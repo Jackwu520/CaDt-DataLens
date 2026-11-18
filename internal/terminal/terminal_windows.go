@@ -10,8 +10,10 @@ import (
 	"strings"
 	"sync"
 	"unicode/utf8"
+	"unsafe"
 
 	pty "github.com/aymanbagabas/go-pty"
+	"golang.org/x/sys/windows"
 
 	"datalens/internal/envvars"
 	"datalens/internal/shellpath"
@@ -45,6 +47,9 @@ type termSession struct {
 
 	shell string
 	cwd   string
+	// shellPID：ConPTY shell 的进程号。关窗确认用它枚举后代进程——
+	// 空闲提示符（无子进程）不算「正在运行」，shell 里跑着命令才算。
+	shellPID uint32
 
 	bufMu    sync.Mutex
 	buf      []byte
@@ -144,6 +149,9 @@ func startTermSession(id, shell string, cols, rows int, cwd string, emit func(ev
 	}
 
 	session := &termSession{id: id, p: p, cmd: cmd, shell: shell, cwd: cwd}
+	if cmd.Process != nil {
+		session.shellPID = uint32(cmd.Process.Pid)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	session.cancel = cancel
 
@@ -446,6 +454,89 @@ func (t *Terminal) TermList() []TermInfo {
 			Exited: exited, ExitCode: code, Bytes: total, Last: lastTermLine(tail)})
 	}
 	return out
+}
+
+// RunningSessionCount 返回「正在执行任务」的终端会话数（关窗二次确认用，见 app_window.go 的 beforeClose）。
+// 判定 = 会话未退出（!exited）**且 shell 有活着的后代进程**：空闲提示符（刚开的 PowerShell、
+// 跑完命令回到提示符）不算——关掉它没有任何损失，拦截只会打扰用户；
+// shell 里跑着 npm run dev / 测试等才算数。ConPTY 的 pseudo console 由系统内部管理，
+// 不挂在 shell 的进程树上，后代枚举看到的就是真实命令进程。
+func (t *Terminal) RunningSessionCount() int {
+	// 先在锁内收集候选，再在锁外逐个枚举进程快照（Toolhelp 遍历全表，锁内做会拖住 TermWrite）
+	terminals.mu.Lock()
+	candidates := make([]*termSession, 0, len(terminals.sessions))
+	for _, s := range terminals.sessions {
+		s.bufMu.Lock()
+		alive := !s.exited
+		s.bufMu.Unlock()
+		if alive && s.shellPID != 0 {
+			candidates = append(candidates, s)
+		}
+	}
+	terminals.mu.Unlock()
+	n := 0
+	for _, s := range candidates {
+		if hasAliveDescendant(s.shellPID) {
+			n++
+		}
+	}
+	return n
+}
+
+// procInfo 是进程快照的一行（只取枚举需要的字段）。
+type procInfo struct {
+	pid  uint32
+	ppid uint32
+}
+
+// descendantExists 判定 self 在给定进程表中是否有后代（BFS，环安全）。
+// 纯函数：真实快照在 hasAliveDescendant，测试喂构造数据（父子环 / 多级 / 无子）。
+func descendantExists(self uint32, procs []procInfo) bool {
+	children := make(map[uint32][]uint32)
+	for _, p := range procs {
+		if p.pid == self {
+			continue // 自身不进表：父 PID 偶然指向自己时不至于自环
+		}
+		children[p.ppid] = append(children[p.ppid], p.pid)
+	}
+	queue := children[self]
+	seen := make(map[uint32]bool)
+	for len(queue) > 0 {
+		id := queue[0]
+		queue = queue[1:]
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		queue = append(queue, children[id]...)
+	}
+	return len(seen) > 0
+}
+
+// hasAliveDescendant 用 Toolhelp32 快照判定 rootPID 是否有活着的后代进程。
+// 快照失败按「有后代」处理（fail-closed）：关窗确认宁多拦不误杀。
+func hasAliveDescendant(rootPID uint32) bool {
+	snap, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
+	if err != nil {
+		return true
+	}
+	defer windows.CloseHandle(snap)
+	procs := make([]procInfo, 0, 256)
+	entry := windows.ProcessEntry32{}
+	entry.Size = uint32(unsafe.Sizeof(entry))
+	for first := true; ; first = false {
+		var err error
+		if first {
+			err = windows.Process32First(snap, &entry)
+		} else {
+			err = windows.Process32Next(snap, &entry)
+		}
+		if err != nil {
+			break // ERROR_NO_MORE_FILES = 遍历完成
+		}
+		procs = append(procs, procInfo{pid: entry.ProcessID, ppid: entry.ParentProcessID})
+	}
+	return descendantExists(rootPID, procs)
 }
 
 // lastTermLine 抽最后一行非空输出，供 TermList 给 AI 一个「终端现在停在哪」的线索。

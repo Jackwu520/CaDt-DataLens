@@ -13,6 +13,8 @@ import (
 // 项目感知运行（V3）：只探测项目文件并给出「候选命令」，由前端弹窗让用户确认后
 // 才交给 RunExec 执行。这里不执行任何命令、不安装依赖、不读取项目以外的用户数据。
 
+// RunProjectCmd 是一条候选运行命令（前端弹窗按 Label 展示，用户确认后才交给 RunExec）。
+// Cwd 是相对项目根的运行目录，空串表示就在项目根执行。
 type RunProjectCmd struct {
 	Label string   `json:"label"`
 	Exe   string   `json:"exe"`
@@ -20,6 +22,8 @@ type RunProjectCmd struct {
 	Cwd   string   `json:"cwd"`
 }
 
+// RunProjectInfo 是一次项目探测的结果。Kind 是命中的项目类型（如 node/go/rust），
+// Marker 是命中的标记文件名，Commands 为空时前端只提示「未找到可运行配置」。
 type RunProjectInfo struct {
 	Root     string          `json:"root"`
 	Kind     string          `json:"kind"`

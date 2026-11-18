@@ -149,11 +149,12 @@ test('parentSessionIdOf：运行态优先，终态记录兜底', () => {
     assert.equal(parentSessionIdOf('a', null, null), '');
 });
 
-test('resolveSubAgentRounds：配置缺省 → 内置 50；单次缺省 → 配置值；不许把「没给」当 3 轮', () => {
+test('resolveSubAgentRounds：配置缺省 → 内置 200；单次缺省 → 配置值；不许把「没给」当 3 轮', () => {
     // 与 resolveWaitTimeoutSec 同一个坑：aiClampInt(null) 会算成 0 再钳到下限
-    assert.equal(resolveSubAgentRounds(undefined, undefined), 50, '两者都缺省 = 内置默认');
-    assert.equal(resolveSubAgentRounds(null, null), 50, 'null 要回落，不能变成 3');
-    assert.equal(resolveSubAgentRounds('', ''), 50);
+    // 2026-11-18 默认 50 → 200：多层审计里中间层 50 轮先饿死，孤儿结论没处投
+    assert.equal(resolveSubAgentRounds(undefined, undefined), 200, '两者都缺省 = 内置默认');
+    assert.equal(resolveSubAgentRounds(null, null), 200, 'null 要回落，不能变成 3');
+    assert.equal(resolveSubAgentRounds('', ''), 200);
     assert.equal(resolveSubAgentRounds(undefined, 120), 120, '设置里的值生效');
     assert.equal(resolveSubAgentRounds(null, 120), 120, '单次没给就吃配置');
     assert.equal(resolveSubAgentRounds(30, 120), 30, '单次点名优先');

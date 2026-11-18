@@ -6,6 +6,7 @@ import {createFileIcon} from '../core/fileicons.js';
 import {enhanceWidgets} from '../core/widget.js';
 import {aiFormatTime, aiTextOf} from './ai-constants.js';
 import {agentLevelText} from './ai-team-model.js';
+import {formatCommandDuration} from './ai-terminal-tools.js';
 import './ai-plan-file.js';
 
 // 解码可能未闭合的 JSON 字符串字面量：截掉不完整转义、补收尾引号再 parse；
@@ -291,6 +292,25 @@ export function createAIToolCards(ctx) {
         }
     }
 
+    // 通用动作审批（危险设置 / 装删插件）：已裁决后只给一句结果，完整过程在 composer 接管卡。
+    function renderActionApprovalBody(container, message, approval) {
+        if (approval.state === 'pending') {
+            renderPendingApprovalPlaceholder(container, approval);
+            return;
+        }
+        const what = approval.actionTitle || '操作';
+        const result = document.createElement('div');
+        result.className = 'ai-approval-result ' + approval.state;
+        result.textContent = approval.state === 'approved'
+            ? (toolIsLive(message) ? '正在执行：' + what + '…' : '已批准：' + what + approvalTraceNote(approval))
+            : approval.state === 'denied'
+                ? '已拒绝：' + what
+                : (approval.state === 'failed'
+                    ? '执行失败：' + (approval.error || what)
+                    : '操作已取消：' + what);
+        container.appendChild(result);
+    }
+
     function renderApprovalBody(container, message, approval, opts) {
         if (approval.state === 'pending') {
             renderPendingApprovalPlaceholder(container, approval);
@@ -306,6 +326,10 @@ export function createAIToolCards(ctx) {
         }
         if (approval.kind === 'worktree') {
             renderWorktreeApprovalBody(container, message, approval);
+            return;
+        }
+        if (approval.kind === 'action') {
+            renderActionApprovalBody(container, message, approval);
             return;
         }
         // skipMeta：工具卡头部已带路径与 diff 统计时，正文不再重复
@@ -431,7 +455,7 @@ export function createAIToolCards(ctx) {
             // 输入区已改为 composer 接管（renderEnvAskTakeover），消息流只留占位提示。
             const wait = document.createElement('div');
             wait.className = 'ai-approval-result pending';
-            wait.textContent = '等待你在下方输入区填写变量值…';
+            wait.textContent = '等待用户在下方输入区填写变量值…';
             container.appendChild(wait);
         } else {
             const result = document.createElement('div');
@@ -468,7 +492,7 @@ export function createAIToolCards(ctx) {
         if (ask.state === 'timeout') return '超时未回答，已交给 AI 决定并继续';
         if (ask.state === 'timeout_abort') return '超时未回答，已停止本轮';
         if (ask.state === 'cancelled') return '问题已取消';
-        if (ask.state === 'skipped') return '你跳过了回答';
+        if (ask.state === 'skipped') return '用户跳过了回答';
         if (ask.state === 'expired') return '页面已关闭，问题未回答';
         return '';
     }
@@ -873,6 +897,15 @@ export function createAIToolCards(ctx) {
                     }
                 }
             } catch (e) {}
+        }
+        // 命令耗时徽标（run_command 完成后 Go 回传的 durationMs 暂存在消息上）：
+        // 贴右侧状态字左边（.duration 的 auto margin 吃掉中间空隙，状态字让位成固定间距）。
+        const durationText = formatCommandDuration(message.durationMs);
+        if (durationText) {
+            const dur = document.createElement('span');
+            dur.className = 'ai-tool-stat duration';
+            dur.textContent = durationText;
+            head.appendChild(dur);
         }
         const state = document.createElement('span');
         state.className = 'ai-tool-state';

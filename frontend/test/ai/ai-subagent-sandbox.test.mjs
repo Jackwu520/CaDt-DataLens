@@ -1,4 +1,4 @@
-// 子代理命令沙箱的接线护栏（方案 docs/unfinished-plans/subagent-sandbox.md）。
+// 子代理命令沙箱的接线护栏（方案 docs/finished-plans/subagent-sandbox.md）。
 //
 // 不变量：
 //   P1 父权限档 → 沙箱档：edit 档不给写（子代理没有审批通道），full 档继承完全权限
@@ -174,6 +174,40 @@ test('P13 收尾轮真的不下发工具，幻觉调用直接收尾（不死循�
     const toolRound = sliceBetween(text, 'async function runSubToolRound(', 'const toolMessage = {');
     assert.ok(toolRound.includes('if (s.wrapUp)'), '收尾轮收到工具调用要单独处理');
     assert.ok(toolRound.includes("finalizeSubAgent(sub, 'done')"), '拒绝后必须立即收尾，不能进下一轮');
+});
+
+test('P14 孤儿接管与投递兜底：父终态不级联，但下级必须有归处', () => {
+    // 2026-11-18 bug-hunt 实测：层3「工具动作接线审查」50 轮预算耗尽自动 done（终态不级联，
+    // 下级结论可能还有价值，agent_stop 才显式级联），它派出的三个层4 对账子代理还在跑；
+    // 结算时 deliverToParent 两头落空——父不在 subAgents、sessionById(子代理会话 id) 恒 null，
+    // 四条「结论未能投递」flash，结论就地蒸发。
+    const text = sourceOf('ai/ai-subagents.js');
+    // ① finalizeSubAgent 终态必须尝试接管运行中的下级
+    const fin = sliceBetween(text, 'function finalizeSubAgent(', '// 停止时未消费的收件箱条数');
+    assert.ok(fin.includes('adoptOrphanChildren(sub)'), '终态必须调用孤儿接管');
+    assert.ok(fin.includes('session.messages.includes(sub.parentToolMessage)'),
+        '刷新前先验证 toolMessage 归属：孤儿改挂根会话后 indexOf 落空会退化成整屏重渲染');
+    // ② 接管实现：直属运行中下级改挂运行中祖父，没有就挂根会话
+    const adopt = sliceBetween(text, 'function adoptOrphanChildren(', 'function finalizeSubAgent(');
+    assert.ok(adopt.includes("item.state === 'running' && item.parentSessionId === sub.id"),
+        '只接管直属运行中下级（孙代理挂直属下级身上，子树自然保持成树）');
+    assert.ok(adopt.includes("grand && grand.state === 'running'"), '优先挂运行中的祖父（收件箱投递可达）');
+    assert.ok(adopt.includes('sub.rootSessionId'), '没有运行中祖父时挂根会话（信箱投递可达）');
+    assert.ok(adopt.includes('agentRegistry.get(kid.key)'), '注册表里的归属要同步改');
+    // ③ deliverToParent 兜底：父 id 不在 sessions 表且未被接管时，按终态记录回落根会话
+    const dlv = sliceBetween(text, 'function deliverToParent(', 'function adoptOrphanChildren(');
+    assert.ok(dlv.includes('parentRecord.rootSessionId'), '父已终态且未被接管时按记录回落根会话');
+});
+
+test('P15 嵌套预算继承：子代理再派单未点名 maxRounds 时继承派出方的上限', () => {
+    // 2026-11-18 bug-hunt 实测诱因：主代理派层2给了 maxRounds 80，层2 派层3没传 → 落回
+    // 设置默认 50 → 中间层先饿死自动收尾，下级成孤儿。显式点名永远优先，主代理派单不继承。
+    const text = sourceOf('ai/ai-subagents.js');
+    const fn = sliceBetween(text, 'async function startSubAgent(', 'async function runSubAgent(');
+    assert.ok(fn.includes('spawnCallerSession.parentSessionId'), '只有子代理派单才继承（主会话不是子代理）');
+    assert.ok(fn.includes('parentLiveSub.maxRounds'), '未点名时继承派出方自己的轮次上限');
+    assert.ok(fn.includes('roundsExplicit'), '显式点名仍优先于继承');
+    assert.ok(fn.includes('resolveSubAgentRounds(roundsInput,'), '继承值也必须过统一钳制');
 });
 
 test('P6 background_command 分支：沙箱档走 AICommandStartConfined，且先过项目 deny 规则', () => {

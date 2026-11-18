@@ -16,7 +16,7 @@ import (
 // AI 终端工具：按 Git Bash → PowerShell 7 → Windows PowerShell → cmd 的优先级执行命令。
 // 复用进程桥的 RunCommandSync（无窗口、超时、输出上限），但 shell 由后端统一选择。
 //
-// 沙箱档是例外：**永不解析 Git Bash**。实测（docs/unfinished-plans/subagent-sandbox.md
+// 沙箱档是例外：**永不解析 Git Bash**。实测（docs/finished-plans/subagent-sandbox.md
 // §8.2）Cygwin 在 WRITE_RESTRICTED 令牌下无法启动——它要在 \BaseNamedObjects 建目录
 // 对象、按用户 SID 建共享内存，而 restricting 列表里没有用户 SID。沙箱档固定
 // PowerShell（回退 cmd），语言与 bash 不同，界面上如实显示 shell 名。

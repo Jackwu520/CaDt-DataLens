@@ -10,6 +10,8 @@ import (
 	"strings"
 )
 
+// start 拉起一个独立实例并立即交还句柄（Process.Release），不等待其退出。
+// dir 是子进程工作目录：文件窗口按文件所在目录、目录窗口按目录本身。
 func start(exe string, args []string, dir string) error {
 	cmd := exec.Command(exe, args...)
 	cmd.Dir = dir

@@ -2,7 +2,7 @@
 // 从 ai-panel.js 拆出（docs/unfinished-plans/structure-cleanup.md 阶段 3），函数体逐字搬移。
 // config 为重赋值 let（经 getConfig() 读）；memoryFallbackNotified 经访问器写；
 // 对话框基建（openAIDialog/closeAIDialog/dialogNode/dialogButton）也归本模块（方案 M4 搬入）；浮动窗折叠状态经 ctx 访问器读写。
-import {aiClamp, aiCtxBannerShow, aiEstimateTokens, aiEstimateImageTokens, aiEstimateVideoTokens, aiImageStats, aiTextOf} from './ai-constants.js';
+import {aiClamp, aiCtxBannerShow, aiCtxBannerState, aiEstimateTokens, aiEstimateImageTokens, aiEstimateVideoTokens, aiImageStats, aiTextOf} from './ai-constants.js';
 import {createInput, createSelect, createSwitch, createTextarea} from '../core/form-controls.js';
 
 export function createAIManageDialogs(ctx) {
@@ -38,6 +38,8 @@ export function createAIManageDialogs(ctx) {
     const getConfig = ctx.getConfig;
     const setMemoryFallbackNotified = ctx.setMemoryFallbackNotified;
     const getAttachments = ctx.getAttachments;
+    // 发送门禁回写宿主（ai-panel 的 updateSendState / submitText 读同一份状态）
+    const setCtxGate = ctx.setCtxGate;
 
     // ---------- 对话框基建（方案 M4 从 ai-panel.js 搬入） ----------
     // 从设置窗打开记忆 / 技能管理时，把对话框临时挂到 body 顶层（盖在设置窗之上），
@@ -541,13 +543,26 @@ export function createAIManageDialogs(ctx) {
         const session = currentSession();
         const dismissedAt = session ? ctxBannerDismissed.get(session) : null;
         const show = aiCtxBannerShow(percent, threshold, dismissedAt);
+        // 状态与文案单一来源 aiCtxBannerState；blocked 与显隐无关（× 关闭后发送门禁仍在）
+        const view = aiCtxBannerState(percent, tokens, windowSize);
+        if (setCtxGate) setCtxGate({blocked: view.blocked, compactBlocked: view.compactBlocked, percent});
+        // ≥100%：压缩请求（摘要提示 + 整段会话）同样发不出去——按钮换成「分段压缩」占位
+        // （方案 docs/unfinished-plans/ai-segmented-compact.md，尚未实装，点击只提示出路）
+        if (el.ctxCompact) {
+            el.ctxCompact.textContent = view.compactBlocked ? '分段压缩' : '压缩上下文';
+            if (view.compactBlocked) {
+                el.ctxCompact.setAttribute('aria-disabled', 'true');
+                el.ctxCompact.dataset.tip = '分段压缩尚未实装：请先切换更大上下文的模型';
+            } else {
+                el.ctxCompact.removeAttribute('aria-disabled');
+                delete el.ctxCompact.dataset.tip;
+            }
+        }
         const wasHidden = el.ctxBanner.classList.contains('hidden');
         el.ctxBanner.classList.toggle('hidden', !show);
+        el.ctxBanner.classList.toggle('is-over', show && view.state === 'over');
         if (wasHidden !== !show) positionOverlays();
-        if (show && el.ctxBannerText) {
-            el.ctxBannerText.textContent = '上下文约 ' + Math.round(percent * 100) + '%（约 ' + tokens + ' / ' + windowSize +
-                ' tokens，估算），建议压缩';
-        }
+        if (show && el.ctxBannerText) el.ctxBannerText.textContent = view.text;
     }
 
     // 点 × 关闭提醒：记下当前百分比（会话内），上下文再涨 5% 才重新出现

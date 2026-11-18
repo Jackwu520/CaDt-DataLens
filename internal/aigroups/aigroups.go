@@ -1,4 +1,4 @@
-// Package aigroups：AI 群聊磁盘存储（方案 docs/unfinished-plans/ai-group-chat.md §6.5）。
+// Package aigroups：AI 群聊磁盘存储（方案 docs/finished-plans/ai-group-chat.md §6.5）。
 // 共享群聊对话复用 internal/sessionstore 引擎（Root 换成 ai-groups）：原子 append、
 // 跨进程写锁、meta 原子替换、回收站删除、残行修复全部继承；私有过程日志
 // private/<agentId>.jsonl 在本包实现（群目录锁 + 包级互斥 + 残行修复 + fsync）。

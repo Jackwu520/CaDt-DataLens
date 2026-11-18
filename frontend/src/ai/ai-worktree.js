@@ -1,6 +1,6 @@
 // ai-worktree.js：AI 隔离工作区（git worktree）域模块——worktree_manage 工具执行、
 // 会话态（session.worktree）、<worktree> 注入块文本、头部状态胶囊。
-// 设计见 docs/unfinished-plans/git-worktree.md：worktree 固定建在 <主根>/.cadt/worktree/<slug>，
+// 设计见 docs/finished-plans/git-worktree.md：worktree 固定建在 <主根>/.cadt/worktree/<slug>，
 // 一会话一个（独占）；回灌 = Go 导出 diff → PatchSave(主根) → patch 审批卡（全档必弹）→ 应用；
 // 丢弃 = worktree remove --force + 删隔离分支。路径一律显式长路径，不做前缀注入。
 import {aiTextOf} from './ai-constants.js';
@@ -43,6 +43,32 @@ export function agentWorktreeWriteVerdict(wt, relPath) {
         message: '【worktree:error】WORKTREE_SCOPE：子代理只能写自己的隔离前缀 ' + worktreeRelPath(wt.name)
             + '/…（当前：' + relPath + '）。不要写其他路径，把该限制与未完成项写进结论上报主代理。',
     };
+}
+
+// 预测 slug（纯函数，复刻 Go deriveSlug / alnumTail）：label 小写、[^a-z0-9] 折成 -、
+// 截 32、去首尾 -，空则 wt；拼会话 id 末 8 位字母数字。创建审批卡用它显示真实路径——
+// 仅当同名冲突时 Go 会顺延 -2/-3（以工具结果里的实际名为准）。
+export function predictWorktreeSlug(label, sessionKey) {
+    let base = '';
+    let lastDash = false;
+    for (const ch of String(label == null ? '' : label).trim().toLowerCase()) {
+        if ((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9')) {
+            base += ch;
+            lastDash = false;
+        } else if (base.length > 0 && !lastDash) {
+            base += '-';
+            lastDash = true;
+        }
+        if (base.length >= 32) break;
+    }
+    base = base.replace(/^-+|-+$/g, '');
+    if (!base) base = 'wt';
+    let id = '';
+    for (const ch of String(sessionKey || '').toLowerCase()) {
+        if ((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9')) id += ch;
+    }
+    if (id.length > 8) id = id.slice(-8);
+    return id ? base + '-' + id : base;
 }
 
 // 主会话隔离写闸（纯函数）：隔离区开启期间主根只读——只允许写自己的隔离前缀与 .cadt/tmp
@@ -112,6 +138,45 @@ export function worktreeBlockText(wt) {
 // worktree 列表格式化（list 工具的输出；orphan 由前端算——登记之外的 .cadt/worktree 条目）。
 // sessions 为全量会话列表（含 _stub 占位：meta 里有 worktree 字段即可参与判定）。
 // stats 为 relPath → git diff --stat 尾行（未提交改动量；对比多个隔离区用），缺失项不打统计。
+// 解析 git diff --stat 尾行汇总（「N files changed, X insertions(+), Y deletions(-)」），
+// 给丢弃卡/信息卡出「+45 −39 · 3 文件」的紧凑汇总。无改动 / 解析失败 → label 空串。
+export function worktreeStatTotals(statText) {
+    const lines = String(statText || '').split('\n').filter((l) => l.trim());
+    for (let i = lines.length - 1; i >= 0; i -= 1) {
+        const m = lines[i].match(/(\d+) files? changed(?:, (\d+) insertions?\(\+\))?(?:, (\d+) deletions?\(-\))?/);
+        if (m) {
+            const files = Number(m[1]) || 0;
+            const added = Number(m[2]) || 0;
+            const removed = Number(m[3]) || 0;
+            return {files, added, removed, label: '+' + added + ' −' + removed + ' · ' + files + ' 文件'};
+        }
+    }
+    return {files: 0, added: 0, removed: 0, label: ''};
+}
+
+// 把紧凑汇总 label（+45 −39 · 3 文件）渲染成带 +/- 颜色的节点（接管卡与弹窗共用）；
+// 不是汇总形状（如「无改动」）原样返回文本。
+export function worktreeStatNode(label) {
+    const wrap = document.createElement('span');
+    const text = String(label || '');
+    const m = text.match(/^\+(\d+) −(\d+) · (\d+) 文件$/);
+    if (!m) {
+        wrap.textContent = text;
+        return wrap;
+    }
+    const add = document.createElement('span');
+    add.className = 'ai-worktree-stat-add';
+    add.textContent = '+' + m[1];
+    const del = document.createElement('span');
+    del.className = 'ai-worktree-stat-del';
+    del.textContent = '−' + m[2];
+    const files = document.createElement('span');
+    files.className = 'ai-worktree-stat-files';
+    files.textContent = ' · ' + m[3] + ' 文件';
+    wrap.append(add, del, files);
+    return wrap;
+}
+
 export function formatWorktreeList(result, sessions, stats) {
     if (!result || !result.available) {
         return '【worktree】git 不可用或不在仓库内：' + ((result && result.reason) || '未知原因');
@@ -205,14 +270,56 @@ export function createAIWorktree(deps) {
                 });
                 observer.observe(deps.dialogEl, {attributes: true, attributeFilter: ['class']});
             }
-            Promise.resolve(messagePromise || message).then((text) => {
+            Promise.resolve(messagePromise || message).then((content) => {
                 if (settled) return;
-                openDialog(title, [dialogNode('div', 'ai-dialog-text', text)], [
+                // Node / Node[] 直接用（结构化弹窗体），字符串才包 ai-dialog-text
+                const nodes = content instanceof Node ? [content]
+                    : (Array.isArray(content) && content.every((n) => n instanceof Node) ? content
+                        : [dialogNode('div', 'ai-dialog-text', String(content))]);
+                openDialog(title, nodes, [
                     dialogButton(cancelLabel || '取消', 'dlg-btn', () => done(false)),
                     dialogButton(confirmLabel, 'dlg-btn ' + (danger ? 'danger' : 'primary'), () => done(true)),
                 ]);
             }).catch(() => done(false));
         });
+    }
+
+    // 结构化弹窗体（与接管审批卡同一套明细行 + 提示条样式）：胶囊信息卡 / 丢弃确认共用
+    function worktreeDialogBody(wt, totals, noteText) {
+        const detail = document.createElement('div');
+        detail.className = 'ai-worktree-detail';
+        const rows = [
+            ['路径', worktreeRelPath(wt.name) + '/'],
+            ['分支', wt.branch || '隔离分支'],
+        ];
+        if (totals.label) rows.push(['改动', worktreeStatNode(totals.label)]);
+        for (const [key, value] of rows) {
+            const row = document.createElement('div');
+            row.className = 'ai-worktree-row';
+            const keyEl = document.createElement('span');
+            keyEl.className = 'ai-worktree-key';
+            keyEl.textContent = key;
+            const valEl = document.createElement('span');
+            valEl.className = 'ai-worktree-val';
+            if (value instanceof Node) valEl.appendChild(value);
+            else valEl.textContent = value;
+            row.append(keyEl, valEl);
+            detail.appendChild(row);
+        }
+        const note = document.createElement('div');
+        note.className = 'ai-worktree-note';
+        const noteIcon = document.createElement('span');
+        noteIcon.className = 'ai-worktree-note-icon';
+        noteIcon.innerHTML = iconSvg('info', 12);
+        const noteTextEl = document.createElement('span');
+        noteTextEl.textContent = noteText;
+        note.append(noteIcon, noteTextEl);
+        const wrap = document.createElement('div');
+        wrap.style.display = 'flex';
+        wrap.style.flexDirection = 'column';
+        wrap.style.gap = '8px';
+        wrap.append(detail, note);
+        return wrap;
     }
 
     // ---------- 会话态与胶囊 / 开关 ----------
@@ -313,9 +420,8 @@ export function createAIWorktree(deps) {
             : Promise.resolve('');
         const confirmed = await confirmDialog({
             title: '丢弃隔离工作区',
-            messagePromise: statPromise.then((stat) => '本会话的改动落在 ' + worktreeRelPath(wt.name) + '/（分支 ' + (wt.branch || '隔离分支') + '）。\n'
-                + (stat ? '改动统计：\n' + stat + '\n\n' : '')
-                + '让 AI 执行 worktree_manage(action=export) 生成补丁审阅回灌；丢弃将删除 worktree 与分支，未导出的改动会丢失。'),
+            messagePromise: statPromise.then((stat) => worktreeDialogBody(wt, worktreeStatTotals(stat),
+                '丢弃将删除 worktree 与分支，未导出的改动会丢失；主根不受影响。回灌先让 AI 执行 worktree_manage(action=export)。')),
             confirmLabel: '丢弃隔离区',
             danger: true,
         });
@@ -341,10 +447,8 @@ export function createAIWorktree(deps) {
         const confirmed = await confirmDialog({
             title: '隔离工作区 ' + wt.name,
             cancelLabel: '关闭',
-            messagePromise: statPromise.then((stat) => '路径：' + worktreeRelPath(wt.name) + '/（分支 ' + (wt.branch || '隔离分支') + '）\n'
-                + (stat ? '改动统计：\n' + stat + '\n\n' : '（暂无改动）\n\n')
-                + '回灌：让 AI 执行 worktree_manage(action=export)，在审批卡里逐文件审阅后应用。\n'
-                + '丢弃将删除 worktree 与分支，未导出的改动会丢失。'),
+            messagePromise: statPromise.then((stat) => worktreeDialogBody(wt, worktreeStatTotals(stat),
+                '回灌：让 AI 执行 worktree_manage(action=export)，在审批卡里逐文件审阅后应用。丢弃将删除 worktree 与分支，未导出的改动会丢失。')),
             confirmLabel: '丢弃隔离区',
             danger: true,
         });
@@ -467,7 +571,13 @@ export function createAIWorktree(deps) {
         // 审批卡（接管 composer）：AI 主动创建 = 写盘 + 建分支 + 改变会话工作方式。
         // 全档必弹（含完全权限）——这是会话级状态变更，不是逐写风险判定；用户手点的「隔离」
         // 开关仍走居中确认弹窗（用户自己发起的动作）。
-        const decision = await requestWorktreeApproval(session, toolMessage, {action: 'create', label, carry});
+        const decision = await requestWorktreeApproval(session, toolMessage, {
+            action: 'create',
+            label,
+            carry,
+            // 卡上给人看真实路径：按同一派生规则预测（同名冲突时 Go 顺延 -2/-3，结果里是实际名）
+            slug: predictWorktreeSlug(label, session.id || ''),
+        });
         if (!decision.approved) {
             return decision.cancelled
                 ? '用户已停止生成，隔离工作区未创建。'
@@ -619,8 +729,7 @@ export function createAIWorktree(deps) {
         const slug = String(relPath || '').split('/').pop();
         try {
             const stat = await backend.GitWorktreeStat(getScopeRoot(), slug, '');
-            const tail = String(stat || '').trim().split('\n').filter(Boolean).pop();
-            return tail || '';
+            return worktreeStatTotals(stat).label;
         } catch (e) {
             return '';
         }
@@ -757,7 +866,8 @@ export function createAIWorktree(deps) {
                 notifyFileChanged(joinPath(root, f.relPath));
             }
         }
-        const lines = [patchResultText(result)];
+        // okTotal = 预检可应用数：未勾选（冲突）的文件不在 PatchApply 结果里，让 unselected 写进汇总
+        const lines = [patchResultText(result, {okTotal: okFiles.length, inWorktree: true})];
         if (applied > 0) {
             lines.push('回灌来自隔离区 ' + worktreeRelPath(wt.name) + '（' + applied + ' 个文件）。改动已回主根，worktree 保留；'
                 + '建议 worktree_manage(action=discard) 收尾——再次 export 是全量语义，已回灌的 hunk 会预检报「不可应用」。');
@@ -784,16 +894,17 @@ export function createAIWorktree(deps) {
             return deny('WORKTREE_TERMINAL', '有 ' + occupying.length + ' 个终端在这个隔离区中运行',
                 '请让用户先关闭这些终端（或等它们退出）后再 discard');
         }
-        // 销毁性动作：接管 composer 的审批卡（全档必弹，含完全权限），卡片里附改动统计
-        const stat = backend.GitWorktreeStat
+        // 销毁性动作：接管 composer 的审批卡（全档必弹，含完全权限），卡片里附改动汇总
+        const statText = backend.GitWorktreeStat
             ? await backend.GitWorktreeStat(getScopeRoot(), wt.name, wt.baseSha).catch(() => '')
             : '';
+        const stat = worktreeStatTotals(statText).label || '无改动';
         const decision = await requestWorktreeApproval(session, toolMessage, {
             action: 'discard',
             name: wt.name,
             relPath: worktreeRelPath(wt.name),
             branch: wt.branch || '',
-            stat: String(stat || ''),
+            stat,
         });
         if (!decision.approved) {
             return decision.cancelled

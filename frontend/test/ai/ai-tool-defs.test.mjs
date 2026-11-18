@@ -9,19 +9,19 @@ import {externalCapabilityUsable} from '../../src/ai/ai-external-tools.js';
 const {toolsForScope} = createAIToolDefs({appControlOn: () => false});
 const names = (scope, planMode) => toolsForScope(scope, planMode).map((t) => t.name);
 
-test('buildSpawnAgentDef：默认轮次取自设置，模型看到的是真实值而不是写死的 50', () => {
+test('buildSpawnAgentDef：默认轮次取自设置，模型看到的是真实值而不是写死的 200', () => {
     const with120 = buildSpawnAgentDef([], 120);
     assert.ok(with120.parameters.properties.maxRounds.description.includes('默认 120'),
         '设置改了默认轮次，工具描述必须跟着变');
-    assert.ok(!with120.parameters.properties.maxRounds.description.includes('默认 50'),
+    assert.ok(!with120.parameters.properties.maxRounds.description.includes('默认 200'),
         '不能同时留着旧默认值');
     // 无设置值（0 / 未传）时保留静态基线
     for (const value of [undefined, 0, null]) {
         const base = buildSpawnAgentDef([], value);
-        assert.ok(base.parameters.properties.maxRounds.description.includes('默认 50'), '缺省仍是 50');
+        assert.ok(base.parameters.properties.maxRounds.description.includes('默认 200'), '缺省仍是 200');
     }
     // 不污染常量对象：def 是新建的，AI_TOOL_DEFS.spawn_agent 保持原样
-    assert.ok(AI_TOOL_DEFS.spawn_agent.parameters.properties.maxRounds.description.includes('默认 50'));
+    assert.ok(AI_TOOL_DEFS.spawn_agent.parameters.properties.maxRounds.description.includes('默认 200'));
     // 没候选时不出现 model 参数；有候选才拼进去
     assert.equal(with120.parameters.properties.model, undefined);
     const withModel = buildSpawnAgentDef([{ref: 'a|b', label: '便宜模型', model: 'm1'}], 60);

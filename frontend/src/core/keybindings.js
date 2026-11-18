@@ -55,13 +55,14 @@ export const KEY_BINDINGS = [
     // —— 编辑 ——
     {id: 'edit.undo', group: '编辑', label: '撤销', kind: 'key', keys: {candysweet: ['Ctrl+Z'], jetbrains: ['Ctrl+Z'], vscode: ['Ctrl+Z']}},
     {id: 'edit.redo', group: '编辑', label: '重做', kind: 'key', keys: {candysweet: ['Ctrl+Y', 'Ctrl+Shift+Z'], jetbrains: ['Ctrl+Y', 'Ctrl+Shift+Z'], vscode: ['Ctrl+Y', 'Ctrl+Shift+Z']}},
-    {id: 'edit.format', group: '编辑', label: '格式化', kind: 'key', keys: {candysweet: ['Ctrl+Alt+L'], jetbrains: ['Ctrl+Alt+L'], vscode: ['Shift+Alt+F']}},
+    {id: 'edit.format', group: '编辑', label: '格式化', kind: 'key', keys: {candysweet: ['Ctrl+Alt+L'], jetbrains: ['Ctrl+Alt+L'], vscode: ['Alt+Shift+F']}},
     {id: 'edit.find', group: '编辑', label: '查找', kind: 'key', keys: {candysweet: ['Ctrl+F'], jetbrains: ['Ctrl+F'], vscode: ['Ctrl+F']}},
     {id: 'edit.globalSearch', group: '编辑', label: '全局搜索', kind: 'key', keys: {candysweet: [DOUBLE_SHIFT], jetbrains: [DOUBLE_SHIFT], vscode: ['Ctrl+P', 'Ctrl+Shift+F']}},
     {id: 'edit.gotoLine', group: '编辑', label: '代码/文本视图转到行:列', kind: 'key', keys: {candysweet: ['Ctrl+G'], jetbrains: ['Ctrl+G'], vscode: ['Ctrl+G']}},
     {id: 'edit.toggleBookmark', group: '编辑', label: '切换当前行书签', kind: 'key', keys: {candysweet: ['F11'], jetbrains: ['F11'], vscode: ['F11']}},
     {id: 'edit.nextBookmark', group: '编辑', label: '跳到下一个书签', kind: 'key', keys: {candysweet: ['F2'], jetbrains: ['F2'], vscode: ['F2']}},
     {id: 'edit.prevBookmark', group: '编辑', label: '跳到上一个书签', kind: 'key', keys: {candysweet: ['Shift+F2'], jetbrains: ['Shift+F2'], vscode: ['Shift+F2']}},
+    {id: 'edit.bookmarkList', group: '编辑', label: '书签总览（跨文件，Delete 删除选中项）', kind: 'key', keys: {candysweet: ['Shift+F11'], jetbrains: ['Shift+F11'], vscode: ['Shift+F11']}},
 
     // —— 运行 ——
     {id: 'run.current', group: '运行', label: '运行当前文件', kind: 'key', keys: {candysweet: ['F5'], jetbrains: ['Shift+F10'], vscode: ['F5']}},

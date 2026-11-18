@@ -198,6 +198,9 @@ type GitOperationResult struct {
 	Output  string `json:"output"`
 	Branch  string `json:"branch,omitempty"`
 	Path    string `json:"path,omitempty"`
+	// ConflictFiles 非空表示签出被未提交改动挡住：这些文件的本地改动会被覆盖
+	// （前端据此弹「强制签出 / 智能签出 / 不签出」对话框）。
+	ConflictFiles []string `json:"conflictFiles,omitempty"`
 }
 
 // parseUpstreamTrack 解析 for-each-ref 的 %(upstream:track)：[ahead 1, behind 2] / [gone]
@@ -429,6 +432,8 @@ func CreateBranch(dir string, name string) (*GitOperationResult, error) {
 }
 
 // CheckoutRef 签出分支、标签或提交 SHA（标签/提交会进入 detached HEAD）。
+// 被未提交改动挡住时（would be overwritten by checkout），解析出受影响文件列表
+// 供前端弹「强制签出 / 智能签出 / 不签出」。
 func CheckoutRef(dir string, ref string) (*GitOperationResult, error) {
 	dir = strings.TrimSpace(dir)
 	ref = strings.TrimSpace(ref)
@@ -445,11 +450,47 @@ func CheckoutRef(dir string, ref string) (*GitOperationResult, error) {
 	if err != nil {
 		return nil, err
 	}
+	res := &GitOperationResult{Success: code == 0, Output: strings.TrimSpace(out)}
+	if code != 0 {
+		res.ConflictFiles = parseCheckoutConflictFiles(out)
+	}
 	branch := ""
 	if b, c, _ := gitRun(dir, []string{"rev-parse", "--abbrev-ref", "HEAD"}, 5000); c == 0 {
 		branch = strings.TrimSpace(b)
 	}
-	return &GitOperationResult{Success: code == 0, Output: strings.TrimSpace(out), Branch: branch}, nil
+	res.Branch = branch
+	return res, nil
+}
+
+// parseCheckoutConflictFiles 从 checkout 的失败输出里解析会被覆盖的文件列表。
+// 典型输出：
+//
+//	error: Your local changes to the following files would be overwritten by checkout:
+//		src/foo.js
+//		src/bar.js
+//	Please commit your changes or stash them before you switch branches.
+//	Aborting
+func parseCheckoutConflictFiles(out string) []string {
+	files := []string{}
+	inList := false
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimRight(line, "\r")
+		if strings.Contains(line, "would be overwritten by") {
+			inList = true
+			continue
+		}
+		if inList {
+			t := strings.TrimSpace(line)
+			if t == "" || !strings.HasPrefix(line, "\t") {
+				if t != "" {
+					break // 非缩进行 = 列表结束（Please... / Aborting）
+				}
+				continue
+			}
+			files = append(files, t)
+		}
+	}
+	return files
 }
 
 // Pull 更新项目：拉取并合并当前分支的上游（git pull）。

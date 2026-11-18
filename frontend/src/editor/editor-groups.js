@@ -133,6 +133,9 @@ const humanizeCounts = (...a) => docExtras.humanizeCounts(...a);
 const renderBookmarks = (...a) => docExtras.renderBookmarks(...a);
 const toggleBookmark = (...a) => docExtras.toggleBookmark(...a);
 const jumpBookmark = (...a) => docExtras.jumpBookmark(...a);
+const addBookmarkAt = (...a) => docExtras.addBookmarkAt(...a);
+const removeBookmarkAt = (...a) => docExtras.removeBookmarkAt(...a);
+const clearDocBookmarks = (...a) => docExtras.clearDocBookmarks(...a);
 const applyPendingDocView = (...a) => docExtras.applyPendingDocView(...a);
 const rememberDocView = (...a) => docExtras.rememberDocView(...a);
 const scheduleGitGutter = (...a) => docExtras.scheduleGitGutter(...a);
@@ -220,6 +223,109 @@ function moveTabInGroup(gid, srcId, targetId, before) {
     const idx = g.docIds.indexOf(targetId);
     g.docIds.splice(before ? idx : idx + 1, 0, srcId);
     renderTabs();
+}
+
+// ---- app_control 分组动作（完整分组操作）：返回 {ok, ...} 或 {ok:false, error} ----
+
+function docInfoOf(docId) {
+    const d = deps.docs.find((item) => item && item.id === docId);
+    return d ? {id: d.id, name: d.name || '', path: d.path || ''} : null;
+}
+
+function groupSnapshot() {
+    const focused = focusedGroup();
+    const focusedId = focused ? focused.id : '';
+    return editorGroups.map((g, index) => ({
+        index,
+        id: g.id,
+        focused: g.id === focusedId,
+        active: (docInfoOf(g.activeId) || {}).name || '',
+        docs: g.docIds.map(docInfoOf).filter(Boolean),
+    }));
+}
+
+function resolveGroupRef(ref) {
+    if (typeof ref === 'number' || (typeof ref === 'string' && /^\d+$/.test(ref.trim()))) {
+        const index = Number(ref);
+        const group = editorGroups[index];
+        return group ? {group, index} : null;
+    }
+    const id = String(ref == null ? '' : ref).trim();
+    const index = editorGroups.findIndex((g) => g.id === id);
+    return index >= 0 ? {group: editorGroups[index], index} : null;
+}
+
+function focusEditorGroup(ref) {
+    const hit = resolveGroupRef(ref);
+    if (!hit) return {ok: false, error: '找不到编辑器分组：' + String(ref)};
+    focusGroupById(hit.group.id);
+    return {ok: true, index: hit.index, id: hit.group.id};
+}
+
+function moveDocToGroup(docId, ref) {
+    const doc = deps.docs.find((item) => item && item.id === docId);
+    if (!doc) return {ok: false, error: '找不到标签：' + String(docId)};
+    const hit = resolveGroupRef(ref);
+    if (!hit) return {ok: false, error: '找不到编辑器分组：' + String(ref)};
+    const src = groupOfDoc(doc.id);
+    if (!src) return {ok: false, error: '标签不在任何编辑器分组'};
+    if (src.id === hit.group.id) return {ok: false, error: '标签已在该分组'};
+    src.docIds = src.docIds.filter((id) => id !== doc.id);
+    if (src.activeId === doc.id) src.activeId = src.docIds[0] || null;
+    removeGroupIfEmpty(src.id);
+    hit.group.docIds.push(doc.id);
+    hit.group.activeId = doc.id;
+    focusedGroupId = hit.group.id;
+    renderTabs();
+    activateDoc(doc);
+    return {ok: true, group: {index: hit.index, id: hit.group.id}};
+}
+
+// 把标签拆到同组旁边的新分组（与拖拽到边缘同一条 performDrop 通路）。
+function splitDocToGroup(docId, zone) {
+    const side = ['left', 'right', 'top', 'bottom'].includes(zone) ? zone : 'right';
+    const src = groupOfDoc(docId);
+    if (!src) return {ok: false, error: '找不到标签所在的编辑器分组'};
+    if (src.docIds.length <= 1) {
+        return {ok: false, error: '该分组只有这一个标签：拆分会留下空分组；请先在同一分组保留另一个标签，或用 split_open 并排打开两个文件'};
+    }
+    performDrop({gid: src.id, zone: side}, docId);
+    const group = groupOfDoc(docId);
+    return {
+        ok: !!(group && editorGroups.length > 1),
+        group: group ? {id: group.id, index: editorGroups.findIndex((item) => item.id === group.id)} : null,
+        side,
+    };
+}
+
+function mergeEditorGroup(ref, intoRef) {
+    const hit = resolveGroupRef(ref == null ? focusedGroupId : ref);
+    if (!hit) return {ok: false, error: '找不到要解散的分组：' + String(ref)};
+    const src = hit.group;
+    let target = null;
+    if (intoRef != null && intoRef !== '') {
+        const into = resolveGroupRef(intoRef);
+        if (!into) return {ok: false, error: '找不到目标分组：' + String(intoRef)};
+        target = into.group;
+    } else {
+        target = editorGroups.find((g) => g.id !== src.id) || null;
+    }
+    if (!target) return {ok: false, error: '至少要保留一个编辑器分组'};
+    if (target.id === src.id) return {ok: false, error: '源分组与目标分组相同'};
+    for (const id of src.docIds) {
+        if (!target.docIds.includes(id)) target.docIds.push(id);
+    }
+    if (!target.activeId || !target.docIds.includes(target.activeId)) {
+        target.activeId = (src.activeId && target.docIds.includes(src.activeId)) ? src.activeId : (target.docIds[0] || null);
+    }
+    src.docIds = [];
+    src.activeId = null;
+    focusedGroupId = target.id;
+    removeGroupIfEmpty(src.id);
+    renderTabs();
+    const activeDoc = deps.docs.find((d) => d.id === target.activeId);
+    if (activeDoc) activateDoc(activeDoc);
+    return {ok: true, group: {id: target.id, index: editorGroups.findIndex((g) => g.id === target.id)}};
 }
 
 function renderTabs() { renderEditorLayout(); }
@@ -1712,5 +1818,5 @@ function reopenClosedTab() {
     function setFocusedGroupId(v) { focusedGroupId = v; }
     function setSplitRoot(v) { splitRoot = v; }
 
-    return {activateDoc, setFocusedGroupId, setSplitRoot, addDocToFocusedGroup, get editorGroups() { return editorGroups; }, applyAceMode, applyCsvTableZoom, applyImageZoom, browserViewportLabel, closeDocNow, closeDocsWithConfirm, closeSqlView, createDoc, createDocEditor, createGroup, dismissBanner, doRedo, doUndo, enterAudioView, enterBinaryView, enterCsvTable, enterImageView, enterMarkdownPreview, enterSplitView, enterSqlView, enterSvgRender, enterTextView, enterVideoView, exitSplitView, expandAllWithGuard, flushCsvCellEditor, get focusedGroupId() { return focusedGroupId; }, groupDocs, groupOfDoc, handleAIWorkspaceFileChanged, handleExternalDocChanges, hideAudioView, hideBanner, hideSvgRender, hideVideoView, hookCodeFoldRanges, hookMultiCursor, humanizeCounts, initCodeFoldHover, jumpBookmark, leaveCsvTable, leaveMarkdownPreview, markDocDirty, mdSyncScrollFromAce, moveTabInGroup, openWithDefaultApp, patchViewContext, refreshPatchMarkers, rememberDocView, renderBookmarks, renderBreadcrumb, renderCsvTableView, renderEditorLayout, renderMarkdownPreview, renderTabs, reopenClosedTab, releaseAudio, releaseVideo, requestCloseDoc, revertDocToSaved, scheduleGitGutter, setBrowserViewport, setFilename, showBanner, showImageMenu, showMdPreviewMenu, showPathInFolder, showSvgMenu, get splitRoot() { return splitRoot; }, syncAllBrowserTabs, syncBrowserTab, syncTabReadOnly, textArea, toggleBookmark, toggleFocusedNode, updateBrowserTitle, updateDocChrome, updateStatus, zoomCsvTable, zoomImageBy, zoomSvgRenderBy};
+    return {activateDoc, setFocusedGroupId, setSplitRoot, addDocToFocusedGroup, get editorGroups() { return editorGroups; }, applyAceMode, applyCsvTableZoom, applyImageZoom, browserViewportLabel, closeDocNow, closeDocsWithConfirm, closeSqlView, createDoc, createDocEditor, createGroup, dismissBanner, doRedo, doUndo, enterAudioView, enterBinaryView, enterCsvTable, enterImageView, enterMarkdownPreview, enterSplitView, enterSqlView, enterSvgRender, enterTextView, enterVideoView, exitSplitView, expandAllWithGuard, flushCsvCellEditor, get focusedGroupId() { return focusedGroupId; }, groupDocs, groupOfDoc, groupSnapshot, focusEditorGroup, moveDocToGroup, splitDocToGroup, mergeEditorGroup, handleAIWorkspaceFileChanged, handleExternalDocChanges, hideAudioView, hideBanner, hideSvgRender, hideVideoView, hookCodeFoldRanges, hookMultiCursor, humanizeCounts, initCodeFoldHover, jumpBookmark, addBookmarkAt, removeBookmarkAt, clearDocBookmarks, leaveCsvTable, leaveMarkdownPreview, markDocDirty, mdSyncScrollFromAce, moveTabInGroup, openWithDefaultApp, patchViewContext, refreshPatchMarkers, rememberDocView, renderBookmarks, renderBreadcrumb, renderCsvTableView, renderEditorLayout, renderMarkdownPreview, renderTabs, reopenClosedTab, releaseAudio, releaseVideo, requestCloseDoc, revertDocToSaved, scheduleGitGutter, setBrowserViewport, setFilename, showBanner, showImageMenu, showMdPreviewMenu, showPathInFolder, showSvgMenu, get splitRoot() { return splitRoot; }, syncAllBrowserTabs, syncBrowserTab, syncTabReadOnly, textArea, toggleBookmark, toggleFocusedNode, updateBrowserTitle, updateDocChrome, updateStatus, zoomCsvTable, zoomImageBy, zoomSvgRenderBy};
 }

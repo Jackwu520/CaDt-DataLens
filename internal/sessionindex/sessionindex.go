@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	_ "modernc.org/sqlite"
@@ -407,11 +408,48 @@ func syncSessionIndex(db *sql.DB, store Store) error {
 	return nil
 }
 
+// foldIndex 在 text 原文上做大小写不敏感定位，返回命中区间的字节偏移 [start, end)，未命中 ok=false。
+//
+// 不能拿 strings.ToLower(text) 的偏移去切 text：个别 rune 小写后会变长（U+023A Ⱥ 2 字节 → U+2C65 ⱥ
+// 3 字节），两者的字节偏移空间不一致——偏移可能大于 len(text) 直接 panic，即使不越界也会切出非法
+// UTF-8 或错位高亮。所以按 rune 逐位比较归约值（等价于原来的 ToLower 比较），偏移由原文的 rune
+// 起始字节位置算出，永远落在 rune 边界上。
+func foldIndex(text, query string) (int, int, bool) {
+	qRunes := []rune(query)
+	if len(qRunes) == 0 {
+		return 0, 0, false
+	}
+	tRunes := []rune(text)
+	if len(tRunes) < len(qRunes) {
+		return 0, 0, false
+	}
+	// offsets[i] = 第 i 个 rune 在 text 中的起始字节位置（取自原串的 range，非法字节也逐字节成 rune）
+	offsets := make([]int, 0, len(tRunes)+1)
+	for i := range text {
+		offsets = append(offsets, i)
+	}
+	offsets = append(offsets, len(text))
+	if len(offsets) != len(tRunes)+1 {
+		return 0, 0, false // 理论不可达：[]rune 与 range 的 rune 切分一致
+	}
+	for i := 0; i+len(qRunes) <= len(tRunes); i++ {
+		matched := true
+		for j, qr := range qRunes {
+			if unicode.ToLower(tRunes[i+j]) != unicode.ToLower(qr) {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return offsets[i], offsets[i+len(qRunes)], true
+		}
+	}
+	return 0, 0, false
+}
+
 func makeSearchSnippet(text, query string, radius int) string {
-	lowerText := strings.ToLower(text)
-	lowerQuery := strings.ToLower(query)
-	pos := strings.Index(lowerText, lowerQuery)
-	if pos < 0 {
+	pos, matchEnd, ok := foldIndex(text, query)
+	if !ok {
 		runes := []rune(text)
 		if len(runes) > radius*2 {
 			runes = runes[:radius*2]
@@ -425,16 +463,12 @@ func makeSearchSnippet(text, query string, radius int) string {
 	for start > 0 && !utf8.RuneStart(text[start]) {
 		start--
 	}
-	end := pos + len(query) + radius
+	end := matchEnd + radius
 	if end > len(text) {
 		end = len(text)
 	}
 	for end < len(text) && !utf8.RuneStart(text[end]) {
 		end++
-	}
-	matchEnd := pos + len(query)
-	if matchEnd > len(text) {
-		matchEnd = len(text)
 	}
 	prefix := "…"
 	if start == 0 {

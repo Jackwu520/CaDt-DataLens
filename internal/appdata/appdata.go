@@ -1,4 +1,8 @@
 // Package appdata 统一应用数据目录（%APPDATA%\CandySweet\CaDt-DataLens）。
+//
+// 只负责拼路径，不创建目录、不读配置；需要目录时由调用方 MkdirAll。
+// 应用数据目录对 AI 助手是硬禁区，读取方一律经这里拿根，
+// 不要在别处硬编码厂商名与产品名。
 package appdata
 
 import (

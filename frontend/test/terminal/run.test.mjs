@@ -7,6 +7,7 @@ import {
     RECIPES, extOf, stemOf, joinPath, cmdText, versionOf, versionAtLeast,
     ansiSegments, splitRefs, splitRunArgs, applyRunTemplate, SELF_TEST, SELF_TEST_MARK,
     buildRunAnalysisPrompt, runTimeoutRemaining, timeoutLabel,
+    activeRunConfig, configRowSubtitle, recentConfigs, resolveRunTarget, resolveRunWidgetLabel,
 } from '../../src/terminal/run.js';
 
 test('配方表：每项都有 run，编译型必须有 build 与 outExt', () => {
@@ -219,4 +220,57 @@ test('timeoutLabel：秒与分钟的人类可读格式', () => {
     assert.equal(timeoutLabel(60000), '1 分钟');
     assert.equal(timeoutLabel(300000), '5 分钟');
     assert.equal(timeoutLabel(90000), '1.5 分钟');
+});
+
+// ---- 运行配置模型（绑定文件的配置 + 旧版参数预设）----
+
+test('activeRunConfig：按 runActiveProfile 匹配，找不到或没选返回 null', () => {
+    const profiles = [
+        {id: 'a', name: 'run', file: 'D:/w/main.py', lang: 'python'},
+        {id: 'b', name: '预设', lang: 'python'},
+    ];
+    assert.equal(activeRunConfig({runActiveProfile: 'a', runProfiles: profiles}), profiles[0]);
+    assert.equal(activeRunConfig({runActiveProfile: 'b', runProfiles: profiles}), profiles[1]);
+    assert.equal(activeRunConfig({runActiveProfile: 'x', runProfiles: profiles}), null);
+    assert.equal(activeRunConfig({runActiveProfile: '', runProfiles: profiles}), null);
+    assert.equal(activeRunConfig(undefined), null);
+    assert.equal(activeRunConfig({runActiveProfile: 'a'}), null, 'runProfiles 缺省时返回 null');
+});
+
+test('resolveRunTarget：绑定文件决定 doc / disk，未绑定返回 null', () => {
+    const same = (a, b) => String(a).replace(/\\/g, '/').toLowerCase() === String(b).replace(/\\/g, '/').toLowerCase();
+    const cfg = {file: 'D:/w/main.py'};
+    assert.equal(resolveRunTarget(cfg, 'D:/W/MAIN.PY', same), 'doc', '同一路径（大小写/分隔符无关）走内存流');
+    assert.equal(resolveRunTarget(cfg, 'D:/w/other.py', same), 'disk');
+    assert.equal(resolveRunTarget(cfg, '', same), 'disk');
+    assert.equal(resolveRunTarget({name: '预设'}, 'D:/w/main.py', same), null, '旧预设不改变目标');
+    assert.equal(resolveRunTarget(null, 'D:/w/main.py', same), null);
+    assert.equal(resolveRunTarget({file: ''}, 'D:/w/main.py', same), null, '空 file 视为未绑定');
+});
+
+test('resolveRunWidgetLabel：配置名优先，否则文件名，再否则「当前文件」', () => {
+    assert.equal(resolveRunWidgetLabel({name: 'run'}, 'main.py'), 'run');
+    assert.equal(resolveRunWidgetLabel(null, 'main.py'), 'main.py');
+    assert.equal(resolveRunWidgetLabel(null, ''), '当前文件');
+    assert.equal(resolveRunWidgetLabel(null, null), '当前文件');
+});
+
+test('recentConfigs：lastUsedAt 降序、过滤未用过的、cap 截断', () => {
+    const list = [
+        {id: 'a', lastUsedAt: 100},
+        {id: 'b', lastUsedAt: 300},
+        {id: 'c'},
+        {id: 'd', lastUsedAt: 200},
+        {id: 'e', lastUsedAt: 400},
+    ];
+    assert.deepEqual(recentConfigs(list, 5).map((p) => p.id), ['e', 'b', 'd', 'a']);
+    assert.deepEqual(recentConfigs(list, 2).map((p) => p.id), ['e', 'b']);
+    assert.deepEqual(recentConfigs([], 5), []);
+    assert.deepEqual(recentConfigs(null, 5), []);
+});
+
+test('configRowSubtitle：绑定文件显示路径，旧预设显示语言桶说明', () => {
+    assert.equal(configRowSubtitle({file: 'D:/w/main.py'}), 'D:/w/main.py');
+    assert.equal(configRowSubtitle({lang: 'python'}), '[python] 参数预设');
+    assert.equal(configRowSubtitle({}), '参数预设（作用于当前文件）');
 });

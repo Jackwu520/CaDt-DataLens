@@ -3,7 +3,7 @@
 // mutate(fn) 改内存 doc → 1s 防抖 MemoSave（带 mtime CAS）。多窗口是多进程，
 // 冲突由 Go 侧 CAS 判定，这里收到冲突就重载磁盘版本并广播，不做合并。
 
-import {parseMemoDoc, defaultMemoData} from './memo-model.js';
+import {parseMemoDoc, defaultMemoData, collectImageRefs} from './memo-model.js';
 
 const SAVE_DEBOUNCE_MS = 1000;
 
@@ -13,10 +13,17 @@ const SAVE_DEBOUNCE_MS = 1000;
 // - workspaceRoot()：当前工作区根（无则空串）
 // - onPendingChange()：pending（有未落盘修改）状态翻转时回调——组合根把它接进
 //   关窗脏标记（anyDirty），保证防抖窗口内关窗会走确认流程而不静默丢数据。
+// - resolveRoot(scope, workspace)：作用域根目录绝对路径（贴图 GC 定位 img/ 用），
+//   必须用缓存捕获的 workspace 而非当前值——换过工作区也要删对文件。
 export function createMemoStore(deps) {
   // caches: key → {doc, mtimeMs, dirty, timer, scope, workspace}
   const caches = new Map();
   const changeListeners = new Set();
+  // 贴图 GC 基准：scopeKey → Set<rel>（上次成功保存/载入时的全量引用集）。
+  // 保存成功后 diff 本次引用集——消失的贴图走 DeleteEntry（回收站）。基于差集而非
+  // 显式删除清单：×按钮/正文删占位符/删条目/删块/冲突重载后再删，所有路径统一覆盖；
+  // 且不能在移除时就删文件——CAS 冲突重载会把引用带回来。
+  const lastSavedImageRefs = new Map();
 
   const normKey = (p) => String(p || '').replace(/[\\/]+$/, '');
   const scopeKey = (scope, workspace) => scope + '|' + normKey(workspace).toLowerCase();
@@ -56,6 +63,9 @@ export function createMemoStore(deps) {
     const json = JSON.stringify(doc);
     const changed = !!cached && JSON.stringify(cached.doc) !== json;
     caches.set(key, {doc, mtimeMs: Number(envelope.mtimeMs) || 0, dirty: false, timer: cached ? cached.timer : 0, scope, workspace});
+    // 磁盘现状就是贴图 GC 的基准：重载（冲突恢复 / 外部变更）后引用集跟着重置，
+    // 别的窗口保住的图不会被我方后续保存误删
+    lastSavedImageRefs.set(key, collectImageRefs(doc));
     if (changed) notify(scope);
     return {doc, scope, workspace, changed};
   }
@@ -102,9 +112,41 @@ export function createMemoStore(deps) {
         return {ok: false, error: (res && res.error) || '保存失败'};
       }
       cache.mtimeMs = Number(res.mtimeMs) || cache.mtimeMs;
+      await gcImages(cache);
       return {ok: true};
     } finally {
       emitPending();
+    }
+  }
+
+  // gcImages 保存成功后的贴图回收：对比「上次成功保存/载入的引用集」与本次——
+  // 消失的引用即被删除的贴图，按缓存捕获的工作区根定位后走 DeleteEntry（回收站，
+  // 资源管理器同款校验）。引用口径含正文占位符（collectImageRefs）：正文里删掉
+  // 占位符同样回收文件。删文件是尽力而为：失败静默留给「存储与清理」兜底，
+  // 不打断保存流程；基准无论成败都刷新为本次引用，避免重复尝试。
+  async function gcImages(cache) {
+    const key = scopeKey(cache.scope, cache.workspace);
+    const prev = lastSavedImageRefs.get(key);
+    const curr = collectImageRefs(cache.doc);
+    lastSavedImageRefs.set(key, curr);
+    if (!prev || !prev.size) return;
+    const gone = [];
+    for (const rel of prev) {
+      if (!curr.has(rel)) gone.push(rel);
+    }
+    if (!gone.length) return;
+    let root = '';
+    if (deps.resolveRoot) {
+      try { root = await deps.resolveRoot(cache.scope, cache.workspace); } catch (e) { root = ''; }
+    }
+    if (!root || !deps.backend || !deps.backend.DeleteEntry) return;
+    for (const rel of gone) {
+      const abs = root.replace(/[\\/]+$/, '') + '/' + String(rel).replace(/[\\/]+/g, '/');
+      try {
+        await deps.backend.DeleteEntry(abs);
+      } catch (e) {
+        // 尽力而为：文件可能已被手动删/占用；孤儿由存储清理兜底
+      }
     }
   }
 
@@ -155,6 +197,12 @@ export function createMemoStore(deps) {
     scheduleSave(scope);
     notify(scope);
     return result;
+  }
+
+  // rootFor 作用域缓存捕获的工作区根（导出复制贴图用；未加载返回当前解析值）。
+  function rootFor(scope) {
+    const entry = findCache(scope);
+    return entry && entry.cache ? entry.cache.workspace : resolveWorkspace(scope);
   }
 
   // flushAll 冲掉所有作用域挂着的未落盘修改（关窗确认流程 / pagehide 兜底调用）。
@@ -208,5 +256,5 @@ export function createMemoStore(deps) {
     emitPending();
   }
 
-  return {load, cached, mutate, flush, flushAll, hasPending, scheduleSave, reloadExternal, saveImage, onChange, forgetWorkspace};
+  return {load, cached, mutate, flush, flushAll, hasPending, scheduleSave, reloadExternal, saveImage, onChange, forgetWorkspace, rootFor};
 }

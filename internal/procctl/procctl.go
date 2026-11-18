@@ -1,4 +1,8 @@
 // Package procctl 运行通道与命令桥共用的进程注册、取消与参数校验。
+//
+// run（F5 运行代码）与 cmdbridge（插件命令 / git 浅集成 / AI 终端命令）共用同一张
+// 取消表，因此这里的上限与 id 冲突检查是全局口径：两边加起来不超过 MaxRunning。
+// 取消一律杀整棵进程树——Git for Windows 的 bash wrapper 只杀父进程等于没杀。
 package procctl
 
 import (

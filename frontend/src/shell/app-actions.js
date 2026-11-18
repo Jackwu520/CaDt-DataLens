@@ -4,6 +4,12 @@
 // 这样既不依赖 main.js 的声明顺序，也不会把 let 状态拍成快照。
 import {fileIconSpec} from '../core/fileicons.js';
 
+/**
+ * 应用级动作域：退出、最近打开记录、外部文件拖入目录。
+ * 最近打开记在 localStorage（上限 12 条，按小写化路径去重，最近的在最前）。
+ * @param {object} deps 依赖（rt / backend / explorer / flash / baseNameOf / openPath / openFolderSmart）
+ * @returns {object} 动作面（含 pendingExternalDrop 的读写接缝）
+ */
 export function createAppActions(deps) {
 
 function exitApp() {
@@ -47,6 +53,8 @@ function clearRecentOpen() {
     deps.flash('已清除最近打开记录');
 }
 
+// recentOpenMenuItems 生成右键/菜单用的最近打开项；空列表时给一条禁用的占位，
+// 末尾固定追加分隔线与「清除最近记录」。
 function recentOpenMenuItems() {
     const list = readRecentOpen();
     if (!list.length) return [{label: '（无最近记录）', disabled: true}];

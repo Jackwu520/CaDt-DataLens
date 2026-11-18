@@ -2,6 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+    formatCommandDuration,
     formatTerminalList,
     formatTerminalRead,
     normalizeTermText,
@@ -61,4 +62,18 @@ test('terminalSendLabel：回车换成可见符号并截断', () => {
     assert.equal(terminalSendLabel('npm run dev\r'), 'npm run dev⏎');
     assert.equal(terminalSendLabel('a\nb\r\nc'), 'a⏎b⏎c');
     assert.equal(terminalSendLabel('x'.repeat(500), 10), 'xxxxxxxxxx…');
+});
+
+test('formatCommandDuration：秒 / 分钟进位 / 非法输入返回空', () => {
+    assert.equal(formatCommandDuration(0), '0.00 s');
+    assert.equal(formatCommandDuration(1250), '1.25 s');
+    assert.equal(formatCommandDuration(12345), '12.3 s');
+    assert.equal(formatCommandDuration(60000), '1 m 00 s');
+    assert.equal(formatCommandDuration(125000), '2 m 05 s');
+    // 59.9 s 舍入进位不出现「2 m 60 s」
+    assert.equal(formatCommandDuration(119900), '2 m 00 s');
+    assert.equal(formatCommandDuration(undefined), '');
+    assert.equal(formatCommandDuration(null), '');
+    assert.equal(formatCommandDuration(-1), '');
+    assert.equal(formatCommandDuration('abc'), '');
 });

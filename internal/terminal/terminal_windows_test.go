@@ -4,9 +4,12 @@ package terminal
 
 import (
 	"context"
+	"fmt"
 	"io"
+	"os/exec"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -358,4 +361,67 @@ func TestTermExitCodeAfterRealProcessExit(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatal("等待进程退出超时")
+}
+
+// ---- RunningSessionCount 的空闲判定：shell 有活后代才算「正在运行」 ----
+
+func TestDescendantExists(t *testing.T) {
+	// 表驱动：self=100。纯函数喂构造数据，锁竞态与真实快照解耦。
+	cases := []struct {
+		name  string
+		procs []procInfo
+		want  bool
+	}{
+		{"无子进程（空闲提示符）", []procInfo{{pid: 100, ppid: 1}}, false},
+		{"直接子进程", []procInfo{{pid: 100, ppid: 1}, {pid: 200, ppid: 100}}, true},
+		{"多级后代", []procInfo{{pid: 100, ppid: 1}, {pid: 200, ppid: 100}, {pid: 300, ppid: 200}}, true},
+		{"兄弟分支无关", []procInfo{{pid: 100, ppid: 1}, {pid: 200, ppid: 1}, {pid: 300, ppid: 200}}, false},
+		{"父 PID 环不自爆", []procInfo{{pid: 100, ppid: 300}, {pid: 200, ppid: 100}, {pid: 300, ppid: 200}}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := descendantExists(100, tc.procs); got != tc.want {
+				t.Fatalf("descendantExists(100) = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestHasAliveDescendantRealProcess(t *testing.T) {
+	// 真实快照链路：起一个 cmd 包 ping 的进程树，轮询断言有/无后代两个方向。
+	// 进程生命周期本测试内闭环、超时有界（各 3s），不依赖 ConPTY。
+	cmd := exec.Command("cmd", "/c", "ping", "-n", "5", "127.0.0.1")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("启动测试进程失败: %v", err)
+	}
+	pid := uint32(cmd.Process.Pid)
+
+	alive := false
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if hasAliveDescendant(pid) {
+			alive = true
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !alive {
+		t.Fatal("shell 挂着运行中的子命令时应判定有活后代")
+	}
+
+	// 杀整棵树：Process.Kill 只杀 cmd、ping 会孤儿化（ppid 仍指向已死的 cmd），
+	// 快照里孤儿仍是「后代」——产品语义正是如此（宁多拦不误杀），测试要用 /T 清干净。
+	kill := exec.Command("taskkill", "/PID", fmt.Sprintf("%d", pid), "/T", "/F")
+	kill.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	_ = kill.Run()
+	_, _ = cmd.Process.Wait()
+
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if !hasAliveDescendant(pid) {
+			return // 后代已清空：空闲判定成立
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("进程树结束后应判定无活后代")
 }

@@ -333,7 +333,7 @@ let semanticAutoRecheckDone = false; // 注册表空时的自动补扫，每会�
         });
     }
 
-    // ---- 子代理命令沙箱：授权残留的检查与清理（docs/unfinished-plans/subagent-sandbox.md §4 阶段 D） ----
+    // ---- 子代理命令沙箱：授权残留的检查与清理（docs/finished-plans/subagent-sandbox.md §4 阶段 D） ----
     // 授权是跨会话复用的缓存，日常不必清理；这里只为「想还原目录权限」的用户提供出口。
     let sandboxGrantBound = false;
     let sandboxGrantBusy = false;

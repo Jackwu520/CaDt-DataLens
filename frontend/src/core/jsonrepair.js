@@ -6,7 +6,13 @@ function addFix(fixes, name) {
     if (!fixes.includes(name)) fixes.push(name);
 }
 
-// stripTrailingCommas 去掉对象/数组里 } 或 ] 前的逗号（输入已是无注释文本）。
+/**
+ * 去掉对象/数组闭合前多余的逗号（输入应已无注释）。
+ * 走字符状态机跳过字符串内容，所以字符串里的 "," 不会被误删。
+ * @param {string} s 待处理文本
+ * @param {string[]} fixes 累加修复名（命中时追加「尾逗号」）
+ * @returns {string} 处理后文本
+ */
 function stripTrailingCommas(s, fixes) {
     let out = '';
     let inStr = false;

@@ -8,6 +8,8 @@ import (
 	"strings"
 )
 
+// PathInfo 是属性对话框与 AI 路径校验共用的只读元信息快照。
+// Modified 用 Unix 毫秒（前端直接 new Date(ms)）；ReadOnly 由写位判断，不反映 ACL。
 type PathInfo struct {
 	Path     string `json:"path"`
 	Name     string `json:"name"`

@@ -320,6 +320,47 @@ export function timeoutLabel(ms) {
     return (Number.isInteger(min) ? min : min.toFixed(1)) + ' 分钟';
 }
 
+// ---- 运行配置模型 ----
+// 配置存 settings.runProfiles：带 file 的是「绑定文件」配置（JetBrains 式，记住要运行哪个文件），
+// 不带 file 的是旧版参数预设（作用于当前文件，经语言桶生效）。标题栏 widget 与运行链共用这里。
+
+// 当前激活的配置：按 settings.runActiveProfile 匹配；找不到（或没选）返回 null。
+export function activeRunConfig(settings) {
+    const id = (settings && settings.runActiveProfile) || '';
+    if (!id) return null;
+    const profiles = Array.isArray(settings.runProfiles) ? settings.runProfiles : [];
+    return profiles.find((p) => p && p.id === id) || null;
+}
+
+// 绑定文件的配置决定这次跑哪个目标：'doc' = 目标就是当前活动文档（走内存流，含脏文件三选一），
+// 'disk' = 目标不在活动文档，从磁盘读取；null = 没有绑定配置（沿用「运行当前文件」旧路径）。
+export function resolveRunTarget(cfg, activeDocPath, samePathFn) {
+    const file = cfg && typeof cfg.file === 'string' ? cfg.file : '';
+    if (!file) return null;
+    const same = !!activeDocPath && typeof samePathFn === 'function' && samePathFn(file, activeDocPath);
+    return same ? 'doc' : 'disk';
+}
+
+// widget 标签：配置名优先，否则当前文件名，再否则「当前文件」。
+export function resolveRunWidgetLabel(cfg, docName) {
+    if (cfg && cfg.name) return String(cfg.name);
+    return String(docName || '') || '当前文件';
+}
+
+// 「最近的配置」：按 lastUsedAt 降序取前 cap 个，从未运行过的不进。
+export function recentConfigs(configs, cap) {
+    const list = (Array.isArray(configs) ? configs : []).filter((p) => p && p.id && Number(p.lastUsedAt) > 0);
+    list.sort((a, b) => Number(b.lastUsedAt) - Number(a.lastUsedAt));
+    return Number.isFinite(cap) && cap >= 0 ? list.slice(0, cap) : list;
+}
+
+// 配置行的副标题：绑定文件显示路径，旧预设显示 [语言] 参数预设。
+export function configRowSubtitle(cfg) {
+    if (cfg && cfg.file) return String(cfg.file);
+    const lang = cfg && cfg.lang ? String(cfg.lang) : '';
+    return lang ? '[' + lang + '] 参数预设' : '参数预设（作用于当前文件）';
+}
+
 // ---- 控制器 ----
 
 export function createRunController(deps) {
@@ -417,12 +458,20 @@ export function createRunController(deps) {
     }
 
     async function run() {
+        // 目标解析：绑定文件的配置（settings.runActiveProfile）优先——
+        // 目标就是当前活动文档时走原内存流；否则从磁盘读取那个文件。
+        const cfg = typeof deps.activeRunConfig === 'function' ? deps.activeRunConfig() : null;
         const doc = deps.getActiveDoc();
-        if (!doc) {
+        const sameFn = (a, b) => (typeof deps.samePathValue === 'function' ? deps.samePathValue(a, b) : String(a) === String(b));
+        const target = resolveRunTarget(cfg, doc && doc.path, sameFn);
+        const boundDisk = target === 'disk';
+        const bound = target === 'doc' || boundDisk;
+
+        if (!doc && !boundDisk) {
             deps.flash('没有打开的文件', true);
             return;
         }
-        if (doc.binary || doc.large) {
+        if (doc && (doc.binary || doc.large) && !boundDisk) {
             deps.flash('二进制或超大文件不能运行', true);
             return;
         }
@@ -430,7 +479,38 @@ export function createRunController(deps) {
             deps.flash('只读模式下不执行代码', true);
             return;
         }
-        const ext = extOf(doc.name || doc.path);
+
+        // 绑定目标不是活动文档：读盘运行（编辑器里有未保存修改时只提示，不阻塞）
+        let diskData = null;
+        if (boundDisk) {
+            if (typeof deps.readRunFile !== 'function') {
+                deps.flash('当前版本不支持运行配置目标文件', true);
+                return;
+            }
+            let data;
+            try {
+                data = await deps.readRunFile(cfg.file);
+            } catch (e) {
+                deps.flash('读取运行配置的目标文件失败：' + errText(e), true);
+                return;
+            }
+            if (data.binary) {
+                deps.flash('配置目标文件是二进制，不能运行', true);
+                return;
+            }
+            if (data.large) {
+                deps.flash('配置目标文件太大，不能运行', true);
+                return;
+            }
+            if (typeof deps.openDocDirtyByPath === 'function' && deps.openDocDirtyByPath(cfg.file)) {
+                deps.flash('目标文件在编辑器里有未保存修改，这次运行的是磁盘内容');
+            }
+            diskData = data;
+        }
+
+        const targetName = diskData ? (diskData.name || String(cfg.file).replace(/\\/g, '/').split('/').pop()) : (doc.name || '');
+        const targetPath = diskData ? (diskData.path || cfg.file) : (doc.path || '');
+        const ext = extOf(targetName || targetPath);
         const recipe = RECIPES[ext];
         if (!recipe) {
             deps.flash('该格式不支持运行：' + (ext ? '.' + ext : '无扩展名'), true);
@@ -443,8 +523,10 @@ export function createRunController(deps) {
             return;
         }
 
-        // 面板里看到的参数就是这次运行的参数；按语言记住，切回同语言的任务时回显
-        if (els && els.args) deps.setArgs(recipe.lang, els.args.value);
+        // 面板里看到的参数就是这次运行的参数；按语言记住，切回同语言的任务时回显。
+        // 绑定配置直接用配置里的参数：不回写语言桶，也不动输入框。
+        const argsOverride = bound ? String(cfg.args || '') : null;
+        if (!bound && els && els.args) deps.setArgs(recipe.lang, els.args.value);
 
         // 首次运行某语言：明示「以你的权限执行本机代码」
         if (!deps.hasConfirmed(recipe.lang)) {
@@ -452,21 +534,28 @@ export function createRunController(deps) {
             if (!ok) return;
         }
 
-        // 未保存修改：弹窗让用户选（保存并运行 / 临时副本 / 取消）
+        // 未保存修改：弹窗让用户选（保存并运行 / 临时副本 / 取消）；磁盘目标没有这个环节
         let content = '';
-        const dirty = !!doc.dirty || !doc.path;
-        if (dirty) {
-            const choice = await deps.askDirtyChoice({name: doc.name || '', canSave: !!doc.path});
-            if (choice === 'cancel' || !choice) return;
-            if (choice === 'save') {
-                const saved = await deps.saveDoc();
-                if (!saved) return;
-            } else {
-                content = deps.getDocText() || '';
+        if (diskData) {
+            content = diskData.content || '';
+        } else {
+            const dirty = !!doc.dirty || !doc.path;
+            if (dirty) {
+                const choice = await deps.askDirtyChoice({name: doc.name || '', canSave: !!doc.path});
+                if (choice === 'cancel' || !choice) return;
+                if (choice === 'save') {
+                    const saved = await deps.saveDoc();
+                    if (!saved) return;
+                } else {
+                    content = deps.getDocText() || '';
+                }
             }
         }
 
-        const session = createSession(doc, recipe);
+        // 「最近的配置」从这里起算一次使用（后续工具链失败也算用过）
+        if (typeof deps.onRunStart === 'function') deps.onRunStart(recipe.lang, cfg);
+
+        const session = createSession({name: targetName, path: targetPath}, recipe);
         activate(session.id);
         deps.showRunPanel();
 
@@ -487,9 +576,9 @@ export function createRunController(deps) {
         let workspace;
         try {
             workspace = await deps.backend.PrepareRun({
-                srcPath: doc.path || '',
+                srcPath: targetPath,
                 content,
-                tempName: doc.name || '',
+                tempName: targetName,
                 needTemp: !!recipe.build,
             });
         } catch (e) {
@@ -503,21 +592,22 @@ export function createRunController(deps) {
         }
 
         const outPath = recipe.outExt
-            ? joinPath(workspace.tempDir, stemOf(doc.name || workspace.sourcePath) + recipe.outExt)
+            ? joinPath(workspace.tempDir, stemOf(targetName || workspace.sourcePath) + recipe.outExt)
             : '';
         // 工作目录：默认文件所在目录（读旁边的数据文件），设置里可改成工作区根
         const workDir = deps.resolveWorkDir(workspace.workDir) || workspace.workDir;
         const ctx = {
             file: workspace.sourcePath,
             dir: workDir,
-            base: doc.name || '',
-            stem: stemOf(doc.name || workspace.sourcePath),
+            base: targetName,
+            stem: stemOf(targetName || workspace.sourcePath),
             ext,
             tool: tool.path,
             out: outPath,
-            args: deps.argsFor(recipe.lang),
+            args: argsOverride !== null ? splitRunArgs(argsOverride) : deps.argsFor(recipe.lang),
         };
-        const steps = makeSteps(recipe, tool, ctx, deps.templateFor(recipe.lang));
+        const templateOverride = bound && typeof cfg.template === 'string' ? cfg.template.trim() : '';
+        const steps = makeSteps(recipe, tool, ctx, deps.templateFor(recipe.lang, templateOverride));
 
         session.steps = steps;
         session.label = sessionLabel(recipe);

@@ -3,13 +3,16 @@
 // 视图（bridge-todo-view）与 AI 工具共用这套函数，上限口径在这里统一卡。
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
 import {
     MEMO_LIMITS,
     addBlock,
     addItem,
     attachImage,
+    collectImageRefs,
     cycleStatus,
     defaultMemoData,
+    exportMemoMarkdown,
     formatMemoForAI,
     findItem,
     moveItemToBlock,
@@ -209,4 +212,134 @@ test('findItem：定位返回块与索引', () => {
     assert.equal(found.blockIndex, 0);
     assert.equal(found.itemIndex, 1);
     assert.equal(findItem(base.doc, 'it-none'), null);
+});
+
+test('updateById：块 collapsed 独立生效（折叠按钮只传 collapsed 也必须折叠）', () => {
+    const base = sampleDoc();
+    const blk = base.doc.blocks[0];
+    const u1 = updateById(base.doc, blk.id, {collapsed: true});
+    assert.ok(u1.ok);
+    assert.equal(u1.doc.blocks[0].collapsed, true);
+    const u2 = updateById(u1.doc, blk.id, {collapsed: false});
+    assert.equal(u2.doc.blocks[0].collapsed, false);
+    // 改标题与折叠互不干扰
+    const u3 = updateById(base.doc, blk.id, {text: '新标题', collapsed: true});
+    assert.equal(u3.doc.blocks[0].title, '新标题');
+    assert.equal(u3.doc.blocks[0].collapsed, true);
+});
+
+test('updateById：index 是移动后的目标下标（下移一格 = idx+1，不是 idx+2）', () => {
+    const base = sampleDoc();
+    const blk = base.doc.blocks[0];
+    const four = addItem(base.doc, blk.id, '第四条');
+    const doc = four.doc;
+    const ids = doc.blocks[0].items.map((it) => it.id);
+    assert.equal(ids.length, 4);
+    // 下移一格：第 2 条（idx=1）与第 3 条交换
+    const down = updateById(doc, ids[1], {index: 1 + 1});
+    assert.deepEqual(down.doc.blocks[0].items.map((it) => it.id), [ids[0], ids[2], ids[1], ids[3]]);
+    // 传 idx+2 会跳过相邻项——视图菜单曾经就是这个形态
+    const skip = updateById(doc, ids[1], {index: 1 + 2});
+    assert.deepEqual(skip.doc.blocks[0].items.map((it) => it.id), [ids[0], ids[2], ids[3], ids[1]]);
+});
+
+// 守卫：便签视图菜单的「下移」必须把 idx+1 交给 updateById（曾被写成 idx+2，跳两格且末条无效）。
+test('bridge-memo-view 的下移不传 idx + 2', () => {
+    const src = readFileSync(new URL('../../src/bridge/bridge-memo-view.js', import.meta.url), 'utf8');
+    assert.equal(/index:\s*idx \+ 2/.test(src), false);
+    assert.ok(/index:\s*idx \+ 1/.test(src), '下移应传 idx + 1');
+});
+
+test('addItem：kind=md 与 afterId 智能插入', () => {
+    const base = sampleDoc();
+    const blk = base.doc.blocks[0];
+    const second = blk.items[1];
+    // kind=md 保留
+    const md = addItem(base.doc, blk.id, '# 标题\n正文', {kind: 'md'});
+    assert.ok(md.ok);
+    assert.equal(md.doc.blocks[0].items[md.doc.blocks[0].items.length - 1].kind, 'md');
+    // afterId：插到第二条之后
+    const ins = addItem(base.doc, blk.id, '插队', {afterId: second.id});
+    const items = ins.doc.blocks[0].items;
+    assert.equal(items[2].id, ins.id);
+    assert.equal(items[2].text, '插队');
+    // afterId 找不到时落到末尾
+    const fall = addItem(base.doc, blk.id, '兜底', {afterId: 'it-none'});
+    assert.equal(fall.doc.blocks[0].items[fall.doc.blocks[0].items.length - 1].text, '兜底');
+});
+
+test('normalizeMemoData：md kind 保留，其他值纠正为 text', () => {
+    const doc = normalizeMemoData({blocks: [{items: [{text: 'a', kind: 'md'}, {text: 'b', kind: 'bogus'}, {text: 'c'}]}]});
+    assert.equal(doc.blocks[0].items[0].kind, 'md');
+    assert.equal(doc.blocks[0].items[1].kind, 'text');
+    assert.equal(doc.blocks[0].items[2].kind, 'text');
+});
+
+test('formatMemoForAI：md 条目带 [md] 标记', () => {
+    const base = sampleDoc();
+    const blk = base.doc.blocks[0];
+    const md = addItem(base.doc, blk.id, '# 小节', {kind: 'md'});
+    const text = formatMemoForAI(md.doc, '工作区快捷便签');
+    assert.match(text, /\[md\] \[it-[^\]]+\] # 小节/);
+});
+
+test('collectImageRefs：item.images 与正文占位符合并收集', () => {
+    const base = sampleDoc();
+    const blk = base.doc.blocks[0];
+    let doc = base.doc;
+    doc = addItem(doc, blk.id, '看图 ![图](img/inner.png) 完', {kind: 'md'}).doc;
+    doc = attachImage(doc, blk.items[0].id, 'img/attached.png').doc;
+    const refs = collectImageRefs(doc);
+    assert.ok(refs.has('img/inner.png'), '正文占位符要收集');
+    assert.ok(refs.has('img/attached.png'), '缩略图挂载要收集');
+    assert.equal(refs.size, 2);
+});
+
+test('exportMemoMarkdown：任务清单 + md 原样 + 图片统一收集', () => {
+    let doc = addBlock(defaultMemoData(), '阶段一').doc;
+    const blkId = doc.blocks[0].id;
+    doc = addItem(doc, blkId, '223s 速度 ![图](img/a.png) 完成', {status: 'completed'}).doc;
+    doc = addItem(doc, blkId, '进行中任务', {status: 'in_progress'}).doc;
+    doc = attachImage(doc, doc.blocks[0].items[1].id, 'img/b.png').doc;
+    doc = addItem(doc, blkId, '## 小节' + String.fromCharCode(10) + '- 列表', {kind: 'md'}).doc;
+
+    const out = exportMemoMarkdown(doc, '工作区');
+    assert.match(out.content, /# 快捷便签 · 工作区/);
+    assert.match(out.content, /## 1\. 阶段一/);
+    assert.match(out.content, /- \[x\] 223s 速度 !\[图\]\(img\/a\.png\) 完成/);
+    assert.match(out.content, /- \[~\] 进行中任务/);
+    assert.match(out.content, /  !\[b\.png\]\(img\/b\.png\)/, '缩略图挂载补成图片语法');
+    assert.ok(out.content.includes('## 小节' + String.fromCharCode(10) + '- 列表'), 'md 条目原样嵌入');
+    assert.deepEqual(out.images.sort(), ['img/a.png', 'img/b.png']);
+});
+
+test('formatMemoForAI：按状态过滤（首行保留全局面板计数 + 尾部命中汇总）', () => {
+    const base = sampleDoc(); // 3 项：1 完成 / 1 进行中 / 1 待办
+    const text = formatMemoForAI(base.doc, '工作区快捷便签', {status: 'in_progress'});
+    assert.match(text, /共 1 块 3 项/, '首行保留全局视野');
+    assert.match(text, /status=in_progress/, '注明过滤条件');
+    assert.match(text, /1\/3 项命中/);
+    assert.ok(!text.includes('223s'), '未命中的待办条目不显示');
+    assert.match(text, /修复转义 bug/);
+    assert.match(text, /以上 1 项为过滤命中；其余 2 项未显示/);
+});
+
+test('formatMemoForAI：按 blockId 只读某分组 + 按 q 文本包含（不区分大小写）', () => {
+    let doc = addBlock(defaultMemoData(), 'A组').doc;
+    doc = addItem(doc, doc.blocks[0].id, 'Alpha 任务').doc;
+    doc = addBlock(doc, 'B组').doc;
+    doc = addItem(doc, doc.blocks[1].id, 'Beta 任务').doc;
+
+    const byBlock = formatMemoForAI(doc, '工作区', {blockId: doc.blocks[0].id});
+    assert.match(byBlock, /A组/);
+    assert.ok(!byBlock.includes('B组'), 'blockId 过滤不显示其他块');
+    assert.match(byBlock, /Alpha 任务/);
+
+    const byQ = formatMemoForAI(doc, '工作区', {q: 'beta'});
+    assert.match(byQ, /q=beta/);
+    assert.match(byQ, /Beta 任务/);
+    assert.ok(!byQ.includes('Alpha 任务'), 'q 过滤不显示未命中');
+
+    const none = formatMemoForAI(doc, '工作区', {q: '不存在的内容xyz'});
+    assert.match(none, /没有匹配过滤条件的条目（面板总数不变：2 项）/, '无命中也汇报总口径');
 });

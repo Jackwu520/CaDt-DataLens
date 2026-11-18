@@ -186,7 +186,7 @@ AI 工具调用 (mcp__windows__*)
 2. `Registry` / `Process` 首版默认不勾；勾上后建议单独二次确认，不与普通点击共用会话授权。
 3. 会话授权是「免逐次审批」的**显式降险决定**，不是免死金牌：项目规则 deny、计划模式、只读档仍然否决。
 4. 不接 `server instructions` 进 prompt；工具描述继续走 500 字符截断 + `[MCP:windows]` 前缀 + workspace_rules 防注入。
-5. 与 `docs/unfinished-plans/subagent-sandbox.md` 的关系：那个方案是**文件效应兜底**，尚未开工；本方案不承诺沙箱，也不得被描述成沙箱。
+5. 与 `docs/finished-plans/subagent-sandbox.md` 的关系：那个方案是**文件效应兜底**，已实施（阶段 A–D）；本方案不承诺沙箱，也不得被描述成沙箱。
 6. 高 DPI 坐标、非英文 Windows、UIA 会话失败、模型不支持图像输入都是上游限制；只能靠 doctor 与文档说明。
 7. 18 个工具 + 现有约 50 个内置工具仍在 128 上限内，但上下文成本要实测；懒加载不要因为「看起来高级」就抢在 P1 前做。
 
@@ -208,7 +208,7 @@ AI 工具调用 (mcp__windows__*)
 - `docs/finished-plans/mcp-client.md`：本项目 MCP 客户端方案（P0–P3 已实施），§10 安全模型、§15 决策记录
 - `docs/finished-plans/ai-external-tools.md`：外部能力来源矩阵，本地能力走 MCP 的权威依据
 - `docs/finished-plans/read-outside-workspace.md`：工作区外读取授权链与路径闸对照基准
-- `docs/unfinished-plans/subagent-sandbox.md`：OS 级沙箱参考（未开工，勿混用）
+- `docs/finished-plans/subagent-sandbox.md`：OS 级沙箱参考（已实施，勿混用）
 - `dsh-windows-mcp`：https://github.com/helloHub1212/dsh-windows-mcp （npm 0.2.11 README 为准）
 
 ---

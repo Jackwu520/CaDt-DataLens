@@ -81,3 +81,20 @@ export function formatTerminalList(local, backendList) {
     lines.push('读输出用 terminal read（id 传上面的 id）；写入用 terminal send（文本自带 \\r 才回车）。');
     return lines.join('\n');
 }
+
+// 命令耗时格式化（run_command 工具卡头部徽标用）：ms → 1.25 s / 12.3 s / 2 m 05 s。
+// 口径与 run.js 的 F5 运行计时一致（<10s 两位小数）；非法 / 负值返回 ''，调用方据此不渲染。
+export function formatCommandDuration(ms) {
+    if (ms == null) return ''; // Number(null) 是 0，会伪装成「0.00 s」，先挡掉
+    const n = Number(ms);
+    if (!Number.isFinite(n) || n < 0) return '';
+    if (n < 60000) {
+        const s = n / 1000;
+        return s.toFixed(s < 10 ? 2 : 1) + ' s';
+    }
+    const m = Math.floor(n / 60000);
+    const s = Math.round((n % 60000) / 1000);
+    // 59.9 s 舍入进位：2 m 60 s 不出现，写成 2 m 00 s
+    if (s === 60) return (m + 1) + ' m 00 s';
+    return m + ' m ' + String(s).padStart(2, '0') + ' s';
+}

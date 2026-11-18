@@ -1,27 +1,40 @@
-// graph.go：Git 图谱引擎——带泳道（graph lane）拓扑的提交历史、分组 ref 列表与
-// 历史上的写操作（签出 / 重置 / cherry-pick）。泳道在 Go 侧算好，前端只负责渲染。
+// graph.go：Git 图谱引擎——`git log --graph` 字形流的提交历史、分组 ref 列表与
+// 历史上的写操作（签出 / 重置 / cherry-pick）。布局布局交给 git 自己（graph.c 是权威实现），
+// Go 侧解析字形流并压缩成 flow 路径（graphglyph.go），前端只负责渲染。
 // 全部走 gitRun（gitinfo.go 唯一执行入口，已带防黑窗 / GIT_TERMINAL_PROMPT=0 / 超时）。
 package gitinfo
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 )
 
-// GitGraphCommit 是图谱里的一行提交。Lane/ThroughLanes 由 assignLanes 计算，
-// 前端据此画竖线与弧线：Lane 是提交圆点所在泳道，ThroughLanes 是穿过该行的其它泳道。
+// GitGraphCommit 是图谱里的一行提交。绘图数据来自 `git log --graph` 的字形矩阵
+//（git graph.c 是权威布局实现，见 graphglyph.go）：组内字形逐个直译成 SVG 段
+//（映射与 Gitea svgcontainer.tmpl 相同），相邻字形天然连接，前端零布局逻辑。
 type GitGraphCommit struct {
-	Sha          string `json:"sha"`
-	Parents      []string `json:"parents"`
-	Refs         string   `json:"refs,omitempty"`         // git %D 原文（装饰器，如 HEAD -> master, origin/master）
-	Author       string   `json:"author"`
-	Email        string   `json:"email,omitempty"`
-	Date         string   `json:"date"`                   // 已格式化的本地时间
-	Subject      string   `json:"subject"`
-	Lane         int      `json:"lane"`
-	ThroughLanes []int    `json:"throughLanes"`           // 该行需要画穿线的泳道（升序）
+	Sha     string `json:"sha"`
+	Refs    string `json:"refs,omitempty"` // git %D 原文（装饰器，如 HEAD -> master, origin/master）
+	Author  string `json:"author"`
+	Email   string `json:"email,omitempty"`
+	Date    string `json:"date"`  // 已格式化的本地时间
+	Subject string `json:"subject"`
+	DotPos  int    `json:"dotPos"`  // 圆点所在字形位置（偶数位 = 泳道）
+	DotFlow int64  `json:"dotFlow"` // 圆点所在 flow 的色号（≥1）
+	Rows    int         `json:"rows"`   // 本组行数（提交行 + 关系行）
+	Glyphs  []GlyphSpan `json:"glyphs"` // 组内所有字形
+}
+
+// GlyphSpan 是一个字形：组内行号 R、字符位置 Pos、字形 Ch（单字符 string——
+// byte 经 JSON 会变成数字，前端按字符分发）、所属 flow 色号 Flow。
+type GlyphSpan struct {
+	R    int    `json:"r"`
+	Pos  int    `json:"p"`
+	Ch   string `json:"c"`
+	Flow int64  `json:"f"`
 }
 
 // GitGraphPage 是一页提交。HasMore + NextSkip 供前端滚动到底时续拉。
@@ -43,118 +56,8 @@ const (
 	graphLogTimeoutMs = 20000
 )
 
-// assignLanes 按提交顺序（git log --date-order，新→旧）分配泳道并算每行穿线。
-// 返回与 commits 等长的 lane 切片；同时回填每个 commit 的 Lane / ThroughLanes。
-//
-// 算法（标准「最小空闲泳道」）：
-//   - laneOf 记录每个 sha 已被分配的泳道（子提交先到，为它的父预留）。
-//   - 处理一行时：该行泳道 = laneOf 里已预留的，否则取当前空闲的最小泳道。
-//   - 该行的每个父：若父已在 laneOf（别的子已为它留位）则复用；否则优先继承当前行的泳道
-//     （直线延续），当前行泳道被占用时才新开泳道。
-//   - 当前行的父处理完后，当前行泳道若不再被任何待续父占用，则标记为空闲（该行圆点画完即止）。
-func assignLanes(commits []GitGraphCommit) []int {
-	lanes := make([]int, len(commits))
-	laneOf := make(map[string]int, len(commits))
-	// pendingLanes: 泳道 -> 仍待续（已有子但父还没出现）的父 sha 集合
-	pending := map[int]map[string]bool{}
-	used := map[int]bool{} // 当前已被占用的泳道
-
-	firstFree := func() int {
-		for l := 0; ; l++ {
-			if !used[l] {
-				return l
-			}
-		}
-	}
-
-	for i := range commits {
-		c := &commits[i]
-		lane := 0
-		if l, ok := laneOf[c.Sha]; ok {
-			lane = l
-		} else {
-			lane = firstFree()
-			laneOf[c.Sha] = lane
-		}
-		used[lane] = true
-		lanes[i] = lane
-		c.Lane = lane
-
-		// 穿线：其它泳道若有待续父（不属于本行的父），本行要画穿线
-		through := []int{}
-		for l, shas := range pending {
-			if l == lane {
-				continue
-			}
-			for sha := range shas {
-				if !containsSha(c.Parents, sha) {
-					through = append(through, l)
-					break
-				}
-			}
-		}
-		sortInts(through)
-		c.ThroughLanes = through
-
-		// 为父分配泳道
-		firstNewParent := true
-		for _, p := range c.Parents {
-			if _, ok := laneOf[p]; ok {
-				continue
-			}
-			if firstNewParent {
-				// 第一个新父继承当前 lane（直线延续）
-				laneOf[p] = lane
-				firstNewParent = false
-			} else {
-				// 后续父取空闲泳道
-				nl := firstFree()
-				laneOf[p] = nl
-				used[nl] = true
-			}
-		}
-
-		// 更新 pending：本行所有父都记为待续；本行自身泳道若不再有待续父则释放
-		for _, p := range c.Parents {
-			pl := laneOf[p]
-			if pending[pl] == nil {
-				pending[pl] = map[string]bool{}
-			}
-			pending[pl][p] = true
-		}
-		stillPending := false
-		for _, p := range c.Parents {
-			if laneOf[p] == lane {
-				stillPending = true
-				break
-			}
-		}
-		if !stillPending {
-			delete(pending, lane)
-			used[lane] = false
-		}
-	}
-	return lanes
-}
-
-func containsSha(list []string, sha string) bool {
-	for _, s := range list {
-		if s == sha {
-			return true
-		}
-	}
-	return false
-}
-
-func sortInts(a []int) {
-	for i := 1; i < len(a); i++ {
-		for j := i; j > 0 && a[j] < a[j-1]; j-- {
-			a[j], a[j-1] = a[j-1], a[j]
-		}
-	}
-}
-
-// GraphCommits 返回一页带泳道拓扑的提交。ref 为空表示当前 HEAD；skip 用于分页续拉。
+// GraphCommits 返回一页带图形拓扑的提交。ref 为空表示当前 HEAD；skip 用于分页续拉。
+// 布局交给 git 自己（--graph，graph.c 权威实现），这里解析字形流并压缩成 flow 路径。
 func GraphCommits(dir string, ref string, limit int, skip int) (*GitGraphPage, error) {
 	page := &GitGraphPage{Commits: []GitGraphCommit{}}
 	dir = strings.TrimSpace(dir)
@@ -188,20 +91,26 @@ func GraphCommits(dir string, ref string, limit int, skip int) (*GitGraphPage, e
 	if skip < 0 {
 		skip = 0
 	}
-	// 多取一条判断 hasMore；NUL 分隔字段，单元间用 \x1f 避免与字段冲突
+	// 多取一条判断 hasMore；字段用  分隔， 标记数据区起点（字形区在其前）。
+	// 不带 %b：多行正文会让 --graph 多出关系行、破坏「一提交一视觉行」的映射，
+	// 正文改为详情面板按需拉取（GraphCommitBody）。
 	args := []string{
-		"log", "-n", strconv.Itoa(limit + 1),
-		"--date-order",
+		// topo-order：分支尖紧跟其 merge 连续展示（与 IDEA/JGit 一致），泳道立即释放、
+		// 列数少且干净；date-order 会按日期交错出 `| |_|_|/` 这类复合辫子（泳道暴涨）。
+		"log", "--graph", "--topo-order",
+		"-n", strconv.Itoa(limit + 1),
 		"--skip=" + strconv.Itoa(skip),
 		"--date=format:%Y-%m-%d %H:%M",
-		"--pretty=format:%H%x1f%P%x1f%D%x1f%an%x1f%ae%x1f%at%x1f%s",
+		"--pretty=format:%x1e%H%x1f%P%x1f%D%x1f%an%x1f%ae%x1f%at%x1f%s",
 	}
 	if ref != "" {
 		if strings.HasPrefix(ref, "-") {
 			page.Reason = "非法修订"
 			return page, nil
 		}
-		args = append(args, "--", ref)
+		// ref 作为修订（放在 log 后）：点分支 = 看该分支的历史（旧版用 `-- ref`
+		// 会被当成路径过滤，是错的）
+		args = append(args[:1], append([]string{ref}, args[1:]...)...)
 	}
 	raw, code, err := gitRun(dir, args, graphLogTimeoutMs)
 	if err != nil {
@@ -211,67 +120,159 @@ func GraphCommits(dir string, ref string, limit int, skip int) (*GitGraphPage, e
 		page.Reason = "读取提交历史失败"
 		return page, nil
 	}
-	lines := splitGraphLines(raw)
-	if len(lines) > limit {
-		lines = lines[:limit]
-		page.HasMore = true
-		page.NextSkip = skip + limit
-	}
-	commits := parseGraphLines(lines)
-	assignLanes(commits)
-	laneCount := 0
-	for _, c := range commits {
-		if c.Lane+1 > laneCount {
-			laneCount = c.Lane + 1
-		}
-	}
+	commits, laneCount, hasMore, nextSkip := buildGraphPage(raw, limit, skip)
 	page.Commits = commits
 	page.LaneCount = laneCount
+	page.HasMore = hasMore
+	page.NextSkip = nextSkip
 	page.Ref = ref
 	return page, nil
 }
 
-// splitGraphLines 按行切分 git log 输出（容忍 \r\n）。
-func splitGraphLines(raw string) []string {
-	raw = strings.ReplaceAll(raw, "\r\n", "\n")
-	raw = strings.TrimSuffix(raw, "\n")
-	if strings.TrimSpace(raw) == "" {
-		return nil
-	}
-	return strings.Split(raw, "\n")
+// graphGlyphRow 是解析器吐出的一行字形快照。
+type graphGlyphRow struct {
+	pos    []int   // 非空格字形的位置（字符偏移）
+	glyph  []byte
+	flow   []int64
+	color  []int
 }
 
-// parseGraphLines 解析 %H%x1f%P%x1f%D%x1f%an%x1f%ae%x1f%at%x1f%s。
-func parseGraphLines(lines []string) []GitGraphCommit {
-	commits := []GitGraphCommit{}
-	for _, line := range lines {
-		f := strings.Split(line, "\x1f")
-		if len(f) < 7 {
+// graphGlyphGroup 是一个视觉行的字形组：一条提交行 + 跟在后面的关系行（git 画斜线的
+// 过渡行）。压缩成一个视觉行，圆点画在提交行（行内高度 0.5）。
+type graphGlyphGroup struct {
+	rows    []graphGlyphRow
+	commit  *GitGraphCommit
+	dotPos  int
+	dotFlow int64
+}
+
+// buildGraphPage 把 --graph 原始输出解析成分组并压缩成 flow 路径。
+func buildGraphPage(raw string, limit int, skip int) ([]GitGraphCommit, int, bool, int) {
+	parser := newGlyphParser()
+	var groups []*graphGlyphGroup
+	maxPos := 0
+	for _, line := range strings.Split(raw, "\n") {
+		line = strings.TrimRight(line, "\r")
+		if strings.TrimSpace(line) == "" {
 			continue
 		}
-		c := GitGraphCommit{
-			Sha:     strings.TrimSpace(f[0]),
-			Refs:    strings.TrimSpace(f[2]),
-			Author:  strings.TrimSpace(f[3]),
-			Email:   strings.TrimSpace(f[4]),
-			Subject: strings.TrimSpace(f[6]),
-		}
-		if ts, err := strconv.ParseInt(strings.TrimSpace(f[5]), 10, 64); err == nil {
-			c.Date = formatGitTime(ts)
+		var glyphPart string
+		isCommit := false
+		if idx := strings.Index(line, ""); idx >= 0 {
+			glyphPart = line[:idx]
+			isCommit = true
 		} else {
-			c.Date = strings.TrimSpace(f[5])
+			glyphPart = line
 		}
-		if p := strings.TrimSpace(f[1]); p != "" {
-			c.Parents = strings.Fields(p)
-		} else {
-			c.Parents = []string{}
+		parser.parse([]byte(glyphPart))
+		row := graphGlyphRow{pos: []int{}, glyph: []byte{}, flow: []int64{}, color: []int{}}
+		for i, g := range parser.glyphs {
+			if g == ' ' {
+				continue
+			}
+			row.pos = append(row.pos, i)
+			row.glyph = append(row.glyph, g)
+			row.flow = append(row.flow, parser.flows[i])
+			row.color = append(row.color, parser.colors[i])
+			if int64(i)+1 > int64(maxPos) && g != '*' {
+				// 记录最大列宽（圆点所在列也算，单独处理）
+			}
+			if i > maxPos {
+				maxPos = i
+			}
 		}
-		commits = append(commits, c)
+		if isCommit {
+			fields := strings.Split(line[strings.Index(line, "")+1:], "\x1f")
+			if len(fields) < 7 {
+				continue // 畸形行跳过（字形已喂给解析器，流状态不受影响）
+			}
+			dotPos := -1
+			for i, g := range parser.glyphs {
+				if g == '*' {
+					dotPos = i
+					break
+				}
+			}
+			if dotPos < 0 {
+				continue
+			}
+			c := &GitGraphCommit{
+				Sha:      strings.TrimSpace(fields[0]),
+				Refs:     strings.TrimSpace(fields[2]),
+				Author:   strings.TrimSpace(fields[3]),
+				Email:    strings.TrimSpace(fields[4]),
+				Subject:  strings.TrimSpace(fields[6]),
+				DotPos:   dotPos,
+				DotFlow:  parser.flows[dotPos],
+			}
+			if ts, err := strconv.ParseInt(strings.TrimSpace(fields[5]), 10, 64); err == nil {
+				c.Date = formatGitTime(ts)
+			} else {
+				c.Date = strings.TrimSpace(fields[5])
+			}
+			groups = append(groups, &graphGlyphGroup{commit: c, dotPos: dotPos, dotFlow: parser.flows[dotPos]})
+			groups[len(groups)-1].rows = append(groups[len(groups)-1].rows, row)
+		} else if len(groups) > 0 {
+			// 关系行：归属前一个提交组（git 画斜线/纵线的过渡行）
+			groups[len(groups)-1].rows = append(groups[len(groups)-1].rows, row)
+		}
 	}
-	return commits
+
+	// 分页：按提交组截断
+	hasMore := false
+	nextSkip := skip
+	if len(groups) > limit {
+		groups = groups[:limit]
+		hasMore = true
+		nextSkip = skip + limit
+	}
+
+	// 逐字形直译输出（Gitea svgcontainer.tmpl 同款）：每个字形一段确定几何，
+	// 相邻字形首尾天然相接（竖线在格右界、斜线跨 2 格、横线贴底边跨 2 格），
+	// 无需任何跨行/跨组连接判定——`| |_|_|/`、`|/| | |` 这类复合字形全覆盖。
+	commits := make([]GitGraphCommit, 0, len(groups))
+	for _, g := range groups {
+		c := g.commit
+		c.Rows = len(g.rows)
+		glyphs := make([]GlyphSpan, 0, 16)
+		for ri, row := range g.rows {
+			for k, pos := range row.pos {
+				glyphs = append(glyphs, GlyphSpan{R: ri, Pos: pos, Ch: string(row.glyph[k]), Flow: row.flow[k]})
+			}
+		}
+		c.Glyphs = glyphs
+		commits = append(commits, *c)
+	}
+
+	laneCount := maxPos/2 + 1
+	if laneCount < 1 {
+		laneCount = 1
+	}
+	return commits, laneCount, hasMore, nextSkip
 }
 
-// formatGitTime 把 unix 时间戳格式化为本地时间（与 RecentLogFor 的展示口径一致）。
+// GraphCommitBody 返回一次提交的完整正文（%b）。图谱列表不带正文（多行正文会让
+// --graph 多出关系行、破坏一行一提交的映射），详情面板按需拉取。
+func GraphCommitBody(dir string, sha string) (string, error) {
+	dir = strings.TrimSpace(dir)
+	sha = strings.TrimSpace(sha)
+	if dir == "" || sha == "" {
+		return "", fmt.Errorf("缺少目录或提交")
+	}
+	if strings.HasPrefix(sha, "-") || !shaRe.MatchString(sha) {
+		return "", fmt.Errorf("非法提交：%s", sha)
+	}
+	out, code, err := gitRun(dir, []string{"log", "-n", "1", "--format=%b", sha}, 10000)
+	if err != nil {
+		return "", err
+	}
+	if code != 0 {
+		return "", fmt.Errorf("读取提交正文失败：%s", strings.TrimSpace(out))
+	}
+	return strings.TrimSpace(out), nil
+}
+
+// formatGitTime 把 unix 时间戳格式化为本地时间。
 func formatGitTime(ts int64) string {
 	return time.Unix(ts, 0).Format("2006-01-02 15:04")
 }
@@ -462,4 +463,180 @@ func GraphCherryPick(dir string, sha string) (*GitOperationResult, error) {
 		return nil, err
 	}
 	return &GitOperationResult{Success: code == 0, Output: strings.TrimSpace(out)}, nil
+}
+
+// GraphCreateBranch 从指定提交新建分支；checkout=true 时立即检出到新分支
+//（对应 IDEA 右键菜单「新建分支」：分支名 + 签出分支 勾选）。
+func GraphCreateBranch(dir string, name string, sha string, checkout bool) (*GitOperationResult, error) {
+	dir = strings.TrimSpace(dir)
+	name = strings.TrimSpace(name)
+	sha = strings.TrimSpace(sha)
+	if dir == "" || name == "" || sha == "" {
+		return nil, fmt.Errorf("缺少目录、分支名或提交")
+	}
+	if strings.HasPrefix(name, "-") {
+		return nil, fmt.Errorf("非法分支名")
+	}
+	if strings.HasPrefix(sha, "-") || !shaRe.MatchString(sha) {
+		return nil, fmt.Errorf("非法提交：%s", sha)
+	}
+	if _, code, _ := gitRun(dir, []string{"rev-parse", "--verify", "--quiet", sha + "^{commit}"}, 5000); code != 0 {
+		return &GitOperationResult{Success: false, Output: "找不到提交：" + sha}, nil
+	}
+	if valid, code, _ := gitRun(dir, []string{"check-ref-format", "--branch", name}, 5000); code != 0 || strings.TrimSpace(valid) != name {
+		return &GitOperationResult{Success: false, Output: "分支名不合法：" + name}, nil
+	}
+	if gitBranchRefExists(dir, "refs/heads/"+name) {
+		return &GitOperationResult{Success: false, Output: "分支已存在：" + name}, nil
+	}
+	args := []string{"branch", name, sha}
+	if checkout {
+		args = []string{"checkout", "-b", name, sha}
+	}
+	out, code, err := gitRun(dir, args, 30000)
+	if err != nil {
+		return nil, err
+	}
+	return &GitOperationResult{Success: code == 0, Output: strings.TrimSpace(out), Branch: name}, nil
+}
+
+// GraphCheckoutForce 强制签出（丢弃挡路的未提交改动，前端必须先弹确认列出受影响文件）。
+func GraphCheckoutForce(dir string, ref string) (*GitOperationResult, error) {
+	dir = strings.TrimSpace(dir)
+	ref = strings.TrimSpace(ref)
+	if dir == "" || ref == "" {
+		return nil, fmt.Errorf("缺少目录或修订")
+	}
+	if strings.HasPrefix(ref, "-") {
+		return nil, fmt.Errorf("非法修订")
+	}
+	if _, code, _ := gitRun(dir, []string{"rev-parse", "--verify", "--quiet", ref + "^{commit}"}, 5000); code != 0 {
+		return &GitOperationResult{Success: false, Output: "找不到标记或修订：" + ref}, nil
+	}
+	out, code, err := gitRun(dir, []string{"checkout", "-f", ref}, 30000)
+	if err != nil {
+		return nil, err
+	}
+	branch := ""
+	if b, c, _ := gitRun(dir, []string{"rev-parse", "--abbrev-ref", "HEAD"}, 5000); c == 0 {
+		branch = strings.TrimSpace(b)
+	}
+	return &GitOperationResult{Success: code == 0, Output: strings.TrimSpace(out), Branch: branch}, nil
+}
+
+// GraphCheckoutSmart 智能签出（IDEA 语义）：先把本地改动 stash，签出成功后再恢复。
+// 签出失败会自动 pop 回滚；恢复冲突时改动保留在 stash 里并在输出中说明。
+func GraphCheckoutSmart(dir string, ref string) (*GitOperationResult, error) {
+	dir = strings.TrimSpace(dir)
+	ref = strings.TrimSpace(ref)
+	if dir == "" || ref == "" {
+		return nil, fmt.Errorf("缺少目录或修订")
+	}
+	if strings.HasPrefix(ref, "-") {
+		return nil, fmt.Errorf("非法修订")
+	}
+	if _, code, _ := gitRun(dir, []string{"rev-parse", "--verify", "--quiet", ref + "^{commit}"}, 5000); code != 0 {
+		return &GitOperationResult{Success: false, Output: "找不到标记或修订：" + ref}, nil
+	}
+	stashOut, code, err := gitRun(dir, []string{"stash", "push"}, 30000)
+	if err != nil {
+		return nil, err
+	}
+	if code != 0 {
+		return &GitOperationResult{Success: false, Output: "暂存本地改动失败：" + strings.TrimSpace(stashOut)}, nil
+	}
+	stashed := !strings.Contains(stashOut, "No local changes to save")
+	out, code, err := gitRun(dir, []string{"checkout", ref}, 30000)
+	if err != nil {
+		return nil, err
+	}
+	var sb strings.Builder
+	sb.WriteString(strings.TrimSpace(out))
+	if code != 0 {
+		// 签出仍失败（理论上 stash 后不该发生）：把改动恢复回来再报错
+		if stashed {
+			pOut, _, _ := gitRun(dir, []string{"stash", "pop"}, 30000)
+			sb.WriteString("\n已恢复暂存的本地改动。" + strings.TrimSpace(pOut))
+		}
+		return &GitOperationResult{Success: false, Output: strings.TrimSpace(sb.String())}, nil
+	}
+	branch := ""
+	if b, c, _ := gitRun(dir, []string{"rev-parse", "--abbrev-ref", "HEAD"}, 5000); c == 0 {
+		branch = strings.TrimSpace(b)
+	}
+	if stashed {
+		pOut, pcode, _ := gitRun(dir, []string{"stash", "pop"}, 30000)
+		sb.WriteString("\n" + strings.TrimSpace(pOut))
+		if pcode != 0 {
+			sb.WriteString("\n恢复暂存改动时冲突：改动仍保留在 stash 中，解决冲突后可 git stash drop。")
+		}
+	}
+	return &GitOperationResult{Success: true, Output: strings.TrimSpace(sb.String()), Branch: branch}, nil
+}
+
+// GitGraphFileChange 是一次提交的文件变动。
+type GitGraphFileChange struct {
+	Path    string `json:"path"`
+	OldPath string `json:"oldPath,omitempty"` // R/C（重命名/复制）时的原名
+	Status  string `json:"status"`            // A / M / D / R / C / T / U / X
+}
+
+// GraphCommitFiles 返回一次提交的文件变动（IDEA 右侧「本次变动」树的数据源）。
+// 普通提交相对其父；根提交相对空树；合并提交相对第一个父（diff-tree 默认对合并
+// 输出为空，必须显式给两个端点）。
+func GraphCommitFiles(dir string, sha string) ([]GitGraphFileChange, error) {
+	dir = strings.TrimSpace(dir)
+	sha = strings.TrimSpace(sha)
+	if dir == "" || sha == "" {
+		return nil, fmt.Errorf("缺少目录或提交")
+	}
+	if strings.HasPrefix(sha, "-") || !shaRe.MatchString(sha) {
+		return nil, fmt.Errorf("非法提交：%s", sha)
+	}
+	if _, code, _ := gitRun(dir, []string{"rev-parse", "--verify", "--quiet", sha + "^{commit}"}, 5000); code != 0 {
+		return nil, fmt.Errorf("找不到提交：%s", sha)
+	}
+	args := []string{"diff-tree", "--no-commit-id", "--name-status", "-r", "--root", "-z", sha}
+	if parOut, pcode, _ := gitRun(dir, []string{"rev-list", "--parents", "-n", "1", sha}, 5000); pcode == 0 {
+		if fields := strings.Fields(strings.TrimSpace(parOut)); len(fields) > 1 {
+			args = []string{"diff-tree", "--no-commit-id", "--name-status", "-r", "-z", fields[1], sha}
+		}
+	}
+	out, code, err := gitRun(dir, args, 30000)
+	if err != nil {
+		return nil, err
+	}
+	if code != 0 {
+		return nil, fmt.Errorf("读取文件变动失败：%s", strings.TrimSpace(out))
+	}
+	return parseNameStatusZ(out), nil
+}
+
+// parseNameStatusZ 解析 diff-tree -z 输出：普通条目 status\0path\0，重命名/复制为
+// status\0old\0new\0（status 带置信度后缀如 R100，只取首字母）。按路径排序。
+func parseNameStatusZ(out string) []GitGraphFileChange {
+	tok := strings.Split(out, "\x00")
+	files := []GitGraphFileChange{}
+	for i := 0; i < len(tok); i++ {
+		s := tok[i]
+		if s == "" {
+			continue
+		}
+		status := s[:1]
+		if i+1 >= len(tok) {
+			break
+		}
+		if status == "R" || status == "C" {
+			if i+2 >= len(tok) {
+				break
+			}
+			files = append(files, GitGraphFileChange{Path: tok[i+2], OldPath: tok[i+1], Status: status})
+			i += 2
+		} else {
+			files = append(files, GitGraphFileChange{Path: tok[i+1], Status: status})
+			i++
+		}
+	}
+	sort.Slice(files, func(a, b int) bool { return files[a].Path < files[b].Path })
+	return files
 }

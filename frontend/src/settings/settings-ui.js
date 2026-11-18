@@ -664,6 +664,10 @@ async function fillAboutVersion() {
 
 function selectSettingsPane(pane) {
     searchMod.resetSettingsSearch();
+    // 新建菜单是动态行：进「通用」时重建一次，保证显隐/顺序/模板改动立刻可见
+    if (pane === 'general' && deps.newFileMenuPane && typeof deps.newFileMenuPane.renderNewFileMenuPane === 'function') {
+        deps.newFileMenuPane.renderNewFileMenuPane();
+    }
     document.querySelectorAll('.snav-item').forEach((b) => b.classList.toggle('active', b.dataset.pane === pane));
     document.querySelectorAll('.settings-pane').forEach((p) => p.classList.toggle('hidden', p.dataset.pane !== pane));
     const group = document.getElementById('snav-formats');
@@ -762,6 +766,21 @@ function openSettings(pane = 'general', preset) {
         fillAboutVersion();
     }
     if (pane === 'integration') syncIntegrationStatus();
+}
+
+// 打开设置并定位到某行：pane 切过去后把目标行滚到视口中央并高亮闪烁
+// （.settings-hit 模式与 settings-search 的命中高亮同款，1600ms 同步）。
+// 传控件元素（如开关 input），向上找 .set-row；行不存在（pane 不对/已改名）静默跳过。
+function openSettingsAtRow(pane, controlEl) {
+    openSettings(pane);
+    const row = controlEl && controlEl.closest ? controlEl.closest('.set-row') : null;
+    if (!row) return;
+    requestAnimationFrame(() => {
+        if (!row.isConnected) return;
+        row.scrollIntoView({block: 'center'});
+        row.classList.add('settings-hit');
+        setTimeout(() => row.classList.remove('settings-hit'), 1600);
+    });
 }
 
 
@@ -898,6 +917,6 @@ const searchMod = createSettingsSearch(searchDeps);
 
     return {
         ...dlgMod, ...selMod, ...searchMod,
-        actRel, activityLog, applyCodeStyle, applyIntegration, applyReadOnlyToDoc, applySettings, countWords, currentCodeStyle, currentTheme, cursorPositionForDoc, elsDialogs, elsSettings, getFormatSettings, installReadOnlyGuards, openSettings, rtFullscreen, scheduleWordCount, selectSettingsPane, setCodeStyle, setTheme, syncIntegrationStatus, syncedOpenMode, toggleAlwaysOnTop, toggleCodeWrap, toggleFullscreen, updateLockButton, updateWordCount,
+        actRel, activityLog, applyCodeStyle, applyIntegration, applyReadOnlyToDoc, applySettings, countWords, currentCodeStyle, currentTheme, cursorPositionForDoc, elsDialogs, elsSettings, getFormatSettings, installReadOnlyGuards, openSettings, openSettingsAtRow, rtFullscreen, scheduleWordCount, selectSettingsPane, setCodeStyle, setTheme, syncIntegrationStatus, syncedOpenMode, toggleAlwaysOnTop, toggleCodeWrap, toggleFullscreen, updateLockButton, updateWordCount,
     };
 }

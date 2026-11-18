@@ -1,6 +1,7 @@
 package cmdbridge
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -120,5 +121,31 @@ func TestCommandJobStatusNotfound(t *testing.T) {
 	st := app.commandJobStatus("bg-not-exist", 0)
 	if st.State != "notfound" {
 		t.Fatalf("未知作业应返回 notfound，实际 %s", st.State)
+	}
+}
+
+func TestRunningAIJobCount(t *testing.T) {
+	// 计数是「当前值」语义（关窗判定用），注册表是全局的：其他测试可能留下已结束作业，
+	// 这里只断言差值，不断言绝对值。
+	before := RunningAIJobCount()
+	const n = 3
+	ids := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		id := "bg-count-" + fmt.Sprintf("%d", i)
+		registerCommandJob(id, "sh", "noop", false)
+		ids = append(ids, id)
+	}
+	if got := RunningAIJobCount(); got != before+n {
+		t.Fatalf("注册 %d 个运行中作业后计数应 +%d，实际 %d -> %d", n, n, before, got)
+	}
+	finishCommandJob(ids[0], 0)
+	if got := RunningAIJobCount(); got != before+n-1 {
+		t.Fatalf("结束 1 个作业后计数应 -1，实际 %d", got)
+	}
+	for _, id := range ids {
+		unregisterCommandJob(id)
+	}
+	if got := RunningAIJobCount(); got != before {
+		t.Fatalf("清理后计数应回到 %d，实际 %d", before, got)
 	}
 }

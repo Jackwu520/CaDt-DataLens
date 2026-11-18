@@ -222,7 +222,7 @@ function formatSteerMessage(text) {
 - `delivery: 'queue'`：按钮文字「插话」，tooltip「在当前轮的下一个工具边界注入，不打断当前工作」
 - `delivery: 'steer'`：按钮文字「排队」，tooltip「撤回插话，改回当前轮结束后发送」（降级，不重排队）
 - ~~不新增「抢占」按钮（行内已有编辑 / 插话 / 删除三个动作，再加会挤）；抢占只在输入框手势上提供~~ → 实施后按用户要求补了**图标抢占按钮**（⚡，`iconSvg('zap')` + tooltip「抢占：停止当前回复并立即发送这条消息」）：队列行已有三个文字动作，再加文字会挤，所以用图标；仅当前轮活着（含停止收尾窗口）时显示。
-- **拖动排序**（实施后追加）：行首加 3×3 点阵拖动手柄（`iconSvg('grip')`，`draggable` 只挂在手柄上，行内按钮照常可点），拖到另一行上/下半区决定插入位置，落点用 inset 阴影提示；`model.reorderSession(sessionId, orderedIds)` 只重排该会话的槽位，其它会话位置不动（flush / drain 都按队列顺序消费，重排即生效）。
+- **拖动排序**（实施后追加）：行首加 3×3 点阵拖动手柄（`iconSvg('grip')`，`draggable` 只挂在手柄上，行内按钮照常可点），拖到另一行上/下半区决定插入位置；落点对齐标签页的 **JetBrains 式让位插槽**（目标位置让出 26px 的 margin，0.13s 过渡），不画描边 / 插入线。`model.reorderSession(sessionId, orderedIds)` 只重排该会话的槽位，其它会话位置不动（flush / drain 都按队列顺序消费，重排即生效）。
 
 **消息气泡**：
 - Steer 消息在 transcript 里渲染成普通用户气泡（第 1 版不加徽章；位置在工具结果之后、下一段助手回复之前，语义已足够，与 DeepSeek harness 后来移除徽章的做法一致）
@@ -612,7 +612,7 @@ if (syncStreamView() || compactOf((currentSession() || {}).id)) {
 2. **ai-done 续轮分支放在空回复兜底之后**（正文写「之间」）：空回复重试本身会调 `startRound`，也会 drain pending steer；放在兜底之后避免把空 assistant 留在历史里。
 3. **drain 回滚用模型 `restoreItems(list, 'queue')`**：drain 已把条目移出队列，回滚按**入队时间顺序**放回同会话队列项之间（保持 FIFO，不插队），并改投 queue。
 4. **附件白名单按 `kind` 判定**：除 `image` / `video` / `message_quote`（常量取自 `ai-quote.js`）外的附件（`file` / `skill` / `selection`）都降级排队——引用 markup 在 drain 时用 `quoteMarkupFromAttachments` 拼进 content，与 `submitText` 同一口径。纯图片 / 纯视频插话补正文占位「（附图）」，否则模板会被跳过。
-5. **`steer` 标记不进轮次口径**：`buildApiMessages` 的「保留最近 2 轮原文」、`turnStartAt`、`lastUserIndex`（重新生成 / 编辑重发）、`isTurnBoundaryMessage`（回合分组 / 列表排序键 / 渲染窗口）、上下文统计的轮数、`ai-usage-ui` 的轮数、结构面板的轮号全部跳过 steer，避免补充指示被当成用户发起的新回合。
+5. **`steer` 标记不进轮次口径**：`buildApiMessages` 的「保留最近 2 轮原文」、`turnStartAt`、`lastUserIndex`（重新生成 / 编辑重发）、`isTurnBoundaryMessage`（回合分组 / 列表排序键 / 渲染窗口）、上下文统计的轮数、`ai-usage-ui` 的轮数全部跳过 steer，避免补充指示被当成用户发起的新回合。**但可见性不走这条口径**（见 §13.14）：结构面板仍列出插话（沿用所属轮号 + 「插话」标签），回合折叠也把插话切成独立段、整条渲染在折叠区外。
 6. **重放一致性**：`normalizeMessage` 保留 `raw.steer === true`——否则重启 / 懒加载补正文后历史 steer 不再包模板，且后续 truncate 重写会把磁盘标记抹掉。
 7. **停止 / 收尾窗口降级**：`stopGeneration` 后最多 1.2s 内 `streams` 仍登记着已停止的流，此时插话会被 `finishStream` 的 `clearSteer` 丢弃。插话手势与队列行按钮都先看 `liveSteerableStream()`（`stopped` / `finished` 即视为窗口关闭），降级为排队并登记 `interjectPending`，由收尾冲刷；抢占手势在已停止时不再重复 `stopGeneration`。
 8. **视频插话复用发送预检**：含 `kind: 'video'` 的插话必须通过 `modelVideoInputEnabled(profile, entry)`（与 `startSessionTurn` 的 `video_protocol` 同源），否则降级排队——避免在历史里留下一条每轮请求都被拒收的视频消息。
@@ -620,5 +620,6 @@ if (syncStreamView() || compactOf((currentSession() || {}).id)) {
 10. **所有权 API 收敛**：`pushItem/unshiftItem` 合并为 `enqueueItem`（全仓无其它消费方），`snapshot` 用 `structuredClone` 做完整深拷贝（含附件嵌套对象）。
 11. **护栏**：`test/ai/ai-message-queue.test.mjs`（模型边界 / 壳清理 / 深拷贝）与 `test/ai/ai-turn-steer-wiring.test.mjs`（源码接线 + 文案合同 + 运行时导出检查）；两者均登记进 `npm test`。
 12. **队列行 ⚡ 抢占按钮（2026-11-18 按用户要求补）**：原方案 §4.6 说不加抢占按钮，但实际使用中队列行没有点击抢占的入口。现补 `preemptQueuedItem(item)`：改投 queue → 移到队首 → `interjectPending` → `stopGeneration()`（停止收尾窗口内不再重复停轮，直接等 `finishStream` 冲刷）；仅当前轮活着时显示，避免空闲队列出现误导性按钮。
-13. **队列行拖动排序（2026-11-18 按用户要求补）**：行首 3×3 点阵手柄（新增 `grip` 图标）+ HTML5 DnD；`reorderSession` 按给定 id 顺序只重排目标会话的槽位，未知 id 忽略、漏掉的条目按原顺序补末尾（不丢消息）；落点用 `drop-before` / `drop-after` 内阴影提示，拖动中源行半透明。
+13. **队列行拖动排序（2026-11-18 按用户要求补）**：行首 3×3 点阵手柄（新增 `grip` 图标）+ HTML5 DnD；`reorderSession` 按给定 id 顺序只重排目标会话的槽位，未知 id 忽略、漏掉的条目按原顺序补末尾（不丢消息）；落点用 `drop-gap-before` / `drop-gap-after` **让位插槽**（margin 0.13s 过渡，与标签页拖动同一套视觉，不画描边），拖动中源行半透明。
+14. **插话可见性（2026-11-18 按用户反馈补）**：轮次口径不把 steer 当新回合，但显示上必须让用户看到自己说过的话——① `renderTurn` 的分段在 steer 处切开，插话整条渲染在**过程折叠区外**（与已答提问卡同一原则；折叠状态仍按轮共享，不会多出开关）；② `buildSessionOutlineItems` 保留 steer 项（`steer: true`），轮号不递增，渲染时加「插话」标签（`so-steer-tag`，琥珀色，与队列胶囊同色系）。
 

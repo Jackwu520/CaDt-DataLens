@@ -416,7 +416,7 @@ export function createAISettingsDialog(ctx) {
         if (opt.retryMax) opt.retryMax.value = String(getConfig().retryMax);
         if (opt.subAgentMax) opt.subAgentMax.value = String(getConfig().subAgentMax);
         if (opt.subAgentMaxDepth) opt.subAgentMaxDepth.value = String(getConfig().subAgentMaxDepth);
-        if (opt.subAgentRounds) opt.subAgentRounds.value = String(aiClampInt(getConfig().subAgentRounds, 3, 200, 50));
+        if (opt.subAgentRounds) opt.subAgentRounds.value = String(aiClampInt(getConfig().subAgentRounds, 3, 200, 200));
         renderSubAgentModelOptions();
         if (opt.skillIndexMax) opt.skillIndexMax.value = String(aiClampInt(getConfig().skillIndexMaxUser, 1, 100, 100));
         if (opt.notifyError) opt.notifyError.checked = getConfig().notifyError !== false;
@@ -880,7 +880,7 @@ export function createAISettingsDialog(ctx) {
                 : '子代理层级上限：不设限', 'ok');
         });
         if (opt.subAgentRounds) opt.subAgentRounds.addEventListener('change', () => {
-            getConfig().subAgentRounds = aiClampInt(opt.subAgentRounds.value, 3, 200, 50);
+            getConfig().subAgentRounds = aiClampInt(opt.subAgentRounds.value, 3, 200, 200);
             opt.subAgentRounds.value = String(getConfig().subAgentRounds);
             saveAIConfig();
             setSettingsStatus('子代理默认轮次：' + getConfig().subAgentRounds + ' 轮' +
@@ -1006,7 +1006,7 @@ export function createAISettingsDialog(ctx) {
             saveAIConfig();
             permMod.renderLocalClassifierStatus();
             setSettingsStatus(getConfig().localClassifierPersonalize
-                ? '个性化学习：已开启（学习你在端侧审批卡上的裁定）'
+                ? '个性化学习：已开启（学习用户在端侧审批卡上的裁定）'
                 : '个性化学习：已关闭', 'ok');
         });
         if (opt.localClassifierTest) opt.localClassifierTest.addEventListener('input', () => {

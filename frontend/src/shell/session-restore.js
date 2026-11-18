@@ -235,6 +235,15 @@ function deserializeSplitSession(node, idxToGid) {
 
 async function restoreSession(sess) {
     if (auxWindowNoSession()) return false;
+    // 快照必须属于本窗口的工作区：cadt.session.v1 是多窗口共享的 localStorage 里
+    // 「最后保存的那个窗口」的环境，拿错快照就会把别的工作区的标签恢复进来，还会顺手把
+    // 本窗口的工作区一起换掉（多窗口一目录一窗口下这是串台）。空 workspace 的快照
+    // （欢迎页/无目录启动）不拦：它本来就要恢复出目录来。
+    if (sess && sess.workspace && deps.workspaceFolder &&
+        sessionPathKey(sess.workspace) !== sessionPathKey(deps.workspaceFolder)) {
+        deps.logFrontend('warn', '会话恢复跳过：快照属于 ' + sess.workspace + '，本窗口工作区是 ' + deps.workspaceFolder);
+        return false;
+    }
     try {
         if (sess.workspace && !deps.workspaceFolder) deps.openFolderWorkspace(sess.workspace);
         knownDocViews = new Map();

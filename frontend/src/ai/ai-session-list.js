@@ -94,7 +94,7 @@ export function createAISessionList(ctx) {
     // 会话条目右侧状态图标的悬浮提示
     const SESSION_STATUS_TITLE = {
         running: '会话运行中',
-        pending: '待确认：需要你审批或回答',
+        pending: '待确认：需要用户审批或回答',
         done: '会话已完成，尚未查看',
         error: '会话出错，尚未查看',
     };

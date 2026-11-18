@@ -90,7 +90,7 @@ test('quoteExcerpt：压平换行，超过阈值截断且不丢完整长度信�
 
 test('quoteChipLabel / quoteLabel：角色、索引与选区标记', () => {
     assert.equal(quoteChipLabel(sample), '助手回复 #12（选区）');
-    assert.equal(quoteChipLabel({source: 'user', index: 3, scope: 'message'}), '你的消息 #3（整条）');
+    assert.equal(quoteChipLabel({source: 'user', index: 3, scope: 'message'}), '用户消息 #3（整条）');
     assert.equal(quoteLabel(sample), '引用 · 助手回复 #12（选区）');
 });
 

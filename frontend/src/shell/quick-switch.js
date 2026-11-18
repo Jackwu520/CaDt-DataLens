@@ -25,6 +25,7 @@ function quickSwitchTitleFor(level) {
         indent: '缩进',
         layout: '布局',
         openmode: '打开方式',
+        bookmarks: '书签（Delete 删除选中项）',
     })[level] || '切换';
 }
 
@@ -145,6 +146,26 @@ function quickSwitchSubItems(level) {
             },
         ];
     }
+    if (level === 'bookmarks') {
+        // 书签总览：聚合打开中的文档（bookmark-list.js），点击跨文件跳转，Delete 删除选中项
+        const groups = typeof deps.bookmarkOverview === 'function' ? deps.bookmarkOverview() : [];
+        if (!groups.length) return [{label: '当前没有书签（代码/文本视图按 F11 添加）', disabled: true}];
+        const items = [];
+        let prevPath = '';
+        for (const group of groups) {
+            if (prevPath && group.path !== prevPath) items.push({sep: true});
+            prevPath = group.path;
+            for (const row of group.rows) {
+                items.push({
+                    label: group.name + ' · 第 ' + row.line + ' 行',
+                    value: row.preview,
+                    del: {path: group.path, row: row.row},
+                    action: () => deps.jumpBookmarkEntry && deps.jumpBookmarkEntry({path: group.path, row: row.row}),
+                });
+            }
+        }
+        return items;
+    }
     return [];
 }
 
@@ -264,11 +285,11 @@ function enterQuickSwitchLevel(level) {
     deps.els.quickSwitch.focus();
 }
 
-function openQuickSwitch() {
+function openQuickSwitchAt(level) {
     if (quickSwitch.open || deps.isDialogOpen()) return;
     deps.closeAllMenus();
     quickSwitch.open = true;
-    quickSwitch.level = 'main';
+    quickSwitch.level = level || 'main';
     quickSwitch.index = 0;
     quickSwitch.mainIndex = 0;
     const active = document.activeElement;
@@ -277,6 +298,10 @@ function openQuickSwitch() {
     deps.els.quickSwitchMask.classList.remove('hidden');
     renderQuickSwitch();
     deps.els.quickSwitch.focus();
+}
+
+function openQuickSwitch() {
+    openQuickSwitchAt('main');
 }
 
 function closeQuickSwitch() {
@@ -319,6 +344,15 @@ function handleQuickSwitchKey(e) {
         activateQuickSwitch(quickSwitch.index);
         return true;
     }
+    if (e.key === 'Delete' && quickSwitch.level === 'bookmarks') {
+        // 总览里删书签：只有打开中的文档可删（与书签的持久化口径一致）；删完就地刷新
+        const row = quickSwitch.rows[quickSwitch.index];
+        if (row && row.item.del && typeof deps.removeBookmarkEntry === 'function') {
+            deps.removeBookmarkEntry(row.item.del);
+            renderQuickSwitch();
+        }
+        return true;
+    }
     if ((e.key === 'ArrowLeft' || e.key === 'Backspace') && quickSwitch.level !== 'main') {
         enterQuickSwitchLevel('main');
         return true;
@@ -343,5 +377,5 @@ deps.els.quickSwitchBack.addEventListener('click', (e) => {
 });
 
 
-    return {handleQuickSwitchKey, openQuickSwitch, quickSwitch, toggleQuickSwitch};
+    return {handleQuickSwitchKey, openQuickSwitch, openQuickSwitchAt, quickSwitch, toggleQuickSwitch};
 }

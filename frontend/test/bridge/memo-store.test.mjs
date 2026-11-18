@@ -4,7 +4,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createMemoStore} from '../../src/bridge/memo-store.js';
-import {addItem} from '../../src/bridge/memo-model.js';
+import {addBlock, addItem, attachImage, removeById, removeImageById, updateById} from '../../src/bridge/memo-model.js';
 
 const SAVE_DEBOUNCE_MS = 1100; // store 里 1000ms + 余量
 
@@ -13,9 +13,10 @@ function makeBackend() {
     const files = new Map();
     let seq = 1;
     const calls = {save: [], load: []};
+    const deleteCalls = [];
     const keyOf = (scope, ws) => scope + '|' + (ws || '');
     return {
-        files, calls, keyOf,
+        files, calls, keyOf, deleteCalls,
         async MemoLoad(scope, workspace) {
             calls.load.push({scope, workspace});
             const cur = files.get(keyOf(scope, workspace));
@@ -37,6 +38,7 @@ function makeBackend() {
             return {ok: true, mtimeMs};
         },
         async MemoSaveImage() { return 'img/img-test.png'; },
+        async DeleteEntry(path) { deleteCalls.push(path); },
     };
 }
 
@@ -46,6 +48,8 @@ function makeStore(backend, hooks = {}) {
         flash: hooks.flash || (() => {}),
         workspaceRoot: hooks.workspaceRoot || (() => '/ws/a'),
         onPendingChange: hooks.onPendingChange || (() => {}),
+        // 贴图 GC 定位：mock 根 = <workspace|/appdata>/memo-root
+        resolveRoot: hooks.resolveRoot || (async (scope, ws) => (ws || '/appdata') + '/memo-root'),
     });
 }
 
@@ -155,4 +159,82 @@ test('外部变更重载：有未保存修改时跳过（不丢正要写的内�
     const changed = await store.reloadExternal('workspace');
     assert.equal(changed, false, 'dirty 时不重读');
     assert.equal(store.hasPending(), true);
+});
+
+test('删贴图引用 → 保存成功 → img 文件走 DeleteEntry（回收站）', async () => {
+    const backend = makeBackend();
+    const store = makeStore(backend);
+    const add = await store.mutate('workspace', (doc) => addItem(doc, '', '带图'));
+    await store.mutate('workspace', (doc) => attachImage(doc, add.id, 'img/x1.png'));
+    await store.flush('workspace'); // 带图状态先落盘（磁盘上才有这个文件，GC 才有可删对象）
+    await store.mutate('workspace', (doc) => removeImageById(doc, add.id, 'img/x1.png'));
+    assert.equal(backend.deleteCalls.length, 0, '删除引用后要等保存成功才删文件');
+
+    await store.flush('workspace');
+    assert.deepEqual(backend.deleteCalls, ['/ws/a/memo-root/img/x1.png'],
+        '保存成功后按缓存捕获的工作区根删文件');
+});
+
+test('删块连带条目贴图 → 保存后全部进回收站', async () => {
+    const backend = makeBackend();
+    const store = makeStore(backend);
+    const blk = await store.mutate('workspace', (doc) => {
+        const r = addBlock(doc, '带图块');
+        let d = r.doc;
+        d = addItem(d, r.id, '一').doc;
+        return {ok: true, doc: d, removedImages: [], id: r.id};
+    });
+    const firstId = () => {
+        const doc = store.cached('workspace');
+        const block = doc.blocks.find((b) => b.id === blk.id);
+        return block.items[0].id;
+    };
+    await store.mutate('workspace', (doc) => attachImage(doc, firstId(), 'img/b1.png'));
+    await store.mutate('workspace', (doc) => attachImage(doc, firstId(), 'img/b2.png'));
+    await store.flush('workspace');
+    assert.equal(backend.deleteCalls.length, 0, '首次保存无删除');
+
+    await store.mutate('workspace', (doc) => removeById(doc, blk.id));
+    await store.flush('workspace');
+    const deleted = backend.deleteCalls.map((p) => p.split('/').pop()).sort();
+    assert.deepEqual(deleted, ['b1.png', 'b2.png'], '删块连带两张贴图一起回收');
+});
+
+test('CAS 冲突重载把引用带回来 → 保存成功后不删文件', async () => {
+    const backend = makeBackend();
+    const store = makeStore(backend);
+    const add = await store.mutate('workspace', (doc) => addItem(doc, '', '带图3'));
+    await store.mutate('workspace', (doc) => attachImage(doc, add.id, 'img/x2.png'));
+    await store.flush('workspace');
+
+    // 别的窗口写入的版本仍含该图引用（mtime 过期 → 我方保存必冲突）
+    const key = backend.keyOf('workspace', '/ws/a');
+    backend.files.set(key, {
+        data: JSON.stringify({version: 1, updatedAt: 9, blocks: [{id: 'blk-o', title: '别人的', collapsed: false,
+            items: [{id: add.id, text: '带图3', kind: 'text', status: 'pending', createdAt: 1, updatedAt: 1, images: ['img/x2.png']}]}]}),
+        mtimeMs: 999999,
+    });
+
+    await store.mutate('workspace', (doc) => removeImageById(doc, add.id, 'img/x2.png'));
+    const res = await store.flush('workspace');
+    assert.equal(res.conflict, true, '过期 mtime 应冲突重载');
+    assert.equal(backend.deleteCalls.length, 0, '冲突未保存成功，不删');
+
+    // 重载回来的文档引用还在：再随便改一笔并保存成功 → 该图绝不能删
+    await store.mutate('workspace', (doc) => updateById(doc, add.id, {text: '改一下'}));
+    await store.flush('workspace');
+    assert.equal(backend.deleteCalls.filter((p) => p.includes('x2.png')).length, 0,
+        '引用还在文档里，文件必须保留');
+});
+
+test('正文占位符删除 → 保存成功 → 文件同样回收（GC 口径含正文）', async () => {
+    const backend = makeBackend();
+    const store = makeStore(backend);
+    const add = await store.mutate('workspace', (doc) => addItem(doc, '', '看 ![图](img/x3.png) 图'));
+    await store.flush('workspace');
+    await store.mutate('workspace', (doc) => updateById(doc, add.id, {text: '图删了'}));
+    await store.flush('workspace');
+    assert.deepEqual(
+        backend.deleteCalls.filter((p) => p.includes('x3.png')),
+        ['/ws/a/memo-root/img/x3.png'], '正文里删掉占位符即回收文件');
 });

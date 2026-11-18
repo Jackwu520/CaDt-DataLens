@@ -53,6 +53,19 @@ test('只有环境块的纯注入消息不占行，带图片/视频仍以数量�
     assert.deepEqual(out.items.map((item) => item.text), ['（2 张图片）', '（1 个视频）', '正文']);
 });
 
+test('插话（steer）不占新轮号，但作为可定位项列出并带标记', () => {
+    const out = buildSessionOutlineItems([
+        {role: 'user', content: '第一轮'},
+        {role: 'assistant', content: '好的'},
+        {role: 'user', content: '补充一句', steer: true},
+        {role: 'assistant', content: '继续'},
+        {role: 'user', content: '第二轮'},
+    ]);
+    assert.deepEqual(out.items.map((item) => item.text), ['第一轮', '补充一句', '第二轮']);
+    assert.deepEqual(out.items.map((item) => item.round), [1, 1, 2]);
+    assert.deepEqual(out.items.map((item) => item.steer === true), [false, true, false]);
+});
+
 test('超过上限只保留最近若干轮，并标记 truncated', () => {
     const messages = [];
     for (let i = 0; i < 10; i += 1) messages.push({role: 'user', content: '第 ' + i + ' 轮'});

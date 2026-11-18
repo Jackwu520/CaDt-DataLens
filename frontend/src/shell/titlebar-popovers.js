@@ -5,6 +5,7 @@
 // 这样既不依赖 main.js 的声明顺序，也不会把 let 状态拍成快照。
 import {createTitlebarGitBranch} from './titlebar-git-branch.js';
 import {createTitlebarProject} from './titlebar-project.js';
+import {createTitlebarRunConfig} from './titlebar-run-config.js';
 
 export function createTitlebarPopovers(deps) {
 
@@ -41,17 +42,19 @@ function positionToolbarPopover(pop, anchor) {
 }
 
 
-// 两个弹层要互相关闭对方：共用一个 extras 对象，交叉引用在两侧创建后才补上（调用都在运行时）
+// 三个弹层要互相关闭对方：共用一个 extras 对象，交叉引用在各侧创建后才补上（调用都在运行时）
 const popDeps = Object.create(deps);
 popDeps.isToolbarPopOpen = isToolbarPopOpen;
 popDeps.positionToolbarPopover = positionToolbarPopover;
 popDeps.POP_ICONS = POP_ICONS;
 const projMod = createTitlebarProject(popDeps);
 const gitMod = createTitlebarGitBranch(popDeps);
+const runMod = createTitlebarRunConfig(popDeps);
 popDeps.closeProjectPopover = projMod.closeProjectPopover;
 popDeps.closeGitBranchPopover = gitMod.closeGitBranchPopover;
+popDeps.closeRunConfigPopover = runMod.closeRunConfigPopover;
 
     return {
-        ...projMod, ...gitMod,
+        ...projMod, ...gitMod, ...runMod,
     };
 }

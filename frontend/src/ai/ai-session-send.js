@@ -278,7 +278,7 @@ export function createAISessionSend(ctx) {
             if (!ids.length) return;
             closeDialog();
             // 内容由用户自己写的（无来源消息）→ 按「用户指令」投递；转发某条模型消息 → 仍按参考信息。
-            // sender 为 null（全局入口）时卡片写「来自你」，不编造会话身份。
+            // sender 为 null（全局入口）时卡片写「来自用户」，不编造会话身份。
             const out = deliverToSessions(ids, text, {session: sender, byUser: !sourceText});
             reportReceipt(out, '已投递到');
         }

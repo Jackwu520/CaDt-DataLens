@@ -28,6 +28,17 @@ func ParseOpenSettingsArg(args []string) string {
 	return ""
 }
 
+// ParseMemoLocatorArg 解析 --memo=<locator>（cadt-memo://scope/kind/id），没有则返回空串。
+func ParseMemoLocatorArg(args []string) string {
+	for _, arg := range args {
+		arg = strings.TrimSpace(arg)
+		if strings.HasPrefix(arg, "--memo=") {
+			return strings.TrimSpace(strings.TrimPrefix(arg, "--memo="))
+		}
+	}
+	return ""
+}
+
 // ParseAISessionArg 解析 --ai-session=<id>，没有则返回空串。
 func ParseAISessionArg(args []string) string {
 	for _, arg := range args {

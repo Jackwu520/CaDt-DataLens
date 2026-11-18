@@ -76,7 +76,7 @@ export function quoteExcerpt(text, limit = AI_QUOTE_EXCERPT_LIMIT) {
 }
 
 export function quoteChipLabel(quote) {
-    const role = quote && quote.source === 'user' ? '你的消息' : '助手回复';
+    const role = quote && quote.source === 'user' ? '用户消息' : '助手回复';
     const index = (quote && Number(quote.index)) || 0;
     return role + ' #' + index + (quote && quote.scope === 'selection' ? '（选区）' : '（整条）');
 }

@@ -2,7 +2,7 @@
 // 条目表、体积统计与删除都在 Go 侧 internal/storage，这里只渲染与传 id；
 // 缓存直删，数据进回收站，WebView2 相关的两项排到下次启动前执行。
 
-import {createSwitch} from '../core/form-controls.js';
+import {createSelect, createSwitch} from '../core/form-controls.js';
 
 // ---- 纯函数（测试见 settings-pane-storage.test.mjs）----
 
@@ -33,6 +33,36 @@ export function groupStorageItems(items) {
 // cacheIDs：「清除缓存」按钮的范围由后端标记决定，前端不写死清单。
 export function cacheIDs(items) {
     return groupStorageItems(items).cache.map((item) => item.id);
+}
+
+// —— 自动清理（docs/finished-plans/auto-cache-cleanup.md）——
+
+// 自动清理范围的固定排除项：内嵌浏览器实例数据含网页登录态，自动静默清等于不定时把
+// 用户登出网站；手动「清除缓存」有确认文案兜底所以不受限，自动清理永远不碰它。
+export const AUTO_CLEAN_EXCLUDED = ['browser-profiles'];
+
+// 自动清理「上次执行」时间戳的 localStorage 键（跨窗口共享；驱动器与设置页共同读写）
+export const AUTO_CLEAN_LAST_KEY = 'datalens-storage-autoclean-last';
+
+// autoCleanScope：自动清理范围 = 后端 inCache 条目的安全子集。
+// data/danger 条目永不进入——显式传 id 列表，不依赖 Go 侧兜底。
+export function autoCleanScope(items) {
+    const list = Array.isArray(items) ? items : [];
+    return cacheIDs(list).filter((id) => {
+        if (AUTO_CLEAN_EXCLUDED.includes(id)) return false;
+        const item = list.find((row) => row.id === id);
+        return !!(item && item.exists);
+    });
+}
+
+// shouldAutoClean：任一条件满足即清。intervalDays=0 关闭时间条件，thresholdBytes=0 关闭大小条件；
+// 从未清理过（lastAt=0）视为时间条件已到期。返回触发原因（'interval' | 'size'）或空串。
+export function shouldAutoClean({now, lastAt, intervalDays, cacheBytes, thresholdBytes}) {
+    const days = Math.max(0, Number(intervalDays) || 0);
+    if (days > 0 && now - (Number(lastAt) || 0) >= days * 86400000) return 'interval';
+    const threshold = Math.max(0, Number(thresholdBytes) || 0);
+    if (threshold > 0 && (Number(cacheBytes) || 0) >= threshold) return 'size';
+    return '';
 }
 
 // prunePicked：重新统计后，已经不在表里或已经清空的条目要从勾选里掉出去。
@@ -143,6 +173,8 @@ export function createSettingsPaneStorage(deps) {
         clearCache: document.getElementById('stg-clear-cache'),
         dataList: document.getElementById('stg-data-list'),
         clearPicked: document.getElementById('stg-clear-picked'),
+        autoList: document.getElementById('stg-auto-list'),
+        autoDesc: document.getElementById('stg-auto-desc'),
     };
     const picked = new Set();
     let report = null;
@@ -171,6 +203,7 @@ export function createSettingsPaneStorage(deps) {
 
     async function renderStoragePane() {
         if (!els.cacheList) return;
+        paintAuto();
         if (!deps.backend.StorageScan) {
             errorText = '当前后端版本不支持存储统计';
             paint();
@@ -409,6 +442,89 @@ export function createSettingsPaneStorage(deps) {
         } else {
             act();
         }
+    }
+
+    // —— 自动清理：三个控件行（开关 / 时间间隔 / 大小阈值），天数或 MB 为 0 表示关闭对应条件 ——
+    function autoCleanConfig() {
+        const s = deps.settings || {};
+        return {
+            enabled: s.storageAutoClean === true,
+            days: Number(s.storageAutoCleanDays),
+            mb: Number(s.storageAutoCleanMB),
+        };
+    }
+
+    function autoCleanDesc() {
+        if (!deps.settings || deps.settings.storageAutoClean !== true) {
+            return '默认关闭；开启后定期或按缓存大小自动清理可再生缓存（不含浏览器登录态）。';
+        }
+        const last = Number(localStorage.getItem(AUTO_CLEAN_LAST_KEY) || 0);
+        return (last ? '上次自动清理：' + new Date(last).toLocaleString() : '尚未自动清理过') + '；检查后满足条件即自动执行。';
+    }
+
+    function buildAutoRow(title, note, control) {
+        const row = document.createElement('div');
+        row.className = 'stg-row';
+        const main = document.createElement('div');
+        main.className = 'stg-row-main';
+        const titleEl = span('stg-row-title');
+        titleEl.append(span(null, title));
+        if (note) titleEl.appendChild(infoTip(note));
+        main.appendChild(titleEl);
+        row.appendChild(main);
+        const holder = document.createElement('div');
+        holder.className = 'stg-row-switch';
+        holder.appendChild(control);
+        row.appendChild(holder);
+        return row;
+    }
+
+    function paintAuto() {
+        if (!els.autoList) return;
+        const cfg = autoCleanConfig();
+        els.autoList.textContent = '';
+        const switchControl = createSwitch({
+            checked: cfg.enabled,
+            title: '开启后按下面的条件自动清理缓存（无需确认，范围只含可再生缓存）',
+            onChange: (event) => {
+                deps.settings.storageAutoClean = event.target.checked;
+                deps.applySettings();
+                paintAuto();
+            },
+        });
+        els.autoList.appendChild(buildAutoRow('自动清理', '范围 = 「清除缓存」的条目表去掉浏览器实例（含网页登录态）', switchControl.element));
+        const daySelect = createSelect({
+            options: [
+                {value: '1', label: '每天', selected: cfg.days === 1},
+                {value: '3', label: '每 3 天', selected: cfg.days === 3},
+                {value: '7', label: '每周', selected: cfg.days === 7 || !Number.isFinite(cfg.days)},
+                {value: '30', label: '每月', selected: cfg.days === 30},
+                {value: '0', label: '仅按大小', selected: cfg.days === 0},
+            ],
+            disabled: !cfg.enabled,
+            onChange: () => {
+                deps.settings.storageAutoCleanDays = Number(daySelect.control.value);
+                deps.applySettings();
+            },
+        });
+        els.autoList.appendChild(buildAutoRow('时间间隔', '距上次自动清理超过该间隔就清一次；启动后与运行中每 6 小时各检查一次', daySelect.element));
+        const mbSelect = createSelect({
+            options: [
+                {value: '100', label: '超过 100 MB', selected: cfg.mb === 100},
+                {value: '200', label: '超过 200 MB', selected: cfg.mb === 200},
+                {value: '500', label: '超过 500 MB', selected: cfg.mb === 500 || !Number.isFinite(cfg.mb)},
+                {value: '1024', label: '超过 1 GB', selected: cfg.mb === 1024},
+                {value: '2048', label: '超过 2 GB', selected: cfg.mb === 2048},
+                {value: '0', label: '仅按时间', selected: cfg.mb === 0},
+            ],
+            disabled: !cfg.enabled,
+            onChange: () => {
+                deps.settings.storageAutoCleanMB = Number(mbSelect.control.value);
+                deps.applySettings();
+            },
+        });
+        els.autoList.appendChild(buildAutoRow('大小阈值', '缓存总量超过该值就清一次', mbSelect.element));
+        if (els.autoDesc) els.autoDesc.textContent = autoCleanDesc();
     }
 
     if (els.refresh) els.refresh.addEventListener('click', () => rescan());

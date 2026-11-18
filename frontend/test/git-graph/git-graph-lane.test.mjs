@@ -1,61 +1,158 @@
 // git-graph-lane.test.mjs —— Git 图谱泳道 SVG 几何纯函数测试。
-// 泳道拓扑本身在 Go 侧算（internal/gitinfo/graph.go 的 assignLanes），前端只负责渲染；
-// 这里测渲染几何：laneCenterX / laneSvgWidth / buildLaneSvg。
+// 布局由 `git log --graph`（graph.c 权威算法）产生、Go 侧解析成组内字形表，
+// 前端按 Gitea svgcontainer.tmpl 映射逐字形直译成 SVG 段；这里测渲染几何：
+// glyphX / laneSvgWidth / buildLaneSvg / parseCommitRefs / fileTreeFromChanges。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {laneCenterX, laneSvgWidth, buildLaneSvg} from '../../src/git-graph/git-graph.js';
+import {
+    glyphX, laneSvgWidth, buildLaneSvg, parseCommitRefs, fileTreeFromChanges,
+    buildSkeletonHtml, clampPaneWidth,
+} from '../../src/git-graph/git-graph.js';
 
-test('laneCenterX 按泳道序号递增，间距恒定', () => {
-    const x0 = laneCenterX(0);
-    const x1 = laneCenterX(1);
-    const x2 = laneCenterX(2);
-    assert.equal(x1 - x0, x2 - x1, '相邻泳道间距应相等');
-    assert.ok(x0 > 0, '首泳道应留左留白');
+test('glyphX：字形竖线画在格子右边界，相邻位差半泳道', () => {
+    assert.equal(glyphX(1) - glyphX(0), 8, '相邻字形位差 = 半泳道宽');
+    assert.equal(glyphX(2) - glyphX(1), 8);
+    assert.ok(glyphX(0) > 0, '首字形留左留白');
 });
 
 test('laneSvgWidth 容纳所有泳道且不小于单泳道', () => {
-    assert.ok(laneSvgWidth(1) >= laneCenterX(0) + 8);
+    assert.ok(laneSvgWidth(1) >= glyphX(0) + 8);
     assert.ok(laneSvgWidth(4) > laneSvgWidth(1));
-    // 宽度应能容纳最后一条泳道的圆点
-    assert.ok(laneSvgWidth(3) >= laneCenterX(2) + 8);
 });
 
-test('buildLaneSvg 为每行画一个圆点', () => {
+test('buildLaneSvg 直线历史：每行一个圆点 + 一条满行竖线', () => {
     const commits = [
-        {sha: 'a', parents: ['b'], lane: 0, throughLanes: []},
-        {sha: 'b', parents: [], lane: 0, throughLanes: []},
+        {sha: 'a', dotPos: 0, dotFlow: 1, rows: 1, glyphs: [{r: 0, p: 0, c: '*', f: 1}]},
+        {sha: 'b', dotPos: 0, dotFlow: 1, rows: 1, glyphs: [{r: 0, p: 0, c: '*', f: 1}]},
     ];
     const svg = buildLaneSvg(commits, 1);
-    const dots = svg.match(/class="gg-dot"/g) || [];
-    assert.equal(dots.length, 2, '两行应有两个圆点');
-    assert.ok(svg.includes('<svg'), '应包含 svg 壳');
+    assert.equal((svg.match(/class="gg-dot"/g) || []).length, 2);
+    // 每行一条竖线段：M glyphX(0),行顶 → L glyphX(0),行底，首尾相接
+    assert.equal((svg.match(/class="gg-line"/g) || []).length, 2);
+    assert.ok(svg.includes(`M${glyphX(0)},0 L${glyphX(0)},26`), '第一行竖线应满行');
+    assert.ok(svg.includes(`M${glyphX(0)},26 L${glyphX(0)},52`), '第二行竖线应从上一行底接起');
 });
 
-test('buildLaneSvg 穿线泳道画额外竖线', () => {
+test('buildLaneSvg 分叉：关系行的反斜线从主线跨 2 格到下一泳道', () => {
+    // 组 = 提交行 `*` + 关系行 `|\`（2 行 → 行高 13）
     const commits = [
-        {sha: 'm', parents: ['a', 'b'], lane: 0, throughLanes: [1]},
-        {sha: 'a', parents: [], lane: 0, throughLanes: []},
+        {sha: 'm', dotPos: 0, dotFlow: 1, rows: 2, glyphs: [
+            {r: 0, p: 0, c: '*', f: 1},
+            {r: 1, p: 0, c: '|', f: 1},
+            {r: 1, p: 1, c: '\\', f: 2},
+        ]},
+        {sha: 'b', dotPos: 2, dotFlow: 2, rows: 1, glyphs: [{r: 0, p: 2, c: '*', f: 2}]},
     ];
     const svg = buildLaneSvg(commits, 2);
-    // lane 0 与 lane 1 都应有竖线（gg-line）
-    const lines = svg.match(/class="gg-line"/g) || [];
-    assert.ok(lines.length >= 2, '穿线应产生额外竖线，实际 ' + lines.length);
+    // 主线：组内两行竖线 (0..13, 13..26) 相接成满行
+    assert.ok(svg.includes(`M${glyphX(0)},0 L${glyphX(0)},13`), '提交行主线竖线');
+    assert.ok(svg.includes(`M${glyphX(0)},13 L${glyphX(0)},26`), '关系行主线竖线');
+    // 分叉斜线：贝塞尔从 glyphX(0),13 到 glyphX(2),26（跨 2 格，下一行 pos2 相接）
+    assert.ok(svg.includes(`M${glyphX(0)},13 C`) && svg.includes(`${glyphX(2)},26`), '分叉斜线应为贝塞尔并跨 2 格落到 lane1');
+    // 分支圆点在 x=glyphX(2)、组顶 + 行中（gh=26）
+    assert.ok(svg.includes(`cx="${glyphX(2)}"`), '分支圆点 x 应在 lane1');
 });
 
-test('buildLaneSvg 父分支拐点画弧线', () => {
-    // 合并提交：lane0 的 m 有父 a(lane0) 与 b(lane1)，b 在下一行 → 应画弧线
+test('buildLaneSvg 汇入：斜杠与横线字形按映射画段', () => {
+    // `|/ `：pos1 的 `/` 从右格右界到左格左界（跨 2 格）
     const commits = [
-        {sha: 'm', parents: ['a', 'b'], lane: 0, throughLanes: [1]},
-        {sha: 'b', parents: [], lane: 1, throughLanes: []},
-        {sha: 'a', parents: [], lane: 0, throughLanes: []},
+        {sha: 'b', dotPos: 2, dotFlow: 2, rows: 2, glyphs: [
+            {r: 0, p: 2, c: '*', f: 2},
+            {r: 1, p: 1, c: '/', f: 2},
+        ]},
+        {sha: 'm', dotPos: 0, dotFlow: 1, rows: 1, glyphs: [{r: 0, p: 0, c: '*', f: 1}]},
     ];
     const svg = buildLaneSvg(commits, 2);
-    const curves = svg.match(/class="gg-curve"/g) || [];
-    assert.ok(curves.length >= 1, '合并应有分支拐点弧线');
+    assert.ok(svg.includes(`M${glyphX(2)},13 C`) && svg.includes(`${glyphX(0)},26`), '汇入斜线应为贝塞尔并落到主线泳道底');
+});
+
+test('buildLaneSvg 缺省 glyphs 只画圆点（容错）', () => {
+    const commits = [{sha: 'a', dotPos: 0, dotFlow: 1, rows: 1}];
+    const svg = buildLaneSvg(commits, 1);
+    assert.equal((svg.match(/gg-dot/g) || []).length, 1);
+    assert.equal((svg.match(/gg-line/g) || []).length, 0);
 });
 
 test('buildLaneSvg 空列表返回空 svg', () => {
     const svg = buildLaneSvg([], 1);
     assert.ok(svg.includes('<svg'));
     assert.equal((svg.match(/gg-dot/g) || []).length, 0);
+});
+
+test('parseCommitRefs 把 %D 装饰器拆成分类徽章', () => {
+    const chips = parseCommitRefs('HEAD -> master, origin/master, tag: v1.0');
+    assert.deepEqual(chips, [
+        {kind: 'head', name: 'HEAD'},
+        {kind: 'local', name: 'master'},
+        {kind: 'remote', name: 'origin/master'},
+        {kind: 'tag', name: 'v1.0'},
+    ]);
+});
+
+test('parseCommitRefs 空装饰器与 detached HEAD', () => {
+    assert.deepEqual(parseCommitRefs(''), []);
+    assert.deepEqual(parseCommitRefs(null), []);
+    assert.deepEqual(parseCommitRefs('HEAD'), [{kind: 'head', name: 'HEAD'}]);
+    assert.deepEqual(parseCommitRefs('feat/gear162-back'), [{kind: 'local', name: 'feat/gear162-back'}]);
+});
+
+test('fileTreeFromChanges 组目录树：目录在前、按名排序、保留状态', () => {
+    const nodes = fileTreeFromChanges([
+        {path: 'src/zz.js', status: 'M'},
+        {path: 'src/api/b.js', status: 'A'},
+        {path: 'src/api/a.js', status: 'D'},
+        {path: 'root.md', status: 'M'},
+        {path: 'src/new.js', oldPath: 'src/old.js', status: 'R'},
+    ]);
+    // 根级：先目录 src，后文件 root.md
+    assert.equal(nodes[0].type, 'dir');
+    assert.equal(nodes[0].name, 'src');
+    assert.equal(nodes[1].type, 'file');
+    assert.equal(nodes[1].name, 'root.md');
+    // src 下：api 目录在前，文件按名排序
+    const src = nodes[0].children;
+    assert.equal(src[0].type, 'dir');
+    assert.equal(src[0].name, 'api');
+    assert.equal(src[1].name, 'new.js');
+    assert.equal(src[1].oldPath, 'src/old.js');
+    assert.deepEqual(src.map((n) => n.name), ['api', 'new.js', 'zz.js']);
+    // api 内按名排序
+    assert.deepEqual(src[0].children.map((n) => n.name), ['a.js', 'b.js']);
+});
+
+test('fileTreeFromChanges 空列表返回空数组', () => {
+    assert.deepEqual(fileTreeFromChanges([]), []);
+    assert.deepEqual(fileTreeFromChanges(null), []);
+});
+
+test('buildSkeletonHtml 三栏齐全且条块数量合理', () => {
+    const html = buildSkeletonHtml();
+    assert.ok(html.includes('gg-sk-refs'), '应有 ref 树骨架');
+    assert.ok(html.includes('gg-sk-commits'), '应有提交列表骨架');
+    assert.ok(html.includes('gg-sk-detail'), '应有详情骨架');
+    assert.ok((html.match(/gg-sk-row/g) || []).length >= 8, '提交骨架应有多行占位');
+    assert.ok((html.match(/gg-sk-dot/g) || []).length >= 8, '每行应有泳道圆点占位');
+    assert.ok((html.match(/gg-sk-line/g) || []).length >= 4, 'ref 树应有多行占位');
+});
+
+test('buildSkeletonHtml 纯静态、条块宽度合法（无注入风险）', () => {
+    const html = buildSkeletonHtml();
+    // 所有 width 都是合法的百分比数字，不含脚本或用户输入
+    const widths = [...html.matchAll(/width:(\d+)%/g)].map((m) => Number(m[1]));
+    assert.ok(widths.length > 0, '应有宽度声明');
+    assert.ok(widths.every((w) => w > 0 && w <= 100), '宽度应在 1–100% 之间');
+    assert.ok(!/<script|on\w+=/.test(html), '骨架 HTML 不应含脚本或事件处理器');
+});
+
+test('clampPaneWidth 把拖动宽度限制在 [min, max]', () => {
+    assert.equal(clampPaneWidth(250, 120, 400), 250, '区间内原样返回');
+    assert.equal(clampPaneWidth(50, 120, 400), 120, '低于下限钳到 min');
+    assert.equal(clampPaneWidth(900, 120, 400), 400, '超过上限钳到 max');
+});
+
+test('clampPaneWidth 非法值与退化区间回落到 min', () => {
+    assert.equal(clampPaneWidth(NaN, 120, 400), 120, 'NaN 回落 min');
+    assert.equal(clampPaneWidth(undefined, 120, 400), 120, 'undefined 回落 min');
+    assert.equal(clampPaneWidth(Infinity, 120, 400), 120, '无穷回落 min');
+    assert.equal(clampPaneWidth(250, 120, 100), 120, 'max<min 的退化区间回落 min');
 });

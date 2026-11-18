@@ -4,7 +4,7 @@ import './reading.css';
 import DOMPurify from 'dompurify';
 import hljs from 'highlight.js/lib/common';
 import {detectFormat, formats, isSupportedFile, pluginFormats} from './core/formats.js';
-import {installTooltip} from './core/tooltip.js';
+import {installTooltip, setTooltipActionHandler} from './core/tooltip.js';
 import {createExplorer} from './explorer/explorer.js';
 import {createStructurePanel, parseStructure} from './editor/structure.js';
 import {createContextMenu} from './shell/contextmenu.js';
@@ -20,7 +20,8 @@ import {decideAutoCollapse, shouldExpandEditorOnTab} from './ai/ai-auto-collapse
 import {createReadingMode} from './reading/reading.js';
 import {repairJson} from './core/jsonrepair.js';
 import {fileIconSpec} from './core/fileicons.js';
-import {RECIPES, extOf, SELF_TEST} from './terminal/run.js';
+import {BUILTIN_FILE_TYPES, defaultNewFileMenu, fileTypeMenuItem, normalizeNewFileMenu} from './explorer/new-file-menu.js';
+import {RECIPES, activeRunConfig, extOf, SELF_TEST} from './terminal/run.js';
 import {queryJsonPath} from './core/jsonpath.js';
 import {unifiedDiff} from './core/diff.js';
 import {validateJsonSchema} from './core/jsonschema.js';
@@ -38,8 +39,14 @@ import {createBridgeUI} from './bridge/bridge-ui.js';
 import {createAIGroupRuntime} from './ai/ai-group-runtime.js';
 import {createAIGroupSidebar} from './ai/ai-group-sidebar.js';
 import {createAIGroupView} from './ai/ai-group-view.js';
-// app_control 代建智能体：数据层纯函数（模型清单/关键词解析/校验）+ 唯一 id 生成
+// app_control 代建智能体 / 群聊：数据层纯函数（模型清单/关键词解析/校验/群草稿）+ 唯一 id 生成
 import {agentsUpsert, listModelOptions, resolveModelByKeyword} from './ai/ai-agent-model.js';
+import {buildGroupDraft} from './ai/ai-group-model.js';
+import {isOfficialPluginSource, pluginInstallRoute, pluginUninstallRoute} from './ai/ai-app-approval.js';
+import {
+    applySettingsValue, buildSettingsTree, coerceSettingsValue,
+    describeSettingsInput, describeSettingsValue, findSettingsRow, settingsRowSnapshot,
+} from './settings/settings-tree.js';
 import {aiNowId} from './ai/ai-constants.js';
 import {createCursorThemes} from './shell/cursor-themes.js';
 import {createTerminalUI} from './terminal/terminal-ui.js';
@@ -55,13 +62,15 @@ import {createDiffDialog} from './editor/diff-dialog.js';
 import {createJsonQuery} from './editor/json-query.js';
 import {createGlobalSearch} from './explorer/global-search.js';
 import {createShiftDoubleTap} from './core/shift-double-tap.js';
-import {keymap} from './core/keymap.js';
+import {keymap, comboSpecFromText} from './core/keymap.js';
 import {DOUBLE_SHIFT, DEFAULT_KEY_STYLE, isValidKeyStyleId, getShortcut} from './core/keybindings.js';
 import {createMessageCenter} from './shell/message-center.js';
 import {createFindBar} from './editor/find-bar.js';
 import {createActivityPane} from './settings/activity-pane.js';
 import {createSettingsPanePatches} from './settings/settings-pane-patches.js';
 import {createSettingsPaneStorage} from './settings/settings-pane-storage.js';
+import {createSettingsPaneNewFileMenu} from './settings/settings-pane-new-file-menu.js';
+import {createStorageAutoClean} from './settings/storage-autoclean.js';
 import {createSettingsPaneExternalTools} from './settings/settings-pane-external-tools.js';
 import {createMenuBar} from './shell/menu-bar.js';
 import {createModeSwitch} from './shell/mode-switch.js';
@@ -73,6 +82,7 @@ import {createStructurePanelController} from './editor/structure-panel.js';
 import {createEditorMenus} from './editor/editor-menus.js';
 import {createExplorerOps} from './explorer/explorer-ops.js';
 import {createEditorGroups} from './editor/editor-groups.js';
+import {bookmarkOverview, formatBookmarkListText} from './editor/bookmark-list.js';
 import {isDocReadOnly, isTabReadOnlyFixed, isTabReadOnlyLocked} from './core/readonly.js';
 
 window.addEventListener('error', (e) => {
@@ -107,6 +117,7 @@ window.__backend = backend;
 let memoFocusHook = null;          // 窗口聚焦 → 全局便签静默对账
 let memoWorkspaceEventHook = null; // workspace-changed → 工作区便签重读
 let memoFlushHook = null;          // 关窗 / 页面隐藏 → 冲掉防抖保存
+let memoJumpHook = null;           // --memo CLI / app-open-memo 事件 → 定位跳转
 let memoPendingFlag = false;       // 有未落盘修改（writing-ui 的 anyDirty 经 getter 读它）
 
 let developerMode = false;
@@ -381,6 +392,11 @@ const els = {
     abMore: document.getElementById('ab-more'),
     abTerminal: document.getElementById('ab-terminal'),
     tbRun: document.getElementById('tb-run'),
+    tbRunConfig: document.getElementById('tb-run-config'),
+    tbRunBadge: document.getElementById('tb-run-badge'),
+    tbRunName: document.getElementById('tb-run-name'),
+    runConfigPop: document.getElementById('run-config-pop'),
+    runConfigPopBody: document.getElementById('run-config-pop-body'),
     editorCollapseStrip: document.getElementById('editor-collapse-strip'),
     abDebug: document.getElementById('ab-debug'),
     abGitGraph: document.getElementById('ab-git-graph'),
@@ -459,7 +475,7 @@ const APP_SETTING_RULES = {
     theme: {type: 'theme'},
     codeStyle: {type: 'enum', values: [CODE_STYLE_AUTO, ...CODE_STYLES.map((s) => s.id)]},
     sidebarWidth: {type: 'number', min: 160, max: 500},
-    terminalHeight: {type: 'number', min: 120, max: 480},
+    terminalHeight: {type: 'number', min: 120, max: 2000},
     aiPanelWidth: {type: 'number', min: 280, max: 2000},
     // 面板显示形态（aiFloatMode：停靠/全屏/悬浮）与停靠侧（aiPanelSide）**故意不在白名单**：
     // 布局形态只能由用户手动切（面板 [...] 菜单 / 设置页 / 视图菜单），AI 与任何自动化都不得改
@@ -468,14 +484,19 @@ const APP_SETTING_RULES = {
 
 const APP_ACTIONS = [
     'get_state', 'screenshot', 'open_file', 'open_folder', 'activate_tab', 'close_tab', 'reopen_closed_tab', 'move_tab',
-    'set_view', 'goto_line', 'toggle_sidebar', 'set_sidebar_view', 'toggle_terminal', 'toggle_ai_panel',
+    'set_view', 'goto_line', 'list_bookmarks', 'add_bookmark', 'remove_bookmark', 'clear_bookmarks', 'goto_bookmark',
+    'toggle_sidebar', 'set_sidebar_view', 'toggle_terminal', 'set_dock_view', 'toggle_ai_panel',
+    'split_open', 'split_editor', 'move_tab_to_group', 'focus_editor_group', 'merge_editor_groups',
     'toggle_fullscreen', 'toggle_always_on_top', 'set_theme', 'open_settings', 'set_setting',
-    'ai_new_session', 'ai_switch_session', 'ai_rename_session', 'flash', 'refresh_explorer', 'type_text', 'press_key',
+    'get_settings_tree', 'set_setting_row',
+    'ai_new_session', 'ai_switch_session', 'ai_rename_session', 'flash', 'refresh_explorer', 'reveal_in_explorer',
+    'type_text', 'press_key', 'click',
     'open_browser_tab', 'close_browser_tab', 'open_memo_panel', 'get_memo', 'add_memo', 'update_memo', 'remove_memo',
-    'get_settings', 'get_editor', 'get_content', 'get_git', 'get_ai', 'get_explorer', 'get_plugins', 'get_terminal',
+    'get_settings', 'get_editor', 'get_content', 'get_git', 'get_ai', 'get_explorer', 'get_plugins', 'get_terminal', 'get_storage',
     'get_activity', 'get_patch', 'patch_set_root', 'patch_repreview',
     'get_gen_models', 'set_gen_model', 'delete_gen_model',
-    'get_agents', 'create_agent',
+    'get_agents', 'create_agent', 'create_group', 'get_groups', 'send_group_message',
+    'install_plugin', 'uninstall_plugin',
     'get_mcp_servers', 'list_mcp_samples', 'install_mcp_sample', 'set_mcp_server', 'delete_mcp_server',
 ];
 
@@ -562,6 +583,69 @@ function appActionResolveDoc(ref) {
     return findDocByPath(text);
 }
 
+// click 动作的 DOM 合成：按真实顺序派发 pointer/mouse 事件（不移动系统鼠标）。
+// 合成事件 isTrusted=false、不带用户激活——依赖真实点击校验的行为可能无响应（技能表已注明）。
+function appActionDispatchClick(el, x, y) {
+    const Pointer = typeof PointerEvent === 'function' ? PointerEvent : MouseEvent;
+    const screenX = (Number(window.screenX) || 0) + x;
+    const screenY = (Number(window.screenY) || 0) + y;
+    const base = {bubbles: true, cancelable: true, composed: true, view: window, clientX: x, clientY: y, screenX, screenY};
+    const pointer = (type, extra) => new Pointer(type, {...base, button: 0, buttons: 0, detail: 0, pointerId: 1, pointerType: 'mouse', isPrimary: true, ...extra});
+    const mouse = (type, extra) => new MouseEvent(type, {...base, button: 0, buttons: 0, detail: 0, ...extra});
+    el.dispatchEvent(pointer('pointerover'));
+    el.dispatchEvent(mouse('mouseover'));
+    el.dispatchEvent(pointer('pointerenter', {bubbles: false}));
+    el.dispatchEvent(mouse('mouseenter', {bubbles: false}));
+    el.dispatchEvent(pointer('pointermove'));
+    el.dispatchEvent(mouse('mousemove'));
+    el.dispatchEvent(pointer('pointerdown', {buttons: 1, detail: 1}));
+    el.dispatchEvent(mouse('mousedown', {buttons: 1, detail: 1}));
+    // 真实点击在 mousedown 后聚焦可聚焦目标；合成事件不会自动聚焦，手动补上
+    try {
+        if (el instanceof HTMLElement && el.tabIndex >= 0) el.focus({preventScroll: true});
+    } catch (e) {}
+    el.dispatchEvent(pointer('pointerup', {buttons: 0, detail: 1}));
+    el.dispatchEvent(mouse('mouseup', {buttons: 0, detail: 1}));
+    el.dispatchEvent(mouse('click', {buttons: 0, detail: 1}));
+}
+
+// press_key 的按键合成：修饰键先按下（带自己与已按修饰键的 flag）→ 主键 down/up →
+// 修饰键逆序抬起。应用全局快捷键按 e.code 匹配（comboFromEvent），故 code 必须是物理键位。
+function appActionDispatchKey(target, spec) {
+    const flags = {ctrlKey: false, altKey: false, shiftKey: false, metaKey: false};
+    const pressed = [];
+    const modifierKeys = [
+        ['ctrl', 'Control', 'ControlLeft'],
+        ['alt', 'Alt', 'AltLeft'],
+        ['shift', 'Shift', 'ShiftLeft'],
+        ['meta', 'Meta', 'MetaLeft'],
+    ];
+    for (const [flag, key, code] of modifierKeys) {
+        if (!spec.modifiers[flag]) continue;
+        flags[flag + 'Key'] = true;
+        target.dispatchEvent(new KeyboardEvent('keydown', {key, code, bubbles: true, cancelable: true, ...flags}));
+        pressed.push([flag, key, code]);
+    }
+    target.dispatchEvent(new KeyboardEvent('keydown', {key: spec.key, code: spec.code, bubbles: true, cancelable: true, ...flags}));
+    target.dispatchEvent(new KeyboardEvent('keyup', {key: spec.key, code: spec.code, bubbles: true, cancelable: true, ...flags}));
+    for (let i = pressed.length - 1; i >= 0; i--) {
+        const [flag, key, code] = pressed[i];
+        flags[flag + 'Key'] = false;
+        target.dispatchEvent(new KeyboardEvent('keyup', {key, code, bubbles: true, cancelable: true, ...flags}));
+    }
+}
+
+function appActionDescribeNode(el) {
+    if (!el) return null;
+    let cls = '';
+    try {
+        cls = typeof el.className === 'string' ? el.className : ((el.getAttribute && el.getAttribute('class')) || '');
+    } catch (e) {}
+    const text = String(el.innerText || el.value || (el.getAttribute && el.getAttribute('aria-label')) || '')
+        .replace(/\s+/g, ' ').trim().slice(0, 80);
+    return {tag: String(el.tagName || '').toLowerCase(), id: el.id || '', cls: cls.slice(0, 120), text};
+}
+
 function appActionEditableTarget(selector, allowNonEditable) {
     let el = null;
     if (selector) {
@@ -628,7 +712,75 @@ function appActionAgentSnapshot() {
     return {agents, models: options.map((option) => ({ref: option.ref, label: option.label}))};
 }
 
-async function runAppAction(action, params, scope, callerSessionId) {
+// 相对路径按工作区根解析（app_control 的文件/目录类动作共用）。
+function appActionWorkspacePath(raw) {
+    const text = String(raw == null ? '' : raw).trim();
+    if (!text) return '';
+    // 绝对路径：盘符 / UNC / POSIX 根 / 带 scheme 的地址（mock、file、http 等）
+    if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(text) || /^[a-zA-Z]:[\\/]/.test(text) ||
+        text.startsWith('\\\\') || text.startsWith('/')) {
+        return text;
+    }
+    if (!workspaceFolder) return text;
+    return workspaceFolder.replace(/[\\/]+$/, '') + '\\' + text.replace(/^[\\/]+/, '');
+}
+
+// 群聊摘要（get_groups / send_group_message 共用）：成员名按当前智能体配置解析。
+function appActionGroupBrief(meta) {
+    const agents = (appActionAIConfig().agents || []);
+    const members = (meta.memberIds || []).map((id) => {
+        const agent = agents.find((item) => item && item.id === id);
+        return agent ? agent.name : '已删除成员';
+    });
+    return {
+        id: meta.id,
+        title: meta.title || '未命名群聊',
+        mode: meta.mode,
+        goal: meta.goal,
+        chair: meta.chair ? {kind: meta.chair.kind, agentId: meta.chair.agentId || ''} : null,
+        members,
+        messageCount: meta.messageCount || 0,
+        updatedAt: meta.updatedAt || 0,
+        minutes: meta.minutes && meta.minutes.text
+            ? {createdAt: Number(meta.minutes.createdAt) || 0, chars: String(meta.minutes.text).length, source: meta.minutes.source || ''}
+            : null,
+    };
+}
+
+// 群聊定位：id 精确 → 标题精确（大小写不敏感）；多命中要求用 id。
+function appActionResolveGroup(query) {
+    if (!aiGroupRuntime) throw new Error('群聊运行时未初始化');
+    const key = String(query == null ? '' : query).trim();
+    if (!key) throw new Error('需要群聊 id 或标题');
+    const groups = aiGroupRuntime.groupList() || [];
+    const byId = groups.find((meta) => meta.id === key);
+    if (byId) return byId;
+    const exact = groups.filter((meta) => String(meta.title || '').toLowerCase() === key.toLowerCase());
+    if (exact.length === 1) return exact[0];
+    if (exact.length > 1) {
+        throw new Error('群聊标题有多个匹配：' + exact.map((meta) => meta.id).join(' / ') + '；请改用 id');
+    }
+    throw new Error('找不到群聊「' + key + '」；现有：' +
+        (groups.map((meta) => (meta.title || '未命名') + '（' + meta.id + '）').join('、') || '（暂无群聊，先用 create_group 创建）'));
+}
+
+// 按名字在官方插件市场解析安装地址；多命中/未命中都报候选。
+async function appActionInstallUrlFromName(name) {
+    if (typeof backend.GetPluginMarket !== 'function') throw new Error('当前版本不支持插件市场');
+    const list = (await backend.GetPluginMarket()) || [];
+    const key = String(name || '').trim().toLowerCase();
+    const nameOf = (item) => [item && item.name, item && item.id, item && (item.repo || '').split('/').pop()]
+        .filter(Boolean).map((value) => String(value).toLowerCase());
+    const hits = list.filter((item) => nameOf(item).includes(key));
+    if (hits.length === 1) return hits[0];
+    if (hits.length > 1) {
+        throw new Error('插件名有多个匹配：' + hits.map((item) => item.name + '（' + item.url + '）').join('；') + '；请改用 url 明确');
+    }
+    throw new Error('官方市场里没有插件「' + name + '」；可用：' +
+        (list.slice(0, 30).map((item) => item.name).join('、') || '（市场为空或拉取失败）'));
+}
+
+async function runAppAction(action, params, scope, callerSessionId, requestActionApproval) {
     const actionScope = scope || 'full';
     const p = params || {};
     switch (String(action || '').trim()) {
@@ -638,6 +790,7 @@ async function runAppAction(action, params, scope, callerSessionId) {
                 workspace: workspaceFolder || null,
                 activeFile: appActionDocInfo(file),
                 tabs: docs.map((doc, index) => ({index, ...appActionDocInfo(doc), active: doc === file})),
+                editorGroups: editorGroupsMod.groupSnapshot(),
                 closedTabsCount: closedTabs.length,
                 sidebar: {visible: !!settings.showSidebar, view: currentSidebarView()},
                 terminal: {open: !!(terminalUI && terminalUI.open), view: getDockView()},
@@ -652,6 +805,8 @@ async function runAppAction(action, params, scope, callerSessionId) {
                 fullscreen: !!rtFullscreen,
                 alwaysOnTop: !!settings.alwaysOnTop,
                 readOnlyMode: !!settings.readOnlyMode,
+                // click 坐标口径：可视区是 CSS 像素，截图是物理像素（÷ dpr）
+                viewport: {width: window.innerWidth, height: window.innerHeight, dpr: window.devicePixelRatio || 1},
             };
         }
         case 'get_settings': {
@@ -799,6 +954,35 @@ async function runAppAction(action, params, scope, callerSessionId) {
                 tail: target ? appActionTermTail(target.term, lines) : '',
             };
         }
+        case 'get_storage': {
+            // 只读占用统计（设置 → 存储与清理 同一份 StorageScan）；清理仍由用户操作
+            if (typeof backend.StorageScan !== 'function') throw new Error('当前版本不支持存储扫描');
+            const report = (await backend.StorageScan(workspaceFolder || '')) || {};
+            const items = (report.items || [])
+                .filter((item) => item && item.exists)
+                .map((item) => ({
+                    id: item.id,
+                    label: item.label,
+                    kind: item.kind,
+                    scope: item.scope,
+                    bytes: Number(item.bytes) || 0,
+                    files: Number(item.files) || 0,
+                    entries: Number(item.entries) || 0,
+                    approx: !!item.approx,
+                    note: item.note || '',
+                }))
+                .sort((a, b) => b.bytes - a.bytes);
+            return {
+                tiles: report.tiles || [],
+                cacheBytes: Number(report.cacheBytes) || 0,
+                dataBytes: Number(report.dataBytes) || 0,
+                truncated: !!report.truncated,
+                pending: report.pending || [],
+                scannedAt: Number(report.scannedAt) || 0,
+                items: items.slice(0, 120),
+                note: '只读统计；清除缓存 / 送回收站 / 自动清理参数仍由用户在 设置 → 存储与清理 操作',
+            };
+        }
         case 'open_file': {
             const target = String(p.path || '').trim();
             if (!target) throw new Error('open_file 需要 path');
@@ -850,6 +1034,58 @@ async function runAppAction(action, params, scope, callerSessionId) {
             moveTabInGroup(group.id, src.id, dst.id, p.before !== false);
             return {order: groupDocs(group).map((doc) => doc.name)};
         }
+        // —— 编辑器分组（完整分组操作）：索引 0 起或分组 id（g12）都能定位 ——
+        case 'split_open': {
+            // 两个文件左右（或上下）并排：先都开在当前组，再把右侧标签拆到新组
+            const rawPaths = Array.isArray(p.paths) ? p.paths : [p.left, p.right];
+            const paths = rawPaths.map((item) => appActionWorkspacePath(item)).filter(Boolean);
+            if (paths.length !== 2) throw new Error('split_open 需要 paths: [左文件, 右文件]（或 left / right）');
+            if (paths[0].replace(/\\/g, '/').toLowerCase() === paths[1].replace(/\\/g, '/').toLowerCase()) {
+                throw new Error('两个路径相同');
+            }
+            if (!workspaceFolder) throw new Error('没有打开工作区');
+            await openPathsHere(paths, {});
+            const leftDoc = findDocByPath(paths[0]);
+            const rightDoc = findDocByPath(paths[1]);
+            if (!leftDoc || !rightDoc) {
+                throw new Error('文件未全部打开（检查路径是否存在）：' + paths.filter((path) => !findDocByPath(path)).join(' / '));
+            }
+            // 已经分属不同分组：无需再拆，直接报现状
+            const leftGroup = editorGroupsMod.groupOfDoc(leftDoc.id);
+            const rightGroup = editorGroupsMod.groupOfDoc(rightDoc.id);
+            if (leftGroup && rightGroup && leftGroup.id !== rightGroup.id) {
+                return {split: {ok: true, already: true}, groups: editorGroupsMod.groupSnapshot()};
+            }
+            const result = editorGroupsMod.splitDocToGroup(rightDoc.id, p.side || 'right');
+            if (!result.ok) throw new Error(result.error || '拆分失败');
+            return {split: result, groups: editorGroupsMod.groupSnapshot()};
+        }
+        case 'split_editor': {
+            const doc = appActionResolveDoc(p.target);
+            if (!doc) throw new Error('找不到要拆分的标签：' + (p.target == null ? 'active' : p.target));
+            const result = editorGroupsMod.splitDocToGroup(doc.id, p.side || 'right');
+            if (!result.ok) throw new Error(result.error || '拆分失败');
+            return {split: result, groups: editorGroupsMod.groupSnapshot()};
+        }
+        case 'move_tab_to_group': {
+            const doc = appActionResolveDoc(p.target);
+            if (!doc) throw new Error('找不到标签：' + (p.target == null ? 'active' : p.target));
+            if (p.group == null || p.group === '') throw new Error('move_tab_to_group 需要 group（索引或分组 id，见 get_state 的 editorGroups）');
+            const result = editorGroupsMod.moveDocToGroup(doc.id, p.group);
+            if (!result.ok) throw new Error(result.error || '移动失败');
+            return {moved: result.group, groups: editorGroupsMod.groupSnapshot()};
+        }
+        case 'focus_editor_group': {
+            if (p.group == null || p.group === '') throw new Error('focus_editor_group 需要 group（索引或分组 id）');
+            const result = editorGroupsMod.focusEditorGroup(p.group);
+            if (!result.ok) throw new Error(result.error || '切换失败');
+            return {focused: {index: result.index, id: result.id}, groups: editorGroupsMod.groupSnapshot()};
+        }
+        case 'merge_editor_groups': {
+            const result = editorGroupsMod.mergeEditorGroup(p.group, p.into);
+            if (!result.ok) throw new Error(result.error || '合并失败');
+            return {merged: result.group, groups: editorGroupsMod.groupSnapshot()};
+        }
         case 'set_view': {
             const mode = String(p.mode || '').trim();
             if (!mode) throw new Error('set_view 需要 mode');
@@ -875,6 +1111,67 @@ async function runAppAction(action, params, scope, callerSessionId) {
             }
             return result;
         }
+        // ===== 书签（跨文件行书签；聚合口径=打开中的文档，与书签的持久化语义一致）=====
+        case 'list_bookmarks': {
+            return formatBookmarkListText(bookmarkOverview(docs));
+        }
+        case 'add_bookmark': {
+            const doc = await appActionBookmarkDoc(p);
+            const line = Math.round(Number(p.line));
+            if (!line || line < 1) throw new Error('add_bookmark 需要 line（1 起的行号）');
+            // 没有行号视图（如树视图）时先切到代码视图定位到该行，保证行数钳制可用
+            let ace = doc.editor && doc.editor.aceEditor;
+            if (!ace) {
+                const landed = await selectLineInDoc(doc, line);
+                if (!landed) throw new Error((doc.name || '该文件') + ' 当前没有支持行号的视图，无法加书签');
+                ace = doc.editor && doc.editor.aceEditor;
+            }
+            const result = addBookmarkAt(doc, line - 1);
+            if (!result) throw new Error('添加书签失败：该文件没有可用的代码/文本编辑器');
+            rememberDocView(doc);
+            let lineCount = 0;
+            try { lineCount = ace.session.getLength(); } catch (e) {}
+            const out = {file: doc.name || doc.path, line: result.row + 1, added: !result.existed};
+            if (lineCount && line > lineCount) {
+                out.note = '请求行超出范围（共 ' + lineCount + ' 行），已加在第 ' + (result.row + 1) + ' 行';
+            }
+            return out;
+        }
+        case 'remove_bookmark': {
+            const doc = await appActionBookmarkDoc(p);
+            const line = Math.round(Number(p.line));
+            if (!line || line < 1) throw new Error('remove_bookmark 需要 line（1 起的行号）');
+            const result = removeBookmarkAt(doc, line - 1);
+            if (!result || !result.existed) {
+                const rows = [...(doc.bookmarks || [])].sort((a, b) => a - b).map((row) => row + 1);
+                throw new Error('该文件第 ' + line + ' 行没有书签' +
+                    (rows.length ? '（现有书签行：' + rows.join('、') + '）' : '（该文件还没有书签）'));
+            }
+            rememberDocView(doc);
+            return {file: doc.name || doc.path, line, removed: true};
+        }
+        case 'clear_bookmarks': {
+            const doc = await appActionBookmarkDoc(p);
+            const removed = clearDocBookmarks(doc);
+            rememberDocView(doc);
+            return {file: doc.name || doc.path, removed};
+        }
+        case 'goto_bookmark': {
+            const path = String(p.path || '').trim();
+            if (!path) throw new Error('goto_bookmark 需要 path');
+            const line = Math.round(Number(p.line));
+            if (!line || line < 1) throw new Error('goto_bookmark 需要 line（1 起的行号）');
+            await openPaths([path]);
+            const doc = findDocByPath(path);
+            if (!doc) throw new Error('文件不存在或无法打开：' + path);
+            const landed = await selectLineInDoc(doc, line);
+            if (!landed) throw new Error((doc.name || '该文件') + ' 不支持按行定位');
+            const out = {file: doc.name || doc.path, line: landed.line};
+            if (landed.clamped) {
+                out.note = '请求行超出范围（共 ' + landed.lineCount + ' 行），已定位到第 ' + landed.line + ' 行';
+            }
+            return out;
+        }
         case 'toggle_sidebar': {
             toggleSidebarView(['files', 'git', 'structure', 'chats'].includes(p.view) ? p.view : settings.sidebarView || 'files');
             return {sidebar: {visible: !!settings.showSidebar, view: currentSidebarView()}};
@@ -890,6 +1187,17 @@ async function runAppAction(action, params, scope, callerSessionId) {
         }
         case 'toggle_terminal': {
             toggleDockView('terminal');
+            return {terminal: {open: !!(terminalUI && terminalUI.open), view: getDockView()}};
+        }
+        case 'set_dock_view': {
+            // 底部面板切换内容（terminal / debug / run / graph）；面板收起时一并打开
+            const view = String(p.view || '').trim().toLowerCase();
+            if (!['terminal', 'debug', 'run', 'graph'].includes(view)) {
+                throw new Error('view 只能是 terminal / debug / run / graph');
+            }
+            setDockView(view);
+            applyDockView();
+            if (terminalUI && !terminalUI.open) toggleTerminalPanel(true);
             return {terminal: {open: !!(terminalUI && terminalUI.open), view: getDockView()}};
         }
         case 'open_browser_tab': {
@@ -911,8 +1219,13 @@ async function runAppAction(action, params, scope, callerSessionId) {
             return {opened: true, message: memoApi.open(p.scope)};
         }
         case 'get_memo': {
-            // 返回紧凑文本清单（含条目/块 id），模型后续 update/remove 直接引用
-            return {scope: p.scope === 'global' ? 'global' : 'workspace', text: await memoApi.list(p.scope)};
+            // 返回紧凑文本清单（含条目/块 id），模型后续 update/remove 直接引用；
+            // 可选过滤：block_id（某分组）/ status（某状态）/ q（文本包含）
+            const filter = {};
+            if (p.block_id != null) filter.blockId = String(p.block_id);
+            if (p.status != null) filter.status = String(p.status);
+            if (p.q != null && String(p.q).trim() !== '') filter.q = String(p.q);
+            return {scope: p.scope === 'global' ? 'global' : 'workspace', text: await memoApi.list(p.scope, filter)};
         }
         case 'add_memo': {
             return {result: await memoApi.add(p.scope, p.kind, p.block_id, String(p.text == null ? '' : p.text))};
@@ -947,8 +1260,16 @@ async function runAppAction(action, params, scope, callerSessionId) {
             return {theme: settings.theme};
         }
         case 'open_settings': {
-            openSettings(p.pane ? String(p.pane) : 'general');
-            return {opened: true, pane: p.pane || 'general'};
+            const pane = String(p.pane || 'general').trim() || 'general';
+            const rowId = String(p.row || '').trim();
+            if (rowId) {
+                const row = findSettingsRow(rowId);
+                if (!row) throw new Error('找不到设置行 id：' + rowId + '（先用 get_settings_tree 取 id）');
+                openSettingsAtRow(row.pane, row.rowEl || row.control);
+                return {opened: row.pane, row: row.id, title: row.title};
+            }
+            openSettings(pane);
+            return {opened: true, pane};
         }
         case 'set_setting': {
             const key = String(p.key || '').trim();
@@ -980,6 +1301,60 @@ async function runAppAction(action, params, scope, callerSessionId) {
             settings[key] = value;
             applySettings();
             return {key, value: settings[key]};
+        }
+        // —— 设置树：只读清单 + 按行 id 写入（中/高风险走动作审批；布局形态永久不可写）——
+        case 'get_settings_tree': {
+            const paneId = String(p.pane || '').trim();
+            const tree = buildSettingsTree();
+            if (!paneId) {
+                return {
+                    panes: tree.panes.map((pane) => ({
+                        id: pane.id, label: pane.label, group: pane.group, rowCount: pane.rows.length,
+                    })),
+                    note: '传 pane 查看该页的分组与行（id / 当前值 / 危险度 / 是否可写）',
+                };
+            }
+            const pane = tree.panes.find((item) => item.id === paneId);
+            if (!pane) throw new Error('未知设置页「' + paneId + '」；可用：' + tree.panes.map((item) => item.id).join(' / '));
+            const groups = [];
+            for (const row of pane.rows) {
+                let group = groups[groups.length - 1];
+                if (!group || group.name !== row.group) {
+                    group = {name: row.group, rows: []};
+                    groups.push(group);
+                }
+                group.rows.push(settingsRowSnapshot(row));
+            }
+            return {pane: {id: pane.id, label: pane.label, group: pane.group}, groups};
+        }
+        case 'set_setting_row': {
+            const row = findSettingsRow(String(p.id || ''));
+            if (!row) throw new Error('找不到设置行 id：' + p.id + '（先用 get_settings_tree 取 id）');
+            if (row.protected) throw new Error('该设置行只能由用户手动修改：' + row.title);
+            if (!row.settable) throw new Error('该设置行不可由 AI 写入：' + row.title + '（' + row.kind + '）');
+            const coerced = coerceSettingsValue(row.kind, row.control, p.value);
+            if (!coerced.ok) throw new Error(coerced.error);
+            const oldValue = describeSettingsValue(row.kind, row.control);
+            const newValue = describeSettingsInput(row.kind, row.control, coerced.value);
+            if (row.risk !== 'low') {
+                if (typeof requestActionApproval !== 'function') {
+                    throw new Error('该设置属于中/高风险，需要用户在界面审批；当前调用没有审批通道，拒绝执行');
+                }
+                const answer = await requestActionApproval({
+                    action: 'set_setting',
+                    title: '修改设置：' + row.title,
+                    target: (row.paneLabel || row.pane) + (row.group ? ' / ' + row.group : '') + ' / ' + row.title + '（' + row.id + '）',
+                    oldValue,
+                    newValue,
+                    risk: row.risk,
+                    warnings: [row.riskReason].filter(Boolean),
+                    source: '设置 → ' + (row.paneLabel || row.pane),
+                    locate: {pane: row.pane, row: row.id},
+                });
+                if (!answer || !answer.approved) return {applied: false, denied: true, note: '用户拒绝了本次设置修改'};
+            }
+            applySettingsValue(row.kind, row.control, coerced.value);
+            return {applied: true, id: row.id, pane: row.pane, title: row.title, oldValue, newValue, risk: row.risk};
         }
         case 'get_activity': {
             // 操作留痕只读查询：帮用户回忆「刚才做了什么」与排障。
@@ -1066,6 +1441,91 @@ async function runAppAction(action, params, scope, callerSessionId) {
             if (!aiPanel || !aiPanel.bridgeGenModelDelete) throw new Error('AI 面板未初始化');
             return aiPanel.bridgeGenModelDelete(p.ref);
         }
+        // —— 插件安装 / 卸载（第三方代码，按权限档与来源走审批；卸载永久删除恒审批）——
+        case 'install_plugin': {
+            if (typeof backend.InstallPluginFromUrl !== 'function') throw new Error('当前版本不支持安装插件');
+            let url = String(p.url || '').trim();
+            let marketItem = null;
+            if (!url) {
+                const name = String(p.name || '').trim();
+                if (!name) throw new Error('install_plugin 需要 name（官方市场插件名）或 url（仓库地址）');
+                marketItem = await appActionInstallUrlFromName(name);
+                url = String(marketItem.url || '').trim();
+                if (!url) throw new Error('市场条目缺少仓库地址：' + name);
+            }
+            const official = isOfficialPluginSource(url);
+            const route = pluginInstallRoute(actionScope, official);
+            if (route === 'deny') throw new Error('只读权限档不能安装插件');
+            if (route === 'approve') {
+                if (typeof requestActionApproval !== 'function') {
+                    throw new Error('安装该插件需要用户在界面审批；当前调用没有审批通道，拒绝执行');
+                }
+                const label = (marketItem && marketItem.name) || url;
+                const answer = await requestActionApproval({
+                    action: 'install_plugin',
+                    title: '安装插件：' + label,
+                    target: (marketItem && marketItem.name ? marketItem.name + ' · ' : '') + url,
+                    oldValue: '未安装',
+                    newValue: (marketItem && marketItem.name
+                        ? marketItem.name + (marketItem.version ? ' v' + marketItem.version : '')
+                        : '来自仓库地址'),
+                    risk: official ? 'medium' : 'high',
+                    warnings: [
+                        '插件代码以与应用相同的权限运行，可读写本机文件、执行命令',
+                        official
+                            ? '来源：官方插件市场（cadt-datalens-plugins）'
+                            : '未知来源：不是官方插件市场（cadt-datalens-plugins），请只在你信任时继续',
+                    ],
+                    source: url,
+                });
+                if (!answer || !answer.approved) return {installed: false, denied: true, note: '用户拒绝了本次插件安装'};
+            }
+            const installed = await backend.InstallPluginFromUrl(url);
+            Promise.resolve().then(() => loadPlugins(backend)).catch(() => {});
+            activityLog.log('plugin.change', (installed && (installed.id || installed.name)) || url, {op: 'install-url'});
+            return {
+                installed: {
+                    id: (installed && installed.id) || '',
+                    name: (installed && installed.name) || '',
+                    version: (installed && installed.version) || '',
+                },
+                official,
+                approval: route,
+            };
+        }
+        case 'uninstall_plugin': {
+            if (typeof backend.DeletePlugin !== 'function') throw new Error('当前版本不支持删除插件');
+            const id = String(p.id || '').trim();
+            if (!id) throw new Error('uninstall_plugin 需要 id（见 get_plugins）');
+            const installed = (typeof backend.GetPlugins === 'function' ? (await backend.GetPlugins()) : []) || [];
+            const hit = installed.find((plugin) => plugin && plugin.id === id);
+            if (!hit) throw new Error('找不到已安装插件：' + id + '（用 get_plugins 查看）');
+            const route = pluginUninstallRoute(actionScope);
+            if (route === 'deny') throw new Error('只读权限档不能卸载插件');
+            if (route === 'approve') {
+                if (typeof requestActionApproval !== 'function') {
+                    throw new Error('卸载插件需要用户在界面审批；当前调用没有审批通道，拒绝执行');
+                }
+                const answer = await requestActionApproval({
+                    action: 'uninstall_plugin',
+                    title: '卸载插件：' + (hit.name || id),
+                    target: (hit.name || id) + '（' + id + '）',
+                    oldValue: '已安装' + (hit.version ? ' v' + hit.version : ''),
+                    newValue: '已卸载（永久删除）',
+                    risk: 'high',
+                    warnings: [
+                        '插件代码会被永久删除，不进回收站',
+                        '依赖该插件扩展的格式 / 命令 / 主题会立即失效',
+                    ],
+                    source: '已安装插件（本地）',
+                });
+                if (!answer || !answer.approved) return {uninstalled: false, denied: true, note: '用户拒绝了本次插件卸载'};
+            }
+            await backend.DeletePlugin(id);
+            Promise.resolve().then(() => loadPlugins(backend)).catch(() => {});
+            activityLog.log('plugin.change', id, {op: 'uninstall'});
+            return {uninstalled: {id, name: hit.name || id}, approval: route};
+        }
         // —— 智能体（群聊成员）：get_agents 只读快照 / create_agent 代建 ——
         // 智能体存 ai-config.json 的 agents[]（面板 aiGroupApi 持有配置与持久化）
         case 'get_agents': {
@@ -1114,6 +1574,55 @@ async function runAppAction(action, params, scope, callerSessionId) {
                 note: '已创建智能体；人设/角色可在 设置 → AI → 智能体 再编辑，或直接在「新建群聊」里选用它',
             };
         }
+        // —— 群聊（AI 代建）：成员/主持人按 id 或名字定位（纯函数在 ai-group-model），
+        // 校验与落盘复用群聊运行时 createGroup（与「新建群聊」弹窗同一条路径）——
+        case 'create_group': {
+            if (!aiGroupRuntime) throw new Error('群聊运行时未初始化');
+            const config = appActionAIConfig();
+            const draft = buildGroupDraft({agents: config.agents || [], params: p});
+            if (!draft.ok) throw new Error(draft.error);
+            const result = await aiGroupRuntime.createGroup(draft.spec);
+            if (!result.ok) throw new Error(result.error || '群聊创建失败');
+            const group = aiGroupRuntime.groupById(result.id);
+            return {
+                created: {
+                    id: result.id,
+                    title: (group && group.meta && group.meta.title) || draft.spec.title || '未命名群聊',
+                    mode: draft.spec.mode,
+                    goal: draft.spec.goal,
+                    members: draft.members.map((member) => member.name),
+                    chair: draft.chair,
+                    rounds: draft.spec.maxRounds,
+                },
+                note: '群聊已创建并在内容区标签页打开；讨论不会自动开始——由用户点「开始讨论」或发第一条消息触发（会真实调用成员模型），不要声称讨论已开始',
+            };
+        }
+        // —— 群聊只读列表 / 用户身份发言（发言会触发成员模型调用，计划模式在面板侧拦截）——
+        case 'get_groups': {
+            if (!aiGroupRuntime) throw new Error('群聊运行时未初始化');
+            const query = String(p.id || p.title || '').trim();
+            if (!query) return {groups: (aiGroupRuntime.groupList() || []).map(appActionGroupBrief)};
+            const meta = appActionResolveGroup(query);
+            const brief = appActionGroupBrief(meta);
+            return {
+                group: {
+                    ...brief,
+                    minutesText: meta.minutes && meta.minutes.text ? String(meta.minutes.text).slice(0, 4000) : '',
+                },
+            };
+        }
+        case 'send_group_message': {
+            if (!aiGroupRuntime) throw new Error('群聊运行时未初始化');
+            const meta = appActionResolveGroup(p.id || p.title);
+            const text = String(p.text == null ? '' : p.text).trim();
+            if (!text) throw new Error('send_group_message 需要 text');
+            const result = await aiGroupRuntime.sendUserMessage(meta.id, text);
+            if (!result.ok) throw new Error(result.error || '发送失败');
+            return {
+                sent: {group: meta.title || meta.id, groupId: meta.id, gid: result.gid},
+                note: '已作为用户消息发出；自由聊天会唤醒成员（真实模型调用），讨论中会进入点名队列',
+            };
+        }
         case 'flash': {
             const message = String(p.message || '').trim();
             if (!message) throw new Error('flash 需要 message');
@@ -1123,6 +1632,22 @@ async function runAppAction(action, params, scope, callerSessionId) {
         case 'refresh_explorer': {
             if (explorer && explorer.refresh) explorer.refresh();
             return {refreshed: true};
+        }
+        case 'reveal_in_explorer': {
+            // 在文件树里展开并选中指定路径（缺省当前活动文件）
+            if (!explorer || typeof explorer.revealPath !== 'function') throw new Error('文件树未初始化');
+            const raw = String(p.path || '').trim() || (file && file.path) || '';
+            if (!raw) throw new Error('reveal_in_explorer 需要 path（当前没有活动文件）');
+            if (!workspaceFolder) throw new Error('没有打开工作区');
+            const target = appActionWorkspacePath(raw);
+            if (!settings.showSidebar) toggleSidebar(true);
+            switchSidebarView('files');
+            if (typeof explorer.setMode === 'function') explorer.setMode('tree', false);
+            // 侧栏刚展开 / 工作区刚切换时树可能还没建：先刷新一次再展开目标路径
+            if (typeof explorer.refresh === 'function') explorer.refresh();
+            const ok = await explorer.revealPath(target);
+            if (!ok) throw new Error('文件树展开失败：路径不在当前工作区或列表未加载：' + target);
+            return {revealed: target};
         }
         case 'type_text': {
             // 模拟键盘输入（仅完全权限档）：输入到焦点元素或 target 选择器匹配的输入框
@@ -1147,16 +1672,66 @@ async function runAppAction(action, params, scope, callerSessionId) {
             return {typed: text.length, target: target.id || target.name || 'activeElement'};
         }
         case 'press_key': {
-            // 模拟按键（仅完全权限档）：派发 keydown/keyup 并冒泡，可触发对话框确认、Esc 关闭、全局快捷键等
+            // 模拟按键 / 组合键（仅完全权限档）：派发 keydown/keyup 并冒泡，可触发全局快捷键、对话框确认、Esc 关闭等
             if (actionScope !== 'full') throw new Error('press_key 需要「完全权限」权限档');
-            const key = String(p.key || '').trim();
-            if (!key) throw new Error('press_key 需要 key（如 Enter / Escape / F3 / a）');
+            const rawKey = String(p.key || '').trim();
+            if (!rawKey) throw new Error('press_key 需要 key（如 Enter / Escape / F3 / a / Ctrl+Shift+P）');
+            const spec = comboSpecFromText(rawKey);
+            if (!spec.ok) throw new Error(spec.error + '；收到的组合串：' + rawKey);
             const target = appActionEditableTarget(p.target, true) || document.activeElement || document.body;
             target.focus && target.focus();
-            const init = {key, bubbles: true, cancelable: true};
-            target.dispatchEvent(new KeyboardEvent('keydown', init));
-            target.dispatchEvent(new KeyboardEvent('keyup', init));
-            return {dispatched: key, target: target.id || target.name || target.tagName || 'body'};
+            appActionDispatchKey(target, spec);
+            return {
+                dispatched: spec.combo,
+                key: spec.key,
+                code: spec.code,
+                modifiers: spec.modifiers,
+                target: target.id || target.name || target.tagName || 'body',
+            };
+        }
+        case 'click': {
+            // 合成一次界面单击（仅完全权限档）：DOM 事件不移动系统鼠标，不产生真实用户激活
+            if (actionScope !== 'full') throw new Error('click 需要「完全权限」权限档');
+            const viewport = {width: window.innerWidth, height: window.innerHeight, dpr: window.devicePixelRatio || 1};
+            const selector = String(p.selector || '').trim();
+            let el = null;
+            let x = 0;
+            let y = 0;
+            if (selector) {
+                try {
+                    el = document.querySelector(selector);
+                } catch (e) {
+                    throw new Error('selector 无效：' + selector);
+                }
+                if (!el) throw new Error('找不到元素：' + selector);
+                try {
+                    el.scrollIntoView({block: 'center', inline: 'center'});
+                } catch (e) {}
+                const rect = el.getBoundingClientRect();
+                if (!(rect.width > 0 && rect.height > 0)) throw new Error('元素当前不可见：' + selector);
+                x = Math.round(Math.min(viewport.width - 1, Math.max(0, rect.left + rect.width / 2)));
+                y = Math.round(Math.min(viewport.height - 1, Math.max(0, rect.top + rect.height / 2)));
+            } else {
+                x = Math.round(Number(p.x));
+                y = Math.round(Number(p.y));
+                if (!Number.isFinite(Number(p.x)) || !Number.isFinite(Number(p.y))) {
+                    throw new Error('click 需要数字坐标 x / y（CSS 像素，相对窗口可视区），或传 selector');
+                }
+                if (x < 0 || y < 0 || x >= viewport.width || y >= viewport.height) {
+                    throw new Error('坐标超出可视区：(' + x + ', ' + y + ')，当前可视区 ' +
+                        viewport.width + '×' + viewport.height + ' CSS 像素（截图是物理像素，请除以 DPR=' + viewport.dpr + '）');
+                }
+                el = document.elementFromPoint(x, y);
+                if (!el) throw new Error('该坐标没有可点击元素：(' + x + ', ' + y + ')');
+            }
+            appActionDispatchClick(el, x, y);
+            const target = appActionDescribeNode(el);
+            return {
+                clicked: {x, y, target},
+                viewport,
+                note: '合成点击（isTrusted=false，不带用户激活）：依赖真实点击校验的行为可能无响应；结果用 screenshot 核对。' +
+                    (target && target.tag === 'iframe' ? '目标是 iframe 容器，页面内部请用 browser_click 系列。' : ''),
+            };
         }
         case 'screenshot': {
             // 截取应用主窗口或指定板块（含 WebView2 与内嵌浏览器）；由 ai-panel 转成图片消息附加给模型
@@ -1406,6 +1981,12 @@ const defaultSettings = {
     // 操作留痕（docs/unfinished-plans/operation-audit-log.md）
     activityLog: true,
     activityRetentionMonths: 12,
+    // 存储自动清理（docs/finished-plans/auto-cache-cleanup.md）：天数 0 = 仅按大小，MB 0 = 仅按时间
+    storageAutoClean: false,
+    storageAutoCleanDays: 7,
+    storageAutoCleanMB: 500,
+    // 右键「新建」菜单定制（docs/unfinished-plans/feature-evaluations-2026-11-18.md §1）
+    newFileMenu: defaultNewFileMenu(),
 };
 let settings = JSON.parse(JSON.stringify(defaultSettings));
 try {
@@ -1421,6 +2002,8 @@ try {
         for (const key of fineInjectKeys) settings[key] = false;
     }
 } catch (e) {}
+// 新建菜单配置：损坏 / 旧版残留字段一律归一化，不让它把右键菜单搞成空白
+settings.newFileMenu = normalizeNewFileMenu(settings.newFileMenu);
 // 2026-11-16 主题体系重构：旧版 9 套界面主题降级为代码主题 —— 迁移成 深色/浅色
 // UI 主题 + 对应代码主题（映射单一来源 code-styles.js，index.html 启动脚本有同表副本）；
 // 未知主题（可能是已卸载插件注册的）先保留，等插件加载后 CSS 生效
@@ -1446,9 +2029,15 @@ settings.treeGuides = !!settings.treeGuides;
 settings.treeCounts = !!settings.treeCounts;
 settings.codeGuides = !!settings.codeGuides;
 settings.alwaysOnTop = !!settings.alwaysOnTop;
+// 存储自动清理：取值白名单与设置页下拉一致，非法值回落默认
+settings.storageAutoClean = settings.storageAutoClean === true;
+if (![1, 3, 7, 30, 0].includes(Number(settings.storageAutoCleanDays))) settings.storageAutoCleanDays = 7;
+if (![100, 200, 500, 1024, 2048, 0].includes(Number(settings.storageAutoCleanMB))) settings.storageAutoCleanMB = 500;
+settings.storageAutoCleanDays = Number(settings.storageAutoCleanDays);
+settings.storageAutoCleanMB = Number(settings.storageAutoCleanMB);
 settings.treeRefreshInterval = Number(settings.treeRefreshInterval);
 if (![0, 1, 2, 3, 5, 10].includes(settings.treeRefreshInterval)) settings.treeRefreshInterval = 3;
-settings.terminalHeight = Math.min(480, Math.max(120, Number(settings.terminalHeight) || 240));
+settings.terminalHeight = Math.min(2000, Math.max(120, Number(settings.terminalHeight) || 240));
 settings.sidebarWidth = Math.min(500, Math.max(160, Number(settings.sidebarWidth) || 264));
 settings.codeWrap = !!settings.codeWrap;
 settings.codeShotTitle = !!settings.codeShotTitle;
@@ -1582,6 +2171,7 @@ const settingsUI = createSettingsUI({
     get LOCK_ICON() { return LOCK_ICON; },
     get readingMode() { return readingMode; },
     get patchesPane() { return settingsPanePatches; },
+    get newFileMenuPane() { return settingsPaneNewFileMenu; },
     get refreshDeveloperMode() { return refreshDeveloperMode; },
     get refreshLogPath() { return refreshLogPath; },
     get relativePathFrom() { return relativePathFrom; },
@@ -1611,13 +2201,14 @@ const settingsUI = createSettingsUI({
     get updateWritingStats() { return updateWritingStats; },
     get workspaceFolder() { return workspaceFolder; },
 });
-const {actRel, activityLog, applyIntegration, applyReadOnlyToDoc, applySettings, closeDialogs, closeTopDialog, getConfirmAction, setConfirmAction, countWords, currentTheme, cursorPositionForDoc, elsDialogs, elsSettings, getFormatSettings, installReadOnlyGuards, openDialogEl, openNameDialog, openSaveConflictDialog, openSettings, rtFullscreen, scheduleWordCount, selectSettingsPane, setCodeStyle, setTheme, syncIntegrationStatus, syncedOpenMode, toggleAlwaysOnTop, toggleCodeWrap, toggleFullscreen, updateLockButton, updateWordCount} = settingsUI;
+const {actRel, activityLog, applyIntegration, applyReadOnlyToDoc, applySettings, closeDialogs, closeTopDialog, getConfirmAction, setConfirmAction, countWords, currentTheme, cursorPositionForDoc, elsDialogs, elsSettings, getFormatSettings, installReadOnlyGuards, openDialogEl, openNameDialog, openSaveConflictDialog, openSettings, openSettingsAtRow, rtFullscreen, scheduleWordCount, selectSettingsPane, setCodeStyle, setTheme, syncIntegrationStatus, syncedOpenMode, toggleAlwaysOnTop, toggleCodeWrap, toggleFullscreen, updateLockButton, updateWordCount} = settingsUI;
 const writingUI = createWritingUI({
     set flashTimer(v) { flashTimer = v; },
     set dirty(v) { dirty = v; },
     set autoSaveTimer(v) { autoSaveTimer = v; },
     get nextCmdSeq() { return nextCmdSeq; },
     get activityLog() { return activityLog; },
+    get syncRunConfigWidget() { return syncRunConfigWidget; },
     get addMessage() { return (...args) => messageCenter.add(...args); },
     get allFormatDefs() { return allFormatDefs; },
     get applyCsvTableZoom() { return applyCsvTableZoom; },
@@ -1678,7 +2269,7 @@ const writingUI = createWritingUI({
     // 关窗脏标记把便签的防抖窗口算进去（anyDirty 可能在 bridgeUI 解构前被调用，读早期 flag 防 TDZ）
     get memoHasPending() { return () => memoPendingFlag; },
 });
-const {CSV_COL_MIN_WIDTH, CSV_ROW_NUM_WIDTH, INDENTS, LANG_DEFS, TREE_MAX_CHILDREN, applyWritingFormat, applyWritingMode, canSplitDoc, cancelAutoSave, closeFootPopover, editorLocale, effectiveToolEnv, flash, fmtSize, formatDisplayName, insertSceneSeparator, isSqlSupportedDoc, isSvgDoc, jumpToPosition, markdownRenderer, mdPreviewWidthLabel, normalizeLegacySqlMode, openConfirmDialog, openGotoDialog, openWritingNameDialog, renderEnvVarsPane, renderFmtTable, renderFormatPane, renderLangPane, renderMarkdownHtml, renderMermaidBlocks, renderPluginsPane, renderRunPane, resolveMarkdownImages, scheduleAutoSave, scheduleCursorPosition, scheduleWritingCaret, setDirty, splitKindFor, toggleWritingMode, toolEnvFor, updateAiWidthWidget, updateBackendDirty, updateCursorPosition, updateTabDirty, updateWindowTitle, updateWritingStats, viewDisabled, viewLabel, viewOptionsFor, writingFormatable} = writingUI;
+const {CSV_COL_MIN_WIDTH, CSV_ROW_NUM_WIDTH, INDENTS, LANG_DEFS, TREE_MAX_CHILDREN, applyRunProfile, applyWritingFormat, applyWritingMode, canSplitDoc, cancelAutoSave, closeFootPopover, editorLocale, effectiveToolEnv, flash, fmtSize, formatDisplayName, insertSceneSeparator, isSqlSupportedDoc, isSvgDoc, jumpToPosition, markdownRenderer, mdPreviewWidthLabel, normalizeLegacySqlMode, openConfirmDialog, openGotoDialog, openWritingNameDialog, renderEnvVarsPane, renderFmtTable, renderFormatPane, renderLangPane, renderMarkdownHtml, renderMermaidBlocks, renderPluginsPane, renderRunPane, resolveMarkdownImages, scheduleAutoSave, scheduleCursorPosition, scheduleWritingCaret, setDirty, splitKindFor, toggleWritingMode, toolEnvFor, updateAiWidthWidget, updateBackendDirty, updateCursorPosition, updateTabDirty, updateWindowTitle, updateWritingStats, viewDisabled, viewLabel, viewOptionsFor, writingFormatable} = writingUI;
 const editorGroupsMod = createEditorGroups({
     set currentMode(v) { currentMode = v; },
     set dirty(v) { dirty = v; },
@@ -1782,48 +2373,11 @@ const editorGroupsMod = createEditorGroups({
     get viewOptionsFor() { return viewOptionsFor; },
     get workspaceFolder() { return workspaceFolder; },
 });
-const {activateDoc, addDocToFocusedGroup, applyAceMode, applyCsvTableZoom, applyImageZoom, browserViewportLabel, closeDocNow, closeDocsWithConfirm, closeSqlView, createDoc, createDocEditor, createGroup, dismissBanner, doRedo, doUndo,  enterAudioView, enterBinaryView, enterCsvTable, enterImageView, enterMarkdownPreview, enterSplitView, enterSqlView, enterSvgRender, enterTextView, enterVideoView, exitSplitView, expandAllWithGuard, flushCsvCellEditor,  groupDocs, setFocusedGroupId, setSplitRoot, groupOfDoc, handleAIWorkspaceFileChanged, handleExternalDocChanges, hideAudioView, hideBanner, hideSvgRender, hideVideoView, hookCodeFoldRanges, hookMultiCursor, humanizeCounts, initCodeFoldHover, jumpBookmark, leaveCsvTable, leaveMarkdownPreview, markDocDirty, mdSyncScrollFromAce, moveTabInGroup, openWithDefaultApp, patchViewContext, refreshPatchMarkers, rememberDocView, renderBookmarks, renderBreadcrumb, renderCsvTableView, renderEditorLayout, renderMarkdownPreview, renderTabs, reopenClosedTab, releaseAudio, releaseVideo, requestCloseDoc, revertDocToSaved, scheduleGitGutter, setBrowserViewport, setFilename, showBanner, showImageMenu, showMdPreviewMenu, showPathInFolder, showSvgMenu,  syncAllBrowserTabs, syncBrowserTab, syncTabReadOnly, textArea, toggleBookmark, toggleFocusedNode, updateBrowserTitle, updateDocChrome, updateStatus, zoomCsvTable, zoomImageBy, zoomSvgRenderBy} = editorGroupsMod;
-const NEW_FILE_TYPES = [
-    {label: 'JSON 文件', name: '新建文件.json'},
-    {label: '文本文件', name: '新建文件.txt'},
-    {label: 'Markdown 文件', name: '新建文件.md'},
-    {label: 'YAML 文件', name: '新建文件.yaml'},
-    {label: 'XML 文件', name: '新建文件.xml'},
-    {label: 'CSV 文件', name: '新建文件.csv'},
-    {label: 'TOML 文件', name: '新建文件.toml'},
-    {label: 'JSONL 文件', name: '新建文件.jsonl'},
-    {label: 'INI 文件', name: '新建文件.ini'},
-    {label: 'Properties 文件', name: '新建文件.properties'},
-];
-
-// 不常用的代码类文件收进「更多」二级菜单
-const NEW_FILE_TYPES_MORE = [
-    {label: 'JavaScript 文件', name: '新建文件.js'},
-    {label: 'TypeScript 文件', name: '新建文件.ts'},
-    {label: 'HTML 文件', name: '新建文件.html'},
-    {label: 'CSS 文件', name: '新建文件.css'},
-    {label: 'Python 文件', name: '新建文件.py'},
-    {label: 'Shell 脚本', name: '新建文件.sh'},
-    {label: 'PowerShell 脚本', name: '新建文件.ps1'},
-    {label: '批处理文件', name: '新建文件.bat'},
-    {label: 'SQL 文件', name: '新建文件.sql'},
-    {label: 'Go 文件', name: '新建文件.go'},
-    {label: 'Java 文件', name: '新建文件.java'},
-    {label: 'Kotlin 文件', name: '新建文件.kt'},
-    {label: 'Lua 脚本', name: '新建文件.lua'},
-];
-
-function fileTypeMenuItem(type, action) {
-    const spec = fileIconSpec(type.name);
-    const dot = type.name.lastIndexOf('.');
-    return {
-        label: type.label,
-        shortcut: dot >= 0 ? type.name.slice(dot) : '',
-        iconHtml: spec.svg,
-        iconClass: spec.className,
-        action: () => action(type),
-    };
-}
+const {activateDoc, addDocToFocusedGroup, applyAceMode, applyCsvTableZoom, applyImageZoom, browserViewportLabel, closeDocNow, closeDocsWithConfirm, closeSqlView, createDoc, createDocEditor, createGroup, dismissBanner, doRedo, doUndo,  enterAudioView, enterBinaryView, enterCsvTable, enterImageView, enterMarkdownPreview, enterSplitView, enterSqlView, enterSvgRender, enterTextView, enterVideoView, exitSplitView, expandAllWithGuard, flushCsvCellEditor,  groupDocs, setFocusedGroupId, setSplitRoot, groupOfDoc, handleAIWorkspaceFileChanged, handleExternalDocChanges, hideAudioView, hideBanner, hideSvgRender, hideVideoView, hookCodeFoldRanges, hookMultiCursor, humanizeCounts, initCodeFoldHover, jumpBookmark, addBookmarkAt, removeBookmarkAt, clearDocBookmarks, leaveCsvTable, leaveMarkdownPreview, markDocDirty, mdSyncScrollFromAce, moveTabInGroup, openWithDefaultApp, patchViewContext, refreshPatchMarkers, rememberDocView, renderBookmarks, renderBreadcrumb, renderCsvTableView, renderEditorLayout, renderMarkdownPreview, renderTabs, reopenClosedTab, releaseAudio, releaseVideo, requestCloseDoc, revertDocToSaved, scheduleGitGutter, setBrowserViewport, setFilename, showBanner, showImageMenu, showMdPreviewMenu, showPathInFolder, showSvgMenu,  syncAllBrowserTabs, syncBrowserTab, syncTabReadOnly, textArea, toggleBookmark, toggleFocusedNode, updateBrowserTitle, updateDocChrome, updateStatus, zoomCsvTable, zoomImageBy, zoomSvgRenderBy} = editorGroupsMod;
+// 内置类型表由 new-file-menu.js 单一来源派生；属性面板的「新建文档」菜单保持既有行为，
+// 资源管理器右键的「新建」子菜单则按 settings.newFileMenu 合成（见 explorer-ops.js）。
+const NEW_FILE_TYPES = BUILTIN_FILE_TYPES.filter((t) => t.group === 'top').map(({id, ...type}) => type);
+const NEW_FILE_TYPES_MORE = BUILTIN_FILE_TYPES.filter((t) => t.group === 'more').map(({id, ...type}) => type);
 
 function newFileTypeMenuItems(action) {
     return [
@@ -1930,6 +2484,9 @@ const editorMenus = createEditorMenus({
     get showInFolder() { return showInFolder; },
     get showMdPreviewMenu() { return showMdPreviewMenu; },
     get showSvgMenu() { return showSvgMenu; },
+    get toggleBookmark() { return toggleBookmark; },
+    get openBookmarkList() { return openBookmarkList; },
+    get clearCurrentDocBookmarks() { return clearDocBookmarksCurrent; },
     get textArea() { return textArea; },
     get workspaceFolder() { return workspaceFolder; },
 });
@@ -1965,6 +2522,7 @@ const explorerOps = createExplorerOps({
     get flash() { return flash; },
     get gitStateCache() { return gitStateCache; },
     get newFileTypeMenuItems() { return newFileTypeMenuItems; },
+    get openSettings() { return openSettings; },
     get openConfirmDialog() { return openConfirmDialog; },
     get openDiffDialog() { return openDiffDialog; },
     get openFolderWorkspace() { return openFolderWorkspace; },
@@ -2014,6 +2572,22 @@ function closeReadingForEditor() {
 function findDocByPath(path) {
     const key = String(path || '').replace(/\\/g, '/').toLowerCase();
     return docs.find((d) => String(d.path || '').replace(/\\/g, '/').toLowerCase() === key) || null;
+}
+
+// 运行配置的目标文件在某个标签里有未保存修改（磁盘目标运行前提示用）
+function openDocDirtyByPath(path) {
+    const doc = findDocByPath(path);
+    return !!doc && !!doc.dirty;
+}
+
+// 配置编辑器选目标文件：只选路径不打开
+async function pickRunFile() {
+    try {
+        return await backend.ShowOpenFileDialog('选择配置目标文件', '') || '';
+    } catch (e) {
+        flash('选择文件失败：' + e, true);
+        return '';
+    }
 }
 
 async function openPathsHere(paths, opts = {}) {
@@ -2208,6 +2782,65 @@ async function openTargets(targets) {
     }
 }
 
+// —— 书签总览与 app_control 书签动作（数据纯函数在 editor/bookmark-list.js）——
+// 口径：书签随会话快照只持久化打开中的标签页，聚合/增删只针对打开中的文档；
+// 动作里 path 指到未打开文件时先打开（add/goto），未打开文件的删除直接报错。
+function bookmarkOverviewForUI() {
+    return bookmarkOverview(docs);
+}
+
+function openBookmarkList() {
+    openQuickSwitchAt('bookmarks');
+}
+
+function clearDocBookmarksCurrent() {
+    if (!file) {
+        flash('当前没有打开的文件');
+        return;
+    }
+    const count = clearDocBookmarks(file);
+    if (!count) {
+        flash('当前文件没有书签');
+        return;
+    }
+    rememberDocView(file);
+    flash('已清除 ' + count + ' 个书签');
+}
+
+function removeBookmarkEntry(entry) {
+    const doc = findDocByPath(entry && entry.path);
+    if (!doc) return false;
+    const result = removeBookmarkAt(doc, Number(entry && entry.row) || 0);
+    if (result.existed) rememberDocView(doc);
+    return result.existed;
+}
+
+async function jumpBookmarkEntry(entry) {
+    const path = entry && entry.path;
+    if (!path) return;
+    await openPaths([path]);
+    const doc = findDocByPath(path);
+    if (doc) await selectLineInDoc(doc, (Number(entry && entry.row) || 0) + 1);
+}
+
+async function appActionBookmarkDoc(p) {
+    const path = String(p.path || '').trim();
+    let doc = null;
+    if (path) {
+        doc = findDocByPath(path);
+        if (!doc) {
+            await openPaths([path]);
+            doc = findDocByPath(path);
+        }
+        if (!doc) throw new Error('文件不存在或无法打开：' + path);
+    } else {
+        doc = file;
+        if (!doc) throw new Error('当前没有打开的文件；请传 path 指定文件');
+    }
+    if (doc.binary || doc.large) throw new Error((doc.name || '该文件') + ' 是二进制或大文件，不支持行书签');
+    return doc;
+}
+
 async function openDialog() {
     try {
         const paths = await backend.OpenFilesDialog();
@@ -2252,15 +2885,19 @@ function renderWorkspaceCrumbs() {
 }
 
 const titlebarPopovers = createTitlebarPopovers({
+    get applyRunProfile() { return applyRunProfile; },
     get backend() { return backend; },
     get baseNameOf() { return baseNameOf; },
     get els() { return els; },
     get elsDialogs() { return elsDialogs; },
+    get file() { return file; },
+    get fileIconSpec() { return fileIconSpec; },
     get flash() { return flash; },
     get gitRootDir() { return gitRootDir; },
     get openFolderDialog() { return openFolderDialog; },
     get openFolderSmart() { return openFolderSmart; },
     get openNameDialog() { return openNameDialog; },
+    get openSettings() { return openSettings; },
     get openVirtualDoc() { return openVirtualDoc; },
     get projectBadgeText() { return projectBadgeText; },
     get readRecentOpen() { return readRecentOpen; },
@@ -2271,7 +2908,7 @@ const titlebarPopovers = createTitlebarPopovers({
     get switchSidebarView() { return switchSidebarView; },
     get workspaceFolder() { return workspaceFolder; },
 });
-const {closeGitBranchPopover, gitPopNewBranch, gitPopOpenCommit, gitPopPush, gitPopUpdateProject, showBranchMenu, showProjectMenu} = titlebarPopovers;
+const {closeGitBranchPopover, closeRunConfigPopover, gitPopNewBranch, gitPopOpenCommit, gitPopPush, gitPopUpdateProject, showBranchMenu, showProjectMenu, showRunConfigMenu, syncRunConfigWidget, touchRunProfileRecency} = titlebarPopovers;
 
 
 function defaultFolderDir() {
@@ -2436,16 +3073,27 @@ function syncWorkspaceWatcher() {
     } catch (e) {}
 }
 
-// 标题栏 ▶ 与工具菜单保持一致的可用状态（菜单是在打开时算的，按钮要随文件切换实时同步）
+// 标题栏 ▶ 与工具菜单保持一致的可用状态（菜单是在打开时算的，按钮要随文件切换实时同步）。
+// 绑定文件的配置激活时，▶ 的可用性跟随配置目标文件而不是当前文档；widget 标签一并刷新。
 function syncRunButtonState() {
     if (!els.tbRun) return;
-    const ro = isDocReadOnly(file, settings);
-    const supported = !!file && !file.binary && !file.large &&
-        !!RECIPES[extOf(file.name || file.path)] && !ro;
-    els.tbRun.disabled = !supported;
-    els.tbRun.dataset.tip = supported || !file ? '运行当前文件 (F5)'
-        : ro ? (isTabReadOnlyLocked(file) ? '本标签已只读，不执行代码' : '只读模式下不执行代码')
-            : '当前文件不支持运行';
+    const cfg = activeRunConfig(settings);
+    if (cfg && cfg.file) {
+        const targetName = String(cfg.file).replace(/\\/g, '/').split('/').pop();
+        const supported = !!RECIPES[extOf(targetName)];
+        els.tbRun.disabled = !supported;
+        els.tbRun.dataset.tip = supported ? '运行配置「' + cfg.name + '」 (F5)'
+            : '配置目标文件不支持运行：' + (targetName || cfg.file);
+    } else {
+        const ro = isDocReadOnly(file, settings);
+        const supported = !!file && !file.binary && !file.large &&
+            !!RECIPES[extOf(file.name || file.path)] && !ro;
+        els.tbRun.disabled = !supported;
+        els.tbRun.dataset.tip = supported || !file ? '运行当前文件 (F5)'
+            : ro ? (isTabReadOnlyLocked(file) ? '本标签已只读，不执行代码' : '只读模式下不执行代码')
+                : '当前文件不支持运行';
+    }
+    if (syncRunConfigWidget) syncRunConfigWidget();
 }
 
 function initActivityBar() {
@@ -2459,6 +3107,7 @@ function initActivityBar() {
         else openGlobalSearch();
     });
     if (els.tbRun) els.tbRun.addEventListener('click', () => runController.run());
+    if (els.tbRunConfig) els.tbRunConfig.addEventListener('click', () => showRunConfigMenu(els.tbRunConfig));
     // 新建浏览器标签页：活动栏是「一次性动作」而非面板开关，故无 aria-pressed
     if (els.abBrowser) els.abBrowser.addEventListener('click', () => openBrowserTab('about:blank'));
     // 快捷便签面板：同上，一次性打开成内容区标签页
@@ -2682,6 +3331,17 @@ const messageCenter = createMessageCenter({
 });
 window.__lens.messageCenter = messageCenter;
 
+// 存储自动清理驱动器（设置 → 存储与清理）：启动后 2 分钟 + 每 6 小时各检查一次，
+// 开关关闭或浮窗/调试控制台窗口内不做任何事。判定与范围纯函数在 settings-pane-storage.js。
+const storageAutoClean = createStorageAutoClean({
+    get backend() { return backend; },
+    get settings() { return settings; },
+    get notify() { return (...args) => messageCenter.add(...args); },
+    get activity() { return activityLog; },
+    get logFrontend() { return logFrontend; },
+});
+storageAutoClean.start();
+
 function initAIPanel() {
     if (aiPanel) return;
     const panelEl = els.aiPanel || document.getElementById('ai-panel');
@@ -2692,7 +3352,7 @@ function initAIPanel() {
         overlayParent: document.getElementById('main-pane'),
         backend,
         settings,
-        // 消息中心投递回调：notify_send 工具与「需要你处理」的通知都走这里（message-center.js）；
+        // 消息中心投递回调：notify_send 工具与「需要用户处理」的通知都走这里（message-center.js）；
         // 是否真的写进列表由 ai-notify-policy 的 centerRecord 决定（任务完成不写）
         addMessage: (...args) => messageCenter.add(...args),
         // 头部放大镜：开全局搜索并只勾选「AI 会话」分类（会话搜索框已并入这里）
@@ -3050,7 +3710,7 @@ function initExplorer() {
         openFolder: () => openFolderDialog(),
         openFileDialog: () => openDialog(),
         isSupported: isSupportedFile,
-        onContextMenu: (info, x, y, node) => showExplorerMenu(info, x, y, node),
+        onContextMenu: (info, x, y) => showExplorerMenu(info, x, y),
         onMove: (items, destDir) => moveEntriesByDrag(items, destDir),
         onExternalDrop: (destDir) => setPendingExternalDrop(destDir),
         onToggleFilter: toggleSidebarFilter,
@@ -3493,6 +4153,25 @@ async function saveAll() {
 
 els.btnWelcomeOpen.addEventListener('click', openDialog);
 
+// 欢迎页「常用入口」：与活动栏 / 菜单共用同一批底层入口；闭包在点击时求值，
+// aiPanel / readingMode / memoApi 等此刻必已初始化，未就绪的域静默跳过
+const welcomeEntries = {
+    ai: () => aiPanel && aiPanel.open(true),
+    memo: () => memoApi.open(),
+    browser: () => openBrowserTab('about:blank'),
+    terminal: () => toggleDockView('terminal'),
+    graph: () => toggleDockView('graph'),
+    reading: () => readingMode && readingMode.openBookshelf(),
+    search: () => openGlobalSearch(),
+    settings: () => openSettings('general'),
+};
+els.welcome.querySelectorAll('.wb-item[data-wentry]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+        const run = welcomeEntries[btn.dataset.wentry];
+        if (run) run();
+    });
+});
+
 elsSettings.fixed.addEventListener('change', () => {
     settings.fixedKeys = elsSettings.fixed.checked;
     applySettings();
@@ -3601,7 +4280,17 @@ const settingsPaneStorage = createSettingsPaneStorage({
     get flash() { return flash; },
     get openConfirmDialog() { return openConfirmDialog; },
     get root() { return workspaceFolder || ''; },
+    get settings() { return settings; },
+    get applySettings() { return applySettings; },
 });
+// 设置 → 通用 → 新建菜单：显隐 / 排序 / 模板，配置只在 settings.newFileMenu 一份
+const settingsPaneNewFileMenu = createSettingsPaneNewFileMenu({
+    get settings() { return settings; },
+    get applySettings() { return applySettings; },
+    get flash() { return flash; },
+});
+// 先渲染一次，让设置搜索能索引到动态行（之后进「通用」时由 selectSettingsPane 重建）
+settingsPaneNewFileMenu.renderNewFileMenuPane();
 // 设置 → AI → 外部工具：能力来源矩阵 + 服务提供商配置（MCP 组由 index.html 迁入，绑定仍归 ai-panel）
 const settingsPaneExternalTools = createSettingsPaneExternalTools({
     get backend() { return backend; },
@@ -3923,8 +4612,12 @@ const quickSwitchMod = createQuickSwitch({
     get viewDisabled() { return viewDisabled; },
     get viewLabel() { return viewLabel; },
     get viewOptionsFor() { return viewOptionsFor; },
+    // 书签总览（quick-switch bookmarks 层级）：聚合打开中的文档，删除/跳转回调见上方书签桥
+    get bookmarkOverview() { return bookmarkOverviewForUI; },
+    get removeBookmarkEntry() { return removeBookmarkEntry; },
+    get jumpBookmarkEntry() { return jumpBookmarkEntry; },
 });
-const {handleQuickSwitchKey, openQuickSwitch, quickSwitch, toggleQuickSwitch} = quickSwitchMod;
+const {handleQuickSwitchKey, openQuickSwitch, openQuickSwitchAt, quickSwitch, toggleQuickSwitch} = quickSwitchMod;
 const appActions = createAppActions({
     get backend() { return backend; },
     get baseNameOf() { return baseNameOf; },
@@ -4053,6 +4746,7 @@ function paletteActions() {
     }
     actions.push({label: '书签： 跳到下一个书签', shortcut: 'F2', action: () => jumpBookmark(1)});
     actions.push({label: '书签： 跳到上一个书签', shortcut: 'Shift+F2', action: () => jumpBookmark(-1)});
+    actions.push({label: '书签： 清除当前文档书签', action: clearDocBookmarksCurrent});
     actions.push({label: '数据： JSONPath 查询…', shortcut: 'Ctrl+Shift+J', action: openJsonQuery});
     actions.push({label: '数据： 比较两个已打开的文件…', action: () => openDiffDialog()});
     actions.push({label: '数据： JSON Schema 校验…', action: openSchemaValidation});
@@ -4158,7 +4852,11 @@ function menuItems(kind) {
             ];
         case 'view': {
             const structured = !!file && !!file.treeAvailable;
-            const items = [{label: '快速切换…', shortcut: 'Ctrl+`', icon: 'E8B3', action: openQuickSwitch}, {sep: true}];
+            const items = [
+                {label: '快速切换…', shortcut: 'Ctrl+`', icon: 'E8B3', action: openQuickSwitch},
+                {label: '书签总览', shortcut: getShortcut('edit.bookmarkList', keymap.style), action: openBookmarkList},
+                {sep: true},
+            ];
             const splitActive = !!(file && file.splitActive);
             items.push(...viewOptionsFor(file && file.format, file).map(([mode, label]) => ({
                 label,
@@ -4641,6 +5339,10 @@ window.addEventListener('keydown', (e) => {
         e.preventDefault();
         e.stopPropagation();
         jumpBookmark(1);
+    } else if (keymap.is(kb, 'edit.bookmarkList')) {
+        e.preventDefault();
+        e.stopPropagation();
+        openBookmarkList();
     } else if (keymap.is(kb, 'edit.prevBookmark')) {
         e.preventDefault();
         e.stopPropagation();
@@ -4842,6 +5544,10 @@ if (rt) {
         // 快捷便签：其他窗口/外部改了 .cadt/memo/memo.json 时重读（面板开着才生效）
         if (memoWorkspaceEventHook) memoWorkspaceEventHook(payload);
     });
+    // 快捷便签定位点跳转：CLI --memo（已在运行时 secondInstance 转发到这里）
+    rt.EventsOn('app-open-memo', (locator) => {
+        if (memoJumpHook) memoJumpHook(locator);
+    });
     // Wails 文件拖放：注册窗口级 dragover/drop 监听（不注册就收不到任何外部拖放），
     // useDropTarget=false 让整个窗口都接受；回调拿到的路径已由 Go 侧解析好
     if (rt.OnFileDrop) {
@@ -4862,12 +5568,20 @@ if (rt) {
         // 快捷便签：挂着的防抖保存在弹确认框前先落盘（自动保存语义，之后无论选哪个退出按钮都不丢）
         if (memoFlushHook) memoFlushHook();
         const r = reasons || {};
-        if (r.aiRunning) {
+        // 来源分组（Go 侧 beforeClose 下发）：AI 回合 / 后台命令作业 / 终端。
+        // terms 只数 shell 里有活命令进程的终端（空闲提示符不算，Go 侧枚举后代进程判定）
+        const bgJobs = Number(r.bgJobs) || 0;
+        const terms = Number(r.terms) || 0;
+        const active = [];
+        if (r.aiRunning) active.push('AI 会话正在进行中');
+        if (bgJobs > 0) active.push(bgJobs + ' 个 AI 后台命令仍在运行');
+        if (terms > 0) active.push(terms + ' 个终端正在执行任务');
+        if (active.length) {
             openConfirmDialog(
-                r.dirty ? '有未保存的修改，且 AI 会话正在进行中；关闭后将丢弃修改并中断任务。'
-                    : 'AI 会话正在进行中，关闭窗口会中断当前任务。',
+                (r.dirty ? '有未保存的修改，且 ' : '') + active.join('，') +
+                    '；关闭将终止这些任务' + (r.dirty ? '并丢弃未保存的修改' : '') + '。',
                 () => { if (backend.ForceClose) backend.ForceClose(); },
-                '中断并关闭', '关闭', 'danger');
+                '终止并关闭', '关闭', 'danger');
             return;
         }
         openConfirmDialog(undefined, undefined, undefined, undefined, 'danger');
@@ -4918,6 +5632,12 @@ if (rt) {
     rt.EventsOn('term-exit', (data) => {
         const s = terminalUI.sessions.get(data.id);
         if (s) s.term.write('\r\n\x1b[90m[进程已退出，代码 ' + data.code + ']\x1b[0m');
+        // AI 创建的终端 shell 退出：经会话信箱唤醒发起会话（用户自己开的终端不投递）。
+        // aiPanel 在此处闭包里尚未赋值也没关系——事件只会触发在应用起来之后。
+        if (s && s.aiSessionId && aiPanel && typeof aiPanel.notifyAITerminalExit === 'function') {
+            try { aiPanel.notifyAITerminalExit(s.aiSessionId, data.id, Number(data.code)); }
+            catch (e) {} // 尽力而为路径：唤醒失败不影响终端 UI 的退出标记
+        }
     });
     rt.EventsOn('cmd-out', (payload) => {
         const h = cmdOutHandlers.get(payload.id);
@@ -4984,6 +5704,9 @@ const {setDragCursor} = cursorThemes;
 
 const terminalMod = createTerminalUI({
     get showGitFileHistory() { return showGitFileHistory; },
+    get touchRunProfileRecency() { return touchRunProfileRecency; },
+    get openDocDirtyByPath() { return openDocDirtyByPath; },
+    get samePathValue() { return samePathValue; },
     get gitRollbackPaths() { return gitRollbackPaths; },
     get gitGroupCollapsed() { return gitGroupCollapsed; },
     get gitUncheckedFiles() { return gitUncheckedFiles; },
@@ -5028,6 +5751,11 @@ const {applyDockView, renderGitPanel, cmdExitHandlers, cmdOutHandlers, currentSi
 //    terminal-ui 导出），也必须在 bridgeUI 工厂之前（保持原始执行顺序）——
 applySettings();
 installTooltip();
+// 气泡动作链接分发（data-tip-actions，见 core/tooltip.js）：未知动作忽略。
+// ai:context-slim → 设置 → AI 助手，定位「上下文实时瘦身」开关
+setTooltipActionHandler((action) => {
+    if (action === 'ai:context-slim') openSettingsAtRow('ai', document.getElementById('ai-opt-context-slim'));
+});
 initContextMenus();
 initExplorer();
 initStructurePanel();
@@ -5047,9 +5775,11 @@ const bridgeUI = createBridgeUI({
     get autoCheckUpdateOnStart() { return autoCheckUpdateOnStart; },
     get backend() { return backend; },
     get closeDocNow() { return closeDocNow; },
-    // 快捷便签面板（bridge-memo-view）需要的跨界依赖：右键菜单、贴图压缩、pending 翻转刷关窗脏标记
+    // 快捷便签面板（bridge-memo-view）需要的跨界依赖：右键菜单、贴图压缩、md 渲染、pending 翻转刷关窗脏标记
     get ctxMenu() { return ctxMenu; },
     get prepareImagePayload() { return prepareImagePayload; },
+    get renderMarkdownHtml() { return renderMarkdownHtml; },
+    get openConfirmDialog() { return openConfirmDialog; },
     get onPendingChange() { return memoPendingChanged; },
     get consoleWindowMode() { return consoleWindowMode; },
     get copyText() { return copyText; },
@@ -5092,6 +5822,7 @@ const {createAgentView, createAgentTeamView, createSideChatView, createGroupChat
 
 // 绑定便签真钩子（顶部早期 let 间接层的落点）：启动期事件先到也只摸到 null，不摸未初始化的 const
 memoFocusHook = () => { if (memoOnWindowFocus) memoOnWindowFocus(); };
+memoJumpHook = (locator) => { if (memoApi && memoApi.jumpToLocator) memoApi.jumpToLocator(locator); };
 memoWorkspaceEventHook = (payload) => { if (memoOnWorkspaceEvent) memoOnWorkspaceEvent(payload); };
 memoFlushHook = () => { if (memoApi && memoApi.flushAll) memoApi.flushAll().catch(() => {}); };
 

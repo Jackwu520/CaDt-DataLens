@@ -3,7 +3,7 @@
 // 信箱深度与溢出策略（会话投递拒收 / 结算合并）、折叠成 user 消息、唤醒被拒后内容回填。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {buildSettlementNotice, buildAskNotice, createAIAgentNotices, NOTICE_DEPTH_MAX} from '../../src/ai/ai-agent-notices.js';
+import {buildSettlementNotice, buildAskNotice, buildBgJobExitNotice, buildTerminalExitNotice, formatBgDuration, createAIAgentNotices, NOTICE_DEPTH_MAX} from '../../src/ai/ai-agent-notices.js';
 
 function makeHarness(overrides) {
     const opts = overrides || {};
@@ -307,7 +307,7 @@ test('用户投递：面板里自己写的内容按「用户指令」投，不�
     assert.equal(h.b.messages[0].app.kind, 'session-user');
 });
 
-test('用户全局投递：不挂会话身份（来自你），当前会话本身可作为目标', () => {
+test('用户全局投递：不挂会话身份（来自用户），当前会话本身可作为目标', () => {
     const h = pairHarness();
     h.setBusy(true);
     // 显式传 session: null = 侧栏 / ＋菜单入口：目标是当前会话也不判 self
@@ -315,22 +315,22 @@ test('用户全局投递：不挂会话身份（来自你），当前会话本�
     assert.equal(out.okCount, 1, '全局入口不判 self');
     h.notices.foldNotices('s1');
     const content = h.session.messages[0].content;
-    assert.ok(content.startsWith('［用户消息 · 来自你］'), content);
+    assert.ok(content.startsWith('［用户消息 · 来自用户］'), content);
     assert.ok(content.includes('按用户指令执行'));
     assert.ok(!content.includes('另一个会话'), '全局入口不编造「另一个会话」');
-    assert.equal(h.session.messages[0].app.label, '用户消息 · 来自你');
+    assert.equal(h.session.messages[0].app.label, '用户消息 · 来自用户');
 });
 
-test('用户广播：标注来自你、无需回复，不带「其他会话」语义', () => {
+test('用户广播：标注来自用户、无需回复，不带「其他会话」语义', () => {
     const h = pairHarness();
     h.setBusy(true);
     h.notices.deliverToSessions(['s2'], '工作区配置已变更', {broadcast: true});
     h.notices.foldNotices('s2');
     const content = h.b.messages[0].content;
-    assert.ok(content.startsWith('［系统通知 · 来自你］'), content);
+    assert.ok(content.startsWith('［系统通知 · 来自用户］'), content);
     assert.ok(content.includes('无需回复'));
     assert.ok(!content.includes('来自其他会话'));
-    assert.equal(h.b.messages[0].app.label, '系统通知 · 来自你');
+    assert.equal(h.b.messages[0].app.label, '系统通知 · 来自用户');
     assert.equal(h.b.messages[0].app.kind, 'session-user');
 });
 
@@ -363,4 +363,40 @@ test('session_list：excludeSessionId 只排发起方；null 表示不排除（�
     // 全局入口（侧栏 / ＋菜单）：不排除任何人，当前会话可选
     const global = h.notices.listSessionsForSend({allWorkspaces: true, excludeSessionId: null}).map((row) => row.id);
     assert.deepEqual(global, ['s1', 's2', 's3']);
+});
+
+test('buildBgJobExitNotice：退出码 / 命令截断 / 后续动作提示', () => {
+    const notice = buildBgJobExitNotice({jobId: 'bg-3', command: 'npm run build', code: 0, durationMs: 65_000});
+    assert.equal(notice.kind, 'bgjob');
+    assert.equal(notice.label, '后台命令 · bg-3');
+    assert.ok(notice.content.startsWith('［后台命令 · bg-3］'), '前缀与 detectAppMessage 同源约定');
+    assert.ok(notice.content.includes('npm run build'));
+    assert.ok(notice.content.includes('退出码 0'));
+    assert.ok(notice.content.includes('1 分 5 秒'));
+    assert.ok(notice.content.includes("check_command(jobId='bg-3')"), '要给出后续动作提示');
+    const long = 'x'.repeat(120);
+    const cut = buildBgJobExitNotice({jobId: 'bg-9', command: long, code: 1});
+    assert.ok(cut.content.includes('…'), '超长命令要截断');
+    assert.ok(!cut.content.includes('x'.repeat(81)));
+});
+
+test('buildTerminalExitNotice：退出码未知与后续动作提示', () => {
+    const notice = buildTerminalExitNotice({termId: 'term-2', code: -1});
+    assert.equal(notice.kind, 'bgterm');
+    assert.equal(notice.label, '后台终端 · term-2');
+    assert.ok(notice.content.startsWith('［后台终端 · term-2］'));
+    assert.ok(notice.content.includes('退出码 -1'));
+    assert.ok(notice.content.includes("terminal read(id='term-2')"));
+    const unknown = buildTerminalExitNotice({termId: 'term-2', code: null});
+    assert.ok(unknown.content.includes('退出码 未知'));
+});
+
+test('formatBgDuration：秒 / 分 / 时三档', () => {
+    assert.equal(formatBgDuration(5_000), '5 秒');
+    assert.equal(formatBgDuration(61_000), '1 分 1 秒');
+    assert.equal(formatBgDuration(120_000), '2 分');
+    assert.equal(formatBgDuration(3_600_000), '1 小时');
+    assert.equal(formatBgDuration(3_700_000), '1 小时 1 分');
+    assert.equal(formatBgDuration(0), '0 秒');
+    assert.equal(formatBgDuration(-5), '0 秒');
 });

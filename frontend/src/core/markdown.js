@@ -79,6 +79,13 @@ export function createMarkdownRenderer(deps) {
 
     // env.aiWidgets 由 AI 面板注入：只有它被显式打开时，svg / html / mermaid / echarts 围栏才渲染成可视化卡片。
     // 主界面 Markdown 预览与阅读模式不传该开关，行为保持不变；info 里写 no-widget 可强制保留源码。
+    /**
+     * 渲染单个代码块：可视化围栏 → 卡片占位，mermaid → 占位函数，其余走 hljs + 可选行号栏。
+     * @param {string} text 代码正文（去掉尾换行）
+     * @param {string} info 围栏信息串（语言与 no-widget 等标记）
+     * @param {object} [env] 渲染环境；env.aiWidgets 为真时才启用可视化卡片
+     * @returns {string} HTML 片段
+     */
     function renderMarkdownCodeBlock(text, info, env) {
         const code = String(text || '').replace(/\n$/, '');
         const infoText = String(info || '').trim();

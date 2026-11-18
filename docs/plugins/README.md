@@ -175,16 +175,65 @@ cadt.registerAIProvider({
 - 典型用途：按会话派生关联 ID、给特定网关补 `tool_choice` / 工具声明、注入租户标记等。不适合做协议级改写或出口 IP 轮换（代理应走 `account.proxy` 或系统代理）。
 - 完整可运行示例见 [`examples/ai-provider-demo/`](examples/ai-provider-demo/)。
 
+### `cadt.registerDocConverter(spec)`
+
+注册一个**文档格式转换器**——通用的导出能力扩展点。应用的各导出场景（快捷便签面板、AI 回答另存、阅读导出……）把内容组装成统一的 `ctx`（HTML + 图片字节 + 落盘原语）交给转换器；转换器负责生成目标格式并落盘。设计意图：Word / PDF 这类重格式的生成依赖较重（docx 打包库、pdf 生成库），放在插件侧随插件分发，核心应用保持零依赖——内置导出只有 Markdown 与 HTML，其余交给市场插件；一个转换器插件安装后，**所有**接入扩展点的导出菜单自动获得该格式，无需各场景重复实现。
+
+```js
+cadt.registerDocConverter({
+    id: 'word-doc',                        // 插件内唯一，^[a-z0-9][a-z0-9-]{0,63}$
+    label: 'Word 文档（.doc，图片存旁侧）',// 导出菜单显示名，≤60 字符
+    extensions: ['doc'],                   // 目标扩展名（展示用）
+    async convert(ctx) {
+        // ctx.source：消费场景标识（如 'memo'）；后续场景接入会扩展
+        // ctx.title / ctx.suggestedName：内容标题与建议文件名主名（不含扩展名）
+        // ctx.html：完整 HTML 文档，图片引用统一为相对 img/<name>，与 ctx.images 一一对应
+        // ctx.images：[{name: 'xxx.png', mime: 'image/png', base64: '…'}]（字节就绪）
+        const path = await ctx.chooseSavePath(ctx.suggestedName + '.doc');
+        if (!path) return;                // 用户取消：返回空串
+        const dir = path.replace(/[\\/][^\\/]+$/, '');
+        for (const image of ctx.images) {
+            await ctx.writeBinaryFile(dir + '/img/' + image.name, image.base64, image.mime);
+        }
+        await ctx.writeTextFile(path, ctx.html);
+        ctx.flash('已导出：' + path);
+    },
+});
+```
+
+`convert(ctx)` 的上下文：
+
+| 成员 | 说明 |
+| --- | --- |
+| `source` | 消费场景标识（如 `'memo'`），同一转换器可服务多个场景 |
+| `title` / `suggestedName` | 内容标题与建议文件名主名（不含扩展名，扩展名由转换器自定） |
+| `html` | 完整 HTML 文档（已 sanitize），图片引用统一为相对 `img/<name>`，与 `images` 一一对应 |
+| `images` | `[{name, mime, base64}]`：文档引用的全部图片，字节就绪 |
+| `chooseSavePath(defaultName)` | 保存对话框，返回完整路径；取消返回 `''` |
+| `writeTextFile(path, content)` | UTF-8 文本落盘（路径来自 chooseSavePath） |
+| `writeBinaryFile(path, base64, mime)` | 二进制落盘（base64 + MIME） |
+| `flash(message, isErr)` | 状态栏消息 |
+
+规则与边界：
+
+- 当前消费方：快捷便签面板的导出菜单（内置 Markdown / HTML 两项固定在前，转换器项以分隔线排在后面）；插件禁用 / 卸载 / 加载失败后其菜单项消失，不影响内置导出。后续更多场景接入同一扩展点。
+- `convert(ctx)` 抛异常由消费方捕获并以「插件导出失败：…」提示，不会破坏界面状态；用户取消对话框请让 `convert` 直接 `return`，不要抛错。
+- 图片交付形态：`ctx.html` 引用相对 `img/<name>`、`ctx.images` 提供字节——**写旁侧文件**（Word 推荐：其 HTML 导入对 data URI 支持不稳）或按 PDF 库能力内嵌，由转换器自定；未成功落盘的图片建议在正文降级标注。
+- 生成逻辑与第三方依赖全部随插件分发（入口 ≤ 2 MB，资产另计），核心应用不为此引入任何依赖。
+- 参考实现：内置的 Word .docx 导出（`src/bridge/memo-docx.js`）即按本 ctx 契约开发；PDF 等更重格式（需引生成库）适合走本扩展点发布到插件市场。
+
 ### 命令执行（进程桥）
 
 ```js
 // 同步执行（超时默认 20s，上限 120s；输出上限 8MB）
-const res = cadt.runCommandSync({exe: 'git', args: ['status', '--porcelain'], cwd: 'D:epo', timeoutMs: 15000});
+const res = cadt.runCommandSync({exe: 'git', args: ['status', '--porcelain'], cwd: 'D:
+epo', timeoutMs: 15000});
 // res = {code: 0, stdout: '...', stderr: '...'}；非零退出码不是异常
 
 // 流式执行
 const job = cadt.runCommand({
-    exe: 'git', args: ['log', '-n', '10'], cwd: 'D:epo',
+    exe: 'git', args: ['log', '-n', '10'], cwd: 'D:
+epo',
     onOut(line) { cadt.openVirtualDoc('输出.txt', line); },
     onErr(line) {},
     onExit(code) { cadt.flash('命令结束：' + code); },

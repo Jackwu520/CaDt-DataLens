@@ -142,6 +142,62 @@ test('诊断可见性：logFrontend 同时写调试台，console 补丁不重复
     assert.match(main, /logFrontend\('error', '未捕获异常：' \+ detail, \{fromConsole: true\}\);/);
 });
 
+// 跨工作区快照不恢复（2026-11-18 多窗口串台）：cadt.session.v1 存在共享 localStorage 里，
+// 是「最后保存的那个窗口」的环境。本窗口已有工作区时，workspace 不匹配的快照必须整体拒绝，
+// 否则别的工作区的标签会被恢复进来，本窗口工作区也会被 openFolderWorkspace 换掉。
+test('跨工作区快照不恢复：快照 workspace 与本窗口不一致时整体跳过', async () => {
+    globalThis.window = {addEventListener() {}};
+    globalThis.localStorage = makeStore();
+    const other = 'D:/work/OtherProject';
+    const opened = [];
+    const logs = [];
+    const restore = createSessionRestore({
+        docs: [], workspaceFolder: other,
+        editorGroups: [], file: null, splitRoot: null,
+        groupDocs: () => [], rememberDocView() {},
+        logFrontend: (level, msg) => logs.push([level, msg]),
+        activityLog: {log() {}, flush() {}},
+        openFolderWorkspace: (dir) => opened.push(dir),
+        createGroup() { throw new Error('跨工作区快照不应走到打开标签这一步'); },
+    });
+    const ok = await restore.restoreSession({
+        workspace: WS,
+        groups: [{paths: [WS + '/a.md'], active: WS + '/a.md'}],
+        current: WS + '/a.md',
+    });
+    assert.equal(ok, false);
+    assert.deepEqual(opened, [], '不能把本窗口工作区切成快照里的那个');
+    assert.equal(logs.length, 1);
+    assert.equal(logs[0][0], 'warn');
+    assert.match(logs[0][1], /会话恢复跳过/);
+});
+
+// 不误伤：同一工作区（大小写/斜杠归一后一致）的快照照常恢复。
+test('同工作区快照照常恢复：路径写法不同也算同一工作区', async () => {
+    globalThis.window = {addEventListener() {}};
+    globalThis.localStorage = makeStore();
+    const opened = [];
+    const restore = createSessionRestore({
+        docs: [], workspaceFolder: WS,
+        editorGroups: [], file: null, splitRoot: null,
+        groupDocs: () => [], rememberDocView() {},
+        logFrontend() {},
+        activityLog: {log() {}, flush() {}},
+        openFolderWorkspace: (dir) => opened.push(dir),
+        createGroup() { return {id: 'g1', activeId: null}; },
+        setFocusedGroupId() {}, openPathsHere: async () => {}, findDocByPath: () => null,
+        groupOfDoc: () => null, activateDoc: async () => {}, setSplitRoot() {},
+        switchMode() {}, renderEditorLayout() {}, flash() {},
+    });
+    const ok = await restore.restoreSession({
+        workspace: WS.replace(/\//g, '\\').toLowerCase(),
+        groups: [{paths: [WS + '/a.md'], active: WS + '/a.md'}],
+        current: WS + '/a.md',
+    });
+    assert.equal(ok, undefined);
+    assert.deepEqual(opened, [], '本窗口已有工作区，不该再开一次');
+});
+
 // 不误伤：没有 allowEmpty 的过程性空快照仍被保护，不清旧快照。
 test('过程性空快照仍受保护：无 allowEmpty 时不覆盖非空旧快照', () => {
     globalThis.window = {addEventListener() {}};

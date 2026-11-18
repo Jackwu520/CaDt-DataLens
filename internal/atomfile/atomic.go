@@ -1,3 +1,8 @@
+// Package atomfile 原子写文件：同目录临时文件 + fsync + 平台替换
+// （Windows 走 ReplaceFile，POSIX 走 rename），避免崩溃或断电留下半截目标文件。
+//
+// 只保证「目标要么是旧内容、要么是完整新内容」；临时文件名带 pid 与纳秒时间戳，
+// 并发写同一目标不会互相踩；任何一步失败都会清掉临时文件。
 package atomfile
 
 import (

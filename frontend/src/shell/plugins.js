@@ -19,6 +19,14 @@ const themeStyles = new Map();
 // 插件可注册 {id, label, classify(command, ctx) → {score, reason}}（可返回 Promise）。
 // score = 危险概率 [0,1]；无 deny 权——判定统一由 AI 面板按严格度阈值转 allow/ask。
 const commandClassifiers = new Map();
+// 文档格式转换器（通用 doc 能力）：插件注册 Word/PDF 等重格式生成器，任何核心
+// 导出场景（便签面板、AI 回答另存、阅读导出……）按需消费——重依赖全在插件侧，
+// 核心 exe 保持零依赖。ctx 由消费方组装（title/html/images + 落盘原语）。
+const docConverters = new Map();
+
+export function getPluginDocConverters() {
+    return [...docConverters.values()];
+}
 
 export function initPluginRuntime(hooks) {
     Object.assign(host, hooks || {});
@@ -154,6 +162,35 @@ function apiFor(plugin) {
         registerAIProvider(spec) {
             return registerPluginAIProvider(plugin.id, spec);
         },
+        // 注册文档格式转换器：{id, label, extensions, convert(ctx)}——通用导出能力，
+        // 各导出场景（便签面板 / AI 回答另存 / 阅读导出…）把内容组装成统一 ctx 后调用
+        // convert；Word/PDF 等生成依赖全在插件侧随插件分发。ctx：{title, suggestedName,
+        // html(图片为相对 img/ 引用), images:[{name,mime,base64}], chooseSavePath(defaultName),
+        // writeTextFile(path,content), writeBinaryFile(path,base64,mime), flash(msg,isErr)}。
+        // 详见 docs/plugins/README.md「注册文档格式转换器」。
+        registerDocConverter(spec) {
+            if (!spec || typeof spec !== 'object') {
+                throw pluginError(plugin, 'registerDocConverter 需要一个转换器对象');
+            }
+            const id = String(spec.id || '').trim();
+            if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(id)) {
+                throw pluginError(plugin, `转换器 id 无效：${JSON.stringify(spec.id)}`);
+            }
+            if (typeof spec.convert !== 'function') {
+                throw pluginError(plugin, '转换器缺少 convert 函数');
+            }
+            const fullId = `${plugin.id}:${id}`;
+            if (docConverters.has(fullId)) {
+                throw pluginError(plugin, `转换器 ${id} 已注册`);
+            }
+            docConverters.set(fullId, {
+                id: fullId,
+                pluginId: plugin.id,
+                label: String(spec.label || id).trim().slice(0, 60),
+                extensions: Array.isArray(spec.extensions) ? spec.extensions.map(String).filter(Boolean) : [],
+                convert: spec.convert,
+            });
+        },
         getActiveFile() {
             return host.getActiveFile();
         },
@@ -201,6 +238,7 @@ export async function loadPlugins(backend) {
     themeStyles.clear();
     commands = [];
     commandClassifiers.clear();
+    docConverters.clear();
     lastLoadErrors = [];
     host.onPluginsChanged();
     if (!backend || typeof backend.GetPluginSources !== 'function') {

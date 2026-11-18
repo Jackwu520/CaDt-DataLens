@@ -22,6 +22,7 @@ import {
     normalizeAgentName,
     normalizeAgents,
     normalizeGroupName,
+    resolveAgentByKeyword,
     resolveAgentModel,
     resolveModelByKeyword,
 } from '../../src/ai/ai-agent-model.js';
@@ -223,6 +224,31 @@ test('resolveModelByKeyword：多命中报 ambiguous 并给候选；未命中/�
     // 未命中 / 空
     assert.equal(resolveModelByKeyword(profiles, 'no-such-model').reason, 'not_found');
     assert.equal(resolveModelByKeyword(profiles, '  ').reason, 'empty');
+});
+
+// ==================== app_control 代建群聊：成员 / 主持人按 id 或名字定位 ====================
+
+test('resolveAgentByKeyword：id 精确 / 名字精确 / 唯一子串', () => {
+    const agents = baseList();
+    assert.equal(resolveAgentByKeyword(agents, 'a2').agent.name, '审查员');
+    assert.equal(resolveAgentByKeyword(agents, '架构师').agent.id, 'a1');
+    assert.equal(resolveAgentByKeyword(agents, ' 架构师 ').agent.id, 'a1'); // 两端空白
+    assert.equal(resolveAgentByKeyword(agents, '架').agent.id, 'a1'); // 唯一子串
+});
+
+test('resolveAgentByKeyword：多命中报 ambiguous 给候选；未命中/空报原因', () => {
+    const dup = normalizeAgents([
+        {id: 'x1', name: 'Review A'},
+        {id: 'x2', name: 'Review B'},
+    ], () => 'g');
+    const ambiguous = resolveAgentByKeyword(dup, 'review');
+    assert.equal(ambiguous.ok, false);
+    assert.equal(ambiguous.reason, 'ambiguous');
+    assert.equal(ambiguous.candidates.length, 2);
+    const agents = baseList();
+    assert.equal(resolveAgentByKeyword(agents, 'ghost').reason, 'not_found');
+    assert.equal(resolveAgentByKeyword(agents, '   ').reason, 'empty');
+    assert.equal(resolveAgentByKeyword([], '甲').reason, 'not_found');
 });
 
 // ==================== 智能体分组（feature-evaluations 2026-11-18 §3） ====================

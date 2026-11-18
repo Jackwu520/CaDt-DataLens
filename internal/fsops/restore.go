@@ -11,6 +11,8 @@ import (
 )
 
 // RestoreEntry 把回收站中原路径为 path 的条目还原到原位置。
+// 拒绝空路径、含 NUL 的路径与盘符根目录（避免误把回收站条目还原成整个盘）；
+// 真正与回收站交互的部分在 internal/recycle，这里只做参数校验与 Clean。
 func (f *FS) RestoreEntry(path string) error {
 	path = strings.TrimSpace(path)
 	if path == "" {

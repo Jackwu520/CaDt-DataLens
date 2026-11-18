@@ -1,10 +1,10 @@
-// ai-group-model.js：群聊域纯函数层（方案 docs/unfinished-plans/ai-group-chat.md）。
+// ai-group-model.js：群聊域纯函数层（方案 docs/finished-plans/ai-group-chat.md）。
 // G1：meta 归一化（§6.2）、调用估算（§3.4）、创建前兼容性预检（§3.16）、内置主持人模板。
 // G2/G3 在本文件继续：点名解析、group 块、主持人契约、看板合并、上下文组装、超时档。
 // 无 DOM、无副作用，可单测。
 
 import {aiEstimateTokens} from './ai-constants.js';
-import {agentCapability, agentThinkingTier} from './ai-agent-model.js';
+import {agentCapability, agentThinkingTier, resolveAgentByKeyword} from './ai-agent-model.js';
 import {PERSONA_GUARD_DATA} from './ai-persona.js';
 import {REPLY_STYLES} from './ai-persona.js';
 
@@ -98,6 +98,13 @@ function clampText(value, max) {
     return String(value == null ? '' : value).slice(0, max);
 }
 
+// 群模式取值归一化的唯一来源：roundtable / task / free 之外一律回落圆桌。
+// 新建弹窗的草稿层、运行时 createGroup、读盘 normalizeGroupMeta 都走它——曾因草稿层自己写了
+// 「非 task 即 roundtable」的三元，把 free 静默改写成圆桌，导致自由聊天在 UI 上完全不可达。
+export function normalizeGroupMode(value) {
+    return GROUP_MODES.some((m) => m.id === value) ? value : 'roundtable';
+}
+
 export function normalizeChair(raw) {
     const c = raw && typeof raw === 'object' ? raw : {};
     return {
@@ -187,7 +194,7 @@ export function normalizeGroupMeta(raw) {
         memberIds: Array.isArray(source.memberIds)
             ? source.memberIds.map((id) => String(id || '')).filter(Boolean).slice(0, GROUP_MEMBER_MAX)
             : [],
-        mode: GROUP_MODES.some((m) => m.id === source.mode) ? source.mode : 'roundtable',
+        mode: normalizeGroupMode(source.mode),
         chair: normalizeChair(source.chair),
         topic: clampText(source.topic, GROUP_TOPIC_MAX),
         goal: GROUP_GOALS.some((g) => g.id === source.goal) ? source.goal : 'explore',
@@ -721,6 +728,7 @@ export function parseMentions(text, memberNames) {
     }
     return {all, names: hit};
 }
+
 // ==================== 自由聊天（QQ/微信群式：消息即唤醒，§4 / §12 保留 v1 上限） ====================
 
 // 自由聊天上限（§12 默认值）：一条用户消息引发的回复链全部受此约束
@@ -855,4 +863,124 @@ export function buildChairMessages({chairAgent, meta, sharedMessages, chairSteps
     const window = memberWindow || 262144;
     const budget = Math.max(1, window - GROUP_OUTPUT_RESERVE_TOKENS);
     return {messages: merged, estimateTokens: estimate, budget, window, overflow: estimate > budget};
+}
+
+// ==================== AI 代建群聊（app_control create_group） ====================
+
+// 动作参数 → createGroup(spec) 草稿：members / chair 接受智能体 id 或名字，
+// 缺省主持人 = 第一个「可主持」（chair 标记）的启用智能体；free 模式缺省由用户主持。
+// 参数非法返回 {ok:false, error}（不静默兜底）；落盘与开标签仍由运行时 createGroup 负责。
+export function buildGroupDraft({agents, params}) {
+    const list = (Array.isArray(agents) ? agents : []).filter((agent) => agent && typeof agent === 'object');
+    const p = params && typeof params === 'object' ? params : {};
+
+    const memberRefs = Array.isArray(p.members)
+        ? p.members
+        : (p.members == null || p.members === '' ? [] : [p.members]);
+    if (!memberRefs.length) {
+        return {ok: false, error: 'create_group 需要 members（2–' + GROUP_MEMBER_MAX + ' 位智能体成员，写 id 或名字；先用 get_agents 查看）'};
+    }
+    const memberIds = [];
+    const members = [];
+    for (const ref of memberRefs) {
+        const resolved = resolveAgentByKeyword(list, ref);
+        if (!resolved.ok) {
+            if (resolved.reason === 'ambiguous') {
+                return {ok: false, error: '成员「' + String(ref) + '」匹配到多个智能体，请写 id 或完整名字：' +
+                    resolved.candidates.map((agent) => agent.name + '（' + agent.id + '）').join('；')};
+            }
+            const available = list.filter((agent) => agent.enabled !== false).map((agent) => agent.name);
+            return {ok: false, error: '找不到智能体「' + String(ref) + '」；可加入的成员：' + (available.join('、') || '（暂无，先用 create_agent 创建）')};
+        }
+        if (resolved.agent.enabled === false) {
+            return {ok: false, error: '智能体「' + resolved.agent.name + '」已停用，不能加入群聊'};
+        }
+        if (memberIds.includes(resolved.agent.id)) continue;
+        memberIds.push(resolved.agent.id);
+        members.push({id: resolved.agent.id, name: resolved.agent.name});
+    }
+    if (memberIds.length < GROUP_MEMBER_MIN) {
+        return {ok: false, error: '至少需要 ' + GROUP_MEMBER_MIN + ' 位不同成员（去重后只有 ' + memberIds.length + ' 位）'};
+    }
+    if (memberIds.length > GROUP_MEMBER_MAX) {
+        return {ok: false, error: '最多 ' + GROUP_MEMBER_MAX + ' 位成员（给了 ' + memberIds.length + ' 位）'};
+    }
+
+    const mode = String(p.mode == null ? '' : p.mode).trim() || 'roundtable';
+    if (!GROUP_MODES.some((item) => item.id === mode)) return {ok: false, error: 'mode 只能是 roundtable / task / free'};
+    const goal = String(p.goal == null ? '' : p.goal).trim() || 'decide';
+    if (!GROUP_GOALS.some((item) => item.id === goal)) return {ok: false, error: 'goal 只能是 explore / decide / plan / review'};
+    const rounds = p.rounds == null || p.rounds === '' ? 2 : Number(p.rounds);
+    if (!Number.isInteger(rounds) || rounds < 1 || rounds > 3) return {ok: false, error: 'rounds 只能是 1 / 2 / 3'};
+    const timeoutPreset = String(p.timeout == null ? '' : p.timeout).trim() || 'standard';
+    if (timeoutPreset !== 'standard' && timeoutPreset !== 'lenient') return {ok: false, error: 'timeout 只能是 standard / lenient'};
+
+    const chairInput = p.chair && typeof p.chair === 'object' && !Array.isArray(p.chair) ? p.chair : null;
+    const policyRaw = chairInput && chairInput.policy != null ? chairInput.policy : p.policy;
+    const policy = String(policyRaw == null ? '' : policyRaw).trim() || 'round-plan';
+    if (!CHAIR_POLICIES.some((item) => item.id === policy)) return {ok: false, error: 'policy 只能是 round-plan / adaptive'};
+
+    let chairKind = 'ai';
+    let chairRef = '';
+    if (chairInput) {
+        chairKind = String(chairInput.kind == null ? '' : chairInput.kind).trim() || 'ai';
+        if (!CHAIR_KINDS.some((item) => item.id === chairKind)) return {ok: false, error: 'chair.kind 只能是 ai / member / user'};
+        const ref = chairInput.agent != null ? chairInput.agent : (chairInput.agentId != null ? chairInput.agentId : chairInput.name);
+        chairRef = ref == null ? '' : ref;
+    } else if (p.chair != null && String(p.chair).trim() !== '') {
+        chairRef = p.chair;
+    } else if (mode === 'free') {
+        chairKind = 'user'; // 自由聊天消息即唤醒，不需要 AI 主持人
+    } else {
+        const fallback = list.find((agent) => agent.chair === true && agent.enabled !== false);
+        if (!fallback) {
+            return {ok: false, error: '没有可用的主持人智能体：先 create_agent {chair:true,...} 建一个，或用 chair:{kind:"member",agent:"<成员名字>"} 让成员兼任，或建 mode:"free" 的自由聊天群（不需要主持人）'};
+        }
+        chairRef = fallback.id;
+    }
+
+    let chairSpec;
+    if (chairKind === 'user') {
+        chairSpec = {kind: 'user', agentId: '', policy};
+    } else {
+        if (String(chairRef).trim() === '') {
+            return {ok: false, error: 'chair.kind=' + chairKind + ' 需要 agent（智能体 id 或名字）'};
+        }
+        const resolved = resolveAgentByKeyword(list, chairRef);
+        if (!resolved.ok) {
+            if (resolved.reason === 'ambiguous') {
+                return {ok: false, error: '主持人「' + String(chairRef) + '」匹配到多个智能体，请写 id 或完整名字：' +
+                    resolved.candidates.map((agent) => agent.name + '（' + agent.id + '）').join('；')};
+            }
+            return {ok: false, error: '找不到主持人智能体「' + String(chairRef) + '」'};
+        }
+        const chairAgent = resolved.agent;
+        if (chairAgent.enabled === false) return {ok: false, error: '智能体「' + chairAgent.name + '」已停用，不能主持'};
+        if (chairKind === 'ai' && chairAgent.chair !== true) {
+            return {ok: false, error: '「' + chairAgent.name + '」没有主持人标记（chair）：可改用 {kind:"member",agent:"' + chairAgent.name + '"} 让成员兼任，或先 create_agent {chair:true,...} 建一个主持人'};
+        }
+        if (chairKind === 'member' && !memberIds.includes(chairAgent.id)) {
+            return {ok: false, error: '兼任主持人「' + chairAgent.name + '」必须是群成员：把它加进 members，或换一位成员兼任'};
+        }
+        chairSpec = {kind: chairKind, agentId: chairAgent.id, policy};
+    }
+
+    const chairName = chairKind === 'user'
+        ? '用户自己'
+        : (list.find((agent) => agent.id === chairSpec.agentId) || {}).name || '';
+    return {
+        ok: true,
+        spec: {
+            title: String(p.title == null ? '' : p.title).trim(),
+            topic: String(p.topic == null ? '' : p.topic).trim(),
+            goal,
+            mode,
+            memberIds,
+            chair: chairSpec,
+            maxRounds: rounds,
+            timeoutPreset,
+        },
+        members,
+        chair: {kind: chairKind, name: chairName, policy},
+    };
 }

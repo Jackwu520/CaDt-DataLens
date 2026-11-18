@@ -60,11 +60,12 @@ test('Ctrl+Z/Y 在文件树焦点时改走 explorerOps，不让编辑器撤销',
     assert.match(capture[0], /handleExplorerUndoKey\(e\)/);
 });
 
-test('右键菜单有撤销/重做入口，且能显示最近操作', () => {
+test('右键菜单不放撤销/重做入口（2026-11-18 定：菜单只留操作，撤销走 Ctrl+Z/Y）', () => {
     const ops = read('explorer/explorer-ops.js');
-    assert.match(ops, /label: '撤销' \+ \(history\.canUndo\(\) \? '：' \+ history\.peekUndo\(\) : ''\)/);
-    assert.match(ops, /label: '重做' \+ \(history\.canRedo\(\) \? '：' \+ history\.peekRedo\(\) : ''\)/);
-    assert.match(ops, /action: \(\) => \{ undoExplorer\(\); \}/);
+    assert.doesNotMatch(ops, /label: '撤销' \+ \(history\.canUndo\(\) \? '：' \+ history\.peekUndo\(\) : ''\)/);
+    assert.doesNotMatch(ops, /label: '重做' \+ \(history\.canRedo\(\) \? '：' \+ history\.peekRedo\(\) : ''\)/);
+    // 快捷键路径仍走 explorerOps 的历史栈
+    assert.match(ops, /async function undoExplorer\(\)/);
 });
 
 test('mock 后端明确拒绝还原，不静默成功', () => {

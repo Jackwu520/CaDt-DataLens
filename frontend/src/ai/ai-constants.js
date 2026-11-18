@@ -268,7 +268,7 @@ export const AI_BUILTIN_SKILLS = [
             '',
             '（一条一个动作：这张表与代码里的可用动作一一对应，测试会核对；新增动作时表和分发必须同时改）',
             '',
-            '- get_state：返回窗口快照（workspace/activeFile/tabs/sidebar/terminal/aiPanel/theme/fullscreen/alwaysOnTop/readOnlyMode）。aiPanel.sessions 列表里 **caller=true 的才是你自己所在的会话**；active=true 只是面板当前查看的会话（你被后台唤醒/用户切走时两者不同）。',
+            '- get_state：返回窗口快照（workspace/activeFile/tabs/sidebar/terminal/aiPanel/theme/fullscreen/alwaysOnTop/readOnlyMode/viewport）。viewport 是可视区 CSS 像素尺寸与 devicePixelRatio（click 的坐标口径，截图物理像素需 ÷ dpr）。aiPanel.sessions 列表里 **caller=true 的才是你自己所在的会话**；active=true 只是面板当前查看的会话（你被后台唤醒/用户切走时两者不同）。',
             '- screenshot {area?}：截取整窗或指定板块，图片自动附加到对话，可直接查看；area = full（默认，整窗）/ editor（编辑区）/ sidebar（侧边栏）/ ai（AI 面板）/ terminal（终端）/ patch（当前补丁视图）/ statusbar（状态栏）。核对局部布局时优先用板块截图，比整窗更清晰。窗口最小化时先让用户恢复窗口。',
             '- get_settings {keys?}：返回当前全部设置值（传 keys 数组只取部分）；同时返回 set_setting 可写键列表。',
             '- get_editor {target?}：文档详情——视图模式、编码/换行/BOM/大小、脏/只读/大文件标记、行数与字符数、光标行列、选区范围与预览、可见行范围（target = 索引/路径，默认活动标签）。当前标签的光标/选区已由 <workspace_context> 每轮自动提供，查看其他标签时再调用。',
@@ -278,6 +278,7 @@ export const AI_BUILTIN_SKILLS = [
             '- get_explorer：资源管理器——可见性、视图、模式（列表/树）、根目录、当前选中项（最多 50 条）。',
             '- get_plugins：已安装插件列表（id / name / version / author / 描述 / 启用状态 / 扩展名）。',
             '- get_terminal {id?, lines?}：终端状态——开关、会话列表（id / 标签 / shell / 是否活动）与指定会话（默认活动）缓冲区末尾文本（默认 40 行，最多 200）。',
+            '- get_storage：存储占用只读报告（应用数据 / 工作区 .cadt / 临时目录的汇总与条目：字节、文件数、条目数、是否估算）；清理仍由用户在设置页操作。',
             '- get_activity {limit?, sinceTs?, actions?, actor?, keyword?}：操作留痕查询（只读）——最近用户与 AI 做过的操作（打开/保存/删除/重命名/设置变更/审批/工具执行等）的逐行文本摘要；只记操作摘要不记文件内容；用户问「我刚才改了什么」或排障时优先用 sinceTs/keyword 查询。',
             '- get_patch {target?}：补丁视图状态（只读）——目标目录、建议目录（suggestedRoot/Hits/Needed）、外部补丁标记、应用模式与勾选、逐文件 kind/status/reason、hunk 状态与落点、最近一次应用结果；尚未预检时会先自动预检。target = 索引/路径，默认活动标签。',
             '- patch_set_root {target?, root}：更换补丁目标目录并重新预检（只读，不写工作区）；root 可传绝对路径或相对工作区根的路径。目标文件缺失、建议目录出现时用这个动作切换。',
@@ -288,26 +289,44 @@ export const AI_BUILTIN_SKILLS = [
             '- close_tab {target}：target = active / 数字索引 / 路径 / "all" / "unmodified"；标签有未保存修改时会弹确认框，由用户决定——不要替用户强行关。',
             '- reopen_closed_tab：撤销最近关闭的标签。',
             '- move_tab {source,target,before}：同分栏内拖动排序（索引或路径）。',
+            '- split_open {paths,side?}：把两个文件并排打开（paths = [左/上, 右/下]，可传相对工作区路径）；已分属不同分组时直接返回现状。side = right（默认）/ left / top / bottom。',
+            '- split_editor {target?,side?}：把当前（或指定）标签拆到同组旁边的新分组；原分组必须还有别的标签（否则会留下空分组，报错并提示改用 split_open）。',
+            '- move_tab_to_group {target,group}：把标签移到指定分组，group = 索引（0 起）或分组 id（见 get_state 的 editorGroups）。',
+            '- focus_editor_group {group}：聚焦指定分组（索引或 id）。',
+            '- merge_editor_groups {group?,into?}：解散某个分组（缺省当前聚焦组），标签并入另一个分组；至少保留一个分组。',
             '- set_view {mode}：切换当前文件视图 mode = tree / code / text / table / preview / render(SVG) / image / binary / split（不可用的视图会报错）。',
             '- goto_line {line,column?}：当前文件跳转到行:列并整行选中。',
+            '- list_bookmarks：列出全部书签（按文件分组，行号 1 起，附行内容片段；只覆盖打开中的标签页——书签随标签页保存）。',
+            '- add_bookmark {path?,line}：给指定文件添加行书签（path 缺省 = 当前文件；文件未打开会自动打开并切到代码视图）。',
+            '- remove_bookmark {path?,line}：移除指定文件该行的书签；该行没有书签时报错并附现有书签行。',
+            '- clear_bookmarks {path?}：清空指定文件（缺省 = 当前文件）的全部书签。',
+            '- goto_bookmark {path,line}：打开文件并跳到指定行（可跨文件）；当前文件内跳行用 goto_line。',
             '- toggle_sidebar {view?}：开关侧边栏（同视图再点=收起）。',
             '- set_sidebar_view {view}：view = files / git / structure。',
             '- toggle_terminal：开关底部终端面板。',
+            '- set_dock_view {view}：切换底部面板内容 view = terminal（终端）/ debug（调试控制台）/ run（运行）/ graph（Git 图谱）；面板收起时一并打开。',
             '- toggle_ai_panel {open?}：开关 AI 面板。',
             '- toggle_fullscreen：切换全屏。',
             '- toggle_always_on_top：切换窗口置顶。',
             '- set_theme {theme}：只切换软件主题（界面配色），theme = dark / light。代码配色（token + 编辑器底色）由独立的 codeStyle 设置控制，不受此动作影响。',
-            '- open_settings {pane?}：打开设置弹窗，pane = general / editor-tabs / formats / integration / models / gen-models / external-tools / ai / permissions / persona / context / preferences / schedules / plugins / shortcuts / developer / about 或 fmt-<格式> / lang-<语言>。',
-            '- set_setting {key,value}：改受限白名单设置并即时生效（持久化）。可写键：autoSave, showSidebar, alwaysOnTop, codeWrap, codeGuides, treeGuides, treeCounts, mdLineNumbers, mdScrollSync, readOnlyMode, treeRefreshInterval(1/2/3/5/10), sidebarFont(10-20), editorFont(10-24), treeExpandDefault(expand/collapse), openMode(tab/window), theme, codeStyle(auto / jetbrains-dark / darcula / tokyo-night / jetbrains-light / github-light / shiki / newsprint / pixyll / whitey；只改代码配色与编辑器观感，不改界面), sidebarWidth(160-500), terminalHeight(120-480), aiPanelWidth(280-2000)。未知键会报错并列出可用键。**AI 面板的显示方式（停靠分屏 / 全屏 / 悬浮）与停靠侧永远不可写**：那是用户的布局偏好，只能由用户自己在面板 […] 菜单或设置页切换，任何动作（含 set_setting、toggle_ai_panel 之外的一切）都不得改动，也不要建议用户「让 AI 帮你切」。',
+            '- open_settings {pane?,row?}：打开设置弹窗，pane = general / editor-tabs / formats / integration / models / gen-models / external-tools / ai / permissions / persona / context / preferences / schedules / plugins / shortcuts / developer / about 或 fmt-<格式> / lang-<语言>；传 row（get_settings_tree 返回的行 id）可打开设置并滚动高亮该行。',
+            '- get_settings_tree {pane?}：设置树。不带 pane 返回页清单（id / 标题 / 父组 / 行数）；带 pane 返回该页分组与行（唯一 id / 标题 / 类型 / 当前值 / 危险度 low|medium|high / 是否可写）。行 id 用于 open_settings 的 row 与 set_setting_row。',
+            '- set_setting_row {id,value}：按设置树 id 写入一项设置：低风险直接生效；中/高风险会弹动作审批卡，批准后才写；布局形态类行永久不可由 AI 写。开关写 true/false，下拉写选项 value（也认选项文案），数字受控件 min/max 约束。',
+            '- set_setting {key,value}：改受限白名单设置并即时生效（持久化）。可写键：autoSave, showSidebar, alwaysOnTop, codeWrap, codeGuides, treeGuides, treeCounts, mdLineNumbers, mdScrollSync, readOnlyMode, treeRefreshInterval(1/2/3/5/10), sidebarFont(10-20), editorFont(10-24), treeExpandDefault(expand/collapse), openMode(tab/window), theme, codeStyle(auto / jetbrains-dark / darcula / tokyo-night / jetbrains-light / github-light / shiki / newsprint / pixyll / whitey；只改代码配色与编辑器观感，不改界面), sidebarWidth(160-500), terminalHeight(120-2000), aiPanelWidth(280-2000)。未知键会报错并列出可用键。**AI 面板的显示方式（停靠分屏 / 全屏 / 悬浮）与停靠侧永远不可写**：那是用户的布局偏好，只能由用户自己在面板 […] 菜单或设置页切换，任何动作（含 set_setting、toggle_ai_panel 之外的一切）都不得改动，也不要建议用户「让 AI 帮你切」。',
             '- ai_new_session {title?,message?}：新建 AI 会话（本面板），message 非空会立刻发送（真实触发一次模型调用）；当前会话还没发过消息时不会重复创建，而是复用并重命名该会话。',
             '- ai_switch_session {id}：切换 AI 会话。',
             '- ai_rename_session {title,id?}：重命名 AI 会话标题。**不传 id 改的是调用者自己所在的会话**（后台会话也安全，不会误改面板当前查看的会话）；改其他会话时 id 从 get_ai 的会话信息或跨会话搜索结果获取；title 非空、超 60 字符截断。当前会话改名即时生效，其他会话改名后下次打开用新标题。',
             '- get_agents：智能体（群聊成员）列表——id / 名字 / 模型（ref 与展示名）/ 职责 / 分组 / 主持人标记 / 启用状态，并附全部可用模型清单（ref + 展示名）。用户让你「建一个智能体 / 加个群成员」时先看这里。',
             '- create_agent {name,model,role?,group?,persona?,style?,chair?,color?,temperature?,slowTier?,enabled?}：新建智能体（群聊成员）。名字 1–32 字符、无空白与 @、全局唯一，保留词 all / everyone / 全体成员 / 所有人 不可用；model 可传模型名（如 deepseek-chat）、「账号名/模型名」或 get_agents 里的 ref，多命中会报候选让你明确；group 是用途分组名（如 写作 / 编码，≤16 字符，缺省归「默认」，组最多 12 个，重名会被拒）；chair=true 表示可被群聊选为主持人；style 取回复风格 id（default / professional / friendly / direct / imaginative / efficient / snarky / socratic / tangerine）；slowTier=true 给不暴露 reasoning 的兼容端点按思考档计时。只新建，不修改/删除已有智能体（那由用户在设置页操作）。',
+            '- create_group {members,title?,topic?,mode?,goal?,chair?,policy?,rounds?,timeout?}：新建 AI 群聊并自动在内容区打开（与侧栏「新建群聊」同一条路径）。members 写 2–8 位智能体的 id 或名字（先用 get_agents 查看）；mode = roundtable（圆桌讨论，默认）/ task（任务协作，主持人拆任务板）/ free（自由聊天，消息即唤醒、不需要主持人）；goal = explore / decide / plan / review（默认 decide）；chair 缺省用第一个带主持人标记（chair=true）的智能体，也可写 id 或名字换人、传 {kind:"member",agent:"成员名"} 让成员兼任、{kind:"user"} 由用户主持（free 缺省 user）；policy = round-plan（默认）/ adaptive；rounds 1–3（默认 2）；timeout = standard / lenient。没有主持人标记的智能体时先 create_agent {chair:true,...} 建一个，或改用成员兼任。创建后讨论不会自动开始——由用户点「开始讨论」或发第一条消息触发（会真实调用成员模型），不要声称讨论已开始。',
+            '- get_groups {id?}：群聊列表（id / 标题 / 模式 / 目标 / 成员 / 消息数 / 是否有纪要）；传 id 或标题返回该群详情与纪要正文（≤4000 字）。',
+            '- send_group_message {id|title,text}：以用户身份往群里发一条消息；自由聊天会真实唤醒成员（花钱），讨论中进入点名队列。计划模式下拒绝。',
+            '- install_plugin {name|url}：安装插件。name 按官方市场（cadt-datalens-plugins，Gitee/GitHub 镜像）解析；url 可直接给仓库地址。full 档直接装；auto 档官方市场直接装、非官方弹动作审批（未知来源红警）；edit 档一律审批；read 档拒绝。安装后插件代码以应用权限运行。',
+            '- uninstall_plugin {id}：卸载插件（id 从 get_plugins 取）。DeletePlugin 是永久删除（不进回收站）：full 档直接删，其余档一律走动作审批。',
             '- open_browser_tab {url?, profileKey?}：在内容区打开内嵌浏览器标签页并返回 tab id（file:// 走与 browser_navigate 同一条读权限链）。',
             '- close_browser_tab {id|name|url}：关闭指定内嵌浏览器标签页。',
             '- open_memo_panel {scope?}：在内容区打开用户的「快捷便签」面板标签页（scope=workspace/global，缺省 workspace）。只开面板不写内容没有意义，登记完再打开。',
-            '- get_memo {scope?}：读快捷便签全部内容（分组块与条目、状态、贴图引用，含各条 id），返回紧凑文本。用户提到「便签/记事/我的便签上有什么」先读它。',
+            '- get_memo {scope?, block_id?, status?, q?}：读快捷便签，返回紧凑文本（含各条 id）。默认读全部；可只读某分组（block_id）、某状态（status=pending/in_progress/completed）或按文本包含过滤（q）——便签多时优先用过滤，首行会汇报全局面板计数。用户提到「便签/记事/我的便签上有什么」先读它；用户消息里出现便签定位点（形如 cadt-memo://workspace/item/it-xxx，用户在面板里「复制定位点」得到）时，按其中的 scope 调 get_memo，再按 id 在清单里定位到对应块/条目，后续 update_memo/remove_memo 直接用这个 id。',
             '- add_memo {scope?,kind,block_id?,text}：往便签添加内容：kind=item 在指定块末尾加一条（block_id 缺省第一个块，没有块时自动建「便签」块兜底）；kind=block 新建分组小节（text 即标题）。改完立即保存并刷新面板。',
             '- update_memo {scope?,id,text?,status?,index?}：改一个条目或块（id 从 get_memo 拿，it- 开头是条目、blk- 开头是块）：条目改文本/状态（pending/in_progress/completed）；块的 text 即标题。index 可选移到该位置（0 起）。',
             '- remove_memo {scope?,id}：删一个条目或块（删块连带块内全部条目，不可恢复，删块前先和用户确认）。',
@@ -320,18 +339,22 @@ export const AI_BUILTIN_SKILLS = [
             '- set_mcp_server {server:{name,command?,args?,cwd?,enabled?,startupTimeoutMs?,callTimeoutMs?,closeTimeoutMs?,envKeys?}}：新建/部分更新 MCP 服务器（未传字段沿用原值）。每次都会弹本机命令执行确认；env 值不可写（envKeys 只登记键名、值由用户填），enabledTools 不可设置；已配环境变量的服务器 AI 不能修改。',
             '- delete_mcp_server {name}：删除 MCP 服务器（每次确认）；已配环境变量的服务器不可由 AI 删除。',
             '- type_text {text,target?}：模拟键盘输入到焦点元素（或 target 选择器匹配的输入框），**仅完全权限档**。',
-            '- press_key {key,target?}：模拟按键（Enter/Escape/F3/单字符等，冒泡触发对话框确认、Esc 关闭、全局快捷键），**仅完全权限档**。',
+            '- press_key {key,target?}：模拟按键，支持组合键串（如 Ctrl+Shift+P / Alt+7 / Ctrl+` / Shift+F4 / Ctrl+Alt+L）与单键（Enter / Escape / F3 / a）；修饰键可用 Ctrl / Alt / Shift / Meta（也认 Control / Option / Win / Cmd），按真实顺序派发修饰键与主键的 keydown/keyup，可触发全局快捷键、对话框确认、Esc 关闭等，**仅完全权限档**。应用快捷键按物理键位（e.code）匹配，本动作会自动给出 code；无法识别的组合串会报错并说明写法。合成事件 isTrusted=false，依赖真实按键校验的浏览器原生行为可能不生效。',
+            '- click {x,y}：在窗口可视区单击一次（DOM 合成 pointer/mouse 事件，不移动系统鼠标；**仅完全权限档**，计划模式下拒绝）。坐标是 CSS 像素：截图是物理像素，先除以 devicePixelRatio（get_state 与 click 返回都带 viewport.dpr）；也可传 selector（如 "#ab-files"）直接点元素，位置更准。返回实际点击坐标与命中元素（tag/id/class/文本），点错按返回的 target 调整；合成事件 isTrusted=false、不带用户激活，少数依赖真实点击校验的行为可能无响应。只支持单击：拖拽 / 滚轮 / 长按 / 悬停不提供；内嵌浏览器页面内部用 browser_click 系列。点击后用 screenshot 核对结果。',
             '- flash {message,isError?}：在状态栏显示一条提示。',
             '- refresh_explorer：刷新文件树。',
+            '- reveal_in_explorer {path?}：在文件树里展开并选中路径（缺省当前活动文件）；会切到文件视图并打开侧栏。',
             '',
             '## 边界（刻意不提供）',
             '',
             '- 不保存/不另存为、不删除/不重命名文件（写文件走 write_file/edit_file 审批，或让用户手动）。',
             '- 不应用/撤销补丁：app_control 只读取补丁视图、换目标目录、重新预检；补丁应用走 propose_patch 审批卡或用户手动点「应用」，撤销由用户在补丁视图操作。',
             '- 不跨窗口：多窗口模式的新开窗口、其他窗口的状态都不可触达。',
-            '- 鼠标点击不模拟；键盘模拟只有 type_text/press_key 且仅完全权限档。',
+            '- 鼠标只模拟单击（click，仅完全权限档，计划模式下拒绝）：派发 pointer/mouse 事件、不移动系统鼠标；拖拽 / 滚轮 / 长按 / 悬停不提供，内嵌浏览器页面内部用 browser_click。键盘模拟只有 type_text/press_key。',
             '- 生成条目的 API Key 不可读写：AI 代填配置时密钥永远留空（已填的保留），由用户在设置里填写。',
             '- MCP 服务器：AI 可代填 command/args/cwd/超时，但 env 值不可写（envKeys 只登记键名）、工具授权（enabledTools）不可设置；新增/修改/删除每次都要用户确认本机命令，已配环境变量的服务器 AI 不可改/删。内置示例只内置脚本，不内置 Python / whisper 模型 / OCR 引擎。',
+            '- 插件：安装/卸载按独立权限矩阵（full 直通；auto 仅官方市场直通；edit 一律审批；read 拒绝），卸单一律审批（full 除外）；插件代码以应用权限运行，非官方来源在审批卡里带「未知来源」红警。API Key、环境变量值、工具授权仍不可由 AI 写。',
+            '- 设置：布局形态（AI 面板显示方式等）永久不可由 AI 写；中/高风险设置要过动作审批卡，批准后立即生效且不记住授权。',
         ].join('\n'),
     },
     {
@@ -948,6 +971,35 @@ export function aiEstimateVideoTokens() {
 export function aiCtxBannerShow(percent, threshold, dismissedAt) {
     if (!(Number(percent) >= Number(threshold))) return false;
     return dismissedAt == null || Math.round(Number(percent) * 100) >= dismissedAt + 5;
+}
+
+// 发送硬门槛（占上下文窗口的比例）：估算占比达到该值即拒绝起轮（startSessionTurn 预检、
+// 提醒条转红、发送按钮禁用三处共用同一口径，避免 UI 状态与实际拦截不一致）。
+export const AI_CTX_SEND_BLOCK_RATIO = 0.9;
+
+// 千分位整数（提醒条文本用）；非有限值按 0 处理。
+function aiGroupDigits(value) {
+    const n = Math.round(Number(value));
+    return String(Number.isFinite(n) ? n : 0).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
+
+// 上下文提醒条的文案与状态：percent = tokens / windowSize。
+// - 'suggest'：达到压缩阈值、仍有发送余量（琥珀提醒）；
+// - 'over'：达到发送硬门槛（红色门禁；blocked 与显隐无关，updateCtxBanner 据此回写发送门禁）。
+// compactBlocked（估算 ≥100%）：压缩请求 = 摘要提示 + 整段会话一起发给模型，此时同样发不出去
+// ——「压缩上下文」按钮禁用、tooltip 指引切换更大上下文的模型（出路只剩切模型 / 新会话）。
+export function aiCtxBannerState(percent, tokens, windowSize) {
+    const ratio = Number(percent) || 0;
+    const windowed = Number(windowSize) > 0;
+    const over = windowed && ratio >= AI_CTX_SEND_BLOCK_RATIO;
+    const compactBlocked = windowed && ratio >= 1;
+    const nums = '（约 ' + aiGroupDigits(tokens) + ' / ' + aiGroupDigits(windowSize) + ' tokens，估算）';
+    const p = Math.round(ratio * 100);
+    let text;
+    if (compactBlocked) text = '上下文 ' + p + '%' + nums + '，已超过模型上限：请切换更大上下文的模型';
+    else if (over) text = '上下文 ' + p + '%' + nums + '，接近上限，请先压缩再发送';
+    else text = '上下文 ' + p + '%' + nums + '，建议压缩';
+    return {state: over ? 'over' : 'suggest', blocked: over, compactBlocked, text};
 }
 
 // 回复操作按钮的颗粒度（设置 → AI 助手 → 回复操作按钮）：

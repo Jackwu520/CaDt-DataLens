@@ -191,6 +191,12 @@ function openBrowserTab(url, profileKey, opts) {
             startupAISession = await deps.backend.GetStartupAISession() || '';
         } catch (e) {}
     }
+    let startupMemoLocator = '';
+    if (deps.backend.GetStartupMemoLocator) {
+        try {
+            startupMemoLocator = await deps.backend.GetStartupMemoLocator() || '';
+        } catch (e) {}
+    }
     let targets = [];
     if (deps.backend.GetStartupTargets) {
         try {
@@ -242,6 +248,10 @@ function openBrowserTab(url, profileKey, opts) {
                     await deps.aiPanel.bridgeSwitchSession(startupAISession);
                 } catch (e) {}
             }
+        }
+        // 快捷便签定位点：CLI --memo 启动直达（工作区已恢复，memoApi 自己处理作用域切换）
+        if (startupMemoLocator && memoMod.memoApi && memoMod.memoApi.jumpToLocator) {
+            try { await memoMod.memoApi.jumpToLocator(startupMemoLocator); } catch (e) {}
         }
     }
     try {

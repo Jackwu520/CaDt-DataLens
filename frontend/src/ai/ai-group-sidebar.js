@@ -14,6 +14,7 @@ import {
     CHAIR_POLICIES,
     GROUP_GOALS,
     estimateDiscussionCalls,
+    normalizeGroupMode,
     preflightGroup,
 } from './ai-group-model.js';
 
@@ -489,11 +490,13 @@ export function createAIGroupSidebar(deps) {
         if (chairKind === 'member' && !memberIds.includes(chairAgentId)) {
             chairAgentId = memberIds[0] || '';
         }
+        // 模式三值直传（归一化在 ai-group-model 的 normalizeGroupMode 单一来源）：
+        // 这里曾写成「非 task 即 roundtable」，把 free 静默改写成圆桌，让自由聊天在 UI 上不可达。
         return {
             title: String(createControls.title.control.value || '').trim(),
             topic: String(createControls.topic.control.value || '').trim(),
             goal: createControls.goal.control.value,
-            mode: createControls.mode.control.value === 'task' ? 'task' : 'roundtable',
+            mode: normalizeGroupMode(createControls.mode.control.value),
             roles: collectRoles(),
             memberIds,
             chair: {kind: chairKind, agentId: chairKind === 'user' ? '' : chairAgentId, policy: createControls.policy.control.value},

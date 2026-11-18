@@ -1,29 +1,48 @@
 // git-graph.js：底部面板「Git 图谱」视图的域模块（factory + 显式依赖注入）。
-// 泳道拓扑由 Go 侧算好（GitGraphCommit.lane / throughLanes），这里只负责渲染 SVG、
-// 提交列表虚拟滚动、ref 树过滤与详情面板操作（签出 / cherry-pick / 重置）。
+// 图形布局交给 git 自己（`git log --graph`，graph.c 权威实现）：Go 侧解析字形流并
+// 压缩成 flow 折线（paths[{f, p:[charPos, yFrac, ...]}]），这里只负责渲染 SVG、
+// 提交列表虚拟滚动、双搜索框（分支 / 提交）、ref 树过滤、
+// 详情面板（IDEA 式：正文 + 作者行 + ref 徽章 + 分支计数 + 本次变动文件树）与
+// 写操作（签出 / cherry-pick / 重置 / 新建分支，右键菜单入口，对话框在 git-graph-dialogs.js）。
 // 写操作是用户主动 UI 动作：走只读锁 + 确认弹窗，不涉 AI 审批链。
 import {iconSvg} from '../core/icons.js';
 import {createInput} from '../core/form-controls.js';
+import {createFileIcon} from '../core/fileicons.js';
+import {createGitGraphDialogs} from './git-graph-dialogs.js';
 
 const ROW_H = 26;        // 提交行高（px）
 const LANE_W = 16;       // 每条泳道宽（px）
 const LANE_PAD = 8;      // 泳道区左右留白
 const DEFAULT_LIMIT = 500;
 
-// 泳道配色：按 lane index 循环取主题色板（CSS 变量在 style.css 定义）
+// 目录图标：与资源管理器（explorer.js ICONS.folder）同一造型；文件图标走 createFileIcon
+// （core/fileicons.js 主题解析链），「本次变动」树与文件树显示同一套图标
+const FOLDER_SVG = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4.7c0-.9.7-1.7 1.7-1.7h2.9l1.6 1.8h4.1c.9 0 1.7.7 1.7 1.7v4.8c0 .9-.7 1.7-1.7 1.7H3.7c-.9 0-1.7-.7-1.7-1.7z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>';
+
+// diff-tree 状态 → git 树状态类（.git-file-row 的 FILESTATUS 映射同源）与悬停文案
+const GIT_STATUS_CLS = { A: 'added', M: 'modified', D: 'deleted', R: 'renamed', C: 'renamed', T: 'modified', U: 'conflict' };
+const GIT_STATUS_LABEL = { A: '新增', M: '修改', D: '删除', R: '重命名', C: '复制', T: '类型变更', U: '冲突' };
+
+// flow 配色：按 flow 色号循环取主题色板（CSS 变量在 style.css 定义，12 色降低撞色概率）
 const LANE_COLORS = [
     'var(--gg-lane-0)', 'var(--gg-lane-1)', 'var(--gg-lane-2)', 'var(--gg-lane-3)',
     'var(--gg-lane-4)', 'var(--gg-lane-5)', 'var(--gg-lane-6)', 'var(--gg-lane-7)',
+    'var(--gg-lane-8)', 'var(--gg-lane-9)', 'var(--gg-lane-10)', 'var(--gg-lane-11)',
 ];
-function laneColor(lane) {
-    return LANE_COLORS[lane % LANE_COLORS.length];
+// flow 色号从 1 起（Go 侧解析器约定）
+function laneColor(flow) {
+    return LANE_COLORS[(flow - 1 + LANE_COLORS.length * 16) % LANE_COLORS.length];
 }
 
 // ===== 泳道 SVG 几何（纯函数，可单测） =====
 
-// laneCenterX 返回第 lane 条泳道圆点的 x 坐标。
-export function laneCenterX(lane) {
-    return LANE_PAD + lane * LANE_W + LANE_W / 2;
+// 每个字形占 HALF_W 宽的网格列（git --graph 字形矩阵的半泳道格）。
+const HALF_W = LANE_W / 2; // 8
+
+// glyphX 返回字形 pos 的「竖线 x」：竖线画在格子右边界（Gitea svgcontainer.tmpl 同款），
+// 斜线/横线以此为连接锚点，相邻字形天然首尾相接。
+export function glyphX(pos) {
+    return LANE_PAD + (pos + 1) * HALF_W;
 }
 
 // laneSvgWidth 返回容纳 laneCount 条泳道的 SVG 宽度。
@@ -31,53 +50,164 @@ export function laneSvgWidth(laneCount) {
     return LANE_PAD * 2 + Math.max(1, laneCount) * LANE_W;
 }
 
+// bezier 生成竖直方向的 S 形三次贝塞尔（起终点与直线相同）。
+// 控制点取 DoltHub commit-graph 的插值公式：两个控制点分别压向「终点的 x、起点的 y」
+// 与「起点的 x、终点的 y」，弯道只占端部、中段保持竖直（对齐 IDEA/GitHub 观感）。
+function bezier(x0, y0, x1, y1) {
+    const cx1 = x0 * 0.1 + x1 * 0.9;
+    const cy1 = y0 * 0.6 + y1 * 0.4;
+    const cx2 = x0 * 0.03 + x1 * 0.97;
+    const cy2 = y0 * 0.4 + y1 * 0.6;
+    return `M${x0},${y0} C${cx1},${cy1} ${cx2},${cy2} ${x1},${y1}`;
+}
+
 // buildLaneSvg 渲染一页提交的泳道 SVG（新→旧，行 i 的 y 中心 = i*ROW_H + ROW_H/2）。
-// 规则：
-//   - 每行画一个圆点（当前提交所在 lane）。
-//   - 每行的 lane 与 throughLanes 画竖线贯穿该行（从行顶到行底）。
-//   - 父分支拐点：父 lane ≠ 当前行 lane 时，从当前行底部画弧线跨到父 lane（连到下一行顶）。
+// 布局数据来自 Go 侧对 `git log --graph` 字形流的解析（graph.c 权威算法，graphglyph.go）：
+// 每个提交组（提交行 + 关系行）带 Rows 与组内字形表，前端按 Gitea svgcontainer.tmpl
+// 的映射逐字形直译成 SVG 段——竖线在格右界、斜线跨 2 格、横线贴底边跨 2 格，
+// 相邻字形天然首尾相接，复合字形（`| |_|_|/`、`|/| | |`）全覆盖；组内行高按
+// Rows 等分压缩（IDEA 式过渡行折叠）。同一条分支线一个 flow 色号贯穿。
 // 返回 <svg> 的 innerHTML 字符串（不含 <svg> 壳）。
 export function buildLaneSvg(commits, laneCount) {
     const width = laneSvgWidth(laneCount);
     const height = commits.length * ROW_H;
     const parts = [];
-    const line = (d, color, cls) => parts.push(`<path d="${d}" class="${cls}" stroke="${color}"/>`);
 
     for (let i = 0; i < commits.length; i++) {
         const c = commits[i];
         const yTop = i * ROW_H;
-        const yMid = yTop + ROW_H / 2;
-        const yBot = yTop + ROW_H;
-        const cx = laneCenterX(c.lane);
-        const color = laneColor(c.lane);
+        const gh = c.rows > 0 ? ROW_H / c.rows : ROW_H; // 组内每行高
+        const seg = (d, flow) => parts.push(`<path d="${d}" class="gg-line" stroke="${laneColor(flow)}"/>`);
 
-        // 竖线：本行 lane + 穿线泳道，各画一条贯穿线
-        const lanesHere = new Set(c.throughLanes || []);
-        lanesHere.add(c.lane);
-        for (const l of lanesHere) {
-            const lx = laneCenterX(l);
-            line(`M${lx},${yTop} L${lx},${yBot}`, laneColor(l), 'gg-line');
-        }
-
-        // 父分支拐点：父 lane 与本行 lane 不同时画弧线（本行底 → 下一行顶）
-        const next = commits[i + 1];
-        if (next) {
-            const drawnLanes = new Set();
-            for (const p of (c.parents || [])) {
-                const pi = next.sha === p ? i + 1 : -1;
-                if (pi < 0) continue; // 父不在下一行（页边界或更远），不画拐点
-                const px = laneCenterX(next.lane);
-                if (px === cx || drawnLanes.has(px)) continue;
-                drawnLanes.add(px);
-                const midY = (yBot + (pi * ROW_H)) / 2;
-                line(`M${cx},${yBot} C${cx},${midY} ${px},${midY} ${px},${pi * ROW_H}`, color, 'gg-curve');
+        for (const g of (c.glyphs || [])) {
+            const x = glyphX(g.p);
+            const y0 = yTop + g.r * gh;
+            const y1 = y0 + gh;
+            switch (g.c) {
+                case '|':
+                case '*':
+                    seg(`M${x},${y0} L${x},${y1}`, g.f);
+                    break;
+                case '\\': // 左格左界 → 右格右界（下一行 pos+1 相接），S 形贝塞尔（IDEA 观感）
+                    seg(bezier(glyphX(g.p - 1), y0, glyphX(g.p + 1), y1), g.f);
+                    break;
+                case '/': // 右格右界 → 左格左界（下一行 pos-1 相接），S 形贝塞尔
+                    seg(bezier(glyphX(g.p + 1), y0, glyphX(g.p - 1), y1), g.f);
+                    break;
+                case '_': // 底边横线：本格左界 → 右格右界（跨 2 格，与右侧字形相接）
+                    seg(`M${glyphX(g.p - 1)},${y1} L${glyphX(g.p + 1)},${y1}`, g.f);
+                    break;
+                case '-':
+                case '.': // 半格横线（八叉合并收尾）
+                    seg(`M${glyphX(g.p - 1)},${y1} L${x},${y1}`, g.f);
+                    break;
+                default:
+                    break;
             }
         }
 
-        // 圆点
-        parts.push(`<circle cx="${cx}" cy="${yMid}" r="4" class="gg-dot" fill="${color}"/>`);
+        // 圆点：提交行的圆点在组内第一行的行中
+        parts.push(`<circle cx="${glyphX(c.dotPos)}" cy="${yTop + gh / 2}" r="4" class="gg-dot" fill="${laneColor(c.dotFlow)}"/>`);
     }
     return `<svg class="gg-lane-svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" aria-hidden="true">${parts.join('')}</svg>`;
+}
+
+// parseCommitRefs 把 %D 装饰器拆成 ref 徽章列表（纯函数，可单测）。
+// "HEAD -> master, origin/master, tag: v1.0" → [{kind:'head',name:'HEAD'},
+//   {kind:'local',name:'master'}, {kind:'remote',name:'origin/master'}, {kind:'tag',name:'v1.0'}]
+export function parseCommitRefs(refs) {
+    const chips = [];
+    for (const raw of String(refs || '').split(',')) {
+        const s = raw.trim();
+        if (!s) continue;
+        if (s.startsWith('tag:')) {
+            const name = s.slice(4).trim();
+            if (name) chips.push({kind: 'tag', name});
+        } else if (s.startsWith('HEAD ->')) {
+            chips.push({kind: 'head', name: 'HEAD'});
+            const b = s.slice(7).trim();
+            if (b) chips.push({kind: 'local', name: b});
+        } else if (s === 'HEAD') {
+            chips.push({kind: 'head', name: 'HEAD'});
+        } else {
+            chips.push({kind: s.indexOf('origin/') === 0 ? 'remote' : 'local', name: s});
+        }
+    }
+    return chips;
+}
+
+// fileTreeFromChanges 把平铺的文件变动列表组目录树（纯函数，可单测）。
+// 返回根级节点数组：{type:'dir', name, path, children[]} | {type:'file', name, path, status, oldPath}。
+// 目录在前、同类型按名称升序。
+export function fileTreeFromChanges(files) {
+    const root = {type: 'dir', name: '', path: '', children: []};
+    for (const f of files || []) {
+        const parts = String(f.path || '').split('/');
+        let cur = root;
+        for (let i = 0; i < parts.length - 1; i++) {
+            const seg = parts[i];
+            if (!seg) continue;
+            const p = cur.path ? cur.path + '/' + seg : seg;
+            let child = null;
+            for (const n of cur.children) {
+                if (n.type === 'dir' && n.name === seg) { child = n; break; }
+            }
+            if (!child) {
+                child = {type: 'dir', name: seg, path: p, children: []};
+                cur.children.push(child);
+            }
+            cur = child;
+        }
+        cur.children.push({
+            type: 'file',
+            name: parts[parts.length - 1] || f.path,
+            path: f.path,
+            status: f.status || '',
+            oldPath: f.oldPath || '',
+        });
+    }
+    const sortRec = (node) => {
+        node.children.sort((a, b) => {
+            if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
+            return a.name < b.name ? -1 : (a.name > b.name ? 1 : 0);
+        });
+        for (const ch of node.children) {
+            if (ch.type === 'dir') sortRec(ch);
+        }
+    };
+    sortRec(root);
+    return root.children;
+}
+
+// buildSkeletonHtml 生成首次加载的骨架屏内部 HTML（纯静态、可单测）。
+// 三栏结构与 .gg-body 对齐；条块宽度错落，避免整齐得像表格。
+// 纯字符串、无用户输入，用 innerHTML 一次性注入是安全的（同 buildLaneSvg）。
+export function buildSkeletonHtml() {
+    const refs = [72, 58, 80, 64, 70, 52].map((w, i) =>
+        `<div class="gg-sk-line" style="width:${w}%;margin-left:${i === 0 ? 0 : 14}px"></div>`).join('');
+    const rows = [64, 78, 55, 70, 82, 60, 73, 68, 58, 76, 66, 71, 62, 80].map((w) =>
+        `<div class="gg-sk-row"><span class="gg-sk-dot"></span><span class="gg-sk-bar" style="width:${w}%"></span></div>`).join('');
+    const detail = [
+        '90%;height:14px', '70%;height:10px', '80%;height:10px', '55%;height:22px',
+    ].map((s) => `<div class="gg-sk-block" style="width:${s}"></div>`).join('');
+    return '<div class="gg-sk-refs">' + refs + '</div>' +
+        '<div class="gg-sk-commits">' + rows + '</div>' +
+        '<div class="gg-sk-detail">' + detail + '</div>';
+}
+
+// ===== 三栏宽度拖动 =====
+const REFS_MIN = 120;       // ref 树最小宽
+const DETAIL_MIN = 180;     // 详情最小宽
+const COMMITS_MIN = 200;    // 中间提交列表最小宽（两条分割条各占 4px，共 8px）
+const SPLITTERS_W = 8;
+const PANE_W_KEY = 'cadt.gitgraph.paneWidths';
+
+// clampPaneWidth 把拖动请求的宽度限制在 [min, max] 内（纯函数，可单测）。
+// 非有限值回落到 min；max < min 时也回落到 min（窗口太窄的退化情形）。
+export function clampPaneWidth(requested, min, max) {
+    if (!Number.isFinite(requested)) return min;
+    if (max < min) return min;
+    return Math.min(max, Math.max(min, requested));
 }
 
 // ===== 域模块 =====
@@ -92,11 +222,53 @@ export function createGitGraph(ctx) {
         loading: false,
         currentRef: '',       // 空串 = 当前 HEAD
         selectedSha: '',
+        refFilter: '',        // 左栏分支过滤词
         expandedGroups: {local: true, remote: false, tags: false, worktrees: false},
         initialized: false,
+        refsW: 180,     // 左栏 ref 树宽（可拖动）
+        detailW: 280,   // 右栏详情宽（可拖动）
+        filesCache: new Map(),   // sha → 文件变动列表（LRU 上限 FILES_CACHE_MAX）
+        fileCollapse: new Set(), // 文件树折叠的目录路径
     };
+    const FILES_CACHE_MAX = 100;
 
-    let els = null; // {root, refTree, commitList, laneCol, detail, hint, filterInput}
+    // 对话框域（新建分支 / 重置 / 签出冲突）：只暴露它们需要的宿主能力
+    const dialogs = createGitGraphDialogs({
+        get backend() { return ctx.backend; },
+        get flash() { return ctx.flash; },
+        get state() { return state; },
+        gitDir,
+    });
+
+    let els = null; // {root, body, refsCol, refTree, rightCol, commitWrap, laneCol, commitList, detail, hint, filterInput, branchFilter, skeleton}
+    let resizeWatched = false;
+
+    // 栏宽持久化：读用 try/catch 兜底（隐私模式 / 损坏值），写尽力而为
+    function loadPaneWidths() {
+        try {
+            const raw = localStorage.getItem(PANE_W_KEY);
+            if (!raw) return;
+            const v = JSON.parse(raw);
+            if (v && Number.isFinite(v.refsW)) state.refsW = v.refsW;
+            if (v && Number.isFinite(v.detailW)) state.detailW = v.detailW;
+        } catch (_) { /* 损坏值或存储不可用：保留默认 */ }
+    }
+    function savePaneWidths() {
+        try {
+            localStorage.setItem(PANE_W_KEY, JSON.stringify({refsW: state.refsW, detailW: state.detailW}));
+        } catch (_) { /* 存储不可用：本次会话内仍生效 */ }
+    }
+    // 把当前栏宽应用到 DOM（CSS 变量），并按容器实际宽度收敛，避免窄窗口下中间栏被挤没
+    function applyPaneWidths() {
+        if (!els || !els.body) return;
+        const total = els.body.clientWidth;
+        const maxRefs = total > 0 ? clampPaneWidth(total - SPLITTERS_W - COMMITS_MIN - state.detailW, REFS_MIN, total) : state.refsW;
+        const refsW = clampPaneWidth(state.refsW, REFS_MIN, maxRefs);
+        const maxDetail = total > 0 ? clampPaneWidth(total - SPLITTERS_W - COMMITS_MIN - refsW, DETAIL_MIN, total) : state.detailW;
+        const detailW = clampPaneWidth(state.detailW, DETAIL_MIN, maxDetail);
+        els.body.style.setProperty('--gg-refs-w', refsW + 'px');
+        els.body.style.setProperty('--gg-detail-w', detailW + 'px');
+    }
 
     // ---- 初始化 DOM ----
     function ensureEls() {
@@ -106,29 +278,50 @@ export function createGitGraph(ctx) {
         root.innerHTML = '';
         root.classList.add('gg-root');
 
-        // 顶栏：过滤 + 刷新 + 回到 HEAD
-        const head = document.createElement('div');
-        head.className = 'gg-head';
+        // 主体：ref 树（含分支过滤头）| 提交列表（含提交搜索头）| 详情
+        const body = document.createElement('div');
+        body.className = 'gg-body';
+
+        // 左栏：分支过滤 + ref 树
+        const refsCol = document.createElement('div');
+        refsCol.className = 'gg-refs';
+        const refsHead = document.createElement('div');
+        refsHead.className = 'gg-col-head';
+        const branchFilter = createInput({
+            className: 'gg-filter gg-filter-col',
+            placeholder: '过滤分支…',
+            spellcheck: false,
+            autocomplete: 'off',
+            onInput: () => { state.refFilter = branchFilter.value || ''; renderRefTree(); },
+        }).element;
+        refsHead.appendChild(branchFilter);
+        const refTree = document.createElement('div');
+        refTree.className = 'gg-refs-tree';
+        refsCol.append(refsHead, refTree);
+
+        // 右区：提交搜索头（延伸到详情上方，边界处竖分割线）+ 提交列表 | 分割条 | 详情。
+        // 头部横跨提交列与详情列：未选提交时详情顶部不再是断掉的一截
+        const rightCol = document.createElement('div');
+        rightCol.className = 'gg-right';
+        const commitsHead = document.createElement('div');
+        commitsHead.className = 'gg-col-head gg-right-head';
+        const headInner = document.createElement('div');
+        headInner.className = 'gg-head-inner';
         const filterInput = createInput({
-            className: 'gg-filter',
-            placeholder: '过滤提交（文本或哈希）…',
+            className: 'gg-filter gg-filter-col',
+            placeholder: '搜索提交（文本或哈希）…',
             spellcheck: false,
             autocomplete: 'off',
             onInput: () => { filteredCache = null; renderCommitList(true); },
         }).element;
         const headActions = document.createElement('div');
-        headActions.className = 'gg-head-actions';
-        const backToHead = mkIconBtn('back', '回到当前分支', () => loadCommits(''));
+        headActions.className = 'gg-col-actions';
         const refreshBtn = mkIconBtn('refresh', '刷新图谱', () => reload());
         const closeBtn = mkIconBtn('close', '关闭面板', () => ctx.toggleTerminalPanel(false));
-        headActions.append(backToHead, refreshBtn, closeBtn);
-        head.append(filterInput, headActions);
-
-        // 主体：ref 树 | 提交列表 | 详情
-        const body = document.createElement('div');
-        body.className = 'gg-body';
-        const refTree = document.createElement('div');
-        refTree.className = 'gg-refs';
+        headActions.append(refreshBtn, closeBtn);
+        headInner.append(filterInput);
+        // 刷新/关闭钉在整条头部的最右端（详情列上方右缘），搜索框只占提交列宽度
+        commitsHead.append(headInner, headActions);
         const commitWrap = document.createElement('div');
         commitWrap.className = 'gg-commits';
         const laneCol = document.createElement('div');
@@ -136,19 +329,116 @@ export function createGitGraph(ctx) {
         const listCol = document.createElement('div');
         listCol.className = 'gg-list-col';
         commitWrap.append(laneCol, listCol);
+
+        // 右栏：详情
         const detail = document.createElement('div');
         detail.className = 'gg-detail';
-        body.append(refTree, commitWrap, detail);
+
+        // 两条列宽拖动条：ref 树 | ‖ | 提交列表 | ‖ | 详情
+        const splitRefs = mkSplitter('refs');
+        const splitDetail = mkSplitter('detail');
+        const rightBody = document.createElement('div');
+        rightBody.className = 'gg-right-body';
+        rightBody.append(commitWrap, splitDetail, detail);
+        rightCol.append(commitsHead, rightBody);
+        body.append(refsCol, splitRefs, rightCol);
 
         const hint = document.createElement('div');
         hint.className = 'gg-hint hidden';
 
-        root.append(head, body, hint);
+        // 首次加载骨架屏：覆盖整个 body（含三栏），加载完成/失败后移除
+        const skeleton = document.createElement('div');
+        skeleton.className = 'gg-skeleton hidden';
+        skeleton.innerHTML = buildSkeletonHtml();
+        body.appendChild(skeleton); // 锚在 .gg-body 内，只盖三栏、不盖列头
+
+        root.append(body, hint);
 
         commitWrap.addEventListener('scroll', onScroll);
 
-        els = {root, refTree, commitList: listCol, laneCol, commitWrap, detail, hint, filterInput};
+        els = {root, body, refsCol, refTree, rightCol, commitWrap, laneCol, commitList: listCol, detail, hint, filterInput, branchFilter, skeleton};
+        loadPaneWidths();
+        applyPaneWidths();
+        watchPanelResize();
         return els;
+    }
+
+    // watchPanelResize 底部面板高度 / 窗口尺寸变化后重渲提交列表：拖动底板高度不改
+    // commitWrap 内容，但可见区变了，虚拟滚动要按新高度重算（用户反馈：拖动后不滚动不重建）。
+    function watchPanelResize() {
+        if (resizeWatched) return;
+        resizeWatched = true;
+        window.addEventListener('resize', () => {
+            if (!els) return;
+            renderCommitList(true);
+            applyPaneWidths();
+        });
+        // 底板高度拖动只改 style.height，不触发 window resize：观察面板 style 变化兜底
+        const panel = document.getElementById('terminal-panel');
+        if (panel && typeof MutationObserver === 'function') {
+            new MutationObserver(() => {
+                if (!els) return;
+                renderCommitList(true);
+            }).observe(panel, {attributes: true, attributeFilter: ['style']});
+        }
+    }
+
+    // mkSplitter 生成一条列宽拖动条：拖动时改左栏（refs=ref 树）或右栏（detail=详情）宽度。
+    // 用 pointer 事件 + setPointerCapture：拖出条外也持续跟踪，松手/取消即结束。
+    // 光标走自定义主题（setDragCursor('ew') → body.cursor-ew → 注入的系统光标），
+    // 与侧栏 / 编辑器分栏一致，不再用原生 col-resize。
+    function mkSplitter(which) {
+        const bar = document.createElement('div');
+        bar.className = 'gg-splitter';
+        bar.dataset.tip = '拖动调整宽度';
+        bar.setAttribute('role', 'separator');
+        bar.setAttribute('aria-orientation', 'vertical');
+        bar.addEventListener('pointerdown', (ev) => {
+            if (!els || !els.body) return;
+            ev.preventDefault();
+            bar.setPointerCapture(ev.pointerId);
+            bar.classList.add('dragging');
+            if (ctx.setDragCursor) ctx.setDragCursor('ew');
+            document.body.style.userSelect = 'none';
+            const startX = ev.clientX;
+            const startRefs = state.refsW;
+            const startDetail = state.detailW;
+            const total = els.body.clientWidth;
+
+            const onMove = (e) => {
+                const dx = e.clientX - startX;
+                if (which === 'refs') {
+                    const max = total - SPLITTERS_W - COMMITS_MIN - startDetail;
+                    state.refsW = clampPaneWidth(startRefs + dx, REFS_MIN, max);
+                } else {
+                    // 拖右分割条向右 = 详情变窄
+                    const max = total - SPLITTERS_W - COMMITS_MIN - startRefs;
+                    state.detailW = clampPaneWidth(startDetail - dx, DETAIL_MIN, max);
+                }
+                applyPaneWidths();
+            };
+            const onUp = () => {
+                bar.removeEventListener('pointermove', onMove);
+                bar.removeEventListener('pointerup', onUp);
+                bar.removeEventListener('pointercancel', onUp);
+                bar.classList.remove('dragging');
+                if (ctx.setDragCursor) ctx.setDragCursor(null);
+                document.body.style.userSelect = '';
+                savePaneWidths();
+            };
+            bar.addEventListener('pointermove', onMove);
+            bar.addEventListener('pointerup', onUp);
+            bar.addEventListener('pointercancel', onUp);
+        });
+        return bar;
+    }
+
+    // 骨架屏显隐：首次拉数据期间盖住空的三栏，避免「先空白后突然蹦出」
+    function showSkeleton() {
+        if (els && els.skeleton) els.skeleton.classList.remove('hidden');
+    }
+    function hideSkeleton() {
+        if (els && els.skeleton) els.skeleton.classList.add('hidden');
     }
 
     function mkIconBtn(icon, tip, onClick) {
@@ -216,17 +506,32 @@ export function createGitGraph(ctx) {
     }
 
     async function reload() {
+        state.filesCache.clear();
+        state.fileCollapse.clear();
         await Promise.all([loadRefs(), loadCommits(state.currentRef, 0)]);
     }
 
-    // 首次切到该视图时调用（懒加载）
+    // afterGraphWrite 图谱写操作（签出 / 重置 / 新建分支）完成后的统一收尾：
+    // 重拉图谱 + 刷新底部 Git 状态条。
+    function afterGraphWrite() {
+        reload();
+        if (ctx.refreshGitStatus) ctx.refreshGitStatus();
+    }
+
+    // 首次切到该视图时调用（懒加载）：首次拉数据期间显示骨架屏
     async function show() {
         const e = ensureEls();
         if (!e) return;
-        if (!state.initialized) await reload();
+        if (state.initialized) return;
+        showSkeleton();
+        try {
+            await reload();
+        } finally {
+            hideSkeleton();
+        }
     }
 
-    // ---- 渲染：ref 树 ----
+    // ---- 渲染：ref 树（带分支过滤） ----
     function renderRefTree() {
         if (!els || !els.refTree) return;
         const tree = els.refTree;
@@ -239,44 +544,52 @@ export function createGitGraph(ctx) {
             tree.appendChild(empty);
             return;
         }
+        const q = state.refFilter.trim().toLowerCase();
+        const hit = (name) => !q || String(name || '').toLowerCase().includes(q);
+        const filtered = (items) => (!q || !items) ? (items || []) : items.filter((r) => hit(r.name));
         // HEAD / 当前分支
         if (refs.current || refs.headSha) {
-            const headGroup = document.createElement('div');
-            headGroup.className = 'gg-ref-group';
-            const headRow = mkRefRow({
-                name: refs.current || 'HEAD（detached）',
-                sha: refs.headSha,
-                current: true,
-            }, 'HEAD');
-            headGroup.appendChild(headRow);
-            tree.appendChild(headGroup);
+            const headName = refs.current || 'HEAD（detached）';
+            if (!q || hit(headName)) {
+                const headGroup = document.createElement('div');
+                headGroup.className = 'gg-ref-group';
+                headGroup.appendChild(mkRefRow({name: headName, sha: refs.headSha, current: true}, 'HEAD'));
+                tree.appendChild(headGroup);
+            }
         }
-        // 分组：本地 / 远程 / 标签 / worktree
-        addRefGroup(tree, 'local', '本地分支', refs.local, false);
-        addRefGroup(tree, 'remote', '远程分支', refs.remote, true);
-        addRefGroup(tree, 'tags', '标签', refs.tags, false);
-        addRefGroup(tree, 'worktrees', 'Worktree', refs.worktrees, true);
+        // 分组：本地 / 远程 / 标签 / worktree（过滤时空组隐藏并强制展开）
+        addRefGroup(tree, 'local', '本地分支', filtered(refs.local), false, q);
+        addRefGroup(tree, 'remote', '远程分支', filtered(refs.remote), true, q);
+        addRefGroup(tree, 'tags', '标签', filtered(refs.tags), false, q);
+        addRefGroup(tree, 'worktrees', 'Worktree', filtered(refs.worktrees), true, q);
+        if (q && !tree.children.length) {
+            const empty = document.createElement('div');
+            empty.className = 'gg-refs-empty';
+            empty.textContent = '没有匹配的分支';
+            tree.appendChild(empty);
+        }
     }
 
-    function addRefGroup(tree, key, title, items, collapsedDefault) {
+    function addRefGroup(tree, key, title, items, collapsedDefault, q) {
         if (!items || !items.length) return;
         if (!(key in state.expandedGroups)) state.expandedGroups[key] = !collapsedDefault;
         const group = document.createElement('div');
         group.className = 'gg-ref-group';
         const head = document.createElement('div');
         head.className = 'gg-ref-group-head';
+        const expanded = q ? true : state.expandedGroups[key];
         const chev = document.createElement('button');
         chev.type = 'button';
         chev.className = 'gg-chev';
         chev.setAttribute('aria-label', title + '（展开或收起）');
-        chev.setAttribute('aria-expanded', String(state.expandedGroups[key]));
-        chev.innerHTML = iconSvg(state.expandedGroups[key] ? 'chevron-down' : 'chevron-right', 12);
+        chev.setAttribute('aria-expanded', String(expanded));
+        chev.innerHTML = iconSvg(expanded ? 'chevron-down' : 'chevron-right', 12);
         const label = document.createElement('span');
         label.className = 'gg-ref-group-title';
         label.textContent = title + '（' + items.length + '）';
         head.append(chev, label);
         group.appendChild(head);
-        if (state.expandedGroups[key]) {
+        if (expanded) {
             for (const r of items) group.appendChild(mkRefRow(r, r.name));
         }
         head.addEventListener('click', () => {
@@ -301,8 +614,7 @@ export function createGitGraph(ctx) {
         }
         row.addEventListener('click', () => {
             // 点 ref = 过滤到该分支（标签/提交则定位）
-            const target = ref.worktree ? ref.name : ref.name;
-            loadCommits(target);
+            loadCommits(ref.name);
         });
         return row;
     }
@@ -430,7 +742,48 @@ export function createGitGraph(ctx) {
         row.append(msg, refs, author, date);
         row.addEventListener('click', () => selectCommit(c.sha));
         row.addEventListener('dblclick', () => selectCommit(c.sha));
+        // 右键：先选中该行再弹菜单（JetBrains 语义）
+        row.addEventListener('contextmenu', (ev) => {
+            ev.preventDefault();
+            if (state.selectedSha !== c.sha) selectCommit(c.sha);
+            openCommitMenu(ev, c);
+        });
         return row;
+    }
+
+    // openCommitMenu 提交行的右键菜单（JetBrains 式精选项：复制修订号 / 新建分支 /
+    // 签出修订 / Cherry-Pick / 将当前分支重置到此处）。
+    function openCommitMenu(ev, c) {
+        const items = [
+            {
+                label: '复制修订号',
+                icon: 'copy',
+                action: () => { if (ctx.copyText) ctx.copyText(c.sha, '修订号'); },
+            },
+            {sep: true},
+            {
+                label: '新建分支…',
+                icon: 'git',
+                action: () => dialogs.openBranchDialog(c, afterGraphWrite),
+            },
+            {
+                label: '签出修订',
+                icon: 'forward',
+                action: () => doCheckout(c),
+            },
+            {
+                label: 'Cherry-Pick',
+                icon: 'star',
+                action: () => doCherryPick(c),
+            },
+            {sep: true},
+            {
+                label: '将当前分支重置到此处…',
+                icon: 'undo',
+                action: () => dialogs.openResetDialog(c, afterGraphWrite),
+            },
+        ];
+        if (ctx.ctxMenu) ctx.ctxMenu.open(items, ev.clientX, ev.clientY);
     }
 
     function onScroll() {
@@ -445,7 +798,7 @@ export function createGitGraph(ctx) {
         }
     }
 
-    // ---- 详情面板 ----
+    // ---- 详情面板（IDEA 式：消息正文 / 作者行 / ref 徽章 / 分支计数 / 操作 / 本次变动） ----
     function selectCommit(sha) {
         state.selectedSha = sha;
         renderCommitList(true); // 选中高亮变了，强制刷新
@@ -469,10 +822,9 @@ export function createGitGraph(ctx) {
             return;
         }
 
-        // 完整提交消息（JetBrains 式：消息正文占据详情主视觉，不截断）
-        const msg = document.createElement('div');
-        msg.className = 'gg-detail-msg';
-        msg.textContent = c.subject || '(无消息)';
+        // 上半区：消息与元信息（可滚动）
+        const info = document.createElement('div');
+        info.className = 'gg-detail-info';
 
         // 关闭按钮浮在详情右上角
         const closeBtn = mkIconBtn('close', '关闭详情', () => {
@@ -482,6 +834,17 @@ export function createGitGraph(ctx) {
         });
         closeBtn.classList.add('gg-detail-close');
 
+        // 完整提交消息：主题加粗 + 正文（IDEA 式）。正文随文件变动一起按需异步加载
+        //（--graph 的一条提交只占一行，多行正文会破坏一行一提交的映射）
+        const msg = document.createElement('div');
+        msg.className = 'gg-detail-msg';
+        msg.textContent = c.subject || '(无消息)';
+        info.appendChild(msg);
+        const bodyEl = document.createElement('div');
+        bodyEl.className = 'gg-detail-body';
+        bodyEl.dataset.bodySha = c.sha;
+        info.appendChild(bodyEl);
+
         // 作者信息行：头像色块 + sha + 作者 <邮箱>, 日期
         const authorRow = document.createElement('div');
         authorRow.className = 'gg-detail-author';
@@ -490,26 +853,233 @@ export function createGitGraph(ctx) {
         avatar.style.background = avatarColor(c.email || c.author || '');
         const authorText = document.createElement('span');
         authorText.className = 'gg-author-text';
-        authorText.textContent = (c.sha || '').slice(0, 7) + ' 作者 ' + (c.author || '') +
-            (c.email ? ' <' + c.email + '>, ' : '') + (c.date || '');
+        authorText.textContent = (c.sha || '').slice(0, 8) + ' 作者 ' + (c.author || '') +
+            (c.email ? ' <' + c.email + '>' : '') + '，' + (c.date || '');
         authorRow.append(avatar, authorText);
+        info.appendChild(authorRow);
 
-        // 分支信息行：该提交在哪些分支上（从 refs 装饰器解析）
-        const branchRow = mkBranchRow(c);
+        // ref 徽章行：HEAD / 本地分支 / 远程 / 标签 分色展示（IDEA 式）
+        const chips = parseCommitRefs(c.refs);
+        if (chips.length) {
+            const refRow = document.createElement('div');
+            refRow.className = 'gg-detail-refs';
+            for (const chip of chips) {
+                const el = document.createElement('span');
+                el.className = 'gg-refchip gg-refchip--' + chip.kind;
+                el.textContent = chip.name;
+                refRow.appendChild(el);
+            }
+            info.appendChild(refRow);
+        }
+
+        // 分支计数行：「在 N 个分支中: HEAD, master, origin/master」
+        const branchRow = document.createElement('div');
+        branchRow.className = 'gg-detail-branch';
+        if (chips.length) {
+            const label = document.createElement('span');
+            label.textContent = '在 ' + chips.length + ' 个分支中: ';
+            const list = document.createElement('span');
+            list.className = 'gg-branch-list';
+            list.textContent = chips.map((x) => x.name).join(', ');
+            branchRow.append(label, list);
+            branchRow.title = chips.map((x) => x.name).join(', ');
+        } else {
+            branchRow.textContent = '不在任何分支上（游离提交）';
+        }
+        info.appendChild(branchRow);
 
         // 操作按钮
         const actions = document.createElement('div');
         actions.className = 'gg-detail-actions';
         actions.appendChild(mkActionBtn('签出', () => doCheckout(c)));
         actions.appendChild(mkActionBtn('Cherry-Pick', () => doCherryPick(c)));
-        const resetGroup = document.createElement('div');
-        resetGroup.className = 'gg-reset-group';
-        resetGroup.appendChild(mkActionBtn('重置 soft', () => doReset(c, 'soft')));
-        resetGroup.appendChild(mkActionBtn('mixed', () => doReset(c, 'mixed')));
-        resetGroup.appendChild(mkActionBtn('hard', () => doReset(c, 'hard'), 'danger'));
-        actions.appendChild(resetGroup);
+        actions.appendChild(mkActionBtn('重置…', () => dialogs.openResetDialog(c, () => reload())));
+        info.appendChild(actions);
 
-        d.append(closeBtn, msg, authorRow, branchRow, actions);
+        // 下半区：本次提交的文件变动树（IDEA 右侧「本次变动」）
+        const filesWrap = document.createElement('div');
+        filesWrap.className = 'gg-detail-files';
+        const filesTitle = document.createElement('div');
+        filesTitle.className = 'gg-files-title';
+        filesTitle.textContent = '本次变动';
+        const filesBody = document.createElement('div');
+        filesBody.className = 'gg-files-body';
+        filesBody.textContent = '加载中…';
+        filesWrap.append(filesTitle, filesBody);
+
+        // 信息区 / 本次变动之间的水平拖动条：上下分配详情高度（比例持久化）
+        const infoRatio = loadInfoH();
+        if (infoRatio != null && els.detail.clientHeight > 0) {
+            info.style.height = Math.round(els.detail.clientHeight * infoRatio) + 'px';
+        }
+        const vsplit = mkDetailSplitter(info);
+        d.append(closeBtn, info, vsplit, filesWrap);
+        loadCommitDetail(c.sha, filesWrap, bodyEl);
+    }
+
+    // 详情信息区高度持久化：null = 未拖过（自适应内容）。存比例（相对详情高），窗口变化不失真。
+    const INFO_H_KEY = 'cadt.gitgraph.infoH';
+    function loadInfoH() {
+        try {
+            const raw = localStorage.getItem(INFO_H_KEY);
+            if (!raw) return null;
+            const v = Number(raw);
+            if (!Number.isFinite(v) || v <= 0.05 || v >= 0.9) return null;
+            return v;
+        } catch (_) { return null; }
+    }
+    function saveInfoH(ratio) {
+        try { localStorage.setItem(INFO_H_KEY, String(ratio)); } catch (_) { /* 存储不可用：会话内仍生效 */ }
+    }
+
+    // mkDetailSplitter 详情内上下拖动条：拖动改信息区高度（其余给本次变动树）。
+    // 比例 = infoH / detail 高度，松手持久化。
+    function mkDetailSplitter(infoEl) {
+        const bar = document.createElement('div');
+        bar.className = 'gg-detail-vsplit';
+        bar.dataset.tip = '拖动调整上下高度';
+        bar.setAttribute('role', 'separator');
+        bar.setAttribute('aria-orientation', 'horizontal');
+        bar.addEventListener('pointerdown', (ev) => {
+            if (!els || !els.detail) return;
+            ev.preventDefault();
+            bar.setPointerCapture(ev.pointerId);
+            bar.classList.add('dragging');
+            if (ctx.setDragCursor) ctx.setDragCursor('ns');
+            document.body.style.userSelect = 'none';
+            const detailH = els.detail.clientHeight;
+            const startY = ev.clientY;
+            const startH = infoEl.getBoundingClientRect().height;
+            const onMove = (e) => {
+                const h = Math.min(detailH - 120, Math.max(60, startH + (e.clientY - startY)));
+                infoEl.style.height = h + 'px';
+            };
+            const onUp = () => {
+                bar.removeEventListener('pointermove', onMove);
+                bar.removeEventListener('pointerup', onUp);
+                bar.removeEventListener('pointercancel', onUp);
+                bar.classList.remove('dragging');
+                if (ctx.setDragCursor) ctx.setDragCursor(null);
+                document.body.style.userSelect = '';
+                saveInfoH(Math.min(0.9, Math.max(0.05, infoEl.getBoundingClientRect().height / detailH)));
+            };
+            bar.addEventListener('pointermove', onMove);
+            bar.addEventListener('pointerup', onUp);
+            bar.addEventListener('pointercancel', onUp);
+        });
+        return bar;
+    }
+
+    // loadCommitDetail 拉取选中提交的文件变动与完整正文（LRU 缓存；会话切换守卫）。
+    async function loadCommitDetail(sha, filesWrap, bodyEl) {
+        const title = filesWrap.querySelector('.gg-files-title');
+        const box = filesWrap.querySelector('.gg-files-body');
+        if (!box) return;
+        const cacheHit = state.filesCache.get(sha);
+        if (cacheHit) {
+            fillFiles(filesWrap, cacheHit.files);
+            fillBody(bodyEl, sha, cacheHit.body);
+            return;
+        }
+        if (!ctx.backend.GitGraphCommitFiles) {
+            filesWrap.classList.add('hidden');
+            return;
+        }
+        const fillFiles = (files) => {
+            title.textContent = '本次变动（' + files.length + '）';
+            box.innerHTML = '';
+            if (!files.length) {
+                const empty = document.createElement('div');
+                empty.className = 'gg-files-empty';
+                empty.textContent = '没有文件变动';
+                box.appendChild(empty);
+                return;
+            }
+            renderFileTree(box, fileTreeFromChanges(files), 0);
+        };
+        const fillBody = (el, forSha, body) => {
+            if (el.dataset.bodySha !== forSha) return;
+            el.textContent = body && body !== findCommit(forSha)?.subject ? body : '';
+        };
+        try {
+            const [files, body] = await Promise.all([
+                ctx.backend.GitGraphCommitFiles(gitDir(), sha),
+                ctx.backend.GitGraphCommitBody ? ctx.backend.GitGraphCommitBody(gitDir(), sha) : Promise.resolve(''),
+            ]);
+            if (state.selectedSha !== sha) return; // 请求期间选中的提交变了，丢弃
+            if (state.filesCache.size >= FILES_CACHE_MAX) {
+                const first = state.filesCache.keys().next().value;
+                state.filesCache.delete(first);
+            }
+            state.filesCache.set(sha, { files, body });
+            fillFiles(files);
+            fillBody(bodyEl, sha, body);
+        } catch (e) {
+            if (state.selectedSha === sha) {
+                box.textContent = '读取文件变动失败：' + e;
+            }
+        }
+    }
+
+    // renderFileTree 递归渲染目录树；目录可折叠（折叠状态记在 state.fileCollapse）。
+    function renderFileTree(box, nodes, depth) {
+        for (const n of nodes) {
+            if (n.type === 'dir') {
+                const row = document.createElement('div');
+                row.className = 'gg-file-dir';
+                row.style.paddingLeft = (4 + depth * 14) + 'px';
+                const chev = document.createElement('span');
+                chev.className = 'gg-file-chev';
+                chev.innerHTML = iconSvg(state.fileCollapse.has(n.path) ? 'chevron-right' : 'chevron-down', 10);
+                const ico = document.createElement('span');
+                ico.className = 'gg-file-ico gg-dir-ico';
+                ico.innerHTML = FOLDER_SVG;
+                const name = document.createElement('span');
+                name.className = 'gg-file-dir-name';
+                name.textContent = n.name;
+                const count = document.createElement('span');
+                count.className = 'gg-file-dir-count';
+                count.textContent = countFiles(n);
+                row.append(chev, ico, name, count);
+                row.addEventListener('click', () => {
+                    if (state.fileCollapse.has(n.path)) state.fileCollapse.delete(n.path);
+                    else state.fileCollapse.add(n.path);
+                    box.innerHTML = '';
+                    // 缓存值是 {files, body} 对象：折叠重渲只取 files（直接展开对象会
+                    // 触发 fileTreeFromChanges 的 for-of 抛 TypeError 并清掉整棵树）
+                    const cached = state.filesCache.get(state.selectedSha);
+                    renderFileTree(box, fileTreeFromChanges(cached ? cached.files : []), 0);
+                });
+                box.appendChild(row);
+                if (!state.fileCollapse.has(n.path)) renderFileTree(box, n.children, depth + 1);
+            } else {
+                // 状态不画字母徽章：文件名直接用 git 树同款 FILESTATUS 色彩
+                // （绿=新增 蓝=修改/重命名 灰=删除），与 .git-file-row / .sb-name 同源变量
+                const stCls = GIT_STATUS_CLS[n.status] || 'modified';
+                const row = document.createElement('div');
+                row.className = 'gg-file-row gg-st-' + stCls;
+                row.style.paddingLeft = (4 + depth * 14 + 14) + 'px';
+                // 文件图标与文件树同一主题解析链（vscode-icons 彩色图标）
+                const ico = createFileIcon(n.name, 'gg-file-ico');
+                const name = document.createElement('span');
+                name.className = 'gg-file-name';
+                name.textContent = n.name;
+                row.append(ico, name);
+                const label = GIT_STATUS_LABEL[n.status] || n.status || '修改';
+                row.title = label + '：' + n.path + (n.oldPath ? '（' + n.oldPath + ' → ' + n.path + '）' : '');
+                box.appendChild(row);
+            }
+        }
+    }
+
+    // countFiles 统计目录节点下的文件总数（含子目录）。
+    function countFiles(node) {
+        let n = 0;
+        for (const ch of node.children) {
+            if (ch.type === 'dir') n += countFiles(ch);
+            else n += 1;
+        }
+        return n;
     }
 
     // avatarColor 由邮箱/作者名派生一个稳定的头像底色（JetBrains 式彩色首字母块）
@@ -520,31 +1090,10 @@ export function createGitGraph(ctx) {
         return 'hsl(' + hue + ' 45% 45%)';
     }
 
-    // mkBranchRow 从 refs 装饰器（%D）解析该提交所在的分支，展示「在 N 个分支中: ...」
-    function mkBranchRow(c) {
-        const row = document.createElement('div');
-        row.className = 'gg-detail-branch';
-        const refs = (c.refs || '').trim();
-        if (!refs) {
-            row.textContent = '不在任何分支上（游离提交）';
-            return row;
-        }
-        // %D 形如 "HEAD -> master, origin/master, tag: v1.0" —— 拆成列表展示
-        const names = refs.split(',').map((s) => s.trim()).filter(Boolean);
-        const label = document.createElement('span');
-        label.textContent = '在 ' + names.length + ' 个引用中: ';
-        const list = document.createElement('span');
-        list.className = 'gg-branch-list';
-        list.textContent = names.join(', ');
-        row.append(label, list);
-        row.title = names.join(', ');
-        return row;
-    }
-
-    function mkActionBtn(label, onClick, variant) {
+    function mkActionBtn(label, onClick) {
         const b = document.createElement('button');
         b.type = 'button';
-        b.className = 'gg-action-btn' + (variant === 'danger' ? ' danger' : '');
+        b.className = 'gg-action-btn';
         b.textContent = label;
         b.addEventListener('click', onClick);
         return b;
@@ -561,18 +1110,20 @@ export function createGitGraph(ctx) {
 
     async function doCheckout(c) {
         if (readOnlyBlocked()) return;
-        const ref = state.refs && state.refs.current === c.sha ? c.sha : c.sha;
         const detached = !(state.refs && state.refs.local.some((r) => r.sha === c.sha));
         const msg = detached
             ? `签出到提交 ${c.sha.slice(0, 7)} 会进入 detached HEAD（不在任何分支上）。继续？`
             : `签出到 ${c.sha.slice(0, 7)}？`;
         ctx.openConfirmDialog(msg, async () => {
             try {
-                const res = await ctx.backend.GitGraphCheckout(gitDir(), ref);
+                const res = await ctx.backend.GitGraphCheckout(gitDir(), c.sha);
                 if (res && res.success) {
                     ctx.flash('已签出 ' + (res.branch || c.sha.slice(0, 7)));
                     await reload();
                     if (ctx.refreshGitStatus) ctx.refreshGitStatus();
+                } else if (res && Array.isArray(res.conflictFiles) && res.conflictFiles.length) {
+                    // 未提交改动挡路：弹 IDEA 式三选一（强制 / 智能 / 不签出）
+                    dialogs.openCheckoutConflict(c, res.conflictFiles, afterGraphWrite);
                 } else {
                     ctx.flash('签出失败：' + ((res && res.output) || '未知错误'), true);
                 }
@@ -600,27 +1151,6 @@ export function createGitGraph(ctx) {
                     ctx.flash('cherry-pick 失败：' + e, true);
                 }
             }, 'Cherry-Pick', 'Cherry-Pick 提交');
-    }
-
-    async function doReset(c, mode) {
-        if (readOnlyBlocked()) return;
-        const warn = mode === 'hard'
-            ? `重置（hard）到 ${c.sha.slice(0, 7)} 会丢弃当前分支之后的所有提交与未提交改动，不可恢复。确定？`
-            : `把当前分支重置（${mode}）到 ${c.sha.slice(0, 7)}？`;
-        ctx.openConfirmDialog(warn, async () => {
-            try {
-                const res = await ctx.backend.GitGraphReset(gitDir(), c.sha, mode);
-                if (res && res.success) {
-                    ctx.flash('已重置（' + mode + '）到 ' + c.sha.slice(0, 7));
-                    await reload();
-                    if (ctx.refreshGitStatus) ctx.refreshGitStatus();
-                } else {
-                    ctx.flash('重置失败：' + ((res && res.output) || '未知错误'), true);
-                }
-            } catch (e) {
-                ctx.flash('重置失败：' + e, true);
-            }
-        }, '重置', '重置分支', mode === 'hard' ? 'danger' : undefined);
     }
 
     // ---- 提示 ----

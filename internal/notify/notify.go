@@ -16,6 +16,7 @@ var (
 	OnToastActivation func(payload string)
 )
 
+// logf 转发到宿主注入的 Logf；未注入（测试或非 Windows 平台）时静默丢弃。
 func logf(level, format string, args ...any) {
 	if Logf != nil {
 		Logf(level, format, args...)

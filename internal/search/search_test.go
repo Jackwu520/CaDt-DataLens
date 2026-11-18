@@ -192,6 +192,56 @@ func TestSearchWorkspaceBuiltinFallback(t *testing.T) {
 	}
 }
 
+func TestSearchFileOnly(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.go")
+	writeSearchFile(t, target, "needle one\nneedle two\n")
+	writeSearchFile(t, filepath.Join(dir, "sibling.go"), "needle sibling\n")
+	writeSearchFile(t, filepath.Join(dir, "sub", "deep.go"), "needle deep\n")
+
+	app := &Searcher{}
+	// 文件根 + FileOnly：只扫该文件（rg 路径与内置路径同语义）
+	checkFileOnly := func(label string) {
+		t.Helper()
+		res, err := app.SearchWorkspaceAdvanced(target, "needle", SearchOptions{FileOnly: true})
+		if err != nil {
+			t.Fatalf("%s: %v", label, err)
+		}
+		if len(res.Hits) != 2 {
+			t.Fatalf("%s: expected 2 hits, got %d: %+v", label, len(res.Hits), res.Hits)
+		}
+		for _, hit := range res.Hits {
+			if !strings.EqualFold(hit.Path, target) {
+				t.Fatalf("%s: hit from another file: %+v", label, hit)
+			}
+			if hit.Dir != filepath.Base(dir) {
+				t.Fatalf("%s: unexpected Dir %q", label, hit.Dir)
+			}
+		}
+	}
+	checkFileOnly("rg-or-builtin")
+	t.Setenv("DATALENS_NO_RG", "1")
+	checkFileOnly("builtin")
+
+	// FileOnly=false 保留历史语义：文件根扩散到父目录
+	res, err := app.SearchWorkspaceAdvanced(target, "needle", SearchOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Hits) != 4 {
+		t.Fatalf("legacy file root should scan parent, got %d hits: %+v", len(res.Hits), res.Hits)
+	}
+
+	// FileOnly 对目录根无意义：按普通目录扫描
+	res, err = app.SearchWorkspaceAdvanced(dir, "needle", SearchOptions{FileOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Hits) != 4 {
+		t.Fatalf("FileOnly with dir root should behave as normal, got %d hits", len(res.Hits))
+	}
+}
+
 func TestSearchArtifactPathClassifier(t *testing.T) {
 	cases := []struct {
 		rel  string
@@ -337,16 +387,16 @@ func TestSkipPath(t *testing.T) {
 		{".cadt/worktree", true},
 		{".cadt/worktree/x", true},
 		{".cadt/worktree/x/src/a.js", true},
-		{".CADT/WORKTREE/X/a.js", true},       // Windows 语义大小写不敏感
-		{".cadt\\worktree\\x\\a.js", true},    // 反斜杠归一
-		{".cadt/worktree-x/a.js", false},      // 不误伤同名前缀目录
-		{".cadtworktree/x", false},            // 不误伤无分隔前缀
-		{".cadt/tmp/a.md", false},             // AI 中间产物保持可搜
+		{".CADT/WORKTREE/X/a.js", true},    // Windows 语义大小写不敏感
+		{".cadt\\worktree\\x\\a.js", true}, // 反斜杠归一
+		{".cadt/worktree-x/a.js", false},   // 不误伤同名前缀目录
+		{".cadtworktree/x", false},         // 不误伤无分隔前缀
+		{".cadt/tmp/a.md", false},          // AI 中间产物保持可搜
 		{".cadt/logs/2026/11/INDEX.md", false},
 		{".cadt/memory", false},
 		{"src/main.go", false},
-		{"", false},   // 根自身（从 worktree 内发起检索）
-		{".", false},  // 根自身
+		{"", false},  // 根自身（从 worktree 内发起检索）
+		{".", false}, // 根自身
 	}
 	for _, c := range cases {
 		if got := SkipPath(c.rel); got != c.want {

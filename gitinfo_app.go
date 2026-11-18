@@ -111,3 +111,23 @@ func (a *App) GitGraphReset(dir, sha, mode string) (*gitinfo.GitOperationResult,
 func (a *App) GitGraphCherryPick(dir, sha string) (*gitinfo.GitOperationResult, error) {
 	return gitinfo.GraphCherryPick(dir, sha)
 }
+
+func (a *App) GitGraphCreateBranch(dir, name, sha string, checkout bool) (*gitinfo.GitOperationResult, error) {
+	return gitinfo.GraphCreateBranch(dir, name, sha, checkout)
+}
+
+func (a *App) GitGraphCheckoutForce(dir, ref string) (*gitinfo.GitOperationResult, error) {
+	return gitinfo.GraphCheckoutForce(dir, ref)
+}
+
+func (a *App) GitGraphCheckoutSmart(dir, ref string) (*gitinfo.GitOperationResult, error) {
+	return gitinfo.GraphCheckoutSmart(dir, ref)
+}
+
+func (a *App) GitGraphCommitFiles(dir, sha string) ([]gitinfo.GitGraphFileChange, error) {
+	return gitinfo.GraphCommitFiles(dir, sha)
+}
+
+func (a *App) GitGraphCommitBody(dir, sha string) (string, error) {
+	return gitinfo.GraphCommitBody(dir, sha)
+}

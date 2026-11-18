@@ -33,13 +33,22 @@ test('轮次折叠：key 只到轮，段号不进折叠状态', () => {
 
 test('轮次折叠：折叠头只在首个可渲染段创建', () => {
     const panel = read('ai/ai-panel.js');
-    assert.match(panel, /const foldHeadIndex = segments\.findIndex\(\(seg, idx\) => !seg\.ask && segRenderable\(seg, idx\)\)/);
+    assert.match(panel, /const foldHeadIndex = segments\.findIndex\(\(seg, idx\) => !seg\.ask && !seg\.steer && segRenderable\(seg, idx\)\)/);
     // head 的创建必须在 isFoldHead 分支里，续段只挂 body
     const headBlock = panel.match(/if \(isFoldHead\) \{[\s\S]*?fold\.appendChild\(head\);\s*\}/);
     assert.ok(headBlock, '折叠头应当被 isFoldHead 包住');
     assert.match(headBlock[0], /className = 'ai-process-head'/);
     // 续段靠 cont 类区分：无头、共享同一个开合状态
     assert.match(panel, /\(isFoldHead \? '' : ' cont'\)/);
+});
+
+test('轮次折叠：用户插话整条渲染在折叠区外', () => {
+    const panel = read('ai/ai-panel.js');
+    assert.match(panel, /segments\.push\(\{steer: item\}\)/);
+    assert.match(panel, /if \(seg\.steer\) \{[\s\S]*?renderMessage\(seg\.steer\.message, seg\.steer\.index, session, host, turnOptions\);[\s\S]*?return;/);
+    // 插话段不参与折叠判定，避免把用户消息塞进过程 body
+    assert.match(panel, /const segHasBody = \(seg, segIndex\) => !seg\.steer &&/);
+    assert.match(panel, /const segRenderable = \(seg, segIndex\) => !seg\.steer &&/);
 });
 
 test('轮次折叠：点头同步同一轮所有段', () => {

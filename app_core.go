@@ -69,6 +69,7 @@ type App struct {
 	startupTargets         []launchargs.OpenTarget
 	startupSettingsPane    string
 	startupAISession       string
+	startupMemoLocator     string
 	dirty                  bool
 	forceClose             bool
 	aiRunning              bool
@@ -151,6 +152,7 @@ func (a *App) startup(ctx context.Context) {
 	}
 	a.startupSettingsPane = launchargs.ParseOpenSettingsArg(os.Args[1:])
 	a.startupAISession = launchargs.ParseAISessionArg(os.Args[1:])
+	a.startupMemoLocator = launchargs.ParseMemoLocatorArg(os.Args[1:])
 	a.startupTargets = launchargs.ParseOpenTargets(os.Args[1:])
 	// 外部文件拖放由前端 runtime.OnFileDrop 注册窗口监听并直接打开；
 	// 这里不再订阅 wails:file-drop，否则同一次拖放会被两侧各处理一遍。
@@ -167,6 +169,11 @@ func (a *App) domReady(ctx context.Context) {
 func (a *App) secondInstance(data options.SecondInstanceData) {
 	if pane := launchargs.ParseOpenSettingsArg(data.Args); pane != "" {
 		runtime.EventsEmit(a.ctx, "app-open-settings", pane)
+		runtime.WindowShow(a.ctx)
+		return
+	}
+	if loc := launchargs.ParseMemoLocatorArg(data.Args); loc != "" {
+		runtime.EventsEmit(a.ctx, "app-open-memo", loc)
 		runtime.WindowShow(a.ctx)
 		return
 	}
@@ -205,6 +212,11 @@ func (a *App) ConsumeStartupSettings() string {
 // GetStartupAISession 返回本次启动要打开的 AI 会话 id（软切换新窗口使用）。
 func (a *App) GetStartupAISession() string {
 	return a.startupAISession
+}
+
+// GetStartupMemoLocator 返回本次启动要跳转的便签定位点（cadt-memo://scope/kind/id）。
+func (a *App) GetStartupMemoLocator() string {
+	return a.startupMemoLocator
 }
 
 func (a *App) GetStartupTargets() []launchargs.OpenTarget {

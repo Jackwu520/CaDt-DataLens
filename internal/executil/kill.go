@@ -1,3 +1,7 @@
+// Package executil 子进程执行的平台工具：防黑窗与进程树终止。
+//
+// 平台无关文件只暴露这两件事，具体实现按 *_windows.go / *_other.go 成对提供；
+// 平台无关代码里不要直接引 syscall 的 CreationFlags 或 x/sys/windows。
 package executil
 
 import (

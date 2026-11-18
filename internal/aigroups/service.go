@@ -5,6 +5,8 @@ package aigroups
 // GroupStore 群聊存储绑定（类型名避开 sessionstore.Service：App 的嵌入字段名必须唯一）。
 type GroupStore struct{}
 
+// store 每次调用现取 Default()，不缓存单例：AppDataDir 由根壳在启动时才注入，
+// 缓存会把注入前的空路径固化下来。
 func (g *GroupStore) store() (*Store, error) { return Default() }
 
 // AIGroupList 各群 meta.json 原文数组（与 AISessionList 同形）。

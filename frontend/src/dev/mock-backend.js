@@ -705,6 +705,7 @@ const mockBackend = {
         const files = await this.GetStartupFiles();
         return files.map((path) => ({path, line: 0, column: 0}));
     },
+    async GetStartupMemoLocator() { return window.__mockStartupMemoLocator || ''; },
     async GetStartupAISession() {
         return window.__mockStartupAISession || mockScenario.get('aisession') || '';
     },
@@ -1221,6 +1222,94 @@ const mockBackend = {
         const limit = Math.max(1, Math.min(Number(maxResults) || 400, 1000));
         return {hits: hits.slice(0, limit), truncated: !!res.truncated || hits.length > limit, files: res.files || 0};
     },
+    // 与 Go SearchWorkspaceAdvanced 同参数面的 mock：dev 模式下 AI 调高级搜索不会崩，
+    // 且 regex / wholeWord / excludePattern / outputMode / context / maxResults 的行为可调试。
+    async SearchWorkspaceAdvanced(root, query, opts = {}) {
+        const text = String(query == null ? '' : query);
+        const limit = Math.max(1, Math.min(Number(opts.maxResults) || 200, 1000));
+        if (!text) return {hits: [], truncated: false, files: 0};
+        const caseSensitive = !!opts.caseSensitive;
+        const context = Math.max(0, Math.min(Number(opts.context) || 0, 3));
+        const mode = ['content', 'files', 'count'].includes(opts.outputMode) ? opts.outputMode : 'content';
+        let re = null;
+        if (opts.regex) {
+            let src = text;
+            if (opts.wholeWord) src = '\\b(?:' + src + ')\\b';
+            try {
+                re = new RegExp(src, caseSensitive ? '' : 'i');
+            } catch (e) {
+                throw new Error('正则表达式无效：' + e.message);
+            }
+        }
+        const needle = caseSensitive ? text : text.toLowerCase();
+        const isWord = (ch) => !!ch && /[\w\u0080-\uffff]/.test(ch);
+        const hits = [];
+        let files = 0;
+        // fileOnly：root 是单个文件时只扫该文件（与真实 Go 后端同语义）
+        const fileOnlyName = opts.fileOnly ? String(root || '').split('/').pop() : '';
+        for (const item of Object.values(mockFiles)) {
+            const name = String(item.name || '');
+            if (opts.fileOnly && name !== fileOnlyName) continue;
+            if (opts.pattern && !mockGlobMatch(opts.pattern, name, name)) continue;
+            if (opts.excludePattern && mockGlobMatch(opts.excludePattern, name, name)) continue;
+            files++;
+            const lines = String(item.content || '').split('\n').map((line) => line.replace(/\r$/, ''));
+            for (let i = 0; i < lines.length && hits.length < limit; i++) {
+                const line = lines[i];
+                if (!line) continue;
+                const spans = [];
+                if (re) {
+                    re.lastIndex = 0;
+                    let m;
+                    while ((m = re.exec(line)) !== null) {
+                        spans.push([m.index, m.index + m[0].length]);
+                        if (!m[0]) re.lastIndex++;
+                    }
+                } else {
+                    const hay = caseSensitive ? line : line.toLowerCase();
+                    let from = 0;
+                    while (from <= hay.length) {
+                        const idx = hay.indexOf(needle, from);
+                        if (idx < 0) break;
+                        const end = idx + needle.length;
+                        if (!opts.wholeWord || (!isWord(line[idx - 1]) && !isWord(line[end]))) spans.push([idx, end]);
+                        from = idx + Math.max(1, needle.length);
+                    }
+                }
+                for (const [start, end] of spans) {
+                    const before = [];
+                    const after = [];
+                    for (let n = i - context; n < i; n++) if (n >= 0) before.push({line: n + 1, text: lines[n]});
+                    for (let n = i + 1; n <= i + context && n < lines.length; n++) after.push({line: n + 1, text: lines[n]});
+                    hits.push({
+                        path: mockDir + name,
+                        name,
+                        dir: 'samples',
+                        line: i + 1,
+                        column: start + 1,
+                        length: end - start,
+                        preview: line,
+                        matchStart: start,
+                        matchEnd: end,
+                        before,
+                        after,
+                    });
+                    if (hits.length >= limit) break;
+                }
+            }
+        }
+        const result = {hits, truncated: hits.length >= limit, files};
+        if (mode === 'files') {
+            result.fileList = [...new Set(hits.map((hit) => hit.path))];
+            result.hits = [];
+        } else if (mode === 'count') {
+            const index = new Map();
+            for (const hit of hits) index.set(hit.path, (index.get(hit.path) || 0) + 1);
+            result.counts = [...index].map(([path, count]) => ({path, count}));
+            result.hits = [];
+        }
+        return result;
+    },
     async FindFiles(root, pattern, maxResults) {
         const pat = String(pattern || '*').trim() || '*';
         const limit = Math.max(1, Math.min(Number(maxResults) || 300, 1000));
@@ -1721,12 +1810,31 @@ const mockBackend = {
                 email: 'candy@example.com',
                 date: '2026-11-' + String(8 - (idx % 8)).padStart(2, '0') + ' 12:00',
                 subject: (isMerge ? 'Merge branch ' : '提交 ') + idx,
-                lane: 0,
-                throughLanes: [],
+                dotPos: 0,
+                dotFlow: 1,
             });
         }
-        // 简单泳道：直线为主，合并行给个示意
-        commits.forEach((c, i) => { c.lane = 0; c.throughLanes = c.parents.length > 1 ? [1] : []; });
+        // 简单泳道：字形直译模型（与 Go 侧 --graph 解析一致：dotPos=圆点字形位，
+        // rows=组行数，glyphs=[{r,p,c,f}] 组内字形，前端按 Gitea 映射逐字形画段）
+        commits.forEach((c, i) => {
+            const isMerge = c.parents.length > 1;
+            c.dotPos = 0;
+            c.dotFlow = 1;
+            c.rows = 1;
+            c.glyphs = [{ r: 0, p: 0, c: '*', f: 1 }];
+            if (isMerge) {
+                c.rows = 2;
+                c.glyphs = [
+                    { r: 0, p: 0, c: '*', f: 1 },
+                    { r: 1, p: 0, c: '|', f: 1 },
+                    { r: 1, p: 1, c: '\\', f: 2 },
+                ];
+            } else if (i % 11 === 5) {
+                c.dotPos = 2;
+                c.dotFlow = 2;
+                c.glyphs = [{ r: 0, p: 2, c: '*', f: 2 }];
+            }
+        });
         return {
             available: true, root: dir, headBranch: window.__mockBranch || 'mock/main',
             ref: ref || '', commits, laneCount: 2,
@@ -1827,6 +1935,30 @@ const mockBackend = {
     },
     async GitGraphCherryPick(dir, sha) {
         return {success: true, output: '[mock] cherry-pick ' + sha};
+    },
+    async GitGraphCreateBranch(dir, name, sha, checkout) {
+        if (checkout) window.__mockBranch = name;
+        return {success: true, output: '[mock] branch ' + name + ' @ ' + sha, branch: name};
+    },
+    async GitGraphCheckoutForce(dir, ref) {
+        window.__mockBranch = ref;
+        return {success: true, output: '[mock] checkout -f ' + ref, branch: ref};
+    },
+    async GitGraphCheckoutSmart(dir, ref) {
+        window.__mockBranch = ref;
+        return {success: true, output: '[mock] stash + checkout + stash pop ' + ref, branch: ref};
+    },
+    async GitGraphCommitBody(dir, sha) {
+        return 'mock 正文第 1 行\n\nmock 正文第 2 行';
+    },
+    async GitGraphCommitFiles(dir, sha) {
+        return [
+            {path: 'frontend/src/git-graph/git-graph.js', status: 'M'},
+            {path: 'internal/gitinfo/graph.go', status: 'M'},
+            {path: 'docs/finished-plans/graph-lanes.md', status: 'A'},
+            {path: 'frontend/src/dev/mock-backend.js', status: 'M'},
+            {path: 'old-name.js', oldPath: 'legacy.js', status: 'R'},
+        ];
     },
     async GitPullFor(dir) {
         return {success: true, output: '[mock] Already up to date.'};
@@ -2360,6 +2492,73 @@ const mockBackend = {
                 '',
                 '（mock 联网检索链路结束）',
             ].join('\n');
+            const finalChunks = finalText.match(/[^\n]{1,8}|[\n]{1,2}/g) || [];
+            let finalDelay = 30;
+            finalChunks.forEach((chunk, i) => {
+                schedule(() => emit('ai-chunk', {id: sessionId, delta: chunk}), finalDelay + i * slow);
+            });
+            finalDelay += finalChunks.length * slow;
+            schedule(() => {
+                emit('ai-done', {id: sessionId, finishReason: 'stop'});
+                (window.__mockAiRuns || new Map()).delete(sessionId);
+            }, finalDelay + 40);
+            return null;
+        }
+        if (mockScenario.has('aisearchfile')) {
+            // search_text 单文件起点：path 直接给文件，结果应只含该文件
+            const toolMessages = (messages || []).filter((message) => message.role === 'tool');
+            if (!toolMessages.length) {
+                schedule(() => emit('ai-chunk', {id: sessionId, delta: '我在单个文件里搜一下。\n\n'}), 20);
+                const args = '{"query":"name","path":"mock://samples/sample.json"}';
+                const argChunks = args.match(/.{1,16}/gs) || [];
+                argChunks.forEach((chunk, i) => {
+                    schedule(() => emit('ai-toolcall', {
+                        id: sessionId,
+                        index: 0,
+                        callId: i === 0 ? 'call_mock_search' : '',
+                        name: i === 0 ? 'search_text' : '',
+                        argsDelta: chunk,
+                    }), 60 + i * 40);
+                });
+                schedule(() => emit('ai-done', {id: sessionId, finishReason: 'tool'}), 120 + argChunks.length * 40);
+                return null;
+            }
+            const lastTool = toolMessages[toolMessages.length - 1];
+            const finalText = '搜索完成：' + String(lastTool.content || '').slice(0, 200);
+            const finalChunks = finalText.match(/[^\n]{1,8}|[\n]{1,2}/g) || [];
+            let finalDelay = 30;
+            finalChunks.forEach((chunk, i) => {
+                schedule(() => emit('ai-chunk', {id: sessionId, delta: chunk}), finalDelay + i * slow);
+            });
+            finalDelay += finalChunks.length * slow;
+            schedule(() => {
+                emit('ai-done', {id: sessionId, finishReason: 'stop'});
+                (window.__mockAiRuns || new Map()).delete(sessionId);
+            }, finalDelay + 40);
+            return null;
+        }
+        if (mockScenario.has('aiapproval')) {
+            // 高危动作审批链路：发一条 app_control set_setting_row（子代理层级，high 风险），
+            // 由真实面板弹 composer 接管卡；批准/拒绝后继续收尾。
+            const toolMessages = (messages || []).filter((message) => message.role === 'tool');
+            if (!toolMessages.length) {
+                schedule(() => emit('ai-chunk', {id: sessionId, delta: '我来调整子代理层级上限。\n\n'}), 20);
+                const args = '{"action":"set_setting_row","params":{"id":"ai-opt-subagent-depth","value":6}}';
+                const argChunks = args.match(/.{1,16}/gs) || [];
+                argChunks.forEach((chunk, i) => {
+                    schedule(() => emit('ai-toolcall', {
+                        id: sessionId,
+                        index: 0,
+                        callId: i === 0 ? 'call_mock_approval' : '',
+                        name: i === 0 ? 'app_control' : '',
+                        argsDelta: chunk,
+                    }), 60 + i * 40);
+                });
+                schedule(() => emit('ai-done', {id: sessionId, finishReason: 'tool'}), 120 + argChunks.length * 40);
+                return null;
+            }
+            const lastTool = toolMessages[toolMessages.length - 1];
+            const finalText = '设置动作已处理：' + String(lastTool.content || '').slice(0, 120);
             const finalChunks = finalText.match(/[^\n]{1,8}|[\n]{1,2}/g) || [];
             let finalDelay = 30;
             finalChunks.forEach((chunk, i) => {

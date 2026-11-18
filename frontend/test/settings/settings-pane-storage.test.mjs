@@ -3,6 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
     barSegments,
+    autoCleanScope,
     cacheConfirmText,
     cacheIDs,
     clearConfirmText,
@@ -13,6 +14,7 @@ import {
     itemMetaText,
     prunePicked,
     selectedBytes,
+    shouldAutoClean,
     tileText,
 } from '../../src/settings/settings-pane-storage.js';
 
@@ -140,4 +142,39 @@ test('barSegments：缓存 / 数据 / 其他三段，其他取自各格的未登
         {key: 'other', label: '其他', bytes: 15},
     ]);
     assert.equal(barSegments(null)[0].bytes, 0);
+});
+
+test('autoCleanScope：inCache 安全子集，排除浏览器登录态与不存在条目', () => {
+    // ITEMS：run-temp / browser-profiles / webview-cache 是缓存；ws-gen / ai-sessions 等是数据
+    // 顺序随 cacheIDs 按体积降序，这里只关心集合本身
+    assert.deepEqual([...autoCleanScope(ITEMS)].sort(), ['run-temp', 'webview-cache'].sort());
+    // 不存在的缓存条目（无东西可删）不进范围
+    const items = [{id: 'run-temp', inCache: true, exists: true}, {id: 'app-logs', inCache: true, exists: false}];
+    assert.deepEqual(autoCleanScope(items), ['run-temp']);
+    assert.deepEqual(autoCleanScope(null), []);
+    // 防线：自动清理永不送出 data/danger 条目
+    const scope = autoCleanScope(ITEMS);
+    for (const item of ITEMS) {
+        if (scope.includes(item.id)) assert.equal(item.kind, 'cache', item.id + ' 必须是缓存');
+    }
+});
+
+test('shouldAutoClean：时间 / 大小任一满足即清，0 关闭对应条件', () => {
+    const now = 1000 * 86400000;
+    const day = 86400000;
+    // 时间触发：距上次清理超过间隔
+    assert.equal(shouldAutoClean({now, lastAt: now - 7 * day, intervalDays: 7, cacheBytes: 0, thresholdBytes: 500 * 1024 * 1024}), 'interval');
+    // 未到间隔、未超阈值 → 不清
+    assert.equal(shouldAutoClean({now, lastAt: now - 6 * day, intervalDays: 7, cacheBytes: 100, thresholdBytes: 500 * 1024 * 1024}), '');
+    // 大小触发：恰好等于阈值就算超
+    assert.equal(shouldAutoClean({now, lastAt: now, intervalDays: 7, cacheBytes: 500 * 1024 * 1024, thresholdBytes: 500 * 1024 * 1024}), 'size');
+    // 从未清理过（lastAt=0）视为时间已到期
+    assert.equal(shouldAutoClean({now, lastAt: 0, intervalDays: 7, cacheBytes: 0, thresholdBytes: 0}), 'interval');
+    // 关闭时间条件（0）后只剩大小条件
+    assert.equal(shouldAutoClean({now, lastAt: 0, intervalDays: 0, cacheBytes: 0, thresholdBytes: 0}), '');
+    assert.equal(shouldAutoClean({now, lastAt: 0, intervalDays: 0, cacheBytes: 600 * 1024 * 1024, thresholdBytes: 500 * 1024 * 1024}), 'size');
+    // 关闭大小条件（0）后只剩时间条件
+    assert.equal(shouldAutoClean({now, lastAt: now - 30 * day, intervalDays: 30, cacheBytes: 999 * 1024 * 1024, thresholdBytes: 0}), 'interval');
+    // 非法输入兜底：负数间隔按 0（关闭）处理
+    assert.equal(shouldAutoClean({now, lastAt: 0, intervalDays: -1, cacheBytes: 0, thresholdBytes: 0}), '');
 });

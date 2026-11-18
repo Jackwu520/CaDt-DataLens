@@ -48,9 +48,11 @@ export const AI_INBOX_WAIT_MIN_SEC = 5;
 
 // 子代理轮次预算：一轮 = 一次模型请求（一轮里可并行多个工具调用）。
 // 默认值可在 设置 → AI 助手 → 子代理 → 默认轮次 调整；单次派单用 spawn_agent 的 maxRounds 覆盖。
+// 2026-11-18 默认 50 → 200：bug-hunt 实测多层审计里中间层 50 轮先耗尽自动收尾，
+// 还在跑的下级成孤儿，结论没地方投（配合嵌套预算继承与孤儿接管一起收口）。
 export const AI_SUB_ROUNDS_MIN = 3;
 export const AI_SUB_ROUNDS_MAX = 200;
-export const AI_SUB_ROUNDS_DEFAULT = 50;
+export const AI_SUB_ROUNDS_DEFAULT = 200;
 
 // 轮次预算的统一解析：配置值缺省 → 内置默认；单次显式值缺省 → 配置值。
 // 不能直接用 aiClampInt(explicit, min, max, fallback)：它把 null / '' 算成 0 再 clamp 到 3，
@@ -162,7 +164,7 @@ export function subAgentScopeOf(parentScope) {
     return SUB_SCOPES.includes(parentScope) ? parentScope : 'read';
 }
 
-// 父权限档 → 子代理沙箱档（方案 docs/unfinished-plans/subagent-sandbox.md §3.1）。
+// 父权限档 → 子代理沙箱档（方案 docs/finished-plans/subagent-sandbox.md §3.1）。
 // 本产品没有独立的 sandbox 状态，权限档就是子代理的命令边界：edit 档的写审批依赖
 // 「人在场」，子代理没有审批通道，所以只给 read-only；full 档按决策继承完全权限。
 export const SUB_SANDBOX_MODE_BY_SCOPE = Object.freeze({
@@ -518,7 +520,7 @@ export function createAISubagents(ctx) {
         // 隔离 worktree 子代理：挂写工具（写效应圈定在自己的隔离前缀内，applyWorkspaceWrite
         // 里闸；审批链不适用于子代理——隔离区即审批边界，回灌由主代理 export 走人工 patch 卡）。
         if (hasWorktree) list.push(AI_TOOL_DEFS.write_file, AI_TOOL_DEFS.edit_file);
-        // 命令通道：一律走 OS 沙箱（docs/unfinished-plans/subagent-sandbox.md），写效应圈在
+        // 命令通道：一律走 OS 沙箱（docs/finished-plans/subagent-sandbox.md），写效应圈在
         // cwd / 隔离 worktree 内，子代理永不弹审批。沙箱不可用时工具直接报错，不降级裸跑。
         // 后台三件套必须一起挂：只给 background_command 而不给 check/stop，模型起了作业
         // 也读不到、停不掉（等于把进程扔在后台自生自灭）。
@@ -615,7 +617,18 @@ export function createAISubagents(ctx) {
         const name = aiTextOf(input.name).trim() || '子代理';
         const task = aiTextOf(input.task).trim();
         if (!task) throw new Error('task 不能为空');
-        const maxRounds = resolveSubAgentRounds(input && input.maxRounds, getConfig().subAgentRounds);
+        // 预算继承（2026-11-18 bug-hunt 实测缺陷）：嵌套派单（派出方本身是子代理）未点名
+        // maxRounds 时继承派出方自己的轮次上限，而不是每层都落回设置默认——否则中间层
+        // 预算先耗尽强制收尾，还在跑的下级成孤儿，结论投递两头落空（见 adoptOrphanChildren）。
+        // 主代理派单不继承（主会话不是子代理，走设置默认）；显式点名永远优先。
+        const spawnCallerSession = (ctx && ctx.session) || null;
+        const parentLiveSub = spawnCallerSession && spawnCallerSession.parentSessionId
+            ? subAgents.get(spawnCallerSession.id) : null;
+        const roundsExplicit = input ? input.maxRounds : undefined;
+        const roundsInput = (roundsExplicit === null || roundsExplicit === undefined || roundsExplicit === '')
+            ? (parentLiveSub ? parentLiveSub.maxRounds : undefined)
+            : roundsExplicit;
+        const maxRounds = resolveSubAgentRounds(roundsInput, getConfig().subAgentRounds);
         const parentDepth = aiClampInt(ctx && ctx.agentDepth, 0, AI_SUB_DEPTH_MAX, 0);
         const depth = parentDepth + 1;
         const maxDepth = subAgentMaxDepth();
@@ -1143,7 +1156,11 @@ export function createAISubagents(ctx) {
     // 关键：子代理会话**不进 sessions 表**（见 ai-panel.js 的子会话判据），所以
     // sessionById(parentSessionId) 对嵌套代理恒为 null——第 2 层起的结算 / 提问通知
     // 曾因此全部静默丢失（2026-11-17 五层嵌套实测：层5-A2a 的结论没回到层4-A2）。
-    // 父是运行中的子代理时投它的收件箱（下一轮边界消费），否则走会话信箱。
+    // 父是运行中的子代理时投它的收件箱（下一轮边界消费），否则按下面两级解析：
+    //   ① 真实会话（父是主会话，或孤儿已改挂根会话）→ 会话信箱；
+    //   ② 父 id 是已终态的子代理且没被接管（防御：接管前后的竞态、旧记录）→
+    //      按它的终态记录回落 rootSessionId 投根会话信箱（2026-11-18 bug-hunt 实测：
+    //      四个孤儿结算曾在此两头落空，只留 flash）。
     // 返回是否投出，供调用方决定要不要降级提示。
     function deliverToParent(sub, notice) {
         if (!sub || !sub.parentSessionId) return false;
@@ -1152,11 +1169,58 @@ export function createAISubagents(ctx) {
             queueSubAgentMessage(parentSub, notice.content, {from: 'subagent'});
             return true;
         }
-        const parent = sessionById(sub.parentSessionId);
-        if (!parent) return false;
         const hub = noticesLike();
         if (!hub) return false;
+        const parentRecord = subAgentRecords.get(sub.parentSessionId);
+        const parent = sessionById(sub.parentSessionId)
+            || (parentRecord ? sessionById(parentRecord.rootSessionId) : null);
+        if (!parent) return false;
         const receipt = hub.deliverAgentNotice(parent, notice);
+        return !!(receipt && receipt.ok);
+    }
+
+    // 孤儿接管（2026-11-18 bug-hunt 实测缺陷）：父代理走到终态**不级联**停运行中的下级
+    // （done 的下级结论可能还有价值；agent_stop 才显式级联，见 stopSubTree），但父结死后
+    // 下级结算时 deliverToParent 会两头落空。终态时把仍在运行的直属下级改挂到最近的
+    // 运行中祖先（祖父，收件箱投递可达）；没有运行中祖先就挂根会话（信箱投递可达）。
+    // 孙代理挂在直属下级身上，直属下级活着，子树自然保持成树，无需递归改写。
+    // 返回接管摘要（null = 没有运行中的下级，无需接管）。
+    function adoptOrphanChildren(sub) {
+        const kids = [...subAgents.values()].filter((item) =>
+            item.state === 'running' && item.parentSessionId === sub.id);
+        if (!kids.length) return null;
+        const grand = subAgents.get(sub.parentSessionId);
+        const target = (grand && grand.state === 'running') ? grand.id : (sub.rootSessionId || '');
+        if (!target) return null;
+        for (const kid of kids) {
+            kid.parentSessionId = target;
+            if (kid.session) kid.session.parentSessionId = target;
+            const reg = agentRegistry.get(kid.key);
+            if (reg) reg.parentSessionId = target;
+        }
+        return {count: kids.length, target: target};
+    }
+
+    // 后台命令作业退出：把「已结束」通知投给发起方。
+    // 发起者还是运行中的子代理 → 进它的收件箱（下一轮边界消费，runSubRound 开头唯一消费点）；
+    // 已结算 / 主会话发起 → 投根会话信箱（deliverAgentNotice 三态投递：忙排队、闲唤醒）。
+    // 目标都不在（会话已删等）返回 false，调用方静默放弃——作业卡片状态本身已收敛。
+    function deliverBgExitNotice(entry, notice) {
+        if (!entry || !notice) return false;
+        const creator = entry.session;
+        if (creator && creator.parentSessionId) {
+            const sub = subAgents.get(creator.id);
+            if (sub && sub.state === 'running') {
+                queueSubAgentMessage(sub, notice.content, {from: 'subagent'});
+                return true;
+            }
+        }
+        const ownerId = bgEntryOwnerId(entry);
+        const target = ownerId ? sessionById(ownerId) : null;
+        if (!target) return false;
+        const hub = noticesLike();
+        if (!hub) return false;
+        const receipt = hub.deliverAgentNotice(target, notice);
         return !!(receipt && receipt.ok);
     }
 
@@ -1227,7 +1291,22 @@ export function createAISubagents(ctx) {
         } catch (e) {}
         persistSessions();
         const session = sessionById(sub.parentSessionId);
-        if (session && sub.parentToolMessage) refreshToolWrap(session, sub.parentToolMessage);
+        // 接管守卫：toolMessage 只属于派出它的那个会话。孤儿改挂根会话后 session 是根会话、
+        // toolMessage 却在已死父代理的转录里，indexOf 落空会退化成整屏重渲染——先验证归属。
+        if (session && sub.parentToolMessage && session.messages.includes(sub.parentToolMessage)) {
+            refreshToolWrap(session, sub.parentToolMessage);
+        }
+        // 孤儿接管：先于本代理自己的结算投递无所谓（两者独立），但要在 subAgents.delete
+        // 之后跑——找下级按 parentSessionId === sub.id，子代理条目还在表里。
+        const adopted = adoptOrphanChildren(sub);
+        if (adopted) {
+            const targetSub = subAgents.get(adopted.target);
+            const targetSession = sessionById(adopted.target);
+            const targetName = (targetSub && targetSub.name)
+                || (targetSession && (targetSession.title || '主会话'))
+                || '上级';
+            flash('子代理「' + sub.name + '」已结束，' + adopted.count + ' 个运行中的下级改由「' + targetName + '」接管');
+        }
         // 结算通知（原语 5 / 7）：后台模式专属——阻塞模式的结论已经作为工具结果交给主代理，
         // 再注入一份就是重复上下文。stopped 由发起方（用户 / agent_stop）自己知道，不发通知。
         if (sub.mode === 'background' && (state === 'done' || state === 'error')) {
@@ -1969,6 +2048,7 @@ export function createAISubagents(ctx) {
         openAgentView, mountAgentView, unmountAgentView, renderAgentView,
         mountTeamView, unmountTeamView,
         parentSessionOfSub, runSubAgent, startSubAgent, runSubRound, handleSubEvent, finalizeSubAgent, stopSubAgentsOf, initHud,
+        deliverBgExitNotice,
         pushSubAgentRecord, unseenInboxCount, dropSubAgentRecordsOf,
         consumeSubInbox, queueSubAgentMessage, steerSubAgent, stopSubAgent, subRunDigest,
         reviveSubAgent, sendToSubAgent, stopSubAgentByInput, handleAgentTool, answerSubAsk,

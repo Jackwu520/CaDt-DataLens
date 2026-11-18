@@ -13,7 +13,7 @@ import (
 )
 
 // 沙箱档的 shell 必须是 PowerShell/cmd：Git Bash 在 restricting SID 下起不来
-// （docs/unfinished-plans/subagent-sandbox.md §8.2），这条断言防回退。
+// （docs/finished-plans/subagent-sandbox.md §8.2），这条断言防回退。
 func TestAIShellSandboxNeverUsesGitBash(t *testing.T) {
 	if shellpath.FindGitBash() == "" {
 		t.Skip("本机没有 Git Bash，无法验证「沙箱档不选它」")

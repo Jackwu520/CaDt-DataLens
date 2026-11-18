@@ -202,9 +202,9 @@ async function applySystemCursors() {
         if (v.set) rule += ' cursor: ' + v.set + ';';
         parts.push(rule + ' }');
     };
-    pushRule('.sidebar-resize, .esplit-col > .esplit-divider', ew);
+    pushRule('.sidebar-resize, .esplit-col > .esplit-divider, .gg-splitter', ew);
     pushRule('body.cursor-ew', ew);
-    pushRule('.term-resize, .git-splitter, .esplit-row > .esplit-divider', ns);
+    pushRule('.term-resize, .git-splitter, .esplit-row > .esplit-divider, .gg-detail-vsplit', ns);
     pushRule('body.cursor-ns', ns);
     if (!parts.length) return;
     let style = document.getElementById('sys-cursors');

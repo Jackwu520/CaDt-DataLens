@@ -289,6 +289,36 @@ function jumpBookmark(delta) {
     deps.jumpToPosition(target + 1, 1);
 }
 
+// 按行号直接增删书签（app_control 书签动作与总览弹层共用）：row 为 0-based。
+// add 会钳到最后一行并幂等；remove/clear 对没有书签的输入静默返回原状，调用方靠返回值回执。
+function addBookmarkAt(doc, row) {
+    const ace = doc && doc.editor && doc.editor.aceEditor;
+    if (!ace) return null;
+    let lineCount = 0;
+    try { lineCount = ace.session.getLength(); } catch (e) { lineCount = 0; }
+    const target = Math.max(0, Math.min(Math.round(Number(row) || 0), Math.max(0, lineCount - 1)));
+    if (!doc.bookmarks) doc.bookmarks = new Set();
+    const existed = doc.bookmarks.has(target);
+    doc.bookmarks.add(target);
+    renderBookmarks(doc);
+    return {row: target, existed};
+}
+
+function removeBookmarkAt(doc, row) {
+    if (!doc || !(doc.bookmarks && doc.bookmarks.has(row))) return {row, existed: false};
+    doc.bookmarks.delete(row);
+    renderBookmarks(doc);
+    return {row, existed: true};
+}
+
+function clearDocBookmarks(doc) {
+    if (!doc || !doc.bookmarks || !doc.bookmarks.size) return 0;
+    const count = doc.bookmarks.size;
+    doc.bookmarks.clear();
+    renderBookmarks(doc);
+    return count;
+}
+
 // ---- 视图状态：光标/滚动/折叠/书签随会话保存 ----
 
 function captureDocView(doc) {
@@ -523,7 +553,7 @@ function setupTreeContextMenu(doc) {
     return {
         hideBanner, dismissBanner, showBanner,
         foldDomCount, foldValueAtPath, foldRowPaths, foldPrimitive, clipFoldText, foldObjectSpec, foldSpan, renderFoldPreview, humanizeCounts,
-        bookmarkRowsForDoc, renderBookmarks, toggleBookmark, jumpBookmark,
+        bookmarkRowsForDoc, renderBookmarks, toggleBookmark, jumpBookmark, addBookmarkAt, removeBookmarkAt, clearDocBookmarks,
         captureDocView, applyDocView, applyPendingDocView, rememberDocView,
         renderGitGutter, clearGitGutterData, scheduleGitGutter,
         estimateJsonNodes, expandAllWithGuard, jsonTreeNodeToggle, openTreeContextMenu, setupTreeContextMenu,

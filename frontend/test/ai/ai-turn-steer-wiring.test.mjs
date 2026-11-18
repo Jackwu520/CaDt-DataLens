@@ -121,17 +121,26 @@ test('队列行提供点击抢占（⚡ 图标，仅当前轮活着时显示）'
     assert.match(preemptItem, /stopGeneration\(\)/);
 });
 
-test('队列行拖动排序：3×3 点阵手柄 + reorderSession', () => {
+test('队列行拖动排序：3×3 点阵手柄 + 标签页式让位插槽', () => {
     const row = sliceBetween(queue, "const handle = document.createElement('span')", 'const steering = item.delivery');
     assert.match(row, /iconSvg\('grip'/);
     assert.match(row, /handle\.draggable = true/);
     assert.match(row, /draggingQueueId = item\.id/);
-    assert.match(row, /reorderQueueItem\(draggedId, item\.id, after\)/);
+    // 让位插槽（margin 过渡），不是描边 / 插入线
+    assert.match(row, /clearQueueDropGaps\(\)/);
+    assert.match(row, /drop-gap-before/);
+    assert.match(row, /drop-gap-after/);
+    assert.match(row, /reorderQueueItem\(draggedId, row\.dataset\.queueId, !before\)/);
     const reorder = sliceBetween(queue, 'function reorderQueueItem(draggedId, targetId, after) {', 'function renderMessageQueue() {');
     assert.match(reorder, /model\.reorderSession\(session\.id, ids\)/);
     assert.match(queue, /reorderSession: \(sessionId, ids\) => model\.reorderSession\(sessionId, ids\)/);
     // 手柄必须在行首（最左边）
     assert.match(queue, /row\.append\(handle, badge, text, edit, interject, preempt, remove\)/);
+    // 视觉契约：插槽是 margin，不是 border / box-shadow 线
+    const css = read('../../src/style.css');
+    assert.match(css, /\.ai-queue-row\.drop-gap-before \{ margin-top: 26px; \}/);
+    assert.match(css, /\.ai-queue-row\.drop-gap-after \{ margin-bottom: 26px; \}/);
+    assert.equal(/\.ai-queue-row\.drop-before\b/.test(css), false);
 });
 
 test('startRound：第 2 次及以后请求前 drain，且先落盘再组装请求', () => {
@@ -160,13 +169,27 @@ test('重放 / 懒加载：normalizeMessage 保留 steer 标记', () => {
     assert.match(normalize, /if \(raw\.steer === true\) message\.steer = true;/);
 });
 
-test('steer 不进轮次口径：lastUserIndex / 回合边界 / 统计 / 结构面板', () => {
+test('steer 不进轮次口径：lastUserIndex / 回合边界 / 统计', () => {
     const lastUser = sliceFunction(panel, 'function lastUserIndex(session) {');
     assert.match(lastUser, /!message\.steer/);
     const boundary = sliceBetween(store, 'export function isTurnBoundaryMessage(message) {', '// 轮次起点：最后一条边界消息的时间');
     assert.match(boundary, /if \(message\.steer\) return false;/);
     assert.match(usage, /message\.role === 'user' && !message\.systemNote && !message\.steer/);
-    assert.match(outline, /if \(message\.steer\) continue;/);
+});
+
+test('插话可见性：结构面板列出插话（同轮号 + 标记），回合折叠不藏用户插话', () => {
+    // 结构面板：steer 项带 steer: true、不占新轮号
+    assert.match(outline, /const steer = message\.steer === true;/);
+    assert.match(outline, /if \(!steer\) round \+= 1;/);
+    assert.match(outline, /steer,/);
+    assert.match(outline, /so-steer-tag/);
+    // 回合折叠：插话切成独立段，整条渲染在折叠区外
+    const turn = sliceBetween(panel, 'function renderTurn(group, session, isLastGroup, parent, extraOptions) {', '// 看板娘文案池与轮换索引见 ai-mascot-phrases.js');
+    assert.match(turn, /if \(item\.message\.steer\) \{/);
+    assert.match(turn, /segments\.push\(\{steer: item\}\)/);
+    assert.match(turn, /if \(seg\.steer\) \{/);
+    assert.match(turn, /renderMessage\(seg\.steer\.message, seg\.steer\.index, session, host, turnOptions\)/);
+    assert.match(turn, /!seg\.steer &&/);
 });
 
 test('ai-done：stop + pending steer 时新建 assistant 续轮，不复用已完成消息', () => {

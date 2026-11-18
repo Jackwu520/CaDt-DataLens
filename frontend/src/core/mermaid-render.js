@@ -11,6 +11,11 @@ const cache = createLruCache(30);
 
 let loadPromise = null;
 
+/**
+ * 确保 mermaid 脚本已加载（懒加载，单飞：并发调用共用一个 Promise）。
+ * 加载失败会把单飞句柄清空，下次调用可重试。
+ * @returns {Promise<object>} window.mermaid 实例
+ */
 function ensureMermaid() {
     if (window.mermaid) return Promise.resolve(window.mermaid);
     if (loadPromise) return loadPromise;
@@ -34,7 +39,13 @@ function ensureMermaid() {
     return loadPromise;
 }
 
-// renderMermaidToSvg 把 mermaid 源码渲染成净化后的 SVG 字符串；失败抛错由卡片降级显示源码。
+/**
+ * 把 mermaid 源码渲染成净化后的 SVG 字符串。
+ * 结果按「主题 + 源码」进 LRU（30 条）；渲染或加载失败直接抛错，由卡片降级显示源码。
+ * @param {string} code mermaid 源码
+ * @param {string} themeId 应用主题 id（经 mermaidThemeIdFor 映射成 mermaid 主题）
+ * @returns {Promise<string>} 已 sanitize 的 SVG 字符串
+ */
 export async function renderMermaidToSvg(code, themeId) {
     const theme = mermaidThemeIdFor(themeId);
     const cacheKey = theme + ':' + code;

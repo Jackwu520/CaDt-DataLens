@@ -1,18 +1,21 @@
 // ai-group-model.test.mjs：群 meta 归一化（§6.2）、调用估算（§3.4）、创建前预检（§3.16）
-// 与内置主持人模板护栏。方案 docs/unfinished-plans/ai-group-chat.md。
+// 与内置主持人模板护栏。方案 docs/finished-plans/ai-group-chat.md。
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
 import {
     BUILTIN_CHAIR,
     GROUP_MEMBER_MAX,
     TIMEOUT_PRESETS,
+    buildGroupDraft,
     estimateDiscussionCalls,
     normalizeGroupMeta,
+    normalizeGroupMode,
     preflightGroup,
     relayWakes,
     resolveChairModel,
 } from '../../src/ai/ai-group-model.js';
-import {agentsUpsert} from '../../src/ai/ai-agent-model.js';
+import {agentsUpsert, normalizeAgents} from '../../src/ai/ai-agent-model.js';
 
 const profiles = [
     {
@@ -283,21 +286,162 @@ test('normalizeGroupMeta：free 模式通过归一', () => {
 test('relayWakes：@B 唤醒、@all 禁止、单条 ≤2 人、不唤醒自己', () => {
     const memberNames = [{id: 'a1', name: '架构师'}, {id: 'a2', name: '审查员'}, {id: 'a3', name: '评审'}];
     const base = {speakerId: 'a1', memberNames, generation: 0, pairCounts: new Map(), perAgentCounts: new Map()};
+    // 单人点名
     assert.deepEqual(relayWakes('@审查员 你怎么看？', base), ['a2']);
+    // 单条最多 @2 人（第三个被截掉）
     assert.deepEqual(relayWakes('@审查员 @评审 @架构师 都说说', base), ['a2', 'a3']);
+    // 成员 @all 禁止：不接力
     assert.deepEqual(relayWakes('@全体成员 集合', base), []);
+    // 不唤醒自己
     assert.deepEqual(relayWakes('@架构师 收到', base), []);
+    // 非成员名不 wake
     assert.deepEqual(relayWakes('@路人 你好', base), []);
-    assert.deepEqual(relayWakes('看这段：```json
-{"a":"@审查员"}
-```', base), []);
+    // 代码块里的 @ 忽略
+    assert.deepEqual(relayWakes('看这段：```json\n{"a":"@审查员"}\n```', base), []);
 });
 
 test('relayWakes：乒乓/单成员/链深上限', () => {
     const memberNames = [{id: 'a1', name: '架构师'}, {id: 'a2', name: '审查员'}];
+    // 同对成员互相唤醒 ≤2 次：a1↔a2 已 2 次后不再唤醒
     const pairCounts = new Map([['a1|a2', 2]]);
     assert.deepEqual(relayWakes('@审查员 再说说', {speakerId: 'a1', memberNames, generation: 0, pairCounts, perAgentCounts: new Map()}), []);
+    // 被点名者本回合已回 3 次：不再唤醒
     const perAgent = new Map([['a2', 3]]);
     assert.deepEqual(relayWakes('@审查员 来', {speakerId: 'a1', memberNames, generation: 0, pairCounts: new Map(), perAgentCounts: perAgent}), []);
+    // 链深到顶（generation ≥ maxHops）：不再唤醒
     assert.deepEqual(relayWakes('@审查员 来', {speakerId: 'a1', memberNames, generation: 6, pairCounts: new Map(), perAgentCounts: new Map()}), []);
+});
+
+// ==================== AI 代建群聊（app_control create_group） ====================
+
+function draftAgents() {
+    return normalizeAgents([
+        {id: 'a1', name: '架构师', modelRef: 'p1|m1'},
+        {id: 'a2', name: '审查员', modelRef: 'p2|m1'},
+        {id: 'a3', name: '主持人', modelRef: 'p1|m1', chair: true},
+        {id: 'a4', name: '停用者', modelRef: 'p1|m1', enabled: false},
+    ], () => 'g');
+}
+
+test('buildGroupDraft：缺省值（roundtable / decide / 2 轮 / 自动选主持人）', () => {
+    const draft = buildGroupDraft({agents: draftAgents(), params: {members: ['架构师', '审查员']}});
+    assert.equal(draft.ok, true);
+    assert.deepEqual(draft.spec.memberIds, ['a1', 'a2']);
+    assert.equal(draft.spec.mode, 'roundtable');
+    assert.equal(draft.spec.goal, 'decide');
+    assert.equal(draft.spec.maxRounds, 2);
+    assert.equal(draft.spec.timeoutPreset, 'standard');
+    assert.deepEqual(draft.spec.chair, {kind: 'ai', agentId: 'a3', policy: 'round-plan'});
+    assert.deepEqual(draft.members.map((m) => m.name), ['架构师', '审查员']);
+    assert.deepEqual(draft.chair, {kind: 'ai', name: '主持人', policy: 'round-plan'});
+});
+
+test('buildGroupDraft：free 模式缺省由用户主持；成员支持 id 去重', () => {
+    const draft = buildGroupDraft({agents: draftAgents(), params: {members: ['a1', '架构师', '审查员'], mode: 'free'}});
+    assert.equal(draft.ok, true);
+    assert.deepEqual(draft.spec.memberIds, ['a1', 'a2']);
+    assert.deepEqual(draft.spec.chair, {kind: 'user', agentId: '', policy: 'round-plan'});
+    assert.equal(draft.chair.name, '用户自己');
+});
+
+test('buildGroupDraft：chair 字符串 / 成员兼任 / 用户主持', () => {
+    const byName = buildGroupDraft({agents: draftAgents(), params: {members: ['架构师', '审查员'], chair: '主持人', policy: 'adaptive'}});
+    assert.equal(byName.ok, true);
+    assert.deepEqual(byName.spec.chair, {kind: 'ai', agentId: 'a3', policy: 'adaptive'});
+    const member = buildGroupDraft({agents: draftAgents(), params: {members: ['架构师', '审查员'], chair: {kind: 'member', agent: '审查员'}}});
+    assert.equal(member.ok, true);
+    assert.deepEqual(member.spec.chair, {kind: 'member', agentId: 'a2', policy: 'round-plan'});
+    const user = buildGroupDraft({agents: draftAgents(), params: {members: ['架构师', '审查员'], chair: {kind: 'user'}}});
+    assert.equal(user.ok, true);
+    assert.equal(user.spec.chair.kind, 'user');
+});
+
+test('buildGroupDraft：主持人校验（未标记 / 已停用 / 兼任非成员）', () => {
+    const notChair = buildGroupDraft({agents: draftAgents(), params: {members: ['架构师', '审查员'], chair: '审查员'}});
+    assert.equal(notChair.ok, false);
+    assert.match(notChair.error, /没有主持人标记/);
+    const disabled = buildGroupDraft({agents: draftAgents(), params: {members: ['架构师', '审查员'], chair: '停用者'}});
+    assert.equal(disabled.ok, false);
+    assert.match(disabled.error, /已停用/);
+    const memberOutside = buildGroupDraft({agents: draftAgents(), params: {members: ['架构师', '审查员'], chair: {kind: 'member', agent: '主持人'}}});
+    assert.equal(memberOutside.ok, false);
+    assert.match(memberOutside.error, /必须是群成员/);
+    const noAgent = buildGroupDraft({agents: draftAgents(), params: {members: ['架构师', '审查员'], chair: {kind: 'ai'}}});
+    assert.equal(noAgent.ok, false);
+    assert.match(noAgent.error, /需要 agent/);
+});
+
+test('buildGroupDraft：没有主持人标记的智能体时 roundtable 报错、free 可建', () => {
+    const agents = normalizeAgents([
+        {id: 'b1', name: '甲', modelRef: 'p1|m1'},
+        {id: 'b2', name: '乙', modelRef: 'p1|m1'},
+    ], () => 'g');
+    const failed = buildGroupDraft({agents, params: {members: ['甲', '乙']}});
+    assert.equal(failed.ok, false);
+    assert.match(failed.error, /没有可用的主持人/);
+    assert.equal(buildGroupDraft({agents, params: {members: ['甲', '乙'], mode: 'free'}}).ok, true);
+});
+
+test('buildGroupDraft：成员校验（未知 / 停用 / 去重后不足 / 超上限）', () => {
+    const agents = draftAgents();
+    const unknown = buildGroupDraft({agents, params: {members: ['架构师', '路人']}});
+    assert.equal(unknown.ok, false);
+    assert.match(unknown.error, /找不到智能体「路人」/);
+    assert.match(unknown.error, /架构师/);
+    assert.ok(!unknown.error.includes('停用者'), '停用智能体不出现在候选里');
+    const disabled = buildGroupDraft({agents, params: {members: ['架构师', '停用者']}});
+    assert.equal(disabled.ok, false);
+    assert.match(disabled.error, /已停用/);
+    const tooFew = buildGroupDraft({agents, params: {members: ['架构师', 'a1']}});
+    assert.equal(tooFew.ok, false);
+    assert.match(tooFew.error, /至少需要/);
+    const tooManyAgents = normalizeAgents(Array.from({length: GROUP_MEMBER_MAX + 1}, (_, i) => ({id: 'm' + i, name: '成员' + i, modelRef: 'p1|m1'})), () => 'g');
+    const tooMany = buildGroupDraft({agents: tooManyAgents, params: {members: tooManyAgents.map((a) => a.name)}});
+    assert.equal(tooMany.ok, false);
+    assert.match(tooMany.error, /最多/);
+});
+
+test('buildGroupDraft：非法 mode / goal / rounds / timeout / policy 明确报错', () => {
+    const agents = draftAgents();
+    const base = {members: ['架构师', '审查员']};
+    assert.match(buildGroupDraft({agents, params: {...base, mode: 'nope'}}).error, /mode/);
+    assert.match(buildGroupDraft({agents, params: {...base, goal: 'nope'}}).error, /goal/);
+    assert.match(buildGroupDraft({agents, params: {...base, rounds: 0}}).error, /rounds/);
+    assert.match(buildGroupDraft({agents, params: {...base, rounds: 4}}).error, /rounds/);
+    assert.match(buildGroupDraft({agents, params: {...base, timeout: 'slow'}}).error, /timeout/);
+    assert.match(buildGroupDraft({agents, params: {...base, policy: 'nope'}}).error, /policy/);
+});
+
+test('buildGroupDraft：title / topic 去两端空白，参数透传给 createGroup', () => {
+    const draft = buildGroupDraft({agents: draftAgents(), params: {
+        members: ['架构师', '审查员'], title: '  存储方案评审  ', topic: ' 对比 A/B  ', mode: 'task', goal: 'plan', rounds: 3, timeout: 'lenient',
+    }});
+    assert.equal(draft.ok, true);
+    assert.equal(draft.spec.title, '存储方案评审');
+    assert.equal(draft.spec.topic, '对比 A/B');
+    assert.equal(draft.spec.mode, 'task');
+    assert.equal(draft.spec.goal, 'plan');
+    assert.equal(draft.spec.maxRounds, 3);
+    assert.equal(draft.spec.timeoutPreset, 'lenient');
+});
+
+// 模式取值归一化的唯一来源：新建草稿 / 运行时 createGroup / 读盘都走它。
+// 草稿层曾自带「非 task 即 roundtable」的三元，把 free 静默改写成圆桌——自由聊天在 UI 上
+// 完全不可达（运行时本可正确处理 free），故此函数与三处接线一并钉死。
+test('normalizeGroupMode：三值直传，其他值回落圆桌', () => {
+    assert.equal(normalizeGroupMode('free'), 'free');
+    assert.equal(normalizeGroupMode('task'), 'task');
+    assert.equal(normalizeGroupMode('roundtable'), 'roundtable');
+    for (const bad of ['', null, undefined, 'Free', 'nope', 0, {}]) {
+        assert.equal(normalizeGroupMode(bad), 'roundtable');
+    }
+});
+
+test('群模式接线：草稿层与运行时都经 normalizeGroupMode，不再自己写三元', () => {
+    const read = (rel) => readFileSync(new URL('../../src/ai/' + rel, import.meta.url), 'utf8');
+    const sidebar = read('ai-group-sidebar.js');
+    assert.ok(sidebar.includes('mode: normalizeGroupMode(createControls.mode.control.value)'));
+    assert.equal(sidebar.includes("=== 'task' ? 'task' : 'roundtable'"), false);
+    const runtime = read('ai-group-runtime.js');
+    assert.ok(runtime.includes('mode: normalizeGroupMode(source.mode)'));
 });

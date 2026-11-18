@@ -1,6 +1,6 @@
 // 运行代码（F5）接线：编辑器/设置/对话框这些宿主能力在此汇聚，配方与输出渲染在 run.js。
 // 从 terminal-ui.js 拆出；toggleTerminalPanel / toggleDockView 由宿主经 deps 注入。
-import {createRunController, splitRunArgs} from './run.js';
+import {activeRunConfig, createRunController, splitRunArgs} from './run.js';
 import {isDocReadOnly} from '../core/readonly.js';
 
 export function createRunUI(deps) {
@@ -178,9 +178,20 @@ const runController = createRunController({
     argsFor: (langId) => splitRunArgs(runArgsText(langId)),
     argsText: (langId) => runArgsText(langId),
     setArgs: (langId, text) => setRunArgs(langId, text),
-    templateFor: (langId) => {
-        const value = deps.settings.runConfigs && deps.settings.runConfigs[langId];
-        return typeof value === 'string' ? value.trim() : '';
+    templateFor: (langId, override) => {
+        // 绑定文件的配置自带命令模板：非空覆盖优先，否则回落该语言的模板（settings.runConfigs）
+        const picked = typeof override === 'string' && override.trim() ? override
+            : (deps.settings.runConfigs && deps.settings.runConfigs[langId]);
+        return typeof picked === 'string' ? picked.trim() : '';
+    },
+    // 绑定文件的配置：运行目标由 settings.runActiveProfile 决定（activeRunConfig 纯函数在 run.js）
+    activeRunConfig: () => activeRunConfig(deps.settings),
+    readRunFile: async (path) => deps.backend.OpenFile(path, ''),
+    samePathValue: (a, b) => (deps.samePathValue ? deps.samePathValue(a, b) : String(a) === String(b)),
+    openDocDirtyByPath: (path) => (deps.openDocDirtyByPath ? deps.openDocDirtyByPath(path) : false),
+    // 「最近的配置」口径：run() 校验全过后回调，绑定/旧预设配置都记 lastUsedAt
+    onRunStart: (lang, cfg) => {
+        if (deps.touchRunProfileRecency && cfg) deps.touchRunProfileRecency(cfg);
     },
     resolveWorkDir: (fallback) => (deps.settings.runCwd === 'workspace' && deps.workspaceFolder ? deps.workspaceFolder : fallback),
     // 运行超时（毫秒）：0 / 未配置 = 不限时；默认关（settings.runTimeoutMs 缺省即 0）

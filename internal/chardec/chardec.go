@@ -45,6 +45,7 @@ func DecodeBytes(raw []byte, enc string) (string, string, error) {
 	return string(raw), "utf-8", nil
 }
 
+// decodeWith 用给定解码器解字节；解码器为 nil 时调用方已先行处理，这里不做兜底。
 func decodeWith(dec *encoding.Decoder, raw []byte) (string, error) {
 	out, _, err := transform.Bytes(dec, raw)
 	if err != nil {

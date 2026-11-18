@@ -1,7 +1,7 @@
 // ai-constants.test.mjs：正文图片 data URL 反解（aiImageFromSrc）与 aiImageSrc 的往返。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {aiCtxBannerShow, aiImageExt, aiImageFromSrc, aiImageSrc, aiMsgActionsStepMode} from '../../src/ai/ai-constants.js';
+import {aiCtxBannerShow, aiCtxBannerState, aiImageExt, aiImageFromSrc, aiImageSrc, aiMsgActionsStepMode} from '../../src/ai/ai-constants.js';
 
 test('aiImageFromSrc: 与 aiImageSrc 往返一致', () => {
     const image = aiImageFromSrc('data:image/png;base64,AAAA', 'seal.png');
@@ -59,6 +59,38 @@ test('aiCtxBannerShow: 达阈值提醒，关闭后按 +5% 档位重新提醒', (
     // 非法输入兜底：percent 非数值视为不达阈值
     assert.equal(aiCtxBannerShow(NaN, 0.8, null), false);
     assert.equal(aiCtxBannerShow(undefined, 0.8, null), false);
+});
+
+test('aiCtxBannerState: 三档文案与门禁状态', () => {
+    // suggest 档（≥压缩阈值、有发送余量）：千分位数字 + 建议压缩
+    const suggest = aiCtxBannerState(0.85, 222822, 262144);
+    assert.equal(suggest.state, 'suggest');
+    assert.equal(suggest.blocked, false);
+    assert.equal(suggest.compactBlocked, false);
+    assert.equal(suggest.text, '上下文 85%（约 222,822 / 262,144 tokens，估算），建议压缩');
+    // over 档（≥发送硬门槛 0.9、未达 100%）：红色门禁态，整体压缩仍可行
+    const near = aiCtxBannerState(0.95, 249036, 262144);
+    assert.equal(near.state, 'over');
+    assert.equal(near.blocked, true);
+    assert.equal(near.compactBlocked, false);
+    assert.equal(near.text, '上下文 95%（约 249,036 / 262,144 tokens，估算），接近上限，请先压缩再发送');
+    // ≥100%：压缩请求（摘要提示 + 整段会话）也发不出去——compactBlocked 为 true，
+    // 文案指引切换更大上下文的模型（切模型后百分比回落自然解锁）
+    const beyond = aiCtxBannerState(1.21, 317645, 262144);
+    assert.equal(beyond.state, 'over');
+    assert.equal(beyond.blocked, true);
+    assert.equal(beyond.compactBlocked, true);
+    assert.equal(beyond.text, '上下文 121%（约 317,645 / 262,144 tokens，估算），已超过模型上限：请切换更大上下文的模型');
+    // 边界：正好 90% 即发送门禁；正好 100% 即压缩门禁
+    assert.equal(aiCtxBannerState(0.9, 1000, 1000).blocked, true);
+    assert.equal(aiCtxBannerState(0.899, 899, 1000).blocked, false);
+    const at = aiCtxBannerState(1, 1000, 1000);
+    assert.equal(at.compactBlocked, true);
+    assert.equal(at.text.includes('已超过模型上限'), true);
+    // windowSize 缺失不判门禁（估算兜底路径）
+    const noWindow = aiCtxBannerState(1.5, 1000, 0);
+    assert.equal(noWindow.blocked, false);
+    assert.equal(noWindow.compactBlocked, false);
 });
 
 test('aiMsgActionsStepMode: 三档颗粒度只作用于中间步骤，最后一条恒完整', () => {

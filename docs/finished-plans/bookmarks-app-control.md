@@ -1,6 +1,7 @@
 # 书签功能补全 + 经 app_control 开放给 AI 助手
 
-> 状态：**未开工**（2026-11-18 规划）。
+> 状态：**已实施**（2026-11-18）。前端测试全绿（1248 通过）、vite build 通过，已移入 `finished-plans/`（文末冒烟清单可作验收参考）。
+> 修订记录：① 总览弹层实现改为**复用 quick-switch 的 `bookmarks` 层级**（`Shift+F11`，Delete 删除选中项）——零新增 CSS/HTML，聚合纯函数仍在 `src/editor/bookmark-list.js`；② 调研发现 `serializeSession` 每次会话保存都把 `knownDocViews` 修剪到打开中的文档，**「关闭文档的书签」没有可读的持久化来源**，`list_bookmarks` / 总览的聚合口径因此定为「打开中的标签页」（与书签随标签页保存的语义一致）；③ `remove_bookmark` 对未打开文件直接报错（打开文件只为删一个书签语义过重，「自动打开」只保留给 add/goto）；④ 键位 `edit.bookmarkList` = `Shift+F11`（三套键位方案一致），编辑器右键菜单补「书签」子菜单。
 
 ## 需求
 

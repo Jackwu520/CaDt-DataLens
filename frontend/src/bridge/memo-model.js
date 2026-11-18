@@ -61,6 +61,7 @@ export function normalizeMemoData(raw) {
       block.items.push({
         id: typeof rawItem.id === 'string' && rawItem.id ? rawItem.id : memoId('it'),
         text: clampStr(rawItem.text, MEMO_LIMITS.textMax),
+        kind: rawItem.kind === 'md' ? 'md' : 'text',
         status: isMemoStatus(rawItem.status) ? rawItem.status : 'pending',
         createdAt: Number(rawItem.createdAt) || 0,
         updatedAt: Number(rawItem.updatedAt) || 0,
@@ -133,14 +134,17 @@ export function addBlock(doc, title) {
   return {ok: true, doc: next, id: block.id};
 }
 
-// addItem 加条目。blockId 为空取第一个块；没有任何块时自动建「待办」块兜底。
-// opts: {status, position: 'top'|'bottom', allowEmpty}——allowEmpty 仅供 UI 的新建行
-// （提交空则删行），AI 工具不走这条通路。
+// addItem 加条目。blockId 为空取第一个块；没有任何块时自动建「便签」块兜底。
+// opts: {status, kind: 'text'|'md', position: 'top'|'bottom', afterId, allowEmpty}
+// afterId：插到该条目之后（工具栏「正在编辑某条目时点新建」的智能插入）；优先于 position。
+// allowEmpty 仅供 UI 的新建行（提交空则删行），AI 工具不走这条通路。
 export function addItem(doc, blockId, text, opts) {
   const value = clampStr(text, MEMO_LIMITS.textMax);
   if (!value.trim() && !(opts && opts.allowEmpty)) return {ok: false, error: '条目内容为空'};
   const status = opts && isMemoStatus(opts.status) ? opts.status : 'pending';
+  const kind = opts && opts.kind === 'md' ? 'md' : 'text';
   const position = opts && opts.position === 'top' ? 'top' : 'bottom';
+  const afterId = opts && typeof opts.afterId === 'string' ? opts.afterId : '';
   const next = cloneDoc(doc);
   let block = blockId ? next.blocks.find((b) => b.id === blockId) : null;
   if (!block && blockId) return {ok: false, error: '找不到块 ' + blockId};
@@ -157,12 +161,15 @@ export function addItem(doc, blockId, text, opts) {
   const item = {
     id: memoId('it'),
     text: value,
+    kind,
     status,
     createdAt: Date.now(),
     updatedAt: Date.now(),
     images: [],
   };
-  if (position === 'top') block.items.unshift(item);
+  const ai = afterId ? block.items.findIndex((it) => it.id === afterId) : -1;
+  if (ai >= 0) block.items.splice(ai + 1, 0, item);
+  else if (position === 'top') block.items.unshift(item);
   else block.items.push(item);
   stamp(next);
   return {ok: true, doc: next, id: item.id, blockId: block.id};
@@ -181,8 +188,8 @@ export function updateById(doc, id, patch) {
     if (typeof patch.text === 'string') {
       if (!patch.text.trim()) return {ok: false, error: '块标题不能为空'};
       block.title = clampStr(patch.text, MEMO_LIMITS.blockTitleMax);
-      block.collapsed = typeof patch.collapsed === 'boolean' ? patch.collapsed : block.collapsed;
     }
+    if (typeof patch.collapsed === 'boolean') block.collapsed = patch.collapsed;
     if (Number.isFinite(patch.index)) moveInArray(next.blocks, block, patch.index);
     stamp(next);
     return {ok: true, doc: next, kind: 'block'};
@@ -249,7 +256,8 @@ export function moveItemToBlock(doc, itemId, targetBlockId) {
   return {ok: true, doc: next};
 }
 
-// removeImageById 从条目上摘掉一张贴图引用（图片文件留在磁盘，存储清理页兜底孤儿）。
+// removeImageById 从条目上摘掉一张贴图引用；removedImages 回传给 store——保存成功后
+// 按最新文档 GC（不再被引用才删文件进回收站，见 memo-store 的 gcImages）。
 export function removeImageById(doc, itemId, rel) {
   const found = findItem(doc, itemId);
   if (!found) return {ok: false, error: '找不到条目 ' + itemId};
@@ -259,7 +267,7 @@ export function removeImageById(doc, itemId, rel) {
   item.images = item.images.filter((p) => p !== rel);
   item.updatedAt = Date.now();
   stamp(next);
-  return {ok: true, doc: next};
+  return {ok: true, doc: next, removedImages: [rel]};
 }
 
 // attachImage 给条目追加贴图引用（落盘成功后调用）。ref 形如 img/xxx.png。
@@ -286,21 +294,109 @@ function moveInArray(arr, element, index) {
 }
 
 // formatMemoForAI 面板内容转给模型看的紧凑文本（id 一并给出，供后续 update/remove）。
-export function formatMemoForAI(doc, scopeLabel) {
+// filter 可选：{blockId?, status?, q?}——按分组 / 状态 / 文本包含过滤；首行永远汇报
+// 全局面板计数（模型不丢全局视野），过滤时注明条件与本次命中数。
+export function formatMemoForAI(doc, scopeLabel, filter) {
   const t = totalsOf(doc);
   if (!t.items && !t.blocks) {
     return (scopeLabel || '面板') + ' 是空的：还没有任何分组或条目。';
   }
+  const f = filter || {};
+  const q = typeof f.q === 'string' ? f.q.trim().toLowerCase() : '';
+  const matchQ = (text) => !q || String(text || '').toLowerCase().indexOf(q) >= 0;
+  const statusOk = (st) => !f.status || f.status === st;
+  let shown = 0;
   const lines = [(scopeLabel || '面板') + ' 共 ' + t.blocks + ' 块 ' + t.items +
     ' 项（完成 ' + t.done + ' / 进行中 ' + t.doing + ' / 待办 ' + t.pending + '）'];
+  const filtersDesc = [
+    f.blockId ? 'block=' + f.blockId : '',
+    f.status ? 'status=' + f.status : '',
+    q ? 'q=' + f.q.trim() : '',
+  ].filter(Boolean);
+  if (filtersDesc.length) lines.push('（本次按 ' + filtersDesc.join('，') + ' 过滤）');
   doc.blocks.forEach((block, bi) => {
+    if (f.blockId && block.id !== f.blockId) return;
+    const hits = block.items.filter((item) => statusOk(item.status) &&
+      (matchQ(item.text) || item.images.some((rel) => matchQ(rel))));
+    shown += hits.length;
     lines.push('# [' + block.id + '] ' + (bi + 1) + '. ' + block.title +
-      (block.collapsed ? '（已折叠）' : '') + '：' + block.items.length + ' 项');
-    for (const item of block.items) {
+      (block.collapsed ? '（已折叠）' : '') + '：' +
+      (filtersDesc.length ? hits.length + '/' + block.items.length + ' 项命中' : block.items.length + ' 项'));
+    for (const item of hits) {
       const mark = item.status === 'completed' ? '[x]' : item.status === 'in_progress' ? '[~]' : '[ ]';
+      const kindTag = item.kind === 'md' ? ' [md]' : '';
       const imgs = item.images.length ? '（贴图 ' + item.images.length + ' 张：' + item.images.join('、') + '）' : '';
-      lines.push('  ' + mark + ' [' + item.id + '] ' + item.text + imgs);
+      lines.push('  ' + mark + kindTag + ' [' + item.id + '] ' + item.text + imgs);
     }
   });
+  if (filtersDesc.length) {
+    lines.push(shown
+      ? '以上 ' + shown + ' 项为过滤命中；其余 ' + (t.items - shown) + ' 项未显示。'
+      : '没有匹配过滤条件的条目（面板总数不变：' + t.items + ' 项）。');
+  }
   return lines.join('\n');
+}
+
+// ===== 内联贴图与导出 =====
+
+// INLINE_IMAGE_RE 正文里的贴图占位符：![文件名](img/xxx.png)。粘贴进编辑框时插入，
+// text 条目轻量渲染成内联图、md 条目由共享渲染器出图，导出按标准 Markdown 携带——
+// 图片位置由此记录在正文流里（渲染与导出的共同依据）。
+export const INLINE_IMAGE_RE = /!\[[^\]\n]*\]\((img\/[^)\s]+)\)/g;
+
+// collectImageRefs 文档里全部贴图引用：item.images（缩略图挂载）+ 正文占位符。
+// 贴图 GC 与导出共用这一份口径——正文里删掉占位符同样会触发文件回收。
+export function collectImageRefs(doc) {
+  const refs = new Set();
+  for (const block of doc.blocks) {
+    for (const item of block.items) {
+      for (const rel of item.images) refs.add(rel);
+      for (const m of String(item.text || '').matchAll(INLINE_IMAGE_RE)) refs.add(m[1]);
+    }
+  }
+  return refs;
+}
+
+// exportMemoMarkdown 便签导出为 Markdown：文本条目 = 任务清单（勾选框，多行续行缩进），
+// md 条目原样嵌入，缩略图与正文占位符统一成标准图片语法（含挂载在 item.images 上的）。
+// images 返回全部被引用的相对路径（导出方负责把文件复制到旁侧 img/）。
+export function exportMemoMarkdown(doc, scopeLabel) {
+  const now = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  const stamp = now.getFullYear() + '-' + pad(now.getMonth() + 1) + '-' + pad(now.getDate()) +
+    ' ' + pad(now.getHours()) + ':' + pad(now.getMinutes());
+  const lines = ['# 快捷便签 · ' + (scopeLabel || ''), '', '- 导出时间：' + stamp, ''];
+  const images = [];
+  const noteImage = (rel) => {
+    if (rel && !images.includes(rel)) images.push(rel);
+  };
+  const scanItem = (item) => {
+    for (const rel of item.images) noteImage(rel);
+    for (const m of String(item.text || '').matchAll(INLINE_IMAGE_RE)) noteImage(m[1]);
+  };
+  doc.blocks.forEach((block, bi) => {
+    lines.push('', '## ' + (bi + 1) + '. ' + block.title, '');
+    let hasList = false;
+    for (const item of block.items) {
+      if (item.kind === 'md') continue;
+      scanItem(item);
+      const mark = item.status === 'completed' ? 'x' : item.status === 'in_progress' ? '~' : ' ';
+      const body = String(item.text || '').split('\n').join('\n  ');
+      lines.push('- [' + mark + '] ' + (body || '（空）'));
+      // 挂载在缩略图上、还没写进正文的贴图：以图片语法补进条目末尾
+      for (const rel of item.images) {
+        if (String(item.text || '').indexOf(rel) >= 0) continue;
+        lines.push('  ![' + rel.split('/').pop() + '](' + rel + ')');
+      }
+      hasList = true;
+    }
+    for (const item of block.items) {
+      if (item.kind !== 'md' || !item.text) continue;
+      scanItem(item);
+      if (hasList) lines.push('');
+      lines.push(String(item.text), '');
+    }
+    if (!block.items.length) lines.push('（空）');
+  });
+  return {content: lines.join('\n') + '\n', images};
 }

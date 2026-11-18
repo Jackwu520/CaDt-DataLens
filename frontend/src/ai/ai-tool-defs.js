@@ -58,14 +58,20 @@ export const AI_TOOL_DEFS = {
     },
     search_text: {
         name: 'search_text',
-        description: '搜索文本，返回命中文件、行号与预览（默认最多 200 条；已跳过 .git/node_modules 等目录；结果按源码优先、构建产物 dist/build 等垫底排序）。path 默认当前范围根；工作区外目录的授权规则与 read_file 相同（用户点名直接搜，否则 read/edit 档请求批准、auto/full 档直接搜）。caseSensitive 区分大小写；filePattern 按 *.go 这类通配过滤命中文件。',
+        description: '搜索文本，返回命中文件、行号与预览（默认最多 200 条，可用 maxResults 调大；已跳过 .git/node_modules 等目录；结果按源码优先、构建产物 dist/build 等垫底排序）。path 默认当前范围根，可传目录（扫描整棵树）或单个文件（只扫该文件，不遍历同目录其他文件）；工作区外路径的授权规则与 read_file 相同（用户点名直接搜，否则 read/edit 档请求批准、auto/full 档直接搜）。caseSensitive 区分大小写；filePattern 按 *.go 这类通配只搜匹配文件，excludePattern 按通配排除（如 *.test.go、tests/**）。需要正则表达力（\\w+\\( 、foo|bar 、锚点）时用 regex:true，纯字面量子串不要开；wholeWord:true 全词匹配（搜 foo 不命中 foobar）。context:1–3 附前后文；outputMode=files 先拿文件清单、=count 拿每文件命中数，大结果先缩范围再 read_file 省 token。',
         parameters: {
             type: 'object',
             properties: {
-                query: {type: 'string', description: '要搜索的文本'},
-                path: {type: 'string', description: '搜索起点目录（相对范围根，或已授权的工作区外绝对路径），默认当前范围根'},
+                query: {type: 'string', description: '要搜索的文本或正则表达式'},
+                path: {type: 'string', description: '搜索起点：目录（扫描整棵树）或单个文件（只搜该文件），相对范围根或已授权的工作区外绝对路径；默认当前范围根'},
                 caseSensitive: {type: 'boolean', description: '区分大小写，默认 false'},
-                filePattern: {type: 'string', description: '文件名或相对路径通配（如 *.go、src/**/*.ts），只保留匹配文件的命中'},
+                filePattern: {type: 'string', description: '文件名或相对路径通配（如 *.go、src/**/*.ts），只搜匹配文件'},
+                excludePattern: {type: 'string', description: '排除文件通配（如 *.test.go、tests/**），与 filePattern 同语法；留空不排除'},
+                regex: {type: 'boolean', description: '按正则匹配（Go RE2 语法，线性时间无回溯）；默认 false 按字面量子串'},
+                wholeWord: {type: 'boolean', description: '全词匹配，词边界按字母数字与下划线判定；默认 false'},
+                context: {type: 'integer', description: '附命中行前后各 N 行上下文（0–3，默认 0）；会放大结果体积'},
+                outputMode: {type: 'string', enum: ['content', 'files', 'count'], description: '输出形态：content 行命中（默认）、files 只要文件清单、count 每文件命中数'},
+                maxResults: {type: 'integer', description: '最多返回条数（100–1000，默认 200）；files/count 模式按文件数计'},
             },
             required: ['query'],
         },
@@ -370,7 +376,7 @@ export const AI_TOOL_DEFS = {
     },
     app_control: {
         name: 'app_control',
-        description: '操作并读取当前 CaDt-DataLens 窗口（像真人一样）：打开/切换/关闭标签页、切换视图、主题、设置、开关侧边栏/终端/AI 面板、管理 AI 会话、代配 MCP 服务器与安装内置示例（get_mcp_servers / list_mcp_samples / install_mcp_sample / set_mcp_server / delete_mcp_server：填命令与参数，env 值/工具授权仍归用户）、截取整窗或指定板块截图（screenshot {area}）；也可只读查询设置值、编辑器状态与选区、内存中的文档内容、Git 状态、AI 面板状态、资源管理器、插件、终端输出、操作留痕（get_activity）以及补丁视图状态（get_patch / patch_set_root / patch_repreview）；读写用户「快捷便签」面板：get_memo / add_memo / update_memo / remove_memo（分组/条目/状态/贴图引用），open_memo_panel 打开面板标签页。仅限当前窗口；不改工作区文件（补丁应用/撤销不在此工具内）。先 skill_use 加载 cadt-ui 技能获取动作全表，再调用本工具。',
+        description: '操作并读取当前 CaDt-DataLens 窗口（像真人一样）：打开/切换/关闭标签页、切换视图、主题、设置、开关侧边栏/终端/AI 面板、管理 AI 会话、创建 AI 群聊（create_group）与群消息、编辑器分栏与分组操作、设置树查询与按行修改（危险项走动作审批）、插件安装卸载、代配 MCP 服务器与安装内置示例（get_mcp_servers / list_mcp_samples / install_mcp_sample / set_mcp_server / delete_mcp_server：填命令与参数，env 值/工具授权仍归用户）、截取整窗或指定板块截图（screenshot {area}）、完全权限下合成一次界面点击（click）；也可只读查询设置值、编辑器状态与选区、内存中的文档内容、Git 状态、AI 面板状态、资源管理器、插件、终端输出、操作留痕（get_activity）以及补丁视图状态（get_patch / patch_set_root / patch_repreview）；读写用户「快捷便签」面板：get_memo / add_memo / update_memo / remove_memo（分组/条目/状态/贴图引用），open_memo_panel 打开面板标签页；管理跨文件行书签：list_bookmarks / add_bookmark / remove_bookmark / clear_bookmarks / goto_bookmark（goto_bookmark 可打开文件并跳行；当前文件内跳行用 goto_line）。仅限当前窗口；不改工作区文件（补丁应用/撤销不在此工具内）。先 skill_use 加载 cadt-ui 技能获取动作全表，再调用本工具。',
         parameters: {
             type: 'object',
             properties: {
@@ -479,7 +485,7 @@ export const AI_TOOL_DEFS = {
     },
     background_command: {
         name: 'background_command',
-        description: '在后台启动一条耗时或长驻命令（构建、watch、本地服务器、长测试），立即返回 jobId，不阻塞对话。启动后用 check_command 轮询状态与增量输出，结束后向用户汇报结果；需要提前终止用 stop_command。会很快结束的短命令请改用 run_command；需要持续交互（REPL、ssh）或想让用户看到现场的长驻程序改用 terminal。工作目录由 cwd 参数决定（默认范围根；隔离会话里默认隔离区，要看主根显式传 cwd=\'.\'），cd 不会保留。审批策略与 run_command 一致（启动时审批一次，查状态/停止不再审批）。',
+        description: '在后台启动一条耗时或长驻命令（构建、watch、本地服务器、长测试），立即返回 jobId，不阻塞对话。作业结束时会收到后台通知唤醒本会话（带退出码），届时用 check_command 读最终输出并向用户汇报；中途想看进度也可以主动 check_command。需要提前终止用 stop_command。会很快结束的短命令请改用 run_command；需要持续交互（REPL、ssh）或想让用户看到现场的长驻程序改用 terminal。工作目录由 cwd 参数决定（默认范围根；隔离会话里默认隔离区，要看主根显式传 cwd=\'.\'），cd 不会保留。审批策略与 run_command 一致（启动时审批一次，查状态/停止不再审批）。',
         parameters: {
             type: 'object',
             properties: {
@@ -491,7 +497,7 @@ export const AI_TOOL_DEFS = {
     },
     check_command: {
         name: 'check_command',
-        description: '查询后台命令作业：返回状态（running / exited / notfound）、退出码、已运行时长与自上次查询以来的新增输出（每作业最多保留 256 KB，超出丢弃最早内容）。不要靠反复调用空等。',
+        description: '查询后台命令作业：返回状态（running / exited / notfound）、退出码、已运行时长与自上次查询以来的新增输出（每作业最多保留 256 KB，超出丢弃最早内容）。作业正常结束时会收到后台通知（唤醒会话），无需轮询等待；不要靠反复调用空等。',
         parameters: {
             type: 'object',
             properties: {
@@ -560,13 +566,13 @@ export const AI_TOOL_DEFS = {
     },
     spawn_agent: {
         name: 'spawn_agent',
-        description: '派出一个子代理独立完成子任务（并行探索 / 多视角审查 / 长任务隔离）。默认阻塞：等它跑完，把最终结论作为工具结果返回。mode=background 时派单即返回（不回等），做完自动通知你、期间你可以继续干活——适合一轮里同时派多个方向；要停下等回报就用 wait_agent（等的是自己收件箱里的新输入）。子代理默认只读探索（列目录 / 读文件 / 看图片 / 搜索 / 联网 / 记忆读取 / 技能 / 再派子代理），不能写文件或执行命令。isolation=worktree 时给子代理建一个独立隔离 git worktree：挂上 write_file / edit_file，写效应圈定在它自己的 .cadt/worktree/<slug>/ 前缀内（前缀外会被拒绝）、写操作自动应用——适合「多个方向并行试改，看结果再定」；它的改动不会进主根，完成后你用 worktree_manage 的 export（带 name=<slug>）导出补丁审阅回灌，或 discard 丢弃。子代理并发数（所有层级同时运行中的子代理总和）与层级上限（整棵树最多几层，主代理算第 1 层，你直接派出的子代理是第 2 层）受「设置 → AI 助手 → 子代理」限制：阻塞模式到并发上限会等空位，后台模式直接报错让你稍后再派（可等现有子代理完成再试）。',
+        description: '派出一个子代理独立完成子任务（并行探索 / 多视角审查 / 长任务隔离）。默认阻塞：等它跑完，把最终结论作为工具结果返回。mode=background 时派单即返回（不回等），做完自动通知你、期间你可以继续干活——适合一轮里同时派多个方向；要停下等回报就用 wait_agent（等的是自己收件箱里的新输入）。子代理默认只读探索（列目录 / 读文件 / 看图片 / 搜索 / 联网 / 记忆读取 / 技能 / 再派子代理），不能写文件或执行命令。isolation=worktree 时给子代理建一个独立隔离 git worktree：挂上 write_file / edit_file，写效应圈定在它自己的 .cadt/worktree/<slug>/ 前缀内（前缀外会被拒绝）、写操作自动应用——适合「多个方向并行试改，看结果再定」；它的改动不会进主根，完成后你用 worktree_manage 的 export（带 name=<slug>）导出补丁审阅回灌，或 discard 丢弃。子代理并发数（所有层级同时运行中的子代理总和）与层级上限（整棵树最多几层，主代理算第 1 层，你直接派出的子代理是第 2 层）受「设置 → AI 助手 → 子代理」限制：阻塞模式到并发上限会等空位，后台模式直接报错让你稍后再派（可等现有子代理完成再试）。你以子代理身份再派单时，maxRounds 不传会继承你自己的轮次上限（主代理派单才用设置默认）——多层审计 / 调研里中间层不会先于下级耗尽预算。',
         parameters: {
             type: 'object',
             properties: {
                 name: {type: 'string', description: '子代理名称（2–16 字，如「依赖调查」「方案 B 审查」）'},
                 task: {type: 'string', description: '交给子代理的完整任务说明（目标 + 关注点 + 期望的结论形式；隔离模式下写清它的隔离前缀用法与改哪些文件）'},
-                maxRounds: {type: 'integer', description: '轮次上限 3–200，默认 50。预算用尽会强制收尾（按当前进度总结，质量下降）：复杂只读探索 / 规划类任务宁可给足（50–150），极轻量的小问题 5–10 轮够'},
+                maxRounds: {type: 'integer', description: '轮次上限 3–200，默认 200。嵌套派单（你本身是子代理时）不传会继承你自己的轮次上限。预算用尽会强制收尾（按当前进度总结，质量下降）：复杂只读探索 / 规划类任务宁可给足（100–200），极轻量的小问题 5–10 轮够'},
                 mode: {
                     type: 'string',
                     enum: ['blocking', 'background'],
@@ -874,7 +880,7 @@ export const AI_TOOL_DEFS = {
     },
     terminal: {
         name: 'terminal',
-        description: '操作应用内置终端（ConPTY 持久会话，与用户看到的底部终端是同一个）：list 看已开的终端、open 新建并自动打开底部面板、send 向终端写文本、read 读最近输出、signal 发 Ctrl+C、close 关闭页签。适合交互式/长驻程序（dev server、需要持续输入的命令、看交互式 CLI）；一次性命令仍用 run_command；不需要交互、只等 AI 自己轮询结果的长驻服务优先 background_command（输出走缓冲更省），terminal 用在想让用户看到现场或随时接手的场合。终端里的程序不受 run_command 的超时与「停止生成」约束——需要中止请用 signal，或让用户自己停。send / open / close 走命令审批。不要往终端里发 sleep、ping 这类命令空等凑时长：需要「等一段时间再继续」用 start_timer 倒计时，到点自动唤醒。',
+        description: '操作应用内置终端（ConPTY 持久会话，与用户看到的底部终端是同一个）：list 看已开的终端、open 新建并自动打开底部面板、send 向终端写文本、read 读最近输出、signal 发 Ctrl+C、close 关闭页签。适合交互式/长驻程序（dev server、需要持续输入的命令、看交互式 CLI）；一次性命令仍用 run_command；不需要交互、只等 AI 自己轮询结果的长驻服务优先 background_command（输出走缓冲更省，结束时有后台通知），terminal 用在想让用户看到现场或随时接手的场合。终端里的程序不受 run_command 的超时与「停止生成」约束——需要中止请用 signal，或让用户自己停。注意：终端里的程序（如 dev server）退出时 shell 还在，不会有通知，要用 read 看输出；shell 会话本身退出（异常终止/被关）会收到后台通知。send / open / close 走命令审批。不要往终端里发 sleep、ping 这类命令空等凑时长：需要「等一段时间再继续」用 start_timer 倒计时，到点自动唤醒。',
         parameters: {
             type: 'object',
             properties: {
@@ -898,9 +904,9 @@ export function buildSpawnAgentDef(choices, defaultRounds) {
     const list = Array.isArray(choices) ? choices.filter((choice) => choice && choice.ref) : [];
     const base = AI_TOOL_DEFS.spawn_agent;
     const rounds = Math.round(Number(defaultRounds));
-    // 静态基线里写的是「默认 50」，有设置值时替换掉——模型只信这段文字，不能让它看到旧默认。
+    // 静态基线里写的是「默认 200」，有设置值时替换掉——模型只信这段文字，不能让它看到旧默认。
     const withRounds = (desc) => (Number.isFinite(rounds) && rounds > 0)
-        ? desc.replace('默认 50', '默认 ' + rounds)
+        ? desc.replace('默认 200', '默认 ' + rounds)
         : desc;
     const properties = {
         ...base.parameters.properties,
@@ -936,7 +942,7 @@ export const AI_TOOL_CATALOG = {
     read_file: {group: 'read', blurb: '读文件正文（可指定行范围），改文件前必须先读'},
     read_image: {group: 'read', blurb: '读图片把画面附加到对话（截图 / 图表 / UI 核对 / 公网图片 URL）；文本内容仍用 read_file'},
     read_video: {group: 'read', blurb: '读本地 mp4 把视频画面附加到对话（演示录屏 / 操作过程，≤16 MB）；图片用 read_image'},
-    search_text: {group: 'read', blurb: '文本搜索（path 限定起点目录、filePattern 限 *.go 这类文件通配），拿 path:line；结果不足再 read_file'},
+    search_text: {group: 'read', blurb: '文本搜索（字面量/正则/全词，排除通配，files/count 聚合），拿 path:line 或文件清单；结果不足再 read_file'},
     glob: {group: 'read', blurb: '按文件名通配找文件（*.go / src/**/*.ts，path 可指定起点目录），拿相对路径；找文件里的内容用 search_text'},
     write_file: {group: 'write', blurb: '新建文件或整体重写；覆盖前必须先 read_file，文件被外部修改后写入会被拒绝'},
     edit_file: {group: 'write', blurb: '最小替换；oldString 逐字一致，默认唯一命中，replaceAll 可全量替换'},
@@ -967,7 +973,7 @@ export const AI_TOOL_CATALOG = {
     browser_evaluate: {group: 'browser', blurb: '在页面里执行脚本（完全权限）'},
     browser_resize: {group: 'browser', blurb: '调整视口宽高（模拟手机/平板等尺寸测响应式）'},
     browser_close: {group: 'browser', blurb: '关闭标签页'},
-    app_control: {group: 'app', blurb: '操作/读取应用本身：标签、视图、主题、设置、面板、AI 会话、MCP 服务器代配与内置示例安装、窗口截图、操作留痕、补丁视图状态、用户快捷便签的读写（先 skill_use cadt-ui 取动作表）'},
+    app_control: {group: 'app', blurb: '操作/读取应用本身：标签、视图、主题、设置、面板、AI 会话、群聊与群消息、编辑器分栏、设置树与危险设置审批、插件安装卸载、MCP 服务器代配与内置示例安装、窗口截图、界面点击（完全权限）、操作留痕、补丁视图状态、用户快捷便签的读写（先 skill_use cadt-ui 取动作表）'},
     memory_list: {group: 'memory', blurb: '跨会话事实与结论；写后更新 MEMORY.md 索引'},
     memory_read: {group: 'memory', blurb: '跨会话事实与结论；写后更新 MEMORY.md 索引'},
     memory_write: {group: 'memory', blurb: '跨会话事实与结论；写后更新 MEMORY.md 索引'},
@@ -1169,7 +1175,7 @@ export function createAIToolDefs(ctx) {
             '调度原则：',
             '- 先查后答：涉及文件、代码或数据时先读再下结论，不要凭记忆编造内容、行号或命令输出。',
             '- 并行读、串行写：互不依赖的只读调用可在同一轮一起发（多个文件、多个关键词）；有依赖时按结果顺序来。',
-            '- 有专用工具就不要用 run_command 绕：列目录 / 读文件 / 搜索 / 找文件用 list_dir / read_file / search_text / glob；工作区外路径也能直接传（已授权或会弹审批），不要拼 shell 命令去搜——引号与编码转义容易出错。',
+            '- 有专用工具就不要用 run_command 绕：列目录 / 读文件 / 搜索 / 找文件用 list_dir / read_file / search_text / glob；正则要用 search_text 的 regex:true，别拼 grep；工作区外路径也能直接传（已授权或会弹审批），不要拼 shell 命令去搜——引号与编码转义容易出错。',
             '- 工作区外的路径：用户明确给过路径的直接读/搜；没给过时 read/edit 档会请求批准（批准过的目录免询问）、auto/full 档可直接访问。search_text / glob 传 path 与 read_file 同权。被拒绝的路径不要反复尝试。',
             '- 要网页交互用内嵌浏览器；操作或查看应用本身用 app_control。',
             '- todo_write 是你会话内的执行进度（每轮自动注入、随会话存档）；用户的「快捷便签」是另一个面板（分组/状态/贴图，跨轮留存）——往便签里记事、改状态、删除用 app_control 的 get_memo / add_memo / update_memo / remove_memo，别把执行计划塞进便签。',

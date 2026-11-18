@@ -56,7 +56,7 @@ test('getShortcut / shortcutsByGroup / renderShortcutsTable 与注册表一致',
     assert.equal(getShortcut('edit.globalSearch'), DOUBLE_SHIFT);
     assert.equal(getShortcut('edit.format'), 'Ctrl+Alt+L');
     assert.equal(getShortcut('edit.format', 'jetbrains'), 'Ctrl+Alt+L');
-    assert.equal(getShortcut('edit.format', 'vscode'), 'Shift+Alt+F');
+    assert.equal(getShortcut('edit.format', 'vscode'), 'Alt+Shift+F');
     assert.equal(getShortcut('no.such.action'), '');
     const groups = shortcutsByGroup();
     assert.deepEqual([...groups.keys()], KEY_GROUPS, '分组顺序即展示顺序');
@@ -66,7 +66,7 @@ test('getShortcut / shortcutsByGroup / renderShortcutsTable 与注册表一致',
     assert.ok(html.includes('class="kbd"'), '键位用 kbd 样式渲染，兼容既有 CSS');
     // 换风格后表格文案跟着变
     const vscode = renderShortcutsTable('vscode');
-    assert.match(vscode, /格式化[\s\S]*?Shift\+Alt\+F/);
+    assert.match(vscode, /格式化[\s\S]*?Alt\+Shift\+F/);
     assert.ok(!/全局搜索[\s\S]{0,80}?双击 Shift/.test(vscode), 'VS Code 风格不再用双击 Shift');
 });
 

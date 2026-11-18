@@ -31,7 +31,7 @@ type rgMessage struct {
 	} `json:"data"`
 }
 
-func rgGlobalArgs(query string, caseSensitive bool, pattern string, artifactOnly bool) []string {
+func rgGlobalArgs(spec *searchSpec, artifactOnly bool) []string {
 	args := []string{
 		"--json", "--no-config", "--no-messages", "--color", "never",
 		"--max-filesize", "4M",
@@ -47,32 +47,48 @@ func rgGlobalArgs(query string, caseSensitive bool, pattern string, artifactOnly
 		// runRgPass 里另有 skipRgHit 按 SkipPath 二次过滤保底）。口径与 search.go 的
 		// SkipPath 一致（含 .cadt/tmp 不受影响）。
 		"--glob", "!.cadt/worktree", "--glob", "!.cadt/worktree/**",
-		"-F",
 	}
-	if !caseSensitive {
+	// 字面量模式用 -F（固定串）；正则模式去掉 -F，pattern 由 rg 自己按正则解释。
+	if !spec.regex {
+		args = append(args, "-F")
+	}
+	if !spec.caseSensitive {
 		args = append(args, "-i")
 	}
+	if spec.wholeWord {
+		args = append(args, "-w")
+	}
+	if spec.context > 0 {
+		args = append(args, "-C", strconv.Itoa(spec.context))
+	}
 	// 文件名/路径通配下推给 rg（-g 的语义与 globMatchPath 基本一致：含 / 按路径、否则按文件名）
-	if pattern = strings.TrimSpace(pattern); pattern != "" {
-		args = append(args, "--glob", pattern)
+	if spec.pattern != "" {
+		args = append(args, "--glob", spec.pattern)
 	}
 	// 产物档拆两趟：源码趟按组件名排除产物目录/后缀，产物趟用 `**/` 前缀包含任意层级。
 	// 表与 search.go 的 searchArtifactDirs / searchArtifactSuffixes 单一来源，改表即两边同步。
-	for _, dir := range searchArtifactDirs {
-		if artifactOnly {
-			args = append(args, "--glob", "**/"+dir+"/**")
-		} else {
-			args = append(args, "--glob", "!"+dir)
+	// FileOnly（用户点名单个文件）不分档：不管它在不在 dist/build 下都当源码扫。
+	if !spec.fileOnly {
+		for _, dir := range searchArtifactDirs {
+			if artifactOnly {
+				args = append(args, "--glob", "**/"+dir+"/**")
+			} else {
+				args = append(args, "--glob", "!"+dir)
+			}
+		}
+		for _, suffix := range searchArtifactSuffixes {
+			if artifactOnly {
+				args = append(args, "--glob", "**/*"+suffix)
+			} else {
+				args = append(args, "--glob", "!*"+suffix)
+			}
 		}
 	}
-	for _, suffix := range searchArtifactSuffixes {
-		if artifactOnly {
-			args = append(args, "--glob", "**/*"+suffix)
-		} else {
-			args = append(args, "--glob", "!*"+suffix)
-		}
+	// 排除通配放在最后：rg 的 glob 后者覆盖前者，确保产物档的「包含」不会盖掉用户排除。
+	if spec.exclude != "" {
+		args = append(args, "--glob", "!"+spec.exclude)
 	}
-	return append(args, "--", query)
+	return append(args, "--", spec.query)
 }
 
 type rgPass struct {
@@ -100,9 +116,10 @@ func skipRgHit(root, path string, cache map[string]bool) bool {
 
 // runRgPass 跑一趟 rg 并把命中收齐。artifactOnly 时只收产物档命中——glob 已做包含，
 // Go 侧再按分类器过滤一次，避免用户 filePattern 与包含 glob 取并集时混进源码命中。
-func runRgPass(rgPath, root, query string, caseSensitive bool, pattern string, artifactOnly bool, hitCap int, deadline time.Time) rgPass {
+func runRgPass(rgPath, root string, spec *searchSpec, artifactOnly bool, hitCap int, deadline time.Time) rgPass {
 	pass := rgPass{files: map[string]bool{}}
 	worktreeCache := map[string]bool{}
+	contextLines := map[string]map[int]string{}
 	remaining := time.Until(deadline)
 	if remaining <= 0 || hitCap <= 0 {
 		pass.truncated = true
@@ -110,7 +127,7 @@ func runRgPass(rgPath, root, query string, caseSensitive bool, pattern string, a
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), remaining)
 	defer cancel()
-	args := append(rgGlobalArgs(query, caseSensitive, pattern, artifactOnly), root)
+	args := append(rgGlobalArgs(spec, artifactOnly), root)
 	cmd := exec.CommandContext(ctx, rgPath, args...)
 	executil.HideCommandWindow(cmd)
 	stdout, err := cmd.StdoutPipe()
@@ -131,11 +148,20 @@ loop:
 		if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
 			continue
 		}
-		if msg.Type != "match" {
-			continue
-		}
 		path := msg.Data.Path.Text
 		if skipRgHit(root, path, worktreeCache) {
+			continue
+		}
+		if msg.Type == "context" {
+			if spec.context > 0 && msg.Data.LineNumber > 0 {
+				if contextLines[path] == nil {
+					contextLines[path] = map[int]string{}
+				}
+				contextLines[path][msg.Data.LineNumber] = strings.TrimRight(msg.Data.Lines.Text, "\r\n")
+			}
+			continue
+		}
+		if msg.Type != "match" {
 			continue
 		}
 		if artifactOnly {
@@ -154,12 +180,18 @@ loop:
 		}
 		name := filepath.Base(path)
 		line := strings.TrimRight(msg.Data.Lines.Text, "\r\n")
-		relDir := filepath.Dir(path)
-		if rel, err := filepath.Rel(root, relDir); err == nil {
-			relDir = rel
-		}
-		if relDir == "." || relDir == "" {
-			relDir = filepath.Base(root)
+		relDir := ""
+		if spec.fileOnly {
+			// 文件根：父目录的相对路径无意义（Rel 会得到 ".."），直接给父目录名
+			relDir = filepath.Base(filepath.Dir(root))
+		} else {
+			relDir = filepath.Dir(path)
+			if rel, err := filepath.Rel(root, relDir); err == nil {
+				relDir = rel
+			}
+			if relDir == "." || relDir == "" {
+				relDir = filepath.Base(root)
+			}
 		}
 		for _, sub := range msg.Data.Submatches {
 			if sub.Start < 0 || sub.End > len(line) || sub.Start >= sub.End {
@@ -188,6 +220,10 @@ loop:
 			hitsPerFile[path]++
 			pass.files[path] = true
 		}
+	}
+	// rg 的 context 消息可能排在 match 之后，扫描结束后按行号统一回填前后文。
+	if spec.context > 0 {
+		attachContextFromMap(pass.hits, contextLines, spec.context)
 	}
 	if capped {
 		// 命中已截断，不再需要 rg 输出；立即结束进程，避免管道写满后 Wait 拖到 deadline
@@ -218,30 +254,31 @@ loop:
 // searchWithRipgrep 用用户自带的 rg 做搜索；第二个返回值表示是否可用，
 // 不可用（未安装/无法启动/歧义失败）时应退回内置扫描。
 // 两趟扫描：先源码档，结果没占满预算再补产物档，两档各自排序后拼接。
-func searchWithRipgrep(root, query string, caseSensitive bool, maxResults int, pattern string) (*SearchResult, bool) {
+func searchWithRipgrep(root string, spec *searchSpec) (*SearchResult, bool) {
 	rgPath, err := exec.LookPath("rg")
 	if err != nil {
 		return nil, false
 	}
 	deadline := time.Now().Add(searchBudget)
-	src := runRgPass(rgPath, root, query, caseSensitive, pattern, false, maxResults, deadline)
+	src := runRgPass(rgPath, root, spec, false, spec.maxResults, deadline)
 	if !src.usable {
 		return nil, false
 	}
-	needle := query
-	if !caseSensitive {
-		needle = strings.ToLower(query)
-	}
-	sortSearchTier(src.hits, needle, caseSensitive, false)
+	needle := spec.needle
+	sortSearchTier(src.hits, needle, spec.caseSensitive, false)
 	result := &SearchResult{
 		Hits:      src.hits,
 		Files:     len(src.files),
 		Truncated: src.truncated,
 	}
-	if len(result.Hits) < maxResults {
-		art := runRgPass(rgPath, root, query, caseSensitive, pattern, true, maxResults-len(result.Hits), deadline)
+	// FileOnly：只有一个文件，没有「产物档补扫」这回事
+	if spec.fileOnly {
+		return result, true
+	}
+	if len(result.Hits) < spec.maxResults {
+		art := runRgPass(rgPath, root, spec, true, spec.maxResults-len(result.Hits), deadline)
 		if art.usable {
-			sortSearchTier(art.hits, needle, caseSensitive, false)
+			sortSearchTier(art.hits, needle, spec.caseSensitive, false)
 			result.Hits = append(result.Hits, art.hits...)
 			result.Files += len(art.files)
 			result.Truncated = result.Truncated || art.truncated
@@ -253,7 +290,7 @@ func searchWithRipgrep(root, query string, caseSensitive bool, maxResults int, p
 		// 源码档已吃满上限，产物档不再扫描（rg 侧不枚举被排除的目录，是否有产物命中无从得知）
 		result.ArtifactSkipped = true
 	}
-	if len(result.Hits) >= maxResults {
+	if len(result.Hits) >= spec.maxResults {
 		result.Truncated = true
 	}
 	return result, true

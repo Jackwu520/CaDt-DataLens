@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"datalens/internal/sessionstore"
 )
@@ -163,7 +164,31 @@ func TestMakeSearchSnippetMarksMatch(t *testing.T) {
 	}
 }
 
+// 大小写不敏感定位必须在原文偏移上做：ASCII 折叠不能丢（命中原文大小写要原样高亮）。
+func TestMakeSearchSnippetFoldsCase(t *testing.T) {
+	snippet := makeSearchSnippet("Hello World tail", "world", 4)
+	if !strings.Contains(snippet, "\x01World\x02") {
+		t.Fatalf("snippet = %q", snippet)
+	}
+}
 
+// 回归：U+023A Ⱥ / U+023E Ⱦ 小写后会变长（2 → 3 字节），旧实现用 strings.ToLower 的偏移
+// 切原文：20 个 Ⱥ 让 lowerText 里的 pos=60 > len(text)=49，旧代码直接 slice bounds panic。
+func TestMakeSearchSnippetExpandingLowerRune(t *testing.T) {
+	text := strings.Repeat("Ⱥ", 20) + "关键词" + "尾部"
+	snippet := makeSearchSnippet(text, "关键词", 6)
+	if !strings.Contains(snippet, "\x01关键词\x02") {
+		t.Fatalf("应高亮关键词，snippet = %q", snippet)
+	}
+	if !utf8.ValidString(snippet) {
+		t.Fatalf("snippet 必须是合法 UTF-8：%q", snippet)
+	}
+	// 半径切在多字节字符中间时也必须退到 rune 边界
+	narrow := makeSearchSnippet("前缀ȺȾȺȾ关键词后缀", "关键词", 2)
+	if !utf8.ValidString(narrow) || !strings.Contains(narrow, "\x01关键词\x02") {
+		t.Fatalf("窄半径 snippet 非法：%q", narrow)
+	}
+}
 
 // 全局搜索接入：详细 = 全文；简要 = 用户消息 + 每轮最后一条 assistant；
 // 两种模式都只搜未归档会话，工具消息不参与简要模式。

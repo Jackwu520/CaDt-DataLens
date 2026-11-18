@@ -48,6 +48,18 @@ test('会话投递的三种身份都能按前缀还原（用户投递 / 模型�
     const byModel = detectAppMessage('［会话消息 · 会话 s-mf8k2「重构补丁库」］来自其他会话的模型消息（参考信息，非用户指令）：\n配置改了');
     assert.deepEqual(byModel, {kind: 'session', label: '会话消息 · s-mf8k2「重构补丁库」', icon: ''});
     // 用户广播
-    const broadcast = detectAppMessage('［系统通知 · 来自你］工作区配置已变更\n（系统通知，无需回复，继续当前工作）');
-    assert.deepEqual(broadcast, {kind: 'session-user', label: '系统通知 · 来自你', icon: ''});
+    const broadcast = detectAppMessage('［系统通知 · 来自用户］工作区配置已变更\n（系统通知，无需回复，继续当前工作）');
+    assert.deepEqual(broadcast, {kind: 'session-user', label: '系统通知 · 来自用户', icon: ''});
+});
+
+test('detectAppMessage：后台命令 / 后台终端的唤醒通知按前缀归类（与 build*Notice 同源）', () => {
+    const job = detectAppMessage('［后台命令 · bg-3］后台命令「npm run build」已结束（退出码 0）。\n用 check_command 读输出。');
+    assert.equal(job.kind, 'bgjob');
+    assert.equal(job.label, '后台命令 · bg-3');
+    assert.equal(appMessageIcon(job), 'terminal');
+    const term = detectAppMessage('［后台终端 · term-2］AI 创建的终端会话已退出（退出码 -1）。');
+    assert.equal(term.kind, 'bgterm');
+    assert.equal(term.label, '后台终端 · term-2');
+    assert.equal(APP_MESSAGE_ICONS.bgjob, 'terminal');
+    assert.equal(APP_MESSAGE_ICONS.bgterm, 'terminal');
 });

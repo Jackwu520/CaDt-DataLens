@@ -49,20 +49,21 @@ export function buildSessionOutlineItems(messages, options) {
         const message = list[i];
         if (!message || message.role !== 'user') continue;
         if (message.systemNote || message.silent || message.app || message.kind === 'model-switch') continue;
-        // 插话（steer）不是新回合，不占轮号（与 groupTurns / 列表排序同一口径）
-        if (message.steer) continue;
+        const steer = message.steer === true;
         const text = splitTurnReminderPrefix(message.content == null ? '' : String(message.content))
             .body.replace(/\s+/g, ' ').trim();
         const images = Array.isArray(message.images) ? message.images.length : 0;
         const videos = Array.isArray(message.videos) ? message.videos.length : 0;
         const media = images ? '（' + images + ' 张图片）' : (videos ? '（' + videos + ' 个视频）' : '');
         if (!text && !media) continue;
-        round += 1;
+        // 插话（steer）不是新回合、不占新轮号，但它是用户说过的话：必须可定位，标「插话」。
+        if (!steer) round += 1;
         all.push({
             index: i,
-            round,
+            round: round || 1,
             ts: Number(message.ts) || Number(message.turnStartedAt) || 0,
             text: text || media,
+            steer,
         });
     }
     const items = all.length > max ? all.slice(all.length - max) : all;
@@ -81,10 +82,11 @@ export function renderSessionOutline(body, snapshot, opts) {
         const item = items[i] || {};
         const index = Number(item.index);
         if (!Number.isFinite(index)) continue;
-        const row = el('div', 'sb-row so-row' + (index === active ? ' so-current' : ''));
+        const row = el('div', 'sb-row so-row' + (index === active ? ' so-current' : '') + (item.steer ? ' so-steer' : ''));
         row.tabIndex = -1;
         row.dataset.index = String(index);
         row.appendChild(el('span', 'so-num', String(item.round || i + 1)));
+        if (item.steer) row.appendChild(el('span', 'so-steer-tag', '插话'));
         row.appendChild(el('span', 'so-text', oneLine(item.text) || '（图片消息）'));
         const time = shortTime(item.ts);
         if (time) row.appendChild(el('span', 'so-time', time));

@@ -405,6 +405,9 @@ if (deps.els.terminalResize) {
     let termResizing = false;
     let termResizeStartY = 0;
     let termResizeStartH = 0;
+    // 高度上限放开到窗口 85%（IDEA 式可铺很高），但至少给顶条留 240px
+    // （AI 面板贴底堆叠区需要立足之地）；极小窗口兜底 120px
+    const maxPanelH = () => Math.max(120, Math.min(window.innerHeight * 0.85, window.innerHeight - 240));
     deps.els.terminalResize.addEventListener('mousedown', (e) => {
         if (!terminalUI.open) return;
         termResizing = true;
@@ -415,7 +418,7 @@ if (deps.els.terminalResize) {
     });
     window.addEventListener('mousemove', (e) => {
         if (!termResizing) return;
-        const h = Math.min(480, Math.max(120, termResizeStartH + (termResizeStartY - e.clientY)));
+        const h = Math.min(maxPanelH(), Math.max(120, termResizeStartH + (termResizeStartY - e.clientY)));
         deps.els.terminalPanel.style.height = h + 'px';
         sessMod.fitActiveTerm();
     });
@@ -424,7 +427,7 @@ if (deps.els.terminalResize) {
         termResizing = false;
         deps.setDragCursor(null);
         sessMod.fitActiveTerm();
-        deps.settings.terminalHeight = Math.min(480, Math.max(120, deps.els.terminalPanel.offsetHeight));
+        deps.settings.terminalHeight = Math.min(maxPanelH(), Math.max(120, deps.els.terminalPanel.offsetHeight));
         deps.applySettings();
     });
 }

@@ -19,6 +19,8 @@ var (
 	OnClear      func()
 )
 
+// Service 是 AI 会话存储的绑定入口；每个方法都在成功后通知派生索引标脏钩子
+// （OnBodyChange / OnMetaChange / OnRemove / OnClear），引擎本身不依赖 sessionindex。
 type Service struct{}
 
 func (s *Service) store() (*Store, error) {

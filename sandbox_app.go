@@ -2,7 +2,7 @@ package main
 
 import "datalens/internal/sandbox"
 
-// AI 子代理沙箱授权的检查与清理（docs/unfinished-plans/subagent-sandbox.md §4 阶段 D）。
+// AI 子代理沙箱授权的检查与清理（docs/finished-plans/subagent-sandbox.md §4 阶段 D）。
 //
 // workspace-write 会在写根目录上留下三样东西：能力 SID 的 allow ACE、Everyone 的
 // FILE_DELETE_CHILD deny、Low 完整性标签。前两者跨会话复用（standing），标签更是永久的；

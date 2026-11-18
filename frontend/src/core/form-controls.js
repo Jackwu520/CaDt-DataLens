@@ -75,6 +75,12 @@ export function createCheckbox(o = {}) {
     return {element, control};
 }
 
+/**
+ * 下拉选择框（.opt-select）。options 每项 {value, label, selected}。
+ * 值真源是返回的 control（原生 select）；需要行式设置项下拉时用 createSettingsSelect。
+ * @param {object} [o] 选项：options / id / value / className / onChange / attrs…
+ * @returns {{element: HTMLElement, control: HTMLSelectElement}} 元素与原生控件
+ */
 export function createSelect(o = {}) {
     const control = document.createElement('select');
     control.className = CONTROL_CLASS.select;

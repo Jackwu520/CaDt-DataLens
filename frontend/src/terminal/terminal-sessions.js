@@ -4,7 +4,7 @@ import {iconSvg} from '../core/icons.js';
 
 export function createTerminalSessions(deps) {
 
-async function createTermSession(shell = '') {
+async function createTermSession(shell = '', meta = null) {
     if (!deps.backend.TermCreate) {
         deps.flash('当前版本不支持内置终端', true);
         return null;
@@ -18,7 +18,7 @@ async function createTermSession(shell = '') {
     }
     const id = created.id;
     const usedShell = created.shell || shell || 'powershell';
-    attachTermSession(id, usedShell, {explicitShell: !!shell});
+    attachTermSession(id, usedShell, {explicitShell: !!shell, aiSessionId: meta && meta.sessionId});
     return {id, shell: usedShell};
 }
 
@@ -93,6 +93,9 @@ function attachTermSession(id, usedShell, opts = {}) {
     document.getElementById('term-tabs').appendChild(tab);
     const session = {id, term, fit, host, tab, shell: usedShell, baseName,
         defaultLabel: label.textContent, defaultTitle: label.title, customName: ''};
+    // AI 来源标记（terminal 工具 open 传入发起会话 id）：term-exit 时 main.js 据此把
+    // 「shell 已退出」投给 AI 会话信箱；用户自己开的终端没有该标记，退出不打扰会话。
+    if (opts.aiSessionId) session.aiSessionId = opts.aiSessionId;
     deps.terminalUI.sessions.set(id, session);
     deps.terminalUI.order.push(id);
     activateTermSession(id);
@@ -282,8 +285,8 @@ function renameTermSession(s) {
 // 与 run_command 共用同一条命令审批链。
 function terminalHostApi() {
     return {
-        async open(shell) {
-            const created = await createTermSession(shell || '');
+        async open(shell, meta) {
+            const created = await createTermSession(shell || '', meta || null);
             if (!created) throw new Error('创建终端失败（详见状态栏提示）');
             deps.toggleTerminalPanel(true);
             activateTermSession(created.id);

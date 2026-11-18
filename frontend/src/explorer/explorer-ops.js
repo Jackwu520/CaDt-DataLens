@@ -5,6 +5,7 @@
 // deps 由 main.js 显式传入（getter 延迟求值 + 需要回写的状态带 setter）；
 // 原 main.js 裸标识符引用已按 deps 名重写为 deps.X。
 import {createExplorerHistory} from './explorer-history.js';
+import {fileTypeMenuItem, resolveNewFileMenu} from './new-file-menu.js';
 
 export function createExplorerOps(deps) {
 
@@ -350,7 +351,7 @@ async function pasteFileClipboard(targetInfo) {
     }
 }
 
-function openCreateEntryDialog(dirPath, isDir, suggestedName, title) {
+function openCreateEntryDialog(dirPath, isDir, suggestedName, title, initialContent) {
     deps.openNameDialog({
         title: title || (isDir ? '新建文件夹' : '新建文件'),
         label: isDir ? '文件夹名称' : '文件名',
@@ -361,6 +362,9 @@ function openCreateEntryDialog(dirPath, isDir, suggestedName, title) {
         onSubmit: async (name) => {
             if (!deps.backend.CreateEntry) throw new Error('当前版本不支持新建');
             const target = await deps.backend.CreateEntry(dirPath, name, isDir);
+            // 自定义模板：CreateEntry 建的是空文件（O_EXCL），模板正文随后由 SaveFile 写入。
+            const body = !isDir && initialContent ? String(initialContent) : '';
+            if (body && deps.backend.SaveFile) await deps.backend.SaveFile(target, body, 'lf', false, 'utf-8');
             if (deps.explorer) {
                 await deps.explorer.refreshDir(dirPath);
                 deps.explorer.selectPath(target, isDir);
@@ -370,7 +374,7 @@ function openCreateEntryDialog(dirPath, isDir, suggestedName, title) {
             } else {
                 await deps.openPath(target);
             }
-            // 新建可撤销：撤销删除（进回收站），重做则重新创建同名条目
+            // 新建可撤销：撤销删除（进回收站），重做则重新创建同名条目并回填模板正文
             history.push({
                 label: '新建“' + deps.baseNameOf(target) + '”',
                 undo: async () => {
@@ -381,6 +385,7 @@ function openCreateEntryDialog(dirPath, isDir, suggestedName, title) {
                 },
                 redo: async () => {
                     const created = await deps.backend.CreateEntry(dirPath, deps.baseNameOf(target), isDir);
+                    if (body && deps.backend.SaveFile) await deps.backend.SaveFile(created, body, 'lf', false, 'utf-8');
                     afterHistoryChange([created]);
                     if (deps.explorer) await deps.explorer.refreshDir(dirPath);
                     return true;
@@ -390,13 +395,59 @@ function openCreateEntryDialog(dirPath, isDir, suggestedName, title) {
     });
 }
 
+// 打开「通用设置」并滚到「新建菜单」小节（右键子菜单底部的「配置菜单…」入口）。
+function openNewFileMenuSettings() {
+    if (!deps.openSettings) return;
+    deps.openSettings('general');
+    requestAnimationFrame(() => {
+        const section = document.getElementById('new-file-menu-settings');
+        if (section && typeof section.scrollIntoView === 'function') section.scrollIntoView({block: 'start'});
+    });
+}
+
+// newFileMenuItems：按 settings.newFileMenu 合成「新建」子菜单。
+// 只决定「出现与顺序」，不绕过 readOnlyMode（入口在 showExplorerMenu 里整体禁用，这里再兜一层）。
 function newFileMenuItems(dirPath) {
-    return [
-        {label: '文件…', icon: 'E7C3', action: () => openCreateEntryDialog(dirPath, false, '', '新建文件')},
-        {label: '目录…', icon: 'E8B7', action: () => openCreateEntryDialog(dirPath, true, '新建文件夹', '新建文件夹')},
-        {sep: true},
-        ...deps.newFileTypeMenuItems((type) => openCreateEntryDialog(dirPath, false, type.name, '新建 ' + type.label)),
-    ];
+    const {top, more} = resolveNewFileMenu(deps.settings && deps.settings.newFileMenu);
+    const readOnly = !!(deps.settings && deps.settings.readOnlyMode);
+    const createType = (type) => openCreateEntryDialog(
+        dirPath, false, type.name, '新建 ' + type.label, type.content);
+    const items = [];
+    let specials = 0;
+    let types = 0;
+    for (const entry of top) {
+        if (entry.kind === 'special') {
+            specials += 1;
+            if (entry.id === 'file.dialog') {
+                items.push({label: entry.label, icon: 'E7C3', disabled: readOnly,
+                    action: () => openCreateEntryDialog(dirPath, false, '', '新建文件')});
+            } else if (entry.id === 'dir.dialog') {
+                items.push({label: entry.label, icon: 'E8B7', disabled: readOnly,
+                    action: () => openCreateEntryDialog(dirPath, true, '新建文件夹', '新建文件夹')});
+            } else if (entry.id === 'scratch') {
+                // 临时文件落盘草稿的编排可能落在本模块或经 deps 注入（另一项功能负责），
+                // 两种位置都认；尚未接入时保留灰占位，不给点了没反应的条目。
+                const scratchFn = typeof createScratchFile === 'function' ? createScratchFile
+                    : (typeof deps.createScratchFile === 'function' ? deps.createScratchFile : null);
+                items.push({label: entry.label, icon: 'doc', disabled: readOnly || !scratchFn,
+                    action: !readOnly && scratchFn ? () => scratchFn(dirPath) : undefined});
+            }
+            continue;
+        }
+        if (specials && !types) items.push({sep: true});
+        types += 1;
+        items.push({...fileTypeMenuItem(entry, createType), disabled: readOnly});
+    }
+    if (more.length) {
+        items.push({sep: true});
+        items.push({
+            label: '更多', icon: 'more', disabled: readOnly,
+            submenu: more.map((type) => fileTypeMenuItem(type, createType)),
+        });
+    }
+    items.push({sep: true});
+    items.push({label: '配置菜单…', icon: 'gear', action: openNewFileMenuSettings});
+    return items;
 }
 
 function applyRenamedPath(oldPath, newPath) {
@@ -628,7 +679,7 @@ async function redoExplorer() {
     return ok;
 }
 
-function showExplorerMenu(info, x, y, node) {
+function showExplorerMenu(info, x, y) {
     if (!deps.ctxMenu || !info) return;
     const isDir = !!info.isDir;
     const selected = deps.explorer ? deps.explorer.getSelection() : [];
@@ -636,21 +687,6 @@ function showExplorerMenu(info, x, y, node) {
     const rootPath = deps.explorer && deps.explorer.getRoot ? deps.explorer.getRoot() : '';
     const deletable = targets.filter((item) => !(rootPath && samePathValue(rootPath, item.path)));
     const items = [];
-    items.push({
-        label: '撤销' + (history.canUndo() ? '：' + history.peekUndo() : ''),
-        shortcut: 'Ctrl+Z',
-        icon: 'E7A7',
-        disabled: !history.canUndo(),
-        action: () => { undoExplorer(); },
-    });
-    items.push({
-        label: '重做' + (history.canRedo() ? '：' + history.peekRedo() : ''),
-        shortcut: 'Ctrl+Y',
-        icon: 'E7A6',
-        disabled: !history.canRedo(),
-        action: () => { redoExplorer(); },
-    });
-    items.push({sep: true});
     if (isDir) {
         items.push({
             label: '新建',
@@ -699,12 +735,6 @@ function showExplorerMenu(info, x, y, node) {
     });
     items.push({sep: true});
     if (isDir) {
-        items.push({
-            label: node && node.expanded ? '收起目录' : '展开目录',
-            icon: 'E70D',
-            disabled: !node,
-            action: () => deps.explorer && deps.explorer.toggleNode(node),
-        });
         items.push({label: '设为文件树根目录', icon: 'E8B7', action: () => deps.openFolderWorkspace(info.path)});
         items.push({
             label: '结构化目录',

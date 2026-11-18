@@ -1,5 +1,5 @@
 // ai-agent-model.js：智能体（群聊成员）数据层——归一化、名字校验/去重、modelRef 解析
-// 与能力快照。纯函数无 DOM，可单测；方案见 docs/unfinished-plans/ai-group-chat.md §6.1。
+// 与能力快照。纯函数无 DOM，可单测；方案见 docs/finished-plans/ai-group-chat.md §6.1。
 // 智能体存 ai-config.json 的 agents[]；删除不级联（群内显示「已删除成员」）。
 // modelRef = '账号id|模型id'（复用 ai-config-model 的 resolveModelRef）；失效显示
 // 「模型不可用」，不静默回退。
@@ -262,6 +262,24 @@ export function listModelOptions(profiles) {
         }
     }
     return out;
+}
+
+// 按 id / 名字解析智能体（app_control create_group 的成员与主持人定位）：
+// 精确 id → 名字精确（NFC 小写）→ 唯一子串。多命中返回候选让调用方报错，绝不静默取第一个。
+export function resolveAgentByKeyword(agents, keyword) {
+    const raw = String(keyword == null ? '' : keyword).trim();
+    const options = (Array.isArray(agents) ? agents : []).filter((agent) => agent && typeof agent === 'object');
+    if (!raw) return {ok: false, reason: 'empty', candidates: []};
+    const byId = options.find((agent) => agent.id === raw);
+    if (byId) return {ok: true, agent: byId};
+    const lower = normalizeAgentName(raw).toLowerCase();
+    const exact = options.filter((agent) => normalizeAgentName(agent.name).toLowerCase() === lower);
+    if (exact.length === 1) return {ok: true, agent: exact[0]};
+    if (exact.length > 1) return {ok: false, reason: 'ambiguous', candidates: exact};
+    const contains = options.filter((agent) => normalizeAgentName(agent.name).toLowerCase().includes(lower));
+    if (contains.length === 1) return {ok: true, agent: contains[0]};
+    if (contains.length > 1) return {ok: false, reason: 'ambiguous', candidates: contains};
+    return {ok: false, reason: 'not_found', candidates: []};
 }
 
 // 按关键词解析唯一模型，优先级：精确 ref → 「账号名/模型名」（/ ／ : ：皆可）→

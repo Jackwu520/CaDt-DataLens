@@ -17,7 +17,7 @@ const RETENTION_MIN = 1;
 const RETENTION_MAX = 60;
 
 // 动作大类：设置页筛选用；action 约定为 domain.verb 点分格式。
-export const ACTIVITY_DOMAINS = ['file', 'tab', 'workspace', 'view', 'settings', 'plugin', 'ai', 'app', 'activity'];
+export const ACTIVITY_DOMAINS = ['file', 'tab', 'workspace', 'view', 'settings', 'plugin', 'ai', 'app', 'activity', 'storage'];
 
 function clampRetention(months) {
     const n = Math.round(Number(months) || RETENTION_DEFAULT);

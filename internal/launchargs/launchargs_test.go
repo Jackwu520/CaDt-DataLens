@@ -160,3 +160,16 @@ func TestParseAISessionArg(t *testing.T) {
 		}
 	}
 }
+
+func TestParseMemoLocatorArg(t *testing.T) {
+	got := ParseMemoLocatorArg([]string{"--memo=cadt-memo://workspace/item/it-abc"})
+	if got != "cadt-memo://workspace/item/it-abc" {
+		t.Fatalf("got %q", got)
+	}
+	if got := ParseMemoLocatorArg([]string{"--memo="}); got != "" {
+		t.Fatalf("空值应返回空串，got %q", got)
+	}
+	if got := ParseMemoLocatorArg([]string{"file.json"}); got != "" {
+		t.Fatalf("无 --memo 应返回空串，got %q", got)
+	}
+}

@@ -122,6 +122,25 @@ function el(tag, className, text) {
     return node;
 }
 
+// verticalScrollFor 计算「把行滚进垂直视野」后的 scrollTop（对齐 IDEA：只垂直 reveal，横向滚动条不动）。
+// 纯函数、可单测：rowTop/rowBottom 是行相对滚动容器内容区的偏移，viewTop/viewH 是当前可视区。
+// 行完全可见返回当前 scrollTop；在上方则贴顶、在下方则贴底，与 scrollIntoView({block:'nearest'}) 等价。
+export function verticalScrollFor(rowTop, rowBottom, viewTop, viewH) {
+    if (viewH <= 0) return viewTop;
+    if (rowTop < viewTop) return rowTop;
+    if (rowBottom > viewTop + viewH) return rowBottom - viewH;
+    return viewTop;
+}
+
+// revealRowVertically 只调整容器的垂直滚动，保留 scrollLeft（打开文件不该挪动横向滚动条）。
+function revealRowVertically(container, row) {
+    if (!container || !row) return;
+    const rowTop = row.offsetTop;
+    const rowBottom = rowTop + row.offsetHeight;
+    const next = verticalScrollFor(rowTop, rowBottom, container.scrollTop, container.clientHeight);
+    if (next !== container.scrollTop) container.scrollTop = next;
+}
+
 export function createExplorer(options) {
     const {
         body, titleEl, refreshBtn, listBtn, treeBtn, filterBtn, onToggleFilter,
@@ -427,7 +446,7 @@ export function createExplorer(options) {
     function scrollToActive() {
         requestAnimationFrame(() => {
             const row = body.querySelector('.sb-row.current');
-            if (row) row.scrollIntoView({block: 'nearest'});
+            if (row) revealRowVertically(body, row);
         });
     }
 
@@ -674,13 +693,13 @@ export function createExplorer(options) {
         }
         setSelection([{path, name: baseName(path), isDir: !!isDir}], path);
         const row = body.querySelector('.sb-row.selected');
-        if (row) row.scrollIntoView({block: 'nearest'});
+        if (row) revealRowVertically(body, row);
     }
 
     function selectPaths(items) {
         setSelection(items, items && items.length ? items[items.length - 1].path : null);
         const row = body.querySelector('.sb-row.anchor') || body.querySelector('.sb-row.selected');
-        if (row) row.scrollIntoView({block: 'nearest'});
+        if (row) revealRowVertically(body, row);
     }
 
     async function revealActive() {
@@ -699,6 +718,29 @@ export function createExplorer(options) {
         }
         if (seq !== revealSeq) return;
         renderTree(true);
+    }
+
+    // 展开到指定路径并选中（app_control reveal_in_explorer）：与跟随活动文件同一条展开链，
+    // 目标可以是文件或目录；不在根内返回 false（调用方给错误）。
+    async function revealPath(targetPath) {
+        const target = String(targetPath || '');
+        if (!tree || !target || !isWithin(tree.path, target)) return false;
+        const seq = ++revealSeq;
+        let node = tree;
+        node.expanded = true;
+        while (node && node.isDir) {
+            await loadNode(node, treeSeq);
+            if (seq !== revealSeq) return false;
+            if (samePath(node.path, target) || samePath(node.path, parentPath(target))) break;
+            const next = node.children.find((child) => child.isDir && isWithin(child.path, target));
+            if (!next) break;
+            next.expanded = true;
+            node = next;
+        }
+        if (seq !== revealSeq) return false;
+        renderTree(true);
+        selectPath(target, false);
+        return true;
     }
 
     function setMode(next, notify = true) {
@@ -1172,6 +1214,7 @@ export function createExplorer(options) {
         },
         selectPath,
         selectPaths,
+        revealPath,
         hasFocus: () => focused,
         setCutPaths,
         setCutPath,

@@ -25,6 +25,9 @@ export const APP_MESSAGE_ICONS = {
     session: 'bell',
     'session-user': 'bell',
     sidechat: 'bookmark',
+    // 后台命令作业退出 / AI 终端会话退出的唤醒通知：与子代理通知同一张卡片形态
+    bgjob: 'terminal',
+    bgterm: 'terminal',
     // 计划批准：应用代替用户按下「执行计划」，内部指令不该显示成用户胶囊
     plan: 'compass',
 };
@@ -66,11 +69,16 @@ export function detectAppMessage(content) {
     if (settled) return {kind: 'subagent', label: '子代理通知 · ' + settled[1].trim(), icon: ''};
     const side = text.match(/^［支线结论 · ([^］]+)］/);
     if (side) return {kind: 'sidechat', label: '支线结论 · ' + side[1].trim(), icon: ''};
+    // 后台命令作业 / AI 终端退出的唤醒通知：prefix 与 buildBgJobExitNotice / buildTerminalExitNotice 同源约定
+    const bgJob = text.match(/^［后台命令 · ([^］]+)］/);
+    if (bgJob) return {kind: 'bgjob', label: '后台命令 · ' + bgJob[1].trim(), icon: ''};
+    const bgTerm = text.match(/^［后台终端 · ([^］]+)］/);
+    if (bgTerm) return {kind: 'bgterm', label: '后台终端 · ' + bgTerm[1].trim(), icon: ''};
     // 用户本人投递（面板里自己写的内容）：是用户指令，与模型投递的「参考信息」区分开
     const userSend = text.match(/^［用户消息 · (?:会话 )?([^］]+)］/);
     if (userSend) return {kind: 'session-user', label: '用户消息 · ' + userSend[1].trim(), icon: ''};
-    if (/^［用户消息 · 来自你］/.test(text)) return {kind: 'session-user', label: '用户消息 · 来自你', icon: ''};
-    if (/^［系统通知 · 来自你］/.test(text)) return {kind: 'session-user', label: '系统通知 · 来自你', icon: ''};
+    if (/^［用户消息 · 来自用户］/.test(text)) return {kind: 'session-user', label: '用户消息 · 来自用户', icon: ''};
+    if (/^［系统通知 · 来自用户］/.test(text)) return {kind: 'session-user', label: '系统通知 · 来自用户', icon: ''};
     // 模型投递（session_send）：身份以会话 id 为准，标题只是补充
     const session = text.match(/^［会话消息 · (?:会话 )?([^］]+)］/);
     if (session) return {kind: 'session', label: '会话消息 · ' + session[1].trim(), icon: ''};

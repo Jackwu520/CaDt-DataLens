@@ -132,9 +132,16 @@
             </button>
         </div>
         <div class="spacer"></div>
-        <button type="button" id="tb-run" data-tip="运行当前文件 (F5)" aria-label="运行当前文件">
-            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M6.4 4.2l8.6 5.8-8.6 5.8V4.2z" fill="currentColor"/></svg>
-        </button>
+        <div id="tb-run-widget" class="tb-run-widget">
+            <button type="button" id="tb-run-config" class="tb-run-config" data-tip="选择运行配置" aria-label="运行配置" aria-haspopup="true" aria-expanded="false">
+                <span id="tb-run-badge" class="tb-run-badge" aria-hidden="true"></span>
+                <span id="tb-run-name" class="tb-run-name">当前文件</span>
+                <svg class="ws-chev" viewBox="0 0 16 16" width="10" height="10" aria-hidden="true"><path d="M4.4 6.2 8 9.8l3.6-3.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+            <button type="button" id="tb-run" data-tip="运行当前文件 (F5)" aria-label="运行当前文件">
+                <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M6.4 4.2l8.6 5.8-8.6 5.8V4.2z" fill="currentColor"/></svg>
+            </button>
+        </div>
         <button type="button" id="editor-collapse-strip" data-tip="收起编辑区（标签页保留，位置让给 AI 助手）" aria-label="收起编辑区" aria-pressed="false">
             <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m6 4 4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
         </button>
@@ -164,6 +171,9 @@
             </button>
         </div>
         <div id="gb-body" class="gb-body" role="listbox" aria-label="分支和操作"></div>
+    </div>
+    <div id="run-config-pop" class="tb-pop run-config-pop hidden" role="dialog" aria-label="运行配置">
+        <div id="run-config-pop-body"></div>
     </div>
     <div id="find-bar" class="find-bar hidden" role="search" aria-label="查找">
         <span class="find-icon" aria-hidden="true"><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="6.8" cy="6.8" r="3.9"/><path d="M9.7 9.7l3.4 3.4"/></svg></span>
@@ -359,6 +369,9 @@
                                 </div>
                             </div>
                         </div>
+
+                        <!-- 新建菜单定制（docs/unfinished-plans/feature-evaluations-2026-11-18.md §1）；内容由 settings-pane-new-file-menu.js 渲染 -->
+                        <div id="new-file-menu-settings"></div>
 
                         <div class="set-group-title">外观</div>
                         <div class="set-card">
@@ -730,13 +743,13 @@
                         <div class="set-group-title">MCP 服务器</div>
                         <div class="set-card">
                             <div class="set-row">
-                                <div class="set-main"><div class="set-title">MCP 客户端<button type="button" class="info-tip" data-tip="连接本机 MCP 服务器（stdio），把远端工具并入 AI 工具表。服务器命令在本机执行，等同于你自己运行它；子进程环境自动过滤疑似密钥变量。不配置则零开销。" aria-label="MCP 客户端说明"></button></div><div class="set-desc">把外部工具并入 AI 工具表；不配置则零开销</div></div>
+                                <div class="set-main"><div class="set-title">MCP 客户端<button type="button" class="info-tip" data-tip="连接本机 MCP 服务器（stdio），把远端工具并入 AI 工具表。服务器命令在本机执行，等同于用户自己运行它；子进程环境自动过滤疑似密钥变量。不配置则零开销。" aria-label="MCP 客户端说明"></button></div><div class="set-desc">把外部工具并入 AI 工具表；不配置则零开销</div></div>
                                 <div class="set-control">
                                     <label class="set-switch"><input type="checkbox" id="ai-opt-mcp-enabled"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
                                 </div>
                             </div>
                             <div class="set-row">
-                                <div class="set-main"><div class="set-title">服务器</div><div class="set-desc">工具勾选决定 AI 能看到哪些远端工具，默认全不勾；也可在「能力来源」里绑定为搜索 / OCR / 语音等能力的来源。也可以让 AI 代填命令与参数（环境变量值与工具授权仍由你完成，每次保存都会确认本机命令）</div></div>
+                                <div class="set-main"><div class="set-title">服务器</div><div class="set-desc">工具勾选决定 AI 能看到哪些远端工具，默认全不勾；也可在「能力来源」里绑定为搜索 / OCR / 语音等能力的来源。也可以让 AI 代填命令与参数（环境变量值与工具授权仍由用户完成，每次保存都会确认本机命令）</div></div>
                                 <div class="set-control">
                                     <button type="button" id="ai-opt-mcp-add" class="dlg-btn">添加服务器</button>
                                 </div>
@@ -943,9 +956,9 @@
                                 </div>
                             </div>
                             <div class="set-row">
-                                <div class="set-main"><div class="set-title">默认轮次<button type="button" class="info-tip" data-tip="spawn_agent 没指定 maxRounds 时用这个预算，范围 3–200。一轮 = 一次模型请求，一轮里可以并行多个工具调用。预算用尽会补一轮无工具收尾，让模型把结论写完——给少了不丢结果，但结论质量会下降。复杂探索 / 规划给 50–150，极轻量的小问题 5–10 轮够。" aria-label="子代理默认轮次说明"></button></div><div class="set-desc">spawn_agent 未指定时使用；只影响之后派出的子代理</div></div>
+                                <div class="set-main"><div class="set-title">默认轮次<button type="button" class="info-tip" data-tip="spawn_agent 没指定 maxRounds 时用这个预算，范围 3–200。一轮 = 一次模型请求，一轮里可以并行多个工具调用。预算用尽会补一轮无工具收尾，让模型把结论写完——给少了不丢结果，但结论质量会下降。复杂探索 / 规划给 100–200，极轻量的小问题 5–10 轮够。子代理自己再派单时不传 maxRounds 会继承它自己的轮次上限，不走这个默认。" aria-label="子代理默认轮次说明"></button></div><div class="set-desc">spawn_agent 未指定时使用；只影响之后派出的子代理</div></div>
                                 <div class="set-control">
-                                    <input type="number" id="ai-opt-subagent-rounds" class="ai-settings-input ai-font-size-num" min="3" max="200" step="1" value="50">
+                                    <input type="number" id="ai-opt-subagent-rounds" class="ai-settings-input ai-font-size-num" min="3" max="200" step="1" value="200">
                                 </div>
                             </div>
                             <div class="set-row">
@@ -967,7 +980,7 @@
                         <div class="set-group-title">通知</div>
                         <div class="set-card">
                             <div class="set-row">
-                                <div class="set-main"><div class="set-title">应用内通知<button type="button" class="info-tip" data-tip="失败、提问、审批、AI 主动发的消息进状态栏【消息】中心（锁图标右侧），可事后查、点击跳回会话；例行「任务完成」不进消息中心——会话列表已有「已完成未查看」角标，一轮一条会把消息列表刷屏。开启本项后，审批 / 失败 / 提问在「你看的不是这条会话」时额外在右下角弹一下；任务完成不弹。设置 → AI → 权限里 AI 也能用 notify_send 工具给你发消息。" aria-label="应用内通知说明"></button></div><div class="set-desc">审批 / 失败 / 提问：不是你正看的会话时右下角弹；任务完成只在会话列表留角标</div></div>
+                                <div class="set-main"><div class="set-title">应用内通知<button type="button" class="info-tip" data-tip="失败、提问、审批、AI 主动发的消息进状态栏【消息】中心（锁图标右侧），可事后查、点击跳回会话；例行「任务完成」不进消息中心——会话列表已有「已完成未查看」角标，一轮一条会把消息列表刷屏。开启本项后，审批 / 失败 / 提问在「用户查看的不是这条会话」时额外在右下角弹一下；任务完成不弹。设置 → AI → 权限里 AI 也能用 notify_send 工具给用户发消息。" aria-label="应用内通知说明"></button></div><div class="set-desc">审批 / 失败 / 提问：不是用户正查看的会话时右下角弹；任务完成只在会话列表留角标</div></div>
                                 <div class="set-control">
                                     <label class="set-switch"><input type="checkbox" id="ai-opt-notify-inapp"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
                                 </div>
@@ -998,7 +1011,7 @@
                                 </div>
                             </div>
                             <div class="set-row">
-                                <div class="set-main"><div class="set-title">待审批时通知<button type="button" class="info-tip" data-tip="AI 要改文件、跑命令或创建环境变量而等你点「批准」时提醒你——写操作审批没有超时，不提醒的话这一轮会一直卡在后台。只有你「正看着这个会话且软件在前台」时不打扰；等 1 分钟仍没处理会再提醒一次。" aria-label="待审批时通知说明"></button></div><div class="set-desc">写操作 / 命令等待批准时提醒（含 1 分钟后再提醒一次）</div></div>
+                                <div class="set-main"><div class="set-title">待审批时通知<button type="button" class="info-tip" data-tip="AI 要改文件、跑命令或创建环境变量而等用户点「批准」时提醒用户——写操作审批没有超时，不提醒的话这一轮会一直卡在后台。只有用户「正看着这个会话且软件在前台」时不打扰；等 1 分钟仍没处理会再提醒一次。" aria-label="待审批时通知说明"></button></div><div class="set-desc">写操作 / 命令等待批准时提醒（含 1 分钟后再提醒一次）</div></div>
                                 <div class="set-control">
                                     <label class="set-switch"><input type="checkbox" id="ai-opt-notify-approve"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
                                 </div>
@@ -1014,7 +1027,7 @@
                         <div class="set-group-title">超时与重试</div>
                         <div class="set-card">
                             <div class="set-row">
-                                <div class="set-main"><div class="set-title">响应空闲超时<button type="button" class="info-tip" data-tip="模型连续这么久没有任何输出（含思考）就中断本轮请求；收到数据会重新计时。工具执行 / 等待你回答期间不会误杀。慢模型或长思考可调大，最长 60 分钟。" aria-label="响应空闲超时说明"></button></div><div class="set-desc">连续无数据多久判定请求卡死</div></div>
+                                <div class="set-main"><div class="set-title">响应空闲超时<button type="button" class="info-tip" data-tip="模型连续这么久没有任何输出（含思考）就中断本轮请求；收到数据会重新计时。工具执行 / 等待用户回答期间不会误杀。慢模型或长思考可调大，最长 60 分钟。" aria-label="响应空闲超时说明"></button></div><div class="set-desc">连续无数据多久判定请求卡死</div></div>
                                 <div class="set-control">
                                     <select id="ai-opt-idle-timeout" class="opt-select">
                                         <option value="30">30 秒</option>
@@ -1080,7 +1093,7 @@
                                 </div>
                             </div>
                             <div class="set-row">
-                                <div class="set-main"><div class="set-title">导出时包含个性化设定</div><div class="set-desc">助手名、对你的称呼、长期指令、人设正文属于个人内容；默认不导出</div></div>
+                                <div class="set-main"><div class="set-title">导出时包含个性化设定</div><div class="set-desc">助手名、对用户的称呼、长期指令、人设正文属于个人内容；默认不导出</div></div>
                                 <div class="set-control">
                                     <label class="set-switch"><input type="checkbox" id="ai-opt-export-persona"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
                                 </div>
@@ -1099,9 +1112,9 @@
                         <div class="set-group-title">身份</div>
                         <div class="set-card">
                             <div class="set-row">
-                                <div class="set-main"><div class="set-title">对你的称呼</div><div class="set-desc">助手怎么称呼你；留空则不臆造称呼</div></div>
+                                <div class="set-main"><div class="set-title">对用户的称呼</div><div class="set-desc">助手怎么称呼用户；留空则不臆造称呼</div></div>
                                 <div class="set-control">
-                                    <input id="ai-persona-user-label" class="ai-settings-input" type="text" maxlength="32" placeholder="暂无内容，点击编辑添加" spellcheck="false" autocomplete="off" aria-label="助手对你的称呼">
+                                    <input id="ai-persona-user-label" class="ai-settings-input" type="text" maxlength="32" placeholder="暂无内容，点击编辑添加" spellcheck="false" autocomplete="off" aria-label="助手对用户的称呼">
                                 </div>
                             </div>
                             <div class="set-row">
@@ -1498,7 +1511,7 @@
                                 </div>
                             </div>
                             <div class="set-row">
-                                <div class="set-main"><div class="set-title">个性化学习<button type="button" class="info-tip" data-tip="两类学习点：① 蒸馏——端侧模型只学**大模型的判定**（云端 AI 分类器的结论、语义插件的结论，线性向语义看齐）；② 分歧裁决——仅当线性 / 语义 / 云端 AI 的放行结论**不一致**时，你在审批卡上的允许 / 拒绝才作为裁决信号回流（此时不一致的是模型之间，你的裁定解决「谁对谁错」）。结论一致时用户操作不学习：审批是一次性授权语境，「这次确实要写」的批准学进去会变成以后每次都放行。秘密打码后存于应用数据 local-classifier/（环形上限 500），SGD + L2 锚定出厂权重防漂移。" aria-label="个性化学习说明"></button></div><div class="set-desc">学大模型的判定（云端 / 语义）+ 三层结论分歧时的用户裁决；结论一致时你的操作不学习（数据仅存本机）</div></div>
+                                <div class="set-main"><div class="set-title">个性化学习<button type="button" class="info-tip" data-tip="两类学习点：① 蒸馏——端侧模型只学**大模型的判定**（云端 AI 分类器的结论、语义插件的结论，线性向语义看齐）；② 分歧裁决——仅当线性 / 语义 / 云端 AI 的放行结论**不一致**时，用户在审批卡上的允许 / 拒绝才作为裁决信号回流（此时不一致的是模型之间，用户的裁定解决「谁对谁错」）。结论一致时用户操作不学习：审批是一次性授权语境，「这次确实要写」的批准学进去会变成以后每次都放行。秘密打码后存于应用数据 local-classifier/（环形上限 500），SGD + L2 锚定出厂权重防漂移。" aria-label="个性化学习说明"></button></div><div class="set-desc">学大模型的判定（云端 / 语义）+ 三层结论分歧时的用户裁决；结论一致时用户操作不学习（数据仅存本机）</div></div>
                                 <div class="set-control">
                                     <label class="set-switch"><input type="checkbox" id="ai-opt-local-personalize"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
                                 </div>
@@ -1591,17 +1604,20 @@
                             </div>
                         </div>
 
-                        <div class="set-group-title">运行配置（多套参数预设）</div>
+                        <div class="set-group-title">运行配置</div>
                         <div class="set-card">
-                            <div class="set-row">
-                                <div class="set-main"><div class="set-title">保存当前配置</div><div class="set-desc">记录运行参数、命令模板与语言；在面板顶部下拉一键载入</div></div>
-                                <div class="set-control">
-                                    <input id="run-profile-name" class="run-template-input" type="text" spellcheck="false" autocomplete="off" placeholder="配置名称，例如：读大 CSV">
-                                    <button type="button" id="run-profile-save" class="dlg-btn">保存当前配置</button>
-                                </div>
+                            <div class="set-row-top">
+                                <div class="set-desc">配置可绑定一个目标文件：选中后标题栏 ▶ / F5 直接运行那个文件，不必先在编辑器打开；不带目标文件的预设仍作用于当前文件。最近运行过的配置会排在标题栏下拉顶部。</div>
                             </div>
                             <div class="set-row-top">
                                 <div id="run-profile-list" class="run-profile-list"></div>
+                            </div>
+                            <div class="set-row-top hidden" id="run-profile-editor"></div>
+                            <div class="set-row">
+                                <div class="set-main"></div>
+                                <div class="set-control">
+                                    <button type="button" id="run-profile-new" class="dlg-btn">新建配置…</button>
+                                </div>
                             </div>
                         </div>
 
@@ -1690,7 +1706,7 @@
                                 </div>
                             </div>
                             <div class="set-row">
-                                <div class="set-main"><div class="set-title">存储方式<button type="button" class="info-tip" data-tip="变量注入到之后新开的内置终端会话与命令桥子进程（AI 命令、插件命令），写在继承环境之后、同名时覆盖系统值；已打开的终端不受影响。AI 助手只看得到变量名与描述：env_list 列出名称，env_create 由 AI 提供名称与描述、值由你在弹窗中亲自填写。" aria-label="存储方式说明"></button></div></div>
+                                <div class="set-main"><div class="set-title">存储方式<button type="button" class="info-tip" data-tip="变量注入到之后新开的内置终端会话与命令桥子进程（AI 命令、插件命令），写在继承环境之后、同名时覆盖系统值；已打开的终端不受影响。AI 助手只看得到变量名与描述：env_list 列出名称，env_create 由 AI 提供名称与描述、值由用户在弹窗中亲自填写。" aria-label="存储方式说明"></button></div></div>
                                 <div class="set-control">
                                     <select id="envvar-encrypted" class="opt-select">
                                         <option value="plain">明文 JSON（可手动备份编辑）</option>
@@ -1730,7 +1746,7 @@
                                 </div>
                             </div>
                             <div class="set-row">
-                                <div class="set-main"><div class="set-desc plugin-trust-hint"><span class="plugin-trust-icon" aria-hidden="true"></span>插件代码以与应用相同的权限运行（可读写本机文件、执行命令），仅安装你信任的来源。</div></div>
+                                <div class="set-main"><div class="set-desc plugin-trust-hint"><span class="plugin-trust-icon" aria-hidden="true"></span>插件代码以与应用相同的权限运行（可读写本机文件、执行命令），仅安装用户信任的来源。</div></div>
                             </div>
                             <div class="set-row-top">
                                 <div class="plugin-list-box">
@@ -1844,6 +1860,7 @@
                                         <option value="plugin">插件</option>
                                         <option value="ai">AI</option>
                                         <option value="app">应用</option>
+                                        <option value="storage">存储</option>
                                         <option value="activity">记录管理</option>
                                     </select>
                                     <select id="activity-filter-actor" class="opt-select">
@@ -1878,6 +1895,15 @@
                                     <button type="button" id="stg-refresh" class="dlg-btn">重新统计</button>
                                 </div>
                             </div>
+                        </div>
+                        <div class="set-card">
+                            <div class="set-row-top">
+                                <div class="set-main">
+                                    <div class="set-title">自动清理</div>
+                                    <div class="set-desc" id="stg-auto-desc">—</div>
+                                </div>
+                            </div>
+                            <div class="stg-rows" id="stg-auto-list"></div>
                         </div>
                         <div class="set-card">
                             <div class="set-row-top">
@@ -2362,8 +2388,12 @@
                 <button type="button" id="ab-files" class="ab-btn" data-tip="文件树 (Ctrl+B)" aria-label="文件树" aria-pressed="false">
                     <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 5.4c0-.9.7-1.6 1.6-1.6h3.1l1.7 1.9h5c.9 0 1.6.7 1.6 1.6v7.3c0 .9-.7 1.6-1.6 1.6H4.6c-.9 0-1.6-.7-1.6-1.6z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>
                 </button>
+                <button type="button" id="ab-git" class="ab-btn" data-tip="Git：变更列表" aria-label="Git">
+                    <span class="ab-dot" aria-hidden="true"></span>
+                    <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M1.8 10H6.6M13.4 10H18.2" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><circle cx="10" cy="10" r="3.4" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>
+                </button>
                 <button type="button" id="ab-structure" class="ab-btn" data-tip="结构 (Alt+7)" aria-label="结构" aria-pressed="false">
-                    <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 4.5h12M6.5 8h9.5M9 11.5h7M11.5 15h4.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+                    <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4.5 3.8V16.2M4.5 6.5H8M4.5 13.5H8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><rect x="8" y="4" width="8" height="5" rx="2.1" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><rect x="8" y="11" width="8" height="5" rx="2.1" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>
                 </button>
                 <button type="button" id="ab-search" class="ab-btn" data-tip="内容搜索 (Ctrl+F)" aria-label="内容搜索">
                     <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="9" cy="9" r="5" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="m12.8 12.8 3.4 3.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
@@ -2373,10 +2403,6 @@
                 </button>
                 <button type="button" id="ab-memo" class="ab-btn" data-tip="快捷便签 面板 (Ctrl+Alt+T)" aria-label="快捷便签 面板">
                     <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3.6 4.2l1.9 1.9 3.1-3.7" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M11.6 4.4h5M3.6 10h2.9M11.6 10h5M3.6 15.4h2.9M11.6 15.4h5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
-                </button>
-                <button type="button" id="ab-git" class="ab-btn" data-tip="Git：变更列表" aria-label="Git">
-                    <span class="ab-dot" aria-hidden="true"></span>
-                    <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="6" cy="5" r="1.9" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="6" cy="15" r="1.9" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="14" cy="9" r="1.9" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M6 7v6M6 9.4c0-2.2 2.4-2.2 5.6-2.3M14 11v.6c0 2-1.6 3.4-4.6 3.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><circle cx="6" cy="10" r=".1" fill="none"/></svg>
                 </button>
                 <div class="ab-sep" aria-hidden="true"></div>
                 <button type="button" id="ab-ai" class="ab-btn" data-tip="AI 助手 (Alt+9)" aria-label="AI 助手" aria-pressed="false">
@@ -2396,13 +2422,13 @@
                     <svg viewBox="0 0 20 20" aria-hidden="true"><ellipse cx="10" cy="11.5" rx="3" ry="3.5" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="10" cy="7.3" r="1.15" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M9.2 6.3 8.3 4.7M10.8 6.3l.9-1.6M6.9 9.3 4.8 8.3M6.8 11.5H4.2M6.9 13.7l-2.1 1M13.1 9.3l2.1-1M13.2 11.5h2.6M13.1 13.7l2.1 1" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
                 </button>
                 <button type="button" id="ab-terminal" class="ab-btn" data-tip="终端 (Alt+F12)" aria-label="终端" aria-pressed="false">
-                    <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m4 6.2 4 3.8-4 3.8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M10.6 13.8H16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+                    <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="3" y="4" width="14" height="12" rx="2.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M6.2 7.3 9.2 10 6.2 12.7" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M11.6 12.7H14.2" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
                 </button>
                 <button type="button" id="ab-git-graph" class="ab-btn" data-tip="Git 图谱" aria-label="Git 图谱" aria-pressed="false">
                     <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="5" cy="5" r="1.6" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="5" cy="15" r="1.6" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="14" cy="10" r="1.6" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M5 6.6v6.8" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M5 8c0 2 3 2 5 2s4 0 4-1.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
                 </button>
                 <button type="button" id="ab-settings" class="ab-btn" data-tip="设置 (Ctrl+,)" aria-label="设置">
-                    <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 6.5h3.6M9.4 6.5H17M3 13.5h7M13 13.5h4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M7 4.8v3.4M13 11.8v3.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+                    <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M8.625 2.25h2.75l.5 2.25c.625.25 1.25.5 1.75.875l2.125-.75 1.375 2.375-1.625 1.5c.125.625.125 1.25 0 1.875l1.625 1.5-1.375 2.375-2.125-.75c-.5.375-1.125.625-1.75.875l-.5 2.25h-2.75l-.5-2.25c-.625-.25-1.25-.5-1.75-.875l-2.125.75-1.375-2.375 1.625-1.5c-.125-.625-.125-1.25 0-1.875l-1.625-1.5 1.375-2.375 2.125.75c.5-.375 1.125-.625 1.75-.875l.5-2.25z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><circle cx="10" cy="10" r="2.5" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>
                 </button>
                 <button type="button" id="ab-about" class="ab-btn" data-tip="关于 CaDt-DataLens" aria-label="关于">
                     <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="6.3" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="10" cy="6.8" r=".9" fill="currentColor"/><path d="M10 9.3v4.1" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
@@ -2514,17 +2540,57 @@
                 <div id="editor" class="hidden"></div>
                 <div id="welcome">
                     <img class="welcome-banner" src="/brand/welcome-banner.jpg" alt="CaDt-DataLens" draggable="false">
-                    <div class="welcome-shortcuts">
-                        <div class="ws-row"><span class="ws-label">新建</span><span class="ws-key">Ctrl+N</span></div>
-                        <div class="ws-row"><span class="ws-label">文件侧边栏</span><span class="ws-key">Ctrl+B</span></div>
-                        <div class="ws-row"><span class="ws-label">终端</span><span class="ws-key">Alt+F12</span></div>
-                        <div class="ws-row"><span class="ws-label">运行当前文件</span><span class="ws-key">F5</span></div>
-                        <div class="ws-row"><span class="ws-label">运行项目</span><span class="ws-key">Ctrl+F5</span></div>
-                        <div class="ws-row"><span class="ws-label">搜索</span><span class="ws-key">Ctrl+F</span></div>
-                        <div class="ws-row"><span class="ws-label">新窗口</span><span class="ws-key">Shift+F4</span></div>
-                        <div class="ws-row"><span class="ws-label">设置</span><span class="ws-key">Ctrl+,</span></div>
-                        <div class="ws-drag">将文件拖放到此处以打开</div>
+                    <div class="welcome-block">
+                        <div class="wb-title">快捷键</div>
+                        <div class="ws-grid">
+                            <div class="ws-row"><span class="ws-label">新建</span><span class="ws-key">Ctrl+N</span></div>
+                            <div class="ws-row"><span class="ws-label">文件侧边栏</span><span class="ws-key">Ctrl+B</span></div>
+                            <div class="ws-row"><span class="ws-label">终端</span><span class="ws-key">Alt+F12</span></div>
+                            <div class="ws-row"><span class="ws-label">运行当前文件</span><span class="ws-key">F5</span></div>
+                            <div class="ws-row"><span class="ws-label">运行项目</span><span class="ws-key">Ctrl+F5</span></div>
+                            <div class="ws-row"><span class="ws-label">搜索</span><span class="ws-key">Ctrl+F</span></div>
+                            <div class="ws-row"><span class="ws-label">新窗口</span><span class="ws-key">Shift+F4</span></div>
+                            <div class="ws-row"><span class="ws-label">设置</span><span class="ws-key">Ctrl+,</span></div>
+                        </div>
                     </div>
+                    <div class="welcome-block">
+                        <div class="wb-title">常用入口</div>
+                        <div class="wb-grid">
+                            <button type="button" class="wb-item" data-wentry="ai">
+                                <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3.2l1.1 3.1 3.1 1.1-3.1 1.1L10 11.6 8.9 8.5 5.8 7.4l3.1-1.1z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M15.2 12.3l.6 1.7 1.7.6-1.7.6-.6 1.7-.6-1.7-1.7-.6 1.7-.6zM5.1 12.9l.5 1.4 1.4.5-1.4.5-.5 1.4-.5-1.4-1.4-.5 1.4-.5z" fill="currentColor"/></svg>
+                                <span>AI 面板</span>
+                            </button>
+                            <button type="button" class="wb-item" data-wentry="memo">
+                                <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3.6 4.2l1.9 1.9 3.1-3.7" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M11.6 4.4h5M3.6 10h2.9M11.6 10h5M3.6 15.4h2.9M11.6 15.4h5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+                                <span>便签</span>
+                            </button>
+                            <button type="button" class="wb-item" data-wentry="browser">
+                                <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="6.3" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M3.7 10h12.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M10 3.7c1.8 1.8 2.7 4 2.7 6.3S11.8 14.5 10 16.3C8.2 14.5 7.3 12.3 7.3 10S8.2 5.5 10 3.7z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>
+                                <span>浏览器</span>
+                            </button>
+                            <button type="button" class="wb-item" data-wentry="terminal">
+                                <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="3" y="4" width="14" height="12" rx="2.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M6.2 7.3 9.2 10 6.2 12.7" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M11.6 12.7H14.2" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+                                <span>终端</span>
+                            </button>
+                            <button type="button" class="wb-item" data-wentry="graph">
+                                <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="5" cy="5" r="1.6" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="5" cy="15" r="1.6" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="14" cy="10" r="1.6" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M5 6.6v6.8" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M5 8c0 2 3 2 5 2s4 0 4-1.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+                                <span>Git 图谱</span>
+                            </button>
+                            <button type="button" class="wb-item" data-wentry="reading">
+                                <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 5.6C9 4.6 7.6 4.1 6.2 4.1H3.4v10.3h3c1.3 0 2.7.5 3.6 1.4.9-.9 2.3-1.4 3.6-1.4h3V4.1h-2.8c-1.4 0-2.8.5-3.8 1.5z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M10 5.6v10" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+                                <span>阅读模式</span>
+                            </button>
+                            <button type="button" class="wb-item" data-wentry="search">
+                                <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="9" cy="9" r="5" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="m12.8 12.8 3.4 3.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+                                <span>全局搜索</span>
+                            </button>
+                            <button type="button" class="wb-item" data-wentry="settings">
+                                <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M8.625 2.25h2.75l.5 2.25c.625.25 1.25.5 1.75.875l2.125-.75 1.375 2.375-1.625 1.5c.125.625.125 1.25 0 1.875l1.625 1.5-1.375 2.375-2.125-.75c-.5.375-1.125.625-1.75.875l-.5 2.25h-2.75l-.5-2.25c-.625-.25-1.25-.5-1.75-.875l-2.125.75-1.375-2.375 1.625-1.5c-.125-.625-.125-1.25 0-1.875l-1.625-1.5 1.375-2.375 2.125.75c.5-.375 1.125-.625 1.75-.875l.5-2.25z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><circle cx="10" cy="10" r="2.5" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>
+                                <span>设置</span>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="ws-drag">将文件拖放到此处以打开</div>
                     <button id="btn-welcome-open" class="tb-btn primary">打开文件 (Ctrl+O)</button>
                 </div>
                 <div id="reading-view" class="hidden"></div>
@@ -2606,6 +2672,11 @@
             <div id="ai-slash" class="ai-slash hidden"></div>
             <div class="ai-bottom-stack">
             <div id="ai-ctx-banner" class="ai-ctx-banner hidden">
+                <svg class="ai-ctx-banner-icon" viewBox="0 0 16 16" aria-hidden="true">
+                    <path d="M8 2.4 14.4 13.1H1.6L8 2.4z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
+                    <path d="M8 6.6v3" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+                    <circle cx="8" cy="11.3" r="0.8" fill="currentColor"/>
+                </svg>
                 <span id="ai-ctx-banner-text">上下文接近窗口上限</span>
                 <button type="button" id="ai-ctx-compact" class="ai-ctx-banner-btn">压缩上下文</button>
                 <button type="button" id="ai-ctx-close" class="ai-ctx-banner-close" data-tip="关闭提醒；上下文再涨 5% 会再次提醒" aria-label="关闭上下文提醒">
@@ -2697,7 +2768,7 @@
                         <div class="ai-ctx-row"><i class="ai-ctx-dot system"></i><span>系统提示词</span><b id="ai-ctx-tok-system">~0</b></div>
                         <div class="ai-ctx-row"><i class="ai-ctx-dot tools"></i><span>工具定义</span><b id="ai-ctx-tok-tools">~0</b></div>
                         <div class="ai-ctx-row"><i class="ai-ctx-dot messages"></i><span>对话消息</span><b id="ai-ctx-tok-messages">~0</b></div>
-                        <div class="ai-ctx-row ai-ctx-row-saved"><i class="ai-ctx-dot saved"></i><span>实时瘦身已省</span><button type="button" class="info-tip" data-tip="旧轮思考、过时的大文件/命令输出、过期注入块在组装请求时被剔除的量（会话里仍保留）" aria-label="实时瘦身已省说明"></button><b id="ai-ctx-tok-saved">~0</b></div>
+                        <div class="ai-ctx-row ai-ctx-row-saved"><i class="ai-ctx-dot saved"></i><span>实时瘦身已省</span><button type="button" class="info-tip" data-tip="旧轮思考、过时的大文件/命令输出、过期注入块在组装请求时被剔除的量（会话里仍保留）" data-tip-actions='[{"label":"去关闭","action":"ai:context-slim"}]' aria-label="实时瘦身已省说明"></button><b id="ai-ctx-tok-saved">~0</b></div>
                     </div>
                     <button type="button" id="ai-ctx-pop-compact" class="dlg-btn ai-ctx-compact">压缩上下文</button>
                 </div>
