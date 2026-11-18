@@ -1,6 +1,6 @@
 # 智能体群聊：多轮讨论引擎、主持调度与任务协作（实施计划）
 
-> 状态：**G0–G4 已实施（2026-11-17，master 分批提交）；2026-11-18 追加：智能体分组、自由聊天（消息即唤醒 + §4 接力）、两处存量缺陷修复**；G5 剩余项（只读工具 / 群聊搜索索引 / 图片附件 / 语义路由器 / 智能体 1:1 单聊）未实施，另行评估。v1 的「@ 即唤醒、回完即停」被作者判定为不符合目标——群聊要允许不同 AI 持续讨论，而不是一对一答完就结束。本版把核心从「消息路由」改为「讨论引擎」；v1 的 @ 路由降级为可选「自由模式」。v2.1：§16 的 14 个开放问题已与作者确认收口——自由模式后置 G5、用户主持随 G3 交付、并行轮后置、非思考总时长上调 180s、思考主持对齐 240s、智能体新增 `slowTier` 开关、手动压缩默认保留最近 1 轮全文。**2026-11-18 追加实施**：① 智能体分组（`agents[].group`，设置页 / 新建群聊分区，上限 12 组，见 feature-evaluations §3）；② 自由聊天——任意模式「闲时消息即唤醒」（`@点名`/`@全体成员`/无 @ 轮换接话）+ `mode:'free'` 成员 @ 接力（§12 全套上限）；③ 修复 `parseMentions` 的 ASCII `\b` 在 CJK 后永不成立导致 `@全体成员` 从未命中的存量缺陷；④ 修复组合根漏传 `resolveModel` 导致成员发言必报「模型不可用」的接线事故。实施落点：`internal/aigroups` + `groupstore_app.go`（Go 存储）、`frontend/src/ai/ai-agent-model.js / ai-agent-settings.js / ai-group-model.js / ai-group-store.js / ai-group-runtime.js / ai-group-view.js / ai-group-sidebar.js` + `bridge/bridge-group-view.js`（前端群聊域）、`internal/storage`（清理条目 ai-groups）。
+> 状态：**G0–G4 已实施（2026-11-17，master 分批提交）；2026-11-18 追加：智能体分组、自由聊天（消息即唤醒 + §4 接力）、两处存量缺陷修复**；G5 剩余项（只读工具 / 群聊搜索索引 / 图片附件 / 语义路由器 / 智能体 1:1 单聊）未实施，另行评估。v1 的「@ 即唤醒、回完即停」被作者判定为不符合目标——群聊要允许不同 AI 持续讨论，而不是一对一答完就结束。本版把核心从「消息路由」改为「讨论引擎」；v1 的 @ 路由降级为可选「自由模式」。v2.1：§16 的 14 个开放问题已与作者确认收口——自由模式后置 G5、用户主持随 G3 交付、并行轮后置、非思考总时长上调 180s、思考主持对齐 240s、智能体新增 `slowTier` 开关、手动压缩默认保留最近 1 轮全文。**2026-11-18 追加实施**：① 智能体分组（`agents[].group`，设置页 / 新建群聊分区，上限 12 组，见 feature-evaluations §3）；② 自由聊天——任意模式「闲时消息即唤醒」（`@点名`/`@全体成员`/无 @ 轮换接话）+ `mode:'free'` 成员 @ 接力（§12 全套上限）；③ 修复 `parseMentions` 的 ASCII `\b` 在 CJK 后永不成立导致 `@全体成员` 从未命中的存量缺陷；④ 修复组合根漏传 `resolveModel` 导致成员发言必报「模型不可用」的接线事故；⑤ **G6 面板化重构（2026-11-18，见 §18）**——群聊退役内容区标签页、接管 AI 面板为「会话 | 群聊」二视图，成员详情像子代理一样开标签页，轮次预算放宽（默认 5 轮 / 0–20 轮或不限 / 发言上限按成员数×轮数推导）。实施落点：`internal/aigroups` + `groupstore_app.go`（Go 存储）、`frontend/src/ai/ai-agent-model.js / ai-agent-settings.js / ai-group-model.js / ai-group-store.js / ai-group-runtime.js / ai-group-view.js / ai-group-ui-model.js / ai-group-member-view.js / ai-group-sidebar.js` + `bridge/bridge-group-member-view.js`（前端群聊域）、`internal/storage`（清理条目 ai-groups）。
 > 前置阅读：`docs/finished-plans/session-messaging.md`（会话信箱 / 后台注入）· `docs/finished-plans/ai-personalization.md`（人设与注入护栏）· `docs/unfinished-plans/side-chat-tab.md`（内容区虚拟文档标签页先例）· `docs/finished-plans/ai-head-agents-terminal.md`（多智能体 UI 先例）
 > 范围：设置 → AI → 智能体；AI 面板群聊列表；内容区「群聊」标签页；`frontend/src/ai/ai-agent-*` / `ai-group-*` 新域；Go 侧新增 `ai-groups` 存储壳（复用 `internal/sessionstore` 引擎）；不改 AI 传输协议、不改现有会话存储格式、不新增 npm / Go 依赖
 
@@ -726,7 +726,9 @@ UI：成员行显示 `256K`、`1M`、`思考`、速度徽标；群创建时给�
   - 创建后打开群聊标签页并可直接开始讨论。
 - 没有智能体时：空态 + 「去设置创建智能体」。
 
-### 8.3 群聊标签页
+### 8.3 群聊标签页（G6 已退役，保留为历史设计）
+
+> **2026-11-18 G6 面板化重构**：群聊不再开内容区标签页，改为接管 AI 面板（「会话 | 群聊」二视图，见 §18）；`doc.groupChat` 与 `bridge-group-view.js` 已删除，新增 `doc.groupMember`（成员详情标签页）。以下为 G0–G4 时期的设计存档。
 
 - 虚拟文档 `doc.groupChat = groupId`，格式 `groupchat`；照抄 `bridge-sidechat-view.js` 的建标签页/激活/上限（最多 3 个群标签页）。
 - 关闭标签页不删除群、不停止讨论；重开恢复。
@@ -1062,3 +1064,46 @@ UI：成员行显示 `256K`、`1M`、`思考`、速度徽标；群创建时给�
 - 每批先跑该批纯函数测试 + 前端构建；测试命令不接 grep/tail 管道，显式看退出码。
 - 用户可见变更同步 `CHANGELOG.md` / `README.md`；实施完成后本方案移入 `docs/finished-plans/`。
 - 版本号由作者决定，不在本方案内自行修改。
+
+## 18. G6 面板化重构（2026-11-18 实施）
+
+> 背景：作者判定「群聊做成内容区标签页」失败——无滚动（`.jsoneditor-pane.active` 的 `display:block` 压过 `.groupchat-pane` 的 flex）、卡片列表不像聊天、控制条四层堆叠、每条消息 7 个徽标。要求：群聊不再是标签页，而是接管 AI 面板；成员内部情况像子代理一样开标签页；功能 / 样式 / 收益整体重做。
+
+### 18.1 面板二视图（会话 | 群聊）
+
+- `#ai-panel` 新增内容视图状态 `panelView: session | group` 与宿主 `#ai-group-host`（`index.html`）；`.ai-group-mode` class 整组隐藏会话 DOM（消息区 / 底部堆叠区 / 会话 chips 与按钮），群聊视图 `display:flex` 占满剩余高度。显示形态（dock/fullscreen）仍归 `applyMode`，二者正交。
+- `ai-panel.js` 新增 `setPanelView` + 桥 `bridgeShowGroupView(spec)` / `bridgeShowSessionView()` / `bridgePanelView()`；`switchSession` / `newSession` 自动切回会话视图；`open()` 在 group 视图下跳过会话渲染并聚焦群输入框；`onViewChange(view, groupId)` 通知 main 转给侧栏做当前群高亮。
+- `ai-group-runtime` 的 `openGroupTab` 依赖更名 `openGroupView`（main 注入 → `bridgeShowGroupView`）；`openGroup` / `createGroup` / 更多菜单 / AI 代建群都汇入这一条路径。
+- 面板头标题随视图切换（群名 ↔ 「AI 助手」）；更多菜单（非浮窗）新增「群聊」子菜单（切群 / 新建）。
+
+### 18.2 群聊视图重写（QQ/微信群式）
+
+- 视图 API：`createAIGroupView(deps).mountPanel(spec, host) → {dispose, focus}`，不再依赖 `doc/pane`；`dispose` 只退订阅 / 清 timer / 摘文档级监听，讨论在 runtime 继续。
+- 时间线：消息 + 关键系统事件（mention / compress / budget / task-update / speech-timeout / context-overflow）按 ts 合并增量追加；日期分隔（今天 / 昨天 / 日期）、轮次分隔（仅轮次变化处）、连续消息合并（同作者 ≤5 分钟同轮次）；流式打字气泡固定队尾，新消息 `insertBefore` 保证顺序。
+- 气泡：成员左侧彩色首字头像（主持人描边、静音降透明）+ 名字/时间 + `--panel2` 圆角气泡；用户右侧 accent 气泡纯文本；纪要卡 / 立场卡保留；失败 / 超时 / 停止用气泡下小状态行（`.gc-msg-status`，不再让 `.gc-msg-error` 命中消息壳）；模型 / 角色 / 首字耗时收进名字 hover tooltip。
+- 滚动：复用 `ai-scroll-follow`（`createScrollGesture` / `createShrinkBurst` / `nextStickState`）——贴底跟随、用户上翻不抢滚动、「回到底部 · N」未读按钮。
+- 输入区：`createTextarea` 工厂自动增高（1–6 行）；Enter 发送 / Shift+Enter 换行 / IME `isComposing` 保护；`@` 成员补全弹层（成员 + 全体成员，@ 紧跟文字也触发，↑↓/Enter/Tab/Esc 键盘操作，`mentionQuery` / `applyMention` 纯函数可单测）；流式时显示停止按钮（`stopOne`）。
+- 讨论控制收敛：主按钮随状态切换「开始讨论 / 暂停 / 继续」；⋯ 菜单收纳结束并总结 / 压缩 / 润色 / 导出纪要 / 群设置 / 切群 / 新建；看板独立图标，改为右侧覆盖层（不挤压消息）；状态文案每帧更新（修掉 phase 早退导致「N 次发言」冻结的存量 bug）。
+- 空态 / 群已删除态；侧栏群列表重做（最近消息预览 `meta.lastPreview`、头像堆、运行脉冲点、当前群高亮、hover 删除）。
+
+### 18.3 成员详情标签页（像子代理）
+
+- `doc.groupMember = groupId:agentId`（独立上限 8 个），`bridge-group-member-view.js` 只管建标签页 / 容器 / 卸载，正文在 `ai-group-member-view.js`（`mountMemberView(root, spec)`，`runtime.subscribe` 200ms 节流 + 分区签名增量重绘）。
+- 区块：实时流（thinking + content）、上下文占用（`agentCapability` 窗口 + 共享消息量 + 发言预算）、**私有过程（仅你可见）**（`parsePrivateSteps` 按 gid 对齐共享消息、`<details>` 折叠、最近 20 条）、发言记录（最近 30 条，轮次 / 立场 / 首字耗时 / token）。
+- 动作：请发言（可带焦点）/ 静音·取消静音 / 停止 / 打开群聊；入口：群聊消息头像与名字、顶部成员头像堆。
+- 接线：`createDocEditor` / `viewOptionsFor` / `closeDocNow` / bridge 创建点四处同步（`virtual-doc-wiring` 守卫自动对账）；标签图标复用 `group`。
+
+### 18.4 轮次与发言预算放宽
+
+- `GROUP_MAX_ROUNDS = 20`，`maxRounds` 语义 0 = 不限轮次（手动结束）、1–20 固定，默认 5；`maxRoundsOf(meta)`（0 → Infinity）成为唯一口径，禁止再写 `meta.maxRounds || 2` 这类兜底。
+- `maxSpeeches` 不再固定 12：`deriveMaxSpeeches(成员数, 轮数)` 按成员数 × 轮数推导（12–200；不限轮次默认 100），创建与群设置共用；`estimateDiscussionCalls` 支持按发言上限折算不限轮次的估算。
+- `TIMEOUT_PRESETS.discussionTotalMs` 15/30 分钟 → 60/120 分钟；`normalizeDiscussion.round` 上限 99 → 9999；`floorRequests` 补归一化持久化（看板「请求发言」重开不丢）；`normalizeGroupMeta` 新增 `lastPreview`（侧栏预览，≤100 字）。
+
+### 18.5 收益
+
+- 工作流统一：会话与群聊同属 AI 面板，左侧列表切换、右侧聊天；不再抢占编辑器标签，切文件不丢群聊上下文。
+- 交互符合直觉：QQ/微信群式「左列表 + 右聊天窗」，滚动 / 贴底 / Enter 发送 / @ 补全等基础体验补齐。
+- 讨论不再「几句话就结束」：默认 5 轮、可到 20 轮或不限；发言上限按成员数 × 轮数推导（5 人 5 轮 = 25 次），不会再被固定 12 次截断。
+- 智能体透明化：成员详情标签页可并行打开，看到私有思考、上下文占用、发言记录与失败原因。
+- 维护成本下降：删除 `doc.groupChat` 虚拟文档与四处接线，群聊只有一个宿主；视图纯函数层（`ai-group-ui-model.js`）配测试。
+- 验证：前端 1423 项测试全绿 + Vite 构建 + dev mock 浏览器走查（面板接管 / 气泡 / @ 补全 / 成员标签页 / 看板 / 群设置 / 视图切换 / 深浅主题）。
