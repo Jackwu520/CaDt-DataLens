@@ -36,13 +36,16 @@ import {
     stripGroupBlock,
 } from './ai-group-model.js';
 import {
-    createGroupStoreAdapter,
-    encodeGroupEvent,
-    encodeGroupMessage,
-    groupHeaderLine,
-    parsePrivateSteps,
-    replayGroupLog,
-} from './ai-group-store.js';
+    MEMBER_TOOL_GID_PREFIX,
+    MEMBER_TOOL_ROUNDS_MAX,
+    assistantToolCallsApiMessage,
+    memberToolDefs,
+    memberToolsNote,
+    toolArgsSummary,
+    toolResultApiMessage,
+} from './ai-group-tools.js';
+import {inspectToolArguments} from './ai-tool-args.js';
+import {createGroupStoreAdapter, encodeGroupEvent, encodeGroupMessage, groupHeaderLine, parsePrivateSteps, replayGroupLog} from './ai-group-store.js';
 
 export function createAIGroupRuntime(deps) {
     const backend = deps.backend;
@@ -52,6 +55,9 @@ export function createAIGroupRuntime(deps) {
     const flash = deps.flash || (() => {});
     // G6 面板化：openGroupView 由 main 注入，把 AI 面板切到群聊视图（不再开内容区标签页）
     const openGroupView = typeof deps.openGroupView === 'function' ? deps.openGroupView : null;
+    // G5 落地：群成员只读工具执行体（main 注入 → aiPanel.aiGroupApi.execMemberTool；
+    // 路径边界在面板侧钳到群工作区）。缺依赖时成员请求不下发工具，行为回到纯对话。
+    const execMemberTool = typeof deps.execMemberTool === 'function' ? deps.execMemberTool : null;
     const getWorkspace = deps.getWorkspace || (() => '');
     // G4：纪要带回会话（走面板信箱 deliverToSessions；会话 id 由宿主提供）
     const deliverToSessions = typeof deps.deliverToSessions === 'function' ? deps.deliverToSessions : null;
@@ -375,6 +381,13 @@ export function createAIGroupRuntime(deps) {
         const seq = (groupSeq.get(groupId) || 0) + 1;
         groupSeq.set(groupId, seq);
         const roundId = groupId + '#' + agentId + '-' + seq;
+        // G5 只读工具：非主持人 + 群绑定了工作区 + 执行体可用时下发（主持人契约是
+        // 严格 JSON 调度，不掺工具轮）；系统提示词追加 <member_tools> 说明段
+        const toolsEnabled = !!execMemberTool && !!g.meta.workspace;
+        const memberTools = toolsEnabled ? memberToolDefs() : [];
+        if (toolsEnabled) {
+            built.messages.splice(1, 0, {role: 'system', content: memberToolsNote()});
+        }
         const stream = {
             roundId,
             groupId,
@@ -395,6 +408,16 @@ export function createAIGroupRuntime(deps) {
             groupBlock: null,
             contract: null,
             timers: {first: null, total: null},
+            // 工具轮（G5）：apiMessages 在请求间续接（assistant(tool_calls)+tool 结果），
+            // toolCalls 按事件 index 聚合，usage 跨轮累计
+            profileCfg: resolved.profileCfg,
+            retryMax: aiClampInt(config && config.retryMax, 0, 10, 5),
+            apiMessages: built.messages,
+            tools: memberTools,
+            toolCalls: new Map(),
+            toolRounds: 0,
+            toolSteps: [],
+            usageAcc: null,
         };
         stream.done = new Promise((resolve) => {
             stream.resolve = resolve;
@@ -404,13 +427,107 @@ export function createAIGroupRuntime(deps) {
         stream.timers.total = setTimeout(() => fireTimeout(stream, 'total'), timeouts.totalMs);
         notify();
         try {
-            const sendResult = backend.AISendChat(roundId, resolved.profileCfg, built.messages, [], aiClampInt(config && config.retryMax, 0, 10, 5));
+            const sendResult = backend.AISendChat(roundId, resolved.profileCfg, built.messages, stream.tools, stream.retryMax);
             Promise.resolve(sendResult).catch((e) => failStream(stream, (e && e.message) || String(e)));
         } catch (e) {
             failStream(stream, (e && e.message) || String(e));
             return {ok: false, error: '发送失败：' + ((e && e.message) || e)};
         }
         return {ok: true, roundId, done: stream.done};
+    }
+
+    // ---------- 成员工具轮（G5）：ai-done finishReason='tool' → 执行 → 同 roundId 续发 ----------
+
+    // ai-toolcall 事件按 index 聚合（与子代理 handleSubEvent 同款语义）
+    function collectToolCalls(stream, payload) {
+        const argErrors = new Map();
+        const calls = [...stream.toolCalls.values()]
+            .filter((call) => call.name)
+            .map((call, index) => {
+                const check = inspectToolArguments(call.arguments);
+                const id = call.id || ('call_gm_' + stream.toolRounds + '_' + index);
+                if (!check.valid && !check.repaired) {
+                    argErrors.set(id, check.text);
+                }
+                return {id, name: call.name, arguments: check.text};
+            });
+        stream.toolCalls.clear();
+        return {calls, argErrors};
+    }
+
+    async function runMemberToolRound(stream, calls, argErrors) {
+        const g = groups.get(stream.groupId);
+        const workspace = g ? g.meta.workspace : '';
+        stream.toolRounds += 1;
+        stream.statusNote = '正在读取工作区文件…';
+        // assistant(tool_calls) 必须与 tool 结果一一配对，否则下一轮请求被服务商拒收
+        stream.apiMessages.push(assistantToolCallsApiMessage(stream.content, calls));
+        for (const call of calls) {
+            if (stream.finished || stream.toolAbort) break;
+            let result = '';
+            const invalidArgs = argErrors && argErrors.get(call.id);
+            if (invalidArgs) {
+                result = invalidArgs;
+            } else if (!stream.tools.length) {
+                result = '工具轮次已用尽（单次发言最多 ' + MEMBER_TOOL_ROUNDS_MAX + ' 轮）：请基于已获取的信息直接完成这次发言，不要再调用工具。';
+            } else {
+                try {
+                    result = await execMemberTool(call.name, call.arguments, workspace);
+                } catch (e) {
+                    result = '工具执行失败：' + ((e && e.message) || e);
+                }
+            }
+            stream.apiMessages.push(toolResultApiMessage(call, result));
+            stream.toolSteps.push({
+                kind: 'tool',
+                name: call.name,
+                text: toolArgsSummary(call.name, call.arguments) + ' → ' + String(result || '').slice(0, 160).replace(/\s+/g, ' '),
+                ok: !/^(工具执行失败|工具参数|路径超出|工具轮次已用尽|工具 )/.test(String(result || '')),
+            });
+        }
+        // 工具步骤即时写私有日志（gid=tools:<roundId>，与最终发言 turnId 对齐）：
+        // 即使后续轮失败 / 超时，读取过程也不丢（§3.13 私有数据归成员自己）
+        if (stream.toolSteps.length && !stream.noPrivate) {
+            try {
+                await store.privateAppend(stream.groupId, stream.agentId, JSON.stringify({
+                    gid: MEMBER_TOOL_GID_PREFIX + stream.roundId,
+                    agentId: stream.agentId,
+                    steps: stream.toolSteps.slice(),
+                    ts: Date.now(),
+                }) + '\n');
+            } catch (e) {
+                console.error('群成员工具步骤落盘失败', e);
+            }
+        }
+        if (stream.finished) return;
+        if (stream.toolAbort) {
+            finishStream(stream, {status: 'stopped'});
+            return;
+        }
+        // 到达轮次上限：本轮起不再下发工具，并给一句收敛提示（防止「拒绝 → 再要」循环）
+        if (stream.toolRounds >= MEMBER_TOOL_ROUNDS_MAX) {
+            stream.tools = [];
+            stream.apiMessages.push({role: 'user', content: '（工具调用轮次已用尽：请基于已获取的信息直接完成这次发言，不要再看文件。）'});
+        }
+        sendMemberFollowUp(stream);
+    }
+
+    function sendMemberFollowUp(stream) {
+        if (stream.finished) return;
+        // 每个请求独立计时：重挂总时长看门狗（首字看门狗已在 touch 后解除）
+        if (stream.timers.total) clearTimeout(stream.timers.total);
+        const g = groups.get(stream.groupId);
+        const timeouts = g ? memberTimeouts(g.meta, {slowTier: false}, null) : null;
+        stream.timers.total = setTimeout(() => fireTimeout(stream, 'total'), timeouts ? timeouts.totalMs : 180000);
+        stream.statusNote = '';
+        stream.content = '';
+        notify();
+        try {
+            const sendResult = backend.AISendChat(stream.roundId, stream.profileCfg, stream.apiMessages, stream.tools, stream.retryMax);
+            Promise.resolve(sendResult).catch((e) => failStream(stream, (e && e.message) || String(e)));
+        } catch (e) {
+            failStream(stream, (e && e.message) || String(e));
+        }
     }
 
     function touch(stream) {
@@ -444,7 +561,7 @@ export function createAIGroupRuntime(deps) {
             stance: (stream.groupBlock && stream.groupBlock.stance) || '',
             groupBlock: stream.groupBlock || null,
             usage: info.usage || null,
-            hasPrivate: !!stream.thinking && !stream.noPrivate,
+            hasPrivate: !!(stream.thinking || (stream.toolSteps && stream.toolSteps.length)) && !stream.noPrivate,
             timing: {
                 startedAt: stream.startedAt,
                 firstActivityAt: stream.firstActivityAt,
@@ -460,6 +577,8 @@ export function createAIGroupRuntime(deps) {
         try {
             await store.append(stream.groupId, encodeGroupMessage(msg) + '\n');
             g.messages.push(msg);
+            // 私有步骤（§3.13）：思考链随最终发言落盘；工具调用摘要已在工具轮即时落过
+            // （gid=tools:<roundId>，与这条发言的 turnId 对齐），这里不重复写
             if (stream.thinking && !stream.noPrivate) {
                 const step = {
                     gid,
@@ -490,6 +609,7 @@ export function createAIGroupRuntime(deps) {
         if (stream.finished) return;
         stream.finished = true;
         clearTimers(stream);
+        if (stream.toolCalls) stream.toolCalls.clear(); // 成员流才有工具聚合；chair/compress 流无此字段
         // 主持人流：先解析契约——chairMessage 进正文、原文不落盘（§3.6）；解析失败按错误归档
         if (stream.chair) {
             const contract = parseChairContract(stream.content);
@@ -560,14 +680,46 @@ export function createAIGroupRuntime(deps) {
             else stream.statusNote = '排队等待限流…';
         } else if (name === 'ai-param-adjust') {
             stream.statusNote = payload.message || '参数已自动调整';
+        } else if (name === 'ai-toolcall') {
+            if (!stream.toolCalls) return notify(); // chair/compress 流没有工具聚合，忽略
+            // 成员工具轮（G5）：按 index 聚合调用（与子代理 handleSubEvent 同款语义）
+            const index = Number((payload && payload.index) || 0);
+            let call = stream.toolCalls.get(index);
+            if (!call) {
+                call = {id: '', name: '', arguments: ''};
+                stream.toolCalls.set(index, call);
+            }
+            if (payload && payload.callId) call.id = payload.callId;
+            if (payload && payload.name) call.name = payload.name;
+            if (payload && payload.argsDelta) call.arguments += payload.argsDelta;
+            touch(stream);
         } else if (name === 'ai-done') {
-            finishStream(stream, payload);
+            if (!stream.toolCalls) { finishStream(stream, payload); return notify(); } // chair/compress 流无工具逻辑
+            // usage 跨工具轮累计（每轮请求各自的 usage 求和）
+            if (payload && payload.usage && payload.usage.totalTokens) {
+                stream.usageAcc = (stream.usageAcc || 0) + Number(payload.usage.totalTokens) || 0;
+            }
+            const wantsTools = !!(payload && payload.finishReason === 'tool');
+            const collected = collectToolCalls(stream, payload);
+            if (!stream.chair && wantsTools && collected.calls.length && execMemberTool && !stream.toolAbort) {
+                // 成员工具轮：执行只读工具后同 roundId 续发（done 在最后一轮才 resolve）；
+                // 异步兜底：循环内抛错按错误归档，不让 done 悬挂
+                Promise.resolve(runMemberToolRound(stream, collected.calls, collected.argErrors))
+                    .catch((e) => failStream(stream, '工具轮执行失败：' + ((e && e.message) || e)));
+            } else if (wantsTools && collected.calls.length) {
+                // 主持人 / 无执行体 / 已停止：工具调用一律拒绝并按错误归档，防无限循环
+                failStream(stream, '成员发言不支持工具调用（本轮返回了 ' + collected.calls.length + ' 个工具调用）');
+            } else {
+                if (stream.usageAcc && payload) {
+                    payload.usage = {...((payload && payload.usage) || {}), totalTokens: stream.usageAcc};
+                }
+                finishStream(stream, payload);
+            }
         } else if (name === 'ai-error') {
             failStream(stream, (payload && payload.message) || '请求失败');
         }
         notify();
     }
-
     // ---------- 用户消息与停止 ----------
 
     async function sendUserMessage(groupId, text) {
@@ -771,6 +923,10 @@ export function createAIGroupRuntime(deps) {
         const q = chatQueues.get(groupId);
         if (q && q.running) q.abort = true;
         if (q) q.pending = [];
+        // 工具轮间隔（无在飞请求）也要拦：置标志让续发停止并按 stopped 归档
+        for (const stream of streams.values()) {
+            if (stream.groupId === groupId && !stream.finished) stream.toolAbort = true;
+        }
         try {
             backend.AIStop(groupId);
         } catch (e) {
@@ -781,6 +937,8 @@ export function createAIGroupRuntime(deps) {
     function stopOne(groupId, agentId) {
         const stream = activeStreamOf(groupId);
         if (stream && stream.agentId === agentId) {
+            // 在飞请求由 AIStop 走 ai-done(stopped) 正常收尾；工具轮间隔靠标志拦住续发
+            if (!stream.finished) stream.toolAbort = true;
             try {
                 backend.AIStop(stream.roundId);
             } catch (e) {

@@ -215,7 +215,9 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 - **轮次预算放宽（回应「说几句话就没了」）**：`maxRounds` 从 1–3 扩到 0–20（0 = 不限轮次、手动结束），默认 5；发言上限不再固定 12，按「成员数 × 轮数」自动推导（12–200，群设置可改）；整场上限 15/30 分钟 → 60/120 分钟；看板「请求发言」补归一化持久化（重开不丢）；侧栏最近消息预览随消息落盘写入 meta。
 - **成员详情标签页（像子代理）**：`doc.groupMember = groupId:agentId`（独立上限 8 个）——实时流 / 上下文占用 / **私有过程（仅你可见，按发言对齐折叠）** / 发言记录（轮次 / 立场 / 首字耗时 / token），动作：请发言（可带焦点）/ 静音 / 停止 / 打开群聊；点群聊消息头像或名字即开。
 - **@ 成员胶囊（QQ 式）**：弹层选中后输入框里 @名字 变成胶囊——文本仍是纯文本（复制 / 粘贴 / 选区不受影响），Backspace/Delete 命中整颗删且可撤销（execCommand 参与原生撤销栈），改坏名字自动溶解；手打 @合法成员名 也会自动成胶囊。实现为真实 textarea + 同度量镜像层（守住表单控件硬规范），纯函数 `scanMentions` / `buildRichHtml` / `expandDeletionRange` 配测试。
-- 新模块 `ai-group-ui-model.js`（视图纯函数 + 测试）/ `ai-group-member-view.js` / `bridge-group-member-view.js`；删除 `bridge-group-view.js`。前端 1427 项测试与 Vite 构建通过。
+- **群成员只读文件工具（G5 落地）**：成员发言请求带 read_file / list_dir / search_text / glob 四个只读工具——议题引用到正文/章节/文件时先读再发言，不再凭猜测空谈；路径严格钳在群所属工作区内（越界即拒，无审批无提权），单次发言最多 4 轮工具调用（到顶注入收敛提示），工具结果与 assistant(toolCalls) 严格配对防服务商拒收；工具步骤即时写成员私有日志（仅你可见），成员详情页以 🔧 时间线展示；后续发言水合工具备注（成员记得自己读过什么）。主持人契约流不下发工具。
+- **修复输入框打字不可见**：@ 胶囊的「textarea 文字透明 + 镜像层渲染」方案在 IME 组合期整段隐形（中文输入法预编辑文字继承 textarea 颜色），改为**文字正常可见、镜像层只画不透明胶囊底**（镜像层失效最坏也只是胶囊缺失）；同时压掉 createTextarea 自带 min-height:58px 导致的高输入箱，议题栏单行钳制改 max-height 方案（-webkit-line-clamp 在部分版本失效）。
+- 新模块 `ai-group-ui-model.js`（视图纯函数 + 测试）/ `ai-group-member-view.js` / `bridge-group-member-view.js` / `ai-group-tools.js`（成员只读工具）；删除 `bridge-group-view.js`。前端 1653 项测试与 Vite 构建通过。
 
 
 ### 修复（端侧分类器 · 语料与金丝雀按线上口径重建）

@@ -3735,6 +3735,11 @@ function initAIPanel() {
         getAIConfig: () => (aiPanel && aiPanel.aiGroupApi ? aiPanel.aiGroupApi.getConfig() : null),
         // modelRef → 请求配置（漏传则每次发言都报「模型不可用」——群聊 G2 接线事故修复）
         resolveModel: (ref) => (aiPanel && aiPanel.aiGroupApi ? aiPanel.aiGroupApi.resolveModel(ref) : null),
+        // G5 落地：群成员只读文件工具执行体（读取/搜索/格式化助手在面板闭包里，
+        // 路径边界在面板侧钳到群工作区）。漏传则成员请求不下发工具，退回纯对话。
+        execMemberTool: (name, argsJson, workspace) => (
+            aiPanel && aiPanel.aiGroupApi ? aiPanel.aiGroupApi.execMemberTool(name, argsJson, workspace) : null
+        ),
         flash: (...args) => flash(...args),
         // G6 面板化：点群聊行 / 创建群聊 → AI 面板切到群聊视图（不再开内容区标签页）
         openGroupView: (spec) => {

@@ -1084,6 +1084,7 @@ UI：成员行显示 `256K`、`1M`、`思考`、速度徽标；群创建时给�
 - 滚动：复用 `ai-scroll-follow`（`createScrollGesture` / `createShrinkBurst` / `nextStickState`）——贴底跟随、用户上翻不抢滚动、「回到底部 · N」未读按钮。
 - 输入区：`createTextarea` 工厂自动增高（1–6 行）；Enter 发送 / Shift+Enter 换行 / IME `isComposing` 保护；`@` 成员补全弹层（成员 + 全体成员，@ 紧跟文字也触发，↑↓/Enter/Tab/Esc 键盘操作，`mentionQuery` / `applyMention` 纯函数可单测）；流式时显示停止按钮（`stopOne`）。
 - @ 胶囊（QQ 式）：补全选中后输入框里渲染胶囊——真实 textarea 文字透明 + 同度量镜像层按 scanMentions 的 range 画 span（胶囊覆盖的字符与原文严格一致，含尾随空格），复制/粘贴/选区/IME 全走原生不受影响；Backspace/Delete 命中胶囊整段删（execCommand 参与原生撤销栈），改坏名字自动溶解回纯文本，手打 @合法成员名 也会自动成胶囊；补全与 @TA 插入都走 execCommand（可撤销）。纯函数 `scanMentions` / `buildRichHtml` / `expandDeletionRange` 可单测。
+- 只读文件工具（G5 落地）：成员请求带 read_file / list_dir / search_text / glob 四个只读工具（`ai-group-tools.js` 从 AI_TOOL_DEFS 过滤），执行体在 ai-panel `execMemberTool`（复用面板读取/搜索/格式化助手），路径经 `resolveWithinRoot` 钳在群所属工作区（越界即拒、无审批）；回路：ai-done finishReason=tool → 工具执行（与 assistant(toolCalls) 严格配对）→ 同 roundId 续发，单次发言 ≤4 轮（到顶注入收敛提示、摘工具）；工具步骤即时写私有日志（gid=tools:<roundId>，成员详情 🔧 时间线），后续发言水合工具备注；主持人契约流不下发工具。
 - 讨论控制收敛：主按钮随状态切换「开始讨论 / 暂停 / 继续」；⋯ 菜单收纳结束并总结 / 压缩 / 润色 / 导出纪要 / 群设置 / 切群 / 新建；看板独立图标，改为右侧覆盖层（不挤压消息）；状态文案每帧更新（修掉 phase 早退导致「N 次发言」冻结的存量 bug）。
 - 空态 / 群已删除态；侧栏群列表重做（最近消息预览 `meta.lastPreview`、头像堆、运行脉冲点、当前群高亮、hover 删除）。
 

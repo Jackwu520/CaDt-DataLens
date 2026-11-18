@@ -12742,12 +12742,12 @@ textarea.dlg-input:focus {
     color: var(--muted);
     background: color-mix(in srgb, var(--panel) 60%, transparent);
     cursor: pointer;
-    display: -webkit-box;
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 1;
+    /* 收起态恒为 1 行：-webkit-line-clamp 在部分版本被 box/overflow 组合破坏，
+       改用 max-height（1.6em 行盒 + 上下 5px padding）硬钳，展开态放开 */
+    max-height: calc(1.6em + 10px);
     overflow: hidden;
 }
-.gc-topic.expanded { -webkit-line-clamp: unset; display: block; }
+.gc-topic.expanded { max-height: none; }
 .gc-topic.hidden { display: none; }
 /* 消息滚动区 + 覆盖层容器 */
 .gc-body-wrap { position: relative; flex: 1; min-height: 0; display: flex; }
@@ -12890,26 +12890,28 @@ textarea.dlg-input:focus {
     z-index: 1;
     flex: 1;
     min-width: 0;
+    /* 压掉 createTextarea 自带 .ai-settings-textarea 的 min-height/resize（设置页语义） */
+    min-height: 0;
     resize: none;
     border: none;
     background: transparent;
-    /* 文字交给镜像层画：透明 + 光标可见；::placeholder/::selection 单独给色保持可见 */
-    color: transparent;
-    caret-color: var(--text);
+    /* 文字正常可见：胶囊由镜像层画**不透明**底盖在对应字符上（透明文字方案在 IME
+       组合期整段隐形，2026-11-19 事故）；镜像层挂了最坏也只是胶囊缺失 */
+    color: var(--text);
     font: inherit;
     font-size: 12.5px;
     line-height: 1.55;
     padding: 6px 10px;
 }
 .gc-composer .gc-input:focus { outline: none; }
-.gc-composer .gc-input::placeholder { color: var(--muted); opacity: 1; }
 .gc-composer .gc-input::selection { background: color-mix(in srgb, var(--accent) 32%, transparent); }
 .gc-input-mirror {
     position: absolute;
     inset: 0;
     z-index: 0;
     overflow: hidden;
-    color: var(--text);
+    /* 非胶囊文字全部透明：这些字符由 textarea 原生渲染；镜像只画胶囊 */
+    color: transparent;
     pointer-events: none;
     user-select: none;
     font-size: 12.5px;
@@ -12917,12 +12919,13 @@ textarea.dlg-input:focus {
     white-space: pre-wrap;
     overflow-wrap: anywhere;
 }
-/* @ 胶囊：span 覆盖的字符与原文严格一致（含尾随空格），不改排版才能与光标对齐 */
+/* @ 胶囊：span 占据的字符与原文严格一致（含尾随空格）不改排版；底色必须**不透明**，
+   才能盖住 textarea 在同一位置渲染的原生文字 */
 .gc-pill {
-    background: color-mix(in srgb, var(--accent) 18%, transparent);
+    background: color-mix(in srgb, var(--accent) 16%, var(--panel2));
     color: var(--accent);
-    border-radius: 999px;
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 32%, transparent);
+    border-radius: 6px;
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 30%, transparent);
 }
 .gc-send-btn {
     flex: none;
@@ -13073,6 +13076,8 @@ textarea.dlg-input:focus {
 .gm-step-summary { display: flex; align-items: center; gap: 6px; padding: 5px 8px; cursor: pointer; font-size: 11.5px; color: var(--muted); user-select: none; }
 .gm-step-summary:hover { color: var(--text); }
 .gm-step-body { padding: 0 8px 8px; font-size: 11.5px; line-height: 1.6; color: var(--text); white-space: pre-wrap; max-height: 200px; overflow: auto; }
+.gm-step-tool { border-color: color-mix(in srgb, var(--accent) 30%, transparent); }
+.gm-tool-step { color: var(--accent); overflow-wrap: anywhere; }
 .gm-msg-row { border: 1px solid var(--border); border-radius: 8px; background: var(--panel2); padding: 6px 9px; display: flex; flex-direction: column; gap: 4px; }
 .gm-msg-head { display: flex; align-items: center; gap: 6px; font-size: 10.5px; color: var(--muted); flex-wrap: wrap; }
 .gm-msg-content { font-size: 12px; line-height: 1.6; word-break: break-word; }

@@ -246,3 +246,76 @@ export function normalizeFileUrlTarget(raw) {
     }
     return {ok: true, url: u.href, path};
 }
+
+// —— 群成员只读工具的路径边界（ai-group-tools 执行链用） ——
+
+// 把模型给的 rel（相对工作区根，或恰好落在根内的绝对路径）解析为根内的绝对路径。
+// 越界（.. 逃逸 / 根外绝对路径 / 空根）一律拒绝；返回 {ok:true, path} 或 {ok:false, error}。
+// 斜杠风格归一为 /（Windows 的 Go 绑定两种都接受）；盘符 / UNC / mock:// 这类带 // 的
+// 假协议根都支持——base 与 resolved 用**同一套**段规范化，避免 // 被吞导致前缀误判。
+export function resolveWithinRoot(root, rel) {
+    const base = String(root || '').replace(/\\/g, '/').replace(/[\\/]+$/, '');
+    if (!base) return {ok: false, error: '群聊未绑定工作区，文件工具不可用'};
+    const raw = String(rel == null ? '' : rel).trim().replace(/^["']|["']$/g, '');
+    if (!raw || raw === '.') return {ok: true, path: base};
+    const unified = raw.replace(/\\/g, '/');
+    const baseNorm = base.replace(/\\/g, '/').toLowerCase();
+    let joined;
+    if (/^[A-Za-z]:\//.test(unified) || unified.startsWith('//')) {
+        // 绝对路径：必须落在根内（含等于根本身）
+        const lower = unified.toLowerCase();
+        if (lower !== baseNorm && !lower.startsWith(baseNorm + '/')) {
+            return {ok: false, error: '路径超出群聊工作区（' + root + '）：' + raw};
+        }
+        joined = unified;
+    } else if (unified.startsWith('/')) {
+        // 根锚定的「伪相对」（/etc/x）：落点不可预测，一律拒绝
+        return {ok: false, error: '路径超出群聊工作区（' + root + '）：' + raw};
+    } else {
+        joined = base + '/' + unified.replace(/^\/+/, '');
+    }
+    // 段规范化（解析 . / ..），保留盘符与 UNC/mock:// 的前缀结构；
+    // 没有点段时原样返回（mock:// 这类双斜杠协议不被重拼吞掉）
+    const hasDotSeg = joined.split('/').some((seg) => seg === '.' || seg === '..');
+    if (!hasDotSeg) {
+        return {ok: true, path: joined.replace(/\/+$/, '') || base};
+    }
+    const drive = /^[A-Za-z]:$/.test(joined.slice(0, 2)) ? joined.slice(0, 2) : '';
+    const unc = !drive && joined.startsWith('//');
+    let rest = joined;
+    if (drive) rest = joined.slice(3);
+    else if (unc) rest = joined.slice(2);
+    const out = [];
+    for (const part of rest.split('/')) {
+        if (!part || part === '.') continue;
+        if (part === '..') {
+            if (!out.length) return {ok: false, error: '路径超出群聊工作区（' + root + '）：' + raw};
+            out.pop();
+            continue;
+        }
+        out.push(part);
+    }
+    let resolved = out.join('/');
+    if (drive) resolved = drive + '/' + resolved;
+    if (unc) resolved = '//' + resolved;
+    if (!resolved) return {ok: true, path: base};
+    // 前缀校验对 base 做同样规范化（mock://samples → mock:/samples），双斜杠不误判
+    const canon = (p) => {
+        let s = p.replace(/\\/g, '/');
+        const d = /^[A-Za-z]:$/.test(s.slice(0, 2)) ? s.slice(0, 2) : '';
+        const u = !d && s.startsWith('//');
+        if (d) s = s.slice(3);
+        else if (u) s = s.slice(2);
+        const segs = s.split('/').filter((seg) => seg && seg !== '.');
+        let r = segs.join('/');
+        if (d) r = d + '/' + r;
+        if (u) r = '//' + r;
+        return r.toLowerCase();
+    };
+    const resolvedNorm = canon(resolved);
+    const baseCanon = canon(base);
+    if (resolvedNorm !== baseCanon && !resolvedNorm.startsWith(baseCanon + '/')) {
+        return {ok: false, error: '路径超出群聊工作区（' + root + '）：' + raw};
+    }
+    return {ok: true, path: resolved};
+}

@@ -2598,6 +2598,9 @@ const mockBackend = {
         const retryLead = mockScenario.has('airetry');
         const leadDelay = retryLead ? 2000 : 0;
         const reasoningText = mockScenario.has('aithink') ? '先读取用户的问题，再给出简洁回答。' : '';
+        // 群成员只读工具（G5）：roundId 带 #（群命名空间）且下发了工具时模拟一轮 read_file；
+        // 真正的读取由面板 execMemberTool 走 mock OpenFile 完成，这里只负责「模型决定调工具」。
+        // schedule 在下方定义，工具模拟统一挪到 schedule 之后（见 hasReadTool 分支）
         let content = '这是浏览器 mock 回复：已收到「' + prompt.slice(0, 60) + '」。\n\n';
         content += '在地址栏加 `?aithink` 可预览思考链，`?aierr` 预览错误，`?aislow` 测试停止按钮。';
         const thinkChunks = reasoningText ? reasoningText.match(/[^\n]{1,4}/g) || [] : [];
@@ -2612,6 +2615,45 @@ const mockBackend = {
         };
         if (retryLead) {
             schedule(() => emit('ai-retry', {id: sessionId, attempt: 1, max: 5, delayMs: 1500, reason: 'HTTP 429'}), 60);
+        }
+        // 群成员只读工具（G5）：roundId 带 #（群命名空间）且下发了 read_file 时模拟一轮工具调用；
+        // 真正的读取由面板 execMemberTool 走 mock OpenFile 完成，这里只负责「模型决定调工具」
+        const isGroupRound = /#/.test(String(sessionId || ''));
+        const hasReadTool = (tools || []).some((tool) => tool && tool.name === 'read_file');
+        const lastIsToolResult = !!(messages || []).length && ((messages[messages.length - 1] || {}).role === 'tool');
+        if (isGroupRound && hasReadTool && !lastIsToolResult) {
+            const mention = (prompt.match(/[\w\u4e00-\u9fff-]+\.(?:md|json|txt|csv|yaml)/) || [])[0] || 'sample.json';
+            const gmArgs = '{"path": "' + mention + '"}';
+            const gmChunks = gmArgs.match(/.{1,16}/gs) || [];
+            schedule(() => emit('ai-chunk', {id: sessionId, delta: '我先读一下工作区里的这份文件。\n\n'}), 20);
+            gmChunks.forEach((chunk, i) => {
+                schedule(() => emit('ai-toolcall', {
+                    id: sessionId,
+                    index: 0,
+                    callId: i === 0 ? 'call_mock_gm_read' : '',
+                    name: i === 0 ? 'read_file' : '',
+                    argsDelta: chunk,
+                }), 60 + i * 40);
+            });
+            schedule(() => emit('ai-done', {id: sessionId, finishReason: 'tool'}), 90 + gmChunks.length * 40 + 50);
+            return null;
+        }
+        if (isGroupRound && hasReadTool && lastIsToolResult) {
+            const toolMsg = messages[messages.length - 1];
+            const finalText = '（mock）已用 read_file 读了「' + String(toolMsg.name || 'file') + '」，结果开头：\n\n> '
+                + String(toolMsg.content || '').split('\n').slice(0, 6).join('\n> ')
+                + '\n\n成员先读文件再发言——G5 只读工具链路工作正常。';
+            const finalChunks = finalText.match(/[^\n]{1,8}|[\n]{1,2}/g) || [];
+            let finalDelay = 30;
+            finalChunks.forEach((chunk, i) => {
+                schedule(() => emit('ai-chunk', {id: sessionId, delta: chunk}), finalDelay + i * slow);
+            });
+            finalDelay += finalChunks.length * slow;
+            schedule(() => {
+                emit('ai-done', {id: sessionId, finishReason: 'stop', usage: {promptTokens: 40, completionTokens: 56, totalTokens: 96, cachedTokens: 0}});
+                (window.__mockAiRuns || new Map()).delete(sessionId);
+            }, finalDelay + 40);
+            return null;
         }
         if (mockScenario.has('aibrowser')) {
             const lastMsg = (messages || [])[messages.length - 1];

@@ -25,6 +25,7 @@ import {
     normalizeReadWindow,
     readWindowOf,
     renderDirTreeText,
+    resolveWithinRoot,
 } from './ai-file-tools.js';
 import {
     filterSearchResult, filterSearchResultToFile, formatSearchAnswer, normalizeSearchOptions,
@@ -16434,6 +16435,130 @@ function requestApproval(session, toolMessage, info) {
         };
     }
 
+    // 群成员只读工具执行体（G5 落地；ai-group-runtime 经 aiGroupApi.execMemberTool 调用）。
+    // 与面板 executeTool 复用同一批读取 / 搜索 / 格式化助手，但边界独立：
+    // 路径一律 resolveWithinRoot 钳在**群所属工作区**内（越界即拒，无审批、无提权），
+    // 无会话耦合（不记 write-guard 指纹——成员不写文件；无工具卡、无留痕注入）。
+    // 返回文本直接作为 tool 结果回给成员模型；错误也以文本返回（工具轮不抛异常）。
+    async function execMemberTool(name, argsJson, workspace) {
+        let input = {};
+        try {
+            input = JSON.parse(String(argsJson || '{}')) || {};
+        } catch (e) {
+            return '工具参数不是合法 JSON：' + String(argsJson || '').slice(0, 200);
+        }
+        const aiText = (v) => String(v == null ? '' : v);
+        try {
+            if (name === 'read_file') {
+                const resolved = resolveWithinRoot(workspace, aiText(input.path));
+                if (!resolved.ok) return resolved.error;
+                let read;
+                try {
+                    read = await readTextFile(resolved.path, null);
+                } catch (err) {
+                    // 不存在 → 给可行动提示（同名文件在哪），省一轮 glob
+                    const hint = await missingFileHint(err, input.path, resolved.path, {
+                        findFiles: backend.FindFiles ? (root, pattern, max) => backend.FindFiles(root, pattern, max) : null,
+                        resolveRoot: async () => ({ok: true, path: workspace}),
+                        currentWorkspace: workspace,
+                    });
+                    return hint || ('文件读取失败：' + ((err && err.message) || err));
+                }
+                const view = readWindowOf(read.text, normalizeReadWindow(input));
+                let head = '文件：' + input.path + '（' + read.data.size + ' 字节';
+                if (view.startLine != null) head += '，行 ' + view.startLine + '-' + view.endLine + '，共 ' + view.totalLines + ' 行';
+                head += '）\n\n';
+                return head + view.text + (view.hint ? '\n' + view.hint : '');
+            }
+            if (name === 'list_dir') {
+                const rel = aiText(input.path).trim() || '.';
+                const depth = Math.max(1, Math.min(8, Math.round(Number(input.depth) || 1)));
+                const resolved = resolveWithinRoot(workspace, rel);
+                if (!resolved.ok) return resolved.error;
+                if (depth > 1) {
+                    const tree = await backend.ReadDirTree(resolved.path, depth);
+                    const lines = ['目录：' + rel + '（递归 ' + (tree ? tree.depth : depth) + ' 层）'];
+                    const treeLines = renderDirTreeText(tree && tree.root ? tree.root.children : null);
+                    if (treeLines.length) lines.push(...treeLines);
+                    else lines.push('（空目录）');
+                    if (tree && tree.truncated) lines.push('…（条目超预算已截断；可收窄 path）');
+                    return lines.join('\n');
+                }
+                const listing = await backend.ReadDir(resolved.path, 200);
+                const entries = (listing && listing.entries) || [];
+                const lines = ['目录：' + rel];
+                for (const entry of entries) {
+                    const sizeText = entry.isDir ? '' : humanSizeBytes(entry.size);
+                    lines.push((entry.isDir ? '[D] ' : '[F] ') + entry.name + (sizeText ? '（' + sizeText + '）' : ''));
+                }
+                if (!entries.length) lines.push('（空目录）');
+                if (listing && listing.truncated) {
+                    lines.push('…（条目过多已截断：只列前 ' + entries.length + ' 项）');
+                }
+                return lines.join('\n');
+            }
+            if (name === 'search_text') {
+                const query = aiText(input.query).trim();
+                if (!query) return '搜索内容为空';
+                const start = aiText(input.path).trim();
+                const resolved = resolveWithinRoot(workspace, start || '.');
+                if (!resolved.ok) return resolved.error;
+                const root = resolved.path;
+                const opts = normalizeSearchOptions(input);
+                const hasAdvanced = typeof backend.SearchWorkspaceAdvanced === 'function';
+                let result;
+                if (hasAdvanced) {
+                    result = await backend.SearchWorkspaceAdvanced(root, query, {
+                        caseSensitive: !!input.caseSensitive,
+                        regex: opts.regex,
+                        wholeWord: opts.wholeWord,
+                        pattern: opts.pattern,
+                        excludePattern: opts.excludePattern,
+                        outputMode: opts.outputMode,
+                        context: opts.context,
+                        maxResults: opts.maxResults,
+                    });
+                } else {
+                    result = (opts.pattern && backend.SearchWorkspaceFiltered)
+                        ? await backend.SearchWorkspaceFiltered(root, query, !!input.caseSensitive, 1000, opts.pattern)
+                        : await backend.SearchWorkspace(root, query, !!input.caseSensitive, opts.maxResults);
+                }
+                const rootNorm = aiNormalizePath(root).replace(/\/+$/, '');
+                const filtered = filterSearchResult(result, opts.pattern, rootNorm, globMatchPath);
+                if (!opts.pattern) filtered.note = '';
+                return formatSearchAnswer(filtered.result, opts, {
+                    rootNorm,
+                    start,
+                    query,
+                    filterNote: filtered.note,
+                    scopeNote: start ? '搜索起点：' + start + '（路径相对该起点）' : '',
+                });
+            }
+            if (name === 'glob') {
+                const pattern = aiText(input.pattern).trim();
+                if (!pattern) return 'pattern 不能为空（如 *.md、正文/第00*.md）';
+                if (!backend.FindFiles) return '当前版本不支持文件发现（请重新构建或更新应用）';
+                const start = aiText(input.path).trim();
+                const resolved = resolveWithinRoot(workspace, start || '.');
+                if (!resolved.ok) return resolved.error;
+                const maxResults = Math.max(1, Math.min(1000, Math.round(Number(input.maxResults) || 300)));
+                const result = await backend.FindFiles(resolved.path, pattern, maxResults);
+                const files = (result && result.files) || [];
+                if (!files.length) {
+                    return '没有匹配的文件：' + pattern + '；可放宽 pattern，或先用 list_dir 确认目录。';
+                }
+                const head = '匹配 ' + files.length + ' 个文件（pattern: ' + pattern +
+                    (start ? '，起点：' + start : '') + '）；以下路径相对该起点：';
+                const lines = files.map((file) => file.path + (file.size ? '  ' + humanSizeBytes(file.size) : ''));
+                if (result && result.truncated) lines.push('…（结果已截断：缩小 pattern 或用 path 限定目录）');
+                return head + '\n' + lines.join('\n');
+            }
+            return '工具 ' + name + ' 不在群成员只读工具清单内（read_file / list_dir / search_text / glob）；不要重试。';
+        } catch (e) {
+            return '工具执行失败：' + ((e && e.message) || e);
+        }
+    }
+
     return {
         toggle,
         open,
@@ -16496,6 +16621,8 @@ function requestApproval(session, toolMessage, info) {
             enhanceAnswerBody: (...args) => toolCardsMod.enhanceAnswerBody(...args),
             deliverToSessions: (...args) => noticesMod.deliverToSessions(...args),
             resolveModel: (ref) => resolveChatModelRef(ref),
+            // 群成员只读工具执行体（G5 落地）：路径钳在群工作区内，无审批无提权
+            execMemberTool: (name, argsJson, workspace) => execMemberTool(name, argsJson, workspace),
             openDialog: (...args) => openAIDialog(...args),
             closeDialog: () => closeAIDialog(),
             node: (tag, className, text) => dialogNode(tag, className, text),

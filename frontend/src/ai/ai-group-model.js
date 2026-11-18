@@ -5,6 +5,7 @@
 
 import {aiEstimateTokens} from './ai-constants.js';
 import {agentCapability, agentThinkingTier, resolveAgentByKeyword} from './ai-agent-model.js';
+import {MEMBER_TOOL_GID_PREFIX} from './ai-group-tools.js';
 import {PERSONA_GUARD_DATA} from './ai-persona.js';
 import {REPLY_STYLES} from './ai-persona.js';
 
@@ -436,7 +437,8 @@ export function buildMemberMessages({member, group, sharedMessages, ownSteps, pa
         if (msg.role === 'user') {
             messages.push({role: 'user', content: '[用户] ' + String(msg.content || '')});
         } else if (memberName && msg.agentName === memberName) {
-            // 自己的历史消息：水合私有步骤（thinking + 签名随消息；工具 G5）
+            // 自己的历史消息：水合私有步骤（thinking + 签名随消息；工具步骤以
+            // gid=tools:<turnId> 记录，折成一条 user 备注放在发言前，成员记得自己读过什么）
             const hydrated = {};
             const steps = Array.isArray(ownSteps) ? ownSteps.filter((s) => s && s.gid === msg.gid) : [];
             const thinking = steps.flatMap((s) => (Array.isArray(s.steps) ? s.steps : []))
@@ -447,6 +449,14 @@ export function buildMemberMessages({member, group, sharedMessages, ownSteps, pa
             if (thinking) {
                 hydrated.thinking = thinking;
                 if (signature) hydrated.thinkingSignature = signature;
+            }
+            const toolLines = (Array.isArray(ownSteps) ? ownSteps : [])
+                .filter((s) => s && s.gid === MEMBER_TOOL_GID_PREFIX + msg.turnId)
+                .flatMap((s) => (Array.isArray(s.steps) ? s.steps : []))
+                .filter((step) => step && step.kind === 'tool')
+                .map((step) => (step.name || 'tool') + '：' + (step.text || ''));
+            if (toolLines.length) {
+                messages.push({role: 'user', content: '（你这条发言前调用了只读工具：\n- ' + toolLines.join('\n- ') + '\n如需细节可再次读取文件。）'});
             }
             messages.push({role: 'assistant', content: String(msg.content || ''), ...hydrated});
         } else if (msg.role === 'assistant') {

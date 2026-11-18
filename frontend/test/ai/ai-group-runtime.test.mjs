@@ -225,3 +225,148 @@ test('未知 roundId 的事件被忽略（不污染面板路由）', () => {
     assert.equal(backend.sent.length, 0);
 });
 
+
+test('成员工具轮（G5）：finishReason=tool → 执行只读工具 → 同 roundId 续发 → 最终发言落盘 + 私有工具步骤', async () => {
+    const backend = makeBackend();
+    const toolCalls = [];
+    const runtime0 = makeRuntime(backend);
+    // 先建群（要 workspace 非空才有工具）：makeRuntime 不注入 workspace，重创带 getWorkspace 的运行时
+    const agents = runtime0.agents;
+    const runtime = createAIGroupRuntime({
+        backend,
+        getAIConfig: () => ({
+            agents,
+            profiles: [{id: 'p1', name: '账号', provider: 'openai', models: [
+                {id: 'm1', model: 'big', contextWindow: 100000, outputWindow: 4096, reasoningEffort: '', thinking: false},
+            ]}],
+            retryMax: 2,
+            outputLanguage: 'zh',
+        }),
+        resolveModel: (ref) => {
+            const entry = {id: 'm1', model: 'big', contextWindow: 100000, outputWindow: 4096};
+            return {account: {}, entry, profileCfg: {provider: 'openai', model: 'big', baseURL: '', apiKey: '', temperature: 0, maxTokens: 4096, proxy: '', extraHeaders: {}, thinking: false, thinkingBudget: 8000, reasoningEffort: '', rpmLimit: 0}, label: 'big'};
+        },
+        flash: () => {},
+        getWorkspace: () => 'D:/novel',
+        execMemberTool: async (name, argsJson, workspace) => {
+            toolCalls.push({name, argsJson, workspace});
+            assert.equal(name, 'read_file');
+            assert.equal(JSON.parse(argsJson).path, '第0001章-引言.md');
+            assert.equal(workspace, 'D:/novel');
+            return '文件：第0001章-引言.md（1200 字节）\n\n第一章正文…';
+        },
+    });
+    await runtime.init();
+    const gid = await makeGroup(runtime);
+    const r = await runtime.speak(gid, 'a1', {});
+    assert.equal(r.ok, true);
+    // 第一轮请求：带 4 个只读工具 + member_tools 系统段
+    assert.ok(backend.sent.length >= 1);
+    const first = backend.sent[0];
+    assert.deepEqual(first.tools.map((t) => t.name), ['read_file', 'list_dir', 'search_text', 'glob']);
+    const firstSystem = first.messages.filter((m) => m.role === 'system').map((m) => m.content).join('\n');
+    assert.ok(firstSystem.includes('<member_tools>'), '系统段缺 member_tools 说明');
+    // 模型返回 tool 调用：ai-toolcall 聚合 + ai-done finishReason=tool
+    runtime.handleEvent('ai-toolcall', {id: first.roundId, index: 0, callId: 'call_1', name: 'read_file', argsDelta: '{"path": "第000'});
+    runtime.handleEvent('ai-toolcall', {id: first.roundId, index: 0, argsDelta: '1章-引言.md"}'});
+    runtime.handleEvent('ai-done', {id: first.roundId, finishReason: 'tool', usage: {totalTokens: 500}});
+    // 续发请求：同 roundId，末尾是 assistant(toolCalls) + tool 结果
+    assert.ok(await waitFor(() => backend.sent.length >= 2));
+    const second = backend.sent[1];
+    assert.equal(second.roundId, first.roundId);
+    const lastTwo = second.messages.slice(-2);
+    assert.equal(lastTwo[0].role, 'assistant');
+    assert.equal(lastTwo[0].toolCalls[0].id, 'call_1');
+    assert.equal(lastTwo[1].role, 'tool');
+    assert.equal(lastTwo[1].toolCallId, 'call_1');
+    assert.ok(lastTwo[1].content.includes('第一章正文'));
+    // 最终发言
+    runtime.handleEvent('ai-chunk', {id: first.roundId, delta: '读完了第一章，钩子很稳。'});
+    runtime.handleEvent('ai-done', {id: first.roundId, finishReason: 'stop', usage: {totalTokens: 300}});
+    const result = await r.done;
+    assert.equal(result.status, 'done');
+    assert.equal(result.content, '读完了第一章，钩子很稳。');
+    // usage 累计（500 + 300）
+    assert.equal(result.usage.totalTokens, 800);
+    await settle(30);
+    const g = runtime.groupById(gid);
+    assert.equal(g.messages[g.messages.length - 1].content, '读完了第一章，钩子很稳。');
+    assert.equal(g.messages[g.messages.length - 1].hasPrivate, true);
+    const privText = backend.groups.get(gid).priv['a1'];
+    assert.ok(privText.includes('"kind": "tool"') || privText.includes('"kind":"tool"'), '私有日志缺工具步骤');
+    assert.ok(privText.includes('tools:'), '私有工具条目缺 tools: gid 前缀');
+    // 后续轮水合：新发言的请求里出现工具备注
+    const r2 = await runtime.speak(gid, 'a1', {});
+    assert.equal(r2.ok, true);
+    const third = backend.sent[backend.sent.length - 1];
+    const noteMsg = third.messages.find((m) => m.role === 'user' && String(m.content).includes('你这条发言前调用了只读工具'));
+    assert.ok(noteMsg, '后续轮缺工具备注水合');
+    assert.ok(noteMsg.content.includes('read_file：第0001章-引言.md'));
+    runtime.handleEvent('ai-chunk', {id: r2.roundId, delta: '补充。'});
+    runtime.handleEvent('ai-done', {id: r2.roundId, finishReason: 'stop'});
+    await r2.done;
+});
+
+test('成员工具轮上限：4 轮后不再下发工具并给收敛提示；工具结果照常配对', async () => {
+    const backend = makeBackend();
+    let execCount = 0;
+    const agents = [
+        {id: 'a1', name: '架构师', color: 'blue', role: '', modelRef: 'p1|m1', personaText: '', chair: false, enabled: true},
+        {id: 'a2', name: '审查员', color: 'red', role: '', modelRef: 'p1|m1', personaText: '', chair: false, enabled: true},
+    ];
+    const runtime = createAIGroupRuntime({
+        backend,
+        getAIConfig: () => ({
+            agents,
+            profiles: [{id: 'p1', name: '账号', provider: 'openai', models: [
+                {id: 'm1', model: 'big', contextWindow: 100000, outputWindow: 4096, reasoningEffort: '', thinking: false},
+            ]}],
+            retryMax: 2,
+            outputLanguage: 'zh',
+        }),
+        resolveModel: () => ({account: {}, entry: {id: 'm1', model: 'big', contextWindow: 100000, outputWindow: 4096}, profileCfg: {provider: 'openai', model: 'big', baseURL: '', apiKey: '', temperature: 0, maxTokens: 4096, proxy: '', extraHeaders: {}, thinking: false, thinkingBudget: 8000, reasoningEffort: '', rpmLimit: 0}, label: 'big'}),
+        flash: () => {},
+        getWorkspace: () => 'D:/novel',
+        execMemberTool: async () => {
+            execCount++;
+            return '文件内容…';
+        },
+    });
+    await runtime.init();
+    const gid = await makeGroup(runtime);
+    const r = await runtime.speak(gid, 'a1', {});
+    assert.equal(r.ok, true);
+    // 连续 5 次「模型要工具」：第 5 轮起不下发工具，请求里带收敛提示
+    for (let i = 0; i < 5; i++) {
+        const sentCount = backend.sent.length;
+        runtime.handleEvent('ai-toolcall', {id: r.roundId, index: 0, callId: 'call_' + i, name: 'read_file', argsDelta: '{"path": "a.md"}'});
+        runtime.handleEvent('ai-done', {id: r.roundId, finishReason: 'tool'});
+        await waitFor(() => backend.sent.length > sentCount);
+    }
+    const last = backend.sent[backend.sent.length - 1];
+    assert.deepEqual(last.tools, []);
+    const nudge = last.messages.find((m) => m.role === 'user' && String(m.content).includes('工具调用轮次已用尽'));
+    assert.ok(nudge, '缺收敛提示');
+    assert.ok(execCount >= 4, '前 4 轮应真实执行过工具：' + execCount);
+    // 收尾
+    runtime.handleEvent('ai-chunk', {id: r.roundId, delta: '结论。'});
+    runtime.handleEvent('ai-done', {id: r.roundId, finishReason: 'stop'});
+    const result = await r.done;
+    assert.equal(result.status, 'done');
+});
+
+test('无执行体 / 主持人返回工具调用 → 按错误归档（防悬空）', async () => {
+    const backend = makeBackend();
+    const {runtime} = makeRuntime(backend); // 未注入 execMemberTool → 成员不下发工具
+    await runtime.init();
+    const gid = await makeGroup(runtime);
+    const r = await runtime.speak(gid, 'a1', {});
+    assert.equal(r.ok, true);
+    assert.deepEqual(backend.sent[0].tools, [], '无执行体时不应下发工具');
+    runtime.handleEvent('ai-toolcall', {id: r.roundId, index: 0, callId: 'c1', name: 'read_file', argsDelta: '{}'});
+    runtime.handleEvent('ai-done', {id: r.roundId, finishReason: 'tool'});
+    const result = await r.done;
+    assert.equal(result.status, 'error');
+    assert.ok(result.error.includes('不支持工具调用'));
+    await settle(20);
+});

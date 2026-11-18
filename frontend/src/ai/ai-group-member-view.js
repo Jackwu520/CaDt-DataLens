@@ -294,15 +294,31 @@ export function createAIGroupMemberView(deps) {
         const byGid = new Map();
         for (const msg of (g.messages || [])) byGid.set(msg.gid, msg);
         for (const step of steps.slice(-PRIVATE_STEPS_MAX).reverse()) {
-            const msg = byGid.get(step.gid);
-            const box = el('details', 'gm-step');
+            // 工具调用条目（gid=tools:<roundId>）：渲染成工具行，与共享发言的对齐交给头部摘要
+            const isToolEntry = String(step.gid || '').startsWith('tools:');
+            const box = el('details', 'gm-step' + (isToolEntry ? ' gm-step-tool' : ''));
             const summary = el('summary', 'gm-step-summary');
+            const msg = byGid.get(step.gid) || (g.messages || []).find((m) => 'tools:' + m.turnId === step.gid);
             const when = msg ? timeLabel(msg.ts) : timeLabel(step.ts);
-            summary.textContent = `${when} · ${msg ? String(msg.content || '').replace(/\s+/g, ' ').slice(0, 40) || '（空发言）' : '（共享日志中无对应发言）'}`;
+            if (isToolEntry) {
+                const toolLines = (step.steps || []).map((s) => (s && s.name) || 'tool').join('、');
+                summary.textContent = `🔧 ${when} · 工具调用（${toolLines || '无'}）`;
+            } else {
+                summary.textContent = `${when} · ${msg ? String(msg.content || '').replace(/\s+/g, ' ').slice(0, 40) || '（空发言）' : '（共享日志中无对应发言）'}`;
+            }
             box.appendChild(summary);
             const bodyEl = el('div', 'gm-step-body');
-            const texts = (step.steps || []).map((s) => s && s.text).filter(Boolean);
-            bodyEl.textContent = texts.join('\n\n') || '（无文本步骤）';
+            if (isToolEntry) {
+                for (const s of (step.steps || [])) {
+                    const row = el('div', 'gm-tool-step');
+                    row.textContent = '🔧 ' + ((s && s.name) || 'tool') + '：' + ((s && s.text) || '');
+                    bodyEl.appendChild(row);
+                }
+                if (!bodyEl.children.length) bodyEl.textContent = '（无工具步骤）';
+            } else {
+                const texts = (step.steps || []).map((s) => s && s.text).filter(Boolean);
+                bodyEl.textContent = texts.join('\n\n') || '（无文本步骤）';
+            }
             box.appendChild(bodyEl);
             card.appendChild(box);
         }
