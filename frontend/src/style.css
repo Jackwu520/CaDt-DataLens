@@ -12791,14 +12791,10 @@ textarea.dlg-input:focus {
 @media (prefers-reduced-motion: reduce) { .agent-group-chevron { transition: none; } }
 .agent-group-name { font-size: 12px; font-weight: 600; color: var(--accent); }
 .agent-group-count { font-size: 11px; color: var(--muted); }
-.agent-group-field { position: relative; flex: 1; min-width: 0; }
-/* 分组建议下拉（编辑器弹窗）：输入框下方浮层点选填入；输入列表外的新名字 = 新建分组 */
+/* 分组建议弹层（编辑器弹窗）：接入弹层栈的 popover——body 定位（left/top/width 由 JS 按
+   输入框 rect 写内联），z-index 由栈按档位分配（style.css 不手写）；Esc 由栈按层序关闭 */
 .agent-group-suggest {
-    position: absolute;
-    top: calc(100% + 3px);
-    left: 0;
-    right: 0;
-    z-index: 40;
+    position: fixed;
     display: flex;
     flex-direction: column;
     padding: 3px;
@@ -12809,7 +12805,6 @@ textarea.dlg-input:focus {
     max-height: 180px;
     overflow: auto;
 }
-.agent-group-suggest.hidden { display: none; }
 .agent-group-suggest-item {
     display: block;
     width: 100%;

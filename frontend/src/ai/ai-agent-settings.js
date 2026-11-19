@@ -5,6 +5,7 @@
 
 import {createInput, createSelect, createSwitch, createTextarea} from '../core/form-controls.js';
 import {iconSvg} from '../core/icons.js';
+import {overlayStack} from '../core/overlay-stack.js';
 import {aiNowId} from './ai-constants.js';
 import {modelRefLabel} from './ai-config-model.js';
 import {REPLY_STYLES} from './ai-persona.js';
@@ -16,6 +17,66 @@ import {
 export function createAIAgentSettings(ctx, extras) {
     // 分组折叠记忆（本窗口会话内）：Set 只存组名，渲染时跳过成员行
     const collapsedGroups = new Set();
+    // 分组建议弹层（接入弹层栈的 popover）：同一时刻最多一个，句柄收口一切关闭路径
+    let groupSuggestEl = null;
+    let groupSuggestHandle = null;
+    let groupSuggestDismiss = null;
+
+    function closeGroupSuggest() {
+        const handle = groupSuggestHandle;
+        groupSuggestHandle = null;
+        if (handle) handle.dispose(); // onClose 回调会再进这里，句柄已置空防重入
+        if (groupSuggestDismiss) { groupSuggestDismiss(); groupSuggestDismiss = null; }
+        if (groupSuggestEl && groupSuggestEl.parentElement) groupSuggestEl.remove();
+    }
+
+    function openGroupSuggest() {
+        const query = String((editorControls && editorControls.group && editorControls.group.control.value) || '').trim();
+        const names = filterGroupSuggestions(agentGroups(agents()), query);
+        if (!names.length) { closeGroupSuggest(); return; }
+        if (!groupSuggestEl) groupSuggestEl = node('div', 'agent-group-suggest');
+        groupSuggestEl.textContent = '';
+        for (const name of names) {
+            const item = node('button', 'agent-group-suggest-item' + (name === query ? ' current' : ''));
+            item.type = 'button';
+            item.textContent = name === AGENT_DEFAULT_GROUP ? name + '（默认）' : name;
+            // mousedown + preventDefault：先于 blur 采纳，输入框不丢焦点
+            item.addEventListener('mousedown', (e) => {
+                e.preventDefault();
+                if (editorControls && editorControls.group) editorControls.group.control.value = name;
+                closeGroupSuggest();
+            });
+            groupSuggestEl.appendChild(item);
+        }
+        if (!groupSuggestEl.parentElement) document.body.appendChild(groupSuggestEl);
+        // 定位：贴分组输入框下沿，越下沿翻转、钳在视口内（body 定位，栈配 z-index）
+        const control = editorControls && editorControls.group ? editorControls.group.control : null;
+        if (control) {
+            groupSuggestEl.style.visibility = 'hidden';
+            const rect = control.getBoundingClientRect();
+            const width = Math.max(rect.width, 160);
+            const height = groupSuggestEl.offsetHeight;
+            let top = rect.bottom + 4;
+            if (top + height > window.innerHeight - 8) top = Math.max(8, rect.top - height - 4);
+            groupSuggestEl.style.left = Math.max(8, Math.min(rect.left, window.innerWidth - width - 8)) + 'px';
+            groupSuggestEl.style.top = top + 'px';
+            groupSuggestEl.style.width = width + 'px';
+            groupSuggestEl.style.visibility = '';
+        }
+        if (!groupSuggestHandle) {
+            const onDocMouseDown = (e) => {
+                if (groupSuggestEl && groupSuggestEl.contains(e.target)) return;
+                if (editorControls && editorControls.group && editorControls.group.element.contains(e.target)) return;
+                closeGroupSuggest();
+            };
+            document.addEventListener('mousedown', onDocMouseDown, true);
+            groupSuggestDismiss = () => document.removeEventListener('mousedown', onDocMouseDown, true);
+            groupSuggestHandle = overlayStack.open({
+                id: 'agent-group-suggest', kind: 'popover', el: groupSuggestEl,
+                onClose: () => { closeGroupSuggest(); return true; },
+            });
+        }
+    }
     const getConfig = ctx.getConfig;
     const saveAIConfig = ctx.saveAIConfig;
     const askConfirm = ctx.askConfirm;
@@ -181,54 +242,33 @@ export function createAIAgentSettings(ctx, extras) {
         rowModel.appendChild(modelCtl.element);
         wrap.appendChild(rowModel);
 
-        // 分组：必有值字段（空 → 默认）。单个输入框 + 建议下拉：focus/输入列出（过滤后的）
+        // 分组：必有值字段（空 → 默认）。单个输入框 + 建议弹层：focus/输入列出（过滤后的）
         // 现有分组点选填入；输入列表里没有的新名字 = 新建分组（保存时 groupNameError 校验）。
+        // 建议是接入弹层栈的正规 popover（body 定位 + 栈配 z-index，Esc 由栈按层序关闭）。
         const rowGroup = node('div', 'agent-form-row');
         rowGroup.appendChild(fieldLabel('分组'));
-        const groupField = node('div', 'agent-group-field');
         const groupCtl = createInput({
             value: agent ? agent.group : AGENT_DEFAULT_GROUP,
             placeholder: '点选现有分组，或输入新名字即新建（≤16 字符）',
             spellcheck: false,
             autocomplete: 'off',
         });
-        groupField.appendChild(groupCtl.element);
-        const groupSuggest = node('div', 'agent-group-suggest hidden');
-        groupField.appendChild(groupSuggest);
-        rowGroup.appendChild(groupField);
+        rowGroup.appendChild(groupCtl.element);
         wrap.appendChild(rowGroup);
-        const renderGroupSuggestions = () => {
-            const query = String(groupCtl.control.value || '').trim();
-            const names = filterGroupSuggestions(agentGroups(agents()), query);
-            groupSuggest.textContent = '';
-            for (const name of names) {
-                const item = node('button', 'agent-group-suggest-item' + (name === query ? ' current' : ''));
-                item.type = 'button';
-                item.textContent = name === AGENT_DEFAULT_GROUP ? name + '（默认）' : name;
-                // mousedown + preventDefault：先于 blur 采纳，输入框不丢焦点
-                item.addEventListener('mousedown', (e) => {
-                    e.preventDefault();
-                    groupCtl.control.value = name;
-                    groupSuggest.classList.add('hidden');
-                });
-                groupSuggest.appendChild(item);
-            }
-            groupSuggest.classList.toggle('hidden', !names.length);
-        };
-        groupCtl.control.addEventListener('focus', renderGroupSuggestions);
-        groupCtl.control.addEventListener('input', renderGroupSuggestions);
+        groupCtl.control.addEventListener('focus', () => openGroupSuggest());
+        groupCtl.control.addEventListener('input', () => openGroupSuggest());
         groupCtl.control.addEventListener('blur', () => {
-            // 延迟让 mousedown 采纳先落地
-            setTimeout(() => groupSuggest.classList.add('hidden'), 150);
+            // 延迟让 mousedown 采纳先落地（采纳时 preventDefault 不丢焦点）
+            setTimeout(() => closeGroupSuggest(), 150);
         });
         groupCtl.control.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape') groupSuggest.classList.add('hidden');
+            // Esc 归弹层栈（建议 popover 在栈顶，先于所在对话框关闭）
             if (e.key === 'Enter') {
                 e.preventDefault();
                 const names = filterGroupSuggestions(agentGroups(agents()), String(groupCtl.control.value || '').trim());
                 if (names.length) {
                     groupCtl.control.value = names[0];
-                    groupSuggest.classList.add('hidden');
+                    closeGroupSuggest();
                 }
             }
         });
@@ -300,6 +340,7 @@ export function createAIAgentSettings(ctx, extras) {
         statusLine.style.minHeight = '14px';
 
         const cancelBtn = dialogButton('取消', 'dlg-btn', () => {
+            closeGroupSuggest();
             editorControls = null;
             closeAIDialog();
         });
@@ -370,6 +411,7 @@ export function createAIAgentSettings(ctx, extras) {
             statusLine.textContent = result.error || '保存失败';
             return;
         }
+        closeGroupSuggest();
         saveAIConfig();
         editorControls = null;
         closeAIDialog();
