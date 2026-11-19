@@ -67,12 +67,32 @@ export function buildCompactSummary(text, cutoff, trigger, totalMessages) {
     };
 }
 
+// 压缩后旧消息的 usage 不再代表当前上下文：它计量的是「压缩前整段输入」，实测锚点
+// 会因此停在压缩前的占用上（环纹丝不动，直到下一轮响应带回新 usage）。usage 本身
+// 保留——统计行总量 / tok/s / 缓存命中与「最近一次 API 实际用量」都依赖它——只打
+// 标记让锚点跳过，压缩后估算退回纯字符口径。标记随消息落盘（serializeSessionMessage
+// 拷贝全部非 _ 字段），重载后依旧成立。
+export function stampPreCompactUsage(messages) {
+    for (const message of Array.isArray(messages) ? messages : []) {
+        if (message && message.usage && typeof message.usage === 'object') {
+            message.usage.preCompact = true;
+        }
+    }
+}
+
+// 锚点可信判定：带 preCompact 标记的 usage 计量的是压缩前的上下文，不能当实测锚点。
+export function isAnchorUsage(message) {
+    return !!(message && message.usage && typeof message.usage === 'object' && !message.usage.preCompact);
+}
+
 // 应用：裁剪 messages 并写回 summary，返回被归档的那段（调用方决定是否落盘 / 推送归档列表）。
+// 保留段里的 usage 一并打 preCompact 标记：它们是在裁剪**之前**计量、包含已归档内容的。
 export function applyCompactToSession(session, summary, cutoff) {
     if (!session) return {archived: [], kept: 0};
     const limit = Math.max(0, Math.min(Number(cutoff) || 0, session.messages.length));
     const archived = session.messages.slice(0, limit);
     session.messages = session.messages.slice(limit);
+    stampPreCompactUsage(session.messages);
     session.summary = summary;
     return {archived, kept: session.messages.length};
 }

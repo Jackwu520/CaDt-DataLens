@@ -10,6 +10,8 @@ import {
     COMPACT_RETAIN_RATIO,
     buildCompactSummary,
     applyCompactToSession,
+    stampPreCompactUsage,
+    isAnchorUsage,
     compactTranscriptOf,
     buildCompactMessages,
     compactThresholdOf,
@@ -102,6 +104,46 @@ test('applyCompactToSession：裁剪消息、写回 summary、返回归档段', 
     const other = {messages: [msg('user')], summary: null};
     assert.equal(applyCompactToSession(other, summary, 99).kept, 0);
     assert.deepEqual(applyCompactToSession(null, summary, 1), {archived: [], kept: 0});
+});
+
+// 压缩后旧 usage 计量的是「压缩前整段输入」，锚点不能再信它——否则占用环停在压缩前
+// 的百分比不动（实测教训：82% 压缩后仍显示 82%，直到下一轮响应落地才回落）。
+test('applyCompactToSession：保留段的 usage 打 preCompact 标，归档段不动', () => {
+    const withUsage = (role) => msg(role, {usage: {promptTokens: 100, completionTokens: 10, totalTokens: 110}});
+    const session = {messages: [withUsage('user'), withUsage('assistant'), withUsage('user'), withUsage('assistant')], summary: null};
+    const archivedBefore = session.messages[1].usage;
+    const summary = buildCompactSummary('s', 2, null, 4);
+    const result = applyCompactToSession(session, summary, 2);
+    // 保留段全部打标（被裁剪前计量过整段上下文），归档段原样
+    for (const message of session.messages) {
+        assert.equal(isAnchorUsage(message), false, '保留段 usage 不可再作锚点');
+        assert.equal(message.usage.preCompact, true);
+        assert.equal(message.usage.totalTokens, 110, 'usage 数值保留（统计行依赖）');
+    }
+    assert.equal(result.archived[1].usage, archivedBefore, '归档段对象未被改动');
+    assert.equal(isAnchorUsage(result.archived[1]), true);
+    // 二次压缩幂等：已打标不会出问题
+    applyCompactToSession(session, summary, 0);
+    assert.equal(session.messages[0].usage.preCompact, true);
+});
+
+test('isAnchorUsage：新鲜 usage 可信，打标 / 缺失不可信', () => {
+    assert.equal(isAnchorUsage({role: 'assistant', usage: {promptTokens: 5}}), true, '压缩后的新响应');
+    assert.equal(isAnchorUsage({role: 'assistant', usage: {promptTokens: 5, preCompact: true}}), false);
+    assert.equal(isAnchorUsage({role: 'assistant'}), false, '无 usage');
+    assert.equal(isAnchorUsage(null), false);
+});
+
+test('stampPreCompactUsage：独立可用，非对象 usage 跳过', () => {
+    const messages = [
+        {role: 'assistant', usage: {totalTokens: 1}},
+        {role: 'assistant', usage: null},
+        {role: 'user'},
+    ];
+    stampPreCompactUsage(messages);
+    assert.equal(messages[0].usage.preCompact, true);
+    assert.equal(messages[1].usage, null);
+    stampPreCompactUsage(null);
 });
 
 test('compactTranscriptOf：带上此前摘要与工具结果，超长从尾部保留', () => {
