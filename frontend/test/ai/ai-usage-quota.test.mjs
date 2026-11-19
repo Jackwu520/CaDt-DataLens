@@ -9,15 +9,19 @@ import {
     createAIUsageQuota,
     formatUsageAge,
     formatUsageAmount,
+    formatUsageCompactText,
     formatUsageCountdown,
-    formatUsageHeadline,
+    formatPercentCompact,
     normalizeResetAt,
     normalizeUsageResult,
     officialSnapshotFromResult,
+    shortWindowName,
+    currencySymbolOf,
+    usageCompactLine,
     usageHeadlineParts,
-    usageHeadlineSummary,
     usageItemText,
     usageStale,
+    usageTightSummary,
     usageTone,
 } from '../../src/ai/ai-usage-quota.js';
 import {normalizeUsageConfig} from '../../src/ai/ai-config-model.js';
@@ -214,7 +218,7 @@ test('usageStale：0 间隔只认无缓存，有间隔按时间窗', () => {
     assert.equal(usageStale({state: 'ok', items: [], at: Date.now() - 3600000}, 5), true);
 });
 
-test('展示格式化：∞ / 两位小数 / 主句 / 多套餐报数 / 失败态', () => {
+test('展示格式化：∞ / 两位小数 / 条目文案 / 紧凑行三形态 / 分组头单值', () => {
     assert.equal(formatUsageAmount(-1, 'USD'), '∞');
     assert.equal(formatUsageAmount(3, 'USD'), '3.00 USD');
     assert.equal(formatUsageAmount(34.5555, '%'), '34.56%');
@@ -224,60 +228,92 @@ test('展示格式化：∞ / 两位小数 / 主句 / 多套餐报数 / 失败�
     assert.equal(usageItemText({isValid: false, invalidMessage: 'Key 无效'}), 'Key 无效');
     assert.equal(usageItemText({label: '剩余', value: '$3.20'}), '剩余 $3.20');
 
-    const head = formatUsageHeadline({
-        state: 'ok',
-        items: [
-            {label: '总额余额（CNY）', value: '49.05', isValid: true},
-            {label: '账户可用', value: '是', isValid: true},
-        ],
-    });
-    assert.equal(head, '总额余额（CNY） 49.05'); // 账户可用被过滤
-
-    assert.equal(formatUsageHeadline({state: 'ok', items: [{planName: '每周', used: 40, unit: '%'}]}), '每周 已用 40.00%');
-    // 多套餐完整列出（不聚合「N 个套餐」）
-    assert.equal(formatUsageHeadline({state: 'ok', items: [{remaining: 1, unit: 'USD'}, {remaining: 2, unit: 'USD'}]}), '1.00 USD · 2.00 USD');
-    assert.equal(formatUsageHeadline({state: 'error', error: 'HTTP 401'}), 'HTTP 401');
-    assert.equal(formatUsageHeadline(null), '');
-    // 外显只显示余额总额：官方条目优先「总额余额」，赠送/充值留给详情层
+    // ── 显示规范 v1：账号卡紧凑行 / 分组头单值 ──
+    // 币种型（官方引擎）：只显示总额，币种转符号；赠送/充值/账户可用留详情层
     assert.deepEqual(
-        usageHeadlineSummary({state: 'ok', items: [
-            {label: '总额余额（CNY）', value: '49.03'},
-            {label: '赠送余额（CNY）', value: '0.00'},
-            {label: '充值余额（CNY）', value: '49.03'},
+        usageCompactLine({state: 'ok', items: [
+            {label: '总额余额（CNY）', value: '48.47'},
+            {label: '赠送余额（CNY）', value: '2.00'},
+            {label: '账户可用', value: '是'},
         ]}),
-        {label: '总额余额（CNY） ', value: '49.03', tone: 'normal'},
+        {prefix: '', parts: [{label: '', value: '¥48.47', tone: '', countdown: ''}]},
     );
-    // 脚本模板：同单位 remaining 求和，返赠只加一次
-    assert.deepEqual(
-        usageHeadlineSummary({state: 'ok', items: [
-            {planName: '5 小时', remaining: 660000, total: 1000000, unit: '%', grantBalance: 500},
-            {planName: '每周', remaining: 3800000, total: 5000000, unit: '%', grantBalance: 500},
-        ]}),
-        {label: '剩余 ', value: '4.5M', tone: 'normal'},
-    );
-    // 同一池的 5h/7d 是重叠约束：按池取较大 remaining，再跨池求和
-    assert.deepEqual(
-        usageHeadlineSummary({state: 'ok', items: [
-            {planName: '池A · 5 小时', poolName: '池A', remaining: 660000, total: 1000000, unit: '%', grantBalance: 500},
-            {planName: '池A · 每周', poolName: '池A', remaining: 3800000, total: 5000000, unit: '%', grantBalance: 0},
-            {planName: '池B · 每周', poolName: '池B', remaining: 1000000, total: 2000000, unit: '%'},
-        ]}),
-        {label: '剩余 ', value: '4.8M', tone: 'normal'},
-    );
-    // % 条目的 remaining 是 token 数：不能拼成百分号
-    assert.equal(usageItemText({unit: '%', remaining: 660000}), '余额 660000.00');
-    // 百分比型没有 remaining：退回首段（已用百分比）
-    assert.deepEqual(
-        usageHeadlineSummary({state: 'ok', items: [{planName: '每周', used: 40, unit: '%'}]}),
-        {label: '每周 ', value: '已用 40.00%', tone: 'normal'},
-    );
-    assert.equal(usageHeadlineSummary({state: 'error', error: 'HTTP 401'}).value, 'HTTP 401');
-    assert.equal(usageHeadlineSummary(null), null);
-    // 只剩「账户可用」一行时照常显示（没有更有信息量的行可挑）
+    assert.equal(formatUsageCompactText({state: 'ok', items: [{label: '总额余额（USD）', value: '18.00'}]}), '$18.00');
+    // value 自带 ¥ 前缀（SiliconFlow）不重复加符号
+    assert.equal(formatUsageCompactText({state: 'ok', items: [{label: '总余额', value: '¥4.7'}]}), '¥4.7');
+    // OpenRouter 没有「总额」行：优先「剩余」
     assert.equal(
-        formatUsageHeadline({state: 'ok', items: [{label: '账户可用', value: '是', isValid: true}]}),
-        '账户可用 是',
+        formatUsageCompactText({state: 'ok', items: [{label: '已购额度', value: '$5'}, {label: '剩余', value: '$3.2'}]}),
+        '$3.2',
     );
+    // NewAPI 货币 remaining 求和
+    assert.equal(
+        formatUsageCompactText({state: 'ok', items: [{remaining: 1, unit: 'USD'}, {remaining: 2, unit: 'USD'}]}),
+        '$3.00',
+    );
+
+    // 已用型：窗口短名 + 前缀「已用：」，按剩余比例上色（≤0 红 / <20% 橙 / 其余绿）
+    const used = usageCompactLine({state: 'ok', items: [
+        {planName: '5 小时', used: 70, unit: '%'},
+        {planName: '每周', used: 95, unit: '%'},
+        {planName: '每月', used: 100, unit: '%'},
+    ]});
+    assert.equal(used.prefix, '已用：');
+    assert.deepEqual(used.parts.map((p) => p.label + ' ' + p.value), ['5h 70%', '7d 95%', '30d 100%']);
+    assert.deepEqual(used.parts.map((p) => p.tone), ['normal', 'warning', 'danger']);
+
+    // 剩余型（SenseNova）：remaining/total 换算百分比，池名直接拼窗口短名
+    const sense = usageCompactLine({state: 'ok', items: [
+        {planName: '通用池 · 5 小时', poolName: '通用池', remaining: 850, total: 50000, unit: '%'},
+        {planName: '通用池 · 每周', poolName: '通用池', remaining: 3800000, total: 5000000, unit: '%'},
+    ]});
+    assert.equal(sense.prefix, '剩余：');
+    assert.deepEqual(sense.parts.map((p) => p.label), ['通用池5h', '通用池7d']);
+    assert.deepEqual(sense.parts.map((p) => p.value), ['1.7%', '76%']);
+    assert.deepEqual(sense.parts.map((p) => p.tone), ['warning', 'normal']);
+
+    // 倒计时文本：⏱ 位置在 DOM，纯文本作「（…后重置）」后缀
+    assert.equal(
+        formatUsageCompactText({state: 'ok', items: [{planName: '每周', used: 40, unit: '%', resetAt: Date.now() + 90 * 60000}]}),
+        '已用：7d: 40%（1h30m 后重置）',
+    );
+    assert.equal(formatUsageCompactText({state: 'error', error: 'HTTP 401'}), 'HTTP 401');
+    assert.equal(formatUsageCompactText(null), '');
+    // 已失效条目原位红字（全部失效时形态未知，不带前缀）
+    assert.equal(
+        formatUsageCompactText({state: 'ok', items: [{planName: '5 小时', used: 1, unit: '%', isValid: false, invalidMessage: 'Key 无效'}]}),
+        '5h: Key 无效',
+    );
+
+    // 分组头单值：最紧约束
+    assert.equal(usageTightSummary({state: 'ok', items: [{label: '总额余额（CNY）', value: '48.47'}]}).value, '¥48.47');
+    const tightUsed = usageTightSummary({state: 'ok', items: [
+        {planName: '5 小时', used: 70, unit: '%'},
+        {planName: '每周', used: 37, unit: '%'},
+    ]});
+    assert.equal(tightUsed.label, '5h ');
+    assert.equal(tightUsed.value, '70%');
+    const tightSense = usageTightSummary({state: 'ok', items: [
+        {planName: '通用池 · 5 小时', poolName: '通用池', remaining: 850, total: 50000, unit: '%'},
+        {planName: '通用池 · 每周', poolName: '通用池', remaining: 3800000, total: 5000000, unit: '%'},
+    ]});
+    assert.equal(tightSense.label, '通用池5h ');
+    assert.equal(tightSense.value, '1.7%');
+    assert.equal(tightSense.tone, 'warning');
+    assert.equal(usageTightSummary({state: 'error', error: 'HTTP 401'}).value, 'HTTP 401');
+    assert.equal(usageTightSummary(null), null);
+
+    // 规范基础记号：窗口短名 / 货币符号 / 百分比紧凑
+    assert.equal(shortWindowName('5 小时'), '5h');
+    assert.equal(shortWindowName('每周'), '7d');
+    assert.equal(shortWindowName('每月'), '30d');
+    assert.equal(shortWindowName('自定义窗口'), '自定义窗口');
+    assert.equal(currencySymbolOf('CNY'), '¥');
+    assert.equal(currencySymbolOf('USD'), '$');
+    assert.equal(currencySymbolOf('%'), '');
+    assert.equal(formatPercentCompact(0.004), '0%');
+    assert.equal(formatPercentCompact(98.23), '98.2%');
+    assert.equal(formatPercentCompact(120), '100%');
 });
 
 test('usageTone：按剩余 20% 阈值分绿/橙/红（对齐 cc-switch），只给数值上色', () => {

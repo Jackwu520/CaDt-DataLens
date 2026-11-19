@@ -308,79 +308,225 @@ export function usageHeadlineParts(snapshot, now = Date.now()) {
     return {segments};
 }
 
-// 纯文本主句（模型选择器分组头等单行场景用）：segments 拼接、完整列出多套餐。
-export function formatUsageHeadline(snapshot, now = Date.now()) {
-    if (!snapshot) return '';
-    if (snapshot.state === 'error') return snapshot.error || '查询失败';
-    const parts = usageHeadlineParts(snapshot, now);
-    return (parts.segments || []).map((segment) => segment.label + segment.value).join(' · ');
+// ── 显示规范 v1（2026-11-20 定稿，全文见 docs/finished-plans/ai-quota-display.md §11）──
+// 账号卡外显与选择器分组头的唯一口径：币种只留符号（¥48.47，不写 CNY/USD）；
+// 窗口短名 5 小时→5h / 每周→7d / 每月→30d；百分比最多 1 位小数；倒计时 ⏱ + 两单位；
+// 段间「 · 」；只有数值上色，按剩余比例 ≤0 红 / <20% 橙 / 其余绿，币种数值不上色。
+
+// 窗口短名：匹配不上时去空格原样保留。
+export function shortWindowName(name) {
+    const text = String(name || '').trim();
+    if (!text) return '';
+    if (/^5\s*小时$/.test(text)) return '5h';
+    if (/^(每周|7\s*天|本周)$/.test(text)) return '7d';
+    if (/^(每月|30\s*天|月)$/.test(text)) return '30d';
+    return text.replace(/\s+/g, '');
 }
 
-// 外显只显示「余额总额」：官方引擎优先「总额余额」条目；脚本模板把同单位的 remaining
-// 求和（返赠余额只加一次）。多套餐的已用百分比与明细留给点击弹出的详情层。
-function summaryAmount(value, unit) {
-    const n = Number(value);
-    if (!Number.isFinite(n)) return '';
-    const compact = (v) => Number(v.toFixed(1)).toString();
-    if (unit && /^(usd|cny|rmb|元|美元|人民币)$/i.test(unit)) return n.toFixed(2) + ' ' + unit;
-    let text;
-    if (Math.abs(n) >= 1e8) text = compact(n / 1e8) + '亿';
-    else if (Math.abs(n) >= 1e6) text = compact(n / 1e6) + 'M';
-    else if (Math.abs(n) >= 1e4) text = compact(n / 1e3) + 'K';
-    else text = String(Math.round(n));
-    return unit ? text + ' ' + unit : text;
+// 货币单位 → 符号；其余（'%' / 'tokens' / 空）返回 ''。
+export function currencySymbolOf(unit) {
+    const text = String(unit || '').trim().toLowerCase();
+    if (text === 'cny' || text === 'rmb' || text === '元' || text === '人民币') return '¥';
+    if (text === 'usd' || text === '美元') return '$';
+    return '';
 }
 
-export function usageHeadlineSummary(snapshot, now = Date.now()) {
+// 百分比紧凑文案：clamp 0–100，最多 1 位小数，整数不带小数（0.00% → 0%）。
+export function formatPercentCompact(pct) {
+    const value = Math.min(100, Math.max(0, Number(pct) || 0));
+    const rounded = Math.round(value * 10) / 10;
+    return (Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1)) + '%';
+}
+
+function toneForLeft(leftPct) {
+    if (leftPct <= 0) return 'danger';
+    if (leftPct < USAGE_WARN_BELOW_PERCENT) return 'warning';
+    return 'normal';
+}
+
+// planName「通用池 · 5 小时」→ {pool:'通用池', window:'5h'}；无「·」时池名取 poolName。
+function poolAndWindow(item) {
+    const planText = String(item.planName || '').trim();
+    const sep = planText.indexOf('·');
+    if (sep >= 0) {
+        return {
+            pool: String(item.poolName || '').trim() || planText.slice(0, sep).trim(),
+            window: shortWindowName(planText.slice(sep + 1)),
+        };
+    }
+    return {pool: String(item.poolName || '').trim(), window: shortWindowName(planText)};
+}
+
+const CURRENCY_PAREN_RE = /[（(]\s*(cny|rmb|usd|美元|人民币|元)\s*[）)]/i;
+
+// 官方条目的币种与数值：label「总额余额（CNY）」+ value「49.05」→ ¥49.05；
+// value 自带 ¥/$ 前缀时直接沿用（SiliconFlow「总余额 ¥4.7」），不重复加符号。
+function currencyOfOfficialItem(item) {
+    const label = String(item.label || '');
+    const value = String(item.value || '').trim();
+    let symbol = '';
+    const paren = CURRENCY_PAREN_RE.exec(label);
+    if (paren) symbol = currencySymbolOf(paren[1]);
+    let amount = value;
+    const lead = /^[¥$]\s*/.exec(amount);
+    if (lead) {
+        symbol = symbol || lead[0].trim();
+        amount = amount.slice(lead[0].length);
+    }
+    return {symbol, amount};
+}
+
+// 主余额条目：总额 → 总余额 → 剩余 → 余额 → 首行（OpenRouter 只有「剩余」，落第三档）。
+function primaryOfficialItem(items) {
+    const byKeyword = (keyword) => items.find((item) => String(item.label).includes(keyword));
+    return byKeyword('总额') || byKeyword('总余额') || byKeyword('剩余') || byKeyword('余额') || items[0];
+}
+
+function invalidPart(item) {
+    const {pool, window} = poolAndWindow(item);
+    return {
+        label: (pool + window) || String(item.label || item.planName || ''),
+        value: item.invalidMessage || '已失效',
+        tone: 'danger',
+        countdown: '',
+    };
+}
+
+// 紧凑段（账号卡行与 tooltip 共用）：{prefix, parts:[{label, value, tone, countdown}]}。
+// 形态判定：官方 label/value 或货币 remaining → 币种型（只显示总额）；remaining+total
+//（非货币单位，SenseNova 积分这类）→ 剩余型（换算百分比）；unit=% 只剩 used → 已用型。
+// extra（"已用 $X / $Y"、"返赠 N"）与绝对值不上外显行，留给详情弹层。
+function usageCompactParts(snapshot) {
     if (!snapshot) return null;
-    if (snapshot.state === 'error') return {label: '', value: snapshot.error || '查询失败', tone: 'danger'};
-    const items = (Array.isArray(snapshot.items) ? snapshot.items : []).filter((item) => item && item.isValid !== false);
+    if (snapshot.state === 'error') {
+        return {prefix: '', parts: [{label: '', value: snapshot.error || '查询失败', tone: 'danger', countdown: ''}]};
+    }
+    const items = (Array.isArray(snapshot.items) ? snapshot.items : []).filter((item) => item);
     if (!items.length) return null;
+    const valid = items.filter((item) => item.isValid !== false);
+    if (!valid.length) return {prefix: '', parts: items.map(invalidPart)};
+    const invalidParts = () => items.filter((item) => item.isValid === false).map(invalidPart);
 
-    // 官方引擎（label/value 型）：只取总额余额（或第一个含「余额」的行）
-    const official = items.filter((item) => item.label && item.value);
+    // ① 币种型（官方引擎 label/value）：只显示总额，赠送/充值/可用留详情层
+    const official = valid.filter((item) => item.label && item.value && item.label !== '账户可用' && item.label !== '账户');
     if (official.length) {
-        const total = official.find((item) => String(item.label).includes('总额'))
-            || official.find((item) => String(item.label).includes('剩余'))
-            || official.find((item) => String(item.label).includes('余额'))
-            || official[0];
-        return {label: String(total.label).trim() + ' ', value: String(total.value), tone: 'normal'};
+        const primary = primaryOfficialItem(official);
+        const {symbol, amount} = currencyOfOfficialItem(primary);
+        const value = symbol
+            ? symbol + amount
+            : String(primary.label).replace(CURRENCY_PAREN_RE, '').trim() + ' ' + amount;
+        return {prefix: '', parts: [{label: '', value, tone: '', countdown: ''}, ...invalidParts()]};
     }
 
-    // 脚本模板：同单位 remaining 求和（unit=% 的 remaining 实际是 token 数，按 tokens 处理）
-    const remainingItems = items.filter((item) => Number.isFinite(item.remaining));
-    if (remainingItems.length) {
-        const unitOf = (item) => (item.unit === '%' ? 'tokens' : (item.unit || ''));
-        const unit = unitOf(remainingItems[0]);
-        let grant = 0;
-        let sameUnit = true;
-        // 同一 planName 的多个窗口（如 5h / 7d）是对同份额度的重叠约束：
-        // 每组取较大的 remaining 再跨池求和，避免把同一份额度重复相加。
-        const poolMax = new Map();
-        for (const item of remainingItems) {
-            if (unitOf(item) !== unit) {
-                sameUnit = false;
-                break;
-            }
-            const key = item.poolName || item.planName || '';
-            const value = Number(item.remaining) || 0;
-            if (!poolMax.has(key) || value > poolMax.get(key)) poolMax.set(key, value);
-            if (Number.isFinite(item.grantBalance)) grant = Math.max(grant, Number(item.grantBalance));
-        }
+    // ② 币种 remaining（NewAPI 这类）：同货币求和，符号前缀
+    const currencyParts = [];
+    const seenSymbols = new Set();
+    for (const item of valid) {
+        if (!Number.isFinite(item.remaining)) continue;
+        const symbol = currencySymbolOf(item.unit);
+        if (!symbol || seenSymbols.has(symbol)) continue;
+        seenSymbols.add(symbol);
         let sum = 0;
-        for (const value of poolMax.values()) sum += value;
-        if (sameUnit) {
-            return {
-                label: '剩余 ',
-                value: summaryAmount(sum + grant, unit === 'tokens' ? '' : unit),
-                tone: usageTone(remainingItems[0]),
-            };
+        for (const row of valid) {
+            if (currencySymbolOf(row.unit) === symbol) sum += Number(row.remaining) || 0;
         }
+        currencyParts.push({label: '', value: symbol + sum.toFixed(2), tone: '', countdown: ''});
+    }
+    if (currencyParts.length) return {prefix: '', parts: [...currencyParts, ...invalidParts()]};
+
+    // ③ 剩余型：remaining/total 换算成剩余百分比，池名直接拼在窗口短名前
+    const remainingItems = valid.filter((item) =>
+        Number.isFinite(item.remaining) && Number.isFinite(item.total) && item.total > 0);
+    if (remainingItems.length) {
+        const parts = [];
+        for (const item of items) {
+            if (item.isValid === false) {
+                parts.push(invalidPart(item));
+                continue;
+            }
+            if (!remainingItems.includes(item)) continue;
+            const {pool, window} = poolAndWindow(item);
+            const leftPct = Math.min(100, Math.max(0, (item.remaining / item.total) * 100));
+            parts.push({
+                label: pool + window,
+                value: formatPercentCompact(leftPct),
+                tone: toneForLeft(leftPct),
+                countdown: formatUsageCountdown(item.resetAt),
+            });
+        }
+        return {prefix: '剩余：', parts};
     }
 
-    // 兜底：百分比型等首段
-    const parts = usageHeadlineParts(snapshot, now);
-    return (parts.segments || [])[0] || null;
+    // ④ 已用型：unit=% 只有 used（cc-switch 系窗口档）
+    const usedItems = valid.filter((item) => item.unit === '%' && Number.isFinite(item.used));
+    if (usedItems.length) {
+        const parts = [];
+        for (const item of items) {
+            if (item.isValid === false) {
+                parts.push(invalidPart(item));
+                continue;
+            }
+            if (!usedItems.includes(item)) continue;
+            const {pool, window} = poolAndWindow(item);
+            const usedPct = Math.min(100, Math.max(0, item.used));
+            parts.push({
+                label: pool + window,
+                value: formatPercentCompact(usedPct),
+                tone: toneForLeft(100 - usedPct),
+                countdown: formatUsageCountdown(item.resetAt),
+            });
+        }
+        return {prefix: '已用：', parts};
+    }
+
+    // ⑤ 兜底：headline 首段原样
+    const segments = usageHeadlineParts(snapshot).segments || [];
+    if (!segments.length) return null;
+    return {
+        prefix: '',
+        parts: segments.map((segment) => ({
+            label: '',
+            value: String(segment.label || '').trim() + String(segment.value || ''),
+            tone: segment.tone || '',
+            countdown: '',
+        })),
+    };
+}
+
+// 账号卡外显的紧凑行（显示规范 v1）；null = 无数据（调用方显示「待查询」）。
+export function usageCompactLine(snapshot) {
+    return usageCompactParts(snapshot);
+}
+
+// 纯文本版（tooltip / 单行场景）：倒计时作「（3h15m 后重置）」后缀。
+export function formatUsageCompactText(snapshot) {
+    const compact = usageCompactParts(snapshot);
+    if (!compact) return '';
+    const body = compact.parts.map((part) => {
+        const head = part.label ? part.label + ': ' : '';
+        const tail = part.countdown ? '（' + part.countdown + ' 后重置）' : '';
+        return head + part.value + tail;
+    }).join(' · ');
+    return compact.prefix + body;
+}
+
+// 选择器分组头的单值摘要：取「最紧」的约束——
+// 已用型取已用最高窗口（5h 70%）；剩余型取剩余最低段（通用池5h 1.8%）；币种型取总额。
+export function usageTightSummary(snapshot) {
+    const compact = usageCompactParts(snapshot);
+    if (!compact || !compact.parts.length) return null;
+    if (compact.prefix) {
+        const numeric = compact.parts
+            .map((part) => ({part, pct: parseFloat(part.value)}))
+            .filter((row) => Number.isFinite(row.pct));
+        if (!numeric.length) return null;
+        const pick = compact.prefix === '已用：'
+            ? numeric.reduce((best, row) => (row.pct > best.pct ? row : best))
+            : numeric.reduce((best, row) => (row.pct < best.pct ? row : best));
+        return {label: pick.part.label ? pick.part.label + ' ' : '', value: pick.part.value, tone: pick.part.tone};
+    }
+    const first = compact.parts[0];
+    return {label: '', value: first.value, tone: first.tone || ''};
 }
 
 // 查询时间相对文案（data-tip 里给绝对时间）。

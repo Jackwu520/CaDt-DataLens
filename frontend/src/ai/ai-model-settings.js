@@ -14,7 +14,7 @@ import {
 import {iconSvg} from '../core/icons.js';
 import {overlayStack} from '../core/overlay-stack.js';
 import {providerIconTileHtml} from './ai-provider-icons.js';
-import {formatUsageAge, usageHeadlineSummary} from './ai-usage-quota.js';
+import {formatUsageAge, formatUsageCompactText, usageCompactLine} from './ai-usage-quota.js';
 
 export function createAIModelSettings(ctx, extras) {
 
@@ -150,14 +150,28 @@ export function createAIModelSettings(ctx, extras) {
         icon.innerHTML = iconSvg('refresh', 12);
         const text = document.createElement('span');
         text.className = 'ai-usage-line-text';
-        // 外显只显示余额总额，明细点开弹层看
-        const summary = usageHeadlineSummary(snapshot);
-        if (summary) {
-            if (summary.label) text.appendChild(document.createTextNode(summary.label));
-            const value = document.createElement('b');
-            value.className = 'ai-usage-value' + (summary.tone === 'normal' ? '' : ' tone-' + summary.tone);
-            value.textContent = summary.value;
-            text.appendChild(value);
+        // 显示规范 v1（docs/finished-plans/ai-quota-display.md §11）：全窗口百分比 + ⏱倒计时，
+        // 币种只留符号；只有数值上色，标签/前缀/倒计时灰。明细仍点弹层看。
+        const compact = usageCompactLine(snapshot);
+        if (compact) {
+            if (compact.prefix) text.appendChild(document.createTextNode(compact.prefix));
+            compact.parts.forEach((part, index) => {
+                if (index) text.appendChild(document.createTextNode(' · '));
+                if (part.label) text.appendChild(document.createTextNode(part.label + ': '));
+                const value = document.createElement('b');
+                value.className = 'ai-usage-value' + (part.tone ? ' tone-' + part.tone : '');
+                value.textContent = part.value;
+                text.appendChild(value);
+                if (part.countdown) {
+                    const clock = document.createElement('span');
+                    clock.className = 'ai-usage-clock';
+                    clock.innerHTML = iconSvg('clock', 11);
+                    const countdown = document.createElement('span');
+                    countdown.className = 'ai-usage-countdown';
+                    countdown.textContent = part.countdown;
+                    text.append(clock, countdown);
+                }
+            });
         } else {
             text.textContent = '待查询';
         }
@@ -168,7 +182,7 @@ export function createAIModelSettings(ctx, extras) {
             ? '点击查询额度'
             : (snapshot.state === 'error'
                 ? (snapshot.error || '查询失败') + ' · 点击重试'
-                : formatUsageAge(snapshot.at) + ' · 点击重新查询');
+                : formatUsageCompactText(snapshot) + '\n' + formatUsageAge(snapshot.at) + ' · 点击重新查询');
         line.addEventListener('click', (event) => queryUsageForAccount(profile, event));
         return line;
     }

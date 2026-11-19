@@ -225,3 +225,64 @@ profile.usage = {
 - 沙箱隔离本身（Worker 无 window.go、fetch 已禁）在 node 里只锁了脚本形态与禁用表字符串，真实隔离靠 WebView2 的 Worker 语义；「测试脚本 + 导入恶意配置探测 window.go」仍是验收清单里的人工项。
 - Token Plan 套餐预设的端点参数移植自 cc-switch Rust 源码，**未对真实账号逐一实测**（智谱 unit=6 判周桶、MiniMax model_remains.general、Kimi limits[].detail 等字段形态以 cc-switch 实测注释为准）；各家改版后改 `ai-usage-templates.js` 即可。
 - 智谱团队版无法靠 baseURL 自动区分，配置弹窗只能手选套餐预设（与 cc-switch 同）。
+
+---
+
+## 11. 额度外显显示规范 v1（2026-11-20 定稿）
+
+> 立规范防反复改：外显行的所有口径以本节为准；实现单一来源在 `ai-usage-quota.js`
+>（`usageCompactLine` / `formatUsageCompactText` / `usageTightSummary` + 记号函数），
+> 改显示先改本节再改代码。
+
+### 11.1 基础记号（所有场景统一）
+
+| 项 | 规范 | 示例 |
+|---|---|---|
+| 货币 | 符号前缀 ¥ / $，**不写 CNY/USD**；两位小数 | `¥48.47` / `$18.00` |
+| 窗口短名 | 5 小时→`5h`；每周 / 7 天→`7d`；每月→`30d`；其余去空格原样 | `5h` `7d` `30d` |
+| 百分比 | 四舍五入最多 1 位小数，整数不带小数，clamp 0–100 | `70%` `98.2%` `0%` |
+| 倒计时 | ⏱ 图标（clock 11px 灰）+ 两单位格式（d/h/m） | `⏱3h15m` `⏱27d8h` |
+| 分隔 | 段与段 ` · `；窗口名与数值之间半角 `: ` | `5h: 70%` |
+| 池名 | 直接拼在窗口短名前，不加分隔符 | `通用池5h: 98.2%` |
+| 上色 | **只有数值上色**，文案/图标一律灰；按剩余比例 ≤0% 红 / <20% 橙 / 其余绿；币种数值不上色 | |
+| 行前缀 | 已用型 `已用：`、剩余型 `剩余：`、币种型无前缀（前缀灰字） | |
+
+### 11.2 数据形状 → 显示形态
+
+| 条目形状 | 典型来源 | 形态 |
+|---|---|---|
+| label / value（官方引擎） | DeepSeek / OpenRouter / SiliconFlow | 币种型 |
+| used%（unit=`%`，无 remaining/total） | Kimi / MiniMax / 智谱 / OpenCode Go / ZenMux… | 已用型 |
+| remaining + total（非货币单位，值是积分/token） | SenseNova OAuth | 剩余型（换算百分比） |
+| remaining + 货币 unit | NewAPI / 通用脚本 | 币种型 |
+
+- **币种型**：只显示总额 `¥48.47`（2026-11-20 拍板：赠送/充值/可用不上外显行，留详情层）。
+  官方条目取「总额 → 总余额 → 剩余 → 余额 → 首行」（OpenRouter 只有「剩余」落第三档）；
+  NewAPI 型同货币 remaining 求和 → `$3.00`。
+- **已用型**：`已用：5h: 70% ⏱3h15m · 7d: 37% ⏱3d4h`——每窗口一段，按 extractor 返回顺序；
+  `extra`（"已用 $X / $Y"）不上外显行。
+- **剩余型**：`剩余：通用池5h: 98.2% ⏱3h17m · 通用池7d: 76% ⏱2d11h`——百分比 =
+  remaining ÷ total；返赠（grantBalance）与积分绝对值不上外显行。
+
+### 11.3 场景
+
+| 场景 | 规格 |
+|---|---|
+| 设置 → AI → 模型 账号卡 | 全量版一行（放不下 ellipsis）；悬浮 tooltip = 全量行文本 + 查询时间；点击 = 重新查询 |
+| 模型选择器分组头 | 单值摘要取「最紧」约束：已用型取已用最高窗口（`5h 70%`）、剩余型取剩余最低段（`通用池5h 1.8%`）、币种型取总额（`¥48.47`）；数值按 11.1 上色；悬浮 tooltip = 全量行 |
+| 详情弹层 / 用量配置「测试」 | 保持 v1 之前的行为（原始单位全字段 + extra + 绝对值 + 重置时间） |
+
+### 11.4 异常态
+
+- 未查询 → `待查询`（灰）；查询失败 → 错误文案（红，点击重试）；
+  条目 `isValid=false` → 该段红字「已失效 / invalidMessage」，全部失效时无前缀。
+- 无 resetAt 或已过期 → 不显示 ⏱。
+
+### 11.5 实现
+
+- 纯函数：`usageCompactLine`（结构化段）、`formatUsageCompactText`（纯文本）、
+  `usageTightSummary`（分组头单值）、`shortWindowName` / `currencySymbolOf` /
+  `formatPercentCompact`（记号）；旧的 `usageHeadlineSummary` / `formatUsageHeadline` 删除。
+- 渲染：`ai-model-settings.buildUsageLine`（账号卡）、`ai-model-picker` 分组头；
+  详情弹层（ai-panel）不动。
+- 测试：`ai-usage-quota.test.mjs` 覆盖三形态、上色阈值、倒计时文本、分组头口径与记号函数。

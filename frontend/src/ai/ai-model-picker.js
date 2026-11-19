@@ -7,7 +7,7 @@ import {overlayStack} from '../core/overlay-stack.js';
 import {createInput} from '../core/form-controls.js';
 import {ctxLimitTiersFor, effectiveContextWindow, formatTokenAmount, reasoningLevelInfo} from './ai-config-model.js';
 import {providerIconTileHtml} from './ai-provider-icons.js';
-import {formatUsageHeadline, usageHeadlineSummary} from './ai-usage-quota.js';
+import {formatUsageCompactText, usageTightSummary} from './ai-usage-quota.js';
 
 export function createAIModelPicker(ctx) {
     const el = ctx.el;
@@ -120,18 +120,26 @@ export function createAIModelPicker(ctx) {
                 const headName = document.createElement('span');
                 headName.textContent = account.name || '未命名账号';
                 head.append(headName);
-                // 开启了额度查询的账号在分组头右侧显示余额主句（失败态红字；无缓存不占位）
+                // 开启了额度查询的账号在分组头右侧显示「最紧」单值（显示规范 v1：
+                // 已用型取已用最高窗口 / 剩余型取剩余最低段 / 币种型取总额），悬浮看全量行
                 if (usageQuota) {
                     const snapshot = usageQuota().peek(account.id);
                     if (snapshot && (snapshot.state === 'error' || (snapshot.items || []).length)) {
                         const headUsage = document.createElement('span');
                         headUsage.className = 'ai-model-picker-usage' + (snapshot.state === 'error' ? ' error' : '');
-                        const summary = usageHeadlineSummary(snapshot);
-                        const compact = summary ? summary.label + summary.value : '';
-                        headUsage.textContent = compact || (snapshot.state === 'error' ? (snapshot.error || '查询失败') : '');
-                        // 有被折叠的段时才挂悬浮提示：分组头只留一段，避免多套餐挤成省略号
-                        const full = snapshot.state === 'error' ? '' : formatUsageHeadline(snapshot);
-                        if (full && full !== compact) headUsage.dataset.tip = full;
+                        const tight = snapshot.state === 'error' ? null : usageTightSummary(snapshot);
+                        if (tight) {
+                            if (tight.label) headUsage.appendChild(document.createTextNode(tight.label));
+                            const value = document.createElement('b');
+                            value.className = 'ai-usage-value' + (tight.tone ? ' tone-' + tight.tone : '');
+                            value.textContent = tight.value;
+                            headUsage.appendChild(value);
+                        } else {
+                            headUsage.textContent = snapshot.state === 'error' ? (snapshot.error || '查询失败') : '';
+                        }
+                        // 悬浮提示给全量行（全部窗口 + 倒计时）；与单值相同时（币种）不挂
+                        const full = snapshot.state === 'error' ? '' : formatUsageCompactText(snapshot);
+                        if (full && full !== headUsage.textContent) headUsage.dataset.tip = full;
                         else delete headUsage.dataset.tip;
                         head.appendChild(headUsage);
                     }
