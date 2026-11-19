@@ -41,6 +41,7 @@ import (
 	"datalens/internal/tray"
 	"datalens/internal/usagestats"
 	"datalens/internal/watch"
+	"datalens/internal/windowreg"
 )
 
 const appVersion = "v1.1.1"
@@ -71,6 +72,7 @@ type App struct {
 	*aigroups.GroupStore                         // AI 群聊磁盘存储（internal/aigroups），提升方法即 AIGroup* 绑定
 	*mcp.Client                                  // MCP 客户端与子进程管理（internal/mcp）
 	ctx                    context.Context
+	windowReg              *windowreg.Registry // 跨窗口会话复用的注册条目（window_app.go）
 	startupTargets         []launchargs.OpenTarget
 	startupSettingsPane    string
 	startupAISession       string
@@ -149,6 +151,9 @@ func (a *App) startup(ctx context.Context) {
 		runtime.WindowSetSize(ctx, 780, 460)
 		return
 	}
+	// 窗口注册表：主窗口进程登记自己（浮窗/调试控制台在 ensureWindowReg 内跳过），
+	// 前端工作区变化后经 WindowRegister 更新 workspace。
+	a.ensureWindowReg()
 	// AI 定时任务调度器：主窗口与 AI 悬浮窗进程各自扫描，执行去重由前端裁决
 	aischedule.Start()
 	// 插件后台服务：启动已声明且 autoStart 的服务（声明由前端加载插件后 Sync 推送；

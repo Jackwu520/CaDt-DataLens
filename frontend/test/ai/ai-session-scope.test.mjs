@@ -4,7 +4,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
-import {decideSessionForWorkspace, activeSessionIdFor, rememberActiveSession, normalizePath, pickWorkspaceSession, workspaceKey} from '../../src/ai/ai-session-scope.js';
+import {decideSessionForWorkspace, activeSessionIdFor, rememberActiveSession, normalizePath, pickWorkspaceSession, workspaceKey, decideSessionOpen} from '../../src/ai/ai-session-scope.js';
 
 const MINE = 'd:/work/other'; // 本窗口打开的工作区
 const OTHER = 'd:/code/cadt-datalens'; // 上一个窗口（当前会话属于这里）
@@ -145,4 +145,28 @@ test('id 为空时删掉该工作区记录（并同步清空全局回退值）',
     rememberActiveSession(config, 'd:/a', '');
     assert.equal(activeSessionIdFor(config, 'd:/a'), '');
     assert.equal(config.activeSessionId, '');
+});
+
+// decideSessionOpen：openWorkspaceFolder 的分支决策单一来源（返回值与 main.js 的
+// 四种返回值一一对应）。覆盖 multi-window-session-reuse.md §2 的目标行为。
+test('decideSessionOpen：无 dir / 浮窗 → invalid（等价 false）', () => {
+    assert.equal(decideSessionOpen({dir: '', currentKey: '', targetKey: 'd:/a'}).action, 'invalid');
+    assert.equal(decideSessionOpen({dir: 'D:/a', isFloat: true, currentKey: 'd:/b', targetKey: 'd:/a'}).action, 'invalid');
+});
+
+test('decideSessionOpen：本窗口已是该工作区 → same；无工作区 → current', () => {
+    assert.equal(decideSessionOpen({dir: 'D:/a', currentKey: 'd:/a', targetKey: 'd:/a'}).action, 'same');
+    assert.equal(decideSessionOpen({dir: 'D:/a', currentKey: '', targetKey: 'd:/a'}).action, 'current');
+});
+
+test('decideSessionOpen：复用命中 → reused（优先于软切换，本窗口不动）', () => {
+    const state = {dir: 'D:/a', currentKey: 'd:/b', targetKey: 'd:/a', reuseHit: true, canSoftSwitch: true};
+    assert.equal(decideSessionOpen(state).action, 'reused');
+});
+
+test('decideSessionOpen：无复用 → window（软切换），仅当后端有新窗口能力', () => {
+    assert.equal(decideSessionOpen({dir: 'D:/a', currentKey: 'd:/b', targetKey: 'd:/a', canSoftSwitch: true}).action, 'window');
+    assert.equal(decideSessionOpen({dir: 'D:/a', currentKey: 'd:/b', targetKey: 'd:/a', canNewWindow: true}).action, 'window');
+    assert.equal(decideSessionOpen({dir: 'D:/a', currentKey: 'd:/b', targetKey: 'd:/a'}).action, 'invalid',
+        '两个后端都没有时不假报 window');
 });

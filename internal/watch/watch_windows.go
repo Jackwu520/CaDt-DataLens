@@ -11,6 +11,10 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+// Supported 报告当前平台是否有可用的目录监听实现。注册前先查它，
+// 不要靠 Watch 的返回值判断——不支持平台上 Watch 绑定仍返回 nil（goroutine 内仅记 warn）。
+func Supported() bool { return true }
+
 func parseNotifyBuffer(buf []byte, size uint32) ([]watchEvent, bool) {
 	if size == 0 {
 		// 缓冲区溢出：内核丢弃了后续事件，调用方应退化为全量刷新

@@ -430,7 +430,8 @@ test('新会话模型继承接线：继承当前会话在用的模型，切会�
     assert.match(syncBlock[0], /config\.activeProfileId = ref\.profile\.id/);
     assert.match(syncBlock[0], /config\.activeModelId = ref\.entry\.id/);
     assert.match(syncBlock[0], /pluginAI/, '插件虚拟账号不能写进窗口默认（落盘就是悬空 id）');
-    assert.match(src, /config\.activeSessionId = id;[\s\S]{0,400}?syncActiveFromSession\(target\);\s*\n\s*saveAIConfig\(\);/,
+    // 工作区分桶后 activeSessionId 经 setActiveSessionId 写（rememberActiveSession），不再直改 config
+    assert.match(src, /setActiveSessionId\(id\);[\s\S]{0,400}?syncActiveFromSession\(target\);\s*\n\s*saveAIConfig\(\);/,
         'switchSession 里必须在保存配置前同步窗口默认');
     assert.match(src, /out\.activeModelId = resolveModelId\(activeAccount, out\.activeModelId, activeAccount\.lastModelId\)/,
         '配置归一化的激活模型兜底必须走 resolveModelId');

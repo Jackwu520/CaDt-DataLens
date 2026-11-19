@@ -114,3 +114,21 @@ export function decideSessionForWorkspace(current, ownKey, list, keyOf, opts = {
     const next = pickWorkspaceSession(list, ownKey, keyOf, current.id);
     return next ? {action: 'switch', session: next} : {action: 'create'};
 }
+
+// 「点别的 AI 会话 → 怎么开」的分支决策（openWorkspaceFolder 的单一来源，纯函数）。
+// 返回 action 语义与 main.js 的 openWorkspaceFolder 返回值一一对应：
+//   invalid  参数不满足（无 dir / 浮窗 / 后端无新窗口能力），等价于 false
+//   same     本窗口已是该工作区
+//   current  本窗口没有工作区：就在本窗口打开
+//   reused   目标工作区已开在别的存活窗口，已向其信箱投递（本窗口不动）
+//   window   软切换：另开窗口打开目标工作区
+// 决策依据 state：{dir, isFloat, currentKey, targetKey, reuseHit, canSoftSwitch, canNewWindow}。
+// reuseHit 由调用方先 await 后端 WindowReuseForSession 探测得到（本函数保持纯同步）。
+export function decideSessionOpen(state) {
+    if (!state || !state.dir || state.isFloat) return {action: 'invalid'};
+    if (state.currentKey && state.currentKey === state.targetKey) return {action: 'same'};
+    if (!state.currentKey) return {action: 'current'};
+    if (state.reuseHit) return {action: 'reused'};
+    if (state.canSoftSwitch || state.canNewWindow) return {action: 'window'};
+    return {action: 'invalid'};
+}

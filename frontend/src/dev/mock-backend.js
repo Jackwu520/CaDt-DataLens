@@ -2556,6 +2556,15 @@ const mockBackend = {
         window.__mockSoftSwitch = {dir, sessionId: sessionId || ''};
         window.__mockNewWindows = (window.__mockNewWindows || []).concat([[dir]]);
     },
+    // 窗口注册表 / 跨窗口会话复用（window_app.go）：浏览器 dev 无跨窗口概念，全部空实现
+    async WindowRegister(workspace) { window.__mockWindowReg = workspace || ''; },
+    async WindowReuseForSession(workspace, sessionId) {
+        window.__mockWindowReuse = {workspace, sessionId: sessionId || ''};
+        return ''; // mock 永远没有可用窗口：走软切换行为
+    },
+    async WindowInboxTake() { return ''; },
+    async WindowInboxAck(reqId, status) { window.__mockInboxAck = {reqId, status}; },
+    async WindowActivate() { window.__mockWindowActivated = true; },
     async ShowInFolder(path) { window.__mockShowInFolder = path; },
     async OpenWithDefaultApp(path) { window.__mockOpenWithDefaultApp = path; },
     async StorageScan(root) { return buildMockStorageReport(root); },

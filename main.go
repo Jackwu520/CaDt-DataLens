@@ -121,6 +121,8 @@ func main() {
 	if err != nil {
 		writeAppLog("error", "wails.Run 退出：%v", err)
 	}
+	// 窗口注册表收尾：释放租约、删注册痕迹（失败由下次启动 Sweep 兜底）。
+	app.shutdownWindowReg()
 	if isConvert {
 		os.Exit(app.convertExitCode)
 	}
