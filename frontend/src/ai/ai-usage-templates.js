@@ -4,9 +4,11 @@
 // extractor 在 Worker 沙箱执行（沙箱拼装见 ai-usage-quota.js）。
 // Token Plan 预设的端点与解析逐家移植自 cc-switch src-tauri/src/services/coding_plan.rs
 // （kimi / zhipu / zhipu_team / minimax / zenmux / opencode_go / ollama_cloud）；
+// OAuth 模板走通用 OAuth 引擎（Go internal/oauthquota）：账号密码登录后拿控制台 token，
+// 再带 token 发请求、由本文件的 extractor 解析。SenseNova Token Plan 是第一个 OAuth provider。
 // 火山方舟要 OpenAPI SigV4 签名、CommandCode 要三连请求，单请求管线承载不了，不做预设。
 
-export const USAGE_TEMPLATE_KEYS = ['official', 'general', 'newapi', 'sub2api', 'plan', 'custom'];
+export const USAGE_TEMPLATE_KEYS = ['official', 'general', 'newapi', 'sub2api', 'plan', 'oauth', 'custom'];
 
 export const USAGE_TEMPLATE_LABELS = {
     official: '官方',
@@ -14,6 +16,7 @@ export const USAGE_TEMPLATE_LABELS = {
     newapi: 'NewAPI',
     sub2api: 'Sub2API',
     plan: 'Token Plan',
+    oauth: 'OAuth',
     custom: '自定义',
 };
 
@@ -142,7 +145,7 @@ const PLAN_KIMI = `({
           planName: "5 小时",
           used: Math.max(0, (limit - remaining) / limit * 100),
           unit: "%",
-          extra: d.resetTime ? "重置 " + d.resetTime : ""
+          resetAt: d.resetTime || 0
         });
       }
     }
@@ -153,7 +156,7 @@ const PLAN_KIMI = `({
           planName: "每周",
           used: Math.max(0, (ul - ur) / ul * 100),
           unit: "%",
-          extra: u.resetTime ? "重置 " + u.resetTime : ""
+          resetAt: u.resetTime || 0
         });
       }
     }
@@ -179,7 +182,7 @@ const PLAN_ZHIPU_EXTRACTOR = `  extractor: function (response) {
         planName: Number(item.unit) === 6 ? "每周" : "5 小时",
         used: pct,
         unit: "%",
-        extra: reset > 0 ? "重置 " + new Date(reset).toISOString().replace("T", " ").slice(0, 16) : ""
+        resetAt: reset > 0 ? reset : 0
       });
     }
     if (!items.length) throw new Error("响应里没有额度条目（账户可能没有套餐）");
@@ -254,7 +257,7 @@ const PLAN_MINIMAX = `({
         planName: "5 小时",
         used: Math.max(0, 100 - interval),
         unit: "%",
-        extra: endTime > 0 ? "重置 " + new Date(endTime).toISOString().replace("T", " ").slice(0, 16) : ""
+        resetAt: endTime > 0 ? endTime : 0
       });
     }
     var weeklyStatus = Number(item.current_weekly_status);
@@ -265,7 +268,7 @@ const PLAN_MINIMAX = `({
         planName: "每周",
         used: Math.max(0, 100 - weekly),
         unit: "%",
-        extra: weekEnd > 0 ? "重置 " + new Date(weekEnd).toISOString().replace("T", " ").slice(0, 16) : ""
+        resetAt: weekEnd > 0 ? weekEnd : 0
       });
     }
     if (!items.length) throw new Error("响应里没有可展示的额度窗口");
@@ -297,10 +300,8 @@ const PLAN_ZENMUX = `({
       var extra = "";
       if (Number.isFinite(Number(w.used_value_usd)) && Number.isFinite(Number(w.max_value_usd))) {
         extra = "已用 $" + Number(w.used_value_usd).toFixed(2) + " / $" + Number(w.max_value_usd).toFixed(2);
-      } else if (w.resets_at) {
-        extra = "重置 " + w.resets_at;
       }
-      items.push({ planName: windows[i][1], used: pct * 100, unit: "%", extra: extra });
+      items.push({ planName: windows[i][1], used: pct * 100, unit: "%", extra: extra, resetAt: w.resets_at || 0 });
     }
     if (!items.length) throw new Error("响应里没有 quota 窗口字段");
     return items;
@@ -329,7 +330,7 @@ const PLAN_OPENCODE_GO = `({
         planName: windows[i][1],
         used: pct,
         unit: "%",
-        extra: pct > 0 && w.resetsAt ? "重置 " + w.resetsAt : ""
+        resetAt: pct > 0 ? (w.resetsAt || 0) : 0
       });
     }
     if (!items.length) throw new Error("响应形态不认识（未文档化端点可能又变了）");
@@ -371,7 +372,7 @@ const PLAN_OLLAMA = `({
         planName: windows[i][1],
         used: Math.min(Math.max(100 - remaining, 0), 100),
         unit: "%",
-        extra: w.resets_at ? "重置 " + w.resets_at : ""
+        resetAt: w.resets_at || 0
       });
     }
     if (!items.length) {
@@ -383,6 +384,56 @@ const PLAN_OLLAMA = `({
 })`;
 
 // Token Plan 套餐预设：id ↔ cc-switch codingPlanProvider 对齐。
+// ── OAuth 模板（通用引擎 + provider 配置）────────────────────────
+// providerId 对应 Go internal/oauthquota 内置表；script 是「带 token 请求」的规格，
+// 由通用 OAuth 引擎发（不是 aigen 哑通道），响应仍走同一 Worker 沙箱 extractor。
+// SenseNova：GET {consoleOrigin}/lite/console/v1/tokenplan/pool-usage
+// 响应 {plan, pools:[{name, window_5h:{limit,used,remaining,reset_at}, window_7d:{...},
+// grant_balance, nearest_grant_expiry}]}——逐池出 5h/7d 两档已用% + remaining + 重置时间。
+export const USAGE_OAUTH_PROVIDERS = [
+    {
+        id: 'sensenova',
+        label: 'SenseNova',
+        script: `({
+  request: {
+    url: "https://platform.sensenova.cn/lite/console/v1/tokenplan/pool-usage",
+    method: "GET"
+  },
+  extractor: function (response) {
+    var pools = (response && response.pools) || [];
+    if (!pools.length) throw new Error("账号没有 Token Plan 额度池（按量付费账号查不到套餐）");
+    var items = [];
+    var windows = [["window_5h", "5 小时"], ["window_7d", "每周"]];
+    for (var i = 0; i < pools.length; i++) {
+      var pool = pools[i] || {};
+      var poolName = String(pool.name || pool.id || ("池 " + (i + 1)));
+      for (var w = 0; w < windows.length; w++) {
+        var win = pool[windows[w][0]] || {};
+        var limit = Number(win.limit), used = Number(win.used), remaining = Number(win.remaining);
+        if (!isFinite(limit) || limit <= 0) continue;
+        var resetAt = Number(win.reset_at || win.resetAt);
+        items.push({
+          planName: poolName + " · " + windows[w][1],
+          poolName: poolName,
+          used: Math.max(0, Math.min(100, used / limit * 100)),
+          remaining: Math.max(0, remaining),
+          total: limit,
+          unit: "%",
+          resetAt: resetAt > 0 ? resetAt * 1000 : 0,
+          extra: Number(pool.grant_balance) > 0 ? "返赠 " + Number(pool.grant_balance) : "",
+          grantBalance: i === 0 && Number(pool.grant_balance) > 0 ? Number(pool.grant_balance) : 0
+        });
+      }
+    }
+    if (!items.length) throw new Error("额度池里没有可展示的窗口");
+    return items;
+  }
+})`,
+    },
+];
+
+export const USAGE_OAUTH_PROVIDER_IDS = USAGE_OAUTH_PROVIDERS.map((item) => item.id);
+
 export const USAGE_PLAN_PRESETS = [
     { id: 'kimi', label: 'Kimi For Coding', code: PLAN_KIMI },
     { id: 'zhipu', label: '智谱 GLM', code: PLAN_ZHIPU },
@@ -424,6 +475,10 @@ export function usageTemplatePresetCode(template, planProvider) {
         case 'plan': {
             const preset = USAGE_PLAN_PRESETS.find((item) => item.id === planProvider);
             return preset ? preset.code : '';
+        }
+        case 'oauth': {
+            const preset = USAGE_OAUTH_PROVIDERS.find((item) => item.id === planProvider);
+            return preset ? preset.script : '';
         }
         case 'custom': return TEMPLATE_CUSTOM;
         default: return '';

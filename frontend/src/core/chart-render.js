@@ -21,7 +21,9 @@ const cache = createLruCache(40);
 
 let echartsLoadPromise = null;
 
-function ensureEcharts() {
+// ensureEcharts 懒加载 ECharts（/vendor/echarts/echarts.min.js）。
+// AI 可视化卡片与设置 → 使用统计共用同一次加载；失败可重试（promise 置空）。
+export function ensureEcharts() {
     if (window.echarts) return Promise.resolve(window.echarts);
     if (echartsLoadPromise) return echartsLoadPromise;
     echartsLoadPromise = new Promise((resolve, reject) => {

@@ -5,6 +5,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
     OFFICIAL_USAGE_HOSTS,
+    USAGE_OAUTH_PROVIDERS,
     USAGE_TEMPLATE_LABELS,
     USAGE_NEWAPI_FIELDS,
     USAGE_PLAN_FIELDS,
@@ -29,7 +30,7 @@ test('预设脚本都是合法的对象字面量（new Function 解析不抛错�
     for (const key of USAGE_TEMPLATE_KEYS) {
         if (key === 'official') continue;
         // plan 模板的脚本挂在套餐预设上（无 planProvider 时为空，runQuery 会走预设表）
-        const code = usageTemplatePresetCode(key, key === 'plan' ? 'kimi' : undefined);
+        const code = usageTemplatePresetCode(key, key === 'plan' ? 'kimi' : (key === 'oauth' ? 'sensenova' : undefined));
         assert.ok(code.length > 50, key + ' 的脚本是空的');
         const fn = new Function('return (' + code + ')');
         const cfg = fn();
@@ -75,6 +76,24 @@ test('预设脚本引用的 {{变量}} 都在已知集合里', () => {
 test('newapi 模板声明了 accessToken / userId 字段', () => {
     const keys = USAGE_NEWAPI_FIELDS.map((item) => item.key);
     assert.deepEqual(keys, ['accessToken', 'userId']);
+});
+
+test('OAuth provider 表：id 唯一、脚本可解析、SenseNova 端点与重置口径正确', () => {
+    assert.ok(USAGE_OAUTH_PROVIDERS.length >= 1);
+    const ids = USAGE_OAUTH_PROVIDERS.map((item) => item.id);
+    assert.equal(new Set(ids).size, ids.length);
+    for (const provider of USAGE_OAUTH_PROVIDERS) {
+        const cfg = new Function('return (' + provider.script + ')')();
+        assert.equal(typeof cfg.extractor, 'function', provider.id + ' 缺 extractor');
+        assert.ok(cfg.request.url.startsWith('https://'), provider.id + ' URL 非 https');
+        assert.equal(cfg.request.method, 'GET');
+    }
+    const sense = USAGE_OAUTH_PROVIDERS.find((item) => item.id === 'sensenova');
+    assert.ok(sense, '缺 SenseNova provider');
+    assert.match(sense.script, /pool-usage/);
+    assert.match(sense.script, /window_5h/);
+    assert.match(sense.script, /grant_balance/);
+    assert.match(sense.script, /reset_at/);
 });
 
 test('renderUsageVars：多处命中全量替换、未命中变量原样保留', () => {

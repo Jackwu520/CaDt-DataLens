@@ -6,6 +6,7 @@ import {createInput, createSwitch, createTextarea} from '../core/form-controls.j
 import {normalizeUsageConfig} from './ai-config-model.js';
 import {
     USAGE_NEWAPI_FIELDS,
+    USAGE_OAUTH_PROVIDERS,
     USAGE_PLAN_FIELDS,
     USAGE_PLAN_PRESETS,
     USAGE_SCRIPT_HELP,
@@ -139,6 +140,69 @@ export function createAIUsageConfigDialog(ctx, extras) {
         }
     }
 
+    // OAuth 登录框：provider 选择后显示登录状态 + 用户名/密码 + 登录/登出。
+    // 密码只在点登录时经绑定传给 Go 引擎（JWE 加密后发），不进配置、不落盘。
+    function buildOAuthLoginBox(providerID) {
+        const box = section('控制台登录');
+        const oauth = extras.oauth;
+        if (!oauth) {
+            box.appendChild(dialogNode('div', 'ai-usage-hint', '当前版本不支持 OAuth 登录（后端绑定缺失）'));
+            return box;
+        }
+        const statusLine = dialogNode('div', 'ai-usage-hint', '读取登录状态…');
+        box.appendChild(statusLine);
+        const refreshStatus = async () => {
+            try {
+                const status = await oauth.status(providerID);
+                statusLine.textContent = status.error
+                    ? '状态读取失败：' + status.error
+                    : (status.loggedIn
+                        ? '已登录' + (status.username ? '（' + status.username + '）' : '') +
+                          (status.canRenew
+                            ? ' · 到期自动续期，无需重新登录'
+                            : status.expiresAt
+                                ? ' · 当前令牌至 ' + new Date(status.expiresAt * 1000).toLocaleString() + '（无续期凭据，到期需重登）'
+                                : '')
+                        : '未登录——填账号密码点「登录」');
+                return status;
+            } catch (e) {
+                statusLine.textContent = '状态读取失败：' + ((e && e.message) || e);
+                return null;
+            }
+        };
+        const userCtl = createInput({placeholder: '控制台账号', spellcheck: false, autocomplete: 'username'});
+        const passCtl = createInput({type: 'password', placeholder: '密码（只用于本次登录）', autocomplete: 'current-password'});
+        box.appendChild(fieldRow('账号', userCtl.control));
+        box.appendChild(fieldRow('密码', passCtl.control));
+        const loginBtn = dialogButton('登录', 'dlg-btn', async () => {
+            loginBtn.disabled = true;
+            loginBtn.textContent = '登录中…';
+            try {
+                const result = await oauth.login(providerID, userCtl.control.value, passCtl.control.value);
+                statusLine.textContent = result.ok
+                    ? '登录成功' + (result.username ? '（' + result.username + '）' : '')
+                    : '登录失败：' + (result.error || '未知错误');
+                if (result.ok) {
+                    passCtl.control.value = ''; // 成功后清掉密码框
+                    flash('OAuth 控制台登录成功，可以测试脚本并保存配置了');
+                }
+            } finally {
+                loginBtn.disabled = false;
+                loginBtn.textContent = '登录';
+            }
+        });
+        const logoutBtn = dialogButton('登出', 'dlg-btn', async () => {
+            const err = await oauth.logout(providerID);
+            statusLine.textContent = err ? '登出失败：' + err : '已登出';
+        });
+        const refreshBtn = dialogButton('刷新状态', 'dlg-btn', () => refreshStatus());
+        const row = dialogNode('div', 'ai-usage-secret');
+        row.append(loginBtn, logoutBtn, refreshBtn);
+        box.appendChild(row);
+        refreshStatus(); // 打开时异步读状态（不阻塞 UI 构建）
+        return box;
+    }
+
     // 模板字段区（切模板 / 套餐时整块重建）。
     function buildTemplateFields() {
         const draft = state.draft;
@@ -159,6 +223,21 @@ export function createAIUsageConfigDialog(ctx, extras) {
                     openDialog(); // 重建字段区（plan 专属 extraFields 跟着套餐走）
                 },
             ));
+        }
+        if (draft.template === 'oauth') {
+            box.appendChild(dialogNode('div', 'ai-usage-hint',
+                'OAuth 模板用控制台账号登录取 token（不是 API Key）；登录后自动续期，额度随预设脚本解析。'));
+            box.appendChild(chipsRow(
+                USAGE_OAUTH_PROVIDERS.map((item) => ({value: item.id, label: item.label})),
+                draft.planProvider,
+                (value) => {
+                    state.draft.planProvider = value;
+                    openDialog(); // 重建字段区（登录状态按 provider 重新读）
+                },
+            ));
+            box.appendChild(buildOAuthLoginBox(draft.planProvider));
+            // OAuth 模板不用账号的 apiKey / baseUrl，直接返回（不往下走通用覆盖字段）
+            return {fields: box};
         }
         if (draft.template === 'newapi') {
             for (const field of USAGE_NEWAPI_FIELDS) {
@@ -187,13 +266,13 @@ export function createAIUsageConfigDialog(ctx, extras) {
             }
         }
         // 通用 / NewAPI / Sub2API / Token Plan / 自定义：凭证覆盖（留空用账号的）
-        if (draft.template !== 'newapi') {
+        if (draft.template !== 'newapi' && draft.template !== 'oauth') {
             box.appendChild(fieldRow('API Key（可选）',
                 secretInput(draft.apiKey, '留空则使用账号的 API Key', (value) => {
                     state.draft.apiKey = value;
                 })));
         }
-        if (draft.template !== 'plan' || draft.planProvider === 'kimi' || draft.planProvider === 'zenmux') {
+        if (draft.template !== 'plan' && draft.template !== 'oauth' || draft.template === 'plan' && (draft.planProvider === 'kimi' || draft.planProvider === 'zenmux')) {
             const {control} = createInput({
                 value: draft.baseUrl,
                 placeholder: '留空则使用账号的 Base URL',
@@ -215,15 +294,6 @@ export function createAIUsageConfigDialog(ctx, extras) {
             }
             scriptBox.appendChild(help);
             return {fields: box, scriptBox};
-        }
-        if (draft.template !== 'official') {
-            const preview = dialogNode('pre', 'ai-usage-script-preview hidden', draftScriptOf(draft));
-            const toggle = dialogButton('查看预设脚本', 'dlg-btn', () => {
-                preview.classList.toggle('hidden');
-                toggle.textContent = preview.classList.contains('hidden') ? '查看预设脚本' : '收起预设脚本';
-            });
-            box.appendChild(toggle);
-            return {fields: box, scriptBox: preview};
         }
         return {fields: box};
     }

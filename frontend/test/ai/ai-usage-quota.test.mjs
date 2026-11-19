@@ -2,17 +2,23 @@
 // 只锁字符串形态与禁用表；result 归一化 / 节流 / 展示格式化 / 快照层全量覆盖）。
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import vm from 'node:vm';
 import {
     buildUsageSpec,
     buildUsageWorkerScript,
     createAIUsageQuota,
     formatUsageAge,
     formatUsageAmount,
+    formatUsageCountdown,
     formatUsageHeadline,
+    normalizeResetAt,
     normalizeUsageResult,
     officialSnapshotFromResult,
+    usageHeadlineParts,
+    usageHeadlineSummary,
     usageItemText,
     usageStale,
+    usageTone,
 } from '../../src/ai/ai-usage-quota.js';
 import {normalizeUsageConfig} from '../../src/ai/ai-config-model.js';
 
@@ -57,6 +63,59 @@ function fakeWorkerFactory() {
     };
 }
 
+// 直接执行 buildUsageWorkerScript() 产出的 prelude 源码（模拟 Worker 全局 self），
+// 覆盖「run → request / response → result」两阶段。这是 _cfg 赋值 bug 的检测网：
+// 假 worker 自己 new Function 解析脚本会绕过 prelude，抓不到这类错误。
+function runPreludeStages(code, responseBody) {
+    const messages = [];
+    let onmessage = null;
+    const fakeSelf = {
+        postMessage: (msg) => messages.push(msg),
+        set onmessage(fn) { onmessage = fn; },
+        get onmessage() { return onmessage; },
+    };
+    // prelude 会把网络原语挂到 self 上赋 undefined / delete 原型链；node 的 fakeSelf
+    // 没有那些属性，delete 走 try/catch 静默，不影响验证目标。
+    const ctx = vm.createContext({self: fakeSelf, navigator: {}, Object, Function, JSON, String, Number, Array, Error, Date, isFinite});
+    vm.runInContext(buildUsageWorkerScript(), ctx);
+    onmessage({data: {type: 'run', code}});
+    const requestMsg = messages.find((m) => m.type === 'request' || m.type === 'error');
+    if (!requestMsg || requestMsg.type === 'error' || !responseBody) return {requestMsg, resultMsg: null, messages};
+    onmessage({data: {type: 'response', response: {status: 200, body: responseBody}}});
+    const resultMsg = messages.find((m) => m.type === 'result' || (m.type === 'error' && messages.indexOf(m) > messages.indexOf(requestMsg)));
+    return {requestMsg, resultMsg, messages};
+}
+
+test('Worker prelude 真实执行：run 解析脚本 → request，response 跑 extractor → result', () => {
+    const code = `({
+      request: { url: "https://api.example.com/balance", method: "GET", headers: {"Authorization": "Bearer k"} },
+      extractor: function (response) { return {remaining: response.balance, unit: "USD"}; }
+    })`;
+    const {requestMsg, resultMsg} = runPreludeStages(code, '{"balance": 12.5}');
+    assert.ok(requestMsg, 'prelude 没回 request');
+    assert.equal(requestMsg.type, 'request', 'prelude run 阶段报错：' + JSON.stringify(requestMsg));
+    assert.equal(requestMsg.request.url, 'https://api.example.com/balance');
+    assert.equal(requestMsg.request.method, 'GET');
+    assert.ok(resultMsg, 'prelude 没回 result');
+    assert.equal(resultMsg.type, 'result', 'prelude response 阶段报错：' + JSON.stringify(resultMsg));
+    assert.equal(resultMsg.raw.remaining, 12.5);
+    assert.equal(resultMsg.raw.unit, 'USD');
+});
+
+test('Worker prelude 真实执行：顶层非对象 / 非法 URL / extractor 缺失都报错', () => {
+    const badTop = runPreludeStages('42', null);
+    assert.equal(badTop.requestMsg.type, 'error');
+    assert.match(badTop.requestMsg.error, /对象字面量/);
+
+    const badUrl = runPreludeStages('({request: {url: "javascript:alert(1)"}, extractor: function(){}})', null);
+    assert.equal(badUrl.requestMsg.type, 'error');
+    assert.match(badUrl.requestMsg.error, /http\(s\)/);
+
+    const noExtractor = runPreludeStages('({request: {url: "https://x.com"}})', '{}');
+    assert.equal(noExtractor.resultMsg.type, 'error');
+    assert.match(noExtractor.resultMsg.error, /extractor/);
+});
+
 test('normalizeUsageResult：对象折成单条、数组多套餐、缺数值判失败', () => {
     const single = normalizeUsageResult({remaining: 12.5, unit: 'USD'});
     assert.equal(single.error, '');
@@ -91,9 +150,9 @@ test('normalizeUsageResult：对象折成单条、数组多套餐、缺数值判
 
 test('normalizeUsageResult：截断超量条目', () => {
     const many = [];
-    for (let i = 0; i < 20; i++) many.push({remaining: i, unit: 'USD'});
+    for (let i = 0; i < 40; i++) many.push({remaining: i, unit: 'USD'});
     const out = normalizeUsageResult(many);
-    assert.ok(out.items.length <= 10);
+    assert.equal(out.items.length, 24); // 多池账号（每池两档）需要更多条目
 });
 
 test('officialSnapshotFromResult：引擎三态折成 snapshot', () => {
@@ -172,17 +231,125 @@ test('展示格式化：∞ / 两位小数 / 主句 / 多套餐报数 / 失败�
             {label: '账户可用', value: '是', isValid: true},
         ],
     });
-    assert.equal(head, '总额余额（CNY） 49.05');
+    assert.equal(head, '总额余额（CNY） 49.05'); // 账户可用被过滤
 
     assert.equal(formatUsageHeadline({state: 'ok', items: [{planName: '每周', used: 40, unit: '%'}]}), '每周 已用 40.00%');
-    assert.match(formatUsageHeadline({state: 'ok', items: [{remaining: 1, unit: 'USD'}, {remaining: 2, unit: 'USD'}]}), /2 个套餐/);
+    // 多套餐完整列出（不聚合「N 个套餐」）
+    assert.equal(formatUsageHeadline({state: 'ok', items: [{remaining: 1, unit: 'USD'}, {remaining: 2, unit: 'USD'}]}), '1.00 USD · 2.00 USD');
     assert.equal(formatUsageHeadline({state: 'error', error: 'HTTP 401'}), 'HTTP 401');
     assert.equal(formatUsageHeadline(null), '');
+    // 外显只显示余额总额：官方条目优先「总额余额」，赠送/充值留给详情层
+    assert.deepEqual(
+        usageHeadlineSummary({state: 'ok', items: [
+            {label: '总额余额（CNY）', value: '49.03'},
+            {label: '赠送余额（CNY）', value: '0.00'},
+            {label: '充值余额（CNY）', value: '49.03'},
+        ]}),
+        {label: '总额余额（CNY） ', value: '49.03', tone: 'normal'},
+    );
+    // 脚本模板：同单位 remaining 求和，返赠只加一次
+    assert.deepEqual(
+        usageHeadlineSummary({state: 'ok', items: [
+            {planName: '5 小时', remaining: 660000, total: 1000000, unit: '%', grantBalance: 500},
+            {planName: '每周', remaining: 3800000, total: 5000000, unit: '%', grantBalance: 500},
+        ]}),
+        {label: '剩余 ', value: '4.5M', tone: 'normal'},
+    );
+    // 同一池的 5h/7d 是重叠约束：按池取较大 remaining，再跨池求和
+    assert.deepEqual(
+        usageHeadlineSummary({state: 'ok', items: [
+            {planName: '池A · 5 小时', poolName: '池A', remaining: 660000, total: 1000000, unit: '%', grantBalance: 500},
+            {planName: '池A · 每周', poolName: '池A', remaining: 3800000, total: 5000000, unit: '%', grantBalance: 0},
+            {planName: '池B · 每周', poolName: '池B', remaining: 1000000, total: 2000000, unit: '%'},
+        ]}),
+        {label: '剩余 ', value: '4.8M', tone: 'normal'},
+    );
+    // % 条目的 remaining 是 token 数：不能拼成百分号
+    assert.equal(usageItemText({unit: '%', remaining: 660000}), '余额 660000.00');
+    // 百分比型没有 remaining：退回首段（已用百分比）
+    assert.deepEqual(
+        usageHeadlineSummary({state: 'ok', items: [{planName: '每周', used: 40, unit: '%'}]}),
+        {label: '每周 ', value: '已用 40.00%', tone: 'normal'},
+    );
+    assert.equal(usageHeadlineSummary({state: 'error', error: 'HTTP 401'}).value, 'HTTP 401');
+    assert.equal(usageHeadlineSummary(null), null);
     // 只剩「账户可用」一行时照常显示（没有更有信息量的行可挑）
     assert.equal(
         formatUsageHeadline({state: 'ok', items: [{label: '账户可用', value: '是', isValid: true}]}),
         '账户可用 是',
     );
+});
+
+test('usageTone：按剩余 20% 阈值分绿/橙/红（对齐 cc-switch），只给数值上色', () => {
+    // 有 total 时按 remaining/total 算剩余
+    assert.equal(usageTone({remaining: 50, total: 100, unit: '%'}), 'normal');   // 剩 50%
+    assert.equal(usageTone({remaining: 15, total: 100, unit: '%'}), 'warning');  // 剩 15% (<20)
+    assert.equal(usageTone({remaining: 0, total: 100, unit: '%'}), 'danger');    // 用完
+    assert.equal(usageTone({remaining: 82, total: 100, unit: '%'}), 'normal');   // 已用 18%
+    // unit=% 但没 total：按 100-used
+    assert.equal(usageTone({used: 30, unit: '%'}), 'normal');
+    assert.equal(usageTone({used: 85, unit: '%'}), 'warning');
+    assert.equal(usageTone({used: 100, unit: '%'}), 'danger');
+    // 余额（无 total）不上色 → normal（绿）
+    assert.equal(usageTone({remaining: 49.05, unit: 'CNY'}), 'normal');
+    assert.equal(usageTone({isValid: false, invalidMessage: '过期'}), 'danger');
+});
+
+test('usageHeadlineParts：segments 分段、过滤「账户可用」、多套餐完整列出、优先 used%', () => {
+    // DeepSeek 官方：过滤「账户可用」，显示总额余额
+    const official = usageHeadlineParts({state: 'ok', items: [
+        {label: '账户可用', value: '是', isValid: true},
+        {label: '总额余额（CNY）', value: '49.05', isValid: true},
+    ]});
+    assert.equal(official.segments.length, 1);
+    assert.equal(official.segments[0].label, '总额余额（CNY） ');
+    assert.equal(official.segments[0].value, '49.05');
+    assert.equal(official.segments[0].tone, 'normal');
+
+    // 只剩「账户可用」时照常显示
+    const onlyAvailable = usageHeadlineParts({state: 'ok', items: [{label: '账户可用', value: '是', isValid: true}]});
+    assert.equal(onlyAvailable.segments[0].label, '账户可用 ');
+
+    // 脚本多套餐：完整列出（不再聚合「N 个套餐」），各自带 tone
+    const multi = usageHeadlineParts({state: 'ok', items: [
+        {planName: '5 小时', used: 12, unit: '%', remaining: 880000, total: 100, isValid: true},
+        {planName: '每周', used: 90, unit: '%', remaining: 500, total: 5000, isValid: true},
+    ]});
+    assert.equal(multi.segments.length, 2);
+    assert.equal(multi.segments[0].label, '5 小时 ');
+    assert.equal(multi.segments[0].value, '已用 12.00%');
+    assert.equal(multi.segments[0].tone, 'normal');
+    assert.equal(multi.segments[1].tone, 'warning'); // 剩 10% < 20%
+
+    // unit=% 时优先 used 显示，remaining 不再套 % 单位（112911.76% 回归）
+    const pct = usageHeadlineParts({state: 'ok', items: [
+        {planName: '池1 · 5小时', used: 25, remaining: 11291176, total: 100, unit: '%', isValid: true},
+    ]});
+    assert.equal(pct.segments[0].value, '已用 25.00%');
+
+    const err = usageHeadlineParts({state: 'error', error: 'HTTP 401'});
+    assert.equal(err.segments[0].value, 'HTTP 401');
+    assert.equal(err.segments[0].tone, 'danger');
+    assert.equal(usageHeadlineParts(null).segments[0].tone, 'muted');
+});
+
+test('normalizeResetAt：秒/毫秒/ISO 归一，无效返回 0', () => {
+    const sec = Math.floor(Date.now() / 1000) + 3600;
+    assert.equal(normalizeResetAt(String(sec)), sec * 1000);
+    assert.equal(normalizeResetAt(sec), sec * 1000);
+    assert.ok(normalizeResetAt(new Date(Date.now() + 3600000).toISOString()) > Date.now());
+    assert.equal(normalizeResetAt(''), 0);
+    assert.equal(normalizeResetAt('not a date'), 0);
+    assert.equal(normalizeResetAt(-5), 0);
+});
+
+test('formatUsageCountdown：d/h/m 只显示两个单位（对齐 cc-switch）', () => {
+    const now = Date.now();
+    assert.equal(formatUsageCountdown(now + (27 * 24 + 2) * 3600000, now), '27d2h');
+    assert.equal(formatUsageCountdown(now + (1 * 60 + 55) * 60000, now), '1h55m');
+    assert.equal(formatUsageCountdown(now + 55 * 60000, now), '55m');
+    assert.equal(formatUsageCountdown(now - 1000, now), '');
+    assert.equal(formatUsageCountdown(0, now), '');
 });
 
 test('formatUsageAge：分钟/小时分档', () => {

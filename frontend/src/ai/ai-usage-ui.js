@@ -6,6 +6,9 @@
 // sessionUsageTotals 是纯数据核：面板统计行、两个弹层、支线标签页统计行共用同一份口径。
 // 格式化三件套（K/M tok、千分位、时长）原本是面板本地函数，这里收编为唯一来源。
 
+import {isTurnBoundaryMessage} from './ai-session-store.js';
+import {overlayStack} from '../core/overlay-stack.js';
+
 export function aiFormatCompactTokens(value) {
     const num = Math.max(0, Math.round(Number(value) || 0));
     if (num < 1000) return String(num);
@@ -64,8 +67,9 @@ export function sessionUsageTotals(session) {
     let hasTools = false;
     for (const message of all) {
         if (!message) continue;
-        // steer 是本轮补充指示，不计入「N 轮」（与 turnStartAt / 会话分组的轮次口径一致）
-        if (message.role === 'user' && !message.systemNote && !message.steer) rounds++;
+        // 轮次口径与 turnStartAt / 会话分组同源：steer 是本轮补充指示，systemNote 与信箱
+        // notice 是机器注入，都不计入「N 轮」（isTurnBoundaryMessage 单一判据）。
+        if (isTurnBoundaryMessage(message)) rounds++;
         if (message.role === 'tool') {
             hasTools = true;
             continue;
@@ -138,8 +142,14 @@ export function createAIUsageUI(ctx) {
     let turnUsagePop = null;
     let turnUsageAnchor = null;
     let turnUsageDismiss = null;
+    // 页面级浮层的弹层栈条目（body 浮层，popover 档）：Esc 由栈按层序退
+    let turnUsageStackHandle = null;
 
     function closeTurnUsagePop() {
+        if (turnUsageStackHandle) {
+            turnUsageStackHandle.dispose();
+            turnUsageStackHandle = null;
+        }
         if (turnUsageDismiss) {
             const dispose = turnUsageDismiss;
             turnUsageDismiss = null;
@@ -214,25 +224,26 @@ export function createAIUsageUI(ctx) {
         turnUsageAnchor = anchor;
 
         // 面板滚动 / 换会话 / 点别处 / Esc 都收起；滚轮滚动时浮层会脱锚，直接关。
+        // Esc 归全局弹层栈（body 浮层，popover 档），不再自挂 keydown。
         const onDown = (e) => {
             if (pop.contains(e.target)) return;
             if (e.target && e.target.closest && e.target.closest('[data-ai-act="usage"]')) return;
             closeTurnUsagePop();
         };
-        const onKey = (e) => {
-            if (e.key === 'Escape') closeTurnUsagePop();
-        };
         const onScroll = () => closeTurnUsagePop();
         document.addEventListener('mousedown', onDown, true);
-        document.addEventListener('keydown', onKey, true);
         window.addEventListener('scroll', onScroll, true);
         window.addEventListener('resize', onScroll);
         turnUsageDismiss = () => {
             document.removeEventListener('mousedown', onDown, true);
-            document.removeEventListener('keydown', onKey, true);
             window.removeEventListener('scroll', onScroll, true);
             window.removeEventListener('resize', onScroll);
         };
+        if (turnUsageStackHandle) turnUsageStackHandle.dispose();
+        turnUsageStackHandle = overlayStack.open({
+            id: 'ai-turn-usage', kind: 'popover', el: pop,
+            onClose: () => { closeTurnUsagePop(); return true; },
+        });
     }
 
     // 面板的用量徽标点击做「同一个徽标再点 = 关」判定用

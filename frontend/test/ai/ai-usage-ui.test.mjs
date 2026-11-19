@@ -68,6 +68,16 @@ test('sessionUsageTotals：轮 / 步 / tokens / 缓存聚合', () => {
     assert.ok(Math.abs(totals.ttftAvg - 95) < 1e-6);
 });
 
+test('sessionUsageTotals：轮次口径与回合边界同源（steer / 信箱 notice 不计轮）', () => {
+    const session = {messages: [
+        {role: 'user', ts: 1, turnStartedAt: 1},
+        {role: 'user', notice: true, turnStartedAt: 2, app: {kind: 'subagent'}},
+        {role: 'user', ts: 3, steer: true, turnStartedAt: 3},
+        {role: 'assistant', usage: {promptTokens: 10, completionTokens: 5}, modelMs: 500, firstTokenMs: 50},
+    ]};
+    assert.equal(sessionUsageTotals(session).rounds, 1, '后台通知与插话都不算用户发起的一轮');
+});
+
 test('sessionUsageTotals：短窗口退化端到端吞吐；无 usage 不计速度', () => {
     // modelMs < 200ms 的窗口走 e2e 兜底
     const short = {messages: [

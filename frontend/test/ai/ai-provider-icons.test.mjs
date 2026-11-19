@@ -43,6 +43,13 @@ test('host 匹配：精确 / 子域 / 端口剥离 / userinfo / 大小写', () =
     assert.equal(providerIconKeyForHost('https://api.minimaxi.com/v1'), 'minimax');
     // 子域后缀匹配
     assert.equal(providerIconKeyForHost('https://eu.api.anthropic.com/v1'), 'claude');
+    // 新增厂商 host
+    assert.equal(providerIconKeyForHost('https://opencode.ai/zen/v1'), 'opencode');
+    assert.equal(providerIconKeyForHost('https://ark.cn-beijing.volces.com/api/v3'), 'doubao');
+    assert.equal(providerIconKeyForHost('https://qianfan.baidubce.com/v2'), 'wenxin');
+    assert.equal(providerIconKeyForHost('https://bedrock-runtime.us-east-1.amazonaws.com'), 'aws');
+    assert.equal(providerIconKeyForHost('https://my.openai.azure.com/openai'), 'azure');
+    assert.equal(providerIconKeyForHost('https://generativelanguage.googleapis.com/v1'), 'gemini');
     // 伪造后缀不命中
     assert.equal(providerIconKeyForHost('https://api.deepseek.com.evil.example.com/v1'), '');
     assert.equal(providerIconKeyForHost(''), '');
@@ -54,6 +61,11 @@ test('名称关键词：中文命中、伪造子串可接受（名称是弱信�
     assert.equal(providerIconKeyForName('智谱 GLM 官方'), 'zhipu');
     assert.equal(providerIconKeyForName('Kimi For Coding'), 'kimi');
     assert.equal(providerIconKeyForName('本地 ollama'), 'ollama');
+    assert.equal(providerIconKeyForName('OpenCode Go'), 'opencode');
+    assert.equal(providerIconKeyForName('豆包 · 火山方舟'), 'doubao');
+    assert.equal(providerIconKeyForName('腾讯混元'), 'hunyuan');
+    assert.equal(providerIconKeyForName('文心一言'), 'wenxin');
+    assert.equal(providerIconKeyForName('Sub2API 自建'), 'sub2api');
     assert.equal(providerIconKeyForName('随便什么'), '');
     assert.equal(providerIconKeyForName(''), '');
 });

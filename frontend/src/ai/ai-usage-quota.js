@@ -20,9 +20,25 @@ import {
 const USAGE_WORKER_TIMEOUT_MS = 5000;
 // 脚本响应体上限：余额响应远小于生图，256KB 足够。
 const USAGE_RESPONSE_MAX_BYTES = 262144;
-const USAGE_SNAPSHOT_ITEMS_MAX = 10;
+const USAGE_SNAPSHOT_ITEMS_MAX = 24;
 // localStorage 快照键：只存展示数据（items/error/at），绝不存 override apiKey。
-const USAGE_SNAPSHOT_STORAGE_KEY = 'cadt.ai-usage-cache.v1';
+// v2：条目结构升级（结构化 resetAt + 百分比优先 used），旧版快照直接作废重查
+const USAGE_SNAPSHOT_STORAGE_KEY = 'cadt.ai-usage-cache.v2';
+
+// resetAt 归一：number 按 <1e12 视为秒、否则毫秒；字符串先试数字再按 ISO 解析。
+// 无效 / 非正数返回 0（调用方据此不显示倒计时）。
+export function normalizeResetAt(raw) {
+    if (typeof raw === 'number') {
+        if (!Number.isFinite(raw) || raw <= 0) return 0;
+        return raw < 1e12 ? raw * 1000 : raw;
+    }
+    const text = String(raw == null ? '' : raw).trim();
+    if (!text) return 0;
+    const numeric = Number(text);
+    if (Number.isFinite(numeric) && numeric > 0) return numeric < 1e12 ? numeric * 1000 : numeric;
+    const parsed = Date.parse(text);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+}
 
 // ── 纯函数（可单测）──────────────────────────────────────────
 
@@ -42,11 +58,20 @@ export function normalizeUsageResult(raw) {
         const str = (value) => (typeof value === 'string' ? value.slice(0, 200) : '');
         const item = {
             planName: str(entry.planName),
+            poolName: str(entry.poolName),
             isValid: entry.isValid !== false,
             invalidMessage: str(entry.invalidMessage),
             unit: str(entry.unit),
             extra: str(entry.extra),
         };
+        // resetAt：epoc 秒 / 毫秒 / ISO 字符串统一成毫秒时间戳，显示层按倒计时渲染
+        if (entry.resetAt != null && entry.resetAt !== '') {
+            const resetMs = normalizeResetAt(entry.resetAt);
+            if (resetMs > 0) item.resetAt = resetMs;
+        }
+        // 返赠余额（SenseNova 这类）：外显时并入总额，详情层仍看 extra 文案
+        const grant = Number(entry.grantBalance);
+        if (Number.isFinite(grant) && grant > 0) item.grantBalance = grant;
         let hasNumber = false;
         for (const key of ['remaining', 'total', 'used']) {
             const value = Number(entry[key]);
@@ -127,9 +152,9 @@ export function buildUsageWorkerScript() {
         '  const data = event.data || {};',
         '  try {',
         "    if (data.type === 'run') {",
-        "      const cfg = new Function('return (' + data.code + ')')();",
-        "      if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) throw new Error('脚本顶层必须是对象字面量');",
-        '      const req = cfg.request;',
+        "      _cfg = new Function('return (' + data.code + ')')();",
+        "      if (!_cfg || typeof _cfg !== 'object' || Array.isArray(_cfg)) throw new Error('脚本顶层必须是对象字面量');",
+        '      const req = _cfg.request;',
         "      if (!req || typeof req !== 'object') throw new Error('缺少 request 配置');",
         "      if (typeof req.url !== 'string' || !req.url.trim()) throw new Error('缺少 request.url');",
         "      const url = req.url.trim().toLowerCase();",
@@ -188,34 +213,174 @@ export function formatUsageAmount(value, unit) {
     return unit === '%' ? text + '%' : (text + (unit ? ' ' + unit : ''));
 }
 
+// cc-switch 口径：颜色一律按**剩余**算（不是已用），只给数值上色。
+// 剩余 >20% 绿(normal)、≤20% 橙(warning)、≤0 红(danger)；没有比例（余额）不上色。
+// 对齐 cc-switch quotaRules.ts 的 WARN_BELOW_PERCENT=20 / toneForLeft。
+export const USAGE_WARN_BELOW_PERCENT = 20;
+export function usageTone(item) {
+    if (!item || item.isValid === false) return 'danger';
+    if (Number.isFinite(item.total) && item.total > 0 && Number.isFinite(item.remaining)) {
+        const left = Math.max(0, (item.remaining / item.total) * 100);
+        if (left <= 0) return 'danger';
+        if (left < USAGE_WARN_BELOW_PERCENT) return 'warning';
+        return 'normal';
+    }
+    // 有已用百分比（unit=%）但没 total：按 100-used 当剩余
+    if (item.unit === '%' && Number.isFinite(item.used)) {
+        const left = 100 - item.used;
+        if (left <= 0) return 'danger';
+        if (left < USAGE_WARN_BELOW_PERCENT) return 'warning';
+        return 'normal';
+    }
+    return 'normal';
+}
+
 // 单条目的展示文案（余额行主句 + 弹层行共用）。
+// 百分比条目（unit === '%'）一律显示「已用 X%」——remaining 是原始额度数（token 数），
+// 不能套 % 单位（2026-11-19 修复「112911.76%」）。
 export function usageItemText(item) {
     if (!item) return '';
     if (item.isValid === false) return item.invalidMessage || '已失效';
     if (item.label && item.value) return item.label + ' ' + item.value;
     const unit = item.unit || '';
-    if (Number.isFinite(item.remaining)) return '余额 ' + formatUsageAmount(item.remaining, unit);
+    if (unit === '%' && Number.isFinite(item.used)) {
+        return (item.planName ? item.planName + ' ' : '') + '已用 ' + formatUsageAmount(item.used, unit);
+    }
+    // unit=% 时 remaining 实际是 token 数（SenseNova 这类），不能拼成 660000.00%
+    if (Number.isFinite(item.remaining)) return '余额 ' + formatUsageAmount(item.remaining, unit === '%' ? '' : unit);
     if (Number.isFinite(item.used)) return (item.planName ? item.planName + ' ' : '') + '已用 ' + formatUsageAmount(item.used, unit);
     if (Number.isFinite(item.total)) return (item.planName ? item.planName + ' ' : '') + '总额 ' + formatUsageAmount(item.total, unit);
     return item.planName || '';
 }
 
-// 余额行主句：脚本条目单套餐直显、多套餐报数；官方引擎的 label/value 明细行
-//（总额/赠送/充值/账户可用）不算套餐——取第一条有信息量的行。
-export function formatUsageHeadline(snapshot) {
+// 重置倒计时：只剩两个单位（27d2h / 1h55m / 55m），对齐 cc-switch countdownStr。
+// 到期或没有 resetAt 返回 ''。
+export function formatUsageCountdown(resetAt, now = Date.now()) {
+    const ms = normalizeResetAt(resetAt);
+    if (!ms) return '';
+    const diff = ms - now;
+    if (diff <= 0) return '';
+    const totalMinutes = Math.floor(diff / 60000);
+    const days = Math.floor(totalMinutes / 1440);
+    const hours = Math.floor((totalMinutes % 1440) / 60);
+    const minutes = totalMinutes % 60;
+    if (days > 0) return days + 'd' + hours + 'h';
+    if (hours > 0) return hours + 'h' + minutes + 'm';
+    return minutes + 'm';
+}
+
+// 余额行结构化文案：segments 数组，每段 {label 灰字前缀, value 上色值, tone}。
+// 对齐 cc-switch：档名/「余额」等文案灰、只有数字上色；多套餐**完整列出**每段
+//（不聚合「N 个套餐」）；官方条目过滤零信息量的「账户可用」。
+export function usageHeadlineParts(snapshot, now = Date.now()) {
+    if (!snapshot) return {segments: [{label: '', value: '待查询', tone: 'muted'}]};
+    if (snapshot.state === 'error') return {segments: [{label: '', value: snapshot.error || '查询失败', tone: 'danger'}]};
+    const items = (Array.isArray(snapshot.items) ? snapshot.items : []).filter((item) => item);
+    if (!items.length) return {segments: []};
+
+    const segments = [];
+    for (const item of items) {
+        if (item.isValid === false) {
+            segments.push({label: item.planName ? item.planName + ' · ' : '', value: item.invalidMessage || '已失效', tone: 'danger'});
+            continue;
+        }
+        // 官方引擎条目：label/value 是明细行；「账户可用」零信息量，有别的行时跳过
+        if (item.label && item.value) {
+            if (item.label === '账户可用' && items.length > 1) continue;
+            segments.push({label: item.label + ' ', value: item.value, tone: 'normal'});
+            continue;
+        }
+        const unit = item.unit || '';
+        const prefix = item.planName ? item.planName + ' ' : '';
+        let value;
+        if (unit === '%' && Number.isFinite(item.used)) value = '已用 ' + formatUsageAmount(item.used, unit);
+        else if (Number.isFinite(item.remaining)) value = formatUsageAmount(item.remaining, unit === '%' ? '' : unit);
+        else if (Number.isFinite(item.used)) value = '已用 ' + formatUsageAmount(item.used, unit);
+        else if (Number.isFinite(item.total)) value = '总额 ' + formatUsageAmount(item.total, unit);
+        else value = '';
+        if (!value) continue;
+        segments.push({label: prefix, value, tone: usageTone(item)});
+    }
+    if (!segments.length) {
+        const only = items.find((item) => item.label && item.value);
+        if (only) segments.push({label: only.label + ' ', value: only.value, tone: 'normal'});
+    }
+    return {segments};
+}
+
+// 纯文本主句（模型选择器分组头等单行场景用）：segments 拼接、完整列出多套餐。
+export function formatUsageHeadline(snapshot, now = Date.now()) {
     if (!snapshot) return '';
     if (snapshot.state === 'error') return snapshot.error || '查询失败';
-    const items = Array.isArray(snapshot.items) ? snapshot.items : [];
-    if (!items.length) return '';
-    const planShaped = items.some((item) =>
-        item.planName || Number.isFinite(item.remaining) || Number.isFinite(item.used) || Number.isFinite(item.total));
-    if (planShaped && items.length > 1) {
-        const primary = items.find((item) => item.isValid !== false) || items[0];
-        return items.length + ' 个套餐 · ' + usageItemText(primary);
+    const parts = usageHeadlineParts(snapshot, now);
+    return (parts.segments || []).map((segment) => segment.label + segment.value).join(' · ');
+}
+
+// 外显只显示「余额总额」：官方引擎优先「总额余额」条目；脚本模板把同单位的 remaining
+// 求和（返赠余额只加一次）。多套餐的已用百分比与明细留给点击弹出的详情层。
+function summaryAmount(value, unit) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return '';
+    const compact = (v) => Number(v.toFixed(1)).toString();
+    if (unit && /^(usd|cny|rmb|元|美元|人民币)$/i.test(unit)) return n.toFixed(2) + ' ' + unit;
+    let text;
+    if (Math.abs(n) >= 1e8) text = compact(n / 1e8) + '亿';
+    else if (Math.abs(n) >= 1e6) text = compact(n / 1e6) + 'M';
+    else if (Math.abs(n) >= 1e4) text = compact(n / 1e3) + 'K';
+    else text = String(Math.round(n));
+    return unit ? text + ' ' + unit : text;
+}
+
+export function usageHeadlineSummary(snapshot, now = Date.now()) {
+    if (!snapshot) return null;
+    if (snapshot.state === 'error') return {label: '', value: snapshot.error || '查询失败', tone: 'danger'};
+    const items = (Array.isArray(snapshot.items) ? snapshot.items : []).filter((item) => item && item.isValid !== false);
+    if (!items.length) return null;
+
+    // 官方引擎（label/value 型）：只取总额余额（或第一个含「余额」的行）
+    const official = items.filter((item) => item.label && item.value);
+    if (official.length) {
+        const total = official.find((item) => String(item.label).includes('总额'))
+            || official.find((item) => String(item.label).includes('剩余'))
+            || official.find((item) => String(item.label).includes('余额'))
+            || official[0];
+        return {label: String(total.label).trim() + ' ', value: String(total.value), tone: 'normal'};
     }
-    if (planShaped) return usageItemText(items[0]);
-    const official = items.find((item) => item.label && item.value && item.label !== '账户可用') || items[0];
-    return official.label && official.value ? official.label + ' ' + official.value : usageItemText(official);
+
+    // 脚本模板：同单位 remaining 求和（unit=% 的 remaining 实际是 token 数，按 tokens 处理）
+    const remainingItems = items.filter((item) => Number.isFinite(item.remaining));
+    if (remainingItems.length) {
+        const unitOf = (item) => (item.unit === '%' ? 'tokens' : (item.unit || ''));
+        const unit = unitOf(remainingItems[0]);
+        let grant = 0;
+        let sameUnit = true;
+        // 同一 planName 的多个窗口（如 5h / 7d）是对同份额度的重叠约束：
+        // 每组取较大的 remaining 再跨池求和，避免把同一份额度重复相加。
+        const poolMax = new Map();
+        for (const item of remainingItems) {
+            if (unitOf(item) !== unit) {
+                sameUnit = false;
+                break;
+            }
+            const key = item.poolName || item.planName || '';
+            const value = Number(item.remaining) || 0;
+            if (!poolMax.has(key) || value > poolMax.get(key)) poolMax.set(key, value);
+            if (Number.isFinite(item.grantBalance)) grant = Math.max(grant, Number(item.grantBalance));
+        }
+        let sum = 0;
+        for (const value of poolMax.values()) sum += value;
+        if (sameUnit) {
+            return {
+                label: '剩余 ',
+                value: summaryAmount(sum + grant, unit === 'tokens' ? '' : unit),
+                tone: usageTone(remainingItems[0]),
+            };
+        }
+    }
+
+    // 兜底：百分比型等首段
+    const parts = usageHeadlineParts(snapshot, now);
+    return (parts.segments || [])[0] || null;
 }
 
 // 查询时间相对文案（data-tip 里给绝对时间）。
@@ -373,8 +538,10 @@ export function createAIUsageQuota(deps) {
     // 脚本模板查询：Worker 解析脚本 → request 出沙箱 → Go 发请求 → 响应回沙箱跑 extractor。
     async function runScriptQuery(profile, usage) {
         const backendRef = backend();
-        if (!backendRef || typeof backendRef.AIUsageHTTPRequest !== 'function') {
-            throw new Error('当前版本不支持脚本额度查询通道');
+        const isOAuth = usage.template === 'oauth';
+        const sendName = isOAuth ? 'AIOAuthQuotaFetch' : 'AIUsageHTTPRequest';
+        if (!backendRef || typeof backendRef[sendName] !== 'function') {
+            throw new Error('当前版本不支持' + (isOAuth ? 'OAuth 额度查询' : '脚本额度查询') + '通道');
         }
         const code = String(usage.code || '').trim();
         if (!code) throw new Error('脚本是空的（先选模板或粘贴脚本）');
@@ -386,7 +553,9 @@ export function createAIUsageQuota(deps) {
             // Worker 构造也可能同步抛（极端环境无 Worker 构造器），放进 try 才能保证 blob 释放
             worker = makeWorker(blobURL);
             const {request} = await workerPhase(worker, {type: 'run', code: rendered}, 'request', '脚本解析');
-            const result = await backendRef.AIUsageHTTPRequest(JSON.stringify(buildUsageSpec(request, profile, usage)));
+            const result = isOAuth
+                ? await backendRef.AIOAuthQuotaFetch(usage.planProvider, String(request.url || ''))
+                : await backendRef.AIUsageHTTPRequest(JSON.stringify(buildUsageSpec(request, profile, usage)));
             if (!result || typeof result !== 'object') throw new Error('查询通道无返回');
             if (result.error && !result.status) throw new Error(result.error);
             if (Number(result.status) >= 400) {
