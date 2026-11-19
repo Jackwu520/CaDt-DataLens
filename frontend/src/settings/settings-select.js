@@ -8,6 +8,10 @@
 
 export const SS_POP_LIMITS = {gap: 6, edge: 8, maxHeight: 320, minWidth: 160, maxWidth: 360};
 
+// 浮层进全局弹层栈（popover 档）：实证须压过设置窗/编辑器（旧 CSS 1200 的由来），
+// Esc 由栈先退浮层再退底下的对话框——旧 document capture 兜底监听随之删除。
+import {overlayStack} from '../core/overlay-stack.js';
+
 // 纯函数：浮层宽度。至少与触发器同宽，最多 360px，且永不超出视口。
 export function computePopWidth(rect, viewport, limits = SS_POP_LIMITS) {
     const maxByViewport = Math.max(0, viewport.width - limits.edge * 2);
@@ -89,6 +93,8 @@ let activeIndex = -1;
 let typeahead = '';
 let typeaheadTimer = 0;
 let rafId = 0;
+// 浮层的弹层栈条目（openInstance/setSelectCloseAll 收口）
+let selectStackHandle = null;
 
 // ---- 全局浮层（唯一 DOM 节点，挂 body，绕过所有 overflow 裁剪） ----
 function ensurePop() {
@@ -375,11 +381,26 @@ function openInstance(inst) {
     document.addEventListener('scroll', onViewportChange, true);
     window.addEventListener('resize', onViewportChange);
     try { pop.focus({preventScroll: true}); } catch (e) {}
+    if (selectStackHandle) selectStackHandle.dispose();
+    selectStackHandle = overlayStack.open({
+        id: POP_ID, kind: 'popover', el: pop,
+        onClose: () => {
+            const btn = active && active.btn;
+            const restore = !!popEl && document.activeElement === popEl;
+            setSelectCloseAll();
+            if (restore && btn) { try { btn.focus({preventScroll: true}); } catch (e2) {} }
+            return true;
+        },
+    });
 }
 
 function setSelectCloseAll(except) {
     if (except && active && active.wrap === except) return;
     const inst = active;
+    if (selectStackHandle) {
+        selectStackHandle.dispose();
+        selectStackHandle = null;
+    }
     document.querySelectorAll('.set-select.open').forEach((wrap) => wrap.classList.remove('open'));
     document.querySelectorAll('.set-select-btn[aria-expanded="true"]').forEach((btn) => btn.setAttribute('aria-expanded', 'false'));
     if (popEl) {
@@ -483,14 +504,8 @@ function enhanceSetSelects() {
             if (e.target && e.target.closest && e.target.closest('.set-select, .set-select-pop')) return;
             setSelectCloseAll();
         });
-        // Esc 全局兜底：设置对话框被 Esc 关掉时浮层不能留在 body 上
-        document.addEventListener('keydown', (e) => {
-            if (e.key !== 'Escape' || !active) return;
-            const btn = active.btn;
-            const restore = !!popEl && document.activeElement === popEl;
-            setSelectCloseAll();
-            if (restore) { try { btn.focus({preventScroll: true}); } catch (e2) {} }
-        }, true);
+        // Esc 兜底监听已删：浮层进了全局弹层栈（popover 档在对话框之上），
+        // Esc 先退浮层（焦点还原在栈条目 onClose 里），再退底下的对话框。
     }
 }
 

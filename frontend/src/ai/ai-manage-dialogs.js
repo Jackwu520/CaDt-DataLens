@@ -4,6 +4,7 @@
 // 对话框基建（openAIDialog/closeAIDialog/dialogNode/dialogButton）也归本模块（方案 M4 搬入）；浮动窗折叠状态经 ctx 访问器读写。
 import {aiClamp, aiCtxBannerShow, aiCtxBannerState, aiEstimateTokens, aiEstimateImageTokens, aiEstimateVideoTokens, aiImageStats, aiTextOf} from './ai-constants.js';
 import {createInput, createSelect, createSwitch, createTextarea} from '../core/form-controls.js';
+import {overlayStack} from '../core/overlay-stack.js';
 
 export function createAIManageDialogs(ctx) {
     const el = ctx.el;
@@ -50,6 +51,8 @@ export function createAIManageDialogs(ctx) {
     const setFloatCollapsed = ctx.setFloatCollapsed;
     let dialogOnTop = false;
     let dialogHome = null;
+    // AI 弹窗的弹层栈条目（openAIDialog/closeAIDialog 所有路径都要收口）
+    let dialogStackHandle = null;
 
     function attachDialogTop() {
         if (!el.dialog || dialogOnTop) return;
@@ -84,10 +87,20 @@ export function createAIManageDialogs(ctx) {
             for (const node of footerNodes || []) if (node) el.dialogFoot.appendChild(node);
         }
         el.dialog.classList.remove('hidden');
+        // 进全局弹层栈：从设置窗以 top 方式打开时本层在栈顶，Esc 先退本层再退设置窗
+        if (dialogStackHandle) dialogStackHandle.dispose();
+        dialogStackHandle = overlayStack.open({
+            id: 'ai-dialog', kind: 'modal', el: el.dialog,
+            onClose: () => { closeAIDialog(); return true; },
+        });
     }
 
     function closeAIDialog() {
         if (!el.dialog) return;
+        if (dialogStackHandle) {
+            dialogStackHandle.dispose();
+            dialogStackHandle = null;
+        }
         el.dialog.classList.remove('ai-permission-dialog');
         el.dialog.classList.add('hidden');
         if (el.dialogCard) el.dialogCard.classList.remove('ai-dialog-card-wide');

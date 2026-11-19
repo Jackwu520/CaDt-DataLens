@@ -4,6 +4,7 @@
 // 依赖一律经 deps 延迟求值（调用方传 getter），不在创建期解构：
 // 这样既不依赖 main.js 的声明顺序，也不会把 let 状态拍成快照。
 import {buildJsonLineMap, queryJsonPath} from '../core/jsonpath.js';
+import {overlayStack} from '../core/overlay-stack.js';
 
 export function createJsonQuery(deps) {
 
@@ -20,6 +21,9 @@ const jsonQuery = {
     timer: 0,
     previousFocus: null,
 };
+
+// 查询栏的弹层栈条目（modal 档，遮罩即容器）；Esc 由栈按层序退
+let jpStackHandle = null;
 
 function jpEls() {
     return {
@@ -83,6 +87,11 @@ function openJsonQuery() {
     jsonQuery.seq++;
     jsonQuery.previousFocus = document.activeElement;
     elsJp.mask.classList.remove('hidden');
+    if (jpStackHandle) jpStackHandle.dispose();
+    jpStackHandle = overlayStack.open({
+        id: 'jp-mask', kind: 'modal', el: elsJp.mask,
+        onClose: () => { closeJsonQuery(); return true; },
+    });
     elsJp.input.value = '';
     elsJp.count.textContent = '';
     const kind = Array.isArray(rootValue) ? '数组' : (rootValue && typeof rootValue === 'object' ? '对象' : typeof rootValue);
@@ -94,6 +103,10 @@ function openJsonQuery() {
 function closeJsonQuery() {
     if (!jsonQuery.open) return;
     jsonQuery.open = false;
+    if (jpStackHandle) {
+        jpStackHandle.dispose();
+        jpStackHandle = null;
+    }
     clearTimeout(jsonQuery.timer);
     jsonQuery.seq++;
     const {mask} = jpEls();
@@ -193,12 +206,7 @@ async function openJsonQueryHit(index) {
 }
 
 function handleJsonQueryKey(e) {
-    if (e.key === 'Escape') {
-        e.preventDefault();
-        e.stopPropagation();
-        closeJsonQuery();
-        return;
-    }
+    // Esc 不在这里处理：查询栏已进全局弹层栈，栈按层序关；方向键 / Enter 仍归输入框
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
         e.preventDefault();
         e.stopPropagation();

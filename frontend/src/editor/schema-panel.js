@@ -5,10 +5,14 @@
 // 这样既不依赖 main.js 的声明顺序，也不会把 let 状态拍成快照。
 import {validateJsonSchema} from '../core/jsonschema.js';
 import {buildJsonLineMap} from '../core/jsonpath.js';
+import {overlayStack} from '../core/overlay-stack.js';
 
 export function createSchemaPanel(deps) {
 
 const schemaState = {open: false, doc: null, lineMap: new Map(), errors: [], previousFocus: null};
+
+// 校验面板的弹层栈条目（modal 档，遮罩即容器）；Esc 由栈按层序退
+let schemaStackHandle = null;
 
 function schemaEls() {
     return {
@@ -24,6 +28,10 @@ function schemaEls() {
 function closeSchemaPanel() {
     if (!schemaState.open) return;
     schemaState.open = false;
+    if (schemaStackHandle) {
+        schemaStackHandle.dispose();
+        schemaStackHandle = null;
+    }
     const {mask} = schemaEls();
     if (mask) mask.classList.add('hidden');
     const prev = schemaState.previousFocus;
@@ -116,6 +124,11 @@ async function openSchemaValidation() {
     schemaState.lineMap = doc.format.id === 'json' ? buildJsonLineMap(text) : new Map();
     const elsS = schemaEls();
     elsS.mask.classList.remove('hidden');
+    if (schemaStackHandle) schemaStackHandle.dispose();
+    schemaStackHandle = overlayStack.open({
+        id: 'js-mask', kind: 'modal', el: elsS.mask,
+        onClose: () => { closeSchemaPanel(); return true; },
+    });
     elsS.summary.textContent = errors.length
         ? (doc.name + ' · ' + errors.length + ' 个错误')
         : (doc.name + ' · 校验通过');
@@ -132,12 +145,7 @@ function bindSchemaPanel() {
     elsS.mask.addEventListener('mousedown', (e) => {
         if (e.target === elsS.mask) closeSchemaPanel();
     });
-    document.addEventListener('keydown', (e) => {
-        if (!schemaState.open || e.key !== 'Escape') return;
-        e.preventDefault();
-        e.stopPropagation();
-        closeSchemaPanel();
-    }, true);
+    // Esc 已归全局弹层栈（openSchemaValidation 注册），不再需要 document capture 监听
 }
 bindSchemaPanel();
 

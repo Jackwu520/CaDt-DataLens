@@ -4,8 +4,12 @@
 // 这样既不依赖 main.js 的声明顺序，也不会把 let 状态拍成快照。
 import {fileIconSpec} from '../core/fileicons.js';
 import {createSelect, createCheckbox} from '../core/form-controls.js';
+import {overlayStack} from '../core/overlay-stack.js';
 
 export function createGlobalSearch(deps) {
+
+// 全局搜索的弹层栈条目（modal 档，遮罩即容器）；Esc 由栈按层序退
+let gsStackHandle = null;
 
 const globalSearch = {
     open: false,
@@ -140,6 +144,11 @@ function openGlobalSearch(opts) {
     ensureAISearchControls();
     syncScopeControls();
     deps.els.gsMask.classList.remove('hidden');
+    if (gsStackHandle) gsStackHandle.dispose();
+    gsStackHandle = overlayStack.open({
+        id: 'gs-mask', kind: 'modal', el: deps.els.gsMask,
+        onClose: () => { closeGlobalSearch(); return true; },
+    });
     deps.els.gsInput.focus();
 }
 
@@ -173,6 +182,10 @@ function syncScopeControls() {
 function closeGlobalSearch() {
     if (!globalSearch.open) return;
     globalSearch.open = false;
+    if (gsStackHandle) {
+        gsStackHandle.dispose();
+        gsStackHandle = null;
+    }
     clearTimeout(globalSearch.timer);
     globalSearch.seq++;
     deps.els.gsMask.classList.add('hidden');
@@ -460,12 +473,7 @@ async function openGlobalSearchHit(hit) {
 }
 
 function handleGlobalSearchKey(e) {
-    if (e.key === 'Escape') {
-        e.preventDefault();
-        e.stopPropagation();
-        closeGlobalSearch();
-        return;
-    }
+    // Esc 不在这里处理：全局搜索已进弹层栈，栈按层序关；方向键 / Enter 仍归输入框
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
         e.preventDefault();
         e.stopPropagation();

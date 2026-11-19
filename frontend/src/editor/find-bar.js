@@ -2,9 +2,12 @@
 //
 // 依赖一律经 deps 延迟求值（调用方传 getter），不在创建期解构：
 // 这样既不依赖 main.js 的声明顺序，也不会把 let 状态拍成快照。
-
+import {overlayStack} from '../core/overlay-stack.js';
 
 export function createFindBar(deps) {
+
+// 查找条的弹层栈条目（bar 档，低于一切遮罩）：Esc 由栈按层序退
+let findStackHandle = null;
 
 const findState = {
     open: false,
@@ -370,6 +373,11 @@ function openFindBar() {
     ensureFindBarHost();
     findState.open = true;
     deps.els.findBar.classList.remove('hidden');
+    if (findStackHandle) findStackHandle.dispose();
+    findStackHandle = overlayStack.open({
+        id: 'find-bar', kind: 'bar', el: deps.els.findBar,
+        onClose: () => { closeFindBar(); return true; },
+    });
     deps.els.abSearch.classList.add('active');
     const selected = selectedFindText();
     if (selected && selected.length <= 200 && !/[\r\n]/.test(selected)) {
@@ -383,6 +391,10 @@ function openFindBar() {
 function closeFindBar(opts = {}) {
     if (!findState.open) return;
     findState.open = false;
+    if (findStackHandle) {
+        findStackHandle.dispose();
+        findStackHandle = null;
+    }
     clearFindMarkers();
     clearTextFindLayer();
     detachFindAceChange();
@@ -414,11 +426,8 @@ function bindFindBar() {
             e.preventDefault();
             e.stopPropagation();
             stepFind(e.shiftKey ? -1 : 1);
-        } else if (e.key === 'Escape') {
-            e.preventDefault();
-            e.stopPropagation();
-            closeFindBar();
         }
+        // Esc 不在这里处理：查找条已进全局弹层栈，栈按层序关
     });
     deps.els.findPrev.addEventListener('click', () => stepFind(-1));
     deps.els.findNext.addEventListener('click', () => stepFind(1));

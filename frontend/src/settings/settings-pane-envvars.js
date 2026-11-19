@@ -1,10 +1,14 @@
 // 设置 → 环境变量：列表渲染、行编辑、批量保存（含加密状态）。
 // 从 writing-ui.js 拆出；deps.flash 由宿主注入。
+import {overlayStack} from '../core/overlay-stack.js';
+
 export function createSettingsPaneEnvvars(deps) {
 
 const ENVVAR_NAME_RULE = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
 const envVarState = {vars: [], encrypted: false, supported: false};
 let envEditorEditing = '';
+// 编辑器的弹层栈条目：盖在设置窗之上，Esc 由栈先退编辑器再退设置窗
+let envEditorStackHandle = null;
 
 async function renderEnvVarsPane() {
     const listEl = document.getElementById('envvar-list');
@@ -122,6 +126,10 @@ function showEnvEditorError(message) {
 }
 
 function closeEnvVarEditor() {
+    if (envEditorStackHandle) {
+        envEditorStackHandle.dispose();
+        envEditorStackHandle = null;
+    }
     const dlg = document.getElementById('dlg-env-editor');
     const mask = document.getElementById('dlg-env-editor-mask');
     if (dlg) dlg.classList.add('hidden');
@@ -160,6 +168,12 @@ function openEnvVarEditor(name) {
     if (toggle) toggle.textContent = '显示';
     if (mask) mask.classList.remove('hidden');
     dlg.classList.remove('hidden');
+    // 进全局弹层栈（modal 档，遮罩作 underEl），替代旧的 window capture 抢跑监听
+    if (envEditorStackHandle) envEditorStackHandle.dispose();
+    envEditorStackHandle = overlayStack.open({
+        id: 'env-editor', kind: 'modal', el: dlg, underEl: mask,
+        onClose: () => { closeEnvVarEditor(); return true; },
+    });
     setTimeout(() => {
         if (nameInput) {
             nameInput.focus();
@@ -218,16 +232,7 @@ function setupEnvVarsSettings() {
     if (closeBtn) closeBtn.addEventListener('click', closeEnvVarEditor);
     const mask = document.getElementById('dlg-env-editor-mask');
     if (mask) mask.addEventListener('click', closeEnvVarEditor);
-    // 捕获阶段拦截 Esc：编辑器开着时只关编辑器，不动背后的设置窗口
-    // （main.js 的全局 Esc 走 window capture，这里必须同样挂 window capture 且先注册才能拦住）
-    window.addEventListener('keydown', (e) => {
-        if (e.key !== 'Escape') return;
-        const dlg = document.getElementById('dlg-env-editor');
-        if (!dlg || dlg.classList.contains('hidden')) return;
-        e.preventDefault();
-        e.stopImmediatePropagation();
-        closeEnvVarEditor();
-    }, true);
+    // 编辑器的 Esc 已归全局弹层栈（openEnvVarEditor 注册），不再需要抢跑监听
     const valueToggle = document.getElementById('env-opt-value-toggle');
     if (valueToggle) {
         valueToggle.addEventListener('click', () => {

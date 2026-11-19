@@ -3,10 +3,11 @@
 // 状态自持（弹层节点与文档监听器）；配置 / 会话 / 动作经 ctx 注入，档位与窗口计算
 // 直接复用 ai-config-model.js 的纯函数（单一来源）。
 import {iconSvg} from '../core/icons.js';
+import {overlayStack} from '../core/overlay-stack.js';
 import {createInput} from '../core/form-controls.js';
 import {ctxLimitTiersFor, effectiveContextWindow, formatTokenAmount, reasoningLevelInfo} from './ai-config-model.js';
 import {providerIconTileHtml} from './ai-provider-icons.js';
-import {formatUsageHeadline} from './ai-usage-quota.js';
+import {formatUsageHeadline, usageHeadlineSummary} from './ai-usage-quota.js';
 
 export function createAIModelPicker(ctx) {
     const el = ctx.el;
@@ -16,7 +17,6 @@ export function createAIModelPicker(ctx) {
     const sessionModelRef = ctx.sessionModelRef;
     const switchModel = ctx.switchModel;
     const openSettings = ctx.openSettings;
-    const providerLabelFor = ctx.providerLabelFor;
     const setReasoningLevelFor = ctx.setReasoningLevelFor;
     const applyCtxLimit = ctx.applyCtxLimit;
     const flash = ctx.flash;
@@ -25,8 +25,14 @@ export function createAIModelPicker(ctx) {
 
     let modelPickerEl = null;
     let modelPickerDismiss = null;
+    // 浮层的弹层栈条目（页面级 body 浮层，popover 档）：Esc 由栈按层序退
+    let modelPickerStackHandle = null;
 
     function closeModelPicker() {
+        if (modelPickerStackHandle) {
+            modelPickerStackHandle.dispose();
+            modelPickerStackHandle = null;
+        }
         if (modelPickerDismiss) {
             const dispose = modelPickerDismiss;
             modelPickerDismiss = null;
@@ -113,19 +119,20 @@ export function createAIModelPicker(ctx) {
                 head.appendChild(headIcon);
                 const headName = document.createElement('span');
                 headName.textContent = account.name || '未命名账号';
-                const headTag = document.createElement('span');
-                headTag.className = 'ai-model-picker-tag';
-                headTag.textContent = providerLabelFor(account);
-                head.append(headName, headTag);
+                head.append(headName);
                 // 开启了额度查询的账号在分组头右侧显示余额主句（失败态红字；无缓存不占位）
                 if (usageQuota) {
                     const snapshot = usageQuota().peek(account.id);
                     if (snapshot && (snapshot.state === 'error' || (snapshot.items || []).length)) {
                         const headUsage = document.createElement('span');
                         headUsage.className = 'ai-model-picker-usage' + (snapshot.state === 'error' ? ' error' : '');
-                        headUsage.textContent = snapshot.state === 'error'
-                            ? (snapshot.error || '查询失败')
-                            : formatUsageHeadline(snapshot);
+                        const summary = usageHeadlineSummary(snapshot);
+                        const compact = summary ? summary.label + summary.value : '';
+                        headUsage.textContent = compact || (snapshot.state === 'error' ? (snapshot.error || '查询失败') : '');
+                        // 有被折叠的段时才挂悬浮提示：分组头只留一段，避免多套餐挤成省略号
+                        const full = snapshot.state === 'error' ? '' : formatUsageHeadline(snapshot);
+                        if (full && full !== compact) headUsage.dataset.tip = full;
+                        else delete headUsage.dataset.tip;
                         head.appendChild(headUsage);
                     }
                 }
@@ -269,10 +276,8 @@ export function createAIModelPicker(ctx) {
                 e.preventDefault();
                 const target = flatItems[navIndex >= 0 ? navIndex : 0];
                 if (target) target.click();
-            } else if (e.key === 'Escape') {
-                e.preventDefault();
-                closeModelPicker();
             }
+            // Esc 不在这里处理：浮层已进全局弹层栈，栈按层序关
         });
 
         const onDocMouseDown = (e) => {
@@ -297,6 +302,11 @@ export function createAIModelPicker(ctx) {
         picker.style.width = width + 'px';
         picker.style.visibility = '';
         search.focus();
+        if (modelPickerStackHandle) modelPickerStackHandle.dispose();
+        modelPickerStackHandle = overlayStack.open({
+            id: 'ai-model-picker', kind: 'popover', el: picker,
+            onClose: () => { closeModelPicker(); return true; },
+        });
     }
 
     return {showModelPicker, closeModelPicker};

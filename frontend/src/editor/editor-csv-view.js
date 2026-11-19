@@ -285,6 +285,8 @@ function openCsvColumnStats(doc, col) {
     }
     panel.classList.remove('hidden');
     doc.csvStatsOpen = true;
+    // 统计面板挂在 doc.tableEl 内（编辑器层叠上下文），不进全局弹层栈：
+    // Esc 由这里的 per-doc 监听自管（栈空时才到达，页面级弹层开着时栈先退）。
     if (!doc.csvStatsEscHandler) {
         doc.csvStatsEscHandler = (e) => {
             if (e.key !== 'Escape' || !doc.csvStatsOpen) return;

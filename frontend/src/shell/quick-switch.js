@@ -3,6 +3,7 @@
 // 依赖一律经 deps 延迟求值（调用方传 getter），不在创建期解构：
 // 这样既不依赖 main.js 的声明顺序，也不会把 let 状态拍成快照。
 import {iconSvg} from '../core/icons.js';
+import {overlayStack} from '../core/overlay-stack.js';
 
 export function createQuickSwitch(deps) {
 
@@ -14,6 +15,9 @@ const quickSwitch = {
     mainIndex: 0,
     previousFocus: null,
 };
+
+// 弹层栈条目：Esc 归栈分发——子级先回主级（层还在），主级才真正关闭
+let quickSwitchStackHandle = null;
 
 function quickSwitchTitleFor(level) {
     return ({
@@ -296,6 +300,18 @@ function openQuickSwitchAt(level) {
     quickSwitch.previousFocus = active &&
         !(active.closest && (active.closest('#tb-menu') || active.closest('#menubar') || active.closest('.ctx-menu'))) ? active : null;
     deps.els.quickSwitchMask.classList.remove('hidden');
+    if (quickSwitchStackHandle) quickSwitchStackHandle.dispose();
+    quickSwitchStackHandle = overlayStack.open({
+        id: 'quick-switch', kind: 'modal', el: deps.els.quickSwitchMask,
+        onClose: () => {
+            if (quickSwitch.level !== 'main') {
+                enterQuickSwitchLevel('main');
+                return true;
+            }
+            closeQuickSwitch();
+            return true;
+        },
+    });
     renderQuickSwitch();
     deps.els.quickSwitch.focus();
 }
@@ -307,6 +323,10 @@ function openQuickSwitch() {
 function closeQuickSwitch() {
     if (!quickSwitch.open) return;
     quickSwitch.open = false;
+    if (quickSwitchStackHandle) {
+        quickSwitchStackHandle.dispose();
+        quickSwitchStackHandle = null;
+    }
     deps.els.quickSwitchMask.classList.add('hidden');
     const previous = quickSwitch.previousFocus;
     quickSwitch.previousFocus = null;
@@ -327,11 +347,8 @@ function toggleQuickSwitch() {
 
 function handleQuickSwitchKey(e) {
     if (!quickSwitch.open) return false;
-    if (e.key === 'Escape') {
-        if (quickSwitch.level === 'main') closeQuickSwitch();
-        else enterQuickSwitchLevel('main');
-        return true;
-    }
+    // Esc 不在这里处理：已进全局弹层栈（openQuickSwitchAt 注册），栈按层序退，
+    // 子级回主级的语义在栈条目的 onClose 里。方向键 / Enter / 数字仍由 main.js 键链代管。
     if (e.key === 'ArrowDown') {
         moveQuickSwitch(1);
         return true;

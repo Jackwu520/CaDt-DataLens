@@ -2,6 +2,7 @@
 // [配置名/文件名 + 展开箭头] + 运行 ▶）。从 titlebar-popovers.js 挂载的第三个弹层兄弟模块；
 // 配置模型纯函数（activeRunConfig / recentConfigs 等）在 terminal/run.js，此处只做 UI 与接线。
 import {activeRunConfig, configRowSubtitle, recentConfigs, resolveRunWidgetLabel} from '../terminal/run.js';
+import {overlayStack} from '../core/overlay-stack.js';
 
 const RUN_POP_ICONS = {
     doc: '<svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M4 1.8h5.2L12.5 5v9.2H4z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M9 2v3.4h3.4" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>',
@@ -42,7 +43,13 @@ function setAnchorExpanded(expanded) {
     if (lastAnchor) lastAnchor.setAttribute('aria-expanded', expanded ? 'true' : 'false');
 }
 
+let runStackHandle = null;
+
 function closeRunConfigPopover() {
+    if (runStackHandle) {
+        runStackHandle.dispose();
+        runStackHandle = null;
+    }
     if (deps.els.runConfigPop) deps.els.runConfigPop.classList.add('hidden');
     setAnchorExpanded(false);
 }
@@ -168,6 +175,12 @@ function showRunConfigMenu(anchor) {
     deps.els.runConfigPop.classList.remove('hidden');
     setAnchorExpanded(true);
     deps.positionToolbarPopover(deps.els.runConfigPop, anchor);
+    // 进全局弹层栈（popover 档）：Esc 由栈按层序退
+    if (runStackHandle) runStackHandle.dispose();
+    runStackHandle = overlayStack.open({
+        id: 'run-config-pop', kind: 'popover', el: deps.els.runConfigPop,
+        onClose: () => { closeRunConfigPopover(); return true; },
+    });
 }
 
 // widget 同步：配置名/文件名 + 徽标（配置 → 彩色字母徽标；当前文件 → 文件图标）。

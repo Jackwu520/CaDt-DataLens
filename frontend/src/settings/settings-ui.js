@@ -711,7 +711,7 @@ function selectSettingsPane(pane) {
     }
     const aiGroup = document.getElementById('snav-ai');
     if (aiGroup) {
-        const inAI = pane === 'models' || pane === 'agents' || pane === 'gen-models' || pane === 'external-tools' || pane === 'ai' || pane === 'persona' || pane === 'context' || pane === 'preferences' || pane === 'schedules';
+        const inAI = pane === 'models' || pane === 'agents' || pane === 'gen-models' || pane === 'external-tools' || pane === 'ai' || pane === 'persona' || pane === 'context' || pane === 'preferences' || pane === 'schedules' || pane === 'usage-stats';
         if (inAI && !aiGroup.classList.contains('expanded')) {
             aiGroup.classList.add('expanded');
             const parent = aiGroup.querySelector('.snav-parent');
@@ -727,6 +727,10 @@ function selectSettingsPane(pane) {
     else if (pane === 'precmd' && typeof deps.renderPreCommandsPane === 'function') deps.renderPreCommandsPane();
     else if (pane === 'envvars') deps.renderEnvVarsPane();
     else if (pane === 'activity') deps.renderActivityPane();
+    else if (pane === 'usage-stats' && typeof deps.renderUsageStatsPane === 'function') {
+        // 异步面板：查询失败落到控制台，不能让导航看起来「点了没反应」
+        Promise.resolve(deps.renderUsageStatsPane()).catch((e) => console.error('使用统计设置页渲染失败', e));
+    }
     else if (pane === 'storage') deps.renderStoragePane();
     else if (pane === 'external-tools' && typeof deps.renderExternalToolsPane === 'function') {
         // 异步面板：渲染失败落到控制台，不能让导航看起来「点了没反应」

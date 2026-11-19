@@ -1,6 +1,25 @@
 // 设置页对话框族：遮罩/栈式关闭、关于、保存冲突、命名对话框，以及 confirmAction 访问器。
 // 从 settings-ui.js 拆出；elsDialogs 与 openSettings 由宿主经 deps 注入。
+import {overlayStack} from '../core/overlay-stack.js';
+
 export function createSettingsDialogs(deps) {
+
+// 家族成员的弹层栈条目：每个可见对话框一条，遮罩作 underEl 钉 dialog 档地板。
+// Esc 归全局栈按层序退（子对话框先于设置窗）；这里的 parentSettings 伪栈只管家族内部。
+const familyHandles = new Map();
+function familyDlgList() {
+    return [deps.elsDialogs.settings, deps.elsDialogs.confirm, deps.elsDialogs.conflict, deps.elsDialogs.runDirty, deps.elsDialogs.runConfirm, deps.elsDialogs.name, deps.elsDialogs.goto, deps.elsDialogs.props, deps.elsDialogs.update, deps.elsDialogs.writing, deps.elsDialogs.writingName];
+}
+function disposeFamilyHandlesExcept(dlg) {
+    for (const el of familyDlgList()) {
+        if (el === dlg) continue;
+        const handle = familyHandles.get(el);
+        if (handle) {
+            handle.dispose();
+            familyHandles.delete(el);
+        }
+    }
+}
 
 function openDialogEl(dlg, options) {
     const keepSettings = !!(options && options.keepSettings) &&
@@ -17,6 +36,12 @@ function openDialogEl(dlg, options) {
     dlg.style.transform = '';
     dlg.classList.remove('hidden');
     deps.syncAllBrowserTabs();
+    // 进全局弹层栈；被藏起的兄弟对话框顺手出栈
+    disposeFamilyHandlesExcept(dlg);
+    familyHandles.set(dlg, overlayStack.open({
+        id: 'settings-dialog', kind: 'dialog', el: dlg, underEl: deps.elsDialogs.mask,
+        onClose: () => { closeTopDialog(); return true; },
+    }));
 }
 
 function closeTopDialog() {
@@ -24,6 +49,11 @@ function closeTopDialog() {
             for (const dlg of [deps.elsDialogs.confirm, deps.elsDialogs.conflict, deps.elsDialogs.runDirty, deps.elsDialogs.runConfirm, deps.elsDialogs.name, deps.elsDialogs.goto, deps.elsDialogs.props, deps.elsDialogs.update, deps.elsDialogs.writing, deps.elsDialogs.writingName]) {
             if (dlg.classList.contains('hidden') || dlg.dataset.parentSettings !== '1') continue;
             dlg.classList.add('hidden');
+            const handle = familyHandles.get(dlg);
+            if (handle) {
+                handle.dispose();
+                familyHandles.delete(dlg);
+            }
             if (dlg === deps.elsDialogs.confirm) confirmAction = null;
             if (dlg === deps.elsDialogs.conflict) finishSaveConflict('cancel');
             if (dlg === deps.elsDialogs.name) {
@@ -38,6 +68,8 @@ function closeTopDialog() {
 }
 
 function closeDialogs() {
+    // 常规路径下模型编辑器由弹层栈挡在设置窗之前（Esc 先退它）；这里保留防御联动，
+    // 兜住非 Esc 的 closeDialogs 调用方（如切换工作区时的强制收场）。
     if (deps.aiPanel && typeof deps.aiPanel.closeModelEditor === 'function') {
         try { deps.aiPanel.closeModelEditor(false); } catch (e) {}
     }
@@ -52,6 +84,7 @@ function closeDialogs() {
     deps.elsDialogs.update.classList.add('hidden');
     deps.elsDialogs.writing.classList.add('hidden');
     deps.elsDialogs.writingName.classList.add('hidden');
+    disposeFamilyHandlesExcept(null);
     confirmAction = null;
     deps.syncAllBrowserTabs();
     nameSubmit = null;
@@ -70,6 +103,11 @@ function finishSaveConflict(choice) {
     const resolve = saveConflictResolve;
     saveConflictResolve = null;
     deps.elsDialogs.conflict.classList.add('hidden');
+    const handle = familyHandles.get(deps.elsDialogs.conflict);
+    if (handle) {
+        handle.dispose();
+        familyHandles.delete(deps.elsDialogs.conflict);
+    }
     if (!deps.elsDialogs.mask.classList.contains('hidden')) closeTopDialog();
     if (resolve) resolve(choice);
 }

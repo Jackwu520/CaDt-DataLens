@@ -1,7 +1,8 @@
 import {iconSvg} from '../core/icons.js';
+import {overlayStack} from '../core/overlay-stack.js';
 
 // 容器内图片查看层：铺满宿主容器（不越出该面板），把图片放大到整个内容区。
-// 关闭：Esc / 点击空白 / 右上角按钮；滚轮缩放、拖拽平移、双击在「适应区域」与 100% 间切换。
+// 关闭：Esc（全局弹层栈按层序退）/ 点击空白 / 右上角按钮；滚轮缩放、拖拽平移、双击在「适应区域」与 100% 间切换。
 export function createImageLightbox(host, options = {}) {
     if (!host) throw new Error('createImageLightbox 需要宿主容器');
     const onContextMenu = typeof options.onContextMenu === 'function' ? options.onContextMenu : null;
@@ -17,6 +18,8 @@ export function createImageLightbox(host, options = {}) {
     let image = null;
     let opened = false;
     let openSeq = 0;
+    // 本实例的弹层栈条目（open/close 收口；同宿主重复 open 先拆旧的）
+    let stackHandle = null;
     let naturalW = 0;
     let naturalH = 0;
     let fitScale = 1;
@@ -116,15 +119,8 @@ export function createImageLightbox(host, options = {}) {
         };
         stage.addEventListener('pointerup', endDrag);
         stage.addEventListener('pointercancel', endDrag);
-        window.addEventListener('keydown', (e) => {
-            if (!opened || e.key !== 'Escape') return;
-            // 右键菜单在查看层之上：这次 Esc 先归菜单（两种监听顺序都要让过）。
-            if (e.defaultPrevented) return;
-            if (document.querySelector('.ctx-menu:not(.hidden)')) return;
-            e.preventDefault();
-            e.stopPropagation();
-            close();
-        }, true);
+        // 查看层的 Esc 已归全局弹层栈（open/close 注册）：栈按层序退，右键菜单等
+        // 更晚打开的层自然排在栈顶，不再需要 defaultPrevented / DOM 反查让路特判。
         window.addEventListener('resize', () => {
             if (!opened || !naturalW) return;
             if (Math.abs(scale - fitScale) < 0.01) computeFit();
@@ -187,6 +183,11 @@ export function createImageLightbox(host, options = {}) {
         img.style.width = '';
         img.style.height = '';
         root.classList.remove('hidden');
+        if (stackHandle) stackHandle.dispose();
+        stackHandle = overlayStack.open({
+            id: 'img-lightbox', kind: 'lightbox', el: root,
+            onClose: () => { close(); return true; },
+        });
         stage.scrollLeft = 0;
         stage.scrollTop = 0;
         // load / error 两条都收：解码失败（坏 data URL、超限图）时不再停在
@@ -225,6 +226,10 @@ export function createImageLightbox(host, options = {}) {
         openSeq++;
         image = null;
         drag = null;
+        if (stackHandle) {
+            stackHandle.dispose();
+            stackHandle = null;
+        }
         stage.classList.remove('dragging');
         root.classList.add('hidden');
         img.removeAttribute('src');

@@ -12,8 +12,9 @@ import {
     aiNowId,
 } from './ai-constants.js';
 import {iconSvg} from '../core/icons.js';
+import {overlayStack} from '../core/overlay-stack.js';
 import {providerIconTileHtml} from './ai-provider-icons.js';
-import {formatUsageAge, formatUsageHeadline} from './ai-usage-quota.js';
+import {formatUsageAge, usageHeadlineSummary} from './ai-usage-quota.js';
 
 export function createAIModelSettings(ctx, extras) {
 
@@ -31,6 +32,14 @@ export function createAIModelSettings(ctx, extras) {
 
     // 模型编辑器的临时状态（原在 ai-settings-dialog.js 闭包级，随模型域迁入）
     let modelEditorState = null;
+    // 编辑器的弹层栈条目：盖在设置窗之上，Esc 由栈先退它再退设置窗
+    let modelEditorStackHandle = null;
+    function disposeEditorStack() {
+        if (modelEditorStackHandle) {
+            modelEditorStackHandle.dispose();
+            modelEditorStackHandle = null;
+        }
+    }
     const renderProfileSelect = ctx.renderProfileSelect;
     const activeProfile = ctx.activeProfile;
     const defaultModelEntry = ctx.defaultModelEntry;
@@ -141,15 +150,19 @@ export function createAIModelSettings(ctx, extras) {
         icon.innerHTML = iconSvg('refresh', 12);
         const text = document.createElement('span');
         text.className = 'ai-usage-line-text';
-        if (!snapshot) {
-            text.textContent = '待查询';
-            line.classList.add('pending');
-        } else if (snapshot.state === 'error') {
-            text.textContent = snapshot.error || '查询失败';
-            line.classList.add('error');
+        // 外显只显示余额总额，明细点开弹层看
+        const summary = usageHeadlineSummary(snapshot);
+        if (summary) {
+            if (summary.label) text.appendChild(document.createTextNode(summary.label));
+            const value = document.createElement('b');
+            value.className = 'ai-usage-value' + (summary.tone === 'normal' ? '' : ' tone-' + summary.tone);
+            value.textContent = summary.value;
+            text.appendChild(value);
         } else {
-            text.textContent = formatUsageHeadline(snapshot);
+            text.textContent = '待查询';
         }
+        if (!snapshot) line.classList.add('pending');
+        else if (snapshot.state === 'error') line.classList.add('error');
         line.append(icon, text);
         line.dataset.tip = !snapshot
             ? '点击查询额度'
@@ -211,18 +224,7 @@ export function createAIModelSettings(ctx, extras) {
             ].join(' · ');
             const actions = document.createElement('div');
             actions.className = 'ai-model-actions';
-            const upBtn = dialogButton('', 'dlg-btn ai-model-move', () => moveProfile(profile.id, index - 1));
-            upBtn.setAttribute('aria-label', '上移');
-            upBtn.dataset.tip = '上移';
-            upBtn.innerHTML = iconSvg('chevron-up', 13);
-            upBtn.disabled = index === 0;
-            actions.appendChild(upBtn);
-            const downBtn = dialogButton('', 'dlg-btn ai-model-move', () => moveProfile(profile.id, index + 1));
-            downBtn.setAttribute('aria-label', '下移');
-            downBtn.dataset.tip = '下移';
-            downBtn.innerHTML = iconSvg('chevron-down', 13);
-            downBtn.disabled = index === profiles.length - 1;
-            actions.appendChild(downBtn);
+
             if (profile.id !== getConfig().activeProfileId) {
                 actions.appendChild(dialogButton('设为当前', 'dlg-btn', () => switchProfile(profile.id)));
             }
@@ -297,6 +299,13 @@ export function createAIModelSettings(ctx, extras) {
         }
         if (opt.modelEditorMask) opt.modelEditorMask.classList.remove('hidden');
         opt.modelEditor.classList.remove('hidden');
+        // 进全局弹层栈（modal 档，遮罩作 underEl）：Esc 先退编辑器（= 取消）再退设置窗
+        if (modelEditorStackHandle) modelEditorStackHandle.dispose();
+        modelEditorStackHandle = overlayStack.open({
+            id: 'ai-model-editor', kind: 'modal',
+            el: opt.modelEditor, underEl: opt.modelEditorMask,
+            onClose: () => { closeModelEditor(false); return true; },
+        });
         // 协议 / 代理 / 推理下拉与设置页同款浮层：原生 select 展开会露出系统菜单，
         // 和弹窗里的自绘控件像两套。enhanceSelect 幂等，重复调用顺带同步触发器文本。
         if (enhanceSelect) {
@@ -352,6 +361,7 @@ export function createAIModelSettings(ctx, extras) {
             }
             saveAIConfig();
             modelEditorState = null;
+            disposeEditorStack();
             if (opt.modelEditor) opt.modelEditor.classList.add('hidden');
             if (opt.modelEditorMask) opt.modelEditorMask.classList.add('hidden');
             extras.refreshSettingsPane();
@@ -375,6 +385,7 @@ export function createAIModelSettings(ctx, extras) {
             getConfig().activeModelId = resolveModelId(activeAccount, activeAccount.lastModelId, '');
         }
         modelEditorState = null;
+        disposeEditorStack();
         if (opt.modelEditor) opt.modelEditor.classList.add('hidden');
         if (opt.modelEditorMask) opt.modelEditorMask.classList.add('hidden');
         saveAIConfig();

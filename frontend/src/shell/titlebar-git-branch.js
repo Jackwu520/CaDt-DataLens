@@ -1,5 +1,7 @@
 // 标题栏 Git 分支弹层（IDEA 式）：分支树、搜索、切换/新建/推送/拉取/更新项目、固定与键盘导航。
 // 从 titlebar-popovers.js 拆出；定位工具与 SVG 常量由宿主经 deps 注入，关闭项目弹层经 deps.closeProjectPopover。
+import {overlayStack} from '../core/overlay-stack.js';
+
 export function createTitlebarGitBranch(deps) {
 
 // ===== 标题栏弹层：Git 分支（IDEA 式） =====
@@ -19,6 +21,8 @@ const gitBranchPopState = {
 // 本地分支每次打开都刷新；远程分支列表缓存，只在 fetch 按钮或 push/pull 后重读
 const gitBranchCache = {dir: '', remote: [], hasRemote: false, result: null};
 let gitBranchRows = [];
+// 分支弹层的弹层栈条目（showBranchMenu/closeGitBranchPopover 收口）
+let gbStackHandle = null;
 
 function invalidateGitBranchRemoteCache() {
     gitBranchCache.hasRemote = false;
@@ -28,6 +32,10 @@ function invalidateGitBranchRemoteCache() {
 
 function closeGitBranchPopover() {
     if (!deps.els.gitBranchPop) return;
+    if (gbStackHandle) {
+        gbStackHandle.dispose();
+        gbStackHandle = null;
+    }
     deps.els.gitBranchPop.classList.add('hidden');
     gitBranchPopState.open = false;
     gitBranchPopState.loading = false;
@@ -367,6 +375,12 @@ function showBranchMenu(anchor) {
     deps.els.gbSearch.value = '';
     deps.els.gbBody.textContent = '';
     deps.els.gitBranchPop.classList.remove('hidden');
+    // 进全局弹层栈（popover 档）：Esc 由栈按层序退；pinned 时不影响 Esc 语义
+    if (gbStackHandle) gbStackHandle.dispose();
+    gbStackHandle = overlayStack.open({
+        id: 'git-branch-pop', kind: 'popover', el: deps.els.gitBranchPop,
+        onClose: () => { closeGitBranchPopover(); return true; },
+    });
     if (cached) {
         renderGitBranchPopover();
     } else {
@@ -608,25 +622,9 @@ document.addEventListener('pointerdown', (e) => {
 }, true);
 
 document.addEventListener('keydown', (e) => {
-    if (deps.isToolbarPopOpen(deps.els.runConfigPop) && e.key === 'Escape') {
-        e.preventDefault();
-        e.stopPropagation();
-        deps.closeRunConfigPopover();
-        return;
-    }
-    if (deps.isToolbarPopOpen(deps.els.projectPop) && e.key === 'Escape') {
-        e.preventDefault();
-        e.stopPropagation();
-        deps.closeProjectPopover();
-        return;
-    }
+    // 三个弹层的 Esc 已归全局弹层栈（各自 show 时注册），不再逐个点名；这里只保留
+    // 分支弹层开着时的 Ctrl+F 聚焦搜索快捷键。
     if (!gitBranchPopState.open) return;
-    if (e.key === 'Escape') {
-        e.preventDefault();
-        e.stopPropagation();
-        closeGitBranchPopover();
-        return;
-    }
     if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'f') {
         e.preventDefault();
         e.stopPropagation();

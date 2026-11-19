@@ -1,6 +1,7 @@
 // 状态栏底部弹出层：编码/BOM/换行符/视图切换/图片与表格缩放/md 与 AI 宽度。
 // 从 writing-ui.js 拆出（放 editor/）。视图模型（deps.viewOptionsFor/deps.viewLabel/deps.viewDisabled/deps.EOLS 等）由宿主经 deps 注入。
 import {iconSvg} from '../core/icons.js';
+import {overlayStack} from '../core/overlay-stack.js';
 
 export function createFootMenus(deps) {
 
@@ -20,8 +21,14 @@ function makeSelect(options, value, onChange) {
 const footPopover = document.getElementById('enc-popover');
 const FOOT_WIDGETS = {encoding: deps.els.stEnc, view: deps.els.stMode, eol: deps.els.stEol, zoom: deps.els.stZoom, mdWidth: deps.els.stMdWidth, aiWidth: deps.els.stAiWidth};
 let footPopoverKind = null;
+// 浮层的弹层栈条目（openFootPopover/closeFootPopover 收口；Esc 由栈按层序退）
+let footStackHandle = null;
 // 编码/换行/缩进弹出面板的行图标用 icons.js 渲染（不再使用 MDL2 字符）
 function closeFootPopover() {
+    if (footStackHandle) {
+        footStackHandle.dispose();
+        footStackHandle = null;
+    }
     footPopover.classList.add('hidden');
     Object.values(FOOT_WIDGETS).forEach((el) => el && el.classList.remove('active'));
     footPopoverKind = null;
@@ -308,6 +315,11 @@ function openFootPopover(kind) {
     Object.values(FOOT_WIDGETS).forEach((el) => el && el.classList.remove('active'));
     anchor.classList.add('active');
     footPopoverKind = kind;
+    if (footStackHandle) footStackHandle.dispose();
+    footStackHandle = overlayStack.open({
+        id: 'foot-popover', kind: 'popover', el: footPopover,
+        onClose: () => { closeFootPopover(); return true; },
+    });
 }
 
 function toggleFootPopover(kind) {

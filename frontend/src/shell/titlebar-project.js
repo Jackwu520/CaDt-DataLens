@@ -1,9 +1,17 @@
 // 标题栏项目弹层：当前项目、项目切换、克隆仓库与 reveal 到资源管理器。
 // 从 titlebar-popovers.js 拆出；定位工具与 SVG 常量由宿主经 deps 注入。
+import {overlayStack} from '../core/overlay-stack.js';
+
 export function createTitlebarProject(deps) {
+
+let projStackHandle = null;
 
 function closeProjectPopover() {
     if (!deps.els.projectPop) return;
+    if (projStackHandle) {
+        projStackHandle.dispose();
+        projStackHandle = null;
+    }
     deps.els.projectPop.classList.add('hidden');
 }
 
@@ -135,6 +143,12 @@ function showProjectMenu(anchor) {
     renderProjectPopover();
     deps.els.projectPop.classList.remove('hidden');
     deps.positionToolbarPopover(deps.els.projectPop, anchor);
+    // 进全局弹层栈（popover 档）：Esc 由栈按层序退
+    if (projStackHandle) projStackHandle.dispose();
+    projStackHandle = overlayStack.open({
+        id: 'project-pop', kind: 'popover', el: deps.els.projectPop,
+        onClose: () => { closeProjectPopover(); return true; },
+    });
 }
 
 function joinFsPath(parent, name) {

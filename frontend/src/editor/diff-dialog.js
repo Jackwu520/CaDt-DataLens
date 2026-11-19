@@ -5,10 +5,14 @@
 // 这样既不依赖 main.js 的声明顺序，也不会把 let 状态拍成快照。
 import {detectFormat} from '../core/formats.js';
 import {unifiedDiff, semanticDiff, semanticEntryText} from '../core/diff.js';
+import {overlayStack} from '../core/overlay-stack.js';
 
 export function createDiffDialog(deps) {
 
 const diffState = {open: false, previousFocus: null, running: false};
+
+// 对话框的弹层栈条目（modal 档，遮罩即容器）；Esc 由栈按层序退
+let diffStackHandle = null;
 
 function diffEls() {
     return {
@@ -57,6 +61,11 @@ function openDiffDialog(pathA, pathB) {
     diffState.open = true;
     diffState.previousFocus = document.activeElement;
     elsD.mask.classList.remove('hidden');
+    if (diffStackHandle) diffStackHandle.dispose();
+    diffStackHandle = overlayStack.open({
+        id: 'diff-mask', kind: 'modal', el: elsD.mask,
+        onClose: () => { closeDiffDialog(); return true; },
+    });
     elsD.semanticList.classList.add('hidden');
     elsD.semanticList.textContent = '';
     elsD.output.textContent = '';
@@ -67,6 +76,10 @@ function openDiffDialog(pathA, pathB) {
 function closeDiffDialog() {
     if (!diffState.open) return;
     diffState.open = false;
+    if (diffStackHandle) {
+        diffStackHandle.dispose();
+        diffStackHandle = null;
+    }
     const {mask} = diffEls();
     if (mask) mask.classList.add('hidden');
     const prev = diffState.previousFocus;
@@ -201,12 +214,7 @@ function bindDiffDialog() {
     elsD.mask.addEventListener('mousedown', (e) => {
         if (e.target === elsD.mask) closeDiffDialog();
     });
-    document.addEventListener('keydown', (e) => {
-        if (!diffState.open || e.key !== 'Escape') return;
-        e.preventDefault();
-        e.stopPropagation();
-        closeDiffDialog();
-    }, true);
+    // Esc 已归全局弹层栈（openDiffDialog 注册），不再需要 document capture 监听
 }
 bindDiffDialog();
 

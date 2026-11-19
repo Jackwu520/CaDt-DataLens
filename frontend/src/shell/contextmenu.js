@@ -1,4 +1,5 @@
 import {iconSvg, renderMenuIcon} from '../core/icons.js';
+import {overlayStack} from '../core/overlay-stack.js';
 
 function el(tag, className, text) {
     const node = document.createElement(tag);
@@ -18,17 +19,78 @@ export function computeMenuPosition(opts) {
     return {left, top};
 }
 
+// —— 子菜单预测锥（hover-intent cone，Amazon 菜单同款）——
+// 斜向移向子菜单必然扫过兄弟行，兄弟行的 mouseenter 原本会立即收起子菜单。
+// 预测锥 = 「子菜单近边两端角 + 父项行对侧底角」的三角走廊 ∪ 父项行 ∪ 子菜单面板；
+// 指针在锥内视为正走向子菜单，收起延迟一小段（继续移动会不断顺延）；
+// 锥外（明确去点别的项）立即收起。菜单与子菜单水平紧贴，走廊三角必须以父项行的
+// 对侧边为起点才能罩住菜单内部的斜向路径。
+export const SUBMENU_CONE_CLOSE_DELAY_MS = 250;
+
+export function pointInRect(px, py, rect) {
+    if (!rect || rect.width <= 0 || rect.height <= 0) return false;
+    return px >= rect.left && px <= rect.right && py >= rect.top && py <= rect.bottom;
+}
+
+// 叉积同号法：点在三角形内（含边界）返回 true；退化（零面积）三角形一律 false。
+function pointInTriangle(px, py, a, b, c) {
+    const cross = (p, q) => (q.x - p.x) * (py - p.y) - (q.y - p.y) * (px - p.x);
+    const s1 = cross(a, b), s2 = cross(b, c), s3 = cross(c, a);
+    const hasNeg = s1 < 0 || s2 < 0 || s3 < 0;
+    const hasPos = s1 > 0 || s2 > 0 || s3 > 0;
+    return !(hasNeg && hasPos);
+}
+
+// 预测锥判定（纯函数，rect 接受 DOMRect 或同字段普通对象）：
+// 子菜单贴着父菜单哪一侧就取哪条近边，父项行取对侧底角作走廊起点（左右开均镜像成立）。
+export function inSubmenuCone(px, py, anchorRect, subRect) {
+    if (pointInRect(px, py, anchorRect) || pointInRect(px, py, subRect)) return true;
+    if (!subRect || subRect.width <= 0 || subRect.height <= 0) return false;
+    const rightSide = (subRect.left + subRect.width / 2) >= (anchorRect.left + anchorRect.width / 2);
+    const nearX = rightSide ? subRect.left : subRect.right;
+    const farX = rightSide ? anchorRect.left : anchorRect.right;
+    return pointInTriangle(px, py,
+        {x: nearX, y: subRect.top},
+        {x: nearX, y: subRect.bottom},
+        {x: farX, y: anchorRect.bottom});
+}
+
 export function createContextMenu() {
     const root = el('div', 'ctx-menu hidden');
     document.body.appendChild(root);
     let panels = [root];
     let isOpen = false;
     let openOptions = {};
+    // 实例的弹层栈条目与本次打开的菜单基准 z（子菜单在其上逐层 +1）
+    let stackHandle = null;
+    let menuBaseZ = 0;
     // 最近一次按下 / 右键的目标：open() 时作为菜单锚点，用来判断滚动是否与菜单有关。
     let lastPointerTarget = null;
+    // 预测锥状态：subOpen[depth] 记住该层打开的子菜单（锚点行 + 面板）；
+    // pendingCloses[depth] 是锥内触发的挂起收起；lastMouse 供到点复核用。
+    const subOpen = {};
+    const pendingCloses = new Map();
+    const lastMouse = {x: null, y: null};
+
+    document.addEventListener('mousemove', (e) => {
+        lastMouse.x = e.clientX;
+        lastMouse.y = e.clientY;
+    }, true);
+
+    function cancelPendingClose(depth) {
+        const timer = pendingCloses.get(depth);
+        if (timer !== undefined) {
+            clearTimeout(timer);
+            pendingCloses.delete(depth);
+        }
+    }
 
     function closeDeeper(depth) {
+        for (const key of pendingCloses.keys()) {
+            if (key >= depth) cancelPendingClose(key);
+        }
         while (panels.length > depth + 1) {
+            delete subOpen[panels.length - 2];
             const panel = panels.pop();
             panel.remove();
         }
@@ -37,6 +99,10 @@ export function createContextMenu() {
     function close() {
         const onClose = openOptions.onClose;
         closeDeeper(0);
+        if (stackHandle) {
+            stackHandle.dispose();
+            stackHandle = null;
+        }
         root.classList.add('hidden');
         root.textContent = '';
         isOpen = false;
@@ -113,11 +179,38 @@ export function createContextMenu() {
     function openSubmenu(anchor, items, depth) {
         closeDeeper(depth);
         const panel = el('div', 'ctx-menu ctx-sub');
-        panel.style.zIndex = String(120 + depth + 1);
+        // 子菜单压在本实例菜单之上逐层 +1（基准由弹层栈在 open 时分配）
+        panel.style.zIndex = String(menuBaseZ + depth + 1);
         panels.push(panel);
+        subOpen[depth] = {anchor, panel};
         document.body.appendChild(panel);
         render(panel, items, depth + 1);
         placeSubmenu(panel, anchor);
+        // 进入子菜单面板：取消该层挂起的延迟收起
+        panel.addEventListener('mouseenter', () => cancelPendingClose(depth));
+    }
+
+    // 兄弟行 mouseenter：该层有打开的子菜单且指针在其预测锥内时，改为延迟收起
+    //（斜向走向子菜单的路上扫过兄弟行不至于把子菜单杀掉）；锥外立即收起。
+    function maybeCloseDeeper(depth, e) {
+        const open = subOpen[depth];
+        const px = e && typeof e.clientX === 'number' ? e.clientX : lastMouse.x;
+        const py = e && typeof e.clientY === 'number' ? e.clientY : lastMouse.y;
+        if (!open || px == null || py == null ||
+            !inSubmenuCone(px, py, open.anchor.getBoundingClientRect(), open.panel.getBoundingClientRect())) {
+            closeDeeper(depth);
+            return;
+        }
+        cancelPendingClose(depth);
+        pendingCloses.set(depth, setTimeout(() => {
+            pendingCloses.delete(depth);
+            const cur = subOpen[depth];
+            if (!cur) return;
+            // 到点复核：指针已进子菜单面板或回到锚点行则放行，仍停在兄弟行上才收
+            if (lastMouse.x != null && (pointInRect(lastMouse.x, lastMouse.y, cur.panel.getBoundingClientRect()) ||
+                pointInRect(lastMouse.x, lastMouse.y, cur.anchor.getBoundingClientRect()))) return;
+            closeDeeper(depth);
+        }, SUBMENU_CONE_CLOSE_DELAY_MS));
     }
 
     // 胶囊徽标（如权限菜单「自动审批」旁的 AI 标识）：item.badge 为短文本，
@@ -177,7 +270,7 @@ export function createContextMenu() {
                     if (!item.disabled) openSubmenu(row, item.submenu, depth);
                 });
             } else {
-                row.addEventListener('mouseenter', () => closeDeeper(depth));
+                row.addEventListener('mouseenter', (e) => maybeCloseDeeper(depth, e));
                 row.addEventListener('click', (e) => {
                     e.stopPropagation();
                     if (item.disabled) return;
@@ -198,6 +291,12 @@ export function createContextMenu() {
         lastPointerTarget = null;
         render(root, items, 0);
         place(root, x == null ? 24 : x, y == null ? 24 : y, openOptions);
+        // 进全局弹层栈：菜单可出现在任何层之上（dialog/modal/popover 皆然），Esc 先退菜单
+        stackHandle = overlayStack.open({
+            id: 'ctx-menu', kind: 'menu', el: root,
+            onClose: () => { close(); return true; },
+        });
+        menuBaseZ = Number(root.style.getPropertyValue('z-index')) || overlayStack.tierZ('menu') + 1;
     }
 
     document.addEventListener('pointerdown', (e) => {
@@ -209,14 +308,7 @@ export function createContextMenu() {
     document.addEventListener('contextmenu', (e) => {
         lastPointerTarget = e.target;
     }, true);
-    window.addEventListener('keydown', (e) => {
-        if (!isOpen) return;
-        if (e.key === 'Escape') {
-            e.preventDefault();
-            e.stopPropagation();
-            close();
-        }
-    }, true);
+    // 菜单的 Esc 已归全局弹层栈（open 注册，menu 档在栈顶时先退菜单）
     window.addEventListener('blur', close);
     window.addEventListener('resize', close);
     document.addEventListener('scroll', (e) => {
@@ -235,5 +327,7 @@ export function createContextMenu() {
         close();
     }, true);
 
-    return {open, close};
+    // 菜单条下拉的子菜单复用本实例打开（openDropdownSubmenu），预测锥判定需要
+    // 读它的开关状态与根元素矩形；实例内嵌套子菜单的锥逻辑在 maybeCloseDeeper。
+    return {open, close, isOpen: () => isOpen, rootEl: () => root};
 }

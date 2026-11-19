@@ -1,4 +1,6 @@
 // palette.js：命令面板（Ctrl+Shift+P）。扁平动作注册表 + 模糊过滤 + 键盘导航。
+import {overlayStack} from '../core/overlay-stack.js';
+
 export function createPalette(options) {
     const mask = options.mask;
     const input = options.input;
@@ -6,6 +8,8 @@ export function createPalette(options) {
     let openState = false;
     let rows = [];
     let index = 0;
+    // 弹层栈条目：Esc 归栈分发（input 上的键仍由 handleKey 自理）
+    let stackHandle = null;
 
     function fuzzyScore(label, query) {
         if (!query) return 1;
@@ -78,6 +82,11 @@ export function createPalette(options) {
     function openPalette() {
         openState = true;
         mask.classList.remove('hidden');
+        if (stackHandle) stackHandle.dispose();
+        stackHandle = overlayStack.open({
+            id: 'palette', kind: 'modal', el: mask,
+            onClose: () => { close(); return true; },
+        });
         input.value = '';
         index = 0;
         render();
@@ -86,6 +95,10 @@ export function createPalette(options) {
 
     function close() {
         openState = false;
+        if (stackHandle) {
+            stackHandle.dispose();
+            stackHandle = null;
+        }
         mask.classList.add('hidden');
     }
 
@@ -119,10 +132,7 @@ export function createPalette(options) {
             run(index);
             return true;
         }
-        if (e.key === 'Escape') {
-            close();
-            return true;
-        }
+        // Esc 不在这里处理：面板已进全局弹层栈，栈按层序关（input 上的键到不了这里）
         return false;
     }
 

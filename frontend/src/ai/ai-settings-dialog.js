@@ -120,7 +120,7 @@ export function createAISettingsDialog(ctx) {
     const applyTodosCollapseDefault = ctx.applyTodosCollapseDefault;
 
     // —— 随域迁入的设置编辑器状态（原 ai-panel.js 闭包级）——
-    let modelEditorState = null;
+    // （modelEditorState 已随模型编辑器归 ai-model-settings.js，此处只剩状态条计时器）
     let settingsStatusTimer = 0;
 
     function setSettingsStatus(text, kind) {
@@ -1116,13 +1116,8 @@ export function createAISettingsDialog(ctx) {
         if (opt.modelEditorMask) opt.modelEditorMask.addEventListener('click', () => modelMod.closeModelEditor(false));
         if (opt.modelEditorCancel) opt.modelEditorCancel.addEventListener('click', () => modelMod.closeModelEditor(false));
         if (opt.modelEditorSave) opt.modelEditorSave.addEventListener('click', () => modelMod.closeModelEditor(true));
-        document.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape' && modelEditorState) {
-                e.preventDefault();
-                e.stopPropagation();
-                modelMod.closeModelEditor(false);
-            }
-        }, true);
+        // 模型编辑器的 Esc 已归全局弹层栈（openModelEditor 注册，onClose = 取消关闭），
+        // 不再需要 document capture 抢跑监听。
         if (opt.openMemory) opt.openMemory.addEventListener('click', () => {
             // 设置窗保持打开：对话框临时挂到 body 顶层显示
             showMemoryDialog({top: true});
@@ -1302,6 +1297,13 @@ export function createAISettingsDialog(ctx) {
         refreshSettingsPane,
         renderModelList: () => modelMod.renderModelList(),
         testUsageConfig: (profile, draft) => ctx.usageQuota().testConfig(profile, draft),
+        // OAuth 额度模板的登录/状态/登出绑定（通用引擎，provider 参数化）
+        oauth: {
+            providers: () => backend.AIOAuthQuotaProviders ? backend.AIOAuthQuotaProviders() : [],
+            login: (id, user, pass) => backend.AIOAuthQuotaLogin(id, user, pass),
+            status: (id) => backend.AIOAuthQuotaStatus(id),
+            logout: (id) => backend.AIOAuthQuotaLogout(id),
+        },
     });
     const modelMod = createAIModelSettings(ctx, {
         setSettingsStatus,

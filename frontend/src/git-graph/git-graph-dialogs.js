@@ -1,9 +1,10 @@
 // git-graph-dialogs.js：Git 图谱的三个操作对话框——新建分支（IDEA 图4）、
 // 分支重置（软/混合/硬三选一，图6）、签出冲突（强制/智能/不签出，图5）。
-// 自持遮罩的轻量模态：不进全局设置对话框栈（图谱是底部面板域，生命周期自成一体），
-// Esc / 遮罩点击 / 取消按钮一律按取消收场。
+// 轻量模态已进全局弹层栈（modal 档）：Esc 由栈按层序退（图谱面板域的层也在栈里），
+// 遮罩点击 / 取消按钮一律按取消收场。
 // 写操作是用户主动 UI 动作：走只读锁（调用方把关），不涉 AI 审批链。
 import {iconSvg} from '../core/icons.js';
+import {overlayStack} from '../core/overlay-stack.js';
 import {createInput, createSwitch} from '../core/form-controls.js';
 
 export function createGitGraphDialogs(ctx) {
@@ -11,6 +12,7 @@ export function createGitGraphDialogs(ctx) {
     // ---- 模态骨架 ----
 
     // openModal 建一个自持遮罩的模态卡片，返回 {card, close}。
+    let modalCount = 0;
     function openModal(title) {
         const overlay = document.createElement('div');
         overlay.className = 'gg-modal-overlay';
@@ -30,22 +32,20 @@ export function createGitGraphDialogs(ctx) {
         head.append(titleEl, closeBtn);
         card.appendChild(head);
         overlay.appendChild(card);
-        const onKey = (e) => {
-            if (e.key === 'Escape') {
-                e.stopPropagation();
-                close();
-            }
-        };
-        window.addEventListener('keydown', onKey, true);
         overlay.addEventListener('mousedown', (e) => {
             if (e.target === overlay) close();
         });
         document.body.appendChild(overlay);
+        // 进全局弹层栈（modal 档，overlay 即遮罩容器）：Esc 由栈按层序退
+        const stackHandle = overlayStack.open({
+            id: 'gg-modal-' + (++modalCount), kind: 'modal', el: overlay,
+            onClose: () => { close(); return true; },
+        });
         return {card, close};
 
         function close() {
+            stackHandle.dispose();
             overlay.remove();
-            window.removeEventListener('keydown', onKey, true);
         }
     }
 
