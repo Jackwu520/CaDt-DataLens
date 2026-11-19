@@ -1,6 +1,6 @@
 # 便签终端条目（kind=term）方案
 
-> 2026-11-19 立项并实施。目标：便签面板新增【终端】条目——条目正文是命令，行首 ▶
+> 2026-11-19 立项并实施。目标：便签面板新增【终端】条目——条目正文是命令，行首运行按钮
 > 运行，输出实时渲染在条目下方；**不支持挂起任务**（npm run dev 这类到点杀树）。
 
 ## 1. 需求与决策
@@ -47,14 +47,14 @@ AI 通路刻意收窄：AI 能建/改/读终端条目（kind 透传），**不�
 - 纯函数（node:test 直测）：`buildShellArgv` / `trimTermLines` / `formatTermDuration`
   / `formatTermStatus` / `termRunId`。
 - 事件订阅一次（`rt.EventsOn('run-out'/'run-exit')`，按 `memo-` 前缀过滤）；
-  活更新直接改条目行 DOM（`.memo-run-btn` 换 ▶/⏹、`.memo-term-out` append 行、
+  活更新直接改条目行 DOM（`.memo-run-btn` 换运行/停止图标、`.memo-term-out` append 行、
   `.memo-term-status` 换文案），**不走整面板重渲染**——流式期间可能正在编辑命令文本。
 - 防重入（running 再点 = 停止）；RunExec 抛错清态 + flash，不留 running 僵尸。
 - `stopAll()`：关面板（`doc.memoUnmount`）停掉仍在跑的运行并清空内存态。
 
 ## 5. 视图（bridge-memo-view.js）
 
-- `buildItem`：kind=term → 行首 `buildRunButton`（▶/⏹，点击读实时状态分流运行/停止/
+- `buildItem`：kind=term → 行首 `buildRunButton`（运行/停止图标，点击读实时状态分流运行/停止/
   空命令先编辑）、命令等宽渲染（`.memo-term-cmd`）、有运行记录时 append
   `buildTermResult`（状态行在上 + 输出块在下，flex-basis:100% 独占整行）。
 - 块尾【终端】按钮启用（原 disabled 占位）→ `quickAddToBlock(kind='term')`。

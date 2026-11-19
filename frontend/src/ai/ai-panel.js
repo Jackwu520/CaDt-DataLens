@@ -1,6 +1,14 @@
 // ai-panel.js：右侧 AI 助手面板（批次 2–6：会话 / 流式聊天 / 思考链 / 三形态 / 工具桥 / 记忆 / 技能 / 写审批 / Todolist / 变更记录 / 提示词 / 压缩 / 设置）
 // 设计文档见 docs/finished-plans/ai-panel.md。
+// 模块级生命周期钩子回填点：所有审批最终汇入 registerPendingApproval（在 createAIPanel 闭包内），
+// 面板创建时把 runLifecycle 装进本变量，PermissionRequest 事件在审批卡出现前阻塞执行。
+// 未注入（mock / 旧宿主）时为 no-op，零影响。
+let permissionLifecycleHook = () => Promise.resolve();
+export function setPermissionLifecycleHook(fn) {
+    permissionLifecycleHook = typeof fn === 'function' ? fn : () => Promise.resolve();
+}
 import {iconSvg} from '../core/icons.js';
+import {overlayStack} from '../core/overlay-stack.js';
 import {createContextMenu} from '../shell/contextmenu.js';
 import {mergePluginAIRequest, pluginAIAccounts} from '../shell/plugin-ai-providers.js';
 import {copyImageUrlToClipboard} from '../core/image-clipboard.js';
@@ -14,7 +22,7 @@ import {
 import {createModelCatalogStore} from './model-catalog.js';
 import {replaySessionLog, isSilentInjection, isTurnBoundaryMessage, sessionActivityTs} from './ai-session-store.js';
 import {buildGuardNotice} from './ai-wipeguard.js';
-import {decideSessionForWorkspace, normalizePath as aiNormalizePath, workspaceKey as aiWorkspaceKey} from './ai-session-scope.js';
+import {decideSessionForWorkspace, activeSessionIdFor, rememberActiveSession, normalizePath as aiNormalizePath, workspaceKey as aiWorkspaceKey} from './ai-session-scope.js';
 import {formatSessionSearchResult, sessionLogDigest} from './ai-session-tools.js';
 import {
     slimToolResult,
@@ -25,8 +33,24 @@ import {
     underContextPressure,
     recentToolIndexes,
     SHRINK_KEEP_TOOL_RESULTS,
+    SHRINK_NOTE_COOLDOWN_MS,
+    shouldInsertShrinkNote,
     slimBreakdownParts,
 } from './ai-context-slim.js';
+import {groupToolCalls, isParallelToolCall} from './ai-tool-schedule.js';
+import {isBlockingEvent} from '../core/precommands.js';
+import {
+    buildHoverScript,
+    buildPressKeyScript,
+    buildScrollScript,
+    buildSelectScript,
+    buildTextClickScript,
+    buildWaitProbe,
+    clampWaitTimeout,
+    describeKeyCombo,
+    describeWait,
+    WAIT_POLL_MS,
+} from './ai-browser-tools.js';
 import {formatTerminalList, formatTerminalRead, formatWaitDuration, friendlyRetryReason, terminalSendLabel} from './ai-terminal-tools.js';
 import {
     globMatchPath,
@@ -43,6 +67,7 @@ import {
 } from './ai-search-advanced.js';
 import {redactScopePaths} from './ai-scope-redact.js';
 import {createLoopGuard} from './ai-loop-guard.js';
+import {createImagePolicyStore, checkRequestBudget} from './ai-image-policy.js';
 import {
     turnProcessDefaultExpanded,
     processThinkingDefaultCollapsed,
@@ -195,11 +220,7 @@ import {
     AI_REMINDER_DETAIL_MAX,
     AI_INJECT_OPTION_MAP,
     AI_IMAGE_LIMIT,
-    AI_IMAGE_MAX_INPUT_BYTES,
-    AI_IMAGE_MAX_DIM,
     AI_IMAGE_MAX_BASE64,
-    AI_IMAGE_MESSAGE_BUDGET,
-    AI_IMAGE_MIMES,
     AI_VIDEO_LIMIT,
     AI_VIDEO_ESTIMATE_TOKENS,
     AI_DEFAULT_SYSTEM_PROMPT,
@@ -247,7 +268,7 @@ import {createScrollGesture, createShrinkBurst, nextStickState, shouldRefollowGr
 import {createAIChangesUI} from './ai-changes-ui.js';
 import {createAIModelPicker} from './ai-model-picker.js';
 import {createAIUsageUI, aiFormatCompactTokens, aiFormatExactCount, aiFormatCompactDuration, turnUsageTotal} from './ai-usage-ui.js';
-import {createAIUsageQuota, usageItemText} from './ai-usage-quota.js';
+import {createAIUsageQuota, formatUsageCountdown, usageItemText, usageTone} from './ai-usage-quota.js';
 import {computeLineDiff, diffStats, buildDiffPreview} from './ai-diff-view.js';
 import {missingFileHint} from './ai-path-hints.js';
 import {aiStreamRetryBudget, shouldAutoRetryStream} from './ai-stream-retry.js';
@@ -257,7 +278,8 @@ import {createAIMessageQueue, formatSteerMessage} from './ai-message-queue.js';
 import {createAISchedule} from './ai-schedule.js';
 import {createAITimer} from './ai-timer.js';
 import {createAISessionList} from './ai-session-list.js';
-import {createAIComposer} from './ai-composer.js';
+import {createAIComposer, renderAttachmentChips} from './ai-composer.js';
+import {normalizeMessageAttachments, inlineEditPayload, snapshotFromAttachments} from './ai-inline-edit.js';
 import {quoteMarkupFromAttachments, splitQuotePrefix, quoteExcerpt, quoteLabel, quoteChipLabel, AI_QUOTE_KIND} from './ai-quote.js';
 import {splitTurnReminderPrefix, wrapTurnReminder} from './ai-turn-reminder.js';
 import {parseFileRef, pickOpenFileMatch, applyFileRefChip} from './ai-file-refs.js';
@@ -270,6 +292,7 @@ import {
     planFileRelPath,
     planMarkdownFrom,
     planReferenceBlock,
+    planAwaitingUserReply,
     normalizeActivePlan,
     normalizePlanSections,
     planSectionsChars,
@@ -312,6 +335,10 @@ export function createAIPanel(options) {
         now: () => Date.now(),
     });
     const flash = typeof opts.flash === 'function' ? opts.flash : () => {};
+    // 失败 / 后台事件统一通知（main.js 注入的 failureNotifier）：消息中心 + toast + 节流。
+    // 与 notifyDesktop（AI 任务失败 / 提问 / 审批，带会话可见性策略）平行：
+    // 后者是「对话级需要回来处理」，这里是「静默失败 / 后台事件」，清单见调用点。
+    const notifyFailure = typeof opts.notifyFailure === 'function' ? opts.notifyFailure : () => {};
     const copyText = typeof opts.copyText === 'function' ? opts.copyText : async () => {};
     const renderMarkdown = typeof opts.renderMarkdown === 'function'
         ? opts.renderMarkdown
@@ -361,9 +388,26 @@ export function createAIPanel(options) {
     // AI 会话开始预指令（main.js 注入 shell/precommands.js 控制器）：空会话首轮流起轮前
     // await 执行工作区的 ai-session-start 条目；宿主未注入时跳过（mock / 旧宿主安全）
     const precmdAIStart = typeof opts.precmdAIStart === 'function' ? opts.precmdAIStart : null;
-    // 已触发过 ai-session-start 的会话 id（窗口生命周期内每会话一次；内存态不持久化——
+    // 已触发过 session-start 的会话 id（窗口生命周期内每会话一次；内存态不持久化——
     // 重启后历史会话因 messages 非空本来就不会再触发）
     const precmdStartedSessions = new Set();
+    // 9 事件通用钩子（main.js 透传 shell/precommands.js 控制器）：
+    //   blocking=true 的事件 await 跑完才继续；false 的 fire-and-forget（不阻塞工具/停止流程）。
+    // 任何失败都不阻断宿主流程——控制器内部已兜错，这里双保险；ws 用会话归属而非当前窗口，
+    // 后台会话也能命中自己工作区的钩子。
+    const precmdEvent = typeof opts.precmdEvent === 'function' ? opts.precmdEvent : null;
+    const runLifecycle = (event, opts2) => {
+        if (!precmdEvent) return Promise.resolve({ran: 0});
+        const o = opts2 || {};
+        const ws = o.ws || (o.session && o.session.workspace) || currentWorkspacePath() || '';
+        if (!ws) return Promise.resolve({ran: 0});
+        const job = Promise.resolve(precmdEvent(event, o.tool || '', ws))
+            .catch((e) => { /* 尽力而为路径：钩子失败不阻断宿主流程（控制器已兜错，这里双保险） */ });
+        const blocking = o.blocking === true || (o.blocking == null && isBlockingEvent(event));
+        return blocking ? job : Promise.resolve({ran: 0, deferred: true});
+    };
+    // 回填模块级审批钩子（PermissionRequest 在 requestApproval / requestActionApproval 里触发）
+    setPermissionLifecycleHook((tool, session) => runLifecycle('permission-request', {tool, session, blocking: true}));
     // 后台终端在内容区的标签页打开器（main.js 提供，docs/unfinished-plans/ai-head-agents-terminal.md）
     const openTermTab = typeof opts.openTermTab === 'function' ? opts.openTermTab : null;
     // AI 终端桥（terminal 工具）：main.js 以 getter 注入（延迟求值，避免 terminal-ui 工厂的 TDZ）。
@@ -431,6 +475,7 @@ export function createAIPanel(options) {
         chipAgents: panel.querySelector('#ai-chip-agents'),
         chipTerms: panel.querySelector('#ai-chip-terms'),
         chipTimers: panel.querySelector('#ai-chip-timers'),
+        chipQueue: panel.querySelector('#ai-chip-queue'),
         chipSchedules: panel.querySelector('#ai-chip-schedules'),
         chipWorktree: panel.querySelector('#ai-chip-worktree'),
         headSearch: panel.querySelector('#ai-head-search'),
@@ -879,6 +924,20 @@ export function createAIPanel(options) {
         return account;
     }
 
+    // activeSessionByWorkspace 归一：只留「非空 key → 非空字符串 id」，其它丢弃。
+    // 放在 ai-config 归一里而不是 scope 模块，是因为它属于配置结构本身（写入见 rememberActiveSession）。
+    function normalizeActiveSessionMap(raw) {
+        const out = {};
+        if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+        for (const key of Object.keys(raw)) {
+            const id = aiTextOf(raw[key]);
+            const name = aiTextOf(key);
+            if (!name || !id) continue;
+            out[name] = id;
+        }
+        return out;
+    }
+
     function normalizeAIConfig(rawStored) {
         const stored = rawStored && typeof rawStored === 'object' ? rawStored : {};
         const out = {
@@ -887,6 +946,9 @@ export function createAIPanel(options) {
             // 激活账号下激活的模型条目 id；配合 profiles[].lastModelId 记住每个账号的选择
             activeModelId: aiTextOf(stored.activeModelId),
             activeSessionId: aiTextOf(stored.activeSessionId),
+            // 各工作区各自的「上次打开的会话」（key = workspaceKey）；面板当前会话按本窗口
+            // 工作区读它，多个窗口才不会互相改写同一个 activeSessionId。值归一成字符串。
+            activeSessionByWorkspace: normalizeActiveSessionMap(stored.activeSessionByWorkspace),
             memoryMode: stored.memoryMode === 'app' ? 'app' : 'workspace',
             // 新会话默认权限档（设置 → AI → 权限 → 新会话）；只对新建会话生效，历史会话保持各自设置
             defaultScope: normalizeDefaultScope(stored.defaultScope),
@@ -1115,17 +1177,28 @@ export function createAIPanel(options) {
         return normalizeAIConfig(stored);
     }
 
-    // 镜像去密钥：profiles[].apiKey / profiles[].usage.apiKey / genModels[].apiKey 置空。
-    // text 就是上面刚 JSON.stringify 出来的对象，正常不会解析失败；真失败时原样返回，
-    // 宁可保留一份可用的镜像，也不要把镜像清成空对象。
+    // 镜像去密钥：不只 apiKey——extraHeaders（Authorization / x-api-key 的常见藏身处）、
+    // 额度脚本的 usage.extraFields（cookie / 账号字段）、genModels 的自定义 headers、
+    // 代理地址里的 user:pass@ 都是凭据，全部不留。text 就是上面刚 JSON.stringify 出来的
+    // 对象，正常不会解析失败；真失败时原样返回，宁可保留一份可用的镜像，也不要把镜像清成空对象。
     function mirrorWithoutKeys(text) {
         try {
             const copy = JSON.parse(text);
             for (const profile of copy.profiles || []) {
                 profile.apiKey = '';
-                if (profile.usage) profile.usage.apiKey = '';
+                if (profile.usage) {
+                    profile.usage.apiKey = '';
+                    if (profile.usage.extraFields) profile.usage.extraFields = {};
+                }
+                if (profile.extraHeaders) delete profile.extraHeaders;
             }
-            for (const entry of copy.genModels || []) entry.apiKey = '';
+            for (const entry of copy.genModels || []) {
+                entry.apiKey = '';
+                if (entry.headers) delete entry.headers;
+            }
+            if (typeof copy.proxy === 'string' && copy.proxy) {
+                copy.proxy = copy.proxy.replace(/\/\/[^@/]*@/, '//');
+            }
             return JSON.stringify(copy);
         } catch (e) {
             return text;
@@ -1153,10 +1226,18 @@ export function createAIPanel(options) {
             localStorage.setItem(AI_CONFIG_KEY, mirrorWithoutKeys(text));
         } catch (e) {}
         if (!configUseDisk()) return;
-        if (!text || (!configSealedBroken && text === lastConfigText)) return;
+        // sealed 时同样按内容去重：基线在 bootstrap 的 sealed 分支里设好，配置没变就不写。
+        // 去掉这条的话，发第一条消息触发的 persistSessions 就会把镜像覆写上去。
+        if (!text || text === lastConfigText) return;
         if (configSealedBroken) {
             // 旧文件是当前环境解不开的密文：先把原文件改名留档（ai-config.json.sealed-<时间>.bak），
             // 再写新配置。只尝试一次——先清标记，失败再把标记恢复，等用户下一次动作。
+            // 旧后端没有留档接口时**宁可一直不写**：没有备份就直接覆盖，等于把「解不开的
+            // 原文件」毁掉，违反「绝不静默覆盖」的不变量。
+            if (!backend.AIConfigBackupSealed) {
+                notifyConfigStoreError(new Error('当前版本不支持密文配置留档，本次修改未写入磁盘；请升级应用后重试。'));
+                return;
+            }
             configSealedBroken = false;
             lastConfigText = text;
             configWriteChain = configWriteChain
@@ -1208,6 +1289,8 @@ export function createAIPanel(options) {
         refreshSystemPromptEstimate(true);
         // 模型配置表：先读磁盘缓存，过期才静默同步；拿到后刷新一次模型页（状态行 + 命中提示）
         modelCatalog.autoSync().then(() => refreshSettingsPane()).catch(() => {});
+        // 图片三层限制：拉一次投影（失败静默回落内置快照，不打扰用户）
+        imagePolicy.load().catch(() => {});
     }
 
     // 插件加载常晚于首次配置读取；注册表重建后按当前启用列表刷新虚拟账号。
@@ -1269,6 +1352,12 @@ export function createAIPanel(options) {
                 // 解不开的密文配置：内存退回镜像（可查看可导出），但写回前必须先留档
                 // （saveAIConfig 的 configSealedBroken 分支负责改名备份）。
                 configSealedBroken = true;
+                // 基线必须与 saveAIConfig 的 text 同一口径（含插件账号过滤），否则第一条
+                // 消息触发的自动保存就会「内容没变也备份覆写」——这正是 sealed 要防的事。
+                const forSaveBaseline = config.profiles.some((p) => p.pluginAI)
+                    ? {...config, profiles: config.profiles.filter((p) => !p.pluginAI)}
+                    : config;
+                lastConfigText = JSON.stringify(forSaveBaseline);
             } else {
                 configFallback = true;
                 notifyConfigStoreError(e);
@@ -1308,7 +1397,13 @@ export function createAIPanel(options) {
             // 重读回来的 activeSessionId 同样是全局的（可能是另一个窗口的工作区那个会话）：
             // 按本窗口工作区对齐，换过就重绘，别让面板主区停在别人的对话上。
             if (adoptWorkspaceSession()) refreshSessionUI();
-        } catch (e) {}
+        } catch (e) {
+            // 热重读失败不能静默吞掉 sealed：不置标记的话，下一次自动保存会绕过
+            // 「先留档再写」直接覆盖那份解不开的密文（审查发现的漏网路径）。
+            if (String((e && e.message) || e).indexOf('AI_CONFIG_SEALED') >= 0) {
+                configSealedBroken = true;
+            }
+        }
     }
 
     // 浮窗是独立进程（ai_float.go 用 --new-window --ai-float 起 exe），配置各存一份内存。
@@ -1601,6 +1696,16 @@ export function createAIPanel(options) {
                     };
                 }
             }
+            // 应急收缩留痕：随 JSONL 落盘，重放 / 懒加载后仍是可见分隔行（不进模型上下文）
+            if (raw.kind === 'slim-note') {
+                message.kind = 'slim-note';
+                if (raw.slimNote && typeof raw.slimNote === 'object') {
+                    message.slimNote = {
+                        percent: Number(raw.slimNote.percent) || 0,
+                        keptToolResults: Number(raw.slimNote.keptToolResults) || 0,
+                    };
+                }
+            }
             if (raw.app && typeof raw.app === 'object') {
                 // 应用注入的指令（Git 快捷操作 / 定时任务 / 其他功能）：聊天里按应用消息卡片展示，不当用户胶囊。
                 message.app = normalizeAppMessage(raw.app);
@@ -1615,6 +1720,10 @@ export function createAIPanel(options) {
             message.videos = Array.isArray(raw.videos)
                 ? raw.videos.map(aiNormalizeVideo).filter(Boolean).slice(0, AI_VIDEO_LIMIT)
                 : [];
+            // 原地编辑的附件快照（本次改动之后的新消息才有）：只存文本类附件——
+            // 媒体走 images / videos、引用走 content 前缀，都不重复落盘。
+            const inlineAttachments = normalizeMessageAttachments(raw.attachments);
+            if (inlineAttachments.length) message.attachments = inlineAttachments;
         }
         if (role === 'tool') {
             message.toolCallId = aiTextOf(raw.toolCallId);
@@ -1926,7 +2035,7 @@ export function createAIPanel(options) {
             out.push(session);
         });
         while (out.length > AI_LEGACY_SESSION_LIMIT) {
-            out.splice(pickSessionToDrop(out, config.activeSessionId), 1);
+            out.splice(pickSessionToDrop(out, activeSessionId()), 1);
         }
         // 老会话没有 workspace：用其他会话已知的工作区 + 本会话的变更路径做一次温和回填。
         const knownWorkspaces = [];
@@ -1983,9 +2092,11 @@ export function createAIPanel(options) {
         if (now - sessionStoreErrorAt < 30000) return;
         sessionStoreErrorAt = now;
         try {
-            if (typeof flash === 'function') {
-                flash('会话保存失败：' + ((error && error.message) || error), true);
-            }
+            const detail = String((error && error.message) || error || '未知错误');
+            if (typeof flash === 'function') flash('会话保存失败：' + detail, true);
+            // A 级：会话保存失败是数据风险，用户可能没盯着状态栏——送消息中心 + toast。
+            // 这里已有 30s 局部节流（sessionStoreErrorAt），notifyFailure 再按 key 兜一层。
+            notifyFailure('会话保存失败', detail, {key: 'session-save', kind: 'error'});
         } catch (e) {}
     }
 
@@ -2010,6 +2121,17 @@ export function createAIPanel(options) {
         return !sessionsLoaded && effectiveStorageMode() === 'disk';
     }
 
+    // 本窗口的当前会话 id：按工作区各记一条（config.activeSessionByWorkspace），
+    // 单值 activeSessionId 只在没有本工作区条目时兜底。读写一律走这两个函数，
+    // 别直接动 config.activeSessionId——多窗口会互相把对方的视图切走。
+    function activeSessionId() {
+        return activeSessionIdFor(config, aiWorkspaceKey(currentWorkspacePath()));
+    }
+
+    function setActiveSessionId(id) {
+        rememberActiveSession(config, aiWorkspaceKey(currentWorkspacePath()), id);
+    }
+
     // 当前会话是否属于本窗口的工作区。activeSessionId 存在全局 ai-config.json（多窗口共享），
     // 新窗口打开另一个工作区时会沿用上一个工作区那个会话——面板直接恢复成别人的对话，之后
     // 还会经 syncWorkspaceToSession 把工作区切回去。判定是纯函数（ai-session-scope.js），
@@ -2029,12 +2151,16 @@ export function createAIPanel(options) {
         );
         if (decision.action === 'bind') {
             current.workspace = currentWorkspacePath();
+            // 把这条会话记到本工作区名下：老配置只有一个全局 activeSessionId，
+            // 谁先打开谁「收养」它，之后各工作区各记各的，不再互相改写。
+            setActiveSessionId(current.id);
+            saveAIConfig();
             return false;
         }
         if (decision.action !== 'switch' && decision.action !== 'create') return false;
         const next = decision.session || createSessionData();
         if (!decision.session) sessions.push(next);
-        config.activeSessionId = next.id;
+        setActiveSessionId(next.id);
         saveAIConfig();
         return true;
     }
@@ -2067,7 +2193,7 @@ export function createAIPanel(options) {
         if (isOpen()) syncActiveSessionUI(true);
         updateScopeUI();
         updateSendState();
-        if (config.activeSessionId) syncSessionWatch(config.activeSessionId);
+        if (activeSessionId()) syncSessionWatch(activeSessionId());
     }
 
     function whenSessionsReady() {
@@ -2110,8 +2236,8 @@ export function createAIPanel(options) {
         const dropped = spare.filter((session) => !survivors.has(session));
         if (!dropped.length) return;
         sessions = sessions.filter((session) => !dropped.includes(session));
-        if (config.activeSessionId && !sessions.some((session) => session.id === config.activeSessionId)) {
-            config.activeSessionId = sessions[0] ? sessions[0].id : '';
+        if (activeSessionId() && !sessions.some((session) => session.id === activeSessionId())) {
+            setActiveSessionId(sessions[0] ? sessions[0].id : '');
         }
         persistSessions();
         renderSessionList();
@@ -2124,7 +2250,7 @@ export function createAIPanel(options) {
     function discardVirginOnLeave(session) {
         if (!session || !isVirginSession(session)) return false;
         // 只处理「正在看的那个会话被切走」：activeSessionId 还没改，对不上就不是离开
-        if (session.id !== config.activeSessionId) return false;
+        if (session.id !== activeSessionId()) return false;
         // 支线有独立标签页承载：静默删掉会让那个标签页指向不存在的会话
         if (aiTextOf(session.sideOf)) return false;
         if (streams.has(session.id) || compactOf(session.id)) return false;
@@ -2186,8 +2312,8 @@ export function createAIPanel(options) {
                 // 磁盘为空就是真的空（包括用户删光）：不能把启动时用于占位的 legacy 会话再写回去。
                 sessions = [createSessionData()];
             }
-            if (!sessions.some((session) => session.id === config.activeSessionId)) {
-                config.activeSessionId = sessions[0] ? sessions[0].id : '';
+            if (!sessions.some((session) => session.id === activeSessionId())) {
+                setActiveSessionId(sessions[0] ? sessions[0].id : '');
             }
             sessionsLoaded = true;
             lastDiskLoadAt = Date.now();
@@ -2208,6 +2334,8 @@ export function createAIPanel(options) {
             notifySessionStoreError(e);
             try {
                 if (typeof flash === 'function') flash('会话磁盘存储不可用，已回退到本地缓存', true);
+                // A 级：磁盘存储整体不可用，后续会话可能都存不住——必须让用户知道。
+                notifyFailure('会话磁盘存储不可用', '已回退到本地缓存，新消息可能无法持久保存，请检查应用数据目录是否可写', {key: 'storage-fallback', kind: 'error'});
             } catch (e2) {}
             // 启动时渲染被「读盘中」的加载态挡掉了：失败回退也要把面板画出来，不能一直停在加载态
             refreshSessionUI();
@@ -2221,7 +2349,7 @@ export function createAIPanel(options) {
 
     function startupHydrateTargets() {
         const out = [];
-        const active = sessions.find((session) => session.id === config.activeSessionId);
+        const active = sessions.find((session) => session.id === activeSessionId());
         if (active && active._stub) out.push(active);
         const recent = sessions.slice().sort((a, b) => sessionActivityTs(b) - sessionActivityTs(a));
         for (const session of recent) {
@@ -2254,8 +2382,11 @@ export function createAIPanel(options) {
             if (session && session._needsRewrite) sessionStore.persistSession(session);
         }
         const failed = targets.filter((session) => session._loadError);
-        if (failed.length && typeof flash === 'function') {
-            flash('部分会话读取失败：' + failed[0]._loadError, true);
+        if (failed.length) {
+            const detail = String(failed[0]._loadError || '未知错误');
+            if (typeof flash === 'function') flash('部分会话读取失败：' + detail, true);
+            // A 级：会话正文读取失败可能丢历史，需用户回来处理。
+            notifyFailure('部分会话读取失败', detail + '（共 ' + failed.length + ' 个会话）', {key: 'session-load', kind: 'error'});
         }
     }
 
@@ -2311,10 +2442,10 @@ export function createAIPanel(options) {
         if (now - archiveOverflowAt < 30000) return; // 30 秒内不重复打扰
         archiveOverflowAt = now;
         try {
-            if (typeof flash === 'function') {
-                flash('已归档消息超过 ' + AI_ARCHIVE_LIMIT + ' 条上限，最旧的 ' + dropped +
-                    ' 条已被丢弃；建议先「导出 Markdown」留存历史', true);
-            }
+            const detail = '最旧的 ' + dropped + ' 条已被丢弃；建议先「导出 Markdown」留存历史';
+            if (typeof flash === 'function') flash('已归档消息超过 ' + AI_ARCHIVE_LIMIT + ' 条上限，' + detail, true);
+            // A 级：历史消息被丢弃是不可逆的，必须醒目提示（已有 30s 局部节流）。
+            notifyFailure('已归档消息超过上限被丢弃', detail, {key: 'archive-overflow', kind: 'error'});
         } catch (e) {}
     }
 
@@ -2404,7 +2535,7 @@ export function createAIPanel(options) {
     }
 
     function currentSession() {
-        return sessions.find((s) => s.id === config.activeSessionId) || sessions[0] || null;
+        return sessions.find((s) => s.id === activeSessionId()) || sessions[0] || null;
     }
 
     // ---------- 会话级流注册表 ----------
@@ -2567,7 +2698,7 @@ export function createAIPanel(options) {
         if (!id) return;
         const session = sessionById(id);
         if (!session) return;
-        if (config.activeSessionId !== id) {
+        if (activeSessionId() !== id) {
             renderSessionList();
             return;
         }
@@ -2633,6 +2764,11 @@ export function createAIPanel(options) {
         }
         if (result.reason === 'lease_failed') {
             flash('无法获取会话写权：' + (result.error || '另一窗口正在使用'), true);
+            return;
+        }
+        // 图片超限是用户可自行解决的原因，直接给可读文案，不要把 reason 码摆给用户
+        if (result.reason === 'images_too_large') {
+            flash(result.message || '图片总量超过上限，请减少图片', true);
             return;
         }
         flash('发送失败：' + (result.reason || 'unknown'), true);
@@ -2796,7 +2932,7 @@ export function createAIPanel(options) {
         // 普通账号原样返回，prepare 抛异常时插件模块内部降级忽略。
         return mergePluginAIRequest(cfg, {
             accountId: profile ? profile.id : '',
-            sessionId: config.activeSessionId || '',
+            sessionId: activeSessionId() || '',
         });
     }
 
@@ -3288,6 +3424,7 @@ export function createAIPanel(options) {
         el,
         backend,
         flash,
+        notifyFailure,
         askConfirm,
         openAIDialog,
         closeAIDialog,
@@ -3337,6 +3474,7 @@ export function createAIPanel(options) {
         },
         getChip: () => el.chipTimers,
         flash,
+        notifyFailure,
         // 创建对话框用居中弹窗（openAIDialog 三件套；函数声明提升，此处引用安全）
         openDialog: openAIDialog,
         closeDialog: closeAIDialog,
@@ -3346,12 +3484,18 @@ export function createAIPanel(options) {
         togglePop: (chip) => toggleChipsPop('timers', chip),
         onTimersChanged: () => {
             if (chipsPopKind === 'timers') renderChipsPop('timers');
+            // 计时器也是信箱胶囊的三类内容之一：启停要同步角标与信箱弹层
+            updateMailboxChip();
         },
         onFire: (payload) => {
             // 不能空 catch：唤醒链路的异常必须可见，否则用户只看到胶囊消失、没有任何提示
             // （track 过一次真实事故：getSessions 未定义被这里吞掉，到点永远静默无反应）。
             Promise.resolve(wakeSessionByTimer(payload)).catch((e) => {
-                flash('计时器「' + String((payload && payload.label) || '计时器') + '」唤醒失败：' + ((e && e.message) || e), true);
+                const label = String((payload && payload.label) || '计时器');
+                const detail = String((e && e.message) || e);
+                flash('计时器「' + label + '」唤醒失败：' + detail, true);
+                // A 级：到点唤醒失败意味着定时任务没落地，用户可能一直在等。
+                notifyFailure('计时器唤醒失败', '「' + label + '」：' + detail, {key: 'timer-wake', kind: 'error'});
             });
         },
     });
@@ -3371,7 +3515,10 @@ export function createAIPanel(options) {
         },
         onJobDone: (job) => {
             Promise.resolve(wakeSessionByGenDone(job)).catch((e) => {
-                flash('生成任务通知失败：' + String((e && e.message) || e), true);
+                const detail = String((e && e.message) || e);
+                flash('生成任务通知失败：' + detail, true);
+                // A 级：生成任务完成/失败没通知到会话，用户看不到产物或失败原因。
+                notifyFailure('生成任务通知失败', detail, {key: 'gen-notify', kind: 'error'});
             });
         },
     });
@@ -3439,13 +3586,17 @@ export function createAIPanel(options) {
                     '若此前在等待该事项的耗时结果，请基于时长与标记继续分析或简短向用户确认；无需展开无关内容。',
             });
             if (!receipt || !receipt.ok) {
-                flash('正计时「' + label + '」停止但未能通知会话：' + ((receipt && receipt.reason) || '未知'), true);
+                const detail = String((receipt && receipt.reason) || '未知');
+                flash('正计时「' + label + '」停止但未能通知会话：' + detail, true);
+                notifyFailure('正计时停止通知失败', '「' + label + '」：' + detail, {key: 'timer-notify', kind: 'error'});
                 return;
             }
             flash('正计时「' + label + '」已停止' + stopKind + '，已计 ' + desc +
                 (receipt.woke ? '（已通知会话）' : '（已排入会话信箱）'));
         } catch (e) {
-            flash('正计时「' + label + '」停止通知失败：' + ((e && e.message) || e), true);
+            const detail = String((e && e.message) || e);
+            flash('正计时「' + label + '」停止通知失败：' + detail, true);
+            notifyFailure('正计时停止通知失败', '「' + label + '」：' + detail, {key: 'timer-notify', kind: 'error'});
         }
     }
 
@@ -3467,7 +3618,9 @@ export function createAIPanel(options) {
             }
             // 跨工作区口径同定时任务（§4.13.4）：按本窗口工作区解析系统上下文，跨区目标保持失败
             if (session.workspace && aiWorkspaceKey(session.workspace) !== aiWorkspaceKey(currentWorkspacePath())) {
-                flash('计时器「' + label + '」到点，但目标会话属于其他工作区，请到对应窗口处理', true);
+                const detail = '计时器「' + label + '」到点，但目标会话属于其他工作区，请到对应窗口处理';
+                flash(detail, true);
+                notifyFailure('计时器到点 · 需到其他窗口处理', detail, {key: 'timer-cross-ws', kind: 'info'});
                 return;
             }
             const seconds = Math.max(1, Math.round(Number(payload && payload.endMs && payload.startMs ? (payload.endMs - payload.startMs) / 1000 : 0)));
@@ -3481,12 +3634,16 @@ export function createAIPanel(options) {
                     '请继续处理之前等待的事项；若已无可继续的步骤，简短告知用户计时结束即可。',
             });
             if (!receipt || !receipt.ok) {
-                flash('计时器「' + label + '」到点但未能注入：' + ((receipt && receipt.reason) || '未知'), true);
+                const detail = String((receipt && receipt.reason) || '未知');
+                flash('计时器「' + label + '」到点但未能注入：' + detail, true);
+                notifyFailure('计时器到点注入失败', '「' + label + '」：' + detail, {key: 'timer-inject', kind: 'error'});
                 return;
             }
             flash('计时器「' + label + '」已到点' + (receipt.woke ? '并唤醒' : '，已排入会话信箱'));
         } catch (e) {
-            flash('计时器「' + label + '」唤醒失败：' + ((e && e.message) || e), true);
+            const detail = String((e && e.message) || e);
+            flash('计时器「' + label + '」唤醒失败：' + detail, true);
+            notifyFailure('计时器唤醒失败', '「' + label + '」：' + detail, {key: 'timer-wake', kind: 'error'});
         }
     }
 
@@ -3503,7 +3660,9 @@ export function createAIPanel(options) {
                 renderSessionList();
             }
             if (session.workspace && aiWorkspaceKey(session.workspace) !== aiWorkspaceKey(currentWorkspacePath())) {
-                flash('生成任务已结束，但目标会话属于其他工作区，请到对应窗口处理', true);
+                const detail = '生成任务「' + (job && job.entryName || '任务') + '」已结束，但目标会话属于其他工作区，请到对应窗口处理';
+                flash(detail, true);
+                notifyFailure('生成任务结束 · 需到其他窗口处理', detail, {key: 'gen-cross-ws', kind: 'info'});
                 return;
             }
             const kindLabel = job.kind === 'video' ? '视频' : '图片';
@@ -3522,12 +3681,16 @@ export function createAIPanel(options) {
                 content,
             });
             if (!receipt || !receipt.ok) {
-                flash('生成任务已结束但未能注入：' + ((receipt && receipt.reason) || '未知'), true);
+                const detail = String((receipt && receipt.reason) || '未知');
+                flash('生成任务已结束但未能注入：' + detail, true);
+                notifyFailure('生成任务注入失败', detail, {key: 'gen-inject', kind: 'error'});
                 return;
             }
             flash('生成任务已结束' + (receipt.woke ? '并唤醒会话' : '，已排入会话信箱'));
         } catch (e) {
-            flash('生成任务唤醒失败：' + ((e && e.message) || e), true);
+            const detail = String((e && e.message) || e);
+            flash('生成任务唤醒失败：' + detail, true);
+            notifyFailure('生成任务唤醒失败', detail, {key: 'gen-notify', kind: 'error'});
         }
     }
 
@@ -3793,6 +3956,9 @@ export function createAIPanel(options) {
     }
 
     function renderMessages(keepScroll) {
+        // 整面重画会让原地编辑区的 DOM 悬空（状态还会指向被丢掉的节点）：先静默退出编辑态。
+        // 数据仍在消息里，退出不丢任何内容；用户重新点「编辑」即可继续。
+        if (inlineEdit) inlineEdit = null;
         // 首次读盘未完成：此时 sessions 只是占位（老快照 / 一个空会话），任何来源的重绘
         // 都只会画出一个错误会话再被替换。统一压成加载态，读盘结束后 refreshSessionUI 画真内容。
         if (sessionsPending()) {
@@ -4187,8 +4353,13 @@ export function createAIPanel(options) {
 
     function turnDurationMs(group, finalItem, live) {
         if (live && finalItem) return Math.max(0, Date.now() - (Number(live.startedAt) || turnStartMs(group)));
-        if (finalItem && finalItem.message.turnMs) return finalItem.message.turnMs;
-        return 0;
+        if (!finalItem) return 0;
+        // 有结束时刻就按当前回合起点现算：落盘的 turnMs 可能是旧口径写入的（把轮中的
+        // 信箱通知当成了起点，见 turnClockLabel 注释），现算连历史轮次一起改正。
+        const started = turnStartMs(group);
+        const finishedAt = Number(finalItem.message.finishedAt) || 0;
+        if (started && finishedAt > started) return finishedAt - started;
+        return Number(finalItem.message.turnMs) || 0;
     }
 
     function processFoldLabel(group, finalItem, turnRunning, live) {
@@ -4471,27 +4642,21 @@ export function createAIPanel(options) {
         const duration = turnRunning && live
             ? Math.max(0, Date.now() - (Number(live.startedAt) || turnStartMs(group)))
             : turnDurationMs(group, finalItem, false);
-        // 按「已回答的提问卡」把过程内容切成多段：提问卡按时间序插在段之间。
-        // 分段只是为了守住时间序，**折叠状态与折叠头都是轮级唯一的**——否则同一轮会出
-        // 多条「已完成 · 用时 X」的过程条，看起来像好几轮（提问卡是折叠区外的整卡，
-        // 它只把 body 隔开，不该切出第二个开关）。
+        // 已答（含超时/跳过/取消）提问卡不再切段，直接留在过程流里按时间序渲染：
+        // 切段会把一条折叠流劈成「body｜卡｜body」，展开时过程被打断（2026-11-19 作者裁定）。
+        // 卡片随过程一起开合、默认收起——宁可点开看问答，也不要长轮次一直铺开。
+        // 只剩插话（steer）切段：它是用户说过的话，整条渲染在折叠区外，不能被过程折叠藏起来。
+        // **折叠状态与折叠头仍是轮级唯一的**，续段只出无头 body 容器。
         const segments = [];
         {
             let cur = [];
             for (const item of processAll) {
                 if (item.message.steer) {
-                    // 插话（steer）是用户说过的话：整条渲染在折叠区外，不能被过程折叠藏起来。
                     if (cur.length) {
                         segments.push({items: cur});
                         cur = [];
                     }
                     segments.push({steer: item});
-                } else if (item.message.ask && item.message.ask.state !== 'pending') {
-                    if (cur.length) {
-                        segments.push({items: cur});
-                        cur = [];
-                    }
-                    segments.push({ask: item});
                 } else {
                     cur.push(item);
                 }
@@ -4505,31 +4670,24 @@ export function createAIPanel(options) {
         if (group.user) renderMessage(group.user, group.startIndex, session, host, turnOptions);
         // 完成后默认收起；但最终回答没有正文时（如工具轮收尾、以工具调用结束），
         // 过程行是唯一信息载体，默认展开以免「全部折叠」看起来没有任何输出。
-        // 最终回答的思考链跟随「最后一个 items 段」的折叠体（与完成后收起的设计一致）；
-        // 尾部是提问卡时同样挂在它前面的末段，不额外暴露在折叠区外。
-        const lastItemsIndex = segments.reduce((acc, seg, idx) => (seg.ask || seg.steer ? acc : idx), -1);
+        // 最终回答的思考链跟随「最后一个 items 段」的折叠体（与完成后收起的设计一致）。
+        const lastItemsIndex = segments.reduce((acc, seg, idx) => (seg.steer ? acc : idx), -1);
         // 折叠状态的 key 只到轮：段号不进 key，否则每段一个开关、一轮被切成好几条。
         const turnFoldKey = session.id + ':' + (group.user ? 'u' + group.user.ts : 'g' + group.startIndex);
-        // 段是否有可展示内容（仅末段可能只挂最终回答的思考链）；插话 / 提问卡段不进折叠体。
+        // 段是否有可展示内容（仅末段可能只挂最终回答的思考链）；插话段不进折叠体。
         const segHasBody = (seg, segIndex) => !seg.steer && (seg.items.length > 0 ||
             (segIndex === lastItemsIndex && !!finalReasoning));
         // 只有「收尾但无正文、也无可展开内容」的那一条退化过程条才允许空 body。
         const segRenderable = (seg, segIndex) => !seg.steer && (segHasBody(seg, segIndex) ||
             (segments.length === 1 && !!finalItem && !!duration));
         // 折叠头只出一次：落在第一个真正渲染出来的 items 段上（前面的空段会被跳过）。
-        const foldHeadIndex = segments.findIndex((seg, idx) => !seg.ask && !seg.steer && segRenderable(seg, idx));
+        const foldHeadIndex = segments.findIndex((seg, idx) => !seg.steer && segRenderable(seg, idx));
         // 展开/收起时要把同一轮所有段的 body 建起来（每段的 ensureBody 是各自闭包）。
         const segEnsureBody = [];
         segments.forEach((seg, segIndex) => {
             if (seg.steer) {
-                // 插话始终整条渲染（与提问卡同一条原则）：用户需要确认自己说的话模型看到了。
+                // 插话始终整条渲染：用户需要确认自己说的话模型看到了。
                 renderMessage(seg.steer.message, seg.steer.index, session, host, turnOptions);
-                return;
-            }
-            if (seg.ask) {
-                // 已答提问卡按时间序插在过程段之间，始终整卡渲染（不参与任何折叠）：
-                // 问答记录是用户自己的答复凭据，收起来就等于「没问过」。
-                renderMessage(seg.ask.message, seg.ask.index, session, host, turnOptions);
                 return;
             }
             const processItems = seg.items;
@@ -4540,7 +4698,7 @@ export function createAIPanel(options) {
             const isFoldHead = segIndex === foldHeadIndex;
             const fold = document.createElement('div');
             // 只有首个段带折叠头；其余段只是「无头的 body 容器」，与首段共享同一个开合状态，
-            // 视觉上仍是一条折叠流被提问卡隔开（不再逐段吐一条「已完成 · 用时」）。
+            // 视觉上仍是一条折叠流被插话隔开（不再逐段吐一条「已完成 · 用时」）。
             fold.className = 'ai-process' + (turnRunning ? ' streaming' : '') + (isFoldHead ? '' : ' cont');
             fold.dataset.processKey = key;
             if (turnRunning) fold.dataset.processStart = String(Number(live.startedAt) || turnStartMs(group));
@@ -4849,6 +5007,28 @@ export function createAIPanel(options) {
         wrap.appendChild(row);
     }
 
+    // 应急收缩留痕行：与模型切换行同款低调分隔样式；详情（触发占用 / 影响范围 / 解除
+    // 条件）收进 ⓘ 的 data-tip，行位留给布局本身。
+    function renderSlimShrinkNote(wrap, message) {
+        const note = message.slimNote && typeof message.slimNote === 'object' ? message.slimNote : {};
+        const row = document.createElement('div');
+        row.className = 'ai-model-switch';
+        const text = document.createElement('span');
+        text.className = 'ai-model-switch-text';
+        text.textContent = message.content || '上下文应急瘦身已介入';
+        const info = document.createElement('span');
+        info.className = 'ai-model-switch-info';
+        info.innerHTML = iconSvg('info', 12);
+        info.setAttribute('aria-label', '应急收缩说明');
+        const tipLines = [];
+        if (note.percent) tipLines.push('触发时估算占用：约 ' + note.percent + '%');
+        tipLines.push('窗口占用达到 90% 时，组装请求会把最近 ' + (note.keptToolResults || 5) +
+            ' 个工具结果之外的历史工具结果修剪或换成落盘指针（会话历史原样保留），占用回落后自动解除。');
+        info.dataset.tip = tipLines.join('\n');
+        row.append(text, info);
+        wrap.appendChild(row);
+    }
+
     // 回复头「AI 模型 时间」信息行的稀疏显示判定（默认关）：只在**轮次开头**（上一条
     // 非工具消息不是 AI 回复——用户消息 / 系统注记等）与**模型切换**时显示；连续工具轮
     // 的中间回复全部隐藏，时间跳变不算节点（连续对话隔几分钟很正常）。设置
@@ -4872,8 +5052,9 @@ export function createAIPanel(options) {
         // 视觉隐藏——用户不需要看模型上下文的内部维护信息
         if (message.silent) wrap.classList.add('msg-silent');
         // 系统注记（轮次提醒 / 待办检查等 user 注入）同理藏视觉：只留在数据层参与请求
-        // 与回合切分。模型切换留痕（kind=model-switch）是给用户看的分隔线，例外保留。
-        if (message.systemNote && message.kind !== 'model-switch') wrap.classList.add('msg-silent');
+        // 与回合切分。模型切换（kind=model-switch）与应急收缩（kind=slim-note）留痕
+        // 是给用户看的分隔线，例外保留。
+        if (message.systemNote && message.kind !== 'model-switch' && message.kind !== 'slim-note') wrap.classList.add('msg-silent');
         // 归档回看：索引指向的是「当前 messages」，直接复用会让复制/编辑重发/重新生成
         // 打到错误的条目。标记只读并清掉索引，appendActions 会据此跳过全部操作按钮。
         const archivedView = !!(options && options.archived);
@@ -4919,6 +5100,9 @@ export function createAIPanel(options) {
         } else if (message.kind === 'model-switch') {
             wrap.classList.add('model-switch');
             renderModelSwitchNote(wrap, message);
+        } else if (message.kind === 'slim-note') {
+            wrap.classList.add('model-switch');
+            renderSlimShrinkNote(wrap, message);
         } else if (message.app) {
             renderAppMessage(wrap, message, index, session);
         } else {
@@ -5252,7 +5436,9 @@ export function createAIPanel(options) {
         };
         if (message.role === 'user') {
             add('copy', '复制');
-            if (index === lastUser && !sessionBusy) add('edit', '编辑重发');
+            // 原地编辑：任意一条「用户亲手键入」的消息都能改（注入类消息截断重发会砍掉
+            // 注入语义，按黑名单排除）；生成中不给入口。
+            if (!sessionBusy && canInlineEdit(message)) add('edit', '编辑');
         } else {
             // 中间步骤按颗粒度收敛：'basic' 只留复制 + 回退（回合收尾信息也只属于最后一条）
             const stepMode = aiMsgActionsStepMode(settings.aiMsgActions, index === lastAssistant);
@@ -5279,7 +5465,7 @@ export function createAIPanel(options) {
                 if (settings.aiShowUsage !== false && turnUsageTotal(message) > 0) {
                     actions.appendChild(turnUsageChip(message, icons));
                 }
-                const clock = turnClockLabel(message);
+                const clock = turnClockLabel(message, sessionNow, index);
                 if (clock) {
                     const duration = document.createElement('span');
                     duration.className = 'ai-msg-duration';
@@ -5291,8 +5477,16 @@ export function createAIPanel(options) {
     }
 
     // 本轮耗时 → 00:34 / 1:02:03（不足 1 秒不显示）
-    function turnClockLabel(message) {
-        const ms = Math.max(0, Number(message && message.turnMs) || 0);
+    // turnMs 是收尾时落盘的；旧版本把轮中的信箱通知当成了回合起点（见 ai-session-store.js
+    // isTurnBoundaryMessage 的 notice 分支），落盘值会比真实耗时短一大截。有 finishedAt 就按
+    // 当前口径现算，历史轮次显示的耗时跟着一起改正。
+    function turnClockLabel(message, session, index) {
+        let ms = Math.max(0, Number(message && message.turnMs) || 0);
+        const finishedAt = Number(message && message.finishedAt) || 0;
+        if (session && finishedAt && index != null) {
+            const started = turnStartAt(session, index);
+            if (started && finishedAt > started) ms = finishedAt - started;
+        }
         if (ms < 1000) return '';
         const total = Math.round(ms / 1000);
         const hours = Math.floor(total / 3600);
@@ -5351,9 +5545,9 @@ export function createAIPanel(options) {
 
     function lastUserIndex(session) {
         for (let i = session.messages.length - 1; i >= 0; i--) {
-            const message = session.messages[i];
-            // steer 是本轮补充指示，不是用户发起的新问题：重新生成 / 编辑重发要回到原始用户消息。
-            if (message.role === 'user' && !message.systemNote && !message.steer) return i;
+            // 与回合边界同源：steer 是本轮补充指示，systemNote / 信箱 notice 是机器注入，
+            // 都不是用户发起的新问题——重新生成 / 编辑重发要回到原始用户消息。
+            if (isTurnBoundaryMessage(session.messages[i])) return i;
         }
         return -1;
     }
@@ -5388,9 +5582,11 @@ export function createAIPanel(options) {
 
     function turnStartAt(session, assistantIndex) {
         for (let i = Math.min(assistantIndex, session.messages.length - 1); i >= 0; i--) {
+            // 与 groupTurns / 会话列表排序键同一套边界判定（isTurnBoundaryMessage）：
+            // steer、systemNote、信箱 notice、轮中自动附加的截图都不是回合起点——否则
+            // turnMs 会从注入时刻起算，末尾显示的耗时被截短。
             const message = session.messages[i];
-            // steer 是本轮补充指示，不是新一轮的起点（否则轮耗时会被它截短）。
-            if (message.role === 'user' && !message.systemNote && !message.steer) return Number(message.turnStartedAt) || Number(message.ts) || 0;
+            if (isTurnBoundaryMessage(message)) return Number(message.turnStartedAt) || Number(message.ts) || 0;
         }
         return 0;
     }
@@ -5521,6 +5717,12 @@ export function createAIPanel(options) {
     // 最近一次 buildApiMessages 的实时瘦身省略量（token 估算，分类记账，统计浮层展示用）。
     // 每次组装重置——浮层打开时自己会组装一遍，读到的就是当前会话的新鲜值。
     let lastBuildSavedTokens = null;
+    // 最近一次组装是否触发了应急收缩（≥窗口 90% 的放宽修剪）：发送点读它决定要不要
+    // 落「应急瘦身已介入」的会话留痕（只改发出内容、磁盘原样，不留痕用户无从知晓）。
+    let lastBuildShrinkPressure = false;
+    let lastBuildShrinkRatio = 0; // 触发时的估算占用（整数百分比，注记展示用）
+    // 会话 → 上次落留痕的时间（WeakMap 随会话回收；震荡去重用 shouldInsertShrinkNote）
+    const slimShrinkNoteAt = new WeakMap();
     // 最近一次 buildApiMessages 产出的「实测 usage 锚点」：最后一条带 usage 的 assistant
     // 在发送数组里的下标 + 它的用量。上下文占用 = 实测值 + 其后的增量估算（六份参照
     // harness 同口径），纯字符估算独自用会系统性偏低。
@@ -5562,19 +5764,27 @@ export function createAIPanel(options) {
         let savedTokens = {reasoning: 0, transient: 0, notes: 0, toolPrune: 0, argsPrune: 0}; // 本次组装剔除的 token，分类记账
         // 应急收缩：窗口占用 ≥ 90% 时把「按龄修剪」放宽成「除最近 5 个工具结果外全修剪」。
         // 只影响发出去的内容（会话历史原样），比直接调模型做摘要便宜得多。
-        // 注意这里自己算占用、不能调 estimateCurrentTokens——那条路会回调进来。
+        // 估算必须与提醒条同口径（aiEstimateTokens 对 CJK 有加权，chars/3.2 会把中文
+        // 低估一倍以上，压力档就永远不触发）；也不能调 estimateCurrentTokens——那条路会回调进来。
+        // 系统提示词与工具参数（整批提交类 MCP 的 args 动辄几十万字符）都要算上。
         let shrinkPressure = false;
+        let shrinkRatio = 0; // 触发时的估算占用（整数百分比，留痕注记展示用）
         if (slim) {
             const windowSize = contextWindowOf(session);
             if (windowSize > 0) {
-                let chars = 0;
+                let used = 0;
                 for (let i = 0; i < limit; i++) {
                     const m = session.messages[i];
                     if (!m) continue;
-                    chars += (typeof m.content === 'string' ? m.content.length : 0) +
-                        (typeof m.reasoning === 'string' ? m.reasoning.length : 0);
+                    if (typeof m.content === 'string' && m.content) used += aiEstimateTokens(m.content);
+                    if (typeof m.reasoning === 'string' && m.reasoning) used += aiEstimateTokens(m.reasoning);
+                    if (Array.isArray(m.toolCalls)) {
+                        for (const tc of m.toolCalls) used += aiEstimateTokens(String((tc && tc.arguments) || ''));
+                    }
                 }
-                shrinkPressure = underContextPressure(chars / 3.2, windowSize);
+                if (systemText) used += aiEstimateTokens(systemText);
+                shrinkPressure = underContextPressure(used, windowSize);
+                shrinkRatio = Math.round(used / windowSize * 100);
             }
         }
         const keepToolIndexes = shrinkPressure ? recentToolIndexes(session.messages, limit, SHRINK_KEEP_TOOL_RESULTS) : null;
@@ -5586,8 +5796,8 @@ export function createAIPanel(options) {
             if (!message) continue;
             // 文件改动汇总卡是纯 UI 载体，不发给模型
             if (message.kind === 'changes-summary') continue;
-            // 模型切换记录只是对话里的可视注记，不进入模型上下文
-            if (message.kind === 'model-switch') continue;
+            // 模型切换 / 应急收缩留痕只是对话里的可视注记，不进入模型上下文
+            if (message.kind === 'model-switch' || message.kind === 'slim-note') continue;
             // 瞬态注入块的旧条目：只发最新一条（见 lastTransient）。瘦身关闭时仍去重——
             // 同内容多份纯冗余，与「是否清理上下文」是两回事
             if (message.dedupeKey && lastTransient.get(message.dedupeKey) !== i) {
@@ -5612,7 +5822,9 @@ export function createAIPanel(options) {
                 const prunable = slim && (i < recentStart || (keepToolIndexes && !keepToolIndexes.has(i)));
                 if (prunable) {
                     // 有落盘路径就换指针（全文在 ai-artifacts/），没有就退回修剪中段。
-                    const pruned = slimToolResult(message.name, toolContent, message.artifactPath);
+                    // 压力档把修剪门槛从「值得落盘的体量」降到 2 K——低于落盘阈值的中等结果
+                    // 平时不值得动，窗口吃紧时正是它们在堆积。
+                    const pruned = slimToolResult(message.name, toolContent, message.artifactPath, shrinkPressure);
                     if (pruned != null) {
                         savedTokens.toolPrune += aiEstimateTokens('x'.repeat(Math.max(0, toolContent.length - pruned.length)));
                         toolContent = pruned;
@@ -5702,6 +5914,8 @@ export function createAIPanel(options) {
             }
         }
         lastBuildSavedTokens = savedTokens;
+        lastBuildShrinkPressure = shrinkPressure;
+        lastBuildShrinkRatio = shrinkRatio;
         return messages;
     }
 
@@ -5725,7 +5939,7 @@ export function createAIPanel(options) {
         const totalTokens = tokens;
         const windowSize = contextWindowOf(session);
         const percent = windowSize > 0 ? (totalTokens / windowSize * 100) : 0;
-        const userCount = session ? session.messages.filter((m) => m.role === 'user' && !m.systemNote && !m.steer).length : 0;
+        const userCount = session ? session.messages.filter((m) => isTurnBoundaryMessage(m)).length : 0;
         const assistantCount = session ? session.messages.filter((m) => m.role === 'assistant').length : 0;
         const toolCount = session ? session.messages.filter((m) => m.role === 'tool').length : 0;
         let lastUsage = null;
@@ -5867,19 +6081,9 @@ export function createAIPanel(options) {
     const statsPopEl = (...args) => usageMod.statsPopEl(...args);
 
     let ctxPopSeq = 0;
-    async function renderCtxPopover(refreshSystem) {
-        const seq = ++ctxPopSeq;
-        const session = currentSession();
-        if (!session || !el.ctxPop || el.ctxPop.classList.contains('hidden')) return;
-        let systemText = promptTextOf(session.id);
-        if (refreshSystem) {
-            try {
-                const bundle = await assembleSystemContext(session, getAttachments());
-                rememberPrompt(session.id, bundle);
-                systemText = bundle.text;
-            } catch (e) {}
-        }
-        if (seq !== ctxPopSeq || !hasHost(session && session.id) || el.ctxPop.classList.contains('hidden')) return;
+    // 同步绘制 ctx 弹层正文（纯计算，无异步）。抽出来让「打开瞬间画当前会话缓存版」
+    // 与「异步精修后画精确版」共用同一段，避免两处逻辑漂移。
+    function paintCtxPop(session, systemText) {
         const windowSize = contextWindowOf(session);
         const messages = buildApiMessages(session, null, systemText);
         let systemTokens = 0;
@@ -5937,6 +6141,30 @@ export function createAIPanel(options) {
                     : '') + '旧轮思考、过时的大文件/命令输出、过期注入块在组装请求时被剔除的量（会话里仍保留）';
             }
         }
+    }
+
+    // 上下文弹层渲染：
+    // 打开瞬间先用「当前会话」的缓存同步画一帧（paintCtxPop），消除异步 assemble 期间
+    // 复用同一个弹层 DOM 而残留的上一个会话数据——这正是切会话后点开「先闪几帧旧信息、
+    // 再一闪刷成当前会话」的根因。随后异步精修系统提示词，再画一帧精确值；两帧之间用
+    // seq + 会话 id 双重校验，防止异步返回时弹层已关 / 已切到别的会话导致串台。
+    async function renderCtxPopover(refreshSystem) {
+        const seq = ++ctxPopSeq;
+        const session = currentSession();
+        if (!session || !el.ctxPop || el.ctxPop.classList.contains('hidden')) return;
+        const sessionId = session.id;
+        // 第一帧：同步、当前会话、缓存提示词——弹层一可见就是对的会话，无空窗
+        paintCtxPop(session, promptTextOf(sessionId));
+        if (!refreshSystem) return;
+        try {
+            const bundle = await assembleSystemContext(session, getAttachments());
+            rememberPrompt(sessionId, bundle);
+            if (seq !== ctxPopSeq || !hasHost(sessionId) || el.ctxPop.classList.contains('hidden')) return;
+            const viewing = currentSession();
+            if (!viewing || viewing.id !== sessionId) return;
+            // 第二帧：异步精修后的精确值
+            paintCtxPop(viewing, bundle.text);
+        } catch (e) {}
     }
 
     // ---------- 路径 / 记忆 / 技能 ----------
@@ -6355,8 +6583,10 @@ export function createAIPanel(options) {
         const data = await backend.OpenFile(path, 'auto');
         if (!data) throw new Error('读取失败');
         if (data.isDir) throw new Error('这是目录，不是文件');
-        if (data.large) throw new Error('文件过大（>10 MB）');
-        if (data.binary) throw new Error('二进制文件不可作为文本读取');
+        // code 供附件入口区分「读不了正文但路径有效」的情况（降级为路径引用），
+        // 其余调用方只读 message，加 code 不影响它们。
+        if (data.large) throw Object.assign(new Error('文件过大（>10 MB）'), {code: 'large'});
+        if (data.binary) throw Object.assign(new Error('二进制文件不可作为文本读取'), {code: 'binary'});
         let text = aiTextOf(data.content);
         if (maxChars && text.length > maxChars) text = text.slice(0, maxChars) + '\n…（已截断）';
         return {text, data};
@@ -6519,8 +6749,18 @@ export function createAIPanel(options) {
         return (await listSkillsRaw(force)).filter((skill) => !skill.disabled);
     }
 
+    // 斜杠补全持有自己的技能缓存（TTL 5s）：技能管理里新建 / 启停 / 隐藏后要同步失效，
+    // 否则补全列表要等 TTL 过期才跟上。slashMod 构造在本模块更后面，故用惰性钩子回填。
+    let slashSkillsInvalidate = null;
+
     function invalidateSkillsCache() {
         skillsCache = {at: 0, list: []};
+        if (!slashSkillsInvalidate) return;
+        try {
+            slashSkillsInvalidate();
+        } catch (e) {
+            // 尽力而为：斜杠缓存刷新失败不影响技能管理本身（TTL 过期后会自愈）
+        }
     }
 
 
@@ -6857,14 +7097,16 @@ export function createAIPanel(options) {
         // 口径与「AI 提问」一致：消息中心**一律**记一条（可事后查、点击跳转），
         // 弹不弹系统卡片由 notifyDesktop 的前台判断决定。别把「要不要记」也交给前台条件——
         // 那样人在前台看着面板时审批会一点痕迹都不留（实测就是这么漏的）。
-        notifyDesktop({kind: 'error', title, body, sessionId: session.id});
+        // 审批 / 待填写是「等用户拍板」，不是错误：用 info 图标（与「AI 计划待批准」一致），
+        // 别用 error 的红叉——消息中心里连着几条红叉会被误读成任务失败。
+        notifyDesktop({kind: 'info', title, body, sessionId: session.id});
         // 人正看着这张卡（面板开着该会话 + 软件在前台）就不用再排 60 秒催办。
         appReallyForeground().then((active) => {
             if (active && isOpen() && currentSession() === session) return;
             setTimeout(() => {
                 if (approval && approval.state && approval.state !== 'pending') return;
                 notifyDesktop({
-                    kind: 'error',
+                    kind: 'info',
                     title: title + '（仍在等待）',
                     body: (session.title || '会话') + ' · 已等待超过 1 分钟，后台轮次被卡住',
                     sessionId: session.id,
@@ -6875,7 +7117,13 @@ export function createAIPanel(options) {
 
     // 审批登记的公共路径（write 与 read 审批共用）：登记 pendingApprovals、刷新接管区与列表；
     // 后台轮次（用户没在看该会话）打未读 + 桌面通知，60 秒后再提醒一次——不自动放行。
-    function registerPendingApproval(session, toolMessage, approval, notifyBody) {
+    async function registerPendingApproval(session, toolMessage, approval, notifyBody) {
+        // PermissionRequest 统一挂点：所有审批（读 / 写 / 命令 / 动作 / worktree）都经此登记，
+        // 在审批卡出现前阻塞执行匹配的工具钩子。之前散落在三个 request* 里的钩子已移除，
+        // 避免覆盖遗漏（命令/读取审批直走这里）或重复触发。
+        await permissionLifecycleHook(
+            (approval && (approval.tool || approval.actionName || (approval.action ? 'worktree:' + approval.action : ''))) || '',
+            session);
         toolMessage.approval = approval;
         toolMessage.status = 'pending';
         toolMessage.content = '等待用户审批…';
@@ -6900,10 +7148,10 @@ export function createAIPanel(options) {
     // 隔离工作区动作审批（AI 主动 create / discard）：接管 composer 的审批卡，而不是居中
     // 二次确认弹窗。与写/命令审批共用 pendingApprovals 通道；**全档必弹**（含完全权限）——
     // 创建/丢弃是会话级状态变更 + 磁盘级增删，不随逐写档位静默执行。
-    function requestWorktreeApproval(session, toolMessage, info) {
+    async function requestWorktreeApproval(session, toolMessage, info) {
         // 停止竞态：弹卡前若本工具已被停止（如 discard 前等 GitWorktreeStat 的窗口），
         // 绝不能再注册一张「已死轮次」的 pending 卡——它会永久待审批并顶掉下一轮的审批。
-        if (toolHalted(toolMessage)) return Promise.resolve({approved: false, cancelled: true});
+        if (toolHalted(toolMessage)) return {approved: false, cancelled: true};
         const approval = {
             kind: 'worktree',
             state: 'pending',
@@ -6927,10 +7175,10 @@ export function createAIPanel(options) {
 
     // 动作审批（app_control 高危动作：改危险设置 / 装删插件）：与写/命令审批共用 pendingApprovals
 // 与 composer 接管区；一次性授权，不写任何长期放行规则。面板字段见 ai-takeover 的 action 卡。
-function requestActionApproval(session, toolMessage, info) {
-    if (!session || !toolMessage) return Promise.resolve({approved: false, error: '缺少会话上下文，无法发起动作审批'});
+async function requestActionApproval(session, toolMessage, info) {
+    if (!session || !toolMessage) return {approved: false, error: '缺少会话上下文，无法发起动作审批'};
     const normalized = normalizeActionApprovalSpec(info);
-    if (!normalized.ok) return Promise.resolve({approved: false, error: normalized.error});
+    if (!normalized.ok) return {approved: false, error: normalized.error};
     const spec = normalized.spec;
     const approval = {
         state: 'pending',
@@ -6951,7 +7199,7 @@ function requestActionApproval(session, toolMessage, info) {
         (session.title || '会话') + ' · ' + normalized.spec.title + ' 需要你确认');
 }
 
-function requestApproval(session, toolMessage, info) {
+async function requestApproval(session, toolMessage, info) {
         const approval = {
             state: 'pending',
             tool: info.tool,
@@ -9053,7 +9301,28 @@ function requestApproval(session, toolMessage, info) {
         // 工具本身只有一个 app_control，没法整只进这份清单。
     ]);
 
+    /**
+     * 工具执行包装层（生命周期钩子）：PreToolUse 前阻塞、PostToolUse / PostToolUseFailure 后触发。
+     * 原 executeTool 的所有 case 零侵入改名成 executeToolInner 由本层调用。
+     * 钩子失败一律不阻断真实工具执行（控制器已兜错，这里再兜一层）。
+     */
     async function executeTool(name, args, ctx) {
+        const hookCtx = {tool: name, session: ctx && ctx.session};
+        await runLifecycle('pre-tool-use', {...hookCtx, blocking: true});
+        let result;
+        let failed = false;
+        try {
+            result = await executeToolInner(name, args, ctx);
+        } catch (e) {
+            failed = true;
+            await runLifecycle('post-tool-use-failure', hookCtx);
+            throw e;
+        }
+        await runLifecycle('post-tool-use', hookCtx);
+        return result;
+    }
+
+    async function executeToolInner(name, args, ctx) {
         const input = args && typeof args === 'object' ? args : {};
         if (ctx && ctx.session && ctx.session.planMode === true &&
             (PLAN_MODE_DENIED_TOOLS.has(name) || name.startsWith('mcp__') || name.startsWith('plugin__'))) {
@@ -9184,8 +9453,11 @@ function requestApproval(session, toolMessage, info) {
                     }
                     throw e;
                 }
+                const readLimits = imageLimits();
                 const payload = await prepareImagePayload(dataURL, {
-                    maxDim: AI_IMAGE_MAX_DIM,
+                    maxDim: readLimits.maxNormalizedDimension,
+                    maxPixels: readLimits.maxImagePixels,
+                    maxDimension: readLimits.maxImageDimension,
                     maxBase64: AI_IMAGE_MAX_BASE64,
                     name: label,
                 });
@@ -10059,9 +10331,14 @@ function requestApproval(session, toolMessage, info) {
             }
             case 'browser_click': {
                 const selector = aiTextOf(input.selector).trim();
-                if (!selector) throw new Error('selector 为空');
+                const clickText = aiTextOf(input.text).trim();
+                if (!selector && !clickText) throw new Error('selector 与 text 至少给一个');
+                if (selector && clickText) throw new Error('selector 与 text 只能给一个');
                 const tab = await ensureBrowserTab(ctx.session);
-                const script = '(() => { const el = document.querySelector(' + JSON.stringify(selector) + '); if (!el) return JSON.stringify({ok: false, message: "未找到元素"}); el.scrollIntoView({block: "center"}); el.click(); return JSON.stringify({ok: true, tag: el.tagName, text: String(el.innerText || "").slice(0, 60)}); })()';
+                // 文本模式走「最小可点击元素」查找（选择器难写时更稳），选择器模式保持原行为
+                const script = clickText
+                    ? buildTextClickScript(clickText)
+                    : '(() => { const el = document.querySelector(' + JSON.stringify(selector) + '); if (!el) return JSON.stringify({ok: false, message: "未找到元素"}); el.scrollIntoView({block: "center"}); el.click(); return JSON.stringify({ok: true, tag: el.tagName, text: String(el.innerText || "").slice(0, 60)}); })()';
                 const raw = await backend.BrowserEval(tab.id, script);
                 const result = browserEvalObject(raw);
                 if (!result || result.ok === false) throw new Error(result && result.message ? result.message : '点击失败');
@@ -10081,10 +10358,71 @@ function requestApproval(session, toolMessage, info) {
             case 'browser_press_key': {
                 const key = aiTextOf(input.key).trim() || 'Enter';
                 const tab = await ensureBrowserTab(ctx.session);
-                const script = '(() => { const el = document.activeElement || document.body; el.dispatchEvent(new KeyboardEvent("keydown", {key: ' + JSON.stringify(key) + ', bubbles: true})); el.dispatchEvent(new KeyboardEvent("keyup", {key: ' + JSON.stringify(key) + ', bubbles: true})); return JSON.stringify({ok: true}); })()';
-                const raw = await backend.BrowserEval(tab.id, script);
+                const raw = await backend.BrowserEval(tab.id, buildPressKeyScript(key, input.modifiers));
                 browserEvalObject(raw);
-                return '已派发按键：' + key;
+                return '已派发按键：' + describeKeyCombo(key, input.modifiers);
+            }
+            case 'browser_wait': {
+                const selector = aiTextOf(input.selector).trim();
+                const waitText = aiTextOf(input.text).trim();
+                const urlPart = aiTextOf(input.url).trim();
+                const cond = {selector, text: waitText, url: urlPart};
+                const what = describeWait(cond);
+                if (!what) throw new Error('至少给出 selector / text / url 之一');
+                const timeoutMs = clampWaitTimeout(input.timeoutMs);
+                const probe = buildWaitProbe(cond);
+                const tab = await ensureBrowserTab(ctx.session);
+                const startedAt = Date.now();
+                let lastError = '';
+                while (true) {
+                    let ok = false;
+                    try {
+                        const result = browserEvalObject(await backend.BrowserEval(tab.id, probe));
+                        ok = !!(result && result.ok);
+                    } catch (e) {
+                        // 页面正在导航时脚本上下文会短暂失效，记下原因继续等（到点再报）
+                        lastError = String((e && e.message) || e);
+                    }
+                    if (ok) {
+                        return '已满足等待条件（' + (Date.now() - startedAt) + 'ms）：' + what + '。';
+                    }
+                    if (Date.now() - startedAt >= timeoutMs) {
+                        throw new Error('等待超时（' + timeoutMs + 'ms）未满足：' + what +
+                            (lastError ? '；期间脚本报错：' + lastError : '') +
+                            '。可先用 browser_snapshot 看当前页面状态，或加大 timeoutMs。');
+                    }
+                    await new Promise((resolve) => setTimeout(resolve, WAIT_POLL_MS));
+                }
+            }
+            case 'browser_scroll': {
+                const script = buildScrollScript({selector: input.selector, byPx: input.byPx, position: input.position});
+                const tab = await ensureBrowserTab(ctx.session);
+                const result = browserEvalObject(await backend.BrowserEval(tab.id, script));
+                if (!result || result.ok === false) throw new Error(result && result.message ? result.message : '滚动失败');
+                return '已滚动：纵向位置 ' + (result.scrollY || 0) + ' / 页面高 ' + (result.scrollHeight || 0) + '。';
+            }
+            case 'browser_hover': {
+                const selector = aiTextOf(input.selector).trim();
+                const script = buildHoverScript(selector);
+                const tab = await ensureBrowserTab(ctx.session);
+                const result = browserEvalObject(await backend.BrowserEval(tab.id, script));
+                if (!result || result.ok === false) throw new Error(result && result.message ? result.message : '悬停失败');
+                return '已悬停：' + (result.tag || '元素') + (result.text ? '（' + result.text + '）' : '') +
+                    '。注意这是脚本派发事件，CSS :hover 样式不会因此生效；若浮层没出现请改用 browser_click 展开。';
+            }
+            case 'browser_select': {
+                const selector = aiTextOf(input.selector).trim();
+                const script = buildSelectScript(selector, {value: input.value, label: input.label});
+                const tab = await ensureBrowserTab(ctx.session);
+                const result = browserEvalObject(await backend.BrowserEval(tab.id, script));
+                if (!result || result.ok === false) {
+                    const options = Array.isArray(result && result.options)
+                        ? '可选值：' + result.options.map((o) => (o.value === o.label ? o.value : o.value + '（' + o.label + '）')).join(' / ')
+                        : '';
+                    throw new Error(((result && result.message) || '选择失败') + (options ? '；' + options : ''));
+                }
+                return '已选择：' + (result.label || result.value || '') + '（value=' + result.value + '）' +
+                    (result.count ? '；该下拉共 ' + result.count + ' 项' : '') + '。';
             }
             case 'browser_evaluate': {
                 const script = aiTextOf(input.script);
@@ -10468,9 +10806,12 @@ function requestApproval(session, toolMessage, info) {
 
                 if (action === 'read') {
                     if (!backend.TermRead) throw new Error('当前版本不支持读取终端输出（请重新构建或更新应用）');
-                    const maxChars = aiClampInt(input.maxChars, 200, 20000, 4000);
+                    // tail（最后 N 行）与 maxChars 二选一：tail 优先。Go 侧只按字节取尾部，
+                    // 这里把读取量拉到上限再在前端按行切——不改 Go 绑定 / wailsjs / exe。
+                    const tailLines = input.tail == null || input.tail === '' ? 0 : aiClampInt(input.tail, 1, 200, 0);
+                    const maxChars = tailLines ? 20000 : aiClampInt(input.maxChars, 200, 20000, 4000);
                     const res = await backend.TermRead(id, maxChars);
-                    return formatTerminalRead(id, res, maxChars);
+                    return formatTerminalRead(id, res, maxChars, tailLines);
                 }
 
                 if (action === 'close') {
@@ -10982,6 +11323,7 @@ function requestApproval(session, toolMessage, info) {
             ts: Date.now(),
             status: 'streaming',
             usage: null,
+            statusCode: 0,
             error: '',
             toolCalls: [],
         };
@@ -11066,6 +11408,19 @@ function requestApproval(session, toolMessage, info) {
         const videoAttachments = (source.videos || []).map(aiNormalizeVideo).filter(Boolean);
         const textAttachments = (source.texts || []).slice();
         if (!value && !imageAttachments.length && !videoAttachments.length && !textAttachments.length) return {ok: false, reason: 'empty'};
+        // 请求预算最后一道前端兜底（对齐 dsh：Host 强制前先自检一遍）：
+        // 图片编码后单张/合计超限就不发起请求，避免整轮被 Go 校验拒收后用户白等一次往返。
+        // 张数也在这里查：编辑重发 / 支线重发 / 队列冲刷都不经过 composer 的入口校验。
+        const limitsNow = imageLimits();
+        if (imageAttachments.length > limitsNow.maxImagesPerMessage) {
+            return {
+                ok: false,
+                reason: 'images_too_large',
+                message: '每条消息最多附加 ' + limitsNow.maxImagesPerMessage + ' 张图片',
+            };
+        }
+        const imageBudget = checkRequestBudget(limitsNow, imageAttachments);
+        if (!imageBudget.ok) return {ok: false, reason: 'images_too_large', message: imageBudget.reason};
         // 纯文本附件 + 空输入：给一个极短占位，避免向 API 发送空 content（Anthropic 不接受空文本块）
         if (!value && textAttachments.length) value = '（已附加引用/文件，见 <attachments>）';
         if (value.length > AI_CHAT_INPUT_LIMIT) return {ok: false, reason: 'too_long'};
@@ -11196,11 +11551,14 @@ function requestApproval(session, toolMessage, info) {
         if (precmdAIStart && session.messages.length === 0 && !precmdStartedSessions.has(session.id)) {
             precmdStartedSessions.add(session.id);
             // 阻塞期给状态栏反馈：默认 30s / 多条叠加时用户极易以为卡住而重复发送（审查 P2-2）
-            flash('正在执行该会话的预指令，完成后再发送…');
+            flash('正在执行该会话的生命周期命令，完成后再发送…');
             try {
                 await precmdAIStart(session.workspace);
-            } catch (e) {} // 尽力而为路径：预指令失败不阻塞起轮（控制器内部已兜错，这里双保险）
+            } catch (e) {} // 尽力而为路径：钩子失败不阻塞起轮（控制器内部已兜错，这里双保险）
         }
+        // UserPromptSubmit：每一轮起轮前阻塞执行（与 session-start 的区别是每轮都触发，
+        // 不只空会话第一轮）；订阅通知唤醒的空会话也走这里，与「提交用户输入」语义一致。
+        await runLifecycle('user-prompt-submit', {session, blocking: true});
 
         let run = null;
         try {
@@ -11233,6 +11591,10 @@ function requestApproval(session, toolMessage, info) {
             ts: turnStartedAt,
             turnStartedAt,
         };
+        // 原地编辑的附件快照：文本类附件随消息落 JSONL，重开应用后仍能还原成 chip
+        //（媒体与引用由既有字段 / content 前缀承载，这里不重复存）。
+        const inlineAttachments = snapshotFromAttachments(textAttachments);
+        if (inlineAttachments.length) userMessage.attachments = inlineAttachments;
         if (opts.app && typeof opts.app === 'object') {
             userMessage.app = normalizeAppMessage(opts.app);
         }
@@ -11358,6 +11720,7 @@ function requestApproval(session, toolMessage, info) {
             flash(ctxGate.compactBlocked
                 ? '上下文已超过模型上限：请切换更大上下文的模型，或开启新会话'
                 : '上下文已超过发送上限，请先压缩上下文（/compact）或减少附件', true);
+            autoCompactOnGateBlocked();
             return false;
         }
         const session = currentSession();
@@ -11387,6 +11750,7 @@ function requestApproval(session, toolMessage, info) {
             else if (result.reason === 'sessions_pending') flash('正在读取会话，稍等一下再发送', true);
             else if (result.reason === 'load_failed') flash('会话正文读取失败，请检查 ai-sessions 目录', true);
             else if (result.reason === 'archived') flash('该会话已归档，请先在会话菜单中取消归档', true);
+            else if (result.reason === 'images_too_large') flash(result.message || '图片总量超过上限，请减少图片', true);
             else if (result.reason === 'no_backend') showNote('当前版本不支持 AI 对话（后端方法缺失）。', true);
             else if (result.reason === 'no_profile') {
                 renderMessages();
@@ -11397,6 +11761,8 @@ function requestApproval(session, toolMessage, info) {
                         '：请切换更大上下文的模型，或开启新会话'
                     : '上下文预计约 ' + result.tokens + ' tokens，超过发送上限（窗口 ' + result.windowSize +
                         ' 的 ' + Math.round(AI_CTX_SEND_BLOCK_RATIO * 100) + '%），请先 /compact 压缩上下文或减少附加内容', true);
+                // 权威预检拦下的也是「轮永远完不成」的场景，同样触发一次兜底压缩
+                autoCompactOnGateBlocked();
             } else if (result.reason === 'video_protocol') {
                 flash('当前模型或协议不支持视频输入：需 OpenAI 兼容协议且模型条目勾选了「视频输入」，请换模型或移除视频附件', true);
             } else if (result.reason === 'other_window' || result.reason === 'session_deleted' ||
@@ -11526,6 +11892,32 @@ function requestApproval(session, toolMessage, info) {
                 flash('插话后上下文将超过窗口 90%，已改回排队（本轮结束后发送）', true);
                 const rebuiltIndex = session.messages.indexOf(s.assistant);
                 apiMessages = buildApiMessages(session, rebuiltIndex >= 0 ? rebuiltIndex : null, s.systemPrompt);
+            }
+        }
+        // 应急收缩首次介入时落一条会话留痕：它只改「发出去的内容」、磁盘历史原样，
+        // 面板占用会突然掉一大截（如 85%→64%），不留痕用户无从知晓发生了什么。
+        // 触发/解除随估算在 90% 线两侧抖动，冷却由 shouldInsertShrinkNote 去重。
+        // 注记插在 assistant 占位之前（渲染上出现在本轮回复之前），且不进本轮请求
+        // （组装对 kind=slim-note 直接跳过）。
+        if (lastBuildShrinkPressure && session && !session._loadError) {
+            const now = Date.now();
+            if (shouldInsertShrinkNote(slimShrinkNoteAt.get(session) || 0, now, SHRINK_NOTE_COOLDOWN_MS)) {
+                slimShrinkNoteAt.set(session, now);
+                const noteMsg = {
+                    role: 'user',
+                    kind: 'slim-note',
+                    systemNote: true,
+                    content: '上下文应急瘦身已介入：本轮请求已把历史工具结果修剪/指针化（会话历史不受影响）',
+                    slimNote: {percent: lastBuildShrinkRatio, keptToolResults: SHRINK_KEEP_TOOL_RESULTS},
+                    ts: now,
+                    turnStartedAt: 0,
+                };
+                const insertAt = session.messages.indexOf(s.assistant);
+                if (insertAt >= 0) session.messages.splice(insertAt, 0, noteMsg);
+                else session.messages.push(noteMsg);
+                persistSessions();
+                queueLogSave(session);
+                if (isOpen() && currentSession() === session) renderMessages(true);
             }
         }
         try {
@@ -11777,6 +12169,45 @@ function requestApproval(session, toolMessage, info) {
         s.roundStartedAt = 0;
     }
 
+    // 使用统计的静默上报：流结束拿到 usage 时写一条事实（幂等键 = 会话 + 消息时间戳）。
+    // 后台兜底扫描会话 JSONL 会补上崩溃/旧版本漏掉的部分，两条路径不会重复计数。
+    function reportUsageFact(sessionId, assistant) {
+        if (!sessionId || !assistant || !assistant.usage) return;
+        const api = backend && backend.AIUsageStatsRecord;
+        if (typeof api !== 'function') return;
+        const usage = assistant.usage;
+        let payload = '';
+        try {
+            payload = JSON.stringify({
+                sessionId,
+                ts: Number(assistant.ts) || Date.now(),
+                model: assistant.model || '',
+                modelAccount: assistant.modelAccount || '',
+                turnMs: Number(assistant.turnMs) || 0,
+                modelMs: Number(assistant.modelMs) || 0,
+                ttftMs: Number(assistant.firstTokenMs) || 0,
+                statusCode: Number(assistant.statusCode) || 0,
+                usage: {
+                    promptTokens: Number(usage.promptTokens) || 0,
+                    completionTokens: Number(usage.completionTokens) || 0,
+                    totalTokens: Number(usage.totalTokens) || 0,
+                    cachedTokens: Number(usage.cachedTokens) || 0,
+                    cacheWriteTokens: Number(usage.cacheWriteTokens) || 0,
+                },
+            });
+        } catch (e) {
+            return;
+        }
+        try {
+            const result = api.call(backend, payload);
+            if (result && typeof result.then === 'function') {
+                result.then(() => {}).catch(() => {});
+            }
+        } catch (e) {
+            // 统计上报是尽力而为：失败不影响对话
+        }
+    }
+
     function finishStream(target) {
         // 只收尾指定的那条流：别的会话可能还在生成，不能碰它们的注册与 UI。
         const current = target || syncStreamView();
@@ -11802,6 +12233,7 @@ function requestApproval(session, toolMessage, info) {
             }
         }
         notifyTurnFinished(session, current.assistant, current.stopped);
+        reportUsageFact(current.sessionId, current.assistant);
         // 计划模式的最终计划不在这里落盘：未批准不落盘（对话区入口卡 + 虚拟只读预览），
         // 用户点「执行计划」时才写 <工作区>/.cadt/plan/plan-<会话id>.md（见 acceptPlan 包装）。
         // 轮已结束：steer 窗口关闭。停止 / 抢占 → 丢弃 pending steer（用户放弃当前任务）；
@@ -11830,7 +12262,7 @@ function requestApproval(session, toolMessage, info) {
             current.leaseHeld = false;
             releaseTurnLease(current.sessionId);
         }
-        if (config.activeSessionId === current.sessionId) syncSessionWatch(current.sessionId);
+        if (activeSessionId() === current.sessionId) syncSessionWatch(current.sessionId);
         if (session && wasViewed && isOpen()) {
             // 正在看的这一轮结束了才重建消息区；后台会话只更新列表与未读标记。
             renderMessages(true);
@@ -11852,11 +12284,20 @@ function requestApproval(session, toolMessage, info) {
         // 否则按忙排队。放在消息队列冲刷之后，保证「用户排队消息优先于后台通知」。
         if (session) flushAgentNotices(session.id);
         // 一轮结束后检查上下文预算：超阈值则自动压缩（不打断生成，此处已无 stream）。
-        if (session && !current.stopped && current.assistant.status === 'done') {
-            autoCompactCount.delete(session.id);
-            overflowRecoveryCount.delete(session.id);
+        // **error 收尾同样要检查**：一轮把上下文堆过阈值后报错收场（限流 / 超窗措辞没命中
+        // 恢复分支），而发送门禁已经拦住新轮——轮末检查若只在 done 时跑，这个会话就永久
+        // 卡死（实测：47 轮的会话停在 94%，最后一轮恰好 error 越阈）。maybeAutoCompact
+        // 内部有阈值判断，估算没过线时本来就是空操作，error 时多调一次没有副作用。
+        // overflowRecovered 的错误已走「强制压缩 + 重发」分支，这里跳过避免双重压缩。
+        if (session && !current.stopped && (current.assistant.status === 'done' || current.assistant.status === 'error')) {
+            if (current.assistant.status === 'done') {
+                autoCompactCount.delete(session.id);
+                overflowRecoveryCount.delete(session.id);
+            }
             setTimeout(() => {
-                if (!anyStreaming() && !oneShot && !currentQueueItems().length) maybeAutoCompact(session);
+                if (!anyStreaming() && !oneShot && !compactStarting && !currentQueueItems().length) {
+                    maybeAutoCompact(session);
+                }
             }, 0);
         }
     }
@@ -11911,11 +12352,10 @@ function requestApproval(session, toolMessage, info) {
         };
         startToolHeartbeat();
         const allowedTools = new Set((s.tools || toolsForScope(s.scope, s.plan, sessionById(s.sessionId))).map((tool) => tool.name));
-        for (const call of calls) {
-            if (streams.get(s.sessionId) !== s || s.stopped) {
-                saveToolTiming();
-                return;
-            }
+        // 单个调用的完整执行（建 tool 消息 → 跑工具 → 落盘 → 留痕 → 刷新卡片）。
+        // 并发的只是「跑工具」这段等待；消息 push 在第一个 await 之前发生，所以
+        // 无论并发与否，messages 顺序都等于模型的调用顺序。
+        const runToolCall = async (call) => {
             const toolMessage = {
                 role: 'tool',
                 toolCallId: call.id,
@@ -11936,7 +12376,7 @@ function requestApproval(session, toolMessage, info) {
                 logActivity('ai.tool', call.name + ' ' + toolArgsSummary(call.arguments), {status: 'error', ms: 0, error: invalidArgs.slice(0, 120)});
                 persistSessions();
                 refreshToolWrap(session, toolMessage);
-                continue;
+                return;
             }
             const toolExecStart = Date.now();
             let result = null;
@@ -11998,6 +12438,39 @@ function requestApproval(session, toolMessage, info) {
             });
             persistSessions();
             refreshToolWrap(session, toolMessage);
+        };
+        // 执行批次：相邻的只读调用并发跑，其余串行。
+        // 并发资格除了工具名，还要看路径——工作区外的读会弹审批卡，两张卡同时弹会互相
+        // 挡住，所以只有「参数能解析且路径在工作区内」的调用才进并发组（判定失败按串行）。
+        const parallelEligible = (call) => {
+            if (!isParallelToolCall(call.name)) return false;
+            try {
+                const args = call.arguments ? JSON.parse(call.arguments) : {};
+                const target = String(args.path || '');
+                if (!target) return false;
+                aiResolveScopePath(target, session);
+                return true;
+            } catch (e) {
+                return false;
+            }
+        };
+        for (const group of groupToolCalls(calls, parallelEligible)) {
+            if (streams.get(s.sessionId) !== s || s.stopped) {
+                saveToolTiming();
+                return;
+            }
+            if (group.length === 1) {
+                await runToolCall(group[0]);
+                continue;
+            }
+            // allSettled 语义：一个调用的收尾代码抛异常（DOM / 会话被改写）不该把同批
+            // 其他调用的结果一起丢掉，更不该让整轮对话静默停摆。
+            await Promise.all(group.map((call) =>
+                runToolCall(call).catch((e) => {
+                    try {
+                        notify('工具执行收尾异常：' + String((e && e.message) || e), true);
+                    } catch (e2) {}
+                })));
         }
         if (streams.get(s.sessionId) !== s || s.stopped) {
             saveToolTiming();
@@ -12498,8 +12971,14 @@ function requestApproval(session, toolMessage, info) {
                     current.renderTimer = 0;
                 }
                 commitRoundTiming(current);
+                current.assistant.statusCode = Number(payload.statusCode) || 0;
                 if (payload.thinkingSignature) current.assistant.thinkingSignature = payload.thinkingSignature;
-                if (payload.usage) current.assistant.usage = payload.usage;
+                if (payload.usage) {
+                    current.assistant.usage = payload.usage;
+                    // 工具轮会直接 return（不经过 finishStream），每轮都要上报；
+                    // 幂等键是 sessionId+消息 ts，finishStream 再报一次也只是 upsert
+                    reportUsageFact(current.sessionId, current.assistant);
+                }
                 if (payload.finishReason === 'stopped') {
                     current.assistant.status = 'stopped';
                     finishStream(current);
@@ -12523,7 +13002,13 @@ function requestApproval(session, toolMessage, info) {
                     const idx = session ? session.messages.indexOf(current.assistant) : -1;
                     const wrap = idx >= 0 && onScreen ? el.messages.querySelector('.ai-msg.assistant[data-ai-idx="' + idx + '"]') : null;
                     if (wrap) updateAssistantElement(wrap, current.assistant, false, {session});
-                    handleToolRound(current, calls, argErrors);
+                    handleToolRound(current, calls, argErrors)
+                        .catch((e) => {
+                            // 批次外的意外（组装/收尾阶段抛错）：至少让用户知道对话停在哪
+                            try {
+                                notify('工具批次执行异常：' + String((e && e.message) || e), true);
+                            } catch (e2) {}
+                        });
                     return;
                 }
                 // 空回复兜底：模型偶发返回 finishReason=stop 且无任何内容（ask_user 回答后
@@ -12534,6 +13019,8 @@ function requestApproval(session, toolMessage, info) {
                     !current.emptyRetried) {
                     const session = sessionById(current.sessionId);
                     if (session) {
+                        // 这条 assistant 马上被替换掉，先把它这一轮的 usage 记下来
+                        reportUsageFact(current.sessionId, current.assistant);
                         const idx = session.messages.indexOf(current.assistant);
                         if (idx >= 0) session.messages.splice(idx, 1);
                         const profile = profileOf(session);
@@ -12634,7 +13121,7 @@ function requestApproval(session, toolMessage, info) {
         persistSessions();
     }
 
-    function stopGeneration(target) {
+    function stopGeneration(target, byUser) {
         const current = target || syncStreamView();
         if (!current) {
             const viewing = currentSession();
@@ -12643,6 +13130,8 @@ function requestApproval(session, toolMessage, info) {
         }
         const sessionId = current.sessionId;
         current.stopped = true;
+        // Stop：仅 byUser=true（用户主动点停止）才触发；内部守卫/计划/后台停止不算
+        if (byUser === true) runLifecycle('stop', {session: sessionById(sessionId)});
         // 放行这个会话上挂着的 wait_agent：停止必须立刻生效，不能等 250ms 心跳兜底。
         if (inboxWaiters && typeof inboxWaiters.cancel === 'function') inboxWaiters.cancel(sessionId);
         // 抢占 = 放弃当前任务：挂着的 pending steer 一并作废（排队消息照旧保留）。
@@ -13105,8 +13594,15 @@ function requestApproval(session, toolMessage, info) {
     let modelListPickerDismiss = null;
     let usagePopoverEl = null;
     let usagePopoverDismiss = null;
+    // 页面级浮层的弹层栈条目（body 浮层，popover 档）：Esc 由栈按层序退
+    let modelListStackHandle = null;
+    let usagePopStackHandle = null;
 
     function closeModelListPicker() {
+        if (modelListStackHandle) {
+            modelListStackHandle.dispose();
+            modelListStackHandle = null;
+        }
         if (modelListPickerDismiss) {
             const dispose = modelListPickerDismiss;
             modelListPickerDismiss = null;
@@ -13216,15 +13712,16 @@ function requestApproval(session, toolMessage, info) {
             if (modelListPickerEl && pop.contains(e.target)) return;
             closeModelListPicker();
         };
-        const onKey = (e) => {
-            if (e.key === 'Escape') closeModelListPicker();
-        };
         modelListPickerDismiss = () => {
             document.removeEventListener('mousedown', onDocMouseDown, true);
-            document.removeEventListener('keydown', onKey, true);
         };
         document.addEventListener('mousedown', onDocMouseDown, true);
-        document.addEventListener('keydown', onKey, true);
+        // Esc 归全局弹层栈（body 浮层，popover 档）
+        if (modelListStackHandle) modelListStackHandle.dispose();
+        modelListStackHandle = overlayStack.open({
+            id: 'ai-model-list-pop', kind: 'popover', el: pop,
+            onClose: () => { closeModelListPicker(); return true; },
+        });
         syncCount();
     }
 
@@ -13241,6 +13738,15 @@ function requestApproval(session, toolMessage, info) {
         return snapshot;
     }
 
+    // 剩余额度紧凑显示：token 数按 K/M 缩写（弹层第二行里用）
+    function formatCountCompact(value) {
+        const n = Number(value);
+        if (!Number.isFinite(n)) return '—';
+        if (n >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, '') + 'M';
+        if (n >= 1e3) return (n / 1e3).toFixed(1).replace(/\.0$/, '') + 'K';
+        return n % 1 === 0 ? String(n) : n.toFixed(2);
+    }
+
     // 明细弹层：入参是 ai-usage-quota 的 snapshot {state, items, error, at}
     //（官方引擎条目 label/value 已在 officialSnapshotFromResult 折成同形状）。
     function showUsagePopover(profile, snapshot, anchor) {
@@ -13252,15 +13758,12 @@ function requestApproval(session, toolMessage, info) {
         head.className = 'ai-usage-pop-head';
         const title = document.createElement('span');
         title.textContent = '用量 · ' + (profile.name || '未命名账号');
-        const provider = document.createElement('span');
-        provider.className = 'ai-usage-pop-provider';
-        provider.textContent = providerLabelFor(profile);
         const closeBtn = document.createElement('button');
         closeBtn.type = 'button';
         closeBtn.className = 'ai-usage-pop-close';
         closeBtn.textContent = '×';
         closeBtn.addEventListener('click', closeUsagePopover);
-        head.append(title, provider, closeBtn);
+        head.append(title, closeBtn);
         const body = document.createElement('div');
         body.className = 'ai-usage-pop-body';
         if (snapshot && snapshot.state === 'error') {
@@ -13277,23 +13780,45 @@ function requestApproval(session, toolMessage, info) {
                 body.appendChild(note);
             }
             for (const item of items) {
+                const itemBox = document.createElement('div');
+                itemBox.className = 'ai-usage-pop-item';
                 const row = document.createElement('div');
                 row.className = 'ai-usage-pop-row';
                 const label = document.createElement('span');
-                label.textContent = [
-                    item.planName || item.label || '',
-                    item.isValid === false ? (item.invalidMessage || '已失效') : '',
-                    item.extra || '',
-                ].filter(Boolean).join(' · ') || '—';
+                label.className = 'ai-usage-pop-label';
+                label.textContent = item.planName || item.label || '—';
                 const value = document.createElement('b');
-                value.textContent = usageItemText(item);
+                const tone = usageTone(item);
+                value.className = 'ai-usage-pop-value ai-usage-value' + (tone === 'normal' ? '' : ' tone-' + tone);
+                // 左侧已显示档名/label：值只取值本身（官方条目取 value，脚本条目去掉档名前缀）
+                let text = (item.label && item.value) ? item.value : usageItemText(item);
+                if (item.planName && text.indexOf(item.planName + ' ') === 0) {
+                    text = text.slice(item.planName.length + 1);
+                }
+                value.textContent = text;
                 row.append(label, value);
-                body.appendChild(row);
+                itemBox.appendChild(row);
+                // 第二行：重置倒计时 / 剩余额度 / 附加说明（extractor 的 extra）
+                const meta = [];
+                const countdown = formatUsageCountdown(item.resetAt);
+                if (countdown) meta.push('重置 ' + countdown);
+                if (item.unit === '%' && Number.isFinite(item.remaining)) {
+                    meta.push('剩余 ' + formatCountCompact(item.remaining));
+                }
+                if (item.extra) meta.push(item.extra);
+                if (item.isValid === false) meta.unshift(item.invalidMessage || '已失效');
+                if (meta.length) {
+                    const note = document.createElement('div');
+                    note.className = 'ai-usage-pop-note';
+                    note.textContent = meta.join(' · ');
+                    itemBox.appendChild(note);
+                }
+                body.appendChild(itemBox);
             }
         }
         pop.append(head, body);
         document.body.appendChild(pop);
-        const width = Math.min(340, window.innerWidth - 16);
+        const width = Math.min(380, window.innerWidth - 16);
         let left = window.innerWidth / 2 - width / 2;
         let top = window.innerHeight / 2 - pop.offsetHeight / 2;
         if (anchor && anchor.getBoundingClientRect) {
@@ -13709,7 +14234,7 @@ function requestApproval(session, toolMessage, info) {
         saveComposerDraft(currentSession() && currentSession().id);
         pendingEdit = null;
         sessions.push(branch);
-        config.activeSessionId = branch.id;
+        setActiveSessionId(branch.id);
         persistSessions();
         logActivity('ai.session', branch.id, {op: 'branch', title: branch.title, from: source.id}, {actor: 'user', source: 'user'});
         renderSessionList();
@@ -13749,6 +14274,287 @@ function requestApproval(session, toolMessage, info) {
         el.input.focus();
         const end = el.input.value.length;
         el.input.setSelectionRange(end, end);
+    }
+
+    // ---------- 用户消息原地编辑（正文 + 图片/视频/文件/引用附件就地增删） ----------
+    // 保存语义与 editLast 完全一致：截断这条及其之后、以新内容重新起轮；差别只在编辑发生在
+    // 气泡里，不碰底部输入区。纯数据层在 ai-inline-edit.js。
+    let inlineEdit = null; // {sessionId, index, wrap, items, text, attachEl, noteEl, saveBtn, busy, legacyPacked}
+
+    // 可编辑：用户亲手键入的一轮。注入类消息（系统注记 / 信箱通知 / 插话 / 应用消息 / 静默块）
+    // 截断重发会把它们承载的语义一起砍掉，按黑名单排除。
+    function canInlineEdit(message) {
+        if (!message || message.role !== 'user') return false;
+        if (message.systemNote || message.notice || message.steer || message.silent) return false;
+        return !message.app;
+    }
+
+    // 消息 → 编辑区附件数组：媒体来自 images / videos，引用来自 content 前缀（旧消息也认），
+    // 其余文本类附件来自本次改动之后落盘的 attachments 快照。
+    function inlineAttachmentsOf(message) {
+        const items = attachmentsFromImages(message.images).concat(attachmentsFromVideos(message.videos));
+        const parsedReminder = splitTurnReminderPrefix(message.content || '');
+        const parsedQuote = splitQuotePrefix(parsedReminder.body);
+        for (const quote of parsedQuote.quotes) {
+            items.push({
+                kind: AI_QUOTE_KIND,
+                label: quoteChipLabel(quote),
+                source: quote.source,
+                index: quote.index,
+                scope: quote.scope,
+                content: quote.text,
+            });
+        }
+        for (const item of normalizeMessageAttachments(message.attachments)) items.push({...item});
+        return {
+            items,
+            body: parsedQuote.quotes.length ? parsedQuote.body : parsedReminder.body,
+            // 旧消息的文本类附件已固化成 <attachments> 环境块：结构上无法还原成 chip
+            legacyPacked: /<attachments>[\s\S]*?<\/attachments>/.test(message.content || ''),
+        };
+    }
+
+    // 编辑区高度自适应：跟着内容长，上限 520px（与 CSS max-height 同口径，到顶后内部滚动）。
+    function autoGrowInline(input) {
+        if (!input) return;
+        input.style.height = 'auto';
+        input.style.height = Math.min(520, Math.max(88, input.scrollHeight || 88)) + 'px';
+    }
+
+    // 退出编辑态并整面重画（编辑是低频操作，keepScroll 让滚动位置不跳）。
+    function endInlineEdit() {
+        if (!inlineEdit) return;
+        const state = inlineEdit;
+        inlineEdit = null;
+        state.wrap.classList.remove('editing');
+        renderMessages(true);
+    }
+
+    function renderInlineAttachments(state) {
+        if (!state || !state.attachEl) return;
+        const editable = state.items;
+        renderAttachmentChips(state.attachEl, editable, {
+            onRemove: (item) => {
+                state.items = state.items.filter((current) => current !== item);
+                renderInlineAttachments(state);
+            },
+            onImageClick: (item) => showImagePreview(item),
+        });
+        // 旧消息的文本类附件已固化进环境块：给出说明，避免用户以为「我的文件没了」
+        if (state.noteEl) {
+            const hasTextChip = (state.items || []).some((item) =>
+                item.kind !== 'image' && item.kind !== 'video' && item.kind !== AI_QUOTE_KIND);
+            const show = !!state.legacyPacked && !hasTextChip;
+            state.noteEl.classList.toggle('hidden', !show);
+            if (show) state.noteEl.textContent = '这条消息的文件附件已固化进上下文，无法单独编辑（可继续添加新附件）';
+        }
+    }
+
+    function renderInlineEditor(state) {
+        const wrap = state.wrap;
+        wrap.innerHTML = '';
+        const box = document.createElement('div');
+        box.className = 'ai-edit';
+
+        const input = document.createElement('textarea');
+        input.className = 'ai-edit-input';
+        input.value = state.text || '';
+        input.rows = 2;
+        input.setAttribute('aria-label', '编辑消息');
+        input.addEventListener('input', () => {
+            state.text = input.value;
+            autoGrowInline(input);
+        });
+        input.addEventListener('keydown', (e) => {
+            // 输入法组词中的回车是「确认候选词」，不是发送（与输入区 handleComposerKey 同一判定）
+            if (e.isComposing || e.keyCode === 229) return;
+            if (e.key === 'Escape') {
+                e.preventDefault();
+                e.stopPropagation();
+                endInlineEdit();
+                return;
+            }
+            if (e.key !== 'Enter') return;
+            // Shift / Alt + Enter 换行（走 textarea 默认行为）；Enter 直接发送，与输入框一致
+            if (e.shiftKey || e.altKey) return;
+            e.preventDefault();
+            e.stopPropagation();
+            saveInlineEdit();
+        });
+        input.addEventListener('paste', (e) => {
+            const data = e.clipboardData;
+            if (!data || !data.items) return;
+            const hasFile = Array.from(data.items).some((item) => item && item.kind === 'file');
+            if (!hasFile) return; // 纯文本粘贴走默认行为
+            e.preventDefault();
+            const currentImages = state.items.filter((item) => item.kind === 'image');
+            void (async () => {
+                const added = await attachmentsFromDataTransfer(data, {currentImages});
+                if (inlineEdit !== state) return;
+                if (!added.length) return;
+                for (const item of added) state.items.push(item);
+                renderInlineAttachments(state);
+            })();
+        });
+        box.appendChild(input);
+
+        const attach = document.createElement('div');
+        attach.className = 'ai-edit-attach ai-attach hidden';
+        box.appendChild(attach);
+        state.attachEl = attach;
+
+        const note = document.createElement('div');
+        note.className = 'ai-edit-note hidden';
+        box.appendChild(note);
+        state.noteEl = note;
+
+        const toolbar = document.createElement('div');
+        toolbar.className = 'ai-edit-toolbar';
+        const addBtn = document.createElement('button');
+        addBtn.type = 'button';
+        addBtn.className = 'ai-edit-btn';
+        addBtn.textContent = '＋ 添加';
+        addBtn.dataset.tip = '添加图片 / 视频 / 文件';
+        addBtn.addEventListener('click', () => { void addInlineAttachments(state); });
+        const spacer = document.createElement('span');
+        spacer.className = 'ai-edit-spacer';
+        const cancelBtn = document.createElement('button');
+        cancelBtn.type = 'button';
+        cancelBtn.className = 'ai-edit-btn';
+        cancelBtn.textContent = '取消';
+        cancelBtn.dataset.tip = 'Esc';
+        cancelBtn.addEventListener('click', () => endInlineEdit());
+        const saveBtn = document.createElement('button');
+        saveBtn.type = 'button';
+        saveBtn.className = 'ai-edit-btn primary';
+        saveBtn.textContent = '保存并重新发送';
+        saveBtn.dataset.tip = 'Enter（Shift+Enter 换行）';
+        saveBtn.addEventListener('click', () => saveInlineEdit());
+        state.saveBtn = saveBtn;
+        toolbar.append(addBtn, spacer, cancelBtn, saveBtn);
+        box.appendChild(toolbar);
+
+        wrap.appendChild(box);
+        renderInlineAttachments(state);
+        autoGrowInline(input);
+        // 首帧再量一次：节点刚挂上时 scrollHeight 可能还是 0（宽度未定就换不了行）
+        if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => autoGrowInline(input));
+        input.focus();
+        const end = input.value.length;
+        input.setSelectionRange(end, end);
+    }
+
+    function beginInlineEdit(wrap, session, index) {
+        if (!wrap || !session) return;
+        const message = session.messages[index];
+        if (!canInlineEdit(message)) return;
+        if (streamOf(session.id) || compactOf(session.id)) {
+            flash('该会话正在生成，结束后再编辑', true);
+            return;
+        }
+        // 同一时间只允许一条消息处于编辑态：先静默收掉旧的
+        if (inlineEdit && (inlineEdit.sessionId !== session.id || inlineEdit.index !== index)) {
+            inlineEdit.wrap.classList.remove('editing');
+            inlineEdit = null;
+        }
+        const loaded = inlineAttachmentsOf(message);
+        const state = {
+            sessionId: session.id,
+            index,
+            wrap,
+            items: loaded.items,
+            text: loaded.body,
+            legacyPacked: loaded.legacyPacked,
+            attachEl: null,
+            noteEl: null,
+            saveBtn: null,
+            busy: false,
+        };
+        inlineEdit = state;
+        wrap.classList.add('editing');
+        renderInlineEditor(state);
+    }
+
+    // 「＋ 添加」：走 composer 的同一条附件链（图片降采样 / 视频校验 / 文本读取降级），
+    // 只是结果进编辑区而不是输入区。
+    async function addInlineAttachments(state) {
+        if (!state || state.busy) return;
+        const currentImages = state.items.filter((item) => item.kind === 'image');
+        const added = await pickAttachmentFiles({currentImages});
+        if (!added.length) return;
+        if (inlineEdit !== state) return; // 期间已退出编辑态
+        for (const item of added) state.items.push(item);
+        renderInlineAttachments(state);
+    }
+
+    function saveInlineEdit() {
+        const state = inlineEdit;
+        if (!state || state.busy) return;
+        const session = sessionById(state.sessionId);
+        if (!session) {
+            endInlineEdit();
+            return;
+        }
+        if (streamOf(session.id) || compactOf(session.id)) {
+            flash('该会话正在生成，结束后再保存', true);
+            return;
+        }
+        const payload = inlineEditPayload(state.items, state.text);
+        if (!payload.value && !payload.images.length && !payload.videos.length && !payload.texts.length) {
+            flash('消息不能为空', true);
+            return;
+        }
+        // 非末条：之后的对话会被丢弃，先确认（取消则编辑态原样保留）
+        const tail = Math.max(0, session.messages.length - state.index - 1);
+        if (tail > 0) {
+            askConfirm('重新发送这条消息？将丢弃它之后的 ' + tail + ' 条对话。', () => {
+                void doSaveInlineEdit(state, session, payload);
+            }, '重新发送');
+            return;
+        }
+        void doSaveInlineEdit(state, session, payload);
+    }
+
+    async function doSaveInlineEdit(state, session, payload) {
+        if (inlineEdit !== state) return;
+        state.busy = true;
+        if (state.saveBtn) {
+            state.saveBtn.disabled = true;
+            state.saveBtn.textContent = '发送中…';
+        }
+        const result = await startSessionTurn(session, payload.value, {
+            truncateAt: state.index,
+            allowPendingEdit: false,
+            preserveScroll: true,
+            attachments: {images: payload.images, videos: payload.videos, texts: payload.texts},
+        });
+        if (result && result.ok) {
+            // 起轮成功：编辑态作废（startSessionTurn 已在当前会话重画消息区）
+            if (inlineEdit === state) inlineEdit = null;
+            return;
+        }
+        // 失败：编辑态与内容原样保留，改完还能再试
+        state.busy = false;
+        if (state.saveBtn) {
+            state.saveBtn.disabled = false;
+            state.saveBtn.textContent = '保存并重新发送';
+        }
+        const reason = result && result.reason;
+        if (reason === 'over_budget') {
+            flash('上下文预计超过发送上限，请先 /compact 压缩上下文或减少附件', true);
+        } else if (reason === 'busy') {
+            flash('该会话刚开始新一轮，稍后再保存', true);
+        } else if (reason === 'too_long') {
+            flash('消息过长（上限 ' + AI_CHAT_INPUT_LIMIT + ' 字符）', true);
+        } else if (reason === 'images_too_large') {
+            flash((result && result.message) || '图片总量超过上限，请减少图片', true);
+        } else if (reason === 'video_protocol') {
+            flash('当前模型或协议不支持视频输入：请换模型或移除视频附件', true);
+        } else if (reason === 'empty') {
+            flash('消息不能为空', true);
+        } else {
+            flashTurnStartFailure(result);
+        }
     }
 
     // sessionOverride：内容区支线对话标签页里的点击（宿主不是面板，不能用「当前会话」反查）。
@@ -13811,9 +14617,9 @@ function requestApproval(session, toolMessage, info) {
         if (!message) return;
         const action = button.dataset.aiAct;
         if (action === 'copy') copyMessage(message);
-        // 编辑：面板路径填面板输入框；标签页路径由 sideChatClick 返回预填文本，这里跳过
+        // 编辑：面板里就地编辑这条消息；标签页路径由 sideChatClick 返回预填文本，这里跳过
         else if (action === 'edit') {
-            if (!sessionOverride) editLast();
+            if (!sessionOverride) beginInlineEdit(wrap, session, index);
         } else if (action === 'regenerate') regenerateLast(sessionOverride);
         else if (action === 'retry') retryLast(sessionOverride);
         else if (action === 'rewind') rewindToMessage(session, index);
@@ -13977,6 +14783,11 @@ function requestApproval(session, toolMessage, info) {
     function switchSession(id) {
         const target = sessions.find((s) => s.id === id);
         if (!target) return;
+        // 切会话即退出原地编辑（编辑区 DOM 属于旧会话的消息气泡）；内容不丢，重画即可
+        if (inlineEdit && inlineEdit.sessionId !== id) {
+            inlineEdit = null;
+            flash('已退出消息编辑（会话已切换）');
+        }
         // 点会话即退出群聊视图（G6 面板化）：群讨论继续在 runtime 里跑，只是不显示
         if (panelView !== 'session') setPanelView('session');
         // 懒加载会话：正文还没读上来（启动只补了当前会话 + 最近若干条）。先补正文再走切换流程，
@@ -14026,7 +14837,7 @@ function requestApproval(session, toolMessage, info) {
             // 没发过消息的空会话：切走就删（草稿已转存到工作区槽），列表里不留占位
             discardVirginOnLeave(previous);
         }
-        config.activeSessionId = id;
+        setActiveSessionId(id);
         syncSessionWatch(id);
         // 切会话即「我改用这个模型了」：窗口默认同步成该会话的账号+条目，新会话才继承得对
         syncActiveFromSession(target);
@@ -14107,7 +14918,10 @@ function requestApproval(session, toolMessage, info) {
         const session = createSessionData();
         pendingEdit = null;
         sessions.push(session);
-        config.activeSessionId = session.id;
+        setActiveSessionId(session.id);
+        // 立刻落盘：不写的话磁盘上的 activeSessionId 还是别的工作区那条老会话，
+        // 下一次配置重读（打开面板 / 窗口聚焦 / 2s 节流）就会把面板带回去。
+        saveAIConfig();
         loadComposerDraft(session.id, session);
         persistSessions();
         logActivity('ai.session', session.id, {op: 'create', title: session.title || ''}, {actor: 'user', source: 'user'});
@@ -14247,10 +15061,10 @@ function requestApproval(session, toolMessage, info) {
             // 删除的是当前会话：跳到**新建的空白会话**——此前 fallback 到 sessions[0]
             // （数组头 = 最旧的会话，列表里看着像「跳到了最后一个对话」）；删对话的意图
             // 通常是「从这里开新的」。删别的会话时当前选中不变。
-            if (!sessions.some((s) => s.id === config.activeSessionId)) {
+            if (!sessions.some((s) => s.id === activeSessionId())) {
                 const fresh = createSessionData();
                 sessions.push(fresh);
-                config.activeSessionId = fresh.id;
+                setActiveSessionId(fresh.id);
             }
             if (sessionUseDisk()) {
                 sessionStore.removeSession(session.id).catch(notifySessionStoreError);
@@ -14371,6 +15185,7 @@ function requestApproval(session, toolMessage, info) {
         ensureLogDir: () => ensureAILogDir(),
         persistSessions,
         flash,
+        notifyFailure,
         // 惰性转发：ask 文案别名随工具卡模块构造（面板末尾）
         askStateLabel: (...args) => askStateLabel(...args),
         askResultText: (...args) => askResultText(...args),
@@ -14400,6 +15215,28 @@ function requestApproval(session, toolMessage, info) {
             showNote('当前版本不支持会话诊断。', true);
             return;
         }
+        // 长会话的读取 / 重放 / 逐行解析可能要几秒，先弹对话框给出「分析中」反馈，
+        // 否则点击后界面毫无变化，用户会以为没点上。模式同 showPromptDialog：先开后填。
+        const pre = dialogNode('pre', 'ai-diagnostic-pre', '正在分析会话数据…');
+        let text = '';
+        const copyBtn = dialogButton('复制诊断信息', 'dlg-btn', () => {
+            if (!text) { flash('诊断信息还在生成中…'); return; }
+            Promise.resolve(copyText(text)).then(() => flash('诊断信息已复制')).catch(() => flash('复制失败', true));
+        });
+        copyBtn.disabled = true;
+        openAIDialog('会话数据诊断', [pre], [
+            dialogButton('重建搜索索引', 'dlg-btn', async () => {
+                if (!backend.AISessionReindex) return;
+                try {
+                    const count = await backend.AISessionReindex();
+                    flash('搜索索引已重建：' + count + ' 个会话');
+                } catch (e) {
+                    flash('重建索引失败：' + ((e && e.message) || e), true);
+                }
+            }),
+            copyBtn,
+            dialogButton('关闭', 'dlg-btn primary', closeAIDialog),
+        ]);
         let raw = '';
         let readError = '';
         try {
@@ -14435,7 +15272,7 @@ function requestApproval(session, toolMessage, info) {
                 indexLine = '搜索索引：不可用（' + ((e && e.message) || e) + '）';
             }
         }
-        const text = [
+        text = [
             '会话：' + (target.title || '新会话'),
             'ID：' + target.id,
             '工作区：' + (target.workspace || '（未绑定）'),
@@ -14451,22 +15288,9 @@ function requestApproval(session, toolMessage, info) {
             '加载错误：' + (readError || target._loadError || '无'),
             indexLine,
         ].join('\n');
-        const pre = dialogNode('pre', 'ai-diagnostic-pre', text);
-        openAIDialog('会话数据诊断', [pre], [
-            dialogButton('重建搜索索引', 'dlg-btn', async () => {
-                if (!backend.AISessionReindex) return;
-                try {
-                    const count = await backend.AISessionReindex();
-                    flash('搜索索引已重建：' + count + ' 个会话');
-                } catch (e) {
-                    flash('重建索引失败：' + ((e && e.message) || e), true);
-                }
-            }),
-            dialogButton('复制诊断信息', 'dlg-btn', () => {
-                Promise.resolve(copyText(text)).then(() => flash('诊断信息已复制')).catch(() => flash('复制失败', true));
-            }),
-            dialogButton('关闭', 'dlg-btn primary', closeAIDialog),
-        ]);
+        // 只更新自己持有的节点：若用户中途关掉对话框或连点两次，更新已脱离 DOM 的节点无害，也不会覆盖别的对话框
+        pre.textContent = text;
+        copyBtn.disabled = false;
     }
 
     // ---------- 管理对话框 / 提示词 / 记忆 / 技能 ----------
@@ -14605,10 +15429,13 @@ function requestApproval(session, toolMessage, info) {
         // 截断只影响「摘要能看到多少」，归档原文与保留下来的消息都不动，用户可在归档里翻全文。
         let transcriptCap = 0; // 0 = 用模块默认上限（120 K 字符）
         if (triggerWindow > 0 && triggerEstimate >= triggerWindow) {
-            // 1 token ≈ 3.2 字符，取窗口的 40% 作为转录预算（余量留给摘要输出与系统提示）
+            // 1 token ≈ 3.2 字符，取窗口的 40% 作为转录预算（余量留给摘要输出与系统提示）。
+            // 只有真的会截断（预算低于默认上限）才提示；auto 压缩不是错误，用普通提示级。
             transcriptCap = Math.max(8000, Math.floor(triggerWindow * 0.4 * 3.2));
-            if (!(options && options.force)) {
-                notify('上下文已超过模型上限：本次压缩只喂入最近的部分转录，摘要会略粗。', true);
+            if (transcriptCap < 120000 && !(options && options.force)) {
+                notify(auto
+                    ? '上下文已超过模型上限：本次自动压缩只喂入最近的部分转录，摘要会略粗。'
+                    : '上下文已超过模型上限：本次压缩只喂入最近的部分转录，摘要会略粗。');
             }
         }
         if (compactStarting) {
@@ -14635,7 +15462,7 @@ function requestApproval(session, toolMessage, info) {
                 },
             };
             try {
-            notify(auto ? '上下文接近上限，正在自动压缩…' : '正在压缩上下文…（可点停止取消）');
+            notify(auto ? '上下文接近上限，正在自动压缩…' : '正在压缩上下文…');
             setStreamingUI(true);
             updateSendState();
             const messages = buildCompactMessages(session, AI_COMPACT_SYSTEM_PROMPT, instruction, transcriptCap);
@@ -14745,6 +15572,17 @@ function requestApproval(session, toolMessage, info) {
             notify('压缩未开始：等待会话写盘失败', true);
         });
         return true;
+    }
+
+    // 发送门禁拦下时的兜底：被拦的轮永远完不成，轮末检查从此不会再跑——不在这里
+    // 补一脚，会话就卡死在红条上（实测路径：最后一轮 error 收尾越过阈值）。输入框里的
+    // 文字不会被清（onStarted 才清），压缩完成后用户直接再点发送即可。
+    // maybeAutoCompact 内部有开关与阈值判断：自动压缩关着 / 没到阈值都是空操作，
+    // 所以这里可以无条件调用，不必重复判定。
+    function autoCompactOnGateBlocked() {
+        const session = currentSession();
+        if (!session || !config.autoCompact) return;
+        maybeAutoCompact(session);
     }
 
     // 自动压缩：上下文占用达到 autoCompactThreshold 时触发一次 /compact。
@@ -15022,6 +15860,8 @@ function requestApproval(session, toolMessage, info) {
     const updateSlash = () => slashMod.updateSlash();
     const runSlashCommand = (command) => slashMod.runSlashCommand(command);
     const handleSlashText = (text) => slashMod.handleSlashText(text);
+    // 技能缓存失效的斜杠侧出口（上方 invalidateSkillsCache 经它同步清空补全缓存）
+    slashSkillsInvalidate = () => slashMod.invalidateSkills();
 
     // sessionOverride：支线标签页的 /clear 清的是标签页里的会话（面板没显示它）。
     // 无参调用 = 面板当前会话，行为不变。
@@ -15340,13 +16180,13 @@ function requestApproval(session, toolMessage, info) {
             diskActive._needsRewrite = true;
         }
         sessions = next;
-        if (!sessions.some((session) => session.id === config.activeSessionId)) {
-            config.activeSessionId = sessions[0] ? sessions[0].id : '';
+        if (!sessions.some((session) => session.id === activeSessionId())) {
+            setActiveSessionId(sessions[0] ? sessions[0].id : '');
         }
         // 磁盘重读会把别处写下的「已完成未查看」带回来，而用户此刻正看着这个会话：
         // 不清掉就会出现「明明在看却一直挂绿点，点一下才恢复」的现象。
         if (isOpen()) {
-            const viewing = sessions.find((session) => session.id === config.activeSessionId);
+            const viewing = sessions.find((session) => session.id === activeSessionId());
             if (viewing && viewing.unread) viewing.unread = '';
         }
         renderSessionList();
@@ -15691,10 +16531,13 @@ function requestApproval(session, toolMessage, info) {
             hideChangesPopover();
         });
         document.addEventListener('keydown', (e) => {
+            // AI 弹窗本体已进全局弹层栈（core/overlay-stack.js），Esc 由栈按层序退——
+            // 栈消费时会 stopImmediatePropagation，这里的监听只在栈空/让路时到达，
+            // 因此只负责收面板内自管的小浮层（ctx/changes pop 不进栈：它们活在面板
+            // 层叠上下文里，走全局档位反而会盖过面板内的对话框）。
             if (e.key === 'Escape') {
                 hideCtxPop();
                 hideChangesPopover();
-                if (el.dialog && !el.dialog.classList.contains('hidden')) closeAIDialog();
             }
         });
         if (el.messages) {
@@ -15824,7 +16667,7 @@ function requestApproval(session, toolMessage, info) {
         }
         if (el.send) el.send.addEventListener('click', (e) => submitFromComposer(e));
         // 注意：不能直接传函数引用，click 会把 MouseEvent 当第一个参数（会被当成要停止的流）
-        if (el.stop) el.stop.addEventListener('click', () => stopGeneration());
+        if (el.stop) el.stop.addEventListener('click', () => stopGeneration(undefined, true));
         panel.querySelectorAll('.ai-resize').forEach((handle) => {
             handle.addEventListener('pointerdown', (e) => startResize(e, handle.dataset.aiResize));
         });
@@ -16063,6 +16906,10 @@ function requestApproval(session, toolMessage, info) {
     const planApprovalMessage = (...args) => takeoverMod.planApprovalMessage(...args);
     const planApprovalKey = (...args) => takeoverMod.planApprovalKey(...args);
 
+    // 图片三层限制的投影消费端：启动时拉一次，composer / startSessionTurn 共用同一份。
+    // 后端未就绪时回落 ai-image-policy.js 的内置快照（与 Go 侧数值镜像）。
+    const imagePolicy = createImagePolicyStore({backend});
+    const imageLimits = () => imagePolicy.get();
     // 输入区与附件域（阶段 3 拆出：ai-composer.js；attachments 随域迁入，attachSeq 经 nextAttachSeq 取号）
     const composerMod = createAIComposer({
         el,
@@ -16094,6 +16941,7 @@ function requestApproval(session, toolMessage, info) {
         renderMessageQueue: (...args) => queueMod.renderMessageQueue(...args),
         entryOf,
         sessionImageBytes,
+        imageLimits,
         // 排队消息的读写一律经队列模块（所有权在 ai-message-queue.js，阶段 A 迁移）
         queue: {
             enqueue: (...args) => queueMod.enqueueItem(...args),
@@ -16136,6 +16984,8 @@ function requestApproval(session, toolMessage, info) {
     const editQueuedMessage = (...args) => composerMod.editQueuedMessage(...args);
     const handleInputPaste = (...args) => composerMod.handleInputPaste(...args);
     const attachCurrentFile = (...args) => composerMod.attachCurrentFile(...args);
+    const pickAttachmentFiles = (...args) => composerMod.pickAttachmentFiles(...args);
+    const attachmentsFromDataTransfer = (...args) => composerMod.attachmentsFromDataTransfer(...args);
     const getAttachments = () => composerMod.getAttachments();
     const setAttachments = (value) => composerMod.setAttachments(value);
 
@@ -16151,6 +17001,7 @@ function requestApproval(session, toolMessage, info) {
         inboxWaiters,
         streams,
         flash,
+        notifyFailure,
         positionOverlays,
         compactOf,
         currentSession,
@@ -16158,6 +17009,7 @@ function requestApproval(session, toolMessage, info) {
         currentQueueItems,
         planApprovalMessage,
         planApprovalKey,
+        planAwaitingUserReply,
         updateComposerTakeover,
         editQueuedMessage,
         captureComposerMessage,
@@ -16175,8 +17027,101 @@ function requestApproval(session, toolMessage, info) {
         getStream: () => stream,
         // 视频 steer 的协议门禁与正常发送同源（startSessionTurn 的 video_protocol 预检）。
         videoSteerAllowed: (session) => modelVideoInputEnabled(profileOf(session), entryOf(session)),
+        // 后台会话的排队消息走会话级内核起轮（不碰输入区 / 不刷前台视图）：
+        // 目标会话、起轮内核与未读标记三个依赖见 ai-message-queue.js 的 flushInBackground。
+        sessionById,
+        startSessionTurn,
+        setSessionUnread,
+        // 后台队列消息被内核预检拦下（over_budget）时兜底触发一次自动压缩腾地方——
+        // 与手动路径 autoCompactOnGateBlocked 对称；压缩完成后 flushMessageQueue 自动重发。
+        onQueueOverBudget: (session) => { maybeAutoCompact(session); },
     });
-    const renderMessageQueue = () => queueMod.renderMessageQueue();
+    const renderMessageQueue = () => { queueMod.renderMessageQueue(); updateMailboxChip(); };
+    // ---------- 信箱胶囊（头部 #ai-chip-queue，类计时器胶囊）----------
+    // 代理侧的「挂在会话上、等着注入」两类机制性消息——
+    // ① 信箱通知（子代理回执 / 提问、后台命令与终端退出、会话间投递，消费在轮边界）
+    // ② 运行中的计时器（到点会唤醒对应会话）。角标 = 两类合计；点击弹 chips-pop
+    // （kind=mailbox），行按会话分组跳会话。用户手动排队的消息不在这里——
+    // composer 队列条就是它的地盘；后台塞不下挂起的场景已有 toast / 消息中心提示。
+    function pendingMailboxCount() {
+        let count = 0;
+        for (const group of noticesMod.listPending()) count += group.items.length;
+        for (const session of sessions) count += timerMod.snapshot([session.id]).length;
+        return count;
+    }
+
+    function updateMailboxChip() {
+        if (!el.chipQueue) return;
+        setChipCount(el.chipQueue, pendingMailboxCount(), 0);
+        // 弹层开着时后台冲刷消费了条目：内容与角标一起原位刷新
+        if (chipsPopKind === 'mailbox') renderChipsPop('mailbox');
+    }
+
+    function fmtMailboxClock(ms) {
+        const total = Math.max(0, Math.ceil((Number(ms) || 0) / 1000));
+        const m = Math.floor(total / 60);
+        const s = total % 60;
+        return m + ':' + String(s).padStart(2, '0');
+    }
+
+    // 单行构造：badge = 会话名（+ 类别后缀），main = 摘要，行点击跳会话。
+    function mailboxRow(host, sessionId, badgeSuffix, mainText, badgeClass) {
+        const owner = sessionById(sessionId);
+        const row = document.createElement('div');
+        row.className = 'ai-chips-row';
+        const badge = document.createElement('span');
+        badge.className = 'ai-queue-pop-badge' + (badgeClass ? ' ' + badgeClass : '');
+        badge.textContent = ((owner && owner.title) || '其他会话') + (badgeSuffix ? ' · ' + badgeSuffix : '');
+        const main = document.createElement('span');
+        main.className = 'ai-chips-main';
+        main.textContent = mainText;
+        const go = document.createElement('span');
+        go.className = 'ai-chips-go';
+        go.innerHTML = iconSvg('chevron-right', 12);
+        row.append(badge, main, go);
+        row.addEventListener('click', () => {
+            hideChipsPop();
+            switchSession(sessionId);
+        });
+        host.appendChild(row);
+    }
+
+    function renderMailboxPopInto(host) {
+        if (!host) return;
+        host.innerHTML = '';
+        let rows = 0;
+        // ① 信箱通知：content 首行做摘要；子代理提问（需要拍板）用橙色徽标突出
+        for (const group of noticesMod.listPending()) {
+            for (const notice of group.items) {
+                rows += 1;
+                const head = String(notice.content || '').split('\n')[0].slice(0, 120);
+                mailboxRow(host, group.sessionId, '', head, notice.kind === 'subagent-ask' ? 'is-ask' : '');
+            }
+        }
+        // ② 运行中的计时器：按会话逐个取（snapshot 按会话链过滤），到点会唤醒对应会话
+        for (const session of sessions) {
+            for (const timer of timerMod.snapshot([session.id])) {
+                rows += 1;
+                const label = timer.label || '计时器';
+                const clock = timer.mode === 'countdown'
+                    ? '剩余 ' + fmtMailboxClock(timer.remainingMs)
+                    : '已计 ' + fmtMailboxClock(timer.elapsedMs);
+                mailboxRow(host, session.id, '计时', label + ' · ' + clock + (timer.mode === 'countdown' ? '（到点唤醒）' : ''), '', null);
+            }
+        }
+        if (!rows) {
+            const empty = document.createElement('div');
+            empty.className = 'ai-chips-empty';
+            empty.textContent = '没有挂着待处理的会话消息';
+            host.appendChild(empty);
+        }
+    }
+
+    if (el.chipQueue) {
+        const iconEl = el.chipQueue.querySelector('.ai-chip-icon');
+        if (iconEl) iconEl.innerHTML = iconSvg('list', 13);
+        el.chipQueue.addEventListener('click', () => toggleChipsPop('mailbox', el.chipQueue));
+    }
     const enqueueComposerMessage = (...args) => queueMod.enqueueComposerMessage(...args);
     const interjectComposerMessage = (...args) => queueMod.interjectComposerMessage(...args);
     const preemptComposerMessage = (...args) => queueMod.preemptComposerMessage(...args);
@@ -16198,8 +17143,8 @@ function requestApproval(session, toolMessage, info) {
     function init() {
         // 会话还没从磁盘读出来时不要替用户决定「当前会话」：占位列表的第一项不是上次打开的
         // 会话，写进 activeSessionId 会造成启动瞬间串台（真正的会话要等读盘完成才出现）。
-        if (!sessionsPending() && (!config.activeSessionId || !sessions.some((s) => s.id === config.activeSessionId))) {
-            config.activeSessionId = sessions[0].id;
+        if (!sessionsPending() && (!activeSessionId() || !sessions.some((s) => s.id === activeSessionId()))) {
+            setActiveSessionId(sessions[0].id);
             saveAIConfig();
         }
         // 上面只保证「会话还在」，不保证它属于本窗口的工作区（多窗口共享 activeSessionId）
@@ -16282,6 +17227,8 @@ function requestApproval(session, toolMessage, info) {
         // 会话间投递（阶段 H）：选址列表按工作区过滤，默认只列同工作区
         getSessions: () => sessions,
         workspaceKeyOf: (session) => aiWorkspaceKey(sessionWorkspacePath(session)),
+        // 信箱增减 → 头部「信箱」胶囊角标刷新（noticesMod 内部各变更点回调）
+        onChanged: () => updateMailboxChip(),
     });
     const deliverAgentNotice = (...args) => noticesMod.deliverAgentNotice(...args);
     const foldAgentNotices = (...args) => noticesMod.foldNotices(...args);
@@ -16355,6 +17302,7 @@ function requestApproval(session, toolMessage, info) {
         backend,
         inboxWaiters,
         flash,
+        notifyFailure,
         renderMarkdown,
         openTermTab,
         // 隔离 worktree（spawn isolation='worktree'）：子代理草稿区建在主根 .cadt/worktree/ 下
@@ -16414,10 +17362,11 @@ function requestApproval(session, toolMessage, info) {
         bgUpdateListeners,
         getChipsPopKind: () => chipsPopKind,
         setChipsPopKind: (value) => { chipsPopKind = value; },
-        // 计时器 / 定时任务弹层（kind=timers / schedules）由各自域提供内容，这里只做转发
+        // 计时器 / 定时任务 / 会话信箱弹层（kind=timers / schedules / mailbox）由各自域提供内容，这里只做转发
         renderChipsPopExtra: (kind, host) => {
             if (kind === 'timers') { timerMod.renderPop(host); return true; }
             if (kind === 'schedules') { scheduleMod.renderSchedulePop(host); return true; }
+            if (kind === 'mailbox') { renderMailboxPopInto(host); return true; }
             return false;
         },
         getConfig: () => config,
@@ -16593,7 +17542,15 @@ function requestApproval(session, toolMessage, info) {
 
     init();
     whenConfigReady();
-    whenSessionsReady();
+    // 排队消息快照恢复：读盘完成后一次（会话 id 校验过滤已删/归档的条目）。
+    // 恢复走的是 queue 模块内部的渲染，不经过面板包装，胶囊角标在这里手动刷一次。
+    whenSessionsReady().then(() => {
+        queueMod.restorePersistedQueue((id) => {
+            const session = sessionById(id);
+            return session && !session.archivedAt ? session : null;
+        });
+        updateMailboxChip();
+    });
     subagentsMod.initHud();
 
 
@@ -17098,11 +18055,13 @@ function requestApproval(session, toolMessage, info) {
                 workspace: s.workspace || '',
                 planMode: !!s.planMode,
                 messages: sessionMessageCount(s),
-                active: s.id === (config && config.activeSessionId),
+                active: s.id === (activeSessionId()),
                 // 「哪一个是我」：active 只是面板当前查看的会话，后台会话调用时 caller 才是自己
                 caller: !!caller && s.id === caller,
             }));
         },
+        // AI 弹窗已进全局弹层栈（openAIDialog/closeAIDialog 注册），Esc 层序由栈分发，
+        // 旧的顶层弹窗让路查询已随栈退役（main.js 不再需要知道 AI 域的弹窗）。
         // 结构面板的「会话结构」数据源：当前会话里的用户消息（用户消息定位条）
         bridgeSessionOutline: () => sessionOutlineSnapshot(),
         bridgeJumpToMessage: (index) => jumpToSessionMessage(index),

@@ -1,17 +1,17 @@
-# 工作区预指令（生命周期钩子一期：workspace-open）
+# 生命周期（工作区 + AI 会话命令钩子）
 
-> 状态：**已实施**（2026-11-19 当日立项当日完成，已移入 `finished-plans/`；同日作者要求二期生命周期提前，`workspace-close` / `ai-session-start` 两个事件随之一并落地，见 §11；同日经子代理对抗性审查并修复全部 P1/P2，见「修订 2」）。代码与测试全部落地：`core/precommands.js` + `shell/precommands.js` + `settings/settings-pane-precommands.js`，测试 `test/core/precommands.test.mjs` / `test/shell/precommands.test.mjs`（合计 36 例全绿）已登记 `npm test`；受影响守卫（ai-app-actions 三方对账 / settings-tree / form-controls-factory / module-scope / no-src-tests）全绿。§8 改动清单与 §10 冒烟清单可作验收参考；冒烟清单的手动验证（真实打开工作区触发执行、AI 四档审批交互）待用户实机走一遍。
+> 状态：**已实施**（2026-11-19 当日立项当日完成；同日按作者要求三次扩展：二期 `workspace-close` / `session-start` 提前、子代理审查修复全部 P1/P2、三期对齐 ZCode 扩到 **9 事件 + 工具匹配器**，见 §11 修订 2/3）。功能 UI 名从「预指令」改为「生命周期」，代码标识符 `precmd*` 保持稳定。代码与测试全部落地：`core/precommands.js` + `shell/precommands.js` + `settings/settings-pane-precommands.js`，测试 `test/core/precommands.test.mjs` / `test/shell/precommands.test.mjs`（合计 42 例）已登记 `npm test`；受影响守卫（ai-app-actions 三方对账 / settings-tree / form-controls-factory / module-scope / no-src-tests）全绿。§8 改动清单与 §10 冒烟清单可作验收参考；冒烟清单的手动验证待用户实机走一遍。
 >
-> 一句话：打开工作区后自动执行一组用户配置的命令；配置在设置页，AI 可经 app_control 代配；**AI 的任何写操作无条件走动作审批（含完全权限档）**。
+> 一句话：为工作区和 AI 会话的 9 个生命周期事件配置自动执行的命令（工具级事件按工具名匹配）；配置在设置 → 生命周期，AI 可经 app_control 代配；**AI 的任何写操作无条件走动作审批（含完全权限档）**。
 
 ## 1. 需求
 
 - 工作区打开（含启动恢复、切回）后按顺序自动执行该工作区的启用条目；失败不阻断打开流程。
 - 配置入口两处：设置页（用户亲手配）+ AI 经 app_control 代配。
-- AI 写入强制走危险审批，**full 档也不例外**；且不只「创建」——AI 的改 / 删 / 启停同权（改命令文本 = 换一条命令），按「AI 对预指令的一切写操作都必审批」设计。
-- 生命周期钩子视角：schema 预留 `event` 字段；**2026-11-19 当日二期提前**，三个事件全部落地（见 §11）。
+- AI 写入强制走危险审批，**full 档也不例外**；且不只「创建」——AI 的改 / 删 / 启停同权（改命令文本 = 换一条命令），按「AI 对生命周期命令的一切写操作都必审批」设计。
+- 生命周期钩子视角：schema 预留 `event` 字段；**2026-11-19 当日二期提前**，9 个事件全部落地（见 §11 修订 3）。
 - **修订（2026-11-19 二期提前）**：`workspace-close` 与 `ai-session-start` 随一期同日实施。`workspace-close` 挂两处：`closeFolder`（显式关闭）与 `openFolderWorkspace` 切走旧目录分支（fire-and-forget，应用整体退出不触发——退出路径没有可靠等待窗口）；`ai-session-start` 在 ai-panel `startSessionTurn` 的租约拿到、最终忙检查之后注入（`opts.precmdAIStart` 由组合根注入 `precommandsCtl.runForAISessionStart`）：**空会话第一轮流起前 await 阻塞**——「开始前」语义要求起轮等待命令完成（每条自带超时上限），失败不阻塞起轮；窗口生命周期内每会话只触发一次（`precmdStartedSessions` 内存态）；恢复的历史会话（messages 非空）不触发；子代理回合不走 `startSessionTurn` 不受影响。重入护栏按「事件 + 工作区」分键，打开与关闭互不阻塞。阻塞期给状态栏 flash 提示「正在执行该会话的预指令」。边缘如实注明：① 资源管理器对**工作区根目录本身**改名/移动（explorer-ops 的 remap 路径）不触发 close/open 事件（旧 key 条目变孤儿，同目录语义未变，v1 接受）；② 同工作区两个空会话并发首轮流时，第二个的 ai-session-start 被重入护栏跳过（极边缘）；③ 起轮在注入点后抛错（attachStream 异常）时命令已跑但无轮次，重发不重跑——与「每会话一次」自洽。
-- **修订 2（2026-11-19 子代理对抗性审查后修复）**：① `update_pre_command` 的 params.ws 一律忽略、强制沿用原绑定（堵跨工作区投毒，P1）；② 审批卡 target 改为命令**全文**（多行不截断；`normalizeActionApprovalSpec` 的 target 上限提到 2000 并保留换行，`.ai-action-val` 加 `pre-wrap`），与 CHANGELOG「审批卡列出命令全文」承诺对齐（P1）；③ `get_pre_commands` 改回**全部事件**条目（含停用）——AI 要能看到三个时机的条目才能 update/remove（P1，`allEntriesForWorkspace` 新增）；④ AI `add` 忽略外部传入 id（防同 id 撞车，P2）；⑤ 执行汇总失败行附 stderr 尾部（压平单行截 200，兑现 §6 承诺，P2）；⑥ 删除零调用的 `normalizePreCommands` 死代码、设置 pane 上限复用 `PRECMD_MAX_*` 常量（P3）。审查结论「有条件通过」，三个 P1 条件全部闭环；测试 36 例（core 17 + shell 19）全绿。
+- **修订 2（2026-11-19 子代理对抗性审查后修复）**：① `update_pre_command` 的 params.ws 一律忽略、强制沿用原绑定（堵跨工作区投毒，P1）；② 审批卡 target 改为命令**全文**（多行不截断；`normalizeActionApprovalSpec` 的 target 上限提到 2000 并保留换行，`.ai-action-val` 加 `pre-wrap`），与 CHANGELOG「审批卡列出命令全文」承诺对齐（P1）；③ `get_pre_commands` 改回**全部事件**条目（含停用）——AI 要能看到三个时机的条目才能 update/remove（P1，`allEntriesForWorkspace` 新增）；④ AI `add` 忽略外部传入 id（防同 id 撞车，P2）；⑤ 执行汇总失败行附 stderr 尾部（压平单行截 200，兑现 §6 承诺，P2）；⑥ 删除零调用的 `normalizePreCommands` 死代码、设置 pane 上限复用 `PRECMD_MAX_*` 常量（P3）。审查结论「有条件通过」，三个 P1 条件全部闭环；测试 42 例（core 20 + shell 22）全绿。
 
 ## 2. 总体判断
 
@@ -58,8 +58,10 @@ settings.preCommands（localStorage，唯一存储，经 applySettings 落盘 se
 ```js
 {
     id: 'pc-xxxx',            // 'pc-' 前缀 + 随机
+    matchTools: [],           // 工具级事件（pre/post/failure/permission）的工具名匹配器；
+                              // ≤20 项每项 ≤60 字符；空=全部；支持 'mcp__*' 前缀通配；非工具事件忽略
     ws: '<sessionPathKey>',   // 绑定工作区（归一化 key，与 aiWorkspaceKey / WorkspaceBucketKey 同一约定）
-    event: 'workspace-open',  // v1 唯一枚举；normalize 拒绝未知值
+    event: 'workspace-open',  // 9 事件之一；matchTools 工具名匹配（工具级事件）；normalize 拒绝未知值
     command: 'npm run dev',   // ≤2000 字符，trim 后非空
     timeoutMs: 30000,         // ∈ [1000, 600000]，缺省 30000（上限对齐 AIRunShellCommand 内部钳制）
     enabled: true,
@@ -114,7 +116,7 @@ AI 侧共三个入口，处置如下：
 8. **只读模式照常执行**：预指令是用户配置的自动化而非编辑行为，不并入 `core/readonly.js` 判定；设置页说明里写明。
 9. **多实例不去重**（v1）：两个进程同开一个工作区会各触发一次，用户命令应幂等；将来要堵用 `resourcelease` per-key 租约，不预做。
 10. **设置树只暴露一个总开关行**（`precommands.enabled`，switch，risk=medium——AI 经 `set_setting_row` 开关也要审批）；**条目不注册为设置树行**（不用 `.srow` / `data-row-id` 标记，`settings-tree.js:206` 的 settable 派生扫不到它）——条目读写只走专用四动作或设置 UI，避免 `set_setting_row` 第二条写入路径稀释校验与 origin 语义。
-11. **审批卡规格固定**：`normalizeActionApprovalSpec({action, title: '新增/修改/删除 预指令（<工作区名>）', target: 命令全文, oldValue, newValue, risk: 'high', warnings: ['批准后该命令将在每次打开工作区 <X> 时自动执行，无需再次审批']})`。
+11. **审批卡规格固定**：`normalizeActionApprovalSpec({action, title: '新增/修改/删除 预指令（<工作区名>）', target: 命令全文, oldValue, newValue, risk: 'high', warnings: ['批准后该命令将在「<事件>」（<工作区名>）时自动执行，无需再次审批']})`。
 12. **执行顺序 = 列表顺序**，设置页给上移 / 下移（不做拖拽，对齐新建菜单评估的取舍）。
 
 ## 8. 改动清单
@@ -160,6 +162,15 @@ AI 侧共三个入口，处置如下：
 
 ## 11. 分期
 
-- **一期（本方案）**：`workspace-open` 事件 + 四动作 + 设置 pane + 审批模型。
-- **二期（2026-11-19 作者要求提前，当日随一期同仓实施）**：`workspace-close`（挂点 `closeFolder` + `openFolderWorkspace` 切走分支）与 `ai-session-start`（ai-panel `startSessionTurn` 注入，空会话首轮流起轮前阻塞执行）两个生命周期事件；设置编辑器补时机下拉，AI 动作表补 `event?` 参数。
+- **一期**：`workspace-open` 事件 + 四动作 + 设置 pane + 审批模型。
+- **二期（当日提前）**：`workspace-close`（挂点 `closeFolder` + `openFolderWorkspace` 切走分支）与 `session-start`（原 `ai-session-start`，ai-panel `startSessionTurn` 注入，空会话首轮流起轮前阻塞执行）。
+- **修订 2（当日，子代理对抗性审查后）**：三个 P1（update 改绑 ws / 审批卡多行命令全文 / get 返回全部事件）+ 三个 P2 修复，测试 36 例。
+- **三期（当日，对齐 ZCode 钩子模型）**：扩到 **9 事件**，UI 改名「生命周期」并重画循环图标：
+  - 工作区级：`workspace-open`、`workspace-close`（fire-and-forget）
+  - AI 会话级：`session-start`（空会话首轮，**阻塞**）、`user-prompt-submit`（每轮起轮前，**阻塞**）、`stop`（用户停止生成，fire-and-forget）
+  - AI 工具级（带 `matchTools` 匹配器，空=全部、`mcp__*` 前缀通配）：`pre-tool-use`（**阻塞**）、`post-tool-use`、`post-tool-use-failure`（fire-and-forget）、`permission-request`（**阻塞**，在审批卡出现前跑）
+  - 挂点实现：ai-panel 把 `executeTool` 包一层 `executeToolInner`（前后/失败挂钩，零侵入所有 case）；`startSessionTurn` 加 `user-prompt-submit` 阻塞点；三个模块级审批函数经 `setPermissionLifecycleHook` 回填钩子；`stopGeneration` 触发 stop。main.js 注入通用 `precmdEvent(event, tool, ws)`，保留 `precmdAIStart` 兼容。
+  - 旧名 `ai-session-start` 保留为合法别名（normalize 改写为 `session-start`），已存盘老配置继续可执行；设置下拉只显示规范名。
+  - 工具匹配器：`matchTools` ≤20 项、每项 ≤60 字符，编辑器在工具级事件时显示匹配器输入。
+- **UI 改造（当日，作者要求）**：生命周期页不再内嵌行内编辑器，只显示条目摘要列表（开关 / 命令预览 / 时机 / 匹配工具 / AI 配置 / 危险标记 / 排序 / 编辑 / 删除）；**新建与编辑走独立弹窗**——复用 aiPanel 的 `openDialog` / `closeDialog` / `node` / `button` 三件套（main.js 惰性 getter 注入，用时先 `initAIPanel`，DOM 在 index.html 静态存在），弹窗标题「新建/编辑生命周期命令」，宽弹窗含命令 / 时机 / 匹配器 / 超时四行，原行内容器 `precmd-editor` 已从 index.html 移除。
 - **后续候选**（各另行立项）：执行输出进后台终端视图（复用 bridge-terminal-view 作业模型）；多实例去重（resourcelease）；`app-quit` 事件（当前刻意不做：应用整体退出没有可靠等待窗口，命令可能被杀）。

@@ -210,7 +210,7 @@ profile.usage = {
 2. **预设脚本运行时取自预设表**，不落盘 `usage.code`——模板修正随版本走（cc-switch 同思路）；只有 custom 模板写 code。
 3. **火山方舟与 CommandCode 不做预设**（评估稿 §4.3 已建议缓期）：火山要 OpenAPI SigV4 签名、CommandCode 要 whoami→credits→subscription 三连请求，单请求管线承载不了；Ollama Cloud 反而简单（`GET ollama.com/api/balance`），补进来了，共 7 家套餐预设。
 4. **余额行做成整行按钮**（点击 = 重查 + 明细弹层），比评估稿的「刷新小按钮 + 明细入口」更省地方；官方引擎多条 label/value 明细行不算「多套餐」（只有数值/套餐名形态的条目才走「N 个套餐」聚合）。
-5. **图标来源**：评估稿写「首选自绘」；实际从 cc-switch（MIT）本地仓库提取了 17 家官方 SVG（deepseek/openai/claude/anthropic/gemini/openrouter/kimi/zhipu/minimax/siliconflow/qwen/stepfun/mistral/grok/copilot/ollama/newapi），提取脚本剥 title、内联进 `ai-provider-icons.js`（约 27 KB body），未命中退首字母瓦片（每词取一字母，Unicode 安全）。
+5. **图标来源**：评估稿写「首选自绘」；实际从 cc-switch（MIT）本地仓库提取了 17 家官方 SVG（2026-11-19 补齐到 39 家，见 CHANGELOG）（deepseek/openai/claude/anthropic/gemini/openrouter/kimi/zhipu/minimax/siliconflow/qwen/stepfun/mistral/grok/copilot/ollama/newapi），提取脚本剥 title、内联进 `ai-provider-icons.js`（约 27 KB body），未命中退首字母瓦片（每词取一字母，Unicode 安全）。
 6. **workerFactory 测试缝**：`createAIUsageQuota` 加 `deps.workerFactory`（默认真 Worker），node 测试环境注入假件走同一消息协议——评估稿 §4.2 说「worker 集成行为人工验收」，现在管线编排可自动化测试。
 
 ### 10.2 落地清单

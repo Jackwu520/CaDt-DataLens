@@ -1,6 +1,6 @@
 # 隔离区 export 可信化改进方案
 
-> 状态：**方案重定向**（2026-11-19 立项，同日调研后调整）。依据 `docs/reports/worktree-usability-2026-11-19.md` 的三轮实测复盘 + 业界做法调研。
+> 状态：**已全部实施**（2026-11-19：S1 预检、S2 应用换轨、S3 出路与收尾）。方案重定向依据同日调研：`docs/reports/worktree-usability-2026-11-19.md` 三轮实测复盘 + 业界做法调研。
 >
 > 核心结论：**三方合并才是正解，双向打补丁救不了基准漂移**。carry=true 已经在 `wt.baseSha` 做了快照 commit——三方合并所需的 merge-base 免费存在，export 现在却丢掉基准、拿 diff 硬对主根当前文件，这是三轮全部撞墙的结构性原因。git 自带的 `git apply -3` 与 `git merge-tree --write-tree` 能直接补上，自研 patch 引擎不必继续堆模糊策略。
 >
@@ -31,7 +31,7 @@
 
 | 参考 | 做法 | 对本方案的启示 |
 | --- | --- | --- |
-| `git apply -3` | 补丁带 blob 身份时，应用失败自动退化为三方合并（base=pre-image blob，ours=当前工作区，theirs=补丁结果）；真冲突留 `<<< >>>` 标记 | **应用层直接用，零自研** |
+| `git apply -3` | 补丁带 blob 身份时，应用失败自动退化为三方合并（base=pre-image blob，ours=当前工作区，theirs=补丁结果）；真冲突留 `<<< >>>` 标记 | **实证否决**（见 §3 L2）：`--3way` 隐含 `--index`，主根有未暂存改动时整份补丁拒绝——脏主根恰是本场景常态 |
 | `git merge-tree --write-tree`（git ≥2.38） | 不动索引、不动工作树跑一次真 merge（三方内容合并 + rename 检测 + 目录冲突处理），输出合并 tree + 冲突文件清单（含冲突类型）+ 信息性消息；`--merge-base=<commit>` 显式指定基准 | **dry-run 的完美答案**：三栏报告的分类逻辑 git 全代劳 |
 | Aider | 应用失败逐级放宽：归一化 hunk → 补模型漏写的 + 行 → 相对缩进 → 拆大 hunk → 上下文窗口缩到 0 → 临时仓库 cherry-pick 应用（≈3way）。实测：禁用灵活打补丁后编辑错误 +9 倍 | `AllowOffset`/`IgnoreWhitespace` 只覆盖其前两级；「拆 hunk」与「临时仓库 cherry-pick」是兜底补强方向 |
 | Cursor fast-apply | 意图与精确 diff 解耦，小模型/Myers 模糊锚点重放到当前文件 | 应用层容错是合理设计，问题出在容错维度不够 |
@@ -54,7 +54,7 @@
 | --- | --- | --- |
 | L0 已应用识别 | `git patch-id --stable` 指纹比对 + hunk 反向匹配兜底 | 问题 2 |
 | L1 dry-run | 双侧临时快照 + `git merge-tree --merge-base=baseSha`，零副作用三栏报告 | 问题 3、4、5 诊断 |
-| L2 应用 | 主根侧 `git apply -3`，真冲突留标记或 .rej | 问题 1、5 出路 |
+| L2 应用 | 主根侧三方合并写回（merge-tree 结果 `cat-file blob` 落工作区，与 L1 同引擎），真冲突不写 | 问题 1、5 出路 |
 | L3 AI 出路 | 拒绝信息给路径 + 冲突报告附主根侧 diff + 包 D 四项 | 问题 6、7、8 |
 
 ### L0：已应用识别
@@ -75,17 +75,14 @@
 
 注意：merge-tree 产出的冲突文件内容带 `<<< >>>` 标记，**只能用于报告，不得直接写入主根**。
 
-### L2：应用
+### L2：应用（✅ 已实施，方案换轨为 merge-tree 写回）
 
-- **执行前重跑一次 L1**（快照便宜）：审批有用户审阅间隔，期间主根可能又变，避免「报告说能合、实际已冲突」的竞态。
-- 审批通过后，主根侧 `git apply -3 <diffText>`（经新 Go 绑定）。
-- **实施时必须先验证的两个 git 行为**（同初版对 StripLevel 的处理方式，先实测再定实现）：
-  - `--3way` 隐含 `--index`，要求「工作区文件与 index 一致」，不一致时整个 patch 拒绝。主根 staged/unstaged 混合是常态——若实测此场景被拒，需逐文件判断或设计 index 侧的临时处理，**不能默默改写用户 index**；
-  - `--3way` 会把冲突写进主根 index 的 higher stages（`git status` 显示 unmerged paths）。apply 发生在审批后，写主根语义没破，但需要明确善后策略：收集完冲突报告后恢复 index 原样，还是保留 unmerged 状态交用户用 git 工具接手——实施前定。
-- `--3way` 与 `--reject` 互斥：部分应用改为**按文件粒度拆分 diff 分别调用**，天然得到逐文件 applied/skipped 报告（代价：整体不再是原子操作，逐文件结果即为真值）。
-- **L1 与 L2 是两套引擎**（merge-tree vs apply-3）：rename 处理不同（merge-tree 有 rename 检测，apply -3 按 delete+add 落地）、边界结论可能不同。现有 diff 已 `--no-renames`，主场景一致；实测若发现系统性偏差，**以 apply -3（真正执行者）为准修正报告分类**。
-- 真冲突文件由 git 留 `<<< >>>` 标记，配合 L3 的报告交 AI 在审批语义下处理。
-- 自研引擎路径（`PatchSave`）保留为兜底（blob 不可解析、git < 2.38）。
+- **实施前实证否决 `git apply -3`**（2026-11-19）：`--3way` 隐含 `--index`，要求「工作区文件与 index 一致」，主根有未暂存改动（本场景常态）时整份补丁直接失败（`f.txt: does not match index`，连可干净应用的文件都不写）。该路线不可用。
+- **换轨：merge-tree 写回**。L1 预检与 L2 应用共用 `runMergeCore`（`internal/gitinfo/worktree_preview.go`）——同一引擎不会分叉；应用瞬间**重新跑一次三方合并**（审批有间隔，主根可能又变，天然满足「执行前重跑 L1」的竞态要求）。
+- 应用 = 把合并 tree 里的文件内容经 `cat-file blob` 写回主根工作区：纯 plumbing，**不碰真 index、不碰 HEAD/分支、无 unmerged stages 残留**（`apply -3` 的两个 index 风险随之消失）；合并结果里不存在的文件（theirs 删除且 ours 未恢复）同步删除主根文件；**真冲突文件不写**（原因进结果行与预检报告），交 AI 在隔离区重做。
+- 逐文件结果（applied / skipped / conflict / failed + numstat 行数）对齐 `PatchApply` 的结果卡契约，前端结果卡零适配；审批卡里 merge-tree 判「可合并」的文件按可应用呈现（双向引擎判冲突 ≠ 三方合不了），用户可自由勾选。
+- 实施发现：**相邻行改动在 git 三方合并里判冲突**（改动区域相接即冲突，需隔至少一行未改内容）——报告里这是正确行为，不是 bug。
+- `git apply -3` 保留为 blob 缺失场景的备选思路，当前不做。
 
 ### L3：AI 出路（原问题 8 + 包 D 不变）
 
@@ -97,7 +94,7 @@
 
 冲突多时报告本身成为新的上下文风险源——尤其是 L3 的「主根侧 diff」：大重构场景下单文件 diff 即可上万行，几十个冲突文件全内联进工具回执会塞满会话。与项目既有惯例一致（wipeguard 通知 8 条截断、worklog 只存标题一句话），定三条硬规则：
 
-1. **工具回执只给索引，不给全文**。export 回执给 AI 的部分上限约 60 行：汇总行（可应用 N / 合并可解 M / 真冲突 K / 已应用 J）+ 真冲突清单最多前 20 条（文件名 + 冲突类型，一行一条），超出折叠为「…另有 N 个文件冲突」；merge-tree 的 free-form messages 只提取含文件名的行，同样受 20 条上限。**全量报告每次 export 独立落盘，不覆盖**：`<主根>/.cadt/worktree/<name>/export-report-<yyyyMMdd-HHmmss>.md`（**必须落主根侧**——隔离区会被 discard 连目录一起删掉），与当次导出的 `.patch` 同源（L2 落 `.cadt/patches/` 已有同名去重机制，报告文件名跟随补丁文件名便于历史对齐）；回执与 worktree 记录（`lastExportReport`，与 `lastExportPatch` 并列）都指向**本次**文件，历史报告保留供「这次和上次差在哪」比对，discard 清理时随隔离区记录一并清。用户在审批卡/编辑器看全量（UI 不占模型上下文），AI 要细节再按需读。
+1. **工具回执只给索引，不给全文**。export 回执给 AI 的部分上限约 60 行：汇总行（可应用 N / 合并可解 M / 真冲突 K / 已应用 J）+ 真冲突清单最多前 20 条（文件名 + 冲突类型，一行一条），超出折叠为「…另有 N 个文件冲突」；merge-tree 的 free-form messages 只提取含文件名的行，同样受 20 条上限。**全量报告每次 export 独立落盘，不覆盖**：`<主根>/.cadt/export-reports/<name>-<时间戳>.md`（**必须主根侧**——隔离区会被 discard 连目录一起删掉；不能放 `.cadt/worktree/<name>/`，那是 worktree 本体的固定父目录）。与当次导出的 `.patch` 同源命名便于历史对齐；回执与 worktree 记录（`lastExportReport`，与 `lastExportPatch` 并列）都指向**本次**文件，历史报告保留供「这次和上次差在哪」比对，discard 清理时随隔离区记录一并清。用户在审批卡/编辑器看全量（UI 不占模型上下文），AI 要细节再按需读。
 2. **主根侧 diff（L3 第 2 条）绝不内联进回执**。回执只给「文件名 + 主根是否被改过」的判定；AI 需要细节时走按需通道逐文件拉取（`worktree_manage` 新增 `action=conflict_detail`，或复用现有 diff 绑定），单文件 diff 封顶 200 行，超出提示改用 `search_text` 定位符号。与复盘问题 3「一次列全」不矛盾：列全的是**文件级**清单（每文件一行，便宜），hunk 级/内容级细节按需取（贵）。
 3. **冲突文件内容（带 `<<< >>>` 标记）永不进上下文**。merge-tree 的结果 tree 只用于报告分类；AI 要看冲突现场应直接读主根/隔离区工作区文件本身（现有 read 通道，天然有分页与体量控制）。
 
@@ -105,9 +102,10 @@
 
 | 改动 | 位置 | 说明 |
 | --- | --- | --- |
-| `GitApply3Way(root, patchText)` | gitinfo + Wails 绑定 | 跑 `git apply -3`，捕获退出码、stdout/stderr、冲突文件列表 |
-| 工作区临时快照辅助 | internal/gitinfo | `GIT_INDEX_FILE=<临时文件>` 下 `add -A`（带 pathspec 排除）+ `write-tree`/`commit-tree`，返回 OID；**不碰主根/隔离区的 index、HEAD、分支** |
-| `GitMergeTree(base, ours, theirs)` | gitinfo + Wails 绑定 | 跑 `merge-tree --write-tree --merge-base=...`，解析 tree OID / 冲突段 / 消息 |
+| `GitWorktreeMergePreview(root, name, baseSha)` | gitinfo + Wails 绑定 | 零副作用预检：双侧快照 + merge-tree 三栏分类 + 报告落盘 |
+| 工作区临时快照辅助 | internal/gitinfo | `GIT_INDEX_FILE` 临时 index（文件必须**不存在**）下 `add -A` + `reset` 摘 .cadt/reparse + `write-tree`/`commit-tree`，返回 OID；不碰真 index/HEAD/分支 |
+| `GitMergeTree` 逻辑（内联于 runMergeCore） | internal/gitinfo | `merge-tree --write-tree --merge-base=...`，解析 tree OID / 冲突段 / 消息；预检与应用共用 |
+| `GitWorktreeMergeApply(root, name, baseSha, paths)` | gitinfo + Wails 绑定 | 审批后的应用换轨：重新跑合并，把合并 tree 内容 `cat-file blob` 写回主根工作区；结果契约对齐 PatchApply |
 | `GitPatchID(diffText)` | gitinfo + Wails 绑定 | `git patch-id --stable`（stdin 喂 diff） |
 
 前端（`frontend/src/ai/ai-worktree.js`）：`manageExport` 改走 L1→L2 链路；三栏报告渲染（可复用初版包 B 的模块设想，但数据源换成 merge-tree 输出）；包 D 四项落点不变。
@@ -123,9 +121,17 @@
 
 ## 6. 实施顺序
 
-- **S1（dry-run 先行）**：快照辅助 + `GitMergeTree` + `GitPatchID` 绑定；前端 `manageExport` 改零副作用预检 + 三栏报告。此步已能解决问题 2/3/4 与 5 的诊断。
-- **S2（应用换轨）**：`GitApply3Way` 绑定 + 按文件拆分调用；审批通过后主根应用走 `apply -3`，自研引擎降为兜底。
-- **S3（出路与收尾）**：L3 四项（拒绝信息给路径 → 自举提示 → discard 保底 → 导出标记）。
+- **S1（dry-run 先行）✅ 已实施（2026-11-19）**：快照辅助 + `GitMergeTree` + `GitPatchID` 绑定（实现为 `GitWorktreeMergePreview` 复合绑定，解析在 Go 侧可单测）；前端 `manageExport` 零副作用预检 + 三栏回执。已解决问题 2/3/4 与 5 的诊断。**实施发现**（方案文字未预见的坑，已进测试）：
+  - 临时 index 文件必须**不存在**（CreateTemp 后立即删）——git 不接受零字节文件当 index（"index file smaller than expected"）；
+  - `add -A` 不能带 exclude pathspec（`:(exclude).cadt` 这类）——被 gitignore 的显式路径直接 fatal（"The following paths are ignored"）；改用 `add -A` 后 `reset -q -- .cadt <reparse...>` 从临时 index 摘除；
+  - L0/L1 分类实际不需要 patch-id 做逐份比对：merge-tree 三栏分类（ours==theirs → 已应用）已精确覆盖「已应用」判定且无启发式，patch-id 绑定保留备用；
+- **S2（应用换轨）✅ 已实施（2026-11-19 同日）**：实证否决 `apply -3`（--3way 隐含 --index，脏主根整份拒绝，见 §3 L2）后换轨 merge-tree 写回；`GitWorktreeMergeApply` 绑定 + 前端审批后走新链路（merge-tree 判「可合并」的文件按可应用进审批卡），`PatchApply` 降为预检不可用时的兜底。实施发现：**相邻行改动在 git 三方合并里判冲突**（改动区域相接即冲突）。
+- **S3（出路与收尾）✅ 已实施（2026-11-19 同日）**：
+  - **discard 保底快照**：`WorktreeSnapshotPatch`（隔离区 diff 原样落盘 `.cadt/patches/worktree-snapshot-<name>-<时间戳>.patch`，**绕开 PatchSave 的「不可应用即删」**）；AI discard 与用户手点丢弃两条路径都先存档再删，回执/提示给出路径并说明可恢复（git apply / propose_patch）；快照失败不阻塞丢弃但明确提示「未导出改动已丢失」；
+  - **create 自举提示**：create 回执（AI）与会话时间线（用户）都提示隔离区缺依赖与构建产物 + 自举命令顺序（npm install → vite build → wails generate module），并点破「测试假失败先怀疑缺生成物」；
+  - **导出状态标记**：`lastExportReport` 进 stat 回执、chip 徽标（「隔离区 xxx · 已导出」）与信息卡行——统计是全量语义，已回灌部分看预检报告；
+  - **conflict_detail 按需通道**：`worktree_manage(action=conflict_detail, file=…)` → `GitWorktreeDiffSinceBase`（主根相对基准单文件 diff，200 行封顶截断附 read_file 提示）——冲突细节按需取（贵），文件级清单在 export 回执里（便宜）；
+  - 拒绝信息出路：`mainRootWriteVerdict` 文案此前已含完整出路（写隔离区前缀 / export / discard），S3 复核确认达标。
 - 每步独立提交、可单独 revert。
 
 ## 7. 验证方式

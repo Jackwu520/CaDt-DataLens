@@ -4,10 +4,236 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 
 ## 未发布
 
-### 智能体分组交互重做
+### 新功能（全局弹层栈：Esc 一次只退一层，z-index 统一分档）
 
-- **分组可折叠**：设置 → AI → 智能体 列表与新建群聊弹窗的成员列表，组头（chevron + 组名 + 计数）可点击折叠/展开——多分组时按需收起，折叠记忆保留（设置页本窗口内、新建弹窗跨次保留）；与新建群聊的分组过滤叠加生效。
-- **新建分组交互重做**：编辑器弹窗的分组从「下拉选 ＋新建分组… → 再弹一行命名输入」换成**单个输入框 + 现有分组建议下拉**——聚焦/输入即列出（包含匹配、大小写不敏感）点选填入，输入列表外的新名字 = 新建分组（保存前仍走组名校验）；不再有隐藏行与哨兵值。
+- **现象**：弹层（对话框/模态/菜单/灯箱/popover）没有栈管理——39 处 Esc 分支散布在约 41 个文件各自为政，跨层协调全靠特判硬编码：main.js 手写「查找条 → AI 弹窗让路 → 设置窗」优先级链、图片灯箱用 DOM 反查让过右键菜单、环境变量编辑器靠 `stopImmediatePropagation` 抢跑。一次 Esc 经常连带关掉多层（比如开着 AI 顶层弹窗按 Esc 曾把底下的设置窗一起关掉）。
+- **改法**：新增 `core/overlay-stack.js` 全局弹层栈（模块级单例）。所有页面级浮层打开时注册（`open({id, kind, el, onClose})`）、关闭路径收口 `dispose()`；唯一的全局 Esc 监听装在 main.js 最顶（window 捕获，先于一切弹层工厂），从栈顶向下分发——一次 Esc 只退栈顶层，下层不动；栈空或让路（Shift+Esc 归 dock 关闭、焦点在 `data-esc-local` 标记的输入框内如设置搜索框「清词不关窗」）时事件照旧流向旧监听。死层（元素已断连/隐藏）分发时顺手剔除，泄漏自愈。
+- **z-index 同步收口**：style.css 里 72 处手工 z-index 中栈管的 15 处全部删除，由栈按档位分配（bar 100 < lightbox 1100 < dialog 2100 < modal 3100 < popover 4100 < menu 5100，同档按栈序后开在上）；设置下拉（实证须压过对话框）归 popover 档、右键菜单归 menu 档；tooltip 9999 与 toast（200→6000）保持常驻顶层，不进栈。
+- **接入范围**：设置对话框族（含共享遮罩）、AI 弹窗与模型/环境变量编辑器、右键菜单（子菜单在菜单基准上逐层 +1）、图片灯箱、命令面板、快速切换（子级先回主级再关）、消息中心、标题栏三弹层、状态栏浮层、查找条、全局搜索、JSONPath/对比/Schema 三遮罩、git-graph 模态、设置下拉、模型选择器与模型列表浮层、本轮用量浮层。面板/视图内部小浮层（AI 面板 ctx/changes/chips pop、群聊菜单、CSV 统计面板、阅读模式 Esc 链）不进栈、自管 Esc——栈消费时被抢占、栈空时照常工作。旧特判（isAIDialogOpen 让路查询、灯箱 DOM 反查、envvars 抢跑监听、标题栏逐个点名 Esc）全部退役。
+- 纯逻辑测试 `test/core/overlay-stack.test.mjs`（16 例：栈序/幂等出栈/档位数学/各让路守卫/死层自愈），`test/ai/ai-dialog-esc.test.mjs` 重写钉住新契约（栈先分发、install 先于工厂、旧 hack 不复存在），另加护栏 `test/core/overlay-esc-guard.test.mjs` 扫描全局 Esc 监听——后续弹层自挂 window/document 级 Esc 直接测试红，强制接入栈或显式登记豁免，均登记 npm test 清单。方案见 `docs/finished-plans/overlay-stack.md`。
+
+### 修复（文本视图滚动条光标不再显示 I 形）
+
+- 文本视图用原生 `<textarea>`，自带 `cursor: text`，滚动条区域继承后悬停显示 I 形光标。给全局滚动条伪元素（`::-webkit-scrollbar` 与滑块 `::-webkit-scrollbar-thumb`）显式声明 `cursor: default`，滚动条上恢复箭头光标，不影响正文输入光标。
+
+### 新功能（菜单子菜单的预测锥）
+
+- **现象**：所有菜单的子菜单都没有斜向容差——鼠标斜向移向子菜单必然扫过兄弟行，兄弟行的 mouseenter 会立即收起子菜单，只能走「先垂直下移再水平过去」的直角路线。
+- **改法**：引入 Amazon 式预测锥（hover-intent cone）。锥 = 「子菜单近边两端角 + 父项行对侧底角」的三角走廊 ∪ 父项行 ∪ 子菜单面板；指针在锥内触发收起时改为延迟 250ms（期间继续移动会不断顺延，到点复核指针已进子菜单或回到锚点行则放行），锥外（明确去点别的项）照旧立即收起。两处菜单面都接上：`shell/contextmenu.js` 的嵌套子菜单（全部右键菜单 / AI 面板 / 资源管理器 / 结构面板 / 终端 / 便签 / 快速切换等共用）与 `main.js` 菜单条下拉的独立子菜单实例（新建 / 最近打开 / 复制路径 / 导出 / 转换为… 等）；子菜单右开被视口翻转成左开时锥镜像成立。
+- 纯函数 `pointInRect` / `inSubmenuCone` 与常量 `SUBMENU_CONE_CLOSE_DELAY_MS` 从 `contextmenu.js` 导出，配 `submenu-cone.test.mjs`（走廊 / 直奔兄弟项 / 左开镜像 / 退化矩形 6 组断言），登记进 npm test 清单。
+
+### 新功能（AI 头部「信箱」胶囊：挂在会话上的机制性消息一眼可见）
+
+- **背景**：两类机制性消息挂在会话上等轮边界注入，用户完全看不见——子代理完成 / 失败 / 提问的回执（会话信箱）、后台命令与终端退出通知。子代理 18 批并行时哪个会话挂着什么，只能靠猜。
+- **胶囊**：AI 头部新增「信箱」胶囊（`#ai-chip-queue`，类计时器胶囊），显隐与角标 = 挂起合计（信箱通知 + 运行中的计时器），无则隐藏。点击弹 chips-pop（kind=mailbox）：按会话分组的条目——信箱通知显示 content 首行摘要（子代理**提问**用橙色徽标突出，需要拍板的最紧急），计时器显示名称与剩余 / 已计时间（到点唤醒标注）；行点击跳到对应会话。弹层开着时后台冲刷消费条目会原位刷新。用户手动排队的消息**不进**这里——composer 队列条就是它的地盘；后台塞不下挂起的场景已有 toast / 消息中心提示与自动压缩兜底。
+- **接线**：`ai-agent-notices.js` 新增 `listPending()` 全局枚举（按会话分组返回 kind / label / content）与 `onChanged` 钩子（入队 / 轮边界消费 / 清空各变更点回调）；计时器经 `timerMod.snapshot([会话id])` 逐会话枚举；计时器启停（`onTimersChanged`）同步刷角标与弹层。
+- 测试：`ai-agent-notices.test.mjs` 补 `listPending` / `onChanged` 整链路覆盖（忙会话回执挂信箱可枚举、消费清零、闲会话不误报，29 例全过）。
+
+### 修复（排队消息重启不再丢）
+
+- **现象**：消息队列是纯内存（重启即丢全部排队条目），且队列条只渲染当前会话的条目——后台会话排了什么、塞下了几条，用户在面板上完全看不到。
+- **持久化**：新增 localStorage 轻量快照（键 `datalens-ai-msg-queue`，预算 800 KB，超限整体放弃不撑爆配额）。每次队列渲染后全量覆盖（队列变更必然触发渲染），启动读盘完成后恢复一次（按 id 去重、剔除已删/归档会话的条目）。图片/视频附件的 base64 data 不进快照（动辄数百 KB，只保留文本类附件）——恢复后消息文本仍在，媒体需重贴。局限：多窗口双开时各自恢复同一批条目（队列本就 per-window 互不同步），只有窗口主动消费才会发送，风险面与恢复前一致。
+- 纯函数 `persistSafeItem` / `restorableQueueItems` 与 `createQueueModel.restore` 配 `ai-message-queue.test.mjs` 新增 3 组断言（28 例全过）。
+
+### 改进（应急收缩触发时留痕：占用「突然下降」不再无解释）
+
+- **背景**：窗口占用 ≥90% 时组装请求会把最近 5 个工具结果之外的历史工具结果修剪/指针化（`ai-context-slim` 的应急收缩档），只改发出内容、磁盘历史原样——实测占用会在一轮之间掉一大截（如 85%→64%），面板上没有任何痕迹，用户无从知晓发生了什么。
+- **改法**：发送前检测到本次组装触发应急收缩、且该会话 30 分钟内没记过留痕时，在本轮回复之前落一条会话注记（`kind=slim-note`，与模型切换留痕同款分隔行样式）：「上下文应急瘦身已介入……」，触发占用与机制说明收进 ⓘ tooltip；注记不进模型上下文（组装跳过）、随 JSONL 落盘重放还原。
+- 判定抽纯函数 `shouldInsertShrinkNote`（冷却去重，防占用在线附近震荡反复刷屏），测试 `ai-context-slim.test.mjs` 新增 3 组断言。
+
+### 修复（后台队列消息塞不下时自动腾地方，不再干等用户）
+
+- **现象**：后台会话的排队消息被起轮内核的请求预检拦下（`over_budget`，占用将超窗口 90%）时，只退回队列 + 提示「切回压缩后再发送」，**不会触发压缩**——而手动发送被同一预检拦下时会兜底触发自动压缩（`autoCompactOnGateBlocked`），两条路径不对称。消息留在队列反复重试失败，直到用户亲自切回来处理。
+- **修法**：`flushInBackground` 的 `over_budget` 分支新增兜底钩子 `onQueueOverBudget`（panel 注入 `maybeAutoCompact(session)`）：消息先退回队列，再触发一次自动压缩腾地方；压缩完成后既有的 `flushMessageQueue` 冲刷会自动重发队列，闭环不丢消息。
+
+### 新功能（使用统计：请求日志）
+
+- 设置 → AI → 使用统计底部新增**请求日志**：按时间倒序分页展示每次模型请求，列含时间、供应商（账号名）、模型、新增输入、输出、缓存命中、缓存写入、命中率、速度、首字、总耗时、状态码；每页 10 / 20 / 50 条可切换，底部显示总记录数与页码。
+- 口径与提示：新增输入 = prompt − 缓存命中 − 缓存写入；命中率 = 缓存命中 ÷（新增输入 + 缓存写入 + 缓存命中）；速度 = 输出 token ÷（请求总耗时 − 首字延迟），只统计输出 ≥100 token 且生成窗口 ≥200ms 的请求；首字 = 请求发出到第一个 token。命中率 / 速度 / 首字表头带 ⓘ 说明，累计 Token 指标卡补「真实消耗」口径说明。
+- 数据采集：`usage_events` 新增 `model_ms` / `ttft_ms` / `status_code`；传输层 `ai-done` 回传最终 HTTP 状态码；主会话、子代理、群聊三处上报补请求耗时、首字延迟与状态码；主会话/群聊 JSONL 扫描同步解析这些字段。群聊的「供应商」改用账号名，旧消息缺账号时回退成员名。
+- 兼容：老库启动时自动补三列并清空一次扫描游标，下次打开面板按历史会话 JSONL 回填耗时/首字（状态码是本次新增字段，历史消息没有记录，显示「—」）。
+- 新增绑定 `AIUsageStatsRequests(offset, limit)`；`dev/mock-backend.js` 提供 137 条确定性演示数据。
+- 测试：Go 覆盖上报归一、主会话/群聊解析、请求日志分页与参数收敛；前端 `usage-stats-model` 新增新增输入/命中率/速度/首字/时间/状态码格式化用例。
+
+### 修复（zcode2api 插件模型清单过时；附 Start Plan 反代不可用的定案）
+
+- ZCode / Z.ai 现役 Start 免费额度是 `GLM-5.3-Flash`（官方 API code `glm-5.3-flash`，1M 上下文 / 128K 输出），插件却仍注册旧的 `GLM-5.2` / `GLM-5-Turbo`，导致模型选不对、请求失败。
+- `plugins/zcode2api/main.js` 注册模型改为 `GLM-5.3-Flash` + `GLM-5.3`；`server/app/routes/gateway.py` 的 `AVAILABLE_MODELS` / `MODEL_NAME_MAP` 同步更新，旧名保留兼容历史配置；`server/app/agent.py` / `settings.py` 的请求头对齐官方 3.18.2（补 `X-Title`、`X-Release-Channel`、平台头等）；同步架构文档并把插件版本升到 1.2.0。
+- **定案：Start Plan 免费额度无法通过反代/API 代理使用**。上游把 zcode-plan 端点的鉴权改为要求渲染进程**逐请求现签**的阿里云验证头（`X-Aliyun-Captcha-Verify-Param`），没有可抽取的 API Key：JWT 直连返回 `405 / 3012 This client is not supported`，官方 API 通道（`api.z.ai/api/anthropic`）只回 `1113 余额不足或无可用资源包`；project access token 换证链实测（zcode-plan 401、ultra-zai 429）同样不可用。GitHub `ZhaoAndy821/dsh-zcode-connector` 独立得出同一结论，其方案是用 CDP 驱动官方客户端而非抽凭证。因此换证链改动已回滚，仅保留模型名与请求头修正。详见 `.cadt/memory/zcode-start-plan-no-api.md`。
+
+### 修复（存储自动清理：原生下拉 + 完成无主动通知）
+
+- **现象**：设置 → 存储与清理 → 自动清理区的「时间间隔」「大小阈值」，展开后是白底黑字的系统原生下拉列表，与项目其它行式下拉外观不一致。
+- **原因**：这两个 select 由 `paintAuto()` 在 async 的 `renderStoragePane()` 里动态创建，而 `selectSettingsPane()` 末尾的 `enhanceSetSelects()` 是同步调用——扫描时它们还没生成；存储面板 deps 里也没有注入增强器，无法自补。
+- **修法**：给 `createSettingsPaneStorage` 注入 `enhanceSetSelects`（main.js 接线），在 `paintAuto()` 末尾补一次增强（幂等，并覆盖开关切换 / 设置更新导致的重建）。
+- **补完成通知**：自动清理原本只 `messageCenter.add(...)` 不传 `opts.toast`，只进消息中心、状态栏角标 +1，后台清理用户不点开就完全不知道；与其它后台事件（工作区防护 / 更新检查）一致改传 `{toast: true}`，完成时弹右下角提示。
+
+### 修复（使用统计 / 额度外显的代码审查问题）
+
+- **扫描游标加「前 64 字节指纹」**：会话日志被 reset/整份重写后又增长到超过旧 offset 时，不再从新文件中间续读导致前段永久漏计；指纹不匹配一律从头重读。
+- **使用统计移出一键清缓存**：子代理用量没有 JSONL 兜底、只存在 `ai-usage.db`，原先把库标成缓存会在例清时不可逆丢失；改为数据条目单独删除并更新文案。主会话/群聊仍可在下次打开面板时按游标回填。
+- **上报时机补齐**：主会话每轮 `ai-done`（含工具轮）都实时上报，空回复自动重试替换消息前也先记下当轮消耗；群聊工具轮累计输入/输出/缓存字段、自动重试不再清零已产生用量、失败/停止路径保留累计值；子代理补 `turnMs`。
+- **额度外显口径**：同一池的 5h/7d 重叠窗口按池取较大剩余再跨池求和（不重复放大同一份额度）；返赠余额只计一次；OpenRouter 优先「剩余」而不是「已购额度」；`%` 条目的 token 数不再拼成百分号；无缓存时恢复「待查询」。
+- **使用统计面板**：环形图/趋势图 tooltip 对模型名与数值全量转义（模型名来自配置，默认 HTML formatter 是注入点）；热力图月份标签跳过后下一周补，不再整月丢失；每周/累计模式 tooltip 显示整列口径；图表实例复用前先 resize；同步失败在副标题提示。
+- `999950+` 的 token 数进位为 `1M`（不再显示 1000K）；热力图窗口收紧为恰好 371 天；未来时间戳归到当前时刻，汇总与热力图口径一致。
+
+### 改进（上下文提醒条的「压缩上下文」按钮不再发灰）
+
+- 默认（琥珀 suggest）态的按钮原本是 `transparent` 背景 + `--muted` 文字 + 普通边框，在琥珀提醒条里几乎看不出是可点的；改为与 `is-over` 红态对称的琥珀强调——描边 / 淡底 / 文字统一用 `--warn`，hover 加深。红态与 ≥100% 的 `aria-disabled` 压暗样式优先级更高，不受影响。
+
+### 变更（便签移除三态统计）
+
+- 状态点换成自定义标签后，三态 status 已无任何 UI 入口，顶栏的「完成/总数 · 进行中 N」是永远不变的死数字。**彻底删除 status 字段**：条目数据不再存 status，导出不再有勾选框，顶栏统计与 AI 反馈里的完成/进行中计数一并移除。
+- **AI 工具改用标签分类**：`get_memo` 的 `status` 过滤改为 `tag`（按自定义标签精确匹配），`add_memo` 新增可选 `tags` 参数（新条目直接挂标签），`update_memo` 去掉 `status` 参数（标签仍用 `tags` 整体替换）。技能表 / APP_ACTIONS / 执行分支三处对齐。
+
+### 改进（额度外显只显示余额总额，明细点开看）
+
+- 账号卡与模型选择器分组头不再平铺所有条目：官方引擎只显示「总额余额」（DeepSeek 的赠送/充值余额不再挤在同一行）；脚本模板把同单位 remaining 求和（SenseNova 的返赠余额一并计入、只加一次）。多套餐的已用百分比、重置时间与返赠文案改由点击账号卡弹出的详情层展示。
+- 新增纯函数 `usageHeadlineSummary` 统一汇总口径；SenseNova extractor 增加 `grantBalance` 数值字段（`extra` 的「返赠 N」文案保留给详情层）。
+- 测试：`ai-usage-quota.test.mjs` 覆盖官方总额优先、多套餐求和 + 返赠、百分比兜底、错误态。
+
+### 改进（模型供应商图标补齐到 39 家）
+
+- 新增 21 家品牌图标（取自 cc-switch MIT 仓库的 `src/icons/extracted/`）：OpenCode、豆包/火山方舟、腾讯混元、腾讯云、文心/百度、零一万物、美团 LongCat、小米 MiMo、NVIDIA、Cohere、Perplexity、HuggingFace、ModelScope、阿里百炼、AWS Bedrock、Azure OpenAI、Google Cloud、Meta/Llama、Gemma、Sub2API。
+- host 匹配补 `opencode.ai` / `ark.cn-beijing.volces.com` / `qianfan.baidubce.com` / `bedrock-runtime.*.amazonaws.com` / `*.openai.azure.com` 等；名称关键词补中文名（豆包、混元、文心、百炼、魔搭等），账号起中文别名也能命中。
+- OpenCode 用官方方块标记改 `currentColor`（原 SVG 是浅色底专用，深色主题下不可见）；其余保留品牌色。多图标内联时 `clipPath`/`mask` 的 id 按图标键加前缀，避免同文档撞车。
+- 主包 +42 KB（gzip +17 KB）。
+
+### 新功能（设置 → AI → 使用统计：用量先入库，打开面板不再扫会话）
+
+- **数据来源**：新增派生库 `<应用数据>/ai-usage.db`（modernc SQLite，可随时删除重建）。事实有两条写入路径：① 每轮流结束时前端拿到 `usage` 静默上报——主会话、子代理（每轮 `ai-done`）、群聊（成员/主持人发言）三处入口，失败忽略；② 打开面板或点刷新时按「字节偏移 + 文件大小/mtime」游标增量扫描会话 JSONL（`ai-sessions` 与 `ai-groups`）——首次打开即历史回填，不启动后台回填、不做定时轮询。其余时间只做库内聚合，不遍历会话文件。子代理消息没有可扫描的 JSONL，依赖实时上报。
+- **口径**：日界按本机时区；活跃日 = 当天 token > 0；当前连续天数从今天往前数（今天没有用量为 0），最长连续取最大连续段；「最长聊天时长」取消息 `turnMs`（老数据无此字段时回退会话首末跨度）；事实永久保留，删会话/截断历史不回收已计入的消耗。
+- **面板**：5 张指标卡（累计 / 峰值 Token、最长聊天时长、当前 / 最长连续天数）、Token 活动热力图（53 周，每日 / 每周 / 累计三种模式）、每日 Token 趋势（多模型折线，近 7 日 / 近 30 日）、模型用量环形图 + 排行（前 5 + 其他）；刷新按钮触发一次增量回填。ECharts 仍懒加载。
+- **清理**：设置 → 存储与清理新增「AI 使用统计」数据条目，删除前先释放库句柄；主会话/群聊事实在下次打开面板时按游标回填，子代理用量不可恢复（见下方修复条）。
+- 方案见 `docs/finished-plans/usage-stats.md`。
+
+### 改进（terminal read 支持按行取尾部：新增 tail 参数）
+
+- **需求**：`terminal` 工具的 `read` 原来只能按字符数（`maxChars`）取输出尾部，想看「最后 N 行」得自己数字符或绕道 `app_control get_terminal`。
+- **改法**：`read` 新增可选 `tail`（1–200 行），与 `maxChars` 二选一、`tail` 优先。传 `tail` 时前端把读取量拉到上限 20000 字符，拿到文本后按行切最后 N 行（纯前端，不改 Go 绑定 / wailsjs / exe）。工具描述、参数表、返回文案同步更新，配套 `ai-terminal-tools.test.mjs` 新增 2 条断言。
+
+### 修复（斜杠补全认不出工作区技能：`.agents/skills` 里的技能被判「未知命令」）
+
+- **现象**：工作区 `.agents/skills/xxx`（或 `.cadt/skills/xxx`）里的技能，输入 `/xxx` 时补全列表里没有、回车提示「未知命令：/xxx」；但同一技能模型用 `skill_use` 能正常加载，`/skill xxx` 和技能菜单里也都能看到。
+- **原因**：斜杠补全在 `ai-slash.js` 里自持一份技能缓存，命中一次就**永不刷新**；而 `skill_use` / `/skill` / 技能菜单走的是 `listSkills(true)` 强扫。面板若在工作区打开之前预热（启动时 AI 面板本就是开着的）或技能是会话中途才放进目录的，补全侧就永久落后于强扫侧，形成「模型能加载、斜杠说不认识」的口径分裂。
+- **修法**：斜杠缓存加 5s TTL（与面板 `listSkills` 同口径），过期后台刷新后重渲染（旧列表先顶上，不闪烁）；`/技能名` 回车时缓存未命中先强扫一次再判未知；面板 `invalidateSkillsCache()`（技能管理里新建 / 启停 / 隐藏、配置导入）经新钩子同步清空补全缓存。命中判定抽成纯函数 `findSkillBySlashToken`（补 10 条断言）。
+
+### 改进（静默失败改走应用内 toast：不再只躺在状态栏）
+
+- **现象**：大量失败 / 后台事件只写状态栏 `flash()`（5 秒自动清空），用户没盯着就完全看不见——会话保存失败、子代理失败、定时任务触发失败、便签多窗口冲突等尤其容易被漏掉。
+- **改法**：新增统一失败通知出口 `shell/failure-notifier.js`（消息中心 + 右下角 toast + 按 key 节流，默认 30s），只给「需要用户回来处理」的 A/B 级清单用；「已复制 / 已保存 / 输入校验 / 当前版本不支持」这类现场即时反馈仍走 flash，不弹。AI 域的对话级通知（任务失败 / 提问 / 审批）仍走既有 `notifyDesktop()` 会话可见性策略，两套平行不重复。
+- **覆盖**：会话保存失败 / 磁盘存储不可用 / 部分会话读取失败 / 归档溢出丢弃 / 对话日志落盘失败、子代理失败与结论投递失败、定时任务触发失败、计时器与生成任务的唤醒/注入失败及跨工作区提醒、排队消息未发送、群聊落盘/纪要/加载/调度失败（高频的只进消息中心不弹）、文件被 AI/补丁修改但未重载、便签多窗口冲突。
+- **节流**：同 key 30s 内只弹一次；C 级高频（群聊加载/调度等）传 `toast:false` 只进列表。纯逻辑 `core/notify-throttle.js` + 单测 `notify-throttle.test.mjs` / `failure-notifier.test.mjs`（已登记 npm test）。
+
+### 改进（过程折叠不再被已答提问卡切段）
+
+- **现象**：一轮里答完一次 `ask_user` 后，过程折叠被劈成「body｜提问卡｜body」——展开时过程流被整卡打断，后续过程是无头续段；多张提问卡就是多段碎片。
+- **修法**：已答（含超时/跳过/取消）提问卡不再切段，留在过程流里按时间序渲染，随过程一起开合、默认收起（点开「已完成」即可查看问答记录）。方案见 `docs/unfinished-plans/turn-fold-redesign.md` §9。
+- 测试：`ai-turn-fold.test.mjs` 新增 R5（不许再出现 `segments.push({ask:`，默认展开判定不特判提问）。
+
+### 新功能（用户消息原地编辑：正文与附件就地改，不再灌回输入框）
+
+- **交互**：用户消息悬停操作栏的「编辑」由「仅最后一条」放开到**任意一条**；点开后气泡就地变成编辑区（正文 `textarea` 自动高度 + 附件 chips + 「＋ 添加」+「取消 / 保存并重新发送」），不动底部输入框。`Esc` 取消、`Enter` 发送、`Shift+Enter` 换行（与输入框一致；输入法组词中的回车不算发送）。
+- **附件可增删**：图片缩略图、视频 / 文件 / 技能 / 选区 / 引用 chip 都能就地删；「＋ 添加」复用输入区同一条附件链（图片降采样、视频校验、文本读取超限降级为路径引用）；编辑区里 `Ctrl+V` 直接粘贴图片 / 视频（纯文本粘贴走默认，不拦）。
+- **保存语义**：截断这条及其之后并重新发送（与既有「编辑重发」一致）；非最后一条保存前二次确认「将丢弃后面 N 条对话」，取消则编辑态原样保留。失败（超阈 / 忙 / 图片超限 / 租约）编辑态与内容都不丢。
+- **历史文件附件**：新增 `message.attachments` 快照（只存文本类附件：文件 / 技能 / 选区），从本次改动起的消息重开应用后仍能完整编辑；此前的老消息里这些附件已固化进 `<attachments>` 环境块，编辑区显示说明「无法单独编辑，可继续添加新附件」。图片 / 视频继续走 `message.images` / `videos`，引用继续从 `<quote>` 前缀解析，都不重复落盘。
+- **实现**：纯数据层 `frontend/src/ai/ai-inline-edit.js`（快照归一 / 载荷组装）；chip 渲染抽成 `renderAttachmentChips`（输入区与编辑区共用，避免两套视觉漂移）；`ai-composer.js` 导出 `pickAttachmentFiles`；控制器与接线在 `ai-panel.js`；样式 `.ai-edit` 系列复用主题变量。方案见 `docs/finished-plans/inline-message-edit.md`。
+- **测试**：`ai-inline-edit.test.mjs`（8 例：白名单 / 截断 / 封顶 / 往返）、`ai-inline-edit-wiring.test.mjs`（8 例：入口放开 / 保存传 `truncateAt` 且不碰输入区 / 二次确认 / 键位 / 退出 / 快照落盘）。
+
+### 改进（自动审批档：`cd x && npm test` 不再反复弹审批卡）
+
+- **现象**：auto 档下模型爱写 `cd frontend && npm test` 切目录，`commandTokens` 遇 `&&` 直接返回 null，家族白名单短路失效、命令落进分类器——语料把 test/build 类故意标成灰色（良性但必须 ask），端侧给 0.95 高分、远程 AI 复核也按「有副作用非只读」判 ask，于是每次都弹卡；单写 `npm test` + `cwd` 参数则命中家族白名单直接放行。
+- **修法**：`commandFamilySignature` 容忍「恰好一段前置 `cd`/`chdir` + 一条白名单家族命令」——cd 只换执行目录，与调用方直接传 `cwd` 参数等价，后者本就自动放行，这里让 cd 写法获得同等待遇，不放宽任何「执行什么」的判定。多段串联、`||`、`;`、管道、重定向、命令替换、反引号、换行、未闭合引号、非白名单家族一律拒绝。计划预授权判定同步用同一签名口径，避免卡片写「不预授权」而执行时却没弹卡的错位。
+- 工具描述同步补指引：`run_command` / `background_command` 与终端组注记写明「换目录直接传 cwd，命令里不必带 `cd <dir> &&` 前缀」。
+- 测试：`test/ai/ai-command-rules.test.mjs` 新增 3 组用例（前置 cd 正向等价 / 安全边界 / family 授权匹配）；全量 `npm test` 1794 通过。
+
+### 改进（会话数据诊断：长会话不再点了没反应）
+
+- 诊断的数据读取 / 重放 / 逐行解析原先全在弹对话框之前跑完，长会话要等几秒，期间界面毫无变化，用户以为没点上。现改为先弹对话框显示「正在分析会话数据…」，算完再填内容；「复制诊断信息」按钮在分析完成前禁用（提前点会提示「还在生成中」），避免复制到空内容。
+
+### 改进（隔离区 AI 出路收尾：discard 保底快照 / 自举提示 / 导出标记 / conflict_detail）
+
+- **discard 保底快照**：丢弃隔离区前自动把未导出改动全量落盘 `.cadt/patches/worktree-snapshot-<name>-<时间戳>.patch` 并在回执/提示给出路径（可用 git apply 或 propose_patch 恢复）——AI discard 与用户手点丢弃两条路径都覆盖；快照**绕开 PatchSave**（它对「没有任何文件可应用」会删补丁文件，保底存档绝不能被删，新增 `WorktreeSnapshotPatch` 引擎）。快照失败不阻塞丢弃但明确提示「未导出改动已丢失」。丢弃确认卡文案同步改为存档语义。
+- **create 自举提示**：create 回执与会话时间线都提示隔离区只有 git 跟踪内容——依赖目录与构建产物（node_modules / dist / wailsjs）不在其中，测试前先自举（npm install → vite build → wails generate module，顺序有依赖；缺 dist 时 generate 报 embed 错误是在提示先 vite build），并点破「测试假失败先怀疑缺生成物，不是代码错误」。
+- **导出状态标记**：隔离区登记的 `lastExportReport` 展示在 stat 回执、chip 徽标（「隔离区 xxx · 已导出」）与信息卡——改动统计是全量语义（相对基准），已回灌部分看最近一次 export 预检报告，避免「全没回灌」误读。
+- **conflict_detail 按需通道**：`worktree_manage(action=conflict_detail, file=…)` 查看主根某文件相对创建基准的 diff（新增 `GitWorktreeDiffSinceBase`，200 行封顶截断附 read_file 提示）——export 预检报冲突时据此在隔离区重做，冲突细节按需逐文件取，文件级清单仍在 export 回执里。
+- 测试：`TestWorktreeSnapshotPatchAndDiffSince`（快照落盘/无改动语义/单文件 diff/截断/越界拒绝）；工具词表护栏同步（file 参数登记 PROSE_TOKENS）。
+
+### 修复（后台会话的排队消息现在会自动发出，不再等你切回对话）
+
+- **现象**：会话 A 正在后台生成，你在 A 里按 Enter 排了一条消息（或插话/抢占降级成排队），然后切到 B 继续干活——A 本轮结束后那条消息**不会发出**，直到你切回 A 才慢半拍补上，「本轮结束后自动发送」的承诺失效。
+- **根因**：`flushMessageQueue` 开头是 `session.id !== sessionId → return`，把「队列只能由当前输入区代发」写成了唯一通路——`finishStream` / `finishCompact` 里明明调了它，在后台会话里是**死调用**（评估稿 `ai-queue-background-flush.md` 已定位，本次按方案 A 落地）。
+- **修法**：冲刷拆成「取项」与「发送」两步——`takeQueuedItem` 只做守卫与摘除（忙 / 归档 / 待回答 / 计划待批准 / **当前会话**的输入区草稿）；当前会话仍走输入区可见地发，后台会话走 `startSessionTurn` 内核起轮（引用前缀与附件分组与手动发送同一口径），不碰输入区、不刷前台视图。
+- **失败不丢**：回插该会话队首 + 状态栏人话（上下文超阈 / 已归档 / 另一窗口占用 / 其他）+ 会话未读标记，并做一次 2.5s 自愈重试（`fromRetry` 防无限打转）。
+- 方案与实施记录见 `docs/finished-plans/ai-queue-background-flush.md`（原在 `unfinished-plans/`，当日评估当日落地）；测试：`ai-message-queue.test.mjs` 新增 5 例（后台走内核且不碰输入区 / 失败回插 / 忙时不取项 / 当前会话仍走输入区 / 附件分组），`ai-turn-steer-wiring.test.mjs` 同步接线断言。
+
+### 修复（消息中心「AI 待审批」显示红叉图标）
+
+- 审批 / 环境变量待填写是「等用户拍板」，不是错误，但 `markWaitingOnUser` 的通知被标成 `kind: 'error'`，消息中心据此画了叉号圆圈（与「AI 任务失败」同款），连着几条容易被误读成任务失败。现统一改为 `info`（ⓘ，与「AI 计划待批准」一致），含 60 秒催办那条。
+- 历史消息一次性迁移：读取 localStorage 时把标题为「AI 待审批 / AI 待填写」（含「（仍在等待）」后缀）的 error 条目改成 info 并写回，真正的错误消息不动。迁移判定抽成纯函数 `migrateApprovalKind`，配 `test/shell/message-center.test.mjs`。
+
+### 修复（轮次耗时被后台通知截短：会话末尾「00:17」这类用时对不上）
+
+- **根因**：信箱注入（子代理结算 / 后台作业与终端退出 / 会话投递）会折叠成 `role=user` 且带 `turnStartedAt` 的消息（`frontend/src/ai/ai-agent-notices.js`），而回合起点判定 `turnStartAt` 只排除 `systemNote` / `steer`，没识别 `notice`——这一轮的耗时就从「通知到达那一刻」起算，末尾操作行的耗时缩成十几秒（实测 `00:17`，真实是几分钟）。
+- **同源影响**：会话列表时间（`sessionTurnStartTs`）、回合分组折叠条的「用时」、编辑重发锚点、「N 轮」统计都抄了同一份 `role === 'user' && !systemNote && !steer` 判定，一并被通知污染。
+- **修法**：`isTurnBoundaryMessage` 增加 `notice` 排除（与 `ai-context-slim.js` 的轮次切分口径一致）；`ai-panel.js` 的 `turnStartAt` / `lastUserIndex`、上下文统计、`ai-usage-ui.js` 的轮次计数全部改为复用这一判据，不再各处手抄。
+- **历史轮次一起修**：耗时徽标与折叠条「用时」在有 `finishedAt` 时按当前口径现算，不再沿用旧口径落盘的 `turnMs`——已存档的会话也不用重写磁盘就能显示正确值。
+- 测试：`ai-session-store.test.mjs`（notice 不作边界、起点不被通知推进）、`ai-usage-ui.test.mjs`（notice / steer 不计轮）、`ai-turn-steer-wiring.test.mjs`（接线断言改为单一判据）。
+
+### 新功能（二进制文件也能进对话：路径引用降级）
+
+- 以前在输入区附加 docx / xlsx / zip / pdf 这类文件只会弹「附加文件失败：二进制文件不可作为文本读取」，等于完全传不进去。现在改为**路径引用降级**（对齐 ZCode 的 `resolvedPathReferenceAttachment`）：不读正文（避免把二进制塞进上下文），而是把「文件未读入内容 + 完整路径 + 该怎么读」注入 `<attachments>` —— pdf 指向 `ocr`，docx/xlsx/pptx 指向 `ocr` 与 `docx` 技能，压缩包提示先解压到 `.cadt/tmp/`，图片指向 `read_image`，mp4 指向 `read_video`，其余回落 `read_file`。纯函数 `attachmentPathHint` 在 `frontend/src/ai/ai-file-tools.js`（配测试）。
+- **顺带修掉文件对话框的图片通道缺口**：选 png/jpg 曾经也会被当文本读而失败，现在按类型分派——视频走视频通道、图片走图片通道（同一套源准入 + 降采样），其余才走文本/路径引用。
+- 超过文本读取上限（>10 MB）的文件同样降级为路径引用，不再整条失败。
+
+### 改进（AI 图片上限放宽到 10 张，按 dsh 架构重做两层限制）
+
+- **张数 6 → 10，总预算 6 MiB → 32 MiB，单张编码 3 MiB → 4 MiB**；归一化长边 1600 → 2048px。大图现在先按「源准入」收下（单张 50 MiB / 单条消息 200 MiB），再经 canvas 等比缩放与降质压到 4 MiB 才进模型——与 deepseek-harness 的「宽松准入 + 归一化兜底 + 请求层硬预算」两层结构一致。
+- **限制改为单一真源 + 投影**：新增 `internal/aiimagepolicy`（常量与校验的唯一定义）与 Wails 绑定 `AIImageLimits`，前端 `frontend/src/ai/ai-image-policy.js` 启动时拉一次，composer 与发送前预检读同一份数值；两侧测试都断言同一组阈值，前后端不会漂。限制不暴露设置页（与 codex / opencode / ZCode / dsh 一致）。
+- **三层校验**：输入区先做源准入整批拒收（超限时点名上限，不再静默截断）；发送前 `startSessionTurn` 再算一次请求预算，超限直接提示、不发无效往返；Go 传输层用同一份真源强制校验张数、单张与单条消息合计，并核对 MIME 白名单与 base64 合法性。
+- **不引入图像原生依赖**：npm 实测 sharp + libvips（win32-x64）约 40.6 MB，会让单 exe 体积翻倍。归一化继续用浏览器原生 canvas（已有链路，零体积），格式面仍是 png/jpeg/webp/gif，与 dsh 一致。方案见 `docs/finished-plans/ai-image-limits.md`。
+
+### 新功能（内嵌浏览器补齐 4 个工具 + 2 处增强）
+
+- 新增 `browser_wait`：等 `selector`（元素出现）/ `text`（可见文本）/ `url`（地址包含），条件之间是「与」；200ms 轮询到超时（默认 5s、上限 60s）。此前没有任何等待原语，导航后只能反复 `browser_snapshot` 猜时间或空等。
+- 新增 `browser_scroll`：`selector` 滚到元素 / `byPx` 按像素 / `position=top|bottom` 滚到顶底，返回滚动位置与页面高度（触发懒加载、把下方内容滚进视野再截图）。
+- 新增 `browser_hover`：派发 `mouseover`/`mouseenter`/`mousemove` 展开靠 JS 监听触发的悬停菜单。**描述里写明边界**：脚本派发事件不改变 CSS `:hover` 伪类，纯 CSS 悬停样式与只认真实指针的浮层不会出现。
+- 新增 `browser_select`：在原生下拉框上按 `value` 或可见文本（`label`，先精确再包含）选中并派发 `input`/`change`；匹配失败时回执附带前 20 个可选值。自定义下拉组件仍走 `browser_click` 展开再点子项。
+- `browser_click` 增 `text` 参数：按可见文本点「文本相等或包含目标的最小可见可点击元素」（选择器难写时更稳）；`selector` 与 `text` 二选一，都传或都不传直接报错。
+- `browser_press_key` 增 `modifiers`：支持 `ctrl`/`shift`/`alt`/`meta`（含 `cmd`/`win` 等别名）组合快捷键。
+- 权限档：`browser_wait` / `browser_scroll` 进只读档（只影响「看什么」，不改页面内容）；`browser_hover` / `browser_select` 与 click/type 同档（写权限档）。
+- 实现：脚本构造与入参归一抽到纯函数 `frontend/src/ai/ai-browser-tools.js`（配 `test/ai/ai-browser-tools.test.mjs`），执行仍走既有 `BrowserEval`（WebView2 ExecuteScript），**无新增 Go 绑定**；`dev/mock-backend.js` 的 `BrowserEval` 对这类回执脚本返回成功，dev 模式可走通工具链。
+
+### 改进（隔离区 export 应用换轨：merge-tree 写回主根）
+
+- **实证否决 `git apply -3` 路线**：`--3way` 隐含 `--index`，要求「工作区文件与 index 一致」，主根有未暂存改动（隔离区回灌的常态场景）时整份补丁直接失败（`f.txt: does not match index`），连可干净应用的文件都不写——原方案的 apply -3 路线不可用。
+- **应用改为 merge-tree 写回**（与预检共用 `runMergeCore`，同一引擎报告与应用永不分叉）：审批通过后重新跑一次三方合并（覆盖审阅间隔内主根再变的竞态），把合并 tree 里的文件内容经 `cat-file blob` 写回主根工作区——纯 plumbing，**不碰真 index / HEAD / 分支、无 unmerged stages 残留**；合并结果里不存在的文件（隔离区删除）同步删除主根文件；**真冲突文件不写**，原因进逐文件结果与预检报告，交 AI 在隔离区重做。新增 `GitWorktreeMergeApply` 绑定（`internal/gitinfo/worktree_preview.go` 的 `WorktreeMergeApply`），结果契约对齐 PatchApply（mode/applied/skipped/added/removed/files），结果卡零适配。
+- 审批卡里 merge-tree 判「可合并」的文件按可应用呈现（双向引擎判冲突 ≠ 三方合不了，如行号漂移、远处改动），用户仍可自由勾选；全部判定为「已应用」或「只有真冲突」时不出审批卡（S1 行为不变）。实施发现：相邻行改动在 git 三方合并里判冲突（改动区域相接即冲突），属正确行为。
+- 测试：`TestWorktreeMergeApply`（漂移合并写回两侧改动同时在场 / 冲突不写 / 已应用 skipped / 删除同步 / 越界路径拒绝 / index 与 HEAD 不动）。
+
+### 改进（隔离区 export 零副作用三方合并预检）
+
+- **export 先跑 merge-tree 预检再落盘**（方案 `docs/unfinished-plans/worktree-export-improvement.md` L1）：carry=true 的基准快照 commit 就是现成 merge-base，新增 `GitWorktreeMergePreview`（`internal/gitinfo/worktree_preview.go`）——主根与隔离区各做一次 `GIT_INDEX_FILE` 临时 index 工作区快照（不碰用户暂存区 / HEAD / 分支），`git merge-tree --write-tree --merge-base=<baseSha>` 三方合并后按改动文件分三栏：**真冲突**（附 merge-tree CONFLICT 原因）/ **本次可应用** / **已应用**（主根与隔离区内容一致，明确「无需重做」）。此前重复 export 会把已回灌 hunk 报成「没有任何文件可直接应用」的误导报错，现改为有信息量的三栏报告且不落盘补丁。
+- **体量护栏**：工具回执只给索引——冲突 / 可应用清单各 20 行封顶、已应用 10 行，超出折叠计数；全量报告每次 export 独立落盘主根 `.cadt/export-reports/<name>-<时间戳>.md`（不覆盖，可跨次比对），AI 要细节按需 read_file，冲突文件内容永不进上下文。
+- **新绑定**：`GitWorktreeMergePreview` / `GitPatchID`（diff 稳定指纹，`git patch-id --stable`）；git <2.38（无 merge-tree）或快照失败时静默降级走原 PatchSave 链路，行为不劣化。隔离区登记新增 `lastExportReport` / `lastExportPreviewAt`（导出状态标记）。
+- 测试：`worktree_preview_test.go`（三栏分类 / 干净合入 / 快照保暂存区）；`ai-worktree.test.mjs` 增预检回执（体量护栏 / 全部已应用 / 折叠）。
+
+### 改进（Git 提交面板对齐 IDEA：单击选中 / 双击只读差异 / 文件类型图标 / 富右键菜单）
+
+- **单击文件名只选中行**：以前整行是 `<label>`，点文件名会顺带切换勾选框、双击还会同时触发勾选与开差异，两个事件打架。现在行改为普通容器、勾选框独立命中区：单击只选中（高亮 `--accent-weak`，轮询重渲染后保持选中），点勾选框只切勾选，双击才打开差异。
+- **文件类型图标**：文件名前加与文件树同源的类型图标（`core/fileicons.js` 的 `createFileIcon`）。
+- **双击看差异改为固定只读**：差异虚拟文档传 `readOnlyFixed: true`（`bridge-git.js` 的 `showGitDiff`），状态栏显示「只读快照」，`setDocReadOnly` 拒绝对它解锁——以前是可编辑的普通虚拟文档。
+- **右键菜单对齐 JetBrains 常用项**（带图标）：显示差异 / 跳转到源 / 文件历史 / 作为补丁复制到剪贴板 / 回滚更改 / 刷新；右键会先选中该行再弹菜单。菜单实现 `openGitFileMenu`、选中态 `selectGitRow`/`applyGitSelection` 在 `terminal-ui.js`，并给 terminal-ui 注入 `openPathsHere` 依赖。
+
+### 修复（便签标签菜单出现两个对勾）
+
+- 标签管理菜单里已选中的标签显示两个对勾：预设项的 label 里拼了 `'✓ '` 前缀，同时 `checked: true` 又让行首渲染一个对勾图标（`renderMenuIcon` 的 checked 分支）——同一行两处勾。去掉 label 里的文字前缀，只靠 `checked` 画图标（`bridge-memo-view.js` 的 `openTagMenu`）。
+
+### 改进（Git 快捷操作支持配置提交粒度）
+
+- Git 快捷操作（提交代码 / 提交并推送）的提交风格配置新增 **`granularity` 字段**：`batch`（按功能/主题分批提交，一批一 commit，推荐，符合项目「一次提交一个主题」惯例）/ `single`（所有改动一次提交）。首次使用询问时多问一项「提交粒度」，此后按工作区 `.cadt/git-commit-style.json` 执行，不再重复询问。
+- 提示词模板 `frontend/src/ai/ai-git.js` 的 `STYLE_RULES` 同步字段说明与 JSON 示例（`version` 升到 2），提交流程步骤按粒度给出「分组逐批 add+commit」或「全部一次提交」的执行指引。
+
 ### 改进（会话列表工作区分组头的「⋯」改为工作区管理菜单）
 
 - AI 会话列表里工作区分组头（如 `CaDt-DataLens`）右侧的「⋯」以前弹出的是**会话管理菜单**（新建 / 置顶 / 重命名 / 删除当前会话…），与面板标题栏右侧的会话菜单重复。现在改为**工作区管理菜单**：在文件资源管理器中显示、复制工作区路径、在新窗口打开此工作区、在此工作区新建会话、打开文件夹…、最近打开的工作区（子菜单）、关闭当前工作区（仅当前分组显示）。面板标题栏右侧的「⋯」仍是会话列表整体菜单，保持不变。
@@ -37,6 +263,23 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 - 示例插件 `docs/plugins/examples/geojson-viewer/`：canvas 地图视图 + `.bin` 十六进制取样导入器，零第三方依赖。文档补 `docs/plugins/README.md` 两节（API 形状、ctx 成员表、边界与限制）。
 - 测试：新增 `test/shell/plugin-viewers.test.mjs`（11 例）与 `test/shell/plugin-importers.test.mjs`（6 例），均登记进 `npm test`。
 
+### 修复（额度外显显示问题一批）
+
+- **DeepSeek 账户卡只显示「是」**：官方引擎条目里的「账户可用」是零信息量行，现在被过滤，优先显示总额余额等有金额的行（只剩它时才显示）。
+- **SenseNova 显示「112911.76%」**：`unit='%'` 的条目此前把 remaining（原始 token 数）套上了 % 单位。现在百分比条目一律显示「已用 X%」，remaining 只作为「剩余 660K」出现在明细里。
+- **「N 个套餐 · 第一名」改为完整列出**：账号卡、模型选择器分组头、明细弹层都直接列出每个套餐（如「5 小时 已用 12% · 每周 已用 32% · 每月 已用 16%」），不再聚合。
+- **重置时间改为倒计时**：extractor 统一输出结构化 `resetAt`，显示层按 `d/h/m` 只取两个单位渲染（`27d2h` / `1h55m` / `55m`），对齐 cc-switch `countdownStr`；各预设（Kimi/智谱/MiniMax/ZenMux/OpenCode Go/Ollama/SenseNova）同步。
+- **去掉协议字段**：用量明细弹层头部的 `/chat/completions` 标签、模型选择器账号分组头的协议标签一并移除（协议信息在账号卡 meta 行已有）。
+- **用量明细弹层重排版**：每条额度改为独立行卡（档名 + 右对齐数值，第二行灰色小字写「重置 2h51m · 剩余 880K · 返赠 500」），条目间细分隔线，弹层加宽到 380px、数值等宽对齐；快照缓存键升 v2，旧格式缓存直接作废重查。
+
+### 新增（通用 OAuth 额度模板：SenseNova Token Plan）
+
+- 额度外显新增第七种预设模板「**OAuth**」（与官方/通用/NewAPI/Sub2API/Token Plan/自定义并列）：服务商额度接口用**控制台登录 token**（不是 API Key、会过期）的，走通用 OAuth 引擎。第一条配置是 **SenseNova Token Plan**：在 OAuth 模板下选 provider、填控制台账号密码登录（密码只用于本次登录、封成 JWE 后发出，不落盘），refresh token 存 DPAPI 加密文件并自动轮续；额度卡显示每个额度池的 5 小时 / 每周**已用百分比 + 剩余数值 + 重置时间 + 返赠余额**。
+- 引擎通用化：`internal/oauthquota` 按 Provider 配置驱动（端点/PKCE/JWKS/IAM 登录全在配置表），新增 OAuth 服务商只需加一条 Go 配置 + 一条前端预设脚本，不改引擎与 UI；带 token 的请求限制在 provider 域名下，OAuth 入口不开放给 AI。
+- 额度数值按 cc-switch 口径着色（对齐 `quotaRules.ts`）：颜色按**剩余**算——>20% 绿、≤20% 橙、≤0 红，只给数字上色、文案保持灰；余额（无总额）绿、用完红。深色用 green/orange/red-400 亮色、浅色用 600/500/500。
+- 用量配置弹窗去掉「查看/收起预设脚本」的预览按钮与预览区（意义不大且折叠态不一体）；自定义脚本编辑器字体改用内置 JetBrains Mono（此前是系统 monospace）。
+- 方案与实现记录见 `docs/finished-plans/oauth-quota-template.md`。
+
 ### 新增（AI 账号额度外显，cc-switch 式用量查询）
 
 - 设置 → AI → 模型的账号卡新增**品牌图标**与**余额行**：开启用量查询的账号常显余额/套餐额度（如「余额 49.05 CNY」「5 小时 已用 34.50%」），点击重新查询并弹出明细；查询失败红字带原因可重试。**未开启的账号没有余额行、也没有查询按钮**——统一只有「用量配置」入口（替代原「查询用量」按钮）。
@@ -46,12 +289,54 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 - 缓存：查询结果按账号缓存（内存 + localStorage 快照，只存展示数据不存密钥），进入模型页时按自动间隔节流补查；AI 不可达——没有给模型暴露任何读写该配置的工具或动作。
 - 新模块：`ai/ai-usage-templates.js`（模板与套餐预设数据）、`ai/ai-usage-quota.js`（查询管线 + 沙箱 + 缓存）、`ai/ai-usage-config-dialog.js`（配置弹窗）、`ai/ai-provider-icons.js`（17 家供应商品牌 SVG，取自 cc-switch MIT 仓库）；测试 `test/ai/ai-usage-templates / ai-usage-quota / ai-provider-icons` 已登记 `npm test`。方案存档 `docs/finished-plans/ai-quota-display.md`。
 
-### 新增（工作区预指令：三个生命周期自动执行）
+### 新增（生命周期：9 事件自动执行命令，对齐 ZCode 钩子）
 
-- 新功能「预指令」：给每个工作区配置一组命令，按**三个生命周期时机**自动执行（工作目录为该工作区根，继承「设置 → 环境变量」）：`workspace-open` 打开工作区（打开 / 切回 / 启动恢复）、`workspace-close` 关闭工作区（显式关闭或切走旧目录；应用整体退出不触发）、`ai-session-start` AI 会话开始（空会话第一轮流起**前**执行，起轮等待跑完、失败不阻塞起轮；每会话只触发一次，恢复的历史会话不触发，子代理回合不触发）。配置入口在 设置 → 预指令（导航「运行」旁）：总开关 + 条目列表（启用开关 / 时机 / 上移下移 / 编辑 / 删除 / 危险命令标记）+「本工作区预跑一次」。单条失败不阻断后续与宿主流程，结果汇总进状态栏消息中心（失败额外弹 toast），操作留痕记 `precmd.run` / `precmd.config`（只记摘要不记命令正文）。
-- **AI 可代配，但每次写入都要审批**：`app_control` 新增 `get_pre_commands` / `add_pre_command {command,timeoutMs?,event?,enabled?}` / `update_pre_command` / `remove_pre_command`，三个写动作**无条件弹动作审批卡（完全权限档也不例外）**，审批卡列出命令全文与触发时机；批准后条目标「AI 配置」徽标、执行汇总注明来源；AI 只能操作本窗口当前工作区的条目；**刻意不提供「立即执行」动作**——要跑命令走 `run_command` 正常审批链，不给借道免审批的旁路；计划模式下拦截三个写动作。
-- 存储刻意放本机设置（localStorage），不放应用数据或工作区 `.cadt/`：full 档的 AI 可直接写应用数据文件，放那里等于绕过审批拿持久化后门；放工作区则等于「打开陌生仓库自动执行命令」。设置里 AI 摸不到 localStorage，审批不可绕过。上限：全局 20 条 / 单工作区 10 条 / 单条命令 2000 字符 / 超时 1–600 秒（默认 30 秒）。方案见 `docs/finished-plans/workspace-precommands.md`。
-- 配套测试 `test/core/precommands.test.mjs`（归一化 / 上限 / 审批规格 / 汇总含 stderr 尾部）与 `test/shell/precommands.test.mjs`（三生命周期执行 / 重入跳过 / 四动作审批语义 / 改绑与撞 id 防护），登记 `npm test`。
+- 新功能「生命周期」：给每个工作区配置一组命令，按 **9 个事件**自动执行（对齐 ZCode 钩子模型，工作目录为该工作区根，继承「设置 → 环境变量」）：
+  - 工作区级：`workspace-open` 打开工作区（打开 / 切回 / 启动恢复）、`workspace-close` 关闭工作区（显式关闭或切走旧目录；应用整体退出不触发）；
+  - AI 会话级：`session-start` 会话开始（空会话首轮流起**前**阻塞，每会话一次）、`user-prompt-submit` 提交用户输入（每轮起轮前阻塞）、`stop` 停止生成时（fire-and-forget）；
+  - AI 工具级（按**工具名匹配器** `matchTools` 过滤，空=全部、`mcp__*` 前缀通配）：`pre-tool-use` 工具前（阻塞）、`post-tool-use` 工具成功后、`post-tool-use-failure` 工具失败后、`permission-request` 权限请求时（审批卡出现前阻塞）。
+  - 设置 → 生命周期页只列条目摘要；**新建/编辑命令走独立弹窗**（命令 / 时机 / 匹配工具 / 超时），不再在页内展开表单。
+  - 阻塞型事件等命令跑完才继续；其余 fire-and-forget 不阻断宿主流程。配置入口在 设置 → 生命周期（导航「运行」旁）：总开关 + 条目列表（启用开关 / 时机 / 匹配工具 / 上移下移 / 编辑 / 删除 / 危险命令标记）+「本工作区预跑一次」。单条失败不阻断后续，结果汇总进状态栏消息中心（失败额外弹 toast），操作留痕记 `precmd.run` / `precmd.config`（只记摘要不记命令正文）。
+- **AI 可代配，但每次写入都要审批**：`app_control` 新增 `get_pre_commands` / `add_pre_command {command,timeoutMs?,event?,matchTools?,enabled?}` / `update_pre_command` / `remove_pre_command`，三个写动作**无条件弹动作审批卡（完全权限档也不例外）**，审批卡列出命令全文、触发事件与匹配工具；批准后条目标「AI 配置」徽标、执行汇总注明来源；AI 只能操作本窗口当前工作区的条目；**刻意不提供「立即执行」动作**——要跑命令走 `run_command` 正常审批链，不给借道免审批的旁路；计划模式下拦截三个写动作。
+- 存储刻意放本机设置（localStorage），不放应用数据或工作区 `.cadt/`：full 档的 AI 可直接写应用数据文件，放那里等于绕过审批拿持久化后门；放工作区则等于「打开陌生仓库自动执行命令」。设置里 AI 摸不到 localStorage，审批不可绕过。上限：全局 20 条 / 单工作区 10 条 / 单条命令 2000 字符 / 超时 1–600 秒（默认 30 秒）。旧事件名 `ai-session-start` 保留为别名兼容已存盘配置。方案见 `docs/finished-plans/workspace-precommands.md`。
+- 配套测试 `test/core/precommands.test.mjs`（归一化 / 上限 / 审批规格 / 匹配器 / 汇总含 stderr 尾部）与 `test/shell/precommands.test.mjs`（9 事件执行 / 工具匹配 / 重入跳过 / 四动作审批语义 / 改绑与撞 id 防护），登记 `npm test`。
+
+### 修复（自动压缩死锁：error 收尾的会话永久卡在发送门禁）
+
+实测路径：47 轮的会话，最后几轮的大工具结果把估算堆过阈值，恰好那轮以 **error 收尾**（限流 / 超窗措辞没命中恢复分支）——自动压缩的轮末检查只在 `status === 'done'` 时跑，error 直接跳过；而估算 94% ≥ 90% 发送门禁把所有新轮拦住，**轮末检查从此永远不会再触发**，会话死锁在红条上。
+
+- 轮末检查扩展到 error 收尾（`overflowRecovered` 的错误已走「强制压缩 + 重发」分支，跳过避免双重压缩；`autoCompactCount` / 溢出恢复计数仍只在 done 时重置，不放松防循环闸）。
+- 发送门禁拦下时（快速门禁与 `over_budget` 权威预检两处）兜底触发一次 `maybeAutoCompact`：被拦的轮永远完不成，这就是最后能自救的时机。输入框文字不会被清（起轮成功才清），压缩完成后直接再点发送即可。
+- `maybeAutoCompact` 内部本就有开关与阈值判断（估算没过线 = 空操作），兜底调用无条件发起是安全的。
+
+### 修复（两个只读审查代理报出的缺陷）
+
+两轮并行审查（Go 侧 / 前端侧）报出 1 个严重、8 个中等、十余个轻微问题，已全部处理或裁定。要点：
+
+- **严重：sealed 场景下自动保存会覆写解不开的配置**。三处叠加修复——① bootstrap 的 sealed 分支补上与 `saveAIConfig` 同口径的基线（`lastConfigText`），配置没变时自动保存直接跳过；② 热重读失败的 `catch` 不再静默吞 `AI_CONFIG_SEALED`，会置标记；③ Go 侧 `WriteFile` 加防呆闸门：目标文件存在且是本环境解不开的密文时拒绝写入（不变量不再依赖前端内存状态）。旧后端缺 `AIConfigBackupSealed` 时宁可不写。
+- **转录读回在默认路径上不可达**（三处叠加）：`toolMessage.agent` 落盘时没有 `id`、标签页 spec 漏复制 `parentSessionId`、读回成功后调了无参的 `scheduleAgentViewRender()` 等于不刷新。现在 `agent` 持久化 `id + artifactDir`、spec 补字段、读回后按 view 重渲染、读不到也收敛到兜底文案（不再永远挂「正在读取」）。落盘目录改用**根会话** id——嵌套代理原来落在父代理的会话目录里，删根会话清不掉。
+- **应急收缩两处失效**：压力判定改用与提醒条同口径的 `aiEstimateTokens`（原 `chars/3.2` 对中文低估一倍以上，90% 阈值要 2.7 倍窗口才触发），并把系统提示词与 `toolCalls.arguments` 计入；压力档新增独立的 2 000 字符修剪门槛（原来低于落盘阈值的结果一条也压不动）。
+- **配置镜像的凭据不止 apiKey**：`extraHeaders`（Authorization/x-api-key）、`usage.extraFields`（额度脚本 cookie）、`genModels[].headers`、代理地址里的 `user:pass@` 全部从 localStorage 镜像剥掉。
+- **`<mcp_server_notes>` 注入面**：notes 是数据不是指令，尖括号转义（`</mcp_server_notes>` 闭合块、伪 `<system-reminder>` 都失效），换行压平补齐 `\r` 与 U+2028/2029；Go 侧快照按 rune 截断 1000 字（手改 `mcp.json` 塞长文本也进不来）。
+- **并发批次单点异常静默停摆**：组内改 allSettled 语义（一个收尾抛错不再丢掉同批结果），`handleToolRound` 调用点补 `.catch`。
+- **Go 小修**：`Encode("")` 不再产出 `enc:v1:` 空密文、`Decode` 对只剩前缀的截断文件返回 `ErrSealed`（损坏 ≠ 空配置）；`BackupSealed` 加 2 MB 上限、备份名精确到毫秒（同秒互覆）；`sanitize` 拦 Windows 保留设备名（CON/NUL/COM1…，Read 打开设备可能挂住 GUI）、Trim 移到截断之后（尾点剥离会让两个 id 落同一目录）；`cache_control` 降级不再消耗 429/5xx 的重试预算（`attempt--` 抵消）；`ai-artifacts` 清理文案明确「子代理转录删了不可恢复」。
+- **补测试**：`internal/dpapi` 往返 + 坏 base64（这次重构最欠的回归面）；指针文案加死链出路（清缓存后模型不必白跑一轮）。
+- 参数折叠的语义收紧：同一条 assistant 消息里的兄弟调用成功不再算「后续重试」（B 成功不代表 A 的参数被取代）。
+
+### 新增（子代理转录重启后可读回）
+
+- 子代理结算时落盘的转录（`ai-artifacts/<父会话>/sub-<agentId>.txt`）现在**能被读回来了**：重启后打开子代理详情，内存里没有转录时会异步补读磁盘并重渲染，原来那句「应用重启后子代理只保留状态与结论摘要」只在文件也不存在时出现，等待期间显示「正在读取磁盘转录…」。
+- 新增绑定 `AIArtifactRead(sessionId, name)`（路径由 Go 侧拼，前端不碰应用数据目录）；`aiartifact.Read` 带 4 MB 上限、非法 id/名一律拒绝，缺文件返回空串而不是报错。
+- 每个子代理只补读一次，失败不重试（避免打开详情就反复打盘）；读到后写进内存缓存，后续切标签页不再读盘。
+- 测试：`aiartifact` 新增往返/缺文件/非法入参 1 例，`parseTranscriptLines` 1 例（坏行跳过、缺字段归一成空串——这是与写盘侧的格式契约）。
+
+### 变更（同一轮工具调用支持并发）
+
+- **一轮里相邻的只读调用并发执行**（`read_file` / `list_dir` / `search_text` / `glob`），单批上限 4 个；写文件、执行命令、派子代理、MCP 工具一律串行——它们带顺序语义或审批。此前是 `for + await` 全串行：模型一轮读 5 个文件就是 5 次串行往返。做法对齐 codex 的 `can_run_in_parallel`、deepseek-harness 的 `executionMode` 分类器（不明确可并行就串行）、ZCode 的 `concurrentSafe`。
+- **并发资格还要求路径在工作区内**：工作区外的读会弹审批卡，两张卡同时弹会互相挡住，所以解析不出路径或解析越界的调用自动退回串行。
+- 顺序与落盘不受影响：tool 消息的 push 发生在第一个 `await` 之前，`messages` 顺序仍等于模型的调用顺序；会话落盘本身按会话 id `enqueue` 串行化，并发调用只会合并、不会交错。
+- 实现：新模块 `frontend/src/ai/ai-tool-schedule.js`（`PARALLEL_READ_TOOLS` / `isParallelToolCall` / `groupToolCalls`），`ai-panel.js` 的 `handleToolRound` 把单次调用抽成 `runToolCall(call)` 后按批次执行。
+- 测试：`ai-tool-schedule.test.mjs` 5 例（只读白名单、批次切断、并发上限、eligible 谓词、边界输入），已登记 `npm test`。
 
 ### 变更（压缩：应急收缩 + 摘要保真 + 超窗兜底）
 
@@ -121,9 +406,9 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 - **`cadt.runCommandSync` 返回的是 Promise**（命令在 Go 侧异步执行），文档却写成同步返回 `{code,stdout,stderr}`：插件照抄后拿到 Promise、读输出得到 `undefined`（面板显示「依赖安装失败：无返回」），失败还会散落一条未处理的 Promise 拒绝。`docs/plugins/README.md` 与插件技能说明改为「必须 await」。
 - **zcode2api 插件 v1.1.1**：「安装依赖」改为 await + 失败给可读原因（源码目录缺失 / 找不到 Python / 命令输出尾部），一次点击依次装 pip 依赖与 `captcha_node` 的 npm 依赖（后者只服务 JWT 账号，装不上不阻断）；服务未注册时状态行不再显示「查询失败」。
 
-### 修复（便签终端条目 ▶ 报错 row is not defined）
+### 修复（便签终端条目运行按钮报错 row is not defined）
 
-- 点终端条目的 ▶ 运行按钮直接抛 `ReferenceError: row is not defined`：审查修复「未提交草稿跑旧命令」时在 `buildRunButton` 的点击处理里引用了 `row`，但该变量在 `buildItem` 作用域——按钮处理内改用 `btn.closest('.memo-item')` 定位行。顺带把运行出发点显性化：▶ 悬停提示标注「运行于工作区根目录 / 应用进程目录」（命令的 cwd 即工作区根，全局作用域未开工作区时继承应用进程目录）。
+- 点终端条目的运行按钮直接抛 `ReferenceError: row is not defined`：审查修复「未提交草稿跑旧命令」时在 `buildRunButton` 的点击处理里引用了 `row`，但该变量在 `buildItem` 作用域——按钮处理内改用 `btn.closest('.memo-item')` 定位行。顺带把运行出发点显性化：运行按钮悬停提示标注「运行于工作区根目录 / 应用进程目录」（命令的 cwd 即工作区根，全局作用域未开工作区时继承应用进程目录）。
 
 ### 变更（移除便签 Word(.doc) 导出）
 
@@ -161,7 +446,7 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 
 ### 新功能（便签终端条目）
 
-- 便签新增**终端条目**：条目正文是命令，行首出现 ▶ 运行按钮，点击以默认 shell（pwsh → Windows PowerShell 兜底，与内置终端默认一致）执行，输出实时渲染在条目下方（等宽深底输出块，stderr 红色、500 行尾部保留、ANSI 与进度条重绘清洗）。**不支持挂起任务**：120s 硬超时自动杀进程树（防 npm run dev 这类常驻），运行中可随时点 ⏹ 手动停止；状态行显示 运行中/退出码/耗时。块尾快捷新建【终端】按钮由占位转可用，条目右键菜单「转为…」支持文本/Markdown/终端三向转换 +「清除运行输出」。
+- 便签新增**终端条目**：条目正文是命令，行首出现运行按钮，点击以默认 shell（pwsh → Windows PowerShell 兜底，与内置终端默认一致）执行，输出实时渲染在条目下方（等宽深底输出块，stderr 红色、500 行尾部保留、ANSI 与进度条重绘清洗）。**不支持挂起任务**：120s 硬超时自动杀进程树（防 npm run dev 这类常驻），运行中可随时点停止按钮手动停止；状态行显示 运行中/退出码/耗时。块尾快捷新建【终端】按钮由占位转可用，条目右键菜单「转为…」支持文本/Markdown/终端三向转换 +「清除运行输出」。
 - 实现：执行复用 F5 的 RunExec 通道（流式 run-out/run-exit、GBK 解码、超时杀树、RunStop），Go 侧零改动；输出为会话内存态不写 memo.json（重渲染不丢、关面板即清）。运行时在 `bridge/memo-term.js`（纯函数 + 编排，运行 id `memo-<itemId>` 与 F5 互不干扰）；AI 经 update_memo 可建/改终端条目（kind=term）但不可运行。配 `test/bridge/memo-term.test.mjs`（12 例）+ memo-model kind=term 断言，登记进 `npm test`。
 
 ### 修复（便签滚动位置：点击状态icon等重渲染后滚动条偏移）

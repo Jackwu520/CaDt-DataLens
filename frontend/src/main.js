@@ -7,7 +7,7 @@ import {detectFormat, formats, isSupportedFile, pluginFormats} from './core/form
 import {installTooltip, setTooltipActionHandler} from './core/tooltip.js';
 import {createExplorer} from './explorer/explorer.js';
 import {createStructurePanel, parseStructure} from './editor/structure.js';
-import {createContextMenu} from './shell/contextmenu.js';
+import {createContextMenu, inSubmenuCone, pointInRect, SUBMENU_CONE_CLOSE_DELAY_MS} from './shell/contextmenu.js';
 import {copyImageBlobToClipboard} from './core/image-clipboard.js';
 import {prepareImagePayload} from './ai/ai-image-encode.js';
 import {normalizeTermText} from './ai/ai-terminal-tools.js';
@@ -72,10 +72,12 @@ import {createShiftDoubleTap} from './core/shift-double-tap.js';
 import {keymap, comboSpecFromText} from './core/keymap.js';
 import {DOUBLE_SHIFT, DEFAULT_KEY_STYLE, isValidKeyStyleId, getShortcut} from './core/keybindings.js';
 import {createMessageCenter} from './shell/message-center.js';
+import {createFailureNotifier} from './shell/failure-notifier.js';
 import {createFindBar} from './editor/find-bar.js';
 import {createActivityPane} from './settings/activity-pane.js';
 import {createSettingsPanePatches} from './settings/settings-pane-patches.js';
 import {createSettingsPaneStorage} from './settings/settings-pane-storage.js';
+import {createSettingsPaneUsageStats} from './settings/settings-pane-usage-stats.js';
 import {createSettingsPaneWipeguard} from './settings/settings-pane-wipeguard.js';
 import {createSettingsPaneNewFileMenu} from './settings/settings-pane-new-file-menu.js';
 import {createSettingsPanePrecommands} from './settings/settings-pane-precommands.js';
@@ -95,6 +97,11 @@ import {createExplorerOps} from './explorer/explorer-ops.js';
 import {createEditorGroups} from './editor/editor-groups.js';
 import {bookmarkOverview, formatBookmarkListText} from './editor/bookmark-list.js';
 import {isDocReadOnly, isTabReadOnlyFixed, isTabReadOnlyLocked} from './core/readonly.js';
+import {overlayStack} from './core/overlay-stack.js';
+
+// 全局弹层栈的 Esc 分发监听必须先于一切弹层工厂注册（window 捕获阶段按注册顺序执行，
+// 只有装得最早才能用 stopImmediatePropagation 可靠抢占各域散落的旧 Esc 监听）。
+overlayStack.install(window);
 
 window.addEventListener('error', (e) => {
     window.__modErr = (e.message || '') + ' @ ' + (e.filename || '').split('/').pop() + ':' + e.lineno + ':' + e.colno;
@@ -1274,20 +1281,20 @@ async function runAppAction(action, params, scope, callerSessionId, requestActio
         }
         case 'get_memo': {
             // 返回紧凑文本清单（含条目/块 id），模型后续 update/remove 直接引用；
-            // 可选过滤：block_id（某分组）/ status（某状态）/ q（文本包含）
+            // 可选过滤：block_id（某分组）/ tag（某标签）/ q（文本包含）
             const filter = {};
             if (p.block_id != null) filter.blockId = String(p.block_id);
-            if (p.status != null) filter.status = String(p.status);
+            if (p.tag != null && String(p.tag).trim() !== '') filter.tag = String(p.tag).trim();
             if (p.q != null && String(p.q).trim() !== '') filter.q = String(p.q);
             return {scope: p.scope === 'global' ? 'global' : 'workspace', text: await memoApi.list(p.scope, filter)};
         }
         case 'add_memo': {
-            return {result: await memoApi.add(p.scope, p.kind, p.block_id, String(p.text == null ? '' : p.text))};
+            const tags = Array.isArray(p.tags) ? p.tags.map((t) => String(t)) : undefined;
+            return {result: await memoApi.add(p.scope, p.kind, p.block_id, String(p.text == null ? '' : p.text), tags)};
         }
         case 'update_memo': {
             const patch = {};
             if (p.text != null) patch.text = String(p.text);
-            if (p.status != null) patch.status = p.status;
             if (p.kind != null) patch.kind = String(p.kind);
             if (Array.isArray(p.tags)) patch.tags = p.tags.map((t) => String(t));
             if (p.index != null) patch.index = Number(p.index);
@@ -2259,6 +2266,7 @@ const settingsUI = createSettingsUI({
     get renderPluginSettingsPane() { return writingUI && writingUI.renderPluginSettingsPane; },
     get renderRunPane() { return renderRunPane; },
     get renderPreCommandsPane() { return () => settingsPanePrecmd.renderPreCommandsPane(); },
+    get renderUsageStatsPane() { return settingsPaneUsageStats.renderUsageStatsPane; },
     get renderStoragePane() {
         // storage 条目渲染完追加「工作区防护」区（组合根接线，两 pane 不互相 import）
         return async () => {
@@ -2361,6 +2369,8 @@ const editorGroupsMod = createEditorGroups({
     set docSeq(v) { docSeq = v; },
     get activityLog() { return activityLog; },
     get aiPanel() { return aiPanel; },
+    // 失败 / 后台事件通知（消息中心 + toast + 节流）：文件被外部改动未重载等
+    get notifyFailure() { return (...args) => failureNotifier.notifyFailure(...args); },
     // 内容区有文档被打开/切到前台：解开编辑区收起态（见 revealEditorForContent）
     get onDocVisible() { return revealEditorForContent; },
     get aiReferenceFileMenuItems() { return aiReferenceFileMenuItems; },
@@ -3565,6 +3575,14 @@ const messageCenter = createMessageCenter({
 });
 window.__lens.messageCenter = messageCenter;
 
+// 失败 / 后台事件统一通知出口：静默失败送消息中心 + 右下角 toast，按 key 节流防刷屏。
+// 只给 A/B 级清单用（落盘失败、多实例冲突、定时任务、子代理等）；即时反馈仍走 flash。
+// 创建晚于 editorGroups / explorerOps（它们在 2356 / 2589 行），故那些域经 getter 延迟取用。
+const failureNotifier = createFailureNotifier({
+    addMessage: (msg, opts) => messageCenter.add(msg, opts),
+});
+window.__lens.failureNotifier = failureNotifier;
+
 // 存储自动清理驱动器（设置 → 存储与清理）：启动后 2 分钟 + 每 6 小时各检查一次，
 // 开关关闭或浮窗/调试控制台窗口内不做任何事。判定与范围纯函数在 settings-pane-storage.js。
 const storageAutoClean = createStorageAutoClean({
@@ -3650,6 +3668,9 @@ function initAIPanel() {
         // 消息中心投递回调：notify_send 工具与「需要用户处理」的通知都走这里（message-center.js）；
         // 是否真的写进列表由 ai-notify-policy 的 centerRecord 决定（任务完成不写）
         addMessage: (...args) => messageCenter.add(...args),
+        // 失败 / 后台事件统一通知（消息中心 + toast + 节流）：A/B 级清单专用，
+        // 与 notifyDesktop（AI 任务失败 / 提问 / 审批，带会话可见性策略）平行，互不重复。
+        notifyFailure: (...args) => failureNotifier.notifyFailure(...args),
         // 头部放大镜：开全局搜索并只勾选「AI 会话」分类（会话搜索框已并入这里）
         onHeadSearch: () => openGlobalSearch({aiOnly: true}),
         // 汇总卡「撤销」：回滚本轮编辑的文件到 HEAD（Git checkout / 删除新建文件）
@@ -3703,8 +3724,12 @@ function initAIPanel() {
         runAppAction,
         hostAppActions: () => APP_ACTIONS,
         // AI 会话开始预指令（shell/precommands.js）：空会话首轮流起轮前 await 执行
-        // ai-session-start 条目；失败不阻塞起轮（ai-panel 侧另有 try/catch 双保险）
+        // session-start 条目；失败不阻塞起轮（ai-panel 侧另有 try/catch 双保险）
         precmdAIStart: (ws) => precommandsCtl.runForAISessionStart(ws),
+        // 9 事件通用钩子（工具级按 matchTools 过滤、阻塞型 await）：workspace 由调用方
+        // 传会话归属，缺省用当前窗口工作区；main.js 只透传，执行与审批全在控制器
+        precmdEvent: (event, toolName, ws) => precommandsCtl.runForEvent(
+            ws || workspaceFolder || '', event, toolName || ''),
         browserHost: {
             ensureTab: async (id, url, profileKey) => {
                 const existed = docs.find((d) => d.id === id);
@@ -3925,6 +3950,8 @@ function initAIPanel() {
             aiPanel && aiPanel.aiGroupApi ? aiPanel.aiGroupApi.execMemberTool(name, argsJson, workspace) : null
         ),
         flash: (...args) => flash(...args),
+        // 落盘 / 调度等后台失败：走消息中心 + toast + 节流（状态栏 flash 5s 就清，看不见）
+        notifyFailure: (...args) => failureNotifier.notifyFailure(...args),
         // G6 面板化：点群聊行 / 创建群聊 → AI 面板切到群聊视图（不再开内容区标签页）
         openGroupView: (spec) => {
             if (aiPanel && aiPanel.bridgeShowGroupView) aiPanel.bridgeShowGroupView(spec);
@@ -4668,8 +4695,14 @@ const settingsPaneStorage = createSettingsPaneStorage({
     get root() { return workspaceFolder || ''; },
     get settings() { return settings; },
     get applySettings() { return applySettings; },
+    get enhanceSetSelects() { return settingsUI.enhanceSetSelects; },
 });
 
+// 设置 → AI → 使用统计：只查 Go 派生库；刷新按钮触发增量回填
+const settingsPaneUsageStats = createSettingsPaneUsageStats({
+    get backend() { return backend; },
+    get flash() { return flash; },
+});
 // 设置 → 存储与清理 → 「工作区防护」区：开关组 / 备份时间线 / 快照清单
 //（ai-wipeguard.js 的恢复出口；storage pane 渲染完后由 renderStoragePane 包装追加渲染）
 const settingsPaneWipeguard = createSettingsPaneWipeguard({
@@ -4705,6 +4738,25 @@ const settingsPanePrecmd = createSettingsPanePrecommands({
     get sessionPathKey() { return sessionPathKey; },
     get getWorkspace() { return () => workspaceFolder || ''; },
     get runOnce() { return () => precommandsCtl.runForWorkspace(workspaceFolder || ''); },
+    // 新建/编辑命令弹窗：复用 AI 面板的居中对话框三件套（DOM 在 index.html 静态存在，
+    // 惰性取——pane 创建时 aiPanel 可能未初始化，用时先 initAIPanel 再读返回面）
+    get openDialog() {
+        return (...args) => {
+            if (!aiPanel) initAIPanel();
+            return aiPanel && typeof aiPanel.openDialog === 'function' ? aiPanel.openDialog(...args) : null;
+        };
+    },
+    get closeDialog() {
+        return () => {
+            if (aiPanel && typeof aiPanel.closeDialog === 'function') aiPanel.closeDialog();
+        };
+    },
+    get dialogNode() {
+        return (...args) => aiPanel && aiPanel.node ? aiPanel.node(...args) : document.createElement(args[0] || 'div');
+    },
+    get dialogButton() {
+        return (...args) => aiPanel && aiPanel.button ? aiPanel.button(...args) : null;
+    },
 });
 // 设置 → 菜单管理：显隐 / 排序 / 模板，配置只在 settings.newFileMenu 一份
 const settingsPaneNewFileMenu = createSettingsPaneNewFileMenu({
@@ -5552,8 +5604,26 @@ function renderDropdown(menuEl) {
                 if (!it.disabled) openDropdownSubmenu(row, it.submenu);
             });
         } else {
-            row.addEventListener('mouseenter', () => {
-                if (ctxMenu) ctxMenu.close();
+            row.addEventListener('mouseenter', (e) => {
+                if (!ctxMenu || !ctxMenu.isOpen()) return;
+                // 菜单条下拉的子菜单是独立 ctxMenu 实例：指针在下拉项的预测锥内
+                // （斜向走向子菜单）时延迟收起，锥外立即收起。复用 lastMouseX/Y 到点复核。
+                const px = typeof e.clientX === 'number' ? e.clientX : lastMouseX;
+                const py = typeof e.clientY === 'number' ? e.clientY : lastMouseY;
+                if (dropdownSubAnchor && px != null && inSubmenuCone(px, py,
+                    dropdownSubAnchor.getBoundingClientRect(), ctxMenu.rootEl().getBoundingClientRect())) {
+                    clearTimeout(dropdownSubCloseTimer);
+                    dropdownSubCloseTimer = setTimeout(() => {
+                        dropdownSubCloseTimer = 0;
+                        if (!ctxMenu || !ctxMenu.isOpen()) return;
+                        const r = ctxMenu.rootEl().getBoundingClientRect();
+                        if (lastMouseX >= 0 && pointInRect(lastMouseX, lastMouseY, r)) return;
+                        ctxMenu.close();
+                    }, SUBMENU_CONE_CLOSE_DELAY_MS);
+                    return;
+                }
+                clearTimeout(dropdownSubCloseTimer);
+                ctxMenu.close();
             });
             row.addEventListener('click', (e) => {
                 e.stopPropagation();
@@ -5575,10 +5645,21 @@ function wrapMenuActions(items) {
     });
 }
 
+// 菜单条下拉子菜单的预测锥状态：锚点行 + 挂起收起计时器（onClose 复位锚点）
+let dropdownSubAnchor = null;
+let dropdownSubCloseTimer = 0;
+// 下拉的弹层栈条目：Esc 由栈按层序退（closeAllMenus 的每条路径都要出栈）
+let menubarPopHandle = null;
+
 function openDropdownSubmenu(anchor, items) {
     if (!ctxMenu || !items || !items.length) return;
     const rect = anchor.getBoundingClientRect();
-    ctxMenu.open(wrapMenuActions(items), rect.right + 2, rect.top - 4);
+    clearTimeout(dropdownSubCloseTimer);
+    // open() 会先跑上一个菜单的 onClose（把 dropdownSubAnchor 清掉），锚点必须在 open 之后再记
+    ctxMenu.open(wrapMenuActions(items), rect.right + 2, rect.top - 4, {
+        onClose: () => { dropdownSubAnchor = null; },
+    });
+    dropdownSubAnchor = anchor;
 }
 
 function closeAllMenus() {
@@ -5586,6 +5667,10 @@ function closeAllMenus() {
         m.classList.remove('open');
         m.querySelector('.dropdown').classList.add('hidden');
     });
+    if (menubarPopHandle) {
+        menubarPopHandle.dispose();
+        menubarPopHandle = null;
+    }
     if (ctxMenu) ctxMenu.close();
     setOpenMenuEl(null);
 }
@@ -5606,6 +5691,11 @@ function openMenu(menuEl) {
     }
     menuEl.classList.add('open');
     setOpenMenuEl(menuEl);
+    // 下拉进全局弹层栈：Esc 由栈按层序退；z-index 也由栈分配（menu 档）
+    menubarPopHandle = overlayStack.open({
+        id: 'menubar-dropdown', kind: 'menu', el: dd,
+        onClose: () => { closeAllMenus(); return true; },
+    });
 }
 
 // 菜单条在静止鼠标下唤出时会补发 mouseenter，坐标与上次真实移动相同则不算悬停切换
@@ -6011,15 +6101,12 @@ window.addEventListener('keydown', (e) => {
             toggleFocusedNode(plus ? 'expand' : 'collapse');
         }
     } else if (e.key === 'Escape') {
-        if (!isDialogOpen() && findState.open) {
-            e.preventDefault();
-            e.stopPropagation();
-            closeFindBar();
-            return;
-        }
-        closeTopDialog();
-        hideMenuBar();
-        closeFootPopover();
+        // 全局弹层栈接管 Esc：一次只退栈顶层（core/overlay-stack.js）。查找条、AI 顶层
+        // 弹窗、菜单条、状态栏浮层都已进栈，不再需要这里的手写优先级链。栈让路
+        // （Shift+Esc 归 dock 关闭、data-esc-local 归元素语义）时也不能兜底，否则
+        // 「Esc 只清搜索词」会连带关掉整个设置窗——只在栈真空时兜一次设置对话框族。
+        if (overlayStack.dispatchEscape(e)) return;
+        if (overlayStack.size() === 0) closeTopDialog();
     }
     // 插件命令快捷键：内置键位优先——走到这里说明没命中任何内置动作。
     // 对话框打开或正在输入框里打字时不触发，避免抢走正常输入。
@@ -6269,6 +6356,7 @@ const terminalMod = createTerminalUI({
     get openDialogEl() { return openDialogEl; },
     get openNameDialog() { return openNameDialog; },
     get openPathsHere() { return openPathsHere; },
+    get openPathsHere() { return openPathsHere; },
     get refreshGitStatus() { return refreshGitStatus; },
     get rt() { return rt; },
     get saveDoc() { return saveDoc; },
@@ -6322,6 +6410,7 @@ const bridgeUI = createBridgeUI({
     get openConfirmDialog() { return openConfirmDialog; },
     get onPendingChange() { return memoPendingChanged; },
     get consoleWindowMode() { return consoleWindowMode; },
+    get notifyFailure() { return (...args) => failureNotifier.notifyFailure(...args); },
     get copyText() { return copyText; },
     get createDoc() { return createDoc; },
     get currentSidebarView() { return currentSidebarView; },

@@ -39,36 +39,37 @@ import (
 	"datalens/internal/terminal"
 	"datalens/internal/toolchain"
 	"datalens/internal/tray"
+	"datalens/internal/usagestats"
 	"datalens/internal/watch"
 )
 
-const appVersion = "v1.1.0"
+const appVersion = "v1.1.1"
 
 type App struct {
-	*reading.Reader        // 阅读模式引擎（internal/reading），提升方法即 Wails 绑定
-	*run.Runner            // 运行代码引擎（internal/run）
-	*browser.Host          // 内嵌浏览器引擎（internal/browser）
-	*search.Searcher       // 工作区检索 / glob（internal/search）
-	*aischedule.Scheduler  // AI 定时任务调度器（internal/aischedule）
-	*cmdbridge.Bridge      // 进程桥：插件 / AI 终端命令（internal/cmdbridge）
-	*terminal.Terminal     // 内置终端后端（internal/terminal）
-	*toolchain.Toolchain   // 语言环境检测（internal/toolchain）
-	*aiconfig.Store        // AI 配置文件读写（internal/aiconfig）
-	*plugins.Manager        // 插件与市场（internal/plugins）
-	AppServices *appservices.Registry // 插件后台服务托管（internal/appservices）
-	*skills.Skills          // 内置技能与 agent 技能注册（internal/skills）
-	*screenshot.Capturer   // 应用窗口截图（internal/screenshot）
-	*notify.Notifier       // 系统通知（internal/notify）
-	*watch.Watcher         // 工作区文件监听（internal/watch）
-	*fileio.Files          // 文件读写与编码（internal/fileio）
-	*fsops.FS              // 目录与条目操作（internal/fsops）
-	*debugconsole.Console  // 调试控制台日志（internal/debugconsole）
-	*aichat.Chat           // AI 对话与流注册表（internal/aichat）
-	*integration.Registrar // Windows 文件关联 / 右键菜单 / PATH（internal/integration）
-	*mcpsamples.Samples    // 内置 MCP 示例（internal/mcpsamples）
-	*sessionstore.Service  // AI 会话磁盘存储（internal/sessionstore）
-	*aigroups.GroupStore   // AI 群聊磁盘存储（internal/aigroups），提升方法即 AIGroup* 绑定
-	*mcp.Client            // MCP 客户端与子进程管理（internal/mcp）
+	*reading.Reader                              // 阅读模式引擎（internal/reading），提升方法即 Wails 绑定
+	*run.Runner                                  // 运行代码引擎（internal/run）
+	*browser.Host                                // 内嵌浏览器引擎（internal/browser）
+	*search.Searcher                             // 工作区检索 / glob（internal/search）
+	*aischedule.Scheduler                        // AI 定时任务调度器（internal/aischedule）
+	*cmdbridge.Bridge                            // 进程桥：插件 / AI 终端命令（internal/cmdbridge）
+	*terminal.Terminal                           // 内置终端后端（internal/terminal）
+	*toolchain.Toolchain                         // 语言环境检测（internal/toolchain）
+	*aiconfig.Store                              // AI 配置文件读写（internal/aiconfig）
+	*plugins.Manager                             // 插件与市场（internal/plugins）
+	AppServices            *appservices.Registry // 插件后台服务托管（internal/appservices）
+	*skills.Skills                               // 内置技能与 agent 技能注册（internal/skills）
+	*screenshot.Capturer                         // 应用窗口截图（internal/screenshot）
+	*notify.Notifier                             // 系统通知（internal/notify）
+	*watch.Watcher                               // 工作区文件监听（internal/watch）
+	*fileio.Files                                // 文件读写与编码（internal/fileio）
+	*fsops.FS                                    // 目录与条目操作（internal/fsops）
+	*debugconsole.Console                        // 调试控制台日志（internal/debugconsole）
+	*aichat.Chat                                 // AI 对话与流注册表（internal/aichat）
+	*integration.Registrar                       // Windows 文件关联 / 右键菜单 / PATH（internal/integration）
+	*mcpsamples.Samples                          // 内置 MCP 示例（internal/mcpsamples）
+	*sessionstore.Service                        // AI 会话磁盘存储（internal/sessionstore）
+	*aigroups.GroupStore                         // AI 群聊磁盘存储（internal/aigroups），提升方法即 AIGroup* 绑定
+	*mcp.Client                                  // MCP 客户端与子进程管理（internal/mcp）
 	ctx                    context.Context
 	startupTargets         []launchargs.OpenTarget
 	startupSettingsPane    string
@@ -153,8 +154,10 @@ func (a *App) startup(ctx context.Context) {
 	// 插件后台服务：启动已声明且 autoStart 的服务（声明由前端加载插件后 Sync 推送；
 	// 此处对空注册表无害，保留以覆盖未来持久化声明的场景）。
 	a.AppServices.StartAll()
-	// MCP 客户端：仅主窗口进程初始化（浮窗/调试控制台不拉 MCP 子进程，避免同机双实例）
+	// MCP 客户端 + 使用统计回填：仅主窗口进程初始化（浮窗/调试控制台不拉子进程/不扫会话）
 	if !a.IsAIFloatWindow() && !a.IsDebugConsoleWindow() {
+		// 使用统计：只初始化派生库；增量扫描由用户打开统计面板/点刷新时触发
+		usagestats.Start()
 		if err := mcp.InitClient(a.Client, func(event string, payload any) {
 			runtime.EventsEmit(ctx, event, payload)
 		}); err != nil {
