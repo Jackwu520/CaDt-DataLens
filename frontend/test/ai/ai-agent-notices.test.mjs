@@ -3,6 +3,7 @@
 // 信箱深度与溢出策略（会话投递拒收 / 结算合并）、折叠成 user 消息、唤醒被拒后内容回填。
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
 import {buildSettlementNotice, buildAskNotice, buildBgJobExitNotice, buildTerminalExitNotice, formatBgDuration, createAIAgentNotices, NOTICE_DEPTH_MAX} from '../../src/ai/ai-agent-notices.js';
 
 function makeHarness(overrides) {
@@ -447,4 +448,15 @@ test('listPending：闲会话回执直接起轮消费，不挂信箱（胶囊不
     assert.deepEqual(h.notices.listPending(), [], '闲会话的回执直接起轮消费，胶囊不应计数');
     assert.equal(h.calls.turns.length, 1);
     assert.ok(changes >= 1, 'enqueued→consumed 的每次增减都有 onChanged');
+});
+
+test('接线：信箱胶囊自身显隐必须由 updateMailboxChip 摘除（setChipCount 只管角标数字）', () => {
+    // 回归：index.html 里胶囊初始是 class="ai-chip hidden"，漏了 classList.toggle('hidden')
+    // 胶囊就永远看不见——信箱有数据也藏着（2026-11-20 实测）。
+    const src = readFileSync(new URL('../../src/ai/ai-panel.js', import.meta.url), 'utf8');
+    assert.match(
+        src,
+        /function updateMailboxChip\(\)[\s\S]{0,500}chipQueue\.classList\.toggle\('hidden', count <= 0\)/,
+        'updateMailboxChip 必须按 count 摘/挂胶囊自身的 hidden',
+    );
 });
