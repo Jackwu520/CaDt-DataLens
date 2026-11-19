@@ -22,6 +22,8 @@ test('提交类提示词包含风格配置、首次询问与超时默认', () =>
         assert.ok(text.includes('Conventional Commits'));
         assert.ok(text.includes('Co-authored-by'));
         assert.ok(text.includes('不要 git add -A'));
+        assert.ok(text.includes('granularity'));
+        assert.ok(text.includes('提交粒度'));
     }
 });
 

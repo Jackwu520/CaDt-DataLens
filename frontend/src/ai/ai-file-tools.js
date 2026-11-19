@@ -181,6 +181,39 @@ export function globMatchPath(pattern, relPath, name) {
     }
 }
 
+// —— 附件路径引用（非文本文件不读内容，只投递路径 + 读法）——
+
+// 按扩展名给出的处理建议。对齐 ZCode 的 resolvedPathReferenceAttachment：
+// 二进制/超大文件既不原样传（会炸上下文）也不静默丢弃（用户以为发过去了），
+// 而是让模型拿路径 + 明确的读法自己去取。
+const ATTACHMENT_HINTS = [
+    {ext: ['pdf'], how: '用 ocr 工具识别其中的文字（扫描件用 rich_layout_recognition），或加载 pdf 技能处理'},
+    {ext: ['docx', 'doc', 'xlsx', 'xls', 'pptx', 'ppt'], how: '用 ocr 工具读取，或加载 docx 技能处理'},
+    {ext: ['zip', 'tar', 'gz', 'tgz', 'bz2', 'xz', '7z', 'rar'], how: '先用命令解压到 .cadt/tmp/ 再看里面的文件'},
+    {ext: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'], how: '用 read_image 工具把画面附加到对话'},
+    {ext: ['mp4'], how: '用 read_video 工具把视频附加到对话（需 OpenAI 兼容协议）'},
+    {ext: ['mp3', 'wav', 'm4a', 'ogg', 'flac'], how: '用 text_to_speech 之外的路径无法直接听，可先用命令转文字再 read_file'},
+];
+
+// attachmentPathHint(path, reason) → 注入 <attachments> 的说明文本。
+// reason: 'binary'（二进制不可当文本读）| 'large'（超过文本读取上限）。
+// 返回空串表示路径为空（调用方据此跳过）。
+export function attachmentPathHint(path, reason) {
+    const clean = String(path || '').trim();
+    if (!clean) return '';
+    const name = clean.replace(/\\/g, '/').split('/').pop() || clean;
+    const dot = name.lastIndexOf('.');
+    const ext = dot > 0 ? name.slice(dot + 1).toLowerCase() : '';
+    const matched = ATTACHMENT_HINTS.find((entry) => entry.ext.includes(ext));
+    const how = matched
+        ? matched.how
+        : '用 read_file 工具读取（若是二进制，改用对应技能或命令处理）';
+    const why = reason === 'large' ? '超过文本读取上限（10 MB）' : '是二进制文件';
+    return '（未读入正文：' + name + ' ' + why + '，无法作为文本注入对话。\n' +
+        '路径：' + clean + '\n' +
+        '处理建议：' + how + '）';
+}
+
 // —— browser_navigate 的 file:// 解析 ——
 
 // 解码后的本地路径做段归一：\→/、折叠空段与 .、解析 ..（盘符/UNC 分享为地板）。

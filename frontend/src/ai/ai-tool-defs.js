@@ -39,7 +39,7 @@ export const AI_TOOL_DEFS = {
     },
     read_image: {
         name: 'read_image',
-        description: '读取一张图片文件并把画面附加到对话（之后你就能直接看到它）。支持 png / jpg / webp / gif / bmp / svg；超过长边 1600 或体积预算会自动等比降采样压缩，不需要你预先处理。也接受公网图片 URL（http/https 直链，作为 path 传入）：抓取后同样附加到对话，内网地址、需要登录或防盗链的链接取不到。工作区外路径的授权规则与 read_file 相同（用户点名可直接读，否则 read/edit 档请求批准、auto/full 直接读；应用数据目录始终拒绝）。返回尺寸与字节数，图片本身作为一条独立消息挂在工具结果之后。每张图约占 800–1600 token 上下文：只在确实要看画面（截图、图表、UI 核对、照片）时用，同一张图不要反复读；文本内容仍用 read_file，不要用本工具读文本。当前聊天模型未启用图像输入时会直接报错。',
+        description: '读取一张图片文件并把画面附加到对话（之后你就能直接看到它）。支持 png / jpg / webp / gif / bmp / svg；超过长边 2048（或像素/体积预算）会自动等比降采样压缩，不需要你预先处理。也接受公网图片 URL（http/https 直链，作为 path 传入）：抓取后同样附加到对话，内网地址、需要登录或防盗链的链接取不到。工作区外路径的授权规则与 read_file 相同（用户点名可直接读，否则 read/edit 档请求批准、auto/full 直接读；应用数据目录始终拒绝）。返回尺寸与字节数，图片本身作为一条独立消息挂在工具结果之后。每张图约占 800–1600 token 上下文：只在确实要看画面（截图、图表、UI 核对、照片）时用，同一张图不要反复读；文本内容仍用 read_file，不要用本工具读文本。当前聊天模型未启用图像输入时会直接报错。',
         parameters: {
             type: 'object',
             properties: {
@@ -421,18 +421,20 @@ export const AI_TOOL_DEFS = {
             '管理本会话的隔离 git worktree（草稿工作区）：改动落在 .cadt/worktree/<slug>/，不直接碰主根，适合有风险的批量改动、大规模重构、不确定能成的试错。',
             'action=create：创建（一个会话同时只能有一个；会弹审批卡请用户确认，含完全权限）。用户明确要求「基于 worktree / 用隔离区 / 在 worktree 里开发」时（开发环境要求，不是读方案文档），实施的第一步就先创建隔离区；计划模式下只在计划里写这一步、不创建。**必须带 reason**：用一句话说明这次为什么要隔离（会原样显示在审批卡上给用户看，≤200 字）。主根当前有未提交改动、且用户想让隔离区在改动之上试方案时带 carry=true。创建后 <worktree> 块会给出前缀，之后所有文件改动都写到该前缀下、run_command 的 cwd 默认就在隔离区；不要写主根同名文件。主根顶层的依赖目录（node_modules / .venv / venv）会以 junction 共享进隔离区，仓库根的 .worktreeinclude 清单会把 .env 这类被忽略文件拷进来；子目录依赖（如 frontend/node_modules）不会自动共享——缺依赖时在隔离区里装（npm install），绝不要手动 mklink 借主根目录。',
             'action=list：列出仓库现有 worktree（只读，附各隔离区的改动统计）。',
-            'action=stat：只读查看本隔离区相对创建基准的改动统计（文件与增删行数）；不落补丁。',
-            'action=export：把 worktree 里相对创建基准的全部改动（含新文件与删除）导出为补丁，交用户在审批卡里审阅后回灌主根。导出是全量语义：上一轮已回灌过的改动再次导出会预检报「不可应用」，属预期——应用成功后应 discard 收尾。worktree 里不要 commit。',
-            'action=discard：删除 worktree 与其隔离分支（不可恢复；未 export 的改动会丢；会弹审批卡请用户确认，含完全权限）。**必须带 reason**：说明这次为什么收尾（回灌已完成 / 方案放弃等，≤200 字，会显示在审批卡上）。回灌成功、或用户明确不要这轮试验时用它收尾。',
+            'action=stat：只读查看本隔离区相对创建基准的改动统计（文件与增删行数）；不落补丁。注意统计是全量语义（相对基准），「已回灌部分」看最近一次 export 的预检报告。',
+            'action=conflict_detail：只读查看主根某文件相对创建基准改了什么（**必须带 file**，相对主根路径；行数封顶 200）。export 预检报冲突时用它理解「主根侧该文件被谁改成了什么样」，据此在隔离区重做对应文件，不要试图直改主根。',
+            'action=export：把 worktree 里相对创建基准的全部改动（含新文件与删除）导出为补丁，交用户在审批卡里审阅后回灌主根。导出前会先用 merge-tree 三方合并做零副作用预检并出三栏报告（可应用 / 真冲突 / 已应用）：全部已应用会明确「无需重做」，真冲突不落补丁并给出报告文件。worktree 里不要 commit。',
+            'action=discard：删除 worktree 与其隔离分支（会弹审批卡请用户确认，含完全权限）。**必须带 reason**：说明这次为什么收尾（回灌已完成 / 方案放弃等，≤200 字，会显示在审批卡上）。丢弃前会自动把未导出改动存档为补丁文件（.cadt/patches/ 目录）并给出路径，可恢复。回灌成功、或用户明确不要这轮试验时用它收尾。',
             '何时不用：常规小改动直接 edit_file/write_file，不要为每次修改开 worktree。',
         ].join('\n'),
         parameters: {
             type: 'object',
             properties: {
-                action: {type: 'string', enum: ['create', 'list', 'stat', 'export', 'discard'], description: 'create=创建隔离区 / list=列出（附改动统计） / stat=隔离区改动统计 / export=导出补丁回灌 / discard=删除'},
+                action: {type: 'string', enum: ['create', 'list', 'stat', 'export', 'discard', 'conflict_detail'], description: 'create=创建隔离区 / list=列出（附改动统计） / stat=隔离区改动统计 / export=导出补丁回灌（含 merge-tree 预检） / discard=删除（自动存档未导出改动） / conflict_detail=主根文件相对基准的 diff（理解冲突用）'},
                 label: {type: 'string', description: 'create 时可选：用途短名（英文/数字/连字符，如 refactor-parser），用于派生目录与分支名'},
                 carry: {type: 'boolean', description: 'create 时可选：true=把主根当前未提交改动（含暂存划分与未跟踪文件）带入隔离区并打成快照 commit 作为基准——适合「用户带着半成品想试 AI 方案」；缺省 false=从主根 HEAD 干净检出'},
                 name: {type: 'string', description: 'export / stat / discard 可选：目标隔离区 slug；缺省=本会话自己的；可指定本会话派生的子代理隔离区（其他会话的会被拒绝）'},
+                file: {type: 'string', description: 'conflict_detail 必填：主根文件相对路径（相对范围根的 slash 路径）'},
                 reason: {type: 'string', description: 'create / discard 必填：用一句话说明为什么隔离（或为什么收尾），会原样显示在审批卡上给用户看，≤200 字。例：「用户要求重构解析器，先隔离试改，成功再回灌」/「本轮改动已回灌完成，收尾清理」'},
             },
             required: ['action'],
@@ -488,7 +490,7 @@ export const AI_TOOL_DEFS = {
     },
     run_command: {
         name: 'run_command',
-        description: '在终端执行一条命令并返回退出码、stdout、stderr。缺省 shell 优先级：Git Bash → PowerShell 7 → Windows PowerShell → cmd，可用 shell 参数强制指定。用于测试、构建、git 查看等；不要运行交互式或长驻命令（改用 background_command）；不要用 sleep、ping 这类命令空等凑时长——需要「过一段时间再继续」（等构建/下载/生成完成）用 start_timer 倒计时，到点自动唤醒。每条命令都在独立进程中执行、工作目录由 cwd 参数决定（默认范围根；会话开启隔离工作区时默认落在隔离区，要看主根显式传 cwd=\'.\'），cd 不会保留到后续命令，不要用 cd/pwd/echo %CD% 探测目录。输出已由工具捕获并返回，不要用重定向（>、2>&1）把测试/构建日志写进文件再读——重定向会让命令变成无法静态分析的复合命令、转人工审批；需要保留长输出用 background_command + check_command。审批：只读命令（ls/cat/grep/git status 等）在自动审批档直接执行；已知命令族（git/go/npm/pnpm/dotnet/cargo 的低风险子命令）同样自动放行；rm -rf、git reset --hard 等危险命令只单次确认；其余按项目权限规则逐条审批；指定了 shell 的命令按脚本处理——脚本里出现删除/写文件/执行代码/改服务等破坏特征直接单次确认，只读脚本在自动审批档交分类器判定（未开启分类器则逐次询问）。完全权限免审批。',
+        description: '在终端执行一条命令并返回退出码、stdout、stderr。缺省 shell 优先级：Git Bash → PowerShell 7 → Windows PowerShell → cmd，可用 shell 参数强制指定。用于测试、构建、git 查看等；不要运行交互式或长驻命令（改用 background_command）；不要用 sleep、ping 这类命令空等凑时长——需要「过一段时间再继续」（等构建/下载/生成完成）用 start_timer 倒计时，到点自动唤醒。每条命令都在独立进程中执行、工作目录由 cwd 参数决定（默认范围根；会话开启隔离工作区时默认落在隔离区，要看主根显式传 cwd=\'.\'），cd 不会保留到后续命令，不要用 cd/pwd/echo %CD% 探测目录；换目录直接传 cwd，命令里直接写目标命令、不必带 `cd <dir> &&` 前缀。输出已由工具捕获并返回，不要用重定向（>、2>&1）把测试/构建日志写进文件再读——重定向会让命令变成无法静态分析的复合命令、转人工审批；需要保留长输出用 background_command + check_command。审批：只读命令（ls/cat/grep/git status 等）在自动审批档直接执行；已知命令族（git/go/npm/pnpm/dotnet/cargo 的低风险子命令）同样自动放行；rm -rf、git reset --hard 等危险命令只单次确认；其余按项目权限规则逐条审批；指定了 shell 的命令按脚本处理——脚本里出现删除/写文件/执行代码/改服务等破坏特征直接单次确认，只读脚本在自动审批档交分类器判定（未开启分类器则逐次询问）。完全权限免审批。',
         parameters: {
             type: 'object',
             properties: {
@@ -502,7 +504,7 @@ export const AI_TOOL_DEFS = {
     },
     background_command: {
         name: 'background_command',
-        description: '在后台启动一条耗时或长驻命令（构建、watch、本地服务器、长测试），立即返回 jobId，不阻塞对话。作业结束时会收到后台通知唤醒本会话（带退出码），届时用 check_command 读最终输出并向用户汇报；中途想看进度也可以主动 check_command。需要提前终止用 stop_command。会很快结束的短命令请改用 run_command；需要持续交互（REPL、ssh）或想让用户看到现场的长驻程序改用 terminal。工作目录由 cwd 参数决定（默认范围根；隔离会话里默认隔离区，要看主根显式传 cwd=\'.\'），cd 不会保留。缺省 shell 优先级与 run_command 相同（Git Bash 优先），可用 shell 参数强制指定；写 PowerShell 脚本时传 shell=\'pwsh\' 并直接写语句，不要在命令里包 powershell -Command "…"（缺省的 Git Bash 会先展开双引号里的 $变量）。审批策略与 run_command 一致（启动时审批一次，查状态/停止不再审批）。',
+        description: '在后台启动一条耗时或长驻命令（构建、watch、本地服务器、长测试），立即返回 jobId，不阻塞对话。作业结束时会收到后台通知唤醒本会话（带退出码），届时用 check_command 读最终输出并向用户汇报；中途想看进度也可以主动 check_command。需要提前终止用 stop_command。会很快结束的短命令请改用 run_command；需要持续交互（REPL、ssh）或想让用户看到现场的长驻程序改用 terminal。工作目录由 cwd 参数决定（默认范围根；隔离会话里默认隔离区，要看主根显式传 cwd=\'.\'），cd 不会保留；换目录直接传 cwd，命令里不必带 `cd <dir> &&` 前缀。缺省 shell 优先级与 run_command 相同（Git Bash 优先），可用 shell 参数强制指定；写 PowerShell 脚本时传 shell=\'pwsh\' 并直接写语句，不要在命令里包 powershell -Command "…"（缺省的 Git Bash 会先展开双引号里的 $变量）。审批策略与 run_command 一致（启动时审批一次，查状态/停止不再审批）。',
         parameters: {
             type: 'object',
             properties: {
@@ -802,11 +804,13 @@ export const AI_TOOL_DEFS = {
     },
     browser_click: {
         name: 'browser_click',
-        description: '点击页面上匹配 CSS 选择器的第一个元素。需「每次询问」及以上权限。',
+        description: '点击页面元素：传 selector 点匹配 CSS 选择器的第一个元素；或传 text 按可见文本点（找文本相等或包含它的最小可见可点击元素，选择器难写时用它）。selector 与 text 二选一。需「每次询问」及以上权限。',
         parameters: {
             type: 'object',
-            properties: {selector: {type: 'string', description: 'CSS 选择器'}},
-            required: ['selector'],
+            properties: {
+                selector: {type: 'string', description: 'CSS 选择器（与 text 二选一）'},
+                text: {type: 'string', description: '按可见文本点（与 selector 二选一；如「提交」「下一页」）'},
+            },
         },
     },
     browser_type: {
@@ -823,11 +827,65 @@ export const AI_TOOL_DEFS = {
     },
     browser_press_key: {
         name: 'browser_press_key',
-        description: '向页面上当前聚焦的元素派发一个按键事件（如 Enter）。需「每次询问」及以上权限。',
+        description: '向页面上当前聚焦的元素派发一个按键事件（如 Enter、Tab）；配合 modifiers 可发组合快捷键（如 Ctrl+S、Shift+Tab）。需「每次询问」及以上权限。',
         parameters: {
             type: 'object',
-            properties: {key: {type: 'string', description: '按键名，如 Enter、Tab'}},
+            properties: {
+                key: {type: 'string', description: '按键名，如 Enter、Tab、Escape、F5'},
+                modifiers: {
+                    type: 'array',
+                    items: {type: 'string'},
+                    description: '组合键修饰符，如 ["ctrl","shift"]；支持 ctrl/control、shift、alt/option、meta/cmd/win',
+                },
+            },
             required: ['key'],
+        },
+    },
+    browser_wait: {
+        name: 'browser_wait',
+        description: '等页面满足条件再继续：selector（元素出现）/ text（可见文本出现）/ url（地址包含），给多个则是「同时满足」。按 200ms 轮询直到满足或超时（timeoutMs 默认 5000、上限 60000）。导航后等异步渲染、等弹窗或结果出现时用它，比反复调 browser_snapshot 猜时间可靠。超时抛错并说明未满足的条件。',
+        parameters: {
+            type: 'object',
+            properties: {
+                selector: {type: 'string', description: 'CSS 选择器：等它出现'},
+                text: {type: 'string', description: '页面可见文本片段：等它出现'},
+                url: {type: 'string', description: '地址片段：等 location.href 包含它'},
+                timeoutMs: {type: 'integer', description: '超时毫秒（200–60000，默认 5000）'},
+            },
+        },
+    },
+    browser_scroll: {
+        name: 'browser_scroll',
+        description: '滚动当前页面：selector 滚到该元素进入视野；byPx 按像素滚（正数向下、负数向上）；position=top/bottom 滚到顶/底。三者选一。用于触发懒加载、把下方内容滚进视野后再截图或点选。返回滚动后的纵向位置与页面高度。',
+        parameters: {
+            type: 'object',
+            properties: {
+                selector: {type: 'string', description: 'CSS 选择器：滚到它（三选一）'},
+                byPx: {type: 'integer', description: '滚动像素，正数向下、负数向上（三选一）'},
+                position: {type: 'string', description: 'top 或 bottom（三选一）'},
+            },
+        },
+    },
+    browser_hover: {
+        name: 'browser_hover',
+        description: '把指针悬停在匹配 CSS 选择器的第一个元素上（派发 mouseover / mouseenter / mousemove），用于展开靠 JS 监听触发的悬停菜单或提示。注意：这是脚本派发的事件，能触发 JS 监听器，但不改变 CSS :hover 伪类——纯 CSS 悬停样式与只认真实指针的浮层不会出现。需「每次询问」及以上权限。',
+        parameters: {
+            type: 'object',
+            properties: {selector: {type: 'string', description: 'CSS 选择器'}},
+            required: ['selector'],
+        },
+    },
+    browser_select: {
+        name: 'browser_select',
+        description: '在匹配 CSS 选择器的原生下拉框上选中一项：按 value 或按选项可见文本（label）匹配，写入后派发 input/change 事件。value 与 label 至少给一个，都給时先按 value 精确匹配、再按文本（先相等后包含）。自定义下拉组件不适用——那种先 browser_click 展开再点子项。需「每次询问」及以上权限。',
+        parameters: {
+            type: 'object',
+            properties: {
+                selector: {type: 'string', description: 'CSS 选择器（指向原生下拉框）'},
+                value: {type: 'string', description: '选项的 value（与 label 至少给一个）'},
+                label: {type: 'string', description: '选项显示文本（与 value 至少给一个）'},
+            },
+            required: ['selector'],
         },
     },
     browser_evaluate: {
@@ -905,7 +963,7 @@ export const AI_TOOL_DEFS = {
     },
     terminal: {
         name: 'terminal',
-        description: '操作应用内置终端（ConPTY 持久会话，与用户看到的底部终端是同一个）：list 看已开的终端、open 新建并自动打开底部面板、send 向终端写文本、read 读最近输出、signal 发 Ctrl+C、close 关闭页签。适合交互式/长驻程序（dev server、需要持续输入的命令、看交互式 CLI）；一次性命令仍用 run_command；不需要交互、只等 AI 自己轮询结果的长驻服务优先 background_command（输出走缓冲更省，结束时有后台通知），terminal 用在想让用户看到现场或随时接手的场合。终端里的程序不受 run_command 的超时与「停止生成」约束——需要中止请用 signal，或让用户自己停。注意：终端里的程序（如 dev server）退出时 shell 还在，不会有通知，要用 read 看输出；shell 会话本身退出（异常终止/被关）会收到后台通知。send / open / close 走命令审批。不要往终端里发 sleep、ping 这类命令空等凑时长：需要「等一段时间再继续」用 start_timer 倒计时，到点自动唤醒。',
+        description: '操作应用内置终端（ConPTY 持久会话，与用户看到的底部终端是同一个）：list 看已开的终端、open 新建并自动打开底部面板、send 向终端写文本、read 读最近输出（默认按字符数 maxChars 取尾部；想按「最后 N 行」看就传 tail，与 maxChars 二选一，tail 优先）、signal 发 Ctrl+C、close 关闭页签。适合交互式/长驻程序（dev server、需要持续输入的命令、看交互式 CLI）；一次性命令仍用 run_command；不需要交互、只等 AI 自己轮询结果的长驻服务优先 background_command（输出走缓冲更省，结束时有后台通知），terminal 用在想让用户看到现场或随时接手的场合。终端里的程序不受 run_command 的超时与「停止生成」约束——需要中止请用 signal，或让用户自己停。注意：终端里的程序（如 dev server）退出时 shell 还在，不会有通知，要用 read 看输出；shell 会话本身退出（异常终止/被关）会收到后台通知。send / open / close 走命令审批。不要往终端里发 sleep、ping 这类命令空等凑时长：需要「等一段时间再继续」用 start_timer 倒计时，到点自动唤醒。',
         parameters: {
             type: 'object',
             properties: {
@@ -913,7 +971,8 @@ export const AI_TOOL_DEFS = {
                 id: {type: 'string', description: '终端 id（由 list / open 返回）；除 list / open 外必填'},
                 shell: {type: 'string', description: 'open 用：pwsh / powershell / cmd / gitbash；省略为默认 shell'},
                 text: {type: 'string', description: 'send 用：要写入的文本；需要回车请自带 \\r（如 "npm run dev\\r"）'},
-                maxChars: {type: 'integer', description: 'read 用：最多返回多少字符（默认 4000，上限 20000）'},
+                maxChars: {type: 'integer', description: 'read 用：最多返回多少字符（默认 4000，上限 20000）；与 tail 二选一，tail 优先'},
+                tail: {type: 'integer', description: 'read 用：只返回最后 N 行（1–200），按行看日志/输出时用；与 maxChars 二选一，tail 优先'},
             },
             required: ['action'],
         },
@@ -995,6 +1054,10 @@ export const AI_TOOL_CATALOG = {
     browser_click: {group: 'browser', blurb: '点选、输入、按键'},
     browser_type: {group: 'browser', blurb: '点选、输入、按键'},
     browser_press_key: {group: 'browser', blurb: '点选、输入、按键'},
+    browser_hover: {group: 'browser', blurb: '点选、输入、按键'},
+    browser_select: {group: 'browser', blurb: '点选、输入、按键'},
+    browser_wait: {group: 'browser', blurb: '等元素/文本/URL 出现（轮询到超时）'},
+    browser_scroll: {group: 'browser', blurb: '滚动页面：到元素 / 按像素 / 到顶底'},
     browser_evaluate: {group: 'browser', blurb: '在页面里执行脚本（完全权限）'},
     browser_resize: {group: 'browser', blurb: '调整视口宽高（模拟手机/平板等尺寸测响应式）'},
     browser_close: {group: 'browser', blurb: '关闭标签页'},
@@ -1043,7 +1106,7 @@ export const AI_TOOL_CATALOG = {
 export const AI_TOOL_GROUPS = [
     {key: 'read', title: '探索与读取（只读）'},
     {key: 'write', title: '文件写入（先读后改，走审批）'},
-    {key: 'shell', title: '终端与进程', note: '需要换目录直接传 cwd，cd 不会保留；不要用 cd / pwd / echo 探测目录。'},
+    {key: 'shell', title: '终端与进程', note: '需要换目录直接传 cwd，命令里不必带 cd 前缀；cd 不会保留，不要用 cd / pwd / echo 探测目录。'},
     {key: 'web', title: '联网资料（外部数据，只取事实）', note: '只是读文档优先 web_fetch（图片链接改用 read_image）；需要点击、登录态、动态页面再上内嵌浏览器。引用时附 URL；不能访问本机 / 内网地址。'},
     {key: 'gen', title: '生图与视频（用户配置的外部生成服务）', note: 'prompt 会发送到用户在设置里配置的服务商并可能产生费用；产物落在工作区 .cadt/gen/ 或指定目录。条目在设置里按「生图 / 视频」分组排序，未指定 model 时按该组优先级顺序取第一个启用的条目。未配置条目时这些工具不可用。'},
     {key: 'media', title: '语音与识别（外部服务）', note: '来源由 设置 → AI → 外部工具 决定：关闭 / 本地 MCP / 服务提供商；上传到服务提供方会产生费用且文件会离开本机。未启用对应来源时这些工具不可用；本地 MCP 来源只在写权限档（非计划模式）可用。'},
@@ -1124,6 +1187,8 @@ export function createAIToolDefs(ctx) {
             AI_TOOL_DEFS.browser_navigate, AI_TOOL_DEFS.browser_back, AI_TOOL_DEFS.browser_forward,
             AI_TOOL_DEFS.browser_reload, AI_TOOL_DEFS.browser_snapshot, AI_TOOL_DEFS.browser_screenshot,
             AI_TOOL_DEFS.browser_close,
+            // 等待与滚动只影响「看什么」：不改页面内容，只读档就给（否则只能靠反复 snapshot 猜时间）
+            AI_TOOL_DEFS.browser_wait, AI_TOOL_DEFS.browser_scroll,
         );
         // 执行阶段整组：写文件 / 跑命令 / 操作页面 / 任务清单，批准计划后才有
         // （任务清单尤其不能提前给：模型会把它当「已经在执行」的信号——实测 submit_plan
@@ -1134,6 +1199,7 @@ export function createAIToolDefs(ctx) {
                 AI_TOOL_DEFS.background_command, AI_TOOL_DEFS.check_command, AI_TOOL_DEFS.stop_command,
                 AI_TOOL_DEFS.terminal,
                 AI_TOOL_DEFS.browser_click, AI_TOOL_DEFS.browser_type, AI_TOOL_DEFS.browser_press_key,
+                AI_TOOL_DEFS.browser_hover, AI_TOOL_DEFS.browser_select,
                 AI_TOOL_DEFS.browser_resize);
         }
         // 补丁：计划模式下只给「预检」形态（dry_run，不落盘、不弹卡），批准计划后再真正出补丁；
@@ -1244,7 +1310,7 @@ export function createAIToolDefs(ctx) {
             {need: ['web_search'], text: '外部资料：web_search 找来源 → web_fetch 读正文 → 引用附 URL'},
             {need: ['ocr'], text: '扫描件 / PDF / 图片取文字：ocr → 按页文本；纯文本文件仍用 read_file'},
             {need: ['transcribe_audio'], text: '录音转文字：transcribe_audio → 再总结要点'},
-            {need: ['browser_navigate', 'browser_snapshot'], text: '网页操作：browser_navigate → browser_snapshot 看结构 → 需要时 click/type → 再 snapshot/screenshot 确认'},
+            {need: ['browser_navigate', 'browser_snapshot'], text: '网页操作：browser_navigate → browser_wait 等渲染完（或直接 browser_snapshot 看结构）→ 需要时 click/type/select → 再 snapshot/screenshot 确认'},
             {need: ['app_control'], text: '应用界面：app_control get_state → screenshot 看图核对 → 改视图/设置 → get_state 复核'},
             {need: ['app_control'], text: '配置 MCP 服务器：skill_use cadt-mcp-config → app_control get_mcp_servers → set_mcp_server（用户确认本机命令）→ 提醒用户在设置里勾选工具/填环境变量'},
             {need: ['app_control'], text: '缺本地 TTS / OCR / ASR：skill_use cadt-mcp-samples → list_mcp_samples → install_mcp_sample（用户确认）→ 提醒绑定能力并填环境变量'},

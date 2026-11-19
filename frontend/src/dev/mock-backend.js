@@ -597,6 +597,111 @@ function mockShellLabel(shell) {
     }
 }
 
+// mockUsageStats 生成一份稳定的演示快照（模块级缓存，多次打开面板数字不跳）。
+let mockUsageCache = null;
+function mockUsageStats() {
+    if (mockUsageCache) return mockUsageCache;
+    const now = new Date();
+    const HEAT_DAYS = 120;
+    const heatDays = [];
+    const dailyModelUsage = [];
+    const modelTotals = new Map();
+    const pad = (v) => String(v).padStart(2, '0');
+    for (let i = HEAT_DAYS - 1; i >= 0; i--) {
+        const date = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
+        const key = date.getFullYear() + '-' + pad(date.getMonth() + 1) + '-' + pad(date.getDate());
+        const wave = 0.25 + 0.75 * Math.abs(Math.sin(i * 0.63));
+        const idle = i % 6 === 5 ? 0.15 : 1;
+        const total = Math.round((4000 + 160000 * wave) * idle);
+        const fast = Math.round(total * 0.62);
+        const smart = total - fast;
+        const requests = total > 0 ? 2 + (i % 7) : 0;
+        heatDays.push({date: key, tokens: total, requests});
+        dailyModelUsage.push({
+            date: key,
+            models: total > 0
+                ? [{model: 'deepseek-chat', tokens: fast}, {model: 'claude-sonnet', tokens: smart}]
+                : [],
+        });
+        modelTotals.set('deepseek-chat', (modelTotals.get('deepseek-chat') || 0) + fast);
+        modelTotals.set('claude-sonnet', (modelTotals.get('claude-sonnet') || 0) + smart);
+    }
+    const totalTokens = heatDays.reduce((sum, day) => sum + day.tokens, 0);
+    const activeDays = heatDays.filter((day) => day.tokens > 0).length;
+    const peak = heatDays.reduce((best, day) => (day.tokens > best.tokens ? day : best), {date: '', tokens: 0});
+    const modelList = [...modelTotals.entries()]
+        .filter(([, tokens]) => tokens > 0)
+        .map(([model, tokens]) => ({
+            model, tokens,
+            inputTokens: Math.round(tokens * 0.72),
+            outputTokens: tokens - Math.round(tokens * 0.72),
+            requests: Math.max(1, Math.round(tokens / 900)),
+            share: totalTokens > 0 ? tokens / totalTokens : 0,
+        }))
+        .sort((a, b) => b.tokens - a.tokens);
+    const snapshot = {
+        generatedAt: Date.now(),
+        range: '30d',
+        summary: {
+            totalTokens,
+            peakDayTokens: peak.tokens,
+            peakDay: peak.date,
+            longestSessionMs: 2 * 3600_000 + 13 * 60_000,
+            currentStreakDays: 4,
+            longestStreakDays: 9,
+            activeDays,
+            totalSessions: 23,
+            totalRequests: heatDays.reduce((sum, day) => sum + day.requests, 0),
+            firstDay: heatDays[0].date,
+            lastDay: heatDays[heatDays.length - 1].date,
+        },
+        heatmap: {
+            startDate: heatDays[0].date,
+            endDate: heatDays[heatDays.length - 1].date,
+            maxTokens: peak.tokens,
+            days: heatDays,
+        },
+        dailyModelUsage,
+        models: modelList,
+    };
+    mockUsageCache = {snapshot};
+    return mockUsageCache;
+}
+
+// mockUsageRequests 请求日志演示数据：确定性生成 137 条，覆盖分页/缓存/速度/首字。
+let mockUsageRequestsCache = null;
+function mockUsageRequests() {
+    if (mockUsageRequestsCache) return mockUsageRequestsCache;
+    const now = Date.now();
+    const models = [
+        {model: 'deepseek-chat', account: 'DeepSeek 官方'},
+        {model: 'claude-sonnet', account: 'Anthropic 主账号'},
+        {model: 'gpt-5.2', account: 'OpenAI 备用'},
+    ];
+    const rows = [];
+    for (let i = 0; i < 137; i++) {
+        const base = models[i % models.length];
+        const prompt = 800 + ((i * 137) % 12000);
+        const cached = Math.min(prompt, Math.round(prompt * (0.35 + ((i % 6) * 0.1))));
+        const cacheWrite = i % 3 === 0 ? Math.round(prompt * 0.05) : 0;
+        const ttft = 300 + ((i * 211) % 2400);
+        rows.push({
+            ts: now - i * 7 * 60 * 1000,
+            model: base.model,
+            modelAccount: base.account,
+            promptTokens: prompt,
+            completionTokens: 80 + ((i * 53) % 900),
+            cachedTokens: cached,
+            cacheWriteTokens: cacheWrite,
+            modelMs: ttft + 1200 + ((i * 317) % 6000),
+            ttftMs: ttft,
+            statusCode: 200,
+        });
+    }
+    mockUsageRequestsCache = rows;
+    return rows;
+}
+
 const mockBackend = {
     async AIConfigRead() {
         return mockAIConfigText;
@@ -604,6 +709,48 @@ const mockBackend = {
     async AIConfigWrite(data) {
         mockAIConfigText = String(data || '');
         return null;
+    },
+    // 使用统计 mock：确定性生成的 30 天演示数据（只走面板渲染链路）
+    async AIUsageStatsRecord() {
+        return '';
+    },
+    async AIUsageStatsSync() {
+        return '';
+    },
+    async AIUsageStatsSnapshot(rangeKey) {
+        const {snapshot} = mockUsageStats();
+        const days = rangeKey === '7d' ? 7 : 30;
+        const dailyModelUsage = snapshot.dailyModelUsage.slice(-days);
+        // 与 Go 侧一致：summary/heatmap 恒为全量，models 按窗口重算
+        const totals = new Map();
+        for (const row of dailyModelUsage) {
+            for (const item of row.models || []) {
+                totals.set(item.model, (totals.get(item.model) || 0) + item.tokens);
+            }
+        }
+        const rangeTotal = [...totals.values()].reduce((sum, value) => sum + value, 0);
+        const models = [...totals.entries()]
+            .map(([model, tokens]) => ({
+                model, tokens,
+                inputTokens: Math.round(tokens * 0.72),
+                outputTokens: tokens - Math.round(tokens * 0.72),
+                requests: Math.max(1, Math.round(tokens / 900)),
+                share: rangeTotal ? tokens / rangeTotal : 0,
+            }))
+            .sort((a, b) => b.tokens - a.tokens);
+        return {
+            ...snapshot,
+            range: rangeKey === '7d' ? '7d' : '30d',
+            generatedAt: Date.now(),
+            dailyModelUsage,
+            models,
+        };
+    },
+    async AIUsageStatsRequests(offset, limit) {
+        const rows = mockUsageRequests();
+        const start = Math.max(0, Number(offset) || 0);
+        const size = Math.max(1, Math.min(200, Number(limit) || 10));
+        return {items: rows.slice(start, start + size), total: rows.length, offset: start, limit: size};
     },
     // 官方白名单引擎 mock：回两条示意余额（dev 调试只看渲染链路）
     async AIUsageQuery() {
@@ -614,6 +761,29 @@ const mockBackend = {
                 {label: '总额余额（USD）', value: '18.00'},
                 {label: '账户可用', value: '是'},
             ],
+        };
+    },
+    // 通用 OAuth 额度 mock：未登录态 + 一份模拟 pool-usage 响应（SenseNova 预设 extractor 可解析）
+    async AIOAuthQuotaProviders() {
+        return [{id: 'sensenova', name: 'SenseNova'}];
+    },
+    async AIOAuthQuotaLogin(providerID, username) {
+        return {ok: true, username: String(username || 'mock'), expiresAt: Math.floor(Date.now() / 1000) + 10800};
+    },
+    async AIOAuthQuotaStatus() {
+        return {loggedIn: false};
+    },
+    async AIOAuthQuotaLogout() {
+        return '';
+    },
+    async AIOAuthQuotaFetch() {
+        return {
+            status: 200, contentType: 'application/json', bytes: 120, truncated: false,
+            body: JSON.stringify({plan: {name: 'Mock Plan'}, pools: [{
+                id: 'mock', name: 'Mock 池', window_5h: {limit: '1000000', used: '340000', remaining: '660000', reset_at: ''},
+                window_7d: {limit: '5000000', used: '1200000', remaining: '3800000', reset_at: ''},
+                grant_balance: '500',
+            }]}),
         };
     },
     // 脚本额度查询哑通道 mock：回 200 + 通用 balance 形态（通用模板 extractor 可直接解析）
@@ -1892,7 +2062,13 @@ const mockBackend = {
         return {id, url: tab.url, title: tab.title, canGoBack: false, canGoForward: false, loading: false};
     },
     async BrowserEval(id, script) {
-        return JSON.stringify({result: {value: '[mock eval] ' + String(script).slice(0, 60)}});
+        const s = String(script);
+        // browser_wait / scroll / hover / select / 按文本点击都靠 JSON.stringify({ok:...}) 回执：
+        // dev 模式直接给成功回执，让这些工具链在 mock 里能走通（不模拟真实 DOM 效果）
+        if (s.includes('JSON.stringify({ok:')) {
+            return JSON.stringify({ok: true, tag: 'MOCK', text: 'mock', scrollY: 0, scrollHeight: 1000, value: 'mock', label: 'mock', count: 3});
+        }
+        return JSON.stringify({result: {value: '[mock eval] ' + s.slice(0, 60)}});
     },
     async BrowserCallCDP(id, method, paramsJSON) {
         throw new Error('CDP 通道暂不可用（' + method + '）');
@@ -3386,6 +3562,21 @@ const mockBackend = {
     },
     async AITestConnection(cfg) { window.__mockAiTestCfg = cfg; return '连接成功（mock）'; },
     async AIListModels(cfg) { window.__mockAiModelsCfg = cfg; return ['deepseek-flash', 'deepseek-v4-pro', 'qwen3.7-plus', 'kimi-k3.1-pro']; },
+    // 图片三层限制（internal/aiimagepolicy 的投影）：数值必须与 Go 侧保持一致，
+    // 否则 dev 模式的预检行为会和真机分叉（window.__mockImageLimits 可覆盖做边界演练）。
+    async AIImageLimits() {
+        return window.__mockImageLimits || {
+            maxImagesPerMessage: 10,
+            maxSourceImageBytes: 50 * 1024 * 1024,
+            maxMessageSourceBytes: 200 * 1024 * 1024,
+            maxImagePixels: 64000000,
+            maxImageDimension: 65535,
+            maxNormalizedDimension: 2048,
+            maxNormalizedBase64: 4 * 1024 * 1024,
+            maxRequestImageBytes: 32 * 1024 * 1024,
+            mediaTypes: ['image/png', 'image/jpeg', 'image/webp', 'image/gif'],
+        };
+    },
     // 模型配置表：mock 里不落盘，同步返回一份固定表，便于验证回填与提示行
     async AIModelCatalogCached() { return {text: window.__mockModelCatalog || '', fetchedAt: window.__mockModelCatalogAt || 0}; },
     async AIModelCatalogSync(url) {

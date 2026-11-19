@@ -641,6 +641,10 @@ export function createAIToolCards(ctx) {
             case 'browser_click': return {verb: '点击', icon: 'cursor'};
             case 'browser_type': return {verb: '输入', icon: 'keyboard'};
             case 'browser_press_key': return {verb: '按键', icon: 'keycap'};
+            case 'browser_wait': return {verb: '等待条件', icon: 'clock'};
+            case 'browser_scroll': return {verb: '滚动页面', icon: 'chevron-down'};
+            case 'browser_hover': return {verb: '悬停', icon: 'eye'};
+            case 'browser_select': return {verb: '选择选项', icon: 'check'};
             case 'browser_resize': return {verb: '调整视口', icon: 'maximize'};
             case 'browser_evaluate': return {verb: '执行脚本', icon: 'code'};
             case 'browser_close': return {verb: '关闭页面', icon: 'close'};
@@ -697,7 +701,17 @@ export function createAIToolCards(ctx) {
             case 'browser_navigate':
                 return {primary: aiTextOf(args.url).trim() || '—', dir: ''};
             case 'browser_click': case 'browser_type':
+                return {primary: aiTextOf(args.selector).trim() || (aiTextOf(args.text).trim() ? '「' + aiTextOf(args.text).trim().slice(0, 40) + '」' : '—'), dir: ''};
+            case 'browser_hover': case 'browser_select':
                 return {primary: aiTextOf(args.selector).trim() || '—', dir: ''};
+            case 'browser_wait': {
+                const cond = [aiTextOf(args.selector).trim(), aiTextOf(args.text).trim(), aiTextOf(args.url).trim()].filter(Boolean);
+                return {primary: cond.length ? cond.join(' + ').slice(0, 60) : '—', dir: ''};
+            }
+            case 'browser_scroll': {
+                const target = aiTextOf(args.selector).trim() || (args.byPx !== undefined && args.byPx !== null ? String(args.byPx) + 'px' : '') || aiTextOf(args.position).trim();
+                return {primary: target ? target.slice(0, 60) : '—', dir: ''};
+            }
             case 'browser_press_key':
                 return {primary: aiTextOf(args.key).trim() || '—', dir: ''};
             case 'browser_resize':

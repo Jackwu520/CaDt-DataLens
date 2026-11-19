@@ -4,6 +4,7 @@
 // 依赖一律经 deps 延迟求值（调用方传 getter），不在创建期解构：
 // 这样既不依赖 main.js 的声明顺序，也不会把 let 状态拍成快照。
 import {iconSvg} from '../core/icons.js';
+import {createFileIcon} from '../core/fileicons.js';
 import {createRunUI} from './run-ui.js';
 import {createTerminalSessions} from './terminal-sessions.js';
 import {createGitGraph} from '../git-graph/git-graph.js';
@@ -15,6 +16,9 @@ const TERM_SHELL_LABELS = {pwsh: 'PowerShell 7', powershell: 'Windows PowerShell
 const cmdOutHandlers = new Map();
 const cmdExitHandlers = new Map();
 let cmdSeq = 0;
+// Git 提交面板当前选中的行（JetBrains 式：单击选中、双击开 diff、右键菜单）；
+// 轮询重渲染后据此恢复选中态。
+let gitSelectedPath = '';
 
 // 运行接线与会话管理经 Object.create 委托原 deps（getter 仍惰性），只补它们需要的宿主能力
 const runDeps = Object.create(deps);
@@ -50,6 +54,59 @@ function gitRelParentDir(path) {
     return rel.slice(0, idx).replace(/\//g, '\\');
 }
 
+// 选中提交面板的某一行（勾选框独立，点它不会选中整行）。
+function selectGitRow(path) {
+    gitSelectedPath = path || '';
+    applyGitSelection();
+}
+
+// 把选中态同步到当前 DOM（轮询重渲染后调用以恢复高亮）。
+function applyGitSelection() {
+    if (!deps.els || !deps.els.gitChanges) return;
+    for (const row of deps.els.gitChanges.querySelectorAll('.git-file-row')) {
+        row.classList.toggle('selected', row.dataset.path === gitSelectedPath);
+    }
+}
+
+// 「作为补丁复制到剪贴板」：读该文件 diff 原文进剪贴板。
+async function copyGitPatch(path) {
+    if (!deps.backend.GitDiffFor) {
+        deps.flash('当前版本不支持读取差异', true);
+        return;
+    }
+    try {
+        const res = await deps.backend.GitDiffFor(deps.gitStateCache.dir, path);
+        if (!res || !res.diff) {
+            deps.flash('该文件暂无差异');
+            return;
+        }
+        await deps.copyText(res.diff, '补丁');
+    } catch (e) {
+        deps.flash('复制补丁失败：' + e, true);
+    }
+}
+
+// 提交面板文件行的右键菜单（对齐 JetBrains 常用项，按项目已有能力裁剪）。
+function openGitFileMenu(path, state, x, y) {
+    if (!deps.ctxMenu) return;
+    const isUntracked = state === 'untracked' ||
+        (deps.gitStateCache.untrackedSet && deps.gitStateCache.untrackedSet.has(path));
+    deps.ctxMenu.open([
+        {label: '显示差异', icon: 'diff', action: () => deps.showGitDiff(path)},
+        {label: '跳转到源', icon: 'file', action: () => deps.openPathsHere([path])},
+        {label: '文件历史', icon: 'history', action: () => deps.showGitFileHistory(path)},
+        {sep: true},
+        {label: '作为补丁复制到剪贴板', icon: 'copy', action: () => copyGitPatch(path)},
+        {sep: true},
+        {label: '回滚更改', icon: 'undo', danger: true, action: () => {
+            const what = isUntracked ? '该文件未被版本管理，回滚将删除文件：' : '将丢弃该文件的全部未提交修改：';
+            deps.openConfirmDialog(what + '\n' + path, () => deps.gitRollbackPaths([path], isUntracked ? [path] : []), '回滚', '回滚更改', 'danger');
+        }},
+        {sep: true},
+        {label: '刷新', icon: 'refresh', action: () => deps.refreshGitStatus()},
+    ], x, y);
+}
+
 function renderGitPanel() {
     if (!deps.els.gitChanges) return;
     const available = deps.gitStateCache.available && deps.gitStateCache.dir;
@@ -79,8 +136,9 @@ function renderGitPanel() {
         return;
     }
     const makeRow = (path, checked, state) => {
-        const row = document.createElement('label');
+        const row = document.createElement('div');
         row.className = 'git-file-row';
+        row.dataset.path = path;
         const cb = document.createElement('input');
         cb.type = 'checkbox';
         cb.checked = checked;
@@ -90,10 +148,15 @@ function renderGitPanel() {
             if (cb.checked) deps.gitUncheckedFiles.delete(path);
             else deps.gitUncheckedFiles.add(path);
         });
+        // 勾选框独立命中区：点它只切勾选，不冒泡到整行的选中 / 双击开 diff
+        cb.addEventListener('click', (e) => e.stopPropagation());
+        cb.addEventListener('dblclick', (e) => e.stopPropagation());
+        const fileName = path.replace(/^.*[\\/]/, '');
+        const icon = createFileIcon(fileName, 'git-ficon');
         const name = document.createElement('span');
         name.className = 'git-fname git-st-' + (state || 'modified');
-        name.textContent = path.replace(/^.*[\\/]/, '');
-        row.append(cb, name);
+        name.textContent = fileName;
+        row.append(cb, icon, name);
         // JetBrains 式：文件名后跟一行淡灰小字 = 相对仓库根的父目录
         const relParent = gitRelParentDir(path);
         if (relParent) {
@@ -103,20 +166,22 @@ function renderGitPanel() {
             row.append(dirSpan);
         }
         row.dataset.tip = path;
+        // 单击：只选中行（不勾选、不开 diff）
+        row.addEventListener('click', (e) => {
+            if (e.target === cb) return;
+            selectGitRow(path);
+        });
+        // 双击：打开只读 diff（选中已在单击时完成）
+        row.addEventListener('dblclick', (e) => {
+            if (e.target === cb) return;
+            deps.showGitDiff(path);
+        });
+        // 右键：先选中，再开菜单
         row.addEventListener('contextmenu', (e) => {
             e.preventDefault();
             e.stopPropagation();
-            if (!deps.ctxMenu) return;
-            const isUntracked = deps.gitStateCache.untrackedSet.has(path);
-            deps.ctxMenu.open([
-                {label: '查看差异', icon: 'E8D3', action: () => deps.showGitDiff(path)},
-                {label: '文件历史', icon: 'E81C', action: () => deps.showGitFileHistory(path)},
-                {sep: true},
-                {label: '回滚更改', icon: 'E7A7', danger: true, action: () => {
-                    const what = isUntracked ? '该文件未被版本管理，回滚将删除文件：' : '将丢弃该文件的全部未提交修改：';
-                    deps.openConfirmDialog(what + '\n' + path, () => deps.gitRollbackPaths([path], isUntracked ? [path] : []), '回滚', '回滚更改', 'danger');
-                }},
-            ], e.clientX, e.clientY);
+            selectGitRow(path);
+            openGitFileMenu(path, state, e.clientX, e.clientY);
         });
         return row;
     };
@@ -171,22 +236,15 @@ function renderGitPanel() {
         return block;
     };
     if (changes.length) {
-        const rows = changes.map((item) => {
-            const row = makeRow(item.path, !deps.gitUncheckedFiles.has(item.path), item.state);
-            row.querySelector('input').dataset.path = item.path;
-            row.addEventListener('dblclick', () => deps.showGitDiff(item.path));
-            return row;
-        });
+        const rows = changes.map((item) => makeRow(item.path, !deps.gitUncheckedFiles.has(item.path), item.state));
         deps.els.gitChanges.appendChild(makeGroupBlock('更改（' + changes.length + ' 个文件）', rows, 'changes'));
     }
     if (untracked.length) {
-        const rows = untracked.map((path) => {
-            const row = makeRow(path, !deps.gitUncheckedFiles.has(path), 'untracked');
-            row.addEventListener('dblclick', () => deps.showGitDiff(path));
-            return row;
-        });
+        const rows = untracked.map((path) => makeRow(path, !deps.gitUncheckedFiles.has(path), 'untracked'));
         deps.els.gitChanges.appendChild(makeGroupBlock('未进行版本管理的文件（' + untracked.length + ' 个文件）', rows, 'untracked'));
     }
+    // 轮询重渲染后恢复选中态（DOM 已重建，选中记忆在 gitSelectedPath）
+    applyGitSelection();
 }
 
 function currentSidebarView() {

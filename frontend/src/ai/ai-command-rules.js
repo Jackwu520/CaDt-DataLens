@@ -170,10 +170,35 @@ function argBlocked(arg, prefixes) {
 }
 
 /**
+ * 剥离前置的纯 `cd <dir> &&` 导航段，返回剩余命令；不满足返回 null。
+ *
+ * 只接受「恰好一段 cd/chdir + 一条后续命令」：多段串联、`||`、`;`、管道、重定向、
+ * 命令替换、反引号、换行、未闭合引号一律拒绝（词法层由 splitCommandSegments 兜底）。
+ * cd 只换执行目录，与调用方直接传 cwd 参数等价，而后者本就走家族自动放行——
+ * 这里让 cd 写法获得同等待遇，不放宽任何「执行什么」的判定。
+ */
+function stripLeadingCd(command) {
+    const text = commandText(command);
+    if (!text.includes('&&') || /[|;]/.test(text)) return null;
+    const split = splitCommandSegments(text, {keepCdCompound: true});
+    if (!split || !split.compound || split.segments.length !== 2) return null;
+    const head = commandTokens(split.segments[0]);
+    if (!head || head.length !== 2) return null;
+    const exe = commandExecutable(head[0]);
+    if (exe !== 'cd' && exe !== 'chdir') return null;
+    return split.segments[1];
+}
+
+/**
  * 返回同类命令签名（如 `git diff`、`npm run build`、`pwd`）；不满足白名单或含复合语法时返回 null。
  */
 export function commandFamilySignature(command) {
-    const tokens = commandTokens(command);
+    let tokens = commandTokens(command);
+    if (!tokens) {
+        const rest = stripLeadingCd(command);
+        if (rest == null) return null;
+        tokens = commandTokens(rest);
+    }
     if (!tokens) return null;
     const exe = commandExecutable(tokens[0]);
     if (!exe || INTERPRETER_EXES.has(exe)) return null;
@@ -1077,13 +1102,15 @@ export function normalizePlanDeclaredCommands(rawCommands) {
             entry.dangerous = true;
             entry.dangerLabel = danger.label || danger.ruleId || '';
             entry.reason = '危险命令执行时仍需单次确认';
-        } else if (!tokens) {
-            entry.reason = '含管道 / 重定向 / 命令串联，不做预授权';
         } else {
+            // 家族签名先判：带前置 cd 的白名单命令在执行期走自动放行，计划预授权
+            // 用同一签名口径，避免卡片写「不预授权」而执行时却没弹卡的错位。
             const family = commandFamilySignature(cleaned);
             if (family) {
                 entry.mode = 'family';
                 entry.signature = family.signature;
+            } else if (!tokens) {
+                entry.reason = '含管道 / 重定向 / 命令串联，不做预授权';
             } else {
                 // 白名单外的单条简单命令（含解释器跑脚本）退到 exact 全文匹配。
                 entry.mode = 'exact';

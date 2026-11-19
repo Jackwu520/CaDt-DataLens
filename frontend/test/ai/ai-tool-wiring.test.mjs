@@ -157,6 +157,7 @@ const PROSE_TOKENS = {
     cwd: '多数工具是 run_command 的参数，此处只是引用 / 归其他工具声明',
     depth: 'list_dir 的参数，glob 描述里指引去用它',
     oldString: 'edit_file 的参数，read_file 描述里提醒不要带行号',
+    file: 'worktree_manage 的参数（conflict_detail 指定主根文件），其他工具描述里只是普通名词',
 };
 
 test('描述里提到的参数名必须已声明', () => {

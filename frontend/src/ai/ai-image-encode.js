@@ -92,6 +92,23 @@ function loadImageElement(src) {
     });
 }
 
+// 解压炸弹防护：一张几十 KB 的 PNG 可以解出上亿像素，直接把 WebView2 渲染进程内存打爆。
+// 解码拿到真实宽高后按投影阈值（maxImagePixels / maxImageDimension）拒收，
+// 检查放在解码之后、画布绘制之前——解码本身不可避免，但不再往画布上画。
+function assertDecodedSize(width, height, opts) {
+    const options = opts || {};
+    const maxPixels = Number(options.maxPixels) || 0;
+    const maxDimension = Number(options.maxDimension) || 0;
+    const w = Number(width) || 0;
+    const h = Number(height) || 0;
+    if (maxDimension > 0 && (w > maxDimension || h > maxDimension)) {
+        throw new Error('图片边长超过上限（' + maxDimension + 'px）');
+    }
+    if (maxPixels > 0 && w * h > maxPixels) {
+        throw new Error('图片像素总数超过上限（' + maxPixels + '）');
+    }
+}
+
 // 解码成可画到画布的东西。Blob 走 createImageBitmap（无则回退 Image + objectURL），
 // data URL 走 Image（Chromium 能直接解 bmp / svg）。close 负责释放位图与 objectURL。
 async function decodeSource(source, opts) {
@@ -104,6 +121,7 @@ async function decodeSource(source, opts) {
         const createBitmap = globalThis.createImageBitmap;
         if (typeof createBitmap === 'function') {
             const bitmap = await createBitmap(source);
+            assertDecodedSize(bitmap.width, bitmap.height, options);
             return {
                 image: bitmap,
                 width: bitmap.width,
@@ -114,6 +132,7 @@ async function decodeSource(source, opts) {
         const url = URL.createObjectURL(source);
         try {
             const img = await loadImageElement(url);
+            assertDecodedSize(img.naturalWidth || img.width, img.naturalHeight || img.height, options);
             return {
                 image: img,
                 width: img.naturalWidth || img.width,
@@ -128,6 +147,7 @@ async function decodeSource(source, opts) {
     const dataUrl = String(source || '').trim();
     if (!/^data:[^,]+,/i.test(dataUrl)) throw new Error('不是有效的图片数据');
     const img = await loadImageElement(dataUrl);
+    assertDecodedSize(img.naturalWidth || img.width, img.naturalHeight || img.height, options);
     return {
         image: img,
         width: img.naturalWidth || img.width,

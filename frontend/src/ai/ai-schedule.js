@@ -9,6 +9,7 @@ export function createAISchedule(ctx) {
     const el = ctx.el;
     const backend = ctx.backend;
     const flash = ctx.flash;
+    const notifyFailure = typeof ctx.notifyFailure === 'function' ? ctx.notifyFailure : () => {};
     const askConfirm = ctx.askConfirm;
     const openAIDialog = ctx.openAIDialog;
     const closeAIDialog = ctx.closeAIDialog;
@@ -478,7 +479,10 @@ export function createAISchedule(ctx) {
                     '第 ' + (fire.runNo || 1) + ' 次触发已注入会话' + (woke ? '' : '（排队等待中）'))).catch(() => {});
             }
         } catch (e) {
-            flash('定时任务「' + name + '」触发失败：' + ((e && e.message) || e), true);
+            const detail = String((e && e.message) || e);
+            flash('定时任务「' + name + '」触发失败：' + detail, true);
+            // A 级：定时任务在后台触发，失败没人盯着状态栏——必须送消息中心。
+            notifyFailure('定时任务触发失败', '「' + name + '」：' + detail, {key: 'schedule-fire', kind: 'error'});
             if (backend.AIScheduleSetResult) {
                 Promise.resolve(backend.AIScheduleSetResult(fire.scheduleId, false, String((e && e.message) || e))).catch(() => {});
             }

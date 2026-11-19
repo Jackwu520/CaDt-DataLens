@@ -14,14 +14,16 @@ export const GIT_ACTIONS = [
 
 const STYLE_RULES = [
     '提交信息风格：先读取工作区的 `' + GIT_COMMIT_STYLE_PATH + '`。',
-    '- 文件存在且可解析：严格按其中的 style / language / coAuthors / coAuthorLine / custom 字段执行。',
-    '- 文件不存在或无法解析：用 ask_user 一次性询问用户（最多 3 个问题，每个都标 recommended，并传 timeoutAction="recommended"，超时自动采用推荐项）：',
+    '- 文件存在且可解析：严格按其中的 style / language / coAuthors / coAuthorLine / custom / granularity 字段执行。',
+    '- 文件不存在或无法解析：用 ask_user 一次性询问用户（最多 4 个问题，每个都标 recommended，并传 timeoutAction="recommended"，超时自动采用推荐项）：',
     '  1) 提交信息风格：Conventional Commits「type(scope): 描述」（推荐）/ 简洁中文说明 / Gitmoji / 自定义（由用户自己输入要求）；',
     '  2) 提交信息语言：中文（推荐）/ 英文；',
     '  3) 是否在提交信息末尾追加 Co-authored-by 署名：不追加（推荐）/ 追加（再让用户输入署名内容）。',
+    '  4) 提交粒度：按功能/主题分批提交（推荐）/ 一次性全部提交。',
     '  拿到答案后把配置写入 `' + GIT_COMMIT_STYLE_PATH + '`（父目录会自动创建），JSON 格式：',
-    '  {"version":1,"style":"conventional|plain|gitmoji|custom","language":"zh|en","coAuthors":false,"coAuthorLine":"","custom":""}',
+    '  {"version":2,"style":"conventional|plain|gitmoji|custom","language":"zh|en","coAuthors":false,"coAuthorLine":"","custom":"","granularity":"batch|single"}',
     '  风格含义：conventional =「type(scope): 描述」；plain = 简洁的自然语言说明；gitmoji = emoji 前缀 + 说明；custom = 按 custom 字段的自定义要求；coAuthors=true 时把 coAuthorLine 原样追加到提交信息末尾。',
+    '  粒度含义：batch = 按功能/主题分批提交（一批一 commit，符合项目惯例）；single = 所有改动一次提交。',
     '  之后同一工作区的提交直接读这个文件，不要重复询问。',
 ].join('\n');
 
@@ -41,8 +43,8 @@ function commitFlow(root, branch) {
         '流程：',
         '1. 运行 git status / git diff 查看改动，只挑选应当提交的文件（跳过构建产物、临时文件与明显无关的内容；必要时先看 .gitignore）。',
         '2. 按配置写提交信息：主题行说明「为什么」而不只是「改了什么」，不要编造没有做过的改动；conventional 风格用 feat/fix/refactor/docs/chore/test/build/perf 等类型，可按改动范围加 scope。',
-        '3. 逐文件 git add（不要 git add -A / git add .），再 git commit。',
-        '4. 汇报提交哈希与完整提交信息。没有可提交的改动就直说，不要制造空提交。',
+        '3. 按配置的 granularity 决定提交粒度：batch = 按功能/主题分组，一组一组逐文件 git add（不要 git add -A / git add .）分别 commit，每批一个主题；single = 全部改动一次提交。',
+        '4. 汇报每个提交的哈希与完整提交信息。没有可提交的改动就直说，不要制造空提交。',
         '',
         '约束：命令需要当前会话处于写权限档；工具不可用或被拒绝时向用户说明原因并停止，不要绕过审批。',
     ].join('\n');
@@ -92,8 +94,8 @@ function commitPushFlow(root, branch) {
         '',
         '提交：',
         '1. 运行 git status / git diff 查看改动，只挑选应当提交的文件（跳过构建产物、临时文件与明显无关的内容）。',
-        '2. 按配置写提交信息后，逐文件 git add（不要 git add -A），再 git commit。',
-        '3. 汇报提交哈希与完整提交信息；没有可提交的改动就直说。',
+        '2. 按配置的 granularity 决定提交粒度：batch = 按功能/主题分组，一组一组逐文件 git add（不要 git add -A）分别 commit，每批一个主题；single = 全部改动一次提交。',
+        '3. 按配置写提交信息后 git commit；汇报每个提交的哈希与完整提交信息，没有可提交的改动就直说。',
         '',
         '推送：',
         '4. 执行 git push；没有上游时用 git push -u origin ' + (tip || '<当前分支>') + '。',

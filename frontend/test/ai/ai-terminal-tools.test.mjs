@@ -9,6 +9,7 @@ import {
     friendlyRetryReason,
     normalizeTermText,
     stripAnsi,
+    tailText,
     terminalSendLabel,
 } from '../../src/ai/ai-terminal-tools.js';
 
@@ -41,6 +42,26 @@ test('formatTerminalRead：运行中 / 已退出 / 截断 / 空输出', () => {
 
     const empty = formatTerminalRead('term-4', {text: ''}, 4000);
     assert.match(empty, /暂无输出/);
+});
+
+test('tailText：取最后 N 行，丢尾部空行，非法 N 原样返回', () => {
+    assert.equal(tailText('a\nb\nc\nd', 2), 'c\nd');
+    assert.equal(tailText('a\nb\nc\n', 2), 'b\nc');
+    assert.equal(tailText('a\nb\nc\n\n', 1), 'c');
+    assert.equal(tailText('only', 3), 'only');
+    assert.equal(tailText('a\nb', 0), 'a\nb');
+    assert.equal(tailText('a\nb', -1), 'a\nb');
+    assert.equal(tailText('a\nb', 'abc'), 'a\nb');
+});
+
+test('formatTerminalRead：tail 按行取，带「最后 N 行」提示', () => {
+    const out = formatTerminalRead('term-1', {text: 'l1\r\nl2\r\nl3\r\nl4\r\n', exited: false}, 20000, 2);
+    assert.match(out, /终端 term-1（运行中）/);
+    assert.match(out, /按行取最后 2 行/);
+    assert.match(out, /l3\nl4$/);
+    assert.doesNotMatch(out, /l2/);
+    // tail 优先时不再显示字符截断提示
+    assert.doesNotMatch(out, /个字符/);
 });
 
 test('formatTerminalList：无终端时给 open 提示', () => {

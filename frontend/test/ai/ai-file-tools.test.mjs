@@ -3,6 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
     AI_READ_MAX_CHARS,
+    attachmentPathHint,
     globMatchPath,
     humanSizeBytes,
     locateEditTarget,
@@ -221,4 +222,44 @@ test('renderDirTreeText: 空与非数组输入返回空行表（由调用方补�
     assert.deepEqual(renderDirTreeText(null), []);
     assert.deepEqual(renderDirTreeText(undefined), []);
     assert.deepEqual(renderDirTreeText([]), []);
+});
+
+// —— attachmentPathHint（二进制/超大文件的路径引用）——
+
+test('attachmentPathHint: 空路径返回空串（调用方据此跳过）', () => {
+    assert.equal(attachmentPathHint('', 'binary'), '');
+    assert.equal(attachmentPathHint(null, 'binary'), '');
+    assert.equal(attachmentPathHint('   ', 'binary'), '');
+});
+
+test('attachmentPathHint: 始终带上路径与「未读入正文」说明', () => {
+    const text = attachmentPathHint('D:\\docs\\report.pdf', 'binary');
+    assert.match(text, /未读入正文/);
+    assert.match(text, /report\.pdf/);
+    assert.match(text, /D:\\docs\\report\.pdf/);
+    assert.match(text, /处理建议/);
+});
+
+test('attachmentPathHint: 按扩展名给不同读法', () => {
+    assert.match(attachmentPathHint('/a/b.pdf', 'binary'), /ocr/);
+    assert.match(attachmentPathHint('/a/b.docx', 'binary'), /docx 技能/);
+    assert.match(attachmentPathHint('/a/b.zip', 'binary'), /解压/);
+    assert.match(attachmentPathHint('/a/b.png', 'binary'), /read_image/);
+    assert.match(attachmentPathHint('/a/b.mp4', 'binary'), /read_video/);
+    // 未知扩展名回落到 read_file
+    assert.match(attachmentPathHint('/a/b.bin', 'binary'), /read_file/);
+    // 无扩展名同样回落
+    assert.match(attachmentPathHint('/a/Makefile', 'binary'), /read_file/);
+});
+
+test('attachmentPathHint: reason 区分「二进制」与「超过文本读取上限」', () => {
+    assert.match(attachmentPathHint('/a/b.dat', 'binary'), /二进制文件/);
+    assert.match(attachmentPathHint('/a/b.dat', 'large'), /超过文本读取上限/);
+    // 未知 reason 按二进制兜底
+    assert.match(attachmentPathHint('/a/b.dat', undefined), /二进制文件/);
+});
+
+test('attachmentPathHint: 扩展名大小写不敏感（正斜杠/反斜杠都能取到文件名）', () => {
+    assert.match(attachmentPathHint('/a/B.PDF', 'binary'), /ocr/);
+    assert.match(attachmentPathHint('D:\\a\\B.Zip', 'binary'), /解压/);
 });

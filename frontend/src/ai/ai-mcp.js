@@ -4,15 +4,20 @@
 import {aiEstimateTokens} from './ai-constants.js';
 
 // mcpNotesBlock：把各 server 的「使用约定」拼成系统提示词块。
-// 只列有内容的 server；整块为空时返回空串（不占上下文）。约定是用户写的说明性文字，
-// 按数据注入并转成单行，避免用户内容里的换行/标签破坏块结构。
+// 只列有内容的 server；整块为空时返回空串（不占上下文）。约定是**数据**不是指令：
+// mcp.json 可能被拷贝、示例分发甚至插件注入，尖括号必须转义——否则 notes 里一句
+// "</mcp_server_notes>" 就能闭合块、往 system 角色里塞任意"守则"。换行压平同时覆盖
+// \r 与 U+2028/2029（JSON.stringify 不会转义它们，原样进块会破坏块结构）。
 export function mcpNotesBlock(servers) {
     const rows = [];
     for (const server of Array.isArray(servers) ? servers : []) {
         const name = String((server && server.name) || '').trim();
         const notes = String((server && server.notes) || '').trim();
         if (!name || !notes) continue;
-        rows.push('- ' + name + '：' + notes.replace(/\s*\r?\n\s*/g, ' '));
+        rows.push('- ' + name + '：' + notes
+            .replace(/\s*[\r\n\u2028\u2029]+\s*/g, ' ')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;'));
     }
     if (!rows.length) return '';
     return [

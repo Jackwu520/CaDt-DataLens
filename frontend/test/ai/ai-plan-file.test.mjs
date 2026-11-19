@@ -13,6 +13,7 @@ import {
     planMarkdownFrom,
     planPreviewSlice,
     planReferenceBlock,
+    planAwaitingUserReply,
     normalizeActivePlan,
     normalizePlanSections,
     planSectionsChars,
@@ -243,4 +244,34 @@ test('planPreviewSlice：null / 空串 / 预算极小兜底', () => {
     const tiny = planPreviewSlice('# 很长的标题\n\n正文', 2);
     assert.equal(tiny.truncated, true);
     assert.equal(tiny.text, '', '一行都放不下时返回空正文');
+});
+
+// ---- planAwaitingUserReply：「计划等待批准」横条的收起判定 ----
+test('planAwaitingUserReply：无计划视为等待；计划提交后无新用户消息视为等待', () => {
+    assert.equal(planAwaitingUserReply(null), true);
+    assert.equal(planAwaitingUserReply({messages: []}), true);
+    assert.equal(planAwaitingUserReply({activePlan: mkPlan(), messages: []}), true);
+    // 只有 assistant / 工具消息，没有新的用户发言：仍等待
+    assert.equal(planAwaitingUserReply({
+        activePlan: mkPlan(),
+        messages: [{role: 'assistant', ts: 9999}, {role: 'tool', ts: 9999}],
+    }), true);
+});
+
+test('planAwaitingUserReply：计划提交后出现 ts 更晚的用户消息 → 已回复（横条收起）', () => {
+    const plan = mkPlan({ts: 1000});
+    assert.equal(planAwaitingUserReply({
+        activePlan: plan,
+        messages: [{role: 'user', ts: 500}, {role: 'user', ts: 1500}],
+    }), false, 'ts 晚于计划提交的用户消息 = 修订意见');
+    // 计划 ts 之前的旧用户消息不算
+    assert.equal(planAwaitingUserReply({
+        activePlan: plan,
+        messages: [{role: 'user', ts: 500}, {role: 'assistant', ts: 800}],
+    }), true);
+    // 缺少 ts 的消息不误判
+    assert.equal(planAwaitingUserReply({
+        activePlan: plan,
+        messages: [{role: 'user', content: 'no ts'}],
+    }), true);
 });

@@ -220,3 +220,16 @@ export function planReferenceBlock(session) {
         '</plan_reference>',
     ].join('\n');
 }
+
+// 计划提交后用户是否还没针对它发言。用于「计划等待批准」横条：用户点了「继续规划」后
+// 横条作为「可回到审批卡」的入口短暂出现，一旦用户发出修订消息（ts 晚于计划提交时刻），
+// 说明已经在继续规划，横条就该收起，不再反复提示批准。纯从会话数据派生，不额外存状态。
+export function planAwaitingUserReply(session) {
+    const plan = session && session.activePlan;
+    if (!plan) return true;
+    const planTs = Number(plan.ts) || 0;
+    for (const msg of (session.messages || [])) {
+        if (msg && msg.role === 'user' && Number(msg.ts) > planTs) return false;
+    }
+    return true;
+}

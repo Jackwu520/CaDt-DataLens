@@ -54,11 +54,20 @@ export const AI_INJECT_OPTION_MAP = {
     // 个性化（称呼 / 名字 / 风格 / 人设 / 长期指令）：总开关，关闭时四段全不注入（含 <identity>）
     injectPersona: 'aiInjectPersona',
 };
-export const AI_IMAGE_LIMIT = 6;
-export const AI_IMAGE_MAX_INPUT_BYTES = 12 * 1024 * 1024;
-export const AI_IMAGE_MAX_DIM = 1600;
-export const AI_IMAGE_MAX_BASE64 = 3 * 1024 * 1024;
-export const AI_IMAGE_MESSAGE_BUDGET = 6 * 1024 * 1024;
+// 图片三层阈值的唯一真源在 Go internal/aiimagepolicy（经 AIImageLimits 投影给前端，
+// 前端消费端见 ai-image-policy.js）。这里只是镜像快照，供 ai-image-encode.js 的纯函数
+// 与未接投影的旧调用点使用——**改数值必须同步 internal/aiimagepolicy/policy.go**。
+//   源准入：50MiB/张、200MiB/消息（入口先收大图，不在这里压）
+//   归一化：长边 2048px、编码后 4MiB（canvas 兜底）
+//   请求预算：合计 32MiB（真正进模型的总量）
+// 张数上限从 6 放宽到 10（与 Go 侧一致）。
+// 只保留有实际消费点的镜像；源准入/请求合计的阈值由 ai-image-policy.js 的
+// DEFAULT_IMAGE_LIMITS 承载（它才是与 Go 投影对齐的那份），此处不再重复定义，
+// 避免出现「看起来是同步点、其实改了没影响」的死常量。
+export const AI_IMAGE_LIMIT = 10;
+export const AI_IMAGE_MAX_INPUT_BYTES = 50 * 1024 * 1024;
+export const AI_IMAGE_MAX_DIM = 2048;
+export const AI_IMAGE_MAX_BASE64 = 4 * 1024 * 1024;
 export const AI_IMAGE_MIMES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
 // 视频附件：不降质不截帧，原样 base64 随消息走（OpenAI 兼容协议的 video_url 内容段）。
 // 文件 16 MB / base64 约 22 MB，与 Go 侧 ReadVideoAsDataURL（16 MB）与 aiMaxVideoBase64（24 MB）对齐。
@@ -326,9 +335,9 @@ export const AI_BUILTIN_SKILLS = [
             '- open_browser_tab {url?, profileKey?}：在内容区打开内嵌浏览器标签页并返回 tab id（file:// 走与 browser_navigate 同一条读权限链）。',
             '- close_browser_tab {id|name|url}：关闭指定内嵌浏览器标签页。',
             '- open_memo_panel {scope?}：在内容区打开用户的「快捷便签」面板标签页（scope=workspace/global，缺省 workspace）。只开面板不写内容没有意义，登记完再打开。',
-            '- get_memo {scope?, block_id?, status?, q?}：读快捷便签，返回紧凑文本（含各条 id 与标签 {a/b}）。默认读全部；可只读某分组（block_id）、某状态（status=pending/in_progress/completed）或按文本包含过滤（q）——便签多时优先用过滤，首行会汇报全局面板计数。用户提到「便签/记事/我的便签上有什么」先读它；用户消息里出现便签定位点（形如 cadt-memo://workspace/item/it-xxx，用户在面板里「复制定位点」得到）时，按其中的 scope 调 get_memo，再按 id 在清单里定位到对应块/条目，后续 update_memo/remove_memo 直接用这个 id。',
-            '- add_memo {scope?,kind,block_id?,text}：往便签添加内容：kind=item 在指定块末尾加一条（block_id 缺省第一个块，没有块时自动建「便签」块兜底）；kind=block 新建分组小节（text 即标题）。改完立即保存并刷新面板。',
-            '- update_memo {scope?,id,text?,status?,kind?,tags?,index?}：改一个条目或块（id 从 get_memo 拿，it- 开头是条目、blk- 开头是块）：条目改文本/状态/渲染类型（kind=text|md|term，term 是终端条目：正文为命令，用户在面板里手动运行）/标签（tags 数组整体替换，≤4 个每个 ≤12 字）；块的 text 即标题。index 可选移到该位置（0 起）。',
+            '- get_memo {scope?, block_id?, tag?, q?}：读快捷便签，返回紧凑文本（含各条 id 与标签 {a/b}）。默认读全部；可只读某分组（block_id）、按某个标签过滤（tag，精确匹配便签上自定义的标签）或按文本包含过滤（q）——便签多时优先用过滤，首行会汇报全局面板计数。用户提到「便签/记事/我的便签上有什么」先读它；用户消息里出现便签定位点（形如 cadt-memo://workspace/item/it-xxx，用户在面板里「复制定位点」得到）时，按其中的 scope 调 get_memo，再按 id 在清单里定位到对应块/条目，后续 update_memo/remove_memo 直接用这个 id。',
+            '- add_memo {scope?,kind,block_id?,text,tags?}：往便签添加内容：kind=item 在指定块末尾加一条（block_id 缺省第一个块，没有块时自动建「便签」块兜底；tags 可给新条目挂自定义标签，≤4 个每个 ≤12 字）；kind=block 新建分组小节（text 即标题）。改完立即保存并刷新面板。',
+            '- update_memo {scope?,id,text?,kind?,tags?,index?}：改一个条目或块（id 从 get_memo 拿，it- 开头是条目、blk- 开头是块）：条目改文本/渲染类型（kind=text|md|term，term 是终端条目：正文为命令，用户在面板里手动运行）/标签（tags 数组整体替换，≤4 个每个 ≤12 字）；块的 text 即标题。index 可选移到该位置（0 起）。',
             '- remove_memo {scope?,id}：删一个条目或块（删块连带块内全部条目，不可恢复，删块前先和用户确认）。',
             '- get_gen_models：生图/视频生成条目列表（回显全部非密钥配置字段：baseURL/path/bodyTemplate/resultPath/resultType/headers/editPath/editFormat/默认参数等，便于自检与排障；hasKey 只标记是否填了密钥，密钥本身永不返回）与各类型缺省条目名。',
             '- set_gen_model {entry}：新建/更新生成条目（按 name 或 id 匹配，**未传的字段沿用原值**；name 建议直接用服务商模型 id）。字段与示例见 cadt-gen-models 技能。apiKey 不可写：已填的保留，留空的留给用户填。',
@@ -338,10 +347,10 @@ export const AI_BUILTIN_SKILLS = [
             '- install_mcp_sample {id}：安装内置示例（释放脚本并写入 MCP 配置，会弹本机命令确认）；安装后提醒用户去能力来源绑定并填环境变量。',
             '- set_mcp_server {server:{name,command?,args?,cwd?,enabled?,startupTimeoutMs?,callTimeoutMs?,closeTimeoutMs?,envKeys?}}：新建/部分更新 MCP 服务器（未传字段沿用原值）。每次都会弹本机命令执行确认；env 值不可写（envKeys 只登记键名、值由用户填），enabledTools 不可设置；已配环境变量的服务器 AI 不能修改。',
             '- delete_mcp_server {name}：删除 MCP 服务器（每次确认）；已配环境变量的服务器不可由 AI 删除。',
-            '- get_pre_commands：当前工作区的预指令列表（id / event / command / timeoutMs / enabled / origin / 最近一次运行结果）。预指令 = 绑定工作区在生命周期时机自动执行的命令（event = workspace-open 打开时 / workspace-close 关闭或切走时 / ai-session-start 空会话第一轮流起前），绑定本窗口当前工作区；origin=ai 的条目说明是你（或别的会话）代配并经用户审批的。',
-            '- add_pre_command {command,timeoutMs?,event?,enabled?}：给当前工作区新增预指令（timeoutMs 毫秒 ∈1000–600000 默认 30000；event 缺省 workspace-open；不传 ws 自动绑定当前工作区）。**必弹动作审批卡，完全权限也不例外**；当前窗口没开工作区会报错。',
-            '- update_pre_command {id,command?,timeoutMs?,event?,enabled?}：改当前工作区的预指令条目（未传字段沿用原值）。**必弹动作审批卡**；只能改本工作区的条目，别的工作区直接报错。',
-            '- remove_pre_command {id}：删除当前工作区的预指令条目。**必弹动作审批卡**；同样只限本工作区。',
+            '- get_pre_commands：当前工作区的生命周期命令列表（id / event / command / timeoutMs / enabled / origin / 最近一次运行结果）。生命周期命令 = 绑定工作区在生命周期时机自动执行的命令（event = workspace-open 打开时 / workspace-close 关闭或切走时 / 9 个事件见下：session-start 会话开始 / user-prompt-submit 提交输入 / pre-tool-use 工具前 / post-tool-use 工具成功后 / post-tool-use-failure 工具失败后 / permission-request 权限请求时 / stop 停止生成时；工具级事件带 matchTools 工具名匹配器（空=全部，mcp__* 通配）），绑定本窗口当前工作区；origin=ai 的条目说明是你（或别的会话）代配并经用户审批的。',
+            '- add_pre_command {command,timeoutMs?,event?,matchTools?,enabled?}：给当前工作区新增生命周期命令（timeoutMs 毫秒 ∈1000–600000 默认 30000；event 缺省 workspace-open；不传 ws 自动绑定当前工作区）。**必弹动作审批卡，完全权限也不例外**；当前窗口没开工作区会报错。',
+            '- update_pre_command {id,command?,timeoutMs?,event?,matchTools?,enabled?}：改当前工作区的生命周期命令条目（未传字段沿用原值）。**必弹动作审批卡**；只能改本工作区的条目，别的工作区直接报错。',
+            '- remove_pre_command {id}：删除当前工作区的生命周期命令条目。**必弹动作审批卡**；同样只限本工作区。',
             '- type_text {text,target?}：模拟键盘输入到焦点元素（或 target 选择器匹配的输入框），**仅完全权限档**。',
             '- press_key {key,target?}：模拟按键，支持组合键串（如 Ctrl+Shift+P / Alt+7 / Ctrl+` / Shift+F4 / Ctrl+Alt+L）与单键（Enter / Escape / F3 / a）；修饰键可用 Ctrl / Alt / Shift / Meta（也认 Control / Option / Win / Cmd），按真实顺序派发修饰键与主键的 keydown/keyup，可触发全局快捷键、对话框确认、Esc 关闭等，**仅完全权限档**。应用快捷键按物理键位（e.code）匹配，本动作会自动给出 code；无法识别的组合串会报错并说明写法。合成事件 isTrusted=false，依赖真实按键校验的浏览器原生行为可能不生效。',
             '- click {x,y}：在窗口可视区单击一次（DOM 合成 pointer/mouse 事件，不移动系统鼠标；**仅完全权限档**，计划模式下拒绝）。坐标是 CSS 像素：截图是物理像素，先除以 devicePixelRatio（get_state 与 click 返回都带 viewport.dpr）；也可传 selector（如 "#ab-files"）直接点元素，位置更准。返回实际点击坐标与命中元素（tag/id/class/文本），点错按返回的 target 调整；合成事件 isTrusted=false、不带用户激活，少数依赖真实点击校验的行为可能无响应。只支持单击：拖拽 / 滚轮 / 长按 / 悬停不提供；内嵌浏览器页面内部用 browser_click 系列。点击后用 screenshot 核对结果。',

@@ -29,14 +29,28 @@ export function normalizeTermText(text) {
     return out.join('\n').replace(/\n+$/, '');
 }
 
+// 取文本最后 N 行（tail）：按 \n 切，丢掉尾部空行后取末尾 N 行。
+export function tailText(text, n) {
+    const count = Math.floor(Number(n));
+    if (!Number.isFinite(count) || count <= 0) return String(text == null ? '' : text);
+    const parts = String(text == null ? '' : text).split('\n');
+    while (parts.length && parts[parts.length - 1] === '') parts.pop();
+    return parts.slice(-count).join('\n');
+}
+
 // terminal read 的返回：头部状态 + 输出正文（截断时说明只给了尾部）
-export function formatTerminalRead(id, res, maxChars) {
+// tailLines > 0 时按「最后 N 行」取（优先于 maxChars 的字符口径）。
+export function formatTerminalRead(id, res, maxChars, tailLines) {
     const termId = String(id || '').trim() || '?';
     const exited = !!(res && res.exited);
     const head = '终端 ' + termId + (exited ? '（已退出，退出码 ' + Number(res && res.exitCode) + '）' : '（运行中）');
-    const text = normalizeTermText(res && res.text);
+    let text = normalizeTermText(res && res.text);
     const lines = [head];
-    if (res && res.truncated) {
+    const wantTail = Number(tailLines) > 0;
+    if (wantTail) {
+        text = tailText(text, tailLines);
+        lines.push('（按行取最后 ' + Math.floor(Number(tailLines)) + ' 行）');
+    } else if (res && res.truncated) {
         lines.push('（只返回了最近约 ' + (Number(maxChars) || 0) + ' 个字符，更早的输出已滚出缓冲）');
     }
     lines.push(text || '（暂无输出：程序可能还在启动，稍等再 read 一次）');

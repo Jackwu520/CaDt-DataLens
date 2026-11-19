@@ -32,6 +32,47 @@ test('同类签名：白名单开发命令', () => {
     }
 });
 
+test('同类签名：前置 cd 导航段与直接 cwd 等价', () => {
+    const cases = [
+        ['cd frontend && npm test', 'npm test'],
+        ['cd frontend && go test ./... -count=1', 'go test'],
+        ['cd frontend && npm run build -- --mode production', 'npm run build'],
+        ['cd frontend && git status --short', 'git status'],
+        ['cd "my dir" && pnpm test', 'pnpm test'],
+        ['cd frontend&&cargo test -- --nocapture', 'cargo test'],
+        ['chdir frontend && dotnet test', 'dotnet test'],
+    ];
+    for (const [command, want] of cases) {
+        assert.equal(commandFamilySignature(command)?.signature, want, command);
+    }
+});
+
+test('同类签名：前置 cd 的安全边界', () => {
+    const cases = [
+        'cd frontend && npm test && rm -rf x',    // 多段串联
+        'cd frontend || npm test',                 // || 不是 &&
+        'cd frontend ; npm test',                  // ; 串联
+        'cd frontend | npm test',                  // 管道
+        'cd $(evil) && npm test',                  // 命令替换
+        'cd frontend && npm test > out',           // 重定向
+        'cd frontend && npm test | cat',           // 管道
+        'cd frontend && rm -rf x',                 // 非白名单家族
+        'cd frontend && cd backend && npm test',   // 多段 cd
+        'npm test && cd frontend',                 // cd 不在前
+        'cd frontend && npm test; echo done',      // 混入 ;
+        'echo x && npm test',                      // 前置不是 cd
+    ];
+    for (const command of cases) {
+        assert.equal(commandFamilySignature(command), null, command);
+    }
+});
+
+test('匹配规则：前置 cd 命令命中同名 family 授权', () => {
+    const rules = [{mode: 'family', signature: 'npm test', cwdKey: 'd:/repo'}];
+    assert.ok(matchCommandRule(rules, 'cd frontend && npm test', 'd:/repo'));
+    assert.equal(matchCommandRule(rules, 'cd frontend && npm test', 'd:/other'), null);
+});
+
 test('同类签名：导航与回显命令直接放行', () => {
     const cases = [
         ['pwd', 'pwd'],
