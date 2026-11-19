@@ -1,6 +1,6 @@
 # 插件 AI 工具注册：安全模型设计（M2）
 
-> 状态：**设计稿，待评审**（2026-11-19）。这是 `docs/unfinished-plans/plugin-extension-roadmap.md` 里 **M2** 的产出：`cadt.registerTool`（M3）动代码**之前**必须先定稿的那份安全模型。评审通过后才进入 M3。
+> 状态：**已定稿并被 M3 采纳**（2026-11-19 评审通过；`cadt.registerTool` 全链路已在 M3 落地，2026-11-21 随路线图归档移入 `finished-plans/`）。这是 `docs/finished-plans/plugin-extension-roadmap.md` 里 **M2** 的产出：`cadt.registerTool`（M3）动代码**之前**必须先定稿的那份安全模型。
 
 ## 1. 目的与范围
 
@@ -223,7 +223,7 @@ MCP 工具是仓内唯一「外部来源的工具」先例，其模型已落地�
 
 ## 10. 相关文档
 
-- 路线图：`docs/unfinished-plans/plugin-extension-roadmap.md`（2.1 节 API 草案、M2/M3 里程碑）
+- 路线图：`docs/finished-plans/plugin-extension-roadmap.md`（2.1 节 API 草案、M2/M3 里程碑）
 - MCP 授权与红线：`docs/finished-plans/mcp-client.md`、`frontend/src/ai/ai-mcp-config.js`
 - 信任模型与事故教训：`docs/plugins/README.md`、`docs/reports/incident-2026-11-18-workspace-wipe.md`
 - 插件现有能力：`docs/finished-plans/plugin-background-services.md`

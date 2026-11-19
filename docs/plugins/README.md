@@ -255,7 +255,7 @@ cadt.registerTool({
 - **计划模式**：一律拒绝，与内置写工具、MCP 同口径。
 - **返回值**：`string` 直接作为工具结果；`{text, images}` 取 `text`（当前版本不把 images 注入对话，会在正文里注明）。
 
-> **必须知道的限制**：审批只约束「**AI 调用插件工具**」这一条路径，**约束不了插件代码自己干活**。插件以 `new Function` 在主文档执行，加载那一刻就拥有与本应用相同的权限（可 `cadt.runCommand` 起进程、可读写本机文件）。所以插件工具授权的作用是**收窄 AI 的能力面**，不是把插件关进沙箱——真正的防线仍然是「只安装可信来源的插件」。详见 `docs/unfinished-plans/plugin-tool-security.md`。
+> **必须知道的限制**：审批只约束「**AI 调用插件工具**」这一条路径，**约束不了插件代码自己干活**。插件以 `new Function` 在主文档执行，加载那一刻就拥有与本应用相同的权限（可 `cadt.runCommand` 起进程、可读写本机文件）。所以插件工具授权的作用是**收窄 AI 的能力面**，不是把插件关进沙箱——真正的防线仍然是「只安装可信来源的插件」。详见 `docs/finished-plans/plugin-tool-security.md`。
 
 ### `cadt.registerViewer(spec)`
 

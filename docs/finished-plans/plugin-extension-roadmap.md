@@ -92,7 +92,7 @@ cadt.registerViewer({
 
 **约束**：视图只渲染不改数据（写回一律经 `requestSave` 上抛给编辑器，走既有脏标记与只读判定）；必须支持 `destroy()`（切换 / 关标签时调用）；大文件（>10 MB 只读档）默认不挂插件视图；主题切换调 `setTheme` 而非重挂。
 
-**与既有方案的关系**：`docs/unfinished-plans/external-file-viewers.md`（评估 open-file-viewer / kkFileView 两个第三方服务）与 `pdf-xlsx-docx-preview.md` 是**并列互补**路线——那两个走外部服务，本项走插件内置渲染。取舍：重型格式（PDF / Office）建议走外部查看器或 docConverter 插件，轻量可视化（GeoJSON / 图表 / 自定义二进制）走 `registerViewer`。
+**与既有方案的关系**：`docs/reports/external-file-viewers.md`（评估 open-file-viewer / kkFileView 两个第三方服务）与 `pdf-xlsx-docx-preview.md` 是**并列互补**路线——那两个走外部服务，本项走插件内置渲染。取舍：重型格式（PDF / Office）建议走外部查看器或 docConverter 插件，轻量可视化（GeoJSON / 图表 / 自定义二进制）走 `registerViewer`。
 
 **验证**：`plugin-viewers.test.mjs`（注册 / 视图清单 / 清空）；手工切换视图与关标签确认无泄漏。
 
@@ -166,7 +166,7 @@ cadt.registerAIContext({
 按「低风险先落地 → 高风险单独设计 → 大件随后」排列：
 
 - **M1（先做，低成本低风险）**：命令入口矩阵升级（3.1）。零安全面、复用全部现成结构、用户立刻有感。✅
-- **M2（先设计后写码）**：AI 工具注册的**安全模型单独定稿**——授权 UI、审批链口径、来源标记、上限、盲区声明。设计稿见 **`docs/unfinished-plans/plugin-tool-security.md`**（核心结论：插件工具复用 MCP 已有安全模型，不发明第二套）。**✅ 2026-11-19 已评审定稿**：①放宽为「插件可声明 readOnly 工具，但须用户显式勾『只读档可用』」②盲区声明放安装确认框 + 授权区 `data-tip` 兜底 ③三层授权 ④AI 可改授权但每次必审批、单次单插件、**总闸不可代开**、给逐项 diff。可进 M3。理由（原始立项）：工具带副作用，仓促落地会变成第二个事故来源。
+- **M2（先设计后写码）**：AI 工具注册的**安全模型单独定稿**——授权 UI、审批链口径、来源标记、上限、盲区声明。设计稿见 **`docs/finished-plans/plugin-tool-security.md`**（核心结论：插件工具复用 MCP 已有安全模型，不发明第二套）。**✅ 2026-11-19 已评审定稿**：①放宽为「插件可声明 readOnly 工具，但须用户显式勾『只读档可用』」②盲区声明放安装确认框 + 授权区 `data-tip` 兜底 ③三层授权 ④AI 可改授权但每次必审批、单次单插件、**总闸不可代开**、给逐项 diff。可进 M3。理由（原始立项）：工具带副作用，仓促落地会变成第二个事故来源。
 - **M3**：`registerTool` 实施（依赖 M2 定稿）。✅
 - **M4**：`registerViewer` 实施（纯渲染、无副作用，但与编辑器生命周期耦合，需要充分验证泄漏）。✅
 - **M5**：`registerAIContext` + `registerImporter`（两项都小，可合并一批）。✅
@@ -191,7 +191,7 @@ cadt.registerAIContext({
 ### 已完成
 
 - **M1 命令入口矩阵**：`cadt.addCommand` 支持 `icon / description / category / contexts / when / shortcut`，纯逻辑在 `frontend/src/shell/plugin-commands-model.js`（配 10 项测试）。
-- **M3 插件 AI 工具**：`cadt.registerTool` 全链路——注册表 `frontend/src/shell/plugin-tools.js`（9 项测试）、三层授权 UI（`ai-permission-settings.js` 的 `renderPluginToolSettings`，`index.html` 授权卡片）、`plugin__` 路由与 `executePluginTool`（`ai-panel.js`）。安全模型见 `docs/unfinished-plans/plugin-tool-security.md`。
+- **M3 插件 AI 工具**：`cadt.registerTool` 全链路——注册表 `frontend/src/shell/plugin-tools.js`（9 项测试）、三层授权 UI（`ai-permission-settings.js` 的 `renderPluginToolSettings`，`index.html` 授权卡片）、`plugin__` 路由与 `executePluginTool`（`ai-panel.js`）。安全模型见 `docs/finished-plans/plugin-tool-security.md`。
 - **M5a AI 上下文注入**：`cadt.registerAIContext` 完整闭环——`frontend/src/shell/plugin-context.js`（上限 4 KiB / 12 KiB、来源标记、闭合标签转义防注入），已接进 `ai-system-context.js` 的 `assembleSystemContext`（env_vars 之后、工具目录之前）。
 
 ### M5b 剩余：把导入器接进打开链

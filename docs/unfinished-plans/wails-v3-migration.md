@@ -1,0 +1,98 @@
+# Wails v2 → v3 迁移评估
+
+> 状态：**已立项，待开工**（2026-11-20 评估定稿；windowreg 方案交付后开迁移分支）
+> 范围：框架迁移（单窗口行为等价）+ 多窗口改造（一进程多窗口）+ 迁移后清理
+> 非范围：Linux/macOS GUI（见 `cross-platform.md`，不受本次迁移影响）
+
+## 1. 背景与动机
+
+- Wails v3.0.0 已于 2026-10 发布正式版（2026-08 beta），**原生多窗口**（`application.NewWebviewWindow`，窗口即一等对象）是主打特性；v2 的声明式单窗口 API 官方明言不适配多窗口。
+- 动机一：**一进程多窗口（JetBrains 模型）**——跨窗口通信变进程内调用，消除跨进程竞态面；JetBrains Open Recent 对已打开项目默认聚焦已有窗口，是「复用优先」交互的业界先例。
+- 动机二：本仓库 `multi-window-session-reuse.md` 的 windowreg 文件信箱，是一窗口一进程约束下对这类竞态的必要补偿（撤回/时效/ack）。v3 多窗口落地后 windowreg 可**整体删除**——它是可抛弃的脚手架，先交付不浪费。
+- 时序决策（2026-11-20）：**先实施 windowreg 并发布（约 600 行、每期可回滚），再开迁移分支做 v3**。理由：迁移 2–3 人周且 v3 生态刚满一个月，先把即期功能用最小成本交付。
+
+## 2. 实测耦合面（2026-11-20 统计，口径可信）
+
+| 项 | 实测数据 | 说明 |
+| --- | --- | --- |
+| wails 耦合隔离面 | 根壳 Go 共 5,313 行；**21 个 `internal/` 域包零 wails 依赖** | `go-layout.md` 引擎下沉的红利在此兑现：迁移不触碰任何域引擎 |
+| runtime 调用 | 根目录 9 个文件 48 处 `runtime.*` | v2 全局 runtime 包 → v3 窗口/应用对象方法，机械替换 |
+| 事件（Go） | 28 处 `EventsEmit/EventsOn` | → `app.Event.Emit/On`，机械替换；**事件名精确匹配是常见故障点** |
+| 绑定方法 | 301 个（`wailsjs/go/main/App.d.ts` 729 行） | v2 `Bind: []interface{}` → v3 `application.NewService(...)`，方法名不变 |
+| 前端绑定调用 | **聚合点仅 1 处**（`main.js:121` `backend = window.go.main.App`），951 处 `backend.XXX` 调用全走它；直接 import wailsjs 的仅 2 个文件（`ai-panel.js` / `ai-worktree.js`） | 关键红利：v3 绑定重新生成后保持对象形状（方法名 + Promise 返回），951 处调用**零改动**，只换聚合点。**2026-11-20 评审补记**：v3 绑定是 ES module（配 `@wailsio/runtime` npm 依赖），`window.go.main.App` 全局在 v3 不存在——除聚合点外，`main.js:115` 的 `hasWails` 探测（同时决定 dev 模式 mock-backend 动态 import 分支）也要改用 v3 探测方式（绑定模块可解析性或注入标志），属净增改动 |
+| 事件（前端） | 48 处 `EventsOn/EventsEmit/EventsOff`，分布 5 个文件（main.js / memo-term.js / mock-backend.js / reading.js / run-ui.js） | → `@wailsio/runtime` 的 `Events.*` |
+| 托盘 | 自研 `internal/tray` + `trayhost_windows.go` 平台对（v2 无原生托盘才自研） | 基本直接留用；或换 v3 原生 `app.SystemTray` 反而简化 |
+| 单实例锁 | v2 的 `SingleInstanceLock`/`OnSecondInstanceLaunch`（`main.go:83`、`app_core.go:187`）→ **v3 内置同形 API**（官方 Single Instance 指南，`options.SingleInstance{UniqueID, OnSecondInstanceLaunch}`，2026-11-20 复评修正：初评误判为无对应物需自研） | `secondInstance` 回调三分支逻辑几乎可平移 |
+| 构建流水线 | `wails build` / `wails dev` → v3 `wails3` CLI + Taskfile；受影响存量：`tools/rebuild-exe.ps1`（测试门 + 便携副本替换）、`scripts/build-installer.ps1` + `build/windows` NSIS、`frontend/package.json.md5` 门控 | **2026-11-20 评审补记**：工作量表未计入的整条工具链切换，约 0.5 天；spike 跑起来第一关就是它 |
+| fork 的 webview2 | `go.mod:54` 本地 replace `third_party/go-webview2`，2 个本地补丁（迷你菜单禁用、闪退隔离） | **不确定度最高**：v3 自带 webview2 栈，补丁注入点要重找，0.5–2 天 |
+| 官方迁移指南估计 | 「典型应用 1–4 小时」 | 对 hello-world 级成立；本项目回归面（见 §3）决定下限，不适用 |
+
+## 3. 工作量估算
+
+**合计约 2–3 人周**，可分期，非「全框架重写」（评审初期曾误判为一个数量级，已按上表实测修正）：
+
+| 块 | 估算 |
+| --- | --- |
+| Go 侧（启动段 v3 三段式 + 48 处 runtime + 28 处事件 + NewService 绑定 + 自研单实例锁 + 托盘留用） | ≤ 1 周 |
+| 前端（聚合点 1 行 + `hasWails` 探测改 v3 方式 + 2 个文件的 wailsjs import + 48 处事件 + mock-backend 适配） | 1–2 天 |
+| 构建流水线（`wails3` CLI + Taskfile、`tools/rebuild-exe.ps1` / `scripts/build-installer.ps1` 适配） | 0.5 天（2026-11-20 评审补记） |
+| fork webview2 补丁对齐 | 0.5–2 天（P0 spike 先探） |
+| **回归验证（成本大头）**：301 个绑定方法签名核对、21 个域包集成测试（MCP 假 server / ConPTY / WebView2）、无边框窗口（`main.go` `Frameless: true`）、AI 浮窗、调试控制台、双实例转发、wipeguard、手工双窗口场景 | 3–5 天 |
+
+## 4. 风险与缺口
+
+1. **v3 生态成熟度**：v3.0.0 发布刚满一个月，本项目压着大量 Windows 深度特性（无边框、AI 浮窗、托盘、单实例转发）。`internal/` 域包的纯 Go 能力（ConPTY、DPAPI、wipeguard ACL、sessionstore）不受迁移影响，但窗口壳层还原度必须实测。→ P0 spike 专门验证。
+2. **fork 补丁注入点**：v3 重写了 webview2 栈，两个本地补丁（迷你菜单禁用、闪退隔离）不一定有对应挂点；丢不起的部分要在 spike 里确认。
+3. **单点故障面变化**：v3 多窗口共享一个 Go 进程——一个窗口把 Go 侧拖死（panic/阻塞）会连坐所有窗口；WebView2 渲染进程仍按窗口隔离，JS 卡死不连坐。对「多格式查看器经常开大文件」的场景，这是相比现有一窗口一进程模型的真实损失，评估多窗口改造时权衡。
+4. **多进程基建冗余化**：v3 多窗口后，`resourcelease` / `internal/watch` 资源监听 / multi-instance-sync 体系大部分仍服务于「用户双击 exe 开第二进程」「AI 浮窗」等场景，不会作废，但部分语义要重审（P3 清理阶段处理，不阻塞迁移）。
+
+## 5. 迁移分期
+
+| 期 | 内容 | 出口判据 |
+| --- | --- | --- |
+| P0 spike | 独立分支：只迁 `main.go` 启动段跑起来，验证 **Frameless 无边框 / 托盘 / 单实例转发 / AI 浮窗 / fork 补丁注入点 / 定向事件 / 每窗口独立 JS context** 七项还原度（2026-11-20 复评加两项：定向事件——issue #6608 报 `window.EmitEvent()` 实际广播到所有窗口，term-out/ai-chat/resource-changed 在多窗口下必须真定向或全前端过滤；每窗口独立 JS context 是 per-window 装配的前提）；起跑先过**工具链关**（2026-11-20 评审补记：`wails3` + Taskfile 迁移、`wails dev` 等价热重载——机械适配，不占七项名额、不设暂停条件） | 七项中五项可用 → 继续；fork 补丁无挂点、Frameless 缺失或定向事件不工作 → 暂停迁移，回到 v2 路线（windowreg 方案不受影响） |
+| P1 框架等价迁移 | 绑定 NewService、48+28 处 runtime/事件替换、自研单实例锁、前端聚合点与事件、mock-backend；**保持单窗口，行为零变化** | 全量 Go + 前端测试过；`tools/rebuild-exe.ps1` 测试门过；手工回归 §3 清单 |
+| P2 多窗口改造 | `--new-window` 改 `app.Window.New`（同进程开窗）；窗口注册表改进程内对象；AI 浮窗 / 调试控制台改窗口对象 | 手工双窗口场景与 v2 时代行为对照 |
+| P3 清理 | 删除 `internal/windowreg` 及其绑定/前端接线；重审 resourcelease / watch 在新模型下的语义；`AGENTS.md` / CHANGELOG 收口 | 文档与代码一致 |
+
+每期独立 commit、可单独 revert；P1 完成即可合回 master（等价迁移本身有独立价值），P2/P3 是否继续由 P0/P1 的实际体验决定。
+
+## 6. 与 windowreg 方案的关系
+
+- 短期（v2）：`multi-window-session-reuse.md` 照常实施——v2 单窗口约束下唯一可行且成本最小的复用路径。
+- 长期（v3）：P2 落地后 windowreg 的注册表/信箱/撤回协议整体删除，「点别的工作区会话」变成进程内路由，本方案处理过的竞态（迟到双开、事件丢失）从架构上消失。
+- 两方案的评审结论互相引用：本文件 §1 时序决策 ↔ `multi-window-session-reuse.md` §8-D。
+
+## 7. 复评（2026-11-20 晚，windowreg 交付后）
+
+初评的两大不确定项一个消除、一个恶化，风险分布改变，总判断不变（P0 spike 先行）：
+
+**升级 ×2**
+
+- **单实例锁 v3 内置**（官方 Single Instance 指南，`options.SingleInstance` 同形 v2）：初评「无内置对应物、自研 1 天」作废；`secondInstance` 回调三分支（设置页 / memo locator / 打开目标）几乎平移。
+- **v3.1.0 于 11-01 发布**（3.0.0 后一周）：维护活跃；附带 CGO-free 实验性桌面构建——对 `cross-platform.md`「Linux GUI 必须 cgo+gtk3」的前提是动摇信号，那边立项时重估。
+
+**降级 ×1**
+
+- **事件定向发射有已知广播 bug**（wails#6608：`window.EmitEvent()` 实际广播到所有窗口）。本项目 `term-out`（4 KiB 高频终端块）/ `ai-chat` 流 / `resource-changed` 在 v2 单窗口下全局广播无感，v3 多窗口下全部变成跨窗口噪音——P2 必须做「定向事件真工作」或「全前端按 key 过滤」，后者是净增成本。这是初评完全没计入的工作量，P2 上修。
+
+**同日实证**
+
+- windowreg 撤回协议一天内三轮演进（remove → rename → O_EXCL claim），每版都被竞态用例在 Win10+ POSIX 语义下打脸——这正是 v3 一进程多窗口整类消灭的复杂度（进程内调用无文件协议、无跨进程竞态）。「先交付 v2 再迁移」的账结清：功能即期可用 + 迁移动机实证。
+- 多实例基建去留矩阵已梳理（见仓库认知条目）：watch→重放保留改进程内事件；租约/claim 的窗口↔窗口协调消失（双击 exe 第二实例仍需单实例锁，v3 内置兜住）；per-workspace 分桶与 `activeSessionByWorkspace` 语义不变；startup 的 convert/浮窗/调试窗早退分支是**按进程参数判定**的，v3 下改按窗口装配（服务启动一次），属 P2 新增改造点。
+- P3 成本下修：windowreg 已被 23 个 Go 用例 + 独立审查锁死，删除有 61 包测试基线护着。
+
+**数字修正**：总量 2–3 人周维持；构成从 Go 侧为主偏移到前端事件与启动装配。P0 spike 清单五项 → 七项（加定向事件实测、每窗口独立 JS context 确认）。
+
+**决策**：维持「先验收 windowreg → commit/push 收口 master → 开 `v3-migration` 分支跑 P0 spike」。七项中 fork 补丁挂点、Frameless、定向事件任一不过即暂停——今天只把「能不能迁」收敛为「七项还原度」，拍板等 spike 实测。
+
+## 8. 参考
+
+- [Wails 官方迁移指南 v2 → v3](https://wails.io/migration/v2-to-v3)（六步手动迁移，无自动化工具）
+- [Wails 官方 Single Instance 指南](https://wails.io/guides/single-instance)（v3 内置单实例锁，复评修正依据）
+- [Wails v3.1.0 发布](https://wails.io)（2026-11-01，CGO-free 实验构建 + Wake 工具）
+- [wails#6608：window.EmitEvent() 广播到所有窗口](https://github.com/wailsapp/wails/issues/6608)（定向事件风险依据）
+- [Wails v3 事件 API 参考](https://wails.io/reference/events)（Window-to-Window 定向模型）
+- [GitHub Discussion #4509：v2→v3 迁移讨论](https://github.com/wailsapp/wails/discussions/4509)
+- [Wails v3.0.0 发布公告](https://wails.io/blog/wails-v3-released)
+- JetBrains 对照：一进程多窗口 + SocketLock 转发 + Open Recent 复用先例（来源见 `multi-window-session-reuse.md` §8）

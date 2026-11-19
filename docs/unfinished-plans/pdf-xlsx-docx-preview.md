@@ -1,8 +1,8 @@
 # 内置 PDF / xlsx / docx 预览（分期方案）
 
-> 状态：**未开工**（2026-11-18 评估成文，方案随外部预览选型调研 `external-file-viewers.md` 的讨论定稿；未改实现代码）
+> 状态：**未开工**（2026-11-18 评估成文，方案随外部预览选型调研 `docs/reports/external-file-viewers.md` 的讨论定稿；未改实现代码）
 > 触发：作者确认「格式覆盖是核心价值」，批准按分期路线补齐预览缺口；PDF / xlsx / docx 三期，每期单独报批体积例外。
-> 范围：三个高价值格式的**只读预览**（binary 视图族新增成员），走 vendor 懒加载 + 现有组件复用，不引入 open-file-viewer / kkFileView（选型依据见 `external-file-viewers.md`）。
+> 范围：三个高价值格式的**只读预览**（binary 视图族新增成员），走 vendor 懒加载 + 现有组件复用，不引入 open-file-viewer / kkFileView（选型依据见 `docs/reports/external-file-viewers.md`）。
 > 非目标：不做编辑/回写（xlsx 写盘、PDF 表单）；不做 pptx / OFD / CAD / 3D / 压缩包预览；不给 AI 加 PDF 文本提取工具；不接 sqlview 到 xlsx；不改文件大小硬闸。
 
 ---
@@ -149,6 +149,6 @@
 
 ## 8. 明确不做（本期边界）
 
-- open-file-viewer / kkFileView 整体引入（见 `external-file-viewers.md` §6）；
+- open-file-viewer / kkFileView 整体引入（见 `docs/reports/external-file-viewers.md` §6）；
 - pptx / OFD / CAD / 3D / GIS / 压缩包 / eml 预览；
 - PDF 文本层与搜索、PDF 外链点击、xlsx 编辑回写、docx 图片提取、AI 读 PDF 工具。
