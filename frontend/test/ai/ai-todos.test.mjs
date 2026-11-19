@@ -3,7 +3,7 @@
 // 另测轮末提醒 <task_todos_check> 的文案口径与节流（todosCheckText / shouldSendTodosCheck）。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createAITodos, shouldSendTodosCheck, todosCheckText, todosDefaultCollapsed} from '../../src/ai/ai-todos.js';
+import {createAITodos, shouldSendTodosCheck, todosCheckText, todosCheckTextFromMessage, todosDefaultCollapsed} from '../../src/ai/ai-todos.js';
 
 function makeMod(settings, todoStates) {
     return createAITodos({
@@ -81,4 +81,34 @@ test('轮末提醒节流：文本未变、或模型刚更新过清单时不催',
     assert.equal(shouldSendTodosCheck({text, lastText: '', toolNames: ['todo_write', 'read_file', 'search_text', 'edit_file']}), true);
     // 阈值可配
     assert.equal(shouldSendTodosCheck({text, lastText: '', toolNames: ['read_file', 'search_text'], minToolCalls: 2}), true);
+});
+
+test('节流比较口径：从落盘消息还原裸 task_todos_check 块（两种形态都要认）', () => {
+    const check = '<task_todos_check>任务清单现状：共 2 项，1 项已完成、1 项进行中、0 项待处理。</task_todos_check>';
+    // 宿主块包装（新形态）
+    assert.equal(todosCheckTextFromMessage('<system-reminder>\n' + check + '\n</system-reminder>'), check);
+    // 裸块（旧形态）
+    assert.equal(todosCheckTextFromMessage(check), check);
+    // 提取不到 → 空串（按从未注入过处理）
+    assert.equal(todosCheckTextFromMessage('<system-reminder>\n<workspace_context>已打开文件</workspace_context>\n</system-reminder>'), '');
+    assert.equal(todosCheckTextFromMessage(''), '');
+    assert.equal(todosCheckTextFromMessage(undefined), '');
+});
+
+test('回归（2026-11-19 session-mwm2sdc1n4cs5）：相同清单连续两轮只催一次', () => {
+    // 复现真实链路：checkText 经 wrapTurnReminder 落盘（带宿主块包装），下一批工具结束
+    // 时清单没动 → 不得再插。旧实现取包装后的 .body（恒空串）导致该闸门永远放行，
+    // 相同文案落盘 339 条、模型每轮在思考链里复述计数。
+    const todos = [
+        {content: 'a', status: 'completed'},
+        {content: 'b', status: 'in_progress'},
+        {content: 'c', status: 'pending'},
+    ];
+    const checkText = todosCheckText(todos);
+    const stored = '<system-reminder>\n' + checkText + '\n</system-reminder>';
+    const tools = ['read_file', 'search_text', 'edit_file'];
+    assert.equal(shouldSendTodosCheck({text: checkText, lastText: todosCheckTextFromMessage(stored), toolNames: tools}), false);
+    // 清单真的变了（todo_write 落地后计数不同）→ 正常催
+    const todos2 = todos.map((t) => ({content: t.content, status: t.status === 'pending' ? 'completed' : t.status}));
+    assert.equal(shouldSendTodosCheck({text: todosCheckText(todos2), lastText: todosCheckTextFromMessage(stored), toolNames: tools}), true);
 });

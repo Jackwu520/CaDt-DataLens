@@ -37,6 +37,25 @@ const (
 	pluginDataAssetMaxSize = int64(512 << 20)
 )
 
+// OnBulkMutate 应用自身对插件目录的整目录增删（更新替换 / 卸载）前后回调，
+// 返回的 done 在操作结束时调用。根壳注入 watch 的静默门（BeginQuiet/EndQuiet）：
+// 「删旧目录 → 复制新目录」在 watcher 看来是几十上百条删除事件，不声明就会被
+// 工作区破坏防护误判成大范围消失（2026-11-19 插件更新误报实录）。
+// 用包级钩子而不是 import watch：本包保持纯引擎、可单独测试。
+var OnBulkMutate func() (done func())
+
+// beginBulkMutate 打开静默门，返回收尾函数（钩子未注入时是空操作）。
+func beginBulkMutate() func() {
+	if OnBulkMutate == nil {
+		return func() {}
+	}
+	done := OnBulkMutate()
+	if done == nil {
+		return func() {}
+	}
+	return done
+}
+
 var pluginAssetMimeTypes = map[string]string{
 	".png":  "image/png",
 	".jpg":  "image/jpeg",
@@ -634,7 +653,9 @@ func clonePluginRepo(rawUrl string) (string, func(), error) {
 }
 
 // replacePluginDir 用新目录内容替换已安装插件目录；失败时恢复旧内容。
+// 整目录删除再复制期间打开静默门：这不是工作区破坏，别让 wipe-guard 当成文件消失。
 func replacePluginDir(destDir, srcDir string) error {
+	defer beginBulkMutate()()
 	backupRoot, err := os.MkdirTemp("", "cadt-plugin-backup-")
 	if err != nil {
 		return err
@@ -738,9 +759,13 @@ func (pm *Manager) DeletePlugin(id string) error {
 	if err != nil {
 		return err
 	}
+	// 用户主动卸载：整目录删除同样打开静默门（卸载不是工作区破坏）。
+	done := beginBulkMutate()
 	if err := os.RemoveAll(filepath.Join(root, id)); err != nil {
+		done()
 		return err
 	}
+	done()
 	disabled := disabledPluginList()
 	kept := make([]string, 0, len(disabled))
 	for _, item := range disabled {

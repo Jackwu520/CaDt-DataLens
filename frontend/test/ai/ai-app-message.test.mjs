@@ -28,6 +28,10 @@ test('旧会话按固定前缀识别应用消息', () => {
     assert.deepEqual(git, {kind: 'git', label: 'Git 快捷操作 · 提交并推送', icon: ''});
     const scheduled = detectAppMessage('[定时任务 · 每日巡检]\n请检查构建');
     assert.deepEqual(scheduled, {kind: 'schedule', label: '定时任务 · 每日巡检', icon: ''});
+    // 工作区防护告警（wipe-guard 插队投递给运行中的会话）：固定前缀，历史回放也能归类
+    const guard = detectAppMessage('［工作区防护］10 秒内 73 个文件被删除。\n这是应用文件监听的统计结果…');
+    assert.deepEqual(guard, {kind: 'wipeguard', label: '工作区防护 · 大面积文件消失', icon: 'warn'});
+    assert.equal(appMessageIcon({kind: 'wipeguard'}), 'warn');
     assert.equal(detectAppMessage('普通用户消息'), null);
     assert.equal(detectAppMessage(''), null);
 });

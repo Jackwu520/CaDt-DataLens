@@ -1,5 +1,7 @@
 // AI 设置 → 模型：条目列表、编辑器状态机（新建/编辑/收起）、窗口与思考预算、导入条目、模型账号增删复制。
 // 从 ai-settings-dialog.js 拆出；modelEditorState / editorEntryOf 随模型域迁入，宿主经 extras 触达状态栏与整页刷新。
+// 额度外显（cc-switch 式）：账号卡带品牌图标与余额行——只在 profile.usage.enabled 时渲染；
+// 未开启的账号没有余额行也没有「查询用量」按钮，只有「用量配置」入口（弹窗见 ai-usage-config-dialog.js）。
 import {
     findModelEntry,
     formatTokenAmount,
@@ -10,6 +12,8 @@ import {
     aiNowId,
 } from './ai-constants.js';
 import {iconSvg} from '../core/icons.js';
+import {providerIconTileHtml} from './ai-provider-icons.js';
+import {formatUsageAge, formatUsageHeadline} from './ai-usage-quota.js';
 
 export function createAIModelSettings(ctx, extras) {
 
@@ -19,6 +23,11 @@ export function createAIModelSettings(ctx, extras) {
     const saveAIConfig = ctx.saveAIConfig;
     const updateComposerState = ctx.updateComposerState;
     const enhanceSelect = typeof ctx.enhanceSelect === 'function' ? ctx.enhanceSelect : null;
+    // 额度查询域：extras.usageQuota 是惰性 getter（管线在 ai-panel 构造）；
+    // openUsageConfigDialog 由 ai-settings-dialog 注入（弹窗模块先于本模块创建）
+    const usageQuota = typeof extras.usageQuota === 'function' ? extras.usageQuota : null;
+    const openUsageConfigDialog = typeof extras.openUsageConfigDialog === 'function'
+        ? extras.openUsageConfigDialog : null;
 
     // 模型编辑器的临时状态（原在 ai-settings-dialog.js 闭包级，随模型域迁入）
     let modelEditorState = null;
@@ -118,6 +127,39 @@ export function createAIModelSettings(ctx, extras) {
 
     let dragProfileId = '';
 
+    // 余额行：只在 usage.enabled 时渲染。点击 = 重新查询 + 明细弹层（ctx.queryUsageForAccount）；
+    // 失败态红字带原因（tooltip 给全文），无缓存显示「待查询」。缓存来自 ai-usage-quota 的快照层。
+    function buildUsageLine(profile) {
+        const usage = profile.usage;
+        if (!usage || usage.enabled !== true || !usageQuota) return null;
+        const snapshot = usageQuota().peek(profile.id);
+        const line = document.createElement('button');
+        line.type = 'button';
+        line.className = 'ai-usage-line';
+        const icon = document.createElement('span');
+        icon.className = 'ai-usage-line-icon';
+        icon.innerHTML = iconSvg('refresh', 12);
+        const text = document.createElement('span');
+        text.className = 'ai-usage-line-text';
+        if (!snapshot) {
+            text.textContent = '待查询';
+            line.classList.add('pending');
+        } else if (snapshot.state === 'error') {
+            text.textContent = snapshot.error || '查询失败';
+            line.classList.add('error');
+        } else {
+            text.textContent = formatUsageHeadline(snapshot);
+        }
+        line.append(icon, text);
+        line.dataset.tip = !snapshot
+            ? '点击查询额度'
+            : (snapshot.state === 'error'
+                ? (snapshot.error || '查询失败') + ' · 点击重试'
+                : formatUsageAge(snapshot.at) + ' · 点击重新查询');
+        line.addEventListener('click', (event) => queryUsageForAccount(profile, event));
+        return line;
+    }
+
     function renderModelList() {
         // 拖拽中若被别处触发重渲染（表单变更 / refreshSettings），原 card 节点销毁会让 dragend
         // 永不触发——残留的 dragProfileId 与让位类会卡住下一个拖拽，重建前一并清掉。
@@ -143,6 +185,10 @@ export function createAIModelSettings(ctx, extras) {
             grip.dataset.tip = '拖动调整顺序';
             grip.innerHTML = iconSvg('grip', 14);
             head.appendChild(grip);
+            const iconSlot = document.createElement('span');
+            iconSlot.className = 'ai-picon-slot';
+            iconSlot.innerHTML = providerIconTileHtml(profile, 20);
+            head.appendChild(iconSlot);
             const name = document.createElement('span');
             name.className = 'ai-model-name';
             name.textContent = profile.name || '未命名账号';
@@ -180,14 +226,28 @@ export function createAIModelSettings(ctx, extras) {
             if (profile.id !== getConfig().activeProfileId) {
                 actions.appendChild(dialogButton('设为当前', 'dlg-btn', () => switchProfile(profile.id)));
             }
-            actions.appendChild(dialogButton('查询用量', 'dlg-btn', (event) => queryUsageForAccount(profile, event)));
+            // 旧的「查询用量」按钮退役：开启查询的账号走余额行（点击即查 + 明细），
+            // 未开启的不显示任何查询按钮——统一只有「用量配置」入口
+            if (openUsageConfigDialog) {
+                actions.appendChild(dialogButton('用量配置', 'dlg-btn', () => openUsageConfigDialog(profile.id)));
+            } else {
+                actions.appendChild(dialogButton('查询用量', 'dlg-btn', (event) => queryUsageForAccount(profile, event)));
+            }
             actions.appendChild(dialogButton('编辑', 'dlg-btn', () => openModelEditor(profile.id)));
             actions.appendChild(dialogButton('复制', 'dlg-btn', () => duplicateModel(profile.id)));
             actions.appendChild(dialogButton('删除', 'dlg-btn', () => deleteModel(profile.id)));
-            card.append(head, meta, actions);
+            const usageLine = buildUsageLine(profile);
+            if (usageLine) card.append(head, meta, usageLine, actions);
+            else card.append(head, meta, actions);
             setupCardDrag(card, profile);
             opt.modelList.appendChild(card);
         });
+        // 自动刷新：开启查询的账号按 autoIntervalMin 节流补查（0 = 只手动），
+        // 批次完成后重画列表；白名单外的「官方」模板不打扰
+        if (usageQuota) {
+            const enabled = getConfig().profiles.filter((p) => p.usage && p.usage.enabled === true);
+            if (enabled.length) usageQuota().sweep(enabled, () => renderModelList());
+        }
     }
 
     function setActiveModel(id) {
@@ -435,6 +495,8 @@ export function createAIModelSettings(ctx, extras) {
                 const next = activeProfile();
                 getConfig().activeModelId = next ? modelEntryOf(next, next.lastModelId).id : '';
             }
+            // 额度快照随账号走：被删账号的 localStorage 快照一并清掉（profile id 唯一，不清理就是永久残留）
+            if (usageQuota) usageQuota().invalidate(id);
             saveAIConfig();
             extras.refreshSettingsPane();
             renderProfileSelect();

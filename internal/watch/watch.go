@@ -4,11 +4,47 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
 // worktreeSkipPrefix AI 隔离 worktree 的固定父目录（相对监听根，正斜杠语义）。
 const worktreeSkipPrefix = ".cadt/worktree"
+
+// quietGraceDuration 静默期结束后的宽限期：内核缓冲区里可能还压着静默期间产生的通知，
+// 给它们留出读出窗口，避免「操作刚结束、旧删除事件刚好读出来」又计数。
+// 变量而非常量只为测试可替换（生产恒 2s）。
+var quietGraceDuration = 2 * time.Second
+
+var (
+	// quietDepth 正在进行的应用自身批量目录操作数（>0 = 静默中）。
+	quietDepth atomic.Int32
+	// quietUntil 静默解除后的宽限截止（UnixNano）。
+	quietUntil atomic.Int64
+)
+
+// BeginQuiet 开始一段「应用自身的批量目录操作」静默期：插件安装 / 更新 / 卸载这类
+// 整目录删除再复制的动作由应用主动发起，不该被 wipe-guard 当成工作区破坏。
+// 静默期内 workspace-changed 事件照常推送（UI 仍需刷新），只是 removed / present
+// 两个供破坏判定用的分组被清空。
+func BeginQuiet() { quietDepth.Add(1) }
+
+// EndQuiet 结束一段静默期；归零时再保留 quietGrace 的宽限。
+func EndQuiet() {
+	if quietDepth.Add(-1) > 0 {
+		return
+	}
+	quietDepth.Store(0) // 配对出错（多调了 End）时不落到负数
+	quietUntil.Store(time.Now().Add(quietGraceDuration).UnixNano())
+}
+
+// quietActive 当前是否处于静默期。
+func quietActive() bool {
+	if quietDepth.Load() > 0 {
+		return true
+	}
+	return time.Now().UnixNano() < quietUntil.Load()
+}
 
 // skipWorktreeEvent 过滤 AI 隔离 worktree（.cadt/worktree）内部的变更事件：worktree 是
 // 给 AI 自己看的草稿区，UI 不需要刷新；且全量检出/依赖安装的事件洪峰会冲出 overflow
@@ -62,6 +98,10 @@ func (w *Watcher) WatchWorkspace(root string) error {
 		err := watchDirectory(root, stop, func(events []watchEvent, overflow bool) {
 			filtered := make([]string, 0, len(events))
 			removed := make([]string, 0, len(events))
+			present := make([]string, 0, len(events))
+			// present 同批去重：构建写盘时同一个文件会连着来好几条 MODIFIED，
+			// 前端只关心「这一批里它出现过」，重复项纯属载荷浪费（一次 build 能省一半）。
+			seenPresent := make(map[string]struct{}, len(events))
 			for _, e := range events {
 				if skipWorktreeEvent(e.Path) {
 					continue
@@ -72,13 +112,28 @@ func (w *Watcher) WatchWorkspace(root string) error {
 					// 只认它——原子写与补丁回灌产生的是 added/renamed_new/modified，
 					// 几十个文件的合法写入不该触发破坏告警。
 					removed = append(removed, e.Path)
+				} else {
+					// 「出现/修改」单独成组同样给 wipe-guard：删除后同路径又出现的
+					// （删目录再复制、temp→rename 落盘）属于替换不是消失，前端据此抵消。
+					if _, dup := seenPresent[e.Path]; dup {
+						continue
+					}
+					seenPresent[e.Path] = struct{}{}
+					present = append(present, e.Path)
 				}
 			}
 			if overflow || len(filtered) > 0 {
+				// 应用自身的批量目录操作期间清空两个判定分组：这些增删由应用主动发起
+				// （插件整目录替换 / 卸载），不是工作区破坏。paths 照常推送。
+				if quietActive() {
+					removed = removed[:0]
+					present = present[:0]
+				}
 				emit("workspace-changed", map[string]interface{}{
 					"root":     root,
 					"paths":    filtered,
 					"removed":  removed,
+					"present":  present,
 					"overflow": overflow,
 				})
 			}

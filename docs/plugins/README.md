@@ -257,6 +257,85 @@ cadt.registerTool({
 
 > **必须知道的限制**：审批只约束「**AI 调用插件工具**」这一条路径，**约束不了插件代码自己干活**。插件以 `new Function` 在主文档执行，加载那一刻就拥有与本应用相同的权限（可 `cadt.runCommand` 起进程、可读写本机文件）。所以插件工具授权的作用是**收窄 AI 的能力面**，不是把插件关进沙箱——真正的防线仍然是「只安装可信来源的插件」。详见 `docs/unfinished-plans/plugin-tool-security.md`。
 
+### `cadt.registerViewer(spec)`
+
+注册一个**自定义视图**：让某个格式多出一个「用自己的渲染器画」的视图（地图、图表、3D、播放器等）。与 `registerFormat` 的区别是——`registerFormat` 只能把数据喂给内置四种视图，`registerViewer` 自己决定怎么画。
+
+```js
+cadt.registerViewer({
+    id: 'geo-map',                       // 全局唯一，^[a-z0-9][a-z0-9-]{0,63}$
+    label: '地图',                        // 视图下拉 / 标签页按钮上的名字（≤40 字）
+    formats: ['geojson'],                // 归属：格式 id 或扩展名（不带点），两者都匹配
+    priority: 10,                        // 可选，视图下拉里越大越靠前（默认 0）
+    mount(container, ctx) {
+        // container 是一个空的 div，铺满内容区；自建 DOM / canvas / 第三方库全在插件侧
+        const canvas = document.createElement('canvas');
+        container.appendChild(canvas);
+        let theme = ctx.getTheme();
+        const off = ctx.onChange((text) => redraw(text));
+        return {
+            resize() {},                                  // 容器尺寸变化（分栏拖拽 / 窗口缩放）
+            setTheme(name) { theme = name; redraw(); },    // 主题切换：改配色，不要重挂
+            destroy() { off(); canvas.remove(); },         // 切视图 / 关标签时调用，必须断干净
+        };
+    },
+});
+```
+
+**ctx 提供什么**：
+
+| 成员 | 说明 |
+| --- | --- |
+| `getData()` | 当前文档文本（视图拿到的是原始文本，不是树的解析结果） |
+| `getSelection()` / `setSelection({start, end})` | 字符偏移的选区读写（底层是 Ace；树视图下为 `null`） |
+| `getTheme()` | `'dark'` / `'light'` / 插件主题 id |
+| `onChange(cb)` | 文本变化回调，返回退订函数 |
+| `requestSave(text)` | **写回的唯一出口**：交给编辑器走脏标记与只读判定，返回是否写入成功 |
+| `flash(msg, isError)` | 状态栏提示 |
+| `source` | `{path, name, size}` |
+| `readOnly` | 当前是否只读（只读时 `requestSave` 直接拒绝） |
+
+规则与边界：
+
+- **视图只渲染不改数据**：ctx 没有直接写接口。要让用户的改动落地就调用 `requestSave(text)`——文本交给编辑器后，脏标记、自动保存、只读锁、外部修改检测全部照旧生效。
+- **必须实现 `destroy()`**：切换视图、关闭标签都会调用。定时器、`window` 监听、`ResizeObserver`、第三方实例一律在那里释放；漏了就是泄漏，宿主不会替你兜底。
+- **视图是覆盖层**：底层编辑器仍持有内容，切走即销毁、切回重新 `mount`，所以不要在 mount 之外缓存 DOM 引用；视图内部状态（缩放 / 滚动）不跨切换保留。
+- **大文件不挂**：二进制文件与 `>10 MB` 的只读档不提供插件视图（视图菜单里直接不出现），避免把整份内容塞进插件。
+- **主题切换走 `setTheme(theme)`**，不要重挂；主题值来自 `html[data-theme]`。
+- **注册上限**：单插件 ≤ 10 个、全局 ≤ 30 个；`id` 全局唯一（视图模式串是 `plugin:<id>`，撞了就切不过去）。超限与非法声明在**注册时报错**并进插件加载错误，不静默丢弃。
+- 插件禁用 / 卸载后，停在旧模式的标签页在下次打开时自动回落到默认视图。
+- 示例见 [`examples/geojson-viewer/`](examples/geojson-viewer/)（地图视图 + 导入器，零第三方依赖）。
+
+### `cadt.registerImporter(spec)`
+
+注册一个**文档导入转换器**：某个文件内置解析不了（只能看二进制）时，问用户一句要不要用插件把它转成文本。典型场景是 PDF→Markdown、docx→md、OCR 后再编辑。
+
+```js
+cadt.registerImporter({
+    id: 'pdf-md',                     // 插件内唯一，^[a-z0-9][a-z0-9-]{0,63}$
+    label: 'PDF 转 Markdown',
+    extensions: ['pdf'],              // 触发条件：这些扩展名（不带点、小写）
+    async convert(ctx) {
+        const bytes = await ctx.readBinaryFile(ctx.path);   // base64
+        const markdown = await toMarkdown(bytes);
+        // 返回 string → 直接当正文；返回 {text, name} → 顺便建议一个新文件名
+        return {text: markdown, name: ctx.name.replace(/\.pdf$/i, '') + '.md'};
+    },
+});
+```
+
+`convert(ctx)` 的 `ctx`：`{source: 'open', ext, path, name, size, readTextFile(path), readBinaryFile(path), flash(msg, isError)}`。
+
+规则与边界：
+
+- **只在打开链询问**：文件内置解析不了（二进制视图）且扩展名命中时才弹确认框；用户拒绝或 `convert` 抛错一律**退回原有的二进制视图**——导入失败不会让文件打不开。
+- **结果以只读虚拟文档打开**：导入是「转换」不是「编辑」，标签页带只读锁。
+- **建议文件名**：返回 `{text, name}` 时用 `name`（例如 `report.md` 才会走 Markdown 渲染）；不返回则沿用原文件名。
+- **读接口不新增 Go 绑定**：`readTextFile` 走内置 `OpenFile`；`readBinaryFile` 先走读图通道（`ReadImageAsDataURL`，图片类型 ≤32 MB），其余类型退回十六进制视图，**上限 1 MB**，超过直接抛错。更大的二进制请用插件自己的通道（`cadt.runCommandSync` 等）读取。
+- **`--convert` 命令行不走插件**：CLI 转换在 Go 侧（`internal/convertcli`），看不到前端插件。
+- 同一扩展名被多个导入器声明时只取**第一个**注册的，不弹多选。
+- 示例见 [`examples/geojson-viewer/`](examples/geojson-viewer/) 的 `bin-peek`。
+
 ### `cadt.getPluginDir()`
 
 返回当前插件的安装目录（绝对路径，字符串）。插件可用它拼自己的资源 / 脚本路径，例如把配套服务源码放在插件目录下的 `server/`：
@@ -380,9 +459,11 @@ cadt.registerDocConverter({
 
 ```js
 // 同步执行（超时默认 20s，上限 120s；输出上限 8MB）
-const res = cadt.runCommandSync({exe: 'git', args: ['status', '--porcelain'], cwd: 'D:
+// 返回 Promise（命令在 Go 侧异步执行），必须 await —— 不 await 只会拿到一个
+// Promise（读 stdout 得到 undefined），失败还会变成未处理的 Promise 拒绝。
+const res = await cadt.runCommandSync({exe: 'git', args: ['status', '--porcelain'], cwd: 'D:
 epo', timeoutMs: 15000});
-// res = {code: 0, stdout: '...', stderr: '...'}；非零退出码不是异常
+// await 后 res = {code: 0, stdout: '...', stderr: '...'}；非零退出码不是异常，看 code
 
 // 流式执行
 const job = cadt.runCommand({
@@ -411,7 +492,7 @@ cadt.openVirtualDoc('Git 差异 — main.diff', patchText);  // 扩展名决定�
 | `cadt.getActiveText()` | 当前文件文本（按当前视图取值），二进制文件为 `null` |
 | `cadt.openPath(path)` | 用本程序打开一个文件或目录 |
 | `cadt.flash(message)` | 在右下角弹出提示 |
-| `cadt.runCommandSync(opts)` | 同步执行命令（见上） |
+| `cadt.runCommandSync(opts)` | 同步执行命令，返回 `Promise<{code, stdout, stderr}>`（**必须 await**，见上） |
 | `cadt.runCommand(opts)` | 流式执行命令，返回 `{stop()}`（见上） |
 | `cadt.openVirtualDoc(name, content)` | 以未命名标签页打开文本 |
 

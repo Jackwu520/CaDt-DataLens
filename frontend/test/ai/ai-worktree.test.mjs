@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
     WORKTREE_REL_DIR,
     WORKTREE_PATCH_LIMIT,
+    WORKTREE_REASON_MAX,
     normalizeWorktreeState,
     worktreeRelPath,
     worktreeBlockText,
@@ -10,6 +11,7 @@ import {
     agentWorktreeWriteVerdict,
     mainRootWriteVerdict,
     resolveWorktreeTarget,
+    worktreeReasonCheck,
     createAIWorktree,
     predictWorktreeSlug,
     worktreeStatTotals,
@@ -259,7 +261,7 @@ function makeWorktreeMod({scope = 'full', approval = {approved: true}, backend =
 test('manageTool(create)：AI 主动创建走审批卡（full 档同样）、批准后才建', async () => {
     const calls = [];
     const {mod, session} = makeWorktreeMod({scope: 'full', calls});
-    const out = await mod.manageTool({session, toolMessage: {toolCallId: 'c1'}}, {action: 'create', label: 'demo'});
+    const out = await mod.manageTool({session, toolMessage: {toolCallId: 'c1'}}, {action: 'create', label: 'demo', reason: '测试：隔离试改'});
     // 顺序：先审批卡，后 GitWorktreeAdd
     assert.equal(calls[0].kind, 'approval');
     assert.equal(calls[0].info.action, 'create');
@@ -272,7 +274,7 @@ test('manageTool(create)：AI 主动创建走审批卡（full 档同样）、批
 test('manageTool(create)：审批拒绝/取消时不建 worktree', async () => {
     const calls = [];
     const {mod, session} = makeWorktreeMod({approval: {approved: false}, calls});
-    const out = await mod.manageTool({session, toolMessage: {toolCallId: 'c2'}}, {action: 'create', label: 'demo'});
+    const out = await mod.manageTool({session, toolMessage: {toolCallId: 'c2'}}, {action: 'create', label: 'demo', reason: '测试：拒绝路径'});
     assert.equal(calls.length, 1);
     assert.equal(calls[0].kind, 'approval');
     assert.equal(session.worktree, undefined);
@@ -283,7 +285,7 @@ test('manageTool(discard)：AI 主动丢弃走审批卡并附改动统计，批�
     const calls = [];
     const {mod, session} = makeWorktreeMod({calls});
     session.worktree = {name: 'demo-ab12', branch: 'cadt/wt/demo-ab12', path: 'D:/repo/.cadt/worktree/demo-ab12', baseSha: 'abcdef1234', createdAt: 1};
-    const out = await mod.manageTool({session, toolMessage: {toolCallId: 'c3'}}, {action: 'discard'});
+    const out = await mod.manageTool({session, toolMessage: {toolCallId: 'c3'}}, {action: 'discard', reason: '测试：收尾清理'});
     assert.equal(calls[0].kind, 'approval');
     assert.equal(calls[0].info.action, 'discard');
     assert.equal(calls[0].info.name, 'demo-ab12');
@@ -304,7 +306,7 @@ test('manageTool(create)：审批通过后创建失败要把 approval 落成 fai
         },
     });
     const tm = {toolCallId: 'c4'};
-    const out = await mod.manageTool({session, toolMessage: tm}, {action: 'create'});
+    const out = await mod.manageTool({session, toolMessage: tm}, {action: 'create', reason: '测试：创建失败落定'});
     assert.equal(tm.approval.state, 'failed');
     assert.equal(tm.approval.error, 'boom');
     // 落定必须经过 persistApprovalMutation（卡片/持久化同步）
@@ -315,7 +317,7 @@ test('manageTool(create)：审批通过后创建失败要把 approval 落成 fai
 test('manageTool(create)：carry=true 传给后端，结果说明带入量与快照基准', async () => {
     const calls = [];
     const {mod, session} = makeWorktreeMod({calls});
-    const out = await mod.manageTool({session, toolMessage: {toolCallId: 'c6'}}, {action: 'create', carry: true});
+    const out = await mod.manageTool({session, toolMessage: {toolCallId: 'c6'}}, {action: 'create', carry: true, reason: '测试：带未提交改动试改'});
     const addCall = calls.find((c) => c.kind === 'add');
     assert.equal(addCall.args[3], true, 'carry 应作为第 4 参传给 GitWorktreeAdd');
     assert.ok(out.includes('带入 3 个未提交改动'), out);
@@ -336,7 +338,7 @@ test('manageTool(discard)：隔离区内有活终端时拒绝，不进审批也�
         },
     });
     session.worktree = {name: 'demo-ab12', branch: 'cadt/wt/demo-ab12', path: wtPath, baseSha: 'sha', createdAt: 1};
-    const out = await mod.manageTool({session, toolMessage: {toolCallId: 'c7'}}, {action: 'discard'});
+    const out = await mod.manageTool({session, toolMessage: {toolCallId: 'c7'}}, {action: 'discard', reason: '测试：终端占用'});
     assert.ok(out.includes('WORKTREE_TERMINAL'), out);
     assert.ok(!calls.some((c) => c.kind === 'approval'), '不应进入审批卡');
     assert.ok(!calls.some((c) => c.kind === 'remove'), '不应执行删除');
@@ -372,3 +374,34 @@ test('worktreeStatTotals：多文件 / 单文件纯增删 / 空文本 / 解析�
     // 没有 summary 行（解析不出）→ 空串，不把逐文件行当数字
     assert.equal(worktreeStatTotals(' frontend/src/style.css | 35 +++---').label, '');
 });
+
+// ---- worktreeReasonCheck：create / discard 的必填原因（显示在审批卡上）----
+
+test('worktreeReasonCheck：必填 / 长度上限 / trim', () => {
+    // 缺失一律报错（create 与 discard 共用同一校验）
+    assert.match(worktreeReasonCheck('').error, /缺少 reason/);
+    assert.match(worktreeReasonCheck(null).error, /缺少 reason/);
+    assert.match(worktreeReasonCheck(undefined).error, /缺少 reason/);
+    assert.match(worktreeReasonCheck('   ').error, /缺少 reason/);
+    // 数字会被 aiTextOf 转成字符串，属于「有内容」——不拦（这里只校验空值）
+    assert.deepEqual(worktreeReasonCheck(12345), {reason: '12345'});
+
+    // 正常：返回 trim 后的原文
+    assert.deepEqual(worktreeReasonCheck('  重构解析器，先隔离试改  '), {reason: '重构解析器，先隔离试改'});
+
+    // 恰好到上限通过
+    const atLimit = 'a'.repeat(WORKTREE_REASON_MAX);
+    assert.equal(worktreeReasonCheck(atLimit).reason.length, WORKTREE_REASON_MAX);
+
+    // 超一字符即拒绝，报错里带实际字数与上限
+    const over = 'a'.repeat(WORKTREE_REASON_MAX + 1);
+    const err = worktreeReasonCheck(over).error;
+    assert.match(err, /reason 过长/);
+    assert.match(err, new RegExp(String(WORKTREE_REASON_MAX + 1)));
+    assert.match(err, new RegExp(String(WORKTREE_REASON_MAX)));
+
+    // 中文按字符计数（不是字节）：上限个字的中文应通过
+    const cjk = '改'.repeat(WORKTREE_REASON_MAX);
+    assert.equal(worktreeReasonCheck(cjk).reason.length, WORKTREE_REASON_MAX, 'CJK 按字符计数');
+});
+

@@ -1,6 +1,7 @@
 // ai-todos.js：AI 面板 Todolist UI（折叠头 + 任务行 + 全部完成 3 秒自动收起）。
 // 从 ai-panel.js 拆出（docs/unfinished-plans/structure-cleanup.md 阶段 3），函数体逐字搬移。
 // todoStates（const Map，引用稳定）与 DOM 表/回调经 ctx 注入。
+import {aiTextOf} from './ai-constants.js';
 
 // 新建会话状态时的默认收起态：默认收起（只看一行进度摘要），
 // 设置页「任务清单默认展开」打开后为展开。纯函数便于单测。
@@ -21,6 +22,20 @@ export function todosCheckText(todos) {
         done + ' 项已完成、' + doing + ' 项进行中、' + pending + ' 项待处理。' +
         '若有已经做完却没标 completed 的步骤，用一次 todo_write 补齐；没有就无需处理本块。' +
         '本块仅供自查，不要在思考或回复里复述，也不必核对计数。</task_todos_check>';
+}
+
+// 从上一条 task_todos_check 注入消息还原节流比较口径（裸 <task_todos_check> 块），
+// 与 todosCheckText 的输出同形、可直接 === 比较。落盘 content 有两种形态都要认：
+// 宿主块包装（<system-reminder> 包裹，新）与裸块（旧数据）。提取不到（非提醒消息 /
+// 空内容）返回空串——按「从未注入过」处理，最多多催一次，无副作用。
+// 教训（2026-11-19）：此前在 ai-panel.js 取 splitTurnReminderPrefix().body 当比较文本——
+// body 是包装块之后的用户正文，纯注入消息里恒为空串，text === lastText 永不成立，
+// 节流第一道闸门（相同文案不重复催）完全失效，相同文案每批工具结束都重插一条
+// （session-mwm2sdc1n4cs5 实测 339 条、最长连续 69 条，模型每轮被迫在思考链里
+// 复述「没有已完成未标记的项 / 不需要 todo_write」）。
+export function todosCheckTextFromMessage(content) {
+    const m = /<task_todos_check>[\s\S]*?<\/task_todos_check>/.exec(aiTextOf(content));
+    return m ? m[0] : '';
 }
 
 // 轮末提醒的节流：清单文本与上次注入完全相同（模型没动过清单，旧那条仍在上下文里，

@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"datalens/internal/atomfile"
 )
@@ -26,6 +27,9 @@ const (
 	mcpDefaultStartupTimeoutMs = 30000
 	mcpDefaultCallTimeoutMs    = 60000
 	mcpDefaultCloseTimeoutMs   = 5000
+	// mcpNotesMaxChars 单条「使用约定」上限（按字符计）：它原样进系统提示词，
+	// 每个 server 都占上下文，卡住长度避免一条配置把提示词撑爆。
+	mcpNotesMaxChars = 1000
 )
 
 var (
@@ -45,6 +49,10 @@ type MCPServerConfig struct {
 	CallTimeoutMs    int               `json:"callTimeoutMs,omitempty"`    // 0 = 默认 60000
 	CloseTimeoutMs   int               `json:"closeTimeoutMs,omitempty"`   // 0 = 默认 5000
 	EnabledTools     []string          `json:"enabledTools"`               // 显式勾选；空 = 一个都不给（刻意的安全默认，不是 bug）
+	// Notes 是用户给这个 server 写的「使用约定」（提交前先校验、分批提交之类），
+	// 原样注入系统提示词的 <mcp_server_notes> 块。纯展示数据：不参与运行态比较，
+	// 改它不会重启 server（见 stripRuntimeFields）。
+	Notes string `json:"notes,omitempty"`
 }
 
 type MCPConfig struct {
@@ -177,6 +185,9 @@ func ValidateServer(name string, s MCPServerConfig) error {
 	}
 	if len(s.Args) > mcpMaxArgsCount {
 		return fmt.Errorf("服务器 %s：参数个数超过上限 %d", name, mcpMaxArgsCount)
+	}
+	if n := utf8.RuneCountInString(s.Notes); n > mcpNotesMaxChars {
+		return fmt.Errorf("服务器 %s：使用约定 %d 字，超过上限 %d 字", name, n, mcpNotesMaxChars)
 	}
 	for _, t := range []struct {
 		label string

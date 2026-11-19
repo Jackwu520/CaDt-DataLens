@@ -261,3 +261,35 @@ func TestNewFileUnifiedDiffNoTrailingNewline(t *testing.T) {
 		t.Fatalf("空文件不应有 hunk：%q", empty)
 	}
 }
+
+// gitSubcommand：静默门按子命令判定，解析要能跳过前导全局选项。
+func TestGitSubcommand(t *testing.T) {
+	cases := []struct {
+		args []string
+		want string
+	}{
+		{[]string{"checkout", "main"}, "checkout"},
+		{[]string{"-c", "core.quotepath=false", "status"}, "status"},
+		{[]string{"-C", "sub", "reset", "--hard"}, "reset"},
+		{[]string{"--git-dir=.git", "clean", "-fd"}, "clean"},
+		{[]string{"--", "switch"}, "switch"},
+		{[]string{}, ""},
+		{[]string{"-c"}, ""},
+	}
+	for _, c := range cases {
+		if got := gitSubcommand(c.args); got != c.want {
+			t.Fatalf("gitSubcommand(%v) = %q, want %q", c.args, got, c.want)
+		}
+	}
+	// 白名单：会批量改写工作树的子命令才算，只读命令不算
+	for _, sub := range []string{"checkout", "switch", "restore", "reset", "clean", "pull", "stash"} {
+		if !worktreeMutatingSubcommands[sub] {
+			t.Fatalf("%s 应在会改写工作树的白名单里", sub)
+		}
+	}
+	for _, sub := range []string{"status", "log", "diff", "show", "rev-parse", "for-each-ref", "fetch", "push"} {
+		if worktreeMutatingSubcommands[sub] {
+			t.Fatalf("%s 是只读/远端命令，不该进白名单", sub)
+		}
+	}
+}

@@ -1,6 +1,6 @@
 # AI 账号额度外显（用量查询增强，cc-switch 式）——评估稿
 
-> 状态：**评估稿，未立项**。基于 2026-11-19 对本仓代码与 cc-switch 源码（本地 `D:\OraSkyC\Project\OpenSource\cc-switch`，v4.x）的只读调研；行号按当日工作区实测。立项后本文即为实施底座。
+> 状态：**已实施（2026-11-19 当日立项当日落地）**。基于对本仓代码与 cc-switch 源码（本地 `D:\OraSkyC\Project\OpenSource\cc-switch`，v4.x）的只读调研；行号按当日工作区实测。实施与评估稿的偏差见文末「实施记录」。
 
 ## 0. 结论摘要
 
@@ -104,7 +104,7 @@ profile.usage = {
 - **为什么 extractor 不在 Go 跑**：需要内嵌 JS 引擎（goja，编译约 +2 MB）——直接违背体积第一约束。cc-switch 用 QuickJS 是因为它的主进程是 Rust；我们的 WebView 本身就是 JS 引擎，**Web Worker 是零依赖的等效沙箱**。
 - **Worker 沙箱设计**（新模块 `ai-usage-quota.js` 内实现）：
   1. `new Worker(URL.createObjectURL(new Blob([prelude + userCode])))`——Worker 全局**天然没有 `window.go` / Wails 绑定 / DOM**（Wails 只注入主 frame），脚本拿不到任何宿主能力；
-  2. prelude 先执行：禁 `fetch / XMLHttpRequest / WebSocket / importScripts / Worker`（覆盖后置空引用，用户代码无法还原），再放用户代码；
+  2. prelude 先执行：从**实例与原型链两层**摘除 `fetch / XMLHttpRequest / WebSocket / importScripts / Worker / sendBeacon` 等，再放用户代码。WebIDL 属性定义在 `WorkerGlobalScope.prototype` 上，只写 `self[name] = undefined` 是在 globalThis 建遮蔽属性，恶意脚本经 `Object.getPrototypeOf(self).fetch` 能拿回原生函数——2026-11-19 审查在 Chromium 实测复现后加固；被摘引用不保留，用户代码无法还原；
   3. 主线程 `postMessage({response})` 输入、worker `postMessage(result)` 输出，结构化克隆只传纯数据；
   4. 超时 `terminate()`（默认 5s）；脚本长度上限 64KB。
   - **威胁模型**：脚本来源 = 用户手写 + 配置导入（ai-settings-io）。cc-switch 把导入脚本当不可信输入是同款考虑；我们最坏情况 = 恶意导入脚本在无网络、无宿主 API 的 worker 里空转到 terminate。请求本身不经过 worker（extractor 拿到的只是响应数据）。
@@ -157,7 +157,7 @@ profile.usage = {
 ## 5. 安全与合规清单
 
 1. **AI 不可达**：不给 executeTool / app_control 增加任何用量配置读写动作——脚本的写路径只有设置页用户操作；AI 无法注入脚本（对照 2026-11-18 事故的结构性盲区，这里不新增 AI 可达面）。
-2. **脚本三道闸**：Worker 无宿主 API（结构性）→ prelude 禁网络原语（运行时）→ 超时 terminate + 64KB 长度上限（资源）。导入配置视同不可信输入，靠这三道闸兜底。
+2. **脚本三道闸**：Worker 无宿主 API（结构性）→ prelude 从实例与原型链摘除网络原语（运行时，见 §4.2 加固注）→ 超时 terminate + 64KB 长度上限（资源）。导入配置视同不可信输入，靠这三道闸兜底。
 3. **密钥**：override apiKey 存 ai-config.json（0600）；UI 掩码；`{{apiKey}}` 替换在前端完成后才发给 Go（与现有 AIUsageQuery 同一暴露面）；不写日志、不进 localStorage 快照、不进操作留痕。
 4. **请求面**：全部经 Go 哑通道——ForbiddenHeader/换行校验、超时钳位、响应上限沿用 aigen 引擎；loopback 放行与账号 baseURL 的信任级别一致（本地 NewAPI/one-api 是合法场景，照 cc-switch）。
 5. **`console.assert` 不当校验用**；extractor 异常全部捕获转失败态文案。
@@ -199,3 +199,29 @@ profile.usage = {
 2. 智谱团队版（zhipu_team）无法靠 baseURL 自动区分（cc-switch 靠显式字段路由），我们的 planProvider 同样只能手选，自动检测只做提示。
 3. 余额值是否进 AI 上下文（让 AI 知道账号余额）？默认**否**，纯 UI 数据。
 4. 多窗口同时开设置页的缓存一致性——一期各窗口自查即可（数据本身轻，无写冲突）。
+
+---
+
+## 10. 实施记录（2026-11-19）
+
+### 10.1 与评估稿的偏差
+
+1. **配置弹窗不进 index.html**：走 `openAIDialog` 动态构建（`ai-usage-config-dialog.js`，同 gen-settings 先例），零静态 DOM；评估稿 §4.5「DOM 放 index.html」作废。
+2. **预设脚本运行时取自预设表**，不落盘 `usage.code`——模板修正随版本走（cc-switch 同思路）；只有 custom 模板写 code。
+3. **火山方舟与 CommandCode 不做预设**（评估稿 §4.3 已建议缓期）：火山要 OpenAPI SigV4 签名、CommandCode 要 whoami→credits→subscription 三连请求，单请求管线承载不了；Ollama Cloud 反而简单（`GET ollama.com/api/balance`），补进来了，共 7 家套餐预设。
+4. **余额行做成整行按钮**（点击 = 重查 + 明细弹层），比评估稿的「刷新小按钮 + 明细入口」更省地方；官方引擎多条 label/value 明细行不算「多套餐」（只有数值/套餐名形态的条目才走「N 个套餐」聚合）。
+5. **图标来源**：评估稿写「首选自绘」；实际从 cc-switch（MIT）本地仓库提取了 17 家官方 SVG（deepseek/openai/claude/anthropic/gemini/openrouter/kimi/zhipu/minimax/siliconflow/qwen/stepfun/mistral/grok/copilot/ollama/newapi），提取脚本剥 title、内联进 `ai-provider-icons.js`（约 27 KB body），未命中退首字母瓦片（每词取一字母，Unicode 安全）。
+6. **workerFactory 测试缝**：`createAIUsageQuota` 加 `deps.workerFactory`（默认真 Worker），node 测试环境注入假件走同一消息协议——评估稿 §4.2 说「worker 集成行为人工验收」，现在管线编排可自动化测试。
+
+### 10.2 落地清单
+
+- **Go**：`ai_usage_app.go` 加 `AIUsageHTTPRequest`（转发 `aigen.HTTPRequest`，30 行）；wailsjs 手写同步（App.js / App.d.ts；models.ts 复用 aigen 命名空间）。
+- **前端新模块**：`ai/ai-usage-templates.js`（模板表 + 7 家套餐预设 + `renderUsageVars`）、`ai/ai-usage-quota.js`（管线 + Worker 沙箱 + 缓存 + sweep 节流）、`ai/ai-usage-config-dialog.js`（配置弹窗）、`ai/ai-provider-icons.js`（注册表 + host/名称匹配 + 瓦片渲染）。
+- **接线**：`ai-config-model.js` 的 `normalizeUsageConfig`；`ai-panel.js`（`normalizeProfile`/`defaultProfile` 带 usage、`usageQuotaMod`、`queryUsageForAccount` 走管线、明细弹层吃 snapshot）；`ai-settings-dialog.js` 建 `usageMod` 注入 model 域；`ai-model-settings.js` 卡片（图标槽 / 余额行 / 按钮显隐 / 自动刷新）；`ai-model-picker.js` 分组头；`mock-backend.js` 补 `AIUsageQuery` / `AIUsageHTTPRequest` mock；`style.css` 新增 `.ai-picon*` / `.ai-usage-line` / `.ai-usage-*` 弹窗样式。
+- **测试**：`test/ai/ai-usage-templates.test.mjs`（8 例）、`ai-usage-quota.test.mjs`（12 例）、`ai-provider-icons.test.mjs`（7 例），登记 `npm test`；`test-manifest` / `form-controls-factory` / `module-scope` 守卫全绿；`vite build`、`go build`、`go test ./internal/aigen ./internal/aiusage ./internal/aitransport` 通过。
+
+### 10.3 已知边界
+
+- 沙箱隔离本身（Worker 无 window.go、fetch 已禁）在 node 里只锁了脚本形态与禁用表字符串，真实隔离靠 WebView2 的 Worker 语义；「测试脚本 + 导入恶意配置探测 window.go」仍是验收清单里的人工项。
+- Token Plan 套餐预设的端点参数移植自 cc-switch Rust 源码，**未对真实账号逐一实测**（智谱 unit=6 判周桶、MiniMax model_remains.general、Kimi limits[].detail 等字段形态以 cc-switch 实测注释为准）；各家改版后改 `ai-usage-templates.js` 即可。
+- 智谱团队版无法靠 baseURL 自动区分，配置弹窗只能手选套餐预设（与 cc-switch 同）。

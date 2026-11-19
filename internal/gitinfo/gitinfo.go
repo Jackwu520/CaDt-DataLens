@@ -37,7 +37,49 @@ type GitDiffResult struct {
 	Diff       string `json:"diff,omitempty"`
 }
 
+// OnMutateWorktree 会成批改写工作树的 git 子命令（切换/检出分支、丢弃改动、清理、
+// 合并/变基/拉取更新）前后回调，返回的 done 在命令结束时调用。根壳注入 watcher 静默门：
+// 「切分支」会把当前分支独有的文件从工作树里删掉，几秒内几十上百条删除事件，
+// 不声明就会被工作区破坏防护当成大范围文件消失（2026-11-19 举一反三排查）。
+var OnMutateWorktree func() (done func())
+
+// worktreeMutatingSubcommands 会批量删除/移动工作树文件的子命令白名单。
+// 只列白名单而不是黑名单（只读命令太多，漏一个反而更糟）。
+var worktreeMutatingSubcommands = map[string]bool{
+	"checkout": true, "switch": true, "restore": true, "reset": true,
+	"stash": true, "merge": true, "rebase": true, "cherry-pick": true,
+	"revert": true, "pull": true, "clean": true, "read-tree": true,
+	"rm": true, "mv": true, "submodule": true, "apply": true,
+}
+
+// gitSubcommand 取 git 子命令名：跳过前导全局选项（-c / -C / --git-dir 等）。
+func gitSubcommand(args []string) string {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" {
+			if i+1 < len(args) {
+				return strings.ToLower(args[i+1])
+			}
+			return ""
+		}
+		if strings.HasPrefix(arg, "-") {
+			// 带值的全局选项（-c key=val / -C path / --git-dir=…）：无 "=" 时跳过它的值
+			if !strings.Contains(arg, "=") && i+1 < len(args) && (arg == "-c" || arg == "-C" || arg == "--git-dir" || arg == "--work-tree" || arg == "--namespace" || arg == "--exec-path") {
+				i++
+			}
+			continue
+		}
+		return strings.ToLower(arg)
+	}
+	return ""
+}
+
 func gitRun(dir string, args []string, timeoutMs int) (string, int, error) {
+	if OnMutateWorktree != nil && worktreeMutatingSubcommands[gitSubcommand(args)] {
+		if done := OnMutateWorktree(); done != nil {
+			defer done()
+		}
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutMs)*time.Millisecond)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", args...)
@@ -625,8 +667,15 @@ func CommitChanges(dir string, message string, paths []string, amend bool, push 
 }
 
 // gitPathInRoot 校验 path 必须位于 root 之内（防穿越）。
+// path 支持两种形态：绝对路径，或相对 root 的路径——git status 输出的是
+// 相对仓库根的路径，前端原样传回（2026-11-19 修复：此前 Rel(root, 相对path)
+// 在 Windows 上直接报错，导致 git 面板的回滚恒被拒「路径越界」）。
 func gitPathInRoot(root, path string) bool {
-	rel, err := filepath.Rel(root, path)
+	p := path
+	if !filepath.IsAbs(p) {
+		p = filepath.Join(root, p)
+	}
+	rel, err := filepath.Rel(root, p)
 	if err != nil {
 		return false
 	}
@@ -657,7 +706,13 @@ func RollbackFor(dir string, paths []string, untracked []string) error {
 		}
 	}
 	for _, p := range untracked {
-		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+		// 相对路径以 dir 为基准解析：os.Remove 不会自己按 dir 走，
+		// 直接用相对路径会删到应用进程 cwd 下的同名文件（2026-11-19 修复）。
+		full := p
+		if !filepath.IsAbs(full) {
+			full = filepath.Join(dir, full)
+		}
+		if err := os.Remove(full); err != nil && !os.IsNotExist(err) {
 			return err
 		}
 	}

@@ -38,6 +38,9 @@ var searchSkipDirs = map[string]bool{
 	"node_modules": true, "__pycache__": true,
 	".pytest_cache": true, ".mypy_cache": true,
 	".gradle": true, ".cache": true,
+	// Python 虚拟环境：几万个文件、检索无意义，指纹计数与 watcher 删除计数同样跳过
+	// （pip install / 重建 venv 是合法的批量删除，2026-11-19 举一反三排查）。
+	".venv": true, "venv": true, "site-packages": true,
 }
 
 var searchBinaryExt = map[string]bool{

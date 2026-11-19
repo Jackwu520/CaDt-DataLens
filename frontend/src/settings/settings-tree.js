@@ -31,6 +31,7 @@ const MEDIUM_RISK_IDS = new Set([
     'opt-activity-retention', 'opt-auto-update',
     'plugin-market-source-mode',
     'envvar-encrypted',
+    'precmd-enabled',
 ]);
 
 // 审批卡上的警示文案（高风险项必须能说清为什么危险）。
@@ -66,6 +67,7 @@ const RISK_REASONS = {
     'opt-activity-retention': '操作留痕保留月数，调小会更早删除审计记录',
     'plugin-market-source-mode': '插件市场数据源（Gitee / GitHub）',
     'envvar-encrypted': '环境变量存储与加密方式',
+    'precmd-enabled': '总开关控制「打开工作区自动执行预指令」：开启后打开工作区会自动运行配置的命令',
 };
 
 export function classifySettingsRisk(id) {

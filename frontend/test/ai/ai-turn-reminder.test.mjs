@@ -62,8 +62,12 @@ test('ai-panel：轮末催促必须包成 <system-reminder> 宿主块，不许�
     const block = panelSrc.match(/session\.messages\.push\(\{\s*role: 'user',\s*content: wrapTurnReminder\(checkText\),[\s\S]*?dedupeKey: 'task_todos_check'[\s\S]*?\}\);/);
     assert.ok(block, '找到轮末催促注入块');
     assert.match(block[0], /systemNote: true/);
-    // 节流比较必须先拆块取正文，否则包装后的内容与裸文案永远不相等
-    assert.match(panelSrc, /lastCheckText = splitTurnReminderPrefix\(String\(session\.messages\[i\]\.content \|\| ''\)\)\.body/);
+    // 节流比较口径必须是裸 <task_todos_check> 块：todosCheckTextFromMessage 从落盘
+    // content（宿主块包装 / 裸块两种形态）还原，与 todosCheckText 输出同形、可直接 ===。
+    // 旧实现取 splitTurnReminderPrefix().body——那是包装后的用户正文，纯注入消息里
+    // 恒为空串，text === lastText 永不成立，相同文案每批工具重插一条
+    // （2026-11-19 session-mwm2sdc1n4cs5 实测 339 条、最长连续 69 条）。
+    assert.match(panelSrc, /lastCheckText = todosCheckTextFromMessage\(session\.messages\[i\]\.content\)/);
 });
 
 test('neutralizeTurnReminderText：大小写与空格变体同样中和', () => {

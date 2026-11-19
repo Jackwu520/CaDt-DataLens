@@ -13,6 +13,8 @@ import {createEditorBrowserTab} from './editor-browser-tab.js';
 import {createEditorSqlView} from './editor-sql-view.js';
 import {createEditorDocExtras} from './editor-doc-extras.js';
 import {createEditorExportMenus} from './editor-export-menus.js';
+import {createEditorPluginView} from './editor-plugin-view.js';
+import {isPluginViewMode, pluginViewLabel, pluginViewUnavailable, viewerIdFromMode} from '../shell/plugin-viewers.js';
 import {createFileIcon, fileIconSpec} from '../core/fileicons.js';
 import {formats, detectFormat, defaultMediaMode, isKnownCodeFileName} from '../core/formats.js';
 import {showPatchView, disposePatchView} from './patch-view.js';
@@ -67,6 +69,7 @@ const showMarkdownPreview = (...a) => splitPreview.showMarkdownPreview(...a);
 const enterMarkdownPreview = (...a) => splitPreview.enterMarkdownPreview(...a);
 const leaveMarkdownPreview = (...a) => splitPreview.leaveMarkdownPreview(...a);
 const showHtmlPreview = (...a) => splitPreview.showHtmlPreview(...a);
+const hideHtmlPreview = (...a) => splitPreview.hideHtmlPreview(...a);
 const enterHtmlPreview = (...a) => splitPreview.enterHtmlPreview(...a);
 const leaveHtmlPreview = (...a) => splitPreview.leaveHtmlPreview(...a);
 const releaseHtmlPreview = (...a) => splitPreview.releaseHtmlPreview(...a);
@@ -96,6 +99,22 @@ const hideSvgRender = (...a) => splitPreview.hideSvgRender(...a);
 const zoomSvgRenderBy = (...a) => splitPreview.zoomSvgRenderBy(...a);
 const enterBinaryView = (...a) => splitPreview.enterBinaryView(...a);
 const enterTextView = (...a) => splitPreview.enterTextView(...a);
+
+// ---- 插件自定义视图域（editor-plugin-view.js） ----
+// 覆盖层形态：底层编辑器照常持有内容，切走 destroy、切回重新 mount。
+const pvDeps = Object.create(deps);
+pvDeps.hideImageView = (...a) => splitPreview.hideImageView(...a);
+pvDeps.hideVideoView = (...a) => splitPreview.hideVideoView(...a);
+pvDeps.hideAudioView = (...a) => splitPreview.hideAudioView(...a);
+pvDeps.applyAceMode = (...a) => applyAceMode(...a);
+pvDeps.showBanner = (...a) => showBanner(...a);
+pvDeps.updateStatus = (...a) => updateStatus(...a);
+pvDeps.markDocDirty = (...a) => markDocDirty(...a);
+const pluginView = createEditorPluginView(pvDeps);
+const enterPluginView = (...a) => pluginView.enterPluginView(...a);
+const showPluginView = (...a) => pluginView.showPluginView(...a);
+const hidePluginView = (...a) => pluginView.hidePluginView(...a);
+const disposePluginView = (...a) => pluginView.disposePluginView(...a);
 
 // ---- 浏览器标签域（editor-browser-tab.js） ----
 const browserTabDeps = Object.create(deps);
@@ -382,6 +401,8 @@ function renderEditorLayout() {
         updateStatus();
         deps.updateSearchState();
     }
+    // 标签条刚整段重建完，横滚定位当前激活标签（rAF 内执行，等布局稳定）
+    scheduleRevealActiveTabs();
 }
 
 function buildSplitNode(parent, node) {
@@ -479,9 +500,18 @@ const VIEW_ICONS = {
     split: '<svg viewBox="0 0 14 14" aria-hidden="true"><rect x="1.5" y="2.2" width="11" height="9.6" rx="1" stroke="currentColor" stroke-width="1.2" fill="none"/><path d="M7 2.6v9" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>',
 };
 const MORE_ICON = '<svg viewBox="0 0 14 14" aria-hidden="true"><circle cx="7" cy="2.9" r="1.25" fill="currentColor"/><circle cx="7" cy="7" r="1.25" fill="currentColor"/><circle cx="7" cy="11.1" r="1.25" fill="currentColor"/></svg>';
+// 插件视图没有内置图标表项：给一个「面板」形状的通用图标，别让按钮变成空白方块
+const PLUGIN_VIEW_ICON = '<svg viewBox="0 0 14 14" aria-hidden="true"><rect x="1.5" y="2.2" width="11" height="9.6" rx="1" stroke="currentColor" stroke-width="1.2" fill="none"/><path d="M4.2 5.5h5.6M4.2 8h3.2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><circle cx="10.6" cy="9.5" r="1.2" fill="currentColor"/></svg>';
+
+function viewIconFor(mode) {
+    if (VIEW_ICONS[mode]) return VIEW_ICONS[mode];
+    return isPluginViewMode(mode) ? PLUGIN_VIEW_ICON : '';
+}
 
 function viewDisabledFor(doc, mode) {
     if (!doc) return true;
+    // 插件视图：注册表缺失 / 二进制 / 大文件 / 归属不符，判定单一来源在 shell/plugin-viewers.js
+    if (isPluginViewMode(mode)) return !!pluginViewUnavailable(doc, mode);
     if (mode === 'image') return !doc.image;
     if (mode === 'video') return !doc.video;
     if (mode === 'audio') return !doc.audio;
@@ -515,7 +545,7 @@ function buildGroupTools(gid) {
         btn.className = 'tb-view' + (on ? ' active' : '');
         btn.dataset.mode = mode;
         btn.dataset.tip = label;
-        btn.innerHTML = VIEW_ICONS[mode] || '';
+        btn.innerHTML = viewIconFor(mode);
         btn.addEventListener('click', async () => {
             if (deps.file !== doc) await activateDoc(doc);
             if (mode === 'sql') {
@@ -773,10 +803,39 @@ function buildGroupTab(g, doc, strip) {
         dragTabGroupId = null;
         moveTabInGroup(g.id, srcId, doc.id, before);
     });
-    if (doc.id === g.activeId) setTimeout(() => {
-        try { tab.scrollIntoView({block: 'nearest', inline: 'nearest'}); } catch (err) {}
-    }, 0);
     return tab;
+}
+
+// 标签条横滚定位：把每个分栏组的激活标签滚进可视区。
+// 不用 scrollIntoView —— 它会连带滚动祖先容器，且 inline:'nearest' 对「部分可见」的
+// 标签不动作，导致激活标签经常停在可视区外。这里显式改 .etabs 自己的 scrollLeft。
+let revealTabsRaf = 0;
+function scheduleRevealActiveTabs() {
+    if (revealTabsRaf) return;
+    revealTabsRaf = requestAnimationFrame(() => {
+        revealTabsRaf = 0;
+        revealActiveTabs();
+    });
+}
+function revealActiveTabs() {
+    for (const wrap of deps.els.editor.querySelectorAll('.egroup')) {
+        const strip = wrap.querySelector('.etabs');
+        if (!strip || strip.classList.contains('hidden') || strip.scrollWidth <= strip.clientWidth) continue;
+        const tab = strip.querySelector('.tab.active[data-doc-id]');
+        if (!tab) continue;
+        // 右侧工具区是绝对定位覆盖在标签条上的；末尾 spacer 的宽度就是它占的宽度，
+        // 滚到最右时给激活标签留出这段，别让「视图切换/更多」把标签压住。
+        const spacer = strip.querySelector('.tb-spacer');
+        const rightInset = spacer ? spacer.offsetWidth : 0;
+        const pad = 8;
+        const sr = strip.getBoundingClientRect();
+        const tr = tab.getBoundingClientRect();
+        if (tr.left < sr.left + pad) {
+            strip.scrollLeft = Math.max(0, strip.scrollLeft - (sr.left + pad - tr.left));
+        } else if (tr.right > sr.right - rightInset - pad) {
+            strip.scrollLeft += tr.right - (sr.right - rightInset - pad);
+        }
+    }
 }
 
 function wireHostDnd(host, gid) {
@@ -1090,6 +1149,14 @@ function markDocDirty(doc) {
     if (!doc || !doc.editor) return;
     const text = doc.editor.getText();
     doc.text = text;
+    // 插件视图挂着的文档：把新文本推给视图（ctx.onChange），视图自己决定重绘
+    if (typeof doc.pluginViewNotify === 'function') {
+        try {
+            doc.pluginViewNotify(text);
+        } catch (e) {
+            console.warn('[plugin-viewer] onChange 抛错：', e);
+        }
+    }
     const base = doc.bases[doc.mode];
     const next = doc.untitled ? true : (base == null ? true : text !== base);
     if (deps.file === doc) {
@@ -1204,6 +1271,8 @@ function refreshPatchMarkers(doc) {
 
 function createDocEditor(doc) {
     if (doc.editor) return;
+    // 插件视图未注册（插件被禁用 / 卸载）：回落默认视图，别把标签页卡在一个空模式上
+    if (isPluginViewMode(doc.mode) && !pluginView.pluginViewAvailable(doc.mode)) doc.mode = '';
     // 浏览器 / 后台终端视图没有 doc.editor，用 doc.pane 判断是否已建过；
     // 否则每次激活都会再建一套面板，旧面板就留在编辑器里叠着。
     if (doc.browser) {
@@ -1368,7 +1437,10 @@ function createDocEditor(doc) {
         } catch (e) {}
     }
     setupTreeContextMenu(doc);
-    doc.mode = splitRequested ? 'split' : previewRequested ? 'preview' : tableRequested ? 'table' : imageRequested ? 'image' : videoRequested ? 'video' : audioRequested ? 'audio' : binaryMode ? 'binary' : startMode;
+    // 插件视图是覆盖层：底层按常规基础模式建，doc.mode 保留 'plugin:<id>'（视图下拉 /
+    // 标签页按钮 / 会话恢复都认这一个字段，不能被下面的基础模式覆盖掉）
+    const requestedPluginMode = isPluginViewMode(doc.mode) ? doc.mode : '';
+    doc.mode = requestedPluginMode || (splitRequested ? 'split' : previewRequested ? 'preview' : tableRequested ? 'table' : imageRequested ? 'image' : videoRequested ? 'video' : audioRequested ? 'audio' : binaryMode ? 'binary' : startMode);
     // 补丁视图是覆盖层：底层编辑器仍按 text 起始，但 doc.mode 必须记成 patch，
     // 否则首次打开时状态栏显示补丁、视图按钮却选中文本。
     if (patchRequested) doc.mode = 'patch';
@@ -1388,6 +1460,7 @@ function createDocEditor(doc) {
     if (imageRequested) showImageView(doc);
     if (videoRequested) showVideoView(doc);
     if (audioRequested) showAudioView(doc);
+    if (requestedPluginMode) showPluginView(doc);
     if (!doc.dirty) doc.bases[doc.mode] = doc.text;
     deps.applyReadOnlyToDoc(doc);
     doc.content = null;
@@ -1576,6 +1649,8 @@ async function activateDoc(doc) {
         // updateDocChrome 不走，但「要看到这份内容」的意图是真的——仍要通知宿主解开
         // 编辑区收起态，否则 AI 让位收起后，点便签按钮 / 点当前标签页毫无反应。
         if (deps.onDocVisible) deps.onDocVisible(doc);
+        // 即便已是 active，若被手动横滚出可视区，重新聚焦时也应滚回定位
+        scheduleRevealActiveTabs();
         return;
     }
     // 切换标签时先暂停上一个标签的视频/音频：面板只是被隐藏，不会自动停音频
@@ -1733,6 +1808,8 @@ function closeDocNow(doc, remember = true) {
     releaseVideo(doc);
     releaseAudio(doc);
     releaseHtmlPreview(doc);
+    // 插件视图：调插件自己的 destroy 再摘挂载点，漏了会留下定时器 / 全局监听
+    disposePluginView(doc);
     const wasActive = doc === deps.file;
     if (doc.path && remember) {
         deps.closedTabs.push({path: doc.path, name: doc.name});
@@ -1858,5 +1935,5 @@ function reopenClosedTab() {
     function setFocusedGroupId(v) { focusedGroupId = v; }
     function setSplitRoot(v) { splitRoot = v; }
 
-    return {activateDoc, setFocusedGroupId, setSplitRoot, addDocToFocusedGroup, get editorGroups() { return editorGroups; }, applyAceMode, applyCsvTableZoom, applyImageZoom, browserViewportLabel, closeDocNow, closeDocsWithConfirm, closeSqlView, createDoc, createDocEditor, createGroup, dismissBanner, doRedo, doUndo, enterAudioView, enterBinaryView, enterCsvTable, enterHtmlPreview, enterImageView, enterMarkdownPreview, enterSplitView, enterSqlView, enterSvgRender, enterTextView, enterVideoView, exitSplitView, expandAllWithGuard, flushCsvCellEditor, get focusedGroupId() { return focusedGroupId; }, groupDocs, groupOfDoc, groupSnapshot, focusEditorGroup, moveDocToGroup, splitDocToGroup, mergeEditorGroup, handleAIWorkspaceFileChanged, handleExternalDocChanges, hideAudioView, hideBanner, hideHtmlPreview, hideSvgRender, hideVideoView, hookCodeFoldRanges, hookMultiCursor, humanizeCounts, initCodeFoldHover, jumpBookmark, addBookmarkAt, removeBookmarkAt, clearDocBookmarks, leaveCsvTable, leaveHtmlPreview, leaveMarkdownPreview, markDocDirty, mdSyncScrollFromAce, moveTabInGroup, openWithDefaultApp, patchViewContext, refreshPatchMarkers, rememberDocView, renderBookmarks, renderBreadcrumb, renderCsvTableView, renderEditorLayout, renderMarkdownPreview, renderTabs, reopenClosedTab, releaseAudio, releaseVideo, requestCloseDoc, revertDocToSaved, scheduleGitGutter, setBrowserViewport, setFilename, showBanner, showHtmlPreview, showImageMenu, showMdPreviewMenu, showPathInFolder, showSvgMenu, get splitRoot() { return splitRoot; }, syncAllBrowserTabs, syncBrowserTab, syncTabReadOnly, textArea, toggleBookmark, toggleFocusedNode, updateBrowserTitle, updateDocChrome, updateStatus, zoomCsvTable, zoomImageBy, zoomSvgRenderBy};
+    return {activateDoc, setFocusedGroupId, setSplitRoot, addDocToFocusedGroup, get editorGroups() { return editorGroups; }, applyAceMode, applyCsvTableZoom, applyImageZoom, browserViewportLabel, closeDocNow, closeDocsWithConfirm, closeSqlView, createDoc, createDocEditor, createGroup, dismissBanner, doRedo, doUndo, enterAudioView, enterBinaryView, enterCsvTable, enterHtmlPreview, enterImageView, enterMarkdownPreview, enterPluginView, enterSplitView, enterSqlView, enterSvgRender, enterTextView, enterVideoView, exitSplitView, expandAllWithGuard, flushCsvCellEditor, get focusedGroupId() { return focusedGroupId; }, groupDocs, groupOfDoc, groupSnapshot, focusEditorGroup, moveDocToGroup, splitDocToGroup, mergeEditorGroup, handleAIWorkspaceFileChanged, handleExternalDocChanges, hideAudioView, hideBanner, hideHtmlPreview, hidePluginView, hideSvgRender, hideVideoView, hookCodeFoldRanges, hookMultiCursor, humanizeCounts, initCodeFoldHover, jumpBookmark, addBookmarkAt, removeBookmarkAt, clearDocBookmarks, leaveCsvTable, leaveHtmlPreview, leaveMarkdownPreview, markDocDirty, mdSyncScrollFromAce, moveTabInGroup, openWithDefaultApp, patchViewContext, refreshPatchMarkers, rememberDocView, renderBookmarks, renderBreadcrumb, renderCsvTableView, renderEditorLayout, renderMarkdownPreview, renderTabs, reopenClosedTab, releaseAudio, releaseVideo, requestCloseDoc, revertDocToSaved, scheduleGitGutter, setBrowserViewport, setFilename, showBanner, showHtmlPreview, showImageMenu, showMdPreviewMenu, showPathInFolder, showSvgMenu, get splitRoot() { return splitRoot; }, syncAllBrowserTabs, syncBrowserTab, syncTabReadOnly, textArea, toggleBookmark, toggleFocusedNode, updateBrowserTitle, updateDocChrome, updateStatus, zoomCsvTable, zoomImageBy, zoomSvgRenderBy};
 }

@@ -218,6 +218,9 @@ func stripRuntimeFields(s MCPServerConfig) MCPServerConfig {
 	out := s
 	out.Enabled = nil
 	out.EnabledTools = nil
+	// Notes 只进提示词，不影响进程与工具集：不剥离的话，改一段备注也会被判定成
+	// 「配置变了」→ 关掉再重启 server，纯属自找中断。
+	out.Notes = ""
 	return out
 }
 
@@ -596,6 +599,8 @@ type SnapshotServer struct {
 	Attempt     int                `json:"attempt,omitempty"`
 	MaxAttempt  int                `json:"maxAttempt,omitempty"`
 	NextRetryAt int64              `json:"nextRetryAt,omitempty"`
+	// Notes 是用户的「使用约定」原文，前端拼进系统提示词的 <mcp_server_notes> 块。
+	Notes string `json:"notes,omitempty"`
 }
 
 type Snapshot struct {
@@ -624,6 +629,7 @@ func (m *Manager) snapshotLocked() Snapshot {
 			Attempt:     entry.status.Attempt,
 			MaxAttempt:  entry.status.MaxAttempt,
 			NextRetryAt: entry.status.NextRetryAt,
+			Notes:       entry.cfg.Notes,
 		}
 		if s.Tools == nil {
 			s.Tools = []mcpPublicToolDef{}

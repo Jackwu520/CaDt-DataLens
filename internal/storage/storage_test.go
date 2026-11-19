@@ -187,6 +187,9 @@ func TestCacheIDs(t *testing.T) {
 	want := []string{
 		"run-temp", "browser-profiles", "webview-cache", "session-index", "app-logs",
 		"debug-console", "ai-logs", "model-catalog", "builtin-skills", "builtin-mcp-samples", "temp-scratch", "ws-worklog", "ws-tmp",
+		// 工具结果落盘区：删了不丢正式内容（会话正文仍在 ai-sessions），只是上下文里的
+		// 「全文在 xxx」指针失效、需要时由 AI 重新调工具取。
+		"ai-artifacts",
 	}
 	got := New(Deps{}).CacheIDs()
 	if strings.Join(got, ",") != strings.Join(want, ",") {

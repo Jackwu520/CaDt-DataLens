@@ -222,6 +222,7 @@ export function replaySessionLog(text) {
         meta: {},
         issues: 0,
         torn: false,
+        droppedTransient: 0,
     };
     const raw = textOf(text);
     if (!raw) return result;
@@ -294,6 +295,30 @@ export function replaySessionLog(text) {
                 result.issues++;
                 break;
         }
+    }
+    // 同类 dedupeKey 的机械注入只保留最新一条（口径与 buildApiMessages 发送侧一致：
+    // 同 key 旧条目本就不会发给模型，读盘再留着纯属冗余）。节流失效期（2026-11-19
+    // 修复前）每批工具都重插一条 <task_todos_check>，单会话落盘过 339 条——这里统一
+    // 折叠掉，丢弃数交给加载方置 _needsRewrite，下次持久化整份重写把磁盘也清掉。
+    // 必须在事件重放完成后做：truncate 的 keep 语义基于完整重放序列，中途剔除会错位。
+    // archived 不动：已离开上下文，重写收益小。
+    const lastByKey = new Map();
+    for (let i = 0; i < result.messages.length; i++) {
+        const key = textOf(result.messages[i] && result.messages[i].dedupeKey);
+        if (key) lastByKey.set(key, i);
+    }
+    if (lastByKey.size) {
+        const kept = [];
+        for (let i = 0; i < result.messages.length; i++) {
+            const message = result.messages[i];
+            const key = textOf(message && message.dedupeKey);
+            if (key && lastByKey.get(key) !== i) {
+                result.droppedTransient++;
+                continue;
+            }
+            kept.push(message);
+        }
+        if (result.droppedTransient) result.messages = kept;
     }
     return result;
 }

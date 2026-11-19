@@ -1,17 +1,27 @@
 // ai-context-slim.test.mjs：实时瘦身纯判定的护栏。
 // 锁住两类「改了就悄悄裁错」的行为：轮次口径（注入类消息不推保留窗口）与
-// 大工具结果修剪（白名单 / 阈值 / 头尾预算 / 标记文案）。
+// 大工具结果处理（跳过表 / 阈值 / 头尾预算 / 指针文案）。
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
     isRealUserTurn,
     recentTurnStart,
     pruneToolResult,
+    spillWanted,
+    spillPointerText,
+    slimToolResult,
+    pruneThresholdOf,
+    foldSupersededToolCalls,
+    foldedToolArguments,
+    underContextPressure,
+    recentToolIndexes,
     slimBreakdownParts,
     SLIM_KEEP_TURNS,
     SLIM_PRUNE_THRESHOLD,
+    SLIM_EXTERNAL_PRUNE_THRESHOLD,
+    SLIM_ARGS_FOLD_THRESHOLD,
     SLIM_HEAD_CHARS,
-    SLIM_PRUNABLE_TOOLS,
+    SLIM_SKIP_TOOLS,
 } from '../../src/ai/ai-context-slim.js';
 
 const msg = (role, extra) => Object.assign({role, content: role}, extra || {});
@@ -92,19 +102,37 @@ test('recentTurnStart：limit 之后的消息不参与判定', () => {
 
 const bigText = (chars) => 'A'.repeat(chars);
 
-test('pruneToolResult：白名单外与未超阈值不修剪', () => {
-    assert.equal(pruneToolResult('list_dir', bigText(20000)), null);
-    assert.equal(pruneToolResult('terminal_read', bigText(20000)), null);
-    assert.equal(pruneToolResult('read_file', bigText(SLIM_PRUNE_THRESHOLD)), null, '恰好等于阈值不裁');
-    assert.equal(pruneToolResult('read_file', ''), null);
-    assert.equal(pruneToolResult('read_file', null), null);
-    assert.deepEqual(SLIM_PRUNABLE_TOOLS,
-        ['read_file', 'web_fetch', 'run_command', 'background_command', 'search_text']);
+test('spillWanted：跳过表内不处理；内置 8 K、外部工具（MCP/插件）50 K 两档阈值', () => {
+    // 跳过表：自带窗口或不可重得的操作回执
+    for (const name of SLIM_SKIP_TOOLS) {
+        assert.equal(spillWanted(name, bigText(200000)), false, name + ' 不该被处理');
+    }
+    assert.ok(SLIM_SKIP_TOOLS.includes('read_file'), 'read_file 自带行窗口，必须跳过');
+    assert.ok(SLIM_SKIP_TOOLS.includes('write_file'), '写入回执不该被落盘');
+    // 曾经的漏洞：MCP 工具不在白名单里 → 553 K 回显原样进上下文
+    assert.equal(spillWanted('mcp__aoci__aoci_update_entry', bigText(60000)), true, 'MCP 超大结果必须处理');
+    assert.equal(spillWanted('mcp__aoci__aoci_update_entry', bigText(20000)), false,
+        'MCP 的中等结果（8–50 K）留在上下文，落盘再读回要多花一轮');
+    assert.equal(spillWanted('mcp__aoci__aoci_maintain', bigText(SLIM_EXTERNAL_PRUNE_THRESHOLD)), false, '恰好 50 K 不处理');
+    assert.equal(spillWanted('mcp__aoci__aoci_maintain', bigText(SLIM_EXTERNAL_PRUNE_THRESHOLD + 1)), true);
+    // 第三方插件工具同档（返回体量同样不受我们控制）
+    assert.equal(spillWanted('plugin__foo', bigText(20000)), false);
+    assert.equal(spillWanted('plugin__foo', bigText(SLIM_EXTERNAL_PRUNE_THRESHOLD + 1)), true);
+    // 内置工具仍是 8 K
+    assert.equal(spillWanted('list_dir', bigText(SLIM_PRUNE_THRESHOLD + 1)), true);
+    assert.equal(spillWanted('web_fetch', bigText(SLIM_PRUNE_THRESHOLD)), false, '恰好等于阈值不处理');
+    assert.equal(spillWanted('web_fetch', ''), false);
+    assert.equal(spillWanted('web_fetch', null), false);
+    // 前缀判定：mcp__ / plugin__ 走宽档，其余走窄档
+    assert.equal(pruneThresholdOf('mcp__x__y'), SLIM_EXTERNAL_PRUNE_THRESHOLD);
+    assert.equal(pruneThresholdOf('plugin__x'), SLIM_EXTERNAL_PRUNE_THRESHOLD);
+    assert.equal(pruneThresholdOf('web_fetch'), SLIM_PRUNE_THRESHOLD);
+    assert.equal(pruneThresholdOf(''), SLIM_PRUNE_THRESHOLD);
 });
 
 test('pruneToolResult：头 4096 + 尾 1024，中段打标记', () => {
     const text = 'H'.repeat(5000) + 'M'.repeat(5000) + 'T'.repeat(5000);
-    const pruned = pruneToolResult('read_file', text);
+    const pruned = pruneToolResult('web_fetch', text);
     assert.ok(pruned.startsWith('H'.repeat(SLIM_HEAD_CHARS)));
     assert.ok(pruned.endsWith('T'.repeat(1024)));
     assert.ok(!pruned.includes('M'), '中段必须被裁掉');
@@ -112,6 +140,7 @@ test('pruneToolResult：头 4096 + 尾 1024，中段打标记', () => {
     assert.ok(pruned.includes('不要凭记忆引用被修剪的中段内容'), '标记必须禁止凭记忆引用中段');
     assert.ok(pruned.includes('重新调用该工具获取'));
     assert.ok(pruned.length < text.length);
+    assert.equal(pruneToolResult('read_file', bigText(20000)), null, '跳过表内的工具不修剪');
 });
 
 test('pruneToolResult：命令类尾部预算放宽到 2048', () => {
@@ -124,10 +153,119 @@ test('pruneToolResult：命令类尾部预算放宽到 2048', () => {
     assert.ok(fetch.endsWith('Z'.repeat(1024)), '非命令类仍是 1024');
 });
 
-test('pruneToolResult：五个白名单工具超阈值都修剪', () => {
-    for (const name of SLIM_PRUNABLE_TOOLS) {
-        assert.ok(pruneToolResult(name, bigText(SLIM_PRUNE_THRESHOLD + 1)) != null, name);
-    }
+test('spillPointerText：头 + 路径 + 原文长度 + 尾', () => {
+    const text = 'H'.repeat(5000) + 'M'.repeat(5000) + 'T'.repeat(3000);
+    const path = 'C:/Users/x/AppData/Roaming/CandySweet/CaDt-DataLens/ai-artifacts/session-1/call-1.txt';
+    const out = spillPointerText('web_fetch', text, path);
+    assert.ok(out.startsWith('H'.repeat(SLIM_HEAD_CHARS)));
+    assert.ok(out.includes('原文 13000 字符'));
+    assert.ok(out.includes(path), '必须给出可读回的绝对路径');
+    assert.ok(out.includes('read_file'), '必须告诉模型怎么读回来');
+    assert.ok(out.includes('不需要就别读'), '必须告诉模型什么时候不必回读');
+    assert.ok(out.endsWith('T'.repeat(1024)));
+    assert.ok(!out.includes('M'), '中段不进上下文');
+});
+
+test('slimToolResult：有落盘路径给指针，没有就退回修剪', () => {
+    const text = bigText(20000);
+    assert.equal(slimToolResult('web_fetch', text, ''), pruneToolResult('web_fetch', text));
+    const pointed = slimToolResult('web_fetch', text, 'D:/a/call-1.txt');
+    assert.ok(pointed.includes('D:/a/call-1.txt'));
+    assert.equal(slimToolResult('read_file', text, 'D:/a/call-1.txt').includes('D:/a/call-1.txt'), true,
+        '落盘过的结果即使工具在跳过表里也按指针发（写盘发生在判定之前）');
+});
+
+// ---------- 过期工具参数折叠 ----------
+
+const callMsg = (id, name, args) => ({role: 'assistant', content: '', toolCalls: [{id, name, arguments: args}]});
+const toolMsg = (id, name, content, status = 'done') => ({role: 'tool', toolCallId: id, name, content, status});
+const bigArgs = () => JSON.stringify({entries: 'x'.repeat(SLIM_ARGS_FOLD_THRESHOLD + 100)});
+const ROLLBACK = '{"status":"repair_required","applied":0,"remaining":37}';
+const APPLIED = '{"status":"applied","applied":37,"remaining":0}';
+
+test('foldSupersededToolCalls：整批退回 + 后续同名调用成功才折叠', () => {
+    // ① 退回 → 后续成功：折叠
+    const ok = foldSupersededToolCalls([
+        callMsg('c1', 'mcp__aoci__aoci_update_entry', bigArgs()),
+        toolMsg('c1', 'mcp__aoci__aoci_update_entry', ROLLBACK),
+        callMsg('c2', 'mcp__aoci__aoci_update_entry', bigArgs()),
+        toolMsg('c2', 'mcp__aoci__aoci_update_entry', APPLIED),
+    ]);
+    assert.deepEqual([...ok], ['c1']);
+    // ② 退回 → 后续也退回：不折叠（旧参数还是下一轮重发的底稿）
+    const stillFailing = foldSupersededToolCalls([
+        callMsg('c1', 't', bigArgs()),
+        toolMsg('c1', 't', ROLLBACK),
+        callMsg('c2', 't', bigArgs()),
+        toolMsg('c2', 't', ROLLBACK),
+    ]);
+    assert.equal(stillFailing.size, 0);
+    // ③ 成功批次：不折叠
+    assert.equal(foldSupersededToolCalls([
+        callMsg('c1', 't', bigArgs()),
+        toolMsg('c1', 't', APPLIED),
+        callMsg('c2', 't', bigArgs()),
+        toolMsg('c2', 't', APPLIED),
+    ]).size, 0);
+    // ④ 参数没超门槛：不折叠
+    assert.equal(foldSupersededToolCalls([
+        callMsg('c1', 't', '{"a":1}'),
+        toolMsg('c1', 't', ROLLBACK),
+        callMsg('c2', 't', bigArgs()),
+        toolMsg('c2', 't', APPLIED),
+    ]).size, 0);
+    // ⑤ 同名但不是同一工具：不折叠
+    assert.equal(foldSupersededToolCalls([
+        callMsg('c1', 'a', bigArgs()),
+        toolMsg('c1', 'a', ROLLBACK),
+        callMsg('c2', 'b', bigArgs()),
+        toolMsg('c2', 'b', APPLIED),
+    ]).size, 0);
+});
+
+test('foldSupersededToolCalls：stopped 也算整批未接收，两种 JSON 空格都认', () => {
+    const stopped = '{"status": "stopped", "applied": 0}';
+    const out = foldSupersededToolCalls([
+        callMsg('c1', 't', bigArgs()),
+        toolMsg('c1', 't', stopped),
+        callMsg('c2', 't', bigArgs()),
+        toolMsg('c2', 't', APPLIED),
+    ]);
+    assert.deepEqual([...out], ['c1']);
+});
+
+test('foldedToolArguments：说明原因与原长度，并禁止复用', () => {
+    const text = foldedToolArguments(44156);
+    const parsed = JSON.parse(text);
+    assert.ok(parsed.note.includes('44156'));
+    assert.ok(parsed.note.includes('整批未接收'));
+    assert.ok(parsed.note.includes('不要复用'));
+    assert.ok(text.length < 300);
+});
+
+// ---------- 应急收缩 ----------
+
+test('underContextPressure：≥90% 才算压力，窗口未知恒 false', () => {
+    assert.equal(underContextPressure(90, 100), true);
+    assert.equal(underContextPressure(95, 100), true);
+    assert.equal(underContextPressure(89, 100), false);
+    assert.equal(underContextPressure(1000, 0), false, '窗口未知（未配模型）时不启用');
+    assert.equal(underContextPressure(NaN, 100), false);
+});
+
+test('recentToolIndexes：只数已落定的工具结果，取最近 N 个', () => {
+    const messages = [
+        {role: 'user', content: 'x'},
+        {role: 'tool', toolCallId: 'a', status: 'done'},
+        {role: 'tool', toolCallId: 'b', status: 'done'},
+        {role: 'assistant', content: ''},
+        {role: 'tool', toolCallId: 'c', status: 'running'},
+        {role: 'tool', toolCallId: 'd', status: 'error'},
+    ];
+    // 保留 2 个：最近的 done/error（d、b），running 的 c 不算
+    assert.deepEqual([...recentToolIndexes(messages, messages.length, 2)].sort((x, y) => x - y), [2, 5]);
+    assert.equal(recentToolIndexes(messages, messages.length, 0).size, 0);
+    assert.equal(recentToolIndexes(messages, 2, 5).size, 1, 'limit 之外的不算');
 });
 
 // ---------- 已省量分类明细 ----------

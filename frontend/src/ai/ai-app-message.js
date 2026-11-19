@@ -30,6 +30,8 @@ export const APP_MESSAGE_ICONS = {
     bgterm: 'terminal',
     // 计划批准：应用代替用户按下「执行计划」，内部指令不该显示成用户胶囊
     plan: 'compass',
+    // 工作区防护告警：预警图标（应用在检测到大批文件消失时插队投递给运行中的会话）
+    wipeguard: 'warn',
 };
 
 export function normalizeAppMessage(raw) {
@@ -62,6 +64,10 @@ export function detectAppMessage(content) {
     if (scheduled) return {kind: 'schedule', label: '定时任务 · ' + scheduled[1].trim(), icon: ''};
     if (/^\[浏览器截图（browser_screenshot 工具自动附加）\]/.test(text)) {
         return {kind: 'browser', label: '浏览器截图', icon: 'camera'};
+    }
+    // 工作区防护告警（wipe-guard）：前缀与 ai-panel 的 wipeguardNotifyForWorkspace 同源约定
+    if (/^［工作区防护］/.test(text)) {
+        return {kind: 'wipeguard', label: '工作区防护 · 大面积文件消失', icon: 'warn'};
     }
     const ask = text.match(/^［子代理提问 · ([^］]+)］/);
     if (ask) return {kind: 'subagent-ask', label: '子代理提问 · ' + ask[1].trim(), icon: ''};

@@ -5,6 +5,8 @@
 import {iconSvg} from '../core/icons.js';
 import {createInput} from '../core/form-controls.js';
 import {ctxLimitTiersFor, effectiveContextWindow, formatTokenAmount, reasoningLevelInfo} from './ai-config-model.js';
+import {providerIconTileHtml} from './ai-provider-icons.js';
+import {formatUsageHeadline} from './ai-usage-quota.js';
 
 export function createAIModelPicker(ctx) {
     const el = ctx.el;
@@ -18,6 +20,8 @@ export function createAIModelPicker(ctx) {
     const setReasoningLevelFor = ctx.setReasoningLevelFor;
     const applyCtxLimit = ctx.applyCtxLimit;
     const flash = ctx.flash;
+    // 额度外显（可选依赖）：分组头右侧显示余额主句；管线未注入时保持原样
+    const usageQuota = typeof ctx.usageQuota === 'function' ? ctx.usageQuota : null;
 
     let modelPickerEl = null;
     let modelPickerDismiss = null;
@@ -103,12 +107,28 @@ export function createAIModelPicker(ctx) {
                 group.className = 'ai-model-picker-group';
                 const head = document.createElement('div');
                 head.className = 'ai-model-picker-group-head';
+                const headIcon = document.createElement('span');
+                headIcon.className = 'ai-model-picker-headicon';
+                headIcon.innerHTML = providerIconTileHtml(account, 16);
+                head.appendChild(headIcon);
                 const headName = document.createElement('span');
                 headName.textContent = account.name || '未命名账号';
                 const headTag = document.createElement('span');
                 headTag.className = 'ai-model-picker-tag';
                 headTag.textContent = providerLabelFor(account);
                 head.append(headName, headTag);
+                // 开启了额度查询的账号在分组头右侧显示余额主句（失败态红字；无缓存不占位）
+                if (usageQuota) {
+                    const snapshot = usageQuota().peek(account.id);
+                    if (snapshot && (snapshot.state === 'error' || (snapshot.items || []).length)) {
+                        const headUsage = document.createElement('span');
+                        headUsage.className = 'ai-model-picker-usage' + (snapshot.state === 'error' ? ' error' : '');
+                        headUsage.textContent = snapshot.state === 'error'
+                            ? (snapshot.error || '查询失败')
+                            : formatUsageHeadline(snapshot);
+                        head.appendChild(headUsage);
+                    }
+                }
                 group.appendChild(head);
                 for (const entry of entries) {
                     const isActive = account.id === activeAccountId && entry.id === activeEntryId;

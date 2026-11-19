@@ -16,7 +16,11 @@ func parseNotifyBuffer(buf []byte, size uint32) ([]watchEvent, bool) {
 		// 缓冲区溢出：内核丢弃了后续事件，调用方应退化为全量刷新
 		return nil, true
 	}
-	var events []watchEvent
+	type rawNotify struct {
+		name   string
+		action uint32
+	}
+	var raw []rawNotify
 	offset := 0
 	for offset+12 <= int(size) {
 		next := binary.LittleEndian.Uint32(buf[offset:])
@@ -28,13 +32,25 @@ func parseNotifyBuffer(buf []byte, size uint32) ([]watchEvent, bool) {
 		nameUnits := unsafe.Slice((*uint16)(unsafe.Pointer(&buf[offset+12])), nameLen/2)
 		name := windows.UTF16ToString(nameUnits)
 		if name != "" {
-			removed := action == syscall.FILE_ACTION_REMOVED || action == syscall.FILE_ACTION_RENAMED_OLD_NAME
-			events = append(events, watchEvent{Path: name, Removed: removed})
+			raw = append(raw, rawNotify{name: name, action: action})
 		}
 		if next == 0 {
 			break
 		}
 		offset += int(next)
+	}
+	events := make([]watchEvent, 0, len(raw))
+	for i, item := range raw {
+		removed := item.action == syscall.FILE_ACTION_REMOVED
+		if item.action == syscall.FILE_ACTION_RENAMED_OLD_NAME {
+			// 改名/移动的**成对**通知（OLD_NAME 紧跟 NEW_NAME）说明目标仍在监听根内——
+			// 这是工作区内部的重命名或挪目录（批量重命名、`git mv`、拖拽归位），文件
+			// 没有离开工作区，不该计入「消失」。移出工作区的移动只会收到 OLD_NAME
+			// （目标在监听根之外，内核不报 NEW_NAME），仍按消失计。
+			paired := i+1 < len(raw) && raw[i+1].action == syscall.FILE_ACTION_RENAMED_NEW_NAME
+			removed = !paired
+		}
+		events = append(events, watchEvent{Path: item.name, Removed: removed})
 	}
 	return events, false
 }

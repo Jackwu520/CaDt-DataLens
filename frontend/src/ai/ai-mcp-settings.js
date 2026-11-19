@@ -40,6 +40,10 @@ export function mcpToolFlags(annotations) {
 }
 
 // mcpValidateServerForm：写入前表单校验（与 Go 写入期校验同规则，用户当场看到错在哪）。
+// MCP_NOTES_MAX_CHARS：单条「使用约定」上限，与 Go 的 mcpNotesMaxChars 同值——
+// 它原样进系统提示词，每个 server 都占上下文。
+export const MCP_NOTES_MAX_CHARS = 1000;
+
 export function mcpValidateServerForm(form) {
     const name = String(form.name || '').trim();
     if (!MCP_SERVER_NAME_RULE.test(name)) {
@@ -50,6 +54,9 @@ export function mcpValidateServerForm(form) {
     }
     if ((form.args || []).length > 128) {
         return '参数个数超过上限 128';
+    }
+    if (Array.from(String(form.notes || '')).length > MCP_NOTES_MAX_CHARS) {
+        return '使用约定最长 ' + MCP_NOTES_MAX_CHARS + ' 字';
     }
     for (const [label, value] of [['启动超时', form.startupTimeoutMs], ['调用超时', form.callTimeoutMs], ['关闭超时', form.closeTimeoutMs]]) {
         if (value < 0 || value > MCP_TIMEOUT_MAX_MS) {
@@ -289,6 +296,12 @@ export function createAIMcpSettings(ctx) {
         const cmdCtl = createInput({value: cfg.command || '', placeholder: '例如 npx、可执行文件路径', spellcheck: false});
         const argsCtl = createTextarea({value: (cfg.args || []).join('\n'), rows: 4, spellcheck: false, placeholder: '每行一个参数'});
         const cwdCtl = createInput({value: cfg.cwd || '', placeholder: '留空 = 继承应用目录', spellcheck: false});
+        // 使用约定：原样注入系统提示词的 <mcp_server_notes> 块。上限与 Go 侧 ValidateServer 一致。
+        const notesCtl = createTextarea({
+            value: cfg.notes || '', rows: 3, spellcheck: false,
+            placeholder: '例如：提交前先校验字段长度；一次最多提交 10 条；按来源分批提交',
+        });
+        notesCtl.control.maxLength = MCP_NOTES_MAX_CHARS;
         const timeoutCtl = (seconds, label) => createInput({
             type: 'number', className: 'dlg-input ai-mcp-timeout',
             value: seconds, min: 1, max: 600, attrs: {'aria-label': label},
@@ -340,6 +353,7 @@ export function createAIMcpSettings(ctx) {
             fieldRow('启动命令', '例如 npx、可执行文件路径；将在本机执行', cmdCtl.element),
             fieldStack('参数（每行一个）', '', argsCtl.element),
             fieldRow('工作目录', '留空 = 继承应用目录', cwdCtl.element),
+            fieldStack('使用约定', '会注入系统提示词（≤1000 字），告诉模型这个 server 该怎么用；不要写密钥', notesCtl.element),
             fieldStack('环境变量', '值留空 = 保持原值；已存的值不回显', envWrap),
             fieldRow('启动超时（秒）', '等待服务器进程就绪的上限', t1Ctl.element),
             fieldRow('调用超时（秒）', '单次 tools/call 的等待上限', t2Ctl.element),
@@ -371,7 +385,11 @@ export function createAIMcpSettings(ctx) {
             const env = mcpMergeEnvRows(existing, collectEnvRows().filter((r) => r.key));
 
             // cwd 必须进 form：漏掉它会让「工作目录」看着填了却从不落盘
-            const form = {name: serverName, command, args, cwd, startupTimeoutMs: t1, callTimeoutMs: t2, closeTimeoutMs: t3};
+            const form = {
+                name: serverName, command, args, cwd, startupTimeoutMs: t1, callTimeoutMs: t2, closeTimeoutMs: t3,
+                // 使用约定：空白就删掉该字段（不留下 notes:''），与 Go 侧的 omitempty 口径一致
+                ...(notesCtl.control.value.trim() ? {notes: notesCtl.control.value.trim().slice(0, MCP_NOTES_MAX_CHARS)} : {}),
+            };
             const error = mcpValidateServerForm(form);
             if (error) {
                 flash(error, true);

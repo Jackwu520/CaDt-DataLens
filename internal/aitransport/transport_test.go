@@ -274,8 +274,17 @@ func TestAIStreamAnthropic(t *testing.T) {
 	if captured.APIKey != "test-key" || captured.AnthropicVersion != "2023-06-01" {
 		t.Fatalf("headers = %#v", captured)
 	}
-	if captured.Body["system"] != "sys" {
+	// 系统提示词以 block 数组下发（首块带 cache_control 缓存断点，见 anthropic_cache_test.go）
+	systemBlocks, ok := captured.Body["system"].([]any)
+	if !ok || len(systemBlocks) != 1 {
 		t.Fatalf("system = %#v", captured.Body["system"])
+	}
+	firstBlock, _ := systemBlocks[0].(map[string]any)
+	if firstBlock["text"] != "sys" || firstBlock["type"] != "text" {
+		t.Fatalf("system block = %#v", firstBlock)
+	}
+	if _, has := firstBlock["cache_control"]; !has {
+		t.Fatalf("system block 应带 cache_control：%#v", firstBlock)
 	}
 	if captured.Body["max_tokens"] != float64(16000) || captured.Body["stream"] != true {
 		t.Fatalf("body = %#v", captured.Body)

@@ -309,7 +309,7 @@ export const AI_BUILTIN_SKILLS = [
             '- toggle_fullscreen：切换全屏。',
             '- toggle_always_on_top：切换窗口置顶。',
             '- set_theme {theme}：只切换软件主题（界面配色），theme = dark / light。代码配色（token + 编辑器底色）由独立的 codeStyle 设置控制，不受此动作影响。',
-            '- open_settings {pane?,row?}：打开设置弹窗，pane = general / editor-tabs / formats / integration / models / gen-models / external-tools / ai / permissions / persona / context / preferences / schedules / plugins / shortcuts / developer / about 或 fmt-<格式> / lang-<语言>；传 row（get_settings_tree 返回的行 id）可打开设置并滚动高亮该行。',
+            '- open_settings {pane?,row?}：打开设置弹窗，pane = general / editor-tabs / formats / integration / models / gen-models / external-tools / ai / permissions / persona / context / preferences / schedules / plugins / precmd / shortcuts / developer / about 或 fmt-<格式> / lang-<语言>；传 row（get_settings_tree 返回的行 id）可打开设置并滚动高亮该行。',
             '- get_settings_tree {pane?}：设置树。不带 pane 返回页清单（id / 标题 / 父组 / 行数）；带 pane 返回该页分组与行（唯一 id / 标题 / 类型 / 当前值 / 危险度 low|medium|high / 是否可写）。行 id 用于 open_settings 的 row 与 set_setting_row。',
             '- set_setting_row {id,value}：按设置树 id 写入一项设置：低风险直接生效；中/高风险会弹动作审批卡，批准后才写；布局形态类行永久不可由 AI 写。开关写 true/false，下拉写选项 value（也认选项文案），数字受控件 min/max 约束。',
             '- set_setting {key,value}：改受限白名单设置并即时生效（持久化）。可写键：autoSave, showSidebar, alwaysOnTop, codeWrap, codeGuides, treeGuides, treeCounts, mdLineNumbers, mdScrollSync, readOnlyMode, treeRefreshInterval(1/2/3/5/10), sidebarFont(10-20), editorFont(10-24), treeExpandDefault(expand/collapse), openMode(tab/window), theme, codeStyle(auto / jetbrains-dark / darcula / tokyo-night / jetbrains-light / github-light / shiki / newsprint / pixyll / whitey；只改代码配色与编辑器观感，不改界面), sidebarWidth(160-500), terminalHeight(120-2000), aiPanelWidth(280-2000)。未知键会报错并列出可用键。**AI 面板的显示方式（停靠分屏 / 全屏 / 悬浮）与停靠侧永远不可写**：那是用户的布局偏好，只能由用户自己在面板 […] 菜单或设置页切换，任何动作（含 set_setting、toggle_ai_panel 之外的一切）都不得改动，也不要建议用户「让 AI 帮你切」。',
@@ -338,6 +338,10 @@ export const AI_BUILTIN_SKILLS = [
             '- install_mcp_sample {id}：安装内置示例（释放脚本并写入 MCP 配置，会弹本机命令确认）；安装后提醒用户去能力来源绑定并填环境变量。',
             '- set_mcp_server {server:{name,command?,args?,cwd?,enabled?,startupTimeoutMs?,callTimeoutMs?,closeTimeoutMs?,envKeys?}}：新建/部分更新 MCP 服务器（未传字段沿用原值）。每次都会弹本机命令执行确认；env 值不可写（envKeys 只登记键名、值由用户填），enabledTools 不可设置；已配环境变量的服务器 AI 不能修改。',
             '- delete_mcp_server {name}：删除 MCP 服务器（每次确认）；已配环境变量的服务器不可由 AI 删除。',
+            '- get_pre_commands：当前工作区的预指令列表（id / event / command / timeoutMs / enabled / origin / 最近一次运行结果）。预指令 = 绑定工作区在生命周期时机自动执行的命令（event = workspace-open 打开时 / workspace-close 关闭或切走时 / ai-session-start 空会话第一轮流起前），绑定本窗口当前工作区；origin=ai 的条目说明是你（或别的会话）代配并经用户审批的。',
+            '- add_pre_command {command,timeoutMs?,event?,enabled?}：给当前工作区新增预指令（timeoutMs 毫秒 ∈1000–600000 默认 30000；event 缺省 workspace-open；不传 ws 自动绑定当前工作区）。**必弹动作审批卡，完全权限也不例外**；当前窗口没开工作区会报错。',
+            '- update_pre_command {id,command?,timeoutMs?,event?,enabled?}：改当前工作区的预指令条目（未传字段沿用原值）。**必弹动作审批卡**；只能改本工作区的条目，别的工作区直接报错。',
+            '- remove_pre_command {id}：删除当前工作区的预指令条目。**必弹动作审批卡**；同样只限本工作区。',
             '- type_text {text,target?}：模拟键盘输入到焦点元素（或 target 选择器匹配的输入框），**仅完全权限档**。',
             '- press_key {key,target?}：模拟按键，支持组合键串（如 Ctrl+Shift+P / Alt+7 / Ctrl+` / Shift+F4 / Ctrl+Alt+L）与单键（Enter / Escape / F3 / a）；修饰键可用 Ctrl / Alt / Shift / Meta（也认 Control / Option / Win / Cmd），按真实顺序派发修饰键与主键的 keydown/keyup，可触发全局快捷键、对话框确认、Esc 关闭等，**仅完全权限档**。应用快捷键按物理键位（e.code）匹配，本动作会自动给出 code；无法识别的组合串会报错并说明写法。合成事件 isTrusted=false，依赖真实按键校验的浏览器原生行为可能不生效。',
             '- click {x,y}：在窗口可视区单击一次（DOM 合成 pointer/mouse 事件，不移动系统鼠标；**仅完全权限档**，计划模式下拒绝）。坐标是 CSS 像素：截图是物理像素，先除以 devicePixelRatio（get_state 与 click 返回都带 viewport.dpr）；也可传 selector（如 "#ab-files"）直接点元素，位置更准。返回实际点击坐标与命中元素（tag/id/class/文本），点错按返回的 target 调整；合成事件 isTrusted=false、不带用户激活，少数依赖真实点击校验的行为可能无响应。只支持单击：拖拽 / 滚轮 / 长按 / 悬停不提供；内嵌浏览器页面内部用 browser_click 系列。点击后用 screenshot 核对结果。',
@@ -538,7 +542,7 @@ export const AI_BUILTIN_SKILLS = [
             '  - `cadt.registerFormat(driver)`：注册新文件格式（复用树/表格/代码/文本视图；内置格式永远优先）。',
             '  - `cadt.addCommand(spec)`：向 工具(U) 菜单加命令。',
             '  - `cadt.addTheme(spec)` / `cadt.registerIconTheme(spec)`：注册配色主题 / 文件图标主题。',
-            '  - `cadt.runCommandSync(opts)` / `cadt.runCommand(opts)`：执行进程（同步/流式）；`cadt.openVirtualDoc(name, content)`：打开虚拟文档（扩展名定高亮）。',
+            '  - `cadt.runCommandSync(opts)` / `cadt.runCommand(opts)`：执行进程（同步/流式）；前者的返回值是 Promise（必须 `await`），后者返回 `{stop()}`。`cadt.openVirtualDoc(name, content)`：打开虚拟文档（扩展名定高亮）。',
             '- 工作区是 CaDt-DataLens 仓库时，先 `read_file docs/plugins/README.md` 拿完整字段与示例，再参考 `docs/plugins/examples/`。',
             '- 安装：设置→插件 添加文件夹或导入 .zip；插件目录默认 exe 旁 `plugins\\`，可在设置切到应用数据目录。',
             '- 迭代已有插件：保持 id 不变，改完把 version 语义化 +1；改完在插件页禁用再启用即可重载。',
@@ -731,10 +735,25 @@ export const AI_PRESETS = [
     {id: 'opencode-zen', name: 'OpenCode Zen（按量）', provider: 'openai', baseURL: 'https://opencode.ai/inference/openai/v1', model: 'gpt-6-luna'},
 ];
 
+// 压缩摘要提示词。对齐 opencode 的保真清单：摘要最容易丢的恰是越界后最要紧的东西——
+// 确切路径、错误串、ID 这类「无法重新推导」的字节。压缩完会话要能继续干活，
+// 所以要求按「保真优先」写，而不是按「读起来通顺」写。
 export const AI_COMPACT_SYSTEM_PROMPT = [
-    '你是会话上下文压缩器。',
-    '请把给定的对话记录压缩成 Markdown 摘要，保留：用户偏好与约束、已做出的决定、关键事实与数据、涉及的文件路径、未完成事项与下一步。',
-    '不要编造未出现的信息；不要输出客套话；尽量不超过 800 字。',
+    '你是会话上下文压缩器。把给定对话记录压缩成 Markdown 摘要，供之后继续这项工作使用。',
+    '这是压缩任务，不是对话：不要回答记录里的问题，不要输出客套或前言。',
+    '',
+    '必须逐字保留（宁可啰嗦也不能改写）：文件路径、函数/符号名、命令行、报错原文、URL、',
+    '各种 ID 与标识符（任务号、候选号、审批号）、关键数字与阈值。',
+    '',
+    '需要写清：',
+    '1. 用户的目标、偏好与硬约束（含「不要做什么」）；',
+    '2. 已做出的决定与被否决的方案（各一句理由）；',
+    '3. 已完成的事实与证据（哪次工具调用得到了什么结论，带 path:line）；',
+    '4. 未完成事项与下一步，按用户原话保留关键措辞；',
+    '5. 工作流状态：改动是未提交、已提交、已推送还是待审。',
+    '',
+    '冲突处理：本次记录里的新信息优先于「此前摘要」，与旧摘要矛盾时按新的写，并删掉过时结论。',
+    '不要编造未出现的信息。尽量不超过 800 字。',
 ].join('\n');
 
 // 英文强约束：部分模型对英文指令的遵循度明显更高（2026-11-17 实测 sensenova 系）。

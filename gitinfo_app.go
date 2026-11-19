@@ -2,7 +2,21 @@ package main
 
 // gitinfo_app.go：Git 浅集成的 Wails 绑定——引擎在 internal/gitinfo，这里只转发。
 
-import "datalens/internal/gitinfo"
+import (
+	"datalens/internal/gitinfo"
+	"datalens/internal/watch"
+)
+
+func init() {
+	// 切换/检出分支、丢弃改动、清理这类 git 操作会成批删除工作树文件（切走的那个分支
+	// 独有的文件），对 watcher 而言与「大范围文件消失」无异——由发起方声明静默，
+	// 不做启发式猜测（2026-11-19 举一反三排查工作区防护误报）。
+	gitinfo.OnMutateWorktree = func() func() {
+		watch.BeginQuiet()
+		return watch.EndQuiet
+	}
+}
+
 
 func (a *App) GitStatusFor(dir string) (*gitinfo.GitTreeStatus, error) {
 	return gitinfo.StatusFor(dir)

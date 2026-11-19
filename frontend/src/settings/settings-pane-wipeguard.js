@@ -128,7 +128,7 @@ export function createSettingsPaneWipeguard(deps) {
         // ---- 标题 + 说明 ----
         host.appendChild(el('h3', 'wg-title', '工作区防护'));
         host.appendChild(el('p', 'stg-row-meta',
-            'AI 写文件前自动留原文件副本；检测到大范围文件消失立即告警并可停止会话。备份存在应用数据目录（工作区之外），整仓删除波及不到。'));
+            'AI 写文件前自动留原文件副本；检测到大范围文件消失时告警，并把情况插队告诉正在运行的会话——不打断对话，由模型自己判断是否与它有关。备份存在应用数据目录（工作区之外），整仓删除波及不到。'));
 
         // ---- 开关组（方案 §3.4：全部默认开）----
         const mkSwitchRow = (label, key, tip) => {

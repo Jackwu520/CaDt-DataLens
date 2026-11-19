@@ -314,3 +314,46 @@ func TestReplacePluginDirSwapsContent(t *testing.T) {
 		}
 	}
 }
+
+// 更新替换是「删旧目录 → 复制新目录」：必须打开静默门并成对收尾，否则工作区
+// watcher 会把这次批量删除当成大范围文件消失（2026-11-19 插件更新误报实录）。
+func TestReplacePluginDirOpensBulkMutateGate(t *testing.T) {
+	root := t.TempDir()
+	dest := filepath.Join(root, "installed")
+	src := filepath.Join(root, "staged")
+	if err := os.MkdirAll(dest, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dest, "plugin.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "plugin.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var begins, ends int
+	old := OnBulkMutate
+	OnBulkMutate = func() func() {
+		begins++
+		return func() { ends++ }
+	}
+	t.Cleanup(func() { OnBulkMutate = old })
+
+	if err := replacePluginDir(dest, src); err != nil {
+		t.Fatalf("replacePluginDir: %v", err)
+	}
+	if begins != 1 || ends != 1 {
+		t.Fatalf("静默门应开一次关一次，实际 begin=%d end=%d", begins, ends)
+	}
+
+	// 失败路径（源目录不存在）也必须收尾，否则静默门会一直关着
+	if err := replacePluginDir(dest, filepath.Join(root, "missing")); err == nil {
+		t.Fatal("源目录不存在应报错")
+	}
+	if begins != 2 || ends != 2 {
+		t.Fatalf("失败路径也要成对收尾，实际 begin=%d end=%d", begins, ends)
+	}
+}

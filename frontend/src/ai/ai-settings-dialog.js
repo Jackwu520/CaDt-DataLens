@@ -9,6 +9,7 @@ import {createAIAgentSettings} from './ai-agent-settings.js';
 import {createAIGenSettings} from './ai-gen-settings.js';
 import {createAIModelSettings} from './ai-model-settings.js';
 import {createAIPermissionSettings} from './ai-permission-settings.js';
+import {createAIUsageConfigDialog} from './ai-usage-config-dialog.js';
 import {createAIPreferenceSettings} from './ai-preference-settings.js';
 import {createAISettingsIO} from './ai-settings-io.js';
 import {createAIPersonalizationSettings} from './ai-personalization-ui.js';
@@ -880,7 +881,7 @@ export function createAISettingsDialog(ctx) {
             setSettingsStatus('子代理并发上限：' + getConfig().subAgentMax + '（同时运行中，含各层级，不含主代理）', 'ok');
         });
         if (opt.subAgentMaxDepth) opt.subAgentMaxDepth.addEventListener('change', () => {
-            getConfig().subAgentMaxDepth = aiClampInt(opt.subAgentMaxDepth.value, 0, 20, 0);
+            getConfig().subAgentMaxDepth = aiClampInt(opt.subAgentMaxDepth.value, 0, 20, 3);
             opt.subAgentMaxDepth.value = String(getConfig().subAgentMaxDepth);
             saveAIConfig();
             setSettingsStatus(getConfig().subAgentMaxDepth > 0
@@ -1294,7 +1295,20 @@ export function createAISettingsDialog(ctx) {
 
     // —— 四个子域：顺序 model → pref（要 openModelEditor/renderModelList）
     //    → io（要 renderModelList/refreshPromptSettings/aiAddUnique）→ perm（无外部依赖，自注册插件广播监听）
-    const modelMod = createAIModelSettings(ctx, {setSettingsStatus, refreshSettingsPane});
+    // 额度查询配置弹窗在 model 之前建：卡片入口按钮要它的 openUsageConfigDialog；
+    // 查询管线（testUsageConfig / sweep）在 ai-panel 构造，经 ctx.usageQuota 惰性触达。
+    const usageMod = createAIUsageConfigDialog(ctx, {
+        setSettingsStatus,
+        refreshSettingsPane,
+        renderModelList: () => modelMod.renderModelList(),
+        testUsageConfig: (profile, draft) => ctx.usageQuota().testConfig(profile, draft),
+    });
+    const modelMod = createAIModelSettings(ctx, {
+        setSettingsStatus,
+        refreshSettingsPane,
+        openUsageConfigDialog: usageMod.openUsageConfigDialog,
+        usageQuota: () => ctx.usageQuota(),
+    });
     // 生图与视频模型 pane：自管 DOM（列表 + 编辑器弹窗），refreshSettingsPane 驱动列表刷新
     const genMod = createAIGenSettings(ctx, {setSettingsStatus, refreshSettingsPane});
     // 智能体 pane（群聊成员）：同 genMod 形态，数据层在 ai-agent-model.js

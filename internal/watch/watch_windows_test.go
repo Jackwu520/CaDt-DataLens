@@ -4,7 +4,9 @@ import (
 	"encoding/binary"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -55,24 +57,56 @@ func TestParseNotifyBuffer(t *testing.T) {
 	}
 }
 
-// TestParseNotifyBufferRemoved 「消失」类动作（removed / renamed_old_name）标 Removed=true——
-// wipe-guard 的删除计数只认这组（方案 §5.1）。
+// TestParseNotifyBufferRemoved 「消失」类动作标 Removed=true——wipe-guard 的删除计数只认这组
+// （方案 §5.1）。rename 要分成两类：成对的 OLD_NAME + NEW_NAME 是工作区内部改名/移动
+// （批量重命名不是文件消失），孤立的 OLD_NAME 才是「移出工作区」。
 func TestParseNotifyBufferRemoved(t *testing.T) {
 	buf := make([]byte, 512)
-	firstLen := 12 + len(utf16Encode("gone.txt"))*2
-	secondLen := 12 + len(utf16Encode("moved-away.txt"))*2
-	next := writeNotifyEntry(buf, 0, uint32(firstLen), "gone.txt", syscall.FILE_ACTION_REMOVED)
-	next = writeNotifyEntry(buf, next, uint32(secondLen), "moved-away.txt", syscall.FILE_ACTION_RENAMED_OLD_NAME)
-	next = writeNotifyEntry(buf, next, 0, "renamed-in.txt", syscall.FILE_ACTION_RENAMED_NEW_NAME)
+	a := 12 + len(utf16Encode("gone.txt"))*2
+	b := 12 + len(utf16Encode("moved-away.txt"))*2
+	c := 12 + len(utf16Encode("renamed-in.txt"))*2
+	next := writeNotifyEntry(buf, 0, uint32(a), "gone.txt", syscall.FILE_ACTION_REMOVED)
+	next = writeNotifyEntry(buf, next, uint32(b), "moved-away.txt", syscall.FILE_ACTION_RENAMED_OLD_NAME)
+	next = writeNotifyEntry(buf, next, uint32(c), "renamed-in.txt", syscall.FILE_ACTION_RENAMED_NEW_NAME)
 	events, _ := parseNotifyBuffer(buf, uint32(next))
 	if len(events) != 3 {
 		t.Fatalf("unexpected events: %#v", events)
 	}
-	if !events[0].Removed || !events[1].Removed {
-		t.Fatalf("removed/renamed_old 应标记 Removed: %#v", events)
+	if !events[0].Removed {
+		t.Fatalf("删除了的文件应标记 Removed: %#v", events)
+	}
+	if events[1].Removed {
+		t.Fatalf("成对 rename 是工作区内移动，不该算消失: %#v", events)
 	}
 	if events[2].Removed {
 		t.Fatalf("renamed_new 是「出现」不是消失: %#v", events)
+	}
+}
+
+// 孤立 RENAMED_OLD_NAME（目标在监听根之外，内核不报 NEW_NAME）= 文件被移出工作区，算消失。
+func TestParseNotifyBufferOrphanRename(t *testing.T) {
+	buf := make([]byte, 512)
+	first := 12 + len(utf16Encode("moved-out.txt"))*2
+	next := writeNotifyEntry(buf, 0, uint32(first), "moved-out.txt", syscall.FILE_ACTION_RENAMED_OLD_NAME)
+	// 下一条不是 NEW_NAME：不构成配对
+	next = writeNotifyEntry(buf, next, 0, "deleted.txt", syscall.FILE_ACTION_REMOVED)
+	events, _ := parseNotifyBuffer(buf, uint32(next))
+	if len(events) != 2 {
+		t.Fatalf("unexpected events: %#v", events)
+	}
+	if !events[0].Removed {
+		t.Fatalf("移出工作区的 rename 应算消失: %#v", events)
+	}
+	if !events[1].Removed {
+		t.Fatalf("removed 应标记 Removed: %#v", events)
+	}
+	// 末尾孤立 OLD_NAME（批内没有 NEW_NAME 跟着）
+	buf2 := make([]byte, 256)
+	only := 12 + len(utf16Encode("last-moved-out.txt"))*2
+	writeNotifyEntry(buf2, 0, 0, "last-moved-out.txt", syscall.FILE_ACTION_RENAMED_OLD_NAME)
+	events2, _ := parseNotifyBuffer(buf2, uint32(only))
+	if len(events2) != 1 || !events2[0].Removed {
+		t.Fatalf("批尾孤立 rename 应算消失: %#v", events2)
 	}
 }
 
@@ -115,5 +149,92 @@ func TestWatchDirectoryReceivesCreate(t *testing.T) {
 		case <-deadline:
 			t.Fatal("did not receive file creation notification")
 		}
+	}
+}
+
+// 静默门接线验证（2026-11-19 插件更新误报实录）：插件安装 / 更新 / 卸载期间
+// workspace-changed 照常推 paths（UI 要刷新），但 removed / present 两个判定分组为空，
+// 破坏判定不会把这些应用自己发起的整目录增删当成大范围文件消失。
+func TestWatchWorkspaceQuietGateDropsRemovedGroup(t *testing.T) {
+	oldGrace := quietGraceDuration
+	quietGraceDuration = 0
+	t.Cleanup(func() {
+		quietGraceDuration = oldGrace
+		quietDepth.Store(0)
+		quietUntil.Store(0)
+	})
+
+	root := t.TempDir()
+	for i := 0; i < 60; i++ {
+		name := filepath.Join(root, "f"+strconv.Itoa(i)+".txt")
+		if err := os.WriteFile(name, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var mu sync.Mutex
+	var paths, removed int
+	oldEmit := Emit
+	Emit = func(event string, data any) {
+		if event != "workspace-changed" {
+			return
+		}
+		m, ok := data.(map[string]interface{})
+		if !ok {
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if list, ok := m["paths"].([]string); ok {
+			paths += len(list)
+		}
+		if list, ok := m["removed"].([]string); ok {
+			removed += len(list)
+		}
+	}
+	t.Cleanup(func() { Emit = oldEmit })
+
+	w := &Watcher{}
+	if err := w.WatchWorkspace(root); err != nil {
+		t.Fatalf("WatchWorkspace: %v", err)
+	}
+	defer func() { w.UnwatchWorkspace() }()
+	time.Sleep(300 * time.Millisecond) // 等 watcher 进入读循环
+
+	BeginQuiet()
+	for i := 0; i < 60; i++ {
+		_ = os.Remove(filepath.Join(root, "f"+strconv.Itoa(i)+".txt"))
+	}
+	time.Sleep(900 * time.Millisecond) // 等内核通知读出
+	EndQuiet()
+
+	mu.Lock()
+	gotPaths, gotRemoved := paths, removed
+	mu.Unlock()
+	if gotPaths == 0 {
+		t.Fatal("静默期也应有 paths 推送（UI 需要刷新）")
+	}
+	if gotRemoved != 0 {
+		t.Fatalf("静默期不应有 removed 计数，实际 %d", gotRemoved)
+	}
+
+	// 静默解除后恢复正常计数：证明不是永久静默
+	for i := 0; i < 5; i++ {
+		name := filepath.Join(root, "g"+strconv.Itoa(i)+".txt")
+		if err := os.WriteFile(name, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	time.Sleep(300 * time.Millisecond)
+	for i := 0; i < 5; i++ {
+		_ = os.Remove(filepath.Join(root, "g"+strconv.Itoa(i)+".txt"))
+	}
+	time.Sleep(600 * time.Millisecond)
+
+	mu.Lock()
+	gotRemoved = removed
+	mu.Unlock()
+	if gotRemoved == 0 {
+		t.Fatal("静默解除后应恢复 removed 计数")
 	}
 }

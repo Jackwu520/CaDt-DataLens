@@ -9,6 +9,8 @@ import {iconSvg} from '../core/icons.js';
 export const WORKTREE_REL_DIR = '.cadt/worktree';
 // 补丁超过此长度拒绝导出（与 propose_patch 的传输上限一致，防一次导出撑爆上下文）
 export const WORKTREE_PATCH_LIMIT = 256 * 1024;
+// create / discard 的必填原因：会原样显示在审批卡上给用户看，太长反而没人读
+export const WORKTREE_REASON_MAX = 200;
 
 // 会话态归一（单一来源；ai-session-store 的 meta 序列化与 ai-panel 的 normalizeSession 共用）
 export function normalizeWorktreeState(raw) {
@@ -117,6 +119,19 @@ export function resolveWorktreeTarget(own, subWorktrees, requestedName) {
     const hit = (subWorktrees || []).find((w) => w && String(w.name).toLowerCase() === wanted && w.baseSha);
     if (hit) return {wt: {name: hit.name, baseSha: hit.baseSha}, own: false};
     return null;
+}
+
+// create / discard 的必填原因校验（纯函数）：原因原样进审批卡，让用户看到 AI 的意图
+// 而不只是动作。返回 {reason} 或 {error}——error 串会作为工具结果回给模型，指导它补参数。
+export function worktreeReasonCheck(rawReason) {
+    const reason = aiTextOf(rawReason).trim();
+    if (!reason) {
+        return {error: '缺少 reason：create / discard 必须用一句话说明原因（会显示在审批卡上给用户看）'};
+    }
+    if (reason.length > WORKTREE_REASON_MAX) {
+        return {error: 'reason 过长（' + reason.length + ' 字，上限 ' + WORKTREE_REASON_MAX + ' 字）：请压成一句话'};
+    }
+    return {reason};
 }
 
 // <worktree> 注入块（给模型看的稳定区提示词；仅 session.worktree 存在时注入）
@@ -555,6 +570,9 @@ export function createAIWorktree(deps) {
     async function manageCreate(session, toolMessage, input) {
         const missing = requireWriteSession(session);
         if (missing) return deny('WORKTREE_CONTEXT', missing);
+        const reasonCheck = worktreeReasonCheck(input && input.reason);
+        if (reasonCheck.error) return deny('WORKTREE_REASON', reasonCheck.error, '补上 reason 后重试；它是审批卡给人看的首要信息');
+        const reason = reasonCheck.reason;
         const root = getScopeRoot();
         if (session.worktree && normalizeWorktreeState(session.worktree)) {
             const wt = session.worktree;
@@ -575,6 +593,7 @@ export function createAIWorktree(deps) {
             action: 'create',
             label,
             carry,
+            reason,
             // 卡上给人看真实路径：按同一派生规则预测（同名冲突时 Go 顺延 -2/-3，结果里是实际名）
             slug: predictWorktreeSlug(label, session.id || ''),
         });
@@ -878,6 +897,9 @@ export function createAIWorktree(deps) {
     async function manageDiscard(session, toolMessage, input) {
         const missing = requireWriteSession(session);
         if (missing) return deny('WORKTREE_CONTEXT', missing);
+        const reasonCheck = worktreeReasonCheck(input && input.reason);
+        if (reasonCheck.error) return deny('WORKTREE_REASON', reasonCheck.error, '补上 reason 后重试；它是审批卡给人看的首要信息');
+        const reason = reasonCheck.reason;
         const target = resolveTarget(session, input && input.name);
         if (!target) {
             const wanted = String((input && input.name) || '').trim();
@@ -905,6 +927,7 @@ export function createAIWorktree(deps) {
             relPath: worktreeRelPath(wt.name),
             branch: wt.branch || '',
             stat,
+            reason,
         });
         if (!decision.approved) {
             return decision.cancelled

@@ -17,7 +17,7 @@ import {createActivityLog} from './core/activity-log.js';
 import {iconSvg, renderMenuIcon} from './core/icons.js';
 import {createPalette} from './shell/palette.js';
 import {createAIPanel} from './ai/ai-panel.js';
-import {createAIWipeguard} from './ai/ai-wipeguard.js';
+import {createAIWipeguard, WIPEGUARD_NOTIFY_COOLDOWN_MS} from './ai/ai-wipeguard.js';
 import {decideAutoCollapse, shouldExpandEditorOnTab} from './ai/ai-auto-collapse.js';
 import {createReadingMode} from './reading/reading.js';
 import {repairJson} from './core/jsonrepair.js';
@@ -30,6 +30,8 @@ import {validateJsonSchema} from './core/jsonschema.js';
 import {getPluginCommands, getPluginCommandClassifiers, getPluginLoadErrors, loadPlugins} from './shell/plugins.js';
 import {commandAppliesTo, commandCategoryLabel, evalCommandWhen, matchCommandShortcut} from './shell/plugin-commands-model.js';
 import * as pluginToolsMod from './shell/plugin-tools.js';
+import * as pluginContextMod from './shell/plugin-context.js';
+import {findImporterFor, hexDumpToBase64} from './shell/plugin-importers.js';
 import {createMarkdownRenderer} from './core/markdown.js';
 import {
     showPatchView, hidePatchView, disposePatchView, refreshPatchView,
@@ -76,6 +78,9 @@ import {createSettingsPanePatches} from './settings/settings-pane-patches.js';
 import {createSettingsPaneStorage} from './settings/settings-pane-storage.js';
 import {createSettingsPaneWipeguard} from './settings/settings-pane-wipeguard.js';
 import {createSettingsPaneNewFileMenu} from './settings/settings-pane-new-file-menu.js';
+import {createSettingsPanePrecommands} from './settings/settings-pane-precommands.js';
+import {createPrecommands} from './shell/precommands.js';
+import {analyzeDangerousCommand} from './ai/ai-command-rules.js';
 import {createStorageAutoClean} from './settings/storage-autoclean.js';
 import {createSettingsPaneExternalTools} from './settings/settings-pane-external-tools.js';
 import {createMenuBar} from './shell/menu-bar.js';
@@ -506,6 +511,7 @@ const APP_ACTIONS = [
     'get_settings', 'get_editor', 'get_content', 'get_git', 'get_ai', 'get_explorer', 'get_plugins', 'get_terminal', 'get_storage',
     'get_activity', 'get_patch', 'patch_set_root', 'patch_repreview',
     'get_gen_models', 'set_gen_model', 'delete_gen_model',
+    'get_pre_commands', 'add_pre_command', 'update_pre_command', 'remove_pre_command',
     'get_agents', 'create_agent', 'create_group', 'get_groups', 'send_group_message',
     'install_plugin', 'uninstall_plugin',
     'get_mcp_servers', 'list_mcp_samples', 'install_mcp_sample', 'set_mcp_server', 'delete_mcp_server',
@@ -1491,6 +1497,14 @@ async function runAppAction(action, params, scope, callerSessionId, requestActio
             if (!aiPanel || !aiPanel.bridgeGenModelDelete) throw new Error('AI 面板未初始化');
             return aiPanel.bridgeGenModelDelete(p.ref);
         }
+        // —— 工作区预指令（get 只读；三个写动作在 shell/precommands.js 无条件动作审批，
+        //    完全权限也不例外；刻意没有 run 动作，要跑命令走 run_command 审批链）——
+        case 'get_pre_commands':
+        case 'add_pre_command':
+        case 'update_pre_command':
+        case 'remove_pre_command': {
+            return await precommandsCtl.handleAppAction(action, p, requestActionApproval);
+        }
         // —— 插件安装 / 卸载（第三方代码，按权限档与来源走审批；卸载永久删除恒审批）——
         case 'install_plugin': {
             if (typeof backend.InstallPluginFromUrl !== 'function') throw new Error('当前版本不支持安装插件');
@@ -2244,6 +2258,7 @@ const settingsUI = createSettingsUI({
     get renderPluginsPane() { return renderPluginsPane; },
     get renderPluginSettingsPane() { return writingUI && writingUI.renderPluginSettingsPane; },
     get renderRunPane() { return renderRunPane; },
+    get renderPreCommandsPane() { return () => settingsPanePrecmd.renderPreCommandsPane(); },
     get renderStoragePane() {
         // storage 条目渲染完追加「工作区防护」区（组合根接线，两 pane 不互相 import）
         return async () => {
@@ -2442,7 +2457,7 @@ const editorGroupsMod = createEditorGroups({
     get viewOptionsFor() { return viewOptionsFor; },
     get workspaceFolder() { return workspaceFolder; },
 });
-const {activateDoc, addDocToFocusedGroup, applyAceMode, applyCsvTableZoom, applyImageZoom, browserViewportLabel, closeDocNow, closeDocsWithConfirm, closeSqlView, createDoc, createDocEditor, createGroup, dismissBanner, doRedo, doUndo,  enterAudioView, enterBinaryView, enterCsvTable, enterHtmlPreview, enterImageView, enterMarkdownPreview, enterSplitView, enterSqlView, enterSvgRender, enterTextView, enterVideoView, exitSplitView, expandAllWithGuard, flushCsvCellEditor,  groupDocs, setFocusedGroupId, setSplitRoot, groupOfDoc, handleAIWorkspaceFileChanged, handleExternalDocChanges, hideAudioView, hideBanner, hideHtmlPreview, hideSvgRender, hideVideoView, hookCodeFoldRanges, hookMultiCursor, humanizeCounts, initCodeFoldHover, jumpBookmark, addBookmarkAt, removeBookmarkAt, clearDocBookmarks, leaveCsvTable, leaveHtmlPreview, leaveMarkdownPreview, markDocDirty, mdSyncScrollFromAce, moveTabInGroup, openWithDefaultApp, patchViewContext, refreshPatchMarkers, rememberDocView, renderBookmarks, renderBreadcrumb, renderCsvTableView, renderEditorLayout, renderMarkdownPreview, renderTabs, reopenClosedTab, releaseAudio, releaseVideo, requestCloseDoc, revertDocToSaved, scheduleGitGutter, setBrowserViewport, setFilename, showBanner, showHtmlPreview, showImageMenu, showMdPreviewMenu, showPathInFolder, showSvgMenu,  syncAllBrowserTabs, syncBrowserTab, syncTabReadOnly, textArea, toggleBookmark, toggleFocusedNode, updateBrowserTitle, updateDocChrome, updateStatus, zoomCsvTable, zoomImageBy, zoomSvgRenderBy} = editorGroupsMod;
+const {activateDoc, addDocToFocusedGroup, applyAceMode, applyCsvTableZoom, applyImageZoom, browserViewportLabel, closeDocNow, closeDocsWithConfirm, closeSqlView, createDoc, createDocEditor, createGroup, dismissBanner, doRedo, doUndo,  enterAudioView, enterBinaryView, enterCsvTable, enterHtmlPreview, enterImageView, enterMarkdownPreview, enterPluginView, enterSplitView, enterSqlView, enterSvgRender, enterTextView, enterVideoView, exitSplitView, expandAllWithGuard, flushCsvCellEditor,  groupDocs, setFocusedGroupId, setSplitRoot, groupOfDoc, handleAIWorkspaceFileChanged, handleExternalDocChanges, hideAudioView, hideBanner, hideHtmlPreview, hidePluginView, hideSvgRender, hideVideoView, hookCodeFoldRanges, hookMultiCursor, humanizeCounts, initCodeFoldHover, jumpBookmark, addBookmarkAt, removeBookmarkAt, clearDocBookmarks, leaveCsvTable, leaveHtmlPreview, leaveMarkdownPreview, markDocDirty, mdSyncScrollFromAce, moveTabInGroup, openWithDefaultApp, patchViewContext, refreshPatchMarkers, rememberDocView, renderBookmarks, renderBreadcrumb, renderCsvTableView, renderEditorLayout, renderMarkdownPreview, renderTabs, reopenClosedTab, releaseAudio, releaseVideo, requestCloseDoc, revertDocToSaved, scheduleGitGutter, setBrowserViewport, setFilename, showBanner, showHtmlPreview, showImageMenu, showMdPreviewMenu, showPathInFolder, showSvgMenu,  syncAllBrowserTabs, syncBrowserTab, syncTabReadOnly, textArea, toggleBookmark, toggleFocusedNode, updateBrowserTitle, updateDocChrome, updateStatus, zoomCsvTable, zoomImageBy, zoomSvgRenderBy} = editorGroupsMod;
 // 内置类型表由 new-file-menu.js 单一来源派生；属性面板的「新建文档」菜单保持既有行为，
 // 资源管理器右键的「新建」子菜单则按 settings.newFileMenu 合成（见 explorer-ops.js）。
 const NEW_FILE_TYPES = BUILTIN_FILE_TYPES.filter((t) => t.group === 'top').map(({id, ...type}) => type);
@@ -2660,6 +2675,117 @@ async function pickRunFile() {
     }
 }
 
+// ---- 插件文档导入器（M5b，cadt.registerImporter）：内置解析不了的文件先问一句要不要交给插件转文本 ----
+
+// openConfirmDialog 的签名是 (message, action, okLabel, title, variant)：只有确认回调，
+// **没有取消回调**。需要「是/否」往下走时用这个 Promise 包装：确认走 action；取消（取消按钮 /
+// 遮罩 / Esc / 关闭）一律表现为 confirm 对话框被重新加上 hidden，用 MutationObserver 兜底
+// 判为 false。确认按钮点击时 closeTopDialog 先执行、随后同步 action()，而 MutationObserver
+// 的回调是微任务，所以 action 一定先落 settled，不会误判成取消。
+function askConfirmAsync(message, okLabel, title) {
+    return new Promise((resolve) => {
+        const el = elsDialogs.confirm;
+        let settled = false;
+        const obs = new MutationObserver(() => {
+            if (settled || !el.classList.contains('hidden')) return;
+            settled = true;
+            obs.disconnect();
+            resolve(false);
+        });
+        const done = (value) => {
+            if (settled) return;
+            settled = true;
+            obs.disconnect();
+            resolve(value);
+        };
+        obs.observe(el, {attributes: true, attributeFilter: ['class']});
+        openConfirmDialog(message, () => done(true), okLabel, title);
+    });
+}
+
+// 导入器拿到的读接口：复用既有绑定（OpenFile / ReadImageAsDataURL），不新造 Go 绑定。
+function importerReadContext(base, path, data) {
+    return {
+        source: 'open',
+        ext: extOf(base),
+        path,
+        name: base,
+        size: Number((data && data.size) || 0) || 0,
+        flash: (msg, isError) => flash(String(msg == null ? '' : msg), isError),
+        readTextFile: async (p) => {
+            const target = String(p || '').trim();
+            if (!target) throw new Error('readTextFile：缺少路径');
+            const file = await backend.OpenFile(target, 'utf-8');
+            if (!file || file.isDir) throw new Error('不是文件：' + target);
+            if (file.binary) throw new Error('不是文本文件：' + target);
+            return file.content == null ? '' : file.content;
+        },
+        readBinaryFile: (p) => readFileBase64(String(p || '').trim()),
+    };
+}
+
+// 二进制读取：优先走读图通道（data URL 自带 base64，≤32 MB）；其余类型退回 OpenFile 的
+// 十六进制视图（Go 侧上限 1 MB）。超过上限直接报错——静默返回半截字节比报错更难排查。
+async function readFileBase64(path) {
+    if (!path) throw new Error('readBinaryFile：缺少路径');
+    if (backend.ReadImageAsDataURL) {
+        try {
+            const url = String(await backend.ReadImageAsDataURL(path) || '');
+            const comma = url.indexOf(',');
+            if (comma > 0) return url.slice(comma + 1);
+        } catch (e) {
+            // 非图片：继续走 hex 通道（此处尽力而为，不让读图失败打断导入）
+        }
+    }
+    const file = await backend.OpenFile(path, 'utf-8');
+    if (!file || file.isDir) throw new Error('不是文件：' + path);
+    if (!file.binary) throw new Error('不是二进制文件：' + path);
+    const shown = Number(file.hexShown || 0);
+    if (shown > 0 && Number(file.size || 0) > shown) {
+        throw new Error('文件超过 1 MB，内置读取通道只覆盖前 1 MB；请用插件自己的通道读取');
+    }
+    return hexDumpToBase64(file.content);
+}
+
+// 用导入器打开：成功返回新建的只读虚拟文档；用户拒绝 / 没有导入器 / 转换失败一律返回 null，
+// 调用方按常规（二进制视图）打开——导入失败不能让文件打不开。
+async function openWithPluginImporter(base, path, data) {
+    if (!data || !data.binary || data.image || data.video || data.audio) return null;
+    const importer = findImporterFor(extOf(base));
+    if (!importer) return null;
+    const ok = await askConfirmAsync(
+        '「' + base + '」内置解析不了（只能看二进制）。用插件「' + importer.pluginName + '」的导入器「' +
+            importer.label + '」转成文本查看？',
+        '导入', '插件导入器');
+    if (!ok) return null;
+    flash('正在用「' + importer.label + '」导入 ' + base + '…');
+    let result;
+    try {
+        result = await importer.convert(importerReadContext(base, path, data));
+    } catch (e) {
+        flash('导入失败，已按二进制视图打开：' + ((e && e.message) || e), true);
+        return null;
+    }
+    const text = typeof result === 'string'
+        ? result
+        : (result && typeof result.text === 'string' ? result.text : '');
+    if (!text) {
+        flash('导入器「' + importer.label + '」没有返回文本，已按二进制视图打开', true);
+        return null;
+    }
+    // 允许导入器建议一个新文件名（PDF → report.md 才有 Markdown 渲染）：没给就沿用原文件名。
+    const suggested = result && typeof result === 'object' ? String(result.name || '').trim() : '';
+    const name = suggested ? suggested.slice(0, 120) : base;
+    const doc = openVirtualDoc(name, text, {readOnly: true});
+    activityLog.log('file.import', path, {
+        importer: importer.id,
+        plugin: importer.pluginId,
+        ext: extOf(base),
+    });
+    flash('已用插件「' + importer.pluginName + '」的「' + importer.label + '」导入 ' + base);
+    return doc || null;
+}
+
 async function openPathsHere(paths, opts = {}) {
     const list = (paths || []).filter(Boolean);
     if (!list.length) return;
@@ -2685,6 +2811,14 @@ async function openPathsHere(paths, opts = {}) {
             const data = await backend.OpenFile(path, enc);
             if (data && data.isDir) {
                 await openFolderSmart(data.path);
+                continue;
+            }
+            // 内置解析不了（二进制视图）而插件声明能处理这个扩展名：问一句再用只读虚拟文档打开。
+            // 拒绝 / 转换失败都返回 null，继续走下面的常规打开（不能因为导入失败就打不开文件）。
+            const imported = await openWithPluginImporter(base, path, data);
+            if (imported) {
+                target = imported;
+                lastNew = imported;
                 continue;
             }
             const doc = createDoc(readOnly ? {...data, readOnly: true} : data);
@@ -3005,6 +3139,9 @@ function openFolderWorkspace(dir) {
     if (workspaceFolder && sessionPathKey(dir) !== sessionPathKey(workspaceFolder)) {
         // 切换工作区前先落盘旧工作区环境（per-workspace 会话恢复需要）。
         saveSessionNow();
+        // 预指令：切走 = 旧工作区的 workspace-close 事件（fire-and-forget，不阻塞切换）
+        Promise.resolve(precommandsCtl.runForWorkspaceClose(workspaceFolder))
+            .catch((e) => console.error('precmd: 关闭执行失败', e));
     }
     workspaceFolder = dir;
     // 快捷便签：工作区变了，丢弃旧工作区的缓存并刷新打开中的面板
@@ -3028,6 +3165,9 @@ function openFolderWorkspace(dir) {
     if (aiPanel && aiPanel.refreshSessionBadge) aiPanel.refreshSessionBadge();
     activityLog.log('workspace.open', dir, {}, {noRel: true});
     flash('已打开文件夹：' + (baseNameOf(dir) || dir));
+    // 预指令：打开（含启动恢复 / 切回）后自动执行该工作区的启用条目；单条失败在
+    // runForWorkspace 内部消化，这里只兜底不让打开流程被预指令中断
+    Promise.resolve(precommandsCtl.runForWorkspace(dir)).catch((e) => console.error('precmd: 执行失败', e));
 }
 
 // 一目录一窗口：本窗口已有工作区目录时，新目录另开窗口；
@@ -3054,6 +3194,7 @@ async function openFolderSmart(dir) {
 
 function closeFolder() {
     if (!workspaceFolder) return;
+    const closedDir = workspaceFolder;
     saveSessionNow({allowEmpty: true});
     workspaceFolder = null;
     if (memoWorkspaceChanged) memoWorkspaceChanged();
@@ -3070,6 +3211,10 @@ function closeFolder() {
     if (aiPanel && aiPanel.refreshSessionList) aiPanel.refreshSessionList();
     if (aiPanel && aiPanel.refreshSessionBadge) aiPanel.refreshSessionBadge();
     flash('已关闭文件夹');
+    // 预指令：显式关闭工作区触发 workspace-close 事件（fire-and-forget，不阻塞关闭流程；
+    // 应用整体退出不走这里——退出路径没有可靠等待窗口，见方案 §6）
+    Promise.resolve(precommandsCtl.runForWorkspaceClose(closedDir))
+        .catch((e) => console.error('precmd: 关闭执行失败', e));
 }
 
 function applySidebarUI() {
@@ -3432,23 +3577,37 @@ const storageAutoClean = createStorageAutoClean({
 storageAutoClean.start();
 
 // 工作区破坏防护控制器（ai/ai-wipeguard.js，方案 docs/finished-plans/workspace-wipe-guard.md）：
-// 两信号检测（watcher 滚动删除计数为主 + 指纹兜底）→ critical 且 AI 活跃时
-// 停会话并熔断本轮写命令。写前备份与恢复出口不在本处（ai-panel 写路径 + 设置页）。
+// 两信号检测（watcher 滚动净消失计数为主 + 指纹兜底）→ critical 时**不停会话**，只出
+// 状态栏红条并向活跃会话插队投递应用消息（2026-11-19 作者裁定）。写前备份与恢复出口
+// 不在本处（ai-panel 写路径 + 设置页）。
+let wipeguardNotifyAt = 0; // 上次向会话投递告警的时间（2 分钟冷却，见 onCritical）
 const wipeguardCtrl = createAIWipeguard({
     getBackend: () => backend,
     getWsRoot: () => workspaceFolder || '',
     getSettings: () => settings,
     isAIActive: (root) => !!(aiPanel && typeof aiPanel.wipeguardIsAIActive === 'function' && aiPanel.wipeguardIsAIActive(root || workspaceFolder || '')),
     onCritical: (info) => {
-        // AI 活跃 → 只停「挂在本工作区上」的生成与子代理（止血；别的后台会话不受牵连）；
-        // 空闲只提醒（用户手动批量删除不误停）
-        if (info.aiActive && aiPanel && typeof aiPanel.wipeguardStopForWorkspace === 'function') {
-            try { aiPanel.wipeguardStopForWorkspace(info.root || workspaceFolder || ''); } catch (e) { /* 停止尽力而为 */ }
+        // 不停会话、不熔断写命令（2026-11-19 作者裁定）：合法批量删除（插件更新、切分支、
+        // 装依赖）与真破坏在 watcher 眼里同形，误判一次就把正在干活的会话打断。改为把
+        // 告警**插队投递**给挂在本工作区、正在运行的会话，由模型自己判断「跟我有没有关系」；
+        // 用户侧只留状态栏红条 + 消息中心，中止与否由用户决定。
+        // 投递与红条共用 2 分钟冷却：真事故里删除会持续十几秒、fireAlarm 每 3 秒就能报
+        // 一次，不节流会把几十条告警堆进会话上下文、把消息中心刷满（每次告警的运行
+        // 日志仍由 Go 侧 WipeGuardAlarm 逐条写，留痕不受影响）。
+        const now = Date.now();
+        if (now - wipeguardNotifyAt < WIPEGUARD_NOTIFY_COOLDOWN_MS) return;
+        wipeguardNotifyAt = now;
+        if (info.aiActive && aiPanel && typeof aiPanel.wipeguardNotifyForWorkspace === 'function') {
+            try {
+                const pending = aiPanel.wipeguardNotifyForWorkspace(info.root || workspaceFolder || '', info);
+                if (pending && typeof pending.catch === 'function') pending.catch(() => {});
+            } catch (e) { /* 投递尽力而为，不影响红条 */ }
         }
         messageCenter.add({
             kind: 'error',
             title: '工作区防护：疑似大范围文件消失',
-            body: info.reason + '。已暂停本工作区的 AI 操作；点击本条直达 设置 → 存储与清理 → 工作区防护 查看与还原被改文件。',
+            body: info.reason + (info.aiActive ? '。已通知相关会话核实；' : '。') +
+                '点击本条直达 设置 → 存储与清理 → 工作区防护 查看与还原被改文件。',
             actionId: 'open-wipeguard-settings',
         }, {toast: true});
     },
@@ -3479,6 +3638,8 @@ function initAIPanel() {
         // 插件 AI 工具注册表（shell/plugin-tools.js）：面板内部按三层授权过滤下发，
         // 宿主未注入时面板降级为「无插件工具」，不影响既有能力。
         pluginTools: pluginToolsMod,
+        // 插件注入的 AI 上下文注册表（shell/plugin-context.js）
+        pluginContext: pluginContextMod,
         panel: panelEl,
         dockParent: document.getElementById('top-row'),
         overlayParent: document.getElementById('main-pane'),
@@ -3541,6 +3702,9 @@ function initAIPanel() {
         },
         runAppAction,
         hostAppActions: () => APP_ACTIONS,
+        // AI 会话开始预指令（shell/precommands.js）：空会话首轮流起轮前 await 执行
+        // ai-session-start 条目；失败不阻塞起轮（ai-panel 侧另有 try/catch 双保险）
+        precmdAIStart: (ws) => precommandsCtl.runForAISessionStart(ws),
         browserHost: {
             ensureTab: async (id, url, profileKey) => {
                 const existed = docs.find((d) => d.id === id);
@@ -3676,6 +3840,26 @@ function initAIPanel() {
                 return 'window';
             }
             return false;
+        },
+        // 会话列表工作区分组头「⋯」的工作区管理菜单：复用宿主已有的工作区能力，
+        // 面板只负责组装菜单与转发动作（见 ai-session-list.js 的 buildWorkspaceMenuItems）。
+        workspaceMenu: {
+            reveal: (path) => {
+                Promise.resolve(backend.ShowInFolder(path))
+                    .catch((e) => flash('打开文件夹位置失败：' + e, true));
+            },
+            openNewWindow: (path) => {
+                Promise.resolve(backend.OpenDirInNewWindow
+                    ? backend.OpenDirInNewWindow(path)
+                    : backend.OpenInNewWindows([path]))
+                    .then(() => flash('已在新窗口打开：' + (baseNameOf(path) || path)))
+                    .catch((e) => flash('打开新窗口失败：' + e, true));
+            },
+            openFolder: () => openFolderDialog(),
+            openFolderSmart: (path) => openFolderSmart(path),
+            closeFolder: () => closeFolder(),
+            baseName: (path) => baseNameOf(path),
+            recent: () => readRecentOpen().filter((entry) => entry && entry.isDir && entry.path),
         },
         getSelection: () => {
             const text = selectedText();
@@ -4499,6 +4683,29 @@ const settingsPaneWipeguard = createSettingsPaneWipeguard({
         return (message, action, okLabel, title, variant) => openConfirmDialog(message, action, okLabel, title, variant);
     },
 });
+// 工作区预指令：打开工作区自动执行（shell/precommands.js 控制器）；写动作无条件动作审批
+const precommandsCtl = createPrecommands({
+    get settings() { return settings; },
+    get applySettings() { return applySettings; },
+    get backend() { return backend; },
+    get sessionPathKey() { return sessionPathKey; },
+    get getWorkspace() { return () => workspaceFolder || ''; },
+    get addMessage() { return (...args) => messageCenter.add(...args); },
+    get activityLog() { return activityLog; },
+});
+// 设置 → 预指令：条目列表 + 编辑器（总开关行在 index.html 静态结构，id precmd-enabled）
+const settingsPanePrecmd = createSettingsPanePrecommands({
+    get settings() { return settings; },
+    get applySettings() { return applySettings; },
+    get flash() { return flash; },
+    get confirmAction() {
+        return (message, action, okLabel, title, variant) => openConfirmDialog(message, action, okLabel, title, variant);
+    },
+    get analyzeDangerousCommand() { return analyzeDangerousCommand; },
+    get sessionPathKey() { return sessionPathKey; },
+    get getWorkspace() { return () => workspaceFolder || ''; },
+    get runOnce() { return () => precommandsCtl.runForWorkspace(workspaceFolder || ''); },
+});
 // 设置 → 菜单管理：显隐 / 排序 / 模板，配置只在 settings.newFileMenu 一份
 const settingsPaneNewFileMenu = createSettingsPaneNewFileMenu({
     get settings() { return settings; },
@@ -4704,6 +4911,7 @@ const modeSwitch = createModeSwitch({
     get enterHtmlPreview() { return enterHtmlPreview; },
     get enterImageView() { return enterImageView; },
     get enterMarkdownPreview() { return enterMarkdownPreview; },
+    get enterPluginView() { return enterPluginView; },
     get enterSplitView() { return enterSplitView; },
     get enterSqlView() { return enterSqlView; },
     get enterSvgRender() { return enterSvgRender; },
@@ -4713,6 +4921,7 @@ const modeSwitch = createModeSwitch({
     get file() { return file; },
     get flash() { return flash; },
     get hideAudioView() { return hideAudioView; },
+    get hidePluginView() { return hidePluginView; },
     get hideSvgRender() { return hideSvgRender; },
     get hideVideoView() { return hideVideoView; },
     get hookCodeFoldRanges() { return hookCodeFoldRanges; },

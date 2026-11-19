@@ -4,6 +4,133 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 
 ## 未发布
 
+### 改进（会话列表工作区分组头的「⋯」改为工作区管理菜单）
+
+- AI 会话列表里工作区分组头（如 `CaDt-DataLens`）右侧的「⋯」以前弹出的是**会话管理菜单**（新建 / 置顶 / 重命名 / 删除当前会话…），与面板标题栏右侧的会话菜单重复。现在改为**工作区管理菜单**：在文件资源管理器中显示、复制工作区路径、在新窗口打开此工作区、在此工作区新建会话、打开文件夹…、最近打开的工作区（子菜单）、关闭当前工作区（仅当前分组显示）。面板标题栏右侧的「⋯」仍是会话列表整体菜单，保持不变。
+- 菜单结构由纯函数 `buildWorkspaceMenuItems` 组装（`frontend/src/ai/ai-session-list.js`，配 `ai-session-list.test.mjs`）；动作经宿主 `workspaceMenu` 回调转发到 main.js 已有的工作区能力（`ShowInFolder` / `OpenDirInNewWindow` / `openFolderSmart` / `closeFolder` 等），无新增 Go 绑定。
+
+### 改进（read_file 按行读取卡可展开，代码区与 diff 视觉统一）
+
+- `read_file` 传 `startLine`/`endLine` 按行读取时，工具卡不再只是一行路径：卡头补「行 N–M」范围徽标，点击可展开正文，直接核对 AI 读了哪几行；字符模式（`offset`/`limit`）读取卡行为不变（仍不展开，文件名即超链接）。
+- 展开的代码区与 `edit_file` 的 diff **视觉语义统一**：同款「背景框（边框 + 圆角 + `--bg` 底色）+ 独立行号列 + 代码列」结构，行号不再是内嵌在文本里的前缀，四位数行号不折行——「AI 读了哪几行」和「AI 改了哪几行」在对话里长得一样，都是明确的代码块。渲染 `renderReadLinesInto` 在 `ai-tool-cards.js`，配 `ai-tool-cards.test.mjs` 测试。
+
+### 修复（git 面板「回滚」恒报路径越界；未跟踪文件会删错位置）
+
+- 回滚的文件路径来自 `git status`（**相对仓库根**），后端 `gitPathInRoot` 却按 `filepath.Rel(绝对 dir, 相对 path)` 判定——Windows 上混合形态直接报错，于是任何文件回滚都返回「路径越界」，功能整体不可用（2026-11-19 由测试 `TestGitRollbackForReal` 暴露）。
+- 后端：相对路径先按 dir 解析（`filepath.Join`）再判越界；未跟踪文件的删除同口径——原来直接用相对路径调 `os.Remove`，会按**应用进程 cwd** 找文件，删不到目标甚至删错同名文件。
+- 前端：回滚的 dir 改用 `GitStatus` 返回的仓库根（新增 `gitStateCache.repoRoot`）——工作区是仓库子目录时，相对仓库根的 pathspec 只配仓库根才能解析正确；老后端无 root 字段时退回工作区目录。
+- 测试：`TestGitRollbackForReal` 从「在真实工作区改示例文件再 checkout」改为临时仓库夹具。原写法两个测试实例并发会互踩（A 写入的 `// modified` 被 B 读成 orig），且 defer 的 `git checkout` 会丢弃用户对该文件的未提交修改。新夹具显式关 `core.autocrlf`（本机全局开启时 checkout 把 LF 转 CRLF，字节比较误报「未还原」）并按行尾归一比较。
+
+### 新功能（隔离区操作必须说明原因）
+
+- AI 主动**创建 / 丢弃**隔离工作区时**必须带 `reason`**（≤200 字，CJK 按字符计数）：原因显示在审批卡**第一行**，让用户先看清「为什么」再决定批不批，而不只是看到「要做什么」。缺失或超长直接拒绝并提示补参数，不弹卡；用户自己手点的隔离开关不受影响（那是用户发起的动作）。
+- 实现：`worktreeReasonCheck` 纯函数在 `frontend/src/ai/ai-worktree.js`（trim / 空值 / 上限校验，配测试）；`worktree_manage` 工具新增 `reason` 参数并在 create/discard 的描述里写明必填与用途；`requestWorktreeApproval` 透传到 `frontend/src/ai/ai-takeover.js` 的隔离区审批卡（create / discard 两个分支都渲染）。
+
+### 新功能（插件扩展点收尾：自定义视图 registerViewer + 导入器接进打开链）
+
+- **`cadt.registerViewer`（自定义视图）**：插件可以给某个格式注册自己的渲染视图（地图 / 图表 / 3D / 播放器），出现在标签页视图按钮与底栏「视图」下拉里，按 `priority` 排序。视图是**覆盖层**：切走即调 `destroy()`、切回重新 `mount`；主题切换走 `setTheme()`，不重挂。写回一律经 `ctx.requestSave(text)` 上抛编辑器，脏标记 / 自动保存 / 只读锁 / 外部修改检测照旧生效；二进制档与 `>10 MB` 只读档不提供插件视图。视图模式串是 `plugin:<id>`，随会话持久化，插件被禁用 / 卸载后标签页自动回落默认视图。注册表 `frontend/src/shell/plugin-viewers.js`（单插件 ≤10、全局 ≤30，超限注册即报错），运行时 `frontend/src/editor/editor-plugin-view.js`，接线覆盖 `createDocEditor` / `closeDocNow` / `switchMode` / `viewOptionsFor` / `viewDisabled` 五处。
+- **`cadt.registerImporter`（导入器）接进打开链**：打开内置解析不了的文件（二进制视图）且扩展名命中插件导入器时，先弹确认框问要不要用它转成文本；同意则以**只读虚拟文档**打开并 flash 插件名与导入器名。用户拒绝或转换失败一律退回原有二进制视图——导入失败不会让文件打不开。返回 `{text, name}` 可建议新文件名（`report.md` 才会走 Markdown 渲染）。读接口复用既有绑定，不新增 Go 绑定；`readBinaryFile` 上限 1 MB，更大的二进制请用插件自己的通道。
+- 示例插件 `docs/plugins/examples/geojson-viewer/`：canvas 地图视图 + `.bin` 十六进制取样导入器，零第三方依赖。文档补 `docs/plugins/README.md` 两节（API 形状、ctx 成员表、边界与限制）。
+- 测试：新增 `test/shell/plugin-viewers.test.mjs`（11 例）与 `test/shell/plugin-importers.test.mjs`（6 例），均登记进 `npm test`。
+
+### 新增（AI 账号额度外显，cc-switch 式用量查询）
+
+- 设置 → AI → 模型的账号卡新增**品牌图标**与**余额行**：开启用量查询的账号常显余额/套餐额度（如「余额 49.05 CNY」「5 小时 已用 34.50%」），点击重新查询并弹出明细；查询失败红字带原因可重试。**未开启的账号没有余额行、也没有查询按钮**——统一只有「用量配置」入口（替代原「查询用量」按钮）。
+- 「配置用量查询」弹窗：预设模板 chips（官方 / 通用模板 / NewAPI / Sub2API / Token Plan / 自定义）+ API Key / 请求地址覆盖（留空用账号的）+ 超时与自动查询间隔（分钟，0=不自动）+ **测试脚本**按钮。「官方」模板走内置白名单引擎（DeepSeek / OpenRouter / SiliconFlow）；Token Plan 内置 7 家套餐预设（Kimi For Coding / 智谱 GLM / 智谱团队 / MiniMax / ZenMux / OpenCode Go / Ollama Cloud，端点移植自 cc-switch），自定义脚本支持 `{{baseUrl}}` / `{{apiKey}}` 与 extraFields 变量替换。
+- 自定义脚本格式 `({ request: {...}, extractor: function (response) {...} })`：**extractor 在隔离 Worker 沙箱执行**——Worker 全局没有 `window.go` / DOM，prelude 从实例与原型链两层摘除 fetch / XHR / WebSocket / importScripts 等网络与派生原语（只遮 globalThis 会被原型链取回），5 秒硬中断、脚本 ≤64KB；HTTP 一律经 Go 哑通道（`AIUsageHTTPRequest`，转发 aigen 引擎）发出。配置随账号存 ai-config.json（0600），导入导出沿用 includeKeys 脱敏语义。
+- 模型选择器（面板头部模型胶囊）的**账号分组头**同步显示品牌图标与余额主句（失败态红字）。
+- 缓存：查询结果按账号缓存（内存 + localStorage 快照，只存展示数据不存密钥），进入模型页时按自动间隔节流补查；AI 不可达——没有给模型暴露任何读写该配置的工具或动作。
+- 新模块：`ai/ai-usage-templates.js`（模板与套餐预设数据）、`ai/ai-usage-quota.js`（查询管线 + 沙箱 + 缓存）、`ai/ai-usage-config-dialog.js`（配置弹窗）、`ai/ai-provider-icons.js`（17 家供应商品牌 SVG，取自 cc-switch MIT 仓库）；测试 `test/ai/ai-usage-templates / ai-usage-quota / ai-provider-icons` 已登记 `npm test`。方案存档 `docs/finished-plans/ai-quota-display.md`。
+
+### 新增（工作区预指令：三个生命周期自动执行）
+
+- 新功能「预指令」：给每个工作区配置一组命令，按**三个生命周期时机**自动执行（工作目录为该工作区根，继承「设置 → 环境变量」）：`workspace-open` 打开工作区（打开 / 切回 / 启动恢复）、`workspace-close` 关闭工作区（显式关闭或切走旧目录；应用整体退出不触发）、`ai-session-start` AI 会话开始（空会话第一轮流起**前**执行，起轮等待跑完、失败不阻塞起轮；每会话只触发一次，恢复的历史会话不触发，子代理回合不触发）。配置入口在 设置 → 预指令（导航「运行」旁）：总开关 + 条目列表（启用开关 / 时机 / 上移下移 / 编辑 / 删除 / 危险命令标记）+「本工作区预跑一次」。单条失败不阻断后续与宿主流程，结果汇总进状态栏消息中心（失败额外弹 toast），操作留痕记 `precmd.run` / `precmd.config`（只记摘要不记命令正文）。
+- **AI 可代配，但每次写入都要审批**：`app_control` 新增 `get_pre_commands` / `add_pre_command {command,timeoutMs?,event?,enabled?}` / `update_pre_command` / `remove_pre_command`，三个写动作**无条件弹动作审批卡（完全权限档也不例外）**，审批卡列出命令全文与触发时机；批准后条目标「AI 配置」徽标、执行汇总注明来源；AI 只能操作本窗口当前工作区的条目；**刻意不提供「立即执行」动作**——要跑命令走 `run_command` 正常审批链，不给借道免审批的旁路；计划模式下拦截三个写动作。
+- 存储刻意放本机设置（localStorage），不放应用数据或工作区 `.cadt/`：full 档的 AI 可直接写应用数据文件，放那里等于绕过审批拿持久化后门；放工作区则等于「打开陌生仓库自动执行命令」。设置里 AI 摸不到 localStorage，审批不可绕过。上限：全局 20 条 / 单工作区 10 条 / 单条命令 2000 字符 / 超时 1–600 秒（默认 30 秒）。方案见 `docs/finished-plans/workspace-precommands.md`。
+- 配套测试 `test/core/precommands.test.mjs`（归一化 / 上限 / 审批规格 / 汇总含 stderr 尾部）与 `test/shell/precommands.test.mjs`（三生命周期执行 / 重入跳过 / 四动作审批语义 / 改绑与撞 id 防护），登记 `npm test`。
+
+### 变更（压缩：应急收缩 + 摘要保真 + 超窗兜底）
+
+- **应急收缩（不调模型）**：窗口占用 ≥ 90% 时，把原本「倒数第 2 轮以前才修剪」的规则放宽成「除最近 5 个工具结果外全部换成指针/修剪」。位置对齐 ZCode 的 microcompact（它同样 0.9 触发、保留最近 5 个结果）：本地先降载，避免窗口快满时只剩「直接调模型做摘要」这一条贵路。**只改发出去的请求，会话历史原样不动**。最近 5 个结果不动的原因很实际——模型正在用的数据被清掉，它得重跑工具，那个往返比省下的 token 更贵。
+- **摘要提示词按「保真优先」重写**：加了逐字保留清单（文件路径、函数/符号名、命令行、报错原文、URL、各类 ID 与标识符、关键数字与阈值）、五类必须写清的事项（目标与硬约束 / 决定与被否决方案 / 已完成事实与证据 / 未完成事项与下一步 / 工作流状态），以及「新历史优先于旧摘要」的冲突规则。参照 opencode 的 checkpoint 提示词。
+- **超窗兜底**：原来「上下文已超过模型上限 → 请先切模型」这条死路取消。改为按窗口比例截断喂给摘要器的转录（窗口 40%，至少 8 K 字符），保证摘要请求本身一定发得出去；截断只影响摘要能看到多少，归档原文与保留下来的消息都不动。
+- 未做：opencode 那种 `[0.85, 0.7, 0.5, 0.35]` 渐进收缩（作者裁定不做）。
+- 测试：`ai-context-slim` 新增 2 例（压力阈值与窗口未知、最近 N 个工具结果索引），`ai-compact` 新增 1 例（转录预算与尾部保留、下限 2000）。
+
+### 变更（Anthropic 提示词缓存断点）
+
+- **Anthropic 系请求现在会打提示词缓存断点**：`system` 改为 block 数组并在末块加 `cache_control: {type:"ephemeral"}`，最后一个工具定义、最后一条消息的末尾 block 同样打点（共 3 个，上限 4）。此前只解析返回里的 `cached_tokens` 却从不发断点——OpenAI / DeepSeek 是自动缓存不受影响，**Anthropic 格式必须显式打点才缓存**，否则每轮全量计费。断点位置依赖「动态块已移出系统提示词」这个既有设计（稳定前缀才值得缓存）。
+- thinking / redacted_thinking 块不接受 `cache_control`，遇到会往前落到 text 块。
+- 兼容降级：个别 Anthropic 兼容网关不认该字段，400 且报文提到 `cache_control` 时自动去掉全部断点重发一次（与既有的 stream_options / 关思考参数降级同一套路）。
+- 测试：新增 `anthropic_cache_test.go` 4 例（断点位置与总数、关闭后形状完全回退、跳过 thinking 块、400 判定），并同步更新 `TestAIStreamAnthropic` 对 `system` 形状的断言。
+
+### 新增（MCP「使用约定」注入系统提示词）
+
+- 设置 → MCP 的服务器编辑弹窗新增**「使用约定」**多行输入（≤1000 字），保存进 `mcp.json` 的 `notes`。用途是把某个 server 专属的用法约束写在配置里，而不是塞进 CaDt 的通用系统提示词——比如「提交前先校验字段长度」「一次最多提交 10 条」「按来源分批」。
+- 有内容的 server 会拼成 `<mcp_server_notes>` 块，**接在工具目录之前**注入系统提示词（模型先看到用法约束，再看到工具定义）；一个都没写就整块不出现，不占上下文。多行会压成单行，避免用户文本里的换行破坏块结构。
+- **纯展示数据**：`stripRuntimeFields` 把 `notes` 剥离，改备注不会触发「配置变了 → 关掉再重启 server」。快照里带上 `notes`，前端直接读，不额外发 RPC。
+- 上限口径：前端 `MCP_NOTES_MAX_CHARS` 与 Go `mcpNotesMaxChars` 同为 1000（按字符计，CJK 一字算一个）；textarea 的 `maxlength` + 表单校验 + Go 写入期校验三层。
+- 测试：Go 2 例（字符上限、`stripRuntimeFields` 忽略 notes），前端 3 例（块只列有内容的 server / 多行压平 / 快照透传与缺省归一）。
+
+### 新增（过期工具参数折叠）
+
+- **整批提交类 MCP 的失败批次参数不再反复重发**：`aoci_update_entry` 这类接口只要有一条不合规就 `applied=0` 整批退回（实测 16 次退回时 `finding` 只有 1–5 条，却连累 37–47 条全部重发）。那些失败批次的完整参数（JSON 阵列，单批 2 万字符上下）留在 assistant 消息里已无复用价值，现在在后续同名调用成功之后折叠成一句说明：「原参数 N 字符已省略，不要复用，以最近一次成功提交为准」。
+- **实测收益**（session-mwmpfg5fihesi）：31 次调用里 17 个失败批次可折叠，参数合计 378 810 字符，净省 **≈ 375 K 字符 ≈ 117 K token**，占该会话 982 K 上下文的 12%。
+- 判定只依赖两个可观测事实、不解析业务 schema：① 结果带「整批未接收」回执标记（`repair_required` / `stopped`，JSON 两种空格写法都认，标记表在 `ai-context-slim.js` 的 `SLIM_ROLLBACK_MARKERS`，接新接口加一行）；② 同一工具其后调用成功过。**尚未成功重试的批次不折叠**——那种情况下旧参数仍是下一轮重发的底稿。
+- 组装视角生效（会话 JSONL 与 UI 里的调用参数照旧完整），与工具结果瘦身同层、同开关（`settings.aiContextSlim`），省量记账新增「过期工具参数」一栏。
+
+### 新增（大工具结果落盘 + 上下文瘦身覆盖 MCP）
+
+- **超过阈值（内置 8 192 字符 / MCP 50 000 字符）的工具结果落盘，上下文里换「预览 + 路径」指针**：写到 `<应用数据>/ai-artifacts/<会话 id>/<toolCallId>.txt`，请求里发「头 4 096 字符 + 原文长度 + 绝对路径 + 读法提示 + 尾 1 024/2 048 字符」。原文仍在会话 JSONL 里（只瘦请求、不瘦历史），指针随消息落盘，重放后照样有效。写盘失败或超过 4 MB 退回原来的「修剪中段 + 提示重跑」。MCP 与其他第三方工具（`mcp__` / `plugin__` 前缀）的阈值单独放宽到 50 K（对齐 ZCode `mcp/index.ts` 的 `maxModelBytes: 50 000`）：8–50 K 的查询结果往往是模型接下来要直接引用的数据，落盘再读回要多花一轮工具调用。
+- **判定从白名单翻成黑名单**：旧实现只认 `read_file / web_fetch / run_command / background_command / search_text` 五个内置工具，**MCP 工具全被漏掉**——实测一个会话里 `mcp__aoci__aoci_update_entry` 的 553 K 回显、`aoci_maintain` 414 K 原样进了上下文（占该轮上下文一半以上）。现在除「自带行窗口」的 `read_file` 与「操作回执、不可重得」的写/改/补丁/派单/待办/提问外，一律按体量判定，MCP 与内置同权。
+- **读策略同比收窄**：应用数据目录的硬拒保留，唯一例外是 `ai-artifacts/` 子树（与 Go 侧 `internal/aiartifact.DirName` 同源）；读该子树不走工作区授权链，不弹审批——否则「读回自己落盘的全文」会被审批卡打断。密钥（`ai-config.json`）、会话正文（`ai-sessions/`）及其它应用数据仍在拒绝范围。
+- **生命周期**：删会话清 `ai-artifacts/<会话 id>/`，删全部会话清整根；存储清理新增 `ai-artifacts` 条目（`KindCache`，进一键清缓存，删了不丢正式内容，只是指针失效需重新调工具）。
+- **子代理转录落盘**：子代理结算时把内存转录写成 `ai-artifacts/<父会话>/sub-<agentId>.txt`（JSONL，一行一条角色/工具名/文本），补上「`agent_stop` 收集过程记录在进程退出后即丢」的缺口。纯留档，失败不影响结算。
+- 实现：新增 `internal/aiartifact`（路径清洗、4 MB 上限、按会话分桶、越界双保险）与 `ai_artifact_app.go`（`AIArtifactWrite` / `AIArtifactClear` / `AIArtifactClearAll`）；前端判定在 `ai-context-slim.js`（`SLIM_SKIP_TOOLS` / `spillWanted` / `spillPointerText` / `slimToolResult`），接线在 `ai-panel.js` 的工具回包与 `buildApiMessages` 两处，读放行在 `ai-read-roots.js`（`ARTIFACT_DIR_NAME` / `isArtifactPath`）。
+- 测试：`internal/aiartifact` 4 例（落盘与清理、路径穿越拒绝、超限、空目录）、`internal/storage` 的清缓存范围快照同步登记 `ai-artifacts`；前端新增/改写 `ai-context-slim` 5 例（MCP 纳入、跳过表、指针文案、命令尾部预算、有路径/无路径分流）与 `ai-read-roots` 1 例（产物子树可读、兄弟前缀与会话目录仍拒）。
+
+### 变更（AI 配置整份加密落盘）
+
+- **`ai-config.json` 在 Windows 上整份 DPAPI 加密**（文件前缀 `enc:v1:`）：密文绑定当前 Windows 用户与本机，模型即使能读到文件，拿到的也只是密文——与 ZCode 的 `~/.zcode/v2/credentials.json` 同一种做法。读写对前端完全透明（`ReadFile` 解出明文、`WriteFile` 加密后落盘），旧的明文配置照常能读，**下次保存自动升级**成密文，不需要用户做任何动作。
+- **解不开时不静默覆盖**：换机器 / 换 Windows 用户 / 文件损坏时 `ReadFile` 返回带 `AI_CONFIG_SEALED` 标记的错误；前端据此进入「留档待办」状态，第一次保存前先调新增绑定 `AIConfigBackupSealed` 把原文件改名成 `ai-config.json.sealed-<时间>.bak`，再写新配置。绝不出现「解不开就用空配置盖掉」。
+- **localStorage 镜像不再存密钥**：`profiles[].apiKey` / `profiles[].usage.apiKey` / `genModels[].apiKey` 写镜像前置空。镜像仍是旧版本回退与 WebView2 重置的兜底，但回退路径缺密钥需要重填——这是「密钥不落明文」的必然代价。
+- 实现：新增 `internal/dpapi`（Windows CryptProtectData / 非 Windows 恒不支持），`internal/envvars` 与 `internal/aiconfig` 共用这一份 syscall 实现，不再各写一套；`internal/aiconfig` 增加 `Decode` / `Encode` / `BackupSealed`，`Store` 增加 `AIConfigBackupSealed` 绑定。前端改动在 `ai-panel.js` 的 `saveAIConfig` / `bootstrapAIConfig` / `reloadAIConfigFromDisk` 三处。
+- 测试：`internal/aiconfig` 新增 4 例（落盘无明文 API Key、旧明文升级、伪造密文报 `ErrSealed` 且不改原文件、留档只对密文生效），`internal/envvars` 原用例保持通过。
+- 升级注意：加密后的文件只有同一 Windows 用户 + 同一台机器能解。换机迁移请走「设置 → 导入导出」（勾选包含密钥）导出明文 JSON；**降级到旧版本会读不懂该文件**，旧版本会回退到 localStorage 镜像（此时已无密钥）。
+
+### 变更（子代理层级上限默认 3 层 = 2 层子代理）
+
+- **层级上限默认值从「不设限（0）」改为 3 层**：主代理第 1 层、它派出的子代理第 2 层、子代理再派出的孙代理第 3 层，孙代理不能再派。也就是**允许 2 层子代理嵌套**。0 仍是合法值（不设限），只影响**缺字段**的新配置与重置后的配置，已存 0 的老配置保持原样不被动升级。
+- 为什么是 3 而不是 2：这个字段数的是「含主代理的整棵树的层数」，且 0 被占用为「不设限」，所以层数永远比子代理嵌套层数大 1。设置页说明与 tooltip 同步写清这层换算（1 = 只有主代理；2 = 主代理 + 1 层子代理；3 = 主代理 + 2 层子代理）。
+- 改动点：`ai-panel.js` 的 config 默认、`ai-settings-dialog.js` 的钳制回落、`ai-subagents.js` 的 `subAgentMaxDepth()` 兜底三处同步改为 3；设置页输入框初始值与说明文案一并更新。
+
+### 修复（轮末清单提醒节流失效：相同文案每批工具重插一条）
+
+- **`<task_todos_check>` 轮末提醒的「相同文案不重复催」闸门完全失效**：注入前取上一条提醒的比较文本时用了 `splitTurnReminderPrefix(content).body`——那是包装块**之后的用户正文**，纯注入消息里恒为空串，与待比较的裸 `<task_todos_check>` 块永不相等，`shouldSendTodosCheck` 的第一道闸门形同虚设。后果是清单没动也每批工具结束重插一条：单会话落盘 339 条、最长连续 69 条（2026-11-19 session-mwm2sdc1n4cs5 实测），模型每轮被迫在思考链里复述「没有已完成未标记的项 / 不需要 todo_write」。修复：新增纯函数 `todosCheckTextFromMessage`（`frontend/src/ai/ai-todos.js`，宿主块包装与裸块两种落盘形态都认，统一还原成裸块再比较），`ai-panel.js` 注入点改用它；发送侧 dedupeKey 只保留最新一条的机制不受影响。
+- 配套测试 `test/ai/ai-todos.test.mjs`：还原函数的两种形态 / 提取不到返回空串 / 回归断言「相同清单连续两轮只催一次、清单真变了才催」。
+- **老会话的重复注入随读盘自动清理**：`replaySessionLog` 重放完成后把同类 `dedupeKey` 机械注入折叠成只留最新一条（口径与发送侧 buildApiMessages 一致），丢弃数经 `droppedTransient` 交给三条加载路径（启动读盘 / 懒加载补水 / 多窗口重载）置 `_needsRewrite`——该会话被再次持久化时整份重写 JSONL，磁盘冗余一并清掉；未打开的会话磁盘不动（无害冗余）。`session_read` / 会话历史查询等读盘方同步少掉这批噪音。配套 `test/ai/ai-session-store.test.mjs`：纯重放折叠（同 key 只留最新 / 无 key 不误伤 / 不同 key 各自折叠 / archived 不动）+ 落盘→读盘折叠→整份重写→日志干净的全链路用例。
+
+### 修复（插件后台服务起不来 + 插件「安装依赖」报错）
+
+- **插件声明的后台服务一律启动失败**：`internal/appservices` 用 `exec.Command` 创建进程后又经 `procctl.ApplyCancel` 写入 `cmd.Cancel`，而 `os/exec` 只接受「由 `CommandContext` 创建」的命令带 Cancel——`cmd.Start()` 直接返回 `exec: command with a non-nil Cancel was not created with CommandContext`（zcode2api 反代的「启动服务失败」即此）。改为 `exec.CommandContext`，取消照旧杀整棵进程树。旧单测把进程原语整体 mock 掉，漏掉了这个只在真起进程时暴露的回归；新增 `internal/appservices/process_test.go`（测试二进制自当子进程）把这条错误钉住。
+- **服务工作目录不存在时给出可读原因**：cwd 缺失过去只在 Windows 层冒一句 `The directory name is invalid`，看不出缺的是哪个目录。现在起进程前先校验（不存在 / 不是目录分别报错并附完整路径），插件面板直接显示「工作目录不可用：<路径>」。
+- **`cadt.runCommandSync` 返回的是 Promise**（命令在 Go 侧异步执行），文档却写成同步返回 `{code,stdout,stderr}`：插件照抄后拿到 Promise、读输出得到 `undefined`（面板显示「依赖安装失败：无返回」），失败还会散落一条未处理的 Promise 拒绝。`docs/plugins/README.md` 与插件技能说明改为「必须 await」。
+- **zcode2api 插件 v1.1.1**：「安装依赖」改为 await + 失败给可读原因（源码目录缺失 / 找不到 Python / 命令输出尾部），一次点击依次装 pip 依赖与 `captcha_node` 的 npm 依赖（后者只服务 JWT 账号，装不上不阻断）；服务未注册时状态行不再显示「查询失败」。
+
+### 修复（便签终端条目 ▶ 报错 row is not defined）
+
+- 点终端条目的 ▶ 运行按钮直接抛 `ReferenceError: row is not defined`：审查修复「未提交草稿跑旧命令」时在 `buildRunButton` 的点击处理里引用了 `row`，但该变量在 `buildItem` 作用域——按钮处理内改用 `btn.closest('.memo-item')` 定位行。顺带把运行出发点显性化：▶ 悬停提示标注「运行于工作区根目录 / 应用进程目录」（命令的 cwd 即工作区根，全局作用域未开工作区时继承应用进程目录）。
+
+### 变更（移除便签 Word(.doc) 导出）
+
+- 导出菜单去掉「Word（.doc，图片存旁侧）」——HTML 兼容形态导入 Word 的兼容提示与排版退化始终不如原生 .docx，保留「Word（.docx 原生，图片内嵌）」与 Markdown / HTML 导出；插件转换器扩展点（`cadt.registerDocConverter`）不受影响。
+
+### 修复（编辑器组接线崩溃：应用启动即抛 ReferenceError）
+
+- 180febc 引入的导出对账漏项：`editor-groups.js` 的导出对象里写了简写属性 `hideHtmlPreview`，但模块内从未定义这个名字（相邻的 `showHtmlPreview` / `hideAudioView` / `hideSvgRender` 等都有包装函数，唯独它漏了）。JS 引擎求值对象字面量时查找裸标识符落空 → `createEditorGroups()` 启动接线即抛 `ReferenceError: hideHtmlPreview is not defined`，main.js 初始化中断，应用窗口起不来（调试台报错 `index-3GRSWvaq.js`）。
+- 修复：补上与 show/enter/leave/release 同模式的包装函数 `const hideHtmlPreview = (...a) => splitPreview.hideHtmlPreview(...a)`。
+- 为什么构建期不报错：压缩器无法改名对象简写里引用的裸标识符，产物里保留 `hideHtmlPreview,` 原样——构建通过、运行必炸。这类「导出对象简写属性」的错只能靠运行暴露，验收时务必实启一次。
+
 ### 修复（工具卡底部「已应用更改」被压成半行）
 
 - 已应用的写文件 / 编辑卡里，正文是 `max-height: min(65vh,460px)` 的纵向 flex：diff 占剩余空间、底部的命令块与结果输出是 `flex: 0 1 auto`（**可缩**）。diff 一长，这两个低优先级项就被一路压到 **3px**——表现成卡片底部「已应用更改（自动放行：完全权限）」下面那行只剩一条边。现在给两者加 `min-height: 1.7em` 保底一行，压不动了；让位由 diff 自己承担（同时它内部照旧滚动）。
@@ -201,6 +328,7 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 - **大工具结果修剪加固**：run_command / background_command 的尾部保留预算 1024 → 2048 字符（失败统计不一定压在最尾，结尾可能是长堆栈）；修剪标记明确「不要凭记忆引用被修剪的中段内容，如需完整内容请重新调用该工具获取」。
 - 实现：判定抽成纯函数模块 `frontend/src/ai/ai-context-slim.js`（isRealUserTurn / recentTurnStart / pruneToolResult），`buildApiMessages` 改用；新增 `ai-context-slim.test.mjs` 12 条用例锁住轮次口径与修剪预算。瘦身仍只裁组装视角，会话历史原样保留。
 - **上下文浮层「实时瘦身已省」分类自解释**：记账按类拆分（旧轮思考 / 重复注入 / 过期注记 / 工具结果中段），明细显示在该行的 ⓘ tooltip 第一行（如「本次剔除：旧轮思考 26K · 工具结果中段 84.5K」）——「省了多少」不再是一个看不出构成的笼统数字，构成按需展开、不占版面。
+- **上下文浮层与状态栏角标口径对齐**：角标 / auto-compact 此前已切到「provider 实测用量锚点 + 增量估算」，浮层头部仍是纯字符估算，CJK 重的会话会出现「浮层 30%、角标 39%」两张皮。现在浮层头部总量与百分比与角标同源，系统提示词/工具定义/对话消息三段图例按估算占比等比缩放到锚点总量（分段之和 = 头部总量）。
 
 ### 新功能（插件能力：后台服务托管 + 专属设置页）
 
@@ -215,9 +343,7 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 - **轮次预算放宽（回应「说几句话就没了」）**：`maxRounds` 从 1–3 扩到 0–20（0 = 不限轮次、手动结束），默认 5；发言上限不再固定 12，按「成员数 × 轮数」自动推导（12–200，群设置可改）；整场上限 15/30 分钟 → 60/120 分钟；看板「请求发言」补归一化持久化（重开不丢）；侧栏最近消息预览随消息落盘写入 meta。
 - **成员详情标签页（像子代理）**：`doc.groupMember = groupId:agentId`（独立上限 8 个）——实时流 / 上下文占用 / **私有过程（仅你可见，按发言对齐折叠）** / 发言记录（轮次 / 立场 / 首字耗时 / token），动作：请发言（可带焦点）/ 静音 / 停止 / 打开群聊；点群聊消息头像或名字即开。
 - **@ 成员胶囊（QQ 式）**：弹层选中后输入框里 @名字 变成胶囊——文本仍是纯文本（复制 / 粘贴 / 选区不受影响），Backspace/Delete 命中整颗删且可撤销（execCommand 参与原生撤销栈），改坏名字自动溶解；手打 @合法成员名 也会自动成胶囊。实现为真实 textarea + 同度量镜像层（守住表单控件硬规范），纯函数 `scanMentions` / `buildRichHtml` / `expandDeletionRange` 配测试。
-- **群成员只读文件工具（G5 落地）**：成员发言请求带 read_file / list_dir / search_text / glob 四个只读工具——议题引用到正文/章节/文件时先读再发言，不再凭猜测空谈；路径严格钳在群所属工作区内（越界即拒，无审批无提权），单次发言最多 4 轮工具调用（到顶注入收敛提示），工具结果与 assistant(toolCalls) 严格配对防服务商拒收；工具步骤即时写成员私有日志（仅你可见），成员详情页以 🔧 时间线展示；后续发言水合工具备注（成员记得自己读过什么）。主持人契约流不下发工具。
-- **修复输入框打字不可见**：@ 胶囊的「textarea 文字透明 + 镜像层渲染」方案在 IME 组合期整段隐形（中文输入法预编辑文字继承 textarea 颜色），改为**文字正常可见、镜像层只画不透明胶囊底**（镜像层失效最坏也只是胶囊缺失）；同时压掉 createTextarea 自带 min-height:58px 导致的高输入箱，议题栏单行钳制改 max-height 方案（-webkit-line-clamp 在部分版本失效）。
-- 新模块 `ai-group-ui-model.js`（视图纯函数 + 测试）/ `ai-group-member-view.js` / `bridge-group-member-view.js` / `ai-group-tools.js`（成员只读工具）；删除 `bridge-group-view.js`。前端 1653 项测试与 Vite 构建通过。
+- 新模块 `ai-group-ui-model.js`（视图纯函数 + 测试）/ `ai-group-member-view.js` / `bridge-group-member-view.js`；删除 `bridge-group-view.js`。前端 1427 项测试与 Vite 构建通过。
 
 
 ### 修复（端侧分类器 · 语料与金丝雀按线上口径重建）

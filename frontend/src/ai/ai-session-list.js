@@ -87,6 +87,41 @@ export function buildSessionMenuItems(session, env) {
     return items;
 }
 
+// 工作区分组头「⋯」菜单组装（纯函数，配 ai-session-list.test.mjs）：act 是符号动作键，
+// showWorkspaceMenu 负责映射成真实闭包。有 path 的分组给「资源管理器显示 / 复制路径 /
+// 新窗口打开 / 在此新建会话」；未关联工作区的分组只给「打开文件夹 / 最近打开」。
+// 关闭工作区只对当前工作区出现；最近打开以子菜单（act=openRecent + arg=path）给出。
+export function buildWorkspaceMenuItems(group, env) {
+    const path = group && group.path ? group.path : '';
+    const isCurrent = !!(group && group.current && path);
+    const recent = Array.isArray(env.recent) ? env.recent : [];
+    const items = [];
+    if (path) {
+        items.push({label: '在文件资源管理器中显示', act: 'reveal'});
+        items.push({label: '复制工作区路径', act: 'copyPath'});
+        items.push({label: '在新窗口打开此工作区', act: 'openNewWindow', disabled: isCurrent});
+        items.push({sep: true});
+        items.push({label: '在此工作区新建会话', act: 'newSession'});
+        items.push({sep: true});
+    }
+    items.push({label: '打开文件夹…', act: 'openFolder'});
+    if (recent.length) {
+        items.push({
+            label: '最近打开的工作区',
+            submenu: recent.map((entry) => ({
+                label: entry.name || env.baseName(entry.path) || entry.path,
+                act: 'openRecent',
+                arg: entry.path,
+            })),
+        });
+    }
+    if (isCurrent) {
+        items.push({sep: true});
+        items.push({label: '关闭当前工作区', act: 'close'});
+    }
+    return items;
+}
+
 export function createAISessionList(ctx) {
     const el = ctx.el;
     const sessionListEl = ctx.sessionListEl;
@@ -134,6 +169,8 @@ export function createAISessionList(ctx) {
     const newSessionInWorkspace = ctx.newSessionInWorkspace;
     const openAILogDir = ctx.openAILogDir;
     const showContextMenu = ctx.showContextMenu;
+    // 工作区管理菜单的宿主能力（由 main.js 注入；缺省空操作，浮窗/测试不报错）
+    const workspaceMenuHost = ctx.workspaceMenu || {};
     const getSessions = ctx.getSessions;
     const setStickBottom = ctx.setStickBottom;
     // 活动栏会话图标状态点：宿主注入的回调（缺省空操作），由本域统一计算并推送
@@ -468,13 +505,13 @@ export function createAISessionList(ctx) {
                     const menu = document.createElement('button');
                     menu.type = 'button';
                     menu.className = 'ai-session-group-action';
-                    menu.dataset.tip = '会话操作';
-                    menu.setAttribute('aria-label', '会话操作');
+                    menu.dataset.tip = '工作区操作';
+                    menu.setAttribute('aria-label', '工作区操作');
                     menu.innerHTML = iconSvg('more', 12);
                     menu.addEventListener('click', (e) => {
                         e.stopPropagation();
                         const rect = menu.getBoundingClientRect();
-                        showSessionListMenu(rect.left, rect.bottom + 4);
+                        showWorkspaceMenu(group, rect.left, rect.bottom + 4);
                     });
                     actions.append(add, menu);
                     head.append(chev, icon, name, actions);
@@ -633,6 +670,44 @@ export function createAISessionList(ctx) {
             {label: '打开对话日志目录', action: openAILogDir},
         ], left, top);
     }
+
+    function showWorkspaceMenu(group, x, y) {
+        if (!showContextMenu) return;
+        const path = group && group.path ? group.path : '';
+        const actions = {
+            reveal: () => { if (path && workspaceMenuHost.reveal) workspaceMenuHost.reveal(path); },
+            copyPath: async () => {
+                if (path) await copyText(path, '工作区路径');
+            },
+            openNewWindow: () => { if (path && workspaceMenuHost.openNewWindow) workspaceMenuHost.openNewWindow(path); },
+            newSession: () => {
+                collapsedWorkspaceGroups.delete(group.key);
+                ensureOpen();
+                newSessionInWorkspace(group);
+                renderSessionList();
+            },
+            openFolder: () => { if (workspaceMenuHost.openFolder) workspaceMenuHost.openFolder(); },
+            openRecent: (arg) => { if (arg && workspaceMenuHost.openFolderSmart) workspaceMenuHost.openFolderSmart(arg); },
+            close: () => { if (workspaceMenuHost.closeFolder) workspaceMenuHost.closeFolder(); },
+        };
+        const baseName = typeof workspaceMenuHost.baseName === 'function'
+            ? workspaceMenuHost.baseName
+            : (p) => String(p || '').replace(/\\/g, '/').replace(/\/+$/, '').split('/').pop();
+        const recent = typeof workspaceMenuHost.recent === 'function' ? workspaceMenuHost.recent() : [];
+        const items = buildWorkspaceMenuItems(group, {recent, baseName})
+            .map((item) => {
+                if (item.submenu) {
+                    return {
+                        ...item,
+                        submenu: item.submenu.map((sub) => (actions[sub.act]
+                            ? {...sub, action: () => actions[sub.act](sub.arg)}
+                            : sub)),
+                    };
+                }
+                return (item.act && actions[item.act]) ? {...item, action: actions[item.act]} : item;
+            });
+        showContextMenu(items, x, y);
+    }
     return {
         renderProfileSelect,
         sessionActivity,
@@ -640,6 +715,7 @@ export function createAISessionList(ctx) {
         renderSessionList,
         showSessionMenu,
         showSessionListMenu,
+        showWorkspaceMenu,
         clearSessionUnread,
         refreshBadge,
     };

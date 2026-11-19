@@ -37,6 +37,8 @@ func StreamResponse(ctx context.Context, cancel context.CancelCauseFunc, id stri
 	streamUsageDropped := false
 	// 关思考参数的兼容性降级：方言因网关而异，被 400 拒收时也只摘一次。
 	thinkingParamDropped := false
+	// 提示词缓存断点的兼容性降级：个别 Anthropic 兼容网关不认 cache_control，同样只摘一次。
+	cacheControlDropped := false
 	for attempt := 0; ; attempt++ {
 		req, err := aiBuildChatRequest(ctx, cfg, messages, tools)
 		if err != nil {
@@ -165,6 +167,16 @@ func StreamResponse(ctx context.Context, cancel context.CancelCauseFunc, id stri
 					touch()
 					continue
 				}
+			}
+			// 网关不认识 Anthropic 的 cache_control（标准字段，实现未必跟上）：摘掉缓存断点
+			// 重发一次。少省一点钱，总好过整轮跑不通。
+			if !cacheControlDropped && ProviderOf(cfg) == ProviderAnthropic && aiRejectsCacheControl(resp.StatusCode, errBody) {
+				cfg.noPromptCache = true
+				cacheControlDropped = true
+				logf("warn", "网关不接受 cache_control（提示词缓存断点），已去掉该字段重试：%s",
+					aiStatusErrorBodyText(resp.StatusCode, errBody))
+				touch()
+				continue
 			}
 			return errors.New(aiStatusErrorBodyText(resp.StatusCode, errBody))
 		}
@@ -499,6 +511,45 @@ func aiRejectsThinkingParam(code int, body []byte) bool {
 	return strings.Contains(strings.ToLower(aiStatusErrorBodyText(code, body)), "thinking")
 }
 
+// anthropicCacheControl 返回一个缓存断点标记。只支持 ephemeral（默认 5 分钟）：
+// 命中时按 0.1x 计费、写入按 1.25x，所以断点打在**大而稳定**的前缀上才划算。
+func anthropicCacheControl() map[string]any {
+	return map[string]any{"type": "ephemeral"}
+}
+
+// markAnthropicTailCacheControl 给最后一条消息的最后一个可用 block 打断点：
+// 「本轮之前的所有内容」成为可缓存前缀，下一轮直接命中，不必每轮重算全部历史。
+// thinking / redacted_thinking 块不接受 cache_control，遇到就往前找。
+func markAnthropicTailCacheControl(messages []map[string]any) {
+	for i := len(messages) - 1; i >= 0; i-- {
+		blocks, ok := messages[i]["content"].([]any)
+		if !ok || len(blocks) == 0 {
+			continue
+		}
+		for j := len(blocks) - 1; j >= 0; j-- {
+			block, ok := blocks[j].(map[string]any)
+			if !ok {
+				continue
+			}
+			if t, _ := block["type"].(string); t == "thinking" || t == "redacted_thinking" {
+				continue
+			}
+			block["cache_control"] = anthropicCacheControl()
+			return
+		}
+	}
+}
+
+// aiRejectsCacheControl 判定网关是否因 cache_control 400：标准字段，但个别兼容实现
+// 还没跟上，会把未知字段当参数错误拒收。命中后摘掉断点重发（不缓存只是贵一点）。
+func aiRejectsCacheControl(code int, body []byte) bool {
+	if code != http.StatusBadRequest && code != http.StatusUnprocessableEntity {
+		return false
+	}
+	text := strings.ToLower(aiStatusErrorBodyText(code, body))
+	return strings.Contains(text, "cache_control") || strings.Contains(text, "cache control")
+}
+
 func aiBuildOpenAIBody(cfg Config, messages []Message, tools []ToolDef) (map[string]any, error) {
 	passReasoning := strings.Contains(strings.ToLower(cfg.Model), "deepseek")
 	converted, err := aiOpenAIMessages(messages, passReasoning)
@@ -677,6 +728,12 @@ func aiBuildAnthropicBody(cfg Config, messages []Message, tools []ToolDef) (map[
 	if maxTokens <= 0 {
 		maxTokens = aiDefaultMaxTokens
 	}
+	// 提示词缓存：Anthropic 是**显式**缓存——不打 cache_control 就每轮全量计费
+	// （OpenAI / DeepSeek 是自动缓存，不受影响）。断点最多 4 个，这里用 3 个：
+	// 系统提示词末尾、最后一个工具定义、最后一条消息的最后一个 block。
+	// 系统提示词与工具定义是稳定前缀（动态块已移出系统提示词，见 ai-system-context.js），
+	// 最后一条消息的断点让「上一轮末尾 → 这一轮开头」这段增量也能命中。
+	cache := !cfg.noPromptCache
 	body := map[string]any{
 		"model":      cfg.Model,
 		"max_tokens": maxTokens,
@@ -684,10 +741,25 @@ func aiBuildAnthropicBody(cfg Config, messages []Message, tools []ToolDef) (map[
 		"stream":     true,
 	}
 	if system != "" {
-		body["system"] = system
+		if cache {
+			body["system"] = []map[string]any{{
+				"type":          "text",
+				"text":          system,
+				"cache_control": anthropicCacheControl(),
+			}}
+		} else {
+			body["system"] = system
+		}
 	}
 	if len(tools) > 0 {
-		body["tools"] = aiAnthropicTools(tools)
+		defs := aiAnthropicTools(tools)
+		if cache && len(defs) > 0 {
+			defs[len(defs)-1]["cache_control"] = anthropicCacheControl()
+		}
+		body["tools"] = defs
+	}
+	if cache {
+		markAnthropicTailCacheControl(converted)
 	}
 	if cfg.Thinking {
 		// 扩展思考开启时 Anthropic 拒绝 temperature != 1，直接省略（默认 1）。

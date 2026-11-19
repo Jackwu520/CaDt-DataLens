@@ -3,7 +3,7 @@
 export function createBridgeGit(deps) {
 
 // ===== git 浅集成 =====
-const gitStateCache = {dir: '', map: new Map(), branch: '', available: false, reason: '', untrackedSet: new Set(), ignoredSet: new Set()};
+const gitStateCache = {dir: '', repoRoot: '', map: new Map(), branch: '', available: false, reason: '', untrackedSet: new Set(), ignoredSet: new Set()};
 const gitGroupCollapsed = {changes: false, untracked: false};
 // 提交面板里被取消勾选的文件（归一化路径）。跨轮询重渲染保留，随文件消失（提交/回滚/外部还原）与工作区切换自动清理
 const gitUncheckedFiles = new Set();
@@ -18,6 +18,7 @@ async function refreshGitStatus() {
     const root = gitRootDir();
     if (!root) {
         gitStateCache.dir = '';
+        gitStateCache.repoRoot = '';
         gitStateCache.map.clear();
         gitUncheckedFiles.clear();
         gitStateCache.available = false;
@@ -29,6 +30,7 @@ async function refreshGitStatus() {
     }
     if (root !== gitStateCache.dir) {
         gitStateCache.dir = root;
+        gitStateCache.repoRoot = '';
         gitStateCache.map.clear();
         gitUncheckedFiles.clear();
     }
@@ -42,6 +44,9 @@ async function refreshGitStatus() {
         } else {
             gitStateCache.available = true;
             gitStateCache.branch = status.branch || '';
+            // entries 的 path 相对仓库根，回滚要以仓库根为 dir 传后端
+            //（工作区可能是仓库子目录）；老后端无 root 时退回工作区目录。
+            gitStateCache.repoRoot = status.root || root;
             gitStateCache.map.clear();
             gitStateCache.untrackedSet.clear();
             gitStateCache.ignoredSet.clear();
@@ -141,7 +146,9 @@ async function gitRollbackPaths(paths, untracked) {
         deps.flash('当前版本不支持回滚', true);
         return;
     }
-    const root = gitStateCache.dir || gitRootDir();
+    // paths / untracked 来自 git status，相对仓库根；必须配仓库根作为 dir，
+    // 否则工作区是仓库子目录时 git checkout 的 pathspec 会解析错位。
+    const root = gitStateCache.repoRoot || gitStateCache.dir || gitRootDir();
     const tracked = paths.filter((p) => !untracked.includes(p));
     const realUntracked = untracked.filter((p) => untracked.includes(p));
     try {

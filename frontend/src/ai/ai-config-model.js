@@ -3,6 +3,7 @@
 // models[] 下每个模型条目有独立的上下文窗口 / 输出窗口 / 输入能力 / 推理等级配置。
 // 旧版单模型字段（model / maxTokens / contextWindow / …）保留为激活条目的镜像，
 // 旧版本 exe 回滚后仍能读到一份可用配置；新逻辑一律以 models[] 为准。
+import {USAGE_PLAN_IDS, USAGE_TEMPLATE_KEYS} from './ai-usage-templates.js';
 
 export const CONTEXT_WINDOW_MIN = 2048;
 export const CONTEXT_WINDOW_MAX = 8388608; // 8M tokens
@@ -360,4 +361,49 @@ export function modelRefLabel(account, entry) {
     const primary = model || name;
     if (!primary) return '';
     return name && name !== primary ? primary + ' · ' + name : primary;
+}
+
+// ── 账号额度查询配置（profile.usage）────────────────────────────
+// 挂在账号条目上随 ai-config.json 持久化；旧配置缺字段 = 功能关闭，零迁移。
+// 模板 / 套餐预设的数据表与脚本见 ai-usage-templates.js。
+
+export const USAGE_TIMEOUT_MIN_SEC = 5;
+export const USAGE_TIMEOUT_MAX_SEC = 60;
+export const USAGE_TIMEOUT_DEFAULT_SEC = 10;
+export const USAGE_INTERVAL_MAX_MIN = 1440;
+export const USAGE_INTERVAL_DEFAULT_MIN = 5;
+export const USAGE_CODE_MAX_LENGTH = 65536;
+export const USAGE_EXTRA_FIELDS_MAX = 8;
+export const USAGE_EXTRA_VALUE_MAX_LENGTH = 512;
+
+// 归一化账号的用量查询配置：缺字段 / 非法值一律回落默认，绝不 throw（配置导入
+// 与手改 JSON 都算不可信输入，坏值最坏等于功能关闭）。enabled 是显式 true 才开。
+export function normalizeUsageConfig(raw) {
+    const src = raw && typeof raw === 'object' ? raw : {};
+    const template = USAGE_TEMPLATE_KEYS.includes(src.template) ? src.template : 'official';
+    const planProvider = USAGE_PLAN_IDS.includes(src.planProvider) ? src.planProvider : 'kimi';
+    const extraFields = {};
+    if (src.extraFields && typeof src.extraFields === 'object') {
+        let count = 0;
+        for (const [key, value] of Object.entries(src.extraFields)) {
+            if (count >= USAGE_EXTRA_FIELDS_MAX) break;
+            // 键必须是合法标识符形态：它们要变成脚本里的 {{key}} 变量名
+            if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
+            const text = String(value == null ? '' : value).slice(0, USAGE_EXTRA_VALUE_MAX_LENGTH);
+            if (!text) continue;
+            extraFields[key] = text;
+            count++;
+        }
+    }
+    return {
+        enabled: src.enabled === true,
+        template,
+        planProvider,
+        code: typeof src.code === 'string' ? src.code.slice(0, USAGE_CODE_MAX_LENGTH) : '',
+        apiKey: typeof src.apiKey === 'string' ? src.apiKey : '',
+        baseUrl: typeof src.baseUrl === 'string' ? src.baseUrl : '',
+        extraFields,
+        timeoutSec: clampNumber(src.timeoutSec, USAGE_TIMEOUT_MIN_SEC, USAGE_TIMEOUT_MAX_SEC, USAGE_TIMEOUT_DEFAULT_SEC),
+        autoIntervalMin: clampNumber(src.autoIntervalMin, 0, USAGE_INTERVAL_MAX_MIN, USAGE_INTERVAL_DEFAULT_MIN),
+    };
 }

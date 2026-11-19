@@ -11,6 +11,9 @@ import {
     clearPluginSettingsPanels, getPluginSettingsPanels, registerPluginSettingsPanel,
 } from './plugin-settings-panels.js';
 import {clearPluginTools, registerPluginTool} from './plugin-tools.js';
+import {clearPluginAIContexts, registerPluginAIContext} from './plugin-context.js';
+import {clearPluginImporters, registerPluginImporter} from './plugin-importers.js';
+import {clearPluginViewers, registerPluginViewer} from './plugin-viewers.js';
 
 const host = {
     flash: () => {},
@@ -181,6 +184,33 @@ function apiFor(plugin) {
                 throw pluginError(plugin, (e && e.message) || e);
             }
         },
+        // 注册 AI 上下文：{id, label?, stable?, text(ctx)}——注入系统提示词的领域知识。
+        // 上限单条 4 KiB / 合计 12 KiB；内容按数据处理（docs/plugins/README.md）。
+        registerAIContext(spec) {
+            try {
+                return registerPluginAIContext(plugin.id, plugin.name, spec);
+            } catch (e) {
+                throw pluginError(plugin, (e && e.message) || e);
+            }
+        },
+        // 注册文档导入器：{id, label?, extensions, convert(ctx)}——把内置格式解析不了的文件转成文本。
+        registerImporter(spec) {
+            try {
+                return registerPluginImporter(plugin.id, plugin.name, spec);
+            } catch (e) {
+                throw pluginError(plugin, (e && e.message) || e);
+            }
+        },
+        // 注册自定义视图：{id, label?, formats, priority?, mount(container, ctx)}。
+        // 视图只渲染不改数据（写回经 ctx.requestSave 上抛编辑器），必须返回 destroy。
+        // 详见 docs/plugins/README.md「注册自定义视图」与路线图 2.2 节。
+        registerViewer(spec) {
+            try {
+                return registerPluginViewer(plugin.id, plugin.name, spec);
+            } catch (e) {
+                throw pluginError(plugin, (e && e.message) || e);
+            }
+        },
         // 返回本插件的安装目录（绝对路径）；插件可用它拼自己的资源/脚本路径。
         getPluginDir() {
             return String(plugin.dir || '');
@@ -238,7 +268,7 @@ function apiFor(plugin) {
         openPath(path) {
             host.openPath(path);
         },
-        // 同步执行命令：{exe, args, cwd, timeoutMs} → {code, stdout, stderr}
+        // 同步执行命令：{exe, args, cwd, timeoutMs} → Promise<{code, stdout, stderr}>（调用方要 await）
         runCommandSync(opts) {
             return host.runCommandSync(opts);
         },
@@ -273,6 +303,9 @@ export async function loadPlugins(backend) {
     clearPluginServices();
     clearPluginSettingsPanels();
     clearPluginTools();
+    clearPluginAIContexts();
+    clearPluginImporters();
+    clearPluginViewers();
     bindServiceBackend(backend);
     for (const style of themeStyles.values()) {
         style.remove();

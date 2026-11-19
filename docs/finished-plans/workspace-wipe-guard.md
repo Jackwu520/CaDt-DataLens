@@ -1,6 +1,6 @@
 # 工作区破坏防护：写前快照 + watcher 检测（方案）
 
-> 状态：**已实施**（2026-11-18 初稿；同日经评审与业界调研修订——存储改内容寻址，原 L3/L4 合并；2026-11-19 落地。落地当日修订两处：检测砍掉 canary 诱饵（作者裁定工作区零足迹，§5.2），watcher 删除计数排除构建产物目录）
+> 状态：**已实施**（2026-11-18 初稿；同日经评审与业界调研修订——存储改内容寻址，原 L3/L4 合并；2026-11-19 落地。落地当日修订三处：检测砍掉 canary 诱饵（作者裁定工作区零足迹，§5.2），watcher 删除计数排除构建产物目录，检测口径改为「净消失」+ 应用自身批量操作静默门——插件更新误报实录见 §5.1）
 > 事故依据：`docs/reports/incident-2026-11-18-workspace-wipe.md`
 > 决策：
 > 1. **检测与恢复分离**。恢复（L1）走写前快照；检测（L2）以工作区 watcher 实时事件为**主信号**，结构指纹为**周期校准与兜底**。（canary 诱饵 2026-11-19 落地当日砍掉——作者裁定工作区零足迹，见 §5.2。）
@@ -105,7 +105,7 @@ L3 三态判定在打开工作区时做一次，写进 `config.json` 的 `wipeGu
 | `run_command` 内 `rm`/`find -delete` 局部 | ❌ | ✅ watcher 秒级 | ✅ |
 | `run_command` 内整仓删除（本次事故） | ❌ | ✅ watcher 秒级 | ✅ 有 git 或项目够小 |
 | 工具返回后**存活的子进程**继续删（探针里有 `sleep 999999`） | ❌ | ✅ watcher（工具前后指纹抓不到——这正是改事件驱动的原因） | ✅ |
-| 用户自己误删 | ❌ | ✅ 提醒（无 AI 活跃时不停会话） | ✅ |
+| 用户自己误删 | ❌ | ✅ 提醒（不停会话，投递消息给正在跑的会话由它自查） | ✅ |
 | 备份目录被 `rm -rf` | — | — | deny-delete ACL 拒绝 unlink |
 
 **L1 是唯一"精确且零成本"的恢复层**，因为它只备份应用自己能看到的写。其余都是兜底。
@@ -134,7 +134,7 @@ L3 三态判定在打开工作区时做一次，写进 `config.json` 的 `wipeGu
 | `snapshots` 定期快照 | 开 | 定期写盘（git archive / CAS 扫描），备份洁癖者可关 | 有 git 时 0.19 s/次、增量 KB 级 |
 | `backupRoot` 路径 | 空（appdata） | — | 大项目用户把备份指到其他盘（§4.1 校验） |
 
-**刻意不做成设置项的**（全是工程参数，不是用户决策；改 `config.json` 可调，不进 UI）：删除计数阈值（40 条/10s）、保留期（7 天 / 200 MB / staggered 桶）、AI 活跃窗口（60s）、指纹节奏（10 分钟）、critical 停会话动作（是 critical 语义的一部分，单列出来只会被误关掉）。L3 的 git/CAS/不保护三态是**派生结果**，不是设置——用户只管开不开 `snapshots`，选哪态由工作区形态自动判定。
+**刻意不做成设置项的**（全是工程参数，不是用户决策；改 `config.json` 可调，不进 UI）：删除计数阈值（40 条/10s）、保留期（7 天 / 200 MB / staggered 桶）、AI 活跃窗口（60s）、指纹节奏（10 分钟）、critical 处置方式（2026-11-19 起固定为「插队投递应用消息、不打断」，不再有停会话/熔断这种会被误关的开关）。L3 的 git/CAS/不保护三态是**派生结果**，不是设置——用户只管开不开 `snapshots`，选哪态由工作区形态自动判定。
 
 ## 4. L1：写前快照 `internal/wipeguard`
 
@@ -233,8 +233,14 @@ func (s *Service) Store(absPath string, content []byte) error
 - **排除子树**：`searchSkipDirs` + `.git` + `.cadt`——`git gc` 清 loose objects、npm 重装 `node_modules` 是合法 churn；`.git` 目录是否整体消失交给指纹 markers 判定（§5.3）。
 - **排除临时/机械文件**（2026-11-19 补丁应用误报实录）：原子写 temp（atomfile `<name>.<pid>.<nanos>.tmp` 与 `<name>.tmp.<pid>.<hash>` 两种命名）、补丁写入 temp（`.cadt-patch-*.tmp`）、锁文件（`.lock` / `.gate`）——它们的「消失」是写入流程的正常半程（temp→rename），不是文件被删；一次 7 文件的补丁应用能堆出 40+ 条删除事件直接爆阈值。按 basename 形态排除。
 - **窗口内同路径去重**（同日实录）：ReadDirectoryChangesW 对一次 rename 推多条 action（temp 消失 + 目标出现 + 父目录变更），41 条事件去重后只有 ~10 个真实文件——重复计数把量级抬高 3-5 倍。
-- **只计「消失」类事件**（2026-11-19 二次误报后定的治本口径）：Go 侧 `parseNotifyBuffer` 解析 `FILE_NOTIFY_INFORMATION` 的 action，`FILE_ACTION_REMOVED` / `FILE_ACTION_RENAMED_OLD_NAME`（被删 / rename 走）单独成组随 `workspace-changed` 的 `removed` 字段下发；前端删除计数只消费 `removed`。此前「paths 全量计数」把补丁回灌 / worktree 回灌的 added/modified 也算进去——70 文件的隔离树回灌照样爆 40 阈值，而它一个文件都没删。
-- 判定（纯函数，表驱动测试）：10 秒滚动窗口内（removed 口径 + 排除子树 + 排除临时文件 + 同路径去重后的）删除类事件 **≥ 40 条** → 告警候选。
+- **只计「消失」类事件**（2026-11-19 二次误报后定的治本口径）：Go 侧 `parseNotifyBuffer` 解析 `FILE_NOTIFY_INFORMATION` 的 action，`FILE_ACTION_REMOVED` 与**孤立**的 `FILE_ACTION_RENAMED_OLD_NAME`（被删 / 移出工作区）单独成组随 `workspace-changed` 的 `removed` 字段下发；前端删除计数只消费 `removed`。此前「paths 全量计数」把补丁回灌 / worktree 回灌的 added/modified 也算进去——70 文件的隔离树回灌照样爆 40 阈值，而它一个文件都没删。
+- **rename 成对不算消失**（2026-11-19 举一反三）：内核把工作区内的一次改名/移动报成相邻的 `RENAMED_OLD_NAME` + `RENAMED_NEW_NAME`；批量重命名 50 个文件、`git mv` 一个目录、拖拽归位都属于这类，文件没离开工作区。移出工作区的移动只收到 `OLD_NAME`（目标在监听根之外），仍按消失计。
+- **净消失（删除后又重建 = 替换）**（2026-11-19 插件更新误报实录）：Go 侧把非「消失」类事件另成一组随 `present` 下发（同批去重）；前端窗口里每条记录带单调递增 `seq`，判定时只把「没有在之后重新出现」的删除计入。插件更新是 `os.RemoveAll` 整目录 + 复制新目录，watcher 看到的是「70 个文件消失」，实际一个都没少。`present` 不进删除计数，只做抵消。
+- **超阈值确认延迟**：删除与随后的重建常常不在同一批内核通知里（第一批只有删除）。首次达到阈值不立即告警，延迟 1.2 s 用同一窗口复核净消失——事故形态（`find . -delete`）只是晚 1.2 s 报，误报则在这一步被消掉。
+- **任意层级的元数据与依赖/缓存目录**：`.git` / `.svn` / `.hg` / `.bzr` / `.cadt` / `.idea` / `.vscode` / `node_modules` / `vendor` / `__pycache__` / `.venv` / `venv` / `site-packages` / `.pytest_cache` / `.mypy_cache` / `.gradle` / `.cache` / `target` / `obj` / `.next` / `.nuxt` / `.turbo` 命中任意一段即排除；`dist` / `build` / `out` / `bin` / `coverage` 仍只按前两段（这三个名字埋在源码深处时往往是真源码目录）。此前只有两段口径，`plugins/<id>/.git/**`、monorepo 的 `packages/*/node_modules`、Python `.venv` 全都落在第三段之后被计数。`internal/search` 的忽略表同步补了 `.venv` / `venv` / `site-packages`（检索与指纹遍历同样跳过）。
+- **应用自身批量操作静默门**（2026-11-19 插件更新误报实录）：插件安装 / 更新 / 卸载由应用主动发起，整目录删除再复制在 watcher 看来与大范围消失无异。`plugins.OnBulkMutate` 包级钩子（根壳注入 `watch.BeginQuiet` / `EndQuiet`）在操作期间清空 `removed` / `present` 两个判定分组（`paths` 照常推送，UI 照常刷新），结束后保留 2 s 宽限吸收缓冲区里的残留通知。启发式挡不住「新版本文件数骤减」的替换，这一层由发起方显式声明。
+- **git 写工作树命令的静默门**（同日举一反三）：切分支 / 检出 / 丢弃改动 / 清理 / 合并 / 变基 / 拉取会成批删除当前分支独有的文件，几秒内几十上百条删除。`gitinfo.OnMutateWorktree` 钩子按**子命令白名单**（checkout / switch / restore / reset / stash / merge / rebase / cherry-pick / revert / pull / clean / read-tree / rm / mv / submodule / apply）在 `gitRun` 里开静默门，只读命令（status / log / diff / show / rev-parse …）不受影响。
+- 判定（纯函数，表驱动测试）：10 秒滚动窗口内（removed 口径 + 排除子树 + 排除临时文件 + 同路径去重 + 重建抵消后的）**净消失 ≥ 40 条** → 告警候选。
 - `overflow` 事件 → 立即触发一次全量指纹重扫（事件丢了靠校准补）。
 
 ### 5.2 信号二：canary 诱饵（**已砍**——工作区零足迹）
@@ -283,16 +289,21 @@ func ShouldWarn(before, after Fingerprint) (bool, string)
 
 watch 侧判定纯函数（JS）：`registerDeleteEvents` / `shouldAlarmFromWatch`（滚动窗口 + 排除子树与产物目录），配 `frontend/test/ai/ai-wipeguard.test.mjs`。
 
-### 5.5 告警动作
+### 5.5 告警动作（2026-11-19 重定：**不自动停会话**）
 
 | 级别 | 条件 | 动作 |
 |---|---|---|
-| **critical** | 告警候选 **且被告警工作区上有 AI 活跃**（该工作区最近 60s 内有工具执行或正在流式） | 状态栏红条 + notify + **只停挂在该工作区上的生成与子代理**（2026-11-19 收窄：初版停全窗口所有会话，误报时把别的后台会话一起陪葬；workspace 为空的会话不可归因，保守一并停）+ 熔断该工作区本轮后续写命令（`startSessionTurn` 解除；`isWriteBlocked(root)` 按工作区匹配，别的后台会话不受牵连）+ 操作留痕 |
-| **critical** | 告警候选，但被告警工作区无 AI 活跃 | 红条 + notify + 留痕，**不停会话**（用户手动批量删除不被误伤）；已有熔断不被空闲告警撤销 |
+| **critical** | 告警候选 **且被告警工作区上有 AI 活跃**（该工作区最近 60s 内有工具执行或正在流式） | 状态栏红条 + notify + **向该工作区正在运行的会话插队投递「应用消息」**（`ai-panel.js` 的 `wipeguardNotifyForWorkspace` → `deliverAgentNotice`，`urgent=true` 插队首，轮边界注入）+ 操作留痕 |
+| **critical** | 告警候选，但被告警工作区无 AI 活跃 | 红条 + notify + 留痕，不唤醒空闲会话（白烧 token，用户看红条与消息中心） |
 | warn | 指纹文件数腰斩等 | 黄条 + 调试日志，不打断 |
 
-- 停止是安全的：它只终止 AI 的生成，不丢用户的任何东西。
-- 文案必须点明"疑似大范围文件消失"，并给出备份位置（设置 → 存储与清理 → wipe-guard）与事故报告链接。
+- **为什么不再停会话**：合法批量删除（插件更新、切分支、装依赖、构建清理）与真破坏在 watcher 眼里同形，误判一次就把正在干活的会话打断——而模型比自己更清楚刚才在做什么。所以改成把事实**告诉它**：消息里点明「可能与你无关……没有删就忽略，确实在删就停下说明」，同时把中止的决定权留给用户。熔断写命令一并取消（`isWriteBlocked` 恒 false，导出保留只为不破坏调用点）。
+- 投递只给**正在运行**的会话：不唤醒空闲会话。目标会话忙 → 排队等下一个轮边界；空闲 → 投递即唤醒（`deliverAgentNotice` 既有语义，本处只从运行中的 `streams` 里挑，因此不会触发唤醒）。
+- 文案固定前缀 `［工作区防护］`（`ai-app-message.js` 的 `detectAppMessage` 按前缀归类，历史回放也认），卡片 kind = `wipeguard`。
+- **消息长度预算**（这条消息会进会话上下文，不能把全量路径塞进去）：`buildGuardNotice` 只拼一句统计 + 三行判断依据 + **最多 8 条截断样例**（每条 76 字以内，头 32 + … + 尾 40）+ 一行恢复提示，实测 300~500 字。300 条路径的告警和不带路径的告警，进上下文后体积几乎一样。
+- **恢复提示（快照/备份）**：`wipeguard.recoveryHint(root)` 读 `WipeGuardSnapshotList`，输出一行「可回滚：最近一份快照 5 分钟前（共 6 份，入口 设置 → 存储与清理 → 工作区防护）」；快照开关关闭或清单为空时说清「只能靠写前备份」。**只报一行摘要，不贴快照清单**——模型要知道的是「能不能救、去哪儿救」，不是文件名列表。
+- **投递与红条共用 2 分钟冷却**（`WIPEGUARD_NOTIFY_COOLDOWN_MS`）：真事故里删除会持续十几秒，`fireAlarm` 的 3 秒去抖仍会连续上报；不节流会把几十条告警堆进会话上下文、把消息中心刷满。每次告警的运行日志由 Go 侧 `WipeGuardAlarm` 逐条写，留痕不受节流影响。
+- 文案要点明"疑似大范围文件消失"，并给出备份位置（设置 → 存储与清理 → wipe-guard）。
 
 ## 6. L3：定期状态快照（原 L3 / L4 合并）
 
@@ -321,7 +332,7 @@ rm <appdata>/wipe-guard/tmp/index.<ts>
 
 ### 6.3 无 git 且大：不保护 + UI 明说
 
-- L1 覆盖不到 `run_command` 删除；L3 三态都不启用。只剩 L2 秒级发现 + 停会话止血 + 报出消失路径（采样时只给根级差异）。
+- L1 覆盖不到 `run_command` 删除；L3 三态都不启用。只剩 L2 秒级发现 + 告警与投递提醒 + 报出消失路径（采样时只给根级差异）。
 - 设置页「存储与清理」的 wipe-guard 条目下固定显示：
 
 > 当前项目：无版本控制，且体积超过保护阈值（200 MB / 5000 文件）。
@@ -347,7 +358,7 @@ const (
 
 ### 7.1 无法覆盖的组合
 
-**无 git + 大项目 + `run_command` 内批量删除**：L1 覆盖不到；L3 三态都不启用。此时只剩 L2 的秒级发现 + 停会话止血 + 报出"消失了哪些路径"（指纹降级为采样时只能给根级差异）。
+**无 git + 大项目 + `run_command` 内批量删除**：L1 覆盖不到；L3 三态都不启用。此时只剩 L2 的秒级发现 + 告警与投递提醒 + 报出"消失了哪些路径"（指纹降级为采样时只能给根级差异）。
 （后续缓解：`run_command` 接 `internal/sandbox` 受限令牌——对齐 Codex CLI 的 Windows WRITE_RESTRICTED 路线，另立项。）
 
 ### 7.2 必须在 UI 明说
@@ -362,7 +373,7 @@ const (
 2. `internal/wipeguard/*_test.go`：表驱动覆盖 §5.4 四条件 + 采样降级 + 空目录；
 3. `wipeguard_app.go`：`WipeGuardFingerprint` / `WipeGuardEnsureCanaries` / `WipeGuardAlarm` 绑定；
 4. `frontend/wailsjs/` 三件 + `dev/mock-backend.js` 同名 mock；
-5. `frontend/src/ai/ai-wipeguard.js`：订阅 `workspace-changed`（deps 注入）+ 滚动窗口判定 + critical 停会话/熔断；`ai-panel.js` 的 `run_command` / `background_command` 分支挂工具前后指纹（保底）；
+5. `frontend/src/ai/ai-wipeguard.js`：订阅 `workspace-changed`（deps 注入）+ 滚动窗口净消失判定 + critical 向运行中会话插队投递应用消息（不停会话、不熔断）；`ai-panel.js` 的 `run_command` / `background_command` 分支挂工具前后指纹（保底）；
 6. `frontend/test/ai/ai-wipeguard.test.mjs`（窗口判定 / AI 活跃上下文 / 去抖纯函数），登记 `npm test`。
 
 ### P2 · L1 写前快照
@@ -412,7 +423,7 @@ Go 测试一律后台执行、显式带 `-timeout`（AGENTS.md 约定）。
 | 备份把磁盘写满 | 总量 200 MB + 7 天双阈值 + staggered；超大文件跳过；孤儿 blob 回收 |
 | 备份拖慢写入 | 单文件 hash + temp rename；失败不阻断写入 |
 | watcher churn 误报（git gc / npm 重装） | 计数排除 `searchSkipDirs` + `.git` + `.cadt` 子树；阈值 40/10s |
-| 用户手动批量删除误停会话 | AI 活动上下文区分：无活跃只强提醒，不停会话 |
+| 用户手动批量删除被当成破坏 | 2026-11-19 起不再自动停会话/熔断：只出红条 + 向运行中的会话投递一条应用消息，由模型自查、由用户决定是否中止 |
 | watch 事件丢失 / 监听失败 | overflow → 指纹重扫；工具前后指纹保底 |
 | ACL 妨碍清理与还原 | 服务以 owner 临时开放，操作完恢复；集成测试覆盖 |
 | 索引膨胀 | 清理时压缩重写 |

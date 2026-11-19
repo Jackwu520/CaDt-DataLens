@@ -322,6 +322,7 @@
                 <button type="button" class="snav-item" data-pane="new-file-menu"><span class="snav-ic" data-icon="list"></span><span>菜单管理</span></button>
                 <button type="button" class="snav-item" data-pane="shortcuts"><span class="snav-ic" data-icon="keyboard"></span><span>快捷键</span></button>
                 <button type="button" class="snav-item" data-pane="run"><span class="snav-ic" data-icon="play"></span><span>运行</span></button>
+                <button type="button" class="snav-item" data-pane="precmd"><span class="snav-ic" data-icon="zap"></span><span>预指令</span></button>
                 <button type="button" class="snav-item" data-pane="plugins"><span class="snav-ic" data-icon="download"></span><span>插件</span></button>
                 <button type="button" class="snav-item" data-pane="integration"><span class="snav-ic" data-icon="export"></span><span>系统集成</span></button>
                 <button type="button" class="snav-item" data-pane="envvars"><span class="snav-ic" data-icon="code"></span><span>环境变量</span></button>
@@ -983,9 +984,9 @@
                                 </div>
                             </div>
                             <div class="set-row">
-                                <div class="set-main"><div class="set-title">层级上限<button type="button" class="info-tip" data-tip="整棵树最多几层，层级编号含主代理：主代理第 1 层，它直接派出的子代理第 2 层，依此类推。通过层号编排任务时按这个口径算。1 = 只允许主代理（不再派子代理）。" aria-label="层级上限说明"></button></div><div class="set-desc">0 = 不设限；主代理算第 1 层</div></div>
+                                <div class="set-main"><div class="set-title">层级上限<button type="button" class="info-tip" data-tip="整棵树最多几层，层级编号含主代理：主代理第 1 层，它直接派出的子代理第 2 层，它再派出的孙代理第 3 层，依此类推。通过层号编排任务时按这个口径算。1 = 只允许主代理（不再派子代理）；2 = 主代理 + 1 层子代理；3 = 主代理 + 2 层子代理（默认）。" aria-label="层级上限说明"></button></div><div class="set-desc">默认 3 层 = 主代理 + 2 层子代理（子代理可再派孙代理）；0 = 不设限</div></div>
                                 <div class="set-control">
-                                    <input type="number" id="ai-opt-subagent-depth" class="ai-settings-input ai-font-size-num" min="0" max="20" step="1" value="0">
+                                    <input type="number" id="ai-opt-subagent-depth" class="ai-settings-input ai-font-size-num" min="0" max="20" step="1" value="3">
                                 </div>
                             </div>
                             <div class="set-row">
@@ -1693,6 +1694,31 @@
                                 <div class="set-control">
                                     <select id="run-selftest-lang" class="opt-select"></select>
                                     <button type="button" id="run-selftest" class="dlg-btn">运行自检脚本</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="settings-pane hidden" data-pane="precmd">
+                        <div class="set-group-title">预指令</div>
+                        <div class="set-card">
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">打开工作区时自动执行<button type="button" class="info-tip" data-tip="三个时机：打开工作区（打开/切回/启动恢复）、关闭工作区（关闭或切走）、AI 会话开始（空会话第一轮流起前，起轮等待跑完）。按列表顺序在该工作区根目录执行启用的命令；失败不阻断宿主流程，结果进状态栏消息中心。配置存在本机设置里，不随工作区文件走；AI 可代配但每次都要你审批（完全权限也不例外）。" aria-label="预指令开关说明"></button></div><div class="set-desc">总开关：关闭后所有工作区的预指令都不再自动执行</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="precmd-enabled"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                </div>
+                            </div>
+                            <div class="set-row-top">
+                                <div class="set-desc">预指令按工作区各自生效，工作目录为该工作区根，继承 设置 → 环境变量；列表顺序即执行顺序。三个时机：打开工作区 / 关闭工作区 / AI 会话开始（空会话第一轮流起前）。</div>
+                            </div>
+                            <div class="set-row-top">
+                                <div id="precmd-list" class="precmd-list"></div>
+                            </div>
+                            <div class="set-row-top hidden" id="precmd-editor"></div>
+                            <div class="set-row">
+                                <div class="set-main"></div>
+                                <div class="set-control">
+                                    <button type="button" id="precmd-new" class="dlg-btn">新建预指令…</button>
+                                    <button type="button" id="precmd-run-now" class="dlg-btn">本工作区预跑一次</button>
                                 </div>
                             </div>
                         </div>

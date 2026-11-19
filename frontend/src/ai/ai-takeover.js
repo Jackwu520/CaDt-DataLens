@@ -517,6 +517,8 @@ export function createAITakeover(ctx) {
             body.appendChild(note);
         };
         if (discard) {
+            // 原因放第一行：用户先要知道「为什么收尾」，再看后果
+            if (approval.reason) addRow('原因', approval.reason, false);
             addRow('位置', approval.relPath || approval.name || '');
             addRow('分支', approval.branch || '隔离分支');
             if (approval.stat) addRow('改动', worktreeStatNode(approval.stat));
@@ -524,6 +526,8 @@ export function createAITakeover(ctx) {
             body.appendChild(detail);
             addNote('warn', '删除不可恢复；主根不受影响。', true);
         } else {
+            // 原因放第一行：这是 AI 主动发起，用户最先要判断的是「该不该隔离」
+            if (approval.reason) addRow('原因', approval.reason, false);
             // slug 由后端按「用途名-会话尾号」派生：这里按同一规则预测出真实路径给人看
             // （同名冲突时 Go 会顺延 -2/-3，实际名以工具结果为准）
             if (approval.slug) {

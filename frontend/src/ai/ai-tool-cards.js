@@ -657,7 +657,20 @@ export function createAIToolCards(ctx) {
         const base = path ? path.replace(/^.*[\\/]/, '') : '';
         const dir = base && path.length > base.length ? path.slice(0, path.length - base.length).replace(/[\\/]+$/, '') : '';
         switch (message.name) {
-            case 'read_file': case 'write_file': case 'edit_file':
+            case 'read_file': {
+                // 按行读取（startLine/endLine）时卡头补行范围徽标，否则看不出读的是哪段
+                const startLine = Math.round(Number(args.startLine));
+                const hasLines = Number.isFinite(startLine) && startLine > 0;
+                let range = '';
+                if (hasLines) {
+                    const endLine = Math.round(Number(args.endLine));
+                    range = Number.isFinite(endLine) && endLine > 0
+                        ? startLine + '–' + endLine
+                        : startLine + '–';
+                }
+                return {primary: base || path || '—', dir, range};
+            }
+            case 'write_file': case 'edit_file':
                 return {primary: base || path || '—', dir};
             case 'read_image':
                 // 网图（read_image 传 URL）：卡头显示「域名 + 路径」，且不做本地文件链接
@@ -813,6 +826,44 @@ export function createAIToolCards(ctx) {
         container.appendChild(diff);
     }
 
+    // read_file 按行读取片段：与 diff 同款的「背景框 + 行号列 + 代码列」结构，
+    // 让读取内容和 edit_file 的 diff 在视觉语义上一致——都是代码块，不是摊在卡片上的裸文本。
+    // 正文每行形如「右对齐行号<TAB>代码」（见 ai-file-tools.readWindowOf），末尾可能有截断提示。
+    function renderReadLinesInto(container, text) {
+        const box = document.createElement('div');
+        box.className = 'ai-read-body';
+        const lines = String(text == null ? '' : text).split('\n');
+        // 行号列宽随最大行号位数走（同 diff 的 --ai-diff-no-w）：固定 22px 装不下四位数行号
+        let maxNoWidth = 0;
+        for (const line of lines) {
+            const m = line.match(/^(\s*\d+)\t/);
+            if (m) maxNoWidth = Math.max(maxNoWidth, m[1].length);
+        }
+        if (maxNoWidth) box.style.setProperty('--ai-read-no-w', maxNoWidth + 'ch');
+        for (const line of lines) {
+            const m = line.match(/^(\s*\d+)\t(.*)$/);
+            const row = document.createElement('div');
+            row.className = 'ai-read-line';
+            if (m) {
+                const no = document.createElement('span');
+                no.className = 'ai-read-no';
+                no.textContent = m[1];
+                const code = document.createElement('span');
+                code.className = 'ai-read-text';
+                code.textContent = m[2] || ' ';
+                row.append(no, code);
+            } else {
+                // 截断提示 / 空行区间 / 其他非代码行：整行弱化显示
+                const note = document.createElement('span');
+                note.className = 'ai-read-note';
+                note.textContent = line || ' ';
+                row.appendChild(note);
+            }
+            box.appendChild(row);
+        }
+        container.appendChild(box);
+    }
+
     // session：这张卡属于哪个会话（渲染目标会话，不一定是面板当前查看的会话）。
     // 支线对话标签页复用同一套渲染，卡内动作（查看计划）必须按它取，不能用 currentSession。
     function renderToolMessage(wrap, message, options, session) {
@@ -824,8 +875,21 @@ export function createAIToolCards(ctx) {
         const approval = message.approval;
         const envAsk = message.envAsk;
         const isCommand = message.name === 'run_command' || message.name === 'background_command';
-        // 读取卡：不做展开，路径名即超链接（点击在标签页打开并跳到读取起始行）
+        // 读取卡：路径名即超链接（点击在标签页打开并跳到读取起始行）。按行读取（startLine/endLine）
+        // 额外支持展开折叠——正文显示带行号的内容片段，让用户直接核对 AI 读了哪几行。
         const isRead = message.name === 'read_file';
+        let readLineRange = '';
+        if (isRead) {
+            try {
+                const args = JSON.parse(message.arguments || '{}') || {};
+                const s = Math.round(Number(args.startLine));
+                if (Number.isFinite(s) && s > 0) {
+                    const e = Math.round(Number(args.endLine));
+                    readLineRange = Number.isFinite(e) && e > 0 ? s + '-' + e : s + '-';
+                }
+            } catch (e) {}
+        }
+        const isReadLines = !!readLineRange;
         // 内置技能卡：内容只注入模型上下文，不向用户展示（识别结果首行的来源标注「（内置）」，
         // 该文案来自 ai-panel skillSourceLabel('builtin') 单一来源）；工作区/用户技能照常可展开
         const isBuiltinSkill = message.name === 'skill_use' &&
@@ -863,7 +927,7 @@ export function createAIToolCards(ctx) {
             head.appendChild(makeToolSpinner(cardSpinStart, message));
         }
         head.append(chev, icon, verb);
-        if (isRead || isBuiltinSkill) chev.remove(); // 无展开功能，折叠箭头不出现
+        if ((isRead && !isReadLines) || isBuiltinSkill) chev.remove(); // 无展开功能，折叠箭头不出现（按行读取卡保留箭头）
         if (toolFileVerb(message) && info.primary && info.primary !== '—' && !info.remote) {
             head.appendChild(createFileIcon(info.primary, 'ai-tool-fileicon'));
         }
@@ -886,6 +950,14 @@ export function createAIToolCards(ctx) {
                 }
             }
             head.appendChild(primary);
+        }
+        if (info.range) {
+            // read_file 按行读取的行范围徽标：一眼看出这次读的是哪段，不是整个文件
+            const range = document.createElement('span');
+            range.className = 'ai-tool-tag';
+            range.textContent = '行 ' + info.range;
+            range.dataset.tip = '按行读取：第 ' + info.range.replace('–', ' 到 ') + ' 行';
+            head.appendChild(range);
         }
         if (isBuiltinSkill) {
             // 内置技能卡没有正文（内容只进模型上下文），徽标替代原来的 hover 说明
@@ -960,7 +1032,7 @@ export function createAIToolCards(ctx) {
         state.className = 'ai-tool-state';
         state.textContent = toolStateText(message);
         head.append(state);
-        if (!isRead && !isBuiltinSkill) {
+        if ((!isRead || isReadLines) && !isBuiltinSkill) {
             head.addEventListener('click', () => {
                 if (statusOnlyBody) return; // 无正文可展开，别把它当折叠开关
                 card.dataset.userToggled = '1';
@@ -1202,7 +1274,18 @@ export function createAIToolCards(ctx) {
         } else if (isBuiltinSkill) {
             // 内置技能卡：内容只注入模型上下文，不向用户展示（无 body，卡片头即全部）
         } else if (isRead) {
-            // 读取卡不做展开：内容不渲染，路径超链接即全部交互
+            // 字符模式读取卡不做展开：内容不渲染，路径超链接即全部交互。
+            // 按行读取卡：正文显示带行号的内容片段（去掉 head 那两行「文件：…」元信息），
+            // 让用户直接核对 AI 读了哪几行；默认折叠，点箭头展开。
+            if (isReadLines) {
+                const raw = String(message.content == null ? '' : message.content);
+                const nl = raw.indexOf('\n\n');
+                const bodyText = nl >= 0 ? raw.slice(nl + 2) : raw;
+                // 行号 + tab + 代码，结构与 .ai-diff 同款：每行拆成行号列 + 代码列，
+                // 让读取片段和 edit_file 的 diff 待在同一个「背景框」里（视觉语义统一）。
+                renderReadLinesInto(body, bodyText);
+                statusOnlyBody = !bodyText.trim();
+            }
         } else {
             const inlineText = String(message.content == null ? '' : message.content);
             // 只剩状态占位（执行中 / 无输出）就不是「可展开的正文」：不建 body、不摆箭头。
@@ -1210,7 +1293,7 @@ export function createAIToolCards(ctx) {
             statusOnlyBody = !inlineText.trim();
             body.textContent = inlineText || (live ? '执行中…' : '（无输出）');
         }
-        if (isRead || isBuiltinSkill || statusOnlyBody) card.appendChild(head);
+        if ((isRead && !isReadLines) || isBuiltinSkill || statusOnlyBody) card.appendChild(head);
         else card.append(head, body);
         if ((approval && approval.state === 'pending') || (envAsk && envAsk.state === 'pending')) return;
         // 终端命令默认只显示一行摘要（命令 + 状态），点击展开完整输出。
@@ -1224,13 +1307,13 @@ export function createAIToolCards(ctx) {
         if (fileToolCard) {
             card.classList.add('collapsed');
         }
-        if (!isRead && !isBuiltinSkill && !fileToolCard && !live && message.status !== 'error' && !statusOnlyBody) card.classList.add('collapsed');
+        if ((!isRead || isReadLines) && !isBuiltinSkill && !fileToolCard && !live && message.status !== 'error' && !statusOnlyBody) card.classList.add('collapsed');
         // 生成卡：进行中或已有产物时不默认折叠（缩略图是主要反馈）；用户手动折叠过的仍以其偏好为准
         if (message.gen && (message.gen.status === 'running' || (message.gen.files || []).length)) {
             card.classList.remove('collapsed');
         }
         // 用户手动展开/收起过的卡片以偏好为准，覆盖上面的默认折叠规则。
-        if (!isRead && !isBuiltinSkill && !statusOnlyBody && message.toolCallId) {
+        if ((!isRead || isReadLines) && !isBuiltinSkill && !statusOnlyBody && message.toolCallId) {
             const storedFold = toolFoldState.get(message.toolCallId);
             if (storedFold !== undefined) card.classList.toggle('collapsed', storedFold);
         }

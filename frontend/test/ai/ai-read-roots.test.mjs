@@ -10,6 +10,7 @@ import {
     sensitiveReadDenyReason,
     scanRootDenyReason,
     hardReadDenyReason,
+    ARTIFACT_DIR_NAME,
 } from '../../src/ai/ai-read-roots.js';
 
 // ---------- normalizeReadRoot / normalizeReadRoots ----------
@@ -108,6 +109,22 @@ test('应用数据目录下的路径硬拒，目录外与空 appDir 放过', () 
     assert.equal(sensitiveReadDenyReason('C:/Users/admin/AppData/Roaming/CaDt-DataLensX/a.md', appDir), null);
     assert.equal(sensitiveReadDenyReason('D:/Novel/a.md', appDir), null);
     assert.equal(sensitiveReadDenyReason('D:/Novel/a.md', ''), null);
+});
+
+// 产物子树是唯一例外：模型自己落盘的工具结果要能自己读回来（指针才有意义）。
+// 同时钉住「例外只到 ai-artifacts 一层」——会话正文与密钥仍在拒绝范围。
+test('ai-artifacts 子树可读，密钥与会话目录仍拒', () => {
+    const appDir = 'C:/Users/admin/AppData/Roaming/CaDt-DataLens';
+    const artifact = appDir + '/' + ARTIFACT_DIR_NAME + '/session-1/call-1.txt';
+    assert.equal(sensitiveReadDenyReason(artifact, appDir), null);
+    assert.equal(sensitiveReadDenyReason(appDir + '/' + ARTIFACT_DIR_NAME, appDir), null);
+    // 兄弟前缀不能误放行（ai-artifactsX 不是产物目录）
+    assert.ok(sensitiveReadDenyReason(appDir + '/' + ARTIFACT_DIR_NAME + 'X/a.txt', appDir));
+    // 密钥、会话正文、其他应用数据照旧拒绝
+    assert.ok(sensitiveReadDenyReason(appDir + '/ai-config.json', appDir));
+    assert.ok(sensitiveReadDenyReason(appDir + '/ai-sessions/x/session.v1.jsonl', appDir));
+    // 扫描产物目录本身不触发「包含应用数据目录」的拒绝
+    assert.equal(scanRootDenyReason(appDir + '/' + ARTIFACT_DIR_NAME, appDir), null);
 });
 
 // ---------- scanRootDenyReason ----------

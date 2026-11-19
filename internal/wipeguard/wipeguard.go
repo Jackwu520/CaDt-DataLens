@@ -25,6 +25,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"datalens/internal/executil"
 )
 
 // protectedMarker 备份根内的保护标记文件：存在说明 deny-delete ACL 已套过。
@@ -211,7 +213,14 @@ func withinDir(root, p string) bool {
 
 // ---- snapshots.go 用的小助手 ----
 
-func execCommand(name string, args ...string) *exec.Cmd { return exec.Command(name, args...) }
+// execCommand 是 snapshots.go 起 git 进程的唯一入口。git.exe 是控制台程序，
+// GUI 进程拉起它会闪黑窗（每轮 git 快照连闪 add / write-tree / archive 三个），
+// 统一在这里隐藏窗口；非 Windows 是空实现，不影响交叉编译。
+func execCommand(name string, args ...string) *exec.Cmd {
+	cmd := exec.Command(name, args...)
+	executil.HideCommandWindow(cmd)
+	return cmd
+}
 
 func lookGit() (string, error) {
 	path, err := exec.LookPath("git")

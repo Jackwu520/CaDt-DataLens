@@ -43,6 +43,7 @@ func rgGlobalArgs(spec *searchSpec, artifactOnly bool) []string {
 		"--glob", "!node_modules", "--glob", "!__pycache__",
 		"--glob", "!.pytest_cache", "--glob", "!.mypy_cache",
 		"--glob", "!.gradle", "--glob", "!.cache",
+		"--glob", "!.venv", "--glob", "!venv", "--glob", "!site-packages",
 		// AI 隔离 worktree：目录与子树双保险（尽力剪枝；Windows 上路径型 glob 不可靠，
 		// runRgPass 里另有 skipRgHit 按 SkipPath 二次过滤保底）。口径与 search.go 的
 		// SkipPath 一致（含 .cadt/tmp 不受影响）。

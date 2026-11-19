@@ -8,6 +8,8 @@ import (
 	"fmt"
 
 	"datalens/internal/patch"
+	"datalens/internal/plugins"
+	"datalens/internal/watch"
 	"datalens/internal/wipeguard"
 )
 
@@ -20,6 +22,14 @@ func init() {
 	// 可跨会话恢复的备份；patch 引擎不 import main，走包级钩子（对齐 patch.AppDataDir 惯例）。
 	patch.OnWriteBackup = func(root, rel, abs string, content []byte) {
 		_ = wipeGuardService.Store(root, rel, abs, content)
+	}
+	// 插件安装 / 更新 / 卸载的整目录增删期间关掉 watcher 的破坏计数：这是应用自己
+	// 发起的合法批量替换（删旧目录 → 复制新目录），不该被当成大范围文件消失。
+	// 启发式（净消失抵消 + .git 排除）能挡住常见形态，但版本结构大改（文件数骤减）
+	// 仍会漏网，所以由发起方显式声明。
+	plugins.OnBulkMutate = func() func() {
+		watch.BeginQuiet()
+		return watch.EndQuiet
 	}
 }
 

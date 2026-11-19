@@ -605,6 +605,31 @@ const mockBackend = {
         mockAIConfigText = String(data || '');
         return null;
     },
+    // 官方白名单引擎 mock：回两条示意余额（dev 调试只看渲染链路）
+    async AIUsageQuery() {
+        return {
+            supported: true,
+            provider: 'Mock',
+            items: [
+                {label: '总额余额（USD）', value: '18.00'},
+                {label: '账户可用', value: '是'},
+            ],
+        };
+    },
+    // 脚本额度查询哑通道 mock：回 200 + 通用 balance 形态（通用模板 extractor 可直接解析）
+    async AIUsageHTTPRequest(specJSON) {
+        let url = '';
+        try {
+            url = String((JSON.parse(String(specJSON || '{}')) || {}).url || '');
+        } catch (_) { /* 规格坏就当空 URL，走下方错误回包 */ }
+        return {
+            status: url.startsWith('http') ? 200 : 400,
+            contentType: 'application/json',
+            body: JSON.stringify({is_active: true, balance: 42.5, planName: 'mock plan'}),
+            bytes: 64,
+            truncated: false,
+        };
+    },
     async AISessionStoreRoot() {
         return 'mock://appdata/CandySweet/CaDt-DataLens/ai-sessions';
     },

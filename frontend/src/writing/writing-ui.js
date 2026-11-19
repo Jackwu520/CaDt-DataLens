@@ -8,6 +8,7 @@ import {WRITING_FONTS, formatWritingText, genName, SCENE_SEPARATOR} from '../cor
 import {isDocReadOnly} from '../core/readonly.js';
 import {RECIPES, SELF_TEST} from '../terminal/run.js';
 import {initPluginRuntime, loadPlugins} from '../shell/plugins.js';
+import {isPluginViewMode, pluginViewLabel, pluginViewOptions, pluginViewUnavailable} from '../shell/plugin-viewers.js';
 import {iconSvg} from '../core/icons.js';
 import {aceModeFor, formats} from '../core/formats.js';
 import {createMarkdownRenderer, decodeMermaidSource, encodeMermaidSource} from '../core/markdown.js';
@@ -79,7 +80,14 @@ const CSV_ROW_NUM_WIDTH = 44;
 const CSV_COL_MIN_WIDTH = 56;
 
 function viewOptionsFor(fmt, doc) {
+    // 虚拟文档（浏览器 / 终端 / 便签 …）没有文件视图：连插件视图也不给
     if (doc && (doc.browser || doc.bgTerm || doc.agentView || doc.agentTeam || doc.sideChat || doc.groupMember || doc.memo)) return [];
+    const base = baseViewOptionsFor(fmt, doc);
+    const extra = pluginViewOptions(fmt, doc);
+    return extra.length ? base.concat(extra) : base;
+}
+
+function baseViewOptionsFor(fmt, doc) {
     if (fmt && fmt.image) return IMAGE_VIEWS;
     if (fmt && fmt.video) return VIDEO_VIEWS;
     if (fmt && fmt.audio) return AUDIO_VIEWS;
@@ -109,6 +117,7 @@ function normalizeLegacySqlMode(doc) {
 
 function viewDisabled(mode) {
     if (!deps.file) return true;
+    if (isPluginViewMode(mode)) return !!pluginViewUnavailable(deps.file, mode);
     if (mode === 'image') return !deps.file.image;
     if (mode === 'video') return !deps.file.video;
     if (mode === 'audio') return !deps.file.audio;
@@ -126,6 +135,7 @@ function viewDisabled(mode) {
 }
 
 function viewDisabledTitle(mode) {
+    if (isPluginViewMode(mode)) return pluginViewUnavailable(deps.file, mode) || '';
     if (mode === 'preview' && deps.file && deps.file.large) return '大文件不支持预览';
     if (mode === 'sql') return 'SQL 查询仅支持 CSV / TSV / JSONL';
     return '当前文件只支持代码视图';
@@ -149,6 +159,7 @@ function formatDisplayName(doc) {
 }
 
 function viewLabel(mode) {
+    if (isPluginViewMode(mode)) return pluginViewLabel(mode);
     if (mode === 'browser') return '网页视图';
     if (mode === 'agentview') return '实时视图';
     if (mode === 'sidechat') return '支线对话';

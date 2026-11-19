@@ -3,6 +3,26 @@
 // 硬约束（§5.4）：registry 只被整代快照替换，绝不增量合并——「要么全有要么全无」。
 import {aiEstimateTokens} from './ai-constants.js';
 
+// mcpNotesBlock：把各 server 的「使用约定」拼成系统提示词块。
+// 只列有内容的 server；整块为空时返回空串（不占上下文）。约定是用户写的说明性文字，
+// 按数据注入并转成单行，避免用户内容里的换行/标签破坏块结构。
+export function mcpNotesBlock(servers) {
+    const rows = [];
+    for (const server of Array.isArray(servers) ? servers : []) {
+        const name = String((server && server.name) || '').trim();
+        const notes = String((server && server.notes) || '').trim();
+        if (!name || !notes) continue;
+        rows.push('- ' + name + '：' + notes.replace(/\s*\r?\n\s*/g, ' '));
+    }
+    if (!rows.length) return '';
+    return [
+        '<mcp_server_notes>',
+        '以下是用户为特定 MCP server 写的使用约定，调用这些 server 的工具时优先遵循：',
+        ...rows,
+        '</mcp_server_notes>',
+    ].join('\n');
+}
+
 export function createAIMcp(ctx) {
     const backend = (ctx && ctx.backend) || {};
 
@@ -26,6 +46,8 @@ export function createAIMcp(ctx) {
             attempt: Math.max(0, Math.round(Number(server.attempt) || 0)),
             maxAttempt: Math.max(0, Math.round(Number(server.maxAttempt) || 0)),
             nextRetryAt: Math.max(0, Math.round(Number(server.nextRetryAt) || 0)),
+            // 用户给这个 server 写的使用约定（进系统提示词，见 mcpNotesBlock）
+            notes: String(server.notes || ''),
         }));
     }
 

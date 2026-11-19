@@ -125,7 +125,7 @@ export function createMemoTerm(deps) {
       const running = !!entry && entry.state === 'running';
       btn.textContent = running ? '⏹' : '▶';
       btn.classList.toggle('running', running);
-      btn.setAttribute('data-tip', running ? '停止运行' : '运行命令');
+      btn.setAttribute('data-tip', running ? '停止运行' : (btn.dataset.cwdTip || '运行命令'));
     }
     if (entry) {
       const box = ensureResultBlock(row);

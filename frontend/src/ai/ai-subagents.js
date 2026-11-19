@@ -499,8 +499,11 @@ export function createAISubagents(ctx) {
         return resolveSubAgentRounds(undefined, getConfig().subAgentRounds);
     }
 
+    // 层级上限含主代理：3 = 主代理 + 2 层子代理（子代理能派孙代理，孙代理不能再派）。
+    // 0 仍在钳制范围内表示「不设限」，保留给显式选择放宽的用户；缺字段时回落 3
+    // （与 ai-panel 的 config 默认一致）。层数比「子代理嵌套层数」大 1，因为主代理占第 1 层。
     function subAgentMaxDepth() {
-        return aiClampInt(getConfig().subAgentMaxDepth, 0, AI_SUB_DEPTH_MAX, 0);
+        return aiClampInt(getConfig().subAgentMaxDepth, 0, AI_SUB_DEPTH_MAX, 3);
     }
 
     // depth 是当前代理自己的 depth；它派出的子代理层号是 depth + 2。
@@ -1334,6 +1337,21 @@ export function createAISubagents(ctx) {
         // 终态记录：done 可续（冷唤醒），error/stopped 不可续但仍可查（「停止并收集记录」）。
         // 转录一律保留至本运行期——原语 2 要拿它做「收集对话记录」；内存由 records LRU 兜底。
         pushSubAgentRecord(sub, state, summary);
+        // 转录落盘：内存里的转录只活到本进程退出，`agent_stop` 承诺的「收集过程记录」
+        // 因此重启即失效。这里顺手留一份到 ai-artifacts/<父会话>/sub-<agentId>.txt
+        // （随父会话删除、可被一键清缓存回收）。纯留档，失败不影响结算，所以不 await。
+        try {
+            const list = subAgentTranscripts.get(sub.key) || [];
+            if (list.length && backend.AIArtifactWrite) {
+                const text = list.map((entry) => JSON.stringify({
+                    role: entry.role || '',
+                    name: entry.name || '',
+                    text: entry.text || '',
+                })).join('\n');
+                Promise.resolve(backend.AIArtifactWrite(
+                    sub.parentSessionId, 'sub-' + sub.id, text)).catch(() => {});
+            }
+        } catch (e) {}
         try {
             if (sub.resolve) sub.resolve({ok: state === 'done', text: summary, state});
         } catch (e) {}

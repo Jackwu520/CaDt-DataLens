@@ -4,10 +4,32 @@ package mcp
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 )
+
+// 使用约定：上限按字符计（CJK 一个字算一个），超限在写盘校验里拒绝。
+func TestValidateServerNotesLimit(t *testing.T) {
+	cfg := MCPServerConfig{Command: "npx", Notes: strings.Repeat("字", mcpNotesMaxChars)}
+	if err := ValidateServer("s", cfg); err != nil {
+		t.Fatalf("恰好到上限应通过：%v", err)
+	}
+	cfg.Notes += "多"
+	if err := ValidateServer("s", cfg); err == nil {
+		t.Fatal("超过上限应报错")
+	}
+}
+
+// Notes 只进提示词、不影响进程：修改备注不能被判定成「配置变了」而重启 server。
+func TestStripRuntimeFieldsIgnoresNotes(t *testing.T) {
+	a := MCPServerConfig{Command: "npx", Notes: "旧约定"}
+	b := MCPServerConfig{Command: "npx", Notes: "新约定"}
+	if !reflect.DeepEqual(stripRuntimeFields(a), stripRuntimeFields(b)) {
+		t.Fatal("Notes 差异不应进入运行态比较（否则改备注会重启 server）")
+	}
+}
 
 func TestMCPReadConfigMissing(t *testing.T) {
 	cfg, err := readMCPConfigAt(filepath.Join(t.TempDir(), "mcp.json"))

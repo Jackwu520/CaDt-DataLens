@@ -1,0 +1,10 @@
+{
+  "id": "geojson-viewer",
+  "name": "GeoJSON 地图预览",
+  "version": "0.1.0",
+  "author": "CaDt-DataLens",
+  "description": "示例插件：cadt.registerViewer 把 .geojson 渲染成可缩放的地图视图；cadt.registerImporter 把内置解析不了的 .bin 转成十六进制取样文本。零第三方依赖。",
+  "license": "MIT",
+  "entry": "main.js",
+  "keywords": ["geojson", "地图", "自定义视图", "导入器", "示例"]
+}

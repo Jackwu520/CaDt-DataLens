@@ -42,6 +42,8 @@ export function createAISettingsIO(ctx, extras) {
             profiles: getConfig().profiles.map((profile) => ({
                 ...profile,
                 apiKey: includeKeys ? profile.apiKey : '',
+                // 额度查询的覆盖密钥与账号 apiKey 同一脱敏语义（随 includeKeys 开关）
+                usage: profile.usage ? {...profile.usage, apiKey: includeKeys ? profile.usage.apiKey : ''} : profile.usage,
             })),
             // 生成条目（生图/视频）：密钥与账号 apiKey 同一脱敏语义
             genModels: (getConfig().genModels || []).map((entry) => ({
@@ -131,8 +133,13 @@ export function createAISettingsIO(ctx, extras) {
                 const existing = getConfig().profiles.find((item) => item.id === profile.id);
                 if (existing) {
                     const keepKey = existing.apiKey;
+                    // 额度覆盖密钥与主 key 同语义：导入空值时保留本机旧值（脱敏导出的配置能无损回灌）
+                    const keepUsageKey = existing.usage && existing.usage.apiKey;
                     Object.assign(existing, profile);
                     if (!profile.apiKey) existing.apiKey = keepKey;
+                    if (keepUsageKey && (!existing.usage || !existing.usage.apiKey)) {
+                        existing.usage = {...existing.usage, apiKey: keepUsageKey};
+                    }
                 } else {
                     getConfig().profiles.push(profile);
                 }

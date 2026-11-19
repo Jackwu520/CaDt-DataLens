@@ -78,8 +78,11 @@ export function applyCompactToSession(session, summary, cutoff) {
 }
 
 // 压缩转录：喂给摘要模型的对话记录（工具结果也带上，否则摘要会丢掉关键事实）。
-export function compactTranscriptOf(session) {
+// maxChars 是转录上限：默认 TRANSCRIPT_MAX；上下文已超模型窗口时由调用方按窗口比例
+// 传一个更小的值——**摘要请求本身也必须能发出去**，否则压缩这条路就死在自己身上了。
+export function compactTranscriptOf(session, maxChars) {
     const source = session || {};
+    const cap = Math.max(2000, Number(maxChars) || TRANSCRIPT_MAX);
     const parts = [];
     if (source.summary && aiTextOf(source.summary.text).trim()) {
         parts.push('此前摘要：\n' + aiTextOf(source.summary.text).trim());
@@ -99,18 +102,18 @@ export function compactTranscriptOf(session) {
             (imageCount ? '\n（附图 ' + imageCount + ' 张）' : ''));
     }
     let transcript = parts.join('\n\n');
-    if (transcript.length > TRANSCRIPT_MAX) transcript = '…（较早内容已截断）\n\n' + transcript.slice(-TRANSCRIPT_MAX);
+    if (transcript.length > cap) transcript = '…（较早内容已截断）\n\n' + transcript.slice(-cap);
     return transcript;
 }
 
 // 压缩请求的消息体（system = 摘要器约束；user = 转录 + 可选焦点指令）。
-export function buildCompactMessages(session, systemPrompt, instruction) {
+export function buildCompactMessages(session, systemPrompt, instruction, maxTranscriptChars) {
     const focus = aiTextOf(instruction).slice(0, 500);
     return [
         {role: 'system', content: systemPrompt},
         {
             role: 'user',
-            content: '请压缩以下对话记录：\n\n' + compactTranscriptOf(session) +
+            content: '请压缩以下对话记录：\n\n' + compactTranscriptOf(session, maxTranscriptChars) +
                 (focus ? '\n\n用户压缩指令（摘要须优先落实）：' + focus : ''),
         },
     ];

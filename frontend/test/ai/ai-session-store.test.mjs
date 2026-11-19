@@ -115,6 +115,45 @@ test('truncate keeps prefix', () => {
     assert.deepEqual(result.messages.map((m) => m.content), ['a', 'b', 'd']);
 });
 
+test('replay folds old same-dedupeKey injections, keeps only the newest', () => {
+    // 节流失效期（2026-11-19 修复前）落盘了大量重复的 <task_todos_check>：读盘统一折叠，
+    // 只留最新一条（口径与 buildApiMessages 发送侧一致），droppedTransient 供加载方置重写。
+    const injection = (text) => ({
+        role: 'user', content: '<system-reminder>\n<task_todos_check>' + text + '</task_todos_check>\n</system-reminder>',
+        systemNote: true, silent: true, dedupeKey: 'task_todos_check', ts: 0,
+    });
+    const text = logOf(
+        encodeSessionHeader({id: 's1'}),
+        encodeMessageEvent({role: 'user', content: 'a', ts: 1}, 'm-1', false),
+        encodeMessageEvent(injection('共 9 项，6 项已完成'), 'm-2', false),
+        encodeMessageEvent({role: 'assistant', content: 'b', ts: 2}, 'm-3', false),
+        encodeMessageEvent(injection('共 9 项，6 项已完成'), 'm-4', false),
+        encodeMessageEvent(injection('共 9 项，7 项已完成'), 'm-5', false),
+    );
+    const result = replaySessionLog(text);
+    assert.deepEqual(result.messages.map((m) => m._mid), ['m-1', 'm-3', 'm-5'], '同 key 只留最后一条');
+    assert.equal(result.droppedTransient, 2);
+    // 无 dedupeKey 的消息（包括同样内容但没 key 的）不受影响
+    const plain = replaySessionLog(logOf(
+        encodeSessionHeader({id: 's1'}),
+        encodeMessageEvent({role: 'user', content: '正文', ts: 1}, 'm-1', false),
+        encodeMessageEvent({role: 'user', content: '<task_todos_check>手写的同名标签不算注入</task_todos_check>', ts: 2}, 'm-2', false),
+    ));
+    assert.equal(plain.messages.length, 2);
+    assert.equal(plain.droppedTransient, 0);
+    // 不同 key 各自折叠、互不误伤；archived 里的旧注入不动
+    const mixed = logOf(
+        encodeSessionHeader({id: 's1'}),
+        encodeMessageEvent({role: 'user', dedupeKey: 'k1', content: 'k1-旧', ts: 1}, 'm-1', true),
+        encodeMessageEvent({role: 'user', dedupeKey: 'k2', content: 'k2-旧', ts: 2}, 'm-2', false),
+        encodeMessageEvent({role: 'user', dedupeKey: 'k2', content: 'k2-新', ts: 3}, 'm-3', false),
+    );
+    const mixedResult = replaySessionLog(mixed);
+    assert.deepEqual(mixedResult.archived.map((m) => m.content), ['k1-旧']);
+    assert.deepEqual(mixedResult.messages.map((m) => m.content), ['k2-新']);
+    assert.equal(mixedResult.droppedTransient, 1);
+});
+
 test('archive moves prefix and sets summary', () => {
     const text = logOf(
         encodeSessionHeader({id: 's1'}),
@@ -395,6 +434,45 @@ test('disk store: normalized-out messages trigger a rewrite before appending', a
     const again = await store.loadAll(normalize);
     assert.deepEqual(again[0].messages.map((m) => m.content), ['a', 'b']);
     assert.ok(!backend._logs.get('s1').includes('"content":""'), '被归一化丢掉的消息应从日志里清掉');
+});
+
+test('disk store: folded duplicate injections trigger a rewrite that cleans the log', async () => {
+    // 2026-11-19 session-mwm2sdc1n4cs5 实测：节流失效让同一句 <task_todos_check> 落盘
+    // 339 条。读盘折叠只清理内存，磁盘冗余要靠 droppedTransient → _needsRewrite 的
+    // 整份重写才能清掉（该老会话被打开并再次持久化时生效）。
+    const backend = fakeBackend();
+    const store = createSessionDiskStore({backend});
+    const injection = (text) => ({
+        role: 'user', content: '<system-reminder>\n<task_todos_check>' + text + '</task_todos_check>\n</system-reminder>',
+        systemNote: true, silent: true, dedupeKey: 'task_todos_check', ts: 0,
+    });
+    const session = newSession({messages: [
+        {role: 'user', content: 'a', ts: 1},
+        injection('共 9 项，6 项已完成'),
+        injection('共 9 项，6 项已完成'),
+        injection('共 9 项，7 项已完成'),
+        {role: 'assistant', content: 'b', status: 'done', ts: 2},
+    ]});
+    await store.persistSession(session);
+    await store.flush();
+    assert.equal((backend._logs.get('s1').match(/task_todos_check/g) || []).length >= 3, true, '三条注入都已落盘');
+
+    const loaded = await store.loadAll(null);
+    assert.equal(loaded[0].messages.length, 3, '读盘折叠成 a + 最新一条注入 + b');
+    assert.ok(loaded[0].messages[1].content.includes('共 9 项，7 项已完成'), '只保留最新一条注入');
+    assert.equal(loaded[0]._needsRewrite, true, '折叠过注入必须标记整份重写');
+
+    // 下一次持久化触发整份重写，磁盘冗余清掉
+    await store.persistSession(loaded[0]);
+    await store.flush();
+    const log = backend._logs.get('s1');
+    // 每条注入在日志里出现 3 次（开/闭标签 + dedupeKey 字段），按 key 字段计数
+    assert.equal((log.match(/"dedupeKey":"task_todos_check"/g) || []).length, 1, '重写后磁盘只保留最新一条注入');
+    assert.equal(loaded[0]._needsRewrite, false, '重写后标志清除，不反复整份重写');
+    const again = await store.loadAll(null);
+    assert.equal(again[0].messages.length, 3);
+    assert.ok(again[0].messages[1].content.includes('共 9 项，7 项已完成'));
+    assert.equal(again[0]._needsRewrite, false, '日志干净后加载不再触发重写');
 });
 
 test('disk store: tool message updated in place is re-written to disk', async () => {

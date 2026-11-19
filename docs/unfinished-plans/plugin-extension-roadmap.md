@@ -1,8 +1,8 @@
 # 插件扩展点路线图（按收益排序的 5 个可开放入口）
 
-> 状态：**未开工**（2026-11-19 立项）。背景：完成「插件后台服务托管 + 专属设置页」（`docs/finished-plans/plugin-background-services.md`）后，梳理插件系统还能开放哪些入口。排序依据是收益 ÷（成本 × 风险），并结合本应用「AI 优先的数据查看器」定位。
+> 状态：**M1 / M3 / M4 / M5 已实施**（2026-11-19）。背景：完成「插件后台服务托管 + 专属设置页」（`docs/finished-plans/plugin-background-services.md`）后，梳理插件系统还能开放哪些入口。排序依据是收益 ÷（成本 × 风险），并结合本应用「AI 优先的数据查看器」定位。
 >
-> 顺序建议：**M1 命令矩阵先落地 → M2 AI 工具安全模型单独定稿 → M3 工具注册 → M4 自定义视图 → M5 上下文注入 + 导入器**。
+> 本级里程碑进度：M1 ✅ 命令入口矩阵 · M2 ✅ 安全模型定稿（`plugin-tool-security.md`）· M3 ✅ 插件 AI 工具 · M4 ✅ 自定义视图 · M5 ✅ AI 上下文注入 + 导入器。剩余为第 4 节「暂缓项」，需要有实际需求再单独立项。
 
 ## 1. 现状盘点与排序原则
 
@@ -68,7 +68,7 @@ cadt.registerTool({
 
 **验证**：`plugin-tools.test.mjs`（注册 / 校验 / 清空 / 上限）、`ai-tool-wiring.test.mjs` 扩展；手工验证「未授权不可见 → 授权后可见 → 调用弹审批 → 拒绝不执行」。
 
-### 2.2 `cadt.registerViewer(spec)` —— 自定义视图 / 预览器
+### 2.2 `cadt.registerViewer(spec)` —— 自定义视图 / 预览器 ✅ 已实施（2026-11-19）
 
 **缺口**：`registerFormat` 只能把数据喂给内置四种视图。地图（GeoJSON）、3D、PDF、图表、音视频自定义控件都做不了，插件只能靠猜 DOM 硬改，宿主一改就崩。
 
@@ -140,7 +140,7 @@ cadt.registerAIContext({
 
 **与 2.1 的关系**：`registerTool` 的工具 + `registerAIContext` 的说明书是天然一对，建议同期实施。
 
-### 3.3 `cadt.registerImporter(spec)` —— 文档导入转换器
+### 3.3 `cadt.registerImporter(spec)` —— 文档导入转换器 ✅ 已实施（2026-11-19）
 
 **缺口**：`registerDocConverter` 只出不进。PDF→Markdown、docx→md、图片 OCR→文本都做不到。
 
@@ -165,11 +165,11 @@ cadt.registerAIContext({
 
 按「低风险先落地 → 高风险单独设计 → 大件随后」排列：
 
-- **M1（先做，低成本低风险）**：命令入口矩阵升级（3.1）。零安全面、复用全部现成结构、用户立刻有感。
+- **M1（先做，低成本低风险）**：命令入口矩阵升级（3.1）。零安全面、复用全部现成结构、用户立刻有感。✅
 - **M2（先设计后写码）**：AI 工具注册的**安全模型单独定稿**——授权 UI、审批链口径、来源标记、上限、盲区声明。设计稿见 **`docs/unfinished-plans/plugin-tool-security.md`**（核心结论：插件工具复用 MCP 已有安全模型，不发明第二套）。**✅ 2026-11-19 已评审定稿**：①放宽为「插件可声明 readOnly 工具，但须用户显式勾『只读档可用』」②盲区声明放安装确认框 + 授权区 `data-tip` 兜底 ③三层授权 ④AI 可改授权但每次必审批、单次单插件、**总闸不可代开**、给逐项 diff。可进 M3。理由（原始立项）：工具带副作用，仓促落地会变成第二个事故来源。
-- **M3**：`registerTool` 实施（依赖 M2 定稿）。
-- **M4**：`registerViewer` 实施（纯渲染、无副作用，但与编辑器生命周期耦合，需要充分验证泄漏）。
-- **M5**：`registerAIContext` + `registerImporter`（两项都小，可合并一批）。
+- **M3**：`registerTool` 实施（依赖 M2 定稿）。✅
+- **M4**：`registerViewer` 实施（纯渲染、无副作用，但与编辑器生命周期耦合，需要充分验证泄漏）。✅
+- **M5**：`registerAIContext` + `registerImporter`（两项都小，可合并一批）。✅
 
 每个里程碑独立提交、可单独 revert（仓库既有约定：重构类一批一 commit）。
 
@@ -185,3 +185,74 @@ cadt.registerAIContext({
 - **文档**：`docs/plugins/README.md` 每个新 API 一节（含示例与边界），`CHANGELOG.md` 记录用户可见变更。
 
 **阶段验收**：每项完成后跑 `npm test`（当前基线 1438 项）+ 相关 Go 包测试 + `wails build -devtools`；插件类改动额外用随仓库的 `plugins/zcode2api/` 或新建示例插件做端到端手工验收。
+
+## 7. 交接补充（2026-11-19 实施进度与剩余接线点）
+
+### 已完成
+
+- **M1 命令入口矩阵**：`cadt.addCommand` 支持 `icon / description / category / contexts / when / shortcut`，纯逻辑在 `frontend/src/shell/plugin-commands-model.js`（配 10 项测试）。
+- **M3 插件 AI 工具**：`cadt.registerTool` 全链路——注册表 `frontend/src/shell/plugin-tools.js`（9 项测试）、三层授权 UI（`ai-permission-settings.js` 的 `renderPluginToolSettings`，`index.html` 授权卡片）、`plugin__` 路由与 `executePluginTool`（`ai-panel.js`）。安全模型见 `docs/unfinished-plans/plugin-tool-security.md`。
+- **M5a AI 上下文注入**：`cadt.registerAIContext` 完整闭环——`frontend/src/shell/plugin-context.js`（上限 4 KiB / 12 KiB、来源标记、闭合标签转义防注入），已接进 `ai-system-context.js` 的 `assembleSystemContext`（env_vars 之后、工具目录之前）。
+
+### M5b 剩余：把导入器接进打开链
+
+注册表与 API 已就位但**尚未被消费**：
+- `frontend/src/shell/plugin-importers.js` 导出 `registerPluginImporter / clearPluginImporters / getPluginImporters / findImporterFor(ext) / normalizeExt(ext)`；记录为 `{key, pluginId, pluginName, id, label, extensions, convert}`。
+- `frontend/src/shell/plugins.js` 的 `apiFor` 已有 `registerImporter(spec)`，`loadPlugins` 已调 `clearPluginImporters()`。
+
+接入点：`frontend/src/main.js` 的 `openPathsHere`，现有结构（行号随并发改动会偏移，以搜索定位）：
+
+```js
+const base = String(path).split(/[\\/]/).pop();
+const preview = detectFormat(base, '');
+const enc = getFormatSettings(preview.id).encoding;
+const data = await backend.OpenFile(path, enc);
+// → createDoc(readOnly ? {...data, readOnly: true} : data) → docs.push → addDocToFocusedGroup → activateDoc
+```
+
+要加的分支：`data.format && data.format.id === 'bytes'`（内置解析不了）且 `findImporterFor(扩展名)` 命中时，用确认框询问是否用该插件导入；同意则 `importer.convert(ctx)` 取文本，`openVirtualDoc(name, text)` 以只读虚拟文档打开，并 flash 导入器名与来源（来源标记与 D5 口径一致）。
+
+注意事项：
+- `ctx` 建议 `{source: 'open', ext, path, readTextFile, readBinaryFile, flash}`，读接口复用 `backend` 既有绑定，**不要新增 Go 绑定**。
+- 用户拒绝或 `convert` 抛错时**退回原有二进制视图打开**，不能因导入失败就打不开文件。
+- 确认框用 `main.js` 里已解构的 `openConfirmDialog`；**先确认它的确切签名**（是否有 cancel 回调）再写，不要假设。
+- 转换可能耗时：期间 flash 提示，不阻塞其他标签。
+
+### M4 调研结论（`registerViewer` 的落点）
+
+- **视图分发入口**：`frontend/src/editor/editor-groups.js` 的 `createDocEditor(doc)`（约 1206 行）。现有虚拟视图的通用模式是「先按 `doc.<标记>` 分支、用 `doc.pane` 判重防叠加」：
+
+```js
+if (doc.browser) { if (doc.pane) return; createBrowserView(doc); return; }
+if (doc.agentView) { if (doc.pane) return; deps.createAgentView(doc); return; }
+// …agentTeam / sideChat / groupMember / bgTerm / memo 同构
+```
+
+  插件视图应照此新增一支：`if (doc.pluginViewer) { if (doc.pane) return; deps.createPluginViewerView(doc); return; }`，且必须在 `closeDocNow` 里补卸载（调 `destroy()`），否则泄漏。
+- **视图下拉清单**：`frontend/src/writing/writing-ui.js` 的 `viewOptionsFor(fmt, doc)`（约 81–93 行）按格式返回选项数组（`IMAGE_VIEWS` / `CSV_VIEWS` / `VIEWS` 等），虚拟文档直接 `return []`。插件视图必须出现在这里，否则一切换就坏。
+- **格式侧归属**：`frontend/src/core/formats.js` 的 `registerPluginFormat` 是格式 driver 的入口；插件视图的 `formats: [...]` 要能映射到格式 id（或在注册表里独立维护 ext→viewer 映射）。
+- **四件套**（AGENTS.md「内容区虚拟文档」）：创建点、`createDocEditor` 分支、`viewOptionsFor` 清单、`closeDocNow` 卸载——漏一处不报错但会坏/泄漏。
+
+### M4 / M5b 实施记录（2026-11-19 完成）
+
+**M5b 导入器接进打开链**（`frontend/src/main.js` 的 `openPathsHere`）：
+
+- 分支落点：`backend.OpenFile` 之后、`createDoc` 之前调 `openWithPluginImporter(base, path, data)`。判据不是 `data.format.id === 'bytes'`（`OpenFile` 的返回值里没有 `format`，格式是前端 `createDoc` 才推导的），而是 `data.binary && !data.image && !data.video && !data.audio`——等价于「最终会落到 bytes 格式」。
+- 确认框：`openConfirmDialog(message, action, okLabel, title, variant)` **只有确认回调、没有取消回调**。为此新增 `askConfirmAsync`：确认走 action，取消（取消按钮 / 遮罩 / Esc / 关闭）统一表现为 confirm 对话框被重新加回 `hidden`，用 MutationObserver 兜底判 false。点击确认时 `closeTopDialog()` 先执行、随后**同步**调用 action，而 observer 回调是微任务，所以不会把「确认」误判成「取消」。
+- `convert` 的 ctx：`{source: 'open', ext, path, name, size, readTextFile, readBinaryFile, flash}`；返回值支持 `string` 或 `{text, name}`（name 用于建议转换后的文件名，例如 `report.md` 才会走 Markdown 渲染）。
+- 读接口不新增 Go 绑定：`readTextFile` 走 `OpenFile`；`readBinaryFile` 先走 `ReadImageAsDataURL`（图片 ≤32 MB，data URL 自带 base64），其余类型退回 `OpenFile` 的十六进制视图并在 `shell/plugin-importers.js` 里还原成 base64——Go 侧 hex 上限 1 MB，超过直接抛错（静默返回半截字节更难排查）。
+- 失败一律回退：用户拒绝 / 没有导入器 / `convert` 抛错 / 返回空文本 → 返回 `null`，照常走 `createDoc` 的二进制视图。导入成功记一条 `file.import` 操作留痕（带 pluginId / importerId）。
+
+**M4 自定义视图**（`cadt.registerViewer`）：
+
+- 注册表 `frontend/src/shell/plugin-viewers.js`（纯逻辑 + 11 例单测）：归一化 / 上限（单插件 10、全局 30）/ 模式串 `plugin:<id>` / 归属匹配（格式 id、格式自带扩展名、文件名扩展名三者取并集——`.geojson` 会落到内置 text 格式，只比格式 id 永远匹配不上）/ 可用性判定单一来源 `pluginViewUnavailable(doc, mode)`。
+- 运行时 `frontend/src/editor/editor-plugin-view.js`：与图片 / 视频 / 音频视图同构的**覆盖层**（`.jsoneditor-pane.plugin-view-active` 时隐藏 JSONEditor，`.plugin-view-host` 铺满）。切走 `destroy()` 并清空容器，切回重新 mount；`ResizeObserver` → rAF 合并的 `resize()`；`html[data-theme]` 的 MutationObserver → `setTheme()`（不重挂）；`markDocDirty` 把新文本推给 `ctx.onChange`。
+- 写回：`ctx.requestSave(text)` → 强制底层编辑器到 code/text 文本通道 → `setText` → 恢复 `doc.mode` 为插件模式 → `markDocDirty`（与 `bases['plugin:<id>']` 比对）。只读时直接拒绝。视图没有任何直接改 `doc.content` / `doc.dirty` 的口子。
+- 接线五处：`createDocEditor`（未注册则回落默认视图 + 建完按插件模式挂载）、`closeDocNow`（`disposePluginView`）、`shell/mode-switch.js`（进入走 `enterPluginView`、离开先 `hidePluginView`）、`writing-ui.js` 的 `viewOptionsFor`（虚拟文档仍返回 `[]`）与 `viewDisabled` / `viewDisabledTitle` / `viewLabel`、`buildGroupTools` 的通用图标兜底。
+- 示例插件 `docs/plugins/examples/geojson-viewer/`：canvas 地图视图 + `.bin` 十六进制取样导入器，零第三方依赖。
+
+
+- 隔离区用 `worktree_manage(action=create, carry=true)`；**隔离区没有** `frontend/node_modules` 与 `wailsjs`，测试前先 `cd frontend && npm install`，再 `npx vite build`，再 `wails generate module`，否则会出现假失败（如「工具定义 / wailsjs / mock 三处接线齐全」）。
+- 主根经常被其他会话并发修改，`worktree_manage(action=export)` 报 `PATCH_HUNK_CONFLICT` 是常态。处理顺序：① 重新 export 一次；② 仍冲突就 `discard` 隔离区，改在主根用 `edit_file` / `propose_patch` 逐处补（已回灌文件不必重做）；③ **不要**用 `cp` 主根文件到隔离区重做 diff——会把别人的改动混进补丁。
+- 当前测试基线：**1613 项**（`cd frontend && npm test`）。
+

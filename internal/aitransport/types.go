@@ -131,6 +131,10 @@ type Config struct {
 	// 「关思考」参数（thinking / enable_thinking 各家方言不一）时，去掉该字段再试一次——
 	// 思考回到服务端默认值，比整个请求 400 可用。不进 JSON。
 	noThinkingParam bool
+	// noPromptCache 只在本次请求内由重试逻辑置位：个别 Anthropic 兼容网关不认识
+	// cache_control（标准字段，但实现未必跟上），400 时去掉全部缓存断点再试一次。
+	// 不缓存只是贵一点，不该让对话跑不通。不进 JSON。
+	noPromptCache bool
 }
 
 // Message 是前端与 Go 之间的会话消息（规范化中间格式）。

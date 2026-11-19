@@ -3,6 +3,7 @@
 // 依赖一律经 deps 延迟求值（调用方传 getter），不在创建期解构：
 // 这样既不依赖 main.js 的声明顺序，也不会把 let 状态拍成快照。
 import {showPatchView, hidePatchView} from '../editor/patch-view.js';
+import {isPluginViewMode} from './plugin-viewers.js';
 
 export function createModeSwitch(deps) {
 
@@ -35,6 +36,12 @@ function applySwitchMode(mode) {
     if (doc && doc.sqlActive) deps.closeSqlView(doc);
     // patch 是覆盖层：即使 currentMode 仍是 patch，也要允许重新显示（状态错位时可自愈）
     if (deps.currentMode === mode && mode !== 'patch') return;
+    // 插件自定义视图（plugin:<id>）也是覆盖层：进入时挂载，离开时先销毁再走常规切换
+    if (isPluginViewMode(mode)) {
+        if (doc) deps.enterPluginView(doc, mode);
+        return;
+    }
+    if (doc && isPluginViewMode(deps.currentMode)) deps.hidePluginView(doc);
     if (mode === 'image') {
         if (doc && doc.image) deps.enterImageView(doc);
         return;
@@ -54,7 +61,7 @@ function applySwitchMode(mode) {
         if (doc && doc.binary) deps.enterBinaryView(doc);
         return;
     }
-    if (mode === 'text' && (deps.currentMode === 'image' || deps.currentMode === 'binary' || deps.currentMode === 'video' || deps.currentMode === 'audio') && doc) {
+    if (mode === 'text' && (deps.currentMode === 'image' || deps.currentMode === 'binary' || deps.currentMode === 'video' || deps.currentMode === 'audio' || isPluginViewMode(deps.currentMode)) && doc) {
         deps.enterTextView(doc);
         return;
     }

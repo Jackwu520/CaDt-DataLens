@@ -278,14 +278,51 @@ test('无正文的工具卡不摆折叠箭头与空 body', () => {
     assert.ok(fn.length > 100, 'renderToolMessage 源码切片失效');
     assert.match(fn, /statusOnlyBody = !inlineText\.trim\(\)/,
         '通用分支必须记下「正文只有状态占位」');
-    assert.match(fn, /if \(isRead \|\| isBuiltinSkill \|\| statusOnlyBody\) card\.appendChild\(head\);/,
-        '无正文时不要 append body（否则展开只有「执行中…」）');
+    assert.match(fn, /if \(\(isRead && !isReadLines\) \|\| isBuiltinSkill \|\| statusOnlyBody\) card\.appendChild\(head\);/,
+        '无正文时不要 append body（否则展开只有「执行中…」）；按行读取卡有正文，字符模式读取卡与内置技能卡无正文');
     assert.match(fn, /if \(statusOnlyBody\) chev\.remove\(\)/, '无正文时不显示折叠箭头');
     assert.match(fn, /if \(statusOnlyBody\) return; \/\/ 无正文可展开/,
         '无正文时点卡头不做折叠 toggle');
 });
 
-// 卡头参数摘要：等待 / 协作 / 会话类工具落 default 会把参数 JSON 原样摆出来
+// 按行读取（startLine/endLine）的读取卡支持展开折叠：正文显示带行号的内容片段，
+// 卡头带行范围徽标。字符模式读取卡仍不做展开。
+test('按行读取卡支持展开折叠，字符模式读取卡不展开', () => {
+    const src = readFileSync(new URL('../../src/ai/ai-tool-cards.js', import.meta.url), 'utf8');
+    const fn = src.slice(src.indexOf('function renderToolMessage'), src.indexOf('function enhanceAnswerBody'));
+    assert.ok(fn.length > 100, 'renderToolMessage 源码切片失效');
+    // 按行读取判定：解析 startLine
+    assert.match(fn, /const isReadLines = !!readLineRange;/, '必须有按行读取判定 isReadLines');
+    // 箭头：字符模式读取卡移除，按行读取卡保留
+    assert.match(fn, /if \(\(isRead && !isReadLines\) \|\| isBuiltinSkill\) chev\.remove\(\)/,
+        '字符模式读取卡不摆箭头，按行读取卡保留箭头');
+    // 正文：按行读取卡渲染内容片段（去掉 head 元信息），走与 diff 同款背景框结构
+    assert.match(fn, /if \(isReadLines\) \{[\s\S]*?renderReadLinesInto\(body, bodyText\);/,
+        '按行读取卡必须把内容片段渲染进背景框');
+    // 卡头行范围徽标
+    assert.match(fn, /if \(info\.range\) \{[\s\S]*?range\.textContent = '行 ' \+ info\.range;/,
+        '卡头必须显示行范围徽标');
+});
+// read_file 展开区与 edit_file diff 视觉语义统一：同款「背景框 + 行号列 + 代码列」结构，
+// 行号独立成列（不是内嵌在文本里），四位数行号不折行。
+test('读取展开区用 diff 同款背景框结构，行号独立成列', () => {
+    const src = readFileSync(new URL('../../src/ai/ai-tool-cards.js', import.meta.url), 'utf8');
+    const fn = src.slice(src.indexOf('function renderReadLinesInto'), src.indexOf('function renderToolMessage'));
+    assert.ok(fn.length > 100, 'renderReadLinesInto 源码切片失效');
+    assert.match(fn, /box\.className = 'ai-read-body'/, '外层必须是背景框 ai-read-body');
+    assert.match(fn, /no\.className = 'ai-read-no'/, '行号独立成列 ai-read-no');
+    assert.match(fn, /code\.className = 'ai-read-text'/, '代码独立成列 ai-read-text');
+    assert.match(fn, /--ai-read-no-w/, '行号列宽随位数走，四位数行号不折行');
+    // CSS：背景框与 diff 同款（border + radius + background: var(--bg)），行号列 nowrap
+    const css = readFileSync(new URL('../../src/style.css', import.meta.url), 'utf8');
+    const box = css.slice(css.indexOf('.ai-read-body {'), css.indexOf('.ai-read-line'));
+    assert.match(box, /border: 1px solid var\(--border\)/, '读取框必须有边框');
+    assert.match(box, /border-radius: 4px/, '读取框必须有圆角');
+    assert.match(box, /background: var\(--bg\)/, '读取框底色须与 diff 一致用 --bg（不是贴近卡片的 --panel2）');
+    const no = css.slice(css.indexOf('.ai-read-no {'), css.indexOf('.ai-read-text'));
+    assert.match(no, /white-space: nowrap/, '行号列禁止折行');
+});
+
 // （截图里就是「等待新输入 {"timeoutSec":300}」），各自给一句人话。
 test('等待 / 协作 / 会话类工具卡头给人话，不摆原始参数 JSON', () => {
     const src = readFileSync(new URL('../../src/ai/ai-tool-cards.js', import.meta.url), 'utf8');

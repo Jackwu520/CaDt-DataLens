@@ -3,7 +3,7 @@
 // 磁盘存储才有「复制会话路径」；普通对话不再出现一排灰掉的无关项。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {buildSessionMenuItems, aggregateSessionBadge} from '../../src/ai/ai-session-list.js';
+import {buildSessionMenuItems, buildWorkspaceMenuItems, aggregateSessionBadge} from '../../src/ai/ai-session-list.js';
 
 const baseEnv = {pendingNoticeCount: () => 0, diskStorage: true};
 const labelsOf = (items) => items.filter((item) => item.label).map((item) => item.label);
@@ -70,6 +70,53 @@ test('结构不变量：删除会话恒在末尾且 danger；分隔线不夹空�
         assert.ok(!(items[i].sep && items[i - 1].sep), '连续两条分隔线');
     }
     assert.equal(items[0].label, '新建会话');
+});
+
+// 工作区分组头「⋯」菜单：有路径给完整工作区操作、无路径只给打开类、关闭仅当前工作区出现。
+const wsEnv = (recent = []) => ({recent, baseName: (p) => String(p || '').split('/').pop()});
+
+test('工作区菜单（有路径，非当前）：资源管理器/复制路径/新窗口/新建会话，无关闭', () => {
+    const items = buildWorkspaceMenuItems({path: 'D:/repos/foo', current: false}, wsEnv());
+    const labels = labelsOf(items);
+    assert.ok(labels.includes('在文件资源管理器中显示'));
+    assert.ok(labels.includes('复制工作区路径'));
+    assert.ok(labels.includes('在新窗口打开此工作区'));
+    assert.ok(labels.includes('在此工作区新建会话'));
+    assert.ok(labels.includes('打开文件夹…'));
+    assert.ok(!labels.includes('关闭当前工作区'));
+    // 每个非分隔、非子菜单项都要有 act
+    for (const item of items) {
+        if (!item.sep && !item.submenu) assert.ok(item.act, '缺少 act: ' + JSON.stringify(item));
+    }
+});
+
+test('工作区菜单（当前工作区）：新窗口项禁用，出现关闭当前工作区', () => {
+    const items = buildWorkspaceMenuItems({path: 'D:/repos/foo', current: true}, wsEnv());
+    const labels = labelsOf(items);
+    assert.ok(labels.includes('关闭当前工作区'));
+    assert.equal(items.find((it) => it.act === 'openNewWindow').disabled, true);
+});
+
+test('工作区菜单（未关联工作区）：只给打开类，无路径相关项与关闭', () => {
+    const items = buildWorkspaceMenuItems({path: '', current: false}, wsEnv());
+    const labels = labelsOf(items);
+    assert.ok(labels.includes('打开文件夹…'));
+    assert.ok(!labels.includes('复制工作区路径'));
+    assert.ok(!labels.includes('关闭当前工作区'));
+});
+
+test('工作区菜单：最近打开以子菜单给出，act=openRecent 带路径', () => {
+    const items = buildWorkspaceMenuItems(
+        {path: 'D:/repos/foo', current: true},
+        wsEnv([{path: 'D:/repos/bar', name: 'bar'}, {path: 'D:/repos/baz'}]),
+    );
+    const recentItem = items.find((it) => it.submenu);
+    assert.ok(recentItem, '应有最近打开子菜单');
+    assert.equal(recentItem.submenu.length, 2);
+    assert.equal(recentItem.submenu[0].label, 'bar');
+    assert.equal(recentItem.submenu[0].act, 'openRecent');
+    assert.equal(recentItem.submenu[0].arg, 'D:/repos/bar');
+    assert.equal(recentItem.submenu[1].label, 'baz', '无 name 时回退 baseName');
 });
 
 // 活动栏会话图标状态点：按 error > pending > done 取最高，仅当前工作区，running 忽略。

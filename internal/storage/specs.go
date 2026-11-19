@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"datalens/internal/aiartifact"
 )
 
 const (
@@ -242,6 +244,13 @@ func (s *Service) specs() []spec {
 			id: "ai-sessions", label: "AI 会话记录", scope: ScopeApp, kind: KindDanger,
 			note:    "所有会话的正文 JSONL 与附图（ai-sessions/），是会话的唯一真源；派生索引删了能重建，这里删了就没了。",
 			targets: []target{locTarget(LocAISessions)},
+		},
+		{
+			// 大对象产物区：上下文里的「全文在 xxx」指针指向这里。删了不丢正式内容
+			// （会话正文仍在 ai-sessions/），只是那些指针失效、模型要重新调工具取数据。
+			id: "ai-artifacts", label: "AI 中间产物（工具结果落盘）", scope: ScopeApp, kind: KindCache, inCache: true,
+			note:    "ai-artifacts/ 里落盘的工具结果全文与子代理转录（超过上下文阈值的那些）。删了不丢正式内容；会话正文里的指针会失效，需要时由 AI 重新调用工具获取。",
+			targets: []target{appDirTarget(aiartifact.DirName)},
 		},
 		{
 			id: "ai-groups", label: "AI 群聊记录", scope: ScopeApp, kind: KindDanger,

@@ -124,6 +124,20 @@ test('compactTranscriptOf：带上此前摘要与工具结果，超长从尾部�
     assert.ok(!/AI：\n\n/.test(text));
 });
 
+// 超窗时的兜底：转录按调用方给的预算截断（保留尾部），摘要请求才发得出去。
+test('compactTranscriptOf：maxChars 生效，保留尾部并标截断', () => {
+    const long = 'A'.repeat(5000) + 'B'.repeat(5000) + 'C'.repeat(5000);
+    const session = {messages: [{role: 'user', content: long}]};
+    const full = compactTranscriptOf(session);
+    const capped = compactTranscriptOf(session, 4000);
+    assert.ok(capped.length <= 4000 + 200, '截断后应接近给定预算：' + capped.length);
+    assert.ok(capped.includes('较早内容已截断'));
+    assert.ok(capped.endsWith('C'.repeat(1000)), '保留尾部（最近的内容）');
+    assert.ok(full.length > capped.length);
+    // 预算过低时至少留 2000 字符，避免摘要器什么也看不到
+    assert.ok(compactTranscriptOf(session, 10).length >= 2000);
+});
+
 test('buildCompactMessages：system 为摘要器约束，user 带焦点指令', () => {
     const session = {messages: [{role: 'user', content: 'x'}]};
     const messages = buildCompactMessages(session, '摘要约束', '保住补丁库方案');

@@ -419,11 +419,11 @@ export const AI_TOOL_DEFS = {
         name: 'worktree_manage',
         description: [
             '管理本会话的隔离 git worktree（草稿工作区）：改动落在 .cadt/worktree/<slug>/，不直接碰主根，适合有风险的批量改动、大规模重构、不确定能成的试错。',
-            'action=create：创建（一个会话同时只能有一个；会弹审批卡请用户确认，含完全权限）。用户明确要求「基于 worktree / 用隔离区 / 在 worktree 里开发」时（开发环境要求，不是读方案文档），实施的第一步就先创建隔离区；计划模式下只在计划里写这一步、不创建。主根当前有未提交改动、且用户想让隔离区在改动之上试方案时带 carry=true。创建后 <worktree> 块会给出前缀，之后所有文件改动都写到该前缀下、run_command 的 cwd 默认就在隔离区；不要写主根同名文件。主根顶层的依赖目录（node_modules / .venv / venv）会以 junction 共享进隔离区，仓库根的 .worktreeinclude 清单会把 .env 这类被忽略文件拷进来；子目录依赖（如 frontend/node_modules）不会自动共享——缺依赖时在隔离区里装（npm install），绝不要手动 mklink 借主根目录。',
+            'action=create：创建（一个会话同时只能有一个；会弹审批卡请用户确认，含完全权限）。用户明确要求「基于 worktree / 用隔离区 / 在 worktree 里开发」时（开发环境要求，不是读方案文档），实施的第一步就先创建隔离区；计划模式下只在计划里写这一步、不创建。**必须带 reason**：用一句话说明这次为什么要隔离（会原样显示在审批卡上给用户看，≤200 字）。主根当前有未提交改动、且用户想让隔离区在改动之上试方案时带 carry=true。创建后 <worktree> 块会给出前缀，之后所有文件改动都写到该前缀下、run_command 的 cwd 默认就在隔离区；不要写主根同名文件。主根顶层的依赖目录（node_modules / .venv / venv）会以 junction 共享进隔离区，仓库根的 .worktreeinclude 清单会把 .env 这类被忽略文件拷进来；子目录依赖（如 frontend/node_modules）不会自动共享——缺依赖时在隔离区里装（npm install），绝不要手动 mklink 借主根目录。',
             'action=list：列出仓库现有 worktree（只读，附各隔离区的改动统计）。',
             'action=stat：只读查看本隔离区相对创建基准的改动统计（文件与增删行数）；不落补丁。',
             'action=export：把 worktree 里相对创建基准的全部改动（含新文件与删除）导出为补丁，交用户在审批卡里审阅后回灌主根。导出是全量语义：上一轮已回灌过的改动再次导出会预检报「不可应用」，属预期——应用成功后应 discard 收尾。worktree 里不要 commit。',
-            'action=discard：删除 worktree 与其隔离分支（不可恢复；未 export 的改动会丢；会弹审批卡请用户确认，含完全权限）。回灌成功、或用户明确不要这轮试验时用它收尾。',
+            'action=discard：删除 worktree 与其隔离分支（不可恢复；未 export 的改动会丢；会弹审批卡请用户确认，含完全权限）。**必须带 reason**：说明这次为什么收尾（回灌已完成 / 方案放弃等，≤200 字，会显示在审批卡上）。回灌成功、或用户明确不要这轮试验时用它收尾。',
             '何时不用：常规小改动直接 edit_file/write_file，不要为每次修改开 worktree。',
         ].join('\n'),
         parameters: {
@@ -433,6 +433,7 @@ export const AI_TOOL_DEFS = {
                 label: {type: 'string', description: 'create 时可选：用途短名（英文/数字/连字符，如 refactor-parser），用于派生目录与分支名'},
                 carry: {type: 'boolean', description: 'create 时可选：true=把主根当前未提交改动（含暂存划分与未跟踪文件）带入隔离区并打成快照 commit 作为基准——适合「用户带着半成品想试 AI 方案」；缺省 false=从主根 HEAD 干净检出'},
                 name: {type: 'string', description: 'export / stat / discard 可选：目标隔离区 slug；缺省=本会话自己的；可指定本会话派生的子代理隔离区（其他会话的会被拒绝）'},
+                reason: {type: 'string', description: 'create / discard 必填：用一句话说明为什么隔离（或为什么收尾），会原样显示在审批卡上给用户看，≤200 字。例：「用户要求重构解析器，先隔离试改，成功再回灌」/「本轮改动已回灌完成，收尾清理」'},
             },
             required: ['action'],
         },

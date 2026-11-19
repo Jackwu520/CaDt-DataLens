@@ -446,6 +446,33 @@ export function createAISystemContext(ctx) {
             }
         }
 
+        // 插件注入的领域上下文（属「稳定」区）：带上限与来源标记，内容按数据处理。
+        if (typeof ctx.pluginContextText === 'function') {
+            try {
+                const injected = ctx.pluginContextText(session);
+                if (injected && injected.text) {
+                    parts.push(injected.text);
+                    meta.pluginContext = {count: injected.count, truncated: !!injected.truncated};
+                }
+            } catch (e) {
+                meta.errors.push('插件上下文：' + ((e && e.message) || e));
+            }
+        }
+
+        // 用户为 MCP server 写的「使用约定」：紧接工具目录之前注入，模型读到工具定义时
+        // 已经有这个 server 的用法约束（哪些字段要校验、怎么分批提交）。空则不占上下文。
+        if (typeof ctx.mcpServerNotes === 'function') {
+            try {
+                const block = ctx.mcpServerNotes();
+                if (block) {
+                    parts.push(block);
+                    meta.mcpNotes = {chars: block.length};
+                }
+            } catch (e) {
+                meta.errors.push('MCP 使用约定：' + ((e && e.message) || e));
+            }
+        }
+
         // 注入顺序：工具目录、守则、输出语言等全部为「稳定」区——动态块（工作区状态 / 清单 /
         // 提醒 / 附件）已移出系统提示词，随起轮的用户消息落盘（见 turnContextBundle），
         // 系统提示词因此每轮完全一致，服务商前缀缓存可整段命中。

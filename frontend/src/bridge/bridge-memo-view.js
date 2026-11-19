@@ -398,7 +398,6 @@ function buildTopBar(view) {
         deps.ctxMenu.open([
             {label: '导出 Markdown（图片复制到旁侧 img/）', icon: 'E896', action: () => exportMemo(view, 'md')},
             {label: '导出 HTML（单文件，图片内嵌）', icon: 'E896', action: () => exportMemo(view, 'html')},
-            {label: '导出 Word（.doc，图片存旁侧）', icon: 'E896', action: () => exportMemo(view, 'doc')},
             {label: '导出 Word（.docx 原生，图片内嵌）', icon: 'E896', action: () => exportMemo(view, 'docx')},
             ...(pluginItems.length ? [{sep: true}, ...pluginItems] : []),
         ], x, y);
@@ -756,13 +755,16 @@ function leaveTermRun(itemId, kind) {
 
 // buildRunButton 终端条目行首的 ▶/⏹：点击时读实时状态（防重入与停止都在这里分流），
 // 按钮视觉由 memo-term 的 paintLive 在状态翻转时原位换（不整面板重渲染）。
+// 提示带运行出发点：命令在工作区根目录执行（全局作用域未开工作区时为应用进程目录）。
 function buildRunButton(view, item) {
     const entry = term.entryOf(item.id);
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'memo-run-btn' + (entry && entry.state === 'running' ? ' running' : '');
     btn.textContent = entry && entry.state === 'running' ? '⏹' : '▶';
-    btn.setAttribute('data-tip', entry && entry.state === 'running' ? '停止运行' : '运行命令');
+    const cwdTip = deps.workspaceFolder ? '运行于工作区根目录' : '运行于应用进程目录';
+    btn.dataset.cwdTip = cwdTip; // paintLive 翻转提示时用（工作区可切换，整渲染才重算）
+    btn.setAttribute('data-tip', entry && entry.state === 'running' ? '停止运行' : cwdTip);
     onButton(btn, () => {
         const cur = term.entryOf(item.id);
         if (cur && cur.state === 'running') {
@@ -772,7 +774,7 @@ function buildRunButton(view, item) {
         // 行内编辑未提交时点 ▶：onButton 的 mousedown+preventDefault 不会触发 blur 提交，
         // 闭包里的 item.text 是上次提交的正文——草稿才是用户此刻要跑的命令。取编辑框
         // 实时值，先 commit 入库再运行（所见即所跑），避免跑出去的是旧命令。
-        const editor = row.querySelector('.memo-inline-area');
+        const editor = btn.closest('.memo-item').querySelector('.memo-inline-area');
         const text = editor ? editor.value : item.text;
         if (!String(text || '').trim()) {
             // 空命令先去编辑，别让用户对着「命令为空」的报错找原因
@@ -1367,7 +1369,6 @@ async function exportMemo(view, format) {
     }
     if (!path) return; // 用户取消
     if (format === 'md') await exportMemoMarkdownFile(view, doc, scopeLabel, path);
-    else if (format === 'doc') await exportMemoWordFile(view, doc, scopeLabel, path);
     else if (format === 'docx') await exportMemoDocxFile(view, doc, scopeLabel, path);
     else await exportMemoHtmlFile(view, doc, scopeLabel, path);
 }
@@ -1459,29 +1460,6 @@ function buildMemoHtml(doc, scopeLabel, urls) {
         }
         return html;
     }
-}
-
-// exportMemoWordFile 内置 Word（.doc）导出：Word 兼容 HTML（相对引用形态）存 .doc +
-// 贴图复制到文档旁侧 img/（Word 的 HTML 导入对 data URI 支持不稳）。零依赖，
-// 与 md 导出共用同一套旁侧图复制流程；重格式（真 .docx）见市场插件 export-word。
-async function exportMemoWordFile(view, doc, scopeLabel, path) {
-    await saveTextFile(path, buildMemoHtml(doc, scopeLabel, null));
-    if (deps.backend.CopyFileTo) {
-        const rootDir = await memoRootDirFor(view.scope, store.rootFor(view.scope));
-        if (rootDir) {
-            const imgDir = parentDirOf(path) + '/img';
-            try { await deps.backend.AIEnsureDir(imgDir); } catch (e) { /* 目录已存在等情况忽略 */ }
-            for (const rel of collectImageRefs(doc)) {
-                const src = rootDir.replace(/[\\/]+$/, '') + '/' + rel.replace(/[\\/]+/g, '/');
-                try {
-                    await deps.backend.CopyFileTo(src, imgDir + '/' + baseNameOf(rel));
-                } catch (e) {
-                    // 尽力而为：单张失败不阻断导出，正文引用仍在
-                }
-            }
-        }
-    }
-    deps.flash('已导出 Word(.doc)：' + path);
 }
 
 // exportMemoDocxFile 内置 Word 原生 .docx 导出（memo-docx.js：OOXML 直排 + store-mode

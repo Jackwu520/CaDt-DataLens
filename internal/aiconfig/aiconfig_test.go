@@ -1,10 +1,13 @@
 package aiconfig
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"datalens/internal/dpapi"
 )
 
 func TestAIConfigFileRoundTrip(t *testing.T) {
@@ -77,5 +80,118 @@ func TestAppAIConfigRoundTrip(t *testing.T) {
 	}
 	if got != payload {
 		t.Fatalf("读取 = %q, want %q", got, payload)
+	}
+}
+
+// 有 DPAPI 的平台（Windows）落盘必须是密文：文件名照旧，但内容里不能出现明文密钥。
+func TestAIConfigFileEncryptedAtRest(t *testing.T) {
+	if !dpapi.Supported() {
+		t.Skip("当前平台没有 DPAPI，按设计保持明文")
+	}
+	path := filepath.Join(t.TempDir(), "ai-config.json")
+	payload := `{"profiles":[{"id":"p1","apiKey":"sk-plaintext-must-not-leak"}]}`
+	if err := WriteFile(path, payload); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(raw), sealedPrefix) {
+		t.Fatalf("落盘内容缺少密文前缀：%q", string(raw))
+	}
+	if strings.Contains(string(raw), "sk-plaintext-must-not-leak") {
+		t.Fatal("密文里出现了明文密钥")
+	}
+	got, err := ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != payload {
+		t.Fatalf("解密后 = %q, want %q", got, payload)
+	}
+}
+
+// 旧版本写下的明文配置要照常能读；下一次保存自动升级成密文。
+func TestAIConfigLegacyPlaintextUpgrades(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ai-config.json")
+	legacy := `{"profiles":[],"legacy":true}`
+	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReadFile(path)
+	if err != nil || got != legacy {
+		t.Fatalf("读旧明文 = %q, %v", got, err)
+	}
+	if !dpapi.Supported() {
+		return
+	}
+	if err := WriteFile(path, got); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(raw), sealedPrefix) {
+		t.Fatal("保存后应升级为密文")
+	}
+}
+
+// 留档：解不开的密文被改名保留，正常明文文件不动。
+func TestAIConfigBackupSealed(t *testing.T) {
+	t.Setenv("AppData", t.TempDir())
+	path := Path()
+	if path == "" {
+		t.Fatal("测试环境应能定位应用数据目录")
+	}
+	if !dpapi.Supported() {
+		t.Skip("当前平台没有 DPAPI")
+	}
+	broken := sealedPrefix + "bm90LWRwYXBpLWRhdGE="
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(broken), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	backup, err := BackupSealed()
+	if err != nil || backup == "" {
+		t.Fatalf("留档 = %q, %v", backup, err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatal("原文件应已被改名")
+	}
+	moved, err := os.ReadFile(backup)
+	if err != nil || string(moved) != broken {
+		t.Fatalf("留档内容 = %q, %v", string(moved), err)
+	}
+	// 明文文件不该被留档（那是正常配置）。
+	if err := os.WriteFile(path, []byte(`{"profiles":[]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if again, err := BackupSealed(); err != nil || again != "" {
+		t.Fatalf("明文文件不应留档：%q, %v", again, err)
+	}
+}
+func TestAIConfigSealedUnreadable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ai-config.json")
+	if !dpapi.Supported() {
+		t.Skip("当前平台没有 DPAPI")
+	}
+	// 伪造一份「别人机器上的密文」：合法前缀 + 无法解密的 base64。
+	broken := sealedPrefix + "bm90LWRwYXBpLWRhdGE="
+	if err := os.WriteFile(path, []byte(broken), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadFile(path); !errors.Is(err, ErrSealed) {
+		t.Fatalf("err = %v, want ErrSealed", err)
+	}
+	if !strings.Contains(ErrSealed.Error(), SealedErrorToken) {
+		t.Fatal("ErrSealed 文案必须带稳定标记，前端靠它判断是否禁用保存")
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil || string(raw) != broken {
+		t.Fatalf("读失败不应改动原文件：%q, %v", string(raw), err)
 	}
 }

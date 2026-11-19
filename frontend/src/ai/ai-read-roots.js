@@ -80,10 +80,29 @@ export function userNamedPath(session, path) {
     return false;
 }
 
+// 产物子目录：与 Go 侧 internal/aiartifact.DirName 同值。它是应用数据目录下**唯一**
+// 对 AI 可读的子树——里面只有工具结果全文与子代理转录，既没有密钥（ai-config.json）
+// 也没有会话正文（ai-sessions/）。上下文里「全文在 xxx」的指针指的就是这里。
+export const ARTIFACT_DIR_NAME = 'ai-artifacts';
+
+// 产物根（appDir/ai-artifacts）；appDir 为空时返回空串。
+export function artifactRootOf(appDir) {
+    const dir = normalizeReadRoot(appDir);
+    return dir ? dir + '/' + ARTIFACT_DIR_NAME : '';
+}
+
+// path 是否落在产物子树里。读它就是「读回自己落盘的工具结果」，不走工作区授权链。
+export function isArtifactPath(path, appDir) {
+    const artifacts = artifactRootOf(appDir);
+    return !!artifacts && readRootCovers(artifacts, path);
+}
+
 // 应用数据目录硬拒：path 在 appDir 下时返回拒绝文案，否则返回 null。
+// 产物子树例外——那是给模型自己落盘、再自己读回用的区域。
 export function sensitiveReadDenyReason(path, appDir) {
     const dir = normalizeReadRoot(appDir);
     if (!dir || !readRootCovers(dir, path)) return null;
+    if (isArtifactPath(path, appDir)) return null;
     return '拒绝读取：该路径位于应用数据目录（含 API 密钥与会话数据），AI 不读取其中的文件；' +
         '如需查看请用主界面直接打开。';
 }

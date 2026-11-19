@@ -540,7 +540,9 @@ export function createSessionDiskStore(options) {
         resetFingerprints(session, session.messages);
         session._logMeta = {title: textOf(meta.title), workspace: textOf(meta.workspace)};
         session._logCreated = !!replay.header;
-        session._needsRewrite = !!session._recovered || (session.messages || []).length !== replay.messages.length;
+        // 重放折叠掉的同类 dedupeKey 旧注入（droppedTransient>0）也要整份重写：
+        // 内存已不含这些条目，不重写的话磁盘 JSONL 里的冗余行永远清不掉。
+        session._needsRewrite = !!session._recovered || (session.messages || []).length !== replay.messages.length || replay.droppedTransient > 0;
         session.updatedAt = Number(meta.updatedAt) || Number(meta.createdAt) || 0;
         session._loadError = loadError;
         session._metaSig = metaSignature(buildSessionMeta(session));
@@ -651,7 +653,8 @@ export function createSessionDiskStore(options) {
         resetFingerprints(session, messages);
         session._logMeta = {title: textOf(session.title), workspace: textOf(session.workspace)};
         session._logCreated = !!replay.header;
-        session._needsRewrite = !!session._recovered || messages.length !== replay.messages.length;
+        // 重放折叠掉的同类 dedupeKey 旧注入也要整份重写（与 loadOne 同理，清磁盘冗余）。
+        session._needsRewrite = !!session._recovered || messages.length !== replay.messages.length || replay.droppedTransient > 0;
         session._metaSig = metaSignature(buildSessionMeta(session));
         delete session._stub;
         delete session._msgCount;
@@ -719,7 +722,8 @@ export function createSessionDiskStore(options) {
         resetFingerprints(session, messages);
         session._logMeta = {title: textOf(session.title), workspace: textOf(session.workspace)};
         session._logCreated = !!replay.header;
-        session._needsRewrite = !!session._recovered || messages.length !== replay.messages.length;
+        // 重放折叠掉的同类 dedupeKey 旧注入也要整份重写（与 loadOne 同理，清磁盘冗余）。
+        session._needsRewrite = !!session._recovered || messages.length !== replay.messages.length || replay.droppedTransient > 0;
         session._metaSig = metaSignature(buildSessionMeta(session));
         session._loadError = '';
         delete session._stub;
@@ -777,14 +781,28 @@ export function createSessionDiskStore(options) {
     async function removeSession(id) {
         requireBackend();
         await flush();
-        return backend.AISessionDelete(id);
+        const result = await backend.AISessionDelete(id);
+        // 会话级产物随会话一起删（ai-artifacts/<会话 id>/）：正文都没了，指针必然失效，
+        // 留着只是磁盘垃圾。清理失败不影响删除本身。
+        if (backend.AIArtifactClear) {
+            try {
+                await backend.AIArtifactClear(id);
+            } catch (e) {}
+        }
+        return result;
     }
 
     async function removeAll() {
         requireBackend();
         await flush();
         if (!backend.AISessionDeleteAll) throw new Error('当前版本缺少批量删除接口');
-        return backend.AISessionDeleteAll();
+        const result = await backend.AISessionDeleteAll();
+        if (backend.AIArtifactClearAll) {
+            try {
+                await backend.AIArtifactClearAll();
+            } catch (e) {}
+        }
+        return result;
     }
 
     return {

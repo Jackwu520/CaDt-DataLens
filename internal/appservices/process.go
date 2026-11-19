@@ -29,24 +29,40 @@ func (r *Registry) start(svc *service) error {
 	svc.stopping = false
 	svc.mu.Unlock()
 
-	cmd := exec.Command(svc.spec.Exe, svc.spec.Args...)
-	procctlApplyCancel(cmd)
-	if dir := strings.TrimSpace(svc.spec.Cwd); dir != "" {
-		cmd.Dir = dir
+	// 工作目录先校验再起进程：cwd 不存在时 Windows 的 CreateProcess 只会回
+	// "The directory name is invalid"，看不出是哪个目录缺了，插件作者只能猜。
+	dir := strings.TrimSpace(svc.spec.Cwd)
+	if dir != "" {
+		info, statErr := os.Stat(dir)
+		if statErr != nil {
+			return r.markStartFailed(svc, fmt.Errorf("工作目录不可用：%s（%v）", dir, statErr))
+		}
+		if !info.IsDir() {
+			return r.markStartFailed(svc, fmt.Errorf("工作目录不是目录：%s", dir))
+		}
 	}
+
+	// ctx 必须先于 exec 创建：procctl.ApplyCancel 会写 cmd.Cancel，而 os/exec 只接受
+	// 「由 CommandContext 创建」的命令带 Cancel，裸 exec.Command 会在 cmd.Start()
+	// 直接报 "command with a non-nil Cancel was not created with CommandContext"。
+	ctx, cancel := context.WithCancel(context.Background())
+	cmd := exec.CommandContext(ctx, svc.spec.Exe, svc.spec.Args...)
+	procctlApplyCancel(cmd)
+	cmd.Dir = dir
 	cmd.Env = os.Environ()
 	executilHideWindow(cmd)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		cancel()
 		return r.markStartFailed(svc, err)
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
+		cancel()
 		return r.markStartFailed(svc, err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
 	if err := procctlRegister(procIDPrefix+svc.spec.ID, cancel); err != nil {
 		cancel()
 		return r.markStartFailed(svc, err)
