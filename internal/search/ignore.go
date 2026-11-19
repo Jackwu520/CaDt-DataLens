@@ -1,0 +1,161 @@
+package search
+
+import (
+	"bufio"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+)
+
+// 用户自定义搜索排除表：<工作区根>/.cadt/config/search-ignore。
+//
+// 语法（gitignore 简化版）：
+//   - 一行一条；空行与 # 开头的行为注释。
+//   - ! 前缀取反：后匹配的规则覆盖先匹配的规则（! 即「重新包含」）。
+//   - 不含 / 的模式按路径每一段的名字匹配（如 .aoci 排除任意层级的 .aoci 目录/文件）。
+//   - 含 / 的模式按相对扫描根的路径 glob 匹配（如 .cadt/tmp、docs/**/*.bak）。
+//
+// 该表作用于 UI 全局搜索 / AI search_text / glob / 目录树 list_dir；硬编码表
+// SkipDir / SkipPath 保持独立（wipeguard 结构指纹等不接入用户配置）。
+// 根自身永不命中——从子目录发起的检索不受影响。
+
+const ignoreRelPath = ".cadt/config/search-ignore"
+
+type ignoreRule struct {
+	negate  bool
+	byName  bool
+	pattern string
+}
+
+// IgnoreRules 解析后的用户排除表。nil 表示无自定义规则。
+type IgnoreRules struct {
+	rules []ignoreRule
+}
+
+type cachedIgnore struct {
+	modTime time.Time
+	rules   *IgnoreRules
+}
+
+var ignoreCache = struct {
+	mu    sync.Mutex
+	items map[string]*cachedIgnore
+}{items: map[string]*cachedIgnore{}}
+
+// LoadIgnoreRules 读取并解析 <root>/.cadt/config/search-ignore；不存在或读失败返回 nil。
+// 按配置路径 + mtime 缓存，避免每次搜索都读盘；配置改动后下次搜索自动重载。
+// 供本包搜索三路径与 fsops 目录树共用。
+func LoadIgnoreRules(root string) *IgnoreRules {
+	root = strings.TrimSpace(root)
+	if root == "" {
+		return nil
+	}
+	path := filepath.Join(root, filepath.FromSlash(ignoreRelPath))
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() {
+		return nil
+	}
+	mt := info.ModTime()
+	ignoreCache.mu.Lock()
+	defer ignoreCache.mu.Unlock()
+	if c := ignoreCache.items[path]; c != nil && c.modTime.Equal(mt) {
+		return c.rules
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	rules := &IgnoreRules{}
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		r := ignoreRule{}
+		if strings.HasPrefix(line, "!") {
+			r.negate = true
+			line = strings.TrimSpace(line[1:])
+		}
+		line = strings.TrimPrefix(line, "/")   // 开头的 / 视为相对根
+		line = strings.TrimSuffix(line, "/")   // 尾部 / 是目录标记，去掉
+		if line == "" || line == "#" {
+			continue
+		}
+		r.byName = !strings.Contains(line, "/")
+		r.pattern = line
+		rules.rules = append(rules.rules, r)
+	}
+	ignoreCache.items[path] = &cachedIgnore{modTime: mt, rules: rules}
+	return rules
+}
+
+// match 判断单条规则是否命中当前条目（name 为条目名，rel 为相对扫描根的路径）。
+func (r ignoreRule) match(name, rel string) bool {
+	rel = strings.ReplaceAll(rel, "\\", "/")
+	if r.byName {
+		// 按名字匹配路径的每一段——遍历到任意层级的同名目录都会命中；
+		// rg 路径只有文件全路径，也靠这里逐段判断。
+		for _, seg := range strings.Split(rel, "/") {
+			if globMatchPath(r.pattern, seg, seg) {
+				return true
+			}
+		}
+		return globMatchPath(r.pattern, name, name)
+	}
+	// 路径规则：匹配完整路径，也匹配任意一级父目录前缀（排除整个子树）。
+	// globMatchPath 是整串精确匹配，不逐前缀就会漏掉目录下的文件。
+	parts := strings.Split(rel, "/")
+	for i := 1; i <= len(parts); i++ {
+		if globMatchPath(r.pattern, strings.Join(parts[:i], "/"), parts[i-1]) {
+			return true
+		}
+	}
+	return false
+}
+
+// shouldSkip 按规则顺序判断，后匹配覆盖先匹配（! 取反 = 重新包含）。
+func (rs *IgnoreRules) shouldSkip(name, rel string) bool {
+	if rs == nil || len(rs.rules) == 0 {
+		return false
+	}
+	rel = strings.ReplaceAll(rel, "\\", "/")
+	if rel == "" || rel == "." || rel == "/" {
+		return false // 根自身永不跳过
+	}
+	excluded := false
+	for _, r := range rs.rules {
+		if r.match(name, rel) {
+			excluded = !r.negate
+		}
+	}
+	return excluded
+}
+
+// ShouldSkipDir / ShouldSkipFile 供搜索三路径与目录树调用，语义一致。
+func (rs *IgnoreRules) ShouldSkipDir(name, rel string) bool  { return rs.shouldSkip(name, rel) }
+func (rs *IgnoreRules) ShouldSkipFile(name, rel string) bool { return rs.shouldSkip(name, rel) }
+
+// globArgs 把规则转成 rg 的 --glob 参数（尽力剪枝；真正口径由 skipRgHit 按规则二次过滤保底，
+// 因为 Windows 上 rg 的路径型 glob 分隔符语义不可靠）。
+func (rs *IgnoreRules) globArgs() []string {
+	if rs == nil || len(rs.rules) == 0 {
+		return nil
+	}
+	var args []string
+	for _, r := range rs.rules {
+		prefix := "!"
+		if r.negate {
+			prefix = ""
+		}
+		if r.byName {
+			args = append(args, "--glob", prefix+r.pattern, "--glob", prefix+"**/"+r.pattern)
+		} else {
+			args = append(args, "--glob", prefix+r.pattern)
+		}
+	}
+	return args
+}

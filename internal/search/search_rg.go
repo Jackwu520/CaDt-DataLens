@@ -89,6 +89,8 @@ func rgGlobalArgs(spec *searchSpec, artifactOnly bool) []string {
 	if spec.exclude != "" {
 		args = append(args, "--glob", "!"+spec.exclude)
 	}
+	// 用户 search-ignore 表：转成 rg glob 尽力剪枝（真正口径由 skipRgHit 二次过滤保底）
+	args = append(args, spec.ignore.globArgs()...)
 	return append(args, "--", spec.query)
 }
 
@@ -99,10 +101,11 @@ type rgPass struct {
 	usable    bool
 }
 
-// skipRgHit 过滤 rg 命中路径里的 AI 隔离 worktree 副本。rg 的路径型 glob 在 Windows 上
-// 不可靠（路径分隔符语义随版本差异，见 rgGlobalArgs 注释），glob 只是尽力剪枝，
-// 这里按 SkipPath 二次过滤保底。结果按 path 缓存（同一文件多命中只算一次）。
-func skipRgHit(root, path string, cache map[string]bool) bool {
+// skipRgHit 过滤 rg 命中路径里的 AI 隔离 worktree 副本与用户排除表命中的文件。
+// rg 的路径型 glob 在 Windows 上不可靠（路径分隔符语义随版本差异，见 rgGlobalArgs 注释），
+// glob 只是尽力剪枝，这里按 SkipPath + 用户规则二次过滤保底。
+// 结果按 path 缓存（同一文件多命中只算一次）。
+func skipRgHit(root, path string, ignore *IgnoreRules, cache map[string]bool) bool {
 	if cached, ok := cache[path]; ok {
 		return cached
 	}
@@ -110,7 +113,7 @@ func skipRgHit(root, path string, cache map[string]bool) bool {
 	if r, relErr := filepath.Rel(root, path); relErr == nil {
 		rel = r
 	}
-	skip := SkipPath(rel)
+	skip := SkipPath(rel) || ignore.shouldSkip(filepath.Base(path), filepath.ToSlash(rel))
 	cache[path] = skip
 	return skip
 }
@@ -150,7 +153,7 @@ loop:
 			continue
 		}
 		path := msg.Data.Path.Text
-		if skipRgHit(root, path, worktreeCache) {
+		if skipRgHit(root, path, spec.ignore, worktreeCache) {
 			continue
 		}
 		if msg.Type == "context" {

@@ -381,6 +381,30 @@ deps.els.gitRecentLog.addEventListener('click', () => deps.showGitRecentLog());
 deps.els.gitCommitBtn.addEventListener('click', () => runGitCommit(false));
 deps.els.gitCommitPushBtn.addEventListener('click', () => runGitCommit(true));
 
+// 分支名行的刷新：与标题栏刷新走同一条状态刷新通路。
+if (deps.els.gitRefreshMeta) {
+    deps.els.gitRefreshMeta.addEventListener('click', () => deps.refreshGitStatus());
+}
+// 分支名行的回滚：回滚全部未提交更改（tracked 丢弃修改，untracked 删除文件）。
+if (deps.els.gitRollback) {
+    deps.els.gitRollback.addEventListener('click', () => {
+        const all = [];
+        const untracked = [];
+        for (const [path, state] of deps.gitStateCache.map) {
+            all.push(path);
+            if (state === 'untracked') untracked.push(path);
+        }
+        if (!all.length) {
+            deps.flash('没有可回滚的更改');
+            return;
+        }
+        deps.openConfirmDialog(
+            '将丢弃全部 ' + all.length + ' 个文件的未提交修改（未跟踪文件将被删除）。',
+            () => deps.gitRollbackPaths(all, untracked),
+            '回滚', '回滚全部更改', 'danger');
+    });
+}
+
 function collectCheckedPaths() {
     return [...deps.els.gitChanges.querySelectorAll('.git-file-row input[type="checkbox"]:checked')].map((cb) => cb.dataset.path);
 }

@@ -6,7 +6,7 @@
 // 写操作（签出 / cherry-pick / 重置 / 新建分支，右键菜单入口，对话框在 git-graph-dialogs.js）。
 // 写操作是用户主动 UI 动作：走只读锁 + 确认弹窗，不涉 AI 审批链。
 import {iconSvg} from '../core/icons.js';
-import {createInput} from '../core/form-controls.js';
+import {createInput, createSelect} from '../core/form-controls.js';
 import {createFileIcon} from '../core/fileicons.js';
 import {createGitGraphDialogs} from './git-graph-dialogs.js';
 
@@ -136,11 +136,56 @@ export function parseCommitRefs(refs) {
     return chips;
 }
 
+// buildCommitMatcher 根据搜索选项构造提交匹配器（纯函数，可单测）。
+// opts: {query, regex, caseSensitive, user, date, now}；返回 (commit) => boolean。
+// 正则无效时返回 {error} 由调用方提示，不抛异常打断渲染。
+export function buildCommitMatcher(opts) {
+    const query = String(opts.query || '').trim();
+    const caseSensitive = !!opts.caseSensitive;
+    const user = String(opts.user || '').trim().toLowerCase();
+    const date = String(opts.date || '');
+    const now = Number(opts.now) || Date.now();
+    let test;
+    if (!query) {
+        test = () => true;
+    } else if (opts.regex) {
+        let re;
+        try {
+            re = new RegExp(query, caseSensitive ? '' : 'i');
+        } catch (e) {
+            return {error: '正则表达式无效：' + (e && e.message ? e.message : e)};
+        }
+        test = (s) => re.test(s);
+    } else {
+        const q = caseSensitive ? query : query.toLowerCase();
+        const fold = (s) => caseSensitive ? String(s || '') : String(s || '').toLowerCase();
+        test = (s) => fold(s).includes(q);
+    }
+    // 日期预设：用 commit 的 YYYY-MM-DD 前缀与 now 比较（date 字段是格式化字符串）
+    const dayMs = 24 * 60 * 60 * 1000;
+    const dateFrom = date === 'today' ? new Date(now).setHours(0, 0, 0, 0)
+        : date === '7d' ? now - 7 * dayMs
+        : date === '30d' ? now - 30 * dayMs
+        : date === '1y' ? now - 365 * dayMs
+        : null;
+    return {match: (c) => {
+        if (user && !((c.author || '').toLowerCase().includes(user) || (c.email || '').toLowerCase().includes(user))) return false;
+        if (dateFrom != null) {
+            const ts = Date.parse(String(c.date || '').replace(' ', 'T'));
+            if (!Number.isFinite(ts) || ts < dateFrom) return false;
+        }
+        if (!query) return true;
+        return test(c.subject || '') || test(c.sha || '') || test(c.author || '') || test(c.email || '') || test(c.refs || '');
+    }};
+}
+
 // fileTreeFromChanges 把平铺的文件变动列表组目录树（纯函数，可单测）。
 // 返回根级节点数组：{type:'dir', name, path, children[]} | {type:'file', name, path, status, oldPath}。
 // 目录在前、同类型按名称升序。
-export function fileTreeFromChanges(files) {
-    const root = {type: 'dir', name: '', path: '', children: []};
+// rootName 非空时，额外套一层「工作区顶层目录」节点（JetBrains 式：最外层是仓库名，
+// 其下才是 docs/frontend 等），返回的数组只有一个根；不传则保持旧行为（匿名根被丢弃）。
+export function fileTreeFromChanges(files, rootName) {
+    const root = {type: 'dir', name: rootName || '', path: '', children: [], root: !!rootName};
     for (const f of files || []) {
         const parts = String(f.path || '').split('/');
         let cur = root;
@@ -176,7 +221,7 @@ export function fileTreeFromChanges(files) {
         }
     };
     sortRec(root);
-    return root.children;
+    return rootName ? [root] : root.children;
 }
 
 // buildSkeletonHtml 生成首次加载的骨架屏内部 HTML（纯静态、可单测）。
@@ -223,6 +268,10 @@ export function createGitGraph(ctx) {
         currentRef: '',       // 空串 = 当前 HEAD
         selectedSha: '',
         refFilter: '',        // 左栏分支过滤词
+        searchRegex: false,      // 提交搜索：正则模式
+        searchCaseSensitive: false, // 提交搜索：区分大小写
+        userFilter: '',          // 提交搜索：作者筛选（author 或 email）
+        dateFilter: '',          // 提交搜索：日期筛选（today/7d/30d/1y）
         expandedGroups: {local: true, remote: false, tags: false, worktrees: false},
         initialized: false,
         refsW: 180,     // 左栏 ref 树宽（可拖动）
@@ -314,12 +363,63 @@ export function createGitGraph(ctx) {
             autocomplete: 'off',
             onInput: () => { filteredCache = null; renderCommitList(true); },
         }).element;
+
+        // 搜索框右侧两个开关：正则（.*）/ 区分大小写（大小双环），均为 SVG 图标按钮
+        const regexBtn = mkToggleBtn('regex', '正则表达式', () => {
+            state.searchRegex = !state.searchRegex;
+            regexBtn.classList.toggle('active', state.searchRegex);
+            regexBtn.setAttribute('aria-pressed', String(state.searchRegex));
+            filteredCache = null; renderCommitList(true);
+        });
+        const caseBtn = mkToggleBtn('case-sensitive', '区分大小写', () => {
+            state.searchCaseSensitive = !state.searchCaseSensitive;
+            caseBtn.classList.toggle('active', state.searchCaseSensitive);
+            caseBtn.setAttribute('aria-pressed', String(state.searchCaseSensitive));
+            filteredCache = null; renderCommitList(true);
+        });
+        const searchBox = document.createElement('div');
+        searchBox.className = 'gg-search-box';
+        searchBox.append(filterInput, regexBtn, caseBtn);
+
+        // 三个筛选下拉：分支（切换查看该分支历史）/ 用户（作者）/ 日期（时间范围）。
+        // 分支选项由 loadRefs 填充；用户选项由 loadCommits 填充；日期是固定预设。
+        const branchSel = createSelect({
+            className: 'gg-filter-select',
+            options: [{value: '', label: '分支'}],
+            title: '按分支查看历史',
+            onChange: (e) => {
+                const ref = e.target.value;
+                loadCommits(ref);
+            },
+        }).element;
+        const userSel = createSelect({
+            className: 'gg-filter-select',
+            options: [{value: '', label: '用户'}],
+            title: '按作者筛选',
+            onChange: (e) => { state.userFilter = e.target.value; filteredCache = null; renderCommitList(true); },
+        }).element;
+        const dateSel = createSelect({
+            className: 'gg-filter-select',
+            options: [
+                {value: '', label: '日期'},
+                {value: 'today', label: '今天'},
+                {value: '7d', label: '最近 7 天'},
+                {value: '30d', label: '最近 30 天'},
+                {value: '1y', label: '最近一年'},
+            ],
+            title: '按日期筛选',
+            onChange: (e) => { state.dateFilter = e.target.value; filteredCache = null; renderCommitList(true); },
+        }).element;
+        const filterBar = document.createElement('div');
+        filterBar.className = 'gg-filter-bar';
+        filterBar.append(branchSel, userSel, dateSel);
+
         const headActions = document.createElement('div');
         headActions.className = 'gg-col-actions';
         const refreshBtn = mkIconBtn('refresh', '刷新图谱', () => reload());
         const closeBtn = mkIconBtn('close', '关闭面板', () => ctx.toggleTerminalPanel(false));
         headActions.append(refreshBtn, closeBtn);
-        headInner.append(filterInput);
+        headInner.append(searchBox, filterBar);
         // 刷新/关闭钉在整条头部的最右端（详情列上方右缘），搜索框只占提交列宽度
         commitsHead.append(headInner, headActions);
         const commitWrap = document.createElement('div');
@@ -356,7 +456,7 @@ export function createGitGraph(ctx) {
 
         commitWrap.addEventListener('scroll', onScroll);
 
-        els = {root, body, refsCol, refTree, rightCol, commitWrap, laneCol, commitList: listCol, detail, hint, filterInput, branchFilter, skeleton};
+        els = {root, body, refsCol, refTree, rightCol, rightHead: commitsHead, commitWrap, laneCol, commitList: listCol, detail, hint, filterInput, branchFilter, branchSel, userSel, dateSel, skeleton};
         loadPaneWidths();
         applyPaneWidths();
         watchPanelResize();
@@ -393,6 +493,16 @@ export function createGitGraph(ctx) {
         bar.dataset.tip = '拖动调整宽度';
         bar.setAttribute('role', 'separator');
         bar.setAttribute('aria-orientation', 'vertical');
+        // hover/拖动「提交列 | 详情」分割条时，让头部那段静态竖线同步高亮，
+        // 否则 body 里拖动条变蓝、头部线仍是灰色，视觉上断成两截（2026-11-21 修复）。
+        // refs 那条分割条在头部没有对应竖线，不联动。
+        const syncHeadLine = (on) => {
+            if (which === 'detail' && els && els.rightHead) {
+                els.rightHead.classList.toggle('gg-head-line-active', on);
+            }
+        };
+        bar.addEventListener('pointerenter', () => syncHeadLine(true));
+        bar.addEventListener('pointerleave', () => syncHeadLine(false));
         bar.addEventListener('pointerdown', (ev) => {
             if (!els || !els.body) return;
             ev.preventDefault();
@@ -422,6 +532,7 @@ export function createGitGraph(ctx) {
                 bar.removeEventListener('pointerup', onUp);
                 bar.removeEventListener('pointercancel', onUp);
                 bar.classList.remove('dragging');
+                syncHeadLine(false);
                 if (ctx.setDragCursor) ctx.setDragCursor(null);
                 document.body.style.userSelect = '';
                 savePaneWidths();
@@ -452,9 +563,67 @@ export function createGitGraph(ctx) {
         return b;
     }
 
+    // mkToggleBtn 搜索选项开关按钮（正则 / 区分大小写）：SVG 图标 + active 态 + aria-pressed。
+    function mkToggleBtn(icon, tip, onClick) {
+        const b = mkIconBtn(icon, tip, onClick);
+        b.classList.add('gg-search-toggle');
+        b.setAttribute('aria-pressed', 'false');
+        return b;
+    }
+
     // ---- 数据加载 ----
     function gitDir() {
         return ctx.gitStateCache.dir || ctx.workspaceFolder || '';
+    }
+
+    // workspaceRootName 取工作区路径的末段作为「本次变动」树的顶层节点名（JetBrains 式）。
+    // 兼容 Windows 反斜杠 / POSIX 斜杠，路径末尾的斜杠先剥掉；取不到时回落到 '工作区'。
+    function workspaceRootName() {
+        const dir = String(gitDir() || '').replace(/[\\/]+$/, '');
+        const seg = dir.split(/[\\/]/).filter(Boolean).pop();
+        return seg || '工作区';
+    }
+
+    // fillBranchSelect 用 refs 的本地/远程分支填充头部「分支」下拉（切换查看该分支历史）。
+    function fillBranchSelect() {
+        if (!els || !els.branchSel) return;
+        const refs = state.refs || {};
+        const names = [];
+        for (const r of (refs.local || [])) if (r.name) names.push(r.name);
+        for (const r of (refs.remote || [])) if (r.name) names.push(r.name);
+        const cur = state.currentRef || '';
+        els.branchSel.innerHTML = '';
+        const first = document.createElement('option');
+        first.value = '';
+        first.textContent = '分支';
+        els.branchSel.appendChild(first);
+        for (const name of names) {
+            const opt = document.createElement('option');
+            opt.value = name;
+            opt.textContent = name;
+            els.branchSel.appendChild(opt);
+        }
+        els.branchSel.value = cur;
+    }
+
+    // fillUserSelect 用当前提交列表里的作者去重填充「用户」下拉。
+    function fillUserSelect() {
+        if (!els || !els.userSel) return;
+        const names = [...new Set(state.commits.map((c) => c.author).filter(Boolean))].sort();
+        const cur = state.userFilter || '';
+        els.userSel.innerHTML = '';
+        const first = document.createElement('option');
+        first.value = '';
+        first.textContent = '用户';
+        els.userSel.appendChild(first);
+        for (const name of names) {
+            const opt = document.createElement('option');
+            opt.value = name;
+            opt.textContent = name;
+            els.userSel.appendChild(opt);
+        }
+        els.userSel.value = names.includes(cur) ? cur : '';
+        if (els.userSel.value !== cur) { state.userFilter = ''; filteredCache = null; }
     }
 
     async function loadRefs() {
@@ -467,6 +636,7 @@ export function createGitGraph(ctx) {
             state.refs = null;
         }
         renderRefTree();
+        fillBranchSelect();
     }
 
     async function loadCommits(ref, skip = 0) {
@@ -498,6 +668,8 @@ export function createGitGraph(ctx) {
             state.nextSkip = page.nextSkip;
             state.initialized = true;
             filteredCache = null; // 数据变了，清过滤缓存
+            fillUserSelect();
+            if (els && els.branchSel) els.branchSel.value = state.currentRef || '';
             renderCommitList(true);
         } catch (e) {
             showHint('读取提交历史失败：' + e);
@@ -637,19 +809,27 @@ export function createGitGraph(ctx) {
     }
 
     function filterCommits() {
-        const q = (els.filterInput.value || '').trim().toLowerCase();
-        if (q === lastFilter && filteredCache) return filteredCache;
-        lastFilter = q;
-        if (!q) {
-            filteredCache = state.commits;
-        } else {
-            filteredCache = state.commits.filter((c) =>
-                (c.subject || '').toLowerCase().includes(q) ||
-                (c.sha || '').toLowerCase().includes(q) ||
-                (c.author || '').toLowerCase().includes(q)
-            );
+        const query = (els.filterInput.value || '').trim();
+        // 缓存键必须覆盖所有筛选条件，否则切换开关/下拉后「点了没变化」
+        const key = JSON.stringify([query, state.searchRegex, state.searchCaseSensitive, state.userFilter, state.dateFilter]);
+        if (key === lastFilter && filteredCache) return filteredCache;
+        lastFilter = key;
+        const {match, error} = buildCommitMatcher({
+            query, regex: state.searchRegex, caseSensitive: state.searchCaseSensitive,
+            user: state.userFilter, date: state.dateFilter,
+        });
+        if (error) {
+            showHint(error);
+            return filteredCache || (filteredCache = state.commits);
         }
+        const anyFilter = !!(query || state.userFilter || state.dateFilter);
+        filteredCache = anyFilter ? state.commits.filter(match) : state.commits;
         return filteredCache;
+    }
+
+    // hasAnyFilter 是否处于任一筛选态（泳道/加载更多/预加载都要据此收敛）。
+    function hasAnyFilter() {
+        return !!(els && ((els.filterInput && els.filterInput.value || '').trim() || state.userFilter || state.dateFilter));
     }
 
     function renderCommitList(force) {
@@ -698,8 +878,7 @@ export function createGitGraph(ctx) {
 
         // 泳道 SVG（按过滤后的切片渲染，行号对齐 slice）
         // 注意：过滤会打乱 lane 连续性——过滤时泳道不准，只在无过滤时画泳道。
-        const q = (els.filterInput.value || '').trim();
-        if (!q) {
+        if (!hasAnyFilter()) {
             laneCol.innerHTML = buildLaneSvg(slice, state.laneCount);
             laneCol.style.paddingTop = padTop + 'px';
             // 同步泳道列宽度到 CSS 变量，让文字列的 padding-left 匹配
@@ -710,7 +889,7 @@ export function createGitGraph(ctx) {
         }
 
         // 加载更多提示
-        if (state.hasMore && !q) {
+        if (state.hasMore && !hasAnyFilter()) {
             const more = document.createElement('div');
             more.className = 'gg-load-more';
             more.textContent = state.loading ? '加载中…' : '滚动加载更多';
@@ -790,8 +969,7 @@ export function createGitGraph(ctx) {
         if (!els) return;
         const wrap = els.commitWrap;
         const nearBottom = wrap.scrollTop + wrap.clientHeight >= wrap.scrollHeight - ROW_H * 5;
-        const q = (els.filterInput.value || '').trim();
-        if (nearBottom && state.hasMore && !state.loading && !q) {
+        if (nearBottom && state.hasMore && !state.loading && !hasAnyFilter()) {
             loadCommits(state.currentRef, state.nextSkip);
         } else {
             renderCommitList();
@@ -988,7 +1166,7 @@ export function createGitGraph(ctx) {
                 box.appendChild(empty);
                 return;
             }
-            renderFileTree(box, fileTreeFromChanges(files), 0);
+            renderFileTree(box, fileTreeFromChanges(files, workspaceRootName()), 0);
         };
         const fillBody = (el, forSha, body) => {
             if (el.dataset.bodySha !== forSha) return;
@@ -1029,7 +1207,7 @@ export function createGitGraph(ctx) {
         for (const n of nodes) {
             if (n.type === 'dir') {
                 const row = document.createElement('div');
-                row.className = 'gg-file-dir';
+                row.className = 'gg-file-dir' + (n.root ? ' gg-file-root' : '');
                 row.style.paddingLeft = (4 + depth * 14) + 'px';
                 const chev = document.createElement('span');
                 chev.className = 'gg-file-chev';
@@ -1051,7 +1229,7 @@ export function createGitGraph(ctx) {
                     // 缓存值是 {files, body} 对象：折叠重渲只取 files（直接展开对象会
                     // 触发 fileTreeFromChanges 的 for-of 抛 TypeError 并清掉整棵树）
                     const cached = state.filesCache.get(state.selectedSha);
-                    renderFileTree(box, fileTreeFromChanges(cached ? cached.files : []), 0);
+                    renderFileTree(box, fileTreeFromChanges(cached ? cached.files : [], workspaceRootName()), 0);
                 });
                 box.appendChild(row);
                 if (!state.fileCollapse.has(n.path)) renderFileTree(box, n.children, depth + 1);
@@ -1070,8 +1248,31 @@ export function createGitGraph(ctx) {
                 row.append(ico, name);
                 const label = GIT_STATUS_LABEL[n.status] || n.status || '修改';
                 row.title = label + '：' + n.path + (n.oldPath ? '（' + n.oldPath + ' → ' + n.path + '）' : '');
+                // 点击文件：拉该文件在「当前选中提交」中的 diff，开只读虚拟 diff 文档
+                // （JetBrains 式：本次变动树点文件看当次提交改了什么）。
+                row.classList.add('gg-file-clickable');
+                row.addEventListener('click', () => openFileDiff(n));
                 box.appendChild(row);
             }
+        }
+    }
+
+    // openFileDiff 打开「本次变动」树中某个文件在当前提交里的 diff（只读虚拟文档）。
+    // 复用 bridge-git 的 showGitDiff 范式：GitGraphCommitFileDiff → 虚拟 .diff doc → patch-view 只读渲染。
+    async function openFileDiff(n) {
+        if (!ctx.backend || !ctx.backend.GitGraphCommitFileDiff || !ctx.openVirtualDoc) return;
+        const sha = state.selectedSha;
+        if (!sha) return;
+        try {
+            const res = await ctx.backend.GitGraphCommitFileDiff(gitDir(), sha, n.path, 4000);
+            if (!res || !res.hasChanges || !res.diff) {
+                ctx.flash && ctx.flash('该文件在此提交中无文本差异');
+                return;
+            }
+            const short = sha.slice(0, 8);
+            ctx.openVirtualDoc('提交 ' + short + ' — ' + n.name + '.diff', res.diff, {readOnlyFixed: true, viewKind: 'diff'});
+        } catch (e) {
+            ctx.flash && ctx.flash('读取提交文件差异失败：' + e, true);
         }
     }
 

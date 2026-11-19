@@ -114,6 +114,12 @@ const rawIcons = {
     'star': '<path fill="currentColor" stroke="none" d="M8 1.9l1.9 3.9 4.2.6-3.1 2.9.9 4.2L8 11.4l-3.9 2.1.9-4.2L1.9 6.4l4.2-.6L8 1.9z"/>',
     'pin': '<path fill="currentColor" stroke="none" d="M10.6 1.7l3.7 3.7-2.4.7-1.8 1.8.3 2.8-1.3 1.3-2.5-2.5-3.9 3.9-.8-.8 3.9-3.9-2.5-2.5 1.3-1.3 2.8.3 1.8-1.8.4-2.6z"/>',
     'lock': '<rect x="3.4" y="7" width="9.2" height="6.8" rx="1.4"/><path d="M6 7V5.6a2 2 0 0 1 4 0V7"/><circle cx="8" cy="10.4" r=".9" fill="currentColor" stroke="none"/>',
+    // 搜索选项（Git 图谱提交搜索）：正则用「点 + 星形」，大小写用「大小两个圆环」，筛选下拉用漏斗
+    'regex': '<circle cx="4.2" cy="11.4" r="1.1" fill="currentColor" stroke="none"/><path d="M8.4 4.2l.6 1.7 1.7.6-1.7.6-.6 1.7-.6-1.7-1.7-.6 1.7-.6.6-1.7z"/><path d="M11.8 9.2l.4 1.1 1.1.4-1.1.4-.4 1.1-.4-1.1-1.1-.4 1.1-.4.4-1.1z"/>',
+    'case-sensitive': '<circle cx="5.4" cy="10.4" r="2.2"/><circle cx="10.8" cy="5.8" r="3.2"/>',
+    'filter': '<path d="M2.4 3.2h11.2L9.2 8.6v4.2l-2.4 1.2V8.6L2.4 3.2z"/>',
+    'user': '<circle cx="8" cy="5.4" r="2.8"/><path d="M2.8 13.4c0-2.6 2.3-4.6 5.2-4.6s5.2 2 5.2 4.6"/>',
+    'calendar': '<rect x="2.6" y="3.6" width="10.8" height="9.8" rx="1.3"/><path d="M2.6 6.6h10.8"/><path d="M5.4 2.4v2.4M10.6 2.4v2.4"/>',
 };
 
 // 注册表整体导出（冻结）：供图标表页/测试枚举展示，业务代码请用 iconSvg()。

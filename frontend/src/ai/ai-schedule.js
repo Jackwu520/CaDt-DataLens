@@ -62,8 +62,9 @@ export function createAISchedule(ctx) {
     }
 
     // ---- 头部定时任务胶囊与弹层（kind=schedules，与计时器胶囊同机制） ----
-    // 定时任务是应用级资产（触发可唤醒绑定的会话，也可每次新建会话），胶囊显示应用内启用数，
-    // 不按会话过滤；列表缓存一份供弹层同步渲染（避免异步填充把弹层定位撑偏）。
+    // 胶囊 = 当前会话口径：只显示/统计绑定当前会话的启用任务；
+    // 其他会话与未绑定任务在「自动化」对话框与设置页可见。
+    // 列表缓存一份供弹层同步渲染（避免异步填充把弹层定位撑偏）。
     let scheduleListCache = [];
 
     function chipEl() {
@@ -77,25 +78,30 @@ export function createAISchedule(ctx) {
         return scheduleListCache.filter((s) => s && s.enabled && s.sessionId && s.sessionId === sid);
     }
 
+    // 胶囊 DOM 按缓存同步刷新（无后端往返）：显隐与角标都是「绑定当前会话」口径，
+    // 切会话走 syncChip 原位重算，不残留上一个会话的任务数。
+    function updateChipFromCache() {
+        const chip = chipEl();
+        if (!chip) return;
+        const mine = currentSessionTasks();
+        chip.classList.toggle('hidden', !mine.length);
+        const countEl = chip.querySelector('.ai-chip-count');
+        if (countEl) {
+            countEl.textContent = String(mine.length);
+            countEl.classList.toggle('hidden', !mine.length);
+        }
+        const iconEl = chip.querySelector('.ai-chip-icon');
+        if (iconEl && !iconEl.dataset.ready) {
+            iconEl.dataset.ready = '1';
+            iconEl.innerHTML = iconSvg('clock', 12);
+        }
+    }
+
     function refreshSchedulesUI(onReady) {
         if (!backend.AIScheduleList) return;
         Promise.resolve(backend.AIScheduleList()).then((list) => {
             scheduleListCache = Array.isArray(list) ? list : [];
-            const chip = chipEl();
-            if (chip) {
-                const mine = currentSessionTasks();
-                chip.classList.toggle('hidden', !mine.length);
-                const countEl = chip.querySelector('.ai-chip-count');
-                if (countEl) {
-                    countEl.textContent = String(mine.length);
-                    countEl.classList.toggle('hidden', !mine.length);
-                }
-                const iconEl = chip.querySelector('.ai-chip-icon');
-                if (iconEl && !iconEl.dataset.ready) {
-                    iconEl.dataset.ready = '1';
-                    iconEl.innerHTML = iconSvg('clock', 12);
-                }
-            }
+            updateChipFromCache();
             // 弹层开着时原位重渲染（重新定位）
             if (typeof ctx.onSchedulesChanged === 'function') ctx.onSchedulesChanged();
             if (typeof onReady === 'function') onReady(scheduleListCache);
@@ -108,6 +114,18 @@ export function createAISchedule(ctx) {
 
     function renderChip() {
         refreshSchedulesUI();
+    }
+
+    // 切会话时的胶囊同步（syncActiveSessionUI 调用）：只按缓存重算显隐/角标，不拉后端。
+    // 定时任务只在 CRUD 与触发时变化，那些路径都会先过 refreshSchedulesUI 更新缓存。
+    function syncChip() {
+        updateChipFromCache();
+    }
+
+    // 头部胶囊点击开关弹层（chip 是静态 DOM，工厂时接线一次；与计时胶囊 ai-timer.js 同款）
+    const schedChip = chipEl();
+    if (schedChip && typeof ctx.togglePop === 'function') {
+        schedChip.addEventListener('click', () => ctx.togglePop(schedChip));
     }
 
     // 弹层（胶囊点开）：只列绑定**当前会话**的启用任务（与胶囊口径一致）；
@@ -562,5 +580,5 @@ export function createAISchedule(ctx) {
         openAIDialog('自动化 · 定时任务', [body], foot);
     }
 
-    return {renderScheduleSettings, renderScheduleRow, renderSchedulePop, renderChip, openScheduleEditor, openAutomationDialog, aiDelay, handleScheduleFire, runScheduledTurn};
+    return {renderScheduleSettings, renderScheduleRow, renderSchedulePop, renderChip, syncChip, openScheduleEditor, openAutomationDialog, aiDelay, handleScheduleFire, runScheduledTurn};
 }

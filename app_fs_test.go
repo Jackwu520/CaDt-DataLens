@@ -85,6 +85,45 @@ func TestReadDirTreeSkipsJunkDirs(t *testing.T) {
 	}
 }
 
+func TestReadDirTreeRespectsSearchIgnore(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"keep", ".aoci"} {
+		if err := os.Mkdir(filepath.Join(dir, name), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "drop.tmp"), []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "keep.tmp"), []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// 用户排除表：按名字排 .aoci、按通配排 *.tmp，再取反保留 keep.tmp
+	ignoreDir := filepath.Join(dir, ".cadt", "config")
+	if err := os.MkdirAll(ignoreDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ignoreDir, "search-ignore"),
+		[]byte(".aoci\n*.tmp\n!keep.tmp\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	listing, err := NewApp().ReadDirTree(dir, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := map[string]bool{}
+	for _, child := range listing.Root.Children {
+		names[child.Name] = true
+	}
+	if names[".aoci"] || names["drop.tmp"] {
+		t.Fatalf("被排除项不该出现在目录树: %+v", listing.Root.Children)
+	}
+	if !names["keep"] || !names["keep.tmp"] {
+		t.Fatalf("未排除项与取反项应保留: %+v", listing.Root.Children)
+	}
+}
+
 func TestReadDirTreeTruncatesOnBudget(t *testing.T) {
 	dir := t.TempDir()
 	for i := 0; i < fsops.DirTreeMaxEntries+50; i++ {

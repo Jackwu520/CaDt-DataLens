@@ -331,7 +331,7 @@ func TestScanWorkspaceSizes(t *testing.T) {
 	env := newTestEnv(t)
 	ws := filepath.Join(env.appRoot, "workspace")
 	env.mustFile(t, filepath.Join(ws, ".cadt", "gen", "a.png"), 1234)
-	env.mustFile(t, filepath.Join(ws, ".cadt", "git-commit-style.json"), 66)
+	env.mustFile(t, filepath.Join(ws, ".cadt", "config", "git-commit-style.json"), 66)
 
 	report := env.service.Scan(ws)
 	gen := itemByID(t, report, "ws-gen")

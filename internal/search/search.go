@@ -326,6 +326,7 @@ type searchSpec struct {
 	context       int
 	outputMode    string
 	fileOnly      bool
+	ignore        *IgnoreRules // 用户自定义排除表（search-ignore），按扫描根加载
 }
 
 func newSearchSpec(query string, opts SearchOptions) (*searchSpec, error) {
@@ -693,6 +694,8 @@ func (s *Searcher) searchWorkspace(root, query string, spec *searchSpec) (*Searc
 	if query == "" {
 		return &SearchResult{}, nil
 	}
+	// 用户排除表按最终扫描根加载（文件根已扩散到父目录时从父目录读配置）
+	spec.ignore = LoadIgnoreRules(root)
 	if !spec.fuzzy && os.Getenv("DATALENS_NO_RG") == "" {
 		if res, ok := searchWithRipgrep(root, spec); ok {
 			applyOutputMode(res, spec)
@@ -729,8 +732,13 @@ func (s *Searcher) scanWorkspaceBuiltin(root string, spec *searchSpec) (*SearchR
 				if searchSkipDirs[strings.ToLower(name)] || name == ".git" {
 					return filepath.SkipDir
 				}
+				rel, relErr := filepath.Rel(root, path)
 				// AI 隔离 worktree 副本整棵跳过（按相对路径；从 worktree 内发起的检索不受影响）
-				if rel, relErr := filepath.Rel(root, path); relErr == nil && SkipPath(rel) {
+				if relErr == nil && SkipPath(rel) {
+					return filepath.SkipDir
+				}
+				// 用户排除表：按名字/路径匹配目录，整棵跳过
+				if relErr == nil && spec.ignore.ShouldSkipDir(name, filepath.ToSlash(rel)) {
 					return filepath.SkipDir
 				}
 			}
@@ -741,6 +749,12 @@ func (s *Searcher) scanWorkspaceBuiltin(root string, spec *searchSpec) (*SearchR
 		}
 		if searchBinaryExt[strings.ToLower(filepath.Ext(name))] {
 			return nil
+		}
+		// 用户排除表：按名字/路径匹配单个文件
+		if !rootIsFile {
+			if r, relErr := filepath.Rel(root, path); relErr == nil && spec.ignore.ShouldSkipFile(name, filepath.ToSlash(r)) {
+				return nil
+			}
 		}
 		// 文件根（FileOnly）：唯一 job 的相对路径就是文件名，不参与目录相对路径推导
 		rel := name

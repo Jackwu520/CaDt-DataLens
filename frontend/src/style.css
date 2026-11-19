@@ -5220,7 +5220,8 @@ a.jsoneditor-poweredBy { display: none !important; }
 .run-remember { display: flex; align-items: center; gap: 6px; margin: 8px 0 0; font-size: 11.5px; }
 .git-toolbar { display: flex; align-items: center; gap: 10px; }
 .git-branch { color: var(--text); font-size: 11.5px; }
-.git-hint { color: var(--muted); font-size: 11px; }
+.git-hint { color: var(--muted); font-size: 11px; flex: 1; min-width: 0; }
+.git-meta-tools { margin-left: auto; flex: none; }
 .git-changes { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 1px; }
 .git-group-block { display: flex; flex-direction: column; gap: 1px; }
 .git-group { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 11px; padding: 4px 2px 2px; cursor: default; }
@@ -7237,7 +7238,6 @@ div.jsoneditor-tree textarea { user-select: text; }
 /* 提问卡收起：头部有倒计时时由倒计时的 auto 外边距推右，收起按钮紧随其后（两个 auto 会把倒计时挤到中间）；
    无倒计时（wait 模式）时收起按钮按默认 auto 推到最右。收起细条沿用 .ai-takeover-bar，
    里面的倒计时去掉块级上边距、不参与伸缩 */
-.ai-ask-takeover .ai-takeover-head .ai-ask-countdown + .ai-takeover-collapse { margin-left: 0; }
 .ai-takeover-bar .ai-ask-countdown { margin: 0; flex: none; white-space: nowrap; }
 .ai-takeover-head {
     display: flex;
@@ -7261,6 +7261,27 @@ div.jsoneditor-tree textarea { user-select: text; }
     padding-left: 8px;
     font-variant-numeric: tabular-nums;
 }
+/* 倒计时暂停/继续小图标：展开态头部紧跟倒计时，收起态细条里 flex:none 不伸缩。
+   头部倒计时已带 margin-left:auto 推右，暂停按钮与收起按钮都贴着它，不要再加 auto。 */
+.ai-ask-pause {
+    flex: none;
+    display: grid;
+    place-items: center;
+    width: 20px;
+    height: 20px;
+    margin: 0;
+    padding: 0;
+    border: none;
+    border-radius: 5px;
+    background: none;
+    color: var(--muted);
+    cursor: pointer;
+}
+.ai-ask-pause:hover { color: var(--text); background: var(--accent-weak); }
+.ai-ask-pause svg { width: 13px; height: 13px; }
+.ai-takeover-bar .ai-ask-pause { width: 18px; height: 18px; margin-left: 0; }
+/* 头部有暂停按钮时收起按钮不要 margin-left:auto 把它俩拆开（倒计时已负责推右） */
+.ai-ask-takeover .ai-takeover-head .ai-ask-pause + .ai-takeover-collapse { margin-left: 0; }
 .ai-takeover-body {
     display: flex;
     flex-direction: column;
@@ -13595,6 +13616,28 @@ textarea.dlg-input:focus {
     font: inherit; font-size: 11.5px; outline: none;
 }
 .gg-filter:focus { border-color: var(--accent); }
+/* 搜索框 + 正则/大小写开关：开关叠在输入框右端内侧 */
+.gg-search-box { position: relative; flex: 1; min-width: 120px; display: flex; align-items: center; }
+.gg-search-box .gg-filter { width: 100%; padding-right: 52px; }
+.gg-search-toggle {
+    position: absolute; top: 50%; transform: translateY(-50%);
+    width: 20px; height: 20px; padding: 0; border: none; border-radius: 3px;
+    background: transparent; color: var(--muted); cursor: pointer;
+    display: inline-flex; align-items: center; justify-content: center;
+}
+.gg-search-toggle:nth-of-type(1) { right: 24px; }
+.gg-search-toggle:nth-of-type(2) { right: 4px; }
+.gg-search-toggle:hover { color: var(--text); background: var(--panel2); }
+.gg-search-toggle.active { color: var(--accent); background: var(--accent-weak); }
+/* 分支/用户/日期筛选下拉：紧凑，不抢搜索框宽度 */
+.gg-filter-bar { display: flex; gap: 4px; flex: none; }
+.gg-filter-select {
+    height: 22px; max-width: 92px; padding: 0 4px; box-sizing: border-box;
+    border: 1px solid var(--border); border-radius: 4px;
+    background: transparent; color: var(--muted);
+    font: inherit; font-size: 11px; outline: none; cursor: pointer;
+}
+.gg-filter-select:focus { border-color: var(--accent); }
 .gg-col-actions { display: flex; gap: 2px; margin-left: auto; flex: none; }
 .gg-btn {
     display: inline-flex; align-items: center; justify-content: center;
@@ -13676,7 +13719,10 @@ textarea.dlg-input:focus {
     content: ''; position: absolute; top: 0; bottom: 0;
     right: calc(var(--gg-detail-w, 280px) + 1px);
     width: 1px; background: var(--border);
+    transition: background .12s ease;
 }
+/* hover/拖动「提交列 | 详情」分割条时头部静态线同步高亮，整条竖线颜色一致不中断 */
+.gg-right-head.gg-head-line-active::after { background: var(--accent); }
 .gg-head-inner {
     width: calc(100% - var(--gg-detail-w, 280px) - 12px);
     min-width: 0;
@@ -13827,6 +13873,9 @@ textarea.dlg-input:focus {
     color: var(--muted); white-space: nowrap;
 }
 .gg-file-dir:hover { color: var(--text); }
+/* 工作区顶层节点（JetBrains 式最外层仓库名）：字重与字色都比普通目录重一档 */
+.gg-file-root { color: var(--text); font-weight: 600; }
+.gg-file-root .gg-dir-ico { color: var(--accent); }
 .gg-file-chev { display: inline-flex; flex: none; }
 .gg-file-dir-name { overflow: hidden; text-overflow: ellipsis; }
 .gg-file-dir-count { flex: none; color: var(--muted); opacity: .8; }
@@ -13835,6 +13884,8 @@ textarea.dlg-input:focus {
     padding-top: 2px; padding-bottom: 2px; padding-right: 8px;
     white-space: nowrap;
 }
+.gg-file-row.gg-file-clickable { cursor: pointer; }
+.gg-file-row.gg-file-clickable:hover { background: var(--panel2); }
 /* 状态着色：git 树同款 FILESTATUS 色板（绿=新增 蓝=修改/重命名 灰=删除），随主题切换 */
 .gg-file-row.gg-st-added .gg-file-name { color: var(--git-added); }
 .gg-file-row.gg-st-modified .gg-file-name,

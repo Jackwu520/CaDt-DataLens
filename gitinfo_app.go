@@ -173,3 +173,8 @@ func (a *App) GitGraphCommitFiles(dir, sha string) ([]gitinfo.GitGraphFileChange
 func (a *App) GitGraphCommitBody(dir, sha string) (string, error) {
 	return gitinfo.GraphCommitBody(dir, sha)
 }
+
+// GitGraphCommitFileDiff 返回一次提交中单个文件的 diff（图谱「本次变动」树点击文件用）。
+func (a *App) GitGraphCommitFileDiff(dir, sha, path string, maxLines int) (*gitinfo.GitDiffResult, error) {
+	return gitinfo.GraphCommitFileDiff(dir, sha, path, maxLines)
+}

@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {
     glyphX, laneSvgWidth, buildLaneSvg, parseCommitRefs, fileTreeFromChanges,
-    buildSkeletonHtml, clampPaneWidth,
+    buildSkeletonHtml, clampPaneWidth, buildCommitMatcher,
 } from '../../src/git-graph/git-graph.js';
 
 test('glyphX：字形竖线画在格子右边界，相邻位差半泳道', () => {
@@ -124,6 +124,53 @@ test('fileTreeFromChanges 组目录树：目录在前、按名排序、保留状
 test('fileTreeFromChanges 空列表返回空数组', () => {
     assert.deepEqual(fileTreeFromChanges([]), []);
     assert.deepEqual(fileTreeFromChanges(null), []);
+});
+
+test('fileTreeFromChanges 传 rootName 时套一层工作区顶层节点', () => {
+    const nodes = fileTreeFromChanges([
+        {path: 'src/a.js', status: 'M'},
+        {path: 'README.md', status: 'M'},
+    ], 'CaDt-DataLens');
+    assert.equal(nodes.length, 1, '只返回一个根节点');
+    assert.equal(nodes[0].type, 'dir');
+    assert.equal(nodes[0].name, 'CaDt-DataLens');
+    assert.equal(nodes[0].root, true);
+    assert.deepEqual(nodes[0].children.map((n) => n.name), ['src', 'README.md']);
+    assert.deepEqual(nodes[0].children[0].children.map((n) => n.name), ['a.js']);
+});
+
+const MATCH_COMMITS = [
+    {sha: 'abc1234def', subject: 'Fix Login Bug', author: 'Alice', email: 'alice@x.com', date: '2026-11-20 10:00', refs: 'HEAD -> master'},
+    {sha: '9990000aaa', subject: 'fix logout bug', author: 'Bob', email: 'bob@x.com', date: '2026-11-01 09:00', refs: ''},
+];
+
+test('buildCommitMatcher 文本模式默认不区分大小写', () => {
+    const {match} = buildCommitMatcher({query: 'login'});
+    assert.equal(match(MATCH_COMMITS[0]), true, 'login 命中 Fix Login Bug');
+    assert.equal(match(MATCH_COMMITS[1]), false);
+});
+
+test('buildCommitMatcher 区分大小写', () => {
+    const exact = buildCommitMatcher({query: 'Login', caseSensitive: true}).match;
+    assert.equal(exact(MATCH_COMMITS[0]), true, '区分大小写时 Login 命中 Login');
+    const lower = buildCommitMatcher({query: 'login', caseSensitive: true}).match;
+    assert.equal(lower(MATCH_COMMITS[0]), false, '区分大小写时 login 不命中 Login');
+});
+
+test('buildCommitMatcher 正则模式与非法正则', () => {
+    const {match} = buildCommitMatcher({query: '^fix.*bug$', regex: true});
+    assert.equal(match(MATCH_COMMITS[0]), true);
+    assert.equal(match(MATCH_COMMITS[1]), true);
+    const bad = buildCommitMatcher({query: '[', regex: true});
+    assert.ok(bad.error, '非法正则应返回 error 而非抛异常');
+});
+
+test('buildCommitMatcher 用户与日期筛选', () => {
+    assert.equal(buildCommitMatcher({user: 'alice'}).match(MATCH_COMMITS[0]), true);
+    assert.equal(buildCommitMatcher({user: 'alice'}).match(MATCH_COMMITS[1]), false);
+    const now = Date.parse('2026-11-20T12:00:00');
+    assert.equal(buildCommitMatcher({date: '7d', now}).match(MATCH_COMMITS[0]), true);
+    assert.equal(buildCommitMatcher({date: '7d', now}).match(MATCH_COMMITS[1]), false, '11-01 不在最近 7 天');
 });
 
 test('buildSkeletonHtml 三栏齐全且条块数量合理', () => {

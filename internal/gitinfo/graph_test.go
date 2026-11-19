@@ -384,6 +384,62 @@ func TestGraphCommitBodyIntegration(t *testing.T) {
 	}
 }
 
+func TestGraphCommitFileDiffIntegration(t *testing.T) {
+	dir := setupTestRepo(t)
+	if dir == "" {
+		t.Skip("无法创建测试仓库")
+	}
+	// 在第二提交里修改 test.txt
+	if err := osWriteFile(dir+"/test.txt", []byte("hello world\n")); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(dir, []string{"add", "."}, 5000)
+	if _, code, _ := gitRun(dir, []string{"commit", "-m", "second"}, 5000); code != 0 {
+		t.Fatal("第二提交失败")
+	}
+	page, err := GraphCommits(dir, "", 10, 0)
+	if err != nil || !page.Available || len(page.Commits) == 0 {
+		t.Fatalf("GraphCommits 失败：%v", err)
+	}
+	sha := page.Commits[0].Sha // 最新提交
+	res, err := GraphCommitFileDiff(dir, sha, "test.txt", 0)
+	if err != nil {
+		t.Fatalf("GraphCommitFileDiff 失败：%v", err)
+	}
+	if !res.HasChanges || !strings.Contains(res.Diff, "+hello world") || !strings.Contains(res.Diff, "-hello") {
+		t.Errorf("diff 内容不符：%+v", res)
+	}
+	// 根提交（第一提交）相对空树应显示整文件新增
+	rootSha := page.Commits[len(page.Commits)-1].Sha
+	rootRes, err := GraphCommitFileDiff(dir, rootSha, "test.txt", 0)
+	if err != nil || !rootRes.HasChanges || !strings.Contains(rootRes.Diff, "+hello") {
+		t.Errorf("根提交 diff 应显示新增：%+v err=%v", rootRes, err)
+	}
+	// 无关路径应无变化
+	none, err := GraphCommitFileDiff(dir, sha, "nope.txt", 0)
+	if err != nil || none.HasChanges {
+		t.Errorf("无关文件应无差异：%+v err=%v", none, err)
+	}
+}
+
+func TestGraphCommitFileDiffValidation(t *testing.T) {
+	// 纯参数校验，不需要 git 仓库
+	cases := []struct{ dir, sha, path string }{
+		{"", "abcdef1", "a.txt"},
+		{"/tmp", "", "a.txt"},
+		{"/tmp", "abcdef1", ""},
+		{"/tmp", "-bad", "a.txt"},
+		{"/tmp", "xyz", "a.txt"},
+		{"/tmp", "abcdef1", "/abs.txt"},
+		{"/tmp", "abcdef1", "../escape.txt"},
+	}
+	for _, c := range cases {
+		if _, err := GraphCommitFileDiff(c.dir, c.sha, c.path, 0); err == nil {
+			t.Errorf("应拒绝 dir=%q sha=%q path=%q", c.dir, c.sha, c.path)
+		}
+	}
+}
+
 func TestGraphRefsIntegration(t *testing.T) {
 	dir := setupTestRepo(t)
 	if dir == "" {

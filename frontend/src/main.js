@@ -438,6 +438,8 @@ const els = {
     gitHint: document.getElementById('git-hint'),
     gitChanges: document.getElementById('git-changes'),
     gitRefresh: document.getElementById('git-refresh'),
+    gitRefreshMeta: document.getElementById('git-refresh-meta'),
+    gitRollback: document.getElementById('git-rollback'),
     gitRecentLog: document.getElementById('git-recent-log'),
     gitAmend: document.getElementById('git-amend'),
     gitMessage: document.getElementById('git-message'),
@@ -4285,6 +4287,10 @@ function initExplorer() {
     }
     applySidebarUI();
     if (els.btnSidebar) els.btnSidebar.addEventListener('click', () => toggleSidebar());
+    // 各左侧面板标题栏的「−」收起按钮：统一收起侧边栏（含文件树 / 结构 / git / AI 会话）
+    document.querySelectorAll('.sb-collapse').forEach((btn) => {
+        btn.addEventListener('click', () => toggleSidebar(false));
+    });
     if (els.lock) els.lock.addEventListener('click', () => {
         settings.readOnlyMode = !settings.readOnlyMode;
         applySettings();
@@ -6479,7 +6485,7 @@ const terminalMod = createTerminalUI({
     get openDialogEl() { return openDialogEl; },
     get openNameDialog() { return openNameDialog; },
     get openPathsHere() { return openPathsHere; },
-    get openPathsHere() { return openPathsHere; },
+    get openVirtualDoc() { return openVirtualDoc; },
     get refreshGitStatus() { return refreshGitStatus; },
     get rt() { return rt; },
     get saveDoc() { return saveDoc; },

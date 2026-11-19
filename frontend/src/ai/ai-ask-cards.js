@@ -6,11 +6,16 @@ import {aiClampInt, aiNowId} from './ai-constants.js';
 // 问号圆圈图标：展开态头部与收起态细条共用
 const ASK_ICON_SVG = '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M6.2 6.3a1.8 1.8 0 1 1 2.5 1.7c-.5.2-.7.6-.7 1.1v.4" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><circle cx="8" cy="11.6" r=".75" fill="currentColor"/></svg>';
 
+// 倒计时暂停/继续图标：暂停态显示播放三角（点它继续），运行态显示双竖条（点它暂停）
+const ASK_PAUSE_SVG = '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="4.5" y="3.5" width="2.4" height="9" rx=".6" fill="currentColor"/><rect x="9.1" y="3.5" width="2.4" height="9" rx=".6" fill="currentColor"/></svg>';
+const ASK_PLAY_SVG = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.2 3.6a.7.7 0 0 1 1.05-.6l6.1 4.4a.7.7 0 0 1 0 1.2l-6.1 4.4a.7.7 0 0 1-1.05-.6z" fill="currentColor"/></svg>';
+
 export function createAIAskCards(ctx, extras) {
     const el = ctx.el;
     const decideEnvCreation = ctx.decideEnvCreation;
     const askDrafts = ctx.askDrafts;
     const askCountdownText = ctx.askCountdownText;
+    const toggleAskPause = ctx.toggleAskPause;
     const skipAsk = ctx.skipAsk;
     const submitAskAnswers = ctx.submitAskAnswers;
     const AI_CHEVRON_SVG = ctx.AI_CHEVRON_SVG;
@@ -21,6 +26,26 @@ export function createAIAskCards(ctx, extras) {
 
     function askTakeoverKey(entry) {
         return entry.toolMessage.toolCallId || entry.key;
+    }
+
+    // 倒计时右侧的暂停/继续小图标。仅倒计时存在时显示；无 deadline（wait / 0 秒）时返回 null。
+    // 用独立 button 而非把细条本身做成 button：收起态细条若嵌 button 会形成嵌套按钮，故细条改 div。
+    function askPauseButton(entry) {
+        const ask = entry.ask;
+        if (!ask || !ask.deadline) return null;
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'ai-ask-pause';
+        const paused = !!ask.paused;
+        btn.innerHTML = paused ? ASK_PLAY_SVG : ASK_PAUSE_SVG;
+        btn.dataset.tip = paused ? '继续倒计时' : '暂停倒计时';
+        btn.setAttribute('aria-label', paused ? '继续倒计时' : '暂停倒计时');
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation(); // 收起态细条整块可点恢复，别让暂停按钮冒泡触发展开
+            e.preventDefault();
+            toggleAskPause(entry);
+        });
+        return btn;
     }
 
     function askDraftFor(entry) {
@@ -136,6 +161,8 @@ export function createAIAskCards(ctx, extras) {
             countdown.textContent = countdownText;
             head.appendChild(countdown);
         }
+        const pauseBtn = askPauseButton(entry);
+        if (pauseBtn) head.appendChild(pauseBtn);
         // 临时收起：整卡折成单行细条，方便继续看上方消息；倒计时保留在细条上（renderAskCollapsedBar），
         // 答案草稿与题目进度在 askDrafts 里不丢。展开态头部无倒计时时收起按钮自己推右（CSS 兄弟选择器分工）
         const collapse = document.createElement('button');
@@ -365,9 +392,11 @@ export function createAIAskCards(ctx, extras) {
     // 收起态细条（沿用审批卡的 .ai-takeover-bar）：标题 + 当前问题 + 倒计时，不放「跳过 / 提交回答」；
     // 超时处理照常在后台走（到点按设置结算，细条随接管区一起消失）。点击恢复完整卡。
     function renderAskCollapsedBar(entry, ask, draft, key, multi) {
-        const bar = document.createElement('button');
-        bar.type = 'button';
+        // 细条内含暂停按钮，不能用 <button>（嵌套按钮非法）：改 div + role/tabindex 保留可点可聚焦
+        const bar = document.createElement('div');
         bar.className = 'ai-takeover-bar';
+        bar.setAttribute('role', 'button');
+        bar.tabIndex = 0;
         const barIcon = document.createElement('span');
         barIcon.className = 'ai-ask-icon';
         barIcon.innerHTML = ASK_ICON_SVG;
@@ -387,13 +416,20 @@ export function createAIAskCards(ctx, extras) {
             countdown.textContent = countdownText;
             bar.appendChild(countdown);
         }
+        const pauseBtn = askPauseButton(entry);
+        if (pauseBtn) bar.appendChild(pauseBtn);
         const chev = document.createElement('span');
         chev.className = 'ai-takeover-collapse';
         chev.innerHTML = AI_CHEVRON_SVG;
         bar.appendChild(chev);
-        bar.addEventListener('click', () => {
+        const expand = () => {
             draft.collapsed = false;
             updateComposerTakeover(true);
+        };
+        bar.addEventListener('click', expand);
+        bar.addEventListener('keydown', (e) => {
+            if (e.target !== bar) return; // 暂停按钮上的按键交给它自己
+            if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); expand(); }
         });
         el.takeover.appendChild(bar);
     }

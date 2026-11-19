@@ -1588,6 +1588,10 @@ export function createAIPanel(options) {
             // timeoutAction=wait 会忽略 timeoutSec；恢复历史时保留这个事实，
             // 否则面板不再提示"已忽略 N 秒"，用户会以为当初没设超时
             ignoredSec: Math.max(0, Number(raw.ignoredSec) || 0),
+            // 暂停态：暂停时冻结剩余毫秒，deadline 保留原值（文案走 paused 分支），
+            // 继续时用 remainingMs 重算 deadline。历史消息恢复后不重建计时器，仅保证文案一致。
+            paused: !!raw.paused,
+            remainingMs: Math.max(0, Number(raw.remainingMs) || 0),
         };
     }
 
@@ -2171,7 +2175,7 @@ export function createAIPanel(options) {
     // 兜底 / 启动加载与 init）一律走这里，不许各自手写清单：漏一项就残留上一个会话的显示
     // （2026-11-18 隔离芯片残留即此因——newSession 不走 switchSession，芯片漏刷一行）。
     // renderSessionList 不在这里：面板关闭时也要刷列表（refreshSessionUI 的口径）；
-    // timerMod / worktreeMod 构造于本声明之后，调用都发生在构造完成以后，无 TDZ 问题。
+    // timerMod / worktreeMod / scheduleMod 构造于本声明之后，调用都发生在构造完成以后，无 TDZ 问题。
     function syncActiveSessionUI(keepScroll) {
         const session = currentSession();
         syncStreamView();
@@ -2183,6 +2187,8 @@ export function createAIPanel(options) {
         syncRemindersUI(session);
         // 计时胶囊按目标会话重新过滤（显示与上限都是会话隔离的）
         timerMod.render();
+        // 定时任务胶囊同为「绑定当前会话」口径，切会话必须重算，否则残留上一个会话的任务数
+        scheduleMod.syncChip();
         // 隔离 worktree 胶囊随目标会话切换（显示 / 隐藏 / 名称）
         worktreeMod.syncChip(session);
         refreshSystemPromptEstimate(true);
@@ -8119,13 +8125,17 @@ async function requestApproval(session, toolMessage, info) {
             // 必须说清它没生效：wait 会把 timeoutSec 静默忽略，否则用户只看到"没设超时"。
             return ask.ignoredSec > 0 ? '本次不限时（已忽略 ' + ask.ignoredSec + ' 秒超时）' : '';
         }
-        const left = Math.max(0, Math.ceil((ask.deadline - Date.now()) / 1000));
+        // 暂停时冻结在 remainingMs，不再随 wall clock 递减；继续后回到 deadline 计时。
+        const leftMs = ask.paused ? ask.remainingMs : Math.max(0, ask.deadline - Date.now());
+        const left = Math.ceil(leftMs / 1000);
+        const mm = Math.floor(left / 60);
+        const ss = left % 60;
+        const time = mm + ':' + String(ss).padStart(2, '0');
+        if (ask.paused) return '已暂停 · 剩余 ' + time;
         if (!left) return '';
         const action = askTimeoutActionOf(ask);
         const label = {recommended: '按 AI 推荐项继续', abort: '停止本轮', ai_decide: '交给 AI 决定'}[action] || '继续';
-        const mm = Math.floor(left / 60);
-        const ss = left % 60;
-        return '超时后' + label + ' · 剩余 ' + mm + ':' + String(ss).padStart(2, '0');
+        return '超时后' + label + ' · 剩余 ' + time;
     }
 
     function updateAskCountdown(entry) {
@@ -8180,6 +8190,25 @@ async function requestApproval(session, toolMessage, info) {
         }
     }
 
+    // 超时前用户可能已点选/自填了部分题但没点「提交回答」。草稿只存在 askDrafts，
+    // 结算时先取回：已答的题保留用户答案，未答的题才交给推荐项/AI，避免整卡覆盖。
+    function askDraftAnswersOf(entry) {
+        const key = (entry.toolMessage && entry.toolMessage.toolCallId) || entry.key;
+        const draft = askDrafts.get(key);
+        const draftAnswers = draft && Array.isArray(draft.answers) ? draft.answers : [];
+        return entry.ask.questions.map((question, qi) => {
+            const picked = draftAnswers[qi];
+            const hasDraft = picked && ((Array.isArray(picked.selected) && picked.selected.length)
+                || (picked.custom && String(picked.custom).trim()));
+            if (!hasDraft) return null;
+            return {
+                id: question.id,
+                selected: Array.isArray(picked.selected) ? [...picked.selected] : [],
+                custom: picked.custom || '',
+            };
+        });
+    }
+
     function handleAskTimeout(entry) {
         if (!entry || !pendingAsks.has(entry.key)) return;
         const action = askTimeoutActionOf(entry.ask);
@@ -8191,8 +8220,10 @@ async function requestApproval(session, toolMessage, info) {
             });
             return;
         }
+        const draftAnswers = askDraftAnswersOf(entry);
         if (action === 'recommended') {
-            const answers = entry.ask.questions.map((question) => {
+            const answers = entry.ask.questions.map((question, qi) => {
+                if (draftAnswers[qi]) return draftAnswers[qi];
                 const recommended = question.options.filter((option) => option.recommended).map((option) => option.label);
                 return {
                     id: question.id,
@@ -8200,29 +8231,56 @@ async function requestApproval(session, toolMessage, info) {
                     custom: '',
                 };
             });
-            if (answers.some((answer) => answer.selected.length)) {
+            if (answers.some((answer) => answer.selected.length || answer.custom)) {
                 settleAsk(entry.key, {
                     state: 'timeout',
                     answers,
                     answer: askAnswerSummary(entry.ask, answers),
                     source: 'timeout_recommended',
-                    result: formatAskAnswers(entry.ask, answers, '用户未在时限内回答（超时），已自动采用推荐项：'),
+                    result: formatAskAnswers(entry.ask, answers, '用户未在时限内回答（超时），已按已选答案与推荐项继续：'),
                 });
                 return;
             }
         }
+        // ai_decide（及推荐项为空的 recommended）：把用户已答部分一并交给模型，未答的题让它自行决定。
+        const answered = draftAnswers.filter(Boolean);
+        const result = answered.length
+            ? formatAskAnswers(entry.ask, draftAnswers, '用户未在时限内回答（超时），以下是超时前已选答案，其余问题请根据上下文自行决定并继续执行：')
+            : '用户未在时限内回答（超时）。请根据上下文自行决定每个问题的答案，并继续执行。';
         settleAsk(entry.key, {
             state: 'timeout',
+            answers: answered,
+            answer: askAnswerSummary(entry.ask, answered),
             source: 'timeout_ai',
-            result: '用户未在时限内回答（超时）。请根据上下文自行决定每个问题的答案，并继续执行。',
+            result,
         });
     }
 
     function setupAskTimer(entry) {
-        if (!entry || !entry.ask.deadline) return;
+        if (!entry || !entry.ask.deadline || entry.ask.paused) return;
         const delay = Math.max(0, entry.ask.deadline - Date.now());
         entry.timer = setTimeout(() => handleAskTimeout(entry), delay);
         entry.ticker = setInterval(() => updateAskCountdown(entry), 1000);
+    }
+
+    // 暂停/继续倒计时：暂停时冻结剩余毫秒并清掉 timer/ticker，继续时用剩余时间重算 deadline。
+    // 只改本次 ask 的内存态并持久化，不写用户设置；无倒计时的 ask（wait / 0 秒）不可暂停。
+    function toggleAskPause(entry) {
+        if (!entry || !entry.ask || entry.ask.state !== 'pending' || !entry.ask.deadline) return;
+        const ask = entry.ask;
+        if (!ask.paused) {
+            ask.remainingMs = Math.max(0, ask.deadline - Date.now());
+            ask.paused = true;
+            clearAskTimers(entry);
+        } else {
+            ask.deadline = Date.now() + ask.remainingMs;
+            ask.paused = false;
+            ask.remainingMs = 0;
+            setupAskTimer(entry);
+        }
+        persistSessions();
+        updateAskCountdown(entry);
+        updateComposerTakeover(true);
     }
 
     function submitAskAnswers(entry, answers) {
@@ -8340,6 +8398,8 @@ async function requestApproval(session, toolMessage, info) {
             timeoutCustom: custom,
             // wait 时不启动计时器：记住被忽略的秒数，面板据此提示"本次不限时"
             ignoredSec: useTimer ? 0 : timeoutSec,
+            paused: false,
+            remainingMs: 0,
         };
         const toolMessage = ctx.toolMessage;
         toolMessage.ask = ask;
@@ -16887,6 +16947,7 @@ async function requestApproval(session, toolMessage, info) {
         skipAsk,
         submitAskAnswers,
         askCountdownText,
+        toggleAskPause,
         streamOf,
         positionOverlays,
         pendingApprovals,

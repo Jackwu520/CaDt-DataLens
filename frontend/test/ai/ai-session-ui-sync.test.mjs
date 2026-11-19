@@ -1,8 +1,10 @@
 // ai-session-ui-sync 接线守卫：当前查看会话的 chrome（消息区 / 输入区 / 发送停止按钮 /
-// 提醒徽标 / 计时胶囊 / 隔离 worktree 芯片 / 系统提示词估算）统一走 syncActiveSessionUI，
+// 提醒徽标 / 计时胶囊 / 定时任务胶囊 / 隔离 worktree 芯片 / 系统提示词估算）统一走 syncActiveSessionUI，
 // 凡「当前会话可能变了」的路径都必须调它，不许手写清单。
 // 背景：switchSession 有一份完整清单，newSession 不走 switchSession 又手写了一份，
 // 漏了隔离芯片——从隔离区会话点「新建对话」会残留「隔离 · 开」（2026-11-18）。
+// 定时胶囊同理（2026-11-20）：syncActiveSessionUI 只刷计时不刷定时，绑定 A 会话的
+// 任务数在 B 会话一直挂着，用户实测「定时 1 在哪个会话都显示」。
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
@@ -31,6 +33,7 @@ test('syncActiveSessionUI：包含全部会话级 chrome 刷新', () => {
         'setStreamingUI()',
         'syncRemindersUI(',
         'timerMod.render()',
+        'scheduleMod.syncChip()',
         'worktreeMod.syncChip(',
         'refreshSystemPromptEstimate(',
     ];
@@ -50,7 +53,7 @@ test('当前会话可能变化的路径一律走 syncActiveSessionUI', () => {
 // 其他路径就会各漏一份（本守卫的来历）
 test('switchSession 不再手写会话级芯片清单', () => {
     const body = fnBody('switchSession');
-    for (const call of ['worktreeMod.syncChip', 'timerMod.render', 'syncRemindersUI(']) {
+    for (const call of ['worktreeMod.syncChip', 'timerMod.render', 'scheduleMod.syncChip', 'syncRemindersUI(']) {
         assert.ok(!body.includes(call), 'switchSession 里出现裸的 ' + call + '（应统一走 syncActiveSessionUI）');
     }
 });

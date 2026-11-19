@@ -135,14 +135,15 @@ func (f *FS) ReadDirTree(path string, depth int) (*DirTreeListing, error) {
 		depth = DirTreeMaxDepth
 	}
 	budget := DirTreeMaxEntries
-	root, truncated := walkDirTree(path, "", depth, &budget)
+	ignore := search.LoadIgnoreRules(path)
+	root, truncated := walkDirTree(path, "", depth, &budget, ignore)
 	return &DirTreeListing{Root: root, Depth: depth, Total: DirTreeMaxEntries - budget, Truncated: truncated}, nil
 }
 
 // walkDirTree 递归收录；根级读失败由调用方先 os.Stat 挡过，子级读失败按空目录跳过。
 // rel 为当前目录相对遍历根的路径（正斜杠；根为空串）——用于按路径跳过 AI 隔离 worktree
 //（.cadt/worktree 整棵不列；从 worktree 自身发起的遍历 rel 不命中，照常列出）。
-func walkDirTree(dir string, rel string, remainingDepth int, budget *int) (*DirTreeNode, bool) {
+func walkDirTree(dir string, rel string, remainingDepth int, budget *int, ignore *search.IgnoreRules) (*DirTreeNode, bool) {
 	node := &DirTreeNode{Name: filepath.Base(dir), IsDir: true}
 	if remainingDepth <= 0 {
 		return node, false
@@ -161,9 +162,15 @@ func walkDirTree(dir string, rel string, remainingDepth int, budget *int) (*DirT
 			if search.SkipDir(name) {
 				continue
 			}
-			if search.SkipPath(joinRelPath(rel, name)) {
+			childRel := joinRelPath(rel, name)
+			if search.SkipPath(childRel) {
 				continue
 			}
+			if ignore.ShouldSkipDir(name, childRel) {
+				continue
+			}
+		} else if ignore.ShouldSkipFile(name, joinRelPath(rel, name)) {
+			continue
 		}
 		if *budget <= 0 {
 			node.Omitted = true
@@ -178,7 +185,7 @@ func walkDirTree(dir string, rel string, remainingDepth int, budget *int) (*DirT
 		}
 		node.Children = append(node.Children, child)
 		if isDir {
-			sub, subTruncated := walkDirTree(filepath.Join(dir, name), joinRelPath(rel, name), remainingDepth-1, budget)
+			sub, subTruncated := walkDirTree(filepath.Join(dir, name), joinRelPath(rel, name), remainingDepth-1, budget, ignore)
 			child.Children = sub.Children
 			child.Omitted = sub.Omitted
 			truncated = truncated || subTruncated

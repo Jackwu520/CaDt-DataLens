@@ -19,7 +19,8 @@
 | `patches/manifest/<id>.json` | 应用 | 真源（原 hash / mtime / 编码 / EOL） | 随补丁 | 否 | 否 |
 | `patches/backup/<id>/` | 应用 | 真源（应用前原始字节） | 撤销需求结束前保留 | 否 | 否 |
 | `permissions.json` | 用户（权限页） | 真源 | 长期 | 否 | 仅用户 |
-| `git-commit-style.json` | Git 快捷操作 | 真源 | 长期 | 否 | 是（走审批） |
+| `config/git-commit-style.json` | Git 快捷操作 | 真源 | 长期 | 否 | 是（走审批） |
+| `config/search-ignore` | 用户 | 真源 | 长期 | 否 | 是（用户手改） |
 | 根目录下 `tmp-*` 脚本 | AI（本轮） | 临时 | 用完即删 | 否 | 是（用前确认是本轮创建） |
 
 无工作区（只打开单个文件）时，补丁相关文件回退到应用数据目录的 `patches/`，由应用自己管理。

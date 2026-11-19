@@ -3,7 +3,7 @@
 // run_command / ask_user / write_file 完成，权限与审批沿用当前会话设置。
 
 // 每个工作区自己的提交风格配置（相对范围根）；首次提交时由 AI 询问用户后写入。
-export const GIT_COMMIT_STYLE_PATH = '.cadt/git-commit-style.json';
+export const GIT_COMMIT_STYLE_PATH = '.cadt/config/git-commit-style.json';
 
 export const GIT_ACTIONS = [
     {id: 'commit-push', label: '提交并推送', icon: 'git-commit-push'},

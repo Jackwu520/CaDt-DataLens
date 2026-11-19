@@ -39,8 +39,8 @@ description: 决定 AI 产出的文件放在哪：新建文件、生成报告/�
 | `answers/` | 单文件 HTML 回答页 | `answer-me-with-html` | 一次性产物 |
 | `patches/` | `.patch`、`index.jsonl`、`manifest/`、`backup/` | 应用（补丁工具 / 补丁视图） | **系统托管，AI 只读** |
 | `plan/` | 计划模式产出的计划文档（`plan-<会话id>.md`，同一会话一份，修订覆盖） | 应用（用户点「执行计划」时才写入） | 未批准不落盘：对话里只留入口卡、点开为只读预览；批准后可在标签页手改 |
+| `config/` | 工作区级配置：`git-commit-style.json`（提交风格）、`search-ignore`（全局搜索/目录树排除表） | Git 快捷操作 / 用户 / 搜索配置 | `git-commit-style.json` 首次询问后写、走一次写审批；`search-ignore` 由用户手改 |
 | `permissions.json` | 项目级权限规则 | 用户在权限页操作 | **AI 不得直接改** |
-| `git-commit-style.json` | 提交风格 | Git 快捷操作首次询问后写 | 走一次写审批 |
 | 根目录下的一次性脚本 | 必须落盘时的临时脚本 | AI（本轮） | 带 `tmp-` 与时间戳，**用完即删**；见第 6 节 |
 | 新用途 | 先补进本表再使用 | — | 不要另起 `.cadt/` 之外的顶层目录 |
 

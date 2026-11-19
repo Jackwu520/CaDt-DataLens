@@ -6,6 +6,7 @@ package gitinfo
 
 import (
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -640,3 +641,65 @@ func parseNameStatusZ(out string) []GitGraphFileChange {
 	sort.Slice(files, func(a, b int) bool { return files[a].Path < files[b].Path })
 	return files
 }
+
+// GraphCommitFileDiff 返回一次提交中单个文件的 unified diff（图谱「本次变动」树点击文件用）。
+// 端点选择与 GraphCommitFiles 完全一致：普通提交相对父提交、根提交相对空树、
+// 合并提交相对第一父——否则文件树里显示的状态与这里给出的补丁会对不上。
+// 安全：sha 走 shaRe + `-` 前缀拒绝 + rev-parse 校验；path 拒绝绝对/越界，
+// 且作为 pathspec 前加 `--`；命令带 --no-ext-diff/--no-textconv 防止用户 git config
+// 或 .gitattributes 触发外部程序（只读查询也不能给外部命令可乘之机）。
+func GraphCommitFileDiff(dir, sha, path string, maxLines int) (*GitDiffResult, error) {
+	dir = strings.TrimSpace(dir)
+	sha = strings.TrimSpace(sha)
+	path = strings.TrimSpace(path)
+	if dir == "" || sha == "" || path == "" {
+		return nil, fmt.Errorf("缺少目录、提交或文件路径")
+	}
+	if strings.HasPrefix(sha, "-") || !shaRe.MatchString(sha) {
+		return nil, fmt.Errorf("非法提交：%s", sha)
+	}
+	// 路径必须是仓库内的相对 slash 路径；拒绝绝对路径与盘符/反斜杠开头（Windows）。
+	if filepath.IsAbs(path) || strings.HasPrefix(path, "/") || strings.HasPrefix(path, "\\") {
+		return nil, fmt.Errorf("path 必须是相对仓库根的路径")
+	}
+	if !gitPathInRoot(dir, path) {
+		return nil, fmt.Errorf("路径越界：%s", path)
+	}
+	if _, code, _ := gitRun(dir, []string{"rev-parse", "--verify", "--quiet", sha + "^{commit}"}, 5000); code != 0 {
+		return nil, fmt.Errorf("找不到提交：%s", sha)
+	}
+	// 端点：默认根提交相对空树（--root 语义由下面显式空树哈希替代）；有父则用第一父。
+	from := emptyTreeSha
+	if parOut, pcode, _ := gitRun(dir, []string{"rev-list", "--parents", "-n", "1", sha}, 5000); pcode == 0 {
+		if fields := strings.Fields(strings.TrimSpace(parOut)); len(fields) > 1 {
+			from = fields[1]
+		}
+	}
+	out, code, err := gitRun(dir, []string{
+		"diff", "--no-ext-diff", "--no-textconv", "--no-color", "--no-renames",
+		from, sha, "--", path,
+	}, 30000)
+	if err != nil {
+		return nil, err
+	}
+	if code != 0 {
+		return nil, fmt.Errorf("读取提交文件差异失败：%s", strings.TrimSpace(out))
+	}
+	diff := trimDiffTail(out) // 只裁尾部一个换行，保住 hunk 末尾的空上下文行
+	result := &GitDiffResult{}
+	if strings.TrimSpace(diff) == "" {
+		return result, nil
+	}
+	if maxLines > 0 {
+		lines := strings.Split(diff, "\n")
+		if len(lines) > maxLines {
+			diff = strings.Join(lines[:maxLines], "\n") + "\n…（已截断，共 " + strconv.Itoa(len(lines)) + " 行）"
+		}
+	}
+	result.HasChanges = true
+	result.Diff = diff
+	return result, nil
+}
+
+// emptyTreeSha 是 git 的空树对象哈希，用作根提交的 diff 起点（等价 diff-tree --root）。
+const emptyTreeSha = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"

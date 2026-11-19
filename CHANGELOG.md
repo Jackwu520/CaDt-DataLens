@@ -4,6 +4,33 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 
 ## 未发布
 
+### 修复（AI 头部「定时」胶囊点了没反应，且在所有会话都显示）
+
+- **现象**：头部「定时」胶囊显示某会话的任务数后，切到任何别的会话都一直挂着，点击也没有任何反应。
+- **原因**：两处接线缺口——① `createAISchedule` 的 ctx 里注入了 `togglePop` 却从没绑到胶囊 DOM 上（弹层机制、`renderSchedulePop` 全就位，唯独差一行 `addEventListener`，计时胶囊有同款接线可对照）；② 胶囊口径早已改成「绑定当前会话的任务」，但 `syncActiveSessionUI` 只重刷计时/隔离芯片不重刷定时胶囊，切换会话后残留上一个会话的显隐与角标。
+- **修法**：`ai-schedule.js` 工厂时给胶囊绑 click → `ctx.togglePop`（点击弹出「本会话的定时任务」弹层：行进编辑器、底部新建与全部管理入口），显隐刷新抽成缓存同步的 `updateChipFromCache` 并导出 `syncChip`；`syncActiveSessionUI` 在 `timerMod.render()` 旁补 `scheduleMod.syncChip()`（切会话按缓存重算，不拉后端）。
+- 测试：新增 `test/ai/ai-schedule-chip-wiring.test.mjs`（钉死点击接线与会话口径），`ai-session-ui-sync.test.mjs` 的会话级 chrome 清单与 switchSession 负向清单补 `scheduleMod.syncChip`。
+
+### 改进（Git 图谱对齐 JetBrains：本次变动顶层目录 / 文件 diff / 提交筛选 / 分割线 hover）
+
+- **本次变动树加工作区顶层节点**：详情「本次变动」文件树最外层套一层工作区目录名（JetBrains 式），其下才是 docs/frontend 等；`fileTreeFromChanges(files, rootName)` 加可选根名参数，不传保持旧行为，顶层节点加粗+accent 图标。
+- **点击文件看当次提交 diff**：本次变动树的文件行可点击，调新绑定 `GitGraphCommitFileDiff(dir, sha, path, maxLines)` 拉该文件在选中提交中的 unified patch，开只读虚拟 .diff 文档走 patch-view 只读快照渲染。Go 引擎复用 `GraphCommitFiles` 的端点语义（普通对父/根对空树/合并对第一父），sha 正则+rev-parse 校验、path 越界校验、`--no-ext-diff/--no-textconv` 防外部命令、maxLines 截断、只裁尾部一个换行保住空上下文行。Wails 绑定与 dev mock 同步。
+- **提交搜索增强**：搜索框右侧加「正则（.*）/ 区分大小写」两个 SVG 开关，并新增「分支 / 用户 / 日期」三个下拉筛选（不做路径）。分支=切换查看该分支历史（复用 ref 机制），用户按 author/email 过滤，日期按 today/7d/30d/1y 过滤；过滤缓存键覆盖全部条件、非法正则不打断渲染、泳道/加载更多/预加载在筛选态收敛。新增 `buildCommitMatcher` 纯函数与 `regex`/`case-sensitive`/`filter`/`user`/`calendar` 五个 SVG 图标（无 emoji/文字图标）。
+- **分割线 hover 一致性**：hover「提交列 | 详情」竖分割条时，头部那段静态竖线同步高亮（此前 body 变蓝、头部仍灰，视觉断成两截）；刷新/关闭按钮位置不变。
+- 测试：`internal/gitinfo/graph_test.go` 新增 diff 集成+校验用例，`test/git-graph/git-graph-lane.test.mjs` 新增根名/匹配器用例；Go 全量测试、前端全量测试与 vite build 均通过。
+
+### 改进（工作区搜索排除表 search-ignore + 配置文件归拢到 .cadt/config/）
+
+- **全局搜索/目录树可自定义排除**：工作区放 `.cadt/config/search-ignore`（一行一条，`#` 注释、`!` 取反、不含 `/` 按路径每段名字匹配、含 `/` 按相对路径 glob），即可把 `.aoci` 这类认知资产/噪音目录从 UI 全局搜索、AI `search_text`、`glob`、目录树 `list_dir` 一并排除。解析层 `internal/search/ignore.go` 产出统一规则，rg `--glob` 尽力剪枝 + 命中二次过滤、内置 WalkDir 与 `FindFiles` 直接剪枝、`fsops.ReadDirTree` 同步遵守；按 mtime 缓存、根自身永不跳过。硬编码忽略表 `SkipDir`/`SkipPath` 保持独立，wipeguard 结构指纹等不接入用户配置。
+- **配置文件归拢**：Git 提交风格配置从 `.cadt/git-commit-style.json` 迁到 `.cadt/config/git-commit-style.json`，`ai-git.js` 的 `GIT_COMMIT_STYLE_PATH` 与提示词同步（不做向前兼容，旧文件不再读取）。`cadt-file-layout` 技能的子目录表与路径速查表补 `config/` 说明。
+- 测试：`internal/search/ignore_test.go`（解析/取反/按名/路径 glob/三路径）、`app_fs_test.go`（目录树遵守配置）新增，Go 全量测试通过。
+
+### 改进（Git 提交面板对齐 JetBrains：分支行回滚/刷新 + 所有左侧面板收起按钮）
+
+- **Git 提交面板分支名行**：在「分支：xxx」那一行最右侧加「回滚全部更改」与「刷新」两个内联 SVG 图标（沿用 `undo` / `refresh` 图形，禁止文字或 emoji 充当图标）。回滚会汇总当前全部未提交文件（tracked 丢弃修改、untracked 删除文件）并二次确认后走既有 `gitRollbackPaths`；刷新与标题栏刷新共用 `refreshGitStatus` 通路。
+- **所有左侧面板收起按钮**：文件树 / 结构 / Git 变更列表 / AI 会话四个面板的标题栏最右各加一个 SVG「−」收起按钮（统一 `sb-collapse` class），点击收起侧边栏（`toggleSidebar(false)`），与标题栏左侧的活动栏图标形成对称。
+- 改动文件：`frontend/index.html`（HTML 结构 + 内联 SVG）、`frontend/src/main.js`（新元素引用 + 收起按钮统一接线）、`frontend/src/terminal/terminal-ui.js`（git 回滚/刷新接线）、`frontend/src/style.css`（`.git-meta-tools` 靠右、`.git-hint` 伸缩）。`npm test` 与 `npm run build` 均通过。
+
 ### 重构（生命周期钩子的动作名与全仓命名统一为 lifecycle-hook）
 
 - **动机**：`app_control` 的动作名长期是 `get_pre_commands` / `add_pre_command` / `update_pre_command` / `remove_pre_command`，而它挂的是 **9 个生命周期事件**（`workspace-open` / `workspace-close` / `session-start` / `user-prompt-submit` / `pre-tool-use` / `post-tool-use` / `post-tool-use-failure` / `permission-request` / `stop`）。pre-command 只表达「前置命令」，`post-tool-use` / `stop` 这类事后钩子被名字说反，模型也容易把它当成「打开前跑一次」。

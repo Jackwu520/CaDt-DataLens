@@ -101,6 +101,7 @@ func (s *Searcher) FindFiles(root, pattern string, maxResults int) (*FindFilesRe
 		maxResults = findFilesDefaultMax
 	}
 	deadline := time.Now().Add(searchBudget)
+	ignore := LoadIgnoreRules(root)
 	result := &FindFilesResult{Files: []FileMatch{}}
 	visited := 0
 	walkErr := filepath.WalkDir(root, func(path string, d os.DirEntry, walkErr error) error {
@@ -113,8 +114,12 @@ func (s *Searcher) FindFiles(root, pattern string, maxResults int) (*FindFilesRe
 				if searchSkipDirs[strings.ToLower(name)] || name == ".git" {
 					return filepath.SkipDir
 				}
+				rel, relErr := filepath.Rel(root, path)
 				// 与 searchWorkspace 同口径：AI 隔离 worktree 副本整棵跳过
-				if rel, relErr := filepath.Rel(root, path); relErr == nil && SkipPath(rel) {
+				if relErr == nil && SkipPath(rel) {
+					return filepath.SkipDir
+				}
+				if relErr == nil && ignore.ShouldSkipDir(name, filepath.ToSlash(rel)) {
 					return filepath.SkipDir
 				}
 			}
@@ -123,16 +128,19 @@ func (s *Searcher) FindFiles(root, pattern string, maxResults int) (*FindFilesRe
 		if !d.Type().IsRegular() {
 			return nil
 		}
+		rel, relErr := filepath.Rel(root, path)
+		if relErr == nil && ignore.ShouldSkipFile(name, filepath.ToSlash(rel)) {
+			return nil
+		}
+		if relErr != nil {
+			rel = name
+		}
+		rel = filepath.ToSlash(rel)
 		visited++
 		if visited%256 == 0 && time.Now().After(deadline) {
 			result.Truncated = true
 			return filepath.SkipAll
 		}
-		rel, relErr := filepath.Rel(root, path)
-		if relErr != nil {
-			rel = name
-		}
-		rel = filepath.ToSlash(rel)
 		if !globMatchPath(pat, rel, name) {
 			return nil
 		}

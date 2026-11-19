@@ -2315,6 +2315,12 @@ const mockBackend = {
             {path: 'old-name.js', oldPath: 'legacy.js', status: 'R'},
         ];
     },
+    async GitGraphCommitFileDiff(dir, sha, path, maxLines) {
+        return {
+            hasChanges: true,
+            diff: 'diff --git a/' + path + ' b/' + path + '\n--- a/' + path + '\n+++ b/' + path + '\n@@ -1 +1 @@\n-旧内容\n+新内容（' + sha + ' 的 mock diff）\n',
+        };
+    },
     async GitPullFor(dir) {
         return {success: true, output: '[mock] Already up to date.'};
     },
