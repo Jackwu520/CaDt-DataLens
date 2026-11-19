@@ -13,6 +13,10 @@ function familyDlgList() {
 function disposeFamilyHandlesExcept(dlg) {
     for (const el of familyDlgList()) {
         if (el === dlg) continue;
+        // 仍可见的兄弟必须留在栈里：keepSettings 下设置窗在子对话框背后继续显示，
+        // 把它出栈会连带撤掉它和共享遮罩的内联 z-index（遮罩回落到 CSS auto，
+        // 标题栏/工具栏被盖成灰蒙蒙一片），且 Esc 失去归属层。
+        if (!el.classList.contains('hidden')) continue;
         const handle = familyHandles.get(el);
         if (handle) {
             handle.dispose();
@@ -36,7 +40,13 @@ function openDialogEl(dlg, options) {
     dlg.style.transform = '';
     dlg.classList.remove('hidden');
     deps.syncAllBrowserTabs();
-    // 进全局弹层栈；被藏起的兄弟对话框顺手出栈
+    // 进全局弹层栈；被藏起的兄弟对话框顺手出栈。dlg 自己的旧句柄先撤，
+    // 否则重复打开同一对话框（如反复点「设置」）会在栈里叠出多个同档条目。
+    const stale = familyHandles.get(dlg);
+    if (stale) {
+        stale.dispose();
+        familyHandles.delete(dlg);
+    }
     disposeFamilyHandlesExcept(dlg);
     familyHandles.set(dlg, overlayStack.open({
         id: 'settings-dialog', kind: 'dialog', el: dlg, underEl: deps.elsDialogs.mask,
@@ -76,6 +86,10 @@ function closeDialogs() {
     deps.elsDialogs.mask.classList.add('hidden');
     deps.elsDialogs.settings.classList.add('hidden');
     deps.elsDialogs.confirm.classList.add('hidden');
+    // runDirty / runConfirm 也要一起藏：disposeFamilyHandlesExcept 现在只出栈「已隐藏」的成员，
+    // 漏掉这两个会让它们在强制收场后既不 hidden 也不出栈（既露在屏上又占着 Esc）。
+    deps.elsDialogs.runDirty.classList.add('hidden');
+    deps.elsDialogs.runConfirm.classList.add('hidden');
     if (saveConflictResolve) finishSaveConflict('cancel');
     deps.elsDialogs.conflict.classList.add('hidden');
     deps.elsDialogs.name.classList.add('hidden');
