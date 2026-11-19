@@ -12779,17 +12779,52 @@ textarea.dlg-input:focus {
 .agent-badge.gc-badge-chair { color: var(--accent); background: color-mix(in srgb, var(--accent) 18%, transparent); }
 .agent-form-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
 .agent-form-row.agent-form-row-top { align-items: flex-start; }
-.agent-form-row.agent-form-row-newgroup { margin-top: -4px; }
-.agent-form-row.agent-form-row-newgroup .agent-form-label { color: var(--accent); }
 .agent-form-row > *:not(.agent-form-label) { flex: 1; min-width: 0; }
 .agent-form-label { flex: none; width: 60px; color: var(--muted); font-size: 12px; }
 .agent-form-row .agent-form-label { padding-top: 4px; }
-/* 智能体分组：设置页列表的组头（组名 + 计数），只有一组时不渲染 */
-.agent-group-head { display: flex; align-items: center; gap: 6px; margin: 4px 0 6px; padding: 0 2px; }
+/* 智能体分组：设置页列表的组头（chevron + 组名 + 计数），可点击折叠/展开；只有一组时不渲染 */
+.agent-group-head { display: flex; align-items: center; gap: 6px; margin: 4px 0 6px; padding: 2px 4px; cursor: pointer; user-select: none; border-radius: 5px; }
+.agent-group-head:hover { background: var(--hover); }
 .agent-group-head:first-child { margin-top: 0; }
+.agent-group-chevron { display: inline-flex; align-items: center; justify-content: center; width: 14px; height: 14px; color: var(--muted); transition: transform 140ms ease; }
+.agent-group-head.collapsed .agent-group-chevron { transform: rotate(-90deg); }
+@media (prefers-reduced-motion: reduce) { .agent-group-chevron { transition: none; } }
 .agent-group-name { font-size: 12px; font-weight: 600; color: var(--accent); }
 .agent-group-count { font-size: 11px; color: var(--muted); }
-.agent-form-row-newgroup.hidden { display: none; }
+.agent-group-field { position: relative; flex: 1; min-width: 0; }
+/* 分组建议下拉（编辑器弹窗）：输入框下方浮层点选填入；输入列表外的新名字 = 新建分组 */
+.agent-group-suggest {
+    position: absolute;
+    top: calc(100% + 3px);
+    left: 0;
+    right: 0;
+    z-index: 40;
+    display: flex;
+    flex-direction: column;
+    padding: 3px;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    background: var(--panel);
+    box-shadow: 0 6px 18px rgba(0, 0, 0, .3);
+    max-height: 180px;
+    overflow: auto;
+}
+.agent-group-suggest.hidden { display: none; }
+.agent-group-suggest-item {
+    display: block;
+    width: 100%;
+    padding: 4px 9px;
+    border: none;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--text);
+    font: inherit;
+    font-size: 12px;
+    text-align: left;
+    cursor: pointer;
+}
+.agent-group-suggest-item:hover { background: var(--hover); }
+.agent-group-suggest-item.current { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
 .agent-form-switches { display: flex; flex-direction: column; gap: 8px; }
 .agent-switch-item { display: flex; align-items: flex-start; gap: 10px; }
 .agent-switch-item .set-switch { margin-top: 2px; }
@@ -12839,9 +12874,13 @@ textarea.dlg-input:focus {
 .gc-form-row > *:not(.gc-form-label) { flex: 1; min-width: 0; }
 .gc-form-label { flex: none; width: 42px; color: var(--muted); font-size: 12px; padding-top: 4px; }
 .gc-member-list { display: flex; flex-direction: column; gap: 6px; max-height: 180px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; padding: 8px; }
-/* 成员按分组分区：组头行（组名 + 计数）；过滤时组头随组内成员一起隐藏 */
-.gc-group-head { display: flex; align-items: baseline; gap: 6px; margin: 4px 0 -2px; }
+/* 成员按分组分区：组头行（chevron + 组名 + 计数）可点击折叠（组头保留、成员行隐藏）；过滤时组头随成员一起隐藏 */
+.gc-group-head { display: flex; align-items: baseline; gap: 6px; margin: 4px 0 -2px; padding: 2px 4px; cursor: pointer; user-select: none; border-radius: 5px; }
+.gc-group-head:hover { background: var(--hover); }
 .gc-group-head:first-child { margin-top: 0; }
+.gc-group-chevron { display: inline-flex; align-items: center; justify-content: center; width: 13px; height: 13px; color: var(--muted); align-self: center; transition: transform 140ms ease; }
+.gc-group-head.collapsed .gc-group-chevron { transform: rotate(-90deg); }
+@media (prefers-reduced-motion: reduce) { .gc-group-chevron { transition: none; } }
 .gc-group-name { font-size: 11px; font-weight: 600; color: var(--accent); }
 .gc-group-count { font-size: 10px; color: var(--muted); }
 .gc-group-head.hidden, .gc-member-item.hidden { display: none; }

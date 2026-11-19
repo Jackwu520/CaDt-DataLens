@@ -21,6 +21,8 @@ import {
 } from './ai-group-model.js';
 
 export function createAIGroupSidebar(deps) {
+    // 新建群聊弹窗的成员分组折叠记忆（跨弹窗保留用户偏好）
+    const gcCollapsedGroups = new Set();
     const runtime = deps.runtime;
     const getAIConfig = deps.getAIConfig || (() => null);
     const saveConfig = deps.saveConfig || (() => {});
@@ -239,10 +241,20 @@ export function createAIGroupSidebar(deps) {
         const roleInputs = {};
         const memberItems = []; // {agentId, group, item}
         for (const part of agentsByGroup(agents)) {
-            const head = node('div', 'gc-group-head');
+            const collapsed = gcCollapsedGroups.has(part.group);
+            const head = node('div', 'gc-group-head' + (collapsed ? ' collapsed' : ''));
+            head.dataset.group = part.group;
+            head.dataset.tip = collapsed ? '展开「' + part.group + '」组的成员' : '折叠「' + part.group + '」组的成员';
+            const chevron = node('span', 'gc-group-chevron');
+            chevron.innerHTML = iconSvg('chevron-down', 10);
+            head.appendChild(chevron);
             head.appendChild(node('span', 'gc-group-name', part.group));
             head.appendChild(node('span', 'gc-group-count', String(part.agents.length)));
-            head.dataset.group = part.group;
+            head.addEventListener('click', () => {
+                if (gcCollapsedGroups.has(part.group)) gcCollapsedGroups.delete(part.group);
+                else gcCollapsedGroups.add(part.group);
+                applyMemberVisibility();
+            });
             memberWrap.appendChild(head);
             for (const agent of part.agents) {
                 const item = node('div', 'gc-member-item');
@@ -276,23 +288,25 @@ export function createAIGroupSidebar(deps) {
             }
         }
         let filterCtl = null;
+        // 成员可见性单一出口：分组过滤（>4 组时的下拉）× 折叠（组头点击）共同决定；
+        // 折叠组保留组头（可展开），只藏成员行
+        const applyMemberVisibility = () => {
+            const picked = filterCtl ? filterCtl.control.value : '';
+            const filterPass = (group) => !picked || group === picked;
+            for (const entry of memberItems) {
+                entry.item.classList.toggle('hidden', !filterPass(entry.group) || gcCollapsedGroups.has(entry.group));
+            }
+            for (const head of memberWrap.querySelectorAll('.gc-group-head')) {
+                head.classList.toggle('hidden', !filterPass(head.dataset.group));
+                head.classList.toggle('collapsed', gcCollapsedGroups.has(head.dataset.group));
+            }
+        };
         if (groups.length > 4) {
             // 分组过滤（纯展示）：选组只显示该组成员，组头随成员可见性收起
             filterCtl = createSelect({
                 options: [{value: '', label: '全部分组'}].concat(groups.map((group) => ({value: group, label: group}))),
             });
-            filterCtl.control.addEventListener('change', () => {
-                const picked = filterCtl.control.value;
-                const visibleByGroup = new Map();
-                for (const entry of memberItems) {
-                    const visible = !picked || entry.group === picked;
-                    entry.item.classList.toggle('hidden', !visible);
-                    if (visible) visibleByGroup.set(entry.group, true);
-                }
-                for (const head of memberWrap.querySelectorAll('.gc-group-head')) {
-                    head.classList.toggle('hidden', !visibleByGroup.get(head.dataset.group));
-                }
-            });
+            filterCtl.control.addEventListener('change', applyMemberVisibility);
             body.appendChild(wrapRow('分组', filterCtl.element, 'gc-form-row'));
         }
         body.appendChild(wrapRow('成员', memberWrap, 'gc-form-row-top'));

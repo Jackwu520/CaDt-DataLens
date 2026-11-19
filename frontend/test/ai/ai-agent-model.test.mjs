@@ -11,6 +11,7 @@ import {
     AGENT_RESERVED_NAMES,
     agentById,
     agentCapability,
+    filterGroupSuggestions,
     agentGroups,
     agentNameError,
     agentsByGroup,
@@ -335,4 +336,17 @@ test('agentsUpsert：group 透传；新组数超上限拒绝；旧组不受限',
     assert.equal(agentGroups(agents).length, AGENT_GROUP_MAX);
     assert.match(agentsUpsert(agents, {name: '新人', group: '新组'}, () => 'x').error, /分组最多/);
     assert.equal(agentsUpsert(agents, {name: '新人', group: '组0'}, () => 'x').ok, true);
+});
+
+test('filterGroupSuggestions：包含匹配、大小写不敏感、空 query 全量（分组输入框建议）', () => {
+    const groups = ['默认', '写作', '编码', '评审团'];
+    assert.deepEqual(filterGroupSuggestions(groups, ''), groups);
+    assert.deepEqual(filterGroupSuggestions(groups, '写'), ['写作']);
+    assert.deepEqual(filterGroupSuggestions(['Workflow', '写作'], 'w'), ['Workflow']); // ASCII 组名大小写不敏感
+    assert.deepEqual(filterGroupSuggestions(groups, '写'), ['写作']);
+    assert.deepEqual(filterGroupSuggestions(groups, '审'), ['评审团']);
+    assert.deepEqual(filterGroupSuggestions(groups, 'zzz'), []);
+    // 输入恰好等于现有组：仍给出该组（点选 = 采纳，不产生重复组）
+    assert.deepEqual(filterGroupSuggestions(groups, '写作'), ['写作']);
+    assert.deepEqual(filterGroupSuggestions(null, ''), []);
 });

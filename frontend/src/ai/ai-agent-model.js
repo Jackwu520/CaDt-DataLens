@@ -73,6 +73,15 @@ export function groupNameError(name, agents, excludeId) {
     return '';
 }
 
+// 分组建议过滤（编辑器弹窗的分组输入框）：包含匹配、大小写不敏感；空 query 给全量。
+// 输入的名字不在列表里 = 新建分组（agentsUpsert 落组，groupNameError 管校验）。
+export function filterGroupSuggestions(names, query) {
+    const q = String(query == null ? '' : query).trim().toLowerCase();
+    const list = Array.isArray(names) ? names : [];
+    if (!q) return list.slice();
+    return list.filter((name) => String(name || '').toLowerCase().includes(q));
+}
+
 // 单条归一化：name/id 全空的原始数据丢弃（返回 null），其余字段 clamp 到边界。
 export function normalizeAgent(raw, index, idGen) {
     const source = raw && typeof raw === 'object' ? raw : {};
