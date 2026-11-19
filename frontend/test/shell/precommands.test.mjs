@@ -131,7 +131,59 @@ test('runForWorkspace：停用条目与未知事件条目不执行', async () =>
     assert.deepEqual(await ctl.runForWorkspace('D:\\ws'), {ran: 0});
 });
 
-// ---- 生命周期：workspace-close / ai-session-start ----
+// ---- 生命周期：workspace-close / session-start / 工具级事件 ----
+
+test('runForEvent：工具级事件按 matchTools 过滤，空匹配器跑全部；runId 带条目 id', async () => {
+    const h = makeHarness({preCommands: [
+        entry({id: 'pc-a', command: 'on-any', event: 'pre-tool-use'}),
+        entry({id: 'pc-b', command: 'on-write', event: 'pre-tool-use', matchTools: ['write_file']}),
+        entry({id: 'pc-c', command: 'on-mcp', event: 'pre-tool-use', matchTools: ['mcp__*']}),
+        entry({id: 'pc-o', command: 'on-open'}), // 非工具事件不参与
+    ]});
+    const ctl = createPrecommands(h.deps);
+    const out = await ctl.runForEvent('D:\\ws', 'pre-tool-use', 'write_file');
+    assert.deepEqual(out, {ran: 2, failed: 0}); // on-any + on-write
+    assert.deepEqual(h.calls.map((c) => c[0]).sort(), ['on-any', 'on-write']);
+    assert.ok(h.calls.every((c) => c[3].startsWith('precmd-')));
+
+    const out2 = await ctl.runForEvent('D:\\ws', 'pre-tool-use', 'mcp__server__tool');
+    assert.deepEqual(out2, {ran: 2, failed: 0}); // on-any + on-mcp
+});
+
+test('runForEvent：工具级重入按工具名分键——同工具在跑时跳过、别的工具照常', async () => {
+    let release;
+    const h = makeHarness({preCommands: [
+        entry({id: 'pc-a', command: 'on-write', event: 'pre-tool-use', matchTools: ['write_file']}),
+        entry({id: 'pc-b', command: 'on-read', event: 'pre-tool-use', matchTools: ['read_file']}),
+    ]});
+    h.deps.backend.AIRunShellCommand = (command) => {
+        if (command === 'on-write' && !release) return new Promise((r) => { release = r; });
+        return Promise.resolve({code: 0, stdout: '', stderr: '', timedOut: false});
+    };
+    const ctl = createPrecommands(h.deps);
+    const first = ctl.runForEvent('D:\\ws', 'pre-tool-use', 'write_file'); // 挂起
+    const sameTool = await ctl.runForEvent('D:\\ws', 'pre-tool-use', 'write_file');
+    assert.deepEqual(sameTool, {ran: 0, skipped: 'running'}); // 同工具被重入护栏跳过
+    const otherTool = await ctl.runForEvent('D:\\ws', 'pre-tool-use', 'read_file');
+    assert.deepEqual(otherTool, {ran: 1, failed: 0}); // 不同工具不受影响
+    release({code: 0, stdout: '', stderr: '', timedOut: false});
+    assert.deepEqual(await first, {ran: 1, failed: 0});
+});
+
+test('runForEvent：post-tool-use / stop 等事件独立触发，互不串台', async () => {
+    const h = makeHarness({preCommands: [
+        entry({id: 'pc-a', command: 'post-cmd', event: 'post-tool-use', matchTools: ['write_file']}),
+        entry({id: 'pc-b', command: 'stop-cmd', event: 'stop'}),
+        entry({id: 'pc-c', command: 'submit-cmd', event: 'user-prompt-submit'}),
+    ]});
+    const ctl = createPrecommands(h.deps);
+    await ctl.runForEvent('D:\\ws', 'post-tool-use', 'write_file');
+    assert.deepEqual(h.calls.map((c) => c[0]), ['post-cmd']);
+    await ctl.runForEvent('D:\\ws', 'stop');
+    assert.deepEqual(h.calls.map((c) => c[0]), ['post-cmd', 'stop-cmd']);
+    await ctl.runForEvent('D:\\ws', 'user-prompt-submit');
+    assert.deepEqual(h.calls.map((c) => c[0]), ['post-cmd', 'stop-cmd', 'submit-cmd']);
+});
 
 test('runForWorkspaceClose：只跑 close 条目，标题带事件标签', async () => {
     const h = makeHarness({preCommands: [
@@ -143,7 +195,7 @@ test('runForWorkspaceClose：只跑 close 条目，标题带事件标签', async
     assert.equal(h.calls.length, 1);
     assert.equal(h.calls[0][0], 'on-close');
     assert.equal(h.calls[0][1], 'D:\\ws');
-    assert.equal(h.messages[0].msg.title, '预指令执行完成（关闭工作区 · ws）');
+    assert.equal(h.messages[0].msg.title, '生命周期执行完成（关闭工作区 · ws）');
 });
 
 test('runForAISessionStart：跑 session-start 条目；backend 全炸也返回 failed 不抛', async () => {
@@ -159,7 +211,7 @@ test('runForAISessionStart：跑 session-start 条目；backend 全炸也返回 
     const out = await ctl.runForAISessionStart('D:\\ws');
     assert.deepEqual(out, {ran: 1, failed: 1});
     assert.equal(h.messages[0].msg.kind, 'error');
-    assert.match(h.messages[0].msg.title, /AI 会话开始 · ws/);
+    assert.match(h.messages[0].msg.title, /会话开始 · ws/);
     assert.equal(h.calls.length, 1); // open 条目不参与
 });
 
@@ -232,7 +284,7 @@ test('add_pre_command：拒绝则不写入；批准则写入 origin=ai 并绑定
     const denied = makeHarness({approvals: [{approved: false}]});
     const ctlDenied = createPrecommands(denied.deps);
     const outDenied = await ctlDenied.handleAppAction('add_pre_command', {command: 'npm run dev'}, denied.requestActionApproval);
-    assert.deepEqual(outDenied, {added: false, denied: true, note: '用户拒绝了本次预指令新增'});
+    assert.deepEqual(outDenied, {added: false, denied: true, note: '用户拒绝了本次新增'});
     assert.equal(denied.settings.preCommands.length, 0);
 
     const ok = makeHarness();
@@ -320,7 +372,7 @@ test('remove_pre_command：批准后删除；拒绝 / 别的工作区不动', as
     const denied = makeHarness({preCommands: [entry({id: 'pc-1'})], approvals: [{approved: false}]});
     const ctlDenied = createPrecommands(denied.deps);
     const out = await ctlDenied.handleAppAction('remove_pre_command', {id: 'pc-1'}, denied.requestActionApproval);
-    assert.deepEqual(out, {removed: false, denied: true, note: '用户拒绝了本次预指令删除'});
+    assert.deepEqual(out, {removed: false, denied: true, note: '用户拒绝了本次删除'});
     assert.equal(denied.settings.preCommands.length, 1);
 
     const ok = await ctl.handleAppAction('remove_pre_command', {id: 'pc-1'}, h.requestActionApproval);
@@ -334,5 +386,5 @@ test('remove_pre_command：批准后删除；拒绝 / 别的工作区不动', as
 test('handleAppAction：未知动作报错', async () => {
     const h = makeHarness();
     const ctl = createPrecommands(h.deps);
-    await assert.rejects(() => ctl.handleAppAction('run_pre_command', {}, null), /未知预指令动作/);
+    await assert.rejects(() => ctl.handleAppAction('run_pre_command', {}, null), /未知动作/);
 });

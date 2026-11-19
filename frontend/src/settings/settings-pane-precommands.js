@@ -1,4 +1,4 @@
-// settings-pane-precommands.js：设置 → 预指令（工作区打开时自动执行的命令）。
+// settings-pane-precommands.js：设置 → 生命周期（工作区打开时自动执行的命令）。
 // 条目存 settings.preCommands（AI 没有任何写通道，方案见
 // docs/finished-plans/workspace-precommands.md）；纯函数在 core/precommands.js，
 // AI 四动作在 shell/precommands.js（写动作无条件动作审批，完全权限也不例外）。
@@ -11,17 +11,19 @@ import {
     PRECMD_TIMEOUT_MIN,
     PRECMD_TIMEOUT_MAX,
     PRECMD_EVENTS,
+    PRECMD_EVENT_OPTIONS,
     PRECMD_MAX_TOTAL,
     PRECMD_MAX_PER_WS,
     normalizePreCommand,
     eventLabel,
+    isToolEvent,
     wsDisplayName,
     commandDigest,
 } from '../core/precommands.js';
 
 export function createSettingsPanePrecommands(deps) {
 
-// 编辑器状态：null = 关闭；{id} = 编辑现有；{id: ''} = 新建
+// 编辑器状态：null = 关闭；{id} = 编辑现有；{id: ''} = 新建（弹窗生命周期内有效）
 let editor = null;
 
 function entriesOf() {
@@ -47,7 +49,7 @@ function setupMasterSwitch() {
     control.addEventListener('change', () => {
         deps.settings.preCommandsEnabled = control.checked;
         deps.applySettings();
-        deps.flash(control.checked ? '已启用预指令：打开工作区时自动执行' : '已停用预指令：打开工作区不再自动执行');
+        deps.flash(control.checked ? '已启用：打开工作区时自动执行' : '已停用：打开工作区不再自动执行');
     });
 }
 
@@ -73,14 +75,14 @@ function renderPreCommandList() {
     if (!wsKey) {
         const empty = document.createElement('div');
         empty.className = 'fmt-hint';
-        empty.textContent = '先打开一个文件夹：预指令绑定工作区，按工作区各自生效。';
+        empty.textContent = '先打开一个文件夹：命令绑定工作区，按工作区各自生效。';
         list.appendChild(empty);
         return;
     }
     if (!mine.length) {
         const empty = document.createElement('div');
         empty.className = 'fmt-hint';
-        empty.textContent = '当前工作区还没有预指令，点「新建预指令…」创建。';
+        empty.textContent = '当前工作区还没有配置，点「新建命令…」创建。';
         list.appendChild(empty);
         return;
     }
@@ -114,6 +116,14 @@ function buildPreCommandRow(entry, entries, wsKey) {
     evTag.className = 'precmd-tag';
     evTag.textContent = eventLabel(entry.event);
     row.appendChild(evTag);
+
+    if (isToolEvent(entry.event) && Array.isArray(entry.matchTools) && entry.matchTools.length) {
+        const tag = document.createElement('span');
+        tag.className = 'precmd-tag';
+        tag.textContent = '工具: ' + entry.matchTools.join('/');
+        tag.dataset.tip = '匹配工具：' + entry.matchTools.join('、');
+        row.appendChild(tag);
+    }
 
     if (entry.origin === 'ai') {
         const tag = document.createElement('span');
@@ -164,10 +174,10 @@ function deletePreCommand(entry) {
         deps.settings.preCommands = entriesOf().filter((e) => e.id !== entry.id);
         if (editor && editor.id === entry.id) closePreCommandEditor();
         persist();
-        deps.flash('已删除预指令：' + commandDigest(entry.command, 40));
+        deps.flash('已删除：' + commandDigest(entry.command, 40));
     };
     if (typeof deps.confirmAction === 'function') {
-        deps.confirmAction('删除预指令「' + commandDigest(entry.command, 60) + '」？', doRemove, '删除', '删除预指令', 'danger');
+        deps.confirmAction('删除命令「' + commandDigest(entry.command, 60) + '」？', doRemove, '删除', '删除命令', 'danger');
     } else {
         doRemove();
     }
@@ -199,19 +209,13 @@ function editorRow(label, controlEl, hint) {
 
 function closePreCommandEditor() {
     editor = null;
-    const box = document.getElementById('precmd-editor');
-    if (box) {
-        box.textContent = '';
-        box.classList.add('hidden');
-    }
+    deps.closeDialog();
 }
 
 function openPreCommandEditor(entry) {
+    const openDialog = deps.openDialog;
+    if (typeof openDialog !== 'function') return;
     editor = {id: entry ? entry.id : ''};
-    const box = document.getElementById('precmd-editor');
-    if (!box) return;
-    box.textContent = '';
-    box.classList.remove('hidden');
     const cmdIn = createInput({
         value: entry ? entry.command : '',
         placeholder: '例如：npm run dev（工作目录为该工作区根）',
@@ -226,37 +230,49 @@ function openPreCommandEditor(entry) {
         min: Math.round(PRECMD_TIMEOUT_MIN / 1000), max: Math.round(PRECMD_TIMEOUT_MAX / 1000), step: 1,
         onChange: () => {},
     });
+    // 旧名 ai-session-start（一期存量）在下拉里映射到规范名 session-start，
+    // 否则没有选项命中会默认选第一项 workspace-open，保存时把用户的命令改错事件（审查 P1）
+    const selectedEvent = entry ? (entry.event === 'ai-session-start' ? 'session-start' : entry.event) : 'workspace-open';
     const eventSel = createSelect({
-        options: PRECMD_EVENTS.map((ev) => ({value: ev, label: eventLabel(ev), selected: entry ? entry.event === ev : ev === 'workspace-open'})),
+        options: PRECMD_EVENT_OPTIONS.map((ev) => ({value: ev, label: eventLabel(ev), selected: ev === selectedEvent})),
     });
+    const matchIn = createInput({
+        value: entry && Array.isArray(entry.matchTools) ? entry.matchTools.join(', ') : '',
+        placeholder: '例如 write_file, run_command, mcp__*（留空 = 所有工具）',
+        spellcheck: false, autocomplete: 'off',
+    });
+    const matchRow = editorRow('匹配工具', matchIn.element,
+        '仅工具级时机（工具前/后/失败、权限请求）生效：逗号分隔工具名；mcp__* 匹配所有 MCP 工具；留空匹配所有工具').row;
+    const syncMatchRow = () => { matchRow.classList.toggle('hidden', !isToolEvent(eventSel.control.value)); };
+    eventSel.control.addEventListener('change', syncMatchRow);
+    syncMatchRow();
 
-    const actions = document.createElement('div');
-    actions.className = 'precmd-edit-row';
-    const ctl = document.createElement('div');
-    ctl.className = 'set-control';
-    const save = document.createElement('button');
-    save.type = 'button';
-    save.className = 'dlg-btn';
-    save.textContent = entry ? '保存修改' : '创建预指令';
-    const cancel = document.createElement('button');
-    cancel.type = 'button';
-    cancel.className = 'dlg-btn';
-    cancel.textContent = '取消';
-    cancel.addEventListener('click', closePreCommandEditor);
-    ctl.append(save, cancel);
-    actions.appendChild(ctl);
-    save.addEventListener('click', () => savePreCommandEditor({
+    // 弹窗三件套（main.js 注入 aiPanel 的 openDialog / node / button，DOM 在 index.html 静态存在）
+    const submit = () => savePreCommandEditor({
         id: entry ? entry.id : '',
         command: cmdIn.control.value,
         timeoutMs: Math.round(Number(timeoutIn.control.value) || 0) * 1000,
         event: eventSel.control.value,
-    }));
-
-    box.append(
-        editorRow('命令', cmdIn.element, '要特定 shell 直接写在命令里（如 powershell -Command …）').row,
-        editorRow('时机', eventSel.element, '打开工作区：打开/切回时执行 · 关闭工作区：关闭或切走时执行 · AI 会话开始：空会话第一轮流起前执行（起轮等待跑完）').row,
-        editorRow('超时（秒）', timeoutIn.element, '到点强制停止并记为失败；范围 1–600 秒').row,
-        actions,
+        matchTools: matchIn.control.value,
+    });
+    const footer = [
+        typeof deps.dialogButton === 'function'
+            ? deps.dialogButton('取消', 'dlg-btn', closePreCommandEditor)
+            : (() => { const b = document.createElement('button'); b.type = 'button'; b.className = 'dlg-btn'; b.textContent = '取消'; b.addEventListener('click', closePreCommandEditor); return b; })(),
+        typeof deps.dialogButton === 'function'
+            ? deps.dialogButton(entry ? '保存修改' : '创建命令', 'dlg-btn primary', submit)
+            : (() => { const b = document.createElement('button'); b.type = 'button'; b.className = 'dlg-btn primary'; b.textContent = entry ? '保存修改' : '创建命令'; b.addEventListener('click', submit); return b; })(),
+    ];
+    openDialog(
+        entry ? '编辑生命周期命令' : '新建生命周期命令',
+        [
+            editorRow('命令', cmdIn.element, '要特定 shell 直接写在命令里（如 powershell -Command …）').row,
+            editorRow('时机', eventSel.element, '工具级时机（工具前/后/失败、权限请求）按匹配器过滤工具；会话级时机（会话开始/提交输入/停止）每会话或每轮触发；工作区级时机随打开/关闭触发').row,
+            matchRow,
+            editorRow('超时（秒）', timeoutIn.element, '到点强制停止并记为失败；范围 1–600 秒').row,
+        ],
+        footer,
+        {top: true, wide: true},
     );
     cmdIn.control.focus();
 }
@@ -268,17 +284,19 @@ function savePreCommandEditor(form) {
         return;
     }
     const event = PRECMD_EVENTS.includes(form.event) ? form.event : 'workspace-open';
+    const matchTools = String(form.matchTools || '').split(/[,，\n、\s]+/)
+        .map((t) => t.trim()).filter(Boolean);
     const entries = entriesOf();
     if (form.id) {
         const idx = entries.findIndex((e) => e && e.id === form.id);
         if (idx < 0) {
-            deps.flash('该预指令已被删除', true);
+            deps.flash('该条目已被删除', true);
             closePreCommandEditor();
             renderPreCommandList();
             return;
         }
         // 用户亲手保存 = 最后写入方，origin 归 'user'（AI 配置徽标随之消失）
-        const norm = normalizePreCommand({command, timeoutMs: form.timeoutMs, event, origin: 'user'}, entries[idx]);
+        const norm = normalizePreCommand({command, timeoutMs: form.timeoutMs, event, matchTools, origin: 'user'}, entries[idx]);
         if (!norm.ok) {
             deps.flash(norm.error, true);
             return;
@@ -287,19 +305,19 @@ function savePreCommandEditor(form) {
     } else {
         const wsKey = wsKeyOf();
         if (!wsKey) {
-            deps.flash('先打开一个文件夹：预指令绑定工作区', true);
+            deps.flash('先打开一个文件夹：命令绑定工作区', true);
             return;
         }
         if (entries.length >= PRECMD_MAX_TOTAL) {
-            deps.flash('预指令已达全局上限 ' + PRECMD_MAX_TOTAL + ' 条，请先删除不用的条目', true);
+            deps.flash('已达全局上限 ' + PRECMD_MAX_TOTAL + ' 条，请先删除不用的条目', true);
             return;
         }
         const mine = entries.filter((e) => String(e.ws || '') === wsKey);
         if (mine.length >= PRECMD_MAX_PER_WS) {
-            deps.flash('当前工作区的预指令已达上限 ' + PRECMD_MAX_PER_WS + ' 条', true);
+            deps.flash('当前工作区已达上限 ' + PRECMD_MAX_PER_WS + ' 条', true);
             return;
         }
-        const norm = normalizePreCommand({command, timeoutMs: form.timeoutMs, event, ws: wsKey, origin: 'user'});
+        const norm = normalizePreCommand({command, timeoutMs: form.timeoutMs, event, matchTools, ws: wsKey, origin: 'user'});
         if (!norm.ok) {
             deps.flash(norm.error, true);
             return;
@@ -309,7 +327,7 @@ function savePreCommandEditor(form) {
     deps.applySettings();
     closePreCommandEditor();
     renderPreCommandList();
-    deps.flash(form.id ? '已保存预指令' : '已创建预指令：' + commandDigest(command, 40));
+    deps.flash(form.id ? '已保存' : '已创建：' + commandDigest(command, 40));
 }
 
 // ---- 预跑一次（纯用户入口，不走审批；AI 没有对应动作，见 §7 决策 5）----
@@ -319,10 +337,10 @@ function setupActions() {
     if (runNow) {
         runNow.addEventListener('click', () => {
             if (!deps.getWorkspace()) {
-                deps.flash('先打开一个文件夹：预指令绑定工作区', true);
+                deps.flash('先打开一个文件夹：命令绑定工作区', true);
                 return;
             }
-            deps.flash('已触发预指令执行（' + wsDisplayName(deps.getWorkspace()) + '），结果见状态栏消息中心');
+            deps.flash('已触发执行（' + wsDisplayName(deps.getWorkspace()) + '），结果见状态栏消息中心');
             Promise.resolve(deps.runOnce()).catch((e) => {
                 console.error('precmd: 预跑失败', e);
             });

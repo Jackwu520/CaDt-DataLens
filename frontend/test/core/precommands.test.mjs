@@ -5,7 +5,11 @@ import assert from 'node:assert/strict';
 import {
     PRECMD_EVENT,
     PRECMD_EVENTS,
+    PRECMD_EVENT_OPTIONS,
     PRECMD_EVENT_LABELS,
+    isToolEvent,
+    isBlockingEvent,
+    toolMatches,
     PRECMD_COMMAND_MAX,
     PRECMD_TIMEOUT_DEFAULT,
     PRECMD_MAX_TOTAL,
@@ -135,11 +139,11 @@ test('countForWorkspace：enabled 与否都占额（key 精确匹配，归一化
 // ---- buildPreCommandApprovalSpec ----
 
 test('buildPreCommandApprovalSpec：三个操作都 risk=high、动作名正确', () => {
-    const entry = {command: 'npm run dev', timeoutMs: 30000, enabled: true};
+    const entry = {command: 'npm run dev', timeoutMs: 30000, enabled: true, event: PRECMD_EVENT};
     const add = buildPreCommandApprovalSpec('add', entry, 'proj');
     assert.equal(add.risk, 'high');
     assert.equal(add.action, 'add_pre_command');
-    assert.match(add.title, /新增预指令（proj）/);
+    assert.match(add.title, /新增生命周期命令（proj）/);
     assert.match(add.warnings[0], /无需再次审批/);
     const upd = buildPreCommandApprovalSpec('update', {...entry, command: 'new'}, 'proj', entry);
     assert.equal(upd.action, 'update_pre_command');
@@ -147,7 +151,7 @@ test('buildPreCommandApprovalSpec：三个操作都 risk=high、动作名正确'
     assert.match(upd.newValue, /new/);
     const del = buildPreCommandApprovalSpec('remove', entry, 'proj');
     assert.equal(del.action, 'remove_pre_command');
-    assert.match(del.warnings[0], /不再随工作区打开自动执行/);
+    assert.match(del.warnings[0], /不再随「打开工作区」事件自动执行/);
 });
 
 test('buildPreCommandApprovalSpec：target 是命令全文（多行不截断，审查 P1-2）', () => {
@@ -184,23 +188,63 @@ test('summarizePreCommandRuns：全成功 / 非零退出 / 超时 / 异常四种
     assert.match(bad, /stderr: ENOENT: no such file at run \(x.js:1\)/);
 });
 
-// ---- 事件枚举（三个生命周期）----
+// ---- 事件枚举（9 个生命周期 + 旧别名）----
 
-test('PRECMD_EVENTS = open / close / ai-session-start，标签齐全', () => {
+test('PRECMD_EVENTS 覆盖工作区/会话/工具 9 事件 + 旧别名，标签齐全', () => {
     assert.equal(PRECMD_EVENT, 'workspace-open');
-    assert.deepEqual(PRECMD_EVENTS, ['workspace-open', 'workspace-close', 'ai-session-start']);
+    assert.equal(PRECMD_EVENTS.length, 10); // 9 规范 + 1 旧别名
     for (const ev of PRECMD_EVENTS) {
         assert.ok(PRECMD_EVENT_LABELS[ev], '缺标签：' + ev);
         assert.equal(eventLabel(ev), PRECMD_EVENT_LABELS[ev]);
     }
     assert.equal(eventLabel('unknown'), 'unknown');
+    assert.ok(!PRECMD_EVENT_OPTIONS.includes('ai-session-start')); // 下拉隐藏旧名
 });
 
-test('normalizePreCommand：三个事件都接受，未知事件拒绝', () => {
+test('normalizePreCommand：9 事件都接受；旧名 ai-session-start 改写为 session-start', () => {
     for (const ev of PRECMD_EVENTS) {
         const out = normalizePreCommand({command: 'ls', event: ev});
         assert.equal(out.ok, true, ev);
-        assert.equal(out.entry.event, ev);
+        assert.equal(out.entry.event, ev === 'ai-session-start' ? 'session-start' : ev);
     }
     assert.equal(normalizePreCommand({command: 'ls', event: 'app-quit'}).ok, false);
+});
+
+// ---- 工具匹配器 ----
+
+test('isToolEvent / isBlockingEvent 分类正确', () => {
+    for (const ev of ['pre-tool-use', 'post-tool-use', 'post-tool-use-failure', 'permission-request']) {
+        assert.equal(isToolEvent(ev), true, ev);
+    }
+    for (const ev of ['workspace-open', 'workspace-close', 'session-start', 'user-prompt-submit', 'stop']) {
+        assert.equal(isToolEvent(ev), false, ev);
+    }
+    for (const ev of ['session-start', 'user-prompt-submit', 'pre-tool-use', 'permission-request']) {
+        assert.equal(isBlockingEvent(ev), true, ev);
+    }
+    for (const ev of ['post-tool-use', 'stop', 'workspace-open']) {
+        assert.equal(isBlockingEvent(ev), false, ev);
+    }
+});
+
+test('toolMatches：空匹配器匹配全部，精确名 / mcp__* 前缀 / * 通配', () => {
+    const base = {event: 'pre-tool-use'};
+    assert.equal(toolMatches(base, 'write_file'), true); // 空 = 全部
+    assert.equal(toolMatches({...base, matchTools: ['write_file', 'run_command']}, 'write_file'), true);
+    assert.equal(toolMatches({...base, matchTools: ['write_file']}, 'read_file'), false);
+    assert.equal(toolMatches({...base, matchTools: ['mcp__*']}, 'mcp__server__tool'), true);
+    assert.equal(toolMatches({...base, matchTools: ['mcp__*']}, 'write_file'), false);
+    assert.equal(toolMatches({...base, matchTools: ['*']}, 'anything'), true);
+    assert.equal(toolMatches({event: 'workspace-open', matchTools: ['*']}, 'write_file'), false); // 非工具事件恒 false
+});
+
+test('normalizePreCommand：matchTools 去重 / 去空 / 上限 20', () => {
+    const out = normalizePreCommand({
+        command: 'ls', event: 'pre-tool-use',
+        matchTools: ['write_file', 'write_file', '', 'run_command', '  ', ...Array.from({length: 25}, (_, i) => 't' + i)],
+    });
+    assert.equal(out.ok, true);
+    assert.equal(out.entry.matchTools.length, 20);
+    assert.equal(new Set(out.entry.matchTools).size, 20);
+    assert.ok(!out.entry.matchTools.includes(''));
 });

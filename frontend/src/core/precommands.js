@@ -4,14 +4,64 @@
 // docs/finished-plans/workspace-precommands.md §5）。
 
 export const PRECMD_EVENT = 'workspace-open'; // 缺省事件（老数据无 event 字段时沿用）
-export const PRECMD_EVENTS = [PRECMD_EVENT, 'workspace-close', 'ai-session-start'];
+
+// 9 个生命周期事件：2 个工作区级 + 7 个 AI 会话/工具级（对齐 ZCode 钩子语义）
+// 'ai-session-start' 是一期旧名，作为合法别名保留（normalize 时统一改写成 session-start），
+// 让已存盘的老配置继续可读可执行。
+export const PRECMD_EVENTS = [
+    PRECMD_EVENT,                  // 打开工作区（打开 / 切回 / 启动恢复）
+    'workspace-close',             // 关闭工作区（显式关闭 / 切走）
+    'session-start',               // AI 会话开始（空会话第一轮流起前，阻塞）
+    'ai-session-start',            // 旧名兼容别名（归一化改写为 session-start）
+    'user-prompt-submit',          // 用户提交每轮 prompt（阻塞）
+    'pre-tool-use',                // 工具调用前（阻塞，支持 matchTools）
+    'post-tool-use',               // 工具调用成功后（fire-and-forget，支持 matchTools）
+    'post-tool-use-failure',       // 工具调用失败后（fire-and-forget，支持 matchTools）
+    'permission-request',          // 权限审批发起时（阻塞，支持 matchTools）
+    'stop',                        // 用户停止生成（fire-and-forget）
+];
+// 设置页下拉只显示规范名（隐藏旧别名，避免用户创建新别名条目）
+export const PRECMD_EVENT_OPTIONS = PRECMD_EVENTS.filter((e) => e !== 'ai-session-start');
 export const PRECMD_EVENT_LABELS = {
     'workspace-open': '打开工作区',
     'workspace-close': '关闭工作区',
-    'ai-session-start': 'AI 会话开始',
+    'session-start': '会话开始',
+    'ai-session-start': '会话开始', // 旧别名同标签
+    'user-prompt-submit': '提交用户输入',
+    'pre-tool-use': '工具调用前',
+    'post-tool-use': '工具成功后',
+    'post-tool-use-failure': '工具失败后',
+    'permission-request': '权限请求时',
+    'stop': '停止生成时',
 };
+// 工具级事件：按工具名匹配（matchTools），其余事件忽略匹配器按工作区过滤
+export const PRECMD_TOOL_EVENTS = ['pre-tool-use', 'post-tool-use', 'post-tool-use-failure', 'permission-request'];
+// 阻塞型事件：起轮/工具调用/审批要等命令跑完才继续；其余 fire-and-forget
+export const PRECMD_BLOCKING_EVENTS = ['session-start', 'user-prompt-submit', 'pre-tool-use', 'permission-request'];
+
 export function eventLabel(event) {
     return PRECMD_EVENT_LABELS[event] || String(event || '');
+}
+export function isToolEvent(event) {
+    return PRECMD_TOOL_EVENTS.includes(event);
+}
+export function isBlockingEvent(event) {
+    return PRECMD_BLOCKING_EVENTS.includes(event);
+}
+
+// 工具名匹配器：matchTools 是工具名数组（允 mcp__/plugin__ 前缀通配『mcp__*』）；
+// 空数组 = 匹配所有工具；对非工具事件恒不参与过滤。
+export function toolMatches(entry, toolName) {
+    if (!isToolEvent(entry && entry.event)) return false;
+    const list = Array.isArray(entry.matchTools) ? entry.matchTools : [];
+    if (!list.length) return true;
+    const name = String(toolName || '');
+    return list.some((raw) => {
+        const pattern = String(raw || '').trim();
+        if (pattern === '*' || pattern === 'all') return true;
+        if (pattern.endsWith('__*')) return name.startsWith(pattern.slice(0, -1)); // 'mcp__*' → 前缀 mcp__
+        return pattern === name;
+    });
 }
 export const PRECMD_MAX_TOTAL = 20;           // 全局条目上限
 export const PRECMD_MAX_PER_WS = 10;          // 单工作区条目上限
@@ -63,7 +113,8 @@ export function normalizePreCommand(raw, prev) {
     if (command.length > PRECMD_COMMAND_MAX) {
         return {ok: false, error: '命令超过长度上限 ' + PRECMD_COMMAND_MAX + ' 字符'};
     }
-    const event = String(src.event != null ? src.event : (prev ? prev.event : PRECMD_EVENT) || PRECMD_EVENT);
+    const eventRaw = String(src.event != null ? src.event : (prev ? prev.event : PRECMD_EVENT) || PRECMD_EVENT);
+    const event = eventRaw === 'ai-session-start' ? 'session-start' : eventRaw; // 旧名改写为规范名
     if (!PRECMD_EVENTS.includes(event)) {
         return {ok: false, error: '未知的事件类型：' + event + '（可用：' + PRECMD_EVENTS.join(' / ') + '）'};
     }
@@ -74,6 +125,10 @@ export function normalizePreCommand(raw, prev) {
         : src.origin === 'user' ? 'user'
         : (prev && prev.origin === 'ai') ? 'ai' : 'user';
     const createdAt = Math.round(numOr(prev ? prev.createdAt : src.createdAt, 0)) || Date.now();
+    // 工具匹配器（仅工具级事件有意义）：最多 20 个、每个 ≤60 字符、去重、去空
+    const matchRaw = src.matchTools != null ? src.matchTools : (prev ? prev.matchTools : []);
+    const matchTools = [...new Set((Array.isArray(matchRaw) ? matchRaw : [])
+        .map((t) => String(t || '').trim().slice(0, 60)).filter(Boolean))].slice(0, 20);
     const entry = {
         id: String(src.id != null ? src.id : (prev ? prev.id : '') || '').trim() || newId(),
         ws: String(src.ws != null ? src.ws : (prev ? prev.ws : '') || ''),
@@ -81,6 +136,7 @@ export function normalizePreCommand(raw, prev) {
         command,
         timeoutMs,
         enabled: src.enabled != null ? !!src.enabled : (prev ? prev.enabled !== false : true),
+        matchTools,
         origin,
         createdAt,
     };
@@ -127,8 +183,11 @@ export function countForWorkspace(entries, wsKey) {
 
 function entrySummary(entry) {
     return '命令：' + commandDigest(entry && entry.command, 160)
-        + ' · 时机：' + eventLabel(entry && entry.event)
+        + ' · 时机：' + (eventLabel(entry && entry.event) || '默认时机')
         + ' · 超时 ' + formatTimeoutText(entry && entry.timeoutMs)
+        + (isToolEvent(entry && entry.event)
+            ? ' · 匹配工具 ' + ((entry.matchTools && entry.matchTools.length) ? entry.matchTools.join('/') : '全部')
+            : '')
         + ' · ' + ((entry && entry.enabled === false) ? '停用' : '启用');
 }
 
@@ -139,45 +198,46 @@ function entrySummary(entry) {
  */
 export function buildPreCommandApprovalSpec(op, entry, wsName, oldEntry) {
     const name = String(wsName || '当前工作区');
+    const when = eventLabel(entry && entry.event) || '默认时机';
     // 审批卡必须给命令**全文**（含多行）：用户批准的与他批准后每次自动执行的必须是同一段
     // 文本（审查 P1-2）；摘要场景（列表行 / 消息中心）才用 commandDigest
     const command = String((entry && entry.command) || '').trim();
     const base = {
         action: op === 'add' ? 'add_pre_command' : op === 'update' ? 'update_pre_command' : 'remove_pre_command',
         risk: 'high',
-        source: '设置 → 预指令',
+        source: '设置 → 生命周期',
     };
     if (op === 'remove') {
         return {
             ...base,
-            title: '删除预指令（' + name + '）',
+            title: '删除生命周期命令（' + name + '）',
             target: command,
             oldValue: entrySummary(entry),
             newValue: '（删除）',
-            warnings: ['删除后该命令不再随工作区打开自动执行'],
+            warnings: ['删除后该命令不再随「' + when + '」事件自动执行'],
         };
     }
     if (op === 'update') {
         return {
             ...base,
-            title: '修改预指令（' + name + '）',
+            title: '修改生命周期命令（' + name + '）',
             target: command,
             oldValue: entrySummary(oldEntry),
             newValue: entrySummary(entry),
             warnings: [
-                '批准后该命令将在每次打开工作区「' + name + '」时自动执行，无需再次审批',
+                '批准后该命令将在「' + when + '」（' + name + '）时自动执行，无需再次审批',
                 '命令以本机权限运行，请确认内容与来源可信',
             ],
         };
     }
     return {
         ...base,
-        title: '新增预指令（' + name + '）',
+        title: '新增生命周期命令（' + name + '）',
         target: command,
         oldValue: '（无）',
         newValue: entrySummary(entry),
         warnings: [
-            '批准后该命令将在每次打开工作区「' + name + '」时自动执行，无需再次审批',
+            '批准后该命令将在「' + when + '」（' + name + '）时自动执行，无需再次审批',
             '命令以本机权限运行，请确认内容与来源可信',
         ],
     };

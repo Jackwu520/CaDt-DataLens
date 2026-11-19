@@ -1,8 +1,10 @@
-// precommands.js：工作区预指令控制器——生命周期自动执行 + AI 四动作（审批 / 写入）。
-// 事件：workspace-open（打开工作区）/ workspace-close（关闭或切走）/ ai-session-start
-// （AI 空会话首轮流起轮前，阻塞等待跑完）；纯函数在 core/precommands.js；存储在
-// settings.preCommands（localStorage，AI 没有任何写通道，审批不可绕过）；执行走现成的
-// AIRunShellCommand 绑定（envvars 合并 / GBK / 超时钳制 / procctl 可停）。
+// precommands.js：工作区生命周期控制器——9 个事件自动执行 + AI 四动作（审批 / 写入）。
+// 工作区级：workspace-open / workspace-close；AI 级：session-start（原 ai-session-start）
+// / user-prompt-submit / pre-tool-use / post-tool-use / post-tool-use-failure / permission-request / stop。
+// 工具级事件按 matchTools 过滤工具名；阻塞型（session-start / user-prompt-submit /
+// pre-tool-use / permission-request）await 跑完才继续，其余 fire-and-forget。
+// 纯函数在 core/precommands.js；存储在 settings.preCommands（localStorage，AI 没有任何
+// 写通道，审批不可绕过）；执行走 AIRunShellCommand 绑定（envvars 合并 / GBK / 超时钳制）。
 // 方案见 docs/finished-plans/workspace-precommands.md。
 //
 // 审批语义（本功能的核心）：四个 app_control 动作里的三个写动作**无条件**弹动作审批卡，
@@ -16,6 +18,8 @@ import {
     normalizePreCommand,
     entriesForWorkspace,
     allEntriesForWorkspace,
+    isToolEvent,
+    toolMatches,
     countForWorkspace,
     buildPreCommandApprovalSpec,
     summarizePreCommandRuns,
@@ -34,13 +38,13 @@ export function createPrecommands(deps) {
 
     function requireWorkspace() {
         const ws = String(deps.getWorkspace() || '');
-        if (!ws) throw new Error('当前窗口没有打开工作区：预指令绑定工作区，请先打开文件夹');
+        if (!ws) throw new Error('当前窗口没有打开工作区：命令绑定工作区，请先打开文件夹');
         return {ws, key: deps.sessionPathKey(ws), name: wsDisplayName(ws)};
     }
 
     async function requireApproval(requestActionApproval, spec) {
         if (typeof requestActionApproval !== 'function') {
-            throw new Error('预指令写入需要用户在界面审批；当前调用没有审批通道，拒绝执行');
+            throw new Error('写入需要用户在界面审批；当前调用没有审批通道，拒绝执行');
         }
         return await requestActionApproval(spec);
     }
@@ -52,7 +56,7 @@ export function createPrecommands(deps) {
         const all = entriesOf();
         return {
             workspace: ws,
-            // 全部事件条目（含停用）：AI 要能看到三个时机的条目才能 update/remove（审查 P1-3）
+            // 全部事件条目（含停用）：AI 要能看到 9 事件的条目才能 update/remove（审查 P1-3）
             entries: allEntriesForWorkspace(all, key)
                 .map((e) => ({
                     id: e.id,
@@ -60,6 +64,7 @@ export function createPrecommands(deps) {
                     command: e.command,
                     timeoutMs: e.timeoutMs,
                     enabled: e.enabled !== false,
+                    matchTools: Array.isArray(e.matchTools) ? e.matchTools : [],
                     origin: e.origin === 'ai' ? 'ai' : 'user',
                     createdAt: e.createdAt || 0,
                     lastRunAt: e.lastRunAt || 0,
@@ -67,7 +72,10 @@ export function createPrecommands(deps) {
                 })),
             totalAll: all.length,
             note: '写动作（add / update / remove）一律要用户在界面审批（完全权限也不例外）；'
-                + 'event 三选一：workspace-open（打开工作区）/ workspace-close（关闭或切走）/ ai-session-start（空会话第一轮流起前）。'
+                + 'event 共 9 个：workspace-open 打开 / workspace-close 关闭 / session-start 会话开始 / '
+                + 'user-prompt-submit 提交输入 / stop 停止 / pre-tool-use 工具前 / post-tool-use 工具后 / '
+                + 'post-tool-use-failure 工具失败 / permission-request 权限请求。'
+                + '工具级事件用 matchTools（工具名数组，空=全部，mcp__* 通配）。'
                 + '没有「立即执行」动作——要跑命令用 run_command。',
         };
     }
@@ -76,10 +84,10 @@ export function createPrecommands(deps) {
         const {key, name} = requireWorkspace();
         const all = entriesOf();
         if (all.length >= PRECMD_MAX_TOTAL) {
-            throw new Error('预指令已达全局上限 ' + PRECMD_MAX_TOTAL + ' 条，请先删除不用的条目');
+            throw new Error('已达全局上限 ' + PRECMD_MAX_TOTAL + ' 条，请先删除不用的条目');
         }
         if (countForWorkspace(all, key) >= PRECMD_MAX_PER_WS) {
-            throw new Error('工作区「' + name + '」的预指令已达上限 ' + PRECMD_MAX_PER_WS + ' 条');
+            throw new Error('工作区「' + name + '」已达上限 ' + PRECMD_MAX_PER_WS + ' 条');
         }
         // id 一律新生成：AI 传 id 可与既有条目撞车（update/remove 只动第一个命中，审查 P2）
         const norm = normalizePreCommand({...params, id: '', ws: key, origin: 'ai'});
@@ -87,7 +95,7 @@ export function createPrecommands(deps) {
         const answer = await requireApproval(requestActionApproval,
             buildPreCommandApprovalSpec('add', norm.entry, name));
         if (!answer || !answer.approved) {
-            return {added: false, denied: true, note: '用户拒绝了本次预指令新增'};
+            return {added: false, denied: true, note: '用户拒绝了本次新增'};
         }
         deps.settings.preCommands = all.concat([norm.entry]);
         deps.applySettings();
@@ -99,7 +107,7 @@ export function createPrecommands(deps) {
             timeoutMs: norm.entry.timeoutMs,
             event: norm.entry.event,
             origin: 'ai',
-            note: '将在每次打开该工作区时自动执行。',
+            note: '将在「' + eventLabel(norm.entry.event) + '」时自动执行。',
         };
     }
 
@@ -109,11 +117,11 @@ export function createPrecommands(deps) {
         const all = entriesOf();
         const idx = all.findIndex((e) => e && e.id === id);
         if (idx < 0) {
-            throw new Error('找不到预指令条目：' + id + '（用 get_pre_commands 查看当前工作区的条目）');
+            throw new Error('找不到条目：' + id + '（用 get_pre_commands 查看当前工作区的条目）');
         }
         const prev = all[idx];
         if (String(prev.ws || '') !== key) {
-            throw new Error('该条目属于其他工作区：AI 只能修改当前工作区的预指令');
+            throw new Error('该条目属于其他工作区：AI 只能修改当前工作区的条目');
         }
         const norm = normalizePreCommand(params, prev);
         if (!norm.ok) throw new Error(norm.error);
@@ -124,7 +132,7 @@ export function createPrecommands(deps) {
         const answer = await requireApproval(requestActionApproval,
             buildPreCommandApprovalSpec('update', norm.entry, name, prev));
         if (!answer || !answer.approved) {
-            return {updated: false, denied: true, note: '用户拒绝了本次预指令修改'};
+            return {updated: false, denied: true, note: '用户拒绝了本次修改'};
         }
         deps.settings.preCommands = all.map((e, i) => (i === idx ? norm.entry : e));
         deps.applySettings();
@@ -138,15 +146,15 @@ export function createPrecommands(deps) {
         const all = entriesOf();
         const prev = all.find((e) => e && e.id === id);
         if (!prev) {
-            throw new Error('找不到预指令条目：' + id + '（用 get_pre_commands 查看当前工作区的条目）');
+            throw new Error('找不到条目：' + id + '（用 get_pre_commands 查看当前工作区的条目）');
         }
         if (String(prev.ws || '') !== key) {
-            throw new Error('该条目属于其他工作区：AI 只能删除当前工作区的预指令');
+            throw new Error('该条目属于其他工作区：AI 只能删除当前工作区的条目');
         }
         const answer = await requireApproval(requestActionApproval,
             buildPreCommandApprovalSpec('remove', prev, name));
         if (!answer || !answer.approved) {
-            return {removed: false, denied: true, note: '用户拒绝了本次预指令删除'};
+            return {removed: false, denied: true, note: '用户拒绝了本次删除'};
         }
         deps.settings.preCommands = all.filter((e) => e.id !== id);
         deps.applySettings();
@@ -166,7 +174,7 @@ export function createPrecommands(deps) {
             case 'remove_pre_command':
                 return await removePreCommand(p, requestActionApproval);
             default:
-                throw new Error('未知预指令动作：' + action);
+                throw new Error('未知动作：' + action);
         }
     }
 
@@ -177,16 +185,25 @@ export function createPrecommands(deps) {
      * 重入护栏按「事件 + 工作区」分键：同工作区打开与关闭互不阻塞。
      * 单条失败（异常 / 超时 / 非零退出）不阻断后续；汇总进消息中心 + 留痕。
      */
-    async function runEntries(root, event) {
+    async function runEntries(root, event, toolName) {
         const dir = String(root || '');
         if (!dir) return {ran: 0};
         if (deps.settings.preCommandsEnabled === false) return {ran: 0, skipped: 'disabled'};
         const key = deps.sessionPathKey(dir);
-        const list = entriesForWorkspace(deps.settings.preCommands, key, event);
+        // 事件兼容：老数据的 ai-session-start 等同 session-start
+        const matchesEvent = (e) => e === event || (event === 'session-start' && e === 'ai-session-start');
+        let list = (Array.isArray(deps.settings.preCommands) ? deps.settings.preCommands : [])
+            .filter((e) => e && e.enabled !== false && String(e.ws || '') === key && matchesEvent(e.event));
+        // 工具级事件：按工具名匹配器过滤（空匹配器 = 匹配全部工具）
+        if (isToolEvent(event)) {
+            list = list.filter((e) => toolMatches(e, toolName));
+        }
         if (!list.length) return {ran: 0};
-        const guard = event + '\u0000' + key;
+        // 重入护栏按「事件 + 工作区」分键；工具级事件把工具名也带上，
+        // 避免同工作区不同工具的钩子互相阻塞
+        const guard = event + '\u0000' + key + (isToolEvent(event) ? '\u0000' + String(toolName || '') : '');
         if (runningByWs.has(guard)) {
-            deps.activityLog.log('precmd.run', dir, {skipped: 'already-running', event}, {noRel: true});
+            deps.activityLog.log('precmd.run', dir, {skipped: 'already-running', event, tool: toolName || ''}, {noRel: true});
             return {ran: 0, skipped: 'running'};
         }
         runningByWs.add(guard);
@@ -209,17 +226,23 @@ export function createPrecommands(deps) {
             deps.applySettings(); // 回填 lastRunAt / lastCode（随设置落 localStorage）
             const failed = results.filter((r) => r.error || !r.result || r.result.timedOut || r.result.code !== 0).length;
             deps.activityLog.log('precmd.run', dir,
-                {event, total: results.length, failed, aiCount: results.filter((r) => r.entry.origin === 'ai').length},
+                {event, tool: toolName || '', total: results.length, failed,
+                 aiCount: results.filter((r) => r.entry.origin === 'ai').length},
                 {noRel: true});
             deps.addMessage({
                 kind: failed ? 'error' : 'success',
-                title: '预指令执行完成（' + (event === PRECMD_EVENT ? '' : eventLabel(event) + ' · ') + wsDisplayName(dir) + '）',
+                title: '生命周期执行完成（' + (event === PRECMD_EVENT ? '' : eventLabel(event) + ' · ') + wsDisplayName(dir) + '）',
                 body: summarizePreCommandRuns(results),
             }, {toast: failed > 0});
             return {ran: results.length, failed};
         } finally {
             runningByWs.delete(guard);
         }
+    }
+
+    // 通用入口：main.js 把 9 个事件都经此挂到 ai-panel / 工作区生命周期
+    function runForEvent(root, event, toolName) {
+        return runEntries(root, event, toolName);
     }
 
     // 打开工作区（openFolderWorkspace 挂点：对话框 / 启动恢复 / AI open_folder 全走这里）
@@ -237,8 +260,8 @@ export function createPrecommands(deps) {
     // 「开始前」语义要求阻塞；每条自带超时上限，失败不阻塞起轮。控制器内部已兜错，
     // 调用方（ai-panel）另有 try/catch 双保险。
     function runForAISessionStart(ws) {
-        return runEntries(ws, 'ai-session-start');
+        return runEntries(ws, 'session-start');
     }
 
-    return {runForWorkspace, runForWorkspaceClose, runForAISessionStart, handleAppAction};
+    return {runForEvent, runForWorkspace, runForWorkspaceClose, runForAISessionStart, handleAppAction};
 }

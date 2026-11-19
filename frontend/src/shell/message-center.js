@@ -8,6 +8,20 @@
 //   focusSession(sessionId)        toast 点击跳转到对应 AI 会话（main.js 传懒箭头）
 //   runAction(actionId, item)      带 actionId 的消息被点击时分派动作（如打开更新对话框）
 // }
+
+// 历史迁移：审批 / 待填写曾被标成 error（红叉图标），语义上不是错误，统一改成 info。
+// 只按标题匹配（含 60 秒催办的「（仍在等待）」后缀），不动真正的「AI 任务失败」。
+// 就地修改并返回是否发生变化，供 load 决定是否写回 localStorage；抽成纯函数便于单测。
+import {overlayStack} from '../core/overlay-stack.js';
+
+export function migrateApprovalKind(m) {
+    if (m && m.kind === 'error' && /AI 待(审批|填写)/.test(String(m.title || ''))) {
+        m.kind = 'info';
+        return true;
+    }
+    return false;
+}
+
 export function createMessageCenter(ctx) {
     const KEY = 'datalens-message-center';
     const MAX_MESSAGES = 100;
@@ -22,6 +36,8 @@ export function createMessageCenter(ctx) {
     let seq = 0;
     let pop = null;
     let dismissHandler = null;
+    // 面板的弹层栈条目（togglePanel/closePanel 收口）
+    let stackHandle = null;
     // 浮层定位函数（内容高度变化后重新调用，保证底部始终贴住按钮）
     let placePanel = null;
 
@@ -37,7 +53,11 @@ export function createMessageCenter(ctx) {
             const raw = JSON.parse(localStorage.getItem(KEY) || '[]');
             const list = Array.isArray(raw) ? raw.slice(0, MAX_MESSAGES) : [];
             const kept = list.filter((m) => !isLegacyDone(m));
-            if (kept.length !== list.length) {
+            let approvalMigrated = false;
+            for (const m of kept) {
+                if (migrateApprovalKind(m)) approvalMigrated = true;
+            }
+            if (kept.length !== list.length || approvalMigrated) {
                 // 顺手写回：别每次启动都重新过滤一遍（此处不能调 persist——messages 还没绑定）
                 try {
                     localStorage.setItem(KEY, JSON.stringify(kept));
@@ -244,12 +264,15 @@ export function createMessageCenter(ctx) {
 
     function closePanel() {
         if (!pop) return;
+        if (stackHandle) {
+            stackHandle.dispose();
+            stackHandle = null;
+        }
         pop.remove();
         pop = null;
         placePanel = null;
         if (dismissHandler) {
             document.removeEventListener('pointerdown', dismissHandler, true);
-            document.removeEventListener('keydown', dismissHandler, true);
             dismissHandler = null;
         }
     }
@@ -272,13 +295,17 @@ export function createMessageCenter(ctx) {
         pop = panel;
         // 打开即视为已读：未读角标清零
         markAllRead();
+        // Esc 归全局弹层栈按层序退；这里只管点击面板外收起
+        stackHandle = overlayStack.open({
+            id: 'msg-center-pop', kind: 'popover', el: panel,
+            onClose: () => { closePanel(); return true; },
+        });
         dismissHandler = (e) => {
-            if (e.key === 'Escape' || (e.type === 'pointerdown' && !panel.contains(e.target) && !anchor.contains(e.target))) {
+            if (e.type === 'pointerdown' && !panel.contains(e.target) && !anchor.contains(e.target)) {
                 closePanel();
             }
         };
         document.addEventListener('pointerdown', dismissHandler, true);
-        document.addEventListener('keydown', dismissHandler, true);
     }
 
     function init() {
