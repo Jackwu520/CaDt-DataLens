@@ -1,15 +1,17 @@
-// precommands.js：工作区预指令的纯函数——条目归一化 / 上限校验 / 工作区过滤 /
-// 动作审批规格 / 执行汇总。存储在 settings.preCommands（localStorage，AI 没有任何
+// lifecycle-hooks.js：工作区生命周期钩子的纯函数——条目归一化 / 上限校验 / 工作区过滤 /
+// 动作审批规格 / 执行汇总。存储在 settings.lifecycleHooks（localStorage，AI 没有任何
 // 写通道——这是「AI 写入必审批不可绕过」的前提，方案见
-// docs/finished-plans/workspace-precommands.md §5）。
+// docs/finished-plans/workspace-lifecycle-hooks.md §5）。
+// 2026-11-21 由 precommands.js 改名：旧名 pre-command 只表达「前置命令」，与 9 个事件
+// （含 post-tool-use / stop 这类事后钩子）不符。
 
-export const PRECMD_EVENT = 'workspace-open'; // 缺省事件（老数据无 event 字段时沿用）
+export const LIFECYCLE_HOOK_EVENT = 'workspace-open'; // 缺省事件（老数据无 event 字段时沿用）
 
 // 9 个生命周期事件：2 个工作区级 + 7 个 AI 会话/工具级（对齐 ZCode 钩子语义）
 // 'ai-session-start' 是一期旧名，作为合法别名保留（normalize 时统一改写成 session-start），
 // 让已存盘的老配置继续可读可执行。
-export const PRECMD_EVENTS = [
-    PRECMD_EVENT,                  // 打开工作区（打开 / 切回 / 启动恢复）
+export const LIFECYCLE_HOOK_EVENTS = [
+    LIFECYCLE_HOOK_EVENT,          // 打开工作区（打开 / 切回 / 启动恢复）
     'workspace-close',             // 关闭工作区（显式关闭 / 切走）
     'session-start',               // AI 会话开始（空会话第一轮流起前，阻塞）
     'ai-session-start',            // 旧名兼容别名（归一化改写为 session-start）
@@ -21,8 +23,8 @@ export const PRECMD_EVENTS = [
     'stop',                        // 用户停止生成（fire-and-forget）
 ];
 // 设置页下拉只显示规范名（隐藏旧别名，避免用户创建新别名条目）
-export const PRECMD_EVENT_OPTIONS = PRECMD_EVENTS.filter((e) => e !== 'ai-session-start');
-export const PRECMD_EVENT_LABELS = {
+export const LIFECYCLE_HOOK_EVENT_OPTIONS = LIFECYCLE_HOOK_EVENTS.filter((e) => e !== 'ai-session-start');
+export const LIFECYCLE_HOOK_EVENT_LABELS = {
     'workspace-open': '打开工作区',
     'workspace-close': '关闭工作区',
     'session-start': '会话开始',
@@ -35,18 +37,18 @@ export const PRECMD_EVENT_LABELS = {
     'stop': '停止生成时',
 };
 // 工具级事件：按工具名匹配（matchTools），其余事件忽略匹配器按工作区过滤
-export const PRECMD_TOOL_EVENTS = ['pre-tool-use', 'post-tool-use', 'post-tool-use-failure', 'permission-request'];
+export const LIFECYCLE_HOOK_TOOL_EVENTS = ['pre-tool-use', 'post-tool-use', 'post-tool-use-failure', 'permission-request'];
 // 阻塞型事件：起轮/工具调用/审批要等命令跑完才继续；其余 fire-and-forget
-export const PRECMD_BLOCKING_EVENTS = ['session-start', 'user-prompt-submit', 'pre-tool-use', 'permission-request'];
+export const LIFECYCLE_HOOK_BLOCKING_EVENTS = ['session-start', 'user-prompt-submit', 'pre-tool-use', 'permission-request'];
 
 export function eventLabel(event) {
-    return PRECMD_EVENT_LABELS[event] || String(event || '');
+    return LIFECYCLE_HOOK_EVENT_LABELS[event] || String(event || '');
 }
 export function isToolEvent(event) {
-    return PRECMD_TOOL_EVENTS.includes(event);
+    return LIFECYCLE_HOOK_TOOL_EVENTS.includes(event);
 }
 export function isBlockingEvent(event) {
-    return PRECMD_BLOCKING_EVENTS.includes(event);
+    return LIFECYCLE_HOOK_BLOCKING_EVENTS.includes(event);
 }
 
 // 工具名匹配器：matchTools 是工具名数组（允 mcp__/plugin__ 前缀通配『mcp__*』）；
@@ -63,16 +65,18 @@ export function toolMatches(entry, toolName) {
         return pattern === name;
     });
 }
-export const PRECMD_MAX_TOTAL = 20;           // 全局条目上限
-export const PRECMD_MAX_PER_WS = 10;          // 单工作区条目上限
-export const PRECMD_COMMAND_MAX = 2000;       // 命令文本上限
-export const PRECMD_TIMEOUT_DEFAULT = 30000;
-export const PRECMD_TIMEOUT_MIN = 1000;
-export const PRECMD_TIMEOUT_MAX = 600000;
-export const PRECMD_ID_PREFIX = 'pc-';        // 条目 id 前缀（同 memo 的 blk-/it- 惯例）
+export const LIFECYCLE_HOOK_MAX_TOTAL = 20;           // 全局条目上限
+export const LIFECYCLE_HOOK_MAX_PER_WS = 10;          // 单工作区条目上限
+export const LIFECYCLE_HOOK_COMMAND_MAX = 2000;       // 命令文本上限
+export const LIFECYCLE_HOOK_TIMEOUT_DEFAULT = 30000;
+export const LIFECYCLE_HOOK_TIMEOUT_MIN = 1000;
+export const LIFECYCLE_HOOK_TIMEOUT_MAX = 600000;
+export const LIFECYCLE_HOOK_ID_PREFIX = 'lh-';        // 条目 id 前缀（同 memo 的 blk-/it- 惯例）
+// 旧前缀只读兼容：存量条目（pc-）不必在保存时被换 id，否则 AI 手里/会话里的 id 会失效
+export const LIFECYCLE_HOOK_LEGACY_ID_PREFIX = 'pc-';
 
 function newId() {
-    return PRECMD_ID_PREFIX + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6);
+    return LIFECYCLE_HOOK_ID_PREFIX + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6);
 }
 
 // 工作区显示名（D:\a\proj → proj），与 baseNameOf 同语义；给审批卡 / 消息中心用
@@ -106,21 +110,21 @@ function numOr(value, fallback) {
  * 非法（空命令 / 超长 / 未知 event）返回 {ok:false, error}；超时越界钳制不报错。
  * origin 语义 = 「最后写入方」：src.origin 显式给 'ai'/'user' 时采纳，否则沿用 prev。
  */
-export function normalizePreCommand(raw, prev) {
+export function normalizeLifecycleHook(raw, prev) {
     const src = (raw && typeof raw === 'object') ? raw : {};
     const command = String(src.command != null ? src.command : (prev ? prev.command : '')).trim();
     if (!command) return {ok: false, error: '命令不能为空'};
-    if (command.length > PRECMD_COMMAND_MAX) {
-        return {ok: false, error: '命令超过长度上限 ' + PRECMD_COMMAND_MAX + ' 字符'};
+    if (command.length > LIFECYCLE_HOOK_COMMAND_MAX) {
+        return {ok: false, error: '命令超过长度上限 ' + LIFECYCLE_HOOK_COMMAND_MAX + ' 字符'};
     }
-    const eventRaw = String(src.event != null ? src.event : (prev ? prev.event : PRECMD_EVENT) || PRECMD_EVENT);
+    const eventRaw = String(src.event != null ? src.event : (prev ? prev.event : LIFECYCLE_HOOK_EVENT) || LIFECYCLE_HOOK_EVENT);
     const event = eventRaw === 'ai-session-start' ? 'session-start' : eventRaw; // 旧名改写为规范名
-    if (!PRECMD_EVENTS.includes(event)) {
-        return {ok: false, error: '未知的事件类型：' + event + '（可用：' + PRECMD_EVENTS.join(' / ') + '）'};
+    if (!LIFECYCLE_HOOK_EVENTS.includes(event)) {
+        return {ok: false, error: '未知的事件类型：' + event + '（可用：' + LIFECYCLE_HOOK_EVENTS.join(' / ') + '）'};
     }
-    const timeoutRaw = src.timeoutMs != null ? src.timeoutMs : (prev ? prev.timeoutMs : PRECMD_TIMEOUT_DEFAULT);
-    const timeoutMs = Math.min(PRECMD_TIMEOUT_MAX,
-        Math.max(PRECMD_TIMEOUT_MIN, Math.round(numOr(timeoutRaw, PRECMD_TIMEOUT_DEFAULT))));
+    const timeoutRaw = src.timeoutMs != null ? src.timeoutMs : (prev ? prev.timeoutMs : LIFECYCLE_HOOK_TIMEOUT_DEFAULT);
+    const timeoutMs = Math.min(LIFECYCLE_HOOK_TIMEOUT_MAX,
+        Math.max(LIFECYCLE_HOOK_TIMEOUT_MIN, Math.round(numOr(timeoutRaw, LIFECYCLE_HOOK_TIMEOUT_DEFAULT))));
     const origin = src.origin === 'ai' ? 'ai'
         : src.origin === 'user' ? 'user'
         : (prev && prev.origin === 'ai') ? 'ai' : 'user';
@@ -140,7 +144,9 @@ export function normalizePreCommand(raw, prev) {
         origin,
         createdAt,
     };
-    if (!entry.id.startsWith(PRECMD_ID_PREFIX)) entry.id = newId();
+    if (!entry.id.startsWith(LIFECYCLE_HOOK_ID_PREFIX) && !entry.id.startsWith(LIFECYCLE_HOOK_LEGACY_ID_PREFIX)) {
+        entry.id = newId();
+    }
     // 执行回显字段（仅展示）：沿用 prev，或随写入透传
     if (prev && prev.lastRunAt) entry.lastRunAt = prev.lastRunAt;
     if (prev && prev.lastCode != null) entry.lastCode = prev.lastCode;
@@ -160,15 +166,15 @@ export function normalizePreCommand(raw, prev) {
  * 只在写入点调用；读取处容忍存量脏数据。
  */
 // 生效条目：启用 + 事件匹配 + 工作区匹配（ws 已是 sessionPathKey 归一化后的 key）
-export function entriesForWorkspace(entries, wsKey, event = PRECMD_EVENT) {
+export function entriesForWorkspace(entries, wsKey, event = LIFECYCLE_HOOK_EVENT) {
     const key = String(wsKey || '');
     if (!key) return [];
     return (Array.isArray(entries) ? entries : [])
         .filter((e) => e && e.enabled !== false && e.event === event && String(e.ws || '') === key);
 }
 
-// 工作区全部条目（不分事件，含停用）：AI 的 get_pre_commands 用——AI 要能看到
-// 三个时机的条目才能 update/remove 它们（审查 P1-3）
+// 工作区全部条目（不分事件，含停用）：AI 的 get_lifecycle_hooks 用——AI 要能看到
+// 全部事件的条目才能 update/remove 它们（审查 P1-3）
 export function allEntriesForWorkspace(entries, wsKey) {
     const key = String(wsKey || '');
     if (!key) return [];
@@ -192,25 +198,29 @@ function entrySummary(entry) {
 }
 
 /**
- * 动作审批规格（op = add | update | remove）：预指令写入一律必弹、风险恒 high，
- * 与权限档无关——调用方（shell/precommands.js）不做任何档位路由。
+ * 动作审批规格（op = add | update | remove）：生命周期钩子写入一律必弹、风险恒 high，
+ * 与权限档无关——调用方（shell/lifecycle-hooks.js）不做任何档位路由。
  * oldEntry 只在 update 传，用于「原值 → 新值」对照。
+ * 刻意没有 run 动作：AI 验证命令走 run_command（full 档直通更快、工具卡更详细），
+ * 按条目执行没有独立价值；用户手动验证走设置页列表行的「运行」按钮。
  */
-export function buildPreCommandApprovalSpec(op, entry, wsName, oldEntry) {
+export function buildLifecycleHookApprovalSpec(op, entry, wsName, oldEntry) {
     const name = String(wsName || '当前工作区');
     const when = eventLabel(entry && entry.event) || '默认时机';
     // 审批卡必须给命令**全文**（含多行）：用户批准的与他批准后每次自动执行的必须是同一段
     // 文本（审查 P1-2）；摘要场景（列表行 / 消息中心）才用 commandDigest
     const command = String((entry && entry.command) || '').trim();
     const base = {
-        action: op === 'add' ? 'add_pre_command' : op === 'update' ? 'update_pre_command' : 'remove_pre_command',
+        action: op === 'add' ? 'add_lifecycle_hook'
+            : op === 'update' ? 'update_lifecycle_hook'
+            : 'remove_lifecycle_hook',
         risk: 'high',
         source: '设置 → 生命周期',
     };
     if (op === 'remove') {
         return {
             ...base,
-            title: '删除生命周期命令（' + name + '）',
+            title: '删除生命周期钩子（' + name + '）',
             target: command,
             oldValue: entrySummary(entry),
             newValue: '（删除）',
@@ -220,7 +230,7 @@ export function buildPreCommandApprovalSpec(op, entry, wsName, oldEntry) {
     if (op === 'update') {
         return {
             ...base,
-            title: '修改生命周期命令（' + name + '）',
+            title: '修改生命周期钩子（' + name + '）',
             target: command,
             oldValue: entrySummary(oldEntry),
             newValue: entrySummary(entry),
@@ -232,7 +242,7 @@ export function buildPreCommandApprovalSpec(op, entry, wsName, oldEntry) {
     }
     return {
         ...base,
-        title: '新增生命周期命令（' + name + '）',
+        title: '新增生命周期钩子（' + name + '）',
         target: command,
         oldValue: '（无）',
         newValue: entrySummary(entry),
@@ -247,7 +257,7 @@ export function buildPreCommandApprovalSpec(op, entry, wsName, oldEntry) {
  * 执行汇总（消息中心 body）：首行总览（含 AI 配置计数），失败逐条给命令摘要与原因。
  * results 形如 [{entry, result: {code, stdout, stderr, timedOut} | null, error: string}]
  */
-export function summarizePreCommandRuns(results) {
+export function summarizeLifecycleHookRuns(results) {
     const list = Array.isArray(results) ? results : [];
     const total = list.length;
     const aiCount = list.filter((r) => r.entry && r.entry.origin === 'ai').length;

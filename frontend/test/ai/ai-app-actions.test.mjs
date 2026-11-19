@@ -58,8 +58,15 @@ function mcpActions(text) {
     return [...hit[1].matchAll(/'([a-z][a-z0-9_]+)'/g)].map((m) => m[1]);
 }
 
-// 允许「已实现但刻意不给模型」的动作：{动作: 原因}。目前没有。
-const UNDOCUMENTED = {};
+// 允许「已实现但刻意不给模型」的动作：{动作: 原因}。
+// 生命周期钩子 2026-11-21 改名（pre_command → lifecycle_hook）：旧名保留为静默别名，
+// 历史会话 / 记忆里的调用仍能命中同一分支，但技能表只下发新名——别再教模型旧词。
+const UNDOCUMENTED = {
+    get_pre_commands: '生命周期钩子旧动作名（现 get_lifecycle_hooks），仅兼容历史调用',
+    add_pre_command: '生命周期钩子旧动作名（现 add_lifecycle_hook），仅兼容历史调用',
+    update_pre_command: '生命周期钩子旧动作名（现 update_lifecycle_hook），仅兼容历史调用',
+    remove_pre_command: '生命周期钩子旧动作名（现 remove_lifecycle_hook），仅兼容历史调用',
+};
 
 const skill = skillActions(constantsSrc);
 const registered = listedActions(mainSrc);
@@ -87,5 +94,20 @@ test('动作清单无重复', () => {
     for (const [label, list] of [['技能表', skill], ['APP_ACTIONS', registered]]) {
         const dup = [...new Set(list.filter((item, index) => list.indexOf(item) !== index))];
         assert.deepEqual(dup, [], label + ' 里有重复动作');
+    }
+});
+
+// 改名后的别名方向守卫：旧名只能做静默别名，不能回潮进技能表；新名必须两处齐全。
+test('生命周期钩子：技能表只发新名，旧名仅兼容', () => {
+    const legacy = ['get_pre_commands', 'add_pre_command', 'update_pre_command', 'remove_pre_command'];
+    const next = ['get_lifecycle_hooks', 'add_lifecycle_hook', 'update_lifecycle_hook', 'remove_lifecycle_hook'];
+    for (const action of legacy) {
+        assert.ok(!skill.includes(action), '技能表不应再下发旧名：' + action);
+        assert.ok(UNDOCUMENTED[action], '旧名要在 UNDOCUMENTED 登记兼容原因：' + action);
+    }
+    for (const action of next) {
+        assert.ok(skill.includes(action), '新名必须进技能表：' + action);
+        assert.ok(registered.includes(action), '新名必须进 APP_ACTIONS：' + action);
+        assert.ok(dispatched.includes(action), '新名必须有分发：' + action);
     }
 });

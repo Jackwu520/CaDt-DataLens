@@ -76,8 +76,8 @@ export function normalizeActionApprovalSpec(raw) {
         spec: {
             action: clampText(raw.action, 60) || 'action',
             title,
-            // target 保留换行、上限 2000：生命周期命令审批卡的命令全文（含多行）走这里，
-            // 压平空白会让「用户批准的」与「实际执行的」不一致（workspace-precommands 方案）
+            // target 保留换行、上限 2000：生命周期钩子审批卡的命令全文（含多行）走这里，
+            // 压平空白会让「用户批准的」与「实际执行的」不一致（workspace-lifecycle-hooks 方案）
             target: String(raw.target == null ? '' : raw.target).trim().slice(0, 2000),
             oldValue: clampText(raw.oldValue, 600),
             newValue: clampText(raw.newValue, 600),

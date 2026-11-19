@@ -324,7 +324,7 @@
                 <button type="button" class="snav-item" data-pane="new-file-menu"><span class="snav-ic" data-icon="list"></span><span>菜单管理</span></button>
                 <button type="button" class="snav-item" data-pane="shortcuts"><span class="snav-ic" data-icon="keyboard"></span><span>快捷键</span></button>
                 <button type="button" class="snav-item" data-pane="run"><span class="snav-ic" data-icon="play"></span><span>运行</span></button>
-                <button type="button" class="snav-item" data-pane="precmd"><span class="snav-ic" data-icon="lifecycle"></span><span>生命周期</span></button>
+                <button type="button" class="snav-item" data-pane="lifecycle"><span class="snav-ic" data-icon="lifecycle"></span><span>生命周期</span></button>
                 <button type="button" class="snav-item" data-pane="plugins"><span class="snav-ic" data-icon="download"></span><span>插件</span></button>
                 <button type="button" class="snav-item" data-pane="integration"><span class="snav-ic" data-icon="export"></span><span>系统集成</span></button>
                 <button type="button" class="snav-item" data-pane="envvars"><span class="snav-ic" data-icon="code"></span><span>环境变量</span></button>
@@ -1703,26 +1703,26 @@
                             </div>
                         </div>
                     </div>
-                    <div class="settings-pane hidden" data-pane="precmd">
+                    <div class="settings-pane hidden" data-pane="lifecycle">
                         <div class="set-group-title">生命周期</div>
                         <div class="set-card">
                             <div class="set-row">
                                 <div class="set-main"><div class="set-title">自动执行工作区命令<button type="button" class="info-tip" data-tip="三个时机：打开工作区（打开/切回/启动恢复）、关闭工作区（关闭或切走）、AI 会话开始（空会话第一轮流起前，起轮等待跑完）。按列表顺序在该工作区根目录执行启用的命令；失败不阻断宿主流程，结果进状态栏消息中心。配置存在本机设置里，不随工作区文件走；AI 可代配但每次都要你审批（完全权限也不例外）。" aria-label="生命周期开关说明"></button></div><div class="set-desc">总开关：关闭后所有工作区的生命周期命令都不再自动执行</div></div>
                                 <div class="set-control">
-                                    <label class="set-switch"><input type="checkbox" id="precmd-enabled"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                    <label class="set-switch"><input type="checkbox" id="lifecycle-enabled"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
                                 </div>
                             </div>
                             <div class="set-row-top">
                                 <div class="set-desc">命令按工作区各自生效，工作目录为该工作区根，继承 设置 → 环境变量；列表顺序即执行顺序。9 个生命周期时机：打开/关闭工作区、会话开始、提交输入、工具前/后/失败、权限请求、停止。新建与编辑走独立弹窗，本页只列摘要。</div>
                             </div>
                             <div class="set-row-top">
-                                <div id="precmd-list" class="precmd-list"></div>
+                                <div id="lifecycle-list" class="lifecycle-list"></div>
                             </div>
                             <div class="set-row">
                                 <div class="set-main"></div>
                                 <div class="set-control">
-                                    <button type="button" id="precmd-new" class="dlg-btn">新建命令…</button>
-                                    <button type="button" id="precmd-run-now" class="dlg-btn">本工作区预跑一次</button>
+                                    <button type="button" id="lifecycle-new" class="dlg-btn">新建命令…</button>
+                                    <button type="button" id="lifecycle-run-now" class="dlg-btn">本工作区预跑一次</button>
                                 </div>
                             </div>
                         </div>
@@ -2707,7 +2707,7 @@
                             <span class="ai-chip-time hidden"></span>
                             <span class="ai-chip-count hidden"></span>
                         </button>
-                        <button type="button" id="ai-chip-queue" class="ai-chip hidden" aria-label="会话信箱（子代理回执 / 计时器 / 排队消息等待投递）" aria-haspopup="true">
+                        <button type="button" id="ai-chip-queue" class="ai-chip hidden" aria-label="会话信箱（子代理回执 / 后台命令退出等已排入待注入的通知）" aria-haspopup="true">
                             <span class="ai-chip-icon"></span>
                             <span class="ai-chip-label">信箱</span>
                             <span class="ai-chip-count hidden"></span>

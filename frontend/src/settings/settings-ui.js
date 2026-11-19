@@ -724,7 +724,7 @@ function selectSettingsPane(pane) {
     else if (pane === 'plugins') deps.renderPluginsPane();
     else if (String(pane).startsWith('plugin-') && deps.renderPluginSettingsPane) deps.renderPluginSettingsPane(pane);
     else if (pane === 'run') deps.renderRunPane();
-    else if (pane === 'precmd' && typeof deps.renderPreCommandsPane === 'function') deps.renderPreCommandsPane();
+    else if (pane === 'lifecycle' && typeof deps.renderLifecyclePane === 'function') deps.renderLifecyclePane();
     else if (pane === 'envvars') deps.renderEnvVarsPane();
     else if (pane === 'activity') deps.renderActivityPane();
     else if (pane === 'usage-stats' && typeof deps.renderUsageStatsPane === 'function') {

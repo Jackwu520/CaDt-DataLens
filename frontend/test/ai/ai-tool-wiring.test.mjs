@@ -7,7 +7,7 @@
 //   1. AI_TOOL_CATALOG + AI_TOOL_GROUPS：漏目录 → <tool_catalog> 里没有它，模型不知道有这个工具；
 //      group 写成未注册的 key 同样会静默丢（渲染按 AI_TOOL_GROUPS 遍历）。
 //   2. toolsForScope：定义了却一次都没 push → 永不下发（四档 × 计划模式取并集判断）。
-//   3. executeTool 分支（ai-panel.js）：漏了 → 模型调用时拿到「未知工具」。
+//   3. executeTool 分支（ai-panel.js，case 在包装层 executeToolInner）：漏了 → 模型调用时拿到「未知工具」。
 //   4. 工具卡 toolMeta（ai-tool-cards.js）：漏了 → 卡头显示 `glob` 这种英文名 + 通用 doc 图标。
 //   5. 图标名必须在 core/icons.js 注册：iconSvg 对未知名返回空串，图标位静默留白。
 //
@@ -42,7 +42,9 @@ const panelSrc = read('ai/ai-panel.js');
 const cardSrc = read('ai/ai-tool-cards.js');
 const subSrc = read('ai/ai-subagents.js');
 
-const executeBody = sliceTopFunction(panelSrc, 'async function executeTool(name, args, ctx) {');
+// executeTool 是生命周期钩子包装层（pre/post-tool-use 挂钩），真正的 case 分支在 executeToolInner
+const executeBody = sliceTopFunction(panelSrc, 'async function executeTool(name, args, ctx) {') +
+    sliceTopFunction(panelSrc, 'async function executeToolInner(name, args, ctx) {');
 const metaBody = sliceTopFunction(cardSrc, 'function toolMeta(name, approval) {');
 
 const casesIn = (text) => new Set([...text.matchAll(/case '([a-z_][a-z0-9_]*)':/g)].map((m) => m[1]));
@@ -117,7 +119,7 @@ test('每个工具至少在一个权限档下发（四档 × 计划模式取并�
 test('每个工具有 executeTool 分支（或在 EXECUTED_ELSEWHERE 登记）', () => {
     const missing = toolNames.filter((name) => !executeCases.has(name) && !EXECUTED_ELSEWHERE[name]);
     assert.deepEqual(missing, [],
-        '这些工具没有执行分支：在 ai-panel.js 的 executeTool 加 case（异步要 await），' +
+        '这些工具没有执行分支：在 ai-panel.js 的 executeToolInner 加 case（异步要 await；executeTool 只是钩子包装层），' +
         '或登记到本文件的 EXECUTED_ELSEWHERE 并写明文件与原因');
 });
 

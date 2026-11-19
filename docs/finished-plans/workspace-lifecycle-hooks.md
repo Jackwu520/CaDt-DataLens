@@ -1,6 +1,6 @@
 # 生命周期（工作区 + AI 会话命令钩子）
 
-> 状态：**已实施**（2026-11-19 当日立项当日完成；同日按作者要求三次扩展：二期 `workspace-close` / `session-start` 提前、子代理审查修复全部 P1/P2、三期对齐 ZCode 扩到 **9 事件 + 工具匹配器**，见 §11 修订 2/3）。功能 UI 名从「预指令」改为「生命周期」，代码标识符 `precmd*` 保持稳定。代码与测试全部落地：`core/precommands.js` + `shell/precommands.js` + `settings/settings-pane-precommands.js`，测试 `test/core/precommands.test.mjs` / `test/shell/precommands.test.mjs`（合计 42 例）已登记 `npm test`；受影响守卫（ai-app-actions 三方对账 / settings-tree / form-controls-factory / module-scope / no-src-tests）全绿。§8 改动清单与 §10 冒烟清单可作验收参考；冒烟清单的手动验证待用户实机走一遍。
+> 状态：**已实施**（2026-11-19 当日立项当日完成；同日按作者要求三次扩展：二期 `workspace-close` / `session-start` 提前、子代理审查修复全部 P1/P2、三期对齐 ZCode 扩到 **9 事件 + 工具匹配器**，见 §11 修订 2/3）。功能 UI 名从「预指令」改为「生命周期」。**2026-11-21 全仓改名**：AI 动作名 `*_pre_command` → `*_lifecycle_hook`（旧名保留为静默别名），代码标识符 `precmd*` → `lifecycle*`（设置字段 `lifecycleHooks` / pane id `lifecycle` / 留痕事件 `lifecycle.run`），本文正文保留改名前的原始记录。代码与测试落地：`core/lifecycle-hooks.js` + `shell/lifecycle-hooks.js` + `settings/settings-pane-lifecycle.js`，测试 `test/core/lifecycle-hooks.test.mjs` / `test/shell/lifecycle-hooks.test.mjs`，已登记 `npm test`；受影响守卫（ai-app-actions 三方对账 / settings-tree / form-controls-factory / module-scope / no-src-tests）全绿。§8 改动清单与 §10 冒烟清单可作验收参考；冒烟清单的手动验证待用户实机走一遍。
 >
 > 一句话：为工作区和 AI 会话的 9 个生命周期事件配置自动执行的命令（工具级事件按工具名匹配）；配置在设置 → 生命周期，AI 可经 app_control 代配；**AI 的任何写操作无条件走动作审批（含完全权限档）**。
 
@@ -172,5 +172,5 @@ AI 侧共三个入口，处置如下：
   - 挂点实现：ai-panel 把 `executeTool` 包一层 `executeToolInner`（前后/失败挂钩，零侵入所有 case）；`startSessionTurn` 加 `user-prompt-submit` 阻塞点；三个模块级审批函数经 `setPermissionLifecycleHook` 回填钩子；`stopGeneration` 触发 stop。main.js 注入通用 `precmdEvent(event, tool, ws)`，保留 `precmdAIStart` 兼容。
   - 旧名 `ai-session-start` 保留为合法别名（normalize 改写为 `session-start`），已存盘老配置继续可执行；设置下拉只显示规范名。
   - 工具匹配器：`matchTools` ≤20 项、每项 ≤60 字符，编辑器在工具级事件时显示匹配器输入。
-- **UI 改造（当日，作者要求）**：生命周期页不再内嵌行内编辑器，只显示条目摘要列表（开关 / 命令预览 / 时机 / 匹配工具 / AI 配置 / 危险标记 / 排序 / 编辑 / 删除）；**新建与编辑走独立弹窗**——复用 aiPanel 的 `openDialog` / `closeDialog` / `node` / `button` 三件套（main.js 惰性 getter 注入，用时先 `initAIPanel`，DOM 在 index.html 静态存在），弹窗标题「新建/编辑生命周期命令」，宽弹窗含命令 / 时机 / 匹配器 / 超时四行，原行内容器 `precmd-editor` 已从 index.html 移除。
+- **UI 改造（当日，作者要求）**：生命周期页不再内嵌行内编辑器，只显示条目摘要列表（开关 / 命令预览 / 时机 / 匹配工具 / AI 配置 / 危险标记 / 排序 / 编辑 / 删除）；**新建与编辑走独立弹窗**——pane 自建模态 DOM 并**直接注册进全局弹层栈**（`core/overlay-stack.js` modal 档，z-index 由栈分配 3100 档 > 设置窗 2100，Esc 由栈按层序退，遮罩点击关闭收口 dispose）。初版曾复用 aiPanel 的 `openDialog` 三件套，实测 aiPanel 返回面并无该方法（那是嵌套子模块 deps 对象的字段），点「新建命令」静默无反应——dev 浏览器实测定位后改为自建方案。原行内容器 `precmd-editor` 已从 index.html 移除。
 - **后续候选**（各另行立项）：执行输出进后台终端视图（复用 bridge-terminal-view 作业模型）；多实例去重（resourcelease）；`app-quit` 事件（当前刻意不做：应用整体退出没有可靠等待窗口，命令可能被杀）。
