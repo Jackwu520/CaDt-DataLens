@@ -29,6 +29,18 @@ test('支线会话：出现「提升为独立会话」', () => {
     assert.equal(item.label, '提升为独立会话');
 });
 
+test('会话菜单不再有「在新窗口打开」：强制新开出口已移除，复用是唯一行为', () => {
+    // 2026-11-20 移除该出口（作者裁定）：有工作区归属 / 兜底当前工作区都不再出现；
+    // 工作区分组头菜单的「在新窗口打开此工作区」不受影响（buildWorkspaceMenuItems 单独测）
+    const withWs = buildSessionMenuItems({id: 's7', workspace: 'D:/repos/foo'}, baseEnv);
+    assert.ok(!withWs.some((it) => it.act === 'openNewWindow'), '有工作区也不应出现「在新窗口打开」');
+    const fallback = buildSessionMenuItems(
+        {id: 's7'},
+        {pendingNoticeCount: () => 0, diskStorage: true, currentWorkspace: 'D:/repos/cur'},
+    );
+    assert.ok(!fallback.some((it) => it.act === 'openNewWindow'), '兜底当前工作区也不应出现「在新窗口打开」');
+});
+
 test('信箱积压：N 条才出现「清空信箱（N 条）」，0 条不出现', () => {
     const withPending = buildSessionMenuItems(
         {id: 's3'},
