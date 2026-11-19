@@ -1,9 +1,12 @@
-// shift-double-tap.js：全局搜索的「双击 Shift」判定（单一来源，纯逻辑，无 DOM 依赖）。
+// shift-double-tap.js：「双击轻按」判定（单一来源，纯逻辑，无 DOM 依赖）。
+// 键位经 opts.key 参数化：默认 'Shift'（main.js 的全局搜索触发），
+// AI 输入区「双击 Esc 停止生成」用 key: 'Escape'（ai-composer.js 接线）共用同一状态机。
+// 文件名沿用历史；「Shift」特指默认键位，判定本身对任意键一致。
 //
 // 背景：旧实现在 keydown 里数 600ms 内的 Shift 次数，凑够 3 次就开搜索。它只看 keydown、
 // 不看配对、更不看中间按了什么——中文输入法下切中英文 / 打字时夹几次 Shift 就被误触发。
 //
-// 判定改成 JetBrains Search Everywhere 的口径：两次「干净」的 Shift 轻按（按下 + 抬起），
+// 判定改成 JetBrains Search Everywhere 的口径：两次「干净」的目标键轻按（按下 + 抬起），
 // 间隔极短，且两次之间没有任何其它按键。四条防线缺一不可：
 //   1. 完整 tap：必须有对应 keyup，按住 Shift 不放 / 长按自动重复都不算；
 //   2. 短窗口：两次 tap 完成间隔 <= windowMs（默认 400ms，比系统双击阈值更严）；
@@ -15,15 +18,16 @@
 export const DOUBLE_TAP_WINDOW_MS = 400;
 
 /**
- * 建一个「双击 Shift」判定器（JetBrains 口径：两次干净 tap 且间隔极短）。
+ * 建一个「双击轻按」判定器（JetBrains 口径：两次干净 tap 且间隔极短）。
  * 状态机只保存两个时刻，无定时器；reset() 可在失焦时手动清空。
  * @param {object} [opts] 选项
+ * @param {string} [opts.key] 目标键的 e.key（默认 'Shift'）
  * @param {number} [opts.windowMs] 两次 tap 的允许间隔（默认 DOUBLE_TAP_WINDOW_MS）
  * @param {() => number} [opts.now] 时间源，便于测试注入假时钟
  * @returns {{onKeyDown: Function, onKeyUp: Function, reset: Function, pendingDown: boolean, armed: boolean}}
  *          事件入口与两个只读状态
  */
-export function createShiftDoubleTap({windowMs = DOUBLE_TAP_WINDOW_MS, now = () => Date.now()} = {}) {
+export function createShiftDoubleTap({key = 'Shift', windowMs = DOUBLE_TAP_WINDOW_MS, now = () => Date.now()} = {}) {
     let pendingDownAt = 0; // >0 表示一个干净 Shift keydown 正等待自己的 keyup
     let firstTapAt = 0;    // >0 表示第一次完整 tap 的完成时刻，等待第二次配对
 
@@ -31,8 +35,8 @@ export function createShiftDoubleTap({windowMs = DOUBLE_TAP_WINDOW_MS, now = () 
         return !!(e && (e.isComposing || e.keyCode === 229));
     }
 
-    function isCleanShiftDown(e) {
-        return !!e && e.key === 'Shift' && !e.ctrlKey && !e.altKey && !e.metaKey &&
+    function isCleanTapDown(e) {
+        return !!e && e.key === key && !e.ctrlKey && !e.altKey && !e.metaKey &&
             !e.repeat && !isComposing(e);
     }
 
@@ -47,23 +51,23 @@ export function createShiftDoubleTap({windowMs = DOUBLE_TAP_WINDOW_MS, now = () 
             reset();
             return false;
         }
-        if (isCleanShiftDown(e)) {
+        if (isCleanTapDown(e)) {
             if (!pendingDownAt) pendingDownAt = now();
             return false;
         }
-        // 任意其它 keydown（打字字母、带修饰键的 Shift、长按 repeat、输入法 Process）
-        // 都说明这不是一次孤立的 Shift 轻按，整段配对作废。
+        // 任意其它 keydown（打字字母、带修饰键的目标键、长按 repeat、输入法 Process）
+        // 都说明这不是一次孤立的目标键轻按，整段配对作废。
         reset();
         return false;
     }
 
-    // keyup：一次完整的 Shift 轻按在此结算；返回 true 表示双击成立。
+    // keyup：一次完整的目标键轻按在此结算；返回 true 表示双击成立。
     function onKeyUp(e) {
         if (isComposing(e)) {
             reset();
             return false;
         }
-        if (!e || e.key !== 'Shift' || e.ctrlKey || e.altKey || e.metaKey) {
+        if (!e || e.key !== key || e.ctrlKey || e.altKey || e.metaKey) {
             reset();
             return false;
         }

@@ -12,11 +12,11 @@ import {getShortcut, renderShortcutsTable} from '../../src/core/keybindings.js';
 const SRC = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'src');
 const read = (rel) => readFileSync(join(SRC, rel), 'utf8');
 
-// 可控时钟 + 事件构造器
-function rig(windowMs = DOUBLE_TAP_WINDOW_MS) {
+// 可控时钟 + 事件构造器（key 参数化：默认 Shift=全局搜索，Escape=AI 输入区停止生成）
+function rig(windowMs = DOUBLE_TAP_WINDOW_MS, key = 'Shift') {
     let t = 1000;
-    const det = createShiftDoubleTap({windowMs, now: () => t});
-    const clean = {key: 'Shift', ctrlKey: false, altKey: false, metaKey: false, repeat: false};
+    const det = createShiftDoubleTap({windowMs, now: () => t, key});
+    const clean = {key, ctrlKey: false, altKey: false, metaKey: false, repeat: false};
     return {
         det,
         at(ms) { t = ms; },
@@ -117,6 +117,38 @@ test('reset 清空全部状态', () => {
     r.det.reset();
     assert.equal(r.det.armed, false);
     assert.equal(r.det.pendingDown, false);
+});
+
+// —— 键位参数化：AI 输入区「双击 Esc 停止生成」（ai-composer.js 接线） ——
+
+test('key: Escape — 两次干净的 Esc 轻按成立', () => {
+    const r = rig(DOUBLE_TAP_WINDOW_MS, 'Escape');
+    assert.equal(tap(r), false, '第一次轻按只登记');
+    assert.equal(r.det.armed, true);
+    r.advance(200);
+    assert.equal(tap(r), true, '第二次轻按完成 → 双击成立');
+    assert.equal(r.det.armed, false, '触发后状态清零');
+});
+
+test('key: Escape — 非目标键（含 Shift）一律当「其它键」打断配对', () => {
+    const r = rig(DOUBLE_TAP_WINDOW_MS, 'Escape');
+    tap(r);
+    r.down({key: 'Shift'});
+    assert.equal(r.det.armed, false, 'Shift 不是该实例的目标键，清零待配对态');
+    r.advance(50);
+    assert.equal(tap(r), false, '被打断后这一下只是新的第一次');
+    assert.equal(tap(r), true, '再一下才成立');
+});
+
+test('默认键位仍是 Shift，Escape 在默认实例里只是打断键（全局搜索接线不回归）', () => {
+    const r = rig();
+    assert.equal(tap(r), false);
+    r.advance(200);
+    assert.equal(tap(r), true);
+    const s = rig();
+    tap(s);
+    s.down({key: 'Escape'});
+    assert.equal(s.det.armed, false);
 });
 
 // —— 接线护栏 ——

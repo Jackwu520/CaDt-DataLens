@@ -88,6 +88,9 @@ export const KEY_BINDINGS = [
     // —— AI 助手 ——
     {id: 'ai.togglePanel', group: 'AI 助手', label: '打开 / 关闭 AI 面板', kind: 'key', keys: {candysweet: ['Alt+9'], jetbrains: ['Alt+9'], vscode: ['Alt+9']}},
     {id: 'ai.send', group: 'AI 助手', label: '发送 / 换行', kind: 'text', keys: {candysweet: ['Enter / Shift+Enter'], jetbrains: ['Enter / Shift+Enter'], vscode: ['Enter / Shift+Enter']}},
+    // 双击 Esc 停止生成：与全局搜索的双击 Shift 同一判定器（core/shift-double-tap.js），
+    // 手势固定不随风格变（对齐 JetBrains 双击手势惯例），故 kind: 'text'。
+    {id: 'ai.stopGeneration', group: 'AI 助手', label: '停止生成（输入区聚焦时）', kind: 'text', keys: {candysweet: ['双击 Esc'], jetbrains: ['双击 Esc'], vscode: ['双击 Esc']}},
     {id: 'ai.sendToggle', group: 'AI 助手', label: '切换为 Ctrl+Enter 发送', kind: 'text', keys: {candysweet: ['设置 · AI 助手'], jetbrains: ['设置 · AI 助手'], vscode: ['设置 · AI 助手']}},
 
     // —— 文件树 ——

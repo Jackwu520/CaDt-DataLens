@@ -10,6 +10,7 @@ import {attachmentPathHint} from './ai-file-tools.js';
 import {checkRequestBudget, checkSourceBatch, DEFAULT_IMAGE_LIMITS} from './ai-image-policy.js';
 import {AI_QUOTE_KIND, quoteChipLabel, quoteExcerpt} from './ai-quote.js';
 import {dataUrlToFile} from '../core/image-clipboard.js';
+import {createShiftDoubleTap} from '../core/shift-double-tap.js';
 
 function attachmentChipPrefix(item) {
     if (item.kind === 'skill') return '技能 · ';
@@ -100,6 +101,10 @@ export function createAIComposer(ctx) {
     const slashState = ctx.slashState;
     const submitText = ctx.submitText;
     const nextAttachSeq = ctx.nextAttachSeq;
+    // 双击 Esc 停止生成：判定与全局搜索「双击 Shift」同一状态机（core/shift-double-tap.js，
+    // key 换成 Escape）。监听在输入框上（面板侧挂 keydown/keyup）——只有 composer 聚焦时才接收事件。
+    const stopGeneration = ctx.stopGeneration;
+    const escDoubleTap = createShiftDoubleTap({key: 'Escape'});
 
     // —— 随域迁入的输入区状态（原 ai-panel.js 闭包级）——
     let attachments = [];
@@ -629,6 +634,10 @@ export function createAIComposer(ctx) {
     }
 
     function handleComposerKey(e) {
+        // 双击 Esc 判定：每个 keydown 都喂给状态机（中间按任意键 / 输入法组字清零配对），
+        // 真正触发在 keyup 结算（handleComposerKeyUp）。放在 isComposing 早退之前，
+        // 让组字中的按键也能重置配对。
+        escDoubleTap.onKeyDown(e);
         if (e.isComposing || e.keyCode === 229) return;
         if (slashState.open) {
             if (e.key === 'ArrowDown') {
@@ -694,6 +703,14 @@ export function createAIComposer(ctx) {
         if (!shouldSend) return;
         e.preventDefault();
         submitFromComposer();
+    }
+
+    // 双击 Esc 的第二次「抬起」在此结算（keydown 只登记，keyup 才触发——保证两次都是
+    // 完整轻按、且中间没有被别的按键打断，防线同 core/shift-double-tap.js）。触发即停当前
+    // 会话：与停止按钮同一条路径（byUser=true），会话闲时是安全的 no-op（压缩中则取消一次性压缩）。
+    function handleComposerKeyUp(e) {
+        if (!escDoubleTap.onKeyUp(e)) return;
+        stopGeneration(undefined, true);
     }
 
     function currentQueueItems() {
@@ -861,6 +878,7 @@ export function createAIComposer(ctx) {
         submitFromComposer,
         sendComposerMessage,
         handleComposerKey,
+        handleComposerKeyUp,
         currentQueueItems,
         captureComposerMessage,
         editQueuedMessage,
