@@ -2,7 +2,7 @@
 // 从 terminal-ui.js 拆出；terminalUI 状态、shell 标签、cwd/theme、runGitCommit 由宿主经 deps 注入。
 import {iconSvg} from '../core/icons.js';
 import {termKeyAction} from './term-keys.js';
-import {matchLinks, linkRangeInRows} from './term-links.js';
+import {matchLinks, linkRangeInRows, linkHitAt} from './term-links.js';
 
 export function createTerminalSessions(deps) {
 
@@ -117,13 +117,40 @@ function termRowData(line, y) {
     return {y, text: line.translateToString(true), colOf, wideAt};
 }
 
-// 激活：Ctrl/Cmd+单击 → Wails BrowserOpenURL（系统默认程序）；普通点击不动作
+// 激活：Ctrl/Cmd+单击 → 系统默认程序打开；普通点击不动作
 function activateTermLink(ev, text) {
     if (!ev || (!ev.ctrlKey && !ev.metaKey)) return;
     const url = String(text || '');
     if (!/^https?:\/\//i.test(url)) return;
+    openTermLinkExternal(url);
+}
+
+// 系统默认程序打开（Wails BrowserOpenURL）；无 Wails runtime（dev 浏览器调试）时降级 window.open
+function openTermLinkExternal(url) {
     if (deps.rt && deps.rt.BrowserOpenURL) deps.rt.BrowserOpenURL(url);
-    else window.open(url, '_blank', 'noopener'); // 无 Wails runtime（dev 浏览器调试）时的降级
+    else window.open(url, '_blank', 'noopener');
+}
+
+// 右键定位链接：把指针位置换算成缓冲行列（cell 尺寸按 .xterm-screen 实测），再对该行
+// 重跑链接检测——与 provideLinks 同一条链，软换行跨行的长链接同样命中。命中判定
+// 纯函数 linkHitAt 在 term-links.js。指针不在终端画面内返回 ''。
+function termLinkAtPointer(s, e) {
+    const term = s.term;
+    const screen = s.host.querySelector('.xterm-screen');
+    if (!screen) return '';
+    const rect = screen.getBoundingClientRect();
+    if (!rect.width || !rect.height) return '';
+    const col = Math.floor((e.clientX - rect.left) / (rect.width / term.cols)) + 1; // 1-based cell 列
+    const row = Math.floor((e.clientY - rect.top) / (rect.height / term.rows));     // 视口内 0-based 行
+    if (col < 1 || row < 0 || row >= term.rows) return '';
+    const bufRow = term.buffer.active.viewportY + row + 1; // 1-based 缓冲行（同 provideLinks 的 y）
+    let links;
+    try {
+        links = termLinksAtRow(term, bufRow);
+    } catch (err) {
+        return '';
+    }
+    return linkHitAt(links, bufRow, col, term.cols);
 }
 
 async function createTermSession(shell = '', meta = null) {
@@ -245,11 +272,12 @@ function attachTermSession(id, usedShell, opts = {}) {
     deps.terminalUI.sessions.set(id, session);
     flushPendingTermOut(id);
     deps.terminalUI.order.push(id);
-    // 终端区域右键菜单：复制选中 / 粘贴 / 清屏（挡掉 WebView2 默认菜单）
+    // 终端区域右键菜单：指向链接时前置链接动作（复制/内置浏览器/默认程序），
+    // 再接常规项（挡掉 WebView2 默认菜单）
     host.addEventListener('contextmenu', (e) => {
         e.preventDefault();
         e.stopPropagation();
-        showTermAreaMenu(session, e.clientX, e.clientY);
+        showTermAreaMenu(session, e.clientX, e.clientY, termLinkAtPointer(session, e));
     });
     activateTermSession(id);
     setTimeout(() => {
@@ -401,20 +429,31 @@ async function showTermShellMenu() {
 }
 if (deps.els.termPanelClose) deps.els.termPanelClose.addEventListener('click', () => deps.toggleTerminalPanel(false));
 
-// 终端区域右键菜单：复制选中（无选中置灰）/ 粘贴 / 清屏
-function showTermAreaMenu(s, x, y) {
+// 终端区域右键菜单：指向链接时前置「复制链接 / 内置浏览器打开 / 默认程序打开」，
+// 下面照常给 复制选中（无选中置灰）/ 粘贴 / 清屏
+function showTermAreaMenu(s, x, y, linkUrl) {
     if (!deps.ctxMenu) return;
     let hasSel = false;
     try {
         hasSel = s.term.hasSelection();
     } catch (e) {}
-    deps.ctxMenu.open([
+    const items = [];
+    if (linkUrl) {
+        items.push(
+            {label: '复制链接', icon: 'E8C8', action: () => deps.copyText(linkUrl, '链接')},
+            {label: '内置浏览器打开', icon: 'browser', action: () => deps.openBrowserTab(linkUrl)},
+            {label: '默认程序打开', icon: 'E8A7', action: () => openTermLinkExternal(linkUrl)},
+            {sep: true},
+        );
+    }
+    items.push(
         {label: '复制', icon: 'E8C8', shortcut: 'Ctrl+C', disabled: !hasSel,
             action: () => { try { deps.copyText(s.term.getSelection(), '选中内容'); } catch (e) {} }},
         {label: '粘贴', icon: 'E77F', shortcut: 'Ctrl+V', action: () => pasteClipboardTo(s.term)},
         {sep: true},
         {label: '清屏', icon: 'eraser', action: () => { try { s.term.clear(); s.term.focus(); } catch (e) {} }},
-    ], x, y);
+    );
+    deps.ctxMenu.open(items, x, y);
 }
 
 // 终端标签页右键菜单（JetBrains 风格）：新建/重命名/清屏/关闭

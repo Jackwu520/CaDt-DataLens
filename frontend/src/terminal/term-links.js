@@ -1,6 +1,6 @@
 // term-links.js：终端内 http/https 链接检测纯函数——拼接行文本提取链接、修剪尾部
-// 标点与未配对括号、把字符偏移换算成 xterm ILink 的每行坐标。缓冲区取行与激活
-// 回调（Ctrl+单击打开）在 terminal-sessions.js 的 registerTermLinks。
+// 标点与未配对括号、把字符偏移换算成 xterm ILink 的每行坐标。缓冲区取行、指针命中
+// 定位与激活回调（Ctrl+单击 / 右键菜单打开）在 terminal-sessions.js 的 registerTermLinks。
 
 // URL 词法：scheme 后取非空白、非引号、非尖括号的连续字符；尾巴交给 trimLinkTail 收拾
 const URL_RE = /https?:\/\/[^\s"'`<>]+/g;
@@ -79,4 +79,21 @@ export function linkRangeInRows(rows, match) {
 function cellColOf(row, off) {
     const col = row.colOf ? row.colOf[off] : off; // 无映射时按纯 ASCII 假设退化
     return typeof col === 'number' ? col : off;
+}
+
+// linkHitAt(links, rowY, colX, cols)：指针命中判定——rowY 为 1-based 缓冲行、colX
+// 为 1-based cell 列（与 termLinksAtRow 产物的 range 坐标同约定），cols 为终端总列数。
+// 跨行链接的中段整行算命中（minX=1、maxX=cols），首末行按端点收窄。命中返回链接
+// 文本，否则返回 ''（links 非数组 / range 缺失也算未命中）。
+export function linkHitAt(links, rowY, colX, cols) {
+    if (!Array.isArray(links)) return '';
+    for (const l of links) {
+        const r = l && l.range;
+        if (!r) continue;
+        if (rowY < r.start.y || rowY > r.end.y) continue;
+        const minX = rowY === r.start.y ? r.start.x : 1;
+        const maxX = rowY === r.end.y ? r.end.x : (cols || r.end.x);
+        if (colX >= minX && colX <= maxX) return l.text || '';
+    }
+    return '';
 }

@@ -1,9 +1,9 @@
 // 终端链接检测纯函数测试：URL 提取与尾巴修剪、跨软换行行拼接的坐标换算
-// （含宽字符 cell 映射）。用法：npm test（package.json 的 test 脚本里显式列出本文件）
+// （含宽字符 cell 映射）、指针命中判定。用法：npm test（package.json 的 test 脚本里显式列出本文件）
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import {matchLinks, trimLinkTail, linkRangeInRows} from '../../src/terminal/term-links.js';
+import {matchLinks, trimLinkTail, linkRangeInRows, linkHitAt} from '../../src/terminal/term-links.js';
 
 test('trimLinkTail：普通标点与引号剪掉，配对括号保留、未配对括号剪掉', () => {
     assert.equal(trimLinkTail('http://x.com/a.'), 'http://x.com/a');
@@ -89,4 +89,46 @@ test('linkRangeInRows：结构异常返回 null', () => {
     assert.equal(linkRangeInRows(null, {start: 0, end: 1}), null);
     assert.equal(linkRangeInRows([], {start: 0, end: 1}), null);
     assert.equal(linkRangeInRows([{y: 1, text: 'ab', colOf: null, wideAt: null}], {start: 1, end: 1}), null);
+});
+
+test('linkHitAt：单行链接按行列命中，端点含、范围外与异行不命中', () => {
+    const links = [{text: 'http://a.io', range: {start: {x: 5, y: 3}, end: {x: 15, y: 3}}}];
+    assert.equal(linkHitAt(links, 3, 5, 80), 'http://a.io');
+    assert.equal(linkHitAt(links, 3, 15, 80), 'http://a.io');
+    assert.equal(linkHitAt(links, 3, 4, 80), '');
+    assert.equal(linkHitAt(links, 3, 16, 80), '');
+    assert.equal(linkHitAt(links, 2, 5, 80), '');
+    assert.equal(linkHitAt(links, 4, 5, 80), '');
+});
+
+test('linkHitAt：跨行链接首末行按端点收窄、中段整行命中', () => {
+    const two = [{text: 'http://example.com/a', range: {start: {x: 5, y: 1}, end: {x: 9, y: 2}}}];
+    assert.equal(linkHitAt(two, 1, 5, 80), 'http://example.com/a');
+    assert.equal(linkHitAt(two, 1, 4, 80), '');
+    assert.equal(linkHitAt(two, 2, 1, 80), 'http://example.com/a');
+    assert.equal(linkHitAt(two, 2, 9, 80), 'http://example.com/a');
+    assert.equal(linkHitAt(two, 2, 10, 80), '');
+    // 三行链接：中段整行（首尾列都算）
+    const three = [{text: 'http://example.com/long', range: {start: {x: 3, y: 1}, end: {x: 6, y: 3}}}];
+    assert.equal(linkHitAt(three, 2, 1, 80), 'http://example.com/long');
+    assert.equal(linkHitAt(three, 2, 80, 80), 'http://example.com/long');
+    assert.equal(linkHitAt(three, 2, 4, 80), 'http://example.com/long');
+});
+
+test('linkHitAt：多链接各按自己的 range 判定', () => {
+    const links = [
+        {text: 'http://a.io', range: {start: {x: 1, y: 2}, end: {x: 10, y: 2}}},
+        {text: 'https://b.io/c', range: {start: {x: 20, y: 2}, end: {x: 33, y: 2}}},
+    ];
+    assert.equal(linkHitAt(links, 2, 1, 80), 'http://a.io');
+    assert.equal(linkHitAt(links, 2, 20, 80), 'https://b.io/c');
+    assert.equal(linkHitAt(links, 2, 15, 80), '');
+});
+
+test('linkHitAt：空输入与异常结构返回空串', () => {
+    assert.equal(linkHitAt(null, 1, 1, 80), '');
+    assert.equal(linkHitAt(undefined, 1, 1, 80), '');
+    assert.equal(linkHitAt([], 1, 1, 80), '');
+    assert.equal(linkHitAt([{text: 'x', range: null}], 1, 1, 80), '');
+    assert.equal(linkHitAt([{}], 1, 1, 80), '');
 });
