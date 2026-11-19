@@ -62,6 +62,7 @@ import {createUpdateCheck} from './shell/update-check.js';
 import {createAppLinks} from './shell/app-links.js';
 import {createPropertiesUI} from './shell/properties-ui.js';
 import {createSessionRestore} from './shell/session-restore.js';
+import {decideSessionOpen} from './ai/ai-session-scope.js';
 import {createAppActions} from './shell/app-actions.js';
 import {createQuickSwitch} from './shell/quick-switch.js';
 import {createSchemaPanel} from './editor/schema-panel.js';
@@ -80,8 +81,8 @@ import {createSettingsPaneStorage} from './settings/settings-pane-storage.js';
 import {createSettingsPaneUsageStats} from './settings/settings-pane-usage-stats.js';
 import {createSettingsPaneWipeguard} from './settings/settings-pane-wipeguard.js';
 import {createSettingsPaneNewFileMenu} from './settings/settings-pane-new-file-menu.js';
-import {createSettingsPanePrecommands} from './settings/settings-pane-precommands.js';
-import {createPrecommands} from './shell/precommands.js';
+import {createSettingsPaneLifecycle} from './settings/settings-pane-lifecycle.js';
+import {createLifecycleHooks} from './shell/lifecycle-hooks.js';
 import {analyzeDangerousCommand} from './ai/ai-command-rules.js';
 import {createStorageAutoClean} from './settings/storage-autoclean.js';
 import {createSettingsPaneExternalTools} from './settings/settings-pane-external-tools.js';
@@ -518,6 +519,8 @@ const APP_ACTIONS = [
     'get_settings', 'get_editor', 'get_content', 'get_git', 'get_ai', 'get_explorer', 'get_plugins', 'get_terminal', 'get_storage',
     'get_activity', 'get_patch', 'patch_set_root', 'patch_repreview',
     'get_gen_models', 'set_gen_model', 'delete_gen_model',
+    'get_lifecycle_hooks', 'add_lifecycle_hook', 'update_lifecycle_hook', 'remove_lifecycle_hook',
+    // 旧名（pre-command 时代）：保留为静默别名——技能表不再下发，历史会话 / 记忆里的调用仍能命中
     'get_pre_commands', 'add_pre_command', 'update_pre_command', 'remove_pre_command',
     'get_agents', 'create_agent', 'create_group', 'get_groups', 'send_group_message',
     'install_plugin', 'uninstall_plugin',
@@ -1504,13 +1507,19 @@ async function runAppAction(action, params, scope, callerSessionId, requestActio
             if (!aiPanel || !aiPanel.bridgeGenModelDelete) throw new Error('AI 面板未初始化');
             return aiPanel.bridgeGenModelDelete(p.ref);
         }
-        // —— 工作区预指令（get 只读；三个写动作在 shell/precommands.js 无条件动作审批，
-        //    完全权限也不例外；刻意没有 run 动作，要跑命令走 run_command 审批链）——
+        // —— 工作区生命周期钩子（get 只读；三个写动作在 shell/lifecycle-hooks.js 无条件动作审批，
+        //    完全权限也不例外；刻意没有 run 动作，AI 验证走 run_command 审批链）——
+        case 'get_lifecycle_hooks':
+        case 'add_lifecycle_hook':
+        case 'update_lifecycle_hook':
+        case 'remove_lifecycle_hook':
+        // 旧名兼容：get_pre_commands / add_pre_command / update_pre_command / remove_pre_command
+        // 走同一分支（技能表已不下发，仅历史会话与记忆里的调用会命中）
         case 'get_pre_commands':
         case 'add_pre_command':
         case 'update_pre_command':
         case 'remove_pre_command': {
-            return await precommandsCtl.handleAppAction(action, p, requestActionApproval);
+            return await lifecycleHooksCtl.handleAppAction(action, p, requestActionApproval);
         }
         // —— 插件安装 / 卸载（第三方代码，按权限档与来源走审批；卸载永久删除恒审批）——
         case 'install_plugin': {
@@ -2077,6 +2086,19 @@ try {
         for (const key of fineInjectKeys) settings[key] = false;
     }
 } catch (e) {}
+// 2026-11-21 命名迁移：preCommands / preCommandsEnabled → lifecycleHooks / lifecycleHooksEnabled
+// （旧名 pre-command 只表达「前置命令」，与 9 个生命周期事件不符）。只在旧键存在时搬一次，
+// 已写新键的配置不被覆盖；旧键一律删除，避免两套字段长期并存。
+if (Object.prototype.hasOwnProperty.call(settings, 'preCommands')) {
+    if (!Array.isArray(settings.lifecycleHooks) && Array.isArray(settings.preCommands)) {
+        settings.lifecycleHooks = settings.preCommands;
+    }
+    delete settings.preCommands;
+}
+if (Object.prototype.hasOwnProperty.call(settings, 'preCommandsEnabled')) {
+    if (settings.lifecycleHooksEnabled === undefined) settings.lifecycleHooksEnabled = settings.preCommandsEnabled;
+    delete settings.preCommandsEnabled;
+}
 // 新建菜单配置：损坏 / 旧版残留字段一律归一化，不让它把右键菜单搞成空白
 settings.newFileMenu = normalizeNewFileMenu(settings.newFileMenu);
 // 2026-11-16 主题体系重构：旧版 9 套界面主题降级为代码主题 —— 迁移成 深色/浅色
@@ -2265,7 +2287,7 @@ const settingsUI = createSettingsUI({
     get renderPluginsPane() { return renderPluginsPane; },
     get renderPluginSettingsPane() { return writingUI && writingUI.renderPluginSettingsPane; },
     get renderRunPane() { return renderRunPane; },
-    get renderPreCommandsPane() { return () => settingsPanePrecmd.renderPreCommandsPane(); },
+    get renderLifecyclePane() { return () => settingsPaneLifecycle.renderLifecyclePane(); },
     get renderUsageStatsPane() { return settingsPaneUsageStats.renderUsageStatsPane; },
     get renderStoragePane() {
         // storage 条目渲染完追加「工作区防护」区（组合根接线，两 pane 不互相 import）
@@ -3144,16 +3166,98 @@ async function openFolderDialog() {
     }
 }
 
+// ===== 跨窗口会话复用（方案 docs/unfinished-plans/multi-window-session-reuse.md）=====
+
+// 本窗口可匹配工作区登记（fire-and-forget；Go 侧浮窗/调试窗静默忽略，失败走日志）。
+function syncWindowRegRegistration(dir) {
+    if (!backend.WindowRegister) return;
+    Promise.resolve(backend.WindowRegister(dir || ''))
+        .catch((e) => console.error('window-register: 工作区登记失败', e));
+}
+
+// 信箱消费串行化：一条请求的 bridgeSwitchSession 是异步的，期间又来事件/获焦触发
+// drain 的话排队进下一轮，避免两次 switchSession 并发打架。
+let windowInboxDraining = false;
+let windowInboxPending = false;
+
+async function drainWindowInbox() {
+    if (!backend.WindowInboxTake) return;
+    if (windowInboxDraining) {
+        windowInboxPending = true;
+        return;
+    }
+    windowInboxDraining = true;
+    try {
+        for (;;) {
+            let raw = '';
+            try {
+                raw = await backend.WindowInboxTake();
+            } catch (e) {
+                break; // 取信失败：等下一个事件/获焦再试
+            }
+            if (!raw) break; // 信箱空：停（ack 落盘再触发的事件在这里自然空转收口）
+            let req = null;
+            try {
+                req = JSON.parse(raw);
+            } catch (e) {
+                continue; // 坏包：ack 让 Go 侧清理？Take 已跳过坏包，直接继续取
+            }
+            const status = await handleInboxRequest(req);
+            try {
+                if (backend.WindowInboxAck) await backend.WindowInboxAck(String(req.reqId || ''), status);
+            } catch (e) {
+                console.error('window-inbox: 回执失败', e);
+            }
+        }
+    } finally {
+        windowInboxDraining = false;
+        if (windowInboxPending) {
+            windowInboxPending = false;
+            Promise.resolve(drainWindowInbox()).catch(() => {});
+        }
+    }
+}
+
+// 单条信箱请求的处理：本窗口工作区仍匹配 → 开面板 + 切到请求的会话并前置；否则
+// mismatch（投递方拿 mismatch 轮换下一候选或退化开新窗口）。
+async function handleInboxRequest(req) {
+    const wantKey = sessionPathKey(req && req.workspace);
+    if (!req || !req.sessionId || !wantKey) return 'mismatch';
+    if (wantKey !== sessionPathKey(workspaceFolder)) return 'mismatch';
+    if (!aiPanel || typeof aiPanel.bridgeSwitchSession !== 'function') return 'mismatch';
+    // 面板收着时先强制展开：只切会话不开面板的话，用户只看到窗口前置、画面无任何变化
+    //（与 focusAISession 同做法；open(true) = 强制打开，无参 open() 是 toggle 语义会关面板）
+    if (typeof aiPanel.open === 'function') {
+        try { aiPanel.open(true); } catch (e) { /* 展开失败不阻断切换 */ }
+    }
+    try {
+        const res = await aiPanel.bridgeSwitchSession(String(req.sessionId));
+        // switchSession 对「会话已删 / 软切换短路 / 支线重定向到母会话」不报错——
+        // 用返回值校验是否真的落到了请求的那个会话上，没落地按 mismatch 让投递方兜底
+        if (!res || res.id !== String(req.sessionId)) return 'mismatch';
+        try {
+            if (backend.WindowActivate) await backend.WindowActivate();
+        } catch (e) {
+            // 置前失败不影响会话已打开
+        }
+        return 'ok';
+    } catch (e) {
+        return 'mismatch'; // 会话已删/懒加载失败：投递方兜底（新窗口按 --ai-session 自行处理）
+    }
+}
+
 function openFolderWorkspace(dir) {
     if (!dir) return;
     if (workspaceFolder && sessionPathKey(dir) !== sessionPathKey(workspaceFolder)) {
         // 切换工作区前先落盘旧工作区环境（per-workspace 会话恢复需要）。
         saveSessionNow();
         // 预指令：切走 = 旧工作区的 workspace-close 事件（fire-and-forget，不阻塞切换）
-        Promise.resolve(precommandsCtl.runForWorkspaceClose(workspaceFolder))
-            .catch((e) => console.error('precmd: 关闭执行失败', e));
+        Promise.resolve(lifecycleHooksCtl.runForWorkspaceClose(workspaceFolder))
+            .catch((e) => console.error('lifecycle: 关闭执行失败', e));
     }
     workspaceFolder = dir;
+    // 窗口注册表：本窗口可匹配工作区更新（fire-and-forget；失败由日志吸收）
+    syncWindowRegRegistration(dir);
     // 快捷便签：工作区变了，丢弃旧工作区的缓存并刷新打开中的面板
     if (memoWorkspaceChanged) memoWorkspaceChanged();
     toggleSidebarFilter(false);
@@ -3177,7 +3281,7 @@ function openFolderWorkspace(dir) {
     flash('已打开文件夹：' + (baseNameOf(dir) || dir));
     // 预指令：打开（含启动恢复 / 切回）后自动执行该工作区的启用条目；单条失败在
     // runForWorkspace 内部消化，这里只兜底不让打开流程被预指令中断
-    Promise.resolve(precommandsCtl.runForWorkspace(dir)).catch((e) => console.error('precmd: 执行失败', e));
+    Promise.resolve(lifecycleHooksCtl.runForWorkspace(dir)).catch((e) => console.error('lifecycle: 执行失败', e));
 }
 
 // 一目录一窗口：本窗口已有工作区目录时，新目录另开窗口；
@@ -3207,6 +3311,8 @@ function closeFolder() {
     const closedDir = workspaceFolder;
     saveSessionNow({allowEmpty: true});
     workspaceFolder = null;
+    // 窗口注册表：清掉本窗口的可匹配工作区（空串 = 退出匹配集合）
+    syncWindowRegRegistration('');
     if (memoWorkspaceChanged) memoWorkspaceChanged();
     // 工作区破坏防护：无工作区时停掉周期校准（诱饵与备份随工作区走）
     if (wipeguardCtrl) wipeguardCtrl.stopCalibrationLoop();
@@ -3223,8 +3329,8 @@ function closeFolder() {
     flash('已关闭文件夹');
     // 预指令：显式关闭工作区触发 workspace-close 事件（fire-and-forget，不阻塞关闭流程；
     // 应用整体退出不走这里——退出路径没有可靠等待窗口，见方案 §6）
-    Promise.resolve(precommandsCtl.runForWorkspaceClose(closedDir))
-        .catch((e) => console.error('precmd: 关闭执行失败', e));
+    Promise.resolve(lifecycleHooksCtl.runForWorkspaceClose(closedDir))
+        .catch((e) => console.error('lifecycle: 关闭执行失败', e));
 }
 
 function applySidebarUI() {
@@ -3723,12 +3829,12 @@ function initAIPanel() {
         },
         runAppAction,
         hostAppActions: () => APP_ACTIONS,
-        // AI 会话开始预指令（shell/precommands.js）：空会话首轮流起轮前 await 执行
+        // AI 会话开始预指令（shell/lifecycle-hooks.js）：空会话首轮流起轮前 await 执行
         // session-start 条目；失败不阻塞起轮（ai-panel 侧另有 try/catch 双保险）
-        precmdAIStart: (ws) => precommandsCtl.runForAISessionStart(ws),
+        lifecycleAIStart: (ws) => lifecycleHooksCtl.runForAISessionStart(ws),
         // 9 事件通用钩子（工具级按 matchTools 过滤、阻塞型 await）：workspace 由调用方
         // 传会话归属，缺省用当前窗口工作区；main.js 只透传，执行与审批全在控制器
-        precmdEvent: (event, toolName, ws) => precommandsCtl.runForEvent(
+        lifecycleEvent: (event, toolName, ws) => lifecycleHooksCtl.runForEvent(
             ws || workspaceFolder || '', event, toolName || ''),
         browserHost: {
             ensureTab: async (id, url, profileKey) => {
@@ -3843,28 +3949,53 @@ function initAIPanel() {
             }
         },
         getScopeRoot: () => workspaceFolder || (file && file.path ? parentDirOf(file.path) : ''),
-        openWorkspaceFolder: (dir, sessionId) => {
-            if (!dir) return false;
-            if (window.__aiFloatWindow) return false;
+        // 「点别的 AI 会话 → 怎么开」的接线（方案 docs/unfinished-plans/multi-window-session-reuse.md）：
+        // 分支决策单一来源在 ai-session-scope.decideSessionOpen（纯函数，测试锁各分支），这里只做探测与执行。
+        // 复用探测快路径无感：目标工作区无存活窗口时 WindowReuseForSession 立即返回空，不等待。
+        openWorkspaceFolder: async (dir, sessionId) => {
+            if (!dir || window.__aiFloatWindow) return false;
             const targetKey = sessionPathKey(dir);
-            if (workspaceFolder && sessionPathKey(workspaceFolder) === targetKey) return 'same';
-            if (!workspaceFolder) {
-                openFolderWorkspace(dir);
-                return 'current';
+            const currentKey = workspaceFolder ? sessionPathKey(workspaceFolder) : '';
+            let reuseHit = false;
+            if (currentKey && currentKey !== targetKey && backend.WindowReuseForSession) {
+                try {
+                    reuseHit = !!(await backend.WindowReuseForSession(dir, sessionId || ''));
+                } catch (e) {
+                    // 探测失败按「没有可用窗口」处理，退化走软切换
+                }
             }
-            // 当前窗口已有工作区：不硬切换，另开窗口打开目标工作区（软切换）。
-            saveSessionNow();
-            if (backend.OpenWorkspaceForConversation) {
-                Promise.resolve(backend.OpenWorkspaceForConversation(dir, sessionId || ''))
-                    .catch((e) => flash('打开新窗口失败：' + ((e && e.message) || e), true));
-                return 'window';
+            const decision = decideSessionOpen({
+                dir,
+                isFloat: !!window.__aiFloatWindow,
+                currentKey,
+                targetKey,
+                reuseHit,
+                canSoftSwitch: typeof backend.OpenWorkspaceForConversation === 'function',
+                canNewWindow: typeof backend.OpenDirInNewWindow === 'function',
+            });
+            switch (decision.action) {
+                case 'same':
+                    return 'same';
+                case 'current':
+                    openFolderWorkspace(dir);
+                    return 'current';
+                case 'reused':
+                    logFrontend('info', '跨窗口会话复用：目标工作区已开在别的存活窗口，已投递');
+                    return 'reused';
+                case 'window':
+                    logFrontend('info', '跨窗口会话：软切换另开窗口（复用探测' + (currentKey && backend.WindowReuseForSession ? '未命中' : '未执行') + '）：' + dir);
+                    saveSessionNow();
+                    if (backend.OpenWorkspaceForConversation) {
+                        Promise.resolve(backend.OpenWorkspaceForConversation(dir, sessionId || ''))
+                            .catch((e) => flash('打开新窗口失败：' + ((e && e.message) || e), true));
+                    } else if (backend.OpenDirInNewWindow) {
+                        Promise.resolve(backend.OpenDirInNewWindow(dir))
+                            .catch((e) => flash('打开新窗口失败：' + ((e && e.message) || e), true));
+                    }
+                    return 'window';
+                default:
+                    return false;
             }
-            if (backend.OpenDirInNewWindow) {
-                Promise.resolve(backend.OpenDirInNewWindow(dir))
-                    .catch((e) => flash('打开新窗口失败：' + ((e && e.message) || e), true));
-                return 'window';
-            }
-            return false;
         },
         // 会话列表工作区分组头「⋯」的工作区管理菜单：复用宿主已有的工作区能力，
         // 面板只负责组装菜单与转发动作（见 ai-session-list.js 的 buildWorkspaceMenuItems）。
@@ -4716,8 +4847,8 @@ const settingsPaneWipeguard = createSettingsPaneWipeguard({
         return (message, action, okLabel, title, variant) => openConfirmDialog(message, action, okLabel, title, variant);
     },
 });
-// 工作区预指令：打开工作区自动执行（shell/precommands.js 控制器）；写动作无条件动作审批
-const precommandsCtl = createPrecommands({
+// 工作区预指令：打开工作区自动执行（shell/lifecycle-hooks.js 控制器）；写动作无条件动作审批
+const lifecycleHooksCtl = createLifecycleHooks({
     get settings() { return settings; },
     get applySettings() { return applySettings; },
     get backend() { return backend; },
@@ -4726,8 +4857,8 @@ const precommandsCtl = createPrecommands({
     get addMessage() { return (...args) => messageCenter.add(...args); },
     get activityLog() { return activityLog; },
 });
-// 设置 → 预指令：条目列表 + 编辑器（总开关行在 index.html 静态结构，id precmd-enabled）
-const settingsPanePrecmd = createSettingsPanePrecommands({
+// 设置 → 生命周期：条目列表 + 编辑器（总开关行在 index.html 静态结构，id lifecycle-enabled）
+const settingsPaneLifecycle = createSettingsPaneLifecycle({
     get settings() { return settings; },
     get applySettings() { return applySettings; },
     get flash() { return flash; },
@@ -4737,26 +4868,10 @@ const settingsPanePrecmd = createSettingsPanePrecommands({
     get analyzeDangerousCommand() { return analyzeDangerousCommand; },
     get sessionPathKey() { return sessionPathKey; },
     get getWorkspace() { return () => workspaceFolder || ''; },
-    get runOnce() { return () => precommandsCtl.runForWorkspace(workspaceFolder || ''); },
-    // 新建/编辑命令弹窗：复用 AI 面板的居中对话框三件套（DOM 在 index.html 静态存在，
-    // 惰性取——pane 创建时 aiPanel 可能未初始化，用时先 initAIPanel 再读返回面）
-    get openDialog() {
-        return (...args) => {
-            if (!aiPanel) initAIPanel();
-            return aiPanel && typeof aiPanel.openDialog === 'function' ? aiPanel.openDialog(...args) : null;
-        };
-    },
-    get closeDialog() {
-        return () => {
-            if (aiPanel && typeof aiPanel.closeDialog === 'function') aiPanel.closeDialog();
-        };
-    },
-    get dialogNode() {
-        return (...args) => aiPanel && aiPanel.node ? aiPanel.node(...args) : document.createElement(args[0] || 'div');
-    },
-    get dialogButton() {
-        return (...args) => aiPanel && aiPanel.button ? aiPanel.button(...args) : null;
-    },
+    get runOnce() { return () => lifecycleHooksCtl.runForWorkspace(workspaceFolder || ''); },
+    get runOnceEntry() { return (entryId) => lifecycleHooksCtl.runOnceForEntry(entryId, workspaceFolder || ''); },
+    // 弹窗挂在 body（不在 .settings-pane 里），enhanceSetSelects 扫不到——打开后手动增强
+    get enhanceSelect() { return settingsUI.enhanceSelect; },
 });
 // 设置 → 菜单管理：显隐 / 排序 / 模板，配置只在 settings.newFileMenu 一份
 const settingsPaneNewFileMenu = createSettingsPaneNewFileMenu({
@@ -6160,11 +6275,18 @@ if (rt) {
         // run_command 子进程 / 工具返回后存活的进程 / 用户的删除全部可见
         if (wipeguardCtrl) wipeguardCtrl.handleWorkspaceEvent(payload);
     });
-    // 多实例资源目录监听（全局便签 / 当前 AI 会话）：只做重读，不做合并
+    // 多实例资源目录监听（全局便签 / 当前 AI 会话）：只做重读，不做合并；
+    // window-inbox = 跨窗口会话投递信箱（复用别的窗口打开会话，方案 multi-window-session-reuse.md）
     rt.EventsOn('resource-changed', (payload) => {
+        if (payload && payload.kind === 'window-inbox') {
+            drainWindowInbox(); // drain 内部串行化；overflow 与多条请求由循环 take 全量消化
+            return;
+        }
         if (memoResourceEventHook) memoResourceEventHook(payload);
         if (aiPanel && typeof aiPanel.handleResourceChange === 'function') aiPanel.handleResourceChange(payload);
     });
+    // 信箱兜底：watcher 漏事件 / overflow 时请求会滞留——窗口获焦顺手 take 一轮（幂等且廉价）
+    window.addEventListener('focus', () => drainWindowInbox());
     // 快捷便签定位点跳转：CLI --memo（已在运行时 secondInstance 转发到这里）
     rt.EventsOn('app-open-memo', (locator) => {
         if (memoJumpHook) memoJumpHook(locator);
@@ -6352,6 +6474,7 @@ const terminalMod = createTerminalUI({
     get gitStateCache() { return gitStateCache; },
     get initAIPanel() { return initAIPanel; },
     get openAIPanelWithDraft() { return openAIPanelWithDraft; },
+    get openBrowserTab() { return openBrowserTab; },
     get openConfirmDialog() { return openConfirmDialog; },
     get openDialogEl() { return openDialogEl; },
     get openNameDialog() { return openNameDialog; },

@@ -38,7 +38,7 @@ import {
     slimBreakdownParts,
 } from './ai-context-slim.js';
 import {groupToolCalls, isParallelToolCall} from './ai-tool-schedule.js';
-import {isBlockingEvent} from '../core/precommands.js';
+import {isBlockingEvent} from '../core/lifecycle-hooks.js';
 import {
     buildHoverScript,
     buildPressKeyScript,
@@ -304,7 +304,7 @@ import {createAIAgentNotices, buildBgJobExitNotice, buildTerminalExitNotice} fro
 import {createAISidechat} from './ai-sidechat.js';
 import {forkMessages, forkSettings} from './ai-session-fork.js';
 import {createAISessionSend} from './ai-session-send.js';
-import {compactTranscriptOf, computeCompactCutoff, computeCompactCutoffByBudget, compactRetainBudget, buildCompactSummary, applyCompactToSession, buildCompactMessages, compactThresholdOf, COMPACT_KEEP_TAIL} from './ai-compact.js';
+import {compactTranscriptOf, computeCompactCutoff, computeCompactCutoffByBudget, compactRetainBudget, buildCompactSummary, applyCompactToSession, buildCompactMessages, compactThresholdOf, isAnchorUsage, COMPACT_KEEP_TAIL} from './ai-compact.js';
 import {createAIMcp, mcpNotesBlock} from './ai-mcp.js';
 import {mcpConfigView, mcpServerCommandPreview, mergeMcpServerConfig, planMcpServerDelete} from './ai-mcp-config.js';
 import {createAIMcpSettings} from './ai-mcp-settings.js';
@@ -385,23 +385,23 @@ export function createAIPanel(options) {
     const isFileDirty = typeof opts.isFileDirty === 'function' ? opts.isFileDirty : () => false;
     const onFileChanged = typeof opts.onFileChanged === 'function' ? opts.onFileChanged : () => {};
     const runHostAppAction = typeof opts.runAppAction === 'function' ? opts.runAppAction : null;
-    // AI 会话开始预指令（main.js 注入 shell/precommands.js 控制器）：空会话首轮流起轮前
+    // AI 会话开始预指令（main.js 注入 shell/lifecycle-hooks.js 控制器）：空会话首轮流起轮前
     // await 执行工作区的 ai-session-start 条目；宿主未注入时跳过（mock / 旧宿主安全）
-    const precmdAIStart = typeof opts.precmdAIStart === 'function' ? opts.precmdAIStart : null;
+    const lifecycleAIStart = typeof opts.lifecycleAIStart === 'function' ? opts.lifecycleAIStart : null;
     // 已触发过 session-start 的会话 id（窗口生命周期内每会话一次；内存态不持久化——
     // 重启后历史会话因 messages 非空本来就不会再触发）
-    const precmdStartedSessions = new Set();
-    // 9 事件通用钩子（main.js 透传 shell/precommands.js 控制器）：
+    const lifecycleStartedSessions = new Set();
+    // 9 事件通用钩子（main.js 透传 shell/lifecycle-hooks.js 控制器）：
     //   blocking=true 的事件 await 跑完才继续；false 的 fire-and-forget（不阻塞工具/停止流程）。
     // 任何失败都不阻断宿主流程——控制器内部已兜错，这里双保险；ws 用会话归属而非当前窗口，
     // 后台会话也能命中自己工作区的钩子。
-    const precmdEvent = typeof opts.precmdEvent === 'function' ? opts.precmdEvent : null;
+    const lifecycleEvent = typeof opts.lifecycleEvent === 'function' ? opts.lifecycleEvent : null;
     const runLifecycle = (event, opts2) => {
-        if (!precmdEvent) return Promise.resolve({ran: 0});
+        if (!lifecycleEvent) return Promise.resolve({ran: 0});
         const o = opts2 || {};
         const ws = o.ws || (o.session && o.session.workspace) || currentWorkspacePath() || '';
         if (!ws) return Promise.resolve({ran: 0});
-        const job = Promise.resolve(precmdEvent(event, o.tool || '', ws))
+        const job = Promise.resolve(lifecycleEvent(event, o.tool || '', ws))
             .catch((e) => { /* 尽力而为路径：钩子失败不阻断宿主流程（控制器已兜错，这里双保险） */ });
         const blocking = o.blocking === true || (o.blocking == null && isBlockingEvent(event));
         return blocking ? job : Promise.resolve({ran: 0, deferred: true});
@@ -3484,8 +3484,6 @@ export function createAIPanel(options) {
         togglePop: (chip) => toggleChipsPop('timers', chip),
         onTimersChanged: () => {
             if (chipsPopKind === 'timers') renderChipsPop('timers');
-            // 计时器也是信箱胶囊的三类内容之一：启停要同步角标与信箱弹层
-            updateMailboxChip();
         },
         onFire: (payload) => {
             // 不能空 catch：唤醒链路的异常必须可见，否则用户只看到胶囊消失、没有任何提示
@@ -5901,8 +5899,10 @@ export function createAIPanel(options) {
                 }
             }
             messages.push(item);
-            // 实测锚点：只认真正发出去的 assistant（错误/空消息已被上面的 continue 跳过）
-            if (message.role === 'assistant' && message.usage) {
+            // 实测锚点：只认真正发出去的 assistant（错误/空消息已被上面的 continue 跳过）；
+            // 压缩打标的 usage（preCompact）计量的是压缩前上下文，不认——压缩后估算
+            // 退回纯字符口径，下一轮响应带回新 usage 后自动恢复「实测 + 增量」
+            if (message.role === 'assistant' && isAnchorUsage(message)) {
                 lastBuildAnchor = {index: messages.length - 1, usage: message.usage};
             }
             // 维护「待响应工具调用」集合：assistant 重置为可用 calls，user 清空。
@@ -6307,7 +6307,7 @@ export function createAIPanel(options) {
 
     // 打开/切换到某个会话时对齐应用工作区：会话有工作区就切过去，
     // 老会话没有工作区则绑定到当前工作区（只绑定一次）。
-    function syncWorkspaceToSession(session) {
+    async function syncWorkspaceToSession(session) {
         if (!session) return '';
         const target = sessionWorkspacePath(session);
         if (!target) {
@@ -6320,8 +6320,13 @@ export function createAIPanel(options) {
         if (current && aiWorkspaceKey(current) === aiWorkspaceKey(target)) return '';
         if (!openWorkspaceFolder) return '';
         try {
-            const result = openWorkspaceFolder(target, session.id);
+            const result = await openWorkspaceFolder(target, session.id);
             if (result === false) return '';
+            if (result === 'reused') {
+                // 目标工作区已开在别的存活窗口：那个窗口会切到该会话并前置，本窗口不动。
+                flash('已在另一个窗口打开该会话');
+                return 'window'; // 复用 switchSession 的 'window' 短路：本窗口不落地切换
+            }
             if (result === 'window') {
                 flash('已在新窗口打开工作区：' + (aiWorkspaceName(target) || target) + '（会话将在该窗口继续）');
                 return 'window';
@@ -10154,9 +10159,11 @@ async function requestApproval(session, toolMessage, info) {
                 if (ctx && ctx.session && ctx.session.planMode === true && action === 'click') {
                     throw new Error('计划模式下禁止界面点击：点击会真实改变应用状态，属于执行阶段，等用户批准计划后再点（get_state / screenshot 不受限）。');
                 }
-                // 设置写入 / 预指令配置 / 群聊发言 / 插件安装卸载都会真实改变状态或触发模型调用：批准计划前不许
+                // 设置写入 / 生命周期钩子配置 / 群聊发言 / 插件安装卸载都会真实改变状态或触发模型调用：批准计划前不许
                 if (ctx && ctx.session && ctx.session.planMode === true &&
                     ['set_setting_row', 'send_group_message', 'install_plugin', 'uninstall_plugin',
+                     'add_lifecycle_hook', 'update_lifecycle_hook', 'remove_lifecycle_hook',
+                     // 旧名（pre-command 时代）同样拦：别名不能成为计划模式的绕行通道
                      'add_pre_command', 'update_pre_command', 'remove_pre_command'].includes(action)) {
                     throw new Error('计划模式下禁止 ' + action + '：该动作会真实改变应用状态或触发模型调用，属于执行阶段，等用户批准计划后再执行（设置树 / 群列表等只读动作不受限）。');
                 }
@@ -11543,17 +11550,17 @@ async function requestApproval(session, toolMessage, info) {
             return {ok: false, reason: 'busy'};
         }
 
-        // AI 会话开始的预指令（shell/precommands.js，方案 docs/finished-plans/workspace-precommands.md）：
+        // AI 会话开始的预指令（shell/lifecycle-hooks.js，方案 docs/finished-plans/workspace-lifecycle-hooks.md）：
         // 「空会话第一轮」起轮前先跑工作区的 ai-session-start 条目——「开始前」语义要求起轮等待
         // 命令完成（每条自带超时上限，默认 30s 上限 600s）；失败不阻塞起轮，结果进消息中心。
         // 窗口生命周期内每会话只触发一次；恢复的历史会话（messages 非空）不触发；
         // 子代理回合不走 startSessionTurn，不受影响。
-        if (precmdAIStart && session.messages.length === 0 && !precmdStartedSessions.has(session.id)) {
-            precmdStartedSessions.add(session.id);
+        if (lifecycleAIStart && session.messages.length === 0 && !lifecycleStartedSessions.has(session.id)) {
+            lifecycleStartedSessions.add(session.id);
             // 阻塞期给状态栏反馈：默认 30s / 多条叠加时用户极易以为卡住而重复发送（审查 P2-2）
-            flash('正在执行该会话的生命周期命令，完成后再发送…');
+            flash('正在执行该会话的生命周期钩子，完成后再发送…');
             try {
-                await precmdAIStart(session.workspace);
+                await lifecycleAIStart(session.workspace);
             } catch (e) {} // 尽力而为路径：钩子失败不阻塞起轮（控制器内部已兜错，这里双保险）
         }
         // UserPromptSubmit：每一轮起轮前阻塞执行（与 session-start 的区别是每轮都触发，
@@ -14427,7 +14434,7 @@ async function requestApproval(session, toolMessage, info) {
         const saveBtn = document.createElement('button');
         saveBtn.type = 'button';
         saveBtn.className = 'ai-edit-btn primary';
-        saveBtn.textContent = '保存并重新发送';
+        saveBtn.textContent = '发送';
         saveBtn.dataset.tip = 'Enter（Shift+Enter 换行）';
         saveBtn.addEventListener('click', () => saveInlineEdit());
         state.saveBtn = saveBtn;
@@ -14537,7 +14544,7 @@ async function requestApproval(session, toolMessage, info) {
         state.busy = false;
         if (state.saveBtn) {
             state.saveBtn.disabled = false;
-            state.saveBtn.textContent = '保存并重新发送';
+            state.saveBtn.textContent = '发送';
         }
         const reason = result && result.reason;
         if (reason === 'over_budget') {
@@ -14780,7 +14787,11 @@ async function requestApproval(session, toolMessage, info) {
     // 正在等正文补上来的目标会话：连点多个未加载会话时，只让最后一次点击落地
     let pendingSwitchId = '';
 
-    function switchSession(id) {
+    // 切换序号令牌：switchSession 在工作区对齐（syncWorkspaceToSession）处 await——
+    // 复用探测最长等 2.5s，期间用户又点别的会话时以最后那次为准（并发交错守卫）。
+    let switchSeq = 0;
+    async function switchSession(id) {
+        const mySeq = ++switchSeq;
         const target = sessions.find((s) => s.id === id);
         if (!target) return;
         // 切会话即退出原地编辑（编辑区 DOM 属于旧会话的消息气泡）；内容不丢，重画即可
@@ -14806,8 +14817,11 @@ async function requestApproval(session, toolMessage, info) {
             return;
         }
         pendingSwitchId = '';
-        const sync = syncWorkspaceToSession(target);
-        // 软切换：目标会话属于另一个工作区，新窗口会带着该会话启动，本窗口保持原状态。
+        const sync = await syncWorkspaceToSession(target);
+        // await 期间又触发了别的切换（连点/软切换）：以最后那次为准，本半段作废
+        if (mySeq !== switchSeq) return;
+        // 软切换：目标会话属于另一个工作区，新窗口会带着该会话启动，本窗口保持原状态；
+        // 'reused'（复用别的窗口）已在 syncWorkspaceToSession 里映射成 'window' 同样短路。
         if (sync === 'window') return;
         if (sync === 'assigned') persistSessions();
         // 不变量：支线对话不在面板里显示。目标是支线时重定向为「切母会话 + 在内容区
@@ -16658,6 +16672,7 @@ async function requestApproval(session, toolMessage, info) {
                 updateSlash();
             });
             el.input.addEventListener('keydown', handleComposerKey);
+            el.input.addEventListener('keyup', handleComposerKeyUp);
             el.input.addEventListener('paste', handleInputPaste);
             el.input.addEventListener('blur', () => {
                 setTimeout(() => {
@@ -16928,6 +16943,8 @@ async function requestApproval(session, toolMessage, info) {
         showImagePreview,
         showNote,
         syncStreamView,
+        // 双击 Esc 停止生成（ai-composer.js）：惰性转发，与停止按钮同一条路径
+        stopGeneration: (...args) => stopGeneration(...args),
         updateContextCount,
         updateSendState,
         updateSlash,
@@ -16979,6 +16996,7 @@ async function requestApproval(session, toolMessage, info) {
     const resizeInput = (...args) => composerMod.resizeInput(...args);
     const submitFromComposer = (...args) => composerMod.submitFromComposer(...args);
     const handleComposerKey = (...args) => composerMod.handleComposerKey(...args);
+    const handleComposerKeyUp = (...args) => composerMod.handleComposerKeyUp(...args);
     const currentQueueItems = (...args) => composerMod.currentQueueItems(...args);
     const captureComposerMessage = (...args) => composerMod.captureComposerMessage(...args);
     const editQueuedMessage = (...args) => composerMod.editQueuedMessage(...args);
@@ -17038,30 +17056,26 @@ async function requestApproval(session, toolMessage, info) {
     });
     const renderMessageQueue = () => { queueMod.renderMessageQueue(); updateMailboxChip(); };
     // ---------- 信箱胶囊（头部 #ai-chip-queue，类计时器胶囊）----------
-    // 代理侧的「挂在会话上、等着注入」两类机制性消息——
-    // ① 信箱通知（子代理回执 / 提问、后台命令与终端退出、会话间投递，消费在轮边界）
-    // ② 运行中的计时器（到点会唤醒对应会话）。角标 = 两类合计；点击弹 chips-pop
-    // （kind=mailbox），行按会话分组跳会话。用户手动排队的消息不在这里——
-    // composer 队列条就是它的地盘；后台塞不下挂起的场景已有 toast / 消息中心提示。
+    // 只列「**已排入**信箱、等轮边界注入」的通知：子代理回执 / 提问、后台命令与终端
+    // 退出、会话间投递、计时器**到点**后的唤醒通知（到点即走 deliverAgentNotice 入箱，
+    // 出现在这里；**没到点的运行中计时器不算信箱**——它还没产生消息，且「计时」胶囊
+    // 已有完整入口）。角标 = 挂起通知合计；点击弹 chips-pop（kind=mailbox），
+    // 行按会话分组跳会话。用户手动排队的消息不在这里——composer 队列条是它的地盘。
     function pendingMailboxCount() {
         let count = 0;
         for (const group of noticesMod.listPending()) count += group.items.length;
-        for (const session of sessions) count += timerMod.snapshot([session.id]).length;
         return count;
     }
 
     function updateMailboxChip() {
         if (!el.chipQueue) return;
-        setChipCount(el.chipQueue, pendingMailboxCount(), 0);
+        const count = pendingMailboxCount();
+        // setChipCount 只管角标数字，胶囊自身的显隐要在这里摘：初始是 hidden，
+        // 漏了这行胶囊就永远看不见（信箱有数据也藏着）。
+        el.chipQueue.classList.toggle('hidden', count <= 0);
+        setChipCount(el.chipQueue, count, 0);
         // 弹层开着时后台冲刷消费了条目：内容与角标一起原位刷新
         if (chipsPopKind === 'mailbox') renderChipsPop('mailbox');
-    }
-
-    function fmtMailboxClock(ms) {
-        const total = Math.max(0, Math.ceil((Number(ms) || 0) / 1000));
-        const m = Math.floor(total / 60);
-        const s = total % 60;
-        return m + ':' + String(s).padStart(2, '0');
     }
 
     // 单行构造：badge = 会话名（+ 类别后缀），main = 摘要，行点击跳会话。
@@ -17098,21 +17112,10 @@ async function requestApproval(session, toolMessage, info) {
                 mailboxRow(host, group.sessionId, '', head, notice.kind === 'subagent-ask' ? 'is-ask' : '');
             }
         }
-        // ② 运行中的计时器：按会话逐个取（snapshot 按会话链过滤），到点会唤醒对应会话
-        for (const session of sessions) {
-            for (const timer of timerMod.snapshot([session.id])) {
-                rows += 1;
-                const label = timer.label || '计时器';
-                const clock = timer.mode === 'countdown'
-                    ? '剩余 ' + fmtMailboxClock(timer.remainingMs)
-                    : '已计 ' + fmtMailboxClock(timer.elapsedMs);
-                mailboxRow(host, session.id, '计时', label + ' · ' + clock + (timer.mode === 'countdown' ? '（到点唤醒）' : ''), '', null);
-            }
-        }
         if (!rows) {
             const empty = document.createElement('div');
             empty.className = 'ai-chips-empty';
-            empty.textContent = '没有挂着待处理的会话消息';
+            empty.textContent = '信箱空：没有挂着待注入的会话消息';
             host.appendChild(empty);
         }
     }
@@ -17885,7 +17888,7 @@ async function requestApproval(session, toolMessage, info) {
             if (target && target._stub && !(await ensureSessionLoaded(target))) {
                 throw new Error('会话正文读取失败：' + (target._loadError || '未知原因'));
             }
-            switchSession(String(id || ''));
+            await switchSession(String(id || ''));
             return currentSession() ? {id: currentSession().id, title: currentSession().title} : null;
         },
         bridgeRenameSession: async (id, title, callerSessionId) => {

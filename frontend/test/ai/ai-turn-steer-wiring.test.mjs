@@ -246,7 +246,7 @@ test('finishStream / stopGeneration：自然结束降级排队，停止或抢占
     assert.ok(finish.indexOf('const shouldFlush') < finish.indexOf('flushMessageQueue(session.id)'),
         '冲刷必须在 shouldFlush 判定之后');
 
-    const stop = sliceFunction(panel, 'function stopGeneration(target) {');
+    const stop = sliceFunction(panel, 'function stopGeneration(target, byUser) {');
     assert.match(stop, /queueMod\.clearSteer\(sessionId\)/);
     assert.ok(stop.indexOf('queueMod.clearSteer') < stop.indexOf('stopSubAgentsOf'));
 });

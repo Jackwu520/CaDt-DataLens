@@ -4913,8 +4913,8 @@ a.jsoneditor-poweredBy { display: none !important; }
 }
 .run-profile-del:hover { color: var(--red); }
 /* 设置 → 生命周期：条目行与行内编辑器（骨架对齐 run-profile 行） */
-.precmd-list { display: flex; flex-direction: column; gap: 4px; margin: 6px 0 2px; }
-.precmd-row {
+.lifecycle-list { display: flex; flex-direction: column; gap: 4px; margin: 6px 0 2px; }
+.lifecycle-row {
     display: flex;
     align-items: center;
     gap: 8px;
@@ -4923,8 +4923,8 @@ a.jsoneditor-poweredBy { display: none !important; }
     border-radius: 4px;
     font-size: 11px;
 }
-.precmd-row .set-switch { flex: none; }
-.precmd-cmd {
+.lifecycle-row .set-switch { flex: none; }
+.lifecycle-cmd {
     flex: 1;
     min-width: 0;
     overflow: hidden;
@@ -4933,7 +4933,7 @@ a.jsoneditor-poweredBy { display: none !important; }
     color: var(--muted);
     font-family: 'JetBrains Mono', Consolas, monospace;
 }
-.precmd-tag {
+.lifecycle-tag {
     flex: none;
     font-size: 10px;
     padding: 1px 6px;
@@ -4941,7 +4941,7 @@ a.jsoneditor-poweredBy { display: none !important; }
     background: var(--chip-bg);
     color: var(--muted);
 }
-.precmd-danger {
+.lifecycle-danger {
     flex: none;
     font-size: 10px;
     padding: 1px 6px;
@@ -4949,7 +4949,7 @@ a.jsoneditor-poweredBy { display: none !important; }
     background: var(--chip-bg);
     color: var(--red);
 }
-.precmd-btn {
+.lifecycle-btn {
     flex: none;
     border: none;
     background: none;
@@ -4958,11 +4958,65 @@ a.jsoneditor-poweredBy { display: none !important; }
     font: inherit;
     font-size: 11px;
 }
-.precmd-btn:hover { color: var(--text); }
-.precmd-btn-del:hover { color: var(--red); }
-.precmd-edit-row { display: flex; align-items: flex-start; gap: 12px; padding: 6px 8px; }
-.precmd-edit-row .set-main { flex: none; min-width: 84px; }
-.precmd-edit-row .set-control { flex: 1; display: flex; gap: 8px; min-width: 0; }
+.lifecycle-btn:hover { color: var(--text); }
+.lifecycle-btn-del:hover { color: var(--red); }
+.lifecycle-edit-row { display: flex; align-items: flex-start; gap: 12px; padding: 6px 8px; }
+.lifecycle-edit-row .set-main { flex: none; min-width: 84px; }
+.lifecycle-edit-row .set-control { flex: 1; display: flex; gap: 8px; min-width: 0; }
+/* 生命周期命令编辑弹窗（modal 档）：z-index 由 overlay-stack 分配，这里不写 */
+.lifecycle-modal {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, 0.45);
+}
+.lifecycle-modal.hidden { display: none; }
+.lifecycle-modal-card {
+    width: min(520px, calc(100vw - 48px));
+    max-height: min(70vh, 560px);
+    display: flex;
+    flex-direction: column;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+    overflow: hidden;
+}
+.lifecycle-modal-title {
+    padding: 10px 14px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+    border-bottom: 1px solid var(--border);
+}
+.lifecycle-modal-body { padding: 12px 14px; overflow: auto; }
+.lifecycle-modal-foot {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    padding: 10px 14px;
+    border-top: 1px solid var(--border);
+}
+/* 弹窗字段：上下布局（标题行 + 控件占满宽），说明文字跟在标题右侧不撑行 */
+.lifecycle-field { margin-bottom: 12px; }
+.lifecycle-field:last-child { margin-bottom: 0; }
+.lifecycle-field-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; min-width: 0; }
+.lifecycle-field-label { flex: none; font-size: 12px; font-weight: 600; color: var(--text); }
+.lifecycle-field-hint {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 11px;
+    color: var(--muted);
+}
+.lifecycle-field-control { display: flex; min-width: 0; }
+.lifecycle-field-control .dlg-input,
+.lifecycle-field-control .opt-select { flex: 1; min-width: 0; width: auto; }
+.lifecycle-btn-run:hover { color: var(--accent, var(--text)); }
 .run-profile-edit {
     flex: none;
     border: none;
@@ -7603,7 +7657,7 @@ div.jsoneditor-tree textarea { user-select: text; }
 .ai-ask-page-btn svg { width: 13px; height: 13px; display: block; }
 .ai-ask-page-btn:hover:not(:disabled) { background: var(--hover); color: var(--text); }
 .ai-ask-page-btn:disabled { opacity: .3; cursor: default; }
-.ai-ask-detail { color: var(--muted); font-size: 11px; line-height: 1.45; white-space: pre-wrap; }
+.ai-ask-detail { color: var(--muted); font-size: 11px; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
 .ai-takeover .ai-ask-form-q.single .ai-ask-question { margin-top: 0; }
 .ai-plan-takeover-icon {
     flex: none;
@@ -8658,33 +8712,61 @@ div.jsoneditor-tree textarea { user-select: text; }
     overflow-wrap: anywhere;
 }
 .ai-ask-options { display: flex; flex-direction: column; gap: 2px; margin-top: 8px; }
+/* 选项按内联流排版（不是 flex 分列）：序号 / 标签 / 推荐角标 / 描述都在同一段文字里，
+   短标签 + 短描述自然待在一行，长标签或长描述到行尾自己往下折，
+   续行靠 padding-left + 负 text-indent 悬挂缩进对齐到标签文字（不会退回序号下面）。
+   以前用 flex 把描述当独立一列（flex: 1 + min-width: 120px），标签一长描述就被压成几字宽的竖条。 */
 .ai-ask-option {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: baseline;
-    gap: 6px;
+    display: block;
     width: 100%;
-    padding: 6px 9px;
+    padding: 6px 9px 6px 31px;
+    text-indent: -22px;
     border: none;
     border-radius: 7px;
     background: none;
     color: var(--text);
     font: inherit;
     font-size: 12px;
+    line-height: 1.5;
     text-align: left;
     cursor: pointer;
 }
+/* 多选：勾选框也在悬挂区内（14px 框 + 6px 间距 → 缩进 42px） */
+.ai-ask-option:has(> .ai-ask-check) { padding-left: 51px; text-indent: -42px; }
 .ai-ask-option:hover:not(:disabled) { background: var(--hover); }
 .ai-ask-option:disabled { cursor: default; }
 .ai-ask-option.selected { background: var(--accent-weak); }
 .ai-ask-option:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
-.ai-ask-check { flex: none; align-self: center; width: 14px; height: 14px; display: grid; place-items: center; border: 1px solid var(--muted); border-radius: 3.5px; color: transparent; }
-.ai-ask-check svg { width: 11px; height: 11px; }
+.ai-ask-check {
+    display: inline-grid;
+    place-items: center;
+    width: 14px;
+    height: 14px;
+    margin-right: 6px;
+    border: 1px solid var(--muted);
+    border-radius: 3.5px;
+    color: transparent;
+    vertical-align: -2px;
+}
+.ai-ask-check svg { width: 11px; height: 11px; display: block; }
 .ai-ask-option.selected .ai-ask-check { background: var(--accent); border-color: var(--accent); color: #fff; }
-.ai-ask-num { flex: none; min-width: 16px; color: var(--muted); font-size: 11.5px; text-align: right; font-variant-numeric: tabular-nums; }
-.ai-ask-option-label { font-weight: 600; }
+.ai-ask-num {
+    display: inline-block;
+    min-width: 16px;
+    color: var(--muted);
+    font-size: 11.5px;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+/* 只有选项里需要序号与标签之间的间距（自己输入的 .ai-ask-custom 是 flex 行，靠 gap 分隔） */
+.ai-ask-option > .ai-ask-num { margin-right: 6px; }
+.ai-ask-option-label { font-weight: 600; overflow-wrap: anywhere; }
 .ai-ask-badge {
-    flex: none;
+    display: inline-block;
+    /* 父级悬挂缩进用的负 text-indent 会被内联块继承（内联块自己是个块容器），
+       不重置的话徽标里的字会整体左移、压到标签末尾上 */
+    text-indent: 0;
+    margin-left: 6px;
     padding: 0 6px;
     height: 16px;
     line-height: 16px;
@@ -8692,8 +8774,15 @@ div.jsoneditor-tree textarea { user-select: text; }
     background: var(--accent-weak);
     color: var(--accent);
     font-size: 10px;
+    vertical-align: 1px;
 }
-.ai-ask-option-desc { flex: 1; min-width: 120px; color: var(--muted); font-size: 11.5px; line-height: 1.5; }
+.ai-ask-option-desc {
+    margin-left: 6px;
+    color: var(--muted);
+    font-size: 11.5px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
 .ai-ask-custom { display: flex; align-items: center; gap: 6px; margin-top: 2px; padding: 4px 9px 2px 9px; border-radius: 5px; }
 .ai-ask-custom.selected { background: var(--accent-weak); }
 .ai-ask-input {
@@ -9809,6 +9898,9 @@ body.console-only > :not(.dbg-console) { display: none !important; }
 html[data-theme="light"] .ai-usage-value.tone-normal { color: #16a34a; }
 html[data-theme="light"] .ai-usage-value.tone-warning { color: #f97316; }
 html[data-theme="light"] .ai-usage-value.tone-danger { color: #ef4444; }
+/* 显示规范 v1：⏱ 倒计时灰字紧跟数值，只有数值上色（标签/前缀/倒计时保持灰） */
+.ai-usage-clock { display: inline-flex; align-items: center; margin: 0 1px 0 3px; color: var(--muted); opacity: 0.75; }
+.ai-usage-countdown { color: var(--muted); font-variant-numeric: tabular-nums; }
 
 /* 配置用量查询弹窗（openAIDialog 动态构建） */
 .ai-usage-dialog-body { display: flex; flex-direction: column; gap: 10px; }
