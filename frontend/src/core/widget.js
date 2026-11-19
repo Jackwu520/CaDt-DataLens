@@ -424,3 +424,45 @@ export function enhanceWidgets(root, opts = {}) {
     });
     return mounted;
 }
+
+// ---------- 重渲染保活（流式 loading 不卡帧） ----------
+// 流式期间 markdown 整段重建（md.innerHTML 覆盖）会把 .ai-widget 占位节点整只销毁，
+// ::before/::after 的 CSS loading 动画时钟随之归零——上方思考链 / 工具卡每帧更新时，
+// loading 就永远停在前几帧。占位自带 data-widget-key（widgetCacheKey），按 key 把旧占位
+// 摘出文档（innerHTML 覆盖销毁不到），写完移植回同 key 的新槽位：同一节点不销毁，
+// 动画连续；轮结束 mountCard 作用于同一节点，无跳变。已挂载（data-widget-ready）的卡
+// 带事件与异步任务，不参与重建保活。
+// park：摘出未挂载占位，返回 Map<key, nodes[]>（同 key 多块按序复用）。
+export function parkPendingWidgets(root) {
+    const byKey = new Map();
+    if (!root || typeof root.querySelectorAll !== 'function') return byKey;
+    for (const node of root.querySelectorAll('.ai-widget[data-widget-lang]')) {
+        if (!node || node.dataset.widgetReady === '1') continue;
+        const key = node.getAttribute('data-widget-key') || '';
+        if (!key) continue;
+        let list = byKey.get(key);
+        if (!list) byKey.set(key, list = []);
+        list.push(node);
+        if (typeof node.remove === 'function') node.remove();
+    }
+    return byKey;
+}
+
+// restore：把摘出的占位移植回同 key 的新槽位，返回移植数；没匹配到的旧占位被丢弃
+// （内容变了），新 DOM 里没有旧 key 槽位时旧节点自然淘汰。
+export function restoreParkedWidgets(parked, newRoot) {
+    if (!parked || !parked.size || !newRoot || typeof newRoot.querySelectorAll !== 'function') return 0;
+    let moved = 0;
+    for (const node of newRoot.querySelectorAll('.ai-widget[data-widget-lang]')) {
+        if (!node || node.dataset.widgetReady === '1') continue;
+        const key = node.getAttribute('data-widget-key') || '';
+        const list = parked.get(key);
+        const kept = list && list.length ? list.shift() : null;
+        if (!kept) continue;
+        if (typeof node.replaceWith === 'function') {
+            node.replaceWith(kept);
+            moved += 1;
+        }
+    }
+    return moved;
+}

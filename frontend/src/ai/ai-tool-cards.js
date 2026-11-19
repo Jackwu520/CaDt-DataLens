@@ -3,7 +3,7 @@
 // 折叠状态 Map 与转录 Map 经 ctx 注入（引用稳定）；dismissedPlanApproval 经 setDismissedPlanApproval 写。
 import {iconSvg} from '../core/icons.js';
 import {createFileIcon} from '../core/fileicons.js';
-import {enhanceWidgets} from '../core/widget.js';
+import {enhanceWidgets, parkPendingWidgets, restoreParkedWidgets} from '../core/widget.js';
 import {aiFormatTime, aiTextOf} from './ai-constants.js';
 import {diffNoDigits} from './ai-diff-view.js';
 import {agentLevelText} from './ai-team-model.js';
@@ -1690,10 +1690,15 @@ export function createAIToolCards(ctx) {
                 if (message.status === 'error' && !content) {
                     md.textContent = message.error ? ('请求失败：' + message.error) : '请求失败';
                 } else if (content) {
+                    // 流式期间整段重建会销毁可视化占位 → CSS loading 动画时钟归零（上方
+                    // 思考链 / 工具卡每帧更新时 loading 永远停在前几帧）。占位先按
+                    // data-widget-key 摘出，写完移植回同 key 槽位，再统一增强。
+                    const parked = parkPendingWidgets(md);
                     md.innerHTML = renderMarkdown(content);
                     enhanceAICodeBlocks(md);
                     resolveAIImages(md);
                     if (enhanceAIFileRefs) enhanceAIFileRefs(md);
+                    restoreParkedWidgets(parked, md);
                     // svg / html / mermaid / echarts 围栏 → 可视化卡片；流式期间只占位，整轮结束后再挂载
                     enhanceWidgets(md, {
                         streaming: !!streaming,

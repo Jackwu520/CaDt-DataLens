@@ -8,7 +8,9 @@ import {
     buildWidgetPlaceholder,
     escapeWidgetText,
     extractWidgetCss,
+    parkPendingWidgets,
     preserveLocalImageSrc,
+    restoreParkedWidgets,
     sanitizeWidgetCss,
     tinySvgSize,
     widgetCacheKey,
@@ -181,4 +183,74 @@ test('preserveLocalImageSrc 给本地图片补 data-ai-src，外链不动', () =
     // src 里的引号必须转义，不能截断属性
     const quoted = preserveLocalImageSrc("<img src=\"a'b.png\">");
     assert.match(quoted, /data-ai-src="a&#39;b\.png"/);
+});
+
+// ---------- 重渲染保活（park / restore：流式 loading 不卡帧） ----------
+// 最小 DOM stub：选择器过滤在函数内以 dataset / getAttribute 判定，stub 容器直接返回预置节点。
+
+function stubWidgetNode(lang, key, ready) {
+    return {
+        attrs: ready
+            ? {'data-widget-lang': lang, 'data-widget-key': key, 'data-widget-ready': '1'}
+            : {'data-widget-lang': lang, 'data-widget-key': key},
+        dataset: ready ? {widgetReady: '1'} : {},
+        removed: false,
+        replacedWith: null,
+        getAttribute(name) { return this.attrs[name] || null; },
+        remove() { this.removed = true; },
+        replaceWith(other) { this.replacedWith = other; },
+    };
+}
+
+function stubRoot(nodes) {
+    return {querySelectorAll: () => nodes};
+}
+
+test('parkPendingWidgets：未挂载占位摘出文档并按 key 分组，同 key 多块按序入组', () => {
+    const a = stubWidgetNode('mermaid', 'mermaid:3:abc', false);
+    const b = stubWidgetNode('svg', 'svg:5:def', false);
+    const sameKey = stubWidgetNode('mermaid', 'mermaid:3:abc', false);
+    const ready = stubWidgetNode('html', 'html:2:xyz', true);
+    const noKey = stubWidgetNode('html', '', false);
+    const parked = parkPendingWidgets(stubRoot([a, b, sameKey, ready, noKey]));
+    assert.equal(parked.get('mermaid:3:abc').length, 2, '同 key 两块按序入组');
+    assert.equal(parked.get('svg:5:def').length, 1);
+    assert.equal(parked.size, 2, 'ready 与无 key 的不进 Map');
+    assert.equal(a.removed && b.removed && sameKey.removed, true, '摘出文档（innerHTML 覆盖销毁不到）');
+    assert.equal(ready.removed, false, '已挂载的卡带事件与异步任务，不摘');
+    assert.equal(noKey.removed, false);
+});
+
+test('restoreParkedWidgets：同 key FIFO 移植回新槽位，未匹配槽位不动', () => {
+    const old1 = stubWidgetNode('mermaid', 'mermaid:3:abc', false);
+    const old2 = stubWidgetNode('mermaid', 'mermaid:3:abc', false);
+    const parked = parkPendingWidgets(stubRoot([old1, old2]));
+    const slotA = stubWidgetNode('mermaid', 'mermaid:3:abc', false);
+    const slotB = stubWidgetNode('mermaid', 'mermaid:3:abc', false);
+    const other = stubWidgetNode('svg', 'svg:9:zzz', false);
+    const ready = stubWidgetNode('html', 'html:2:xyz', true);
+    const moved = restoreParkedWidgets(parked, stubRoot([slotA, other, slotB, ready]));
+    assert.equal(moved, 2);
+    assert.equal(slotA.replacedWith, old1, 'FIFO：第一块回第一槽');
+    assert.equal(slotB.replacedWith, old2, '第二块回第二槽');
+    assert.equal(other.replacedWith, null, '无匹配 key 的新占位不动');
+    assert.equal(ready.replacedWith, null, '已挂载的槽不参与');
+    assert.equal(parked.get('mermaid:3:abc').length, 0, '移植后组清空');
+});
+
+test('restoreParkedWidgets：空 parked / 非法输入安全返回 0', () => {
+    assert.equal(restoreParkedWidgets(new Map(), stubRoot([stubWidgetNode('svg', 'svg:1:a', false)])), 0);
+    assert.equal(restoreParkedWidgets(null, null), 0);
+});
+
+test('接线：流式重渲染按 park → innerHTML → restore → enhanceWidgets 顺序保活占位', () => {
+    const src = readFileSync(new URL('../../src/ai/ai-tool-cards.js', import.meta.url), 'utf8');
+    const parkAt = src.indexOf('const parked = parkPendingWidgets(md);');
+    assert.ok(parkAt > 0, '摘出在 innerHTML 覆盖之前');
+    const writeAt = src.indexOf('md.innerHTML = renderMarkdown(content);', parkAt);
+    assert.ok(writeAt > parkAt, 'innerHTML 覆盖在摘出之后');
+    const restoreAt = src.indexOf('restoreParkedWidgets(parked, md);', writeAt);
+    assert.ok(restoreAt > writeAt, '移植在覆盖之后');
+    const enhanceAt = src.indexOf('enhanceWidgets(md, {', restoreAt);
+    assert.ok(enhanceAt > restoreAt, '统一增强在移植之后（mountCard 作用于移植回来的节点）');
 });
