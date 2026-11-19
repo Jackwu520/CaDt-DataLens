@@ -41,6 +41,11 @@ export function createAIAgentView(ctx, extras) {
     const stopSubAgentDeep = typeof extras.stopSubAgentDeep === 'function' ? extras.stopSubAgentDeep : stopSubAgent;
     const startSubCompact = extras.startSubCompact;
     const agentStateBadge = extras.agentStateBadge;
+    // 磁盘转录补读（宿主注入）：重启后内存里的转录没了，但 ai-artifacts 里还留着落盘副本。
+    // 只在「内存没块且拿得到 agentId + 父会话」时试一次，读到就填回内存缓存再重渲染。
+    const loadAgentTranscript = typeof extras.loadAgentTranscript === 'function' ? extras.loadAgentTranscript : null;
+    const transcriptLoads = new Set();
+    const transcriptLoadsFailed = new Set();
 
     // 详情视图挂载点：主窗口是内容区标签页、悬浮窗是面板内覆盖层。每个挂载点一个 view 对象，
     // 同一子代理可同时开多处（标签页 + 悬浮窗），各自独立节流渲染。
@@ -136,10 +141,51 @@ export function createAIAgentView(ctx, extras) {
             blocks.push({key: 'transcript-label', kind: 'label', text: '过程转录'});
         }
         blocks.push(...agentTranscriptBlocks(transcript));
-        if (!blocks.length) {
-            blocks.push({key: 'empty', kind: 'tip', text: '应用重启后子代理只保留状态与结论摘要；本次没有可显示的转录。'});
+        // 内存里没有转录时，试一次磁盘补读（每个 subId 只试一次，读到就重渲染）。
+        // 这是「应用重启后」唯一的还原路径：会话 JSONL 里只剩 toolMessage.agent 的 id，
+        // 转录正文在 ai-artifacts/<父会话>/sub-<agentId>.txt。
+        if (!transcript || !transcript.length) {
+            const agentId = String(view.subId || '');
+            const loading = kickTranscriptLoad(view);
+            if (!blocks.length) {
+                blocks.push({
+                    key: 'empty',
+                    kind: 'tip',
+                    text: loading
+                        ? '正在读取磁盘转录…'
+                        : (transcriptLoadsFailed.has(agentId)
+                            ? '磁盘上没有找到这台子代理的转录（可能未落盘或缓存已被清理）；只保留状态与结论摘要。'
+                            : '应用重启后子代理只保留状态与结论摘要；本次没有可显示的转录。'),
+                });
+            }
         }
         return {blocks, live: false, sub: null};
+    }
+
+    // 补读磁盘转录：返回 true 表示「已发起，正在读」。禁止并发重复发起，也不重试失败——
+    // 但失败要落一个标记并重渲染一次，否则「正在读取」永远不收敛（读回为空也算失败）。
+    function kickTranscriptLoad(view) {
+        if (!loadAgentTranscript) return false;
+        const agentId = String((view && view.subId) || '');
+        const sessionId = String((view && (view.agentArtifactDir || view.parentSessionId || view.sessionId)) || '');
+        if (!agentId || !sessionId) return false;
+        if (transcriptLoads.has(agentId)) return false;
+        transcriptLoads.add(agentId);
+        Promise.resolve(loadAgentTranscript(sessionId, agentId))
+            .then((entries) => {
+                if (entries && entries.length) {
+                    if (view.toolCallId) subAgentTranscripts.set(view.toolCallId, entries);
+                } else {
+                    // 没读到：记下来，agentBlocksOf 下次走「没有可显示的转录」的兜底文案
+                    transcriptLoadsFailed.add(agentId);
+                }
+                scheduleAgentViewRender(view);
+            })
+            .catch(() => {
+                transcriptLoadsFailed.add(agentId);
+                scheduleAgentViewRender(view);
+            });
+        return true;
     }
 
     function createAgentBlockNode(block) {
@@ -622,6 +668,9 @@ export function createAIAgentView(ctx, extras) {
         // 透传 parentSessionId：记录被 LRU 回收后 agentParentInfo 仍能靠它回落到父会话标题
         const source = target.subId ? (subAgents.get(target.subId) || subAgentRecords.get(target.subId)) : null;
         target.parentSessionId = String((source && source.parentSessionId) || '');
+        // 磁盘转录的分桶 id：落盘时用的是根会话（嵌套代理的 parentSessionId 是上层子代理
+        // 的会话 id，对不上桶）。记录里有 rootSessionId，运行态有 artifactDir，都没有再回落。
+        target.agentArtifactDir = String((source && (source.artifactDir || source.rootSessionId)) || '');
         const liveSub = target.subId ? subAgents.get(target.subId) : null;
         const rec = !liveSub && target.subId ? subAgentRecords.get(target.subId) : null;
         target.task = String((liveSub && liveSub.task) || (rec && rec.task) || '');

@@ -2,7 +2,7 @@
 // 方案见 docs/finished-plans/ai-turn-steering.md §6.1。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createQueueModel, createAIMessageQueue, formatSteerMessage} from '../../src/ai/ai-message-queue.js';
+import {createQueueModel, createAIMessageQueue, formatSteerMessage, queuedAttachmentsPayload, persistSafeItem, restorableQueueItems} from '../../src/ai/ai-message-queue.js';
 
 const item = (over = {}) => ({sessionId: 's1', text: 'hi', attachments: [], ...over});
 
@@ -266,3 +266,164 @@ test('formatSteerMessage：ZCode 文案合同（改文案要同步接线护栏�
     assert.match(text, /补充一句/);
     assert.equal(formatSteerMessage(null).includes('null'), false);
 });
+
+// ---------- 后台会话的排队冲刷（docs/unfinished-plans/ai-queue-background-flush.md 方案 A） ----------
+
+function shellCtx(over) {
+    const calls = {start: [], flash: [], unread: [], submit: []};
+    const ctx = {
+        // el.queue 为空时 renderMessageQueue 直接 return，不需要真 DOM
+        el: {input: {value: '', trim() { return String(this.value || '').trim(); }}},
+        streams: new Map(),
+        compactOf: () => false,
+        currentSession: () => null,
+        sessionById: (id) => (id === 's1' ? {id: 's1', title: '后台会话', messages: []} : null),
+        startSessionTurn: async (session, text, opts) => {
+            calls.start.push({sessionId: session.id, text, opts});
+            return {ok: true};
+        },
+        setSessionUnread: (session, kind) => calls.unread.push([session.id, kind]),
+        flash: (text, isError) => calls.flash.push([text, isError]),
+        getAttachments: () => [],
+        setAttachments: () => {},
+        renderAttachments: () => {},
+        resizeInput: () => {},
+        updateSendState: () => {},
+        submitText: async (text) => {
+            calls.submit.push(text);
+            return true;
+        },
+    };
+    return {ctx: {...ctx, ...(over || {})}, calls};
+}
+
+test('queuedAttachmentsPayload：图片 / 视频分组，引用块不进文本附件', () => {
+    const payload = queuedAttachmentsPayload([
+        {kind: 'image', data: 'x'},
+        {kind: 'video', data: 'y'},
+        {kind: 'file', label: 'a.js', content: 'x'},
+        {kind: 'message_quote', source: 'q', text: 'y'},
+        null,
+    ]);
+    assert.deepEqual(payload.images.map((a) => a.kind), ['image']);
+    assert.deepEqual(payload.videos.map((a) => a.kind), ['video']);
+    assert.deepEqual(payload.texts.map((a) => a.kind), ['file']);
+    assert.deepEqual(queuedAttachmentsPayload(null), {images: [], videos: [], texts: []});
+});
+
+test('后台会话：轮末冲刷走内核起轮，不碰输入区', async () => {
+    const {ctx, calls} = shellCtx();
+    const shell = createAIMessageQueue(ctx);
+    shell.enqueueItem({
+        sessionId: 's1',
+        text: '排队的 2',
+        attachments: [{kind: 'image', data: 'x'}, {kind: 'file', label: 'a.js', content: 'x'}],
+    });
+    await shell.flushMessageQueue('s1');
+    assert.equal(calls.submit.length, 0, '后台会话不该灌输入区再代发');
+    assert.equal(calls.start.length, 1, '后台会话要走 startSessionTurn 内核');
+    assert.equal(calls.start[0].text, '排队的 2');
+    assert.deepEqual(calls.start[0].opts.attachments.images.map((a) => a.kind), ['image']);
+    assert.deepEqual(calls.start[0].opts.attachments.texts.map((a) => a.kind), ['file']);
+    assert.equal(calls.start[0].opts.preserveScroll, true);
+    assert.equal(calls.start[0].opts.truncateAt, null);
+    assert.equal(shell.itemsForSession('s1').length, 0, '发出后队列清空');
+});
+
+test('后台会话：起轮失败回插队首、打未读并提示，不丢消息', async () => {
+    const {ctx, calls} = shellCtx({
+        startSessionTurn: async () => ({ok: false, reason: 'over_budget', tokens: 9, windowSize: 8}),
+    });
+    const shell = createAIMessageQueue(ctx);
+    shell.enqueueItem({sessionId: 's1', text: '排队 3'});
+    await shell.flushMessageQueue('s1', {fromRetry: true});
+    assert.equal(shell.itemsForSession('s1').length, 1, '失败不丢：回到该会话队首');
+    assert.equal(shell.itemsForSession('s1')[0].text, '排队 3');
+    assert.deepEqual(calls.unread, [['s1', 'done']]);
+    assert.equal(calls.flash.length, 1);
+    assert.equal(calls.flash[0][1], true, '失败提示要标红');
+    assert.match(calls.flash[0][0], /上下文/);
+});
+
+test('后台会话：忙（生成中）时不取项，消息留在队列', async () => {
+    const live = {sessionId: 's1', stopped: false, finished: false, roundId: 'r'};
+    const {ctx, calls} = shellCtx({streams: new Map([['s1', live]])});
+    const shell = createAIMessageQueue(ctx);
+    shell.enqueueItem({sessionId: 's1', text: '排队 4'});
+    await shell.flushMessageQueue('s1');
+    assert.equal(calls.start.length, 0);
+    assert.equal(shell.itemsForSession('s1').length, 1);
+});
+
+test('当前会话：冲刷仍走输入区代发，不调用内核', async () => {
+    const current = {id: 's1', title: '当前会话', messages: []};
+    const {ctx, calls} = shellCtx({currentSession: () => current, sessionById: () => current});
+    const shell = createAIMessageQueue(ctx);
+    shell.enqueueItem({sessionId: 's1', text: '排队 5'});
+    await shell.flushMessageQueue('s1');
+    assert.deepEqual(calls.submit, ['排队 5']);
+    assert.equal(calls.start.length, 0, '当前会话不该绕开输入区');
+    assert.equal(shell.itemsForSession('s1').length, 0);
+});
+
+// ---------- 重启恢复（localStorage 轻量快照） ----------
+
+test('persistSafeItem：剥离图片/视频附件（base64 不进存储），文本类保留，字段归一', () => {
+    const safe = persistSafeItem({
+        id: 'q_1', sessionId: 's1', text: 'hi',
+        attachments: [
+            {kind: 'image', data: 'AAAA', name: 'a.png'},
+            {kind: 'video', data: 'BBBB', name: 'b.mp4'},
+            {kind: 'text', name: 'note.md', content: '# hi'},
+            null,
+        ],
+        delivery: 'steer', ts: 123, roundId: 'r9',
+    });
+    assert.deepEqual(safe.attachments, [{kind: 'text', name: 'note.md', content: '# hi'}]);
+    assert.equal(safe.delivery, 'steer');
+    assert.equal(safe.ts, 123);
+    assert.equal(safe.roundId, 'r9');
+    // 非法值归一：text 缺省空串、delivery 未知值回落 queue、ts 缺失归 0
+    const blank = persistSafeItem({id: 'q_2', sessionId: 's1', text: null, delivery: 'x'});
+    assert.equal(blank.text, '');
+    assert.equal(blank.delivery, 'queue');
+    assert.equal(blank.ts, 0);
+    assert.deepEqual(blank.attachments, []);
+});
+
+test('restorableQueueItems：剔失效、按已有 id 去重、lookup 不过的不收', () => {
+    const list = [
+        {id: 'q_1', sessionId: 's1', text: 'a'},
+        {id: 'q_2', sessionId: 'gone', text: 'b'},
+        {id: 'q_3', sessionId: 's1', text: '   '},
+        {id: 'q_4', sessionId: 's1', text: 'c'},
+        null,
+        {sessionId: 's1', text: '无 id'},
+    ];
+    const out = restorableQueueItems(list, new Set(['q_4']), (id) => (id === 's1' ? {id} : null));
+    assert.deepEqual(out.map((it) => it.id), ['q_1'], 'q_2 会话失效 / q_3 空文本 / q_4 内存已有');
+    // lookup 缺省（不传）时不做会话校验
+    assert.deepEqual(restorableQueueItems([{id: 'q_9', sessionId: 'any', text: 'z'}], [], null).length, 1);
+    // 非数组 / 空输入安全
+    assert.deepEqual(restorableQueueItems(null, [], null), []);
+});
+
+test('model.restore：原样收回快照条目（id 保留），坏条目过滤，不触发 onChange', () => {
+    let fired = 0;
+    const model = createQueueModel({onChange: () => { fired += 1; }});
+    const ok = model.restore([
+        {id: 'q_1', sessionId: 's1', text: 'a', delivery: 'queue', ts: 1, roundId: ''},
+        {id: 'q_2', sessionId: 's1', text: 'b', ts: 2},
+        {text: '无 id 不收'},
+        null,
+    ]);
+    assert.equal(ok, true);
+    assert.equal(fired, 0, '恢复的旧条目不该唤醒 wait_agent');
+    assert.deepEqual(model.all().map((it) => it.id), ['q_1', 'q_2']);
+    assert.equal(model.forSession('s1')[0].text, 'a');
+    // 全是坏条目 / 非数组返回 false，队列不动
+    assert.equal(model.restore([{text: 'x'}]), false);
+    assert.equal(model.restore('bad'), false);
+    assert.equal(model.all().length, 2);
+});
+

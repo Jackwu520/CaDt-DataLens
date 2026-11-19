@@ -2,7 +2,19 @@
 // Ctrl+Shift+Enter 抢占，结束后冲刷）。队列状态机是纯模型（createQueueModel），DOM 壳只做渲染与接线；
 // 方案见 docs/finished-plans/ai-turn-steering.md。
 import {iconSvg} from '../core/icons.js';
-import {AI_QUOTE_KIND} from './ai-quote.js';
+import {AI_QUOTE_KIND, quoteMarkupFromAttachments} from './ai-quote.js';
+
+// 队列条目 → startSessionTurn 的附件载荷（与 submitText 的手动发送同一口径）：
+// 图片 / 视频各自成组，其余（文件 / 选区 / 技能）走文本附件；对话引用已在正文前缀里，
+// 不能再当附件送一遍（否则 <attachments> 块会重复）。
+export function queuedAttachmentsPayload(attachments) {
+    const list = Array.isArray(attachments) ? attachments : [];
+    return {
+        images: list.filter((att) => att && att.kind === 'image'),
+        videos: list.filter((att) => att && att.kind === 'video'),
+        texts: list.filter((att) => att && att.kind !== 'image' && att.kind !== 'video' && att.kind !== AI_QUOTE_KIND),
+    };
+}
 
 // 插话（steer）请求模板：只作用于发给模型的请求，落盘与气泡仍是用户原文（见 ai-panel.js buildApiMessages）。
 // 文案与 ZCode 的 user_steer 对齐——改文案要同步 test/ai/ai-turn-steer-wiring.test.mjs。
@@ -17,6 +29,47 @@ let queueItemSeq = 0;
 function nextQueueItemId() {
     queueItemSeq += 1;
     return 'q_' + Date.now() + '_' + queueItemSeq;
+}
+
+// ---------- 重启恢复（localStorage 轻量快照） ----------
+// 队列本体是纯内存，重启即丢。排队消息虽是秒级缓冲，但「被 over_budget 拦下等压缩」
+// 「后台会话挂着」的条目可能活很久，丢了用户无从察觉。读写时机：每次队列渲染后全量
+// 覆盖（队列变更必然触发渲染，见 renderMessageQueue）；启动读盘完成后恢复一次。
+// 局限：多窗口双开时各自恢复同一批条目（队列本就 per-window、互不同步），只有窗口
+// 主动消费才会发送，风险面与恢复前一致。
+
+const QUEUE_STORAGE_KEY = 'datalens-ai-msg-queue';
+// 序列化超过这个体积就整体放弃（恢复后重写同样守它）：localStorage 配额 5MB，快照
+// 是尽力而为的兜底，不能反过来把存储撑爆。
+const QUEUE_STORAGE_BUDGET = 800 * 1024;
+
+// 图片 / 视频附件的 base64 data 动辄数百 KB~数 MB，不进 localStorage——快照只保留
+// 文本类附件；媒体在恢复后会随条目消失，用户重贴即可（消息文本才是条目主体）。
+export function persistSafeItem(item) {
+    return {
+        id: item.id,
+        sessionId: item.sessionId,
+        text: item.text == null ? '' : String(item.text),
+        attachments: (item.attachments || []).filter((att) => att && att.kind !== 'image' && att.kind !== 'video'),
+        delivery: item.delivery === 'steer' ? 'steer' : 'queue',
+        ts: Number(item.ts) || 0,
+        roundId: item.roundId || '',
+    };
+}
+
+// 从快照列表挑出可恢复的条目：剔除失效（无 id / 无会话 / 空正文、会话已删除或归档）
+// 与内存里已有的（双窗口先后恢复同一批时按 id 去重）。纯函数，便于单测。
+export function restorableQueueItems(list, existingIds, sessionLookup) {
+    const seen = existingIds instanceof Set ? existingIds : new Set(existingIds || []);
+    const out = [];
+    for (const item of Array.isArray(list) ? list : []) {
+        if (!item || !item.id || seen.has(item.id)) continue;
+        if (!item.sessionId || typeof item.text !== 'string' || !item.text.trim()) continue;
+        if (typeof sessionLookup === 'function' && !sessionLookup(item.sessionId)) continue;
+        seen.add(item.id);
+        out.push(item);
+    }
+    return out;
 }
 
 function copyQueueItem(item) {
@@ -169,6 +222,14 @@ export function createQueueModel(options) {
         clearAll() {
             items = [];
         },
+        // 重启恢复：原样收回快照条目（保留原 id / ts / delivery / roundId）。不触发
+        // onChange——恢复的旧条目不该去唤醒 wait_agent。调用方负责去重与失效过滤。
+        restore(restored) {
+            const list = (Array.isArray(restored) ? restored : []).filter((item) => item && item.id && item.sessionId);
+            if (!list.length) return false;
+            for (const item of list) items.push(item);
+            return true;
+        },
         // 跨端同步快照（深拷贝：改快照不影响队列本体）。
         snapshot: (sessionId) => ({
             sessionId,
@@ -201,6 +262,7 @@ export function createAIMessageQueue(ctx) {
     let draggingQueueId = '';            // 队列行拖动排序中的 item id（仅本模块内使用）
     const streams = ctx.streams;
     const flash = ctx.flash;
+    const notifyFailure = typeof ctx.notifyFailure === 'function' ? ctx.notifyFailure : () => {};
     const positionOverlays = ctx.positionOverlays;
     const compactOf = ctx.compactOf;
     const currentSession = ctx.currentSession;
@@ -208,6 +270,8 @@ export function createAIMessageQueue(ctx) {
     const currentQueueItems = ctx.currentQueueItems;
     const planApprovalMessage = ctx.planApprovalMessage;
     const planApprovalKey = ctx.planApprovalKey;
+    const planAwaitingUserReply = typeof ctx.planAwaitingUserReply === 'function'
+        ? ctx.planAwaitingUserReply : () => true;
     const updateComposerTakeover = ctx.updateComposerTakeover;
     const editQueuedMessage = ctx.editQueuedMessage;
     const captureComposerMessage = ctx.captureComposerMessage;
@@ -224,6 +288,28 @@ export function createAIMessageQueue(ctx) {
     const setDismissedPlanApproval = ctx.setDismissedPlanApproval;
     const getStream = ctx.getStream;
     const videoSteerAllowed = ctx.videoSteerAllowed;
+    // 后台冲刷依赖（2026-11-19 起）：会话查询 / 起轮内核 / 未读标记。
+    // 旧调用方（测试桩）没传 startSessionTurn 时后台路径降级为「不发送、留队」。
+    const sessionById = typeof ctx.sessionById === 'function' ? ctx.sessionById : null;
+    const startSessionTurn = typeof ctx.startSessionTurn === 'function' ? ctx.startSessionTurn : null;
+    const setSessionUnread = typeof ctx.setSessionUnread === 'function' ? ctx.setSessionUnread : null;
+    // 后台队列消息被内核预检拦下（over_budget）时的兜底钩子：panel 注入 maybeAutoCompact，
+    // 让「后台会话 + 队列消息塞不下」也能自动腾地方（与手动路径 autoCompactOnGateBlocked 对称）。
+    const onQueueOverBudget = typeof ctx.onQueueOverBudget === 'function' ? ctx.onQueueOverBudget : null;
+
+    // 会话查询：显式 id 优先；没注入 sessionById 时退回 currentSession（单会话测试桩）。
+    function sessionOf(sessionId) {
+        if (!sessionId) return null;
+        if (sessionById) return sessionById(sessionId) || null;
+        const cur = typeof currentSession === 'function' ? currentSession() : null;
+        return cur && cur.id === sessionId ? cur : null;
+    }
+
+    // 会话是否忙（生成中 / 压缩中）：队列一律等服务。
+    function sessionBusy(sessionId) {
+        if (streams && typeof streams.has === 'function' && streams.has(sessionId)) return true;
+        return typeof compactOf === 'function' && !!compactOf(sessionId);
+    }
 
     // 当前查看会话的流是否还能接受 steer：已停止 / 已收尾的流不再收——stopGeneration 后
     // 最多 1.2s 内 streams 仍登记着它，此时入队 steer 会被 finishStream 的 clearSteer 丢掉。
@@ -259,6 +345,37 @@ export function createAIMessageQueue(ctx) {
         if (model.reorderSession(session.id, ids)) renderMessageQueue();
     }
 
+    // 队列快照写盘：渲染后全量覆盖（清空 / 移除等不一定走渲染的变更点在 API 层单独挂）。
+    // 超预算 / 存储不可用时清键放弃——快照是尽力而为的兜底，不能反过来撑爆 localStorage。
+    function persistQueueSnapshot() {
+        try {
+            const payload = JSON.stringify(model.all().map(persistSafeItem));
+            if (!payload || payload.length > QUEUE_STORAGE_BUDGET) {
+                localStorage.removeItem(QUEUE_STORAGE_KEY);
+                return;
+            }
+            localStorage.setItem(QUEUE_STORAGE_KEY, payload);
+        } catch (e) { /* 尽力而为路径：隐私模式 / 配额超限不影响内存队列 */ }
+    }
+
+    // 启动恢复：读盘完成后调用一次（sessionLookup 校验会话还在且未归档，返回会话或空值）。
+    // 恢复后立刻回写一次快照，把失效条目从存储里清掉。
+    function restorePersistedQueue(sessionLookup) {
+        let list;
+        try {
+            list = JSON.parse(localStorage.getItem(QUEUE_STORAGE_KEY) || '[]');
+        } catch (e) {
+            return 0;
+        }
+        if (!Array.isArray(list)) return 0;
+        const existing = new Set(model.all().map((item) => item.id));
+        const restored = restorableQueueItems(list, existing, sessionLookup);
+        if (!model.restore(restored)) return 0;
+        persistQueueSnapshot();
+        renderMessageQueue();
+        return restored.length;
+    }
+
     function renderMessageQueue() {
         if (!el.queue) return;
         // 重绘会换掉行 DOM：进行中的拖动直接作废，避免 dragend 丢失后留下过期的拖动 id。
@@ -268,7 +385,10 @@ export function createAIMessageQueue(ctx) {
         const session = currentSession();
         const plan = session ? planApprovalMessage(session) : null;
         const planKey = plan ? planApprovalKey(session, plan) : '';
-        const showPlanReminder = !!(plan && getDismissedPlanApproval() === planKey);
+        // 横条只在「用户点了继续规划、但还没发出修订消息」时作为回到审批卡的入口出现。
+        // 用户一旦发言（ts 晚于计划提交），说明已在继续规划，横条收起，不再反复提示批准。
+        const showPlanReminder = !!(plan && getDismissedPlanApproval() === planKey &&
+            planAwaitingUserReply(session));
         el.queue.innerHTML = '';
         el.queue.classList.toggle('hidden', !items.length && !showPlanReminder);
         if (showPlanReminder) {
@@ -440,6 +560,7 @@ export function createAIMessageQueue(ctx) {
             }
         }
         positionOverlays();
+        persistQueueSnapshot();
     }
 
     // opts.plain：跳过「/ 开头转斜杠命令」检查——斜杠技能调用（sendComposerMessage）的
@@ -586,21 +707,48 @@ export function createAIMessageQueue(ctx) {
         flushMessageQueue(sessionId);
     }
 
-    // 冲刷排队消息（一轮一条，队首优先）。opts.fromRetry：失败自动重试的那次调用——
-    // 防止重试自身失败后再排下一次（避免对 over_budget 这类持续失败无限打转）。
-    async function flushMessageQueue(sessionId, opts) {
-        if (!sessionId || streams.has(sessionId) || compactOf(sessionId)) return;
-        const session = currentSession();
-        if (!session || session.id !== sessionId || session.archivedAt) return;
-        if (currentPendingAskEntry() || planApprovalMessage(session)) return;
+    // 取项（纯守卫，不碰 UI）：返回 {session, item} 并把条目从队列摘掉；不满足条件返回 null。
+    // 后台会话与当前会话共用这一套守卫——输入区草稿保护只对「用户正看着的那个输入区」有意义。
+    function takeQueuedItem(sessionId) {
+        if (!sessionId || sessionBusy(sessionId)) return null;
+        const session = sessionOf(sessionId);
+        if (!session || session.archivedAt) return null;
+        // 待回答 / 计划待批准：输入区被接管卡占着，队列不动（与手动发送同一口径）
+        if (typeof currentPendingAskEntry === 'function' && currentPendingAskEntry(sessionId)) return null;
+        if (typeof planApprovalMessage === 'function' && planApprovalMessage(session)) return null;
         const item = model.forSession(sessionId)[0];
-        if (!item) return;
-        // 输入区还有没发出去的内容（草稿 / 附件）时先不动排队：等这一条发完再冲刷，
-        // 否则会把用户正在写的东西顶掉（历史上就是直接覆盖的）。
-        if ((el.input && el.input.value.trim()) || getAttachments().length) return;
-        const index = model.indexOf(item);
+        if (!item) return null;
+        const viewing = typeof currentSession === 'function' ? currentSession() : null;
+        if (viewing && viewing.id === sessionId &&
+            ((el.input && el.input.value.trim()) || getAttachments().length)) return null;
         model.remove(item);
         renderMessageQueue();
+        return {session, item};
+    }
+
+    // 失败回插：放到该会话的队首（其它会话的条目位置不受影响）。
+    function restoreQueuedItem(session, item) {
+        const all = model.all();
+        let at = all.length;
+        for (let i = 0; i < all.length; i++) {
+            if (all[i].sessionId === session.id) {
+                at = i;
+                break;
+            }
+        }
+        model.insert(at, item);
+        renderMessageQueue();
+    }
+
+    // 起轮失败多为瞬态（回合租约释放 / 写盘排空的时序差）：延 2.5s 自愈重试一次。
+    // 既有守卫（忙 / 草稿 / 接管卡）让重试天然防重入；持续失败由下一次自然触发点兜底。
+    function scheduleFlushRetry(sessionId, opts) {
+        if (opts && opts.fromRetry) return;
+        setTimeout(() => { flushMessageQueue(sessionId, {fromRetry: true}); }, 2500);
+    }
+
+    // 当前会话：仍走输入区（用户看得见地发），失败回插队列。
+    async function flushThroughComposer(session, item, opts) {
         setAttachments((item.attachments || []).map((att) => ({...att})));
         renderAttachments();
         if (el.input) el.input.value = item.text || '';
@@ -608,21 +756,86 @@ export function createAIMessageQueue(ctx) {
         // preserveScroll：冲刷可能发生在用户上翻阅读时（本轮结束的瞬间），不抢滚动位置；
         // 用户本来贴底的话 stickBottom 仍为 true，keepScroll 渲染照常贴底跟随。
         const ok = await submitText(item.text || '', null, {preserveScroll: true});
-        if (!ok) {
-            model.insert(Math.min(index, model.all().length), item);
-            if (el.input) el.input.value = '';
-            setAttachments([]);
-            renderAttachments();
-            resizeInput();
-            renderMessageQueue();
-            updateSendState();
-            // 起轮失败多为瞬态（回合租约释放 / 写盘排空的时序差）：延 2.5s 自愈重试一次。
-            // 既有守卫（忙 / 草稿 / 接管卡）让重试天然防重入；持续失败由下一次自然触发点兜底。
-            if (!(opts && opts.fromRetry)) {
-                setTimeout(() => { flushMessageQueue(sessionId, {fromRetry: true}); }, 2500);
-            }
-        }
+        if (ok) return;
+        restoreQueuedItem(session, item);
+        if (el.input) el.input.value = '';
+        setAttachments([]);
+        renderAttachments();
+        resizeInput();
+        renderMessageQueue();
+        updateSendState();
+        scheduleFlushRetry(session.id, opts);
     }
+
+    // 后台会话（用户切走了）：走会话级内核起轮，不碰输入区、不刷前台视图。
+    // 2026-11-19 修：此处原先是「目标不是当前会话就直接 return」，后台排队消息要等用户
+    // 切回来才发（方案 docs/unfinished-plans/ai-queue-background-flush.md 方案 A）。
+    async function flushInBackground(session, item, opts) {
+        if (!startSessionTurn) {
+            // 没接内核（测试桩 / 旧装配）：不发送也不丢，留队等下次触发
+            restoreQueuedItem(session, item);
+            return;
+        }
+        const quoteMarkup = quoteMarkupFromAttachments(item.attachments || []);
+        let text = String(item.text || '');
+        if (quoteMarkup) text = text ? quoteMarkup + '\n\n' + text : quoteMarkup;
+        let result = null;
+        try {
+            result = await startSessionTurn(session, text, {
+                attachments: queuedAttachmentsPayload(item.attachments),
+                allowPendingEdit: false,
+                truncateAt: null,
+                preserveScroll: true,
+            });
+        } catch (e) {
+            result = {ok: false, reason: 'error', error: (e && e.message) || String(e)};
+        }
+        if (result && result.ok === true) return;
+        restoreQueuedItem(session, item);
+        if (result && result.reason === 'over_budget' && onQueueOverBudget) {
+            // 消息塞不下：兜底触发一次自动压缩腾地方。消息已退回队列，压缩完成后
+            // flushMessageQueue 会自动重发（panel 侧压缩完成路径已有冲刷，闭环不丢消息）。
+            onQueueOverBudget(session);
+        }
+        reportBackgroundFlushFailure(session, result);
+        // 失败都排一次重试（fromRetry 防无限打转）：busy 是流注册 / 压缩的时序差，
+        // 其余是租约 / 写盘的瞬态失败，2.5s 后一次自愈窗口足够。
+        scheduleFlushRetry(session.id, opts);
+    }
+
+    // 后台发送失败要让用户看得见：状态栏一句话 + 会话未读标记（内容仍留在队列，不丢）。
+    function reportBackgroundFlushFailure(session, result) {
+        const reason = (result && result.reason) || 'error';
+        if (reason === 'busy') return; // 纯时序差：不打扰用户，等重试
+        const title = session.title || '后台会话';
+        let detail;
+        if (reason === 'over_budget') {
+            detail = '上下文已超阈：消息仍留在「' + title + '」的队列，切回压缩后再发送';
+        } else if (reason === 'archived') {
+            detail = '「' + title + '」已归档：排队消息未发送';
+        } else if (reason === 'other_window' || reason === 'lease_failed') {
+            detail = '「' + title + '」正被另一个窗口使用：排队消息留队稍后重试';
+        } else {
+            detail = '「' + title + '」的排队消息未能发出（' + reason + '），已留在队列';
+        }
+        flash(detail, true);
+        // B 级：后台会话的排队消息没发出去，用户不看状态栏就会漏掉（内容仍在队列，不丢）。
+        notifyFailure('排队消息未发送', detail, {key: 'queue-flush-' + reason, kind: 'error', sessionId: session.id});
+        if (setSessionUnread) setSessionUnread(session, 'done');
+    }
+
+    // 冲刷排队消息（一轮一条，队首优先）。当前会话走输入区代发，后台会话走内核起轮。
+    // opts.fromRetry：失败自动重试的那次调用——防止重试自身失败后再排下一次。
+    async function flushMessageQueue(sessionId, opts) {
+        const taken = takeQueuedItem(sessionId);
+        if (!taken) return;
+        const viewing = typeof currentSession === 'function' ? currentSession() : null;
+        if (viewing && viewing.id === sessionId) {
+            return flushThroughComposer(taken.session, taken.item, opts);
+        }
+        return flushInBackground(taken.session, taken.item, opts);
+    }
+
 
     function clearQueueForSession(sessionId) {
         model.clearForSession(sessionId);
@@ -647,16 +860,20 @@ export function createAIMessageQueue(ctx) {
     }
 
     function removeItem(item) {
-        return model.remove(item);
+        const ok = model.remove(item);
+        if (ok) persistQueueSnapshot();
+        return ok;
     }
 
     function insertItem(index, item) {
         model.insert(index, item);
+        persistQueueSnapshot();
     }
 
     function clearAll() {
         model.clearAll();
         interjectPending.clear();
+        persistQueueSnapshot();
     }
 
     function hasInterject(sessionId) {
@@ -673,6 +890,7 @@ export function createAIMessageQueue(ctx) {
 
     return {
         renderMessageQueue,
+        restorePersistedQueue,
         enqueueComposerMessage,
         interjectComposerMessage,
         preemptComposerMessage,

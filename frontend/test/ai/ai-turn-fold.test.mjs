@@ -1,8 +1,9 @@
 // 轮次过程折叠的结构护栏：一轮只能有一条折叠条（一个头 + 一个折叠状态）。
 //
-// 背景：过程内容会按「已回答的提问卡」切成多段以守住时间序，但提问卡是折叠区外的整卡，
-// 它只该把 body 隔开，不该切出第二个开关。2026-11-17 前是「每段一个 .ai-process 头」，
-// 结果同一轮里「已完成 · 用时 13 分 9 秒」重复出现三次，看起来像跑了三轮。
+// 背景：过程内容曾按「已回答的提问卡」切成多段以守住时间序，2026-11-17 先把折叠头
+// 收到轮级（否则同一轮里「已完成 · 用时 13 分 9 秒」重复出现三次，看起来像跑了三轮）；
+// 2026-11-19 起提问卡不再切段——「body｜卡｜body」展开时过程被打断，改由
+// 「含已答提问的轮完成后默认展开」兜住问答记录的可见性（turn-fold-redesign.md §5）。
 //
 // 这些不变量写在渲染函数里（renderTurn 依赖 DOM 与后端，无法直接单测），所以按项目惯例
 // 用源码断言钉住，改动时先确认是不是真的要拆掉它们：
@@ -10,6 +11,7 @@
 //   R2 折叠头只在 isFoldHead 段创建，续段只出无头 body 容器
 //   R3 点头后同一轮所有段同步开合
 //   R4 续段收起时不占位（否则空容器把卡片间距翻倍）
+//   R5 已答提问卡不切段，留在过程流里按时间序渲染
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
@@ -33,13 +35,22 @@ test('轮次折叠：key 只到轮，段号不进折叠状态', () => {
 
 test('轮次折叠：折叠头只在首个可渲染段创建', () => {
     const panel = read('ai/ai-panel.js');
-    assert.match(panel, /const foldHeadIndex = segments\.findIndex\(\(seg, idx\) => !seg\.ask && !seg\.steer && segRenderable\(seg, idx\)\)/);
+    assert.match(panel, /const foldHeadIndex = segments\.findIndex\(\(seg, idx\) => !seg\.steer && segRenderable\(seg, idx\)\)/);
     // head 的创建必须在 isFoldHead 分支里，续段只挂 body
     const headBlock = panel.match(/if \(isFoldHead\) \{[\s\S]*?fold\.appendChild\(head\);\s*\}/);
     assert.ok(headBlock, '折叠头应当被 isFoldHead 包住');
     assert.match(headBlock[0], /className = 'ai-process-head'/);
     // 续段靠 cont 类区分：无头、共享同一个开合状态
     assert.match(panel, /\(isFoldHead \? '' : ' cont'\)/);
+});
+
+test('轮次折叠：已答提问卡不切段，留在过程流里', () => {
+    const panel = read('ai/ai-panel.js');
+    assert.ok(!/segments\.push\(\{ask:/.test(panel),
+        '已答提问卡不许再把过程流切成 body｜卡｜body（2026-11-19 作者裁定）');
+    // 卡片随过程一起开合，默认值不再为提问特判
+    assert.ok(!/hasSettledAsk/.test(panel),
+        '提问卡不参与默认展开判定——与其他过程条目同一条开合规则');
 });
 
 test('轮次折叠：用户插话整条渲染在折叠区外', () => {

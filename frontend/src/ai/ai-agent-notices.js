@@ -142,6 +142,11 @@ export function createAIAgentNotices(ctx) {
     const getPendingEdit = ctx.getPendingEdit || (() => null);
     const getSessions = ctx.getSessions || (() => []);
     const workspaceKeyOf = ctx.workspaceKeyOf || (() => '');
+    // 信箱增减通知（头部「信箱」胶囊角标）：入队 / 消费 / 清空都调，可缺省（测试桩不传）。
+    const onChanged = typeof ctx.onChanged === 'function' ? ctx.onChanged : null;
+    function notifyChanged() {
+        if (onChanged) onChanged();
+    }
     // 等待原语（ai-inbox-wait.js）：入队即唤醒正在 wait_agent 的调用方。
     // 只表示「有新东西排队」，不在这里注入——注入仍在轮边界（foldNotices / wakeWith）。
     const inboxWaiters = ctx.inboxWaiters;
@@ -158,6 +163,24 @@ export function createAIAgentNotices(ctx) {
     function pendingCount(sessionId) {
         const list = notices.get(sessionId);
         return list ? list.length : 0;
+    }
+
+    // 全局枚举：每个有挂起通知的会话一组（头部「信箱」胶囊 / 弹层的展示源）。
+    // Map 迭代顺序即入队顺序；content 原样给出，弹层自行截断。
+    function listPending() {
+        const out = [];
+        for (const [sessionId, list] of notices) {
+            if (!list || !list.length) continue;
+            out.push({
+                sessionId,
+                items: list.map((item) => ({
+                    kind: item.kind || '',
+                    label: item.label || '',
+                    content: item.content || '',
+                })),
+            });
+        }
+        return out;
     }
 
     // 注入文案：单条即原文；多条合并成一段（各条之间用分隔行），保证「一条注入」不被刷屏。
@@ -180,6 +203,7 @@ export function createAIAgentNotices(ctx) {
         }
         if (urgent) list.unshift(notice);
         else list.push(notice);
+        notifyChanged();
         return list.length;
     }
 
@@ -195,6 +219,7 @@ export function createAIAgentNotices(ctx) {
         if (!list.length) return 0;
         const batch = list.splice(0, Math.min(limit || NOTICE_FOLD_MAX, list.length));
         if (!list.length) notices.delete(session.id);
+        notifyChanged();
         const ts = Date.now();
         session.messages.push({
             role: 'user',
@@ -217,6 +242,7 @@ export function createAIAgentNotices(ctx) {
         if (!list.length) return {woke: false, reason: 'empty'};
         const batch = list.splice(0, Math.min(limit || NOTICE_FOLD_MAX, list.length));
         if (!list.length) notices.delete(session.id);
+        notifyChanged();
         waking.add(session.id);
         const run = startSessionTurn(session, noticeText(batch), {
             app: noticeApp(batch),
@@ -333,6 +359,7 @@ export function createAIAgentNotices(ctx) {
     function dropSession(sessionId) {
         notices.delete(sessionId);
         waking.delete(sessionId);
+        notifyChanged();
     }
 
     // ---- 会话间投递（§4.12）：信箱 = notices 的正式化，一条管道 N 个发送方 ----
@@ -502,6 +529,7 @@ export function createAIAgentNotices(ctx) {
     function clearMailbox(sessionId) {
         const had = pendingCount(sessionId);
         notices.delete(sessionId);
+        notifyChanged();
         renderSessionList();
         return had;
     }
@@ -518,6 +546,7 @@ export function createAIAgentNotices(ctx) {
         dropSession,
         clearMailbox,
         pendingCount,
+        listPending,
         isWaking,
         listSessionsForSend,
         sessionListText,

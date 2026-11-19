@@ -51,6 +51,10 @@ function openAgentTab(spec) {
             parentLabel: String((spec && spec.parentLabel) || ''),
             depth: Number((spec && spec.depth) || 0) || 0,
             task: String((spec && spec.task) || ''),
+            // 磁盘转录补读要用的两个 id：落盘分桶用根会话（artifactDir），父会话 id 做回落。
+            // 漏掉任何一个，重启后「补读转录」在标签页路径上就永远不会发生。
+            parentSessionId: String((spec && spec.parentSessionId) || ''),
+            agentArtifactDir: String((spec && spec.agentArtifactDir) || ''),
         },
         mode: 'agentview',
         treeAvailable: false,

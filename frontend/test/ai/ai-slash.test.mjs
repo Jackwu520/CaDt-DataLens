@@ -6,6 +6,7 @@ import {
     extractSlashArgs,
     filterSlashCommands,
     filterSlashSkills,
+    findSkillBySlashToken,
 } from '../../src/ai/ai-slash.js';
 
 const SKILLS = [
@@ -45,4 +46,16 @@ test('extractSlashArgs + filterSlashSkills 组合：带参技能调用的完整�
     assert.deepEqual(hit.map((s) => s.name), ['app-local-log']);
     const skill = hit[0];
     assert.equal(extractSlashArgs(typed, skill.name), '--list');
+});
+
+test('findSkillBySlashToken：/技能名 精确命中（大小写不敏感、去前导 /），不命中返回 null', () => {
+    assert.equal(findSkillBySlashToken(SKILLS, '/app-error-log').name, 'app-error-log');
+    assert.equal(findSkillBySlashToken(SKILLS, '/APP-LOCAL-LOG').name, 'app-local-log');
+    assert.equal(findSkillBySlashToken(SKILLS, 'app-local-log').name, 'app-local-log', '无前导 / 也认');
+    assert.equal(findSkillBySlashToken(SKILLS, '/workspace'), null, '工作区里的技能不在表里就不命中');
+    assert.equal(findSkillBySlashToken(SKILLS, '/app'), null, '前缀不算命中（与补全的 includes 区分）');
+    assert.equal(findSkillBySlashToken([], '/anything'), null);
+    assert.equal(findSkillBySlashToken(SKILLS, '/'), null);
+    assert.equal(findSkillBySlashToken(SKILLS, ''), null);
+    assert.equal(findSkillBySlashToken(null, '/app-error-log'), null);
 });

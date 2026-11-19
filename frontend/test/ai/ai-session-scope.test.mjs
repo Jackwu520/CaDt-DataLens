@@ -4,7 +4,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
-import {decideSessionForWorkspace, normalizePath, pickWorkspaceSession, workspaceKey} from '../../src/ai/ai-session-scope.js';
+import {decideSessionForWorkspace, activeSessionIdFor, rememberActiveSession, normalizePath, pickWorkspaceSession, workspaceKey} from '../../src/ai/ai-session-scope.js';
 
 const MINE = 'd:/work/other'; // 本窗口打开的工作区
 const OTHER = 'd:/code/cadt-datalens'; // 上一个窗口（当前会话属于这里）
@@ -110,4 +110,39 @@ test('分桶哈希向量与 Go 侧 WorkspaceBucketKey 一致', () => {
     assert.equal(bucketKeyOf(''), '_unbound');
     assert.equal(bucketKeyOf('   '), '_unbound');
     assert.equal(bucketKeyOf('/'), '_unbound');
+});
+
+// ===== 按工作区记录当前会话 =====
+// 单值 activeSessionId 多窗口共享，各窗口会互相改写导致面板来回跳（2026-11-19 报告）。
+// activeSessionByWorkspace 让每个工作区各记一条，窗口之间不再互相驱动。
+
+test('各工作区各记各的：写一个不影响另一个', () => {
+    const config = {activeSessionId: '', activeSessionByWorkspace: {}};
+    rememberActiveSession(config, 'd:/a', 's-a');
+    rememberActiveSession(config, 'd:/b', 's-b');
+    assert.equal(activeSessionIdFor(config, 'd:/a'), 's-a');
+    assert.equal(activeSessionIdFor(config, 'd:/b'), 's-b');
+    rememberActiveSession(config, 'd:/a', 's-a2');
+    assert.equal(activeSessionIdFor(config, 'd:/a'), 's-a2');
+    assert.equal(activeSessionIdFor(config, 'd:/b'), 's-b', '另一工作区不该被改写');
+});
+
+test('没有本工作区条目时回退全局 activeSessionId（老配置兼容）', () => {
+    const config = {activeSessionId: 's-legacy', activeSessionByWorkspace: {}};
+    assert.equal(activeSessionIdFor(config, 'd:/a'), 's-legacy');
+});
+
+test('欢迎页（没有工作区）只写全局，不清掉各工作区记录', () => {
+    const config = {activeSessionId: '', activeSessionByWorkspace: {'d:/a': 's-a'}};
+    rememberActiveSession(config, '', 's-x');
+    assert.equal(config.activeSessionId, 's-x');
+    assert.equal(activeSessionIdFor(config, 'd:/a'), 's-a');
+    assert.equal(activeSessionIdFor(config, ''), 's-x');
+});
+
+test('id 为空时删掉该工作区记录（并同步清空全局回退值）', () => {
+    const config = {activeSessionId: 's-a', activeSessionByWorkspace: {'d:/a': 's-a'}};
+    rememberActiveSession(config, 'd:/a', '');
+    assert.equal(activeSessionIdFor(config, 'd:/a'), '');
+    assert.equal(config.activeSessionId, '');
 });

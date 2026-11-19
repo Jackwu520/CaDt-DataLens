@@ -838,6 +838,7 @@ export function createAIConversationLog(ctx) {
     const ensureLogDir = ctx.ensureLogDir;
     const persistSessions = ctx.persistSessions;
     const flash = ctx.flash;
+    const notifyFailure = typeof ctx.notifyFailure === 'function' ? ctx.notifyFailure : () => {};
     const askStateLabel = ctx.askStateLabel;
     const askResultText = ctx.askResultText;
     const joinPath = ctx.joinPath;
@@ -991,7 +992,10 @@ export function createAIConversationLog(ctx) {
         } catch (e) {
             if (!logSaveErrorShown) {
                 logSaveErrorShown = true;
-                flash('对话日志保存失败：' + ((e && e.message) || e), true);
+                const detail = String((e && e.message) || e);
+                flash('对话日志保存失败：' + detail, true);
+                // A 级：日志落盘失败意味着会话 Markdown 留存没写出去，需用户回来处理。
+                notifyFailure('对话日志保存失败', detail, {key: 'log-save', kind: 'error'});
             }
         }
     }

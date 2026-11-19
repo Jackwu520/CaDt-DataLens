@@ -31,6 +31,8 @@ function makeHarness(overrides) {
         notifyDesktop: (o) => calls.desktop.push(o),
         flash: (text, isError) => calls.flashes.push({text, isError}),
         persistSessions: () => {},
+        // 信箱增减钩子（头部「信箱」胶囊角标）：透传以便断言触发次数
+        onChanged: () => { if (opts.onChanged) opts.onChanged(); },
         getPendingEdit: () => opts.pendingEdit || null,
         getSessions: () => (opts.sessions ? opts.sessions() : [session]),
         workspaceKeyOf: (target) => (opts.workspaceKey ? opts.workspaceKey(target) : 'ws'),
@@ -399,4 +401,50 @@ test('formatBgDuration：秒 / 分 / 时三档', () => {
     assert.equal(formatBgDuration(3_700_000), '1 小时 1 分');
     assert.equal(formatBgDuration(0), '0 秒');
     assert.equal(formatBgDuration(-5), '0 秒');
+});
+
+// ---------- listPending / onChanged（头部「信箱」胶囊的数据源）----------
+
+test('listPending：忙会话的子代理回执挂信箱可枚举，轮边界消费后清零，onChanged 跟随', () => {
+    let changes = 0;
+    const h = makeHarness({busy: true, onChanged: () => { changes += 1; }});
+    // 模拟「开子代理 → 回执到达」：忙会话收结算回执（挂信箱等轮边界）
+    const result = h.notices.deliverAgentNotice(h.session, buildSettlementNotice({
+        name: '批16-文档', agentId: 'sub-1', state: 'done', summary: '9 条全部落盘',
+    }));
+    assert.equal(result.ok, true);
+    assert.equal(result.reason, 'queued', '忙会话的回执应挂信箱而不是立即起轮');
+    const pending = h.notices.listPending();
+    assert.equal(pending.length, 1, '只有一个会话挂通知');
+    assert.equal(pending[0].sessionId, 's1');
+    assert.equal(pending[0].items.length, 1);
+    assert.equal(pending[0].items[0].kind, 'subagent');
+    assert.equal(pending[0].items[0].label, '子代理通知 · 批16-文档');
+    assert.ok(pending[0].items[0].content.includes('批16-文档'), 'content 首行含子代理名');
+    assert.equal(changes, 1, '入队触发一次 onChanged');
+    // 轮边界消费（foldNotices 折成 user 消息）后信箱清空，onChanged 再触发
+    assert.equal(h.notices.foldNotices('s1'), 1);
+    assert.deepEqual(h.notices.listPending(), []);
+    assert.equal(changes, 2);
+    assert.equal(h.session.messages.length, 1, '消费路径把回执折成了一条 user 消息');
+    // clearMailbox（用户动作）同样清空并触发
+    h.notices.deliverAgentNotice(h.session, buildAskNotice({
+        name: '批17-A', agentId: 'sub-2', askId: 'call_1', questions: [{text: '继续吗'}],
+    }));
+    assert.equal(h.notices.listPending()[0].items[0].kind, 'subagent-ask');
+    const before = changes;
+    h.notices.clearMailbox('s1');
+    assert.deepEqual(h.notices.listPending(), []);
+    assert.equal(changes, before + 1);
+});
+
+test('listPending：闲会话回执直接起轮消费，不挂信箱（胶囊不误报）', () => {
+    let changes = 0;
+    const h = makeHarness({busy: false, onChanged: () => { changes += 1; }});
+    h.notices.deliverAgentNotice(h.session, buildSettlementNotice({
+        name: '批末-A', agentId: 'sub-3', state: 'done', summary: 'ok',
+    }));
+    assert.deepEqual(h.notices.listPending(), [], '闲会话的回执直接起轮消费，胶囊不应计数');
+    assert.equal(h.calls.turns.length, 1);
+    assert.ok(changes >= 1, 'enqueued→consumed 的每次增减都有 onChanged');
 });

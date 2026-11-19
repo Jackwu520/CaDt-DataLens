@@ -24,6 +24,16 @@ export function extractSlashArgs(text, skillName) {
     return trimmed.slice(firstToken.length).trim();
 }
 
+// 「/技能名」按首 token 精确命中（去掉前导 /，大小写不敏感）；不命中返回 null
+export function findSkillBySlashToken(skills, token) {
+    const name = String(token || '').trim().replace(/^\/+/, '').toLowerCase();
+    if (!name) return null;
+    for (const skill of skills || []) {
+        if (String((skill && skill.name) || '').toLowerCase() === name) return skill;
+    }
+    return null;
+}
+
 export function createAISlash(ctx) {
     const el = ctx.el;
     const slashState = ctx.slashState;
@@ -49,19 +59,42 @@ export function createAISlash(ctx) {
 
     // 技能列表缓存：面板构造即预热（listSkills 自带 5s 缓存），输入 / 时基本已就位，
     // 补全可以全同步渲染、不闪烁；首载在途时 updateSlash 才走异步补渲染兜底。
+    //
+    // 缓存必须能过期：早先这里「命中一次就永不刷新」，面板若在打开工作区之前预热
+    // （启动时 AI 面板本就是开着的），工作区里的技能（.cadt/skills、.agents/skills）
+    // 就被永久漏掉——补全与 /技能名 判未知命令，而 skill_use / /skill / 技能菜单走
+    // listSkills(true) 强扫又能加载。TTL 与面板缓存同口径，另给显式 invalidateSkills。
+    const SKILLS_TTL_MS = 5000;
     let skillsCache = null;
+    let skillsAt = 0;
     let skillsPromise = null;
     let renderSeq = 0;
 
-    function ensureSkills() {
-        if (skillsCache) return Promise.resolve(skillsCache);
-        if (!skillsPromise) {
-            // 尽力而为：技能列表读不到就不显示技能区，指令补全不受影响
-            skillsPromise = Promise.resolve(listSkills())
-                .then((skills) => { skillsCache = skills; return skills; })
-                .catch(() => { skillsCache = []; return []; });
-        }
+    // 尽力而为：技能列表读不到就不显示技能区，指令补全不受影响
+    function refreshSkills(force) {
+        if (skillsPromise) return skillsPromise;
+        skillsPromise = Promise.resolve()
+            .then(() => listSkills(force === true))
+            .then((skills) => { skillsCache = skills; skillsAt = Date.now(); return skills; })
+            .catch(() => { skillsCache = skillsCache || []; skillsAt = Date.now(); return skillsCache; })
+            .then((skills) => { skillsPromise = null; return skills; });
         return skillsPromise;
+    }
+
+    function skillsFresh() {
+        return !!skillsCache && Date.now() - skillsAt < SKILLS_TTL_MS;
+    }
+
+    function ensureSkills() {
+        if (skillsFresh()) return Promise.resolve(skillsCache);
+        return refreshSkills(false);
+    }
+
+    // 技能管理里新建 / 启停 / 改名后由面板调用：清空缓存立即重扫
+    function invalidateSkills() {
+        skillsCache = null;
+        skillsAt = 0;
+        return ensureSkills();
     }
 
     // ---------- 斜杠命令 ----------
@@ -149,9 +182,10 @@ export function createAISlash(ctx) {
         const rendered = entries.length > 0;
         if (rendered) renderSlash(entries);
         else hideSlash();
-        if (skillsCache) return;
-        // 首载在途兜底：到达后本次输入仍有效就补渲染（含「指令无匹配但技能有」的面板重开；
-        // Esc 与空态在此时序下无法区分，重开窗口仅首载几十 ms，可接受）
+        if (skillsFresh()) return;
+        // 首载 / 缓存过期：旧列表先顶上补全（不闪烁），刷新到达后本次输入仍有效就再渲染一遍
+        // （含「指令无匹配但技能有」的面板重开；Esc 与空态在此时序下无法区分，
+        //  重开窗口只有一次异步往返，可接受）
         const seq = ++renderSeq;
         ensureSkills().then((skills) => {
             if (seq !== renderSeq || !el.input || el.input.value !== value) return;
@@ -291,9 +325,11 @@ export function createAISlash(ctx) {
             runSlashCommand(command);
             return;
         }
-        // 非固定指令：尝试按技能名调用（/技能名 参数）
-        const skills = await ensureSkills();
-        const skill = skills.find((item) => String(item.name || '').toLowerCase() === name.slice(1).toLowerCase());
+        // 非固定指令：尝试按技能名调用（/技能名 参数）。缓存没命中先强扫一次再判未知——
+        // skill_use / /skill / 技能菜单都是 listSkills(true) 强扫，只有这里读缓存；
+        // 不补这一趟就会出现「模型能加载、斜杠说不认识」的口径分裂。
+        let skill = findSkillBySlashToken(await ensureSkills(), name);
+        if (!skill) skill = findSkillBySlashToken(await refreshSkills(true), name);
         if (skill) {
             await invokeSkillItem(skill, text);
             return;
@@ -302,5 +338,5 @@ export function createAISlash(ctx) {
     }
 
     ensureSkills();
-    return {hideSlash, updateSlash, runSlashCommand, handleSlashText};
+    return {hideSlash, updateSlash, runSlashCommand, handleSlashText, invalidateSkills};
 }

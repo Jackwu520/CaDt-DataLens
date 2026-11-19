@@ -693,6 +693,10 @@ test('isTurnBoundaryMessage 只认用户发起的回合边界', () => {
     assert.equal(isTurnBoundaryMessage({role: 'user', ts: 5, app: {kind: 'app'}, images: [{mime: 'image/png'}]}), false);
     // 应用入口真正发起的回合带 turnStartedAt，仍然是边界
     assert.equal(isTurnBoundaryMessage({role: 'user', ts: 6, turnStartedAt: 6, app: {kind: 'app'}, images: [{mime: 'image/png'}]}), true);
+    // 信箱 notice（子代理结算 / 后台作业退出 / 会话投递折叠的 user 消息）恒在轮中注入：
+    // 它有 turnStartedAt（通知到达时刻），但绝不是回合起点——否则轮耗时从通知起算
+    assert.equal(isTurnBoundaryMessage({role: 'user', ts: 7, turnStartedAt: 7, notice: true, app: {kind: 'subagent'}}), false);
+    assert.equal(isTurnBoundaryMessage({role: 'user', ts: 8, turnStartedAt: 8, notice: true, app: {kind: 'browser'}, images: [{mime: 'image/png'}]}), false);
     assert.equal(isTurnBoundaryMessage(null), false);
     assert.equal(isTurnBoundaryMessage(undefined), false);
 });
@@ -708,6 +712,18 @@ test('sessionTurnStartTs 停在最后一个回合起点，轮中间注入不让�
         {role: 'assistant', content: 'b', ts: 2400},
     ]};
     assert.equal(sessionTurnStartTs(session), 2000, '截图附加与轮次提醒不能把起点推到 2200/2300');
+});
+
+test('sessionTurnStartTs：轮中的信箱 notice 有 turnStartedAt 也不推进起点', () => {
+    const session = {messages: [
+        {role: 'user', content: '调研一下', ts: 1000, turnStartedAt: 1000},
+        {role: 'tool', content: '结果', ts: 1100},
+        {role: 'user', content: '［子代理通知］已失败', ts: 3000, turnStartedAt: 3000, notice: true, app: {kind: 'subagent'}},
+        {role: 'assistant', content: '重新派单', ts: 3100},
+    ]};
+    assert.equal(sessionTurnStartTs(session), 1000, '通知到达时刻不能顶替用户发问时刻');
+    // 会话列表时间同源：列表不该跳到通知时刻
+    assert.equal(sessionActivityTs(session), 1000);
 });
 
 test('sessionTurnStartTs：老数据回落到用户消息 ts，没有用户消息给 0', () => {
@@ -753,15 +769,19 @@ test('buildSessionMeta 的 turnTs：占位沿用缓存，不把现算出来的 0
 test('buildSessionMeta：worktree 会话态随 meta 持久化（占位与非对象归一）', () => {
     const wt = {name: 'demo-ab12', branch: 'cadt/wt/demo-ab12', path: 'D:/repo/.cadt/worktree/demo-ab12', baseSha: 'abc', createdAt: 5};
     const meta = buildSessionMeta({id: 's1', worktree: wt});
-    assert.deepEqual(meta.worktree, wt);
+    // 导出状态标记（lastExportReport / lastExportPreviewAt）缺失归一成空值，其余原样保留
+    assert.deepEqual(meta.worktree, {...wt, lastExportReport: '', lastExportPreviewAt: 0});
     // 占位会话（_stub）也原样保留 worktree（孤儿判定要占位会话参与）
     const stubMeta = buildSessionMeta({id: 's2', _stub: true, _msgCount: 3, worktree: wt});
     assert.equal(stubMeta.worktree.name, 'demo-ab12');
-    // 非法值归一成 null；JSON 往返不失真
+    // 非法值归一成 null；JSON 往返不失真（含导出标记字段）
     assert.equal(buildSessionMeta({id: 's3'}).worktree, null);
     assert.equal(buildSessionMeta({id: 's4', worktree: 'x'}).worktree, null);
-    const round = JSON.parse(JSON.stringify(buildSessionMeta({id: 's5', worktree: wt})));
-    assert.equal(round.worktree.path, wt.path);
+    const marked = {...wt, lastExportReport: 'D:/repo/.cadt/export-reports/r.md', lastExportPreviewAt: 99};
+    const round = JSON.parse(JSON.stringify(buildSessionMeta({id: 's5', worktree: marked})));
+    assert.equal(round.worktree.path, marked.path);
+    assert.equal(round.worktree.lastExportReport, 'D:/repo/.cadt/export-reports/r.md');
+    assert.equal(round.worktree.lastExportPreviewAt, 99);
 });
 
 test('buildSessionMeta：opencodeSessionId 随 meta 持久化，重启后沿用同一 ID', () => {

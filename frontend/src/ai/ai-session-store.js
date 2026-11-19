@@ -78,6 +78,9 @@ export function messageFingerprint(message) {
         // 不进指纹会被「指纹没变」挡在就地截断之外，重启重放又会回到 pending。
         message.guard ? textOf(message.guard.state) + ':' + textOf(message.guard.action) + ':' + textOf(message.guard.source) : '',
         Number(message.turnMs) || 0,
+        Number(message.modelMs) || 0,
+        Number(message.firstTokenMs) || 0,
+        Number(message.statusCode) || 0,
         Number(message.thinkMs) || 0,
         Number(message.finishedAt) || 0,
     ].join('|');
@@ -86,13 +89,19 @@ export function messageFingerprint(message) {
 // 「用户发起回合」的边界消息：会话列表的排序键与时间文案只认它。
 // 回合进行中注入的 user 消息不是新回合——轮次提醒 / 待办检查 / 模型切换留痕（systemNote、
 // silent），以及工具中途自动附加的截图（带 app + images 但没有 turnStartedAt）。
-// 消息渲染的回合分组（groupTurns）与列表用同一个判定，两边不会出现「分组算一轮、列表跳两次」。
+// 消息渲染的回合分组（groupTurns）、轮次耗时起点（ai-panel.js turnStartAt）与编辑重发锚点
+// 用同一个判定，不会出现「分组算一轮、列表跳两次」。
 export function isTurnBoundaryMessage(message) {
     if (!message || message.role !== 'user') return false;
     if (message.systemNote) return false;
     // 插话（steer）是本轮补充指示，不是用户发起的新回合：分组 / 列表排序键 / 渲染窗口
     // 都沿用原回合起点（与 ai-panel.js 的 turnStartAt / 瘦身轮次口径一致）。
     if (message.steer) return false;
+    // 信箱注入（子代理结算 / 后台作业与终端退出 / 会话投递折叠成的 user 消息，带 notice）
+    // 恒出现在轮中间：它有 turnStartedAt（通知到达时刻），若被当成回合起点，这一轮的耗时
+    // 就从通知那一刻起算（实测只剩十几秒），列表时间也会跳到通知时刻而不是用户发问时刻。
+    // 与 ai-context-slim.js 的轮次切分口径一致。
+    if (message.notice) return false;
     if (message.app && Array.isArray(message.images) && message.images.length && !message.turnStartedAt) return false;
     // read_video 自动附加的视频消息与 read_image 同口径：不是用户发起的回合
     if (message.app && Array.isArray(message.videos) && message.videos.length && !message.turnStartedAt) return false;

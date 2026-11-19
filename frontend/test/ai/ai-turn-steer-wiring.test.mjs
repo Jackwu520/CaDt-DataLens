@@ -117,9 +117,18 @@ test('wait_agent 唤醒语义：排队不打扰等待，只有 steer 唤醒并�
 });
 
 test('flushMessageQueue：起轮失败自动重试一次（瞬态失败自愈，不无限打转）', () => {
-    const flush = sliceFunction(queue, 'async function flushMessageQueue(sessionId, opts) {');
-    assert.match(flush, /opts && opts\.fromRetry/, '重试那次调用必须带标记');
-    assert.match(flush, /setTimeout\(\(\) => \{ flushMessageQueue\(sessionId, \{fromRetry: true\}\); \}, 2500\)/);
+    // 重试逻辑收在 scheduleFlushRetry（两条发送路径共用），fromRetry 是防无限打转的标记
+    const retry = sliceFunction(queue, 'function scheduleFlushRetry(sessionId, opts) {');
+    assert.match(retry, /opts && opts\.fromRetry/, '重试那次调用必须带标记');
+    assert.match(retry, /setTimeout\(\(\) => \{ flushMessageQueue\(sessionId, \{fromRetry: true\}\); \}, 2500\)/);
+    const ui = sliceFunction(queue, 'async function flushThroughComposer(session, item, opts) {');
+    assert.match(ui, /scheduleFlushRetry\(session\.id, opts\)/, '当前会话失败要排重试');
+    const bg = sliceFunction(queue, 'async function flushInBackground(session, item, opts) {');
+    assert.match(bg, /scheduleFlushRetry\(session\.id, opts\)/, '后台会话失败也要排重试');
+    // 后台会话必须真的走内核起轮，不能退回「不是当前会话就 return」的旧死路
+    assert.match(bg, /startSessionTurn\(session, text, \{/);
+    assert.match(bg, /allowPendingEdit: false/);
+    assert.match(bg, /truncateAt: null/);
 });
 
 test('队列行按钮：按 delivery 切换插话 / 排队，改投是同步 setDelivery', () => {
@@ -190,10 +199,12 @@ test('重放 / 懒加载：normalizeMessage 保留 steer 标记', () => {
 
 test('steer 不进轮次口径：lastUserIndex / 回合边界 / 统计', () => {
     const lastUser = sliceFunction(panel, 'function lastUserIndex(session) {');
-    assert.match(lastUser, /!message\.steer/);
+    // 轮次口径收敛到单一判据：lastUserIndex 直接复用 isTurnBoundaryMessage（steer 在那边排除）
+    assert.match(lastUser, /if \(isTurnBoundaryMessage\(session\.messages\[i\]\)\) return i;/);
     const boundary = sliceBetween(store, 'export function isTurnBoundaryMessage(message) {', '// 轮次起点：最后一条边界消息的时间');
     assert.match(boundary, /if \(message\.steer\) return false;/);
-    assert.match(usage, /message\.role === 'user' && !message\.systemNote && !message\.steer/);
+    // 统计口径也走同一判据（steer 在 isTurnBoundaryMessage 里排除，这里不能再各写一份）
+    assert.match(usage, /if \(isTurnBoundaryMessage\(message\)\) rounds\+\+;/);
 });
 
 test('插话可见性：结构面板列出插话（同轮号 + 标记），回合折叠不藏用户插话', () => {
@@ -229,6 +240,11 @@ test('finishStream / stopGeneration：自然结束降级排队，停止或抢占
     assert.match(finish, /if \(current\.stopped\) queueMod\.clearSteer\(current\.sessionId\);/);
     assert.match(finish, /else queueMod\.fallbackSteerToQueue\(current\.sessionId\);/);
     assert.ok(finish.indexOf('queueMod.clearSteer') < finish.indexOf('const shouldFlush'));
+    // 自然结束（模型没被停止）必须有冲刷：降级来的插话靠这一行发出；只认 hasInterject
+    // 会让「模型直接停止、插话没赶上本轮」的在后台会话里永远躺在队列（2026-11-19 实测场景）
+    assert.match(finish, /const shouldFlush = queueMod\.hasInterject\(current\.sessionId\) \|\| \(!current\.stopped && current\.assistant\.status === 'done'\);/);
+    assert.ok(finish.indexOf('const shouldFlush') < finish.indexOf('flushMessageQueue(session.id)'),
+        '冲刷必须在 shouldFlush 判定之后');
 
     const stop = sliceFunction(panel, 'function stopGeneration(target) {');
     assert.match(stop, /queueMod\.clearSteer\(sessionId\)/);
@@ -264,6 +280,6 @@ test('接线：composer 拿到 preempt，队列壳导出 steer 车道与手势 A
     }
     // 纯模型现在接受可选的 {onChange}（steer 入队即唤醒 wait_agent 的调用方），签名不再是无参
     assert.match(queue, /export function createQueueModel\(options\)/);
-    // 引用 kind 的单一来源
-    assert.match(queue, /import \{AI_QUOTE_KIND\} from '\.\/ai-quote\.js';/);
+    // 引用 kind 的单一来源（对话引用前缀也从同一模块取，队列与手动发送一条口径）
+    assert.match(queue, /import \{AI_QUOTE_KIND, quoteMarkupFromAttachments\} from '\.\/ai-quote\.js';/);
 });

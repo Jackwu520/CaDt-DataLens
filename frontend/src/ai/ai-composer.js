@@ -3,11 +3,66 @@
 // attachments 为本域私有 let（经 getAttachments/setAttachments 供面板与消息队列访问）；
 // 排队 item 的 id 由队列模型生成（ai-message-queue.js）；attachSeq 留在面板（executeTool /clear 会重置），
 // 经 nextAttachSeq() 取号。
-import {aiTextOf, aiImageSrc, AI_IMAGE_LIMIT, AI_IMAGE_MAX_BASE64, AI_IMAGE_MAX_DIM, AI_IMAGE_MAX_INPUT_BYTES, AI_IMAGE_MESSAGE_BUDGET,
+import {aiTextOf, aiImageSrc, AI_IMAGE_MAX_BASE64, AI_IMAGE_MAX_INPUT_BYTES,
     AI_VIDEO_LIMIT, AI_VIDEO_MAX_INPUT_BYTES, AI_VIDEO_MAX_BASE64, AI_VIDEO_MIMES, aiVideoFromSrc, bufferToBase64, isReadableVideoPath} from './ai-constants.js';
-import {prepareImagePayload} from './ai-image-encode.js';
+import {prepareImagePayload, isReadableImagePath} from './ai-image-encode.js';
+import {attachmentPathHint} from './ai-file-tools.js';
+import {checkRequestBudget, checkSourceBatch, DEFAULT_IMAGE_LIMITS} from './ai-image-policy.js';
 import {AI_QUOTE_KIND, quoteChipLabel, quoteExcerpt} from './ai-quote.js';
 import {dataUrlToFile} from '../core/image-clipboard.js';
+
+function attachmentChipPrefix(item) {
+    if (item.kind === 'skill') return '技能 · ';
+    if (item.kind === 'selection') return '选中 · ';
+    if (item.kind === 'selection_reference') return '引用选区 · ';
+    if (item.kind === 'reference') return '引用 · ';
+    if (item.kind === AI_QUOTE_KIND) return '回复引用 · ';
+    if (item.kind === 'video') return '视频 · ';
+    return '文件 · ';
+}
+
+// 附件 chip 渲染的唯一实现：输入区附件条与消息原地编辑区共用，避免两套视觉漂移。
+// handlers：onRemove(item) 传了才给 × 按钮（历史附件只读时只画 chip）；onImageClick(item) 传了才可点开大图。
+export function renderAttachmentChips(container, items, handlers) {
+    if (!container) return;
+    const opts = handlers || {};
+    const list = Array.isArray(items) ? items : [];
+    container.innerHTML = '';
+    container.classList.toggle('hidden', !list.length);
+    for (const item of list) {
+        if (!item || typeof item !== 'object') continue;
+        const chip = document.createElement('span');
+        if (item.kind === 'image') {
+            chip.className = 'ai-chip ai-chip-image';
+            const img = document.createElement('img');
+            img.className = 'ai-chip-img';
+            img.src = aiImageSrc(item);
+            img.alt = item.name || item.label || '图片';
+            img.draggable = false;
+            if (opts.onImageClick) img.addEventListener('click', () => opts.onImageClick(item));
+            chip.appendChild(img);
+        } else {
+            chip.className = 'ai-chip';
+            const label = document.createElement('span');
+            label.className = 'ai-chip-label';
+            label.textContent = attachmentChipPrefix(item) + (item.label || '');
+            chip.appendChild(label);
+        }
+        if (opts.onRemove) {
+            const remove = document.createElement('button');
+            remove.type = 'button';
+            remove.className = 'ai-chip-remove';
+            remove.textContent = '×';
+            remove.addEventListener('click', (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                opts.onRemove(item);
+            });
+            chip.appendChild(remove);
+        }
+        container.appendChild(chip);
+    }
+}
 
 export function createAIComposer(ctx) {
     const el = ctx.el;
@@ -38,6 +93,8 @@ export function createAIComposer(ctx) {
     const entryOf = ctx.entryOf;
     const sessionImageBytes = ctx.sessionImageBytes;
     const readVideoFile = ctx.readVideoFile;
+    // 图片三层限制：经 ctx 取当前投影（未注入时回落内置快照，dev mock 也能跑）。
+    const imageLimits = typeof ctx.imageLimits === 'function' ? ctx.imageLimits : () => DEFAULT_IMAGE_LIMITS;
     // 排队消息的读写经队列模块 API（所有权在 ai-message-queue.js，阶段 A 迁移）
     const queue = ctx.queue;
     const slashState = ctx.slashState;
@@ -49,44 +106,14 @@ export function createAIComposer(ctx) {
 
     function renderAttachments() {
         if (!el.attach) return;
-        el.attach.innerHTML = '';
-        el.attach.classList.toggle('hidden', !attachments.length);
-        for (const item of attachments) {
-            const chip = document.createElement('span');
-            const remove = document.createElement('button');
-            remove.type = 'button';
-            remove.className = 'ai-chip-remove';
-            remove.textContent = '×';
-            remove.addEventListener('click', () => {
+        renderAttachmentChips(el.attach, attachments, {
+            onRemove: (item) => {
                 attachments = attachments.filter((current) => current.id !== item.id);
                 renderAttachments();
                 updateContextCount();
-            });
-            if (item.kind === 'image') {
-                chip.className = 'ai-chip ai-chip-image';
-                const img = document.createElement('img');
-                img.className = 'ai-chip-img';
-                img.src = aiImageSrc(item);
-                img.alt = item.name || '图片';
-                img.draggable = false;
-                img.addEventListener('click', () => showImagePreview(item));
-                chip.append(img, remove);
-            } else {
-                chip.className = 'ai-chip';
-                const label = document.createElement('span');
-                label.className = 'ai-chip-label';
-                let prefix = '文件 · ';
-                if (item.kind === 'skill') prefix = '技能 · ';
-                else if (item.kind === 'selection') prefix = '选中 · ';
-                else if (item.kind === 'reference') prefix = '引用 · ';
-                else if (item.kind === 'selection_reference') prefix = '引用选区 · ';
-                else if (item.kind === AI_QUOTE_KIND) prefix = '回复引用 · ';
-                else if (item.kind === 'video') prefix = '视频 · ';
-                label.textContent = prefix + item.label;
-                chip.append(label, remove);
-            }
-            el.attach.appendChild(chip);
-        }
+            },
+            onImageClick: (item) => showImagePreview(item),
+        });
         updateContextCount();
         updateSendState();
     }
@@ -101,15 +128,16 @@ export function createAIComposer(ctx) {
                 return false;
             }
             if (!item.data) return false;
-            if (attachments.filter((current) => current.kind === 'image').length >= AI_IMAGE_LIMIT) {
-                flash('每条消息最多附加 ' + AI_IMAGE_LIMIT + ' 张图片', true);
+            // 张数 + 请求预算走 ai-image-policy（单一真源经 ctx 投影，未注入时回落内置快照）。
+            const limits = imageLimits() || DEFAULT_IMAGE_LIMITS;
+            const currentImages = attachments.filter((current) => current.kind === 'image');
+            if (currentImages.length >= limits.maxImagesPerMessage) {
+                flash('每条消息最多附加 ' + limits.maxImagesPerMessage + ' 张图片', true);
                 return false;
             }
-            const currentBytes = attachments
-                .filter((current) => current.kind === 'image')
-                .reduce((sum, current) => sum + sessionImageBytes([current]), 0);
-            if (currentBytes + item.data.length > AI_IMAGE_MESSAGE_BUDGET) {
-                flash('图片总量超过上限，请减少图片或先发送当前消息', true);
+            const budget = checkRequestBudget(limits, currentImages.concat([{data: item.data}]));
+            if (!budget.ok) {
+                flash(budget.reason, true);
                 return false;
             }
             item.id = 'att-' + (nextAttachSeq());
@@ -195,11 +223,16 @@ export function createAIComposer(ctx) {
     }
 
     // 降采样 / 压缩链在 ai-image-encode.js（与 read_image 工具共用单一实现），这里只补
-    // 「输入框口径」：体积上限、尺寸上限与默认名。
+    // 「输入框口径」：体积上限、尺寸上限、像素门禁与默认名。
+    // 归一化长边 / 像素 / 边长走投影值（改 Go 的 aiimagepolicy 即可生效），
+    // 编码后体积仍用常量兜底——它与 ai-image-encode.js 的默认预算同源。
     function prepareImageAttachment(file) {
+        const limits = imageLimits() || DEFAULT_IMAGE_LIMITS;
         return prepareImagePayload(file, {
             maxInputBytes: AI_IMAGE_MAX_INPUT_BYTES,
-            maxDim: AI_IMAGE_MAX_DIM,
+            maxDim: limits.maxNormalizedDimension,
+            maxPixels: limits.maxImagePixels,
+            maxDimension: limits.maxImageDimension,
             maxBase64: AI_IMAGE_MAX_BASE64,
             name: (file && file.name && file.name !== 'image.png') ? file.name : '粘贴的图片',
         });
@@ -219,25 +252,31 @@ export function createAIComposer(ctx) {
         return {mime, data, bytes: file.size, name: String(file.name || '').trim() || '视频'};
     }
 
+    // 按路径构造附件对象（不写进输入区）：消息原地编辑区的「＋ 添加」与输入区共用同一条链路。
+    async function attachmentVideoFromPath(path) {
+        if (!path) return null;
+        if (!readVideoFile) throw new Error('当前版本不支持读取视频');
+        const dataURL = await readVideoFile(path);
+        const payload = aiVideoFromSrc(dataURL, String(path).split(/[\\/]/).pop());
+        if (!payload) throw new Error('不是支持的 mp4 视频');
+        return {kind: 'video', label: payload.name, ...payload};
+    }
+
     async function attachVideoPath(path) {
-        if (!readVideoFile) {
-            flash('当前版本不支持读取视频', true);
-            return false;
-        }
         try {
-            const dataURL = await readVideoFile(path);
-            const payload = aiVideoFromSrc(dataURL, String(path).split(/[\\/]/).pop());
-            if (!payload) throw new Error('不是支持的 mp4 视频');
-            return addAttachment({kind: 'video', label: payload.name, ...payload});
+            const item = await attachmentVideoFromPath(path);
+            return item ? addAttachment(item) : false;
         } catch (e) {
             flash('附加视频失败：' + ((e && e.message) || e), true);
             return false;
         }
     }
 
-    async function handleInputPaste(e) {
-        const data = e.clipboardData;
-        if (!data || !data.items) return;
+    // 从粘贴 / 拖放的 DataTransfer 构造附件数组（不写输入区）：输入区 Ctrl+V 与消息原地编辑区
+    // 共用同一份解析（图片降采样 / 视频校验 / 整批源准入）。
+    // opts.currentImages：调用方已有的图片（编辑区没有 composer 的 attachments，预算要按它算）。
+    async function attachmentsFromDataTransfer(data, opts) {
+        if (!data || !data.items) return [];
         const files = [];
         const videoFiles = [];
         for (const item of data.items) {
@@ -249,44 +288,116 @@ export function createAIComposer(ctx) {
                 else if (type.startsWith('video/')) videoFiles.push(file);
             }
         }
-        if (!files.length && !videoFiles.length) return;
-        const text = data.getData('text/plain');
-        if (!text) e.preventDefault();
-        const room = AI_IMAGE_LIMIT - attachments.filter((item) => item.kind === 'image').length;
-        if (files.length && room <= 0) {
-            flash('每条消息最多附加 ' + AI_IMAGE_LIMIT + ' 张图片', true);
-        }
-        for (const file of files.slice(0, room)) {
-            try {
-                const prepared = await prepareImageAttachment(file);
-                prepared.kind = 'image';
-                prepared.label = prepared.name;
-                addAttachment(prepared);
-            } catch (err) {
-                flash('图片处理失败：' + ((err && err.message) || err), true);
+        const out = [];
+        if (files.length) {
+            const limits = imageLimits() || DEFAULT_IMAGE_LIMITS;
+            const currentImages = (opts && Array.isArray(opts.currentImages))
+                ? opts.currentImages
+                : attachments.filter((item) => item.kind === 'image');
+            // 源准入层（对齐 dsh 语义）：整批不合规就整批拒收，不留到提交时回滚。
+            // 注意只跳过图片循环——同一次粘贴里的视频不该被图片的问题连累。
+            const sourceCheck = checkSourceBatch(limits, currentImages, files);
+            if (!sourceCheck.ok) {
+                flash(sourceCheck.reason, true);
+            } else {
+                for (const file of files) {
+                    try {
+                        const prepared = await prepareImageAttachment(file);
+                        prepared.kind = 'image';
+                        prepared.label = prepared.name;
+                        out.push(prepared);
+                    } catch (err) {
+                        flash('图片处理失败：' + ((err && err.message) || err), true);
+                    }
+                }
             }
         }
-        if (files.length > room) flash('超出图片数量上限，已附加 ' + room + ' 张', true);
         for (const file of videoFiles) {
             try {
                 const prepared = await prepareVideoAttachment(file);
                 prepared.kind = 'video';
                 prepared.label = prepared.name;
-                addAttachment(prepared);
+                out.push(prepared);
             } catch (err) {
                 flash('视频处理失败：' + ((err && err.message) || err), true);
             }
+        }
+        return out;
+    }
+
+    async function handleInputPaste(e) {
+        const data = e.clipboardData;
+        if (!data || !data.items) return;
+        const hasFile = Array.from(data.items).some((item) => item && item.kind === 'file');
+        if (!hasFile) return;
+        const text = data.getData('text/plain');
+        if (!text) e.preventDefault();
+        const added = await attachmentsFromDataTransfer(data);
+        for (const item of added) addAttachment(item);
+    }
+
+    async function attachmentTextFromPath(path) {
+        if (!path) return null;
+        const name = String(path).split(/[\\/]/).pop() || String(path);
+        try {
+            const read = await readTextFile(path, 64 << 10);
+            const label = (read.data && read.data.name) || name;
+            return {kind: 'file', label, path, content: read.text};
+        } catch (e) {
+            // 二进制 / 超过文本读取上限：路径本身是有效的，降级为「路径引用」——
+            // 不读正文（会炸上下文），也不静默丢弃（用户以为发过去了）。
+            // 对齐 ZCode 的 resolvedPathReferenceAttachment；模型拿路径用对应工具自己读。
+            const code = e && e.code;
+            const reason = code === 'large' || code === 'binary' ? code : '';
+            if (!reason) throw e;
+            return {kind: 'file', label: name, path, content: attachmentPathHint(path, reason)};
         }
     }
 
     async function attachPath(path, opts) {
         if (!path) return false;
         try {
-            const read = await readTextFile(path, 64 << 10);
-            const name = (read.data && read.data.name) || String(path).split(/[\\/]/).pop();
-            return addAttachment({kind: 'file', label: name, path, content: read.text});
+            const item = await attachmentTextFromPath(path);
+            return item ? addAttachment(item) : false;
         } catch (e) {
             flash('附加文件失败：' + ((e && e.message) || e), true);
+            return false;
+        }
+    }
+
+    // 图片文件走图片通道（降采样 + 三层准入），不要当文本读——
+    // 文件对话框选 png 曾经会被 readTextFile 当文本处理而失败。
+    async function attachmentImageFromPath(path, opts) {
+        if (!path) return null;
+        if (!backend.ReadImageAsDataURL) throw new Error('当前版本不支持读取图片');
+        const name = String(path).split(/[\\/]/).pop() || '图片';
+        const dataURL = await backend.ReadImageAsDataURL(path);
+        const file = dataUrlToFile(dataURL, name);
+        if (!file) throw new Error('读到的图片数据无法解析');
+        // 与粘贴同一条源准入：整批拒收 + 点名上限。
+        // 编辑区没有 composer 的 attachments，调用方可传 currentImages 走同一份预算。
+        const limits = imageLimits() || DEFAULT_IMAGE_LIMITS;
+        const current = (opts && Array.isArray(opts.currentImages))
+            ? opts.currentImages
+            : attachments.filter((item) => item.kind === 'image');
+        const sourceCheck = checkSourceBatch(limits, current, [file]);
+        if (!sourceCheck.ok) {
+            const err = new Error(sourceCheck.reason);
+            err.sourceCheck = true;
+            throw err;
+        }
+        const prepared = await prepareImageAttachment(file);
+        prepared.kind = 'image';
+        prepared.label = prepared.name;
+        return prepared;
+    }
+
+    async function attachImagePath(path) {
+        try {
+            const item = await attachmentImageFromPath(path);
+            return item ? addAttachment(item) : false;
+        } catch (e) {
+            flash(e && e.sourceCheck ? e.message : '附加图片失败：' + ((e && e.message) || e), true);
             return false;
         }
     }
@@ -380,10 +491,46 @@ export function createAIComposer(ctx) {
         }
         if (!paths || !paths.length) return;
         for (const path of paths) {
-            // mp4 走视频通道（二进制 base64），其余照旧读文本
+            // 按类型分派：视频走 base64 视频通道，图片走降采样图片通道，
+            // 其余走文本读取（读不了正文的自动降级为路径引用）。
             if (isReadableVideoPath(path)) await attachVideoPath(path);
+            else if (isReadableImagePath(path)) await attachImagePath(path);
             else await attachPath(path);
         }
+    }
+
+    // 按路径构造附件（不写进输入区）：编辑区「＋ 添加」与输入区共用同一条链路。
+    async function attachmentFromPath(path, opts) {
+        if (!path) return null;
+        if (isReadableVideoPath(path)) return attachmentVideoFromPath(path);
+        if (isReadableImagePath(path)) return attachmentImageFromPath(path, opts);
+        return attachmentTextFromPath(path);
+    }
+
+    // 弹文件对话框并返回构造好的附件数组，不改输入区状态——消息原地编辑区用它。
+    // opts.currentImages：编辑区已有的图片（走同一份张数 / 体积预算）。
+    async function pickAttachmentFiles(opts) {
+        if (!pickFiles) {
+            flash('当前版本不支持选择附加文件', true);
+            return [];
+        }
+        let paths;
+        try {
+            paths = await pickFiles();
+        } catch (e) {
+            flash('选择文件失败：' + ((e && e.message) || e), true);
+            return [];
+        }
+        const out = [];
+        for (const path of paths || []) {
+            try {
+                const item = await attachmentFromPath(path, opts);
+                if (item) out.push(item);
+            } catch (e) {
+                flash(e && e.sourceCheck ? e.message : '附加失败：' + ((e && e.message) || e), true);
+            }
+        }
+        return out;
     }
 
     async function showSkillPicker() {
@@ -701,6 +848,7 @@ export function createAIComposer(ctx) {
         prepareImageAttachment,
         prepareVideoAttachment,
         attachPath,
+        attachImagePath,
         attachVideoPath,
         attachSelection,
         referencePath,
@@ -717,7 +865,9 @@ export function createAIComposer(ctx) {
         captureComposerMessage,
         editQueuedMessage,
         handleInputPaste,
+        attachmentsFromDataTransfer,
         attachCurrentFile,
+        pickAttachmentFiles,
         showAIEditMenu,
         getAttachments: () => attachments,
         setAttachments: (value) => { attachments = value; },

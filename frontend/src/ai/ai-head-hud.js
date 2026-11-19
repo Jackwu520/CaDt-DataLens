@@ -500,7 +500,8 @@ export function createAIHeadHud(ctx, extras) {
         if (iconEl) iconEl.innerHTML = iconSvg('terminal', 13);
         el.chipTerms.addEventListener('click', () => toggleChipsPop('terms', el.chipTerms));
     }
-    // 点面板其他位置关闭 chips 弹层
+    // 点面板其他位置关闭 chips 弹层。chips pop 挂在面板内（.ai-popover 档），不进全局弹层栈，
+    // 也无 Esc 语义（历史行为即如此：只靠外点与再次点击收起）。
     panel.addEventListener('mousedown', (e) => {
         if (!getChipsPopKind()) return;
         if (e.target.closest && (e.target.closest('#ai-chips-pop') || e.target.closest('.ai-chip'))) return;

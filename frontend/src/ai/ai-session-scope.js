@@ -48,6 +48,32 @@ export function workspaceKey(value) {
     return normalizePath(aiTextOf(value).trim()).replace(/\/+$/, '').toLowerCase();
 }
 
+// 当前会话的「按工作区」归属：config.activeSessionByWorkspace[workspaceKey] = sessionId。
+// 多窗口共享同一份 ai-config.json，单值 activeSessionId 会被各窗口互相改写——A 窗口写盘、
+// B 窗口读到后按自己的工作区改回再写盘，面板就在两个会话之间来回跳（2026-11-19 报告）。
+// 每个工作区各记一条：切工作区时自然读到该工作区上次的会话，窗口之间不再互相驱动。
+// 老配置只有 activeSessionId：没有本工作区条目时回退到它（保持既有恢复语义）。
+export function activeSessionIdFor(config, ownKey) {
+    const map = (config && config.activeSessionByWorkspace) || {};
+    const keyed = ownKey && typeof map === 'object' ? aiTextOf(map[ownKey]) : '';
+    if (keyed) return keyed;
+    return aiTextOf(config && config.activeSessionId);
+}
+
+// 记住某个工作区当前打开的会话（id 为空 = 清除该工作区条目）。
+// activeSessionId 同步写成同一个值，只作为欢迎页 / 老配置的兼容回退。
+export function rememberActiveSession(config, ownKey, id) {
+    if (!config || typeof config !== 'object') return;
+    const next = aiTextOf(id);
+    config.activeSessionId = next;
+    if (!ownKey) return;
+    if (!config.activeSessionByWorkspace || typeof config.activeSessionByWorkspace !== 'object') {
+        config.activeSessionByWorkspace = {};
+    }
+    if (next) config.activeSessionByWorkspace[ownKey] = next;
+    else delete config.activeSessionByWorkspace[ownKey];
+}
+
 // 能成为「面板当前会话」的候选：未归档、非支线（支线有独立标签页承载）。
 function isCandidate(session) {
     if (!session || session.archivedAt) return false;

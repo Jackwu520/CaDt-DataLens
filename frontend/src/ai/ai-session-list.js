@@ -32,6 +32,15 @@ export function aggregateSessionBadge(sessions, env) {
     return '';
 }
 
+// 计划待批准是否需要用户注意（会话列表 pending/info 角标的判定之一，纯函数便于单测）。
+// AI 正在为这份计划工作时（用户点「继续规划」发来修订意见、新一轮在跑），流挂着就不算
+// 「等用户动手」——列表应显示 running 而非 pending。与 planApprovalMessage 的 streamOf
+// 前置判定同源：流在跑时审批卡也隐藏。
+export function planPendingNeedsAttention(session, hasStream) {
+    return !!(session && session.planMode && session.activePlan &&
+        session.activePlan.status === 'pending' && !hasStream);
+}
+
 // 支线紧跟母会话：按传入顺序（已按活跃度排序）铺平，再把每条支线插到它的母会话之后。
 // 母会话已删除、或 sideOf 成环时按普通会话处理——渲染不能因为元数据坏了就少一条会话。
 export function orderSessionsWithSides(list) {
@@ -230,10 +239,8 @@ export function createAISessionList(ctx) {
             if (message.ask && message.ask.state === 'pending') return true;
             if (message.envAsk && message.envAsk.state === 'pending') return true;
         }
-        // 计划模式：有待批准的计划（计划唯一真源是 session.activePlan）
-        if (session.planMode && session.activePlan && session.activePlan.status === 'pending') {
-            return true;
-        }
+        // 计划模式：待批准且 AI 没在为该计划工作（见纯函数注释）
+        if (planPendingNeedsAttention(session, streams.has(session.id))) return true;
         return false;
     }
 

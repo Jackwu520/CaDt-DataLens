@@ -3,7 +3,7 @@
 // 磁盘存储才有「复制会话路径」；普通对话不再出现一排灰掉的无关项。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {buildSessionMenuItems, buildWorkspaceMenuItems, aggregateSessionBadge} from '../../src/ai/ai-session-list.js';
+import {buildSessionMenuItems, buildWorkspaceMenuItems, aggregateSessionBadge, planPendingNeedsAttention} from '../../src/ai/ai-session-list.js';
 
 const baseEnv = {pendingNoticeCount: () => 0, diskStorage: true};
 const labelsOf = (items) => items.filter((item) => item.label).map((item) => item.label);
@@ -159,4 +159,25 @@ test('状态点跳过归档会话', () => {
 test('状态点透传被抑制的状态（正在查看的会话返回空，不产生点）', () => {
     const sessions = [{id: 'viewed'}];
     assert.equal(aggregateSessionBadge(sessions, badgeEnv({viewed: ''})), '');
+});
+
+// 计划待批准的 pending/info 角标：AI 正在为该计划工作时（流挂着）不该报「待用户动手」。
+const planSession = (over = {}) => ({
+    id: 's1', planMode: true, activePlan: {status: 'pending', markdown: '# 计划'}, messages: [], ...over,
+});
+
+test('planPendingNeedsAttention：待批准且无流 → 需要用户注意', () => {
+    assert.equal(planPendingNeedsAttention(planSession(), false), true);
+});
+
+test('planPendingNeedsAttention：AI 正在为该计划工作（有流）→ 不需要注意', () => {
+    assert.equal(planPendingNeedsAttention(planSession(), true), false,
+        '继续规划后新一轮在跑，列表应显示 running 而非 pending(info)');
+});
+
+test('planPendingNeedsAttention：非 pending / 非计划模式 / 无计划 → 不需要注意', () => {
+    assert.equal(planPendingNeedsAttention(planSession({activePlan: {status: 'approved'}}), false), false);
+    assert.equal(planPendingNeedsAttention(planSession({planMode: false}), false), false);
+    assert.equal(planPendingNeedsAttention(planSession({activePlan: null}), false), false);
+    assert.equal(planPendingNeedsAttention(null, false), false);
 });

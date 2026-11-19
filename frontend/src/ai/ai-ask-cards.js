@@ -269,8 +269,19 @@ export function createAIAskCards(ctx, extras) {
             input.placeholder = question.options.length ? '其他：自己输入回答…' : '输入你的回答…';
             input.spellcheck = false;
             input.value = answerDraft.custom;
+            // 初始渲染：自填已有内容时显示选中态
+            if (answerDraft.custom.trim()) custom.classList.add('selected');
             input.addEventListener('input', () => {
                 answerDraft.custom = input.value;
+                // 自填有内容即视为选中：加高亮；单选题同时清除选项选中（与提交逻辑对齐：custom 优先于 selected）
+                custom.classList.toggle('selected', !!answerDraft.custom.trim());
+                if (!question.multiSelect && answerDraft.custom.trim()) {
+                    answerDraft.selected = [];
+                    // 同步 UI：移除所有选项的 .selected 类，不重建卡片（避免打断输入焦点）
+                    options.querySelectorAll('.ai-ask-option.selected').forEach((btn) => {
+                        btn.classList.remove('selected');
+                    });
+                }
             });
             input.addEventListener('focus', () => {
                 draft.focusOi = question.options.length;

@@ -9,11 +9,32 @@ import {createAITeamView} from './ai-team-view.js';
 import {agentTreeText} from './ai-team-model.js';
 import {normalizeWorktreeState} from './ai-worktree.js';
 import {aiClampInt, aiNowId, aiTextOf, AI_COMPACT_SYSTEM_PROMPT} from './ai-constants.js';
+import {aiStreamRetryBudget, shouldAutoRetryStream} from './ai-stream-retry.js';
 import {AI_TOOL_DEFS, buildSpawnAgentDef} from './ai-tool-defs.js';
 import {inspectToolArguments} from './ai-tool-args.js';
 import {buildSettlementNotice, buildAskNotice} from './ai-agent-notices.js';
 import {compactTranscriptOf, computeCompactCutoffByBudget, compactRetainBudget, buildCompactSummary, applyCompactToSession, buildCompactMessages, compactThresholdOf, COMPACT_KEEP_TAIL} from './ai-compact.js';
 import {createLoopGuard} from './ai-loop-guard.js';
+
+// parseTranscriptLines：磁盘转录（JSONL，一行一条 {role,name,text}）→ 转录条目数组。
+// 格式契约的另一半在 finalizeSubAgent 的落盘处；坏行跳过而不是整份丢弃——重启后
+// 能显示多少算多少，总比「一条坏行让整段记录消失」好。
+export function parseTranscriptLines(text) {
+    const entries = [];
+    for (const line of String(text == null ? '' : text).split('\n')) {
+        if (!line.trim()) continue;
+        try {
+            const row = JSON.parse(line);
+            if (!row || typeof row !== 'object') continue;
+            entries.push({
+                role: String(row.role || ''),
+                name: String(row.name || ''),
+                text: String(row.text || ''),
+            });
+        } catch (e) {}
+    }
+    return entries;
+}
 
 // target 是否在 ancestorSessionId 的后代里（`agent_send` 的方向守卫）。
 // 从 lookup(target) 的**上级**开始追，因此天然排除自身——`agentUnderSessionBy` 当年从 target
@@ -308,6 +329,7 @@ export function createAISubagents(ctx) {
     const panel = ctx.panel;
     const backend = ctx.backend;
     const flash = ctx.flash;
+    const notifyFailure = typeof ctx.notifyFailure === 'function' ? ctx.notifyFailure : () => {};
     const renderMarkdown = ctx.renderMarkdown;
     const openTermTab = ctx.openTermTab;
     // 详情视图的宿主出口：主窗口在内容区开标签页（bridge-agent-view.js），悬浮窗退回面板覆盖层
@@ -424,6 +446,8 @@ export function createAISubagents(ctx) {
         stopSubAgentDeep: (...args) => stopSubTree(...args),
         startSubCompact: (...args) => startSubCompact(...args),
         agentStateBadge: (...args) => agentStateBadge(...args),
+        // 重启后从磁盘补读转录（正文在 ai-artifacts，见 finalizeSubAgent 的落盘）
+        loadAgentTranscript: (...args) => loadAgentTranscriptFromDisk(...args),
     });
     const agentViews = viewMod.agentViews;
     const scheduleAgentViewRender = (...args) => viewMod.scheduleAgentViewRender(...args);
@@ -740,6 +764,10 @@ export function createAISubagents(ctx) {
         };
         toolMessage.agent = {
             key: sub.key,
+            // id / artifactDir：重启后详情视图靠它们从磁盘补读转录（ai-artifacts/<根会话>/sub-<id>.txt）。
+            // 落盘目录用根会话 id，删根会话时才能一并清掉嵌套代理的产物。
+            id: sub.id,
+            artifactDir: rootSessionId || sub.parentSessionId,
             depth,
             mode,
             name: sub.name,
@@ -913,6 +941,35 @@ export function createAISubagents(ctx) {
         }
     }
 
+    // 流中途被网关掐断 / 流内网关 5xx（ai-error.retryable）的自动重试：与主会话
+    // retryTruncatedRound 同语义——半截 assistant 整条作废、换空 assistant 重发
+    // （runSubRound 会换新 roundId、清 toolCalls 与循环守卫）。预算见 ai-stream-retry.js
+    // （retryMax=0 视为关闭）。当前轮的工具尚未执行（工具轮在 done 后才跑），作废无副作用；
+    // 收尾轮（wrapUp）同样受益：传输故障先重试，重试耗尽才回退「转录摘录」。
+    function retrySubAgentRound(sub, payload) {
+        const s = sub.flow;
+        if (sub.state !== 'running' || s.stopped) return false;
+        const budget = aiStreamRetryBudget(getConfig().retryMax);
+        if (!shouldAutoRetryStream({
+            retryable: !!(payload && payload.retryable),
+            stopped: !!s.stopped,
+            retried: s.streamRetried,
+            budget,
+        })) return false;
+        const idx = sub.session.messages.indexOf(s.assistant);
+        if (idx < 0) return false;
+        s.streamRetried = (s.streamRetried || 0) + 1;
+        sub.session.messages.splice(idx, 1);
+        const assistant = newAssistantMessage(
+            sub.profile || profileOf(parentSessionOfSub(sub)),
+            sub.entry || entryOf(parentSessionOfSub(sub)));
+        sub.session.messages.push(assistant);
+        s.assistant = assistant;
+        runSubRound(sub);
+        subThrottleRender(sub);
+        return true;
+    }
+
     async function runSubToolRound(sub, calls, argErrors) {
         const s = sub.flow;
         // 收尾轮本就不下发工具（见 runSubRound 的 tools 选择）。模型仍幻觉出工具调用时
@@ -1022,12 +1079,52 @@ export function createAISubagents(ctx) {
         runSubRound(sub);
     }
 
+    // 子代理的 token 用量也计入使用统计：与主会话写同一张事实表，sessionId 用子代理会话 id。
+    // 子代理消息只活在内存与 ai-artifacts 转录里（会话 JSONL 只有最后一轮的汇总），
+    // 兜底扫描拿不到，所以必须在这里每轮流结束时实时上报。
+    function reportSubUsage(sub, assistant, usage) {
+        if (!usage || !sub || !sub.id) return;
+        const api = backend && backend.AIUsageStatsRecord;
+        if (typeof api !== 'function') return;
+        let payload = '';
+        try {
+            payload = JSON.stringify({
+                sessionId: sub.id,
+                ts: Number(assistant && assistant.ts) || Date.now(),
+                model: (assistant && assistant.model) || '',
+                modelAccount: (assistant && assistant.modelAccount) || '',
+                turnMs: Number(assistant && assistant.turnMs) || 0,
+                modelMs: Number(assistant && assistant.modelMs) || 0,
+                ttftMs: Number(assistant && assistant.firstTokenMs) || 0,
+                statusCode: Number(assistant && assistant.statusCode) || 0,
+                usage: {
+                    promptTokens: Number(usage.promptTokens) || 0,
+                    completionTokens: Number(usage.completionTokens) || 0,
+                    totalTokens: Number(usage.totalTokens) || 0,
+                    cachedTokens: Number(usage.cachedTokens) || 0,
+                    cacheWriteTokens: Number(usage.cacheWriteTokens) || 0,
+                },
+            });
+        } catch (e) {
+            return;
+        }
+        try {
+            const result = api.call(backend, payload);
+            if (result && typeof result.then === 'function') {
+                result.then(() => {}).catch(() => {});
+            }
+        } catch (e) {
+            // 统计上报是尽力而为：失败不影响子代理
+        }
+    }
+
     function handleSubEvent(name, payload, sub) {
         const s = sub.flow;
         if (!payload || payload.id !== s.roundId) return;
         switch (name) {
             case 'ai-chunk':
                 if (payload.delta) {
+                    if (!s.firstTokenAt) s.firstTokenAt = Date.now();
                     s.assistant.content += payload.delta;
                     // 转录里维护一条「进行中」的助手条目，流式更新最后一条
                     const list = subAgentTranscripts.get(sub.key);
@@ -1040,6 +1137,7 @@ export function createAISubagents(ctx) {
             case 'ai-think':
                 // 子代理没有 composer 可接管：高阈值直接自动停止，原因写进记录摘要。
                 if (payload.delta && sub.state === 'running') {
+                    if (!s.firstTokenAt) s.firstTokenAt = Date.now();
                     s.assistant.reasoning += payload.delta;
                     if (!s.loopGuard) s.loopGuard = createLoopGuard();
                     s.loopGuard.push(payload.delta);
@@ -1061,6 +1159,7 @@ export function createAISubagents(ctx) {
                 }
                 break;
             case 'ai-toolcall': {
+                if (!s.firstTokenAt) s.firstTokenAt = Date.now();
                 const index = Number(payload.index) || 0;
                 let call = s.toolCalls.get(index);
                 if (!call) {
@@ -1073,7 +1172,18 @@ export function createAISubagents(ctx) {
                 break;
             }
             case 'ai-done': {
-                if (payload.usage) s.usage = payload.usage;
+                if (payload.usage) {
+                    s.usage = payload.usage;
+                    // 子代理没有主会话的 finishStream：用本轮起点补请求耗时/首字后再上报
+                    if (s.roundStartedAt && s.assistant) {
+                        const finishedAt = Date.now();
+                        s.assistant.modelMs = Math.max(0, finishedAt - s.roundStartedAt);
+                        s.assistant.firstTokenMs = s.firstTokenAt ? Math.max(0, s.firstTokenAt - s.roundStartedAt) : 0;
+                        s.assistant.turnMs = s.assistant.modelMs;
+                    }
+                    if (s.assistant) s.assistant.statusCode = Number(payload.statusCode) || 0;
+                    reportSubUsage(sub, s.assistant, payload.usage);
+                }
                 // 结束「进行中」转录条目
                 const list = subAgentTranscripts.get(sub.key);
                 const last = list && list.length ? list[list.length - 1] : null;
@@ -1130,6 +1240,9 @@ export function createAISubagents(ctx) {
                 break;
             }
             case 'ai-error':
+                // 流中途被掐断 / 流内网关 5xx（retryable）先走自动重试：探索半途的
+                // 传输故障不该直接判死，也不该触发下面的「摘录兜底」。
+                if (retrySubAgentRound(sub, payload)) break;
                 if (s.wrapUp) {
                     // 收尾总结请求自身失败（如 60 条消息的上下文超窗）：
                     // 回退为转录摘录，不让探索成果跟着一起丢。
@@ -1338,8 +1451,10 @@ export function createAISubagents(ctx) {
         // 转录一律保留至本运行期——原语 2 要拿它做「收集对话记录」；内存由 records LRU 兜底。
         pushSubAgentRecord(sub, state, summary);
         // 转录落盘：内存里的转录只活到本进程退出，`agent_stop` 承诺的「收集过程记录」
-        // 因此重启即失效。这里顺手留一份到 ai-artifacts/<父会话>/sub-<agentId>.txt
-        // （随父会话删除、可被一键清缓存回收）。纯留档，失败不影响结算，所以不 await。
+        // 因此重启即失效。这里顺手留一份到 ai-artifacts/<根会话>/sub-<agentId>.txt
+        // ——用**根会话** id 分桶：嵌套代理的 parentSessionId 是上层子代理的会话 id，
+        // 落在那里的话删根会话清不掉（读回时详情视图带 artifactDir，两边口径一致）。
+        // 随根会话删除、可被一键清缓存回收。纯留档，失败不影响结算，所以不 await。
         try {
             const list = subAgentTranscripts.get(sub.key) || [];
             if (list.length && backend.AIArtifactWrite) {
@@ -1349,7 +1464,7 @@ export function createAISubagents(ctx) {
                     text: entry.text || '',
                 })).join('\n');
                 Promise.resolve(backend.AIArtifactWrite(
-                    sub.parentSessionId, 'sub-' + sub.id, text)).catch(() => {});
+                    sub.rootSessionId || sub.parentSessionId, 'sub-' + sub.id, text)).catch(() => {});
             }
         } catch (e) {}
         try {
@@ -1382,10 +1497,18 @@ export function createAISubagents(ctx) {
                 unconsumed: unseenInboxCount(sub),
             }));
             // 投不出去不能静默：父会话已结束 / 已归档时结论就此蒸发（嵌套里尤其难察觉）。
-            if (!delivered) flash('子代理「' + sub.name + '」的结论未能投递（父会话已结束或已归档）', true);
+            if (!delivered) {
+                const detail = '子代理「' + sub.name + '」的结论未能投递（父会话已结束或已归档）';
+                flash(detail, true);
+                notifyFailure('子代理结论未能投递', detail, {key: 'sub-deliver', kind: 'error'});
+            }
         }
-        if (state === 'error') flash('子代理「' + sub.name + '」失败：' + (note || '执行出错'), true);
-        else if (state === 'stopped') flash('子代理「' + sub.name + '」已停止');
+        if (state === 'error') {
+            const detail = String(note || '执行出错');
+            flash('子代理「' + sub.name + '」失败：' + detail, true);
+            // A 级：子代理在后台失败，用户没盯着状态栏就会漏掉。
+            notifyFailure('子代理失败', '「' + sub.name + '」：' + detail, {key: 'sub-error', kind: 'error'});
+        } else if (state === 'stopped') flash('子代理「' + sub.name + '」已停止');
     }
 
     // 停止时未消费的收件箱条数（阶段 C 起会非零；结算文案与工具回执都要标出来）。
@@ -2113,6 +2236,22 @@ export function createAISubagents(ctx) {
         for (const record of subAgentRecords.values()) collect(record);
         return out;
     }
+
+    // 磁盘转录补读：应用重启后内存缓存已空，但结算时落过一份到
+    // ai-artifacts/<父会话>/sub-<agentId>.txt（见 finalizeSubAgent），从那里还原过程记录。
+    // 返回 [{role, name, text}]，与 subTranscriptPush 的条目同形；读不到/文件被清返回 null。
+    async function loadAgentTranscriptFromDisk(parentSessionId, agentId) {
+        if (!backend.AIArtifactRead || !parentSessionId || !agentId) return null;
+        let text = '';
+        try {
+            text = await backend.AIArtifactRead(parentSessionId, 'sub-' + agentId);
+        } catch (e) {
+            return null;
+        }
+        const entries = parseTranscriptLines(text);
+        return entries.length ? entries : null;
+    }
+
     return {
         subAgentLimit, subAgentMaxDepth, subAgentCanSpawn, subSystemPromptFor, subToolsForScope,
         activeSubCount, subTranscriptPush, subThrottleRender,
@@ -2135,6 +2274,7 @@ export function createAISubagents(ctx) {
         worktreeNamesForSession,
         subCompacts,
         subAgents, subAgentTranscripts, subAgentRecords,
+        loadAgentTranscriptFromDisk,
         bgJobSnapshot, notifyBgListeners, bridgeStopBgJob,
     };
 }

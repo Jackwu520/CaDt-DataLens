@@ -16,12 +16,14 @@ import {
     underContextPressure,
     recentToolIndexes,
     slimBreakdownParts,
+    shouldInsertShrinkNote,
     SLIM_KEEP_TURNS,
     SLIM_PRUNE_THRESHOLD,
     SLIM_EXTERNAL_PRUNE_THRESHOLD,
     SLIM_ARGS_FOLD_THRESHOLD,
     SLIM_HEAD_CHARS,
     SLIM_SKIP_TOOLS,
+    SHRINK_NOTE_COOLDOWN_MS,
 } from '../../src/ai/ai-context-slim.js';
 
 const msg = (role, extra) => Object.assign({role, content: role}, extra || {});
@@ -277,4 +279,25 @@ test('slimBreakdownParts：固定顺序、过滤零项、坏值归零', () => {
     assert.deepEqual(slimBreakdownParts({}), []);
     assert.deepEqual(slimBreakdownParts(null), []);
     assert.deepEqual(slimBreakdownParts({reasoning: -5, transient: 'x'}), []);
+});
+
+// ---------- 应急收缩留痕判定 ----------
+
+test('shouldInsertShrinkNote：从未记过即记（含坏值归零）', () => {
+    assert.equal(shouldInsertShrinkNote(0, 1000, 1000), true);
+    assert.equal(shouldInsertShrinkNote(undefined, 1000, 1000), true);
+    assert.equal(shouldInsertShrinkNote(null, 1000, 1000), true);
+    assert.equal(shouldInsertShrinkNote(-1, 1000, 1000), true);
+});
+
+test('shouldInsertShrinkNote：冷却期内不记，期满与越界再记', () => {
+    const cooldown = 30 * 60 * 1000;
+    assert.equal(shouldInsertShrinkNote(1000, 1000 + cooldown - 1, cooldown), false);
+    assert.equal(shouldInsertShrinkNote(1000, 1000 + cooldown, cooldown), true);
+    assert.equal(shouldInsertShrinkNote(1000, 1000 + cooldown * 3, cooldown), true);
+});
+
+test('shouldInsertShrinkNote：冷却参数缺省用内置值', () => {
+    assert.equal(shouldInsertShrinkNote(1000, 1000 + SHRINK_NOTE_COOLDOWN_MS - 1), false);
+    assert.equal(shouldInsertShrinkNote(1000, 1000 + SHRINK_NOTE_COOLDOWN_MS), true);
 });

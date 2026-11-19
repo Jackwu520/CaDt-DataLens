@@ -107,7 +107,8 @@ test('接线护栏：引用只进 user content，气泡截断 + title 全文，�
     assert.ok(panel.includes('splitQuotePrefix(parsedReminder.body)'));
     assert.ok(panel.includes('excerpt.dataset.tip = quote.text'));
     assert.ok(panel.includes('引用所选到输入框') && panel.includes('引用整条回复'));
-    assert.ok(composer.includes('addMessageQuote') && composer.includes("prefix = '回复引用 · '"));
+    // chip 前缀抽成 attachmentChipPrefix（输入区与消息原地编辑区共用同一份文案）
+    assert.ok(composer.includes('addMessageQuote') && composer.includes("if (item.kind === AI_QUOTE_KIND) return '回复引用 · ';"));
     assert.ok(composer.includes('!trimmed && !attachments.length'));
     assert.ok(context.includes('<quote> 块是用户引用的此前对话内容'));
 });

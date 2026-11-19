@@ -95,30 +95,48 @@ export function pruneThresholdOf(name) {
 }
 
 // 落盘版：头 + 指针 + 尾。指针必须回答三件事——文件在哪、怎么读、什么时候不必读。
+// 注意：指针里的绝对路径**有意**绕过了工作区路径脱敏（ai-scope-redact）——模型必须拿到
+// 真实路径才能 read_file 读回，这是「省上下文」换「暴露 appdata 路径给服务商」的取舍，
+// 例外范围只有 ai-artifacts 子树。文案还要预留死链出路：一键清缓存会删掉这些文件。
 export function spillPointerText(name, content, path) {
     const text = String(content == null ? '' : content);
     return text.slice(0, SLIM_HEAD_CHARS) +
         '\n\n[... 结果过长：原文 ' + text.length + ' 字符，已存盘。完整内容：' + path +
         '\n  需要时用 read_file 读该路径（支持 offset 续读）；不需要就别读，' +
-        '按上面的预览作答即可。]\n\n' +
+        '按上面的预览作答即可。若该路径读取失败（缓存可能已被清理），请重新调用该工具获取。]\n\n' +
         text.slice(-tailBudgetOf(name));
 }
 
 // 没有落盘路径时的老路：丢掉中段，提示重新调用（不可重得的结果就别调用，按头部作答）。
 // 头部上下文重要（结构信息在头部），命令/搜索的结论常在尾部。
-export function pruneToolResult(name, content) {
-    const text = String(content == null ? '' : content);
-    if (!spillWanted(name, text)) return null;
+function pruneBody(name, text) {
     return text.slice(0, SLIM_HEAD_CHARS) +
         '\n\n[... 中间内容已修剪：原文 ' + text.length + ' 字符，读取于较早轮次、大概率已过时。' +
         '不要凭记忆引用被修剪的中段内容；如需完整内容请重新调用该工具获取 ...]\n\n' +
         text.slice(-tailBudgetOf(name));
 }
 
+export function pruneToolResult(name, content) {
+    const text = String(content == null ? '' : content);
+    if (!spillWanted(name, text)) return null;
+    return pruneBody(name, text);
+}
+
+// 压力档的修剪门槛：远低于落盘阈值。窗口吃紧时，低于落盘线的中等结果正是堆积主力——
+// 「不值得落盘」不等于「可以继续留在上下文里」。
+export const SLIM_PRESSURE_PRUNE_CHARS = 2000;
+
 // 组装请求时的统一入口：有落盘路径走指针，没有就走修剪，都不需要返回 null（不改动）。
-export function slimToolResult(name, content, artifactPath) {
+// pressure=true 是应急收缩档：门槛降到 SLIM_PRESSURE_PRUNE_CHARS，跳过表仍然生效
+// （read_file 自带窗口、操作回执不可重得，这两类永远不动）。
+export function slimToolResult(name, content, artifactPath, pressure) {
     if (artifactPath) return spillPointerText(name, content, artifactPath);
-    return pruneToolResult(name, content);
+    const text = String(content == null ? '' : content);
+    if (pressure) {
+        if (SLIM_SKIP_TOOLS.indexOf(name) >= 0 || text.length <= SLIM_PRESSURE_PRUNE_CHARS) return null;
+        return pruneBody(name, text);
+    }
+    return pruneToolResult(name, text);
 }
 
 // ---------- 应急收缩（按压力，不调模型） ----------
@@ -131,6 +149,18 @@ export const SHRINK_PRESSURE_RATIO = 0.9;
 // 压力模式下不动的最近工具结果数：模型正在用的数据被清掉，它得重跑一遍工具，
 // 那个往返比省下的 token 更贵（ZCode 同样是 5）。
 export const SHRINK_KEEP_TOOL_RESULTS = 5;
+
+// 应急收缩留痕注记的最小间隔：占用在 90% 线附近震荡时（每轮增减几条消息就能跨线）
+// 防止「触发一条注记 / 回落 / 再触发」反复刷屏。
+export const SHRINK_NOTE_COOLDOWN_MS = 30 * 60 * 1000;
+
+// 是否该插一条「应急收缩已介入」的会话留痕：从未记过（lastAt=0）即记；
+// 记过则按冷却去重。判定是纯函数，接线（WeakMap + 发送点）在 ai-panel.js。
+export function shouldInsertShrinkNote(lastAt, now, cooldownMs) {
+    const last = Number(lastAt) || 0;
+    if (!(last > 0)) return true;
+    return now - last >= Math.max(1, Number(cooldownMs) || SHRINK_NOTE_COOLDOWN_MS);
+}
 
 // 占用是否已经到「该应急降载」的程度。windowSize 未知（未配模型）时恒 false。
 export function underContextPressure(usedTokens, windowSize) {
@@ -207,20 +237,25 @@ export function foldSupersededToolCalls(messages, limit) {
                 id: call.id,
                 name: call.name || '',
                 len: args.length,
+                // 同一条 assistant 消息里的并行调用不算「后续重试」：兄弟调用的成功
+                // 不代表本批参数已被取代（B 成功可能是 B 的内容本来就没问题）
+                msgIdx: i,
                 rolledBack: settled && isRollbackReceipt(result.content),
                 success: settled && result.status !== 'error' && !isRollbackReceipt(result.content),
             });
         }
     }
-    // 倒序扫一遍：lastSuccessByName 里放的是「k 之后」的同名成功调用，
+    // 倒序扫一遍：lastSuccessByName 里放的是「k 之后、且不在同一条消息里」的同名成功调用，
     // 有就说明这批参数已经被后来的成功提交取代，可以折叠。O(n)。
-    const lastSuccessByName = new Set();
+    const lastSuccessByName = new Map(); // 工具名 → 最近一次成功调用的消息下标
     for (let k = calls.length - 1; k >= 0; k--) {
         const call = calls[k];
-        if (call.len > SLIM_ARGS_FOLD_THRESHOLD && call.rolledBack && lastSuccessByName.has(call.name)) {
+        const successIdx = lastSuccessByName.get(call.name);
+        if (call.len > SLIM_ARGS_FOLD_THRESHOLD && call.rolledBack &&
+            successIdx !== undefined && successIdx !== call.msgIdx) {
             out.add(call.id);
         }
-        if (call.success) lastSuccessByName.add(call.name);
+        if (call.success) lastSuccessByName.set(call.name, call.msgIdx);
     }
     return out;
 }
