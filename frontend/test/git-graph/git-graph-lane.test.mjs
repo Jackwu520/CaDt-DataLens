@@ -4,6 +4,7 @@
 // glyphX / laneSvgWidth / buildLaneSvg / parseCommitRefs / fileTreeFromChanges。
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
 import {
     glyphX, laneSvgWidth, buildLaneSvg, parseCommitRefs, fileTreeFromChanges,
     buildSkeletonHtml, clampPaneWidth,
@@ -155,4 +156,22 @@ test('clampPaneWidth 非法值与退化区间回落到 min', () => {
     assert.equal(clampPaneWidth(undefined, 120, 400), 120, 'undefined 回落 min');
     assert.equal(clampPaneWidth(Infinity, 120, 400), 120, '无穷回落 min');
     assert.equal(clampPaneWidth(250, 120, 100), 120, 'max<min 的退化区间回落 min');
+});
+
+// 2026-11-20 实测回归：缓存命中路径（再次点同一提交）在首个 await 前同步调用
+// fillFiles / fillBody，而两个 const 声明在函数后半段——TDZ 直接炸出
+// 「Cannot access 'fillFiles' before initialization」的未处理 Promise 拒绝。
+test('loadCommitDetail：fillFiles / fillBody 声明先于缓存命中调用（TDZ 回归护栏）', () => {
+    const src = readFileSync(new URL('../../src/git-graph/git-graph.js', import.meta.url), 'utf8');
+    const body = /async function loadCommitDetail\([\s\S]*?\n    \}/.exec(src);
+    assert.ok(body, 'loadCommitDetail 应存在');
+    const b = body[0];
+    assert.ok(b.includes('const fillFiles') && b.includes('const fillBody'), '两个填充函数应存在');
+    assert.ok(b.indexOf('const fillFiles') < b.indexOf('fillFiles(cacheHit.files)'),
+        'fillFiles 声明必须先于缓存命中路径的调用（const TDZ）');
+    assert.ok(b.indexOf('const fillBody') < b.indexOf('fillBody(bodyEl, sha, cacheHit.body)'),
+        'fillBody 声明必须先于缓存命中路径的调用（const TDZ）');
+    // 签名单参：缓存路径只传 files（曾误传 filesWrap 把详情容器当文件数组用）
+    assert.match(b, /fillFiles\(cacheHit\.files\)/);
+    assert.doesNotMatch(b, /fillFiles\(filesWrap/);
 });

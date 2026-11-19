@@ -975,16 +975,9 @@ export function createGitGraph(ctx) {
         const title = filesWrap.querySelector('.gg-files-title');
         const box = filesWrap.querySelector('.gg-files-body');
         if (!box) return;
-        const cacheHit = state.filesCache.get(sha);
-        if (cacheHit) {
-            fillFiles(filesWrap, cacheHit.files);
-            fillBody(bodyEl, sha, cacheHit.body);
-            return;
-        }
-        if (!ctx.backend.GitGraphCommitFiles) {
-            filesWrap.classList.add('hidden');
-            return;
-        }
+        // fillFiles / fillBody 必须先声明再用：缓存命中路径（再次点同一提交）在首个 await
+        // 之前就同步调用它们，声明放后面会踩 const TDZ（Cannot access 'fillFiles' before
+        // initialization → 未处理的 Promise 拒绝，2026-11-20 实测）。
         const fillFiles = (files) => {
             title.textContent = '本次变动（' + files.length + '）';
             box.innerHTML = '';
@@ -1001,6 +994,16 @@ export function createGitGraph(ctx) {
             if (el.dataset.bodySha !== forSha) return;
             el.textContent = body && body !== findCommit(forSha)?.subject ? body : '';
         };
+        const cacheHit = state.filesCache.get(sha);
+        if (cacheHit) {
+            fillFiles(cacheHit.files);
+            fillBody(bodyEl, sha, cacheHit.body);
+            return;
+        }
+        if (!ctx.backend.GitGraphCommitFiles) {
+            filesWrap.classList.add('hidden');
+            return;
+        }
         try {
             const [files, body] = await Promise.all([
                 ctx.backend.GitGraphCommitFiles(gitDir(), sha),
