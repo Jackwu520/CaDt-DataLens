@@ -10,6 +10,11 @@ func (a *App) AIArtifactWrite(sessionID string, name string, content string) (st
 	return aiartifact.Write(sessionID, name, content)
 }
 
+// AIArtifactRead 读回一份产物（重启后补读子代理转录用）；不存在返回空串。
+func (a *App) AIArtifactRead(sessionID string, name string) (string, error) {
+	return aiartifact.Read(sessionID, name)
+}
+
 // AIArtifactClear 删除某会话的全部产物（删会话时调用）。
 func (a *App) AIArtifactClear(sessionID string) error {
 	return aiartifact.ClearSession(sessionID)

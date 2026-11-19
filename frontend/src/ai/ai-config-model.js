@@ -3,7 +3,7 @@
 // models[] 下每个模型条目有独立的上下文窗口 / 输出窗口 / 输入能力 / 推理等级配置。
 // 旧版单模型字段（model / maxTokens / contextWindow / …）保留为激活条目的镜像，
 // 旧版本 exe 回滚后仍能读到一份可用配置；新逻辑一律以 models[] 为准。
-import {USAGE_PLAN_IDS, USAGE_TEMPLATE_KEYS} from './ai-usage-templates.js';
+import {USAGE_OAUTH_PROVIDER_IDS, USAGE_PLAN_IDS, USAGE_TEMPLATE_KEYS} from './ai-usage-templates.js';
 
 export const CONTEXT_WINDOW_MIN = 2048;
 export const CONTEXT_WINDOW_MAX = 8388608; // 8M tokens
@@ -381,7 +381,9 @@ export const USAGE_EXTRA_VALUE_MAX_LENGTH = 512;
 export function normalizeUsageConfig(raw) {
     const src = raw && typeof raw === 'object' ? raw : {};
     const template = USAGE_TEMPLATE_KEYS.includes(src.template) ? src.template : 'official';
-    const planProvider = USAGE_PLAN_IDS.includes(src.planProvider) ? src.planProvider : 'kimi';
+    const isOAuth = template === 'oauth';
+    const allowedProviders = isOAuth ? USAGE_OAUTH_PROVIDER_IDS : USAGE_PLAN_IDS;
+    const planProvider = allowedProviders.includes(src.planProvider) ? src.planProvider : (isOAuth ? 'sensenova' : 'kimi');
     const extraFields = {};
     if (src.extraFields && typeof src.extraFields === 'object') {
         let count = 0;

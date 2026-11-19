@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+
+	"datalens/internal/aiimagepolicy"
 )
 
 func ProviderOf(cfg Config) ProviderKind {
@@ -148,24 +150,38 @@ func ValidateMessages(messages []Message) error {
 			if role != "user" {
 				return fmt.Errorf("第 %d 条消息只有用户消息可以携带图片", i+1)
 			}
-			if len(m.Images) > aiMaxImagesPerMessage {
-				return fmt.Errorf("第 %d 条消息图片超过上限（%d 张）", i+1, aiMaxImagesPerMessage)
+			limits := aiimagepolicy.Get()
+			if len(m.Images) > limits.MaxImagesPerMessage {
+				return fmt.Errorf("第 %d 条消息图片超过上限（%d 张）", i+1, limits.MaxImagesPerMessage)
 			}
+			// 先把长度与格式这两项 O(1) 检查跑完，再决定要不要解码：
+			// 上限抬到 32 MiB/消息后，历史里几条带图消息就是上百 MB base64，
+			// 先整体解码再报「合计超限」会白白分配一大块内存。
+			var imageTotal int64
 			for j, img := range m.Images {
 				mime := strings.ToLower(strings.TrimSpace(img.Mime))
-				switch mime {
-				case "image/png", "image/jpeg", "image/webp", "image/gif":
-				default:
+				if !containsString(limits.MediaTypes, mime) {
 					return fmt.Errorf("第 %d 条消息第 %d 张图片格式不支持：%s", i+1, j+1, img.Mime)
 				}
 				data := strings.TrimSpace(img.Data)
 				if data == "" {
 					return fmt.Errorf("第 %d 条消息第 %d 张图片数据为空", i+1, j+1)
 				}
-				if len(data) > aiMaxImageBase64 {
-					return fmt.Errorf("第 %d 条消息第 %d 张图片超过大小上限", i+1, j+1)
+				if len(data) > limits.MaxNormalizedBase64 {
+					return fmt.Errorf("第 %d 条消息第 %d 张图片超过大小上限（%d MB）",
+						i+1, j+1, limits.MaxNormalizedBase64>>20)
 				}
-				if _, err := base64.StdEncoding.DecodeString(data); err != nil {
+				imageTotal += int64(len(data))
+			}
+			// 单条消息所有图片编码后合计的硬预算（对应 dsh 的 maxMessageImageBytes 在请求层的形态）：
+			// 单张各自合规不代表这一轮不会被几百 MB 的附件拖垮。放在解码之前判。
+			if imageTotal > int64(limits.MaxRequestImageBytes) {
+				return fmt.Errorf("第 %d 条消息图片合计超过上限（%d MB）：请减少图片或先发送当前消息",
+					i+1, limits.MaxRequestImageBytes>>20)
+			}
+			// 长度/格式/合计都过关，才做 base64 合法性解码（最贵的一步）。
+			for j, img := range m.Images {
+				if _, err := base64.StdEncoding.DecodeString(strings.TrimSpace(img.Data)); err != nil {
 					return fmt.Errorf("第 %d 条消息第 %d 张图片不是合法 base64", i+1, j+1)
 				}
 			}
@@ -207,6 +223,16 @@ func ValidateMessages(messages []Message) error {
 		}
 	}
 	return nil
+}
+
+// containsString 判断 strings 里是否有目标值（图片 MIME 白名单来自 aiimagepolicy，规模很小，线性比对足够）。
+func containsString(values []string, target string) bool {
+	for _, v := range values {
+		if v == target {
+			return true
+		}
+	}
+	return false
 }
 
 // messagesPayloadBytes 估算请求体的序列化体积：正文 + 思考 + 工具参数 + 附件 base64。

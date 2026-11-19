@@ -55,6 +55,11 @@ func Decode(raw string) (string, error) {
 	if !strings.HasPrefix(text, sealedPrefix) {
 		return raw, nil
 	}
+	// 只有前缀没有密文体（文件被截断 / 手工清空）：这是磁盘损坏，不是「用户清空了配置」。
+	// 当成空配置返回会让损坏被静默当成合法状态，必须走 ErrSealed 让前端留档提示。
+	if strings.TrimSpace(strings.TrimPrefix(text, sealedPrefix)) == "" {
+		return "", ErrSealed
+	}
 	if !dpapi.Supported() {
 		return "", ErrSealed
 	}
@@ -71,6 +76,11 @@ func Decode(raw string) (string, error) {
 // Encode 把明文配置转成落盘形态：有 DPAPI 就加密，没有就原样。
 // 加密失败直接报错，不退回明文——否则「密钥不落明文」这条保证会静默消失。
 func Encode(plain string) (string, error) {
+	// 空配置不落前缀：否则「首次写盘的空配置」会变成一个解不开的 0 字节密文文件，
+	// 换台机器就被判 ErrSealed 并触发留档，纯属自找麻烦。
+	if plain == "" {
+		return "", nil
+	}
 	if !dpapi.Supported() {
 		return plain, nil
 	}
@@ -96,7 +106,7 @@ func ReadFile(path string) (string, error) {
 	// 密文是 base64，体积约为明文的 1.37 倍：先按放宽后的上限挡掉异常大文件，
 	// 解密后再按 FileMax 精确判定。
 	if info.Size() > FileMax*2 {
-		return "", fmt.Errorf("AI 配置超过 %d KB", FileMax/1024)
+		return "", fmt.Errorf("AI 配置文件超过 %d KB", FileMax*2/1024)
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -120,6 +130,14 @@ func WriteFile(path, data string) error {
 	if len(data) > FileMax {
 		return fmt.Errorf("AI 配置超过 %d KB", FileMax/1024)
 	}
+	// 防呆闸门：「解不开的密文绝不静默覆盖」这条不变量不能只靠前端内存标记——
+	// 热重读失败被吞、镜像回退等路径都可能绕过它。目标文件存在且解不开时拒绝写入，
+	// 调用方必须先 BackupSealed 留档（留档后文件已改名，这里自然放行）。
+	if raw, err := os.ReadFile(path); err == nil {
+		if _, derr := Decode(string(raw)); derr != nil && errors.Is(derr, ErrSealed) {
+			return fmt.Errorf("%w：目标文件是本环境解不开的密文，请先留档（BackupSealed）再写入", ErrSealed)
+		}
+	}
 	encoded, err := Encode(data)
 	if err != nil {
 		return err
@@ -142,17 +160,25 @@ func BackupSealed() (string, error) {
 	if path == "" {
 		return "", errors.New("无法定位应用数据目录")
 	}
-	raw, err := os.ReadFile(path)
+	info, err := os.Stat(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return "", nil
 		}
 		return "", err
 	}
+	if info.Size() > FileMax*2 {
+		return "", fmt.Errorf("AI 配置文件超过 %d KB，不自动留档，请手工处理", FileMax*2/1024)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
 	if !strings.HasPrefix(strings.TrimSpace(string(raw)), sealedPrefix) {
 		return "", nil
 	}
-	backup := path + ".sealed-" + time.Now().Format("20060102-150405") + ".bak"
+	// 精确到毫秒：两个窗口同一秒内各留档一次时，秒级命名会互相覆盖（RENAME 带 REPLACE）。
+	backup := path + ".sealed-" + time.Now().Format("20060102-150405.000") + ".bak"
 	if err := os.Rename(path, backup); err != nil {
 		return "", err
 	}

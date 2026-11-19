@@ -11,6 +11,12 @@ const STROKE_ATTRS = 'fill="none" stroke="currentColor" stroke-width="1.4" strok
 // 注册表整体导出（冻结）：供图标表页/测试枚举展示，业务代码请用 iconSvg()。
 // name -> 内部图形（不含 <svg> 壳）。实心图标在这里自带 fill/stroke 覆盖。
 const rawIcons = {
+    // 生命周期（预指令/生命周期钩子设置页）：循环箭头 + 中心播放三角，表「随事件循环自动跑」
+    'lifecycle': '<path d="M5.7 7v2l5 3.5z" fill="currentColor" stroke="none"/>'
+        + '<path d="M12.9 6.1a5.3 5.3 0 0 0-9.5-1.2"/>'
+        + '<path d="M3.4 3.2v2.4h2.4"/>'
+        + '<path d="M3.1 9.9a5.3 5.3 0 0 0 9.5 1.2"/>'
+        + '<path d="M12.6 12.8v-2.4h-2.4"/>',
     'plus': '<path d="M8 3.5v9M3.5 8h9"/>',
     'close': '<path d="M4 4l8 8M12 4l-8 8"/>',
     'check': '<path d="M3.4 8.7l3.1 3.1 6.1-6.6"/>',

@@ -47,8 +47,20 @@ func SessionDir(sessionID string) string {
 	return filepath.Join(root, id)
 }
 
-// sanitize 只留下安全字符：会话 id 与产物名都由宿主生成，但仍按最严口径过滤，
-// 避免 ".."、路径分隔符或盘符混进来把写入引到目录之外。
+// sanitize 把会话 id / 产物名收紧成单段安全文件名：**任一非法字符即整串拒绝**
+// （fail-closed），不做替换——替换会产生「名字被改写」的隐式行为，调用方以为写的是 A
+// 实际写的是 B。Truncation 在 Trim 之后：先按上限截，再去掉首尾点，保证不会截出
+// 以点结尾的目录名（Win32 会剥离尾点，两个不同 id 会落到同一目录）。
+// Windows 保留设备名（CON/NUL/COM1…）单独拦：它们不含非法字符，但 Read 打开
+// 控制台设备可能把 GUI 进程挂住。
+var windowsReservedNames = map[string]bool{
+	"con": true, "prn": true, "aux": true, "nul": true,
+	"com1": true, "com2": true, "com3": true, "com4": true, "com5": true,
+	"com6": true, "com7": true, "com8": true, "com9": true,
+	"lpt1": true, "lpt2": true, "lpt3": true, "lpt4": true, "lpt5": true,
+	"lpt6": true, "lpt7": true, "lpt8": true, "lpt9": true,
+}
+
 func sanitize(value string, maxLen int) string {
 	var b strings.Builder
 	for _, r := range value {
@@ -57,14 +69,16 @@ func sanitize(value string, maxLen int) string {
 			r == '-', r == '_', r == '.':
 			b.WriteRune(r)
 		default:
+			// 非法字符：整串判废（分隔符、盘符、空格、控制字符都在此拦下）
 			return ""
 		}
 	}
-	out := strings.Trim(b.String(), ".")
+	out := b.String()
 	if len(out) > maxLen {
 		out = out[:maxLen]
 	}
-	if out == "" {
+	out = strings.Trim(out, ".")
+	if out == "" || windowsReservedNames[strings.ToLower(strings.TrimSuffix(out, filepath.Ext(out)))] {
 		return ""
 	}
 	return out
@@ -91,6 +105,31 @@ func Write(sessionID, name, content string) (string, error) {
 	return path, nil
 }
 
+// Read 读回一份产物（子代理转录用）；不存在返回空串，不报错。
+// 上限按 MaxBytes 守一次，避免手改出来的大文件把渲染层拖死。
+func Read(sessionID, name string) (string, error) {
+	dir := SessionDir(sessionID)
+	file := sanitize(name, 96)
+	if dir == "" || file == "" {
+		return "", errors.New("会话 id 或产物名非法")
+	}
+	info, err := os.Stat(filepath.Join(dir, file+".txt"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	if info.Size() > MaxBytes {
+		return "", ErrTooLarge
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, file+".txt"))
+	if err != nil {
+		return "", err
+	}
+	return string(raw), nil
+}
+
 // ClearSession 删除某会话的全部产物（删会话时调用）。
 func ClearSession(sessionID string) error {
 	dir := SessionDir(sessionID)
@@ -111,8 +150,10 @@ func ClearSession(sessionID string) error {
 // ClearAll 删除全部产物（「删除所有会话」时调用）。
 func ClearAll() error {
 	root := Root()
-	// 只认以 ai-artifacts 结尾的目录，避免 Root() 口径变化时误删 appdata 其他内容。
-	if root == "" || filepath.Base(root) != DirName {
+	// Root() 全由常量拼出（appdata.Root() + DirName），没有外部输入，这条校验防的只有
+	// 一种情况：未来有人改坏 Root() 的口径（丢了 DirName、返回了相对路径）。真出现时
+	// 宁可拒绝删除，也不能静默 RemoveAll 一个不可预期的目录。
+	if root == "" || filepath.Base(root) != DirName || !filepath.IsAbs(root) {
 		return errors.New("产物根目录异常")
 	}
 	return os.RemoveAll(root)

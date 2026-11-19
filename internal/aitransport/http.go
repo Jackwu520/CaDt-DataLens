@@ -90,8 +90,11 @@ func StreamResponse(ctx context.Context, cancel context.CancelCauseFunc, id stri
 			delay := aiRetryDelay(attempt, resp.Header.Get("Retry-After"), resp.StatusCode)
 			// 429 是配额类限流：把服务端要求的等待时间回灌给限流器，冻结期内同 key 的
 			// 其他请求（子代理、分类器、别的会话）一起排队，避免「一个请求在退避、
-			// 另外二十个还在往前撞」。5xx 不是配额问题，不冻结。
-			aiRateLimiter.freezeUntil(rateKey(cfg), time.Now().Add(delay))
+			// 另外二十个还在往前撞」。5xx 不是配额问题，不冻结（退避时长是本端猜的
+			// 指数退避，回灌出去会让同 key 的无关请求跟着空等）。
+			if resp.StatusCode == http.StatusTooManyRequests {
+				aiRateLimiter.freezeUntil(rateKey(cfg), time.Now().Add(delay))
+			}
 			emit(EventRetry, RetryPayload{Id: id, Attempt: attempt + 1, Max: max, DelayMs: int(delay.Milliseconds()), Reason: reason})
 			logf("warn", "AI 接口返回 %d，%s 后第 %d/%d 次重试", resp.StatusCode, delay.Round(time.Millisecond), attempt+1, max)
 			if !aiRetryWait(ctx, delay, touch) {
@@ -169,10 +172,12 @@ func StreamResponse(ctx context.Context, cancel context.CancelCauseFunc, id stri
 				}
 			}
 			// 网关不认识 Anthropic 的 cache_control（标准字段，实现未必跟上）：摘掉缓存断点
-			// 重发一次。少省一点钱，总好过整轮跑不通。
+			// 重发一次。少省一点钱，总好过整轮跑不通。attempt-- 抵消 for 的自增：
+			// 兼容性降级不该消耗 429/5xx 的重试预算（否则几个降级连发就把重试吃光）。
 			if !cacheControlDropped && ProviderOf(cfg) == ProviderAnthropic && aiRejectsCacheControl(resp.StatusCode, errBody) {
 				cfg.noPromptCache = true
 				cacheControlDropped = true
+				attempt--
 				logf("warn", "网关不接受 cache_control（提示词缓存断点），已去掉该字段重试：%s",
 					aiStatusErrorBodyText(resp.StatusCode, errBody))
 				touch()
@@ -202,6 +207,13 @@ func StreamResponse(ctx context.Context, cancel context.CancelCauseFunc, id stri
 				emit(event, payload)
 			case EventDone, EventError:
 				batcher.flushNow()
+				if event == EventDone {
+					// 请求日志要显示状态码：成功流的响应码只有这一层拿得到，补进 done 载荷。
+					if p, ok := payload.(DonePayload); ok {
+						p.StatusCode = resp.StatusCode
+						payload = p
+					}
+				}
 				emit(event, payload)
 			default:
 				emit(event, payload)

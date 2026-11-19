@@ -5,6 +5,7 @@
 // 标签页视图经 subscribe 拿快照。
 import {aiClampInt, aiEstimateTokens, aiNowId} from './ai-constants.js';
 import {friendlyRetryReason} from './ai-terminal-tools.js';
+import {aiStreamRetryBudget, shouldAutoRetryStream} from './ai-stream-retry.js';
 import {
     FREE_CHAT_CAPS,
     GROUP_LAST_PREVIEW_MAX,
@@ -53,6 +54,7 @@ export function createAIGroupRuntime(deps) {
     const getAIConfig = typeof deps.getAIConfig === 'function' ? deps.getAIConfig : (() => null);
     const resolveModel = typeof deps.resolveModel === 'function' ? deps.resolveModel : (() => null);
     const flash = deps.flash || (() => {});
+    const notifyFailure = typeof deps.notifyFailure === 'function' ? deps.notifyFailure : () => {};
     // G6 面板化：openGroupView 由 main 注入，把 AI 面板切到群聊视图（不再开内容区标签页）
     const openGroupView = typeof deps.openGroupView === 'function' ? deps.openGroupView : null;
     // G5 落地：群成员只读工具执行体（main 注入 → aiPanel.aiGroupApi.execMemberTool；
@@ -127,7 +129,9 @@ export function createAIGroupRuntime(deps) {
     function init() {
         if (initPromise) return initPromise;
         initPromise = refreshList().catch((e) => {
-            flash('群聊列表加载失败：' + ((e && e.message) || e), true);
+            const detail = String((e && e.message) || e);
+            flash('群聊列表加载失败：' + detail, true);
+            notifyFailure('群聊列表加载失败', detail, {key: 'group-list-load', kind: 'error', toast: false});
         });
         return initPromise;
     }
@@ -156,7 +160,9 @@ export function createAIGroupRuntime(deps) {
         try {
             await ensureLoaded(id);
         } catch (e) {
-            flash('群聊记录读取失败：' + ((e && e.message) || e), true);
+            const detail = String((e && e.message) || e);
+            flash('群聊记录读取失败：' + detail, true);
+            notifyFailure('群聊记录读取失败', detail, {key: 'group-read', kind: 'error', toast: false});
             return null;
         }
         if (openGroupView) openGroupView({groupId: id, title: g.meta.title});
@@ -233,7 +239,9 @@ export function createAIGroupRuntime(deps) {
         try {
             await store.remove(id);
         } catch (e) {
-            flash('删除群聊失败：' + ((e && e.message) || e), true);
+            const detail = String((e && e.message) || e);
+            flash('删除群聊失败：' + detail, true);
+            notifyFailure('删除群聊失败', detail, {key: 'group-delete', kind: 'error', toast: false});
             return {ok: false};
         }
         groups.delete(id);
@@ -251,7 +259,9 @@ export function createAIGroupRuntime(deps) {
         try {
             await store.writeMeta(id, JSON.stringify(g.meta));
         } catch (e) {
-            flash('群聊状态保存失败：' + ((e && e.message) || e), true);
+            const detail = String((e && e.message) || e);
+            flash('群聊状态保存失败：' + detail, true);
+            notifyFailure('群聊状态保存失败', detail, {key: 'group-meta-save', kind: 'error', toast: false});
         }
         notify();
     }
@@ -394,11 +404,15 @@ export function createAIGroupRuntime(deps) {
             agentId,
             agentName: agent.name,
             agentColor: agent.color,
+            // 使用统计的「供应商」列显示账号名（agentName 是群成员昵称，不是账号）
+            modelAccount: (resolved.account && resolved.account.name) || '',
             modelName: resolved.label || (resolved.entry && resolved.entry.model) || '',
             content: '',
             thinking: '',
             startedAt: Date.now(),
             firstActivityAt: 0,
+            firstTokenMs: 0,
+            statusCode: 0,
             finished: false,
             timeout: false,
             timedOutBy: '',
@@ -418,6 +432,7 @@ export function createAIGroupRuntime(deps) {
             toolRounds: 0,
             toolSteps: [],
             usageAcc: null,
+            usageFields: null,
         };
         stream.done = new Promise((resolve) => {
             stream.resolve = resolve;
@@ -533,10 +548,51 @@ export function createAIGroupRuntime(deps) {
     function touch(stream) {
         if (!stream.firstActivityAt) {
             stream.firstActivityAt = Date.now();
+            // 使用统计的首字延迟：整段发言只记第一次（重试/工具轮不重置）
+            if (!stream.firstTokenMs) stream.firstTokenMs = Math.max(0, stream.firstActivityAt - (Number(stream.startedAt) || stream.firstActivityAt));
             if (stream.timers.first) {
                 clearTimeout(stream.timers.first);
                 stream.timers.first = null;
             }
+        }
+    }
+
+    // 群聊成员 / 主持人的 token 用量也计入使用统计（与主会话同一事实表）。
+    // 幂等键用消息 gid：落盘扫描与实时上报都认它，不会重复计数。
+    function reportStreamUsage(stream, gid, finishedAt, usage) {
+        if (!usage || !stream || !stream.groupId) return;
+        const api = backend && backend.AIUsageStatsRecord;
+        if (typeof api !== 'function') return;
+        let payload = '';
+        try {
+            payload = JSON.stringify({
+                sessionId: 'group:' + stream.groupId,
+                messageId: gid,
+                ts: finishedAt,
+                model: stream.modelName || '',
+                modelAccount: stream.modelAccount || stream.agentName || '',
+                turnMs: Math.max(0, finishedAt - (Number(stream.startedAt) || finishedAt)),
+                modelMs: Math.max(0, finishedAt - (Number(stream.startedAt) || finishedAt)),
+                ttftMs: Number(stream.firstTokenMs) || 0,
+                statusCode: Number(stream.statusCode) || 0,
+                usage: {
+                    promptTokens: Number(usage.promptTokens) || 0,
+                    completionTokens: Number(usage.completionTokens) || 0,
+                    totalTokens: Number(usage.totalTokens) || 0,
+                    cachedTokens: Number(usage.cachedTokens) || 0,
+                    cacheWriteTokens: Number(usage.cacheWriteTokens) || 0,
+                },
+            });
+        } catch (e) {
+            return;
+        }
+        try {
+            const result = api.call(backend, payload);
+            if (result && typeof result.then === 'function') {
+                result.then(() => {}).catch(() => {});
+            }
+        } catch (e) {
+            // 统计上报是尽力而为：失败不影响群聊
         }
     }
 
@@ -545,6 +601,7 @@ export function createAIGroupRuntime(deps) {
         if (!g) return;
         const gid = aiNowId('gm-');
         const finishedAt = Date.now();
+        reportStreamUsage(stream, gid, finishedAt, info && info.usage);
         const msg = {
             gid,
             role: 'assistant',
@@ -552,6 +609,8 @@ export function createAIGroupRuntime(deps) {
             agentName: stream.agentName,
             agentColor: stream.agentColor,
             model: stream.modelName,
+            modelAccount: stream.modelAccount || '',
+            statusCode: Number(stream.statusCode) || 0,
             content: stream.content,
             ts: finishedAt,
             turnId: stream.roundId,
@@ -594,7 +653,10 @@ export function createAIGroupRuntime(deps) {
                 meta.lastPreview = previewOfMessage(msg);
             });
         } catch (e) {
-            flash('群聊消息落盘失败：' + ((e && e.message) || e), true);
+            const detail = String((e && e.message) || e);
+            flash('群聊消息落盘失败：' + detail, true);
+            // A 级：群聊消息没写进磁盘会丢历史，需用户回来处理（节流防连续发言刷屏）。
+            notifyFailure('群聊消息落盘失败', detail, {key: 'group-msg-save', kind: 'error'});
         }
         if (info.status === 'timeout') {
             await appendSystemEvent(stream.groupId, {
@@ -650,8 +712,11 @@ export function createAIGroupRuntime(deps) {
         stream.finished = true;
         clearTimers(stream);
         stream.error = message;
+        // 失败流没有可展示的成功状态码；不要把上一个工具轮的 200 带进请求日志
+        stream.statusCode = 0;
         const status = stream.timeout ? 'timeout' : 'error';
-        await persistSpeech(stream, {status, error: message, usage: null});
+        const acc = stream.usageFields;
+        await persistSpeech(stream, {status, error: message, usage: acc && acc.totalTokens > 0 ? {...acc} : null});
         streams.delete(stream.roundId);
         notify();
         if (stream.resolve) {
@@ -694,10 +759,20 @@ export function createAIGroupRuntime(deps) {
             if (payload && payload.argsDelta) call.arguments += payload.argsDelta;
             touch(stream);
         } else if (name === 'ai-done') {
+            stream.statusCode = Number((payload && payload.statusCode) || 0) || 0;
             if (!stream.toolCalls) { finishStream(stream, payload); return notify(); } // chair/compress 流无工具逻辑
-            // usage 跨工具轮累计（每轮请求各自的 usage 求和）
-            if (payload && payload.usage && payload.usage.totalTokens) {
-                stream.usageAcc = (stream.usageAcc || 0) + Number(payload.usage.totalTokens) || 0;
+            // usage 跨工具轮累计：total 用于展示，输入/输出/缓存各字段也一起累计
+            if (payload && payload.usage) {
+                const usage = payload.usage;
+                const acc = stream.usageFields
+                    || (stream.usageFields = {promptTokens: 0, completionTokens: 0, cachedTokens: 0, cacheWriteTokens: 0, totalTokens: 0});
+                acc.promptTokens += Number(usage.promptTokens) || 0;
+                acc.completionTokens += Number(usage.completionTokens) || 0;
+                acc.cachedTokens += Number(usage.cachedTokens) || 0;
+                acc.cacheWriteTokens += Number(usage.cacheWriteTokens) || 0;
+                acc.totalTokens += Number(usage.totalTokens)
+                    || ((Number(usage.promptTokens) || 0) + (Number(usage.completionTokens) || 0));
+                stream.usageAcc = acc.totalTokens;
             }
             const wantsTools = !!(payload && payload.finishReason === 'tool');
             const collected = collectToolCalls(stream, payload);
@@ -710,16 +785,48 @@ export function createAIGroupRuntime(deps) {
                 // 主持人 / 无执行体 / 已停止：工具调用一律拒绝并按错误归档，防无限循环
                 failStream(stream, '成员发言不支持工具调用（本轮返回了 ' + collected.calls.length + ' 个工具调用）');
             } else {
-                if (stream.usageAcc && payload) {
-                    payload.usage = {...((payload && payload.usage) || {}), totalTokens: stream.usageAcc};
+                if (stream.usageFields && payload) {
+                    payload.usage = {...((payload && payload.usage) || {}), ...stream.usageFields};
                 }
                 finishStream(stream, payload);
             }
         } else if (name === 'ai-error') {
-            failStream(stream, (payload && payload.message) || '请求失败');
+            // 流中途被掐断 / 流内网关 5xx（retryable）先走自动重试，失败再归档错误
+            if (!retryGroupSpeechStream(stream, payload)) {
+                failStream(stream, (payload && payload.message) || '请求失败');
+            }
         }
         notify();
     }
+    // 流中途被网关掐断 / 流内网关 5xx（ai-error.retryable）的自动重试：与主会话
+    // retryTruncatedRound 同语义——清掉本轮半截内容后按原 roundId 续发（Go 侧出错
+    // 后已释放流注册表条目，同 id 可复用）。成员工具轮中间失败时 apiMessages 已含
+    // 此前轮的 assistant(tool_calls)+tool 配对，本轮半截作废后原样续发，不会重放
+    // 已执行的工具。预算见 ai-stream-retry.js（retryMax=0 视为关闭）。只有携带
+    // 重发上下文（profileCfg/apiMessages）的流可重试；成员/主持人/摘要器三类流
+    // 都在创建时存好了这些字段。
+    function retryGroupSpeechStream(stream, payload) {
+        if (!stream || stream.finished || stream.timeout || stream.error) return false;
+        if (!stream.profileCfg || !stream.apiMessages) return false;
+        const budget = aiStreamRetryBudget(stream.retryMax);
+        if (!shouldAutoRetryStream({retryable: !!(payload && payload.retryable), retried: stream.streamRetried, budget})) return false;
+        stream.streamRetried = (stream.streamRetried || 0) + 1;
+        stream.content = '';
+        stream.thinking = '';
+        stream.firstActivityAt = 0;
+        if (stream.toolCalls) stream.toolCalls.clear();
+        // 已完成的工具轮 token 不因重试作废；重试轮继续累加到同一份合计
+        stream.statusNote = '流式连接被中断，正在自动重试…';
+        try {
+            const sendResult = backend.AISendChat(stream.roundId, stream.profileCfg, stream.apiMessages, stream.tools, stream.retryMax);
+            Promise.resolve(sendResult).catch((e) => failStream(stream, (e && e.message) || String(e)));
+        } catch (e) {
+            failStream(stream, (e && e.message) || String(e));
+            return false;
+        }
+        return true;
+    }
+
     // ---------- 用户消息与停止 ----------
 
     async function sendUserMessage(groupId, text) {
@@ -773,7 +880,11 @@ export function createAIGroupRuntime(deps) {
         } else {
             // 闲时（QQ/微信群式）：消息即唤醒——@点名谁谁回，无 @ 轮换一位成员接话；
             // 自由模式成员输出里的 @ 继续接力（受 §12 上限约束）。不 await：发送立即返回。
-            runChatDispatch(groupId, msg).catch((e) => flash('群聊消息调度失败：' + ((e && e.message) || e), true));
+            runChatDispatch(groupId, msg).catch((e) => {
+                const detail = String((e && e.message) || e);
+                flash('群聊消息调度失败：' + detail, true);
+                notifyFailure('群聊消息调度失败', detail, {key: 'group-dispatch', kind: 'error', toast: false});
+            });
         }
         return {ok: true, gid};
     }
@@ -1050,11 +1161,14 @@ export function createAIGroupRuntime(deps) {
             agentId: chairAgent.id,
             agentName: '主持人',
             agentColor: chairAgent.color,
+            modelAccount: (resolved.account && resolved.account.name) || '',
             modelName: resolved.label || '',
             content: '',
             thinking: '',
             startedAt: Date.now(),
             firstActivityAt: 0,
+            firstTokenMs: 0,
+            statusCode: 0,
             finished: false,
             timeout: false,
             timedOutBy: '',
@@ -1064,6 +1178,11 @@ export function createAIGroupRuntime(deps) {
             groupBlock: null,
             contract: null,
             timers: {first: null, total: null},
+            // 自动重试上下文：ai-error.retryable 时按原 roundId 续发（见 retryGroupSpeechStream）
+            profileCfg: resolved.profileCfg,
+            apiMessages: built.messages,
+            tools: [],
+            retryMax: aiClampInt(config && config.retryMax, 0, 10, 5),
         };
         stream.done = new Promise((resolve) => {
             stream.resolve = resolve;
@@ -1143,7 +1262,9 @@ export function createAIGroupRuntime(deps) {
                 meta.lastPreview = previewOfMessage(msg);
             });
         } catch (e) {
-            flash('纪要落盘失败：' + ((e && e.message) || e), true);
+            const detail = String((e && e.message) || e);
+            flash('纪要落盘失败：' + detail, true);
+            notifyFailure('群聊纪要落盘失败', detail, {key: 'group-minutes-save', kind: 'error'});
         }
     }
 
@@ -1449,11 +1570,14 @@ export function createAIGroupRuntime(deps) {
             agentId: 'compress',
             agentName: '摘要器',
             agentColor: '',
+            modelAccount: (resolved.account && resolved.account.name) || '',
             modelName: resolved.label || '',
             content: '',
             thinking: '',
             startedAt: Date.now(),
             firstActivityAt: 0,
+            firstTokenMs: 0,
+            statusCode: 0,
             finished: false,
             timeout: false,
             timedOutBy: '',
@@ -1464,6 +1588,11 @@ export function createAIGroupRuntime(deps) {
             groupBlock: null,
             contract: null,
             timers: {first: null, total: null},
+            // 自动重试上下文：ai-error.retryable 时按原 roundId 续发（见 retryGroupSpeechStream）
+            profileCfg: resolved.profileCfg,
+            apiMessages: messages,
+            tools: [],
+            retryMax: aiClampInt(config && config.retryMax, 0, 10, 5),
         };
         stream.done = new Promise((resolve) => {
             stream.resolve = resolve;

@@ -12,8 +12,10 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"regexp"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -22,6 +24,7 @@ func streamOpenAISSE(body io.Reader, id string, emit Emitter, touch func()) erro
 	scanner.Buffer(make([]byte, 64<<10), 4<<20)
 
 	finishReason := "stop"
+	finishSeen := false
 	doneSent := false
 	var usage aiUsage
 	var timings *aiChatTimings
@@ -98,11 +101,17 @@ func streamOpenAISSE(body io.Reader, id string, emit Emitter, touch func()) erro
 			}
 			if choice.FinishReason != nil && *choice.FinishReason != "" {
 				finishReason = aiFinishReason(*choice.FinishReason)
+				finishSeen = true
 			}
 		}
 	}
 	if err := scanner.Err(); err != nil {
 		return err
+	}
+	// 静默截断守卫：流被干净地关闭但既没收到 [DONE] 也没收到 finish_reason——
+	// 生成中途被掐断却不报错，半截内容会被当成完整结果落盘，比报错更危险。
+	if !finishSeen {
+		return fmt.Errorf("%w：流结束但没有终止标记（无 finish_reason / [DONE]），生成可能不完整。可直接重试", ErrStreamTruncated)
 	}
 	emitDone()
 	return nil
@@ -238,6 +247,10 @@ func streamResponsesSSE(body io.Reader, id string, emit Emitter, touch func()) e
 	}
 	if err := scanner.Err(); err != nil {
 		return err
+	}
+	// 静默截断守卫：Responses 正常结束必有 response.completed / response.incomplete。
+	if !doneSent {
+		return fmt.Errorf("%w：流结束但没有终止事件（response.completed），生成可能不完整。可直接重试", ErrStreamTruncated)
 	}
 	emitDone()
 	return nil
@@ -398,6 +411,11 @@ func streamAnthropicSSE(body io.Reader, id string, emit Emitter, touch func()) e
 		}
 		return err
 	}
+	// 静默截断守卫：Anthropic 正常结束必有 message_stop；流提前关闭时半截内容
+	// 不能当完整结果落盘（thinking signature 也必然不完整，重发才有意义）。
+	if !doneSent {
+		return fmt.Errorf("%w：流结束但没有终止事件（message_stop），生成可能不完整。可直接重试", ErrStreamTruncated)
+	}
 	emitDone()
 	return nil
 }
@@ -411,15 +429,48 @@ func aiFinishReason(reason string) string {
 	}
 }
 
+// aiStreamUpstreamRe 识别「流内 error 事件文案是网关/上游故障」的特征：
+// error code: 5xx、[502]、HTTP 502 / status: 5xx、502 Bad Gateway 这类。
+// 只认带状态码数字或 5xx 习惯用语的形态，避免把「额度不足」「内容过滤」这类
+// 模型业务错误误判成可重试的传输故障。
+var aiStreamUpstreamRe = regexp.MustCompile(
+	`(?i)(?:error[ _-]?code|http|status)\s*:?\s*5\d{2}` +
+		`|\[\s*5\d{2}\s*\]` +
+		`|\b5\d{2}\s+(?:bad gateway|internal server error|service unavailable|gateway time-?out)`)
+
 // aiStreamErrorText 把「流中途被断开」翻成用户能看懂的文案。网关/代理在长生成中
 // 掐断 SSE 时，Go 只返回 io.ErrUnexpectedEOF（chunked 流缺终止块），原文冒到界面
 // 既看不出是网络问题，也给不出下一步。解析失败、业务错误体等已有明确文本的照原样返回。
+//
+// 另一条路径：流已正常开启但网关在流中途发了 error 事件（如 502），HTTP 状态码
+// 层面的重试循环够不着——这里按文案特征包装成 ErrStreamUpstreamError，让前端
+// 整轮自动重发，而不是把「Streaming response failed: [502]」摆给用户手动点继续。
 func aiStreamErrorText(err error) error {
 	if err == nil {
 		return nil
 	}
-	if errors.Is(err, io.ErrUnexpectedEOF) || strings.Contains(strings.ToLower(err.Error()), "unexpected eof") {
+	lower := strings.ToLower(err.Error())
+	if errors.Is(err, io.ErrUnexpectedEOF) || strings.Contains(lower, "unexpected eof") {
 		return fmt.Errorf("%w：通常是网关或代理在长生成中超时、掐断了连接，本轮已生成的内容可能不完整。可直接重试；大段改动建议拆成多次小改动", ErrStreamTruncated)
+	}
+	// 断流的第三种形态：连接被掐在一条 JSON 数据块中间，bufio 把最后的不完整行当
+	// 整块交上来，json.Unmarshal 报「unexpected end of JSON input」。这不是网关发
+	// 了坏数据（真坏数据报的是 invalid character 之类），同样可整轮重发。
+	if strings.Contains(lower, "unexpected end of json input") {
+		return fmt.Errorf("%w：流在数据块中间被网关掐断（最后一条不完整），本轮已生成的内容可能不完整。可直接重试", ErrStreamTruncated)
+	}
+	// 同一条缝的另外几种断法：流中途连接被重置 / 管道断裂（网关崩溃、LB 掐长连接
+	// 常见）。优先按 errno 判定——Windows 的 WSAECONNRESET 文案是「An existing
+	// connection was forcibly closed by the remote host」，里面根本没有
+	// "connection reset" 字样，纯文案匹配会漏；errno 链断了（如中途被转成字符串）
+	// 再兜一层文案匹配。
+	if errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE) ||
+		strings.Contains(lower, "connection reset") || strings.Contains(lower, "broken pipe") ||
+		strings.Contains(lower, "forcibly closed by the remote host") {
+		return fmt.Errorf("%w：连接被网关或代理中途重置，本轮已生成的内容可能不完整。可直接重试", ErrStreamTruncated)
+	}
+	if aiStreamUpstreamRe.MatchString(err.Error()) {
+		return fmt.Errorf("%w：%s", ErrStreamUpstreamError, err.Error())
 	}
 	return err
 }

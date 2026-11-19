@@ -21,6 +21,9 @@ import {showPatchView, disposePatchView} from './patch-view.js';
 
 export function createEditorGroups(deps) {
 
+// 失败 / 后台事件通知（消息中心 + toast + 节流）：文件被外部改动未重载等
+const notifyFailure = (...args) => (typeof deps.notifyFailure === 'function' ? deps.notifyFailure(...args) : undefined);
+
 let editorGroups = [];
 let splitRoot = null;
 let focusedGroupId = null;
@@ -1200,7 +1203,10 @@ async function reloadAfterPatch(files) {
         const doc = deps.findDocByPath(patchAbsPath(rel));
         if (!doc) continue;
         if (doc.dirty) {
-            deps.flash(doc.name + ' 已被补丁修改，但编辑器里有未保存内容，未自动重载', true);
+            const detail = doc.name + ' 已被补丁修改，但编辑器里有未保存内容，未自动重载';
+            deps.flash(detail, true);
+            // B 级：磁盘已变但编辑器保留旧内容，继续编辑可能覆盖补丁结果。
+            notifyFailure('文件已被修改但未重载', detail, {key: 'stale-patch:' + doc.name, kind: 'error'});
             continue;
         }
         if (doc === deps.file) {
@@ -1774,7 +1780,10 @@ async function handleAIWorkspaceFileChanged(path) {
     const doc = deps.findDocByPath(path);
     if (!doc) return;
     if (doc.dirty) {
-        deps.flash('AI 已修改 ' + doc.name + '，但编辑器中有未保存修改，未自动重载', true);
+        const detail = 'AI 已修改 ' + doc.name + '，但编辑器中有未保存修改，未自动重载';
+        deps.flash(detail, true);
+        // B 级：AI 改了磁盘但本地有未保存内容，用户没注意就可能保存覆盖回去。
+        notifyFailure('AI 修改的文件未重载', detail, {key: 'stale-ai:' + doc.name, kind: 'error'});
         return;
     }
     if (doc === deps.file) {

@@ -36,10 +36,10 @@ const (
 	// 单次请求体积兜底（仅防爆）：同样六个参照 harness 都不设消息条数上限，条数与体积无关
 	// （1000 条短消息可能很小，200 条带图消息可能上百 MB）。这里只拦「序列化后大到任何服务商
 	// 都不可能接受」的请求，避免把几百 MB 的 base64 塞进 HTTP 客户端。
-	aiMaxRequestBytes     = 128 << 20
-	aiMaxModels           = 500
-	aiMaxImagesPerMessage = 6
-	aiMaxImageBase64      = 8 << 20
+	aiMaxRequestBytes = 128 << 20
+	aiMaxModels       = 500
+	// 图片三层阈值不在本包另写一份：唯一真源在 internal/aiimagepolicy（经 AIImageLimits 投影给前端）。
+	// 这里只做 Go 侧强制校验的引用，数值改在 aiimagepolicy 一处即可，前后端不会漂。
 	// 视频输入（OpenAI 兼容协议的 video_url 内容段）：不做降质/截帧，体积门禁放前端，
 	// 这里只兜底。Qwen-VL 系（DashScope / vLLM）实测可吃十几 MB 的 base64 视频。
 	aiMaxVideosPerMessage = 1
@@ -67,11 +67,17 @@ const (
 
 var (
 	ErrIdleTimeout = errors.New("AI 响应超时（无数据）")
-	// ErrStreamTruncated：流式响应在生成中途被服务端断开（chunked 流缺终止块）。
-	// 整轮重发即可恢复，前端据此自动重试而不是直接把原始 EOF 摆给用户。
-	ErrStreamTruncated = errors.New("AI 流式响应被服务端提前断开（unexpected EOF）")
-	errAnthropicDone   = errors.New("anthropic stream done")
-	aiToolNameRule     = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+	// ErrStreamTruncated：流式响应在生成中途被服务端断开。具体断法有三种形态
+	// （chunked 缺终止块 / 连接被重置 / 流干净关闭但没有终止事件），前端据此
+	// 整轮自动重试，而不是把半截内容当完整结果落盘或把裸错误摆给用户。
+	ErrStreamTruncated = errors.New("AI 流式响应被服务端提前断开")
+	// ErrStreamUpstreamError：流已正常开启（HTTP 200 + SSE），但网关在流中途发了
+	// error 事件且文案是网关/上游故障特征（error code: 5xx、[502]、HTTP 5xx 等）。
+	// 与 unexpected EOF 同属「整轮重发即可恢复」的传输故障：HTTP 状态码层面的
+	// 5xx 重试循环够不着它，必须靠这个标记让前端自动重发，而不是把 502 摆给用户。
+	ErrStreamUpstreamError = errors.New("AI 流式响应在流内收到网关错误")
+	errAnthropicDone       = errors.New("anthropic stream done")
+	aiToolNameRule         = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 )
 
 // idleTimeoutError 携带本次实际生效的空闲超时秒数，文案对用户显示具体阈值；
@@ -196,6 +202,8 @@ type DonePayload struct {
 	FinishReason      string   `json:"finishReason"`
 	ThinkingSignature string   `json:"thinkingSignature,omitempty"`
 	Usage             *aiUsage `json:"usage,omitempty"`
+	// StatusCode 是这条成功流对应的 HTTP 状态码（请求日志展示用；重试后记最终成功的响应）。
+	StatusCode int `json:"statusCode,omitempty"`
 }
 
 type ErrorPayload struct {

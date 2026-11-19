@@ -3,6 +3,7 @@ package aitransport
 // 传输引擎测试：从根目录 ai_test.go 拆出（随包迁移）。
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -10,10 +11,14 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
+
+	"datalens/internal/aiimagepolicy"
 )
 
 type aiEventRecord struct {
@@ -188,6 +193,10 @@ func TestAIStreamOpenAI(t *testing.T) {
 	donePayload := done[0].(DonePayload)
 	if donePayload.Id != "sess#0" || donePayload.FinishReason != "tool" {
 		t.Fatalf("done = %#v", donePayload)
+	}
+	// 请求日志要显示成功流的 HTTP 状态码：done 载荷必须带上最终响应码
+	if donePayload.StatusCode != 200 {
+		t.Fatalf("done statusCode = %d", donePayload.StatusCode)
 	}
 	if donePayload.Usage == nil || donePayload.Usage.TotalTokens != 15 || donePayload.Usage.PromptTokens != 10 || donePayload.Usage.CachedTokens != 6 {
 		t.Fatalf("usage = %#v", donePayload.Usage)
@@ -716,6 +725,85 @@ func TestValidateToolsHasNoCountLimit(t *testing.T) {
 	}
 }
 
+// 图片三层校验：张数（10）、单张编码（4MiB）、单条消息合计（32MiB）都走 aiimagepolicy 单一真源。
+func TestValidateMessagesImageLimits(t *testing.T) {
+	limits := aiimagepolicy.Get()
+	small := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x89}, 1024))
+	makeImages := func(n int) []ImagePart {
+		out := make([]ImagePart, 0, n)
+		for i := 0; i < n; i++ {
+			out = append(out, ImagePart{Mime: "image/png", Data: small})
+		}
+		return out
+	}
+
+	// 恰好 10 张通过
+	if err := ValidateMessages([]Message{{Role: "user", Images: makeImages(limits.MaxImagesPerMessage)}}); err != nil {
+		t.Fatalf("%d 张小图应通过: %v", limits.MaxImagesPerMessage, err)
+	}
+	// 11 张拒绝
+	if err := ValidateMessages([]Message{{Role: "user", Images: makeImages(limits.MaxImagesPerMessage + 1)}}); err == nil ||
+		!strings.Contains(err.Error(), "图片超过上限") {
+		t.Fatalf("超过张数上限应被拒: %v", err)
+	}
+	// 单张超过归一化上限（4MiB base64）
+	oversized := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x89}, limits.MaxNormalizedBase64+1))
+	if err := ValidateMessages([]Message{{Role: "user", Images: []ImagePart{{Mime: "image/png", Data: oversized}}}}); err == nil ||
+		!strings.Contains(err.Error(), "超过大小上限") {
+		t.Fatalf("单张超限应被拒: %v", err)
+	}
+	// 单条消息合计超请求预算：10 张各 3MiB 原始字节 → 每张恰好 4MiB base64（等于单张上限、不触发单张红线），
+	// 合计 40MiB > 32MiB，因此报错必然来自合计判定——特意用等值单张来区分两条红线。
+	perImage := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x89}, 3<<20))
+	images := make([]ImagePart, 0, 10)
+	for i := 0; i < 10; i++ {
+		images = append(images, ImagePart{Mime: "image/png", Data: perImage})
+	}
+	err := ValidateMessages([]Message{{Role: "user", Images: images}})
+	if err == nil || !strings.Contains(err.Error(), "合计超过上限") {
+		t.Fatalf("合计超请求预算应被拒: %v", err)
+	}
+	// 格式白名单：不支持的 MIME 拒绝
+	if err := ValidateMessages([]Message{{Role: "user", Images: []ImagePart{{Mime: "image/bmp", Data: small}}}}); err == nil ||
+		!strings.Contains(err.Error(), "格式不支持") {
+		t.Fatalf("bmp 应被拒（归一化后只收 png/jpeg/webp/gif）: %v", err)
+	}
+	// 非 user 消息带图拒绝
+	if err := ValidateMessages([]Message{{Role: "assistant", Images: makeImages(1)}}); err == nil ||
+		!strings.Contains(err.Error(), "只有用户消息") {
+		t.Fatalf("assistant 带图应被拒: %v", err)
+	}
+}
+
+// messagesPayloadBytes 必须把图片 base64 算进体积兜底（否则几十 MB 附图会绕过 128MiB 上限判定）。
+func TestMessagesPayloadBytesCountsImages(t *testing.T) {
+	img := ImagePart{Mime: "image/png", Data: base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{1}, 1<<20))}
+	got := messagesPayloadBytes([]Message{{Role: "user", Images: []ImagePart{img}}})
+	if got < len(img.Data) {
+		t.Fatalf("体积统计未包含图片 base64：got %d < %d", got, len(img.Data))
+	}
+}
+
+// 「每消息图片合计」是单条消息内的预算，不跨消息累加——
+// 两条各 20MiB base64 的历史必须放行（若有人把 imageTotal 提到循环外，这条会红）。
+func TestValidateMessagesImageBudgetNotAcrossMessages(t *testing.T) {
+	// 每张 4MiB base64（等于单张上限，不触发单张红线），每条消息 5 张 = 20MiB < 32MiB；
+	// 两条消息合计 40MiB > 32MiB——跨消息累加的实现会误拦第二条。
+	perImage := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x89}, 3<<20))
+	one := make([]ImagePart, 0, 5)
+	for i := 0; i < 5; i++ {
+		one = append(one, ImagePart{Mime: "image/png", Data: perImage})
+	}
+	msgs := []Message{
+		{Role: "user", Images: one},
+		{Role: "assistant", Content: "ok"},
+		{Role: "user", Images: one},
+	}
+	if err := ValidateMessages(msgs); err != nil {
+		t.Fatalf("两条各 20MiB 图片不应被合计拦截（每消息独立）：%v", err)
+	}
+}
+
 func TestSanitizeAIMessagesToolArguments(t *testing.T) {
 	messages := []Message{
 		{Role: "assistant", ToolCalls: []ToolCall{
@@ -811,7 +899,7 @@ func TestAIStreamUnexpectedEOF(t *testing.T) {
 
 	cfg := Config{BaseURL: server.URL + "/v1", Model: "m", Proxy: "direct"}
 	events, err := runAIStreamForTest(cfg, []Message{{Role: "user", Content: "hi"}}, nil)
-	if err == nil || !strings.Contains(err.Error(), "提前断开") || !strings.Contains(err.Error(), "unexpected EOF") {
+	if err == nil || !strings.Contains(err.Error(), "提前断开") {
 		t.Fatalf("error = %v", err)
 	}
 	// 前端靠这个哨兵把「整轮重发即可恢复」与普通接口错误区分开（自动重试）
@@ -1553,5 +1641,145 @@ func TestIdleTimeoutErrorCarriesSeconds(t *testing.T) {
 	}
 	if errors.Is(errors.New("其它错误"), ErrIdleTimeout) {
 		t.Fatal("无关错误不应命中 ErrIdleTimeout")
+	}
+}
+
+// 流内 error 事件文案命中网关 5xx 特征时，aiStreamErrorText 必须包成
+// ErrStreamUpstreamError（chat.go 据此给 ai-error 标 retryable），且保留原始文案；
+// 模型业务错误（额度/限流/内容类）不得误标，否则会把确定性失败重试成死循环。
+func TestAIStreamErrorTextMarksUpstreamGatewayError(t *testing.T) {
+	gateway := []string{
+		"Streaming response failed: [502] error code: 502",
+		"error code: 503",
+		"HTTP 500 Internal Server Error",
+		"status: 502",
+		"502 Bad Gateway",
+		"504 Gateway timeout",
+	}
+	for _, msg := range gateway {
+		err := aiStreamErrorText(errors.New(msg))
+		if !errors.Is(err, ErrStreamUpstreamError) {
+			t.Fatalf("%q 未标记 ErrStreamUpstreamError", msg)
+		}
+		if !strings.Contains(err.Error(), msg) {
+			t.Fatalf("%q 原始文案丢失：%q", msg, err.Error())
+		}
+	}
+	business := []string{
+		"额度不足",
+		"rate limited",
+		"content filter blocked",
+		"invalid temperature 400",
+		"Insufficient Balance",
+	}
+	for _, msg := range business {
+		err := aiStreamErrorText(errors.New(msg))
+		if errors.Is(err, ErrStreamUpstreamError) {
+			t.Fatalf("%q 被误标为网关错误", msg)
+		}
+		if err.Error() != msg {
+			t.Fatalf("%q 文案被改写：%q", msg, err.Error())
+		}
+	}
+}
+
+// 流中途连接被重置 / 管道断裂与 unexpected EOF 同属传输层断流（网关崩溃、LB 掐
+// 长连接的常见姿势）：必须标 ErrStreamTruncated 让前端整轮自动重发，而不是把
+// 裸系统错误摆给用户。Windows 的 WSAECONNRESET 文案里没有 "connection reset"
+// 字样，必须靠 errno 或完整文案兜住（2026-11-19 线上实测）。
+func TestAIStreamErrorTextMarksConnectionResetTruncated(t *testing.T) {
+	for _, raw := range []error{
+		errors.New("read tcp 192.168.1.2:52344->1.2.3.4:443: read: connection reset by peer"),
+		errors.New("read tcp 122.205.71.129:52869->104.18.11.66:443: wsarecv: An existing connection was forcibly closed by the remote host."),
+		errors.New("write |1: broken pipe"),
+		fmt.Errorf("包一层后 errno 链仍在：%w", os.NewSyscallError("wsarecv", syscall.ECONNRESET)),
+	} {
+		err := aiStreamErrorText(raw)
+		if !errors.Is(err, ErrStreamTruncated) {
+			t.Fatalf("%v 未标记 ErrStreamTruncated", raw)
+		}
+		if text := err.Error(); strings.Contains(text, "wsarecv") || strings.Contains(text, "forcibly closed") {
+			t.Fatalf("裸系统错误文案冒出：%q", text)
+		}
+	}
+}
+
+// 断流的第三种形态（2026-11-19 线上实测）：连接被掐在一条 JSON 数据块中间——
+// bufio 把最后的不完整行当整块交上来，解析报「unexpected end of JSON input」。
+// 不是网关发了坏数据，是断流，必须同样标 ErrStreamTruncated 让前端整轮重发。
+func TestAIStreamTruncatedMidJSONMarkedRetryable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, buf, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_, _ = buf.WriteString("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n")
+		payload := "data: {\"choices\":[{\"delta\":{\"cont"
+		_, _ = fmt.Fprintf(buf, "%x\r\n%s\r\n", len(payload), payload)
+		_ = buf.Flush()
+		// 不写 chunked 终止块直接断开
+	}))
+	defer server.Close()
+
+	cfg := Config{BaseURL: server.URL + "/v1", Model: "m", Proxy: "direct"}
+	_, err := runAIStreamForTest(cfg, []Message{{Role: "user", Content: "hi"}}, nil)
+	if err == nil {
+		t.Fatal("应返回错误")
+	}
+	if !errors.Is(err, ErrStreamTruncated) {
+		t.Fatalf("截断 JSON 未标记 ErrStreamTruncated：%v", err)
+	}
+	if strings.Contains(err.Error(), "unexpected end of JSON input") {
+		t.Fatalf("裸解析错误文案冒出：%q", err.Error())
+	}
+}
+
+// 静默截断预防：流被干净地关闭但没有终止事件（finish_reason/[DONE]、message_stop、
+// response.completed）时，半截内容不能当完整结果 emitDone 落盘——那连错误都不报，
+// 用户拿到的结论可能缺一半。必须标 ErrStreamTruncated 让前端整轮重发。
+func TestAIStreamSilentTruncationWithoutTerminator(t *testing.T) {
+	cases := []struct {
+		name     string
+		provider string
+		sse      func(w http.ResponseWriter)
+	}{
+		{"openai 无 finish_reason 无 [DONE]", "openai", func(w http.ResponseWriter) {
+			writeSSEJSON(w, map[string]any{"choices": []any{map[string]any{
+				"delta": map[string]any{"content": "半截"}, "finish_reason": nil,
+			}}})
+		}},
+		{"anthropic 无 message_stop", "anthropic", func(w http.ResponseWriter) {
+			writeAnthropicSSE(w, "content_block_delta", map[string]any{
+				"type": "content_block_delta", "index": 0,
+				"delta": map[string]any{"type": "text_delta", "text": "半截"},
+			})
+		}},
+		{"responses 无 response.completed", "responses", func(w http.ResponseWriter) {
+			writeSSEJSON(w, map[string]any{"type": "response.output_text.delta", "delta": "半截"})
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				tc.sse(w)
+			}))
+			defer server.Close()
+
+			cfg := Config{Provider: tc.provider, BaseURL: server.URL + "/v1", Model: "m", Proxy: "direct"}
+			events, err := runAIStreamForTest(cfg, []Message{{Role: "user", Content: "hi"}}, nil)
+			if err == nil {
+				t.Fatalf("应返回截断错误，events=%d", len(events))
+			}
+			if !errors.Is(err, ErrStreamTruncated) {
+				t.Fatalf("未标记 ErrStreamTruncated：%v", err)
+			}
+			for _, ev := range events {
+				if ev.Name == EventDone {
+					t.Fatalf("静默截断不应 emit done：%#v", ev.Payload)
+				}
+			}
+		})
 	}
 }

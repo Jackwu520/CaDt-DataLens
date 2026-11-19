@@ -396,6 +396,8 @@ export function createAIGroupView(deps) {
         const onDocDown = (e) => {
             if (!menu.contains(e.target) && e.target !== anchor && !anchor.contains(e.target)) closeMenu(state);
         };
+        // 菜单挂在群聊视图 shell 内（面板层叠上下文），不进全局弹层栈：Esc 自管
+        // （页面级弹层开着时栈先消费并抢占，本监听收不到）。
         const onDocKey = (e) => { if (e.key === 'Escape') closeMenu(state); };
         document.addEventListener('mousedown', onDocDown, true);
         document.addEventListener('keydown', onDocKey, true);

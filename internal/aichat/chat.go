@@ -105,10 +105,12 @@ func (c *Chat) AISendChat(sessionId string, cfg aitransport.Config, messages []a
 			emit(aitransport.EventDone, aitransport.DonePayload{Id: sessionId, FinishReason: "stopped"})
 			logf("info", "AI 请求已停止（%s）", time.Since(started).Round(time.Millisecond))
 		case err != nil:
+			// 流中途被掐断（EOF）与流内收到网关 5xx 错误（如 502）都是「整轮重发
+			// 即可恢复」的传输故障：标记 retryable 让前端自动重发；其余错误如实上抛。
 			emit(aitransport.EventError, aitransport.ErrorPayload{
 				Id:        sessionId,
 				Message:   err.Error(),
-				Retryable: errors.Is(err, aitransport.ErrStreamTruncated),
+				Retryable: errors.Is(err, aitransport.ErrStreamTruncated) || errors.Is(err, aitransport.ErrStreamUpstreamError),
 			})
 			logf("error", "AI 请求失败（%s）：%v", time.Since(started).Round(time.Millisecond), err)
 		default:

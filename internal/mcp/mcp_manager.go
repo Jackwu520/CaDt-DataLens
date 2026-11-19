@@ -618,6 +618,12 @@ func (m *Manager) Snapshot() Snapshot {
 func (m *Manager) snapshotLocked() Snapshot {
 	out := Snapshot{Enabled: m.enabled, Servers: []SnapshotServer{}}
 	for _, entry := range m.servers {
+		// notes 是用户手改 mcp.json 也可能进来的内容：写盘路径有长度校验，但热改文件
+		// 不经过它——出快照前按 rune 截断，防止手滑把几万字塞进每次的系统提示词。
+		notes := entry.cfg.Notes
+		if runes := []rune(notes); len(runes) > mcpNotesMaxChars {
+			notes = string(runes[:mcpNotesMaxChars])
+		}
 		s := SnapshotServer{
 			Name:        entry.name,
 			State:       entry.status.State,
@@ -629,7 +635,7 @@ func (m *Manager) snapshotLocked() Snapshot {
 			Attempt:     entry.status.Attempt,
 			MaxAttempt:  entry.status.MaxAttempt,
 			NextRetryAt: entry.status.NextRetryAt,
-			Notes:       entry.cfg.Notes,
+			Notes:       notes,
 		}
 		if s.Tools == nil {
 			s.Tools = []mcpPublicToolDef{}

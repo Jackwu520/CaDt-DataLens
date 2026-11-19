@@ -187,6 +187,50 @@ func TestAISendChatMarksTruncatedStreamRetryable(t *testing.T) {
 	}
 }
 
+// 流已正常开启（HTTP 200 + SSE）但网关在流中途发 error 事件（如 502）时，
+// HTTP 状态码层面的重试循环够不着，ai-error 也必须带 retryable——前端据此
+// 整轮自动重发，而不是把「Streaming response failed: [502]」摆给用户手动点继续。
+func TestAISendChatMarksInStreamGatewayErrorRetryable(t *testing.T) {
+	events := make(chan aitransport.ErrorPayload, 1)
+	oldEmit := Emit
+	Emit = func(event string, payload any) {
+		if event != aitransport.EventError {
+			return
+		}
+		if p, ok := payload.(aitransport.ErrorPayload); ok {
+			events <- p
+		}
+	}
+	t.Cleanup(func() { Emit = oldEmit })
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher := w.(http.Flusher)
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"半截\"}}]}\n\n")
+		flusher.Flush()
+		_, _ = fmt.Fprint(w, "data: {\"error\":{\"message\":\"Streaming response failed: [502] error code: 502\"}}\n\n")
+		flusher.Flush()
+	}))
+	defer server.Close()
+
+	cfg := aitransport.Config{BaseURL: server.URL + "/v1", Model: "m", Proxy: "direct"}
+	if err := (&Chat{}).AISendChat("instream-gateway#0", cfg, []aitransport.Message{{Role: "user", Content: "hi"}}, nil, 0); err != nil {
+		t.Fatalf("AISendChat: %v", err)
+	}
+	select {
+	case payload := <-events:
+		if !payload.Retryable {
+			t.Fatalf("流内网关错误未标记 retryable：%#v", payload)
+		}
+		if !strings.Contains(payload.Message, "Streaming response failed") {
+			t.Fatalf("原始错误文案丢失：%q", payload.Message)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatalf("3 秒内未收到 ai-error")
+	}
+}
+
 func TestAIHomeDir(t *testing.T) {
 	want, err := os.UserHomeDir()
 	if err != nil {

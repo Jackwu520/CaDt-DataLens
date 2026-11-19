@@ -60,3 +60,29 @@ func TestClearSessionMissingIsNoop(t *testing.T) {
 		t.Fatalf("空 id 不应报错：%v", err)
 	}
 }
+
+// 读回：写到读的往返、缺文件返回空串（重启后 UI 靠它判断「没有可显示的转录」）。
+func TestReadRoundTrip(t *testing.T) {
+	t.Setenv("AppData", t.TempDir())
+	content := `{"role":"assistant","name":"","text":"开始"}` + "\n" + `{"role":"tool","name":"read_file","text":"结果"}`
+	if _, err := Write("session-abc", "sub-agent1", content); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Read("session-abc", "sub-agent1")
+	if err != nil {
+		t.Fatalf("读回应成功：%v", err)
+	}
+	if got != content {
+		t.Fatalf("读回 = %q", got)
+	}
+	// 不存在 / 非法入参
+	if text, err := Read("session-abc", "sub-missing"); err != nil || text != "" {
+		t.Fatalf("缺失文件应返回空串：%q, %v", text, err)
+	}
+	if _, err := Read("../x", "sub-1"); err == nil {
+		t.Fatal("非法会话 id 应报错")
+	}
+	if _, err := Read("session-abc", ".."); err == nil {
+		t.Fatal("非法产物名应报错")
+	}
+}

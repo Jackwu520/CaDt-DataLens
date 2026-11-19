@@ -169,7 +169,7 @@ async function showGitDiff(path) {
             deps.flash('该文件暂无差异');
             return;
         }
-        deps.openVirtualDoc('Git 差异 — ' + path.replace(/^.*[\\/]/, '') + '.diff', res.diff);
+        deps.openVirtualDoc('Git 差异 — ' + path.replace(/^.*[\\/]/, '') + '.diff', res.diff, {readOnlyFixed: true, viewKind: 'diff'});
     } catch (e) {
         deps.flash('读取差异失败：' + e, true);
     }

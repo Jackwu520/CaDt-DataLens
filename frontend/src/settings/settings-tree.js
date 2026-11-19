@@ -67,7 +67,7 @@ const RISK_REASONS = {
     'opt-activity-retention': '操作留痕保留月数，调小会更早删除审计记录',
     'plugin-market-source-mode': '插件市场数据源（Gitee / GitHub）',
     'envvar-encrypted': '环境变量存储与加密方式',
-    'precmd-enabled': '总开关控制「打开工作区自动执行预指令」：开启后打开工作区会自动运行配置的命令',
+    'precmd-enabled': '总开关控制「生命周期命令自动执行」：覆盖打开/关闭工作区、会话起轮、工具前后、权限请求、停止生成等 9 个事件',
 };
 
 export function classifySettingsRisk(id) {
