@@ -162,6 +162,9 @@ export function barSegments(report) {
 // ---- 渲染 ----
 
 export function createSettingsPaneStorage(deps) {
+    // 动态面板的行式下拉增强器（与其它动态 pane 一致）：paintAuto 重建的 select
+    // 晚于 selectSettingsPane 的同步增强扫描，必须在这里自己补一次。
+    const enhanceSetSelects = (deps && deps.enhanceSetSelects) || null;
     const els = {
         tiles: document.getElementById('stg-tiles'),
         bar: document.getElementById('stg-bar'),
@@ -525,6 +528,9 @@ export function createSettingsPaneStorage(deps) {
         });
         els.autoList.appendChild(buildAutoRow('大小阈值', '缓存总量超过该值就清一次', mbSelect.element));
         if (els.autoDesc) els.autoDesc.textContent = autoCleanDesc();
+        // 这两个 select 是 async 渲染里动态建的，面板切换时的增强扫描赶不上；
+        // 开关切换 / 设置更新也会重建，所以每次 paintAuto 都补增强（幂等）。
+        if (typeof enhanceSetSelects === 'function') enhanceSetSelects();
     }
 
     if (els.refresh) els.refresh.addEventListener('click', () => rescan());

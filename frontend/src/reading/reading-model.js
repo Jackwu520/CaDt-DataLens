@@ -228,6 +228,7 @@ function chapterRanges(f, options) {
     if (options && options.chapterLevel) {
         const at = headings.filter((h) => h.level === options.chapterLevel);
         if (at.length) {
+            extendFirstChapterPreamble(f, at);
             return at.map((h, i) => ({
                 title: h.title, offset: h.offset,
                 endOffset: i + 1 < at.length ? at[i + 1].offset : Infinity,
@@ -237,6 +238,7 @@ function chapterRanges(f, options) {
     }
     const hits = headings.filter((h) => RE_CHAPTER.test(h.title));
     if (hits.length) {
+        extendFirstChapterPreamble(f, hits);
         return hits.map((h, i) => ({
             title: h.title, offset: h.offset,
             endOffset: i + 1 < hits.length ? hits[i + 1].offset : Infinity,
@@ -273,6 +275,21 @@ function sectionsFor(headings, range, block, rel) {
     const rest = headings.filter((h) => h.offset > range.offset &&
         (Number.isFinite(range.endOffset) ? h.offset < range.endOffset : true));
     return buildHeadingTree(rest.map((h) => sectionNode(h, rel, block)));
+}
+
+// extendFirstChapterPreamble 章前序并入第一章（卷首语 / 书籍信息页场景）：
+// 文件第一个章命中前还有标题/正文时（如「第0000章-引言.md」的基本信息段、
+// 「第1卷.md」的卷名与题记），把第一章起点扩到文件头，避免前序内容成为渲染不到的孤儿。
+// 字数同步修正：Go 侧标题 words 覆盖「本标题 → 下一同级标题」，
+// 前序字数 = 全文字数 − Σ各章 words。
+function extendFirstChapterPreamble(f, ranges) {
+    if (!ranges.length || ranges[0].offset <= 1) return;
+    const sumWords = ranges.reduce((s, h) => s + (h.words || 0), 0);
+    const preambleWords = Math.max(0, (f.words || 0) - sumWords);
+    ranges[0] = Object.assign({}, ranges[0], {
+        offset: 1,
+        words: (ranges[0].words || 0) + preambleWords,
+    });
 }
 
 function sectionNode(h, rel, block) {
@@ -333,6 +350,8 @@ function buildVolumeFile(f, options) {
         const tops = headings.filter((h) => h.level === minLevel);
         if (tops.length >= 2) hits = tops;
     }
+    // 卷名与题记并入第一章（章流模式不产生孤儿内容；卷首语区间随之收窄）
+    extendFirstChapterPreamble(f, hits);
     const block = f.ext === '.docx';
     const children = hits.map((h, i) => {
         const ck = classifyChapterTitle(h.title);

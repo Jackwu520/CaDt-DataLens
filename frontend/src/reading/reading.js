@@ -469,26 +469,41 @@ export function createReadingMode(deps) {
     let chunkTotal = 1;
     let pendingChunks = null;
 
-    function volumeHeaderFor(index) {
-        // 卷边界插入卷分隔（§7.1）：与上一章不同卷时显示卷名
+    function volumeHeaderFor(index, entry) {
+        // 卷边界插入卷分隔（§7.1）：与上一章不同卷时显示卷名；
+        // 章名或章内标题已含卷名时跳过，避免「沈世安列传」+「沈世安列传 第1章 …」重复
         const chapter = book.chapters[index];
         const prev = index > 0 ? book.chapters[index - 1] : null;
         if (!chapter.volumeTitle) return '';
         if (prev && prev.volumeTitle === chapter.volumeTitle) return '';
+        if (String(chapter.title).indexOf(chapter.volumeTitle) >= 0) return '';
+        if (entry && entry.headings) {
+            const lo = chapter.offset;
+            const hi = Number.isFinite(chapter.endOffset) ? chapter.endOffset : Infinity;
+            const inSlice = entry.headings.some((h) =>
+                h.offset >= lo && h.offset < hi && String(h.title).indexOf(chapter.volumeTitle) >= 0);
+            if (inSlice) return '';
+        }
         return '<div class="rd-volume-header">' + escapeHtmlText(chapter.volumeTitle) + '</div>';
     }
 
     function chapterEndFor(index) {
-        if (index >= book.chapters.length - 1) {
-            return '<div class="rd-chapter-end"><span>全书完 · 共 ' + book.chapters.length + ' 章</span></div>';
+        const last = index >= book.chapters.length - 1;
+        const prevBtn = index > 0
+            ? '<button type="button" class="tb-btn rd-prev-chapter">← 上一章</button>' : '';
+        if (last) {
+            return '<div class="rd-chapter-end">' + prevBtn +
+                '<span>全书完 · 共 ' + book.chapters.length + ' 章</span></div>';
         }
-        return '<div class="rd-chapter-end"><span>本章完</span>' +
+        return '<div class="rd-chapter-end">' + prevBtn + '<span>本章完</span>' +
             '<button type="button" class="tb-btn rd-next-chapter">下一章 →</button></div>';
     }
 
     function bindChapterEnd(index) {
         const btnNext = els.reader.querySelector('.rd-next-chapter');
         if (btnNext) btnNext.addEventListener('click', () => navigate(1));
+        const btnPrev = els.reader.querySelector('.rd-prev-chapter');
+        if (btnPrev) btnPrev.addEventListener('click', () => navigate(-1));
     }
 
     function escapeHtmlText(s) {
@@ -505,24 +520,31 @@ export function createReadingMode(deps) {
         currentUnit = chapter;
         const payload = await ensureUnitPayload(chapter);
         let unit = Object.assign({}, chapter);
+        let entry = null;
         if (payload.kind === 'md' || payload.kind === 'txt') {
-            const entry = await ensureFile(unit.rel);
-            unit.endOffset = unitEndFor(unit, entry);
+            entry = await ensureFile(unit.rel);
+            // 章区间以模型为准（endOffset Infinity = 到文件尾），不再用 unitEndFor 收口。
+            // 切片只在这里做一次：rawSlice 告诉渲染层内容已切好，禁止二次切片
+            // （二次切片是「引言/分卷空白」bug 的根源：offset>1 时对已切文本再切得到空串）
             let text = payload.content;
-            if (Number.isFinite(unit.endOffset)) {
+            const sliced = unit.offset > 1 || Number.isFinite(unit.endOffset);
+            if (sliced) {
                 const lines = String(payload.content).replace(/\r\n/g, '\n').split('\n');
-                text = lines.slice(unit.offset - 1, unit.endOffset - 1).join('\n');
+                const start = unit.offset > 1 ? unit.offset - 1 : 0;
+                const end = Number.isFinite(unit.endOffset) ? unit.endOffset - 1 : lines.length;
+                text = lines.slice(start, end).join('\n');
             }
             const chunks = chunkText(text);
             chunkIndex = 0;
             chunkTotal = chunks.length;
             pendingChunks = chunks;
             payload.content = chunks[0];
+            payload.rawSlice = sliced;
         } else if (payload.kind === 'docx') {
-            unit.endOffset = unitEndFor(unit, payload);
+            unit.endOffset = Number.isFinite(unit.endOffset) ? unit.endOffset : Infinity;
         }
         const rendered = await render.renderUnit(unit, payload);
-        let html = volumeHeaderFor(index) + rendered.html + chapterEndFor(index);
+        let html = volumeHeaderFor(index, entry) + rendered.html + chapterEndFor(index);
         if (isPaged()) {
             els.reader.innerHTML = '<div class="rd-paged-viewport"><div class="rd-paged-inner">' + html + '</div></div>';
             repaginate(0);
@@ -586,22 +608,27 @@ export function createReadingMode(deps) {
             const chapter = book.chapters[idx];
             const payload = await ensureUnitPayload(chapter);
             const unit = Object.assign({}, chapter);
+            let entry = null;
             if (payload.kind === 'md' || payload.kind === 'txt') {
-                const entry = await ensureFile(unit.rel);
-                unit.endOffset = unitEndFor(unit, entry);
+                entry = await ensureFile(unit.rel);
+                // 与 renderChapter 相同：切片只做一次，模型区间为准
                 let text = payload.content;
-                if (Number.isFinite(unit.endOffset)) {
+                const sliced = unit.offset > 1 || Number.isFinite(unit.endOffset);
+                if (sliced) {
                     const lines = String(payload.content).replace(/\r\n/g, '\n').split('\n');
-                    text = lines.slice(unit.offset - 1, unit.endOffset - 1).join('\n');
+                    const start = unit.offset > 1 ? unit.offset - 1 : 0;
+                    const end = Number.isFinite(unit.endOffset) ? unit.endOffset - 1 : lines.length;
+                    text = lines.slice(start, end).join('\n');
                 }
                 payload.content = chunkText(text).join('\n');
+                payload.rawSlice = sliced;
             } else if (payload.kind === 'docx') {
-                unit.endOffset = unitEndFor(unit, payload);
+                unit.endOffset = Number.isFinite(unit.endOffset) ? unit.endOffset : Infinity;
             }
             const rendered = await render.renderUnit(unit, payload);
             const section = document.createElement('section');
             section.dataset.unitId = chapter.id;
-            section.innerHTML = volumeHeaderFor(idx) + rendered.html;
+            section.innerHTML = volumeHeaderFor(idx, entry) + rendered.html;
             els.reader.appendChild(section);
             st.bytes += rendered.html.length * 2;
             st.count++;
@@ -741,6 +768,9 @@ export function createReadingMode(deps) {
             ' · ' + Math.round(currentRatio * 100) + '%';
         const p = computeProgress(book.chapters, book.model.totalWords, currentIndex, currentRatio);
         els.progressFill.style.width = Math.round(p * 100) + '%';
+        // 顶栏章导航可用状态
+        if (els.btnPrev) els.btnPrev.disabled = currentIndex <= 0;
+        if (els.btnNext) els.btnNext.disabled = currentIndex >= book.chapters.length - 1;
         stateStore.setProgress(book.key, {
             lastUnitId: chapter.id,
             lastUnitTitle: chapter.title,
@@ -1255,6 +1285,9 @@ export function createReadingMode(deps) {
     function onCaptureKey(e) {
         if (!active) return;
         if (deps.isDialogOpen()) return; // 对话框优先
+        // 阅读模式是全屏视图而非弹层，不进全局弹层栈：这里的 Esc 链
+        // （查找条 → 专注 → 设置浮层 → 关书）只管视图内部；全局弹层
+        // （右键菜单等）开着时由栈先消费，本监听收不到。
         const key = e.key;
         if (key === 'Escape') {
             e.preventDefault();
@@ -1399,6 +1432,8 @@ export function createReadingMode(deps) {
     els.findPrev.addEventListener('click', () => search.prev());
     els.findNext.addEventListener('click', () => search.next());
     els.progressTrack.addEventListener('click', () => switchTab('toc'));
+    els.btnPrev.addEventListener('click', () => navigate(-1));
+    els.btnNext.addEventListener('click', () => navigate(1));
     // 交互时间与滚动进度（一次性注册）
     ['scroll', 'pointerdown', 'keydown'].forEach((ev) => {
         container.addEventListener(ev, () => {

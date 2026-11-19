@@ -21,6 +21,8 @@ const SAVE_DEBOUNCE_MS = 1000;
 // - resolveRoot(scope, workspace)：作用域根目录绝对路径（贴图 GC 定位 img/ 用），
 //   必须用缓存捕获的 workspace 而非当前值——换过工作区也要删对文件。
 export function createMemoStore(deps) {
+  // 失败 / 后台事件通知（消息中心 + toast + 节流）：便签多窗口冲突 / 保存失败
+  const notifyFailure = (...args) => (typeof deps.notifyFailure === 'function' ? deps.notifyFailure(...args) : undefined);
   // caches: key → {doc, mtimeMs, dirty, timer, scope, workspace, writer, readOnly, owner}
   const caches = new Map();
   const changeListeners = new Set();
@@ -360,9 +362,18 @@ export function createMemoStore(deps) {
       if (!cache.writer) return;
       cache.dirty = false;
       const res = await saveCache(scopeKey(cache.scope, cache.workspace), cache);
-      if (!res.ok && !res.conflict && !res.busy && deps.flash) deps.flash('快捷便签 保存失败：' + res.error, true);
-      if (res.conflict && deps.flash) deps.flash('快捷便签 已在其他窗口修改，已刷新为磁盘版本', true);
-      if (res.busy && deps.flash) deps.flash('快捷便签正在另一窗口编辑，稍后重试', true);
+      if (!res.ok && !res.conflict && !res.busy) {
+        if (deps.flash) deps.flash('快捷便签 保存失败：' + res.error, true);
+        notifyFailure('快捷便签保存失败', String(res.error || '未知错误'), {key: 'memo-save', kind: 'error'});
+      }
+      if (res.conflict) {
+        if (deps.flash) deps.flash('快捷便签 已在其他窗口修改，已刷新为磁盘版本', true);
+        notifyFailure('快捷便签已在其他窗口修改', '已刷新为磁盘版本；本窗口未保存的改动可能已被覆盖', {key: 'memo-conflict', kind: 'error'});
+      }
+      if (res.busy) {
+        if (deps.flash) deps.flash('快捷便签正在另一窗口编辑，稍后重试', true);
+        notifyFailure('快捷便签正被其他窗口编辑', '稍后重试', {key: 'memo-busy', kind: 'info'});
+      }
     }, SAVE_DEBOUNCE_MS);
   }
 

@@ -17,6 +17,9 @@
     --rd-para-gap: 0.6em;
 }
 #reading-view.hidden { display: none; }
+/* 组件级 .hidden 兜底：style.css 没有全局 .hidden 规则，阅读模块内的
+   过滤输入框/面板等靠这条统一隐藏（否则切到搜索页签过滤框仍显示） */
+#reading-view .hidden { display: none !important; }
 
 #reading-view[data-rd-theme='paper'] { --rd-bg: #faf7ef; --rd-fg: #2b2a27; --rd-muted: #8a8578; --rd-panel: #f3eee1; --rd-accent: #a0642c; }
 #reading-view[data-rd-theme='sepia'] { --rd-bg: #f3ead6; --rd-fg: #5a4632; --rd-muted: #98876a; --rd-panel: #eadfc4; --rd-accent: #8a5a24; }
@@ -307,13 +310,19 @@ mark.rd-mark-cur { background: color-mix(in srgb, #e2703a 75%, transparent); col
 .rd-volume-header {
     text-align: center;
     color: var(--rd-muted);
-    font-size: 0.95em;
-    letter-spacing: 0.2em;
-    margin: 2.2em auto 1.4em;
-    padding-top: 1.2em;
-    border-top: 1px solid color-mix(in srgb, var(--rd-fg) 14%, transparent);
+    font-size: 0.85em;
+    letter-spacing: 0.3em;
+    margin: 1.2em auto 0.9em;
 }
 .rd-reader section[data-unit-id] { display: block; }
+/* 章首标题（与章名一致的首个标题）：居中、紧凑上边距，替代默认 h1/h2 排版 */
+.rd-reader .rd-chapter-title {
+    text-align: center;
+    font-size: 1.35em;
+    font-weight: 600;
+    margin: 0.1em auto 1.1em;
+    line-height: 1.5;
+}
 .rd-chapter-end {
     display: flex;
     justify-content: center;

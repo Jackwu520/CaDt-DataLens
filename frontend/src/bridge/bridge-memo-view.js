@@ -33,6 +33,7 @@ const store = createMemoStore({
     // deps.backend / deps.flash 是组合根的 getter 属性（每次访问求值，不拍快照）
     backend: deps.backend,
     flash: deps.flash,
+    notifyFailure: (...args) => (typeof deps.notifyFailure === 'function' ? deps.notifyFailure(...args) : undefined),
     workspaceRoot: () => deps.workspaceFolder || '',
     // pending 翻转 → 组合根更新应用关窗脏标记（防抖窗口内关窗走确认流程，不静默丢）
     onPendingChange: deps.onPendingChange,
@@ -349,17 +350,7 @@ function buildTopBar(view) {
     });
     bar.appendChild(seg);
 
-    const doc = store.cached(view.scope);
-    if (doc) {
-        const t = totalsOfDoc(doc);
-        if (t.items) {
-            const summary = document.createElement('div');
-            summary.className = 'memo-summary';
-            summary.textContent = t.done + '/' + t.items + (t.doing ? ' · 进行中 ' + t.doing : '');
-            bar.appendChild(summary);
-        }
-    }
-
+    // 状态点已换成自定义标签，不再有完成/进行中三态统计。
     const spacer = document.createElement('div');
     spacer.className = 'memo-top-spacer';
     bar.appendChild(spacer);
@@ -577,8 +568,9 @@ function openTagMenu(view, itemId, x, y) {
             if (!res.ok) deps.flash(res.error, true);
         });
     };
+    // 已勾选只靠 checked 让行首画对勾图标：label 里再拼 '✓ ' 会出现两个对勾
     const presetItems = TAG_PRESETS.map((tag) => ({
-        label: (tags.indexOf(tag) >= 0 ? '✓ ' : '') + tag,
+        label: tag,
         checked: tags.indexOf(tag) >= 0,
         action: toggle(tag),
     }));
@@ -633,13 +625,11 @@ function quickAddToBlock(view, blockId, kind) {
 
 function buildItem(view, block, item) {
     const row = document.createElement('div');
-    row.className = 'memo-item st-' + item.status;
+    row.className = 'memo-item' + (item.kind === 'term' ? ' memo-item-term' : '');
     row.dataset.itemId = item.id;
 
-    // 终端条目：行首 ▶/⏹ 运行按钮（点击运行/停止，输出渲染在条目下方）
-    if (item.kind === 'term') row.appendChild(buildRunButton(view, item));
-
-    // 标签芯片（替代状态点）：自定义 tag，点击芯片弹管理菜单；没有标签时显示「＋标签」入口
+    // 标签芯片（替代状态点）：自定义 tag，点击芯片弹管理菜单；没有标签时显示「＋标签」入口。
+    // 标签行独占第一行（flex 0 0 100%），内容在下一行——终端条目的运行按钮也在这行左侧。
     const tagWrap = document.createElement('span');
     tagWrap.className = 'memo-item-tags';
     (item.tags || []).forEach((tag) => tagWrap.appendChild(tagChip(view, item.id, tag)));
@@ -651,6 +641,9 @@ function buildItem(view, block, item) {
     onButton(addTag, (x, y) => openTagMenu(view, item.id, x, y));
     tagWrap.appendChild(addTag);
     row.appendChild(tagWrap);
+
+    // 终端条目：内容行行首运行/停止按钮（点击运行/停止，输出渲染在条目下方）
+    if (item.kind === 'term') row.appendChild(buildRunButton(view, item));
 
     const text = document.createElement('div');
     text.className = 'memo-item-text' + (item.text ? '' : ' empty');
@@ -753,7 +746,7 @@ function leaveTermRun(itemId, kind) {
     term.clear(itemId);
 }
 
-// buildRunButton 终端条目行首的 ▶/⏹：点击时读实时状态（防重入与停止都在这里分流），
+// buildRunButton 终端条目行首的运行/停止按钮：点击时读实时状态（防重入与停止都在这里分流），
 // 按钮视觉由 memo-term 的 paintLive 在状态翻转时原位换（不整面板重渲染）。
 // 提示带运行出发点：命令在工作区根目录执行（全局作用域未开工作区时为应用进程目录）。
 function buildRunButton(view, item) {
@@ -761,7 +754,7 @@ function buildRunButton(view, item) {
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'memo-run-btn' + (entry && entry.state === 'running' ? ' running' : '');
-    btn.textContent = entry && entry.state === 'running' ? '⏹' : '▶';
+    btn.innerHTML = iconSvg(entry && entry.state === 'running' ? 'stop' : 'play', 12);
     const cwdTip = deps.workspaceFolder ? '运行于工作区根目录' : '运行于应用进程目录';
     btn.dataset.cwdTip = cwdTip; // paintLive 翻转提示时用（工作区可切换，整渲染才重算）
     btn.setAttribute('data-tip', entry && entry.state === 'running' ? '停止运行' : cwdTip);
@@ -771,7 +764,7 @@ function buildRunButton(view, item) {
             term.stop(item.id);
             return;
         }
-        // 行内编辑未提交时点 ▶：onButton 的 mousedown+preventDefault 不会触发 blur 提交，
+        // 行内编辑未提交时点运行按钮：onButton 的 mousedown+preventDefault 不会触发 blur 提交，
         // 闭包里的 item.text 是上次提交的正文——草稿才是用户此刻要跑的命令。取编辑框
         // 实时值，先 commit 入库再运行（所见即所跑），避免跑出去的是旧命令。
         const editor = btn.closest('.memo-item').querySelector('.memo-inline-area');
@@ -1024,18 +1017,6 @@ function appendEditableItem(view, blockId) {
         if (res.ok) requestAnimationFrame(() => startItemTextEdit(view, res.id));
         else deps.flash(res.error, true);
     }).catch(() => {});
-}
-
-function totalsOfDoc(doc) {
-    let items = 0, done = 0, doing = 0;
-    for (const block of doc.blocks) {
-        for (const item of block.items) {
-            items++;
-            if (item.status === 'completed') done++;
-            else if (item.status === 'in_progress') doing++;
-        }
-    }
-    return {items, done, doing};
 }
 
 function openThumbLightbox(view, item, rel, fallbackSrc) {
@@ -1404,22 +1385,16 @@ function buildMemoHtml(doc, scopeLabel, urls) {
         const list = [];
         for (const item of block.items) {
             if (item.kind === 'md') continue;
-            // 字面勾选符 + 内联着色：Word 的 HTML 导入不理会 ::before/类选择器，.doc 靠它显示勾选态
-            const mark = item.status === 'completed'
-                ? '<span class="mark" style="color:#2e7d32;font-weight:bold">☑</span>'
-                : item.status === 'in_progress'
-                    ? '<span class="mark" style="color:#bf6a02;font-weight:bold">◐</span>'
-                    : '<span class="mark" style="color:#aab2bd">☐</span>';
+            // 标签以文本形式带出（导出不依赖状态勾选符）
+            const tagText = item.tags && item.tags.length
+                ? '<span style="color:#548af7">{' + item.tags.map(escapeHtml).join('/') + '}</span> ' : '';
             let body = escapeHtml(item.text || '').replace(/!\[([^\]\n]*)\]\((img\/[^)\s]+)\)/g, (m, alt, rel) =>
                 (!urls || urls.has(rel)) ? '<img alt="' + alt + '" src="' + src(rel) + '">' : '');
             for (const rel of item.images) {
                 if ((urls && !urls.has(rel)) || body.indexOf('"' + src(rel) + '"') >= 0) continue;
                 body += '<img alt="贴图" src="' + src(rel) + '">';
             }
-            const strike = item.status === 'completed'
-                ? ' style="color:#999;text-decoration:line-through"'
-                : '';
-            list.push('<li class="' + cls + '"><span' + strike + '>' + (mark + ' ' + (body || '&nbsp;')) + '</span></li>');
+            list.push('<li><span>' + (tagText + (body || '&nbsp;')) + '</span></li>');
         }
         if (list.length) parts.push('<ul>' + list.join('') + '</ul>');
         for (const item of block.items) {
@@ -1438,8 +1413,6 @@ function buildMemoHtml(doc, scopeLabel, urls) {
         'h2{font-size:16px;color:#2b579a;border-bottom:1px solid #e3e8f0;padding-bottom:6px;margin:4px 0 12px}\n' +
         'ul{list-style:none;padding-left:6px;margin:0}\n' +
         'li{padding:5px 2px;white-space:pre-wrap;word-break:break-word}\n' +
-        'li .mark{font-weight:bold;margin-right:4px}\n' +
-        'li.done span{color:#999;text-decoration:line-through}\n' +
         'img{max-width:320px;max-height:220px;border-radius:6px;border:1px solid #dde3ec;vertical-align:middle;margin:4px 6px 2px 0}\n' +
         '.md{padding:2px 0}\n' +
         '.md h1,.md h2,.md h3{color:#2b579a}\n' +
@@ -1547,10 +1520,9 @@ async function runDocConverter(view, converter) {
 // ===== 对外 API（main.js 转发给 AI 面板 / 活动栏 / 工作区切换）=====
 
 function countsText(doc) {
-    const t = totalsOfDoc(doc);
-    return t.items
-        ? ('当前：' + t.done + '/' + t.items + ' 完成' + (t.doing ? '，' + t.doing + ' 项进行中' : '') + '。')
-        : '当前：还没有条目。';
+    let items = 0;
+    for (const block of doc.blocks) items += block.items.length;
+    return items ? ('当前：' + items + ' 项。') : '当前：还没有条目。';
 }
 
 // memoLocator 定位点：cadt-memo://<scope>/<block|item>/<id>。
@@ -1694,20 +1666,16 @@ function jumpFlash(view, selector) {
 // memoApi：AI 工具（memo 动作）的执行通道。改完即防抖保存并广播刷新。
 const memoApi = {
     normalizeScope(scope) { return scope === 'global' ? 'global' : 'workspace'; },
-    // list(scope, filter)：filter {blockId?, status?, q?} 可选——按分组/状态/文本过滤，
-    // 首行仍汇报全局面板计数。status 非法直接报错（模型会修正重试）。
+    // list(scope, filter)：filter {blockId?, tag?, q?} 可选——按分组/标签/文本过滤。
     async list(scope, filter) {
         const s = this.normalizeScope(scope);
         const f = filter && typeof filter === 'object' ? filter : {};
-        if (f.status != null && ['pending', 'in_progress', 'completed'].indexOf(f.status) < 0) {
-            throw new Error('status 过滤只支持 pending / in_progress / completed');
-        }
         if (f.blockId != null && typeof f.blockId === 'string') f.blockId = f.blockId.trim();
         const res = await store.load(s);
         if (res.error) throw new Error(res.error);
         return formatMemoForAI(res.doc, s === 'global' ? '全局快捷便签' : '工作区快捷便签', f);
     },
-    async add(scope, kind, blockId, text) {
+    async add(scope, kind, blockId, text, tags) {
         const s = this.normalizeScope(scope);
         if (kind === 'block') {
             const res = await store.mutate(s, (doc) => addBlock(doc, text));
@@ -1715,7 +1683,7 @@ const memoApi = {
             return '已新建分组，id：' + res.id + '。' + countsText(res.doc);
         }
         if (kind !== 'item') throw new Error('kind 只支持 item（条目）或 block（分组）');
-        const res = await store.mutate(s, (doc) => addItem(doc, blockId || '', text));
+        const res = await store.mutate(s, (doc) => addItem(doc, blockId || '', text, {tags}));
         if (!res.ok) throw new Error(res.error);
         return '已添加条目，id：' + res.id + '（所在块 ' + res.blockId + '）。' + countsText(res.doc);
     },

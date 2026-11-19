@@ -135,6 +135,48 @@ test('buildBookModel split profile：卷文件切章', () => {
     assert.ok(vol.renderable, '卷文件本身可渲染（卷首语）');
 });
 
+test('章前序并入第一章：引言文件（基本信息段在前）', () => {
+    // 真实场景：第0000章-引言.md = # 基本信息(1) + ## 本书世界线(21) + # 引言(31) + # 结语(59)
+    const scan = mockScan([
+        {
+            rel: '第0000章-引言.md', name: '第0000章-引言.md', ext: '.md', words: 426,
+            headings: [
+                {offset: 1, level: 1, title: '基本信息', words: 167},
+                {offset: 21, level: 2, title: '本书世界线', words: 35},
+                {offset: 31, level: 1, title: '引言', words: 98},
+                {offset: 59, level: 1, title: '结语', words: 126},
+            ],
+        },
+    ], 'file');
+    const chapters = flattenChapters(buildBookModel(scan));
+    assert.equal(chapters.length, 1);
+    assert.equal(chapters[0].title, '引言');
+    // 前序（基本信息+世界线）并入第一章，起点回到文件头
+    assert.equal(chapters[0].offset, 1);
+    assert.equal(chapters[0].endOffset, Infinity);
+    // 字数修正：全文 426 = 前序 202 + 引言 98 + 结语 126；唯一章的 words 修正为全文字数
+    assert.equal(chapters[0].words, 426);
+});
+
+test('章前序并入第一章：卷文件的卷名与题记', () => {
+    const scan = mockScan([
+        {
+            rel: '第1卷.md', name: '第1卷.md', ext: '.md', words: 1000,
+            headings: [
+                {offset: 1, level: 1, title: '第1卷 星火长明', words: 30},
+                {offset: 5, level: 2, title: '第1章 起', words: 300},
+                {offset: 40, level: 2, title: '第2章 承', words: 400},
+                {offset: 90, level: 2, title: '第3章 转', words: 270},
+            ],
+        },
+    ], 'split');
+    const chapters = flattenChapters(buildBookModel(scan));
+    assert.equal(chapters[0].title, '第1章 起');
+    assert.equal(chapters[0].offset, 1, '卷名+题记并入第一章');
+    assert.equal(chapters[0].words, 330, '300 + 前序 30');
+    assert.equal(chapters[0].endOffset, 40);
+});
+
 test('buildBookModel 目录卷：正文/扩展章', () => {
     const scan = mockScan([
         {rel: '第0001章-a.md', name: '第0001章-a.md', ext: '.md', words: 10, headings: []},

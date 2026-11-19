@@ -61,6 +61,10 @@ export function buildSkeleton(container) {
     const back = btn('rd-btn', '←');
     const bookTitle = el('span', 'rd-book-title');
     const unitTitle = el('span', 'rd-unit-title');
+    const chapterNav = el('div', 'rd-chapter-nav');
+    const btnPrev = btn('rd-btn', '‹', '上一章 (←)');
+    const btnNext = btn('rd-btn', '›', '下一章 (→)');
+    chapterNav.append(btnPrev, btnNext);
     const actions = el('div', 'rd-topbar-actions');
     const btnToc = btn('rd-btn', '目录');
     const btnBm = btn('rd-btn', '书签');
@@ -69,7 +73,7 @@ export function buildSkeleton(container) {
     const btnTts = btn('rd-btn', '朗读');
     const btnFocus = btn('rd-btn', '专注');
     actions.append(btnToc, btnBm, btnSearch, btnAa, btnTts, btnFocus);
-    topbar.append(back, bookTitle, unitTitle, actions);
+    topbar.append(back, bookTitle, unitTitle, chapterNav, actions);
 
     const body = el('div', 'rd-body');
     const sidebar = el('aside', 'rd-sidebar hidden');
@@ -111,7 +115,8 @@ export function buildSkeleton(container) {
     container.append(topbar, body, bottombar, focusHint);
 
     return {
-        topbar, back, bookTitle, unitTitle, btnToc, btnBm, btnSearch, btnAa, btnTts, btnFocus,
+        topbar, back, bookTitle, unitTitle, chapterNav, btnPrev, btnNext,
+        btnToc, btnBm, btnSearch, btnAa, btnTts, btnFocus,
         sidebar, tabs, tabToc, tabBm, tabSearch, tocFilter, tocPane, bmPane, searchPane,
         contentWrap, reader, findbar, findInput, findCount, findPrev, findNext, findClose,
         bottombar, progressTrack, progressFill, progressText, focusHint,

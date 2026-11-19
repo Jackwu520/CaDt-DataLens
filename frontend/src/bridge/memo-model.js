@@ -3,8 +3,7 @@
 // 变更函数，保证两条路径走同一条上限校验与 id 生成。变更函数一律返回
 // {ok, doc?, id?, error?}，不抛异常——工具路径要把失败原因原样回给模型。
 
-export const MEMO_STATUSES = ['pending', 'in_progress', 'completed'];
-// kind：text 普通文本 / md Markdown 渲染 / term 终端条目（正文是命令，▶ 运行，输出内存态不落盘）。
+// kind：text 普通文本 / md Markdown 渲染 / term 终端条目（正文是命令，点运行按钮执行，输出内存态不落盘）。
 export const MEMO_KINDS = ['text', 'md', 'term'];
 export const DEFAULT_BLOCK_TITLE = '便签';
 
@@ -53,10 +52,6 @@ export function defaultMemoData() {
   return {version: 1, updatedAt: 0, blocks: []};
 }
 
-export function isMemoStatus(v) {
-  return MEMO_STATUSES.includes(v);
-}
-
 export function isMemoKind(v) {
   return MEMO_KINDS.includes(v);
 }
@@ -66,13 +61,16 @@ export function normalizeMemoKind(v) {
   return isMemoKind(v) ? v : 'text';
 }
 
-// cycleStatus 状态点点击循环：pending → in_progress → completed → pending。
-export function cycleStatus(status) {
-  const idx = MEMO_STATUSES.indexOf(status);
-  return MEMO_STATUSES[(idx + 1) % MEMO_STATUSES.length];
-}
-
 const clampStr = (v, max) => String(v == null ? '' : v).slice(0, max);
+
+// normalizeTags 标签数组归一：截断/去空白/去重/限量（normalize 与 addItem 共用同一口径）。
+export function normalizeTags(v) {
+  if (!Array.isArray(v)) return [];
+  return v.map((t) => clampStr(t, MEMO_LIMITS.tagMax).trim())
+    .filter((t) => t)
+    .filter((t, i, arr) => arr.indexOf(t) === i)
+    .slice(0, MEMO_LIMITS.tagsPerItem);
+}
 
 // normalizeMemoData 把任意输入修成合法结构：缺字段补默认、超限截断、状态枚举纠正。
 // 手改坏/旧版本的数据也能安全打开。
@@ -93,17 +91,12 @@ export function normalizeMemoData(raw) {
       const images = (Array.isArray(rawItem.images) ? rawItem.images : [])
         .filter((p) => typeof p === 'string' && p)
         .slice(0, MEMO_LIMITS.imagesPerItem);
-      const tags = (Array.isArray(rawItem.tags) ? rawItem.tags : [])
-        .map((t) => clampStr(t, MEMO_LIMITS.tagMax).trim())
-        .filter((t) => t)
-        .filter((t, i, arr) => arr.indexOf(t) === i)
-        .slice(0, MEMO_LIMITS.tagsPerItem);
+      const tags = normalizeTags(rawItem.tags);
       block.items.push({
         id: typeof rawItem.id === 'string' && rawItem.id ? rawItem.id : memoId('it'),
         text: clampStr(rawItem.text, MEMO_LIMITS.textMax),
         kind: normalizeMemoKind(rawItem.kind),
         tags,
-        status: isMemoStatus(rawItem.status) ? rawItem.status : 'pending',
         createdAt: Number(rawItem.createdAt) || 0,
         updatedAt: Number(rawItem.updatedAt) || 0,
         images,
@@ -145,17 +138,11 @@ function stamp(doc) {
   doc.updatedAt = Date.now();
 }
 
-// totalsOf 汇总计数（头部摘要与 AI 反馈共用）。
+// totalsOf 汇总条目数（AI 反馈计数用）。
 export function totalsOf(doc) {
-  let items = 0, done = 0, doing = 0;
-  for (const block of doc.blocks) {
-    for (const item of block.items) {
-      items++;
-      if (item.status === 'completed') done++;
-      else if (item.status === 'in_progress') doing++;
-    }
-  }
-  return {blocks: doc.blocks.length, items, done, doing, pending: items - done - doing};
+  let items = 0;
+  for (const block of doc.blocks) items += block.items.length;
+  return {blocks: doc.blocks.length, items};
 }
 
 // addBlock 新建分组小节；title 空则用「新建分组」。
@@ -176,13 +163,12 @@ export function addBlock(doc, title) {
 }
 
 // addItem 加条目。blockId 为空取第一个块；没有任何块时自动建「便签」块兜底。
-// opts: {status, kind: 'text'|'md'|'term', position: 'top'|'bottom', afterId, allowEmpty}
+// opts: {tags, kind: 'text'|'md'|'term', position: 'top'|'bottom', afterId, allowEmpty}
 // afterId：插到该条目之后（工具栏「正在编辑某条目时点新建」的智能插入）；优先于 position。
 // allowEmpty 仅供 UI 的新建行（提交空则删行），AI 工具不走这条通路。
 export function addItem(doc, blockId, text, opts) {
   const value = clampStr(text, MEMO_LIMITS.textMax);
   if (!value.trim() && !(opts && opts.allowEmpty)) return {ok: false, error: '条目内容为空'};
-  const status = opts && isMemoStatus(opts.status) ? opts.status : 'pending';
   const kind = normalizeMemoKind(opts && opts.kind);
   const position = opts && opts.position === 'top' ? 'top' : 'bottom';
   const afterId = opts && typeof opts.afterId === 'string' ? opts.afterId : '';
@@ -205,7 +191,7 @@ export function addItem(doc, blockId, text, opts) {
     id: memoId('it'),
     text: value,
     kind,
-    status,
+    tags: normalizeTags(opts && opts.tags),
     createdAt: Date.now(),
     updatedAt: Date.now(),
     images: [],
@@ -219,15 +205,12 @@ export function addItem(doc, blockId, text, opts) {
 }
 
 // updateById 单参数入口（AI 的 app_control update_memo 动作与 UI 的就地编辑共用）：
-// id 命中条目 → text/status/index 作用于条目；命中块 → text 当作块标题、index 当块位置。
+// id 命中条目 → text/tags/kind/index 作用于条目；命中块 → text 当作块标题、index 当块位置。
 export function updateById(doc, id, patch) {
   if (!id) return {ok: false, error: '缺少 id'};
   const next = cloneDoc(doc);
   const block = next.blocks.find((b) => b.id === id);
   if (block) {
-    if (patch.status && isMemoStatus(patch.status)) {
-      return {ok: false, error: id + ' 是块（分组小节），没有状态；要改条目请传条目 id'};
-    }
     if (typeof patch.text === 'string') {
       if (!patch.text.trim()) return {ok: false, error: '块标题不能为空'};
       block.title = clampStr(patch.text, MEMO_LIMITS.blockTitleMax);
@@ -244,13 +227,6 @@ export function updateById(doc, id, patch) {
     found.item.text = clampStr(patch.text, MEMO_LIMITS.textMax);
     found.item.updatedAt = Date.now();
   }
-  if (patch.status != null) {
-    if (!isMemoStatus(patch.status)) {
-      return {ok: false, error: 'status 只支持 pending / in_progress / completed'};
-    }
-    found.item.status = patch.status;
-    found.item.updatedAt = Date.now();
-  }
   if (patch.kind != null) {
     if (!isMemoKind(patch.kind)) {
       return {ok: false, error: 'kind 只支持 text / md / term'};
@@ -262,11 +238,7 @@ export function updateById(doc, id, patch) {
     if (!Array.isArray(patch.tags)) {
       return {ok: false, error: 'tags 必须是字符串数组'};
     }
-    const tags = patch.tags
-      .map((t) => clampStr(t, MEMO_LIMITS.tagMax).trim())
-      .filter((t) => t)
-      .filter((t, i, arr) => arr.indexOf(t) === i)
-      .slice(0, MEMO_LIMITS.tagsPerItem);
+    const tags = normalizeTags(patch.tags);
     found.item.tags = tags;
     found.item.updatedAt = Date.now();
   }
@@ -357,7 +329,7 @@ function moveInArray(arr, element, index) {
 }
 
 // formatMemoForAI 面板内容转给模型看的紧凑文本（id 一并给出，供后续 update/remove）。
-// filter 可选：{blockId?, status?, q?}——按分组 / 状态 / 文本包含过滤；首行永远汇报
+// filter 可选：{blockId?, tag?, q?}——按分组 / 标签 / 文本包含过滤；首行永远汇报
 // 全局面板计数（模型不丢全局视野），过滤时注明条件与本次命中数。
 export function formatMemoForAI(doc, scopeLabel, filter) {
   const t = totalsOf(doc);
@@ -367,30 +339,29 @@ export function formatMemoForAI(doc, scopeLabel, filter) {
   const f = filter || {};
   const q = typeof f.q === 'string' ? f.q.trim().toLowerCase() : '';
   const matchQ = (text) => !q || String(text || '').toLowerCase().indexOf(q) >= 0;
-  const statusOk = (st) => !f.status || f.status === st;
+  const tag = typeof f.tag === 'string' ? f.tag.trim() : '';
+  const tagOk = (tags) => !tag || (Array.isArray(tags) && tags.indexOf(tag) >= 0);
   let shown = 0;
-  const lines = [(scopeLabel || '面板') + ' 共 ' + t.blocks + ' 块 ' + t.items +
-    ' 项（完成 ' + t.done + ' / 进行中 ' + t.doing + ' / 待办 ' + t.pending + '）'];
+  const lines = [(scopeLabel || '面板') + ' 共 ' + t.blocks + ' 块 ' + t.items + ' 项'];
   const filtersDesc = [
     f.blockId ? 'block=' + f.blockId : '',
-    f.status ? 'status=' + f.status : '',
+    tag ? 'tag=' + tag : '',
     q ? 'q=' + f.q.trim() : '',
   ].filter(Boolean);
   if (filtersDesc.length) lines.push('（本次按 ' + filtersDesc.join('，') + ' 过滤）');
   doc.blocks.forEach((block, bi) => {
     if (f.blockId && block.id !== f.blockId) return;
-    const hits = block.items.filter((item) => statusOk(item.status) &&
+    const hits = block.items.filter((item) => tagOk(item.tags) &&
       (matchQ(item.text) || item.images.some((rel) => matchQ(rel))));
     shown += hits.length;
     lines.push('# [' + block.id + '] ' + (bi + 1) + '. ' + block.title +
       (block.collapsed ? '（已折叠）' : '') + '：' +
       (filtersDesc.length ? hits.length + '/' + block.items.length + ' 项命中' : block.items.length + ' 项'));
     for (const item of hits) {
-      const mark = item.status === 'completed' ? '[x]' : item.status === 'in_progress' ? '[~]' : '[ ]';
       const kindTag = item.kind === 'md' ? ' [md]' : item.kind === 'term' ? ' [终端]' : '';
       const tagStr = item.tags && item.tags.length ? ' {' + item.tags.join('/') + '}' : '';
       const imgs = item.images.length ? '（贴图 ' + item.images.length + ' 张：' + item.images.join('、') + '）' : '';
-      lines.push('  ' + mark + kindTag + ' [' + item.id + ']' + tagStr + ' ' + item.text + imgs);
+      lines.push('  ' + kindTag + ' [' + item.id + ']' + tagStr + ' ' + item.text + imgs);
     }
   });
   if (filtersDesc.length) {
@@ -444,9 +415,9 @@ export function exportMemoMarkdown(doc, scopeLabel) {
     for (const item of block.items) {
       if (item.kind === 'md') continue;
       scanItem(item);
-      const mark = item.status === 'completed' ? 'x' : item.status === 'in_progress' ? '~' : ' ';
       const body = String(item.text || '').split('\n').join('\n  ');
-      lines.push('- [' + mark + '] ' + (body || '（空）'));
+      const tags = item.tags && item.tags.length ? '{' + item.tags.join('/') + '} ' : '';
+      lines.push('- ' + tags + (body || '（空）'));
       // 挂载在缩略图上、还没写进正文的贴图：以图片语法补进条目末尾
       for (const rel of item.images) {
         if (String(item.text || '').indexOf(rel) >= 0) continue;

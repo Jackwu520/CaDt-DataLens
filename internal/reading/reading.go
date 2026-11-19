@@ -272,21 +272,36 @@ func (s *Reader) ScanReadingRoot(root string, opts ReadingScanOptions) (*Reading
 		if err != nil {
 			return nil, err
 		}
-		if scan.Title == "" {
-			scan.Title = strings.TrimSuffix(info.Name(), filepath.Ext(info.Name()))
-		}
 	} else if info.IsDir() {
 		files, err = s.scanReadingDir(abs, opts, scan)
 		if err != nil {
 			return nil, err
 		}
-		if scan.Title == "" {
-			scan.Title = filepath.Base(abs)
-		}
 	} else {
 		return nil, fmt.Errorf("不支持的路径类型：%s", abs)
 	}
 	scan.Files = files
+	// 书籍元数据：命名候选文件优先（第0卷/基本信息/简介/README），
+	// 其次按排序后的首个文本文件正文回退（如「第0000章-引言.md」内含 **书名** 段）
+	if scan.Title == "" || scan.Author == "" || scan.Intro == "" {
+		if t, a2, i := extractReadingMetaWithFiles(abs, files); t != "" || a2 != "" || i != "" {
+			if scan.Title == "" {
+				scan.Title = t
+			}
+			if scan.Author == "" {
+				scan.Author = a2
+			}
+			if scan.Intro == "" {
+				scan.Intro = i
+			}
+		}
+	}
+	if scan.Title == "" && info.Mode().IsRegular() {
+		scan.Title = strings.TrimSuffix(info.Name(), filepath.Ext(info.Name()))
+	}
+	if scan.Title == "" {
+		scan.Title = filepath.Base(abs)
+	}
 	fillReadingProfile(scan)
 	scan.ScanMs = time.Since(start).Milliseconds()
 	if debugEnabled() {
@@ -1010,7 +1025,7 @@ func parseReadingMetaText(text string) (title, author, intro string) {
 			}
 		}
 	}
-	for _, line := range lines {
+	for i, line := range lines {
 		if m := reReadingMetaTitle.FindStringSubmatch(line); m != nil && title == "" {
 			title = strings.TrimSpace(m[1])
 		}
@@ -1020,9 +1035,61 @@ func parseReadingMetaText(text string) (title, author, intro string) {
 		if m := reReadingMetaIntro.FindStringSubmatch(line); m != nil && intro == "" {
 			intro = strings.TrimSpace(m[2])
 			if intro == "" {
-				// 简介内容在下一行的场景
-				continue
+				// 简介内容在下一行的场景：取其后首个非空行
+				for j := i + 1; j < len(lines); j++ {
+					next := strings.TrimSpace(lines[j])
+					if next == "" {
+						continue
+					}
+					intro = next
+					break
+				}
 			}
+		}
+	}
+	return title, author, intro
+}
+
+// extractReadingMetaWithFiles 命名候选文件优先；失败时按排序后的首个文本文件正文回退
+// （真实书库常见「第0000章-引言.md」内含 **书名**/**作者** 段的场景）。
+func extractReadingMetaWithFiles(root string, files []ReadingFile) (title, author, intro string) {
+	title, author, intro = extractReadingMeta(root)
+	if title != "" && author != "" && intro != "" {
+		return title, author, intro
+	}
+	for _, f := range files {
+		if f.Error != "" {
+			continue
+		}
+		ext := strings.ToLower(f.Ext)
+		if ext != ".md" && ext != ".markdown" && ext != ".txt" {
+			continue
+		}
+		path := filepath.Join(root, filepath.FromSlash(f.Rel))
+		info, err := os.Stat(path)
+		if err != nil || info.IsDir() || info.Size() > 4<<20 {
+			continue
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		text, _, err := decodeReadingText(raw)
+		if err != nil {
+			continue
+		}
+		t, a2, i := parseReadingMetaText(text)
+		if title == "" {
+			title = t
+		}
+		if author == "" {
+			author = a2
+		}
+		if intro == "" {
+			intro = i
+		}
+		if title != "" && author != "" && intro != "" {
+			break
 		}
 	}
 	return title, author, intro

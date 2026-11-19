@@ -64,6 +64,8 @@ func (e *testEnv) newService(withRecycleBin bool) *Service {
 				return filepath.Join(e.appRoot, "ai-index.db")
 			case LocScheduleDB:
 				return filepath.Join(e.appRoot, "ai-schedule.db")
+			case LocUsageStats:
+				return filepath.Join(e.appRoot, "ai-usage.db")
 			case LocModelCatalog:
 				return filepath.Join(e.appRoot, "model-catalog.json")
 			case LocActivity:
@@ -200,7 +202,7 @@ func TestCacheIDs(t *testing.T) {
 // TestMustNotBeCached 把最不能误删的东西钉死在勾选表里。
 func TestMustNotBeCached(t *testing.T) {
 	for _, id := range []string{
-		"ai-sessions", "ai-memory", "ai-schedule", "activity", "classifier",
+		"ai-sessions", "ai-usage", "ai-memory", "ai-schedule", "activity", "classifier",
 		"ws-memory", "ws-patches", "ws-plan", "ws-gen", "ws-answers", "ui-state", "app-config",
 		// wipe-guard 是破坏防护的备份库：例行清缓存拆掉保险 = 没有防护（方案 §4.3 的负向断言）
 		"wipe-guard",

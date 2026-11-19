@@ -372,6 +372,36 @@ func TestExtractReadingMeta(t *testing.T) {
 	}
 }
 
+// 真实书库场景：书名段写在「第0000章-引言.md」正文里（命名候选全部落空），
+// 回退到排序后的首个文本文件；简介独占一行时取下一非空行。
+func TestExtractReadingMetaWithFilesFallback(t *testing.T) {
+	dir := t.TempDir()
+	writeReadingFixture(t, dir, "第0000章-引言.md",
+		"# 基本信息\n\n**书名**：《日记星辰》\n\n**作者**：橙天赪\n\n**简介**：\n\n身世悲惨的少年在人生尽头遇见了温柔的声音。\n")
+	writeReadingFixture(t, dir, "第0001章-人生倒数.md", "# 第1章 人生倒数\n\n正文\n")
+	files := []ReadingFile{
+		{Rel: "第0000章-引言.md", Name: "第0000章-引言.md", Ext: ".md"},
+		{Rel: "第0001章-人生倒数.md", Name: "第0001章-人生倒数.md", Ext: ".md"},
+	}
+	title, author, intro := extractReadingMetaWithFiles(dir, files)
+	if title != "《日记星辰》" || author != "橙天赪" {
+		t.Errorf("meta = %q/%q", title, author)
+	}
+	if intro != "身世悲惨的少年在人生尽头遇见了温柔的声音。" {
+		t.Errorf("intro = %q（应取简介下一非空行）", intro)
+	}
+	// 命名候选文件优先于回退
+	dir2 := t.TempDir()
+	writeReadingFixture(t, dir2, "第0卷 基本信息.md", "**书名**：候选书\n**作者**：候选作者\n")
+	writeReadingFixture(t, dir2, "第0000章-引言.md", "**书名**：回退书\n**作者**：回退作者\n")
+	title, author, _ = extractReadingMetaWithFiles(dir2, []ReadingFile{
+		{Rel: "第0000章-引言.md", Name: "第0000章-引言.md", Ext: ".md"},
+	})
+	if title != "候选书" || author != "候选作者" {
+		t.Errorf("命名候选应优先 = %q/%q", title, author)
+	}
+}
+
 func TestSuggestReadingBooks(t *testing.T) {
 	t.Setenv("AppData", t.TempDir())
 	ws := t.TempDir()

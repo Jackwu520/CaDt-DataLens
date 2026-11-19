@@ -27,6 +27,7 @@ import (
 	"datalens/internal/sessionindex"
 	"datalens/internal/sessionstore"
 	"datalens/internal/storage"
+	"datalens/internal/usagestats"
 )
 
 var storageService = storage.New(storage.Deps{
@@ -39,6 +40,7 @@ var storageService = storage.New(storage.Deps{
 		// 派生 SQLite 打开状态下删不掉，清除前先释放本进程句柄
 		"session-index": func(string) (func(), error) { sessionindex.ResetFiles(); return nil, nil },
 		"ai-schedule":   func(string) (func(), error) { aischedule.Close(); return nil, nil },
+		"ai-usage":      func(string) (func(), error) { usagestats.Close(); return nil, nil },
 		// 多实例：持有写权/回合的资源正在被另一窗口使用时，拒绝清理（见 multi-instance-sync.md）
 		"ai-sessions": func(string) (func(), error) { return sessionstore.LockRootForClear() },
 		"memo":        func(string) (func(), error) { return memo.LockForClear("global", "") },
@@ -95,6 +97,8 @@ func storageLocation(name string) string {
 		return sessionindex.Path()
 	case storage.LocScheduleDB:
 		return aischedule.Path()
+	case storage.LocUsageStats:
+		return usagestats.Path()
 	case storage.LocModelCatalog:
 		return aicatalog.Path()
 	case storage.LocActivity:

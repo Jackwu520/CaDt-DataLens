@@ -241,15 +241,22 @@ func (s *Service) specs() []spec {
 			targets: []target{workspaceTarget("patches")},
 		},
 		{
+			// 子代理的用量事实只存在于这个库（没有可扫描的 JSONL），删了不可恢复；
+			// 主会话/群聊部分下次打开统计面板会按游标重新回填。
+			id: "ai-usage", label: "AI 使用统计", scope: ScopeApp, kind: KindData,
+			note:    "使用统计的事实库（ai-usage.db）：主会话与群聊的用量可从 JSONL 重新回填，但子代理的用量只存在这里，删除不可恢复。",
+			targets: []target{dbTarget(LocUsageStats)},
+		},
+		{
 			id: "ai-sessions", label: "AI 会话记录", scope: ScopeApp, kind: KindDanger,
 			note:    "所有会话的正文 JSONL 与附图（ai-sessions/），是会话的唯一真源；派生索引删了能重建，这里删了就没了。",
 			targets: []target{locTarget(LocAISessions)},
 		},
 		{
-			// 大对象产物区：上下文里的「全文在 xxx」指针指向这里。删了不丢正式内容
-			// （会话正文仍在 ai-sessions/），只是那些指针失效、模型要重新调工具取数据。
+			// 大对象产物区：上下文里的「全文在 xxx」指针指向这里。工具结果删了不丢正式内容，
+			// 但**子代理转录也在里面且不可再生**（重启后读回靠它）——清缓存会一并丢掉。
 			id: "ai-artifacts", label: "AI 中间产物（工具结果落盘）", scope: ScopeApp, kind: KindCache, inCache: true,
-			note:    "ai-artifacts/ 里落盘的工具结果全文与子代理转录（超过上下文阈值的那些）。删了不丢正式内容；会话正文里的指针会失效，需要时由 AI 重新调用工具获取。",
+			note:    "ai-artifacts/ 里落盘的工具结果全文与子代理转录。工具结果删了不丢正式内容（指针失效、需要时重新调工具）；但子代理转录删了不可恢复，会话里只剩结论摘要。会话删除时对应目录会随删。",
 			targets: []target{appDirTarget(aiartifact.DirName)},
 		},
 		{

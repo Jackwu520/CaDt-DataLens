@@ -1,4 +1,4 @@
-// memo-term.js：快捷便签「终端条目」的运行时——条目正文是命令字符串，点 ▶ 交给
+// memo-term.js：快捷便签「终端条目」的运行时——条目正文是命令字符串，点运行按钮交给
 // run.Runner.RunExec 通道执行（流式 run-out / run-exit、GBK 解码、120s 超时杀树、
 // RunStop 手动停止）。输出是会话内存态：只存本模块的 Map，不写 memo.json——
 // 重渲染（折叠/编辑/外部变更）从 Map 恢复，关面板（memoUnmount）停运行并清空。
@@ -6,6 +6,7 @@
 // 命令字符串 → argv 的拼接是本模块纯函数 buildShellArgv。运行 id 固定 `memo-<itemId>`
 // 前缀，与 F5 的 run-N-build/run 互不干扰（run.js 对未知 id 静默忽略）。
 // 顶部纯函数不依赖 DOM/Wails，node:test 直接导入（memo-term.test.mjs）。
+import {iconSvg} from '../core/icons.js';
 
 export const TERM_TIMEOUT_MS = 120000; // 硬超时：不支持挂起任务（npm run dev 这类到点杀树）
 export const TERM_MAX_LINES = 500;     // 输出块尾部保留行数（超出丢头部，Map 与 DOM 同步）
@@ -123,7 +124,7 @@ export function createMemoTerm(deps) {
     const btn = row.querySelector('.memo-run-btn');
     if (btn) {
       const running = !!entry && entry.state === 'running';
-      btn.textContent = running ? '⏹' : '▶';
+      btn.innerHTML = iconSvg(running ? 'stop' : 'play', 12);
       btn.classList.toggle('running', running);
       btn.setAttribute('data-tip', running ? '停止运行' : (btn.dataset.cwdTip || '运行命令'));
     }

@@ -60,7 +60,9 @@ export function createStorageAutoClean(deps) {
             const result = await deps.backend.StorageClear(ids, '');
             const trigger = verdict === 'size' ? '缓存超过阈值' : '距上次清理已到期';
             if (typeof deps.notify === 'function') {
-                deps.notify({kind: 'success', title: '自动清理完成', body: trigger + ' · ' + clearReportText(result)});
+                // 后台静默清理要主动可见：只进消息中心的话，用户不点状态栏角标就完全
+                // 不知道清过。与其它后台事件（工作区防护 / 更新检查）一致弹右下角 toast。
+                deps.notify({kind: 'success', title: '自动清理完成', body: trigger + ' · ' + clearReportText(result)}, {toast: true});
             }
             if (deps.activity) {
                 deps.activity.log('storage.auto_clean', '', {

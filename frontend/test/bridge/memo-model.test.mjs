@@ -1,4 +1,4 @@
-// memo-model 纯函数护栏：归一化（坏数据兜底 / 超限截断 / 状态枚举纠正）、
+// memo-model 纯函数护栏：归一化（坏数据兜底 / 超限截断 / 标签去重限量）、
 // 增删改移（上限报错、id 生成、自动建块、移动语义）与 AI 文本格式（id 可回溯）。
 // 视图（bridge-todo-view）与 AI 工具共用这套函数，上限口径在这里统一卡。
 import test from 'node:test';
@@ -10,7 +10,7 @@ import {
     addItem,
     attachImage,
     collectImageRefs,
-    cycleStatus,
+    normalizeTags,
     defaultMemoData,
     exportMemoMarkdown,
     formatMemoForAI,
@@ -29,8 +29,8 @@ import {
 function sampleDoc() {
     const r1 = addBlock(defaultMemoData(), '阶段一');
     const r2 = addItem(r1.doc, r1.id, '实现 token 流');
-    const r3 = addItem(r2.doc, r1.id, '修复转义 bug', {status: 'in_progress'});
-    const r4 = addItem(r3.doc, r1.id, '写单元测试', {status: 'completed'});
+    const r3 = addItem(r2.doc, r1.id, '修复转义 bug', {tags: ['重要']});
+    const r4 = addItem(r3.doc, r1.id, '写单元测试', {tags: ['已验收', '重要']});
     return r4;
 }
 
@@ -41,15 +41,15 @@ test('normalizeMemoData：非对象输入回默认结构', () => {
     }
 });
 
-test('normalizeMemoData：补 id、纠状态、截断超限', () => {
+test('normalizeMemoData：补 id、归标签、截断超限', () => {
     const longText = 'x'.repeat(MEMO_LIMITS.textMax + 100);
     const doc = normalizeMemoData({
         blocks: [
             {
                 title: 't'.repeat(MEMO_LIMITS.blockTitleMax + 50),
                 items: [
-                    {text: longText, status: 'bogus', images: ['img/a.png', 42, null, 'img/b.png']},
-                    {text: '第二条', status: 'completed', images: Array(20).fill('img/c.png')},
+                    {text: longText, tags: ['重要', '重要', '  ', 'x'.repeat(50)], images: ['img/a.png', 42, null, 'img/b.png']},
+                    {text: '第二条', tags: ['已验收'], images: Array(20).fill('img/c.png')},
                 ],
             },
             null,
@@ -60,11 +60,9 @@ test('normalizeMemoData：补 id、纠状态、截断超限', () => {
     const [b1, b2] = doc.blocks;
     assert.ok(b1.id.startsWith('blk-'));
     assert.equal(b1.title.length, MEMO_LIMITS.blockTitleMax);
-    assert.equal(b1.items[0].status, 'pending');
     assert.equal(b1.items[0].text.length, MEMO_LIMITS.textMax);
     assert.deepEqual(b1.items[0].images, ['img/a.png', 'img/b.png']);
     assert.equal(b1.items[1].images.length, MEMO_LIMITS.imagesPerItem);
-    assert.equal(b1.items[1].status, 'completed');
     assert.equal(b2.items.length, MEMO_LIMITS.itemsPerBlock);
 });
 
@@ -112,23 +110,17 @@ test('updateById：条目与块共用 id 入口', () => {
     const base = sampleDoc();
     const it = base.doc.blocks[0].items[0];
 
-    // 改条目文本与状态
-    const u1 = updateById(base.doc, it.id, {text: '改过的', status: 'completed'});
+    // 改条目文本与标签
+    const u1 = updateById(base.doc, it.id, {text: '改过的', tags: ['已验收']});
     assert.ok(u1.ok && u1.kind === 'item');
     assert.equal(u1.doc.blocks[0].items[0].text, '改过的');
-    assert.equal(u1.doc.blocks[0].items[0].status, 'completed');
-
-    // 非法状态报错
-    assert.equal(updateById(base.doc, it.id, {status: 'done'}).ok, false);
+    assert.deepEqual(u1.doc.blocks[0].items[0].tags, ['已验收']);
 
     // 改块标题：text 即标题
     const blk = base.doc.blocks[0];
     const u2 = updateById(base.doc, blk.id, {text: '新标题'});
     assert.ok(u2.ok && u2.kind === 'block');
     assert.equal(u2.doc.blocks[0].title, '新标题');
-
-    // 块没有状态
-    assert.equal(updateById(base.doc, blk.id, {status: 'completed'}).ok, false);
 
     // index 移动：把第 0 条挪到末尾
     const u3 = updateById(base.doc, blk.items[0].id, {index: 99});
@@ -180,10 +172,9 @@ test('attachImage / removeImageById：贴图引用上限', () => {
     assert.equal(removeImageById(doc, it.id, 'img/none.png').ok, false);
 });
 
-test('cycleStatus：三态循环', () => {
-    assert.equal(cycleStatus('pending'), 'in_progress');
-    assert.equal(cycleStatus('in_progress'), 'completed');
-    assert.equal(cycleStatus('completed'), 'pending');
+test('normalizeTags：截断/去重/去空白/限量', () => {
+    assert.deepEqual(normalizeTags(['重要', '重要', '  ', 'x'.repeat(50)]), ['重要', 'x'.repeat(12)]);
+    assert.deepEqual(normalizeTags(null), []);
 });
 
 test('formatMemoForAI：含 id 与计数，空面板有引导语', () => {
@@ -193,13 +184,11 @@ test('formatMemoForAI：含 id 与计数，空面板有引导语', () => {
     const base = sampleDoc();
     const text = formatMemoForAI(base.doc, '工作区快捷便签');
     assert.match(text, /共 1 块 3 项/);
-    assert.match(text, /完成 1 \/ 进行中 1 \/ 待办 1/);
     for (const item of base.doc.blocks[0].items) {
         assert.ok(text.includes('[' + item.id + ']'), '缺条目 id：' + item.id);
     }
-    assert.ok(text.includes('[x]'));
-    assert.ok(text.includes('[~]'));
-    assert.ok(text.includes('[ ]'));
+    assert.ok(text.includes('{重要}'));
+    assert.ok(text.includes('{已验收/重要}'));
 });
 
 test('memoId：同批调用不重复', () => {
@@ -317,7 +306,7 @@ test('exportMemoMarkdown：term 条目按普通清单条目导出（命令原文
     let doc = addBlock(defaultMemoData(), '部署').doc;
     doc = addItem(doc, doc.blocks[0].id, 'npm run build', {kind: 'term'}).doc;
     const out = exportMemoMarkdown(doc, '工作区');
-    assert.match(out.content, /- \[ \] npm run build/);
+    assert.match(out.content, /- npm run build/);
 });
 
 test('collectImageRefs：item.images 与正文占位符合并收集', () => {
@@ -335,29 +324,29 @@ test('collectImageRefs：item.images 与正文占位符合并收集', () => {
 test('exportMemoMarkdown：任务清单 + md 原样 + 图片统一收集', () => {
     let doc = addBlock(defaultMemoData(), '阶段一').doc;
     const blkId = doc.blocks[0].id;
-    doc = addItem(doc, blkId, '223s 速度 ![图](img/a.png) 完成', {status: 'completed'}).doc;
-    doc = addItem(doc, blkId, '进行中任务', {status: 'in_progress'}).doc;
+    doc = addItem(doc, blkId, '223s 速度 ![图](img/a.png) 完成', {tags: ['已验收']}).doc;
+    doc = addItem(doc, blkId, '进行中任务', {tags: ['重要']}).doc;
     doc = attachImage(doc, doc.blocks[0].items[1].id, 'img/b.png').doc;
     doc = addItem(doc, blkId, '## 小节' + String.fromCharCode(10) + '- 列表', {kind: 'md'}).doc;
 
     const out = exportMemoMarkdown(doc, '工作区');
     assert.match(out.content, /# 快捷便签 · 工作区/);
     assert.match(out.content, /## 1\. 阶段一/);
-    assert.match(out.content, /- \[x\] 223s 速度 !\[图\]\(img\/a\.png\) 完成/);
-    assert.match(out.content, /- \[~\] 进行中任务/);
+    assert.match(out.content, /- \{已验收\} 223s 速度 !\[图\]\(img\/a\.png\) 完成/);
+    assert.match(out.content, /- \{重要\} 进行中任务/);
     assert.match(out.content, /  !\[b\.png\]\(img\/b\.png\)/, '缩略图挂载补成图片语法');
     assert.ok(out.content.includes('## 小节' + String.fromCharCode(10) + '- 列表'), 'md 条目原样嵌入');
     assert.deepEqual(out.images.sort(), ['img/a.png', 'img/b.png']);
 });
 
-test('formatMemoForAI：按状态过滤（首行保留全局面板计数 + 尾部命中汇总）', () => {
-    const base = sampleDoc(); // 3 项：1 完成 / 1 进行中 / 1 待办
-    const text = formatMemoForAI(base.doc, '工作区快捷便签', {status: 'in_progress'});
+test('formatMemoForAI：按标签过滤（首行保留全局面板计数 + 尾部命中汇总）', () => {
+    const base = sampleDoc(); // 3 项：重要×2 / 已验收×1
+    const text = formatMemoForAI(base.doc, '工作区快捷便签', {tag: '已验收'});
     assert.match(text, /共 1 块 3 项/, '首行保留全局视野');
-    assert.match(text, /status=in_progress/, '注明过滤条件');
+    assert.match(text, /tag=已验收/, '注明过滤条件');
     assert.match(text, /1\/3 项命中/);
-    assert.ok(!text.includes('223s'), '未命中的待办条目不显示');
-    assert.match(text, /修复转义 bug/);
+    assert.ok(!text.includes('修复转义 bug'), '未命中标签的条目不显示');
+    assert.match(text, /写单元测试/);
     assert.match(text, /以上 1 项为过滤命中；其余 2 项未显示/);
 });
 

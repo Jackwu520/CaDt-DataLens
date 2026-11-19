@@ -48,6 +48,7 @@ const (
 	LocDebugConsole    = "debug-console"
 	LocSessionIndex    = "session-index"
 	LocScheduleDB      = "schedule-db"
+	LocUsageStats      = "usage-stats"
 	LocModelCatalog    = "model-catalog"
 	LocActivity        = "activity"
 	LocAISessions      = "ai-sessions"

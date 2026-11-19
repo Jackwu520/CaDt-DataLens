@@ -65,13 +65,19 @@ export function createReadingRender(deps) {
 
     // ---- HTML 后处理：锚点 + 图片 ----
 
-    function postProcess(container, rel) {
+    function postProcess(container, rel, unit) {
         let idx = 0;
         for (const h of container.querySelectorAll('h1,h2,h3,h4,h5,h6')) {
             if (!h.textContent.trim()) continue;
             h.id = 'rh-' + idx;
             h.dataset.rh = String(idx);
             idx++;
+        }
+        // 章首标题与章名一致时标记为章标题（居中、紧凑上边距），替代默认 h1/h2 排版
+        const firstEl = container.firstElementChild;
+        if (firstEl && /^H[1-6]$/.test(firstEl.tagName) && unit && unit.title &&
+            firstEl.textContent.trim() === String(unit.title).trim()) {
+            firstEl.classList.add('rd-chapter-title');
         }
         for (const img of container.querySelectorAll('img')) {
             const raw = img.getAttribute('data-ai-src') || img.getAttribute('src') || '';
@@ -106,11 +112,11 @@ export function createReadingRender(deps) {
 
     // ---- Markdown ----
 
-    function renderMarkdownUnit(text, rel) {
+    function renderMarkdownUnit(text, rel, unit) {
         let html = renderMarkdownHtml(text);
         const tpl = document.createElement('template');
         tpl.innerHTML = html;
-        postProcess(tpl.content, rel);
+        postProcess(tpl.content, rel, unit);
         return tpl.innerHTML;
     }
 
@@ -227,7 +233,7 @@ export function createReadingRender(deps) {
         const html = out.join('\n');
         const tpl = document.createElement('template');
         tpl.innerHTML = html;
-        postProcess(tpl.content, unit.rel);
+        postProcess(tpl.content, unit.rel, unit);
         return tpl.innerHTML;
     }
 
@@ -260,7 +266,7 @@ export function createReadingRender(deps) {
         });
         const tpl = document.createElement('template');
         tpl.innerHTML = html;
-        postProcess(tpl.content, unit.rel);
+        postProcess(tpl.content, unit.rel, unit);
         // EPUB 内部锚链接标记（控制器处理跳转）
         for (const a of tpl.content.querySelectorAll('a[href^="#"]')) {
             a.dataset.epubAnchor = (a.getAttribute('href') || '').slice(1);
@@ -281,16 +287,26 @@ export function createReadingRender(deps) {
         if (kind === 'md') {
             let text;
             if (payload.rawSlice) {
-                // 大章分块：内容已切好，不再按单元区间二次切片
+                // 内容已按单元区间切好（renderChapter/分块），这里只做段内换行合并，
+                // 不再二次切片——offset>1 的章二次切片会得到空串（引言空白 bug）
                 text = getSetting('readingJoinSoftLines', true) ? joinSoftLines(payload.content) : payload.content;
             } else {
                 text = prepareMarkdownText(payload.content, unit, {
                     joinSoftLines: getSetting('readingJoinSoftLines', true),
                 });
             }
-            html = renderMarkdownUnit(text, unit.rel);
+            html = renderMarkdownUnit(text, unit.rel, unit);
         } else if (kind === 'txt') {
-            html = renderTxtUnit(payload.content, unit, payload.headings);
+            if (payload.rawSlice) {
+                // 已切好的内容：把标题偏移平移到切片坐标系，避免二次切片
+                const shifted = (payload.headings || [])
+                    .filter((h) => h.offset >= unit.offset &&
+                        (Number.isFinite(unit.endOffset) ? h.offset < unit.endOffset : true))
+                    .map((h) => Object.assign({}, h, {offset: h.offset - unit.offset + 1}));
+                html = renderTxtUnit(payload.content, {offset: 1, endOffset: Infinity}, shifted);
+            } else {
+                html = renderTxtUnit(payload.content, unit, payload.headings);
+            }
         } else if (kind === 'docx') {
             html = renderDocxBlocks(payload.blocks, unit);
         } else if (kind === 'epub') {
