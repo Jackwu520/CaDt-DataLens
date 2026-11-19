@@ -752,6 +752,15 @@ func RecentLogFor(dir string, limit int) (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
+// trimDiffTail 只去掉 git 输出末尾的那一个换行。
+// 不能用 TrimRight(out, "\n")：hunk 的最后一行可能是空上下文行，git 默认输出
+// " "（空格 + 换行），而 diff.suppressBlankEmpty / --suppress-blank-empty 会输出纯空行。
+// TrimRight 会把「空行 + 行尾换行」一起吃光，hunk 比 @@ 头少一行，差异视图随即报
+// PATCH_PARSE（「头部声明 -226,7 +226,7，实际数出 -6 +6」）。
+func trimDiffTail(out string) string {
+	return strings.TrimSuffix(out, "\n")
+}
+
 // DiffFor 返回指定文件相对 HEAD 的差异（unified patch）。
 func DiffFor(dir string, path string) (*GitDiffResult, error) {
 	result := &GitDiffResult{}
@@ -764,13 +773,13 @@ func DiffFor(dir string, path string) (*GitDiffResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	out = strings.TrimRight(out, "\n")
+	out = trimDiffTail(out)
 	if out == "" {
 		// 暂存新增文件没有 HEAD 差异
 		out2, code2, _ := gitRun(dir, []string{"diff", "--cached", "--", path}, 10000)
 		if code2 == 0 && strings.TrimSpace(out2) != "" {
 			result.HasChanges = true
-			result.Diff = strings.TrimRight(out2, "\n")
+			result.Diff = trimDiffTail(out2)
 		} else if patch, ok := untrackedFileUnifiedDiff(dir, path); ok {
 			// 未跟踪文件：HEAD 与索引都没有版本，按「全部新增」生成补丁
 			result.HasChanges = true

@@ -23,6 +23,10 @@ export function normalizeWorktreeState(raw) {
         path: aiTextOf(raw.path),
         baseSha: aiTextOf(raw.baseSha),
         createdAt: Number(raw.createdAt) || 0,
+        // export 状态标记（L3）：最近一次预检报告路径——与 lastExportPatch 并列，让
+        // 「已导出 / 有未导出改动」可从状态区分。多次 export 各一份报告不覆盖。
+        lastExportReport: aiTextOf(raw.lastExportReport),
+        lastExportPreviewAt: Number(raw.lastExportPreviewAt) || 0,
     };
 }
 
@@ -121,6 +125,53 @@ export function resolveWorktreeTarget(own, subWorktrees, requestedName) {
     return null;
 }
 
+// export 预检回执（纯函数，可单测）：merge-tree 三方合并分类 → 有界三栏文本。
+// 体量护栏（方案「报告体量护栏」）：回执只给索引不给全文——冲突/可应用清单各 20 行封顶、
+// 已应用 10 行，超出折叠为计数；全量报告在 mp.reportPath（主根 .cadt/export-reports/，
+// 每次 export 独立一份），AI 要细节按需读文件，冲突文件内容永不进上下文。
+// mp 为 Go GitWorktreeMergePreviewResult（json 小驼峰）：{supported, clean, applicable,
+// alreadyApplied, conflicted:[{path, reasons}], reportPath}。
+const PREVIEW_CAP_CONFLICT = 20;
+const PREVIEW_CAP_APPLICABLE = 20;
+const PREVIEW_CAP_ALREADY = 10;
+
+export function worktreeExportPreviewText(wt, mp) {
+    const name = wt && wt.name ? wt.name : '?';
+    const conflicted = (mp && mp.conflicted) || [];
+    const applicable = (mp && mp.applicable) || [];
+    const already = (mp && mp.alreadyApplied) || [];
+    const total = conflicted.length + applicable.length + already.length;
+    const section = (title, items, cap, render) => {
+        if (!items.length) return [title + ' 0 个：'];
+        // 折叠计数并入标题行（体量护栏：大冲突场景回执仍有界）
+        const lines = [title + ' ' + items.length + ' 个' + (items.length > cap ? '（列前 ' + cap
+            + '，另有 ' + (items.length - cap) + ' 个见报告文件）' : '') + '：'];
+        for (const item of items.slice(0, cap)) lines.push('  ' + render(item));
+        return lines;
+    };
+    const lines = ['隔离区 ' + worktreeRelPath(name) + ' 回灌预检（merge-tree 三方合并，未写入主根）：改动共 ' + total + ' 个文件。'];
+    if (total && !conflicted.length && !applicable.length) {
+        // 全集都已应用：明确「无需重做」，不落盘补丁——消除复盘问题 2 的「已应用误报冲突」
+        lines.push('');
+        lines.push(...section('已在主根（无需重做）', already, PREVIEW_CAP_ALREADY, (p) => '· ' + p));
+    } else {
+        lines.push('');
+        lines.push(...section('真冲突（需在隔离区重做后重新 export）', conflicted, PREVIEW_CAP_CONFLICT,
+            (f) => '· ' + f.path + ((f.reasons && f.reasons.length) ? '（' + f.reasons[0] + '）' : '')));
+        lines.push(...section('本次可应用', applicable, PREVIEW_CAP_APPLICABLE, (p) => '· ' + p));
+        lines.push(...section('已在主根（无需重做）', already, PREVIEW_CAP_ALREADY, (p) => '· ' + p));
+    }
+    lines.push('');
+    if (mp && mp.reportPath) {
+        lines.push('全量报告（主根侧，可用 read_file 查看）：' + mp.reportPath);
+    } else {
+        lines.push('全量报告落盘失败' + ((mp && mp.reportErr) ? '：' + mp.reportErr : ''));
+    }
+    lines.push('冲突处理：在 ' + worktreeRelPath(name) + '/ 里按主根当前内容重做对应文件后重新 export；'
+        + '主根隔离期只读，绝不要直接改主根文件绕过审阅。');
+    return lines.join('\n');
+}
+
 // create / discard 的必填原因校验（纯函数）：原因原样进审批卡，让用户看到 AI 的意图
 // 而不只是动作。返回 {reason} 或 {error}——error 串会作为工具结果回给模型，指导它补参数。
 export function worktreeReasonCheck(rawReason) {
@@ -145,7 +196,7 @@ export function worktreeBlockText(wt) {
         '- 隔离区里没有主根的 .cadt/，工具的路径一律相对范围根（主根），与命令 cwd 无关：临时日志/中间产物用 write_file 写到主根 .cadt/tmp/（auto 档免审批）；不要在命令里用 ../ 猜路径，也不要用 / 开头或 UNC 路径（隔离期间会被拒绝，Win32 会把它解析到当前盘根）。',
         '- 跑测试直接用 run_command，输出会自动返回；不要用输出重定向把日志写文件再 sed 读（会变成无法静态分析的复合命令而转人工审批）。长日志用 background_command + check_command。',
         '- 完成后调 worktree_manage(action=export) 生成补丁交用户审阅回灌主根；应用成功后建议 discard 收尾。不要 commit 到隔离分支：worktree 是草稿区，分支不保留。',
-        '- 导出预检有冲突（「上下文不匹配」/ hunk 行号偏移）时：在隔离区里按主根当前内容修正该文件后重新 export，或把冲突行号与原因告知用户；绝不要直接编辑主根绕过审阅（写工具会拒绝，这不是权限档能放开的）。',
+        '- 导出预检有冲突时：export 会先用 merge-tree 三方合并做零副作用预检并给出三栏报告（可应用 / 真冲突 / 已应用）。真冲突文件在隔离区里按主根当前内容修正该文件后重新 export（全量报告文件可 read_file 按需查看）；绝不要直接编辑主根绕过审阅（写工具会拒绝，这不是权限档能放行的）。',
         '</worktree>',
     ].join('\n');
 }
@@ -263,6 +314,47 @@ export function createAIWorktree(deps) {
         refreshToolWrap(session, toolMessage);
     }
 
+    // export 预检标记（导出状态标记）：把最近一次预检报告路径写回会话登记（lastExportReport）。
+    // resolveTarget 返回的 wt 是归一化副本，直接改它不会持久化——own 写 session.worktree 活
+    // 对象，子代理写 getSubWorktrees 命中项；尽力而为，失败不影响 export 本身。
+    function markExportReport(session, target, wt, mp) {
+        const path = mp && mp.reportPath ? String(mp.reportPath) : '';
+        if (!path) return;
+        try {
+            const wanted = String(wt.name).toLowerCase();
+            if (target && target.own && session && session.worktree
+                && String(session.worktree.name || '').toLowerCase() === wanted) {
+                session.worktree.lastExportReport = path;
+                session.worktree.lastExportPreviewAt = Date.now();
+                persistSessions();
+                return;
+            }
+            if (target && !target.own) {
+                const sub = (getSubWorktrees(session ? session.id : '') || [])
+                    .find((w) => w && String(w.name || '').toLowerCase() === wanted);
+                if (sub) {
+                    sub.lastExportReport = path;
+                    sub.lastExportPreviewAt = Date.now();
+                    persistSessions();
+                }
+            }
+        } catch (e) {}
+    }
+
+    // discard 保底快照（L3）：丢弃前把隔离区相对基准的未导出改动全量落盘 .cadt/patches/。
+    // 必须绕开 PatchSave——它对「没有任何文件可应用」会删补丁文件，保底存档绝不能被删。
+    // 返回补丁路径；无改动或绑定缺失返回 ''；失败返回 null（调用方继续丢弃但在回执里提示）。
+    async function snapshotWorktreePatch(root, wt) {
+        if (typeof backend.GitWorktreeSnapshotPatch !== 'function') return '';
+        try {
+            return await backend.GitWorktreeSnapshotPatch(root, wt.name, wt.baseSha || 'HEAD');
+        } catch (e) {
+            const msg = String((e && e.message) || e);
+            if (msg.includes('没有改动')) return '';
+            return null;
+        }
+    }
+
     // ---------- 确认弹窗（Promise 化；Esc / 关闭 / 取消都按放弃处理） ----------
     // message 可传字符串或 Promise<string>（如信息卡先取改动统计再渲染文案）。
     // 按钮回调必须先 closeDialog 再落定（仓库惯例，见 ai-reminders / ai-schedule）：漏掉这步
@@ -308,6 +400,8 @@ export function createAIWorktree(deps) {
             ['分支', wt.branch || '隔离分支'],
         ];
         if (totals.label) rows.push(['改动', worktreeStatNode(totals.label)]);
+        // 导出状态标记（L3）：区分「已导出 / 有未导出改动」，避免全量统计被误读成全没回灌
+        if (wt.lastExportReport) rows.push(['已导出', '最近预检报告 ' + wt.lastExportReport]);
         for (const [key, value] of rows) {
             const row = document.createElement('div');
             row.className = 'ai-worktree-row';
@@ -353,8 +447,8 @@ export function createAIWorktree(deps) {
                     iconEl.innerHTML = iconSvg('folder', 12);
                 }
                 const label = chip.querySelector('.ai-chip-label');
-                if (label) label.textContent = '隔离区 ' + wt.name;
-                chip.dataset.tip = '隔离区 ' + wt.name + '（点击查看信息与丢弃）';
+                if (label) label.textContent = '隔离区 ' + wt.name + (wt.lastExportReport ? ' · 已导出' : '');
+                chip.dataset.tip = '隔离区 ' + wt.name + (wt.lastExportReport ? '（已导出过：改动统计是全量语义，已回灌部分见预检报告）' : '（点击查看信息与丢弃）');
             }
         }
         if (toggle) {
@@ -407,23 +501,30 @@ export function createAIWorktree(deps) {
         }
         worktreeBusy.add(session.id);
         try {
+            // 保底快照（L3）：用户手点的丢弃同样先存档未导出改动
+            const snapPath = await snapshotWorktreePatch(getScopeRoot(), wt);
             await backend.GitWorktreeRemove(getScopeRoot(), wt.name, true);
+            if (session.worktree && session.worktree.name === wt.name) {
+                session.worktree = null;
+                persistSessions();
+            }
+            syncChip(currentSession() === session ? session : null);
+            let note = '已丢弃隔离工作区 ' + wt.name;
+            if (snapPath) note += '（未导出改动已存档：' + snapPath + '，可恢复）';
+            else if (snapPath === null) note += '（保底快照失败，未导出改动已丢失）';
+            flash(note);
+            // 写进会话历史：丢弃也是隔离区生命周期的一部分，重启后对话里可查
+            recordToolEvent(session, {action: 'discard', name: wt.name},
+                '已丢弃隔离工作区 ' + worktreeRelPath(wt.name) + '（含分支 ' + (wt.branch || '隔离分支') + '）。'
+                + (snapPath ? '丢弃前已存档未导出改动：' + snapPath + '（可恢复）。' : '')
+                + (snapPath === null ? '保底快照失败，未导出改动已丢失。' : ''));
+            return true;
         } catch (e) {
             flash('丢弃失败：' + ((e && e.message) || e), true);
             return false;
         } finally {
             worktreeBusy.delete(session.id);
         }
-        if (session.worktree && session.worktree.name === wt.name) {
-            session.worktree = null;
-            persistSessions();
-        }
-        syncChip(currentSession() === session ? session : null);
-        flash('已丢弃隔离工作区 ' + wt.name);
-        // 写进会话历史：丢弃也是隔离区生命周期的一部分，重启后对话里可查
-        recordToolEvent(session, {action: 'discard', name: wt.name},
-            '已丢弃隔离工作区 ' + worktreeRelPath(wt.name) + '（含分支 ' + (wt.branch || '隔离分支') + '）。');
-        return true;
     }
 
     // 丢弃确认（输入区「隔离」pill 取消勾选时用；返回是否真的丢弃）
@@ -436,7 +537,7 @@ export function createAIWorktree(deps) {
         const confirmed = await confirmDialog({
             title: '丢弃隔离工作区',
             messagePromise: statPromise.then((stat) => worktreeDialogBody(wt, worktreeStatTotals(stat),
-                '丢弃将删除 worktree 与分支，未导出的改动会丢失；主根不受影响。回灌先让 AI 执行 worktree_manage(action=export)。')),
+                '丢弃将删除 worktree 与分支（丢弃前会自动把未导出改动存档为 .patch，可恢复）；主根不受影响。回灌先让 AI 执行 worktree_manage(action=export)。')),
             confirmLabel: '丢弃隔离区',
             danger: true,
         });
@@ -463,7 +564,7 @@ export function createAIWorktree(deps) {
             title: '隔离工作区 ' + wt.name,
             cancelLabel: '关闭',
             messagePromise: statPromise.then((stat) => worktreeDialogBody(wt, worktreeStatTotals(stat),
-                '回灌：让 AI 执行 worktree_manage(action=export)，在审批卡里逐文件审阅后应用。丢弃将删除 worktree 与分支，未导出的改动会丢失。')),
+                '回灌：让 AI 执行 worktree_manage(action=export)，在审批卡里逐文件审阅后应用。丢弃将删除 worktree 与分支（未导出改动会自动存档为 .patch，可恢复）。')),
             confirmLabel: '丢弃隔离区',
             danger: true,
         });
@@ -549,8 +650,10 @@ export function createAIWorktree(deps) {
                 return manageExport(ctx, input);
             case 'discard':
                 return manageDiscard(session, toolMessage, input);
+            case 'conflict_detail':
+                return manageConflictDetail(session, input);
             default:
-                return deny('WORKTREE_ACTION', '未知 action：' + (action || '（空）') + '，可用 create / list / stat / export / discard');
+                return deny('WORKTREE_ACTION', '未知 action：' + (action || '（空）') + '，可用 create / list / stat / export / discard / conflict_detail');
         }
     }
 
@@ -639,6 +742,7 @@ export function createAIWorktree(deps) {
             '- 所有文件改动写到 ' + worktreeRelPath(added.name) + '/…（相对范围根），不要改主根同名文件。',
             '- run_command / background_command 未显式传 cwd 时默认就在 ' + worktreeRelPath(added.name) + ' 里执行；要看主根用 cwd=\'.\'。',
             depsNoteOf(added),
+            '- 隔离区只有 git 跟踪内容：依赖目录（如 frontend/node_modules）与构建产物（dist / wailsjs）不在其中——测试或构建前先在隔离区自举，例：cd frontend && npm install → npx vite build → wails generate module（顺序有依赖；缺 dist 时 generate 报 embed 错误是在提示先 vite build）。测试「假失败」先怀疑缺生成物，不是代码错误。',
             '- 完成后调 worktree_manage(action=export) 生成补丁交用户审阅回灌；不要 commit 到隔离分支。',
         ].filter(Boolean).join('\n');
     }
@@ -738,6 +842,7 @@ export function createAIWorktree(deps) {
         ];
         if (carry && added.carried > 0) summaryLines.push('已带入主根未提交改动 ' + added.carried + ' 个文件（快照 commit 作为基准）。');
         if (added.includeCopied > 0) summaryLines.push('已按 .worktreeinclude 拷贝 ' + added.includeCopied + ' 个被忽略文件。');
+        summaryLines.push('提示：隔离区只有 git 跟踪内容——依赖目录与构建产物（node_modules / dist / wailsjs）不在其中，测试前需先自举（npm install → vite build → wails generate module）。');
         recordToolEvent(session, {action: 'create', label: aiTextOf(label).trim().slice(0, 80), carry}, summaryLines.join('\n'));
         return added;
     }
@@ -787,9 +892,41 @@ export function createAIWorktree(deps) {
             if (!String(stat || '').trim()) {
                 return 'worktree 没有改动（相对创建基准无差异）。';
             }
-            return '隔离区 ' + worktreeRelPath(wt.name) + ' 相对创建基准的改动统计：\n' + String(stat).trim();
+            let text = '隔离区 ' + worktreeRelPath(wt.name) + ' 相对创建基准的改动统计（全量语义）：\n' + String(stat).trim();
+            // 导出状态标记（L3）：已回灌部分看最近一次预检报告，别被全量统计误导成「全没回灌」
+            if (wt.lastExportReport) {
+                text += '\n已导出标记：最近一次 export 预检报告 ' + wt.lastExportReport
+                    + '（报告里的「已应用」栏是主根已有的改动，无需重做）。';
+            }
+            return text;
         } catch (e) {
             return deny('WORKTREE_STAT', '统计失败', String((e && e.message) || e));
+        }
+    }
+
+    // conflict_detail（L3「冲突报告可消费」）：主根某文件相对基准的 diff，按需逐文件拉取，
+    // 单文件行数封顶（Go 侧截断）——冲突细节按需取（贵），文件级清单在 export 回执里（便宜）。
+    async function manageConflictDetail(session, input) {
+        const root = getScopeRoot();
+        if (!root) return deny('WORKTREE_CONTEXT', '当前没有工作区范围');
+        const target = resolveTarget(session, input && input.name);
+        if (!target) {
+            const wanted = String((input && input.name) || '').trim();
+            if (wanted) return deny('WORKTREE_OWNERSHIP', '隔离区 ' + wanted + ' 不归本会话管', '只允许操作本会话自己的隔离区或本会话派生的子代理隔离区');
+            return deny('WORKTREE_NONE', '本会话没有隔离工作区', '先 worktree_manage(action=create) 创建');
+        }
+        const wt = target.wt;
+        const file = String((input && input.file) || '').trim();
+        if (!file) return deny('WORKTREE_ARGS', '缺少 file：要查主根相对基准 diff 的文件路径（相对主根）');
+        if (typeof backend.GitWorktreeDiffSinceBase !== 'function') {
+            return deny('WORKTREE_ENV', '当前环境没有 diff 通道（旧后端）', '可改用 run_command 在主根跑 git diff ' + wt.baseSha + ' -- ' + file);
+        }
+        try {
+            const diff = await backend.GitWorktreeDiffSinceBase(root, wt.baseSha, file, 200);
+            return '主根 ' + file + ' 相对创建基准的改动（封顶 200 行）：\n' + diff
+                + '\n据此在 ' + worktreeRelPath(wt.name) + '/ 里重做该文件后重新 export；绝不要直接改主根。';
+        } catch (e) {
+            return deny('WORKTREE_CONFLICT_DETAIL', '查询失败', String((e && e.message) || e));
         }
     }
 
@@ -830,14 +967,46 @@ export function createAIWorktree(deps) {
             return deny('WORKTREE_NO_PATCH', '当前环境缺少补丁后端（dev mock 不支持回灌）',
                 '请在完整应用里验证 export；这里只能 create/stat/discard。');
         }
+        // 零副作用预检（L1，方案 docs/unfinished-plans/worktree-export-improvement.md）：
+        // merge-tree 三方合并（base=wt.baseSha，ours=主根快照，theirs=隔离区快照），零落盘。
+        // - 全部已应用 → 明确「无需重做」，不落盘补丁（消除复盘问题 2 的假冲突）；
+        // - 预检不可应用（只有真冲突）→ 三栏报告直接返回，不再走 PatchSave 的
+        //   「补丁已保存但没有任何文件可直接应用」误导路径（复盘问题 1/4）；
+        // - 干净或混合（有可应用也有冲突）→ 仍走原 PatchSave 审批链路（可部分应用）；
+        // - 绑定缺失（dev mock / 旧后端）、git <2.38、快照失败 → 静默降级走原链路兜底。
+        let mp = null;
+        if (typeof backend.GitWorktreeMergePreview === 'function') {
+            try {
+                const res = await backend.GitWorktreeMergePreview(root, wt.name, wt.baseSha);
+                if (res && res.supported) mp = res;
+            } catch (e) {
+                mp = null; // 与无预检同待遇：兜底链路
+            }
+        }
+        if (mp) markExportReport(session, target, wt, mp);
+        if (mp && !(mp.applicable || []).length && (mp.conflicted || []).length) {
+            // 有真冲突且没有可直接应用的文件：不落盘补丁、不弹审批卡，给有信息量的报告
+            return worktreeExportPreviewText(wt, mp);
+        }
+        if (mp && (mp.alreadyApplied || []).length && !(mp.applicable || []).length && !(mp.conflicted || []).length) {
+            return worktreeExportPreviewText(wt, mp);
+        }
         let preview;
         try {
             preview = await backend.PatchSave(root, 'worktree 回灌：' + wt.name, diffText);
         } catch (e) {
             return deny('PATCH_PARSE', '补丁无法解析或路径不合法', String((e && e.message) || e));
         }
+        // S2 应用换轨：merge-tree 判定「可合并」的文件按可应用呈现——双向引擎判冲突
+        // ≠ 三方合不了（行号漂移、远处改动都合得动），审批卡里用户仍可自由勾选
+        const mpApplicable = mp ? new Set(mp.applicable || []) : null;
+        if (mpApplicable && mpApplicable.size) {
+            for (const f of preview.files || []) {
+                if (mpApplicable.has(f.relPath) && f.status !== 'ok') f.status = 'ok';
+            }
+        }
         const okFiles = (preview.files || []).filter((f) => f.status === 'ok');
-        if (!okFiles.length) {
+        if (!okFiles.length && !(mp && (mp.applicable || []).length)) {
             const first = (preview.files || []).find((f) => f.reason) || {};
             return deny('PATCH_HUNK_CONFLICT', '补丁已保存但没有任何文件可直接应用：' + (first.relPath || '')
                     + (first.reason ? '（' + first.reason + '）' : ''),
@@ -864,7 +1033,13 @@ export function createAIWorktree(deps) {
         refreshToolWrap(session, toolMessage);
         let result;
         try {
-            result = await backend.PatchApply(approvalRef.planId, selected, null, mode);
+            if (mp && typeof backend.GitWorktreeMergeApply === 'function') {
+                // S2：应用走 merge-tree 写回（与预检同引擎，应用瞬间重新跑合并保证一致性，
+                // 不碰主根 index）；结果形状对齐 PatchApply，结果卡零适配渲染
+                result = await backend.GitWorktreeMergeApply(root, wt.name, wt.baseSha, selected);
+            } else {
+                result = await backend.PatchApply(approvalRef.planId, selected, null, mode);
+            }
         } catch (e) {
             const msg = String((e && e.message) || e);
             // 补丁卡读 approval.result 判断「正在应用」还是结果；异常不落 failed 会永久转圈
@@ -890,6 +1065,14 @@ export function createAIWorktree(deps) {
         if (applied > 0) {
             lines.push('回灌来自隔离区 ' + worktreeRelPath(wt.name) + '（' + applied + ' 个文件）。改动已回主根，worktree 保留；'
                 + '建议 worktree_manage(action=discard) 收尾——再次 export 是全量语义，已回灌的 hunk 会预检报「不可应用」。');
+        }
+        if (mp) {
+            if ((mp.conflicted || []).length) {
+                lines.push('预检判定另有 ' + mp.conflicted.length + ' 个文件真冲突（未回灌）：在隔离区按主根当前内容重做后重新 export，'
+                    + '绝不要直接改主根文件绕过审阅。全量报告：' + (mp.reportPath || ''));
+            } else if (mp.reportPath) {
+                lines.push('merge-tree 预检报告：' + mp.reportPath);
+            }
         }
         return lines.filter(Boolean).join('\n');
     }
@@ -939,6 +1122,8 @@ export function createAIWorktree(deps) {
             return '用户已停止生成，丢弃已取消。';
         }
         const root = getScopeRoot();
+        // 保底快照（L3）：丢弃前把未导出改动落盘 .cadt/patches/，绝不静默丢工作
+        const snapPath = await snapshotWorktreePatch(root, wt);
         worktreeBusy.add(session.id);
         try {
             await backend.GitWorktreeRemove(root, wt.name, true);
@@ -956,7 +1141,13 @@ export function createAIWorktree(deps) {
             syncChip(currentSession() === session ? session : null);
         }
         flash('已丢弃隔离工作区 ' + wt.name);
-        return '已丢弃隔离工作区 ' + worktreeRelPath(wt.name) + '（含分支）。主根不受影响；需要时重新 create。';
+        let note = '已丢弃隔离工作区 ' + worktreeRelPath(wt.name) + '（含分支）。主根不受影响；需要时重新 create。';
+        if (snapPath) {
+            note = '丢弃前已自动存档未导出改动（.patch）：' + snapPath + '（可用 git apply 或 propose_patch 恢复）。' + note;
+        } else if (snapPath === null) {
+            note = '保底快照失败：未导出改动已随隔离区删除。' + note;
+        }
+        return note;
     }
 
     return {manageTool, mountChip, syncChip, pruneStartup, blockFor, openChipDialog, createForSession, toggleForSession};

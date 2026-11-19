@@ -104,6 +104,34 @@ func (a *App) GitWorktreeStat(dir, name, baseSha string) (string, error) {
 	return gitinfo.WorktreeStat(dir, name, baseSha)
 }
 
+// GitWorktreeMergePreview export 的零副作用三方合并预检（L1 dry-run；快照/merge-tree/报告
+// 落盘都在引擎内）。Supported=false 时前端降级走 PatchPreviewText/PatchSave 兜底链路。
+func (a *App) GitWorktreeMergePreview(dir, name, baseSha string) (*gitinfo.GitWorktreeMergePreviewResult, error) {
+	return gitinfo.WorktreeMergePreview(dir, name, baseSha)
+}
+
+// GitPatchID diff 文本的稳定指纹（L0 已应用识别的第一层，stdin 喂给 git patch-id --stable）。
+func (a *App) GitPatchID(diffText string) (string, error) {
+	return gitinfo.PatchID(diffText)
+}
+
+// GitWorktreeMergeApply 审批通过后的应用换轨（S2）：按三方合并结果把选中文件写回主根
+// 工作区。与预检共用同一引擎（runMergeCore），应用瞬间重新跑合并保证一致性；不碰 index。
+func (a *App) GitWorktreeMergeApply(dir, name, baseSha string, paths []string) (*gitinfo.GitWorktreeMergeApplyResult, error) {
+	return gitinfo.WorktreeMergeApply(dir, name, baseSha, paths)
+}
+
+// GitWorktreeSnapshotPatch discard 保底快照（S3）：隔离区当前 diff 原样落盘 .cadt/patches/，
+// 绕开 PatchSave 的「不可应用即删」；无改动返回 ErrWorktreeNoChanges。
+func (a *App) GitWorktreeSnapshotPatch(dir, name, baseSha string) (string, error) {
+	return gitinfo.WorktreeSnapshotPatch(dir, name, baseSha)
+}
+
+// GitWorktreeDiffSinceBase 主根相对基准的单文件 diff（S3 conflict_detail 按需通道，行数封顶）。
+func (a *App) GitWorktreeDiffSinceBase(dir, baseSha, path string, maxLines int) (string, error) {
+	return gitinfo.WorktreeDiffSinceBase(dir, baseSha, path, maxLines)
+}
+
 // ===== Git 图谱（引擎在 internal/gitinfo/graph.go；泳道在 Go 侧算好，前端只渲染） =====
 
 func (a *App) GitGraphCommits(dir, ref string, limit, skip int) (*gitinfo.GitGraphPage, error) {

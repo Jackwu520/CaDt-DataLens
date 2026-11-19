@@ -293,3 +293,19 @@ func TestGitSubcommand(t *testing.T) {
 		}
 	}
 }
+
+// trimDiffTail 只能去掉 git 输出末尾的那一个换行。若用 TrimRight(out, "\n")，
+// hunk 末尾的空上下文行（diff.suppressBlankEmpty 下输出为纯空行）会连同换行一起
+// 被吃光，差异视图随即报「hunk 行数与 @@ 头不一致」。见 2026-11-19 报告。
+func TestTrimDiffTailKeepsTrailingBlankContextLine(t *testing.T) {
+	// git 默认：末尾空上下文行是「空格 + 换行」
+	withSpace := "@@ -1,2 +1,2 @@\n a\n \n"
+	if got := trimDiffTail(withSpace); got != "@@ -1,2 +1,2 @@\n a\n " {
+		t.Fatalf("带空格前缀的末尾空行被改动：%q", got)
+	}
+	// suppressBlankEmpty：末尾空上下文行是纯空行，只能去掉一个换行
+	bare := "@@ -1,2 +1,2 @@\n a\n\n"
+	if got := trimDiffTail(bare); got != "@@ -1,2 +1,2 @@\n a\n" {
+		t.Fatalf("应只去掉一个换行：%q", got)
+	}
+}

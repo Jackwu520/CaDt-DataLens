@@ -763,7 +763,7 @@ func WorktreeDiff(root, name, baseSha string) (string, error) {
 	if code != 0 {
 		return "", fmt.Errorf("git diff 失败（worktree：%s）", name)
 	}
-	diff := strings.TrimRight(out, "\n")
+	diff := trimDiffTail(out)
 	if strings.TrimSpace(diff) == "" {
 		return "", ErrWorktreeNoChanges
 	}

@@ -11,6 +11,7 @@ import {
     agentWorktreeWriteVerdict,
     mainRootWriteVerdict,
     resolveWorktreeTarget,
+    worktreeExportPreviewText,
     worktreeReasonCheck,
     createAIWorktree,
     predictWorktreeSlug,
@@ -405,3 +406,92 @@ test('worktreeReasonCheck：必填 / 长度上限 / trim', () => {
     assert.equal(worktreeReasonCheck(cjk).reason.length, WORKTREE_REASON_MAX, 'CJK 按字符计数');
 });
 
+
+// ---- worktreeExportPreviewText：merge-tree 三栏预检回执（体量护栏）----
+
+test('worktreeExportPreviewText：三栏分类与回执结构', () => {
+    const wt = {name: 'demo-ab12'};
+    const mp = {
+        supported: true,
+        clean: false,
+        applicable: ['new.txt', 'src/main.js'],
+        alreadyApplied: ['docs/README.md'],
+        conflicted: [
+            {path: 'a.txt', reasons: ['CONFLICT (content): Merge conflict in a.txt']},
+            {path: 'lib/heavy.js', reasons: []},
+        ],
+        reportPath: 'D:/repo/.cadt/export-reports/export-report-demo-ab12-20261119-140000.md',
+    };
+    const text = worktreeExportPreviewText(wt, mp);
+    const lines = text.split('\n');
+    // 汇总行：总数字
+    assert.ok(lines[0].includes('改动共 5 个文件'), lines[0]);
+    assert.ok(lines[0].includes('未写入主根'));
+    // 三栏都在
+    assert.ok(text.includes('真冲突（需在隔离区重做后重新 export） 2 个'));
+    assert.ok(text.includes('· a.txt（CONFLICT (content): Merge conflict in a.txt）'));
+    assert.ok(text.includes('本次可应用 2 个'));
+    assert.ok(text.includes('已在主根（无需重做） 1 个'));
+    // 报告路径与「按需读」指引
+    assert.ok(text.includes('.cadt/export-reports/export-report-demo-ab12-20261119-140000.md'));
+    assert.ok(text.includes('read_file'));
+    // 出路指引：在隔离区重做 + 主根只读
+    assert.ok(text.includes('在 .cadt/worktree/demo-ab12/ 里按主根当前内容重做'));
+    assert.ok(text.includes('不要直接改主根'));
+    // 回执行数有界（护栏：≤60 行）
+    assert.ok(lines.length <= 60, '回执超 60 行：' + lines.length);
+});
+
+test('worktreeExportPreviewText：全部已应用 → 无需重做，不出真冲突栏', () => {
+    const text = worktreeExportPreviewText({name: 'demo-ab12'}, {
+        supported: true,
+        clean: true,
+        applicable: [],
+        alreadyApplied: ['a.txt', 'b.txt'],
+        conflicted: [],
+        reportPath: 'D:/r.md',
+    });
+    assert.ok(text.includes('已在主根（无需重做） 2 个'));
+    assert.ok(text.includes('· a.txt'));
+    assert.ok(!text.includes('真冲突'));
+    assert.ok(!text.includes('本次可应用'));
+});
+
+test('worktreeExportPreviewText：清单超上限折叠为计数（体量护栏）', () => {
+    const conflicted = Array.from({length: 30}, (_, i) => ({path: 'f' + i + '.txt', reasons: []}));
+    const applicable = Array.from({length: 25}, (_, i) => 'g' + i + '.txt');
+    const already = Array.from({length: 15}, (_, i) => 'h' + i + '.txt');
+    const text = worktreeExportPreviewText({name: 'demo-ab12'}, {
+        supported: true, clean: false, applicable, alreadyApplied: already, conflicted, reportPath: 'D:/r.md',
+    });
+    const lines = text.split('\n');
+    assert.ok(lines.length <= 60, '大冲突场景回执必须仍有界：' + lines.length);
+    assert.ok(text.includes('真冲突（需在隔离区重做后重新 export） 30 个'));
+    assert.ok(text.includes('另有 10 个见报告文件')); // 30 - 20
+    assert.ok(text.includes('另有 5 个见报告文件'));  // 25 - 20
+    assert.ok(text.includes('另有 5 个见报告文件'));  // 15 - 10
+    assert.ok(!text.includes('f29.txt'), '折叠外的文件名不进回执');
+    assert.ok(!text.includes('g24.txt'));
+    assert.ok(!text.includes('h14.txt'));
+});
+
+test('worktreeExportPreviewText：报告落盘失败时如实带出原因', () => {
+    const text = worktreeExportPreviewText({name: 'demo-ab12'}, {
+        supported: true, clean: false,
+        applicable: [], alreadyApplied: [], conflicted: [{path: 'a.txt', reasons: []}],
+        reportErr: '磁盘只读',
+    });
+    assert.ok(text.includes('全量报告落盘失败：磁盘只读'));
+});
+
+test('normalizeWorktreeState：lastExportReport / lastExportPreviewAt 透传（导出状态标记）', () => {
+    const wt = normalizeWorktreeState({
+        name: 'demo-ab12',
+        lastExportReport: 'D:/repo/.cadt/export-reports/r.md',
+        lastExportPreviewAt: 1234567890,
+    });
+    assert.equal(wt.lastExportReport, 'D:/repo/.cadt/export-reports/r.md');
+    assert.equal(wt.lastExportPreviewAt, 1234567890);
+    assert.equal(normalizeWorktreeState({name: 'demo-ab12'}).lastExportReport, '');
+    assert.equal(normalizeWorktreeState({name: 'demo-ab12'}).lastExportPreviewAt, 0);
+});
