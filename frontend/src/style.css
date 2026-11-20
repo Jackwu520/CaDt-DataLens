@@ -2963,7 +2963,7 @@ aside[data-sidebar-view="chats"] #ai-sessions-panel { display: flex; flex: 1; mi
     border-radius: 6px;
     background: var(--panel2);
     color: var(--text);
-    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    font-family: var(--editor-font-family, ui-monospace, Consolas, monospace);
     font-size: 11.5px;
     line-height: 1.55;
     white-space: pre-wrap;
@@ -6398,7 +6398,6 @@ div.jsoneditor-tree textarea { user-select: text; }
     background: var(--panel);
     font-size: 11px;
 }
-.ai-app-msg-md.hidden { display: none; }
 .ai-app-msg-view-toggle { margin-left: 0; }
 /* 稀疏信息行的中间轮空回复：整条压没（连续工具轮只剩工具卡之间的标准间距） */
 .ai-msg.assistant.turn-blank { display: none; }
@@ -8841,18 +8840,10 @@ div.jsoneditor-tree textarea { user-select: text; }
     font-size: 10.5px;
     font-variant-numeric: tabular-nums;
 }
-/* 快超时（≤10 秒）：变红 + 轻微脉冲提醒。展开态与收起态细条共用同一节点，故只按状态类走。 */
+/* 快超时（≤10 秒）：变红加粗提醒（不做闪烁动画）。展开态与收起态细条共用同一节点，故只按状态类走。 */
 .ai-ask-countdown.urgent {
     color: var(--red);
     font-weight: 600;
-    animation: ai-ask-urgent-pulse 1s ease-in-out infinite;
-}
-@keyframes ai-ask-urgent-pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: .45; }
-}
-@media (prefers-reduced-motion: reduce) {
-    .ai-ask-countdown.urgent { animation: none; }
 }
 .ai-ask-result {
     margin-top: 8px;
@@ -14242,3 +14233,9 @@ html[data-theme="light"] {
 .us-log-page-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
 .us-log-page-btn:disabled { opacity: 0.35; cursor: default; }
 .us-log-page { min-width: 56px; text-align: center; font-variant-numeric: tabular-nums; color: var(--text); }
+
+/* 全局隐藏兜底：本项目历史上逐类配 .xxx.hidden，新增组件常漏配导致隐藏失效。
+   放文件末尾（同特异性后写赢，压过前面所有普通 display 声明）；不加 !important，
+   保留内联 style.display 与既有 !important 显示逻辑的优先级。已有的 .xxx.hidden 规则
+   特异性更高，行为不变，无需删除。 */
+.hidden { display: none; }
