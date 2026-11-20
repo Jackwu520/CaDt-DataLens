@@ -28,11 +28,16 @@ func (a *App) OpenAIFloatWindow(root string) error {
 }
 
 // OpenSettingsInMainWindow 请求主窗口打开设置页（悬浮窗使用）。
+// 无主窗口（浮窗单独运行）时回退发到浮窗自身——设置对话框在浮窗形态可见
+// （与 v2 的单实例转发等价，审查 P2-1）；前端 flash 文案由调用窗口自己出。
 func (a *App) OpenSettingsInMainWindow(pane string) error {
 	if strings.TrimSpace(pane) == "" {
 		pane = "models"
 	}
 	st := winReg.primary()
+	if st == nil {
+		st = winReg.get("float")
+	}
 	if st == nil {
 		return nil
 	}

@@ -11,8 +11,13 @@ export function createTerminalSessions(deps) {
 // await TermCreate resolve 后才把 session 注册进 map：先到的事件原先被静默丢弃，
 // 首屏 banner/提示符残缺，转义序列被拦腰截断会一直乱下去。现在先暂存，
 // attachTermSession 注册后按序回放。
-const pendingTermOut = new Map();
+const pendingTermOut = new Map(); // id -> {buf, at}
 const PENDING_TERM_OUT_MAX = 256 * 1024;
+// 广播兜底缓冲是**短命**的：owner 登记竞态期（Go 回退广播）每个窗口都会收到
+// 非，己会话的输出并暂存——该 id 永远不会被本窗口 attach，条目必须过期丢弃，
+// 否则弹几次终端就攒一份永不释放（2026-11-21 审查 P2-1）。
+const PENDING_TERM_OUT_TTL = 30 * 1000;
+const PENDING_TERM_OUT_MAX_KEYS = 8;
 
 function writeTermOut(data) {
     if (!data || !data.id) return;
@@ -21,23 +26,35 @@ function writeTermOut(data) {
         s.term.write(data.data || '');
         return;
     }
-    let buf = (pendingTermOut.get(data.id) || '') + (data.data || '');
-    if (buf.length > PENDING_TERM_OUT_MAX) buf = buf.slice(-PENDING_TERM_OUT_MAX);
-    pendingTermOut.set(data.id, buf);
+    // 定期清一次过期条目（写入频率高，不能每次都全表扫）
+    if (pendingTermOut.size >= PENDING_TERM_OUT_MAX_KEYS) {
+        const now = Date.now();
+        for (const [key, entry] of pendingTermOut) {
+            if (now - entry.at > PENDING_TERM_OUT_TTL) pendingTermOut.delete(key);
+        }
+    }
+    const entry = pendingTermOut.get(data.id);
+    if (!entry || Date.now() - entry.at > PENDING_TERM_OUT_TTL) {
+        // 新条目或已过期：过期说明这个 id 在本窗口就是无人认领的，丢弃旧尾巴
+        pendingTermOut.delete(data.id);
+        pendingTermOut.set(data.id, {buf: data.data || '', at: Date.now()});
+        return;
+    }
+    entry.at = Date.now();
+    entry.buf += data.data || '';
+    if (entry.buf.length > PENDING_TERM_OUT_MAX) entry.buf = entry.buf.slice(-PENDING_TERM_OUT_MAX);
+}
+
+function discardPendingTermOut(id) {
+    pendingTermOut.delete(id);
 }
 
 function flushPendingTermOut(id) {
-    const buf = pendingTermOut.get(id);
-    if (!buf) return;
+    const entry = pendingTermOut.get(id);
+    if (!entry) return;
     pendingTermOut.delete(id);
     const s = deps.terminalUI.sessions.get(id);
-    if (s) s.term.write(buf);
-}
-
-// 丢弃某会话的暂存缓冲：attachResumedTermSession 用环形缓冲快照回放，
-// 快照已覆盖这段缓冲，不清掉会双写。
-function discardPendingTermOut(id) {
-    pendingTermOut.delete(id);
+    if (s) s.term.write(entry.buf);
 }
 
 // 粘贴进终端：优先走 Go 绑定（WebView2 下 navigator.clipboard.readText 不保证放行）
@@ -394,14 +411,21 @@ async function attachResumedTermSession(id, shell) {
         Promise.resolve(deps.backend.RegisterEventOwner('term', id)).catch(() => {});
     }
     let replay = null;
+    let replayFailed = false;
     try {
         replay = await deps.backend.TermRead(id, TERM_REPLAY_CHARS);
     } catch (e) {
-        replay = null; // 会话可能在交接间隙被关掉：照旧挂载，输出自然为空
+        // 快照失败（会话可能已被关）：不丢暂存缓冲，attach 后照常 flush，
+        // 保住交接间隙收到的输出（审查 P2-2）。
+        replayFailed = true;
     }
-    discardPendingTermOut(id);
+    if (!replayFailed) discardPendingTermOut(id);
     const usedShell = shell || (replay && replay.shell) || 'powershell';
-    const s = attachTermSession(id, usedShell, {explicitShell: !!shell, skipPendingFlush: true});
+    const s = attachTermSession(id, usedShell, {explicitShell: !!shell, skipPendingFlush: replayFailed ? false : true});
+    if (replayFailed) {
+        flushPendingTermOut(id);
+        return s;
+    }
     if (s && replay && replay.text) {
         try {
             s.term.write(replay.text);
@@ -597,7 +621,7 @@ function terminalHostApi() {
             }));
         },
         send(id, data) {
-            if (!deps.terminalUI.sessions.has(id)) throw new Error('终端不在界面上：' + id);
+            if (!deps.terminalUI.sessions.has(id)) throw new Error('终端不在界面上（可能已被用户弹出为独立窗口）：' + id);
             return deps.backend.TermWrite(id, data);
         },
         focus(id) {

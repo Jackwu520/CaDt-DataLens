@@ -77,10 +77,10 @@ func screenWorkArea(s *application.Screen) windowgeom.Rect {
 	if s == nil {
 		return windowgeom.Rect{}
 	}
-	wa := s.PhysicalWorkArea
-	if wa.Width <= 0 || wa.Height <= 0 {
-		wa = s.WorkArea
-	}
+	// v3 的窗口 Position/Size 是 DIP 逻辑坐标（Windows 实现里 PhysicalToDipRect），
+	// 工作区必须同空间取 WorkArea；PhysicalWorkArea 是物理像素，混用会在
+	// 非 100% 缩放 / 混合 DPI 下把窗口夹到屏幕外（2026-11-21 审查 P1-1）。
+	wa := s.WorkArea
 	return windowgeom.Rect{X: wa.X, Y: wa.Y, Width: wa.Width, Height: wa.Height}
 }
 
@@ -197,9 +197,17 @@ func (g *windowGeometryManager) capture(st *windowState) {
 		// 最大化时的 Position/Size 是屏幕尺寸，不能当还原矩形；只置标记。
 		prev, ok := g.stateStore().Get(key)
 		if !ok || !prev.Valid() {
-			return
+			// 首次运行没移动过就最大化：按默认尺寸在主屏居中合成一条还原记录，
+			// 否则「未移动直接最大化」的偏好永远记不下来（2026-11-21 审查 P2-3）。
+			_, primary := screenWorkAreas()
+			if !primary.Valid() {
+				return
+			}
+			defW, defH, _, _ := windowSizesFor(spec.Mode)
+			r = windowgeom.Center(defW, defH, primary)
+		} else {
+			r = prev
 		}
-		r = prev
 		r.Maximised = true
 	} else {
 		x, y := w.Position()

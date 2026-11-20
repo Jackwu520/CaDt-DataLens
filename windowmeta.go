@@ -57,8 +57,11 @@ type windowState struct {
 	// geometryApplied：创建后首次导航完成时按当前显示器收敛一次几何；后续
 	// HMR/重载触发的导航不重复应用，避免把用户已拖动的窗口拉回初始位置。
 	geometryApplied bool
-	initialGeom     windowgeom.Rect
-	hasInitialGeom  bool
+	// shownOnce：窗口只 Show/Maximise 一次。托盘隐藏的窗口遇到 reload（HMR /
+	// location.reload）时不能被 windowReady 重新弹出（审查 P2-4）。
+	shownOnce      bool
+	initialGeom    windowgeom.Rect
+	hasInitialGeom bool
 }
 
 func (s *windowState) name() string { return s.spec.Name }
@@ -103,6 +106,17 @@ func (s *windowState) setInitialGeometry(r windowgeom.Rect, ok bool) {
 	s.mu.Lock()
 	s.initialGeom, s.hasInitialGeom = r, ok
 	s.mu.Unlock()
+}
+
+// markShownOnce 首次调用返回 true；后续导航重载不再重复显示窗口。
+func (s *windowState) markShownOnce() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.shownOnce {
+		return false
+	}
+	s.shownOnce = true
+	return true
 }
 
 // takeInitialGeometry 首次调用返回创建时的几何并标记已应用；后续导航返回 false。

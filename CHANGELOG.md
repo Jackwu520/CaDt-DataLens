@@ -44,10 +44,30 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 ### 改进（v3 独有能力一批：热键 / 窗口切换器 / 屏幕看护 / MCP 变体）
 
 - **全局热键**（v2 没有全局热键 API，v3 `GlobalShortcutManager`）：`Ctrl+Alt+A` 呼出 AI 浮窗、`Ctrl+Alt+T` 主窗前置并打开终端面板、`Ctrl+Alt+D` 呼出调试控制台。固定键位，组合键被其他程序占用时只记日志；退出时随 v3 cleanup 注销。
-- **窗口切换器**：quick-switch（`Ctrl+E`）新增「窗口」层，列出其他存活窗口（形态 · 工作区）并跳转——Go 侧进程内窗口注册表直接出清单，`WindowList` / `WindowFocusByName` 两个绑定。
+- **窗口切换器**：quick-switch（`Ctrl+反引号`）新增「窗口」层，列出其他存活窗口（形态 · 工作区）并跳转——Go 侧进程内窗口注册表直接出清单，`WindowList` / `WindowFocusByName` 两个绑定。
 - **显示器布局看护**：每 10s 轮询显示器布局（v3 在 WM_DISPLAYCHANGE 自动刷新 ScreenManager），变化后等 1.5s（让系统排完窗口）把可见窗口按新布局收敛一次——只平移不缩放（`windowgeom.ClampVisible`），悬跨双屏的窗口不会被裁。
 - **调试控制台窗口不占任务栏**：`HiddenOnTaskbar`（Windows 嵌套选项），工具窗口的恢复走切换器「窗口」层与 F12；AI 浮窗/终端窗口保持任务栏。
 - **MCP server 构建变体**：v3 内置 MCP server（`-tags mcp`，`app_info/windows_list/window_control/js_eval/dom_*/mouse_*/keyboard_*`，外部 agent 经 Streamable HTTP 驱动应用界面）。`js_eval` 可在页面里执行任意 JS，故做成**构建变体**——标准构建完全不含该端点；`tools/rebuild-exe.ps1 -IncludeMCP` 出变体包，令牌随机生成持久化到 `<应用数据>/mcp-server.json`（0600），端口占用自动后移。见 `docs/finished-plans/app-mcp-server.md`。
+
+### 审查修复（2026-11-21 子代理全面审查）
+
+- **坐标系统一（P1）**：v3 的窗口 Position/Size 是 DIP 逻辑坐标，几何记忆此前与 `PhysicalWorkArea`（物理像素）混算，非 100% 缩放/混合 DPI 下会把窗口夹到屏幕外或漏判离屏——工作区统一取 `Screen.WorkArea`（DIP）。
+- **退出标记**：`stopTray` 不再清 `quitRequested`（ForceQuitAll 先置位再 teardown，中途被清会让退出流程里的窗口钩子守卫失效）；终端交还投递加 `teardownDone` 守卫，应用收尾期一律不投递。
+- **MCP 变体**：`App.Run` 报错不再静默 exit 0（启动失败给退出码 1）；端口探测失败的兜底改 `WAILS_MCP_PORT=0`（系统分配）而非回落已占用端口；被占端口不再回写 `mcp-server.json`（第二实例会把第一实例的连接信息改写成死端口）；**令牌不再向子进程环境继承**——`envvars.SanitizeChildEnv` 剥离 `WAILS_MCP_*`/`CADT_*`，终端/命令桥/运行代码/沙箱/插件服务/MCP 子进程全覆盖，堵住「受控进程拿凭据反向驱动宿主」的通道。
+- **文件拖放修复（P1）**：v3 的 drop 只回调 Go 侧监听（不发回 JS 事件），此前 `rt.OnFileDrop` 通道不存在、拖放打开文件静默失效——Go 收下后转 `app-file-drop` 窗口事件，前端经事件桥按窗口消费。
+- **窗口生命周期**：`windowReady` 的 Show/Maximise 改一次性标记（托盘隐藏的窗口遇 reload 不再被弹回）；首次运行「未移动直接最大化」也记还原矩形；浮窗先启的进程开出首个主窗口时惰性补齐 AI 侧服务（定时任务/插件服务/MCP 客户端/使用统计）；通知点击激活在无主窗形态回退浮窗；`event_owner` 表满改 FIFO 淘汰（不再整表清空打回广播）。
+- **前端**：`WindowGetSize` 适配 v3 双返回值打包成数组的变化（浮窗「收起前尺寸」恢复失效）；终端独立窗口里 Shift+Esc 改为关窗（收起会留一块空白无边框窗口）；调试台作唯一窗口时关窗确认框可见（console-only 放行 #dialog-mask）；终端暂存缓冲加条目上限与 TTL（多窗口广播兜底不再无界累积）；`attachResumedTermSession` 快照失败不再丢暂存；AI terminal 工具对已弹出终端的报错文案与描述补弹出语义。
+- **构建/文档**：Taskfile 的 NSIS 目录对齐 `installer/`（package 链路此前是死链）；安装包构建补 `wails3 generate webview2bootstrapper`（裸 Win10 自动装 WebView2，此前静默缺失）；build-installer 支持 `-IncludeMCP`；删除 launchargs 单实例 ID 死代码与 package.json.md5 残留；packaging.md / AGENTS / README 口径修正（切换器键位、wails_tools.nsh 手工维护、版本五处、wails3 dev 前置构建说明、AGENTS 补 event_owner/spike/src-core 新模块条目）。
+
+### 审查修复（2026-11-21 等价性对照）
+
+- **对话框取消不再报错**：v2 显式吞掉取消（空值+nil），v3 把 cfd 的「cancelled by user」透传成错误——打开/保存/文件夹/插件选择全部取消路径现在返回空值，前端不再弹红字。
+- **浮窗单独运行的设置/memo 入口回退**：无主窗口时 `--open-settings` / `--memo` / 浮窗齿轮改为投递到浮窗自身（与 v2 的单实例转发等价，不再静默丢弃）。
+- **托盘态清理**：第二实例带文件/设置/memo 目标把窗口拉出前台时，顺手复位退出标记并撤掉通知区图标（v2 每个分支都做，此前图标残留）。
+- **`--new-window <dir> --ai-session=<id>` 组合**：会话 id 不再被丢弃，随窗口启动上下文带入软切换。
+- **关窗确认口径**：关掉非最后一个主窗口时不再用「关闭将终止这些任务」弹危险确认（终端会话/后台命令在进程里活着，并不随该窗口死）。
+- **8 秒兜底显示回归**：v2 的 `ensureWindowShown` 语义找回——导航 8s 未完成强制露出窗口，WebView2 卡死不再「进程活着但没窗口」。
+- **窗口归属遗留立项**：工作区监听单槽顶掉（wipe-guard L2 失明）、memo 租约同进程双写、`findWailsWindow` 多窗口不确定、对话框无属主、资源监听替换式登记——五项同根（进程级单例 vs 多窗口），统一按「调用方窗口键控」重构，见 `docs/unfinished-plans/window-ownership-refactor.md`（未开工，已知偏差均已声明）。
 
 ### 修复（AI 头部「定时」胶囊点了没反应，且在所有会话都显示）
 

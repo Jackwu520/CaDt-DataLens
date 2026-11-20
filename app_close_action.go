@@ -181,7 +181,9 @@ func (a *App) stopTray() {
 	}
 	a.tray.Close()
 	a.tray = nil
-	a.quitRequested.Store(false)
+	// 注意：这里不能清 quitRequested——ForceQuitAll 先置位再走 teardown→stopTray，
+	// 清掉会让退出流程里的窗口钩子丢失退出标记（2026-11-21 审查 P1-2）。
+	// 重置只属于 restoreFromTray / secondInstanceShow（窗口回到前台语义）。
 }
 
 // restoreFromTray 从托盘回到前台（托盘图标同时撤掉：窗口在时别继续占通知区）。
@@ -207,6 +209,15 @@ func (a *App) quitFromTray() {
 	}
 	showMainWindow()
 	a.QuitApp()
+}
+
+// clearTrayState 第二实例/恢复路径的托盘态清理（v2 secondInstanceShow 每个分支都做）：
+// 复位退出标记并撤掉通知区图标——窗口已经被拉出来了，图标残留会让人误以为还在托盘。
+func (a *App) clearTrayState() {
+	a.quitRequested.Store(false)
+	if a.tray != nil {
+		a.tray.Hide()
+	}
 }
 
 // secondInstanceShow 是「又点了一次桌面图标 / 系统通知被点击」时把窗口找回来的路径：

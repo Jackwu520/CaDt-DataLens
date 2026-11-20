@@ -1,4 +1,6 @@
 ﻿param(
+    # 构建内含 v3 MCP server 的变体（-tags mcp），见 docs/finished-plans/app-mcp-server.md
+    [switch]$IncludeMCP,
     [string]$Certificate = "",
     [string]$CertificatePassword = "",
     [string]$SignTool = "",
@@ -106,8 +108,8 @@ try {
         -out $syso
     if ($LASTEXITCODE -ne 0) { throw "wails3 generate syso 失败（退出码 $LASTEXITCODE）" }
     try {
-        Write-Host "==> go build -tags production,devtools" -ForegroundColor Cyan
-        & go build -tags "production,devtools" -trimpath -buildvcs=false -ldflags="-w -s -H windowsgui" -o $appExe .
+        Write-Host "==> go build -tags production,devtools$(if ($IncludeMCP) { ',mcp' })" -ForegroundColor Cyan
+        & go build -tags "production,devtools$(if ($IncludeMCP) { ',mcp' })" -trimpath -buildvcs=false -ldflags="-w -s -H windowsgui" -o $appExe .
         if ($LASTEXITCODE -ne 0) { throw "go build 失败（退出码 $LASTEXITCODE）" }
     } finally {
         Remove-Item $syso -Force -ErrorAction SilentlyContinue
@@ -128,6 +130,14 @@ if (-not $SkipSign) {
 $signArgs = ""
 if (-not $SkipSign) {
     $signArgs = (@("sign", "/fd", "sha256") + ($(if ($TimestampUrl) { @("/tr", $TimestampUrl, "/td", "sha256") } else { @() })) + $certArgs) -join " "
+}
+
+Write-Host "==> wails3 generate webview2bootstrapper（安装包内嵌 WebView2 引导器）" -ForegroundColor Cyan
+if (Get-Command wails3 -ErrorAction SilentlyContinue) {
+    & wails3 generate webview2bootstrapper -dir (Join-Path $root "build\windows\installer	mp")
+    if ($LASTEXITCODE -ne 0) { Write-Host "引导器生成失败：安装包将不含 WebView2 自动安装（目标机器需自带运行时）" -ForegroundColor Yellow }
+} else {
+    Write-Host "找不到 wails3：跳过 WebView2 引导器生成" -ForegroundColor Yellow
 }
 
 Write-Host "==> makensis（安装包 + 卸载程序签名）" -ForegroundColor Cyan

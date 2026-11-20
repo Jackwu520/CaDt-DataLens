@@ -9552,7 +9552,9 @@ body.console-only .dbg-head select { --wails-draggable: no-drag; }
 }
 
 /* 独立调试控制台窗口：隐藏主应用 UI，控制台铺满 */
-body.console-only > :not(.dbg-console) { display: none !important; }
+body.console-only > :not(.dbg-console):not(#app):not(#app-toasts) { display: none !important; }
+/* 调试台作为唯一窗口时的关窗/退出确认框：#app 保留但只显示遮罩层（审查 P2-7） */
+body.console-only #app > :not(#dialog-mask) { display: none !important; }
 
 /* ---------- AI 改版：精简发送区 / 全屏 / 独立悬浮窗 ---------- */
 .ai-composer-bottom { justify-content: flex-start; gap: 6px; }

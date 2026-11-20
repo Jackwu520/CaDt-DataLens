@@ -247,15 +247,17 @@ func (a *App) beforeCloseWindow(st *windowState) bool {
 		a.hideToTray(st.window())
 		return true
 	}
-	// 关窗二次确认的依据不止「AI 回合进行中」：终端会话与 AI 后台命令作业都会随窗口
-	// 关闭被静默终止，一并计入。这些是进程级资源：主窗口关闭时要提示；非主窗口
-	// 只在它是最后一个窗口时提示（其余情况关浮窗不影响主窗口里的任务）。
+	// 关窗二次确认的依据不止「AI 回合进行中」：终端会话与 AI 后台命令作业都会随
+	// 进程退出被静默终止，一并计入。这些是进程级资源：只有「退出应用」的路径
+	// （最后一个主窗口 / 最后一个窗口）才真正带走它们——关掉中间某个主窗口时
+	// 任务还在别的窗口/进程里活着，不该用「关闭将终止这些任务」吓唬用户
+	//（审查 P2-3：v2 一窗一进程时文案准确，v3 同进程后口径要跟着收）。
 	// lastMain：关闭的是最后一个主窗口，即「退出应用」——会连带关掉浮窗/调试台；
 	// lastWindow：关闭后进程里没有窗口了（--ai-float / --debug-console 单独运行）。
 	lastMain := isMain && winReg.countMain() <= 1
 	lastWindow := winReg.count() <= 1
 	terms, bgJobs := 0, 0
-	if isMain || lastWindow {
+	if (isMain && lastMain) || lastWindow {
 		terms = a.Terminal.RunningSessionCount()
 		bgJobs = cmdbridge.RunningAIJobCount()
 	}

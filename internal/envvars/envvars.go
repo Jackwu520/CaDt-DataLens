@@ -196,8 +196,10 @@ func injectedEnvEntries() []string {
 
 // MergeEnv 在继承环境之后追加注入变量；exec.Cmd 与 go-pty 在 Windows 构建环境块时
 // 同名键保留最后一次出现（不区分大小写），因此注入值覆盖系统同名值。
+// 继承前先剥离应用私有变量（SanitizeChildEnv）。
 func MergeEnv(base []string) []string {
 	entries := injectedEnvEntries()
+	base = SanitizeChildEnv(base)
 	if len(entries) == 0 {
 		return base
 	}
@@ -205,4 +207,34 @@ func MergeEnv(base []string) []string {
 	merged = append(merged, base...)
 	merged = append(merged, entries...)
 	return merged
+}
+
+// childEnvBlockedPrefixes 不向子进程继承的应用私有环境变量前缀。
+// WAILS_MCP_* 是 MCP server 变体的连接凭据（js_eval/call_bound_method 等于全权
+// 驱动宿主），泄给终端/命令桥/沙箱子进程等于给受控进程开了反向操控宿主的通道
+// （2026-11-21 审查 P1-4）。注意只屏蔽 WAILS_MCP_：CADT_ 前缀里有测试辅助进程
+// 的握手变量（CADT_RUN_STDIN_HELPER 等）与用户可用环境（CADT_UNIQUE_ID），不能动。
+var childEnvBlockedPrefixes = []string{"WAILS_MCP_"}
+
+// SanitizeChildEnv 过滤不向子进程继承的应用私有环境变量。
+func SanitizeChildEnv(base []string) []string {
+	out := make([]string, 0, len(base))
+	for _, kv := range base {
+		name, _, ok := strings.Cut(kv, "=")
+		if !ok {
+			continue
+		}
+		upper := strings.ToUpper(name)
+		blocked := false
+		for _, prefix := range childEnvBlockedPrefixes {
+			if strings.HasPrefix(upper, prefix) {
+				blocked = true
+				break
+			}
+		}
+		if !blocked {
+			out = append(out, kv)
+		}
+	}
+	return out
 }

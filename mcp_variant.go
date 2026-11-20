@@ -53,7 +53,11 @@ func bootstrapMCPVariant() {
 		token = hex.EncodeToString(buf)
 	}
 	// 端口被占就向后找空闲位：v3 server 绑定失败会让 App.Run 直接报错退出。
+	fallback := false
 	if !portFree(host, port) {
+		// 端口被占：可能是第一实例已经握着它（单实例锁在 bootstrap 之后才检查），
+		// 也可能是别的程序。向后找一个空闲位，但不回写配置文件——否则第二实例
+		// 会把 mcp-server.json 改写成没人监听的端口（审查 P1-3）。
 		found := -1
 		for p := port + 1; p <= port+mcpPortProbeRange; p++ {
 			if portFree(host, p) {
@@ -62,15 +66,24 @@ func bootstrapMCPVariant() {
 			}
 		}
 		if found < 0 {
-			writeAppLog("warn", "MCP 端口探测失败：%d 起连续 %d 个端口均被占用，MCP server 不启动", port, mcpPortProbeRange)
+			// 连续 21 个端口全占用：让 v3 server 用系统分配的空闲端口
+			//（WAILS_MCP_PORT=0），绝不能回落到已判占用的 9099 让整个应用启动失败。
+			os.Setenv("WAILS_MCP_HOST", host)
+			os.Setenv("WAILS_MCP_PORT", "0")
+			writeAppLog("warn", "MCP 端口 %d 起连续 %d 个均被占用：改由系统分配端口，端点以运行日志为准", port, mcpPortProbeRange)
 			return
 		}
 		port = found
+		fallback = true
 	}
 	os.Setenv("WAILS_MCP_HOST", host)
 	os.Setenv("WAILS_MCP_PORT", strconv.Itoa(port))
 	os.Setenv("WAILS_MCP_TOKEN", token)
 
+	if fallback {
+		writeAppLog("warn", "MCP 端口 %d 被占用，本次改用 %d（不改写 mcp-server.json，避免污染第一实例的连接信息）", port, port)
+		return
+	}
 	endpoint := fmt.Sprintf("http://%s:%d/mcp", host, port)
 	// 该文件会被外部脚本/客户端读取，内容保持 ASCII：避免读取方编码口径不一致。
 	payload, err := json.MarshalIndent(struct {

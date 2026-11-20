@@ -9,6 +9,13 @@ import (
 // 通用文件对话框：打开/保存统一走这里，过滤器用预置短 id，避免把过滤模式散在各调用处。
 // 用户取消时路径返回空串，由调用方自行判断不写文件。
 
+// isDialogCancelled 识别文件对话框的取消。v2 显式吞掉取消（空值+nil），v3 的 cfd 层
+// 把取消透传成错误——该错误类型在 internal/go-common-file-dialog/cfd 里导不出来，
+// 只能按消息识别（对照 v2 dialog.go 的 ErrCancelled 文案）。
+func isDialogCancelled(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "cancelled by user")
+}
+
 // dialogFilter 是 v3 对话框过滤器的最小本地表示（DisplayName + 分号分隔扩展名）。
 type dialogFilter struct {
 	DisplayName string
@@ -44,6 +51,9 @@ func (a *App) ShowOpenFileDialog(title string, filter string) (string, error) {
 		dialog.AddFilter(f.DisplayName, f.Pattern)
 	}
 	path, err := dialog.PromptForSingleSelection()
+	if isDialogCancelled(err) {
+		return "", nil
+	}
 	if err != nil {
 		return "", err
 	}
@@ -66,6 +76,9 @@ func (a *App) ShowSaveFileDialog(title string, defaultName string, filter string
 		dialog.AddFilter(f.DisplayName, f.Pattern)
 	}
 	path, err := dialog.PromptForSingleSelection()
+	if isDialogCancelled(err) {
+		return "", nil
+	}
 	if err != nil {
 		return "", err
 	}

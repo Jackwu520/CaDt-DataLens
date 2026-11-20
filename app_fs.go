@@ -14,11 +14,15 @@ func (a *App) OpenFilesDialog() ([]string, error) {
 	if wailsApp == nil {
 		return nil, nil
 	}
-	return wailsApp.Dialog.OpenFile().
+	paths, err := wailsApp.Dialog.OpenFile().
 		SetTitle("打开文件").
 		AddFilter("结构化数据 (*.json;*.jsonl;*.ndjson;*.yaml;*.yml;*.xml;*.svg;*.csv;*.tsv)", "*.json;*.jsonl;*.ndjson;*.yaml;*.yml;*.xml;*.svg;*.csv;*.tsv").
 		AddFilter("所有文件 (*.*)", "*.*").
 		PromptForMultipleSelection()
+	if isDialogCancelled(err) {
+		return nil, nil
+	}
+	return paths, err
 }
 
 func (a *App) OpenFolderDialog(defaultDir string) (string, error) {
@@ -32,7 +36,11 @@ func (a *App) OpenFolderDialog(defaultDir string) (string, error) {
 	if strings.TrimSpace(defaultDir) != "" {
 		dialog.SetDirectory(defaultDir)
 	}
-	return dialog.PromptForSingleSelection()
+	path, err := dialog.PromptForSingleSelection()
+	if isDialogCancelled(err) {
+		return "", nil
+	}
+	return path, err
 }
 
 func (a *App) SaveFileDialog(defaultName string) (string, error) {
@@ -41,10 +49,14 @@ func (a *App) SaveFileDialog(defaultName string) (string, error) {
 	}
 	dialog := wailsApp.Dialog.SaveFile()
 	dialog.SetOptions(&application.SaveFileDialogOptions{Title: "保存文件"})
-	return dialog.
+	path, err := dialog.
 		SetFilename(defaultName).
 		AddFilter("所有文件 (*.*)", "*.*").
 		PromptForSingleSelection()
+	if isDialogCancelled(err) {
+		return "", nil
+	}
+	return path, err
 }
 
 // 兼容别名（实现已下沉 internal/fsops）。

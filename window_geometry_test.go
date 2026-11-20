@@ -31,7 +31,8 @@ func TestGeometryRestoreKey(t *testing.T) {
 	}
 }
 
-func TestGeometryPersistKey(t *testing.T) {	cases := []struct {
+func TestGeometryPersistKey(t *testing.T) {
+	cases := []struct {
 		name      string
 		spec      windowSpec
 		isPrimary bool

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"datalens/internal/envvars"
 	"datalens/internal/executil"
 	"datalens/internal/procctl"
 )
@@ -49,7 +50,7 @@ func (r *Registry) start(svc *service) error {
 	cmd := exec.CommandContext(ctx, svc.spec.Exe, svc.spec.Args...)
 	procctlApplyCancel(cmd)
 	cmd.Dir = dir
-	cmd.Env = os.Environ()
+	cmd.Env = envvars.SanitizeChildEnv(os.Environ())
 	executilHideWindow(cmd)
 
 	stdout, err := cmd.StdoutPipe()

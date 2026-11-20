@@ -26,10 +26,10 @@
 
 ## 2. 版本号
 
-版本号只有一个真源：`app_core.go` 的 `appVersion`（当前 `v1.2.0`），同步 `wails.json` 的 `productVersion`、`build/windows/info.json`（v3 syso 版本资源）与 `build/windows/installer/wails_tools.nsh` 的 `INFO_PRODUCTVERSION`。
+版本号只有一个真源：`app_core.go` 的 `appVersion`（当前 `v1.2.0`），同步四处：`wails.json` 的 `productVersion`、`build/windows/info.json`（v3 syso 版本资源）、`build/windows/installer/wails_tools.nsh` 的 `INFO_PRODUCTVERSION` 与 `build/config.yml` 的 `version`（`wails3 update build-assets` 重新生成资产时的模板源，漏改会回灌旧版本号）。
 
 - `wails.json` 的 `info.productVersion` 决定 exe 文件属性与安装包版本，必须与 `appVersion` 一致（去掉 `v` 前缀）。
-- 单测 `TestWailsInfoVersionMatchesAppVersion` 会强制校验，不一致时 `go test ./...` 失败。
+- 单测 `TestWailsInfoVersionMatchesAppVersion` 只强制校验 `wails.json` 一处；info.json / wails_tools.nsh / config.yml 三处仍靠发版时人工同步。
 - NSIS 要求四段数字，Wails 会自动把 `1.0.0` 补成 `1.0.0.0`。
 - 发新版本时两处一起改，再跑测试。
 
@@ -224,7 +224,7 @@ signtool verify /pa /v build/bin/CaDt-DataLens-amd64-installer.exe
 | 安装向导中文乱码 | `project.nsi` 必须是 UTF-8 带 BOM |
 | 静默安装退出码 66 | 程序正在运行，先关闭 `datalens.exe` 再装 |
 | `signtool` 时间戳失败 | 网络不通；用 `-TimestampUrl ""` 离线构建，或换可达的时间戳服务器 |
-| 自定义 `project.nsi` 被覆盖 | `wails_tools.nsh` 每次构建都会重新生成，自定义只能写在 `project.nsi` |
+| 自定义 `project.nsi` 被覆盖 | v3 没有 `wails build`，`wails_tools.nsh` 是手工维护文件（发版改版本号），自定义直接改这两个文件 |
 | 安装后右键菜单不显示 | 需要重启资源管理器或重新登录；Windows 11 在“显示更多选项”里 |
 | 卸载后插件还在 | 设计如此：`plugins\` 是用户数据，静默卸载一律保留 |
 
@@ -234,7 +234,7 @@ signtool verify /pa /v build/bin/CaDt-DataLens-amd64-installer.exe
 | --- | --- |
 | `scripts/build-installer.ps1` | 一键构建 + 签名 + 验签 |
 | `build/windows/installer/project.nsi` | 安装包模板（组件、升级、卸载、签名钩子） |
-| `build/windows/installer/wails_tools.nsh` | Wails 自动生成，勿手改 |
+| `build/windows/installer/wails_tools.nsh` | NSIS 变量（手工维护，发版同步版本号） |
 | `build/windows/info.json` | exe 文件属性（版本、公司、版权） |
-| `wails.json` | 构建配置与安装包版本 |
+| `wails.json` | v2 遗留，仅 productVersion 仍被 rebuild-exe 作版本回退源读取 |
 | `installer_cli_windows.go` | `--integrate` / `--unintegrate` 集成命令 |

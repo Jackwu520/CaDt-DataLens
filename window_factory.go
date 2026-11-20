@@ -28,8 +28,21 @@ func (a *App) createWindow(spec windowSpec) *application.WebviewWindow {
 	win := wailsApp.Window.NewWithOptions(windowOptionsFor(spec, initialRect, hasInitialRect))
 	st.setWindow(win)
 	installGeometryHooks(win, st)
-	if spec.Mode == windowModeMain && currentWindow() == nil {
-		setMainWindow(win)
+	// v3 的文件拖放只回调 Go 侧监听（不会发回 JS 事件），这里收下后转成本窗口事件；
+	// 前端经事件桥按 sender 过滤消费（修复迁移期 OnFileDrop 收不到事件的回归）。
+	win.OnWindowEvent(events.Common.WindowFilesDropped, func(ev *application.WindowEvent) {
+		files := ev.Context().DroppedFiles()
+		if len(files) == 0 {
+			return
+		}
+		win.EmitEvent("app-file-drop", map[string]any{"filenames": files})
+	})
+	if spec.Mode == windowModeMain {
+		if currentWindow() == nil {
+			setMainWindow(win)
+		}
+		// 浮窗/调试台/终端窗首启的进程，开第一个主窗口时补齐 AI 侧服务。
+		a.ensureAIServices()
 	}
 
 	win.RegisterHook(events.Windows.WindowClosing, func(e *application.WindowEvent) {
@@ -55,6 +68,15 @@ func (a *App) createWindow(spec windowSpec) *application.WebviewWindow {
 	})
 	win.RegisterHook(events.Windows.WebViewNavigationCompleted, func(_ *application.WindowEvent) {
 		a.windowReady(st)
+	})
+	// v2 有 8 秒兜底显示（ensureWindowShown）：WebView2 初始化/导航卡死时进程活着
+	// 但没有任何窗口。这里补回同语义：导航迟迟不完成就强制露出窗口（审查 P2-4）。
+	// 托盘隐藏需要先有关窗确认流程，8 秒内不可能发生，不会误弹托盘窗口。
+	time.AfterFunc(8*time.Second, func() {
+		if !win.IsVisible() {
+			writeAppLog("warn", "窗口 %s 导航 8s 未完成，兜底显示", win.Name())
+			win.Show()
+		}
 	})
 	writeAppLog("info", "窗口已创建：%s（mode=%s workspace=%q）", spec.Name, spec.Mode, spec.Workspace)
 	return win
@@ -142,12 +164,16 @@ func (a *App) windowReady(st *windowState) {
 		win.SetSize(rect.Width, rect.Height)
 		maximised = rect.Maximised
 	}
-	if spec.Mode == windowModeMain {
-		showWindowWhenReady(win, maximised)
-	} else if maximised {
-		win.Maximise()
-	} else {
-		win.Show()
+	// 显示只做一次：托盘隐藏的窗口遇到 reload（HMR / location.reload）时
+	// 不能被重新弹出（审查 P2-4）。
+	if st.markShownOnce() {
+		if spec.Mode == windowModeMain {
+			showWindowWhenReady(win, maximised)
+		} else if maximised {
+			win.Maximise()
+		} else {
+			win.Show()
+		}
 	}
 }
 
@@ -204,6 +230,11 @@ func findTerminalWindow(termID string) *windowState {
 func (a *App) emitTerminalPopoutClosed(st *windowState) {
 	spec := st.startup()
 	if spec.Mode != windowModeTerminal || spec.TermID == "" {
+		return
+	}
+	// 应用收尾（最后一个主窗口退出 / ForceQuitAll）已经 teardown：一律不投递，
+	// 避免往正在关闭的窗口里塞页签（quitRequested 只覆盖显式退出路径）。
+	if a.teardownDone.Load() {
 		return
 	}
 	var info terminal.TermInfo

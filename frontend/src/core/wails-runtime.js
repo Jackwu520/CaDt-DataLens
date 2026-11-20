@@ -45,8 +45,12 @@ export function createRuntimeAdapter(runtime) {
         WindowSetMinSize(width, height) {
             return Window.SetMinSize(width, height);
         },
+        // v3 的多返回值绑定经 Call.ByName 会打包成数组（bindings.go nonErrorOutputs），
+        // 这里收敛成 v2 的 {w, h} 形状；新增双返回值绑定的适配都要在这一层做掉。
         WindowGetSize() {
-            return Window.Size();
+            return Promise.resolve(Window.Size()).then((size) => (
+                Array.isArray(size) ? {w: size[0], h: size[1]} : size
+            ));
         },
         WindowIsFullscreen() {
             return Window.IsFullscreen();
@@ -78,14 +82,8 @@ export function createRuntimeAdapter(runtime) {
         Quit() {
             return Application.Quit();
         },
-        // v3 文件拖放需要页面里有 [data-file-drop-target]（index.html 的 body 已加），
-        // 事件名 common:WindowFilesDropped，载荷 {filenames,x,y,elementDetails}。
-        OnFileDrop(cb) {
-            return Events.On('common:WindowFilesDropped', (ev) => {
-                const d = (ev && ev.data) || {};
-                cb(d.x, d.y, d.filenames || []);
-            });
-        },
+        // 文件拖放：v3 的 drop 只回调 Go 侧监听（不发回 JS 事件），由 Go 转成
+        // app-file-drop 窗口事件（window_factory.go），前端经事件桥按窗口过滤消费。
     };
 }
 
@@ -99,6 +97,9 @@ export function createBackendProxy(Call, packagePrefix = 'main.App') {
             if (typeof prop !== 'string') return undefined;
             // 防止 Promise 链/JSON 序列化把 Proxy 当 thenable 或普通对象展开。
             if (prop === 'then' || prop === 'toJSON' || prop === 'constructor' || prop === 'inspect') return undefined;
+            // 注意语义差异（与 v2 生成绑定不同）：对任意方法名都返回函数，因此
+            // `if (backend.X)` 式的存在性检测恒为真——方法名拼错或前后端版本错配
+            // 时会变成每次调用 reject，调用点需要自带 catch。
             return (...args) => Call.ByName(`${packagePrefix}.${prop}`, ...args);
         },
     });

@@ -1,5 +1,5 @@
 ﻿param(
-    # 透传 wails build -devtools（带调试面板的构建）
+    # 构建带调试面板的变体（go build -tags production,devtools）
     [switch]$Devtools,
     # 构建内含 v3 MCP server 的变体（-tags mcp）：外部 agent 经 Streamable HTTP 驱动应用，
     # 令牌/端口见 <应用数据目录>\mcp-server.json。标准构建完全不含该端点（见 app-mcp-server.md）
@@ -229,7 +229,7 @@ try {
 } catch {
     Write-Host ""
     Write-Host "[X] 出错：$($_.Exception.Message)" -ForegroundColor Red
-    if ($_.Exception.Message -notmatch "wails build 失败") {
+    if ($_.Exception.Message -notmatch "go build 失败") {
         Write-Host $_.ScriptStackTrace -ForegroundColor DarkGray
     }
 } finally {

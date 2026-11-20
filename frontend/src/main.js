@@ -6230,6 +6230,12 @@ window.addEventListener('keydown', (e) => {
         if (isDialogOpen() || !terminalUI.open) return;
         e.preventDefault();
         e.stopPropagation();
+        // 终端独立窗口只有一个面板：收起等于一块空白无边框窗口，改为关窗
+        // （走 Go 的 term-popout-closed 把会话交还主窗口，审查 P2-3）。
+        if (window.__terminalWindowMode) {
+            try { if (window.runtime && window.runtime.WindowClose) window.runtime.WindowClose(); } catch (e2) {}
+            return;
+        }
         toggleTerminalPanel(false);
     } else if (keymap.is(kb, 'view.terminal')) {
         e.preventDefault();
@@ -6388,19 +6394,20 @@ if (rt) {
     });
     // Wails 文件拖放：注册窗口级 dragover/drop 监听（不注册就收不到任何外部拖放），
     // useDropTarget=false 让整个窗口都接受；回调拿到的路径已由 Go 侧解析好
-    if (rt.OnFileDrop) {
-        rt.OnFileDrop((_x, _y, paths) => {
-            if (!Array.isArray(paths) || !paths.length) return;
-            // 文件树目录行的外部拖放：先复制进目录，而不是打开
-            const pending = getPendingExternalDrop();
-            if (pending && Date.now() - pending.at < 5000) {
-                setPendingExternalDropValue(null);
-                copyExternalIntoDir(paths, pending.destDir);
-                return;
-            }
-            openPaths(paths);
-        }, false);
-    }
+    // 文件拖放：v3 的 drop 只回调 Go 侧监听，Go 转成本窗口事件（window_factory.go）
+    // 后经事件桥按 sender 过滤消费（旧 rt.OnFileDrop 通道在 v3 不存在）。
+    appEvents.onWindow('app-file-drop', (data) => {
+        const paths = (data && data.filenames) || [];
+        if (!Array.isArray(paths) || !paths.length) return;
+        // 文件树目录行的外部拖放：先复制进目录，而不是打开
+        const pending = getPendingExternalDrop();
+        if (pending && Date.now() - pending.at < 5000) {
+            setPendingExternalDropValue(null);
+            copyExternalIntoDir(paths, pending.destDir);
+            return;
+        }
+        openPaths(paths);
+    });
     // 关窗/退出确认文案（Go 侧 beforeClose 与显式退出共用同一份理由）。
     // 来源分组：AI 回合 / 后台命令作业 / 终端；terms 只数 shell 里有活命令进程的终端。
     function closeReasonsText(r, actionWord) {

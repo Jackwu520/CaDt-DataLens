@@ -7,8 +7,8 @@
 ## 安装时调用 datalens.exe --integrate=...，卸载时调用 --unintegrate=all，
 ## 与程序内“设置 → 系统集成”共用同一套逻辑。
 ##
-## 构建：wails build -nsis -installscope user
-## 注意：wails_tools.nsh 由 wails build 每次重新生成，自定义只改本文件。
+## 构建：powershell -ExecutionPolicy Bypass -File scripts/build-installer.ps1
+## 注意：v3 没有 wails build——wails_tools.nsh 是手工维护文件（发版同步版本号），自定义直接改本文件。
 ####
 
 # 安装后的可执行文件名；程序内的 `datalens` 命令、Agent Skill 文档都按这个名字工作

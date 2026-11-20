@@ -105,8 +105,11 @@ test('关闭底部面板：三套风格同为 Shift+Esc，且 main.js 按面板�
             `${style.id} 风格下关闭底部面板应为 Shift+Escape`);
     }
     const main = read('src/main.js');
-    assert.match(main, /keymap\.is\(kb, 'view\.closeDockPanel'\)[\s\S]{0,500}?toggleTerminalPanel\(false\)/,
+    assert.match(main, /keymap\.is\(kb, 'view\.closeDockPanel'\)[\s\S]{0,800}?toggleTerminalPanel\(false\)/,
         'Shift+Esc 必须真正收起底部面板');
+    // 终端独立窗口只有一个面板：收起等于空白无边框窗口，改为关窗（会话交还主窗口）
+    assert.match(main, /__terminalWindowMode[\s\S]{0,200}?WindowClose\(\)/,
+        '终端独立窗口的 Shift+Esc 应关窗而不是收起面板');
 });
 
 test('main.js 真实绑定与注册表对账（源码断言）', () => {

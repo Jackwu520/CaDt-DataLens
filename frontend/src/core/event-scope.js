@@ -32,12 +32,17 @@ export const EVENT_SCOPES = Object.freeze({
 
     // 工作区 / 资源
     'workspace-changed': 'workspace',
+    // 注意：resource-changed 目前实际以 onApp 全窗广播消费（watch.Emit 未带 sender，
+    // onResource 的 owns 谓词通道已建未接）——消费端有 kind/租约幂等兜底。改接线前
+    // 先给 Go 侧 watch 事件带上归属，不要只动这张表（2026-11-21 审查 P2-4）。
     'resource-changed': 'resource',
 
     // 窗口控制命令
     'confirm-close': 'window',
     'app-quit-request': 'window',
     'app-open-terminal': 'window',
+    // 文件拖放：Go 侧收下 v3 drop 后转成窗口事件（window_factory.go），按窗口消费
+    'app-file-drop': 'window',
     'open-targets': 'window',
     'app-open-settings': 'window',
     'app-open-memo': 'window',

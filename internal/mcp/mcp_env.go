@@ -25,8 +25,9 @@ func mcpChildEnv(extra map[string]string) []string {
 		if !ok {
 			continue
 		}
-		if mcpSecretEnvPattern.MatchString(name) || strings.HasPrefix(strings.ToUpper(name), "CADT_") {
-			continue // 疑似密钥 / 本应用私有变量：一律不传
+		if mcpSecretEnvPattern.MatchString(name) || strings.HasPrefix(strings.ToUpper(name), "CADT_") ||
+			strings.HasPrefix(strings.ToUpper(name), "WAILS_MCP_") {
+			continue // 疑似密钥 / 本应用私有变量（含宿主 MCP 凭据）：一律不传
 		}
 		if _, overridden := extraLower[strings.ToLower(name)]; overridden {
 			continue // 显式配置将覆盖同名变量，避免重复键

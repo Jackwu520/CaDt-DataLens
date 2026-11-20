@@ -25,7 +25,10 @@ test('接回路径：切事件归属 + TermRead 快照回放，且不允许漏�
     assert.match(fn, /RegisterEventOwner\('term', id\)/);
     assert.match(fn, /TermRead\(id, TERM_REPLAY_CHARS\)/);
     assert.match(fn, /discardPendingTermOut\(id\)/, '快照已覆盖暂存期，不清会双写');
-    assert.match(fn, /skipPendingFlush: true/);
+    // 快照成功才跳过 flush（skipPendingFlush）；快照失败必须走 flushPendingTermOut
+    // 保住交接间隙的输出（2026-11-21 审查 P2-2）。
+    assert.match(fn, /skipPendingFlush: replayFailed \? false : true/);
+    assert.match(fn, /if \(replayFailed\) \{\s*flushPendingTermOut\(id\);/);
 });
 
 test('主窗口监听 term-popout-closed 并按 target 接回', () => {

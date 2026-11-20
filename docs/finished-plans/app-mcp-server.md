@@ -11,6 +11,7 @@ Streamable HTTP 端点，把一套「外部 agent 驱动应用界面」的工具
 - `window_control`：focus/show/hide/close/maximise/set_size/set_position/set_title/set_url/set_always_on_top …
 - `js_eval` / `dom_html` / `dom_query`：在页面里执行任意 JS、读 DOM
 - `mouse_move` / `mouse_click` / `mouse_drag` / `mouse_scroll` / `keyboard_type` / `keyboard_press`：界面自动化（带可视光标反馈）
+- `call_bound_method` / `emit_event` / `wait_for_event` / `screenshot_dom`：直调任意 Go 绑定、事件收发与页面截图——**`call_bound_method` 可不经 js_eval 直调全部绑定（读写文件/跑命令），威胁模型按「全权驱动宿主」评估**
 
 这与 `docs/unfinished-plans/desktop-mcp.md` 是**两回事**：那份规划是把外部桌面自动化
 server（windows-mcp）接进本应用的 MCP 客户端；这里是把**本应用**暴露为 MCP server。
@@ -31,7 +32,7 @@ v3 的 server 只能经环境变量配置，且绑定失败会让 `App.Run` 报�
 1. 令牌：首次生成 24 字节随机 hex，持久化到 `<应用数据>/mcp-server.json`（0600，原子写）；
 2. 端口：默认 9099，被占用则向后探测 20 个（探测+持久化，重启沿用）；
 3. `os.Setenv` 注入 `WAILS_MCP_HOST/WAILS_MCP_PORT/WAILS_MCP_TOKEN`（host 固定 127.0.0.1）；
-4. 连接信息写回 `mcp-server.json`：`{endpoint, token, note}`，应用日志记一行端点。
+4. 连接信息写回 `mcp-server.json`：`{endpoint, port, token, note}`，应用日志记一行端点。
 
 外部客户端拿 endpoint + token 配置即可。删除 `mcp-server.json` 重启应用即可轮换令牌。
 
@@ -41,7 +42,7 @@ v3 的 server 只能经环境变量配置，且绑定失败会让 `App.Run` 报�
   （它能读用户文件本身——本机威胁模型与用户权限等同）。
 - `js_eval` 绕过应用内所有审批链（MCP 工具白名单、AI 写权限档）。因此**标准构建不含它**；
   变体只建议在受信机器、明确需要外部 agent 驱动界面时安装。
-- 变体不含设置页开关：装了变体 = 启用。要停用就换回标准构建。
+- 变体不含设置页开关：装了变体 = 启用。要停用就换回标准构建。安装包脚本（build-installer.ps1）同样支持 `-IncludeMCP`；`envvars.SanitizeChildEnv` 会向全部子进程（终端/命令桥/沙箱/插件服务）屏蔽 `WAILS_MCP_*`，防止受控进程拿凭据反向驱动宿主。
 
 ## 验证
 

@@ -48,6 +48,9 @@ func (a *App) AddPluginFromFolder() (*plugins.PluginInfo, error) {
 		CanChooseFiles(false).
 		CanChooseDirectories(true).
 		PromptForSingleSelection()
+	if isDialogCancelled(err) {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -67,6 +70,9 @@ func (a *App) ImportPluginFromZip() (*plugins.PluginInfo, error) {
 		AddFilter("插件包 (*.zip)", "*.zip").
 		AddFilter("所有文件 (*.*)", "*.*").
 		PromptForMultipleSelection()
+	if isDialogCancelled(err) {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, err
 	}

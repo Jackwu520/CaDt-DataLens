@@ -122,7 +122,6 @@ func (a *App) startup(ctx context.Context) {
 		a.waitConvertTimeout()
 		return
 	}
-	applyTaskbarIcon()
 	// 系统通知的应用标识必须在发出第一条 Toast 之前登记好，
 	// 否则 Windows 只返回成功、不显示（见 internal/notify 的 ensureToastAppID）。
 	// 点击通知的激活回调也在这里接上：把窗口拉回前台 + 把激活参数转给前端。
@@ -139,24 +138,37 @@ func (a *App) startup(ctx context.Context) {
 	// 无主窗口的形态（--ai-float / --debug-console / 终端独立窗口作首窗）：
 	// AI 定时任务、插件后台服务、MCP 客户端、使用统计都是主窗口域的服务，
 	// 不在这里拉起（ctx 之外拿不到窗口形态，直接按主窗口数判定）。
-	if winReg.countMain() == 0 {
-		return
-	}
-	// AI 定时任务调度器：主窗口与 AI 悬浮窗各自扫描，执行去重由前端裁决
-	aischedule.Start()
-	// 插件后台服务：启动已声明且 autoStart 的服务（声明由前端加载插件后 Sync 推送；
-	// 此处对空注册表无害，保留以覆盖未来持久化声明的场景）。
-	a.AppServices.StartAll()
-	// MCP 客户端 + 使用统计回填：仅主窗口初始化（浮窗/调试控制台/终端窗口不拉子进程/不扫会话）
-	usagestats.Start()
-	if err := mcp.InitClient(a.Client, func(event string, payload any) {
-		emitAppEvent(event, payload)
-	}); err != nil {
-		// 损坏的 mcp.json 不阻塞启动：设置页会读到同样的错误并展示路径
-		writeAppLog("warn", "MCP 配置加载失败：%v", err)
+	// AI 侧服务只在有主窗口的进程里拉起；浮窗/调试台/终端窗首启时先跳过，
+	// 之后开出的第一个主窗口经 ensureAIServices 惰性补齐（审查 P2-1：v3 单进程
+	// 多窗口后窗口形态可动态变化，一次性门控会漏掉后续主窗口）。
+	if winReg.countMain() > 0 {
+		a.ensureAIServices()
 	}
 	// 外部文件拖放由前端 runtime.OnFileDrop 注册窗口监听并直接打开；
 	// 这里不再订阅 wails:file-drop，否则同一次拖放会被两侧各处理一遍。
+}
+
+// aiServicesOnce：AI 定时任务 / 插件后台服务 / MCP 客户端 / 使用统计只在
+// 首个主窗口出现时初始化一次（startup 时有主窗口直接拉起；没有则由后续
+// createWindow(main) 补齐）。
+var aiServicesOnce sync.Once
+
+func (a *App) ensureAIServices() {
+	aiServicesOnce.Do(func() {
+		// AI 定时任务调度器：主窗口与 AI 悬浮窗各自扫描，执行去重由前端裁决
+		aischedule.Start()
+		// 插件后台服务：启动已声明且 autoStart 的服务（声明由前端加载插件后 Sync 推送；
+		// 此处对空注册表无害，保留以覆盖未来持久化声明的场景）。
+		a.AppServices.StartAll()
+		// MCP 客户端 + 使用统计回填（浮窗/调试控制台/终端窗口不拉子进程/不扫会话）
+		usagestats.Start()
+		if err := mcp.InitClient(a.Client, func(event string, payload any) {
+			emitAppEvent(event, payload)
+		}); err != nil {
+			// 损坏的 mcp.json 不阻塞启动：设置页会读到同样的错误并展示路径
+			writeAppLog("warn", "MCP 配置加载失败：%v", err)
+		}
+	})
 }
 
 func (a *App) secondInstance(args []string) {
@@ -168,15 +180,27 @@ func (a *App) secondInstance(args []string) {
 		a.ensureDebugWindow()
 		return
 	}
+	// 下面这些分支都会把某个窗口拉到前台：顺手清托盘态（v2 每分支都走
+	// secondInstanceShow，审查 P2-2）。
+	a.clearTrayState()
 	if pane := launchargs.ParseOpenSettingsArg(args); pane != "" {
-		if st := winReg.primary(); st != nil {
+		// 无主窗口形态回退浮窗（与 OpenSettingsInMainWindow 同构，审查 P2-1）。
+		st := winReg.primary()
+		if st == nil {
+			st = winReg.get("float")
+		}
+		if st != nil {
 			emitWindowEventTo(st.window(), "app-open-settings", pane)
 			activateWindow(st.window())
 		}
 		return
 	}
 	if loc := launchargs.ParseMemoLocatorArg(args); loc != "" {
-		if st := winReg.primary(); st != nil {
+		st := winReg.primary()
+		if st == nil {
+			st = winReg.get("float")
+		}
+		if st != nil {
 			emitWindowEventTo(st.window(), "app-open-memo", loc)
 			activateWindow(st.window())
 		}
@@ -192,7 +216,12 @@ func (a *App) secondInstance(args []string) {
 	}
 	// 窗口打开模式（或显式 --new-window）：总是开新窗口；否则投给主窗口。
 	if launchargs.HasFlag(args, "--new-window") || appconfig.OpenMode() == "window" {
-		a.openMainWindow(windowSpec{Targets: targets})
+		// --new-window <dir> --ai-session=<id> 组合：会话 id 随窗口启动上下文带入
+		//（v2 的独立进程冷启动解析同一参数，审查 P2-6）。
+		a.openMainWindow(windowSpec{
+			Targets:   targets,
+			SessionID: launchargs.ParseAISessionArg(args),
+		})
 		return
 	}
 	if st := winReg.primary(); st != nil {
@@ -217,7 +246,12 @@ func (a *App) onToastActivation(payload string) {
 	if a.ctx == nil {
 		return
 	}
-	if st := winReg.primary(); st != nil {
+	st := winReg.primary()
+	if st == nil {
+		// 无主窗口形态（浮窗单独运行）：通知点击回退唤起浮窗（审查 P2-9）。
+		st = winReg.get("float")
+	}
+	if st != nil {
 		activateWindow(st.window())
 		if strings.TrimSpace(payload) != "" {
 			emitWindowEventTo(st.window(), "ai-notify-activate", payload)

@@ -963,7 +963,7 @@ export const AI_TOOL_DEFS = {
     },
     terminal: {
         name: 'terminal',
-        description: '操作应用内置终端（ConPTY 持久会话，与用户看到的底部终端是同一个）：list 看已开的终端、open 新建并自动打开底部面板、send 向终端写文本、read 读最近输出（默认按字符数 maxChars 取尾部；想按「最后 N 行」看就传 tail，与 maxChars 二选一，tail 优先）、signal 发 Ctrl+C、close 关闭页签。适合交互式/长驻程序（dev server、需要持续输入的命令、看交互式 CLI）；一次性命令仍用 run_command；不需要交互、只等 AI 自己轮询结果的长驻服务优先 background_command（输出走缓冲更省，结束时有后台通知），terminal 用在想让用户看到现场或随时接手的场合。终端里的程序不受 run_command 的超时与「停止生成」约束——需要中止请用 signal，或让用户自己停。注意：终端里的程序（如 dev server）退出时 shell 还在，不会有通知，要用 read 看输出；shell 会话本身退出（异常终止/被关）会收到后台通知。send / open / close 走命令审批。不要往终端里发 sleep、ping 这类命令空等凑时长：需要「等一段时间再继续」用 start_timer 倒计时，到点自动唤醒。',
+        description: '操作应用内置终端（ConPTY 持久会话，与用户看到的底部终端是同一个）：list 看已开的终端、open 新建并自动打开底部面板、send 向终端写文本、read 读最近输出（默认按字符数 maxChars 取尾部；想按「最后 N 行」看就传 tail，与 maxChars 二选一，tail 优先）、signal 发 Ctrl+C、close 关闭页签。适合交互式/长驻程序（dev server、需要持续输入的命令、看交互式 CLI）；一次性命令仍用 run_command；不需要交互、只等 AI 自己轮询结果的长驻服务优先 background_command（输出走缓冲更省，结束时有后台通知），terminal 用在想让用户看到现场或随时接手的场合。终端里的程序不受 run_command 的超时与「停止生成」约束——需要中止请用 signal，或让用户自己停。注意：终端里的程序（如 dev server）退出时 shell 还在，不会有通知，要用 read 看输出；shell 会话本身退出（异常终止/被关）会收到后台通知。send / open / close 走命令审批。用户可能把某个终端「在独立窗口打开」：被弹出的会话不在 list 结果里，对它 send/focus 会报错——这时不要反复重试，告知用户切回那个窗口操作即可。不要往终端里发 sleep、ping 这类命令空等凑时长：需要「等一段时间再继续」用 start_timer 倒计时，到点自动唤醒。',
         parameters: {
             type: 'object',
             properties: {

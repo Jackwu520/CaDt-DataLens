@@ -139,6 +139,8 @@ func main() {
 	err := wailsApp.Run()
 	if err != nil {
 		writeAppLog("error", "wails.Run 退出：%v", err)
+		// 启动期失败（如 MCP 变体端口被抢）不能静默 exit 0：调用方/启动器需要失败信号。
+		os.Exit(1)
 	}
 	// 兜底落盘：正常路径在最后一个窗口的 WindowClosing 钩子里已经 flush，
 	// 这里覆盖非关窗退出（托盘退出/外部结束）时防抖计时器还没到点的情况。

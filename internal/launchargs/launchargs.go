@@ -1,13 +1,11 @@
-// launchargs：启动参数解析 —— 打开目标（文件:行:列）、设置页、AI 会话、单实例 ID 与开关判定。
+// launchargs：启动参数解析 —— 打开目标（文件:行:列）、设置页、AI 会话与开关判定。
 package launchargs
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 )
 
 // OpenTarget 启动时要打开的文件或目录；行列从 1 开始，0 表示未指定。
@@ -204,22 +202,4 @@ func HasFlag(args []string, flag string) bool {
 		}
 	}
 	return false
-}
-
-// UniqueIDForArgs 计算单实例锁 ID：--new-window 或配置为 window 打开模式时给随机 ID，
-// 让新进程真正开出独立窗口。
-func UniqueIDForArgs(args []string, openMode string) string {
-	for _, arg := range args {
-		if arg == "--new-window" {
-			return randomLaunchID()
-		}
-	}
-	if openMode == "window" {
-		return randomLaunchID()
-	}
-	return "cadt-datalens-7f3a9c21"
-}
-
-func randomLaunchID() string {
-	return fmt.Sprintf("cadt-datalens-window-%d-%d", os.Getpid(), time.Now().UnixNano())
 }

@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"unsafe"
 
+	"datalens/internal/envvars"
 	"golang.org/x/sys/windows"
 )
 
@@ -227,6 +228,7 @@ func (s *Sandbox) Env(base []string) []string {
 	if s.tempDir == "" {
 		return base
 	}
+	base = envvars.SanitizeChildEnv(base) // 应用私有变量（宿主 MCP 凭据等）不进沙箱
 	out := make([]string, 0, len(base)+2)
 	for _, kv := range base {
 		key := kv

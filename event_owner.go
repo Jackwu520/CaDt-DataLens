@@ -17,7 +17,8 @@ type ownerKey struct{ kind, id string }
 
 var eventOwners = struct {
 	sync.RWMutex
-	m map[ownerKey]string
+	m     map[ownerKey]string
+	order []ownerKey // 插入序：表满时按最老登记淘汰，而不是全表清空
 }{m: make(map[ownerKey]string)}
 
 // eventOwnerLimit 防无界增长：浏览器标签等没有天然退出事件的资源靠上限兜底。
@@ -31,11 +32,24 @@ func (a *App) RegisterEventOwner(ctx context.Context, kind, id string) error {
 	if name == "" || kind == "" || id == "" {
 		return nil
 	}
+	key := ownerKey{kind, id}
 	eventOwners.Lock()
-	if len(eventOwners.m) >= eventOwnerLimit {
-		eventOwners.m = make(map[ownerKey]string)
+	if _, exists := eventOwners.m[key]; !exists && len(eventOwners.m) >= eventOwnerLimit {
+		// 表满：淘汰最老的登记（对应资源大概率已消失，广播兜底会接管其事件），
+		// 不能整表清空——那会把所有活跃归属一次性打回广播（审查 P2-6）。
+		for len(eventOwners.order) > 0 {
+			oldest := eventOwners.order[0]
+			eventOwners.order = eventOwners.order[1:]
+			if _, live := eventOwners.m[oldest]; live {
+				delete(eventOwners.m, oldest)
+				break
+			}
+		}
 	}
-	eventOwners.m[ownerKey{kind, id}] = name
+	if _, exists := eventOwners.m[key]; !exists {
+		eventOwners.order = append(eventOwners.order, key)
+	}
+	eventOwners.m[key] = name
 	eventOwners.Unlock()
 	return nil
 }

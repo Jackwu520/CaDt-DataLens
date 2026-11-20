@@ -22,18 +22,6 @@ func TestFirstPathArgSkipsExeAndFlags(t *testing.T) {
 	}
 }
 
-func TestUniqueIDForArgs(t *testing.T) {
-	if got := UniqueIDForArgs(nil, "tab"); got != "cadt-datalens-7f3a9c21" {
-		t.Fatalf("tab id = %q", got)
-	}
-	if got := UniqueIDForArgs([]string{"--new-window"}, "tab"); !strings.HasPrefix(got, "cadt-datalens-window-") {
-		t.Fatalf("new-window id = %q", got)
-	}
-	if got := UniqueIDForArgs(nil, "window"); !strings.HasPrefix(got, "cadt-datalens-window-") {
-		t.Fatalf("window mode id = %q", got)
-	}
-}
-
 func TestPathArgsKeepsFilesAndDirs(t *testing.T) {
 	dir := t.TempDir()
 	a := filepath.Join(dir, "a.json")
