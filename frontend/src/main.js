@@ -439,6 +439,25 @@ function syncDevConsoleVisibility() {
     }
 }
 
+// ===== 标题栏 logo 加载竞态兜底 =====
+// 多窗口/高负载下 /icon.png 偶发加载失败，<img> 失败不重试 → 图标就此永久缺失
+// （任务栏图标走 exe 资源不受影响，2026-11-21 用户实测）。失败后重赋 src 重新
+// 请求，最多 3 次 600ms 间隔；图片自然加载成功则一个字节都不多花。
+(function patchAppLogoRetry() {
+    const logo = document.getElementById('app-logo');
+    if (!logo) return;
+    let tries = 0;
+    logo.addEventListener('error', () => {
+        if (tries >= 3) return;
+        tries++;
+        setTimeout(() => {
+            const src = logo.getAttribute('src') || '/icon.png';
+            logo.removeAttribute('src');
+            logo.setAttribute('src', src);
+        }, 600);
+    });
+})();
+
 // ===== 辅助独立窗（便签 / 会话监控 / 文件对比）=====
 // 与终端独立窗口同构（bridge-ui 启动编排按 auxWindowKind 分派到这里）：
 // 跳过正常启动流程，全屏渲染单一视图。数据源磁盘/进程内共享——便签走租约
