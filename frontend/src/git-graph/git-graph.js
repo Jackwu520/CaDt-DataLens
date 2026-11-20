@@ -50,15 +50,12 @@ export function laneSvgWidth(laneCount) {
     return LANE_PAD * 2 + Math.max(1, laneCount) * LANE_W;
 }
 
-// bezier 生成竖直方向的 S 形三次贝塞尔（起终点与直线相同）。
-// 控制点取 DoltHub commit-graph 的插值公式：两个控制点分别压向「终点的 x、起点的 y」
-// 与「起点的 x、终点的 y」，弯道只占端部、中段保持竖直（对齐 IDEA/GitHub 观感）。
-function bezier(x0, y0, x1, y1) {
-    const cx1 = x0 * 0.1 + x1 * 0.9;
-    const cy1 = y0 * 0.6 + y1 * 0.4;
-    const cx2 = x0 * 0.03 + x1 * 0.97;
-    const cy2 = y0 * 0.4 + y1 * 0.6;
-    return `M${x0},${y0} C${cx1},${cy1} ${cx2},${cy2} ${x1},${y1}`;
+// slant 生成一条直线斜线（Gitea svgcontainer.tmpl 同款，也贴合 git 文本字形）。
+// 曾用 S 形贝塞尔（控制点压向终点）追求「IDEA 观感」，但那让横向位移集中在行首：
+// 线先快速横移一格再竖直，形成台阶/凹陷（作者反馈「右边几条线没必要凹进去一块」）。
+// 直线让分叉/汇入在整行内均匀过渡，分支线更接近「直上」，不再有突兀的弯折。
+function slant(x0, y0, x1, y1) {
+    return `M${x0},${y0} L${x1},${y1}`;
 }
 
 // buildLaneSvg 渲染一页提交的泳道 SVG（新→旧，行 i 的 y 中心 = i*ROW_H + ROW_H/2）。
@@ -88,11 +85,11 @@ export function buildLaneSvg(commits, laneCount) {
                 case '*':
                     seg(`M${x},${y0} L${x},${y1}`, g.f);
                     break;
-                case '\\': // 左格左界 → 右格右界（下一行 pos+1 相接），S 形贝塞尔（IDEA 观感）
-                    seg(bezier(glyphX(g.p - 1), y0, glyphX(g.p + 1), y1), g.f);
+                case '\\': // 左格左界 → 右格右界（下一行 pos+1 相接），直线斜线
+                    seg(slant(glyphX(g.p - 1), y0, glyphX(g.p + 1), y1), g.f);
                     break;
-                case '/': // 右格右界 → 左格左界（下一行 pos-1 相接），S 形贝塞尔
-                    seg(bezier(glyphX(g.p + 1), y0, glyphX(g.p - 1), y1), g.f);
+                case '/': // 右格右界 → 左格左界（下一行 pos-1 相接），直线斜线
+                    seg(slant(glyphX(g.p + 1), y0, glyphX(g.p - 1), y1), g.f);
                     break;
                 case '_': // 底边横线：本格左界 → 右格右界（跨 2 格，与右侧字形相接）
                     seg(`M${glyphX(g.p - 1)},${y1} L${glyphX(g.p + 1)},${y1}`, g.f);
