@@ -4,6 +4,59 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 
 ## 未发布
 
+### 改进（归档会话改为明确的只读态，不再只靠右下角一行灰字）
+
+- **现象**：查看归档会话时不能编辑消息、也不能发送，但界面上编辑按钮照常出现、输入框照常可填，直到点发送才被后端拒绝，右下角甩出一行英文 reason 码 `archived`，用户很难看懂。
+- **改法（三层）**：① 视觉——composer 顶部常驻琥珀色横幅「归档会话 · 只读，不能发送消息」并就地给出「取消归档」按钮（直接调 `archiveSession(session, false)`），输入框设只读、模式 pill 置灰；② 入口——`canInlineEdit` 加归档判定，消息操作收起编辑 / 重试 / 重新生成 / 回退 / 分支等改写动作（只留复制、投递等只读动作），`saveInlineEdit` 开头再挡一道；③ 兜底——起轮与原地保存的 `archived` 失败原因统一成中文文案，不再露出裸 reason 码。
+- 改动：`frontend/index.html`（横幅结构）、`frontend/src/ai/ai-panel.js`（`syncArchivedBanner` + 三处门禁 + 两处文案）、`frontend/src/style.css`（`.ai-archived-banner` / `.ai-composer.is-archived`），新增测试 `test/ai/ai-archived-readonly.test.mjs` 并登记 `npm test` 清单；同步更新 `ai-inline-edit-wiring.test.mjs` 的 `canInlineEdit` 签名断言。`npm test` 全量通过。
+
+### 改进（会话右键菜单加图标，归档移到删除上方）
+
+- 会话右键菜单按图 2 的布局调整：「归档会话 / 取消归档」从诊断区移到「删除会话」正上方，归档与删除紧邻成组；所有菜单项补上前缀图标（新建 / 支线 / 置顶 / 重命名 / 导出 / 诊断 / 提升 / 清空信箱 / 复制 ID / 复制路径 / 归档 / 删除），图标走菜单统一的 `item.icon` 通道。
+- 图标表新增 `archive`（带盖归档盒）与 `unarchive`（归档盒 + 取出箭头）两枚，归档态自动切换；全部用内联 SVG、`currentColor` 着色，无新依赖。
+- 改动：`frontend/src/core/icons.js`、`frontend/src/ai/ai-session-list.js`（`buildSessionMenuItems`）、`frontend/test/ai/ai-session-list.test.mjs`（新增归档位置 + 图标完整性用例）。`npm test` 全量通过。
+
+### 改进（子代理通知等结论型应用消息支持 Markdown 渲染，可切回原文）
+
+- **现象**：后台子代理结算 / 提问、支线结论以应用消息卡片注入，正文里的 `###` / `**` / 反引号代码围栏都按纯文本原样显示（`查看指令` 区用 `<pre>`），可读性差。
+- **改法**：只对结论型 kind（`subagent` / `subagent-ask` / `sidechat`）渲染 Markdown；指令型（git / 定时 / 计划批准 / 会话投递 / 工作区防护等）保持原文——「查看指令」的用途是核对实际发给模型的字节，渲染会吃掉标记符号。卡片头新增「查看原文 / 查看渲染」切换，随时切回逐字原文；开头的宿主环境块（`<system-reminder>`）始终原文弱化显示，不参与渲染。
+- **性能**：复用已注入面板的单例 `renderMarkdown`（无新依赖、零体积成本）；默认折叠时**不渲染**，只在展开且处于渲染视图时才跑，结果按消息 key 缓存，流式期间 `renderMessages` 全量重放直接取缓存、零成本；正文超 12000 字符退回原文。
+- 改动：`frontend/src/ai/ai-app-message.js`（`appMessageMarkdownEligible` 纯函数）、`frontend/src/ai/ai-panel.js`（`renderAppMessage` 双视图 + 懒渲染 + 缓存）、`frontend/src/style.css`（`.ai-app-msg-md`）、`frontend/test/ai/ai-app-message.test.mjs`（新增 eligibility 用例）。`npm test` 全量通过、`npm run build` 通过。
+
+### 改进（AI 会话列表改按「最近一轮结束时间」排序，刚结束的会话冒到顶）
+
+- **现象**：刚结束的会话仍按发问时刻排在列表中间（如跑了很久的会话显示 17:30 的发问时间，结束时间却是更晚），用户期望它排到最前。
+- **背景**：参考 opencode / ZCode / dsh 三家 harness 实测口径——dsh 按用户发问时间（结束不刷新，与旧行为一致），opencode 按 `time.updated`（运行中冻结、运行结束才刷新），ZCode 按 `lastActivityAt`（含 turn/工具活动，运行中整体置顶）。作者拍板采用 **opencode 模式**。
+- **修法**：排序键与时间文案同源 `sessionActivityTs` 改为 `max(最近一轮结束时间 finishedAt, 最近发问时间 turnStartedAt)`：运行中（工具结果 / 流式回复）两个值都不推进，会话不会在列表里跳动（保住旧版「工具刷屏顶列表」的修复）；用户发新一轮按发问时刻前移，本轮结束按 `finishedAt` 再前移。新增 `sessionEndTs()`（只认已收尾 assistant 的 `finishedAt`，跳过 `status:'streaming'`）。会话 meta 加 `endTs` 缓存字段（仿 `turnTs`），占位会话从 meta 读回，重启后排序不跳位；老会话无 `finishedAt` 时 `endTs=0`，自然回落到发问时间。
+- 改动：`frontend/src/ai/ai-session-store.js`（`sessionEndTs` + `sessionActivityTs` + meta `endTs`）、`frontend/src/ai/ai-session-disk.js`（`toStubs` 读回 `_endTs`）；测试 `test/ai/ai-session-store.test.mjs` 新增 5 例（运行中冻结 / 结束前移 / 发问前移 / 老会话回落 / meta 缓存），全量 `npm test` 通过。
+
+### 修复（AI 消息队列抢占一条后，其它插话消息消失）
+
+- **现象**：生成中输入两条插话消息后，点其中一条的「抢占」（⚡）发送，这条发出去了，另一条却凭空消失。
+- **原因**：`preemptQueuedItem` / `preemptComposerMessage` 抢占时会调 `stopGeneration`，而 `stopGeneration` 与 1.2s 后的 `finishStream` 都会执行 `queueMod.clearSteer(sessionId)`——这是「放弃当前任务」语义，把本会话所有 pending steer 一起清掉。抢占的意图只是让这一条立即发出，其它消息本应保留，却被连带丢弃。
+- **修法**：两条抢占路径在停轮**之前**先 `model.fallbackSteerToQueue(sessionId)`，把本会话其它 steer 降级为 `queue`（被抢占那条已改投 queue，不受影响）；`clearSteer` 清不到它们，它们会在被抢占那条发出后按 FIFO 依次冲刷。停止按钮的「放弃当前任务」语义不变。
+- 改动：`frontend/src/ai/ai-message-queue.js`（两处抢占路径）、`docs/finished-plans/ai-turn-steering.md` §4.5；测试 `test/ai/ai-message-queue.test.mjs`（新增「其它 steer 降级保留」用例）、`test/ai/ai-turn-steer-wiring.test.mjs`（两条抢占路径接线断言），51 例全绿。
+
+### 修复（AI 流式计时超过 1 小时只显示「X 分 Y 秒」，缺小时/天档位）
+
+- **现象**：AI 处理中的计时条（`.ai-process-timer`）跑到 82 分钟时仍显示「82 分 56.3 秒」，分钟数一路涨下去，不换算成小时/天。
+- **原因**：计时条文案走 `ai/ai-constants.js` 的 `aiFormatLiveDuration`，它只有「秒 / 分 秒」两档；同文件的 `aiFormatDuration` 虽有小时档但也没天档。
+- **修法**：`aiFormatDuration` 抽出共用的 `aiDurationText`，统一为「天 / 小时 / 分 / 秒」四档整数秒（值为 0 的单位跳过）；`aiFormatLiveDuration` 补上小时/天档——不到 1 小时保留十分位小数（40.2 秒 / 3 分 40.2 秒），到小时/天档改整数秒。图片里的 82 分 56.3 秒现在显示「1 小时 22 分 56 秒」。顺带修掉 `NaN` 输入时返回「NaN 天」的边界 bug（`Number(ms) || 0` 兜底）。
+- 测试：`test/ai/ai-constants.test.mjs` 新增 2 例覆盖四档与非法输入，11 例全绿；相邻 `ai-terminal-tools` / `ai-team-model` 24 例无回归。
+
+### 修复（未配置生命周期钩子时，发首条消息仍闪「正在执行该会话的生命周期钩子」）
+
+- **现象**：明明没有任何生命周期钩子（甚至总开关已关），空会话发第一条消息时状态栏仍提示「正在执行该会话的生命周期钩子，完成后再发送…」。
+- **原因**：`ai-panel.js` 的 `startSessionTurn` 只判断「`lifecycleAIStart` 已注入（main.js 永远注入）+ 空会话首轮」就**无条件** flash；是否真有 `session-start` 条目要到控制器下游才知道（无条目时立即 `{ran:0}` 返回，提示却已经闪出去了）。
+- **修法**：`shell/lifecycle-hooks.js` 的 `runEntries` 增加可选 `onWillRun(list)` 同步挂点——只在「确有启用的条目、且未被重入护栏跳过」时回调一次；`runForAISessionStart` 透传，ai-panel 把 flash 挪进该回调。无条目 / 总开关关闭 / 已跳过都不再提示，真有钩子时的阻塞等待反馈语义不变。
+- 测试：`test/shell/lifecycle-hooks.test.mjs` 新增 2 例（只在确有可执行条目时回调、重入跳过不回调），25 例全绿；`npm run build` 通过。
+
+### 新增（帮助 → 教程：内置文档讲解专门语法）
+
+- 帮助菜单新增「教程」，以内置虚拟文档打开 `docs/tutorial.md`，与用户协议 / 隐私协议一致用固定只读展示（不可解锁、无保存入口）。
+- 内容只收录有专门语法、光看界面不易弄明白的部分，按「解决什么—怎么写—边界」组织：搜索排除表 `search-ignore`（按名/按路径、`!` 取反与覆盖顺序、四处检索范围）、生命周期钩子（9 事件、阻塞与非阻塞、工具名匹配器、执行环境、AI 代配必审批、为何存 localStorage）、JSONPath 查询（路径/切片/联合/递归/过滤运算符）、便签定位点 `cadt-memo://`、命令行文件与行列定位。博客式叙述，分级清晰，不使用 emoji。
+- 改动：`docs/tutorial.md`（新）、`frontend/src/shell/app-links.js`（import + `showTutorial` + 导出）、`frontend/src/main.js`（解构 + 帮助菜单项）、`frontend/test/shell/app-links-readonly.test.mjs`（教程纳入固定只读护栏）。
+
 ### 修复（AI 头部「定时」胶囊点了没反应，且在所有会话都显示）
 
 - **现象**：头部「定时」胶囊显示某会话的任务数后，切到任何别的会话都一直挂着，点击也没有任何反应。
