@@ -69,6 +69,8 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 - **关窗确认口径**：关掉非最后一个主窗口时不再用「关闭将终止这些任务」弹危险确认（终端会话/后台命令在进程里活着，并不随该窗口死）。
 - **8 秒兜底显示回归**：v2 的 `ensureWindowShown` 语义找回——导航 8s 未完成强制露出窗口，WebView2 卡死不再「进程活着但没窗口」。
 - **标题栏 X / 终端收回绕过关窗确认（用户实测）**：v3 两条关窗路径发不同事件——JS `WindowClose()` 发 `Common.WindowClosing`、原生 WM_CLOSE 发 `Windows.WindowClosing`（经默认映射汇入 Common）；关窗钩子此前挂在 `Windows.*` 上，JS 关窗路径完全绕过 `beforeCloseWindow`（改文件点 X 直接退出、终端窗口收回不发交还事件）。钩子移到 `Common` 后两条路径统一：先于内部关闭监听执行，取消语义完整。
+- **终端弹出窗口实测反馈一批**：terminal-only 漏藏 `#ai-panel`（`#body-col` 直接子级）根因是 style.css 修改后未重跑 `npm run build`，dist 停在旧版——**已重构建，后续前端改动一律先 npm run build**；启动防闪现（app-booting 首帧隐藏 + 模式确定后摘除 + 5s 兜底）；标题栏去四向箭头光标；头部加「工作区 / Shell」胶囊并同步 OS 窗口标题；收回链路双侧诊断日志；v3 内部关闭监听语义核verified（Common 先于内部关闭执行、取消生效）。
+- **v2/v3 共存警告（操作层面）**：两者单实例锁 ID 相同但转发协议不同——**同时运行会双开或挂起**（03:51 与 03:53 的日志证实）。测试 v3 前必须完全退出 v2（含托盘），任务管理器确认无 datalens 进程。
 - **窗口归属遗留立项**：工作区监听单槽顶掉（wipe-guard L2 失明）、memo 租约同进程双写、`findWailsWindow` 多窗口不确定、对话框无属主、资源监听替换式登记——五项同根（进程级单例 vs 多窗口），统一按「调用方窗口键控」重构，见 `docs/unfinished-plans/window-ownership-refactor.md`（未开工，已知偏差均已声明）。
 
 ### 修复（AI 头部「定时」胶囊点了没反应，且在所有会话都显示）

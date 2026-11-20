@@ -301,22 +301,26 @@ async function startTerminalWindowMode() {
         return;
     }
     let shell = '';
+    let cwdBase = '';
     try {
         const infos = backend.TermList ? await backend.TermList() : [];
         const info = infos.find((x) => x && x.id === termId);
-        if (info) shell = info.shell || '';
+        if (info) {
+            shell = info.shell || '';
+            cwdBase = String(info.cwd || '').replace(/^.*[\/]/, '');
+        }
     } catch (e) {}
     const s = await terminalMod.attachResumedTermSession(termId, shell);
     toggleTerminalPanel(true);
 
-    // 窗口头：标题 + 收回主窗口（关窗交还会话）+ 关闭会话（TermClose 后关窗）。
-    // 无边框窗口，头部即拖动区（body.terminal-only CSS）。
+    // 窗口头：标题（终端 + 工作区 + Shell 胶囊）+ 收回主窗口（关窗交还会话）+
+    // 关闭会话（TermClose 后关窗）。无边框窗口，头部即拖动区（body.terminal-only CSS）。
     const panel = document.getElementById('terminal-panel');
     const head = document.createElement('div');
     head.id = 'term-window-head';
     const title = document.createElement('span');
     title.className = 'term-window-title';
-    title.textContent = '终端 · ' + ((s && s.defaultLabel) || shell || '本地');
+    title.textContent = '终端';
     const actions = document.createElement('div');
     actions.className = 'term-window-actions';
     const redock = document.createElement('button');
@@ -338,9 +342,27 @@ async function startTerminalWindowMode() {
         try { if (backend.TermClose) await backend.TermClose(termId); } catch (e) {}
         try { if (window.runtime && window.runtime.WindowClose) window.runtime.WindowClose(); } catch (e) {}
     });
+    const shellPill = document.createElement('span');
+    shellPill.className = 'term-window-pill';
+    shellPill.textContent = (s && s.defaultLabel) || shell || '本地';
+    if (cwdBase) {
+        const cwdPill = document.createElement('span');
+        cwdPill.className = 'term-window-pill';
+        cwdPill.dataset.tip = '会话启动目录';
+        cwdPill.textContent = cwdBase;
+        head.append(cwdPill);
+    }
+    const spacer = document.createElement('span');
+    spacer.style.flex = '1';
     actions.append(redock, closeBtn);
-    head.append(title, actions);
+    head.append(title, shellPill, spacer, actions);
     if (panel) panel.insertBefore(head, panel.firstChild);
+    // OS 窗口标题（任务栏/Alt+Tab 可见）：终端 · 工作区 · Shell
+    try {
+        if (window.runtime && window.runtime.WindowSetTitle) {
+            window.runtime.WindowSetTitle('终端 · ' + (cwdBase || '无工作区') + ' · ' + ((s && s.defaultLabel) || shell || '本地'));
+        }
+    } catch (e) {}
     if (s) {
         try { s.term.focus(); } catch (e) {}
     }

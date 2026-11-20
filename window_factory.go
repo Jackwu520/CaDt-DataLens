@@ -41,7 +41,6 @@ func (a *App) createWindow(spec windowSpec) *application.WebviewWindow {
 		if currentWindow() == nil {
 			setMainWindow(win)
 		}
-		// 浮窗/调试台/终端窗首启的进程，开第一个主窗口时补齐 AI 侧服务。
 		a.ensureAIServices()
 	}
 
