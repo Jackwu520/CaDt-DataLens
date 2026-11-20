@@ -15,6 +15,14 @@
     <meta charset="UTF-8"/>
     <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
     <title>CaDt-DataLens</title>
+    <style>
+        /* 启动防闪现：窗口模式（主窗/AI 浮窗/调试台/终端窗）由 JS 异步探测，
+           首帧先隐藏 #app，探测完成后由 main.js 摘除 app-booting；
+           兜底 5s 强制显示，防 JS 异常导致永久黑屏。 */
+        html.app-booting #app { display: none !important; }
+    </style>
+    <script>document.documentElement.classList.add("app-booting");
+    setTimeout(function () { document.documentElement.classList.remove("app-booting"); }, 5000);</script>
     <script>
         (function () {
             // 旧版界面主题 id → 现双主题（2026-11-16 重构：其余九套降级为代码主题）。

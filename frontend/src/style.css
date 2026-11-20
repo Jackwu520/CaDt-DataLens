@@ -10229,6 +10229,7 @@ body.terminal-only #toolbar,
 body.terminal-only #activity-bar,
 body.terminal-only #sidebar,
 body.terminal-only #main-pane,
+body.terminal-only #ai-panel,
 body.terminal-only #statusbar,
 body.terminal-only #enc-popover { display: none !important; }
 body.terminal-only #editor-wrap,
@@ -10254,7 +10255,6 @@ body.terminal-only #terminal-panel > #terminal-resize { display: none !important
     border-bottom: 1px solid var(--border);
     user-select: none;
     --wails-draggable: drag;
-    cursor: move;
 }
 #term-window-head button { --wails-draggable: no-drag; }
 .term-window-title {

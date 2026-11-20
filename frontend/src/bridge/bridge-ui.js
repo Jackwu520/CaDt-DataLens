@@ -172,8 +172,12 @@ function openBrowserTab(url, profileKey, opts) {
     if (!floatWindow && !deps.hasWails && deps.mockScenario.has('aifloat')) floatWindow = true;
     if (floatWindow) {
         window.__aiFloatWindow = true;
+        document.documentElement.classList.remove('app-booting');
         document.body.classList.add('ai-float-window');
         document.title = 'AI 助手 · CaDt-DataLens';
+    } else {
+        // 普通窗口：模式已定，解除首帧隐藏
+        document.documentElement.classList.remove('app-booting');
     }
     // 操作留痕：主窗口启动标记（悬浮窗/独立控制台/转换模式不记）。
     deps.activityLog.log('app.start', '', {mock: deps.hasWails ? undefined : true}, {actor: 'system', source: 'system'});

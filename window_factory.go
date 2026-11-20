@@ -45,7 +45,14 @@ func (a *App) createWindow(spec windowSpec) *application.WebviewWindow {
 		a.ensureAIServices()
 	}
 
-	win.RegisterHook(events.Windows.WindowClosing, func(e *application.WindowEvent) {
+	// 关窗钩子必须挂在 Common.WindowClosing：两条关窗路径在这里汇合——
+	//   原生 WM_CLOSE/Alt+F4 → Windows.WindowClosing →（默认事件映射）→ Common
+	//   JS WindowClose()（标题栏 X / 终端窗口收回）→ 直接发 Common
+	// 挂在 Windows.* 上会让 JS 关窗路径完全绕过 beforeCloseWindow（X 不弹确认、
+	// 终端窗口收回不发交还事件，2026-11-21 用户实测）。钩子先于 v3 内部关闭
+	// 监听器执行，e.Cancel() 可以同时拦住两条路径。
+	win.RegisterHook(events.Common.WindowClosing, func(e *application.WindowEvent) {
+		writeAppLog("info", "WindowClosing 钩子触发：%s", st.name())
 		// 关窗前采集一次并同步落盘：拖拽刚结束就关窗时防抖计时器可能还没到点。
 		winGeom.capture(st)
 		winGeom.flush()
@@ -260,8 +267,10 @@ func (a *App) emitTerminalPopoutClosed(st *windowState) {
 		}
 	}
 	if target == "" {
+		writeAppLog("warn", "终端交还中止：无存活主窗口可接回（id=%s）", info.ID)
 		return
 	}
+	writeAppLog("info", "终端交还：id=%s shell=%s origin=%s target=%s", info.ID, info.Shell, spec.Origin, target)
 	emitAppEvent("term-popout-closed", map[string]string{
 		"id": info.ID, "shell": info.Shell, "target": target,
 	})

@@ -252,6 +252,7 @@ window.__debugConsole = debugConsole;
 // 独立控制台窗口：隐藏主应用 UI，铺满渲染控制台并轮询中继日志
 function startConsoleWindowMode() {
     window.__consoleWindowMode = true;
+    document.documentElement.classList.remove('app-booting');
     document.body.classList.add('console-only');
     document.title = '调试控制台 · CaDt-DataLens';
     const dc = createDebugConsole({
@@ -288,6 +289,7 @@ function startConsoleWindowMode() {
 // 跳过正常启动流程；主题/字体经 applySettings 套用，会话经环形缓冲快照回放接进来。
 async function startTerminalWindowMode() {
     window.__terminalWindowMode = true;
+    document.documentElement.classList.remove('app-booting');
     document.body.classList.add('terminal-only');
     try { applySettings(); } catch (e) {}
     let termId = '';
@@ -6508,12 +6510,16 @@ if (rt) {
     // 会话已退出/已关闭时 Go 不发这个事件。
     appEvents.onApp('term-popout-closed', async (data) => {
         const d = data || {};
+        logFrontend('info', '[term-popout] 收到交还事件 id=' + (d.id || '') + ' target=' + (d.target || '') + ' self=' + wailsWindowName);
         if (!d.id || d.target !== wailsWindowName) return;
         if (terminalUI.sessions.has(d.id)) return;
         try {
             await terminalMod.attachResumedTermSession(d.id, d.shell || '');
             toggleTerminalPanel(true);
-        } catch (e) {}
+            logFrontend('info', '[term-popout] 会话已接回：' + d.id);
+        } catch (e) {
+            logFrontend('error', '[term-popout] 接回失败：' + ((e && (e.stack || e.message)) || e));
+        }
     });
     appEvents.onWindowOrBroadcast('cmd-out', (payload) => {
         const h = cmdOutHandlers.get(payload.id);

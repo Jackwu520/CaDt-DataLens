@@ -68,6 +68,7 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 - **`--new-window <dir> --ai-session=<id>` 组合**：会话 id 不再被丢弃，随窗口启动上下文带入软切换。
 - **关窗确认口径**：关掉非最后一个主窗口时不再用「关闭将终止这些任务」弹危险确认（终端会话/后台命令在进程里活着，并不随该窗口死）。
 - **8 秒兜底显示回归**：v2 的 `ensureWindowShown` 语义找回——导航 8s 未完成强制露出窗口，WebView2 卡死不再「进程活着但没窗口」。
+- **标题栏 X / 终端收回绕过关窗确认（用户实测）**：v3 两条关窗路径发不同事件——JS `WindowClose()` 发 `Common.WindowClosing`、原生 WM_CLOSE 发 `Windows.WindowClosing`（经默认映射汇入 Common）；关窗钩子此前挂在 `Windows.*` 上，JS 关窗路径完全绕过 `beforeCloseWindow`（改文件点 X 直接退出、终端窗口收回不发交还事件）。钩子移到 `Common` 后两条路径统一：先于内部关闭监听执行，取消语义完整。
 - **窗口归属遗留立项**：工作区监听单槽顶掉（wipe-guard L2 失明）、memo 租约同进程双写、`findWailsWindow` 多窗口不确定、对话框无属主、资源监听替换式登记——五项同根（进程级单例 vs 多窗口），统一按「调用方窗口键控」重构，见 `docs/unfinished-plans/window-ownership-refactor.md`（未开工，已知偏差均已声明）。
 
 ### 修复（AI 头部「定时」胶囊点了没反应，且在所有会话都显示）
