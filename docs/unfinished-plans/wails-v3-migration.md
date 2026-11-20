@@ -19,7 +19,7 @@
 | runtime 调用 | 根目录 9 个文件 48 处 `runtime.*` | v2 全局 runtime 包 → v3 窗口/应用对象方法，机械替换 |
 | 事件（Go） | 28 处 `EventsEmit/EventsOn` | → `app.Event.Emit/On`，机械替换；**事件名精确匹配是常见故障点** |
 | 绑定方法 | 301 个（`wailsjs/go/main/App.d.ts` 729 行） | v2 `Bind: []interface{}` → v3 `application.NewService(...)`，方法名不变 |
-| 前端绑定调用 | **聚合点仅 1 处**（`main.js:121` `backend = window.go.main.App`），951 处 `backend.XXX` 调用全走它；直接 import wailsjs 的仅 2 个文件（`ai-panel.js` / `ai-worktree.js`） | 关键红利：v3 绑定重新生成后保持对象形状（方法名 + Promise 返回），951 处调用**零改动**，只换聚合点。**2026-11-20 评审补记**：v3 绑定是 ES module，`window.go.main.App` 全局在 v3 不存在——除聚合点外，`main.js:115` 的 `hasWails` 探测（同时决定 dev 模式 mock-backend 动态 import 分支）也要改用 v3 探测方式（绑定模块可解析性或注入标志），属净增改动。**P0 实测修正**：`wails3 generate bindings -b` 生成的绑定直接 `import ... from "/wails/runtime.js"`（app 内置运行时），**不需要 `@wailsio/runtime` npm 依赖**；默认模式才引 npm 包 |
+| 前端绑定调用 | **聚合点仅 1 处**（`main.js:121` `backend = window.go.main.App`），951 处 `backend.XXX` 调用全走它；直接 import wailsjs 的仅 2 个文件（`ai-panel.js` / `ai-worktree.js`） | 关键红利：v3 绑定重新生成后保持对象形状（方法名 + Promise 返回），951 处调用**零改动**，只换聚合点。**2026-11-20 评审补记**：v3 绑定是 ES module，`window.go.main.App` 全局在 v3 不存在——除聚合点外，`main.js:115` 的 `hasWails` 探测（同时决定 dev 模式 mock-backend 动态 import 分支）也要改用 v3 探测方式（绑定模块可解析性或注入标志），属净增改动。**P0 实测修正**：v3 绑定可走 `-b` 引用 `/wails/runtime.js`；**最终实现**是不生成绑定、不引 npm——动态 import 运行时 + `Call.ByName('main.App.<Method>')` Proxy，951 处调用零改动（见 §10） |
 | 事件（前端） | 48 处 `EventsOn/EventsEmit/EventsOff`，分布 5 个文件（main.js / memo-term.js / mock-backend.js / reading.js / run-ui.js） | → `@wailsio/runtime` 的 `Events.*` |
 | 托盘 | 自研 `internal/tray` + `trayhost_windows.go` 平台对（v2 无原生托盘才自研） | 基本直接留用；或换 v3 原生 `app.SystemTray` 反而简化 |
 | 单实例锁 | v2 的 `SingleInstanceLock`/`OnSecondInstanceLaunch`（`main.go:83`、`app_core.go:187`）→ **v3 内置同形 API**（官方 Single Instance 指南，`options.SingleInstance{UniqueID, OnSecondInstanceLaunch}`，2026-11-20 复评修正：初评误判为无对应物需自研） | `secondInstance` 回调三分支逻辑几乎可平移 |
@@ -114,3 +114,21 @@
 **工具链**：`wails3 build`（Wake）9.3s 出包；`wails3 generate bindings -b` 840ms 生成（引用 `/wails/runtime.js`，零 npm 依赖）。
 
 **结论**：P0 出口判据满足（6 通过 + 定向事件有低成本兜底），**迁移继续**；进入 P1 前先按 §2 三处修正更新估算，P2 首项落事件过滤设计。**事件过滤方案已独立立项**：`wails-v3-event-filtering.md`（P1 内建桥接层 + 48 处订阅迁移，估算 +2 天；P2 不再单列事件改造）。
+
+## 10. P1 实施记录（2026-11-20，分支 `v3-migration`）
+
+**已完成（`aa8921a` + 本批）**
+
+- Go 启动段：`application.New` + `NewService(app)` + `WebviewWindow`（Frameless / Hidden / EnableFileDrop / Zoom）；生命周期映射：`ServiceStartup` ↔ v2 `OnStartup`、`WindowClosing`+`Cancel` ↔ `OnBeforeClose`、`Windows.WebViewNavigationCompleted` ↔ `OnDomReady`（非 Windows 由 8s 兜底显示）。
+- 兼容层 `wails_app.go`：app 级/窗口级事件发射（窗口级带 sender）、窗口显示/隐藏/标题/尺寸/背景、剪贴板、退出；根壳 48 处 `runtime.*` 全部切换，对话框改 v3 builder。
+- 前端绑定：`core/wails-runtime.js` 动态加载 `/wails/runtime.js`（`@vite-ignore` + 变量 specifier，Vite 不会在构建期解析），`backend` 用 `Call.ByName('main.App.<Method>')` Proxy——951 处调用零改动；`window.runtime` / `window.go` shim 兼容旧模块（ai-panel / reading / 插件）。
+- 事件桥：`core/app-events.js` + `core/event-scope.js`，48 处订阅收口（守卫测试：`EventsOn` 只许出现在桥与 mock）；控制命令改 `emitWindowEvent`（sender = 窗口名）并经 `onWindow` 过滤；`run-ui` 等模块顶层订阅走就绪队列。
+- 构建流水线：`tools/rebuild-exe.ps1` / `scripts/build-installer.ps1` 改为「npm run build → `wails3 generate syso` → `go build -tags production`」；产出 `build/bin/CaDt-DataLens.exe`（约 35 MB，含图标/清单/版本资源）。
+- 验证：`go test ./...` 全绿；`npm test` 全绿；实机跑通首屏渲染、单实例文件转发（open-targets 落标签页）、AI 浮窗模式（独立进程 560×760）、关窗干净退出。
+
+**待办（P1 剩余 / P2 前置）**
+
+- 手工回归：托盘、文件拖放、终端/运行/浏览器事件、多显示器/DPI、无边框拖拽与缩放。
+- `wails3 dev` 热重载流程适配（开发体验，不阻塞交付）。
+- P2：窗口注册表改进程内、`term-out`/`cmd-*` 等流事件加 owner 收紧 `onOwned`、AI 浮窗改窗口对象。
+- P3：删除 `frontend/wailsjs`（v2 生成物）与 `internal/windowreg`。

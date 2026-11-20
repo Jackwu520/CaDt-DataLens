@@ -159,7 +159,7 @@ func (a *App) beforeClose() bool {
 		a.UnwatchWorkspace()
 		return false
 	}
-	emitAppEvent("confirm-close", map[string]interface{}{
+	emitWindowEvent("confirm-close", map[string]interface{}{
 		"dirty": a.dirty, "aiRunning": a.aiRunning, "terms": terms, "bgJobs": bgJobs,
 	})
 	return true

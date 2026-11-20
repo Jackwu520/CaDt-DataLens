@@ -366,7 +366,7 @@ test('接线护栏：Go 侧每个 AI 流式事件都有 main.js 订阅与面板�
         .map((m) => m[1]);
     assert.ok(names.length >= 7, '至少应解析出 chunk/think/toolcall/done/error/retry/param-adjust');
     const main = read('../../src/main.js');
-    const list = /for \(const eventName of \[([^\]]+)\]\)\s*\{\s*rt\.EventsOn\(eventName/.exec(main);
+    const list = /for \(const eventName of \[([^\]]+)\]\)\s*\{\s*(?:rt\.EventsOn|appEvents\.onApp)\(eventName/.exec(main);
     assert.ok(list, 'main.js 的 AI 事件订阅数组应存在');
     const panel = read('../../src/ai/ai-panel.js');
     for (const name of names) {

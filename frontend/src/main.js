@@ -100,6 +100,7 @@ import {bookmarkOverview, formatBookmarkListText} from './editor/bookmark-list.j
 import {isDocReadOnly, isTabReadOnlyFixed, isTabReadOnlyLocked} from './core/readonly.js';
 import {overlayStack} from './core/overlay-stack.js';
 import {loadWailsRuntime, createRuntimeAdapter, createBackendProxy} from './core/wails-runtime.js';
+import {createAppEventBridge, setAppEventBridge} from './core/app-events.js';
 
 // 全局弹层栈的 Esc 分发监听必须先于一切弹层工厂注册（window 捕获阶段按注册顺序执行，
 // 只有装得最早才能用 stopImmediatePropagation 可靠抢占各域散落的旧 Esc 监听）。
@@ -135,6 +136,20 @@ if (hasWails) {
 // 兼容仍直接读 window.runtime / window.go 的旧模块（ai-panel / reading / 插件）。
 if (rt) window.runtime = rt;
 if (backend && hasWails) window.go = {main: {App: backend}};
+// 事件桥：所有 EventsOn 统一经这里，按 sender / 工作区 / ID 归属过滤
+// （多窗口语义见 docs/unfinished-plans/wails-v3-event-filtering.md）。
+let wailsWindowName = null;
+if (hasWails && wailsRuntime) {
+    try { wailsWindowName = await wailsRuntime.Window.Name(); } catch (e) {}
+}
+const appEvents = createAppEventBridge({
+    rt,
+    windowName: wailsWindowName,
+    logf: (msg) => console.debug('[app-events]', msg),
+});
+window.__appEvents = appEvents;
+// 回放早于桥创建就排队的域模块订阅（run-ui 等在模块顶层 mount）。
+setAppEventBridge(appEvents);
 // 暴露给插件作者与调试：生产环境插件同样可以直接访问 window.go
 window.__backend = backend;
 
@@ -4188,42 +4203,42 @@ function initAIPanel() {
         // 新增 Go 侧 aiEvent* 常量时必须同步加进这里，否则事件发出后前端无人接收
         // （ai-retry 曾长期漏订阅，导致流式状态条的重试提示是死代码）。
         for (const eventName of ['ai-chunk', 'ai-think', 'ai-toolcall', 'ai-done', 'ai-error', 'ai-retry', 'ai-param-adjust', 'ai-queue']) {
-            rt.EventsOn(eventName, (payload) => {
+            appEvents.onApp(eventName, (payload) => {
                 if (aiPanel) aiPanel.handleEvent(eventName, payload);
                 if (aiGroupRuntime) aiGroupRuntime.handleEvent(eventName, payload);
             });
         }
         // 定时任务：sched-fire 由 Go 调度器广播（多窗口都会收到，执行去重在面板内裁决）
-        rt.EventsOn('sched-fire', (payload) => {
+        appEvents.onApp('sched-fire', (payload) => {
             if (aiPanel && typeof aiPanel.handleScheduleFire === 'function') {
                 try { aiPanel.handleScheduleFire(payload); } catch (e) {}
             }
         });
         // AI 计时器：到点/停止事件（多窗口都会收到，胶囊只在启动窗口注册过）
-        rt.EventsOn('ai-timer-fired', (info) => {
+        appEvents.onApp('ai-timer-fired', (info) => {
             if (aiPanel && typeof aiPanel.handleTimerEvent === 'function') {
                 try { aiPanel.handleTimerEvent('ai-timer-fired', info); } catch (e) {}
             }
         });
-        rt.EventsOn('ai-timer-stopped', (info) => {
+        appEvents.onApp('ai-timer-stopped', (info) => {
             if (aiPanel && typeof aiPanel.handleTimerEvent === 'function') {
                 try { aiPanel.handleTimerEvent('ai-timer-stopped', info); } catch (e) {}
             }
         });
-        rt.EventsOn('schedules-changed', () => {
+        appEvents.onApp('schedules-changed', () => {
             const activePane = document.querySelector('.settings-pane[data-pane="schedules"]:not(.hidden)');
             if (activePane && aiPanel && typeof aiPanel.refreshScheduleSettings === 'function') {
                 try { aiPanel.refreshScheduleSettings(); } catch (e) {}
             }
         });
         // MCP 客户端：Go 侧世代/状态事件都推全量快照，面板整表替换（ai-mcp.js §5.4）
-        rt.EventsOn('mcp-tools-changed', (snapshot) => {
+        appEvents.onApp('mcp-tools-changed', (snapshot) => {
             if (aiPanel && typeof aiPanel.handleMcpEvent === 'function') {
                 try { aiPanel.handleMcpEvent(snapshot); } catch (e) {}
             }
             refreshExternalToolsPaneIfVisible();
         });
-        rt.EventsOn('mcp-status-changed', (snapshot) => {
+        appEvents.onApp('mcp-status-changed', (snapshot) => {
             if (aiPanel && typeof aiPanel.handleMcpEvent === 'function') {
                 try { aiPanel.handleMcpEvent(snapshot); } catch (e) {}
             }
@@ -6273,14 +6288,13 @@ for (const type of ['dragenter', 'dragover', 'dragleave', 'drop']) {
 }
 
 if (rt) {
-    rt.EventsOn('app-open-settings', (pane) => {
+    appEvents.onWindow('app-open-settings', (pane) => {
         openSettings(String(pane || 'models'));
     });
-    rt.EventsOn('open-targets', (targets) => openTargets(targets));
-    rt.EventsOn('open-files', (paths) => openPaths(paths));
+    appEvents.onWindow('open-targets', (targets) => openTargets(targets));
     // 系统通知被点击：Go 侧已把窗口拉回前台，这里按激活参数跳到对应 AI 会话
-    rt.EventsOn('ai-notify-activate', (payload) => handleNotifyActivation(payload));
-    rt.EventsOn('workspace-changed', (payload) => {
+    appEvents.onWindow('ai-notify-activate', (payload) => handleNotifyActivation(payload));
+    appEvents.onWorkspace('workspace-changed', () => workspaceFolder, (payload) => {
         if (explorer && typeof explorer.handleExternalChanges === 'function') explorer.handleExternalChanges(payload);
         handleExternalDocChanges(payload);
         // 快捷便签：其他窗口/外部改了 .cadt/memo/memo.json 时重读（面板开着才生效）
@@ -6291,7 +6305,7 @@ if (rt) {
     });
     // 多实例资源目录监听（全局便签 / 当前 AI 会话）：只做重读，不做合并；
     // window-inbox = 跨窗口会话投递信箱（复用别的窗口打开会话，方案 multi-window-session-reuse.md）
-    rt.EventsOn('resource-changed', (payload) => {
+    appEvents.onApp('resource-changed', (payload) => {
         if (payload && payload.kind === 'window-inbox') {
             drainWindowInbox(); // drain 内部串行化；overflow 与多条请求由循环 take 全量消化
             return;
@@ -6302,7 +6316,7 @@ if (rt) {
     // 信箱兜底：watcher 漏事件 / overflow 时请求会滞留——窗口获焦顺手 take 一轮（幂等且廉价）
     window.addEventListener('focus', () => drainWindowInbox());
     // 快捷便签定位点跳转：CLI --memo（已在运行时 secondInstance 转发到这里）
-    rt.EventsOn('app-open-memo', (locator) => {
+    appEvents.onWindow('app-open-memo', (locator) => {
         if (memoJumpHook) memoJumpHook(locator);
     });
     // Wails 文件拖放：注册窗口级 dragover/drop 监听（不注册就收不到任何外部拖放），
@@ -6320,7 +6334,7 @@ if (rt) {
             openPaths(paths);
         }, false);
     }
-    rt.EventsOn('confirm-close', (reasons) => {
+    appEvents.onWindow('confirm-close', (reasons) => {
         flushCsvCellEditor();
         // 快捷便签：挂着的防抖保存在弹确认框前先落盘（自动保存语义，之后无论选哪个退出按钮都不丢）
         if (memoFlushHook) memoFlushHook();
@@ -6353,7 +6367,7 @@ if (rt) {
             if (backend.SetAIRunning) backend.SetAIRunning(running);
         } catch (e) {}
     }, 800);
-    rt.EventsOn('browser-nav', (data) => {
+    appEvents.onApp('browser-nav', (data) => {
         const doc = docs.find((d) => d.id === (data && data.id));
         if (!doc) return;
         if (data.loading !== undefined) doc.loading = !!data.loading;
@@ -6369,11 +6383,11 @@ if (rt) {
         if (doc.browserFwdBtn && data.canGoForward !== undefined) doc.browserFwdBtn.disabled = !data.canGoForward;
         if (data.title) updateBrowserTitle(doc, data.title);
     });
-    rt.EventsOn('browser-title', (data) => {
+    appEvents.onApp('browser-title', (data) => {
         const doc = docs.find((d) => d.id === (data && data.id));
         if (doc && data && data.title) updateBrowserTitle(doc, data.title);
     });
-    rt.EventsOn('browser-error', (data) => {
+    appEvents.onApp('browser-error', (data) => {
         const doc = docs.find((d) => d.id === (data && data.id));
         if (doc) flash('浏览器进程异常，标签页可能需要重新打开', true);
     });
@@ -6382,12 +6396,12 @@ if (rt) {
     setInterval(() => {
         if (file && file.browser) syncBrowserTab(file);
     }, 250);
-    rt.EventsOn('term-out', (data) => {
+    appEvents.onApp('term-out', (data) => {
         // 走 terminal 域的统一入口：session 未注册时先缓冲（Go 在 TermCreate 返回前就开始推输出），
         // attachTermSession 注册后按序回放，首屏 banner 不再被丢
         terminalMod.writeTermOut(data);
     });
-    rt.EventsOn('term-exit', (data) => {
+    appEvents.onApp('term-exit', (data) => {
         const s = terminalUI.sessions.get(data.id);
         if (s) s.term.write('\r\n\x1b[90m[进程已退出，代码 ' + data.code + ']\x1b[0m');
         // AI 创建的终端 shell 退出：经会话信箱唤醒发起会话（用户自己开的终端不投递）。
@@ -6397,11 +6411,11 @@ if (rt) {
             catch (e) {} // 尽力而为路径：唤醒失败不影响终端 UI 的退出标记
         }
     });
-    rt.EventsOn('cmd-out', (payload) => {
+    appEvents.onApp('cmd-out', (payload) => {
         const h = cmdOutHandlers.get(payload.id);
         if (h) h(payload.stream, payload.data);
     });
-    rt.EventsOn('cmd-exit', (payload) => {
+    appEvents.onApp('cmd-exit', (payload) => {
         const h = cmdExitHandlers.get(payload.id);
         if (h) {
             cmdExitHandlers.delete(payload.id);

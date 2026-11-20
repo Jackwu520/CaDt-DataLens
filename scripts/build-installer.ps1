@@ -69,15 +69,49 @@ if (-not $SkipSign) {
     }
 }
 
-$wailsArgs = @("build", "-nsis", "-installscope", "user", "-devtools")
-if ($SkipFrontend) { $wailsArgs += "-s" }
-
-Write-Host "==> wails $($wailsArgs -join ' ')" -ForegroundColor Cyan
+# v3 构建：前端 vite（可跳过）→ syso（图标/清单/版本资源）→ go build（production+devtools）
 $env:PATH = (Split-Path -Parent $MakeNsis) + ";" + $env:PATH
 Push-Location $root
 try {
-    & wails @wailsArgs
-    if ($LASTEXITCODE -ne 0) { throw "wails build 失败（退出码 $LASTEXITCODE）" }
+    if (-not $SkipFrontend) {
+        if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
+            throw "找不到 npm：请先安装 Node.js 20.19+ 并加入 PATH"
+        }
+        if (-not (Test-Path (Join-Path $root "frontend\node_modules"))) {
+            Write-Host "==> npm install（frontend）" -ForegroundColor Cyan
+            Push-Location (Join-Path $root "frontend")
+            try {
+                & npm install
+                if ($LASTEXITCODE -ne 0) { throw "npm install 失败（退出码 $LASTEXITCODE）" }
+            } finally { Pop-Location }
+        }
+        Write-Host "==> npm run build（frontend）" -ForegroundColor Cyan
+        Push-Location (Join-Path $root "frontend")
+        try {
+            & npm run build
+            if ($LASTEXITCODE -ne 0) { throw "前端构建失败（退出码 $LASTEXITCODE）" }
+        } finally { Pop-Location }
+    }
+
+    if (-not (Get-Command wails3 -ErrorAction SilentlyContinue)) {
+        throw "找不到 wails3 CLI：需要 Wails v3.1.0+（go install github.com/wailsapp/wails/v3/cmd/wails3@v3.1.0）"
+    }
+    New-Item -ItemType Directory -Force -Path $binDir | Out-Null
+    $syso = Join-Path $root "rsrc_windows_amd64.syso"
+    Write-Host "==> wails3 generate syso（图标/清单/版本资源）" -ForegroundColor Cyan
+    & wails3 generate syso -arch amd64 `
+        -icon (Join-Path $root "build\windows\icon.ico") `
+        -info (Join-Path $root "build\windows\info.json") `
+        -manifest (Join-Path $root "build\windows\wails.exe.manifest") `
+        -out $syso
+    if ($LASTEXITCODE -ne 0) { throw "wails3 generate syso 失败（退出码 $LASTEXITCODE）" }
+    try {
+        Write-Host "==> go build -tags production,devtools" -ForegroundColor Cyan
+        & go build -tags "production,devtools" -trimpath -buildvcs=false -ldflags="-w -s -H windowsgui" -o $appExe .
+        if ($LASTEXITCODE -ne 0) { throw "go build 失败（退出码 $LASTEXITCODE）" }
+    } finally {
+        Remove-Item $syso -Force -ErrorAction SilentlyContinue
+    }
 } finally {
     Pop-Location
 }

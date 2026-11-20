@@ -11,6 +11,7 @@ import {createReadingState} from './reading-state.js';
 import {createReadingRender} from './reading-render.js';
 import {createReadingSearch} from './reading-search.js';
 import {createReadingTts} from './reading-tts.js';
+import {whenAppEvents} from '../core/app-events.js';
 import {
     buildSkeleton, renderBookshelf, renderDetail, renderToc, scrollTocToActive,
     renderBookmarks, renderSearchResults, renderSettingsPopover, renderStats,
@@ -1009,17 +1010,14 @@ export function createReadingMode(deps) {
 
     // 订阅后端 reading-search-progress 事件，把「已扫描 x/y」写进状态行
     function bindSearchProgress(requestID) {
-        const rt = typeof window !== 'undefined' ? window.runtime : null;
-        if (!rt || typeof rt.EventsOn !== 'function') return null;
         const handler = (data) => {
             if (!data || data.requestID !== requestID) return;
             const row = els.searchResults.querySelector('.rd-search-status');
             if (row) row.textContent = '已扫描 ' + data.scanned + ' / ' + data.total + ' …';
         };
-        rt.EventsOn('reading-search-progress', handler);
-        return () => {
-            if (typeof rt.EventsOff === 'function') rt.EventsOff('reading-search-progress');
-        };
+        let off = null;
+        whenAppEvents((bridge) => { off = bridge.onApp('reading-search-progress', handler); });
+        return () => { if (off) off(); };
     }
 
     async function onSearchGo(rel, unitOffset, hit, hitIndexInGroup) {

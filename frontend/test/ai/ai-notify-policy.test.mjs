@@ -120,7 +120,7 @@ test('通知点击跳转的完整链路：四处接线一环不少', () => {
         'notifyDesktop 发系统通知必须带 buildNotifyActivationPayload(sessionId)');
     // ③ main.js 监听 Go 转发的激活事件并按参数跳会话
     const mainSrc = read('src/main.js');
-    assert.ok(mainSrc.includes("EventsOn('ai-notify-activate'"), "main.js 必须监听 'ai-notify-activate'");
+    assert.ok(/(?:EventsOn|onWindow)\('ai-notify-activate'/.test(mainSrc), "main.js 必须监听 'ai-notify-activate'（控制命令走事件桥 onWindow）");
     assert.ok(mainSrc.includes('function focusAISession'), 'main.js 必须有 focusAISession 收口');
     assert.ok(/aiPanel\.switchSession/.test(mainSrc), 'focusAISession 必须调 aiPanel.switchSession');
     // ④ Go 侧接激活钩子 + 原样转发事件名；前端解析键与 Go 注释里的契约一致

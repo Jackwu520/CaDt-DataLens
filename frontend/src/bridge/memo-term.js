@@ -7,6 +7,7 @@
 // 前缀，与 F5 的 run-N-build/run 互不干扰（run.js 对未知 id 静默忽略）。
 // 顶部纯函数不依赖 DOM/Wails，node:test 直接导入（memo-term.test.mjs）。
 import {iconSvg} from '../core/icons.js';
+import {whenAppEvents} from '../core/app-events.js';
 
 export const TERM_TIMEOUT_MS = 120000; // 硬超时：不支持挂起任务（npm run dev 这类到点杀树）
 export const TERM_MAX_LINES = 500;     // 输出块尾部保留行数（超出丢头部，Map 与 DOM 同步）
@@ -190,9 +191,15 @@ export function createMemoTerm(deps) {
     paintLive(itemId);
   }
 
-  if (deps.rt && typeof deps.rt.EventsOn === 'function') {
-    deps.rt.EventsOn('run-out', onRunOut);
-    deps.rt.EventsOn('run-exit', onRunExit);
+  // 事件桥：宿主可注入（测试）；生产由 main.js 创建，经就绪队列注册。
+  if (deps.appEvents) {
+    deps.appEvents.onApp('run-out', onRunOut);
+    deps.appEvents.onApp('run-exit', onRunExit);
+  } else {
+    whenAppEvents((bridge) => {
+      bridge.onApp('run-out', onRunOut);
+      bridge.onApp('run-exit', onRunExit);
+    });
   }
 
   // ===== 编排 =====

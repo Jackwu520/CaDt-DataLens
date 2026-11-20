@@ -79,8 +79,9 @@ function makeDeps() {
     let exitHandler = null;
     const deps = {
         flash: (msg, isErr) => flashLog.push({msg, isErr: !!isErr}),
-        rt: {
-            EventsOn: (name, cb) => {
+        // 事件桥（生产由 main.js 注入；测试用假桥捕获处理器）
+        appEvents: {
+            onApp: (name, cb) => {
                 if (name === 'run-out') outHandler = cb;
                 if (name === 'run-exit') exitHandler = cb;
             },

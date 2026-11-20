@@ -44,6 +44,17 @@ func emitAppEvent(name string, data ...any) {
 	wailsApp.Event.Emit(name, data...)
 }
 
+// emitWindowEvent 用窗口对象发射：v3 会给 CustomEvent 填 sender（窗口名），
+// 前端桥接层据此把控制命令只交给目标窗口（window.EmitEvent 本身仍是广播）。
+func emitWindowEvent(name string, data ...any) {
+	w := currentWindow()
+	if w == nil {
+		emitAppEvent(name, data...)
+		return
+	}
+	w.EmitEvent(name, data...)
+}
+
 // showMainWindow 对应 v2 WindowShow 的语义：显示并把最小化的窗口恢复回来。
 func showMainWindow() {
 	w := currentWindow()

@@ -2,6 +2,7 @@
 // 从 terminal-ui.js 拆出；toggleTerminalPanel / toggleDockView 由宿主经 deps 注入。
 import {activeRunConfig, createRunController, splitRunArgs} from './run.js';
 import {isDocReadOnly} from '../core/readonly.js';
+import {whenAppEvents} from '../core/app-events.js';
 
 export function createRunUI(deps) {
 
@@ -146,7 +147,8 @@ function setRunArgs(langId, text) {
 const runController = createRunController({
     backend: deps.backend,
     onEvent: (name, cb) => {
-        if (deps.rt && deps.rt.EventsOn) deps.rt.EventsOn(name, cb);
+        // 事件统一经桥；本模块在模块顶层 mount()，早于 main.js 创建桥，经就绪队列注册。
+        whenAppEvents((bridge) => bridge.onApp(name, cb));
     },
     getActiveDoc: () => (deps.file ? {
         path: deps.file.path || '',

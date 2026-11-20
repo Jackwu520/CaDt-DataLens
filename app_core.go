@@ -188,12 +188,12 @@ func (a *App) domReady() {
 
 func (a *App) secondInstance(args []string) {
 	if pane := launchargs.ParseOpenSettingsArg(args); pane != "" {
-		emitAppEvent("app-open-settings", pane)
+		emitWindowEvent("app-open-settings", pane)
 		a.secondInstanceShow()
 		return
 	}
 	if loc := launchargs.ParseMemoLocatorArg(args); loc != "" {
-		emitAppEvent("app-open-memo", loc)
+		emitWindowEvent("app-open-memo", loc)
 		a.secondInstanceShow()
 		return
 	}
@@ -202,7 +202,7 @@ func (a *App) secondInstance(args []string) {
 		targets = launchargs.StartupCwdTarget()
 	}
 	if len(targets) > 0 {
-		emitAppEvent("open-targets", targets)
+		emitWindowEvent("open-targets", targets)
 	}
 	// 只用 WindowShow：Windows 上 WindowUnminimise 走 WM_SYSCOMMAND/SC_RESTORE，
 	// 会把最大化的窗口还原成普通窗口；WindowShow 内部只在最小化时才恢复。
@@ -219,7 +219,7 @@ func (a *App) onToastActivation(payload string) {
 	}
 	a.secondInstanceShow()
 	if strings.TrimSpace(payload) != "" {
-		emitAppEvent("ai-notify-activate", payload)
+		emitWindowEvent("ai-notify-activate", payload)
 	}
 }
 
