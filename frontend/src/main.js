@@ -5240,6 +5240,32 @@ const schemaPanel = createSchemaPanel({
     get structureTextForDoc() { return structureTextForDoc; },
 });
 const {openSchemaValidation} = schemaPanel;
+// 窗口切换器缓存：quick-switch「窗口」层用（打开该层时刷新一轮）。
+// 列表来自 Go 的窗口注册表（v3 一进程多窗口才有这张表）。
+let windowSwitchRows = [];
+const WINDOW_MODE_LABELS = {main: '主窗口', float: 'AI 浮窗', debug: '调试控制台', terminal: '终端'};
+async function refreshWindowSwitchEntries() {
+    if (!backend.WindowList) {
+        windowSwitchRows = [];
+        return;
+    }
+    try {
+        const rows = await backend.WindowList();
+        windowSwitchRows = (rows || []).filter((w) => w && !w.self);
+    } catch (e) {
+        windowSwitchRows = []; // 尽力而为路径：失败沿用空列表
+    }
+}
+function windowSwitchEntries() {
+    if (!windowSwitchRows.length) return [{label: '（没有其他窗口）', disabled: true}];
+    return windowSwitchRows.map((w) => ({
+        label: (WINDOW_MODE_LABELS[w.mode] || '窗口') +
+            (w.workspace ? ' · ' + String(w.workspace).replace(/^.*[\\/]/, '') : ''),
+        value: w.name,
+        action: () => { if (backend.WindowFocusByName) backend.WindowFocusByName(w.name); },
+    }));
+}
+
 const quickSwitchMod = createQuickSwitch({
     get applyAceMode() { return applyAceMode; },
     get applySettings() { return applySettings; },
@@ -5266,6 +5292,8 @@ const quickSwitchMod = createQuickSwitch({
     get themes() { return themes; },
     get toggleAlwaysOnTop() { return toggleAlwaysOnTop; },
     get toggleCodeWrap() { return toggleCodeWrap; },
+    get windowSwitchEntries() { return windowSwitchEntries; },
+    get refreshWindowSwitchEntries() { return refreshWindowSwitchEntries; },
     get toggleSidebar() { return toggleSidebar; },
     get toggleSidebarView() { return toggleSidebarView; },
     get toggleTerminalPanel() { return toggleTerminalPanel; },
@@ -6410,6 +6438,10 @@ if (rt) {
             message || '确定退出应用？',
             () => { if (backend.ForceQuitAll) backend.ForceQuitAll(); },
             '退出', '退出应用', 'danger');
+    });
+    // 全局热键 Ctrl+Alt+T：主窗口前置 + 打开终端面板（Go 侧发来）
+    appEvents.onWindow('app-open-terminal', () => {
+        try { toggleDockView('terminal'); } catch (e) {}
     });
     // AI 回合状态同步给后端（Go 侧 beforeClose 据此决定是否弹关窗确认）
     let aiRunningLast = false;

@@ -40,6 +40,38 @@ func (a *App) SetWindowCollapsed(ctx context.Context, collapsed bool) {
 	}
 }
 
+// WindowList 列出全部存活窗口（quick-switch「窗口」层用）。
+// title/位置在 Go 侧拿不到读取口，标识用窗口名 + 形态 + 工作区。
+func (a *App) WindowList(ctx context.Context) []map[string]string {
+	self := callerWindowName(ctx)
+	out := make([]map[string]string, 0, 4)
+	for _, st := range winReg.list() {
+		item := map[string]string{
+			"name": st.name(),
+			"mode": string(st.startup().Mode),
+			"self": "",
+		}
+		if st.name() == self {
+			item["self"] = "1"
+		}
+		if ws := st.workspace(); ws != "" {
+			item["workspace"] = ws
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+// WindowFocusByName 前置并聚焦指定窗口（切换器跳转用）；窗口不存在返回 false。
+func (a *App) WindowFocusByName(ctx context.Context, name string) (bool, error) {
+	st := winReg.get(strings.TrimSpace(name))
+	if st == nil || st.window() == nil {
+		return false, nil
+	}
+	activateWindow(st.window())
+	return true, nil
+}
+
 // uniqueIDForLaunch：P2 起所有模式共用同一单实例锁——第二个进程一律转发给
 // 已运行实例，由 secondInstance 决定开主窗口 / 浮窗 / 调试控制台。
 // CADT_UNIQUE_ID 可覆盖（并行测试/便携多配置隔离用），默认值与原单实例 ID 一致。

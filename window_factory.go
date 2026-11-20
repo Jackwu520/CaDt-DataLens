@@ -79,12 +79,15 @@ func windowOptionsFor(spec windowSpec, initialRect windowgeom.Rect, hasInitialRe
 	width, height, minWidth, minHeight := windowSizesFor(spec.Mode)
 	title := "CaDt-DataLens"
 	alwaysOnTop := false
+	hiddenOnTaskbar := false
 	switch spec.Mode {
 	case windowModeFloat:
 		title = "AI 助手 · CaDt-DataLens"
 		alwaysOnTop = true
 	case windowModeDebug:
 		title = "调试控制台 · CaDt-DataLens"
+		// 工具窗口不占任务栏/Alt+Tab：恢复走 quick-switch「窗口」层与 F12。
+		hiddenOnTaskbar = true
 	case windowModeTerminal:
 		title = "终端 · CaDt-DataLens"
 	}
@@ -103,6 +106,10 @@ func windowOptionsFor(spec windowSpec, initialRect windowgeom.Rect, hasInitialRe
 		EnableFileDrop:     true,
 		ZoomControlEnabled: false,
 		Zoom:               1.0,
+	}
+	if hiddenOnTaskbar {
+		// Windows 的任务栏隐藏在嵌套选项里（options.Windows.HiddenOnTaskbar）。
+		opts.Windows = application.WindowsWindow{HiddenOnTaskbar: true}
 	}
 	// 记住的位置/尺寸（window-state.json）：按当前显示器布局收敛后再交给 v3。
 	// 首个窗口在 Run 之前创建，此时 v3 尚未缓存显示器列表，windowReady 会再收敛一次。

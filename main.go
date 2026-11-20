@@ -74,6 +74,9 @@ func main() {
 	writeAppLog("info", "启动参数：%q", os.Args[1:])
 	// 上次在设置页里排的 WebView2 清理：趁浏览器进程还没起来执行（见 cleanup_apply.go）。
 	applyPendingStorageCleanup()
+	// MCP 变体（-tags mcp，tools/rebuild-exe.ps1 -IncludeMCP）：Run 内会自动启动
+	// v3 内置 MCP server，这里先把令牌/端口准备好并写连接信息文件。标准构建是空操作。
+	bootstrapMCPVariant()
 
 	app := NewApp()
 	app.convert = convertOpts

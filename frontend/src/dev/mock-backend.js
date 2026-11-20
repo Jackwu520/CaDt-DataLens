@@ -1784,6 +1784,10 @@ const mockBackend = {
     async PopOutTerminal(id) { this._calls.push('popout-terminal:' + id); },
     async IsTerminalWindow() { return !!window.__mockTerminalWindow; },
     async GetStartupTermID() { return window.__mockTerminalTermId || ''; },
+    async WindowList() {
+        return (window.__mockWindows || [{name: 'main', mode: 'main', self: '1'}]).slice();
+    },
+    async WindowFocusByName(name) { this._calls.push('focus-window:' + name); return true; },
     async TermResize() {},
     async TermClose() {},
     async RunCommandSync(exe, args, cwd, timeoutMs) {

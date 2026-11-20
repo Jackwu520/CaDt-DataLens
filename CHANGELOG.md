@@ -41,6 +41,14 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 - **启动门控修正**：无主窗口的形态（`--ai-float` / `--debug-console` / 终端窗口作首窗）不再拉起 AI 定时任务、插件服务、MCP 客户端与使用统计（此前按 `ctx` 判定窗口形态在 ServiceStartup 里拿不到，实际一直按主窗口路径初始化）。
 - 已知边界与机制见 `docs/finished-plans/terminal-popout.md`；接线护栏 `test/terminal/term-popout-wiring.test.mjs`。
 
+### 改进（v3 独有能力一批：热键 / 窗口切换器 / 屏幕看护 / MCP 变体）
+
+- **全局热键**（v2 没有全局热键 API，v3 `GlobalShortcutManager`）：`Ctrl+Alt+A` 呼出 AI 浮窗、`Ctrl+Alt+T` 主窗前置并打开终端面板、`Ctrl+Alt+D` 呼出调试控制台。固定键位，组合键被其他程序占用时只记日志；退出时随 v3 cleanup 注销。
+- **窗口切换器**：quick-switch（`Ctrl+E`）新增「窗口」层，列出其他存活窗口（形态 · 工作区）并跳转——Go 侧进程内窗口注册表直接出清单，`WindowList` / `WindowFocusByName` 两个绑定。
+- **显示器布局看护**：每 10s 轮询显示器布局（v3 在 WM_DISPLAYCHANGE 自动刷新 ScreenManager），变化后等 1.5s（让系统排完窗口）把可见窗口按新布局收敛一次——只平移不缩放（`windowgeom.ClampVisible`），悬跨双屏的窗口不会被裁。
+- **调试控制台窗口不占任务栏**：`HiddenOnTaskbar`（Windows 嵌套选项），工具窗口的恢复走切换器「窗口」层与 F12；AI 浮窗/终端窗口保持任务栏。
+- **MCP server 构建变体**：v3 内置 MCP server（`-tags mcp`，`app_info/windows_list/window_control/js_eval/dom_*/mouse_*/keyboard_*`，外部 agent 经 Streamable HTTP 驱动应用界面）。`js_eval` 可在页面里执行任意 JS，故做成**构建变体**——标准构建完全不含该端点；`tools/rebuild-exe.ps1 -IncludeMCP` 出变体包，令牌随机生成持久化到 `<应用数据>/mcp-server.json`（0600），端口占用自动后移。见 `docs/finished-plans/app-mcp-server.md`。
+
 ### 修复（AI 头部「定时」胶囊点了没反应，且在所有会话都显示）
 
 - **现象**：头部「定时」胶囊显示某会话的任务数后，切到任何别的会话都一直挂着，点击也没有任何反应。

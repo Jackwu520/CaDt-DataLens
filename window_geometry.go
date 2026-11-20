@@ -11,7 +11,9 @@ package main
 // 可能是另一个工作区），按名字存会让位置在重启后错位。
 
 import (
+	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -264,4 +266,75 @@ func installGeometryHooks(win *application.WebviewWindow, st *windowState) {
 	win.RegisterHook(events.Windows.WindowDidResize, capture)
 	win.RegisterHook(events.Windows.WindowMaximise, capture)
 	win.RegisterHook(events.Windows.WindowUnMaximise, capture)
+}
+
+// ---- 显示器布局看护（拔屏 / 改分辨率的运行期收敛） ----
+
+const (
+	// screenWatchInterval：布局轮询周期。v3 在 WM_DISPLAYCHANGE 时自己刷新 ScreenManager
+	// 缓存，这里只负责发现「布局变了」这件事——轮询比挂 Win32 钩子省事且足够。
+	screenWatchInterval = 10 * time.Second
+	// screenWatchSettle：布局变化后等系统排完窗口再收敛（Windows 会自动搬窗口）。
+	screenWatchSettle = 1500 * time.Millisecond
+)
+
+func screenAreasSignature(areas []windowgeom.Rect) string {
+	parts := make([]string, 0, len(areas))
+	for _, a := range areas {
+		parts = append(parts, fmt.Sprintf("%d,%d,%d,%d", a.X, a.Y, a.Width, a.Height))
+	}
+	return strings.Join(parts, "|")
+}
+
+// startScreenWatch 启动显示器布局看护：布局变化后把可见窗口按新布局收敛一次
+// （只平移不缩放，见 windowgeom.ClampVisible）。不还原最大化/全屏/收起态的窗口。
+func (a *App) startScreenWatch() {
+	go func() {
+		last := ""
+		for {
+			time.Sleep(screenWatchInterval)
+			if wailsApp == nil || wailsApp.Screen == nil {
+				continue
+			}
+			areas, _ := screenWorkAreas()
+			sig := screenAreasSignature(areas)
+			if sig == last {
+				continue
+			}
+			first := last == ""
+			last = sig
+			if first {
+				continue // 首轮只记基线
+			}
+			time.Sleep(screenWatchSettle)
+			a.reclampVisibleWindows()
+		}
+	}()
+}
+
+// reclampVisibleWindows 把可见窗口按当前显示器布局收敛（启动收敛的运行期补充）。
+func (a *App) reclampVisibleWindows() {
+	areas, primary := screenWorkAreas()
+	if len(areas) == 0 {
+		return
+	}
+	for _, st := range winReg.list() {
+		w := st.window()
+		if w == nil || !w.IsVisible() || w.IsMinimised() || w.IsMaximised() || w.IsFullscreen() {
+			continue
+		}
+		if st.IsCollapsed() {
+			continue
+		}
+		x, y := w.Position()
+		width, height := w.Size()
+		cur := windowgeom.Rect{X: x, Y: y, Width: width, Height: height}
+		fixed := windowgeom.ClampVisible(cur, areas, primary)
+		if !fixed.Valid() || fixed == cur {
+			continue
+		}
+		w.SetPosition(fixed.X, fixed.Y)
+		w.SetSize(fixed.Width, fixed.Height)
+		writeAppLog("info", "显示器布局变化：窗口 %s 收敛到 (%d,%d) %dx%d", st.name(), fixed.X, fixed.Y, fixed.Width, fixed.Height)
+	}
 }

@@ -1,6 +1,9 @@
 ﻿param(
     # 透传 wails build -devtools（带调试面板的构建）
     [switch]$Devtools,
+    # 构建内含 v3 MCP server 的变体（-tags mcp）：外部 agent 经 Streamable HTTP 驱动应用，
+    # 令牌/端口见 <应用数据目录>\mcp-server.json。标准构建完全不含该端点（见 app-mcp-server.md）
+    [switch]$IncludeMCP,
     # 跳过测试门直接构建（测试门失败后选「2 强行构建」走同一条路）
     [switch]$SkipTest,
     # 不停运行中的实例：改用「改名让路」替换（运行中的旧 exe 改名为 datalens.running-old-*.exe）
@@ -97,6 +100,7 @@ function Build-AndReplace {
         }
         $tags = "production"
         if ($Devtools) { $tags = "production,devtools" }
+        if ($IncludeMCP) { $tags = $tags + ",mcp" }
         $syso = Join-Path $root "rsrc_windows_amd64.syso"
         New-Item -ItemType Directory -Force -Path (Split-Path -Parent $binExe) | Out-Null
         Write-Host "wails3 generate syso（图标/清单/版本资源）" -ForegroundColor Cyan

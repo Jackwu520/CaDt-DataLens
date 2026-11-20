@@ -133,6 +133,9 @@ func (a *App) startup(ctx context.Context) {
 	// 运行代码的临时副本 / 编译产物：启动时清一次过期的（7 天），失败不影响启动；
 	// 多窗口可能各跑一次，RemoveAll 幂等所以无害。
 	go func() { _, _ = a.CleanupRunTempStale() }()
+	// 全局热键与显示器布局看护：与窗口模式无关，进程活着就工作。
+	a.registerGlobalHotkeys()
+	a.startScreenWatch()
 	// 无主窗口的形态（--ai-float / --debug-console / 终端独立窗口作首窗）：
 	// AI 定时任务、插件后台服务、MCP 客户端、使用统计都是主窗口域的服务，
 	// 不在这里拉起（ctx 之外拿不到窗口形态，直接按主窗口数判定）。

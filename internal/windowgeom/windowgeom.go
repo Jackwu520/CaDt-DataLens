@@ -111,6 +111,41 @@ func Normalize(r Rect, minW, minH int, areas []Rect, primary Rect) Rect {
 	return r
 }
 
+// ClampVisible 只修位置不改尺寸：把窗口拉回可见工作区（拔屏/改分辨率后的运行期收敛）。
+// 悬跨双屏的窗口取交叠最大的工作区，只平移不缩放——缩放是 Normalize（还原时）的事，
+// 运行期动用户的窗口尺寸太激进。
+func ClampVisible(r Rect, areas []Rect, primary Rect) Rect {
+	if !r.Valid() || len(areas) == 0 {
+		return r
+	}
+	if !primary.Valid() {
+		primary = areas[0]
+	}
+	target := bestArea(r, areas)
+	if !target.Valid() {
+		return Center(r.Width, r.Height, primary)
+	}
+	needW := min(MinVisibleWidth, r.Width)
+	needH := min(MinVisibleHeight, r.Height)
+	if overlap(r.X, r.X+r.Width, target.X, target.X+target.Width) < needW ||
+		overlap(r.Y, r.Y+r.Height, target.Y, target.Y+target.Height) < needH {
+		return Center(r.Width, r.Height, primary)
+	}
+	if r.Y < target.Y {
+		r.Y = target.Y
+	}
+	if maxY := target.Y + target.Height - needH; r.Y > maxY {
+		r.Y = maxY
+	}
+	if minX := target.X - r.Width + needW; r.X < minX {
+		r.X = minX
+	}
+	if maxX := target.X + target.Width - needW; r.X > maxX {
+		r.X = maxX
+	}
+	return r
+}
+
 // bestArea 返回与 r 交叠面积最大的工作区（无交叠时返回零值）。
 func bestArea(r Rect, areas []Rect) Rect {
 	var best Rect

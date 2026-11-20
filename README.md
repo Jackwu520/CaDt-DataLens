@@ -171,6 +171,9 @@ CaDt-DataLens 用桌面窗口打开 JSON、JSONL、YAML、XML、CSV 和普通文
 | AI 会话侧边栏 | `Alt+8` |
 | AI 助手面板 | `Alt+9` |
 | AI 停止生成（输入框聚焦时） | 双击 `Esc` |
+| 呼出 AI 浮窗（全局热键） | `Ctrl+Alt+A` |
+| 呼出主窗口终端面板（全局热键） | `Ctrl+Alt+T` |
+| 呼出调试控制台（全局热键） | `Ctrl+Alt+D` |
 | 文件树中打开文件 / 展开目录 | 双击 |
 | 文件树中选择 / 多选 | 单击 / `Ctrl+单击` |
 | 文件树中连续选择 / 追加范围 | `Shift+单击` / `Ctrl+Shift+单击` |
@@ -277,6 +280,8 @@ powershell -ExecutionPolicy Bypass -File tools/rebuild-exe.ps1
 ```
 
 脚本先跑 Go + 前端测试门，再构建 `build/bin/CaDt-DataLens.exe` 并替换仓库根目录的便携副本 `datalens.exe`。可以运行 `wails3 doctor` 检查环境。
+
+构建变体：加 `-IncludeMCP` 会编译进 v3 内置 MCP server（外部 agent 经 Streamable HTTP 驱动应用界面，含 `js_eval` 等重权能工具），令牌与端点写入 `<应用数据目录>\mcp-server.json`；**标准构建完全不含该端点**，详见 [docs/finished-plans/app-mcp-server.md](docs/finished-plans/app-mcp-server.md)。
 
 ### 安装包
 

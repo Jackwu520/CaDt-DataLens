@@ -30,6 +30,7 @@ function quickSwitchTitleFor(level) {
         layout: '布局',
         openmode: '打开方式',
         bookmarks: '书签（Delete 删除选中项）',
+        windows: '窗口',
     })[level] || '切换';
 }
 
@@ -50,6 +51,8 @@ function quickSwitchMainItems() {
         {label: '缩进', value: currentIndentLabel(), enter: 'indent', disabled: !deps.file || !deps.file.format},
         {label: '布局', enter: 'layout'},
         {label: '打开方式', value: deps.settings.openMode === 'window' ? '多窗口' : '单窗口标签页', enter: 'openmode'},
+        // 窗口切换（v3 一进程多窗口）：列出其他存活窗口并跳转
+        ...(typeof deps.windowSwitchEntries === 'function' ? [{label: '窗口', enter: 'windows'}] : []),
     ];
 }
 
@@ -149,6 +152,10 @@ function quickSwitchSubItems(level) {
                 action: () => { deps.settings.openMode = 'window'; deps.applySettings(); },
             },
         ];
+    }
+    if (level === 'windows') {
+        // 条目来自 main.js 的缓存（打开本层时异步刷新一轮再重渲染）
+        return deps.windowSwitchEntries();
     }
     if (level === 'bookmarks') {
         // 书签总览：聚合打开中的文档（bookmark-list.js），点击跨文件跳转，Delete 删除选中项
@@ -272,6 +279,14 @@ function enterQuickSwitchLevel(level) {
         if ((level === 'view' && !deps.file) || (level === 'indent' && (!deps.file || !deps.file.format))) return;
         quickSwitch.mainIndex = quickSwitch.index;
         quickSwitch.level = level;
+        // 窗口层的列表是动态的：进入时异步刷新一轮，完成后就地重渲染
+        if (level === 'windows' && typeof deps.refreshWindowSwitchEntries === 'function') {
+            Promise.resolve(deps.refreshWindowSwitchEntries())
+                .then(() => {
+                    if (quickSwitch.open && quickSwitch.level === 'windows') renderQuickSwitch();
+                })
+                .catch(() => {}); // 刷新失败沿用上次缓存，尽力而为路径
+        }
         const items = quickSwitchSubItems(level);
         let checked = 0;
         let number = 0;

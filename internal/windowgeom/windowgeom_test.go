@@ -96,6 +96,29 @@ func TestNormalizePreservesMaximised(t *testing.T) {
 	}
 }
 
+func TestClampVisible(t *testing.T) {
+	primary := Rect{X: 0, Y: 0, Width: 1920, Height: 1080}
+	areas := []Rect{primary}
+
+	cases := []struct {
+		name string
+		in   Rect
+		want Rect
+	}{
+		{"已可见不动", Rect{X: 200, Y: 100, Width: 800, Height: 600}, Rect{X: 200, Y: 100, Width: 800, Height: 600}},
+		{"屏幕没了居中且不缩放", Rect{X: 5000, Y: 3000, Width: 800, Height: 600}, Rect{X: 560, Y: 240, Width: 800, Height: 600}},
+		{"标题栏在屏外只平移", Rect{X: 300, Y: -120, Width: 800, Height: 600}, Rect{X: 300, Y: 0, Width: 800, Height: 600}},
+		{"超界尺寸保留", Rect{X: 0, Y: 0, Width: 3000, Height: 2000}, Rect{X: 0, Y: 0, Width: 3000, Height: 2000}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ClampVisible(tc.in, areas, primary); got != tc.want {
+				t.Fatalf("ClampVisible(%+v) = %+v, want %+v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestStoreRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "window-state.json")
 	s := Load(path)
