@@ -3,7 +3,7 @@
 // 磁盘存储才有「复制会话路径」；普通对话不再出现一排灰掉的无关项。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {buildSessionMenuItems, buildWorkspaceMenuItems, aggregateSessionBadge, planPendingNeedsAttention} from '../../src/ai/ai-session-list.js';
+import {buildSessionMenuItems, buildWorkspaceMenuItems, aggregateSessionBadge, planPendingNeedsAttention, workspaceGroupExpanded} from '../../src/ai/ai-session-list.js';
 import {ICONS} from '../../src/core/icons.js';
 
 const baseEnv = {pendingNoticeCount: () => 0, diskStorage: true};
@@ -215,4 +215,27 @@ test('planPendingNeedsAttention：非 pending / 非计划模式 / 无计划 → 
     assert.equal(planPendingNeedsAttention(planSession({planMode: false}), false), false);
     assert.equal(planPendingNeedsAttention(planSession({activePlan: null}), false), false);
     assert.equal(planPendingNeedsAttention(null, false), false);
+});
+
+// 工作区分组默认展开：只展开当前工作区，其余收起；用户显式切换过则尊重其选择。
+const groupEnv = (currentKey, override = new Map(), firstKey = '') => ({override, currentKey: () => currentKey, firstKey});
+
+test('分组默认展开：当前工作区展开，其余收起', () => {
+    const env = groupEnv('ws-a', new Map(), 'ws-a');
+    assert.equal(workspaceGroupExpanded('ws-a', {current: true}, env), true, '当前工作区默认展开');
+    assert.equal(workspaceGroupExpanded('ws-b', {current: false}, env), false, '其他工作区默认收起');
+    assert.equal(workspaceGroupExpanded('', {current: false}, env), false, '未关联分组默认收起');
+});
+
+test('分组默认展开：未打开工作区时展开第一个分组', () => {
+    const env = groupEnv('', new Map(), 'ws-b');
+    assert.equal(workspaceGroupExpanded('ws-b', {current: false}, env), true, '第一个分组展开');
+    assert.equal(workspaceGroupExpanded('ws-c', {current: false}, env), false, '其余仍收起');
+});
+
+test('分组默认展开：显式切换覆盖默认（记住用户选择）', () => {
+    const override = new Map([['ws-b', true], ['ws-a', false]]);
+    const env = groupEnv('ws-a', override, 'ws-a');
+    assert.equal(workspaceGroupExpanded('ws-b', {current: false}, env), true, '手动展开的非当前分组保持展开');
+    assert.equal(workspaceGroupExpanded('ws-a', {current: true}, env), false, '手动收起的当前分组保持收起');
 });
