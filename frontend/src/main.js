@@ -307,7 +307,11 @@ async function startTerminalWindowMode() {
         const info = infos.find((x) => x && x.id === termId);
         if (info) {
             shell = info.shell || '';
-            cwdBase = String(info.cwd || '').replace(/^.*[\/]/, '');
+            cwdBase = String(info.cwd || '');
+            {
+                const cutAt = Math.max(cwdBase.lastIndexOf('\\'), cwdBase.lastIndexOf('/'));
+                cwdBase = cwdBase.slice(cutAt + 1);
+            }
         }
     } catch (e) {}
     const s = await terminalMod.attachResumedTermSession(termId, shell);
@@ -345,17 +349,16 @@ async function startTerminalWindowMode() {
     const shellPill = document.createElement('span');
     shellPill.className = 'term-window-pill';
     shellPill.textContent = (s && s.defaultLabel) || shell || '本地';
-    if (cwdBase) {
-        const cwdPill = document.createElement('span');
-        cwdPill.className = 'term-window-pill';
-        cwdPill.dataset.tip = '会话启动目录';
-        cwdPill.textContent = cwdBase;
-        head.append(cwdPill);
-    }
+    const cwdPill = document.createElement('span');
+    cwdPill.className = 'term-window-pill';
+    cwdPill.dataset.tip = '会话启动目录';
+    cwdPill.textContent = cwdBase;
     const spacer = document.createElement('span');
     spacer.style.flex = '1';
     actions.append(redock, closeBtn);
-    head.append(title, shellPill, spacer, actions);
+    head.append(title);
+    if (cwdBase) head.append(cwdPill);
+    head.append(shellPill, spacer, actions);
     if (panel) panel.insertBefore(head, panel.firstChild);
     // OS 窗口标题（任务栏/Alt+Tab 可见）：终端 · 工作区 · Shell
     try {
