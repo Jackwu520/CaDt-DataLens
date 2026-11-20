@@ -303,11 +303,14 @@ export function createAIModelPicker(ctx) {
         document.body.appendChild(picker);
         picker.style.visibility = 'hidden';
         const width = Math.min(360, window.innerWidth - 16);
+        picker.style.width = width + 'px';
+        // 锁定打开时的高度：搜索过滤只重建列表内容，弹层高度不再随结果条数变化。
+        // 列表自身 flex:1 + overflow:auto，内容变少时留白、变多时内部滚动。
         const height = picker.offsetHeight;
+        picker.style.height = height + 'px';
         const top = rect.top - height - 8 >= 8 ? rect.top - height - 8 : Math.max(8, rect.bottom + 8);
         picker.style.left = Math.max(8, Math.min(rect.left, window.innerWidth - width - 8)) + 'px';
         picker.style.top = top + 'px';
-        picker.style.width = width + 'px';
         picker.style.visibility = '';
         search.focus();
         if (modelPickerStackHandle) modelPickerStackHandle.dispose();
