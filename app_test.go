@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"os"
@@ -239,8 +240,9 @@ func TestOpenModeConfig(t *testing.T) {
 	if got := appconfig.OpenMode(); got != "window" {
 		t.Fatalf("open mode = %q, want window", got)
 	}
-	if got := uniqueIDForLaunch(); !strings.HasPrefix(got, "cadt-datalens-window-") {
-		t.Fatalf("window mode unique ID = %q", got)
+	// P2：窗口打开模式不再另起进程，所有模式共用同一单实例 ID（由 secondInstance 决定开窗）。
+	if got := uniqueIDForLaunch(); got != "cadt-datalens-7f3a9c21" {
+		t.Fatalf("window mode unique ID = %q, want shared single-instance id", got)
 	}
 	if err := app.SetOpenMode("tab"); err != nil {
 		t.Fatal(err)
@@ -577,11 +579,13 @@ func TestWailsInfoVersionMatchesAppVersion(t *testing.T) {
 }
 
 func TestConsumeStartupSettings(t *testing.T) {
-	app := &App{startupSettingsPane: "models"}
-	if got := app.ConsumeStartupSettings(); got != "models" {
+	state := winReg.add(windowSpec{Name: "test-startup-settings", Mode: windowModeMain, SettingsPane: "models"})
+	defer winReg.remove(state.name())
+	app := &App{}
+	if got := app.ConsumeStartupSettings(context.Background()); got != "models" {
 		t.Fatalf("first = %q", got)
 	}
-	if got := app.ConsumeStartupSettings(); got != "" {
+	if got := app.ConsumeStartupSettings(context.Background()); got != "" {
 		t.Fatalf("second = %q", got)
 	}
 }

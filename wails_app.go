@@ -55,6 +55,15 @@ func emitWindowEvent(name string, data ...any) {
 	w.EmitEvent(name, data...)
 }
 
+// emitWindowEventTo 定向到指定窗口（sender 仍是该窗口名）。
+func emitWindowEventTo(w *application.WebviewWindow, name string, data ...any) {
+	if w == nil {
+		emitAppEvent(name, data...)
+		return
+	}
+	w.EmitEvent(name, data...)
+}
+
 // showMainWindow 对应 v2 WindowShow 的语义：显示并把最小化的窗口恢复回来。
 func showMainWindow() {
 	w := currentWindow()

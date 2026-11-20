@@ -4,12 +4,8 @@ package main
 // 日志追加与增量读取在 internal/debugconsole。
 
 import (
-	"os"
-	"os/exec"
-	"path/filepath"
+	"context"
 	"strings"
-
-	"datalens/internal/debugconsole"
 )
 
 // ExportDebugConsoleLog 弹出保存对话框并写出调试控制台日志文本；
@@ -32,23 +28,14 @@ func (a *App) ExportDebugConsoleLog(defaultName, content string) (string, error)
 	return path, nil
 }
 
-// IsDebugConsoleWindow 当前进程是否作为独立调试控制台窗口运行。
-func (a *App) IsDebugConsoleWindow() bool {
-	return debugconsole.HasArg("--debug-console")
+// IsDebugConsoleWindow 当前调用窗口是否是独立调试控制台窗口。
+func (a *App) IsDebugConsoleWindow(ctx context.Context) bool {
+	st := stateForCaller(ctx)
+	return st != nil && st.startup().Mode == windowModeDebug
 }
 
-// OpenDebugConsoleWindow 以独立进程方式打开调试控制台窗口。
-// 带 --new-window 让新实例使用独立单实例锁，从而真正开出新窗口。
+// OpenDebugConsoleWindow 打开（或聚焦）调试控制台窗口（P2：同进程窗口）。
 func (a *App) OpenDebugConsoleWindow() error {
-	exe, err := os.Executable()
-	if err != nil {
-		return err
-	}
-	cmd := exec.Command(exe, "--new-window", "--debug-console")
-	cmd.Dir = filepath.Dir(exe)
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-	_ = cmd.Process.Release()
+	a.ensureDebugWindow()
 	return nil
 }

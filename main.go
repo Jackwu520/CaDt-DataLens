@@ -6,11 +6,11 @@ import (
 	"os"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
-	"github.com/wailsapp/wails/v3/pkg/events"
 
 	"datalens/internal/applog"
 	"datalens/internal/convertcli"
 	"datalens/internal/installercli"
+	"datalens/internal/launchargs"
 	"datalens/internal/patchcli"
 	"datalens/internal/previewassets"
 )
@@ -78,11 +78,6 @@ func main() {
 	app := NewApp()
 	app.convert = convertOpts
 
-	width, height, minWidth, minHeight := 1280, 800, 720, 480
-	if hasArg("--ai-float") {
-		width, height, minWidth, minHeight = 560, 760, 360, 480
-	}
-
 	var singleInstance *application.SingleInstanceOptions
 	if !isConvert {
 		singleInstance = &application.SingleInstanceOptions{
@@ -119,40 +114,30 @@ func main() {
 		},
 	})
 
-	win := wailsApp.Window.NewWithOptions(application.WebviewWindowOptions{
-		Name:             "main",
-		Title:            "CaDt-DataLens",
-		Width:            width,
-		Height:           height,
-		MinWidth:         minWidth,
-		MinHeight:        minHeight,
-		Frameless:        true,
-		Hidden:           true,
-		BackgroundColour: application.NewRGB(30, 31, 36),
-		URL:              "/",
-		EnableFileDrop:   true,
-		ZoomControlEnabled: false,
-		Zoom:               1.0,
-	})
-	setMainWindow(win)
-
-	// 关窗确认：v2 OnBeforeClose 返回 true 表示拦下；v3 用 WindowClosing + Cancel。
-	win.RegisterHook(events.Common.WindowClosing, func(e *application.WindowEvent) {
-		if app.beforeClose() {
-			e.Cancel()
-		}
-	})
-	// v2 OnDomReady 的等价时机：首屏导航完成后显示窗口（v3 没有 domReady 回调；
-	// 该事件在 events.Windows 组，非 Windows 平台不触发，由 ensureWindowShown 兜底）。
-	win.RegisterHook(events.Windows.WebViewNavigationCompleted, func(_ *application.WindowEvent) {
-		app.domReady()
-	})
+	// 首个窗口：按启动参数决定形态（主窗口 / AI 浮窗 / 调试控制台）。
+	primary := windowSpec{
+		Name:         "main",
+		Mode:         windowModeMain,
+		Targets:      launchargs.ParseOpenTargets(os.Args[1:]),
+		SessionID:    launchargs.ParseAISessionArg(os.Args[1:]),
+		SettingsPane: launchargs.ParseOpenSettingsArg(os.Args[1:]),
+		MemoLocator:  launchargs.ParseMemoLocatorArg(os.Args[1:]),
+	}
+	if hasArg("--ai-float") {
+		primary.Name = "float"
+		primary.Mode = windowModeFloat
+	}
+	if hasArg("--debug-console") {
+		primary.Name = "debug"
+		primary.Mode = windowModeDebug
+	}
+	app.createWindow(primary)
 
 	err := wailsApp.Run()
 	if err != nil {
 		writeAppLog("error", "wails.Run 退出：%v", err)
 	}
-	// 窗口注册表收尾：释放租约、删注册痕迹（失败由下次启动 Sweep 兜底）。
+	// 窗口注册表收尾（P2 起为进程内注册表，保留调用以兼容 P3 清理前的结构）。
 	app.shutdownWindowReg()
 	if isConvert {
 		os.Exit(app.convertExitCode)

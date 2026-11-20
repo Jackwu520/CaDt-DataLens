@@ -37,6 +37,7 @@ export const EVENT_SCOPES = Object.freeze({
     'open-targets': 'window',
     'app-open-settings': 'window',
     'app-open-memo': 'window',
+    'app-open-ai-session': 'window',
     'ai-notify-activate': 'window',
 
     // ID 归属（流式；P1 注册为 onApp，消费者已按 id 过滤；P2 收紧为 onOwned）

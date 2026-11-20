@@ -38,7 +38,6 @@ import (
 	"datalens/internal/tray"
 	"datalens/internal/usagestats"
 	"datalens/internal/watch"
-	"datalens/internal/windowreg"
 )
 
 const appVersion = "v1.1.1"
@@ -69,14 +68,6 @@ type App struct {
 	*aigroups.GroupStore                         // AI 群聊磁盘存储（internal/aigroups），提升方法即 AIGroup* 绑定
 	*mcp.Client                                  // MCP 客户端与子进程管理（internal/mcp）
 	ctx                    context.Context
-	windowReg              *windowreg.Registry // 跨窗口会话复用的注册条目（window_app.go）
-	startupTargets         []launchargs.OpenTarget
-	startupSettingsPane    string
-	startupAISession       string
-	startupMemoLocator     string
-	dirty                  bool
-	forceClose             bool
-	aiRunning              bool
 	aiTimersMu             sync.Mutex
 	aiTimers               *aitimer.Registry
 	convert                *convertcli.Options
@@ -136,28 +127,22 @@ func (a *App) startup(ctx context.Context) {
 	// 点击通知的激活回调也在这里接上：把窗口拉回前台 + 把激活参数转给前端。
 	notify.OnToastActivation = a.onToastActivation
 	notify.Prepare()
-	ensureWindowShown()
 	sqlview.CleanupTempFiles()
 	reading.CleanupCacheOnStartup()
 	// 运行代码的临时副本 / 编译产物：启动时清一次过期的（7 天），失败不影响启动；
-	// 多窗口进程可能各跑一次，RemoveAll 幂等所以无害。
+	// 多窗口可能各跑一次，RemoveAll 幂等所以无害。
 	go func() { _, _ = a.CleanupRunTempStale() }()
-	if a.IsDebugConsoleWindow() {
-		// 独立调试控制台窗口：小尺寸独立窗，不处理启动文件/目录
-		setMainWindowTitle("调试控制台 · CaDt-DataLens")
-		setMainWindowSize(780, 460)
+	if a.IsDebugConsoleWindow(nil) {
+		// 独立调试控制台窗口：不处理启动文件/目录（窗口尺寸/标题在窗口工厂里按类型设置）。
 		return
 	}
-	// 窗口注册表：主窗口进程登记自己（浮窗/调试控制台在 ensureWindowReg 内跳过），
-	// 前端工作区变化后经 WindowRegister 更新 workspace。
-	a.ensureWindowReg()
-	// AI 定时任务调度器：主窗口与 AI 悬浮窗进程各自扫描，执行去重由前端裁决
+	// AI 定时任务调度器：主窗口与 AI 悬浮窗各自扫描，执行去重由前端裁决
 	aischedule.Start()
 	// 插件后台服务：启动已声明且 autoStart 的服务（声明由前端加载插件后 Sync 推送；
 	// 此处对空注册表无害，保留以覆盖未来持久化声明的场景）。
 	a.AppServices.StartAll()
-	// MCP 客户端 + 使用统计回填：仅主窗口进程初始化（浮窗/调试控制台不拉子进程/不扫会话）
-	if !a.IsAIFloatWindow() && !a.IsDebugConsoleWindow() {
+	// MCP 客户端 + 使用统计回填：仅主窗口初始化（浮窗/调试控制台不拉子进程/不扫会话）
+	if !a.IsAIFloatWindow(nil) && !a.IsDebugConsoleWindow(nil) {
 		// 使用统计：只初始化派生库；增量扫描由用户打开统计面板/点刷新时触发
 		usagestats.Start()
 		if err := mcp.InitClient(a.Client, func(event string, payload any) {
@@ -167,92 +152,125 @@ func (a *App) startup(ctx context.Context) {
 			writeAppLog("warn", "MCP 配置加载失败：%v", err)
 		}
 	}
-	if a.IsAIFloatWindow() {
-		setMainWindowTitle("AI 助手 · CaDt-DataLens")
-	}
-	a.startupSettingsPane = launchargs.ParseOpenSettingsArg(os.Args[1:])
-	a.startupAISession = launchargs.ParseAISessionArg(os.Args[1:])
-	a.startupMemoLocator = launchargs.ParseMemoLocatorArg(os.Args[1:])
-	a.startupTargets = launchargs.ParseOpenTargets(os.Args[1:])
 	// 外部文件拖放由前端 runtime.OnFileDrop 注册窗口监听并直接打开；
 	// 这里不再订阅 wails:file-drop，否则同一次拖放会被两侧各处理一遍。
 }
 
-// domReady 页面就绪后再显示窗口，避开 WebView2 初始化占住 UI 线程的那段时间。
-func (a *App) domReady() {
-	if a.convert != nil {
+func (a *App) secondInstance(args []string) {
+	if launchargs.HasFlag(args, "--ai-float") {
+		a.ensureFloatWindow(launchargs.ParseOpenTargets(args)...)
 		return
 	}
-	showWindowWhenReady()
-}
-
-func (a *App) secondInstance(args []string) {
+	if launchargs.HasFlag(args, "--debug-console") {
+		a.ensureDebugWindow()
+		return
+	}
 	if pane := launchargs.ParseOpenSettingsArg(args); pane != "" {
-		emitWindowEvent("app-open-settings", pane)
-		a.secondInstanceShow()
+		if st := winReg.primary(); st != nil {
+			emitWindowEventTo(st.window(), "app-open-settings", pane)
+			activateWindow(st.window())
+		}
 		return
 	}
 	if loc := launchargs.ParseMemoLocatorArg(args); loc != "" {
-		emitWindowEvent("app-open-memo", loc)
-		a.secondInstanceShow()
+		if st := winReg.primary(); st != nil {
+			emitWindowEventTo(st.window(), "app-open-memo", loc)
+			activateWindow(st.window())
+		}
 		return
 	}
 	targets := launchargs.ParseOpenTargets(args)
 	if len(targets) == 0 {
 		targets = launchargs.StartupCwdTarget()
 	}
-	if len(targets) > 0 {
-		emitWindowEvent("open-targets", targets)
+	if len(targets) == 0 {
+		a.secondInstanceShow()
+		return
 	}
-	// 只用 WindowShow：Windows 上 WindowUnminimise 走 WM_SYSCOMMAND/SC_RESTORE，
-	// 会把最大化的窗口还原成普通窗口；WindowShow 内部只在最小化时才恢复。
-	// 顺带清掉托盘态（窗口可能正藏在通知区里，见 app_close_action.go）。
-	a.secondInstanceShow()
+	// 窗口打开模式（或显式 --new-window）：总是开新窗口；否则投给主窗口。
+	if launchargs.HasFlag(args, "--new-window") || appconfig.OpenMode() == "window" {
+		a.openMainWindow(windowSpec{Targets: targets})
+		return
+	}
+	if st := winReg.primary(); st != nil {
+		deliverOpenTargets(st, openTargetsAny(targets))
+		return
+	}
+	a.openMainWindow(windowSpec{Targets: targets})
+}
+
+// openTargetsAny 把 []launchargs.OpenTarget 转成事件投递的 []any（JSON 形状不变）。
+func openTargetsAny(targets []launchargs.OpenTarget) []any {
+	out := make([]any, 0, len(targets))
+	for _, t := range targets {
+		out = append(out, t)
+	}
+	return out
 }
 
 // onToastActivation 系统通知被点击（internal/notify 的 COM 激活回调，可能在任意 COM 线程触发）：
-// 先把窗口拉回前台（语义与 secondInstance 一致，只用 WindowShow 避免还原最大化），
-// 再把激活参数原文发给前端自行解析跳转（形如 "ai-session=<id>"；空参数只拉窗口）。
+// 先把主窗口拉回前台，再把激活参数原文发给前端自行解析跳转（空参数只拉窗口）。
 func (a *App) onToastActivation(payload string) {
 	if a.ctx == nil {
 		return
 	}
-	a.secondInstanceShow()
-	if strings.TrimSpace(payload) != "" {
-		emitWindowEvent("ai-notify-activate", payload)
+	if st := winReg.primary(); st != nil {
+		activateWindow(st.window())
+		if strings.TrimSpace(payload) != "" {
+			emitWindowEventTo(st.window(), "ai-notify-activate", payload)
+		}
 	}
 }
 
-// ConsumeStartupSettings 返回本次启动携带的设置页并清空（供前端启动后打开）。
-func (a *App) ConsumeStartupSettings() string {
-	pane := a.startupSettingsPane
-	a.startupSettingsPane = ""
+// ConsumeStartupSettings 返回该窗口启动时携带的设置页并清空（供前端启动后打开）。
+func (a *App) ConsumeStartupSettings(ctx context.Context) string {
+	st := stateForCaller(ctx)
+	if st == nil {
+		return ""
+	}
+	st.mu.Lock()
+	pane := st.spec.SettingsPane
+	st.spec.SettingsPane = ""
+	st.mu.Unlock()
 	return pane
 }
 
-// GetStartupAISession 返回本次启动要打开的 AI 会话 id（软切换新窗口使用）。
-func (a *App) GetStartupAISession() string {
-	return a.startupAISession
+// GetStartupAISession 返回该窗口启动时要打开的 AI 会话 id（软切换新窗口使用）。
+func (a *App) GetStartupAISession(ctx context.Context) string {
+	if st := stateForCaller(ctx); st != nil {
+		return st.startup().SessionID
+	}
+	return ""
 }
 
-// GetStartupMemoLocator 返回本次启动要跳转的便签定位点（cadt-memo://scope/kind/id）。
-func (a *App) GetStartupMemoLocator() string {
-	return a.startupMemoLocator
+// GetStartupMemoLocator 返回该窗口启动时要跳转的便签定位点（cadt-memo://scope/kind/id）。
+func (a *App) GetStartupMemoLocator(ctx context.Context) string {
+	if st := stateForCaller(ctx); st != nil {
+		return st.startup().MemoLocator
+	}
+	return ""
 }
 
-func (a *App) GetStartupTargets() []launchargs.OpenTarget {
-	if a.startupTargets == nil {
+func (a *App) GetStartupTargets(ctx context.Context) []launchargs.OpenTarget {
+	st := stateForCaller(ctx)
+	if st == nil {
 		return []launchargs.OpenTarget{}
 	}
-	if len(a.startupTargets) == 0 {
+	targets := st.startup().Targets
+	if len(targets) == 0 {
 		return launchargs.StartupCwdTarget()
 	}
-	return a.startupTargets
+	return targets
 }
 
-func (a *App) GetStartupFiles() []string {
-	files := make([]string, 0, len(a.startupTargets))
-	for _, target := range a.startupTargets {
+func (a *App) GetStartupFiles(ctx context.Context) []string {
+	st := stateForCaller(ctx)
+	if st == nil {
+		return []string{}
+	}
+	targets := st.startup().Targets
+	files := make([]string, 0, len(targets))
+	for _, target := range targets {
 		files = append(files, target.Path)
 	}
 	return files

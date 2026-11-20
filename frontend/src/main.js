@@ -6319,6 +6319,13 @@ if (rt) {
     appEvents.onWindow('app-open-memo', (locator) => {
         if (memoJumpHook) memoJumpHook(locator);
     });
+    // P2 进程内复用：别的窗口把「打开这个工作区的会话」直接投给本窗口
+    //（替代 v2 的 windowreg 文件信箱；handler 复用原信箱请求的处理逻辑）。
+    appEvents.onWindow('app-open-ai-session', (req) => {
+        Promise.resolve(handleInboxRequest(req)).catch((e) => {
+            console.error('app-open-ai-session: 切换会话失败', e);
+        });
+    });
     // Wails 文件拖放：注册窗口级 dragover/drop 监听（不注册就收不到任何外部拖放），
     // useDropTarget=false 让整个窗口都接受；回调拿到的路径已由 Go 侧解析好
     if (rt.OnFileDrop) {

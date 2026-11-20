@@ -11,7 +11,7 @@ test('范围表：Go 发射的事件全部有分类', () => {
         'sched-fire', 'schedules-changed', 'mcp-tools-changed', 'mcp-status-changed',
         'ai-timer-fired', 'ai-timer-stopped',
         'workspace-changed', 'resource-changed',
-        'confirm-close', 'open-targets', 'app-open-settings', 'app-open-memo', 'ai-notify-activate',
+        'confirm-close', 'open-targets', 'app-open-settings', 'app-open-memo', 'app-open-ai-session', 'ai-notify-activate',
         'term-out', 'term-exit', 'cmd-out', 'cmd-exit', 'run-out', 'run-exit',
         'browser-nav', 'browser-title', 'browser-error', 'reading-search-progress',
     ];

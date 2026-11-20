@@ -17,6 +17,8 @@ package main
 import (
 	"strings"
 
+	"github.com/wailsapp/wails/v3/pkg/application"
+
 	"datalens/internal/appconfig"
 	"datalens/internal/tray"
 )
@@ -87,11 +89,11 @@ func (a *App) QuitApp() {
 	quitApp()
 }
 
-// hideToTray 隐藏窗口并把图标挂到通知区。
-func (a *App) hideToTray() {
+// hideToTray 隐藏指定窗口并把图标挂到通知区。
+func (a *App) hideToTray(w *application.WebviewWindow) {
 	a.showTray()
-	if a.ctx != nil {
-		hideMainWindow()
+	if w != nil {
+		w.Hide()
 	}
 	if !a.trayHintShown {
 		a.trayHintShown = true

@@ -3,31 +3,43 @@ package main
 // 应用状态与窗口：脏标记、应用配置（open mode）、多窗口与资源管理器定位。
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 
+	"github.com/wailsapp/wails/v3/pkg/application"
+
 	"datalens/internal/appconfig"
 	"datalens/internal/clipboard"
 	"datalens/internal/cmdbridge"
 	"datalens/internal/launchargs"
-	"datalens/internal/newwindow"
 	"datalens/internal/shellexec"
 )
 
-func (a *App) SetDirty(dirty bool) {
-	a.dirty = dirty
+func (a *App) SetDirty(ctx context.Context, dirty bool) {
+	if st := stateForCaller(ctx); st != nil {
+		st.SetDirty(dirty)
+	}
 }
 
-// SetAIRunning：前端在 AI 回合开始/结束时同步（关窗二次确认依据，见 beforeClose）。
-func (a *App) SetAIRunning(running bool) {
-	a.aiRunning = running
+// SetAIRunning：前端在 AI 回合开始/结束时同步（关窗二次确认依据，见 beforeCloseWindow）。
+func (a *App) SetAIRunning(ctx context.Context, running bool) {
+	if st := stateForCaller(ctx); st != nil {
+		st.SetAIRunning(running)
+	}
 }
 
+// uniqueIDForLaunch：P2 起所有模式共用同一单实例锁——第二个进程一律转发给
+// 已运行实例，由 secondInstance 决定开主窗口 / 浮窗 / 调试控制台。
+// CADT_UNIQUE_ID 可覆盖（并行测试/便携多配置隔离用），默认值与原单实例 ID 一致。
 func uniqueIDForLaunch() string {
-	return launchargs.UniqueIDForArgs(os.Args[1:], appconfig.OpenMode())
+	if v := strings.TrimSpace(os.Getenv("CADT_UNIQUE_ID")); v != "" {
+		return v
+	}
+	return "cadt-datalens-7f3a9c21"
 }
 
 func (a *App) GetOpenMode() string {
@@ -48,18 +60,52 @@ func (a *App) SetOpenMode(mode string) error {
 }
 
 func (a *App) OpenNewWindow() error {
-	return newwindow.Open()
+	a.openMainWindow(windowSpec{})
+	return nil
 }
 
 // OpenDirInNewWindow 在独立新窗口打开目录（一目录一窗口）。
 func (a *App) OpenDirInNewWindow(dir string) error {
-	return newwindow.OpenDir(dir)
+	dir, err := validateWindowDir(dir)
+	if err != nil {
+		return err
+	}
+	a.openMainWindow(windowSpec{
+		Workspace: dir,
+		Targets:   []launchargs.OpenTarget{{Path: dir}},
+	})
+	return nil
 }
 
-// OpenWorkspaceForConversation 软切换：当前窗口已有工作区时，另开窗口打开目标工作区，
-// 并把目标 AI 会话 id 传给新窗口（新窗口启动后恢复工作区环境并选中该会话）。
+// OpenWorkspaceForConversation 软切换：另开窗口打开目标工作区，并把目标 AI 会话 id
+// 传给新窗口（新窗口启动后恢复工作区环境并选中该会话）。
 func (a *App) OpenWorkspaceForConversation(dir string, sessionID string) error {
-	return newwindow.OpenWorkspaceConversation(dir, sessionID)
+	dir, err := validateWindowDir(dir)
+	if err != nil {
+		return err
+	}
+	a.openMainWindow(windowSpec{
+		Workspace: dir,
+		Targets:   []launchargs.OpenTarget{{Path: dir}},
+		SessionID: sessionID,
+	})
+	return nil
+}
+
+// validateWindowDir 校验「打开窗口」的目录参数（空/不存在/不是目录都报错）。
+func validateWindowDir(dir string) (string, error) {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		return "", fmt.Errorf("目录为空")
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		return "", fmt.Errorf("目录不存在：%s", dir)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("不是目录：%s", dir)
+	}
+	return dir, nil
 }
 
 func (a *App) ShowInFolder(path string) error {
@@ -119,11 +165,16 @@ func (a *App) GetClipboardImage() (string, error) {
 
 func (a *App) OpenInNewWindows(paths []string) error {
 	_ = a.SetOpenMode("window")
-	_, err := newwindow.OpenFiles(paths)
-	return err
+	for _, p := range paths {
+		if strings.TrimSpace(p) == "" {
+			continue
+		}
+		a.openMainWindow(windowSpec{Targets: []launchargs.OpenTarget{{Path: p}}})
+	}
+	return nil
 }
 
-func (a *App) SetWindowBg(r, g, b int) {
+func (a *App) SetWindowBg(ctx context.Context, r, g, b int) {
 	clamp := func(v int) uint8 {
 		if v < 0 {
 			return 0
@@ -133,46 +184,68 @@ func (a *App) SetWindowBg(r, g, b int) {
 		}
 		return uint8(v)
 	}
-	setMainWindowBackground(clamp(r), clamp(g), clamp(b), 255)
+	w := callerWindow(ctx)
+	if w == nil {
+		w = currentWindow()
+	}
+	if w != nil {
+		w.SetBackgroundColour(application.NewRGBA(clamp(r), clamp(g), clamp(b), 255))
+	}
 }
 
-func (a *App) beforeClose() bool {
-	// 设置里选了「最小化到托盘」：点 X 只是把窗口藏起来，进程与后台任务（AI 回合、终端、
-	// 后台命令）全部照旧跑，所以这里不弹任何确认——真正退出时（菜单 / 托盘右键 /
-	// 系统关机）才走下面的确认流程。见 app_close_action.go。
-	// 多窗口下「藏」只属于最后一个窗口：先数一遍同 exe 还有没有别的应用窗口在跑。
-	// 转换模式（--convert）不参与：它没有用户可见的窗口，藏起来只会挡住 os.Exit。
-	if a.convert == nil && traySupported() &&
-		shouldHideOnClose(a.closeAction, isPortableWindowProcess(), a.forceClose, a.quitRequested.Load(), systemShuttingDown(), countOtherPortableWindows()) {
-		a.hideToTray()
-		return true
-	}
-	// 关窗二次确认的依据不止「AI 回合进行中」：终端会话（含用户自己开的，仅在 shell 里
-	// 真有命令进程在跑时才计数，空闲提示符放行）与 AI 后台命令作业（background_command，
-	// 回合结束后仍长驻）都会随窗口关闭被静默终止，一并计入。
-	terms := a.Terminal.RunningSessionCount()
-	bgJobs := cmdbridge.RunningAIJobCount()
-	if a.forceClose || (!a.dirty && !a.aiRunning && terms == 0 && bgJobs == 0) {
-		a.stopTray()
-		a.mcpCloseAll() // MCP 子进程全量关闭（总预算 8s，超时靠 taskkill 兜底）
-		a.AppServices.StopAll() // 插件后台服务全量停止（取消即杀整棵进程树）
-		a.UnwatchWorkspace()
+// beforeCloseWindow 是单个窗口的关窗确认（v2 OnBeforeClose 的等价物）。
+func (a *App) beforeCloseWindow(st *windowState) bool {
+	if st == nil {
 		return false
 	}
-	emitWindowEvent("confirm-close", map[string]interface{}{
-		"dirty": a.dirty, "aiRunning": a.aiRunning, "terms": terms, "bgJobs": bgJobs,
-	})
+	isMain := st.startup().Mode == windowModeMain
+	// 设置里选了「最小化到托盘」：点 X 只是把窗口藏起来，进程与后台任务全部照旧跑。
+	// 只有主窗口参与；且只在该窗口是最后一个主窗口时才藏（否则直接关掉本窗口）。
+	if a.convert == nil && isMain && traySupported() &&
+		shouldHideOnClose(a.closeAction, true, st.forceClosed(), a.quitRequested.Load(), systemShuttingDown(), winReg.countMain()-1) {
+		setMainWindow(st.window())
+		a.hideToTray(st.window())
+		return true
+	}
+	// 关窗二次确认的依据不止「AI 回合进行中」：终端会话与 AI 后台命令作业都会随窗口
+	// 关闭被静默终止，一并计入。终端/后台命令当前是进程级计数，只对主窗口生效
+	//（浮窗/调试控制台不承载它们，避免误报）。
+	terms, bgJobs := 0, 0
+	if isMain {
+		terms = a.Terminal.RunningSessionCount()
+		bgJobs = cmdbridge.RunningAIJobCount()
+	}
+	if st.forceClosed() || (!st.IsDirty() && !st.IsAIRunning() && terms == 0 && bgJobs == 0) {
+		if winReg.countMain() <= 1 {
+			a.stopTray()
+			a.mcpCloseAll()         // MCP 子进程全量关闭（总预算 8s，超时靠 taskkill 兜底）
+			a.AppServices.StopAll() // 插件后台服务全量停止（取消即杀整棵进程树）
+			a.UnwatchWorkspace()
+		}
+		return false
+	}
+	if w := st.window(); w != nil {
+		w.EmitEvent("confirm-close", map[string]interface{}{
+			"dirty": st.IsDirty(), "aiRunning": st.IsAIRunning(), "terms": terms, "bgJobs": bgJobs,
+		})
+	}
 	return true
 }
 
-func (a *App) ForceClose() {
-	a.forceClose = true
-	a.dirty = false
-	a.aiRunning = false
-	a.quitRequested.Store(true)
-	a.stopTray()
-	a.mcpCloseAll()
-	a.AppServices.StopAll()
-	a.UnwatchWorkspace()
-	quitApp()
+func (a *App) ForceClose(ctx context.Context) {
+	st := stateForCaller(ctx)
+	if st == nil {
+		return
+	}
+	st.markForceClose()
+	st.SetDirty(false)
+	st.SetAIRunning(false)
+	lastMain := winReg.countMain() <= 1
+	if lastMain {
+		a.stopTray()
+		a.mcpCloseAll()
+		a.AppServices.StopAll()
+		a.UnwatchWorkspace()
+	}
+	closeWindow(st.window())
 }

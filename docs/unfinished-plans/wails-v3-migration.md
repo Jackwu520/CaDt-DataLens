@@ -133,3 +133,22 @@
 - `wails3 dev` 热重载流程适配（开发体验，不阻塞交付）。
 - P2：窗口注册表改进程内、`term-out`/`cmd-*` 等流事件加 owner 收紧 `onOwned`、AI 浮窗改窗口对象。
 - P3：删除 `frontend/wailsjs`（v2 生成物）与 `internal/windowreg`。
+
+## 11. P2 实施记录（2026-11-20，分支 `v3-migration`）
+
+**已完成**
+
+- **一进程多窗口**：新增 `windowmeta.go` 进程内窗口注册表（名字 / 形态 / 工作区 / 启动参数 / 每窗脏标记与 AI 状态）；绑定方法通过 `ctx.Value(application.WindowKey)` 归属调用方窗口（v3 在 `messageprocessor_call` 注入），`stateForCaller` 无上下文时回退主窗口（测试友好）。
+- **窗口工厂 `window_factory.go`**：主窗口（可多开 `main` / `main-2`…）、AI 浮窗（单例 `float`）、调试控制台（单例 `debug`）统一创建；每个窗口独立注册 `WindowClosing` / `WebViewNavigationCompleted` 钩子。
+- **单实例语义简化**：所有模式共用同一 UniqueID（`CADT_UNIQUE_ID` 可覆盖，供并行测试/便携多配置）；第二实例不再新起进程，由 `secondInstance` 决定开主窗口 / 浮窗 / 调试控制台。
+- **进程内开窗**：`--new-window`、窗口打开模式、`OpenNewWindow`、`OpenDirInNewWindow`、`OpenWorkspaceForConversation`、`OpenAIFloatWindow`、`OpenDebugConsoleWindow` 全部改为同进程窗口；`OpenDirInNewWindow` 保留目录校验（空/不存在/非目录报错）。
+- **跨窗口会话复用**：`WindowRegister` / `WindowReuseForSession` 改进程内注册表；命中目标工作区时直接投 `app-open-ai-session`（window 作用域事件）并前置目标窗口；`WindowInboxTake/Ack` 保留空实现兼容旧 drain 循环。
+- **前端**：`app-open-ai-session` 纳入事件桥；浮窗/调试控制台形态判定改由调用窗口 context 决定（`IsAIFloatWindow` / `IsDebugConsoleWindow`）。
+- **实机验证**：单进程同时存在 2 个主窗口 + 浮窗 + 调试控制台；第二实例 `--new-window <file>` 只在新窗口打开文件；关闭单个窗口其余存活、全关进程退出；浮窗（560×760，AI 面板单栏）与调试控制台（780×460，控制台输出）渲染正确（PrintWindow 截图）。
+
+**待办（P2 收尾 / P3）**
+
+- 会话复用命中后目标窗口切换失败（会话已删等）的源窗口兜底：v2 有 ack 协议，进程内投递当前无回执，需补一个结果事件或改为同步返回。
+- `term-out` / `cmd-*` / `run-*` 等流事件加 owner 字段，把事件桥的 `onOwned` 真正收紧（当前仍是 app 级广播 + 消费端按 id 过滤）。
+- 多窗口下的 session 快照共享（`cadt.session.v1` 是共享 localStorage；per-workspace 快照已按工作区隔离）、托盘「最后一个窗口」交互、手工双窗口回归。
+- P3：删除 `internal/windowreg`、`internal/newwindow`、`frontend/wailsjs` 与 root 里的兼容空实现。
