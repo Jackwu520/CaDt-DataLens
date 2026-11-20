@@ -45,6 +45,19 @@ v2 时代的浮窗是「再起一个进程 + CSS 把主界面藏起来」，窗�
 - 移动/缩放后 500ms 防抖写盘；**关窗前同步采集 + flush**，拖拽刚结束就关窗也不会丢；进程退出再兜底 flush 一次。
 - 最大化时只置 `maximised` 标记，保留最大化前的还原矩形（最大化状态的 Position/Size 是屏幕尺寸，不能当还原尺寸）。
 - 最小化/全屏时跳过采集。
+- 浮窗「收起」（只留标题栏）时跳过采集：收起高度是 UI 程序化调整，不是用户偏好；收起/展开由前端经 `SetWindowCollapsed(ctx, bool)` 同步，保证下次打开仍是收起前的展开尺寸。
+
+### 同批修复的浮窗关闭语义（v2 进程级假设遗留）
+
+v2 里一个窗口就是一个进程，`runtime.Quit` 只关自己；v3 一进程多窗口后它是应用级退出。同批修正：
+
+- 独立调试台的关闭改走按调用方窗口的 `ForceClose`（兜底 `WindowClose`），不再退出整个应用。
+- 主窗口标题栏 X 改为 `WindowClose` 优先，重新经过 `WindowClosing`（托盘隐藏、脏数据/AI 回合确认、最后一个主窗口收口）。
+- 显式退出（菜单/托盘）不能直接 `Application.Quit`（它不经过 `WindowClosing`）：`QuitApp` 汇总全部窗口与进程级任务，无风险直接 `ForceQuitAll`，有风险发 `app-quit-request` 复用关窗确认框。
+- 生命周期口径：**最后一个主窗口关闭 = 退出程序**，带走浮窗/调试台（其 AI/未保存状态计入确认）；没有主窗口的模式（`--ai-float` / `--debug-console`）以最后一个窗口收口。
+- 应用级服务（托盘/MCP/插件服务/工作区监听）收口抽成幂等的 `teardownAppServices`，只在应用退出时执行一次；关浮窗不再误停后台服务。
+- 独立调试台窗口是无边框的，头部补拖动区（`body.console-only .dbg-head`），按钮 no-drag；停靠模式不受影响。
+- 护栏 `frontend/test/core/window-close-semantics.test.mjs` 钉住这些路径。
 
 ### 最大化恢复
 

@@ -46,6 +46,9 @@ type windowState struct {
 	dirty      bool
 	aiRunning  bool
 	forceClose bool
+	// collapsed：浮窗「收起」形态（只留标题栏）。收起期间的尺寸变化是 UI 程序化
+	// 调整，不参与窗口几何记忆，避免把 44px 的标题栏高度存成用户偏好。
+	collapsed bool
 	// geometryApplied：创建后首次导航完成时按当前显示器收敛一次几何；后续
 	// HMR/重载触发的导航不重复应用，避免把用户已拖动的窗口拉回初始位置。
 	geometryApplied bool
@@ -85,6 +88,10 @@ func (s *windowState) SetAIRunning(v bool) { s.mu.Lock(); s.aiRunning = v; s.mu.
 func (s *windowState) IsAIRunning() bool   { s.mu.Lock(); defer s.mu.Unlock(); return s.aiRunning }
 func (s *windowState) forceClosed() bool   { s.mu.Lock(); defer s.mu.Unlock(); return s.forceClose }
 func (s *windowState) markForceClose()     { s.mu.Lock(); s.forceClose = true; s.mu.Unlock() }
+
+// SetCollapsed / IsCollapsed：浮窗收起形态（只留标题栏），几何采集据此跳过。
+func (s *windowState) SetCollapsed(v bool) { s.mu.Lock(); s.collapsed = v; s.mu.Unlock() }
+func (s *windowState) IsCollapsed() bool   { s.mu.Lock(); defer s.mu.Unlock(); return s.collapsed }
 
 // setInitialGeometry 记录创建时算好的几何（未命中存档时 ok=false）。
 func (s *windowState) setInitialGeometry(r windowgeom.Rect, ok bool) {
@@ -184,6 +191,38 @@ func (r *winRegistryStore) countMain() int {
 		}
 	}
 	return n
+}
+
+// count 统计仍存活的窗口总数（应用级服务只在最后一个窗口关闭时收口）。
+func (r *winRegistryStore) count() int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return len(r.states)
+}
+
+// anyDirty / anyAIRunning 汇总全部窗口的标记（退出应用时把附属窗口的状态算入确认）。
+// 先快照再逐个读窗口状态，避免 registry 锁与 windowState 锁反向嵌套。
+func (r *winRegistryStore) anyDirty() bool {
+	return r.any(func(s *windowState) bool { return s.IsDirty() })
+}
+
+func (r *winRegistryStore) anyAIRunning() bool {
+	return r.any(func(s *windowState) bool { return s.IsAIRunning() })
+}
+
+func (r *winRegistryStore) any(match func(*windowState) bool) bool {
+	r.mu.RLock()
+	states := make([]*windowState, 0, len(r.states))
+	for _, s := range r.states {
+		states = append(states, s)
+	}
+	r.mu.RUnlock()
+	for _, s := range states {
+		if match(s) {
+			return true
+		}
+	}
+	return false
 }
 
 // findByWorkspace 找一个开着目标工作区的主窗口（exclude 为调用方窗口名）。

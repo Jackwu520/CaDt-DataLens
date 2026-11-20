@@ -34,6 +34,7 @@ export const EVENT_SCOPES = Object.freeze({
 
     // 窗口控制命令
     'confirm-close': 'window',
+    'app-quit-request': 'window',
     'open-targets': 'window',
     'app-open-settings': 'window',
     'app-open-memo': 'window',

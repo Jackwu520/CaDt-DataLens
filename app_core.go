@@ -77,6 +77,7 @@ type App struct {
 	// 关闭行为：点窗口 X 是直接退出（exit）还是隐藏到托盘（tray）。见 app_close_action.go。
 	closeAction   string
 	quitRequested atomic.Bool // 显式「退出」（菜单 / 托盘右键 / ForceClose）时置位，绕开「最小化到托盘」
+	teardownDone  atomic.Bool // 应用级服务（托盘/MCP/插件/工作区监听）只收口一次
 	tray          *tray.Tray
 	trayHintShown bool
 }

@@ -22,6 +22,17 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 - **落盘时机**：移动 / 缩放 500ms 防抖写入；关窗与进程退出同步 flush（拖拽刚结束就关窗也不会丢）。文件是 `<应用数据>/window-state.json`，损坏时静默回落空状态，不阻塞启动。
 - 方案与后续路线见 `docs/finished-plans/window-geometry-memory.md`。
 
+### 修复（浮窗 / 调试台的关闭语义）
+
+- **独立调试台关闭不再退出整个应用**：v2 里一个窗口就是一个进程，`runtime.Quit` 只关自己；v3 一进程多窗口后它是应用级退出。独立控制台的关闭改为按调用方窗口 `ForceClose`（兜底 `WindowClose`）。
+- **主窗口标题栏 X 改走窗口级关闭**：先 `WindowClose` 再兜底 `Quit`，重新经过 Go 的 `WindowClosing`（托盘隐藏 / 脏数据与 AI 回合确认 / 最后一个主窗口收口），不再绕过确认直接退出。
+- **浮窗/调试台关闭不再误停后台服务**：`beforeCloseWindow` / `ForceClose` 的收口条件补上「关闭的必须是主窗口」，避免关浮窗时把 MCP、插件服务和工作区监听一起停掉。
+- **收起态不写几何记忆**：浮窗「收起」（只留标题栏）期间新增 `SetWindowCollapsed` 标记，几何采集跳过，下次打开仍是收起前的展开尺寸。
+- **独立调试台窗口可拖动**：无边框窗口的头部补拖动区（`body.console-only .dbg-head`），按钮保持可点；停靠模式不受影响。
+- **显式退出恢复确认**：v3 的 `Application.Quit` 不经过 `WindowClosing`（v2 的 `runtime.Quit` 会先调 `OnBeforeClose`）。菜单/托盘的「退出」改为 `QuitApp` 汇总全部窗口与进程级任务：无风险直接关闭全部窗口；有风险发 `app-quit-request`，前端复用关窗确认框，确认后 `ForceQuitAll`。
+- **最后一个主窗口关闭 = 退出程序**：带走浮窗/调试台（确认理由聚合附属窗口的 AI/未保存状态）；应用级服务收口抽成幂等的 `teardownAppServices`，只在应用退出时执行一次。
+- 新增护栏 `frontend/test/core/window-close-semantics.test.mjs`，防止这些路径再退回 `runtime.Quit`。
+
 ### 修复（AI 头部「定时」胶囊点了没反应，且在所有会话都显示）
 
 - **现象**：头部「定时」胶囊显示某会话的任务数后，切到任何别的会话都一直挂着，点击也没有任何反应。

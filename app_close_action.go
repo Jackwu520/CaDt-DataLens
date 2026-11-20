@@ -15,6 +15,7 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/application"
 
 	"datalens/internal/appconfig"
+	"datalens/internal/cmdbridge"
 	"datalens/internal/tray"
 )
 
@@ -54,14 +55,91 @@ func (a *App) SetCloseAction(action string) error {
 	return nil
 }
 
-// QuitApp 显式退出（菜单「退出」）：与点 X 不同，它不受「最小化到托盘」影响，
-// 该走的未保存 / 任务进行中确认照旧走（beforeClose 会拦下来弹框，用户确认后 ForceClose）。
+// QuitApp 显式退出（菜单「退出」/ 托盘右键「退出」）。与点 X 不同，它不受
+// 「最小化到托盘」影响，但未保存 / 任务进行中的确认照旧要走。
+//
+// v3 的 Application.Quit 不经过 WindowClosing（v2 的 runtime.Quit 会先调
+// OnBeforeClose），所以不能直接把窗口关掉再 quitApp：没风险时直接关闭全部窗口；
+// 有风险时把汇总结果发给一个窗口，前端复用关窗确认框，确认后调 ForceQuitAll。
 func (a *App) QuitApp() {
 	if a.ctx == nil {
 		return
 	}
+	reasons := a.appQuitReasonSnapshot()
+	if reasons.empty() {
+		a.ForceQuitAll()
+		return
+	}
+	st := winReg.primary()
+	if st == nil {
+		for _, cand := range winReg.list() {
+			st = cand
+			break
+		}
+	}
+	if st == nil {
+		a.ForceQuitAll()
+		return
+	}
+	emitWindowEventTo(st.window(), "app-quit-request", reasons)
+	activateWindow(st.window())
+}
+
+// ForceQuitAll 前端确认退出后调用：关闭全部窗口。应用级服务在这里先收口一次
+// （幂等），不依赖最后一个窗口的钩子跑在前面。
+func (a *App) ForceQuitAll() {
 	a.quitRequested.Store(true)
-	quitApp()
+	states := winReg.list()
+	if len(states) == 0 {
+		quitApp()
+		return
+	}
+	a.teardownAppServices()
+	for _, st := range states {
+		st.markForceClose()
+		st.SetDirty(false)
+		st.SetAIRunning(false)
+		closeWindow(st.window())
+	}
+}
+
+// appQuitReasons 是显式退出前汇总的「有风险」状态（跨全部窗口 + 进程级任务）。
+type appQuitReasons struct {
+	Dirty     bool `json:"dirty"`
+	AIRunning bool `json:"aiRunning"`
+	Terms     int  `json:"terms"`
+	BgJobs    int  `json:"bgJobs"`
+}
+
+func (r appQuitReasons) empty() bool {
+	return !r.Dirty && !r.AIRunning && r.Terms == 0 && r.BgJobs == 0
+}
+
+func (a *App) appQuitReasonSnapshot() appQuitReasons {
+	var r appQuitReasons
+	for _, st := range winReg.list() {
+		if st.IsDirty() {
+			r.Dirty = true
+		}
+		if st.IsAIRunning() {
+			r.AIRunning = true
+		}
+	}
+	r.Terms = a.Terminal.RunningSessionCount()
+	r.BgJobs = cmdbridge.RunningAIJobCount()
+	return r
+}
+
+// teardownAppServices 应用级服务收口（托盘 / MCP / 插件服务 / 工作区监听）。
+// 只在应用退出时调用一次；普通关掉一个窗口不能走这里。
+func (a *App) teardownAppServices() {
+	if !a.teardownDone.CompareAndSwap(false, true) {
+		return
+	}
+	a.stopTray()
+	a.mcpCloseAll()         // MCP 子进程全量关闭（总预算 8s，超时靠 taskkill 兜底）
+	a.AppServices.StopAll() // 插件后台服务全量停止（取消即杀整棵进程树）
+	a.UnwatchWorkspace()
 }
 
 // hideToTray 隐藏指定窗口并把图标挂到通知区。
@@ -119,17 +197,16 @@ func (a *App) restoreFromTray() {
 }
 
 // quitFromTray 托盘右键「退出」：先把窗口露出来（未保存 / 任务进行中的确认框得看得见），
-// 再走正常退出流程——quitRequested 让 beforeClose 不再隐藏。
+// 再走与菜单「退出」同一条退出请求流程（v3 不能直接 Application.Quit，会绕过关窗确认）。
 func (a *App) quitFromTray() {
 	if a.ctx == nil {
 		return
 	}
-	a.quitRequested.Store(true)
 	if a.tray != nil {
 		a.tray.Hide()
 	}
 	showMainWindow()
-	quitApp()
+	a.QuitApp()
 }
 
 // secondInstanceShow 是「又点了一次桌面图标 / 系统通知被点击」时把窗口找回来的路径：

@@ -168,6 +168,11 @@ func (g *windowGeometryManager) capture(st *windowState) {
 	if w == nil || w.IsMinimised() || w.IsFullscreen() {
 		return
 	}
+	// 浮窗「收起」时窗口被 UI 压到标题栏高度；这不是用户偏好，跳过采集，
+	// 保留收起前的还原矩形（下次打开仍是展开后的大小）。
+	if st.IsCollapsed() {
+		return
+	}
 	// 创建阶段的初始定位/尺寸事件会早于 windowReady 到达。此时窗口还不可见，
 	// 采集会把「最大化」标记冲成普通状态（重启后就不还原最大化了），直接跳过；
 	// 用户真正拖动/缩放时窗口必然可见。

@@ -32,6 +32,14 @@ func (a *App) SetAIRunning(ctx context.Context, running bool) {
 	}
 }
 
+// SetWindowCollapsed：浮窗前端在「收起/展开」时同步。收起态的窗口高度只是
+// 标题栏高度，不能当成用户偏好的窗口尺寸写进几何记忆。
+func (a *App) SetWindowCollapsed(ctx context.Context, collapsed bool) {
+	if st := stateForCaller(ctx); st != nil {
+		st.SetCollapsed(collapsed)
+	}
+}
+
 // uniqueIDForLaunch：P2 起所有模式共用同一单实例锁——第二个进程一律转发给
 // 已运行实例，由 secondInstance 决定开主窗口 / 浮窗 / 调试控制台。
 // CADT_UNIQUE_ID 可覆盖（并行测试/便携多配置隔离用），默认值与原单实例 ID 一致。
@@ -208,25 +216,37 @@ func (a *App) beforeCloseWindow(st *windowState) bool {
 		return true
 	}
 	// 关窗二次确认的依据不止「AI 回合进行中」：终端会话与 AI 后台命令作业都会随窗口
-	// 关闭被静默终止，一并计入。终端/后台命令当前是进程级计数，只对主窗口生效
-	//（浮窗/调试控制台不承载它们，避免误报）。
+	// 关闭被静默终止，一并计入。这些是进程级资源：主窗口关闭时要提示；非主窗口
+	// 只在它是最后一个窗口时提示（其余情况关浮窗不影响主窗口里的任务）。
+	// lastMain：关闭的是最后一个主窗口，即「退出应用」——会连带关掉浮窗/调试台；
+	// lastWindow：关闭后进程里没有窗口了（--ai-float / --debug-console 单独运行）。
+	lastMain := isMain && winReg.countMain() <= 1
+	lastWindow := winReg.count() <= 1
 	terms, bgJobs := 0, 0
-	if isMain {
+	if isMain || lastWindow {
 		terms = a.Terminal.RunningSessionCount()
 		bgJobs = cmdbridge.RunningAIJobCount()
 	}
-	if st.forceClosed() || (!st.IsDirty() && !st.IsAIRunning() && terms == 0 && bgJobs == 0) {
-		if winReg.countMain() <= 1 {
-			a.stopTray()
-			a.mcpCloseAll()         // MCP 子进程全量关闭（总预算 8s，超时靠 taskkill 兜底）
-			a.AppServices.StopAll() // 插件后台服务全量停止（取消即杀整棵进程树）
-			a.UnwatchWorkspace()
+	dirty, aiRunning := st.IsDirty(), st.IsAIRunning()
+	if lastMain {
+		// 退出应用会带走附属窗口：它们的未保存/AI 状态也要算进这次确认。
+		dirty = dirty || winReg.anyDirty()
+		aiRunning = aiRunning || winReg.anyAIRunning()
+	}
+	if st.forceClosed() || (!dirty && !aiRunning && terms == 0 && bgJobs == 0) {
+		if lastMain {
+			// 最后一个主窗口关闭 = 退出程序：先收口应用级服务，再带走附属窗口。
+			a.teardownAppServices()
+			closeOtherWindows(st)
+		} else if lastWindow {
+			// 没有主窗口的模式（--ai-float / --debug-console）：最后一个窗口收口。
+			a.teardownAppServices()
 		}
 		return false
 	}
 	if w := st.window(); w != nil {
 		w.EmitEvent("confirm-close", map[string]interface{}{
-			"dirty": st.IsDirty(), "aiRunning": st.IsAIRunning(), "terms": terms, "bgJobs": bgJobs,
+			"dirty": dirty, "aiRunning": aiRunning, "terms": terms, "bgJobs": bgJobs,
 		})
 	}
 	return true
@@ -240,12 +260,14 @@ func (a *App) ForceClose(ctx context.Context) {
 	st.markForceClose()
 	st.SetDirty(false)
 	st.SetAIRunning(false)
-	lastMain := winReg.countMain() <= 1
+	isMain := st.startup().Mode == windowModeMain
+	lastMain := isMain && winReg.countMain() <= 1
+	lastWindow := winReg.count() <= 1
 	if lastMain {
-		a.stopTray()
-		a.mcpCloseAll()
-		a.AppServices.StopAll()
-		a.UnwatchWorkspace()
+		a.teardownAppServices()
+		closeOtherWindows(st)
+	} else if lastWindow {
+		a.teardownAppServices()
 	}
 	closeWindow(st.window())
 }

@@ -1672,6 +1672,7 @@ const mockBackend = {
     },
     async SetCloseAction(action) { window.__mockCloseAction = action === 'tray' ? 'tray' : 'exit'; },
     async QuitApp() { this._calls.push('quit-app'); },
+    async ForceQuitAll() { window.__mockForceQuitAll = (window.__mockForceQuitAll || 0) + 1; },
     async GetIntegrationStatus() {
         if (!window.__mockIntegration) {
             window.__mockIntegration = {fileAssoc: false, contextMenu: false};
@@ -2659,6 +2660,7 @@ const mockBackend = {
         return {acquired: false, busy: false};
     },
     async ForceClose() { window.__mockForceClosed = (window.__mockForceClosed || 0) + 1; },
+    async SetWindowCollapsed(collapsed) { window.__mockWindowCollapsed = !!collapsed; },
     async WebSearch(query, maxResults) {
         window.__mockWebSearch = {query, maxResults};
         return {

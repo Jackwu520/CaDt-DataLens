@@ -5620,6 +5620,12 @@ div.jsoneditor-tree textarea { user-select: text; }
     height: 100%;
     z-index: 1;
 }
+/* 独立控制台窗口是无边框的：头部即标题栏（拖动窗口），控件保持可点。
+   停靠模式在编辑器底部面板里，不需要拖动语义。 */
+body.console-only .dbg-head { --wails-draggable: drag; cursor: move; }
+body.console-only .dbg-head button,
+body.console-only .dbg-head input,
+body.console-only .dbg-head select { --wails-draggable: no-drag; }
 #debug-view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 #debug-view.hidden { display: none; }
 .term-head.hidden, .term-body.hidden { display: none; }

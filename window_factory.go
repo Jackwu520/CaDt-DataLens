@@ -211,5 +211,19 @@ func closeWindow(w *application.WebviewWindow) {
 	}
 }
 
+// closeOtherWindows 关闭除 except 外的全部窗口（最后一个主窗口退出时带走浮窗/调试台）。
+// 先置 forceClose：这些窗口的 AI 回合/未保存状态已经算进主窗口的退出确认，不再逐个弹框。
+func closeOtherWindows(except *windowState) {
+	for _, st := range winReg.list() {
+		if st == except {
+			continue
+		}
+		st.markForceClose()
+		st.SetDirty(false)
+		st.SetAIRunning(false)
+		closeWindow(st.window())
+	}
+}
+
 // windowShowDelay 是 UI 线程从导航初始化松手的等待（v2 的图标占位问题）。
 const windowShowDelay = 120 * time.Millisecond

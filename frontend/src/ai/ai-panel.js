@@ -16198,6 +16198,10 @@ async function requestApproval(session, toolMessage, info) {
         const rt = window.runtime || {};
         const collapsed = !!next;
         if (collapsed === floatCollapsed) return;
+        // 收起态的标题栏高度不是用户偏好：同步给 Go，几何采集跳过这段时间。
+        try {
+            if (backend.SetWindowCollapsed) backend.SetWindowCollapsed(collapsed);
+        } catch (e) {}
         if (collapsed) {
             const apply = (size) => {
                 const w = size && (size.w || size.width);
@@ -16481,8 +16485,8 @@ async function requestApproval(session, toolMessage, info) {
     // ---------- 绑定面板交互 ----------
 
 
-    // 悬浮窗强制退出：优先 ForceClose（后端置 forceClose 后 Quit，不受 dirty/aiRunning
-    // 的 beforeClose 拦截影响）；绑定不可用时退回 runtime.Quit 兜底。
+    // 悬浮窗强制退出：优先 ForceClose（后端置 forceClose 后关掉当前窗口，不受
+    // dirty/aiRunning 的 beforeClose 拦截影响）；绑定不可用时只关当前窗口。
     function forceQuitFloatWindow() {
         try {
             if (backend.ForceClose) {
@@ -16491,7 +16495,8 @@ async function requestApproval(session, toolMessage, info) {
             }
         } catch (e) {}
         try {
-            if (window.runtime && window.runtime.Quit) window.runtime.Quit();
+            // v3 的 runtime.Quit 是应用级退出——浮窗只能关自己。
+            if (window.runtime && window.runtime.WindowClose) window.runtime.WindowClose();
         } catch (e) {}
     }
 

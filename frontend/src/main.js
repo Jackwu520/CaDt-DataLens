@@ -258,15 +258,15 @@ function startConsoleWindowMode() {
         },
         onClose: () => {
             try {
-                if (window.runtime && window.runtime.Quit) {
-                    window.runtime.Quit();
+                // v3 里 runtime.Quit 是应用级退出：独立控制台只能关自己。
+                // ForceClose 按 ctx 归属关闭调用方窗口（调试台不参与关窗确认）。
+                if (backend.ForceClose) {
+                    backend.ForceClose();
                     return;
                 }
                 if (window.runtime && window.runtime.WindowClose) {
                     window.runtime.WindowClose();
-                    return;
                 }
-                if (backend.ForceClose) backend.ForceClose();
             } catch (e) {}
         },
     });
@@ -5019,7 +5019,9 @@ if (rt) {
         rt.WindowToggleMaximise();
         setTimeout(syncMaxIcon, 100);
     });
-    document.getElementById('wc-close').addEventListener('click', () => { if (rt.Quit) rt.Quit(); else if (rt.WindowClose) rt.WindowClose(); });
+    // 标题栏 X 走窗口级关闭（触发 Go 的 WindowClosing：托盘隐藏/关窗确认/
+    // 最后一个窗口收口）；runtime.Quit 是应用级退出，留给菜单里的「退出」。
+    document.getElementById('wc-close').addEventListener('click', () => { if (rt.WindowClose) rt.WindowClose(); else if (rt.Quit) rt.Quit(); });
     document.getElementById('toolbar').addEventListener('dblclick', (e) => {
         if (e.target.closest('button, input, select, textarea')) return;
         rt.WindowToggleMaximise();
@@ -6301,28 +6303,43 @@ if (rt) {
             openPaths(paths);
         }, false);
     }
-    appEvents.onWindow('confirm-close', (reasons) => {
-        flushCsvCellEditor();
-        // 快捷便签：挂着的防抖保存在弹确认框前先落盘（自动保存语义，之后无论选哪个退出按钮都不丢）
-        if (memoFlushHook) memoFlushHook();
-        const r = reasons || {};
-        // 来源分组（Go 侧 beforeClose 下发）：AI 回合 / 后台命令作业 / 终端。
-        // terms 只数 shell 里有活命令进程的终端（空闲提示符不算，Go 侧枚举后代进程判定）
+    // 关窗/退出确认文案（Go 侧 beforeClose 与显式退出共用同一份理由）。
+    // 来源分组：AI 回合 / 后台命令作业 / 终端；terms 只数 shell 里有活命令进程的终端。
+    function closeReasonsText(r, actionWord) {
         const bgJobs = Number(r.bgJobs) || 0;
         const terms = Number(r.terms) || 0;
         const active = [];
         if (r.aiRunning) active.push('AI 会话正在进行中');
         if (bgJobs > 0) active.push(bgJobs + ' 个 AI 后台命令仍在运行');
         if (terms > 0) active.push(terms + ' 个终端正在执行任务');
-        if (active.length) {
+        if (!active.length) return '';
+        return (r.dirty ? '有未保存的修改，且 ' : '') + active.join('，') +
+            '；' + actionWord + '将终止这些任务' + (r.dirty ? '并丢弃未保存的修改' : '') + '。';
+    }
+
+    appEvents.onWindow('confirm-close', (reasons) => {
+        flushCsvCellEditor();
+        // 快捷便签：挂着的防抖保存在弹确认框前先落盘（自动保存语义，之后无论选哪个退出按钮都不丢）
+        if (memoFlushHook) memoFlushHook();
+        const message = closeReasonsText(reasons || {}, '关闭');
+        if (message) {
             openConfirmDialog(
-                (r.dirty ? '有未保存的修改，且 ' : '') + active.join('，') +
-                    '；关闭将终止这些任务' + (r.dirty ? '并丢弃未保存的修改' : '') + '。',
+                message,
                 () => { if (backend.ForceClose) backend.ForceClose(); },
                 '终止并关闭', '关闭', 'danger');
             return;
         }
         openConfirmDialog(undefined, undefined, undefined, undefined, 'danger');
+    });
+    // 显式退出（菜单/托盘）：Go 汇总全部窗口的风险后发来；确认后一次关闭所有窗口。
+    appEvents.onWindow('app-quit-request', (reasons) => {
+        flushCsvCellEditor();
+        if (memoFlushHook) memoFlushHook();
+        const message = closeReasonsText(reasons || {}, '退出');
+        openConfirmDialog(
+            message || '确定退出应用？',
+            () => { if (backend.ForceQuitAll) backend.ForceQuitAll(); },
+            '退出', '退出应用', 'danger');
     });
     // AI 回合状态同步给后端（Go 侧 beforeClose 据此决定是否弹关窗确认）
     let aiRunningLast = false;
