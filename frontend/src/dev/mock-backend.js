@@ -1797,6 +1797,10 @@ const mockBackend = {
     async GetStartupDiff() { return null; },
     async GetStartupLight() { return window.__mockAuxWindowKind === 'light' ? {path: ''} : null; },
     async GetStartupPreview() { return window.__mockAuxWindowKind === 'preview' ? {path: '', origin: ''} : null; },
+    // 群讨论租约（multi-instance-sync P6）：mock 恒成功（dev 单窗口）
+    async GroupLeaseAcquire(id, label) { this._calls.push('group-lease-acquire:' + id); return {acquired: true}; },
+    async GroupLeaseRelease(id) { this._calls.push('group-lease-release:' + id); },
+    async GroupLeaseStatus(id) { return {acquired: false, busy: false}; },
     async WindowList() {
         return (window.__mockWindows || [{name: 'main', mode: 'main', self: '1'}]).slice();
     },

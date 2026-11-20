@@ -1276,6 +1276,23 @@ export function createAIGroupRuntime(deps) {
         d.error = '';
         if (d.phase === 'idle' || d.phase === 'ended') d.phase = 'opening';
         notify();
+        // 群讨论租约（multi-instance-sync P6 收尾）：整场讨论一个群同一时刻只有
+        // 一个窗口主持——跨窗口 busy 直接落 error（进程内 refcount 不再放行双主持）。
+        // 绑定不可用（旧 mock）时不阻塞讨论，维持旧行为。
+        if (backend.GroupLeaseAcquire) {
+            try {
+                const lease = await backend.GroupLeaseAcquire(groupId, '');
+                if (!lease || lease.busy) {
+                    d.running = false;
+                    d.phase = 'idle';
+                    d.error = '群聊正在另一窗口讨论';
+                    notify();
+                    if (typeof deps.flash === 'function') deps.flash('群聊正在另一窗口讨论', true);
+                    return;
+                }
+                d.leaseHeld = true;
+            } catch (e) {}
+        }
         try {
             while (!d.abort) {
                 const meta = g.meta;
@@ -1423,6 +1440,12 @@ export function createAIGroupRuntime(deps) {
             }
         } finally {
             d.running = false;
+            // 讨论退出（结束/暂停/出错）都放掉讨论租约：暂停态不长期占锁，
+            // 恢复时 runDiscussion 会重新获取。
+            if (d.leaseHeld && backend.GroupLeaseRelease) {
+                d.leaseHeld = false;
+                Promise.resolve(backend.GroupLeaseRelease(groupId)).catch(() => {});
+            }
             if (d.needMinutes) {
                 d.needMinutes = false;
                 d.phase = 'ended';

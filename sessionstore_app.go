@@ -14,4 +14,6 @@ func init() {
 	sessionstore.OnMetaChange = sessionindex.UpdateMeta
 	sessionstore.OnRemove = sessionindex.Delete
 	sessionstore.OnClear = sessionindex.Clear
+	// 回合租约的归属窗口名（同进程多窗口跨窗口互斥，2026-11-21 审查遗留）
+	sessionstore.OwnerForCall = callerWindowName
 }

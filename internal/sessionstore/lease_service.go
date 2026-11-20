@@ -2,18 +2,36 @@
 //
 // 一次 Acquire 同时拿「根门闩共享 + 会话独占」，Release 按相反顺序释放。与
 // sessionstore.withSessionLock 的短租约共用 resourcelease 的进程内 refcount：
-// 同一回合里的 Append/WriteMeta 不会自锁，别的窗口持有回合锁时写路径返回
+// 同一回合里的 Append/WriteMeta 不会自锁，别的进程持有回合锁时写路径返回
 // ErrSessionBusy（字符串前缀 session-busy:）。
+//
+// v3 一进程多窗口：租约的进程内重入按「归属窗口名」分桶——同窗口重入计数，
+// 跨窗口 Busy（reason other_window：两个窗口各自 startSessionTurn 同一会话
+// 不再被 refcount 放行成双回合，2026-11-21 审查遗留 / multi-instance-sync
+// 收缩范围外的同进程缺口）。
 package sessionstore
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
 	"datalens/internal/resourcelease"
 )
+
+// OwnerForCall 返回绑定调用方窗口名（main 注入 callerWindowName）。
+// 空串 = 兼容测试与非绑定路径（单桶语义，行为与旧 refcount 一致）。
+var OwnerForCall func(ctx context.Context) string
+
+func leaseOwnerKey(ctx context.Context) string {
+	if OwnerForCall != nil {
+		return strings.TrimSpace(OwnerForCall(ctx))
+	}
+	return ""
+}
 
 // LogStat 是会话正文的磁盘状态，交接协议用它判断“另一个窗口是否写过”。
 type LogStat struct {
@@ -25,7 +43,7 @@ type LogStat struct {
 // LeaseStatus 是租约获取/探测结果。
 type LeaseStatus struct {
 	Acquired bool                `json:"acquired"` // 本进程是否持有
-	Busy     bool                `json:"busy"`     // 是否被其它进程持有
+	Busy     bool                `json:"busy"`     // 是否被其它进程/窗口持有
 	Owner    resourcelease.Owner `json:"owner,omitempty"`
 	Stat     LogStat             `json:"stat,omitempty"`
 }
@@ -33,7 +51,8 @@ type LeaseStatus struct {
 type sessionLeaseEntry struct {
 	root    *resourcelease.Lease
 	session *resourcelease.Lease
-	refs    int
+	// holders 持有者计数，按归属窗口名分桶：同窗口重入 +1，跨窗口 Busy。
+	holders map[string]int
 	owner   resourcelease.Owner
 }
 
@@ -45,8 +64,9 @@ var (
 // AISessionLeaseAcquire 取会话回合租约（根共享 + 会话独占）。
 //
 // purpose 只用于调试/展示；timeoutMs=0 时非阻塞，>0 时在“根共享”下短等
-// 目标会话（根独占的清理不会反向等待会话租约，不会形成 ABBA）。
-func (s *Service) AISessionLeaseAcquire(id, purpose, label string, timeoutMs int) (LeaseStatus, error) {
+// 目标会话（根独占的清理不会反向等待会话租约，不会形成 ABBA）。等待只对
+// 「别的进程」的持有者有意义：同进程别的窗口持有 → 立即 Busy，不等待。
+func (s *Service) AISessionLeaseAcquire(ctx context.Context, id, purpose, label string, timeoutMs int) (LeaseStatus, error) {
 	store, err := s.store()
 	if err != nil {
 		return LeaseStatus{}, err
@@ -57,11 +77,17 @@ func (s *Service) AISessionLeaseAcquire(id, purpose, label string, timeoutMs int
 	if err := store.EnsureRoot(); err != nil {
 		return LeaseStatus{}, err
 	}
+	ownerKey := leaseOwnerKey(ctx)
 
 	sessionLeaseMu.Lock()
 	if entry := sessionLeases[id]; entry != nil {
-		entry.refs++
-		st := LeaseStatus{Acquired: true, Owner: entry.owner, Stat: statLog(store, id)}
+		if _, held := entry.holders[ownerKey]; held {
+			entry.holders[ownerKey]++
+			st := LeaseStatus{Acquired: true, Owner: entry.owner, Stat: statLog(store, id)}
+			sessionLeaseMu.Unlock()
+			return st, nil
+		}
+		st := LeaseStatus{Busy: true, Owner: entry.owner, Stat: statLog(store, id)}
 		sessionLeaseMu.Unlock()
 		return st, nil
 	}
@@ -81,12 +107,14 @@ func (s *Service) AISessionLeaseAcquire(id, purpose, label string, timeoutMs int
 	}
 	owner := resourcelease.Owner{
 		PID:       os.Getpid(),
-		Label:     label,
+		Label:     leaseOwnerLabel(label, ownerKey),
 		StartedAt: time.Now().UnixMilli(),
 		Version:   1,
 	}
 	var sessionLease *resourcelease.Lease
-	if timeoutMs > 0 {
+	if timeoutMs > 0 && ownerKey == "" {
+		// 短等只用于跨进程场景（无归属窗口的后台入口）；同进程多窗口一律非阻塞
+		// ——等待会吞掉「另一窗口运行中」的即时反馈。
 		sessionLease, err = resourcelease.AcquireWait(leasePath, owner, time.Duration(timeoutMs)*time.Millisecond)
 	} else {
 		sessionLease, err = resourcelease.Acquire(leasePath, owner)
@@ -102,30 +130,58 @@ func (s *Service) AISessionLeaseAcquire(id, purpose, label string, timeoutMs int
 	// 双检：并发 Acquire 可能已经入表；把本次多拿的 ref 还回去。
 	sessionLeaseMu.Lock()
 	if entry := sessionLeases[id]; entry != nil {
-		entry.refs++
+		entry.holders[ownerKey]++
 		st := LeaseStatus{Acquired: true, Owner: entry.owner, Stat: statLog(store, id)}
 		sessionLeaseMu.Unlock()
 		sessionLease.Release()
 		rootLease.Release()
 		return st, nil
 	}
-	entry := &sessionLeaseEntry{root: rootLease, session: sessionLease, refs: 1, owner: owner}
+	entry := &sessionLeaseEntry{
+		root:    rootLease,
+		session: sessionLease,
+		holders: map[string]int{ownerKey: 1},
+		owner:   owner,
+	}
 	sessionLeases[id] = entry
 	st := LeaseStatus{Acquired: true, Owner: owner, Stat: statLog(store, id)}
 	sessionLeaseMu.Unlock()
 	return st, nil
 }
 
-// AISessionLeaseRelease 释放本进程对这个会话的回合租约；refs 归零才真正解锁。
-func (s *Service) AISessionLeaseRelease(id string) error {
+// leaseOwnerLabel 把窗口名并进横幅 label：同进程多窗口下 PID 相同，
+// 只有窗口名能区分「谁在跑」。
+func leaseOwnerLabel(label, ownerKey string) string {
+	label = strings.TrimSpace(label)
+	if ownerKey == "" {
+		if label == "" {
+			return "session"
+		}
+		return label
+	}
+	if label == "" {
+		return "窗口 " + ownerKey
+	}
+	return label + " · 窗口 " + ownerKey
+}
+
+// AISessionLeaseRelease 释放调用方窗口对这个会话的回合租约；最后一个持有者
+// 退出才真正解锁。
+func (s *Service) AISessionLeaseRelease(ctx context.Context, id string) error {
+	ownerKey := leaseOwnerKey(ctx)
 	sessionLeaseMu.Lock()
 	entry := sessionLeases[id]
 	if entry == nil {
 		sessionLeaseMu.Unlock()
 		return nil
 	}
-	entry.refs--
-	if entry.refs > 0 {
+	if n := entry.holders[ownerKey]; n > 1 {
+		entry.holders[ownerKey] = n - 1
+		sessionLeaseMu.Unlock()
+		return nil
+	}
+	delete(entry.holders, ownerKey)
+	if len(entry.holders) > 0 {
 		sessionLeaseMu.Unlock()
 		return nil
 	}
@@ -134,6 +190,41 @@ func (s *Service) AISessionLeaseRelease(id string) error {
 	entry.session.Release()
 	entry.root.Release()
 	return nil
+}
+
+// AISessionLeaseReleaseByOwner 归属窗口关闭时释放它名下的全部回合租约；
+// 最后一个持有者退出才解锁。返回触及的会话数（未持锁的窗口返回 0）。
+func (s *Service) AISessionLeaseReleaseByOwner(owner string) int {
+	ownerKey := strings.TrimSpace(owner)
+	if ownerKey == "" {
+		return 0
+	}
+	sessionLeaseMu.Lock()
+	ids := make([]string, 0, 2)
+	for id, entry := range sessionLeases {
+		if _, held := entry.holders[ownerKey]; held {
+			ids = append(ids, id)
+		}
+	}
+	type pendingRelease struct {
+		session *resourcelease.Lease
+		root    *resourcelease.Lease
+	}
+	releases := make([]pendingRelease, 0, len(ids))
+	for _, id := range ids {
+		entry := sessionLeases[id]
+		delete(entry.holders, ownerKey)
+		if len(entry.holders) == 0 {
+			delete(sessionLeases, id)
+			releases = append(releases, pendingRelease{entry.session, entry.root})
+		}
+	}
+	sessionLeaseMu.Unlock()
+	for _, r := range releases {
+		r.session.Release()
+		r.root.Release()
+	}
+	return len(ids)
 }
 
 // AISessionLeaseStatus 探测会话租约：本进程持有 -> Acquired；别的进程持有 ->

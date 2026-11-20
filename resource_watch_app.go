@@ -101,4 +101,12 @@ func (a *App) releaseWindowOwnedState(owner string) {
 		writeAppLog("info", "窗口关闭摘除资源监听：%s ×%d", owner, n)
 	}
 	memo.ReleaseLeaseByOwner(owner)
+	// 回合租约：窗口带着运行中的回合关掉时释放，别的窗口可按交接协议接管
+	if n := a.Service.AISessionLeaseReleaseByOwner(owner); n > 0 {
+		writeAppLog("info", "窗口关闭释放回合租约：%s ×%d", owner, n)
+	}
+	// 群讨论租约：同批（multi-instance-sync P6 收尾）
+	if n := a.GroupStore.GroupLeaseReleaseByOwner(owner); n > 0 {
+		writeAppLog("info", "窗口关闭释放群讨论租约：%s ×%d", owner, n)
+	}
 }

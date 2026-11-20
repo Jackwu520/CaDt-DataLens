@@ -1,6 +1,8 @@
 package sessionstore
 
 import (
+	"context"
+	"strings"
 	"errors"
 	"os"
 	"path/filepath"
@@ -13,22 +15,22 @@ import (
 func TestServiceSessionLeaseRefcount(t *testing.T) {
 	withServiceAppData(t)
 	svc := &Service{}
-	first, err := svc.AISessionLeaseAcquire("s1", "turn", "test", 0)
+	first, err := svc.AISessionLeaseAcquire(nil, "s1", "turn", "test", 0)
 	if err != nil || !first.Acquired {
 		t.Fatalf("首次租约失败：%+v %v", first, err)
 	}
-	second, err := svc.AISessionLeaseAcquire("s1", "turn", "test", 0)
+	second, err := svc.AISessionLeaseAcquire(nil, "s1", "turn", "test", 0)
 	if err != nil || !second.Acquired {
 		t.Fatalf("第二次租约应走 refcount：%+v %v", second, err)
 	}
-	if err := svc.AISessionLeaseRelease("s1"); err != nil {
+	if err := svc.AISessionLeaseRelease(nil, "s1"); err != nil {
 		t.Fatal(err)
 	}
 	status, err := svc.AISessionLeaseStatus("s1")
 	if err != nil || !status.Acquired {
 		t.Fatalf("释放一个 ref 后仍应持有：%+v %v", status, err)
 	}
-	if err := svc.AISessionLeaseRelease("s1"); err != nil {
+	if err := svc.AISessionLeaseRelease(nil, "s1"); err != nil {
 		t.Fatal(err)
 	}
 	status, err = svc.AISessionLeaseStatus("s1")
@@ -41,10 +43,10 @@ func TestServiceSessionLeaseRefcount(t *testing.T) {
 func TestSessionWriteSharesTurnLease(t *testing.T) {
 	withServiceAppData(t)
 	svc := &Service{}
-	if _, err := svc.AISessionLeaseAcquire("s1", "turn", "test", 0); err != nil {
+	if _, err := svc.AISessionLeaseAcquire(nil, "s1", "turn", "test", 0); err != nil {
 		t.Fatal(err)
 	}
-	defer svc.AISessionLeaseRelease("s1")
+	defer svc.AISessionLeaseRelease(nil, "s1")
 	if err := svc.AISessionAppend("s1", `{"t":"header"}`, true); err != nil {
 		t.Fatalf("同进程 Append 应共享租约：%v", err)
 	}
@@ -122,5 +124,66 @@ func TestSessionWriteBlockedByRootGate(t *testing.T) {
 	gate.Release()
 	if err := store.Append("s1", "x\n"); err != nil {
 		t.Fatalf("释放后 Append 失败：%v", err)
+	}
+}
+
+// TestTurnLeaseOwners：回合租约按归属窗口分桶——同窗口重入计数，跨窗口 Busy
+// （v3 同进程双窗口不再被 refcount 放行成双回合），按归属释放只摘自己的。
+func TestTurnLeaseOwners(t *testing.T) {
+	withServiceAppData(t)
+	svc := &Service{}
+	id := "lease-owner-test"
+
+	// 归属窗口名经 ctx 注入（生产由 main 注入 callerWindowName）。
+	type ownerCtxKey struct{}
+	OwnerForCall = func(ctx context.Context) string {
+		if v, ok := ctx.Value(ownerCtxKey{}).(string); ok {
+			return v
+		}
+		return ""
+	}
+	defer func() { OwnerForCall = nil }()
+	winCtx := func(owner string) context.Context {
+		return context.WithValue(context.Background(), ownerCtxKey{}, owner)
+	}
+
+	// 窗口 main 取得回合租约
+	first, err := svc.AISessionLeaseAcquire(winCtx("main"), id, "turn", "", 0)
+	if err != nil || !first.Acquired {
+		t.Fatalf("窗口 main 取租约失败：%+v %v", first, err)
+	}
+	// 同窗口重入：计数 +1
+	reentry, err := svc.AISessionLeaseAcquire(winCtx("main"), id, "turn", "", 0)
+	if err != nil || !reentry.Acquired {
+		t.Fatalf("同窗口重入应计数：%+v %v", reentry, err)
+	}
+	// 跨窗口（main-2）：Busy
+	second, err := svc.AISessionLeaseAcquire(winCtx("main-2"), id, "turn", "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Acquired || !second.Busy {
+		t.Fatalf("跨窗口取租约应 Busy：%+v", second)
+	}
+	if !strings.Contains(second.Owner.Label, "main") {
+		t.Fatalf("Busy Owner 应能看出持有窗口：%+v", second.Owner)
+	}
+	// main-2 未持锁：按归属释放触达 0
+	if n := svc.AISessionLeaseReleaseByOwner("main-2"); n != 0 {
+		t.Fatalf("未持锁窗口按归属释放应触达 0：%d", n)
+	}
+	// main 释放一次（重入还在）：仍持有
+	if err := svc.AISessionLeaseRelease(winCtx("main"), id); err != nil {
+		t.Fatal(err)
+	}
+	if st, err := svc.AISessionLeaseStatus(id); err != nil || !st.Acquired {
+		t.Fatalf("还剩一个持有者时应仍持有：%+v %v", st, err)
+	}
+	// main 关窗：按归属释放解锁
+	if n := svc.AISessionLeaseReleaseByOwner("main"); n != 1 {
+		t.Fatalf("按归属释放应触达 1：%d", n)
+	}
+	if st, err := svc.AISessionLeaseStatus(id); err != nil || st.Acquired || st.Busy {
+		t.Fatalf("全部释放后租约应为空：%+v %v", st, err)
 	}
 }

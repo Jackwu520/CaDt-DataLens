@@ -1782,6 +1782,12 @@ B6–F 系列引擎下沉（`docs/finished-plans/go-layout.md`）经逐提交审
 - **窗口基建**：三类辅助窗走与终端弹出同构的骨架（`windowModeMemo/Monitor/Diff` + `aux_windows.go` 绑定壳 + `GetAuxWindowKind` 启动分派），几何记忆按形态槽位级联，quick-switch「窗口」层自动收录；三类窗口都不注册为工作区打开者，不撞「同工作区防双开」守卫。
 - 护栏：`frontend/test/ai/ai-monitor-view.test.mjs`（流式尾随状态机 + 行组装）、`frontend/test/editor/diff-window-view.test.mjs`（摘要口径）、`aux_windows_test.go`（注册表查找 / 入参归一 / 几何槽位）。
 
+### 重构（multi-instance-sync P6 收尾：回合租约按窗口分桶 + 群讨论租约）
+
+- **会话回合租约按归属窗口分桶**：`AISessionLeaseAcquire/Release` 加 ctx（归属=调用方窗口名）——v3 同进程双窗口各自 `startSessionTurn` 同一会话不再被进程内 refcount 放行成双回合（上下文交错/meta 覆盖），跨窗口直接 `other_window` 忙提示；窗口关闭按归属释放（`AISessionLeaseReleaseByOwner`），另一窗口可按交接协议接管。短等语义仅保留给无归属窗口的后台入口，同进程多窗口一律非阻塞。
+- **群聊讨论租约（multi-instance-sync P6）**：`internal/aigroups/lease_service.go`——根门闩共享 + 群独占（锁在 `ai-groups/.locks/<id>.turn.lease` 与 `ai-groups.gate`，均在被保护目录之外），粒度=**整场讨论**：一个群同一时刻只有一个窗口主持，第二个窗口发起讨论提示「群聊正在另一窗口讨论」；暂停态不长期占锁、恢复重取；窗口关闭按归属释放。自由聊天维持追加锁 + CAS（既有已知限制口径不变）。
+- 方案 `docs/finished-plans/multi-instance-sync.md` 移档收尾；护栏 `internal/aigroups/lease_service_test.go` + `sessionstore` 租约分桶测试。
+
 ### 重构（窗口归属重构：监听/租约/浏览器/截图/对话框按窗口归属）
 
 - **工作区监听按窗口键控**：`Watcher` 单槽改按归属者多槽——双窗口先后打开各自工作区，后开窗口不再顶掉先开窗口的 `workspace-changed`（此前先开窗口的资源管理器自动刷新失效、wipe-guard L2 对其静默失明）。

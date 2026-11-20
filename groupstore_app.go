@@ -6,5 +6,6 @@ import "datalens/internal/aigroups"
 // 群聊不进会话搜索索引（§16.8）、无派生索引钩子——共享对话 JSONL 是唯一真源；
 // 绑定方法由 App 匿名嵌入 *aigroups.GroupStore 提升（app_core.go）。
 func init() {
+	aigroups.OwnerForCall = callerWindowName
 	aigroups.AppDataDir = appDataRoot
 }
