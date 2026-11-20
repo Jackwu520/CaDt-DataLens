@@ -51,7 +51,7 @@
 | 期 | 内容 | 出口判据 |
 | --- | --- | --- |
 | P0 spike | 独立分支：只迁 `main.go` 启动段跑起来，验证 **Frameless 无边框 / 托盘 / 单实例转发 / AI 浮窗 / fork 补丁注入点 / 定向事件 / 每窗口独立 JS context** 七项还原度（2026-11-20 复评加两项：定向事件——issue #6608 报 `window.EmitEvent()` 实际广播到所有窗口，term-out/ai-chat/resource-changed 在多窗口下必须真定向或全前端过滤；每窗口独立 JS context 是 per-window 装配的前提）；起跑先过**工具链关**（2026-11-20 评审补记：`wails3` + Taskfile 迁移、`wails dev` 等价热重载——机械适配，不占七项名额、不设暂停条件）。**2026-11-20 已完成**（`spike/wails3/` 独立模块，见 `docs/reports/wails-v3-p0-spike.md`） | 七项中五项可用 → 继续；fork 补丁无挂点、Frameless 缺失或定向事件不工作 → 暂停迁移，回到 v2 路线（windowreg 方案不受影响）。**实测：6 项通过；定向事件确认广播（#6608），`sender` 可用于前端过滤；按「可用 + 兜底成本」判定继续，P2 先落事件过滤** |
-| P1 框架等价迁移 | 绑定 NewService、48+28 处 runtime/事件替换、自研单实例锁、前端聚合点与事件、mock-backend；**保持单窗口，行为零变化** | 全量 Go + 前端测试过；`tools/rebuild-exe.ps1` 测试门过；手工回归 §3 清单 |
+| P1 框架等价迁移 | 绑定 NewService、48+28 处 runtime/事件替换（事件订阅按 `wails-v3-event-filtering.md` 走桥接层）、自研单实例锁、前端聚合点与事件、mock-backend；**保持单窗口，行为零变化** | 全量 Go + 前端测试过；`tools/rebuild-exe.ps1` 测试门过；手工回归 §3 清单 |
 | P2 多窗口改造 | `--new-window` 改 `app.Window.New`（同进程开窗）；窗口注册表改进程内对象；AI 浮窗 / 调试控制台改窗口对象 | 手工双窗口场景与 v2 时代行为对照 |
 | P3 清理 | 删除 `internal/windowreg` 及其绑定/前端接线；重审 resourcelease / watch 在新模型下的语义；`AGENTS.md` / CHANGELOG 收口 | 文档与代码一致 |
 
@@ -113,4 +113,4 @@
 
 **工具链**：`wails3 build`（Wake）9.3s 出包；`wails3 generate bindings -b` 840ms 生成（引用 `/wails/runtime.js`，零 npm 依赖）。
 
-**结论**：P0 出口判据满足（6 通过 + 定向事件有低成本兜底），**迁移继续**；进入 P1 前先按 §2 三处修正更新估算，P2 首项落事件过滤设计。
+**结论**：P0 出口判据满足（6 通过 + 定向事件有低成本兜底），**迁移继续**；进入 P1 前先按 §2 三处修正更新估算，P2 首项落事件过滤设计。**事件过滤方案已独立立项**：`wails-v3-event-filtering.md`（P1 内建桥接层 + 48 处订阅迁移，估算 +2 天；P2 不再单列事件改造）。
