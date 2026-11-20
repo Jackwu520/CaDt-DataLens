@@ -26,6 +26,7 @@ export function createImageLightbox(host, options = {}) {
     let scale = 1;
     let drag = null;
     let dragMoved = false;
+    let downTarget = null;
 
     function ensureBuilt() {
         if (root) return;
@@ -67,8 +68,15 @@ export function createImageLightbox(host, options = {}) {
 
         closeBtn.addEventListener('click', close);
         root.addEventListener('click', (e) => {
-            if (!opened || dragMoved) return;
-            if (e.target === root || e.target === stage || e.target === canvas) close();
+            if (!opened) return;
+            // 用 pointerdown 记下的原始目标判断「点空白」：指针捕获会把 click.target 重定向到
+            // stage，直接看 e.target 会把「点图片」也误判成点空白。dragMoved 只吞拖动收尾那次
+            // click，判断完即清，避免残留标志让后续单击永远关不掉。
+            const blank = downTarget === root || downTarget === stage || downTarget === canvas;
+            const wasDrag = dragMoved;
+            downTarget = null;
+            dragMoved = false;
+            if (!wasDrag && blank) close();
         });
         root.addEventListener('contextmenu', (e) => {
             if (!opened) return;
@@ -94,28 +102,36 @@ export function createImageLightbox(host, options = {}) {
         stage.addEventListener('pointerdown', (e) => {
             if (!opened || e.button !== 0) return;
             if (e.target !== stage && e.target !== canvas && e.target !== img) return;
-            drag = {x: e.clientX, y: e.clientY, left: stage.scrollLeft, top: stage.scrollTop};
+            // 记下这次按下的原始目标，click 阶段据此判断「点空白」（捕获会改写 click.target）。
+            // 指针捕获延迟到真正拖动后才做：单击时不捕获，click.target 保持真实，关闭判定才准。
+            downTarget = e.target;
             dragMoved = false;
-            stage.classList.add('dragging');
-            if (stage.setPointerCapture) {
-                try { stage.setPointerCapture(e.pointerId); } catch (err) { /* 指针已失效 */ }
-            }
+            drag = {x: e.clientX, y: e.clientY, left: stage.scrollLeft, top: stage.scrollTop, captured: false, pointerId: e.pointerId};
         });
         stage.addEventListener('pointermove', (e) => {
             if (!drag) return;
             const dx = e.clientX - drag.x;
             const dy = e.clientY - drag.y;
-            if (Math.abs(dx) + Math.abs(dy) > 2) dragMoved = true;
+            if (!dragMoved && Math.abs(dx) + Math.abs(dy) > 2) {
+                dragMoved = true;
+                stage.classList.add('dragging');
+                if (!drag.captured && stage.setPointerCapture) {
+                    try { stage.setPointerCapture(e.pointerId); drag.captured = true; } catch (err) { /* 指针已失效 */ }
+                }
+            }
+            if (!dragMoved) return;
             stage.scrollLeft = drag.left - dx;
             stage.scrollTop = drag.top - dy;
         });
         const endDrag = (e) => {
             if (!drag) return;
-            drag = null;
-            stage.classList.remove('dragging');
-            if (e.pointerId != null && stage.hasPointerCapture && stage.hasPointerCapture(e.pointerId)) {
+            if (drag.captured && e.pointerId != null && stage.hasPointerCapture && stage.hasPointerCapture(e.pointerId)) {
                 stage.releasePointerCapture(e.pointerId);
             }
+            drag = null;
+            stage.classList.remove('dragging');
+            // 不清 dragMoved：留给紧随其后的 click 消费（拖动收尾那次 click 不该触发关闭），
+            // click 处理里会清；若这次 pointerup 没有伴随 click（如指针移出），open 时也会重置。
         };
         stage.addEventListener('pointerup', endDrag);
         stage.addEventListener('pointercancel', endDrag);
@@ -152,14 +168,17 @@ export function createImageLightbox(host, options = {}) {
         const rect = stage.getBoundingClientRect();
         const ax = Math.min(Math.max(clientX == null ? rect.left + rect.width / 2 : clientX, rect.left), rect.right);
         const ay = Math.min(Math.max(clientY == null ? rect.top + rect.height / 2 : clientY, rect.top), rect.bottom);
-        const contentX = stage.scrollLeft + (ax - rect.left);
-        const contentY = stage.scrollTop + (ay - rect.top);
-        const prev = scale;
+        // 以图片当前实际渲染框为基准记锚点比例，而不是拿 stage 可视区硬算。canvas 是 flex 居中、
+        // stage 还有 12px padding，旧公式在「小图放大」时漏算居中偏移，锚点会一路漂移、不跟鼠标。
+        const before = img.getBoundingClientRect();
+        const relX = before.width > 0 ? (ax - before.left) / before.width : 0.5;
+        const relY = before.height > 0 ? (ay - before.top) / before.height : 0.5;
         scale = next;
         applyScale();
-        const ratio = scale / prev;
-        stage.scrollLeft = contentX * ratio - (ax - rect.left);
-        stage.scrollTop = contentY * ratio - (ay - rect.top);
+        const after = img.getBoundingClientRect();
+        // 缩放后把锚点重新摆回指针下：图片因居中/尺寸变化产生的位移一并补进 scroll。
+        stage.scrollLeft += (after.left + relX * after.width) - ax;
+        stage.scrollTop += (after.top + relY * after.height) - ay;
     }
 
     function open(targetImage, src, title) {
@@ -174,6 +193,7 @@ export function createImageLightbox(host, options = {}) {
         scale = 1;
         drag = null;
         dragMoved = false;
+        downTarget = null;
         stage.classList.remove('dragging');
         titleNode.textContent = title || '';
         titleNode.dataset.tip = title || '';
