@@ -187,6 +187,16 @@ const consoleWindowMode = (async () => {
 })();
 let consoleWindowResolved = null; // true=独立窗口 false=普通窗口 null=未定
 
+// 终端独立窗口探测（异步尽早开始；普通窗口为 false）
+const terminalWindowMode = (async () => {
+    try {
+        if (!(backend && backend.IsTerminalWindow)) return false;
+        return !!(await backend.IsTerminalWindow());
+    } catch (e) {
+        return false;
+    }
+})();
+
 // 悬浮调试控制台（F12）：先于 console 捕获补丁创建，保证所有日志都能进面板
 const debugConsole = createDebugConsole({
     // 停靠到底部面板容器（与终端共用），显示/隐藏由底部面板控制
@@ -272,6 +282,66 @@ function startConsoleWindowMode() {
     });
     window.__debugConsole = dc;
     dc.open();
+}
+
+// 终端独立窗口：全屏渲染一个已存在的终端会话（弹出/收回机制见 terminal-sessions.js）。
+// 跳过正常启动流程；主题/字体经 applySettings 套用，会话经环形缓冲快照回放接进来。
+async function startTerminalWindowMode() {
+    window.__terminalWindowMode = true;
+    document.body.classList.add('terminal-only');
+    try { applySettings(); } catch (e) {}
+    let termId = '';
+    try {
+        termId = String((backend.GetStartupTermID && await backend.GetStartupTermID()) || '');
+    } catch (e) {}
+    if (!termId) {
+        try { if (window.runtime && window.runtime.WindowClose) window.runtime.WindowClose(); } catch (e) {}
+        return;
+    }
+    let shell = '';
+    try {
+        const infos = backend.TermList ? await backend.TermList() : [];
+        const info = infos.find((x) => x && x.id === termId);
+        if (info) shell = info.shell || '';
+    } catch (e) {}
+    const s = await terminalMod.attachResumedTermSession(termId, shell);
+    toggleTerminalPanel(true);
+
+    // 窗口头：标题 + 收回主窗口（关窗交还会话）+ 关闭会话（TermClose 后关窗）。
+    // 无边框窗口，头部即拖动区（body.terminal-only CSS）。
+    const panel = document.getElementById('terminal-panel');
+    const head = document.createElement('div');
+    head.id = 'term-window-head';
+    const title = document.createElement('span');
+    title.className = 'term-window-title';
+    title.textContent = '终端 · ' + ((s && s.defaultLabel) || shell || '本地');
+    const actions = document.createElement('div');
+    actions.className = 'term-window-actions';
+    const redock = document.createElement('button');
+    redock.type = 'button';
+    redock.className = 'term-btn';
+    redock.dataset.tip = '收回主窗口';
+    redock.setAttribute('aria-label', '收回主窗口');
+    redock.innerHTML = iconSvg('new-window', 12);
+    redock.addEventListener('click', () => {
+        try { if (window.runtime && window.runtime.WindowClose) window.runtime.WindowClose(); } catch (e) {}
+    });
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.className = 'term-btn';
+    closeBtn.dataset.tip = '关闭会话';
+    closeBtn.setAttribute('aria-label', '关闭会话');
+    closeBtn.innerHTML = iconSvg('close', 12);
+    closeBtn.addEventListener('click', async () => {
+        try { if (backend.TermClose) await backend.TermClose(termId); } catch (e) {}
+        try { if (window.runtime && window.runtime.WindowClose) window.runtime.WindowClose(); } catch (e) {}
+    });
+    actions.append(redock, closeBtn);
+    head.append(title, actions);
+    if (panel) panel.insertBefore(head, panel.firstChild);
+    if (s) {
+        try { s.term.focus(); } catch (e) {}
+    }
 }
 
 // 诊断日志单一入口：应用日志文件 + 调试台。此前它只写文件，模块里直接调
@@ -6395,6 +6465,17 @@ if (rt) {
             catch (e) {} // 尽力而为路径：唤醒失败不影响终端 UI 的退出标记
         }
     });
+    // 终端独立窗口关闭：Go 指定了交还目标窗口，只有目标窗口接（避免多个主窗口抢）。
+    // 会话已退出/已关闭时 Go 不发这个事件。
+    appEvents.onApp('term-popout-closed', async (data) => {
+        const d = data || {};
+        if (!d.id || d.target !== wailsWindowName) return;
+        if (terminalUI.sessions.has(d.id)) return;
+        try {
+            await terminalMod.attachResumedTermSession(d.id, d.shell || '');
+            toggleTerminalPanel(true);
+        } catch (e) {}
+    });
     appEvents.onWindowOrBroadcast('cmd-out', (payload) => {
         const h = cmdOutHandlers.get(payload.id);
         if (h) h(payload.stream, payload.data);
@@ -6545,6 +6626,7 @@ const bridgeUI = createBridgeUI({
     get openConfirmDialog() { return openConfirmDialog; },
     get onPendingChange() { return memoPendingChanged; },
     get consoleWindowMode() { return consoleWindowMode; },
+    get terminalWindowMode() { return terminalWindowMode; },
     get notifyFailure() { return (...args) => failureNotifier.notifyFailure(...args); },
     get copyText() { return copyText; },
     get createDoc() { return createDoc; },
@@ -6575,6 +6657,7 @@ const bridgeUI = createBridgeUI({
     get sessionPathKey() { return sessionPathKey; },
     get settings() { return settings; },
     get startConsoleWindowMode() { return startConsoleWindowMode; },
+    get startTerminalWindowMode() { return startTerminalWindowMode; },
     get switchSidebarView() { return switchSidebarView; },
     get syncBrowserTab() { return syncBrowserTab; },
     get syncedOpenMode() { return syncedOpenMode; },

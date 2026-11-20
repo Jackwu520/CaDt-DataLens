@@ -27,6 +27,8 @@ export const EVENT_SCOPES = Object.freeze({
     'mcp-status-changed': 'app',
     'ai-timer-fired': 'app',
     'ai-timer-stopped': 'app',
+    // 终端独立窗口关闭：payload.target 指定由哪个主窗口把会话接回去
+    'term-popout-closed': 'app',
 
     // 工作区 / 资源
     'workspace-changed': 'workspace',

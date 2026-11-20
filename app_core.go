@@ -133,8 +133,10 @@ func (a *App) startup(ctx context.Context) {
 	// 运行代码的临时副本 / 编译产物：启动时清一次过期的（7 天），失败不影响启动；
 	// 多窗口可能各跑一次，RemoveAll 幂等所以无害。
 	go func() { _, _ = a.CleanupRunTempStale() }()
-	if a.IsDebugConsoleWindow(nil) {
-		// 独立调试控制台窗口：不处理启动文件/目录（窗口尺寸/标题在窗口工厂里按类型设置）。
+	// 无主窗口的形态（--ai-float / --debug-console / 终端独立窗口作首窗）：
+	// AI 定时任务、插件后台服务、MCP 客户端、使用统计都是主窗口域的服务，
+	// 不在这里拉起（ctx 之外拿不到窗口形态，直接按主窗口数判定）。
+	if winReg.countMain() == 0 {
 		return
 	}
 	// AI 定时任务调度器：主窗口与 AI 悬浮窗各自扫描，执行去重由前端裁决
@@ -142,16 +144,13 @@ func (a *App) startup(ctx context.Context) {
 	// 插件后台服务：启动已声明且 autoStart 的服务（声明由前端加载插件后 Sync 推送；
 	// 此处对空注册表无害，保留以覆盖未来持久化声明的场景）。
 	a.AppServices.StartAll()
-	// MCP 客户端 + 使用统计回填：仅主窗口初始化（浮窗/调试控制台不拉子进程/不扫会话）
-	if !a.IsAIFloatWindow(nil) && !a.IsDebugConsoleWindow(nil) {
-		// 使用统计：只初始化派生库；增量扫描由用户打开统计面板/点刷新时触发
-		usagestats.Start()
-		if err := mcp.InitClient(a.Client, func(event string, payload any) {
-			emitAppEvent(event, payload)
-		}); err != nil {
-			// 损坏的 mcp.json 不阻塞启动：设置页会读到同样的错误并展示路径
-			writeAppLog("warn", "MCP 配置加载失败：%v", err)
-		}
+	// MCP 客户端 + 使用统计回填：仅主窗口初始化（浮窗/调试控制台/终端窗口不拉子进程/不扫会话）
+	usagestats.Start()
+	if err := mcp.InitClient(a.Client, func(event string, payload any) {
+		emitAppEvent(event, payload)
+	}); err != nil {
+		// 损坏的 mcp.json 不阻塞启动：设置页会读到同样的错误并展示路径
+		writeAppLog("warn", "MCP 配置加载失败：%v", err)
 	}
 	// 外部文件拖放由前端 runtime.OnFileDrop 注册窗口监听并直接打开；
 	// 这里不再订阅 wails:file-drop，否则同一次拖放会被两侧各处理一遍。

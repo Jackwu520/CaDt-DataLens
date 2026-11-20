@@ -1781,6 +1781,9 @@ const mockBackend = {
             };
         });
     },
+    async PopOutTerminal(id) { this._calls.push('popout-terminal:' + id); },
+    async IsTerminalWindow() { return !!window.__mockTerminalWindow; },
+    async GetStartupTermID() { return window.__mockTerminalTermId || ''; },
     async TermResize() {},
     async TermClose() {},
     async RunCommandSync(exe, args, cwd, timeoutMs) {

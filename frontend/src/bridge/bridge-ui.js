@@ -155,6 +155,14 @@ function openBrowserTab(url, profileKey, opts) {
         deps.startConsoleWindowMode();
         return;
     }
+    // 终端独立窗口：全屏渲染一个已存在的终端会话，同样跳过正常启动流程
+    if (await deps.terminalWindowMode) {
+        Promise.resolve(deps.startTerminalWindowMode())
+            .catch((e) => {
+                try { deps.logFrontend('error', '终端窗口启动失败：' + ((e && (e.stack || e.message)) || e)); } catch (_) {}
+            });
+        return;
+    }
     let floatWindow = false;
     try {
         floatWindow = !!(deps.backend.IsAIFloatWindow && await deps.backend.IsAIFloatWindow());

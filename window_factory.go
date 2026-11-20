@@ -12,6 +12,7 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/events"
 
 	"datalens/internal/launchargs"
+	"datalens/internal/terminal"
 	"datalens/internal/windowgeom"
 )
 
@@ -39,6 +40,10 @@ func (a *App) createWindow(spec windowSpec) *application.WebviewWindow {
 			e.Cancel()
 			return
 		}
+		// 终端独立窗口关闭：把还活着的会话交还原窗口（退出流程除外）。
+		if !a.quitRequested.Load() && !systemShuttingDown() {
+			a.emitTerminalPopoutClosed(st)
+		}
 		winReg.remove(st.name())
 		if currentWindow() == win {
 			if primary := winReg.primary(); primary != nil {
@@ -62,6 +67,8 @@ func windowSizesFor(mode windowMode) (width, height, minWidth, minHeight int) {
 		return 560, 760, 360, 480
 	case windowModeDebug:
 		return 780, 460, 400, 300
+	case windowModeTerminal:
+		return 900, 600, 480, 320
 	default:
 		return 1280, 800, 720, 480
 	}
@@ -78,6 +85,8 @@ func windowOptionsFor(spec windowSpec, initialRect windowgeom.Rect, hasInitialRe
 		alwaysOnTop = true
 	case windowModeDebug:
 		title = "调试控制台 · CaDt-DataLens"
+	case windowModeTerminal:
+		title = "终端 · CaDt-DataLens"
 	}
 	opts := application.WebviewWindowOptions{
 		Name:               spec.Name,
@@ -159,6 +168,63 @@ func (a *App) ensureDebugWindow() *application.WebviewWindow {
 		}
 	}
 	return a.createWindow(windowSpec{Name: "debug", Mode: windowModeDebug})
+}
+
+// ensureTerminalWindow 打开（或聚焦）承载指定终端会话的独立窗口。
+// ConPTY 会话留在进程里不动，事件归属由新窗口装载后自行接管。
+func (a *App) ensureTerminalWindow(termID, origin string) *application.WebviewWindow {
+	if st := findTerminalWindow(termID); st != nil {
+		if w := st.window(); w != nil {
+			activateWindow(w)
+			return w
+		}
+	}
+	return a.createWindow(windowSpec{Mode: windowModeTerminal, TermID: termID, Origin: origin})
+}
+
+func findTerminalWindow(termID string) *windowState {
+	for _, st := range winReg.list() {
+		spec := st.startup()
+		if spec.Mode == windowModeTerminal && spec.TermID == termID {
+			return st
+		}
+	}
+	return nil
+}
+
+// emitTerminalPopoutClosed 终端独立窗口关闭：会话还活着就广播交还事件，
+// 原窗口（不在了就当前主窗口）收到后把页签接回去。退出流程不投递。
+func (a *App) emitTerminalPopoutClosed(st *windowState) {
+	spec := st.startup()
+	if spec.Mode != windowModeTerminal || spec.TermID == "" {
+		return
+	}
+	var info terminal.TermInfo
+	found := false
+	for _, it := range a.TermList() {
+		if it.ID == spec.TermID {
+			info = it
+			found = true
+			break
+		}
+	}
+	if !found || info.Exited {
+		return
+	}
+	target := spec.Origin
+	if target == "" || winReg.get(target) == nil {
+		if p := winReg.primary(); p != nil {
+			target = p.name()
+		} else {
+			target = ""
+		}
+	}
+	if target == "" {
+		return
+	}
+	emitAppEvent("term-popout-closed", map[string]string{
+		"id": info.ID, "shell": info.Shell, "target": target,
+	})
 }
 
 // activateWindow 把窗口显示并前置（最小化时先恢复，不用 Restore 以免还原最大化）。

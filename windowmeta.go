@@ -21,9 +21,10 @@ import (
 type windowMode string
 
 const (
-	windowModeMain  windowMode = "main"
-	windowModeFloat windowMode = "float"
-	windowModeDebug windowMode = "debug"
+	windowModeMain     windowMode = "main"
+	windowModeFloat    windowMode = "float"
+	windowModeDebug    windowMode = "debug"
+	windowModeTerminal windowMode = "terminal"
 )
 
 // windowSpec 是创建窗口时的启动上下文（等价 v2 的进程启动参数）。
@@ -35,6 +36,10 @@ type windowSpec struct {
 	SessionID    string
 	SettingsPane string
 	MemoLocator  string
+	// TermID / Origin：终端独立窗口（windowModeTerminal）——弹出的会话 id 与
+	// 发起弹出的窗口名（关窗时把会话交还给它）。
+	TermID string
+	Origin string
 }
 
 // windowState 是单个窗口的可变状态。
@@ -142,6 +147,11 @@ func (r *winRegistryStore) nextName(mode windowMode) string {
 			return "debug"
 		}
 		return fmt.Sprintf("debug-%d", r.seq)
+	case windowModeTerminal:
+		if _, ok := r.states["term"]; !ok {
+			return "term"
+		}
+		return fmt.Sprintf("term-%d", r.seq)
 	default:
 		if _, ok := r.states["main"]; !ok {
 			return "main"
@@ -182,11 +192,16 @@ func (r *winRegistryStore) list() []*windowState {
 
 // countMain 统计仍存活的主窗口数（托盘「最后一个窗口」判据用）。
 func (r *winRegistryStore) countMain() int {
+	return r.countMode(windowModeMain)
+}
+
+// countMode 统计指定形态的窗口数（几何级联与启动门控用）。
+func (r *winRegistryStore) countMode(mode windowMode) int {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	n := 0
 	for _, s := range r.states {
-		if s.spec.Mode == windowModeMain {
+		if s.spec.Mode == mode {
 			n++
 		}
 	}

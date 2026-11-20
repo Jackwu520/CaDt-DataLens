@@ -430,27 +430,7 @@ func (t *Terminal) TermClose(id string) error {
 	return nil
 }
 
-// TermReadResult 是 TermRead 的返回：最近输出 + 会话状态（AI 靠它判断命令是否跑完）。
-type TermReadResult struct {
-	ID        string `json:"id"`
-	Shell     string `json:"shell"`
-	Cwd       string `json:"cwd"`
-	Text      string `json:"text"`
-	Truncated bool   `json:"truncated"`
-	Exited    bool   `json:"exited"`
-	ExitCode  int32  `json:"exitCode"`
-	Bytes     int64  `json:"bytes"`
-}
-
-type TermInfo struct {
-	ID       string `json:"id"`
-	Shell    string `json:"shell"`
-	Cwd      string `json:"cwd"`
-	Exited   bool   `json:"exited"`
-	ExitCode int32  `json:"exitCode"`
-	Bytes    int64  `json:"bytes"`
-	Last     string `json:"last"`
-}
+// TermReadResult / TermInfo 类型在 terminal.go（共享契约，非 Windows 桩也要编译）。
 
 // TermRead 返回某个终端会话的最近输出（AI terminal 工具的 read 动作）。
 // 会话退出后仍可读（输出缓冲保留到 TermClose）。

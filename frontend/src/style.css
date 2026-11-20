@@ -10221,6 +10221,53 @@ body.ai-float-window.ai-float-collapsed #ai-agent-view,
 body.ai-float-window.ai-float-collapsed #ai-scroll-btn,
 body.ai-float-window.ai-float-collapsed .ai-popover { display: none !important; }
 
+/* ===== 终端独立窗口（terminal-only）：全屏渲染单个终端会话 =====
+   确认框等模态不在隐藏列表里：最后一个窗口关窗确认必须可见。 */
+body.terminal-only #toolbar,
+body.terminal-only #activity-bar,
+body.terminal-only #sidebar,
+body.terminal-only #main-pane,
+body.terminal-only #statusbar,
+body.terminal-only #enc-popover { display: none !important; }
+body.terminal-only #editor-wrap,
+body.terminal-only #body-col,
+body.terminal-only #top-row { display: flex; flex: 1; min-width: 0; min-height: 0; }
+body.terminal-only #terminal-panel {
+    position: fixed;
+    inset: 0;
+    z-index: 30;
+    width: auto !important;
+    height: auto !important;
+}
+body.terminal-only #terminal-panel.hidden { display: none !important; }
+body.terminal-only #terminal-panel > .term-head,
+body.terminal-only #terminal-panel > #terminal-resize { display: none !important; }
+#term-window-head {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 6px 4px 10px;
+    background: var(--panel2);
+    border-bottom: 1px solid var(--border);
+    user-select: none;
+    --wails-draggable: drag;
+    cursor: move;
+}
+#term-window-head button { --wails-draggable: no-drag; }
+.term-window-title {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text);
+    font-family: system-ui, "Microsoft YaHei", sans-serif;
+    font-size: 12px;
+    font-weight: 600;
+}
+.term-window-actions { display: flex; gap: 2px; }
+
 #ai-opt-thinking-group.hidden { display: none; }
 
 /* ---------- 模型管理：卡片列表 + 三级编辑弹层 ---------- */

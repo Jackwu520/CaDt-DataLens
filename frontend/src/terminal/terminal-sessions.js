@@ -34,6 +34,12 @@ function flushPendingTermOut(id) {
     if (s) s.term.write(buf);
 }
 
+// 丢弃某会话的暂存缓冲：attachResumedTermSession 用环形缓冲快照回放，
+// 快照已覆盖这段缓冲，不清掉会双写。
+function discardPendingTermOut(id) {
+    pendingTermOut.delete(id);
+}
+
 // 粘贴进终端：优先走 Go 绑定（WebView2 下 navigator.clipboard.readText 不保证放行）
 async function pasteClipboardTo(term) {
     let text = '';
@@ -274,7 +280,7 @@ function attachTermSession(id, usedShell, opts = {}) {
     // 「shell 已退出」投给 AI 会话信箱；用户自己开的终端没有该标记，退出不打扰会话。
     if (opts.aiSessionId) session.aiSessionId = opts.aiSessionId;
     deps.terminalUI.sessions.set(id, session);
-    flushPendingTermOut(id);
+    if (!opts.skipPendingFlush) flushPendingTermOut(id);
     deps.terminalUI.order.push(id);
     // 终端区域右键菜单：指向链接时前置链接动作（复制/内置浏览器/默认程序），
     // 再接常规项（挡掉 WebView2 默认菜单）
@@ -369,6 +375,57 @@ function removeTermSession(id) {
     pendingTermOut.delete(id);
     deps.terminalUI.sessions.delete(id);
     deps.terminalUI.order = deps.terminalUI.order.filter((x) => x !== id);
+}
+
+// 回放字符预算：ConPTY 环形缓冲 64 KiB，TermRead 上限 20k 字符——够最近几屏加少量回滚。
+const TERM_REPLAY_CHARS = 20000;
+
+// attachResumedTermSession：把「当前不归本窗口渲染」的已存在会话接回本窗口。
+// 终端独立窗口装载与主窗口收回共用这一条路径。先切事件归属、取环形缓冲快照，
+// 再在一个同步段里丢弃暂存缓冲（快照已覆盖）→ 挂载（不 flush）→ 回放，之后到达
+// 的输出直接写入：既不丢输出，也不会因回放与缓冲重叠而双写。
+async function attachResumedTermSession(id, shell) {
+    const existing = deps.terminalUI.sessions.get(id);
+    if (existing) {
+        activateTermSession(id);
+        return existing;
+    }
+    if (deps.backend.RegisterEventOwner) {
+        Promise.resolve(deps.backend.RegisterEventOwner('term', id)).catch(() => {});
+    }
+    let replay = null;
+    try {
+        replay = await deps.backend.TermRead(id, TERM_REPLAY_CHARS);
+    } catch (e) {
+        replay = null; // 会话可能在交接间隙被关掉：照旧挂载，输出自然为空
+    }
+    discardPendingTermOut(id);
+    const usedShell = shell || (replay && replay.shell) || 'powershell';
+    const s = attachTermSession(id, usedShell, {explicitShell: !!shell, skipPendingFlush: true});
+    if (s && replay && replay.text) {
+        try {
+            s.term.write(replay.text);
+        } catch (e) {}
+    }
+    return s;
+}
+
+// popOutTermSession：把会话弹出为独立窗口（ConPTY 不动，事件归属由新窗口接管）。
+// Go 建窗成功后本窗口立即卸掉页签；弹出窗口若没起来或被关掉，Go 会广播
+// term-popout-closed 指定交还目标，原窗口把会话接回来（attachResumedTermSession）。
+async function popOutTermSession(id) {
+    if (!deps.backend.PopOutTerminal) {
+        deps.flash('当前版本不支持独立终端窗口', true);
+        return;
+    }
+    try {
+        await deps.backend.PopOutTerminal(id);
+    } catch (e) {
+        deps.flash('弹出终端失败：' + e, true);
+        return;
+    }
+    removeTermSession(id);
+    if (!deps.terminalUI.sessions.size) deps.toggleTerminalPanel(false);
 }
 
 function syncTerminalTheme() {
@@ -480,6 +537,9 @@ async function showTermTabMenu(id, x, y) {
             submenu: shells.map((sh) => ({label: sh.name, action: () => createTermSession(sh.id)})),
         });
     }
+    if (deps.backend.PopOutTerminal) {
+        items.push({label: '在独立窗口打开', icon: 'new-window', action: () => popOutTermSession(id)});
+    }
     items.push(
         {label: '重命名标签页', icon: 'E8AC', action: () => renameTermSession(s)},
         {label: '清屏', icon: 'eraser', action: () => { try { s.term.clear(); s.term.focus(); } catch (e) {} }},
@@ -552,7 +612,7 @@ function terminalHostApi() {
     };
 }
 
-return {activateTermSession, closeTermSession, createTermSession, fitActiveTerm, removeTermSession,
+return {activateTermSession, attachResumedTermSession, closeTermSession, createTermSession, fitActiveTerm, popOutTermSession, removeTermSession,
         renameTermSession, showTermShellMenu, showTermTabMenu, syncTerminalTheme, terminalHostApi,
         termDefaultCols, termDefaultRows, writeTermOut};
 }

@@ -6,7 +6,7 @@ func TestGeometryRestoreKey(t *testing.T) {
 	cases := []struct {
 		name      string
 		spec      windowSpec
-		mainCount int
+		modeCount int
 		wantKey   string
 		wantCasc  int
 	}{
@@ -17,10 +17,12 @@ func TestGeometryRestoreKey(t *testing.T) {
 		{"第二个主窗口", windowSpec{Name: "main-2", Mode: windowModeMain}, 2, "main", 1},
 		{"第三个主窗口", windowSpec{Name: "main-3", Mode: windowModeMain}, 3, "main", 2},
 		{"计数异常按首个处理", windowSpec{Name: "main", Mode: windowModeMain}, 0, "main", 0},
+		{"首个终端窗口", windowSpec{Name: "term", Mode: windowModeTerminal}, 1, "terminal", 0},
+		{"第二个终端窗口", windowSpec{Name: "term-2", Mode: windowModeTerminal}, 2, "terminal", 1},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			key, cascade := geometryRestoreKey(tc.spec, tc.mainCount)
+			key, cascade := geometryRestoreKey(tc.spec, tc.modeCount)
 			if key != tc.wantKey || cascade != tc.wantCasc {
 				t.Fatalf("geometryRestoreKey() = (%q, %d), want (%q, %d)",
 					key, cascade, tc.wantKey, tc.wantCasc)
@@ -29,8 +31,7 @@ func TestGeometryRestoreKey(t *testing.T) {
 	}
 }
 
-func TestGeometryPersistKey(t *testing.T) {
-	cases := []struct {
+func TestGeometryPersistKey(t *testing.T) {	cases := []struct {
 		name      string
 		spec      windowSpec
 		isPrimary bool
@@ -38,6 +39,7 @@ func TestGeometryPersistKey(t *testing.T) {
 	}{
 		{"AI 浮窗", windowSpec{Name: "float", Mode: windowModeFloat}, false, "float"},
 		{"调试控制台", windowSpec{Name: "debug", Mode: windowModeDebug}, false, "debug"},
+		{"终端独立窗口", windowSpec{Name: "term", Mode: windowModeTerminal}, false, "terminal"},
 		{"主窗口是 primary", windowSpec{Name: "main", Mode: windowModeMain}, true, "main"},
 		{"额外主窗口不覆盖", windowSpec{Name: "main-2", Mode: windowModeMain}, false, ""},
 		{"非规范浮窗名", windowSpec{Name: "float-2", Mode: windowModeFloat}, false, ""},

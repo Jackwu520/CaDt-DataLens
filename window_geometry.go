@@ -83,8 +83,8 @@ func screenWorkArea(s *application.Screen) windowgeom.Rect {
 }
 
 // geometryRestoreKey 给出窗口创建时的存储 key 与级联层数。
-// mainCount 是含本窗口在内的主窗口数（调用时窗口已登记到注册表）。
-func geometryRestoreKey(spec windowSpec, mainCount int) (key string, cascade int) {
+// modeCount 是含本窗口在内的同形态窗口数（调用时窗口已登记到注册表）。
+func geometryRestoreKey(spec windowSpec, modeCount int) (key string, cascade int) {
 	switch spec.Mode {
 	case windowModeFloat:
 		if spec.Name == "float" {
@@ -96,13 +96,20 @@ func geometryRestoreKey(spec windowSpec, mainCount int) (key string, cascade int
 			return "debug", 0
 		}
 		return "", 0
+	case windowModeTerminal:
+		// 终端窗口数量不定：都从 "terminal" 槽位级联，避免叠在一起。
+		return "terminal", modeCountExtra(modeCount)
 	default:
-		extra := mainCount - 1
-		if extra < 0 {
-			extra = 0
-		}
-		return "main", extra
+		return "main", modeCountExtra(modeCount)
 	}
+}
+
+func modeCountExtra(count int) int {
+	extra := count - 1
+	if extra < 0 {
+		extra = 0
+	}
+	return extra
 }
 
 // geometryPersistKey 给出窗口移动/关闭时的存储 key；空串表示不持久化。
@@ -117,6 +124,9 @@ func geometryPersistKey(spec windowSpec, isPrimary bool) string {
 		if spec.Name == "debug" {
 			return "debug"
 		}
+	case windowModeTerminal:
+		// 终端窗口数量不定，全部写同一个槽位（最后一次移动的窗口生效）。
+		return "terminal"
 	default:
 		if isPrimary {
 			return "main"
@@ -127,7 +137,7 @@ func geometryPersistKey(spec windowSpec, isPrimary bool) string {
 
 // initialGeometry 计算窗口创建时应使用的矩形。ok=false 时保持 v3 默认居中。
 func (g *windowGeometryManager) initialGeometry(spec windowSpec, defaultW, defaultH, minW, minH int) (windowgeom.Rect, bool) {
-	key, cascade := geometryRestoreKey(spec, winReg.countMain())
+	key, cascade := geometryRestoreKey(spec, winReg.countMode(spec.Mode))
 	if key == "" {
 		return windowgeom.Rect{}, false
 	}
