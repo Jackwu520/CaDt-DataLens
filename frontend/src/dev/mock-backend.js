@@ -1790,9 +1790,13 @@ const mockBackend = {
     async PopOutMemo(scope, workspace) { this._calls.push('popout-memo:' + scope + ':' + (workspace || '')); },
     async PopOutSession(sessionId, kind, workspace) { this._calls.push('popout-session:' + kind + ':' + sessionId); },
     async OpenDiffWindow(pathA, pathB) { this._calls.push('open-diff:' + pathA + '|' + pathB); },
+    async OpenLightView(path) { this._calls.push('open-light:' + path); },
+    async OpenLivePreview(path) { this._calls.push('open-preview:' + path); },
     async GetStartupMemo() { return window.__mockAuxWindowKind === 'memo' ? {scope: 'global', workspace: ''} : null; },
     async GetStartupMonitorSession() { return null; },
     async GetStartupDiff() { return null; },
+    async GetStartupLight() { return window.__mockAuxWindowKind === 'light' ? {path: ''} : null; },
+    async GetStartupPreview() { return window.__mockAuxWindowKind === 'preview' ? {path: '', origin: ''} : null; },
     async WindowList() {
         return (window.__mockWindows || [{name: 'main', mode: 'main', self: '1'}]).slice();
     },

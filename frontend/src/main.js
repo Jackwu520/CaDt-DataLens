@@ -14,6 +14,8 @@ import {normalizeTermText} from './ai/ai-terminal-tools.js';
 import {createBridgeMemoView} from './bridge/bridge-memo-view.js';
 import {createAIMonitorView} from './ai/ai-monitor-view.js';
 import {createDiffWindowView} from './editor/diff-window-view.js';
+import {createLightView} from './editor/light-view.js';
+import {createPreviewWindowView, pickPreviewKind} from './editor/preview-window-view.js';
 import {CODE_SHOT_RADII, CODE_SHOT_SCALES} from './core/code-shot.js';
 import {createDebugConsole} from './terminal/debugconsole.js';
 import {createActivityLog} from './core/activity-log.js';
@@ -620,6 +622,73 @@ async function startDiffWindowMode() {
     });
     view.mount();
     rerun = () => view.run();
+}
+
+// 轻量查看窗：一个文件一个只读窗（文本高亮 / 图片），不占工作区归属，
+// 不会与打开它的主窗口抢会话/监听/租约——「双击即看」的正路。
+async function startLightWindowMode() {
+    window.__auxWindowMode = 'light';
+    document.documentElement.classList.remove('app-booting');
+    document.body.classList.add('light-only');
+    try { applySettings(); } catch (e) {}
+    let info = null;
+    try { info = backend.GetStartupLight ? await backend.GetStartupLight() : null; } catch (e) {}
+    if (!info || !info.path) { closeAuxWindowSelf(); return; }
+    const path = String(info.path);
+    const head = buildAuxWindowHead({
+        title: '查看',
+        pill: baseNameOf(path) || path,
+        pillTitle: path,
+        actions: [{icon: 'close', tip: '关闭', onClick: () => closeAuxWindowSelf()}],
+    });
+    const host = document.createElement('div');
+    host.className = 'aux-window-body';
+    document.body.append(head, host);
+    const view = createLightView({
+        get backend() { return backend; },
+        path,
+        baseNameOf,
+        container: host,
+    });
+    view.mount();
+    try { if (window.runtime && window.runtime.WindowSetTitle) window.runtime.WindowSetTitle((baseNameOf(path) || path) + ' · 查看 · CaDt-DataLens'); } catch (e) {}
+}
+
+// 实时预览外置窗：markdown/HTML/SVG/图片的只读镜像，轮询磁盘 mtime 跟随保存。
+// 源文件在主窗口编辑，预览窗只读——写作时预览丢第二屏的形态。
+async function startPreviewWindowMode() {
+    window.__auxWindowMode = 'preview';
+    document.documentElement.classList.remove('app-booting');
+    document.body.classList.add('preview-only');
+    try { applySettings(); } catch (e) {}
+    let info = null;
+    try { info = backend.GetStartupPreview ? await backend.GetStartupPreview() : null; } catch (e) {}
+    if (!info || !info.path) { closeAuxWindowSelf(); return; }
+    const path = String(info.path);
+    const head = buildAuxWindowHead({
+        title: '实时预览',
+        pill: baseNameOf(path) || path,
+        pillTitle: path,
+        actions: [
+            ...(info.origin && backend.WindowFocusByName ? [{
+                icon: 'new-window',
+                tip: '回到主窗口',
+                onClick: () => backend.WindowFocusByName(info.origin),
+            }] : []),
+            {icon: 'close', tip: '关闭', onClick: () => closeAuxWindowSelf()},
+        ],
+    });
+    const host = document.createElement('div');
+    host.className = 'aux-window-body';
+    document.body.append(head, host);
+    const view = createPreviewWindowView({
+        get backend() { return backend; },
+        path,
+        kind: pickPreviewKind(path),
+        container: host,
+    });
+    view.mount();
+    window.addEventListener('pagehide', () => view.dispose(), {once: true});
 }
 
 async function refreshLogPath() {
@@ -2910,6 +2979,13 @@ const editorMenus = createEditorMenus({
     get settings() { return settings; },
     get showImageMenu() { return showImageMenu; },
     get showInFolder() { return showInFolder; },
+    get pickPreviewKind() { return pickPreviewKind; },
+    get openLivePreview() {
+        return () => {
+            if (!file || !file.path) return;
+            backend.OpenLivePreview(file.path).catch((e) => flash('打开实时预览窗失败：' + ((e && e.message) || e), true));
+        };
+    },
     get showMdPreviewMenu() { return showMdPreviewMenu; },
     get showSvgMenu() { return showSvgMenu; },
     get toggleBookmark() { return toggleBookmark; },
@@ -5462,7 +5538,7 @@ const {openSchemaValidation} = schemaPanel;
 // 窗口切换器缓存：quick-switch「窗口」层用（打开该层时刷新一轮）。
 // 列表来自 Go 的窗口注册表（v3 一进程多窗口才有这张表）。
 let windowSwitchRows = [];
-const WINDOW_MODE_LABELS = {main: '主窗口', float: 'AI 浮窗', debug: '调试控制台', terminal: '终端', memo: '便签', monitor: '会话监控', diff: '文件对比'};
+const WINDOW_MODE_LABELS = {main: '主窗口', float: 'AI 浮窗', debug: '调试控制台', terminal: '终端', memo: '便签', monitor: '会话监控', diff: '文件对比', light: '轻量查看', preview: '实时预览'};
 async function refreshWindowSwitchEntries() {
     if (!backend.WindowList) {
         windowSwitchRows = [];
@@ -6898,6 +6974,8 @@ const bridgeUI = createBridgeUI({
     get startMemoWindowMode() { return startMemoWindowMode; },
     get startMonitorWindowMode() { return startMonitorWindowMode; },
     get startDiffWindowMode() { return startDiffWindowMode; },
+    get startLightWindowMode() { return startLightWindowMode; },
+    get startPreviewWindowMode() { return startPreviewWindowMode; },
     // 便签面板顶栏「弹出」：把当前作用域弹成置顶便签窗（便签窗自身不传这个键，不显示按钮）
     get popOutMemo() {
         return (scope, workspace) => {

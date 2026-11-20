@@ -28,6 +28,8 @@ const (
 	windowModeMemo     windowMode = "memo"
 	windowModeMonitor  windowMode = "monitor"
 	windowModeDiff     windowMode = "diff"
+	windowModeLight    windowMode = "light"
+	windowModePreview  windowMode = "preview"
 )
 
 // windowSpec 是创建窗口时的启动上下文（等价 v2 的进程启动参数）。
@@ -52,6 +54,11 @@ type windowSpec struct {
 	// DiffLeft / DiffRight：文件对比窗（windowModeDiff）的两个对比文件路径。
 	DiffLeft  string
 	DiffRight string
+	// LightPath：轻量查看窗（windowModeLight）的文件路径（只读，磁盘真源）。
+	LightPath string
+	// PreviewPath：实时预览窗（windowModePreview）的源文件路径；Origin 是
+	// 持有该文档的窗口名（预览窗只读，轮询磁盘 mtime 跟随变化）。
+	PreviewPath string
 }
 
 // windowState 是单个窗口的可变状态。
@@ -193,6 +200,16 @@ func (r *winRegistryStore) nextName(mode windowMode) string {
 			return "diff"
 		}
 		return fmt.Sprintf("diff-%d", r.seq)
+	case windowModeLight:
+		if _, ok := r.states["light"]; !ok {
+			return "light"
+		}
+		return fmt.Sprintf("light-%d", r.seq)
+	case windowModePreview:
+		if _, ok := r.states["preview"]; !ok {
+			return "preview"
+		}
+		return fmt.Sprintf("preview-%d", r.seq)
 	default:
 		if _, ok := r.states["main"]; !ok {
 			return "main"

@@ -101,6 +101,10 @@ func TestAuxWindowGeometryKeys(t *testing.T) {
 		{windowModeMonitor, "monitor-2", "monitor", "monitor"},
 		{windowModeDiff, "diff", "diff", "diff"},
 		{windowModeDiff, "diff-5", "diff", "diff"},
+		{windowModeLight, "light", "light", "light"},
+		{windowModeLight, "light-2", "light", "light"},
+		{windowModePreview, "preview", "preview", "preview"},
+		{windowModePreview, "preview-9", "preview", "preview"},
 	}
 	for _, c := range cases {
 		spec := windowSpec{Name: c.name, Mode: c.mode}
@@ -111,5 +115,39 @@ func TestAuxWindowGeometryKeys(t *testing.T) {
 		if got := geometryPersistKey(spec, false); got != c.persist {
 			t.Errorf("%s/%s persist key = %q, want %q", c.mode, c.name, got, c.persist)
 		}
+	}
+}
+
+func TestFindLightAndPreviewWindows(t *testing.T) {
+	added := []*windowState{}
+	cleanup := func() {
+		for _, st := range added {
+			winReg.remove(st.name())
+		}
+	}
+	defer cleanup()
+
+	if findLightWindow("D:/a.md") != nil {
+		t.Fatal("空注册表不该找到轻量查看窗")
+	}
+	if findPreviewWindow("D:/a.md") != nil {
+		t.Fatal("空注册表不该找到预览窗")
+	}
+
+	added = append(added, winReg.add(windowSpec{Name: "light", Mode: windowModeLight, LightPath: "D:/a.md"}))
+	added = append(added, winReg.add(windowSpec{Name: "preview", Mode: windowModePreview, PreviewPath: "D:/a.md", Origin: "main"}))
+	added = append(added, winReg.add(windowSpec{Name: "main", Mode: windowModeMain, Workspace: "D:/ws"}))
+
+	if st := findLightWindow(" D:/a.md "); st == nil || st.name() != "light" {
+		t.Fatalf("findLightWindow 应容忍空白（实际裁剪）：%v", st)
+	}
+	if st := findLightWindow("D:/b.md"); st != nil {
+		t.Fatalf("不同文件不该命中轻量查看窗：%v", st)
+	}
+	if st := findPreviewWindow("D:/a.md"); st == nil || st.name() != "preview" {
+		t.Fatalf("findPreviewWindow 命中错误：%v", st)
+	}
+	if st := findPreviewWindow("D:/b.html"); st != nil {
+		t.Fatalf("不同源文件不该命中预览窗：%v", st)
 	}
 }

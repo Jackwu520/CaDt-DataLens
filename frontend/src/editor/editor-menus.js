@@ -235,6 +235,12 @@ function showEditorMenu(x, y) {
         ...(referenceItems.length ? [{sep: true}] : []),
         {label: '复制文件路径', icon: 'E8C8', disabled: !hasPath, action: () => deps.copyText(deps.file.path, '路径')},
         {label: '打开文件位置', icon: 'E8B7', disabled: !hasPath, action: deps.showInFolder},
+        // 实时预览外置窗（辅助窗第二批）：md/html/svg/图片可开，保存落盘后自动跟随
+        ...(deps.pickPreviewKind && deps.file && deps.file.path && deps.pickPreviewKind(deps.file.path) ? [{
+            label: '在独立窗口实时预览',
+            icon: 'E8A7',
+            action: () => deps.openLivePreview && deps.openLivePreview(),
+        }] : []),
         // 插件命令（contexts 含 editorContext）：菜单项由宿主组装后注入，本域不碰插件逻辑
         ...(deps.pluginEditorMenuItems ? deps.pluginEditorMenuItems() : []),
     ], x, y);

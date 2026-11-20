@@ -1758,6 +1758,13 @@ B6–F 系列引擎下沉（`docs/finished-plans/go-layout.md`）经逐提交审
 - **窗口基建**：三类辅助窗走与终端弹出同构的骨架（`windowModeMemo/Monitor/Diff` + `aux_windows.go` 绑定壳 + `GetAuxWindowKind` 启动分派），几何记忆按形态槽位级联，quick-switch「窗口」层自动收录；三类窗口都不注册为工作区打开者，不撞「同工作区防双开」守卫。
 - 护栏：`frontend/test/ai/ai-monitor-view.test.mjs`（流式尾随状态机 + 行组装）、`frontend/test/editor/diff-window-view.test.mjs`（摘要口径）、`aux_windows_test.go`（注册表查找 / 入参归一 / 几何槽位）。
 
+### 改进（辅助独立窗第二批：轻量查看 / 实时预览外置）
+
+- **轻量查看窗**：资源管理器右键「在独立窗口查看（轻量）」——一个文件一个只读窗（light-only 形态）：文本走 highlight.js 高亮、图片走 `ReadImageAsDataURL`，元信息行带编码/换行/尺寸；大文件按 20 万字符截断展示并提示回主窗口看全文。不注册工作区打开者（不占会话/监听/租约）——openMode「一个文件一个窗口」禁用后的正路出口，双击即看不再需要完整工作区。同文件重复打开前置已有窗口。
+- **实时预览外置窗**：编辑器右键「在独立窗口实时预览」（md / html / svg / 图片）——只读镜像窗（preview-only 形态），轮询磁盘 mtime 跟随保存自动重渲染：markdown 走共享渲染链、HTML 经 DOMPurify 清洗（FORBID 口径固化在 `PREVIEW_SANITIZE_CONFIG`）、SVG 走 img 隔离渲染（脚本不执行）。头部「回到主窗口」回发起编辑的窗口；一个源文件一个预览位。
+- **基建**：`windowModeLight/Preview` 并入辅助窗骨架（几何槽位级联、切换器自动收录、启动分派同一路径）。
+- 护栏：`frontend/test/editor/light-view.test.mjs`（语言映射 / 元信息行）、`frontend/test/editor/preview-window-view.test.mjs`（形态判定 / 清洗口径传递）、`aux_windows_test.go` 扩充（light/preview 查找与几何槽位）。
+
 ## v1.1.0 — 2026-11-15
 
 ### 补丁（.patch / .diff）

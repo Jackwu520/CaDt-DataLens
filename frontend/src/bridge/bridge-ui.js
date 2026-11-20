@@ -163,14 +163,17 @@ function openBrowserTab(url, profileKey, opts) {
             });
         return;
     }
-    // 辅助独立窗（便签 / 会话监控 / 文件对比）：同构终端窗，各渲染自己的单一视图
+    // 辅助独立窗（便签 / 会话监控 / 文件对比 / 轻量查看 / 实时预览）：同构终端窗，各渲染自己的单一视图
     const auxKind = await deps.auxWindowKind;
-    if (auxKind === 'memo' || auxKind === 'monitor' || auxKind === 'diff') {
+    if (auxKind === 'memo' || auxKind === 'monitor' || auxKind === 'diff' || auxKind === 'light' || auxKind === 'preview') {
         const starter = auxKind === 'memo' ? deps.startMemoWindowMode
-            : auxKind === 'monitor' ? deps.startMonitorWindowMode : deps.startDiffWindowMode;
+            : auxKind === 'monitor' ? deps.startMonitorWindowMode
+            : auxKind === 'diff' ? deps.startDiffWindowMode
+            : auxKind === 'light' ? deps.startLightWindowMode : deps.startPreviewWindowMode;
+        const label = {memo: '便签', monitor: '会话监控', diff: '文件对比', light: '轻量查看', preview: '实时预览'}[auxKind];
         Promise.resolve(starter())
             .catch((e) => {
-                try { deps.logFrontend('error', (auxKind === 'memo' ? '便签' : auxKind === 'monitor' ? '会话监控' : '文件对比') + '窗口启动失败：' + ((e && (e.stack || e.message)) || e)); } catch (_) {}
+                try { deps.logFrontend('error', label + '窗口启动失败：' + ((e && (e.stack || e.message)) || e)); } catch (_) {}
             });
         return;
     }

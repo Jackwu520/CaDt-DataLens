@@ -105,6 +105,12 @@ func windowSizesFor(mode windowMode) (width, height, minWidth, minHeight int) {
 		return 560, 780, 420, 480
 	case windowModeDiff:
 		return 980, 680, 680, 440
+	case windowModeLight:
+		// 轻量查看窗：一个文件一个窗，默认比主窗口小一号。
+		return 760, 600, 460, 380
+	case windowModePreview:
+		// 实时预览窗：纵向文档形态，适合摆在第二屏跟着写。
+		return 680, 800, 440, 440
 	default:
 		return 1280, 800, 720, 480
 	}
@@ -134,6 +140,10 @@ func windowOptionsFor(spec windowSpec, initialRect windowgeom.Rect, hasInitialRe
 		title = "会话监控 · CaDt-DataLens"
 	case windowModeDiff:
 		title = "文件对比 · CaDt-DataLens"
+	case windowModeLight:
+		title = "查看 · CaDt-DataLens"
+	case windowModePreview:
+		title = "实时预览 · CaDt-DataLens"
 	}
 	opts := application.WebviewWindowOptions{
 		Name:               spec.Name,

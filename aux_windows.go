@@ -139,7 +139,65 @@ func (a *App) OpenDiffWindow(ctx context.Context, pathA, pathB string) error {
 	return nil
 }
 
-// GetAuxWindowKind 当前调用窗口的辅助窗类型（memo|monitor|diff）；其他窗口空串。
+// findLightWindow 按文件路径找已存在的轻量查看窗（同文件只开一个）。
+func findLightWindow(path string) *windowState {
+	path = strings.TrimSpace(path)
+	for _, st := range winReg.list() {
+		spec := st.startup()
+		if spec.Mode == windowModeLight && strings.TrimSpace(spec.LightPath) == path {
+			return st
+		}
+	}
+	return nil
+}
+
+// findPreviewWindow 按源文件路径找已存在的预览窗（一个源文件一个预览位）。
+func findPreviewWindow(path string) *windowState {
+	path = strings.TrimSpace(path)
+	for _, st := range winReg.list() {
+		spec := st.startup()
+		if spec.Mode == windowModePreview && strings.TrimSpace(spec.PreviewPath) == path {
+			return st
+		}
+	}
+	return nil
+}
+
+// OpenLightView 把文件弹成轻量查看窗（只读，磁盘真源，不占工作区归属）。
+// 同文件已有查看窗直接前置；文件存在性由前端 OpenFile 读取时校验。
+func (a *App) OpenLightView(ctx context.Context, path string) error {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return fmt.Errorf("缺少文件路径")
+	}
+	if st := findLightWindow(path); st != nil {
+		activateWindow(st.window())
+		return nil
+	}
+	a.createWindow(windowSpec{Mode: windowModeLight, LightPath: path})
+	return nil
+}
+
+// OpenLivePreview 打开源文件的实时预览窗（只读镜像：轮询磁盘 mtime 跟随保存）。
+// Origin 记发起窗口供头部「回到主窗口」；一个源文件一个预览位，重复打开前置。
+func (a *App) OpenLivePreview(ctx context.Context, path string) error {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return fmt.Errorf("缺少文件路径")
+	}
+	if st := findPreviewWindow(path); st != nil {
+		activateWindow(st.window())
+		return nil
+	}
+	origin := ""
+	if cw := callerWindow(ctx); cw != nil {
+		origin = cw.Name()
+	}
+	a.createWindow(windowSpec{Mode: windowModePreview, PreviewPath: path, Origin: origin})
+	return nil
+}
+
+// GetAuxWindowKind 当前调用窗口的辅助窗类型（memo|monitor|diff|light|preview）；其他窗口空串。
 // 终端窗不在这里（沿用 IsTerminalWindow，避免碰已验证的启动分支）。
 func (a *App) GetAuxWindowKind(ctx context.Context) string {
 	st := stateForCaller(ctx)
@@ -153,8 +211,34 @@ func (a *App) GetAuxWindowKind(ctx context.Context) string {
 		return "monitor"
 	case windowModeDiff:
 		return "diff"
+	case windowModeLight:
+		return "light"
+	case windowModePreview:
+		return "preview"
 	}
 	return ""
+}
+
+// GetStartupLight 轻量查看窗的启动上下文：文件路径。
+func (a *App) GetStartupLight(ctx context.Context) map[string]string {
+	st := stateForCaller(ctx)
+	if st == nil || st.startup().Mode != windowModeLight {
+		return nil
+	}
+	return map[string]string{"path": st.startup().LightPath}
+}
+
+// GetStartupPreview 实时预览窗的启动上下文：源文件路径与发起窗口名。
+func (a *App) GetStartupPreview(ctx context.Context) map[string]string {
+	st := stateForCaller(ctx)
+	if st == nil || st.startup().Mode != windowModePreview {
+		return nil
+	}
+	spec := st.startup()
+	return map[string]string{
+		"path":   spec.PreviewPath,
+		"origin": spec.Origin,
+	}
 }
 
 // GetStartupMemo 便签独立窗口的启动上下文：scope + workspace（global 时 workspace 空）。

@@ -700,6 +700,12 @@ function showExplorerMenu(info, x, y) {
         items.push({label: '以只读打开', icon: 'E8E5', action: () => deps.openPath(info.path, {readOnly: true})});
         items.push({label: '用默认应用打开', icon: 'E8E5', action: () => deps.openWithDefaultApp(info.path)});
         items.push({label: '在新窗口中打开', icon: 'E8A7', action: () => deps.openInNewWindows([info.path])});
+        // 轻量查看窗（辅助窗第二批）：只读、不占工作区归属，双击即看的正路
+        if (deps.backend && deps.backend.OpenLightView) {
+            items.push({label: '在独立窗口查看（轻量）', icon: 'E8A7', action: () => {
+                deps.backend.OpenLightView(info.path).catch((e) => deps.flash && deps.flash('打开轻量查看窗失败：' + ((e && e.message) || e), true));
+            }});
+        }
         if (deps.readingMode && /\.(md|markdown|mdx|txt|docx|epub)$/i.test(info.name || '')) {
             items.push({label: '阅读此文件', icon: 'E8A5', action: () => deps.readingMode.openSingleFile(info.path)});
         }
