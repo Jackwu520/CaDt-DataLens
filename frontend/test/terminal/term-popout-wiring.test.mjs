@@ -31,6 +31,14 @@ test('接回路径：切事件归属 + TermRead 快照回放，且不允许漏�
     assert.match(fn, /if \(replayFailed\) \{\s*flushPendingTermOut\(id\);/);
 });
 
+test('弹出/接回保留页签标签（「本地」不漂移成 Shell 名）', () => {
+    assert.match(sessionsSrc, /popoutLabels\.set\(id, \{label: s\.customName \|\| s\.defaultLabel, custom: !!s\.customName\}\)/,
+        '弹出时记住页签名（含自定义名）');
+    assert.match(sessionsSrc, /const remembered = popoutLabels\.get\(id\);/);
+    assert.match(sessionsSrc, /label: remembered && remembered\.label/);
+    assert.match(sessionsSrc, /popoutLabels\.delete\(id\);/);
+});
+
 test('主窗口监听 term-popout-closed 并按 target 接回', () => {
     const start = mainSrc.indexOf("appEvents.onApp('term-popout-closed'");
     assert.ok(start >= 0, 'main.js 缺少 term-popout-closed 处理器');

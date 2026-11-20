@@ -12,6 +12,9 @@ export function createTerminalSessions(deps) {
 // 首屏 banner/提示符残缺，转义序列被拦腰截断会一直乱下去。现在先暂存，
 // attachTermSession 注册后按序回放。
 const pendingTermOut = new Map(); // id -> {buf, at}
+// popoutLabels：弹出期间记住页签名（含用户自定义名），接回时原样恢复——
+// 否则接回按 shell 名重起标签，「本地」会变成「PowerShell 7」（2026-11-21 用户实测）。
+const popoutLabels = new Map(); // id -> {label, custom}
 const PENDING_TERM_OUT_MAX = 256 * 1024;
 // 广播兜底缓冲是**短命**的：owner 登记竞态期（Go 回退广播）每个窗口都会收到
 // 非，己会话的输出并暂存——该 id 永远不会被本窗口 attach，条目必须过期丢弃，
@@ -251,7 +254,7 @@ function attachTermSession(id, usedShell, opts = {}) {
         return true;
     });
     // 页签命名仿 JetBrains：默认 shell 叫「本地」，重复时加 (2)/(3)；显式选择的 shell 用名字
-    const baseName = opts.explicitShell ? (deps.TERM_SHELL_LABELS[usedShell] || usedShell) : '本地';
+    const baseName = opts.label || (opts.explicitShell ? (deps.TERM_SHELL_LABELS[usedShell] || usedShell) : '本地');
     let dup = 0;
     for (const s of deps.terminalUI.sessions.values()) {
         if (s.baseName === baseName) dup++;
@@ -296,6 +299,7 @@ function attachTermSession(id, usedShell, opts = {}) {
     // AI 来源标记（terminal 工具 open 传入发起会话 id）：term-exit 时 main.js 据此把
     // 「shell 已退出」投给 AI 会话信箱；用户自己开的终端没有该标记，退出不打扰会话。
     if (opts.aiSessionId) session.aiSessionId = opts.aiSessionId;
+    if (opts.customName) session.customName = opts.customName;
     deps.terminalUI.sessions.set(id, session);
     if (!opts.skipPendingFlush) flushPendingTermOut(id);
     deps.terminalUI.order.push(id);
@@ -314,6 +318,11 @@ function attachTermSession(id, usedShell, opts = {}) {
         } catch (e) {}
     }, 80);
     return session;
+}
+
+// termShellLabel：shell id → 展示名（终端窗口头部胶囊用，跟页签重命名无关）。
+function termShellLabel(shell) {
+    return deps.TERM_SHELL_LABELS[shell] || shell || '本地';
 }
 
 function termDefaultCols() {
@@ -421,7 +430,14 @@ async function attachResumedTermSession(id, shell) {
     }
     if (!replayFailed) discardPendingTermOut(id);
     const usedShell = shell || (replay && replay.shell) || 'powershell';
-    const s = attachTermSession(id, usedShell, {explicitShell: !!shell, skipPendingFlush: replayFailed ? false : true});
+    const remembered = popoutLabels.get(id);
+    const s = attachTermSession(id, usedShell, {
+        label: remembered && remembered.label,
+        customName: remembered && remembered.custom ? remembered.label : '',
+        explicitShell: !remembered,
+        skipPendingFlush: replayFailed ? false : true,
+    });
+    popoutLabels.delete(id);
     if (replayFailed) {
         flushPendingTermOut(id);
         return s;
@@ -448,6 +464,8 @@ async function popOutTermSession(id) {
         deps.flash('弹出终端失败：' + e, true);
         return;
     }
+    const s = deps.terminalUI.sessions.get(id);
+    if (s) popoutLabels.set(id, {label: s.customName || s.defaultLabel, custom: !!s.customName});
     removeTermSession(id);
     if (!deps.terminalUI.sessions.size) deps.toggleTerminalPanel(false);
 }
@@ -637,6 +655,6 @@ function terminalHostApi() {
 }
 
 return {activateTermSession, attachResumedTermSession, closeTermSession, createTermSession, fitActiveTerm, popOutTermSession, removeTermSession,
-        renameTermSession, showTermShellMenu, showTermTabMenu, syncTerminalTheme, terminalHostApi,
+        renameTermSession, showTermShellMenu, showTermTabMenu, syncTerminalTheme, terminalHostApi, termShellLabel,
         termDefaultCols, termDefaultRows, writeTermOut};
 }

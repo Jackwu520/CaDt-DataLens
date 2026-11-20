@@ -348,7 +348,7 @@ async function startTerminalWindowMode() {
     });
     const shellPill = document.createElement('span');
     shellPill.className = 'term-window-pill';
-    shellPill.textContent = (s && s.defaultLabel) || shell || '本地';
+    shellPill.textContent = terminalMod.termShellLabel(shell);
     const cwdPill = document.createElement('span');
     cwdPill.className = 'term-window-pill';
     cwdPill.dataset.tip = '会话启动目录';
@@ -363,7 +363,7 @@ async function startTerminalWindowMode() {
     // OS 窗口标题（任务栏/Alt+Tab 可见）：终端 · 工作区 · Shell
     try {
         if (window.runtime && window.runtime.WindowSetTitle) {
-            window.runtime.WindowSetTitle('终端 · ' + (cwdBase || '无工作区') + ' · ' + ((s && s.defaultLabel) || shell || '本地'));
+            window.runtime.WindowSetTitle('终端 · ' + (cwdBase || '无工作区') + ' · ' + terminalMod.termShellLabel(shell));
         }
     } catch (e) {}
     if (s) {
