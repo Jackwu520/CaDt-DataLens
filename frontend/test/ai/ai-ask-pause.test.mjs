@@ -41,6 +41,15 @@ test('倒计时文案：暂停时冻结在 remainingMs，显示「已暂停」',
     assert.match(text, /'已暂停 · 剩余 '/, '暂停文案');
 });
 
+test('不限时不显示倒计时文案：无 deadline 直接返回空，不再有「已忽略 N 秒」', () => {
+    const text = fnBody(panel, 'function askCountdownText(ask)', 'function updateAskCountdown');
+    assert.match(text, /if \(!ask\.deadline\) return ''/, '无 deadline 返回空串');
+    assert.doesNotMatch(text, /本次不限时|已忽略/, '不再渲染"已忽略 N 秒"提示');
+    // 渲染层两处都按文案为空就不建节点
+    const head = fnBody(cards, 'const countdownText = askCountdownText(ask);', '// 临时收起');
+    assert.match(head, /if \(countdownText\)/, '展开态按文案判空');
+});
+
 test('ask 数据：初始化与历史恢复都带 paused / remainingMs 字段', () => {
     const normalize = fnBody(panel, 'function normalizeAsk', '// 思考循环守卫记录');
     assert.match(normalize, /paused: !!raw\.paused/, '历史恢复 paused');
@@ -94,9 +103,10 @@ test('快超时高亮：≤10 秒且未暂停时挂 urgent，暂停时移除', (
     assert.match(update, /leftMs <= ASK_URGENT_MS/, '按阈值判定');
     assert.match(update, /!ask\.paused/, '暂停不高亮');
     assert.match(update, /classList\.toggle\('urgent', urgent\)/, '切换 urgent 类');
-    assert.match(css, /\.ai-ask-countdown\.urgent \{/, 'urgent 样式');
-    assert.match(css, /@keyframes ai-ask-urgent-pulse/, '脉冲动画');
-    assert.match(css, /prefers-reduced-motion/, '尊重减少动态偏好');
+    const urgent = fnBody(css, '.ai-ask-countdown.urgent {', '.ai-ask-result');
+    assert.match(urgent, /color: var\(--red\)/, '变红');
+    assert.match(urgent, /font-weight: 600/, '加粗');
+    assert.doesNotMatch(urgent, /animation|@keyframes/, '不做闪烁动画（用户要求）');
 });
 
 test('收起态留白：composer 在收起态降 min-height', () => {

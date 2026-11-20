@@ -152,7 +152,7 @@ export function createAIAskCards(ctx, extras) {
         title.className = 'ai-takeover-title';
         title.textContent = 'AI 提问' + (multi ? ' · ' + ask.questions.length + ' 个问题' : '');
         head.append(icon, title);
-        // 有倒计时用倒计时文案；wait（无 deadline）时也可能有"已忽略 N 秒"的提示
+        // 有倒计时才渲染文案节点；wait / 0 秒（无 deadline）时文案为空，整块不显示
         const countdownText = askCountdownText(ask);
         if (countdownText) {
             const countdown = document.createElement('span');

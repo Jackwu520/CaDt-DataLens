@@ -1594,8 +1594,7 @@ export function createAIPanel(options) {
                 ? raw.timeoutAction
                 : 'recommended',
             timeoutCustom: !!raw.timeoutCustom,
-            // timeoutAction=wait 会忽略 timeoutSec；恢复历史时保留这个事实，
-            // 否则面板不再提示"已忽略 N 秒"，用户会以为当初没设超时
+            // timeoutAction=wait 会忽略 timeoutSec；保留这个事实供数据层参考（面板不展示）
             ignoredSec: Math.max(0, Number(raw.ignoredSec) || 0),
             // 暂停态：暂停时冻结剩余毫秒，deadline 保留原值（文案走 paused 分支），
             // 继续时用 remainingMs 重算 deadline。历史消息恢复后不重建计时器，仅保证文案一致。
@@ -8191,11 +8190,9 @@ async function requestApproval(session, toolMessage, info) {
 
     function askCountdownText(ask) {
         if (!ask || ask.state !== 'pending') return '';
-        if (!ask.deadline) {
-            // timeoutAction=wait（或显式 0 秒）没有倒计时。若这次还传了秒数，
-            // 必须说清它没生效：wait 会把 timeoutSec 静默忽略，否则用户只看到"没设超时"。
-            return ask.ignoredSec > 0 ? '本次不限时（已忽略 ' + ask.ignoredSec + ' 秒超时）' : '';
-        }
+        // 不限时（wait / 0 秒，无 deadline）不渲染倒计时：既没有秒数，也不显示任何
+        // 提示文案——那类文字挤在收起条中间既突兀又无意义。
+        if (!ask.deadline) return '';
         // 暂停时冻结在 remainingMs，不再随 wall clock 递减；继续后回到 deadline 计时。
         const leftMs = ask.paused ? ask.remainingMs : Math.max(0, ask.deadline - Date.now());
         const left = Math.ceil(leftMs / 1000);
@@ -8476,7 +8473,7 @@ async function requestApproval(session, toolMessage, info) {
             timeoutSec,
             timeoutAction,
             timeoutCustom: custom,
-            // wait 时不启动计时器：记住被忽略的秒数，面板据此提示"本次不限时"
+            // wait 时不启动计时器：记住被忽略的秒数（数据层保留，面板不展示）
             ignoredSec: useTimer ? 0 : timeoutSec,
             paused: false,
             remainingMs: 0,
