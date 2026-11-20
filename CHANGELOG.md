@@ -4,6 +4,20 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 
 ## 未发布
 
+### 改进（斜杠选中技能即作为本轮请求发出，不再让「继续输入需求」）
+
+- **现象**：输入 `/` 从补全列表选一个技能后，只提示「已加载技能（随下一轮发送），继续输入需求」，输入框被清空、什么都没发出去，看起来像「技能不能单独发、必须配文字等下一轮」。
+- **对齐调研**：ZCode / dsh / opencode / cline / codex / pi 六家一致——选中 skill 即作为本轮请求发出，正文作为 user context 注入，**没有「挂起等下一轮」的状态机**。本应用底层其实也支持只发 skill（附件让发送按钮变亮、空文案由 `startSessionTurn` 补占位），纯粹是斜杠路径主动清空输入框 + 误导文案造成的错觉。
+- **改法**：`ai-slash.js` 新增纯函数 `slashSkillInvocation`（无参 → 空文案只发 skill，带参 → 原文连附件一起发）；`invokeSkillItem` 附加附件后直接 `sendComposerMessage`，不再清空输入框干等；`/help` 与文件头注释同步；附件栏技能选择器与 `/skill 名字` 的文案改为「可直接点发送（只发 skill），或继续输入需求」。
+- 测试：`ai-slash.test.mjs` 新增 `slashSkillInvocation` 用例；`npm run build` 通过、全量 `npm test` 1979 通过（串行）。
+
+### 修复（会话数据诊断不再卡在「正在分析」，字体一并修正）
+
+- **现象**：打开会话数据诊断后一直显示「正在分析会话数据…」，必须点「重建搜索索引」才出数据；诊断正文的中文字体发虚发窄，很难看。
+- **根因**：`Stats()` 是诊断用的只读统计，却顺带调用 `syncSessionIndex` 重放全部脏会话——长会话要跑几秒，前端 `await backend.AISessionIndexStats()` 一直不返回，文本填不进去；点「重建索引」时 `ResetFiles()` 关掉了 `Stats()` 正在用的 DB，才让 await 抛 `sql: database is closed` 结束等待、文本终于显示（于是看起来像「点了重建才出来」）。
+- **改法**：`internal/sessionindex/sessionindex.go` 的 `Stats()` 改为纯读取当前索引状态，不再同步脏会话，脏数照实上报（`dirty` 列）让诊断能看出待索引量；`frontend/src/style.css` 的 `.ai-diagnostic-pre` 字体从 `ui-monospace/SFMono-Regular`（Windows 上中文回退到宋体）改为项目统一的 `--editor-font-family`（JetBrains Mono + 微软雅黑）。
+- 测试：`internal/sessionindex/sessionindex_test.go` 新增 `TestStatsDoesNotRebuildDirtySessions` 锁定「Stats 不重建脏会话」；Go 相关用例通过。
+
 ### 改进（归档会话改为明确的只读态，不再只靠右下角一行灰字）
 
 - **现象**：查看归档会话时不能编辑消息、也不能发送，但界面上编辑按钮照常出现、输入框照常可填，直到点发送才被后端拒绝，右下角甩出一行英文 reason 码 `archived`，用户很难看懂。
@@ -21,7 +35,8 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 - **现象**：后台子代理结算 / 提问、支线结论以应用消息卡片注入，正文里的 `###` / `**` / 反引号代码围栏都按纯文本原样显示（`查看指令` 区用 `<pre>`），可读性差。
 - **改法**：只对结论型 kind（`subagent` / `subagent-ask` / `sidechat`）渲染 Markdown；指令型（git / 定时 / 计划批准 / 会话投递 / 工作区防护等）保持原文——「查看指令」的用途是核对实际发给模型的字节，渲染会吃掉标记符号。卡片头新增「查看原文 / 查看渲染」切换，随时切回逐字原文；开头的宿主环境块（`<system-reminder>`）始终原文弱化显示，不参与渲染。
 - **性能**：复用已注入面板的单例 `renderMarkdown`（无新依赖、零体积成本）；默认折叠时**不渲染**，只在展开且处于渲染视图时才跑，结果按消息 key 缓存，流式期间 `renderMessages` 全量重放直接取缓存、零成本；正文超 12000 字符退回原文。
-- 改动：`frontend/src/ai/ai-app-message.js`（`appMessageMarkdownEligible` 纯函数）、`frontend/src/ai/ai-panel.js`（`renderAppMessage` 双视图 + 懒渲染 + 缓存）、`frontend/src/style.css`（`.ai-app-msg-md`）、`frontend/test/ai/ai-app-message.test.mjs`（新增 eligibility 用例）。`npm test` 全量通过、`npm run build` 通过。
+- 改动：`frontend/src/ai/ai-app-message.js`（`appMessageMarkdownEligible` 纯函数）、`frontend/src/ai/ai-panel.js`（`renderAppMessage` 双视图 + 懒渲染 + 缓存）、`frontend/src/style.css`（`.ai-app-msg-md` + 末尾全局 `.hidden { display:none }` 兜底）、`frontend/test/ai/ai-app-message.test.mjs`（eligibility + 全局 hidden 规则守卫）。`npm test` 全量通过、`npm run build` 通过。
+- 顺带在 `style.css` 末尾加全局 `.hidden { display: none }` 兜底：本项目历史上逐类配 `.xxx.hidden`（已有 30 条），新增组件常漏配导致隐藏失效（本次卡片切换就踩到一次）。全局规则不带 `!important`（不压过内联 `style.display` 与既有 `!important` 显示逻辑）、放文件末尾（同特异性后写赢），已有逐类规则特异性更高、行为不变。
 
 ### 改进（AI 会话列表改按「最近一轮结束时间」排序，刚结束的会话冒到顶）
 
