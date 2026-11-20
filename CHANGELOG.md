@@ -2,6 +2,30 @@
 
 CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与 Gitee Release 的 tag 对应。
 
+## 未发布
+
+### 改进（超窗压缩自救复评：分段压缩不实施 + 旧摘要截断修复）
+
+- **分段压缩方案复评，决定不实施**：`docs/unfinished-plans/ai-segmented-compact.md` 的两个死因（压缩请求=全量发送发不出去、转录尾部截断导致摘要残缺）在 2026-11-19 的 `9147f8b` 已被「超窗兜底」绕过——`startCompact` 不再预拒，而是把转录按窗口比例截断（`transcriptCap = window × 0.4 × 3.2` 字符），保证摘要请求一定发得出去；原文全程归档不删，auto-compact 同样走兜底。会话死锁已解，完整分段压缩只剩「摘要覆盖率」优化点，性价比降为 nice-to-have。方案移入 `docs/reports/` 作决策记录。
+- **修超窗压缩丢旧摘要**：`compactTranscriptOf` 原来把「此前摘要」拼进转录一起按尾部截断，而超窗兜底会压小预算——旧摘要排在最前，总是第一个被截掉，滚动累积链断裂，超窗压缩的摘要反而比正常压缩更差。现在旧摘要恒定保留在头部、只截消息中段，且旧摘要篇幅计入截断预算（消息转录保底 2000 字符），请求体积仍受 cap 约束。
+- **清理过时文案**：≥100% 时提醒条按钮不再显示「分段压缩」占位与 aria-disabled 压暗、点击不再提示「尚未实装」，恢复「压缩上下文」可点；banner / 提示行 / 发送 flash 改为「可压缩（摘要略粗），或切换更大上下文的模型」；删掉 style.css 里对应的死样式。`aiCtxBannerState` 文案测试同步。
+- 护栏：`ai-compact.test.mjs` 补「超窗截断仍保留头部旧摘要 + 总量受 cap 约束 + 超长旧摘要保底」，`ai-constants.test.mjs` 同步 banner 文案；前端全量 `npm test` 通过。
+
+### 修复（可视化卡片「全屏」显示不出图、「另存为」的 SVG 打不开）
+
+- **成因**：mermaid 用 `htmlLabels` 把节点文字放进 `foreignObject` 的 HTML 里，序列化时空元素被写成 `<br>`（HTML 不补斜杠）。这份字符串在卡片里由 HTML 解析器读（容错），但编成 `data:image/svg+xml,…` 交给 `<img>`、或存成 `.svg` 文件时，浏览器按 **XML** 整份解析——一个未闭合的 `<br>` 就让整张图加载失败：灯箱显示「无法显示」，文件只画出错误点之前的半张图（`Opening and ending tag mismatch: br line 1 and p`）。
+- **修复**：`frontend/src/core/widget.js` 新增纯函数 `svgXmlSafe`（XML 空元素补自闭合 + `&nbsp;` → `&#160;`），`svgToDataUrl`（全屏灯箱）与卡片「另存为」的 SVG 出口都先过一遍；HTML 卡片导出不受影响。SVG 命名空间没有同名空元素（是 `<image>` 不是 `<img>`），全局替换不会误伤。
+- **顺手补齐失败提示**：用户自己的 `.svg` 文件本身不良构时不自动洗白（那会让坏文件看着正常，发给别人/用浏览器打开还是坏的），但预览外置窗补上了 `<img>` 的 `onerror`（此前解码失败是一片空白），渲染视图与「导出为 PNG」的报错也点明「多半是标签未闭合或用了 `&nbsp;` 这类 HTML 实体」。
+- 用例进 `frontend/test/core/widget.test.mjs`（空元素/实体/不误伤成对标签、data URL 里不再残留裸 `<br>`）。
+
+### 修复（AI 回复「话说到一半」停住时看不出原因）
+
+- **结束原因如实上报**：传输层归一结束原因时，`length`（输出预算打满 / 上下文超限）与 Anthropic 的 `max_tokens` 不再被折成 `stop`；只发 `[DONE]`、不给 `finish_reason` 的网关记为 `unknown`（`internal/aitransport/sse.go`）。此前两类都表现为「正常完成」，界面上与模型自己写完完全无法区分。
+- **落盘留痕**：assistant 消息新增 `finishReason` / `truncated` 字段（并进消息指纹），重启重放后仍能判断某条回复当时是正常收尾还是被截断。
+- **提示与出口**：被截断的回复在正文末尾出现警告色提示条 + 「继续」按钮，点一下从断点接着写、不重复已输出内容；`unknown` 只在正文悬空收尾（冒号 / 逗号 / 破折号等）时才提示，正常网关不打扰。
+- 判定与文案抽成 `frontend/src/ai/ai-truncation.js`（纯函数，`test/ai/ai-truncation.test.mjs` 覆盖，已登记 `npm test`）；`internal/aitransport` 补两条用例（`[DONE]` 无原因 → `unknown`、`length` / `max_tokens` 原样保留）。
+- 背景：免费通道（hy4-flash-free）在准备输出长 SVG 时多次停在一句话后面，客户端当时既无提示也无续写入口（会话 `session-mwpjsx19f56c0`）。
+
 ## v1.2.0 — 2026-11-20
 
 ### 重构（窗口架构迁移到 Wails v3：一进程多窗口）
@@ -1055,7 +1079,7 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 - **上下文达到窗口 90% 禁止发送**：发送按钮禁用、提示行说明原因、回车 / 点击发送直接给明确提示；此前起轮预检（超 90% 拒发）只在点击后才 flash，用户无预知。判定口径收敛为单一常量 `AI_CTX_SEND_BLOCK_RATIO`（ai-constants.js），起轮预检、门禁、提醒条三处同源。
 - **上下文提醒条重绘**：一行裸灰字改为警告胶囊——警告图标 + 一行文案 +「压缩上下文」按钮 + ×，边距与输入框卡片对齐；达到压缩阈值为琥珀「建议压缩」态，达到发送门槛转红色门禁态（数字千分位）。× 关闭只收提醒、发送门禁不变（再涨 5% 重新提醒的规则照旧）。
 - **≥100%（压缩也不可行）分层出口**：压缩请求 = 摘要提示 + 整段会话一起发给模型，估算 ≥100% 时同样必被拒收——`/compact` 与 auto-compact 在 `startCompact` 提前拒绝并给出指引（不再等 API 报错，也不触发转录尾部截断导致的「摘要静默缺斤短两」）；提醒条按钮换成「分段压缩」占位（aria-disabled 压暗 + tooltip + 点击提示出路；用 `aria-disabled` 而非 `disabled` 是为了让 hover/tooltip 仍可派发）；发送提示行与 flash 按档区分文案。
-- 方案文档：`docs/unfinished-plans/ai-segmented-compact.md`（分段压缩自救——归档最老一批消息再摘要的分段压缩，待实施）。
+- 方案文档：`docs/unfinished-plans/ai-segmented-compact.md`（分段压缩自救——归档最老一批消息再摘要的分段压缩）。注：该方案后于 2026-11-22 复评决定不实施并移入 `docs/reports/`，详见「未发布」段落。
 - 文案与状态收敛为纯函数 `aiCtxBannerState`（ai-constants.js），护栏补进 `ai-constants.test.mjs`（三档文案 / 门禁边界 / 千分位 / windowSize 兜底）。
 
 ### 新功能（tooltip · 可悬停交互气泡与动作链接）
@@ -1757,6 +1781,18 @@ B6–F 系列引擎下沉（`docs/finished-plans/go-layout.md`）经逐提交审
 - **文件对比独立窗口**：双文件对比对话框退化为选择器——选定两个文件后打开独立对比窗（diff-only 形态）：行级 diff + 格式感知语义差异、几何记忆、可摆第二屏、不挡主窗口；编辑器右键「与文件对比」等两个路径都点名的入口跳过对话框直接开窗，同文件对重复打开直接前置。
 - **窗口基建**：三类辅助窗走与终端弹出同构的骨架（`windowModeMemo/Monitor/Diff` + `aux_windows.go` 绑定壳 + `GetAuxWindowKind` 启动分派），几何记忆按形态槽位级联，quick-switch「窗口」层自动收录；三类窗口都不注册为工作区打开者，不撞「同工作区防双开」守卫。
 - 护栏：`frontend/test/ai/ai-monitor-view.test.mjs`（流式尾随状态机 + 行组装）、`frontend/test/editor/diff-window-view.test.mjs`（摘要口径）、`aux_windows_test.go`（注册表查找 / 入参归一 / 几何槽位）。
+
+### 重构（窗口归属重构：监听/租约/浏览器/截图/对话框按窗口归属）
+
+- **工作区监听按窗口键控**：`Watcher` 单槽改按归属者多槽——双窗口先后打开各自工作区，后开窗口不再顶掉先开窗口的 `workspace-changed`（此前先开窗口的资源管理器自动刷新失效、wipe-guard L2 对其静默失明）。
+- **资源监听按窗口键控**：`ResourceWatcher` 的登记 id 带归属窗口（事件 key 保持裸值），双窗口监听同一便签作用域/会话目录各自持链，先关窗口只摘自己的。
+- **memo 写权租约跨窗口互斥**：租约持有者按窗口名分桶——同窗口重入计数、**跨窗口 Busy**（恢复 v2 的「第二个窗口只读 + 横幅」保护，此前双窗口同时可写只靠 mtime CAS 兜底）；横幅 owner 并入窗口名（同进程 PID 相同）。
+- **浏览器控件归属发起窗口**（上一次提交 92cae1f，本批一并归档方案）：不再按 Z 序挂上前台窗。
+- **截图目标归属调用方窗口**：`CaptureAppScreenshot(Region)` 加 ctx，AI 在哪个窗口调用就截哪个窗口。
+- **任务栏图标逐窗补打**：`applyTaskbarIconTo(hwnd)` 按 `showWindowWhenReady` 的归属窗口补 ICON_BIG，第二主窗口不再吞到别的窗口头上。
+- **对话框带属主**：七个文件对话框入口加 ctx，`dialogOwner`（调用方窗口 → 回落当前主窗）+ `AttachToWindow`——对话框模态到对应窗口并跟随位置，浮窗置顶时不再被压住。
+- **窗口关闭统一收口**：WindowClosing 钩子 `releaseWindowOwnedState(窗口名)`（摘本窗工作区监听槽 / 资源监听 / memo 租约）+ `BrowserCloseByOwner`（回收本窗浏览器标签页），不再泄漏监听与 WebView2 进程。
+- 方案落地记录见 `docs/finished-plans/window-ownership-refactor.md`；护栏 `internal/watch/ownership_test.go` + `internal/memo/memo_lease_test.go` 扩充。
 
 ### 改进（辅助独立窗第二批：轻量查看 / 实时预览外置）
 

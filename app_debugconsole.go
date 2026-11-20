@@ -15,7 +15,7 @@ func (a *App) ExportDebugConsoleLog(defaultName, content string) (string, error)
 	if name == "" {
 		name = "debug-console.log"
 	}
-	path, err := a.ShowSaveFileDialog("导出调试控制台日志", name, "log")
+	path, err := a.ShowSaveFileDialog(nil, "导出调试控制台日志", name, "log")
 	if err != nil {
 		return "", err
 	}

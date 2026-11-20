@@ -3,7 +3,11 @@ package main
 // memo_app.go：快捷便签面板的 Wails 绑定——引擎在 internal/memo，
 // 这里只注入应用数据目录并把三个绑定挂到 App 上（读 / CAS 写 / 贴图落盘）。
 
-import "datalens/internal/memo"
+import (
+	"context"
+
+	"datalens/internal/memo"
+)
 
 func init() {
 	memo.SetDeps(memo.Deps{AppDataDir: appDataRoot})
@@ -24,14 +28,15 @@ func (a *App) MemoSaveImage(scope, workspace, dataURL string) (string, error) {
 	return memo.SaveImage(scope, workspace, dataURL)
 }
 
-// MemoLeaseAcquire 取便签写权（打开面板时调用）；busy 返回 owner，不报错。
-func (a *App) MemoLeaseAcquire(scope, workspace, label string) (memo.LeaseStatus, error) {
-	return memo.AcquireLease(scope, workspace, label)
+// MemoLeaseAcquire 取便签写权（打开面板时调用，按调用方窗口归属）；busy 返回
+// owner（另一窗口/进程在编辑），不报错。
+func (a *App) MemoLeaseAcquire(ctx context.Context, scope, workspace, label string) (memo.LeaseStatus, error) {
+	return memo.AcquireLease(scope, workspace, label, callerWindowName(ctx))
 }
 
-// MemoLeaseRelease 释放便签写权（关闭面板/切作用域/关窗时调用）。
-func (a *App) MemoLeaseRelease(scope, workspace string) error {
-	return memo.ReleaseLease(scope, workspace)
+// MemoLeaseRelease 释放调用方窗口的便签写权（关闭面板/切作用域/关窗时调用）。
+func (a *App) MemoLeaseRelease(ctx context.Context, scope, workspace string) error {
+	return memo.ReleaseLease(scope, workspace, callerWindowName(ctx))
 }
 
 // MemoLeaseStatus 探测便签写权（只读横幅/定时接管用，不用于写决策）。

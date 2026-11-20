@@ -21,11 +21,23 @@ type ResourceWatcher struct {
 	OnEvent func(kind, key string, paths []string, overflow bool)
 }
 
+// resourceWatch 单条资源监听。owner 是归属者（v3 = 调用方窗口名）：两个窗口监听
+// 同一资源各自持有一条，先关窗口只摘自己的，不再把后开窗口依赖的推送拆掉
+// （2026-11-21 审查第 5 项）。key 保持裸值（OnEvent / 前端消费按它过滤）。
 type resourceWatch struct {
-	kind string
-	key  string
-	stop chan struct{}
-	done chan struct{}
+	owner string
+	kind  string
+	key   string
+	stop  chan struct{}
+	done  chan struct{}
+}
+
+// resourceID 内部登记 id：owner 为空时与旧格式一致（兼容测试）。
+func resourceID(owner, kind, key string) string {
+	if owner == "" {
+		return kind + "|" + key
+	}
+	return kind + "|" + owner + "|" + key
 }
 
 // Resources 是进程级的资源监听器；根壳在 startup 注入的事件通道上广播。
@@ -35,10 +47,10 @@ func NewResourceWatcher() *ResourceWatcher {
 	return &ResourceWatcher{watches: map[string]*resourceWatch{}}
 }
 
-// Watch 开始监听 dir（递归），替换同 kind+key 的旧监听。
-// 非 Windows 上系统通知不可用时 goroutine 会记一条 warn；绑定仍返回 nil，
-// 前端退回 focus/轮询刷新。
-func (w *ResourceWatcher) Watch(kind, key, dir string) error {
+// Watch 开始监听 dir（递归），替换同 owner+kind+key 的旧监听；owner 空 = 旧格式
+// 单例语义（兼容测试）。非 Windows 上系统通知不可用时 goroutine 会记一条 warn；
+// 绑定仍返回 nil，前端退回 focus/轮询刷新。
+func (w *ResourceWatcher) Watch(owner, kind, key, dir string) error {
 	dir = strings.TrimSpace(dir)
 	if dir == "" {
 		return fmt.Errorf("监听目录为空")
@@ -50,14 +62,14 @@ func (w *ResourceWatcher) Watch(kind, key, dir string) error {
 	if !info.IsDir() {
 		return fmt.Errorf("不是目录：%s", dir)
 	}
-	id := kind + "|" + key
+	id := resourceID(owner, kind, key)
 	w.mu.Lock()
 	w.stopLocked(id)
 	stop := make(chan struct{})
 	done := make(chan struct{})
-	w.watches[id] = &resourceWatch{kind: kind, key: key, stop: stop, done: done}
+	w.watches[id] = &resourceWatch{owner: owner, kind: kind, key: key, stop: stop, done: done}
 	w.mu.Unlock()
-	logf("info", "资源监听：%s %s -> %s", kind, key, dir)
+	logf("info", "资源监听：%s %s -> %s（owner=%s）", kind, key, dir, owner)
 	go func() {
 		defer close(done)
 		err := watchDirectory(dir, stop, func(events []watchEvent, overflow bool) {
@@ -82,14 +94,33 @@ func (w *ResourceWatcher) Watch(kind, key, dir string) error {
 	return nil
 }
 
-// Unwatch 停止监听；不存在时静默。
-func (w *ResourceWatcher) Unwatch(kind, key string) {
+// Unwatch 停止指定归属者的一条监听；不存在时静默。
+func (w *ResourceWatcher) Unwatch(owner, kind, key string) {
 	w.mu.Lock()
-	w.stopLocked(kind + "|" + key)
+	w.stopLocked(resourceID(owner, kind, key))
 	w.mu.Unlock()
 }
 
-// StopAll 停止全部监听（窗口关闭/测试用）。
+// UnwatchByOwner 停掉指定归属者的全部监听（窗口关闭时只摘自己的），返回条数。
+func (w *ResourceWatcher) UnwatchByOwner(owner string) int {
+	if owner == "" {
+		return 0
+	}
+	w.mu.Lock()
+	ids := make([]string, 0, 2)
+	for id, item := range w.watches {
+		if item != nil && item.owner == owner {
+			ids = append(ids, id)
+		}
+	}
+	for _, id := range ids {
+		w.stopLocked(id)
+	}
+	w.mu.Unlock()
+	return len(ids)
+}
+
+// StopAll 停止全部监听（应用退出/测试用）。
 func (w *ResourceWatcher) StopAll() {
 	w.mu.Lock()
 	defer w.mu.Unlock()

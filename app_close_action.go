@@ -141,7 +141,7 @@ func (a *App) teardownAppServices() {
 	a.stopTray()
 	a.mcpCloseAll()         // MCP 子进程全量关闭（总预算 8s，超时靠 taskkill 兜底）
 	a.AppServices.StopAll() // 插件后台服务全量停止（取消即杀整棵进程树）
-	a.UnwatchWorkspace()
+	a.Watcher.UnwatchAll()  // 全部工作区监听槽（按窗口键控，退出时统一收口）
 }
 
 // hideToTray 隐藏指定窗口并把图标挂到通知区。

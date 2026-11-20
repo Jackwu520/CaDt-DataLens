@@ -20,7 +20,7 @@ func (a *App) ExportStructureDir(dir string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	path, err := a.ShowSaveFileDialog("导出结构化目录", rootName+"-目录结构.txt", "txt")
+	path, err := a.ShowSaveFileDialog(nil, "导出结构化目录", rootName+"-目录结构.txt", "txt")
 	if err != nil {
 		return "", err
 	}
@@ -48,7 +48,7 @@ func (a *App) ExportStructureText(defaultName string, content string) (string, e
 	if strings.HasSuffix(strings.ToLower(name), ".mmd") {
 		filter = "mmd"
 	}
-	path, err := a.ShowSaveFileDialog("导出结构", name, filter)
+	path, err := a.ShowSaveFileDialog(nil, "导出结构", name, filter)
 	if err != nil {
 		return "", err
 	}

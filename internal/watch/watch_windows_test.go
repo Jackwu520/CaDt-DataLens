@@ -195,10 +195,10 @@ func TestWatchWorkspaceQuietGateDropsRemovedGroup(t *testing.T) {
 	t.Cleanup(func() { Emit = oldEmit })
 
 	w := &Watcher{}
-	if err := w.WatchWorkspace(root); err != nil {
-		t.Fatalf("WatchWorkspace: %v", err)
+	if err := w.WatchWorkspaceFor("main", root); err != nil {
+		t.Fatalf("WatchWorkspaceFor: %v", err)
 	}
-	defer func() { w.UnwatchWorkspace() }()
+	defer func() { w.UnwatchWorkspaceFor("main") }()
 	time.Sleep(300 * time.Millisecond) // 等 watcher 进入读循环
 
 	BeginQuiet()

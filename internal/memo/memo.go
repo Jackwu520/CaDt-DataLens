@@ -75,8 +75,12 @@ type LeaseStatus struct {
 
 type memoLeaseEntry struct {
 	lease *resourcelease.Lease
-	refs  int
-	owner resourcelease.Owner
+	// holders 写权持有者计数，按归属者（v3 = 调用方窗口名）分桶：同窗口重入
+	// 计数 +1，跨窗口直接 Busy（v2 的「第二个窗口只读 + 横幅」语义——此前
+	// refs 是进程内重入计数，两个主窗口都会拿到 Acquired，双写只靠 mtime CAS
+	// 兜底，2026-11-21 审查第 2 项）。
+	holders map[string]int
+	owner   resourcelease.Owner
 }
 
 var (
@@ -142,23 +146,32 @@ func LeasePath(scope, workspace string) (string, error) {
 	return root + ".lock", nil
 }
 
-// AcquireLease 取便签写权（面板打开期间持有；同进程重入走 refcount）。
-func AcquireLease(scope, workspace, label string) (LeaseStatus, error) {
+// AcquireLease 取便签写权（面板打开期间持有；同窗口重入走计数，跨窗口 Busy）。
+// owner 是归属者（v3 = 调用方窗口名；空串 = 兼容测试的单桶语义）。
+func AcquireLease(scope, workspace, label, owner string) (LeaseStatus, error) {
 	path, err := LeasePath(scope, workspace)
 	if err != nil {
 		return LeaseStatus{}, err
 	}
+	ownerKey := strings.TrimSpace(owner)
+	fileLabel := leaseOwnerLabel(label, ownerKey)
 	memoLeaseMu.Lock()
 	if entry := memoLeases[path]; entry != nil {
-		entry.refs++
-		st := LeaseStatus{Acquired: true, Owner: entry.owner}
+		// 同窗口重入：计数 +1；别的窗口已持有 → Busy（第二个窗口只读 + 横幅）。
+		if _, held := entry.holders[ownerKey]; held {
+			entry.holders[ownerKey]++
+			st := LeaseStatus{Acquired: true, Owner: entry.owner}
+			memoLeaseMu.Unlock()
+			return st, nil
+		}
+		st := LeaseStatus{Busy: true, Owner: entry.owner}
 		memoLeaseMu.Unlock()
 		return st, nil
 	}
 	memoLeaseMu.Unlock()
 
-	owner := resourcelease.Owner{PID: os.Getpid(), Label: label}
-	lease, err := resourcelease.Acquire(path, owner)
+	fileOwner := resourcelease.Owner{PID: os.Getpid(), Label: fileLabel}
+	lease, err := resourcelease.Acquire(path, fileOwner)
 	if err != nil {
 		if resourcelease.IsBusy(err) {
 			return LeaseStatus{Busy: true, Owner: resourcelease.BusyOwner(err)}, nil
@@ -168,31 +181,57 @@ func AcquireLease(scope, workspace, label string) (LeaseStatus, error) {
 	// 双检：并发 Acquire 可能已经入表；把本次多拿的 ref 还回去。
 	memoLeaseMu.Lock()
 	if entry := memoLeases[path]; entry != nil {
-		entry.refs++
+		entry.holders[ownerKey]++
 		st := LeaseStatus{Acquired: true, Owner: entry.owner}
 		memoLeaseMu.Unlock()
 		lease.Release()
 		return st, nil
 	}
-	memoLeases[path] = &memoLeaseEntry{lease: lease, refs: 1, owner: owner}
+	memoLeases[path] = &memoLeaseEntry{
+		lease:   lease,
+		holders: map[string]int{ownerKey: 1},
+		owner:   fileOwner,
+	}
 	memoLeaseMu.Unlock()
-	return LeaseStatus{Acquired: true, Owner: owner}, nil
+	return LeaseStatus{Acquired: true, Owner: fileOwner}, nil
 }
 
-// ReleaseLease 释放本窗口对便签写权的引用；refs 归零才真正解锁。
-func ReleaseLease(scope, workspace string) error {
+// leaseOwnerLabel 把窗口名并进横幅 label：同进程多窗口下 PID 相同，
+// 只有窗口名能区分「谁在编辑」（2026-11-21 审查第 2 项口径）。
+func leaseOwnerLabel(label, owner string) string {
+	label = strings.TrimSpace(label)
+	if owner == "" {
+		if label == "" {
+			return "memo"
+		}
+		return label
+	}
+	if label == "" {
+		return "窗口 " + owner
+	}
+	return label + " · 窗口 " + owner
+}
+
+// ReleaseLease 释放指定归属者对便签写权的引用；最后一个持有者退出才真正解锁。
+func ReleaseLease(scope, workspace, owner string) error {
 	path, err := LeasePath(scope, workspace)
 	if err != nil {
 		return err
 	}
+	ownerKey := strings.TrimSpace(owner)
 	memoLeaseMu.Lock()
 	entry := memoLeases[path]
 	if entry == nil {
 		memoLeaseMu.Unlock()
 		return nil
 	}
-	entry.refs--
-	if entry.refs > 0 {
+	if n := entry.holders[ownerKey]; n > 1 {
+		entry.holders[ownerKey] = n - 1
+		memoLeaseMu.Unlock()
+		return nil
+	}
+	delete(entry.holders, ownerKey)
+	if len(entry.holders) > 0 {
 		memoLeaseMu.Unlock()
 		return nil
 	}
@@ -200,6 +239,36 @@ func ReleaseLease(scope, workspace string) error {
 	memoLeaseMu.Unlock()
 	entry.lease.Release()
 	return nil
+}
+
+// ReleaseLeaseByOwner 归属者（窗口）关闭时释放它名下的全部写权引用；
+// 最后一个持有者退出才解锁。返回触及的作用域条数。
+func ReleaseLeaseByOwner(owner string) int {
+	owner = strings.TrimSpace(owner)
+	if owner == "" {
+		return 0
+	}
+	memoLeaseMu.Lock()
+	paths := make([]string, 0, 2)
+	for path, entry := range memoLeases {
+		if _, held := entry.holders[owner]; held {
+			paths = append(paths, path)
+		}
+	}
+	releases := make([]*resourcelease.Lease, 0, len(paths))
+	for _, path := range paths {
+		entry := memoLeases[path]
+		delete(entry.holders, owner)
+		if len(entry.holders) == 0 {
+			delete(memoLeases, path)
+			releases = append(releases, entry.lease)
+		}
+	}
+	memoLeaseMu.Unlock()
+	for _, lease := range releases {
+		lease.Release()
+	}
+	return len(paths)
 }
 
 // LeaseStatusFor 探测便签写权：本进程持有 -> Acquired；别的进程持有 -> Busy + Owner；
@@ -231,7 +300,7 @@ func LockForClear(scope, workspace string) (func(), error) {
 		return nil, err
 	}
 	memoLeaseMu.Lock()
-	busy := memoLeases[path] != nil && memoLeases[path].refs > 0
+	busy := memoLeases[path] != nil && len(memoLeases[path].holders) > 0
 	memoLeaseMu.Unlock()
 	if busy {
 		return nil, fmt.Errorf("%w（本窗口正在编辑）", ErrBusy)

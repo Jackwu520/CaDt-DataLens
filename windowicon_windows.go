@@ -34,11 +34,12 @@ var (
 	procGetModuleHandleW         = kernel32.NewProc("GetModuleHandleW")
 )
 
-// applyTaskbarIcon 给主窗口补上 ICON_BIG。
+// applyTaskbarIconTo 给指定窗口补上 ICON_BIG（逐窗补打：v3 一进程多窗口后按
+// Z 序找「第一个主窗口」会把图标补到别的窗口头上——第二主窗口的任务栏占位
+// 图标不再被换掉，2026-11-21 审查第 3 项）。
 // wails 只设置了 ICON_SMALL，而 Windows 11 任务栏按钮按 ICON_BIG 绘制，
 // 不补会先显示系统默认的空白占位图标，几十秒后才被替换成真实图标。
-func applyTaskbarIcon() {
-	hwnd := findWailsWindow()
+func applyTaskbarIconTo(hwnd uintptr) {
 	if hwnd == 0 {
 		return
 	}
@@ -67,9 +68,14 @@ func showWindowWhenReady(win *application.WebviewWindow, maximised bool) {
 	if win == nil {
 		return
 	}
+	// 归属句柄先解析：这个 goroutine 只补「本窗口」的图标，不按 Z 序猜。
+	var hwnd uintptr
+	if p := win.NativeWindow(); p != nil {
+		hwnd = uintptr(p)
+	}
 	go func() {
 		time.Sleep(windowShowDelay)
-		applyTaskbarIcon()
+		applyTaskbarIconTo(hwnd)
 		if maximised {
 			// 先最大化再 Show：Show() 才会把 WebView2 控制器置可见（Maximise 是裸
 			// ShowWindow，从隐藏窗口直接最大化会得到窗口可见但 WebView 隐藏的空白窗）。
@@ -80,9 +86,9 @@ func showWindowWhenReady(win *application.WebviewWindow, maximised bool) {
 		}
 		// 任务栏按钮出现后再补两次，确保 Explorer 刷新到窗口图标。
 		time.Sleep(60 * time.Millisecond)
-		applyTaskbarIcon()
+		applyTaskbarIconTo(hwnd)
 		time.Sleep(300 * time.Millisecond)
-		applyTaskbarIcon()
+		applyTaskbarIconTo(hwnd)
 	}()
 }
 

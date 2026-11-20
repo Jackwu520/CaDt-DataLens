@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"strings"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -37,8 +38,18 @@ func dialogFilterOrAny(filter string) []dialogFilter {
 	return dialogFilters["any"]
 }
 
+// dialogOwner 解析对话框属主窗口：优先绑定调用方窗口（ctx），否则回落当前主窗。
+// 属主让对话框模态到对应窗口并跟随其位置（浮窗置顶时不再被压住——2026-11-21
+// 审查第 4 项）。拿不到窗口返回 nil = 维持无属主的旧行为。
+func dialogOwner(ctx context.Context) *application.WebviewWindow {
+	if w := callerWindow(ctx); w != nil {
+		return w
+	}
+	return currentWindow()
+}
+
 // ShowOpenFileDialog 通用文件选择对话框。
-func (a *App) ShowOpenFileDialog(title string, filter string) (string, error) {
+func (a *App) ShowOpenFileDialog(ctx context.Context, title string, filter string) (string, error) {
 	if wailsApp == nil {
 		return "", nil
 	}
@@ -47,6 +58,9 @@ func (a *App) ShowOpenFileDialog(title string, filter string) (string, error) {
 		name = "选择文件"
 	}
 	dialog := wailsApp.Dialog.OpenFile().SetTitle(name)
+	if w := dialogOwner(ctx); w != nil {
+		dialog = dialog.AttachToWindow(w)
+	}
 	for _, f := range dialogFilterOrAny(filter) {
 		dialog.AddFilter(f.DisplayName, f.Pattern)
 	}
@@ -61,7 +75,7 @@ func (a *App) ShowOpenFileDialog(title string, filter string) (string, error) {
 }
 
 // ShowSaveFileDialog 通用保存对话框。
-func (a *App) ShowSaveFileDialog(title string, defaultName string, filter string) (string, error) {
+func (a *App) ShowSaveFileDialog(ctx context.Context, title string, defaultName string, filter string) (string, error) {
 	if wailsApp == nil {
 		return "", nil
 	}
@@ -70,6 +84,9 @@ func (a *App) ShowSaveFileDialog(title string, defaultName string, filter string
 		name = "保存文件"
 	}
 	dialog := wailsApp.Dialog.SaveFile()
+	if w := dialogOwner(ctx); w != nil {
+		dialog = dialog.AttachToWindow(w)
+	}
 	dialog.SetOptions(&application.SaveFileDialogOptions{Title: name})
 	dialog.SetFilename(strings.TrimSpace(defaultName))
 	for _, f := range dialogFilterOrAny(filter) {

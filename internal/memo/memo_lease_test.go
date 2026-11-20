@@ -3,6 +3,7 @@ package memo
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -32,31 +33,51 @@ func TestLeasePathScopes(t *testing.T) {
 	}
 }
 
-func TestLeaseRefcountAndClearGuard(t *testing.T) {
+// TestLeaseOwnersAndClearGuard：同窗口重入走计数，跨窗口 Busy（v2 的「第二个
+// 窗口只读 + 横幅」语义），最后持有者退出才解锁；按归属释放只摘自己的。
+func TestLeaseOwnersAndClearGuard(t *testing.T) {
 	base := t.TempDir()
 	withDeps(t, base)
 	ws := t.TempDir()
 
-	first, err := AcquireLease("workspace", ws, "窗口 A")
+	first, err := AcquireLease("workspace", ws, "", "main")
 	if err != nil || !first.Acquired {
 		t.Fatalf("首次 AcquireLease 失败：%+v %v", first, err)
 	}
-	second, err := AcquireLease("workspace", ws, "窗口 A")
-	if err != nil || !second.Acquired {
-		t.Fatalf("第二次 AcquireLease 应走 refcount：%+v %v", second, err)
+	// 同窗口重入：计数 +1，仍 Acquired
+	reentry, err := AcquireLease("workspace", ws, "", "main")
+	if err != nil || !reentry.Acquired {
+		t.Fatalf("同窗口重入应走计数：%+v %v", reentry, err)
+	}
+	// 跨窗口：Busy（不再双写）
+	second, err := AcquireLease("workspace", ws, "", "main-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Acquired || !second.Busy {
+		t.Fatalf("跨窗口 AcquireLease 应 Busy：%+v", second)
+	}
+	if !strings.Contains(second.Owner.Label, "main") {
+		t.Fatalf("Busy Owner 应能看出持有窗口：%+v", second.Owner)
 	}
 	if _, err := LockForClear("workspace", ws); err == nil {
-		t.Fatal("本窗口持锁时 LockForClear 应报忙")
+		t.Fatal("有窗口持锁时 LockForClear 应报忙")
 	}
-	if err := ReleaseLease("workspace", ws); err != nil {
+	// 释放一次（重入计数还在）：仍持有
+	if err := ReleaseLease("workspace", ws, "main"); err != nil {
 		t.Fatal(err)
 	}
 	status, err := LeaseStatusFor("workspace", ws)
 	if err != nil || !status.Acquired {
-		t.Fatalf("释放一个 ref 后仍应持有：%+v %v", status, err)
+		t.Fatalf("还剩一个持有者时应仍持有：%+v %v", status, err)
 	}
-	if err := ReleaseLease("workspace", ws); err != nil {
-		t.Fatal(err)
+	// main-2 关窗：只摘它自己——它本来就没持有，不影响 main
+	if n := ReleaseLeaseByOwner("main-2"); n != 0 {
+		t.Fatalf("未持锁窗口的按归属释放应触达 0 条：%d", n)
+	}
+	// main 关窗（重入已清 + 持有清掉）：解锁
+	if n := ReleaseLeaseByOwner("main"); n != 1 {
+		t.Fatalf("按归属释放应触达 1 条：%d", n)
 	}
 	status, err = LeaseStatusFor("workspace", ws)
 	if err != nil || status.Acquired || status.Busy {

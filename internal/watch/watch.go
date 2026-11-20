@@ -69,30 +69,35 @@ type watchEvent struct {
 	Removed bool
 }
 
-// WatchWorkspace 递归监听工作区，变化时通过 workspace-changed 事件推给前端；
-// 监听失败时前端仍保留轮询兜底。
-func (w *Watcher) WatchWorkspace(root string) error {
+// WatchWorkspaceFor 递归监听 owner 的工作区，变化时通过 workspace-changed 事件推
+// 给前端；监听失败时前端仍保留轮询兜底。root 为空 = 停掉该归属者的监听。
+// 同归属者重复调用 = 换根（替换自己的槽）；不同归属者互不影响。
+func (w *Watcher) WatchWorkspaceFor(owner, root string) error {
+	owner = strings.TrimSpace(owner)
 	root = strings.TrimSpace(root)
+	w.mu.Lock()
+	if old := w.slotLocked(owner); old != nil {
+		stopSlotLocked(old)
+		w.setSlotLocked(owner, nil)
+	}
 	if root == "" {
-		w.stopWorkspaceWatch()
+		w.mu.Unlock()
 		return nil
 	}
 	info, err := os.Stat(root)
 	if err != nil {
+		w.mu.Unlock()
 		return err
 	}
 	if !info.IsDir() {
+		w.mu.Unlock()
 		return fmt.Errorf("不是目录：%s", root)
 	}
-	w.mu.Lock()
-	w.stopWatcherLocked()
 	stop := make(chan struct{})
 	done := make(chan struct{})
-	w.root = root
-	w.stop = stop
-	w.done = done
+	w.setSlotLocked(owner, &watchSlot{root: root, stop: stop, done: done})
 	w.mu.Unlock()
-	logf("info", "文件监听：%s", root)
+	logf("info", "文件监听：%s（owner=%s）", root, owner)
 	go func() {
 		defer close(done)
 		err := watchDirectory(root, stop, func(events []watchEvent, overflow bool) {
@@ -145,29 +150,26 @@ func (w *Watcher) WatchWorkspace(root string) error {
 	return nil
 }
 
-func (w *Watcher) UnwatchWorkspace() {
-	w.stopWorkspaceWatch()
-}
-
-func (w *Watcher) stopWorkspaceWatch() {
+// UnwatchWorkspaceFor 停掉指定归属者的工作区监听。
+func (w *Watcher) UnwatchWorkspaceFor(owner string) {
+	owner = strings.TrimSpace(owner)
 	w.mu.Lock()
-	defer w.mu.Unlock()
-	w.stopWatcherLocked()
+	old := w.slotLocked(owner)
+	w.setSlotLocked(owner, nil)
+	w.mu.Unlock()
+	stopSlotLocked(old)
 }
 
-func (w *Watcher) stopWatcherLocked() {
-	if w.stop == nil {
-		return
+// UnwatchAll 停掉全部监听槽（应用退出收口用）。
+func (w *Watcher) UnwatchAll() {
+	w.mu.Lock()
+	slots := make([]*watchSlot, 0, len(w.slots))
+	for _, s := range w.slots {
+		slots = append(slots, s)
 	}
-	close(w.stop)
-	w.stop = nil
-	done := w.done
-	w.done = nil
-	w.root = ""
-	if done != nil {
-		select {
-		case <-done:
-		case <-time.After(2 * time.Second):
-		}
+	w.slots = map[string]*watchSlot{}
+	w.mu.Unlock()
+	for _, s := range slots {
+		stopSlotLocked(s)
 	}
 }

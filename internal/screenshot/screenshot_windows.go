@@ -7,6 +7,7 @@ package screenshot
 // 超过前端图片上限时按 0.7 逐级缩小重编码。
 
 import (
+	"context"
 	"bytes"
 	"encoding/base64"
 	"fmt"
@@ -243,20 +244,20 @@ func shotCaptureWindowRegionPNG(hwnd uintptr, rx, ry, rw, rh int) (string, error
 	}
 }
 
-// CaptureAppScreenshot 截取当前应用主窗口（含内嵌浏览器与 AI 面板）为 PNG base64，
+// CaptureAppScreenshot 截取调用方窗口（含内嵌浏览器与 AI 面板）为 PNG base64，
 // 供 app_control 的 screenshot 动作把界面视觉信息交给模型。
-func (c *Capturer) CaptureAppScreenshot() (string, error) {
-	hwnd := findParent()
+func (c *Capturer) CaptureAppScreenshot(ctx context.Context) (string, error) {
+	hwnd := parentForCall(ctx)
 	if hwnd == 0 {
 		return "", fmt.Errorf("找不到主窗口")
 	}
 	return shotCaptureWindowPNG(hwnd)
 }
 
-// CaptureAppScreenshotRegion 截取主窗口内的指定区域（物理像素，相对窗口左上角）。
+// CaptureAppScreenshotRegion 截取调用方窗口内的指定区域（物理像素，相对窗口左上角）。
 // 供 app_control screenshot {area} 做板块截图；越界会自动裁剪。
-func (c *Capturer) CaptureAppScreenshotRegion(x, y, width, height int) (string, error) {
-	hwnd := findParent()
+func (c *Capturer) CaptureAppScreenshotRegion(ctx context.Context, x, y, width, height int) (string, error) {
+	hwnd := parentForCall(ctx)
 	if hwnd == 0 {
 		return "", fmt.Errorf("找不到主窗口")
 	}

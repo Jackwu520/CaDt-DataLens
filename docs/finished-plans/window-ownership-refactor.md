@@ -1,6 +1,16 @@
 # 窗口归属重构（per-window ownership，2026-11-21 审查遗留）
 
-状态：**未开工**（2026-11-21 子代理全面审查发现，独立立项）
+状态：**已实施**（2026-11-21 当日落地，随手工回归批次完成；五项全部收口）
+
+| 项 | 落地 |
+|---|---|
+| 3. findWailsWindow 多窗口不确定 | 浏览器：`BrowserOpen` 加 ctx，`ParentForCall`（callerWindow+NativeWindow）按发起窗口挂控件，实例记 `ownerHWND`，关窗 `BrowserCloseByOwner` 回收；截图：`CaptureAppScreenshot(Region)` 同构改造；任务栏图标：`applyTaskbarIconTo(hwnd)` 逐窗补打 |
+| 1. 工作区监听单槽顶掉 | `Watcher` 改按归属者多槽（`WatchWorkspaceFor(owner, root)`），绑定经 ctx 取窗口名；同窗口换根替换自己，跨窗口互不影响 |
+| 5. 资源监听同 key 替换 | `ResourceWatcher.Watch/Unwatch` 增 owner 维度（内部 id `kind\|owner\|key`，事件 key 保持裸值）；`UnwatchByOwner` 关窗只摘自己的 |
+| 2. memo 租约同进程双写 | `memoLeaseEntry.refs` 改 `holders map[窗口名]int`：同窗口重入计数、跨窗口 Busy（v2 只读横幅语义回归）；横幅 label 并入窗口名（同进程 PID 相同，靠窗口名区分）；`ReleaseLeaseByOwner` 关窗释放 |
+| 4. 对话框无属主 | 七个对话框入口加 ctx，`dialogOwner(ctx)`（调用方窗口 → 回落当前主窗）+ `AttachToWindow(w)` 挂属主 |
+
+窗口关闭统一收口在 `window_factory.go` 的 WindowClosing 钩子：`releaseWindowOwnedState(窗口名)`（watch 槽位 / 资源监听 / memo 租约）+ `BrowserCloseByOwner`。护栏：`internal/watch/ownership_test.go`（双窗槽位互不顶掉 / 按归属摘除）、`internal/memo/memo_lease_test.go`（跨窗口 Busy / 按归属释放）。
 
 ## 背景
 
@@ -16,6 +26,6 @@ v2 是「一窗一进程」，窗口间天然隔离；v3 一进程多窗口后�
 
 ## 备注
 
-- 1/5 同根、2/3/4 各自独立；1+5 与 2 都需要「窗口名 → 归属」的通用小工具（可从 `event_owner.go` 抽）。
-- 未修期间的行为偏差：多主窗口下后开窗口的 watcher 顶掉先开窗口（wipe-guard L2 失明）、双窗口 memo 同时可写（靠 mtime CAS 兜底）、浏览器标签可能挂错父窗口——已知并在审查记录中声明，不作为未预期缺陷。
-- 修复后同步校准 AGENTS.md 的「多窗口单写者」描述与 terminal-popout.md 的「AI 看不到弹出终端」口径。
+- 原则：引擎按「归属者」键控，绑定一律带 ctx 从调用方窗口取归属键（窗口名或原生句柄）；窗口关闭统一收口。
+- 归属键取窗口名（watch/memo）或原生 HWND（浏览器控件父窗口、任务栏图标、截图目标）——前者要参与前端/磁盘语义过滤，后者只面向 Win32。
+- 行为偏差（原「未修期间声明」）全部消除：双窗口工作区刷新/wipe-guard L2 正常、memo 第二窗口恢复只读横幅、浏览器不再挂错窗口、对话框带属主。

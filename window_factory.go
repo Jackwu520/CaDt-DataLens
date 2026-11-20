@@ -64,8 +64,9 @@ func (a *App) createWindow(spec windowSpec) *application.WebviewWindow {
 			a.emitTerminalPopoutClosed(st)
 		}
 		winReg.remove(st.name())
-		// 浏览器标签页跟着宿主窗口走：该窗口的前端已死，按 owner 回收实例
-		// （不回收会泄漏 WebView2 进程与浏览器配置目录锁）。
+		// 窗口名下的一切按归属收口：工作区/资源监听槽、memo 写权租约、浏览器标签页
+		// （该窗口的前端已死，不回收会顶掉别的窗口的监听、泄漏 WebView2 进程）。
+		a.releaseWindowOwnedState(st.name())
 		if p := win.NativeWindow(); p != nil {
 			a.BrowserCloseByOwner(uintptr(p))
 		}
