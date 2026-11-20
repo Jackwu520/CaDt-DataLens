@@ -3,7 +3,7 @@
 ## 项目概述
 CaDt-DataLens 是一个面向 Windows 的轻量级多格式数据查看与编辑器（JSON/JSONL、YAML、XML/SVG、CSV/TSV、TOML、INI/Properties、Markdown、代码文本、图片、二进制）。
 
-技术栈：Go 后端 + Wails v2（原生窗口 + Windows WebView2）+ 原生 JS 前端（Vite 构建，Ace / jsoneditor / markdown-it / highlight.js）。
+技术栈：Go 后端 + Wails v3（一进程原生多窗口 + Windows WebView2）+ 原生 JS 前端（Vite 构建，Ace / jsoneditor / markdown-it / highlight.js）。
 
 设计目标：**单 exe、零依赖、系统提供引擎**——不自带 Chromium、不打包 Node、不做项目索引。许可证 Apache-2.0。
 
@@ -14,7 +14,7 @@ CaDt-DataLens 是一个面向 Windows 的轻量级多格式数据查看与编辑
 - `main.go`：Wails 启动配置、窗口选项、`//go:embed all:frontend/dist` 资源内嵌、单实例锁
 - `app_core.go`：App 结构与生命周期（startup/domReady/单实例）、命令行目标与启动参数解析；`const appVersion` 在 `app_core.go:40`
 - `app_window.go` / `app_fs.go`：脏标记/应用配置/多窗口与资源管理器定位 · 文件/文件夹对话框；文件读写与目录条目操作已下沉 `internal/fileio` / `internal/fsops`
-- `window_app.go` + `internal/windowreg/`：窗口注册表与跨窗口会话投递信箱（跨工作区点会话复用已开窗口）——每个主窗口进程在 `<应用数据>/windows/` 注册（`resourcelease` 租约判活，进程崩内核自动放锁；`<windowId>.lease` 在目录外，Register 先 lease 后目录防 Sweep 误删；30s heartbeat goroutine 经 `StartHeartbeat`）；信箱 `<windowId>/inbox/` 走 **claim 接管协议**：take 与投递方超时撤回对同一 `<reqId>.claim` 做 O_EXCL 独占创建，内核保证恰一方得手（**remove/rename 方案在 Win10+ POSIX 语义下均实测不互斥，已弃用**——同一文件对象可被多个预打开句柄先后改名/删除挂起后仍可改名）；接管方 Ack 回执时释放 claim，ENOENT 语义由 alive 复判替代（区分「已接管」与「目标已退出」，接管后目标死亡退回未接管让投递方开新窗）；迟到请求 3s 时效丢弃 ack `expired`，Sweep 只清「目录存在+租约无主」并保孤儿 lease（24h 兜底）；`WindowReuseForSession` 探测复用（总预算 2.5s 跨候选轮换，mismatch 换下一个），非 Windows / `watch.Supported()` 为 false 自动降级为软切换新开；浮窗/调试控制台/convert 不注册；退出收口在 `main.go` 尾部 `shutdownWindowReg`；复用决策纯函数在前端 `ai-session-scope.js` 的 `decideSessionOpen`（会话右键「在新窗口打开」强制新开出口 2026-11-20 作者裁定移除，复用是唯一行为）；方案见 `docs/unfinished-plans/multi-window-session-reuse.md`
+- `window_app.go` + `windowmeta.go` / `window_factory.go`：**Wails v3 一进程多窗口**的窗口注册与会话复用——`windowmeta.go` 维护进程内窗口注册表（名字 / 形态 / 工作区 / 启动参数 / 每窗脏标记与 AI 状态），绑定方法经 `ctx.Value(application.WindowKey)` 归属调用方窗口（无上下文回退主窗口）；`window_factory.go` 创建主窗口（可多开 main/main-N）、AI 浮窗（float 单例）、调试控制台（debug 单例），每窗独立 WindowClosing / 导航完成钩子；`WindowRegister` / `WindowReuseForSession` 按工作区匹配存活窗口并直接投 `app-open-ai-session` 事件（v2 的文件注册表与信箱协议已在 P3 删除）；复用决策纯函数仍在前端 `ai-session-scope.js` 的 `decideSessionOpen`
 - `appdata.go` / `logging.go`：应用数据目录、日志（文件属性在 `internal/fsops` 的 `GetPathInfo`）
 - `internal/aichat/` + `internal/aitransport/`：AI 对话与传输——发消息/停止/流注册表/看门狗/连通性/目录（aichat）· OpenAI/Anthropic/Responses 三套请求构造 · SSE 解码 · 重试与空闲看门狗 · 参数校验与代理 · 事件契约（aitransport）；`ai_transport_app.go` 注入 Logf/Version/LogsDir/看门狗挂载点
 - `ai_gen_app.go` + `internal/aigen/`：生图/视频执行通道（哑通道两绑定：`AIGenHTTPRequest` 按前端渲染好的规格发同步 HTTP、`AIGenSaveProducts` 产物解码/下载 + 工作区路径校验落盘 `.cadt/gen/`；模板渲染/提取/轮询在前端 `ai-gen-model.js` / `ai-gen-jobs.js`，方案见 `docs/finished-plans/ai-gen-models.md`）
@@ -65,9 +65,9 @@ CaDt-DataLens 是一个面向 Windows 的轻量级多格式数据查看与编辑
 - `app_dialogs.go` / `app_preview_assets.go` / `app_debugconsole.go`：对话框与绑定壳（预览资源在 `internal/previewassets`，调试控制台存储在 `internal/debugconsole`）
 - `*_test.go`：与同名源文件对应的单元测试
 
-> **`package main` 只能在仓库根**：`//go:embed all:frontend/dist` 与 `frontend/wailsjs/go/main/` 都以根目录为前提，`type App` 与全部 Wails 绑定方法必须留在根。所以根目录的分类靠**文件名前缀 + 同包拆文件**。
+> **`package main` 只能在仓库根**：`//go:embed all:frontend/dist` 以根目录为前提，`type App` 与全部 Wails 绑定方法必须留在根。所以根目录的分类靠**文件名前缀 + 同包拆文件**。
 >
-> **纯引擎可以下沉 `internal/<域>`**（2026-11-16 起按 `docs/finished-plans/go-layout.md` 分批执行）：引擎包不 import main、不碰 App，位置与外部动作一律经 `Deps` 钩子注入，根目录留一个 `*_app.go` 壳做挂名绑定。已落地的包见上方「Go 后端」清单（含 `internal/aigroups`、`internal/sandbox`、`internal/shellexec`），另有一批不单独挂绑定行的叶子包：`internal/mcp`、`internal/integration`、`internal/aiconfig`、`internal/screenshot`、`internal/notify`、`internal/watch`（工作区 watcher + `ResourceWatcher` 资源目录监听），以及 `internal/launchargs`（启动参数解析）、`internal/appconfig`（config.json 读写）、`internal/applog`（运行日志与开发者模式）、`internal/convertcli`（--convert 命令行）、`internal/installercli`（安装器集成命令）、`internal/newwindow`（新窗口进程拉起）、共享叶子包 `internal/appdata`（应用数据路径）、`internal/shellpath`（Git Bash / pwsh 探测）、`internal/clipboard`（剪贴板图片）、`internal/atomfile`（原子替换 + 残行修复）、`internal/chardec`（GBK/GB18030 编解码）、`internal/executil`（防黑窗/杀进程树）。B1–B12、C0–C3、D 系列均已实施（B11 已并入 C1 完成）；上述域引擎均按服务嵌入 App，实测成立；剩余根目录为绑定壳与平台 glue，布局收口。**平台 glue（`*_windows/_other` 成对文件）留在根是本分**，不要摊进 internal 包。
+> **纯引擎可以下沉 `internal/<域>`**（2026-11-16 起按 `docs/finished-plans/go-layout.md` 分批执行）：引擎包不 import main、不碰 App，位置与外部动作一律经 `Deps` 钩子注入，根目录留一个 `*_app.go` 壳做挂名绑定。已落地的包见上方「Go 后端」清单（含 `internal/aigroups`、`internal/sandbox`、`internal/shellexec`），另有一批不单独挂绑定行的叶子包：`internal/mcp`、`internal/integration`、`internal/aiconfig`、`internal/screenshot`、`internal/notify`、`internal/watch`（工作区 watcher + `ResourceWatcher` 资源目录监听），以及 `internal/launchargs`（启动参数解析）、`internal/appconfig`（config.json 读写）、`internal/applog`（运行日志与开发者模式）、`internal/convertcli`（--convert 命令行）、`internal/installercli`（安装器集成命令）、共享叶子包 `internal/appdata`（应用数据路径）、`internal/shellpath`（Git Bash / pwsh 探测）、`internal/clipboard`（剪贴板图片）、`internal/atomfile`（原子替换 + 残行修复）、`internal/chardec`（GBK/GB18030 编解码）、`internal/executil`（防黑窗/杀进程树）。B1–B12、C0–C3、D 系列均已实施（B11 已并入 C1 完成）；上述域引擎均按服务嵌入 App，实测成立；剩余根目录为绑定壳与平台 glue，布局收口。**平台 glue（`*_windows/_other` 成对文件）留在根是本分**，不要摊进 internal 包。
 
 ### 前端 `frontend/`
 > 2026-11-14 目录归位：`src/` 顶层只留 `main.js`，其余按域进目录。**Go 的目录即包，前端的目录只是分组**——新增模块直接放进对应域目录，不要往顶层加文件。
@@ -98,13 +98,13 @@ CaDt-DataLens 是一个面向 Windows 的轻量级多格式数据查看与编辑
 - `src/style.css`：布局、主题、Ace/jsoneditor 样式；`src/reading.css`：阅读模式样式（`.rd-` 前缀）
 - `index.html`：窗口结构、菜单、设置对话框
 - `public/vendor/`：jsoneditor、mermaid 等第三方资源，以及 AI 可视化引擎 echarts（1.07 MiB）/ elk（1.57 MiB）/ wordcloud 两件（~52 KiB，均懒加载，许可见 `licenses/`）；`public/fonts/`：Inter / JetBrains Mono / Fira Code（OFL）
-- `wailsjs/`：Wails 自动生成的绑定，**不要手改**
+- 绑定调用：v3 不再生成 `wailsjs/`；前端经 `/wails/runtime.js` 的 `Call.ByName('main.App.<Method>')` 调 Go 方法（`core/wails-runtime.js` 的 Proxy）
 - `dist/`：构建产物，经 `go:embed` 编进 exe，**不要手改**
 
 ### `docs/`
 - `packaging.md`（打包与发布）、`plugins/`、`skills/`、`samples/`、`screenshots/`、`icons/`、`legal/`、`mcp-samples/`（外部工具本地来源示例：SAPI TTS / Windows OCR / whisper ASR）；三份脚本已随 exe 内嵌、可在设置 → AI → 外部工具 → MCP 服务器 → 内置示例一键安装，本目录保留用于单独分发、审查与修改（Python / whisper 模型 / OCR 引擎仍不打包）
 - `finished-plans/`：已实施完的方案存档（`ai-panel.md`、`ai-panel-v2.md`、`ai-panel-v3.md`、`ai-head-agents-terminal.md`、`operation-audit-log.md`、`writing-mode.md`、`reading-mode.md`、`visualizer.md`、`mcp-client.md`、`ai-personalization.md`、`local-command-classifier.md`、`ai-gen-models.md`、`ai-turn-steering.md`、`ai-shell-choice.md`、`session-workspace-buckets.md`、`ai-always-collapse.md`、`workspace-lifecycle-hooks.md`（2026-11-19 实施完成移入）、`ai-quota-display.md`（AI 账号额度外显，2026-11-19 当日立项当日落地）、`oauth-quota-template.md`（通用 OAuth 额度模板 + SenseNova Token Plan，2026-11-19）、`usage-stats.md`（AI 使用统计：事实入库 + 打开面板增量回填 + 请求日志分页，不扫会话超集，2026-11-19）、`ai-queue-background-flush.md`（后台会话排队消息自动续跑，方案 A：`flushMessageQueue` 拆「取项 / 发送」，后台会话走 `startSessionTurn` 内核，2026-11-19 当日评估当日落地）、`inline-message-edit.md`（用户消息原地编辑 + 附件快照，2026-11-19 当日立项当日落地）等；2026-11-21 归档移入：`worktree-export-improvement.md`（隔离区 export 可信化：S1 预检换轨到 PatchPreviewText、S2 AllowOffset 消解假冲突、S3 三栏报告与自举提示，已全部实施）、`plugin-extension-roadmap.md`（插件扩展点路线图，M1–M5 全部完成：命令入口矩阵 / AI 工具注册 / 自定义视图 / AI 上下文注入 + 导入器）、`plugin-tool-security.md`（插件 AI 工具注册安全模型，M2 已定稿并被 M3 采纳）、`memo-terminal-item.md`（便签终端条目 kind=term，2026-11-19 立项并实施））
-- `unfinished-plans/`：未开工/进行中的方案（目前：`ai-rerank.md`、`desktop-mcp.md`、`side-chat-tab.md`、`turn-fold-redesign.md`、`cross-platform.md`、`run-check.md`、`ai-segmented-compact.md`、`pdf-xlsx-docx-preview.md`（PDF / xlsx / docx 预览，三期分报体积）、`multi-instance-sync.md`（P1–P5 已实施、群聊复用与手工双窗口验收待做）、`ai-cognition-index.md`（AI 工作区认知索引：FRAS 卷文件 + drift 治理，2026-11-19 立项，源自 AOCI 调研，机制借鉴自写引擎不搬代码，待开工）、`feature-evaluations-2026-11-18.md`（四项功能评估稿：右键菜单定制 / 临时文件 / 群聊智能体分组 / AI search 增强；第 3 项已实施，其余待立项）、`multi-window-session-reuse.md`（跨工作区点会话复用已开窗口：窗口注册表 + 文件信箱，复用 watch/Resources 与 resourcelease，不做跨进程总线；2026-11-19 立项，2026-11-20 评审通过并补强协议层（Deliver 撤回 + take 时效检查防迟到双开、reqId Go 侧生成校验、watch.Supported() 降级门槛、强制新开出口），同日实施完成（P1–P4 编码 + 独立会话审查通过：rename 接管协议、ENOENT alive 复判、接管后死亡回退），待手工双窗口验收后移入 finished-plans）、`wails-v3-migration.md`（Wails v2→v3 迁移评估：实测耦合面（21 域包零 wails 依赖、前端 backend 聚合点仅 1 处 951 调用零改动）+ 2–3 人周分期（P0 spike 七项还原度验证：Frameless/托盘/单实例/fork 补丁/**定向事件（wails#6608 广播 bug）/每窗口 JS context** → P1 框架等价 → P2 多窗口 → P3 删 windowreg 清理）；2026-11-20 立项当日复评：单实例锁 v3 内置（初评误判已修正）、v3.1.0 已发、事件定向有已知广播 bug 致 P2 上修；同日评审补记：构建流水线（wails3 CLI + Taskfile、rebuild-exe/build-installer 适配）入 §2/§3 并作 spike 起跑关、绑定聚合点补 hasWails 探测 v3 改法（v3 无 window.go 全局）；时序决策：先交付 windowreg 再开迁移分支，拍板等 spike 实测；2026-11-20 P0 spike 七项实测（6 通过、定向事件为广播但有 sender 兜底）后进入 P1，同日在 `v3-migration` 分支落地：Go 启动段 v3 三段式 + wails_app 兼容层、`Call.ByName` Proxy 绑定（零 npm/wailsjs）、事件桥 core/app-events + event-scope、构建脚本改 `wails3 generate syso` + `go build -tags production`，Go/前端测试全绿并实机跑通首屏/单实例转发/AI 浮窗/关窗；P2 同日落地：进程内窗口注册表 + per-window ctx 归属 + 浮窗/调试台同进程 + 会话复用改进程内投递））；已实施的方案完成即移入 `finished-plans/`（2026-11-18 整理移入：`memo-panel.md`、`ai-group-chat.md`、`git-worktree.md`、`subagent-sandbox.md`、`bookmarks-app-control.md`、`auto-cache-cleanup.md`；`workspace-wipe-guard.md`（2026-11-19 移入，已实施）；群聊 G5 增强等后续范围如开工另立新方案）
+- `unfinished-plans/`：未开工/进行中的方案（目前：`ai-rerank.md`、`desktop-mcp.md`、`side-chat-tab.md`、`turn-fold-redesign.md`、`cross-platform.md`、`run-check.md`、`ai-segmented-compact.md`、`pdf-xlsx-docx-preview.md`（PDF / xlsx / docx 预览，三期分报体积）、`multi-instance-sync.md`（P1–P5 已实施、群聊复用与手工双窗口验收待做）、`ai-cognition-index.md`（AI 工作区认知索引：FRAS 卷文件 + drift 治理，2026-11-19 立项，源自 AOCI 调研，机制借鉴自写引擎不搬代码，待开工）、`feature-evaluations-2026-11-18.md`（四项功能评估稿：右键菜单定制 / 临时文件 / 群聊智能体分组 / AI search 增强；第 3 项已实施，其余待立项））；已实施的方案完成即移入 `finished-plans/`（2026-11-18 整理移入：`memo-panel.md`、`ai-group-chat.md`、`git-worktree.md`、`subagent-sandbox.md`、`bookmarks-app-control.md`、`auto-cache-cleanup.md`；`workspace-wipe-guard.md`（2026-11-19 移入，已实施）；`wails-v3-migration.md` / `wails-v3-event-filtering.md` / `multi-window-session-reuse.md`（2026-11-20 Wails v3 P0–P3 完成移入：一进程多窗口、事件桥、windowreg/newwindow/wailsjs 删除）；群聊 G5 增强等后续范围如开工另立新方案）
 - `icon-guidelines.md`
 - `reports/optimization-proposals.md`：体积与性能优化提案（含实测体积基线）
 - `reports/external-file-viewers.md`：外部文件预览选型评估（open-file-viewer / kkFileView），**结论为两者均不引入**（2026-11-21 从 `unfinished-plans/` 归档到此——决策已定、不会再产生实施动作；PDF/xlsx/docx 预览另见 `unfinished-plans/pdf-xlsx-docx-preview.md`）
@@ -161,7 +161,7 @@ CaDt-DataLens 是一个面向 Windows 的轻量级多格式数据查看与编辑
 
 ### Go 侧
 - 平台相关代码按现有约定分文件成对出现：`xxx_windows.go` + `xxx_other.go`，不要在一个文件里堆 `runtime.GOOS` 判断。
-- 新增导出方法后，`frontend/wailsjs/` 由 `wails dev` / `wails build` 重新生成。
+- 新增导出方法后无需生成绑定：前端经 `Call.ByName` 动态解析；**必须**在 `dev/mock-backend.js` 补同名 mock。
 - **平台无关文件里不许出现 Windows 专属符号**（`syscall` 的 `HideWindow`/`CreationFlags`、`UTF16PtrFromString`、`golang.org/x/sys/windows` 等）；防黑窗统一用 `executil.HideCommandWindow`。守两道：`crossplatform_guard_test.go`（静态扫，毫秒级）+ `tools\check-crossbuild.cmd`（真编 linux/darwin，约 5 秒）。`_other.go` 桩**同样要能编译**——2026-11-17 交叉编译发现三个包从未在非 Windows 下编过（其中 `browser_other.go` 连参数重名都没人发现）。评估与分期见 `docs/unfinished-plans/cross-platform.md`。
 - 文件大小硬限制（`app_core.go` 的 `largeFileBytes` / `maxFileBytes` / `imagePreviewLimit`，图片 hex 上限 `app_file.go` 的 `imageHexLimit`）：>10 MB 只读、>100 MB 拒绝打开、图片预览 32 MB、二进制 hex 1 MB。放宽限制前先确认性能。
 
@@ -185,7 +185,7 @@ CaDt-DataLens 是一个面向 Windows 的轻量级多格式数据查看与编辑
 - 执行分支：`ai-panel.js` 的 `executeToolInner` 加 `case '<名字>'`（异步记得 await；`executeTool` 是生命周期钩子包装层，case 一律写在内层）；工具卡 `ai-tool-cards.js` 的 `toolMeta` 补 `verb` + `icon`（图标名必须在 `core/icons.js` 注册，否则渲染为空不报错）。
 - **接线守卫**：`frontend/test/ai/ai-tool-wiring.test.mjs` 会逐个工具核对「目录 ↔ 档位下发 ↔ 执行分支 ↔ 工具卡元数据 ↔ 图标注册」，并交叉核对「描述里提到的参数名 ↔ `parameters.properties` ↔ 执行分支读的 `input.*`」，漏一处直接红；执行分支确实不在 `ai-panel.js` 时登记到该文件的 `EXECUTED_ELSEWHERE` 并写明原因。
 - **加参数**（改已有工具同理）：`properties` 加字段 + 写 `description`（模型只看这个）；描述里提到参数名就必须已声明——词表命中的参数名会被守卫当「参数提及」校验，确属取值 / 输出字段 / 别的工具参数时登记 `PROSE_TOKENS` 并写原因。
-- Go 绑定 + `frontend/wailsjs/` 三件（App.js / App.d.ts / models.ts，wails 重新生成或手写）；**`dev/mock-backend.js` 补同名 mock**（漏了 dev 模式调用即崩）。
+- Go 绑定方法（v3 无生成绑定目录）；**`dev/mock-backend.js` 补同名 mock**（漏了 dev 模式调用即崩）。
 - 配套测试：纯函数进 `*.test.mjs` / `*_test.go`，并登记 `npm test` 清单。
 
 **修改工具（含加参数）**
@@ -232,29 +232,24 @@ CaDt-DataLens 是一个面向 Windows 的轻量级多格式数据查看与编辑
 
 ## 常用命令
 
-前置：Windows 10/11 + WebView2 Runtime、Go 1.26+、Node.js 20.19+（或 22.12+）、Wails CLI v2.17.1+。
+前置：Windows 10/11 + WebView2 Runtime、Go 1.26+、Node.js 20.19+（或 22.12+）、Wails CLI v3.1.0+（`wails3`，仅用于生成 Windows 资源）。
 
 ```bash
 # 环境检查
-wails doctor
+wails3 doctor
 
-# 开发（热重载）
-wails dev
-
-# 构建 exe（产物 build/bin/CaDt-DataLens.exe）
-wails build -devtools
+# 开发运行（v3 未接 Taskfile/wails3 dev：直接构建启动；前端热更新用 npm run dev + mock）
+go build -o datalens.exe . && ./datalens.exe
 
 # 一键构建并替换根目录便携副本 datalens.exe（tools/rebuild-exe.cmd 双击入口）：开头选是否跑
 # Go 测试（1 进行 / 2 跳过只跑前端），测试门（Go + 前端）通过才构建，失败可按提示
 # 「1 复制失败信息到剪贴板（粘贴给 AI 修复）」/「2 跳过测试强行构建」/其他退出；
+# 构建流程：npm run build → wails3 generate syso（图标/清单/版本资源）→ go build -tags production；
 # 自动优雅关闭运行中的实例，锁死时改名让路 datalens.running-old-*.exe、下次运行清理；
 # -SkipTest 跳过测试门 / -KeepRunning 不停实例 / -Devtools 带调试面板
 powershell -ExecutionPolicy Bypass -File tools/rebuild-exe.ps1
 
-# 构建安装包（需 NSIS 3，makensis 在 PATH）
-wails build -nsis -installscope user
-
-# 构建 + 代码签名
+# 构建安装包（需 NSIS 3，makensis 在 PATH；内部同样是前端构建 + syso + go build，再 makensis）
 powershell -ExecutionPolicy Bypass -File scripts/build-installer.ps1
 
 # Go 测试

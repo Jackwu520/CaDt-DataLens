@@ -10874,7 +10874,7 @@ async function requestApproval(session, toolMessage, info) {
                 if (action === 'read') {
                     if (!backend.TermRead) throw new Error('当前版本不支持读取终端输出（请重新构建或更新应用）');
                     // tail（最后 N 行）与 maxChars 二选一：tail 优先。Go 侧只按字节取尾部，
-                    // 这里把读取量拉到上限再在前端按行切——不改 Go 绑定 / wailsjs / exe。
+                    // 这里把读取量拉到上限再在前端按行切——不改 Go 绑定 / 前端绑定层 / exe。
                     const tailLines = input.tail == null || input.tail === '' ? 0 : aiClampInt(input.tail, 1, 200, 0);
                     const maxChars = tailLines ? 20000 : aiClampInt(input.maxChars, 200, 20000, 4000);
                     const res = await backend.TermRead(id, maxChars);

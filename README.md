@@ -267,24 +267,23 @@ CaDt-DataLens.exe --convert config.yaml --to json --stdout
 - Windows 10/11（需要 WebView2 Runtime）。
 - Go 1.26+。
 - Node.js 20.19+（或 22.12+）。
-- Wails CLI v2.17.1+。
+- Wails CLI v3.1.0+（`wails3`，用于生成 Windows 图标/清单资源）。
 
 ```bash
-go install github.com/wailsapp/wails/v2/cmd/wails@v2.17.1
+go install github.com/wailsapp/wails/v3/cmd/wails3@v3.1.0
 git clone https://github.com/candysweet-cdt/CaDt-DataLens.git
 cd CaDt-DataLens
-wails build -devtools
+powershell -ExecutionPolicy Bypass -File tools/rebuild-exe.ps1
 ```
 
-产物在 `build/bin/CaDt-DataLens.exe`。可以运行 `wails doctor` 检查环境。
+脚本先跑 Go + 前端测试门，再构建 `build/bin/CaDt-DataLens.exe` 并替换仓库根目录的便携副本 `datalens.exe`。可以运行 `wails3 doctor` 检查环境。
 
 ### 安装包
 
 安装包使用 NSIS 构建（需先安装 [NSIS 3](https://nsis.sourceforge.io/) 并让 `makensis` 在 PATH 中）。完整的工具准备、版本号规则、升级/卸载行为、签名和发布检查清单见 **[打包与发布流程](docs/packaging.md)**。
 
 ```bash
-wails build -nsis -installscope user                                  # 只打包
-powershell -ExecutionPolicy Bypass -File scripts/build-installer.ps1  # 构建 + 代码签名
+powershell -ExecutionPolicy Bypass -File scripts/build-installer.ps1  # 构建 + 代码签名 + 打包
 ```
 
 产物在 `build/bin/CaDt-DataLens-amd64-installer.exe`，按当前用户安装到 `%LOCALAPPDATA%\Programs\CaDt-DataLens`，无需管理员权限。安装时可勾选文件关联、资源管理器右键菜单（默认勾选，写入 HKCU）、Agent Skill、用户 PATH、桌面快捷方式（默认不勾选）。安装包自动检测并静默安装 WebView2 运行时，创建开始菜单快捷方式和卸载项；覆盖安装沿用上次安装目录；卸载撤销注册表集成，但保留 `%APPDATA%\CandySweet\CaDt-DataLens` 下的配置和安装目录下的 `plugins\`。注册表集成由 `datalens.exe --integrate=... / --unintegrate=all` 完成，与程序内“设置 → 系统集成”共用同一套逻辑。
@@ -294,10 +293,10 @@ powershell -ExecutionPolicy Bypass -File scripts/build-installer.ps1  # 构建 +
 ## 开发
 
 ```bash
-wails dev
+go build -o datalens.exe . && ./datalens.exe
 ```
 
-前端也可以单独在浏览器里用 mock 数据调试：
+前端单独在浏览器里用 mock 数据调试：
 
 ```bash
 cd frontend
@@ -352,7 +351,7 @@ jsoneditor 使用 Apache License 2.0，详见 [frontend/public/vendor/LICENSE.js
 
 ## 第三方组件
 
-- [Wails v2](https://github.com/wailsapp/wails) — MIT
+- [Wails v3](https://github.com/wailsapp/wails) — MIT
 - [jsoneditor](https://github.com/josdejong/jsoneditor) — Apache-2.0
 - [js-yaml](https://github.com/nodeca/js-yaml) — MIT
 - [fast-xml-parser](https://github.com/NaturalIntelligence/fast-xml-parser) — MIT

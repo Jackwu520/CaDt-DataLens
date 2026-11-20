@@ -1,6 +1,6 @@
 # Wails v2 → v3 迁移评估
 
-> 状态：**已立项，待开工**（2026-11-20 评估定稿；windowreg 方案交付后开迁移分支）
+> 状态：**已实施完成**（2026-11-20，`v3-migration` 分支 P0–P3；手工回归清单见 §11）
 > 范围：框架迁移（单窗口行为等价）+ 多窗口改造（一进程多窗口）+ 迁移后清理
 > 非范围：Linux/macOS GUI（见 `cross-platform.md`，不受本次迁移影响）
 
@@ -152,3 +152,11 @@
 - `term-out` / `cmd-*` / `run-*` 等流事件加 owner 字段，把事件桥的 `onOwned` 真正收紧（当前仍是 app 级广播 + 消费端按 id 过滤）。
 - 多窗口下的 session 快照共享（`cadt.session.v1` 是共享 localStorage；per-workspace 快照已按工作区隔离）、托盘「最后一个窗口」交互、手工双窗口回归。
 - P3：删除 `internal/windowreg`、`internal/newwindow`、`frontend/wailsjs` 与 root 里的兼容空实现。
+
+## 12. P3 清理记录（2026-11-20）
+
+- **删除旧基建**：`internal/windowreg`（文件注册表 + 信箱协议与 23 个用例）、`internal/newwindow`（进程拉起）、`frontend/wailsjs`（v2 生成绑定）。
+- **信箱收口**：`WindowInboxTake/Ack` 绑定、前端 `drainWindowInbox` 轮询/获焦兜底、`resource-changed` 的 `window-inbox` 分支全部删除；原 `handleInboxRequest` 更名 `handleReuseSessionRequest`，只服务 `app-open-ai-session` 事件。
+- **死代码清理**：`wails_app.go` 只保留应用/主窗口/事件/剪贴板/退出接缝；`windowicon_windows.go` 去掉跨进程响应探测；`portablewindows_*`（跨进程窗口计数）删除。
+- **文档收口**：`README.md`、`AGENTS.md`、`docs/packaging.md` 更新到 v3 构建（`wails3 generate syso` + `go build -tags production`）与 `Call.ByName` 绑定口径；本方案与事件过滤方案归档 `finished-plans`，`multi-window-session-reuse.md` 作为 v2 阶段实现留档。
+- **验证**：Go/前端全量测试、linux/darwin 交叉编译、`tools/rebuild-exe.ps1` 测试门与构建均通过。

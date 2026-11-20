@@ -1,7 +1,7 @@
 # Wails v3 P0 Spike 实测报告
 
 > 2026-11-20 · 分支 `v3-migration` · spike 模块 `spike/wails3/`（独立 go.mod，不参与根包 v2 构建）
-> 目的：按 `docs/unfinished-plans/wails-v3-migration.md` §5 的 P0 出口判据，验证七项平台还原度 + 工具链关。
+> 目的：按 `docs/finished-plans/wails-v3-migration.md` §5 的 P0 出口判据，验证七项平台还原度 + 工具链关。
 
 ## 0. 环境与复现
 

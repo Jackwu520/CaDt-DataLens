@@ -2568,8 +2568,6 @@ const mockBackend = {
         window.__mockWindowReuse = {workspace, sessionId: sessionId || ''};
         return ''; // mock 永远没有可用窗口：走软切换行为
     },
-    async WindowInboxTake() { return ''; },
-    async WindowInboxAck(reqId, status) { window.__mockInboxAck = {reqId, status}; },
     async WindowActivate() { window.__mockWindowActivated = true; },
     async ShowInFolder(path) { window.__mockShowInFolder = path; },
     async OpenWithDefaultApp(path) { window.__mockOpenWithDefaultApp = path; },

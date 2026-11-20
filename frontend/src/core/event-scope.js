@@ -1,5 +1,5 @@
 // event-scope.js：多窗口事件范围表（唯一分类来源）。
-// 与 docs/unfinished-plans/wails-v3-event-filtering.md §3 对齐；新增订阅必须先登记这里。
+// 与 docs/finished-plans/wails-v3-event-filtering.md §3 对齐；新增订阅必须先登记这里。
 //
 // scope:
 //   app       全局状态，所有窗口都应处理（消费者自行去重）

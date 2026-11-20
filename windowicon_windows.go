@@ -34,16 +34,6 @@ var (
 	procGetModuleHandleW         = kernel32.NewProc("GetModuleHandleW")
 )
 
-// windowResponsive 用 WM_NULL + 短超时探测窗口线程是否还能及时处理消息。
-func windowResponsive(hwnd uintptr) bool {
-	if hwnd == 0 {
-		return false
-	}
-	var result uintptr
-	r, _, _ := procSendMessageTimeoutW.Call(hwnd, 0, 0, 0, 0x0002, 50, uintptr(unsafe.Pointer(&result)))
-	return r != 0
-}
-
 // applyTaskbarIcon 给主窗口补上 ICON_BIG。
 // wails 只设置了 ICON_SMALL，而 Windows 11 任务栏按钮按 ICON_BIG 绘制，
 // 不补会先显示系统默认的空白占位图标，几十秒后才被替换成真实图标。

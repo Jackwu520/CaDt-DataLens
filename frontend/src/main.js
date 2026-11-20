@@ -137,7 +137,7 @@ if (hasWails) {
 if (rt) window.runtime = rt;
 if (backend && hasWails) window.go = {main: {App: backend}};
 // 事件桥：所有 EventsOn 统一经这里，按 sender / 工作区 / ID 归属过滤
-// （多窗口语义见 docs/unfinished-plans/wails-v3-event-filtering.md）。
+// （多窗口语义见 docs/finished-plans/wails-v3-event-filtering.md）。
 let wailsWindowName = null;
 if (hasWails && wailsRuntime) {
     try { wailsWindowName = await wailsRuntime.Window.Name(); } catch (e) {}
@@ -3191,7 +3191,7 @@ async function openFolderDialog() {
     }
 }
 
-// ===== 跨窗口会话复用（方案 docs/unfinished-plans/multi-window-session-reuse.md）=====
+// ===== 跨窗口会话复用（方案 docs/finished-plans/multi-window-session-reuse.md）=====
 
 // 本窗口可匹配工作区登记（fire-and-forget；Go 侧浮窗/调试窗静默忽略，失败走日志）。
 function syncWindowRegRegistration(dir) {
@@ -3200,52 +3200,9 @@ function syncWindowRegRegistration(dir) {
         .catch((e) => console.error('window-register: 工作区登记失败', e));
 }
 
-// 信箱消费串行化：一条请求的 bridgeSwitchSession 是异步的，期间又来事件/获焦触发
-// drain 的话排队进下一轮，避免两次 switchSession 并发打架。
-let windowInboxDraining = false;
-let windowInboxPending = false;
-
-async function drainWindowInbox() {
-    if (!backend.WindowInboxTake) return;
-    if (windowInboxDraining) {
-        windowInboxPending = true;
-        return;
-    }
-    windowInboxDraining = true;
-    try {
-        for (;;) {
-            let raw = '';
-            try {
-                raw = await backend.WindowInboxTake();
-            } catch (e) {
-                break; // 取信失败：等下一个事件/获焦再试
-            }
-            if (!raw) break; // 信箱空：停（ack 落盘再触发的事件在这里自然空转收口）
-            let req = null;
-            try {
-                req = JSON.parse(raw);
-            } catch (e) {
-                continue; // 坏包：ack 让 Go 侧清理？Take 已跳过坏包，直接继续取
-            }
-            const status = await handleInboxRequest(req);
-            try {
-                if (backend.WindowInboxAck) await backend.WindowInboxAck(String(req.reqId || ''), status);
-            } catch (e) {
-                console.error('window-inbox: 回执失败', e);
-            }
-        }
-    } finally {
-        windowInboxDraining = false;
-        if (windowInboxPending) {
-            windowInboxPending = false;
-            Promise.resolve(drainWindowInbox()).catch(() => {});
-        }
-    }
-}
-
-// 单条信箱请求的处理：本窗口工作区仍匹配 → 开面板 + 切到请求的会话并前置；否则
-// mismatch（投递方拿 mismatch 轮换下一候选或退化开新窗口）。
-async function handleInboxRequest(req) {
+// 单条「跨窗口复用会话」请求的处理（P2 由 app-open-ai-session 事件直达）：
+// 本窗口工作区仍匹配 → 开面板 + 切到请求的会话并前置；否则只记日志（源窗口已按命中处理）。
+async function handleReuseSessionRequest(req) {
     const wantKey = sessionPathKey(req && req.workspace);
     if (!req || !req.sessionId || !wantKey) return 'mismatch';
     if (wantKey !== sessionPathKey(workspaceFolder)) return 'mismatch';
@@ -3974,7 +3931,7 @@ function initAIPanel() {
             }
         },
         getScopeRoot: () => workspaceFolder || (file && file.path ? parentDirOf(file.path) : ''),
-        // 「点别的 AI 会话 → 怎么开」的接线（方案 docs/unfinished-plans/multi-window-session-reuse.md）：
+        // 「点别的 AI 会话 → 怎么开」的接线（方案 docs/finished-plans/multi-window-session-reuse.md）：
         // 分支决策单一来源在 ai-session-scope.decideSessionOpen（纯函数，测试锁各分支），这里只做探测与执行。
         // 复用探测快路径无感：目标工作区无存活窗口时 WindowReuseForSession 立即返回空，不等待。
         openWorkspaceFolder: async (dir, sessionId) => {
@@ -6303,26 +6260,18 @@ if (rt) {
         // run_command 子进程 / 工具返回后存活的进程 / 用户的删除全部可见
         if (wipeguardCtrl) wipeguardCtrl.handleWorkspaceEvent(payload);
     });
-    // 多实例资源目录监听（全局便签 / 当前 AI 会话）：只做重读，不做合并；
-    // window-inbox = 跨窗口会话投递信箱（复用别的窗口打开会话，方案 multi-window-session-reuse.md）
+    // 多实例资源目录监听（全局便签 / 当前 AI 会话）：只做重读，不做合并。
     appEvents.onApp('resource-changed', (payload) => {
-        if (payload && payload.kind === 'window-inbox') {
-            drainWindowInbox(); // drain 内部串行化；overflow 与多条请求由循环 take 全量消化
-            return;
-        }
         if (memoResourceEventHook) memoResourceEventHook(payload);
         if (aiPanel && typeof aiPanel.handleResourceChange === 'function') aiPanel.handleResourceChange(payload);
     });
-    // 信箱兜底：watcher 漏事件 / overflow 时请求会滞留——窗口获焦顺手 take 一轮（幂等且廉价）
-    window.addEventListener('focus', () => drainWindowInbox());
     // 快捷便签定位点跳转：CLI --memo（已在运行时 secondInstance 转发到这里）
     appEvents.onWindow('app-open-memo', (locator) => {
         if (memoJumpHook) memoJumpHook(locator);
     });
-    // P2 进程内复用：别的窗口把「打开这个工作区的会话」直接投给本窗口
-    //（替代 v2 的 windowreg 文件信箱；handler 复用原信箱请求的处理逻辑）。
+    // P2 进程内复用：别的窗口把「打开这个工作区的会话」直接投给本窗口。
     appEvents.onWindow('app-open-ai-session', (req) => {
-        Promise.resolve(handleInboxRequest(req)).catch((e) => {
+        Promise.resolve(handleReuseSessionRequest(req)).catch((e) => {
             console.error('app-open-ai-session: 切换会话失败', e);
         });
     });

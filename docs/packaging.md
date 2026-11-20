@@ -13,7 +13,7 @@
 | --- | --- | --- |
 | Go 1.26+ | 编译后端 | 系统安装 |
 | Node.js 20.19+ / 22.12+ | 构建前端 | 系统安装 |
-| Wails CLI v2.17.1 | 构建入口 | `go install github.com/wailsapp/wails/v2/cmd/wails@v2.17.1` |
+| Wails CLI v3.1.0（`wails3`） | 生成 Windows 图标/清单/版本资源（syso） | `go install github.com/wailsapp/wails/v3/cmd/wails3@v3.1.0` |
 | NSIS 3（`makensis`） | 生成安装包 | 安装 [NSIS](https://nsis.sourceforge.io/)，或用便携版目录 |
 | `signtool` | 代码签名 | Windows SDK，或 NuGet 包 `Microsoft.Windows.SDK.BuildTools` |
 
@@ -22,7 +22,7 @@
 - `makensis`：`-MakeNsis` 参数 → 环境变量 `makensis` → PATH → `%LOCALAPPDATA%\cadt-tools\**` → `%LOCALAPPDATA%\Temp\nsis-portable\**` → `C:\Program Files (x86)\NSIS\makensis.exe`
 - `signtool`：`-SignTool` 参数 → 环境变量 `signtool` → PATH → `%LOCALAPPDATA%\cadt-tools\sdk-buildtools\bin\*\x64\signtool.exe` → Windows Kits 目录
 
-`wails build -nsis` 本身也要求 `makensis` 在 PATH 中；缺失时它只打印警告、不生成安装包，脚本会自行补上路径。
+程序本体由 `wails3 generate syso` + `go build -tags production` 构建（`tools/rebuild-exe.ps1` / `scripts/build-installer.ps1` 已封装）；安装包由脚本自行调用 `makensis`，缺失时报错而不是静默跳过。
 
 ## 2. 版本号
 
@@ -46,11 +46,11 @@
 
 ## 3. 便携版
 
-```bash
-wails build -devtools
+```powershell
+powershell -ExecutionPolicy Bypass -File tools/rebuild-exe.ps1 -Devtools
 ```
 
-`-devtools` 让生产版保留 WebView2 开发者工具；软件内“设置 → 开发者模式”开启后，帮助菜单会出现“开发者工具”。不加该参数时其余功能不受影响，但帮助菜单无法打开开发者工具。
+`-Devtools` 让生产版保留 WebView2 开发者工具（构建标签 `production,devtools`）；软件内“设置 → 开发者模式”开启后，帮助菜单会出现“开发者工具”。不加该参数时其余功能不受影响，但帮助菜单无法打开开发者工具。
 
 产物：`build/bin/CaDt-DataLens.exe`。发布时通常改名为 `datalens.exe`（程序内的 `datalens` PATH 命令、Agent Skill 文档都按这个文件名工作）。
 
@@ -66,7 +66,7 @@ powershell -ExecutionPolicy Bypass -File scripts/build-installer.ps1
 
 脚本流程：
 
-1. `wails build -nsis -installscope user`：编译程序，重新生成 `build/windows/installer/wails_tools.nsh`、WebView2 bootstrapper（`build/windows/installer/tmp/`）和安装包模板需要的文件。
+1. `npm run build` → `wails3 generate syso` → `go build -tags production,devtools`：编译程序并写入图标/清单/版本资源。
 2. 用 `signtool` 签名 `build/bin/CaDt-DataLens.exe`（安装包内嵌的就是这个已签名文件）。
 3. 在 `build/windows/installer` 目录手工调用 `makensis` 重新打包，并传入 `-DSIGNTOOL`、`-DSIGN_ARGS`；`project.nsi` 中的 `!finalize` / `!uninstfinalize` 负责给安装包和卸载程序签名。
 4. 对程序 exe 和安装包执行 `signtool verify /pa /v`。
@@ -84,8 +84,8 @@ powershell -ExecutionPolicy Bypass -File scripts/build-installer.ps1
 
 不签名的快速打包：
 
-```bash
-wails build -nsis -installscope user
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/build-installer.ps1 -SkipSign
 ```
 
 产物：`build/bin/CaDt-DataLens-amd64-installer.exe`（安装包）和 `build/bin/CaDt-DataLens.exe`（程序本体）。
@@ -208,7 +208,7 @@ signtool verify /pa /v build/bin/CaDt-DataLens-amd64-installer.exe
 
 - [ ] `app_core.go` 的 `appVersion` 与 `wails.json` 的 `info.productVersion` 一致。
 - [ ] `go test ./...` 通过。
-- [ ] `wails build` 产出的便携版能正常启动。
+- [ ] 构建脚本产出的便携版能正常启动。
 - [ ] `scripts/build-installer.ps1` 成功，并打印 `Successfully verified`。
 - [ ] 静默安装 → 检查开始菜单快捷方式、卸载项、关联/右键菜单指向安装目录 → 静默卸载 → 检查清理。
 - [ ] 覆盖安装（不带 `/D`）仍装回上次目录。
@@ -219,7 +219,7 @@ signtool verify /pa /v build/bin/CaDt-DataLens-amd64-installer.exe
 
 | 现象 | 原因 / 处理 |
 | --- | --- |
-| 只有 exe，没有安装包 | `makensis` 不在 PATH，`wails build -nsis` 只打印警告；用脚本指定 `-MakeNsis` |
+| 只有 exe，没有安装包 | `makensis` 不在 PATH；用脚本 `-MakeNsis` 指定路径（脚本会改为报错，不再静默跳过） |
 | PowerShell 脚本报中文语法错 | 脚本必须保存为 UTF-8 **带 BOM**（Windows PowerShell 5.1 按 ANSI 解析无 BOM 文件） |
 | 安装向导中文乱码 | `project.nsi` 必须是 UTF-8 带 BOM |
 | 静默安装退出码 66 | 程序正在运行，先关闭 `datalens.exe` 再装 |

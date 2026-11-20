@@ -7,7 +7,6 @@ package main
 // 堆出一串图标，每个只能唤回自己那个窗口。
 
 import (
-	"os"
 	"testing"
 
 	"datalens/internal/appconfig"
@@ -42,47 +41,5 @@ func TestShouldHideOnClose(t *testing.T) {
 					tc.action, tc.portable, tc.force, tc.quitRequest, tc.shuttingDown, tc.otherWindows, got, tc.want)
 			}
 		})
-	}
-}
-
-// 应用窗口身份只认「不是 AI 浮窗 / 调试控制台」——不能看 --new-window：
-// 窗口模式下双击文件拉起的进程不带它（newwindow.OpenFiles 也是裸参数）。
-func TestIsPortableWindowProcess(t *testing.T) {
-	old := os.Args
-	t.Cleanup(func() { os.Args = old })
-
-	for _, tc := range []struct {
-		args []string
-		want bool
-	}{
-		{[]string{"CaDt-DataLens.exe"}, true},
-		{[]string{"CaDt-DataLens.exe", "D:\\data\\a.json"}, true}, // 窗口模式双击文件：不带 --new-window
-		{[]string{"CaDt-DataLens.exe", "--new-window"}, true},     // 空白新窗口
-		{[]string{"CaDt-DataLens.exe", "--new-window", "--ai-float"}, false},
-		{[]string{"CaDt-DataLens.exe", "--new-window", "--debug-console"}, false},
-	} {
-		os.Args = tc.args
-		if got := isPortableWindowProcess(); got != tc.want {
-			t.Errorf("isPortableWindowProcess(%q) = %v，期望 %v", tc.args, got, tc.want)
-		}
-	}
-}
-
-// 跨进程枚举时靠标题把附属窗口摘出去（标题是程序自己写死的）。
-func TestIsPortableWindowTitle(t *testing.T) {
-	for _, tc := range []struct {
-		title string
-		want  bool
-	}{
-		{"CaDt-DataLens", true},
-		{"a.json - CaDt-DataLens", true},
-		{"AI 助手 · CaDt-DataLens", false},
-		{"调试控制台 · CaDt-DataLens", false},
-		{"", false},
-		{"   ", false},
-	} {
-		if got := isPortableWindowTitle(tc.title); got != tc.want {
-			t.Errorf("isPortableWindowTitle(%q) = %v，期望 %v", tc.title, got, tc.want)
-		}
 	}
 }

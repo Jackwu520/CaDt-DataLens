@@ -5,48 +5,23 @@ package main
 //   · tray：点 X 只是把窗口藏起来——进程、AI 回合、终端会话、后台命令全都继续跑，
 //     想找回窗口就点通知区图标；真想退出走托盘右键「退出」或菜单「退出」。
 //
-// 多窗口 = 多进程，每个窗口各是一个进程，所以「托盘」必须按「最后一个窗口」算：
-//   · 还有别的应用窗口活着 → 点 X 就是关掉这个窗口（含脏文件确认），绝不藏；
-//   · 它是最后一个 → 才藏进托盘。
-// 否则多窗口下一个 X 藏一个，通知区会堆一串图标，而每个图标只能唤回自己那个窗口。
-//
-// 身份判定不看 --new-window：窗口模式下双击文件拉起的进程不带它（newwindow.OpenFiles
-// 也是裸参数），这个标记只说明「要不要抢单实例锁」。能用的是「是不是应用窗口」
-// （排除 AI 浮窗 / 调试控制台）＋「同 exe 还有没有别的窗口」（见 portablewindows_windows.go）。
+// P2 起多窗口在同一进程内，「托盘」按「还有没有别的主窗口」算：
+//   · 还有别的主窗口活着 → 点 X 就是关掉这个窗口（含脏文件确认），绝不藏；
+//   · 它是最后一个主窗口 → 才藏进托盘。
+// 否则多窗口下一个 X 藏一个，通知区会堆一串图标，而每个图标只能唤回一个窗口。
+// 附属窗口（AI 浮窗 / 调试控制台）只按其窗口类型判定，从不藏进托盘。
 
 import (
-	"strings"
-
 	"github.com/wailsapp/wails/v3/pkg/application"
 
 	"datalens/internal/appconfig"
 	"datalens/internal/tray"
 )
 
-// isPortableWindowProcess 当前进程是不是「用户眼里的应用窗口」（主窗口 / 文件窗口）。
-// AI 浮窗与调试控制台是附属窗口：它们关掉就是关掉，也不让程序因为它们留在后台。
-func isPortableWindowProcess() bool {
-	return !hasArg("--ai-float") && !hasArg("--debug-console")
-}
-
-// isPortableWindowTitle 判断一个窗口标题是否属于「应用窗口」。
-// 附属窗口的标题是程序自己写死的（app_core.go 的 WindowSetTitle），据此排除；
-// 用途是跨进程枚举时别把 AI 浮窗 / 调试控制台当成「另一个应用窗口」。
-func isPortableWindowTitle(title string) bool {
-	t := strings.TrimSpace(title)
-	if t == "" {
-		return false
-	}
-	if strings.HasPrefix(t, "AI 助手") || strings.HasPrefix(t, "调试控制台") {
-		return false
-	}
-	return true
-}
-
 // shouldHideOnClose 是「点 X 时藏进托盘而不是退出」的唯一判定。
 //   - 系统关机时必须 false：否则 Windows 等不到进程退出，用户看到的是「关不掉」。
 //   - otherWindows > 0 时必须 false：多窗口下关掉的每个窗口都要真的关掉，
-//     只有最后一个窗口才谈得上「留在后台」。
+//     只有最后一个主窗口才谈得上「留在后台」。
 func shouldHideOnClose(action string, portable bool, force, quitRequested, shuttingDown bool, otherWindows int) bool {
 	if action != appconfig.CloseActionTray {
 		return false

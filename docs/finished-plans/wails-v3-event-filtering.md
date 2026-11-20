@@ -1,6 +1,6 @@
 # Wails v3 多窗口事件过滤方案
 
-> 状态：**P1 桥接层已实施**（2026-11-20：`core/app-events.js` + `core/event-scope.js`，48 处订阅迁移 + 守卫测试）；ID 归属收紧（term-out / cmd-* 等加 owner 字段）与真实双窗口验收待 P2
+> 状态：**已实施**（P1：`core/app-events.js` + `core/event-scope.js`，48 处订阅迁移 + 守卫测试；P2：`app-open-ai-session` 等窗口作用域事件接入）；ID 归属收紧（term-out / cmd-* 加 owner 字段）列为可选后续优化
 > 依据：`docs/reports/wails-v3-p0-spike.md`（P0 实测：`window.EmitEvent` 确认广播，#6608 未修；`WailsEvent.sender` 可用）
 > 关联：`wails-v3-migration.md` §4.3 / §9（P2 首项）
 

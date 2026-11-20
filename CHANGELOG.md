@@ -4,6 +4,16 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 
 ## 未发布
 
+### 重构（窗口架构迁移到 Wails v3：一进程多窗口）
+
+- **一进程多窗口**：框架从 Wails v2 迁到 v3（`application.New` + `NewService` + 多 `WebviewWindow`），主窗口可多开、AI 浮窗与调试控制台不再是独立进程；第二实例、`--new-window`、窗口打开模式、打开目录/软切换、打开浮窗/调试台全部改为同进程窗口。窗口级状态（启动参数、脏标记、AI 运行状态、工作区）按窗口名归属，绑定方法经 v3 的 `application.WindowKey` 上下文拿到调用方窗口。
+- **跨窗口会话复用**：原文件注册表 + 信箱协议（`internal/windowreg`）整体删除，改为进程内注册表；命中目标工作区时直接向该窗口投 `app-open-ai-session` 事件并前置。
+- **事件桥**：新增 `core/app-events.js` + `core/event-scope.js`，48 处订阅收口（`EventsOn` 只允许出现在桥与 mock），控制命令按 sender/工作区过滤；`app-open-ai-session` 等窗口级事件只投目标窗口。
+- **前端绑定**：不再生成 `wailsjs/`；运行时动态加载 `/wails/runtime.js`，`backend` 用 `Call.ByName('main.App.<Method>')` Proxy，原有调用点零改动；`window.go` / `window.runtime` 兼容 shim 保留旧模块。
+- **构建**：`tools/rebuild-exe.ps1` 与 `scripts/build-installer.ps1` 改为「npm run build → `wails3 generate syso` → `go build -tags production`」；新增 `portablewindows_other.go` 等跨平台桩，`tools/check-crossbuild.ps1` 非 Windows vet 加 `-tags purego`。
+- **清理**：删除 `internal/windowreg`、`internal/newwindow`、`frontend/wailsjs` 与信箱轮询兼容代码。
+- 方案与实测记录见 `docs/finished-plans/wails-v3-migration.md`、`docs/finished-plans/wails-v3-event-filtering.md`、`docs/reports/wails-v3-p0-spike.md`。Go/前端全量测试、linux/darwin 交叉编译、`rebuild-exe.ps1` 测试门均通过；托盘/拖放/终端/DPI 等 GUI 场景留手工回归。
+
 ### 修复（AI 头部「定时」胶囊点了没反应，且在所有会话都显示）
 
 - **现象**：头部「定时」胶囊显示某会话的任务数后，切到任何别的会话都一直挂着，点击也没有任何反应。

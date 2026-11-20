@@ -742,7 +742,7 @@ export function createAIWorktree(deps) {
             '- 所有文件改动写到 ' + worktreeRelPath(added.name) + '/…（相对范围根），不要改主根同名文件。',
             '- run_command / background_command 未显式传 cwd 时默认就在 ' + worktreeRelPath(added.name) + ' 里执行；要看主根用 cwd=\'.\'。',
             depsNoteOf(added),
-            '- 隔离区只有 git 跟踪内容：依赖目录（如 frontend/node_modules）与构建产物（dist / wailsjs）不在其中——测试或构建前先在隔离区自举，例：cd frontend && npm install → npx vite build → wails generate module（顺序有依赖；缺 dist 时 generate 报 embed 错误是在提示先 vite build）。测试「假失败」先怀疑缺生成物，不是代码错误。',
+            '- 隔离区只有 git 跟踪内容：依赖目录（如 frontend/node_modules）与构建产物（dist）不在其中——测试或构建前先在隔离区自举，例：cd frontend && npm install → npm run build（缺 dist 时 go build 报 embed 错误是在提示先构建前端）。测试「假失败」先怀疑缺生成物，不是代码错误。',
             '- 完成后调 worktree_manage(action=export) 生成补丁交用户审阅回灌；不要 commit 到隔离分支。',
         ].filter(Boolean).join('\n');
     }
@@ -842,7 +842,7 @@ export function createAIWorktree(deps) {
         ];
         if (carry && added.carried > 0) summaryLines.push('已带入主根未提交改动 ' + added.carried + ' 个文件（快照 commit 作为基准）。');
         if (added.includeCopied > 0) summaryLines.push('已按 .worktreeinclude 拷贝 ' + added.includeCopied + ' 个被忽略文件。');
-        summaryLines.push('提示：隔离区只有 git 跟踪内容——依赖目录与构建产物（node_modules / dist / wailsjs）不在其中，测试前需先自举（npm install → vite build → wails generate module）。');
+        summaryLines.push('提示：隔离区只有 git 跟踪内容——依赖目录与构建产物（node_modules / dist）不在其中，测试前需先自举（npm install → npm run build）。');
         recordToolEvent(session, {action: 'create', label: aiTextOf(label).trim().slice(0, 80), carry}, summaryLines.join('\n'));
         return added;
     }

@@ -137,8 +137,6 @@ func main() {
 	if err != nil {
 		writeAppLog("error", "wails.Run 退出：%v", err)
 	}
-	// 窗口注册表收尾（P2 起为进程内注册表，保留调用以兼容 P3 清理前的结构）。
-	app.shutdownWindowReg()
 	if isConvert {
 		os.Exit(app.convertExitCode)
 	}
