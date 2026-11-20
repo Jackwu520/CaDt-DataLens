@@ -24,8 +24,10 @@ func TestPluginsConfigWiringRoundTrip(t *testing.T) {
 	if err := app.SetDataSource("github"); err != nil {
 		t.Fatal(err)
 	}
-	if got := appconfig.OpenMode(); got != "window" {
-		t.Fatalf("写插件配置后 openMode = %q，期望 window", got)
+	// openMode 已禁用 window（2026-11-21 用户裁定），写入后读取回落 tab；
+	// 这里验证的是合并写不丢字段：tab 恒定 + 插件两项照常落盘
+	if got := appconfig.OpenMode(); got != "tab" {
+		t.Fatalf("写插件配置后 openMode = %q，期望 tab（window 已禁用）", got)
 	}
 	if got := app.GetPluginsPathMode(); got != "appdata" {
 		t.Fatalf("pluginsPathMode = %q，期望 appdata", got)
@@ -38,7 +40,7 @@ func TestPluginsConfigWiringRoundTrip(t *testing.T) {
 		t.Fatalf("config.json 未落盘: %v", err)
 	}
 	cfg := appconfig.Read()
-	if cfg.OpenMode != "window" || cfg.PluginsPathMode != "appdata" || cfg.DataSource != "github" {
+	if cfg.OpenMode != "tab" || cfg.PluginsPathMode != "appdata" || cfg.DataSource != "github" {
 		t.Fatalf("config.json 内容 = %+v", cfg)
 	}
 }

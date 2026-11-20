@@ -237,8 +237,10 @@ func TestOpenModeConfig(t *testing.T) {
 	if err := app.SetOpenMode("window"); err != nil {
 		t.Fatal(err)
 	}
-	if got := appconfig.OpenMode(); got != "window" {
-		t.Fatalf("open mode = %q, want window", got)
+	// 2026-11-21 用户裁定：「一个文件一个窗口」在 v3 一进程多窗口下会造成同工作区
+	// 双开，已禁用——写入 window 后读取一律回落 tab（appconfig.Read 归一化）。
+	if got := appconfig.OpenMode(); got != "tab" {
+		t.Fatalf("open mode = %q, want tab (window disabled)", got)
 	}
 	// P2：窗口打开模式不再另起进程，所有模式共用同一单实例 ID（由 secondInstance 决定开窗）。
 	if got := uniqueIDForLaunch(); got != "cadt-datalens-7f3a9c21" {
