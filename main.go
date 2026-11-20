@@ -137,6 +137,9 @@ func main() {
 	if err != nil {
 		writeAppLog("error", "wails.Run 退出：%v", err)
 	}
+	// 兜底落盘：正常路径在最后一个窗口的 WindowClosing 钩子里已经 flush，
+	// 这里覆盖非关窗退出（托盘退出/外部结束）时防抖计时器还没到点的情况。
+	winGeom.flush()
 	if isConvert {
 		os.Exit(app.convertExitCode)
 	}

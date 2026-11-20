@@ -14,6 +14,14 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 - **清理**：删除 `internal/windowreg`、`internal/newwindow`、`frontend/wailsjs` 与信箱轮询兼容代码。
 - 方案与实测记录见 `docs/finished-plans/wails-v3-migration.md`、`docs/finished-plans/wails-v3-event-filtering.md`、`docs/reports/wails-v3-p0-spike.md`。Go/前端全量测试、linux/darwin 交叉编译、`rebuild-exe.ps1` 测试门均通过；托盘/拖放/终端/DPI 等 GUI 场景留手工回归。
 
+### 改进（浮窗行为工程化：窗口位置 / 尺寸记忆）
+
+- **窗口几何记忆**：新增 `internal/windowgeom`（矩形收敛纯逻辑 + `window-state.json` 原子持久化）与根壳 `window_geometry.go`。主窗口、AI 浮窗、调试控制台分别记住位置与尺寸，下次启动原样恢复；最大化状态记住的是最大化前的还原矩形，不会把满屏尺寸当成普通尺寸。
+- **多屏安全**：创建窗口时按当前 `Screen.PhysicalWorkArea` 收敛——显示器被拔掉或分辨率变化后，窗口自动回到主屏可见区；从 4K 屏回到小屏时尺寸收敛到当前工作区，标题栏不会被挤到屏幕外。
+- **多主窗口级联**：额外主窗口（main-2/…）不单独持久化，从 main 的还原矩形按 28px 级联，避免每次启动都叠在同一位置。
+- **落盘时机**：移动 / 缩放 500ms 防抖写入；关窗与进程退出同步 flush（拖拽刚结束就关窗也不会丢）。文件是 `<应用数据>/window-state.json`，损坏时静默回落空状态，不阻塞启动。
+- 方案与后续路线见 `docs/finished-plans/window-geometry-memory.md`。
+
 ### 修复（AI 头部「定时」胶囊点了没反应，且在所有会话都显示）
 
 - **现象**：头部「定时」胶囊显示某会话的任务数后，切到任何别的会话都一直挂着，点击也没有任何反应。

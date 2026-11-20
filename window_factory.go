@@ -12,6 +12,7 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/events"
 
 	"datalens/internal/launchargs"
+	"datalens/internal/windowgeom"
 )
 
 // createWindow 创建并登记窗口，随后 app.Run 会跑它。
@@ -20,13 +21,20 @@ func (a *App) createWindow(spec windowSpec) *application.WebviewWindow {
 		spec.Name = winReg.nextName(spec.Mode)
 	}
 	st := winReg.add(spec)
-	win := wailsApp.Window.NewWithOptions(windowOptionsFor(spec))
+	width, height, minWidth, minHeight := windowSizesFor(spec.Mode)
+	initialRect, hasInitialRect := winGeom.initialGeometry(spec, width, height, minWidth, minHeight)
+	st.setInitialGeometry(initialRect, hasInitialRect)
+	win := wailsApp.Window.NewWithOptions(windowOptionsFor(spec, initialRect, hasInitialRect))
 	st.setWindow(win)
+	installGeometryHooks(win, st)
 	if spec.Mode == windowModeMain && currentWindow() == nil {
 		setMainWindow(win)
 	}
 
 	win.RegisterHook(events.Windows.WindowClosing, func(e *application.WindowEvent) {
+		// 关窗前采集一次并同步落盘：拖拽刚结束就关窗时防抖计时器可能还没到点。
+		winGeom.capture(st)
+		winGeom.flush()
 		if a.beforeCloseWindow(st) {
 			e.Cancel()
 			return
@@ -47,21 +55,31 @@ func (a *App) createWindow(spec windowSpec) *application.WebviewWindow {
 	return win
 }
 
+// windowSizesFor 返回窗口类型的默认尺寸与最小尺寸。
+func windowSizesFor(mode windowMode) (width, height, minWidth, minHeight int) {
+	switch mode {
+	case windowModeFloat:
+		return 560, 760, 360, 480
+	case windowModeDebug:
+		return 780, 460, 400, 300
+	default:
+		return 1280, 800, 720, 480
+	}
+}
+
 // windowOptionsFor 按窗口类型给出 v3 窗口参数。
-func windowOptionsFor(spec windowSpec) application.WebviewWindowOptions {
-	width, height, minWidth, minHeight := 1280, 800, 720, 480
+func windowOptionsFor(spec windowSpec, initialRect windowgeom.Rect, hasInitialRect bool) application.WebviewWindowOptions {
+	width, height, minWidth, minHeight := windowSizesFor(spec.Mode)
 	title := "CaDt-DataLens"
 	alwaysOnTop := false
 	switch spec.Mode {
 	case windowModeFloat:
-		width, height, minWidth, minHeight = 560, 760, 360, 480
 		title = "AI 助手 · CaDt-DataLens"
 		alwaysOnTop = true
 	case windowModeDebug:
-		width, height, minWidth, minHeight = 780, 460, 400, 300
 		title = "调试控制台 · CaDt-DataLens"
 	}
-	return application.WebviewWindowOptions{
+	opts := application.WebviewWindowOptions{
 		Name:               spec.Name,
 		Title:              title,
 		Width:              width,
@@ -77,6 +95,14 @@ func windowOptionsFor(spec windowSpec) application.WebviewWindowOptions {
 		ZoomControlEnabled: false,
 		Zoom:               1.0,
 	}
+	// 记住的位置/尺寸（window-state.json）：按当前显示器布局收敛后再交给 v3。
+	// 首个窗口在 Run 之前创建，此时 v3 尚未缓存显示器列表，windowReady 会再收敛一次。
+	if hasInitialRect {
+		opts.InitialPosition = application.WindowXY
+		opts.X, opts.Y = initialRect.X, initialRect.Y
+		opts.Width, opts.Height = initialRect.Width, initialRect.Height
+	}
+	return opts
 }
 
 // windowReady 在首屏导航完成后显示窗口（v2 OnDomReady 的等价时机）。
@@ -88,8 +114,22 @@ func (a *App) windowReady(st *windowState) {
 	if win == nil {
 		return
 	}
-	if st.startup().Mode == windowModeMain {
-		showWindowWhenReady(win)
+	spec := st.startup()
+	maximised := false
+	if rect, ok := st.takeInitialGeometry(); ok {
+		// 首个窗口创建于 Run 之前，v3 那时还没枚举显示器；这里按当前屏幕布局
+		// 再收敛一次（窗口仍隐藏，用户看不到跳动）。后续导航重载不重复应用。
+		_, _, minW, minH := windowSizesFor(spec.Mode)
+		areas, primary := screenWorkAreas()
+		rect = windowgeom.Normalize(rect, minW, minH, areas, primary)
+		win.SetPosition(rect.X, rect.Y)
+		win.SetSize(rect.Width, rect.Height)
+		maximised = rect.Maximised
+	}
+	if spec.Mode == windowModeMain {
+		showWindowWhenReady(win, maximised)
+	} else if maximised {
+		win.Maximise()
 	} else {
 		win.Show()
 	}

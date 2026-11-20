@@ -62,14 +62,19 @@ func applyTaskbarIcon() {
 // showWindowWhenReady 等窗口线程从导航初始化里松手后再显示窗口。
 // wails 在 webview 导航完成时就显示窗口，但此时 UI 线程还会被初始化工作占住约 1 秒，
 // Explorer 查询窗口图标会超时，任务栏只能先画占位图标。等一小段再显示并补图标。
-func showWindowWhenReady(win *application.WebviewWindow) {
+// maximised 为真时走最大化（ShowWindow(SW_MAXIMIZE) 本身就会显示窗口）。
+func showWindowWhenReady(win *application.WebviewWindow, maximised bool) {
 	if win == nil {
 		return
 	}
 	go func() {
 		time.Sleep(windowShowDelay)
 		applyTaskbarIcon()
-		win.Show()
+		if maximised {
+			win.Maximise()
+		} else {
+			win.Show()
+		}
 		// 任务栏按钮出现后再补两次，确保 Explorer 刷新到窗口图标。
 		time.Sleep(60 * time.Millisecond)
 		applyTaskbarIcon()

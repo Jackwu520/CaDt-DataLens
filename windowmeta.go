@@ -15,6 +15,7 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/application"
 
 	"datalens/internal/launchargs"
+	"datalens/internal/windowgeom"
 )
 
 type windowMode string
@@ -45,6 +46,11 @@ type windowState struct {
 	dirty      bool
 	aiRunning  bool
 	forceClose bool
+	// geometryApplied：创建后首次导航完成时按当前显示器收敛一次几何；后续
+	// HMR/重载触发的导航不重复应用，避免把用户已拖动的窗口拉回初始位置。
+	geometryApplied bool
+	initialGeom     windowgeom.Rect
+	hasInitialGeom  bool
 }
 
 func (s *windowState) name() string { return s.spec.Name }
@@ -79,6 +85,24 @@ func (s *windowState) SetAIRunning(v bool) { s.mu.Lock(); s.aiRunning = v; s.mu.
 func (s *windowState) IsAIRunning() bool   { s.mu.Lock(); defer s.mu.Unlock(); return s.aiRunning }
 func (s *windowState) forceClosed() bool   { s.mu.Lock(); defer s.mu.Unlock(); return s.forceClose }
 func (s *windowState) markForceClose()     { s.mu.Lock(); s.forceClose = true; s.mu.Unlock() }
+
+// setInitialGeometry 记录创建时算好的几何（未命中存档时 ok=false）。
+func (s *windowState) setInitialGeometry(r windowgeom.Rect, ok bool) {
+	s.mu.Lock()
+	s.initialGeom, s.hasInitialGeom = r, ok
+	s.mu.Unlock()
+}
+
+// takeInitialGeometry 首次调用返回创建时的几何并标记已应用；后续导航返回 false。
+func (s *windowState) takeInitialGeometry() (windowgeom.Rect, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.geometryApplied {
+		return windowgeom.Rect{}, false
+	}
+	s.geometryApplied = true
+	return s.initialGeom, s.hasInitialGeom
+}
 
 func (s *windowState) startup() windowSpec {
 	s.mu.Lock()
