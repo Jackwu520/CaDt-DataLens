@@ -213,7 +213,7 @@ export const AI_TOOL_DEFS = {
     },
     reminder_add: {
         name: 'reminder_add',
-        description: '给当前会话添加一条「任务提醒」（标题 + 可选说明，未完成的最多 5 条；已完成的保留作历史、不占名额，标 done 即释放名额）。用于防止上下文过长遗漏事情：用户交代了稍后要做的事、或你把长任务拆步后怕丢步骤时添加。提醒清单每轮对话开始都会注入给你；完成一条后记得用 reminder_update 标记 done 或删除。不写工作区文件，无需审批。',
+        description: '给当前会话添加一条「任务提醒」（标题 + 可选说明，未完成的最多 5 条；已完成的保留作历史、不占名额，标 done 即释放名额）。用于记住单条、零散但跨轮不能忘的事：用户交代稍后要做的事、必须遵守的约束、关键 id / 路径 / 承诺等。不要把工作拆成步骤——多步任务的执行进度用 todo_write。提醒清单每轮对话开始都会注入给你；完成一条后记得用 reminder_update 标记 done 或删除。不写工作区文件，无需审批。',
         parameters: {
             type: 'object',
             properties: {
@@ -468,7 +468,7 @@ export const AI_TOOL_DEFS = {
     },
     todo_write: {
         name: 'todo_write',
-        description: '维护任务清单以规划和展示多步工作；琐碎单步任务不用。开工前先为每个具体步骤各建一项；只要还有未完成的工作，保持恰好一项 in_progress（开始下一项前先把上一项标 completed）；每完成一项立即标 completed，不要攒到最后一次性更新。这是**会话内的执行进度**（每轮自动注入、随会话存档），不是用户「快捷便签」面板里的内容——往用户便签里记事/改状态用 app_control 的 get_memo / add_memo / update_memo 动作。需「每次询问」「自动审批」或「完全权限」。',
+        description: '维护任务清单以规划和展示多步工作；琐碎单步任务不用。开工前先为每个具体步骤各建一项；只要还有未完成的工作，保持恰好一项 in_progress（开始下一项前先把上一项标 completed）；每完成一项立即标 completed，不要攒到最后一次性更新。这是**会话内的执行进度**（每轮自动注入、随会话存档），不是用户「快捷便签」面板里的内容——往用户便签里记事/改状态用 app_control 的 get_memo / add_memo / update_memo 动作。零散但需跨轮记住的备忘（约束 / id / 承诺）用 reminder_add，别塞进清单。需「每次询问」「自动审批」或「完全权限」。',
         parameters: {
             type: 'object',
             properties: {
