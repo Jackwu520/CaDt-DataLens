@@ -245,7 +245,23 @@ async function restoreSession(sess) {
         return false;
     }
     try {
-        if (sess.workspace && !deps.workspaceFolder) deps.openFolderWorkspace(sess.workspace);
+        if (sess.workspace && !deps.workspaceFolder) {
+            // 同一工作区禁止双开（v3 会话/监听/租约按单打开设计）：已被其他窗口
+            // 打开的工作区不再恢复，等用户回到那个窗口（2026-11-21 用户裁定）。
+            if (deps.backend && deps.backend.IsWorkspaceOpen) {
+                Promise.resolve(deps.backend.IsWorkspaceOpen(sess.workspace)).then((open) => {
+                    if (open) {
+                        if (typeof deps.flash === 'function') {
+                            deps.flash('工作区 ' + sess.workspace + ' 已在另一个窗口打开，本窗口未重复恢复');
+                        }
+                        return;
+                    }
+                    deps.openFolderWorkspace(sess.workspace);
+                }).catch(() => deps.openFolderWorkspace(sess.workspace));
+            } else {
+                deps.openFolderWorkspace(sess.workspace);
+            }
+        }
         knownDocViews = new Map();
         pendingDocViews = new Map();
         for (const [path, view] of Object.entries(sess.views || {})) {

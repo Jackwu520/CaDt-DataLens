@@ -88,7 +88,11 @@ func main() {
 			OnSecondInstanceLaunch: func(data application.SecondInstanceData) {
 				// v3 的 Args 是完整 os.Args（含 exe 路径），v2 语义是 os.Args[1:]。
 				args := data.Args
-				if len(args) > 0 && (args[0] == os.Args[0] || args[0] == appExePath()) {
+				// v3 的 Args 恒为完整 os.Args（含 exe 自身路径）：无条件剥 args[0]。
+				// 旧逻辑按「与运行中实例路径比对」剥——跨副本混跑（root vs build/bin，
+				// 或 v2/v3）时路径不同会漏剥，把 exe 自己当打开目标塞进二进制查看器
+				//（2026-11-21 用户实测复现）。
+				if len(args) > 0 {
 					args = args[1:]
 				}
 				app.secondInstance(args)

@@ -70,6 +70,14 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 - **8 秒兜底显示回归**：v2 的 `ensureWindowShown` 语义找回——导航 8s 未完成强制露出窗口，WebView2 卡死不再「进程活着但没窗口」。
 - **标题栏 X / 终端收回绕过关窗确认（用户实测）**：v3 两条关窗路径发不同事件——JS `WindowClose()` 发 `Common.WindowClosing`、原生 WM_CLOSE 发 `Windows.WindowClosing`（经默认映射汇入 Common）；关窗钩子此前挂在 `Windows.*` 上，JS 关窗路径完全绕过 `beforeCloseWindow`（改文件点 X 直接退出、终端窗口收回不发交还事件）。钩子移到 `Common` 后两条路径统一：先于内部关闭监听执行，取消语义完整。
 - **终端弹出窗口实测反馈一批**：terminal-only 漏藏 `#ai-panel`（`#body-col` 直接子级）根因是 style.css 修改后未重跑 `npm run build`，dist 停在旧版——**已重构建，后续前端改动一律先 npm run build**；启动防闪现（app-booting 首帧隐藏 + 模式确定后摘除 + 5s 兜底）；标题栏去四向箭头光标；头部加「工作区 / Shell」胶囊并同步 OS 窗口标题；收回链路双侧诊断日志；v3 内部关闭监听语义核verified（Common 先于内部关闭执行、取消生效）。
+- **手工回归第二批（用户实测）修复与裁定**：
+  - **同工作区禁止双开（用户裁定）**：`openMainWindow` 加工作区守卫（已开即前置+投递会话/目标），启动恢复路径加 `IsWorkspaceOpen` 检查——会话双开丢失（两窗口同会话各持内存态，后关覆盖先关）的根源被堵住；深层的会话写回合并调查随窗口归属批次跟进。
+  - **「一个文件一个窗口」禁用（用户裁定，轻量查看窗待评估）**：openMode 只支持 tab（appconfig 读取回落、OpenInNewWindows 退化为标签页打开、设置/切换器/AI set_setting 文案同步）；打开文件默认归属其父目录工作区。
+  - **托盘语义重定义（用户实测反馈）**：托盘模式下主窗口点 X 一律收进托盘（不再弹确认框）；多主窗共用单托盘图标，恢复时全部找回（`shouldHideOnClose` 去 otherWindows 条件）。
+  - **切换器「窗口」层含当前窗口**（勾选标记 + 「（当前）」后缀，点击自身 no-op）。
+  - **第二实例参数无条件剥 exe 自身路径**（跨副本混跑时 exe 被当文件塞进二进制查看器，用户实测复现）。
+  - `WindowReuseForSession` 探测日志（跨窗跳转命中与否的定位证据）。
+- **启动挂起/闪退排查记录（测试环境副作用，非产品 bug）**：测试期强杀实例留下的 msedgewebview2 僵尸子进程会锁住 WebView2 用户数据目录，新实例的环境创建会挂起/静默退出（日志只到启动参数行、Go 层无 panic——applog 已接管 crash output 可排除）。僵尸进程自然消亡或手动清理后恢复。遗留改进：WebView2 环境创建失败时给用户可见的错误提示（当前静默退出，见 internal/applog 注释里的同款历史问题）。
 - **v2/v3 共存警告（操作层面）**：两者单实例锁 ID 相同但转发协议不同——**同时运行会双开或挂起**（03:51 与 03:53 的日志证实）。测试 v3 前必须完全退出 v2（含托盘），任务管理器确认无 datalens 进程。
 - **窗口归属遗留立项**：工作区监听单槽顶掉（wipe-guard L2 失明）、memo 租约同进程双写、`findWailsWindow` 多窗口不确定、对话框无属主、资源监听替换式登记——五项同根（进程级单例 vs 多窗口），统一按「调用方窗口键控」重构，见 `docs/unfinished-plans/window-ownership-refactor.md`（未开工，已知偏差均已声明）。
 

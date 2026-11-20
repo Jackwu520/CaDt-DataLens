@@ -2239,7 +2239,9 @@ if (!editorFonts.some((f) => f.id === settings.editorFontFamily)) settings.edito
 if (!cjkFonts.some((f) => f.id === settings.uiCjkFont)) settings.uiCjkFont = 'auto';
 if (!cjkFonts.some((f) => f.id === settings.editorCjkFont)) settings.editorCjkFont = 'auto';
 settings.autoSave = !!settings.autoSave;
-if (settings.openMode !== 'window') settings.openMode = 'tab';
+// openMode 仅支持 tab：「一个文件一个窗口」在 v3 一进程多窗口下会造成同工作区
+// 双开，轻量查看窗评估前禁用（2026-11-21 用户裁定）；旧配置里的 window 值回落。
+settings.openMode = 'tab';
 // 关闭行为（exit 直接退出 / tray 最小化到托盘）：非法值回落退出——藏窗口是不可见的坑，
 // 宁可退出也不要让用户找不到程序。真相在后端 config.json（见 SetCloseAction）。
 if (settings.closeAction !== 'tray') settings.closeAction = 'exit';
@@ -5278,7 +5280,7 @@ async function refreshWindowSwitchEntries() {
     }
     try {
         const rows = await backend.WindowList();
-        windowSwitchRows = (rows || []).filter((w) => w && !w.self);
+        windowSwitchRows = (rows || []).filter((w) => w && w.name);
     } catch (e) {
         windowSwitchRows = []; // 尽力而为路径：失败沿用空列表
     }
@@ -5287,9 +5289,13 @@ function windowSwitchEntries() {
     if (!windowSwitchRows.length) return [{label: '（没有其他窗口）', disabled: true}];
     return windowSwitchRows.map((w) => ({
         label: (WINDOW_MODE_LABELS[w.mode] || '窗口') +
-            (w.workspace ? ' · ' + String(w.workspace).replace(/^.*[\\/]/, '') : ''),
-        value: w.name,
-        action: () => { if (backend.WindowFocusByName) backend.WindowFocusByName(w.name); },
+            (w.workspace ? ' · ' + String(w.workspace).replace(/^.*[\/]/, '') : '') +
+            (w.self ? '（当前）' : ''),
+        checked: !!w.self,
+        action: () => {
+            if (w.self) return;
+            if (backend.WindowFocusByName) backend.WindowFocusByName(w.name);
+        },
     }));
 }
 

@@ -20,25 +20,22 @@ func TestShouldHideOnClose(t *testing.T) {
 		force        bool
 		quitRequest  bool
 		shuttingDown bool
-		otherWindows int
 		want         bool
 	}{
-		{"默认直接退出", appconfig.CloseActionExit, true, false, false, false, 0, false},
-		{"空配置按退出处理", "", true, false, false, false, 0, false},
-		{"托盘 + 唯一窗口", appconfig.CloseActionTray, true, false, false, false, 0, true},
-		{"托盘 + 还有别的窗口（多窗口逐个关）", appconfig.CloseActionTray, true, false, false, false, 1, false},
-		{"托盘 + 还有两个窗口", appconfig.CloseActionTray, true, false, false, false, 2, false},
-		{"托盘但本进程是附属窗口（浮窗/调试台）", appconfig.CloseActionTray, false, false, false, false, 0, false},
-		{"托盘但正在强制退出", appconfig.CloseActionTray, true, true, false, false, 0, false},
-		{"托盘但用户点了退出", appconfig.CloseActionTray, true, false, true, false, 0, false},
-		{"托盘但系统正在关机", appconfig.CloseActionTray, true, false, false, true, 0, false},
+		{"默认直接退出", appconfig.CloseActionExit, true, false, false, false, false},
+		{"空配置按退出处理", "", true, false, false, false, false},
+		{"托盘模式主窗口一律藏", appconfig.CloseActionTray, true, false, false, false, true},
+		{"托盘但本进程是附属窗口（浮窗/调试台）", appconfig.CloseActionTray, false, false, false, false, false},
+		{"托盘但正在强制退出", appconfig.CloseActionTray, true, true, false, false, false},
+		{"托盘但用户点了退出", appconfig.CloseActionTray, true, false, true, false, false},
+		{"托盘但系统正在关机", appconfig.CloseActionTray, true, false, false, true, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := shouldHideOnClose(tc.action, tc.portable, tc.force, tc.quitRequest, tc.shuttingDown, tc.otherWindows)
+			got := shouldHideOnClose(tc.action, tc.portable, tc.force, tc.quitRequest, tc.shuttingDown)
 			if got != tc.want {
-				t.Fatalf("shouldHideOnClose(%q, portable=%v, force=%v, quit=%v, shutdown=%v, others=%d) = %v，期望 %v",
-					tc.action, tc.portable, tc.force, tc.quitRequest, tc.shuttingDown, tc.otherWindows, got, tc.want)
+				t.Fatalf("shouldHideOnClose(%q, portable=%v, force=%v, quit=%v, shutdown=%v) = %v，期望 %v",
+					tc.action, tc.portable, tc.force, tc.quitRequest, tc.shuttingDown, got, tc.want)
 			}
 		})
 	}

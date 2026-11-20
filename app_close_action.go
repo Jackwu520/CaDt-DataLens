@@ -21,16 +21,18 @@ import (
 
 // shouldHideOnClose 是「点 X 时藏进托盘而不是退出」的唯一判定。
 //   - 系统关机时必须 false：否则 Windows 等不到进程退出，用户看到的是「关不掉」。
-//   - otherWindows > 0 时必须 false：多窗口下关掉的每个窗口都要真的关掉，
-//     只有最后一个主窗口才谈得上「留在后台」。
-func shouldHideOnClose(action string, portable bool, force, quitRequested, shuttingDown bool, otherWindows int) bool {
+//   - 托盘模式下主窗口一律藏：多主窗共用同一个托盘图标（单例），恢复时全部找回。
+//     旧口径「只有最后一个主窗口才藏」在多窗口下会出现「点 X 弹确认框」的反直觉
+//     行为（2026-11-21 用户实测裁定废弃）；附属窗口（浮窗/调试台/终端窗）从不藏，
+//     由调用方的 isMain 判定承担。
+func shouldHideOnClose(action string, portable bool, force, quitRequested, shuttingDown bool) bool {
 	if action != appconfig.CloseActionTray {
 		return false
 	}
 	if !portable || force || quitRequested || shuttingDown {
 		return false
 	}
-	return otherWindows == 0
+	return true
 }
 
 // GetCloseAction 返回当前关闭行为（exit / tray），设置页用它回显。
@@ -187,6 +189,7 @@ func (a *App) stopTray() {
 }
 
 // restoreFromTray 从托盘回到前台（托盘图标同时撤掉：窗口在时别继续占通知区）。
+// 托盘模式下可能藏了多个主窗口：全部找回（Show 对已可见窗口是幂等 no-op）。
 func (a *App) restoreFromTray() {
 	if a.ctx == nil {
 		return
@@ -195,7 +198,17 @@ func (a *App) restoreFromTray() {
 	if a.tray != nil {
 		a.tray.Hide()
 	}
-	showMainWindow()
+	for _, st := range winReg.list() {
+		if st.startup().Mode != windowModeMain {
+			continue
+		}
+		if w := st.window(); w != nil {
+			w.Show()
+			if w.IsMinimised() {
+				w.UnMinimise()
+			}
+		}
+	}
 }
 
 // quitFromTray 托盘右键「退出」：先把窗口露出来（未保存 / 任务进行中的确认框得看得见），

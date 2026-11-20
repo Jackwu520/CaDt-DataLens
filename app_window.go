@@ -42,6 +42,11 @@ func (a *App) SetWindowCollapsed(ctx context.Context, collapsed bool) {
 
 // WindowList 列出全部存活窗口（quick-switch「窗口」层用）。
 // title/位置在 Go 侧拿不到读取口，标识用窗口名 + 形态 + 工作区。
+// IsWorkspaceOpen 查询某工作区是否已被其他窗口打开（恢复路径防双开用）。
+func (a *App) IsWorkspaceOpen(ctx context.Context, dir string) bool {
+	return winReg.findByWorkspace(strings.TrimSpace(dir), callerWindowName(ctx)) != nil
+}
+
 func (a *App) WindowList(ctx context.Context) []map[string]string {
 	self := callerWindowName(ctx)
 	out := make([]map[string]string, 0, 4)
@@ -203,14 +208,27 @@ func (a *App) GetClipboardImage() (string, error) {
 	return clipboard.ImageDataURL()
 }
 
+// OpenInNewWindows 兼容入口：原「一个文件一个窗口」在 v3 一进程多窗口下会造成
+// 同工作区双开（会话/监听/租约按单打开语义设计），2026-11-21 用户裁定禁用——
+// 退化为在主窗口以标签页打开（绑定名与前端调用面保留，行为变更）。
 func (a *App) OpenInNewWindows(paths []string) error {
-	_ = a.SetOpenMode("window")
+	_ = a.SetOpenMode("tab")
+	targets := make([]launchargs.OpenTarget, 0, len(paths))
 	for _, p := range paths {
 		if strings.TrimSpace(p) == "" {
 			continue
 		}
-		a.openMainWindow(windowSpec{Targets: []launchargs.OpenTarget{{Path: p}}})
+		targets = append(targets, launchargs.OpenTarget{Path: p})
 	}
+	if len(targets) == 0 {
+		return nil
+	}
+	if st := winReg.primary(); st != nil {
+		deliverOpenTargets(st, openTargetsAny(targets))
+		return nil
+	}
+	// 没有存活主窗口：开一个新窗口承载（此时不存在双开）
+	a.openMainWindow(windowSpec{Targets: targets})
 	return nil
 }
 
@@ -242,7 +260,7 @@ func (a *App) beforeCloseWindow(st *windowState) bool {
 	// 设置里选了「最小化到托盘」：点 X 只是把窗口藏起来，进程与后台任务全部照旧跑。
 	// 只有主窗口参与；且只在该窗口是最后一个主窗口时才藏（否则直接关掉本窗口）。
 	if a.convert == nil && isMain && traySupported() &&
-		shouldHideOnClose(a.closeAction, true, st.forceClosed(), a.quitRequested.Load(), systemShuttingDown(), winReg.countMain()-1) {
+		shouldHideOnClose(a.closeAction, true, st.forceClosed(), a.quitRequested.Load(), systemShuttingDown()) {
 		setMainWindow(st.window())
 		a.hideToTray(st.window())
 		return true

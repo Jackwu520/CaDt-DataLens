@@ -21,15 +21,15 @@ func TestConfigPathUnderAppData(t *testing.T) {
 func TestSaveReadRoundTrip(t *testing.T) {
 	t.Setenv("AppData", t.TempDir())
 	cfg := Read()
-	cfg.OpenMode = "window"
+	cfg.OpenMode = "window" // 旧配置残留的 window：读回应回落 tab（多窗口已禁用）
 	cfg.DeveloperMode = true
 	cfg.DisabledPlugins = []string{"demo"}
 	if err := Save(cfg); err != nil {
 		t.Fatal(err)
 	}
 	got := Read()
-	if got.OpenMode != "window" || !got.DeveloperMode || len(got.DisabledPlugins) != 1 || got.DisabledPlugins[0] != "demo" {
-		t.Fatalf("读回配置不符: %+v", got)
+	if got.OpenMode != "tab" || !got.DeveloperMode || len(got.DisabledPlugins) != 1 || got.DisabledPlugins[0] != "demo" {
+		t.Fatalf("读回配置不符（window 应回落 tab）: %+v", got)
 	}
 	if _, err := os.Stat(Path()); err != nil {
 		t.Fatalf("config.json 未写入: %v", err)
@@ -50,7 +50,7 @@ func TestCloseActionDefaultAndRoundTrip(t *testing.T) {
 	}
 	// 只改关闭行为不能把别的字段冲掉
 	cfg := Read()
-	cfg.OpenMode = "window"
+	cfg.OpenMode = "tab"
 	cfg.DeveloperMode = true
 	if err := Save(cfg); err != nil {
 		t.Fatal(err)
@@ -59,7 +59,7 @@ func TestCloseActionDefaultAndRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	back := Read()
-	if back.CloseAction != CloseActionExit || back.OpenMode != "window" || !back.DeveloperMode {
+	if back.CloseAction != CloseActionExit || back.OpenMode != "tab" || !back.DeveloperMode {
 		t.Fatalf("SaveCloseAction 丢了其它字段: %+v", back)
 	}
 }

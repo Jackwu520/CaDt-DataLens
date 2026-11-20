@@ -140,16 +140,14 @@ function quickSwitchSubItems(level) {
         ];
     }
     if (level === 'openmode') {
+        // 「多窗口」已禁用：一个文件一个窗口会造成同工作区双开，轻量查看窗评估前
+        // 只保留单窗口标签页（2026-11-21 用户裁定）。
         return [
             {
                 label: '单窗口标签页',
-                checked: deps.settings.openMode === 'tab',
+                checked: true,
+                disabled: true,
                 action: () => { deps.settings.openMode = 'tab'; deps.applySettings(); },
-            },
-            {
-                label: '多窗口',
-                checked: deps.settings.openMode === 'window',
-                action: () => { deps.settings.openMode = 'window'; deps.applySettings(); },
             },
         ];
     }

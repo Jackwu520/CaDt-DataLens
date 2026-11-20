@@ -1788,6 +1788,7 @@ const mockBackend = {
         return (window.__mockWindows || [{name: 'main', mode: 'main', self: '1'}]).slice();
     },
     async WindowFocusByName(name) { this._calls.push('focus-window:' + name); return true; },
+    async IsWorkspaceOpen(dir) { return !!(window.__mockWorkspaceOpenDirs || []).some((d) => d === dir); },
     async TermResize() {},
     async TermClose() {},
     async RunCommandSync(exe, args, cwd, timeoutMs) {

@@ -21,7 +21,8 @@ test('main.js 维护窗口列表缓存并按 target 跳转', () => {
     assert.match(mainSrc, /async function refreshWindowSwitchEntries/);
     assert.match(mainSrc, /backend\.WindowList/);
     assert.match(mainSrc, /backend\.WindowFocusByName/);
-    assert.match(mainSrc, /filter\(\(w\) => w && !w\.self\)/, '不列自己');
+    // 2026-11-21 用户裁定：当前窗口也列出（勾选标记 + 「（当前）」），点击自身 no-op
+    assert.match(mainSrc, /checked: !!w\.self/);
 });
 
 test('全局热键的目标事件已登记（app-open-terminal）', () => {

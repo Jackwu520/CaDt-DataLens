@@ -39,6 +39,7 @@ func (a *App) WindowRegister(ctx context.Context, workspace string) error {
 // WindowReuseForSession 找目标工作区的存活窗口，投递「打开会话」请求并等待回执。
 // 返回复用的窗口名；空串 = 无可用窗口或目标切换失败（调用方退化为开新窗口）。
 func (a *App) WindowReuseForSession(ctx context.Context, workspace, sessionID string) (string, error) {
+	writeAppLog("info", "会话复用探测：workspace=%q session=%q caller=%s", workspace, sessionID, callerWindowName(ctx))
 	from := callerWindowName(ctx)
 	target := winReg.findByWorkspace(workspace, from)
 	if target == nil {

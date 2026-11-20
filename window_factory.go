@@ -313,8 +313,23 @@ func deliverOpenSession(st *windowState, reqID, workspace, sessionID string) {
 }
 
 // openMainWindow 新建一个主窗口（--new-window / 新目录 / 软切换）。
+// 同一工作区禁止双开（v3 会话/监听/租约按「一个工作区一个打开者」设计，2026-11-21
+// 用户裁定）：目标工作区已有存活窗口时，前置该窗口并投递启动上下文（含会话 id），
+// 不再新建。
 func (a *App) openMainWindow(spec windowSpec) *application.WebviewWindow {
 	spec.Mode = windowModeMain
+	if spec.Workspace != "" {
+		if st := winReg.findByWorkspace(spec.Workspace, ""); st != nil {
+			activateWindow(st.window())
+			if spec.SessionID != "" {
+				emitWindowEventTo(st.window(), "app-open-ai-session", map[string]string{
+					"workspace": spec.Workspace,
+					"sessionId": spec.SessionID,
+				})
+			}
+			return st.window()
+		}
+	}
 	return a.createWindow(spec)
 }
 

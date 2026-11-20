@@ -70,9 +70,9 @@ func Read() Config {
 	if json.Unmarshal(raw, &stored) != nil {
 		return cfg
 	}
-	if stored.OpenMode == "window" {
-		cfg.OpenMode = "window"
-	}
+	// openMode 只支持 tab：「一个文件一个窗口」在 v3 一进程多窗口下会造成同工作区
+	// 双开（会话/监听/租约按单打开语义设计），轻量查看窗评估前禁用（2026-11-21 用户裁定）。
+	// 旧配置里的 window 值一律回落 tab。
 	cfg.CloseAction = NormalizeCloseAction(stored.CloseAction)
 	if stored.PluginsPathMode == "appdata" {
 		cfg.PluginsPathMode = "appdata"
@@ -101,7 +101,7 @@ func Save(cfg Config) error {
 	return os.WriteFile(path, raw, 0644)
 }
 
-// OpenMode 返回文件打开方式（tab / window）。
+// OpenMode 返回文件打开方式（仅 tab；window 已禁用，见 Read）。
 func OpenMode() string {
 	return Read().OpenMode
 }
