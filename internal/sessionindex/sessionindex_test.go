@@ -157,6 +157,44 @@ func TestSyncSessionIndexRebuildsDirty(t *testing.T) {
 	}
 }
 
+// 回归：诊断面板调 Stats 只读索引状态，不能顺带重放脏会话——
+// 否则长会话会把「正在分析会话数据…」卡住，用户得点「重建搜索索引」才出数据。
+func TestStatsDoesNotRebuildDirtySessions(t *testing.T) {
+	dir := t.TempDir()
+	AppDataDir = func() string { return dir }
+	t.Cleanup(func() { ResetFiles(); AppDataDir = nil })
+
+	store := sessionstore.New(t.TempDir())
+	header := `{"v":1,"t":"header","id":"s1","title":"诊断会话"}` + "\n"
+	msg1 := `{"v":1,"t":"msg","mid":"m1","m":{"role":"user","content":"第一次内容","ts":1}}` + "\n"
+	if err := store.Append("s1", header+msg1); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.WriteMeta("s1", `{"id":"s1","title":"诊断会话","workspace":"D:/w","updatedAt":1,"messageCount":1}`); err != nil {
+		t.Fatal(err)
+	}
+	// 先建索引（Search 会同步脏会话）
+	if _, err := Search(store, "第一次", 10); err != nil {
+		t.Fatal(err)
+	}
+	// 追加新消息并标脏，此时索引里还没有这条新内容
+	if err := store.Append("s1", `{"v":1,"t":"msg","mid":"m2","m":{"role":"user","content":"后来新增","ts":2}}`+"\n"); err != nil {
+		t.Fatal(err)
+	}
+	MarkDirty("s1")
+
+	stats, err := Stats(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !stats.Exists {
+		t.Fatal("索引应已存在")
+	}
+	if stats.Dirty != 1 {
+		t.Fatalf("Stats 不应重建脏会话，期望 dirty=1，实际 %d", stats.Dirty)
+	}
+}
+
 func TestMakeSearchSnippetMarksMatch(t *testing.T) {
 	snippet := makeSearchSnippet("前面一些内容，关键词在这里，后面还有一些内容", "关键词", 8)
 	if !strings.Contains(snippet, "\x01关键词\x02") {
