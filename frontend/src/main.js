@@ -5289,7 +5289,7 @@ function windowSwitchEntries() {
     if (!windowSwitchRows.length) return [{label: '（没有其他窗口）', disabled: true}];
     return windowSwitchRows.map((w) => ({
         label: (WINDOW_MODE_LABELS[w.mode] || '窗口') +
-            (w.workspace ? ' · ' + String(w.workspace).replace(/^.*[\/]/, '') : '') +
+            (w.workspace ? ' · ' + baseNameOf(w.workspace) : '') +
             (w.self ? '（当前）' : ''),
         checked: !!w.self,
         action: () => {
