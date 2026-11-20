@@ -1252,6 +1252,8 @@ export function createAISettingsDialog(ctx) {
         });
         if (opt.exportBtn) opt.exportBtn.addEventListener('click', ioMod.exportAIConfig);
         if (opt.importBtn) opt.importBtn.addEventListener('click', ioMod.importAIConfig);
+        if (opt.modelExportBtn) opt.modelExportBtn.addEventListener('click', ioMod.exportAccountModels);
+        if (opt.modelImportBtn) opt.modelImportBtn.addEventListener('click', ioMod.importAccountModels);
         if (opt.clearSessions) opt.clearSessions.addEventListener('click', () => {
             askConfirm('清空全部 AI 会话（含消息、任务清单与变更记录）？', () => {
                 setSessions([createSessionData()]);
