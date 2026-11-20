@@ -170,7 +170,9 @@ func (a *App) windowReady(st *windowState) {
 		if spec.Mode == windowModeMain {
 			showWindowWhenReady(win, maximised)
 		} else if maximised {
+			// 同上：最大化后必须补 Show() 联动 WebView2 可见性。
 			win.Maximise()
+			win.Show()
 		} else {
 			win.Show()
 		}

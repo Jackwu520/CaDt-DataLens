@@ -71,7 +71,10 @@ func showWindowWhenReady(win *application.WebviewWindow, maximised bool) {
 		time.Sleep(windowShowDelay)
 		applyTaskbarIcon()
 		if maximised {
+			// 先最大化再 Show：Show() 才会把 WebView2 控制器置可见（Maximise 是裸
+			// ShowWindow，从隐藏窗口直接最大化会得到窗口可见但 WebView 隐藏的空白窗）。
 			win.Maximise()
+			win.Show()
 		} else {
 			win.Show()
 		}

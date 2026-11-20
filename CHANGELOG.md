@@ -57,6 +57,7 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 - **文件拖放修复（P1）**：v3 的 drop 只回调 Go 侧监听（不发回 JS 事件），此前 `rt.OnFileDrop` 通道不存在、拖放打开文件静默失效——Go 收下后转 `app-file-drop` 窗口事件，前端经事件桥按窗口消费。
 - **窗口生命周期**：`windowReady` 的 Show/Maximise 改一次性标记（托盘隐藏的窗口遇 reload 不再被弹回）；首次运行「未移动直接最大化」也记还原矩形；浮窗先启的进程开出首个主窗口时惰性补齐 AI 侧服务（定时任务/插件服务/MCP 客户端/使用统计）；通知点击激活在无主窗形态回退浮窗；`event_owner` 表满改 FIFO 淘汰（不再整表清空打回广播）。
 - **前端**：`WindowGetSize` 适配 v3 双返回值打包成数组的变化（浮窗「收起前尺寸」恢复失效）；终端独立窗口里 Shift+Esc 改为关窗（收起会留一块空白无边框窗口）；调试台作唯一窗口时关窗确认框可见（console-only 放行 #dialog-mask）；终端暂存缓冲加条目上限与 TTL（多窗口广播兜底不再无界累积）；`attachResumedTermSession` 快照失败不再丢暂存；AI terminal 工具对已弹出终端的报错文案与描述补弹出语义。
+- **最大化还原空白窗修复（用户实测复现）**：v3 的 `Maximise()` 是裸 `ShowWindow(SW_MAXIMIZE)`，绕过了 `Show()` 里「导航完成后置 WebView2 控制器可见」的联动——从隐藏窗口直接最大化会得到「窗口可见但 WebView 隐藏」的全屏空白（窗口树取证：Chrome_WidgetWin 三层子窗口 vis=False）。最大化后补一次 `Show()` 修复。
 - **构建/文档**：Taskfile 的 NSIS 目录对齐 `installer/`（package 链路此前是死链）；安装包构建补 `wails3 generate webview2bootstrapper`（裸 Win10 自动装 WebView2，此前静默缺失）；build-installer 支持 `-IncludeMCP`；删除 launchargs 单实例 ID 死代码与 package.json.md5 残留；packaging.md / AGENTS / README 口径修正（切换器键位、wails_tools.nsh 手工维护、版本五处、wails3 dev 前置构建说明、AGENTS 补 event_owner/spike/src-core 新模块条目）。
 
 ### 审查修复（2026-11-21 等价性对照）
