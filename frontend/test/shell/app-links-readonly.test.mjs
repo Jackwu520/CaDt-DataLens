@@ -15,11 +15,14 @@ test('openBundledDoc 把 readOnlyFixed 标记透传给 openVirtualDoc', () => {
         'openBundledDoc 必须在 readOnlyFixed 时以 {readOnlyFixed: true} 建虚拟文档');
 });
 
-test('用户协议与隐私协议以固定只读打开', () => {
+test('用户协议、隐私协议与教程以固定只读打开', () => {
     const terms = src.match(/function showTerms\(\)\s*\{([\s\S]*?)\}/);
     const privacy = src.match(/function showPrivacy\(\)\s*\{([\s\S]*?)\}/);
+    const tutorial = src.match(/function showTutorial\(\)\s*\{([\s\S]*?)\}/);
     assert.ok(terms, '必须存在 showTerms');
     assert.ok(privacy, '必须存在 showPrivacy');
+    assert.ok(tutorial, '必须存在 showTutorial');
     assert.match(terms[1], /openBundledDoc\([\s\S]*?,\s*true\)/, 'showTerms 必须传 readOnlyFixed=true');
     assert.match(privacy[1], /openBundledDoc\([\s\S]*?,\s*true\)/, 'showPrivacy 必须传 readOnlyFixed=true');
+    assert.match(tutorial[1], /openBundledDoc\([\s\S]*?,\s*true\)/, 'showTutorial 必须传 readOnlyFixed=true');
 });
