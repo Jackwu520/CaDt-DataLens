@@ -32,13 +32,17 @@ export function createAISettingsIO(ctx, extras) {
     const invalidateSkillsCache = ctx.invalidateSkillsCache;
     const getConfig = ctx.getConfig;
 
-    function exportAIConfig() {
+    // scope: 'accounts' = 只导账号模型（profiles + genModels，供模型面板）；
+    //        'all'      = 导出整份 AI 配置（含其他面板设置，供 AI 助手面板）。
+    function exportAIConfig(scope) {
         const includeKeys = !!(opt.exportKeys && opt.exportKeys.checked);
         // 个性化含用户称呼 / 长期指令 / 人设正文，属个人内容：默认不导出，显式勾选才带
         const includePersona = !!(opt.exportPersona && opt.exportPersona.checked);
+        const all = scope !== 'accounts';
         const data = {
             version: 1,
             exportedAt: new Date().toISOString(),
+            scope: all ? 'all' : 'accounts',
             profiles: getConfig().profiles.map((profile) => ({
                 ...profile,
                 apiKey: includeKeys ? profile.apiKey : '',
@@ -50,6 +54,8 @@ export function createAISettingsIO(ctx, extras) {
                 ...entry,
                 apiKey: includeKeys ? entry.apiKey : '',
             })),
+        };
+        if (all) Object.assign(data, {
             prompts: getConfig().prompts.map((prompt) => ({
                 id: prompt.id,
                 name: prompt.name,
@@ -93,13 +99,14 @@ export function createAISettingsIO(ctx, extras) {
             askTimeout: getConfig().askTimeout,
             askTimeoutAction: getConfig().askTimeoutAction,
             idleTimeoutSec: getConfig().idleTimeoutSec,
-        };
+        });
         if (includePersona) data.persona = normalizePersona(getConfig().persona);
         const json = JSON.stringify(data, null, 2);
-        const defaultName = 'cadt-ai-getConfig().json';
+        const defaultName = all ? 'cadt-ai-config.json' : 'cadt-ai-accounts.json';
+        const title = all ? '导出 AI 配置' : '导出账号模型';
         const save = async () => {
             let path = '';
-            if (backend.ShowSaveFileDialog) path = await backend.ShowSaveFileDialog('导出 AI 配置', defaultName, '*.json');
+            if (backend.ShowSaveFileDialog) path = await backend.ShowSaveFileDialog(title, defaultName, '*.json');
             else if (backend.SaveFileDialog) path = await backend.SaveFileDialog(defaultName);
             else throw new Error('当前版本不支持保存对话框');
             if (!path) {
@@ -112,13 +119,16 @@ export function createAISettingsIO(ctx, extras) {
         save().catch((e) => flash('导出失败：' + ((e && e.message) || e), true));
     }
 
-    async function importAIConfig() {
+    // scope: 'accounts' = 只合并账号模型（供模型面板）；'all' = 合并整份 AI 配置。
+    // 两个入口都按 scope 决定合并范围，与文件里实际有哪些字段解耦，行为可预期。
+    async function importAIConfig(scope) {
+        const all = scope !== 'accounts';
         if (!backend.ShowOpenFileDialog) {
             flash('当前版本不支持导入对话框', true);
             return;
         }
         try {
-            const path = await backend.ShowOpenFileDialog('导入 AI 配置', '*.json');
+            const path = await backend.ShowOpenFileDialog(all ? '导入 AI 配置' : '导入账号模型', '*.json');
             if (!path) {
                 flash('已取消导入');
                 return;
@@ -145,7 +155,8 @@ export function createAISettingsIO(ctx, extras) {
                 }
                 importedProfiles++;
             }
-            for (const raw of Array.isArray(data.prompts) ? data.prompts : []) {
+            if (all) {
+                for (const raw of Array.isArray(data.prompts) ? data.prompts : []) {
                 if (!raw || !aiTextOf(raw.id) || !aiTextOf(raw.content).trim()) continue;
                 if (String(raw.id).startsWith('builtin-')) continue;
                 const existing = getConfig().prompts.find((item) => item.id === raw.id);
@@ -218,6 +229,7 @@ export function createAISettingsIO(ctx, extras) {
             if (data.persona && typeof data.persona === 'object') {
                 getConfig().persona = normalizePersona(data.persona);
             }
+            }
             // 生成条目：按 id 合并（同 id 空密钥不覆盖本地，与账号语义一致）
             let importedGenModels = 0;
             for (const raw of Array.isArray(data.genModels) ? data.genModels : []) {
@@ -234,21 +246,6 @@ export function createAISettingsIO(ctx, extras) {
                 importedGenModels++;
             }
             if (importedGenModels) extras.refreshSettingsPane();
-            for (const pathValue of Array.isArray(data.approvedPaths) ? data.approvedPaths : []) {
-                extras.aiAddUnique(getConfig().approvedPaths, pathValue);
-            }
-            for (const rootValue of Array.isArray(data.approvedReadRoots) ? data.approvedReadRoots : []) {
-                extras.aiAddUnique(getConfig().approvedReadRoots, rootValue);
-            }
-            for (const name of Array.isArray(data.disabledSkills) ? data.disabledSkills : []) {
-                extras.aiAddUnique(getConfig().disabledSkills, name);
-            }
-            for (const name of Array.isArray(data.hiddenSkills) ? data.hiddenSkills : []) {
-                extras.aiAddUnique(getConfig().hiddenSkills, name);
-            }
-            if (Number.isFinite(Number(data.skillIndexMaxUser))) {
-                getConfig().skillIndexMaxUser = aiClampInt(data.skillIndexMaxUser, 1, 100, 100);
-            }
             if (!getConfig().profiles.some((profile) => profile.id === getConfig().activeProfileId)) {
                 getConfig().activeProfileId = getConfig().profiles[0] ? getConfig().profiles[0].id : '';
             }
@@ -260,20 +257,37 @@ export function createAISettingsIO(ctx, extras) {
             } else {
                 getConfig().activeModelId = '';
             }
-            getConfig().autoClassifierModel = resolveModelRef(getConfig().autoClassifierModel, getConfig().profiles);
-            getConfig().subAgentModel = resolveModelRef(getConfig().subAgentModel, getConfig().profiles);
-            getConfig().subAgentModelChoices = subAgentModelChoicesFrom(
-                getConfig().subAgentModelChoices, getConfig().profiles).map((choice) => choice.ref).slice(0, 3);
+            if (all) {
+                for (const pathValue of Array.isArray(data.approvedPaths) ? data.approvedPaths : []) {
+                    extras.aiAddUnique(getConfig().approvedPaths, pathValue);
+                }
+                for (const rootValue of Array.isArray(data.approvedReadRoots) ? data.approvedReadRoots : []) {
+                    extras.aiAddUnique(getConfig().approvedReadRoots, rootValue);
+                }
+                for (const name of Array.isArray(data.disabledSkills) ? data.disabledSkills : []) {
+                    extras.aiAddUnique(getConfig().disabledSkills, name);
+                }
+                for (const name of Array.isArray(data.hiddenSkills) ? data.hiddenSkills : []) {
+                    extras.aiAddUnique(getConfig().hiddenSkills, name);
+                }
+                if (Number.isFinite(Number(data.skillIndexMaxUser))) {
+                    getConfig().skillIndexMaxUser = aiClampInt(data.skillIndexMaxUser, 1, 100, 100);
+                }
+                getConfig().autoClassifierModel = resolveModelRef(getConfig().autoClassifierModel, getConfig().profiles);
+                getConfig().subAgentModel = resolveModelRef(getConfig().subAgentModel, getConfig().profiles);
+                getConfig().subAgentModelChoices = subAgentModelChoicesFrom(
+                    getConfig().subAgentModelChoices, getConfig().profiles).map((choice) => choice.ref).slice(0, 3);
+                invalidateSkillsCache();
+                extras.refreshSettingsPane();
+                extras.refreshChatSettings();
+                extras.refreshPromptSettings();
+            }
             saveAIConfig();
-            invalidateSkillsCache();
-            extras.refreshSettingsPane();
-            extras.refreshChatSettings();
-            extras.refreshPromptSettings();
             renderProfileSelect();
             updateComposerState();
             extras.renderModelList();
             if (isOpen()) renderMessages(true);
-            extras.setSettingsStatus('已导入 ' + importedProfiles + ' 个模型账号', 'ok');
+            extras.setSettingsStatus('已导入 ' + importedProfiles + ' 个模型账号' + (all ? '及 AI 配置' : ''), 'ok');
         } catch (e) {
             flash('导入失败：' + ((e && e.message) || e), true);
         }
@@ -281,8 +295,12 @@ export function createAISettingsIO(ctx, extras) {
 
     // 账号级字段写入口（模型级字段走 extras.editorEntryOf + 各自 handler）
 
-return {
-        exportAIConfig,
-        importAIConfig,
+    return {
+        // 全量导出/导入（AI 助手面板）
+        exportAIConfig: () => exportAIConfig('all'),
+        importAIConfig: () => importAIConfig('all'),
+        // 仅账号模型导出/导入（模型面板）
+        exportAccountModels: () => exportAIConfig('accounts'),
+        importAccountModels: () => importAIConfig('accounts'),
     };
 }

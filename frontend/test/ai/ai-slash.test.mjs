@@ -7,6 +7,7 @@ import {
     filterSlashCommands,
     filterSlashSkills,
     findSkillBySlashToken,
+    slashSkillInvocation,
 } from '../../src/ai/ai-slash.js';
 
 const SKILLS = [
@@ -46,6 +47,19 @@ test('extractSlashArgs + filterSlashSkills 组合：带参技能调用的完整�
     assert.deepEqual(hit.map((s) => s.name), ['app-local-log']);
     const skill = hit[0];
     assert.equal(extractSlashArgs(typed, skill.name), '--list');
+});
+
+test('slashSkillInvocation：无参数只发 skill（空文案），带参数连原文一起发', () => {
+    // 无参数：立即发送但文案为空串，skill 正文随附件注入、空文案由 startSessionTurn 补占位
+    assert.deepEqual(slashSkillInvocation('/app-error-log', 'app-error-log'), {args: '', textToSend: ''});
+    assert.deepEqual(slashSkillInvocation('/APP-ERROR-LOG   ', 'app-error-log'), {args: '', textToSend: ''});
+    // 带参数：原文（含 /技能名）作为 textToSend
+    assert.deepEqual(slashSkillInvocation('/app-error-log 123', 'app-error-log'), {args: '123', textToSend: '/app-error-log 123'});
+    assert.deepEqual(slashSkillInvocation('/app-error-log --list 全部', 'app-error-log'),
+        {args: '--list 全部', textToSend: '/app-error-log --list 全部'});
+    // 首 token 不是该技能名 → 无参数（与其他命令文本边界一致）
+    assert.deepEqual(slashSkillInvocation('/compact 保住补丁库', 'app-error-log'), {args: '', textToSend: ''});
+    assert.deepEqual(slashSkillInvocation('', 'app-error-log'), {args: '', textToSend: ''});
 });
 
 test('findSkillBySlashToken：/技能名 精确命中（大小写不敏感、去前导 /），不命中返回 null', () => {

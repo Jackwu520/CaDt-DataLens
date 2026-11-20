@@ -3,7 +3,8 @@
 // 磁盘存储才有「复制会话路径」；普通对话不再出现一排灰掉的无关项。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {buildSessionMenuItems, buildWorkspaceMenuItems, aggregateSessionBadge, planPendingNeedsAttention} from '../../src/ai/ai-session-list.js';
+import {buildSessionMenuItems, buildWorkspaceMenuItems, aggregateSessionBadge, planPendingNeedsAttention, workspaceGroupExpanded} from '../../src/ai/ai-session-list.js';
+import {ICONS} from '../../src/core/icons.js';
 
 const baseEnv = {pendingNoticeCount: () => 0, diskStorage: true};
 const labelsOf = (items) => items.filter((item) => item.label).map((item) => item.label);
@@ -73,15 +74,37 @@ test('置顶与归档：标签切换、归档会话的置顶项禁用', () => {
     assert.ok(labelsOf(normal).includes('归档会话'));
 });
 
-test('结构不变量：删除会话恒在末尾且 danger；分隔线不夹空段', () => {
+test('结构不变量：删除会话恒在末尾且 danger；归档紧挨它上面；分隔线不夹空段', () => {
     const items = buildSessionMenuItems({id: 's6'}, baseEnv);
     const last = items[items.length - 1];
     assert.equal(last.label, '删除会话');
     assert.equal(last.danger, true);
+    // 归档紧挨删除上方（图 2 的底部布局：归档 → 永久删除）
+    assert.equal(items[items.length - 2].label, '归档会话');
     for (let i = 1; i < items.length; i++) {
         assert.ok(!(items[i].sep && items[i - 1].sep), '连续两条分隔线');
     }
     assert.equal(items[0].label, '新建会话');
+});
+
+test('归档/取消归档：已归档会话倒数第二项切成「取消归档」且用 unarchive 图标', () => {
+    const items = buildSessionMenuItems({id: 's9', archivedAt: 123}, baseEnv);
+    const archive = items[items.length - 2];
+    assert.equal(archive.label, '取消归档');
+    assert.equal(archive.icon, 'unarchive');
+    const normal = buildSessionMenuItems({id: 's9'}, baseEnv);
+    assert.equal(normal[normal.length - 2].icon, 'archive');
+});
+
+test('每个菜单项都有已注册的图标（菜单图标不缺、不拼错）', () => {
+    for (const session of [{id: 'a'}, {id: 'b', sideOf: 'a'}, {id: 'c', archivedAt: 1}]) {
+        const env = {pendingNoticeCount: () => 3, diskStorage: true};
+        for (const item of buildSessionMenuItems(session, env)) {
+            if (item.sep) continue;
+            assert.ok(item.icon, '菜单项缺 icon: ' + item.label);
+            assert.ok(ICONS[item.icon], '图标未注册: ' + item.icon + '（' + item.label + '）');
+        }
+    }
 });
 
 // 工作区分组头「⋯」菜单：有路径给完整工作区操作、无路径只给打开类、关闭仅当前工作区出现。
@@ -192,4 +215,27 @@ test('planPendingNeedsAttention：非 pending / 非计划模式 / 无计划 → 
     assert.equal(planPendingNeedsAttention(planSession({planMode: false}), false), false);
     assert.equal(planPendingNeedsAttention(planSession({activePlan: null}), false), false);
     assert.equal(planPendingNeedsAttention(null, false), false);
+});
+
+// 工作区分组默认展开：只展开当前工作区，其余收起；用户显式切换过则尊重其选择。
+const groupEnv = (currentKey, override = new Map(), firstKey = '') => ({override, currentKey: () => currentKey, firstKey});
+
+test('分组默认展开：当前工作区展开，其余收起', () => {
+    const env = groupEnv('ws-a', new Map(), 'ws-a');
+    assert.equal(workspaceGroupExpanded('ws-a', {current: true}, env), true, '当前工作区默认展开');
+    assert.equal(workspaceGroupExpanded('ws-b', {current: false}, env), false, '其他工作区默认收起');
+    assert.equal(workspaceGroupExpanded('', {current: false}, env), false, '未关联分组默认收起');
+});
+
+test('分组默认展开：未打开工作区时展开第一个分组', () => {
+    const env = groupEnv('', new Map(), 'ws-b');
+    assert.equal(workspaceGroupExpanded('ws-b', {current: false}, env), true, '第一个分组展开');
+    assert.equal(workspaceGroupExpanded('ws-c', {current: false}, env), false, '其余仍收起');
+});
+
+test('分组默认展开：显式切换覆盖默认（记住用户选择）', () => {
+    const override = new Map([['ws-b', true], ['ws-a', false]]);
+    const env = groupEnv('ws-a', override, 'ws-a');
+    assert.equal(workspaceGroupExpanded('ws-b', {current: false}, env), true, '手动展开的非当前分组保持展开');
+    assert.equal(workspaceGroupExpanded('ws-a', {current: true}, env), false, '手动收起的当前分组保持收起');
 });

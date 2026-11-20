@@ -2963,7 +2963,7 @@ aside[data-sidebar-view="chats"] #ai-sessions-panel { display: flex; flex: 1; mi
     border-radius: 6px;
     background: var(--panel2);
     color: var(--text);
-    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    font-family: var(--editor-font-family, ui-monospace, Consolas, monospace);
     font-size: 11.5px;
     line-height: 1.55;
     white-space: pre-wrap;
@@ -6394,6 +6394,17 @@ body.console-only .dbg-head select { --wails-draggable: no-drag; }
     white-space: pre-wrap;
     overflow-wrap: anywhere;
 }
+/* 结论型应用消息卡片的 Markdown 渲染视图：沿用 .ai-md 正文样式，约束高度与内边距 */
+.ai-app-msg-md {
+    max-height: 320px;
+    overflow: auto;
+    padding: 7px 9px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--panel);
+    font-size: 11px;
+}
+.ai-app-msg-view-toggle { margin-left: 0; }
 /* 稀疏信息行的中间轮空回复：整条压没（连续工具轮只剩工具卡之间的标准间距） */
 .ai-msg.assistant.turn-blank { display: none; }
 .ai-msg.assistant {
@@ -7205,6 +7216,9 @@ body.console-only .dbg-head select { --wails-draggable: no-drag; }
     max-height: min(58vh, 560px);
 }
 .ai-takeover.hidden { display: none; }
+/* 收起态：接管区只剩单行细条，输入框容器不必再占 96px 最小高度，
+   否则细条下方空出一大块圆角框（提问/审批/补丁卡共用 .ai-takeover-bar，统一在此收口）。 */
+.ai-composer:has(> #ai-takeover > .ai-takeover-bar) { min-height: 0; }
 .ai-takeover-card { display: flex; flex-direction: column; min-height: 0; gap: 8px; }
 /* 审批卡临时收起：头部收起按钮 + 收起态单行细条 */
 .ai-takeover-collapse {
@@ -8832,6 +8846,11 @@ body.console-only .dbg-head select { --wails-draggable: no-drag; }
     font-size: 10.5px;
     font-variant-numeric: tabular-nums;
 }
+/* 快超时（≤10 秒）：变红加粗提醒（不做闪烁动画）。展开态与收起态细条共用同一节点，故只按状态类走。 */
+.ai-ask-countdown.urgent {
+    color: var(--red);
+    font-weight: 600;
+}
 .ai-ask-result {
     margin-top: 8px;
     padding-top: 7px;
@@ -9322,6 +9341,52 @@ body.console-only .dbg-head select { --wails-draggable: no-drag; }
     background: color-mix(in srgb, var(--text) 10%, transparent);
 }
 .ai-ctx-banner-close svg { width: 12px; height: 12px; }
+
+/* 归档会话只读横幅：与 .ai-ctx-banner 同为堆叠区提醒条，琥珀色表示"当前不可写"。
+   带「取消归档」按钮就地给出出口，不必去会话菜单里翻。 */
+.ai-archived-banner {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    margin: 0 var(--ai-sbw, 12px) 8px 10px;
+    padding: 6px 8px 6px 11px;
+    border: 1px solid color-mix(in srgb, var(--warn) 50%, var(--border));
+    background: color-mix(in srgb, var(--warn) 11%, transparent);
+    border-radius: 9px;
+    font-size: 12px;
+}
+.ai-archived-banner.hidden { display: none; }
+.ai-archived-banner-icon {
+    flex: none;
+    width: 14px;
+    height: 14px;
+    color: var(--warn);
+}
+.ai-archived-banner span {
+    flex: 1;
+    min-width: 0;
+    color: var(--text);
+}
+.ai-archived-banner-btn {
+    flex: none;
+    padding: 3px 10px;
+    border: 1px solid color-mix(in srgb, var(--warn) 60%, var(--border));
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--warn) 18%, transparent);
+    color: var(--warn);
+    font: inherit;
+    font-size: 11.5px;
+    cursor: pointer;
+}
+.ai-archived-banner-btn:hover {
+    color: color-mix(in srgb, var(--warn) 85%, var(--text));
+    border-color: var(--warn);
+    background: color-mix(in srgb, var(--warn) 30%, transparent);
+}
+/* 归档只读态：输入框明确不可写，底栏模式 pill 置灰（发送按钮已由 updateSendState 禁用） */
+.ai-composer.is-archived .ai-input { opacity: .55; cursor: not-allowed; }
+.ai-composer.is-archived .ai-composer-bottom > .ai-pill { opacity: .5; pointer-events: none; }
 .ai-dialog {
     position: absolute;
     inset: 0;
@@ -11248,6 +11313,65 @@ html[data-writing="on"][data-writing-paper="dim"] .jsoneditor textarea.jsonedito
 }
 /* 子代理提问（需要用户拍板）：橙色提醒，与 agents 弹层 waiting 同色系 */
 .ai-queue-pop-badge.is-ask { background: color-mix(in srgb, var(--orange) 18%, transparent); color: var(--orange); }
+/* 信箱弹层行（kind=mailbox）：两行布局——meta（会话名 + 类别徽标）独占上行，
+   摘要占满整行宽度，避免长命令被会话名徽标挤成窄列竖排。与共用 .ai-chips-row 分开，
+   不影响计时器 / 定时任务 / 智能体树。 */
+.ai-mailbox-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    padding: 7px 8px;
+    border: none;
+    border-radius: 6px;
+    background: none;
+    color: var(--text);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+.ai-mailbox-row:hover { background: var(--hover); }
+.ai-mailbox-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.ai-mailbox-meta { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.ai-mailbox-session {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 10.5px;
+    font-weight: 600;
+    color: var(--muted);
+}
+.ai-mailbox-kind {
+    flex: none;
+    padding: 0 6px;
+    border-radius: 999px;
+    background: var(--accent-weak);
+    color: var(--accent);
+    font-size: 9px;
+    line-height: 15px;
+    white-space: nowrap;
+}
+.ai-mailbox-text {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow: hidden;
+    font-size: 11px;
+    line-height: 1.5;
+    color: var(--text);
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+.ai-mailbox-row .ai-chips-go { align-self: center; }
+/* 类别配色：待拍板 / 工作区防护 / 错误 = 橙红警示，后台作业 = 低调中性 */
+.ai-mailbox-subagent-ask .ai-mailbox-kind,
+.ai-mailbox-wipeguard .ai-mailbox-kind { background: color-mix(in srgb, var(--orange) 20%, transparent); color: var(--orange); }
+.ai-mailbox-error .ai-mailbox-kind { background: color-mix(in srgb, var(--red) 18%, transparent); color: var(--red); }
+.ai-mailbox-bgjob .ai-mailbox-kind,
+.ai-mailbox-bgterm .ai-mailbox-kind { background: color-mix(in srgb, var(--muted) 16%, transparent); color: var(--muted); }
 /* 智能体团队：嵌套树（缩进 + 竖线 rail）。基础 .ai-chips-row 与计时器 / 定时任务共用，
    树形样式只挂 .ai-agent-tree-row 等新类，不改基础规则。 */
 .ai-agent-tree-row {
@@ -14237,3 +14361,9 @@ html[data-theme="light"] {
 .us-log-page-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
 .us-log-page-btn:disabled { opacity: 0.35; cursor: default; }
 .us-log-page { min-width: 56px; text-align: center; font-variant-numeric: tabular-nums; color: var(--text); }
+
+/* 全局隐藏兜底：本项目历史上逐类配 .xxx.hidden，新增组件常漏配导致隐藏失效。
+   放文件末尾（同特异性后写赢，压过前面所有普通 display 声明）；不加 !important，
+   保留内联 style.display 与既有 !important 显示逻辑的优先级。已有的 .xxx.hidden 规则
+   特异性更高，行为不变，无需删除。 */
+.hidden { display: none; }

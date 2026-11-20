@@ -9,9 +9,7 @@
 //   再放进 Shadow DOM：样式不外泄、主界面不受影响，脚本也不会执行。
 // - 卡片内的链接由外层拦截后交给系统浏览器，其它导航一律阻止。
 import DOMPurify from 'dompurify';
-import {SHADOW_STYLE, VISUAL_BUDGET, svgSanitizeConfig} from './visual-spec.js';
-
-const WIDGET_LANGS = new Set(['svg', 'html', 'htm', 'mermaid', 'echarts', 'chart', 'graph', 'wordcloud']);
+import {SHADOW_STYLE, VISUAL_BUDGET, WIDGET_LANGS, svgSanitizeConfig} from './visual-spec.js';
 // 限额与 Shadow 基础样式来自 core/visual-spec.js（规范单一来源，代码与提示词共用一份预算）。
 const MAX_WIDGET_CHARS = VISUAL_BUDGET.maxWidgetChars;
 const MAX_WIDGETS_PER_MESSAGE = VISUAL_BUDGET.maxPerMessage;
@@ -62,6 +60,16 @@ export function widgetCacheKey(lang, code) {
     let hash = 5381;
     for (let i = 0; i < text.length; i++) hash = ((hash << 5) + hash + text.charCodeAt(i)) | 0;
     return String(lang) + ':' + text.length + ':' + (hash >>> 0).toString(36);
+}
+
+// 可视化卡片「全屏」：把渲染后的静态 SVG 编成可独立加载的 data URL。
+// 抽成纯函数给 node 测试覆盖；裸片段补 xmlns，否则 <img> 里的 SVG 无法独立解析。
+export function svgToDataUrl(svg) {
+    const text = String(svg == null ? '' : svg);
+    const doc = /<svg[\s>]/i.test(text) && /xmlns=/i.test(text)
+        ? text
+        : text.replace(/<svg(\s|>)/i, '<svg xmlns="http://www.w3.org/2000/svg"$1');
+    return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(doc);
 }
 
 // 占位 HTML：由 markdown.js 的 fence 规则插入，增强阶段再从 .ai-widget-src 读回源码。
@@ -202,6 +210,37 @@ function fitTinySvg(shadow) {
     svg.style.setProperty('margin', '12px auto', 'important');
 }
 
+// ---- 竖向长图兜底 ----
+// SHADOW_STYLE 的 svg{max-height:520px} 对横向图无害（按宽度缩放后本就矮），
+// 但 mermaid TD 这类竖向长图会被压成 520px 窄条、节点文字缩到看不清。
+// 高/宽超过阈值时取消 max-height，让图按宽度完整铺开，由 .ai-widget-body 的
+// overflow:auto 承载滚动。横向图与正常比例的图完全不碰。
+const TALL_SVG_RATIO = 1.2;
+
+// 纯函数：viewBox 高/宽是否超过阈值。抽出来给 node 测试覆盖。
+export function tallSvgNeedsUncap(viewBox) {
+    const parts = String(viewBox || '').trim().split(/[\s,]+/);
+    if (parts.length !== 4) return false;
+    const nums = parts.map(Number);
+    if (nums.some((n) => !Number.isFinite(n))) return false;
+    const vw = nums[2];
+    const vh = nums[3];
+    if (!(vw > 0 && vh > 0)) return false;
+    return vh / vw > TALL_SVG_RATIO;
+}
+
+// 应用在已清洗的 shadow DOM 上：只覆盖 max-height，不引入任何 url / 表达式。
+// 作者显式写了高度/max-height 的视为自管，直接跳过。
+function fitTallSvg(shadow) {
+    const svg = shadow && shadow.querySelector ? shadow.querySelector('svg') : null;
+    if (!svg) return;
+    const inline = svg.style;
+    if (inline && (hasDeclaredSize(inline.height) || hasDeclaredSize(inline.maxHeight))) return;
+    if (!tallSvgNeedsUncap(svg.getAttribute('viewBox'))) return;
+    svg.style.setProperty('max-height', 'none', 'important');
+    svg.style.setProperty('height', 'auto', 'important');
+}
+
 // fillShadow 只负责填充内容；主题重渲染（异步卡片）会重复调用，不改监听器。
 function fillShadow(host, code, lang) {
     const shadow = ensureShadow(host);
@@ -210,8 +249,11 @@ function fillShadow(host, code, lang) {
     const extracted = extractWidgetCss(lang === 'html' ? preserveLocalImageSrc(code) : code);
     shadow.innerHTML = '<style>' + SHADOW_STYLE + extracted.css + '</style>' +
         sanitizeWidgetHtml(extracted.code, lang);
-    // 异步引擎产物也走这条（lang 传 'svg'），但它们的 viewBox 是 680 宽，不会命中。
-    if (lang === 'svg') fitTinySvg(shadow);
+    // 异步引擎产物也走这条（lang 传 'svg'），但它们的 viewBox 是 680 宽，小图标兜底不会命中。
+    if (lang === 'svg') {
+        fitTinySvg(shadow);
+        fitTallSvg(shadow);
+    }
 }
 
 function mountShadow(host, code, lang, opts) {
@@ -259,6 +301,21 @@ function mountCard(node, lang, kind, code, opts) {
         if (typeof opts.copyText === 'function') opts.copyText(code, LANG_LABELS[lang] || String(lang).toUpperCase());
     });
     actions.append(srcButton, copyButton);
+    // 全屏：复用图片灯箱看大图（滚轮缩放 / 拖拽平移）。只有 SVG 类卡片能进——
+    // 异步引擎产物（mermaid / echarts / graph / wordcloud）取渲染后的静态 SVG，svg 卡取源码；
+    // html 卡不是一张图，不显示这个按钮。
+    const isSvgLike = !!ASYNC_RENDERERS[lang] || lang === 'svg';
+    if (isSvgLike && typeof opts.openFullscreen === 'function') {
+        const fullButton = widgetButton('全屏', '在灯箱中放大查看', () => {
+            const svg = ASYNC_RENDERERS[lang] ? (asyncSvg.get(node) || '') : code;
+            if (!svg) {
+                if (typeof opts.fullscreenPending === 'function') opts.fullscreenPending();
+                return;
+            }
+            opts.openFullscreen(svg, (LANG_LABELS[lang] || 'SVG') + ' · ' + (KIND_LABELS[kind] || '图示'));
+        });
+        actions.append(fullButton);
+    }
     // 另存为：异步卡片导出渲染后的 SVG（源码只是文本 / JSON，离线打不开），svg / html 卡导源码。
     if (typeof opts.saveAs === 'function') {
         const saveButton = widgetButton('另存为', '保存到工作区 .cadt/answers/', () => {

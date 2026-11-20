@@ -208,6 +208,8 @@ function formatSteerMessage(text) {
 - 本轮是**停止/抢占** → 全部丢弃（`clearSteerInputs`，reason `turn_cancelled`；与「用户放弃当前任务」一致）
 - 本轮是**自然结束** → 降级为 `delivery: 'queue'`，由现有 `shouldFlush` 冲刷（不会丢消息，也不需要额外的续轮路径）
 
+**「抢占单条」与「停止整轮」的区分**（2026-11-22 bug 修复）：`stopGeneration` / `finishStream` 的 `clearSteer` 是「放弃当前任务」语义，会把本会话**所有** pending steer 一起清掉——这对「用户点停止按钮」是对的，但对「抢占队列里的某一条消息」是错的：抢占的意图只是「让这一条立即发出」，其它排队/插话消息必须保留。因此抢占路径（`preemptQueuedItem` 队列行 ⚡、`preemptComposerMessage` 的 Ctrl+Shift+Enter）在调用 `stopGeneration` **之前**先执行 `model.fallbackSteerToQueue(sessionId)`，把本会话其它 steer 降级为 `queue`（被抢占的那条已改投 `queue`，不受影响）。这样 `clearSteer` 清不到它们，它们会在被抢占的那条发出后按 FIFO 依次冲刷。否则「输入两条插话 → 抢占其中一条」会导致另一条凭空消失。
+
 **内容限制**：生成中 Ctrl+Enter 的消息若带 `kind: 'file'` 附件，直接按排队处理并 `flash`「文件附件将随下一轮发送」——steer 的第一版不做轮中 `<attachments>` 环境块重组。
 
 ### 4.6 UI 渲染

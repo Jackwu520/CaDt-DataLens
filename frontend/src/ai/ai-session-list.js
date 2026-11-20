@@ -70,29 +70,44 @@ export function orderSessionsWithSides(list) {
     return out;
 }
 
+// 工作区分组默认展开判定（纯函数，配 ai-session-list.test.mjs）：
+// - 用户手动切换过该分组（override 有布尔值）→ 尊重显式选择；
+// - 否则默认只展开当前工作区，其余收起；
+// - 未打开工作区（currentKey 为空）时展开第一个分组，避免所有会话都藏在收起的分组里。
+export function workspaceGroupExpanded(key, group, env) {
+    const override = env && env.override && typeof env.override.get === 'function'
+        ? env.override.get(key) : undefined;
+    if (typeof override === 'boolean') return override;
+    const currentKey = typeof env.currentKey === 'function' ? env.currentKey() : (env && env.currentKey) || '';
+    if (currentKey) return !!(group && group.current);
+    return key === (env && env.firstKey);
+}
+
 // 会话右键菜单项组装（纯函数，配 ai-session-list.test.mjs）：act 是符号动作键，
 // showSessionMenu 负责映射成真实闭包。显隐规则——不适用的项直接不出现：
 // 支线才有「提升为独立会话」、信箱有积压才有「清空信箱」、
 // 磁盘存储才有「复制会话路径」（内存/legacy 模式没有磁盘路径可复制）。
 export function buildSessionMenuItems(session, env) {
     const pending = Math.max(0, Number(env.pendingNoticeCount(session.id)) || 0);
+    const archived = !!session.archivedAt;
     const items = [
-        {label: '新建会话', act: 'new'},
-        {label: '新建支线对话', act: 'newSide'},
+        {label: '新建会话', icon: 'plus', act: 'new'},
+        {label: '新建支线对话', icon: 'sidechat', act: 'newSide'},
         {sep: true},
-        {label: session.pinned ? '取消置顶' : '置顶会话', disabled: !!session.archivedAt, act: 'togglePin'},
-        {label: '重命名会话…', act: 'rename'},
-        {label: '导出会话…', act: 'export'},
-        {label: '会话数据诊断…', act: 'diagnostics'},
+        {label: session.pinned ? '取消置顶' : '置顶会话', icon: 'pin', disabled: archived, act: 'togglePin'},
+        {label: '重命名会话…', icon: 'rename', act: 'rename'},
+        {label: '导出会话…', icon: 'export', act: 'export'},
+        {label: '会话数据诊断…', icon: 'chart', act: 'diagnostics'},
     ];
-    if (session.sideOf) items.push({label: '提升为独立会话', act: 'promote'});
-    if (pending > 0) items.push({label: '清空信箱（' + pending + ' 条）', act: 'clearMailbox'});
-    items.push({label: session.archivedAt ? '取消归档' : '归档会话', act: 'archive'});
+    if (session.sideOf) items.push({label: '提升为独立会话', icon: 'new-window', act: 'promote'});
+    if (pending > 0) items.push({label: '清空信箱（' + pending + ' 条）', icon: 'eraser', act: 'clearMailbox'});
     items.push({sep: true});
-    items.push({label: '复制会话ID', act: 'copyId'});
-    if (env.diskStorage) items.push({label: '复制会话路径', act: 'copyPath'});
+    items.push({label: '复制会话ID', icon: 'copy', act: 'copyId'});
+    if (env.diskStorage) items.push({label: '复制会话路径', icon: 'folder', act: 'copyPath'});
+    // 归档紧挨删除、放在它上面（对齐图 2 的底部布局：归档 → 永久删除）
     items.push({sep: true});
-    items.push({label: '删除会话', danger: true, act: 'remove'});
+    items.push({label: archived ? '取消归档' : '归档会话', icon: archived ? 'unarchive' : 'archive', act: 'archive'});
+    items.push({label: '删除会话', icon: 'trash', danger: true, act: 'remove'});
     return items;
 }
 
@@ -187,7 +202,9 @@ export function createAISessionList(ctx) {
 
     // —— 随域迁入的列表状态（原 ai-panel.js 闭包级）；会话搜索框已删（并入全局搜索的「AI 会话」分类）——
     let archivedExpanded = false;
-    const collapsedWorkspaceGroups = new Set();
+    // 用户显式切换过的分组展开状态：key → boolean。无记录的分组走默认判定
+    //（只展开当前工作区，其余收起，见 workspaceGroupExpanded），切换后记住选择。
+    const workspaceGroupOverrides = new Map();
     // 每个工作区分组一次只渲染最近 AI_SESSION_GROUP_PAGE 条会话，点分组底部的「···」再追加一页。
     // key = 列表类型 + 工作区 key，进行中与已归档互不影响；只是渲染层的展开状态，不动会话数据。
     const AI_SESSION_GROUP_PAGE = 10;
@@ -473,9 +490,16 @@ export function createAISessionList(ctx) {
         const renderWorkspaceGroups = (list, archived, collapsible) => {
             const groups = buildWorkspaceGroups(list);
             const showHeaders = groups.length > 1 || !!(groups[0] && groups[0].path);
+            const firstKey = groups.length ? groups[0].key : '';
+            const groupEnv = {
+                override: workspaceGroupOverrides,
+                currentKey: () => aiWorkspaceKey(currentWorkspacePath()),
+                firstKey,
+            };
             for (const group of groups) {
                 if (showHeaders) {
-                    const collapsed = collapsible && collapsedWorkspaceGroups.has(group.key);
+                    const expanded = workspaceGroupExpanded(group.key, group, groupEnv);
+                    const collapsed = collapsible && !expanded;
                     // 用 div 承载：头部内含两个真实 button，避免 button 嵌套 button 的非法结构。
                     const head = document.createElement('div');
                     head.className = 'ai-session-group-head' + (group.current ? ' current' : '') + (collapsed ? '' : ' expanded');
@@ -504,7 +528,7 @@ export function createAISessionList(ctx) {
                     add.innerHTML = iconSvg('plus', 12);
                     add.addEventListener('click', (e) => {
                         e.stopPropagation();
-                        collapsedWorkspaceGroups.delete(group.key);
+                        workspaceGroupOverrides.set(group.key, true);
                         ensureOpen();
                         newSessionInWorkspace(group);
                         renderSessionList();
@@ -524,8 +548,7 @@ export function createAISessionList(ctx) {
                     head.append(chev, icon, name, actions);
                     if (collapsible) {
                         const toggle = () => {
-                            if (collapsedWorkspaceGroups.has(group.key)) collapsedWorkspaceGroups.delete(group.key);
-                            else collapsedWorkspaceGroups.add(group.key);
+                            workspaceGroupOverrides.set(group.key, !workspaceGroupExpanded(group.key, group, groupEnv));
                             renderSessionList();
                         };
                         head.addEventListener('click', toggle);
@@ -688,7 +711,7 @@ export function createAISessionList(ctx) {
             },
             openNewWindow: () => { if (path && workspaceMenuHost.openNewWindow) workspaceMenuHost.openNewWindow(path); },
             newSession: () => {
-                collapsedWorkspaceGroups.delete(group.key);
+                workspaceGroupOverrides.set(group.key, true);
                 ensureOpen();
                 newSessionInWorkspace(group);
                 renderSessionList();

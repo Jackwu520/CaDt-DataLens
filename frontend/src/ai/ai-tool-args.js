@@ -2,6 +2,28 @@
 // 模型偶发在参数末尾多写一个 } 或截断，非法文本一旦进入会话历史，
 // 之后每一轮请求都会被后端校验拒收，所以存储与发送两端都要过这一层。
 import {repairJson} from '../core/jsonrepair.js';
+import {WIDGET_LANGS} from '../core/visual-spec.js';
+
+// 识别「可视化围栏语言被误发成工具名」：模型偶尔把 ```svg / ```mermaid / ```graph
+// 等正文围栏标记当成 function_call 的名字发出去（截图里还见过 svg</arg_value:xxx> 这种
+// 序列化噪声混进名字）。返回命中的规范围栏语言，否则返回 null。
+// 只在工具白名单拒绝的分支调用，即使误判也只是换一条提示文案，不影响任何执行。
+export function detectFenceToolMisuse(name) {
+    const raw = String(name == null ? '' : name).trim();
+    if (!raw) return null;
+    // 取开头的语言标记，忽略后面混入的序列化噪声（如 </arg_value:…>）。
+    const m = raw.match(/^[A-Za-z][A-Za-z0-9]*/);
+    if (!m) return null;
+    const token = m[0].toLowerCase();
+    return WIDGET_LANGS.has(token) ? token : null;
+}
+
+// 围栏误用的针对性纠错文案：明确告诉模型可视化走正文围栏、不是工具调用。
+export function fenceToolMisuseMessage(lang) {
+    return '「' + lang + '」是正文代码围栏的语言标记，不是可调用工具。' +
+        '可视化内容请直接写在回复正文的 ```' + lang + ' 围栏代码块里，应用会把它渲染成卡片；' +
+        '不要作为工具调用发出。';
+}
 
 function parseObject(text) {
     if (!text) return null;

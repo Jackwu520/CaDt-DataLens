@@ -48,8 +48,9 @@ test('buildLaneSvg 分叉：关系行的反斜线从主线跨 2 格到下一泳�
     // 主线：组内两行竖线 (0..13, 13..26) 相接成满行
     assert.ok(svg.includes(`M${glyphX(0)},0 L${glyphX(0)},13`), '提交行主线竖线');
     assert.ok(svg.includes(`M${glyphX(0)},13 L${glyphX(0)},26`), '关系行主线竖线');
-    // 分叉斜线：贝塞尔从 glyphX(0),13 到 glyphX(2),26（跨 2 格，下一行 pos2 相接）
-    assert.ok(svg.includes(`M${glyphX(0)},13 C`) && svg.includes(`${glyphX(2)},26`), '分叉斜线应为贝塞尔并跨 2 格落到 lane1');
+    // 分叉斜线：直线从 glyphX(0),13 到 glyphX(2),26（跨 2 格，下一行 pos2 相接）。
+    // 用直线而非 S 形贝塞尔：贝塞尔把横移压在行首形成台阶/凹陷（作者反馈「凹进去一块」）。
+    assert.ok(svg.includes(`M${glyphX(0)},13 L${glyphX(2)},26`), '分叉斜线应为直线并跨 2 格落到 lane1');
     // 分支圆点在 x=glyphX(2)、组顶 + 行中（gh=26）
     assert.ok(svg.includes(`cx="${glyphX(2)}"`), '分支圆点 x 应在 lane1');
 });
@@ -64,7 +65,7 @@ test('buildLaneSvg 汇入：斜杠与横线字形按映射画段', () => {
         {sha: 'm', dotPos: 0, dotFlow: 1, rows: 1, glyphs: [{r: 0, p: 0, c: '*', f: 1}]},
     ];
     const svg = buildLaneSvg(commits, 2);
-    assert.ok(svg.includes(`M${glyphX(2)},13 C`) && svg.includes(`${glyphX(0)},26`), '汇入斜线应为贝塞尔并落到主线泳道底');
+    assert.ok(svg.includes(`M${glyphX(2)},13 L${glyphX(0)},26`), '汇入斜线应为直线并落到主线泳道底');
 });
 
 test('buildLaneSvg 缺省 glyphs 只画圆点（容错）', () => {

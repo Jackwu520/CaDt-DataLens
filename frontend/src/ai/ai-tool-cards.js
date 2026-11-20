@@ -150,6 +150,8 @@ export function createAIToolCards(ctx) {
     const renderMarkdown = ctx.renderMarkdown;
     const renderMermaidBlocks = ctx.renderMermaidBlocks;
     const openExternal = ctx.openExternal;
+    // 可视化卡片「全屏」：复用 AI 面板图片灯箱放大 SVG（经 ai-panel 注入）
+    const openWidgetFullscreen = typeof ctx.openWidgetFullscreen === 'function' ? ctx.openWidgetFullscreen : null;
     // 打开文件并跳行（main.js 的 openTargets，经 ai-panel 透传）：read_file 卡路径超链接用
     const openTargets = typeof ctx.openTargets === 'function' ? ctx.openTargets : null;
     // submit_plan 工具卡「查看计划」：已批准开 .cadt/plan/ 的真文件，未批准开虚拟只读预览
@@ -1348,6 +1350,7 @@ export function createAIToolCards(ctx) {
             openExternal,
             saveAs: saveWidgetAs,
             resolveImages: resolveAIImages,
+            openFullscreen: openWidgetFullscreen,
         });
     }
 
@@ -1706,6 +1709,7 @@ export function createAIToolCards(ctx) {
                         openExternal,
                         saveAs: saveWidgetAs,
                         resolveImages: resolveAIImages,
+                        openFullscreen: openWidgetFullscreen,
                     });
                 } else if (streaming) {
                     md.innerHTML = '<div class="ai-typing"><span></span><span></span><span></span></div>';

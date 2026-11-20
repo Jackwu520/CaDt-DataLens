@@ -3910,8 +3910,9 @@ function initAIPanel() {
         runAppAction,
         hostAppActions: () => APP_ACTIONS,
         // AI 会话开始预指令（shell/lifecycle-hooks.js）：空会话首轮流起轮前 await 执行
-        // session-start 条目；失败不阻塞起轮（ai-panel 侧另有 try/catch 双保险）
-        lifecycleAIStart: (ws) => lifecycleHooksCtl.runForAISessionStart(ws),
+        // session-start 条目；失败不阻塞起轮（ai-panel 侧另有 try/catch 双保险）。
+        // onWillRun 由控制器在确有条目要跑时回调，ai-panel 用它闪阻塞期提示
+        lifecycleAIStart: (ws, onWillRun) => lifecycleHooksCtl.runForAISessionStart(ws, onWillRun),
         // 9 事件通用钩子（工具级按 matchTools 过滤、阻塞型 await）：workspace 由调用方
         // 传会话归属，缺省用当前窗口工作区；main.js 只透传，执行与审批全在控制器
         lifecycleEvent: (event, toolName, ws) => lifecycleHooksCtl.runForEvent(
@@ -5403,7 +5404,7 @@ const appLinks = createAppLinks({
     get openVirtualDoc() { return openVirtualDoc; },
     get rt() { return rt; },
 });
-const {appFeedbackUrl, appReleasesUrl, openBundledDoc, openDevTools, openExternalUrl, showChangelog, showPrivacy, showTerms} = appLinks;
+const {appFeedbackUrl, appReleasesUrl, openBundledDoc, openDevTools, openExternalUrl, showChangelog, showPrivacy, showTerms, showTutorial} = appLinks;
 const updateCheck = createUpdateCheck({
     get appReleasesUrl() { return appReleasesUrl; },
     get backend() { return backend; },
@@ -5786,6 +5787,7 @@ function menuItems(kind) {
             const items = [
                 {label: '检查更新…', icon: 'E895', action: checkForUpdates},
                 {label: '更新日志', icon: 'E8A5', action: showChangelog},
+                {label: '教程', icon: 'E8A5', action: showTutorial},
                 {label: '反馈', icon: 'E939', action: () => openExternalUrl(appFeedbackUrl)},
                 {sep: true},
                 {label: '用户协议', icon: 'E8A5', action: showTerms},

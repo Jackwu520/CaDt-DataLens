@@ -14,6 +14,7 @@ import {
     isSilentInjection,
     isTurnBoundaryMessage,
     sessionTurnStartTs,
+    sessionEndTs,
     sessionActivityTs,
     buildSessionMeta,
     messageFingerprint,
@@ -722,7 +723,7 @@ test('sessionTurnStartTs：轮中的信箱 notice 有 turnStartedAt 也不推进
         {role: 'assistant', content: '重新派单', ts: 3100},
     ]};
     assert.equal(sessionTurnStartTs(session), 1000, '通知到达时刻不能顶替用户发问时刻');
-    // 会话列表时间同源：列表不该跳到通知时刻
+    // 会话列表时间同源：列表不该跳到通知时刻（无 finishedAt，回落发问时间）
     assert.equal(sessionActivityTs(session), 1000);
 });
 
@@ -736,7 +737,7 @@ test('sessionTurnStartTs：老数据回落到用户消息 ts，没有用户消�
     assert.equal(sessionTurnStartTs(undefined), 0);
 });
 
-test('sessionActivityTs 在占位与已载体两种形态下给出同一个轮次起点', () => {
+test('sessionActivityTs 在占位与已载体两种形态下给出同一时间键', () => {
     const live = {
         createdAt: 100,
         updatedAt: 900,
@@ -747,7 +748,8 @@ test('sessionActivityTs 在占位与已载体两种形态下给出同一个轮�
     };
     const meta = buildSessionMeta(live);
     assert.equal(meta.turnTs, 700, 'meta 要缓存轮次起点，占位阶段才有的可读');
-    const stub = {_stub: true, _turnTs: meta.turnTs, _msgCount: 2, createdAt: 100, updatedAt: 900, messages: []};
+    assert.equal(meta.endTs, 0, '没有 finishedAt 时结束时间为 0');
+    const stub = {_stub: true, _turnTs: meta.turnTs, _endTs: meta.endTs, _msgCount: 2, createdAt: 100, updatedAt: 900, messages: []};
     assert.equal(sessionActivityTs(stub), 700);
     assert.equal(sessionActivityTs(live), 700, '补水后不能跳到最后一条消息的 800');
     assert.equal(sessionActivityTs(stub), sessionActivityTs(live), '补水前后不跳位');
@@ -758,6 +760,82 @@ test('sessionActivityTs：正文里没有用户回合时回落到写入时间', 
     assert.equal(sessionActivityTs({createdAt: 100, updatedAt: 0, messages: []}), 100);
     assert.equal(sessionActivityTs({_stub: true, _turnTs: 0, createdAt: 100, updatedAt: 900, messages: []}), 900, '老 meta 没有 turnTs 时占位仍按 updatedAt');
     assert.equal(sessionActivityTs(null), 0);
+});
+
+// ---- 会话列表排序口径：opencode 模式（2026-11-22 定）----
+// 取 max(最近一轮结束时间 finishedAt, 最近发问时间 turnStartedAt)：
+// 运行中冻结（工具/流式不推进），一轮结束才前移，用户发新一轮按发问时刻前移。
+test('sessionEndTs：只认已收尾 assistant 的 finishedAt，运行中流式回复不算', () => {
+    const streaming = {messages: [
+        {role: 'user', content: 'q', ts: 1000, turnStartedAt: 1000},
+        {role: 'assistant', content: '正在写', ts: 1500, status: 'streaming'},
+    ]};
+    assert.equal(sessionEndTs(streaming), 0, '流式回复没有 finishedAt，不能当结束时间');
+
+    const done = {messages: [
+        {role: 'user', content: 'q', ts: 1000, turnStartedAt: 1000},
+        {role: 'tool', content: '结果', ts: 1200},
+        {role: 'assistant', content: '完成', ts: 1800, status: 'done', finishedAt: 1800},
+    ]};
+    assert.equal(sessionEndTs(done), 1800);
+    // 取最后一条已收尾回复（多轮场景）
+    const multi = {messages: [
+        {role: 'user', content: 'q1', ts: 1000, turnStartedAt: 1000},
+        {role: 'assistant', content: 'a1', status: 'done', finishedAt: 1500},
+        {role: 'user', content: 'q2', ts: 2000, turnStartedAt: 2000},
+        {role: 'assistant', content: 'a2', status: 'done', finishedAt: 2600},
+    ]};
+    assert.equal(sessionEndTs(multi), 2600);
+    assert.equal(sessionEndTs({messages: []}), 0);
+    assert.equal(sessionEndTs(undefined), 0);
+});
+
+test('sessionActivityTs：运行中冻结——工具与流式输出不推进时间', () => {
+    const session = {messages: [
+        {role: 'user', content: 'q', ts: 1000, turnStartedAt: 1000},
+        {role: 'tool', content: '结果', ts: 1500},
+        {role: 'tool', content: '又一个结果', ts: 2000},
+        {role: 'assistant', content: '还在写', ts: 2500, status: 'streaming'},
+    ]};
+    assert.equal(sessionActivityTs(session), 1000, '没有 finishedAt 时停在发问时刻，工具刷屏不顶列表');
+});
+
+test('sessionActivityTs：一轮结束后按 finishedAt 前移，刚结束的会话排前面', () => {
+    const session = {messages: [
+        {role: 'user', content: 'q', ts: 1000, turnStartedAt: 1000},
+        {role: 'tool', content: '结果', ts: 1500},
+        {role: 'assistant', content: '完成', ts: 5000, status: 'done', finishedAt: 5000},
+    ]};
+    assert.equal(sessionActivityTs(session), 5000, '结束时间晚于发问时间，取结束时间');
+    // 与另一个更晚发问但更早结束的会话比较：结束时间决定排序
+    const other = {messages: [
+        {role: 'user', content: 'q2', ts: 3000, turnStartedAt: 3000},
+        {role: 'assistant', content: 'done', ts: 4000, status: 'done', finishedAt: 4000},
+    ]};
+    assert.ok(sessionActivityTs(session) > sessionActivityTs(other), '刚结束的长会话应排在前面');
+});
+
+test('sessionActivityTs：用户发新一轮按发问时刻前移（max 口径）', () => {
+    const session = {messages: [
+        {role: 'user', content: 'q1', ts: 1000, turnStartedAt: 1000},
+        {role: 'assistant', content: 'a1', status: 'done', finishedAt: 6000},
+        {role: 'user', content: 'q2', ts: 9000, turnStartedAt: 9000},
+        {role: 'assistant', content: '还在写', status: 'streaming'},
+    ]};
+    assert.equal(sessionActivityTs(session), 9000, '新一轮发问时刻晚于上轮结束，取发问时刻');
+});
+
+test('buildSessionMeta 的 endTs：占位沿用缓存，已载体现算，老数据回落 0', () => {
+    const live = {messages: [
+        {role: 'user', content: 'q', ts: 1000, turnStartedAt: 1000},
+        {role: 'assistant', content: 'a', status: 'done', finishedAt: 1800},
+    ]};
+    assert.equal(buildSessionMeta(live).endTs, 1800);
+    assert.equal(buildSessionMeta({_stub: true, _endTs: 777, messages: []}).endTs, 777);
+    assert.equal(buildSessionMeta({_stub: true, messages: []}).endTs, 0);
+    // 占位排序：endTs 优先于 turnTs
+    const stub = {_stub: true, _turnTs: 1000, _endTs: 1800, createdAt: 100, updatedAt: 900};
+    assert.equal(sessionActivityTs(stub), 1800);
 });
 
 test('buildSessionMeta 的 turnTs：占位沿用缓存，不把现算出来的 0 写回盘', () => {

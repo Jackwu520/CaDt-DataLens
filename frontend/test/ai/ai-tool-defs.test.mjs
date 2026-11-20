@@ -291,3 +291,12 @@ test('write_worklog：标题只写索引里那一句，细节留给 summary', ()
     assert.ok(def.parameters.required.includes('title') && !def.parameters.required.includes('summary'),
         '标题必填、摘要可选');
 });
+
+test('任务提醒与任务清单：描述里互相写清分工，避免把拆步塞进提醒', () => {
+    assert.match(AI_TOOL_DEFS.reminder_add.description, /todo_write/,
+        'reminder_add 描述要把拆步场景指向 todo_write');
+    assert.doesNotMatch(AI_TOOL_DEFS.reminder_add.description, /拆步后怕丢步骤/,
+        '不能再把「长任务拆步」说成提醒的用途');
+    assert.match(AI_TOOL_DEFS.todo_write.description, /reminder_add/,
+        'todo_write 描述要把零散备忘指向 reminder_add');
+});

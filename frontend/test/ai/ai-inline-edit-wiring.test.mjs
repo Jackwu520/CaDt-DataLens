@@ -28,12 +28,14 @@ function sliceFunction(source, marker) {
 
 test('入口：任意一条用户消息都能原地编辑（不再只认最后一条）', () => {
     const actions = sliceFunction(panel, 'function appendActions(wrap, message, index, session, target) {');
-    assert.match(actions, /if \(!sessionBusy && canInlineEdit\(message\)\) add\('edit', '编辑'\);/);
+    assert.match(actions, /if \(!sessionBusy && canInlineEdit\(message, sessionNow\)\) add\('edit', '编辑'\);/);
     assert.doesNotMatch(actions, /index === lastUser && !sessionBusy\) add\('edit'/, '不允许退回「仅最后一条」');
-    const can = sliceFunction(panel, 'function canInlineEdit(message) {');
+    const can = sliceFunction(panel, 'function canInlineEdit(message, session) {');
     // 注入类消息不可编辑：截断重发会把它们的语义一起砍掉
     assert.match(can, /message\.systemNote \|\| message\.notice \|\| message\.steer \|\| message\.silent/);
     assert.match(can, /return !message\.app;/);
+    // 归档会话只读：同样不可编辑（与 ai-archived-readonly.test.mjs 双保险）
+    assert.match(can, /if \(owner && owner\.archivedAt\) return false;/);
 });
 
 test('保存：截断到被编辑那条并重新起轮，不读底部输入区', () => {
@@ -47,7 +49,7 @@ test('保存：截断到被编辑那条并重新起轮，不读底部输入区',
 });
 
 test('非末条：先二次确认，取消时编辑态保留', () => {
-    const save = sliceFunction(panel, 'function saveInlineEdit() {');
+    const save = sliceFunction(panel, 'function saveInlineEdit(skipConfirm) {');
     assert.match(save, /const tail = Math\.max\(0, session\.messages\.length - state\.index - 1\);/);
     assert.match(save, /askConfirm\('重新发送这条消息？将丢弃它之后的 ' \+ tail \+ ' 条对话。'/);
 });
@@ -58,10 +60,20 @@ test('键盘：Esc 取消 / Enter 发送 / Shift+Enter 换行；均不冒泡', (
     // Enter 直接发送；Shift / Alt + Enter 放行走默认换行
     assert.match(editor, /if \(e\.key !== 'Enter'\) return;/);
     assert.match(editor, /if \(e\.shiftKey \|\| e\.altKey\) return;/);
-    assert.match(editor, /saveInlineEdit\(\);\s*\}\);/);
+    assert.match(editor, /saveInlineEdit\(e\.ctrlKey \|\| e\.metaKey\);/);
     // 输入法组词中的回车不能当发送
     assert.match(editor, /if \(e\.isComposing \|\| e\.keyCode === 229\) return;/);
     assert.match(editor, /e\.stopPropagation\(\)/);
+});
+
+test('跳过确认：Ctrl/Cmd+Enter 与 Ctrl/Cmd+点击直接保存，普通发送仍弹确认', () => {
+    const editor = sliceFunction(panel, 'function renderInlineEditor(state) {');
+    // 键盘与点击两条入口都传 skipConfirm
+    assert.match(editor, /saveInlineEdit\(e\.ctrlKey \|\| e\.metaKey\);/);
+    assert.match(editor, /saveBtn\.addEventListener\('click', \(e\) => saveInlineEdit\(e\.ctrlKey \|\| e\.metaKey\)\);/);
+    const save = sliceFunction(panel, 'function saveInlineEdit(skipConfirm) {');
+    assert.match(save, /if \(tail > 0 && !skipConfirm\) \{/, 'Ctrl/Cmd 捷径跳过确认');
+    assert.match(save, /askConfirm\('重新发送这条消息？将丢弃它之后的 ' \+ tail \+ ' 条对话。'/);
 });
 
 test('退出：整面重画与切会话都会释放编辑态', () => {

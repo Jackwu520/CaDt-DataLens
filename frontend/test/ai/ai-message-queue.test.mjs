@@ -233,6 +233,37 @@ test('队列行抢占：改投 queue、移到队首、停轮并登记待冲刷',
     assert.equal(stopped, 1);
 });
 
+test('队列行抢占：其它 steer 降级保留，不被 clearSteer 连带丢弃', () => {
+    // 2026-11-22 实测 bug：队列里两条插话，抢占其中一条后另一条消失。
+    // 根因是 stopGeneration / finishStream 的 clearSteer 清掉本会话所有 steer。
+    let stopped = 0;
+    const live = {sessionId: 's1', stopped: false, finished: false, roundId: 'r'};
+    const shell = createAIMessageQueue({
+        el: {},
+        streams: new Map([['s1', live]]),
+        compactOf: () => false,
+        getStream: () => live,
+        flash: () => {},
+        stopGeneration: () => { stopped += 1; },
+    });
+    const a = shell.enqueueItem({sessionId: 's1', text: 'A', delivery: 'steer'});
+    const b = shell.enqueueItem({sessionId: 's1', text: 'B', delivery: 'steer'});
+    const other = shell.enqueueItem({sessionId: 's2', text: 'other', delivery: 'steer'});
+    shell.preemptQueuedItem(a);
+
+    // A 被抢占：改投 queue + 移到队首
+    assert.equal(a.delivery, 'queue');
+    assert.equal(shell.itemsForSession('s1')[0], a);
+    assert.equal(stopped, 1);
+    // B 必须还在，且已降级为 queue（clearSteer 清不到它）
+    assert.equal(b.delivery, 'queue');
+    assert.deepEqual(shell.itemsForSession('s1').map((it) => it.text), ['A', 'B']);
+    // 其它会话的 steer 不受抢占影响
+    assert.equal(other.delivery, 'steer');
+    assert.equal(shell.hasSteer('s1'), false);
+    assert.equal(shell.hasSteer('s2'), true);
+});
+
 test('队列行抢占：停止收尾窗口不再重复停轮，等收尾冲刷', () => {
     let stopped = 0;
     const live = {sessionId: 's1', stopped: true, finished: false, roundId: 'r'};

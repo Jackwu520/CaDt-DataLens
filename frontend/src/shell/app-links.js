@@ -5,6 +5,7 @@
 import changelogText from '../../../CHANGELOG.md?raw';
 import termsText from '../../../docs/legal/terms.md?raw';
 import privacyText from '../../../docs/legal/privacy.md?raw';
+import tutorialText from '../../../docs/tutorial.md?raw';
 
 /**
  * 外链与内置文档动作域（更新日志 / 用户协议 / 隐私协议 / 开发者工具）。
@@ -48,6 +49,10 @@ function showPrivacy() {
     openBundledDoc('privacy', '隐私协议.md', privacyText, true);
 }
 
+function showTutorial() {
+    openBundledDoc('tutorial', '教程.md', tutorialText, true);
+}
+
 async function openDevTools() {
     if (!deps.backend.OpenDevTools) {
         deps.flash('当前版本不支持打开开发者工具', true);
@@ -62,5 +67,5 @@ async function openDevTools() {
 }
 
 
-    return {appFeedbackUrl, appReleasesUrl, openBundledDoc, openDevTools, openExternalUrl, showChangelog, showPrivacy, showTerms};
+    return {appFeedbackUrl, appReleasesUrl, openBundledDoc, openDevTools, openExternalUrl, showChangelog, showPrivacy, showTerms, showTutorial};
 }

@@ -1,5 +1,5 @@
 // ai-slash.js：斜杠命令（/context /compact /clear /help /model /export /memory /schedule /skill /plan /init /patch /diff /worktree）
-// 与技能补全：指令固定在前、技能在后分区显示；/技能名 直接附加，/技能名 参数 立即发送（生成中由 sendComposerMessage 排队）。
+// 与技能补全：指令固定在前、技能在后分区显示；/技能名 立即发送（只发 skill），/技能名 参数 连原文一起发（生成中由 sendComposerMessage 排队）。
 // slashState 由面板与输入区共享（引用稳定、仅属性级读写），经 ctx 注入。
 import {AI_COMMANDS, aiClamp} from './ai-constants.js';
 
@@ -22,6 +22,16 @@ export function extractSlashArgs(text, skillName) {
     const firstToken = trimmed.split(/\s+/)[0] || '';
     if (firstToken.toLowerCase() !== '/' + String(skillName || '').toLowerCase()) return '';
     return trimmed.slice(firstToken.length).trim();
+}
+
+// 斜杠技能调用的发送决策（纯函数，可单测）：两种都立即发起一轮，区别只在文案——
+// 无参数 → textToSend 为空串，只发 skill（正文随附件 <skill_manual> 注入，空文案由 startSessionTurn 补占位）；
+// 带参数 → textToSend 为原文（/技能名 参数），连同 skill 附件一起发。
+// 对齐主流 harness（dsh / opencode / cline / codex / pi / ZCode）「选中即作为本轮请求」的语义，
+// 不再让用户「继续输入需求 / 等下一轮」。
+export function slashSkillInvocation(text, skillName) {
+    const args = extractSlashArgs(text, skillName);
+    return {args, textToSend: args ? String(text || '').trim() : ''};
 }
 
 // 「/技能名」按首 token 精确命中（去掉前导 /，大小写不敏感）；不命中返回 null
@@ -195,25 +205,16 @@ export function createAISlash(ctx) {
         });
     }
 
-    // 技能调用核心：附加技能附件 → 有参数则立即发送原文（生成中由 sendComposerMessage 排队）；
-    // 无参数则清空输入框让用户继续写需求（与 /skill <名字> 的附加手感一致）。
+    // 技能调用核心：附加技能附件后立即发起一轮（生成中由 sendComposerMessage 排队）——
+    // 有参数发原文（/技能名 参数），无参数只发 skill（空文案由 startSessionTurn 补占位、正文随附件注入）。
+    // 对齐主流 harness「选中即作为本轮请求」的语义，不再让用户「继续输入需求 / 等下一轮」。
     async function invokeSkillItem(skill, typedText) {
         if (!skill) return;
         hideSlash();
-        const args = extractSlashArgs(typedText, skill.name);
-        addAttachment({kind: 'skill', label: skill.name, path: skill.path, content: skill.content});
-        if (args) {
-            sendComposerMessage(String(typedText || '').trim());
-            showNote('已附加技能：' + skill.name);
-            return;
-        }
-        if (el.input) {
-            el.input.value = '';
-            resizeInput();
-            el.input.focus();
-        }
-        updateSendState();
-        showNote('已加载技能：' + skill.name + '（随下一轮发送），继续输入需求。');
+        const {args, textToSend} = slashSkillInvocation(typedText, skill.name);
+        if (!addAttachment({kind: 'skill', label: skill.name, path: skill.path, content: skill.content})) return;
+        sendComposerMessage(textToSend);
+        showNote(args ? ('已附加技能：' + skill.name) : ('已发送技能：' + skill.name));
     }
 
     async function runSlashCommand(entry) {
@@ -247,7 +248,7 @@ export function createAISlash(ctx) {
                 break;
             case '/help':
                 showNote('可用命令：\n' + AI_COMMANDS.map((cmd) => cmd.name + '  —  ' + cmd.desc).join('\n')
-                    + '\n\n技能可直接 /技能名 调用（可带参数，如 /技能名 参数），输入 / 从补全列表选择。');
+                    + '\n\n技能输入 /技能名 立即发送（只发 skill），也可带参数如 /技能名 参数；输入 / 从补全列表选择。');
                 break;
             case '/model':
                 showModelPicker();

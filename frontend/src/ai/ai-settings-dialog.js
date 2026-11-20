@@ -73,6 +73,8 @@ export function createAISettingsDialog(ctx) {
     const dialogButton = ctx.dialogButton;
     const openAIDialog = ctx.openAIDialog;
     const closeAIDialog = ctx.closeAIDialog;
+    const confirmFullPermission = ctx.confirmFullPermission;
+    const enhanceSelect = ctx.enhanceSelect;
     const invalidateSkillsCache = ctx.invalidateSkillsCache;
     const resolveMemoryDir = ctx.resolveMemoryDir;
     const getAILogRoot = ctx.getAILogRoot;
@@ -830,11 +832,32 @@ export function createAISettingsDialog(ctx) {
             setSettingsStatus('AI 工作日志：' + (opt.worklog.checked ? '已开启' : '已关闭（write_worklog 工具停用）'), 'ok');
         });
         if (opt.defaultScope) opt.defaultScope.addEventListener('change', () => {
-            getConfig().defaultScope = normalizeDefaultScope(opt.defaultScope.value);
-            opt.defaultScope.value = getConfig().defaultScope;
-            saveAIConfig();
-            const labels = {read: '只读访问', edit: '每次询问', auto: '自动审批', full: '完全权限'};
-            setSettingsStatus('新会话默认权限档：' + (labels[getConfig().defaultScope] || getConfig().defaultScope), 'ok');
+            const next = normalizeDefaultScope(opt.defaultScope.value);
+            const before = getConfig().defaultScope;
+            if (next === before) return;
+            const apply = () => {
+                getConfig().defaultScope = next;
+                opt.defaultScope.value = next;
+                if (typeof enhanceSelect === 'function') enhanceSelect(opt.defaultScope);
+                saveAIConfig();
+                const labels = {read: '只读访问', edit: '每次询问', auto: '自动审批', full: '完全权限'};
+                setSettingsStatus('新会话默认权限档：' + (labels[next] || next), 'ok');
+            };
+            if (next === 'full' && typeof confirmFullPermission === 'function') {
+                // 完全权限影响之后所有新会话，复用会话级切换的同款确认框（top 盖在设置窗上）。
+                // 先把下拉回退到原档位（程序化改 value 不触发 change，enhanceSelect 同步触发器文本）；
+                // 确认后 apply 才落到 full——这样取消 / Esc / 点遮罩关闭都无需额外回调，显示天然保持旧值。
+                opt.defaultScope.value = before;
+                if (typeof enhanceSelect === 'function') enhanceSelect(opt.defaultScope);
+                confirmFullPermission(apply, {
+                    top: true,
+                    title: '允许新会话默认使用完全权限？',
+                    intro: '开启后，之后新建的 AI 会话将默认获得完全权限，可直接在当前设备上执行高权限操作，包括文件处理、命令执行和联网访问。主要范围包括：',
+                    note: '该设置只影响之后新建的会话，已有会话保持各自档位。请只在信任当前设备和上下文时开启；该权限可能增加敏感数据暴露、误操作或提示注入风险，可随时关闭。',
+                });
+            } else {
+                apply();
+            }
         });
         const bindNotifyToggle = (node, key, label) => {
             if (!node) return;
@@ -1252,6 +1275,8 @@ export function createAISettingsDialog(ctx) {
         });
         if (opt.exportBtn) opt.exportBtn.addEventListener('click', ioMod.exportAIConfig);
         if (opt.importBtn) opt.importBtn.addEventListener('click', ioMod.importAIConfig);
+        if (opt.modelExportBtn) opt.modelExportBtn.addEventListener('click', ioMod.exportAccountModels);
+        if (opt.modelImportBtn) opt.modelImportBtn.addEventListener('click', ioMod.importAccountModels);
         if (opt.clearSessions) opt.clearSessions.addEventListener('click', () => {
             askConfirm('清空全部 AI 会话（含消息、任务清单与变更记录）？', () => {
                 setSessions([createSessionData()]);

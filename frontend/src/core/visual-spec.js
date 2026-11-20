@@ -16,6 +16,10 @@ export const VISUAL_BUDGET = {
     maxCssChars: 24 * 1024,
 };
 
+// 可视化围栏语言清单（单一来源）：widget.js 的卡片渲染与 AI 工具名的「围栏误用」识别共用。
+// 这些是正文围栏的语言标记，不是可调用工具；模型偶尔会把它们误发成 function_call。
+export const WIDGET_LANGS = new Set(['svg', 'html', 'htm', 'mermaid', 'echarts', 'chart', 'graph', 'wordcloud']);
+
 // Shadow DOM 基础样式的别名表：[--color-* 别名, 应用变量, 兜底色]。
 // 主题自定义属性会穿透 shadow 边界继承，映射一份通用命名让模型按惯例写的图也能拿到主题色。
 const SHADOW_ALIAS = [

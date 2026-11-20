@@ -949,17 +949,16 @@ func Reindex(store Store) (int, error) {
 	return count, nil
 }
 
-// Stats 返回索引健康度与容量统计；会先同步脏会话。
-func Stats(store Store) (IndexStats, error) {
+// Stats 返回索引健康度与容量统计。只读当前索引状态，不触发脏会话重建——
+// 诊断面板调用它，若顺带重放全部脏会话，长会话会把「正在分析会话数据…」卡住不消失。
+// 脏会话数照实上报（dirty 列），让诊断能看出有多少待索引，而不是先同步成 0。
+func Stats(_ Store) (IndexStats, error) {
 	stats := IndexStats{Exists: Exists()}
 	if !stats.Exists {
 		return stats, nil
 	}
 	db, err := database()
 	if err != nil {
-		return stats, err
-	}
-	if err := syncSessionIndex(db, store); err != nil {
 		return stats, err
 	}
 	stats.Exists = true

@@ -867,24 +867,37 @@ export function describeAISchedule(s) {
     return s.kind || '';
 }
 
-export function aiFormatDuration(ms) {
-    const total = Math.max(0, Math.round(Number(ms) / 1000));
-    if (total < 1) return '不到 1 秒';
-    if (total < 60) return total + ' 秒';
-    const minutes = Math.floor(total / 60);
-    const seconds = total % 60;
-    if (minutes < 60) return minutes + ' 分' + (seconds ? ' ' + seconds + ' 秒' : '');
-    const hours = Math.floor(minutes / 60);
-    const rest = minutes % 60;
-    return hours + ' 小时' + (rest ? ' ' + rest + ' 分' : '');
+// 整数秒 → 「X 天 Y 小时 Z 分 W 秒」，值为 0 的单位跳过（如 1 小时 2 秒不写「0 分」）。
+// aiFormatDuration / aiFormatLiveDuration 共用，保证两处档位口径一致。
+function aiDurationText(totalSeconds) {
+    const parts = [];
+    const days = Math.floor(totalSeconds / 86400);
+    const hours = Math.floor((totalSeconds % 86400) / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+    if (days) parts.push(days + ' 天');
+    if (hours) parts.push(hours + ' 小时');
+    if (minutes) parts.push(minutes + ' 分');
+    if (seconds) parts.push(seconds + ' 秒');
+    return parts.join(' ');
 }
 
-// 流式轮次的实时计时（ZCode 风格，带十分位）：40.2 秒 / 3 分 40.2 秒
+export function aiFormatDuration(ms) {
+    const total = Math.max(0, Math.round((Number(ms) || 0) / 1000));
+    if (total < 1) return '不到 1 秒';
+    return aiDurationText(total);
+}
+
+// 流式轮次的实时计时：不到 1 小时保留十分位小数（40.2 秒 / 3 分 40.2 秒），
+// 到小时/天档改显示整数秒（ZCode 风格，长时间运行时小数秒没有信息量）：1 小时 22 分 56 秒。
 export function aiFormatLiveDuration(ms) {
-    const total = Math.max(0, Number(ms) / 1000);
-    if (total < 60) return total.toFixed(1) + ' 秒';
-    const minutes = Math.floor(total / 60);
-    const seconds = total - minutes * 60;
+    const total = Math.max(0, (Number(ms) || 0) / 1000);
+    if (total >= 3600) return aiDurationText(Math.round(total));
+    // 分/秒档先按 0.1s 取整，避免 59.96 秒被 toFixed 显示成「60.0 秒」
+    const t = Math.round(total * 10) / 10;
+    const minutes = Math.floor(t / 60);
+    const seconds = t - minutes * 60;
+    if (minutes < 1) return seconds.toFixed(1) + ' 秒';
     return minutes + ' 分 ' + seconds.toFixed(1) + ' 秒';
 }
 

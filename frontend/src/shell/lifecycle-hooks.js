@@ -242,8 +242,11 @@ export function createLifecycleHooks(deps) {
      * 通用执行入口：跑某工作区某事件的启用条目（顺序执行，列表序即依赖序）。
      * 重入护栏按「事件 + 工作区」分键：同工作区打开与关闭互不阻塞。
      * 单条失败（异常 / 超时 / 非零退出）不阻断后续；汇总进消息中心 + 留痕。
+     * onWillRun(list)：可选同步挂点，仅在「确有可执行条目、且没被重入护栏跳过」时回调一次
+     * （起轮阻塞期的状态栏提示挂在这里——无条目 / 总开关关闭 / 已跳过时一律不回调，
+     * 否则空配置也会闪「正在执行钩子」的假反馈）。
      */
-    async function runEntries(root, event, toolName) {
+    async function runEntries(root, event, toolName, onWillRun) {
         const dir = String(root || '');
         if (!dir) return {ran: 0};
         if (deps.settings.lifecycleHooksEnabled === false) return {ran: 0, skipped: 'disabled'};
@@ -265,6 +268,10 @@ export function createLifecycleHooks(deps) {
             return {ran: 0, skipped: 'running'};
         }
         runningByWs.add(guard);
+        if (typeof onWillRun === 'function') {
+            // 即将真实执行：先给宿主同步挂点（提示失败不影响钩子执行）
+            try { onWillRun(list); } catch (e) { /* 尽力而为路径：提示失败不影响执行 */ }
+        }
         try {
             // 顺序执行：列表序即依赖序；单条失败不阻断后续与宿主流程
             const results = [];
@@ -316,9 +323,10 @@ export function createLifecycleHooks(deps) {
 
     // AI 会话开始（ai-panel 空会话首轮流注入点）：起轮前 await，跑完才发首轮请求——
     // 「开始前」语义要求阻塞；每条自带超时上限，失败不阻塞起轮。控制器内部已兜错，
-    // 调用方（ai-panel）另有 try/catch 双保险。
-    function runForAISessionStart(ws) {
-        return runEntries(ws, 'session-start');
+    // 调用方（ai-panel）另有 try/catch 双保险。onWillRun 仅在确实有 session-start 条目要跑时
+    // 回调（ai-panel 用它闪「正在执行钩子」提示，见 runEntries 注释）。
+    function runForAISessionStart(ws, onWillRun) {
+        return runEntries(ws, 'session-start', '', onWillRun);
     }
 
     return {runForEvent, runForWorkspace, runForWorkspaceClose, runForAISessionStart, runOnceForEntry, handleAppAction};

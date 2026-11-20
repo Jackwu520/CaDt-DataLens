@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {APP_MESSAGE_ICONS, appMessageIcon, detectAppMessage, normalizeAppMessage} from '../../src/ai/ai-app-message.js';
+import {readFileSync} from 'node:fs';
+import {APP_MESSAGE_ICONS, appMessageIcon, detectAppMessage, normalizeAppMessage, appMessageMarkdownEligible, APP_MSG_MD_MAX_CHARS} from '../../src/ai/ai-app-message.js';
 
 test('normalizeAppMessage 补齐默认值并截断超长字段', () => {
     assert.deepEqual(normalizeAppMessage({kind: 'git', label: 'Git 快捷操作 · 提交'}), {
@@ -66,4 +67,31 @@ test('detectAppMessage：后台命令 / 后台终端的唤醒通知按前缀归�
     assert.equal(term.label, '后台终端 · term-2');
     assert.equal(APP_MESSAGE_ICONS.bgjob, 'terminal');
     assert.equal(APP_MESSAGE_ICONS.bgterm, 'terminal');
+});
+
+test('appMessageMarkdownEligible：仅结论型卡片渲染，指令型保持原文', () => {
+    // 结论型：子代理结算 / 提问、支线结论
+    assert.equal(appMessageMarkdownEligible('subagent', '结论：### 标题\n**加粗**'), true);
+    assert.equal(appMessageMarkdownEligible('subagent-ask', 'Q1：继续吗'), true);
+    assert.equal(appMessageMarkdownEligible('sidechat', '支线结论'), true);
+    // 指令型：git / 定时 / 计划 / 会话投递 / 工作区防护等一律原文（核对发给模型的字节）
+    assert.equal(appMessageMarkdownEligible('git', '工作区：D:/repo'), false);
+    assert.equal(appMessageMarkdownEligible('schedule', '请检查构建'), false);
+    assert.equal(appMessageMarkdownEligible('plan', '请执行计划'), false);
+    assert.equal(appMessageMarkdownEligible('session', '会议纪要'), false);
+    assert.equal(appMessageMarkdownEligible('session-user', '用户指令'), false);
+    assert.equal(appMessageMarkdownEligible('wipeguard', '73 个文件消失'), false);
+    assert.equal(appMessageMarkdownEligible('', ''), false);
+    // 超长结论退回原文，避免展开一次跑超长 markdown
+    assert.equal(appMessageMarkdownEligible('subagent', 'x'.repeat(APP_MSG_MD_MAX_CHARS)), true);
+    assert.equal(appMessageMarkdownEligible('subagent', 'x'.repeat(APP_MSG_MD_MAX_CHARS + 1)), false);
+});
+
+test('全局 .hidden 兜底规则存在且不带 !important（隐藏失效/误伤内联显示的护栏）', () => {
+    const css = readFileSync(new URL('../../src/style.css', import.meta.url), 'utf8');
+    // 卡片渲染/原文视图靠 classList.toggle('hidden') 切换，依赖末尾的全局兜底。
+    // 必须不带 !important，否则会压过内联 style.display 与既有 !important 显示逻辑。
+    const globalRule = css.match(/^\.hidden\s*\{\s*display:\s*none\s*;?\s*\}/m);
+    assert.ok(globalRule, 'style.css 末尾应有全局 .hidden { display:none } 兜底规则');
+    assert.doesNotMatch(globalRule[0], /!important/);
 });

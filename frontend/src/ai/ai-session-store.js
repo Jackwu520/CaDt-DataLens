@@ -119,14 +119,36 @@ export function sessionTurnStartTs(session) {
     return 0;
 }
 
-// 列表排序/时间文案的键（单一来源）。占位会话只有 meta，读缓存的 turnTs；
-// 已载体的现算，两者同源，补水前后不会跳位。清空正文等没有边界消息的情况回落到写入时间。
+// 最近一轮的「结束时间」（列表排序与时间文案的键，opencode 口径）：最后一条已收尾
+// assistant 消息的 finishedAt。finishStream 在轮末写入 finishedAt，运行中 / 流式回复
+// 没有它——所以工具结果、流式输出不会让会话在列表里跳动（保住 CHANGELOG 里修过的
+// 「工具刷屏顶列表」问题），只有一轮真正结束才推进。没有已收尾回复的老会话返回 0，
+// 由 sessionActivityTs 回落到轮次起点。
+export function sessionEndTs(session) {
+    const messages = (session && session.messages) || [];
+    for (let i = messages.length - 1; i >= 0; i--) {
+        const message = messages[i];
+        if (!message || message.role !== 'assistant') continue;
+        if (message.status === 'streaming') continue;
+        const finished = Number(message.finishedAt) || 0;
+        if (finished) return finished;
+    }
+    return 0;
+}
+
+// 列表排序/时间文案的键（单一来源，opencode 口径）：取「最近一轮结束时间」与
+// 「最近发问时间」的较大者。一轮里工具结果 / 流式输出都不推进这两个值，所以运行中
+// 会话不会在列表里跳动；用户发新一轮时按发问时刻前移，本轮结束时按 finishedAt 再前移。
+// 没有已收尾回复的老会话 endTs=0，自然回落到发问时间；两者都没有再回落到写入时间。
+// 占位会话只有 meta，读缓存的 endTs / turnTs；已载体的现算，两者同源，补水前后不跳位。
 export function sessionActivityTs(session) {
     if (!session) return 0;
     if (session._stub) {
-        return Number(session._turnTs) || Number(session.updatedAt) || Number(session.createdAt) || 0;
+        return Math.max(Number(session._endTs) || 0, Number(session._turnTs) || 0) ||
+            Number(session.updatedAt) || Number(session.createdAt) || 0;
     }
-    return sessionTurnStartTs(session) || Number(session.updatedAt) || Number(session.createdAt) || 0;
+    return Math.max(sessionEndTs(session), sessionTurnStartTs(session)) ||
+        Number(session.updatedAt) || Number(session.createdAt) || 0;
 }
 
 // ---------- 事件编码 ----------
@@ -345,6 +367,11 @@ export function buildSessionMeta(session) {
         turnTs: session && session._stub
             ? Math.max(0, Number(session._turnTs) || 0)
             : sessionTurnStartTs(session),
+        // 最近一轮结束时间（列表排序键，opencode 口径）：占位沿用缓存值，已载体的现算。
+        // 老 meta 没有这个字段时读成 0，sessionActivityTs 会回落到 turnTs。
+        endTs: session && session._stub
+            ? Math.max(0, Number(session._endTs) || 0)
+            : sessionEndTs(session),
         workspace: textOf(session && session.workspace),
         scope: ['read', 'edit', 'auto', 'full'].includes(session && session.scope) ? session.scope : 'read',
         profileId: textOf(session && session.profileId),

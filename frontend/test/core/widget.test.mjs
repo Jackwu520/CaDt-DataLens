@@ -12,6 +12,8 @@ import {
     preserveLocalImageSrc,
     restoreParkedWidgets,
     sanitizeWidgetCss,
+    svgToDataUrl,
+    tallSvgNeedsUncap,
     tinySvgSize,
     widgetCacheKey,
     widgetKindOf,
@@ -168,7 +170,59 @@ test('widget.js 在 fillShadow 里接上小 viewBox 兜底', () => {
     const src = readFileSync(new URL('../../src/core/widget.js', import.meta.url), 'utf8');
     assert.match(src, /function fillShadow[\s\S]*?fitTinySvg\(shadow\)/, 'fillShadow 必须调用兜底');
     assert.match(src, /function fitTinySvg[\s\S]*?tinySvgSize\(/, '兜底必须用纯函数算尺寸');
-    assert.match(src, /if \(lang === 'svg'\) fitTinySvg/, '只处理 svg 卡，html 卡里布局好的图标不越界');
+    assert.match(src, /fitTinySvg\(shadow\);\s*\n\s*fitTallSvg\(shadow\)/, 'svg 卡同时调用长图兜底');
+});
+
+test('tallSvgNeedsUncap 识别竖向长图（高/宽 > 1.2），横向与正常图不命中', () => {
+    // mermaid TD 长流程：高远大于宽 → 需要取消 max-height
+    assert.equal(tallSvgNeedsUncap('0 0 680 3000'), true);
+    assert.equal(tallSvgNeedsUncap('0 0 200 1000'), true);
+    assert.equal(tallSvgNeedsUncap('0,0,680,1200'), true, '逗号分隔也能解析');
+    // 刚好超过阈值
+    assert.equal(tallSvgNeedsUncap('0 0 100 121'), true);
+    // 正常比例 / 横向图不碰
+    assert.equal(tallSvgNeedsUncap('0 0 680 400'), false);
+    assert.equal(tallSvgNeedsUncap('0 0 680 520'), false, '1.2 以内不命中');
+    assert.equal(tallSvgNeedsUncap('0 0 1000 300'), false, '横向图不命中');
+    assert.equal(tallSvgNeedsUncap('0 0 100 120'), false, '正好 1.2 不命中');
+    // 非法输入安全返回 false
+    assert.equal(tallSvgNeedsUncap(''), false);
+    assert.equal(tallSvgNeedsUncap('none'), false);
+    assert.equal(tallSvgNeedsUncap('0 0 15'), false);
+    assert.equal(tallSvgNeedsUncap('0 0 abc 15'), false);
+    assert.equal(tallSvgNeedsUncap('0 0 -15 15'), false);
+    assert.equal(tallSvgNeedsUncap(null), false);
+});
+
+test('widget.js 长图兜底只覆盖 max-height，不碰作者显式高度', () => {
+    const src = readFileSync(new URL('../../src/core/widget.js', import.meta.url), 'utf8');
+    assert.match(src, /function fitTallSvg[\s\S]*?tallSvgNeedsUncap\(/, '兜底必须用纯函数判定');
+    assert.match(src, /max-height', 'none'/, '取消 max-height 让图完整铺开');
+    assert.match(src, /hasDeclaredSize\(inline\.height\) \|\| hasDeclaredSize\(inline\.maxHeight\)/,
+        '作者显式高度/max-height 视为自管，跳过');
+});
+
+test('svgToDataUrl 生成可独立加载的 data URL，裸片段补 xmlns', () => {
+    const full = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect/></svg>';
+    const url = svgToDataUrl(full);
+    assert.ok(url.startsWith('data:image/svg+xml;charset=utf-8,'), '前缀正确');
+    assert.equal(decodeURIComponent(url.slice(url.indexOf(',') + 1)), full, '内容原样编码');
+
+    const bare = '<svg viewBox="0 0 10 10"><rect/></svg>';
+    const bareUrl = svgToDataUrl(bare);
+    const decoded = decodeURIComponent(bareUrl.slice(bareUrl.indexOf(',') + 1));
+    assert.match(decoded, /<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg" viewBox=/, '补上 xmlns');
+    assert.equal((decoded.match(/xmlns=/g) || []).length, 1, '只补一次，不重复');
+
+    assert.equal(svgToDataUrl(null), 'data:image/svg+xml;charset=utf-8,');
+});
+
+test('全屏按钮只给 SVG 类卡片，且经 opts.openFullscreen 回调', () => {
+    const src = readFileSync(new URL('../../src/core/widget.js', import.meta.url), 'utf8');
+    assert.match(src, /const isSvgLike = !!ASYNC_RENDERERS\[lang\] \|\| lang === 'svg'/,
+        '仅 SVG / 异步引擎卡显示全屏按钮');
+    assert.match(src, /isSvgLike && typeof opts\.openFullscreen === 'function'/, '有回调才显示');
+    assert.match(src, /opts\.openFullscreen\(svg,/, '点击走 openFullscreen 回调');
 });
 
 test('preserveLocalImageSrc 给本地图片补 data-ai-src，外链不动', () => {

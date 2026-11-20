@@ -13,6 +13,7 @@ import {createContextMenu} from '../shell/contextmenu.js';
 import {mergePluginAIRequest, pluginAIAccounts} from '../shell/plugin-ai-providers.js';
 import {copyImageUrlToClipboard} from '../core/image-clipboard.js';
 import {createImageLightbox} from '../shell/image-lightbox.js';
+import {svgToDataUrl} from '../core/widget.js';
 import {createFileIcon} from '../core/fileicons.js';
 import {createSessionOutlineController} from './session-outline.js';
 import {createSessionDiskStore, createAIConversationLog} from './ai-session-disk.js';
@@ -130,9 +131,9 @@ import {createAILocalClassifier, hasVerdictDisagreement} from './ai-local-classi
 import {parseClassifierVerdict} from './ai-classifier-verdict.js';
 import {GIT_ACTIONS, buildGitActionPrompt} from './ai-git.js';
 import {createAIReminders, normalizeReminders, remindersForPrompt, reminderAddBlocked} from './ai-reminders.js';
-import {normalizeAppMessage, appMessageIcon, detectAppMessage} from './ai-app-message.js';
+import {normalizeAppMessage, appMessageIcon, detectAppMessage, appMessageMarkdownEligible} from './ai-app-message.js';
 import {normalizeActionApprovalSpec} from './ai-app-approval.js';
-import {inspectToolArguments, safeToolArguments} from './ai-tool-args.js';
+import {inspectToolArguments, safeToolArguments, detectFenceToolMisuse, fenceToolMisuseMessage} from './ai-tool-args.js';
 import {patchErrorParts} from './ai-patch-error.js';
 import {patchAllowApply, lastUserTextOf} from './ai-patch-policy.js';
 import {
@@ -508,6 +509,8 @@ export function createAIPanel(options) {
         dialogClose: panel.querySelector('#ai-dialog-close'),
         dialogCard: panel.querySelector('.ai-dialog-card'),
         composer: panel.querySelector('.ai-composer'),
+        archivedBanner: panel.querySelector('#ai-archived-banner'),
+        unarchiveBtn: panel.querySelector('#ai-unarchive-btn'),
         queue: panel.querySelector('#ai-queue'),
         takeover: panel.querySelector('#ai-takeover'),
         attach: panel.querySelector('#ai-attach'),
@@ -696,6 +699,8 @@ export function createAIPanel(options) {
         exportPersona: document.getElementById('ai-opt-export-persona'),
         exportBtn: document.getElementById('ai-opt-export'),
         importBtn: document.getElementById('ai-opt-import'),
+        modelExportBtn: document.getElementById('ai-model-export'),
+        modelImportBtn: document.getElementById('ai-model-import'),
         clearSessions: document.getElementById('ai-opt-clear-sessions'),
         approved: document.getElementById('ai-opt-approved'),
         approvedClear: document.getElementById('ai-opt-approved-clear'),
@@ -787,6 +792,10 @@ export function createAIPanel(options) {
     let processFoldState = new Map();
     // 应用消息（Git 快捷操作 / 定时任务）默认收起指令全文；展开状态按消息 key 记住，避免重渲染后弹回。
     const appMsgExpanded = new Set();
+    // 「查看原文」切换：记住哪些卡片被用户切到原文视图（默认 Markdown 视图）。
+    const appMsgRawView = new Set();
+    // 渲染好的 Markdown HTML 缓存：卡片正文内容不变，重放时直接取缓存，不重跑 markdown。
+    const appMsgHtmlCache = new Map();
     // 用户超长消息默认折叠：手动展开/收起的状态按消息 key 记住（内存即可，重渲染不弹回）。
     const userFoldExpanded = new Set();
     const AI_USER_FOLD_LINES = 12;
@@ -1585,8 +1594,7 @@ export function createAIPanel(options) {
                 ? raw.timeoutAction
                 : 'recommended',
             timeoutCustom: !!raw.timeoutCustom,
-            // timeoutAction=wait 会忽略 timeoutSec；恢复历史时保留这个事实，
-            // 否则面板不再提示"已忽略 N 秒"，用户会以为当初没设超时
+            // timeoutAction=wait 会忽略 timeoutSec；保留这个事实供数据层参考（面板不展示）
             ignoredSec: Math.max(0, Number(raw.ignoredSec) || 0),
             // 暂停态：暂停时冻结剩余毫秒，deadline 保留原值（文案走 paused 分支），
             // 继续时用 remainingMs 重算 deadline。历史消息恢复后不重建计时器，仅保证文案一致。
@@ -2751,6 +2759,10 @@ export function createAIPanel(options) {
     // 起轮失败的用户提示：多实例的 busy 与普通同进程 busy 分开说。
     function flashTurnStartFailure(result) {
         if (!result || result.ok) return;
+        if (result.reason === 'archived') {
+            flash('该会话已归档，取消归档后再发送', true);
+            return;
+        }
         if (result.reason === 'other_window') {
             const pid = result.owner && result.owner.pid;
             flash('该会话正在另一窗口运行' + (pid ? '（PID ' + pid + '）' : '') + '，请稍后再试', true);
@@ -3289,6 +3301,7 @@ export function createAIPanel(options) {
         newSession, open, switchSession, compactOf, streamOf, sendAppMessage,
         activeProfile, appControlOn, defaultModelEntry, defaultProfile, normalizeProfile,
         configForProfile, promptById, emptyState, dialogButton, openAIDialog, closeAIDialog,
+        confirmFullPermission,
         invalidateSkillsCache, resolveMemoryDir, getAILogRoot, openAILogDir,
         aiNormalizePath, aiJoinPath, aiPathDir, aiPathKey, aiProjectRoot, aiWorkspaceKey,
         queryUsageForAccount, showModelListPicker, switchProfile,
@@ -4931,6 +4944,14 @@ export function createAIPanel(options) {
             (image.width && image.height ? ' · ' + image.width + '×' + image.height : ''));
     }
 
+    // 可视化卡片「全屏」：把渲染后的静态 SVG 编成 data URL 交给图片灯箱。
+    // SVG 是矢量，放大不失真，正好用于看长流程图的细节；灯箱已有滚轮缩放 / 拖拽平移 / Esc。
+    // 不传 image 对象 → 灯箱右键菜单拿不到 .data 会静默跳过，无副作用。
+    function openWidgetFullscreen(svg, label) {
+        if (!svg) return;
+        lightboxForHost(panel).open(null, svgToDataUrl(svg), label || '可视化');
+    }
+
     // 正文 Markdown 图片限高展示，点击进查看层看原图；本地图片仍可右键复制 / 另存为。
     function openMarkdownImage(img) {
         const src = img.src || '';
@@ -5238,6 +5259,12 @@ export function createAIPanel(options) {
 
         const key = appMessageKey(message, index, session);
         const expanded = appMsgExpanded.has(key);
+        // 结论型通知（子代理结算 / 提问、支线结论）的正文按 Markdown 渲染；指令型保持原文。
+        // 开头的宿主环境块（system-reminder）始终原文弱化显示，不参与渲染——排查注入要核对它。
+        const parsed = splitTurnReminderPrefix(aiTextOf(message.content));
+        const bodyText = parsed.reminder ? parsed.body : (message.content || '');
+        // 用正文（去掉宿主环境块后）判断长度，避免带大环境块的通知被误判为超长而退回原文。
+        const mdEligible = appMessageMarkdownEligible(app.kind, bodyText);
 
         const foot = document.createElement('div');
         foot.className = 'ai-app-msg-foot';
@@ -5261,24 +5288,64 @@ export function createAIPanel(options) {
         const toggleText = document.createElement('span');
         toggleText.textContent = expanded ? '收起指令' : '查看指令';
         toggle.append(chev, toggleText);
-        foot.append(hint, toggle);
 
         const body = document.createElement('div');
         body.className = 'ai-app-msg-body' + (expanded ? '' : ' hidden');
-        // 「查看指令」展示实际发给模型的完整内容：开头的宿主环境块（system-reminder：
-        // 任务清单 / workspace_context / 提醒 / 附件）弱化显示，与投递 / 应用指令正文区分——
-        // 不删内容，排查注入时这正是要核对的东西。非严格形状（无块）时原样全量显示。
-        const parsed = splitTurnReminderPrefix(aiTextOf(message.content));
         if (parsed.reminder) {
             const env = document.createElement('pre');
             env.className = 'ai-app-msg-env';
             env.textContent = parsed.reminder;
             body.appendChild(env);
         }
-        const pre = document.createElement('pre');
-        pre.className = 'ai-app-msg-text';
-        pre.textContent = parsed.reminder ? parsed.body : (message.content || '');
-        body.appendChild(pre);
+
+        // 懒渲染：仅「展开且当前是渲染视图」时才跑 markdown，结果按 key 缓存，重放零成本。
+        let ensureMd = null;
+        if (mdEligible) {
+            const mdView = document.createElement('div');
+            mdView.className = 'ai-md ai-app-msg-md';
+            const rawView = document.createElement('pre');
+            rawView.className = 'ai-app-msg-text';
+            rawView.textContent = bodyText;
+            const showRaw = appMsgRawView.has(key);
+            rawView.classList.toggle('hidden', !showRaw);
+            mdView.classList.toggle('hidden', showRaw);
+            body.append(mdView, rawView);
+
+            ensureMd = () => {
+                if (mdView.dataset.rendered) return;
+                let html = appMsgHtmlCache.get(key);
+                if (html == null) {
+                    html = renderMarkdown(bodyText);
+                    appMsgHtmlCache.set(key, html);
+                }
+                mdView.innerHTML = html;
+                mdView.dataset.rendered = '1';
+            };
+            if (expanded && !showRaw) ensureMd();
+
+            const viewToggle = document.createElement('button');
+            viewToggle.type = 'button';
+            viewToggle.className = 'ai-app-msg-toggle ai-app-msg-view-toggle';
+            const viewToggleText = document.createElement('span');
+            viewToggleText.textContent = showRaw ? '查看渲染' : '查看原文';
+            viewToggle.appendChild(viewToggleText);
+            viewToggle.addEventListener('click', () => {
+                const nowRaw = !appMsgRawView.has(key);
+                if (nowRaw) appMsgRawView.add(key);
+                else appMsgRawView.delete(key);
+                rawView.classList.toggle('hidden', !nowRaw);
+                mdView.classList.toggle('hidden', nowRaw);
+                viewToggleText.textContent = nowRaw ? '查看渲染' : '查看原文';
+                if (!nowRaw) ensureMd();
+            });
+            foot.append(hint, viewToggle, toggle);
+        } else {
+            const pre = document.createElement('pre');
+            pre.className = 'ai-app-msg-text';
+            pre.textContent = bodyText;
+            body.appendChild(pre);
+            foot.append(hint, toggle);
+        }
 
         toggle.addEventListener('click', () => {
             const next = !appMsgExpanded.has(key);
@@ -5287,6 +5354,7 @@ export function createAIPanel(options) {
             body.classList.toggle('hidden', !next);
             toggle.classList.toggle('expanded', next);
             toggleText.textContent = next ? '收起指令' : '查看指令';
+            if (next && ensureMd) ensureMd();
         });
 
         card.append(foot, body);
@@ -5412,6 +5480,9 @@ export function createAIPanel(options) {
         actions.innerHTML = '';
         // 只有「这条消息所属会话」在生成时才收起改写类操作：其他会话在跑不影响这里。
         const sessionBusy = !!(sessionNow && streamOf(sessionNow.id));
+        // 归档会话只读：收起所有会改写当前会话的动作（编辑 / 重试 / 重新生成 / 回退 / 分支），
+        // 只留复制、投递、支线引用等只读动作；横幅已就地给出「取消归档」出口。
+        const archived = !!(sessionNow && sessionNow.archivedAt);
         const icon = (path) => '<svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">' + path + '</svg>';
         const icons = {
             copy: icon('<rect x="5.2" y="5.2" width="7.6" height="7.6" rx="1.4"/><path d="M3.6 10.2V3.9c0-.7.6-1.3 1.3-1.3h6.3"/>'),
@@ -5441,25 +5512,25 @@ export function createAIPanel(options) {
         if (message.role === 'user') {
             add('copy', '复制');
             // 原地编辑：任意一条「用户亲手键入」的消息都能改（注入类消息截断重发会砍掉
-            // 注入语义，按黑名单排除）；生成中不给入口。
-            if (!sessionBusy && canInlineEdit(message)) add('edit', '编辑');
+            // 注入语义，按黑名单排除）；生成中 / 归档会话不给入口。
+            if (!sessionBusy && canInlineEdit(message, sessionNow)) add('edit', '编辑');
         } else {
             // 中间步骤按颗粒度收敛：'basic' 只留复制 + 回退（回合收尾信息也只属于最后一条）
             const stepMode = aiMsgActionsStepMode(settings.aiMsgActions, index === lastAssistant);
             const isLast = index === lastAssistant;
             add('copy', '复制');
             if (message.status === 'error') {
-                if (!sessionBusy && (isLast || stepMode === 'full')) add('retry', '重试');
-            } else if (isLast && !sessionBusy) {
+                if (!sessionBusy && !archived && (isLast || stepMode === 'full')) add('retry', '重试');
+            } else if (isLast && !sessionBusy && !archived) {
                 add('regenerate', '重新生成');
             }
-            if (!sessionBusy && !compactOf(sessionNow.id) && index < sessionNow.messages.length - 1) {
+            if (!sessionBusy && !archived && !compactOf(sessionNow.id) && index < sessionNow.messages.length - 1) {
                 add('rewind', '回退到此轮（丢弃之后的消息）');
             }
             // 回合收尾信息：分支 / 本轮用量 / 耗时。生成中与失败轮不显示（还没得看、也没意义）
             const finished = message.status !== 'streaming' && message.status !== 'error';
             if (finished && (isLast || stepMode === 'full')) {
-                if (!sessionBusy) add('branch', '在新对话中分支');
+                if (!sessionBusy && !archived) add('branch', '在新对话中分支');
                 // 支线对话（旁路追问）：轻关联，不复制历史，只把这条消息作为引用带入新会话
                 if (!sessionBusy) add('sidechat', '新建支线对话（带这条引用追问）');
                 // 这条消息在支线会话里：一键把结论送回母会话的信箱
@@ -8120,11 +8191,9 @@ async function requestApproval(session, toolMessage, info) {
 
     function askCountdownText(ask) {
         if (!ask || ask.state !== 'pending') return '';
-        if (!ask.deadline) {
-            // timeoutAction=wait（或显式 0 秒）没有倒计时。若这次还传了秒数，
-            // 必须说清它没生效：wait 会把 timeoutSec 静默忽略，否则用户只看到"没设超时"。
-            return ask.ignoredSec > 0 ? '本次不限时（已忽略 ' + ask.ignoredSec + ' 秒超时）' : '';
-        }
+        // 不限时（wait / 0 秒，无 deadline）不渲染倒计时：既没有秒数，也不显示任何
+        // 提示文案——那类文字挤在收起条中间既突兀又无意义。
+        if (!ask.deadline) return '';
         // 暂停时冻结在 remainingMs，不再随 wall clock 递减；继续后回到 deadline 计时。
         const leftMs = ask.paused ? ask.remainingMs : Math.max(0, ask.deadline - Date.now());
         const left = Math.ceil(leftMs / 1000);
@@ -8144,12 +8213,19 @@ async function requestApproval(session, toolMessage, info) {
         if (!hasHost(sessionId)) return;
         const key = entry.toolMessage.toolCallId || entry.key;
         const text = askCountdownText(entry.ask);
+        // 快超时高亮：未暂停且剩余 ≤10 秒时给倒计时挂 urgent 类（CSS 变红 + 轻微脉冲）；
+        // 暂停时移除，避免暂停中还在闪。
+        const ask = entry.ask;
+        const leftMs = ask.paused ? ask.remainingMs : Math.max(0, ask.deadline - Date.now());
+        const urgent = !!ask.deadline && !ask.paused && leftMs > 0 && leftMs <= ASK_URGENT_MS;
         // 逐宿主更新：面板整域查（倒计时可能出现在消息区或接管区），支线标签页查各自 root
         for (const host of sideChatHostsOf(sessionId)) {
             const scope = host.isPanel ? panel : host.root;
             if (!scope || !scope.querySelectorAll) continue;
             scope.querySelectorAll('.ai-ask-countdown').forEach((node) => {
-                if (node.dataset.askKey === key) node.textContent = text;
+                if (node.dataset.askKey !== key) return;
+                node.textContent = text;
+                node.classList.toggle('urgent', urgent);
             });
         }
     }
@@ -8358,6 +8434,8 @@ async function requestApproval(session, toolMessage, info) {
     }
 
     const ASK_TIMEOUT_ACTIONS = ['recommended', 'wait', 'abort', 'ai_decide'];
+    // 倒计时进入最后 N 秒时高亮提醒（CSS .ai-ask-countdown.urgent）
+    const ASK_URGENT_MS = 10000;
 
     // 本次提问的超时设置：工具可传 timeoutSec / timeoutAction 逐次覆盖，不写回 config。
     // 未传（undefined/null/空串）才回落到设置里的默认值；0 表示本次不限时。
@@ -8396,7 +8474,7 @@ async function requestApproval(session, toolMessage, info) {
             timeoutSec,
             timeoutAction,
             timeoutCustom: custom,
-            // wait 时不启动计时器：记住被忽略的秒数，面板据此提示"本次不限时"
+            // wait 时不启动计时器：记住被忽略的秒数（数据层保留，面板不展示）
             ignoredSec: useTimer ? 0 : timeoutSec,
             paused: false,
             remainingMs: 0,
@@ -11302,11 +11380,26 @@ async function requestApproval(session, toolMessage, info) {
         if (changed) updateSendState();
     }
 
+    // 归档会话只读态：横幅 + composer 置灰 + 输入框只读，由 updateSendState 统一驱动
+    // （切会话 / 归档 / 取消归档都会走它）。横幅自带「取消归档」出口，不必去会话菜单翻。
+    function syncArchivedBanner(archived) {
+        const on = !!archived;
+        if (el.archivedBanner) el.archivedBanner.classList.toggle('hidden', !on);
+        if (el.composer) el.composer.classList.toggle('is-archived', on);
+        if (el.input) {
+            el.input.readOnly = on;
+            el.input.placeholder = on
+                ? '此会话已归档，不能发送消息'
+                : '发消息或粘贴图片；/ 调用指令，@ 提及文件';
+        }
+    }
+
     function updateSendState() {
         if (!el.send) return;
         if (sessionsPending()) {
             // 会话列表还没读回来：此时发送会落到占位会话上，读盘一完成就被替换掉（消息丢失）。
             // 只读盘最初几百毫秒，直接禁用并说明原因。
+            syncArchivedBanner(false);
             el.send.disabled = true;
             syncSendStopButtons(false);
             el.send.dataset.tip = '正在读取会话…';
@@ -11332,15 +11425,17 @@ async function requestApproval(session, toolMessage, info) {
         // 上下文门禁与发送共用一个口径（AI_CTX_SEND_BLOCK_RATIO，判定回写在 setCtxGate）：
         // 超限时任何发送（含排队/插话/抢占手势）都会被预检拒绝，按钮直接禁用并说明原因
         const ctxOverLimit = ctxGate.blocked;
+        syncArchivedBanner(archived);
         el.send.disabled = !hasProfile || archived || loadFailed || imageBlocked || videoBlocked || ctxOverLimit ||
             (!hasText && !hasImages && !hasVideos && !hasTextAttachments);
         syncSendStopButtons(busy);
         if (!busy && el.hint) {
-            // 本会话空闲但别的会话在跑：给出提示，但发送按钮仍然是「发送」
+            // 归档态由上面的横幅统一说明（含取消归档出口），这里不再重复那行小灰字
             const others = streams.size;
-            el.hint.textContent = loadFailed
-                ? '会话正文读取失败，已禁止追加；可清空该会话或检查 ai-sessions 目录'
-                : (archived ? '会话已归档，取消归档后可继续'
+            el.hint.textContent = archived
+                ? ''
+                : (loadFailed
+                    ? '会话正文读取失败，已禁止追加；可清空该会话或检查 ai-sessions 目录'
                     : (imageBlocked ? '当前模型未勾选图像输入：请移除图片或在模型设置中开启'
                         : (videoBlocked ? '当前模型未勾选视频输入：请移除视频或在模型设置中开启'
                             : (ctxOverLimit ? (ctxGate.compactBlocked
@@ -11617,10 +11712,13 @@ async function requestApproval(session, toolMessage, info) {
         // 子代理回合不走 startSessionTurn，不受影响。
         if (lifecycleAIStart && session.messages.length === 0 && !lifecycleStartedSessions.has(session.id)) {
             lifecycleStartedSessions.add(session.id);
-            // 阻塞期给状态栏反馈：默认 30s / 多条叠加时用户极易以为卡住而重复发送（审查 P2-2）
-            flash('正在执行该会话的生命周期钩子，完成后再发送…');
             try {
-                await lifecycleAIStart(session.workspace);
+                // 阻塞期状态栏反馈：控制器只在确有启用的 session-start 条目要跑时才回调——
+                // 默认 30s / 多条叠加时用户极易以为卡住而重复发送（审查 P2-2）；
+                // 没有钩子时闪这句纯属假反馈，一律不提示
+                await lifecycleAIStart(session.workspace, () => {
+                    flash('正在执行该会话的生命周期钩子，完成后再发送…');
+                });
             } catch (e) {} // 尽力而为路径：钩子失败不阻塞起轮（控制器内部已兜错，这里双保险）
         }
         // UserPromptSubmit：每一轮起轮前阻塞执行（与 session-start 的区别是每轮都触发，
@@ -12448,7 +12546,14 @@ async function requestApproval(session, toolMessage, info) {
             const toolExecStart = Date.now();
             let result = null;
             try {
-                if (!allowedTools.has(call.name)) throw new Error('当前范围不允许工具：' + call.name);
+                // 白名单拒绝：先识别「可视化围栏语言被误当工具名」这一特定误用，给模型可纠正的
+                // 文案；其余真正的越权调用保持原提示不变。
+                if (!allowedTools.has(call.name)) {
+                    const fenceLang = detectFenceToolMisuse(call.name);
+                    throw new Error(fenceLang
+                        ? fenceToolMisuseMessage(fenceLang)
+                        : '当前范围不允许工具：' + call.name);
+                }
                 const parsed = call.arguments ? JSON.parse(call.arguments) : {};
                 // wipe-guard AI 活跃度：在途工具计数（critical 判停用）
                 wipeguardBusyTools++;
@@ -13313,9 +13418,14 @@ async function requestApproval(session, toolMessage, info) {
         }
     }
 
-    function confirmFullPermission(onConfirm) {
+    // 完全权限确认框：会话级切换与设置页「新会话默认权限」共用同一份文案与外观。
+    // options.title 可覆盖标题（设置页用「新会话默认权限」专属提示），options.top=true 时弹层挂 body
+    // 盖在设置窗之上（与智能体/生图编辑器同款）；缺省沿用会话级切换的旧行为。
+    function confirmFullPermission(onConfirm, options) {
+        const opts = options || {};
+        const title = opts.title || '允许 AI 使用完全权限？';
         const intro = dialogNode('div', 'ai-perm-intro',
-            '开启后，AI 可以在当前设备上直接执行高权限操作，包括文件处理、命令执行和联网访问。主要范围包括：');
+            opts.intro || '开启后，AI 可以在当前设备上直接执行高权限操作，包括文件处理、命令执行和联网访问。主要范围包括：');
         const list = dialogNode('div', 'ai-perm-list');
         const rows = [
             {icon: 'folder', title: '文件和文件夹', desc: '查看、新建、更新、上传或移除设备上的文件与文件夹'},
@@ -13335,20 +13445,20 @@ async function requestApproval(session, toolMessage, info) {
             list.appendChild(row);
         }
         const note = dialogNode('div', 'ai-perm-note',
-            '请只在信任当前任务和上下文时开启；该权限可能增加敏感数据暴露、误操作或提示注入风险，可随时关闭。');
+            opts.note || '请只在信任当前任务和上下文时开启；该权限可能增加敏感数据暴露、误操作或提示注入风险，可随时关闭。');
         const cancel = dialogButton('取消', 'dlg-btn', closeAIDialog);
         const enable = dialogButton('确认', 'dlg-btn danger', () => {
             closeAIDialog();
             onConfirm();
         });
-        openAIDialog('允许 AI 使用完全权限？', [intro, list, note], [cancel, enable]);
+        openAIDialog(title, [intro, list, note], [cancel, enable], opts.top ? {top: true} : undefined);
         el.dialog.classList.add('ai-permission-dialog');
         if (el.dialogTitle) {
             el.dialogTitle.textContent = '';
             const icon = document.createElement('i');
             icon.className = 'ai-dialog-title-icon';
             icon.innerHTML = iconSvg('warn', 15);
-            el.dialogTitle.append(icon, document.createTextNode('允许 AI 使用完全权限？'));
+            el.dialogTitle.append(icon, document.createTextNode(title));
         }
     }
 
@@ -14084,7 +14194,7 @@ async function requestApproval(session, toolMessage, info) {
         const codeText = codeEl ? String(codeEl.textContent || '') : '';
         const items = [];
         if (selectedText.trim() && selectionInside) {
-            items.push({label: '复制所选', shortcut: 'Ctrl+C', icon: 'E8C8', action: () => copyText(selectedText, '所选文本')});
+            items.push({label: '复制所选', shortcut: 'Ctrl+C', icon: 'copy', action: () => copyText(selectedText, '所选文本')});
         }
         // 对话引用：与编辑器右键的「引用该文件 / 引用选取」（只给路径、让模型自己读）区分，
         // 这里把消息正文/选区带进输入区附件条，发送时拼成 user content 前缀的 <quote>。
@@ -14097,24 +14207,24 @@ async function requestApproval(session, toolMessage, info) {
                 source: message.role, index, scope, content: text,
             });
             if (selectedText.trim() && selectionInside) {
-                items.push({label: '引用所选到输入框', icon: 'E8C8', action: () => quoteOf(selectedText, 'selection')});
+                items.push({label: '引用所选到输入框', icon: 'quote', action: () => quoteOf(selectedText, 'selection')});
             }
             items.push({
                 label: message.role === 'assistant' ? '引用整条回复' : '引用整条消息',
-                icon: 'E8C8',
+                icon: 'quote',
                 disabled: !aiTextOf(quotedBody).trim(),
                 action: () => quoteOf(quotedBody, 'message'),
             });
         }
         if (codeText.trim()) {
-            items.push({label: '复制代码', icon: 'E8C8', action: () => copyText(codeText, '代码')});
+            items.push({label: '复制代码', icon: 'copy', action: () => copyText(codeText, '代码')});
         }
         if (message) {
             const label = message.role === 'assistant' ? '复制整条回复' : (message.role === 'user' ? '复制这条消息' : '复制工具输出');
-            items.push({label, icon: 'E8C8', action: () => copyMessage(message)});
+            items.push({label, icon: 'copy', action: () => copyMessage(message)});
         }
         if (items.length) items.push({sep: true});
-        items.push({label: '全选对话', action: selectAllAIText});
+        items.push({label: '全选对话', icon: 'select-all', action: selectAllAIText});
         showContextMenu(items, event.clientX, event.clientY);
     }
 
@@ -14350,9 +14460,12 @@ async function requestApproval(session, toolMessage, info) {
 
     // 可编辑：用户亲手键入的一轮。注入类消息（系统注记 / 信箱通知 / 插话 / 应用消息 / 静默块）
     // 截断重发会把它们承载的语义一起砍掉，按黑名单排除。
-    function canInlineEdit(message) {
+    function canInlineEdit(message, session) {
         if (!message || message.role !== 'user') return false;
         if (message.systemNote || message.notice || message.steer || message.silent) return false;
+        // 归档会话只读：编辑会截断重发，与「不能发送消息」的门禁冲突
+        const owner = session || currentSession();
+        if (owner && owner.archivedAt) return false;
         return !message.app;
     }
 
@@ -14446,7 +14559,8 @@ async function requestApproval(session, toolMessage, info) {
             if (e.shiftKey || e.altKey) return;
             e.preventDefault();
             e.stopPropagation();
-            saveInlineEdit();
+            // Ctrl/Cmd+Enter：跳过「丢弃后续对话」确认，直接保存
+            saveInlineEdit(e.ctrlKey || e.metaKey);
         });
         input.addEventListener('paste', (e) => {
             const data = e.clipboardData;
@@ -14495,8 +14609,8 @@ async function requestApproval(session, toolMessage, info) {
         saveBtn.type = 'button';
         saveBtn.className = 'ai-edit-btn primary';
         saveBtn.textContent = '发送';
-        saveBtn.dataset.tip = 'Enter（Shift+Enter 换行）';
-        saveBtn.addEventListener('click', () => saveInlineEdit());
+        saveBtn.dataset.tip = 'Enter 发送（Shift+Enter 换行）· 非末条时 Ctrl+Enter / Ctrl+点击可跳过确认';
+        saveBtn.addEventListener('click', (e) => saveInlineEdit(e.ctrlKey || e.metaKey));
         state.saveBtn = saveBtn;
         toolbar.append(addBtn, spacer, cancelBtn, saveBtn);
         box.appendChild(toolbar);
@@ -14514,7 +14628,11 @@ async function requestApproval(session, toolMessage, info) {
     function beginInlineEdit(wrap, session, index) {
         if (!wrap || !session) return;
         const message = session.messages[index];
-        if (!canInlineEdit(message)) return;
+        if (!canInlineEdit(message, session)) return;
+        if (session.archivedAt) {
+            flash('该会话已归档，取消归档后再编辑', true);
+            return;
+        }
         if (streamOf(session.id) || compactOf(session.id)) {
             flash('该会话正在生成，结束后再编辑', true);
             return;
@@ -14554,12 +14672,17 @@ async function requestApproval(session, toolMessage, info) {
         renderInlineAttachments(state);
     }
 
-    function saveInlineEdit() {
+    // skipConfirm：Ctrl/Cmd+Enter 或 Ctrl/Cmd+点击发送时跳过「丢弃后续对话」的二次确认。
+    function saveInlineEdit(skipConfirm) {
         const state = inlineEdit;
         if (!state || state.busy) return;
         const session = sessionById(state.sessionId);
         if (!session) {
             endInlineEdit();
+            return;
+        }
+        if (session.archivedAt) {
+            flash('该会话已归档，取消归档后再发送', true);
             return;
         }
         if (streamOf(session.id) || compactOf(session.id)) {
@@ -14571,9 +14694,9 @@ async function requestApproval(session, toolMessage, info) {
             flash('消息不能为空', true);
             return;
         }
-        // 非末条：之后的对话会被丢弃，先确认（取消则编辑态原样保留）
+        // 非末条：之后的对话会被丢弃，先确认（取消则编辑态原样保留）；Ctrl/Cmd 捷径跳过
         const tail = Math.max(0, session.messages.length - state.index - 1);
-        if (tail > 0) {
+        if (tail > 0 && !skipConfirm) {
             askConfirm('重新发送这条消息？将丢弃它之后的 ' + tail + ' 条对话。', () => {
                 void doSaveInlineEdit(state, session, payload);
             }, '重新发送');
@@ -14607,7 +14730,9 @@ async function requestApproval(session, toolMessage, info) {
             state.saveBtn.textContent = '发送';
         }
         const reason = result && result.reason;
-        if (reason === 'over_budget') {
+        if (reason === 'archived') {
+            flash('该会话已归档，取消归档后再发送', true);
+        } else if (reason === 'over_budget') {
             flash('上下文预计超过发送上限，请先 /compact 压缩上下文或减少附件', true);
         } else if (reason === 'busy') {
             flash('该会话刚开始新一轮，稍后再保存', true);
@@ -16573,6 +16698,10 @@ async function requestApproval(session, toolMessage, info) {
             startCompact();
         });
         if (el.ctxBannerClose) el.ctxBannerClose.addEventListener('click', () => dialogsMod.dismissCtxBanner());
+        if (el.unarchiveBtn) el.unarchiveBtn.addEventListener('click', () => {
+            const session = currentSession();
+            if (session && session.archivedAt) archiveSession(session, false);
+        });
         if (el.statsSessionBtn) el.statsSessionBtn.addEventListener('click', (e) => {
             e.stopPropagation();
             toggleStatsPop('session');
@@ -17144,21 +17273,42 @@ async function requestApproval(session, toolMessage, info) {
         if (chipsPopKind === 'mailbox') renderChipsPop('mailbox');
     }
 
-    // 单行构造：badge = 会话名（+ 类别后缀），main = 摘要，行点击跳会话。
-    function mailboxRow(host, sessionId, badgeSuffix, mainText, badgeClass) {
+    // 信箱通知类别 → 短标签（弹层 meta 行的小徽标）。只认这里的白名单才上色，
+    // 未知 kind 落「通知」且不加类别 class——kind 来自外部数据，不直接拼进 class。
+    const MAILBOX_KIND_LABEL = {
+        bgjob: '后台命令', bgterm: '后台终端',
+        subagent: '子代理', 'subagent-ask': '待拍板', sidechat: '支线结论',
+        session: '会话消息', 'session-user': '用户消息', schedule: '定时任务',
+        wipeguard: '工作区防护', error: '错误',
+    };
+    // 单行构造：meta 行（会话名 + 类别徽标）+ 摘要独立占满宽，杜绝长命令被会话名挤成窄列竖排。
+    function mailboxRow(host, sessionId, notice) {
         const owner = sessionById(sessionId);
+        const kind = notice.kind || '';
+        const knownKind = Object.prototype.hasOwnProperty.call(MAILBOX_KIND_LABEL, kind) ? kind : '';
+        const head = String(notice.content || '').split('\n')[0].trim().slice(0, 240);
         const row = document.createElement('div');
-        row.className = 'ai-chips-row';
-        const badge = document.createElement('span');
-        badge.className = 'ai-queue-pop-badge' + (badgeClass ? ' ' + badgeClass : '');
-        badge.textContent = ((owner && owner.title) || '其他会话') + (badgeSuffix ? ' · ' + badgeSuffix : '');
-        const main = document.createElement('span');
-        main.className = 'ai-chips-main';
-        main.textContent = mainText;
+        row.className = 'ai-mailbox-row' + (knownKind ? ' ai-mailbox-' + knownKind : '');
+        const body = document.createElement('div');
+        body.className = 'ai-mailbox-body';
+        const meta = document.createElement('div');
+        meta.className = 'ai-mailbox-meta';
+        const session = document.createElement('span');
+        session.className = 'ai-mailbox-session';
+        session.textContent = (owner && owner.title) || '其他会话';
+        const kindEl = document.createElement('span');
+        kindEl.className = 'ai-mailbox-kind';
+        kindEl.textContent = knownKind ? MAILBOX_KIND_LABEL[knownKind] : '通知';
+        meta.append(session, kindEl);
+        const text = document.createElement('div');
+        text.className = 'ai-mailbox-text';
+        text.textContent = head;
+        if (head.length > 60) text.dataset.tip = head; // 被 line-clamp 截断时悬停看全文
+        body.append(meta, text);
         const go = document.createElement('span');
         go.className = 'ai-chips-go';
         go.innerHTML = iconSvg('chevron-right', 12);
-        row.append(badge, main, go);
+        row.append(body, go);
         row.addEventListener('click', () => {
             hideChipsPop();
             switchSession(sessionId);
@@ -17170,12 +17320,11 @@ async function requestApproval(session, toolMessage, info) {
         if (!host) return;
         host.innerHTML = '';
         let rows = 0;
-        // ① 信箱通知：content 首行做摘要；子代理提问（需要拍板）用橙色徽标突出
+        // ① 信箱通知：content 首行做摘要，kind 决定 meta 行的小徽标与配色
         for (const group of noticesMod.listPending()) {
             for (const notice of group.items) {
                 rows += 1;
-                const head = String(notice.content || '').split('\n')[0].slice(0, 120);
-                mailboxRow(host, group.sessionId, '', head, notice.kind === 'subagent-ask' ? 'is-ask' : '');
+                mailboxRow(host, group.sessionId, notice);
             }
         }
         if (!rows) {
@@ -17529,6 +17678,7 @@ async function requestApproval(session, toolMessage, info) {
         renderMermaidBlocks,
         openExternal,
         openTargets,
+        openWidgetFullscreen,
         // submit_plan 工具卡「查看计划」：与接管区同一条落盘 + 打开路径
         openPlan: (...args) => openPlan(...args),
         settings,

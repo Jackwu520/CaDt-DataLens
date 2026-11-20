@@ -97,8 +97,14 @@ test('靠右边界时左移，浮层不超出视口', () => {
     assert.ok(g.left + g.width <= viewport.width - edge);
 });
 
-test('触发器过窄时给最小宽度；视口过窄时宽度受视口约束', () => {
+test('宽度 = max(最小宽度, 触发器宽度)：过窄给最小宽度，宽 select 不再被固定上限压窄', () => {
     assert.equal(computePopWidth(rect(10, 10, 80), viewport), SS_POP_LIMITS.minWidth);
+    // 宽触发器（如 JDK 路径下拉，近 900px）展开后与触发器同宽，不再压到旧的 360px
+    assert.equal(computePopWidth(rect(10, 10, 900), viewport), 900);
+    assert.equal(computePopWidth(rect(10, 10, 400), viewport), 400);
+});
+
+test('视口过窄时宽度受视口约束，不溢出屏幕', () => {
     const narrow = {width: 200, height: 600};
     const w = computePopWidth(rect(10, 10, 500), narrow);
     assert.equal(w, narrow.width - edge * 2);
