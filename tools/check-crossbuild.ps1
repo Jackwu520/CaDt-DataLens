@@ -28,7 +28,9 @@ try {
         $env:GOOS = $t.Os
         $env:GOARCH = $t.Arch
         $env:CGO_ENABLED = '0'
-        & go vet ./... 2> $log
+        # Wails v3 的非 Windows 纯 Go 构建要求 purego 标签（CGO-free 桌面实验路径）；
+        # 不带标签时 v3 的 buildguard 会显式报错。
+        & go vet -tags purego ./... 2> $log
         if ($LASTEXITCODE -ne 0) {
             $failed += $t.Label
             Get-Content $log | Where-Object { $_.Trim() -ne '' } | ForEach-Object {

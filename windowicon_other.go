@@ -2,10 +2,8 @@
 
 package main
 
-import "context"
-
 func applyTaskbarIcon() {}
 
-func showWindowWhenReady(ctx context.Context) {}
+func showWindowWhenReady() {}
 
-func ensureWindowShown(ctx context.Context) {}
+func ensureWindowShown() {}

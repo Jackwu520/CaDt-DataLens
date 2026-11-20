@@ -124,7 +124,8 @@
 - 前端绑定：`core/wails-runtime.js` 动态加载 `/wails/runtime.js`（`@vite-ignore` + 变量 specifier，Vite 不会在构建期解析），`backend` 用 `Call.ByName('main.App.<Method>')` Proxy——951 处调用零改动；`window.runtime` / `window.go` shim 兼容旧模块（ai-panel / reading / 插件）。
 - 事件桥：`core/app-events.js` + `core/event-scope.js`，48 处订阅收口（守卫测试：`EventsOn` 只许出现在桥与 mock）；控制命令改 `emitWindowEvent`（sender = 窗口名）并经 `onWindow` 过滤；`run-ui` 等模块顶层订阅走就绪队列。
 - 构建流水线：`tools/rebuild-exe.ps1` / `scripts/build-installer.ps1` 改为「npm run build → `wails3 generate syso` → `go build -tags production`」；产出 `build/bin/CaDt-DataLens.exe`（约 35 MB，含图标/清单/版本资源）。
-- 验证：`go test ./...` 全绿；`npm test` 全绿；实机跑通首屏渲染、单实例文件转发（open-targets 落标签页）、AI 浮窗模式（独立进程 560×760）、关窗干净退出。
+- 验证：`go test ./...` 全绿；`npm test` 全绿；实机跑通首屏渲染、单实例文件转发（open-targets 落标签页）、AI 浮窗模式（独立进程 560×760）、调试控制台窗、关窗干净退出。
+- 跨平台护栏：补齐 `portablewindows_other.go`（master 上缺失的 `countOtherPortableWindows` 桩）、`windowicon_other.go` 签名同步；`tools/check-crossbuild.ps1` 非 Windows vet 加 `-tags purego`（v3 CGO-free 要求）——linux/darwin 三目标全部通过。
 
 **待办（P1 剩余 / P2 前置）**
 
