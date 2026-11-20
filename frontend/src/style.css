@@ -11244,6 +11244,65 @@ html[data-writing="on"][data-writing-paper="dim"] .jsoneditor textarea.jsonedito
 }
 /* 子代理提问（需要用户拍板）：橙色提醒，与 agents 弹层 waiting 同色系 */
 .ai-queue-pop-badge.is-ask { background: color-mix(in srgb, var(--orange) 18%, transparent); color: var(--orange); }
+/* 信箱弹层行（kind=mailbox）：两行布局——meta（会话名 + 类别徽标）独占上行，
+   摘要占满整行宽度，避免长命令被会话名徽标挤成窄列竖排。与共用 .ai-chips-row 分开，
+   不影响计时器 / 定时任务 / 智能体树。 */
+.ai-mailbox-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    padding: 7px 8px;
+    border: none;
+    border-radius: 6px;
+    background: none;
+    color: var(--text);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+.ai-mailbox-row:hover { background: var(--hover); }
+.ai-mailbox-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.ai-mailbox-meta { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.ai-mailbox-session {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 10.5px;
+    font-weight: 600;
+    color: var(--muted);
+}
+.ai-mailbox-kind {
+    flex: none;
+    padding: 0 6px;
+    border-radius: 999px;
+    background: var(--accent-weak);
+    color: var(--accent);
+    font-size: 9px;
+    line-height: 15px;
+    white-space: nowrap;
+}
+.ai-mailbox-text {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow: hidden;
+    font-size: 11px;
+    line-height: 1.5;
+    color: var(--text);
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+.ai-mailbox-row .ai-chips-go { align-self: center; }
+/* 类别配色：待拍板 / 工作区防护 / 错误 = 橙红警示，后台作业 = 低调中性 */
+.ai-mailbox-subagent-ask .ai-mailbox-kind,
+.ai-mailbox-wipeguard .ai-mailbox-kind { background: color-mix(in srgb, var(--orange) 20%, transparent); color: var(--orange); }
+.ai-mailbox-error .ai-mailbox-kind { background: color-mix(in srgb, var(--red) 18%, transparent); color: var(--red); }
+.ai-mailbox-bgjob .ai-mailbox-kind,
+.ai-mailbox-bgterm .ai-mailbox-kind { background: color-mix(in srgb, var(--muted) 16%, transparent); color: var(--muted); }
 /* 智能体团队：嵌套树（缩进 + 竖线 rail）。基础 .ai-chips-row 与计时器 / 定时任务共用，
    树形样式只挂 .ai-agent-tree-row 等新类，不改基础规则。 */
 .ai-agent-tree-row {

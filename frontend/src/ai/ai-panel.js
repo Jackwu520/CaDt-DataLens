@@ -3301,6 +3301,7 @@ export function createAIPanel(options) {
         newSession, open, switchSession, compactOf, streamOf, sendAppMessage,
         activeProfile, appControlOn, defaultModelEntry, defaultProfile, normalizeProfile,
         configForProfile, promptById, emptyState, dialogButton, openAIDialog, closeAIDialog,
+        confirmFullPermission,
         invalidateSkillsCache, resolveMemoryDir, getAILogRoot, openAILogDir,
         aiNormalizePath, aiJoinPath, aiPathDir, aiPathKey, aiProjectRoot, aiWorkspaceKey,
         queryUsageForAccount, showModelListPicker, switchProfile,
@@ -13417,9 +13418,14 @@ async function requestApproval(session, toolMessage, info) {
         }
     }
 
-    function confirmFullPermission(onConfirm) {
+    // 完全权限确认框：会话级切换与设置页「新会话默认权限」共用同一份文案与外观。
+    // options.title 可覆盖标题（设置页用「新会话默认权限」专属提示），options.top=true 时弹层挂 body
+    // 盖在设置窗之上（与智能体/生图编辑器同款）；缺省沿用会话级切换的旧行为。
+    function confirmFullPermission(onConfirm, options) {
+        const opts = options || {};
+        const title = opts.title || '允许 AI 使用完全权限？';
         const intro = dialogNode('div', 'ai-perm-intro',
-            '开启后，AI 可以在当前设备上直接执行高权限操作，包括文件处理、命令执行和联网访问。主要范围包括：');
+            opts.intro || '开启后，AI 可以在当前设备上直接执行高权限操作，包括文件处理、命令执行和联网访问。主要范围包括：');
         const list = dialogNode('div', 'ai-perm-list');
         const rows = [
             {icon: 'folder', title: '文件和文件夹', desc: '查看、新建、更新、上传或移除设备上的文件与文件夹'},
@@ -13439,20 +13445,20 @@ async function requestApproval(session, toolMessage, info) {
             list.appendChild(row);
         }
         const note = dialogNode('div', 'ai-perm-note',
-            '请只在信任当前任务和上下文时开启；该权限可能增加敏感数据暴露、误操作或提示注入风险，可随时关闭。');
+            opts.note || '请只在信任当前任务和上下文时开启；该权限可能增加敏感数据暴露、误操作或提示注入风险，可随时关闭。');
         const cancel = dialogButton('取消', 'dlg-btn', closeAIDialog);
         const enable = dialogButton('确认', 'dlg-btn danger', () => {
             closeAIDialog();
             onConfirm();
         });
-        openAIDialog('允许 AI 使用完全权限？', [intro, list, note], [cancel, enable]);
+        openAIDialog(title, [intro, list, note], [cancel, enable], opts.top ? {top: true} : undefined);
         el.dialog.classList.add('ai-permission-dialog');
         if (el.dialogTitle) {
             el.dialogTitle.textContent = '';
             const icon = document.createElement('i');
             icon.className = 'ai-dialog-title-icon';
             icon.innerHTML = iconSvg('warn', 15);
-            el.dialogTitle.append(icon, document.createTextNode('允许 AI 使用完全权限？'));
+            el.dialogTitle.append(icon, document.createTextNode(title));
         }
     }
 
@@ -14188,7 +14194,7 @@ async function requestApproval(session, toolMessage, info) {
         const codeText = codeEl ? String(codeEl.textContent || '') : '';
         const items = [];
         if (selectedText.trim() && selectionInside) {
-            items.push({label: '复制所选', shortcut: 'Ctrl+C', icon: 'E8C8', action: () => copyText(selectedText, '所选文本')});
+            items.push({label: '复制所选', shortcut: 'Ctrl+C', icon: 'copy', action: () => copyText(selectedText, '所选文本')});
         }
         // 对话引用：与编辑器右键的「引用该文件 / 引用选取」（只给路径、让模型自己读）区分，
         // 这里把消息正文/选区带进输入区附件条，发送时拼成 user content 前缀的 <quote>。
@@ -14201,24 +14207,24 @@ async function requestApproval(session, toolMessage, info) {
                 source: message.role, index, scope, content: text,
             });
             if (selectedText.trim() && selectionInside) {
-                items.push({label: '引用所选到输入框', icon: 'E8C8', action: () => quoteOf(selectedText, 'selection')});
+                items.push({label: '引用所选到输入框', icon: 'quote', action: () => quoteOf(selectedText, 'selection')});
             }
             items.push({
                 label: message.role === 'assistant' ? '引用整条回复' : '引用整条消息',
-                icon: 'E8C8',
+                icon: 'quote',
                 disabled: !aiTextOf(quotedBody).trim(),
                 action: () => quoteOf(quotedBody, 'message'),
             });
         }
         if (codeText.trim()) {
-            items.push({label: '复制代码', icon: 'E8C8', action: () => copyText(codeText, '代码')});
+            items.push({label: '复制代码', icon: 'copy', action: () => copyText(codeText, '代码')});
         }
         if (message) {
             const label = message.role === 'assistant' ? '复制整条回复' : (message.role === 'user' ? '复制这条消息' : '复制工具输出');
-            items.push({label, icon: 'E8C8', action: () => copyMessage(message)});
+            items.push({label, icon: 'copy', action: () => copyMessage(message)});
         }
         if (items.length) items.push({sep: true});
-        items.push({label: '全选对话', action: selectAllAIText});
+        items.push({label: '全选对话', icon: 'select-all', action: selectAllAIText});
         showContextMenu(items, event.clientX, event.clientY);
     }
 
@@ -17262,21 +17268,42 @@ async function requestApproval(session, toolMessage, info) {
         if (chipsPopKind === 'mailbox') renderChipsPop('mailbox');
     }
 
-    // 单行构造：badge = 会话名（+ 类别后缀），main = 摘要，行点击跳会话。
-    function mailboxRow(host, sessionId, badgeSuffix, mainText, badgeClass) {
+    // 信箱通知类别 → 短标签（弹层 meta 行的小徽标）。只认这里的白名单才上色，
+    // 未知 kind 落「通知」且不加类别 class——kind 来自外部数据，不直接拼进 class。
+    const MAILBOX_KIND_LABEL = {
+        bgjob: '后台命令', bgterm: '后台终端',
+        subagent: '子代理', 'subagent-ask': '待拍板', sidechat: '支线结论',
+        session: '会话消息', 'session-user': '用户消息', schedule: '定时任务',
+        wipeguard: '工作区防护', error: '错误',
+    };
+    // 单行构造：meta 行（会话名 + 类别徽标）+ 摘要独立占满宽，杜绝长命令被会话名挤成窄列竖排。
+    function mailboxRow(host, sessionId, notice) {
         const owner = sessionById(sessionId);
+        const kind = notice.kind || '';
+        const knownKind = Object.prototype.hasOwnProperty.call(MAILBOX_KIND_LABEL, kind) ? kind : '';
+        const head = String(notice.content || '').split('\n')[0].trim().slice(0, 240);
         const row = document.createElement('div');
-        row.className = 'ai-chips-row';
-        const badge = document.createElement('span');
-        badge.className = 'ai-queue-pop-badge' + (badgeClass ? ' ' + badgeClass : '');
-        badge.textContent = ((owner && owner.title) || '其他会话') + (badgeSuffix ? ' · ' + badgeSuffix : '');
-        const main = document.createElement('span');
-        main.className = 'ai-chips-main';
-        main.textContent = mainText;
+        row.className = 'ai-mailbox-row' + (knownKind ? ' ai-mailbox-' + knownKind : '');
+        const body = document.createElement('div');
+        body.className = 'ai-mailbox-body';
+        const meta = document.createElement('div');
+        meta.className = 'ai-mailbox-meta';
+        const session = document.createElement('span');
+        session.className = 'ai-mailbox-session';
+        session.textContent = (owner && owner.title) || '其他会话';
+        const kindEl = document.createElement('span');
+        kindEl.className = 'ai-mailbox-kind';
+        kindEl.textContent = knownKind ? MAILBOX_KIND_LABEL[knownKind] : '通知';
+        meta.append(session, kindEl);
+        const text = document.createElement('div');
+        text.className = 'ai-mailbox-text';
+        text.textContent = head;
+        if (head.length > 60) text.dataset.tip = head; // 被 line-clamp 截断时悬停看全文
+        body.append(meta, text);
         const go = document.createElement('span');
         go.className = 'ai-chips-go';
         go.innerHTML = iconSvg('chevron-right', 12);
-        row.append(badge, main, go);
+        row.append(body, go);
         row.addEventListener('click', () => {
             hideChipsPop();
             switchSession(sessionId);
@@ -17288,12 +17315,11 @@ async function requestApproval(session, toolMessage, info) {
         if (!host) return;
         host.innerHTML = '';
         let rows = 0;
-        // ① 信箱通知：content 首行做摘要；子代理提问（需要拍板）用橙色徽标突出
+        // ① 信箱通知：content 首行做摘要，kind 决定 meta 行的小徽标与配色
         for (const group of noticesMod.listPending()) {
             for (const notice of group.items) {
                 rows += 1;
-                const head = String(notice.content || '').split('\n')[0].slice(0, 120);
-                mailboxRow(host, group.sessionId, '', head, notice.kind === 'subagent-ask' ? 'is-ask' : '');
+                mailboxRow(host, group.sessionId, notice);
             }
         }
         if (!rows) {
