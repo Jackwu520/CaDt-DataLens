@@ -4,7 +4,10 @@ package browser
 // Windows 实现在 browser_windows.go / browser_com_windows.go，其余平台为 stub。
 // 每个 AI 会话可通过 profileKey 获得独立的用户数据目录（cookie/登录态隔离）。
 
-import "regexp"
+import (
+	"context"
+	"regexp"
+)
 
 // Host 内嵌浏览器引擎。Windows 下持有 WebView2 宿主线程；其余平台为 stub。
 type Host struct{}
@@ -15,8 +18,12 @@ var (
 	Logf func(level, format string, args ...any)
 	// Emit 前端事件推送（main 在 startup 注入 Wails EventsEmit）。
 	Emit func(event string, data any)
-	// FindParent 返回 WebView2 控件的宿主父窗口（main/windowicon_windows.go 的 findWailsWindow）。
+	// FindParent 返回 WebView2 控件的兜底宿主父窗口（main/windowicon_windows.go 的
+	// findWailsWindow）。v3 一进程多窗口后只在拿不到调用方窗口时兜底（测试/非绑定路径）。
 	FindParent func() uintptr
+	// ParentForCall 返回绑定调用方窗口的原生句柄（main 用 callerWindow+NativeWindow）。
+	// 浏览器控件归属发起它的窗口——不再按 Z 序猜「当前主窗口」。
+	ParentForCall func(ctx context.Context) uintptr
 )
 
 func logf(level, format string, args ...any) {

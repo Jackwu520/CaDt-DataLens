@@ -7,6 +7,7 @@ package browser
 // CDP 槽位调用见 browser_com_windows.go。
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
@@ -240,6 +241,7 @@ type browserInstance struct {
 	ctrl3      *edge.ICoreWebView2Controller3 // 栅格缩放用（QI 一次缓存，Close 时 Release）
 	webview    *edge.ICoreWebView2
 	hwndCtl    uintptr // WebView2 控件自己的 HWND（z 序调整用）
+	ownerHWND  uintptr // 宿主父窗口（= 发起打开的窗口）：关窗时按它回收实例
 	url        string
 	title      string
 	canGoBack  bool
@@ -328,12 +330,25 @@ func (h *Host) BrowserEnsureZ(id string) error {
 	return jobErr
 }
 
-// browserParentHWND 返回 WebView2 控件的宿主父窗口（生产 = Wails 主窗口；测试可替换）。
+// browserParentHWND 返回 WebView2 控件的兜底宿主父窗口（生产 = Wails 主窗口；测试可替换）。
 var browserParentHWND = func() uintptr {
 	if FindParent != nil {
 		return FindParent()
 	}
 	return 0
+}
+
+// browserParentFor 解析浏览器控件的宿主父窗口：优先绑定调用方窗口（v3 一进程
+// 多窗口，控件归属发起它的窗口——此前按 Z 序找「第一个 WailsWebviewWindow」，
+// 永远挂上当前最前台的窗口，后台窗口的浏览器就渲染到前台去了）；拿不到
+// （测试 / 非绑定路径）回退 FindParent。
+func browserParentFor(ctx context.Context) uintptr {
+	if ParentForCall != nil {
+		if h := ParentForCall(ctx); h != 0 {
+			return h
+		}
+	}
+	return browserParentHWND()
 }
 
 func browserGet(id string) *browserInstance {
@@ -496,7 +511,7 @@ func browserCreateOnHost(inst *browserInstance, hwnd uintptr) error {
 
 // ---- App 绑定方法 ----
 
-func (h *Host) BrowserOpen(id, url, profileKey string) (map[string]string, error) {
+func (h *Host) BrowserOpen(ctx context.Context, id, url, profileKey string) (map[string]string, error) {
 	id = strings.TrimSpace(id)
 	if id == "" {
 		return nil, fmt.Errorf("id 不能为空")
@@ -521,13 +536,14 @@ func (h *Host) BrowserOpen(id, url, profileKey string) (map[string]string, error
 	browserInstances[id] = inst
 	browserMu.Unlock()
 
-	hwnd := browserParentHWND()
+	hwnd := browserParentFor(ctx)
 	if hwnd == 0 {
 		browserMu.Lock()
 		delete(browserInstances, id)
 		browserMu.Unlock()
 		return nil, fmt.Errorf("找不到主窗口")
 	}
+	inst.ownerHWND = hwnd // 控件归属发起窗口：关窗时按它回收（BrowserCloseByOwner）
 	var createErr error
 	jobErr := browserHostRun(func() {
 		createErr = browserCreateOnHost(inst, hwnd)
@@ -917,4 +933,31 @@ func (h *Host) BrowserClose(id string) error {
 		logf("INFO", "browser-%s：已关闭", inst.id)
 	})
 	return jobErr
+}
+
+// BrowserCloseByOwner 关闭归属指定宿主窗口的全部浏览器实例（窗口关闭时回收：
+// 该窗口的前端已死，标签页跟着走），返回关闭数。0 = 该窗口没有开浏览器。
+func (h *Host) BrowserCloseByOwner(hwnd uintptr) int {
+	if hwnd == 0 {
+		return 0
+	}
+	browserMu.Lock()
+	ids := make([]string, 0, 2)
+	for id, inst := range browserInstances {
+		if inst.ownerHWND == hwnd {
+			ids = append(ids, id)
+		}
+	}
+	browserMu.Unlock()
+	if len(ids) == 0 {
+		return 0
+	}
+	closed := 0
+	for _, id := range ids {
+		if err := h.BrowserClose(id); err == nil {
+			closed++
+		}
+	}
+	logf("INFO", "窗口关闭回收浏览器标签页：owner=%#x closed=%d", hwnd, closed)
+	return closed
 }

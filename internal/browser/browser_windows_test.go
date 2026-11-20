@@ -114,7 +114,7 @@ func TestBrowserEmbedAndCDP(t *testing.T) {
 	defer func() { browserParentHWND = origParent }()
 
 	app := &Host{}
-	info, err := app.BrowserOpen("t-browser", "about:blank", "test")
+	info, err := app.BrowserOpen(nil, "t-browser", "about:blank", "test")
 	if err != nil {
 		t.Fatalf("BrowserOpen: %v", err)
 	}
@@ -237,7 +237,7 @@ func TestBrowserLocalFileNavigation(t *testing.T) {
 	defer func() { browserParentHWND = origParent }()
 
 	app := &Host{}
-	if _, err := app.BrowserOpen("t-file", "about:blank", "test"); err != nil {
+	if _, err := app.BrowserOpen(nil, "t-file", "about:blank", "test"); err != nil {
 		t.Fatalf("BrowserOpen: %v", err)
 	}
 	defer app.BrowserClose("t-file")

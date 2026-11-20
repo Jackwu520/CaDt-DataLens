@@ -56,7 +56,7 @@ func TestBrowserViewportPresetSmoke(t *testing.T) {
 	defer func() { browserParentHWND = origParent }()
 
 	app := &Host{}
-	if _, err := app.BrowserOpen("t-resize", "data:text/html,<html><head><meta name='viewport' content='width=device-width'><title>rp</title></head><body>resize repro</body></html>", "test"); err != nil {
+	if _, err := app.BrowserOpen(nil, "t-resize", "data:text/html,<html><head><meta name='viewport' content='width=device-width'><title>rp</title></head><body>resize repro</body></html>", "test"); err != nil {
 		t.Fatalf("BrowserOpen: %v", err)
 	}
 	defer app.BrowserClose("t-resize")
@@ -121,7 +121,7 @@ func TestBrowserObjectMessageQuarantine(t *testing.T) {
 
 	app := &Host{}
 	url := "data:text/html,<html><body><script>setTimeout(function(){window.chrome.webview.postMessage({a:1});},200)</script></body></html>"
-	if _, err := app.BrowserOpen("t-objmsg", url, "test"); err != nil {
+	if _, err := app.BrowserOpen(nil, "t-objmsg", url, "test"); err != nil {
 		t.Fatalf("BrowserOpen: %v", err)
 	}
 	// 泵 2 秒：让页面脚本的 postMessage 回调派发出来
@@ -149,7 +149,7 @@ func TestBrowserObjectMessageQuarantine(t *testing.T) {
 		t.Fatal("关闭后实例应移出注册表")
 	}
 	// 同名重开必须可用（隔离不挡重建）
-	if _, err := app.BrowserOpen("t-objmsg", "about:blank", "test"); err != nil {
+	if _, err := app.BrowserOpen(nil, "t-objmsg", "about:blank", "test"); err != nil {
 		t.Fatalf("隔离后同名重开: %v", err)
 	}
 	defer app.BrowserClose("t-objmsg")

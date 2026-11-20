@@ -44,13 +44,13 @@ func TestBrowserCloseThenReopen(t *testing.T) {
 	defer func() { browserParentHWND = origParent }()
 
 	app := &Host{}
-	if _, err := app.BrowserOpen("t-a", "about:blank", "test"); err != nil {
+	if _, err := app.BrowserOpen(nil, "t-a", "about:blank", "test"); err != nil {
 		t.Fatalf("第一次 BrowserOpen: %v", err)
 	}
 	if err := app.BrowserClose("t-a"); err != nil {
 		t.Fatalf("BrowserClose: %v", err)
 	}
-	if _, err := app.BrowserOpen("t-b", "about:blank", "test"); err != nil {
+	if _, err := app.BrowserOpen(nil, "t-b", "about:blank", "test"); err != nil {
 		t.Fatalf("关闭后再 BrowserOpen: %v", err)
 	}
 	if err := app.BrowserClose("t-b"); err != nil {
@@ -114,7 +114,7 @@ func TestBrowserControlRaisedAboveMainWebView(t *testing.T) {
 	defer func() { browserParentHWND = origParent }()
 
 	app := &Host{}
-	if _, err := app.BrowserOpen("t-z", "about:blank", "test"); err != nil {
+	if _, err := app.BrowserOpen(nil, "t-z", "about:blank", "test"); err != nil {
 		t.Fatalf("BrowserOpen: %v", err)
 	}
 	defer app.BrowserClose("t-z")
@@ -183,7 +183,7 @@ func TestBrowserEnsureZRaisesCoveredControl(t *testing.T) {
 	defer func() { browserParentHWND = origParent }()
 
 	app := &Host{}
-	if _, err := app.BrowserOpen("t-ensure", "about:blank", "test"); err != nil {
+	if _, err := app.BrowserOpen(nil, "t-ensure", "about:blank", "test"); err != nil {
 		t.Fatalf("BrowserOpen: %v", err)
 	}
 	defer app.BrowserClose("t-ensure")

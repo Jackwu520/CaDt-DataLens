@@ -4,11 +4,17 @@ package browser
 
 // 非 Windows 平台浏览器标签页 stub：内嵌 WebView2 仅 Windows 可用。
 
-import "fmt"
+import (
+	"context"
+	"fmt"
+)
 
-func (h *Host) BrowserOpen(id, url, profileKey string) (map[string]string, error) {
+func (h *Host) BrowserOpen(ctx context.Context, id, url, profileKey string) (map[string]string, error) {
 	return nil, fmt.Errorf("当前平台不支持内嵌浏览器")
 }
+
+// BrowserCloseByOwner 非 Windows 没有内嵌浏览器实例，恒 0。
+func (h *Host) BrowserCloseByOwner(hwnd uintptr) int { return 0 }
 
 func (h *Host) BrowserNavigate(id string, url string) error { return browserUnsupported() }
 func (h *Host) BrowserGoBack(id string) error               { return browserUnsupported() }
