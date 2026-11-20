@@ -11,6 +11,9 @@ import {createContextMenu, inSubmenuCone, pointInRect, SUBMENU_CONE_CLOSE_DELAY_
 import {copyImageBlobToClipboard} from './core/image-clipboard.js';
 import {prepareImagePayload} from './ai/ai-image-encode.js';
 import {normalizeTermText} from './ai/ai-terminal-tools.js';
+import {createBridgeMemoView} from './bridge/bridge-memo-view.js';
+import {createAIMonitorView} from './ai/ai-monitor-view.js';
+import {createDiffWindowView} from './editor/diff-window-view.js';
 import {CODE_SHOT_RADII, CODE_SHOT_SCALES} from './core/code-shot.js';
 import {createDebugConsole} from './terminal/debugconsole.js';
 import {createActivityLog} from './core/activity-log.js';
@@ -432,6 +435,191 @@ function syncDevConsoleVisibility() {
             toggleTerminalPanel(false);
         }
     }
+}
+
+// ===== 辅助独立窗（便签 / 会话监控 / 文件对比）=====
+// 与终端独立窗口同构（bridge-ui 启动编排按 auxWindowKind 分派到这里）：
+// 跳过正常启动流程，全屏渲染单一视图。数据源磁盘/进程内共享——便签走租约
+// （多窗口单写者）、监控窗只读镜像（会话归属与回合租约留在原窗口）、对比窗
+// 读完即渲。三类窗口都不注册工作区打开者（Go findByWorkspace 只认主窗口）。
+const auxWindowKind = (async () => {
+    try {
+        if (!(backend && backend.GetAuxWindowKind)) return '';
+        return String(await backend.GetAuxWindowKind() || '');
+    } catch (e) {
+        return '';
+    }
+})();
+
+// 辅助窗的轻提示：没有状态栏，走底部浮动条（自管超时，不进弹层栈）。
+let auxToastTimer = 0;
+function auxToast(msg, isErr) {
+    let host = document.getElementById('aux-toast');
+    if (!host) {
+        host = document.createElement('div');
+        host.id = 'aux-toast';
+        document.body.appendChild(host);
+    }
+    host.textContent = String(msg == null ? '' : msg);
+    host.classList.toggle('error', !!isErr);
+    host.classList.add('show');
+    clearTimeout(auxToastTimer);
+    auxToastTimer = setTimeout(() => host.classList.remove('show'), 2600);
+}
+
+function closeAuxWindowSelf() {
+    try { if (window.runtime && window.runtime.WindowClose) window.runtime.WindowClose(); } catch (e) {}
+}
+
+// buildAuxWindowHead 辅助窗统一头部：标题 + 上下文胶囊 + 动作按钮。
+// 无边框窗口，头部即拖动区（body.*-only CSS 对 .aux-window-head 开 drag）。
+function buildAuxWindowHead({title, pill, pillTitle, actions}) {
+    const head = document.createElement('div');
+    head.className = 'aux-window-head';
+    const label = document.createElement('span');
+    label.className = 'aux-window-title';
+    label.textContent = title;
+    head.appendChild(label);
+    if (pill) {
+        const pillEl = document.createElement('span');
+        pillEl.className = 'aux-window-pill';
+        pillEl.textContent = pill;
+        if (pillTitle) pillEl.title = pillTitle;
+        head.appendChild(pillEl);
+    }
+    const spacer = document.createElement('div');
+    spacer.className = 'aux-window-spacer';
+    head.appendChild(spacer);
+    for (const a of (actions || [])) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'aux-window-btn';
+        btn.dataset.tip = a.tip || a.label || '';
+        btn.setAttribute('aria-label', a.tip || a.label || '');
+        btn.innerHTML = iconSvg(a.icon || 'close', 12);
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            a.onClick(e);
+        });
+        head.appendChild(btn);
+    }
+    return head;
+}
+
+// 便签独立窗口：桌面便签形态（置顶小窗）。复用主窗口同一套便签视图、
+// store 与租约（memoApi.flushAll 走同一落盘链），外部变更经 resource-changed 同步。
+async function startMemoWindowMode() {
+    window.__auxWindowMode = 'memo';
+    document.documentElement.classList.remove('app-booting');
+    document.body.classList.add('memo-only');
+    try { applySettings(); } catch (e) {}
+    let info = null;
+    try { info = backend.GetStartupMemo ? await backend.GetStartupMemo() : null; } catch (e) {}
+    if (!info || !info.scope) { closeAuxWindowSelf(); return; }
+    const scope = info.scope === 'workspace' ? 'workspace' : 'global';
+    const wsRoot = String(info.workspace || '');
+    let memoFlush = () => {};
+    const head = buildAuxWindowHead({
+        title: '便签',
+        pill: scope === 'workspace' ? (baseNameOf(wsRoot) || '工作区') : '全局',
+        pillTitle: scope === 'workspace' ? wsRoot : '全局便签',
+        actions: [{
+            icon: 'close',
+            tip: '关闭',
+            onClick: () => { memoFlush(); closeAuxWindowSelf(); },
+        }],
+    });
+    const host = document.createElement('div');
+    host.className = 'aux-window-body';
+    document.body.append(head, host);
+    const menu = createContextMenu();
+    const memoView = createBridgeMemoView({
+        get backend() { return backend; },
+        get flash() { return auxToast; },
+        get els() { return {editor: host}; },
+        get ctxMenu() { return menu; },
+        get workspaceFolder() { return wsRoot; },
+        get rt() { return rt; },
+        normalizeTermText,
+        initialScope: () => scope,
+    });
+    memoView.createMemoView({memo: true});
+    memoFlush = () => {
+        try { if (memoView.memoApi && memoView.memoApi.flushAll) memoView.memoApi.flushAll().catch(() => {}); } catch (e) {}
+    };
+    // 外部变更同步：AI 写入 / 其他窗口保存 → 重载（与主窗口同一 resource-changed 链）。
+    appEvents.onApp('resource-changed', (payload) => memoView.memoOnResourceEvent(payload));
+    // 关窗前 flush：防抖窗口内的最后一下编辑不落盘就丢了（1s 防抖 + mtime CAS 兜底）。
+    window.addEventListener('pagehide', memoFlush, {once: true});
+}
+
+// 会话监控窗：只读镜像——渲染被监控会话/群聊的 JSONL 时间线并尾随流式事件。
+// 不改会话归属：原窗口继续持有回合租约，这里只看 + 停止 + 跳回发起窗口。
+async function startMonitorWindowMode() {
+    window.__auxWindowMode = 'monitor';
+    document.documentElement.classList.remove('app-booting');
+    document.body.classList.add('monitor-only');
+    try { applySettings(); } catch (e) {}
+    let info = null;
+    try { info = backend.GetStartupMonitorSession ? await backend.GetStartupMonitorSession() : null; } catch (e) {}
+    if (!info || !info.sessionId) { closeAuxWindowSelf(); return; }
+    const monitor = createAIMonitorView({
+        get backend() { return backend; },
+        get appEvents() { return appEvents; },
+        toast: auxToast,
+        sessionId: String(info.sessionId),
+        kind: info.kind === 'group' ? 'group' : 'session',
+        workspace: String(info.workspace || ''),
+        origin: String(info.origin || ''),
+        onOpenHome: () => {
+            if (info.origin && backend.WindowFocusByName) backend.WindowFocusByName(info.origin);
+        },
+        onClose: () => closeAuxWindowSelf(),
+    });
+    monitor.mount(document.body);
+}
+
+// 文件对比窗：读取两个文件 → 行级 diff + 可选语义差异，只读展示。
+async function startDiffWindowMode() {
+    window.__auxWindowMode = 'diff';
+    document.documentElement.classList.remove('app-booting');
+    document.body.classList.add('diff-only');
+    try { applySettings(); } catch (e) {}
+    let info = null;
+    try { info = backend.GetStartupDiff ? await backend.GetStartupDiff() : null; } catch (e) {}
+    if (!info || !info.left || !info.right) { closeAuxWindowSelf(); return; }
+    const left = String(info.left);
+    const right = String(info.right);
+    let rerun = () => {};
+    const head = buildAuxWindowHead({
+        title: '文件对比',
+        pill: (baseNameOf(left) || left) + ' ↔ ' + (baseNameOf(right) || right),
+        pillTitle: left + '\n' + right,
+        actions: [
+            {
+                icon: 'refresh',
+                tip: '重新比较',
+                onClick: () => rerun(),
+            },
+            {icon: 'close', tip: '关闭', onClick: () => closeAuxWindowSelf()},
+        ],
+    });
+    const host = document.createElement('div');
+    host.className = 'aux-window-body';
+    document.body.append(head, host);
+    const view = createDiffWindowView({
+        get backend() { return backend; },
+        toast: auxToast,
+        left,
+        right,
+        baseNameOf,
+        container: host,
+        onTitle: (text) => {
+            try { if (window.runtime && window.runtime.WindowSetTitle) window.runtime.WindowSetTitle(text + ' · 文件对比 · CaDt-DataLens'); } catch (e) {}
+        },
+    });
+    view.mount();
+    rerun = () => view.run();
 }
 
 async function refreshLogPath() {
@@ -4187,6 +4375,7 @@ function initAIPanel() {
     aiGroupRuntime.init();
     aiGroupSidebar = createAIGroupSidebar({
         runtime: aiGroupRuntime,
+        get backend() { return backend; },
         getAIConfig: () => (aiPanel && aiPanel.aiGroupApi ? aiPanel.aiGroupApi.getConfig() : null),
         saveConfig: () => {
             if (aiPanel && aiPanel.aiGroupApi) aiPanel.aiGroupApi.saveConfig();
@@ -5273,7 +5462,7 @@ const {openSchemaValidation} = schemaPanel;
 // 窗口切换器缓存：quick-switch「窗口」层用（打开该层时刷新一轮）。
 // 列表来自 Go 的窗口注册表（v3 一进程多窗口才有这张表）。
 let windowSwitchRows = [];
-const WINDOW_MODE_LABELS = {main: '主窗口', float: 'AI 浮窗', debug: '调试控制台', terminal: '终端'};
+const WINDOW_MODE_LABELS = {main: '主窗口', float: 'AI 浮窗', debug: '调试控制台', terminal: '终端', memo: '便签', monitor: '会话监控', diff: '文件对比'};
 async function refreshWindowSwitchEntries() {
     if (!backend.WindowList) {
         windowSwitchRows = [];
@@ -6705,6 +6894,16 @@ const bridgeUI = createBridgeUI({
     get onPendingChange() { return memoPendingChanged; },
     get consoleWindowMode() { return consoleWindowMode; },
     get terminalWindowMode() { return terminalWindowMode; },
+    get auxWindowKind() { return auxWindowKind; },
+    get startMemoWindowMode() { return startMemoWindowMode; },
+    get startMonitorWindowMode() { return startMonitorWindowMode; },
+    get startDiffWindowMode() { return startDiffWindowMode; },
+    // 便签面板顶栏「弹出」：把当前作用域弹成置顶便签窗（便签窗自身不传这个键，不显示按钮）
+    get popOutMemo() {
+        return (scope, workspace) => {
+            backend.PopOutMemo(scope, workspace).catch((e) => flash('弹出便签窗失败：' + ((e && e.message) || e), true));
+        };
+    },
     get notifyFailure() { return (...args) => failureNotifier.notifyFailure(...args); },
     get copyText() { return copyText; },
     get createDoc() { return createDoc; },

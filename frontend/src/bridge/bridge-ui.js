@@ -163,6 +163,17 @@ function openBrowserTab(url, profileKey, opts) {
             });
         return;
     }
+    // 辅助独立窗（便签 / 会话监控 / 文件对比）：同构终端窗，各渲染自己的单一视图
+    const auxKind = await deps.auxWindowKind;
+    if (auxKind === 'memo' || auxKind === 'monitor' || auxKind === 'diff') {
+        const starter = auxKind === 'memo' ? deps.startMemoWindowMode
+            : auxKind === 'monitor' ? deps.startMonitorWindowMode : deps.startDiffWindowMode;
+        Promise.resolve(starter())
+            .catch((e) => {
+                try { deps.logFrontend('error', (auxKind === 'memo' ? '便签' : auxKind === 'monitor' ? '会话监控' : '文件对比') + '窗口启动失败：' + ((e && (e.stack || e.message)) || e)); } catch (_) {}
+            });
+        return;
+    }
     let floatWindow = false;
     try {
         floatWindow = !!(deps.backend.IsAIFloatWindow && await deps.backend.IsAIFloatWindow());

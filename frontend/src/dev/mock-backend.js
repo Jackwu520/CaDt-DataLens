@@ -1784,6 +1784,15 @@ const mockBackend = {
     async PopOutTerminal(id) { this._calls.push('popout-terminal:' + id); },
     async IsTerminalWindow() { return !!window.__mockTerminalWindow; },
     async GetStartupTermID() { return window.__mockTerminalTermId || ''; },
+    // 辅助独立窗（便签/会话监控/文件对比，aux_windows.go）：dev 浏览器调试按普通窗口处理，
+    // 弹出动作只记调用；要调试窗口形态本身请用真实 exe。
+    async GetAuxWindowKind() { return window.__mockAuxWindowKind || ''; },
+    async PopOutMemo(scope, workspace) { this._calls.push('popout-memo:' + scope + ':' + (workspace || '')); },
+    async PopOutSession(sessionId, kind, workspace) { this._calls.push('popout-session:' + kind + ':' + sessionId); },
+    async OpenDiffWindow(pathA, pathB) { this._calls.push('open-diff:' + pathA + '|' + pathB); },
+    async GetStartupMemo() { return window.__mockAuxWindowKind === 'memo' ? {scope: 'global', workspace: ''} : null; },
+    async GetStartupMonitorSession() { return null; },
+    async GetStartupDiff() { return null; },
     async WindowList() {
         return (window.__mockWindows || [{name: 'main', mode: 'main', self: '1'}]).slice();
     },

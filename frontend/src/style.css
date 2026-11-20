@@ -14367,3 +14367,212 @@ html[data-theme="light"] {
    保留内联 style.display 与既有 !important 显示逻辑的优先级。已有的 .xxx.hidden 规则
    特异性更高，行为不变，无需删除。 */
 .hidden { display: none; }
+
+/* ===== 辅助独立窗（便签 memo-only / 会话监控 monitor-only / 文件对比 diff-only）=====
+   同 terminal-only：隐藏应用外壳（静态 DOM 仍在），头部即拖动区，主体全屏。 */
+body.memo-only,
+body.monitor-only,
+body.diff-only {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    overflow: hidden;
+}
+body.memo-only #toolbar,
+body.memo-only #activity-bar,
+body.memo-only #sidebar,
+body.memo-only #main-pane,
+body.memo-only #ai-panel,
+body.memo-only #statusbar,
+body.memo-only #enc-popover,
+body.monitor-only #toolbar,
+body.monitor-only #activity-bar,
+body.monitor-only #sidebar,
+body.monitor-only #main-pane,
+body.monitor-only #ai-panel,
+body.monitor-only #statusbar,
+body.monitor-only #enc-popover,
+body.diff-only #toolbar,
+body.diff-only #activity-bar,
+body.diff-only #sidebar,
+body.diff-only #main-pane,
+body.diff-only #ai-panel,
+body.diff-only #statusbar,
+body.diff-only #enc-popover { display: none !important; }
+
+.aux-window-head {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 8px 5px 12px;
+    background: var(--panel2);
+    border-bottom: 1px solid var(--border);
+    user-select: none;
+    --wails-draggable: drag;
+}
+.aux-window-head button,
+.aux-window-head .monitor-status { --wails-draggable: no-drag; }
+.aux-window-title {
+    flex: none;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--fg);
+    white-space: nowrap;
+}
+.aux-window-pill {
+    flex: none;
+    max-width: 40%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 11px;
+    color: var(--muted);
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 1px 8px;
+}
+.aux-window-spacer { flex: 1; min-width: 0; }
+.aux-window-btn {
+    border: none;
+    background: none;
+    color: var(--muted);
+    cursor: pointer;
+    font: inherit;
+    padding: 3px 6px;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+}
+.aux-window-btn:hover { color: var(--fg); background: var(--panel); }
+.aux-window-body {
+    flex: 1;
+    min-height: 0;
+    position: relative;
+    overflow: auto;
+}
+body.memo-only .aux-window-body { overflow: hidden; }
+
+/* 辅助窗轻提示（无状态栏）：底部浮动条 */
+#aux-toast {
+    position: fixed;
+    left: 50%;
+    bottom: 18px;
+    transform: translateX(-50%) translateY(8px);
+    max-width: 82%;
+    padding: 6px 14px;
+    border-radius: 6px;
+    background: var(--panel2);
+    border: 1px solid var(--border);
+    color: var(--fg);
+    font-size: 12px;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.18s ease, transform 0.18s ease;
+    z-index: 6000;
+}
+#aux-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+#aux-toast.error { border-color: var(--danger, #b45858); color: var(--danger, #d08080); }
+
+/* 会话监控窗：时间线 */
+.monitor-root { display: flex; flex-direction: column; height: 100%; }
+.monitor-body {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 10px 12px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    box-sizing: border-box;
+}
+.monitor-row {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--panel);
+    padding: 8px 10px;
+    max-width: 100%;
+    overflow: hidden;
+}
+.monitor-row-user { border-left: 3px solid var(--accent, #5a7fd4); }
+.monitor-row-assistant { border-left: 3px solid var(--border); }
+.monitor-row-live { border-left: 3px solid var(--ok, #5aa469); }
+.monitor-row-meta {
+    font-size: 11px;
+    color: var(--muted);
+    margin-bottom: 4px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.monitor-reasoning {
+    font-size: 11px;
+    color: var(--muted);
+    background: var(--panel2);
+    border-radius: 6px;
+    padding: 6px 8px;
+    margin-bottom: 6px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 180px;
+    overflow-y: auto;
+}
+.monitor-row-text {
+    font-size: 12px;
+    line-height: 1.55;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+}
+.monitor-row-text p { margin: 0 0 6px; }
+.monitor-row-text p:last-child { margin-bottom: 0; }
+.monitor-row-text pre {
+    background: var(--panel2);
+    border-radius: 6px;
+    padding: 8px;
+    overflow-x: auto;
+    font-size: 11px;
+}
+.monitor-row-text code { background: var(--panel2); border-radius: 3px; padding: 1px 4px; font-size: 11px; }
+.monitor-row-text pre code { background: none; padding: 0; }
+.monitor-empty {
+    color: var(--muted);
+    font-size: 12px;
+    text-align: center;
+    padding: 24px 0;
+}
+.monitor-status {
+    flex: none;
+    font-size: 11px;
+    color: var(--muted);
+    background: var(--panel);
+    border-radius: 999px;
+    padding: 1px 8px;
+    max-width: 30%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.monitor-status.running { color: var(--ok, #5aa469); }
+
+/* 文件对比窗：复用对话框的 .diff-line / .diff-sem-* 配色 */
+.diff-window-root { display: flex; flex-direction: column; height: 100%; }
+.diff-window-summary {
+    flex: none;
+    padding: 6px 12px;
+    font-size: 12px;
+    color: var(--muted);
+    border-bottom: 1px solid var(--border);
+    background: var(--panel);
+}
+.diff-window-output {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    padding: 8px 0 16px;
+    font-family: var(--mono, monospace);
+    font-size: 12px;
+    line-height: 1.5;
+}
+.diff-window-output .diff-line { display: block; padding: 0 12px; white-space: pre; }
+.diff-window-same { color: var(--muted); padding: 18px 12px; font-size: 12px; }

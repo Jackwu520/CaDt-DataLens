@@ -161,6 +161,20 @@ export function createAIGroupSidebar(deps) {
         }
         foot.appendChild(avatars);
         foot.appendChild(node('span', 'gc-list-meta', relativeTime(meta.updatedAt)));
+        // 监控窗（辅助窗第一批）：只读镜像群聊时间线，不改群聊归属
+        const pop = node('button', 'gc-list-del', '监控');
+        pop.type = 'button';
+        pop.dataset.tip = '在独立窗口打开（只读监控）';
+        pop.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const b = deps.backend;
+            if (!b || typeof b.PopOutSession !== 'function') {
+                flash('当前构建不支持监控窗', true);
+                return;
+            }
+            b.PopOutSession(meta.id, 'group', '').catch((err) => flash('打开监控窗失败：' + ((err && err.message) || err), true));
+        });
+        foot.appendChild(pop);
         const del = node('button', 'gc-list-del', '删除');
         del.type = 'button';
         del.dataset.tip = '删除群聊（回收站可撤销）';

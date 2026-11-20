@@ -98,6 +98,8 @@ export function buildSessionMenuItems(session, env) {
         {label: '重命名会话…', icon: 'rename', act: 'rename'},
         {label: '导出会话…', icon: 'export', act: 'export'},
         {label: '会话数据诊断…', icon: 'chart', act: 'diagnostics'},
+        // 监控窗（辅助窗第一批）：只读镜像，不改会话归属；绑定缺失（旧 mock）时灰置
+        {label: '在独立窗口打开（监控）', icon: 'new-window', act: 'monitor', disabled: !env.canMonitor},
     ];
     if (session.sideOf) items.push({label: '提升为独立会话', icon: 'new-window', act: 'promote'});
     if (pending > 0) items.push({label: '清空信箱（' + pending + ' 条）', icon: 'eraser', act: 'clearMailbox'});
@@ -649,6 +651,12 @@ export function createAISessionList(ctx) {
             diagnostics: () => showSessionDiagnostics(session),
             promote: () => promoteSideChat(session),
             clearMailbox: () => { clearMailbox(session.id); },
+            // 监控窗（辅助窗第一批）：只读镜像，不改会话归属
+            monitor: () => {
+                if (!backend.PopOutSession) return;
+                backend.PopOutSession(session.id, 'session', sessionWorkspacePath(session) || '')
+                    .catch((e) => listFlash('打开监控窗失败：' + ((e && e.message) || e), true));
+            },
             archive: () => archiveSession(session, !session.archivedAt),
             copyId: () => { copyText(session.id, '会话ID'); },
             // 磁盘路径找 Go 侧解析（桶名 = 工作区短哈希，前端不复刻规则）；
@@ -670,6 +678,7 @@ export function createAISessionList(ctx) {
         const items = buildSessionMenuItems(session, {
             pendingNoticeCount,
             diskStorage: !!sessionUseDisk(),
+            canMonitor: !!backend.PopOutSession,
         }).map((item) => (item.act && actions[item.act]) ? {...item, action: actions[item.act]} : item);
         showContextMenu(items, x, y);
     }

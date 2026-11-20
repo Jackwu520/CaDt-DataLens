@@ -25,6 +25,9 @@ const (
 	windowModeFloat    windowMode = "float"
 	windowModeDebug    windowMode = "debug"
 	windowModeTerminal windowMode = "terminal"
+	windowModeMemo     windowMode = "memo"
+	windowModeMonitor  windowMode = "monitor"
+	windowModeDiff     windowMode = "diff"
 )
 
 // windowSpec 是创建窗口时的启动上下文（等价 v2 的进程启动参数）。
@@ -40,6 +43,15 @@ type windowSpec struct {
 	// 发起弹出的窗口名（关窗时把会话交还给它）。
 	TermID string
 	Origin string
+	// MemoScope：便签独立窗口（windowModeMemo）的作用域（workspace|global），
+	// workspace 作用域时 Workspace 字段带工作区路径。
+	MemoScope string
+	// SessionKind：会话监控窗（windowModeMonitor）的会话类型（session|group），
+	// SessionID 字段复用为被监控的会话 id；Origin 是发起监控的窗口名。
+	SessionKind string
+	// DiffLeft / DiffRight：文件对比窗（windowModeDiff）的两个对比文件路径。
+	DiffLeft  string
+	DiffRight string
 }
 
 // windowState 是单个窗口的可变状态。
@@ -166,6 +178,21 @@ func (r *winRegistryStore) nextName(mode windowMode) string {
 			return "term"
 		}
 		return fmt.Sprintf("term-%d", r.seq)
+	case windowModeMemo:
+		if _, ok := r.states["memo"]; !ok {
+			return "memo"
+		}
+		return fmt.Sprintf("memo-%d", r.seq)
+	case windowModeMonitor:
+		if _, ok := r.states["monitor"]; !ok {
+			return "monitor"
+		}
+		return fmt.Sprintf("monitor-%d", r.seq)
+	case windowModeDiff:
+		if _, ok := r.states["diff"]; !ok {
+			return "diff"
+		}
+		return fmt.Sprintf("diff-%d", r.seq)
 	default:
 		if _, ok := r.states["main"]; !ok {
 			return "main"

@@ -125,7 +125,9 @@ function createMemoView(doc) {
     const view = {
         doc,
         root,
-        scope: currentScope(),
+        // 初始作用域：默认读 localStorage；便签独立窗口经 deps.initialScope 钉住
+        // 启动作用域（localStorage 与主窗口共享，不能反过来改它的默认值）。
+        scope: (typeof deps.initialScope === 'function' ? (deps.initialScope() || currentScope()) : currentScope()),
         disposed: false,
         focusedItem: null,  // 粘贴目标：最后点过的条目 id
         lastEditItem: null, // 智能插入锚点：最近一次编辑过的条目 id
@@ -394,6 +396,21 @@ function buildTopBar(view) {
         ], x, y);
     });
     bar.appendChild(exportBtn);
+
+    // 弹出为独立便签窗（置顶桌面便签；数据磁盘共享，写权租约照旧）。
+    // 便签独立窗口自身不传 popOutMemo，不显示这个按钮，避免套娃。
+    if (typeof deps.popOutMemo === 'function') {
+        const popBtn = document.createElement('button');
+        popBtn.type = 'button';
+        popBtn.className = 'memo-quick-btn';
+        popBtn.textContent = '弹出';
+        popBtn.setAttribute('data-tip', '弹出为独立便签窗');
+        onButton(popBtn, () => {
+            commitActive(view);
+            deps.popOutMemo(view.scope, view.scope === 'workspace' ? (deps.workspaceFolder || '') : '');
+        });
+        bar.appendChild(popBtn);
+    }
     return bar;
 }
 

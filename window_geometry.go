@@ -101,6 +101,9 @@ func geometryRestoreKey(spec windowSpec, modeCount int) (key string, cascade int
 	case windowModeTerminal:
 		// 终端窗口数量不定：都从 "terminal" 槽位级联，避免叠在一起。
 		return "terminal", modeCountExtra(modeCount)
+	case windowModeMemo, windowModeMonitor, windowModeDiff:
+		// 便签 / 会话监控 / 文件对比窗：数量不定，同形态槽位级联。
+		return string(spec.Mode), modeCountExtra(modeCount)
 	default:
 		return "main", modeCountExtra(modeCount)
 	}
@@ -129,6 +132,8 @@ func geometryPersistKey(spec windowSpec, isPrimary bool) string {
 	case windowModeTerminal:
 		// 终端窗口数量不定，全部写同一个槽位（最后一次移动的窗口生效）。
 		return "terminal"
+	case windowModeMemo, windowModeMonitor, windowModeDiff:
+		return string(spec.Mode)
 	default:
 		if isPrimary {
 			return "main"

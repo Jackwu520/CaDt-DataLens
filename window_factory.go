@@ -97,6 +97,14 @@ func windowSizesFor(mode windowMode) (width, height, minWidth, minHeight int) {
 		return 780, 460, 400, 300
 	case windowModeTerminal:
 		return 900, 600, 480, 320
+	case windowModeMemo:
+		// 便签窗：经典桌面便签的窄长形态，贴屏角落用。
+		return 400, 560, 300, 360
+	case windowModeMonitor:
+		// 会话监控窗：第二屏盯长任务的纵向时间线。
+		return 560, 780, 420, 480
+	case windowModeDiff:
+		return 980, 680, 680, 440
 	default:
 		return 1280, 800, 720, 480
 	}
@@ -118,6 +126,14 @@ func windowOptionsFor(spec windowSpec, initialRect windowgeom.Rect, hasInitialRe
 		hiddenOnTaskbar = true
 	case windowModeTerminal:
 		title = "终端 · CaDt-DataLens"
+	case windowModeMemo:
+		title = "便签 · CaDt-DataLens"
+		// 桌面便签语义：贴在别的窗口之上（几何记忆与收起逻辑照常）。
+		alwaysOnTop = true
+	case windowModeMonitor:
+		title = "会话监控 · CaDt-DataLens"
+	case windowModeDiff:
+		title = "文件对比 · CaDt-DataLens"
 	}
 	opts := application.WebviewWindowOptions{
 		Name:               spec.Name,
