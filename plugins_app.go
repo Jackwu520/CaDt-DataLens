@@ -3,8 +3,6 @@ package main
 // plugins_app.go：插件引擎（internal/plugins）的宿主接线与对话框壳。
 
 import (
-	"github.com/wailsapp/wails/v2/pkg/runtime"
-
 	"datalens/internal/appconfig"
 	"datalens/internal/plugins"
 )
@@ -42,9 +40,14 @@ func (a *App) OpenPluginsDir() error {
 
 // AddPluginFromFolder 选择本地插件文件夹并安装。
 func (a *App) AddPluginFromFolder() (*plugins.PluginInfo, error) {
-	dir, err := runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{
-		Title: "选择插件文件夹（内含 plugin.json）",
-	})
+	if wailsApp == nil {
+		return nil, nil
+	}
+	dir, err := wailsApp.Dialog.OpenFile().
+		SetTitle("选择插件文件夹（内含 plugin.json）").
+		CanChooseFiles(false).
+		CanChooseDirectories(true).
+		PromptForSingleSelection()
 	if err != nil {
 		return nil, err
 	}
@@ -56,13 +59,14 @@ func (a *App) AddPluginFromFolder() (*plugins.PluginInfo, error) {
 
 // ImportPluginFromZip 选择插件包并逐个导入。
 func (a *App) ImportPluginFromZip() (*plugins.PluginInfo, error) {
-	paths, err := runtime.OpenMultipleFilesDialog(a.ctx, runtime.OpenDialogOptions{
-		Title: "导入插件包",
-		Filters: []runtime.FileFilter{
-			{DisplayName: "插件包 (*.zip)", Pattern: "*.zip"},
-			{DisplayName: "所有文件 (*.*)", Pattern: "*.*"},
-		},
-	})
+	if wailsApp == nil {
+		return nil, nil
+	}
+	paths, err := wailsApp.Dialog.OpenFile().
+		SetTitle("导入插件包").
+		AddFilter("插件包 (*.zip)", "*.zip").
+		AddFilter("所有文件 (*.*)", "*.*").
+		PromptForMultipleSelection()
 	if err != nil {
 		return nil, err
 	}

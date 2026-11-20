@@ -3,13 +3,10 @@
 package main
 
 import (
-	"context"
 	"os"
 	"syscall"
 	"time"
 	"unsafe"
-
-	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 const (
@@ -74,7 +71,7 @@ func applyTaskbarIcon() {
 // wails 在 webview 导航完成时就显示窗口，但此时 UI 线程还会被初始化工作占住约 1 秒，
 // Explorer 查询窗口图标会超时，任务栏只能先画占位图标。等线程可响应消息再显示，
 // 任务栏按钮一出现就能拿到真实图标。
-func showWindowWhenReady(ctx context.Context) {
+func showWindowWhenReady() {
 	hwnd := findWailsWindow()
 	go func() {
 		for i := 0; i < 500; i++ { // 最多等 10 秒
@@ -84,7 +81,7 @@ func showWindowWhenReady(ctx context.Context) {
 			time.Sleep(20 * time.Millisecond)
 		}
 		applyTaskbarIcon()
-		runtime.WindowShow(ctx)
+		showMainWindow()
 		// 任务栏按钮出现后再补两次，确保 Explorer 刷新到窗口图标。
 		time.Sleep(60 * time.Millisecond)
 		applyTaskbarIcon()
@@ -94,12 +91,12 @@ func showWindowWhenReady(ctx context.Context) {
 }
 
 // ensureWindowShown 兜底：页面迟迟没有就绪时也要把窗口显示出来。
-func ensureWindowShown(ctx context.Context) {
+func ensureWindowShown() {
 	go func() {
 		time.Sleep(8 * time.Second)
 		hwnd := findWailsWindow()
 		if visible, _, _ := procIsWindowVisible.Call(hwnd); visible == 0 {
-			runtime.WindowShow(ctx)
+			showMainWindow()
 		}
 	}()
 }
@@ -115,7 +112,7 @@ func findWailsWindow() uintptr {
 		}
 		var buf [64]uint16
 		n, _, _ := procGetClassNameW.Call(hwnd, uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)))
-		if syscall.UTF16ToString(buf[:n]) == "wailsWindow" {
+		if syscall.UTF16ToString(buf[:n]) == "WailsWebviewWindow" || syscall.UTF16ToString(buf[:n]) == "wailsWindow" {
 			found = hwnd
 			return 0
 		}

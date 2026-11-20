@@ -4,8 +4,6 @@ package main
 // 这里负责惰性初始化与事件广播（到点 / 自动停止 / 手动停止）。
 
 import (
-	"github.com/wailsapp/wails/v2/pkg/runtime"
-
 	"datalens/internal/aitimer"
 )
 
@@ -17,12 +15,12 @@ func (a *App) aiTimersIf() *aitimer.Registry {
 		a.aiTimers = aitimer.NewRegistry(
 			func(info aitimer.Info) {
 				if a.ctx != nil {
-					runtime.EventsEmit(a.ctx, "ai-timer-fired", info)
+					emitAppEvent("ai-timer-fired", info)
 				}
 			},
 			func(info aitimer.Info) {
 				if a.ctx != nil {
-					runtime.EventsEmit(a.ctx, "ai-timer-stopped", info) // Auto=true：正计时到点自动停止
+					emitAppEvent("ai-timer-stopped", info) // Auto=true：正计时到点自动停止
 				}
 			},
 		)
@@ -42,7 +40,7 @@ func (a *App) StopTimer(id string) (aitimer.StopResult, error) {
 		return result, err
 	}
 	if result.Found && a.ctx != nil {
-		runtime.EventsEmit(a.ctx, "ai-timer-stopped", result.Stopped)
+		emitAppEvent("ai-timer-stopped", result.Stopped)
 	}
 	return result, nil
 }

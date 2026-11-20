@@ -99,6 +99,7 @@ import {createEditorGroups} from './editor/editor-groups.js';
 import {bookmarkOverview, formatBookmarkListText} from './editor/bookmark-list.js';
 import {isDocReadOnly, isTabReadOnlyFixed, isTabReadOnlyLocked} from './core/readonly.js';
 import {overlayStack} from './core/overlay-stack.js';
+import {loadWailsRuntime, createRuntimeAdapter, createBackendProxy} from './core/wails-runtime.js';
 
 // 全局弹层栈的 Esc 分发监听必须先于一切弹层工厂注册（window 捕获阶段按注册顺序执行，
 // 只有装得最早才能用 stopImmediatePropagation 可靠抢占各域散落的旧 Esc 监听）。
@@ -112,14 +113,18 @@ const UNLOCK_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3.2" y
 const LOCK_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3.2" y="7" width="9.6" height="6.8" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M6 7V5.6A2 2 0 0 1 10 5.6V7" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><circle cx="8" cy="10.4" r="1" fill="currentColor"/></svg>';
 const plainTextExtensions = new Set(['txt', 'log', 'conf']);
 
-const hasWails = !!(window.go && window.go.main && window.go.main.App);
+// Wails v3：没有 window.go 全局，绑定改为 /wails/runtime.js 的 Call.ByName。
+// 加载失败 = 浏览器直开（mock 调试），走下方 mock 分支。
+const wailsRuntime = await loadWailsRuntime();
+const hasWails = !!wailsRuntime;
 
 const mockScenario = new URLSearchParams(location.search);
 
 let backend;
-let rt = window.runtime;
+let rt = null;
 if (hasWails) {
-    backend = window.go.main.App;
+    rt = createRuntimeAdapter(wailsRuntime);
+    backend = createBackendProxy(wailsRuntime.Call);
 } else if (import.meta.env.DEV) {
     // vite dev 浏览器调试：动态加载 mock 后端（生产构建里这个分支被静态求值为 false，
     // chunk 不会产出，也就不会被 go:embed 打进 exe——dist 曾是 66 KB 的 mock-backend-*.js）
@@ -127,6 +132,9 @@ if (hasWails) {
     backend = mock.mockBackend;
     if (mockScenario.has('winctl')) rt = mock.mockRt;
 }
+// 兼容仍直接读 window.runtime / window.go 的旧模块（ai-panel / reading / 插件）。
+if (rt) window.runtime = rt;
+if (backend && hasWails) window.go = {main: {App: backend}};
 // 暴露给插件作者与调试：生产环境插件同样可以直接访问 window.go
 window.__backend = backend;
 

@@ -5,10 +5,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/wailsapp/wails/v2"
-	"github.com/wailsapp/wails/v2/pkg/options"
-	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
-	"github.com/wailsapp/wails/v2/pkg/options/windows"
+	"github.com/wailsapp/wails/v3/pkg/application"
+	"github.com/wailsapp/wails/v3/pkg/events"
 
 	"datalens/internal/applog"
 	"datalens/internal/convertcli"
@@ -24,11 +22,15 @@ var assets embed.FS
 // Paste / Find … 的白色横条，可编辑区域触发，不受应用主题控制也绕过 JS 的
 // contextmenu 接管）。
 //
+// 主窗口走 v3 原生 Windows.DisabledFeatures（见 main 里的 application.Options）；
+// 这里仍保留 go-webview2 fork 的注入点，因为内嵌浏览器标签页（internal/browser）
+// 直接依赖 fork 的 pkg/edge，需要同一个 feature 列表。
+//
 // 注意：不能靠 WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS 环境变量——go-webview2 会在
 // init() 与每次创建环境时调 preventEnvAndRegistryOverrides() 把它清空，参数根本到不了
 // 浏览器进程。改走本地补丁的 COM/环境双通道注入点，见
 // third_party/go-webview2/webviewloader/app_browser_args.go。
-// 须在 WebView2 环境创建（wails.Run）之前调用。
+// 须在 WebView2 环境创建之前调用。
 //
 // msWebOOUI / msPdfOOUI 是微软在 WebView2Feedback#2140 给出的官方 workaround；
 // 后两项是旧实现里的名字，保留以兼容不同 Edge 版本（未知 feature 会被忽略）。
@@ -80,44 +82,73 @@ func main() {
 	if hasArg("--ai-float") {
 		width, height, minWidth, minHeight = 560, 760, 360, 480
 	}
-	var instanceLock *options.SingleInstanceLock
+
+	var singleInstance *application.SingleInstanceOptions
 	if !isConvert {
-		instanceLock = &options.SingleInstanceLock{
-			UniqueId:               uniqueIDForLaunch(),
-			OnSecondInstanceLaunch: app.secondInstance,
+		singleInstance = &application.SingleInstanceOptions{
+			UniqueID: uniqueIDForLaunch(),
+			OnSecondInstanceLaunch: func(data application.SecondInstanceData) {
+				// v3 的 Args 是完整 os.Args（含 exe 路径），v2 语义是 os.Args[1:]。
+				args := data.Args
+				if len(args) > 0 && (args[0] == os.Args[0] || args[0] == appExePath()) {
+					args = args[1:]
+				}
+				app.secondInstance(args)
+			},
 		}
 	}
 
-	err := wails.Run(&options.App{
+	wailsApp = application.New(application.Options{
+		Name:        "CaDt-DataLens",
+		Description: "轻量级多格式数据查看与编辑器",
+		Services: []application.Service{
+			application.NewService(app),
+		},
+		Assets: application.AssetOptions{
+			Handler:    application.BundledAssetFileServer(assets),
+			Middleware: previewassets.Middleware,
+		},
+		SingleInstance: singleInstance,
+		Windows: application.WindowsOptions{
+			WebviewUserDataPath: webviewDataPath(),
+			// 迷你菜单禁用（v3 原生选项，自动与上游 feature 合并）；见 disableMiniMenu 注释。
+			DisabledFeatures: []string{"msWebOOUI", "msPdfOOUI", "msEdgeMiniMenu", "msEdgeTextSelectionMenu"},
+		},
+		ErrorHandler: func(err error) {
+			writeAppLog("error", "wails v3：%v", err)
+		},
+	})
+
+	win := wailsApp.Window.NewWithOptions(application.WebviewWindowOptions{
+		Name:             "main",
 		Title:            "CaDt-DataLens",
 		Width:            width,
 		Height:           height,
 		MinWidth:         minWidth,
 		MinHeight:        minHeight,
 		Frameless:        true,
-		StartHidden:      true,
-		BackgroundColour: &options.RGBA{R: 30, G: 31, B: 36, A: 1},
-		AssetServer: &assetserver.Options{
-			Assets:     assets,
-			Middleware: previewassets.Middleware,
-		},
-		OnStartup:     app.startup,
-		OnDomReady:    app.domReady,
-		OnBeforeClose: app.beforeClose,
-		Logger:        applog.WailsLogger{},
-		Windows: &windows.Options{
-			IsZoomControlEnabled: false,
-			DisablePinchZoom:     true,
-			ZoomFactor:           1.0,
-			WebviewUserDataPath:  webviewDataPath(),
-		},
-		DragAndDrop: &options.DragAndDrop{
-			EnableFileDrop:     true,
-			DisableWebViewDrop: false,
-		},
-		SingleInstanceLock: instanceLock,
-		Bind:               []interface{}{app},
+		Hidden:           true,
+		BackgroundColour: application.NewRGB(30, 31, 36),
+		URL:              "/",
+		EnableFileDrop:   true,
+		ZoomControlEnabled: false,
+		Zoom:               1.0,
 	})
+	setMainWindow(win)
+
+	// 关窗确认：v2 OnBeforeClose 返回 true 表示拦下；v3 用 WindowClosing + Cancel。
+	win.RegisterHook(events.Common.WindowClosing, func(e *application.WindowEvent) {
+		if app.beforeClose() {
+			e.Cancel()
+		}
+	})
+	// v2 OnDomReady 的等价时机：首屏导航完成后显示窗口（v3 没有 domReady 回调；
+	// 该事件在 events.Windows 组，非 Windows 平台不触发，由 ensureWindowShown 兜底）。
+	win.RegisterHook(events.Windows.WebViewNavigationCompleted, func(_ *application.WindowEvent) {
+		app.domReady()
+	})
+
+	err := wailsApp.Run()
 	if err != nil {
 		writeAppLog("error", "wails.Run 退出：%v", err)
 	}
@@ -126,4 +157,12 @@ func main() {
 	if isConvert {
 		os.Exit(app.convertExitCode)
 	}
+}
+
+// appExePath 返回当前 exe 路径（第二实例参数比对用；取不到时退回 os.Args[0]）。
+func appExePath() string {
+	if exe, err := os.Executable(); err == nil {
+		return exe
+	}
+	return os.Args[0]
 }

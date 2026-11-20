@@ -3,7 +3,6 @@ package main
 // 应用状态与窗口：脏标记、应用配置（open mode）、多窗口与资源管理器定位。
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -16,8 +15,6 @@ import (
 	"datalens/internal/launchargs"
 	"datalens/internal/newwindow"
 	"datalens/internal/shellexec"
-
-	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 func (a *App) SetDirty(dirty bool) {
@@ -107,11 +104,11 @@ func explorerArgs(path string, isDir bool) []string {
 }
 
 func (a *App) CopyText(text string) error {
-	return runtime.ClipboardSetText(a.ctx, text)
+	return clipboardSetText(text)
 }
 
 func (a *App) GetClipboardText() (string, error) {
-	return runtime.ClipboardGetText(a.ctx)
+	return clipboardGetText()
 }
 
 // GetClipboardImage 把剪贴板里的图片读成 PNG data URL（空串表示没有图片）。
@@ -136,10 +133,10 @@ func (a *App) SetWindowBg(r, g, b int) {
 		}
 		return uint8(v)
 	}
-	runtime.WindowSetBackgroundColour(a.ctx, clamp(r), clamp(g), clamp(b), 255)
+	setMainWindowBackground(clamp(r), clamp(g), clamp(b), 255)
 }
 
-func (a *App) beforeClose(ctx context.Context) bool {
+func (a *App) beforeClose() bool {
 	// 设置里选了「最小化到托盘」：点 X 只是把窗口藏起来，进程与后台任务（AI 回合、终端、
 	// 后台命令）全部照旧跑，所以这里不弹任何确认——真正退出时（菜单 / 托盘右键 /
 	// 系统关机）才走下面的确认流程。见 app_close_action.go。
@@ -162,7 +159,7 @@ func (a *App) beforeClose(ctx context.Context) bool {
 		a.UnwatchWorkspace()
 		return false
 	}
-	runtime.EventsEmit(ctx, "confirm-close", map[string]interface{}{
+	emitAppEvent("confirm-close", map[string]interface{}{
 		"dirty": a.dirty, "aiRunning": a.aiRunning, "terms": terms, "bgJobs": bgJobs,
 	})
 	return true
@@ -177,5 +174,5 @@ func (a *App) ForceClose() {
 	a.mcpCloseAll()
 	a.AppServices.StopAll()
 	a.UnwatchWorkspace()
-	runtime.Quit(a.ctx)
+	quitApp()
 }

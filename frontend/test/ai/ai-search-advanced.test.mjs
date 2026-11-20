@@ -88,14 +88,14 @@ test('files / count 模式与空结果', () => {
     assert.equal(formatSearchAnswer({hits: []}, {}, {query: 'nope'}), '没有找到匹配：nope');
 });
 
-test('工具定义 / wailsjs / mock 三处接线齐全', () => {
+test('工具定义 / Go 绑定 / mock 三处接线齐全', () => {
     const props = AI_TOOL_DEFS.search_text.parameters.properties;
     for (const key of ['regex', 'wholeWord', 'excludePattern', 'outputMode', 'context', 'maxResults']) {
         assert.ok(props[key], 'search_text 缺参数 ' + key);
     }
     const read = (rel) => readFileSync(new URL('../../' + rel, import.meta.url), 'utf8');
-    assert.match(read('wailsjs/go/main/App.js'), /export function SearchWorkspaceAdvanced\(/);
-    assert.match(read('wailsjs/go/main/App.d.ts'), /SearchWorkspaceAdvanced\(arg1:string,arg2:string,arg3:search\.SearchOptions\)/);
+    // v3 不再生成 wailsjs：绑定由 runtime Call.ByName 动态解析，接线核对直接对 Go 方法签名。
+    assert.match(read('../internal/search/search.go'), /func \(s \*Searcher\) SearchWorkspaceAdvanced\(root, query string, opts SearchOptions\)/);
     assert.match(read('src/dev/mock-backend.js'), /async SearchWorkspaceAdvanced\(/);
     assert.match(read('src/ai/ai-panel.js'), /backend\.SearchWorkspaceAdvanced\(searchRoot, query,/);
 });

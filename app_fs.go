@@ -5,44 +5,49 @@ package main
 import (
 	"strings"
 
-	"github.com/wailsapp/wails/v2/pkg/runtime"
+	"github.com/wailsapp/wails/v3/pkg/application"
 
 	"datalens/internal/fsops"
 )
 
 func (a *App) OpenFilesDialog() ([]string, error) {
-	return runtime.OpenMultipleFilesDialog(a.ctx, runtime.OpenDialogOptions{
-		Title: "打开文件",
-		Filters: []runtime.FileFilter{
-			{DisplayName: "结构化数据 (*.json;*.jsonl;*.ndjson;*.yaml;*.yml;*.xml;*.svg;*.csv;*.tsv)", Pattern: "*.json;*.jsonl;*.ndjson;*.yaml;*.yml;*.xml;*.svg;*.csv;*.tsv"},
-			{DisplayName: "所有文件 (*.*)", Pattern: "*.*"},
-		},
-	})
+	if wailsApp == nil {
+		return nil, nil
+	}
+	return wailsApp.Dialog.OpenFile().
+		SetTitle("打开文件").
+		AddFilter("结构化数据 (*.json;*.jsonl;*.ndjson;*.yaml;*.yml;*.xml;*.svg;*.csv;*.tsv)", "*.json;*.jsonl;*.ndjson;*.yaml;*.yml;*.xml;*.svg;*.csv;*.tsv").
+		AddFilter("所有文件 (*.*)", "*.*").
+		PromptForMultipleSelection()
 }
 
 func (a *App) OpenFolderDialog(defaultDir string) (string, error) {
-	opts := runtime.OpenDialogOptions{Title: "打开文件夹"}
-	if strings.TrimSpace(defaultDir) != "" {
-		opts.DefaultDirectory = defaultDir
+	if wailsApp == nil {
+		return "", nil
 	}
-	return runtime.OpenDirectoryDialog(a.ctx, opts)
+	dialog := wailsApp.Dialog.OpenFile().
+		CanChooseFiles(false).
+		CanChooseDirectories(true).
+		SetTitle("打开文件夹")
+	if strings.TrimSpace(defaultDir) != "" {
+		dialog.SetDirectory(defaultDir)
+	}
+	return dialog.PromptForSingleSelection()
 }
 
 func (a *App) SaveFileDialog(defaultName string) (string, error) {
-	return runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
-		Title:           "保存文件",
-		DefaultFilename: defaultName,
-		Filters: []runtime.FileFilter{
-			{DisplayName: "所有文件 (*.*)", Pattern: "*.*"},
-		},
-	})
+	if wailsApp == nil {
+		return "", nil
+	}
+	dialog := wailsApp.Dialog.SaveFile()
+	dialog.SetOptions(&application.SaveFileDialogOptions{Title: "保存文件"})
+	return dialog.
+		SetFilename(defaultName).
+		AddFilter("所有文件 (*.*)", "*.*").
+		PromptForSingleSelection()
 }
 
 // 兼容别名（实现已下沉 internal/fsops）。
 type DirEntry = fsops.DirEntry
 
 type DirListing = fsops.DirListing
-
-type DirTreeNode = fsops.DirTreeNode
-
-type DirTreeListing = fsops.DirTreeListing

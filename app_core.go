@@ -7,9 +7,6 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/wailsapp/wails/v2/pkg/options"
-	"github.com/wailsapp/wails/v2/pkg/runtime"
-
 	"datalens/internal/aichat"
 	"datalens/internal/aiconfig"
 	"datalens/internal/aigroups"
@@ -105,28 +102,28 @@ func (a *App) startup(ctx context.Context) {
 	// 关闭行为（点 X 退出还是最小化到托盘）：配置在 config.json，前端设置页只负责推过来。
 	a.closeAction = appconfig.CloseAction()
 	reading.Emit = func(event string, data any) {
-		runtime.EventsEmit(ctx, event, data)
+		emitAppEvent(event, data)
 	}
 	run.Emit = func(event string, data any) {
-		runtime.EventsEmit(ctx, event, data)
+		emitAppEvent(event, data)
 	}
 	browser.Emit = func(event string, data any) {
-		runtime.EventsEmit(ctx, event, data)
+		emitAppEvent(event, data)
 	}
 	aischedule.Emit = func(event string, data any) {
-		runtime.EventsEmit(ctx, event, data)
+		emitAppEvent(event, data)
 	}
 	cmdbridge.Emit = func(event string, data any) {
-		runtime.EventsEmit(ctx, event, data)
+		emitAppEvent(event, data)
 	}
 	terminal.Emit = func(event string, data any) {
-		runtime.EventsEmit(ctx, event, data)
+		emitAppEvent(event, data)
 	}
 	watch.Emit = func(event string, data any) {
-		runtime.EventsEmit(ctx, event, data)
+		emitAppEvent(event, data)
 	}
 	aichat.Emit = func(event string, payload any) {
-		runtime.EventsEmit(ctx, event, payload)
+		emitAppEvent(event, payload)
 	}
 	watch.Logf = writeAppLog
 	if a.convert != nil {
@@ -139,7 +136,7 @@ func (a *App) startup(ctx context.Context) {
 	// 点击通知的激活回调也在这里接上：把窗口拉回前台 + 把激活参数转给前端。
 	notify.OnToastActivation = a.onToastActivation
 	notify.Prepare()
-	ensureWindowShown(ctx)
+	ensureWindowShown()
 	sqlview.CleanupTempFiles()
 	reading.CleanupCacheOnStartup()
 	// 运行代码的临时副本 / 编译产物：启动时清一次过期的（7 天），失败不影响启动；
@@ -147,8 +144,8 @@ func (a *App) startup(ctx context.Context) {
 	go func() { _, _ = a.CleanupRunTempStale() }()
 	if a.IsDebugConsoleWindow() {
 		// 独立调试控制台窗口：小尺寸独立窗，不处理启动文件/目录
-		runtime.WindowSetTitle(ctx, "调试控制台 · CaDt-DataLens")
-		runtime.WindowSetSize(ctx, 780, 460)
+		setMainWindowTitle("调试控制台 · CaDt-DataLens")
+		setMainWindowSize(780, 460)
 		return
 	}
 	// 窗口注册表：主窗口进程登记自己（浮窗/调试控制台在 ensureWindowReg 内跳过），
@@ -164,14 +161,14 @@ func (a *App) startup(ctx context.Context) {
 		// 使用统计：只初始化派生库；增量扫描由用户打开统计面板/点刷新时触发
 		usagestats.Start()
 		if err := mcp.InitClient(a.Client, func(event string, payload any) {
-			runtime.EventsEmit(ctx, event, payload)
+			emitAppEvent(event, payload)
 		}); err != nil {
 			// 损坏的 mcp.json 不阻塞启动：设置页会读到同样的错误并展示路径
 			writeAppLog("warn", "MCP 配置加载失败：%v", err)
 		}
 	}
 	if a.IsAIFloatWindow() {
-		runtime.WindowSetTitle(ctx, "AI 助手 · CaDt-DataLens")
+		setMainWindowTitle("AI 助手 · CaDt-DataLens")
 	}
 	a.startupSettingsPane = launchargs.ParseOpenSettingsArg(os.Args[1:])
 	a.startupAISession = launchargs.ParseAISessionArg(os.Args[1:])
@@ -182,30 +179,30 @@ func (a *App) startup(ctx context.Context) {
 }
 
 // domReady 页面就绪后再显示窗口，避开 WebView2 初始化占住 UI 线程的那段时间。
-func (a *App) domReady(ctx context.Context) {
+func (a *App) domReady() {
 	if a.convert != nil {
 		return
 	}
-	showWindowWhenReady(ctx)
+	showWindowWhenReady()
 }
 
-func (a *App) secondInstance(data options.SecondInstanceData) {
-	if pane := launchargs.ParseOpenSettingsArg(data.Args); pane != "" {
-		runtime.EventsEmit(a.ctx, "app-open-settings", pane)
+func (a *App) secondInstance(args []string) {
+	if pane := launchargs.ParseOpenSettingsArg(args); pane != "" {
+		emitAppEvent("app-open-settings", pane)
 		a.secondInstanceShow()
 		return
 	}
-	if loc := launchargs.ParseMemoLocatorArg(data.Args); loc != "" {
-		runtime.EventsEmit(a.ctx, "app-open-memo", loc)
+	if loc := launchargs.ParseMemoLocatorArg(args); loc != "" {
+		emitAppEvent("app-open-memo", loc)
 		a.secondInstanceShow()
 		return
 	}
-	targets := launchargs.ParseOpenTargets(data.Args)
+	targets := launchargs.ParseOpenTargets(args)
 	if len(targets) == 0 {
 		targets = launchargs.StartupCwdTarget()
 	}
 	if len(targets) > 0 {
-		runtime.EventsEmit(a.ctx, "open-targets", targets)
+		emitAppEvent("open-targets", targets)
 	}
 	// 只用 WindowShow：Windows 上 WindowUnminimise 走 WM_SYSCOMMAND/SC_RESTORE，
 	// 会把最大化的窗口还原成普通窗口；WindowShow 内部只在最小化时才恢复。
@@ -222,7 +219,7 @@ func (a *App) onToastActivation(payload string) {
 	}
 	a.secondInstanceShow()
 	if strings.TrimSpace(payload) != "" {
-		runtime.EventsEmit(a.ctx, "ai-notify-activate", payload)
+		emitAppEvent("ai-notify-activate", payload)
 	}
 }
 

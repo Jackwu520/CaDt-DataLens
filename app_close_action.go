@@ -17,8 +17,6 @@ package main
 import (
 	"strings"
 
-	"github.com/wailsapp/wails/v2/pkg/runtime"
-
 	"datalens/internal/appconfig"
 	"datalens/internal/tray"
 )
@@ -86,14 +84,14 @@ func (a *App) QuitApp() {
 		return
 	}
 	a.quitRequested.Store(true)
-	runtime.Quit(a.ctx)
+	quitApp()
 }
 
 // hideToTray 隐藏窗口并把图标挂到通知区。
 func (a *App) hideToTray() {
 	a.showTray()
 	if a.ctx != nil {
-		runtime.WindowHide(a.ctx)
+		hideMainWindow()
 	}
 	if !a.trayHintShown {
 		a.trayHintShown = true
@@ -140,7 +138,7 @@ func (a *App) restoreFromTray() {
 	if a.tray != nil {
 		a.tray.Hide()
 	}
-	runtime.WindowShow(a.ctx)
+	showMainWindow()
 }
 
 // quitFromTray 托盘右键「退出」：先把窗口露出来（未保存 / 任务进行中的确认框得看得见），
@@ -153,8 +151,8 @@ func (a *App) quitFromTray() {
 	if a.tray != nil {
 		a.tray.Hide()
 	}
-	runtime.WindowShow(a.ctx)
-	runtime.Quit(a.ctx)
+	showMainWindow()
+	quitApp()
 }
 
 // secondInstanceShow 是「又点了一次桌面图标 / 系统通知被点击」时把窗口找回来的路径：
@@ -167,5 +165,5 @@ func (a *App) secondInstanceShow() {
 	if a.tray != nil {
 		a.tray.Hide()
 	}
-	runtime.WindowShow(a.ctx)
+	showMainWindow()
 }

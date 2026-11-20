@@ -11,8 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/wailsapp/wails/v2/pkg/runtime"
-
 	"datalens/internal/convertcli"
 )
 
@@ -76,7 +74,7 @@ func (a *App) FinishConvert(payload string) error {
 		fmt.Fprintf(os.Stderr, "完成，共写入 %d 个文件。\n", written)
 	}
 	a.convertDone.Store(true)
-	go runtime.Quit(a.ctx)
+	go quitApp()
 	return firstErr
 }
 
@@ -84,7 +82,7 @@ func (a *App) finishConvertWithError(err error) {
 	fmt.Fprintln(os.Stderr, err)
 	a.convertExitCode = 1
 	a.convertDone.Store(true)
-	go runtime.Quit(a.ctx)
+	go quitApp()
 }
 
 func (a *App) convertMode() bool { return a.convert != nil }
