@@ -6,16 +6,17 @@
 // 选项一多就把窗口内容顶起来）。打开时按视口剩余空间决定向下 / 向上，并给出
 // 最大高度上限与左右边界约束；滚动 / 缩放会重新定位。
 
-export const SS_POP_LIMITS = {gap: 6, edge: 8, maxHeight: 320, minWidth: 160, maxWidth: 360};
+export const SS_POP_LIMITS = {gap: 6, edge: 8, maxHeight: 320, minWidth: 160};
 
 // 浮层进全局弹层栈（popover 档）：实证须压过设置窗/编辑器（旧 CSS 1200 的由来），
 // Esc 由栈先退浮层再退底下的对话框——旧 document capture 兜底监听随之删除。
 import {overlayStack} from '../core/overlay-stack.js';
 
-// 纯函数：浮层宽度。至少与触发器同宽，最多 360px，且永不超出视口。
+// 纯函数：浮层宽度 = max(最小宽度, 触发器/容器宽度)，并受视口边界约束（不溢出屏幕）。
+// 不再设固定上限：宽 select（如 JDK 路径）展开后应与触发器同宽，选项文本才不会被截断。
 export function computePopWidth(rect, viewport, limits = SS_POP_LIMITS) {
     const maxByViewport = Math.max(0, viewport.width - limits.edge * 2);
-    return Math.min(Math.max(rect.width, limits.minWidth), limits.maxWidth, maxByViewport);
+    return Math.min(Math.max(rect.width, limits.minWidth), maxByViewport);
 }
 
 // 纯函数：给定触发器矩形 / 视口 / 浮层自然高度，算出浮层几何。
