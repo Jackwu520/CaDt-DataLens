@@ -19,12 +19,12 @@
 | runtime 调用 | 根目录 9 个文件 48 处 `runtime.*` | v2 全局 runtime 包 → v3 窗口/应用对象方法，机械替换 |
 | 事件（Go） | 28 处 `EventsEmit/EventsOn` | → `app.Event.Emit/On`，机械替换；**事件名精确匹配是常见故障点** |
 | 绑定方法 | 301 个（`wailsjs/go/main/App.d.ts` 729 行） | v2 `Bind: []interface{}` → v3 `application.NewService(...)`，方法名不变 |
-| 前端绑定调用 | **聚合点仅 1 处**（`main.js:121` `backend = window.go.main.App`），951 处 `backend.XXX` 调用全走它；直接 import wailsjs 的仅 2 个文件（`ai-panel.js` / `ai-worktree.js`） | 关键红利：v3 绑定重新生成后保持对象形状（方法名 + Promise 返回），951 处调用**零改动**，只换聚合点。**2026-11-20 评审补记**：v3 绑定是 ES module（配 `@wailsio/runtime` npm 依赖），`window.go.main.App` 全局在 v3 不存在——除聚合点外，`main.js:115` 的 `hasWails` 探测（同时决定 dev 模式 mock-backend 动态 import 分支）也要改用 v3 探测方式（绑定模块可解析性或注入标志），属净增改动 |
+| 前端绑定调用 | **聚合点仅 1 处**（`main.js:121` `backend = window.go.main.App`），951 处 `backend.XXX` 调用全走它；直接 import wailsjs 的仅 2 个文件（`ai-panel.js` / `ai-worktree.js`） | 关键红利：v3 绑定重新生成后保持对象形状（方法名 + Promise 返回），951 处调用**零改动**，只换聚合点。**2026-11-20 评审补记**：v3 绑定是 ES module，`window.go.main.App` 全局在 v3 不存在——除聚合点外，`main.js:115` 的 `hasWails` 探测（同时决定 dev 模式 mock-backend 动态 import 分支）也要改用 v3 探测方式（绑定模块可解析性或注入标志），属净增改动。**P0 实测修正**：`wails3 generate bindings -b` 生成的绑定直接 `import ... from "/wails/runtime.js"`（app 内置运行时），**不需要 `@wailsio/runtime` npm 依赖**；默认模式才引 npm 包 |
 | 事件（前端） | 48 处 `EventsOn/EventsEmit/EventsOff`，分布 5 个文件（main.js / memo-term.js / mock-backend.js / reading.js / run-ui.js） | → `@wailsio/runtime` 的 `Events.*` |
 | 托盘 | 自研 `internal/tray` + `trayhost_windows.go` 平台对（v2 无原生托盘才自研） | 基本直接留用；或换 v3 原生 `app.SystemTray` 反而简化 |
 | 单实例锁 | v2 的 `SingleInstanceLock`/`OnSecondInstanceLaunch`（`main.go:83`、`app_core.go:187`）→ **v3 内置同形 API**（官方 Single Instance 指南，`options.SingleInstance{UniqueID, OnSecondInstanceLaunch}`，2026-11-20 复评修正：初评误判为无对应物需自研） | `secondInstance` 回调三分支逻辑几乎可平移 |
-| 构建流水线 | `wails build` / `wails dev` → v3 `wails3` CLI + Taskfile；受影响存量：`tools/rebuild-exe.ps1`（测试门 + 便携副本替换）、`scripts/build-installer.ps1` + `build/windows` NSIS、`frontend/package.json.md5` 门控 | **2026-11-20 评审补记**：工作量表未计入的整条工具链切换，约 0.5 天；spike 跑起来第一关就是它 |
-| fork 的 webview2 | `go.mod:54` 本地 replace `third_party/go-webview2`，2 个本地补丁（迷你菜单禁用、闪退隔离） | **不确定度最高**：v3 自带 webview2 栈，补丁注入点要重找，0.5–2 天 |
+| 构建流水线 | `wails build` / `wails dev` → v3 `wails3` CLI；受影响存量：`tools/rebuild-exe.ps1`（测试门 + 便携副本替换）、`scripts/build-installer.ps1` + `build/windows` NSIS、`frontend/package.json.md5` 门控 | **2026-11-20 评审补记**：工作量表未计入的整条工具链切换，约 0.5 天；spike 跑起来第一关就是它。**P0 实测修正**：v3.1.0 已切到 **Wake**（`wails.yaml` 工程配置；`wails3 build` 需 `WAILS_EXP_USE_WAKE=1`，Taskfile 回退已关闭），不是 Taskfile 流程 |
+| fork 的 webview2 | `go.mod:54` 本地 replace `third_party/go-webview2`，2 个本地补丁（迷你菜单禁用、闪退隔离） | **不确定度最高**：v3 自带 webview2 栈，补丁注入点要重找，0.5–2 天。**P0 实测解决**：迷你菜单禁用由 v3 原生 `Windows.DisabledFeatures` 覆盖（运行时命令行已证实，与上游 feature 自动合并）；闪退隔离的两条历史崩溃路径（畸形 postMessage / `WebResourceRequested` 失败）v3.1.0 已原生硬化。**不需要为这两个补丁 fork `wails/v3`**；`third_party/go-webview2` 的 replace 只为 `internal/browser` 保留（内嵌浏览器仍直接依赖它）。剩余：v3 的 COM 回调 panic 无 `recover()`、embed 失败仍 `os.Exit(1)`（仅 WebView2 控制器创建失败），记入 P2 风险 |
 | 官方迁移指南估计 | 「典型应用 1–4 小时」 | 对 hello-world 级成立；本项目回归面（见 §3）决定下限，不适用 |
 
 ## 3. 工作量估算
@@ -35,8 +35,8 @@
 | --- | --- |
 | Go 侧（启动段 v3 三段式 + 48 处 runtime + 28 处事件 + NewService 绑定 + 自研单实例锁 + 托盘留用） | ≤ 1 周 |
 | 前端（聚合点 1 行 + `hasWails` 探测改 v3 方式 + 2 个文件的 wailsjs import + 48 处事件 + mock-backend 适配） | 1–2 天 |
-| 构建流水线（`wails3` CLI + Taskfile、`tools/rebuild-exe.ps1` / `scripts/build-installer.ps1` 适配） | 0.5 天（2026-11-20 评审补记） |
-| fork webview2 补丁对齐 | 0.5–2 天（P0 spike 先探） |
+| 构建流水线（`wails3` CLI + Wake、`tools/rebuild-exe.ps1` / `scripts/build-installer.ps1` 适配） | 0.5 天（2026-11-20 评审补记；P0 实测：`wails3 build` 9.3s / 10.1 MiB 已跑通） |
+| fork webview2 补丁对齐 | ~~0.5–2 天~~ **P0 消解**：补丁 1 走 v3 原生选项、补丁 2 主要路径已原生硬化；仅 `internal/browser` 继续用现有 fork |
 | **回归验证（成本大头）**：301 个绑定方法签名核对、21 个域包集成测试（MCP 假 server / ConPTY / WebView2）、无边框窗口（`main.go` `Frameless: true`）、AI 浮窗、调试控制台、双实例转发、wipeguard、手工双窗口场景 | 3–5 天 |
 
 ## 4. 风险与缺口
@@ -50,7 +50,7 @@
 
 | 期 | 内容 | 出口判据 |
 | --- | --- | --- |
-| P0 spike | 独立分支：只迁 `main.go` 启动段跑起来，验证 **Frameless 无边框 / 托盘 / 单实例转发 / AI 浮窗 / fork 补丁注入点 / 定向事件 / 每窗口独立 JS context** 七项还原度（2026-11-20 复评加两项：定向事件——issue #6608 报 `window.EmitEvent()` 实际广播到所有窗口，term-out/ai-chat/resource-changed 在多窗口下必须真定向或全前端过滤；每窗口独立 JS context 是 per-window 装配的前提）；起跑先过**工具链关**（2026-11-20 评审补记：`wails3` + Taskfile 迁移、`wails dev` 等价热重载——机械适配，不占七项名额、不设暂停条件） | 七项中五项可用 → 继续；fork 补丁无挂点、Frameless 缺失或定向事件不工作 → 暂停迁移，回到 v2 路线（windowreg 方案不受影响） |
+| P0 spike | 独立分支：只迁 `main.go` 启动段跑起来，验证 **Frameless 无边框 / 托盘 / 单实例转发 / AI 浮窗 / fork 补丁注入点 / 定向事件 / 每窗口独立 JS context** 七项还原度（2026-11-20 复评加两项：定向事件——issue #6608 报 `window.EmitEvent()` 实际广播到所有窗口，term-out/ai-chat/resource-changed 在多窗口下必须真定向或全前端过滤；每窗口独立 JS context 是 per-window 装配的前提）；起跑先过**工具链关**（2026-11-20 评审补记：`wails3` + Taskfile 迁移、`wails dev` 等价热重载——机械适配，不占七项名额、不设暂停条件）。**2026-11-20 已完成**（`spike/wails3/` 独立模块，见 `docs/reports/wails-v3-p0-spike.md`） | 七项中五项可用 → 继续；fork 补丁无挂点、Frameless 缺失或定向事件不工作 → 暂停迁移，回到 v2 路线（windowreg 方案不受影响）。**实测：6 项通过；定向事件确认广播（#6608），`sender` 可用于前端过滤；按「可用 + 兜底成本」判定继续，P2 先落事件过滤** |
 | P1 框架等价迁移 | 绑定 NewService、48+28 处 runtime/事件替换、自研单实例锁、前端聚合点与事件、mock-backend；**保持单窗口，行为零变化** | 全量 Go + 前端测试过；`tools/rebuild-exe.ps1` 测试门过；手工回归 §3 清单 |
 | P2 多窗口改造 | `--new-window` 改 `app.Window.New`（同进程开窗）；窗口注册表改进程内对象；AI 浮窗 / 调试控制台改窗口对象 | 手工双窗口场景与 v2 时代行为对照 |
 | P3 清理 | 删除 `internal/windowreg` 及其绑定/前端接线；重审 resourcelease / watch 在新模型下的语义；`AGENTS.md` / CHANGELOG 收口 | 文档与代码一致 |
@@ -96,3 +96,21 @@
 - [GitHub Discussion #4509：v2→v3 迁移讨论](https://github.com/wailsapp/wails/discussions/4509)
 - [Wails v3.0.0 发布公告](https://wails.io/blog/wails-v3-released)
 - JetBrains 对照：一进程多窗口 + SocketLock 转发 + Open Recent 复用先例（来源见 `multi-window-session-reuse.md` §8）
+
+## 9. P0 spike 实测结论（2026-11-20，分支 `v3-migration`）
+
+完整证据与复现命令见 `docs/reports/wails-v3-p0-spike.md`；spike 代码在 `spike/wails3/`（独立 go.mod）。
+
+| # | 项 | 结论 |
+| --- | --- | --- |
+| 1 | Frameless | **通过**（custom-frame：frame 内缩 0/0/0；v3 保留 `WS_OVERLAPPEDWINDOW` 走 `WM_NCCALCSIZE`，不能按 `WS_CAPTION` 判定） |
+| 2 | 托盘 | **通过**（`SystemTray.New` + 菜单/点击回调；图标目视待人工） |
+| 3 | 单实例转发 | **通过**（回调拿到 args/cwd，第二进程 exit 0） |
+| 4 | AI 浮窗（一进程多窗口） | **通过**（运行期创建第二窗口，同 PID、独立 JS） |
+| 5 | fork 补丁注入点 | **通过**：迷你菜单走 v3 原生 `DisabledFeatures`（运行时命令行证实）；闪退隔离两条历史路径已原生硬化；无需 fork wails |
+| 6 | 定向事件 | **失败（#6608 复现）**：`window.EmitEvent` 广播到所有窗口；`WailsEvent.sender` 可用，前端过滤兜底 |
+| 7 | 每窗口独立 JS context | **通过**（ExecJS 标记/REALM 探针均只命中目标窗口） |
+
+**工具链**：`wails3 build`（Wake）9.3s 出包；`wails3 generate bindings -b` 840ms 生成（引用 `/wails/runtime.js`，零 npm 依赖）。
+
+**结论**：P0 出口判据满足（6 通过 + 定向事件有低成本兜底），**迁移继续**；进入 P1 前先按 §2 三处修正更新估算，P2 首项落事件过滤设计。

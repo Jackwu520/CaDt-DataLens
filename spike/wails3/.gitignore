@@ -1,0 +1,5 @@
+# CaDtSpikeV3.exe
+cadt-v3-spike.exe
+bin/
+.wails/
+frontend/bindings/

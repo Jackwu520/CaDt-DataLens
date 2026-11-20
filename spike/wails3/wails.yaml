@@ -1,0 +1,12 @@
+# wails3 CLI 工程配置（工具链关验证用；frontend 关闭，资源由 Go embed 提供）
+# yaml-language-server: $schema=https://v3.wails.io/schemas/wails.v3.json
+version: 3
+project:
+  name: cadt-spike-v3
+  product_name: CaDtSpikeV3
+  identifier: local.cadt.spike.v3
+  version: 0.0.1
+frontend:
+  disabled: true
+build:
+  tags: [devtools]
