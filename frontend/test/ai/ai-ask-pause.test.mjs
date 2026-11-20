@@ -87,3 +87,19 @@ test('CSS：暂停按钮样式存在且收起态不伸缩', () => {
     assert.match(css, /\.ai-ask-pause \{/, '暂停按钮基础样式');
     assert.match(css, /\.ai-takeover-bar \.ai-ask-pause \{[^}]*width: 18px/, '收起态尺寸');
 });
+
+test('快超时高亮：≤10 秒且未暂停时挂 urgent，暂停时移除', () => {
+    assert.match(panel, /const ASK_URGENT_MS = 10000/, '高亮阈值常量');
+    const update = fnBody(panel, 'function updateAskCountdown(entry)', 'function clearAskTimers');
+    assert.match(update, /leftMs <= ASK_URGENT_MS/, '按阈值判定');
+    assert.match(update, /!ask\.paused/, '暂停不高亮');
+    assert.match(update, /classList\.toggle\('urgent', urgent\)/, '切换 urgent 类');
+    assert.match(css, /\.ai-ask-countdown\.urgent \{/, 'urgent 样式');
+    assert.match(css, /@keyframes ai-ask-urgent-pulse/, '脉冲动画');
+    assert.match(css, /prefers-reduced-motion/, '尊重减少动态偏好');
+});
+
+test('收起态留白：composer 在收起态降 min-height', () => {
+    assert.match(css, /\.ai-composer:has\(> #ai-takeover > \.ai-takeover-bar\) \{[^}]*min-height: 0/,
+        '收起态细条时输入框容器不再被 96px 撑高');
+});

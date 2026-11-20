@@ -666,12 +666,17 @@ export function createAIMessageQueue(ctx) {
         }
         if (!liveSteerableStream(session.id)) {
             // 已在停止 / 收尾：不再重复 stopGeneration，消息插到队首由收尾冲刷。
+            // 收尾的 finishStream 会 clearSteer，先把其它 steer 降级保留，避免连带丢失。
+            model.fallbackSteerToQueue(session.id);
             model.enqueueFront(payload);
             interjectPending.add(session.id);
             renderMessageQueue();
             flash('当前轮正在停止，消息将随后发送');
             return;
         }
+        // stopGeneration 会 clearSteer 丢弃本会话所有 steer：先把其它 steer 降级为 queue
+        // 保留（本条 payload 是 queue，不受影响），它们会在本条发出后按 FIFO 依次冲刷。
+        model.fallbackSteerToQueue(session.id);
         model.enqueueFront(payload);
         renderMessageQueue();
         flash('已抢占：正在停止当前回复…');
@@ -690,6 +695,11 @@ export function createAIMessageQueue(ctx) {
         const index = model.indexOf(item);
         if (index < 0) return;
         model.setDelivery(item, 'queue');
+        // 抢占 = 让这一条立即发出，其它消息必须保留。stopGeneration / finishStream 会
+        // clearSteer 丢弃本会话所有 steer，所以提前把「除本条外」的 steer 降级为 queue
+        //（本条已 setDelivery 成 queue，不受影响）——clearSteer 清不到它们，它们会在本条
+        // 发出后按 FIFO 依次冲刷。否则用户排队的多条插话会随抢占一起消失（2026-11-22 实测）。
+        model.fallbackSteerToQueue(sessionId);
         model.remove(item);
         model.insert(0, item);
         interjectPending.add(sessionId);

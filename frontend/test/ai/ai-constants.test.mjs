@@ -1,7 +1,7 @@
 // ai-constants.test.mjs：正文图片 data URL 反解（aiImageFromSrc）与 aiImageSrc 的往返。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {aiCtxBannerShow, aiCtxBannerState, aiImageExt, aiImageFromSrc, aiImageSrc, aiIsContextOverflowError, aiMsgActionsStepMode} from '../../src/ai/ai-constants.js';
+import {aiCtxBannerShow, aiCtxBannerState, aiFormatDuration, aiFormatLiveDuration, aiImageExt, aiImageFromSrc, aiImageSrc, aiIsContextOverflowError, aiMsgActionsStepMode} from '../../src/ai/ai-constants.js';
 
 test('aiImageFromSrc: 与 aiImageSrc 往返一致', () => {
     const image = aiImageFromSrc('data:image/png;base64,AAAA', 'seal.png');
@@ -91,6 +91,54 @@ test('aiCtxBannerState: 三档文案与门禁状态', () => {
     const noWindow = aiCtxBannerState(1.5, 1000, 0);
     assert.equal(noWindow.blocked, false);
     assert.equal(noWindow.compactBlocked, false);
+});
+
+test('aiFormatDuration: 天/小时/分/秒四档，显示到整数秒，0 值单位跳过', () => {
+    // 秒档
+    assert.equal(aiFormatDuration(0), '不到 1 秒');
+    assert.equal(aiFormatDuration(499), '不到 1 秒');
+    assert.equal(aiFormatDuration(500), '1 秒'); // Math.round 进位
+    assert.equal(aiFormatDuration(1000), '1 秒');
+    assert.equal(aiFormatDuration(59400), '59 秒');
+    // 分档
+    assert.equal(aiFormatDuration(60000), '1 分');
+    assert.equal(aiFormatDuration(90000), '1 分 30 秒');
+    assert.equal(aiFormatDuration(3599000), '59 分 59 秒');
+    // 小时档（秒要保留）
+    assert.equal(aiFormatDuration(3600000), '1 小时');
+    assert.equal(aiFormatDuration(3720000), '1 小时 2 分');
+    assert.equal(aiFormatDuration(3723000), '1 小时 2 分 3 秒');
+    assert.equal(aiFormatDuration(86399000), '23 小时 59 分 59 秒');
+    // 天档（秒要保留）
+    assert.equal(aiFormatDuration(86400000), '1 天');
+    assert.equal(aiFormatDuration(90000000), '1 天 1 小时');
+    assert.equal(aiFormatDuration(183600000), '2 天 3 小时');
+    assert.equal(aiFormatDuration(183603000), '2 天 3 小时 3 秒');
+    // 非法输入兜底
+    assert.equal(aiFormatDuration(NaN), '不到 1 秒');
+    assert.equal(aiFormatDuration(-1000), '不到 1 秒');
+});
+
+test('aiFormatLiveDuration: 不到 1 小时带十分位小数，小时/天档整数秒', () => {
+    // 秒档带十分位
+    assert.equal(aiFormatLiveDuration(0), '0.0 秒');
+    assert.equal(aiFormatLiveDuration(40200), '40.2 秒');
+    // 分档带十分位
+    assert.equal(aiFormatLiveDuration(220200), '3 分 40.2 秒');
+    // 59.96 秒按 0.1s 取整进位到 1 分，不出现非法的「60.0 秒」
+    assert.equal(aiFormatLiveDuration(59960), '1 分 0.0 秒');
+    // 图片里的 82 分 56.3 秒 → 到小时档，去小数
+    assert.equal(aiFormatLiveDuration(4976300), '1 小时 22 分 56 秒');
+    // 小时档（整数秒）
+    assert.equal(aiFormatLiveDuration(3600000), '1 小时');
+    assert.equal(aiFormatLiveDuration(3720000), '1 小时 2 分');
+    assert.equal(aiFormatLiveDuration(86399000), '23 小时 59 分 59 秒');
+    // 天档（整数秒）
+    assert.equal(aiFormatLiveDuration(86400000), '1 天');
+    assert.equal(aiFormatLiveDuration(183603000), '2 天 3 小时 3 秒');
+    // 非法输入兜底
+    assert.equal(aiFormatLiveDuration(NaN), '0.0 秒');
+    assert.equal(aiFormatLiveDuration(-1000), '0.0 秒');
 });
 
 test('aiMsgActionsStepMode: 三档颗粒度只作用于中间步骤，最后一条恒完整', () => {

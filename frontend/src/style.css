@@ -6388,6 +6388,18 @@ div.jsoneditor-tree textarea { user-select: text; }
     white-space: pre-wrap;
     overflow-wrap: anywhere;
 }
+/* 结论型应用消息卡片的 Markdown 渲染视图：沿用 .ai-md 正文样式，约束高度与内边距 */
+.ai-app-msg-md {
+    max-height: 320px;
+    overflow: auto;
+    padding: 7px 9px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--panel);
+    font-size: 11px;
+}
+.ai-app-msg-md.hidden { display: none; }
+.ai-app-msg-view-toggle { margin-left: 0; }
 /* 稀疏信息行的中间轮空回复：整条压没（连续工具轮只剩工具卡之间的标准间距） */
 .ai-msg.assistant.turn-blank { display: none; }
 .ai-msg.assistant {
@@ -7199,6 +7211,9 @@ div.jsoneditor-tree textarea { user-select: text; }
     max-height: min(58vh, 560px);
 }
 .ai-takeover.hidden { display: none; }
+/* 收起态：接管区只剩单行细条，输入框容器不必再占 96px 最小高度，
+   否则细条下方空出一大块圆角框（提问/审批/补丁卡共用 .ai-takeover-bar，统一在此收口）。 */
+.ai-composer:has(> #ai-takeover > .ai-takeover-bar) { min-height: 0; }
 .ai-takeover-card { display: flex; flex-direction: column; min-height: 0; gap: 8px; }
 /* 审批卡临时收起：头部收起按钮 + 收起态单行细条 */
 .ai-takeover-collapse {
@@ -8826,6 +8841,19 @@ div.jsoneditor-tree textarea { user-select: text; }
     font-size: 10.5px;
     font-variant-numeric: tabular-nums;
 }
+/* 快超时（≤10 秒）：变红 + 轻微脉冲提醒。展开态与收起态细条共用同一节点，故只按状态类走。 */
+.ai-ask-countdown.urgent {
+    color: var(--red);
+    font-weight: 600;
+    animation: ai-ask-urgent-pulse 1s ease-in-out infinite;
+}
+@keyframes ai-ask-urgent-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: .45; }
+}
+@media (prefers-reduced-motion: reduce) {
+    .ai-ask-countdown.urgent { animation: none; }
+}
 .ai-ask-result {
     margin-top: 8px;
     padding-top: 7px;
@@ -9316,6 +9344,52 @@ div.jsoneditor-tree textarea { user-select: text; }
     background: color-mix(in srgb, var(--text) 10%, transparent);
 }
 .ai-ctx-banner-close svg { width: 12px; height: 12px; }
+
+/* 归档会话只读横幅：与 .ai-ctx-banner 同为堆叠区提醒条，琥珀色表示"当前不可写"。
+   带「取消归档」按钮就地给出出口，不必去会话菜单里翻。 */
+.ai-archived-banner {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    margin: 0 var(--ai-sbw, 12px) 8px 10px;
+    padding: 6px 8px 6px 11px;
+    border: 1px solid color-mix(in srgb, var(--warn) 50%, var(--border));
+    background: color-mix(in srgb, var(--warn) 11%, transparent);
+    border-radius: 9px;
+    font-size: 12px;
+}
+.ai-archived-banner.hidden { display: none; }
+.ai-archived-banner-icon {
+    flex: none;
+    width: 14px;
+    height: 14px;
+    color: var(--warn);
+}
+.ai-archived-banner span {
+    flex: 1;
+    min-width: 0;
+    color: var(--text);
+}
+.ai-archived-banner-btn {
+    flex: none;
+    padding: 3px 10px;
+    border: 1px solid color-mix(in srgb, var(--warn) 60%, var(--border));
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--warn) 18%, transparent);
+    color: var(--warn);
+    font: inherit;
+    font-size: 11.5px;
+    cursor: pointer;
+}
+.ai-archived-banner-btn:hover {
+    color: color-mix(in srgb, var(--warn) 85%, var(--text));
+    border-color: var(--warn);
+    background: color-mix(in srgb, var(--warn) 30%, transparent);
+}
+/* 归档只读态：输入框明确不可写，底栏模式 pill 置灰（发送按钮已由 updateSendState 禁用） */
+.ai-composer.is-archived .ai-input { opacity: .55; cursor: not-allowed; }
+.ai-composer.is-archived .ai-composer-bottom > .ai-pill { opacity: .5; pointer-events: none; }
 .ai-dialog {
     position: absolute;
     inset: 0;

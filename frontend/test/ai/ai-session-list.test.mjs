@@ -4,6 +4,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {buildSessionMenuItems, buildWorkspaceMenuItems, aggregateSessionBadge, planPendingNeedsAttention} from '../../src/ai/ai-session-list.js';
+import {ICONS} from '../../src/core/icons.js';
 
 const baseEnv = {pendingNoticeCount: () => 0, diskStorage: true};
 const labelsOf = (items) => items.filter((item) => item.label).map((item) => item.label);
@@ -73,15 +74,37 @@ test('置顶与归档：标签切换、归档会话的置顶项禁用', () => {
     assert.ok(labelsOf(normal).includes('归档会话'));
 });
 
-test('结构不变量：删除会话恒在末尾且 danger；分隔线不夹空段', () => {
+test('结构不变量：删除会话恒在末尾且 danger；归档紧挨它上面；分隔线不夹空段', () => {
     const items = buildSessionMenuItems({id: 's6'}, baseEnv);
     const last = items[items.length - 1];
     assert.equal(last.label, '删除会话');
     assert.equal(last.danger, true);
+    // 归档紧挨删除上方（图 2 的底部布局：归档 → 永久删除）
+    assert.equal(items[items.length - 2].label, '归档会话');
     for (let i = 1; i < items.length; i++) {
         assert.ok(!(items[i].sep && items[i - 1].sep), '连续两条分隔线');
     }
     assert.equal(items[0].label, '新建会话');
+});
+
+test('归档/取消归档：已归档会话倒数第二项切成「取消归档」且用 unarchive 图标', () => {
+    const items = buildSessionMenuItems({id: 's9', archivedAt: 123}, baseEnv);
+    const archive = items[items.length - 2];
+    assert.equal(archive.label, '取消归档');
+    assert.equal(archive.icon, 'unarchive');
+    const normal = buildSessionMenuItems({id: 's9'}, baseEnv);
+    assert.equal(normal[normal.length - 2].icon, 'archive');
+});
+
+test('每个菜单项都有已注册的图标（菜单图标不缺、不拼错）', () => {
+    for (const session of [{id: 'a'}, {id: 'b', sideOf: 'a'}, {id: 'c', archivedAt: 1}]) {
+        const env = {pendingNoticeCount: () => 3, diskStorage: true};
+        for (const item of buildSessionMenuItems(session, env)) {
+            if (item.sep) continue;
+            assert.ok(item.icon, '菜单项缺 icon: ' + item.label);
+            assert.ok(ICONS[item.icon], '图标未注册: ' + item.icon + '（' + item.label + '）');
+        }
+    }
 });
 
 // 工作区分组头「⋯」菜单：有路径给完整工作区操作、无路径只给打开类、关闭仅当前工作区出现。

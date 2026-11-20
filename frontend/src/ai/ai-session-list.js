@@ -76,23 +76,25 @@ export function orderSessionsWithSides(list) {
 // 磁盘存储才有「复制会话路径」（内存/legacy 模式没有磁盘路径可复制）。
 export function buildSessionMenuItems(session, env) {
     const pending = Math.max(0, Number(env.pendingNoticeCount(session.id)) || 0);
+    const archived = !!session.archivedAt;
     const items = [
-        {label: '新建会话', act: 'new'},
-        {label: '新建支线对话', act: 'newSide'},
+        {label: '新建会话', icon: 'plus', act: 'new'},
+        {label: '新建支线对话', icon: 'sidechat', act: 'newSide'},
         {sep: true},
-        {label: session.pinned ? '取消置顶' : '置顶会话', disabled: !!session.archivedAt, act: 'togglePin'},
-        {label: '重命名会话…', act: 'rename'},
-        {label: '导出会话…', act: 'export'},
-        {label: '会话数据诊断…', act: 'diagnostics'},
+        {label: session.pinned ? '取消置顶' : '置顶会话', icon: 'pin', disabled: archived, act: 'togglePin'},
+        {label: '重命名会话…', icon: 'rename', act: 'rename'},
+        {label: '导出会话…', icon: 'export', act: 'export'},
+        {label: '会话数据诊断…', icon: 'chart', act: 'diagnostics'},
     ];
-    if (session.sideOf) items.push({label: '提升为独立会话', act: 'promote'});
-    if (pending > 0) items.push({label: '清空信箱（' + pending + ' 条）', act: 'clearMailbox'});
-    items.push({label: session.archivedAt ? '取消归档' : '归档会话', act: 'archive'});
+    if (session.sideOf) items.push({label: '提升为独立会话', icon: 'new-window', act: 'promote'});
+    if (pending > 0) items.push({label: '清空信箱（' + pending + ' 条）', icon: 'eraser', act: 'clearMailbox'});
     items.push({sep: true});
-    items.push({label: '复制会话ID', act: 'copyId'});
-    if (env.diskStorage) items.push({label: '复制会话路径', act: 'copyPath'});
+    items.push({label: '复制会话ID', icon: 'copy', act: 'copyId'});
+    if (env.diskStorage) items.push({label: '复制会话路径', icon: 'folder', act: 'copyPath'});
+    // 归档紧挨删除、放在它上面（对齐图 2 的底部布局：归档 → 永久删除）
     items.push({sep: true});
-    items.push({label: '删除会话', danger: true, act: 'remove'});
+    items.push({label: archived ? '取消归档' : '归档会话', icon: archived ? 'unarchive' : 'archive', act: 'archive'});
+    items.push({label: '删除会话', icon: 'trash', danger: true, act: 'remove'});
     return items;
 }
 

@@ -246,6 +246,55 @@ test('runForAISessionStart：执行中同事件重入跳过；空工作区直接
     assert.deepEqual(await ctl.runForAISessionStart(''), {ran: 0});
 });
 
+// onWillRun 是起轮阻塞提示（ai-panel 的「正在执行生命周期钩子」）的挂点：
+// 没有可执行条目时绝不能回调——否则空配置也会闪假反馈（2026-11-21 实测 bug）。
+test('runForAISessionStart：onWillRun 只在确有可执行条目时同步回调一次', async () => {
+    // 无 session-start 条目（只有 open）
+    const none = makeHarness({lifecycleHooks: [entry({id: 'pc-o', command: 'on-open'})]});
+    let firedNone = 0;
+    assert.deepEqual(
+        await createLifecycleHooks(none.deps).runForAISessionStart('D:\\ws', () => { firedNone += 1; }),
+        {ran: 0});
+    assert.equal(firedNone, 0);
+
+    // 总开关关闭 / 只有停用条目
+    const off = makeHarness({lifecycleHooks: [entry({id: 'pc-a', event: 'session-start'})], enabled: false});
+    let firedOff = 0;
+    await createLifecycleHooks(off.deps).runForAISessionStart('D:\\ws', () => { firedOff += 1; });
+    assert.equal(firedOff, 0);
+    const disabled = makeHarness({lifecycleHooks: [entry({id: 'pc-a', event: 'session-start', enabled: false})]});
+    let firedDisabled = 0;
+    await createLifecycleHooks(disabled.deps).runForAISessionStart('D:\\ws', () => { firedDisabled += 1; });
+    assert.equal(firedDisabled, 0);
+
+    // 有启用条目：执行前回调一次，`list` 为该次要跑的条目（停用条目不进列表）
+    const hit = makeHarness({lifecycleHooks: [
+        entry({id: 'pc-a', command: 'prep', event: 'session-start'}),
+        entry({id: 'pc-s', command: 'no', event: 'session-start', enabled: false}),
+    ]});
+    let seen = null;
+    const out = await createLifecycleHooks(hit.deps).runForAISessionStart('D:\\ws',
+        (list) => { seen = list.map((e) => e.id); });
+    assert.deepEqual(out, {ran: 1, failed: 0});
+    assert.deepEqual(seen, ['pc-a']);
+});
+
+test('runForAISessionStart：重入被跳过时不回调 onWillRun（本次并未阻塞等待）', async () => {
+    let release;
+    const h = makeHarness({lifecycleHooks: [entry({id: 'pc-a', command: 'prep', event: 'session-start'})]});
+    h.deps.backend.AIRunShellCommand = () => new Promise((r) => { release = r; });
+    const ctl = createLifecycleHooks(h.deps);
+    let fired = 0;
+    const first = ctl.runForAISessionStart('D:\\ws', () => { fired += 1; });
+    assert.equal(fired, 1); // 首次真实执行前同步回调
+    assert.deepEqual(
+        await ctl.runForAISessionStart('D:\\ws', () => { fired += 1; }),
+        {ran: 0, skipped: 'running'});
+    assert.equal(fired, 1);
+    release({code: 0, stdout: '', stderr: '', timedOut: false});
+    await first;
+});
+
 // ---- get_lifecycle_hooks ----
 
 test('get_lifecycle_hooks：返回当前工作区**全部事件**条目（含停用），别的工作区不可见', async () => {

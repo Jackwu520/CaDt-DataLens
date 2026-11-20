@@ -90,3 +90,14 @@ export function detectAppMessage(content) {
     if (session) return {kind: 'session', label: '会话消息 · ' + session[1].trim(), icon: ''};
     return null;
 }
+
+// 哪些应用消息卡片的正文适合当 Markdown 渲染：结论型（子代理结算 / 提问、支线结论）。
+// 指令型（git / 定时任务 / 计划批准 / 会话投递 / 工作区防护等）保持原文——「查看指令」
+// 的用途是核对实际发给模型的字节，渲染会吃掉 ### / ** / 反引号这些标记符号。
+const MARKDOWN_APP_KINDS = new Set(['subagent', 'subagent-ask', 'sidechat']);
+// 子代理结论按设计不截断，超长时退回原文，避免展开一次跑超长 markdown 拖慢面板。
+export const APP_MSG_MD_MAX_CHARS = 12000;
+export function appMessageMarkdownEligible(kind, content) {
+    if (!MARKDOWN_APP_KINDS.has(String(kind || ''))) return false;
+    return String(content == null ? '' : content).length <= APP_MSG_MD_MAX_CHARS;
+}

@@ -96,11 +96,14 @@ test('视频插话与正常发送同一条协议门禁', () => {
     assert.match(panel, /videoSteerAllowed: \(session\) => modelVideoInputEnabled\(profileOf\(session\), entryOf\(session\)\)/);
 });
 
-test('preemptComposerMessage：停轮 + 队首 + 抢占待发标记', () => {
-    const preempt = sliceBetween(queue, 'function preemptComposerMessage(opts) {', 'async function flushMessageQueue');
+test('preemptComposerMessage：停轮 + 队首 + 抢占待发标记 + 保留其它 steer', () => {
+    const preempt = sliceFunction(queue, 'function preemptComposerMessage(opts) {');
     assert.match(preempt, /model\.enqueueFront\(payload\)/);
     assert.match(preempt, /interjectPending\.add\(session\.id\)/);
     assert.match(preempt, /stopGeneration\(\)/);
+    // 抢占前先把其它 steer 降级为 queue，避免被 stopGeneration / finishStream 的
+    // clearSteer 连带丢弃（2026-11-22 实测：两条插话抢占一条后另一条消失）
+    assert.match(preempt, /model\.fallbackSteerToQueue\(session\.id\)/);
 });
 
 test('wait_agent 唤醒语义：排队不打扰等待，只有 steer 唤醒并带来源', () => {
@@ -147,6 +150,8 @@ test('队列行提供点击抢占（⚡ 图标，仅当前轮活着时显示）'
     assert.match(preemptItem, /model\.setDelivery\(item, 'queue'\)/);
     assert.match(preemptItem, /interjectPending\.add\(sessionId\)/);
     assert.match(preemptItem, /stopGeneration\(\)/);
+    // 抢占前降级其它 steer 保留，避免被 clearSteer 连带丢弃（2026-11-22 bug）
+    assert.match(preemptItem, /model\.fallbackSteerToQueue\(sessionId\)/);
 });
 
 test('队列行拖动排序：3×3 点阵手柄 + 标签页式让位插槽', () => {
