@@ -4,6 +4,25 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 
 ## 未发布
 
+### 修复（设置页「默认读写权限」选完全权限时补上确认框）
+
+- **现象**：设置 → AI → 权限 →「新会话默认读写权限」下拉切到「完全权限」时直接生效、不弹确认框；而会话级切换权限有图1 那样的强确认。默认值影响之后所有新会话，影响面更大却无确认。
+- **根因**：两条路径代码不同——会话切换走 `ai-panel.js` 的 `setScope` → `confirmFullPermission`，设置页下拉的 change 只写 `config.defaultScope` 并保存，从未接确认框。
+- **改法**：把 `confirmFullPermission` 提取为可带 `title/intro/note/top` 选项的共用函数，经 ctx 注入设置页；下拉选 full 时先把值回退到原档位（程序化改 `select.value` 不触发 change，`enhanceSelect` 同步自绘触发器文本），再弹同款确认框（`top: true` 盖在设置窗上），确认后才落盘为 full。取消 / Esc / 点遮罩关闭都无需额外回调，显示天然保持旧值。
+- 改动：`frontend/src/ai/ai-panel.js`、`frontend/src/ai/ai-settings-dialog.js`。`node --check` 语法通过。
+
+### 文档（6 家 harness 终端唤醒机制调研：手动停止不唤醒是主流）
+
+- 调研 cline / codex / opencode / pi / ZCode / dsh 六家在终端命令结束、手动停止时是否唤醒 AI 会话。结论：手动停止不唤醒是绝对主流（6 家全部如此），本应用 `code !== -1` 的排除口径与主流一致、不是 bug；"会唤醒"的印象来自"后台正常完成"或 ZCode 独有的"停止后台任务算终态"两类场景。
+- 核查 `code === -1` 语义：它严格说是"非正常退出"标记（含两种罕见异常来源），但在"排除唤醒"方向上误判无害——主流排除的是整个"被中止"类别。若要对齐 ZCode 需显式标记而非复用 -1。
+- 文档：`docs/reports/terminal-wakeup-survey-2026-11-21.md`。仅调研，未改代码。
+
+### 改进（信箱弹层改为两行卡片，长通知不再竖排成窄条）
+
+- **现象**：点头部「信箱」胶囊弹出的通知列表把会话名徽标和摘要并排塞在一行，徽标就占 140px，后台命令这类长摘要被挤成很窄的一列、竖着折成十几行，很难看。
+- **改法**：信箱行改用专用两行布局——上行「会话名 + 类别徽标」（后台命令 / 待拍板 / 子代理…按 kind 上色，未知 kind 落「通知」不拼 class），下行摘要独占整个弹层宽度、最多两行、超出悬停看全文。专用 `.ai-mailbox-*` 样式与计时器 / 定时任务 / 智能体树共用的 `.ai-chips-row` 分开，互不影响。
+- 改动：`frontend/src/ai/ai-panel.js`（`mailboxRow` / `MAILBOX_KIND_LABEL` / `renderMailboxPopInto`）、`frontend/src/style.css`（`.ai-mailbox-*`）。`npm run build` 通过、全量 `npm test` 1980 通过（串行两次）。
+
 ### 改进（斜杠选中技能即作为本轮请求发出，不再让「继续输入需求」）
 
 - **现象**：输入 `/` 从补全列表选一个技能后，只提示「已加载技能（随下一轮发送），继续输入需求」，输入框被清空、什么都没发出去，看起来像「技能不能单独发、必须配文字等下一轮」。
