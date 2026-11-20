@@ -557,12 +557,8 @@ export function createAIComposer(ctx) {
         showContextMenu(skills.map((skill) => ({
             label: skill.name + ' — ' + skill.description,
             action: () => {
-                addAttachment({
-                    kind: 'skill',
-                    label: skill.name,
-                    path: skill.path,
-                    content: skill.content,
-                });
+                if (!addAttachment({kind: 'skill', label: skill.name, path: skill.path, content: skill.content})) return;
+                showNote('已附加技能：' + skill.name + '，可直接点发送（只发 skill），或继续输入需求。');
             },
         })), rect.right + 4, rect.bottom + 4);
     }
@@ -581,7 +577,7 @@ export function createAIComposer(ctx) {
             return;
         }
         addAttachment({kind: 'skill', label: target.name, path: target.path, content: target.content});
-        showNote('已加载技能：' + target.name + '（随下一轮发送）');
+        showNote('已附加技能：' + target.name + '，可直接点发送（只发 skill），或继续输入需求。');
     }
 
     // 输入框随内容长高，上限 8 行：按当前字号行高与上下内边距动态算上限（字号可自定义），
