@@ -148,7 +148,7 @@ const runController = createRunController({
     backend: deps.backend,
     onEvent: (name, cb) => {
         // 事件统一经桥；本模块在模块顶层 mount()，早于 main.js 创建桥，经就绪队列注册。
-        whenAppEvents((bridge) => bridge.onApp(name, cb));
+        whenAppEvents((bridge) => bridge.onWindowOrBroadcast(name, cb));
     },
     getActiveDoc: () => (deps.file ? {
         path: deps.file.path || '',

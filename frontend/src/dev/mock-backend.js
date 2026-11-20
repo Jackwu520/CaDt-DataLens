@@ -2568,6 +2568,9 @@ const mockBackend = {
         window.__mockWindowReuse = {workspace, sessionId: sessionId || ''};
         return ''; // mock 永远没有可用窗口：走软切换行为
     },
+    async WindowReuseResult(reqId, status) { window.__mockWindowReuseResult = {reqId, status}; },
+    async RegisterEventOwner(kind, id) { window.__mockEventOwners = (window.__mockEventOwners || []).concat([[kind, id]]); },
+    async UnregisterEventOwner(kind, id) { window.__mockEventOwnerOff = {kind, id}; },
     async WindowActivate() { window.__mockWindowActivated = true; },
     async ShowInFolder(path) { window.__mockShowInFolder = path; },
     async OpenWithDefaultApp(path) { window.__mockOpenWithDefaultApp = path; },

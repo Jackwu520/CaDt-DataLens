@@ -2545,7 +2545,6 @@ const structurePanelCtrl = createStructurePanelController({
     get currentMode() { return currentMode; },
     get currentSidebarView() { return currentSidebarView; },
     get els() { return els; },
-    set els(v) { els = v; },
     get exportStructureTree() { return exportStructureTree; },
     get file() { return file; },
     get iconSvg() { return iconSvg; },
@@ -3870,6 +3869,8 @@ function initAIPanel() {
                 cmdExitHandlers.delete(id);
             };
             if (!id || !handlers) return {cancel: off};
+            // 流事件归属：cmd-out/cmd-exit 只投本窗口（创建竞态前的广播仍由 id 过滤兜底）
+            if (backend.RegisterEventOwner) Promise.resolve(backend.RegisterEventOwner('cmd', id)).catch(() => {});
             if (handlers.onOut || handlers.onErr) {
                 cmdOutHandlers.set(id, (stream, data) => {
                     if (stream === 'err') {
@@ -6269,11 +6270,21 @@ if (rt) {
     appEvents.onWindow('app-open-memo', (locator) => {
         if (memoJumpHook) memoJumpHook(locator);
     });
-    // P2 进程内复用：别的窗口把「打开这个工作区的会话」直接投给本窗口。
+    // P2 进程内复用：别的窗口把「打开这个工作区的会话」直接投给本窗口；
+    // 处理完必须回执 reqId，投递方才好区分「已切过去」与「会话已删 → 退化开新窗口」。
     appEvents.onWindow('app-open-ai-session', (req) => {
-        Promise.resolve(handleReuseSessionRequest(req)).catch((e) => {
-            console.error('app-open-ai-session: 切换会话失败', e);
-        });
+        Promise.resolve(handleReuseSessionRequest(req))
+            .then((status) => {
+                if (req && req.reqId && backend.WindowReuseResult) {
+                    Promise.resolve(backend.WindowReuseResult(req.reqId, status)).catch(() => {});
+                }
+            })
+            .catch((e) => {
+                console.error('app-open-ai-session: 切换会话失败', e);
+                if (req && req.reqId && backend.WindowReuseResult) {
+                    Promise.resolve(backend.WindowReuseResult(req.reqId, 'mismatch')).catch(() => {});
+                }
+            });
     });
     // Wails 文件拖放：注册窗口级 dragover/drop 监听（不注册就收不到任何外部拖放），
     // useDropTarget=false 让整个窗口都接受；回调拿到的路径已由 Go 侧解析好
@@ -6323,7 +6334,7 @@ if (rt) {
             if (backend.SetAIRunning) backend.SetAIRunning(running);
         } catch (e) {}
     }, 800);
-    appEvents.onApp('browser-nav', (data) => {
+    appEvents.onWindowOrBroadcast('browser-nav', (data) => {
         const doc = docs.find((d) => d.id === (data && data.id));
         if (!doc) return;
         if (data.loading !== undefined) doc.loading = !!data.loading;
@@ -6339,11 +6350,11 @@ if (rt) {
         if (doc.browserFwdBtn && data.canGoForward !== undefined) doc.browserFwdBtn.disabled = !data.canGoForward;
         if (data.title) updateBrowserTitle(doc, data.title);
     });
-    appEvents.onApp('browser-title', (data) => {
+    appEvents.onWindowOrBroadcast('browser-title', (data) => {
         const doc = docs.find((d) => d.id === (data && data.id));
         if (doc && data && data.title) updateBrowserTitle(doc, data.title);
     });
-    appEvents.onApp('browser-error', (data) => {
+    appEvents.onWindowOrBroadcast('browser-error', (data) => {
         const doc = docs.find((d) => d.id === (data && data.id));
         if (doc) flash('浏览器进程异常，标签页可能需要重新打开', true);
     });
@@ -6352,12 +6363,12 @@ if (rt) {
     setInterval(() => {
         if (file && file.browser) syncBrowserTab(file);
     }, 250);
-    appEvents.onApp('term-out', (data) => {
+    appEvents.onWindowOrBroadcast('term-out', (data) => {
         // 走 terminal 域的统一入口：session 未注册时先缓冲（Go 在 TermCreate 返回前就开始推输出），
         // attachTermSession 注册后按序回放，首屏 banner 不再被丢
         terminalMod.writeTermOut(data);
     });
-    appEvents.onApp('term-exit', (data) => {
+    appEvents.onWindowOrBroadcast('term-exit', (data) => {
         const s = terminalUI.sessions.get(data.id);
         if (s) s.term.write('\r\n\x1b[90m[进程已退出，代码 ' + data.code + ']\x1b[0m');
         // AI 创建的终端 shell 退出：经会话信箱唤醒发起会话（用户自己开的终端不投递）。
@@ -6367,11 +6378,11 @@ if (rt) {
             catch (e) {} // 尽力而为路径：唤醒失败不影响终端 UI 的退出标记
         }
     });
-    appEvents.onApp('cmd-out', (payload) => {
+    appEvents.onWindowOrBroadcast('cmd-out', (payload) => {
         const h = cmdOutHandlers.get(payload.id);
         if (h) h(payload.stream, payload.data);
     });
-    appEvents.onApp('cmd-exit', (payload) => {
+    appEvents.onWindowOrBroadcast('cmd-exit', (payload) => {
         const h = cmdExitHandlers.get(payload.id);
         if (h) {
             cmdExitHandlers.delete(payload.id);

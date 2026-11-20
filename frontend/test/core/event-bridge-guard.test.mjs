@@ -40,7 +40,7 @@ test('EventsOn 只允许出现在桥与 mock', () => {
 
 test('桥注册的字面事件名必须已在 event-scope 分类', () => {
     const files = listJS(srcRoot);
-    const re = /__appEvents\.[a-zA-Z]+\(\s*'([^']+)'|appEvents\.(onApp|onWindow|onWorkspace|onOwned|onResource)\(\s*'([^']+)'|bridge\.(onApp|onWindow|onWorkspace|onOwned|onResource)\(\s*'([^']+)'/g;
+    const re = /__appEvents\.[a-zA-Z]+\(\s*'([^']+)'|appEvents\.(onApp|onWindow|onWorkspace|onOwned|onResource)\(\s*'([^']+)'|bridge\.(onApp|onWindow|onWindowOrBroadcast|onWorkspace|onOwned|onResource)\(\s*'([^']+)'/g;
     const missing = [];
     for (const file of files) {
         const text = readFileSync(file, 'utf8');

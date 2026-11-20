@@ -116,6 +116,10 @@ function openBrowserTab(url, profileKey, opts) {
     }
     const profileForOpen = doc.browserProfile || 'tab-' + doc.id;
     const onOpened = (info) => {
+        // 流事件归属：browser-nav/title/error 定向投本窗口（打开完成前的竞态事件走广播兜底）
+        if (deps.backend.RegisterEventOwner) {
+            Promise.resolve(deps.backend.RegisterEventOwner('browser', doc.id)).catch(() => {});
+        }
         if (info && info.title) deps.updateBrowserTitle(doc, info.title);
         if (doc.browserEmpty) {
             doc.browserEmpty.remove();

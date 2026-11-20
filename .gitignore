@@ -2,8 +2,12 @@ node_modules/
 frontend/dist/
 build/bin/
 build/windows/installer/tmp/
-frontend/wailsjs/
 /plugins/
+
+# Taskfile 缓存 / wails3 生成物
+.task/
+.wails/
+*.syso
 
 # 公开语料 eval 数据（体积大且许可各异，不入库；脚本见 scripts/eval-public-corpus.mjs）
 scripts/eval-data/

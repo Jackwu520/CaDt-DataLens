@@ -1016,8 +1016,18 @@ export function createReadingMode(deps) {
             if (row) row.textContent = '已扫描 ' + data.scanned + ' / ' + data.total + ' …';
         };
         let off = null;
-        whenAppEvents((bridge) => { off = bridge.onApp('reading-search-progress', handler); });
-        return () => { if (off) off(); };
+        whenAppEvents((bridge) => {
+            if (deps.backend && deps.backend.RegisterEventOwner) {
+                Promise.resolve(deps.backend.RegisterEventOwner('reading', requestID)).catch(() => {});
+            }
+            off = bridge.onWindowOrBroadcast('reading-search-progress', handler);
+        });
+        return () => {
+            if (off) off();
+            if (deps.backend && deps.backend.UnregisterEventOwner) {
+                Promise.resolve(deps.backend.UnregisterEventOwner('reading', requestID)).catch(() => {});
+            }
+        };
     }
 
     async function onSearchGo(rel, unitOffset, hit, hitIndexInGroup) {

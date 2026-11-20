@@ -26,7 +26,7 @@
 
 ## 2. 版本号
 
-版本号只有一个真源：`app_core.go` 的 `appVersion`（当前 `v1.1.1`）。
+版本号只有一个真源：`app_core.go` 的 `appVersion`（当前 `v1.2.0`），同步 `wails.json` 的 `productVersion`、`build/windows/info.json`（v3 syso 版本资源）与 `build/windows/installer/wails_tools.nsh` 的 `INFO_PRODUCTVERSION`。
 
 - `wails.json` 的 `info.productVersion` 决定 exe 文件属性与安装包版本，必须与 `appVersion` 一致（去掉 `v` 前缀）。
 - 单测 `TestWailsInfoVersionMatchesAppVersion` 会强制校验，不一致时 `go test ./...` 失败。

@@ -228,7 +228,7 @@ CaDt-DataLens 是一个面向 Windows 的轻量级多格式数据查看与编辑
 ### 文档与提交
 - 用户可见的改动同步更新 `CHANGELOG.md` 与 `README.md` 对应小节。
 - 方案文档放 `docs/unfinished-plans/`，全部实施后移入 `docs/finished-plans/`。
-- 版本号三处需一致：`app_core.go` 的 `appVersion`（`app_core.go:40`）、`wails.json` 的 `productVersion`、NSIS 脚本（见 `docs/packaging.md`）。
+- 版本号四处需一致：`app_core.go` 的 `appVersion`、`wails.json` 的 `productVersion`、`build/windows/info.json`（v3 syso 版本资源）、`build/windows/installer/wails_tools.nsh` 的 `INFO_PRODUCTVERSION`（见 `docs/packaging.md`）。
 
 ## 常用命令
 
@@ -238,7 +238,9 @@ CaDt-DataLens 是一个面向 Windows 的轻量级多格式数据查看与编辑
 # 环境检查
 wails3 doctor
 
-# 开发运行（v3 未接 Taskfile/wails3 dev：直接构建启动；前端热更新用 npm run dev + mock）
+# 开发运行（wails3 dev：Vite 热更新 + 应用窗口）
+wails3 dev
+# 或者只构建启动（不跑 Vite dev server）
 go build -o datalens.exe . && ./datalens.exe
 
 # 一键构建并替换根目录便携副本 datalens.exe（tools/rebuild-exe.cmd 双击入口）：开头选是否跑

@@ -40,7 +40,7 @@ import (
 	"datalens/internal/watch"
 )
 
-const appVersion = "v1.1.1"
+const appVersion = "v1.2.0"
 
 type App struct {
 	*reading.Reader                              // 阅读模式引擎（internal/reading），提升方法即 Wails 绑定
@@ -93,22 +93,22 @@ func (a *App) startup(ctx context.Context) {
 	// 关闭行为（点 X 退出还是最小化到托盘）：配置在 config.json，前端设置页只负责推过来。
 	a.closeAction = appconfig.CloseAction()
 	reading.Emit = func(event string, data any) {
-		emitAppEvent(event, data)
+		routeOwnedEvent("reading", event, data)
 	}
 	run.Emit = func(event string, data any) {
-		emitAppEvent(event, data)
+		routeOwnedEvent("run", event, data)
 	}
 	browser.Emit = func(event string, data any) {
-		emitAppEvent(event, data)
+		routeOwnedEvent("browser", event, data)
 	}
 	aischedule.Emit = func(event string, data any) {
 		emitAppEvent(event, data)
 	}
 	cmdbridge.Emit = func(event string, data any) {
-		emitAppEvent(event, data)
+		routeOwnedEvent("cmd", event, data)
 	}
 	terminal.Emit = func(event string, data any) {
-		emitAppEvent(event, data)
+		routeOwnedEvent("term", event, data)
 	}
 	watch.Emit = func(event string, data any) {
 		emitAppEvent(event, data)

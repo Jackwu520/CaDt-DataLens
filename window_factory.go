@@ -143,13 +143,15 @@ func deliverOpenTargets(st *windowState, targets []any) {
 	activateWindow(w)
 }
 
-// deliverOpenSession 把「打开某个 AI 会话」投给指定窗口（替代 v2 的文件信箱）。
-func deliverOpenSession(st *windowState, workspace, sessionID string) {
+// deliverOpenSession 把「打开某个 AI 会话」投给指定窗口（替代 v2 的文件信箱）；
+// reqID 由投递方生成，目标窗口处理完经 WindowReuseResult 回执。
+func deliverOpenSession(st *windowState, reqID, workspace, sessionID string) {
 	w := st.window()
 	if w == nil {
 		return
 	}
 	w.EmitEvent("app-open-ai-session", map[string]string{
+		"reqId":     reqID,
 		"workspace": workspace,
 		"sessionId": sessionID,
 	})

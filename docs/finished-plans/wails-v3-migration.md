@@ -160,3 +160,10 @@
 - **死代码清理**：`wails_app.go` 只保留应用/主窗口/事件/剪贴板/退出接缝；`windowicon_windows.go` 去掉跨进程响应探测；`portablewindows_*`（跨进程窗口计数）删除。
 - **文档收口**：`README.md`、`AGENTS.md`、`docs/packaging.md` 更新到 v3 构建（`wails3 generate syso` + `go build -tags production`）与 `Call.ByName` 绑定口径；本方案与事件过滤方案归档 `finished-plans`，`multi-window-session-reuse.md` 作为 v2 阶段实现留档。
 - **验证**：Go/前端全量测试、linux/darwin 交叉编译、`tools/rebuild-exe.ps1` 测试门与构建均通过。
+
+## 13. 收尾补强（2026-11-20，P3 后）
+
+- **复用回执**：`WindowReuseForSession` 改为投递后等待目标窗口回执（`WindowReuseResult`，预算 2.5s）；目标切会话失败/超时返回空串，源窗口退化为开新窗口（等价 v2 信箱 ack）。
+- **流事件 owner**：新增 `event_owner.go` 与 `RegisterEventOwner/UnregisterEventOwner` 绑定；`term-out`/`term-exit`/`cmd-*`/`run-*`/`browser-*`/`reading-search-progress` 按 id 查归属窗口定向发射，前端用事件桥 `onWindowOrBroadcast` 接收（未登记时的创建竞态仍走广播 + id 过滤）。
+- **开发工作流**：补 `Taskfile.yml` + `build/config.yml`（`build/Taskfile.yml`、`build/windows/Taskfile.yml`），`wails3 task windows:build` 与 `wails3 dev` 可用；前端构建在 DEV 模式下跳过（Vite dev server 供资源），不生成绑定、不改图标。
+- **版本与资源**：`v1.2.0`（appVersion / wails.json / build/windows/info.json / wails_tools.nsh 四处一致）；`build/windows/info.json` 改 v3 schema，修复此前 v2 模板导致 exe 版本资源为空的问题。

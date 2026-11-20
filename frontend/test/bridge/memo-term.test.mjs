@@ -85,6 +85,10 @@ function makeDeps() {
                 if (name === 'run-out') outHandler = cb;
                 if (name === 'run-exit') exitHandler = cb;
             },
+            onWindowOrBroadcast: (name, cb) => {
+                if (name === 'run-out') outHandler = cb;
+                if (name === 'run-exit') exitHandler = cb;
+            },
         },
         normalizeTermText: (t) => String(t || '').replace(/\r\n/g, '\n'),
         backend: {

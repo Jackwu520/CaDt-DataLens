@@ -193,12 +193,12 @@ export function createMemoTerm(deps) {
 
   // 事件桥：宿主可注入（测试）；生产由 main.js 创建，经就绪队列注册。
   if (deps.appEvents) {
-    deps.appEvents.onApp('run-out', onRunOut);
-    deps.appEvents.onApp('run-exit', onRunExit);
+    deps.appEvents.onWindowOrBroadcast('run-out', onRunOut);
+    deps.appEvents.onWindowOrBroadcast('run-exit', onRunExit);
   } else {
     whenAppEvents((bridge) => {
-      bridge.onApp('run-out', onRunOut);
-      bridge.onApp('run-exit', onRunExit);
+      bridge.onWindowOrBroadcast('run-out', onRunOut);
+      bridge.onWindowOrBroadcast('run-exit', onRunExit);
     });
   }
 
@@ -238,6 +238,9 @@ export function createMemoTerm(deps) {
     paintLive(itemId);
     resetLiveBlock(itemId);
     try {
+      if (deps.backend && deps.backend.RegisterEventOwner) {
+        Promise.resolve(deps.backend.RegisterEventOwner('run', termRunId(itemId))).catch(() => {});
+      }
       await deps.backend.RunExec(termRunId(itemId), shell.path, buildShellArgv(shell.name, cmd), String(cwd || ''), '', TERM_TIMEOUT_MS);
       return {ok: true};
     } catch (e) {

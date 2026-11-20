@@ -166,6 +166,10 @@ async function createTermSession(shell = '', meta = null) {
         return null;
     }
     const id = created.id;
+    // 流事件归属：term-out/term-exit 定向投本窗口（create 返回前的竞态事件走广播兜底）
+    if (deps.backend.RegisterEventOwner) {
+        Promise.resolve(deps.backend.RegisterEventOwner('term', id)).catch(() => {});
+    }
     const usedShell = created.shell || shell || 'powershell';
     attachTermSession(id, usedShell, {explicitShell: !!shell, aiSessionId: meta && meta.sessionId});
     return {id, shell: usedShell};

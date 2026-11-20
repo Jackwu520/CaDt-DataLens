@@ -70,6 +70,15 @@ export function createAppEventBridge({rt, windowName = null, logf = () => {}} = 
                 return sender === windowName;
             });
         },
+        // onWindowOrBroadcast：流式事件用——定向命中（sender=本窗口）或未定归属的
+        // 应用级广播（sender 为空，创建期竞态）都收；其他窗口定向的事件丢弃。
+        onWindowOrBroadcast(name, cb) {
+            return add(name, cb, (_payload, ev) => {
+                if (!windowName) return true;
+                const sender = ev && ev.sender;
+                return !sender || sender === windowName;
+            });
+        },
         // onWorkspace：payload.root 与本窗口工作区一致才收（同工作区多窗口都收）
         onWorkspace(name, getWorkspace, cb) {
             return add(name, cb, (payload) => {

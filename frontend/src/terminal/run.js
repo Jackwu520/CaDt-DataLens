@@ -743,6 +743,10 @@ export function createRunController(deps) {
             renderStatus();
             appendLine(session, '▸ ' + (step.kind === 'build' ? '编译：' : '运行：') + cmdText(step.exe, step.args), 'info');
             const id = session.id + '-' + step.kind;
+            // 流事件归属：run-out/run-exit 定向投本窗口
+            if (deps.backend && deps.backend.RegisterEventOwner) {
+                Promise.resolve(deps.backend.RegisterEventOwner('run', id)).catch(() => {});
+            }
             const exit = await startStep(session, id, step, timeoutMs > 0 ? Math.max(1, remainMs) : 0);
             if (!exit) {
                 finishSession(session, 'failed', null, total);
