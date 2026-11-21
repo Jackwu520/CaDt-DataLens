@@ -88,4 +88,13 @@ test('forkSettings：空源给出安全默认', () => {
     assert.deepEqual(s.approvedPaths, []);
     assert.deepEqual(s.readRoots, []);
     assert.equal(s.summary, null);
+    assert.equal(s.temp, false, '普通会话派生出来的仍是普通会话');
+});
+
+// 临时会话（session.temp）派生：分叉 / 支线必须继承一次性语义，否则「分个支就变成
+// 会注入 AGENTS.md / 记忆、重启后还在的普通会话」，一次性语义被静默突破。
+test('forkSettings：临时会话的派生仍是临时会话（temp 继承 + 只认严格 true）', () => {
+    assert.equal(forkSettings({...source, temp: true}).temp, true);
+    assert.equal(forkSettings({...source, temp: 'true'}).temp, false, '脏值不继承');
+    assert.equal(forkSettings({...source}).temp, false);
 });

@@ -19,6 +19,8 @@ import {createPreviewWindowView, pickPreviewKind} from './editor/preview-window-
 import {CODE_SHOT_RADII, CODE_SHOT_SCALES} from './core/code-shot.js';
 import {createDebugConsole} from './terminal/debugconsole.js';
 import {createActivityLog} from './core/activity-log.js';
+import {createDbUi} from './db/db-ui.js';
+import {createDbTabView} from './db/db-tab.js';
 import {iconSvg, renderMenuIcon} from './core/icons.js';
 import {createPalette} from './shell/palette.js';
 import {createAIPanel} from './ai/ai-panel.js';
@@ -67,6 +69,7 @@ import {createUpdateCheck} from './shell/update-check.js';
 import {createAppLinks} from './shell/app-links.js';
 import {createPropertiesUI} from './shell/properties-ui.js';
 import {createSessionRestore} from './shell/session-restore.js';
+import {createBrowserTabRestore} from './shell/browser-tab-restore.js';
 import {decideSessionOpen} from './ai/ai-session-scope.js';
 import {createAppActions} from './shell/app-actions.js';
 import {createQuickSwitch} from './shell/quick-switch.js';
@@ -171,6 +174,7 @@ let memoFocusHook = null;          // 窗口聚焦 → 全局便签静默对账
 let memoWorkspaceEventHook = null; // workspace-changed → 工作区便签重读
 let memoResourceEventHook = null;  // resource-changed → 全局便签目录监听重读
 let memoFlushHook = null;          // 关窗 / 页面隐藏 → 冲掉防抖保存
+let dbSidebarRenderHook = null;    // 侧栏切到「数据库」面板 → 重绘工作区清单（dbUi 建得晚，先挂 null）
 let memoJumpHook = null;           // --memo CLI / app-open-memo 事件 → 定位跳转
 let memoPendingFlag = false;       // 有未落盘修改（writing-ui 的 anyDirty 经 getter 读它）
 
@@ -825,6 +829,7 @@ const els = {
     abAi: document.getElementById('ab-ai'),
     abChats: document.getElementById('ab-chats'),
     abAppPages: document.getElementById('ab-app-pages'),
+    abDatabase: document.getElementById('ab-database'),
     tbAi: document.getElementById('tb-ai'),
     aiPanel: document.getElementById('ai-panel'),
     termNew: document.getElementById('term-new'),
@@ -931,6 +936,8 @@ const APP_ACTIONS = [
     'install_plugin', 'uninstall_plugin',
     'get_mcp_servers', 'list_mcp_samples', 'install_mcp_sample', 'set_mcp_server', 'delete_mcp_server',
     'cognition_toggle',
+    // 桌面控制授权：执行体在 AI 面板（需要会话上下文与审批卡通道），这里登记以保持动作对账
+    'request_desktop_control',
 ];
 
 const APP_SCREENSHOT_AREAS = {
@@ -1844,6 +1851,12 @@ async function runAppAction(action, params, scope, callerSessionId, requestActio
             if (!answer || !answer.approved) return {applied: false, denied: true, note: '用户拒绝了本次认知索引' + (enabled ? '启用' : '关闭')};
             applySettingsValue('switch', control, enabled);
             return {applied: true, enabled, oldValue, newValue};
+        }
+        case 'request_desktop_control': {
+            // 会话级桌面控制授权：必须由 AI 面板在会话上下文里执行（要 session + 桌面控制状态 +
+            // pendingApprovals 审批通道）。ai-panel 的 app_control 分支已在分发前拦截并处理，
+            // 走到这里说明调用来自没有面板的宿主（悬浮窗 / 调试台），确定性拒绝。
+            throw new Error('request_desktop_control 只能由 AI 面板在当前会话内发起');
         }
         case 'get_activity': {
             // 操作留痕只读查询：帮用户回忆「刚才做了什么」与排障。
@@ -2857,6 +2870,8 @@ const editorGroupsMod = createEditorGroups({
     get applyWritingMode() { return applyWritingMode; },
     get backend() { return backend; },
     get baseNameOf() { return baseNameOf; },
+    // 个人浏览器标签关闭时从恢复列表移除（shell/browser-tab-restore.js）
+    get browserTabRestore() { return browserTabRestore; },
     get cancelAutoSave() { return cancelAutoSave; },
     get canSplitDoc() { return canSplitDoc; },
     get closeDialogs() { return closeDialogs; },
@@ -2871,6 +2886,7 @@ const editorGroupsMod = createEditorGroups({
     get createGroupMemberView() { return createGroupMemberView; },
     get createBgTermView() { return createBgTermView; },
     get createAppPageView() { return createAppPageView; },
+    get createDatabaseView() { return createDatabaseView; },
     get createMemoView() { return createMemoView; },
     get CSV_COL_MIN_WIDTH() { return CSV_COL_MIN_WIDTH; },
     get CSV_ROW_NUM_WIDTH() { return CSV_ROW_NUM_WIDTH; },
@@ -3811,9 +3827,18 @@ function applySidebarUI() {
         els.abAppPages.classList.toggle('active', appPagesActive);
         els.abAppPages.setAttribute('aria-pressed', String(appPagesActive));
     }
+    if (els.abDatabase) {
+        const dbActive = !!settings.showSidebar && settings.sidebarView === 'database';
+        els.abDatabase.classList.toggle('active', dbActive);
+        els.abDatabase.setAttribute('aria-pressed', String(dbActive));
+    }
     // 切进应用页面面板时按需渲染（首次 / 注册表变动后）
     if (els.sidebar.dataset.sidebarView === 'app-pages' && !document.querySelector('#app-pages-nav .app-pages-nav-item')) {
         try { renderAppPagesNav(); } catch (e) {}
+    }
+    // 切进数据库面板时重绘（工作区清单可能被别的窗口改过）；dbUi 建得晚，经早期 hook 间接层
+    if (els.sidebar.dataset.sidebarView === 'database' && dbSidebarRenderHook) {
+        try { dbSidebarRenderHook(); } catch (e) {}
     }
     const filesVisible = !!settings.showSidebar && currentSidebarView() === 'files';
     if (explorer) explorer.setVisible(filesVisible);
@@ -3907,6 +3932,7 @@ function initActivityBar() {
     if (els.abGit) els.abGit.addEventListener('click', () => toggleSidebarView('git'));
     if (els.abChats) els.abChats.addEventListener('click', () => toggleSidebarView('chats'));
     if (els.abAppPages) els.abAppPages.addEventListener('click', () => toggleAppPagesPanel());
+    if (els.abDatabase) els.abDatabase.addEventListener('click', () => toggleSidebarView('database'));
     if (els.abMore) els.abMore.addEventListener('click', () => {
         if (!ctxMenu) return;
         const rect = els.abMore.getBoundingClientRect();
@@ -4717,8 +4743,7 @@ function initAIPanel() {
             }
             refreshExternalToolsPaneIfVisible();
         });
-        // 桌面授权单飞广播（desktop-grant-changed，desktop-mcp.md §13.3-2）：任何窗口 grant/revoke
-        // 都广播到这里，面板整表替换副本；本窗口有会话被挤掉时由面板投递通知
+        // 桌面控制状态广播（desktop-grant-changed）：别的窗口改了同一会话的启用状态时刷新本窗口 UI
         appEvents.onApp('desktop-grant-changed', (payload) => {
             if (aiPanel && typeof aiPanel.handleDesktopGrantEvent === 'function') {
                 try { aiPanel.handleDesktopGrantEvent(payload); } catch (e) {}
@@ -5505,6 +5530,15 @@ const settingsPaneExternalTools = createSettingsPaneExternalTools({
         return () => (aiPanel && typeof aiPanel.getMcpToolDefs === 'function' ? aiPanel.getMcpToolDefs() : []);
     },
     get getAiPanel() { return () => aiPanel; },
+    // 外部工具页要按 mcp.json 渲染 MCP 服务器组：AI 面板是惰性初始化的，直接读 aiPanel
+    // 可能拿到 null（用户没开过面板就点开该页）。与设置页 AI 子页一致地在此兜底初始化
+    // （initAIPanel 自带 if (aiPanel) return 幂等，不会重复建面板）。
+    get ensureAiPanel() {
+        return () => {
+            if (!aiPanel) initAIPanel();
+            return aiPanel;
+        };
+    },
     get confirmAction() {
         return (message, action, okLabel, title, variant, options) => openConfirmDialog(message, action, okLabel, title, variant, options);
     },
@@ -5949,6 +5983,13 @@ const sessionRestore = createSessionRestore({
     get workspaceFolder() { return workspaceFolder; },
 });
 const {knownDocViews, pendingDocViews, readSession, readWorkspaceSession, restoreSession, saveSessionNow, scheduleSessionSave, sessionPathKey} = sessionRestore;
+// 个人浏览器标签的保存与启动恢复（shell/browser-tab-restore.js）：openBrowserTab getter
+// 指向下方 bridgeUI 解构出的函数——getter 延迟求值，创建期尚处 TDZ 也没关系。
+const browserTabRestore = createBrowserTabRestore({
+    get backend() { return backend; },
+    get logFrontend() { return logFrontend; },
+    get openBrowserTab() { return openBrowserTab; },
+});
 const propertiesUI = createPropertiesUI({
     get activateDoc() { return activateDoc; },
     get backend() { return backend; },
@@ -7104,6 +7145,9 @@ if (rt) {
             doc.browserEmpty = null;
         }
         if (data.url) doc.browserUrl = data.url;
+        // 个人浏览器地址变化：通知恢复模块防抖落盘（cadt.browser-tabs.v1）。事件先按
+        // doc 归属过滤过（本窗口没有这个 doc 时上面已 return），不会收到别的窗口的导航。
+        if (doc.browserPersist && browserTabRestore) browserTabRestore.notePersonalNav(data.url);
         if (doc.browserAddr && document.activeElement !== doc.browserAddr) {
             doc.browserAddr.value = data.url && data.url !== 'about:blank' ? data.url : '';
         }
@@ -7219,6 +7263,7 @@ const {setDragCursor} = cursorThemes;
 
 const terminalMod = createTerminalUI({
     get renderAppPagesNav() { return renderAppPagesNav; },
+    get renderDatabaseNav() { return dbUi.renderSidebar; },
     get showGitFileHistory() { return showGitFileHistory; },
     get touchRunProfileRecency() { return touchRunProfileRecency; },
     get openDocDirtyByPath() { return openDocDirtyByPath; },
@@ -7282,6 +7327,15 @@ initActivityBar();
 const bridgeUI = createBridgeUI({
     // 应用页面标签页：pageId → mount(root)，各页内容渲染仍归原域
     get appPageMounters() { return appPageMounters; },
+    // 数据库连接标签页：doc → 视图根元素（会话连接 / 对象树 / 网格 / 控制台都在 db 域）
+    get dbViewMounter() {
+        return (doc) => createDbTabView({
+            get backend() { return backend; },
+            get flash() { return flash; },
+            get settings() { return settings; },
+            get logActivity() { return activityLog.log; },
+        }, doc);
+    },
     // 应用页面标签页里的原生 select 用设置页同款浮层增强，去掉浏览器原生外观
     get enhanceSetSelects() { return settingsUI.enhanceSetSelects; },
     // 便签终端条目：run 事件订阅（mock/winctl 场景也走这里）与输出清洗（ai 域纯函数经组合根注入）
@@ -7300,6 +7354,9 @@ const bridgeUI = createBridgeUI({
     get getAIConfig() { return () => (aiPanel && aiPanel.aiGroupApi ? aiPanel.aiGroupApi.getConfig() : null); },
     get applySettings() { return applySettings; },
     get autoCheckUpdateOnStart() { return autoCheckUpdateOnStart; },
+    // 个人浏览器标签保存与启动恢复（shell/browser-tab-restore.js）：openBrowserTab 建个人标签
+    // 时通知、启动编排末尾调 restoreOnStartup
+    get browserTabRestore() { return browserTabRestore; },
     get backend() { return backend; },
     get closeDocNow() { return closeDocNow; },
     // 快捷便签面板（bridge-memo-view）需要的跨界依赖：右键菜单、贴图压缩、md 渲染、pending 翻转刷关窗脏标记
@@ -7360,9 +7417,25 @@ const bridgeUI = createBridgeUI({
     get workspaceFolder() { return workspaceFolder; },
 });
 const {createAgentView, createAgentTeamView, createSideChatView, createGroupMemberView, openGroupMemberTab, createBgTermView, createAppPageView, openAppPageTab, gitGroupCollapsed, gitRootDir, gitStateCache, gitUncheckedFiles, notifyAIGitEntry, openAgentTab, openAgentTeamTab, openSideChatTab, openBgTermTab, openBrowserTab, openVirtualDoc, refreshGitStatus, showGitDiff, showGitFileHistory, showGitRecentLog, gitRollbackPaths,
-    openMemoTab, createMemoView, memoApi, memoHasPending, memoOnWorkspaceEvent, memoOnWindowFocus, memoOnResourceEvent, memoWorkspaceChanged} = bridgeUI;
+    openMemoTab, createMemoView, memoApi, memoHasPending, memoOnWorkspaceEvent, memoOnWindowFocus, memoOnResourceEvent, memoWorkspaceChanged,
+    createDatabaseView, openDatabaseTab} = bridgeUI;
 // 成员详情标签页出口回填（aiGroupView 的 openMemberTab 闭包在创建期引用本 hook，避免 TDZ）
 openGroupMemberTabHook = openGroupMemberTab;
+
+// 数据库连接（侧栏「数据库」面板 + 内容区标签页）：internal/dbclient 引擎
+// （SQLite / MySQL / 受控写入），方案 docs/unfinished-plans/db-connection-tools.md；
+// 工作区清单存 settings.dbWorkspaceDatabases，总开关 settings.dbToolsEnabled 默认关。
+const dbUi = createDbUi({
+    get backend() { return backend; },
+    get flash() { return flash; },
+    get settings() { return settings; },
+    get persistSettingsLight() { return persistSettingsLight; },
+    get logActivity() { return activityLog.log; },
+    get workspaceFolder() { return workspaceFolder; },
+    get ctxMenu() { return ctxMenu; },
+    get openDatabaseTab() { return openDatabaseTab; },
+});
+dbSidebarRenderHook = () => dbUi.renderSidebar();
 
 // 绑定便签真钩子（顶部早期 let 间接层的落点）：启动期事件先到也只摸到 null，不摸未初始化的 const
 memoFocusHook = () => { if (memoOnWindowFocus) memoOnWindowFocus(); };

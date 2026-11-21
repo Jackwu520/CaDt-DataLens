@@ -451,6 +451,7 @@ function mockAIGroupEnsure(id) {
     return item;
 }
 let mockAIConfigText = '';
+const dbCredentialMock = new Map(); // 插件数据库驱动的通用凭据（模拟 dpapi 表）
 
 // 与 frontend/src/ai/ai-file-tools.js / Go globMatchPath 同规则的简易通配（mock 专用，避免跨模块依赖）
 function mockGlobMatch(pattern, relPath, name) {
@@ -814,6 +815,10 @@ const mockBackend = {
     },
     async AISessionRead(id) {
         const item = mockAISessions.get(String(id));
+        // window.__mockSessionTooLarge = true 可模拟超限会话（S2「打开即自动整理」链路的 dev 联调）。
+        if (window.__mockSessionTooLarge) {
+            throw new Error('session-too-large: 会话正文 300 MB，超过 256 MB 上限（打开时将自动整理归档）');
+        }
         return item ? item.log : '';
     },
     async AISessionAppend(id, lines, allowCreate) {
@@ -850,7 +855,12 @@ const mockBackend = {
     async AISessionStat(id) {
         const item = mockAISessions.get(String(id));
         if (!item) return {exists: false, mtimeMs: 0, size: 0};
-        return {exists: true, mtimeMs: Number(item.mtimeMs) || 0, size: Number(item.bytes) || 0};
+        const stat = {exists: true, mtimeMs: Number(item.mtimeMs) || 0, size: Number(item.bytes) || 0};
+        if (item.archive) {
+            stat.archiveExists = true;
+            stat.archiveSize = item.archive.length;
+        }
+        return stat;
     },
     // mock：会话回合租约。window.__mockSessionLeaseBusy=true 可模拟另一窗口正在跑。
     async AISessionLeaseAcquire(id, purpose, label, timeoutMs) {
@@ -887,7 +897,12 @@ const mockBackend = {
     async AISessionStat(id) {
         const item = mockAISessions.get(String(id));
         if (!item) return {exists: false, mtimeMs: 0, size: 0};
-        return {exists: true, mtimeMs: Number(item.mtimeMs) || 0, size: Number(item.bytes) || 0};
+        const stat = {exists: true, mtimeMs: Number(item.mtimeMs) || 0, size: Number(item.bytes) || 0};
+        if (item.archive) {
+            stat.archiveExists = true;
+            stat.archiveSize = item.archive.length;
+        }
+        return stat;
     },
     // mock：会话回合租约。window.__mockSessionLeaseBusy=true 可模拟另一窗口正在跑。
     async AISessionLeaseAcquire(id, purpose, label, timeoutMs) {
@@ -941,6 +956,103 @@ const mockBackend = {
     },
     async AISessionDeleteAll() {
         mockAISessions.clear();
+        return null;
+    },
+    // —— 会话数据整形 mock（vacuum / 侧车读回 / 临时加载 / 侧车清理，随 Go 绑定同名）——
+    // dev mock 的极简重放：只认 msg（含 a:1）/ truncate / archive / reset / meta.summary，
+    // 坏行按 issues 计数跳过。dedupeKey 折叠与 torn 细节不在 dev 演示范围。
+    __mockVacuumPlan(log) {
+        const lines = log.split('\n');
+        const live = [];
+        const archived = [];
+        let summary = null;
+        let issues = 0;
+        for (const raw of lines) {
+            const line = raw.trim();
+            if (!line) continue;
+            let event = null;
+            try { event = JSON.parse(line); } catch (e) { issues++; continue; }
+            if (!event || typeof event !== 'object' || (Number(event.v) || 0) > 1) { issues++; continue; }
+            if (event.t === 'msg' && event.m && typeof event.m === 'object') {
+                const message = Object.assign({}, event.m, {_mid: String(event.mid == null ? '' : event.mid)});
+                (event.a ? archived : live).push(message);
+            } else if (event.t === 'truncate') {
+                live.length = Math.max(0, Math.min(live.length, Number(event.keep) || 0));
+            } else if (event.t === 'archive') {
+                const keep = Math.max(0, Math.min(live.length, Number(event.keep) || 0));
+                archived.push(...live.slice(0, keep));
+                // 语义对齐 replaySessionLog：移走 [0,keep)，保留尾部 slice(keep)。
+                live.splice(0, keep);
+                if (event.summary && typeof event.summary === 'object') summary = event.summary;
+            } else if (event.t === 'reset') {
+                live.length = 0;
+                archived.length = 0;
+                summary = null;
+            } else if (event.t === 'meta' && event.patch && typeof event.patch === 'object' &&
+                Object.prototype.hasOwnProperty.call(event.patch, 'summary')) {
+                summary = (event.patch.summary && typeof event.patch.summary === 'object') ? event.patch.summary : null;
+            }
+        }
+        return {live, archived, summary, issues};
+    },
+    async AISessionVacuum(id, force) {
+        const key = String(id);
+        const item = mockAISessions.get(key);
+        const before = item ? item.log.length : 0;
+        const result = {
+            skipped: false, changed: false, movedArchived: 0, liveKept: 0, droppedTransient: 0,
+            issues: 0, torn: false, beforeBytes: before, afterBytes: before,
+            sidecarLines: 0, sidecarAppendedLines: 0, liveDominant: false,
+        };
+        if (!item) { result.skipped = true; return result; }
+        const plan = this.__mockVacuumPlan(item.log);
+        result.issues = plan.issues;
+        if (!plan.archived.length) {
+            result.skipped = true;
+            result.liveDominant = before > 256 * 1024 * 1024;
+            return result;
+        }
+        const header = item.log.split('\n').find((line) => line.includes('"t":"header"')) || '';
+        const out = [header];
+        if (plan.summary) out.push(JSON.stringify({v: 1, t: 'meta', patch: {summary: plan.summary}}));
+        const stripMid = (message) => {
+            const copy = Object.assign({}, message);
+            delete copy._mid;
+            return copy;
+        };
+        for (const message of plan.live) {
+            out.push(JSON.stringify({v: 1, t: 'msg', mid: message._mid, m: stripMid(message)}));
+        }
+        const sidecarLines = plan.archived.map((message) => JSON.stringify({v: 1, t: 'msg', mid: message._mid, a: 1, m: stripMid(message)}));
+        item.archive = (item.archive || '') + sidecarLines.join('\n') + '\n';
+        item.log = out.filter(Boolean).join('\n') + '\n';
+        item.mtimeMs = Date.now();
+        item.bytes = item.log.length;
+        result.changed = true;
+        result.movedArchived = plan.archived.length;
+        result.liveKept = plan.live.length;
+        result.beforeBytes = before;
+        result.afterBytes = item.log.length;
+        result.sidecarAppendedLines = sidecarLines.length;
+        result.sidecarLines = item.archive.split('\n').filter((line) => line.trim()).length;
+        result.liveDominant = result.afterBytes > 256 * 1024 * 1024;
+        return result;
+    },
+    async AISessionReadArchive(id, offset, limit) {
+        const item = mockAISessions.get(String(id));
+        const lines = (item && item.archive ? item.archive.split('\n') : []).filter((line) => line.trim());
+        const total = lines.length;
+        const start = Math.max(0, Math.min(total, Math.max(0, Math.round(Number(offset) || 0))));
+        const count = Math.max(0, Math.round(Number(limit) || 0));
+        return {total, offset: start, events: lines.slice(start, start + count)};
+    },
+    async AISessionReadForce(id) {
+        const item = mockAISessions.get(String(id));
+        return item ? item.log : '';
+    },
+    async AISessionArchiveClear(id) {
+        const item = mockAISessions.get(String(id));
+        if (item) item.archive = '';
         return null;
     },
     // AI 群聊存储（ai-groups，与 Go groupstore 同形）
@@ -1133,6 +1245,93 @@ const mockBackend = {
         };
     },
     async SQLClose() { return null; },
+    // ---- 数据库连接页（internal/dbclient 的同名绑定；dev 下返回静态演示数据）----
+    async DBOpen(path, allowEdit) {
+        return {id: 'mock-db-sqlite', kind: 'sqlite', name: '演示.db', editable: !!allowEdit, immutable: false};
+    },
+    async DBConnect(connectionID) {
+        return {id: 'mock-db-mysql', kind: 'mysql', name: '演示 MySQL', server: '127.0.0.1:3306', database: 'demo', editable: false};
+    },
+    async DBListDatabases() { return ['main']; },
+    async DBListObjects() {
+        return [
+            {name: 'products', kind: 'table', rowEstimate: 3},
+            {name: 'logs', kind: 'table', rowEstimate: 1},
+            {name: 'v_summary', kind: 'view', rowEstimate: 0},
+        ];
+    },
+    async DBDescribe(id, database, table) {
+        const hasPk = table !== 'logs';
+        return {
+            table: String(table || 'products'), database: '', kind: 'table',
+            columns: [
+                {name: 'id', type: 'INTEGER', notNull: true, pk: hasPk},
+                {name: 'name', type: 'TEXT', notNull: false, pk: false},
+                {name: 'price', type: 'REAL', notNull: false, pk: false},
+            ],
+            pk: hasPk ? ['id'] : [],
+            indexes: hasPk ? [{name: 'sqlite_autoindex_products_1', unique: true, columns: ['id']}] : [],
+            rowEstimate: 3, editable: hasPk && false,
+        };
+    },
+    async DBBrowse(id, req) {
+        const rows = [
+            ['1', 'alpha', '1.5'],
+            ['2', 'beta', '2.5'],
+            ['3', 'gamma', '3.5'],
+        ];
+        const want = Number(req && req.limit || 0);
+        const truncated = want > 0 && want < rows.length;
+        return {
+            columns: ['id', 'name', 'price'],
+            rows: truncated ? rows.slice(0, want) : rows,
+            nulls: rows.map(() => [false, false, false]),
+            truncated, elapsedMs: 1, message: '',
+        };
+    },
+    async DBQuery(id, queryID, query, confirmed) {
+        const q = String(query || '');
+        if (!confirmed && /update|delete|drop|insert/i.test(q)) {
+            return {status: 'confirm', confirm: 'missingWhere', message: '演示模式：写语句需确认。'};
+        }
+        return {
+            status: 'ok',
+            result: {
+                columns: ['id', 'name'], rows: [['1', 'alpha'], ['2', 'beta']],
+                nulls: [[false, false], [false, false]], truncated: false, elapsedMs: 1, message: '',
+            },
+            statements: 1, writes: /update|delete|insert/i.test(q) ? 1 : 0,
+        };
+    },
+    async DBCancel() { return null; },
+    async DBClose() { return null; },
+    async DBListConnections() { return []; },
+    async DBSaveConnection(cfg) { return Object.assign({}, cfg, {id: 'mock-dbc-1', updatedAt: Date.now()}); },
+    async DBDeleteConnection() { return null; },
+    async DBTestConnection() { return 'MySQL 8.0（mock）'; },
+    async DBPreviewChanges(id, changes) {
+        return (changes && changes.updates || []).map((u) => ({
+            kind: 'update',
+            sql: 'UPDATE ' + changes.table + ' SET ' + u.column + " = '" + (u.newValue || '') + "' WHERE id = " + ((u.keys && u.keys.id) || '?'),
+        }));
+    },
+    async DBApplyChanges(id, changes) {
+        return {
+            updates: (changes && changes.updates || []).length,
+            deletes: (changes && changes.deletes || []).length,
+            inserts: (changes && changes.inserts || []).length,
+            elapsedMs: 2,
+        };
+    },
+    // 插件数据库驱动的通用凭据存取（dev 下内存 Map 模拟 dpapi 表）
+    async DBCredentialPut(key, plain) {
+        if (!plain) dbCredentialMock.delete(String(key || ''));
+        else dbCredentialMock.set(String(key), String(plain));
+        return null;
+    },
+    async DBCredentialGet(key) {
+        return dbCredentialMock.get(String(key || '')) || '';
+    },
     async TermShells() { return [{id: 'bash', name: 'Git Bash'}]; },
     async DetectToolchain() { return {envs: []}; },
     async PrepareRun(spec) {
@@ -2857,6 +3056,10 @@ const mockBackend = {
         window.__mockMcpInstalled = window.__mockMcpInstalled || new Set();
         window.__mockMcpInstalled.add(id);
         return {installed: true, id, publicToolName: 'mcp__' + id + '__' + id, note: 'mock 安装完成'};
+    },
+    // 桌面控制「安装…」：mock 只回成功步骤（真装依赖要下载 uv / Python，dev 环境不跑）
+    async MCPDesktopInstall() {
+        return {ok: true, steps: ['uv 已就绪', '预热 windows-mcp 依赖']};
     },
     async ExternalSearch() { throw new Error('mock 环境不调用外部服务'); },
     async ExternalFetch() { throw new Error('mock 环境不调用外部服务'); },

@@ -897,6 +897,22 @@ export function aiFormatDuration(ms) {
     return aiDurationText(total);
 }
 
+// 字节数的人可读形态（9616029 → '9.2 MB'）：B/KB/MB/GB/TB，1024 进制；
+// ≥100 的档位取整（100 MB 没必要两位小数），GB 级保留 1 位精度。
+// 与 settings-pane-storage 的 formatBytes 同语义，但 AI 域不能反向 import settings，独立成纯函数。
+export function aiFormatBytes(bytes) {
+    const value = Number(bytes) || 0;
+    if (value < 1024) return value + ' B';
+    const units = ['KB', 'MB', 'GB', 'TB'];
+    let size = value / 1024;
+    let index = 0;
+    while (size >= 1024 && index < units.length - 1) {
+        size /= 1024;
+        index += 1;
+    }
+    return size.toFixed(size >= 100 ? 0 : 1) + ' ' + units[index];
+}
+
 // 流式轮次的实时计时：不到 1 小时保留十分位小数（40.2 秒 / 3 分 40.2 秒），
 // 到小时/天档改显示整数秒（ZCode 风格，长时间运行时小数秒没有信息量）：1 小时 22 分 56 秒。
 export function aiFormatLiveDuration(ms) {

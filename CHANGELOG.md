@@ -4,6 +4,72 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 
 ## 未发布
 
+### 新增（AI 临时会话：一次性对话，只读 / 不绑工作区 / 不注入工作区知识 / 关掉就没了）
+
+- **入口**：AI 会话侧栏的「新建会话」改成**分体按钮**——主体仍是原来的新建会话（绑定当前工作区），右侧新增「⋯」按钮，点开是新建方式的菜单，目前提供**新建临时会话**（`#ai-session-action-new-more` → `showNewSessionMenu`，菜单走全局 `showContextMenu` / 弹层栈，Esc 归栈管）。
+- **临时会话语义**（`createSessionData(title, {transient: true})`）：权限档固定**只读**、`workspace` 为空（不绑定任何工作区，磁盘落在 `ai-sessions/_unbound/` 桶）、桌面控制默认关、不复用空会话也不接管工作区草稿；会话上带 `temp === true` 标记（判定的单一来源是 `ai-session-scope.js` 的 `isTransientSession`，只认严格 `true`）。
+- **不注入工作区知识**：`ai-system-context.js` 对临时会话跳过 AGENTS.md、`<memory>`（MEMORY.md）、认知索引守则与卷 / 维护提醒、`<workspace_context>`（活动文件 / 光标 / 已打开文件），改为注入一段 `<transient_session>` 定性块（说明「只读、无工作区归属、关掉就不再出现」）；身份 / 人设 / 偏好 / 技能 / 环境变量这些应用级能力照旧注入。认知索引预取也一并跳过。
+- **关掉应用就没了**：`buildSessionMeta` 把 `temp` 写进 `meta.json`（留档）；`ai-session-disk` 的 `loadMetas` / `loadAll` 默认**滤掉** `temp` 会话（显式 `includeTemp` 才读回来，诊断用），所以重启后列表里不会出现它们，正文仍留在磁盘上作留档。运行期内仍在列表可见（带「临时」徽标，归「未关联工作区」分组）；`metasDiffer` 跳过临时会话、`applyLoadedSessions` 整份替换时把它们补回内存——打开面板触发的磁盘重读不会把正在用的临时会话弄丢。
+- **不吸附到工作区**：`adoptWorkspaceSession` / `syncWorkspaceToSession` 对临时会话直接返回，`newSession` 的空会话复用也把它们排除——切过去 / 换工作区都不会把它变成工作区会话。
+- 护栏：新增 `frontend/test/ai/ai-temp-session.test.mjs`（源码接线守卫：分体按钮结构 / 菜单入口 / 三处不吸附守卫 / 磁盘重读保留 / 徽标，已登记 `npm test`）；`ai-session-store.test.mjs` 加 `buildSessionMeta` 的 `temp` 用例（含 meta 签名必须变化）；`ai-session-disk.test.mjs` 加「临时会话不进食盘列表、被滤掉的不读正文」；`ai-session-scope.test.mjs` 加 `isTransientSession` 严格判定；`ai-system-context.test.mjs` 加「临时会话只留定性块、不注入 AGENTS.md / 记忆 / 认知索引 / 工作区状态」。
+- **二次审查后补的四处漏洞**（子代理只读审查发现，均已修 + 补断言）：① legacy / 磁盘回退模式下临时会话会跨重启存活（`loadLegacySessions` 补 `isTransientSession` 过滤）；② **起轮路径 `startSessionTurn` 会把空 workspace 回填成当前工作区**——临时会话发第一条消息就被收养，现加 `!isTransientSession(session)` 守卫（这是最常走的一条路）；③ 空临时会话切走不删是死代码（`isVirginSession` 只认标题「新会话」，而临时会话标题固定为「临时会话」，现放行 `AI_TEMP_SESSION_TITLE`）；④ 从临时会话派生支线 / 分支会变成普通持久化会话（`forkSettings` 继承 `temp`，分支与支线各自清空兜底绑定的 workspace）。另按审查意见让 `newTempSession` 与 `newSession` 一致地清理离开的空会话。
+
+### 新增（AI 会话「数据整形」：180 MB 死锁会话的根治——vacuum 归档出栈 + 256 MB 语义反转 + 落盘预算化）
+
+- **背景**：两个历史会话正文涨到 180.71 / 162.59 MB，超过 `AISessionRead` 的 64 MB 上限被拒绝加载，压缩 / 导出 / 清空全被同一堵墙卡死（只删不救）。方案与两轮调研记录见 `docs/unfinished-plans/session-compaction-disk-growth.md`（§5 定稿，S1→S2→S3 全部实施）。
+- **S1 vacuum 归档出栈**：新绑定 `AISessionVacuum(id, force)` 把重放后处于归档态的消息搬进 sidecar `archive.v1.jsonl`（append-only，`m` 用 `json.RawMessage` 保字节原文），主文件原子重写为 header + meta + summary + live——live 段被 auto-compact 的 token 阈值结构性约束，主文件从此回到「结构性小于任何上限」的形状。Go 状态机与前端 `replaySessionLog` 逐事件同构（含 v 缺失视为 0、JS 真值、keep clamp、dedupeKey 折叠三条特性级行为），10 条固定夹具双侧测试钉死（`vacuum_parity_test.go` ↔ `ai-session-vacuum-parity.test.mjs`）。两步写（sidecar 追加 → 主文件替换）由 `archive.v1.jsonl.state` 清单做崩溃恢复；进锁重 stat 保证双窗口竞态下第二方 no-op。配套 `AISessionReadArchive`（分页读回）、`AISessionReadForce`（真空角落临时加载）、`AISessionArchiveClear`（清空会话连带侧车）。
+- **消费点接线（先于入口开放）**：归档卡 / 命令面板「查看已归档消息」/ 导出 Markdown / 对话日志自动落盘 / `session_history` 工具查询全部改为「内存归档 + 侧车按需分页」；sessionindex 索引扫描拼接 sidecar（归档在前、主文件在后），归档正文搜索可达。
+- **S2 上限语义反转**：`aiSessionReadLimit` 64 → 256 MB，超限不再「拒绝服务」——错误改带稳定前缀 `session-too-large:`，前端加载路径捕获后自动触发 vacuum 并重读，toast 一次「已自动整理」，此后永久回归常态；**任何体积的会话都能打开并继续聊**。拒载卡片只留给两类真失败：整理执行失败（「重试整理」）与 live 段自身超限（「临时加载」，`AISessionReadForce` 整份读入，载入后 `/compact` 回归常态）。列表不挂任何体积 UI（作者裁定）。
+- **S3 降速**：整份重写收窄——重写前归档先经 vacuum 出栈，内存只清「已落盘为归档态」的登记前缀（`_archivedMids`），刚切进归档、尚未落盘的尾部保留在内存并随重写以 a:1 落盘（任何情况下不把内存归档从载荷排除——vacuum 只搬磁盘归档态，排除未落盘部分 = 丢消息）；vacuum 失败自动回退旧路径全量编码保数据；工具结果落盘预算化——超阈值结果全文落 `ai-artifacts/` 后，历史（JSONL 与内存）只留头 4 K + 尾 1 K + 指针（`persistBudgetText`，>4 MB 只留指针），请求组装对已预算消息透传；「长文本调研」型会话的磁盘增速降一个数量级。
+- 护栏：Go `vacuum_parity_test.go`（10 条夹具双侧一致性 + 崩溃恢复 + 分页 + 前缀契约 + liveDominant）、`sessionindex` 拼接测试；前端 `ai-session-disk-tidy.test.mjs`（自动整理三分流 / 收窄与回退 / 手动整理 / 日志合并 / 预算化）、`ai-session-vacuum-parity.test.mjs`，均登记 `npm test`。全量 `go test ./...`、`npm test`、`npm run build` 通过；`dev/mock-backend.js` 同步补齐 4 个新绑定。
+
+### 新增（内置数据库连接与浏览工具：SQLite 本地库 / MySQL 连接 / 受控写入，P0–P2 一次落地）
+
+- **入口（一切皆标签，作者纠正后返工）**：活动栏新增「数据库」图标 → 侧栏面板列出**本工作区添加的数据库**（`settings.dbWorkspaceDatabases`，条目带 workspace 字段按工作区生效；按 SQLite / MySQL 分组可折叠）。顶部按钮添加（SQLite 选文件 / MySQL 打开**对齐 JetBrains「数据源和驱动程序」的统一管理对话框**：左列表 +/−、右表单名称自动建议 `user@host:port`、主机端口并排、URL 预览、「加入当前工作区」开关，底部 测试连接 / 应用 / 确定）；**双击在内容区开「数据库」标签页**（视图型虚拟标签 `dbView`，一个标签 = 一个库会话，关标签即断开）；右键或行尾 `[...]` 菜单：打开 / 允许编辑（SQLite）/ 测试 / 编辑（打开连接管理并定位该连接）/ 删除连接（全局）/ 从工作区移除。标签页内仍为「对象树 | 表网格（面板内子标签）| SQL 控制台」三栏。总开关 `settings.dbToolsEnabled` 默认关，启用门在面板内。方案与实施记录（含入口重构 §11.6）见 `docs/unfinished-plans/db-connection-tools.md`（§11）。
+- **能力**：打开本地 SQLite 库文件（对象树两级按需加载）；MySQL 连接管理（新建/编辑/测试/删除、密码 DPAPI 加密单独落盘、复合凭据键）；表数据网格（虚拟滚动、列头排序、结构化筛选、分页 500 行/上限 5000，排序筛选分页全下推为参数化 SQL）；SQL 控制台（多语句逐条分类、Ctrl+Enter、执行中可取消 `DBCancel`）；受控写入（连接级「允许编辑」开关 + dirty model → 提交预览（内联展示值 SQL）→ 单事务提交 → 乐观并发冲突整体回滚 → noCache 刷新；无主键表/视图一律只读，主键列不可编辑）。
+- **安全**（P0 即埋，非事后补）：默认只读双保险——SQLite `mode=ro`（WAL 无读权限自动 immutable 兜底并显式标记）、MySQL `SET SESSION TRANSACTION READ ONLY` + 池限 1；查询路径逐条分类，任一条非只读整批拒——**数据变更 CTE（`WITH x AS (DELETE … RETURNING …)`）逐体检查**、未知语句 fail-closed 按写拒、PRAGMA 赋值判写、MySQL `INTO OUTFILE/CALL/GRANT/LOAD` 归危险；危险语句与缺 WHERE（含 WHERE TRUE / 1）走两阶段确认（guard 返回 confirm、前端确认后重发）；DDL 未开放；连接目标拒绝链路本地地址（IMDS 169.254.169.254）；写留痕 `db.exec` / `db.apply` 不含参数值与密码。
+- **实现**：Go 引擎 `internal/dbclient/`（driver/guard/sqlite/mysql/session/query/edit/config 九文件，纯引擎 + 根壳 `dbclient_app.go` 薄绑定）；前端新域 `frontend/src/db/`（factory+deps）；SQLite 复用已在库的 `modernc.org/sqlite`（增量 0），MySQL 用 `go-sql-driver/mysql`（纯 Go ~0.6 MB，作者已批准 2026-11-22，全功能最坏 +1.5 MB 预算内）。
+- **MariaDB 支持**：与 MySQL 协议兼容、同一引擎——连接管理对话框加「驱动」选择（MySQL / MariaDB），侧栏按所选分组显示；零新依赖。
+- **插件驱动扩展点（其他数据库交给插件）**：`cadt.registerDbDriver({id, label, fields, connect})`——侧栏 [+ 插件驱动] 按声明的 fields 动态出连接表单（`type:'password'` 字段经 DPAPI 加密走 `DBCredentialPut/Get` 凭据库，绝不进清单与跨窗同步），内容区「数据库」标签页复用对象树/网格/控制台（会话门面与内置绑定同形，`db-plugin.js`）；kind 串 `plugin:<插件id>:<驱动id>`，插件禁用后打开引用条目明确报错。会话契约、上限（单插件 5 / 全局 20）与限制（HTTP 型直连、sidecar 走 registerService、裸 TCP 需下沉核心）见 `docs/plugins/README.md`「注册数据库驱动」；完整示例 `plugins/db-clickhouse-http/`（真实 ClickHouse HTTP 接口，零依赖）。护栏：`test/shell/plugin-db-drivers.test.mjs` 登记 `npm test`。
+- 护栏：`internal/dbclient` 表驱动测试（分类/拆分/批量口径 + 真实 SQLite 端到端：只读拦截含 CTE bypass、下推浏览、截断判定、冲突回滚、会话上限回收、取消）；`frontend/test/db/db-model.test.mjs` 登记 `npm test`；接线守卫 `virtual-doc-wiring.test.mjs` 的 tabUnmount owners 清单纳入 `bridge-database-view.js`。全量验证：`go test ./...` 62 包、`npm test` 2324 例、`npm run build`、`tools/check-crossbuild.cmd` 三平台，全部通过。
+- 已知边界：Redis 不在本期（P3 按方案单独立项）；SSH 隧道、ERD、跨库迁移不做（§9）；行定位只认主键（唯一索引不做）；DDL 恒拒；密码仅在打开连接对话框内输入、不回显不进日志。
+
+### 修复（重启遗留的卡片，模型把「等待用户回答…」当成已有结果）
+
+- **现象**：应用在等用户回答 / 审批 / 填变量时被关闭，重开后卡片显示为终态（「已过期」「已取消」），用户以为自己只是错过了；但模型那边收到的是一条**内容为「等待用户回答…」的已完成工具结果**，于是把「还在等」读成「已有答案 / 已批准」，按猜测继续跑。
+- **成因**：卡片数据确实落盘了，重放也把状态收敛成终态；但正文只在**为空时**才替换，而这三类工具注册时都写了占位正文（`等待用户回答…` / `等待用户审批…` / `等待用户审批命令…` / `等待用户填写变量值…`），于是占位原样进了模型上下文。「正文为空」这个前提多数情况下根本不成立。
+- **修复**：`ai-constants.js` 新增三条按语义拆开的文案——`ASK_LOST_TEXT`（答案未知，需要就用 `ask_user` 重问）、`APPROVAL_LOST_TEXT`（没收到决定，操作没执行）、`ENV_ASK_LOST_TEXT`（变量没创建）；重放分支改为**无条件**整句替换。顺带补上一个漏网变体：审批分支原先只认「等待用户审批…」，命令审批与 AI 分类器的另两种占位会原样漏出。卡片文案「页面已关闭，问题未回答」改为「应用重启，这个问题没收到回答」。
+- 护栏：新增 `frontend/test/ai/ai-replay-recovery-guard.test.mjs`（源码断言：三类卡片必须走 `*_LOST_TEXT`、旧文案不得复现，已登记 `npm test`）；`ai-constants.test.mjs` 增一例（不得沿用注册占位、必须说清「没收到」、三条文案不得合并）。`npm test` 2294 通过、`npm run build` 通过。
+- 说明：卡片上「让 AI 重新问一次」的按钮**评估后不做**——四家竞品都没有卡片复活，且它与「继续回合」是同一条通路，缺的只是「别让模型自欺」这一半，本次已修完；理由与实施手册在 `docs/finished-plans/interactive-card-restart-recovery.md`（§4.2 / §5.2-5.4）。
+
+### 修复（操作留痕把自动放行记成「用户批准」）
+
+- **现象**：设置 → 操作留痕里，规则放行、家族放行、git 快捷、端侧 / 云端分类器放行、完全权限直通的每一笔 `ai.approve` / `ai.deny`，actor 徽标都显示「用户」——审计上分不清是**人拍板的**还是**系统自动放行的**，而「谁批的」正是审批复盘与出事追责的第一问。
+- **成因**：`logPermission` 落盘时把 actor 写死成 `'user'`，只用 `source` 字段区分来源；留痕页按 actor 打徽标并支持按 actor 筛选（`settings/activity-pane.js` 的 `ACTIVITY_ACTOR_LABEL = {user, ai, system}`），于是后端数据与前端语义各说各话。
+- **修复**：`frontend/src/ai/ai-permissions.js` 新增纯函数 `permissionAuditActor(source)` 按判定来源归属 actor——`user` / `project` / `session`（用户在卡上拍板，或用户预写的规则与会话授权）归 `user`；`readonly` / `family` / `git-flow` / `classifier` / `local-classifier` / `full` / `auto` 归 `ai`；`worktree-isolation` / `agent-worktree` / web 内置 `default` 归 `system`；**未知来源归 `ai`**（宁可少记人的功劳，也不能把一次自动放行记成人工批准）。`logPermission` 改用该函数，`internal/activity` 的 actor 白名单本就含 `ai`，**无 Go 变更、无 schema 变更、存量记录不改写**。
+- 护栏：`frontend/test/ai/ai-permissions.test.mjs` 新增两例（逐来源归属含空值 / 未知值回落；与 `decidePermission` 实际产出的自动来源对齐，断言自动判定一律不是 `user`）。全量 `npm test` 2289 通过、`npm run build` 通过。
+- 背景：该缺陷是在评估「用户委托代理（让另一个模型代点审批）」时顺带发现的，那份方案本身已复评否决并归档到 `docs/reports/user-delegate-agent.md`。
+
+### 改进（桌面控制按会话启用 + 控制模式声明，全面简化 windows-mcp 使用路径）
+
+- **背景（2026-11-22 用户要求）**：旧形态门槛太多——要先去 MCP 列表勾工具、再在输入框点亮「桌面」pill（应用级单飞）、再让模型调 `windows_desktop` 揭示具体工具；用户侧表现为「设置里一堆按钮 + 输入框一个莫名其妙的『桌面 · 8』」，且一次只能一个会话持有。
+- **新模型三层**：① 安装（应用级，外部工具页）：只有一个「启用桌面控制」开关 + 「安装…」按钮，未安装时开关禁用；安装一步到位写入 mcp.json（`enabled` + 白名单工具勾选）并跑官方 uv 安装脚本 + `uvx windows-mcp` 预热依赖（新增 Go 绑定 `MCPDesktopInstall`，windows/other 成对）。② 会话启用（`session.desktopEnabled`，与 planMode / worktree 同族）：入口收进 composer 的权限面板（新增「桌面控制」行，与计划模式 / 隔离工作区并列），用户手动开启弹二次确认（完全权限同款外观与通道），关闭不弹；AI 经新增的 app_control 动作 `request_desktop_control` 申请时**必弹危险审批卡（完全权限也不例外）**。取消应用级单飞：按会话独立，多会话可同时启用。③ 控制模式（新工具 `windows_control_mode`，进出都不审批）：进入后白名单桌面工具（快照 / 点击 / 输入 / 滚动 / 剪贴板）才全量注入工具表，面板顶部（标题栏下方居中）浮出跑马灯「AI 正在控制你的电脑」，标题胶囊区在「智能体团队」左侧点亮红色「桌面控制中」；退出或用户点胶囊立即收回。
+- **移除**：composer 的「桌面 · N」pill、`windows_desktop` 揭示工具及其全部揭示/匹配逻辑（`matchDesktopDefs` / `formatRevealResult` / `revealedBySession`）、应用级单飞与 `desktop-grant-changed` 的抢占语义（事件保留，payload 改为 `{sessionId, enabled}` 供多窗口刷新）。取消揭示层的理由：控制模式本身就是显式闸，再叠一层两次往返的揭示只会多一个前置与「并行调用必被拒一次」的坑；成本只在地控制模式期间支付（7 份 schema），退出即移除。
+- **设置项**：设置 → AI → 权限 → 新会话 下新增「默认桌面控制」（默认关；桌面未安装时禁用；开启时二次确认），只对新建会话生效——新会话创建时按它置 `desktopEnabled`，AI 仍需 `windows_control_mode` 才动手。
+- **护栏**：重写 `frontend/test/ai/ai-desktop-control.test.mjs`（会话级启用 / 控制模式进出 / 会话说隔离 / 配置行一步到位）；`ai-tool-wiring` 的档位并集用例改注入 `desktopEnabledOn`；`external-tools-page` 守卫保持不变。全量 `npm test` 通过、`npm run build` 通过、`go build ./...` 通过。
+
+### 修复（外部工具页的 MCP 总开关与服务器列表根本不渲染）
+
+- **成因（2026-11-22 用户反馈）**：MCP 服务器组（总开关 + 服务器列表）从设置弹层迁到「应用页面 → 外部工具」后，按配置渲染它的 `mcpSettingsMod.render()` 只挂在 `ai-panel.refreshSettings()` 上，而后者只在设置弹层切到 AI 相关子页时触发——外部工具页 mount 时谁都没按 `mcp.json` 渲染一次。于是页面永远停在 `index.html` 的静态初值：开关显示为关、`#ai-opt-mcp-list` 空白（四个已连接的服务器与「工具」按钮全不见），点开关时闭包里 `config` 还是 `null`、`change` 处理器第一句 `if (!config) return` 直接返回（只改了 DOM 视觉），重开标签就弹回。
+- **修复**：`settings-pane-external-tools.js` 的 `mount()` 在搬运 DOM 后调 `ai-panel` 新增的 `renderMcpSettings()`（内部走 `mcpSettingsMod.render()`——含 `loadConfig`，不是只重绘的 `renderAll`）；`main.js` 新增 `ensureAiPanel` 注入，AI 面板惰性初始化（用户没开过面板就点开该页）时先建面板再取，避免拿到 `null`。`ai-mcp-settings.js` 的开关 change 补兜底：`config` 缺失时先补读一次配置，仍失败则回弹勾选并提示「配置读取失败」，不再出现「看着打开了其实没写」的假象。
+- 护栏：`frontend/test/settings/external-tools-page.test.mjs` 新增 1 例接线守卫（mount 必须调 `renderMcpSettings` / 面板经 `ensureAiPanel` 取 / ai-panel 的暴露面必须走含 loadConfig 的 `render` / main.js 必须注入 `ensureAiPanel`）；该测试 11/11、`ai/ai-mcp-settings.test.mjs` 8/8 通过，`npm run build` 通过。
+
+### 改进（重启后恢复上次的个人浏览器标签）
+
+- **行为**：「我的浏览器」（固定 profile 的个人浏览器）标签页现在参与关闭保存与启动恢复——开着网页直接关应用，重开后标签自动续上（登录态在 profile 磁盘里本就保留）；关掉个人浏览器标签 = 用户不想看它了，不再恢复（登录态仍在，重开不用重新登录）。普通临时浏览器标签与 AI 会话浏览器不恢复（两者 profile 目录随随机 tabId 走，恢复出来是未登录空白页，P1 另评估，方案 §2/§4）。
+- **实现**：新增 `frontend/src/shell/browser-tab-restore.js`——快照存 localStorage `cadt.browser-tabs.v1`（全局单份，只存地址列表、过滤 about:blank、上限 20）；实例确认打开成功（onOpened）、已开着再导航、`browser-nav` 地址变化、`closeDocNow` 关标签四处通知保存；**只有实例确认打开成功的窗口才写 key**——打开失败回滚（实例被别的窗口占用）绝不覆盖存档，其他窗口与悬浮窗/控制台退出也绝不覆盖；启动编排 `restoreSession` 之后仅主窗口恢复，多窗口并发用轻量 owner 租约（15s TTL + 5s 心跳，释放仅当 owner 是自己）串行化，恢复前再以 Go 侧 `BrowserState` 做保险（实例已在别的窗口活着就跳过）。方案见 `docs/finished-plans/browser-tab-restore.md`。
+- 护栏：新增 `frontend/test/shell/browser-tab-restore.test.mjs`（已登记 `npm test`）：归一化/序列化往返/坏数据容错、写权判据（回滚不清存档、未确认导航不落盘、未持有窗口退出不覆盖、悬浮窗不写）、开/导航/关生命周期、租约对账（无 owner 获取 / 未过期跳过 / 过期接管 / 释放后可接管 / 不偷别人租约）、BrowserState 跳过、openBrowserTab 缺失分支、接线护栏（main.js getter 注入 / browser-nav 通知 / bridge-ui 恢复调用点与 onOpened 通知点 / editor-groups 关闭通知点 / PERSONAL_BROWSER_ID 两处同值）。
+
 ### 修复（确认对话框长文件名撑出横滚条）
 
 - **成因（2026-11-22 用户反馈）**：确认框正文 `#dlg-confirm-text` 是 `.dialog-body`（flex + `overflow:auto`）的直接子项，只有 `white-space: pre-line`；flex 子项默认 `min-width:auto`，超长无空格串（如反复拼接的 `ai_image_policy_app…` 文件名）的 min-content 宽度就是整串宽度，撑破 430px 容器出现横向滚动条。
@@ -703,7 +769,7 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 ### 改进（过程折叠不再被已答提问卡切段）
 
 - **现象**：一轮里答完一次 `ask_user` 后，过程折叠被劈成「body｜提问卡｜body」——展开时过程流被整卡打断，后续过程是无头续段；多张提问卡就是多段碎片。
-- **修法**：已答（含超时/跳过/取消）提问卡不再切段，留在过程流里按时间序渲染，随过程一起开合、默认收起（点开「已完成」即可查看问答记录）。方案见 `docs/unfinished-plans/turn-fold-redesign.md` §9。
+- **修法**：已答（含超时/跳过/取消）提问卡不再切段，留在过程流里按时间序渲染，随过程一起开合、默认收起（点开「已完成」即可查看问答记录）。方案见 `docs/finished-plans/turn-fold-redesign.md` §9。
 - 测试：`ai-turn-fold.test.mjs` 新增 R5（不许再出现 `segments.push({ask:`，默认展开判定不特判提问）。
 
 ### 新功能（用户消息原地编辑：正文与附件就地改，不再灌回输入框）

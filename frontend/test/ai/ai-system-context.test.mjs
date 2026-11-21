@@ -84,8 +84,49 @@ test('注入开关逐段生效，关闭时不留空壳', async () => {
     assert.equal(meta.workspace.loaded, false);
 });
 
-test('workspace_context：应用内标签页（浏览器 / 便签 / 计划视图）与文件分开列出，不标「范围外」', async () => {
+// 临时会话（session.temp）：一次性白纸——开关全开也不注入工作区知识（AGENTS.md / 记忆 /
+// 认知索引卷与守则 / 工作区状态），只留定性块与应用级能力（偏好 / 技能 / 环境变量）。
+test('临时会话：不注入 AGENTS.md / 记忆 / 认知索引 / 工作区状态，只留定性块', async () => {
     const mod = createAISystemContext(makeCtx({
+        settings: {
+            aiInjectPersona: true, aiInjectAgentsMd: true, aiInjectMemory: true,
+            aiInjectPreferences: true, aiInjectSkills: true, aiInjectEnvVars: true,
+            aiInjectActiveFile: true, aiInjectOpenFiles: true, aiInjectRoot: true,
+        },
+        config: {preferences: [{text: '始终用中文回答'}]},
+        ctx: {
+            aiProjectRoot: () => '/w',
+            resolveMemoryDir: async () => ({dir: '/w/.cadt/memory', mode: 'workspace'}),
+            getScopeRoot: () => '/w',
+            getWorkspaceContext: () => ({activeFile: {path: '/w/demo.txt', mode: 'code'}, openFiles: ['/w/demo.txt']}),
+            cognitionEnabled: () => true,
+            cognitionTurnBlocks: () => ({index: '<cognition_index>VOLUME</cognition_index>', nudge: 'NUDGE'}),
+        },
+    }));
+    const {text, turnBlock, meta} = await mod.assembleSystemContext({temp: true, todos: []}, []);
+
+    assert.equal(sectionOf(text, 'agents_md'), null, '临时会话不注入 AGENTS.md');
+    assert.equal(sectionOf(text, 'memory'), null, '临时会话不注入记忆');
+    assert.equal(sectionOf(text, 'cognition_rules'), null, '临时会话不注入认知索引守则');
+    assert.equal(sectionOf(turnBlock, 'workspace_context'), null, '临时会话不注入工作区状态');
+    assert.equal(sectionOf(turnBlock, 'cognition_index'), null, '临时会话不注入认知索引卷');
+    assert.ok(!turnBlock.includes('NUDGE'), '临时会话不注入认知维护提醒');
+
+    const block = sectionOf(text, 'transient_session');
+    assert.ok(block, '应有一条临时会话定性块：' + text);
+    assert.ok(block.includes('默认只读'), '定性块要说清只读');
+    assert.ok(block.includes('关闭应用后不再出现'), '定性块要说清不留存');
+    assert.equal(meta.transient.workspace, '');
+
+    // 应用级能力照旧：偏好 / 技能 / 环境变量是「怎么做事」，不是工作区知识
+    assert.ok(sectionOf(text, 'user_preferences'), '偏好不是工作区知识，仍应注入');
+    assert.ok(sectionOf(text, 'skills'));
+    assert.ok(sectionOf(text, 'env_vars'));
+    assert.deepEqual(meta.agents, {loaded: false, chars: 0, path: ''});
+    assert.equal(meta.memory.loaded, false);
+});
+
+test('workspace_context：应用内标签页（浏览器 / 便签 / 计划视图）与文件分开列出，不标「范围外」', async () => {    const mod = createAISystemContext(makeCtx({
         settings: {aiInjectOpenFiles: true},
         ctx: {
             getWorkspaceContext: () => ({

@@ -1,7 +1,7 @@
 # 「一切皆标签页」的统一模型与接线注册表（实施计划）
 
 > 状态：**已实施**（2026-11-22 审计成文，同日 A+B 两阶段一次落地，成文即归档到 `docs/finished-plans/`）
-> 前置阅读：`AGENTS.md`「内容区标签页（「一切皆标签页」，新增一类时必读）」· `frontend/test/editor/virtual-doc-wiring.test.mjs`（现有守卫）· `docs/unfinished-plans/browser-tab-restore.md`（恢复缺口，本文不重复做）
+> 前置阅读：`AGENTS.md`「内容区标签页（「一切皆标签页」，新增一类时必读）」· `frontend/test/editor/virtual-doc-wiring.test.mjs`（现有守卫）· `docs/finished-plans/browser-tab-restore.md`（浏览器标签的恢复方案，P0 个人浏览器已实施；其余虚拟标签页的可行性盘点在其 §4）
 > 范围：只动前端内容区标签页模型（`frontend/src/core/`（新模块）、`frontend/src/editor/`、`frontend/src/bridge/`、`frontend/src/writing/writing-ui.js`、`frontend/src/main.js` 的 `appTabViewOf`）。不改 Go 侧、不改流式协议、不改会话存储格式。
 
 ## 1. 概念定义（本方案的语义基线）
@@ -271,7 +271,7 @@ const declared = TAB_KINDS.map((k) => k.marker).sort();
 
 ## 8. 遗留缺口（本方案不解决，各自立项）
 
-1. **会话恢复不含虚拟标签页**：`session-restore.js:113` 按 `d.path` 过滤。浏览器那条已有 `docs/unfinished-plans/browser-tab-restore.md`（P0 只做个人浏览器）；其余 6 类 + T 族无方案。恢复注册表后，可以给 `TAB_KINDS` 加 `restorable` 与 `snapshot(doc)` 字段，届时一并做。
+1. **会话恢复不含虚拟标签页**：`session-restore.js:113` 按 `d.path` 过滤。浏览器那条已有 `docs/finished-plans/browser-tab-restore.md`（P0 个人浏览器已实施，2026-11-22；其余类型的可行性盘点见其 §4）；其余 6 类 + T 族无方案。恢复注册表后，可以给 `TAB_KINDS` 加 `restorable` 与 `snapshot(doc)` 字段，届时一并做。
 2. **「重新打开关闭的标签页」不含虚拟标签页**：`editor-groups.js:1833` 只对 `doc.path` 入栈 `closedTabs`，`reopenClosedTab` 走 `openPath(entry.path)`。同上，注册表是天然的落点（加 `reopen(doc)` 钩子）。
 3. **T 族的视图下拉是"有意保留"但没写明**：`viewOptionsFor` 不屏蔽 `.md` 计划文档的预览选项（正确），但源码里没有注释说明这是有意的。阶段 B 顺手补一句注释。
 

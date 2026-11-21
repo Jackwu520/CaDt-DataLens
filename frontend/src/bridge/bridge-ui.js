@@ -14,6 +14,7 @@ import {createBridgeSideChat} from './bridge-sidechat-view.js';
 import {createBridgeGroupMemberView} from './bridge-group-member-view.js';
 import {createBridgeMemoView} from './bridge-memo-view.js';
 import {createBridgeAppPageView} from './bridge-app-page-view.js';
+import {createBridgeDatabaseView} from './bridge-database-view.js';
 
 export function createBridgeUI(deps) {
 
@@ -28,6 +29,8 @@ const groupMemberMod = createBridgeGroupMemberView(deps);
 const memoMod = createBridgeMemoView(deps);
 // 应用页面标签页：使用统计 / 定时任务 / 操作记录 / 补丁库（清单在 core/app-pages.js）
 const appPageMod = createBridgeAppPageView(deps);
+// 数据库连接标签页：侧栏「数据库」面板双击工作区条目打开（一个标签 = 一个库会话，视图在 db 域）
+const databaseMod = createBridgeDatabaseView(deps);
 // git 域要开虚拟文档标签：经 Object.create 委托原 deps（保持 getter 惰性），只补一个宿主函数
 const gitDeps = Object.create(deps);
 gitDeps.openVirtualDoc = openVirtualDoc;
@@ -87,6 +90,8 @@ function openBrowserTab(url, profileKey, opts) {
                 opened.browserUrl = target;
                 if (opened.browserAddr) opened.browserAddr.value = target;
                 deps.backend.BrowserNavigate(opened.id, target).catch(() => {});
+                // 已开着再导航 = 地址变了，同步进恢复列表
+                if (deps.browserTabRestore) deps.browserTabRestore.notePersonalOpened(target);
             }
             return opened;
         }
@@ -109,6 +114,8 @@ function openBrowserTab(url, profileKey, opts) {
     deps.docs.push(doc);
     deps.addDocToFocusedGroup(doc);
     deps.activateDoc(doc);
+    // 注意：建标签这里不通知恢复模块——写权要等实例确认打开成功（onOpened）再置位，
+    // 打开失败回滚（closeDocNow）才不会把（可能是别的窗口写下的）存档抹掉。
     if (!deps.backend.BrowserOpen) {
         deps.flash('当前环境不支持内嵌浏览器', true);
         return doc;
@@ -125,6 +132,11 @@ function openBrowserTab(url, profileKey, opts) {
             doc.browserEmpty = null;
         }
         deps.syncBrowserTab(doc);
+        // 实例确认打开成功：个人浏览器标签落恢复列表（普通临时标签不参与恢复，
+        // 见 shell/browser-tab-restore.js 的写权不变量）
+        if (doc.browserPersist && deps.browserTabRestore) {
+            deps.browserTabRestore.notePersonalOpened(target);
+        }
     };
     // 个人浏览器关掉后立刻重开：上一个 WebView2 浏览器进程可能还没退干净、同一 user data
     // 目录短暂被占，补一次重试（约 0.8s），别让「记住登录」的入口动辄弹打开失败。
@@ -273,6 +285,16 @@ function openBrowserTab(url, profileKey, opts) {
             if (sess) await deps.restoreSession(sess);
         }
     }
+    // 个人浏览器标签恢复（P0，docs/finished-plans/browser-tab-restore.md）：文件标签先
+    // 恢复，再恢复网页；仅主窗口（悬浮窗 / 独立窗在上面已分流）。BrowserOpen 本就是
+    // 异步的，实例目录被占时靠 openBrowserTab 内置的重试兜底。
+    if (!floatWindow && deps.browserTabRestore) {
+        try {
+            await deps.browserTabRestore.restoreOnStartup();
+        } catch (e) {
+            deps.logFrontend('warn', '个人浏览器恢复失败：' + ((e && (e.stack || e.message)) || e));
+        }
+    }
     if (floatWindow) {
         document.title = 'AI 助手 · CaDt-DataLens';
         if (!deps.aiPanel) deps.initAIPanel();
@@ -307,7 +329,7 @@ function openBrowserTab(url, profileKey, opts) {
 
 
     return {
-        ...termMod, ...agentMod, ...teamMod, ...sideChatMod, ...groupMemberMod, ...memoMod, ...appPageMod, ...gitMod, ...cliMod,
+        ...termMod, ...agentMod, ...teamMod, ...sideChatMod, ...groupMemberMod, ...memoMod, ...appPageMod, ...databaseMod, ...gitMod, ...cliMod,
         openBrowserTab, openVirtualDoc,
     };
 }

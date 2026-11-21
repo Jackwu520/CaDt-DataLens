@@ -1,7 +1,7 @@
 # AI 面板「始终折叠」模式（默认关闭）
 
 > 状态：**已实施**（2026-11-18 规划；2026-11-19 落地：默认关的 `aiAlwaysCollapse` 设置开关 + 面板「显示方式」菜单项，判定收敛为纯函数 `ai/ai-always-collapse.js` 并配测试）。
-> 前置必读：`docs/unfinished-plans/turn-fold-redesign.md`——同域两次过渡尝试已回滚（整轮外壳吞用户消息、已答提问卡紧凑态），本方案不重走老路。
+> 前置必读：`docs/finished-plans/turn-fold-redesign.md`——同域两次过渡尝试已回滚（整轮外壳吞用户消息、已答提问卡紧凑态），本方案不重走老路。
 
 ## 需求
 
