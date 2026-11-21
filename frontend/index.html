@@ -300,7 +300,6 @@
                         <button type="button" class="snav-item snav-child" data-pane="models"><span class="snav-ic" data-icon="zap"></span><span>模型</span></button>
                         <button type="button" class="snav-item snav-child" data-pane="agents"><span class="snav-ic" data-icon="agents"></span><span>智能体</span></button>
                         <button type="button" class="snav-item snav-child" data-pane="gen-models"><span class="snav-ic" data-icon="image"></span><span>生图与视频</span></button>
-                        <button type="button" class="snav-item snav-child" data-pane="external-tools"><span class="snav-ic" data-icon="globe"></span><span>外部工具</span></button>
                         <button type="button" class="snav-item snav-child" data-pane="ai"><span class="snav-ic" data-icon="sparkles"></span><span>AI 助手</span></button>
                         <button type="button" class="snav-item snav-child" data-pane="permissions"><span class="snav-ic" data-icon="shield"></span><span>权限</span></button>
                         <button type="button" class="snav-item snav-child" data-pane="persona"><span class="snav-ic" data-icon="star"></span><span>个性化</span></button>
@@ -327,7 +326,7 @@
                     <div class="snav-children" id="snav-lang-children"></div>
                 </div>
                 <div class="snav-section">页面</div>
-                <button type="button" class="snav-item" data-pane="app-pages"><span class="snav-ic" data-icon="list"></span><span>应用页面</span></button>
+                <button type="button" class="snav-item" data-pane="app-pages"><span class="snav-ic" data-icon="apps"></span><span>应用页面</span></button>
                 <div class="snav-section">功能</div>
                 <button type="button" class="snav-item" data-pane="new-file-menu"><span class="snav-ic" data-icon="list"></span><span>菜单管理</span></button>
                 <button type="button" class="snav-item" data-pane="shortcuts"><span class="snav-ic" data-icon="keyboard"></span><span>快捷键</span></button>
@@ -533,6 +532,12 @@
                                 </div>
                             </div>
                             <div class="set-row">
+                                <div class="set-main"><div class="set-title">显示 .cadt 状态目录<button type="button" class="info-tip" data-tip="应用自己的状态目录（草稿 / 日志 / 补丁 / 记忆）。默认显示；关掉后文件树与列表在工作区根层隐藏它，不影响「临时草稿」固定节点与各设置页入口。" aria-label="显示 .cadt 状态目录说明"></button></div><div class="set-desc">关闭只在文件树/列表的根层隐藏，目录本身仍存在</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="opt-show-cad-dir" checked><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                </div>
+                            </div>
+                            <div class="set-row">
                                 <div class="set-main"><div class="set-title">代码视图缩进参考线</div></div>
                                 <div class="set-control">
                                     <label class="set-switch"><input type="checkbox" id="opt-code-guides"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
@@ -542,6 +547,12 @@
                                 <div class="set-main"><div class="set-title">代码视图自动换行</div><div class="set-desc">默认长行横向滚动，仅影响代码视图</div></div>
                                 <div class="set-control">
                                     <label class="set-switch"><input type="checkbox" id="opt-code-wrap"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">代码视图滚动手感</div><div class="set-desc">滚轮滚动的过渡方式；关闭则恢复逐行硬切</div></div>
+                                <div class="set-control">
+                                    <select id="opt-scroll-style" class="opt-select"></select>
                                 </div>
                             </div>
                         </div>
@@ -775,42 +786,6 @@
                             </div>
                         </div>
                     </div>
-                    <div class="settings-pane hidden" data-pane="external-tools">
-                        <div class="set-group-title">能力来源</div>
-                        <div class="set-card">
-                            <div class="set-row">
-                                <div class="set-main"><div class="set-title">外部能力来源</div><div class="set-desc">搜索 / 抓取默认用内置 Bing，OCR / 语音合成 / 语音识别默认关闭。选「本地 MCP」需要先在下方配置服务器并勾选工具；本地 MCP 来源只在写权限档（非计划模式）向 AI 开放。来源=服务提供商时会把本次请求的文件 / 文本上传到外部服务并产生费用。把「网页抓取」设为关闭，AI 也读不了公网图片（read_image 的 URL 通道）。</div></div>
-                            </div>
-                        </div>
-                        <div id="extcap-list"></div>
-
-                        <div class="set-group-title">服务提供商</div>
-                        <div class="set-card" id="extcap-provider"></div>
-
-                        <div class="set-group-title">MCP 服务器</div>
-                        <div class="set-card">
-                            <div class="set-row">
-                                <div class="set-main"><div class="set-title">MCP 客户端<button type="button" class="info-tip" data-tip="连接本机 MCP 服务器（stdio），把远端工具并入 AI 工具表。服务器命令在本机执行，等同于用户自己运行它；子进程环境自动过滤疑似密钥变量。不配置则零开销。" aria-label="MCP 客户端说明"></button></div><div class="set-desc">把外部工具并入 AI 工具表；不配置则零开销</div></div>
-                                <div class="set-control">
-                                    <label class="set-switch"><input type="checkbox" id="ai-opt-mcp-enabled"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
-                                </div>
-                            </div>
-                            <div class="set-row">
-                                <div class="set-main"><div class="set-title">服务器</div><div class="set-desc">工具勾选决定 AI 能看到哪些远端工具，默认全不勾；也可在「能力来源」里绑定为搜索 / OCR / 语音等能力的来源。也可以让 AI 代填命令与参数（环境变量值与工具授权仍由用户完成，每次保存都会确认本机命令）</div></div>
-                                <div class="set-control">
-                                    <button type="button" id="ai-opt-mcp-add" class="dlg-btn">添加服务器</button>
-                                </div>
-                            </div>
-                            <div id="ai-opt-mcp-list"></div>
-                            <div class="set-row">
-                                <div class="set-main"><div class="set-title">内置示例</div><div class="set-desc">Windows 语音合成（SAPI）/ Windows OCR / whisper.cpp 语音识别；脚本随应用内嵌，安装时释放并注册为 MCP 服务器。运行引擎与模型仍由系统 / 用户提供（不随 exe 打包）。</div></div>
-                                <div class="set-control">
-                                    <button type="button" id="ai-opt-mcp-samples" class="dlg-btn">查看示例</button>
-                                </div>
-                            </div>
-                            <div id="ai-opt-mcp-samples-list" class="hidden"></div>
-                        </div>
-                    </div>
                     <div class="settings-pane hidden" data-pane="ai">
                         <div class="set-group-title">界面</div>
                         <div class="set-card">
@@ -857,6 +832,12 @@
                                 </div>
                             </div>
                             <div class="set-row">
+                                <div class="set-main"><div class="set-title">认知索引</div><div class="set-desc">AI 维护的工作区语义层（.cadt/cognition/，记「文件职责 / 改动联动 / 暗约束」），每会话注入一份路径地图；适合反复编码的代码工作区，数据目录不建议。AI 请求启停时必弹审批卡</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="ai-opt-cognition"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                </div>
+                            </div>
+                            <div class="set-row">
                                 <div class="set-main"><div class="set-title">记忆与技能</div><div class="set-desc">系统提示词与逐项注入开关在「上下文注入」页</div></div>
                                 <div class="set-control">
                                     <button type="button" id="ai-opt-open-memory" class="dlg-btn">记忆管理…</button>
@@ -873,6 +854,16 @@
                                     <select id="ai-opt-sendkey" class="opt-select">
                                         <option value="enter">Enter 发送 / Shift+Enter 换行</option>
                                         <option value="ctrl-enter">Ctrl+Enter 发送 / Enter 换行</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">长文本粘贴</div><div class="set-desc">超过 1000 字符的纯文本粘贴方式；胶囊可点击查看并编辑全文</div></div>
+                                <div class="set-control">
+                                    <select id="ai-opt-long-paste" class="opt-select">
+                                        <option value="collapse">折叠为胶囊（默认）：原位彩色胶囊，点开可编辑标签页</option>
+                                        <option value="attachment">转为附件：整段作为文件附件，正文不留位置</option>
+                                        <option value="off">关闭：原样全文键入</option>
                                     </select>
                                 </div>
                             </div>
@@ -2742,10 +2733,13 @@
                     <span>归档会话 · 只读，不能发送消息</span>
                     <button type="button" id="ai-unarchive-btn" class="ai-archived-banner-btn">取消归档</button>
                 </div>
-                <textarea id="ai-input" class="ai-input" rows="2" placeholder="发消息或粘贴图片；/ 调用指令，@ 提及文件" spellcheck="false" autocomplete="off"></textarea>
+                <div class="ai-input-wrap">
+                    <textarea id="ai-input" class="ai-input" rows="2" placeholder="发消息或粘贴图片；/ 调用指令，@ 提及文件" spellcheck="false" autocomplete="off"></textarea>
+                </div>
                 <div class="ai-composer-bottom">
                     <button type="button" id="ai-attach-btn" class="ai-plus-btn" data-tip="添加附件或指令" aria-label="添加附件或指令">+</button>
                     <button type="button" id="ai-permission" class="ai-pill" aria-label="权限：只读访问">只读访问</button>
+                    <button type="button" id="ai-computer-use" class="ai-pill hidden" aria-pressed="false">桌面</button>
                     <button type="button" id="ai-plan" class="ai-pill" data-tip="计划模式：先只读探索并给出计划，批准后执行" aria-label="计划模式：先只读探索并给出计划，批准后执行" aria-pressed="false">计划</button>
                     <button type="button" id="ai-worktree" class="ai-pill" data-tip="隔离工作区：在 git worktree 里开发，改动只落在 .cadt/worktree/&lt;slug&gt;/，完成后经补丁审阅回灌" aria-label="隔离工作区：在 git worktree 里开发" aria-pressed="false">隔离</button>
                     <span id="ai-hint" class="ai-hint"></span>
@@ -2935,6 +2929,49 @@
     </footer>
 </div>
 <div id="app-toasts" class="app-toasts" aria-live="polite"></div>
+<!-- 「外部工具」应用页面（core/app-pages.js external-tools）的内容停靠区：
+     设置 → AI → 外部工具 已迁为内容区标签页，这段 DOM 常驻此处（隐藏），
+     由 settings/settings-pane-external-tools.js 的 mount/unmount 搬进 / 搬出标签页容器。
+     搬运保持节点身份：ai-mcp-settings.js 启动时按 id 捕获的引用与事件绑定始终有效。 -->
+<div id="extcap-park" hidden>
+    <div class="set-group-title">能力来源</div>
+    <div class="set-card">
+        <div class="set-row">
+            <div class="set-main"><div class="set-title">外部能力来源</div><div class="set-desc">搜索 / 抓取默认用内置 Bing，OCR / 语音合成 / 语音识别默认关闭。选「本地 MCP」需要先在下方配置服务器并勾选工具；本地 MCP 来源只在写权限档（非计划模式）向 AI 开放。来源=服务提供商时会把本次请求的文件 / 文本上传到外部服务并产生费用。把「网页抓取」设为关闭，AI 也读不了公网图片（read_image 的 URL 通道）。</div></div>
+        </div>
+    </div>
+    <div id="extcap-list"></div>
+
+    <div class="set-group-title">服务提供商</div>
+    <div class="set-card" id="extcap-provider"></div>
+
+    <div class="set-group-title">MCP 服务器</div>
+    <div class="set-card">
+        <div class="set-row">
+            <div class="set-main"><div class="set-title">MCP 客户端<button type="button" class="info-tip" data-tip="连接本机 MCP 服务器（stdio），把远端工具并入 AI 工具表。服务器命令在本机执行，等同于用户自己运行它；子进程环境自动过滤疑似密钥变量。不配置则零开销。" aria-label="MCP 客户端说明"></button></div><div class="set-desc">把外部工具并入 AI 工具表；不配置则零开销</div></div>
+            <div class="set-control">
+                <label class="set-switch"><input type="checkbox" id="ai-opt-mcp-enabled"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+            </div>
+        </div>
+        <div class="set-row">
+            <div class="set-main"><div class="set-title">服务器</div><div class="set-desc">工具勾选决定 AI 能看到哪些远端工具，默认全不勾；也可在「能力来源」里绑定为搜索 / OCR / 语音等能力的来源。也可以让 AI 代填命令与参数（环境变量值与工具授权仍由用户完成，每次保存都会确认本机命令）</div></div>
+            <div class="set-control">
+                <button type="button" id="ai-opt-mcp-add" class="dlg-btn">添加服务器</button>
+            </div>
+        </div>
+        <div id="ai-opt-mcp-list"></div>
+        <div class="set-row">
+            <div class="set-main"><div class="set-title">内置示例</div><div class="set-desc">Windows 语音合成（SAPI）/ Windows OCR / whisper.cpp 语音识别；脚本随应用内嵌，安装时释放并注册为 MCP 服务器。运行引擎与模型仍由系统 / 用户提供（不随 exe 打包）。</div></div>
+            <div class="set-control">
+                <button type="button" id="ai-opt-mcp-samples" class="dlg-btn">查看示例</button>
+            </div>
+        </div>
+        <div id="ai-opt-mcp-samples-list" class="hidden"></div>
+    </div>
+
+    <div class="set-group-title">桌面控制</div>
+    <div class="set-card" id="extcap-desktop"></div>
+</div>
 <script src="./src/main.js" type="module"></script>
 </body>
 </html>

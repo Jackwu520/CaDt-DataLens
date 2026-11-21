@@ -124,6 +124,8 @@ const rawIcons = {
     'info': '<circle cx="8" cy="8" r="5.6"/><path d="M8 7.4v3.4"/><path d="M8 5.2v.1"/>',
     'star': '<path fill="currentColor" stroke="none" d="M8 1.9l1.9 3.9 4.2.6-3.1 2.9.9 4.2L8 11.4l-3.9 2.1.9-4.2L1.9 6.4l4.2-.6L8 1.9z"/>',
     'pin': '<path fill="currentColor" stroke="none" d="M10.6 1.7l3.7 3.7-2.4.7-1.8 1.8.3 2.8-1.3 1.3-2.5-2.5-3.9 3.9-.8-.8 3.9-3.9-2.5-2.5 1.3-1.3 2.8.3 1.8-1.8.4-2.6z"/>',
+    // 竖直图钉（固定态）：与斜的 pin 配对，表示「已固定」。Git 弹层固定按钮用
+    'pin-upright': '<path fill="currentColor" stroke="none" d="M5.5 2h5v1.5h-5z"/><path fill="currentColor" stroke="none" d="M6.2 3.5h3.6l-.7 5.8L8 13.8l-1.1-4.5z"/>',
     'lock': '<rect x="3.4" y="7" width="9.2" height="6.8" rx="1.4"/><path d="M6 7V5.6a2 2 0 0 1 4 0V7"/><circle cx="8" cy="10.4" r=".9" fill="currentColor" stroke="none"/>',
     // 搜索选项（Git 图谱提交搜索）：正则用「点 + 星形」，大小写用「大小两个圆环」，筛选下拉用漏斗
     'regex': '<circle cx="4.2" cy="11.4" r="1.1" fill="currentColor" stroke="none"/><path d="M8.4 4.2l.6 1.7 1.7.6-1.7.6-.6 1.7-.6-1.7-1.7-.6 1.7-.6.6-1.7z"/><path d="M11.8 9.2l.4 1.1 1.1.4-1.1.4-.4 1.1-.4-1.1-1.1-.4 1.1-.4.4-1.1z"/>',
@@ -172,6 +174,8 @@ const rawIcons = {
     'view-split': '<rect x="1.7" y="2.5" width="12.6" height="11" rx="1.1"/><path d="M8 2.9v10.2"/>',
     // 插件视图兜底（面板 + 文本行 + 圆点）
     'view-panel': '<rect x="1.7" y="2.5" width="12.6" height="11" rx="1.1"/><path d="M4.8 6.3h6.4M4.8 9.1h3.7"/><circle cx="12.1" cy="10.9" r="1.4" fill="currentColor" stroke="none"/>',
+    // 应用页面（活动栏 ab-app-pages 同款 2×2 方格，20 网格按 0.8 缩到 16 网格）
+    'apps': '<rect x="2.6" y="2.9" width="4.3" height="4.3" rx="0.9"/><rect x="9.1" y="2.9" width="4.3" height="4.3" rx="0.9"/><rect x="2.6" y="9" width="4.3" height="4.3" rx="0.9"/><rect x="9.1" y="9" width="4.3" height="4.3" rx="0.9"/>',
 };
 
 // 注册表整体导出（冻结）：供图标表页/测试枚举展示，业务代码请用 iconSvg()。

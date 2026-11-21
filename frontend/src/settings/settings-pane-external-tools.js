@@ -1,8 +1,12 @@
-// settings-pane-external-tools.js：设置 → AI → 外部工具。
-// 上半部分是能力来源矩阵（搜索/抓取/OCR/TTS/ASR 各选 关闭 / 本地 MCP / 服务提供商，
-// 搜索与抓取另有内置），下半部分是服务提供商配置；MCP 服务器组由 index.html 原样迁入，
-// 绑定仍归 ai-mcp-settings.js。配置读写走 Go（WebToolsConfigGet / Save / ClearKey）。
+// settings-pane-external-tools.js：「外部工具」应用页面（原 设置 → AI → 外部工具，已迁为
+// 内容区标签页，见 core/app-pages.js）。上半部分是能力来源矩阵（搜索/抓取/OCR/TTS/ASR 各选
+// 关闭 / 本地 MCP / 服务提供商，搜索与抓取另有内置），下半部分是服务提供商配置；
+// MCP 服务器组 DOM 常驻 index.html 的 #extcap-park 停靠区，绑定仍归 ai-mcp-settings.js。
+// mount/unmount 把停靠 DOM 搬进 / 搬出标签页容器——保持节点身份，启动时按 id 捕获的
+// 引用与事件绑定（本模块 els、ai-mcp-settings 的 el）跨开关标签页始终有效。
+// 配置读写走 Go（WebToolsConfigGet / Save / ClearKey）。
 import {createInput, createSelect, createSwitch} from '../core/form-controls.js';
+import {pageHeader, statusBadge, stateBlock} from '../app-pages/ui-kit.js';
 import {
     DEFAULT_PROVIDER_BASE_URL,
     EXTERNAL_CAPABILITIES,
@@ -12,6 +16,9 @@ import {
     externalProviderReady,
     normalizeExternalToolsConfig,
 } from '../ai/ai-external-tools.js';
+// 桌面控制（Computer Use）的配置行构造（desktop-mcp.md §5.3/§13.5 P2 降级：
+// 复制安装命令 + 一键写入 mcp.json 行 + doctor 只读诊断；不做自动安装依赖）
+import {DESKTOP_MCP_SERVER, desktopServerConfigRow} from '../ai/ai-desktop-control.js';
 
 export function createSettingsPaneExternalTools(deps) {
     const backend = (deps && deps.backend) || {};
@@ -27,6 +34,7 @@ export function createSettingsPaneExternalTools(deps) {
     const els = {
         list: document.getElementById('extcap-list'),
         provider: document.getElementById('extcap-provider'),
+        desktop: document.getElementById('extcap-desktop'),
         samples: document.getElementById('ai-opt-mcp-samples'),
         samplesList: document.getElementById('ai-opt-mcp-samples-list'),
     };
@@ -37,6 +45,13 @@ export function createSettingsPaneExternalTools(deps) {
     let samplesError = '';
     let samplesOpen = false;
     let sampleInstalling = '';
+    let desktopMcpConfig = null;  // MCPConfig（懒加载，仅桌面卡片用）
+    let desktopDoctor = null;     // MCPDesktopDoctor 结果
+    let desktopBusy = '';         // 'doctor' | 'write' 进行中标记
+    let saveState = {text: '', tone: 'neutral'}; // 保存反馈（页头徽标）
+    let saveStamp = 0;            // 最近一次成功保存时间（页头「已保存」副文案）
+    let saveSeq = 0;              // 保存竞态序号：只让最后一次结果更新徽标
+    let headBadge = null;         // 页头保存状态徽标节点
 
     function fieldRow(title, desc, ...controls) {
         const row = document.createElement('div');
@@ -114,11 +129,21 @@ export function createSettingsPaneExternalTools(deps) {
         };
     }
 
+    function setSaveState(text, tone) {
+        saveState = {text, tone};
+        if (headBadge) {
+            headBadge.className = 'ap-badge ap-badge-' + tone;
+            headBadge.textContent = text;
+        }
+    }
+
     async function save(patch) {
         if (typeof backend.WebToolsConfigSave !== 'function') {
             flash('当前后端版本不支持外部工具配置', true);
             return;
         }
+        const seq = ++saveSeq;
+        setSaveState('保存中…', 'warn');
         try {
             await backend.WebToolsConfigSave(payload(patch));
             config = normalizeExternalToolsConfig(await backend.WebToolsConfigGet());
@@ -126,8 +151,13 @@ export function createSettingsPaneExternalTools(deps) {
             if (panel && typeof panel.refreshExternalTools === 'function') {
                 Promise.resolve(panel.refreshExternalTools()).catch(() => {});
             }
+            if (seq === saveSeq) {
+                saveStamp = Date.now();
+                setSaveState('已保存 ' + new Date(saveStamp).toLocaleTimeString(), 'success');
+            }
             paint();
         } catch (e) {
+            if (seq === saveSeq) setSaveState('保存失败', 'danger');
             flash('外部工具配置保存失败：' + ((e && e.message) || e), true);
         }
     }
@@ -136,21 +166,23 @@ export function createSettingsPaneExternalTools(deps) {
         return (getMcpToolDefs() || []).map((def) => ({value: def.name, label: def.name}));
     }
 
-    function capabilityHint(cap, mode, liveNames) {
-        if (mode === 'off') return '不向 AI 注册该工具。';
-        if (mode === 'builtin') return '使用应用内置实现，失败后可自动回退。';
+    // capabilityState：把提示升级为「有效性徽标 + 说明」，让矩阵一眼可扫。
+    // tone ∈ success | warn | danger | neutral；text 是徽标短文案；hint 是详细说明。
+    function capabilityState(cap, mode, liveNames) {
+        if (mode === 'off') return {tone: 'neutral', text: '关闭', hint: '不向 AI 注册该工具。'};
+        if (mode === 'builtin') return {tone: 'success', text: '可用', hint: '使用应用内置实现，失败后可自动回退。'};
         if (mode === 'provider') {
             return externalProviderReady(config)
-                ? '上传到服务提供商，按量计费；审批卡会显示文件与预估费用。'
-                : '服务提供商未启用或缺少 API Key，当前不可用（见下方配置）。';
+                ? {tone: 'success', text: '可用', hint: '上传到服务提供商，按量计费；审批卡会显示文件与预估费用。'}
+                : {tone: 'warn', text: '待配置', hint: '服务提供商未启用或缺少 API Key，当前不可用（见下方配置）。'};
         }
         if (mode === 'mcp') {
             const binding = config.mcpBindings[cap.key] || '';
-            if (!binding) return '尚未选择 MCP 工具，当前不可用。';
-            if (!liveNames.includes(binding)) return '绑定的工具当前不可用（服务器被禁用/删除或工具未勾选），请重选。';
-            return '交本机 MCP 服务器处理；仅写权限档（非计划模式）向 AI 开放，调用按写工具审批。';
+            if (!binding) return {tone: 'warn', text: '待绑定', hint: '尚未选择 MCP 工具，当前不可用。'};
+            if (!liveNames.includes(binding)) return {tone: 'danger', text: '已失效', hint: '绑定的工具当前不可用（服务器被禁用/删除或工具未勾选），请重选。'};
+            return {tone: 'success', text: '可用', hint: '交本机 MCP 服务器处理；仅写权限档（非计划模式）向 AI 开放，调用按写工具审批。'};
         }
-        return '';
+        return {tone: 'neutral', text: '', hint: ''};
     }
 
     function paintCapabilities() {
@@ -187,9 +219,18 @@ export function createSettingsPaneExternalTools(deps) {
                 });
                 controls.push(bindingSelect.element);
             }
+            const state = capabilityState(cap, mode, liveNames);
             const card = document.createElement('div');
-            card.className = 'set-card';
-            card.appendChild(fieldRow(cap.label, capabilityHint(cap, mode, liveNames), ...controls));
+            card.className = 'set-card ap-cap-card';
+            const row = fieldRow(cap.label, state.hint, ...controls);
+            const titleEl = row.querySelector('.set-title');
+            if (titleEl) {
+                titleEl.style.display = 'flex';
+                titleEl.style.alignItems = 'center';
+                titleEl.style.gap = '6px';
+                titleEl.appendChild(statusBadge(state.text, state.tone));
+            }
+            card.appendChild(row);
             els.list.appendChild(card);
         }
     }
@@ -363,31 +404,193 @@ export function createSettingsPaneExternalTools(deps) {
         });
     }
 
+    // ===== 桌面控制（Computer Use）卡片（desktop-mcp.md §5.3/§13.5）=====
+    // P2 降级形态：不自动安装依赖——复制安装命令 + 一键写入 mcp.json 服务器行 +
+    // doctor 只读诊断。工具勾选仍走上方 MCP 服务器列表，会话授权在 AI 输入框「桌面」pill。
+
+    function desktopRow() {
+        return (desktopMcpConfig && desktopMcpConfig.mcpServers && desktopMcpConfig.mcpServers[DESKTOP_MCP_SERVER]) || null;
+    }
+
+    async function loadDesktop() {
+        if (typeof backend.MCPGetConfig !== 'function') return;
+        try {
+            desktopMcpConfig = await backend.MCPGetConfig();
+            if (!desktopMcpConfig || typeof desktopMcpConfig !== 'object') desktopMcpConfig = {mcpServers: {}};
+            if (!desktopMcpConfig.mcpServers) desktopMcpConfig.mcpServers = {};
+        } catch (e) {
+            desktopMcpConfig = null; // 读取失败不阻塞整页：卡片显示为不可用
+        }
+    }
+
+    function copyText(text) {
+        navigator.clipboard.writeText(text)
+            .then(() => flash('已复制到剪贴板'))
+            .catch(() => flash('复制失败：剪贴板不可用', true));
+    }
+
+    async function runDesktopDoctor() {
+        if (typeof backend.MCPDesktopDoctor !== 'function') {
+            flash('当前后端版本不支持桌面依赖检测', true);
+            return;
+        }
+        desktopBusy = 'doctor';
+        paintDesktop();
+        try {
+            desktopDoctor = await backend.MCPDesktopDoctor();
+        } catch (e) {
+            desktopDoctor = null;
+            flash('依赖检测失败：' + ((e && e.message) || e), true);
+        } finally {
+            desktopBusy = '';
+            paintDesktop();
+        }
+    }
+
+    async function writeDesktopServerRow() {
+        if (typeof backend.MCPWriteConfig !== 'function' || !desktopMcpConfig) {
+            flash('当前后端版本不支持写入 MCP 配置', true);
+            return;
+        }
+        if (desktopRow()) {
+            flash('服务器「' + DESKTOP_MCP_SERVER + '」已存在：不覆盖用户配置（要重装请先在服务器列表删除它）', true);
+            return;
+        }
+        desktopBusy = 'write';
+        try {
+            const next = Object.assign({}, desktopMcpConfig, {version: 1});
+            next.mcpServers = Object.assign({}, desktopMcpConfig.mcpServers);
+            next.mcpServers[DESKTOP_MCP_SERVER] = desktopServerConfigRow();
+            await backend.MCPWriteConfig(next);
+            desktopMcpConfig = next;
+            flash('已写入服务器「' + DESKTOP_MCP_SERVER + '」（默认停用）：先在服务器列表勾选工具，再在 AI 输入框点亮「桌面」');
+            const panel = getAiPanel();
+            if (panel && typeof panel.refreshMcpConfig === 'function') {
+                Promise.resolve(panel.refreshMcpConfig()).catch(() => {}); // 尽力而为：拉新快照
+            }
+        } catch (e) {
+            flash('写入失败：' + ((e && e.message) || e), true);
+        } finally {
+            desktopBusy = '';
+            paintDesktop();
+        }
+    }
+
+    function paintDesktop() {
+        if (!els.desktop) return;
+        els.desktop.textContent = '';
+        const row = desktopRow();
+        const preview = desktopServerConfigRow();
+        const commandPreview = preview.command + ' ' + preview.args.join(' ');
+        if (row) {
+            const state = row.enabled === false ? '已注册（停用）' : '已注册';
+            els.desktop.appendChild(fieldRow(
+                '服务器「' + DESKTOP_MCP_SERVER + '」', state + '；在上方 MCP 服务器列表勾选工具后，到 AI 输入框点亮「桌面」授权。',
+                button('复制启动命令', 'dlg-btn', () => copyText(commandPreview)),
+            ));
+            return;
+        }
+        const hint = document.createElement('div');
+        hint.className = 'set-desc';
+        hint.textContent = '未注册。安装命令给用户在本机终端执行（首次运行会下载 Python 3.14 解释器与依赖，约 100 MB）；'
+            + '写入的配置行默认停用，工具勾选与会话授权仍由用户完成。';
+        els.desktop.appendChild(hint);
+        els.desktop.appendChild(fieldRow(
+            '依赖（uv）',
+            desktopDoctor
+                ? (desktopDoctor.uvFound
+                    ? 'uv 已在 PATH：' + desktopDoctor.uvPath
+                    : (desktopDoctor.uvHomeFound
+                        ? 'uv 在用户目录（不在 PATH）：' + desktopDoctor.uvHome
+                        : '未找到 uv' + ((desktopDoctor.hints || []).length ? '。' + desktopDoctor.hints[0] : '')))
+                : '点「检测」解析 uv 位置（PATH 与用户目录 .local\\bin）。',
+            button(desktopBusy === 'doctor' ? '检测中…' : '检测', 'dlg-btn', () => { void runDesktopDoctor(); }),
+            button('复制安装命令', 'dlg-btn', () => copyText('powershell -ExecutionPolicy Bypass -Command "irm https://astral.sh/uv/install.ps1 | iex"')),
+        ));
+        if (desktopDoctor && !desktopDoctor.uvFound && !desktopDoctor.uvHomeFound && (desktopDoctor.hints || []).length > 1) {
+            const tip = document.createElement('div');
+            tip.className = 'fmt-hint hint-indent';
+            tip.textContent = desktopDoctor.hints[1];
+            els.desktop.appendChild(tip);
+        }
+        els.desktop.appendChild(fieldRow(
+            '注册服务器行',
+            '白名单只含观察组与输入组（Snapshot / Click / Move / Scroll / Type / Shortcut / Clipboard）；'
+                + '无 Screenshot（客户端暂不显示 MCP 图像结果）、无 Registry / Process / App / PowerShell / FileSystem。',
+            button(desktopBusy === 'write' ? '写入中…' : '写入 mcp.json', 'dlg-btn', () => { void writeDesktopServerRow(); }),
+            button('复制启动命令', 'dlg-btn', () => copyText(commandPreview)),
+        ));
+    }
+
+    // 页头：统一标题 + 保存状态徽标。页头节点在 mount 时 prepend 到 root，
+    // 不进 #extcap-park（否则会被 unmount 一起搬回停靠区）。
+    function ensureHead(root) {
+        if (!root) return;
+        if (headEl && headEl.parentElement === root) return;
+        headBadge = statusBadge(saveState.text || '就绪', saveState.tone);
+        headEl = pageHeader({
+            title: '外部工具',
+            desc: '配置 AI 的联网能力来源、服务提供商与本机 MCP 服务器。所有改动即时保存到本机。',
+            actions: [headBadge],
+        });
+        headEl.classList.add('ap-extcap-head');
+        root.insertBefore(headEl, root.firstChild);
+    }
+
+    let headEl = null;
+
     function paint() {
         if (els.list) els.list.textContent = '';
         if (els.provider) els.provider.textContent = '';
         if (errorText) {
-            if (els.list) {
-                const hint = document.createElement('div');
-                hint.className = 'fmt-hint hint-indent';
-                hint.textContent = errorText;
-                els.list.appendChild(hint);
-            }
+            if (els.list) els.list.appendChild(stateBlock('error', errorText));
             return;
         }
         paintCapabilities();
         paintProvider();
+        paintDesktop();
         paintSamples();
         // 动态创建的行式下拉需要设置页增强器接管（与其它动态 pane 一致）
         if (typeof enhanceSetSelects === 'function') enhanceSetSelects();
     }
 
     async function renderExternalToolsPane() {
-        await Promise.all([load(), loadSamples()]);
+        await Promise.all([load(), loadSamples(), loadDesktop()]);
         paint();
+    }
+
+    // ---- 应用页面标签页装载（bridge-app-page-view.js 经 main.js 的 appPageMounters 调用）----
+
+    // 把停靠区 DOM 搬进标签页根容器；已在目标容器里时跳过（防重复装载）。
+    function moveParkInto(root) {
+        if (!els.list || els.list.parentElement === root) return;
+        const park = document.getElementById('extcap-park');
+        if (!park) return;
+        root.classList.add('extcap-root'); // 沿用设置 pane 的纵向节奏（flex + gap）
+        for (const child of Array.from(park.children)) root.appendChild(child);
+    }
+
+    // 挂到宿主容器：搬 DOM → 加载配置并渲染 → 返回卸载函数（把 DOM 搬回停靠区）。
+    // 根容器内容全部来自停靠区（bridge 每次开标签新建 root），卸载时整体搬回即可。
+    function mount(root) {
+        if (!root) return null;
+        moveParkInto(root);
+        ensureHead(root);
+        renderExternalToolsPane().catch((e) => console.error('外部工具页面渲染失败', e));
+        return () => {
+            // 页头是 mount 时新建的、不属于停靠区：单独移除，避免残留到下次挂载。
+            if (headEl) {
+                if (headEl.parentNode) headEl.parentNode.removeChild(headEl);
+                headEl = null;
+                headBadge = null;
+            }
+            const park = document.getElementById('extcap-park');
+            if (!park || !els.list) return;
+            for (const child of Array.from(root.children)) park.appendChild(child);
+        };
     }
 
     bindSamples();
 
-    return {renderExternalToolsPane};
+    return {mount, renderExternalToolsPane};
 }

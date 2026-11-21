@@ -497,7 +497,8 @@ function enhanceSetSelects() {
             instances.delete(inst);
         }
     });
-    document.querySelectorAll('.settings-pane select').forEach(enhanceSelect);
+    // 应用页面标签页（外部工具等从设置迁出的页）用同一套行式下拉语言
+    document.querySelectorAll('.settings-pane select, .apppage-root select').forEach(enhanceSelect);
     if (!window.__setSelectDelegated) {
         window.__setSelectDelegated = true;
         // 外点关闭（浮层在 body 上，必须把它一并算作「内部」）

@@ -1,4 +1,4 @@
-// core/scratch.js：临时草稿（explorer「新建 → 临时文件」）的目录约定与纯函数。
+// core/scratch.js：临时文件（explorer「新建 → 临时文件」）的目录约定与纯函数。
 //
 // 方案：docs/finished-plans/scratch-file.md。三条硬约定，动之前先读方案：
 //   1. 落 <工作区>/.cadt/scratch/ —— **不进** .cadt/tmp（那是 AI 的免审写区：覆盖同名文件
@@ -58,18 +58,19 @@ export function isScratchPath(workspaceFolder, path) {
 
 const pad2 = (n) => String(n).padStart(2, '0');
 
-// scratchStamp：草稿文件名里的秒级时间戳（本地时间，YYYYMMDD-HHMMSS）。
+// scratchStamp：通用秒级时间戳（本地时间，YYYYMMDD-HHMMSS）。
+// 不再参与临时文件命名（已对齐 JetBrains 的 scratch[-N] 风格），保留供其他用途。
 export function scratchStamp(now) {
     const d = now instanceof Date ? now : new Date(Number(now) || Date.now());
     return String(d.getFullYear()) + pad2(d.getMonth() + 1) + pad2(d.getDate()) +
         '-' + pad2(d.getHours()) + pad2(d.getMinutes()) + pad2(d.getSeconds());
 }
 
-// scratchDraftName：草稿-YYYYMMDD-HHMMSS.<ext>；seq>0 时加 -2 / -3 后缀
-// （同秒连点、或 CreateEntry 报「已存在」后的重试，见方案 §2 第 1 条）。
-export function scratchDraftName(now, ext, seq = 0) {
-    const suffix = seq > 0 ? '-' + (seq + 1) : '';
-    return '草稿-' + scratchStamp(now) + suffix + normalizeScratchExt(ext);
+// scratchDraftName：scratch[-N].<ext>（对齐 JetBrains Scratches：scratch.json / scratch_1.json …）。
+// seq>0 时加 _1 / _2 后缀（同扩展名撞名递增，见方案 §2 第 1 条）。
+export function scratchDraftName(ext, seq = 0) {
+    const suffix = seq > 0 ? '_' + seq : '';
+    return 'scratch' + suffix + normalizeScratchExt(ext);
 }
 
 // isBlankDraftText：空白草稿的判据（关闭标签即自动删除）。BOM / 全角空格也算空。

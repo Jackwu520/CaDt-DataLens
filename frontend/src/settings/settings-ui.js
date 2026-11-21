@@ -12,7 +12,10 @@ import {createSettingsSearch} from './settings-search.js';
 import {createSettingsSelect} from './settings-select.js';
 import {CODE_STYLE_AUTO, CODE_STYLES, currentCodeStyleName, isValidCodeStyleId} from './code-styles.js';
 import {renderShortcutsTable, KEY_STYLES, DEFAULT_KEY_STYLE, isValidKeyStyleId, keyStyleName} from '../core/keybindings.js';
+import {renderEditorShortcutsTable} from '../core/editor-keybindings.js';
+import {SCROLL_STYLES} from '../editor/editor-smooth-scroll.js';
 import {keymap} from '../core/keymap.js';
+import {mergeSettingsInto, stripPerWindowLayout} from './settings-sync.js';
 
 export function createSettingsUI(deps) {
 
@@ -38,6 +41,14 @@ function actRel(path) {
 
 // 设置变更留痕：与上次 applySettings 的快照对比；逐键记 ≤8 条，超出合并为一条汇总。
 let lastSettingsSnapshot = null;
+
+// 跨窗口设置同步（2026-11-22）：本窗口 applySettings 写完 localStorage 后广播 settings-changed；
+// 收到别的窗口的广播时置 applyingRemote=true，原地合并内存 + 重绘，但不再广播（防环）。
+// 布局键（PER_WINDOW_LAYOUT_KEYS）每窗口独立：广播仍带全量快照，但接收方合并前剥掉——
+// 点侧边栏图标只属于当前窗口，不该镜像到别的窗口。
+// 用 payload 携带完整快照而非只靠 localStorage——WebView2 多窗口是否共享 localStorage 未强依赖，
+// 双保险：payload 到达后也顺手写回本窗口 localStorage，供方案 C（打开设置重读）兜底。
+let applyingRemoteSettings = false;
 
 function diffSettingsForLog(prev, next) {
     const keys = new Set([...Object.keys(prev || {}), ...Object.keys(next || {})]);
@@ -80,9 +91,11 @@ const elsSettings = {
     treeGuides: document.getElementById('opt-tree-guides'),
     treeCounts: document.getElementById('opt-tree-counts'),
     treeRefresh: document.getElementById('opt-tree-refresh'),
+    showCadDir: document.getElementById('opt-show-cad-dir'),
     codeGuides: document.getElementById('opt-code-guides'),
     alwaysOnTop: document.getElementById('opt-always-on-top'),
     codeWrap: document.getElementById('opt-code-wrap'),
+    scrollStyle: document.getElementById('opt-scroll-style'),
     codeShotTitle: document.getElementById('opt-code-shot-title'),
     codeShotLineNumbers: document.getElementById('opt-code-shot-line-numbers'),
     codeShotRadius: document.getElementById('opt-code-shot-radius'),
@@ -139,7 +152,10 @@ const elsSettings = {
 // 表内容跟随当前快捷键风格（keymap.style），切换风格后立刻重绘。
 const shortcutsTable = document.getElementById('shortcuts-table');
 function renderShortcuts() {
-    if (shortcutsTable) shortcutsTable.innerHTML = renderShortcutsTable(keymap.style);
+    if (shortcutsTable) {
+        shortcutsTable.innerHTML = renderShortcutsTable(keymap.style)
+            + renderEditorShortcutsTable(keymap.style);
+    }
 }
 renderShortcuts();
 // 风格一变（设置页切换，或 main.js 启动时按存档切换）就重绘文案表。
@@ -183,6 +199,20 @@ if (keyStyleSelect) {
         keyStyleSelect.appendChild(opt);
     }
     keyStyleSelect.addEventListener('change', () => setKeyStyle(keyStyleSelect.value));
+}
+// 滚动手感下拉：选项来自 editor-smooth-scroll.js 的 SCROLL_STYLES 单一来源（同代码主题下拉写法）。
+if (elsSettings.scrollStyle) {
+    elsSettings.scrollStyle.textContent = '';
+    for (const style of SCROLL_STYLES) {
+        const opt = document.createElement('option');
+        opt.value = style.value;
+        opt.textContent = style.label;
+        elsSettings.scrollStyle.appendChild(opt);
+    }
+    elsSettings.scrollStyle.addEventListener('change', () => {
+        deps.settings.scrollStyle = elsSettings.scrollStyle.value;
+        applySettings();
+    });
 }
 // 代码截图样式（渲染档位单一来源在 core/code-shot.js 的 CODE_SHOT_RADII / CODE_SHOT_SCALES）
 elsSettings.codeShotTitle.addEventListener('change', () => {
@@ -358,6 +388,8 @@ function setKeyStyle(id) {
     if (!isValidKeyStyleId(value)) return;
     deps.settings.keyStyle = value;
     keymap.setStyle(value);   // 运行时索引立即切换，行为随之生效；文案表由订阅回调重绘
+    // 编辑器内键位（Ace CommandManager）不走全局 keymap，需单独重绑所有已开编辑器
+    if (typeof deps.applyEditorKeybindingsToAll === 'function') deps.applyEditorKeybindingsToAll();
     if (keyStyleSelect) keyStyleSelect.value = value;
     applySettings();
     deps.flash('快捷键风格：' + keyStyleName(value));
@@ -401,10 +433,20 @@ function applyCodeGuides() {
     }
 }
 
+// 置顶值未变就不调用运行时（2026-11-22）：applySettings 是高频出口（侧边栏切换、跨窗口
+// settings-changed 同步与发送方回声都会触发），而 Wails 的 SetAlwaysOnTop 落到
+// SetWindowPos(HWND_TOPMOST/NOTOPMOST, 无 SWP_NOACTIVATE/NOZORDER) 时会把窗口无条件提到
+// 本档 Z 序最顶——值没变也一样（win32 实测，非 MSDN 文档语义）。不设防的话，任何窗口点
+// 侧边栏图标都会让另一个窗口跳到前台、再被发送方回声顶回来，表现为两窗来回闪一下。
+let lastAppliedAlwaysOnTop = null;
+
 function applyAlwaysOnTop() {
+    const next = !!deps.settings.alwaysOnTop;
+    if (lastAppliedAlwaysOnTop === next) return;
     if (!deps.rt || !deps.rt.WindowSetAlwaysOnTop) return;
     try {
-        deps.rt.WindowSetAlwaysOnTop(!!deps.settings.alwaysOnTop);
+        deps.rt.WindowSetAlwaysOnTop(next);
+        lastAppliedAlwaysOnTop = next;
     } catch (e) {}
 }
 
@@ -584,10 +626,13 @@ function applySettings() {
     elsSettings.treeCounts.checked = !!deps.settings.treeCounts;
     elsSettings.treeRefresh.value = String(deps.settings.treeRefreshInterval);
     if (deps.explorer && deps.explorer.setAutoRefresh) deps.explorer.setAutoRefresh(deps.settings.treeRefreshInterval);
+    if (elsSettings.showCadDir) elsSettings.showCadDir.checked = deps.settings.showCadDir !== false;
+    if (deps.explorer && deps.explorer.setShowCadDir) deps.explorer.setShowCadDir(deps.settings.showCadDir !== false);
     elsSettings.autoSave.checked = !!deps.settings.autoSave;
     elsSettings.codeGuides.checked = !!deps.settings.codeGuides;
     elsSettings.alwaysOnTop.checked = !!deps.settings.alwaysOnTop;
     elsSettings.codeWrap.checked = !!deps.settings.codeWrap;
+    if (elsSettings.scrollStyle) elsSettings.scrollStyle.value = SCROLL_STYLES.some((s) => s.value === deps.settings.scrollStyle) ? deps.settings.scrollStyle : 'standard';
     elsSettings.codeShotTitle.checked = !!deps.settings.codeShotTitle;
     elsSettings.codeShotLineNumbers.checked = deps.settings.codeShotLineNumbers !== false;
     elsSettings.codeShotRadius.value = String(CODE_SHOT_RADII.includes(Number(deps.settings.codeShotRadius)) ? Number(deps.settings.codeShotRadius) : 10);
@@ -660,6 +705,56 @@ function applySettings() {
     if ((deps.settings.autoSave || (deps.file && deps.file.draft)) && deps.dirty &&
         !isDocReadOnly(deps.file, deps.settings)) deps.scheduleAutoSave();
     else deps.cancelAutoSave();
+    broadcastSettings();
+}
+
+// broadcastSettings：settings-changed 的唯一广播点（applySettings / persistSettingsLight 共用）。
+// 全量快照走 payload（localStorage 是否跨窗口共享不强依赖）；远端触发期间静默，防回声环。
+function broadcastSettings() {
+    if (applyingRemoteSettings || !deps.rt || typeof deps.rt.EventsEmit !== 'function') return;
+    try {
+        deps.rt.EventsEmit('settings-changed', {values: JSON.parse(JSON.stringify(deps.settings))});
+    } catch (e) {}
+}
+
+// persistSettingsLight：轻量落盘出口——只写 localStorage + 广播，不做全量重绘。
+// 供拖分割线、草稿扩展名记忆这类高频/局部小改动用：它们同样改了 settings 对象，
+// 漏广播会让别的窗口内存副本停在旧值；走 applySettings 的全量重绘对它们又是浪费。
+// 布局键进广播无害：接收方 applyRemoteSettings 会剥掉（PER_WINDOW_LAYOUT_KEYS）。
+function persistSettingsLight() {
+    try {
+        localStorage.setItem(deps.settingsKey, JSON.stringify(deps.settings));
+    } catch (e) {}
+    broadcastSettings();
+}
+
+// applyRemoteSettings：收到别的窗口的 settings-changed 广播后，把快照原地合并进内存副本。
+// 必须原地合并（Object.assign）而非替换对象——ai-panel / ai-cognition 等模块持有 settings
+// 的值快照引用（ai-panel.js:327 `const settings = opts.settings`），换对象它们读不到新值。
+// payload 是权威来源；顺手写回本窗口 localStorage，供 openSettings 的方案 C 兜底。
+function applyRemoteSettings(values) {
+    if (!values || typeof values !== 'object') return;
+    applyingRemoteSettings = true;
+    try {
+        // 布局键（侧栏显隐/视图/宽度、AI 面板形态等）每窗口独立，跨窗合并前剥掉——
+        // 这里是广播与方案 C 重读（reloadSettingsFromDisk）的共同必经点，别处不要再直并。
+        const changed = mergeSettingsInto(deps.settings, stripPerWindowLayout(values));
+        if (!changed.length) return; // 同源回声（发出的窗口自己也收）：值没变，不重绘
+        try { localStorage.setItem(deps.settingsKey, JSON.stringify(deps.settings)); } catch (e) {}
+        applySettings();
+    } finally {
+        applyingRemoteSettings = false;
+    }
+}
+
+// reloadSettingsFromDisk：方案 C 兜底——打开设置页时从 localStorage 重读一次再渲染。
+// 处理「广播事件在设置页未打开时到达、但 localStorage 是共享的」这类场景；若本地存储不共享，
+// 读到的仍是旧值，此时纯靠事件广播（applyRemoteSettings）保证正确，本函数无副作用。
+function reloadSettingsFromDisk() {
+    let stored = null;
+    try { stored = JSON.parse(localStorage.getItem(deps.settingsKey) || 'null'); } catch (e) {}
+    if (!stored || typeof stored !== 'object') return;
+    applyRemoteSettings(stored);
 }
 
 
@@ -713,7 +808,8 @@ function selectSettingsPane(pane) {
     }
     const aiGroup = document.getElementById('snav-ai');
     if (aiGroup) {
-        const inAI = pane === 'models' || pane === 'agents' || pane === 'gen-models' || pane === 'external-tools' || pane === 'ai' || pane === 'persona' || pane === 'context' || pane === 'preferences';
+        // 外部工具已迁为应用页面标签页（core/app-pages.js），不再是设置子页
+        const inAI = pane === 'models' || pane === 'agents' || pane === 'gen-models' || pane === 'ai' || pane === 'persona' || pane === 'context' || pane === 'preferences';
         if (inAI && !aiGroup.classList.contains('expanded')) {
             aiGroup.classList.add('expanded');
             const parent = aiGroup.querySelector('.snav-parent');
@@ -730,14 +826,11 @@ function selectSettingsPane(pane) {
     else if (pane === 'envvars') deps.renderEnvVarsPane();
     else if (pane === 'app-pages' && typeof deps.renderAppPagesPane === 'function') deps.renderAppPagesPane();
     else if (pane === 'storage') deps.renderStoragePane();
-    else if (pane === 'external-tools' && typeof deps.renderExternalToolsPane === 'function') {
-        // 异步面板：渲染失败落到控制台，不能让导航看起来「点了没反应」
-        Promise.resolve(deps.renderExternalToolsPane()).catch((e) => console.error('外部工具设置页渲染失败', e));
-    }
     else if (pane === 'developer') {
         // 开发者页只剩日志与调试控制台；补丁库已迁为内容区标签页（应用页面 → 补丁库）
+        // 外部工具同理已迁（应用页面 → 外部工具），AI 子页不再有它
     }
-    if (pane === 'ai' || pane === 'models' || pane === 'agents' || pane === 'gen-models' || pane === 'external-tools' || pane === 'persona' || pane === 'context' || pane === 'preferences') {
+    if (pane === 'ai' || pane === 'models' || pane === 'agents' || pane === 'gen-models' || pane === 'persona' || pane === 'context' || pane === 'preferences') {
         if (!deps.aiPanel) deps.initAIPanel();
         if (deps.aiPanel && typeof deps.aiPanel.refreshSettings === 'function') {
             try { deps.aiPanel.refreshSettings(); } catch (e) {}
@@ -750,6 +843,8 @@ function selectSettingsPane(pane) {
 }
 
 function openSettings(pane = 'general', preset) {
+    // 方案 C：打开设置前先从 localStorage 重读一次，兜住事件广播错过的变更。
+    reloadSettingsFromDisk();
     dlgMod.openDialogEl(elsDialogs.settings);
     searchMod.resetSettingsSearch();
     selectSettingsPane(pane);
@@ -934,6 +1029,6 @@ const searchMod = createSettingsSearch(searchDeps);
 
     return {
         ...dlgMod, ...selMod, ...searchMod,
-        actRel, activityLog, applyCodeStyle, applyIntegration, applyReadOnlyToDoc, applySettings, countWords, currentCodeStyle, currentTheme, cursorPositionForDoc, elsDialogs, elsSettings, getFormatSettings, installReadOnlyGuards, openSettings, openSettingsAtRow, rtFullscreen, scheduleWordCount, selectSettingsPane, setCodeStyle, setTheme, syncIntegrationStatus, syncedOpenMode, toggleAlwaysOnTop, toggleCodeWrap, toggleFullscreen, updateLockButton, updateWordCount,
+        actRel, activityLog, applyCodeStyle, applyIntegration, applyReadOnlyToDoc, applyRemoteSettings, applySettings, countWords, currentCodeStyle, currentTheme, cursorPositionForDoc, elsDialogs, elsSettings, getFormatSettings, installReadOnlyGuards, openSettings, openSettingsAtRow, persistSettingsLight, rtFullscreen, scheduleWordCount, selectSettingsPane, setCodeStyle, setTheme, syncIntegrationStatus, syncedOpenMode, toggleAlwaysOnTop, toggleCodeWrap, toggleFullscreen, updateLockButton, updateWordCount,
     };
 }

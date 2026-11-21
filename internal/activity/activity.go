@@ -62,13 +62,16 @@ type activityAppendPayload struct {
 }
 
 // activityQuery ActivityRead 的过滤条件：从新到旧命中 limit 即停。
+// BeforeTs + BeforeSeq 组成复合游标（ts+seq），消除同一毫秒多条时的重复/漏读；
+// BeforeSeq 缺省（0）时退化为旧的单时间戳游标，保持老前端与 AI 的 get_activity 兼容。
 type activityQuery struct {
-	Limit    int      `json:"limit"`
-	BeforeTs int64    `json:"beforeTs"`
-	SinceTs  int64    `json:"sinceTs"`
-	Actions  []string `json:"actions"`
-	Actor    string   `json:"actor"`
-	Keyword  string   `json:"keyword"`
+	Limit     int      `json:"limit"`
+	BeforeTs  int64    `json:"beforeTs"`
+	BeforeSeq int64    `json:"beforeSeq"`
+	SinceTs   int64    `json:"sinceTs"`
+	Actions   []string `json:"actions"`
+	Actor     string   `json:"actor"`
+	Keyword   string   `json:"keyword"`
 }
 
 type activityReadResult struct {
@@ -443,8 +446,16 @@ func Read(queryJSON string) (string, error) {
 			if json.Unmarshal([]byte(line), &entry) != nil {
 				continue
 			}
-			if query.BeforeTs > 0 && entry.TS >= query.BeforeTs {
-				continue
+			// 复合游标：跳过 >= 游标位置的所有条目。BeforeSeq>0 时同一毫秒内按 seq
+			// 精确切页（严格小于游标 ts，或 ts 相等但 seq 更小），否则退回旧的单 ts 口径。
+			if query.BeforeTs > 0 {
+				if query.BeforeSeq > 0 {
+					if entry.TS > query.BeforeTs || (entry.TS == query.BeforeTs && entry.Seq >= query.BeforeSeq) {
+						continue
+					}
+				} else if entry.TS >= query.BeforeTs {
+					continue
+				}
 			}
 			if query.SinceTs > 0 && entry.TS < query.SinceTs {
 				continue

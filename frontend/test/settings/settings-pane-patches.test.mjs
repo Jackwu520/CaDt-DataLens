@@ -1,7 +1,22 @@
 // settings-pane-patches 纯函数测试：状态徽标映射、行标题拼装、删除确认文案。
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+import {fileURLToPath} from 'node:url';
 import {patchStatusLabel, patchRowTitle, patchDeleteConfirmText} from '../../src/settings/settings-pane-patches.js';
+
+const paneSrc = readFileSync(fileURLToPath(new URL('../../src/settings/settings-pane-patches.js', import.meta.url)), 'utf8');
+
+// 2026-11-22 P0：mount 里用了 createSelect 做排序下拉，但顶部只 import 了 createInput，
+// 导致打开补丁库标签页就抛 `createSelect is not defined`，整页空白。钉死 import 接线。
+test('补丁库 mount 用到的 createSelect 必须已 import（防 ReferenceError 整页空白）', () => {
+    const usesCreateSelect = /createSelect\s*\(/.test(paneSrc);
+    const importsCreateSelect = /import\s*\{[^}]*\bcreateSelect\b[^}]*\}\s*from\s*['"]\.\.\/core\/form-controls\.js['"]/.test(paneSrc);
+    if (usesCreateSelect) {
+        assert.ok(importsCreateSelect,
+            'mount 用了 createSelect 就必须从 core/form-controls.js import，否则打开补丁库抛 ReferenceError');
+    }
+});
 
 test('patchStatusLabel：状态 → 文案与色调', () => {
     const cases = [

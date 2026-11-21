@@ -77,6 +77,7 @@ import {createGlobalSearch} from './explorer/global-search.js';
 import {createShiftDoubleTap} from './core/shift-double-tap.js';
 import {keymap, comboSpecFromText} from './core/keymap.js';
 import {DOUBLE_SHIFT, DEFAULT_KEY_STYLE, isValidKeyStyleId, getShortcut} from './core/keybindings.js';
+import {createEditorKeybindings} from './editor/editor-keybindings.js';
 import {createMessageCenter} from './shell/message-center.js';
 import {createFailureNotifier} from './shell/failure-notifier.js';
 import {createFindBar} from './editor/find-bar.js';
@@ -886,6 +887,7 @@ const APP_SETTING_RULES = {
     showSidebar: {type: 'bool'},
     alwaysOnTop: {type: 'bool'},
     codeWrap: {type: 'bool'},
+    scrollStyle: {type: 'enum', values: ['standard', 'swift', 'brisk', 'off']},
     codeGuides: {type: 'bool'},
     treeGuides: {type: 'bool'},
     treeCounts: {type: 'bool'},
@@ -894,6 +896,7 @@ const APP_SETTING_RULES = {
     readOnlyMode: {type: 'bool'},
     fixedKeys: {type: 'bool'},
     treeRefreshInterval: {type: 'enum', values: [0, 1, 2, 3, 5, 10]},
+    showCadDir: {type: 'bool'},
     sidebarFont: {type: 'number', min: 10, max: 20},
     editorFont: {type: 'number', min: 10, max: 24},
     treeExpandDefault: {type: 'enum', values: ['expand', 'collapse']},
@@ -927,6 +930,7 @@ const APP_ACTIONS = [
     'get_agents', 'create_agent', 'create_group', 'get_groups', 'send_group_message',
     'install_plugin', 'uninstall_plugin',
     'get_mcp_servers', 'list_mcp_samples', 'install_mcp_sample', 'set_mcp_server', 'delete_mcp_server',
+    'cognition_toggle',
 ];
 
 const APP_SCREENSHOT_AREAS = {
@@ -1812,6 +1816,35 @@ async function runAppAction(action, params, scope, callerSessionId, requestActio
             applySettingsValue(row.kind, row.control, coerced.value);
             return {applied: true, id: row.id, pane: row.pane, title: row.title, oldValue, newValue, risk: row.risk};
         }
+        case 'cognition_toggle': {
+            // 认知索引启停（可选启用功能，默认关）：**无条件动作审批卡**——对齐生命周期钩子
+            // / worktree 的口径，不管什么权限档都弹，用户拍板后才写。设置树里该行登记为
+            // protected（settings-tree.js）：AI 的唯一写路径就是这张审批卡；手动开关走设置页。
+            const control = document.getElementById('ai-opt-cognition');
+            if (!control) throw new Error('当前版本没有认知索引设置项');
+            const enabled = p.enabled === undefined ? !control.checked : p.enabled === true;
+            const oldValue = control.checked ? '开启' : '关闭';
+            const newValue = enabled ? '开启' : '关闭';
+            if (typeof requestActionApproval !== 'function') {
+                throw new Error('cognition_toggle 需要用户在界面审批；当前调用没有审批通道，拒绝执行');
+            }
+            const answer = await requestActionApproval({
+                action: 'cognition_toggle',
+                title: (enabled ? '启用' : '关闭') + ' AI 认知索引',
+                target: '设置 → AI → 上下文与记忆 / 认知索引（ai-opt-cognition）',
+                oldValue,
+                newValue,
+                risk: 'medium',
+                warnings: enabled
+                    ? ['启用后 AI 会话每会话注入一份路径地图（≤1–2K token，只注一次），并在改动代码后被期待维护 .cadt/cognition/ 认知卷；可选启用功能，工作区本地纯文本，可随时关闭或删除']
+                    : ['关闭后 AI 不再注入认知索引、不再维护认知卷；已写的 .cadt/cognition/ 保留在工作区（可在 设置 → 存储与清理 清除）'],
+                source: 'app_control · cognition_toggle',
+                locate: {pane: 'ai', row: 'ai-opt-cognition'},
+            });
+            if (!answer || !answer.approved) return {applied: false, denied: true, note: '用户拒绝了本次认知索引' + (enabled ? '启用' : '关闭')};
+            applySettingsValue('switch', control, enabled);
+            return {applied: true, enabled, oldValue, newValue};
+        }
         case 'get_activity': {
             // 操作留痕只读查询：帮用户回忆「刚才做了什么」与排障。
             if (!backend.ActivityRead) throw new Error('当前版本不支持操作记录');
@@ -2356,6 +2389,8 @@ const defaultSettings = {
     treeGuides: false,
     treeCounts: false,
     treeRefreshInterval: 3,
+    // 文件树/列表是否显示应用状态目录 .cadt（默认显示；关掉只在根层隐藏）
+    showCadDir: true,
     terminalHeight: 240,
     sidebarWidth: 264,
     gitCommitAreaHeight: 0,
@@ -2363,6 +2398,7 @@ const defaultSettings = {
     alwaysOnTop: false,
     editorFont: 13,
     codeWrap: false,
+    scrollStyle: 'standard',
     // 代码截图样式（档位单一来源 core/code-shot.js）
     codeShotTitle: false,
     codeShotLineNumbers: true,
@@ -2400,6 +2436,8 @@ const defaultSettings = {
     aiPanelWidth: 380,
     aiFloatMode: 'dock',
     aiSendKey: 'enter',
+    // 长文本粘贴模式：collapse 折叠为可点击胶囊（默认）/ attachment 转附件 / off 原样键入
+    aiLongPaste: 'collapse',
     aiChatFont: 13,
     aiChatFontEn: 'follow',
     aiChatFontCjk: 'follow',
@@ -2407,6 +2445,9 @@ const defaultSettings = {
     aiShowThinking: true,
     aiShowEveryTurnMeta: false,
     aiContextSlim: true,
+    // 认知索引（可选启用，默认关）：显式播种让 get_settings 能看到键——技能表教模型
+    // 用 get_settings 查当前状态，缺省不存在会被误读成「版本不支持」（2026-11-22 审查）
+    aiCognition: false,
     aiShowUsage: true,
     // 回复操作按钮颗粒度：full 全部完整出现（默认）/ mid-basic 中间步骤只留复制+回退 / last-only 只在最后一条显示
     aiMsgActions: 'full',
@@ -2529,6 +2570,7 @@ if (settings.structureSource !== 'session') settings.structureSource = 'file';
 settings.showSidebar = !!settings.showSidebar;
 settings.treeGuides = !!settings.treeGuides;
 settings.treeCounts = !!settings.treeCounts;
+settings.showCadDir = settings.showCadDir !== false;
 settings.codeGuides = !!settings.codeGuides;
 settings.alwaysOnTop = !!settings.alwaysOnTop;
 // 存储自动清理：取值白名单与设置页下拉一致，非法值回落默认
@@ -2597,6 +2639,8 @@ settings.aiFloatMode = ['dock', 'fullscreen'].includes(settings.aiFloatMode) ? s
 // AI 面板停靠侧（dock 分屏模式下与内容区互换左右）
 settings.aiPanelSide = settings.aiPanelSide === 'left' ? 'left' : 'right';
 settings.aiSendKey = settings.aiSendKey === 'ctrl-enter' ? 'ctrl-enter' : 'enter';
+// 长文本粘贴模式（三档，非法值回落 collapse）
+settings.aiLongPaste = ['off', 'attachment', 'collapse'].includes(settings.aiLongPaste) ? settings.aiLongPaste : 'collapse';
 settings.aiChatFont = Math.min(32, Math.max(10, Number(settings.aiChatFont) || 13));
 for (const key of ['aiChatFontEn', 'aiChatFontCjk', 'aiChatCodeFont']) {
     if (typeof settings[key] !== 'string' || !settings[key]) settings[key] = 'follow';
@@ -2650,9 +2694,17 @@ if (!['split', 'preview', 'code', 'text'].includes(settings.formatSettings.markd
     settings.formatSettings.markdown.view = 'preview';
 }
 
+// 编辑器内键位（复制行 / 删除行 / 多选…）随快捷键风格联动：与全局 keymap 共用 settings.keyStyle。
+// 纯运行时，deps 全 getter 延迟求值；创建后注入 settingsUI（切风格时 applyToAll）与 editorGroups（建编辑器时 applyTo）。
+const editorKeybindings = createEditorKeybindings({
+    get settings() { return settings; },
+    get docs() { return docs; },
+});
+
 const settingsUI = createSettingsUI({
     get aiPanel() { return aiPanel; },
     get allFormatDefs() { return allFormatDefs; },
+    get applyEditorKeybindingsToAll() { return () => editorKeybindings.applyToAll(); },
     get applySidebarUI() { return applySidebarUI; },
     get applyWritingMode() { return applyWritingMode; },
     get backend() { return backend; },
@@ -2701,7 +2753,7 @@ const settingsUI = createSettingsUI({
             }
         };
     },
-    get renderExternalToolsPane() { return settingsPaneExternalTools.renderExternalToolsPane; },
+    // 外部工具已迁为应用页面标签页，settings-ui 不再渲染它（挂载器见 appPageMounters）
     get rt() { return rt; },
     get scheduleAutoSave() { return scheduleAutoSave; },
     get settings() { return settings; },
@@ -2717,7 +2769,7 @@ const settingsUI = createSettingsUI({
     get updateWritingStats() { return updateWritingStats; },
     get workspaceFolder() { return workspaceFolder; },
 });
-const {actRel, activityLog, applyIntegration, applyReadOnlyToDoc, applySettings, closeDialogs, closeTopDialog, getConfirmAction, setConfirmAction, countWords, currentTheme, cursorPositionForDoc, elsDialogs, elsSettings, getFormatSettings, installReadOnlyGuards, openDialogEl, openNameDialog, openSaveConflictDialog, openSettings, openSettingsAtRow, rtFullscreen, scheduleWordCount, selectSettingsPane, setCodeStyle, setTheme, syncIntegrationStatus, syncedOpenMode, toggleAlwaysOnTop, toggleCodeWrap, toggleFullscreen, updateLockButton, updateWordCount} = settingsUI;
+const {actRel, activityLog, applyIntegration, applyReadOnlyToDoc, applyRemoteSettings, applySettings, closeDialogs, closeTopDialog, getConfirmAction, setConfirmAction, countWords, currentTheme, cursorPositionForDoc, elsDialogs, elsSettings, getFormatSettings, installReadOnlyGuards, openDialogEl, openNameDialog, openSaveConflictDialog, openSettings, openSettingsAtRow, persistSettingsLight, rtFullscreen, scheduleWordCount, selectSettingsPane, setCodeStyle, setTheme, syncIntegrationStatus, syncedOpenMode, toggleAlwaysOnTop, toggleCodeWrap, toggleFullscreen, updateLockButton, updateWordCount} = settingsUI;
 const writingUI = createWritingUI({
     set flashTimer(v) { flashTimer = v; },
     set dirty(v) { dirty = v; },
@@ -2800,6 +2852,7 @@ const editorGroupsMod = createEditorGroups({
     get onDocVisible() { return revealEditorForContent; },
     get aiReferenceFileMenuItems() { return aiReferenceFileMenuItems; },
     get applyReadOnlyToDoc() { return applyReadOnlyToDoc; },
+    get applyEditorKeybindings() { return (aceEditor) => editorKeybindings.applyTo(aceEditor); },
     get applySettings() { return applySettings; },
     get applyWritingMode() { return applyWritingMode; },
     get backend() { return backend; },
@@ -2876,6 +2929,7 @@ const editorGroupsMod = createEditorGroups({
     get setDragCursor() { return setDragCursor; },
     get settings() { return settings; },
     get settingsKey() { return settingsKey; },
+    get persistSettingsLight() { return persistSettingsLight; },
     get splitKindFor() { return splitKindFor; },
     get structurePanel() { return structurePanel; },
     get switchMode() { return switchMode; },
@@ -2912,15 +2966,13 @@ function newFileTypeMenuItems(action) {
 }
 
 // rememberScratchExt：临时草稿「上次用过的扩展名」（下一份草稿一键建的默认语言）。
-// 只为一个字符串走整份 applySettings 会重刷主题/字体/写作模式，这里直接落 localStorage
-// （键与 settings-ui 的持久化同一个 settingsKey）。
+// 只为一个字符串走整份 applySettings 会重刷主题/字体/写作模式，走 persistSettingsLight
+// 轻量出口：同样落 localStorage + 广播（别窗内存副本不落旧值），但不做全量重绘。
 function rememberScratchExt(ext) {
     const next = normalizeScratchExt(ext);
     if (settings.scratchExt === next) return next;
     settings.scratchExt = next;
-    try {
-        localStorage.setItem(settingsKey, JSON.stringify(settings));
-    } catch (e) {}
+    persistSettingsLight();
     return next;
 }
 
@@ -2945,6 +2997,7 @@ const structurePanelCtrl = createStructurePanelController({
     get settings() { return settings; },
     set settings(v) { settings = v; },
     get settingsKey() { return settingsKey; },
+    get persistSettingsLight() { return persistSettingsLight; },
     get structureCache() { return structureCache; },
     get structurePanel() { return structurePanel; },
     set structurePanel(v) { structurePanel = v; },
@@ -3857,7 +3910,7 @@ function initActivityBar() {
     if (els.abMore) els.abMore.addEventListener('click', () => {
         if (!ctxMenu) return;
         const rect = els.abMore.getBoundingClientRect();
-        // 「视图与工具窗口」：视图菜单 + 应用页面（使用统计 / 定时任务 / 操作记录 / 补丁库）。
+        // 「视图与工具窗口」：视图菜单 + 应用页面（使用统计 / 外部工具 / 定时任务 / 操作记录 / 补丁库）。
         // 应用页面是内容区标签页，这里给鼠标党一个直达入口（菜单「工具」与命令面板另有入口）。
         ctxMenu.open([
             ...menuItems('view'),
@@ -4180,6 +4233,11 @@ function initAIPanel() {
         pluginTools: pluginToolsMod,
         // 插件注入的 AI 上下文注册表（shell/plugin-context.js）
         pluginContext: pluginContextMod,
+        // 桌面授权单飞广播出口（desktop-grant-changed）：面板 grant/revoke 时经这里全窗广播，
+        // 各窗口副本收敛（订阅在下方 onApp 区）。浏览器 mock（rt 为空）时静默降级为单窗口语义。
+        emitAppEvent: (name, payload) => {
+            if (rt && typeof rt.EventsEmit === 'function') rt.EventsEmit(name, payload);
+        },
         panel: panelEl,
         dockParent: document.getElementById('top-row'),
         overlayParent: document.getElementById('main-pane'),
@@ -4221,6 +4279,8 @@ function initAIPanel() {
                 return null;
             }
         },
+        // 「自动化」按钮 → 定时任务应用页面标签页（虚拟标签页改造后不再是设置模态框）
+        openAppPageTab: (...args) => openAppPageTab(...args),
         // 子代理详情视图：在内容区标签页打开（不遮挡面板；悬浮窗由面板自己退回覆盖层）
         openAgentTab: (...args) => openAgentTab(...args),
         // 智能体团队详情：内容区标签页（主代理 + 子代理树）
@@ -4286,6 +4346,9 @@ function initAIPanel() {
         // AI 回答里的 ```mermaid 围栏占位渲染（功能验证报告 §1.3.3：原来占位无人渲染，图直接消失）
         renderMermaidBlocks,
         openExternal: openExternalUrl,
+        // AI 回答正文里的 http(s) 链接用内置浏览器标签页打开（而非 target=_blank 弹裸 WebView2 窗口）。
+        // 箭头函数延迟求值：openBrowserTab 在 bridgeUI 解构（约 7342 行）后才可用，直接传会 TDZ。
+        openBrowserTab: (url) => openBrowserTab(url, ''),
         confirm: openConfirmDialog,
         nameDialog: openNameDialog,
         openSettings: (pane, preset) => {
@@ -4529,7 +4592,7 @@ function initAIPanel() {
             if (aiPanel && aiPanel.aiGroupApi) aiPanel.aiGroupApi.saveConfig();
         },
         flash: (...args) => flash(...args),
-        confirm: (message, action, okLabel, title) => openConfirmDialog(message, action, okLabel, title),
+        confirm: (message, action, okLabel, title, variant, options) => openConfirmDialog(message, action, okLabel, title, variant, options),
         // 新建群聊弹窗左下角的齿轮：直达 设置 → AI → 智能体（成员管理）
         openSettings: (pane) => openSettings(pane),
         dialog: aiPanel.aiGroupApi
@@ -4621,10 +4684,25 @@ function initAIPanel() {
             }
         });
         appEvents.onApp('schedules-changed', () => {
+            // 设置面板可见时刷新（兼容旧路径）
             const activePane = document.querySelector('.settings-pane[data-pane="schedules"]:not(.hidden)');
             if (activePane && aiPanel && typeof aiPanel.refreshScheduleSettings === 'function') {
                 try { aiPanel.refreshScheduleSettings(); } catch (e) {}
             }
+            // 应用页面标签页开着时也要刷新（修复跨窗口/工具 CRUD 后标签页陈旧）
+            const schedDoc = docs.find((d) => d.appPage === 'schedules');
+            if (schedDoc && schedDoc.appPageRoot && schedDoc.appPageRoot.isConnected
+                && aiPanel && typeof aiPanel.refreshScheduleSettings === 'function') {
+                try { aiPanel.refreshScheduleSettings(); } catch (e) {}
+            }
+        });
+        // 跨窗口设置同步：别的窗口改了设置（含 AI 的 cognition_toggle 审批卡）后广播全量快照，
+        // 本窗口原地合并内存并重绘——否则窗口1的设置页/认知开关一直显示启动时的旧值。
+        // 发出的窗口自己也收（v3 广播无定向），applyRemoteSettings 会写回同源值，幂等。
+        appEvents.onApp('settings-changed', (payload) => {
+            const values = payload && payload.values;
+            if (!values) return;
+            try { applyRemoteSettings(values); } catch (e) {}
         });
         // MCP 客户端：Go 侧世代/状态事件都推全量快照，面板整表替换（ai-mcp.js §5.4）
         appEvents.onApp('mcp-tools-changed', (snapshot) => {
@@ -4638,6 +4716,13 @@ function initAIPanel() {
                 try { aiPanel.handleMcpEvent(snapshot); } catch (e) {}
             }
             refreshExternalToolsPaneIfVisible();
+        });
+        // 桌面授权单飞广播（desktop-grant-changed，desktop-mcp.md §13.3-2）：任何窗口 grant/revoke
+        // 都广播到这里，面板整表替换副本；本窗口有会话被挤掉时由面板投递通知
+        appEvents.onApp('desktop-grant-changed', (payload) => {
+            if (aiPanel && typeof aiPanel.handleDesktopGrantEvent === 'function') {
+                try { aiPanel.handleDesktopGrantEvent(payload); } catch (e) {}
+            }
         });
     }
 }
@@ -5249,6 +5334,10 @@ const activityPane = createActivityPane({
     get flash() { return flash; },
     get openConfirmDialog() { return openConfirmDialog; },
     get settings() { return settings; },
+    // 页内「去设置」：定位到仍留在设置页的启用开关（settings-tree 反射契约不破）
+    get openActivitySettings() {
+        return () => settingsUI.openSettingsAtRow('general', elsSettings.activityLog);
+    },
 });
 const {renderActivityPane} = activityPane;
 // 补丁库（设置 → 开发者）：最近补丁列表 + 删除（Go 侧 PatchDelete 负责回收文件与摘索引）
@@ -5257,6 +5346,8 @@ const settingsPanePatches = createSettingsPanePatches({
     get flash() { return flash; },
     get openConfirmDialog() { return openConfirmDialog; },
     get root() { return workspaceFolder || ''; },
+    // 点补丁行「打开视图」：.patch 文件走 openPath 会由 patch-view 接管（含预检/应用/撤销）
+    get openPatchFile() { return (path) => openPath(path); },
 });
 // 设置 → 存储与清理：条目与删除都在 Go 侧，这里给的是位置（工作区根）与确认/回执通道。
 const settingsPaneStorage = createSettingsPaneStorage({
@@ -5273,6 +5364,8 @@ const settingsPaneStorage = createSettingsPaneStorage({
 const settingsPaneUsageStats = createSettingsPaneUsageStats({
     get backend() { return backend; },
     get flash() { return flash; },
+    // 请求日志「每页条数」下拉走设置页同款浮层增强，去掉浏览器原生外观（应用页面不走 settings-ui 扫描）
+    get enhanceSelect() { return settingsUI.enhanceSelect; },
 });
 
 // 应用页面标签页的挂载器（键 = core/app-pages.js 的 id，值 = mount(root) → 卸载函数）。
@@ -5284,11 +5377,15 @@ const appPageMounters = {
     'patches': (root) => settingsPanePatches.mount(root),
     'activity': (root) => activityPane.mount(root),
     'schedules': (root) => (aiPanel && aiPanel.bridgeMountSchedules ? aiPanel.bridgeMountSchedules(root) : null),
+    // 外部工具的 DOM 停靠在 #extcap-park，mount 搬进 / 卸载搬出（settings-pane-external-tools.js）
+    'external-tools': (root) => settingsPaneExternalTools.mount(root),
 };
 
-// 设置 → 页面 → 应用页面：目录页，一行一个页面，点开在内容区打开对应标签页
+// 设置 → 页面 → 应用页面：目录页，一行一个页面，点开在内容区打开对应标签页（顺带关设置弹层）
 const settingsPaneAppPages = createSettingsPaneAppPages({
     get openAppPageTab() { return openAppPageTab; },
+    get closeSettings() { return closeDialogs; },
+    get iconSvg() { return iconSvg; },
 });
 
 // 侧栏「应用页面」面板：一列页面入口，点行直接在内容区打开标签页。
@@ -5361,7 +5458,7 @@ const settingsPaneWipeguard = createSettingsPaneWipeguard({
     get flash() { return flash; },
     get syncConfig() { return () => wipeguardCtrl.syncConfig(); },
     get confirmAction() {
-        return (message, action, okLabel, title, variant) => openConfirmDialog(message, action, okLabel, title, variant);
+        return (message, action, okLabel, title, variant, options) => openConfirmDialog(message, action, okLabel, title, variant, options);
     },
 });
 // 工作区预指令：打开工作区自动执行（shell/lifecycle-hooks.js 控制器）；写动作无条件动作审批
@@ -5380,7 +5477,7 @@ const settingsPaneLifecycle = createSettingsPaneLifecycle({
     get applySettings() { return applySettings; },
     get flash() { return flash; },
     get confirmAction() {
-        return (message, action, okLabel, title, variant) => openConfirmDialog(message, action, okLabel, title, variant);
+        return (message, action, okLabel, title, variant, options) => openConfirmDialog(message, action, okLabel, title, variant, options);
     },
     get analyzeDangerousCommand() { return analyzeDangerousCommand; },
     get sessionPathKey() { return sessionPathKey; },
@@ -5398,7 +5495,8 @@ const settingsPaneNewFileMenu = createSettingsPaneNewFileMenu({
 });
 // 先渲染一次，让设置搜索能索引到动态行（之后进「菜单管理」时由 selectSettingsPane 重建）
 settingsPaneNewFileMenu.renderNewFileMenuPane();
-// 设置 → AI → 外部工具：能力来源矩阵 + 服务提供商配置（MCP 组由 index.html 迁入，绑定仍归 ai-panel）
+// 外部工具应用页面：能力来源矩阵 + 服务提供商配置（DOM 停靠 index.html 的 #extcap-park，
+// mount/unmount 搬进搬出标签页；MCP 组绑定仍归 ai-panel）
 const settingsPaneExternalTools = createSettingsPaneExternalTools({
     get backend() { return backend; },
     get flash() { return flash; },
@@ -5408,15 +5506,17 @@ const settingsPaneExternalTools = createSettingsPaneExternalTools({
     },
     get getAiPanel() { return () => aiPanel; },
     get confirmAction() {
-        return (message, action, okLabel, title, variant) => openConfirmDialog(message, action, okLabel, title, variant);
+        return (message, action, okLabel, title, variant, options) => openConfirmDialog(message, action, okLabel, title, variant, options);
     },
     // 该工厂创建时会立即读取 deps.openExternalUrl；用包装函数把真正的 openExternalUrl 读取推迟到点击时
     get openExternalUrl() { return (url) => openExternalUrl(url); },
 });
 function refreshExternalToolsPaneIfVisible() {
-    const pane = document.querySelector('.settings-pane[data-pane="external-tools"]');
-    if (!pane || pane.classList.contains('hidden')) return;
-    settingsPaneExternalTools.renderExternalToolsPane();
+    // 外部工具已是应用页面标签页：标签开着才刷新（关着时 DOM 在停靠区，不重绘）
+    const doc = docs.find((d) => d.appPage === 'external-tools');
+    if (doc && doc.appPageRoot && doc.appPageRoot.isConnected) {
+        settingsPaneExternalTools.renderExternalToolsPane();
+    }
 }
 const debugConsoleBtn = document.getElementById('opt-debug-console');
 if (debugConsoleBtn) debugConsoleBtn.addEventListener('click', () => toggleDockView('debug'));
@@ -5455,6 +5555,14 @@ elsSettings.treeCounts.addEventListener('change', () => {
 elsSettings.treeRefresh.addEventListener('change', () => {
     settings.treeRefreshInterval = Number(elsSettings.treeRefresh.value) || 0;
     applySettings();
+});
+elsSettings.showCadDir.addEventListener('change', () => {
+    settings.showCadDir = elsSettings.showCadDir.checked;
+    applySettings();
+    if (explorer) {
+        explorer.setShowCadDir(settings.showCadDir);
+        explorer.refresh();
+    }
 });
 elsSettings.uiFont.addEventListener('change', () => {
     settings.uiFont = elsSettings.uiFont.value;
@@ -5754,7 +5862,7 @@ function scratchSwitchEntries() {
     if (!workspaceFolder) return [{label: '（未打开工作区）', disabled: true}];
     // 缓存是上一次刷新时的列表：换过工作区后只认当前草稿目录里的条目
     const rows = scratchSwitchRows.filter((row) => isScratchPath(workspaceFolder, row.path));
-    if (!rows.length) return [{label: '（还没有临时草稿）', disabled: true}];
+    if (!rows.length) return [{label: '（还没有临时文件）', disabled: true}];
     return rows.map((row) => ({
         label: row.name,
         value: scratchMtimeText(row.mtime),
@@ -6235,7 +6343,7 @@ function menuItems(kind) {
             items.push({sep: true},
                 {label: '起名器…', icon: 'sparkles', action: openWritingNameDialog},
                 {label: '插入： 场景分隔符', icon: 'plus', disabled: !file || !!file.binary || !!file.large, action: insertSceneSeparator});
-            // 应用页面（使用统计 / 定时任务 / 操作记录 / 补丁库）：从设置对话框搬出来的
+            // 应用页面（使用统计 / 外部工具 / 定时任务 / 操作记录 / 补丁库）：从设置对话框搬出来的
             // 数据浏览面板，现在各自是一个内容区标签页。清单单一来源 core/app-pages.js；
             // 提示：paletteActions() 会递归展开 submenu，所以命令面板自动就能搜到这几项。
             items.push({sep: true}, {
@@ -7174,6 +7282,8 @@ initActivityBar();
 const bridgeUI = createBridgeUI({
     // 应用页面标签页：pageId → mount(root)，各页内容渲染仍归原域
     get appPageMounters() { return appPageMounters; },
+    // 应用页面标签页里的原生 select 用设置页同款浮层增强，去掉浏览器原生外观
+    get enhanceSetSelects() { return settingsUI.enhanceSetSelects; },
     // 便签终端条目：run 事件订阅（mock/winctl 场景也走这里）与输出清洗（ai 域纯函数经组合根注入）
     get rt() { return rt; },
     get normalizeTermText() { return normalizeTermText; },

@@ -458,10 +458,12 @@ export function createAIMcpSettings(ctx) {
             if (panel) panel.remove();
             return;
         }
-        if (!panel) {
-            panel = document.createElement('div');
-            panel.id = 'ai-opt-mcp-tools';
-        }
+        // 每次重建 panel 节点：panel.innerHTML 只替换子节点、不换 panel 本身，
+        // 复用节点会让下方 4 个按钮与 change 监听逐次叠加（MCP 事件高频触发时持续累积）。
+        // 新建节点让旧节点连同其监听器一起被 GC，是消除累积的最小可靠修法。
+        if (panel) panel.remove();
+        panel = document.createElement('div');
+        panel.id = 'ai-opt-mcp-tools';
         const anchor = row.nextElementSibling && row.nextElementSibling.classList.contains('ai-mcp-diag')
             ? row.nextElementSibling
             : row;

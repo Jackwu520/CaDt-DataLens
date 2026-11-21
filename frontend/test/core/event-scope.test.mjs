@@ -8,7 +8,7 @@ test('范围表：Go 发射的事件全部有分类', () => {
     const expected = [
         'ai-chunk', 'ai-think', 'ai-toolcall', 'ai-done', 'ai-error', 'ai-retry',
         'ai-param-adjust', 'ai-queue',
-        'sched-fire', 'schedules-changed', 'mcp-tools-changed', 'mcp-status-changed',
+        'sched-fire', 'schedules-changed', 'mcp-tools-changed', 'mcp-status-changed', 'settings-changed',
         'ai-timer-fired', 'ai-timer-stopped',
         'workspace-changed', 'resource-changed',
         'confirm-close', 'open-targets', 'app-open-settings', 'app-open-memo', 'app-open-ai-session', 'ai-notify-activate',

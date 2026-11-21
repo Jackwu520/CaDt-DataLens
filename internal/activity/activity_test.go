@@ -374,6 +374,62 @@ func TestActivityConcurrentAppendNoTear(t *testing.T) {
 	}
 }
 
+func TestActivityReadCompositeCursorSameMillisecond(t *testing.T) {
+	withTempDataDir(t)
+	// 同一毫秒 ts=2000 三条，seq 递增；另有一条更早 ts=1000。
+	raw, _ := json.Marshal(activityAppendPayload{Entries: []activityEntry{
+		{TS: 1000, Actor: "user", Action: "file.open", Target: "old", Seq: 1},
+		{TS: 2000, Actor: "user", Action: "file.save", Target: "seq2", Seq: 2},
+		{TS: 2000, Actor: "user", Action: "file.save", Target: "seq3", Seq: 3},
+		{TS: 2000, Actor: "user", Action: "file.save", Target: "seq4", Seq: 4},
+	}})
+	if err := Append(string(raw)); err != nil {
+		t.Fatal(err)
+	}
+	// 第一页取最新 2 条（倒序：seq4、seq3）。
+	out, err := Read(`{"limit":2}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var page1 activityReadResult
+	if err := json.Unmarshal([]byte(out), &page1); err != nil {
+		t.Fatal(err)
+	}
+	if len(page1.Entries) != 2 || page1.Entries[0].Seq != 4 || page1.Entries[1].Seq != 3 {
+		t.Fatalf("第一页 seq 应为 [4,3]，得到 %+v", page1.Entries)
+	}
+	// 复合游标：以第一页最旧一条（ts=2000,seq=3）为游标，下一页应只剩 seq2 与 old，
+	// 不重复 seq3/seq4，也不漏 seq2。
+	oldest := page1.Entries[len(page1.Entries)-1]
+	query := fmt.Sprintf(`{"limit":10,"beforeTs":%d,"beforeSeq":%d}`, oldest.TS, oldest.Seq)
+	out, err = Read(query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var page2 activityReadResult
+	if err := json.Unmarshal([]byte(out), &page2); err != nil {
+		t.Fatal(err)
+	}
+	if len(page2.Entries) != 2 {
+		t.Fatalf("第二页应剩 2 条（seq2 + old），得到 %d：%+v", len(page2.Entries), page2.Entries)
+	}
+	if page2.Entries[0].Seq != 2 || page2.Entries[1].Seq != 1 {
+		t.Errorf("第二页 seq 应为 [2,1]，得到 %+v", page2.Entries)
+	}
+	// 旧的单 beforeTs 游标仍兼容：beforeTs=2000 只返回 ts<2000 的 old 一条。
+	out, err = Read(`{"limit":10,"beforeTs":2000}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var legacy activityReadResult
+	if err := json.Unmarshal([]byte(out), &legacy); err != nil {
+		t.Fatal(err)
+	}
+	if len(legacy.Entries) != 1 || legacy.Entries[0].Seq != 1 {
+		t.Errorf("旧 beforeTs 游标应只返回 old 一条，得到 %+v", legacy.Entries)
+	}
+}
+
 func TestActivityPath(t *testing.T) {
 	withTempDataDir(t)
 	path, err := Path()

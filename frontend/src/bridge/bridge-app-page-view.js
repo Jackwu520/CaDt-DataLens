@@ -1,7 +1,7 @@
 // bridge-app-page-view.js：应用页面在内容区的标签页（「一切皆标签页」的第二族）。
 //
 // 与第一族（子代理详情 / 支线对话 / 便签…）的区别：那族装载「一个具体业务对象」，
-// 这族装载「一个功能页面」（使用统计 / 定时任务 / 操作记录 / 补丁库）。
+// 这族装载「一个功能页面」（使用统计 / 外部工具 / 定时任务 / 操作记录 / 补丁库）。
 // 页面清单与元数据在 core/app-pages.js，内容渲染仍归原域——本模块只负责：
 //   建标签页 → 建容器 → 调该页的 mount(root) → 关标签时调它返回的卸载函数。
 //
@@ -53,6 +53,10 @@ function createAppPageView(doc) {
         return;
     }
     const unmount = mount(root);
+    // 应用页面标签页里的原生 select 走设置页同款浮层增强（.apppage-root select 已在扫描器
+    // 覆盖范围内，只是此前只在切设置页时才调）。mount 后补一次，去掉浏览器原生外观。
+    // 异步渲染的 select（如使用统计的每页条数）由各页自行增强，这里覆盖同步建好的筛选栏。
+    if (typeof deps.enhanceSetSelects === 'function') deps.enhanceSetSelects();
     // 统一卸载契约（closeDocNow 只调这一条）：页面自己退订 / 释放图表实例
     doc.tabUnmount = () => {
         if (typeof unmount === 'function') unmount();

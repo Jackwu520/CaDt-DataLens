@@ -40,7 +40,7 @@ export const TAB_KINDS = [
     {marker: 'agentTeam', kind: 'team', icon: 'agents', label: '智能体团队'},
     {marker: 'sideChat', kind: 'sidechat', icon: 'sidechat', label: '支线对话'},
     {marker: 'groupMember', kind: 'groupmember', icon: 'group', label: '群聊成员'},
-    // 应用页面（使用统计 / 定时任务 / 操作记录 / 补丁库…）：一个类型按 doc.appPage 细分，
+    // 应用页面（使用统计 / 外部工具 / 定时任务 / 操作记录 / 补丁库…）：一个类型按 doc.appPage 细分，
     // 图标与标签从 core/app-pages.js 的注册表取。视图工厂在 bridge 域。
     {marker: 'appPage', kind: 'apppage', icon: 'doc', label: '应用页面',
         resolve: (doc) => {

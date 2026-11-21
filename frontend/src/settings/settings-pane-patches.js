@@ -4,6 +4,12 @@
 //
 // 宿主：2026-11-22 起本页是「应用页面」标签页（core/app-pages.js 的 patches），
 // 由 mount(root) 在标签页容器里建骨架并绑定。原来的设置 → 开发者 内嵌位置已移除。
+//
+// 现代化重设计：卡片列表 + 状态筛选 + 搜索 + 排序 + 详情抽屉（复用 patch-view 的 diff
+// 渲染思路）+ 整行可点打开补丁视图。分页在前端做（Go PatchList 一次取足够多），不改后端契约。
+
+import {createInput, createSelect} from '../core/form-controls.js';
+import {pageHeader, commandBar, filterChips, statusBadge, stateBlock, relativeTime, iconButton, detailDrawer} from '../app-pages/ui-kit.js';
 
 // 状态徽标：文案与色调（tone 决定 CSS class）。未知状态按「未应用」展示原文更保险，
 // 但索引只会有这几种，多余的走 default 兜底。
@@ -69,46 +75,175 @@ export function createSettingsPanePatches(deps) {
     // 当前宿主里的元素（mount 时按 id 在宿主内查询，兼容多宿主的将来）
     let els = {listEl: null, pathEl: null, refreshBtn: null};
     let loading = false;
+    let allPatches = [];            // 一次取回的全量补丁（前端筛选/排序/分页）
+    let patchFilter = {status: 'all', keyword: '', sort: 'time'};
+    let patchPage = 1;
+    const PAGE_SIZE = 30;
+    let openDrawer = null;          // 当前详情抽屉句柄
 
     function root() {
         return typeof deps.root === 'function' ? deps.root() : (deps.root || '');
     }
 
-    function emptyText(text) {
+    function emptyText(text, action) {
         const listEl = els.listEl;
         if (!listEl) return;
         listEl.textContent = '';
-        const empty = document.createElement('div');
-        empty.className = 'patch-store-empty';
-        empty.textContent = text;
-        listEl.appendChild(empty);
+        listEl.appendChild(stateBlock('empty', text, action));
+    }
+
+    // 旧 tone（ok/warn/error/muted）→ ui-kit tone（success/warn/danger/neutral）
+    function toneOf(raw) {
+        return {ok: 'success', warn: 'warn', error: 'danger', muted: 'neutral'}[raw] || 'neutral';
+    }
+
+    // 在补丁视图中打开（复用 backend.PatchPreviewFile 契约，由宿主 openPatchFile 建标签页）
+    function openPatch(meta) {
+        if (!meta || !meta.patchPath) return deps.flash('该补丁没有可预览的文件', true);
+        if (typeof deps.openPatchFile === 'function') deps.openPatchFile(meta.patchPath, root());
+        else deps.flash('当前宿主不支持打开补丁视图', true);
+    }
+
+    // 详情抽屉：展示补丁元信息 + 文件列表 + 操作（打开视图 / 撤销 / 删除）
+    function showDetail(meta) {
+        if (openDrawer) { openDrawer.close(); openDrawer = null; }
+        const body = document.createElement('div');
+        body.className = 'ap-patch-detail';
+        const label = patchStatusLabel(meta.status);
+        body.appendChild(statusBadge(label.text, toneOf(label.tone)));
+        const rows = [
+            ['摘要', meta.summary || '—'],
+            ['创建时间', relativeTime(Number(meta.createdAt) * 1000) + '（' + patchTimeText(meta.createdAt) + '）'],
+            ['文件数', String((meta.files || []).length)],
+            ['增删', '+' + (meta.added || 0) + ' −' + (meta.removed || 0)],
+            ['存储路径', meta.patchPath || '—'],
+        ];
+        if (meta.appliedAt) rows.push(['应用时间', relativeTime(Number(meta.appliedAt) * 1000)]);
+        if (meta.revertedAt) rows.push(['撤销时间', relativeTime(Number(meta.revertedAt) * 1000)]);
+        for (const [k, v] of rows) {
+            const line = document.createElement('div');
+            line.className = 'ap-detail-kv';
+            const key = document.createElement('span');
+            key.className = 'ap-detail-k';
+            key.textContent = k;
+            const val = document.createElement('span');
+            val.className = 'ap-detail-v';
+            val.textContent = v;
+            val.dataset.tip = v;
+            line.append(key, val);
+            body.appendChild(line);
+        }
+        if ((meta.files || []).length) {
+            const filesTitle = document.createElement('div');
+            filesTitle.className = 'ap-detail-section';
+            filesTitle.textContent = '文件列表';
+            body.appendChild(filesTitle);
+            const files = document.createElement('div');
+            files.className = 'ap-patch-files';
+            for (const f of meta.files) {
+                const fRow = document.createElement('div');
+                fRow.className = 'ap-patch-file';
+                fRow.textContent = f;
+                fRow.dataset.tip = f;
+                files.appendChild(fRow);
+            }
+            body.appendChild(files);
+        }
+        const actions = document.createElement('div');
+        actions.className = 'ap-detail-actions';
+        actions.appendChild(iconButton({icon: 'doc', tip: '在补丁视图中打开（可应用/撤销）', label: '打开视图', onClick: () => openPatch(meta)}));
+        if (meta.status === 'applied' && typeof deps.backend.PatchRevert === 'function') {
+            actions.appendChild(iconButton({
+                icon: 'restore', tip: '从备份撤销这份补丁', label: '撤销', danger: true,
+                onClick: () => deps.openConfirmDialog('撤销补丁「' + (meta.summary || meta.id) + '」并从备份还原文件？', async () => {
+                    try {
+                        const res = await deps.backend.PatchRevert(meta.id, root(), 'abort');
+                        deps.flash(res && res.ok ? '补丁已撤销' : ('撤销失败：' + ((res && res.message) || '未知原因')), !(res && res.ok));
+                        if (openDrawer) { openDrawer.close(); openDrawer = null; }
+                        refreshPatchStore();
+                    } catch (e) {
+                        deps.flash('撤销失败：' + ((e && e.message) || e), true);
+                    }
+                }, '撤销', '撤销补丁', 'danger'),
+            }));
+        }
+        actions.appendChild(iconButton({icon: 'trash', tip: '删除补丁（进回收站，已应用项无法再撤销）', label: '删除', danger: true, onClick: () => {
+            if (openDrawer) { openDrawer.close(); openDrawer = null; }
+            deletePatchRecord(meta);
+        }}));
+        body.appendChild(actions);
+
+        const drawer = detailDrawer({title: meta.summary || '补丁详情', onClose: () => { if (openDrawer === drawer) openDrawer = null; }, content: body});
+        openDrawer = drawer;
+        // 抽屉挂到当前标签的可视容器（apppage-pane），保证定位与 z-index 生效
+        const hostPane = els.listEl && els.listEl.closest('.apppage-pane');
+        (hostPane || document.body).appendChild(drawer.element);
     }
 
     function buildRow(meta) {
         const row = document.createElement('div');
         row.className = 'patch-store-row';
+        row.dataset.tip = '点击查看补丁详情';
 
         const time = document.createElement('span');
         time.className = 'ps-time';
-        time.textContent = patchTimeText(meta.createdAt);
+        time.textContent = relativeTime(Number(meta.createdAt) * 1000);
+        time.dataset.tip = patchTimeText(meta.createdAt);
 
         const label = patchStatusLabel(meta.status);
-        const badge = document.createElement('span');
-        badge.className = 'ps-badge ps-badge-' + label.tone;
-        badge.textContent = label.text;
+        row.appendChild(statusBadge(label.text, toneOf(label.tone)));
 
         const summary = document.createElement('span');
         summary.className = 'ps-summary';
         summary.textContent = patchRowTitle(meta);
+        summary.dataset.tip = summary.textContent;
 
-        const del = document.createElement('button');
-        del.type = 'button';
-        del.className = 'dlg-btn ps-del';
-        del.textContent = '删除';
-        del.addEventListener('click', () => deletePatchRecord(meta));
+        const openBtn = iconButton({icon: 'doc', tip: '打开补丁视图', onClick: (e) => { e.stopPropagation(); openPatch(meta); }});
+        const del = iconButton({icon: 'trash', tip: '删除补丁', danger: true, onClick: (e) => { e.stopPropagation(); deletePatchRecord(meta); }});
+        const actions = document.createElement('span');
+        actions.className = 'ps-actions';
+        actions.append(openBtn, del);
 
-        row.append(time, badge, summary, del);
+        row.append(time, summary, actions);
+        row.addEventListener('click', () => showDetail(meta));
         return row;
+    }
+
+    function filteredPatches() {
+        let list = allPatches.slice();
+        if (patchFilter.status !== 'all') list = list.filter((m) => m.status === patchFilter.status);
+        if (patchFilter.keyword) {
+            const kw = patchFilter.keyword.toLowerCase();
+            list = list.filter((m) => (String(m.summary || '') + ' ' + (m.files || []).join(' ')).toLowerCase().includes(kw));
+        }
+        if (patchFilter.sort === 'size') list.sort((a, b) => (b.added + b.removed) - (a.added + a.removed));
+        else list.sort((a, b) => Number(b.createdAt) - Number(a.createdAt));
+        return list;
+    }
+
+    function paintList() {
+        const listEl = els.listEl;
+        if (!listEl) return;
+        const rows = filteredPatches();
+        if (!rows.length) {
+            emptyText(allPatches.length ? '没有符合条件的补丁' : '还没有补丁记录');
+            return;
+        }
+        const start = (patchPage - 1) * PAGE_SIZE;
+        const pageRows = rows.slice(start, start + PAGE_SIZE);
+        listEl.textContent = '';
+        const frag = document.createDocumentFragment();
+        for (const meta of pageRows) frag.appendChild(buildRow(meta));
+        listEl.appendChild(frag);
+        if (rows.length > PAGE_SIZE) {
+            const foot = document.createElement('div');
+            foot.className = 'ap-patch-foot';
+            foot.textContent = '共 ' + rows.length + ' 条 · 第 ' + patchPage + '/' + Math.ceil(rows.length / PAGE_SIZE) + ' 页';
+            const prev = iconButton({icon: 'chevron-left', tip: '上一页', onClick: () => { if (patchPage > 1) { patchPage--; paintList(); } }});
+            const next = iconButton({icon: 'chevron-right', tip: '下一页', onClick: () => { if (patchPage < Math.ceil(rows.length / PAGE_SIZE)) { patchPage++; paintList(); } }});
+            foot.append(prev, next);
+            listEl.appendChild(foot);
+        }
     }
 
     async function refreshPatchStore() {
@@ -130,15 +265,11 @@ export function createSettingsPanePatches(deps) {
                     els.pathEl.textContent = '存储目录：—';
                 }
             }
-            const list = await deps.backend.PatchList(dir, 50);
-            if (!Array.isArray(list) || !list.length) {
-                emptyText('还没有补丁记录');
-                return;
-            }
-            listEl.textContent = '';
-            const frag = document.createDocumentFragment();
-            for (const meta of list) frag.appendChild(buildRow(meta));
-            listEl.appendChild(frag);
+            // 一次取足够多（500），前端做筛选/排序/分页，不改 Go 绑定签名
+            const list = await deps.backend.PatchList(dir, 500);
+            allPatches = Array.isArray(list) ? list : [];
+            patchPage = 1;
+            paintList();
         } catch (e) {
             emptyText('读取失败：' + ((e && e.message) || e));
         } finally {
@@ -167,18 +298,56 @@ export function createSettingsPanePatches(deps) {
     // 返回卸载函数（关标签时由 doc.tabUnmount 调用）。
     function mount(host) {
         if (!host) return null;
-        host.innerHTML = patchStoreSkeleton();
-        els = {
-            listEl: host.querySelector('#patch-store-list'),
-            pathEl: host.querySelector('#patch-store-path'),
-            refreshBtn: host.querySelector('#patch-store-refresh'),
-        };
-        const onRefresh = () => refreshPatchStore();
-        if (els.refreshBtn) els.refreshBtn.addEventListener('click', onRefresh);
+        host.textContent = '';
+
+        const refreshBtn = document.createElement('button');
+        refreshBtn.type = 'button';
+        refreshBtn.className = 'dlg-btn';
+        refreshBtn.textContent = '刷新';
+        refreshBtn.addEventListener('click', () => refreshPatchStore());
+        const pathEl = document.createElement('div');
+        pathEl.className = 'ap-patch-path';
+        pathEl.textContent = '存储目录：—';
+        host.appendChild(pageHeader({
+            title: '补丁库',
+            desc: 'AI 提交过的补丁（.cadt/patches）。点行查看详情，可打开补丁视图应用/撤销；删除会送回收站。',
+            actions: [refreshBtn],
+        }));
+        host.appendChild(pathEl);
+
+        const chips = filterChips({
+            items: [
+                {value: 'all', label: '全部'},
+                {value: 'applied', label: '已应用'},
+                {value: 'unapplied', label: '未应用'},
+                {value: 'failed', label: '失败'},
+                {value: 'reverted', label: '已撤销'},
+            ],
+            value: patchFilter.status,
+            onChange: (v) => { patchFilter.status = v; patchPage = 1; paintList(); },
+        });
+        const sortCtl = createSelect({
+            options: [{value: 'time', label: '按时间'}, {value: 'size', label: '按改动量'}],
+            onChange: () => { patchFilter.sort = sortCtl.value; patchPage = 1; paintList(); },
+        }).control;
+        const bar = commandBar({
+            placeholder: '搜索摘要或文件路径',
+            onSearch: (v) => { patchFilter.keyword = v; patchPage = 1; paintList(); },
+            filters: [chips.element, sortCtl],
+        });
+        host.appendChild(bar.element);
+
+        const listEl = document.createElement('div');
+        listEl.className = 'patch-store-list';
+        listEl.id = 'patch-store-list';
+        host.appendChild(listEl);
+        els = {listEl, pathEl, refreshBtn};
         refreshPatchStore();
         return () => {
-            if (els.refreshBtn) els.refreshBtn.removeEventListener('click', onRefresh);
+            if (openDrawer) { openDrawer.close(); openDrawer = null; }
+            if (typeof bar.destroy === 'function') bar.destroy();
             els = {listEl: null, pathEl: null, refreshBtn: null};
+            allPatches = [];
         };
     }
 

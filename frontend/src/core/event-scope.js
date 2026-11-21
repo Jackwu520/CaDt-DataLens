@@ -25,6 +25,12 @@ export const EVENT_SCOPES = Object.freeze({
     'schedules-changed': 'app',
     'mcp-tools-changed': 'app',
     'mcp-status-changed': 'app',
+    // 设置变更广播（多窗口）：任一窗口改设置后发全量快照，其他窗口原地合并内存副本并重绘。
+    // app 级不按 sender 过滤——发出的窗口自己也收，接收方按值比较，无变化即跳过（幂等）。
+    'settings-changed': 'app',
+    // 桌面授权单飞广播（desktop-mcp.md §13.3-2）：payload {sessionId, title} 或 {sessionId: null}，
+    // 各窗口整表替换持有者副本，被挤掉的本地会话由面板投递通知
+    'desktop-grant-changed': 'app',
     'ai-timer-fired': 'app',
     'ai-timer-stopped': 'app',
     // 终端独立窗口关闭：payload.target 指定由哪个主窗口把会话接回去

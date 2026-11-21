@@ -21,12 +21,37 @@ function createMarkdownPreview(doc) {
     doc.previewEl = wrap;
     doc.previewScroll = scroll;
     doc.previewBody = body;
+    // 纯预览模式的滚动持久化：无论是否分屏，用户滚动都记进 doc.previewScrollTop，
+    // 切标签回来能恢复（分屏时 hookPreviewScrollSync 会接管，这里只处理纯预览）。
+    scroll.addEventListener('scroll', () => {
+        if (doc.splitActive && doc.splitKind === 'markdown') return;
+        doc.previewScrollTop = Math.round(scroll.scrollTop || 0);
+    });
     wrap.addEventListener('click', (e) => {
         const a = e.target.closest('a');
         if (!a) return;
         const href = a.getAttribute('href') || '';
-        if (!href || href.startsWith('#')) return;
+        if (!href) return;
+        // 一律 preventDefault：否则 Ctrl/中键点击会让 WebView2 把相对 URL（如 #锚点）
+        // 解析成 wails.localhost/#... 交给系统浏览器，报 ERR_CONNECTION_REFUSED。
         e.preventDefault();
+        if (href.startsWith('#')) {
+            // 文内锚点：在预览滚动容器内自行定位，不走浏览器 hash 导航。
+            let id = href.slice(1);
+            try { id = decodeURIComponent(id); } catch (_) {}
+            let target = null;
+            try {
+                target = doc.previewBody.querySelector('[id="' + id.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"]');
+            } catch (_) {}
+            if (target && doc.previewScroll) {
+                const top = target.getBoundingClientRect().top
+                    - doc.previewScroll.getBoundingClientRect().top
+                    + doc.previewScroll.scrollTop;
+                doc.previewScroll.scrollTop = top;
+                doc.previewScrollTop = Math.round(top);
+            }
+            return;
+        }
         if (!/^(https?:|mailto:)/i.test(href)) return;
         if (deps.rt && deps.rt.BrowserOpenURL) deps.rt.BrowserOpenURL(href);
         else window.open(href, '_blank', 'noopener');
@@ -35,7 +60,9 @@ function createMarkdownPreview(doc) {
 
 function renderMarkdownPreview(doc, opts = {}) {
     if (!doc || !doc.editor || !doc.previewBody) return;
-    const scrollTop = doc.previewScroll ? doc.previewScroll.scrollTop : 0;
+    // doc.previewScrollTop 是预览滚动的持久真源（存 doc 上，不依赖 DOM）。
+    // 切标签时 pane 被摘除插回会让 DOM scrollTop 归零，所以恢复要用它，不能读当前 DOM。
+    const scrollTop = Number.isFinite(doc.previewScrollTop) ? doc.previewScrollTop : 0;
     try {
         const patched = !!(opts.incremental && deps.patchMarkdownPreview(doc));
         if (!patched) doc.previewBody.innerHTML = deps.renderMarkdownBlocksHtml(doc.editor.getText());
@@ -44,8 +71,30 @@ function renderMarkdownPreview(doc, opts = {}) {
         doc.previewBody.textContent = 'Markdown 渲染失败：' + e.message;
     }
     if (doc.previewScroll) doc.previewScroll.scrollTop = scrollTop;
-    mdSyncScrollFromAce(doc);
+    // 分屏时以 Ace 滚动为真源做对齐；纯预览模式保持上面的持久滚动位置。
+    if (doc.splitActive && doc.splitKind === 'markdown') mdSyncScrollFromAce(doc);
     deps.renderMermaidBlocks(doc.previewBody);
+}
+
+// 切标签回来、DOM 布局稳定后恢复预览滚动：纯预览用持久值，分屏用 Ace 滚动对齐。
+// 供 editor-groups 的 activateDoc 在 ace.resize() 之后调用——此时 scrollHeight 已就绪，
+// mdSyncScrollFromAce 才能算出正确的 max。
+function restorePreviewScroll(doc) {
+    if (!doc || !doc.previewScroll) return;
+    if (doc.splitActive && doc.splitKind === 'markdown') {
+        mdSyncScrollFromAce(doc);
+        return;
+    }
+    if (Number.isFinite(doc.previewScrollTop)) {
+        try { doc.previewScroll.scrollTop = doc.previewScrollTop; } catch (e) {}
+    }
+}
+
+// 切走标签前把预览滚动位置存进 doc（DOM 摘除插回会归零，必须先存）。
+function capturePreviewScroll(doc) {
+    if (!doc || !doc.previewScroll) return;
+    // 调用方只对活动（可见）doc 调用，DOM scrollTop 有效，可无条件存（含滚回顶部的 0）
+    doc.previewScrollTop = Math.round(doc.previewScroll.scrollTop || 0);
 }
 
 function showMarkdownPreview(doc) {
@@ -151,7 +200,8 @@ function ensureSplitDivider(doc) {
             deps.setDragCursor(null);
             document.body.style.userSelect = '';
             deps.settings.splitRatio = doc.splitRatio;
-            try { localStorage.setItem(deps.settingsKey, JSON.stringify(deps.settings)); } catch (err) {}
+            // 轻量落盘出口：splitRatio 是每窗独立键，广播到对端会被剥掉，但出口必须统一
+            deps.persistSettingsLight();
         };
         window.addEventListener('mousemove', move);
         window.addEventListener('mouseup', up);
@@ -185,6 +235,7 @@ function mdSyncScrollFromAce(doc) {
     if (max <= 0) return;
     doc._previewEcho = Math.round(ratio * max);
     scroll.scrollTop = doc._previewEcho;
+    doc.previewScrollTop = doc._previewEcho;
 }
 
 // 反方向：预览滚动 → 源码跟随。该内核 session.setScrollTop 收像素
@@ -1276,6 +1327,8 @@ function enterTextView(doc) {
     return {
         createMarkdownPreview,
         renderMarkdownPreview,
+        restorePreviewScroll,
+        capturePreviewScroll,
         showMarkdownPreview,
         hideMarkdownPreview,
         enterMarkdownPreview,

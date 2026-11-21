@@ -203,7 +203,8 @@ function toggleStructureSource() {
     if (!deps.structurePanel) return;
     const next = deps.structurePanel.getSource() === 'session' ? 'file' : 'session';
     deps.settings.structureSource = next;
-    try { localStorage.setItem(deps.settingsKey, JSON.stringify(deps.settings)); } catch (e) {}
+    // 轻量落盘出口：structureSource 是每窗独立键，广播到对端会被剥掉，但出口必须统一
+    deps.persistSettingsLight();
     const effective = deps.structurePanel.setSource(next);
     syncStructureChrome(effective, structureSources());
 }
@@ -244,7 +245,7 @@ function showStructureExportMenu() {
 
 function toggleStructureExportLineNums() {
     deps.settings.structureExportLineNums = !deps.settings.structureExportLineNums;
-    try { localStorage.setItem(deps.settingsKey, JSON.stringify(deps.settings)); } catch (e) {}
+    deps.persistSettingsLight(); // 偏好键：广播后别的窗口内存副本才不会停在旧值
     showStructureExportMenu();
 }
 

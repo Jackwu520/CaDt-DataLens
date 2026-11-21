@@ -7,6 +7,9 @@
 // 依赖一律经 deps 延迟求值（调用方传 getter），不在创建期解构：
 // 这样既不依赖 main.js 的声明顺序，也不会把 let 状态拍成快照。
 
+import {createSelect} from '../core/form-controls.js';
+import {pageHeader, commandBar, stateBlock, copyButton, relativeTime, formatFullTime} from '../app-pages/ui-kit.js';
+
 // 页面骨架：筛选栏 + 列表 + 状态 + 加载更早 + 记录管理动作。
 // id 与原设置页保持一致（渲染函数按 id 在宿主内查询）。
 export function activitySkeleton() {
@@ -59,8 +62,14 @@ export function createActivityPane(deps) {
 
 let hostEl = null;
 
-const activityView = {entries: [], truncated: false, oldestTs: 0, loading: false};
+const activityView = {entries: [], truncated: false, oldestTs: 0, oldestSeq: 0, loading: false};
 const ACTIVITY_PAGE_SIZE = 200;
+// 动作域 → 中文名（列表显示中文，导出仍保留原始 action）
+const ACTIVITY_ACTION_LABEL = {
+    file: '文件', tab: '标签页', workspace: '工作区', view: '视图',
+    settings: '设置', plugin: '插件', ai: 'AI', app: '应用',
+    storage: '存储', activity: '记录',
+};
 
 function node(id) {
     return hostEl ? hostEl.querySelector('#' + id) : document.getElementById(id);
@@ -84,31 +93,35 @@ async function renderActivityPane(opts = {}) {
     if (!listEl || activityView.loading) return;
     if (!deps.backend.ActivityRead) {
         listEl.textContent = '';
-        const empty = document.createElement('div');
-        empty.className = 'activity-empty';
-        empty.textContent = '当前版本不支持操作记录（旧版后端）';
-        listEl.appendChild(empty);
+        listEl.appendChild(stateBlock('info', '当前版本不支持操作记录（旧版后端）'));
         return;
     }
     activityView.loading = true;
     try {
         const query = {limit: ACTIVITY_PAGE_SIZE, ...activityFilterOf()};
-        if (opts.append && activityView.oldestTs > 0) query.beforeTs = activityView.oldestTs;
+        // 复合游标 ts+seq：同毫秒多条时精确切页，不重复/不漏
+        if (opts.append && activityView.oldestTs > 0) {
+            query.beforeTs = activityView.oldestTs;
+            if (activityView.oldestSeq > 0) query.beforeSeq = activityView.oldestSeq;
+        }
         const parsed = JSON.parse(await deps.backend.ActivityRead(JSON.stringify(query)));
         const entries = Array.isArray(parsed.entries) ? parsed.entries : [];
         activityView.entries = opts.append ? activityView.entries.concat(entries) : entries;
         activityView.truncated = !!parsed.truncated;
         const last = activityView.entries[activityView.entries.length - 1];
         activityView.oldestTs = last && last.ts ? last.ts : 0;
+        activityView.oldestSeq = last && last.seq ? last.seq : 0;
         renderActivityList(listEl);
         if (statusEl) {
             statusEl.textContent = activityView.entries.length
-                ? '已加载 ' + activityView.entries.length + ' 条（新→旧）' + (activityView.truncated ? '；可能还有更早记录' : '')
+                ? '已加载 ' + activityView.entries.length + ' 条（新→旧）' + (activityView.truncated ? '；可加载更早记录' : '；已到最早')
                 : '暂无记录（功能未开启或近期没有操作）';
         }
         if (moreBtn) moreBtn.classList.toggle('hidden', !activityView.entries.length || !activityView.truncated);
     } catch (e) {
-        if (statusEl) statusEl.textContent = '读取失败：' + ((e && e.message) || e);
+        listEl.textContent = '';
+        listEl.appendChild(stateBlock('error', '读取失败：' + ((e && e.message) || e)));
+        if (statusEl) statusEl.textContent = '';
     } finally {
         activityView.loading = false;
     }
@@ -116,24 +129,36 @@ async function renderActivityPane(opts = {}) {
 
 const ACTIVITY_ACTOR_LABEL = {user: '用户', ai: 'AI', system: '系统'};
 
-function activityTimeText(ts) {
-    const d = new Date(ts || 0);
-    if (!d.getTime()) return '—';
-    const pad = (n) => String(n).padStart(2, '0');
-    return (d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+function actionLabel(action) {
+    const text = String(action || '');
+    const domain = text.split('.')[0];
+    const zh = ACTIVITY_ACTION_LABEL[domain];
+    return zh ? zh + ' · ' + text.slice(domain.length + 1) : text;
+}
+
+// 格式化 detail：逐行缩进的 JSON（键值着色交给 CSS），替代裸 JSON.stringify 撑乱 flex 行。
+function formatDetail(detail) {
+    if (!detail || typeof detail !== 'object' || !Object.keys(detail).length) return '';
+    try { return JSON.stringify(detail, null, 2); } catch (e) { return String(detail); }
 }
 
 function renderActivityList(listEl) {
     listEl.textContent = '';
     if (!activityView.entries.length) {
-        const empty = document.createElement('div');
-        empty.className = 'activity-empty';
-        empty.textContent = '暂无记录';
-        listEl.appendChild(empty);
+        listEl.appendChild(stateBlock('empty', '暂无记录（功能未开启或近期没有操作）'));
         return;
     }
     const frag = document.createDocumentFragment();
+    let lastDay = '';
     for (const entry of activityView.entries) {
+        const day = new Date(entry.ts || 0).toLocaleDateString();
+        if (day !== lastDay) {
+            lastDay = day;
+            const group = document.createElement('div');
+            group.className = 'act-day-group';
+            group.textContent = day;
+            frag.appendChild(group);
+        }
         frag.appendChild(buildActivityRow(entry));
     }
     listEl.appendChild(frag);
@@ -145,7 +170,8 @@ function buildActivityRow(entry) {
 
     const time = document.createElement('span');
     time.className = 'act-time';
-    time.textContent = activityTimeText(entry.ts);
+    time.textContent = relativeTime(entry.ts);
+    time.dataset.tip = formatFullTime(entry.ts);
 
     const badge = document.createElement('span');
     badge.className = 'act-badge act-badge-' + (ACTIVITY_ACTOR_LABEL[entry.actor] ? entry.actor : 'system');
@@ -153,29 +179,39 @@ function buildActivityRow(entry) {
 
     const action = document.createElement('span');
     action.className = 'act-action';
-    action.textContent = entry.action || '?';
+    action.textContent = actionLabel(entry.action);
+    action.dataset.tip = entry.action || '';
 
     const target = document.createElement('span');
     target.className = 'act-target';
     target.textContent = entry.target || '';
+    target.dataset.tip = entry.target || '';
 
     row.append(time, badge, action, target);
 
-    const detailText = entry.detail && Object.keys(entry.detail).length ? JSON.stringify(entry.detail) : '';
+    const detailText = formatDetail(entry.detail);
     if (detailText) {
         const toggle = document.createElement('button');
         toggle.type = 'button';
         toggle.className = 'act-detail-btn dlg-btn';
+        toggle.dataset.tip = '展开/收起详情';
         toggle.textContent = '详情';
-        const detail = document.createElement('div');
+        const detail = document.createElement('pre');
         detail.className = 'act-detail hidden';
         detail.textContent = detailText;
         toggle.addEventListener('click', () => {
-            detail.classList.toggle('hidden');
-            toggle.textContent = detail.classList.contains('hidden') ? '详情' : '收起';
+            const hidden = detail.classList.toggle('hidden');
+            toggle.textContent = hidden ? '详情' : '收起';
         });
-        row.appendChild(toggle);
-        row.appendChild(detail);
+        // 操作按钮包进一个格子（grid 第 5 列），否则详情钮+复制钮各占一列会挤掉对齐：
+        // 无详情行只有 5 个子元素，有详情行若直接 append 两个按钮会变成 7 个，复制钮掉到下一行。
+        const ops = document.createElement('span');
+        ops.className = 'act-ops';
+        ops.append(toggle, copyButton(() => detailText, {flash: deps.flash, tip: '复制详情'}));
+        row.append(ops, detail);
+    } else {
+        // 无详情也占位，保持列对齐
+        row.appendChild(document.createElement('span'));
     }
     return row;
 }
@@ -263,31 +299,115 @@ function clearActivity() {
 // 返回卸载函数：摘掉监听并清空缓存，避免关标签后状态与 DOM 一起泄漏。
 function mount(host) {
     if (!host) return null;
-    host.innerHTML = activitySkeleton();
+    host.textContent = '';
+
+    // 页头：主操作区 = 去设置 / 打开目录 / 导出 JSON / 导出 CSV / 清空
+    const goSettings = document.createElement('button');
+    goSettings.type = 'button';
+    goSettings.className = 'dlg-btn';
+    goSettings.dataset.tip = '启用开关与保留月数仍在 设置 → 通用 → 操作记录';
+    goSettings.textContent = '去设置';
+    if (typeof deps.openActivitySettings === 'function') {
+        goSettings.addEventListener('click', () => deps.openActivitySettings());
+    } else {
+        goSettings.classList.add('hidden');
+    }
+    const openDirBtn = document.createElement('button');
+    openDirBtn.type = 'button';
+    openDirBtn.className = 'dlg-btn';
+    openDirBtn.textContent = '打开目录';
+    openDirBtn.addEventListener('click', openActivityDir);
+    const exportJsonBtn = document.createElement('button');
+    exportJsonBtn.type = 'button';
+    exportJsonBtn.className = 'dlg-btn';
+    exportJsonBtn.textContent = '导出 JSON';
+    exportJsonBtn.addEventListener('click', () => exportActivityRecords('json'));
+    const exportCsvBtn = document.createElement('button');
+    exportCsvBtn.type = 'button';
+    exportCsvBtn.className = 'dlg-btn';
+    exportCsvBtn.textContent = '导出 CSV';
+    exportCsvBtn.addEventListener('click', () => exportActivityRecords('csv'));
+    const clearBtn = document.createElement('button');
+    clearBtn.type = 'button';
+    clearBtn.className = 'dlg-btn';
+    clearBtn.textContent = '清空…';
+    clearBtn.addEventListener('click', clearActivity);
+    host.appendChild(pageHeader({
+        title: '操作记录',
+        desc: '用户与 AI 的操作留痕（只记摘要，不记文件内容）。筛选后导出与列表同源。',
+        actions: [goSettings, openDirBtn, exportJsonBtn, exportCsvBtn, clearBtn],
+    }));
+
+    // 命令栏：动作域 / 来源下拉 + 关键字搜索（防抖 200ms）+ 清空筛选
+    const domainCtl = createSelect({
+        id: 'activity-filter-domain',
+        options: [['', '全部动作'], ['file', '文件'], ['tab', '标签页'], ['workspace', '工作区'], ['view', '视图'], ['settings', '设置'], ['plugin', '插件'], ['ai', 'AI'], ['app', '应用'], ['storage', '存储'], ['activity', '记录管理']]
+            .map(([value, label]) => ({value, label})),
+    }).control;
+    const actorCtl = createSelect({
+        id: 'activity-filter-actor',
+        options: [['', '全部来源'], ['user', '用户'], ['ai', 'AI'], ['system', '系统']]
+            .map(([value, label]) => ({value, label})),
+    }).control;
+    const clearFilterBtn = document.createElement('button');
+    clearFilterBtn.type = 'button';
+    clearFilterBtn.className = 'dlg-btn';
+    clearFilterBtn.dataset.tip = '清除全部筛选条件';
+    clearFilterBtn.textContent = '清除筛选';
+    clearFilterBtn.addEventListener('click', () => {
+        domainCtl.value = '';
+        actorCtl.value = '';
+        bar.setSearch('', true);
+    });
+    const refreshBtn = document.createElement('button');
+    refreshBtn.type = 'button';
+    refreshBtn.className = 'dlg-btn';
+    refreshBtn.textContent = '刷新';
+    refreshBtn.addEventListener('click', () => renderActivityPane());
+    const bar = commandBar({
+        placeholder: '关键字（动作 / 对象 / 详情）',
+        onSearch: () => renderActivityPane(),
+        filters: [domainCtl, actorCtl, clearFilterBtn, refreshBtn],
+    });
+    // commandBar 自己带搜索框；给隐藏的旧 keyword input 一个 id 兼容 activityFilterOf
+    bar.input.id = 'activity-filter-keyword';
+    host.appendChild(bar.element);
+
+    // 表头 + 列表 + 状态 + 加载更早
+    const head = document.createElement('div');
+    head.className = 'act-thead';
+    for (const label of ['时间', '来源', '动作', '对象', '详情']) {
+        const cell = document.createElement('span');
+        cell.textContent = label;
+        head.appendChild(cell);
+    }
+    host.appendChild(head);
+    const listEl = document.createElement('div');
+    listEl.className = 'activity-list';
+    listEl.id = 'activity-list';
+    host.appendChild(listEl);
+    const statusEl = document.createElement('div');
+    statusEl.className = 'act-status';
+    statusEl.id = 'activity-list-status';
+    host.appendChild(statusEl);
+    const moreBtn = document.createElement('button');
+    moreBtn.type = 'button';
+    moreBtn.className = 'dlg-btn hidden';
+    moreBtn.id = 'activity-more';
+    moreBtn.textContent = '加载更早记录';
+    moreBtn.addEventListener('click', () => renderActivityPane({append: true}));
+    host.appendChild(moreBtn);
+
     hostEl = host;
-    const bind = (id, event, handler) => {
-        const el = host.querySelector('#' + id);
-        if (!el) return null;
-        el.addEventListener(event, handler);
-        return () => el.removeEventListener(event, handler);
-    };
-    const offs = [
-        bind('activity-filter-domain', 'change', () => renderActivityPane()),
-        bind('activity-filter-actor', 'change', () => renderActivityPane()),
-        bind('activity-filter-keyword', 'keydown', (e) => { if (e.key === 'Enter') renderActivityPane(); }),
-        bind('activity-refresh', 'click', () => renderActivityPane()),
-        bind('activity-more', 'click', () => renderActivityPane({append: true})),
-        bind('opt-open-activity', 'click', openActivityDir),
-        bind('opt-export-activity-json', 'click', () => exportActivityRecords('json')),
-        bind('opt-export-activity-csv', 'click', () => exportActivityRecords('csv')),
-        bind('opt-clear-activity', 'click', clearActivity),
-    ].filter(Boolean);
+    domainCtl.addEventListener('change', () => renderActivityPane());
+    actorCtl.addEventListener('change', () => renderActivityPane());
     renderActivityPane();
     return () => {
-        for (const off of offs) off();
+        if (typeof bar.destroy === 'function') bar.destroy();
         hostEl = null;
         activityView.entries = [];
         activityView.oldestTs = 0;
+        activityView.oldestSeq = 0;
         activityView.truncated = false;
     };
 }

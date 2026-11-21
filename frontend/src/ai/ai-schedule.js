@@ -2,6 +2,8 @@
 // 从 ai-panel.js 拆出（docs/unfinished-plans/structure-cleanup.md 阶段 3），函数体逐字搬移；
 // sessions 为重赋值 let 且模块内只读，经 getSessions() 访问。
 import {iconSvg} from '../core/icons.js';
+import {createInput, createSelect, createTextarea} from '../core/form-controls.js';
+import {pageHeader, commandBar, filterChips, statusBadge, stateBlock, relativeTime} from '../app-pages/ui-kit.js';
 import {describeAISchedule, aiFormatLocalMs, aiClampInt, aiTextOf} from './ai-constants.js';
 
 export function createAISchedule(ctx) {
@@ -14,6 +16,7 @@ export function createAISchedule(ctx) {
     const openAIDialog = ctx.openAIDialog;
     const closeAIDialog = ctx.closeAIDialog;
     const dialogButton = ctx.dialogButton;
+    const enhanceSelect = typeof ctx.enhanceSelect === 'function' ? ctx.enhanceSelect : null;
     const sessionTitleById = ctx.sessionTitleById;
     const sessionActivity = ctx.sessionActivity;
     const currentSession = ctx.currentSession;
@@ -28,6 +31,8 @@ export function createAISchedule(ctx) {
     const sendAppMessage = ctx.sendAppMessage;
     // 会话信箱（阶段 I）：定时任务改成「一个通知发送方」——与子代理结算走同一条注入管道
     const deliverAgentNotice = typeof ctx.deliverAgentNotice === 'function' ? ctx.deliverAgentNotice : null;
+    // 打开定时任务管理的统一出口（虚拟标签页改造后开应用页面标签页，悬浮窗降级回对话框）
+    const openSchedulesPage = typeof ctx.openSchedulesPage === 'function' ? ctx.openSchedulesPage : null;
 
     // ---- 应用页面：定时任务（core/app-pages.js 的 schedules）----
     // host 由应用页面标签页传入（视图工厂 bridge-app-page-view 调 mount）；
@@ -51,15 +56,21 @@ export function createAISchedule(ctx) {
         }
         Promise.resolve(backend.AIScheduleList()).then((list) => {
             if (!target.isConnected) return;
+            schedCache = Array.isArray(list) ? list : [];
             target.innerHTML = '';
-            if (!list || !list.length) {
+            // 应用页表格容器走筛选/表格行；弹层与对话框仍用窄列表行
+            if (target.classList.contains('ap-sched-table')) {
+                paintScheduleTable(target);
+                return;
+            }
+            if (!schedCache.length) {
                 const empty = document.createElement('span');
                 empty.className = 'ai-pref-empty';
                 empty.textContent = '（暂无任务）';
                 target.appendChild(empty);
                 return;
             }
-            for (const s of list) {
+            for (const s of schedCache) {
                 target.appendChild(renderScheduleRow(s));
             }
         }).catch((e) => {
@@ -67,34 +78,158 @@ export function createAISchedule(ctx) {
         });
     }
 
-    // 应用页面标签页的挂载入口：建骨架（说明 + 列表容器 + 新建按钮）→ 绑定 → 首次渲染。
-    // 注意 renderScheduleSettings 是「把列表画进容器」，所以必须传列表容器而不是外层 host。
+    // 应用页面列表的筛选状态（仅影响页面表格，不碰胶囊/弹层的「当前会话」口径）
+    let schedFilter = {status: 'all', keyword: ''};
+    let schedCache = []; // 最近一次 AIScheduleList 结果，供前端筛选复用
+
+    // 应用页表格行：列对齐（任务 / 类型+排程 / 下次触发 / 目标会话 / 状态 / 操作），
+    // 与弹层/对话框共用的 renderScheduleRow 分开——那行是窄列表，本行是宽表格。
+    function renderScheduleTableRow(s) {
+        const row = document.createElement('div');
+        row.className = 'ap-sched-row' + (s.enabled ? '' : ' disabled');
+        const kindLabel = s.kind === 'once' ? '单次' : (s.kind === 'interval' ? '循环' : 'cron');
+        const scopeBadge = statusBadge(s.scope, s.scope === 'edit' ? 'warn' : 'neutral');
+        const target = s.sessionId
+            ? (sessionTitleById(s.sessionId) || s.sessionId.slice(0, 8))
+            : '每次新建';
+        const status = statusBadge(s.enabled ? '启用' : '停用', s.enabled ? 'success' : 'neutral');
+        const nextText = s.nextRunAt ? relativeTime(s.nextRunAt) : '—';
+        const cells = [
+            {cls: 'ap-sched-name', text: s.name},
+            {cls: 'ap-sched-kind', text: kindLabel + ' · ' + describeAISchedule(s).replace(/^[^·]+·\s*/, '')},
+            {cls: 'ap-sched-next', text: nextText},
+            {cls: 'ap-sched-target', text: target},
+        ];
+        for (const c of cells) {
+            const el = document.createElement('span');
+            el.className = c.cls;
+            el.textContent = c.text;
+            el.dataset.tip = c.text;
+            row.appendChild(el);
+        }
+        const scopeCell = document.createElement('span');
+        scopeCell.className = 'ap-sched-scope';
+        scopeCell.appendChild(scopeBadge);
+        row.appendChild(scopeCell);
+        row.appendChild(status);
+        const actions = document.createElement('span');
+        actions.className = 'ap-sched-actions';
+        const toggle = document.createElement('button');
+        toggle.type = 'button';
+        toggle.className = 'dlg-icon-btn';
+        toggle.dataset.tip = s.enabled ? '暂停任务' : '启用任务';
+        toggle.setAttribute('aria-label', toggle.dataset.tip);
+        toggle.innerHTML = iconSvg(s.enabled ? 'pause' : 'play', 13);
+        toggle.addEventListener('click', () => {
+            Promise.resolve(backend.AIScheduleToggle(s.id, !s.enabled)).then(() => {
+                renderScheduleSettings();
+                flash((s.enabled ? '已停用：' : '已启用：') + s.name);
+            }).catch((e) => flash('操作失败：' + ((e && e.message) || e), true));
+        });
+        const edit = document.createElement('button');
+        edit.type = 'button';
+        edit.className = 'dlg-icon-btn';
+        edit.dataset.tip = '编辑任务';
+        edit.setAttribute('aria-label', '编辑任务');
+        edit.innerHTML = iconSvg('rename', 13);
+        edit.addEventListener('click', () => openScheduleEditor(s));
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.className = 'dlg-icon-btn ap-icon-btn-danger';
+        remove.dataset.tip = '删除任务';
+        remove.setAttribute('aria-label', '删除任务');
+        remove.innerHTML = iconSvg('trash', 13);
+        remove.addEventListener('click', () => {
+            askConfirm('删除定时任务「' + s.name + '」？', () => {
+                Promise.resolve(backend.AIScheduleDelete(s.id)).then(() => {
+                    renderScheduleSettings();
+                    flash('已删除定时任务：' + s.name);
+                }).catch((e) => flash('删除失败：' + ((e && e.message) || e), true));
+            });
+        });
+        actions.append(toggle, edit, remove);
+        row.appendChild(actions);
+        return row;
+    }
+
+    // 按筛选条件过滤应用页列表
+    function filteredSchedules() {
+        return schedCache.filter((s) => {
+            if (schedFilter.status === 'enabled' && !s.enabled) return false;
+            if (schedFilter.status === 'disabled' && s.enabled) return false;
+            if (schedFilter.keyword) {
+                const hay = (s.name + ' ' + (s.prompt || '') + ' ' + describeAISchedule(s)).toLowerCase();
+                if (!hay.includes(schedFilter.keyword.toLowerCase())) return false;
+            }
+            return true;
+        });
+    }
+
+    function paintScheduleTable(listEl) {
+        if (!listEl) return;
+        listEl.textContent = '';
+        const rows = filteredSchedules();
+        if (!rows.length) {
+            const cta = document.createElement('button');
+            cta.type = 'button';
+            cta.className = 'dlg-btn primary';
+            cta.textContent = '新建第一个任务';
+            cta.addEventListener('click', () => openScheduleEditor(null, {top: true}));
+            listEl.appendChild(stateBlock('empty', schedCache.length ? '没有符合条件的任务' : '还没有定时任务。设一个到点提醒，AI 会自动唤醒并干活。', cta));
+            return;
+        }
+        for (const s of rows) listEl.appendChild(renderScheduleTableRow(s));
+    }
+
+    // 应用页面标签页的挂载入口：页头 + 命令栏 + 表格式列表 + 事件订阅。
     function mountSchedules(host) {
         if (!host) return null;
-        host.innerHTML = `
-<div class="set-group-title">定时任务</div>
-<div class="set-card">
-    <div class="set-row">
-        <div class="set-main"><div class="set-title">说明</div><div class="set-desc">单次（once）/ 固定间隔（interval）/ cron；仅在应用运行期间有效，关闭窗口后挂起、重开后不错过的时间不补跑；触发会消耗 token，AI 也可通过 schedule_* 工具管理</div></div>
-    </div>
-    <div class="set-row-top">
-        <div id="ai-opt-schedules" class="ai-sched-list"></div>
-    </div>
-    <div class="set-row">
-        <div class="set-main"><div class="set-title">新建任务</div><div class="set-desc">scope（触发轮次权限）仅对「每次新建会话」的任务生效；edit 档任务触发时若无人处理写审批会一直挂起，建议触发时保持在电脑前</div></div>
-        <div class="set-control">
-            <button type="button" id="ai-opt-schedule-add" class="dlg-btn">新建任务…</button>
-        </div>
-    </div>
-</div>`;
-        const listEl = host.querySelector('#ai-opt-schedules');
-        const addBtn = host.querySelector('#ai-opt-schedule-add');
-        const onAdd = () => openScheduleEditor(null, {top: true});
-        if (addBtn) addBtn.addEventListener('click', onAdd);
+        host.textContent = '';
+        const addBtn = document.createElement('button');
+        addBtn.type = 'button';
+        addBtn.className = 'dlg-btn primary';
+        addBtn.textContent = '新建任务';
+        addBtn.addEventListener('click', () => openScheduleEditor(null, {top: true}));
+        host.appendChild(pageHeader({
+            title: '定时任务',
+            desc: '单次 / 固定间隔 / cron 自动唤醒 AI。仅在应用运行期间有效；关闭后挂起，错过的任务不补跑。',
+            actions: [addBtn],
+        }));
+
+        const chips = filterChips({
+            items: [
+                {value: 'all', label: '全部'},
+                {value: 'enabled', label: '启用中'},
+                {value: 'disabled', label: '已停用'},
+            ],
+            value: schedFilter.status,
+            onChange: (v) => { schedFilter.status = v; paintScheduleTable(listEl); },
+        });
+        const bar = commandBar({
+            placeholder: '搜索名称、指令或排程',
+            onSearch: (v) => { schedFilter.keyword = v; paintScheduleTable(listEl); },
+            filters: [chips.element],
+        });
+        host.appendChild(bar.element);
+
+        const head = document.createElement('div');
+        head.className = 'ap-sched-thead';
+        for (const label of ['任务', '排程', '下次触发', '目标会话', '权限', '状态', '操作']) {
+            const cell = document.createElement('span');
+            cell.textContent = label;
+            head.appendChild(cell);
+        }
+        host.appendChild(head);
+        const listEl = document.createElement('div');
+        listEl.className = 'ap-sched-table';
+        host.appendChild(listEl);
         mountedList = listEl;
+
+        // 跨窗口/工具 CRUD 后的刷新由 main.js 的 schedules-changed 订阅统一驱动
+        // （refreshScheduleSettings 会传 mountedList，即本标签页的 listEl）。
         renderScheduleSettings(listEl);
         return () => {
-            if (addBtn) addBtn.removeEventListener('click', onAdd);
+            if (typeof bar.destroy === 'function') bar.destroy();
             if (mountedList === listEl) mountedList = null;
         };
     }
@@ -229,11 +364,12 @@ export function createAISchedule(ctx) {
         manageIco.innerHTML = iconSvg('chevron-right', 12);
         const manageLabel = document.createElement('span');
         manageLabel.className = 'ai-chips-name';
-        manageLabel.textContent = '全部管理（设置）…';
+        manageLabel.textContent = '全部管理…';
         manageBtn.append(manageIco, manageLabel);
         manageBtn.addEventListener('click', () => {
             if (typeof ctx.hideChipsPop === 'function') ctx.hideChipsPop();
-            if (typeof ctx.openSettings === 'function') ctx.openSettings('schedules');
+            if (openSchedulesPage) openSchedulesPage();
+            else if (typeof ctx.openSettings === 'function') ctx.openSettings('schedules');
         });
         host.appendChild(manageBtn);
         // 弹层打开即拉最新列表（缓存是上次刷新的快照）
@@ -302,39 +438,42 @@ export function createAISchedule(ctx) {
             if (cls) n.className = cls;
             return n;
         };
-        const row = (labelText, inputNode) => {
+        const row = (labelText, control) => {
             const r = node('div', 'ai-sched-field');
             const label = node('label');
             label.textContent = labelText;
-            r.append(label, inputNode);
+            r.append(label, control);
             return r;
         };
-        const name = node('input', 'ai-settings-input');
-        name.type = 'text';
-        name.placeholder = '省略则取指令前 30 字';
-        const kind = node('select', 'ai-settings-input');
-        for (const [v, label] of [['once', '单次（once）'], ['interval', '固定间隔（interval）'], ['cron', 'cron 表达式']]) {
-            const option = node('option');
-            option.value = v;
-            option.textContent = label;
-            kind.appendChild(option);
-        }
-        const valueInput = node('input', 'ai-settings-input');
+        // 表单控件一律走 core/form-controls.js（修复存量裸控件违规）
+        const nameCtl = createInput({className: 'ai-settings-input', placeholder: '省略则取指令前 30 字'});
+        const kindCtl = createSelect({
+            className: 'ai-settings-input',
+            options: [
+                {value: 'once', label: '单次（once）'},
+                {value: 'interval', label: '固定间隔（interval）'},
+                {value: 'cron', label: 'cron 表达式'},
+            ],
+        });
+        const valueCtl = createInput({className: 'ai-settings-input'});
         const valueLabel = node('label');
         const valueRow = node('div', 'ai-sched-field');
-        valueRow.append(valueLabel, valueInput);
-        const prompt = node('textarea', 'ai-settings-input');
-        prompt.rows = 4;
-        prompt.placeholder = '到点注入给 AI 的指令，例如：检查构建进度并汇报';
-        const scope = node('select', 'ai-settings-input');
-        for (const [v, label] of [['chat', 'chat（纯对话）'], ['read', 'read（只读访问）'], ['edit', 'edit（每次询问）']]) {
-            const option = node('option');
-            option.value = v;
-            option.textContent = label;
-            scope.appendChild(option);
-        }
-        // 目标会话：默认唤醒当前会话；也可选每次新建（docs/unfinished-plans/ai-head-agents-terminal.md 同期的定时任务修正）
-        const targetSel = node('select', 'ai-settings-input');
+        valueRow.append(valueLabel, valueCtl.element);
+        const promptCtl = createTextarea({
+            className: 'ai-settings-input', rows: 4,
+            placeholder: '到点注入给 AI 的指令，例如：检查构建进度并汇报',
+        });
+        const scopeCtl = createSelect({
+            className: 'ai-settings-input',
+            options: [
+                {value: 'chat', label: 'chat（纯对话）'},
+                {value: 'read', label: 'read（只读访问）'},
+                {value: 'edit', label: 'edit（每次询问）'},
+            ],
+        });
+        // 目标会话：默认唤醒当前会话；也可选每次新建
+        const targetCtl = createSelect({className: 'ai-settings-input'});
+        const targetSel = targetCtl.control;
         const fillTargetOptions = () => {
             targetSel.textContent = '';
             const fresh = node('option');
@@ -352,35 +491,32 @@ export function createAISchedule(ctx) {
             }
         };
         fillTargetOptions();
-        const maxRuns = node('input', 'ai-settings-input');
-        maxRuns.type = 'number';
-        maxRuns.min = '0';
-        maxRuns.placeholder = '0 = 不限';
+        const maxRunsCtl = createInput({type: 'number', className: 'ai-settings-input', min: 0, placeholder: '0 = 不限'});
         const syncKind = () => {
-            const v = kind.value;
+            const v = kindCtl.control.value;
             if (v === 'once') {
                 valueLabel.textContent = '触发时间（本地，如 2026-11-13 09:00）';
-                valueInput.placeholder = '留空则用「N 分钟后」';
+                valueCtl.control.placeholder = '留空则用「N 分钟后」';
             } else if (v === 'interval') {
                 valueLabel.textContent = '循环间隔（分钟，1–525600）';
-                valueInput.placeholder = '如 10 = 每 10 分钟';
+                valueCtl.control.placeholder = '如 10 = 每 10 分钟';
             } else {
                 valueLabel.textContent = 'cron 表达式（分 时 日 月 周）';
-                valueInput.placeholder = '如 0 9 * * 1-5';
+                valueCtl.control.placeholder = '如 0 9 * * 1-5';
             }
         };
-        kind.addEventListener('change', syncKind);
+        kindCtl.control.addEventListener('change', syncKind);
         syncKind();
         if (isEdit) {
-            name.value = existing.name || '';
-            kind.value = existing.kind || 'once';
+            nameCtl.control.value = existing.name || '';
+            kindCtl.control.value = existing.kind || 'once';
             syncKind();
-            if (existing.kind === 'interval') valueInput.value = String(existing.intervalMinutes || '');
-            else if (existing.kind === 'cron') valueInput.value = existing.cron || '';
-            else valueInput.value = existing.at ? aiFormatLocalMs(existing.nextRunAt || existing.lastRunAt) : '';
-            prompt.value = existing.prompt || '';
-            scope.value = ['chat', 'read', 'edit'].includes(existing.scope) ? existing.scope : 'chat';
-            maxRuns.value = String(existing.maxRuns || 0);
+            if (existing.kind === 'interval') valueCtl.control.value = String(existing.intervalMinutes || '');
+            else if (existing.kind === 'cron') valueCtl.control.value = existing.cron || '';
+            else valueCtl.control.value = existing.at ? aiFormatLocalMs(existing.nextRunAt || existing.lastRunAt) : '';
+            promptCtl.control.value = existing.prompt || '';
+            scopeCtl.control.value = ['chat', 'read', 'edit'].includes(existing.scope) ? existing.scope : 'chat';
+            maxRunsCtl.control.value = String(existing.maxRuns || 0);
         }
         // 目标会话预选：编辑 = 已绑定会话；新建 = 当前会话；不在最近 30 个列表时补选项兜底
         const preselectId = isEdit ? (existing.sessionId || '') : (currentSession() ? currentSession().id : '');
@@ -399,22 +535,22 @@ export function createAISchedule(ctx) {
         save.type = 'button';
         save.textContent = isEdit ? '保存' : '创建';
         save.addEventListener('click', () => {
-            const v = valueInput.value.trim();
+            const v = valueCtl.control.value.trim();
             const input = {
-                name: name.value.trim(),
-                kind: kind.value,
-                prompt: prompt.value.trim(),
+                name: nameCtl.control.value.trim(),
+                kind: kindCtl.control.value,
+                prompt: promptCtl.control.value.trim(),
                 sessionId: targetSel.value,
-                scope: scope.value,
-                maxRuns: aiClampInt(maxRuns.value, 0, 1000000, 0),
+                scope: scopeCtl.control.value,
+                maxRuns: aiClampInt(maxRunsCtl.control.value, 0, 1000000, 0),
             };
-            if (kind.value === 'once') {
+            if (input.kind === 'once') {
                 input.at = v;
                 if (!v) {
                     flash('请填写触发时间', true);
                     return;
                 }
-            } else if (kind.value === 'interval') {
+            } else if (input.kind === 'interval') {
                 input.intervalMinutes = aiClampInt(v, 0, 525600, 0);
                 if (input.intervalMinutes <= 0) {
                     flash('请填写循环间隔（分钟）', true);
@@ -438,16 +574,21 @@ export function createAISchedule(ctx) {
         });
         const body = node('div', 'ai-sched-editor');
         body.append(
-            row('名称', name),
-            row('类型', kind),
+            row('名称', nameCtl.element),
+            row('类型', kindCtl.element),
             valueRow,
-            row('触发指令', prompt),
-            row('目标会话', targetSel),
-            row('权限档（新建会话时生效）', scope),
-            row('最多触发次数', maxRuns),
+            row('触发指令', promptCtl.element),
+            row('目标会话', targetCtl.element),
+            row('权限档（新建会话时生效）', scopeCtl.element),
+            row('最多触发次数', maxRunsCtl.element),
         );
-        if (valueLabel.parentElement !== valueRow) valueRow.insertBefore(valueLabel, valueInput);
         openAIDialog(isEdit ? '编辑定时任务' : '新建定时任务', [body], [cancelBtn, save], opts && opts.top ? {top: true} : undefined);
+        // 弹窗挂在 body（不在 .apppage-root 里），扫描器扫不到——入 DOM 后逐个增强，
+        // 否则类型 / 权限档 / 目标会话三个下拉露浏览器原生菜单（与其它自绘控件两套外观）。
+        // 增强器幂等，原生 select 仍是值真源，change 照常派发。
+        if (enhanceSelect) {
+            for (const ctl of [kindCtl, scopeCtl, targetCtl]) enhanceSelect(ctl.control);
+        }
     }
     // ---- 定时任务触发（sched-fire）----
     // 多窗口去重：广播会被所有窗口收到。指定目标会话的任务只由持有该会话的窗口执行，
@@ -611,7 +752,7 @@ export function createAISchedule(ctx) {
             if (body.isConnected) build(list);
         });
         const foot = [
-            dialogButton('全部管理（设置）…', 'dlg-btn', () => { closeAIDialog(); if (typeof ctx.openSettings === 'function') ctx.openSettings('schedules'); }),
+            dialogButton('全部管理…', 'dlg-btn', () => { closeAIDialog(); if (openSchedulesPage) openSchedulesPage(); else if (typeof ctx.openSettings === 'function') ctx.openSettings('schedules'); }),
             dialogButton('新建任务…', 'dlg-btn primary', () => openScheduleEditor(null)),
             dialogButton('关闭', 'dlg-btn', closeAIDialog),
         ];

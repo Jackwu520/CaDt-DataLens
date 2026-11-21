@@ -73,6 +73,19 @@ export function createSettingsPaneUsageStats(deps) {
     let trendChart = null;
     let donutChart = null;
     let resizeTimer = 0;
+    let chartResizeObserver = null;
+
+    // 图表容器尺寸变化时 resize 两个 ECharts 实例（debounce）。
+    // 只靠 window.resize 覆盖不到「窗口没变但容器变窄」的场景——侧栏展开/收起、
+    // 编辑器分栏拖动、标签页宽度变化都不派发 window.resize，图表会保持旧宽度。
+    // 这里用 ResizeObserver 盯容器本身，window.resize 仅作宿主不派发 RO 时的兜底。
+    function scheduleChartResize() {
+        clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(() => {
+            if (trendChart && trendChart.getDom() && trendChart.getDom().getClientRects().length) trendChart.resize();
+            if (donutChart && donutChart.getDom() && donutChart.getDom().getClientRects().length) donutChart.resize();
+        }, 120);
+    }
 
     function root() {
         return hostEl || document.getElementById('usage-stats-root');
@@ -88,6 +101,12 @@ export function createSettingsPaneUsageStats(deps) {
     function mountSkeleton(host) {
         if (state.mounted && host.dataset.usReady === '1') return;
         disposeCharts();
+        // 板块间距靠 .us-root 的 flex gap:14px。应用页面标签页的宿主是 .apppage-root，
+        // 设置页旧宿主是 #usage-stats-root，两者都没有 .us-root——组件自己加上，
+        // 别依赖宿主 class，否则切到应用页面后所有卡片紧贴、没有上下间距。
+        // 注意：us-root 会加在宿主元素身上（同节点合并），**不得自带 padding**——
+        // 同特异性下声明更晚会压掉 .apppage-root 的内边距（曾因此整页贴边），留白统一由宿主给。
+        host.classList.add('us-root');
         host.dataset.usReady = '1';
         host.innerHTML = `
 <div class="us-head">
@@ -170,13 +189,17 @@ export function createSettingsPaneUsageStats(deps) {
         bindLogPager();
         if (!state.resizeBound) {
             state.resizeBound = true;
-            window.addEventListener('resize', () => {
-                clearTimeout(resizeTimer);
-                resizeTimer = setTimeout(() => {
-                    if (trendChart && trendChart.getDom() && trendChart.getDom().getClientRects().length) trendChart.resize();
-                    if (donutChart && donutChart.getDom() && donutChart.getDom().getClientRects().length) donutChart.resize();
-                }, 120);
-            });
+            // 容器级观察：覆盖所有「窗口没变但图表变窄」的宽度变化（侧栏/分栏/标签页）。
+            const trendEl = node('us-trend');
+            const donutEl = node('us-donut');
+            if (typeof ResizeObserver === 'function' && trendEl && donutEl) {
+                chartResizeObserver = new ResizeObserver(scheduleChartResize);
+                chartResizeObserver.observe(trendEl);
+                chartResizeObserver.observe(donutEl);
+            }
+            // window.resize 兜底：部分宿主（IAB 节流渲染帧）不派发 RO 回调，
+            // 两者共用同一 debounce，重复触发只会合并成一次 resize。
+            window.addEventListener('resize', scheduleChartResize);
         }
     }
 
@@ -511,6 +534,10 @@ export function createSettingsPaneUsageStats(deps) {
             const suffix = document.createElement('span');
             suffix.textContent = '条';
             host.append(prefix, element, suffix);
+            // 应用页面不走 settings-ui 的自动扫描，这里手动增强成自绘浮层——
+            // 否则原生 select 展开会露出系统菜单（截图里白底的 10/20/50），与界面其余自绘控件两套外观。
+            // 增强器幂等，原生 select 仍是值真源，change 照常从它派发。
+            if (typeof deps.enhanceSelect === 'function') deps.enhanceSelect(element);
         }
         const prev = node('us-log-prev');
         if (prev) prev.addEventListener('click', () => goLogPage(state.logPage - 1));
@@ -797,6 +824,13 @@ export function createSettingsPaneUsageStats(deps) {
         renderUsageStatsPane().catch(() => {});
         return () => {
             disposeCharts();
+            if (chartResizeObserver) {
+                chartResizeObserver.disconnect();
+                chartResizeObserver = null;
+            }
+            window.removeEventListener('resize', scheduleChartResize);
+            state.resizeBound = false;
+            if (hostEl) hostEl.classList.remove('us-root');
             hostEl = null;
             state.mounted = false;
         };
