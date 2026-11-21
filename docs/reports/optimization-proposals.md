@@ -696,6 +696,7 @@ CaDt-DataLens.exe --convert "config.yaml" --to json --stdout
 | **自建全项目索引（学 IDE）** | 索引缓存可涨到 GB 级，正是 JetBrains 类产品体积的主要来源。**本项目的核心竞争力恰恰是「无索引」** |
 | **内置 LSP 客户端** | 需要 Node / 各语言 language server，违背「单 exe、零依赖」的核心设计 |
 | **打包 ripgrep 二进制** | rg 单文件约 3–5 MB。改为「检测到就用」（第 7 项）即可，体积为 0 |
+| **用户委托代理接管审批（Delegate Agent，2026-11-22 否决）** | 被监管者不能监管自己：白名单里唯一安全的「只读探索 / 项目 allow 重复命令」现状（auto 档）已自动放行，净价值为 0；其余转人工项本就是人工锚点，且必弹点还在变多（4 天从 4 处涨到 7 处），委托红线表要永久跟随。详见 `docs/reports/user-delegate-agent.md` |
 
 ---
 

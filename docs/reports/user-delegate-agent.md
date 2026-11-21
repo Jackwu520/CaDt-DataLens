@@ -1,6 +1,6 @@
 # 用户委托代理（Delegate Agent）——有边界的授权委托方案
 
-> 状态：**方案评估（未开工）**
+> 状态：**已评估 · 不做（2026-11-22 复评，见 §九）**——2026-11-22 从 `docs/unfinished-plans/` 移入本目录归档：决策已定、不会再产生实施动作，留作决策记录。其中「操作留痕 actor 失真」一项已拆出并单独实施（§9.4）。
 > 一句话：不做「完全接管授权」，只在**明确白名单 + 额度 + 独立信息源**内代替人点头；**元权限（改权限档 / 改安全防线 / 改留痕 / 改委托配置本身）永不委托**。
 > 需求原型：一个「用户智能体」，启用后接管所有需要用户拍板的环节（审批、隔离区、改会话权限等），且是应用级、跨会话、可完全接管。
 
@@ -223,7 +223,7 @@
 | `frontend/src/ai/ai-permission-settings.js` | 设置页新增委托代理开关与白名单/额度配置行（走 `set_setting_row` 风险审批） |
 | `frontend/src/ai/ai-constants.js` | cadt-ui 技能动作表、工具目录若新增委托管理动作需三处对齐（`ai-app-actions.test.mjs` 守卫） |
 | `internal/activity/activity.go` | actor 白名单加 `delegate`；委托记录不可由 AI 工具清除的约束 |
-| `docs/finished-plans/` | 实施完成后本方案移入归档 |
+| ~~`docs/finished-plans/`~~ | ~~实施完成后本方案移入归档~~ —— 未实施，2026-11-22 直接归档到 `docs/reports/`（本文件） |
 
 ### 6.3 不改的部分
 
@@ -275,3 +275,45 @@
 ### 最终建议
 
 若用户的真实诉求是「少点审批」，**优先做「扩大 allow 规则 + 提升分类器准确率 + 批量/时间段授权」，成本更低、风险为零、已有基础设施**。本方案（委托代理）只在用户明确需要「让另一个模型复核并点头」时才值得投入，且必须守住三条铁律与「只委托、不接管」的定位。
+
+---
+
+## 九、复评（2026-11-22）
+
+> 复评触因：距初稿 4 天，需确认结论是否仍成立。以下全部为当前工作区实测。
+
+### 9.1 结论
+
+**不做。** 三条铁律与「只委托、不接管」的定位是对的，但**净价值为 0**——白名单放的东西现状已经自动放行，放不掉的东西正是作者刻意保留的人工锚点。复评新增两条比初稿更硬的论据（9.3 第 2、3 条）。
+
+### 9.2 事实勘误（初稿引用已部分漂移）
+
+| 初稿引用 | 现状 |
+|---|---|
+| `ai-permissions.js:254/259/265/274-276/297-316` | **基本准确**（`decidePermission` 仍在该区间，危险命令单次确认仍是 `dangerous && scope !== 'full'`） |
+| `ai-panel.js` 各点行号（7057 / 7159 / 7829 / 7865 / 13364 / 7451） | **整体下移 500–700 行**：`logPermission` 7311、worktree 必弹 7418、`decideApproval` 8157、`setScope` 14035；文件已从 1.8 万涨到 **19080 行**。复评后一律按符号定位，不按行号 |
+| `ai-classifier-verdict.js:89-106`、`ai-subagents.js:229-249`、`activity.go` 三 actor | 准确 |
+| 「4 处全档必弹」 | **已涨到至少 7 处**：原 4 处 + 桌面控制 `request_desktop_control`（全档必弹）+ 生命周期钩子三个写动作（无条件弹）+ `cognition_toggle`（完全权限也不例外） |
+
+### 9.3 新增论据
+
+1. **白名单的实际减扰增量为 0。** §3 里唯一标 ✅ 的两项（普通只读探索、项目 allow 内的重复命令）在 auto 档已由 `gitFlowSafe / readOnly / familyAuto / classifier` 四条通道自动放行（`ai-permissions.js:274-280`）。read 档下它们仍弹卡，但 read 档用户切 auto 档即得同等效果——委托代理新增的能力等价于「一个已有的开关」，代价却是**多一个信任根**。
+
+2. **人工锚点在变多，委托的红线表就得永久跟着长。** 4 天里新增 3 个必弹点。每加一个，委托代理都必须同步排除，漏一处就等于给新防线开了后门；这类维护成本随功能增长单调恶化，且失效是静默的。
+
+3. **项目实际走的正是初稿推荐的替代路线，并且奏效了。** 这轮真正解决审批疲劳的改动是「`cd x && npm test` 不再反复弹卡」——扩 `commandFamilySignature` 容忍一段前置 `cd`，加上工具描述引导用 `cwd` 参数（CHANGELOG「改进（自动审批档…）」一节）。低成本、零新信任根、当天生效。这与 §277 的优先级判断一致，等于用实践否决了本方案的价值主张。
+
+### 9.4 唯一值得单独做的事：留痕 actor 失真
+
+初稿 §4.4 把这个当「顺带修正」埋在委托方案里，但它**与委托无关、可独立交付、零风险**：
+
+- `logPermission`（`ai-panel.js:7324-7330`）把 allow/deny 一律写 `actor:'user'`，只有 `source` 区分来源。
+- 操作留痕页按 actor 打徽标并支持筛选（`settings/activity-pane.js:130` 的 `ACTIVITY_ACTOR_LABEL = {user:'用户', ai:'AI', system:'系统'}`、`:177`）。结果是**规则放行 / 家族放行 / 分类器放行 / 完全权限直通的每一笔，在审计里都显示成「用户批准」**。
+- 修法：按 `source` 映射 actor（`scope` / `project` / `user` 归 user；`readonly` / `family` / `git-flow` / `classifier` / `local-classifier` / `full` / `auto` 归 ai），`validActivityActor` 已支持 `ai`，**无 Go 变更、无 schema 变更**；配一条纯函数 + 单测。约 10 行。
+- 价值：审计可读性（「谁批的」不再骗人），也是将来任何授权机制的前置条件。
+- **已实施（2026-11-22）**：纯函数 `permissionAuditActor(source)` 落在 `frontend/src/ai/ai-permissions.js`（映射表 + 未知来源归 `ai`——宁可少记人的功劳，也不能把自动放行记成人工批准），`logPermission` 改用它；测试见 `frontend/test/ai/ai-permissions.test.mjs` 的「留痕 actor」两例（逐来源归属 + 与 `decidePermission` 实际产出对齐）。`agent-worktree` / `worktree-isolation` / web 内置 `default` 归 `system`。
+
+### 9.5 处置建议
+
+- 本稿**已移入 `docs/reports/`** 作决策记录（2026-11-22），并在 `optimization-proposals.md` 第四节「不建议做的方向」登记一行指向这里。
+- 若用户仍反复抱怨审批多，正确动作是继续在 §9.3 第 3 条那条线上加码（扩家族签名、补语料、调严格度），而不是引入会点头的模型。

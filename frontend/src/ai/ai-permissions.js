@@ -324,3 +324,36 @@ export function normalizeDefaultScope(raw) {
     const value = String(raw == null ? '' : raw).trim();
     return AI_SCOPES.includes(value) ? value : 'read';
 }
+
+// ---------- 操作留痕的 actor 归属 ----------
+
+// 归属按**判定来源**分，不看是否经过审批卡：
+//   user   —— 用户在审批卡上拍板，或用户预先写下的授权（项目规则 / 会话规则 / 设置页）
+//   ai     —— 模型侧自动判定（只读 / 家族 / git 快捷 / 端侧与云端分类器 / 完全权限直通）
+//   system —— 宿主强制（工作区隔离守卫）与产品内置默认（web 默认放行）
+// 未知来源归 ai：把自动放行记成人工批准是最坏的失真方向，宁可少记人的功劳。
+const PERMISSION_ACTOR_BY_SOURCE = {
+    user: 'user',
+    project: 'user',
+    session: 'user',
+    readonly: 'ai',
+    family: 'ai',
+    'git-flow': 'ai',
+    classifier: 'ai',
+    'local-classifier': 'ai',
+    full: 'ai',
+    auto: 'ai',
+    'worktree-isolation': 'system',
+    'agent-worktree': 'system',
+    default: 'system',
+};
+
+/**
+ * 审批判定来源 → 操作留痕 actor。
+ * 历史实现把 allow/deny 一律写成 actor:'user'，导致规则 / 家族 / 分类器 / 完全权限的
+ * 自动放行在留痕页全部显示成「用户批准」（谁批的看不出来）。
+ */
+export function permissionAuditActor(source) {
+    const key = String(source == null ? '' : source).trim();
+    return PERMISSION_ACTOR_BY_SOURCE[key] || 'ai';
+}
