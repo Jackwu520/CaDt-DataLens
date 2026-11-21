@@ -1,6 +1,6 @@
 // new-file-menu.js：资源管理器「新建」子菜单的条目注册表、配置归一化与合成（纯函数）。
 //
-// 背景（docs/unfinished-plans/feature-evaluations-2026-11-18.md §1）：
+// 背景（docs/finished-plans/feature-evaluations-2026-11-18.md §1）：
 // 菜单运行时 contextmenu.js 只认数据、条目没有稳定 id；这里把 id 化与配置合成收成单一来源。
 // 配置进 settings.newFileMenu，沿用 datalens-settings 的 localStorage 通道，缺省零迁移。
 //
@@ -241,6 +241,7 @@ export function fileTypeMenuItem(type, action) {
     return {
         label: type.label,
         shortcut: dot >= 0 ? type.name.slice(dot) : '',
+        // iconHtml-exception: 文件类型图标走 fileIconSpec 域（core/fileicons*.js），非通用注册表语义
         iconHtml: spec.svg,
         iconClass: spec.className,
         action: () => action(type),

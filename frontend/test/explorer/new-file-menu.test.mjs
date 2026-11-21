@@ -1,5 +1,5 @@
 // new-file-menu.test.mjs —— 右键「新建」菜单定制的纯函数 + 接线守卫。
-// 背景：docs/unfinished-plans/feature-evaluations-2026-11-18.md §1
+// 背景：docs/finished-plans/feature-evaluations-2026-11-18.md §1
 
 import test from 'node:test';
 import assert from 'node:assert/strict';

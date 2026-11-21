@@ -204,6 +204,8 @@ func TestMustNotBeCached(t *testing.T) {
 	for _, id := range []string{
 		"ai-sessions", "ai-usage", "ai-memory", "ai-schedule", "activity", "classifier",
 		"ws-memory", "ws-patches", "ws-plan", "ws-gen", "ws-answers", "ui-state", "app-config",
+		// 临时草稿是用户亲手写的内容：一键清缓存不许碰，只能按勾选单条清（送回收站）
+		"ws-scratch",
 		// wipe-guard 是破坏防护的备份库：例行清缓存拆掉保险 = 没有防护（方案 §4.3 的负向断言）
 		"wipe-guard",
 	} {

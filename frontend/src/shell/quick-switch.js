@@ -31,6 +31,7 @@ function quickSwitchTitleFor(level) {
         openmode: '打开方式',
         bookmarks: '书签（Delete 删除选中项）',
         windows: '窗口',
+        scratch: '临时草稿（最近修改在前）',
     })[level] || '切换';
 }
 
@@ -51,6 +52,12 @@ function quickSwitchMainItems() {
         {label: '缩进', value: currentIndentLabel(), enter: 'indent', disabled: !deps.file || !deps.file.format},
         {label: '布局', enter: 'layout'},
         {label: '打开方式', value: deps.settings.openMode === 'window' ? '多窗口' : '单窗口标签页', enter: 'openmode'},
+        // 临时草稿架（docs/finished-plans/scratch-file.md §7.3 / §8.1）：主入口是文件树里的
+        // 「临时草稿」固定节点，这一层对齐 JetBrains 的 Show Scratch Files——键盘可达的快速切换，
+        // 不必展开树、也不受树里滚动位置影响
+        ...(typeof deps.scratchEntries === 'function'
+            ? [{label: '临时草稿', value: deps.workspaceFolder ? '' : '未打开工作区', enter: 'scratch', disabled: !deps.workspaceFolder}]
+            : []),
         // 窗口切换（v3 一进程多窗口）：列出其他存活窗口并跳转
         ...(typeof deps.windowSwitchEntries === 'function' ? [{label: '窗口', enter: 'windows'}] : []),
     ];
@@ -154,6 +161,10 @@ function quickSwitchSubItems(level) {
     if (level === 'windows') {
         // 条目来自 main.js 的缓存（打开本层时异步刷新一轮再重渲染）
         return deps.windowSwitchEntries();
+    }
+    if (level === 'scratch') {
+        // 草稿架：<ws>/.cadt/scratch 下的文件（按 mtime 倒序），选中即打开
+        return typeof deps.scratchEntries === 'function' ? deps.scratchEntries() : [];
     }
     if (level === 'bookmarks') {
         // 书签总览：聚合打开中的文档（bookmark-list.js），点击跨文件跳转，Delete 删除选中项
@@ -277,13 +288,20 @@ function enterQuickSwitchLevel(level) {
         if ((level === 'view' && !deps.file) || (level === 'indent' && (!deps.file || !deps.file.format))) return;
         quickSwitch.mainIndex = quickSwitch.index;
         quickSwitch.level = level;
-        // 窗口层的列表是动态的：进入时异步刷新一轮，完成后就地重渲染
+        // 窗口层 / 草稿层的列表都是动态的：进入时异步刷新一轮，完成后就地重渲染
         if (level === 'windows' && typeof deps.refreshWindowSwitchEntries === 'function') {
             Promise.resolve(deps.refreshWindowSwitchEntries())
                 .then(() => {
                     if (quickSwitch.open && quickSwitch.level === 'windows') renderQuickSwitch();
                 })
                 .catch(() => {}); // 刷新失败沿用上次缓存，尽力而为路径
+        }
+        if (level === 'scratch' && typeof deps.refreshScratchEntries === 'function') {
+            Promise.resolve(deps.refreshScratchEntries())
+                .then(() => {
+                    if (quickSwitch.open && quickSwitch.level === 'scratch') renderQuickSwitch();
+                })
+                .catch(() => {});
         }
         const items = quickSwitchSubItems(level);
         let checked = 0;

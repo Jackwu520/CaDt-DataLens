@@ -1,6 +1,6 @@
 # 四项功能评估（2026-11-18）
 
-> 状态：**评估稿，未立项**。四个候选功能只做现状核实与方案建议，未经实施；哪项先行由作者定，立项后各自另立方案文档（本稿作为其事实底座）。
+> 状态：**已归档（2026-11-21）**：四项评估全部有归属——1/3/4 已实施留档，§2 临时文件抽离为独立方案 `docs/finished-plans/scratch-file.md`（2026-11-21 实施完成）。本稿作为历史评估留档，不再承载待办。
 >
 > 性质：只读评估，未改动任何代码。行号按 2026-11-18 工作区实测。
 
@@ -75,74 +75,7 @@
 
 ## 2. 临时文件
 
-> **本节为 2026-11-18 二次复核版（替换原稿）：原稿的「落盘草稿」结论方向正确，但有三处判断需要修正，目录建议从 `.cadt/tmp` 改为 `.cadt/scratch`，工作量 0.5 → 0.5–0.7 天。**
-
-### 2.0 复核结论（先看这里）
-
-| # | 原稿说法 | 复核结果（行号按 2026-11-18 工作区实测） |
-|---|---------|----------------------------------------|
-| 1 | 落盘草稿 → 会话恢复天然带回，重启不丢 | **高估**。`serializeSession` 只记路径（`frontend/src/shell/session-restore.js:113` `filter(d => d.path)`），恢复时 `restoreSession` → `openPathsHere` 按路径**从盘上重读**；而 `settings.autoSave` 默认 false（`main.js:1507`）。所以会话恢复带回的是「标签」，不是「文字」——没按 Ctrl+S 的输入照样丢。要兑现「随手写、不用管」的预期，必须给草稿文档加静默落盘。 |
-| 2 | 有 path → 全链路自然工作 | **成立，但漏了可见性**：`.cadt` 在文件树/列表里都是跳过项（`explorer.js:152` `LIST_SKIP_DIRS` 含 `.cadt`）。草稿建好后树里根本看不到，现有 `refreshDir` + `selectPath` 一行视觉反馈都没有。找回只剩两条路：`Ctrl+Shift+T` 重新打开关闭的标签（`editor-groups.js:1595`，栈深 12）与 文件 → 最近打开（`app-actions.js:27-45`，12 条）。 |
-| 3 | Go 零改动（`CreateEntry` + `SaveFile` 够用） | **半成立，但靠的不是这两者**。`CreateEntry` 只建一层、父目录必须已存在（`internal/fsops/fsops.go:247-258`，同名在 `:264` 报错）；`SaveFile` 是裸 `os.WriteFile`（`internal/fileio/fileio.go:365-373`），**不建父目录**。真正现成的是已对前端开放的 `backend.AIEnsureDir`（MkdirAll 幂等，`internal/aichat/chat.go:247`，`ai-panel.js:7754` 早就在用）。零 Go 改动能成立，前提是用它。 |
-| 4 | 草稿与 AI 产物同放 `.cadt/tmp` 是特性 | **建议放弃**。`.cadt/tmp` 是 AI 的**免审写区**：`isAutoWriteRisky()` 对 `.cadt/tmp/**` 直接返回 false（`ai-panel.js:7636-7639`），隔离 worktree 期间主根只读也对它例外放行（`ai-worktree.js:84-85`）。用户草稿放这里 = 与免审写区共用目录，AI 覆盖同名文件不需要任何确认；清缓存 `ws-tmp` 时还会连草稿一起清。 |
-
-### 2.1 需求解读
-
-explorer「新建」子菜单里的「临时文件」——快速建一个草稿开始写，不污染工作区正式目录，也不需要先想文件名。
-
-补充原稿没写的现状定位：应用已有两种「新建」，都不是这个语义——
-
-- 文件 → 新建 → 类型：内存未命名文档（`properties-ui.js:9-30` → `newDocumentWith`，`main.js:3471`），即 Ctrl+N 那条路，无 path，重启即丢；
-- explorer → 新建 → 类型：先弹名字、再建到被点目录（`explorer-ops.js:353-390`），要先想名字。
-
-「临时文件」填的是中间的空档：**免起名 + 落盘有 path**。
-
-### 2.2 方案建议（修订）
-
-**仍推荐「落盘草稿」，但补三件事：换到独立目录、静默落盘、保存容错。**
-
-1. **目录**：`<ws>/.cadt/scratch/`，文件名 `草稿-YYYYMMDD-HHMMSS.<ext>`（秒级时间戳；`CreateEntry` 同名报错，撞了加序号重试一次）。`<ext>` 由入口决定，见 2.6。一律建在**工作区根**（用 `deps.workspaceFolder`），与右键点的那个目录无关——`newFileMenuItems(dirPath)` 的 `dirPath` 只用于判定入口可用性，不能拿它拼草稿路径。理由见 2.0 第 4 条：不能让用户草稿住在 AI 免审写区。
-2. **建目录**：`backend.AIEnsureDir(dir)`（MkdirAll，已有绑定）→ `CreateEntry` → `SaveFile` 写初始内容（空或一行 md 头）→ `openPath`。**不做** `explorer.refreshDir`（`.cadt` 不在树里，刷了也看不见），改为 flash 一行「已建临时草稿：.cadt/scratch/草稿-….<ext>」。3. **静默落盘（关键补充）**：新建时给文档打 `doc.draft = true`；`scheduleAutoSave` 的唯一实现（`writing-ui.js:269-276`）门条件从 `settings.autoSave` 放宽为 `settings.autoSave || 当前文档是 draft`（`setDirty` 已无条件调用它，见 `writing-ui.js:256`）。另有一处「切标签前先存上一个文件」的门在 `editor-groups.js:1451`，同一个条件同样要放宽，否则切走再切回来前的那次输入不落盘。草稿输入 1 秒防抖自动保存，重启回来还是原文；普通文件行为不变。
-4. **语义与找回**：草稿就是普通文档，保存/另存为/diff/全局搜索全部照旧（`.cadt` 不在 `searchSkipDirs`，`search.go:35`，草稿可被搜索到）。同会话找回靠 `Ctrl+Shift+T`；跨启动靠 文件 → 最近打开——所以草稿**有意**进最近列表，不屏蔽。
-5. **入口两处**：explorer「新建」里的 `scratch` 项（它已是 `new-file-menu.js` 的 `SPECIAL_IDS` 之一，当前因无实现而灰显）+ 文件 → 新建 子菜单同一条（`properties-ui.js:9-30`，无工作区时 disabled）。`explorer-ops.js:427-433` 已留好 `deps.createScratchFile` 钩子（注释写明「编排可能落在本模块或经 deps 注入」），签名扩成 `(dirPath, ext)` 即可接上，**不用改 `new-file-menu.js`**（配置只管出现与顺序，语言选择属动作层）。命令面板会自动收录文件菜单子项（`main.js:4356-4364` `flattenPaletteItems`），不用另写一份。
-6. **无工作区**：`workspaceFolder` 为空时两个入口都 disabled，v1 不做「应用数据 scratch/」——省一条 Go 清理条目，真需要时再加。
-7. **只读**：父项「新建」已挡 `settings.readOnlyMode`（`explorer-ops.js:692`），子项再挡一层防绕过；`doc.draft` 不得越过只读锁与大文件保护。
-8. **存储条目（推荐，约 6 行）**：`internal/storage/specs.go` 加 `id: "ws-scratch"`、`kind: KindCache`、**`inCache: false`**、`workspaceTarget("scratch")`。`inCache: false` 的含义是「一键清缓存不碰用户草稿，需要时单条清」（`specs.go:59`）；`TestSpecTable` 会校验 label/note/targets，`TestCacheIDs`（`storage_test.go:184`）不吃非 inCache 项，**测试零改动**。
-
-### 2.3 改动面
-
-- `explorer-ops.js`：`scratch` 项接 `createScratchDraft()` 编排（AIEnsureDir → CreateEntry → SaveFile → openPath → flash），并进新建历史（撤销 = 删草稿，走回收站）；签名 `(dirPath, ext)`，语言清单复用 `BUILTIN_FILE_TYPES`，不新增表。
-- `properties-ui.js`：文件 → 新建 加同一条目（复用同一编排，经 deps 注入，不复制实现）。
-- `main.js`：`scratchDraftName(now)` 纯函数（时间戳格式 + 撞名序号）；`doc.draft` 标记随 createDoc/保存流程保值。
-- `writing-ui.js`：`scheduleAutoSave` 门条件放宽一条（draft）。
-- `editor-groups.js`：切标签前「先存上一个文件」的门（`:1451`）同款放宽。
-- Go：`internal/storage/specs.go` +6 行（推荐项）；不想要这条就退回 `.cadt/tmp`，接受 2.0 第 4 条风险。
-- 测试：`frontend/test/` 加文件名纯函数用例（时间戳格式 / 撞名序号）并登记 `package.json` 的硬编码 test 清单（`test-manifest.test.mjs` 双向对账）。
-
-### 2.4 风险与护栏
-
-- **清缓存删掉 `scratch/` 后，已打开的草稿再保存会 ENOENT**（`SaveFile` 不建父目录）。护栏：保存失败且错误是「路径不存在」时，`AIEnsureDir` 重建目录后静默重试一次（`main.js` save 分支，约 3 行）。
-- `doc.draft` 只买「自动保存」这一个特权，绝不能连只读锁、大文件保护、脏标记语义一起绕。
-- 工作区若没有忽略 `.cadt`（本仓 `.gitignore:18` 有，用户目录未必），草稿会出现在 `git status` 里。落地时确认一次；需要就在建目录时补 `.cadt/.gitignore` 一行（10 秒的事，但不该默认假设）。
-- 树里不可见是**设计取舍**而不是缺陷：草稿本来就不该占文件树的注意力。代价是不给 flash 就完全没有反馈——所以 flash 是 v1 必做项，不是锦上添花。
-
-### 2.5 工作量：0.5–0.7 天（原 0.5 天上调；多出的是静默落盘、保存容错与一条 storage 条目）。风险仍低，**四项里性价比最高，建议最先做**。
-
-### 2.6 草稿的语言 / 高亮怎么定（2026-11-18 追加）
-
-**事实：本应用没有内容识别高亮，也没有「每文档切换语言」的机制，高亮完全由文件名（扩展名 / 少数固定文件名）决定。**
-
-- 唯一入口 `aceModeFor(fileName, driver)`：`basename → 已知文件名表 fileNameAceModes → extensionAceModes[ext] → 驱动自身的 aceMode → 'text'`（`frontend/src/core/formats.js:509-515`），实际下发给 Ace 的位置是 `frontend/src/editor/editor-ace-hooks.js:29-32`（`session.setMode('ace/mode/…')`）。
-- 虚拟文档也是「扩展名定高亮」（`ai/ai-constants.js:524` `cadt.openVirtualDoc(name, content)` 的描述），同一约定。
-- `isKnownCodeFileName`（`formats.js:523-526`）只兜「无扩展名但文件名已知」的一批（Dockerfile / Makefile / .gitignore…），是静态白名单，不是嗅探。
-- **扩展名不止管着色**：运行配方按它取（`terminal/run.js:452-453` `RECIPES[extOf(doc.name)]`）、图标按它取（`core/fileicons.js`）、格式驱动与可用视图也按它定（`formats.js:427-455` `detectFormat` → 树视图 / 表格视图 / 预览）。所以草稿不能「随便给个 .txt 再靠识别」。
-
-**结论：草稿必须带扩展名，选语言 = 选扩展名。**
-
-- **v1（推荐，零新机制）**：把 `scratch` 项做成二级菜单，语言清单**复用** `BUILTIN_FILE_TYPES`（`explorer/new-file-menu.js:28-54`，25 项，`top`/`more` 已分好层）。顶层「临时文件」= 上次用过的扩展名（`settings.scratchExt`，缺省 `.md`）一键建；二级列常用项 + 「更多…」。文件名 `草稿-YYYYMMDD-HHMMSS.<ext>`。
-- 一键到底的做法：顶层项直接用 `.md`（或上次扩展名）建，二级才是「临时文件（选择语言）」。多一层菜单就少一分「什么都不用想」的爽感，别让默认路径变长。
-- **不做内容嗅探**：规则永远不全，且与「扩展名决定一切」的既有分派链打架（嗅探出 Python 但 `doc.format` 仍是 text，运行配方、图标、视图全都对不上）。
-- **后续（另立项，与本项解耦）**：真正的「文档语言覆盖」——`doc.langOverride` 传给 `aceModeFor` 第三参，只改 Ace 着色，**绝不能改 `doc.format`**（否则 `.py` 会被 JSON 驱动器解析，树/表格视图与保存序列化一起乱）；持久化进 `sessions.views`（`rememberDocView`/`knownDocViews`）；入口放状态栏语言区或标签右键。它顺带解决存量痛点：`.txt` 里的 Python、无扩展名脚本今天完全没法高亮。
+> **已抽离为独立方案**：完整内容（复核结论 / 需求解读 / 方案建议 / 改动面 / 风险护栏 / 工作量 / 语言高亮）见 `docs/finished-plans/scratch-file.md`。本节原为 2026-11-18 二次复核版（原稿「落盘草稿」方向正确，三处修正：目录 `.cadt/tmp` → `.cadt/scratch`、补静默落盘与保存容错，工作量 0.5 → 0.5–0.7 天）。
 
 ---
 
@@ -247,7 +180,7 @@ explorer「新建」子菜单里的「临时文件」——快速建一个草稿
 
 ## 5. 综合建议
 
-1. **先做 2（临时文件）**：3 已完成（`db28961`），2 是剩下三项里最小的一件，今日复核后建议口径见 §2；0.5–0.7 天可收。
+1. **2（临时文件）已实施**：独立方案见 `docs/finished-plans/scratch-file.md`（2026-11-21 落地，含实施记录 §8）。
 2. ~~**再做 4 一期**~~：**4 已一期 + 二期全做**（2026-11-18，见 `docs/finished-plans/ai-search-enhancement.md`）；对 AI 日常使用增益最大，Go 侧改动可控（环境变量对拍钩子现成）。
 3. **1 最后**：价值最主观（取决于自用频率），且管理 UI 成本最高；机制不影响其他三项，随时可插入。
 4. 立项后按本仓惯例各自另立方案文档（从本稿对应章节拷贝事实底座），实施完成移 `docs/finished-plans/`。

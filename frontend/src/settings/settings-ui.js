@@ -656,7 +656,9 @@ function applySettings() {
         logSettingsChange(JSON.parse(JSON.stringify(deps.settings)));
         lastSettingsSnapshot = JSON.parse(JSON.stringify(deps.settings));
     } catch (e) {}
-    if (deps.settings.autoSave && deps.dirty && !isDocReadOnly(deps.file, deps.settings)) deps.scheduleAutoSave();
+    // 临时草稿（doc.draft）不依赖 autoSave 开关，设置变更后也要把它的防抖保存重新挂上
+    if ((deps.settings.autoSave || (deps.file && deps.file.draft)) && deps.dirty &&
+        !isDocReadOnly(deps.file, deps.settings)) deps.scheduleAutoSave();
     else deps.cancelAutoSave();
 }
 
@@ -711,7 +713,7 @@ function selectSettingsPane(pane) {
     }
     const aiGroup = document.getElementById('snav-ai');
     if (aiGroup) {
-        const inAI = pane === 'models' || pane === 'agents' || pane === 'gen-models' || pane === 'external-tools' || pane === 'ai' || pane === 'persona' || pane === 'context' || pane === 'preferences' || pane === 'schedules' || pane === 'usage-stats';
+        const inAI = pane === 'models' || pane === 'agents' || pane === 'gen-models' || pane === 'external-tools' || pane === 'ai' || pane === 'persona' || pane === 'context' || pane === 'preferences';
         if (inAI && !aiGroup.classList.contains('expanded')) {
             aiGroup.classList.add('expanded');
             const parent = aiGroup.querySelector('.snav-parent');
@@ -726,21 +728,14 @@ function selectSettingsPane(pane) {
     else if (pane === 'run') deps.renderRunPane();
     else if (pane === 'lifecycle' && typeof deps.renderLifecyclePane === 'function') deps.renderLifecyclePane();
     else if (pane === 'envvars') deps.renderEnvVarsPane();
-    else if (pane === 'activity') deps.renderActivityPane();
-    else if (pane === 'usage-stats' && typeof deps.renderUsageStatsPane === 'function') {
-        // 异步面板：查询失败落到控制台，不能让导航看起来「点了没反应」
-        Promise.resolve(deps.renderUsageStatsPane()).catch((e) => console.error('使用统计设置页渲染失败', e));
-    }
+    else if (pane === 'app-pages' && typeof deps.renderAppPagesPane === 'function') deps.renderAppPagesPane();
     else if (pane === 'storage') deps.renderStoragePane();
     else if (pane === 'external-tools' && typeof deps.renderExternalToolsPane === 'function') {
         // 异步面板：渲染失败落到控制台，不能让导航看起来「点了没反应」
         Promise.resolve(deps.renderExternalToolsPane()).catch((e) => console.error('外部工具设置页渲染失败', e));
     }
     else if (pane === 'developer') {
-        // 补丁库：进面板时拉一次最近补丁（顺带触发 Go 侧滞留 applying 的自愈）
-        if (deps.patchesPane && typeof deps.patchesPane.refreshPatchStore === 'function') {
-            try { deps.patchesPane.refreshPatchStore(); } catch (e) {}
-        }
+        // 开发者页只剩日志与调试控制台；补丁库已迁为内容区标签页（应用页面 → 补丁库）
     }
     if (pane === 'ai' || pane === 'models' || pane === 'agents' || pane === 'gen-models' || pane === 'external-tools' || pane === 'persona' || pane === 'context' || pane === 'preferences') {
         if (!deps.aiPanel) deps.initAIPanel();
@@ -748,12 +743,7 @@ function selectSettingsPane(pane) {
             try { deps.aiPanel.refreshSettings(); } catch (e) {}
         }
     }
-    if (pane === 'schedules') {
-        if (!deps.aiPanel) deps.initAIPanel();
-        if (deps.aiPanel && typeof deps.aiPanel.refreshScheduleSettings === 'function') {
-            try { deps.aiPanel.refreshScheduleSettings(); } catch (e) {}
-        }
-    }
+    // 定时任务已迁为内容区标签页（应用页面 → 定时任务），CRUD 后由页面自己刷新列表
     // 动态面板（格式总览 / 格式子页 / 运行 / AI 设置）每次重建都会生成新的 select，
     // 渲染完再增强一次，避免它们退回原生外观。
     selMod.enhanceSetSelects();

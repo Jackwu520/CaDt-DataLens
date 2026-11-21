@@ -5,7 +5,9 @@
 // deps 由 main.js 显式传入（getter 延迟求值 + 需要回写的状态带 setter）；
 // 原 main.js 裸标识符引用已按 deps 名重写为 deps.X。
 import {createExplorerHistory} from './explorer-history.js';
-import {fileTypeMenuItem, resolveNewFileMenu} from './new-file-menu.js';
+import {BUILTIN_FILE_TYPES, fileTypeMenuItem, resolveNewFileMenu} from './new-file-menu.js';
+import {normalizeScratchExt, scratchDraftName, scratchDir} from '../core/scratch.js';
+import {iconSvg} from '../core/icons.js';
 
 export function createExplorerOps(deps) {
 
@@ -395,6 +397,141 @@ function openCreateEntryDialog(dirPath, isDir, suggestedName, title, initialCont
     });
 }
 
+// ---- 临时草稿（docs/finished-plans/scratch-file.md）----
+//
+// 语言清单直接复用「新建文件」的内置类型表：应用里高亮 / 视图 / 运行配方全部按扩展名分派，
+// 没有内容嗅探，所以「选语言」= 选扩展名（方案 §6）。零新表。
+const scratchLangs = BUILTIN_FILE_TYPES.map((type) => {
+    const dot = type.name.lastIndexOf('.');
+    return {
+        ext: type.name.slice(dot).toLowerCase(),
+        // 'Markdown 文件' → 'Markdown'；'Shell 脚本' 原样
+        label: type.label.replace(/文件$/, ''),
+        group: type.group,
+    };
+});
+
+// scratchLangItems：语言项 → 菜单项（只决定出现与标签，可用性由 scratchMenuItems 统一套）。
+function scratchLangItems(dirPath, langs) {
+    return langs.map((lang) => ({
+        label: lang.label,
+        shortcut: lang.ext,
+        action: () => createScratchFile(dirPath, lang.ext),
+    }));
+}
+
+// scratchMenuItems：新建菜单里「临时文件」的子菜单。
+// 首行 = 上次用过的扩展名（settings.scratchExt，缺省 .md）一键建，其余是语言清单 + 更多…
+function scratchMenuItems(dirPath) {
+    const defExt = normalizeScratchExt(deps.settings && deps.settings.scratchExt);
+    const readOnly = !!(deps.settings && deps.settings.readOnlyMode);
+    const items = [
+        {label: '临时文件（' + defExt + '）', icon: 'doc', action: () => createScratchFile(dirPath, defExt)},
+        {sep: true},
+        ...scratchLangItems(dirPath, scratchLangs.filter((lang) => lang.group === 'top')),
+    ];
+    const more = scratchLangs.filter((lang) => lang.group !== 'top');
+    if (more.length) items.push({label: '更多…', submenu: scratchLangItems(dirPath, more)});
+    for (const item of items) {
+        if (!item.sep) item.disabled = readOnly;
+    }
+    return items;
+}
+
+// createScratchFile(dirPath, ext, opts)：临时草稿的唯一编排。
+//   dirPath —— 只表达「从哪个新建入口进来」，**不参与拼路径**：草稿一律落工作区根的
+//              .cadt/scratch/，不能跟着右键点中的子目录走（也不能落进 AI 免审写区 .cadt/tmp）。
+//   ext     —— 草稿扩展名（= 语言）。
+//   opts.content —— 初始内容（编辑器选区「存为临时草稿」用）。
+// 落盘链路：AIEnsureDir（MkdirAll 幂等）→ CreateEntry（O_EXCL）→ SaveFile（有初始内容时）→ openPath。
+// 不刷文件树：.cadt 在文件树里本来就被跳过，刷了也看不见，改为一句话 flash。
+async function createScratchFile(dirPath, ext, opts = {}) {
+    const ws = deps.workspaceFolder;
+    if (!ws) {
+        deps.flash('临时草稿需要先打开工作区文件夹', true);
+        return '';
+    }
+    if (deps.settings && deps.settings.readOnlyMode) {
+        deps.flash('只读模式下不能新建临时草稿', true);
+        return '';
+    }
+    if (!deps.backend.AIEnsureDir || !deps.backend.CreateEntry || !deps.backend.SaveFile) {
+        deps.flash('当前版本不支持临时草稿', true);
+        return '';
+    }
+    const dir = scratchDir(ws);
+    const usedExt = normalizeScratchExt(ext);
+    const content = opts && opts.content != null ? String(opts.content) : '';
+    try {
+        await deps.backend.AIEnsureDir(dir);
+    } catch (e) {
+        deps.flash('创建草稿目录失败：' + e, true);
+        return '';
+    }
+    // 秒级时间戳在同一秒内连点会撞名：CreateEntry 走 O_EXCL 会报错，加序号重试两次。
+    let target = '';
+    let name = '';
+    for (let seq = 0; seq < 3; seq += 1) {
+        name = scratchDraftName(Date.now(), usedExt, seq);
+        try {
+            target = await deps.backend.CreateEntry(dir, name, false);
+            break;
+        } catch (e) {
+            if (seq >= 2) {
+                deps.flash('创建临时草稿失败：' + e, true);
+                return '';
+            }
+        }
+    }
+    if (!target) return '';
+    if (content) {
+        try {
+            await deps.backend.SaveFile(target, content, 'lf', false, 'utf-8');
+        } catch (e) {
+            deps.flash('草稿已建，但写入内容失败：' + e, true);
+        }
+    }
+    // 「上次用过的扩展名」只影响下一次一键建草稿，不值得走整份 applySettings（会重刷主题/字体）
+    if (typeof deps.rememberScratchExt === 'function') deps.rememberScratchExt(usedExt);
+    if (deps.openPath) await deps.openPath(target);
+    // 文件树的「临时草稿」节点要立刻能看到这份新草稿（.cadt 不在文件系统通知范围内），
+    // 顺手展开 + 选中它——比一句 flash 更明确的「东西在这儿」
+    if (deps.explorer && typeof deps.explorer.refreshScratch === 'function') {
+        try {
+            await deps.explorer.refreshScratch({expand: true});
+            if (typeof deps.explorer.selectPath === 'function') deps.explorer.selectPath(target, false);
+        } catch (e) {}
+    }
+    const doc = deps.docs.find((item) => samePathValue(item.path, target));
+    // 打开路径时 openPathsHere 已按目录判定过；这里补一次，保证「刚建的这份」一定有标记
+    if (doc) {
+        doc.draft = true;
+        // 草稿的预期是「立刻能写」：空内容 + 预览型格式（.md / .html）的首屏在 createDoc 里
+        // 一律是预览视图，这里只对**刚建的空草稿**改走代码视图，普通文件与已有内容不受影响。
+        if (!content && doc.format && doc.format.preview && doc.mode === 'preview' &&
+            doc === deps.file && typeof deps.switchMode === 'function') {
+            deps.switchMode('code');
+        }
+    }
+    deps.flash('已建临时草稿：' + name + '（文件树「临时草稿」）');
+    history.push({
+        label: '新建临时草稿“' + name + '”',
+        undo: async () => {
+            if (!deps.backend.DeleteEntry) return false;
+            await deps.backend.DeleteEntry(target); // 回收站，误撤销可取回
+            afterHistoryChange([target]);
+            return true;
+        },
+        redo: async () => {
+            const created = await deps.backend.CreateEntry(dir, name, false);
+            if (content && deps.backend.SaveFile) await deps.backend.SaveFile(created, content, 'lf', false, 'utf-8');
+            afterHistoryChange([created]);
+            return true;
+        },
+    });
+    return target;
+}
+
 // 打开「菜单管理」设置页（右键子菜单底部的「配置菜单…」入口）。
 function openNewFileMenuSettings() {
     if (!deps.openSettings) return;
@@ -415,18 +552,21 @@ function newFileMenuItems(dirPath) {
         if (entry.kind === 'special') {
             specials += 1;
             if (entry.id === 'file.dialog') {
-                items.push({label: entry.label, icon: 'E7C3', disabled: readOnly,
+                items.push({label: entry.label, icon: 'file', disabled: readOnly,
                     action: () => openCreateEntryDialog(dirPath, false, '', '新建文件')});
             } else if (entry.id === 'dir.dialog') {
-                items.push({label: entry.label, icon: 'E8B7', disabled: readOnly,
+                items.push({label: entry.label, icon: 'folder', disabled: readOnly,
                     action: () => openCreateEntryDialog(dirPath, true, '新建文件夹', '新建文件夹')});
             } else if (entry.id === 'scratch') {
-                // 临时文件落盘草稿的编排可能落在本模块或经 deps 注入（另一项功能负责），
-                // 两种位置都认；尚未接入时保留灰占位，不给点了没反应的条目。
-                const scratchFn = typeof createScratchFile === 'function' ? createScratchFile
-                    : (typeof deps.createScratchFile === 'function' ? deps.createScratchFile : null);
-                items.push({label: entry.label, icon: 'doc', disabled: readOnly || !scratchFn,
-                    action: !readOnly && scratchFn ? () => scratchFn(dirPath) : undefined});
+                // 临时草稿：有工作区且非只读才可用；不可用时保留灰占位（不给点了没反应的条目）。
+                // 子菜单首行是「上次用过的扩展名」一键建，其余是语言清单（方案 §6）。
+                const available = !!deps.workspaceFolder && !readOnly;
+                items.push({
+                    label: entry.label,
+                    icon: 'doc',
+                    disabled: !available,
+                    submenu: available ? scratchMenuItems(dirPath) : undefined,
+                });
             }
             continue;
         }
@@ -680,6 +820,20 @@ async function redoExplorer() {
 
 function showExplorerMenu(info, x, y) {
     if (!deps.ctxMenu || !info) return;
+    // 「临时草稿」固定节点是界面给的入口，不是一个用户可以搬/删的普通目录：
+    // 只给「新建草稿 / 刷新 / 定位 / 去清理」四件事，避免误删整个 scratch 目录。
+    if (info.scratch) {
+        const readOnly = !!(deps.settings && deps.settings.readOnlyMode);
+        deps.ctxMenu.open([
+            {label: '新建临时草稿', icon: 'plus', disabled: readOnly, submenu: scratchMenuItems(info.path)},
+            {sep: true},
+            {label: '刷新', icon: 'refresh', action: () => deps.explorer && deps.explorer.refreshScratch && deps.explorer.refreshScratch({expand: true})},
+            {label: '在文件管理器中显示', icon: 'folder', action: () => deps.showPathInFolder(info.path)},
+            {sep: true},
+            {label: '存储与清理…', icon: 'gear', action: () => deps.openSettings && deps.openSettings('storage')},
+        ], x, y);
+        return;
+    }
     const isDir = !!info.isDir;
     const selected = deps.explorer ? deps.explorer.getSelection() : [];
     const targets = selected.length ? selected : [{path: info.path, name: info.name, isDir}];
@@ -689,88 +843,88 @@ function showExplorerMenu(info, x, y) {
     if (isDir) {
         items.push({
             label: '新建',
-            icon: 'E710',
+            icon: 'plus',
             disabled: !!deps.settings.readOnlyMode,
             submenu: newFileMenuItems(info.path),
         });
-        items.push({label: '作为书籍阅读', icon: 'E8A5', action: () => deps.readingMode && deps.readingMode.openBook(info.path)});
-        items.push({label: '用默认应用打开', icon: 'E8E5', action: () => deps.openWithDefaultApp(info.path)});
+        items.push({label: '作为书籍阅读', icon: 'doc', action: () => deps.readingMode && deps.readingMode.openBook(info.path)});
+        items.push({label: '用默认应用打开', icon: 'open-folder', action: () => deps.openWithDefaultApp(info.path)});
     } else {
-        items.push({label: '打开', icon: 'E8E5', action: () => deps.openPath(info.path)});
-        items.push({label: '以只读打开', icon: 'E8E5', action: () => deps.openPath(info.path, {readOnly: true})});
-        items.push({label: '用默认应用打开', icon: 'E8E5', action: () => deps.openWithDefaultApp(info.path)});
-        items.push({label: '在新窗口中打开', icon: 'E8A7', action: () => deps.openInNewWindows([info.path])});
+        items.push({label: '打开', icon: 'open-folder', action: () => deps.openPath(info.path)});
+        items.push({label: '以只读打开', icon: 'open-folder', action: () => deps.openPath(info.path, {readOnly: true})});
+        items.push({label: '用默认应用打开', icon: 'open-folder', action: () => deps.openWithDefaultApp(info.path)});
+        items.push({label: '在新窗口中打开', icon: 'new-window', action: () => deps.openInNewWindows([info.path])});
         // 轻量查看窗（辅助窗第二批）：只读、不占工作区归属，双击即看的正路
         if (deps.backend && deps.backend.OpenLightView) {
-            items.push({label: '在独立窗口查看（轻量）', icon: 'E8A7', action: () => {
+            items.push({label: '在独立窗口查看（轻量）', icon: 'new-window', action: () => {
                 deps.backend.OpenLightView(info.path).catch((e) => deps.flash && deps.flash('打开轻量查看窗失败：' + ((e && e.message) || e), true));
             }});
         }
         if (deps.readingMode && /\.(md|markdown|mdx|txt|docx|epub)$/i.test(info.name || '')) {
-            items.push({label: '阅读此文件', icon: 'E8A5', action: () => deps.readingMode.openSingleFile(info.path)});
+            items.push({label: '阅读此文件', icon: 'doc', action: () => deps.readingMode.openSingleFile(info.path)});
         }
         items.push(...deps.aiReferenceFileMenuItems({path: info.path, name: info.name}));
         if (deps.gitStateCache.map.get(info.path.replace(/\\/g, '/'))) {
-            items.push({label: 'Git：查看差异', icon: 'E8D3', action: () => deps.showGitDiff(info.path)});
+            items.push({label: 'Git：查看差异', icon: 'diff', action: () => deps.showGitDiff(info.path)});
         }
         const compareTargets = selected.filter((item) => item && item.path && !item.isDir);
         if (compareTargets.length === 2) {
             items.push({
                 label: '比较这两个文件…',
-                icon: 'E8A5',
+                icon: 'doc',
                 action: () => deps.openDiffDialog(compareTargets[0].path, compareTargets[1].path),
             });
         }
     }
     items.push({sep: true});
-    items.push({label: '复制', shortcut: 'Ctrl+C', icon: 'E8C8', action: () => setFileClipboard(targets, false)});
+    items.push({label: '复制', shortcut: 'Ctrl+C', icon: 'copy', action: () => setFileClipboard(targets, false)});
     items.push({
         label: '剪切',
         shortcut: 'Ctrl+X',
-        icon: 'E8C6',
+        icon: 'cut',
         disabled: !!deps.settings.readOnlyMode,
         action: () => setFileClipboard(targets, true),
     });
     items.push({
         label: '粘贴',
         shortcut: 'Ctrl+V',
-        icon: 'E77F',
+        icon: 'paste',
         disabled: !!deps.settings.readOnlyMode || !deps.fileClipboard || !deps.fileClipboard.items.length,
         action: () => pasteFileClipboard(info),
     });
     items.push({sep: true});
     if (isDir) {
-        items.push({label: '设为文件树根目录', icon: 'E8B7', action: () => deps.openFolderWorkspace(info.path)});
+        items.push({label: '设为文件树根目录', icon: 'folder', action: () => deps.openFolderWorkspace(info.path)});
         items.push({
             label: '结构化目录',
-            iconHtml: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 4.5h14M5.5 8.5h11.5M8 12.5h9M10.5 16.5h6.5" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>',
+            iconHtml: iconSvg('structured-dir'),
             submenu: [
-                {label: '复制', icon: 'E8C8', action: () => deps.copyStructuredDir(info.path)},
-                {label: '导出…', icon: 'E74E', action: () => deps.exportStructuredDir(info.path)},
+                {label: '复制', icon: 'copy', action: () => deps.copyStructuredDir(info.path)},
+                {label: '导出…', icon: 'save', action: () => deps.exportStructuredDir(info.path)},
             ],
         });
         items.push({sep: true});
     }
     items.push({
         label: '重命名…',
-        icon: 'E8AC',
+        icon: 'rename',
         disabled: !!deps.settings.readOnlyMode || targets.length !== 1,
         action: () => openRenameEntryDialog(info),
     });
     items.push({
         label: '删除',
         shortcut: 'Delete',
-        icon: 'E74D',
+        icon: 'trash',
         danger: true,
         disabled: !!deps.settings.readOnlyMode || !deletable.length,
         action: () => deleteExplorerEntries(targets),
     });
-    items.push({label: '复制路径', icon: 'E8C8', submenu: copyPathMenuItems(targets)});
-    items.push({label: '在文件管理器中显示', icon: 'E8B7', action: () => deps.showPathInFolder(info.path)});
+    items.push({label: '复制路径', icon: 'copy', submenu: copyPathMenuItems(targets)});
+    items.push({label: '在文件管理器中显示', icon: 'folder', action: () => deps.showPathInFolder(info.path)});
     items.push({sep: true});
-    items.push({label: '刷新', icon: 'E72C', action: () => deps.explorer && deps.explorer.refresh()});
+    items.push({label: '刷新', icon: 'refresh', action: () => deps.explorer && deps.explorer.refresh()});
     items.push({sep: true});
-    items.push({label: '属性…', icon: 'E946', action: () => deps.showFileProperties(info.path)});
+    items.push({label: '属性…', icon: 'info', action: () => deps.showFileProperties(info.path)});
     deps.ctxMenu.open(items, x, y);
 }
 
@@ -787,6 +941,9 @@ function showExplorerMenu(info, x, y) {
         pasteFileClipboard,
         openCreateEntryDialog,
         newFileMenuItems,
+        // 临时草稿：编排与菜单各一份，供 文件 → 新建 / 编辑器右键 复用（不复制实现）
+        createScratchFile,
+        scratchMenuItems,
         applyRenamedPath,
         deleteExplorerEntries,
         openRenameEntryDialog,

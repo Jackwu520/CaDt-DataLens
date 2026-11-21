@@ -1,12 +1,14 @@
+import {iconSvg} from '../core/icons.js';
+
+// 局部键 → 注册表键（原散落 SVG 已收编 core/icons.js）；svg 尺寸由 .sb-chev/.sb-icon/.sb-tool 的 CSS 规则统一
 const ICONS = {
-    chevron: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="m6 4 4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-    folder: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4.7c0-.9.7-1.7 1.7-1.7h2.9l1.6 1.8h4.1c.9 0 1.7.7 1.7 1.7v4.8c0 .9-.7 1.7-1.7 1.7H3.7c-.9 0-1.7-.7-1.7-1.7z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>',
-    file: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2.8h5.2L12 5.6v7.6H4z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M9.2 2.8v2.8H12" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>',
-    list: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4.2h10M3 8h10M3 11.8h10" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>',
-    tree: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 3.2v9.6M3 6h4.2M3 11.8h4.2" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><path d="M7.2 4.6h5.2v2.8H7.2zM7.2 10.4h5.2v2.8H7.2z" fill="none" stroke="currentColor" stroke-width="1.1"/></svg>',
-    filter: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 3.2h11L9.6 8.4v4.2l-3.2 1.6V8.4z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>',
-    refresh: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M12.8 8a4.8 4.8 0 1 1-1.4-3.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M12.8 2.6v3.2H9.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-    reveal: '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.6" fill="none" stroke="currentColor" stroke-width="1.2"/><circle cx="8" cy="8" r="1.5" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M8 1.4v2.2M8 12.4v2.2M1.4 8h2.2M12.4 8h2.2" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>',
+    chevron: iconSvg('chevron-right'),
+    folder: iconSvg('folder'),
+    list: iconSvg('list'),
+    tree: iconSvg('tree'),
+    filter: iconSvg('filter'),
+    refresh: iconSvg('refresh'),
+    reveal: iconSvg('locate'),
 };
 function normalizePath(path) {
     return String(path || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
@@ -147,6 +149,7 @@ export function createExplorer(options) {
         body, titleEl, refreshBtn, revealBtn, listBtn, treeBtn, filterBtn, onToggleFilter,
         readDir, dirMtime, openPath, openFolder, openFileDialog, isSupported,
         onModeChange, onContextMenu, onMove, onExternalDrop, canDrag,
+        scratchRoot,
         readLimit = 1000, listReadLimit = 5000,
     } = options;
     // 列表扫描上限三常量随列表引擎迁入 explorer-list.js；忽略表与文件系统通知共用，留宿主
@@ -169,6 +172,9 @@ export function createExplorer(options) {
     let externalOverflow = false;
     const externalDirs = new Set();
     let dragState = null;
+    // 「临时草稿」固定节点（JetBrains 的 Scratches and Consoles 同款）：不在 tree.children 里，
+    // 由 renderTree 单独追加在根节点之后；路径是真实的 <ws>/.cadt/scratch，loadNode 照常读盘。
+    let scratchNode = null;
 
     const canList = (name) => (typeof isSupported === 'function' ? isSupported(name) : true);
 
@@ -208,6 +214,48 @@ export function createExplorer(options) {
         // 打开了工作区就扫工作区下所有文件（含嵌套）；只开了单个文件则扫其所在目录及子文件夹
         if (explicitRoot) return explicitRoot;
         return activePath ? parentPath(activePath) : null;
+    }
+
+    // 树里隐藏应用自己的状态目录 .cadt（AI 记忆 / 日志 / 补丁 / 草稿都在里面）。
+    // 草稿没有失去可见性——它由下面的「临时草稿」固定节点专门展示；
+    // 其余 .cadt 内容各有自己的界面（设置 → 存储与清理、补丁库、便签…）。
+    // 只在工作区根这一层生效：用户直接把某个目录设成根时不会误伤同名子目录。
+    function filterTreeEntries(node, entries) {
+        if (!node || !node.root) return entries;
+        return entries.filter((entry) => !(entry.isDir && String(entry.name).toLowerCase() === '.cadt'));
+    }
+
+    // 草稿固定节点的路径：没打开工作区 / 调用方没提供时返回空串（节点不出现）
+    function scratchRootPath() {
+        return typeof scratchRoot === 'function' ? String(scratchRoot() || '') : '';
+    }
+
+    // ensureScratchNode：路径变了就重建（切工作区），否则复用同一个对象保住展开态
+    function ensureScratchNode() {
+        const dir = scratchRootPath();
+        if (!dir) {
+            scratchNode = null;
+            return null;
+        }
+        if (scratchNode && samePath(scratchNode.path, dir)) return scratchNode;
+        scratchNode = {
+            name: '临时草稿',
+            path: dir,
+            isDir: true,
+            // root 语义 = 固定节点：不可拖拽、名字加粗（与工作区根同款）
+            root: true,
+            scratch: true,
+            expanded: false,
+            loaded: false,
+            loading: false,
+            error: '',
+            truncated: false,
+            dirMtime: 0,
+            children: [],
+            loadPromise: null,
+            refreshing: false,
+        };
+        return scratchNode;
     }
 
     function currentRoot() {
@@ -355,7 +403,7 @@ export function createExplorer(options) {
             e.stopPropagation();
             selectForContext(node);
             if (typeof onContextMenu === 'function') {
-                onContextMenu({kind: 'tree', name: node.name, path: node.path, isDir: node.isDir, isRoot: !!node.root}, e.clientX, e.clientY, node);
+                onContextMenu({kind: 'tree', name: node.name, path: node.path, isDir: node.isDir, isRoot: !!node.root, scratch: !!node.scratch}, e.clientX, e.clientY, node);
             }
         });
         row.draggable = !node.root;
@@ -464,6 +512,9 @@ export function createExplorer(options) {
         }
         const frag = document.createDocumentFragment();
         appendTreeRows(tree, frag);
+        // 草稿固定节点跟在工作区根之后（JetBrains 把 Scratches 放在项目节点下方同一层）
+        const sn = ensureScratchNode();
+        if (sn) appendTreeRows(sn, frag);
         body.appendChild(frag);
         body.scrollTop = prevTop;
         updateTitle();
@@ -486,7 +537,7 @@ export function createExplorer(options) {
                 const result = await readDir(node.path, readLimit);
                 if (seq != null && seq !== treeSeq) return false;
                 const entries = (result && result.entries) || [];
-                node.children = entries.map((entry) => ({
+                node.children = filterTreeEntries(node, entries).map((entry) => ({
                     name: entry.name,
                     path: entry.path,
                     isDir: !!entry.isDir,
@@ -704,8 +755,18 @@ export function createExplorer(options) {
     }
 
     async function revealActive() {
-        if (!tree || !activePath || !isWithin(tree.path, activePath)) return;
+        if (!tree || !activePath) return;
         const seq = ++revealSeq;
+        // 草稿落在 .cadt/scratch（树里已隐藏 .cadt）：展开固定节点即可，不必走子树逐层展开
+        const sn = ensureScratchNode();
+        if (sn && isWithin(sn.path, activePath)) {
+            sn.expanded = true;
+            await loadNode(sn, treeSeq);
+            if (seq !== revealSeq) return;
+            renderTree(true);
+            return;
+        }
+        if (!isWithin(tree.path, activePath)) return;
         let node = tree;
         node.expanded = true;
         while (node && node.isDir) {
@@ -729,6 +790,18 @@ export function createExplorer(options) {
         const target = String(targetPath || '');
         if (!target) return false;
         ensureTree();
+        // 草稿路径：.cadt 已从树里隐藏，改由「临时草稿」固定节点承载
+        const sn = ensureScratchNode();
+        if (sn && isWithin(sn.path, target)) {
+            const seq = ++revealSeq;
+            sn.expanded = true;
+            if (!sn.loaded) await loadNode(sn, treeSeq);
+            else await refreshNodeChildren(sn, true);
+            if (seq !== revealSeq) return false;
+            renderTree(true);
+            selectPath(target, false);
+            return true;
+        }
         if (!tree || !isWithin(tree.path, target)) return false;
         const seq = ++revealSeq;
         let node = tree;
@@ -865,6 +938,11 @@ export function createExplorer(options) {
             revealSeq++;
             ensureTree();
             renderTree();
+            // 用户显式刷新：草稿固定节点也重读一遍（它不在 tree 子树里，不会随之重建）
+            if (scratchNode) {
+                if (scratchNode.expanded) refreshScratch({expand: true});
+                else scratchNode.loaded = false;
+            }
             revealActive();
         }
         scheduleAutoRefresh();
@@ -872,6 +950,8 @@ export function createExplorer(options) {
 
     function isNodeAttached(node) {
         if (!tree || !node) return false;
+        // 草稿固定节点不在 tree 子树里，但它自身就是当前挂载的那个对象
+        if (scratchNode && node === scratchNode) return true;
         if (samePath(tree.path, node.path)) return tree === node;
         return findLoadedNode(tree, node.path) === node;
     }
@@ -897,7 +977,7 @@ export function createExplorer(options) {
             }
             const result = await readDir(path, readLimit);
             if (!isNodeAttached(node) || node.loading || node.loadPromise || !samePath(node.path, path)) return false;
-            return mergeChildren(node, (result && result.entries) || [], !!(result && result.truncated), result && result.mtime);
+            return mergeChildren(node, filterTreeEntries(node, (result && result.entries) || []), !!(result && result.truncated), result && result.mtime);
         } catch (e) {
             if (!isNodeAttached(node) || (node.children && node.children.length && !node.root)) return false;
             const message = String((e && e.message) || e);
@@ -939,6 +1019,8 @@ export function createExplorer(options) {
         if (!tree) return;
         const targets = [];
         collectExpanded(tree, targets);
+        // 草稿固定节点不在 tree 子树里，展开时也要跟着定时刷新（草稿可能被 AI / 外部编辑器改）
+        if (scratchNode && scratchNode.expanded) targets.push(scratchNode);
         const visiblePaths = new Set();
         for (const row of body.querySelectorAll('.sb-row[data-path][data-dir="1"]')) {
             visiblePaths.add(normalizePath(row.dataset.path));
@@ -987,6 +1069,7 @@ export function createExplorer(options) {
         for (const dir of externalDirs) {
             const node = findLoadedNode(tree, dir);
             if (node && node.isDir) nodes.push(node);
+            else if (scratchNode && samePath(scratchNode.path, dir)) nodes.push(scratchNode);
         }
         const listRoot = mode === 'list' ? listRootPath() : null;
         // 只关心扫描范围内（含嵌套）的变化；父目录的事件不再触发整个列表重载
@@ -1249,6 +1332,22 @@ export function createExplorer(options) {
         if (!document.hidden && autoRefreshSeconds > 0) scheduleAutoRefresh(0);
     });
 
+    // 草稿文件树节点变更后调用（新建草稿 / 空白草稿被自动删掉）：展开时重读目录，收起时只重绘。
+    // .cadt 不在文件系统通知范围内（忽略表里就有它），所以这条刷新由调用方显式触发。
+    // opts.expand = 新建后展开该节点（否则新文件只在收起态里，用户看不到任何变化）。
+    async function refreshScratch(opts = {}) {
+        const sn = ensureScratchNode();
+        if (!sn) {
+            if (visible) renderTree();
+            return false;
+        }
+        if (opts.expand) sn.expanded = true;
+        if (sn.expanded) await refreshNodeChildren(sn, true);
+        else sn.loaded = false;
+        if (visible && mode === 'tree') renderTree();
+        return true;
+    }
+
     return {
         setVisible,
         setMode,
@@ -1261,6 +1360,7 @@ export function createExplorer(options) {
         refresh,
         toggleNode,
         refreshDir,
+        refreshScratch,
         pathRenamed,
         handleExternalChanges,
         notifyFileChange,

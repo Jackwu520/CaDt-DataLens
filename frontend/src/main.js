@@ -84,6 +84,7 @@ import {createActivityPane} from './settings/activity-pane.js';
 import {createSettingsPanePatches} from './settings/settings-pane-patches.js';
 import {createSettingsPaneStorage} from './settings/settings-pane-storage.js';
 import {createSettingsPaneUsageStats} from './settings/settings-pane-usage-stats.js';
+import {createSettingsPaneAppPages} from './settings/settings-pane-app-pages.js';
 import {createSettingsPaneWipeguard} from './settings/settings-pane-wipeguard.js';
 import {createSettingsPaneNewFileMenu} from './settings/settings-pane-new-file-menu.js';
 import {createSettingsPaneLifecycle} from './settings/settings-pane-lifecycle.js';
@@ -103,6 +104,9 @@ import {createExplorerOps} from './explorer/explorer-ops.js';
 import {createEditorGroups} from './editor/editor-groups.js';
 import {bookmarkOverview, formatBookmarkListText} from './editor/bookmark-list.js';
 import {isDocReadOnly, isTabReadOnlyFixed, isTabReadOnlyLocked} from './core/readonly.js';
+import {listScratchDrafts, isScratchPath, normalizeScratchExt, scratchDir} from './core/scratch.js';
+import {tabKindOf} from './core/tab-kinds.js';
+import {APP_PAGES, appPageGroups, appPageOf} from './core/app-pages.js';
 import {overlayStack} from './core/overlay-stack.js';
 import {loadWailsRuntime, createRuntimeAdapter, createBackendProxy} from './core/wails-runtime.js';
 import {createAppEventBridge, setAppEventBridge} from './core/app-events.js';
@@ -115,8 +119,9 @@ window.addEventListener('error', (e) => {
     window.__modErr = (e.message || '') + ' @ ' + (e.filename || '').split('/').pop() + ':' + e.lineno + ':' + e.colno;
 });
 
-const UNLOCK_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3.2" y="7" width="9.6" height="6.8" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M6 7V5.6A2.4 2.4 0 0 1 10.8 4.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><circle cx="8" cy="10.4" r="1" fill="currentColor"/></svg>';
-const LOCK_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3.2" y="7" width="9.6" height="6.8" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M6 7V5.6A2 2 0 0 1 10 5.6V7" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><circle cx="8" cy="10.4" r="1" fill="currentColor"/></svg>';
+// 只读锁（状态栏按钮）：解锁/锁定成对语义，走注册表（.status-lock svg 由 CSS 统一 14px）
+const UNLOCK_ICON = iconSvg('unlock');
+const LOCK_ICON = iconSvg('lock');
 const plainTextExtensions = new Set(['txt', 'log', 'conf']);
 
 // Wails v3：没有 window.go 全局，绑定改为 /wails/runtime.js 的 Call.ByName。
@@ -803,8 +808,6 @@ const els = {
     activityBar: document.getElementById('activity-bar'),
     abFiles: document.getElementById('ab-files'),
     abStructure: document.getElementById('ab-structure'),
-    abSearch: document.getElementById('ab-search'),
-    abBrowser: document.getElementById('ab-browser'),
     abMemo: document.getElementById('ab-memo'),
     abMore: document.getElementById('ab-more'),
     abTerminal: document.getElementById('ab-terminal'),
@@ -820,6 +823,7 @@ const els = {
     abGit: document.getElementById('ab-git'),
     abAi: document.getElementById('ab-ai'),
     abChats: document.getElementById('ab-chats'),
+    abAppPages: document.getElementById('ab-app-pages'),
     tbAi: document.getElementById('tb-ai'),
     aiPanel: document.getElementById('ai-panel'),
     termNew: document.getElementById('term-new'),
@@ -944,14 +948,10 @@ function appActionDocInfo(doc) {
 // 快捷便签 / 计划与差异等虚拟文档 / 子代理详情 / 后台终端）不是文件，混进「已打开文件」
 // 会被 aiDisplayPath 在范围根之外判成「（范围外）xxx」——模型会以为工作区外还有同名文件
 // 可读，用户看到的也是这句没头没尾的标注。返回 null 表示这是真文件（有 path）。
+//
+// 视图型虚拟标签页（浏览器 / 终端 / 子代理 …）的 kind 与 label 在 core/tab-kinds.js；
+// 这里只留文本型虚拟标签页（靠 viewKind 区分）的标签。
 const APP_TAB_KIND_LABELS = {
-    browser: '浏览器',
-    memo: '快捷便签',
-    terminal: '后台终端',
-    agent: '子代理详情',
-    team: '智能体团队',
-    sidechat: '支线对话',
-    groupmember: '群聊成员',
     plan: '计划文档',
     diff: '差异审阅',
     document: '只读文档',
@@ -960,21 +960,13 @@ const APP_TAB_KIND_LABELS = {
 
 function appTabViewOf(doc) {
     if (!doc || doc.path) return null;
-    let kind = '';
-    if (doc.browser) kind = 'browser';
-    else if (doc.memo) kind = 'memo';
-    else if (doc.bgTerm) kind = 'terminal';
-    else if (doc.agentView) kind = 'agent';
-    else if (doc.agentTeam) kind = 'team';
-    else if (doc.sideChat) kind = 'sidechat';
-    else if (doc.groupMember) kind = 'groupmember';
-    else if (doc.viewKind) kind = String(doc.viewKind);
-    else kind = 'untitled';
-    return {
-        kind,
-        label: APP_TAB_KIND_LABELS[kind] || '标签页',
-        name: String(doc.name || doc.browserUrl || '').trim(),
-    };
+    const name = String(doc.name || doc.browserUrl || '').trim();
+    // 视图型虚拟标签页：类型名与标签来自 core/tab-kinds.js（单一来源）
+    const tabKind = tabKindOf(doc);
+    if (tabKind) return {kind: tabKind.kind, label: tabKind.label, name};
+    // 文本型虚拟标签页（计划 / 差异 / 只读文档 / 未保存新文档）：靠 viewKind 区分
+    const kind = doc.viewKind ? String(doc.viewKind) : 'untitled';
+    return {kind, label: APP_TAB_KIND_LABELS[kind] || '标签页', name};
 }
 
 function appActionDocCaret(doc) {
@@ -1879,8 +1871,14 @@ async function runAppAction(action, params, scope, callerSessionId, requestActio
         }
         case 'ai_new_session': {
             if (!aiPanel || !aiPanel.bridgeNewSession) throw new Error('AI 面板未初始化');
-            const session = await aiPanel.bridgeNewSession({title: p.title, message: p.message});
-            return {created: session, note: p.message ? '已在新会话发送消息（真实触发一次模型调用）' : '已创建空会话'};
+            const focus = p.focus === true;
+            const session = await aiPanel.bridgeNewSession({title: p.title, message: p.message, focus});
+            const where = focus ? '并已切到该会话' : '（后台运行，面板当前会话未变）';
+            let sendPart;
+            if (!p.message) sendPart = '已创建空会话';
+            else if (session && session.sent === false) sendPart = '会话已建但消息发送失败（见面板错误提示）';
+            else sendPart = '已在新会话发送消息（真实触发一次模型调用）';
+            return {created: session, note: sendPart + where};
         }
         case 'ai_switch_session': {
             if (!aiPanel || !aiPanel.bridgeSwitchSession) throw new Error('AI 面板未初始化');
@@ -2467,8 +2465,10 @@ const defaultSettings = {
     storageAutoClean: false,
     storageAutoCleanDays: 7,
     storageAutoCleanMB: 500,
-    // 右键「新建」菜单定制（docs/unfinished-plans/feature-evaluations-2026-11-18.md §1）
+    // 右键「新建」菜单定制（docs/finished-plans/feature-evaluations-2026-11-18.md §1）
     newFileMenu: defaultNewFileMenu(),
+    // 临时草稿上次用过的扩展名（docs/finished-plans/scratch-file.md §6）：一键建草稿的默认语言
+    scratchExt: '.md',
 };
 let settings = JSON.parse(JSON.stringify(defaultSettings));
 try {
@@ -2499,6 +2499,8 @@ if (Object.prototype.hasOwnProperty.call(settings, 'preCommandsEnabled')) {
 }
 // 新建菜单配置：损坏 / 旧版残留字段一律归一化，不让它把右键菜单搞成空白
 settings.newFileMenu = normalizeNewFileMenu(settings.newFileMenu);
+// 临时草稿的默认扩展名：非法的旧值（含手工改坏的 localStorage）回落到 .md
+settings.scratchExt = normalizeScratchExt(settings.scratchExt);
 // 2026-11-16 主题体系重构：旧版 9 套界面主题降级为代码主题 —— 迁移成 深色/浅色
 // UI 主题 + 对应代码主题（映射单一来源 code-styles.js，index.html 启动脚本有同表副本）；
 // 未知主题（可能是已卸载插件注册的）先保留，等插件加载后 CSS 生效
@@ -2678,6 +2680,7 @@ const settingsUI = createSettingsUI({
     get refreshLogPath() { return refreshLogPath; },
     get relativePathFrom() { return relativePathFrom; },
     get renderActivityPane() { return renderActivityPane; },
+    get renderAppPagesPane() { return settingsPaneAppPages.renderAppPagesPane; },
     get renderCsvTableView() { return renderCsvTableView; },
     get renderEnvVarsPane() { return renderEnvVarsPane; },
     get renderFmtTable() { return renderFmtTable; },
@@ -2814,6 +2817,7 @@ const editorGroupsMod = createEditorGroups({
     get createSideChatView() { return createSideChatView; },
     get createGroupMemberView() { return createGroupMemberView; },
     get createBgTermView() { return createBgTermView; },
+    get createAppPageView() { return createAppPageView; },
     get createMemoView() { return createMemoView; },
     get CSV_COL_MIN_WIDTH() { return CSV_COL_MIN_WIDTH; },
     get CSV_ROW_NUM_WIDTH() { return CSV_ROW_NUM_WIDTH; },
@@ -2907,6 +2911,19 @@ function newFileTypeMenuItems(action) {
     ];
 }
 
+// rememberScratchExt：临时草稿「上次用过的扩展名」（下一份草稿一键建的默认语言）。
+// 只为一个字符串走整份 applySettings 会重刷主题/字体/写作模式，这里直接落 localStorage
+// （键与 settings-ui 的持久化同一个 settingsKey）。
+function rememberScratchExt(ext) {
+    const next = normalizeScratchExt(ext);
+    if (settings.scratchExt === next) return next;
+    settings.scratchExt = next;
+    try {
+        localStorage.setItem(settingsKey, JSON.stringify(settings));
+    } catch (e) {}
+    return next;
+}
+
 // ---- 资源管理器域操作（explorer-ops.js） ----
 // ---- 编辑器右键菜单域（editor-menus.js） ----
 // ---- 结构面板域（structure-panel.js） ----
@@ -2967,6 +2984,8 @@ const editorMenus = createEditorMenus({
     get createContextMenu() { return createContextMenu; },
     get createPalette() { return createPalette; },
     get createReadingMode() { return createReadingMode; },
+    // 编辑器选区「存为临时草稿」：编排在 explorer-ops，这里只传选区文本与当前文档扩展名
+    get createScratchFile() { return createScratchFile; },
     get ctxMenu() { return ctxMenu; },
     set ctxMenu(v) { ctxMenu = v; },
     get currentMode() { return currentMode; },
@@ -3054,6 +3073,7 @@ const explorerOps = createExplorerOps({
     get openPath() { return openPath; },
     get openWithDefaultApp() { return openWithDefaultApp; },
     get readingMode() { return readingMode; },
+    get rememberScratchExt() { return rememberScratchExt; },
     get renderBreadcrumb() { return renderBreadcrumb; },
     get renderTabs() { return renderTabs; },
     get renderWorkspaceCrumbs() { return renderWorkspaceCrumbs; },
@@ -3062,6 +3082,8 @@ const explorerOps = createExplorerOps({
     get showFileProperties() { return showFileProperties; },
     get showGitDiff() { return showGitDiff; },
     get showPathInFolder() { return showPathInFolder; },
+    // 空草稿建好后切到可写的视图（预览型格式首屏是预览，见 createScratchFile）
+    get switchMode() { return switchMode; },
     get updateWindowTitle() { return updateWindowTitle; },
     get workspaceFolder() { return workspaceFolder; },
     set workspaceFolder(v) { workspaceFolder = v; },
@@ -3078,6 +3100,9 @@ const moveEntriesByDrag = (...a) => explorerOps.moveEntriesByDrag(...a);
 const pasteFileClipboard = (...a) => explorerOps.pasteFileClipboard(...a);
 const openCreateEntryDialog = (...a) => explorerOps.openCreateEntryDialog(...a);
 const newFileMenuItems = (...a) => explorerOps.newFileMenuItems(...a);
+// 临时草稿：编排在 explorer-ops（唯一实现），文件菜单 / 编辑器右键只经这两个别名复用
+const createScratchFile = (...a) => explorerOps.createScratchFile(...a);
+const scratchMenuItems = (...a) => explorerOps.scratchMenuItems(...a);
 const applyRenamedPath = (...a) => explorerOps.applyRenamedPath(...a);
 const deleteExplorerEntries = (...a) => explorerOps.deleteExplorerEntries(...a);
 const openRenameEntryDialog = (...a) => explorerOps.openRenameEntryDialog(...a);
@@ -3260,6 +3285,9 @@ async function openPathsHere(paths, opts = {}) {
                 continue;
             }
             const doc = createDoc(readOnly ? {...data, readOnly: true} : data);
+            // 草稿目录里的文件天然是草稿：不管从「新建 → 临时文件」、草稿架还是最近打开进来，
+            // 都拿到 doc.draft（静默落盘 / 关闭空草稿自动删只认这个标记）。
+            if (isScratchPath(workspaceFolder, doc.path)) doc.draft = true;
             docs.push(doc);
             addDocToFocusedGroup(doc);
             rememberRecentOpen(doc.path, doc.name, false);
@@ -3725,6 +3753,15 @@ function applySidebarUI() {
         els.abChats.classList.toggle('active', chatsActive);
         els.abChats.setAttribute('aria-pressed', String(chatsActive));
     }
+    if (els.abAppPages) {
+        const appPagesActive = !!settings.showSidebar && settings.sidebarView === 'app-pages';
+        els.abAppPages.classList.toggle('active', appPagesActive);
+        els.abAppPages.setAttribute('aria-pressed', String(appPagesActive));
+    }
+    // 切进应用页面面板时按需渲染（首次 / 注册表变动后）
+    if (els.sidebar.dataset.sidebarView === 'app-pages' && !document.querySelector('#app-pages-nav .app-pages-nav-item')) {
+        try { renderAppPagesNav(); } catch (e) {}
+    }
     const filesVisible = !!settings.showSidebar && currentSidebarView() === 'files';
     if (explorer) explorer.setVisible(filesVisible);
     if (structurePanel) structurePanel.setVisible(!!settings.showSidebar && currentSidebarView() === 'structure');
@@ -3802,16 +3839,13 @@ function initActivityBar() {
     if (!els.activityBar) return;
     if (els.abFiles) els.abFiles.addEventListener('click', () => toggleSidebarView('files'));
     if (els.abStructure) els.abStructure.addEventListener('click', () => toggleSidebarView('structure'));
-    if (els.abSearch) els.abSearch.addEventListener('click', () => {
-        // 有可搜索视图开内容查找，否则退到全局搜索，保证图标总是有响应
-        if (findTarget()) openFindBar();
-        else openGlobalSearch();
-    });
+    // 搜索入口已从活动栏移除（Ctrl+F / Ctrl+Shift+F 与菜单「编辑」两项兜底）：
+    // 活动栏只留面板开关。
     if (els.tbRun) els.tbRun.addEventListener('click', () => runController.run());
     if (els.tbRunConfig) els.tbRunConfig.addEventListener('click', () => showRunConfigMenu(els.tbRunConfig));
-    // 新建浏览器标签页：活动栏是「一次性动作」而非面板开关，故无 aria-pressed
-    if (els.abBrowser) els.abBrowser.addEventListener('click', () => openBrowserTab('about:blank'));
-    // 快捷便签面板：同上，一次性打开成内容区标签页
+    // 浏览器入口已从活动栏移到「应用页面」侧栏面板与文件菜单：
+    // 活动栏只留面板开关，一次性动作不该和开关抢位置。
+    // 快捷便签面板：一次性打开成内容区标签页
     if (els.abMemo) els.abMemo.addEventListener('click', () => openMemoTab());
     if (els.editorCollapseStrip) els.editorCollapseStrip.addEventListener('click', () => toggleEditorCollapsed());
     if (els.abTerminal) els.abTerminal.addEventListener('click', () => toggleDockView('terminal'));
@@ -3819,10 +3853,28 @@ function initActivityBar() {
     if (els.abDebug) els.abDebug.addEventListener('click', () => toggleDockView('debug'));
     if (els.abGit) els.abGit.addEventListener('click', () => toggleSidebarView('git'));
     if (els.abChats) els.abChats.addEventListener('click', () => toggleSidebarView('chats'));
+    if (els.abAppPages) els.abAppPages.addEventListener('click', () => toggleAppPagesPanel());
     if (els.abMore) els.abMore.addEventListener('click', () => {
         if (!ctxMenu) return;
         const rect = els.abMore.getBoundingClientRect();
-        ctxMenu.open(menuItems('view'), rect.right + 6, rect.top - 4);
+        // 「视图与工具窗口」：视图菜单 + 应用页面（使用统计 / 定时任务 / 操作记录 / 补丁库）。
+        // 应用页面是内容区标签页，这里给鼠标党一个直达入口（菜单「工具」与命令面板另有入口）。
+        ctxMenu.open([
+            ...menuItems('view'),
+            {sep: true},
+            {
+                label: '应用页面',
+                icon: 'list',
+                submenu: appPageGroups().flatMap((group, index) => [
+                    ...(index ? [{sep: true}] : []),
+                    ...group.pages.map((page) => ({
+                        label: page.label,
+                        icon: page.icon,
+                        action: () => openAppPageTab(page.id),
+                    })),
+                ]),
+            },
+        ], rect.right + 6, rect.top - 4);
     });
     if (els.abSettings) els.abSettings.addEventListener('click', () => openSettings('general'));
     if (els.abAbout) els.abAbout.addEventListener('click', () => openSettings('about'));
@@ -3955,15 +4007,14 @@ function openAIPanelWithDraft(text) {
     aiPanel.bridgeSetDraft(text);
 }
 
-const AI_REFERENCE_ICON_HTML = '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3.2l1.1 3.1 3.1 1.1-3.1 1.1L10 11.6 8.9 8.5 5.8 7.4l3.1-1.1z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M15.2 12.3l.6 1.7 1.7.6-1.7.6-.6 1.7-.6-1.7-1.7-.6 1.7-.6z" fill="currentColor"/></svg>';
-
 // 右键菜单的 AI 引用入口（引用该文件 / 引用选取）：不再要求面板已打开——
 // 点击时自动开面板；同一文件（标签页 / 资源管理器 / 编辑器右键）只有一个入口，不再并排两个 AI 项。
+// 图标统一走注册表的 sparkles（原 20 网格手写星花已删除）。
 function aiReferenceFileMenuItems(doc) {
     if (!doc || !doc.path) return [];
     return [{
         label: '引用该文件',
-        iconHtml: AI_REFERENCE_ICON_HTML,
+        icon: 'sparkles',
         action: () => aiReferencePath(doc.path, doc.name || ''),
     }];
 }
@@ -3976,7 +4027,7 @@ function aiEditorReferenceMenuItems() {
         if (caret.selection) {
             return [{
                 label: '引用选取',
-                iconHtml: AI_REFERENCE_ICON_HTML,
+                icon: 'sparkles',
                 action: () => {
                     if (!aiPanel) initAIPanel();
                     if (!aiPanel || !aiPanel.referenceSelection) {
@@ -3991,7 +4042,7 @@ function aiEditorReferenceMenuItems() {
     }
     return [{
         label: '引用该文件',
-        iconHtml: AI_REFERENCE_ICON_HTML,
+        icon: 'sparkles',
         action: () => aiReferencePath(file.path, file.name || ''),
     }];
 }
@@ -4072,6 +4123,8 @@ const wipeguardCtrl = createAIWipeguard({
     getBackend: () => backend,
     getWsRoot: () => workspaceFolder || '',
     getSettings: () => settings,
+    // L3 快照失败 / 跳过文件升级进消息中心（snapshotTick 内部 30 分钟节流，见 ai-wipeguard.js）
+    notify: (msg, opts) => messageCenter.add(msg, opts),
     isAIActive: (root) => !!(aiPanel && typeof aiPanel.wipeguardIsAIActive === 'function' && aiPanel.wipeguardIsAIActive(root || workspaceFolder || '')),
     onCritical: (info) => {
         // 不停会话、不熔断写命令（2026-11-19 作者裁定）：合法批量删除（插件更新、切分支、
@@ -4617,6 +4670,9 @@ function initExplorer() {
         treeBtn: els.sbModeTree,
         readDir: (path, limit) => backend.ReadDir(path, limit),
         dirMtime: (path) => (typeof backend.DirMtime === 'function' ? backend.DirMtime(path) : Promise.resolve(0)),
+        // 文件树的「临时草稿」固定节点（JetBrains Scratches 同款）：.cadt 从树里隐藏，
+        // 草稿单独挂一个根级节点，路径就是 <ws>/.cadt/scratch
+        scratchRoot: () => scratchDir(workspaceFolder),
         openPath: (path) => openPath(path),
         openFolder: () => openFolderDialog(),
         openFileDialog: () => openDialog(),
@@ -4984,6 +5040,9 @@ async function saveDoc(doc, opts = {}) {
         doc.path = path;
         doc.name = path.split(/[\\/]/).pop();
         doc.untitled = false;
+        // 落点决定草稿身份：另存为到草稿目录 → 变成草稿；存到别处 → 不再是草稿
+        // （关标签时的「空草稿自动删」只认这个标记，普通文件绝不能被误删）
+        doc.draft = isScratchPath(workspaceFolder, path);
         doc.mode = savedMode;
         // 操作留痕：另存为 / 首次落盘（新建）/ 普通保存三类；自动保存不记。
         if (opts.saveAs) {
@@ -5022,6 +5081,16 @@ async function saveDoc(doc, opts = {}) {
         if (!opts.auto && !opts.silent) flash('已保存 ' + doc.name);
         return true;
     } catch (e) {
+        // 草稿目录被清掉（存储清理 / 手动删除）后，已打开草稿的保存会 ENOENT：SaveFile 是裸
+        // os.WriteFile，不建父目录。重建目录后静默重试一次（方案 §4 的护栏），普通文件不走这条。
+        const msg = String((e && e.message) || e);
+        if (doc.draft && !opts.reenoentRetry && backend.AIEnsureDir &&
+            /no such file|not exist|系统找不到|不存在/i.test(msg)) {
+            try {
+                await backend.AIEnsureDir(parentFolderOf(doc.path));
+                return await saveDoc(doc, {...opts, reenoentRetry: true});
+            } catch (e2) {}
+        }
         flash((opts.auto ? '自动保存失败：' : '保存失败：') + e, true);
         return false;
     }
@@ -5205,6 +5274,83 @@ const settingsPaneUsageStats = createSettingsPaneUsageStats({
     get backend() { return backend; },
     get flash() { return flash; },
 });
+
+// 应用页面标签页的挂载器（键 = core/app-pages.js 的 id，值 = mount(root) → 卸载函数）。
+// 经 deps 注入 bridge 域：bridge/ 不 import settings/ 与 ai/（同级域互相不 import）。
+// 定时任务在面板闭包里（CRUD 后要刷新头部胶囊），经 aiPanel 的桥转发——面板可能还没建，
+// 所以在调用时惰性取，不在创建期快照。
+const appPageMounters = {
+    'usage-stats': (root) => settingsPaneUsageStats.mount(root),
+    'patches': (root) => settingsPanePatches.mount(root),
+    'activity': (root) => activityPane.mount(root),
+    'schedules': (root) => (aiPanel && aiPanel.bridgeMountSchedules ? aiPanel.bridgeMountSchedules(root) : null),
+};
+
+// 设置 → 页面 → 应用页面：目录页，一行一个页面，点开在内容区打开对应标签页
+const settingsPaneAppPages = createSettingsPaneAppPages({
+    get openAppPageTab() { return openAppPageTab; },
+});
+
+// 侧栏「应用页面」面板：一列页面入口，点行直接在内容区打开标签页。
+// 与设置页目录同源（core/app-pages.js），只是宿主不同——侧栏是常用入口，设置页是发现入口。
+// 侧栏「应用页面」面板底部的一次性动作：不属 APP_PAGES（那是单例功能页，
+// 有身份、会去重），但同属"开个东西看看"的意图，放一起比塞回活动栏更合适。
+// 浏览器多开、带 URL 与 profile，语义上更接近"文件"而不是"功能页"，所以只作动作行。
+const APP_PAGE_ACTIONS = [
+    {id: 'browser', label: '新建浏览器标签页', icon: 'browser', hint: 'Ctrl+Alt+B', run: () => openBrowserTab('about:blank')},
+];
+
+function renderAppPagesNav() {
+    const host = document.getElementById('app-pages-nav');
+    if (!host) return;
+    host.textContent = '';
+    // 顶部动作区：浏览器 / 便签这类「一次性开一个」的入口（不属 APP_PAGES）
+    for (const action of APP_PAGE_ACTIONS) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'app-pages-nav-item';
+        btn.dataset.pageId = action.id;
+        btn.dataset.tip = action.hint ? action.hint : '';
+        const ic = document.createElement('span');
+        ic.className = 'ap-ic';
+        ic.innerHTML = iconSvg(action.icon, 13);
+        const label = document.createElement('span');
+        label.className = 'ap-label';
+        label.textContent = action.label;
+        btn.append(ic, label);
+        btn.addEventListener('click', action.run);
+        host.appendChild(btn);
+    }
+    const sep = document.createElement('div');
+    sep.className = 'app-pages-nav-sep';
+    host.appendChild(sep);
+    for (const group of appPageGroups()) {
+        const heading = document.createElement('div');
+        heading.className = 'app-pages-nav-group';
+        heading.textContent = group.group;
+        host.appendChild(heading);
+        for (const page of group.pages) {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'app-pages-nav-item';
+            btn.dataset.pageId = page.id;
+            btn.dataset.tip = page.desc;
+            const ic = document.createElement('span');
+            ic.className = 'ap-ic';
+            ic.innerHTML = iconSvg(page.icon, 13);
+            const label = document.createElement('span');
+            label.className = 'ap-label';
+            label.textContent = page.label;
+            btn.append(ic, label);
+            btn.addEventListener('click', () => openAppPageTab(page.id));
+            host.appendChild(btn);
+        }
+    }
+}
+
+function toggleAppPagesPanel() {
+    toggleSidebarView('app-pages');
+}
 // 设置 → 存储与清理 → 「工作区防护」区：开关组 / 备份时间线 / 快照清单
 //（ai-wipeguard.js 的恢复出口；storage pane 渲染完后由 renderStoragePane 包装追加渲染）
 const settingsPaneWipeguard = createSettingsPaneWipeguard({
@@ -5584,6 +5730,38 @@ function windowSwitchEntries() {
     }));
 }
 
+// 临时草稿架缓存：quick-switch「临时草稿」层用（打开该层时刷新一轮）。
+// 文件树的「临时草稿」节点是主入口（JetBrains Scratches 同款），这一层是键盘可达的快速切换
+// （对齐 JetBrains Show Scratch Files）：进层时重读一遍，按 mtime 倒序。
+let scratchSwitchRows = [];
+async function refreshScratchEntries() {
+    scratchSwitchRows = await listScratchDrafts(
+        {readDir: (path, limit) => backend.ReadDir(path, limit)}, workspaceFolder);
+    return scratchSwitchRows;
+}
+function scratchMtimeText(ms) {
+    const n = Number(ms) || 0;
+    if (!n) return '';
+    try {
+        return new Date(n).toLocaleString('zh-CN', {
+            month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false,
+        });
+    } catch (e) {
+        return '';
+    }
+}
+function scratchSwitchEntries() {
+    if (!workspaceFolder) return [{label: '（未打开工作区）', disabled: true}];
+    // 缓存是上一次刷新时的列表：换过工作区后只认当前草稿目录里的条目
+    const rows = scratchSwitchRows.filter((row) => isScratchPath(workspaceFolder, row.path));
+    if (!rows.length) return [{label: '（还没有临时草稿）', disabled: true}];
+    return rows.map((row) => ({
+        label: row.name,
+        value: scratchMtimeText(row.mtime),
+        action: () => openPath(row.path),
+    }));
+}
+
 const quickSwitchMod = createQuickSwitch({
     get applyAceMode() { return applyAceMode; },
     get applySettings() { return applySettings; },
@@ -5612,12 +5790,16 @@ const quickSwitchMod = createQuickSwitch({
     get toggleCodeWrap() { return toggleCodeWrap; },
     get windowSwitchEntries() { return windowSwitchEntries; },
     get refreshWindowSwitchEntries() { return refreshWindowSwitchEntries; },
+    // 临时草稿架（quick-switch scratch 层级）：只读 <ws>/.cadt/scratch，选中即 openPath
+    get scratchEntries() { return scratchSwitchEntries; },
+    get refreshScratchEntries() { return refreshScratchEntries; },
     get toggleSidebar() { return toggleSidebar; },
     get toggleSidebarView() { return toggleSidebarView; },
     get toggleTerminalPanel() { return toggleTerminalPanel; },
     get viewDisabled() { return viewDisabled; },
     get viewLabel() { return viewLabel; },
     get viewOptionsFor() { return viewOptionsFor; },
+    get workspaceFolder() { return workspaceFolder; },
     // 书签总览（quick-switch bookmarks 层级）：聚合打开中的文档，删除/跳转回调见上方书签桥
     get bookmarkOverview() { return bookmarkOverviewForUI; },
     get removeBookmarkEntry() { return removeBookmarkEntry; },
@@ -5675,6 +5857,9 @@ const propertiesUI = createPropertiesUI({
     get openCreateEntryDialog() { return openCreateEntryDialog; },
     get openDialogEl() { return openDialogEl; },
     get reloadActive() { return reloadActive; },
+    // 临时草稿子菜单与资源管理器「新建 → 临时文件」同一份（explorer-ops.scratchMenuItems）
+    get scratchMenuItems() { return scratchMenuItems; },
+    get settings() { return settings; },
     get structureTextForDoc() { return structureTextForDoc; },
     get workspaceFolder() { return workspaceFolder; },
 });
@@ -5841,64 +6026,64 @@ function menuItems(kind) {
             const reloadable = docs.some((d) => d.path);
             const exportDir = workspaceFolder || (hasPath ? parentDirOf(file.path) : '');
             return [
-                {label: '新建', shortcut: 'Ctrl+N', icon: 'E710', submenu: newDocumentMenuItems()},
-                {label: '新建窗口', shortcut: 'Ctrl+Shift+N', icon: 'E8A7', action: openNewWindow},
+                {label: '新建', shortcut: 'Ctrl+N', icon: 'plus', submenu: newDocumentMenuItems()},
+                {label: '新建窗口', shortcut: 'Ctrl+Shift+N', icon: 'new-window', action: openNewWindow},
                 {label: '新建浏览器标签页', shortcut: 'Ctrl+Alt+B', icon: 'browser', action: () => openBrowserTab('about:blank')},
                 {label: '打开我的浏览器（保留登录）', icon: 'browser', action: () => openBrowserTab('about:blank', '', {personal: true})},
                 {label: '快捷便签面板', shortcut: 'Ctrl+Alt+T', icon: 'memo', action: () => openMemoTab()},
                 {sep: true},
-                {label: '打开…', shortcut: 'Ctrl+O', icon: 'E8E5', action: openDialog},
-                {label: '打开文件夹…', icon: 'E8B7', action: openFolderDialog},
-                {label: '打开书籍…', icon: 'E8A5', action: () => readingMode && readingMode.openBookshelf()},
-                {label: '最近打开', icon: 'E81C', submenu: recentOpenMenuItems()},
-                {label: '关闭文件夹', icon: 'E8BB', disabled: !workspaceFolder, action: closeFolder},
+                {label: '打开…', shortcut: 'Ctrl+O', icon: 'open-folder', action: openDialog},
+                {label: '打开文件夹…', icon: 'folder', action: openFolderDialog},
+                {label: '打开书籍…', icon: 'doc', action: () => readingMode && readingMode.openBookshelf()},
+                {label: '最近打开', icon: 'history', submenu: recentOpenMenuItems()},
+                {label: '关闭文件夹', icon: 'close', disabled: !workspaceFolder, action: closeFolder},
                 {sep: true},
-                {label: '保存', shortcut: 'Ctrl+S', icon: 'E74E', disabled: !canSave, action: () => save()},
-                {label: '另存为…', shortcut: 'Ctrl+Shift+S', icon: 'E74E', disabled: !canSave, action: saveAs},
+                {label: '保存', shortcut: 'Ctrl+S', icon: 'save', disabled: !canSave, action: () => save()},
+                {label: '另存为…', shortcut: 'Ctrl+Shift+S', icon: 'save', disabled: !canSave, action: saveAs},
                 {label: '保存全部', disabled: !hasDirty, action: saveAll},
                 {sep: true},
-                {label: '重新加载', icon: 'E72C', disabled: !hasPath, action: requestReload},
-                {label: '从磁盘全部重新加载', icon: 'E895', disabled: !reloadable, action: reloadAllFromDisk},
+                {label: '重新加载', icon: 'refresh', disabled: !hasPath, action: requestReload},
+                {label: '从磁盘全部重新加载', icon: 'download', disabled: !reloadable, action: reloadAllFromDisk},
                 {sep: true},
-                {label: '打开文件位置', icon: 'E8B7', disabled: !hasPath, action: showInFolder},
+                {label: '打开文件位置', icon: 'folder', disabled: !hasPath, action: showInFolder},
                 {
                     label: '复制路径',
-                    icon: 'E8C8',
+                    icon: 'copy',
                     disabled: !hasPath,
                     submenu: [
-                        {label: '复制完整路径', icon: 'E8C8', action: () => copyText(file.path, '路径')},
-                        {label: '复制所在目录', icon: 'E8C8', action: () => copyText(parentDirOf(file.path), '目录路径')},
-                        {label: '复制文件名', icon: 'E8C8', action: () => copyText(file.name, '文件名')},
+                        {label: '复制完整路径', icon: 'copy', action: () => copyText(file.path, '路径')},
+                        {label: '复制所在目录', icon: 'copy', action: () => copyText(parentDirOf(file.path), '目录路径')},
+                        {label: '复制文件名', icon: 'copy', action: () => copyText(file.name, '文件名')},
                     ],
                 },
                 {sep: true},
-                {label: '文件属性…', icon: 'E946', disabled: !hasPath, action: showFileProperties},
+                {label: '文件属性…', icon: 'info', disabled: !hasPath, action: showFileProperties},
                 {
                     label: '导出',
-                    icon: 'E896',
+                    icon: 'export',
                     submenu: [
                         {label: '复制结构化目录', disabled: !exportDir, action: () => copyStructuredDir(exportDir)},
                         {label: '导出结构化目录…', disabled: !exportDir, action: () => exportStructuredDir(exportDir)},
                     ],
                 },
                 {sep: true},
-                {label: '关闭标签', shortcut: 'Ctrl+W', icon: 'E8BB', disabled: !file, action: () => requestCloseDoc(file)},
+                {label: '关闭标签', shortcut: 'Ctrl+W', icon: 'close', disabled: !file, action: () => requestCloseDoc(file)},
                 {label: '关闭其他标签', disabled: !otherDocs.length, action: () => closeDocsWithConfirm(otherDocs)},
                 {label: '关闭所有标签', disabled: !docs.length, action: () => closeDocsWithConfirm(docs.slice(), '关闭所有标签页将丢弃未保存的修改。')},
-                {label: '重新打开关闭的标签页', shortcut: 'Ctrl+Shift+T', icon: 'E7A7', disabled: !closedTabs.length, action: reopenClosedTab},
+                {label: '重新打开关闭的标签页', shortcut: 'Ctrl+Shift+T', icon: 'undo', disabled: !closedTabs.length, action: reopenClosedTab},
                 {sep: true},
-                {label: '设置…', shortcut: 'Ctrl+,', icon: 'E713', action: () => openSettings('general')},
+                {label: '设置…', shortcut: 'Ctrl+,', icon: 'gear', action: () => openSettings('general')},
                 {sep: true},
-                {label: '退出', icon: 'E8BB', action: exitApp},
+                {label: '退出', icon: 'close', action: exitApp},
             ];
         }
         case 'edit':
             return [
-                {label: '撤销', shortcut: 'Ctrl+Z', icon: 'E7A7', action: doUndo},
-                {label: '重做', shortcut: 'Ctrl+Y', icon: 'E7A6', action: doRedo},
+                {label: '撤销', shortcut: 'Ctrl+Z', icon: 'undo', action: doUndo},
+                {label: '重做', shortcut: 'Ctrl+Y', icon: 'redo', action: doRedo},
                 {sep: true},
-                {label: '查找…', shortcut: 'Ctrl+F', icon: 'E721', disabled: !findTarget(), action: openFindBar},
-                {label: '全局搜索…', shortcut: getShortcut('edit.globalSearch', keymap.style), icon: 'E721', action: openGlobalSearch},
+                {label: '查找…', shortcut: 'Ctrl+F', icon: 'search', disabled: !findTarget(), action: openFindBar},
+                {label: '全局搜索…', shortcut: getShortcut('edit.globalSearch', keymap.style), icon: 'search', action: openGlobalSearch},
             ];
         case 'format':
             return [
@@ -5923,7 +6108,7 @@ function menuItems(kind) {
         case 'view': {
             const structured = !!file && !!file.treeAvailable;
             const items = [
-                {label: '快速切换…', shortcut: 'Ctrl+`', icon: 'E8B3', action: openQuickSwitch},
+                {label: '快速切换…', shortcut: 'Ctrl+`', icon: 'select-all', action: openQuickSwitch},
                 {label: '书签总览', shortcut: getShortcut('edit.bookmarkList', keymap.style), action: openBookmarkList},
                 {sep: true},
             ];
@@ -6010,46 +6195,61 @@ function menuItems(kind) {
             const items = [{
                 label: '运行当前文件',
                 shortcut: 'F5',
-                icon: 'E768',
+                icon: 'play',
                 disabled: !file || !runController.isSupported({name: file.name, path: file.path}) || isDocReadOnly(file, settings),
                 action: () => runController.run(),
             }, {
                 label: '停止运行',
                 shortcut: 'Shift+F5',
-                icon: 'E71A',
+                icon: 'close',
                 disabled: !runController.hasRunning(),
                 action: () => runController.stop(),
             }, {
                 label: '运行面板',
                 shortcut: 'Alt+F11',
-                icon: 'E7B3',
+                icon: 'terminal',
                 action: () => runController.togglePanel(),
             }, {
                 label: '运行项目…',
                 shortcut: 'Ctrl+F5',
-                icon: 'E7B3',
+                icon: 'terminal',
                 disabled: !file && !workspaceFolder,
                 action: () => startRunProject(),
             }, {sep: true}, {
                 label: 'JSONPath 查询…',
                 shortcut: 'Ctrl+Shift+J',
-                icon: 'E721',
+                icon: 'search',
                 disabled: !jsonQuerySupported(file),
                 action: openJsonQuery,
             }, {
                 label: '比较两个文件…',
-                icon: 'E8A5',
+                icon: 'doc',
                 disabled: docs.filter((d) => d.path && !d.binary).length < 2,
                 action: () => openDiffDialog(),
             }, {
                 label: 'JSON Schema 校验…',
-                icon: 'E73E',
+                icon: 'check',
                 disabled: !file || file.binary || !file.format || (file.format.id !== 'json' && file.format.id !== 'jsonl'),
                 action: openSchemaValidation,
             }];
             items.push({sep: true},
-                {label: '起名器…', icon: 'E716', action: openWritingNameDialog},
-                {label: '插入： 场景分隔符', icon: 'E710', disabled: !file || !!file.binary || !!file.large, action: insertSceneSeparator});
+                {label: '起名器…', icon: 'sparkles', action: openWritingNameDialog},
+                {label: '插入： 场景分隔符', icon: 'plus', disabled: !file || !!file.binary || !!file.large, action: insertSceneSeparator});
+            // 应用页面（使用统计 / 定时任务 / 操作记录 / 补丁库）：从设置对话框搬出来的
+            // 数据浏览面板，现在各自是一个内容区标签页。清单单一来源 core/app-pages.js；
+            // 提示：paletteActions() 会递归展开 submenu，所以命令面板自动就能搜到这几项。
+            items.push({sep: true}, {
+                label: '应用页面',
+                icon: 'list',
+                submenu: appPageGroups().flatMap((group, index) => [
+                    ...(index ? [{sep: true}] : []),
+                    ...group.pages.map((page) => ({
+                        label: page.label,
+                        icon: page.icon,
+                        action: () => openAppPageTab(page.id),
+                    })),
+                ]),
+            });
             const toolCmds = getPluginCommands().filter((cmd) => commandAppliesTo(cmd, 'tools'));
             if (!toolCmds.length) {
                 items.push({sep: true}, {label: '（暂无插件命令）', disabled: true});
@@ -6069,18 +6269,18 @@ function menuItems(kind) {
         }
         case 'help': {
             const items = [
-                {label: '检查更新…', icon: 'E895', action: checkForUpdates},
-                {label: '更新日志', icon: 'E8A5', action: showChangelog},
-                {label: '教程', icon: 'E8A5', action: showTutorial},
-                {label: '反馈', icon: 'E939', action: () => openExternalUrl(appFeedbackUrl)},
+                {label: '检查更新…', icon: 'download', action: checkForUpdates},
+                {label: '更新日志', icon: 'doc', action: showChangelog},
+                {label: '教程', icon: 'doc', action: showTutorial},
+                {label: '反馈', icon: 'feedback', action: () => openExternalUrl(appFeedbackUrl)},
                 {sep: true},
-                {label: '用户协议', icon: 'E8A5', action: showTerms},
-                {label: '隐私协议', icon: 'E72E', action: showPrivacy},
+                {label: '用户协议', icon: 'doc', action: showTerms},
+                {label: '隐私协议', icon: 'shield', action: showPrivacy},
                 {sep: true},
-                {label: '命令面板', shortcut: 'Ctrl+Shift+P', icon: 'E721', action: () => palette && palette.toggle()},
+                {label: '命令面板', shortcut: 'Ctrl+Shift+P', icon: 'search', action: () => palette && palette.toggle()},
                 {label: '快捷键', action: () => openSettings('shortcuts')},
             ];
-            if (developerMode) items.push({label: '开发者工具', icon: 'E756', action: openDevTools});
+            if (developerMode) items.push({label: '开发者工具', icon: 'terminal', action: openDevTools});
             items.push({label: '关于 CaDt-DataLens', action: () => openSettings('about')});
             return items;
         }
@@ -6245,11 +6445,6 @@ document.addEventListener('click', (e) => {
 }, true);
 
 function updateSearchState() {
-    if (els.abSearch) {
-        els.abSearch.disabled = false;
-        els.abSearch.dataset.tip = '内容搜索 (Ctrl+F)';
-        els.abSearch.setAttribute('aria-label', '内容搜索');
-    }
     if (!findState.open) return;
     if (!findTarget()) {
         closeFindBar({keepFocus: true});
@@ -6765,6 +6960,19 @@ if (rt) {
             () => { if (backend.ForceQuitAll) backend.ForceQuitAll(); },
             '退出', '退出应用', 'danger');
     });
+    // 外部优雅退出（--quit 经单实例转发，重建脚本在替换 exe 前调用）：每个窗口结算
+    // 自己的 AI 回合（标中断、落盘、释放租约）后 ack；Go 收齐全部窗口 ack（或 6s
+    // 超时）才 ForceQuitAll。onApp 而非 onWindow：广播不带 sender。
+    appEvents.onApp('app-graceful-quit', async () => {
+        flushCsvCellEditor();
+        if (memoFlushHook) memoFlushHook();
+        try {
+            if (aiPanel && aiPanel.settleForShutdown) await aiPanel.settleForShutdown();
+        } catch (e) {}
+        if (backend.AppGracefulQuitAck) {
+            try { backend.AppGracefulQuitAck(); } catch (e) {}
+        }
+    });
     // 全局热键 Ctrl+Alt+T：主窗口前置 + 打开终端面板（Go 侧发来）
     appEvents.onWindow('app-open-terminal', () => {
         try { toggleDockView('terminal'); } catch (e) {}
@@ -6902,6 +7110,7 @@ const {setDragCursor} = cursorThemes;
 
 
 const terminalMod = createTerminalUI({
+    get renderAppPagesNav() { return renderAppPagesNav; },
     get showGitFileHistory() { return showGitFileHistory; },
     get touchRunProfileRecency() { return touchRunProfileRecency; },
     get openDocDirtyByPath() { return openDocDirtyByPath; },
@@ -6963,6 +7172,8 @@ initStructurePanel();
 initActivityBar();
 
 const bridgeUI = createBridgeUI({
+    // 应用页面标签页：pageId → mount(root)，各页内容渲染仍归原域
+    get appPageMounters() { return appPageMounters; },
     // 便签终端条目：run 事件订阅（mock/winctl 场景也走这里）与输出清洗（ai 域纯函数经组合根注入）
     get rt() { return rt; },
     get normalizeTermText() { return normalizeTermText; },
@@ -7038,7 +7249,7 @@ const bridgeUI = createBridgeUI({
     get updateBrowserTitle() { return updateBrowserTitle; },
     get workspaceFolder() { return workspaceFolder; },
 });
-const {createAgentView, createAgentTeamView, createSideChatView, createGroupMemberView, openGroupMemberTab, createBgTermView, gitGroupCollapsed, gitRootDir, gitStateCache, gitUncheckedFiles, notifyAIGitEntry, openAgentTab, openAgentTeamTab, openSideChatTab, openBgTermTab, openBrowserTab, openVirtualDoc, refreshGitStatus, showGitDiff, showGitFileHistory, showGitRecentLog, gitRollbackPaths,
+const {createAgentView, createAgentTeamView, createSideChatView, createGroupMemberView, openGroupMemberTab, createBgTermView, createAppPageView, openAppPageTab, gitGroupCollapsed, gitRootDir, gitStateCache, gitUncheckedFiles, notifyAIGitEntry, openAgentTab, openAgentTeamTab, openSideChatTab, openBgTermTab, openBrowserTab, openVirtualDoc, refreshGitStatus, showGitDiff, showGitFileHistory, showGitRecentLog, gitRollbackPaths,
     openMemoTab, createMemoView, memoApi, memoHasPending, memoOnWorkspaceEvent, memoOnWindowFocus, memoOnResourceEvent, memoWorkspaceChanged} = bridgeUI;
 // 成员详情标签页出口回填（aiGroupView 的 openMemberTab 闭包在创建期引用本 hook，避免 TDZ）
 openGroupMemberTabHook = openGroupMemberTab;

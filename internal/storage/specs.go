@@ -221,6 +221,15 @@ func (s *Service) specs() []spec {
 			targets: []target{workspaceTarget("answers")},
 		},
 		{
+			// 临时草稿（explorer「新建 → 临时文件」，docs/finished-plans/scratch-file.md）：
+			// **刻意 inCache=false**——草稿是用户亲手写的内容，例行清缓存不该顺手清掉。
+			// kind 必须是 KindData：缓存条目走 os.RemoveAll 直删，数据条目才送回收站
+			// （clear.go 的 removePath），草稿误删必须能取回。
+			id: "ws-scratch", label: "临时草稿（本工作区）", scope: ScopeWorkspace, kind: KindData,
+			note:    "工作区 .cadt/scratch 里的临时草稿（新建 → 临时文件）。不在「清除缓存」一键范围里，需要时在这里按勾选清除；删除走回收站。",
+			targets: []target{workspaceTarget("scratch")},
+		},
+		{
 			id: "ws-memo", label: "快捷便签（本工作区）", scope: ScopeWorkspace, kind: KindData,
 			note:    "工作区 .cadt/memo 里的快捷便签面板数据与贴图。",
 			targets: []target{workspaceTarget("memo")},
