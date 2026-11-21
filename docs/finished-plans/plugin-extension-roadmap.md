@@ -88,7 +88,7 @@ cadt.registerViewer({
 
 `ctx` 建议提供：`getData()`（当前文档内容）、`getSelection()` / `setSelection()`、`getTheme()`、`onChange(cb)`、`requestSave(text)`、`flash(msg)`。
 
-**接线点**：`frontend/src/core/formats.js`（格式 → 视图清单，新增 `views[]` 与 `defaultView`）、`frontend/src/editor/editor-groups.js` 的 `createDocEditor` 视图分发（现有 `if (doc.X)` 分支模式）、`frontend/src/writing/writing-ui.js` 的 `viewOptionsFor`（视图下拉必须列出插件视图，否则一切换就坏）、以及 AGENTS.md「内容区虚拟文档」四件套的卸载链路（防订阅 / DOM 泄漏）。
+**接线点**：`frontend/src/core/formats.js`（格式 → 视图清单，新增 `views[]` 与 `defaultView`）、`frontend/src/editor/editor-groups.js` 的 `createDocEditor` 视图分发（现有 `if (doc.X)` 分支模式）、`frontend/src/writing/writing-ui.js` 的 `viewOptionsFor`（视图下拉必须列出插件视图，否则一切换就坏）、以及 AGENTS.md「内容区标签页（一切皆标签页）」的接线点与卸载链路（防订阅 / DOM 泄漏）。
 
 **约束**：视图只渲染不改数据（写回一律经 `requestSave` 上抛给编辑器，走既有脏标记与只读判定）；必须支持 `destroy()`（切换 / 关标签时调用）；大文件（>10 MB 只读档）默认不挂插件视图；主题切换调 `setTheme` 而非重挂。
 
@@ -231,7 +231,7 @@ if (doc.agentView) { if (doc.pane) return; deps.createAgentView(doc); return; }
   插件视图应照此新增一支：`if (doc.pluginViewer) { if (doc.pane) return; deps.createPluginViewerView(doc); return; }`，且必须在 `closeDocNow` 里补卸载（调 `destroy()`），否则泄漏。
 - **视图下拉清单**：`frontend/src/writing/writing-ui.js` 的 `viewOptionsFor(fmt, doc)`（约 81–93 行）按格式返回选项数组（`IMAGE_VIEWS` / `CSV_VIEWS` / `VIEWS` 等），虚拟文档直接 `return []`。插件视图必须出现在这里，否则一切换就坏。
 - **格式侧归属**：`frontend/src/core/formats.js` 的 `registerPluginFormat` 是格式 driver 的入口；插件视图的 `formats: [...]` 要能映射到格式 id（或在注册表里独立维护 ext→viewer 映射）。
-- **四件套**（AGENTS.md「内容区虚拟文档」）：创建点、`createDocEditor` 分支、`viewOptionsFor` 清单、`closeDocNow` 卸载——漏一处不报错但会坏/泄漏。
+- **接线点**（AGENTS.md「内容区标签页」）：创建点、`createDocEditor` 分派、`viewOptionsFor` 屏蔽、标签图标、`closeDocNow` 卸载（现统一为 `doc.tabUnmount`）——漏一处不报错但会坏/泄漏。2026-11-22 起类型清单收敛到 `core/tab-kinds.js` 的 `TAB_KINDS`，新增一类不再需要逐处改（见 `docs/finished-plans/tab-registry.md`）。
 
 ### M4 / M5b 实施记录（2026-11-19 完成）
 

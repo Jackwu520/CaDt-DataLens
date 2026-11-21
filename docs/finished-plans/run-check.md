@@ -1,9 +1,12 @@
 # `run_check` 实施文档（子代理可执行检查，闭合命令集）
 
-> 状态：**待实施**（2026-11-17 方案成文，未开工）  
-> 定位：`subagent-sandbox.md` §7 的方案 A——**不引入 OS 沙箱、不给通用 shell**，用「closed set of checks」解决「子代理跑不了测试 / 看不了 git」这一真实需求  
-> 前置决议：2026-11-17 复核结论「通用 shell + ACL 沙箱性价比不成立」（理由见 `subagent-sandbox.md` §7.1），本方为其替代  
-> 范围：新增一个 AI 工具 + 一个 Go 引擎包 + 一个 Wails 绑定；**不改** `run_command` / 审批链 / 分类器 / 子代理权限档语义
+> 状态：**存档 / 未采纳**（2026-11-17 方案成文，从未实施；2026-11-22 复核后从 `unfinished-plans/` 移入）  
+> 未采纳原因：作者 2026-11-17 选择方案 C（OS 级沙箱 + 通用 shell），子代理已获得完整命令通道（`run_command` / `background_command` / `check_command` / `stop_command`，走 OS 沙箱），本方案的「闭合命令集」需求已被覆盖。决议原文见 `docs/finished-plans/subagent-sandbox.md:159` 与 `:165`。  
+> 回退触发条件：若方案 C 在实测中因工具链失败面不可接受而回退，本方案是首选替代（`subagent-sandbox.md:165`）；截至 2026-11-22 未触发。  
+> 重启实施前须知：本文成文于沙箱落地之前，若干技术假设已漂移——`runCommandSyncRegistered` 现为 `runCommandSyncConfined` 的薄包装（`internal/cmdbridge/app_commands.go:60`），本文 §4.2 的裸跑路径与当前「子代理命令一律进沙箱」口径冲突；`Detect` / `resolveRunProjectExe` 行号已变为 `internal/runproject/runproject.go:41` / `:155`；test/build/lint 映射表仍需自建（`Detect` 只产出运行命令）。重启即一次实质重新立项。  
+> 定位（原）：`subagent-sandbox.md` §7 的方案 A——**不引入 OS 沙箱、不给通用 shell**，用「closed set of checks」解决「子代理跑不了测试 / 看不了 git」这一真实需求  
+> 前置决议（原）：2026-11-17 复核结论「通用 shell + ACL 沙箱性价比不成立」（理由见 `subagent-sandbox.md` §7.1），本方为其替代——该复核结论已被作者推翻，见上  
+> 范围（原）：新增一个 AI 工具 + 一个 Go 引擎包 + 一个 Wails 绑定；**不改** `run_command` / 审批链 / 分类器 / 子代理权限档语义
 
 ## 1. 为什么是这个形状
 

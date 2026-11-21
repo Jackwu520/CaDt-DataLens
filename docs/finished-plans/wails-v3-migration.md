@@ -2,7 +2,7 @@
 
 > 状态：**已实施完成**（2026-11-20，`v3-migration` 分支 P0–P3；手工回归清单见 §11）
 > 范围：框架迁移（单窗口行为等价）+ 多窗口改造（一进程多窗口）+ 迁移后清理
-> 非范围：Linux/macOS GUI（见 `cross-platform.md`，不受本次迁移影响）
+> 非范围：Linux/macOS GUI（见 `docs/reports/cross-platform.md`，不受本次迁移影响）
 
 ## 1. 背景与动机
 
@@ -70,7 +70,7 @@
 **升级 ×2**
 
 - **单实例锁 v3 内置**（官方 Single Instance 指南，`options.SingleInstance` 同形 v2）：初评「无内置对应物、自研 1 天」作废；`secondInstance` 回调三分支（设置页 / memo locator / 打开目标）几乎平移。
-- **v3.1.0 于 11-01 发布**（3.0.0 后一周）：维护活跃；附带 CGO-free 实验性桌面构建——对 `cross-platform.md`「Linux GUI 必须 cgo+gtk3」的前提是动摇信号，那边立项时重估。
+- **v3.1.0 于 11-01 发布**（3.0.0 后一周）：维护活跃；附带 CGO-free 实验性桌面构建——对 `docs/reports/cross-platform.md`「Linux GUI 必须 cgo+gtk3」的前提是动摇信号，那边立项时重估。
 
 **降级 ×1**
 

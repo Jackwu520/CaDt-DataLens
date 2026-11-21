@@ -2,6 +2,7 @@
 
 > 状态：**未开工**（2026-11-16 调研成文，本轮只评估与规划，未修改实现代码）
 > 复核：**2026-11-17** 二次核对代码与上游，修正 §5.2 / §5.3 / §7 的事实，并把分阶段调整为 §12.8；仍未改实现代码。
+> 复核：**2026-11-21** v3 迁移完成后三审（§13）：`toolsForScope` 第三参已就位（P1 变薄）、工具数 68→78（懒加载前移）、应用自身 MCP server 变体落地（方向重定位）、多窗口 grant 争用为新风险；仍未改实现代码。
 > 触发：用户要求参考 `dsh-windows-mcp`，给 CaDt-DataLens 加一套类似的 Windows 操作 MCP。
 > 范围：把桌面自动化能力以**外部 stdio MCP server** 的形态挂进现有 MCP 客户端；在本项目内补齐「会话授权 + 依赖安装 + 懒加载 + 诊断」这层产品化外壳。
 > 非目标：不自研 UIA / 截图 / 输入引擎；不做 MCP server 暴露；不做 Streamable HTTP；不打包 Python / uv；不改现有 MCP 协议层；不做 OS 沙箱。
@@ -133,7 +134,7 @@ AI 工具调用 (mcp__windows__*)
 
 ## 6. 分阶段实施
 
-> 2026-11-17 复核后调整：P0 拆成 P0a / 决策点，P2 降级，P3 视 token 实测前移——以 §12.8 为准，下表保留作原始排期记录。
+> 2026-11-17 复核后调整：P0 拆成 P0a / 决策点，P2 降级，P3 视 token 实测前移——**排期以 §13.5 为准**（2026-11-21 三审替换 §12.8），下表保留作原始排期记录。
 
 | 阶段 | 内容 | 验收 | 回滚 |
 |---|---|---|---|
@@ -293,3 +294,66 @@ case "image", "audio":
 | 5 | 首版是否砍掉 `Screenshot`？ | **砍**，先证明纯文本快照够用；不够再补图像通道 |
 | 6 | 子代理是否继承 grant？ | **不继承**，首版写死并在 UI 说明 |
 | 7 | 安装器是否值得做？ | **先不做**，用「复制命令 + 写配置行」过渡 |
+
+---
+
+## 13. 复核（2026-11-21，v3 迁移完成后）
+
+> 触发：Wails v3 迁移 P0–P3 落地（2026-11-20）+ 应用自身 MCP server 变体落地（`mcp_variant.go` / `tools/rebuild-exe.ps1 -IncludeMCP` / `docs/finished-plans/app-mcp-server.md`）。只读代码与上游，未改实现代码。
+
+### 13.1 方向重定位：两个「桌面 MCP」方向已并存
+
+原方案非目标里写「不做 MCP server 暴露」——已被现实超越，现在两方向并存：
+
+- **方向 a（本方案）**：本应用的 AI 驱动 **Windows 桌面（第三方原生窗口）**——外部 windows-mcp server 接进本应用的 MCP 客户端；
+- **方向 b（已完成）**：**外部 agent 驱动本应用**——v3 内置 MCP server（`-tags mcp` 构建变体，Streamable HTTP，`mcp_variant.go` 引导随机令牌 / 端口探测，标准构建零端点）。
+
+两方向互不依赖。方向 b 的 `call_bound_method` 已让外部客户端能直调全部绑定，其威胁模型在 `docs/finished-plans/app-mcp-server.md` 按「全权驱动宿主」评估过。本方案维持方向 a，规划文档只需盯住它；文档引用处（`app-mcp-server.md` 开头）也已互相注明是两回事。
+
+### 13.2 代码事实重验（§3 / §12 全量核对）
+
+| 项 | §12 时 | 现在（2026-11-21） | 结论 |
+|---|---|---|---|
+| MCP 客户端图像降级 | `mcp_client.go:280-288` | **不变**（`mcp_client.go:288` 的 `case "image", "audio"` 仍降级占位文本；`CallResult` 仍只有 `Text`/`IsError`，`:250`） | §12.1 维持 |
+| 256 KB 结果截断 | `mcp_client.go:25` | 不变（`mcpResultMaxBytes`） | §12.7-2 维持 |
+| `toolsForScope` 签名 | 两参，加 session 是硬成本 | **三参 `(scope, planMode, session)` 已存在**（`ai-tool-defs.js:1129`）；session 现服务 `videoCapableOf`（read_video 按会话视频能力注入，`:1235`） | §12.2 的硬成本已被 read_video 工作付掉，见 §13.3-1 |
+| `toolCatalogText` | 由 `toolsForScope` 反推 | 仍由它反推（`ai-tool-defs.js:1243`） | 「单一判定源、不另加过滤层」约束维持 |
+| 子代理 MCP 工具 | `subToolsForScope` 无 MCP 工具 | 仍无；子代理现在甚至拿到 `run_command` + OS 沙箱三件套（`SUB_SANDBOX_MODE_BY_SCOPE`） | §12.3「不继承」维持 |
+| `flushToolImages` | `ai-panel.js:10374` | 仍在：定义 `ai-panel.js:9379`、轮边界调用 `:12763` | §12.1-B 图像通道仍可行 |
+| 工具数 | `AI_TOOL_DEFS` 68 | **78**（defs 与 catalog 同步 78） | 见 §13.3-3，懒加载压力加大 |
+| 会话级放行 | `commandApprovalRules` Map<session.id>，无通配 | 不变（`ai-permission-settings.js:647`） | §12.5 维持 |
+| MCP 绑定 | `internal/mcp/client.go` | 不变（`MCPWriteConfig` / `MCPSnapshot` / `MCPCallTool` / `MCPProbeServer`） | — |
+| 上游版本 | windows-mcp 0.8.9（2026-11-12），Python ≥3.14 | **仍 0.8.9**，无新版本 | §12.4 全表维持 |
+
+### 13.3 v3 迁移对本方案的实质影响
+
+1. **P1 成本下调**：`toolsForScope` 第三参已就位，桌面授权**不需要动签名**——在 `createAIToolDefs` 的 ctx 上挂 `desktopGrantOn: (session) => bool` getter，MCP 注入分支（`ai-tool-defs.js:1224-1226`）加一个条件；`toolCatalogText` 从同一函数反推，自动跟随。`videoCapableOf` 是现成的同构先例（按会话能力决定一个工具是否注册），照抄模式即可。
+2. **多窗口带来新风险——grant 争用（§12.7 之外）**：dsh 是单窗单会话产品，「按会话授权」语义天然成立；本项目 v3 后是多窗多会话（`windowmeta.go` 注册表 + `ai-session-scope.js` 工作区归属），两个窗口各开一个会话、各开各的 pill = **两个 agent 同时驱动同一套物理键鼠**。dsh 的 USER_CONTROL 只防「人抢 AI」，不防「AI 抢 AI」。建议首版做**单飞 grant**：应用级同一时刻只允许一个会话持有桌面授权——新 grant 挤掉旧 grant 并向旧会话投递通知（复用 `ai-agent-notices` 的 notice 通道），pill 显示当前持有者。备选「允许多 grant、争用自负」不推荐：桌面操作静默失败极难排查。
+3. **懒加载（P3）优先级上调**：工具数 68→78，桌面若全量注入 +18 会把工具段推到 96 份 schema（仍在 `aiMaxToolDefs = 128` 内，但上下文成本已不是小事）。§12.6 的「P1 落地后量一次 token 再决定」改为**默认前移**：紧跟 P1 / P1.5 实施，且首版白名单只 reveal 观察组（Snapshot / Screenshot / DisplayInventory / Clipboard 等 6–8 个），输入组按需揭示。
+4. **子代理与桌面自动化的一般逃逸**：子代理沙箱圈定的是**文件写效应**，不拦键鼠注入——沙箱里的 PowerShell `SendKeys` / UIA 模块照样能驱动桌面。这是 `docs/reports/incident-2026-11-18-workspace-wipe.md` §5「脚本内 shell 不受规则约束」盲区的具体表现：**桌面闸门只管专用桌面工具，管不住 `run_command` 的通用逃逸**。不新增机制（键鼠注入不落盘，wipeguard 的 watcher 覆盖不到，如实承认），但在 pill tooltip 与帮助文档明示「本开关挡不住命令通道」，与 §9.1 / §12.7-1 并列。
+5. **「与既有能力抢活」清单更新（§12.7-4）**：`app_control`（自身 UI）与 `browser_*`（CDP）之外，v3 变体的 `mouse_*` / `keyboard_*` 证明**自家窗口的界面自动化已由 v3 原语覆盖**——但它们是往 WebView 里合成 DOM 事件（带动画光标视觉反馈），不是 OS 级 SendInput，只对自家页面有效。桌面工具定位收得更窄：**第三方原生窗口**（资源管理器、其他应用），自家界面一律不许用桌面工具，写进工具描述与守则。
+
+### 13.4 路线复评
+
+- **路线 B 维持推荐**：v3 没有提供任何 OS 级自动化原语（上述合成事件结论），路线 C（自研 Go 桌面 server）的成本判断不变——UIA 元素定位、高 DPI、非英文 Windows 的坑全在上游踩好了，继续白嫖。
+- 排期相对 §12.8 的调整只有两处：P1 变薄（签名已就位）+ 新增单飞 grant；P3 懒加载默认前移。P0a 零代码验证不变。
+
+### 13.5 建议排期（替换 §12.8）
+
+| 阶段 | 内容 | 相对 §12.8 的变化 |
+|---|---|---|
+| **P0a 零代码** | 手写 mcp.json（`uvx windows-mcp serve --tools Snapshot,Click,Type`），勾 3 工具，跑 Snapshot → Click | 不变 |
+| **决策点** | 纯 Snapshot 能否完成一次真实点击？ | 不变 |
+| **P1 会话闸门** | `ai-desktop-control.js` + `ctx.desktopGrantOn`（**不动签名**）+ pill + **单飞 grant** + 派发硬拒绝 + 测试 | 变薄：签名已就位；加单飞 |
+| **P1.5（条件）** | MCP 图像结果通道（§12.1-B） | 不变 |
+| **P3 懒加载** | `windows_desktop` 入口 + revealed 集合，首版只 reveal 观察组 | **默认前移**，不再等 token 实测 |
+| **P4 doctor** | 只读诊断绑定 + 设置页按钮 | 不变 |
+| **P2 安装器（降级）** | 复制安装命令 + 一键写入 mcp.json 行 | 不变 |
+
+### 13.6 待决策补充
+
+| # | 问题 | 建议 |
+|---|---|---|
+| 8 | 多窗口 grant 争用策略？ | **单飞**：应用级一个会话持有，新 grant 挤旧 + 通知旧会话（§13.3-2） |
+| 9 | 懒加载是否默认前移？ | **是**：78 基数 + 18 增量，工具段成本已不是「看起来高级」 |
+| 10 | `run_command` 键鼠逃逸首版要不要堵？ | **不堵**：属 incident §5 已知盲区的通用形态，专用闸门管不了通用通道；pill tooltip 明示即可 |

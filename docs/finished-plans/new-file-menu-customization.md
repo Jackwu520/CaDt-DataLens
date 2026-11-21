@@ -1,6 +1,6 @@
 # 右键「新建」菜单定制（已完成 2026-11-18）
 
-> 事实底座：`docs/unfinished-plans/feature-evaluations-2026-11-18.md` §1。
+> 事实底座：`docs/finished-plans/feature-evaluations-2026-11-18.md` §1。
 > 范围按评估稿一期执行：只接 explorer 右键「新建」子菜单；explorer 主菜单 / 编辑器右键保持硬编码。
 
 ## 结果

@@ -1,6 +1,6 @@
 # 支线对话标签页化 + AI 面板视图层抽取（实施计划）
 
-> 状态：**进行中**（2026-11-15 调研成文；同日按作者「都按推荐开工」完成阶段 0 与阶段 1 的数据层，见 §12 实施记录。2026-11-17 阶段 2 遗留与阶段 3/4 收口，V1/V5 因注入面超红线另立方案，见 §13）
+> 状态：**功能已交付并归档**（2026-11-15 调研成文；阶段 0–4 与抽取批次 V3/V4/M1–M5 全部落地，`npm test` 965/965、`vite build` 通过，见 §12 / §13 实施记录）。**未做项**：V1/V5（消息渲染家族 → `ai/ai-session-view.js`）因注入面超 §7.2 红线另立方案；V2 无需搬；审批卡在内容区宽度的真机目视待补。
 > 决策依据：作者 2026-11-15 判定「支线对话与分支已无实质区别」，选定「支线进内容区标签页、能力与 UI 均完整、母会话留在 AI 面板、三枚头部 chip 在标签页内降级为顶部悬浮胶囊」；同时要求顺带抽离 `ai-panel.js` 的方法以收敛体积。
 > 前置阅读：`docs/unfinished-plans/frontend-split-phase3.md`（拆分纪律与豁免条款）· `docs/finished-plans/session-messaging.md` §4.9（支线原始设计与 §4.12 信箱）· `.cadt/memory/ai-panel-ui-conventions.md`（接管 composer 的固定做法）· `.cadt/memory/frontend-module-refactor-audit.md`（验证方法论）
 > 范围：`frontend/src/ai/` 的会话视图层与支线域、`frontend/src/bridge/bridge-sidechat-view.js`（新）、`frontend/src/editor/editor-groups.js` 特判分支、`frontend/src/style.css` 新增块；不改 Go 侧、不改流式协议、不改会话存储格式（仅新增可选字段）。

@@ -1,6 +1,6 @@
 # AI search 增强（已完成 2026-11-18）
 
-> 事实底座：`docs/unfinished-plans/feature-evaluations-2026-11-18.md` §4。
+> 事实底座：`docs/finished-plans/feature-evaluations-2026-11-18.md` §4。
 > 范围按评估稿 4.4 执行：一期（regex / wholeWord / excludePattern / maxResults）+ 二期（outputMode / context）全部实施；
 > 明确不做的三项（多行正则、rg flags 透传、run_command 跑 rg 当常规路径）保持未做。
 

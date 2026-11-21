@@ -2816,7 +2816,10 @@ aside[data-sidebar-view="structure"] > #sb-body,
 aside[data-sidebar-view="structure"] > #sb-filter-row,
 aside[data-sidebar-view="chats"] > .sb-head,
 aside[data-sidebar-view="chats"] > #sb-body,
-aside[data-sidebar-view="chats"] > #sb-filter-row { display: none; }
+aside[data-sidebar-view="chats"] > #sb-filter-row,
+aside[data-sidebar-view="app-pages"] > .sb-head,
+aside[data-sidebar-view="app-pages"] > #sb-body,
+aside[data-sidebar-view="app-pages"] > #sb-filter-row { display: none; }
 
 /* 状态栏字数统计 */
 .st-count {
@@ -2866,13 +2869,43 @@ aside[data-sidebar-view="files"] #structure-panel,
 aside[data-sidebar-view="git"] #structure-panel,
 aside[data-sidebar-view="structure"] #git-panel,
 aside[data-sidebar-view="chats"] #git-panel,
-aside[data-sidebar-view="chats"] #structure-panel { display: none; }
+aside[data-sidebar-view="chats"] #structure-panel,
+aside[data-sidebar-view="app-pages"] #git-panel,
+aside[data-sidebar-view="app-pages"] #structure-panel,
+aside[data-sidebar-view="app-pages"] #ai-sessions-panel { display: none; }
 aside[data-sidebar-view="git"] #git-panel { display: flex; flex: 1; min-height: 0; flex-direction: column; padding: 6px 10px 8px; gap: 6px; overflow: hidden; }
 aside[data-sidebar-view="structure"] #structure-panel { display: flex; flex: 1; min-height: 0; flex-direction: column; overflow: hidden; }
 aside[data-sidebar-view="files"] #ai-sessions-panel,
 aside[data-sidebar-view="git"] #ai-sessions-panel,
 aside[data-sidebar-view="structure"] #ai-sessions-panel { display: none; }
 aside[data-sidebar-view="chats"] #ai-sessions-panel { display: flex; flex: 1; min-height: 0; flex-direction: column; }
+
+/* 应用页面面板：侧栏里的一列页面入口，点行直接在内容区打开对应标签页 */
+aside:not([data-sidebar-view="app-pages"]) #app-pages-panel { display: none; }
+aside[data-sidebar-view="app-pages"] #app-pages-panel { display: flex; flex: 1; min-height: 0; flex-direction: column; overflow: hidden; }
+.app-pages-panel .sb-head { flex: none; }
+.app-pages-nav { flex: 1; min-height: 0; overflow: auto; padding: 6px 8px 10px; display: flex; flex-direction: column; gap: 2px; }
+.app-pages-nav-group { font-size: 11px; font-weight: 600; color: var(--muted); padding: 8px 8px 4px; user-select: none; }
+.app-pages-nav-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 7px 8px;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text);
+    font: inherit;
+    font-size: 12.5px;
+    text-align: left;
+    cursor: pointer;
+}
+.app-pages-nav-item:hover { background: var(--hover); }
+.app-pages-nav-item .ap-ic { flex: none; display: inline-flex; width: 14px; height: 14px; color: var(--muted); align-items: center; justify-content: center; }
+.app-pages-nav-item:hover .ap-ic { color: inherit; }
+.app-pages-nav-item .ap-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.app-pages-nav-sep { height: 1px; background: var(--border); margin: 8px 8px; flex: none; }
 
 .ai-session-list {
     flex: 1;
@@ -6573,6 +6606,46 @@ body.console-only .dbg-head select { --wails-draggable: no-drag; }
     background: var(--panel2);
 }
 .ai-streaming-label { flex: none; font-weight: 600; color: var(--accent); font-size: 12px; }
+/* 回合中断横幅（进程被外部强杀后重开会话）：warn 色系与重试提示同源，但形态是
+   消息流末尾的常驻条而非瞬时浮标——用户不看一眼容易再次当成「莫名停止」 */
+.ai-interrupt-bar {
+    margin-top: 8px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 10px;
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--warn, #e8912d) 10%, transparent);
+    border: 1px solid color-mix(in srgb, var(--warn, #e8912d) 26%, transparent);
+}
+.ai-interrupt-bar .ai-interrupt-icon { display: grid; place-items: center; color: var(--warn, #e8912d); flex: none; }
+.ai-interrupt-bar .ai-interrupt-icon svg { width: 13px; height: 13px; display: block; }
+.ai-interrupt-bar .ai-interrupt-text { flex: 1; min-width: 0; font-size: 12px; color: var(--text); }
+.ai-interrupt-bar .ai-interrupt-resume {
+    flex: none;
+    padding: 2px 10px;
+    border-radius: 6px;
+    border: none;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 600;
+    color: #fff;
+    background: var(--warn, #e8912d);
+}
+.ai-interrupt-bar .ai-interrupt-resume:hover { filter: brightness(1.08); }
+.ai-interrupt-bar .ai-interrupt-dismiss {
+    flex: none;
+    display: grid;
+    place-items: center;
+    padding: 3px;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+    background: transparent;
+    color: var(--muted);
+}
+.ai-interrupt-bar .ai-interrupt-dismiss:hover { background: var(--panel2); color: var(--text); }
+.ai-interrupt-bar .ai-interrupt-dismiss svg { width: 11px; height: 11px; display: block; }
 .ai-retry-note {
     flex: none;
     display: inline-flex;
@@ -8121,6 +8194,37 @@ body.console-only .dbg-head select { --wails-draggable: no-drag; }
     white-space: pre-wrap;
     overflow-wrap: anywhere;
 }
+/* 截断提示条：回复被砍断（输出打满预算 / 上游没给结束原因）时给「继续」出口。
+   颜色取警告档，和红色错误条区分开——截断不是失败，内容仍然可用。 */
+.ai-truncated-box {
+    margin-top: 6px;
+    padding: 4px 8px 4px 9px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--border));
+    border-radius: 5px;
+    background: color-mix(in srgb, var(--warn) 8%, transparent);
+    color: var(--warn);
+    font-size: 11px;
+    line-height: 1.5;
+}
+.ai-truncated-continue {
+    margin-left: auto;
+    flex: none;
+    padding: 1px 9px;
+    border: 1px solid color-mix(in srgb, var(--warn) 50%, var(--border));
+    border-radius: 4px;
+    background: transparent;
+    color: var(--warn);
+    font-size: 11px;
+    line-height: 1.6;
+    cursor: pointer;
+}
+.ai-truncated-continue:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--warn) 16%, transparent);
+}
+.ai-truncated-continue:disabled { opacity: 0.55; cursor: default; }
 /* 流式中的工具调用占位：与真实工具卡同款外观（实线边框卡片行），内部复用 .ai-tool-* 头部样式 */
 .ai-live-tools {
     margin-top: 6px;
@@ -9238,8 +9342,8 @@ body.console-only .dbg-head select { --wails-draggable: no-drag; }
 }
 /* 上下文提醒条：警告胶囊（图标 + 一行字 + 「压缩上下文」小按钮 + × 关闭）。
    suggest 态琥珀；≥发送硬上限（ai-constants.AI_CTX_SEND_BLOCK_RATIO）转 is-over 红色，
-   同时发送按钮禁用（updateSendState 读 ctxGate）；≥100% 按钮换「分段压缩」占位
-   （ai-segmented-compact.md，未实装）。× 关闭只收提醒、门禁不变。 */
+   同时发送按钮禁用（updateSendState 读 ctxGate）；≥100% 压缩仍可用（startCompact 有
+   超窗兜底，摘要略粗），按钮照常可点。× 关闭只收提醒、门禁不变。 */
 .ai-ctx-banner {
     /* 可收缩（min-height:0）：面板被压矮时先于 composer 让位 */
     flex: 0 1 auto;
@@ -9305,22 +9409,6 @@ body.console-only .dbg-head select { --wails-draggable: no-drag; }
     color: var(--red);
     border-color: var(--red);
     background: color-mix(in srgb, var(--red) 20%, transparent);
-}
-/* ≥100%：「分段压缩」占位（方案已立项未实装，点击仅提示）——压暗 + not-allowed。
-   用 aria-disabled 而非 disabled：真禁用的按钮不派发 hover 事件，tooltip 会失效 */
-.ai-ctx-banner-btn[aria-disabled="true"],
-.ai-ctx-banner-btn[aria-disabled="true"]:hover {
-    opacity: 0.55;
-    cursor: not-allowed;
-    color: var(--muted);
-    border-color: var(--border);
-    background: transparent;
-}
-.ai-ctx-banner.is-over .ai-ctx-banner-btn[aria-disabled="true"],
-.ai-ctx-banner.is-over .ai-ctx-banner-btn[aria-disabled="true"]:hover {
-    color: color-mix(in srgb, var(--red) 55%, var(--muted));
-    border-color: color-mix(in srgb, var(--red) 25%, var(--border));
-    background: color-mix(in srgb, var(--red) 8%, transparent);
 }
 .ai-ctx-banner-close {
     flex: none;
@@ -11048,6 +11136,20 @@ html[data-writing="on"][data-writing-paper="dim"] .jsoneditor textarea.jsonedito
 }
 .act-detail-btn { flex: none; padding: 1px 8px; font-size: 11px; }
 /* ===== 补丁库（设置 → 开发者）===== */
+/* ===== 应用页面标签页（使用统计 / 定时任务 / 操作记录 / 补丁库）===== */
+/* 这些页面原本嵌在设置对话框里，现在各自是一个内容区标签页：宿主给容器与滚动，
+   内部骨架由各页 mount(root) 生成（结构沿用 .set-group-title / .set-card 那套）。 */
+.apppage-pane { padding: 0; overflow: auto; }
+.jsoneditor-pane.active.apppage-pane { display: block; }
+.apppage-root { padding: 14px 16px 22px; max-width: 1100px; }
+.apppage-root.empty { padding: 24px 16px; color: var(--muted); font-size: 12px; }
+/* 使用统计自带 .us-root 内边距，避免和标签页容器叠加成两层留白 */
+.apppage-root > .us-root { padding: 0; }
+/* 设置 → 页面 → 应用页面：目录行，整行可点 */
+.app-pages-hint { margin: 0 0 10px; color: var(--muted); font-size: 12px; }
+.app-pages-row { cursor: pointer; }
+.app-pages-row:hover { background: var(--hover); }
+
 .patch-store-list { display: flex; flex-direction: column; max-height: 260px; overflow: auto; }
 .patch-store-empty { padding: 12px 8px; color: var(--muted); font-size: 12px; text-align: center; }
 .patch-store-row {
@@ -14288,8 +14390,13 @@ html[data-theme="light"] {
 .us-title { font-size: 14px; font-weight: 600; color: var(--text); }
 .us-sub { font-size: 11px; color: var(--muted); margin-top: 3px; line-height: 1.5; }
 .us-refresh { flex: none; }
-.us-metrics { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; }
-.us-metric { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; min-width: 0; }
+/* 指标卡固定 5 个：窄了 3 个一行（末行 2 个各撑一半），宽了 5 个一行。
+   不用 auto-fill——它会在中间宽度产出 4+1 的参差；容器查询实测会破坏 .us-root 的宽度，改按视口。 */
+.us-metrics { display: flex; flex-wrap: wrap; gap: 10px; }
+.us-metric { flex: 1 1 calc(33.333% - 7px); background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; min-width: 0; }
+@media (min-width: 1300px) {
+    .us-metric { flex-basis: calc(20% - 8px); }
+}
 .us-metric-label { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--muted); }
 .us-metric-value { font-size: 20px; font-weight: 600; color: var(--text); margin-top: 4px; font-variant-numeric: tabular-nums; }
 .us-metric-sub { font-size: 10.5px; color: var(--muted); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -14669,4 +14776,16 @@ body.preview-only #enc-popover { display: none !important; }
     display: block;
     max-width: 100%;
     margin: 12px auto;
+}
+/* 预览失败说明（SVG 解码失败等）：居中文案，不占满屏 */
+.preview-view-error {
+    margin: 24px auto;
+    max-width: 560px;
+    padding: 14px 16px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--panel2);
+    color: var(--muted);
+    font-size: 13px;
+    line-height: 1.7;
 }
