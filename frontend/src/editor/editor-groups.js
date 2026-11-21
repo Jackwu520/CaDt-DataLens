@@ -6,6 +6,7 @@
 import DOMPurify from 'dompurify';
 import {iconSvg} from '../core/icons.js';
 import {isDocReadOnly, isTabReadOnlyFixed, isTabReadOnlyLocked} from '../core/readonly.js';
+import {isBlankDraftText} from '../core/scratch.js';
 import {createEditorAceHooks} from './editor-ace-hooks.js';
 import {createEditorCsvView} from './editor-csv-view.js';
 import {createEditorSplitPreview} from './editor-split-preview.js';
@@ -17,6 +18,7 @@ import {createEditorPluginView} from './editor-plugin-view.js';
 import {isPluginViewMode, pluginViewLabel, pluginViewUnavailable, viewerIdFromMode} from '../shell/plugin-viewers.js';
 import {createFileIcon, fileIconSpec} from '../core/fileicons.js';
 import {formats, detectFormat, defaultMediaMode, isKnownCodeFileName} from '../core/formats.js';
+import {tabKindOf, tabIconName} from '../core/tab-kinds.js';
 import {showPatchView, disposePatchView} from './patch-view.js';
 
 export function createEditorGroups(deps) {
@@ -127,6 +129,21 @@ const browserTab = createEditorBrowserTab(browserTabDeps);
 const createBrowserView = (...a) => browserTab.createBrowserView(...a);
 const syncBrowserTab = (...a) => browserTab.syncBrowserTab(...a);
 const syncAllBrowserTabs = (...a) => browserTab.syncAllBrowserTabs(...a);
+
+// 虚拟标签页类型 → 视图工厂（键是 core/tab-kinds.js 的 kind）。
+// 工厂本体留在各域（binary 在 bridge、浏览器在 editor-browser-tab），本表只做分派；
+// 用箭头函数而不是直接引用，保持 deps 的 getter 惰性（域实例在本模块之后才创建）。
+const VIRTUAL_TAB_VIEWS = {
+    browser: (doc) => createBrowserView(doc),
+    memo: (doc) => deps.createMemoView(doc),
+    terminal: (doc) => deps.createBgTermView(doc),
+    'agent': (doc) => deps.createAgentView(doc),
+    team: (doc) => deps.createAgentTeamView(doc),
+    sidechat: (doc) => deps.createSideChatView(doc),
+    groupmember: (doc) => deps.createGroupMemberView(doc),
+    // 应用页面（使用统计 / 定时任务 …）：一个类型装 N 个功能页，按 doc.appPage 分派在工厂内部
+    apppage: (doc) => deps.createAppPageView(doc),
+};
 const updateBrowserTitle = (...a) => browserTab.updateBrowserTitle(...a);
 const setBrowserViewport = (...a) => browserTab.setBrowserViewport(...a);
 const browserViewportLabel = (...a) => browserTab.browserViewportLabel(...a);
@@ -360,6 +377,13 @@ function renderEditorLayout() {
     deps.syncRunButtonState();
     // 提示条先移出布局区，避免被整体清空
     if (deps.els.banner && deps.els.banner.parentElement === deps.els.editor) deps.els.editorArea.appendChild(deps.els.banner);
+    // 整段重建会把标签条横向滚动位置清零，先按组记下来，重建完原样恢复。
+    // 否则任何后台重绘（外部修改标记 / AI 写已打开的文件 / 保存脏标）都会把用户
+    // 手动滚到一半的标签条弹回激活标签的定位点，标签多时表现为「怎么都滚不到末尾」。
+    const prevStripScroll = new Map();
+    for (const stripEl of deps.els.editor.querySelectorAll('.egroup[data-gid] > .etabs')) {
+        prevStripScroll.set(stripEl.parentElement.dataset.gid, stripEl.scrollLeft);
+    }
     deps.els.editor.textContent = '';
     const root = splitRoot || (focusedGroupId || (editorGroups[0] && editorGroups[0].id));
     if (!root || !editorGroups.length) return;
@@ -404,8 +428,18 @@ function renderEditorLayout() {
         updateStatus();
         deps.updateSearchState();
     }
-    // 标签条刚整段重建完，横滚定位当前激活标签（rAF 内执行，等布局稳定）
-    scheduleRevealActiveTabs();
+    // 重建完成：先恢复各组标签条的横滚位置（超出新上限由浏览器自动收敛）；
+    // 只有首次构建（此前不存在该组的标签条）才做激活标签定位——已有位置就尊重它，
+    // 切换标签时的定位由 activateDoc 显式补发，别把用户手动滚出的位置拽回去。
+    const freshGids = new Set();
+    for (const wrap of deps.els.editor.querySelectorAll('.egroup[data-gid]')) {
+        const stripEl = wrap.querySelector(':scope > .etabs');
+        if (!stripEl) continue;
+        const prev = prevStripScroll.get(wrap.dataset.gid);
+        if (prev === undefined) freshGids.add(wrap.dataset.gid);
+        else stripEl.scrollLeft = prev;
+    }
+    if (freshGids.size) scheduleRevealActiveTabs(freshGids);
 }
 
 function buildSplitNode(parent, node) {
@@ -487,28 +521,30 @@ function buildGroup(parent, gid) {
     }
 }
 
+// 视图模式图标：局部键 → 注册表键（14 网格散落 SVG 已按 16 网格重画收编 core/icons.js，
+// 尺寸由 .tb-view svg 的 CSS 规则统一 14px；sql/code/text/preview/image 与 database/code/
+// doc/image 同形复用，不另立键）
 const VIEW_ICONS = {
-    tree: '<svg viewBox="0 0 14 14" aria-hidden="true"><path d="M1.5 3.2h11M1.5 7h7.6M1.5 10.8h4.4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" fill="none"/></svg>',
-    table: '<svg viewBox="0 0 14 14" aria-hidden="true"><rect x="1.5" y="2.2" width="11" height="9.6" rx="1" stroke="currentColor" stroke-width="1.2" fill="none"/><path d="M1.5 5.6h11M5.3 2.2v9.6M9 2.2v9.6" stroke="currentColor" stroke-width="1" fill="none"/></svg>',
-    sql: '<svg viewBox="0 0 14 14" aria-hidden="true"><ellipse cx="7" cy="3.2" rx="4.7" ry="1.8" stroke="currentColor" stroke-width="1.1" fill="none"/><path d="M2.3 3.2v7.6c0 1 2.1 1.8 4.7 1.8s4.7-.8 4.7-1.8V3.2" stroke="currentColor" stroke-width="1.1" fill="none"/><path d="M2.3 7c0 1 2.1 1.8 4.7 1.8s4.7-.8 4.7-1.8" stroke="currentColor" stroke-width="1.1" fill="none"/></svg>',
-    code: '<svg viewBox="0 0 14 14" aria-hidden="true"><path d="M4.4 3.6 1.7 7l2.7 3.4M9.6 3.6 12.3 7l-2.7 3.4M7.9 2.4 6.1 11.6" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>',
-    text: '<svg viewBox="0 0 14 14" aria-hidden="true"><path d="M3 1.6h5.6L11.4 4v8.4H3z" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linejoin="round"/><path d="M5 7.2h4M5 9.6h4" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>',
-    preview: '<svg viewBox="0 0 14 14" aria-hidden="true"><rect x="1.5" y="2.2" width="11" height="9.6" rx="1" stroke="currentColor" stroke-width="1.2" fill="none"/><circle cx="4.8" cy="5.3" r="1.05" fill="currentColor"/><path d="M2.6 10.4 5.8 7.3l2.3 2.3L9.8 8l1.9 2.3" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linejoin="round"/></svg>',
-    image: '<svg viewBox="0 0 14 14" aria-hidden="true"><rect x="1.5" y="2.2" width="11" height="9.6" rx="1" stroke="currentColor" stroke-width="1.2" fill="none"/><circle cx="4.8" cy="5.3" r="1.05" fill="currentColor"/><path d="M2.6 10.4 5.8 7.3l2.3 2.3L9.8 8l1.9 2.3" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linejoin="round"/></svg>',
-    binary: '<svg viewBox="0 0 14 14" aria-hidden="true"><text x="2" y="10.6" font-size="9" font-family="JetBrains Mono, Consolas, monospace" font-weight="700" fill="currentColor">01</text></svg>',
-    video: '<svg viewBox="0 0 14 14" aria-hidden="true"><rect x="1.5" y="2.6" width="11" height="8.8" rx="1.4" stroke="currentColor" stroke-width="1.2" fill="none"/><path d="M5.9 5.3l3.3 1.7-3.3 1.7z" fill="currentColor" stroke="none"/></svg>',
-    audio: '<svg viewBox="0 0 14 14" aria-hidden="true"><ellipse cx="5.2" cy="9.8" rx="2.2" ry="1.7" fill="currentColor" stroke="none"/><path d="M7.4 9.8V3.2c2.6.4 3.7 1.3 3.7 2.9" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"/></svg>',
-    render: '<svg viewBox="0 0 14 14" aria-hidden="true"><path d="M2 11c2.8 0 3.4-7 6.2-7 1.7 0 2 1.6 3.8 1.6" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"/><circle cx="2" cy="11" r="1.1" fill="currentColor"/><circle cx="12" cy="5.6" r="1.1" fill="currentColor"/></svg>',
-    patch: '<svg viewBox="0 0 14 14" aria-hidden="true"><path d="M2 3.4h10M2 7h6.4M2 10.6h4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" fill="none"/><path d="M9.6 8.2l2.4 2.4-2.4 2.4" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-    split: '<svg viewBox="0 0 14 14" aria-hidden="true"><rect x="1.5" y="2.2" width="11" height="9.6" rx="1" stroke="currentColor" stroke-width="1.2" fill="none"/><path d="M7 2.6v9" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>',
+    tree: 'view-tree',
+    table: 'view-table',
+    sql: 'database',
+    code: 'code',
+    text: 'doc',
+    preview: 'image',
+    image: 'image',
+    binary: 'view-binary',
+    video: 'view-video',
+    audio: 'view-audio',
+    render: 'view-render',
+    patch: 'view-patch',
+    split: 'view-split',
 };
-const MORE_ICON = '<svg viewBox="0 0 14 14" aria-hidden="true"><circle cx="7" cy="2.9" r="1.25" fill="currentColor"/><circle cx="7" cy="7" r="1.25" fill="currentColor"/><circle cx="7" cy="11.1" r="1.25" fill="currentColor"/></svg>';
-// 插件视图没有内置图标表项：给一个「面板」形状的通用图标，别让按钮变成空白方块
-const PLUGIN_VIEW_ICON = '<svg viewBox="0 0 14 14" aria-hidden="true"><rect x="1.5" y="2.2" width="11" height="9.6" rx="1" stroke="currentColor" stroke-width="1.2" fill="none"/><path d="M4.2 5.5h5.6M4.2 8h3.2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><circle cx="10.6" cy="9.5" r="1.2" fill="currentColor"/></svg>';
 
 function viewIconFor(mode) {
-    if (VIEW_ICONS[mode]) return VIEW_ICONS[mode];
-    return isPluginViewMode(mode) ? PLUGIN_VIEW_ICON : '';
+    const key = VIEW_ICONS[mode];
+    if (key) return iconSvg(key, 14);
+    // 插件视图没有内置图标表项：给一个「面板」形状的通用图标，别让按钮变成空白方块
+    return isPluginViewMode(mode) ? iconSvg('view-panel', 14) : '';
 }
 
 function viewDisabledFor(doc, mode) {
@@ -564,7 +600,7 @@ function buildGroupTools(gid) {
     more.type = 'button';
     more.className = 'tb-more';
     more.dataset.tip = '标签页操作';
-    more.innerHTML = MORE_ICON;
+    more.innerHTML = iconSvg('more-vertical', 14);
     more.addEventListener('click', () => {
         const r = more.getBoundingClientRect();
         showTabbarToolsMenu(r.left, r.bottom + 4);
@@ -591,13 +627,13 @@ function showTabbarToolsMenu(x, y) {
     if (!deps.ctxMenu) return;
     const clean = deps.docs.filter((d) => !d.dirty);
     deps.ctxMenu.open([
-        {label: '新建浏览器标签页', icon: 'E721', action: () => deps.openBrowserTab('about:blank')},
-        {label: '转到文件…', shortcut: 'Ctrl+Shift+N', icon: 'E721', action: () => {}},
+        {label: '新建浏览器标签页', icon: 'search', action: () => deps.openBrowserTab('about:blank')},
+        {label: '转到文件…', shortcut: 'Ctrl+Shift+N', icon: 'search', action: () => {}},
         {sep: true},
         {label: '关闭所有标签页', action: () => closeDocsWithConfirm(deps.docs.slice(), '关闭所有标签页将丢弃未保存的修改。')},
         {label: '关闭未修改标签页', disabled: !clean.length, action: () => closeDocsWithConfirm(clean)},
         {sep: true},
-        {label: '配置编辑器标签页…', icon: 'E713', action: () => deps.openSettings('editor-tabs')},
+        {label: '配置编辑器标签页…', icon: 'gear', action: () => deps.openSettings('editor-tabs')},
     ], x, y);
 }
 
@@ -608,42 +644,13 @@ function focusGroupById(gid) {
     if (d && deps.file !== d) activateDoc(d);
 }
 
-function bgTermTabIcon() {
+// 视图型虚拟标签页的图标：图标名来自 core/tab-kinds.js 的注册表（单一来源），
+// 这里只负责把名字变成 span。漏注册的图标名会得到空图标而不报错，
+// 所以 virtual-doc-wiring.test.mjs 还额外核对「注册表里的 icon 都在 core/icons.js 注册过」。
+function virtualTabIcon(name) {
     const span = document.createElement('span');
     span.className = 'tab-icon';
-    span.innerHTML = iconSvg('terminal', 13);
-    return span;
-}
-
-// 子代理详情标签页：没有扩展名可依据，用「智能体团队」同款图标
-function agentViewTabIcon() {
-    const span = document.createElement('span');
-    span.className = 'tab-icon';
-    span.innerHTML = iconSvg('agents', 13);
-    return span;
-}
-
-// 支线对话标签页：双气泡图标（与子代理的协作图区分）
-function sideChatTabIcon() {
-    const span = document.createElement('span');
-    span.className = 'tab-icon';
-    span.innerHTML = iconSvg('sidechat', 13);
-    return span;
-}
-
-// 群聊成员详情标签页：双人像图标
-function groupMemberTabIcon() {
-    const span = document.createElement('span');
-    span.className = 'tab-icon';
-    span.innerHTML = iconSvg('group', 13);
-    return span;
-}
-
-// 快捷便签 面板：清单图标
-function memoTabIcon() {
-    const span = document.createElement('span');
-    span.className = 'tab-icon';
-    span.innerHTML = iconSvg('memo', 13);
+    span.innerHTML = iconSvg(name, 13);
     return span;
 }
 
@@ -702,8 +709,10 @@ function buildGroupTab(g, doc, strip) {
     tab.className = 'tab' + (doc.id === g.activeId ? ' active' : '') + (doc.dirty ? ' dirty' : '') + (doc.staleOnDisk ? ' stale' : '') + (isTabReadOnlyLocked(doc) ? ' tab-readonly' : '');
     tab.dataset.docId = String(doc.id);
     tab.dataset.tip = tabTooltip(doc);
-    // 后台终端 / 子代理详情 / 团队详情标签页用固定图标（非文件，没有扩展名图标）
-    const icon = doc.bgTerm ? bgTermTabIcon() : (doc.agentView || doc.agentTeam) ? agentViewTabIcon() : doc.sideChat ? sideChatTabIcon() : doc.groupMember ? groupMemberTabIcon() : doc.memo ? memoTabIcon() : createFileIcon(doc.name, 'tab-icon');
+    // 视图型虚拟标签页（浏览器 / 终端 / 子代理 …）用注册表指定的固定图标；
+    // 其余（含计划 / 差异等无路径文本文档）走按扩展名解析的文件图标。
+    const virtualIcon = tabIconName(doc);
+    const icon = virtualIcon ? virtualTabIcon(virtualIcon) : createFileIcon(doc.name, 'tab-icon');
     const dot = document.createElement('span');
     dot.className = 'tab-dot';
     const name = document.createElement('span');
@@ -813,15 +822,27 @@ function buildGroupTab(g, doc, strip) {
 // 不用 scrollIntoView —— 它会连带滚动祖先容器，且 inline:'nearest' 对「部分可见」的
 // 标签不动作，导致激活标签经常停在可视区外。这里显式改 .etabs 自己的 scrollLeft。
 let revealTabsRaf = 0;
-function scheduleRevealActiveTabs() {
-    if (revealTabsRaf) return;
+let revealTabsFilter = null; // null = 全部组；Set(gid) = 只定位这些组（重建恢复过位置的组不再定位）
+function scheduleRevealActiveTabs(gids = null) {
+    if (revealTabsRaf) {
+        // 同帧合并：无条件定位（null）吞掉组过滤；否则取并集
+        if (revealTabsFilter) {
+            if (!gids) revealTabsFilter = null;
+            else for (const gid of gids) revealTabsFilter.add(gid);
+        }
+        return;
+    }
+    revealTabsFilter = gids ? new Set(gids) : null;
     revealTabsRaf = requestAnimationFrame(() => {
         revealTabsRaf = 0;
-        revealActiveTabs();
+        const filter = revealTabsFilter;
+        revealTabsFilter = null;
+        revealActiveTabs(filter);
     });
 }
-function revealActiveTabs() {
-    for (const wrap of deps.els.editor.querySelectorAll('.egroup')) {
+function revealActiveTabs(gids = null) {
+    for (const wrap of deps.els.editor.querySelectorAll('.egroup[data-gid]')) {
+        if (gids && !gids.has(wrap.dataset.gid)) continue;
         const strip = wrap.querySelector('.etabs');
         if (!strip || strip.classList.contains('hidden') || strip.scrollWidth <= strip.clientWidth) continue;
         const tab = strip.querySelector('.tab.active[data-doc-id]');
@@ -1279,45 +1300,15 @@ function createDocEditor(doc) {
     if (doc.editor) return;
     // 插件视图未注册（插件被禁用 / 卸载）：回落默认视图，别把标签页卡在一个空模式上
     if (isPluginViewMode(doc.mode) && !pluginView.pluginViewAvailable(doc.mode)) doc.mode = '';
-    // 浏览器 / 后台终端视图没有 doc.editor，用 doc.pane 判断是否已建过；
-    // 否则每次激活都会再建一套面板，旧面板就留在编辑器里叠着。
-    if (doc.browser) {
+    // 视图型虚拟标签页（浏览器 / 后台终端 / 子代理详情 …）：类型判定与视图工厂分派都在这里，
+    // 类型清单的单一来源是 core/tab-kinds.js（视图实现仍在本域与各调用方，不进 core）。
+    const virtualKind = tabKindOf(doc);
+    if (virtualKind) {
+        // 这些视图没有 doc.editor，用 doc.pane 判断是否已建过；
+        // 否则每次激活都会再建一套面板，旧面板就留在编辑器里叠着。
         if (doc.pane) return;
-        createBrowserView(doc);
-        return;
-    }
-    if (doc.agentView) {
-        if (doc.pane) return;
-        deps.createAgentView(doc);
-        return;
-    }
-    // 智能体团队详情标签页：主代理 + 子代理树（按打开时的会话取数）
-    if (doc.agentTeam) {
-        if (doc.pane) return;
-        deps.createAgentTeamView(doc);
-        return;
-    }
-    // 支线对话标签页：完整会话渲染在内容区（面板保持显示主对话）
-    if (doc.sideChat) {
-        if (doc.pane) return;
-        deps.createSideChatView(doc);
-        return;
-    }
-    // 群聊成员详情标签页（G6 面板化）：像子代理详情一样开在内容区；群聊本体在 AI 面板
-    if (doc.groupMember) {
-        if (doc.pane) return;
-        deps.createGroupMemberView(doc);
-        return;
-    }
-    if (doc.bgTerm) {
-        if (doc.pane) return;
-        deps.createBgTermView(doc);
-        return;
-    }
-    // 快捷便签面板：每窗口一个标签，数据在 bridge 域 memo-store（AI 经 app_control 走同一套变更通路）
-    if (doc.memo) {
-        if (doc.pane) return;
-        deps.createMemoView(doc);
+        const factory = VIRTUAL_TAB_VIEWS[virtualKind.kind];
+        if (factory) factory(doc);
         return;
     }
     const fmt = doc.format;
@@ -1671,7 +1662,11 @@ async function activateDoc(doc) {
     focusedGroupId = g.id;
     const token = ++activateToken;
     deps.cancelAutoSave();
-    if (deps.settings.autoSave && deps.file && deps.dirty && deps.file.path && !deps.file.large) {
+    // 切标签前先把上一个文件的改动落盘。临时草稿（doc.draft）不依赖 autoSave 开关：
+    // 草稿的预期是「随手写、不用管」，切走再切回来不能丢那一次输入。
+    const prev = deps.file;
+    if ((deps.settings.autoSave || (prev && prev.draft)) &&
+        prev && deps.dirty && prev.path && !prev.large) {
         await deps.save({auto: true});
         if (token !== activateToken) return;
     }
@@ -1692,6 +1687,9 @@ async function activateDoc(doc) {
     doc.pane.classList.add('active');
     deps.editor = doc.editor;
     updateDocChrome();
+    // 标签条重建只对首次构建的组做激活标签定位（renderEditorLayout），切换标签后
+    // 「把激活标签滚进可视区」由这里显式兜底，背景重绘不再抢用户的滚动位置。
+    scheduleRevealActiveTabs();
     deps.setDirty(doc.dirty);
     applyAceMode();
     if (doc.splitActive || doc.mode === 'split') enterSplitView(doc);
@@ -1795,10 +1793,28 @@ async function handleAIWorkspaceFileChanged(path) {
     }
 }
 
+// 草稿正文（判空用）：编辑器优先，还没建编辑器时退回 doc.text
+function draftTextOf(doc) {
+    if (!doc) return '';
+    if (doc.editor && typeof doc.editor.getText === 'function') {
+        try {
+            return doc.editor.getText();
+        } catch (e) {}
+    }
+    return doc.text == null ? '' : String(doc.text);
+}
+
+// isBlankDraft：空白临时草稿——关闭标签即自动删除（不走确认）。
+// 只认 doc.draft，普通文档永远不会被判成空白草稿（方案 §7.3 第 2 条）。
+function isBlankDraft(doc) {
+    return !!doc && !!doc.draft && isBlankDraftText(draftTextOf(doc));
+}
+
 function requestCloseDoc(doc) {
     if (!doc) return;
     if (doc === deps.file) flushCsvCellEditor();
-    if (doc.dirty) {
+    // 空白草稿没有可丢的内容，不必拿「未保存的修改」拦一次
+    if (doc.dirty && !isBlankDraft(doc)) {
         deps.openConfirmDialog('“' + doc.name + '”有未保存的修改，关闭标签后将丢弃。', () => closeDocNow(doc), '丢弃并关闭', '关闭标签', 'danger');
     } else {
         closeDocNow(doc);
@@ -1808,6 +1824,8 @@ function requestCloseDoc(doc) {
 function closeDocNow(doc, remember = true) {
     const idx = deps.docs.indexOf(doc);
     if (idx < 0) return;
+    // 空白草稿关标签 = 回收站删掉，不弹确认、不留关闭栈（方案 §7.3 第 2 条）
+    const blankDraft = isBlankDraft(doc);
     // 操作留痕：脏标签关闭 = 放弃修改（保存后的关闭到这里 dirty 已清零）。
     if (doc.dirty) deps.activityLog.log('tab.closeDirty', doc.name, {discarded: true});
     else deps.activityLog.log('tab.close', doc.name, {});
@@ -1820,41 +1838,38 @@ function closeDocNow(doc, remember = true) {
     // 插件视图：调插件自己的 destroy 再摘挂载点，漏了会留下定时器 / 全局监听
     disposePluginView(doc);
     const wasActive = doc === deps.file;
-    if (doc.path && remember) {
+    if (doc.path && remember && !blankDraft) {
         deps.closedTabs.push({path: doc.path, name: doc.name});
         if (deps.closedTabs.length > 12) deps.closedTabs.shift();
+    }
+    // 空白草稿删文件：走回收站（误删可取回），失败静默——关标签不该被一次删除失败挡住
+    if (blankDraft && doc.path && deps.backend && deps.backend.DeleteEntry) {
+        // 删完再刷文件树的「临时草稿」节点（.cadt 不在文件系统通知范围内）
+        const refreshScratchTree = () => {
+            if (!deps.explorer || typeof deps.explorer.refreshScratch !== 'function') return;
+            try {
+                const pending = deps.explorer.refreshScratch();
+                if (pending && typeof pending.catch === 'function') pending.catch(() => {});
+            } catch (e) {}
+        };
+        try {
+            const pending = deps.backend.DeleteEntry(doc.path);
+            if (pending && typeof pending.then === 'function') pending.then(refreshScratchTree, refreshScratchTree);
+            else refreshScratchTree();
+        } catch (e) {
+            refreshScratchTree();
+        }
     }
     if (doc.browser && deps.backend.BrowserClose) {
         deps.backend.BrowserClose(doc.id).catch(() => {});
     }
-    // 后台终端标签页：只断开输出订阅，作业继续在后台运行
-    if (doc.bgTerm && doc.bgTermUnsub) {
-        doc.bgTermUnsub();
-        doc.bgTermUnsub = null;
-    }
-    // 子代理详情标签页：卸载视图挂载点（子代理本身不受影响，仍在跑）
-    if (doc.agentView && doc.agentViewUnmount) {
-        doc.agentViewUnmount();
-        doc.agentViewUnmount = null;
-    }
-    // 团队详情标签页：注销视图（代理继续跑，重开标签页重建）
-    if (doc.agentTeam && doc.agentTeamUnmount) {
-        doc.agentTeamUnmount();
-        doc.agentTeamUnmount = null;
-    }
-    if (doc.sideChat && doc.sideChatUnmount) {
-        doc.sideChatUnmount();
-        doc.sideChatUnmount = null;
-    }
-    // 群聊成员详情标签页：退订 runtime（成员/讨论继续在后台，重开标签页恢复）
-    if (doc.groupMember && doc.groupMemberUnmount) {
-        doc.groupMemberUnmount();
-        doc.groupMemberUnmount = null;
-    }
-    // 快捷便签 面板：退订变更广播并冲掉未落盘的修改
-    if (doc.memo && doc.memoUnmount) {
-        doc.memoUnmount();
-        doc.memoUnmount = null;
+    // 视图型虚拟标签页的统一卸载契约：各域建视图时把清理函数挂到 doc.tabUnmount
+    // （后台终端断订阅、子代理/团队卸挂载点、支线退注册、群聊成员退 runtime、便签冲盘并让出写权）。
+    // 各域只清理「标签页这一层」——作业继续在后台跑、子代理继续跑、会话内容不受影响。
+    // 唯一走别的通道的是浏览器（BrowserClose 要调 Go 侧释放 WebView2 实例），在上面单独处理。
+    if (doc.tabUnmount) {
+        doc.tabUnmount();
+        doc.tabUnmount = null;
     }
     deps.docs.splice(idx, 1);
     if (doc.editor) {
