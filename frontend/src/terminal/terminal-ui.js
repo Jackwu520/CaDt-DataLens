@@ -249,12 +249,12 @@ function renderGitPanel() {
 
 function currentSidebarView() {
     const view = deps.settings.sidebarView;
-    if (view === 'git' || view === 'structure' || view === 'chats' || view === 'app-pages') return view;
+    if (view === 'git' || view === 'structure' || view === 'chats' || view === 'app-pages' || view === 'database') return view;
     return 'files';
 }
 
 function switchSidebarView(view) {
-    if (!['files', 'git', 'structure', 'chats', 'app-pages'].includes(view)) view = 'files';
+    if (!['files', 'git', 'structure', 'chats', 'app-pages', 'database'].includes(view)) view = 'files';
     deps.settings.sidebarView = view;
     if (deps.structurePanel && view === 'structure') deps.structurePanel.setDoc(deps.file);
     deps.applySettings();
@@ -264,6 +264,10 @@ function switchSidebarView(view) {
     // 应用页面面板：每次切进来重绘一次（列表是本地注册表，成本可忽略）
     if (view === 'app-pages' && typeof deps.renderAppPagesNav === 'function') {
         try { deps.renderAppPagesNav(); } catch (e) {}
+    }
+    // 数据库面板：每次切进来重绘（工作区注册表可能被别的窗口改过）
+    if (view === 'database' && typeof deps.renderDatabaseNav === 'function') {
+        try { deps.renderDatabaseNav(); } catch (e) {}
     }
 }
 

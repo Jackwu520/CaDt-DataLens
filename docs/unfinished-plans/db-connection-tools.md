@@ -1,6 +1,7 @@
 # 内置数据库连接与浏览工具（分期方案）
 
-> 状态：**未开工**（2026-11-22 评估 + 深度调研成文 + 代码事实复核；P0 设计决策见 §5.1，待拍板范围后实施）
+> 状态：**P0–P2 已实施**（2026-11-22 评估、调研、评审、实施同日完成；落地决策与偏离记录见 §11；
+> P3 Redis 按既定边界「单独立项」，未启动）
 >
 > 目标形态：类 JetBrains DataGrip / Beekeeper Studio 的「连接 → 对象树 → 表数据网格 → SQL 查询 → 受控编辑」，
 > 但严格保持本项目「单 exe、零依赖、无索引、轻快」的核心竞争力——**做一个够用的轻量数据查看器，不做一个瘦版 DataGrip**。
@@ -247,7 +248,7 @@ type QueryRequest struct {
 
 **范围**：作为**独立子系统**（不复用 SQL 结果网格）：key 虚拟树（默认 `:` 分隔、可切扁平）、按 value 类型分派的编辑器（string/hash/list/set/zset/stream/JSON）、TTL 展示与修改、单命令 CLI、编辑生成命令预览。
 
-**依赖**：优先自写精简 RESP 客户端（0 新依赖）；若用 `go-redis/v9` 约 +1 MB——**作者已批准**（2026-11-22，与 P1 同批确认）。
+**依赖（2026-11-22 作者拍板：自写）**：自写精简 RESP2 客户端（0 新依赖；浏览面只需约 20 条命令 + 一条通用管线，单连接串行，不需要 go-redis 的池化/Cluster/RESP3）；**实施时在客户端文件头注释注明「后续如有真实需求（Cluster/Pub-Sub/RESP3）可替换 go-redis/v9（约 +1 MB，体积已批）」**。
 
 **关键约束**（来自调研）
 - 只用 `SCAN`（可调 COUNT、客户端去重、cursor==0 判结束）；**绝不用 `KEYS`**；精确查找走 `EXISTS`；不依赖 `INFO`/`CONFIG` 列 key（托管 Redis 常禁用）。
@@ -319,3 +320,61 @@ type QueryRequest struct {
 **SQLTools / VSCode**：[driver template](https://github.com/mtxr/vsc-sqltools-driver-template) · [language server 源码](https://github.com/mtxr/vscode-sqltools) · [Go plugin 警告](https://pkg.go.dev/plugin)
 
 **Redis**：[RedisInsight 官方](https://redis.io/docs/latest/develop/tools/insight/) · [SCAN](https://redis.io/docs/latest/commands/scan/) · [KEYS](https://redis.io/docs/latest/commands/keys/) · [ARDM 源码](https://github.com/qishibo/AnotherRedisDesktopManager)
+
+---
+
+## 11. 实施记录（2026-11-22，P0–P2 一次落地）
+
+### 11.1 交付物
+
+- **Go 引擎 `internal/dbclient/`**（纯引擎，不 import main）：`dbclient.go`（类型/常量/入口）、`driver.go`（契约+编译期注册）、`guard.go`（SQL 分类器）、`sqlite.go`、`mysql.go`、`session.go`（注册表/空闲回收/取消）、`query.go`（控制台+浏览下推）、`edit.go`（受控写入）、`config.go`（连接配置+dpapi 凭据）；测试 `guard_test.go` / `dbclient_test.go` / `config_test.go`（含真实 SQLite 端到端）。
+- **根壳 `dbclient_app.go`**：15 个绑定（DBOpen / DBConnect / DBListDatabases / DBListObjects / DBDescribe / DBBrowse / DBQuery / DBCancel / DBClose / DBListConnections / DBSaveConnection / DBDeleteConnection / DBTestConnection / DBPreviewChanges / DBApplyChanges），mock-backend 全部补齐。
+- **前端 `src/db/`**（新域，factory+deps）：`db-page.js`（三栏装配+启用门）、`db-object-tree.js`、`db-table-grid.js`、`db-query-editor.js`、`db-connections.js`、`db-grid-core.js`、`db-model.js`（纯函数）；测试 `frontend/test/db/db-model.test.mjs` 已登记 `npm test`。
+- 接线：`core/app-pages.js` 加 `database` 页、`main.js` appPageMounters 注入、样式追加 `style.css` 尾段。
+
+### 11.2 评审决策落地（§5.1/§5.2 开工前四项）
+
+1. **guard 分类器**：词法级 tokenizer（引号/注释/括号深度）+ 语句拆分（方言感知：MySQL `#` 注释、`--` 需空白、反斜杠转义）+ 首关键字分类；**数据变更 CTE 逐体检查**（`WITH x AS (DELETE … RETURNING …)` 判写）；未知语句 fail-closed 按写拒绝；PRAGMA 赋值/`wal_checkpoint` 判写；MySQL `INTO OUTFILE/DUMPFILE/@var`、`CALL`、`GRANT`、`LOAD` 等归危险。逗号词法化修复了多 CTE 列表的误判（测试抓出）。
+2. **排序/筛选下推**：表浏览全下推——ORDER BY / 结构化筛选（列名经元数据白名单、值全走占位参数）/ LIMIT OFFSET；contains 用 `ESCAPE '!'`（反斜杠在 MySQL 字面量里语义危险）。
+3. **页内多对象导航**：面板内子标签页（`db-tabbar`），每张打开过的表一个标签，关标签不清会话（空闲回收兜底）。
+4. **取消路径**：第六个绑定 `DBCancel(sessionID, queryID)`；控制台执行中可取消，慢查询不再只能等 20s 超时。
+
+### 11.3 与正文的偏离（已确认）
+
+- **连接目标校验收窄**（§5.2）：只拦链路本地地址（169.254.0.0/16 含 IMDS）与 metadata 主机名，内网保留段默认放行——开发库多在 192.168.x.x，默认拒内网等于让多数用户第一次用就去改配置。
+- **行定位只认主键**（§5.3 原文「主键/唯一索引」）：唯一索引不做行身份（NULL 语义与组合键歧义），无主键表一律只读，UI 给出原因。
+- **两阶段确认协议**（§5.3 DROP 确认等）：guard 返回 `Status=confirm + 原因`（danger / missingWhere），前端确认层后带 `confirmed=true` 重发；DDL 恒拒（`Capabilities.DDL=false`），确认层只对写路径生效。
+- **截断判定**：分页下推 LIMIT 取 limit+1，由结果组装层截断打标——LIMIT 在服务端截掉后客户端看不到第 limit+1 行，少取一行永远标不出 Truncated（测试抓出）。
+- **MySQL 只读第二道**（评审建议）：池限 1 连接 + 建连后 `SET SESSION TRANSACTION READ ONLY`（best-effort，连接重建会丢——guard 分类是主防线）。
+- **总开关**（§8）：落 `settings.dbToolsEnabled`（默认关），启用门做在页面内（开关在页面上，未启用时页面只显示启用门）；未接入设置树，避免新增 `opt-` 行的联动成本。
+- **SQLite 打开是临时会话**，不落连接表（§5.1 原文的 `config.go` 移到 P1，服务 MySQL 连接管理）；「允许编辑」在打开对话框显式勾选（默认只读 mode=ro）。
+- **WAL/immutable 兜底**：mode=ro 失败（WAL -shm 无读权限）自动以 immutable=1 重试一次，SessionInfo.Immutable 标记 + 界面「只读快照」徽标提示，非静默降级。
+
+### 11.4 留痕与凭据
+
+- 写留痕经前端 activity 攒批：控制台写语句（`db.exec`）与提交（`db.apply`），detail 只含类型/行数/耗时，**不含参数值与密码**（与方案 §5.3 一致）。
+- 密码：dpapi 加密（Sealed 标记）单独落 `db-credentials.json`，复合键 `connectionID|host|port|user`；非 Windows（dpapi.Supported()==false）退明文（envvars/aiconfig 同款退路）；凭据文件损坏时报错不覆盖。
+
+### 11.5 验证（全部通过）
+
+- `go test ./internal/dbclient/`：表驱动分类/拆分/批量口径 + 真实 SQLite 端到端（只读拦截含 CTE bypass、下推浏览、截断、冲突回滚、会话上限回收、取消）。
+- `go test ./...`（后台 + `-timeout 300s`）：62 包全绿；`go vet`、`gofmt` 干净。
+- `npm test`：2324 例全绿（含 icon-guard / form-controls-factory / overlay-esc-guard / test-manifest 等守卫）；`npm run build` 通过。
+- `tools/check-crossbuild.cmd`：linux/amd64、darwin/arm64、darwin/amd64 全过（go-sql-driver 纯 Go）。
+- 体积：`go build -tags production` 实测 46,088,192 B（≈43.9 MiB）；本功能增量以 **go-sql-driver ~0.6 MB + 前端 dist ~30 KB** 计（同期有并行特性合入，无法与旧 exe 基线逐字节剥离），在批准的 +1.5 MB 预算内。
+
+### 11.6 入口重构：应用页面 → 侧栏面板 + 一切皆标签（2026-11-22 作者纠正后返工）
+
+首次实施把数据库做成应用页面（APP_PAGES 一项，三栏一个页面）。作者纠正：要符合「一切皆标签」语义，但**不进应用页面**——改为：
+
+- **入口**：活动栏新增 `ab-database` 图标 → 侧栏「数据库」面板（`sidebarView='database'`，与 files/git/structure/chats/app-pages 同一套切换器；白名单在 `terminal-ui.js` 的 currentSidebarView/switchSidebarView 两处 + main.js 的 applySidebarUI）。
+- **工作区清单**：`settings.dbWorkspaceDatabases`（平铺数组、条目带 `workspace` 字段，lifecycleHooks 同款「本机设置、按工作区生效」模式；跨窗经 settings-changed 同步）。条目：`{id, workspace, kind, name, path?|connectionId?, allowEdit?, addedAt}`——SQLite 存路径（allowEdit 条目级开关，菜单切换、重开标签生效）；MySQL 引用全局连接 id（配置与凭据仍在 Go 侧，多工作区共享，`db-ui.js` 只存引用）。
+- **面板交互**：按类型分组（SQLite / MySQL，可折叠）；顶部「+ SQLite 库文件 / + MySQL 连接」；MySQL 添加 = 未引用的已保存连接清单 + 「新建连接…」；双击行 → 开标签页；右键或行尾 `[...]` → 菜单（打开 / 允许编辑 / 测试连接 / 编辑连接 / 删除连接（全局）/ 从工作区移除，`ctxMenu` 右键菜单）。
+- **标签页**：`core/tab-kinds.js` 新增视图型 `{marker:'dbView', kind:'database', icon:'database', label:'数据库'}`（resolve 细分为条目名，AI 上下文能认出具体库）；创建点在 `bridge/bridge-database-view.js`（marker + key 成对，key = 条目 id 去重）；分派在 `editor-groups.js` 的 `VIRTUAL_TAB_VIEWS.database`；视图本体 `src/db/db-tab.js`——**一个标签页 = 一个库会话**：挂载时连接、`doc.tabUnmount` 统一契约断开（网格未提交修改随关标签丢弃）；页内仍是「对象树 | 表网格（面板内子标签）| SQL 控制台」三栏。
+- **原应用页面形态移除**：APP_PAGES 条目、appPageMounters 条目、`db-page.js` 删除；接线守卫 `virtual-doc-wiring.test.mjs` 的 tabUnmount owners 清单加入 `bridge-database-view.js`。
+- **连接对话框化**：`db-connections.js` 收敛为纯对话框族（`openConnectionEditor` / `confirmDeleteConnection` + 共用 `openMaskDialog`），供菜单与添加流复用。
+- **TDZ 防线**：`dbUi` 建得晚（bridgeUI 解构后），侧栏重绘经早期 hook 间接层 `dbSidebarRenderHook`（仓库 2026-11-18 教训的同款处理）；terminal-ui / editor-groups 的 deps 一律 lazy getter。
+
+### 11.7 新建连接对齐 JetBrains「数据源和驱动程序」（2026-11-22 作者要求）
+
+MySQL 的添加/编辑从「先选已有再新建」两步流收敛为**统一管理对话框**（`db-connections.js` 的 `openConnectionsManager`）：左侧连接清单（+ 新建 / − 删除，行带「工作区」引用徽标）、右侧表单——名称自动建议 `user@host:port`（nameTouched 前跟随主机/用户/端口，对应 JetBrains 的 `@localhost`）、主机端口并排、用户/密码（密码留空保持已存）、数据库、允许编辑开关、**「加入当前工作区」开关**（对应 JetBrains 的「项目数据源」概念，应用时经 `syncWorkspaceRef` 同步引用）、URL 只读预览；底部 测试连接 / 取消 / 应用 / 确定（应用 = 保存草稿并刷新列表不关窗）。SQLite 添加保持文件选择（JetBrains 的 SQLite 数据源同样只选文件）。连接对话框仅此一处入口：侧栏 [+ MySQL 连接] 与行菜单「编辑连接…（打开连接管理并定位该连接）」。

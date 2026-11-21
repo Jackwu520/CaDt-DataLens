@@ -102,6 +102,7 @@ test('虚拟标签页卸载走统一契约 doc.tabUnmount', () => {
     const owners = [
         'bridge-terminal-view.js', 'bridge-agent-view.js', 'bridge-team-view.js',
         'bridge-sidechat-view.js', 'bridge-group-member-view.js', 'bridge-memo-view.js',
+        'bridge-database-view.js',
     ];
     const missing = owners.filter((file) => !/doc\.tabUnmount\s*=/.test(read('bridge/' + file)));
     assert.deepEqual(missing, [], '这些域没挂 doc.tabUnmount：关标签后订阅 / 监听 / DOM 会泄漏');

@@ -47,6 +47,10 @@ export const TAB_KINDS = [
             const page = appPageOf(doc && doc.appPage);
             return page ? {icon: page.icon, label: page.label} : null;
         }},
+    // 数据库连接（侧栏「数据库」面板双击打开，一个标签页 = 一个库会话）：
+    // 标签用 doc.name（库文件名 / 连接名）而非泛称，AI 上下文里能认出是哪个库。
+    {marker: 'dbView', kind: 'database', icon: 'database', label: '数据库',
+        resolve: (doc) => (doc && doc.name ? {icon: 'database', label: doc.name} : null)},
 ];
 
 /**

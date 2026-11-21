@@ -157,6 +157,8 @@ const VIRTUAL_TAB_VIEWS = {
     groupmember: (doc) => deps.createGroupMemberView(doc),
     // 应用页面（使用统计 / 定时任务 …）：一个类型装 N 个功能页，按 doc.appPage 分派在工厂内部
     apppage: (doc) => deps.createAppPageView(doc),
+    // 数据库连接（侧栏「数据库」面板双击打开；会话与表网格都在工厂内部，main.js 注入）
+    database: (doc) => deps.createDatabaseView(doc),
 };
 const updateBrowserTitle = (...a) => browserTab.updateBrowserTitle(...a);
 const setBrowserViewport = (...a) => browserTab.setBrowserViewport(...a);
@@ -1920,6 +1922,11 @@ function closeDocNow(doc, remember = true) {
     }
     if (doc.browser && deps.backend.BrowserClose) {
         deps.backend.BrowserClose(doc.id).catch(() => {});
+    }
+    // 个人浏览器标签关闭 = 用户不想看它了：从恢复列表移除并释放恢复租约
+    // （登录态仍在 profile 磁盘里，重开不用重新登录）。见 shell/browser-tab-restore.js。
+    if (doc.browser && doc.browserPersist && deps.browserTabRestore) {
+        deps.browserTabRestore.notePersonalClosed();
     }
     // 视图型虚拟标签页的统一卸载契约：各域建视图时把清理函数挂到 doc.tabUnmount
     // （后台终端断订阅、子代理/团队卸挂载点、支线退注册、群聊成员退 runtime、便签冲盘并让出写权）。

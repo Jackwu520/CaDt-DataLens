@@ -100,6 +100,16 @@ CaDt-DataLens 用桌面窗口打开 JSON、JSONL、YAML、XML、CSV 和普通文
 - **失败输出发给 AI 分析**：面板按钮把输出尾部 200 行填进 AI 输入框，由用户决定是否发送，不会自动调用模型。
 - **项目运行（`Ctrl+F5`）**：向上探测 `package.json` / `go.mod` / `Cargo.toml` / `pyproject.toml` / `Makefile`，在面板列出候选命令（`npm start` / `go run .` / `cargo run` …），确认后才以项目根为工作目录执行。
 
+### 数据库
+
+- 活动栏「数据库」图标打开侧栏面板，列出**本工作区添加的数据库**（按 SQLite / MySQL / MariaDB / 插件驱动分组、可折叠）：顶部按钮添加 SQLite 库文件（`.db` / `.sqlite` / `.sqlite3`）、MySQL/MariaDB 连接（同一引擎，JetBrains 式统一管理对话框）或**插件驱动**（`cadt.registerDbDriver`，其他数据库类型交给插件，见 docs/plugins/README.md）；**双击在内容区开「数据库」标签页**（一个标签 = 一个库会话），右键或行尾 `[...]` 有打开 / 允许编辑 / 测试 / 编辑 / 移除等菜单。对象树两级按需加载（库 → 表/视图），点表进数据网格。总开关 `settings.dbToolsEnabled` 默认关，启用门在面板内。
+- 表数据网格：虚拟滚动、点列头排序、结构化筛选（包含/比较/NULL，全部下推为参数化 SQL）、分页（每页 500 行，服务端截断有标记）；不跑 `COUNT(*)`，MySQL 行数用 information_schema 估算值。
+- SQL 控制台：多语句逐条分类执行，Ctrl+Enter 运行、执行中可取消（`DBCancel`）、结果表复用网格；结果行数上限 100–5000。
+- **默认只读是双保险**：SQLite 以 `mode=ro` 打开（WAL 无读权限时自动 immutable 兜底并明确提示）、MySQL 建连即 `SET SESSION TRANSACTION READ ONLY` + 连接池限 1；查询路径再逐条分类，任一条非只读整批拒（数据变更 CTE、未知语句 fail-closed 都判写）。
+- **受控写入是显式授权**：连接级「允许编辑」开关（SQLite 在打开对话框勾选，默认关）+ 编辑器全局只读锁同样生效；dirty model → 提交预览（逐条展示内联值的 SQL）→ 单事务提交，任一语句行数不符预期整体回滚并提示刷新；无主键表与视图一律只读，主键列本身不可编辑。
+- 危险语句（DROP/TRUNCATE/ATTACH/CALL/GRANT/LOAD 等）与缺 WHERE（或 WHERE TRUE）的 UPDATE/DELETE 走两阶段确认；DDL 未开放。
+- 密码经 DPAPI 加密单独落 `db-credentials.json`（复合键防撞；换用户/换机器解不开时提示重存，绝不覆盖）；写操作进操作留痕（类型/行数/耗时，不含参数值）；会话空闲 15 分钟自动断开，连接上限 8 个。
+
 ### 生命周期
 
 - **9 个生命周期事件自动执行**配置的命令（设置 → 生命周期，导航「运行」旁），对齐 ZCode 钩子模型：

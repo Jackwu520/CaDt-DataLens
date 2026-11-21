@@ -371,6 +371,65 @@ cadt.registerService({
 - 服务声明只在内存里，不落盘；exe / args / cwd 的合法性由插件负责，应用只做启停与健康检查，**不做沙箱**。只托管可信来源的插件服务。
 - 操作 API（均返回 Promise）：`cadt.startService(id)` / `cadt.stopService(id)` / `cadt.getServiceStatus(id)` / `cadt.getServiceLogs(id)`，其中 `id` 是插件内短 id。
 
+### `cadt.registerDbDriver(spec)`
+
+注册一个**数据库驱动**：让侧栏「数据库」面板支持新的数据库类型。连接表单字段由驱动声明（宿主动态渲染），连接后的会话由驱动实现——对象树、表数据网格、SQL 控制台全部复用内置界面，宿主不关心传输与协议（HTTP 型数据库直接 `fetch`；需要本地 sidecar 的配合 `registerService` 托管）。
+
+```js
+cadt.registerDbDriver({
+    id: 'clickhouse',                    // 插件内唯一，^[a-z0-9][a-z0-9-]{0,63}$
+    label: 'ClickHouse (HTTP)',          // 侧栏分组名与添加对话框标题（≤40 字）
+    fields: [                            // 连接表单（1–12 个）
+        {key: 'url', label: 'HTTP 地址', type: 'text', default: 'http://127.0.0.1:8123', required: true},
+        {key: 'user', label: '用户', type: 'text', default: 'default'},
+        {key: 'password', label: '密码', type: 'password'},   // password = DPAPI 加密存储，不进工作区清单
+        {key: 'database', label: '默认库', type: 'text', default: 'default'},
+    ],
+    async connect(config) {              // config = 表单收集值（password 已合并明文）
+        async function sql(query) {
+            const res = await fetch(config.url, {method: 'POST', body: query});
+            if (!res.ok) throw new Error('ClickHouse ' + res.status + '：' + (await res.text()).slice(0, 500));
+            return res.json();
+        }
+        return {
+            info: {server: 'ClickHouse', database: config.database},
+            async listDatabases() {
+                const json = await sql('SELECT name FROM system.databases ORDER BY name FORMAT JSON');
+                return json.data.map((r) => String(r.name));
+            },
+            async listObjects(db) { /* → [{name, kind: 'table'|'view', rowEstimate}] */ },
+            async describe(db, table) { /* → {table, kind, columns:[{name,type,notNull,pk}], pk, indexes, rowEstimate} */ },
+            async browse(req) { /* → {columns, rows, nulls, truncated, elapsedMs, message} */ },
+            async query({queryId, sql, confirmed, limit}) { /* → {status:'ok'|'confirm', confirm?, result, writes?} */ },
+            async cancel(queryId) {},    // 可选
+            async close() {},            // 可选
+        };
+    },
+});
+```
+
+**会话契约**（方法名与返回形状与内置 SQLite/MySQL 绑定一致，网格与控制台零改动复用）：
+
+| 方法 | 入参 | 返回 |
+| --- | --- | --- |
+| `listDatabases()` | — | `string[]` |
+| `listObjects(db)` | 库名 | `[{name, kind: 'table'\|'view', rowEstimate?}]` |
+| `describe(db, table)` | 库名、表名 | `{table, kind, columns:[{name,type,notNull,default?,pk}], pk, indexes?, rowEstimate?}` |
+| `browse(req)` | `{database, table, sortColumn, sortDesc, filters, offset, limit}` | `{columns, rows: string[][], nulls: bool[][], truncated, elapsedMs?, message?}` |
+| `query(o)` | `{queryId, sql, confirmed, limit}` | `{status: 'ok'\|'confirm', confirm?: 'danger'\|'missingWhere', message?, result, statements?, writes?}` |
+| `cancel(queryId)` / `close()` | — | 可选，无返回 |
+
+规则与边界：
+
+- **kind 与注册表**：驱动的全局类型串是 `plugin:<插件id>:<驱动id>`，工作区清单按它分组；插件禁用 / 卸载后引用它的条目打开时明确报「驱动未注册」，不会静默空白。上限：单插件 ≤ 5 个、全局 ≤ 20 个、单驱动 fields ≤ 12 项，超限注册时报错。
+- **v1 只读**：插件会话一律不可编辑（网格编辑 = dirty model + 单事务提交 + 乐观并发，是内置 sqlite/mysql 的 SQL 契约；插件侧的受控写入等契约稳定后另开）。`query` 返回的 `writes` 只用于留痕计数。
+- **危险确认走同一 UI**：`query` 返回 `status:'confirm'`（`confirm: 'danger' | 'missingWhere'`）时宿主弹同一确认层，用户确认后带 `confirmed: true` 重发——插件自己也应当做同等拦截，两道防线。
+- **密文字段**：`type:'password'`（或 `secret: true`）的字段经 DPAPI 加密存储（键 `dbplug:<条目id>:<字段键>`），绝不进 localStorage 与跨窗同步；编辑对话框留空 = 保持不变。`connect` 拿到的 config 已合并明文，只在闭包内使用。
+- **超时**：宿主对每次插件调用包 120s 超时；插件应在 connect/query 里自设更短的超时与 `AbortController`。
+- **工作区清单**：用户添加的连接配置（非密文字段）存 `settings.dbWorkspaceDatabases`，条目形如 `{kind: 'plugin:<插件id>:<驱动id>', name, config, …}`，按工作区生效、跨窗同步。
+- **传输选择**：HTTP SQL 接口（ClickHouse/Trino/Presto 等）直接 `fetch`；数据库自带代理协议不可直连时，用 `registerService` 起本地 sidecar 再调它的 HTTP 接口；裸 TCP 协议（如 PostgreSQL wire）当前无桥接通道，做协议客户端不如把驱动下沉到核心（见 `internal/dbclient` 的 Driver 接口，MySQL/SQLite 先例）。
+- 完整可运行示例见 [`plugins/db-clickhouse-http/`](../../plugins/db-clickhouse-http/)（真实 ClickHouse HTTP 接口，零依赖）。
+
 ### `cadt.registerSettingsPanel(spec)`
 
 注册一个**插件专属设置面板**：在 设置 → 插件设置 下出现独立导航项，适合放服务开关、状态、日志、说明等自定义内容。

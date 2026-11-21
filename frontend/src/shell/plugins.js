@@ -4,6 +4,9 @@ import {registerPluginFormat, unregisterAllPluginFormats} from '../core/formats.
 import {clearPluginAIProviders, getPluginAIProviders, registerPluginAIProvider} from './plugin-ai-providers.js';
 import {normalizePluginCommand} from './plugin-commands-model.js';
 import {
+    clearPluginDbDrivers, getPluginDbDrivers, registerPluginDbDriver,
+} from './plugin-db-drivers.js';
+import {
     bindServiceBackend, buildServiceSpecs, clearPluginServices, registerPluginService,
     serviceLogs, serviceStatus, startService, stopService,
 } from './plugin-services.js';
@@ -230,6 +233,16 @@ function apiFor(plugin) {
         stopService(id) { return stopService(plugin.id, id); },
         getServiceStatus(id) { return serviceStatus(plugin.id, id); },
         getServiceLogs(id) { return serviceLogs(plugin.id, id); },
+        // 注册数据库驱动：{id, label, fields, connect(config)}——「其他数据库交给插件」的扩展面。
+        // kind = plugin:<插件id>:<驱动id>，侧栏「数据库」面板按声明动态出连接表单，
+        // 内容区标签页复用对象树/网格/控制台；会话形状契约见 docs/plugins/README.md。
+        registerDbDriver(spec) {
+            try {
+                return registerPluginDbDriver(plugin.id, plugin.name, spec);
+            } catch (e) {
+                throw pluginError(plugin, (e && e.message) || e);
+            }
+        },
         // 注册文档格式转换器：{id, label, extensions, convert(ctx)}——通用导出能力，
         // 各导出场景（便签面板 / AI 回答另存 / 阅读导出…）把内容组装成统一 ctx 后调用
         // convert；Word/PDF 等生成依赖全在插件侧随插件分发。ctx：{title, suggestedName,
@@ -300,6 +313,7 @@ function notifyPluginsLoaded() {
 export async function loadPlugins(backend) {
     unregisterAllPluginFormats();
     clearPluginAIProviders();
+    clearPluginDbDrivers();
     clearPluginServices();
     clearPluginSettingsPanels();
     clearPluginTools();
@@ -356,6 +370,7 @@ export async function loadPlugins(backend) {
         sources.map((s) => s.id).join('、') + '）· 命令分类器 ' + commandClassifiers.size +
         ' 个 · AI provider ' + getPluginAIProviders().length +
         ' 个 · 服务 ' + buildServiceSpecs().length +
+        ' 个 · 数据库驱动 ' + getPluginDbDrivers().length +
         ' 个 · 设置面板 ' + getPluginSettingsPanels().length +
         ' 个 · 错误 ' + errors.length + (errors.length ? '：' + errors.join('；') : ''));
     host.onPluginsChanged();
