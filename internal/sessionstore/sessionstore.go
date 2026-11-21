@@ -26,14 +26,19 @@ import (
 // 分桶布局（NewBucketed）：工作区短哈希作父目录——<root>/<ws8>/<id>/...，
 // 桶名规则见 WorkspaceBucketKey；aigroups 复用同一引擎按 groupId 平铺，桶化必须 opt-in。
 const (
-	SessionsDirName    = "ai-sessions"
-	aiSessionMetaName  = "meta.json"
-	aiSessionLogName   = "session.v1.jsonl"
-	ImagesDir          = "images"
-	VideosDir          = "videos"
-	aiSessionLockName  = ".session.lock"
-	aiSessionLockWait  = 5 * time.Second
-	aiSessionReadLimit = 64 << 20 // 单会话正文上限：超过后拒绝加载，提示先压缩
+	SessionsDirName   = "ai-sessions"
+	aiSessionMetaName = "meta.json"
+	aiSessionLogName  = "session.v1.jsonl"
+	ImagesDir         = "images"
+	VideosDir         = "videos"
+	aiSessionLockName = ".session.lock"
+	aiSessionLockWait = 5 * time.Second
+	// 单会话正文上限（256 MB，2026-11-22 由 64 MB 扩限并语义反转，方案 §5.2 S2）：
+	// 实测 180 MB 整份读入+重放仅 ~450 ms / 峰值 544 MB，64 MB 是未经测量的保守防线。
+	// 超过它不再「拒绝服务」——前端 loadOne 捕获 session-too-large: 前缀后自动触发
+	// AISessionVacuum 整理并重试，对话永不因体积被阻断。256 MB 也是加载内存峰值的
+	// 硬拒线（外推 ~800 MB RSS，逼近渲染进程舒适区边缘），不再上调。
+	aiSessionReadLimit = 256 << 20
 	aiSessionMetaLimit = 1 << 20
 	aiSessionIDMax     = 128
 	aiSessionImageMax  = 120
@@ -63,6 +68,17 @@ type Store struct {
 	DeleteFn func(string) error
 	// bucketed=true 时会话目录按工作区短哈希分桶（仅 ai-sessions 用；aigroups 保持平铺）。
 	bucketed bool
+	// readLimitOverride 单会话正文读取上限的测试覆盖（0 = 用 aiSessionReadLimit 常量），
+	// 让 vacuum/liveDominant/超限前缀测试不必写 256MB 级夹具。
+	readLimitOverride int64
+}
+
+// bodyReadLimit 单会话正文读取上限（Read 拒载、Vacuum 阈值与 liveDominant 共用同一把尺）。
+func (s *Store) bodyReadLimit() int64 {
+	if s.readLimitOverride > 0 {
+		return s.readLimitOverride
+	}
+	return aiSessionReadLimit
 }
 
 // 同进程内所有 App 方法各建一个 store，追加互斥必须是包级的。
@@ -607,9 +623,10 @@ func (s *Store) Read(id string) (string, error) {
 		}
 		return "", err
 	}
-	if info.Size() > aiSessionReadLimit {
-		return "", fmt.Errorf("会话正文 %d MB，超过 %d MB 上限；请先压缩或清空该会话",
-			info.Size()/(1<<20), aiSessionReadLimit/(1<<20))
+	if info.Size() > s.bodyReadLimit() {
+		// 稳定错误前缀契约：前端据此分流「打开即自动整理」（不做字符串模糊匹配）。
+		return "", fmt.Errorf("session-too-large: 会话正文 %d MB，超过 %d MB 上限（打开时将自动整理归档）",
+			info.Size()/(1<<20), s.bodyReadLimit()/(1<<20))
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -674,7 +691,7 @@ func (s *Store) AppendWithCreate(id string, payload string, allowCreate bool) er
 }
 
 // workspaceFromHeader 取追加载荷首行 header 里的 workspace；首行不是 header 时给空
-//（落 _unbound，只在载荷异常时发生，不丢数据）。
+// （落 _unbound，只在载荷异常时发生，不丢数据）。
 func workspaceFromHeader(payload string) string {
 	line := payload
 	if i := strings.IndexByte(line, '\n'); i >= 0 {

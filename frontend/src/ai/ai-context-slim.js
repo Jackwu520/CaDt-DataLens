@@ -116,6 +116,24 @@ function pruneBody(name, text) {
         text.slice(-tailBudgetOf(name));
 }
 
+// ---------- 落盘预算化（S3，方案 §5.1）：全文只在请求侧瘦不够，历史本身也要瘦 ----------
+// ZCode 同款闸门：工具结果入库前按预算截断 + 指针化，落库的是预算后内容。这里扩展到
+// 会话 JSONL：全文已落 ai-artifacts/（写盘成功的分支），历史里只留头尾预算 + 长度 +
+// 路径指针；全文 >4 MB 连头尾都不留（数据就是日志回显之类，指针足够）。
+// 请求组装侧对已预算消息直接透传（persistBudgeted 标记），不再二次修剪。
+export const SLIM_PERSIST_HARD_LIMIT = 4 * 1024 * 1024;
+
+// 落盘预算文本（纯函数）：有 artifactPath 才预算，否则保持全文（组装侧仍有修剪兜底）。
+export function persistBudgetText(name, content, artifactPath) {
+    const text = String(content == null ? '' : content);
+    if (!artifactPath) return text;
+    if (text.length > SLIM_PERSIST_HARD_LIMIT) {
+        return '[工具结果 ' + text.length + ' 字符，已完整存盘：' + artifactPath +
+            '\n本条消息只保留指针；需要时用 read_file 读取该路径（支持 offset 续读）。]';
+    }
+    return spillPointerText(name, text, artifactPath);
+}
+
 export function pruneToolResult(name, content) {
     const text = String(content == null ? '' : content);
     if (!spillWanted(name, text)) return null;

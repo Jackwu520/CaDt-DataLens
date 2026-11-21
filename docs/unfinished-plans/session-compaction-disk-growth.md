@@ -1,6 +1,10 @@
 # 会话压缩导致磁盘正文无限累加：根因诊断与改进方案
 
-> 状态：**方案已定稿，待开工**（2026-11-22 成文，同日评审收敛）
+> 状态：**S1 / S2 / S3 已全部实施**（2026-11-22 成文并评审收敛，同日开工一次落地）
+>
+> 实施记录：Go `internal/sessionstore/vacuum.go`（Vacuum 状态机 + ReadArchive / ReadForce / ClearArchive，两步写清单恢复）+ `sessionindex` 拼接；前端 `ai-session-disk.js`（readBodyAutoTidy / 归档出栈对账 / 侧车消费点）+ `ai-panel.js`（拒载卡片 / 归档卡分页 / 导出 / 诊断）+ `ai-context-slim.js`（persistBudgetText）。护栏：`vacuum_parity_test.go` ↔ `ai-session-vacuum-parity.test.mjs` 双侧夹具（12 条）、`ai-session-disk-tidy.test.mjs`（三分流 / 出栈对账 / 手动整理 / 日志合并 / 预算化）、sessionindex 拼接测试。验证：`go test ./...` 全量、`npm test` 全量、`npm run build` 通过。群聊共享对话的自身增长暴露面维持「另立方案」不变。
+>
+> 双代理评审后的三处修正（同日落地）：① 重写前内存对账改为「只清 `_archivedMids` 登记过的前缀」——vacuum 只搬磁盘归档态，刚切进归档的未落盘尾部必须留在内存并随重写以 a:1 落盘（原实现全清 + 排除载荷 = 三处同时丢消息，P0）；② keep 的数值边界在浮点域钳制（int(1e20) 在 amd64 是 implementation-dependent，会变成「全删」而 JS 是「全留」），超界 JSON 数字（1e999）按 ±Inf 对齐；③ 崩溃恢复判定从 size+mtime 改为主文件内容哈希（Pre/PostMainHash），模糊窗口绝不盲截（截错丢「仅存于 sidecar」的归档），叠加 appendSidecarBatch 幂等比对兜重复；另补 reset×sidecar 清空、未知 schema 引信（拒绝整理）、AISessionVacuum 的另一窗口回合租约校验。
 >
 > 触发问题：两个历史会话正文分别涨到 **180.71 MB / 162.59 MB**，超过 `AISessionRead` 的 64 MB 上限被拒绝加载，启动时汇总弹出「部分会话读取失败：会话正文 180 MB，超过 64 MB 上限；请先压缩或清空该会话（共 2 个会话）」。
 > 关键认知：**「压缩后磁盘累加」是全行业普遍设计，但本实现叠加了三个独有缺陷，才压出 180 MB 并撞上硬墙**。本文记录根因、六家横向调研结论与四期改进方案。
@@ -260,9 +264,10 @@ sidecar archive.v1.jsonl = 归档消息（append-only，永不整读、永不重
 
 #### S3 降速：重写收窄 + 工具结果落盘预算化
 
-**重写收窄（原 5.2）**：
+**重写收窄（原 5.2，实施时修订——评审发现全量排除有丢消息窗口）**：
 
 - `buildRewriteEvents`（`ai-session-disk.js:219-240`）不再把 archived 重新 encode 进主文件；整份重写只写 header + meta + summary + live——**与 S1 vacuum 的主文件重写共用同一条实现**（vacuum 输出的主文件形状 = 本条想要的目标形状，前端 Rewrite 收敛后不再有第二种写法）。
+- **实施修订（双代理评审 P0）**：vacuum 只搬「磁盘上已是归档态」的消息，而压缩进行中刚切进归档的尾部尚未落盘为归档态——直接排除载荷会把它们三处同时弄丢。落地语义改为：重写前 vacuum 出栈 + 内存只清 `_archivedMids` 登记过的前缀（= 磁盘归档态全集），未登记尾部保留在内存并随重写以 a:1 落盘，下一次 vacuum 再搬走。稳态（无在途压缩）下载荷仍是 header + meta + summary + live 的目标形状。
 - `AISessionRewrite` 收敛为迁移/归一化场景 + 体积断言（重写后不得比重大，除非确有新增消息）。
 - 归档不再逐条在主文件重编码后，「查看已归档消息/导出」由 S1 的 `AISessionReadArchive` 分页承接——这也是 S1 先于本条落地的原因。
 

@@ -373,3 +373,56 @@ func TestScopedSessionSearchLimitBudget(t *testing.T) {
 		t.Fatalf("limit=3 时应恰好 3 条且 Truncated=true：%d 条，%+v", len(result.Hits), result)
 	}
 }
+
+// TestSyncStitchesArchiveSidecar vacuum 之后的会话：归档正文只在 sidecar，
+// 索引同步按「sidecar 在前、主文件在后」拼接重建，归档行（live_index=-1）与
+// 主文件 live 行同时入索引（方案 §5.1 S1 消费点接线）。
+func TestSyncStitchesArchiveSidecar(t *testing.T) {
+	store := sessionstore.New(t.TempDir())
+	if err := store.Append("sv1", `{"v":1,"t":"header","id":"sv1","title":"拼接会话"}`+"\n"+
+		`{"v":1,"t":"msg","mid":"old","m":{"role":"user","content":"侧车里的归档历史","ts":1}}`+"\n"+
+		`{"v":1,"t":"archive","keep":1,"summary":{"text":"S"}}`+"\n"+
+		`{"v":1,"t":"msg","mid":"new","m":{"role":"user","content":"整理后的新消息","ts":2}}`+"\n"); err != nil {
+		t.Fatal(err)
+	}
+	result, err := store.Vacuum("sv1", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.MovedArchived != 1 || !result.Changed {
+		t.Fatalf("vacuum 应移走 1 条归档：%+v", result)
+	}
+
+	db, _ := newTestSessionIndex(t)
+	if err := syncSessionIndex(db, store); err != nil {
+		t.Fatal(err)
+	}
+	var liveCount, archivedCount int
+	if err := db.QueryRow(`SELECT count(*) FROM messages WHERE session_id='sv1' AND live_index>=0`).Scan(&liveCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT count(*) FROM messages WHERE session_id='sv1' AND live_index<0`).Scan(&archivedCount); err != nil {
+		t.Fatal(err)
+	}
+	if liveCount != 1 || archivedCount != 1 {
+		t.Fatalf("拼接后应 1 条 live + 1 条归档，got live=%d archived=%d", liveCount, archivedCount)
+	}
+	// 归档正文确实进了索引（重放语义等价：sidecar a:1 → archived 桶）。
+	var text string
+	if err := db.QueryRow(`SELECT text FROM messages WHERE session_id='sv1' AND live_index<0`).Scan(&text); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(text, "侧车里的归档历史") {
+		t.Fatalf("归档行文本不符：%q", text)
+	}
+	// 主文件的 archive 标记已物化：重索引后不残留重复归档。
+	if err := syncSessionIndex(db, store); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT count(*) FROM messages WHERE session_id='sv1' AND live_index<0`).Scan(&archivedCount); err != nil {
+		t.Fatal(err)
+	}
+	if archivedCount != 1 {
+		t.Fatalf("重复同步不应翻倍归档行：%d", archivedCount)
+	}
+}

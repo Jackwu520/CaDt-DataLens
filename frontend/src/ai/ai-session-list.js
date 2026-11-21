@@ -6,6 +6,7 @@ import {iconSvg} from '../core/icons.js';
 import {aiTextOf, aiFormatSessionTime} from './ai-constants.js';
 import {sessionActivityTs} from './ai-session-store.js';
 import {planAwaitingUserReply} from './ai-plan-file.js';
+import {isTransientSession} from './ai-session-scope.js';
 
 // 活动栏「AI 会话」图标状态点的聚合（纯函数，env 注入判定，便于单测）：
 // 只统计当前工作区的非归档会话，按 error > pending > done 取最高优先级的一个；
@@ -90,7 +91,10 @@ export function workspaceGroupExpanded(key, group, env) {
 // 会话右键菜单项组装（纯函数，配 ai-session-list.test.mjs）：act 是符号动作键，
 // showSessionMenu 负责映射成真实闭包。显隐规则——不适用的项直接不出现：
 // 支线才有「提升为独立会话」、信箱有积压才有「清空信箱」、
-// 磁盘存储才有「复制会话路径」（内存/legacy 模式没有磁盘路径可复制）。
+// 磁盘存储才有「复制会话路径」（内存/legacy 模式没有磁盘路径可复制）、
+// 磁盘存储 + 正文 ≥16 MB 才有「瘦身归档」（vacuum 提前回收空间，方案 §5.1 S1 触发方式 ②）。
+export const AI_ARCHIVE_VACUUM_MIN_BYTES = 16 * 1024 * 1024;
+
 export function buildSessionMenuItems(session, env) {
     const pending = Math.max(0, Number(env.pendingNoticeCount(session.id)) || 0);
     const archived = !!session.archivedAt;
@@ -105,6 +109,10 @@ export function buildSessionMenuItems(session, env) {
         // 监控窗（辅助窗第一批）：只读镜像，不改会话归属；绑定缺失（旧 mock）时灰置
         {label: '在独立窗口打开（监控）', icon: 'new-window', act: 'monitor', disabled: !env.canMonitor},
     ];
+    if (env.canVacuumArchive &&
+        Math.max(0, Number(typeof env.logSizeOf === 'function' ? env.logSizeOf(session) : 0) || 0) >= AI_ARCHIVE_VACUUM_MIN_BYTES) {
+        items.push({label: '瘦身归档', icon: 'eraser', act: 'vacuumArchive'});
+    }
     if (session.sideOf) items.push({label: '提升为独立会话', icon: 'new-window', act: 'promote'});
     if (pending > 0) items.push({label: '清空信箱（' + pending + ' 条）', icon: 'eraser', act: 'clearMailbox'});
     items.push({sep: true});
@@ -195,6 +203,8 @@ export function createAISessionList(ctx) {
     const showSessionDiagnostics = ctx.showSessionDiagnostics;
     const archiveSession = ctx.archiveSession;
     const deleteSession = ctx.deleteSession;
+    // 手动「瘦身归档」（vacuum）：面板侧处理忙碌守卫与结果提示；缺省时空操作
+    const vacuumSessionArchive = typeof ctx.vacuumSessionArchive === 'function' ? ctx.vacuumSessionArchive : () => {};
     const newSession = ctx.newSession;
     const newSessionInWorkspace = ctx.newSessionInWorkspace;
     const openAILogDir = ctx.openAILogDir;
@@ -211,6 +221,12 @@ export function createAISessionList(ctx) {
     // 用户显式切换过的分组展开状态：key → boolean。无记录的分组走默认判定
     //（只展开当前工作区，其余收起，见 workspaceGroupExpanded），切换后记住选择。
     const workspaceGroupOverrides = new Map();
+
+    // 把某个工作区分组显式展开（新建临时会话时用：它归「未关联工作区」分组，
+    // 那个分组默认收起——不展开的话用户点完「新建临时会话」在列表里看不到它）。
+    function expandWorkspaceGroup(key) {
+        workspaceGroupOverrides.set(String(key || ''), true);
+    }
     // 每个工作区分组一次只渲染最近 AI_SESSION_GROUP_PAGE 条会话，点分组底部的「···」再追加一页。
     // key = 列表类型 + 工作区 key，进行中与已归档互不影响；只是渲染层的展开状态，不动会话数据。
     const AI_SESSION_GROUP_PAGE = 10;
@@ -392,6 +408,17 @@ export function createAISessionList(ctx) {
                 const badge = document.createElement('span');
                 badge.className = 'ai-session-badge';
                 badge.textContent = '支线';
+                titleRow.appendChild(badge);
+            }
+            // 临时会话：一次性对话（默认只读 / 不绑工作区 / 不注入工作区与记忆）。
+            // 磁盘只留档，重启后不再出现——徽标就是「这条不会留到下次」的唯一提示。
+            if (isTransientSession(session)) {
+                const badge = document.createElement('span');
+                badge.className = 'ai-session-badge temp';
+                badge.textContent = '临时';
+                badge.dataset.tip = '临时会话：默认只读、不绑定工作区、不注入 AGENTS.md 与记忆；关闭应用后不再显示';
+                badge.setAttribute('role', 'img');
+                badge.setAttribute('aria-label', badge.dataset.tip);
                 titleRow.appendChild(badge);
             }
             const meta = document.createElement('div');
@@ -662,6 +689,7 @@ export function createAISessionList(ctx) {
                     .catch((e) => listFlash('打开监控窗失败：' + ((e && e.message) || e), true));
             },
             archive: () => archiveSession(session, !session.archivedAt),
+            vacuumArchive: () => vacuumSessionArchive(session),
             copyId: () => { copyText(session.id, '会话ID'); },
             // 磁盘路径找 Go 侧解析（桶名 = 工作区短哈希，前端不复刻规则）；
             // 尚未落盘的会话把 session-gone 转成人话，不弹原始错误
@@ -683,6 +711,10 @@ export function createAISessionList(ctx) {
             pendingNoticeCount,
             diskStorage: !!sessionUseDisk(),
             canMonitor: !!backend.PopOutSession,
+            // 「瘦身归档」：整理绑定存在 + 该会话正文 ≥16 MB（stat 缓存在 _logStat；
+            // 未载入的占位会话没有 stat，先载入再整理）
+            canVacuumArchive: !!backend.AISessionVacuum && !!sessionUseDisk(),
+            logSizeOf: (target) => Math.max(0, Number(target && target._logStat && target._logStat.size) || 0),
         }).map((item) => (item.act && actions[item.act]) ? {...item, action: actions[item.act]} : item);
         showContextMenu(items, x, y);
     }
@@ -761,5 +793,6 @@ export function createAISessionList(ctx) {
         showWorkspaceMenu,
         clearSessionUnread,
         refreshBadge,
+        expandWorkspaceGroup,
     };
 }

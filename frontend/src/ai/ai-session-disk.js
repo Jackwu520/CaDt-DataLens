@@ -24,11 +24,20 @@ import {
     aiNowId,
     aiSafeFileStem,
 } from './ai-constants.js';
+import {isTransientSession} from './ai-session-scope.js';
 
 // ---------- 磁盘适配 ----------
 
+// 超限错误的稳定前缀契约（internal/sessionstore.Read）——前端据此分流「打开即自动
+// 整理」（方案 §5.2 S2 上限语义反转），不做字符串模糊匹配。
+export const SESSION_TOO_LARGE_PREFIX = 'session-too-large:';
+
+// createSessionDiskStore 的 options 约定：
+//   onTidy(id, result)    超限自动整理成功后的宿主回调（toast / 列表刷新），可缺省。
+//   normalizeMessage(...) 消息归一（与 loadAll/hydrate 共用），可缺省。
 export function createSessionDiskStore(options) {
     const backend = options.backend || {};
+    const onTidy = typeof options.onTidy === 'function' ? options.onTidy : null;
     const genId = options.genId || ((prefix) => prefix + Date.now().toString(36) + Math.random().toString(36).slice(2, 8));
     const onError = typeof options.onError === 'function' ? options.onError : () => {};
     const queues = new Map();
@@ -216,6 +225,13 @@ export function createSessionDiskStore(options) {
         session._archivedMids = archivedMids;
     }
 
+    // 整份重写的事件装配：header + meta + summary + 归档（a:1）+ live。
+    // 归档必须随载荷落盘——其中「已落盘为归档态」的部分（_archivedMids 登记过的前缀）
+    // 在重写前已由 ensureArchivedSpilled + adoptVacuumSpill 搬进 sidecar 并清出内存，
+    // 这里编码的只剩「尚未落盘为归档态」的尾部（本次压缩刚切进来、vacuum 看不见的）；
+    // 若 vacuum 失败（spill=null，未 adopt），内存归档原样全量编码——与旧路径等价，数据不丢。
+    // 任何情况下都不得把内存归档从载荷里排除：排除 = 把 vacuum 看不见的消息从磁盘抹掉
+    // （审查发现的 P0，曾在此处用 excludeArchived 丢过刚压缩的消息）。
     function buildRewriteEvents(session) {
         const messages = Array.isArray(session.messages) ? session.messages : [];
         const archived = Array.isArray(session.archived) ? session.archived : [];
@@ -237,6 +253,37 @@ export function createSessionDiskStore(options) {
         // 整份重写后磁盘内容与内存一致：指纹表按当前消息重建。
         resetFingerprints(session, messages);
         return events;
+    }
+
+    // ---------- 归档出栈（S3 重写收窄的前提，复用 Go vacuum） ----------
+
+    // 重写之前把主文件里「已落盘为归档态」的消息搬进 sidecar（Go AISessionVacuum 幂等：
+    // 已整理过的会话只搬增量）。失败（另一窗口占用 / 磁盘错误 / 旧后端缺绑定）返回 null，
+    // 调用方不 adopt，重写按旧路径全量编码内存归档——数据不丢，只是不瘦身。
+    async function ensureArchivedSpilled(session) {
+        if (!(session.archived || []).length || !backend.AISessionVacuum) return null;
+        try {
+            return await backend.AISessionVacuum(session.id, true) || null;
+        } catch (e) {
+            return null;
+        }
+    }
+
+    // vacuum 成功后的内存对账。关键不变量：_archivedMids 登记的条目 = 「磁盘上已是归档态」
+    // 的消息（loadOne/hydrate/reload 从重放建立；archiveSession 在 append 成功后登记；
+    // buildRewriteEvents 的 syncMids 在重写落盘后重建）。vacuum 搬走的正是磁盘归档态全集，
+    // 因此只清登记过的前缀；未登记的尾部是刚切进归档、尚未落盘的消息——清掉就是丢消息
+    // （vacuum 只搬磁盘归档态，看不见这些尾部）。主文件已被 Go 重写，stat 基线必须刷新，
+    // 否则本窗口误判「另一窗口写过」触发多余重读。
+    async function adoptVacuumSpill(session, result) {
+        if (!session || !result) return;
+        const archived = Array.isArray(session.archived) ? session.archived : [];
+        const registered = Math.min(archived.length, Math.max(0, (session._archivedMids || []).length));
+        session.archived = archived.slice(registered);
+        session._archivedMids = [];
+        const sidecarLines = Math.max(0, Number(result.sidecarLines) || 0);
+        if (sidecarLines || !session._archiveSidecarTotal) session._archiveSidecarTotal = sidecarLines;
+        await refreshStat(session);
     }
 
     // 新会话的第一条事件必须是 header；之后只追加事件行。
@@ -301,6 +348,9 @@ export function createSessionDiskStore(options) {
         if (session._needsRewrite || archived.length !== archivedMids.length) {
             // 归一化丢过消息 / 归档在不经过 archive() 的情况下被改动：整份重写，保证日志与内存一致。
             await prepareImages(session, archived.concat(messages));
+            // S3 重写收窄：先把磁盘归档出栈到 sidecar，再只写 live；出栈失败回退旧路径。
+            const spill = await ensureArchivedSpilled(session);
+            await adoptVacuumSpill(session, spill);
             try {
                 const events = buildRewriteEvents(session);
                 await backend.AISessionRewrite(session.id, encodeSessionLines(events));
@@ -411,6 +461,9 @@ export function createSessionDiskStore(options) {
                 try {
                     session._needsRewrite = false;
                     await prepareImages(session, archivedNow.concat(liveNow));
+                    // S3 重写收窄：归档先出栈到 sidecar，再只写 live；出栈失败回退旧路径。
+                    const spill = await ensureArchivedSpilled(session);
+                    await adoptVacuumSpill(session, spill);
                     const events = buildRewriteEvents(session);
                     await backend.AISessionRewrite(session.id, encodeSessionLines(events));
                 } catch (e) {
@@ -483,6 +536,15 @@ export function createSessionDiskStore(options) {
                 await backend.AISessionRewrite(session.id, encodeSessionLines(events));
                 session._logCreated = true;
                 session._logMeta = {title: textOf(session.title), workspace: textOf(session.workspace)};
+                // 清空的语义是「抹掉全部消息」：归档 sidecar 若保留，重启后归档卡会凭
+                // 侧车探测复活。用户显式发起的销毁，与 Remove 同级（旧后端尽力而为）；
+                // 侧车计数只在删除成功后才归零（失败保留旧值，避免 UI 短暂矛盾）。
+                if (backend.AISessionArchiveClear) {
+                    try {
+                        await backend.AISessionArchiveClear(session.id);
+                        session._archiveSidecarTotal = 0;
+                    } catch (e) {}
+                }
             } catch (e) {
                 restoreLogState(session, state);
                 throw e;
@@ -500,6 +562,9 @@ export function createSessionDiskStore(options) {
             const state = snapshotLogState(session);
             try {
                 await prepareImages(session, (session.archived || []).concat(session.messages || []));
+                // S3 重写收窄：迁移/归一化场景同样先出栈归档再只写 live。
+                const spill = await ensureArchivedSpilled(session);
+                await adoptVacuumSpill(session, spill);
                 const events = buildRewriteEvents(session);
                 await backend.AISessionRewrite(session.id, encodeSessionLines(events));
             } catch (e) {
@@ -516,15 +581,98 @@ export function createSessionDiskStore(options) {
     // 同时持有过多大字符串；结果按下标回填，顺序与原串行实现一致。
     const LOAD_CONCURRENCY = 6;
 
+    // ---------- 超限自动整理（方案 §5.2 S2：256 MB 从「拒绝服务」改为「打开即自动整理」） ----------
+
+    // 读正文；撞上 session-too-large: 时自动 AISessionVacuum（唯一自动写盘路径，理由链
+    // 见方案 §5.2）后重读。错误对象带三类标记供拒载卡片分流：
+    //   tooLarge    —— 稳定前缀命中（超限家族）
+    //   tidyFailed  —— 自动整理执行失败（磁盘错误 / 另一窗口占用）→ 卡片「重试整理」
+    //   liveDominant —— 整理后 live 段自身仍超限（真空角落）→ 卡片「临时加载」
+    async function readBodyAutoTidy(id) {
+        let text = '';
+        try {
+            text = await backend.AISessionRead(id);
+            return {text, tidy: null};
+        } catch (e) {
+            const msg = String((e && e.message) || e);
+            const tooLarge = new Error(msg);
+            tooLarge.tooLarge = msg.startsWith(SESSION_TOO_LARGE_PREFIX);
+            if (!tooLarge.tooLarge || !backend.AISessionVacuum) throw tooLarge;
+            let tidy = null;
+            try {
+                tidy = await backend.AISessionVacuum(id, false);
+            } catch (vacuumErr) {
+                const err = new Error('自动整理失败：' + String((vacuumErr && vacuumErr.message) || vacuumErr));
+                err.tooLarge = true;
+                err.tidyFailed = true;
+                throw err;
+            }
+            if (tidy && tidy.liveDominant) {
+                tooLarge.liveDominant = true;
+                tooLarge.tidyResult = tidy;
+                throw tooLarge;
+            }
+            try {
+                text = await backend.AISessionRead(id);
+            } catch (retryErr) {
+                const retryMsg = String((retryErr && retryErr.message) || retryErr);
+                const err = new Error(retryMsg);
+                err.tooLarge = retryMsg.startsWith(SESSION_TOO_LARGE_PREFIX);
+                err.liveDominant = err.tooLarge; // 已整理过仍超限 = live 主导
+                err.tidyResult = tidy;
+                throw err;
+            }
+            return {text, tidy};
+        }
+    }
+
+    // 归档侧车记账：自动整理成功时用 vacuum 统计；否则在 stat 报告 sidecar 存在时探测一次
+    // 总数。混合态（vacuum 过又压缩过）下内存归档非空也要探测——侧车历史与内存归档互不
+    // 重叠，消费点按「侧车 + 内存」合并展示，少探测会把侧车历史藏没（审查发现的 P1）。
+    async function syncArchiveSidecarMeta(session, tidy) {
+        if (!session || !session.id) return;
+        if (tidy && typeof tidy.sidecarLines === 'number') {
+            session._archiveSidecarTotal = Math.max(0, Number(tidy.sidecarLines) || 0);
+            return;
+        }
+        const stat = session._logStat;
+        if (!stat || !stat.archiveExists) return;
+        if (!backend.AISessionReadArchive) return;
+        try {
+            const page = await backend.AISessionReadArchive(session.id, 0, 0);
+            session._archiveSidecarTotal = Math.max(0, Number(page && page.total) || 0);
+        } catch (e) {
+            // 探测失败不阻塞加载：卡片与对话框按需再试。
+        }
+    }
+
+    // 分页读回 sidecar 归档（消费点共用）：返回消息数组与总数；offset 语义与
+    // Go AISessionReadArchive 一致（非空事件行）。
+    async function readArchivedPage(id, offset, limit) {
+        if (!backend.AISessionReadArchive) return {messages: [], total: 0};
+        const page = await backend.AISessionReadArchive(id, Math.max(0, offset || 0), Math.max(0, limit || 0));
+        const events = Array.isArray(page && page.events) ? page.events : [];
+        const replay = events.length ? replaySessionLog(events.join('\n') + '\n') : replaySessionLog('');
+        return {
+            messages: replay.archived || [],
+            total: Math.max(0, Number(page && page.total) || 0),
+        };
+    }
+
     async function loadOne(meta, normalizeSession) {
         let replay = replaySessionLog('');
         let loadError = '';
+        let loadErrorFlags = null;
         let bodyText = '';
+        let tidy = null;
         try {
-            bodyText = await backend.AISessionRead(meta.id);
+            const read = await readBodyAutoTidy(meta.id);
+            bodyText = read.text;
+            tidy = read.tidy;
             replay = replaySessionLog(bodyText);
         } catch (e) {
             loadError = (e && e.message) || String(e);
+            loadErrorFlags = e;
         }
         const combined = Object.assign({}, meta, {
             messages: replay.messages,
@@ -545,32 +693,54 @@ export function createSessionDiskStore(options) {
         session._needsRewrite = !!session._recovered || (session.messages || []).length !== replay.messages.length || replay.droppedTransient > 0;
         session.updatedAt = Number(meta.updatedAt) || Number(meta.createdAt) || 0;
         session._loadError = loadError;
+        session._tidyFailed = !!(loadErrorFlags && loadErrorFlags.tidyFailed);
+        session._liveDominant = !!(loadErrorFlags && loadErrorFlags.liveDominant);
         session._metaSig = metaSignature(buildSessionMeta(session));
         await hydrateImages(session);
         await refreshStat(session);
+        await syncArchiveSidecarMeta(session, tidy);
+        if (tidy && onTidy) {
+            try {
+                onTidy(meta.id, tidy);
+            } catch (e) {}
+        }
         return session;
     }
 
-    async function loadAll(normalizeSession) {
+    // 临时会话（meta.temp）：落盘只作留档，列表里不该出现——启动加载与磁盘重读一律滤掉，
+    // 这样才能做到「关闭应用就没了」。会话本体还活在内存里（用户删它走正常删除路径），
+    // 所以调用方需要时传 includeTemp 才读得回来（诊断 / 测试用）。
+    function keepMeta(meta, includeTemp) {
+        if (!meta || !meta.id) return false;
+        if (!includeTemp && isTransientSession({temp: meta.temp})) return false;
+        return true;
+    }
+
+    async function loadAll(normalizeSession, opts) {
         requireBackend();
+        const includeTemp = !!(opts && opts.includeTemp);
         let metas = [];
         try {
             metas = await backend.AISessionList();
         } catch (e) {
             throw e;
         }
-        const loaded = new Array(metas.length).fill(null);
+        const parsed = [];
+        for (const item of metas || []) {
+            let meta = null;
+            try {
+                meta = JSON.parse(item);
+            } catch (e) {
+                continue;
+            }
+            if (keepMeta(meta, includeTemp)) parsed.push(meta);
+        }
+        const loaded = new Array(parsed.length).fill(null);
         let cursor = 0;
         async function worker() {
-            while (cursor < metas.length) {
+            while (cursor < parsed.length) {
                 const index = cursor++;
-                let meta = null;
-                try {
-                    meta = JSON.parse(metas[index]);
-                } catch (e) {
-                    continue;
-                }
-                if (!meta || !meta.id) continue;
+                const meta = parsed[index];
                 // 单个会话读坏不影响整轮加载：与串行的 loadError 语义一致
                 try {
                     loaded[index] = await loadOne(meta, normalizeSession);
@@ -580,7 +750,7 @@ export function createSessionDiskStore(options) {
             }
         }
         const workers = [];
-        const lanes = Math.min(LOAD_CONCURRENCY, metas.length);
+        const lanes = Math.min(LOAD_CONCURRENCY, parsed.length);
         for (let i = 0; i < lanes; i++) workers.push(worker());
         await Promise.all(workers);
         return loaded.filter(Boolean);
@@ -590,8 +760,9 @@ export function createSessionDiskStore(options) {
     // 列表页只用到 meta（标题/时间/条数/未读/置顶/工作区/待办/摘要…），正文整份重放是启动
     // 几十个会话时的主要开销。启动先 loadMetas 画列表，正文交给 hydrateSession 按需补。
 
-    async function loadMetas() {
+    async function loadMetas(opts) {
         requireBackend();
+        const includeTemp = !!(opts && opts.includeTemp);
         const raw = await backend.AISessionList();
         const metas = [];
         for (const item of raw || []) {
@@ -601,7 +772,7 @@ export function createSessionDiskStore(options) {
             } catch (e) {
                 continue;
             }
-            if (meta && meta.id) metas.push(meta);
+            if (keepMeta(meta, includeTemp)) metas.push(meta);
         }
         return metas;
     }
@@ -632,14 +803,18 @@ export function createSessionDiskStore(options) {
         if (!session._stub) return true;
         requireBackend();
         let replay = replaySessionLog('');
+        let tidy = null;
         try {
-            const bodyText = await backend.AISessionRead(session.id);
-            replay = replaySessionLog(bodyText);
+            const read = await readBodyAutoTidy(session.id);
+            tidy = read.tidy;
+            replay = replaySessionLog(read.text);
         } catch (e) {
             delete session._stub;
             delete session._msgCount;
             delete session._archivedCount;
             session._loadError = (e && e.message) || String(e);
+            session._tidyFailed = !!(e && e.tidyFailed);
+            session._liveDominant = !!(e && e.liveDominant);
             return false;
         }
         const normalize = typeof options.normalizeMessage === 'function' ? options.normalizeMessage : null;
@@ -662,6 +837,12 @@ export function createSessionDiskStore(options) {
         delete session._archivedCount;
         await hydrateImages(session);
         await refreshStat(session);
+        await syncArchiveSidecarMeta(session, tidy);
+        if (tidy && onTidy) {
+            try {
+                onTidy(session.id, tidy);
+            } catch (e) {}
+        }
         return true;
     }
 
@@ -702,7 +883,20 @@ export function createSessionDiskStore(options) {
     async function reloadSession(session) {
         if (!session || !session.id) return false;
         requireBackend();
-        const bodyText = await backend.AISessionRead(session.id);
+        let tidy = null;
+        let bodyText = '';
+        try {
+            const read = await readBodyAutoTidy(session.id);
+            tidy = read.tidy;
+            bodyText = read.text;
+        } catch (e) {
+            // 重读撞上超限（另一窗口写入把正文推过了上限）：标记后交给拒载卡片，
+            // 不把错误吞成「重读成功」。
+            session._loadError = (e && e.message) || String(e);
+            session._tidyFailed = !!(e && e.tidyFailed);
+            session._liveDominant = !!(e && e.liveDominant);
+            throw e;
+        }
         // 已有会话读到空日志 = 已被另一窗口删除；不能当成“新会话”重放，
         // 否则 _logCreated 被清掉，下一次 Append 会把目录重建出来。
         if (!bodyText && session._logCreated) {
@@ -710,7 +904,44 @@ export function createSessionDiskStore(options) {
             err.code = 'session-gone';
             throw err;
         }
-        const replay = replaySessionLog(bodyText);
+        await applySessionReplay(session, replaySessionLog(bodyText));
+        session._loadError = '';
+        session._tidyFailed = false;
+        session._liveDominant = false;
+        await hydrateImages(session);
+        await refreshStat(session);
+        await syncArchiveSidecarMeta(session, tidy);
+        if (tidy && onTidy) {
+            try {
+                onTidy(session.id, tidy);
+            } catch (e) {}
+        }
+        return true;
+    }
+
+    // 真空角落的「临时加载」（方案 §5.4）：live 段自身超限时用户显式要求整份读入，
+    // 载入后可正常对话，压缩一次即回归常态。与 reloadSession 共用装配。
+    async function reloadSessionForce(session) {
+        if (!session || !session.id) return false;
+        requireBackend();
+        const bodyText = await backend.AISessionReadForce(session.id);
+        if (!bodyText && session._logCreated) {
+            const err = new Error('session-gone: 会话已被删除');
+            err.code = 'session-gone';
+            throw err;
+        }
+        await applySessionReplay(session, replaySessionLog(bodyText));
+        session._loadError = '';
+        session._tidyFailed = false;
+        session._liveDominant = false;
+        await hydrateImages(session);
+        await refreshStat(session);
+        await syncArchiveSidecarMeta(session, null);
+        return true;
+    }
+
+    // 重放结果装配（reloadSession / reloadSessionForce / hydrate 的公共尾部）。
+    async function applySessionReplay(session, replay) {
         const normalize = typeof options.normalizeMessage === 'function' ? options.normalizeMessage : null;
         const messages = normalize ? replay.messages.map(normalize).filter(Boolean) : replay.messages;
         session.messages = messages;
@@ -726,13 +957,9 @@ export function createSessionDiskStore(options) {
         // 重放折叠掉的同类 dedupeKey 旧注入也要整份重写（与 loadOne 同理，清磁盘冗余）。
         session._needsRewrite = !!session._recovered || messages.length !== replay.messages.length || replay.droppedTransient > 0;
         session._metaSig = metaSignature(buildSessionMeta(session));
-        session._loadError = '';
         delete session._stub;
         delete session._msgCount;
         delete session._archivedCount;
-        await hydrateImages(session);
-        await refreshStat(session);
-        return true;
     }
 
     // sameLogStat 供交接协议比较 AISessionStat 与内存基线。
@@ -806,6 +1033,25 @@ export function createSessionDiskStore(options) {
         return result;
     }
 
+    // 手动「瘦身归档」（右键入口，≥16 MB 显示）：force vacuum + 内存对账 + 整份重读。
+    // 调用方必须先确认该会话没有在跑的回合（流式消息不落盘，重放会把它从内存里甩掉）。
+    function vacuumSessionArchive(session) {
+        if (!session || !session.id) return Promise.resolve(null);
+        requireBackend();
+        if (!backend.AISessionVacuum) return Promise.reject(new Error('当前版本缺少会话整理接口：AISessionVacuum'));
+        return enqueue(session.id, async () => {
+            const result = await backend.AISessionVacuum(session.id, true);
+            await adoptVacuumSpill(session, result);
+            if (result && result.changed) await reloadSession(session);
+            return result;
+        });
+    }
+
+    // 归档侧车分页读回（归档卡 / 对话框 / 导出的消费通道）。
+    function readArchivePage(id, offset, limit) {
+        return readArchivedPage(id, offset, limit);
+    }
+
     return {
         loadAll,
         loadMetas,
@@ -823,6 +1069,9 @@ export function createSessionDiskStore(options) {
         whenIdle,
         refreshStat,
         reloadSession,
+        reloadSessionForce,
+        vacuumSessionArchive,
+        readArchivePage,
         sameLogStat,
         hydrateImages,
         newMid,
@@ -921,7 +1170,32 @@ export function createAIConversationLog(ctx) {
         if (message.status === 'error' && message.error) lines.push('> 错误：' + message.error, '');
     }
 
-    function buildConversationLogMarkdown(session) {
+    // 对话日志的归档侧车预算：vacuum 后归档正文只存 sidecar（可能几十万条），自动落盘
+    // 每轮都会跑，全量读回会把日志拖成巨文档。取最近的 ARCHIVE cap 条（时间序尾部，
+    // 紧邻内存归档），更早的留给「导出 Markdown」（导出全量读回）。
+    const LOG_SIDECAR_ARCHIVED_CAP = 200;
+
+    // 读回 sidecar 归档的尾部（尽力而为：缺绑定 / 读失败都退化为空）。
+    async function loadSidecarArchived(session, cap) {
+        if (!backend.AISessionReadArchive || !session || !session.id) {
+            return {messages: [], total: 0};
+        }
+        try {
+            const head = await backend.AISessionReadArchive(session.id, 0, 0);
+            const total = Math.max(0, Number(head && head.total) || 0);
+            if (!total) return {messages: [], total: 0};
+            const limit = Math.min(total, Math.max(0, Number(cap) || 0));
+            const offset = Math.max(0, total - limit);
+            const page = await backend.AISessionReadArchive(session.id, offset, limit);
+            const events = Array.isArray(page && page.events) ? page.events : [];
+            const replay = events.length ? replaySessionLog(events.join('\n') + '\n') : replaySessionLog('');
+            return {messages: replay.archived || [], total};
+        } catch (e) {
+            return {messages: [], total: 0};
+        }
+    }
+
+    function buildConversationLogMarkdown(session, archivedOverride, omittedArchived) {
         const config = getConfig();
         const lines = ['# ' + (session.title || 'AI 会话'), ''];
         lines.push('- 会话 ID：`' + session.id + '`');
@@ -933,9 +1207,16 @@ export function createAIConversationLog(ctx) {
         if (session.summary && session.summary.text) {
             lines.push('## 会话摘要', '', session.summary.text, '');
         }
-        const archived = Array.isArray(session.archived) ? session.archived : [];
+        // 归档 = sidecar 尾部（vacuum 前的历史）+ 内存归档（vacuum 后新增的压缩）。
+        const archived = Array.isArray(archivedOverride)
+            ? archivedOverride
+            : (Array.isArray(session.archived) ? session.archived : []);
         if (archived.length) {
             lines.push('## 已归档消息（压缩前，不进入当前上下文）', '');
+            const omitted = Math.max(0, Number(omittedArchived) || 0);
+            if (omitted) {
+                lines.push('> 另有 ' + omitted + ' 条更早的归档在会话侧车中，此处省略；完整历史用「导出 Markdown」。', '');
+            }
             for (const message of archived) appendLogMessage(lines, message, '###');
             lines.push('');
         }
@@ -960,7 +1241,11 @@ export function createAIConversationLog(ctx) {
             if (!session.logFile) {
                 session.logFile = aiSafeFileStem(session.title || 'AI 会话') + '-' + String(session.id).slice(-8) + '.md';
             }
-            const archived = Array.isArray(session.archived) ? session.archived : [];
+            // S1 消费点接线：归档 = 内存 + sidecar 尾部（超过 cap 的部分注明省略）。
+            const sidecar = await loadSidecarArchived(session, LOG_SIDECAR_ARCHIVED_CAP);
+            const memoryArchived = Array.isArray(session.archived) ? session.archived : [];
+            const archived = sidecar.messages.concat(memoryArchived);
+            const omitted = Math.max(0, sidecar.total - sidecar.messages.length);
             const messages = archived.concat(session.messages);
             const imagesDir = joinPath(dir, 'images');
             let imagesSaved = false;
@@ -986,7 +1271,7 @@ export function createAIConversationLog(ctx) {
                 }
             }
             if (imagesSaved) persistSessions();
-            const markdown = buildConversationLogMarkdown(session);
+            const markdown = buildConversationLogMarkdown(session, archived, omitted);
             await backend.SaveFile(joinPath(dir, session.logFile), markdown, 'lf', false, 'utf-8');
             session.logSavedAt = Date.now();
             persistSessions();

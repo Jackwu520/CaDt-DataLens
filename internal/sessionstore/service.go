@@ -3,6 +3,7 @@ package sessionstore
 // Service：AI 会话存储的 Wails 绑定层，main.App 以服务嵌入（方法名与原壳一致）。
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -53,6 +54,73 @@ func (s *Service) AISessionRead(id string) (string, error) {
 		return "", err
 	}
 	return store.Read(id)
+}
+
+// AISessionReadForce 读取正文且不做体积检查：真空角落（live 段自身超限）的
+// 「临时加载」专用，前端只在拒载卡片上显式提供该入口（方案 §5.4）。
+func (s *Service) AISessionReadForce(id string) (string, error) {
+	store, err := s.store()
+	if err != nil {
+		return "", err
+	}
+	return store.ReadForce(id)
+}
+
+// AISessionVacuum 数据整形：把归档态消息移入 sidecar（archive.v1.jsonl）并把主文件
+// 重写为 header + meta + summary + live。force=false 时正文 ≤ 上限直接跳过（自动整理），
+// force=true 无条件整理（右键「瘦身归档」/ 重写前出栈归档）。成功且确实重写后标脏索引。
+// 回合租约空闲校验（方案 §5.1）：另一窗口正持有该会话回合租约时拒绝——同窗口允许
+// （自动整理发生在持有者自己的回合/加载流程内）；跨进程由 withSessionLock 的文件锁挡。
+func (s *Service) AISessionVacuum(ctx context.Context, id string, force bool) (VacuumResult, error) {
+	store, err := s.store()
+	if err != nil {
+		return VacuumResult{}, err
+	}
+	if !ValidSessionID(id) {
+		return VacuumResult{}, fmt.Errorf("非法会话 id：%q", id)
+	}
+	sessionLeaseMu.Lock()
+	if entry := sessionLeases[id]; entry != nil {
+		if _, held := entry.holders[leaseOwnerKey(ctx)]; !held {
+			sessionLeaseMu.Unlock()
+			return VacuumResult{}, fmt.Errorf("%w（另一窗口正在运行该会话，稍后再整理）", ErrSessionBusy)
+		}
+	}
+	sessionLeaseMu.Unlock()
+	result, err := store.Vacuum(id, force)
+	if err != nil {
+		return result, err
+	}
+	if result.Changed && OnBodyChange != nil {
+		OnBodyChange(id)
+	}
+	return result, nil
+}
+
+// AISessionReadArchive 分页读归档 sidecar（offset/limit 按非空事件行计），
+// 归档消费点（查看/导出/对话日志/搜索）的按需读回通道。
+func (s *Service) AISessionReadArchive(id string, offset int, limit int) (ArchivePage, error) {
+	store, err := s.store()
+	if err != nil {
+		return ArchivePage{}, err
+	}
+	return store.ReadArchive(id, offset, limit)
+}
+
+// AISessionArchiveClear 删除归档 sidecar（「清空会话」专用：reset 语义要求归档卡
+// 不凭侧车探测复活）。删除成功后标脏索引（归档消息数变化）。
+func (s *Service) AISessionArchiveClear(id string) error {
+	store, err := s.store()
+	if err != nil {
+		return err
+	}
+	if err := store.ClearArchive(id); err != nil {
+		return err
+	}
+	if OnBodyChange != nil {
+		OnBodyChange(id)
+	}
+	return nil
 }
 
 // AISessionPath 返回会话正文 JSONL 的磁盘绝对路径（前端「复制会话路径」用）。

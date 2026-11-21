@@ -52,6 +52,15 @@ type Store interface {
 	Read(id string) (string, error)
 }
 
+// ArchiveSource 是可选的归档 sidecar 读能力（internal/sessionstore.Store 实现）。
+// vacuum 把归档消息搬进 sidecar 后主文件不再含归档正文；索引扫描按「sidecar 在前、
+// 主文件在后」拼接（归档事件带 a:1，重放后落 archived 桶，与时间序一致），
+// 归档正文得以继续入索引（与 HEAD 前的「扫主文件全文含归档」同口径；消息级搜索
+// 仍按 live_index>=0 过滤，与既有行为一致——归档行只进索引计数，不进搜索结果）。
+type ArchiveSource interface {
+	ReadArchiveAll(id string) (string, error)
+}
+
 type aiIndexMessage struct {
 	Mid  string
 	Role string
@@ -197,87 +206,127 @@ func ensureSessionIndexSchema(db *sql.DB) error {
 
 // replayIndexEvents 只做检索需要的轻量重放：msg / truncate / archive / reset。
 func replayIndexEvents(raw string) (live, archived []aiIndexMessage) {
+	var state indexReplayState
 	for _, line := range strings.Split(raw, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		var event struct {
-			T    string `json:"t"`
-			A    int    `json:"a"`
-			Mid  string `json:"mid"`
-			Keep int    `json:"keep"`
-			M    *struct {
-				Role      string `json:"role"`
-				Content   string `json:"content"`
-				Reasoning string `json:"reasoning"`
-				Name      string `json:"name"`
-				Arguments string `json:"arguments"`
-				Ts        int64  `json:"ts"`
-			} `json:"m"`
-		}
-		if json.Unmarshal([]byte(line), &event) != nil {
-			continue
-		}
-		switch event.T {
-		case "msg":
-			if event.M == nil {
-				continue
-			}
-			parts := make([]string, 0, 4)
-			if event.M.Content != "" {
-				parts = append(parts, event.M.Content)
-			}
-			if event.M.Reasoning != "" {
-				parts = append(parts, event.M.Reasoning)
-			}
-			if event.M.Name != "" {
-				parts = append(parts, event.M.Name)
-			}
-			if event.M.Arguments != "" {
-				parts = append(parts, event.M.Arguments)
-			}
-			text := strings.TrimSpace(strings.Join(parts, "\n"))
-			if text == "" {
-				continue
-			}
-			if runes := []rune(text); len(runes) > aiIndexTextLimit {
-				text = string(runes[:aiIndexTextLimit])
-			}
-			message := aiIndexMessage{Mid: event.Mid, Role: event.M.Role, Name: event.M.Name, Ts: event.M.Ts, Text: text}
-			if event.A == 1 {
-				archived = append(archived, message)
-			} else {
-				live = append(live, message)
-			}
-		case "truncate":
-			keep := event.Keep
-			if keep < 0 {
-				keep = 0
-			}
-			if keep < len(live) {
-				live = live[:keep]
-			}
-		case "archive":
-			keep := event.Keep
-			if keep < 0 {
-				keep = 0
-			}
-			if keep > len(live) {
-				keep = len(live)
-			}
-			archived = append(archived, live[:keep]...)
-			live = append([]aiIndexMessage(nil), live[keep:]...)
-		case "reset":
-			live = nil
-			archived = nil
-		}
+		state.applyLine(line)
 	}
-	return live, archived
+	return state.live, state.archived
+}
+
+// indexReplayState 把重放状态抽出来，供主文件与 sidecar 两段拼接续放
+// （vacuum 之后归档正文只在 sidecar，索引必须把两段按时间序接起来）。
+type indexReplayState struct {
+	live     []aiIndexMessage
+	archived []aiIndexMessage
+}
+
+// applyLine 处理单行（原 replayIndexEvents 循环体逐字搬移，live/archived 换成状态字段）。
+func (st *indexReplayState) applyLine(line string) {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return
+	}
+	var event struct {
+		T    string `json:"t"`
+		A    int    `json:"a"`
+		Mid  string `json:"mid"`
+		Keep int    `json:"keep"`
+		M    *struct {
+			Role      string `json:"role"`
+			Content   string `json:"content"`
+			Reasoning string `json:"reasoning"`
+			Name      string `json:"name"`
+			Arguments string `json:"arguments"`
+			Ts        int64  `json:"ts"`
+		} `json:"m"`
+	}
+	if json.Unmarshal([]byte(line), &event) != nil {
+		return
+	}
+	switch event.T {
+	case "msg":
+		if event.M == nil {
+			return
+		}
+		parts := make([]string, 0, 4)
+		if event.M.Content != "" {
+			parts = append(parts, event.M.Content)
+		}
+		if event.M.Reasoning != "" {
+			parts = append(parts, event.M.Reasoning)
+		}
+		if event.M.Name != "" {
+			parts = append(parts, event.M.Name)
+		}
+		if event.M.Arguments != "" {
+			parts = append(parts, event.M.Arguments)
+		}
+		text := strings.TrimSpace(strings.Join(parts, "\n"))
+		if text == "" {
+			return
+		}
+		if runes := []rune(text); len(runes) > aiIndexTextLimit {
+			text = string(runes[:aiIndexTextLimit])
+		}
+		message := aiIndexMessage{Mid: event.Mid, Role: event.M.Role, Name: event.M.Name, Ts: event.M.Ts, Text: text}
+		if event.A == 1 {
+			st.archived = append(st.archived, message)
+		} else {
+			st.live = append(st.live, message)
+		}
+	case "truncate":
+		keep := event.Keep
+		if keep < 0 {
+			keep = 0
+		}
+		if keep < len(st.live) {
+			st.live = st.live[:keep]
+		}
+	case "archive":
+		keep := event.Keep
+		if keep < 0 {
+			keep = 0
+		}
+		if keep > len(st.live) {
+			keep = len(st.live)
+		}
+		st.archived = append(st.archived, st.live[:keep]...)
+		st.live = append([]aiIndexMessage(nil), st.live[keep:]...)
+	case "reset":
+		st.live = nil
+		st.archived = nil
+	}
 }
 
 func indexSessionLog(db *sql.DB, id, raw string) error {
 	live, archived := replayIndexEvents(raw)
+	return indexSessionReplay(db, id, live, archived)
+}
+
+// stitchedReplayFromStore 从 Store 读正文并（可选）拼接归档 sidecar 完成两段重放：
+// sidecar 在前（归档时间序更早）、主文件在后。sidecar 读不到时退回只扫主文件
+// （与「Read 失败静默跳过」同级的尽力而为，不拖垮整个索引同步）。
+func stitchedReplayFromStore(store Store, id string) (indexReplayState, error) {
+	var state indexReplayState
+	mainRaw, err := store.Read(id)
+	if err != nil {
+		return state, err
+	}
+	if src, ok := store.(ArchiveSource); ok {
+		if archiveRaw, arcErr := src.ReadArchiveAll(id); arcErr == nil && archiveRaw != "" {
+			for _, line := range strings.Split(archiveRaw, "\n") {
+				state.applyLine(line)
+			}
+		}
+	}
+	for _, line := range strings.Split(mainRaw, "\n") {
+		state.applyLine(line)
+	}
+	return state, nil
+}
+
+// indexSessionReplay 把重放结果写入索引（DELETE 后重插，归档行 live_index=-1）。
+func indexSessionReplay(db *sql.DB, id string, live, archived []aiIndexMessage) error {
 	tx, err := db.Begin()
 	if err != nil {
 		return err
@@ -397,11 +446,11 @@ func syncSessionIndex(db *sql.DB, store Store) error {
 	}
 	rows.Close()
 	for _, id := range dirtyIDs {
-		raw, err := store.Read(id)
+		state, err := stitchedReplayFromStore(store, id)
 		if err != nil {
 			continue
 		}
-		if err := indexSessionLog(db, id, raw); err != nil {
+		if err := indexSessionReplay(db, id, state.live, state.archived); err != nil {
 			return err
 		}
 	}
@@ -701,11 +750,11 @@ func syncSessionIndexBudgeted(db *sql.DB, store Store, maxWait time.Duration) er
 		if time.Now().After(deadline) {
 			return nil
 		}
-		raw, err := store.Read(id)
+		state, err := stitchedReplayFromStore(store, id)
 		if err != nil {
 			continue
 		}
-		if err := indexSessionLog(db, id, raw); err != nil {
+		if err := indexSessionReplay(db, id, state.live, state.archived); err != nil {
 			return err
 		}
 	}

@@ -1,0 +1,141 @@
+{
+  "comment": "vacuum 状态机（internal/sessionstore/vacuum.go）与前端 replaySessionLog（ai-session-store.js）的双侧一致性夹具。expect 数值由 replaySessionLog 实测生成后钉死：两侧测试各断言同一份 expect，任何一侧语义漂移即红。torn=true 的用例按「无换行结尾」拼接（未提交尾行两侧都丢弃）。",
+  "cases": [
+    {
+      "name": "basic-archive-summary",
+      "lines": [
+        "{\"v\":1,\"t\":\"header\",\"id\":\"s1\",\"title\":\"基础\",\"createdAt\":100,\"workspace\":\"\"}",
+        "{\"v\":1,\"t\":\"msg\",\"mid\":\"m1\",\"m\":{\"role\":\"user\",\"content\":\"q1\",\"ts\":1}}",
+        "{\"v\":1,\"t\":\"msg\",\"mid\":\"m2\",\"m\":{\"role\":\"assistant\",\"content\":\"a1\",\"ts\":2}}",
+        "{\"v\":1,\"t\":\"msg\",\"mid\":\"m3\",\"m\":{\"role\":\"user\",\"content\":\"q2\",\"ts\":3}}",
+        "{\"v\":1,\"t\":\"archive\",\"keep\":2,\"summary\":{\"text\":\"S1\"}}"
+      ],
+      "expect": { "live": 1, "archived": 2, "issues": 0, "droppedTransient": 0, "torn": false, "summary": "S1" }
+    },
+    {
+      "name": "truncate-archive-interleave",
+      "lines": [
+        "{\"v\":1,\"t\":\"header\",\"id\":\"s2\",\"title\":\"交错\",\"createdAt\":100,\"workspace\":\"\"}",
+        "{\"v\":1,\"t\":\"msg\",\"mid\":\"m1\",\"m\":{\"role\":\"user\",\"content\":\"q1\",\"ts\":1}}",
+        "{\"v\":1,\"t\":\"msg\",\"mid\":\"m2\",\"m\":{\"role\":\"assistant\",\"content\":\"a1\",\"ts\":2}}",
+        "{\"v\":1,\"t\":\"truncate\",\"keep\":1}",
+        "{\"v\":1,\"t\":\"msg\",\"mid\":\"m3\",\"m\":{\"role\":\"user\",\"content\":\"q2\",\"ts\":3}}",
+        "{\"v\":1,\"t\":\"msg\",\"mid\":\"m4\",\"m\":{\"role\":\"tool\",\"name\":\"run\",\"content\":\"r\",\"ts\":4}}",
+        "{\"v\":1,\"t\":\"archive\",\"keep\":1,\"summary\":{\"text\":\"S2\"}}",
+        "{\"v\":1,\"t\":\"meta\",\"patch\":{\"title\":\"改名\"}}"
+      ],
+      "expect": { "live": 2, "archived": 1, "issues": 0, "droppedTransient": 0, "torn": false, "summary": "S2", "archivedOrder": ["m1"] }
+    },
+    {
+      "name": "dedupe-fold-keeps-last",
+      "lines": [
+        "{\"v\":1,\"t\":\"header\",\"id\":\"s3\",\"title\":\"去重\",\"createdAt\":100,\"workspace\":\"\"}",
+        "{\"v\":1,\"t\":\"msg\",\"mid\":\"m1\",\"m\":{\"role\":\"user\",\"content\":\"旧注入\",\"dedupeKey\":\"check\",\"ts\":1}}",
+        "{\"v\":1,\"t\":\"msg\",\"mid\":\"m2\",\"m\":{\"role\":\"user\",\"content\":\"正文\",\"ts\":2}}",
+        "{\"v\":1,\"t\":\"msg\",\"mid\":\"m3\",\"m\":{\"role\":\"user\",\"content\":\"新注入\",\"dedupeKey\":\"check\",\"ts\":3}}"
+      ],
+      "expect": { "live": 2, "archived": 0, "issues": 0, "droppedTransient": 1, "torn": false, "summary": "" }
+    },
+    {
+      "name": "reset-clears-archived-too",
+      "lines": [
+        "{\"v\":1,\"t\":\"header\",\"id\":\"s4\",\"title\":\"清空\",\"createdAt\":100,\"workspace\":\"\"}",
+        "{\"v\":1,\"t\":\"msg\",\"mid\":\"m1\",\"m\":{\"role\":\"user\",\"content\":\"q1\",\"ts\":1}}",
+        "{\"v\":1,\"t\":\"archive\",\"keep\":1,\"summary\":{\"text\":\"S4\"}}",
+        "{\"v\":1,\"t\":\"reset\"}",
+        "{\"v\":1,\"t\":\"msg\",\"mid\":\"m2\",\"m\":{\"role\":\"user\",\"content\":\"q2\",\"ts\":2}}"
+      ],
+      "expect": { "live": 1, "archived": 0, "issues": 0, "droppedTransient": 0, "torn": false, "summary": "" }
+    },
+    {
+      "name": "direct-archived-order-then-marker",
+      "lines": [
+        "{\"v\":1,\"t\":\"header\",\"id\":\"s5\",\"title\":\"直归档\",\"createdAt\":100,\"workspace\":\"\"}",
+        "{\"v\":1,\"t\":\"msg\",\"mid\":\"A\",\"a\":1,\"m\":{\"role\":\"user\",\"content\":\"A\",\"ts\":1}}",
+        "{\"v\":1,\"t\":\"msg\",\"mid\":\"L1\",\"m\":{\"role\":\"user\",\"content\":\"L1\",\"ts\":2}}",
+        "{\"v\":1,\"t\":\"msg\",\"mid\":\"B\",\"a\":1,\"m\":{\"role\":\"user\",\"content\":\"B\",\"ts\":3}}",
+        "{\"v\":1,\"t\":\"archive\",\"keep\":1,\"summary\":{\"text\":\"S5\"}}"
+      ],
+      "expect": { "live": 0, "archived": 3, "issues": 0, "droppedTransient": 0, "torn": false, "summary": "S5", "archivedOrder": ["A", "B", "L1"] }
+    },
+    {
+      "name": "bad-lines-and-unknown-events",
+      "lines": [
+        "{\"v\":1,\"t\":\"header\",\"id\":\"s6\",\"title\":\"坏行\",\"createdAt\":100,\"workspace\":\"\"}",
+        "not-a-json",
+        "{\"v\":1,\"t\":\"mystery\"}",
+        "{\"v\":2,\"t\":\"msg\",\"mid\":\"f1\",\"m\":{\"role\":\"user\",\"content\":\"future\",\"ts\":1}}",
+        "{\"v\":1,\"t\":\"msg\",\"mid\":\"m1\"}",
+        "{\"v\":1,\"t\":\"msg\",\"mid\":\"m2\",\"m\":{\"role\":\"user\",\"content\":\"ok\",\"ts\":2}}"
+      ],
+      "expect": { "live": 1, "archived": 0, "issues": 4, "droppedTransient": 0, "torn": false, "summary": "" }
+    },
+    {
+      "name": "torn-tail-dropped",
+      "lines": [
+        "{\"v\":1,\"t\":\"header\",\"id\":\"s7\",\"title\":\"撕裂尾\",\"createdAt\":100,\"workspace\":\"\"}",
+        "{\"v\":1,\"t\":\"msg\",\"mid\":\"m1\",\"m\":{\"role\":\"user\",\"content\":\"q1\",\"ts\":1}}",
+        "{\"v\":1,\"t\":\"msg\",\"mid\":\"m2\",\"m\":{\"role\":\"user\",\"content\":\"半行"
+      ],
+      "expect": { "live": 1, "archived": 0, "issues": 0, "droppedTransient": 0, "torn": true, "summary": "" }
+    },
+    {
+      "name": "meta-summary-overrides-archive-summary",
+      "lines": [
+        "{\"v\":1,\"t\":\"header\",\"id\":\"s8\",\"title\":\"摘要折叠\",\"createdAt\":100,\"workspace\":\"\"}",
+        "{\"v\":1,\"t\":\"msg\",\"mid\":\"m1\",\"m\":{\"role\":\"user\",\"content\":\"q1\",\"ts\":1}}",
+        "{\"v\":1,\"t\":\"archive\",\"keep\":1,\"summary\":{\"text\":\"OLD\"}}",
+        "{\"v\":1,\"t\":\"meta\",\"patch\":{\"summary\":{\"text\":\"NEW\"}}}"
+      ],
+      "expect": { "live": 0, "archived": 1, "issues": 0, "droppedTransient": 0, "torn": false, "summary": "NEW" }
+    },
+    {
+      "name": "keep-clamp-and-float",
+      "lines": [
+        "{\"v\":1,\"t\":\"header\",\"id\":\"s9\",\"title\":\"clamp\",\"createdAt\":100,\"workspace\":\"\"}",
+        "{\"v\":1,\"t\":\"msg\",\"mid\":\"m1\",\"m\":{\"role\":\"user\",\"content\":\"q1\",\"ts\":1}}",
+        "{\"v\":1,\"t\":\"msg\",\"mid\":\"m2\",\"m\":{\"role\":\"user\",\"content\":\"q2\",\"ts\":2}}",
+        "{\"v\":1,\"t\":\"truncate\",\"keep\":99}",
+        "{\"v\":1,\"t\":\"msg\",\"mid\":\"m3\",\"m\":{\"role\":\"user\",\"content\":\"q3\",\"ts\":3}}",
+        "{\"v\":1,\"t\":\"archive\",\"keep\":2.7,\"summary\":{\"text\":\"S9\"}}"
+      ],
+      "expect": { "live": 1, "archived": 2, "issues": 0, "droppedTransient": 0, "torn": false, "summary": "S9" }
+    },
+    {
+      "name": "a-truthiness-js-semantics",
+      "lines": [
+        "{\"v\":1,\"t\":\"header\",\"id\":\"s10\",\"title\":\"真值\",\"createdAt\":100,\"workspace\":\"\"}",
+        "{\"v\":1,\"t\":\"msg\",\"mid\":\"f\",\"a\":false,\"m\":{\"role\":\"user\",\"content\":\"f\",\"ts\":1}}",
+        "{\"v\":1,\"t\":\"msg\",\"mid\":\"z\",\"a\":0,\"m\":{\"role\":\"user\",\"content\":\"z\",\"ts\":2}}",
+        "{\"v\":1,\"t\":\"msg\",\"mid\":\"e\",\"a\":\"\",\"m\":{\"role\":\"user\",\"content\":\"e\",\"ts\":3}}",
+        "{\"v\":1,\"t\":\"msg\",\"mid\":\"s\",\"a\":\"1\",\"m\":{\"role\":\"user\",\"content\":\"s\",\"ts\":4}}",
+        "{\"v\":1,\"t\":\"msg\",\"mid\":\"n\",\"a\":2,\"m\":{\"role\":\"user\",\"content\":\"n\",\"ts\":5}}",
+        "{\"v\":1,\"t\":\"msg\",\"mid\":\"o\",\"a\":{\"x\":1},\"m\":{\"role\":\"user\",\"content\":\"o\",\"ts\":6}}"
+      ],
+      "expect": { "live": 3, "archived": 3, "issues": 0, "droppedTransient": 0, "torn": false, "summary": "", "archivedOrder": ["s", "n", "o"] }
+    },
+    {
+      "name": "keep-huge-and-infinity-json",
+      "lines": [
+        "{\"v\":1,\"t\":\"header\",\"id\":\"s11\",\"title\":\"超界keep\",\"createdAt\":100,\"workspace\":\"\"}",
+        "{\"v\":1,\"t\":\"msg\",\"mid\":\"m1\",\"m\":{\"role\":\"user\",\"content\":\"q1\",\"ts\":1}}",
+        "{\"v\":1,\"t\":\"msg\",\"mid\":\"m2\",\"m\":{\"role\":\"user\",\"content\":\"q2\",\"ts\":2}}",
+        "{\"v\":1,\"t\":\"truncate\",\"keep\":1e20}",
+        "{\"v\":1,\"t\":\"msg\",\"mid\":\"m3\",\"m\":{\"role\":\"user\",\"content\":\"q3\",\"ts\":3}}",
+        "{\"v\":1,\"t\":\"archive\",\"keep\":1e999,\"summary\":{\"text\":\"S11\"}}"
+      ],
+      "expect": { "live": 0, "archived": 3, "issues": 0, "droppedTransient": 0, "torn": false, "summary": "S11", "archivedOrder": ["m1", "m2", "m3"] }
+    },
+    {
+      "name": "multi-header-last-wins",
+      "lines": [
+        "{\"v\":1,\"t\":\"header\",\"id\":\"s12\",\"title\":\"第一头\",\"createdAt\":100,\"workspace\":\"D:/a\"}",
+        "{\"v\":1,\"t\":\"msg\",\"mid\":\"m1\",\"m\":{\"role\":\"user\",\"content\":\"q1\",\"ts\":1}}",
+        "{\"v\":1,\"t\":\"header\",\"id\":\"s12\",\"title\":\"第二头\",\"createdAt\":200,\"workspace\":\"D:/b\"}",
+        "{\"v\":1,\"t\":\"msg\",\"mid\":\"m2\",\"m\":{\"role\":\"user\",\"content\":\"q2\",\"ts\":2}}",
+        "{\"v\":1,\"t\":\"archive\",\"keep\":1,\"summary\":{\"text\":\"S12\"}}"
+      ],
+      "expect": { "live": 1, "archived": 1, "issues": 0, "droppedTransient": 0, "torn": false, "summary": "S12", "archivedOrder": ["m1"] }
+    }
+  ]
+}

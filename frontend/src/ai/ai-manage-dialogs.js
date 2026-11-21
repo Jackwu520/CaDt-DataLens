@@ -193,16 +193,23 @@ export function createAIManageDialogs(ctx) {
     function showArchivedDialog() {
         const session = currentSession();
         if (!session) return;
+        // 归档 = 内存（vacuum 后新增的压缩）+ 侧车（vacuum 移入的历史，按页读回）。
         const archived = Array.isArray(session.archived) ? session.archived : [];
+        const sidecarTotal = typeof ctx.archivedTotalOf === 'function'
+            ? Math.max(0, Number(ctx.archivedTotalOf(session)) || 0) - archived.length
+            : 0;
         const body = dialogNode('div', 'ai-mgr-list');
         if (session.summary && session.summary.text) {
             body.appendChild(dialogNode('div', 'ai-dialog-hint', '当前摘要：\n' + session.summary.text));
         }
-        if (!archived.length) {
+        if (!archived.length && !sidecarTotal) {
             body.appendChild(dialogNode('div', 'ai-mgr-empty', '没有已归档消息。执行 /compact 后，压缩前的消息会保存在这里（不随请求发送）。'));
         } else {
-            for (const message of archived) {
-                if (!message || !message.role) continue;
+            if (sidecarTotal) {
+                body.appendChild(dialogNode('div', 'ai-mgr-empty', '侧车历史 ' + sidecarTotal + ' 条（已整理入 archive.v1.jsonl）。'));
+            }
+            const renderRow = (message) => {
+                if (!message || !message.role) return;
                 const row = dialogNode('div', 'ai-mgr-row');
                 const main = dialogNode('div', 'ai-mgr-main');
                 const label = message.kind === 'changes-summary'
@@ -217,7 +224,33 @@ export function createAIManageDialogs(ctx) {
                 main.appendChild(dialogNode('div', 'ai-mgr-meta', text));
                 row.appendChild(main);
                 body.appendChild(row);
-            }
+            };
+            archived.forEach(renderRow);
+            // 侧车按页读回（100 条/页），「更多」按钮就地追加。
+            let sidecarLoaded = 0;
+            const moreBtn = sidecarTotal
+                ? dialogButton('读取侧车历史（剩 ' + sidecarTotal + ' 条）', 'dlg-btn', async () => {
+                    if (typeof ctx.loadArchivedSidecarPage !== 'function') return;
+                    moreBtn.disabled = true;
+                    try {
+                        const state = await ctx.loadArchivedSidecarPage(session);
+                        const messages = (state && state.messages) || [];
+                        for (const message of messages.slice(sidecarLoaded)) renderRow(message);
+                        sidecarLoaded = messages.length;
+                        const remaining = Math.max(0, ((state && state.total) || sidecarTotal) - sidecarLoaded);
+                        if (remaining > 0) {
+                            moreBtn.disabled = false;
+                            moreBtn.textContent = '读取侧车历史（剩 ' + remaining + ' 条）';
+                        } else {
+                            moreBtn.parentElement && moreBtn.remove();
+                        }
+                    } catch (e) {
+                        moreBtn.disabled = false;
+                        flash('侧车读取失败：' + String((e && e.message) || e), true);
+                    }
+                })
+                : null;
+            if (moreBtn) body.appendChild(moreBtn);
         }
         openAIDialog('已归档消息（不发送）', [body], [dialogButton('关闭', 'dlg-btn primary', closeAIDialog)]);
     }

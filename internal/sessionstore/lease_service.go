@@ -15,6 +15,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -34,10 +35,14 @@ func leaseOwnerKey(ctx context.Context) string {
 }
 
 // LogStat 是会话正文的磁盘状态，交接协议用它判断“另一个窗口是否写过”。
+// Archive* 字段描述归档 sidecar（archive.v1.jsonl）：前端凭 archiveExists 决定
+// 是否向侧车探测归档总数（vacuum 后内存 archived 清空，归档内容只存 sidecar）。
 type LogStat struct {
-	Exists  bool  `json:"exists"`
-	MtimeMs int64 `json:"mtimeMs"`
-	Size    int64 `json:"size"`
+	Exists        bool  `json:"exists"`
+	MtimeMs       int64 `json:"mtimeMs"`
+	Size          int64 `json:"size"`
+	ArchiveExists bool  `json:"archiveExists,omitempty"`
+	ArchiveSize   int64 `json:"archiveSize,omitempty"`
 }
 
 // LeaseStatus 是租约获取/探测结果。
@@ -278,5 +283,12 @@ func statLog(store *Store, id string) LogStat {
 	if err != nil || info.IsDir() {
 		return LogStat{}
 	}
-	return LogStat{Exists: true, MtimeMs: info.ModTime().UnixMilli(), Size: info.Size()}
+	stat := LogStat{Exists: true, MtimeMs: info.ModTime().UnixMilli(), Size: info.Size()}
+	// sidecar 存在性顺带上报：懒加载/交接协议的 stat 往返已经在这里，前端不必再探一次。
+	dir := filepath.Dir(path)
+	if archiveInfo, err := os.Stat(filepath.Join(dir, aiSessionArchiveName)); err == nil && !archiveInfo.IsDir() {
+		stat.ArchiveExists = true
+		stat.ArchiveSize = archiveInfo.Size()
+	}
+	return stat
 }
