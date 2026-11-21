@@ -11,6 +11,7 @@ import {isReadableImagePath} from './ai-image-encode.js';
 import {isReadableVideoPath} from './ai-constants.js';
 import {wrapTurnReminder} from './ai-turn-reminder.js';
 import {cognitionRulesText} from './ai-cognition.js';
+import {isTransientSession} from './ai-session-scope.js';
 
 // 空记忆占位引导：MEMORY.md 不存在或为空时注入，替代「整块消失」——模型由此得知记忆区的存在与写入时机
 // （块内带引导语的先例：<user_preferences> / <task_todos> / <task_reminders>）。
@@ -166,6 +167,9 @@ export function createAISystemContext(ctx) {
     // 同步实现（数据全在内存里），起轮路径可在落盘前调用；无任何子块时返回空串（不生成空包装）。
     function turnContextBundle(session, attachmentList) {
         const blocks = [];
+        // 临时会话不注入工作区知识（活动文件 / 已打开文件 / 认知索引卷 / 维护提醒）：
+        // 它是一张「没绑工作区」的白纸，只带会话自身的清单、提醒、计划状态与附件。
+        const transient = isTransientSession(session);
         const meta = {
             workspace: {loaded: false, files: 0},
             attachments: {count: 0, chars: 0},
@@ -234,7 +238,7 @@ export function createAISystemContext(ctx) {
         }
 
         // 工作区状态（活动文件 / 光标 / 选区 / 可见范围 / 已打开文件）
-        {
+        if (!transient) {
             const context = ctx.getWorkspaceContext() || {};
             const root = ctx.getScopeRoot() || '';
             const contextParts = [];
@@ -317,7 +321,7 @@ export function createAISystemContext(ctx) {
         // 认知索引（可选启用，默认关）：overview 每会话注入一次（压缩裁掉历史块后重注是预期
         // 恢复行为）+ 维护提醒。缓存由 prefetchTurnCache 在起轮前刷新，这里只同步消费缓存、
         // 不自己调后端（§5.3 注入落点约束：卷是可变内容，进系统提示词稳定区会击穿前缀缓存）。
-        if (typeof ctx.cognitionTurnBlocks === 'function') {
+        if (!transient && typeof ctx.cognitionTurnBlocks === 'function') {
             const cog = ctx.cognitionTurnBlocks(session);
             if (cog && cog.index) {
                 blocks.push(cog.index);
@@ -335,6 +339,9 @@ export function createAISystemContext(ctx) {
     async function assembleSystemContext(session, attachmentList) {
         const base = ctx.effectiveSystemPrompt(session);
         const parts = [base];
+        // 临时会话（session.temp）：不注入工作区知识——AGENTS.md、记忆、认知索引守则一律跳过。
+        // 身份 / 人设 / 偏好 / 技能 / 环境变量是应用级能力，照旧保留。
+        const transient = isTransientSession(session);
         const meta = {
             agents: {loaded: false, chars: 0, path: ''},
             memory: {loaded: false, chars: 0, path: '', mode: ''},
@@ -346,6 +353,19 @@ export function createAISystemContext(ctx) {
             persona: {enabled: false, style: 'default', personaChars: 0, personaSource: '', instructionChars: 0},
             errors: [],
         };
+
+        // 临时会话定性块：紧跟 base——它是「这次对话是什么」的前提，先说清才不会让模型
+        // 拿默认的工作区假设去解释后面的一切（没注入 AGENTS.md / 记忆 / 认知索引，也没有工作区归属）。
+        if (transient) {
+            parts.push([
+                '<transient_session>',
+                '这是一条临时会话：默认只读、不绑定工作区；没有注入 AGENTS.md、记忆、认知索引等工作区知识。',
+                '不要假定工作区上下文（用户说的「这个文件 / 这里」需要先问清路径）；文件与命令类工具按只读权限判定。',
+                '临时会话只在本次运行内可见：磁盘仅作留档，关闭应用后不再出现在会话列表里。',
+                '</transient_session>',
+            ].join('\n'));
+            meta.transient = {workspace: '', scope: aiTextOf(session && session.scope)};
+        }
 
         // 支线定性块：紧跟 base——它改变模型对整段历史的解释，晚于人设/AGENTS 就容易被冲淡
         {
@@ -386,7 +406,7 @@ export function createAISystemContext(ctx) {
             };
         }
 
-        if (ctx.settings.aiInjectAgentsMd !== false) {
+        if (!transient && ctx.settings.aiInjectAgentsMd !== false) {
             const project = ctx.aiProjectRoot();
             if (project) {
                 const path = ctx.aiJoinPath(project, 'AGENTS.md');
@@ -400,7 +420,7 @@ export function createAISystemContext(ctx) {
             }
         }
 
-        if (ctx.settings.aiInjectMemory !== false) {
+        if (!transient && ctx.settings.aiInjectMemory !== false) {
             try {
                 const mem = await ctx.resolveMemoryDir();
                 const memPath = mem.mode === 'workspace' ? ctx.aiDisplayPath(mem.dir) : '（应用数据）/ai-memory';
@@ -521,7 +541,8 @@ export function createAISystemContext(ctx) {
         if (rules) parts.push(rules);
         // 认知索引守则（两态固定文案，属稳定区——变的是卷不是守则，§5.4）：存在性判断交给
         // 动态块（<cognition_index> 只在有卷时出现），这里只描述「有索引怎么做 / 没有怎么开」。
-        if (typeof ctx.cognitionEnabled === 'function') {
+        // 临时会话不注入（没有工作区归属，卷本身也读不到）。
+        if (!transient && typeof ctx.cognitionEnabled === 'function') {
             parts.push(cognitionRulesText(ctx.cognitionEnabled()));
         }
         parts.push(outputLanguageRuleText());

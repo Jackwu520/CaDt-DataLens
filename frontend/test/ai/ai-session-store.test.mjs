@@ -883,3 +883,13 @@ test('buildSessionMeta：opencodeSessionId 随 meta 持久化，重启后沿用�
     const round = JSON.parse(JSON.stringify(buildSessionMeta({id: 's3', opencodeSessionId: 'datalens-xyz'})));
     assert.equal(round.opencodeSessionId, 'datalens-xyz');
 });
+
+test('buildSessionMeta：临时会话标记随 meta 落盘（启动加载据此滤掉）', () => {
+    assert.equal(buildSessionMeta({id: 's1', temp: true}).temp, true);
+    // 普通会话 / 脏值一律 false：读盘回来的老会话没有这个字段，缺省就是普通会话
+    assert.equal(buildSessionMeta({id: 's2'}).temp, false);
+    assert.equal(buildSessionMeta({id: 's3', temp: 'yes'}).temp, false);
+    // 标记变化必须改变 meta 签名，否则 writeMetaIfChanged 不会补写这个字段
+    const sig = (m) => metaSignature(buildSessionMeta(m));
+    assert.notEqual(sig({id: 's4'}), sig({id: 's4', temp: true}));
+});

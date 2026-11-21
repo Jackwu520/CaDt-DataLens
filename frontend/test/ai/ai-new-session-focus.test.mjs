@@ -51,7 +51,7 @@ test('后台继承当前会话：createSessionData 走 inheritModelRef（读 cur
     const fn = sliceFunction(panel, 'bridgeNewSession: async (opts2) => {');
     assert.match(fn, /createSessionData 继承面板当前会话的模型\/权限（inheritModelRef 读\s*\n?\s*\/\/?\s*currentSession/);
     // createSessionData 内部确实调用 inheritModelRef（继承当前会话 pin 的模型）
-    const create = sliceFunction(panel, 'function createSessionData(title) {', '\n    function ');
+    const create = sliceFunction(panel, 'function createSessionData(title, sessionOpts) {', '\n    function ');
     assert.match(create, /const inherited = inheritModelRef\(\);/);
     assert.match(create, /profileId: inherited\.profileId/);
     assert.match(create, /modelId: inherited\.modelId/);

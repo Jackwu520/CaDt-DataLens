@@ -411,7 +411,7 @@ test('resolveModelId：preferred → fallback → 首条目，失效 id 不写�
 
 test('新会话模型继承接线：继承当前会话在用的模型，切会话同步窗口默认', () => {
     const src = readFileSync(new URL('../../src/ai/ai-panel.js', import.meta.url), 'utf8');
-    const createBlock = /function createSessionData\(title\)[\s\S]*?ctxLimit:/.exec(src);
+    const createBlock = /function createSessionData\(title, sessionOpts\)[\s\S]*?ctxLimit:/.exec(src);
     assert.ok(createBlock, 'createSessionData 应存在');
     assert.match(createBlock[0], /profileId:\s*inherited\.profileId/, '新会话应继承继承出来的账号');
     assert.match(createBlock[0], /modelId:\s*inherited\.modelId/, '新会话应继承继承出来的模型');

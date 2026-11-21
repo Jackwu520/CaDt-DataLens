@@ -376,6 +376,9 @@ export function buildSessionMeta(session) {
             : sessionEndTs(session),
         workspace: textOf(session && session.workspace),
         scope: ['read', 'edit', 'auto', 'full'].includes(session && session.scope) ? session.scope : 'read',
+        // 临时会话：磁盘只作留档，启动加载据它把这些会话滤掉（见 ai-session-disk 的 keepMeta）。
+        // 只认严格 true——与 isTransientSession 同一口径，脏值不能把普通会话变成一次性的。
+        temp: (session && session.temp) === true,
         profileId: textOf(session && session.profileId),
         modelId: textOf(session && session.modelId),
         // 本次会话上下文上限（模型选择器档位，0 = 不设限；随会话持久化，子代理派生时继承）

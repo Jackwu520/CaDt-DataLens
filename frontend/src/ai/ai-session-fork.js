@@ -39,6 +39,11 @@ export function forkSettings(source) {
     return {
         workspace: src.workspace || '',
         scope: src.scope || 'read',
+        // 临时会话派生出来的会话仍是临时会话：语义（一次性、不绑工作区、不注入工作区知识）
+        // 不能因为「分了个支 / 开了个支线」就漂移成重启后还留着的普通会话。
+        // 调用方要在 assign 之后把它的 workspace 清空（见 ai-panel 的 branchSessionAt /
+        // ai-sidechat 的 openSideChat）。
+        temp: src.temp === true,
         profileId: src.profileId || '',
         modelId: src.modelId || '',
         // 本次会话上下文上限随 fork 继承（会话级模型设置的一部分，之后各自演化不联动）

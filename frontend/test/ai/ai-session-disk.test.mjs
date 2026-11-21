@@ -248,3 +248,35 @@ test('新会话首落盘 allowCreate=true；已有会话追加 allowCreate=false
     await store.persistSession(session);
     assert.deepEqual(calls, [true, false], '首落盘必须允许建目录，之后的追加必须是扇出写');
 });
+
+// 临时会话（meta.temp）：磁盘只作留档，读盘列表一律滤掉——「关闭应用就没了」靠的就是这一层。
+// 会话本体活在内存里，所以过滤只发生在读盘侧，写盘侧照旧（留档）。
+test('临时会话不进食盘列表：loadMetas / loadAll 默认滤掉，显式 includeTemp 才读回来', async () => {
+    const metas = [
+        buildSessionMeta({id: 'normal', title: 'T-normal', workspace: 'D:/w', createdAt: 1000, updatedAt: 2000, messages: msgsOf(2)}),
+        buildSessionMeta({id: 'tmp', title: 'T-tmp', temp: true, createdAt: 1000, updatedAt: 2000, messages: msgsOf(1)}),
+    ];
+    const reads = [];
+    const store = createSessionDiskStore({
+        backend: {
+            AISessionList: async () => metas.map((meta) => JSON.stringify(meta)),
+            AISessionRead: async (id) => { reads.push(id); return logOf(id, 1); },
+            AISessionWriteMeta: async () => {},
+            AISessionAppend: async () => {},
+            AISessionRewrite: async () => {},
+            AISessionDelete: async () => {},
+        },
+        normalizeMessage: (raw) => (raw && raw.role ? {role: raw.role, content: String(raw.content || ''), ts: Number(raw.ts) || 0} : null),
+    });
+
+    const normalOnly = await store.loadMetas();
+    assert.deepEqual(normalOnly.map((meta) => meta.id), ['normal'], '临时会话不能出现在会话列表');
+
+    const withTemp = await store.loadMetas({includeTemp: true});
+    assert.deepEqual(withTemp.map((meta) => meta.id), ['normal', 'tmp'], 'includeTemp 是诊断/测试用的显式出口');
+
+    const loaded = await store.loadAll((raw) => ({...raw, messages: [], archived: []}));
+    assert.deepEqual(loaded.map((session) => session.id), ['normal'], '整份重读同样不能把临时会话带回来');
+    assert.equal(reads.includes('tmp'), false, '被滤掉的会话不读正文');
+});
+

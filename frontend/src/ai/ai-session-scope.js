@@ -81,6 +81,14 @@ function isCandidate(session) {
     return true;
 }
 
+// 临时会话：一次性会话（侧栏「新建会话」右侧「⋯」→ 新建临时会话）。
+// 语义：默认只读、不绑定工作区、不注入 AGENTS.md / 记忆 / 认知索引等环境知识；
+// 磁盘只作为留档（meta.temp 标记），启动加载时一律滤掉——对用户来说关掉应用就没了。
+// 判定只认严格 true：读盘回来的老会话没有这个字段，缺省即普通会话。
+export function isTransientSession(session) {
+    return !!(session && session.temp === true);
+}
+
 // 本工作区里最近更新的会话；没有返回 null。keyOf 把会话映射成归一化工作区 key。
 export function pickWorkspaceSession(list, ownKey, keyOf, excludeId) {
     if (!ownKey) return null;

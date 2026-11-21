@@ -4,7 +4,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
-import {decideSessionForWorkspace, activeSessionIdFor, rememberActiveSession, normalizePath, pickWorkspaceSession, workspaceKey, decideSessionOpen} from '../../src/ai/ai-session-scope.js';
+import {decideSessionForWorkspace, activeSessionIdFor, rememberActiveSession, isTransientSession, normalizePath, pickWorkspaceSession, workspaceKey, decideSessionOpen} from '../../src/ai/ai-session-scope.js';
 
 const MINE = 'd:/work/other'; // 本窗口打开的工作区
 const OTHER = 'd:/code/cadt-datalens'; // 上一个窗口（当前会话属于这里）
@@ -50,6 +50,17 @@ test('老会话没有工作区归属：绑定到当前工作区，不换会话',
     const current = sess('s-legacy', '');
     const d = decideSessionForWorkspace(current, OWN_KEY, [current], keyOf);
     assert.equal(d.action, 'bind');
+});
+
+// 临时会话（isTransientSession）：只认严格的 temp === true——老会话没有这个字段就是普通会话。
+// 这条判定同时是「不绑工作区」与「读盘列表滤掉」两处的单一来源，门一旦放宽就会把
+// 普通会话误判成一次性会话（关掉应用就再也看不到）。
+test('isTransientSession 只认严格 true', () => {
+    assert.equal(isTransientSession({id: 's', temp: true}), true);
+    assert.equal(isTransientSession({id: 's'}), false);
+    assert.equal(isTransientSession({id: 's', temp: 'true'}), false);
+    assert.equal(isTransientSession({id: 's', temp: 1}), false);
+    assert.equal(isTransientSession(null), false);
 });
 
 test('当前窗口没有工作区（欢迎页）：不做任何切换', () => {
