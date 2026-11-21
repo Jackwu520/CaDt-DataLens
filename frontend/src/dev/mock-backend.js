@@ -516,7 +516,7 @@ const mockStorageItems = [
     {id: 'temp-scratch', label: '系统临时文件', note: '%TEMP% 下本应用写的临时库与插件暂存。', kind: 'cache', scope: 'temp', inCache: true, path: 'C:\\Users\\dev\\AppData\\Local\\Temp', bytes: 720 * 1024, files: 12, entries: 12, exists: true},
     {id: 'ws-worklog', label: 'AI 工作日志（本工作区）', note: '.cadt/logs 下的工作日志索引与正文。', kind: 'cache', scope: 'workspace', inCache: true, path: '', bytes: 0, files: 0, entries: 0, exists: false},
     {id: 'ws-gen', label: '生图与视频产物', note: '.cadt/gen 里保存下来的生成图片与视频。', kind: 'data', scope: 'workspace', inCache: false, path: '', bytes: 0, files: 0, entries: 0, exists: false},
-    {id: 'ws-scratch', label: '临时草稿（本工作区）', note: '.cadt/scratch 里的临时草稿，不进一键清缓存，删除走回收站。', kind: 'data', scope: 'workspace', inCache: false, path: '', bytes: 0, files: 0, entries: 0, exists: false},
+    {id: 'ws-scratch', label: '临时文件（本工作区）', note: '.cadt/scratch 里的临时文件，不进一键清缓存，删除走回收站。', kind: 'data', scope: 'workspace', inCache: false, path: '', bytes: 0, files: 0, entries: 0, exists: false},
     {id: 'ws-memory', label: '工作区 AI 记忆', note: '.cadt/memory 里的记忆与索引。', kind: 'danger', scope: 'workspace', inCache: false, path: '', bytes: 0, files: 0, entries: 0, exists: false},
     {id: 'ai-sessions', label: 'AI 会话记录', note: '所有会话的正文 JSONL 与附图，是唯一真源。', kind: 'danger', scope: 'app', inCache: false, path: MOCK_APP_ROOT + '\\ai-sessions', bytes: 60 * 1024 * 1024, files: 1204, entries: 0, exists: true},
     {id: 'ai-schedule', label: 'AI 定时任务', note: '定时任务定义与运行记录。', kind: 'danger', scope: 'app', inCache: false, path: MOCK_APP_ROOT + '\\ai-schedule.db', bytes: 184 * 1024, files: 3, entries: 0, exists: true},
@@ -2664,6 +2664,56 @@ const mockBackend = {
         if (window.__mockMemoLeaseBusy) return {acquired: false, busy: true, owner: {pid: 999, label: '另一窗口'}};
         return {acquired: false, busy: false};
     },
+    // mock：认知索引三件（CognitionRead / CognitionEdit / CognitionStatus）。dev 浏览器调试
+    // 用——卷恒空、指纹按工作区稳定（CAS base 自洽），edit 模拟成功。
+    async CognitionRead(workspace, reqJSON) {
+        const req = JSON.parse(reqJSON || '{}');
+        const filterOn = (Array.isArray(req.paths) && req.paths.length) ||
+            (Array.isArray(req.labels) && req.labels.length) || String(req.query || '').trim();
+        return JSON.stringify({
+            exists: true,
+            mode: filterOn ? 'entries' : 'overview',
+            text: filterOn
+                ? '命中 0 条：'
+                : '认知索引 overview：0 条 / 0 字节（预算 600 / 262144）。\n（mock dev 环境：无真实卷，路径地图为空）',
+            fingerprint: 'mock' + String(workspace || '').length.toString(16) + 'deadbeef',
+            scene: 'code',
+            entries: 0,
+            bytes: 0,
+            lines: [],
+        });
+    },
+    async CognitionEdit(workspace, reqJSON) {
+        const req = JSON.parse(reqJSON || '{}');
+        const warnings = ['mock dev 环境：未写真实卷'];
+        if (typeof req.ignore === 'string' && req.ignore.trim()) {
+            warnings.push('mock dev 环境：ignore 参数已受理（未写真实卷），排除表不生效');
+        }
+        return JSON.stringify({
+            applied: true,
+            fingerprint: 'mock' + Date.now().toString(16),
+            entries: Array.isArray(req.entries) ? req.entries.length : 0,
+            bytes: 0,
+            bookkept: 0,
+            warnings,
+        });
+    },
+    async CognitionStatus(workspace, verbose) {
+        return JSON.stringify({
+            exists: true,
+            scene: 'code',
+            entries: 0,
+            bytes: 0,
+            budgetEntries: 600,
+            budgetBytes: 262144,
+            fingerprint: 'mock' + String(workspace || '').length.toString(16) + 'deadbeef',
+            hasBaseline: true,
+            missing: {total: 0},
+            orphan: {total: 0},
+            stale: {total: 0},
+            unbaselined: {total: 0},
+        });
+    },
     // mock：便签写权租约。window.__mockMemoLeaseBusy=true 可模拟另一窗口正在编辑。
     async MemoLeaseAcquire(scope, workspace, label) {
         const key = scope + '|' + (workspace || '');
@@ -2729,7 +2779,7 @@ const mockBackend = {
             bytes: 2048,
         };
     },
-    // 外部工具（设置 → AI → 外部工具）：mock 只在内存里保存来源矩阵，便于浏览器调试页面。
+    // 外部工具（应用页面 → 外部工具）：mock 只在内存里保存来源矩阵，便于浏览器调试页面。
     async WebToolsConfigGet() {
         return window.__mockExternalTools || {
             enabled: false,

@@ -105,6 +105,8 @@ test('每个工具至少在一个权限档下发（四档 × 计划模式取并�
         appControlOn: () => true,
         externalToolsOn: () => true,
         genModelsOn: () => true,
+        // 桌面控制（Computer Use）：授权是会话态（「桌面」pill），下发在写权限档 × 授权开启
+        desktopGrantOn: () => true,
     });
     const delivered = new Set();
     for (const scope of ['read', 'edit', 'auto', 'full']) {
@@ -160,6 +162,7 @@ const PROSE_TOKENS = {
     depth: 'list_dir 的参数，glob 描述里指引去用它',
     oldString: 'edit_file 的参数，read_file 描述里提醒不要带行号',
     file: 'worktree_manage 的参数（conflict_detail 指定主根文件），其他工具描述里只是普通名词',
+    ignore: 'cognition_edit 的参数；cognition_status 描述与 hint 指引去用它（Missing 噪音大的收窄出口）',
 };
 
 test('描述里提到的参数名必须已声明', () => {

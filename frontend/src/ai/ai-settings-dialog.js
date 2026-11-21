@@ -382,6 +382,7 @@ export function createAISettingsDialog(ctx) {
     function refreshChatSettings() {
         if (opt.displayMode) opt.displayMode.value = settings.aiFloatMode === 'fullscreen' ? 'fullscreen' : 'dock';
         if (opt.sendKey) opt.sendKey.value = settings.aiSendKey === 'ctrl-enter' ? 'ctrl-enter' : 'enter';
+        if (opt.longPaste) opt.longPaste.value = ['off', 'attachment', 'collapse'].includes(settings.aiLongPaste) ? settings.aiLongPaste : 'collapse';
         if (opt.outputLang) opt.outputLang.value = ['zh', 'en', 'auto'].includes(getConfig().outputLanguage) ? getConfig().outputLanguage : 'zh';
         const chatFont = aiClampInt(settings.aiChatFont, 10, 32, 13);
         if (opt.chatFont) opt.chatFont.value = String(chatFont);
@@ -404,6 +405,8 @@ export function createAISettingsDialog(ctx) {
         if (opt.msgActions) opt.msgActions.value = settings.aiMsgActions || 'full';
         if (opt.turnMetaAll) opt.turnMetaAll.checked = settings.aiShowEveryTurnMeta === true;
         if (opt.contextSlim) opt.contextSlim.checked = settings.aiContextSlim !== false;
+        // 认知索引：可选启用，默认关（§5.3）；AI 侧启停走 app_control 的 cognition_toggle 审批卡
+        if (opt.cognition) opt.cognition.checked = settings.aiCognition === true;
         if (opt.assistantCard) opt.assistantCard.checked = settings.aiAssistantCard === true;
         if (opt.inlineWidgets) opt.inlineWidgets.checked = settings.aiInlineWidgets !== false;
         if (opt.todosExpanded) opt.todosExpanded.checked = settings.aiTodosDefaultExpanded === true;
@@ -721,6 +724,11 @@ export function createAISettingsDialog(ctx) {
             saveSettings();
             updateSendState();
         });
+        if (opt.longPaste) opt.longPaste.addEventListener('change', () => {
+            settings.aiLongPaste = ['off', 'attachment', 'collapse'].includes(opt.longPaste.value) ? opt.longPaste.value : 'collapse';
+            saveSettings();
+            setSettingsStatus('长文本粘贴方式已更新（下次粘贴生效）', 'ok');
+        });
         // 显示方式：dock/fullscreen 持久化；float 是动作（打开独立窗口），选完回弹到已持久化档位
         if (opt.displayMode) opt.displayMode.addEventListener('change', () => {
             setMode(opt.displayMode.value);
@@ -789,6 +797,12 @@ export function createAISettingsDialog(ctx) {
             saveSettings();
             // 瘦身只影响下次组装请求；立即刷新统计让用户看到开关效果
             updateContextCount();
+        });
+        if (opt.cognition) opt.cognition.addEventListener('change', () => {
+            settings.aiCognition = !!opt.cognition.checked;
+            saveSettings();
+            // 工具下发 / 注入按活设置读取，下一轮自动生效；守则两态随下一轮系统提示词切换
+            setSettingsStatus('认知索引：' + (opt.cognition.checked ? '已启用（AI 会在编码会话里维护 .cadt/cognition/）' : '已关闭'), 'ok');
         });
         if (opt.assistantCard) opt.assistantCard.addEventListener('change', () => {
             settings.aiAssistantCard = !!opt.assistantCard.checked;

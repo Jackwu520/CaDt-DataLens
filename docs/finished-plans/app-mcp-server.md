@@ -13,7 +13,7 @@ Streamable HTTP 端点，把一套「外部 agent 驱动应用界面」的工具
 - `mouse_move` / `mouse_click` / `mouse_drag` / `mouse_scroll` / `keyboard_type` / `keyboard_press`：界面自动化（带可视光标反馈）
 - `call_bound_method` / `emit_event` / `wait_for_event` / `screenshot_dom`：直调任意 Go 绑定、事件收发与页面截图——**`call_bound_method` 可不经 js_eval 直调全部绑定（读写文件/跑命令），威胁模型按「全权驱动宿主」评估**
 
-这与 `docs/unfinished-plans/desktop-mcp.md` 是**两回事**：那份规划是把外部桌面自动化
+这与 `docs/finished-plans/desktop-mcp.md` 是**两回事**：那份方案是把外部桌面自动化
 server（windows-mcp）接进本应用的 MCP 客户端；这里是把**本应用**暴露为 MCP server。
 两者互不依赖，可以并存。
 

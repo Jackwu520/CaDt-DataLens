@@ -1,8 +1,7 @@
 # Windows 桌面操作 MCP（评估与规划）
 
-> 状态：**未开工**（2026-11-16 调研成文，本轮只评估与规划，未修改实现代码）
-> 复核：**2026-11-17** 二次核对代码与上游，修正 §5.2 / §5.3 / §7 的事实，并把分阶段调整为 §12.8；仍未改实现代码。
-> 复核：**2026-11-21** v3 迁移完成后三审（§13）：`toolsForScope` 第三参已就位（P1 变薄）、工具数 68→78（懒加载前移）、应用自身 MCP server 变体落地（方向重定位）、多窗口 grant 争用为新风险；仍未改实现代码。
+> 状态：**已实施**（2026-11-21 P1 / P3 / P4 / P2 一次性落地 + 实机回归通过，见 §13.7 与「实机回归」；P0a 零代码验证完成、决策点通过；P1.5 维持跳过；仅余多窗口双 grant 接管的人工回归待做）
+> 沿革：2026-11-16 调研成文；2026-11-17 二次核对代码与上游，修正 §5.2 / §5.3 / §7 的事实，分阶段调整为 §12.8；2026-11-21 v3 迁移完成后三审（§13）：`toolsForScope` 第三参已就位（P1 变薄）、工具数 68→78（懒加载前移）、应用自身 MCP server 变体落地（方向重定位）、多窗口 grant 争用为新风险——同日完成实施与实机回归并归档。
 > 触发：用户要求参考 `dsh-windows-mcp`，给 CaDt-DataLens 加一套类似的 Windows 操作 MCP。
 > 范围：把桌面自动化能力以**外部 stdio MCP server** 的形态挂进现有 MCP 客户端；在本项目内补齐「会话授权 + 依赖安装 + 懒加载 + 诊断」这层产品化外壳。
 > 非目标：不自研 UIA / 截图 / 输入引擎；不做 MCP server 暴露；不做 Streamable HTTP；不打包 Python / uv；不改现有 MCP 协议层；不做 OS 沙箱。
@@ -340,20 +339,67 @@ case "image", "audio":
 
 ### 13.5 建议排期（替换 §12.8）
 
-| 阶段 | 内容 | 相对 §12.8 的变化 |
-|---|---|---|
-| **P0a 零代码** | 手写 mcp.json（`uvx windows-mcp serve --tools Snapshot,Click,Type`），勾 3 工具，跑 Snapshot → Click | 不变 |
-| **决策点** | 纯 Snapshot 能否完成一次真实点击？ | 不变 |
-| **P1 会话闸门** | `ai-desktop-control.js` + `ctx.desktopGrantOn`（**不动签名**）+ pill + **单飞 grant** + 派发硬拒绝 + 测试 | 变薄：签名已就位；加单飞 |
-| **P1.5（条件）** | MCP 图像结果通道（§12.1-B） | 不变 |
-| **P3 懒加载** | `windows_desktop` 入口 + revealed 集合，首版只 reveal 观察组 | **默认前移**，不再等 token 实测 |
-| **P4 doctor** | 只读诊断绑定 + 设置页按钮 | 不变 |
-| **P2 安装器（降级）** | 复制安装命令 + 一键写入 mcp.json 行 | 不变 |
+> **实施状态（2026-11-21）**：P1 / P3 / P4 / P2 已一次性落地，见 §13.7 实施记录；P0a 部分完成（uv 已装、windows-mcp 白名单冒烟进行中），决策点与真实点击验证待人工回归。P1.5 维持跳过（决策 5：首版砍 Screenshot）。
+
+| 阶段 | 内容 | 相对 §12.8 的变化 | 状态 |
+|---|---|---|---|
+| **P0a 零代码** | 手写 mcp.json（`uvx windows-mcp serve --tools Snapshot,Click,Type`），勾 3 工具，跑 Snapshot → Click | 不变 | **完成**（server 冒烟 + 实机回归，§13.7） |
+| **决策点** | 纯 Snapshot 能否完成一次真实点击？ | 不变 | **通过**（无障碍树足够，Screenshot 维持砍） |
+| **P1 会话闸门** | `ai-desktop-control.js` + `ctx.desktopGrantOn`（**不动签名**）+ pill + **单飞 grant** + 派发硬拒绝 + 测试 | 变薄：签名已就位；加单飞 | **已落地** |
+| **P1.5（条件）** | MCP 图像结果通道（§12.1-B） | 不变 | 跳过（决策 5） |
+| **P3 懒加载** | `windows_desktop` 入口 + revealed 集合，首版只 reveal 观察组 | **默认前移**，不再等 token 实测 | **已落地** |
+| **P4 doctor** | 只读诊断绑定 + 设置页按钮 | 不变 | **已落地** |
+| **P2 安装器（降级）** | 复制安装命令 + 一键写入 mcp.json 行 | 不变 | **已落地** |
 
 ### 13.6 待决策补充
 
-| # | 问题 | 建议 |
-|---|---|---|
-| 8 | 多窗口 grant 争用策略？ | **单飞**：应用级一个会话持有，新 grant 挤旧 + 通知旧会话（§13.3-2） |
-| 9 | 懒加载是否默认前移？ | **是**：78 基数 + 18 增量，工具段成本已不是「看起来高级」 |
-| 10 | `run_command` 键鼠逃逸首版要不要堵？ | **不堵**：属 incident §5 已知盲区的通用形态，专用闸门管不了通用通道；pill tooltip 明示即可 |
+| # | 问题 | 建议 | 结果 |
+|---|---|---|---|
+| 8 | 多窗口 grant 争用策略？ | **单飞**：应用级一个会话持有，新 grant 挤旧 + 通知旧会话（§13.3-2） | 采纳：`desktop-grant-changed` 应用广播收敛副本 |
+| 9 | 懒加载是否默认前移？ | **是**：78 基数 + 18 增量，工具段成本已不是「看起来高级」 | 采纳：与 P1 同批落地 |
+| 10 | `run_command` 键鼠逃逸首版要不要堵？ | **不堵**：属 incident §5 已知盲区的通用形态，专用闸门管不了通用通道；pill tooltip 明示即可 | 采纳：pill tooltip 已写明 |
+
+### 13.7 实施记录（2026-11-21，P1/P3/P4/P2 一次性落地）
+
+> 未提交前的工作树实施记录；P0a 决策点出结果后按需补记。
+
+**落地面**
+
+- `frontend/src/ai/ai-desktop-control.js`（新）：server 名常量与 def 判定（只认 `def.mcpServer === 'windows'`，不读 annotations）、白名单常量与配置行构造、`matchDesktopDefs` / `formatRevealResult` 纯函数、`createAIDesktopControl` 工厂（grant / revoke / handleGrantEvent / reveal / revealedDefs / isRevealed / registeredCount）。
+- `frontend/src/ai/ai-tool-defs.js`：`windows_desktop` def（query / names 两参数）；`AI_TOOL_GROUPS` 新组 `desktop`；目录条目；MCP 通用注入分支排除 windows server 工具，桌面分支按「写档 × 非计划 × `ctx.desktopGrantOn(session)`」注入入口 + `ctx.desktopRevealedDefs(session)`；典型工具链一条（`hasAll` 自动按可用性过滤）。
+- `frontend/src/ai/ai-panel.js`：`desktopMod` 创建（`emitAppEvent` 走 opts、`onEvicted` 经 `sessionById` 过滤 + 忙会话才投 `deliverAgentNotice`，kind=`desktop`）；`executeToolInner` 加 `case 'windows_desktop'`；`executeMcpTool` 前置 `desktopDispatchGate`（未授权 / 未揭示两级硬拒绝，闸在审批链之前）；`invokeMcpToolWithApproval` 的 `sessionAllow` 加桌面授权短路（deny 优先不变）；`updateScopeUI` 渲染 pill（注册数 / 持有者提示 / `data-tip` 含 run_command 声明）；`toggleComputerUse` + 点击绑定；`handleMcpEvent` 顺手刷 pill；公开 `handleDesktopGrantEvent`。
+- `frontend/src/main.js`：`emitAppEvent` opt（经 rt adapter `EventsEmit`，mock 下静默降级单窗口语义）；`appEvents.onApp('desktop-grant-changed', …)` 转发面板。
+- `frontend/src/core/event-scope.js`：登记 `desktop-grant-changed: 'app'`。
+- `frontend/index.html`：Composer `#ai-computer-use` pill（`#ai-permission` 旁，初始 hidden）；设置 → AI → 外部工具 新增「桌面控制」卡片容器 `#extcap-desktop`。
+- `frontend/src/ai/ai-tool-cards.js`：`windows_desktop` 卡头 `{verb: '桌面揭示', icon: 'cursor'}`（cursor 图标已注册）。
+- `frontend/src/settings/settings-pane-external-tools.js`：桌面卡片——uv 检测（`MCPDesktopDoctor`）+ 复制安装命令 + 一键写入 mcp.json 行（同名已存在拒绝不覆盖，对齐 MCPInstallSample 规则）+ 复制启动命令；MCP 配置懒加载、写后 `refreshMcpConfig`。
+- `mcp_desktop_app.go`（新）+ `mcp_desktop_app_test.go`：`MCPDesktopDoctor` 只读绑定（`exec.LookPath` + 用户目录 `.local\bin` 候选，纯读无子进程）；`resolveUvCandidates` 纯函数表驱动。MCP 家族本就无 mock（ai-mcp-settings 同款 guarded），不补 mock-backend。
+- 测试：`frontend/test/ai/ai-desktop-control.test.mjs`（8 例）登记 `npm test`；`ai-tool-wiring.test.mjs` 下发并集 stub 加 `desktopGrantOn: () => true`。
+
+**实现与方案的偏差（如实）**
+
+1. 「新会话默认授权」设置项未做：授权必须显式、每次启动从零开始（§5.2 的「不写盘持久化」语义在多窗设置体系里没有干净的落点，设置树会把行反射进 AI 可写面，风险大于收益）。
+2. doctor 首版不含「UIA 窗口数 / 显示器缩放」：server 未连接时无从查询，probe（`MCPProbeServer`）只列工具清单；上游行为靠 P0a 人工记录。
+3. 揭示集合跨 revoke 保留：收回后重新授权不要求重新揭示（派发闸先查 grantOn，收回状态下调用照样被拒）——比 §5.4「关闭立即生效」更严：注入与派发同时消失，只是用户重新授权后免去重新揭示一轮。
+4. 单飞被挤通知只投「忙」会话：空闲会话静默收回（不为「你丢了授权」唤醒一轮），派发硬拒绝文案兜底。
+
+**验证**
+
+- 前端全量 `npm test` 2139/2139（含本功能 8 例；数字随并行认知功能的新测试增长）；`vite build` 通过；`mcp_desktop_app` 定向 Go 测试 PASS；`check-crossbuild.ps1` exit=0（根包新增文件平台无关：`os/exec` / `path/filepath` / `os`）。
+- P0a：uv 0.13.9 已装（用户目录）；**stdio 冒烟通过（2026-11-21）**——`uvx windows-mcp@0.8.9 serve --tools Snapshot,Click,Type` 完成 initialize → tools/list 握手，返回 `["ControlStatus","Snapshot","Click","Type"]`：① `--tools` 白名单精确生效（fail-closed，工具名 PascalCase 与配置行一致）；② **ControlStatus 上游强制保留**（§2 事实复核成立，无害的状态/释放工具，实际暴露 8 个而非 7 个）；③ 首跑实下 CPython 3.14.10（22.6 MiB）+ 84 包，之后安装 + 启动约 1.5 s——印证 `startupTimeoutMs: 600000` 只影响首跑。`--control` / `--control-policy` 参数与 §12.4 记录一致。
+
+**子代理只读审查（2026-11-21 实施后）**
+
+- P0：零——三道闸在模型主调用路径闭合，无「无用户配置即可绕过」的洞。
+- **P1-1（已修）**：`invokeExternalMcp`（能力来源绑定）直调 `invokeMcpToolWithApproval` 绕过派发闸——用户把 OCR 等能力绑到 `mcp__windows__X` 时，full 档可零授权零审批执行。修复：闸下沉 `invokeMcpToolWithApproval` 开头单收口（denied 形状走「不回退直接作答」车道，与用户拒绝同语义）。
+- **P1-2（已修）**：doctor 的 uv 候选 `…\.local\bin\uv` 缺 `.exe`——Windows `os.Stat` 不做 PATHEXT 解析，`.local\bin` 不在 PATH 时恒落空。修复：候选改 `uv.exe` + `uv` 双形态（顺带覆盖非 Windows），测试同步。
+- P2（已修 3 处）：揭示文案明示「同批并行调用拒一次、下一条请求生效」；`isRevealed` 改大小写不敏感（与揭示同口径）；`windows_desktop` 加计划模式拒绝。未修（接受）：grant 后快照清空的入口不一致（文案兜底）、revealed 集合跨 revoke 保留（偏差 3 已记录）、单飞「最后广播者赢」的固有竞态（§13.3-2 明示接受，派发闸兜底）。
+- OK 清单：toolsForScope 全部 4 处调用 + toolCatalogText 都传 session（真正组装 API 请求的 `:12265` 在内）；直达 MCP 调用仅 `invokeMcpToolWithApproval` 一条；计划模式双保险成立；子代理/群聊/插件零桌面工具；pill 在全部窗口形态可用、归档会话不可点；与并行认知功能叠层无语义冲突（逐 hunk 核对）。
+
+**实机回归（2026-11-21 晚，Win11，whitelist 7 工具 + ControlStatus）**
+
+- **决策点：通过**。①「看任务栏固定图标」——纯 Snapshot 46 s 完成，无障碍树读出主屏任务栏 13 个图标带窗口状态 + 两侧系统按钮，模型还正确指出 UI 树分不出「固定 vs 运行中驻留」（并主动提出读注册表 Taskband Favorites 的后续路径）——文本树质量足以支撑元素级定位；②「打开计算器按 123+456= 并关闭」——2 m 35 s 全链路完成，读数 579，窗口关闭后从窗口列表复核。结论：**维持砍 Screenshot**（§12.9 #5），P1.5 不排期。
+- **实测 P0（已处置）：`--control` 模式吞系统组合键**。AI 桌面操作后 Alt+Tab / Win+Shift+S 等系统组合键失效，**关掉本应用才恢复**（server 子进程经 Job Object 随杀）。根因定位（读 uv 缓存里的上游 0.8.9 源码）：`desktop/control.py:684-685` 为整个 server 生命周期装 WH_KEYBOARD_LL / WH_MOUSE_LL 低级钩子做「桌面所有权」——`_suppress=True` 期间键回调 `return 1` 吃掉全部物理输入（重 UIA 快照 + GIL 争用加剧饥饿）；`desktop/control_consent.py` 的独立 Tk 进程弹框（"AI is about to take control of this computer" + 倒计时 Allow/Deny）即实测所见「python 弹框」；紧急接管和弦 `_CHORD={0x10,0x11,0x12,0x08}`（Ctrl+Shift+Alt+Backspace）。**处置：配置行默认加 `--no-control`**（上游 `start()` 对 disabled 直接 return，完全不装钩子线程——已源码验证）；授权语义由应用的「桌面」pill（显式、单飞、仅本会话）承担，consent/争用保护不再由上游钩子提供。想要上游所有权保护的用户可自行改回 `--control`（附紧急接管和弦）。已写入配置行的旧机器：删行重写或手动在 args 加 `"--no-control"`。
+- 建模建议实测观察：模型称「读数已截图核对」，但 server 白名单无 Screenshot——应为重新 Snapshot 读计算器显示元素的文案不精确；属模型措辞问题，非链路缺陷。
+- 速度基线：全桌面 UIA 快照单次数秒～十几秒，一次点击类任务 1–3 分钟属上游常态（每次操作前后都要快照核对）。
+- 待人工回归：设置页写入服务器行 → 勾选工具 → 点亮「桌面」→ `windows_desktop` 揭示 → Snapshot → Click → 关 pill 立即拒绝 → 重启后 blind；多窗口双 grant 接管通知。

@@ -37,6 +37,7 @@ type FindFilesResult struct {
 }
 
 // globMatchPath 通配匹配；空模式视为全匹配，非法模式同样按「不过滤」处理。
+// 注：字面字符一律 QuoteMeta，构建出的正则恒可编译——「非法模式」实际不可达，兜底保留。
 func globMatchPath(pattern, relPath, name string) bool {
 	pat := strings.TrimSpace(pattern)
 	if pat == "" {

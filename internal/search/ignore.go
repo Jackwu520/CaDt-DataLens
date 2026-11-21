@@ -20,6 +20,8 @@ import (
 // 该表作用于 UI 全局搜索 / AI search_text / glob / 目录树 list_dir；硬编码表
 // SkipDir / SkipPath 保持独立（wipeguard 结构指纹等不接入用户配置）。
 // 根自身永不命中——从子目录发起的检索不受影响。
+// 语法与匹配机器经 LoadIgnoreRulesAt 供认知索引的 <root>/.cogignore 复用
+// （internal/cognition：可搜索 ≠ 可索引，两份排除文件刻意解耦）。
 
 const ignoreRelPath = ".cadt/config/search-ignore"
 
@@ -52,7 +54,13 @@ func LoadIgnoreRules(root string) *IgnoreRules {
 	if root == "" {
 		return nil
 	}
-	path := filepath.Join(root, filepath.FromSlash(ignoreRelPath))
+	return LoadIgnoreRulesAt(filepath.Join(root, filepath.FromSlash(ignoreRelPath)))
+}
+
+// LoadIgnoreRulesAt 读取并解析任意路径的 gitignore 简化版排除文件；不存在、是目录或读失败返回
+// nil。缓存键 = 文件绝对路径 + mtime，多份排除文件（search-ignore / cognition 的 .cogignore）
+// 互不串扰；文件改动后下次加载自动重载。
+func LoadIgnoreRulesAt(path string) *IgnoreRules {
 	info, err := os.Stat(path)
 	if err != nil || info.IsDir() {
 		return nil

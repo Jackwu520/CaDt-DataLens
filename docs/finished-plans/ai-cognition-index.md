@@ -1,9 +1,12 @@
 # AI 工作区认知索引：FRAS 卷文件 + drift 治理（方案）
 
-> 状态：**待开工**（2026-11-19 立项；源自对 AOCI（`aoci-spec/aoci-code`）的调研——机制借鉴、自写引擎，**代码与文案一律不搬**：对方许可 FSL-1.1-MIT，本仓 Apache-2.0，source-available 不允许 redistribution）
+> 状态：**代码已实施（P1+P2，2026-11-22）；本仓索引已建成（177 条 / 39 KB，drift 四态全 0）；AOCI 已于 2026-11-22 退役并清除；P3 跨仓库量化验收待回填**（2026-11-19 立项；源自对 AOCI（`aoci-spec/aoci-code`）的调研——机制借鉴、自写引擎，**代码与文案一律不搬**：对方许可 FSL-1.1-MIT，本仓 Apache-2.0，source-available 不允许 redistribution）
 > 修订：2026-11-19 评审后修订——overview 注入落点改走轮上下文（§5.3，原定系统提示词稳定区会击穿前缀缓存）、锁文件移到 cognition 目录外（§4.3）、清理补 BeforeClear 门闩（§6）、补分批建卷协议（§7 P1）与维护提醒注入（§5.5）、路径归一与 meta 预算行定死（§3.2 / §3.3）
 > 修订：2026-11-21 再评估——AOCI 已在本仓实跑（P0 事实完成：1010 条 / 520 KB / 148 目录分组），据此回填标定锚点（§3.2）、补降级第三档（§5.3）、子代理段改白名单口径且 v1 不派 cognition_edit（§5.2）、cognition_read 补响应上限与 status 副作用说明（§5.1 / §8）、P3 试验田改址并声明双索引混淆（§7 / §9）
 > 修订：2026-11-21 评审后修订（开工前终版）——① baseline 生命周期补 `cognition_edit` 写后簿记，否则首次维护后永报 Stale / Unbaselined（§4.1 / §5.1）；② CAS 改为前端自动附加 `base` 指纹比对，原「比对 `.state` 登记指纹」恒真、防不了两窗口互覆（§4.3 / §5.1）；③ read 封顶 16 KB 降至 7 000 字符，避开 context-slim 的 8 192 字符回包落盘阈值（§3.2 / §5.1）；④ 计划模式改「不派 cognition_edit」，原「对齐 memo 放行」与代码事实相反（memo 写动作硬拦 `ai-panel.js:10388`、propose_patch 因写 `.cadt/patches` 降 dry_run `ai-panel.js:10719`）（§5.2 / §10）；⑤ drift 清单自带 `.cadt/` 整树排除——已核实 search 忽略表不含 `.cadt`（§4.1）；⑥ `.cadt/cognition` 整树列为 write_file / edit_file 拒绝路径、meta 收口 `cognition_edit` 新增 `meta` 参数——原「`.state` 物理上无从触达」经 write_file 不成立（§3.1 / §3.3 / §5.1）。另补：目录条目 Stale 豁免、`op=add` 撞已有路径报错、注入预取与轮路径范围（§5.3）、meta rule6 提示注入防线（§3.3 / §9）、wailsjs 残留清理与行号勘误
+> 修订：2026-11-22 作者决策 + 实施落地——**可选启用（默认关）**：settings.aiCognition（原 aiInjectCognition 概念并入总开关），未启用时三件工具全不下发、不注入、不提醒；守则改两态（启用态讲职责与分工 / 关闭态只留一句启用入口，两段都是固定文案属稳定区）；**内置助手可主动推荐**——app_control 新增 `cognition_toggle {enabled}`，**必弹动作审批卡（完全权限也不例外，对齐 lifecycle 钩子 / worktree 口径）**，设置树该行登记 protected 防绕行（AI 唯一写路径是审批卡），用户也可在 设置 → AI → 上下文与记忆 手动开关；预取落点定为起轮前 `prefetchTurnCache`（本地文件读 ≈1–2ms，bundle 保持同步消费）。P0–P2 已实施：`internal/cognition`（parse/drift/service）+ `cognition_app.go` + 存储门闩 `ws-cognition` + `ai-tool-defs` 三处登记 + `ai-cognition.js` + 注入/提醒接线 + mock 三件 + 双侧测试门全绿
+> 修订：2026-11-22 用户反馈追加——**作用域排除文件 `ignore.txt`**：Missing 漂移不要求全工作区建档（生成物 / 数据文件报 Missing 纯噪音）。文件落 `.cadt/cognition/ignore.txt`（与卷文件同目录、天然在 .cadt 整树排除之下无自指），gitignore 简化语法，解析/匹配复用 search 排除表机器（`LoadIgnoreRulesAt`），与 `.cadt/config/search-ignore` 刻意解耦（可搜索 ≠ 可索引）；AI 创建通道是 **cognition_edit 新增 `ignore` 参数**（整卷替换、与 meta 同款 CAS 语义、ignore 进指纹三段），用户手工编辑不受限——该树是 write_file/edit_file 拒绝路径，模型不用也不会猜路径（§4.1 / §5.1）；被排除文件不报 Missing、指向它的既有条目按 Orphan 收敛
+> 修订：2026-11-22 三子代理独立审查后修复——**P0×2**：① Edit 同批升序多条 remove 按陈旧索引删除会删错条目且报成功（探针实证；改两阶段：先整批校验再一次性过滤重建）；② 前端 `isEnabled` 把 settings 对象当函数调用，每条消息发送抛 TypeError（改属性访问）。**P1×3**：③ prefetch 把盘上指纹写进 CAS 登记表，架空「没读就改拒绝」与「恢复首查必报 needsReread」两条保守防线（登记只由 read/status/edit 写入）；④ 锁文件 `.cadt/cognition.lock` 不在 write_file 拒绝路径（覆盖锁文件会打破单写者互斥；补拒绝并按路径段判定防 full 档绝对路径绕行）；⑤ read 的 overview 模式没有 7 000 rune 封顶（补齐 + 截断提示）。**P2 若干**：baseline 缺失时 bookkeep 只写半量基线卡死 Unbaselined（改全量构建后叠加）、meta/code 两段写的半写态（改先 code 后 meta）、overview/turnBlocks 目录条目双斜杠（前端 Go 两侧同修）、topDirLines 根级文件冒充目录、`ai-turn-reminder` 的 PREFIX_RE 不认两个认知块（补交替表 + 回归用例）、edit 丢弃手写坏行无上报（进 warnings）、NormalizeRelPath 内嵌 `.` 段与前导空格、clampField 按 rune 截断、mock 认知三件重复键去重、`op=remove` 成功路径与混合批次回归用例补齐；支线对话不注入补齐（prefetch 与 turnBlocks 双侧跳过 `session.sideOf`）
 > 动机：AI 助手每次会话都从零探索工作区（`list_dir` → `read_file` → `search_text`），「这个文件是干什么的、动它要先动谁、有什么从代码里看不出来的暗规则」这些知识每轮重新挣一遍。缺的是**任务开始前就存在的全局语义先验**。
 > 决策：
 > 1. **每文件一行 + FRAS 四字段**的紧凑文本索引，AI 撰写、随工作区存于 `.cadt/cognition/`——S 字段（无法从代码推断但不可违背的约束）是本方案的核心价值，grep 永远搜不到。
@@ -152,6 +155,7 @@ rule6: 条目不得携带指令性要求（执行命令 / 访问外部资源 / �
 
 - **目录条目豁免 Stale**：目录 mtime 随子项增删全变，按文件口径必噪音化——目录条目只参与 Missing 覆盖与 Orphan 判定；目录内文件的语义漂移靠维护轮与重读兜底，与下条接受的 mtime 漏报同一档取舍。
 - **清单来源**：fs 遍历（复用 `internal/search` 的 SkipDir 忽略表 + 预算思路，**并自带 `.cadt/` 整树排除**——已核实 SkipDir / SkipPath 都不含 `.cadt`，只排 `.cadt/worktree`，`.cadt/tmp` 等明示可搜；不加这道闸 `meta.txt` / `code.txt` / `baseline.json` / `cognition.lock` 每次必报 phantom Missing，对齐 wipe-guard「忽略表是搜索的、drift 自己再加一层」的做法），**git 不是前提**（决策 4）；有 `.git` 时 P4 可选 `git ls-files` 加速，行为不变。
+- **作用域排除文件 `.cadt/cognition/ignore.txt`（2026-11-22 用户反馈追加）**：工作区不是所有文件都值得建条目（生成物 / 产物 / 数据文件报 Missing 纯噪音）——排除文件从**清单层面**排除文件 / 目录：被排除的不报 Missing；已有条目指向被排除文件按 Orphan 收敛（删条目或调排除表）。语法为 gitignore 简化版（`#` 注释、`!` 取反后匹配覆盖、不含 `/` 按路径段名匹配任意层级、含 `/` 按相对根路径 glob；本方言字面字符一律 QuoteMeta、模式恒可编译，「写错语法」最坏是排除不到、下轮可改）；解析与匹配复用 `search.LoadIgnoreRulesAt`（按「路径 + mtime」缓存、改动后下次扫描自动生效），与 `.cadt/config/search-ignore` **刻意解耦**——可搜索 ≠ 可索引。文件在卷目录里 = 天然落在 .cadt 整树排除之下，自身永不进清单（无自指）。**AI 写通道 = cognition_edit 的 `ignore` 参数**（整卷替换、与 meta 同款 CAS 校验，预算 100 行 / 单行 200 rune 超限拒绝；**进指纹三段** meta‖code‖ignore——排除表改变作用域属卷状态变化，其他窗口 base 失效逼重读）；写管线排 meta 之后，半写态最坏是排除表丢失（Missing 重现，无破坏性）。**现场提示**：status 响应在「Missing ≥ 20（`cogIgnoreHintMissing`）且排除文件不存在」时自带 hint（模型正盯着 Missing 看的时刻给出口，指明 ignore 参数通道与语法要点）；低于阈值不催、已有文件不重复提示。
 - `mtime+size` 判 Stale 有漏报（同尺寸内容改写）——接受：索引的语义修正本来就靠维护轮，drift 是提醒不是保证；精确 hash 留给 P4 可选项。
 
 ### 4.2 变更感知：不新增常驻监听
@@ -172,7 +176,7 @@ AOCI 用 chunk/cursor/receipt/challenge 证明「整份索引完整进了上下�
 - `cognition_read` 返回内容 + `fingerprint`（卷内容哈希 + 时间；哈希口径 = `meta.txt` 与 `code.txt` 拼接字节的 sha256，拼接顺序定死）；前端在会话内存登记 `sessionId → fingerprint`（纯函数 + Map，可测）。**登记表同时是 `cognition_edit` 的 CAS `base` 来源**（§4.3）——edit 成功后登记值更新为新指纹。
 - `cognition_status` 的响应带当前 `fingerprint` 与 `needsReread`（= 会话登记的指纹 ≠ 当前）——维护轮开始前模型若没读过最新卷，status 明说「先 read 再 edit」。
 - challenge 全套不做：单用户单模型场景，「没读就改」由 CAS 直接拒绝兜底，够了。
-- **登记表只存内存，不持久化**：应用重启、会话从磁盘恢复、换窗口查看同一会话，登记表都是空的 → 首次 `status` 必报 `needsReread=true`。这是预期行为不是缺陷（保守方向，误报一次重读的代价远小于基于脏指纹改卷），不要为消掉它去做持久化。子代理沿用父会话的 `sessionId` 登记，不单独维护一份。
+- **登记表只存内存，不持久化**：应用重启、会话从磁盘恢复、换窗口查看同一会话，登记表都是空的 → 首次 `status` 必报 `needsReread=true`。这是预期行为不是缺陷（保守方向，误报一次重读的代价远小于基于脏指纹改卷），不要为消掉它去做持久化。子代理沿用父会话的 `sessionId` 登记，不单独维护一份。**实施偏差（2026-11-22）**：子代理按自己的会话 id 独立登记——偏差方向保守（首查多报一次 needsReread），不产生写坏卷风险，接受；prefetch（§5.3）刻意**不写**登记表，登记只由 read/status/edit 三个工具响应写入——预取若续期登记，会把「没读就改拒绝」与「恢复会话首查必报」两条保守防线静默拆掉（2026-11-22 子代理审查发现并修复）。
 
 ## 5. AI 工具设计（3 件）
 
@@ -189,6 +193,7 @@ AOCI 用 chunk/cursor/receipt/challenge 证明「整份索引完整进了上下�
 ### 5.2 档位与审批
 
 - 下发范围：`toolsForScope` 各档——`cognition_read` / `cognition_status` 全档；`cognition_edit` 不进 read 档（写卷虽限 `.cadt/`，但首次建索引会诱导大量探索，read 档场景不该发生）。
+- 启用门（2026-11-22 作者决策）：三件工具先过 `settings.aiCognition`（**默认关**）——未启用时全不下发、不注入、不提醒，守则走关闭态（一句 `cognition_toggle` 入口）；内置助手可主动建议启用，**必弹动作审批卡（完全权限也不例外）**由用户拍板，设置树该行登记 protected 防绕行。
 - 计划模式：`cognition_edit` **不派**（2026-11-21 评审修正，原定「对齐 memo 放行」与代码事实相反）：计划模式契约是零副作用，两个先例都是拦——memo 写动作硬拦（`ai-panel.js:10388`「计划模式下禁止写快捷便签」），propose_patch 因会写 `.cadt/patches` 降级 dry_run（`ai-panel.js:10719`）——「写的是应用状态区」恰是被拦的那类。实现零成本：`toolsForScope` 按 planMode 收窄，纵深防御层（`ai-panel.js:9533`）自动兜底；首建 / 维护挪到执行阶段，探索期发现的 S 约束先记进计划正文。
 - 审批：不进 `analyzeDangerousCommand` 体系（不是命令）；写路径硬校验在 Go 侧（§5.1），不依赖前端档位判断。
 - 子代理：**v1 一律不派 `cognition_edit`**。这不是收紧而是对齐代码现状：`subToolsForScope`（`ai-subagents.js`）是**手工白名单**而非档位表，其成文不变量是「子代理拿不到任何写工具」（`ai-subagents.js:205`），唯一写例外是隔离 worktree 子代理的 write/edit（写效应圈定在隔离前缀内）。`cognition_read` / `cognition_status` 推进白名单；子代理发现条目该维护时汇报回父代理、由父代理 `cognition_edit`。隔离 worktree 子代理同样不给——它的工作区是隔离前缀，不覆盖主工作区的 `.cadt/`，硬给只会造成两套写权判定并存（本方案自己警告过的形态）。指纹登记沿用父会话 `sessionId`（§4.4），父代理的 edit 子代理 `status` 直接可见。
@@ -201,11 +206,11 @@ AOCI 用 chunk/cursor/receipt/challenge 证明「整份索引完整进了上下�
 `ai-system-context.js` 自 2026-11-15 起的核心约定是「稳定区 / 动态块分离」——文件头注释写明动态块（工作区状态 / 清单 / 提醒 / 附件）全部移出系统提示词、经 `turnContextBundle` 随起轮的用户消息落盘，目的是「系统提示词每轮完全一致，服务商前缀缓存可整段命中」。cognition 卷是**会被 `cognition_edit` 改写的可变内容**；把它塞进 `assembleSystemContext` 意味着每次维护都改系统提示词，而系统提示词是前缀的第一段——一变则整个会话历史缓存全废、按非缓存价重算。省下 1–2K，赔掉几十万 token 的缓存折扣，与 §2 的目标 1 完全相反。
 
 - **只注入一次**：起轮路径判定「本会话历史里还没有 `cognition_index` 块」时才生成，块随首轮用户消息落盘，此后成为历史的一部分——永久可缓存、只付一次钱。判定抽成纯函数 `shouldInjectCognitionOverview(messages)` 配单测，不要靠会话字段（恢复会话时字段可能已丢）。auto-compact 裁掉历史后块可能消失、判定自然再次为真——**压缩后重注入是预期恢复行为不是缺陷**，明文写死防止实现时当 bug 修掉。
-- **注入路径范围与预取**：v1 只挂主会话的 `startSessionTurn`（支线对话 / 群聊 / 子代理不注入）。`turnContextBundle` 是同步组装（`ai-panel.js:11848` 无 await），overview 快照必须在会话打开 / 切工作区时**预取**进 `ai-cognition.js` 的缓存，bundle 只消费缓存、不自己调后端；预取失败按无索引处理，不阻塞起轮。
+- **注入路径范围与预取**：v1 只挂主会话的 `startSessionTurn`（支线对话 / 群聊 / 子代理不注入）。`turnContextBundle` 是同步组装（无 await），overview 快照由**起轮前的 `prefetchTurnCache`**（本地文件读 ≈1–2ms，实施落点）刷新进 `ai-cognition.js` 的缓存，bundle 只消费缓存、不自己调后端；预取失败按无索引处理，不阻塞起轮。
 - **内容**：场景 + 条目数 + **纯路径地图**（每行 `path [标签]`，无 FRAS 正文）+ 一句使用守则（含 §3.4 分工表的模型可读版）。
 - **预算 1–2K token（约 4–6K 字符），硬上限**，与卷的 600 条目 / 256 KB 上限是两套数（§3.2）。超限降级**三级**：① 只注入 `hot` 标签条目 + 目录条目；② 只注入目录条目 + 一句「细节用 `cognition_read` 取」；③ 只注入**顶层目录**（深度 ≤ 2）+ 一句「目录全貌与细节用 `cognition_read` 取」。**第三级不是理论兜底**：AOCI 本仓实跑的目录分组是 148 组，纯目录路径地图 ≈ 8–10 KB，连②都顶破 4–6K 字符上限——**500+ 文件的仓库稳态就落在③**，①②是中小工作区的主路径。降级档位写进响应 meta，便于 P3 实测回填。
 - **不整卷注入、不每轮重复、不随 `cognition_edit` 刷新**（决策 2）：会话内索引被改后，模型靠 `cognition_status` 的 `needsReread` 发现该重读，而不是靠宿主重注。
-- 开关：`aiInjectCognition`（默认开），在 `ai-context-slim` 的注入统计里以 `meta.cognition` 可见字符数与降级档位——和 AGENTS.md / 记忆同一套口径，用户能看见它吃了多少上下文。
+- 开关：`aiCognition`（**默认关，可选启用**——2026-11-22 作者决策；启停走 `cognition_toggle` 审批卡或设置页），注入统计以 `meta.cognition` 可见字符数与降级档位——和 AGENTS.md / 记忆同一套口径，用户能看见它吃了多少上下文。
 
 ### 5.4 系统守则
 
@@ -262,14 +267,14 @@ AOCI 用 chunk/cursor/receipt/challenge 证明「整份索引完整进了上下�
 
 aoci 不是本方案的依赖，只是验证工具；它给验收留下的混淆变量见 P3 引言。
 
-### P1 · Go 引擎
+### P1 · Go 引擎（**已实施，2026-11-22**）
 
 1. `internal/cognition`：parse / drift（自带 `.cadt` 排除）/ service（base CAS + 写后簿记）三件 + `*_test.go`（格式向量、行级容错、路径归一、四态判定表、预算拒绝、CAS 三态（缺失 / 过期 / 通过）、edit 簿记闭环、租约互斥、清理门闩互斥、`.cadt` 不进清单）；
 2. `cognition_app.go` + `dev/mock-backend.js` 三件 mock（v3 无 wailsjs）；
 3. `storage_app.go` 门闩表加 `cognition` + `internal/storage/specs.go` 登记 + 负向断言（cognition ∉ CacheIDs）；
 4. **建卷协议**（写进工具描述与 meta 的 `build` 行）：首次建卷必须**按目录分批**——一批只读该目录的直接成员、读完立即 `cognition_edit` 追加该批条目、末批完成后跑 `cognition_status` 收 baseline。理由是本仓库规模（根 79 + `internal` 172 个 Go 文件、前端 221 个 js）一次通读必然触发上下文压缩，压缩后前面的认知丢失，写出来的条目会退化成"凭目录名猜职责"。分批还有一个副作用是好的：每批都能立刻看到 CAS 与预算反馈。
 
-### P2 · AI 工具接线
+### P2 · AI 工具接线（**已实施，2026-11-22**）
 
 1. `ai-tool-defs.js` 三处登记 + `toolsForScope` 档位（含 `subToolsForScope` 与群聊不派 `cognition_edit`）+ 计划模式不派 `cognition_edit`（按 planMode 收窄）；
 2. `ai-panel.js` executeTool 三 case + `ai-tool-cards.js` toolMeta + 图标；
@@ -279,7 +284,7 @@ aoci 不是本方案的依赖，只是验证工具；它给验收留下的混淆
 
 ### P3 · 端到端验收（**试验田改用无 AOCI 的普通代码仓库**）
 
-> 本仓库已由宿主侧 AOCI 维护一份并行索引（P0 实跑，1010 条 / 520 KB），在这里验收测出的是「内置索引在 AOCI 之上的边际价值」而非净价值；且 DataLens 自己的 AI 会话经 `<workspace_rules>` 吃进 AGENTS.md 里 14 KB 的 AOCI 契约块（教模型调 `aoci_*` 工具，而它并没有这些工具），探索轮数的统计会被这层噪音污染。**试验田换一个无 AOCI、无宿主注入合同的普通代码仓库**；本仓库降级为「双索引共存」观察点——`cognition_status` 检测到根目录 `aoci.txt` 清单时在响应里提示一句「已有外部认知索引，是否建/续维护由用户决定」（P3 可选项，不做自动合并，见 §9）。
+> 本仓库曾由宿主侧 AOCI 维护一份并行索引（P0 实跑，1010 条 / 520 KB），在这里验收测出的是「内置索引在 AOCI 之上的边际价值」而非净价值；且 DataLens 自己的 AI 会话经 `<workspace_rules>` 吃进 AGENTS.md 里 14 KB 的 AOCI 契约块（教模型调 `aoci_*` 工具，而它并没有这些工具），探索轮数的统计会被这层噪音污染。**试验田须用一个无外部索引、无宿主注入合同的普通代码仓库**以测净价值。本仓已于 2026-11-22 建成内置索引（177 条 / 39 KB，drift 全 0）并清除 AOCI 全部资产（索引文件、`.aoci/` 运行时目录、AGENTS.md 契约块、MCP server 配置），不再有双索引共存的混淆变量。§9 曾设想的「检测到 `aoci.txt` 时提示」未实施，随 AOCI 退役一并作废。
 
 1. 让 AI 给试验田仓库建索引（条目结构参考本仓的包/域划分：十几个包 + 分域前端目录是天然的目录条目骨架），**观察它是否自发分批**；不分批就说明 P1-4 的协议没写进工具描述；
 2. 人工改动几个文件 → `cognition_status` 报 Stale/Missing → AI 维护轮收敛 → status 干净；**再改一次但故意不提维护**，看 §5.5 的提醒是否在下一轮出现且被采纳；
@@ -303,7 +308,7 @@ aoci 不是本方案的依赖，只是验证工具；它给验收留下的混淆
 |---|---|
 | 格式解析 | Go 表驱动：标准行 / 缺字段 / 目录条目 / 坏行跳过计数 / TAB 注入拒绝 / 值内 ` F:` 视为字段起点（不误吞正文）/ 超预算拒绝 / meta `budget` 行与常量不一致即拒 |
 | 路径归一 | `Internal/` vs `internal/`、`a\b.js` vs `a/b.js`、前导 `./` 视为同一路径；一次扫描不产生成对 Missing + Orphan |
-| drift 判定 | 四态各造一例 + 目录条目覆盖豁免（且目录条目豁免 Stale）+ `.cadt/cognition/**` 与 `cognition.lock` 不进清单（无 phantom Missing）+ 预算采样降级标记 |
+| drift 判定 | 四态各造一例 + 目录条目覆盖豁免（且目录条目豁免 Stale）+ `.cadt/cognition/**` 与 `cognition.lock` 不进清单（无 phantom Missing）+ 排除文件场景表（目录整树 / 按名通配 / 路径 glob / 取反重含 / 自身不进清单 / 无文件行为不变）+ ignore 参数 edit 通道（CAS / 指纹前移与 status 读回一致 / 预算拒绝）+ 提示三态+ 预算采样降级标记 |
 | 写路径 | CAS 三态：`base` 缺失（未读过）拒绝 / 过期拒绝 / 匹配通过后新指纹成为下轮 base；`op=add` 撞已有路径报错；条目 rel-path 非法（绝对路径、`..`、`.cadt/` 前缀）拒绝；**edit 写后簿记闭环：改文件 → edit 条目 → 下轮 status 不再报 Stale / Unbaselined**；`write_file` / `edit_file` 写 `.cadt/cognition/**` 被拒；edit 无目标路径参数（`.state/` 不可达）；租约互斥（第二窗口 Busy）；锁文件在 `<ws>/.cadt/cognition.lock` 而非卷目录内 |
 | 工具响应 | `cognition_read` 过滤命中 > 7 000 字符截断并提示收窄过滤（且该上限 < `SLIM_PRUNE_THRESHOLD` 的 8 192，回包不被指针化）；`cognition_status` 仅在索引存在但 baseline 缺失时写 `baseline.json`，其余调用零写入（Go 测试断言） |
 | 清理联动 | `BeforeClear` 门闩：另一窗口持租约时清理被拒；`cognition ∉ TestCacheIDs` 负向断言 |
@@ -329,7 +334,7 @@ Go 测试一律后台执行、显式带 `-timeout`（AGENTS.md 约定）。
 | 清理与写卷撞车 | `BeforeClear` 门闩按 memo 先例挂 `cognition`；租约持有时清理被拒而非删一半 |
 | 索引随 `.cadt/` 被整仓误删 | wipe-guard 是另一方案的事；本方案索引可由 AI 全量重建（条目都来自 AI 的认知，损失 = 重建成本非数据损失） |
 | 数据目录误建索引 | 场景软判定 + 工具描述注明 + meta.scene 记录 |
-| 工作区已有外部认知索引（如宿主侧 AOCI），双份并行互相漂移 | 不做自动合并（两套格式的语义映射是另一个方案的事）；`cognition_status` 检测到根目录 `aoci.txt` 清单时提示一句，建/续维护由用户裁决（§7 P3 可选项）；P3 试验田改用无外部索引的仓库规避污染 |
+| 工作区已有外部认知索引（如宿主侧 AOCI），双份并行互相漂移 | 不做自动合并（两套格式的语义映射是另一个方案的事）；本仓 2026-11-22 的做法是「建好内置索引后彻底退役外部索引」（清索引文件 + `.aoci/` + AGENTS 契约块 + MCP 配置），保留单一事实源；P3 试验田用无外部索引的仓库规避污染 |
 | 新包维护成本 | 文件 ≤ 1500 行、函数 < 200 行、纯函数表驱动测试（项目红线） |
 
 ## 10. 明确否决的方案

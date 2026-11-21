@@ -1,6 +1,7 @@
 package search
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -115,5 +116,36 @@ func TestIgnoreNotAffectFingerprintSkipDir(t *testing.T) {
 	// 硬编码表与用户配置互相独立：SkipDir 不含 .aoci（wipeguard 等不接入用户配置）
 	if SkipDir(".aoci") {
 		t.Error("SkipDir 不应包含用户配置里的目录名")
+	}
+}
+
+func TestLoadIgnoreRulesAtArbitraryPath(t *testing.T) {
+	// LoadIgnoreRulesAt：认知索引的 .cogignore 等任意路径排除文件复用同一解析/匹配机器。
+	// 缓存键 = 文件路径 + mtime，与 search-ignore 互不串扰。
+	dir := t.TempDir()
+	if LoadIgnoreRulesAt(filepath.Join(dir, "missing.cogignore")) != nil {
+		t.Fatal("不存在的文件应返回 nil")
+	}
+	// 是目录也应返回 nil（防呆）
+	if err := os.MkdirAll(filepath.Join(dir, "cfg"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if LoadIgnoreRulesAt(filepath.Join(dir, "cfg")) != nil {
+		t.Fatal("目录应返回 nil")
+	}
+	path := filepath.Join(dir, ".cogignore")
+	writeSearchFile(t, path, "*.log\n!keep.log\ndist/\n")
+	rules := LoadIgnoreRulesAt(path)
+	if rules == nil || len(rules.rules) != 3 {
+		t.Fatalf("应解析出 3 条规则，got %+v", rules)
+	}
+	if !rules.shouldSkip("run.log", "a/b/run.log") || rules.shouldSkip("keep.log", "keep.log") {
+		t.Error("通配与取反语义应与 search-ignore 一致")
+	}
+	if !rules.shouldSkip("x", "dist/bundle.js") {
+		t.Error("目录规则应整树命中")
+	}
+	if LoadIgnoreRulesAt(path) != rules {
+		t.Error("mtime 未变时应命中缓存")
 	}
 }

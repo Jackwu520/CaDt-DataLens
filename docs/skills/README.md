@@ -8,6 +8,7 @@
 | `cadt-file-layout/` | 内置 AI 助手的文件目录规范：产物落盘位置、三层分区、命名约定、硬禁区与可删除清单 | 应用内置技能，首次列出技能时释放到应用数据目录 |
 | `reverse-engineer-anything/` | REA：对原生二进制、托管程序、Electron/JavaScript、固件、浏览器目标做逆向分析，并按需生成 AgentEnv 环境包 | 应用内置技能，首次列出技能时释放到应用数据目录 |
 | `chinese-formal-document-format/` | 中文正式文档（公文风格）DOCX 排版：只改版式、不改正文，并核验原文未被改动 | 应用内置技能，首次列出技能时释放到应用数据目录 |
+| `landing-page-design/` | 落地页/营销页设计：需求问询、页面结构、转化文案、SEO + 完整视觉系统（字体/间距/圆角/背景/动效）；纯规则无外部依赖 | 应用内置技能，首次列出技能时释放到应用数据目录 |
 
 ## cadt-datalens：注册到全局技能目录
 
@@ -30,7 +31,7 @@
 
 ## 内置技能：随应用分发
 
-`cadt-file-layout/`、`reverse-engineer-anything/` 与 `chinese-formal-document-format/` 通过 `go:embed` 编进 exe。AI 面板首次列出技能时，会把它们释放到：
+`cadt-file-layout/`、`reverse-engineer-anything/`、`chinese-formal-document-format/` 与 `landing-page-design/` 通过 `go:embed` 编进 exe。AI 面板首次列出技能时，会把它们释放到：
 
 ```text
 %APPDATA%\CandySweet\CaDt-DataLens\builtin-skills\
@@ -39,7 +40,8 @@
 │   ├── SKILL.md
 │   └── reference\paths.md
 ├── reverse-engineer-anything\
-└── chinese-formal-document-format\
+├── chinese-formal-document-format\
+└── landing-page-design\
 ```
 
 - 在「设置 → AI 助手 → 技能」中显示为「内置」，优先级最低（rank 600），可被工作区、应用级或用户级同名技能覆盖。
@@ -55,8 +57,11 @@
 | `cadt-file-layout` | 本项目自研 | 随应用版本 |
 | `reverse-engineer-anything` | [morluto/rea](https://github.com/morluto/rea)（`.agents/skills/reverse-engineer-anything`） | SKILL v62 |
 | `chinese-formal-document-format` | [ianlinkstudy/chinese-formal-document-format](https://github.com/ianlinkstudy/chinese-formal-document-format) | v1.3.0 |
+| `landing-page-design` | [elayadesign/ai-design-skills](https://github.com/elayadesign/ai-design-skills) | 2026-11-01 main |
 
-后两个技能均为 MIT 许可，许可证文本随技能目录一并存放（`LICENSE`），第三方组件清单见仓库根目录 `THIRD_PARTY_LICENSES.md`。`cadt-file-layout` 随本仓库 Apache-2.0 分发。
+后三个技能均为 MIT 许可，许可证文本随技能目录一并存放（`LICENSE`），第三方组件清单见仓库根目录 `THIRD_PARTY_LICENSES.md`。`cadt-file-layout` 随本仓库 Apache-2.0 分发。
+
+`landing-page-design` 的 `description` 做了本应用适配：收敛为「用户明确要求落地页/营销页时才加载」（上游原文是「任何 web UI 都触发」）；正文有一句 `CaDt-DataLens 适配` 引用块，其余内容与上游一致，便于日后同步。其内容改编自 [taste-skill](https://github.com/Leonxlnx/taste-skill)（MIT，作者 Leon Lin），许可声明保留在技能正文末尾。
 
 ## 修改与贡献
 

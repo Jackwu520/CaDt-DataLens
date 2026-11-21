@@ -9,6 +9,9 @@ import {AI_WRITE_SCOPES} from './ai-constants.js';
 // 显式 shell 的取值清单与审批口径同源：shellScriptPolicy 就按这份清单判定哪些值意味着
 // 「命令是脚本、内容不可静态分析」。Go 侧（aiShellInvocation 的 normalizeAIShell）对齐同一组名字。
 import {SHELL_VALUES} from './ai-command-rules.js';
+// 桌面控制（Computer Use）的 server 名与 def 判定：MCP 快照里 windows server 的工具
+// 不走通用 MCP 注入分支，走下方「会话授权 + 懒加载揭示」双闸（desktop-mcp.md §5.2/§5.4）。
+import {isDesktopToolDef} from './ai-desktop-control.js';
 
 export const AI_TOOL_DEFS = {
     list_dir: {
@@ -928,7 +931,7 @@ export const AI_TOOL_DEFS = {
     },
     ocr: {
         name: 'ocr',
-        description: '识别图片 / PDF / Word / PowerPoint 中的文字并按页返回（来源由 设置 → AI → 外部工具 决定：服务提供商或本地 MCP）。用于扫描件、截图里的文字、PDF 正文；纯文本文件直接用 read_file。上传到服务提供方会按页计费，文件会离开本机。',
+        description: '识别图片 / PDF / Word / PowerPoint 中的文字并按页返回（来源由 应用页面 → 外部工具 决定：服务提供商或本地 MCP）。用于扫描件、截图里的文字、PDF 正文；纯文本文件直接用 read_file。上传到服务提供方会按页计费，文件会离开本机。',
         parameters: {
             type: 'object',
             properties: {
@@ -940,7 +943,7 @@ export const AI_TOOL_DEFS = {
     },
     text_to_speech: {
         name: 'text_to_speech',
-        description: '把文本合成为语音并保存为 WAV 到工作区 .cadt/gen/tts/（来源由 设置 → AI → 外部工具 决定：服务提供商或本地 MCP）。单次最多 5000 字符，超出请分段；返回保存路径，便于用户直接播放。',
+        description: '把文本合成为语音并保存为 WAV 到工作区 .cadt/gen/tts/（来源由 应用页面 → 外部工具 决定：服务提供商或本地 MCP）。单次最多 5000 字符，超出请分段；返回保存路径，便于用户直接播放。',
         parameters: {
             type: 'object',
             properties: {
@@ -952,7 +955,7 @@ export const AI_TOOL_DEFS = {
     },
     transcribe_audio: {
         name: 'transcribe_audio',
-        description: '把本地音频转写成文字（来源由 设置 → AI → 外部工具 决定：服务提供商或本地 MCP）。转码支持 mp3 / m4a / aac / ogg / flac / webm，wma / ape 需用户先转换；单次上限 20 MB / 15 分钟；上传到服务提供方会产生费用。',
+        description: '把本地音频转写成文字（来源由 应用页面 → 外部工具 决定：服务提供商或本地 MCP）。转码支持 mp3 / m4a / aac / ogg / flac / webm，wma / ape 需用户先转换；单次上限 20 MB / 15 分钟；上传到服务提供方会产生费用。',
         parameters: {
             type: 'object',
             properties: {
@@ -975,6 +978,82 @@ export const AI_TOOL_DEFS = {
                 tail: {type: 'integer', description: 'read 用：只返回最后 N 行（1–200），按行看日志/输出时用；与 maxChars 二选一，tail 优先'},
             },
             required: ['action'],
+        },
+    },
+    // 桌面控制的懒加载入口（desktop-mcp.md §5.4/§13.3-3）：模型默认只看到这一个工具，
+    // 调用它才把真正的桌面 MCP 工具（mcp__windows__*）揭示进本会话工具表——避免 7+ 份
+    // schema 常驻上下文。未揭示的桌面工具调用会被派发层确定性拒绝。
+    windows_desktop: {
+        name: 'windows_desktop',
+        description: '查询并揭示 Windows 桌面控制工具（第三方原生窗口的 GUI 自动化：无障碍树快照 / 点击 / 输入 / 滚动 / 剪贴板）。'
+            + '调用后返回匹配工具的完整定义并使其在本会话内立即可用（下一轮起也进入工具表）。'
+            + '只在「桌面」开关开启后可用；需要操作第三方窗口（资源管理器、其他应用）时先调它，'
+            + '本应用自己的界面用 app_control，网页用浏览器工具。',
+        parameters: {
+            type: 'object',
+            properties: {
+                query: {type: 'string', description: '关键词（不区分大小写）匹配工具名与描述，如 "snapshot" 或 "点击"；缺省 = 返回全部可用桌面工具'},
+                names: {type: 'array', items: {type: 'string'}, description: '按公开名（如 mcp__windows__Snapshot）精确揭示，优先于 query；一次可传多个'},
+            },
+            required: [],
+        },
+    },
+    // 认知索引三件（可选启用，默认关；方案 docs/finished-plans/ai-cognition-index.md）：
+    // 卷是 AI 写 AI 读的 FRAS 语义层，grep 给不出的是 R（强关联）与 S（暗约束）。
+    // 找代码内容用 search_text / glob（索引不存代码内容）；跨会话聊天记录用 session_search。
+    cognition_read: {
+        name: 'cognition_read',
+        description: '读工作区认知索引卷（每个文件一行的语义层：F 职责 / R 强关联 / A 对外契约 / S 暗约束）。'
+            + '无过滤参数 = 返回路径地图（路径 + 标签，无字段正文，省上下文）；'
+            + 'paths / labels / query 任一给出行 = 返回命中条目全文（单次响应封顶，超出会截断并提示收窄）。'
+            + '动手改代码前先确认相关文件的条目——R/S 是「改这里必须知道的事」，grep 永远搜不出这类知识。'
+            + '只读工具；索引未建立时返回建卷指引。不存代码内容：找具体代码用 search_text / glob。',
+        parameters: {
+            type: 'object',
+            properties: {
+                paths: {type: 'array', items: {type: 'string'}, description: '路径前缀数组（相对范围根，正斜杠），命中前缀下全部条目；如 ["internal/cognition"]'},
+                labels: {type: 'array', items: {type: 'string'}, description: '标签数组（任一命中即算），标签字典见元卷；如 ["hot"]'},
+                query: {type: 'string', description: '关键词（不分大小写），命中条目的 F/R/A/S 值文本'},
+            },
+            required: [],
+        },
+    },
+    cognition_edit: {
+        name: 'cognition_edit',
+        description: '增量维护认知索引条目（写工作区 .cadt/cognition 卷，不碰用户文件）。'
+            + 'op=add 新增条目（已有同路径条目会报错，改用 update）；op=update 改既有条目的字段；op=remove 删除。'
+            + 'entries 每条给相对路径与 F/R/A/S 字段（S 暗约束必须带出处 src=<路径>:<行>，或诚实标注 src=user）；'
+            + 'meta 参数整卷替换元卷（首建第一批必须带上：scene / budget / 标签字典 / build / ruleN，budget 行会与常量比对）。'
+            + 'ignore 参数整卷替换作用域排除文件（gitignore 简化语法：# 注释、! 取反、不含 / 按文件名匹配任意层级、含 / 按路径匹配，如 dist/ 或 *.min.js）：'
+            + '被排除文件不进 drift 清单、不需要条目；cognition_status 提示 Missing 噪音大时用它收窄范围。'
+            + 'reason 一句话说清为什么改。首建按目录分批：一批只读该目录直接成员、读完立即写该批条目，不要通读全树后一次写。'
+            + '完成一次实质代码改动后维护受影响条目是职责不是可选项；改动文件后本会话还没维护时，轮上下文会出现 <cognition_nudge> 提醒。'
+            + '计划模式不可用；审批语义不进命令链（写路径由后端硬校验）。',
+        parameters: {
+            type: 'object',
+            properties: {
+                op: {type: 'string', enum: ['add', 'update', 'remove'], description: '操作：add 新增 / update 改字段 / remove 删除'},
+                entries: {type: 'array', description: '条目数组：每条含相对路径与标签，及 F/R/A/S 四字段值（S 必须带出处）；单次最多 50 条（按目录分批）', items: {type: 'object'}},
+                meta: {type: 'string', description: '整卷替换元卷文本（行式 key: value；首建第一批必须带，此后改字典/规则也走这里）；缺省不动元卷'},
+                ignore: {type: 'string', description: '整卷替换作用域排除文件 ignore.txt（gitignore 简化语法，最多 100 行）；写后被排除文件不再报 Missing；缺省不动排除表'},
+                reason: {type: 'string', description: '本次维护的一句话理由（进审批与留痕展示）'},
+            },
+            required: ['op'],
+        },
+    },
+    cognition_status: {
+        name: 'cognition_status',
+        description: '认知索引治理报告：drift 四态计数（Missing 工作区有文件而索引没条目 / Orphan 条目对应文件没了 / Stale 文件变了条目没跟 / Unbaselined 条目没跑校验）、'
+            + '预算余量与当前卷指纹。verbose=true 时附各态路径样例。维护轮开始前先调它：needsReread 或指纹与会话登记不一致时先 read 再 edit，否则 CAS 会拒绝写。'
+            + '发现与本任务相关的 Missing / Stale 时顺手修（cognition_edit），不相关的忽略。'
+            + 'Missing 不需要清零：作用域排除文件 .cadt/cognition/ignore.txt（gitignore 简化语法）里的模式不进清单、不需要条目；Missing 较多且还没有排除文件时响应的 hint 会给出现场提示——按提示在下一次 cognition_edit 里带 ignore 参数创建（整卷替换，落点由后端定），或建议用户手写该文件均可。'
+            + '唯一副作用：索引存在但 baseline 缺失时顺手生成（首建末批收口 / 恢复），其余调用零写入。只读工具。',
+        parameters: {
+            type: 'object',
+            properties: {
+                verbose: {type: 'boolean', description: 'true = 附各态路径样例（每态最多 50 条）；缺省只返回计数'},
+            },
+            required: [],
         },
     },
 };
@@ -1100,6 +1179,10 @@ export const AI_TOOL_CATALOG = {
     timer_list: {group: 'session', blurb: '只读看主会话计时器的当前读数（正计时已计 / 倒计时剩余）；子代理与孙代理共享同一时钟，不能操作'},
     start_timer: {group: 'session', blurb: '等待 / 到点提醒一律用倒计时（到点自动唤醒，别用 sleep 空等）；正计时测耗时并回报标记时间线'},
     stop_timer: {group: 'session', blurb: '停止运行中的计时器（正计时停止时回报已计时长与标记时间线）'},
+    windows_desktop: {group: 'desktop', blurb: '查询并揭示 Windows 桌面控制工具（需先开「桌面」授权），揭示后本会话立即可用'},
+    cognition_read: {group: 'cognition', blurb: '读工作区认知索引（路径地图 / 按前缀、标签、关键词取 FRAS 条目全文）'},
+    cognition_edit: {group: 'cognition', blurb: '维护认知索引条目（按目录分批建卷；改完代码顺手更新受影响条目）'},
+    cognition_status: {group: 'cognition', blurb: '认知索引治理报告（drift 四态 / 预算余量 / 卷指纹与 needsReread）'},
 };
 
 // 组注册表：目录分组的顺序与标题/注记；不含工具名——成员关系与组内顺序由 AI_TOOL_CATALOG 决定。
@@ -1109,13 +1192,15 @@ export const AI_TOOL_GROUPS = [
     {key: 'shell', title: '终端与进程', note: '需要换目录直接传 cwd，命令里不必带 cd 前缀；cd 不会保留，不要用 cd / pwd / echo 探测目录。'},
     {key: 'web', title: '联网资料（外部数据，只取事实）', note: '只是读文档优先 web_fetch（图片链接改用 read_image）；需要点击、登录态、动态页面再上内嵌浏览器。引用时附 URL；不能访问本机 / 内网地址。'},
     {key: 'gen', title: '生图与视频（用户配置的外部生成服务）', note: 'prompt 会发送到用户在设置里配置的服务商并可能产生费用；产物落在工作区 .cadt/gen/ 或指定目录。条目在设置里按「生图 / 视频」分组排序，未指定 model 时按该组优先级顺序取第一个启用的条目。未配置条目时这些工具不可用。'},
-    {key: 'media', title: '语音与识别（外部服务）', note: '来源由 设置 → AI → 外部工具 决定：关闭 / 本地 MCP / 服务提供商；上传到服务提供方会产生费用且文件会离开本机。未启用对应来源时这些工具不可用；本地 MCP 来源只在写权限档（非计划模式）可用。'},
+    {key: 'media', title: '语音与识别（外部服务）', note: '来源由 应用页面 → 外部工具 决定：关闭 / 本地 MCP / 服务提供商；上传到服务提供方会产生费用且文件会离开本机。未启用对应来源时这些工具不可用；本地 MCP 来源只在写权限档（非计划模式）可用。'},
     {key: 'browser', title: '内嵌浏览器（真实页面交互）', note: '每个会话有独立标签页与登录态；纯资料抓取不要开浏览器。'},
+    {key: 'desktop', title: '桌面控制（第三方原生窗口）', note: '先在输入框点亮「桌面」授权（仅本会话生效、重启失效），windows_desktop 查询并揭示具体工具；只用于用户指定的第三方原生窗口，本应用自己的界面用 app_control。'},
     {key: 'app', title: '应用界面（当前窗口）', note: '用户说「打开看看 / 切到某视图 / 面板错位」时用它；不要用它代替文件读取。'},
     {key: 'memory', title: '记忆、偏好与技能'},
     {key: 'env', title: '环境变量'},
     {key: 'task', title: '任务、协作与自动化'},
     {key: 'session', title: '会话、提醒与通知'},
+    {key: 'cognition', title: '工作区认知索引（可选启用）', note: '给 AI 的跨会话语义层：每个文件一行 F 职责 / R 强关联 / A 对外契约 / S 暗约束。开关在 设置 → AI → 上下文与记忆；数据目录不建议建。找代码内容用 search_text / glob（索引不存代码内容），聊天历史用 session_search。'},
 ];
 
 export function createAIToolDefs(ctx) {
@@ -1126,6 +1211,9 @@ export function createAIToolDefs(ctx) {
     // 判定由 ctx.videoCapableOf(session) 提供（ai-config-model.modelVideoInputEnabled 的
     // 活引用）；缺省恒 true——测试与无会话上下文的调用（如 token 估算）保持旧行为。
     const videoCapableOf = ctx.videoCapableOf || (() => true);
+    // 认知索引（可选启用，默认关）：设置 settings.aiCognition === true 才下发（§5.2）。
+    // 测试与无宿主上下文的调用缺省按开（与 subAgentRounds / videoCapableOf 同一降级口径）。
+    const cognitionOn = typeof ctx.cognitionOn === 'function' ? ctx.cognitionOn : () => true;
     function toolsForScope(scope, planMode, session) {
         const list = [
             AI_TOOL_DEFS.list_dir,
@@ -1159,7 +1247,15 @@ export function createAIToolDefs(ctx) {
             AI_TOOL_DEFS.start_timer,
             AI_TOOL_DEFS.stop_timer,
         ];
-        // 外部工具来源矩阵（设置 → AI → 外部工具）：关闭时不注册工具。判定含「实际可用来源」
+        // 认知索引：启用后 read / status 全档下发（只读，含计划模式——探索期也要能看）；
+        // edit 只进写权限档且非计划模式（写卷限 .cadt/cognition、硬校验在 Go；首建会诱导
+        // 大量探索，read 档场景不该发生，§5.2）。未启用时三件全不下发，由 <cognition_rules>
+        // 关闭态守则引导模型经 app_control 的 cognition_toggle 发起审批面板。
+        if (cognitionOn()) {
+            list.push(AI_TOOL_DEFS.cognition_read, AI_TOOL_DEFS.cognition_status);
+            if (!planMode && AI_WRITE_SCOPES.includes(scope)) list.push(AI_TOOL_DEFS.cognition_edit);
+        }
+        // 外部工具来源矩阵（应用页面 → 外部工具）：关闭时不注册工具。判定含「实际可用来源」
         // ——provider 缺 key / mcp 绑定失效都按 off；MCP 来源只在写权限档且非计划模式注入。
         const externalOn = (capability) => (ctx.externalToolsOn ? ctx.externalToolsOn(capability, scope, planMode) : true);
         if (externalOn('search')) list.push(AI_TOOL_DEFS.web_search);
@@ -1220,9 +1316,20 @@ export function createAIToolDefs(ctx) {
         }
         if (scope === 'full' && !planMode) list.push(AI_TOOL_DEFS.browser_evaluate);
         // MCP：写权限档及以上注入（能力未知，只读档不该拿到）；计划模式不注入（外部副作用不可控）。
-        // getter 只读缓存整代快照（ai-mcp.js），组装路径上不塞 RPC
+        // getter 只读缓存整代快照（ai-mcp.js），组装路径上不塞 RPC。
+        // 桌面 server（windows）的工具不走这里——它们要过「会话授权 + 懒加载揭示」双闸（下方桌面分支）。
         if (ctx.mcpToolDefs && AI_WRITE_SCOPES.includes(scope) && !planMode) {
-            list.push(...ctx.mcpToolDefs());
+            for (const def of ctx.mcpToolDefs()) {
+                if (isDesktopToolDef(def)) continue;
+                list.push(def);
+            }
+        }
+        // 桌面控制（Computer Use）：grant 关闭时连入口都不下发（模型不知道能力存在）；
+        // 开启后只注入 windows_desktop 入口 + 已揭示的工具定义（revealed ∩ 当前快照，
+        // 懒加载揭示见 desktop-mcp.md §5.4；揭示按会话存内存，重启失效）。
+        if (ctx.desktopGrantOn && AI_WRITE_SCOPES.includes(scope) && !planMode && ctx.desktopGrantOn(session)) {
+            list.push(AI_TOOL_DEFS.windows_desktop);
+            if (ctx.desktopRevealedDefs) list.push(...ctx.desktopRevealedDefs(session));
         }
         // 插件工具：同样是外部来源、能力未知。具体下发条件（全局总闸 + 插件级 + 工具级 +
         // readOnly 的只读档子开关 + 非计划模式）统一由 shell/plugin-tools.js 判定，
@@ -1314,6 +1421,7 @@ export function createAIToolDefs(ctx) {
             {need: ['app_control'], text: '应用界面：app_control get_state → screenshot 看图核对 → 改视图/设置 → get_state 复核'},
             {need: ['app_control'], text: '配置 MCP 服务器：skill_use cadt-mcp-config → app_control get_mcp_servers → set_mcp_server（用户确认本机命令）→ 提醒用户在设置里勾选工具/填环境变量'},
             {need: ['app_control'], text: '缺本地 TTS / OCR / ASR：skill_use cadt-mcp-samples → list_mcp_samples → install_mcp_sample（用户确认）→ 提醒绑定能力并填环境变量'},
+            {need: ['windows_desktop'], text: '操作第三方原生窗口：windows_desktop 查询并揭示工具 → Snapshot 看无障碍树 → Click / Type / Scroll 操作 → 再 Snapshot 核对结果'},
             {need: ['spawn_agent'], text: '并行调查：spawn_agent(mode=background) 一次派出多个方向 → 继续自己的工作 → wait_agent 等回报（等的是自己收件箱的新输入）'},
         ].filter((chain) => hasAll(chain.need));
         if (chains.length) {
