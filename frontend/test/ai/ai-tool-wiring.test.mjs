@@ -105,8 +105,9 @@ test('每个工具至少在一个权限档下发（四档 × 计划模式取并�
         appControlOn: () => true,
         externalToolsOn: () => true,
         genModelsOn: () => true,
-        // 桌面控制（Computer Use）：授权是会话态（「桌面」pill），下发在写权限档 × 授权开启
-        desktopGrantOn: () => true,
+        // 桌面控制（Computer Use）：启用是会话态（session.desktopEnabled），下发在写权限档 × 已启用；
+        // 控制模式只影响「哪几个 mcp__windows__* 一起下发」，不影响 windows_control_mode 本身是否可达
+        desktopEnabledOn: () => true,
     });
     const delivered = new Set();
     for (const scope of ['read', 'edit', 'auto', 'full']) {

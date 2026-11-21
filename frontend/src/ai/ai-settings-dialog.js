@@ -74,6 +74,9 @@ export function createAISettingsDialog(ctx) {
     const openAIDialog = ctx.openAIDialog;
     const closeAIDialog = ctx.closeAIDialog;
     const confirmFullPermission = ctx.confirmFullPermission;
+    // 桌面控制确认框与「是否可用」判定：都从面板注入（设置页的项要置灰与二次确认）
+    const confirmDesktopControl = ctx.confirmDesktopControl;
+    const desktopInstalled = ctx.desktopInstalled;
     const enhanceSelect = ctx.enhanceSelect;
     const invalidateSkillsCache = ctx.invalidateSkillsCache;
     const resolveMemoryDir = ctx.resolveMemoryDir;
@@ -414,6 +417,11 @@ export function createAISettingsDialog(ctx) {
         if (opt.expandEditorOnTab) opt.expandEditorOnTab.checked = settings.editorExpandOnNewTab !== false;
         if (opt.autoTitle) opt.autoTitle.checked = getConfig().autoTitle !== false;
         if (opt.defaultScope) opt.defaultScope.value = normalizeDefaultScope(getConfig().defaultScope);
+        // 新会话默认桌面控制：未安装（MCP 快照里没有 windows 工具）时该项不可选
+        if (opt.defaultDesktop) {
+            opt.defaultDesktop.checked = getConfig().defaultDesktopControl === true;
+            opt.defaultDesktop.disabled = typeof desktopInstalled === 'function' ? !desktopInstalled() : false;
+        }
         if (opt.logEnabled) opt.logEnabled.checked = getConfig().logEnabled !== false;
         if (opt.worklog) opt.worklog.checked = getConfig().worklogEnabled !== false;
         if (opt.appControl) opt.appControl.checked = appControlOn();
@@ -872,6 +880,29 @@ export function createAISettingsDialog(ctx) {
             } else {
                 apply();
             }
+        });
+        if (opt.defaultDesktop) opt.defaultDesktop.addEventListener('change', () => {
+            const want = !!opt.defaultDesktop.checked;
+            const apply = () => {
+                getConfig().defaultDesktopControl = want;
+                saveAIConfig();
+                setSettingsStatus('新会话默认桌面控制：' + (want ? '开启' : '关闭'), 'ok');
+            };
+            if (!want) {
+                apply();
+                return;
+            }
+            // 开启要二次确认（与完全权限同款通道）：先回退勾选，确认后才落盘——
+            // 取消 / Esc / 点遮罩都无需额外回调，显示天然保持旧值。
+            opt.defaultDesktop.checked = false;
+            if (typeof confirmDesktopControl === 'function') {
+                confirmDesktopControl(apply, {
+                    top: true,
+                    title: '允许新会话默认开启桌面控制？',
+                });
+                return;
+            }
+            apply();
         });
         const bindNotifyToggle = (node, key, label) => {
             if (!node) return;

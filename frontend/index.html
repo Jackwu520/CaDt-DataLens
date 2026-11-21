@@ -1394,6 +1394,12 @@
                                     </select>
                                 </div>
                             </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">默认桌面控制</div><div class="set-desc">仅对新建会话生效；需先在 应用页面 → 外部工具 → 桌面控制 安装，否则不可选。开启时需二次确认</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="ai-opt-default-desktop"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                </div>
+                            </div>
                         </div>
 
                         <div class="set-group-title">项目规则</div>
@@ -2415,6 +2421,9 @@
                 <button type="button" id="ab-app-pages" class="ab-btn" data-tip="应用页面" aria-label="应用页面" aria-pressed="false">
                     <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="3.2" y="3.6" width="5.4" height="5.4" rx="1.1" fill="none" stroke="currentColor" stroke-width="1.3"/><rect x="11.4" y="3.6" width="5.4" height="5.4" rx="1.1" fill="none" stroke="currentColor" stroke-width="1.3"/><rect x="3.2" y="11.2" width="5.4" height="5.4" rx="1.1" fill="none" stroke="currentColor" stroke-width="1.3"/><rect x="11.4" y="11.2" width="5.4" height="5.4" rx="1.1" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>
                 </button>
+                <button type="button" id="ab-database" class="ab-btn" data-tip="数据库" aria-label="数据库" aria-pressed="false">
+                    <svg viewBox="0 0 20 20" aria-hidden="true"><ellipse cx="10" cy="4.6" rx="6.4" ry="2.4" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M3.6 4.6v10.8c0 1.3 2.9 2.4 6.4 2.4s6.4-1.1 6.4-2.4V4.6" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M3.6 10c0 1.3 2.9 2.4 6.4 2.4s6.4-1.1 6.4-2.4" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>
+                </button>
                 <button type="button" id="ab-memo" class="ab-btn" data-tip="快捷便签 面板 (Ctrl+Alt+T)" aria-label="快捷便签 面板">
                     <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3.6 4.2l1.9 1.9 3.1-3.7" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M11.6 4.4h5M3.6 10h2.9M11.6 10h5M3.6 15.4h2.9M11.6 15.4h5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
                 </button>
@@ -2521,6 +2530,15 @@
                 </div>
                 <div id="app-pages-nav" class="app-pages-nav"></div>
             </div>
+            <div id="database-panel" class="database-panel">
+                <div class="sb-head">
+                    <span class="sb-title">数据库</span>
+                    <div class="sb-tools">
+                        <button type="button" class="sb-tool sb-collapse" data-tip="收起面板" aria-label="收起面板"><svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 8.5h11"/></svg></button>
+                    </div>
+                </div>
+                <div id="database-nav" class="database-nav"></div>
+            </div>
             <div id="ai-sessions-panel" class="ai-sessions-panel">
                 <div class="sb-head">
                     <span class="sb-title">AI 会话</span>
@@ -2540,9 +2558,15 @@
                     <button type="button" data-list="groups">群聊</button>
                 </div>
                 <div id="ai-session-actions" class="ai-session-actions">
-                    <button type="button" id="ai-session-action-new" class="ai-session-action-btn" data-tip="新建会话（当前工作区）" aria-label="新建会话（当前工作区）">
-                        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3.5v9M3.5 8h9" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg><span>新建会话</span>
-                    </button>
+                    <!-- 分体按钮：主体新建常规会话（绑定当前工作区），右侧「⋯」列出其他新建方式（临时会话…） -->
+                    <div class="ai-session-action-split">
+                        <button type="button" id="ai-session-action-new" class="ai-session-action-btn" data-tip="新建会话（当前工作区）" aria-label="新建会话（当前工作区）">
+                            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3.5v9M3.5 8h9" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg><span>新建会话</span>
+                        </button>
+                        <button type="button" id="ai-session-action-new-more" class="ai-session-action-more" data-tip="新建会话的更多方式" aria-label="新建会话的更多方式">
+                            <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="3.5" cy="8" r="1" fill="currentColor"/><circle cx="8" cy="8" r="1" fill="currentColor"/><circle cx="12.5" cy="8" r="1" fill="currentColor"/></svg>
+                        </button>
+                    </div>
                     <div class="ai-session-action-row">
                         <button type="button" id="ai-session-action-auto" class="ai-session-action-btn" data-tip="自动化：定时任务一览与创建" aria-label="自动化：定时任务一览与创建">
                             <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.9" fill="none" stroke="currentColor" stroke-width="1.1"/><path d="M8 4.6V8l2.4 1.6" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg><span>自动化</span>
@@ -2642,6 +2666,10 @@
                 <div class="ai-head-row ai-head-title-row">
                     <span class="ai-title" id="ai-session-title">AI 助手</span>
                     <div class="ai-head-chips" id="ai-head-chips">
+                        <button type="button" id="ai-chip-desktop" class="ai-chip ai-chip-desktop hidden" aria-label="桌面控制（本会话）">
+                            <span class="ai-chip-icon"></span>
+                            <span class="ai-chip-label">桌面控制</span>
+                        </button>
                         <button type="button" id="ai-chip-agents" class="ai-chip" aria-label="智能体团队（子代理运行状态）" aria-haspopup="true">
                             <span class="ai-chip-icon"></span>
                             <span class="ai-chip-label">智能体团队</span>
@@ -2705,6 +2733,11 @@
             <div id="ai-agent-view" class="ai-agent-view hidden"></div>
             <!-- 群聊视图宿主（G6 面板化）：群聊接管 AI 面板的内容区，会话视图与它互斥显隐 -->
             <div id="ai-group-host" class="ai-group-host hidden"></div>
+            <!-- 桌面控制模式提示：AI 进入 windows_control_mode 后浮在会话区顶部正中，点它立即收回 -->
+            <div id="ai-desktop-marquee" class="ai-marquee hidden" role="status" aria-live="polite" data-tip="点击立即关闭桌面控制">
+                <span class="ai-marquee-dot"></span>
+                <span class="ai-marquee-text">AI 正在控制你的电脑</span>
+            </div>
             <div id="ai-messages" class="ai-messages" role="log" aria-live="polite"></div>
             <button type="button" id="ai-scroll-btn" class="ai-scroll-btn hidden" data-tip="回到底部" aria-label="回到底部">
                 <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3.6v8M4.6 8.4L8 11.8l3.4-3.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -2739,7 +2772,6 @@
                 <div class="ai-composer-bottom">
                     <button type="button" id="ai-attach-btn" class="ai-plus-btn" data-tip="添加附件或指令" aria-label="添加附件或指令">+</button>
                     <button type="button" id="ai-permission" class="ai-pill" aria-label="权限：只读访问">只读访问</button>
-                    <button type="button" id="ai-computer-use" class="ai-pill hidden" aria-pressed="false">桌面</button>
                     <button type="button" id="ai-plan" class="ai-pill" data-tip="计划模式：先只读探索并给出计划，批准后执行" aria-label="计划模式：先只读探索并给出计划，批准后执行" aria-pressed="false">计划</button>
                     <button type="button" id="ai-worktree" class="ai-pill" data-tip="隔离工作区：在 git worktree 里开发，改动只落在 .cadt/worktree/&lt;slug&gt;/，完成后经补丁审阅回灌" aria-label="隔离工作区：在 git worktree 里开发" aria-pressed="false">隔离</button>
                     <span id="ai-hint" class="ai-hint"></span>

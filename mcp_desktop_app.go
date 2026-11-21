@@ -7,9 +7,11 @@ package main
 // 首版不探测（server 未连接时无从查起），如实只报 uv 解析结果。
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"time"
 )
 
 // MCPDesktopDoctorResult 桌面 doctor 的探测结果（前端拼进诊断面板）。
@@ -34,6 +36,28 @@ func resolveUvCandidates(home string) []string {
 		filepath.Join(bin, "uv.exe"),
 		filepath.Join(bin, "uv"),
 	}
+}
+
+// MCPDesktopInstall 桌面控制卡片的「安装…」按钮：uv 缺失时跑官方安装脚本，再用 uvx 预热
+// windows-mcp（下载 Python 解释器与依赖）。**由用户点击显式触发**（2026-11-22 需求：连依赖
+// 一起装），输出隐藏窗口、总预算 15 分钟；失败原因原样回给前端。
+type MCPDesktopInstallResult struct {
+	Ok    bool     `json:"ok"`
+	Error string   `json:"error,omitempty"`
+	Steps []string `json:"steps,omitempty"`
+}
+
+func (a *App) MCPDesktopInstall() MCPDesktopInstallResult {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+	defer cancel()
+	steps, err := runDesktopMcpBootstrap(ctx)
+	result := MCPDesktopInstallResult{Steps: steps}
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+	result.Ok = true
+	return result
 }
 
 // MCPDesktopDoctor 桌面控制卡片的「检测依赖」按钮：解析 uv 的位置。纯读、无子进程

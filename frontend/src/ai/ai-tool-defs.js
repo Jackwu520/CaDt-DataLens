@@ -980,22 +980,24 @@ export const AI_TOOL_DEFS = {
             required: ['action'],
         },
     },
-    // 桌面控制的懒加载入口（desktop-mcp.md §5.4/§13.3-3）：模型默认只看到这一个工具，
-    // 调用它才把真正的桌面 MCP 工具（mcp__windows__*）揭示进本会话工具表——避免 7+ 份
-    // schema 常驻上下文。未揭示的桌面工具调用会被派发层确定性拒绝。
-    windows_desktop: {
-        name: 'windows_desktop',
-        description: '查询并揭示 Windows 桌面控制工具（第三方原生窗口的 GUI 自动化：无障碍树快照 / 点击 / 输入 / 滚动 / 剪贴板）。'
-            + '调用后返回匹配工具的完整定义并使其在本会话内立即可用（下一轮起也进入工具表）。'
-            + '只在「桌面」开关开启后可用；需要操作第三方窗口（资源管理器、其他应用）时先调它，'
-            + '本应用自己的界面用 app_control，网页用浏览器工具。',
+    // 桌面控制的「控制模式」声明（2026-11-22 用户重设计）：进出都不审批，只是把会话
+    // 明确切到「正在控制用户电脑」的状态——进入后白名单桌面工具（mcp__windows__*）才
+    // 全量注入工具表，面板顶部同时挂跑马灯；退出即移除，跑马灯同步消失。
+    // 前置：用户在权限面板开启桌面控制（或经 app_control 申请批准）。未启用时工具不下发。
+    windows_control_mode: {
+        name: 'windows_control_mode',
+        description: '声明进入 / 退出 Windows 桌面控制模式（第三方原生窗口的 GUI 自动化：无障碍树快照 / 点击 / 输入 / 滚动 / 剪贴板）。'
+            + '进入（action=enter）后，白名单桌面工具才出现在工具表里，用户界面上也会显示「AI 正在控制你的电脑」。'
+            + '任务一结束就调 action=exit 交还控制权——不要让控制模式跨任务常开。进出都不需要审批；'
+            + '本应用自己的界面用 app_control，网页用浏览器工具，只有第三方原生窗口才用桌面工具。'
+            + '若返回「未开启」，说明用户还没授权本会话的桌面控制（可用 app_control 的 request_desktop_control 发起申请）。',
         parameters: {
             type: 'object',
             properties: {
-                query: {type: 'string', description: '关键词（不区分大小写）匹配工具名与描述，如 "snapshot" 或 "点击"；缺省 = 返回全部可用桌面工具'},
-                names: {type: 'array', items: {type: 'string'}, description: '按公开名（如 mcp__windows__Snapshot）精确揭示，优先于 query；一次可传多个'},
+                action: {type: 'string', enum: ['enter', 'exit', 'status'], description: 'enter = 进入控制模式并加载桌面工具；exit = 退出并交还控制权；status = 只查当前状态'},
+                reason: {type: 'string', description: 'enter 用：一句话说明这次要控制什么（显示给用户看，如「在记事本里输入配置文本」）'},
             },
-            required: [],
+            required: ['action'],
         },
     },
     // 认知索引三件（可选启用，默认关；方案 docs/finished-plans/ai-cognition-index.md）：
@@ -1179,7 +1181,7 @@ export const AI_TOOL_CATALOG = {
     timer_list: {group: 'session', blurb: '只读看主会话计时器的当前读数（正计时已计 / 倒计时剩余）；子代理与孙代理共享同一时钟，不能操作'},
     start_timer: {group: 'session', blurb: '等待 / 到点提醒一律用倒计时（到点自动唤醒，别用 sleep 空等）；正计时测耗时并回报标记时间线'},
     stop_timer: {group: 'session', blurb: '停止运行中的计时器（正计时停止时回报已计时长与标记时间线）'},
-    windows_desktop: {group: 'desktop', blurb: '查询并揭示 Windows 桌面控制工具（需先开「桌面」授权），揭示后本会话立即可用'},
+    windows_control_mode: {group: 'desktop', blurb: '声明进入 / 退出 Windows 桌面控制模式，进入后桌面工具才可用（进出不审批，任务结束即退出）'},
     cognition_read: {group: 'cognition', blurb: '读工作区认知索引（路径地图 / 按前缀、标签、关键词取 FRAS 条目全文）'},
     cognition_edit: {group: 'cognition', blurb: '维护认知索引条目（按目录分批建卷；改完代码顺手更新受影响条目）'},
     cognition_status: {group: 'cognition', blurb: '认知索引治理报告（drift 四态 / 预算余量 / 卷指纹与 needsReread）'},
@@ -1194,7 +1196,7 @@ export const AI_TOOL_GROUPS = [
     {key: 'gen', title: '生图与视频（用户配置的外部生成服务）', note: 'prompt 会发送到用户在设置里配置的服务商并可能产生费用；产物落在工作区 .cadt/gen/ 或指定目录。条目在设置里按「生图 / 视频」分组排序，未指定 model 时按该组优先级顺序取第一个启用的条目。未配置条目时这些工具不可用。'},
     {key: 'media', title: '语音与识别（外部服务）', note: '来源由 应用页面 → 外部工具 决定：关闭 / 本地 MCP / 服务提供商；上传到服务提供方会产生费用且文件会离开本机。未启用对应来源时这些工具不可用；本地 MCP 来源只在写权限档（非计划模式）可用。'},
     {key: 'browser', title: '内嵌浏览器（真实页面交互）', note: '每个会话有独立标签页与登录态；纯资料抓取不要开浏览器。'},
-    {key: 'desktop', title: '桌面控制（第三方原生窗口）', note: '先在输入框点亮「桌面」授权（仅本会话生效、重启失效），windows_desktop 查询并揭示具体工具；只用于用户指定的第三方原生窗口，本应用自己的界面用 app_control。'},
+    {key: 'desktop', title: '桌面控制（第三方原生窗口）', note: '用户先在本会话启用桌面控制（权限面板开关或 app_control 的 request_desktop_control 申请），再用 windows_control_mode 进入控制模式——进入后白名单桌面工具（快照 / 点击 / 输入 / 滚动 / 剪贴板）才出现，用户会看到「AI 正在控制你的电脑」。任务结束立即 exit 交还控制权；只用于用户指定的第三方原生窗口，本应用自己的界面用 app_control。'},
     {key: 'app', title: '应用界面（当前窗口）', note: '用户说「打开看看 / 切到某视图 / 面板错位」时用它；不要用它代替文件读取。'},
     {key: 'memory', title: '记忆、偏好与技能'},
     {key: 'env', title: '环境变量'},
@@ -1324,12 +1326,12 @@ export function createAIToolDefs(ctx) {
                 list.push(def);
             }
         }
-        // 桌面控制（Computer Use）：grant 关闭时连入口都不下发（模型不知道能力存在）；
-        // 开启后只注入 windows_desktop 入口 + 已揭示的工具定义（revealed ∩ 当前快照，
-        // 懒加载揭示见 desktop-mcp.md §5.4；揭示按会话存内存，重启失效）。
-        if (ctx.desktopGrantOn && AI_WRITE_SCOPES.includes(scope) && !planMode && ctx.desktopGrantOn(session)) {
-            list.push(AI_TOOL_DEFS.windows_desktop);
-            if (ctx.desktopRevealedDefs) list.push(...ctx.desktopRevealedDefs(session));
+        // 桌面控制（Computer Use）：只在「会话已启用桌面控制 + 已进入控制模式」时注入控制模式
+        // 工具与白名单桌面工具（mcp__windows__*，全量下发）。未进入控制模式时任何桌面工具都不
+        // 出现——控制模式本身既是显式声明，也是注入开关（2026-11-22 取消懒加载揭示层）。
+        if (ctx.desktopEnabledOn && AI_WRITE_SCOPES.includes(scope) && !planMode && ctx.desktopEnabledOn(session)) {
+            list.push(AI_TOOL_DEFS.windows_control_mode);
+            if (ctx.desktopDefsForSession) list.push(...ctx.desktopDefsForSession(session));
         }
         // 插件工具：同样是外部来源、能力未知。具体下发条件（全局总闸 + 插件级 + 工具级 +
         // readOnly 的只读档子开关 + 非计划模式）统一由 shell/plugin-tools.js 判定，
@@ -1421,7 +1423,7 @@ export function createAIToolDefs(ctx) {
             {need: ['app_control'], text: '应用界面：app_control get_state → screenshot 看图核对 → 改视图/设置 → get_state 复核'},
             {need: ['app_control'], text: '配置 MCP 服务器：skill_use cadt-mcp-config → app_control get_mcp_servers → set_mcp_server（用户确认本机命令）→ 提醒用户在设置里勾选工具/填环境变量'},
             {need: ['app_control'], text: '缺本地 TTS / OCR / ASR：skill_use cadt-mcp-samples → list_mcp_samples → install_mcp_sample（用户确认）→ 提醒绑定能力并填环境变量'},
-            {need: ['windows_desktop'], text: '操作第三方原生窗口：windows_desktop 查询并揭示工具 → Snapshot 看无障碍树 → Click / Type / Scroll 操作 → 再 Snapshot 核对结果'},
+            {need: ['windows_control_mode'], text: '操作第三方原生窗口：windows_control_mode 进入 → Snapshot 看无障碍树 → Click / Type / Scroll 操作 → 再 Snapshot 核对结果 → windows_control_mode 退出'},
             {need: ['spawn_agent'], text: '并行调查：spawn_agent(mode=background) 一次派出多个方向 → 继续自己的工作 → wait_agent 等回报（等的是自己收件箱的新输入）'},
         ].filter((chain) => hasAll(chain.need));
         if (chains.length) {
