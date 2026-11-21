@@ -17,6 +17,7 @@ The following components are licensed under the MIT License:
 - go-pty — Copyright (c) 2023 Ayman Bagabas（terminal_windows.go 的终端启动流程改编自该项目）
 - reverse-engineer-anything（REA Agent Skill）— Copyright (c) 2026 morluto（许可证：[docs/skills/reverse-engineer-anything/LICENSE](docs/skills/reverse-engineer-anything/LICENSE)）
 - chinese-formal-document-format（中文正式文档排版 Agent Skill）— Copyright (c) 2026 chinese-formal-document-format contributors（许可证：[docs/skills/chinese-formal-document-format/LICENSE](docs/skills/chinese-formal-document-format/LICENSE)）
+- landing-page-design（落地页设计 Agent Skill）— Copyright (c) 2026 Elaya（许可证：[docs/skills/landing-page-design/LICENSE](docs/skills/landing-page-design/LICENSE)）
 
 ```text
 MIT License

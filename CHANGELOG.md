@@ -4,6 +4,176 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 
 ## 未发布
 
+### 改进（四个应用页面现代化重设计）
+
+- **背景**：外部工具 / 定时任务 / 操作记录 / 补丁库搬进内容区标签页后，骨架仍是设置面板的 `.set-card` 纵向堆叠——信息密度低、没有详情、没有状态反馈。用户 2026-11-22 要求重设计，取舍：各页定制、只统一视觉 token；设置项留设置页 + 页内「去设置」跳转；前端 UI + 必要后端增强。
+- **共用基础**：新增 `frontend/src/app-pages/ui-kit.js`（页头 / 状态徽标 / 命令栏防抖搜索 / 筛选 chips / 状态块 / 详情抽屉 / 相对时间 / 复制 / 图标按钮），全部走 `core/form-controls` + `core/icons` + `core/overlay-stack`，零新依赖；`style.css` 补 `.ap-*` token 类，颜色全走主题变量。
+- **外部工具**：能力矩阵改响应式卡片网格 + 有效性徽标；保存加「保存中 / 已保存 / 失败」状态反馈（竞态序号只让最后一次更新）；修复 MCP 工具面板每次 `renderAll` 复用节点导致的监听器累积（改为每次重建 panel 节点）。
+- **定时任务**：竖排 nowrap 改列对齐排程表（下次触发含相对时间 / 状态徽标 / 权限 / 操作）；筛选 chips + 搜索 + 空态 CTA；编辑器改用 `form-controls` 工厂（修复裸控件违规）；`schedules-changed` 订阅补刷新应用页标签（修复跨窗口陈旧）。
+- **操作记录**：日志表格（日期分组 / 中文动作名 / 格式化 JSON 详情 / 复制 / 相对时间）；命令栏防抖搜索 + 清除筛选；Go 侧 `ActivityRead` 新增 `beforeSeq` 复合游标（ts+seq 消除同毫秒重复/漏，旧 `beforeTs` 单游标兼容）；页内「去设置」跳转保留 settings-tree 反射契约。
+- **补丁库**：卡片列表 + 状态筛选 + 搜索 + 排序 + 前端分页（显示总数）；整行可点开详情抽屉（元信息 / 文件列表 / 打开补丁视图 / 撤销 / 删除）；去掉嵌套滚动；时间含相对时间。
+- **护栏**：新增 4 个页面接线守卫测试（`ai-schedule-page` / `activity-pane` / `patch-store-page` + 扩 `external-tools-page`），均登记 `npm test`；Go 侧新增复合游标表驱动用例。全量前端 2264 例通过、Go 全量通过、`npm run build` 通过。
+- **说明**：补丁库分页最终在前端做（`PatchList` 一次取 500 + 前端筛选/排序/分页），未改 Go 绑定签名——实测前端全量取数已足够，避免扩大后端改动面。
+
+### 修复（一次 Enter 发出两条消息，第一条还标「已停止生成」）
+
+- **成因（2026-11-22 用户反馈）**：提交链路没有防重入。一次轻按 Enter 可能派发两次 keydown（键盘重复 / 中文输入法确认候选词的双事件），而 `submitText` → `startSessionTurn` 从入口忙检查（`ai-panel.js:11934`）到 `attachStream` 注册流（`ai-panel.js:12123`）之间有一串 `await`（`whenIdle`、回合租约、上下文组装）；窗口内流还没注册、输入框也还没清空（清空在 `onStarted`，`ai-panel.js:12187`）。第二次读到同样的文本再起一轮，两个 `startSessionTurn` 抢注册流，落败方在 `ai-panel.js:12198` 的守卫处把占位 assistant 标成 `stopped`——用户看到的就是「两条同样的消息，前一条已停止生成」。
+- **修复**：`ai-composer.js` 的 `submitFromComposer` 加 `submitInFlight` 防重入锁，持有到 `submitText` 的 Promise 落定（起轮并清空输入区）才释放，锁在 `finally` 里放，同步抛错也不会把输入区永久卡死；`sendComposerMessage` 的直发分支改为 `return submitText(text)`，把异步提交的 Promise 交回锁（不返回的话锁立刻释放，双发照样能发生）。`handleComposerKey` 的 Enter 分支补 `if (e.repeat) return;`，按住 Enter 的键盘重复事件不再算新的发送意图。排队 / 插话 / 抢占是同步完成的（当场清输入区），不受锁影响。
+- 护栏：新增 `frontend/test/ai/ai-composer-submit-guard.test.mjs`（已登记 `npm test`）源码断言钉住五处接线——锁存在于取文本前、锁在 `finally` 释放、直发分支返回 Promise、Enter 挡 `repeat`、输入框 keydown 只绑定一处；dev 环境实测「连续两次 Enter」修复前出两条、修复后只出一条。
+
+### 改进（计划批准卡支持临时收起 / 展开）
+
+- **变更**：计划批准卡（composer 接管区）与 ask_user 提问卡、工具审批卡对齐——头部新增收起按钮，点击折成单行细条（plan 图标 + 「计划等待批准 · 计划标题」），点击细条恢复完整卡；「执行计划 / 继续规划」与收起状态互不影响。
+- **实现**：`ai-takeover.js` 的 `createAITakeover` 闭包内维护 plan 折叠 key + 标志，换一条计划（key 变化）自动复位展开；收起细条复用现有 `.ai-takeover-bar` / `.ai-takeover-collapse` 样式，`style.css` 补一条 plan 头部收起按钮紧跟 mode 徽标的 margin 规则。纯前端改动，零 Go 变更。
+- 护栏：`ai-takeover.test.mjs` / `ai-plan-file.test.mjs` 28 例通过、`node --check` 通过。
+
+### 修复（frontend/nul 反复出现导致快照告警刷屏）
+
+- **成因（2026-11-22 用户反馈，第二次出现）**：`> nul` 是 cmd 惯用法，但在 Git Bash 下重定向会落地成真文件；`npm test` 在 `frontend/` 下跑就生成 `frontend/nul`（Windows 保留设备名，187 KB npm test 日志）。`.gitignore` 原有的 `/nul` 只匹配仓库根，漏掉 `frontend/nul`——git 把它列为未跟踪文件，`git add -A` fatal，L3 定期快照每 10 分钟跳过一次并刷「快照跳过 1 个无法索引的文件」告警。
+- **修复**：`.gitignore` 的 `/nul` 改为不带前导斜杠的 `nul` / `NUL`，覆盖任意层级（实测 `git check-ignore` 命中 `frontend/nul`、`git status` 不再显示、`git add -A` 干净退出）。文件本身需以 `\\?\` 前缀删除（Win32 常规 API 打不开保留设备名）。
+- 说明：快照侧早已有单文件跳过重试兜底（`gitAddAllWith`），本修是消除根因——让 git 根本不碰这类误产物，告警不再产生。
+
+### 杂项（AOCI 退役，内置认知索引成为单一事实源）
+
+- **背景**：本仓自 2026-11-19 起由宿主侧 AOCI（FSL-1.1-MIT source-available）维护并行认知索引；2026-11-22 内置认知索引（`internal/cognition` + `cognition_read/edit/status`）实施完成并建成（177 条 / 39 KB，drift 四态全 0），两者功能重叠且 AOCI 与 Apache-2.0 定位有张力、55 MB 运行时产物入库。作者决定退役 AOCI、保留内置索引为单一事实源。
+- **清理**：删除 `aoci.txt` / `aoci.meta.txt` / `aoci.code.txt` 与 `.aoci/` 整目录（drafts/baseline/fingerprints/ledger 等）；删 `AGENTS.md` 末尾 14 KB AOCI 接入契约块；`.gitattributes` 保留 LF 规则但改为通用说明、`.gitignore` 删 AOCI 忽略边界注释；卸载 aoci MCP server；清 README / tutorial 里的 AOCI 示例、两份 ignore 表的 AOCI 死规则。
+- **文档**：方案 `docs/unfinished-plans/ai-cognition-index.md` 移入 `docs/finished-plans/`，状态行与 §7 P3 / §9 的双索引描述改为「已退役」；同步 AGENTS.md / CHANGELOG / `ai-cognition.js` / `ai-tool-defs.js` / `cognition.go` 的方案路径引用。
+
+### 修复（使用统计图表宽度变化不重建）
+
+- **成因（2026-11-22 用户反馈）**：趋势图 / 环形图是 ECharts 实例，只在 `window.resize` 时调 `.resize()`，但侧栏展开收起、编辑器分栏拖动、标签页宽度变化都不派发 `window.resize`——容器变窄了图表仍保持旧宽度，看起来像「不重建」（热力图是 CSS Grid 固定 53 列 + 横向滚动，不受影响）。
+- **修复**：`settings-pane-usage-stats.js` 改用 `ResizeObserver` 直接观察 `#us-trend` / `#us-donut` 两个容器，覆盖所有「窗口没变但容器变窄」的宽度变化；`window.resize` 保留作宿主不派发 RO 回调时的兜底，两者共用同一 120ms debounce；卸载时对称 `disconnect()` + `removeEventListener()` 并重置 `resizeBound`，避免重挂重复绑定与实例泄漏。
+- 护栏：`frontend/test/settings/usage-stats-pane.test.mjs` 补 2 例接线守卫（RO 观察两个容器 + 保留 window.resize 兜底 / 卸载对称解绑），已登记 `npm test`；该测试 6/6 通过、`npm run build` 通过。
+
+### 修复（多窗口点侧边栏图标两窗来回闪一下）
+
+- **成因（2026-11-22 用户反馈）**：两个成因叠加。① `applySettings` 是所有设置写入的高频统一出口（侧边栏四 icon 都经 `toggleSidebarView` 触发），其中 `applyAlwaysOnTop` 每次都无条件调 `WindowSetAlwaysOnTop`；Wails v3 的该实现落到 `SetWindowPos(HWND_TOPMOST/NOTOPMOST, SWP_NOMOVE|SWP_NOSIZE)` 时会**把窗口无条件提到本档 Z 序最顶——值没变也一样**（win32 实测，MSDN「NOTOPMOST 对已是非置顶窗口无效果」在 Win11 26300 不成立）。② 当日新加的跨窗口设置同步广播全量快照，而 `mergeSettingsInto` 按 `Object.is` 逐键比较——对象键（`runArgs`/`runConfigs`/`runProfiles`/`langEnv`/`formatSettings`）是 `JSON.parse` 新引用，永远「有变更」，于是接收窗全量重绘并触发 `applyAlwaysOnTop`（跳到前台），发送窗自己的回声同样误报变更再重绘一次（顶回前台）——任一窗口点侧边栏图标即两窗各跳一次，表现为「来回闪一下」。底部 dock 四 icon（终端/调试/运行/图谱）不走 `applySettings`，所以不闪。
+- **修复**：① `applyAlwaysOnTop` 记住上次应用的置顶值，值未变不调用运行时（启动首应用与真实开关行为不变）；② `mergeSettingsInto` 对纯对象/数组键改为结构化深比较（键序无关、数组序敏感、非 plain 对象不假相等），内容没变不写入、引用原样保留——回声与同源广播幂等归零；③ 布局/模式/选择键改为**每窗口独立**：侧栏显隐/视图/模式/宽度、终端 dock 高度、git 提交区高度、AI 面板开合/宽度/停靠侧/形态、分栏比例、结构面板来源、窗口置顶、写作模式总开关、当前激活的运行配置（`PER_WINDOW_LAYOUT_KEYS`，判类规则见 settings-sync.js 注释：窗口自身形态 → 每窗独立，偏好与数据 → 全局同步）跨窗合并前剥掉（`applyRemoteSettings` 是广播与方案 C 重读的共同必经点）——点侧边栏图标、置顶窗口、进写作模式、选运行配置都不再镜像到别的窗口；localStorage 共享单槽语义不变，重启后取最后写入者的值（与引入同步之前一致）；④ 设置持久化收敛为三条通道并钉死——`applySettings`（全量重绘+落盘+广播）/ `persistSettingsLight`（新增，只落盘+广播，供拖分割线、`rememberScratchExt` 等高频小改动）/ `applyRemoteSettings`（唯一合并入口）；`editor-split-preview` 分栏拖动、`structure-panel` 两处、`rememberScratchExt` 四个历史直写 `localStorage` 的散点全部改走轻量出口（其中 `scratchExt` / `structureExportLineNums` 是偏好键，直写漏广播会让别的窗口内存副本停在旧值——正是同步要修的病）。
+- 护栏：`test/settings/settings-sync.test.mjs` 补 7 例（深比较语义 4 例 + 布局键剥离 3 例：剥键不改入参、畸形输入、合并语义端到端）；新增 `test/settings/settings-windowops.test.mjs`（已登记 `npm test`）源码断言钉住「`applyAlwaysOnTop` 值未变不调用运行时」「`mergeSettingsInto` 不得用 `Object.is` 直比对象键」「合并入口必须过 `stripPerWindowLayout`」+ 统一入口扫描「`settings-changed` 广播全仓仅 settings-ui.js 一处」「`localStorage.setItem(settingsKey…)` 禁止出现在 settings-ui.js 之外」「`mergeSettingsInto` 调用全仓仅一处」「`PER_WINDOW_LAYOUT_KEYS` 每键真实存在（防拼写漂移）」；AGENTS.md 前端侧新增「设置同步硬规范」。
+
+### 修复（多窗口设置不同步：窗口2开启认知索引，窗口1设置页仍显示关闭）
+
+- **成因（2026-11-22 用户反馈）**：设置持久化在共享 `localStorage`（`datalens-settings`），但每个窗口只在启动时读一次到内存 `settings` 对象，之后不重读、也无跨窗口通知。窗口2经 AI 审批卡开启认知索引后写入 localStorage，窗口1的内存副本仍是启动时的 `false`——设置页复选框与 `aiCognition` 工具下发全按旧值走。影响**所有设置项**，认知索引只是最易触发的那个。
+- **修复（B+C，覆盖全部设置项，纯前端零重建）**：① `settings-changed` 登记为 app 全局事件；`applySettings()`（所有设置写入的统一出口，含 `cognition_toggle` 审批卡与 AI 设置页手动开关）写完 localStorage 后经 `rt.EventsEmit` 广播全量快照；② 各窗口 `appEvents.onApp('settings-changed')` 收到后把快照**原地合并**进现有 settings 对象（`mergeSettingsInto`，保持 ai-panel 等持有者的引用有效）并重绘——发出的窗口自己也收，按值比较无变化即跳过，幂等防环；③ 方案 C 兜底：打开设置页前先从 localStorage 重读一次再渲染，覆盖广播错过 / localStorage 共享的场景。
+- 护栏：`settings-sync.js` 纯函数 + `test/settings/settings-sync.test.mjs`（原地引用 / 同值幂等 / 畸形快照），`event-scope.test.mjs` 登记新事件；前端 2217 测试全绿、`npm run build` 通过。
+
+### 改进（认知索引支持 .cadt/cognition/ignore.txt 作用域排除）
+
+- **成因（2026-11-22 用户反馈）**：`cognition_status` 的 Missing 漂移按「工作区有文件而索引没条目」全量计数——但工作区不是所有文件都值得建条目，生成物 / 构建产物 / 数据文件报 Missing 纯噪音，没法像 `.gitignore` 一样收窄。
+- **落点（作者裁定：写进卷目录而非工作区根）**：作用域排除文件 **`.cadt/cognition/ignore.txt`**（gitignore 简化语法：`#` 注释 / `!` 取反后匹配覆盖 / 不含 `/` 按路径段名匹配任意层级 / 含 `/` 按相对根路径 glob），从**清单层面**排除文件与目录（`ScanWorkspace` 剪枝 + 跳文件）：被排除文件不再报 Missing；已有条目指向被排除文件按 Orphan 收敛；文件在卷目录里 = 天然落 `.cadt` 整树排除之下，自身永不进清单（无自指）。解析与匹配复用 `internal/search` 的排除表机器（新抽象 `LoadIgnoreRulesAt(path)`，按「路径 + mtime」缓存、改动后下次扫描自动生效），与 `.cadt/config/search-ignore` **刻意解耦**——可搜索 ≠ 可索引。
+- **AI 创建通道**：`.cadt/cognition` 整树是 write_file/edit_file 拒绝路径，模型不用也不会猜路径——`cognition_edit` 新增 **`ignore` 参数**（整卷替换、与 meta 同款 CAS 校验；预算 100 行 / 单行 200 rune 超限整体拒绝不动盘；不校验 glob 语法——本方言字面字符恒 QuoteMeta，「写错语法」最坏是排除不到、下轮可改；**进指纹三段** meta‖code‖ignore，排除表改变作用域其他窗口 base 失效逼重读；写管线排 meta 之后，半写态最坏是排除表丢失、无破坏性）。
+- **现场提示（如何让 AI 知道能创建）**：`cognition_status` 响应在「Missing ≥ 20 且排除文件不存在」时自带 hint——模型正盯着 Missing 看的时刻给出口，指明 ignore 参数通道与语法要点；低于阈值不催、已有文件不重复提示。`cognition_status` 描述与 `<cognition_rules>` 守则同步指向该 hint。
+- 护栏：`internal/cognition/drift_test.go` 补排除文件场景表（目录整树 / 按名通配 / 路径 glob / 取反重含 / 自身不进清单 / 无文件行为不变）+ `TestIgnoreListPrunesOrphansIgnoredEntries`（排除后条目收敛 Orphan）；`service_test.go` 补 `TestEditIgnoreParam`（ignore-only edit / 文件落卷目录 / CAS / 指纹前移与 status 读回一致 / 预算拒绝）与提示三态；`parse_test.go` 补 `TestParseIgnoreText`（规整 / 空文本 / 预算）；`internal/search/ignore_test.go` 补 `TestLoadIgnoreRulesAtArbitraryPath`。cognition / search 双包与全仓 `go test` 通过、前端全量 2224 例通过（工具接线守卫按 PROSE_TOKENS 登记「ignore 为 cognition_edit 的参数」）。
+
+### 修复（应用页面标签页整体居中；使用统计整页贴边）
+
+- **成因（2026-11-22 用户实测）**：① `.apppage-root` 只有 `max-width: 1100px` 没有 `margin: 0 auto`，窗口一宽所有应用页面左对齐贴着侧栏，非常难看；② 使用统计的 mount 把 `.us-root` class 加在宿主 `.apppage-root` 元素身上（同节点合并），`.us-root` 里设置页遗留的内边距 `padding: 4px 2px 20px` 同特异性、声明更晚，把宿主的 `padding: 14px 16px 22px` 压掉——整页左右上下全贴边；同文件的 `.apppage-root > .us-root` 重置规则写的是「子元素」形态，从来匹配不上。
+- **修复**：`.apppage-root` 补 `margin: 0 auto` 整体居中；`.us-root` 去掉遗留 padding（留白统一由宿主给），删除从未命中的子元素重置规则；usage-stats 注释标注「us-root 不得自带 padding」防回归。外部工具 / 定时任务 / 操作记录 / 补丁库的宿主均无自带 padding 的 class，一并受益于居中。
+- 护栏：`frontend/test/settings/usage-stats-pane.test.mjs` 补负向断言（`.us-root` 禁 padding）与宿主三属性断言（padding / max-width / margin auto），已登记 `npm test`。
+
+### 改进（AI 输入框长文本粘贴：彩色胶囊 + 可编辑全文标签页 + 三档设置）
+
+- **变更**：粘贴超过 1000 字符的纯文本时，默认在光标原位折叠成一个彩色胶囊（如「文本1：【胶囊】文本2」的前后文位置完整保留），附件区不携带任何内容；点击胶囊打开**可编辑**虚拟标签页查看/修改全文，编辑内容经 `openVirtualDoc` 的 `onChange` 回调实时写回，发送时胶囊原位展开成（可能已编辑的）全文。
+- **三档设置**：设置 → AI → 聊天行为 →「长文本粘贴」：`collapse` 折叠胶囊（默认）/ `attachment` 整段转附件（正文不留位置，ZCode 款）/ `off` 原样全文键入（dsh 款）。每次粘贴即读设置，下次粘贴生效。
+- **实现**：胶囊沿用群聊 @ 提及的「文本是唯一真源、镜像层画不透明底胶囊」方案（`ai-paste.js` 纯函数 + `ai-composer.js` 镜像层/原子删除/展开 + `style.css` 彩色胶囊），避开 IME 组合期整段隐形坑；展开覆盖直发/排队/插话/抢占四条发送路径；手打同形标记不误展开。
+- **护栏**：`frontend/test/ai/ai-paste.test.mjs`（11 例纯函数：阈值边界、标记扫描、镜像 HTML 转义、展开、光标命中、行数），已登记 `npm test`；前端全量 2193 例与 `vite build` 通过。
+
+### 改进（计划批准卡新增「在隔离区中执行」开关）
+
+- **变更**：计划批准卡左下角原静态提示「批准后开始执行」换成开关「在隔离区中执行」（默认关）。勾选后点「执行计划」会先创建一个隔离 git worktree（`.cadt/worktree/<slug>/`），再让 AI 在隔离区里执行；不勾选行为完全不变。只读档禁用该开关并提示先切到「每次询问」及以上。
+- **实现**：① 批准卡开关经 `createSwitch` 创建，勾选值随 `acceptPlan(session, grants, {inWorktree})` 透传；② 面板包装层在**计划落盘前**建隔离区（复用 `worktreeMod.createForSession`，传 `skipConfirm` 免二次弹窗、`allowRunning` 绕过刚停流的守卫），创建失败即返回、审批卡保留可重试——避免落盘后无法回滚；③ 批准指令按勾选差异化：勾选时明确告知隔离区路径、主根只读、改动只写隔离区、完成后经 `worktree_manage(action=export)` 回灌（两种文案共用「计划已批准，请立即按」前缀，历史会话识别不受影响）；④ `createForSession` 新增 `skipConfirm` / `allowRunning` 两个可选参数，既有调用点行为不变。纯前端改动，零 Go 变更。
+- 护栏：`frontend/test/ai/ai-plan-worktree.test.mjs`（7 例：指令差异化纯函数 + 开关默认关 / 透传 / 建区早于落盘 / 两选项接线），已登记 `npm test`。前端全量测试与 `vite build` 通过。
+
+### 修复（智能体团队标签页：支持折叠，层级超过 8 连线不再错乱）
+
+- **成因（2026-11-22 用户实测）**：团队详情视图（`ai-team-view.js`）把 `flattenAgentTree` 的折叠回调写死为 `() => false`，从未接入折叠态，卡片无法收起；连线只按封顶后的 `--atl` 在固定列画一条竖线 + 横线，既不画祖先列的贯穿竖线、也不区分末子节点，层级超过 8 后深层连线全挤在同一位置、断裂重叠成一团。
+- **修复**：① `flattenAgentTree` 行数据增加 `key / guides / isLast`（祖先列是否有后续兄弟、自身是否末子），纯函数可单测；② 团队视图每个实例维护折叠 `Set`，卡片前加折叠箭头（有子节点才有，叶子用等宽占位对齐），点击切换并重绘、保持焦点与滚动位置；③ 连线改为按 `guides` 逐列画贯穿竖线、末子竖线止于行中心，层级封顶时深层落在同一列形成阶梯而非重叠。
+- 护栏：`frontend/test/ai/ai-agent-tree.test.mjs` 补 2 例（连线字段 / 折叠后代清理），已登记 `npm test`；全量测试与 `vite build` 通过。
+
+### 改进（外部工具迁为应用页面标签页；应用页面目录行体验）
+
+- **迁移**：设置 → AI → 外部工具 整体迁为「应用页面」内容区标签页（与使用统计 / 定时任务同族）。内容 DOM 常驻 index.html 尾部的 `#extcap-park` 停靠区，`settings-pane-external-tools.js` 的 mount/unmount 搬进 / 搬出标签页容器——保持节点身份，`ai-mcp-settings.js` 启动时按 id 捕获的引用与事件绑定跨开关标签页始终有效；容器加 `.extcap-root` 沿用设置 pane 的纵向节奏；MCP 世代事件只在标签开着时刷新（`refreshExternalToolsPaneIfVisible` 改判 `doc.appPage`）。
+- **AI 文案同步**：技能表与工具描述里的指引路径统一改为「应用页面 → 外部工具」；`open_settings` 的 pane 清单对齐当前实际子页（外部工具 / 定时任务已不在设置弹窗，补 app-pages / envvars / storage / new-file-menu）。注意：MCP 与能力来源各行随页离开设置树，AI 对 MCP 服务器仍走 get/set/delete_mcp_server 专用动作。
+- **图标对齐**：设置导航「应用页面」的清单图标（≡）换为与侧栏活动栏同款四方格——新登记 `core/icons.js` 的 `apps` 图标（20 网格按 0.8 缩到 16 网格）。
+- **目录行**：设置 → 页面 → 应用页面 点行（或「打开」按钮）在内容区开标签页后顺带关闭设置弹层；目录行补页面图标；hover 从贴边直角大色块改为圆角内收（负 margin 换呼吸空间）并去掉行分隔线。
+- 护栏：新增 `frontend/test/settings/external-tools-page.test.mjs`（APP_PAGES 注册 / 停靠区与导航断言 / mount 搬运契约 / 关弹层接线 / 下拉增强覆盖 / CSS 契约），已登记 `npm test`。前端全量 2191 例通过。
+
+### 修复（plan 模式下抢占失效：消息停在排队框发不出去）
+
+- **成因（2026-11-22 用户实测）**：抢占（Ctrl+Shift+Enter / 队列行 ⚡）的消息入队后靠轮收尾冲刷发出，但 `takeQueuedItem` 的守卫见「计划待批准」就静默放行失败——plan 模式下 `activePlan` 为 pending 时（审批卡接管输入区），冲刷被拦、待发标记已被 `finishStream` 消费，没有任何重试或提示，消息永远以「排队」状态留在队列框。
+- **修复**：① 计划守卫改为「审批卡**正显示**才拦」——被「继续规划」收起后输入区已空闲、手动发送可行，队列冲刷同一口径放行（原先收起后照样拦，口径比手动发送更严）；② 抢占入口自动收起待批准的计划卡让路（只改显示、计划保持 pending，队列上方「计划等待批准 · 查看」可随时回到批准卡）；③ `finishStream` 收尾兜底：停止 / 抢占收尾且有消息待发时收起正显示的计划卡（覆盖抢占瞬间计划才提交、收尾时才 pending 的工具竞态；普通停止与自然结束不收卡）。
+- 护栏：`frontend/test/ai/ai-message-queue.test.mjs` 补 3 例（卡正显示拦冲刷 / 收起后放行 / 抢占自动收起）、`frontend/test/ai/ai-turn-steer-wiring.test.mjs` 补 4 处源码断言，均已登记 `npm test`。前端全量 2182 例通过。
+
+### 改进（通用确认框支持自定义触发键，重新发送框 Enter 即确认）
+
+- **变更**：通用确认框 `openConfirmDialog` 新增可选第 6 参 `options.keys`（`KeyboardEvent.key` 字符串或数组），按下指定键即等同点确认按钮；输入法组词态与带修饰键的组合不触发，Esc 仍由弹层栈统一处理。
+- **应用**：AI 消息原地编辑点「重新发送」弹出的二次确认框绑定 Enter——弹框时焦点仍在编辑区 textarea，监听挂在 window 捕获阶段确保可靠触发。
+- 护栏：`frontend/test/settings/confirm-dialog-keys.test.mjs` 锁住参数解析、监听守卫与透传链，已登记 `npm test`。
+
+### 修复（计划批准指令补「计划模式已自动退出」，防模型再调 plan_mode）
+
+- **成因（2026-11-22 用户实测）**：点「执行计划」后应用代发的批准指令只说「开始执行」，没告诉模型计划模式已被应用自动退出——模型有时会纠结模式状态，主动调用注定空转的 `plan_mode(false)`（当前已不在计划模式，只会返回「当前不在计划模式」）。
+- **修复**：批准指令追加一句「计划模式已随批准自动退出，不要再调用 plan_mode」；顺带把 `detectAppMessage` 的计划批准前缀放宽到两代文案共有的头「计划已批准，请立即按」——排队重发路径（`flushInBackground`）不透传 app 元数据，现行文案此前认不回来、会渲染成用户胶囊。
+- 护栏：`frontend/test/ai/ai-app-message.test.mjs` 补现行文案识别用例，已登记 `npm test`。
+
+### 修复（计划模式「继续规划」讨论轮：列表 info 角标不退、AI 幻觉审批卡还在）
+
+- **成因（2026-11-22 用户实测）**：AI 提交计划后用户点「继续规划」发修订意见、AI 只用正文回应（未重新提交），此时审批卡已随「继续规划」收起，但 `activePlan.status` 仍是 `pending`——会话列表的 `planPendingNeedsAttention` 只看「pending 且无流」，于是讨论轮结束就挂出 info「待确认」角标，和横条（用户发言即收起）与审批卡（已收起）的状态不一致；同一状态下模型只看得到历史里「提交过计划」，不知道卡片此刻在不在，回出「点「执行计划」我就动手」这种幻觉（卡片并不存在）。
+- **修复**：① 角标判定补上与横条同源的 `planAwaitingUserReply`——用户已对计划发言（继续规划讨论中）不再标待确认，计划重新提交（ts 更新）后角标自然回来；② 起轮动态块新增 `<plan_status>`（`turnContextBundle`，随用户消息注入、不进系统提示词稳定区）：每轮把审批卡真实状态告诉模型（卡在输入框上方等批准 / 卡已随「继续规划」收起、没有可点的「执行计划」按钮，修订收敛后重新 submit_plan），判定经 ctx 注入 `planApprovalCardVisible`（与接管区同源：`planApprovalMessage` + dismissed 比对）；③ 完成后的桌面通知「AI 计划待批准」同步加同一判定，讨论轮不再误弹。
+- 护栏：`frontend/test/ai/ai-session-list.test.mjs` 补 2 例（讨论轮不挂角标 / 重新提交角标回来）、`frontend/test/ai/ai-system-context.test.mjs` 补 4 例（卡在 / 卡收起 / 非计划状态不注入 / 缺绑定跳过），均已登记 `npm test`。前端全量 `npm test` 与 `vite build` 通过。
+
+### 改进（AI 对话引用卡片化，点击开全文）
+
+- **变更**：输入框里的引用从单行 chip（只显示「回复引用 · 助手回复 #…」，看不到内容）改为引用卡片——来源标签弱化在上、正文摘要独立成 2 行；发送后用户气泡里的引用块也从「标签+摘要挤一行」改成上下分层 + 左侧竖线强调。
+- **看全文**：引用卡片的摘要、气泡里的标签/摘要都可点击，在只读虚拟标签页打开引用全文（复用现有「只读文档」类型，固定只读不可解锁、可复制）；悬浮仍有 tooltip 快速预览。输入区与消息原地编辑区共用同一套卡片渲染。
+
+### 修复（AI 打开网页后截图出现空标签页、截图为空白）
+
+- **成因（2026-11-22 用户实测，复现率极高）**：AI 用 `app_control open_browser_tab` 打开网页会新建一个标签页，但这条路径不写会话的 `browserTabId`；紧接着 `browser_screenshot`（或 `browser_snapshot` / `browser_navigate`）走 `ensureBrowserTab` 时看不到 id，便**再新建一个 `about:blank`「新标签页」**——当前视图没切过去，截图工具却对着这张空白页截，于是标签栏莫名多出一个空标签、附加的图是白图。
+- **修复**：`app_control` 的 `open_browser_tab` / `close_browser_tab` 成功后，把标签页 id 与会话的 `browserTabId` 对齐（纯函数 `resolveSessionBrowserTabId`，`ai-browser-tools.js`）——打开即登记、关闭当前标签才清空、变化时才落盘。此后所有 `browser_*` 工具复用同一标签页，不再重复新建。
+- 护栏：`frontend/test/ai/ai-browser-tools.test.mjs` 补纯函数用例、`frontend/test/ai/ai-browser-tab-identity.test.mjs` 锁接线点，均已登记 `npm test`。
+
+### 改进（文件树/列表可显示 .cadt 状态目录，默认显示）
+
+- **变更**：此前 `.cadt`（AI 草稿 / 日志 / 补丁 / 记忆）在文件树与列表的工作区根层被硬编码隐藏（2026-11-21 `a72570a` 引入，无开关、与 Windows 隐藏属性无关），现改为默认显示，并在 设置 → 通用设置 →「文件树与代码视图」分组的「显示 .cadt 状态目录」开关提供控制；关掉时恢复原来的根层隐藏，不影响「临时草稿」固定节点与各设置页入口。
+- **实现**：隐藏判定抽成纯函数 `isCadDirEntry` / `visibleTreeEntries`（`frontend/src/explorer/explorer.js`），树过滤与列表跳过表共用同一开关；`setShowCadDir` 同步列表忽略表（文件系统通知同读该表），`showCadDir` 设置项走完 HTML → 事件 → applySettings 全链路，AI `set_setting` 亦可直接改。
+- 护栏：`frontend/test/explorer/explorer-cad-dir.test.mjs`（纯逻辑 + 全链路源码守卫），已登记 `npm test`。
+
+### 修复（会话消息原地编辑：异步重绘不再打断编辑态）
+
+- **成因（2026-11-22 用户实测）**：第一次编辑会话消息，几秒后莫名退出编辑态，第二次点编辑又不会。根因是 `renderMessages` 无条件 `inlineEdit = null`，而 `handleResourceChange` 的会话磁盘重读（租约忙时重试最多 ~6 秒）会在用户打字时触发重绘——首次编辑时之前某次写盘的重读还在重试队列里，几秒后落地打断编辑；之后没有新写盘事件，所以再编辑不受影响。
+- **修复**：`renderMessages` 重绘前用 `snapshotInlineEdit` 保存编辑数据（会话/idx/文本/附件/光标位置，不含 DOM 引用），重绘后用 `restoreInlineEdit` 在新的 `.ai-msg[data-ai-idx]` 节点上原样恢复编辑态与光标位置，未保存内容不丢。校验会话仍是当前查看的、消息仍可编辑才恢复，否则静默放弃；只保护面板主视图（支线标签页编辑由自己管）。
+- 护栏：`frontend/test/ai/ai-inline-edit.test.mjs` 补 3 例源码守卫（快照-恢复接线 / 快照字段 / 恢复校验与定位），已登记 `npm test` 清单。
+
+### 改进（编辑器内快捷键随风格联动：默认对齐 JetBrains，VSCode 风格可选）
+
+- **能力**：代码 / 文本视图里的编辑键（此前走 jsoneditor 内嵌 Ace 默认键位，不受快捷键风格控制）现在跟随 设置 → 快捷键风格（candysweet / jetbrains / vscode）联动，切换即时生效（已开标签一并重绑）。设置页快捷键表下方新增「编辑器内键位」分组，与全局表同源切换。
+- **默认（CandySweet）与 JetBrains 对齐**：Ctrl+D = 复制行 / 选区、Ctrl+Y = 删除行、Ctrl+Shift+U = 切换大小写、Ctrl+Alt+↑/↓ = 向上/下复制行、Ctrl+/ · Ctrl+Shift+/ = 行/块注释。**注意**：默认 Ctrl+D 由原来的「删除行」改为「复制行」，删除行改用 Ctrl+Y——老用户需注意肌肉记忆变化。
+- **VSCode 风格**：Ctrl+D = 多选下一个匹配（自实现：光标在词上首按选中该词，再按逐个加入后续匹配，文末回绕）、Ctrl+Shift+L = 选中所有匹配、Ctrl+Shift+K = 删除行、Ctrl+Shift+Alt+↓ = 复制行、Ctrl+Shift+A = 块注释。
+- **冲突处理**：全局「重做」在默认/JetBrains 风格去掉 Ctrl+Y（仅留 Ctrl+Shift+Z），VSCode 风格保留 Ctrl+Y；Ctrl+W 仍是全局「关闭标签」，不占编辑器扩展选区（扩展选区沿用 Ace 原生 Ctrl+Alt+←/→）。只读文档下这些编辑键不生效。
+- **实现**：键位单一来源 `core/editor-keybindings.js`（纯数据 + 纯函数）+ 运行时 `editor/editor-keybindings.js`（用 Ace `bindKey(key, null)` 精确解绑冲突键、专属命令名重绑、幂等；不改动 vendored 文件，可整体回滚）。组合根注入到 editor-groups（建编辑器时 applyTo）与 settings-ui（切风格时 applyToAll）。
+- 护栏：新增 `frontend/test/core/editor-keybindings.test.mjs`（键位表冲突 / 语义 / 展示）与 `frontend/test/editor/editor-keybindings-wiring.test.mjs`（接线源码守卫），均登记 `npm test`；同步更新 keybindings / keymap 旧断言。前端全量 `npm test` 与 `vite build` 通过。
+
+### 新功能（AI 工作区认知索引：FRAS 卷文件 + drift 治理，可选启用）
+
+- **能力**：AI 维护的工作区语义层（`.cadt/cognition/` 卷文件，每文件一行 F 职责 / R 强关联 / A 对外契约 / S 暗约束）——R/S 是 grep 永远给不出的「改这里必须同时知道的事」；新会话首轮注入一份路径地图（≤1–2K token，三级降级封顶），细节按需 `cognition_read`。机制借鉴 AOCI、引擎全部自写（方案 `docs/finished-plans/ai-cognition-index.md`，2026-11-21 评审修订后实施）。
+- **可选启用（默认关）**：开关在 设置 → AI → 上下文与记忆「认知索引」（`aiCognition`，设置树登记 protected）；内置助手可主动建议启用——app_control 新增 `cognition_toggle {enabled}`，**必弹动作审批卡（完全权限也不例外）**，用户拍板或手动在设置开/关；关闭态系统守则只留一句启用入口。
+- **三件工具**（启用后下发）：`cognition_read`（路径地图 / 按前缀·标签·关键词取条目全文，响应 ≤7 000 字符——刻意压在 context-slim 落盘阈值之下，模型永远拿到正文而非指针）/ `cognition_edit`（按目录分批维护条目 + `meta` 整卷替换；写路径 base-CAS，写后 baseline 簿记闭环——改完文件再更新条目不再永报 Stale）/ `cognition_status`（drift 四态报告 + 预算余量 + needsReread；唯一副作用是 baseline 缺失时全量生成）。计划模式三件中 edit 不派；子代理只派只读两件；群聊不派。
+- **治理**：`.cadt/cognition` 整树是 write_file/edit_file 拒绝路径（卷只能经 cognition_edit 改，用户手工编辑不受限）；meta 的 budget 行与 Go 常量比对（600 条 / 256 KB）；租约锁在卷目录外；`ws-cognition` 进存储清理勾选清单（刻意不进一键清缓存）并挂 BeforeClear 门闩。
+- **注入落点**：`<cognition_index>` / `<cognition_nudge>` 走轮上下文（`turnContextBundle`），不进系统提示词稳定区——卷会被改写，进稳定区等于每次维护击穿前缀缓存；压缩裁掉历史块后重注是预期恢复行为。改动索引覆盖内文件却没维护时，下一轮一行提醒（方向「少提醒」）。
+- 引擎 `internal/cognition`（parse / drift / service）+ 绑定壳 `cognition_app.go`；前端域 `ai-cognition.js`（指纹登记 / 预取 / 纯函数）+ 守卫测试。帮助 → 教程新增「认知索引」一节（开关与审批 / 三件工具 / 卷文件 / 治理机制 / 边界）。
+- 护栏：`internal/cognition/*_test.go`（格式向量 / 路径归一 / 四态判定 / CAS 三态 / 簿记闭环 / 预算拒绝 / 租约与清理门闩 / `.cadt` 不进清单 / status 零写入）、`frontend/test/ai/ai-cognition.test.mjs`（已登记 `npm test`）、工具接线守卫与动作三方对账全绿；前端全量与 `go test ./...` 通过。P3 真实使用量化验收（探索轮数 / 错改率对比）待回填。
+
+### 新功能（桌面控制 Computer Use：第三方窗口 GUI 自动化，desktop-mcp P1/P3/P4/P2 落地）
+
+- **能力**：把外部 windows-mcp（CursorTouch，stdio MCP server）接进应用 MCP 客户端，让 AI 能看第三方原生窗口的无障碍树并做点击 / 输入 / 滚动 / 剪贴板操作。方案 `docs/finished-plans/desktop-mcp.md` §13.5（2026-11-21 三审排期）。
+- **三道闸**（`ai/ai-desktop-control.js`）：① 只在写权限档（非计划模式）注入；② 会话授权单飞——输入框新增「桌面」pill（无注册工具时隐藏，数字=快照真实注册数），仅本会话生效、重启失效，应用级同时只允许一个会话持有（grant/revoke 经 `desktop-grant-changed` 全窗广播收敛，新 grant 挤掉旧持有者并向其会话投递通知，空闲会话静默收回不唤醒）；③ 懒加载揭示——模型默认只看到 `windows_desktop` 入口，调用它才把匹配的 `mcp__windows__*` 工具揭示进本会话工具表，未揭示的桌面工具派发层确定性拒绝。
+- **审批语义**：授权生效的桌面工具免逐次审批（`sessionAllow`），项目规则 deny 优先不变；pill tooltip 明示 `run_command` 命令通道不受本开关约束（incident §5 已知盲区的如实承认）。
+- **工具表**：MCP 通用注入分支排除 windows server 的工具（走桌面双闸）；`windows_desktop` 登记目录新组「桌面控制（第三方原生窗口）」与典型工具链。
+- **设置 → AI → 外部工具 → 桌面控制卡片**（P2 降级形态）：不自动装依赖——复制 uv 安装命令 + 一键写入 mcp.json 服务器行（`uvx windows-mcp@0.8.9 serve --tools Snapshot,Click,Move,Scroll,Type,Shortcut,Clipboard`，白名单无 Screenshot（MCP 客户端暂不显示图像结果）/ Registry / Process / App / PowerShell / FileSystem，默认停用）+ `MCPDesktopDoctor` 只读诊断（uv 解析，PATH 与用户目录 `.local\bin`）。
+- 护栏：`frontend/test/ai/ai-desktop-control.test.mjs`（8 例：server 判定 / 揭示匹配 / 单飞与广播副本收敛 / 配置行与白名单口径），已登记 `npm test`；工具接线守卫的授权 stub 同步；`mcp_desktop_app_test.go`（uv 候选表驱动 + doctor 冒烟）。前端全量 2139/2139、Go 定向、`vite build`、`check-crossbuild` 均通过；实施后经只读子代理审查（P0 零、P1 两处当日修复：**能力来源绑定 mcp__windows__\* 曾绕过派发闸**——闸下沉 `invokeMcpToolWithApproval` 单收口；**doctor 的 uv 候选缺 `.exe`** 恒落空——补 uv.exe + uv 双候选）。
+- 已知边界与实机回归（2026-11-21）：**决策点通过**——纯无障碍树完成「任务栏图标清单」（46 s，13 图标带窗口状态）与「计算器 123+456= 关闭复核」（2 m 35 s），Screenshot 维持砍掉。**实测 P0（已处置）**：上游 `--control` 模式用 WH_KEYBOARD_LL/WH_MOUSE_LL 低级钩子做桌面所有权，AI 操作后 Alt+Tab / Win+Shift+S 等系统组合键被吞到 server 进程退出才恢复（重 UIA 快照 + GIL 争用加剧）——配置行默认改 **`--no-control`**（源码验证 disabled 完全不装钩子），授权语义由「桌面」pill 承担；想要上游 consent 弹框的可自行改回 `--control`（紧急接管和弦 Ctrl+Shift+Alt+Backspace）。已写入旧配置行的机器：删行重写或手动在 args 加 `"--no-control"`。其余：`toolsForScope` 的 session 参数本就存在（read_video 先例），P1 无签名改动；配置行带 `startupTimeoutMs: 600000`（uvx 首跑下载依赖，默认 30s 会超）；揭示口径「同批并行调用拒一次、下一条请求生效」已写进揭示文案；高 DPI / 非英文 Windows 属上游行为。
+
 ### 工程（禁止 `git checkout` / `git restore`：跨 harness 的命令守卫）
 
 - **背景**：2026-11-21 一次 `git checkout -- frontend/src/explorer/explorer.js` 想撤掉「自己的」改动，把该文件上**多个并行会话叠加的未提交改动**一起回滚到 HEAD（wipe-guard 快照早于那次改动，恢复不回来）。单文件整文件回退在这类仓库里等价于批量销毁；`git restore` 是同一动作的新名字，一并禁掉——但只拦**会写工作区**的形态，`git restore --staged`（只撤暂存）放行，带了 `--worktree` / `-W` 就照拦。
@@ -35,6 +205,47 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 - **修复**：重建前按组记录各标签条 `scrollLeft`、重建后原样恢复（超上限自动收敛）；只有首次构建（此前不存在该组的标签条）才做激活标签定位；切换标签由 `activateDoc` 显式补发定位。`scheduleRevealActiveTabs` / `revealActiveTabs` 支持按组过滤，同帧调度合并时「无条件定位」吞掉组过滤，组过滤永远挤不掉显式定位。
 - **附带改善**：关闭后台标签、拖动排序、AI 修改已打开文件等重绘不再把用户滚出的位置弹回；多分栏各组的滚动位置互不影响。
 - 护栏：新增 `frontend/test/editor/tabstrip-scroll.test.mjs`（5 例源码守卫：收集先于清空、恢复/首次构建分流、过滤器合并语义、activateDoc 显式定位），已登记 `npm test` 清单。
+
+### 修复（自动保存后编辑器失焦「突然打不了字」：后台重绘不再抢走焦点）
+
+- **成因（2026-11-22 用户实测）**：自动保存成功路径 `saveDoc` 调用 `renderTabs()` → `renderEditorLayout()`，后者整段 `#editor.textContent = ''` 清空再 `appendChild` 把编辑器 pane 插回——DOM 节点被摘除再插回时浏览器会丢失子树内的焦点（Ace 的隐藏 textarea 失焦）。用户写着写着突然打不了字，必须重新用鼠标点一下。这是通用问题：任何触发 `renderEditorLayout` 的后台重绘（自动保存、外部修改标记、AI 写已打开文件、保存脏标）都会在用户打字时夺走焦点。
+- **修复**：`renderEditorLayout` 重建前记录 `document.activeElement` 与其所属 `.jsoneditor-pane`（`prevActive` / `prevActivePane` / `hadFocusInEditor`），重建后若焦点所属 pane 仍是激活文档则恢复焦点——优先走 `aceEditor.focus()`（同步 Ace 内部焦点状态），否则回退 `prevActive.focus()`。按焦点 pane 反查文档（不依赖 `deps.file` 当前值，多分栏下焦点组可能不是 file 组）。
+- **边界**：标签切换（`activateDoc` 移走旧 pane）不会命中——重建后激活 pane 与焦点 pane 不同，`activePane.contains(prevActivePane)` 为 false，不会抢新标签焦点；关闭标签时焦点 pane 已被移除，`prevActive.isConnected` 为 false，同样不执行。
+- 护栏：`frontend/test/editor/tabstrip-scroll.test.mjs` 补 1 例源码守卫（焦点记录先于清空、重建后 `aceEditor.focus()` 恢复、恢复逻辑位于标签条定位之后），已登记 `npm test` 清单。
+
+### 改进（运行面板：同一文件反复运行复用同一个标签，不再堆标签）
+
+- **成因（2026-11-22 用户实测）**：底部「运行」面板每次按 F5 都 `createSession` 新建一个标签，同一文件反复运行会堆出一排同名标签（截图里 3 个 `草稿-…py`），用户要手动关掉旧的。
+- **修复**：`run()` 创建会话前先按文件路径查找可复用会话（`findReusableRunSession` 纯函数）——同路径 = 同一文件，复用同一个标签；不同文件各自一个标签。复用时若旧任务还在跑，先 `RunStop` 停止并等它完全退出（会话级 `donePromise`，由 `finishSession` / `execSteps` finally resolve），再重置会话状态、清空旧输出、更新标签标题——避免新旧进程的 `run-exit` 事件串台。
+- **边界**：自检（`selfTest`）与项目运行（无文件路径）不参与复用，各自独立标签；`MAX_SESSIONS` 上限照旧生效（复用不占新名额）。
+- 护栏：`frontend/test/terminal/run.test.mjs` 补 3 例纯函数测试（同路径复用 / 不同路径各自新建 / 自检与无 path 不参与复用 / 空表与坏条目不抛错），已登记 `npm test` 清单。
+
+### 修复（Markdown 预览滚动不持久 + 分屏不对齐：滚动位置存进 doc）
+
+- **成因（2026-11-22 用户实测）**：切标签切回来，md 预览的浏览进度没了、跳回顶部；分屏视图还有滚动条 / 不对齐。根因是预览滚动只存在 DOM（`doc.previewScroll.scrollTop`），而切标签 / 自动保存触发的 `renderEditorLayout` 会把 pane 整段摘除插回（与失焦同一个机制），DOM scrollTop 归零。
+- **修复**：预览滚动的持久真源改为 `doc.previewScrollTop`（存在 doc 上，不依赖 DOM）——`createMarkdownPreview` 挂 scroll 监听写入它；`renderMarkdownPreview` 用它恢复（不再读当前 DOM）；切走（`snapshotActiveDoc`）、`renderEditorLayout` 重建前 capture，切回（`activateDoc` 的 ace.resize 后 setTimeout）、重建后 restore。只对活动 doc capture/restore——隐藏 doc 的 DOM scrollTop 已归零，读了会覆盖持久值。
+- **分屏**：以 Ace 滚动为真源对齐（`mdSyncScrollFromAce` 回写持久值），布局就绪后（resize 之后）恢复，避免 scrollHeight 未就绪时算出 0 导致停在顶部；预览滚动容器加 `scrollbar-gutter: stable`，防止横向滚动条出现时挤压内容高度引起跳动。
+- 护栏：新增 `frontend/test/editor/md-preview-scroll.test.mjs`（8 例源码守卫：持久真源 / capture-restore 接线 / 分屏对齐 / 时序），已登记 `npm test` 清单。
+
+### 修复（使用统计板块上下无间距：补上漏加的 .us-root class）
+
+- **成因（2026-11-22 用户实测）**：使用统计作为「应用页面」标签页打开后，Token 活动 / 趋势 / 模型用量 / 请求日志各板块上下紧贴、没有间距。根因是板块间距靠 `.us-root` 的 flex `gap:14px`，但 `mountSkeleton` 只往 host 里塞 `.us-card`，从没给 host 加 `.us-root`——应用页面宿主是 `.apppage-root`（无此 class），CSS 里甚至已有 `.apppage-root > .us-root { padding:0 }` 的适配规则，却因 JS 没加 class 而形同虚设。
+- **修复**：`mountSkeleton` 建骨架前给 host 加 `.us-root`（组件自带样式，不依赖宿主 class），卸载时移除——flex column + gap 生效，板块间距恢复。
+- 护栏：新增 `frontend/test/settings/usage-stats-pane.test.mjs`（3 例源码守卫：加/移除 class 接线 + CSS gap 规则），已登记 `npm test` 清单。
+
+### 修复（临时文件目录不存在时报错 + 新建后不显示：空目录当正常态 + 强制重读）
+
+- **成因（2026-11-22 别的机器实测）**：新机器工作区还没有 `.cadt/scratch/`，展开「临时文件」节点时后端 `ReadDir` 的 `os.Stat` 报 `GetFileAttributesEx ... 系统找不到指定的文件`，节点显示「无法读取：GetFileAttributesEx...」；之后新建草稿虽然 `AIEnsureDir` 建了目录，节点仍不显示文件。根因：① `loadNode` 把「目录不存在」当普通读取错误存进 `node.error`；② 失败后 `node.loaded=true`，`refreshScratch` 走 `refreshNodeChildren` 时被残留的加载态 guard 挡住，没重读。
+- **修复**：新增 `isMissingDirError` 纯函数识别跨平台「目录不存在」文案（英文 `cannot find the file` / 中文 `系统找不到指定的文件` / `no such file or directory`），`loadNode` 的 catch 对 scratch 节点 + 该错误当空目录处理（清 error、不显示报错）；`refreshScratch` 新建后强制重置 `loaded`/`error`/`loading`/`loadPromise`/`refreshing` 再走 `loadNode` 完整重读，保证新文件显示。
+- 护栏：`frontend/test/explorer/explorer-diff.test.mjs` 补 3 例（错误文案判定 + loadNode scratch 特殊处理 + refreshScratch 强制重读），已登记 `npm test` 清单。
+
+### 改进（临时文件对齐 JetBrains：节点叫「临时文件」，文件名用 scratch 不用中文）
+
+- **成因（2026-11-22 用户反馈）**：文件树里的固定节点叫「临时草稿」，新建的文件名是 `草稿-YYYYMMDD-HHMMSS.<ext>`（带中文 + 时间戳），与 JetBrains 的 Scratches（`scratch.json` / `scratch_1.json`）风格不一致。
+- **改名**：树节点、quick-switch 层、右键菜单项、编辑器右键「存为临时文件」、存储与清理条目标签、flash 与历史文案，全部从「临时草稿」改为「临时文件」（`explorer.js` / `explorer-ops.js` / `editor-menus.js` / `quick-switch.js` / `main.js` / `dev/mock-backend.js` / `internal/storage/specs.go`）。
+- **命名**：`scratchDraftName` 从 `草稿-时间戳[-N].<ext>` 改为 `scratch[-N].<ext>`（对齐 JetBrains：`scratch.json`、`scratch_1.json`…）；`createScratchFile` 的撞名重试从「同秒 3 次」改为「递增 `_N` 直到成功（上限 100）」。`scratchStamp` 保留为通用时间戳工具（不再参与命名）。
+- **兼容**：旧文件（`草稿-*.md`）仍落在 `.cadt/scratch/`，`isScratchPath` 只认目录不认前缀，照常识别与打开；只影响新建文件的命名。
+- 护栏：`frontend/test/core/scratch.test.mjs` 更新命名断言（`scratch.md` / `scratch_1.md` / `scratch_2.md`），已登记 `npm test` 清单。
 
 ### 新增（临时文件：explorer「新建」里的免起名草稿）
 

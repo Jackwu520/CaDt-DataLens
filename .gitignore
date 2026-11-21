@@ -33,5 +33,7 @@ Thumbs.db
 /datalens.exe~
 /*.exe~
 
-# Windows 保留设备名误产物（cmd 里 redirect 到 nul 时可能落在仓库根）
-/nul
+# Windows 保留设备名误产物（cmd 里 `> nul` 在 Git Bash 下会落地成真文件；
+# 不带前导斜杠，覆盖任意层级——npm test 在 frontend/ 下跑就落在 frontend/nul）
+nul
+NUL
