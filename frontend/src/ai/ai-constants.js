@@ -901,7 +901,7 @@ export function aiFormatDuration(ms) {
 // ≥100 的档位取整（100 MB 没必要两位小数），GB 级保留 1 位精度。
 // 与 settings-pane-storage 的 formatBytes 同语义，但 AI 域不能反向 import settings，独立成纯函数。
 export function aiFormatBytes(bytes) {
-    const value = Number(bytes) || 0;
+    const value = Math.max(0, Number(bytes) || 0);
     if (value < 1024) return value + ' B';
     const units = ['KB', 'MB', 'GB', 'TB'];
     let size = value / 1024;
