@@ -13,6 +13,13 @@ export const AI_LEGACY_KEEP_DAYS = 30;
 // 应用重启时仍在执行的工具：没有结果可回传，按「中断」呈现（区别于工具自己返回的失败）
 export const TOOL_INTERRUPTED_TEXT = '应用在这个工具执行期间关闭或重启，没收到执行结果（工具可能已经执行，也可能没有）。重试前请先确认是否已经产生了副作用。';
 export const TOOL_INTERRUPTED_RE = /^(应用在这个工具执行期间关闭或重启|执行被中断（应用已关闭或崩溃）)/;
+// 应用重启时正等着用户决定的卡片（ask / 审批 / 变量填写）：卡片本身收敛为终态，
+// 但**这条工具结果仍会发给模型**。注册时的占位正文（「等待用户回答…」「等待用户审批命令…」
+// 「等待用户填写变量值…」）必须整句换掉，否则模型会把「还在等」当成「已经有结果」，进而替用户拍板。
+// 三者语义不同，不要合并：ask 是「答案未知，可以重问」，审批/变量是「没执行，需要就重提」。
+export const ASK_LOST_TEXT = '应用在等待用户回答这个问题时关闭了，没收到回答（答案未知）。不要假定用户选了什么；如果这个答案还影响后续步骤，用 ask_user 重新问一次。';
+export const APPROVAL_LOST_TEXT = '应用在等待用户审批这个操作时关闭了，没收到决定，该操作没有执行。需要的话请重新发起。';
+export const ENV_ASK_LOST_TEXT = '应用在等待用户填写变量值时关闭了，没收到决定，变量没有创建。需要的话请重新发起。';
 // 工具轮次轻提醒周期：对齐 harness（无硬性上限），每到周期注入一次系统提示。
 // 停止只由用户中止、上下文压缩或模型自然结束触发。
 export const AI_TOOL_ROUND_LIMIT = 100;
@@ -352,6 +359,7 @@ export const AI_BUILTIN_SKILLS = [
             '- update_lifecycle_hook {id,command?,timeoutMs?,event?,matchTools?,enabled?}：改当前工作区的生命周期钩子条目（未传字段沿用原值）。**必弹动作审批卡**；只能改本工作区的条目，别的工作区直接报错。',
             '- remove_lifecycle_hook {id}：删除当前工作区的生命周期钩子条目。**必弹动作审批卡**；同样只限本工作区。',
             '- cognition_toggle {enabled}：启用/关闭 AI 认知索引（跨会话记住「文件职责 / 改动联动 / 暗约束」的可选语义层，默认关）。**必弹动作审批卡，完全权限也不例外**，由用户拍板；适合在用户反复于同一代码工作区做 AI 编码会话时主动建议启用，数据目录不建议建。当前状态可用 get_settings 看 aiCognition 键。',
+            '- request_desktop_control {reason?}：向用户申请打开当前会话的桌面控制（操作第三方原生窗口：读取界面 / 点击 / 输入 / 滚动 / 剪贴板）。**必弹危险审批卡，完全权限也不例外**；批准后本会话才启用，之后仍需 windows_control_mode（action=enter）进入控制模式才能调桌面工具。用户手动在权限面板开启时不需要走本动作；未安装 desktop 服务器时本动作会直接给出了去外部工具页安装的提示。',
             '- type_text {text,target?}：模拟键盘输入到焦点元素（或 target 选择器匹配的输入框），**仅完全权限档**。',
             '- press_key {key,target?}：模拟按键，支持组合键串（如 Ctrl+Shift+P / Alt+7 / Ctrl+` / Shift+F4 / Ctrl+Alt+L）与单键（Enter / Escape / F3 / a）；修饰键可用 Ctrl / Alt / Shift / Meta（也认 Control / Option / Win / Cmd），按真实顺序派发修饰键与主键的 keydown/keyup，可触发全局快捷键、对话框确认、Esc 关闭等，**仅完全权限档**。应用快捷键按物理键位（e.code）匹配，本动作会自动给出 code；无法识别的组合串会报错并说明写法。合成事件 isTrusted=false，依赖真实按键校验的浏览器原生行为可能不生效。',
             '- click {x,y}：在窗口可视区单击一次（DOM 合成 pointer/mouse 事件，不移动系统鼠标；**仅完全权限档**，计划模式下拒绝）。坐标是 CSS 像素：截图是物理像素，先除以 devicePixelRatio（get_state 与 click 返回都带 viewport.dpr）；也可传 selector（如 "#ab-files"）直接点元素，位置更准。返回实际点击坐标与命中元素（tag/id/class/文本），点错按返回的 target 调整；合成事件 isTrusted=false、不带用户激活，少数依赖真实点击校验的行为可能无响应。只支持单击：拖拽 / 滚轮 / 长按 / 悬停不提供；内嵌浏览器页面内部用 browser_click 系列。点击后用 screenshot 核对结果。',

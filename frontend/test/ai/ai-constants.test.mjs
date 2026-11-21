@@ -1,7 +1,7 @@
 // ai-constants.test.mjs：正文图片 data URL 反解（aiImageFromSrc）与 aiImageSrc 的往返。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {aiCtxBannerShow, aiCtxBannerState, aiFormatDuration, aiFormatLiveDuration, aiImageExt, aiImageFromSrc, aiImageSrc, aiIsContextOverflowError, aiMsgActionsStepMode} from '../../src/ai/ai-constants.js';
+import {aiCtxBannerShow, aiCtxBannerState, aiFormatDuration, aiFormatLiveDuration, aiImageExt, aiImageFromSrc, aiImageSrc, aiIsContextOverflowError, aiMsgActionsStepMode, APPROVAL_LOST_TEXT, ASK_LOST_TEXT, ENV_ASK_LOST_TEXT, TOOL_INTERRUPTED_TEXT} from '../../src/ai/ai-constants.js';
 
 test('aiImageFromSrc: 与 aiImageSrc 往返一致', () => {
     const image = aiImageFromSrc('data:image/png;base64,AAAA', 'seal.png');
@@ -169,4 +169,32 @@ test('aiIsContextOverflowError: 只认超窗措辞，不误伤鉴权/限流错�
     assert.equal(aiIsContextOverflowError('invalid request: messages[2].role'), false);
     assert.equal(aiIsContextOverflowError(''), false);
     assert.equal(aiIsContextOverflowError(null), false);
+});
+
+// 应用重启时挂起的卡片：卡片降级为终态，但这条工具结果仍会发给模型。
+// 核心不变量——正文不能留「等待…」口吻（模型会当成已有结果），必须说清没收到 / 没执行。
+test('重启遗留卡片的工具结果文案：说清「没收到」，且不留占位口吻', () => {
+    const cases = [
+        ['ASK_LOST_TEXT', ASK_LOST_TEXT],
+        ['APPROVAL_LOST_TEXT', APPROVAL_LOST_TEXT],
+        ['ENV_ASK_LOST_TEXT', ENV_ASK_LOST_TEXT],
+    ];
+    const placeholders = ['等待用户回答…', '等待用户审批…', '等待用户审批命令…', '等待 AI 分类器判定…', '等待用户填写变量值…'];
+    for (const [name, text] of cases) {
+        assert.equal(typeof text, 'string', name + ' 必须是字符串');
+        assert.ok(text.length > 20, name + ' 太短，缺少可判断的信息');
+        // 不能是注册时那句进行时占位（模型会读成「还在等」），但允许「在等待…时关闭了」这种叙述
+        assert.ok(!placeholders.includes(text), name + ' 不能沿用注册时的占位正文');
+        assert.ok(!text.endsWith('…'), name + ' 不能以省略号收尾，读起来像还没结束');
+        assert.ok(/没收到/.test(text), name + ' 必须明确「没收到」');
+    }
+    // 语义分工：ask 是答案未知（可以重问），审批 / 变量是没执行（需要就重提）
+    assert.ok(/答案未知/.test(ASK_LOST_TEXT) && /ask_user/.test(ASK_LOST_TEXT), 'ask 遗失文案要给「答案未知 + 可重问」的出路');
+    assert.ok(/没有执行/.test(APPROVAL_LOST_TEXT), '审批遗失必须说清副作用未发生');
+    assert.ok(/没有创建/.test(ENV_ASK_LOST_TEXT), '变量创建遗失必须说清未创建');
+    // 与「工具执行中被中断」区分开：那个是副作用未知，这里是决定 / 回答未知
+    assert.notEqual(ASK_LOST_TEXT, TOOL_INTERRUPTED_TEXT);
+    assert.notEqual(APPROVAL_LOST_TEXT, TOOL_INTERRUPTED_TEXT);
+    assert.notEqual(ASK_LOST_TEXT, APPROVAL_LOST_TEXT);
+    assert.notEqual(APPROVAL_LOST_TEXT, ENV_ASK_LOST_TEXT);
 });

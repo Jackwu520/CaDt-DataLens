@@ -515,7 +515,7 @@ export function createAIToolCards(ctx) {
         if (ask.state === 'timeout_abort') return '超时未回答，已停止本轮';
         if (ask.state === 'cancelled') return '问题已取消';
         if (ask.state === 'skipped') return '用户跳过了回答';
-        if (ask.state === 'expired') return '页面已关闭，问题未回答';
+        if (ask.state === 'expired') return '应用重启，这个问题没收到回答';
         return '';
     }
 
@@ -650,7 +650,7 @@ export function createAIToolCards(ctx) {
             case 'submit_plan': return {verb: '提交计划', icon: 'compass'};
             case 'ask_user': return {verb: '提问', icon: 'info'};
             case 'app_control': return {verb: '应用操作', icon: 'gear'};
-            case 'windows_desktop': return {verb: '桌面揭示', icon: 'cursor'};
+            case 'windows_control_mode': return {verb: '桌面控制', icon: 'cursor'};
             case 'todo_write': return {verb: '任务', icon: 'check'};
             case 'notify_send': return {verb: '消息', icon: 'bell'};
             case 'env_list': return {verb: '环境变量', icon: 'shield'};
