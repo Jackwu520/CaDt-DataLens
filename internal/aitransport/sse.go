@@ -52,6 +52,12 @@ func streamOpenAISSE(body io.Reader, id string, emit Emitter, touch func()) erro
 			continue
 		}
 		if data == "[DONE]" {
+			// 只发 [DONE] 不给 finish_reason 的网关不少（免费/中转通道尤甚）：内容是否
+			// 完整无从判断，标 unknown 留痕（前端据此对「话说到一半」的结尾提示可继续），
+			// 但不当传输故障重试——[DONE] 就是上游明确的收尾信号。
+			if !finishSeen {
+				finishReason = "unknown"
+			}
 			emitDone()
 			return nil
 		}
@@ -420,10 +426,16 @@ func streamAnthropicSSE(body io.Reader, id string, emit Emitter, touch func()) e
 	return nil
 }
 
+// aiFinishReason：把三家协议的结束原因归一成前端认识的三档：
+// tool（有工具调用）/ length（输出预算打满，内容被砍断）/ stop（其余）。
+// length 必须原样保留——归一成 stop 会让「被截断」与「模型写完了」在界面上无法区分，
+// 用户只看到话说到一半（2026-11-21 定位：hy4-flash-free 停在 SVG 围栏前）。
 func aiFinishReason(reason string) string {
 	switch strings.ToLower(strings.TrimSpace(reason)) {
 	case "tool_calls", "tool_use", "function_call":
 		return "tool"
+	case "length", "max_tokens", "max_output_tokens", "model_context_window_exceeded":
+		return "length"
 	default:
 		return "stop"
 	}

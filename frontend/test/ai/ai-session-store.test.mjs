@@ -17,6 +17,7 @@ import {
     sessionEndTs,
     sessionActivityTs,
     buildSessionMeta,
+    metaSignature,
     messageFingerprint,
 } from '../../src/ai/ai-session-store.js';
 import {createSessionDiskStore} from '../../src/ai/ai-session-disk.js';
@@ -91,6 +92,17 @@ test('buildSessionMeta：activePlan 归一随 meta 持久化（计划唯一真�
     const bad = buildSessionMeta({id: 's1', activePlan: {...plan, status: 'weird', extraField: 1}});
     assert.equal(bad.activePlan.status, 'pending');
     assert.equal('extraField' in bad.activePlan, false, '白名单外字段不得透传');
+});
+
+test('buildSessionMeta：turnInFlight 随 meta 持久化（进程强杀的中断留痕）', () => {
+    // 起轮置位、finishStream 清除；只有「进程死了没走收尾」才残留 true——
+    // 读盘侧据此挂「回合中断」横幅，与「用户自己停止」区分开。
+    assert.equal(buildSessionMeta({id: 's1'}).turnInFlight, false);
+    assert.equal(buildSessionMeta({id: 's1', turnInFlight: true}).turnInFlight, true);
+    assert.equal(buildSessionMeta({id: 's1', turnInFlight: 'weird'}).turnInFlight, false);
+    // 标记变化必须改变 meta 签名：否则 writeMetaIfChanged 会漏写置位/清除
+    const sig = (m) => metaSignature(buildSessionMeta(m));
+    assert.notEqual(sig({id: 's1'}), sig({id: 's1', turnInFlight: true}));
 });
 
 test('messageFingerprint：思考循环守卫状态变化要能触发重写', () => {

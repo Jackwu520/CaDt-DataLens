@@ -1,5 +1,5 @@
 // ai-diff-view.js：行级 diff 纯函数域——LCS 行 diff、± 统计、审批卡预览裁剪。
-// 方案 V4 从 ai-panel.js 逐字搬移（docs/unfinished-plans/side-chat-tab.md §7.3）；
+// 方案 V4 从 ai-panel.js 逐字搬移（docs/finished-plans/side-chat-tab.md §7.3）；
 // 写审批卡的「放弃 / 应用」外壳在 ai-takeover.js，消费这里产出的 ops / stats / preview。
 // 上限常量沿用 ai-constants.js 的单一来源（AI_DIFF_MAX_LINES / AI_DIFF_PREVIEW_LIMIT）。
 import {aiTextOf, AI_DIFF_MAX_LINES, AI_DIFF_PREVIEW_LIMIT} from './ai-constants.js';

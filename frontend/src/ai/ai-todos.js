@@ -2,6 +2,7 @@
 // 从 ai-panel.js 拆出（docs/unfinished-plans/structure-cleanup.md 阶段 3），函数体逐字搬移。
 // todoStates（const Map，引用稳定）与 DOM 表/回调经 ctx 注入。
 import {aiTextOf} from './ai-constants.js';
+import {iconSvg} from '../core/icons.js';
 
 // 新建会话状态时的默认收起态：默认收起（只看一行进度摘要），
 // 设置页「任务清单默认展开」打开后为展开。纯函数便于单测。
@@ -129,7 +130,7 @@ export function createAITodos(ctx) {
         head.className = 'ai-todos-head';
         const ico = document.createElement('span');
         ico.className = 'ai-todos-ico';
-        ico.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="3" cy="4.6" r="1.25" fill="currentColor"/><rect x="6" y="3.8" width="8" height="1.6" rx="0.8" fill="currentColor"/><circle cx="3" cy="11.4" r="1.25" fill="currentColor"/><rect x="6" y="10.6" width="8" height="1.6" rx="0.8" fill="currentColor"/></svg>';
+        ico.innerHTML = iconSvg('checklist');
         const label = document.createElement('span');
         label.className = 'ai-todos-label';
         label.textContent = '任务';
@@ -144,7 +145,7 @@ export function createAITodos(ctx) {
             ].filter(Boolean).join(' · ') || (list.length + ' 项');
         const chev = document.createElement('span');
         chev.className = 'ai-todos-chev';
-        chev.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 6.5L8 10l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+        chev.innerHTML = iconSvg('chevron-down');
         head.append(ico, label, sum);
         // 收起态：在展开 icon 左侧用小字显示进行中的任务标题（过长由 CSS 截断）。
         // 头部本身是 button，开关只能用 span role=button 承载，避免 button 嵌套。
@@ -160,7 +161,7 @@ export function createAITodos(ctx) {
         curToggle.className = 'ai-todos-cur-toggle' + (badgeOn ? '' : ' off');
         curToggle.setAttribute('role', 'button');
         curToggle.setAttribute('aria-label', '收起时显示进行中的任务');
-        curToggle.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.1 8c1.5-2.6 3.5-3.9 5.9-3.9s4.4 1.3 5.9 3.9c-1.5 2.6-3.5 3.9-5.9 3.9S3.6 10.6 2.1 8z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><circle cx="8" cy="8" r="2.1" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>';
+        curToggle.innerHTML = iconSvg('eye');
         curToggle.addEventListener('click', (e) => {
             // 不触发头部的折叠/展开
             e.stopPropagation();

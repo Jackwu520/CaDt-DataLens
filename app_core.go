@@ -78,8 +78,13 @@ type App struct {
 	closeAction   string
 	quitRequested atomic.Bool // 显式「退出」（菜单 / 托盘右键 / ForceClose）时置位，绕开「最小化到托盘」
 	teardownDone  atomic.Bool // 应用级服务（托盘/MCP/插件/工作区监听）只收口一次
-	tray          *tray.Tray
-	trayHintShown bool
+	// --quit 优雅退出（外部重建脚本 / 工具）：各窗口结算 AI 回合后 ack，收齐或超时才退出。
+	// 状态见 app_close_action.go 的 beginGracefulQuit。
+	gracefulQuitStarted atomic.Bool
+	gracefulAcksMu      sync.Mutex
+	gracefulAcks        map[string]bool
+	tray                *tray.Tray
+	trayHintShown       bool
 }
 
 // FileData 兼容别名（实现已下沉 internal/fileio）。
@@ -172,6 +177,12 @@ func (a *App) ensureAIServices() {
 }
 
 func (a *App) secondInstance(args []string) {
+	// --quit：外部（重建脚本等）请求优雅退出。绕开一切确认框：先让各窗口结算 AI
+	// 回合并落盘，收齐 ack（或超时）再 ForceQuitAll。见 app_close_action.go。
+	if launchargs.HasFlag(args, "--quit") {
+		a.beginGracefulQuit()
+		return
+	}
 	if launchargs.HasFlag(args, "--ai-float") {
 		a.ensureFloatWindow(launchargs.ParseOpenTargets(args)...)
 		return

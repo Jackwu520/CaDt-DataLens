@@ -83,6 +83,8 @@ export function messageFingerprint(message) {
         Number(message.statusCode) || 0,
         Number(message.thinkMs) || 0,
         Number(message.finishedAt) || 0,
+        textOf(message.truncated),
+        textOf(message.finishReason),
     ].join('|');
 }
 
@@ -389,6 +391,10 @@ export function buildSessionMeta(session) {
         round: Number(session && session.round) || 0,
         archivedAt: Number(session && session.archivedAt) || 0,
         pinned: !!(session && session.pinned),
+        // 回合在飞标记：起轮置位、finishStream 清除。进程被外部强杀（重建脚本 / 任务管理器）
+        // 时来不及走收尾，标记残留在 meta.json 里——下次读盘据此挂「回合中断」横幅，
+        // 把「进程死了」与「用户自己停了」区分开（后者经 stopGeneration→finishStream，标记已清）。
+        turnInFlight: (session && session.turnInFlight) === true,
         // 后台结束、用户尚未查看的会话：'' / 'done' / 'error'（列表右侧状态圆点用）
         unread: session && (session.unread === 'done' || session.unread === 'error') ? session.unread : '',
         // 懒加载占位（_stub）只有 meta、messages 是空数组：条数必须沿用缓存值，否则会把 0 写进

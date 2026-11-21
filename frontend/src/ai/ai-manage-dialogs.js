@@ -590,15 +590,14 @@ export function createAIManageDialogs(ctx) {
         // 状态与文案单一来源 aiCtxBannerState；blocked 与显隐无关（× 关闭后发送门禁仍在）
         const view = aiCtxBannerState(percent, tokens, windowSize);
         if (setCtxGate) setCtxGate({blocked: view.blocked, compactBlocked: view.compactBlocked, percent});
-        // ≥100%：压缩请求（摘要提示 + 整段会话）同样发不出去——按钮换成「分段压缩」占位
-        // （方案 docs/unfinished-plans/ai-segmented-compact.md，尚未实装，点击只提示出路）
+        // ≥100% 时整体压缩请求发不出去，但 startCompact 有超窗兜底（按窗口比例截断转录），
+        // 压缩仍可用、只是摘要略粗。按钮保持「压缩上下文」可点，仅补一句预期说明。
         if (el.ctxCompact) {
-            el.ctxCompact.textContent = view.compactBlocked ? '分段压缩' : '压缩上下文';
+            el.ctxCompact.textContent = '压缩上下文';
+            el.ctxCompact.removeAttribute('aria-disabled');
             if (view.compactBlocked) {
-                el.ctxCompact.setAttribute('aria-disabled', 'true');
-                el.ctxCompact.dataset.tip = '分段压缩尚未实装：请先切换更大上下文的模型';
+                el.ctxCompact.dataset.tip = '已超过模型上限：本次压缩只喂入最近的转录，摘要会略粗';
             } else {
-                el.ctxCompact.removeAttribute('aria-disabled');
                 delete el.ctxCompact.dataset.tip;
             }
         }

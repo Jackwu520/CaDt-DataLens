@@ -1,5 +1,5 @@
 // ai-usage-ui.js：用量 UI 域——本轮用量浮层、统计行弹层（会话 / tokens）与用量合计 /
-// 格式化纯函数。方案 V3 从 ai-panel.js 逐字搬移（docs/unfinished-plans/side-chat-tab.md §7.3）；
+// 格式化纯函数。方案 V3 从 ai-panel.js 逐字搬移（docs/finished-plans/side-chat-tab.md §7.3）；
 // 上下文弹层（renderCtxPopover）依赖面板闭包过深（系统上下文组装 / 记忆缓存 / 附件），
 // 留在面板，经 ctx 注入给 toggleStatsPop。
 //
@@ -8,6 +8,7 @@
 
 import {isTurnBoundaryMessage} from './ai-session-store.js';
 import {overlayStack} from '../core/overlay-stack.js';
+import {iconSvg} from '../core/icons.js';
 
 export function aiFormatCompactTokens(value) {
     const num = Math.max(0, Math.round(Number(value) || 0));
@@ -182,7 +183,7 @@ export function createAIUsageUI(ctx) {
         title.className = 'ai-turn-usage-title';
         const glyph = document.createElement('span');
         glyph.className = 'ai-turn-usage-icon';
-        glyph.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="8" cy="4.2" rx="4.5" ry="1.7"/><path d="M3.5 4.2v3.7c0 .94 2.01 1.7 4.5 1.7s4.5-.76 4.5-1.7V4.2"/><path d="M3.5 7.9v3.7c0 .94 2.01 1.7 4.5 1.7s4.5-.76 4.5-1.7V7.9"/></svg>';
+        glyph.innerHTML = iconSvg('database');
         title.append(glyph, document.createTextNode('本轮用量'));
         const sum = document.createElement('b');
         sum.textContent = aiFormatExactCount(total) + ' tok';

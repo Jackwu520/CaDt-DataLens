@@ -1783,3 +1783,76 @@ func TestAIStreamSilentTruncationWithoutTerminator(t *testing.T) {
 		})
 	}
 }
+
+// 只发 [DONE] 不给 finish_reason 的网关：done 载荷标 unknown（内容是否完整无从判断），
+// 不当作传输故障重试——[DONE] 是上游明确的收尾信号，重发只会重复一份内容。
+func TestAIStreamDoneWithoutFinishReasonMarksUnknown(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		writeSSEJSON(w, map[string]any{"choices": []any{map[string]any{
+			"delta":         map[string]any{"content": "话说到一半："},
+			"finish_reason": nil,
+		}}})
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	cfg := Config{Provider: "openai", BaseURL: server.URL + "/v1", Model: "m", Proxy: "direct"}
+	events, err := runAIStreamForTest(cfg, []Message{{Role: "user", Content: "hi"}}, nil)
+	if err != nil {
+		t.Fatalf("StreamResponse: %v", err)
+	}
+	done := aiEventsNamed(events, EventDone)
+	if len(done) != 1 {
+		t.Fatalf("done count = %d", len(done))
+	}
+	if got := done[0].(DonePayload).FinishReason; got != "unknown" {
+		t.Fatalf("finishReason = %q，期望 unknown", got)
+	}
+}
+
+// 输出预算打满要如实上报 length：OpenAI 的 length 与 Anthropic 的 max_tokens 同义
+// （前者以前被归一成 stop），前端据此提示「可继续」而不是当正常收尾。
+func TestAIStreamFinishReasonLengthKept(t *testing.T) {
+	cases := []struct {
+		name     string
+		provider string
+		sse      func(w http.ResponseWriter)
+	}{
+		{"openai length", "openai", func(w http.ResponseWriter) {
+			writeSSEJSON(w, map[string]any{"choices": []any{map[string]any{
+				"delta":         map[string]any{"content": "截断"},
+				"finish_reason": "length",
+			}}})
+			_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+		}},
+		{"anthropic max_tokens", "anthropic", func(w http.ResponseWriter) {
+			writeAnthropicSSE(w, "message_delta", map[string]any{
+				"type": "message_delta", "delta": map[string]any{"stop_reason": "max_tokens"},
+			})
+			writeAnthropicSSE(w, "message_stop", map[string]any{"type": "message_stop"})
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				tc.sse(w)
+			}))
+			defer server.Close()
+
+			cfg := Config{Provider: tc.provider, BaseURL: server.URL + "/v1", Model: "m", Proxy: "direct"}
+			events, err := runAIStreamForTest(cfg, []Message{{Role: "user", Content: "hi"}}, nil)
+			if err != nil {
+				t.Fatalf("StreamResponse: %v", err)
+			}
+			done := aiEventsNamed(events, EventDone)
+			if len(done) != 1 {
+				t.Fatalf("done count = %d", len(done))
+			}
+			if got := done[0].(DonePayload).FinishReason; got != "length" {
+				t.Fatalf("finishReason = %q，期望 length", got)
+			}
+		})
+	}
+}

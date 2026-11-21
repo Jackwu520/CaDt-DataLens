@@ -273,6 +273,7 @@ import {createAIUsageQuota, formatUsageCountdown, usageItemText, usageTone} from
 import {computeLineDiff, diffStats, buildDiffPreview} from './ai-diff-view.js';
 import {missingFileHint} from './ai-path-hints.js';
 import {aiStreamRetryBudget, shouldAutoRetryStream} from './ai-stream-retry.js';
+import {resolveTruncation, truncatedNotice} from './ai-truncation.js';
 import {createAIGitUi} from './ai-git-ui.js';
 import {createAISlash} from './ai-slash.js';
 import {createAIMessageQueue, formatSteerMessage} from './ai-message-queue.js';
@@ -1896,6 +1897,9 @@ export function createAIPanel(options) {
             archived: Array.isArray(raw.archived) ? raw.archived : [],
             archivedAt: Number(raw.archivedAt) || 0,
             pinned: raw.pinned === true,
+            // 回合在飞标记（meta.turnInFlight）：进程被强杀时来不及走 finishStream，
+            // 标记残留 → 读盘后挂「回合中断」横幅（appendInterruptedTurnNotice 消费并清除）。
+            turnInFlight: raw.turnInFlight === true,
             // 会话在后台结束（用户没在看它 / 面板关着）时置位，用于列表右侧的「未查看」圆点。
             unread: raw.unread === 'error' ? 'error' : (raw.unread === 'done' || raw.unread === true ? 'done' : ''),
             planMode: raw.planMode === true,
@@ -3479,7 +3483,7 @@ export function createAIPanel(options) {
             if (chipsPopKind === 'schedules') renderChipsPop('schedules');
         },
     });
-    const renderScheduleSettings = () => scheduleMod.renderScheduleSettings();
+    const renderScheduleSettings = (host) => scheduleMod.renderScheduleSettings(host);
     const openScheduleEditor = (...args) => scheduleMod.openScheduleEditor(...args);
     const aiDelay = (...args) => scheduleMod.aiDelay(...args);
     const handleScheduleFire = (...args) => scheduleMod.handleScheduleFire(...args);
@@ -4266,6 +4270,9 @@ export function createAIPanel(options) {
             renderTurn(group, session, groupIndex === groups.length - 1);
         });
         const live = streamOf(session.id);
+        // 回合中断横幅（进程强杀残留的 turnInFlight）：只在无流时挂——流式中的会话
+        // 是活回合，挂中断条反而自相矛盾
+        if (!live) appendInterruptedTurnNotice(host, session);
         if (live) {
             // 流式状态条钉在消息区最底部（任务清单卡片上方）：看板娘 + 随机开场文案 + 实时计时
             const bar = document.createElement('div');
@@ -4309,6 +4316,93 @@ export function createAIPanel(options) {
         updateContextCount();
         updateScrollButton();
         updateComposerTakeover();
+    }
+
+    // ---------- 中断回合横幅（进程被外部强杀的善后） ----------
+    // 重建脚本 / 任务管理器杀进程时，在飞的回合没有收尾路径：meta.turnInFlight 残留，
+    // JSONL 停在「工具已执行完 / 用户消息已落盘」。横幅把这件事告诉用户并给一键续跑，
+    // 不再是「莫名停止」。横幅本身不落盘（JSONL 历史保持追加式真源），显隐走内存态。
+
+    // 续跑发给模型的话：不重复已完成的工作，从中断处接着做。
+    const AI_INTERRUPT_RESUME_PROMPT = '（上一回合因应用被强制退出而中断，工具结果已保留在历史里。）' +
+        '请从中断处继续，不要重复已完成的工作；如任务实际上已经完成，简要汇报结果即可。';
+
+    function appendInterruptedTurnNotice(host, session) {
+        if (!session || session._stub) return;
+        if (!session.turnInFlight) {
+            renderInterruptedTurnNotice(host, session);
+            return;
+        }
+        // 检测到即清持久标记（本次启动只提示一次；再次强杀会有新一轮的标记）。
+        // 横幅的继续显隐走 _interruptNotice 内存态：续跑 / 忽略 / 新起轮都会收掉它。
+        session.turnInFlight = false;
+        session._interruptNotice = true;
+        persistSessions();
+        renderInterruptedTurnNotice(host, session);
+    }
+
+    function renderInterruptedTurnNotice(host, session) {
+        if (!host || !session || !session._interruptNotice) return;
+        const bar = document.createElement('div');
+        bar.className = 'ai-interrupt-bar';
+        const icon = document.createElement('span');
+        icon.className = 'ai-interrupt-icon';
+        icon.innerHTML = iconSvg('warn', 13);
+        const text = document.createElement('span');
+        text.className = 'ai-interrupt-text';
+        text.textContent = '上次应用被强制关闭，这个会话的回合中断在这里。';
+        const resume = document.createElement('button');
+        resume.type = 'button';
+        resume.className = 'ai-interrupt-resume';
+        resume.textContent = '继续回合';
+        resume.dataset.tip = '按历史里的工具结果接着做，不重复已完成的工作';
+        resume.addEventListener('click', () => { resumeInterruptedTurn(session); });
+        const dismiss = document.createElement('button');
+        dismiss.type = 'button';
+        dismiss.className = 'ai-interrupt-dismiss';
+        dismiss.setAttribute('aria-label', '忽略');
+        dismiss.innerHTML = iconSvg('close', 12);
+        dismiss.addEventListener('click', () => {
+            session._interruptNotice = false;
+            bar.remove();
+        });
+        bar.append(icon, text, resume, dismiss);
+        host.appendChild(bar);
+    }
+
+    async function resumeInterruptedTurn(session) {
+        if (!session) return;
+        if (streamOf(session.id) || compactOf(session.id) || compactStarting) return;
+        session._interruptNotice = false;
+        if (isOpen() && currentSession() === session) renderMessages(true);
+        try {
+            const result = await startSessionTurn(session, AI_INTERRUPT_RESUME_PROMPT, {preserveScroll: true});
+            if (!result.ok && result.reason !== 'no_profile') {
+                flashTurnStartFailure(result);
+            }
+        } catch (e) {}
+    }
+
+    // 优雅退出（--quit）的窗口侧结算：停掉本窗口全部在飞回合与压缩（走既有 stopGeneration
+    // 收口：工具卡标中断、终态落盘、释放租约），等写队列排空后由 main.js ack 给 Go。
+    async function settleForShutdown() {
+        try { cancelOneShot(); } catch (e) {}
+        const ids = [];
+        for (const stream of Array.from(streams.values())) {
+            ids.push(stream.sessionId);
+            try { stopGeneration(stream, false); } catch (e) {}
+        }
+        // stopGeneration 的兜底 finishStream 挂在 1.2s 定时器上；等全部收尾再排空写队列。
+        // Go 侧另有 6s 总超时，这里拖再久也不会卡死退出。
+        const deadline = Date.now() + 2400;
+        while (anyStreaming() && Date.now() < deadline) {
+            await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+        if (sessionStore && typeof sessionStore.whenIdle === 'function') {
+            for (const id of ids) {
+                try { await sessionStore.whenIdle(id); } catch (e) {}
+            }
+        }
     }
 
     // 回合分组按 isTurnBoundaryMessage 切轮（判定与列表排序键同源，见 ai-session-store.js）。
@@ -4617,7 +4711,7 @@ export function createAIPanel(options) {
         head.className = 'ai-think-head';
         const chev = document.createElement('span');
         chev.className = 'ai-think-chev';
-        chev.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 6.5L8 10l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+        chev.innerHTML = iconSvg('chevron-down');
         const label = document.createElement('span');
         label.className = 'ai-think-label';
         label.textContent = aiThinkLabel(message, false);
@@ -4753,7 +4847,7 @@ export function createAIPanel(options) {
                 head.disabled = !hasBody;
                 const chev = document.createElement('span');
                 chev.className = 'ai-process-chev';
-                chev.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 6.5L8 10l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+                chev.innerHTML = iconSvg('chevron-down');
                 if (!hasBody) chev.style.visibility = 'hidden';
                 const label = document.createElement('span');
                 label.className = 'ai-process-label';
@@ -4906,7 +5000,12 @@ export function createAIPanel(options) {
         img.className = 'ai-image-preview';
         img.src = aiImageSrc(image);
         img.alt = image.name || '图片';
-        img.addEventListener('click', () => showImageFullscreen(image));
+        img.addEventListener('click', () => {
+            // 预览对话框是 modal 档（z 3100），灯箱是 lightbox 档（z 1100）：两者同时开着时
+            // 对话框会盖在灯箱上、挡住大图。点图进全屏就先收掉这个中间态对话框，只留灯箱。
+            closeAIDialog();
+            showImageFullscreen(image);
+        });
         img.addEventListener('contextmenu', (e) => {
             e.preventDefault();
             e.stopPropagation();
@@ -5173,7 +5272,9 @@ export function createAIPanel(options) {
                     toggle.className = 'ai-user-fold-btn';
                     const syncToggle = () => {
                         const folded = text.classList.contains('folded');
-                        toggle.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true" style="transform:rotate(' + (folded ? '0' : '180') + 'deg)"><path d="M4.5 6.5L8 10l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg><span>' + (folded ? '展开全文' : '收起') + '</span>';
+                        toggle.innerHTML = iconSvg('chevron-down') + '<span>' + (folded ? '展开全文' : '收起') + '</span>';
+                        // 折叠态翻转箭头：transform 留在 svg 上，css 的 .15s 过渡才作用于它
+                        toggle.firstElementChild.style.transform = 'rotate(' + (folded ? '0' : '180') + 'deg)';
                     };
                     syncToggle();
                     toggle.addEventListener('click', () => {
@@ -5483,18 +5584,18 @@ export function createAIPanel(options) {
         // 归档会话只读：收起所有会改写当前会话的动作（编辑 / 重试 / 重新生成 / 回退 / 分支），
         // 只留复制、投递、支线引用等只读动作；横幅已就地给出「取消归档」出口。
         const archived = !!(sessionNow && sessionNow.archivedAt);
-        const icon = (path) => '<svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">' + path + '</svg>';
+        // 消息动作图标统一走注册表（影子工厂已拆）：edit 与 rename 同为「笔」造型共用一键
         const icons = {
-            copy: icon('<rect x="5.2" y="5.2" width="7.6" height="7.6" rx="1.4"/><path d="M3.6 10.2V3.9c0-.7.6-1.3 1.3-1.3h6.3"/>'),
-            edit: icon('<path d="M3.2 12.8l.6-2.7L10.6 3.3c.5-.5 1.3-.5 1.8 0l.3.3c.5.5.5 1.3 0 1.8L5.9 12.2l-2.7.6z"/><path d="M9.6 4.4l2 2"/>'),
-            regenerate: icon('<path d="M12.6 6.4A5 5 0 1 1 3.4 9.6"/><path d="M12.8 3.2v3.4H9.4"/>'),
-            retry: icon('<path d="M12.6 6.4A5 5 0 1 1 3.4 9.6"/><path d="M12.8 3.2v3.4H9.4"/>'),
-            rewind: icon('<path d="M6.2 4.4L2.8 7.8l3.4 3.4"/><path d="M3 7.8h6.2a4 4 0 1 1 0 8H6.6"/>'),
-            branch: icon('<circle cx="4.6" cy="3.4" r="1.7"/><circle cx="4.6" cy="12.6" r="1.7"/><circle cx="11.5" cy="6.4" r="1.7"/><path d="M4.6 5.1v5.8"/><path d="M4.6 8.9c0-1.7 1.3-2.5 3-2.5h2.2"/>'),
-            database: icon('<ellipse cx="8" cy="4.2" rx="4.5" ry="1.7"/><path d="M3.5 4.2v3.7c0 .94 2.01 1.7 4.5 1.7s4.5-.76 4.5-1.7V4.2"/><path d="M3.5 7.9v3.7c0 .94 2.01 1.7 4.5 1.7s4.5-.76 4.5-1.7V7.9"/>'),
-            sidechat: icon('<path d="M13.2 9.2a2 2 0 0 1-2 2H6.8L3.6 13.8v-3.2"/><path d="M12.4 10.4h-.4"/><path d="M3 6.2A2 2 0 0 1 5 4.2h6a2 2 0 0 1 2 2v.6a2 2 0 0 1-2 2H7l-2.8 2.2V8.2H5a2 2 0 0 1-2-2z"/><path d="M11 7.4h.6"/>'),
-            bringback: icon('<path d="M3 8h8.6"/><path d="M8.4 4.6L11.8 8l-3.4 3.4"/><path d="M13 3.2v9.6"/>'),
-            deliver: icon('<path d="M3.2 8l9.2-4.6v9.2z"/><path d="M12.4 8h1.9"/><path d="M3.2 8h1.2"/>'),
+            copy: iconSvg('copy'),
+            edit: iconSvg('rename'),
+            regenerate: iconSvg('refresh'),
+            retry: iconSvg('refresh'),
+            rewind: iconSvg('rewind'),
+            branch: iconSvg('git'),
+            database: iconSvg('database'),
+            sidechat: iconSvg('sidechat'),
+            bringback: iconSvg('bringback'),
+            deliver: iconSvg('deliver'),
         };
         const add = (act, label, disabled) => {
             const button = document.createElement('button');
@@ -11439,7 +11540,7 @@ async function requestApproval(session, toolMessage, info) {
                     : (imageBlocked ? '当前模型未勾选图像输入：请移除图片或在模型设置中开启'
                         : (videoBlocked ? '当前模型未勾选视频输入：请移除视频或在模型设置中开启'
                             : (ctxOverLimit ? (ctxGate.compactBlocked
-                                    ? '上下文超过模型上限：请切换更大上下文的模型'
+                                    ? '上下文超过模型上限：可压缩（/compact，摘要略粗）或切换更大上下文的模型'
                                     : '上下文超过发送上限：请先压缩上下文（/compact）')
                                 : (hasProfile ? (others ? '其他会话正在生成（' + others + ' 个）' : '') : '未配置 AI')))));
         }
@@ -11836,6 +11937,12 @@ async function requestApproval(session, toolMessage, info) {
         }
         // 会话列表立刻出现「生成中」标记（按会话独立显示，其他会话的流不受影响）
         renderSessionList();
+        // 回合在飞标记随这次 meta 落盘：进程被外部强杀时来不及走收尾，标记残留在
+        // meta.json，下次读盘据此挂「回合中断」横幅。finishStream（含用户停止的
+        // 1.2s 兜底）会清掉它——只有「没走收尾的死亡」才留痕。
+        session.turnInFlight = true;
+        // 用户没点横幅的「继续」而是直接发新消息：中断横幅一并收掉
+        session._interruptNotice = false;
         // 先把用户消息与占位 assistant 落盘：即使流事件丢失、应用崩溃或磁盘重读打断，
         // 会话也不会只剩一个空壳（定时任务/后台注入尤其明显）。
         persistSessions();
@@ -11883,7 +11990,7 @@ async function requestApproval(session, toolMessage, info) {
         // 权威预检仍在 startSessionTurn（按新消息重新估算）
         if (ctxGate.blocked) {
             flash(ctxGate.compactBlocked
-                ? '上下文已超过模型上限：请切换更大上下文的模型，或开启新会话'
+                ? '上下文已超过模型上限：可压缩上下文（/compact，摘要略粗），或切换更大上下文的模型'
                 : '上下文已超过发送上限，请先压缩上下文（/compact）或减少附件', true);
             autoCompactOnGateBlocked();
             return false;
@@ -11923,7 +12030,7 @@ async function requestApproval(session, toolMessage, info) {
             } else if (result.reason === 'over_budget') {
                 flash(result.tokens >= result.windowSize
                     ? '上下文预计约 ' + result.tokens + ' tokens，已超过窗口 ' + result.windowSize +
-                        '：请切换更大上下文的模型，或开启新会话'
+                        '：可压缩上下文（/compact，摘要略粗），或切换更大上下文的模型'
                     : '上下文预计约 ' + result.tokens + ' tokens，超过发送上限（窗口 ' + result.windowSize +
                         ' 的 ' + Math.round(AI_CTX_SEND_BLOCK_RATIO * 100) + '%），请先 /compact 压缩上下文或减少附加内容', true);
                 // 权威预检拦下的也是「轮永远完不成」的场景，同样触发一次兜底压缩
@@ -12413,6 +12520,9 @@ async function requestApproval(session, toolMessage, info) {
         }
         // 本轮文件改动汇总卡（Qoder 风格）：在落盘前追加，保证重放后仍显示
         appendChangesSummary(session, current.changesMark);
+        // 回合已收尾：清掉在飞标记（所有结束路径——done/error/stopped——都汇到这里，
+        // 包括用户停止的 1.2s 兜底）。残留 = 进程没走到这行就死了。
+        if (session) session.turnInFlight = false;
         // 用户在别的会话或面板关着时结束：条目上留一个「已完成未查看」，切回来（或打开面板）才清掉。
         if (session && !current.stopped && (!wasViewed || !isOpen())) {
             if (current.assistant.status === 'done') setSessionUnread(session, 'done');
@@ -13144,6 +13254,9 @@ async function requestApproval(session, toolMessage, info) {
                 }
                 commitRoundTiming(current);
                 current.assistant.statusCode = Number(payload.statusCode) || 0;
+                // 结束原因随消息落盘：没有它，「被截断」与「模型写完了」事后完全无法区分
+                // （2026-11-21 排查 hy4-flash-free 停在 SVG 围栏前时的直接障碍）。
+                current.assistant.finishReason = aiTextOf(payload.finishReason) || 'stop';
                 if (payload.thinkingSignature) current.assistant.thinkingSignature = payload.thinkingSignature;
                 if (payload.usage) {
                     current.assistant.usage = payload.usage;
@@ -13234,6 +13347,13 @@ async function requestApproval(session, toolMessage, info) {
                         startRound(current);
                         return;
                     }
+                }
+                // 截断提示：length = 打满输出预算；unknown = 上游只发 [DONE] 没给原因且正文
+                // 悬空收尾。标记落在消息上（随会话落盘），历史会话重开也看得到「继续」入口。
+                const truncKind = resolveTruncation(current.assistant.finishReason, current.assistant.content);
+                if (truncKind) {
+                    current.assistant.truncated = truncKind;
+                    if (onScreen) showNote(truncatedNotice(truncKind) + '——点回复末尾的「继续」可接着写。');
                 }
                 current.assistant.status = 'done';
                 finishStream(current);
@@ -13573,7 +13693,8 @@ async function requestApproval(session, toolMessage, info) {
         return reasoningLevelInfo(account, entry).label;
     }
 
-    const AI_CHEVRON_SVG = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 6.5L8 10l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    // 折叠箭头（ctx 共享给 action-approval-card / ask-cards / patch-card / takeover 兄弟模块）
+    const AI_CHEVRON_SVG = iconSvg('chevron-down');
 
     // 单行模型 chip：图标 + 模型名 + 推理等级 + 展开箭头（不显示「模型 / 推理等级」文字标签）
     function renderModelChip() {
@@ -16687,16 +16808,7 @@ async function requestApproval(session, toolMessage, info) {
         if (el.promptsBtn) el.promptsBtn.addEventListener('click', () => showPromptDialog());
         if (el.memoryBtn) el.memoryBtn.addEventListener('click', () => showMemoryDialog());
         if (el.skillsBtn) el.skillsBtn.addEventListener('click', () => showSkillsDialog());
-        if (el.ctxCompact) el.ctxCompact.addEventListener('click', () => {
-            // ≥100% 时按钮是「分段压缩」占位（文案在 updateCtxBanner 换）：分段压缩方案已立项
-            // 未实装（docs/unfinished-plans/ai-segmented-compact.md），点击只给指引，
-            // 不发注定被拒收的压缩请求
-            if (ctxGate.compactBlocked) {
-                flash('分段压缩尚未实装：请先切换更大上下文的模型', true);
-                return;
-            }
-            startCompact();
-        });
+        if (el.ctxCompact) el.ctxCompact.addEventListener('click', () => startCompact());
         if (el.ctxBannerClose) el.ctxBannerClose.addEventListener('click', () => dialogsMod.dismissCtxBanner());
         if (el.unarchiveBtn) el.unarchiveBtn.addEventListener('click', () => {
             const session = currentSession();
@@ -18064,6 +18176,9 @@ async function requestApproval(session, toolMessage, info) {
         getMode: () => mode,
         // 是否有会话正在生成/压缩（关窗二次确认依据，main.js 轮询后经 SetAIRunning 同步给 Go）
         hasActiveTurn: () => streams.size > 0 || !!oneShot,
+        // 优雅退出（--quit）的窗口侧结算：停掉在飞回合、落盘、释放租约；main.js 在
+        // app-graceful-quit 事件里调用，完成后 ack（AppGracefulQuitAck）
+        settleForShutdown,
         // AI 创建的终端 shell 退出（main.js 的 term-exit 转发）：经会话信箱唤醒发起会话。
         // terminal 工具只挂主会话（子代理白名单无它），sessionId 就是主会话 id；会话已删则放弃。
         notifyAITerminalExit: (sessionId, termId, code) => {
@@ -18084,17 +18199,41 @@ async function requestApproval(session, toolMessage, info) {
         bridgeNewSession: async (opts2) => {
             const title = String((opts2 && opts2.title) || '').trim();
             const message = String((opts2 && opts2.message) || '').trim();
+            // focus=true 抢占面板（打开面板 + 切到新会话 + 走 UI 输入区发消息，旧行为）；
+            // 缺省后台新建：不打开面板、不切 currentSession、不碰输入区，带 message 时经
+            // startSessionTurn 会话级内核起轮（定时任务/通知唤醒同款路径，见 11662 注释）。
+            const focus = !!(opts2 && opts2.focus);
             if (typeof newSession !== 'function' || typeof submitText !== 'function') throw new Error('会话桥不可用');
-            open(true);
-            newSession();
-            const session = currentSession();
-            if (title && session) {
-                session.title = title.slice(0, 60);
-                persistSessions();
-                renderSessionList();
+            if (focus) {
+                open(true);
+                newSession();
+                const session = currentSession();
+                if (title && session) {
+                    session.title = title.slice(0, 60);
+                    persistSessions();
+                    renderSessionList();
+                }
+                // submitText 发送失败会返回 false（busy / sessions_pending / no_profile 等，
+                // 内部已 flash 错误）：如实带出 sent，避免 note 误报「已发送」。
+                const sent = message ? !!(await submitText(message)) : null;
+                return session ? {id: session.id, title: session.title, sent} : null;
             }
-            if (message) await submitText(message);
-            return session ? {id: session.id, title: session.title} : null;
+            // 后台路径：createSessionData 继承面板当前会话的模型/权限（inheritModelRef 读
+            // currentSession，不切它）——正好满足「继承当前会话」的口径。
+            if (typeof createSessionData !== 'function' || typeof startSessionTurn !== 'function') {
+                throw new Error('会话桥不可用');
+            }
+            const session = createSessionData(title || undefined);
+            sessions.push(session);
+            persistSessions();
+            renderSessionList();
+            let turn = null;
+            if (message) turn = await startSessionTurn(session, message);
+            return {
+                id: session.id,
+                title: session.title,
+                ...(turn ? {turn: {ok: !!turn.ok, reason: turn.reason || ''}} : {}),
+            };
         },
         bridgeSwitchSession: async (id) => {
             if (typeof switchSession !== 'function') throw new Error('会话桥不可用');
@@ -18234,6 +18373,9 @@ async function requestApproval(session, toolMessage, info) {
         // 都在面板闭包里，注入给团队视图；标签页本身只提供容器。
         bridgeMountAgentTeamView: (root, spec) => mountTeamView(root, spec, {getMainAgent: mainAgentInfoOf}),
         bridgeUnmountAgentTeamView: (root) => unmountTeamView(root),
+        // 定时任务应用页面标签页（内容区）用的桥：任务列表渲染与 CRUD 都留在面板闭包里
+        // （CRUD 后要刷新头部胶囊与弹层缓存），标签页只提供容器。
+        bridgeMountSchedules: (root) => scheduleMod.mountSchedules(root),
         // 内容区「支线对话」标签页：把会话渲染进宿主容器（复用面板渲染函数，
         // 面板单例 UI 在外渲染时跳过；滚动由宿主自己管）
         bridgeRenderSideChat: (root, sessionId) => renderSideChatInto(root, sessionId),

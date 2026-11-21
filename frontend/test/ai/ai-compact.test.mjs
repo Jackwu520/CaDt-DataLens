@@ -180,6 +180,25 @@ test('compactTranscriptOf：maxChars 生效，保留尾部并标截断', () => {
     assert.ok(compactTranscriptOf(session, 10).length >= 2000);
 });
 
+// 超窗截断的旧摘要：它是对更早历史的滚动累积，必须恒定留在头部。原来摘要与消息一起按
+// 尾部截断，cap 被压小时旧摘要总被截掉——超窗压缩反而比正常压缩更容易「失忆」。
+test('compactTranscriptOf：超窗截断仍保留头部旧摘要，总量受 cap 约束', () => {
+    const session = {
+        summary: {text: 'SHORT_SUMMARY'},
+        messages: [{role: 'user', content: 'A'.repeat(5000) + 'RECENT_TAIL'}],
+    };
+    const capped = compactTranscriptOf(session, 4000);
+    assert.ok(capped.includes('此前摘要：\nSHORT_SUMMARY'), '旧摘要必须留在头部');
+    assert.ok(capped.endsWith('RECENT_TAIL'), '消息转录仍保留最近尾部');
+    assert.ok(capped.includes('较早内容已截断'));
+    assert.ok(capped.length <= 4000 + 200, '旧摘要计入预算：总量仍接近 cap：' + capped.length);
+    // 旧摘要很长时也要保住它，但消息转录至少留 2000 字符（不能只剩旧摘要）
+    const longSummary = {summary: {text: 'S'.repeat(9000)}, messages: [{role: 'user', content: 'M'.repeat(5000)}]};
+    const capped2 = compactTranscriptOf(longSummary, 4000);
+    assert.ok(capped2.includes('S'.repeat(9000)), '超长旧摘要完整保留');
+    assert.ok(capped2.length >= 9000 + 2000, '消息转录保底 2000 字符');
+});
+
 test('buildCompactMessages：system 为摘要器约束，user 带焦点指令', () => {
     const session = {messages: [{role: 'user', content: 'x'}]};
     const messages = buildCompactMessages(session, '摘要约束', '保住补丁库方案');

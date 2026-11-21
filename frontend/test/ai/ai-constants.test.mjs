@@ -74,13 +74,13 @@ test('aiCtxBannerState: 三档文案与门禁状态', () => {
     assert.equal(near.blocked, true);
     assert.equal(near.compactBlocked, false);
     assert.equal(near.text, '上下文 95%（约 249,036 / 262,144 tokens，估算），接近上限，请先压缩再发送');
-    // ≥100%：压缩请求（摘要提示 + 整段会话）也发不出去——compactBlocked 为 true，
-    // 文案指引切换更大上下文的模型（切模型后百分比回落自然解锁）
+    // ≥100%：整体压缩请求发不出去（compactBlocked 为 true），但 startCompact 有超窗兜底，
+    // 压缩仍可用——文案提示「摘要略粗」而不是禁用按钮/只让切模型
     const beyond = aiCtxBannerState(1.21, 317645, 262144);
     assert.equal(beyond.state, 'over');
     assert.equal(beyond.blocked, true);
     assert.equal(beyond.compactBlocked, true);
-    assert.equal(beyond.text, '上下文 121%（约 317,645 / 262,144 tokens，估算），已超过模型上限：请切换更大上下文的模型');
+    assert.equal(beyond.text, '上下文 121%（约 317,645 / 262,144 tokens，估算），已超过模型上限：可压缩（摘要略粗）或切换更大上下文的模型');
     // 边界：正好 90% 即发送门禁；正好 100% 即压缩门禁
     assert.equal(aiCtxBannerState(0.9, 1000, 1000).blocked, true);
     assert.equal(aiCtxBannerState(0.899, 899, 1000).blocked, false);

@@ -322,7 +322,7 @@ export const AI_BUILTIN_SKILLS = [
             '- get_settings_tree {pane?}：设置树。不带 pane 返回页清单（id / 标题 / 父组 / 行数）；带 pane 返回该页分组与行（唯一 id / 标题 / 类型 / 当前值 / 危险度 low|medium|high / 是否可写）。行 id 用于 open_settings 的 row 与 set_setting_row。',
             '- set_setting_row {id,value}：按设置树 id 写入一项设置：低风险直接生效；中/高风险会弹动作审批卡，批准后才写；布局形态类行永久不可由 AI 写。开关写 true/false，下拉写选项 value（也认选项文案），数字受控件 min/max 约束。',
             '- set_setting {key,value}：改受限白名单设置并即时生效（持久化）。可写键：autoSave, showSidebar, alwaysOnTop, codeWrap, codeGuides, treeGuides, treeCounts, mdLineNumbers, mdScrollSync, readOnlyMode, treeRefreshInterval(1/2/3/5/10), sidebarFont(10-20), editorFont(10-24), treeExpandDefault(expand/collapse), openMode(tab/window), theme, codeStyle(auto / jetbrains-dark / darcula / tokyo-night / jetbrains-light / github-light / shiki / newsprint / pixyll / whitey；只改代码配色与编辑器观感，不改界面), sidebarWidth(160-500), terminalHeight(120-2000), aiPanelWidth(280-2000)。未知键会报错并列出可用键。**AI 面板的显示方式（停靠分屏 / 全屏 / 悬浮）与停靠侧永远不可写**：那是用户的布局偏好，只能由用户自己在面板 […] 菜单或设置页切换，任何动作（含 set_setting、toggle_ai_panel 之外的一切）都不得改动，也不要建议用户「让 AI 帮你切」。',
-            '- ai_new_session {title?,message?}：新建 AI 会话（本面板），message 非空会立刻发送（真实触发一次模型调用）；当前会话还没发过消息时不会重复创建，而是复用并重命名该会话。',
+            '- ai_new_session {title?,message?,focus?}：新建 AI 会话。**默认后台创建**：不打开面板、不切换面板当前会话、不碰输入区；message 非空会在新会话后台起一轮（真实触发一次模型调用）。focus=true 才抢占面板（打开并切到新会话、经输入区发消息）；当前会话还没发过消息时，focus 路径会复用并重命名该会话。模型与权限档继承面板当前会话。',
             '- ai_switch_session {id}：切换 AI 会话。',
             '- ai_rename_session {title,id?}：重命名 AI 会话标题。**不传 id 改的是调用者自己所在的会话**（后台会话也安全，不会误改面板当前查看的会话）；改其他会话时 id 从 get_ai 的会话信息或跨会话搜索结果获取；title 非空、超 60 字符截断。当前会话改名即时生效，其他会话改名后下次打开用新标题。',
             '- get_agents：智能体（群聊成员）列表——id / 名字 / 模型（ref 与展示名）/ 职责 / 分组 / 主持人标记 / 启用状态，并附全部可用模型清单（ref + 展示名）。用户让你「建一个智能体 / 加个群成员」时先看这里。',
@@ -1050,8 +1050,9 @@ function aiGroupDigits(value) {
 // 上下文提醒条的文案与状态：percent = tokens / windowSize。
 // - 'suggest'：达到压缩阈值、仍有发送余量（琥珀提醒）；
 // - 'over'：达到发送硬门槛（红色门禁；blocked 与显隐无关，updateCtxBanner 据此回写发送门禁）。
-// compactBlocked（估算 ≥100%）：压缩请求 = 摘要提示 + 整段会话一起发给模型，此时同样发不出去
-// ——「压缩上下文」按钮禁用、tooltip 指引切换更大上下文的模型（出路只剩切模型 / 新会话）。
+// compactBlocked（估算 ≥100%）：整体压缩请求会把整段会话一起发给模型，直接发不出去；但
+// startCompact 有超窗兜底（按窗口比例截断转录），此时压缩仍可用、只是摘要略粗。所以这里只
+// 用 compactBlocked 区分文案（提示「摘要略粗」），按钮照常可点，不再禁用、不再指引切模型。
 export function aiCtxBannerState(percent, tokens, windowSize) {
     const ratio = Number(percent) || 0;
     const windowed = Number(windowSize) > 0;
@@ -1060,7 +1061,7 @@ export function aiCtxBannerState(percent, tokens, windowSize) {
     const nums = '（约 ' + aiGroupDigits(tokens) + ' / ' + aiGroupDigits(windowSize) + ' tokens，估算）';
     const p = Math.round(ratio * 100);
     let text;
-    if (compactBlocked) text = '上下文 ' + p + '%' + nums + '，已超过模型上限：请切换更大上下文的模型';
+    if (compactBlocked) text = '上下文 ' + p + '%' + nums + '，已超过模型上限：可压缩（摘要略粗）或切换更大上下文的模型';
     else if (over) text = '上下文 ' + p + '%' + nums + '，接近上限，请先压缩再发送';
     else text = '上下文 ' + p + '%' + nums + '，建议压缩';
     return {state: over ? 'over' : 'suggest', blocked: over, compactBlocked, text};

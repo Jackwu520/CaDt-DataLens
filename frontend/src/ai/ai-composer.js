@@ -844,14 +844,14 @@ export function createAIComposer(ctx) {
         if (!showContextMenu) return;
         const hasSel = editableHasSelection(target);
         showContextMenu([
-            {label: '撤销', shortcut: 'Ctrl+Z', icon: 'E7A7', action: () => execEditable(target, 'undo')},
-            {label: '重做', shortcut: 'Ctrl+Y', icon: 'E7A6', action: () => execEditable(target, 'redo')},
+            {label: '撤销', shortcut: 'Ctrl+Z', icon: 'undo', action: () => execEditable(target, 'undo')},
+            {label: '重做', shortcut: 'Ctrl+Y', icon: 'redo', action: () => execEditable(target, 'redo')},
             {sep: true},
-            {label: '剪切', shortcut: 'Ctrl+X', icon: 'E8C6', disabled: !hasSel, action: () => execEditable(target, 'cut')},
-            {label: '复制', shortcut: 'Ctrl+C', icon: 'E8C8', disabled: !hasSel, action: () => execEditable(target, 'copy')},
-            {label: '粘贴', shortcut: 'Ctrl+V', icon: 'E77F', action: () => pasteIntoEditable(target)},
+            {label: '剪切', shortcut: 'Ctrl+X', icon: 'cut', disabled: !hasSel, action: () => execEditable(target, 'cut')},
+            {label: '复制', shortcut: 'Ctrl+C', icon: 'copy', disabled: !hasSel, action: () => execEditable(target, 'copy')},
+            {label: '粘贴', shortcut: 'Ctrl+V', icon: 'paste', action: () => pasteIntoEditable(target)},
             {sep: true},
-            {label: '全选', shortcut: 'Ctrl+A', icon: 'E8B3', action: () => execEditable(target, 'selectAll')},
+            {label: '全选', shortcut: 'Ctrl+A', icon: 'select-all', action: () => execEditable(target, 'selectAll')},
         ], event.clientX, event.clientY);
     }
 

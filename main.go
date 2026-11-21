@@ -4,6 +4,7 @@ import (
 	"embed"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 
@@ -138,7 +139,14 @@ func main() {
 		primary.Name = "debug"
 		primary.Mode = windowModeDebug
 	}
-	app.createWindow(primary)
+	if launchargs.HasFlag(os.Args[1:], "--quit") {
+		// --quit 只对「已有运行实例」有意义：转发场景在 application.New() 里就
+		// os.Exit 了；走到这里说明本进程成了主实例而目标应用没在跑——不建窗口，
+		// 短定时器直接退出，避免冷启动闪一个完整窗口再被脚本强杀。
+		time.AfterFunc(300*time.Millisecond, wailsApp.Quit)
+	} else {
+		app.createWindow(primary)
+	}
 
 	err := wailsApp.Run()
 	if err != nil {

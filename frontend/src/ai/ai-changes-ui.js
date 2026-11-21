@@ -3,6 +3,7 @@
 // 依赖（opts 常量、const Map、面板函数）均引用稳定，经 ctx 注入。
 import {aiFormatTime, aiTextOf} from './ai-constants.js';
 import {createFileIcon} from '../core/fileicons.js';
+import {iconSvg} from '../core/icons.js';
 
 // 审阅 diff 块归一：GitDiffFor 的输出**不能整串 trim**——git 的空上下文行是「单个空格」
 // 的行，hunk 恰好以空上下文行结尾时（markdown 等文档极常见），整串 trim 会把它连同
@@ -198,7 +199,7 @@ export function createAIChangesUI(ctx) {
         head.className = 'ai-changes-card-head';
         const icon = document.createElement('span');
         icon.className = 'ai-changes-card-icon';
-        icon.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M9.5 1.5H4a.8.8 0 0 0-.8.8v11.4a.8.8 0 0 0 .8.8h8a.8.8 0 0 0 .8-.8V4.8L9.5 1.5z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M6 8.2h4M6 10.6h4M6 5.8h2" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>';
+        icon.innerHTML = iconSvg('doc');
         const title = document.createElement('span');
         title.className = 'ai-changes-card-title';
         title.textContent = '已编辑 ' + changes.length + ' 个文件';

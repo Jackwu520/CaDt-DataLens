@@ -12,6 +12,9 @@ package main
 // 附属窗口（AI 浮窗 / 调试控制台）只按其窗口类型判定，从不藏进托盘。
 
 import (
+	"context"
+	"time"
+
 	"github.com/wailsapp/wails/v3/pkg/application"
 
 	"datalens/internal/appconfig"
@@ -130,6 +133,71 @@ func (a *App) appQuitReasonSnapshot() appQuitReasons {
 	r.Terms = a.Terminal.RunningSessionCount()
 	r.BgJobs = cmdbridge.RunningAIJobCount()
 	return r
+}
+
+// beginGracefulQuit 外部优雅退出（`datalens.exe --quit` 经单实例转发到这里）：
+// 与 QuitApp 的区别是绕开一切确认框——先广播 app-graceful-quit 让每个窗口结算
+// 自己的 AI 回合（工具卡标中断、终态落盘、释放回合租约），收齐 ack（或超时）
+// 再 ForceQuitAll。重建脚本在替换 exe 前调它，跑着的回合就不会再「莫名陪葬」。
+func (a *App) beginGracefulQuit() {
+	if a.ctx == nil {
+		return
+	}
+	if !a.gracefulQuitStarted.CompareAndSwap(false, true) {
+		return // 重复 --quit：退出已在路上
+	}
+	targets := winReg.list()
+	if len(targets) == 0 {
+		a.ForceQuitAll()
+		return
+	}
+	a.gracefulAcksMu.Lock()
+	a.gracefulAcks = make(map[string]bool, len(targets))
+	for _, st := range targets {
+		a.gracefulAcks[st.name()] = false
+	}
+	a.gracefulAcksMu.Unlock()
+	emitAppEvent("app-graceful-quit")
+	// 结算通常 1-2 秒（stopGeneration 的兜底 finishStream 在 1.2s 定时器上）；
+	// 超时兜底：某个窗口 JS 卡死也保证进程最终退出。
+	go func() {
+		deadline := time.Now().Add(6 * time.Second)
+		for time.Now().Before(deadline) {
+			if a.gracefulAllAcked() {
+				break
+			}
+			time.Sleep(150 * time.Millisecond)
+		}
+		a.ForceQuitAll()
+	}()
+}
+
+// AppGracefulQuitAck 前端窗口结算完成后的确认（app-graceful-quit 处理器收尾时调用）；
+// 按窗口名去重，重复 ack 无害。
+func (a *App) AppGracefulQuitAck(ctx context.Context) {
+	name := callerWindowName(ctx)
+	if name == "" {
+		return
+	}
+	a.gracefulAcksMu.Lock()
+	if a.gracefulAcks != nil {
+		a.gracefulAcks[name] = true
+	}
+	a.gracefulAcksMu.Unlock()
+}
+
+func (a *App) gracefulAllAcked() bool {
+	a.gracefulAcksMu.Lock()
+	defer a.gracefulAcksMu.Unlock()
+	if len(a.gracefulAcks) == 0 {
+		return true
+	}
+	for _, ok := range a.gracefulAcks {
+		if !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // teardownAppServices 应用级服务收口（托盘 / MCP / 插件服务 / 工作区监听）。

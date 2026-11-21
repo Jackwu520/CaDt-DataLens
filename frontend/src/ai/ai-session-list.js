@@ -512,7 +512,7 @@ export function createAISessionList(ctx) {
                     }
                     const chev = document.createElement('span');
                     chev.className = 'ai-session-group-chev';
-                    chev.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+                    chev.innerHTML = iconSvg('chevron-right', 12);
                     const icon = document.createElement('span');
                     icon.className = 'ai-session-group-icon';
                     icon.innerHTML = iconSvg(group.path ? 'folder' : 'circle', 12);
@@ -624,7 +624,7 @@ export function createAISessionList(ctx) {
             head.setAttribute('aria-expanded', String(archivedExpanded));
             const chev = document.createElement('span');
             chev.className = 'ai-session-arch-chev';
-            chev.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+            chev.innerHTML = iconSvg('chevron-right', 12);
             const label = document.createElement('span');
             label.textContent = '已归档 ' + archivedList.length;
             head.append(chev, label);

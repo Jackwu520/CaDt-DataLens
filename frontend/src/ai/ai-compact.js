@@ -103,10 +103,14 @@ export function applyCompactToSession(session, summary, cutoff) {
 export function compactTranscriptOf(session, maxChars) {
     const source = session || {};
     const cap = Math.max(2000, Number(maxChars) || TRANSCRIPT_MAX);
-    const parts = [];
+    // 旧摘要单独留在头部：它是对更早历史的滚动累积。原来把旧摘要拼进 transcript 一起按
+    // 尾部截断，而超窗兜底会把 cap 压小——旧摘要恰好排在最前，总是第一个被截掉，滚动链条
+    // 就此断掉，超窗压缩的摘要质量反而比正常压缩更差。现在旧摘要恒定保留，只截消息中段。
+    let priorSummary = '';
     if (source.summary && aiTextOf(source.summary.text).trim()) {
-        parts.push('此前摘要：\n' + aiTextOf(source.summary.text).trim());
+        priorSummary = '此前摘要：\n' + aiTextOf(source.summary.text).trim();
     }
+    const parts = [];
     for (const message of source.messages || []) {
         if (!message) continue;
         if (message.role === 'tool') {
@@ -122,8 +126,13 @@ export function compactTranscriptOf(session, maxChars) {
             (imageCount ? '\n（附图 ' + imageCount + ' 张）' : ''));
     }
     let transcript = parts.join('\n\n');
-    if (transcript.length > cap) transcript = '…（较早内容已截断）\n\n' + transcript.slice(-cap);
-    return transcript;
+    // 截断预算扣掉旧摘要占的篇幅，保证「旧摘要 + 消息转录」总量仍受 cap 约束——超窗兜底
+    // 正是靠 cap 保证摘要请求一定发得出去，不能为了保旧摘要把这个保证破坏；但消息转录至少
+    // 留 2000 字符，避免摘要器只看到旧摘要、对最近发生了什么一无所知。
+    const prefix = priorSummary ? priorSummary.length + 2 : 0;
+    const msgCap = Math.max(2000, cap - prefix);
+    if (transcript.length > msgCap) transcript = '…（较早内容已截断）\n\n' + transcript.slice(-msgCap);
+    return priorSummary ? priorSummary + '\n\n' + transcript : transcript;
 }
 
 // 压缩请求的消息体（system = 摘要器约束；user = 转录 + 可选焦点指令）。

@@ -516,6 +516,7 @@ const mockStorageItems = [
     {id: 'temp-scratch', label: '系统临时文件', note: '%TEMP% 下本应用写的临时库与插件暂存。', kind: 'cache', scope: 'temp', inCache: true, path: 'C:\\Users\\dev\\AppData\\Local\\Temp', bytes: 720 * 1024, files: 12, entries: 12, exists: true},
     {id: 'ws-worklog', label: 'AI 工作日志（本工作区）', note: '.cadt/logs 下的工作日志索引与正文。', kind: 'cache', scope: 'workspace', inCache: true, path: '', bytes: 0, files: 0, entries: 0, exists: false},
     {id: 'ws-gen', label: '生图与视频产物', note: '.cadt/gen 里保存下来的生成图片与视频。', kind: 'data', scope: 'workspace', inCache: false, path: '', bytes: 0, files: 0, entries: 0, exists: false},
+    {id: 'ws-scratch', label: '临时草稿（本工作区）', note: '.cadt/scratch 里的临时草稿，不进一键清缓存，删除走回收站。', kind: 'data', scope: 'workspace', inCache: false, path: '', bytes: 0, files: 0, entries: 0, exists: false},
     {id: 'ws-memory', label: '工作区 AI 记忆', note: '.cadt/memory 里的记忆与索引。', kind: 'danger', scope: 'workspace', inCache: false, path: '', bytes: 0, files: 0, entries: 0, exists: false},
     {id: 'ai-sessions', label: 'AI 会话记录', note: '所有会话的正文 JSONL 与附图，是唯一真源。', kind: 'danger', scope: 'app', inCache: false, path: MOCK_APP_ROOT + '\\ai-sessions', bytes: 60 * 1024 * 1024, files: 1204, entries: 0, exists: true},
     {id: 'ai-schedule', label: 'AI 定时任务', note: '定时任务定义与运行记录。', kind: 'danger', scope: 'app', inCache: false, path: MOCK_APP_ROOT + '\\ai-schedule.db', bytes: 184 * 1024, files: 3, entries: 0, exists: true},
@@ -1673,6 +1674,8 @@ const mockBackend = {
     async SetCloseAction(action) { window.__mockCloseAction = action === 'tray' ? 'tray' : 'exit'; },
     async QuitApp() { this._calls.push('quit-app'); },
     async ForceQuitAll() { window.__mockForceQuitAll = (window.__mockForceQuitAll || 0) + 1; },
+    // --quit 优雅退出的窗口 ack（真实后端按窗口名去重；mock 记数即可）
+    async AppGracefulQuitAck() { window.__mockGracefulQuitAck = (window.__mockGracefulQuitAck || 0) + 1; },
     async GetIntegrationStatus() {
         if (!window.__mockIntegration) {
             window.__mockIntegration = {fileAssoc: false, contextMenu: false};

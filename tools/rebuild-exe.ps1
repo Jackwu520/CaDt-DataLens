@@ -13,8 +13,9 @@
 # rebuild-exe.ps1：一键构建 exe 并替换到仓库根目录的便携副本 datalens.exe（tools\rebuild-exe.cmd 双击入口）。
 # 流程：先跑测试门（Go + 前端）→ 通过直接构建；未通过则显示失败摘要，可选
 # 「1 复制失败信息到剪贴板（粘贴给 AI 修复）」「2 跳过测试强行构建」「其他退出」。
-# 运行中的 exe 无法覆盖——默认先尝试优雅关闭（等 6 秒，应用有「AI 正在生成」二次确认弹窗
-# 时会超时转强制结束）；带 -KeepRunning 时改走改名让路（Windows 允许改名运行中的 exe），
+# 运行中的 exe 无法覆盖——默认先发 --quit 优雅退出（等 10 秒：各窗口结算 AI 回合并落盘），
+# 没退的再尝试优雅关闭（等 6 秒，「AI 正在生成」二次确认弹窗在途时会超时转强制结束）；
+# 带 -KeepRunning 时改走改名让路（Windows 允许改名运行中的 exe），
 # 遗留的 datalens.running-old-*.exe 下次运行清理（名字匹配 .gitignore 的 *.running-old*.exe）。
 
 $ErrorActionPreference = "Stop"
@@ -46,6 +47,25 @@ function Stop-RunningInstances {
         Where-Object { $_.ProcessName -in @("CaDt-DataLens", "datalens") -and $known -contains $_.Path }
     if (-not $running) { return }
     Write-Host "发现运行中的实例，尝试优雅关闭…" -ForegroundColor Cyan
+    # 先走 --quit 优雅退出（经单实例转发给主实例）：各窗口结算 AI 回合（工具卡标中断、
+    # 写队列落盘、释放租约）后退出，跑着的对话不再被强杀「莫名陪葬」。旧版 exe 不识别
+    # 该开关时会当成普通启动转发（最多前置一下窗口），等不到退出就落到下面的常规关闭。
+    $quitLauncher = $target
+    if (-not (Test-Path $quitLauncher)) { $quitLauncher = $binExe }
+    if (Test-Path $quitLauncher) {
+        try { Start-Process -FilePath $quitLauncher -ArgumentList "--quit" -WindowStyle Hidden | Out-Null } catch { }
+        $gracefulDeadline = (Get-Date).AddSeconds(10)
+        while ((Get-Date) -lt $gracefulDeadline) {
+            Start-Sleep -Milliseconds 400
+            $alive = Get-Process -ErrorAction SilentlyContinue |
+                Where-Object { $_.ProcessName -in @("CaDt-DataLens", "datalens") -and $known -contains $_.Path }
+            if (-not $alive) {
+                Write-Host "已优雅退出（回合已结算落盘）。" -ForegroundColor DarkGray
+                return
+            }
+        }
+        Write-Host "优雅退出超时（可能有窗口未响应），转常规关闭…" -ForegroundColor Yellow
+    }
     foreach ($proc in $running) { $null = $proc.CloseMainWindow() }
     # 应用有「AI 正在生成」关窗二次确认：等 6 秒，没退的转强制结束
     $deadline = (Get-Date).AddSeconds(6)

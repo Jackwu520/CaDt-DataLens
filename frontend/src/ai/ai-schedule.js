@@ -29,36 +29,74 @@ export function createAISchedule(ctx) {
     // 会话信箱（阶段 I）：定时任务改成「一个通知发送方」——与子代理结算走同一条注入管道
     const deliverAgentNotice = typeof ctx.deliverAgentNotice === 'function' ? ctx.deliverAgentNotice : null;
 
-    // ---- 设置 → AI → 定时任务 ----
+    // ---- 应用页面：定时任务（core/app-pages.js 的 schedules）----
+    // host 由应用页面标签页传入（视图工厂 bridge-app-page-view 调 mount）；
+    // 不传时优先用「当前已挂载的列表容器」——AI 的 schedule_* 工具在 CRUD 后调
+    // renderScheduleSettings() 要能刷新正在看的那个标签页，否则只能看见陈旧列表。
 
-    function renderScheduleSettings() {
-        if (!opt.schedules) return;
-        // 设置页渲染顺带刷新头部胶囊与弹层缓存（CRUD 工具与手动操作都汇到这条路径）
+    let mountedList = null;
+
+    function renderScheduleSettings(host) {
+        const target = host || mountedList || opt.schedules;
+        if (!target) return;
+        // 列表渲染顺带刷新头部胶囊与弹层缓存（CRUD 工具与手动操作都汇到这条路径）
         refreshSchedulesUI();
         if (!backend.AIScheduleList) {
-            opt.schedules.innerHTML = '';
+            target.innerHTML = '';
             const empty = document.createElement('span');
             empty.className = 'ai-pref-empty';
             empty.textContent = '（当前版本不支持定时任务）';
-            opt.schedules.appendChild(empty);
+            target.appendChild(empty);
             return;
         }
         Promise.resolve(backend.AIScheduleList()).then((list) => {
-            if (!opt.schedules) return;
-            opt.schedules.innerHTML = '';
+            if (!target.isConnected) return;
+            target.innerHTML = '';
             if (!list || !list.length) {
                 const empty = document.createElement('span');
                 empty.className = 'ai-pref-empty';
                 empty.textContent = '（暂无任务）';
-                opt.schedules.appendChild(empty);
+                target.appendChild(empty);
                 return;
             }
             for (const s of list) {
-                opt.schedules.appendChild(renderScheduleRow(s));
+                target.appendChild(renderScheduleRow(s));
             }
         }).catch((e) => {
-            if (opt.schedules) opt.schedules.textContent = '加载失败：' + ((e && e.message) || e);
+            if (target.isConnected) target.textContent = '加载失败：' + ((e && e.message) || e);
         });
+    }
+
+    // 应用页面标签页的挂载入口：建骨架（说明 + 列表容器 + 新建按钮）→ 绑定 → 首次渲染。
+    // 注意 renderScheduleSettings 是「把列表画进容器」，所以必须传列表容器而不是外层 host。
+    function mountSchedules(host) {
+        if (!host) return null;
+        host.innerHTML = `
+<div class="set-group-title">定时任务</div>
+<div class="set-card">
+    <div class="set-row">
+        <div class="set-main"><div class="set-title">说明</div><div class="set-desc">单次（once）/ 固定间隔（interval）/ cron；仅在应用运行期间有效，关闭窗口后挂起、重开后不错过的时间不补跑；触发会消耗 token，AI 也可通过 schedule_* 工具管理</div></div>
+    </div>
+    <div class="set-row-top">
+        <div id="ai-opt-schedules" class="ai-sched-list"></div>
+    </div>
+    <div class="set-row">
+        <div class="set-main"><div class="set-title">新建任务</div><div class="set-desc">scope（触发轮次权限）仅对「每次新建会话」的任务生效；edit 档任务触发时若无人处理写审批会一直挂起，建议触发时保持在电脑前</div></div>
+        <div class="set-control">
+            <button type="button" id="ai-opt-schedule-add" class="dlg-btn">新建任务…</button>
+        </div>
+    </div>
+</div>`;
+        const listEl = host.querySelector('#ai-opt-schedules');
+        const addBtn = host.querySelector('#ai-opt-schedule-add');
+        const onAdd = () => openScheduleEditor(null, {top: true});
+        if (addBtn) addBtn.addEventListener('click', onAdd);
+        mountedList = listEl;
+        renderScheduleSettings(listEl);
+        return () => {
+            if (addBtn) addBtn.removeEventListener('click', onAdd);
+            if (mountedList === listEl) mountedList = null;
+        };
     }
 
     // ---- 头部定时任务胶囊与弹层（kind=schedules，与计时器胶囊同机制） ----
@@ -580,5 +618,5 @@ export function createAISchedule(ctx) {
         openAIDialog('自动化 · 定时任务', [body], foot);
     }
 
-    return {renderScheduleSettings, renderScheduleRow, renderSchedulePop, renderChip, syncChip, openScheduleEditor, openAutomationDialog, aiDelay, handleScheduleFire, runScheduledTurn};
+    return {renderScheduleSettings, mountSchedules, renderScheduleRow, renderSchedulePop, renderChip, syncChip, openScheduleEditor, openAutomationDialog, aiDelay, handleScheduleFire, runScheduledTurn};
 }

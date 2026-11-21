@@ -1,5 +1,5 @@
 // ai-model-picker.js：双层级模型选择器（搜索 + 按账号分组 + 行内思考等级 + 会话上下文上限）。
-// 方案 M1 从 ai-panel.js 逐字搬入（docs/unfinished-plans/side-chat-tab.md §7.4）。
+// 方案 M1 从 ai-panel.js 逐字搬入（docs/finished-plans/side-chat-tab.md §7.4）。
 // 状态自持（弹层节点与文档监听器）；配置 / 会话 / 动作经 ctx 注入，档位与窗口计算
 // 直接复用 ai-config-model.js 的纯函数（单一来源）。
 import {iconSvg} from '../core/icons.js';

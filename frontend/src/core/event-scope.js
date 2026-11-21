@@ -29,6 +29,8 @@ export const EVENT_SCOPES = Object.freeze({
     'ai-timer-stopped': 'app',
     // 终端独立窗口关闭：payload.target 指定由哪个主窗口把会话接回去
     'term-popout-closed': 'app',
+    // --quit 优雅退出（外部重建脚本）：每个窗口结算自己的 AI 回合后 ack
+    'app-graceful-quit': 'app',
 
     // 工作区 / 资源
     'workspace-changed': 'workspace',

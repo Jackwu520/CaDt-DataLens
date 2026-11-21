@@ -9,6 +9,7 @@ import {diffNoDigits} from './ai-diff-view.js';
 import {agentLevelText} from './ai-team-model.js';
 import {formatCommandDuration} from './ai-terminal-tools.js';
 import {answerThinkingDefaultCollapsed} from './ai-always-collapse.js';
+import {CONTINUATION_PROMPT, truncatedNotice} from './ai-truncation.js';
 import './ai-plan-file.js';
 
 // 解码可能未闭合的 JSON 字符串字面量：截掉不完整转义、补收尾引号再 parse；
@@ -510,7 +511,7 @@ export function createAIToolCards(ctx) {
         head.className = 'ai-ask-head';
         const icon = document.createElement('span');
         icon.className = 'ai-ask-icon';
-        icon.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M6.2 6.3a1.8 1.8 0 1 1 2.5 1.7c-.5.2-.7.6-.7 1.1v.4" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><circle cx="8" cy="11.6" r=".75" fill="currentColor"/></svg>';
+        icon.innerHTML = iconSvg('question', 16);
         const title = document.createElement('span');
         title.className = 'ai-ask-title';
         title.textContent = ask.questions.length > 1 ? 'AI 提问 · ' + ask.questions.length + ' 个问题' : 'AI 提问';
@@ -927,7 +928,7 @@ export function createAIToolCards(ctx) {
         head.className = 'ai-tool-head';
         const chev = document.createElement('span');
         chev.className = 'ai-tool-chev';
-        chev.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 6.5L8 10l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+        chev.innerHTML = iconSvg('chevron-down');
         // 动作词 + 图标 + 主参数（ZCode 风格）
         const meta = toolMeta(message.name, approval);
         const info = toolPrimary(message);
@@ -1644,7 +1645,7 @@ export function createAIToolCards(ctx) {
                 head.className = 'ai-think-head';
                 const chev = document.createElement('span');
                 chev.className = 'ai-think-chev';
-                chev.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 6.5L8 10l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+                chev.innerHTML = iconSvg('chevron-down');
                 const label = document.createElement('span');
                 label.className = 'ai-think-label';
                 head.append(chev, label);
@@ -1730,6 +1731,46 @@ export function createAIToolCards(ctx) {
                 setTextIfChanged(errorBox, message.error);
             } else if (errorBox) {
                 errorBox.remove();
+            }
+            // 截断提示条：打满输出预算（length）或上游没给结束原因且正文悬空（suspect）时，
+            // 在回复末尾给一条「继续」出口——否则用户只看到话说到一半，分不清是模型没写完
+            // 还是软件断了（2026-11-21 那次「莫名其妙停下来」）。只在收尾后显示。
+            let truncBox = wrap.querySelector('.ai-truncated-box');
+            const truncKind = !streaming && message.truncated ? String(message.truncated) : '';
+            if (truncKind && content) {
+                const viewing = typeof currentSession === 'function' ? currentSession() : null;
+                const owner = options && options.session;
+                const sameSession = !!(viewing && owner && viewing.id === owner.id);
+                const signature = truncKind + '|' + (sameSession ? 'live' : 'read');
+                if (!truncBox) {
+                    truncBox = document.createElement('div');
+                    truncBox.className = 'ai-truncated-box';
+                    wrap.querySelector('.ai-bubble').appendChild(truncBox);
+                }
+                if (truncBox.dataset.signature !== signature) {
+                    truncBox.dataset.signature = signature;
+                    truncBox.textContent = truncatedNotice(truncKind);
+                    if (sameSession && typeof submitText === 'function') {
+                        const cont = document.createElement('button');
+                        cont.type = 'button';
+                        cont.className = 'ai-truncated-continue';
+                        cont.textContent = '继续';
+                        cont.dataset.tip = '让 AI 从断点接着写，不重复已输出的内容';
+                        cont.addEventListener('click', async () => {
+                            cont.disabled = true;
+                            const ok = await submitText(CONTINUATION_PROMPT, null, {preserveScroll: true});
+                            if (ok) {
+                                truncBox.remove();
+                            } else {
+                                cont.disabled = false;
+                                flash('「继续」没有发出，请手动发言', true);
+                            }
+                        });
+                        truncBox.appendChild(cont);
+                    }
+                }
+            } else if (truncBox) {
+                truncBox.remove();
             }
         }
         // 流式工具调用占位：name 已到、参数还在增量接收时先亮卡（写大文件不再像卡住），

@@ -39,6 +39,31 @@ test('剥掉开头的宿主环境块，只预览用户正文', () => {
     assert.equal(out.items[0].text, '真的改了吗我怎么没看见');
 });
 
+test('剥掉开头的引用块，只预览用户正文', () => {
+    const content = '<quote source="assistant" index="713" scope="selection">\n建议装 VS Build Tools\n</quote>\n\n你推荐哪个';
+    const out = buildSessionOutlineItems([{role: 'user', content}]);
+    assert.equal(out.items[0].text, '你推荐哪个');
+});
+
+test('环境块 + 引用块连续剥掉，只留正文', () => {
+    const content = '<system-reminder>\n<workspace_context>\n当前活动文件：a.js\n</workspace_context>\n</system-reminder>\n\n' +
+        '<quote source="assistant" index="3" scope="message">\n引用的回复\n</quote>\n\n正文在这里';
+    const out = buildSessionOutlineItems([{role: 'user', content}]);
+    assert.equal(out.items[0].text, '正文在这里');
+});
+
+test('只有引用块没有正文的消息不占行，带图片仍以数量兜底', () => {
+    const quote = '<quote source="assistant" index="3" scope="message">\n引用的回复\n</quote>';
+    const out = buildSessionOutlineItems([
+        {role: 'user', content: quote},
+        {role: 'user', content: quote, images: [{}]},
+        {role: 'user', content: '正文'},
+    ]);
+    assert.equal(out.total, 2);
+    assert.deepEqual(out.items.map((item) => item.index), [1, 2]);
+    assert.deepEqual(out.items.map((item) => item.text), ['（1 张图片）', '正文']);
+});
+
 test('只有环境块的纯注入消息不占行，带图片/视频仍以数量兜底', () => {
     const reminder = '<system-reminder>\n<workspace_context>\n当前活动文件：a.js\n</workspace_context>\n</system-reminder>';
     const out = buildSessionOutlineItems([

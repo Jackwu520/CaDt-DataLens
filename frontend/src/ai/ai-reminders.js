@@ -6,6 +6,7 @@
 // 创建对话框用居中弹窗（ctx 注入 openDialog/closeDialog/dialogNode/dialogButton 三件套），
 // 输入控件走 form-controls 工厂（表单控件硬规范：禁新增裸 input）。
 import {aiTextOf, AI_REMINDER_LIMIT, AI_REMINDER_TITLE_MAX, AI_REMINDER_DETAIL_MAX} from './ai-constants.js';
+import {iconSvg} from '../core/icons.js';
 import {createInput} from '../core/form-controls.js';
 
 // ---------- 纯函数（可单测） ----------
@@ -152,7 +153,7 @@ export function createAIReminders(ctx) {
         remBtn.id = 'ai-reminders-btn';
         remBtn.className = 'ai-icon-btn ai-rem-btn';
         remBtn.setAttribute('aria-haspopup', 'true');
-        remBtn.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.6a3.6 3.6 0 0 0-3.6 3.6c0 2.6-1 3.6-1.7 4.3h10.6c-.7-.7-1.7-1.7-1.7-4.3A3.6 3.6 0 0 0 8 2.6z" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round"/><path d="M6.6 12.6a1.5 1.5 0 0 0 2.8 0" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>';
+        remBtn.innerHTML = iconSvg('bell');
         remBadge = document.createElement('span');
         remBadge.className = 'ai-rem-badge hidden';
         remBadge.textContent = '0';
