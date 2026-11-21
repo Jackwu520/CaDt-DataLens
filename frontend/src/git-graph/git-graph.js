@@ -15,9 +15,9 @@ const LANE_W = 16;       // 每条泳道宽（px）
 const LANE_PAD = 8;      // 泳道区左右留白
 const DEFAULT_LIMIT = 500;
 
-// 目录图标：与资源管理器（explorer.js ICONS.folder）同一造型；文件图标走 createFileIcon
-// （core/fileicons.js 主题解析链），「本次变动」树与文件树显示同一套图标
-const FOLDER_SVG = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4.7c0-.9.7-1.7 1.7-1.7h2.9l1.6 1.8h4.1c.9 0 1.7.7 1.7 1.7v4.8c0 .9-.7 1.7-1.7 1.7H3.7c-.9 0-1.7-.7-1.7-1.7z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>';
+// 目录图标：统一走注册表（原散落 SVG 与 explorer 同造型，已收编 core/icons.js 的 folder 键）；
+// 文件图标走 createFileIcon（core/fileicons.js 主题解析链），「本次变动」树与文件树显示同一套图标
+const FOLDER_SVG = iconSvg('folder');
 
 // diff-tree 状态 → git 树状态类（.git-file-row 的 FILESTATUS 映射同源）与悬停文案
 const GIT_STATUS_CLS = { A: 'added', M: 'modified', D: 'deleted', R: 'renamed', C: 'renamed', T: 'modified', U: 'conflict' };

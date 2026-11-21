@@ -2,13 +2,14 @@
 // 从 ai-takeover.js 拆出（frontend-split-phase3 A2，同域兄弟模块）；ctx 与宿主同源，
 // askNavAction 纯函数（宿主留守，ai-takeover.test.mjs 覆盖）与宿主分发器经 extras 注入。
 import {aiClampInt, aiNowId} from './ai-constants.js';
+import {iconSvg} from '../core/icons.js';
 
-// 问号圆圈图标：展开态头部与收起态细条共用
-const ASK_ICON_SVG = '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M6.2 6.3a1.8 1.8 0 1 1 2.5 1.7c-.5.2-.7.6-.7 1.1v.4" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><circle cx="8" cy="11.6" r=".75" fill="currentColor"/></svg>';
+// 问号圆圈图标：展开态头部与收起态细条共用（.ai-ask-icon 无 svg 尺寸规则，显式 16 保持撑满）
+const ASK_ICON_SVG = iconSvg('question', 16);
 
 // 倒计时暂停/继续图标：暂停态显示播放三角（点它继续），运行态显示双竖条（点它暂停）
-const ASK_PAUSE_SVG = '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="4.5" y="3.5" width="2.4" height="9" rx=".6" fill="currentColor"/><rect x="9.1" y="3.5" width="2.4" height="9" rx=".6" fill="currentColor"/></svg>';
-const ASK_PLAY_SVG = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.2 3.6a.7.7 0 0 1 1.05-.6l6.1 4.4a.7.7 0 0 1 0 1.2l-6.1 4.4a.7.7 0 0 1-1.05-.6z" fill="currentColor"/></svg>';
+const ASK_PAUSE_SVG = iconSvg('pause');
+const ASK_PLAY_SVG = iconSvg('play');
 
 export function createAIAskCards(ctx, extras) {
     const el = ctx.el;
@@ -77,7 +78,7 @@ export function createAIAskCards(ctx, extras) {
         head.className = 'ai-takeover-head';
         const icon = document.createElement('span');
         icon.className = 'ai-ask-icon';
-        icon.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.2" y="3.8" width="11.6" height="8.4" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M5.6 8h4.8" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>';
+        icon.innerHTML = iconSvg('env', 16);
         const title = document.createElement('span');
         title.className = 'ai-takeover-title';
         title.textContent = '创建环境变量 · ' + envAsk.name;
@@ -202,7 +203,7 @@ export function createAIAskCards(ctx, extras) {
             const prev = document.createElement('button');
             prev.type = 'button';
             prev.className = 'ai-ask-page-btn';
-            prev.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10 3.5L5.5 8l4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+            prev.innerHTML = iconSvg('chevron-left');
             prev.disabled = qi <= 0;
             prev.addEventListener('click', () => {
                 draft.idx = Math.max(0, draft.idx - 1);
@@ -214,7 +215,7 @@ export function createAIAskCards(ctx, extras) {
             const next = document.createElement('button');
             next.type = 'button';
             next.className = 'ai-ask-page-btn';
-            next.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 3.5L10.5 8 6 12.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+            next.innerHTML = iconSvg('chevron-right');
             next.disabled = qi >= ask.questions.length - 1;
             next.addEventListener('click', () => {
                 draft.idx = Math.min(ask.questions.length - 1, draft.idx + 1);
@@ -242,7 +243,7 @@ export function createAIAskCards(ctx, extras) {
             if (question.multiSelect) {
                 const check = document.createElement('span');
                 check.className = 'ai-ask-check';
-                check.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.4 8.4l3.1 3.1 6.1-6.9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+                check.innerHTML = iconSvg('check');
                 button.appendChild(check);
             }
             const num = document.createElement('span');

@@ -3,10 +3,12 @@
 // 配置模型纯函数（activeRunConfig / recentConfigs 等）在 terminal/run.js，此处只做 UI 与接线。
 import {activeRunConfig, configRowSubtitle, recentConfigs, resolveRunWidgetLabel} from '../terminal/run.js';
 import {overlayStack} from '../core/overlay-stack.js';
+import {iconSvg} from '../core/icons.js';
 
+// 局部键 → 注册表键（原散落 SVG 已收编 core/icons.js）
 const RUN_POP_ICONS = {
-    doc: '<svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M4 1.8h5.2L12.5 5v9.2H4z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M9 2v3.4h3.4" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>',
-    edit: '<svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M11.2 2.4l2.4 2.4-7.8 7.8-3.1.7.7-3.1z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>',
+    doc: iconSvg('file', 15),
+    edit: iconSvg('rename', 15),
 };
 
 // 「所有配置」组默认折叠（JetBrains 同款），展开状态只活在本模块内存里

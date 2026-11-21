@@ -20,7 +20,12 @@ const rawIcons = {
     'plus': '<path d="M8 3.5v9M3.5 8h9"/>',
     'close': '<path d="M4 4l8 8M12 4l-8 8"/>',
     'check': '<path d="M3.4 8.7l3.1 3.1 6.1-6.6"/>',
+    // 圆圈勾 / 圆圈叉：状态徽标造型（消息中心成功/失败、分支弹层当前分支），与裸勾/叉区分
+    'circle-check': '<circle cx="8" cy="8" r="5.6"/><path d="M5.5 8.2l1.7 1.7 3.3-3.5"/>',
+    'circle-x': '<circle cx="8" cy="8" r="5.6"/><path d="M6 6l4 4M10 6l-4 4"/>',
+    'question': '<circle cx="8" cy="8" r="6"/><path d="M6.2 6.3a1.8 1.8 0 1 1 2.5 1.7c-.5.2-.7.6-.7 1.1v.4"/><circle cx="8" cy="11.6" r=".75" fill="currentColor" stroke="none"/>',
     'chevron-right': '<path d="M6 3.6L10.4 8 6 12.4"/>',
+    'chevron-left': '<path d="M10 3.6L5.6 8l4.4 4.4"/>',
     'chevron-up': '<path d="M3.6 10L8 5.6l4.4 4.4"/>',
     'chevron-down': '<path d="M3.6 6L8 10.4l4.4-4.4"/>',
     'back': '<path d="M13 8H3.4"/><path d="M7.4 3.6L3.4 8l4 4.4"/>',
@@ -126,13 +131,55 @@ const rawIcons = {
     'filter': '<path d="M2.4 3.2h11.2L9.2 8.6v4.2l-2.4 1.2V8.6L2.4 3.2z"/>',
     'user': '<circle cx="8" cy="5.4" r="2.8"/><path d="M2.8 13.4c0-2.6 2.3-4.6 5.2-4.6s5.2 2 5.2 4.6"/>',
     'calendar': '<rect x="2.6" y="3.6" width="10.8" height="9.8" rx="1.3"/><path d="M2.6 6.6h10.8"/><path d="M5.4 2.4v2.4M10.6 2.4v2.4"/>',
+    // 数据库（本轮用量 / SQL 视图）：双壁圆柱
+    'database': '<ellipse cx="8" cy="4.2" rx="4.5" ry="1.7"/><path d="M3.5 4.2v3.7c0 .94 2.01 1.7 4.5 1.7s4.5-.76 4.5-1.7V4.2"/><path d="M3.5 7.9v3.7c0 .94 2.01 1.7 4.5 1.7s4.5-.76 4.5-1.7V7.9"/>',
+    // 结构化目录（复制 / 导出目录结构）：逐级缩进的四行
+    'structured-dir': '<path d="M2.4 3.6h11.2M4.4 6.8h9.2M6.4 10h7.2M8.4 13.2h5.2"/>',
+    // 解锁（与 lock 成对：文档只读锁的解锁态，锁梁张开）
+    'unlock': '<rect x="3.2" y="7" width="9.6" height="6.8" rx="1.4"/><path d="M6 7V5.6A2.5 2.5 0 0 1 10.8 4.4"/><circle cx="8" cy="10.4" r="1" fill="currentColor" stroke="none"/>',
+    // 回退到此轮（AI 消息动作）：左箭头 + 拖回的弧线（弧底收在 14.8，避免描边溢出 16 网格被裁）
+    'rewind': '<path d="M6.2 4L2.8 7.4l3.4 3.4"/><path d="M3 7.4h6.2a3.7 3.7 0 1 1 0 7.4H6.2"/>',
+    // 带回主对话（支线对话动作）：右箭头 + 右壁
+    'bringback': '<path d="M3 8h8.6"/><path d="M8.4 4.6L11.8 8l-3.4 3.4"/><path d="M13 3.2v9.6"/>',
+    // 投递（AI 消息投递到其他会话/子代理）：纸飞机
+    'deliver': '<path d="M3.2 8l9.2-4.6v9.2z"/><path d="M12.4 8h1.9"/><path d="M3.2 8h1.2"/>',
+    // 标签（Git tag）：吊牌 + 圆点
+    'tag': '<path d="M2.6 3.2h5.1l5 5-4.5 4.5-5-5z"/><circle cx="5.3" cy="5.9" r="1" fill="currentColor" stroke="none"/>',
+    // 全部折叠 / 全部展开（结构面板工具栏）：上下箭头指向 / 背离中线
+    // （原 14 网格的四角斜线正反画渲染像素级一致、两态不可区分，复审后改为折叠箭头造型）
+    'collapse-all': '<path d="M4.8 2.6L8 5.8l3.2-3.2"/><path d="M4.8 13.4L8 10.2l3.2 3.2"/><path d="M2.8 8h10.4"/>',
+    'expand-all': '<path d="M4.8 5.8L8 2.6l3.2 3.2"/><path d="M4.8 10.2L8 13.4l3.2-3.2"/><path d="M2.8 8h10.4"/>',
+    // 目录树（explorer 列表/树切换）：树干 + 两个分支盒
+    'tree': '<path d="M3 3.2v9.6M3 6h4.2M3 11.8h4.2"/><path d="M7.2 4.6h5.2v2.8H7.2zM7.2 10.4h5.2v2.8H7.2z" stroke-width="1.1"/>',
+    // 定位（在资源管理器中显示）：靶心十字
+    'locate': '<circle cx="8" cy="8" r="5.6"/><circle cx="8" cy="8" r="1.5"/><path d="M8 1.4v2.2M8 12.4v2.2M1.4 8h2.2M12.4 8h2.2"/>',
+    // 任务清单（AI 任务卡头）：实心圆点 + 实心条 ×2
+    'checklist': '<circle cx="3" cy="4.6" r="1.25" fill="currentColor" stroke="none"/><rect x="6" y="3.8" width="8" height="1.6" rx="0.8" fill="currentColor" stroke="none"/><circle cx="3" cy="11.4" r="1.25" fill="currentColor" stroke="none"/><rect x="6" y="10.6" width="8" height="1.6" rx="0.8" fill="currentColor" stroke="none"/>',
+    // 环境变量（创建环境变量卡头）：输入框 + 占位横线
+    'env': '<rect x="2.2" y="3.8" width="11.6" height="8.4" rx="1.6"/><path d="M5.6 8h4.8"/>',
+    // 计划（计划等待批准卡头）：方框 + 文本行
+    'plan': '<rect x="3.5" y="3.5" width="9" height="9" rx="1"/><path d="M5.5 6h5M5.5 8.4h5M5.5 10.8h3"/>',
+    // 竖排三点（更多操作，列布局），与横排 more 区分
+    'more-vertical': '<circle cx="8" cy="3.4" r="1.15" fill="currentColor" stroke="none"/><circle cx="8" cy="8" r="1.15" fill="currentColor" stroke="none"/><circle cx="8" cy="12.6" r="1.15" fill="currentColor" stroke="none"/>',
+    // ---- 视图模式族（editor-groups 视图下拉收编，14 网格重画为 16 网格）----
+    'view-tree': '<path d="M1.7 3.7h12.6M1.7 8h8.7M1.7 12.3h5"/>',
+    'view-table': '<rect x="1.7" y="2.5" width="12.6" height="11" rx="1.1"/><path d="M1.7 6.4h12.6M6.1 2.5v11M10.3 2.5v11" stroke-width="1.1"/>',
+    'view-binary': '<rect x="2.2" y="4.4" width="4.8" height="7.2" rx="1"/><rect x="9" y="4.4" width="4.8" height="7.2" rx="1"/>',
+    'view-video': '<rect x="1.7" y="3" width="12.6" height="10" rx="1.6"/><path d="M6.7 6l3.8 2-3.8 2z" fill="currentColor" stroke="none"/>',
+    'view-audio': '<ellipse cx="5.9" cy="11.2" rx="2.5" ry="1.9" fill="currentColor" stroke="none"/><path d="M8.5 11.2V3.7c3 .5 4.2 1.5 4.2 3.3"/>',
+    'view-render': '<path d="M2.3 12.6c3.2 0 3.9-8 7.1-8 1.9 0 2.3 1.8 4.3 1.8"/><circle cx="2.3" cy="12.6" r="1.3" fill="currentColor" stroke="none"/><circle cx="13.7" cy="6.4" r="1.3" fill="currentColor" stroke="none"/>',
+    'view-patch': '<path d="M2.3 3.9h11.4M2.3 8h7.3M2.3 12.1h4.6"/><path d="M11 9.4l2.7 2.7-2.7 2.7"/>',
+    'view-split': '<rect x="1.7" y="2.5" width="12.6" height="11" rx="1.1"/><path d="M8 2.9v10.2"/>',
+    // 插件视图兜底（面板 + 文本行 + 圆点）
+    'view-panel': '<rect x="1.7" y="2.5" width="12.6" height="11" rx="1.1"/><path d="M4.8 6.3h6.4M4.8 9.1h3.7"/><circle cx="12.1" cy="10.9" r="1.4" fill="currentColor" stroke="none"/>',
 };
 
 // 注册表整体导出（冻结）：供图标表页/测试枚举展示，业务代码请用 iconSvg()。
 export const ICONS = Object.freeze({...rawIcons});
 
 // 遗留映射：旧菜单数据里的 Segoe MDL2 码位 -> 注册表命名图标。
-// 仅作迁移兼容，新代码一律直接写命名图标。
+// 2026-11-22 图标收编后本仓 src 已零码位（护栏 test/core/icon-guard.test.mjs 强制），
+// 这张表只为外部插件菜单数据的兼容保留；新代码一律直接写命名图标。
 const LEGACY_ICONS = {
     'E70D': 'chevron-down',
     'E70E': 'chevron-up',

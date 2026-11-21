@@ -1,6 +1,7 @@
 # 图标统一管理治理方案（icon-consolidation）
 
-> 状态：方案已出，待实施。立项日期 2026-11-21。
+> 状态：已实施（2026-11-22，P0–P3 全部落地，护栏红/绿自检通过，全量前端测试与 vite build 通过）。
+> 立项日期 2026-11-21。
 > 缘起：用户反馈 AI 消息右键菜单 4 个图标完全相同 + 1 个无图标；顺带评估「全软件图标是否需要统一管理」。
 > 结论：**统一管理的地方早就存在**（`frontend/src/core/icons.js` + `docs/icon-guidelines.md`），问题不是缺地方，而是「规范存在、执行失效」——注册表建好了但没有强制路径，业务侧各自造轮子。因此本方案是「治理存量 + 收紧后门 + 加护栏」，不是另起炉灶。
 
@@ -124,3 +125,60 @@ P0 完成后，任何新增散落都会让 `npm test` 变红——规范从「�
 | P3 文档 | 2–3 | 低风险 | 收尾 |
 
 总量约 20+ 文件，建议 P0 先落地止血，P1/P2 按批次推进，每批可独立回滚。
+
+## 七、实施记录（2026-11-22）
+
+> 施工前按用户要求做了全量重评，行号与存量已漂移，以下为修订口径与实际落地结果。
+
+**重评修正（相对原方案的差异）**
+
+- 行号全部漂移（如 `AI_REFERENCE_ICON_HTML` 3597→3968、影子工厂 5485→5585、VIEW_ICONS 490→524），语义未变。
+- 原方案漏了 `ai/ai-monitor-view.js` 的 `iconSvgOf` 影子工厂（close/new-window/refresh，自述「不引 core/icons 全表」）——已一并拆除。
+- 原方案笔误：`AI_REFERENCE_ICON_HTML`（四角星花）与 `structure-panel.js` 并非同一图形；真正的重复对是 `structure-panel.js:132` ↔ `explorer-ops.js:746`（同为 20 网格缩进目录线），收编为 `structured-dir` 键。
+- 遗留码位存量实测 **162 处 / 11 文件**（原方案估「几十处」），逐码核对全部在 `LEGACY_ICONS` 映射内，机械替换安全，已清零。
+- 扫描误报处置：护栏用 `['"`]<svg` 启发式放行正则字面量与报错文案；`dev/mock-backend.js`（mock 数据）、`shell/plugins.js`（插件字符串检查）文件级豁免；`git-graph.js` 泳道画布留 1 行基线（图表产物，同 layout-render 性质）。
+- `AI_CHEVRON_SVG` 是经 ctx 共享给 4 个兄弟模块的常量，只需改 ai-panel 定义点，13 处消费一次性收敛。
+
+**注册表新键（27 个）**：`chevron-left` `question` `circle-check` `circle-x` `database` `structured-dir` `unlock` `rewind` `bringback` `deliver` `tag` `collapse-all` `expand-all` `locate` `checklist` `env` `plan` `more-vertical`（18）+ `view-*` 族（tree/table/binary/video/audio/render/patch/split/panel，9）+ `tree`（复审补登记，见下）。
+节省项：`view-sql`→`database`、`view-code`→`code`、`view-text`→`doc`、view-preview/view-image→`image`（原两键逐字符相同）、POP_ICONS `commit`→`check`、`push`→`upload`（注册表注释本就声明 upload 覆盖「上传/推送」）。
+
+**造型裁量（按风险 1 的缓解措施「差异明显就登记新键」）**
+
+- 消息中心成功/失败与分支弹层当前分支是**圆圈徽标**造型，直接套裸 `check`/`close` 会丢圆圈——登记 `circle-check` / `circle-x` 两个键，视觉零回归。
+- main.js 的 UNLOCK/LOCK 是解锁/锁定成对语义，都套 `lock` 会丢解锁态——登记 `unlock` 键。
+- ai-panel 影子工厂映射：`edit`→`rename`（同为笔造型）、`regenerate`/`retry`→`refresh`（同为循环箭头）、`branch`→`git`、`sidechat`→`sidechat`（去掉装饰点）；`rewind`/`bringback`/`deliver` 为独有语义，登记新键。
+
+**尺寸护栏事实**：SVG 无 width/height 属性时按 100% 默认撑满容器——收编时逐一核对了消费容器 CSS，4 个无 `svg` 规则的容器（`.ai-ask-icon`/`.ai-plan-takeover-icon`/`.app-toast-icon`/`.ai-session-*-chev`）显式传尺寸保持撑满，其余靠 CSS 规则覆盖。AI 引用菜单的 iconHtml 后门改 `icon: 'sparkles'`（renderMenuIcon 命名图标通道）。
+
+**验证**：护栏注入自检红→撤销回绿；全量 `npm test` 2066/2066（两处钉旧实现形态的断言 `video: '<svg` / `audio: '<svg` 同步更新为注册表键形态）；`vite build` 通过。收编后基线仅剩 git-graph 泳道画布 1 处，码位与 iconHtml 基线为空表。`LEGACY_ICONS` 保留（外部插件菜单数据兼容），注释已说明。
+
+## 八、复审修正（2026-11-22，双子代理只读复审后）
+
+复审发现 4 个护栏盲区问题，全部已修：
+
+1. **[P1] explorer `iconSvg('tree')` 键未登记**——树视图按钮静默渲染为空（iconSvg 未知键返回空串，npm test 全绿也看不见）。补登记 `tree` 键（按 HEAD 原造型收编），护栏新增**规则⑤「字面量键引用必须已注册」**（`iconSvg('x')` / `icon: 'x'` 的键名要在 ICONS 中，ECharts 内置名走放行名单）把这类错误固化成红灯。
+2. **[P1] 4 处三元式遗留码位漏迁**——`icon: cond ? 'E70D' : 'E70E'`（bridge-memo-view ×3）与 `icon: entry.isDir ? 'E8B7' : undefined`（app-actions）不紧跟冒号，原正则看不见；已迁为 `chevron-down`/`chevron-up`/`folder`，LEGACY_CODE_RE 收紧为「任何带引号的 E 码字面量」。
+3. **[P1] `collapse-all`/`expand-all` 原四角斜线正反画渲染像素级一致**（这是被收编的存量缺陷，两态本就不可区分）——重画为「上下箭头指向/背离中线」的折叠造型。
+4. **[P2] `rewind` 弧底描边溢出 16 网格被裁约 0.5px**——弧半径 4→3.7 收进网格；`unlock` 锁梁弧弦长超直径触发 SVG 自动放大半径——2.4→2.5 归一。
+
+护栏自检随之加强：INLINE_SVG_RE 补 `'<svg'` 拼接首段形态；扫描器自测覆盖三元式/点赋值/case 标签。复审确认无问题的面：尺寸保真（全部抽查点有 CSS 规则或显式尺寸）、映射语义（无打架）、import 健康（24 文件恰好一次且被使用）、162 处码位迁移与 CHANGELOG 数字精确一致、基线三表与快照一致。
+
+> **事故记录(2026-11-21 18:35)**:复审修复过程中的护栏自检,误用 `git checkout -- explorer.js`
+> 撤销注入,把该文件上**并行会话未提交的 scratch 树节点改动层一并丢弃**(icon-consolidation 自身
+> 的编辑层已逐字重放恢复;并行改动层发生在 16:21 快照之后,wipeguard L3/L1 均未覆盖)。
+> 处置:icon 层已恢复、全量测试绿;scratch 树节点接线(explorer.js 的 scratchNode /
+> LIST_SKIP_DIRS 树侧过滤)待并行会话按其上下文重放,恢复依据见 `finished-plans/scratch-file.md` §8。
+> 教训:撤销自检注入一律用精确反向 Edit,不许对有未提交多方改动的文件动 git checkout。
+>
+> **事故根因补记(2026-11-21 18:50)**:并行改动层无备份的原因查清——wipeguard 三层各自盲区叠加:
+> ① L1 写前快照挂在应用自身 AI 工具写路径(`write_file`/`edit_file`/patch),并行会话是外部
+> ZCode 会话,写文件不经 datalens 进程,L1 天然看不见(index.jsonl 仅有的 28 条全是历史 patch 备份);
+> ② L3 定期快照一直在跑(16:40→18:41 每 10 分钟 13 次),但每次都死于 `git add -A` exit 128:
+> 并行会话在 16:21–16:40 间意外创建了 `frontend/nul`(Windows 保留设备名,1047 字节,应为
+> Git Bash 下 `> nul` 重定向落地成真文件),git 枚举可见、Win32 打不开 → 整张快照放弃,最后一张
+> 成功快照停在 16:21:39,并行改动恰在其后;③ L2 只告警不备份数据。
+> 处置:`nul` 文件已用 `DeleteFileW` + `\?\` NT 路径删除(.NET/常规 API 全被设备名守卫挡住,
+> 其 1047 字节内容因同一路由未能读出);删除后 `git add -A` 恢复正常(临时索引验证 exit 0),
+> L3 自下个周期起恢复出快照。此文件同时会卡用户后续任何 `git add -A` / `commit -a`。
+> 硬化建议(另行立项):L3 对单个不可索引文件应「跳过+警告」而非整张失败;快照连续失败应升级为
+> 用户可见告警(目前仅 debug-console warn)。

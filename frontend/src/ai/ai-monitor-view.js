@@ -6,6 +6,7 @@
 import {replaySessionLog, textOf} from './ai-session-store.js';
 import {replayGroupLog} from './ai-group-store.js';
 import {createMarkdownRenderer} from '../core/markdown.js';
+import {iconSvg} from '../core/icons.js';
 
 // 尾随的流式事件集合（与 event-scope.js 的 'session' 档一致，按 sessionId 认领）。
 export const MONITOR_STREAM_EVENTS = ['ai-chunk', 'ai-think', 'ai-toolcall', 'ai-done', 'ai-error', 'ai-retry', 'ai-queue'];
@@ -334,12 +335,8 @@ export function createAIMonitorView(deps) {
     return {mount, dispose, reloadForTest: reload};
 }
 
-// iconSvgOf 监控窗的极小图标集：直接内联 SVG（不引 core/icons 全表）。
+// iconSvgOf 监控窗的极小图标集：统一走注册表（尺寸对齐同窗 main.js 按钮的 iconSvg(_, 12) 惯例）。
 function iconSvgOf(name) {
-    const paths = {
-        close: '<path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round"/>',
-        'new-window': '<rect x="2.5" y="2.5" width="8" height="8" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.3"/><rect x="6.5" y="6.5" width="7" height="7" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.3"/>',
-        refresh: '<path d="M13 8a5 5 0 1 1-1.5-3.5M11.5 2v2.6H14" stroke="currentColor" stroke-width="1.4" fill="none" stroke-linecap="round"/>',
-    };
-    return '<svg viewBox="0 0 16 16" aria-hidden="true">' + (paths[name] || paths.close) + '</svg>';
+    const keys = {close: 'close', 'new-window': 'new-window', refresh: 'refresh'};
+    return iconSvg(keys[name] || 'close', 12);
 }

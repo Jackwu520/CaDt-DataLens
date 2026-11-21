@@ -4,6 +4,8 @@
 //
 // deps 由 main.js 显式传入（getter 延迟求值）；原裸标识符引用已重写为 deps.X，
 // 对象简写位展开为 key: deps.X。
+import {iconSvg} from '../core/icons.js';
+
 export function createStructurePanelController(deps) {
 
 function structureTextForDoc(doc) {
@@ -129,7 +131,7 @@ function initStructurePanel() {
         },
     });
     if (deps.els.structureExport) {
-        deps.els.structureExport.innerHTML = '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 4.5h14M5.5 8.5h11.5M8 12.5h9M10.5 16.5h6.5" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>';
+        deps.els.structureExport.innerHTML = iconSvg('structured-dir');
         deps.els.structureExport.addEventListener('click', () => showStructureExportMenu());
     }
     if (deps.els.structureSource) {
@@ -233,8 +235,8 @@ function showStructureExportMenu() {
     ];
     const r = deps.els.structureExport.getBoundingClientRect();
     deps.ctxMenu.open([
-        {label: '复制为', icon: 'E8C8', disabled: !has, submenu: copyItems},
-        {label: '导出为…', icon: 'E74E', disabled: !has, submenu: exportItems},
+        {label: '复制为', icon: 'copy', disabled: !has, submenu: copyItems},
+        {label: '导出为…', icon: 'save', disabled: !has, submenu: exportItems},
         {sep: true},
         {label: '附带行号', checked: deps.settings.structureExportLineNums, action: toggleStructureExportLineNums},
     ], r.left, r.bottom + 4);

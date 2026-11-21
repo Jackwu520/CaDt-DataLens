@@ -69,7 +69,8 @@ function recentOpenMenuItems() {
         const spec = entry.isDir ? null : fileIconSpec(entry.name || entry.path);
         return {
             label: entry.name || deps.baseNameOf(entry.path),
-            icon: entry.isDir ? 'E8B7' : undefined,
+            icon: entry.isDir ? 'folder' : undefined,
+            // iconHtml-exception: 文件类型图标走 fileIconSpec 域（core/fileicons*.js），非通用注册表语义
             iconHtml: spec ? spec.svg : undefined,
             iconClass: spec ? spec.className : undefined,
             action: () => (entry.isDir ? deps.openFolderSmart(entry.path) : deps.openPath(entry.path)),

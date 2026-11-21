@@ -37,7 +37,7 @@ function svgToPngBlob(svgText) {
                 reject(e);
             }
         };
-        img.onerror = () => reject(new Error('SVG 加载失败'));
+        img.onerror = () => reject(new Error('浏览器无法解码该 SVG（多半是标签未闭合，或用了 &nbsp; 这类 HTML 实体）'));
         img.src = url;
     });
 }
@@ -52,7 +52,7 @@ function fileStem(name) {
 function showSvgMenu(doc, x, y) {
     if (!deps.ctxMenu || !doc) return;
     const items = [
-        {label: '导出为 PNG…（2x）', icon: 'E74E', action: async () => {
+        {label: '导出为 PNG…（2x）', icon: 'save', action: async () => {
             try {
                 const svgText = doc.editor.getText();
                 const blob = await svgToPngBlob(svgText);
@@ -76,7 +76,7 @@ function showSvgMenu(doc, x, y) {
                 deps.flash('导出失败：' + (e && e.message || e), true);
             }
         }},
-        {label: '复制图片', icon: 'E8C8', action: async () => {
+        {label: '复制图片', icon: 'copy', action: async () => {
             try {
                 const blob = await svgToPngBlob(doc.editor.getText());
                 const ok = await copyImageBlobToClipboard(blob);
@@ -87,8 +87,8 @@ function showSvgMenu(doc, x, y) {
         }},
         {sep: true},
         ...deps.aiReferenceFileMenuItems(doc),
-        {label: '复制文件路径', icon: 'E8C8', disabled: !doc.path, action: () => deps.copyText(doc.path, '路径')},
-        {label: '打开文件位置', icon: 'E8B7', disabled: !doc.path, action: () => deps.showPathInFolder(doc.path)},
+        {label: '复制文件路径', icon: 'copy', disabled: !doc.path, action: () => deps.copyText(doc.path, '路径')},
+        {label: '打开文件位置', icon: 'folder', disabled: !doc.path, action: () => deps.showPathInFolder(doc.path)},
     ];
     deps.ctxMenu.open(items, x, y);
 }
@@ -97,7 +97,7 @@ function showSvgMenu(doc, x, y) {
 function showImageMenu(doc, x, y) {
     if (!deps.ctxMenu || !doc) return;
     const items = [
-        {label: '另存为…', icon: 'E74E', disabled: !doc.path, action: async () => {
+        {label: '另存为…', icon: 'save', disabled: !doc.path, action: async () => {
             let dest = '';
             try {
                 dest = await deps.backend.SaveFileDialog(deps.baseNameOf(doc.path));
@@ -112,7 +112,7 @@ function showImageMenu(doc, x, y) {
                 deps.flash('另存为失败：' + (e && e.message || e), true);
             }
         }},
-        {label: '复制图片', icon: 'E8C8', action: async () => {
+        {label: '复制图片', icon: 'copy', action: async () => {
             try {
                 const url = doc.imageUrl || await deps.backend.ReadImageAsDataURL(doc.path);
                 const blob = await (await fetch(url)).blob();
@@ -124,8 +124,8 @@ function showImageMenu(doc, x, y) {
         }},
         {sep: true},
         ...deps.aiReferenceFileMenuItems(doc),
-        {label: '复制文件路径', icon: 'E8C8', disabled: !doc.path, action: () => deps.copyText(doc.path, '路径')},
-        {label: '打开文件位置', icon: 'E8B7', disabled: !doc.path, action: () => deps.showPathInFolder(doc.path)},
+        {label: '复制文件路径', icon: 'copy', disabled: !doc.path, action: () => deps.copyText(doc.path, '路径')},
+        {label: '打开文件位置', icon: 'folder', disabled: !doc.path, action: () => deps.showPathInFolder(doc.path)},
     ];
     deps.ctxMenu.open(items, x, y);
 }
@@ -136,7 +136,7 @@ function showMdPreviewMenu(doc, x, y) {
     const selText = String(window.getSelection ? window.getSelection().toString() : '');
     const widthOptions = [['720', '720px'], ['860', '860px'], ['920', '920px'], ['1100', '1100px'], ['1300', '1300px'], ['0', '跟随窗口宽度']];
     const items = [
-        {label: '复制', shortcut: 'Ctrl+C', icon: 'E8C8', disabled: !selText, submenu: [
+        {label: '复制', shortcut: 'Ctrl+C', icon: 'copy', disabled: !selText, submenu: [
             {label: '纯文本', action: () => deps.copyText(selText, '所选文本')},
             {label: '富文本', action: async () => {
                 const ok = await copySelectionRich();
@@ -169,12 +169,12 @@ function showMdPreviewMenu(doc, x, y) {
                 },
             })),
         });
-        items.push({label: '刷新预览', icon: 'E72C', action: () => deps.renderMarkdownPreview(doc)});
+        items.push({label: '刷新预览', icon: 'refresh', action: () => deps.renderMarkdownPreview(doc)});
     }
     items.push({sep: true});
     items.push(...deps.aiReferenceFileMenuItems(doc));
-    items.push({label: '复制文件路径', icon: 'E8C8', disabled: !doc.path, action: () => deps.copyText(doc.path, '路径')});
-    items.push({label: '打开文件位置', icon: 'E8B7', disabled: !doc.path, action: () => deps.showPathInFolder(doc.path)});
+    items.push({label: '复制文件路径', icon: 'copy', disabled: !doc.path, action: () => deps.copyText(doc.path, '路径')});
+    items.push({label: '打开文件位置', icon: 'folder', disabled: !doc.path, action: () => deps.showPathInFolder(doc.path)});
     deps.ctxMenu.open(items, x, y);
 }
 
@@ -188,16 +188,16 @@ function showTabMenu(doc, x, y) {
     const clean = gdocs.filter((d) => !d.dirty);
     const hasPath = !!doc.path;
     deps.ctxMenu.open([
-        {label: '关闭', shortcut: 'Ctrl+W / Shift+点击', icon: 'E8BB', action: () => deps.requestCloseDoc(doc)},
+        {label: '关闭', shortcut: 'Ctrl+W / Shift+点击', icon: 'close', action: () => deps.requestCloseDoc(doc)},
         {label: '关闭其他标签页', disabled: !others.length, action: () => deps.closeDocsWithConfirm(others)},
         {label: '关闭所有标签页', action: () => deps.closeDocsWithConfirm(gdocs.slice(), '关闭所有标签页将丢弃未保存的修改。')},
         {label: '关闭左侧标签页', disabled: !left.length, action: () => deps.closeDocsWithConfirm(left)},
         {label: '关闭未修改标签页', disabled: !clean.length, action: () => deps.closeDocsWithConfirm(clean)},
         {sep: true},
-        {label: '复制文件路径', icon: 'E8C8', disabled: !hasPath, action: () => deps.copyText(doc.path, '路径')},
-        {label: '复制文件名', icon: 'E8C8', action: () => deps.copyText(doc.name, '文件名')},
-        {label: '用默认应用打开', icon: 'E8E5', disabled: !hasPath, action: () => deps.openWithDefaultApp(doc.path)},
-        {label: '打开文件位置', icon: 'E8B7', disabled: !hasPath, action: () => deps.showPathInFolder(doc.path)},
+        {label: '复制文件路径', icon: 'copy', disabled: !hasPath, action: () => deps.copyText(doc.path, '路径')},
+        {label: '复制文件名', icon: 'copy', action: () => deps.copyText(doc.name, '文件名')},
+        {label: '用默认应用打开', icon: 'open-folder', disabled: !hasPath, action: () => deps.openWithDefaultApp(doc.path)},
+        {label: '打开文件位置', icon: 'folder', disabled: !hasPath, action: () => deps.showPathInFolder(doc.path)},
         // 固定只读（审阅快照）：不提供解锁入口，只留一条禁用说明。
         ...(isTabReadOnlyFixed(doc) ? [{
             label: '只读快照 · 不可解锁',
@@ -210,11 +210,11 @@ function showTabMenu(doc, x, y) {
             title: '只影响当前标签，与编辑器全局只读锁互不干扰',
             action: () => deps.setDocReadOnly(doc, !isTabReadOnlyLocked(doc)),
         }]),
-        {label: '与另一个标签页比较…', icon: 'E8A5', disabled: gdocs.filter((d) => d.path && !d.binary).length < 2, action: () => deps.openDiffDialog(doc.path)},
+        {label: '与另一个标签页比较…', icon: 'doc', disabled: gdocs.filter((d) => d.path && !d.binary).length < 2, action: () => deps.openDiffDialog(doc.path)},
         ...deps.aiReferenceFileMenuItems(doc),
         {sep: true},
-        {label: '在新窗口中打开', shortcut: 'Shift+F4', icon: 'E8A7', disabled: !hasPath, action: () => deps.openInNewWindows([doc.path])},
-        {label: '重新打开关闭的标签页', shortcut: 'Ctrl+Shift+T', icon: 'E7A7', disabled: !deps.closedTabs.length, action: deps.reopenClosedTab},
+        {label: '在新窗口中打开', shortcut: 'Shift+F4', icon: 'new-window', disabled: !hasPath, action: () => deps.openInNewWindows([doc.path])},
+        {label: '重新打开关闭的标签页', shortcut: 'Ctrl+Shift+T', icon: 'undo', disabled: !deps.closedTabs.length, action: deps.reopenClosedTab},
     ], x, y);
 }
 

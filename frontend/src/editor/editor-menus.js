@@ -5,6 +5,7 @@
 // deps 由 main.js 显式传入（getter 延迟求值）；原裸标识符引用已重写为 deps.X，
 // 对象简写位展开为 key: deps.X。
 import {isDocReadOnly} from '../core/readonly.js';
+import {scratchExtFromName} from '../core/scratch.js';
 import {renderCodeShot, planCodeShot} from '../core/code-shot.js';
 import {copyImageBlobToClipboard} from '../core/image-clipboard.js';
 
@@ -180,36 +181,50 @@ function showEditorMenu(x, y) {
     const readonly = isDocReadOnly(deps.file, deps.settings);
     const hasPath = !!deps.file.path;
     const referenceItems = deps.aiEditorReferenceMenuItems();
+    // 选区「存为临时草稿」：菜单构建时取一次文本（菜单抢焦点后选区状态不可靠）。
+    // 存的是另一个文件，不修改原文档，所以标签级只读锁不拦；全局只读锁代表「整机不写」，拦住。
+    const selection = selectedText();
+    const canScratch = !!selection.trim() && !!deps.workspaceFolder &&
+        !(deps.settings && deps.settings.readOnlyMode) &&
+        typeof deps.createScratchFile === 'function';
     // 代码视图下提供运行入口，可用状态与标题栏 ▶ / 工具菜单一致
     const runSupported = !!deps.runController && !readonly &&
         deps.runController.isSupported({name: deps.file.name, path: deps.file.path});
     deps.ctxMenu.open([
-        {label: '撤销', shortcut: 'Ctrl+Z', icon: 'E7A7', disabled: readonly, action: deps.doUndo},
-        {label: '重做', shortcut: 'Ctrl+Y', icon: 'E7A6', disabled: readonly, action: deps.doRedo},
+        {label: '撤销', shortcut: 'Ctrl+Z', icon: 'undo', disabled: readonly, action: deps.doUndo},
+        {label: '重做', shortcut: 'Ctrl+Y', icon: 'redo', disabled: readonly, action: deps.doRedo},
         {sep: true},
-        {label: '剪切', shortcut: 'Ctrl+X', icon: 'E8C6', disabled: !editable || readonly, action: ctxCut},
-        {label: '复制', shortcut: 'Ctrl+C', icon: 'E8C8', disabled: !editable, action: ctxCopy},
-        {label: '粘贴', shortcut: 'Ctrl+V', icon: 'E77F', disabled: !editable || readonly, action: ctxPaste},
-        {label: '全选', shortcut: 'Ctrl+A', icon: 'E8B3', disabled: !editable, action: ctxSelectAll},
+        {label: '剪切', shortcut: 'Ctrl+X', icon: 'cut', disabled: !editable || readonly, action: ctxCut},
+        {label: '复制', shortcut: 'Ctrl+C', icon: 'copy', disabled: !editable, action: ctxCopy},
+        {label: '粘贴', shortcut: 'Ctrl+V', icon: 'paste', disabled: !editable || readonly, action: ctxPaste},
+        {label: '全选', shortcut: 'Ctrl+A', icon: 'select-all', disabled: !editable, action: ctxSelectAll},
         ...(canShot ? [{
             label: '代码截图',
-            icon: 'E74E',
+            icon: 'save',
             submenu: [
                 {label: '带标题', checked: !!deps.settings.codeShotTitle, action: toggleCodeShotTitle},
                 {sep: true},
-                {label: '复制为图片', icon: 'E8C8', action: copyCodeShot},
-                {label: '导出为 PNG…', icon: 'E74E', action: exportCodeShot},
+                {label: '复制为图片', icon: 'copy', action: copyCodeShot},
+                {label: '导出为 PNG…', icon: 'save', action: exportCodeShot},
             ],
         }] : []),
+        // 从选区建草稿（对齐 JetBrains Alt+Enter → Create new scratch file from selection）：
+        // 扩展名沿用当前文档，**不嗅探选区内容**——高亮 / 视图 / 运行配方全按扩展名分派（方案 §6）
+        ...(canScratch ? [{
+            label: '存为临时草稿',
+            icon: 'doc',
+            action: () => deps.createScratchFile(
+                deps.workspaceFolder, scratchExtFromName(deps.file && deps.file.name), {content: selection}),
+        }] : []),
         {sep: true},
-        {label: '查找…', shortcut: 'Ctrl+F', icon: 'E721', disabled: !editable, action: ctxFind},
+        {label: '查找…', shortcut: 'Ctrl+F', icon: 'search', disabled: !editable, action: ctxFind},
         {label: '格式化', shortcut: 'Ctrl+Alt+L', disabled: !deps.file || readonly || !!deps.file.format.rawOnly, action: deps.formatDocument},
-        {label: '重新加载', icon: 'E72C', disabled: !hasPath, action: deps.requestReload},
-        ...(code ? [{sep: true}, {label: '运行', shortcut: 'F5', icon: 'E768', disabled: !runSupported, action: () => deps.runController.run()}] : []),
+        {label: '重新加载', icon: 'refresh', disabled: !hasPath, action: deps.requestReload},
+        ...(code ? [{sep: true}, {label: '运行', shortcut: 'F5', icon: 'play', disabled: !runSupported, action: () => deps.runController.run()}] : []),
         {sep: true},
         {
             label: '折叠',
-            icon: 'E70D',
+            icon: 'chevron-down',
             disabled: !code,
             submenu: [
                 {label: '折叠当前', action: () => ctxFold('fold')},
@@ -233,12 +248,12 @@ function showEditorMenu(x, y) {
         {sep: true},
         ...referenceItems,
         ...(referenceItems.length ? [{sep: true}] : []),
-        {label: '复制文件路径', icon: 'E8C8', disabled: !hasPath, action: () => deps.copyText(deps.file.path, '路径')},
-        {label: '打开文件位置', icon: 'E8B7', disabled: !hasPath, action: deps.showInFolder},
+        {label: '复制文件路径', icon: 'copy', disabled: !hasPath, action: () => deps.copyText(deps.file.path, '路径')},
+        {label: '打开文件位置', icon: 'folder', disabled: !hasPath, action: deps.showInFolder},
         // 实时预览外置窗（辅助窗第二批）：md/html/svg/图片可开，保存落盘后自动跟随
         ...(deps.pickPreviewKind && deps.file && deps.file.path && deps.pickPreviewKind(deps.file.path) ? [{
             label: '在独立窗口实时预览',
-            icon: 'E8A7',
+            icon: 'new-window',
             action: () => deps.openLivePreview && deps.openLivePreview(),
         }] : []),
         // 插件命令（contexts 含 editorContext）：菜单项由宿主组装后注入，本域不碰插件逻辑
@@ -249,12 +264,12 @@ function showEditorMenu(x, y) {
 function showBlankMenu(x, y) {
     if (!deps.ctxMenu) return;
     const items = [
-        {label: '新建', shortcut: 'Ctrl+N', icon: 'E710', action: deps.newDocument},
-        {label: '打开文件…', shortcut: 'Ctrl+O', icon: 'E8E5', action: deps.openDialog},
-        {label: '打开文件夹…', icon: 'E8B7', action: deps.openFolderDialog},
+        {label: '新建', shortcut: 'Ctrl+N', icon: 'plus', action: deps.newDocument},
+        {label: '打开文件…', shortcut: 'Ctrl+O', icon: 'open-folder', action: deps.openDialog},
+        {label: '打开文件夹…', icon: 'folder', action: deps.openFolderDialog},
     ];
-    if (deps.workspaceFolder) items.push({label: '关闭文件夹', icon: 'E8BB', action: deps.closeFolder});
-    items.push({sep: true}, {label: '设置…', shortcut: 'Ctrl+,', icon: 'E713', action: () => deps.openSettings('general')});
+    if (deps.workspaceFolder) items.push({label: '关闭文件夹', icon: 'close', action: deps.closeFolder});
+    items.push({sep: true}, {label: '设置…', shortcut: 'Ctrl+,', icon: 'gear', action: () => deps.openSettings('general')});
     deps.ctxMenu.open(items, x, y);
 }
 

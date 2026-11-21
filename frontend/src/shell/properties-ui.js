@@ -7,16 +7,27 @@ import {detectFormat} from '../core/formats.js';
 export function createPropertiesUI(deps) {
 
 function newDocumentMenuItems() {
+    const readOnly = !!(deps.settings && deps.settings.readOnlyMode);
     return [
         {
             label: '文件…',
-            icon: 'E7C3',
+            icon: 'file',
             disabled: !deps.workspaceFolder,
             action: () => deps.openCreateEntryDialog(deps.workspaceFolder, false, '', '新建文件'),
         },
+        // 临时草稿：与资源管理器「新建 → 临时文件」同一编排（explorer-ops.createScratchFile），
+        // 这里只多一个入口，不复制实现。
+        {
+            label: '临时文件',
+            icon: 'doc',
+            disabled: !deps.workspaceFolder || readOnly,
+            submenu: deps.workspaceFolder && deps.scratchMenuItems
+                ? deps.scratchMenuItems(deps.workspaceFolder)
+                : undefined,
+        },
         {
             label: '目录…',
-            icon: 'E8B7',
+            icon: 'folder',
             disabled: !deps.workspaceFolder,
             action: () => deps.openCreateEntryDialog(deps.workspaceFolder, true, '新建文件夹', '新建文件夹'),
         },
