@@ -18,13 +18,15 @@ import {
 } from '../ai/ai-external-tools.js';
 // 桌面控制（Computer Use）的配置行构造（desktop-mcp.md §5.3/§13.5 P2 降级：
 // 复制安装命令 + 一键写入 mcp.json 行 + doctor 只读诊断；不做自动安装依赖）
-import {DESKTOP_MCP_SERVER, desktopServerConfigRow} from '../ai/ai-desktop-control.js';
+import {DESKTOP_MCP_SERVER, desktopServerConfigRow, isDesktopToolDef} from '../ai/ai-desktop-control.js';
 
 export function createSettingsPaneExternalTools(deps) {
     const backend = (deps && deps.backend) || {};
     const flash = (deps && deps.flash) || (() => {});
     const getMcpToolDefs = (deps && deps.getMcpToolDefs) || (() => []);
     const getAiPanel = (deps && deps.getAiPanel) || (() => null);
+    // ensureAiPanel：取 AI 面板并在未建时初始化（宿主注入；缺省退回纯读）
+    const ensureAiPanel = (deps && deps.ensureAiPanel) || getAiPanel;
     const openExternalUrl = (deps && deps.openExternalUrl) || (() => {});
     const enhanceSetSelects = (deps && deps.enhanceSetSelects) || null;
     const confirmAction = (deps && deps.confirmAction) || ((message, action) => {
@@ -46,8 +48,7 @@ export function createSettingsPaneExternalTools(deps) {
     let samplesOpen = false;
     let sampleInstalling = '';
     let desktopMcpConfig = null;  // MCPConfig（懒加载，仅桌面卡片用）
-    let desktopDoctor = null;     // MCPDesktopDoctor 结果
-    let desktopBusy = '';         // 'doctor' | 'write' 进行中标记
+    let desktopBusy = '';         // 'toggle' | 'install' 进行中标记
     let saveState = {text: '', tone: 'neutral'}; // 保存反馈（页头徽标）
     let saveStamp = 0;            // 最近一次成功保存时间（页头「已保存」副文案）
     let saveSeq = 0;              // 保存竞态序号：只让最后一次结果更新徽标
@@ -404,12 +405,25 @@ export function createSettingsPaneExternalTools(deps) {
         });
     }
 
-    // ===== 桌面控制（Computer Use）卡片（desktop-mcp.md §5.3/§13.5）=====
-    // P2 降级形态：不自动安装依赖——复制安装命令 + 一键写入 mcp.json 服务器行 +
-    // doctor 只读诊断。工具勾选仍走上方 MCP 服务器列表，会话授权在 AI 输入框「桌面」pill。
+    // ===== 桌面控制（Computer Use）卡片（2026-11-22 用户重设计：极简两件套）=====
+    // 只留「启用桌面控制」开关 + 「安装…」按钮：安装 = 写入 mcp.json 服务器行（含白名单工具
+    // 勾选）+ 让后端预热 uv / Python 依赖；未安装时开关呈禁用态。
+    // 会话级授权不在这里——它在 AI 权限面板（每会话独立），也是个开关。
 
     function desktopRow() {
         return (desktopMcpConfig && desktopMcpConfig.mcpServers && desktopMcpConfig.mcpServers[DESKTOP_MCP_SERVER]) || null;
+    }
+
+    // 桌面工具计数：MCP 快照里 windows server 已注册的工具数（0 = 未就绪 / 未启动 / 未勾选）
+    function desktopToolCount() {
+        return getMcpToolDefs().filter(isDesktopToolDef).length;
+    }
+
+    function refreshPanelSnapshot() {
+        const panel = getAiPanel();
+        if (panel && typeof panel.refreshMcpConfig === 'function') {
+            Promise.resolve(panel.refreshMcpConfig()).catch(() => {}); // 尽力而为：拉新快照
+        }
     }
 
     async function loadDesktop() {
@@ -429,47 +443,65 @@ export function createSettingsPaneExternalTools(deps) {
             .catch(() => flash('复制失败：剪贴板不可用', true));
     }
 
-    async function runDesktopDoctor() {
-        if (typeof backend.MCPDesktopDoctor !== 'function') {
-            flash('当前后端版本不支持桌面依赖检测', true);
+    // 启用 / 停用（应用级）：只切 mcp.json 里该行的 enabled，不动工具勾选与会话授权
+    async function setDesktopEnabled(on) {
+        if (typeof backend.MCPWriteConfig !== 'function' || !desktopMcpConfig) {
+            flash('当前后端版本不支持写入 MCP 配置', true);
             return;
         }
-        desktopBusy = 'doctor';
-        paintDesktop();
+        desktopBusy = 'toggle';
         try {
-            desktopDoctor = await backend.MCPDesktopDoctor();
+            const next = Object.assign({}, desktopMcpConfig, {version: 1});
+            next.mcpServers = Object.assign({}, desktopMcpConfig.mcpServers);
+            next.mcpServers[DESKTOP_MCP_SERVER] = Object.assign({}, desktopRow(), {enabled: !!on});
+            await backend.MCPWriteConfig(next);
+            desktopMcpConfig = next;
+            refreshPanelSnapshot();
+            flash(on ? '桌面控制已启用' : '桌面控制已停用（各会话的授权保留，重新启用后恢复）');
         } catch (e) {
-            desktopDoctor = null;
-            flash('依赖检测失败：' + ((e && e.message) || e), true);
+            flash('保存失败：' + ((e && e.message) || e), true);
         } finally {
             desktopBusy = '';
             paintDesktop();
         }
     }
 
-    async function writeDesktopServerRow() {
-        if (typeof backend.MCPWriteConfig !== 'function' || !desktopMcpConfig) {
+    // 安装：写入服务器行（一步到位：enabled + 白名单工具勾选）→ 让后端预热 uv / 依赖。
+    // 预热失败不阻塞安装结果：uvx 首次真正启动时还会再试一次自动下载。
+    async function runDesktopInstall() {
+        if (typeof backend.MCPWriteConfig !== 'function') {
             flash('当前后端版本不支持写入 MCP 配置', true);
             return;
         }
         if (desktopRow()) {
-            flash('服务器「' + DESKTOP_MCP_SERVER + '」已存在：不覆盖用户配置（要重装请先在服务器列表删除它）', true);
+            flash('桌面控制已安装（要重装请先在 MCP 服务器列表删除「' + DESKTOP_MCP_SERVER + '」）', true);
             return;
         }
-        desktopBusy = 'write';
+        desktopBusy = 'install';
+        paintDesktop();
         try {
+            if (!desktopMcpConfig) {
+                desktopMcpConfig = await backend.MCPGetConfig();
+                if (!desktopMcpConfig || typeof desktopMcpConfig !== 'object') desktopMcpConfig = {version: 1, mcpServers: {}};
+                if (!desktopMcpConfig.mcpServers) desktopMcpConfig.mcpServers = {};
+            }
             const next = Object.assign({}, desktopMcpConfig, {version: 1});
             next.mcpServers = Object.assign({}, desktopMcpConfig.mcpServers);
             next.mcpServers[DESKTOP_MCP_SERVER] = desktopServerConfigRow();
             await backend.MCPWriteConfig(next);
             desktopMcpConfig = next;
-            flash('已写入服务器「' + DESKTOP_MCP_SERVER + '」（默认停用）：先在服务器列表勾选工具，再在 AI 输入框点亮「桌面」');
-            const panel = getAiPanel();
-            if (panel && typeof panel.refreshMcpConfig === 'function') {
-                Promise.resolve(panel.refreshMcpConfig()).catch(() => {}); // 尽力而为：拉新快照
+            refreshPanelSnapshot();
+            if (typeof backend.MCPDesktopInstall === 'function') {
+                const result = await backend.MCPDesktopInstall();
+                flash(result && result.ok
+                    ? '桌面控制已安装完成'
+                    : '桌面控制已安装；依赖预热未完成：' + ((result && result.error) || '首次控制时会自动下载'));
+            } else {
+                flash('桌面控制已安装：首次控制时 uvx 会自动下载 uv / Python 依赖（约 100 MB，需几分钟）');
             }
+            refreshPanelSnapshot();
         } catch (e) {
-            flash('写入失败：' + ((e && e.message) || e), true);
+            flash('安装失败：' + ((e && e.message) || e), true);
         } finally {
             desktopBusy = '';
             paintDesktop();
@@ -479,47 +511,24 @@ export function createSettingsPaneExternalTools(deps) {
     function paintDesktop() {
         if (!els.desktop) return;
         els.desktop.textContent = '';
-        const row = desktopRow();
+        const installed = !!desktopRow();
+        const enabled = installed && desktopRow().enabled !== false;
+        const count = desktopToolCount();
         const preview = desktopServerConfigRow();
-        const commandPreview = preview.command + ' ' + preview.args.join(' ');
-        if (row) {
-            const state = row.enabled === false ? '已注册（停用）' : '已注册';
-            els.desktop.appendChild(fieldRow(
-                '服务器「' + DESKTOP_MCP_SERVER + '」', state + '；在上方 MCP 服务器列表勾选工具后，到 AI 输入框点亮「桌面」授权。',
-                button('复制启动命令', 'dlg-btn', () => copyText(commandPreview)),
-            ));
-            return;
-        }
-        const hint = document.createElement('div');
-        hint.className = 'set-desc';
-        hint.textContent = '未注册。安装命令给用户在本机终端执行（首次运行会下载 Python 3.14 解释器与依赖，约 100 MB）；'
-            + '写入的配置行默认停用，工具勾选与会话授权仍由用户完成。';
-        els.desktop.appendChild(hint);
-        els.desktop.appendChild(fieldRow(
-            '依赖（uv）',
-            desktopDoctor
-                ? (desktopDoctor.uvFound
-                    ? 'uv 已在 PATH：' + desktopDoctor.uvPath
-                    : (desktopDoctor.uvHomeFound
-                        ? 'uv 在用户目录（不在 PATH）：' + desktopDoctor.uvHome
-                        : '未找到 uv' + ((desktopDoctor.hints || []).length ? '。' + desktopDoctor.hints[0] : '')))
-                : '点「检测」解析 uv 位置（PATH 与用户目录 .local\\bin）。',
-            button(desktopBusy === 'doctor' ? '检测中…' : '检测', 'dlg-btn', () => { void runDesktopDoctor(); }),
-            button('复制安装命令', 'dlg-btn', () => copyText('powershell -ExecutionPolicy Bypass -Command "irm https://astral.sh/uv/install.ps1 | iex"')),
-        ));
-        if (desktopDoctor && !desktopDoctor.uvFound && !desktopDoctor.uvHomeFound && (desktopDoctor.hints || []).length > 1) {
-            const tip = document.createElement('div');
-            tip.className = 'fmt-hint hint-indent';
-            tip.textContent = desktopDoctor.hints[1];
-            els.desktop.appendChild(tip);
-        }
-        els.desktop.appendChild(fieldRow(
-            '注册服务器行',
-            '白名单只含观察组与输入组（Snapshot / Click / Move / Scroll / Type / Shortcut / Clipboard）；'
-                + '无 Screenshot（客户端暂不显示 MCP 图像结果）、无 Registry / Process / App / PowerShell / FileSystem。',
-            button(desktopBusy === 'write' ? '写入中…' : '写入 mcp.json', 'dlg-btn', () => { void writeDesktopServerRow(); }),
-            button('复制启动命令', 'dlg-btn', () => copyText(commandPreview)),
-        ));
+        const desc = installed
+            ? (count
+                ? 'AI 可操作第三方原生窗口（读取界面 / 点击 / 输入 / 滚动 / 剪贴板）。真正动手前还要进入控制模式，面板顶部会显示提示'
+                : '已安装；首次启动 uvx 会下载 uv / Python 依赖（约 100 MB），工具数稍后自动出现')
+            : '未安装。点「安装」写入配置并下载 uv / Python 依赖（约 100 MB，需几分钟）；运行引擎由系统提供';
+        const sw = createSwitch({
+            checked: enabled,
+            disabled: !installed || desktopBusy === 'toggle',
+            onChange: (event) => void setDesktopEnabled(event.target.checked),
+        });
+        const actions = installed
+            ? [button('复制启动命令', 'dlg-btn', () => copyText(preview.command + ' ' + preview.args.join(' ')))]
+            : [button(desktopBusy === 'install' ? '安装中…' : '安装…', 'dlg-btn', () => void runDesktopInstall())];
+        els.desktop.appendChild(fieldRow('启用桌面控制', desc, ...actions, sw.element));
     }
 
     // 页头：统一标题 + 保存状态徽标。页头节点在 mount 时 prepend 到 root，
@@ -577,6 +586,17 @@ export function createSettingsPaneExternalTools(deps) {
         moveParkInto(root);
         ensureHead(root);
         renderExternalToolsPane().catch((e) => console.error('外部工具页面渲染失败', e));
+        // MCP 服务器组（总开关 + 服务器列表）的渲染归 ai-panel 的 ai-mcp-settings。
+        // 该组已迁出设置弹层，refreshSettings 不再覆盖本页：不在这里补一次按配置渲染，
+        // 开关就停在 index.html 的静态未勾、列表空（用户侧表现＝看不到工具、开关刷新又弹回）。
+        const panel = ensureAiPanel();
+        if (panel && typeof panel.renderMcpSettings === 'function') {
+            try {
+                panel.renderMcpSettings();
+            } catch (e) {
+                console.error('MCP 服务器组渲染失败', e);
+            }
+        }
         return () => {
             // 页头是 mount 时新建的、不属于停靠区：单独移除，避免残留到下次挂载。
             if (headEl) {

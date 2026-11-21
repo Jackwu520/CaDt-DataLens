@@ -67,6 +67,22 @@ test('settings-pane-external-tools.js：mount 搬运停靠区、卸载搬回', (
         '导出面必须同时保留 mount 与 renderExternalToolsPane（后者供 MCP 事件刷新）');
 });
 
+test('外部工具页打开时按 mcp.json 渲染 MCP 服务器组（开关 / 列表不停在静态初值）', () => {
+    // 症状（2026-11-22 用户实测）：页面里的总开关显示为关、服务器行与「工具」按钮全无，
+    // 点开关像是打开了，重开页面又弹回。根因是该组已迁出设置弹层，refreshSettings()
+    // （含 mcpSettingsMod.render()）只在设置页触发，本页 mount 谁都没按配置渲染一次。
+    const mountBody = paneSrc.slice(paneSrc.indexOf('function mount(root)'), paneSrc.indexOf('return {mount, renderExternalToolsPane}'));
+    assert.ok(/renderMcpSettings\(\)/.test(mountBody),
+        'mount 必须触发 ai-panel 的 renderMcpSettings（漏了 = 开关停在 index.html 未勾态、服务器列表空白）');
+    assert.ok(/ensureAiPanel/.test(paneSrc),
+        '取面板必须经 ensureAiPanel（AI 面板惰性初始化时直接读 aiPanel 会拿到 null）');
+    const panelSrc = read('src/ai/ai-panel.js');
+    assert.ok(/renderMcpSettings:\s*\(\)\s*=>\s*mcpSettingsMod\.render\(\)/.test(panelSrc),
+        'ai-panel 必须暴露 renderMcpSettings，且内部走 mcpSettingsMod.render（含 loadConfig，不是 renderAll）');
+    assert.ok(/get ensureAiPanel\(\)/.test(mainSrc),
+        'main.js 必须注入 ensureAiPanel（未建面板时初始化后再返回）');
+});
+
 test('main.js：挂载器登记 external-tools，事件刷新不再找设置 pane', () => {
     assert.ok(/'external-tools': \(root\) => settingsPaneExternalTools\.mount\(root\)/.test(mainSrc),
         'appPageMounters 必须登记 external-tools（漏了 = 标签页只显示「界面尚未就绪」）');
@@ -124,3 +140,35 @@ test('style.css：外部工具页纵向节奏 + 目录行 hover 圆角内收', (
     assert.ok(/#extcap-list\s*\{[^}]*grid-template-columns/.test(cssSrc),
         '能力矩阵必须改为响应式网格（自动适配列数），不再是单列堆叠');
 });
+
+test('桌面控制：卡片只剩「启用开关 + 安装」，MCP 列表不再出现 windows 行', () => {
+    assert.ok(/createSwitch\(\{/.test(paneSrc), '启用开关必须走 form-controls 的 createSwitch');
+    assert.ok(/runDesktopInstall/.test(paneSrc) && /MCPDesktopInstall/.test(paneSrc),
+        '安装按钮必须调 backend.MCPDesktopInstall（连 uv / Python 依赖一起装）');
+    assert.ok(!/writeDesktopServerRow/.test(paneSrc), '旧的两段式写入已删除（安装一步到位）');
+    assert.ok(!/runDesktopDoctor/.test(paneSrc), 'doctor 检测按钮已从卡片移除（极简两件套）');
+    assert.ok(/setDesktopEnabled/.test(paneSrc), '启用开关必须走独立的 setDesktopEnabled（只切 enabled）');
+    const mcpSrc = read('src/ai/ai-mcp-settings.js');
+    assert.ok(/name !== DESKTOP_MCP_SERVER/.test(mcpSrc),
+        'MCP 服务器列表必须过滤 windows 行（桌面控制只在自己的卡片里出现）');
+});
+
+test('桌面控制：权限面板行 / 标题胶囊 / 跑马灯 / 控制模式工具接线', () => {
+    const panelSrc = read('src/ai/ai-panel.js');
+    assert.ok(/label: '桌面控制'/.test(panelSrc), '权限面板必须有「桌面控制」行');
+    assert.ok(/function confirmDesktopControl/.test(panelSrc), '用户手动开启必须二次确认（完全权限同款）');
+    assert.ok(/request_desktop_control/.test(panelSrc), 'AI 申请通道必须在 app_control 里拦截处理');
+    assert.ok(/function syncDesktopControlUI/.test(panelSrc), '标题胶囊与跑马灯统一由 syncDesktopControlUI 驱动');
+    assert.ok(/case 'windows_control_mode'/.test(panelSrc), '必须实现 windows_control_mode 执行分支');
+    assert.ok(!/case 'windows_desktop'/.test(panelSrc), '揭示层执行分支必须删除');
+    assert.ok(!htmlSrc.includes('id="ai-computer-use"'), 'composer 的「桌面」pill 必须删除');
+    assert.ok(htmlSrc.includes('id="ai-chip-desktop"') && htmlSrc.includes('id="ai-desktop-marquee"'),
+        '标题红胶囊与面板顶部跑马灯节点必须在 index.html');
+    assert.ok(/ai-marquee/.test(cssSrc) && /ai-chip-desktop/.test(cssSrc), '两套样式必须存在');
+    const defsSrc = read('src/ai/ai-tool-defs.js');
+    assert.ok(/windows_control_mode: \{/.test(defsSrc), '工具定义必须改名为 windows_control_mode');
+    assert.ok(!/windows_desktop: \{/.test(defsSrc), '旧揭示工具定义必须删除');
+    assert.ok(/defaultDesktopControl/.test(read('src/ai/ai-settings-dialog.js')),
+        '设置页「新会话默认桌面控制」必须接线');
+});
+

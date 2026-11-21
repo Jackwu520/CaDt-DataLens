@@ -5,6 +5,7 @@
 // readOnlyHint 是服务器自填的 hint，绝不作为安全判断——批量勾选只是省点击，授权动作是用户点按钮本身。
 import {aiEstimateTokens} from './ai-constants.js';
 import {createInput, createTextarea} from '../core/form-controls.js';
+import {DESKTOP_MCP_SERVER} from './ai-desktop-control.js';
 
 const MCP_SERVER_NAME_RULE = /^[A-Za-z0-9_-]{1,32}$/;
 const MCP_TIMEOUT_MAX_MS = 600000;
@@ -123,8 +124,16 @@ export function createAIMcpSettings(ctx) {
     function bind() {
         if (el.enabled) {
             el.enabled.addEventListener('change', async () => {
-                if (!config) return;
-                await writeConfig(Object.assign({}, config, {enabled: el.enabled.checked}));
+                const checked = el.enabled.checked;
+                // 首次渲染前 config 可能还没读（旧路径下这里静默 return，点了像没反应）：
+                // 先补读一次，仍拿不到就把勾选回弹，不留下「看着开了其实没写」的假象。
+                if (!config) await loadConfig().catch(() => {});
+                if (!config) {
+                    el.enabled.checked = !checked;
+                    flash('MCP 配置读取失败，开关未保存', true);
+                    return;
+                }
+                await writeConfig(Object.assign({}, config, {enabled: checked}));
             });
         }
         if (el.add) {
@@ -190,7 +199,7 @@ export function createAIMcpSettings(ctx) {
             el.list.innerHTML = '';
             return;
         }
-        const names = Object.keys(config.mcpServers);
+        const names = Object.keys(config.mcpServers).filter((name) => name !== DESKTOP_MCP_SERVER);
         if (!names.length) {
             el.list.innerHTML = '<div class="fmt-hint hint-indent">尚未配置服务器。npx / uvx 型命令首次启动可能需要下载依赖，稍慢属正常。</div>';
             return;
