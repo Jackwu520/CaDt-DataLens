@@ -641,6 +641,21 @@ export function createAIMessageQueue(ctx) {
         flash('已插话：将在下一个工具边界生效');
     }
 
+    // 抢占 = 立即发出这条消息：待批准的计划卡收起让路（只改显示、计划保持 pending，
+    // 队列上方出现「计划等待批准 · 查看」入口，随时可回到批准卡）。流式期间卡片本就
+    // 不显示（planApprovalMessage 对未注销的流返回 null），这里覆盖「轮已空闲、卡正
+    // 显示」的直冲刷分支；收尾竞态由 ai-panel.js finishStream 的同款收起兜底。
+    function dismissPendingPlanCard(session) {
+        if (!session || typeof planApprovalMessage !== 'function' ||
+            typeof getDismissedPlanApproval !== 'function' || typeof setDismissedPlanApproval !== 'function') return;
+        const plan = planApprovalMessage(session);
+        if (!plan) return;
+        const key = typeof planApprovalKey === 'function' ? planApprovalKey(session, plan) : '';
+        if (!key || getDismissedPlanApproval() === key) return;
+        setDismissedPlanApproval(key);
+        if (typeof updateComposerTakeover === 'function') updateComposerTakeover(true);
+    }
+
     // 抢占（preempt）：停掉当前轮，消息作为普通用户消息开新一轮（原「插话」语义）。
     function preemptComposerMessage(opts) {
         const session = currentSession();
@@ -652,6 +667,8 @@ export function createAIMessageQueue(ctx) {
         }
         const payload = captureComposerMessage();
         if (!payload) return;
+        // 轮已空闲且计划卡正显示时先收起让路；流式 / 收尾窗口交给 finishStream 兜底
+        dismissPendingPlanCard(session);
         if (compactOf(session.id)) {
             model.enqueue(payload);
             renderMessageQueue();
@@ -692,6 +709,8 @@ export function createAIMessageQueue(ctx) {
             flash('正在压缩上下文，消息保持排队');
             return;
         }
+        // 轮已空闲且计划卡正显示时先收起让路（后续直冲刷分支才不会被计划守卫静默拦下）
+        dismissPendingPlanCard(sessionOf(sessionId));
         const index = model.indexOf(item);
         if (index < 0) return;
         model.setDelivery(item, 'queue');
@@ -723,9 +742,15 @@ export function createAIMessageQueue(ctx) {
         if (!sessionId || sessionBusy(sessionId)) return null;
         const session = sessionOf(sessionId);
         if (!session || session.archivedAt) return null;
-        // 待回答 / 计划待批准：输入区被接管卡占着，队列不动（与手动发送同一口径）
+        // 待回答：输入区被接管卡占着，队列不动（与手动发送同一口径）
         if (typeof currentPendingAskEntry === 'function' && currentPendingAskEntry(sessionId)) return null;
-        if (typeof planApprovalMessage === 'function' && planApprovalMessage(session)) return null;
+        // 计划待批准只在审批卡「正显示」时拦队列：被「继续规划」或抢占收起后输入区已空闲、
+        // 手动发送可行，冲刷同一口径放行——否则 pending 计划会把队列永远钉住（2026-11-22
+        // plan 模式抢占实测：抢占消息变成排队后发不出去）。
+        const pendingPlan = typeof planApprovalMessage === 'function' ? planApprovalMessage(session) : null;
+        if (pendingPlan && typeof planApprovalKey === 'function' &&
+            typeof getDismissedPlanApproval === 'function' &&
+            getDismissedPlanApproval() !== planApprovalKey(session, pendingPlan)) return null;
         const item = model.forSession(sessionId)[0];
         if (!item) return null;
         const viewing = typeof currentSession === 'function' ? currentSession() : null;

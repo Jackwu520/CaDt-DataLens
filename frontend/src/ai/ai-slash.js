@@ -58,6 +58,8 @@ export function createAISlash(ctx) {
     const exportSession = ctx.exportSession;
     const showMemoryDialog = ctx.showMemoryDialog;
     const openSettings = ctx.openSettings;
+    // /schedule 走定时任务应用页面标签页（悬浮窗降级回对话框）
+    const openSchedulesPage = typeof ctx.openSchedulesPage === 'function' ? ctx.openSchedulesPage : null;
     const attachSkillByName = ctx.attachSkillByName;
     const showSkillsDialog = ctx.showSkillsDialog;
     const handlePlanCommand = ctx.handlePlanCommand;
@@ -260,7 +262,8 @@ export function createAISlash(ctx) {
                 await showMemoryDialog();
                 break;
             case '/schedule':
-                openSettings('schedules');
+                if (openSchedulesPage) openSchedulesPage();
+                else openSettings('schedules');
                 break;
             case '/skill':
                 if (argText) await attachSkillByName(argText);

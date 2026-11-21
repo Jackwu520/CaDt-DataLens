@@ -10,6 +10,7 @@ import {remindersForPrompt} from './ai-reminders.js';
 import {isReadableImagePath} from './ai-image-encode.js';
 import {isReadableVideoPath} from './ai-constants.js';
 import {wrapTurnReminder} from './ai-turn-reminder.js';
+import {cognitionRulesText} from './ai-cognition.js';
 
 // 空记忆占位引导：MEMORY.md 不存在或为空时注入，替代「整块消失」——模型由此得知记忆区的存在与写入时机
 // （块内带引导语的先例：<user_preferences> / <task_todos> / <task_reminders>）。
@@ -209,6 +210,29 @@ export function createAISystemContext(ctx) {
             }
         }
 
+        // 计划审批卡真实状态（防幻觉）：pending 计划的审批卡可能已被用户「继续规划」收起——
+        // 模型只看得到历史里「提交过计划」，会凭空宣称卡片还在、引导用户点「执行计划」。
+        // 每轮随用户消息注入一次真实状态（卡在 / 卡已收起），只在计划模式且计划待批准时出现；
+        // 批准即退出计划模式，不再注入。卡片显隐判定经 ctx 注入（面板本地 dismissed 状态）。
+        {
+            const plan = session && session.activePlan;
+            if (session && session.planMode && plan && plan.status === 'pending'
+                && typeof ctx.planApprovalCardVisible === 'function') {
+                const visible = !!ctx.planApprovalCardVisible(session);
+                blocks.push([
+                    '<plan_status>',
+                    visible
+                        ? '计划已提交待批准：审批卡当前显示在输入框上方，等用户点「执行计划」。'
+                        : '审批卡已随用户点「继续规划」收起：当前没有待批准的计划卡片，也没有可点的「执行计划」按钮——不要宣称卡片存在或引导用户点「执行计划」。',
+                    visible
+                        ? '用户本轮消息如提出意见，即是对该计划的修订要求。'
+                        : '继续规划讨论；方案收敛后用 submit_plan 重新提交完整修订版（提交后会弹出新的审批卡）。',
+                    '</plan_status>',
+                ].join('\n'));
+                meta.planStatus = {visible};
+            }
+        }
+
         // 工作区状态（活动文件 / 光标 / 选区 / 可见范围 / 已打开文件）
         {
             const context = ctx.getWorkspaceContext() || {};
@@ -287,6 +311,21 @@ export function createAISystemContext(ctx) {
                     count: attachmentList.length,
                     chars: attachmentList.reduce((sum, item) => sum + aiTextOf(item.content).length, 0),
                 };
+            }
+        }
+
+        // 认知索引（可选启用，默认关）：overview 每会话注入一次（压缩裁掉历史块后重注是预期
+        // 恢复行为）+ 维护提醒。缓存由 prefetchTurnCache 在起轮前刷新，这里只同步消费缓存、
+        // 不自己调后端（§5.3 注入落点约束：卷是可变内容，进系统提示词稳定区会击穿前缀缓存）。
+        if (typeof ctx.cognitionTurnBlocks === 'function') {
+            const cog = ctx.cognitionTurnBlocks(session);
+            if (cog && cog.index) {
+                blocks.push(cog.index);
+                meta.cognition = {chars: cog.index.length, injected: true};
+            }
+            if (cog && cog.nudge) {
+                blocks.push(cog.nudge);
+                meta.cognitionNudge = {chars: cog.nudge.length};
             }
         }
 
@@ -480,6 +519,11 @@ export function createAISystemContext(ctx) {
         if (catalog) parts.push(catalog);
         const rules = workspaceRulesText(ctx.currentScopeOf(session), !!(session && session.planMode));
         if (rules) parts.push(rules);
+        // 认知索引守则（两态固定文案，属稳定区——变的是卷不是守则，§5.4）：存在性判断交给
+        // 动态块（<cognition_index> 只在有卷时出现），这里只描述「有索引怎么做 / 没有怎么开」。
+        if (typeof ctx.cognitionEnabled === 'function') {
+            parts.push(cognitionRulesText(ctx.cognitionEnabled()));
+        }
         parts.push(outputLanguageRuleText());
 
         // 动态块只为估算 / 注入统计保留 meta；文本经 turnBlock 返回给起轮路径注入用户消息。
@@ -488,6 +532,9 @@ export function createAISystemContext(ctx) {
         meta.attachments = turn.meta.attachments;
         if (turn.meta.taskTodos) meta.taskTodos = turn.meta.taskTodos;
         if (turn.meta.reminders) meta.reminders = turn.meta.reminders;
+        if (turn.meta.planStatus) meta.planStatus = turn.meta.planStatus;
+        if (turn.meta.cognition) meta.cognition = turn.meta.cognition;
+        if (turn.meta.cognitionNudge) meta.cognitionNudge = turn.meta.cognitionNudge;
 
         return {text: parts.join('\n\n'), meta, turnBlock: turn.text};
     }

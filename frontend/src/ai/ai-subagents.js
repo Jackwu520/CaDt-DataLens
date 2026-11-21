@@ -580,6 +580,11 @@ export function createAISubagents(ctx) {
             AI_TOOL_DEFS.agent_tree,
             AI_TOOL_DEFS.skill_use, AI_TOOL_DEFS.env_list,
         ];
+        // 认知索引只读两件（可选启用，默认关，§5.2）：调查任务可查条目；edit 不派——白名单
+        // 成文不变量「子代理拿不到任何写工具」，发现条目该维护时汇报回父代理去 cognition_edit。
+        if (typeof ctx.cognitionOn === 'function' && ctx.cognitionOn()) {
+            list.push(AI_TOOL_DEFS.cognition_read, AI_TOOL_DEFS.cognition_status);
+        }
         // ask_user 只在后台模式挂载（§4.5 原语 6 的实现陷阱）：阻塞模式的父回合被 await
         // 占住，没人能回答，挂上去必然 120s 超时——按模式硬性区分，不靠提示词自觉。
         if (mode === 'background') list.push(AI_TOOL_DEFS.ask_user);

@@ -5,7 +5,7 @@ import {readFileSync} from 'node:fs';
 import {
     AI_QUOTE_KIND, AI_QUOTE_EXCERPT_LIMIT,
     buildQuoteMarkup, quoteMarkupFromAttachments, splitQuotePrefix,
-    neutralizeQuoteText, quoteExcerpt, quoteChipLabel, quoteLabel,
+    neutralizeQuoteText, quoteExcerpt, quoteChipLabel, quoteLabel, quoteCardExcerpt, quoteFullDoc,
 } from '../../src/ai/ai-quote.js';
 
 const read = (name) => readFileSync(new URL(name, import.meta.url), 'utf8');
@@ -94,6 +94,25 @@ test('quoteChipLabel / quoteLabel：角色、索引与选区标记', () => {
     assert.equal(quoteLabel(sample), '引用 · 助手回复 #12（选区）');
 });
 
+test('quoteCardExcerpt：压平空白、截断、单个省略号且不带啰嗦尾巴', () => {
+    assert.equal(quoteCardExcerpt('第一行\n  第二行\t第三行'), '第一行 第二行 第三行');
+    assert.equal(quoteCardExcerpt('短文本'), '短文本');
+    assert.equal(quoteCardExcerpt(null), '');
+    const out = quoteCardExcerpt('甲'.repeat(100), 40);
+    assert.equal(out, '甲'.repeat(40) + '…');
+    assert.ok(!out.includes('共 '));
+    assert.ok(!out.includes('悬浮'));
+});
+
+test('quoteFullDoc：标题含角色索引 scope，content 兼容 content/text 两种字段', () => {
+    const fromAttachment = quoteFullDoc({source: 'assistant', index: 12, scope: 'selection', content: '附件正文'});
+    assert.equal(fromAttachment.name, '引用全文 — 助手回复 #12（选区）.txt');
+    assert.equal(fromAttachment.content, '附件正文');
+    const fromBubble = quoteFullDoc({source: 'user', index: 3, scope: 'message', text: '气泡正文'});
+    assert.equal(fromBubble.name, '引用全文 — 用户消息 #3（整条）.txt');
+    assert.equal(fromBubble.content, '气泡正文');
+});
+
 test('接线护栏：引用只进 user content，气泡截断 + title 全文，纯文本附件可空文本发送', () => {
     const panel = read('../../src/ai/ai-panel.js');
     const composer = read('../../src/ai/ai-composer.js');
@@ -113,10 +132,30 @@ test('接线护栏：引用只进 user content，气泡截断 + title 全文，�
     assert.ok(panel.includes("label: '全选对话', icon: 'select-all'"));
     const icons = read('../../src/core/icons.js');
     assert.ok(icons.includes("'quote':"));
-    // chip 前缀抽成 attachmentChipPrefix（输入区与消息原地编辑区共用同一份文案）
-    assert.ok(composer.includes('addMessageQuote') && composer.includes("if (item.kind === AI_QUOTE_KIND) return '回复引用 · ';"));
+    // 引用走专用卡片分支（ai-chip-quote），不再套 attachmentChipPrefix 的单行前缀
+    assert.ok(composer.includes('addMessageQuote') && composer.includes("item.kind === AI_QUOTE_KIND"));
+    assert.ok(composer.includes("chip.className = 'ai-chip ai-chip-quote'"));
+    assert.ok(composer.includes('quoteCardExcerpt(item.content, 48)'));
+    assert.ok(composer.includes('onQuoteClick'));
     assert.ok(composer.includes('!trimmed && !attachments.length'));
     assert.ok(context.includes('<quote> 块是用户引用的此前对话内容'));
+});
+
+test('接线护栏：气泡与输入区引用都能点击开只读全文虚拟标签', () => {
+    const panel = read('../../src/ai/ai-panel.js');
+    const composer = read('../../src/ai/ai-composer.js');
+    // 气泡：摘要仍保留 tooltip，且绑定 openFull → quoteFullDoc → openVirtualDoc
+    assert.ok(panel.includes('excerpt.dataset.tip = quote.text'));
+    assert.ok(panel.includes('const openFull = () => {'));
+    assert.ok(panel.includes('quoteFullDoc(quote)'));
+    assert.ok(panel.includes("openVirtualDoc(doc.name, doc.content, {readOnlyFixed: true, viewKind: 'document'})"));
+    // 输入区 / 编辑区：openVirtualDoc 从主窗注入 composer，两个渲染点都传 onQuoteClick
+    assert.ok(composer.includes('const openVirtualDoc = ctx.openVirtualDoc;'));
+    assert.ok(composer.includes('quoteFullDoc(item)'));
+    // 输入区在 composer 内部、编辑区在 panel 内，两处都传了 onQuoteClick
+    assert.ok(composer.includes('onQuoteClick: (item) =>'));
+    assert.ok(panel.includes('onQuoteClick: (item) =>'));
+    assert.ok(panel.includes('openVirtualDoc,') && panel.includes('nextAttachSeq: () => ++attachSeq'));
 });
 
 test('接线护栏：编辑器右键代码截图复用剪贴板与保存链路', () => {

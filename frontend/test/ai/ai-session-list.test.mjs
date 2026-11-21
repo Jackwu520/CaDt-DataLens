@@ -217,6 +217,22 @@ test('planPendingNeedsAttention：非 pending / 非计划模式 / 无计划 → 
     assert.equal(planPendingNeedsAttention(null, false), false);
 });
 
+test('planPendingNeedsAttention：用户已对计划发言（继续规划讨论中）→ 不需要注意', () => {
+    // 计划提交（ts=0）后用户发过修订意见：审批卡已收起、横条已收起，角标不该再挂「待批准」
+    assert.equal(planPendingNeedsAttention(planSession({
+        activePlan: {status: 'pending', markdown: '# 计划', ts: 0},
+        messages: [{role: 'user', ts: 5}],
+    }), false), false, '继续规划讨论轮结束后，info 角标不应出现');
+});
+
+test('planPendingNeedsAttention：计划重新提交（ts 晚于用户最后发言）→ 角标回来', () => {
+    // 修订轮 AI 重新 submit_plan：新计划 awaiting 决策，角标应重新出现
+    assert.equal(planPendingNeedsAttention(planSession({
+        activePlan: {status: 'pending', markdown: '# 计划 v2', ts: 10},
+        messages: [{role: 'user', ts: 5}],
+    }), false), true);
+});
+
 // 工作区分组默认展开：只展开当前工作区，其余收起；用户显式切换过则尊重其选择。
 const groupEnv = (currentKey, override = new Map(), firstKey = '') => ({override, currentKey: () => currentKey, firstKey});
 

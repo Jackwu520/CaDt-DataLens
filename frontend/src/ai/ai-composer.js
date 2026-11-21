@@ -8,7 +8,10 @@ import {aiTextOf, aiImageSrc, AI_IMAGE_MAX_BASE64, AI_IMAGE_MAX_INPUT_BYTES,
 import {prepareImagePayload, isReadableImagePath} from './ai-image-encode.js';
 import {attachmentPathHint} from './ai-file-tools.js';
 import {checkRequestBudget, checkSourceBatch, DEFAULT_IMAGE_LIMITS} from './ai-image-policy.js';
-import {AI_QUOTE_KIND, quoteChipLabel, quoteExcerpt} from './ai-quote.js';
+import {AI_QUOTE_KIND, quoteChipLabel, quoteCardExcerpt, quoteFullDoc} from './ai-quote.js';
+import {normalizePasteMode, shouldFoldPaste, makePasteMarker, makePasteEntry, scanPasteMarkers,
+    markerAtCursor, buildPasteMirrorHtml, expandPasteMarkers} from './ai-paste.js';
+import {iconSvg} from '../core/icons.js';
 import {dataUrlToFile} from '../core/image-clipboard.js';
 import {createShiftDoubleTap} from '../core/shift-double-tap.js';
 
@@ -17,13 +20,13 @@ function attachmentChipPrefix(item) {
     if (item.kind === 'selection') return '选中 · ';
     if (item.kind === 'selection_reference') return '引用选区 · ';
     if (item.kind === 'reference') return '引用 · ';
-    if (item.kind === AI_QUOTE_KIND) return '回复引用 · ';
     if (item.kind === 'video') return '视频 · ';
     return '文件 · ';
 }
 
 // 附件 chip 渲染的唯一实现：输入区附件条与消息原地编辑区共用，避免两套视觉漂移。
-// handlers：onRemove(item) 传了才给 × 按钮（历史附件只读时只画 chip）；onImageClick(item) 传了才可点开大图。
+// handlers：onRemove(item) 传了才给 × 按钮（历史附件只读时只画 chip）；onImageClick(item) 传了才可点开大图；
+// onQuoteClick(item) 传了才让引用卡片可点开全文（未传时只展示摘要，不绑定点击）。
 export function renderAttachmentChips(container, items, handlers) {
     if (!container) return;
     const opts = handlers || {};
@@ -42,6 +45,46 @@ export function renderAttachmentChips(container, items, handlers) {
             img.draggable = false;
             if (opts.onImageClick) img.addEventListener('click', () => opts.onImageClick(item));
             chip.appendChild(img);
+        } else if (item.kind === AI_QUOTE_KIND) {
+            // 对话引用做成卡片：来源标签弱化在上，正文摘要独立成行；点击摘要开全文。
+            chip.className = 'ai-chip ai-chip-quote';
+            const top = document.createElement('span');
+            top.className = 'ai-chip-quote-top';
+            const icon = document.createElement('span');
+            icon.className = 'ai-chip-quote-icon';
+            icon.innerHTML = iconSvg('quote', 12);
+            const label = document.createElement('span');
+            label.className = 'ai-chip-quote-label';
+            label.textContent = quoteChipLabel(item);
+            top.append(icon, label);
+            if (opts.onRemove) {
+                const remove = document.createElement('button');
+                remove.type = 'button';
+                remove.className = 'ai-chip-remove';
+                remove.textContent = '×';
+                remove.addEventListener('click', (event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    opts.onRemove(item);
+                });
+                top.appendChild(remove);
+            }
+            chip.appendChild(top);
+            const excerpt = document.createElement('span');
+            excerpt.className = 'ai-chip-quote-excerpt';
+            excerpt.textContent = quoteCardExcerpt(item.content, 48);
+            excerpt.dataset.tip = aiTextOf(item.content);
+            if (opts.onQuoteClick) {
+                excerpt.classList.add('clickable');
+                excerpt.addEventListener('click', (event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    opts.onQuoteClick(item);
+                });
+            }
+            chip.appendChild(excerpt);
+            container.appendChild(chip);
+            continue;
         } else {
             chip.className = 'ai-chip';
             const label = document.createElement('span');
@@ -101,6 +144,10 @@ export function createAIComposer(ctx) {
     const slashState = ctx.slashState;
     const submitText = ctx.submitText;
     const nextAttachSeq = ctx.nextAttachSeq;
+    // 引用卡片点击开全文：复用主窗的只读虚拟文档标签（未注入时卡片只展示摘要、不可点）。
+    const openVirtualDoc = ctx.openVirtualDoc;
+    // 长文本粘贴胶囊点击：由面板注入，打开可编辑虚拟标签页并回写 pasteStore（未注入时胶囊不可点）。
+    const openPasteDoc = ctx.openPasteDoc;
     // 双击 Esc 停止生成：判定与全局搜索「双击 Shift」同一状态机（core/shift-double-tap.js，
     // key 换成 Escape）。监听在输入框上（面板侧挂 keydown/keyup）——只有 composer 聚焦时才接收事件。
     const stopGeneration = ctx.stopGeneration;
@@ -108,6 +155,82 @@ export function createAIComposer(ctx) {
 
     // —— 随域迁入的输入区状态（原 ai-panel.js 闭包级）——
     let attachments = [];
+    // 长文本粘贴胶囊：正文里只放标记文本 ⟦贴N⟧，全文存这里（含用户在虚拟标签页里编辑后的版本）。
+    // 与群聊 @ 胶囊同构：文本是唯一真源、镜像层画彩色胶囊；发送时标记原位展开成全文。
+    const pasteStore = new Map();
+    let pasteSeq = 0;
+
+    // 当前粘贴模式（每次读，设置改了下次粘贴即生效）。未注入 settings 时走默认 collapse。
+    function pasteMode() {
+        return normalizePasteMode(settings && settings.aiLongPaste);
+    }
+
+    // 镜像层 DOM：textarea 文字正常可见（不透明），镜像层只在胶囊位置画不透明底盖住原生文字。
+    // 惰性创建，挂在 textarea 的父节点上（父节点需 position:relative，由 CSS 保证）。
+    let pasteMirror = null;
+    function ensurePasteMirror() {
+        if (pasteMirror || !el.input || !el.input.parentNode) return pasteMirror;
+        const parent = el.input.parentNode;
+        if (getComputedStyle(parent).position === 'static') parent.style.position = 'relative';
+        pasteMirror = document.createElement('div');
+        pasteMirror.className = 'ai-paste-mirror';
+        pasteMirror.setAttribute('aria-hidden', 'true');
+        parent.insertBefore(pasteMirror, el.input);
+        return pasteMirror;
+    }
+
+    // 同步镜像层字体度量 + 重绘胶囊 + 滚动对齐（参考 ai-group-view.js 的 syncMirrorStyles/renderMirror）。
+    function refreshPasteMirror() {
+        if (!el.input) return;
+        const mirror = ensurePasteMirror();
+        if (!mirror) return;
+        const value = String(el.input.value || '');
+        // 没有胶囊时直接隐藏镜像层，省一次重绘。
+        if (!scanPasteMarkers(value).some((r) => pasteStore.has(r.id))) {
+            mirror.innerHTML = '';
+            mirror.style.display = 'none';
+            return;
+        }
+        mirror.style.display = '';
+        const cs = getComputedStyle(el.input);
+        const box = (prop, extra) => (parseFloat(cs[prop]) || 0) + (extra || 0);
+        mirror.style.fontFamily = cs.fontFamily;
+        mirror.style.fontSize = cs.fontSize;
+        mirror.style.fontWeight = cs.fontWeight;
+        mirror.style.fontStyle = cs.fontStyle;
+        mirror.style.lineHeight = cs.lineHeight;
+        mirror.style.letterSpacing = cs.letterSpacing;
+        mirror.style.whiteSpace = 'pre-wrap';
+        mirror.style.overflowWrap = 'anywhere';
+        mirror.style.wordBreak = cs.wordBreak === 'normal' ? 'normal' : cs.wordBreak;
+        mirror.style.padding = [
+            box('paddingTop', box('borderTopWidth')),
+            box('paddingRight', box('borderRightWidth')),
+            box('paddingBottom', box('borderBottomWidth')),
+            box('paddingLeft', box('borderLeftWidth')),
+        ].map((n) => n + 'px').join(' ');
+        mirror.innerHTML = buildPasteMirrorHtml(value, pasteStore);
+        mirror.scrollTop = el.input.scrollTop;
+        mirror.scrollLeft = el.input.scrollLeft;
+    }
+
+    // 在光标处插入一个胶囊标记（保留光标前后文 → 位置语义），触发 input 让面板重算状态。
+    function insertPasteMarker(text) {
+        if (!el.input) return false;
+        const id = ++pasteSeq;
+        pasteStore.set(id, makePasteEntry(text));
+        const marker = makePasteMarker(id);
+        const start = typeof el.input.selectionStart === 'number' ? el.input.selectionStart : el.input.value.length;
+        const end = typeof el.input.selectionEnd === 'number' ? el.input.selectionEnd : start;
+        try {
+            el.input.setRangeText(marker, start, end, 'end');
+        } catch (e) {
+            el.input.value = el.input.value.slice(0, start) + marker + el.input.value.slice(end);
+        }
+        el.input.dispatchEvent(new Event('input', {bubbles: true}));
+        refreshPasteMirror();
+        return true;
+    }
 
     function renderAttachments() {
         if (!el.attach) return;
@@ -118,6 +241,11 @@ export function createAIComposer(ctx) {
                 updateContextCount();
             },
             onImageClick: (item) => showImagePreview(item),
+            onQuoteClick: (item) => {
+                if (!openVirtualDoc) return;
+                const doc = quoteFullDoc(item);
+                openVirtualDoc(doc.name, doc.content, {readOnlyFixed: true, viewKind: 'document'});
+            },
         });
         updateContextCount();
         updateSendState();
@@ -334,11 +462,27 @@ export function createAIComposer(ctx) {
         const data = e.clipboardData;
         if (!data || !data.items) return;
         const hasFile = Array.from(data.items).some((item) => item && item.kind === 'file');
-        if (!hasFile) return;
+        if (hasFile) {
+            // 文件优先：图片/视频仍走附件通道，不受三档设置影响。
+            const fileText = data.getData('text/plain');
+            if (!fileText) e.preventDefault();
+            const added = await attachmentsFromDataTransfer(data);
+            for (const item of added) addAttachment(item);
+            return;
+        }
+        // 纯文本：按三档设置分派。
+        const mode = pasteMode();
+        if (mode === 'off') return; // dsh 款：不拦截，浏览器默认原样全文插入。
         const text = data.getData('text/plain');
-        if (!text) e.preventDefault();
-        const added = await attachmentsFromDataTransfer(data);
-        for (const item of added) addAttachment(item);
+        if (!text || !shouldFoldPaste(text)) return; // 短文本原样插入。
+        e.preventDefault();
+        if (mode === 'attachment') {
+            // ZCode 款：整段转文本附件，正文不留标记（位置丢失）。
+            addAttachment({kind: 'file', label: '粘贴文本.txt', content: text});
+        } else {
+            // collapse（默认）：光标处插彩色胶囊标记，全文存 pasteStore。
+            insertPasteMarker(text);
+        }
     }
 
     async function attachmentTextFromPath(path) {
@@ -591,10 +735,19 @@ export function createAIComposer(ctx) {
         el.input.style.height = Math.min(max, Math.max(44, el.input.scrollHeight)) + 'px';
     }
 
+    // 提交防重入锁：一次轻按 Enter 可能派发两次 keydown（键盘重复 / 中文输入法确认候选词的双事件），
+    // 而 submitText → startSessionTurn 从入口忙检查到 attachStream 注册流之间有一串 await
+    // （whenIdle / 回合租约 / 上下文组装），窗口内流还没注册、输入框也还没清空（清空在 onStarted）。
+    // 不锁的话第二次会读到同样的文本再起一轮，两个 startSessionTurn 抢注册流——落败方在
+    // ai-panel.js 的守卫处把占位 assistant 标成 stopped，用户看到「一次回车发出两条，前一条已停止生成」。
+    // 锁必须覆盖异步提交全程，不能只挡同步重入。
+    let submitInFlight = false;
+
     // ev：点击事件可带 Ctrl/Meta——生成中点发送按钮 = 排队，按住 Ctrl 点 = 插话（与 Ctrl+Enter 同路），
     // Ctrl+Shift 点 = 抢占（停掉当前轮，与 Ctrl+Shift+Enter 同路）。
     function submitFromComposer(ev) {
         if (!el.input) return;
+        if (submitInFlight) return;
         const text = el.input.value;
         const trimmed = text.trim();
         if (!trimmed && !attachments.length) return;
@@ -602,7 +755,19 @@ export function createAIComposer(ctx) {
             handleSlashText(trimmed);
             return;
         }
-        sendComposerMessage(text, ev);
+        submitInFlight = true;
+        // 排队 / 插话 / 抢占是同步完成的（enqueueComposerMessage 当场清输入区），锁立刻释放；
+        // 直发路径返回 submitText 的 Promise，锁持有到起轮成功清空输入区才放行下一次提交。
+        // try/finally 兜住同步抛错：否则一次异常会把锁永久卡在 true，输入区再也发不出消息。
+        (async () => {
+            try {
+                await sendComposerMessage(text, ev);
+            } catch (e) {
+                // 提交失败已由 submitText 内部 flash 提示；这里只需保证锁被释放
+            } finally {
+                submitInFlight = false;
+            }
+        })();
     }
 
     // 直发/排队统一出口：submitFromComposer 与斜杠技能调用（ai-slash.js）共用。
@@ -611,8 +776,13 @@ export function createAIComposer(ctx) {
     // 但已是待发消息，不能再转回 handleSlashText（会死循环）。
     function sendComposerMessage(text, ev) {
         if (!el.input) return;
+        // 发送前把胶囊标记原位展开成全文（含用户在虚拟标签页里编辑过的版本），再走各出口。
+        const expanded = expandPasteMarkers(text, pasteStore);
+        text = expanded.text;
+        for (const id of expanded.usedIds) pasteStore.delete(id);
         el.input.value = text;
         resizeInput();
+        refreshPasteMirror();
         updateSendState();
         // 只有本会话在生成 / 压缩时才并入排队；别的会话在跑不影响本会话直接发送。
         if (syncStreamView() || compactOf((currentSession() || {}).id)) {
@@ -626,7 +796,9 @@ export function createAIComposer(ctx) {
             }
             return;
         }
-        submitText(text);
+        // 返回 Promise：submitFromComposer 的防重入锁要等这次异步提交落定（起轮并清空输入区）
+        // 才放行下一次提交，否则同一次 Enter 的双事件仍能在 await 窗口里各起一轮。
+        return submitText(text);
     }
 
     function handleComposerKey(e) {
@@ -678,6 +850,9 @@ export function createAIComposer(ctx) {
             return;
         }
         if (e.key !== 'Enter') return;
+        // 按住 Enter 产生的键盘重复（repeat）不是新的发送意图：只认第一次按下。
+        // 输入法确认候选词的双事件里也可能夹一个 repeat，一并在这里挡掉。
+        if (e.repeat) return;
         // 生成中三手势（方案 §4.1）：Enter 排队 / Ctrl+Enter 插话（不打断）/
         // Ctrl+Shift+Enter 抢占（停掉重来）；Shift+Enter 与 Alt+Enter 保持换行（现状）。
         if (syncStreamView() || compactOf((currentSession() || {}).id)) {
@@ -716,7 +891,11 @@ export function createAIComposer(ctx) {
 
     function captureComposerMessage() {
         if (!el.input) return null;
-        const text = String(el.input.value || '').trim();
+        const raw = String(el.input.value || '').trim();
+        // 排队路径同样展开胶囊标记（覆盖排队/插话/抢占），清理已用条目。
+        const expanded = expandPasteMarkers(raw, pasteStore);
+        const text = expanded.text;
+        for (const id of expanded.usedIds) pasteStore.delete(id);
         const items = attachments.slice();
         if (!text && !items.length) return null;
         const session = currentSession();
@@ -729,6 +908,7 @@ export function createAIComposer(ctx) {
         };
         el.input.value = '';
         resizeInput();
+        refreshPasteMirror();
         attachments = [];
         renderAttachments();
         hideSlash();
@@ -761,6 +941,7 @@ export function createAIComposer(ctx) {
         attachments = (item.attachments || []).map((att) => ({...att}));
         renderAttachments();
         resizeInput();
+        refreshPasteMirror();
         updateSendState();
         renderMessageQueue();
         el.input.focus();
@@ -824,6 +1005,17 @@ export function createAIComposer(ctx) {
             await pasteImageFromClipboard();
             return;
         }
+        // 与 Ctrl+V 同一分派：长按折叠的纯文本走胶囊/附件，短文本与 off 档原样插入。
+        const mode = pasteMode();
+        if (mode !== 'off' && shouldFoldPaste(text)) {
+            target.focus();
+            if (mode === 'attachment') {
+                addAttachment({kind: 'file', label: '粘贴文本.txt', content: text});
+            } else {
+                insertPasteMarker(text);
+            }
+            return;
+        }
         target.focus();
         // execCommand('insertText') 会进 undo 栈（菜单粘贴也能 Ctrl+Z 撤销）；不可用时回退 setRangeText
         let ok = false;
@@ -838,6 +1030,77 @@ export function createAIComposer(ctx) {
             }
             target.dispatchEvent(new Event('input', {bubbles: true}));
         }
+    }
+
+    // ---------- 长文本粘贴胶囊：点击开可编辑虚拟标签页 / 原子删除 ----------
+
+    // 点击输入框：光标落在胶囊标记内则打开可编辑虚拟标签页。
+    function handleComposerClick(e) {
+        if (!el.input || !openPasteDoc || pasteMode() !== 'collapse') return;
+        const pos = typeof el.input.selectionStart === 'number' ? el.input.selectionStart : -1;
+        const hit = markerAtCursor(el.input.value || '', pos);
+        if (!hit || !pasteStore.has(hit.id)) return;
+        e.preventDefault();
+        openPasteDoc(hit.id, pasteStore.get(hit.id));
+    }
+
+    // 悬停：光标落在胶囊上时给出手型 + 提示（tooltip 由 data-tip 的全局运行时负责显示）。
+    function handleComposerHover(e) {
+        if (!el.input || pasteMode() !== 'collapse') return;
+        // 用鼠标坐标换算字符位置较复杂；胶囊的 tooltip 已由镜像层 span 的 data-tip 承载，
+        // 镜像层 span 设 pointer-events:auto，故这里只需保证 textarea 不抢手型。
+        // 具体命中交给镜像层 span 的 CSS :hover。
+    }
+
+    // Backspace/Delete 命中胶囊整段删（对齐群聊 gc 的原子删除）。
+    function handlePasteCapsuleKey(e) {
+        if (!el.input || pasteMode() !== 'collapse') return false;
+        if (e.key !== 'Backspace' && e.key !== 'Delete') return false;
+        if (e.isComposing) return false;
+        const value = String(el.input.value || '');
+        const start = typeof el.input.selectionStart === 'number' ? el.input.selectionStart : -1;
+        const end = typeof el.input.selectionEnd === 'number' ? el.input.selectionEnd : -1;
+        if (start < 0 || end < 0) return false;
+        const markers = scanPasteMarkers(value).filter((r) => pasteStore.has(r.id));
+        let range = null;
+        if (start === end) {
+            const pos = start;
+            range = e.key === 'Backspace'
+                ? markers.find((r) => r.start < pos && pos <= r.end)
+                : markers.find((r) => r.start <= pos && pos < r.end);
+        } else {
+            const lo = Math.min(start, end);
+            const hi = Math.max(start, end);
+            const touched = markers.filter((r) => r.start < hi && r.end > lo);
+            if (touched.length) {
+                range = {
+                    start: Math.min(lo, touched[0].start),
+                    end: Math.max(hi, touched[touched.length - 1].end),
+                };
+            }
+        }
+        if (!range) return false;
+        e.preventDefault();
+        try {
+            el.input.setSelectionRange(range.start, range.end);
+            if (!document.execCommand('delete')) throw new Error('execCommand 不可用');
+        } catch (err) {
+            el.input.setRangeText('', range.start, range.end, 'end');
+            el.input.dispatchEvent(new Event('input', {bubbles: true}));
+        }
+        refreshPasteMirror();
+        return true;
+    }
+
+    // 镜像层胶囊点击（事件委托）：镜像层 span 可点，点开对应虚拟标签页。
+    function handlePasteMirrorClick(e) {
+        if (!openPasteDoc || pasteMode() !== 'collapse') return;
+        const target = e.target && e.target.closest ? e.target.closest('.ai-paste-pill') : null;
+        if (!target) return;
+        const id = Number(target.getAttribute('data-paste-id'));
+        if (!pasteStore.has(id)) return;
+        e.preventDefault();
+        openPasteDoc(id, pasteStore.get(id));
     }
 
     function showAIEditMenu(event, target) {
@@ -883,6 +1146,22 @@ export function createAIComposer(ctx) {
         attachCurrentFile,
         pickAttachmentFiles,
         showAIEditMenu,
+        refreshPasteMirror,
+        handleComposerClick,
+        handleComposerHover,
+        handlePasteCapsuleKey,
+        handlePasteMirrorClick,
+        // 供虚拟标签页 onChange 回写：按 id 取/更新条目，并刷新胶囊 tooltip。
+        getPasteEntry: (id) => pasteStore.get(id),
+        updatePasteEntry: (id, text) => {
+            const entry = pasteStore.get(id);
+            if (!entry) return;
+            const next = makePasteEntry(text);
+            entry.text = next.text;
+            entry.charCount = next.charCount;
+            entry.lineCount = next.lineCount;
+            refreshPasteMirror();
+        },
         getAttachments: () => attachments,
         setAttachments: (value) => { attachments = value; },
     };

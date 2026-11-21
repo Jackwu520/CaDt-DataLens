@@ -84,3 +84,20 @@ export function quoteChipLabel(quote) {
 export function quoteLabel(quote) {
     return '引用 · ' + quoteChipLabel(quote);
 }
+
+// 卡片摘要：压平空白后按 limit 截断，只补一个省略号。与 quoteExcerpt 不同，
+// 卡片已有 tooltip 与「点击看全文」，不再追加「（共 N 字符，悬浮查看全部）」的啰嗦尾巴。
+export function quoteCardExcerpt(text, limit = 120) {
+    const flat = aiTextOf(text).replace(/\s+/g, ' ').trim();
+    const cap = Math.max(20, Number(limit) || 120);
+    if (flat.length <= cap) return flat;
+    return flat.slice(0, cap) + '…';
+}
+
+// 点击引用开全文时用的虚拟只读文档：标题含角色/索引/scope，content 兼容
+// composer 附件（item.content）与气泡引用（quote.text）两种字段名。
+export function quoteFullDoc(quote) {
+    const name = '引用全文 — ' + quoteChipLabel(quote) + '.txt';
+    const content = aiTextOf((quote && (quote.content || quote.text)) || '');
+    return {name, content};
+}

@@ -4,6 +4,7 @@
 // classifyVerdictRows/askNavAction 纯函数留守（ai-takeover.test.mjs）；
 // approvalTakeoverKey/Collapsed、dismissedPlanApproval、stickBottom 经访问器读写（核心域他处亦写）。
 import {iconSvg} from '../core/icons.js';
+import {createSwitch} from '../core/form-controls.js';
 import {AI_WRITE_SCOPES} from './ai-constants.js';
 import {isWebApproval} from './ai-permissions.js';
 import {collectCommandFamilies, commandFamilySignature, mergePlanGrantItems} from './ai-command-rules.js';
@@ -578,6 +579,12 @@ export function createAITakeover(ctx) {
         return session.id + ':' + (Number(plan.ts) || 0) + ':' + String(plan.markdown || '').length;
     }
 
+    // 计划审批卡临时收起状态（仅显示层，不影响审批）：换一条计划（key 变化）自动复位展开。
+    // 与审批卡 / 提问卡同口径——收起后仍可从细条恢复，「执行计划 / 继续规划」不受影响。
+    // 宿主不需要读写它，故存在本工厂闭包内（createAITakeover 只在面板初始化时创建一次）。
+    let planTakeoverKey = '';
+    let planTakeoverCollapsed = false;
+
     // ---- 系统接管（通用；系统发起、模型不可见） ----
     const systemCountdownTimers = new Map();
 
@@ -675,6 +682,33 @@ export function createAITakeover(ctx) {
         const key = planApprovalKey(session, plan);
         el.takeover.dataset.takeoverKey = 'plan:' + key;
         el.takeover.textContent = '';
+        if (planTakeoverKey !== key) {
+            planTakeoverKey = key;
+            planTakeoverCollapsed = false;
+        }
+        // 收起态：单行细条，保留「计划等待批准」的可见性与计划标题，点击恢复完整卡
+        if (planTakeoverCollapsed) {
+            const bar = document.createElement('button');
+            bar.type = 'button';
+            bar.className = 'ai-takeover-bar';
+            const barIcon = document.createElement('span');
+            barIcon.className = 'ai-plan-takeover-icon';
+            barIcon.innerHTML = iconSvg('plan', 16);
+            const barText = document.createElement('span');
+            barText.className = 'ai-takeover-bar-text';
+            const digest = planDigest(String(plan.markdown || '').trim());
+            barText.textContent = '计划等待批准' + (digest.title ? ' · ' + digest.title : '');
+            const chev = document.createElement('span');
+            chev.className = 'ai-takeover-collapse';
+            chev.innerHTML = AI_CHEVRON_SVG;
+            bar.append(barIcon, barText, chev);
+            bar.addEventListener('click', () => {
+                planTakeoverCollapsed = false;
+                updateComposerTakeover(true);
+            });
+            el.takeover.appendChild(bar);
+            return;
+        }
         const card = document.createElement('div');
         card.className = 'ai-takeover-card ai-plan-takeover';
         const head = document.createElement('div');
@@ -689,6 +723,16 @@ export function createAITakeover(ctx) {
         mode.className = 'ai-takeover-mode';
         mode.textContent = '计划模式';
         head.append(icon, title, mode);
+        // 临时收起：折叠整卡为细条，方便继续查看上方消息；审批本身不受影响
+        const collapse = document.createElement('button');
+        collapse.type = 'button';
+        collapse.className = 'ai-takeover-collapse';
+        collapse.innerHTML = AI_CHEVRON_SVG;
+        collapse.addEventListener('click', () => {
+            planTakeoverCollapsed = true;
+            updateComposerTakeover(true);
+        });
+        head.appendChild(collapse);
         const body = document.createElement('div');
         body.className = 'ai-takeover-body';
         const preview = document.createElement('div');
@@ -781,10 +825,25 @@ export function createAITakeover(ctx) {
         }
         const foot = document.createElement('div');
         foot.className = 'ai-takeover-foot';
-        const hint = document.createElement('span');
-        hint.className = 'ai-takeover-hint';
-        hint.textContent = currentScopeOf(session) === 'read' ? '执行计划前请切换到「每次询问」或更高权限' : '批准后开始执行';
-        if (currentScopeOf(session) === 'read') {
+        const readOnly = currentScopeOf(session) === 'read';
+        // 「在隔离区中执行」开关（默认关）：取代原先左下角的静态提示「批准后开始执行」。
+        // 勾选后点「执行计划」会先建一个隔离 git worktree，再让 AI 在隔离区里执行——
+        // 批准卡本身就是一次明确确认，创建隔离区不再弹第二次确认框。只读档不能隔离开发，禁用并说明原因。
+        const wtRow = document.createElement('div');
+        wtRow.className = 'ai-plan-worktree-row';
+        const wtText = document.createElement('span');
+        wtText.className = 'ai-plan-worktree-label';
+        wtText.textContent = '在隔离区中执行';
+        const wtSwitch = createSwitch({
+            checked: false,
+            title: '开启后先创建一个隔离 git worktree，计划的所有改动只落在隔离区，完成后经补丁审阅回灌主根',
+        });
+        if (readOnly) {
+            wtSwitch.control.disabled = true;
+            wtRow.dataset.tip = '只读访问档不能隔离开发：先切换到「每次询问」或更高权限';
+        }
+        wtRow.append(wtText, wtSwitch.element);
+        if (readOnly) {
             const permission = document.createElement('button');
             permission.type = 'button';
             permission.className = 'dlg-btn';
@@ -811,8 +870,10 @@ export function createAITakeover(ctx) {
         accept.type = 'button';
         accept.className = 'dlg-btn primary';
         accept.textContent = '执行计划';
-        accept.addEventListener('click', () => acceptPlan(session, Array.from(selectedGrants.values())));
-        foot.append(hint, continueBtn, accept);
+        accept.addEventListener('click', () => acceptPlan(session, Array.from(selectedGrants.values()), {
+            inWorktree: wtSwitch.control.checked,
+        }));
+        foot.append(wtRow, continueBtn, accept);
         card.append(head, body, foot);
         el.takeover.appendChild(card);
     }

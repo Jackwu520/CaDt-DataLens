@@ -768,9 +768,13 @@ export function createAIWorktree(deps) {
         return lines.join('\n');
     }
 
-    // 面板直连创建（/worktree 斜杠命令）：不依赖模型回合与 toolMessage，
+    // 面板直连创建（/worktree 斜杠命令 / 计划批准卡「在隔离区中执行」）：不依赖模型回合与 toolMessage，
     // 确认卡走当前档位（full 免），创建后胶囊同步；并把「已创建隔离区」写进会话历史。
-    // opts.carry=true 时同时带入主根未提交改动。返回 {name, branch, path, baseSha} 或 null。
+    // opts.carry=true 时同时带入主根未提交改动；opts.skipConfirm=true 表示调用方已经拿过用户确认
+    // （计划批准卡本身就是一次明确确认，不必再弹第二次），full 档本来就免确认；
+    // opts.allowRunning=true 用于「先停流再建隔离区」的批准场景——stopGeneration 后 streams 要到
+    // 兜底定时器才摘除，这期间 streamOf 仍非空，但写效应已停，可以安全建区。
+    // 返回 {name, branch, path, baseSha} 或 null。
     async function createForSession(session, label, opts) {
         const missing = requireWriteSession(session);
         if (missing) {
@@ -779,7 +783,7 @@ export function createAIWorktree(deps) {
         }
         // 运行中一律不许切换（写效应正在产生）：此前的守卫只挂在输入区 pill 上，
         // /worktree 与权限菜单直连这里会绕过（2026-11-17 复查）。
-        if (isRunning(session.id)) {
+        if (isRunning(session.id) && !(opts && opts.allowRunning)) {
             flash('当前轮次运行中：结束或停止后再切换隔离区', true);
             return null;
         }
@@ -798,7 +802,7 @@ export function createAIWorktree(deps) {
         }
         const scope = currentScopeOf(session);
         let confirmed = true;
-        if (scope !== 'full') {
+        if (scope !== 'full' && !(opts && opts.skipConfirm)) {
             confirmed = await confirmDialog({
                 title: '创建隔离工作区',
                 message: '在当前工作区建一个隔离 git worktree：之后的改动落在 ' + WORKTREE_REL_DIR + '/<slug>/（新分支 cadt/wt/<slug>），'

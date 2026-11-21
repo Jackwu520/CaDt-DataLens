@@ -8,7 +8,12 @@ import {aiTextOf} from './ai-constants.js';
 const OPEN_TAG = '<system-reminder>';
 // 注入块至少含一个子块才生成，所以开头必须是已知子块标签之一。
 // task_todos_check：轮末清单催促（tool 轮边界注入），与起轮的 task_todos 同属宿主环境块。
-const PREFIX_RE = /^<system-reminder>\n<(?:workspace_context|task_todos|task_todos_check|task_reminders|attachments)>[\s\S]*?\n<\/system-reminder>[ \t]*\n*/;
+// cognition_index / cognition_nudge：认知索引的轮上下文块（ai-cognition.js，排在 blocks 末尾，
+// 其余块全空时会成为开头子块——不认它会把注入块当用户正文拆不回去）。
+// plan_status：计划审批卡真实状态（ai-system-context.js，继续规划讨论轮注入）——无 todos /
+// reminders 时它排在 blocks 开头，漏认会把整个 <system-reminder> 当用户正文显示在气泡里
+// （2026-11-22 实测 bug）。
+const PREFIX_RE = /^<system-reminder>\n<(?:workspace_context|task_todos|task_todos_check|task_reminders|plan_status|attachments|cognition_index|cognition_nudge)>[\s\S]*?\n<\/system-reminder>[ \t]*\n*/;
 
 // 注入内容里的 </system-reminder> 会提前闭合包装；换成全角斜杠，内容基本原样保留
 // （与 ai-quote.js 的 neutralizeQuoteText 同口径）。

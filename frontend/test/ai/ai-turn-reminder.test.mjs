@@ -55,6 +55,28 @@ test('splitTurnReminderPrefix：轮末清单催促（task_todos_check）属于�
     assert.equal(parsed.body, '');
 });
 
+test('splitTurnReminderPrefix：认知索引两块（cognition_index / cognition_nudge）是已知宿主子块', () => {
+    // 其余环境块全空时认知块会排在 bundle 开头——PREFIX_RE 不认它就会把注入块当用户正文
+    // （2026-11-22 认知索引接线审查发现，回归用例）
+    for (const tag of ['cognition_index', 'cognition_nudge']) {
+        const inner = '<' + tag + '>认知索引块正文</' + tag + '>';
+        const parsed = splitTurnReminderPrefix(wrapTurnReminder(inner));
+        assert.ok(parsed.reminder.startsWith('<system-reminder>\n<' + tag + '>'), tag + ' 应被识别为宿主子块');
+        assert.equal(parsed.body, '');
+    }
+});
+
+test('splitTurnReminderPrefix：计划审批卡状态（plan_status）是已知宿主子块', () => {
+    // 继续规划讨论轮：无 todos / reminders 时 plan_status 是 blocks 的第一个子块，
+    // PREFIX_RE 漏认会把整个 <system-reminder> 当用户正文显示进气泡（2026-11-22 实测 bug）。
+    const inner = '<plan_status>\n审批卡已随用户点「继续规划」收起：当前没有待批准的计划卡片。\n</plan_status>';
+    const content = wrapTurnReminder(inner) + '\n用户对计划的修订意见';
+    const parsed = splitTurnReminderPrefix(content);
+    assert.ok(parsed.reminder.startsWith('<system-reminder>\n<plan_status>'), 'plan_status 应被识别为宿主子块');
+    assert.ok(parsed.reminder.endsWith('</system-reminder>'));
+    assert.equal(parsed.body, '用户对计划的修订意见', '气泡只显示用户正文，不显示注入块');
+});
+
 test('ai-panel：轮末催促必须包成 <system-reminder> 宿主块，不许裸 user 文本', () => {
     // 2026-11-17 实证：裸 <task_todos_check> 会被弱模型当成「用户刚说的话」并据此反问。
     // 回归护栏：注入内容必须走 wrapTurnReminder，角色仍是 user + systemNote + dedupeKey。

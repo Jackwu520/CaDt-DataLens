@@ -113,3 +113,44 @@ test('flattenAgentTree：无 key 的条目也能稳定返回行', () => {
     assert.equal(rows.length, 1);
     assert.equal(rows[0].agent.name, '无 key');
 });
+
+test('flattenAgentTree：输出 key / guides / isLast 供树形连线使用', () => {
+    // 主代理(root) 下两个一级代理，第一个再挂一个孙代理
+    const main = agent('main', {subId: 's1'});
+    const a = agent('a', {parentSessionId: 's1'});
+    const a1 = agent('a1', {parentSessionId: 'sub-a'});
+    const b = agent('b', {parentSessionId: 's1'});
+    const roots = buildAgentTree([main, a, a1, b]);
+    const rows = flattenAgentTree(roots, () => false);
+    const of = (key) => rows.find((row) => row.key === key);
+
+    assert.equal(of('main').level, 0);
+    assert.deepEqual(of('main').guides, []);
+    assert.equal(of('main').isLast, true);          // 唯一根
+
+    // a 不是父的最后一个孩子 → guides[0]=true（其后代左侧竖线要贯穿）
+    assert.equal(of('a').level, 1);
+    assert.deepEqual(of('a').guides, []);
+    assert.equal(of('a').isLast, false);
+
+    // 孙代理 a1：guides[0] 继承「a 还有后续兄弟 b」= true，自身是 a 的独子 → isLast=true
+    assert.equal(of('a1').level, 2);
+    assert.deepEqual(of('a1').guides, [true]);
+    assert.equal(of('a1').isLast, true);
+
+    assert.equal(of('b').level, 1);
+    assert.deepEqual(of('b').guides, []);
+    assert.equal(of('b').isLast, true);            // 最后一个一级代理
+});
+
+test('flattenAgentTree：折叠父节点后其后代的 guides 不残留', () => {
+    const main = agent('main', {subId: 's1'});
+    const a = agent('a', {parentSessionId: 's1'});
+    const a1 = agent('a1', {parentSessionId: 'sub-a'});
+    const b = agent('b', {parentSessionId: 's1'});
+    const roots = buildAgentTree([main, a, a1, b]);
+    const rows = flattenAgentTree(roots, (key) => key === 'main');
+    // 主代理折叠后只剩它一行，b 也是主代理的后代，一并隐藏
+    assert.deepEqual(rows.map((row) => row.key), ['main']);
+    assert.equal(rows[0].collapsed, true);
+});

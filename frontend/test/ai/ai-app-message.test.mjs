@@ -41,6 +41,11 @@ test('计划批准指令按应用消息识别（不渲染成用户胶囊）', ()
     const plan = detectAppMessage('计划已批准，请立即按上面的计划开始执行，不要重复计划内容。');
     assert.deepEqual(plan, {kind: 'plan', label: '计划已批准', icon: ''});
     assert.equal(appMessageIcon(plan), 'compass');
+    // 现行文案（2026-11-22 起，尾部带「计划模式已自动退出」句）：前缀取两代共有的头
+    assert.deepEqual(
+        detectAppMessage('计划已批准，请立即按你通过 submit_plan 提交的计划开始执行，不要重复计划内容。' +
+            '计划模式已随批准自动退出，不要再调用 plan_mode。'),
+        {kind: 'plan', label: '计划已批准', icon: ''});
     // 用户自己手打的近似文本不算（前缀必须完全对上定稿文案）
     assert.equal(detectAppMessage('计划已批准之后我又想了想'), null);
 });

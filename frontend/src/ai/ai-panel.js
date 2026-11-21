@@ -50,6 +50,7 @@ import {
     clampWaitTimeout,
     describeKeyCombo,
     describeWait,
+    resolveSessionBrowserTabId,
     WAIT_POLL_MS,
 } from './ai-browser-tools.js';
 import {formatTerminalList, formatTerminalRead, formatWaitDuration, friendlyRetryReason, terminalSendLabel} from './ai-terminal-tools.js';
@@ -263,6 +264,7 @@ import {
 import {recordRead, recordWrite, checkWriteFresh} from './ai-write-guard.js';
 import {createAIToolDefs} from './ai-tool-defs.js';
 import {createAISystemContext, truncateSkillDescription} from './ai-system-context.js';
+import {createAICognition, resolveNeedsReread} from './ai-cognition.js';
 import {createAIWorktree, normalizeWorktreeState, worktreeRelPath, agentWorktreeWriteVerdict, mainRootWriteVerdict} from './ai-worktree.js';
 import {createAITodos, shouldSendTodosCheck, todosCheckText, todosCheckTextFromMessage} from './ai-todos.js';
 import {createScrollGesture, createShrinkBurst, nextStickState, shouldRefollowGrowth, STRICT_BOTTOM_PX} from './ai-scroll-follow.js';
@@ -282,7 +284,7 @@ import {createAITimer} from './ai-timer.js';
 import {createAISessionList} from './ai-session-list.js';
 import {createAIComposer, renderAttachmentChips} from './ai-composer.js';
 import {normalizeMessageAttachments, inlineEditPayload, snapshotFromAttachments} from './ai-inline-edit.js';
-import {quoteMarkupFromAttachments, splitQuotePrefix, quoteExcerpt, quoteLabel, quoteChipLabel, AI_QUOTE_KIND} from './ai-quote.js';
+import {quoteMarkupFromAttachments, splitQuotePrefix, quoteLabel, quoteChipLabel, quoteCardExcerpt, quoteFullDoc, AI_QUOTE_KIND} from './ai-quote.js';
 import {splitTurnReminderPrefix, wrapTurnReminder} from './ai-turn-reminder.js';
 import {parseFileRef, pickOpenFileMatch, applyFileRefChip} from './ai-file-refs.js';
 import {createAIToolCards} from './ai-tool-cards.js';
@@ -308,6 +310,7 @@ import {forkMessages, forkSettings} from './ai-session-fork.js';
 import {createAISessionSend} from './ai-session-send.js';
 import {compactTranscriptOf, computeCompactCutoff, computeCompactCutoffByBudget, compactRetainBudget, buildCompactSummary, applyCompactToSession, buildCompactMessages, compactThresholdOf, isAnchorUsage, COMPACT_KEEP_TAIL} from './ai-compact.js';
 import {createAIMcp, mcpNotesBlock} from './ai-mcp.js';
+import {createAIDesktopControl, isDesktopToolName, formatRevealResult} from './ai-desktop-control.js';
 import {mcpConfigView, mcpServerCommandPreview, mergeMcpServerConfig, planMcpServerDelete} from './ai-mcp-config.js';
 import {createAIMcpSettings} from './ai-mcp-settings.js';
 import {
@@ -429,6 +432,15 @@ export function createAIPanel(options) {
     // 支线对话的宿主出口（main.js 的 openSideChatTab）：完整会话渲染在内容区标签页，
     // 面板继续显示主对话——这是「支线不切走」的实现基础
     const openSideChatTab = typeof opts.openSideChatTab === 'function' ? opts.openSideChatTab : null;
+    // 「自动化」按钮的宿主出口（main.js 的 openAppPageTab）：定时任务应用页面标签页
+    const openAppPageTab = typeof opts.openAppPageTab === 'function' ? opts.openAppPageTab : null;
+    // 打开定时任务管理的统一入口（侧栏「自动化」按钮 / /schedule 命令 / 胶囊与对话框的「全部管理」共用）：
+    // 虚拟标签页改造后直接开定时任务应用页面；悬浮窗没有内容区、或宿主出口未注入时降级回对话框。
+    // 调用都发生在初始化之后（事件回调里），此时 scheduleMod 已就位。
+    const openSchedulesPage = () => {
+        if (openAppPageTab && !window.__aiFloatWindow) openAppPageTab('schedules');
+        else if (scheduleMod) scheduleMod.openAutomationDialog();
+    };
     // 群聊视图宿主（G6 面板化）：main.js 注入，把 ai-group-view 挂进 #ai-group-host；
     // groupHub 提供群列表 / 打开 / 新建（更多菜单与群聊视图内的切换弹层共用）
     const mountGroupChatView = typeof opts.mountGroupChatView === 'function' ? opts.mountGroupChatView : null;
@@ -440,6 +452,9 @@ export function createAIPanel(options) {
     const openExternal = typeof opts.openExternal === 'function'
         ? opts.openExternal
         : (url) => { try { window.open(url, '_blank', 'noopener'); } catch (e) {} };
+    // 回答正文里的 http(s) 链接走内置浏览器标签页（main.js 注入 openBrowserTab）。
+    // 未注入时（mock / 旧宿主）降级回 openExternal，不让链接变成死链。
+    const openBrowserTab = typeof opts.openBrowserTab === 'function' ? opts.openBrowserTab : null;
     const hostAppActions = typeof opts.hostAppActions === 'function' ? opts.hostAppActions : null;
     const isMock = !!opts.isMock;
     const floatWindow = !!opts.floatWindow;
@@ -517,6 +532,7 @@ export function createAIPanel(options) {
         attach: panel.querySelector('#ai-attach'),
         attachBtn: panel.querySelector('#ai-attach-btn'),
         permission: panel.querySelector('#ai-permission'),
+        computerUse: panel.querySelector('#ai-computer-use'),
         plan: panel.querySelector('#ai-plan'),
         worktreeToggle: panel.querySelector('#ai-worktree'),
         modelChip: panel.querySelector('#ai-model-chip'),
@@ -644,6 +660,7 @@ export function createAIPanel(options) {
         injectEnvVars: document.getElementById('ai-opt-inject-envvars'),
         injectPersona: document.getElementById('ai-opt-inject-persona'),
         sendKey: document.getElementById('ai-opt-sendkey'),
+        longPaste: document.getElementById('ai-opt-long-paste'),
         outputLang: document.getElementById('ai-opt-output-lang'),
         displayMode: document.getElementById('ai-opt-display-mode'),
         chatFont: document.getElementById('ai-opt-chatfont'),
@@ -657,6 +674,7 @@ export function createAIPanel(options) {
         msgActions: document.getElementById('ai-opt-msg-actions'),
         turnMetaAll: document.getElementById('ai-opt-turn-meta-all'),
         contextSlim: document.getElementById('ai-opt-context-slim'),
+        cognition: document.getElementById('ai-opt-cognition'),
         assistantCard: document.getElementById('ai-opt-assistant-card'),
         inlineWidgets: document.getElementById('ai-opt-inline-widgets'),
         todosExpanded: document.getElementById('ai-opt-todos-expanded'),
@@ -3452,6 +3470,8 @@ export function createAIPanel(options) {
         openAIDialog,
         closeAIDialog,
         dialogButton,
+        // 定时任务弹窗挂在 body（不在 .apppage-root 里），表单里的原生 select 需手动增强成自绘浮层
+        enhanceSelect: typeof enhanceSelect === 'function' ? enhanceSelect : null,
         sessionTitleById: (...args) => sessionTitleById(...args),
         sessionActivity,
         currentSession,
@@ -3471,6 +3491,8 @@ export function createAIPanel(options) {
         togglePop: (chip) => toggleChipsPop('schedules', chip),
         hideChipsPop: () => hideChipsPop(),
         openSettings,
+        // 「全部管理」统一走定时任务应用页面标签页（悬浮窗降级回对话框）
+        openSchedulesPage,
         // 会话归属判定：自动化弹层只展示本工作区会话的任务（跨工作区的折叠成提示行）
         isSessionLocal: (session) => !session || !session.workspace
             || aiWorkspaceKey(session.workspace) === aiWorkspaceKey(currentWorkspacePath()),
@@ -3977,8 +3999,11 @@ export function createAIPanel(options) {
     }
 
     function renderMessages(keepScroll) {
-        // 整面重画会让原地编辑区的 DOM 悬空（状态还会指向被丢掉的节点）：先静默退出编辑态。
-        // 数据仍在消息里，退出不丢任何内容；用户重新点「编辑」即可继续。
+        // 整面重绘会让原地编辑区的 DOM 悬空。旧实现直接 inlineEdit=null 丢弃编辑态：
+        // 异步的会话重读 / 资源变更（handleResourceChange，重试最多 ~6s）会在用户打字时
+        // 触发重绘，导致「第一次编辑几秒后莫名退出，第二次又不会（没有新的写盘事件了）」。
+        // 现在保存编辑数据，重绘后在新的消息节点上原样恢复，不丢未保存内容。
+        const editSnapshot = inlineEdit && !renderTarget ? snapshotInlineEdit(inlineEdit) : null;
         if (inlineEdit) inlineEdit = null;
         // 首次读盘未完成：此时 sessions 只是占位（老快照 / 一个空会话），任何来源的重绘
         // 都只会画出一个错误会话再被替换。统一压成加载态，读盘结束后 refreshSessionUI 画真内容。
@@ -3987,6 +4012,8 @@ export function createAIPanel(options) {
             return;
         }
         renderMessagesInner(keepScroll);
+        // 重绘完成后恢复编辑态（消息节点已换成新的）
+        if (editSnapshot) restoreInlineEdit(editSnapshot);
         // 消息流变了：结构面板的会话大纲要跟着更新（新增轮次 / 切换会话 / 压缩 / 编辑重发）
         notifyStructure();
         scheduleOutlineSync();
@@ -5243,13 +5270,22 @@ export function createAIPanel(options) {
                 for (const quote of parsedQuote.quotes) {
                     const row = document.createElement('div');
                     row.className = 'ai-user-quote-row';
+                    // 点击标签或摘要：在只读虚拟标签页打开引用全文（openVirtualDoc 由主窗注入）。
+                    const openFull = () => {
+                        if (typeof openVirtualDoc !== 'function') return;
+                        const doc = quoteFullDoc(quote);
+                        openVirtualDoc(doc.name, doc.content, {readOnlyFixed: true, viewKind: 'document'});
+                    };
                     const quoteLabelEl = document.createElement('span');
-                    quoteLabelEl.className = 'ai-user-quote-label';
-                    quoteLabelEl.textContent = quoteLabel(quote);
+                    quoteLabelEl.className = 'ai-user-quote-label clickable';
+                    quoteLabelEl.innerHTML = iconSvg('quote', 12) + '<span></span>';
+                    quoteLabelEl.lastChild.textContent = quoteLabel(quote);
+                    quoteLabelEl.addEventListener('click', openFull);
                     const excerpt = document.createElement('span');
-                    excerpt.className = 'ai-user-quote-excerpt';
-                    excerpt.textContent = quoteExcerpt(quote.text);
+                    excerpt.className = 'ai-user-quote-excerpt clickable';
+                    excerpt.textContent = quoteCardExcerpt(quote.text, 120);
                     excerpt.dataset.tip = quote.text;
+                    excerpt.addEventListener('click', openFull);
                     row.append(quoteLabelEl, excerpt);
                     quoteBox.appendChild(row);
                 }
@@ -6952,7 +6988,7 @@ export function createAIPanel(options) {
         return config.appControlEnabled !== false;
     }
 
-    // ---- 外部工具来源（设置 → AI → 外部工具；config 真源在 Go 的 external-tools.json）----
+    // ---- 外部工具来源（应用页面 → 外部工具；config 真源在 Go 的 external-tools.json）----
     // 工具可见性与执行路由共用这一份缓存：provider 缺 key / MCP 绑定失效都按 off 处理。
     let externalToolsConfig = defaultExternalToolsConfig();
     let externalToolsConfigLoaded = false;
@@ -6997,6 +7033,24 @@ export function createAIPanel(options) {
     // 工具定义表与权限档工具清单（阶段 3 拆出：ai-tool-defs.js）
     // MCP 客户端前端逻辑层（ai-mcp.js）：registry 只被 Go 的整代快照替换（§5.4）
     const mcpMod = createAIMcp({backend, flash});
+    // 桌面控制（Computer Use）闸门（ai-desktop-control.js）：会话授权单飞 + 懒加载揭示，
+    // 方案 desktop-mcp.md §5.2/§5.4/§13.3。被挤通知只在会话忙时投递——空闲会话静默收回，
+    // 不为「你丢了授权」唤醒一轮；忙则排队到下一轮边界（deliverAgentNotice 自带该语义）。
+    const desktopMod = createAIDesktopControl({
+        mcpToolDefs: () => mcpMod.mcpToolDefs(),
+        emitAppEvent: typeof opts.emitAppEvent === 'function' ? opts.emitAppEvent : (() => {}),
+        onEvicted: (info) => {
+            const session = info && info.sessionId ? sessionById(info.sessionId) : null;
+            if (!session) return; // 别窗口的持有者：由那边自己的广播副本通知
+            if (!(streamOf(session.id) || compactOf(session.id))) return;
+            deliverAgentNotice(session, {
+                kind: 'desktop',
+                label: '桌面授权',
+                content: '[桌面授权已被其他会话接管]\n本会话的桌面控制工具已立即收回；如需继续，'
+                    + '请用户在对应窗口重新点亮「桌面」。收回状态下调用桌面工具会被确定性拒绝。',
+            });
+        },
+    });
     // MCP 设置页（ai-mcp-settings.js）：配置读写走 Go，状态走 mcpMod 快照
     const mcpSettingsMod = createAIMcpSettings({
         backend,
@@ -7014,6 +7068,13 @@ export function createAIPanel(options) {
     const pluginToolsMod = opts.pluginTools || null;
     // 插件注入的 AI 上下文（shell/plugin-context.js）：与工具注册表同样由宿主注入
     const pluginContextMod = opts.pluginContext || null;
+    // 认知索引（可选启用，默认关）：会话指纹登记 / overview 预取与轮上下文注入都在
+    // ai-cognition.js；面板只提供 backend / settings / 范围根三件依赖（§5.3 注入落点约束）。
+    const cognitionMod = createAICognition({
+        get settings() { return settings; },
+        backend,
+        getScopeRoot,
+    });
     const pluginToolAuth = () => (config && config.pluginTools && typeof config.pluginTools === 'object')
         ? config.pluginTools
         : {};
@@ -7022,8 +7083,14 @@ export function createAIPanel(options) {
         // read_video 按会话视频能力裁剪：不支持的协议/模型连工具定义都不下发
         videoCapableOf,
         mcpToolDefs: () => mcpMod.mcpToolDefs(),
+        // 桌面控制（Computer Use）：会话授权与揭示状态经 getter 注入。toolCatalogText 从
+        // toolsForScope 反推，自动跟随——不要在别处另加一层桌面过滤（desktop-mcp.md §12.2 的单一判定源约束）
+        desktopGrantOn: (session) => desktopMod.grantOn(session),
+        desktopRevealedDefs: (session) => desktopMod.revealedDefs(session),
         // 生图/视频：配置了启用条目才下发 generate_image / generate_video / check_gen
         genModelsOn: () => (config.genModels || []).some((item) => item && item.enabled !== false),
+        // 认知索引三件：启用（settings.aiCognition）才下发（默认关，§5.2）
+        cognitionOn: () => cognitionMod.isEnabled(),
         // 外部工具：按能力的实际来源（off/provider/mcp/builtin）与权限档决定是否下发
         externalToolsOn: (capability, scope, planMode) =>
             externalCapabilityUsable(capability, externalModeOf(capability), scope, planMode),
@@ -7052,6 +7119,9 @@ export function createAIPanel(options) {
             : {text: '', count: 0, truncated: false}),
         get settings() { return settings; },
         get config() { return config; },
+        // 认知索引：守则两态文案（稳定区，ai-cognition.js 纯函数）与轮上下文两块（同步消费预取缓存）
+        get cognitionEnabled() { return () => cognitionMod.isEnabled(); },
+        get cognitionTurnBlocks() { return cognitionMod.turnBlocks; },
         get effectiveSystemPrompt() { return effectiveSystemPrompt; },
         get aiProjectRoot() { return aiProjectRoot; },
         get aiJoinPath() { return aiJoinPath; },
@@ -7075,6 +7145,17 @@ export function createAIPanel(options) {
         get sessionById() { return sessionById; },
         // 隔离 worktree 块：会话持有活跃 worktree 时每轮注入（含目录存在性校验与失效清登记）
         get worktreeBlock() { return worktreeMod.blockFor; },
+        // <plan_status> 动态块判定：pending 计划的审批卡此刻是否真的显示在输入框上方。
+        // 与接管区同源（planApprovalMessage 前置 + dismissed 比对）：卡片被「继续规划」收起后，
+        // 模型不能再宣称卡片存在或引导点「执行计划」（修订讨论轮防幻觉）。getter 惰性求值，
+        // 引用后置声明的 planApprovalMessage / planApprovalKey 无 TDZ 问题。
+        get planApprovalCardVisible() {
+            return (session) => {
+                const plan = planApprovalMessage(session);
+                if (!plan) return false;
+                return dismissedPlanApproval !== planApprovalKey(session, plan);
+            };
+        },
     });
     const assembleSystemContext = (session, attachmentList) => systemCtxMod.assembleSystemContext(session, attachmentList);
     const planModeBlock = () => systemCtxMod.planModeBlock();
@@ -8918,6 +8999,11 @@ async function requestApproval(session, toolMessage, info) {
     // （不回退，直接作答）与「调用失败」（搜索/抓取回退内置）。
     async function invokeMcpToolWithApproval(name, input, ctx, approvalText) {
         const session = ctx && ctx.session;
+        // 桌面闸先行（收口在此：executeMcpTool 主路径与 invokeExternalMcp 能力来源绑定两个
+        // 调用方共用，2026-11-21 审查 P1-1——能力路由曾绕过派发闸直达审批链）；denied 形状
+        // 让能力来源路由「不回退、直接作答」，与用户拒绝同车道
+        const gate = desktopDispatchGate(name, session);
+        if (gate) return {ok: false, denied: true, message: gate};
         const scope = currentScopeOf(session);
         const rules = await ensureProjectRules(false);
         const decision = decidePermission({
@@ -8925,7 +9011,10 @@ async function requestApproval(session, toolMessage, info) {
             kind: 'write',
             rules,
             subject: name,
-            sessionAllow: !!(session && matchCommandRule(commandRulesFor(session), name, 'MCP 工具')),
+            // 桌面工具在授权（「桌面」pill）生效时免逐次审批（§5.2：显式降险决定），
+            // 项目规则 deny 优先不变（decidePermission 里 deny 先于 sessionAllow 判定）
+            sessionAllow: !!(session && (matchCommandRule(commandRulesFor(session), name, 'MCP 工具')
+                || (isDesktopToolName(name) && desktopMod.grantOn(session)))),
         });
         logPermission('write', name, decision.decision, decision.source, decision.rule);
         if (decision.decision === 'deny') {
@@ -8959,6 +9048,20 @@ async function requestApproval(session, toolMessage, info) {
             mcpLogActivity(route, name, input, 'error', Date.now() - startedAt);
             throw e;
         }
+    }
+
+    // 桌面工具派发闸（desktop-mcp.md §5.2）：授权关闭 → 硬拒绝；已授权但未揭示 →
+    // 提示先走 windows_desktop。闸在审批链之前：未授权时连审批卡都不该弹。
+    // 收口在 invokeMcpToolWithApproval 开头（两个调用方共用），这里只是函数定义。
+    function desktopDispatchGate(name, session) {
+        if (!isDesktopToolName(name)) return null;
+        if (!desktopMod.grantOn(session)) {
+            return '桌面工具未授权：请用户先在输入框点亮「桌面」开关（仅本会话生效，重启后失效）。';
+        }
+        if (!desktopMod.isRevealed(session, name)) {
+            return '桌面工具 ' + name + ' 尚未揭示：先调用 windows_desktop 查询并揭示（query 关键词或 names 精确名），再调用它。';
+        }
+        return null;
     }
 
     async function executeMcpTool(name, input, ctx) {
@@ -9048,7 +9151,7 @@ async function requestApproval(session, toolMessage, info) {
     // 能力来源=MCP：调用户绑定的 MCP 公开工具；调用前校验绑定仍在快照里。
     async function invokeExternalMcp(capability, input, ctx) {
         const binding = String((externalToolsConfig.mcpBindings || {})[capability] || '');
-        if (!binding) throw new Error('未绑定 MCP 工具（设置 → AI → 外部工具）');
+        if (!binding) throw new Error('未绑定 MCP 工具（应用页面 → 外部工具）');
         if (!externalMcpToolNames().includes(binding)) {
             throw new Error('绑定的 MCP 工具不可用：' + binding + '（服务器被禁用 / 删除，或工具未勾选）');
         }
@@ -9458,7 +9561,7 @@ async function requestApproval(session, toolMessage, info) {
                 command: plan.server.command,
                 argCount: plan.server.args.length,
                 envKeys,
-                note: '配置已保存。请让用户在 设置 → AI → 外部工具 → MCP 服务器 → 该行「工具」里勾选要授权给 AI 的工具（默认全不勾）' +
+                note: '配置已保存。请让用户在 应用页面 → 外部工具 → MCP 服务器 → 该行「工具」里勾选要授权给 AI 的工具（默认全不勾）' +
                     (envKeys.length ? '，并在「编辑」里填写环境变量的值' : '') +
                     (plan.config.enabled === false ? '；MCP 客户端总开关当前是关闭的，需要用户开启' : '') + '。',
             };
@@ -9492,8 +9595,8 @@ async function requestApproval(session, toolMessage, info) {
         const subject = isImage ? '读取网络图片' : '网页抓取';
         if (externalModeOf('fetch') === 'off') {
             throw new Error(isImage
-                ? '读取网络图片已被用户关闭（设置 → AI → 外部工具：「网页抓取」为关闭时网图一并停用）'
-                : subject + '已被用户关闭（设置 → AI → 外部工具）');
+                ? '读取网络图片已被用户关闭（应用页面 → 外部工具：「网页抓取」为关闭时网图一并停用）'
+                : subject + '已被用户关闭（应用页面 → 外部工具）');
         }
         const hostSubject = webRuleSubject(target);
         if (!hostSubject) return null;
@@ -9543,7 +9646,44 @@ async function requestApproval(session, toolMessage, info) {
         'todo_write',
         // 快捷便签的写动作是 app_control 的 per-action 拦截（见 executeTool 的 app_control 分支）：
         // 工具本身只有一个 app_control，没法整只进这份清单。
+        // 认知索引维护是 .cadt/ 写效应：计划模式「零副作用」契约同样拦（§5.2，评审修正）。
+        'cognition_edit',
     ]);
+
+    // 认知索引工具的公共前置（§5.2 可选启用默认关）：开关 + 后端绑定；工作区按调用现取。
+    function cognitionToolGate() {
+        if (!cognitionMod.isEnabled()) {
+            throw new Error('认知索引未启用（设置 → AI → 上下文与记忆）：可建议用户经 app_control 的 cognition_toggle 审批开启');
+        }
+        if (!backend.CognitionRead) throw new Error('当前版本不支持认知索引（请重新构建或更新应用）');
+    }
+    function cognitionWorkspace() {
+        const ws = getScopeRoot();
+        if (!ws) throw new Error('认知索引按工作区生效：当前没有打开工作区');
+        return ws;
+    }
+    async function cognitionCall(method, ws, payload) {
+        const raw = method === 'CognitionStatus'
+            ? await backend.CognitionStatus(ws, payload === true)
+            : await backend[method](ws, JSON.stringify(payload));
+        return JSON.parse(raw);
+    }
+    function stringList(value) {
+        return Array.isArray(value) ? value.map((item) => aiTextOf(item).trim()).filter(Boolean) : [];
+    }
+    // .cadt/cognition 整树是 AI write_file / edit_file 的拒绝路径（§3.1）：卷只能经
+    // cognition_edit 改——write_file 直写会绕过预算 / 规则 / CAS 校验并污染 CAS 基准；
+    // .state 与锁文件（树外的 .cadt/cognition.lock）由 Go 独占——锁文件被覆盖会打破
+    // 单写者互斥（atomfile Replace 换掉被锁的旧文件对象）。用户手工编辑不受限（人优先）。
+    // 绝对路径（full 档可写工作区外）也按路径段判定，防止绕过前缀比对。
+    function assertNotCognitionPath(relPath) {
+        const raw = String(relPath || '').replace(/\\/g, '/').toLowerCase();
+        const hit = /(^|\/)\.cadt\/cognition(\.lock|\/|$)/.test(raw) ||
+            /(^|\/)\.cadt\/cognition(\.lock|\/)/.test(raw.split('/./').join('/'));
+        if (hit) {
+            throw new Error('认知索引卷与锁文件（.cadt/cognition*）只能经 cognition_edit 维护：write_file / edit_file 直写会绕过预算、规则与 CAS 校验，覆盖锁文件还会打破单写者互斥。');
+        }
+    }
 
     /**
      * 工具执行包装层（生命周期钩子）：PreToolUse 前阻塞、PostToolUse / PostToolUseFailure 后触发。
@@ -9842,7 +9982,7 @@ async function requestApproval(session, toolMessage, info) {
                 const query = aiTextOf(input.query).trim();
                 if (!query) throw new Error('搜索词为空');
                 const mode = externalModeOf('search');
-                if (mode === 'off') throw new Error('网页搜索已被用户关闭（设置 → AI → 外部工具）');
+                if (mode === 'off') throw new Error('网页搜索已被用户关闭（应用页面 → 外部工具）');
                 const maxResults = webToolLimit(input.maxResults, 1, 10, defaultSearchCount(externalToolsConfig));
                 if (mode === 'mcp') {
                     const routed = await invokeExternalMcp('search', {query, count: maxResults}, ctx);
@@ -9904,7 +10044,7 @@ async function requestApproval(session, toolMessage, info) {
                 if (!resolved.ok) return resolved.message;
                 const path = resolved.path;
                 const mode = externalModeOf('ocr');
-                if (mode === 'off') throw new Error('OCR 未启用（设置 → AI → 外部工具）');
+                if (mode === 'off') throw new Error('OCR 未启用（应用页面 → 外部工具）');
                 const purpose = input.purpose === 'rich_layout_recognition' ? 'rich_layout_recognition' : 'text_recognition';
                 if (mode === 'mcp') {
                     const routed = await invokeExternalMcp('ocr', {path, purpose}, ctx);
@@ -9923,7 +10063,7 @@ async function requestApproval(session, toolMessage, info) {
                 if (!text) throw new Error('朗读文本为空');
                 if ([...text].length > 5000) throw new Error('文本超过 5000 字符，请分段后再试');
                 const mode = externalModeOf('tts');
-                if (mode === 'off') throw new Error('语音合成未启用（设置 → AI → 外部工具）');
+                if (mode === 'off') throw new Error('语音合成未启用（应用页面 → 外部工具）');
                 const voice = input.voice === 'tide' ? 'tide' : 'stella';
                 if (mode === 'mcp') {
                     const routed = await invokeExternalMcp('tts', {text, voice}, ctx);
@@ -9945,7 +10085,7 @@ async function requestApproval(session, toolMessage, info) {
                 if (!resolved.ok) return resolved.message;
                 const path = resolved.path;
                 const mode = externalModeOf('asr');
-                if (mode === 'off') throw new Error('语音识别未启用（设置 → AI → 外部工具）');
+                if (mode === 'off') throw new Error('语音识别未启用（应用页面 → 外部工具）');
                 const name = fileNameOf(path);
                 if (mode === 'mcp') {
                     const routed = await invokeExternalMcp('asr', {path}, ctx);
@@ -10293,6 +10433,21 @@ async function requestApproval(session, toolMessage, info) {
                 }
                 return await runAskQuestion(input, ctx);
             }
+            // 桌面控制懒加载入口（desktop-mcp.md §5.4）：揭示 = 把匹配的 mcp__windows__*
+            // 公开名写进会话 revealed 集合，下一轮进工具表；本轮结果里带全量定义可直接调用。
+            case 'windows_desktop': {
+                const session = ctx && ctx.session;
+                // 计划模式下拒绝（审查 P2-5）：揭示本身零副作用，但「立即可调用」的回复
+                // 会误导模型，且桌面 MCP 工具在计划模式本就既不注入也被 mcp__ 拦截
+                if (session && session.planMode) {
+                    throw new Error('计划模式只允许只读探索：windows_desktop 不可用。请先用 submit_plan 提交完整计划，用户批准后再执行。');
+                }
+                if (!desktopMod.grantOn(session)) {
+                    return '桌面控制未授权：请用户先在输入框点亮「桌面」开关（仅本会话生效，重启后失效）。';
+                }
+                const revealed = desktopMod.reveal(session, input);
+                return formatRevealResult(revealed);
+            }
             case 'plan_mode': {
                 if (!ctx || !ctx.session) throw new Error('缺少会话上下文');
                 const enabled = input.enabled === true;
@@ -10402,6 +10557,8 @@ async function requestApproval(session, toolMessage, info) {
                 if (ctx && ctx.session && ctx.session.planMode === true &&
                     ['set_setting_row', 'send_group_message', 'install_plugin', 'uninstall_plugin',
                      'add_lifecycle_hook', 'update_lifecycle_hook', 'remove_lifecycle_hook',
+                     // 认知索引启停是应用功能开关：与设置写入同一执行阶段语义
+                     'cognition_toggle',
                      // 旧名（pre-command 时代）同样拦：别名不能成为计划模式的绕行通道
                      'add_pre_command', 'update_pre_command', 'remove_pre_command'].includes(action)) {
                     throw new Error('计划模式下禁止 ' + action + '：该动作会真实改变应用状态或触发模型调用，属于执行阶段，等用户批准计划后再执行（设置树 / 群列表等只读动作不受限）。');
@@ -10453,6 +10610,16 @@ async function requestApproval(session, toolMessage, info) {
                     });
                     persistSessions();
                     return '截图已捕获并作为图片附加到对话（下一轮请求模型可见）。';
+                }
+                // app_control 的 open_browser_tab / close_browser_tab 与 browser_* 工具共享
+                // 会话标签页身份：否则 AI 用它打开网页后，browser_screenshot 走 ensureBrowserTab
+                // 看不到 id 会另开 about:blank「新标签页」，截到白图（2026-11-22 高频 bug）。
+                if (ctx && ctx.session && (action === 'open_browser_tab' || action === 'close_browser_tab')) {
+                    const nextId = resolveSessionBrowserTabId(action, params, result, ctx.session.browserTabId);
+                    if (nextId !== ctx.session.browserTabId) {
+                        ctx.session.browserTabId = nextId;
+                        persistSessions();
+                    }
                 }
                 return result === undefined ? 'OK' : (typeof result === 'string' ? result : JSON.stringify(result));
             }
@@ -10859,10 +11026,78 @@ async function requestApproval(session, toolMessage, info) {
             }
             case 'worktree_manage':
                 return worktreeMod.manageTool(ctx, input);
+            case 'cognition_read': {
+                cognitionToolGate();
+                const ws = cognitionWorkspace();
+                const req = {paths: stringList(input.paths), labels: stringList(input.labels), query: aiTextOf(input.query).trim()};
+                const res = await cognitionCall('CognitionRead', ws, req);
+                cognitionMod.noteRead(ctx && ctx.session ? ctx.session.id : '', res.fingerprint);
+                if (!res.exists) return res.hint || '认知索引未建立';
+                return res.text;
+            }
+            case 'cognition_edit': {
+                cognitionToolGate();
+                const ws = cognitionWorkspace();
+                const sessionId = ctx && ctx.session ? ctx.session.id : '';
+                const entries = (Array.isArray(input.entries) ? input.entries : []).map((e) => ({
+                    path: aiTextOf(e && e.path).trim(),
+                    labels: stringList(e && e.labels),
+                    f: aiTextOf(e && e.f).trim(),
+                    r: aiTextOf(e && e.r).trim(),
+                    a: aiTextOf(e && e.a).trim(),
+                    s: aiTextOf(e && e.s).trim(),
+                })).filter((e) => e.path);
+                const req = {
+                    op: aiTextOf(input.op).trim() || 'add',
+                    entries,
+                    meta: typeof input.meta === 'string' ? input.meta : '',
+                    ignore: typeof input.ignore === 'string' ? input.ignore : '',
+                    reason: aiTextOf(input.reason).trim(),
+                    base: cognitionMod.baseFor(sessionId), // CAS 基准：前端自动附加，模型不可见（§4.3）
+                };
+                const res = await cognitionCall('CognitionEdit', ws, req);
+                cognitionMod.noteEditSuccess(sessionId, res.fingerprint);
+                const lines = ['已写入：' + res.entries + ' 条 / ' + res.bytes + ' 字节' +
+                    (res.bookkept ? '，baseline 簿记刷新 ' + res.bookkept + ' 条' : '') + '。',
+                '卷指纹已登记为本会话 CAS base（下轮 edit 直接带它即可）。'];
+                for (const w of (res.warnings || [])) lines.push('警告：' + w);
+                return lines.join('\n');
+            }
+            case 'cognition_status': {
+                cognitionToolGate();
+                const ws = cognitionWorkspace();
+                const sessionId = ctx && ctx.session ? ctx.session.id : '';
+                const res = await cognitionCall('CognitionStatus', ws, input.verbose === true);
+                const needs = resolveNeedsReread(cognitionMod.baseFor(sessionId), res.fingerprint);
+                cognitionMod.noteRead(sessionId, res.fingerprint);
+                if (!res.exists) return res.hint || '认知索引未建立';
+                const driftLine = (label, list) => {
+                    let text = label + '：' + list.total;
+                    if (Array.isArray(list.samples) && list.samples.length) {
+                        text += '（样例：' + list.samples.slice(0, 8).join('、') + (list.samples.length > 8 ? ' 等' : '') + '）';
+                    }
+                    return text;
+                };
+                const lines = [
+                    '认知索引：' + res.entries + ' 条 / ' + res.bytes + ' 字节（预算 ' + res.budgetEntries + ' / ' + res.budgetBytes + '）' +
+                        (res.scene ? '，scene=' + res.scene : '') +
+                        (res.badLines ? '，' + res.badLines + ' 条坏行被跳过' : '') +
+                        (res.baselineGenerated ? '（本次顺手生成 baseline）' : ''),
+                    '卷指纹 ' + (res.fingerprint || '').slice(0, 12) + '…；needsReread=' +
+                        (needs ? 'true（先 cognition_read 再 edit，否则 CAS 拒绝）' : 'false'),
+                    driftLine('Missing（工作区有文件、索引没条目）', res.missing),
+                    driftLine('Orphan（条目对应文件已不存在）', res.orphan),
+                    driftLine('Stale（文件变了、条目没跟）', res.stale),
+                    driftLine('Unbaselined（条目没跑校验）', res.unbaselined),
+                ];
+                if (res.scanTruncated) lines.push('工作区文件数超扫描预算，清单被截断（数据目录不建议建索引）。');
+                return lines.join('\n');
+            }
             case 'write_file': {
                 if (!ctx || !ctx.session || !ctx.toolMessage) throw new Error('写操作缺少会话上下文');
                 const path = aiResolveScopePath(input.path, ctx.session);
                 const relPath = aiRelPath(getScopeRoot(), path);
+                assertNotCognitionPath(relPath);
                 const content = aiTextOf(input.content);
                 if (!content.trim()) throw new Error('文件内容为空');
                 if (content.length > AI_WRITE_LIMIT) throw new Error('内容过长（上限 256KB）');
@@ -10913,6 +11148,7 @@ async function requestApproval(session, toolMessage, info) {
                 if (!ctx || !ctx.session || !ctx.toolMessage) throw new Error('写操作缺少会话上下文');
                 const path = aiResolveScopePath(input.path, ctx.session);
                 const relPath = aiRelPath(getScopeRoot(), path);
+                assertNotCognitionPath(relPath);
                 const oldString = aiTextOf(input.oldString);
                 const newString = aiTextOf(input.newString);
                 if (!oldString) throw new Error('oldString 不能为空');
@@ -11845,6 +12081,9 @@ async function requestApproval(session, toolMessage, info) {
         // 整段命中；块在起轮时冻结一份（与旧 baseSystemPrompt 快照同等新鲜度）。生成失败不阻塞起轮。
         let turnBlock = '';
         try {
+            // 认知索引 overview 预取（本地文件读，≈1–2ms）：bundle 只同步消费缓存、不自己调
+            // 后端（§5.3 注入落点约束）。未启用时零开销；失败按无索引处理（内部吞错）。
+            await cognitionMod.prefetchTurnCache(session);
             turnBlock = systemCtxMod.turnContextBundle(session, textAttachments).text;
         } catch (e) {
             // 尽力而为路径：环境块生成失败时按无块发送，下一轮会重建
@@ -12400,7 +12639,9 @@ async function requestApproval(session, toolMessage, info) {
         // 计划待批准判定与审批卡同源（session.activePlan.status==='pending'），且必须前置：
         // submit_plan 形态的正文可为空，不能被下面的 content 检查挡掉；模型以正文给计划的
         // 旧场景（activePlan 不存在）不再误报「待批准」，落回普通完成通知。
-        if (session && session.planMode && session.activePlan && session.activePlan.status === 'pending') {
+        // 继续规划讨论轮（用户已对计划发言、审批卡已收起）不算待批准，不再弹「等你批准」。
+        if (session && session.planMode && session.activePlan && session.activePlan.status === 'pending'
+            && planAwaitingUserReply(session)) {
             if (config.notifyApprove === false) return;
             notifyDesktop({
                 kind: 'info',
@@ -12549,6 +12790,19 @@ async function requestApproval(session, toolMessage, info) {
             refreshSystemPromptEstimate(true);
             updateScrollButton();
             updateComposerTakeover(true);
+        }
+        if (shouldFlush && current.stopped && session) {
+            // 抢占 / 停止窗口的消息要立即发出：待批准的计划卡收起让路（只改显示、计划保持
+            // pending，队列上方有「计划等待批准 · 查看」入口可回到批准卡）。同时兜住抢占
+            // 瞬间计划尚未提交、收尾时才 pending 的工具竞态；普通停止（无待发消息）与
+            // 自然结束不收卡（自然结束的排队消息按既定语义等用户处理计划）。
+            const plan = planApprovalMessage(session);
+            const planKey = plan ? planApprovalKey(session, plan) : '';
+            if (plan && dismissedPlanApproval !== planKey) {
+                dismissedPlanApproval = planKey;
+                updateComposerTakeover(true);
+                renderMessageQueue();
+            }
         }
         if (shouldFlush) {
             if (session) flushMessageQueue(session.id);
@@ -13512,6 +13766,43 @@ async function requestApproval(session, toolMessage, info) {
                 ? '计划模式已开启：AI 只读探索并给出计划，批准后再执行'
                 : '计划模式：先只读探索并给出计划，批准后执行';
         }
+        if (el.computerUse) {
+            // 桌面 pill（desktop-mcp.md §5.2）：无注册工具时整个隐藏；数字是快照里
+            // windows server 的真实注册数（未勾选不算）。其他会话持有时点灰并提示接管语义。
+            const count = desktopMod.registeredCount();
+            const granted = desktopMod.grantOn(session);
+            const holder = desktopMod.holderInfo();
+            const other = !!(holder && session && holder.sessionId !== session.id);
+            el.computerUse.classList.toggle('hidden', !count);
+            el.computerUse.textContent = granted ? '桌面 · 开' : (count ? '桌面 · ' + count : '桌面');
+            el.computerUse.setAttribute('aria-pressed', String(granted));
+            el.computerUse.classList.toggle('active', granted);
+            el.computerUse.dataset.tip = granted
+                ? '桌面控制已授权：仅本会话生效，重启后失效。再点一次立即收回；run_command 命令通道不受本开关约束。'
+                : (other
+                    ? '桌面控制正由其他会话持有（' + (holder.title || '另一会话') + '）；点亮将接管并通知对方。仅本会话生效、重启失效；run_command 命令通道不受本开关约束。'
+                    : '授权本会话驱动 Windows 桌面（第三方原生窗口，经 MCP server「windows」）。点亮后模型用 windows_desktop 揭示工具；仅本会话生效、重启失效；run_command 命令通道不受本开关约束。');
+            el.computerUse.setAttribute('aria-label', granted ? '桌面控制：已授权' : '桌面控制：未授权');
+        }
+    }
+
+    // 桌面授权开关（§5.2）：grant / revoke 都经应用广播收敛（单飞，最后广播者赢），
+    // 被挤掉的会话由各窗口副本检测并投递通知。授权只存内存，重启全部失效。
+    function toggleComputerUse() {
+        const session = currentSession();
+        if (!session) return;
+        if (desktopMod.grantOn(session)) {
+            const result = desktopMod.revoke(session);
+            if (result.ok) flash('桌面控制已收回（本会话）');
+        } else {
+            const result = desktopMod.grant(session);
+            if (result.ok) {
+                flash(result.evicted
+                    ? '桌面控制已接管：原持有会话已收到通知（仅本会话生效，重启失效）'
+                    : '桌面控制已授权（仅本会话生效，重启失效）');
+            }
+        }
+        updateScopeUI();
     }
 
     function applyScope(scope) {
@@ -14640,6 +14931,11 @@ async function requestApproval(session, toolMessage, info) {
                 renderInlineAttachments(state);
             },
             onImageClick: (item) => showImagePreview(item),
+            onQuoteClick: (item) => {
+                if (typeof openVirtualDoc !== 'function') return;
+                const doc = quoteFullDoc(item);
+                openVirtualDoc(doc.name, doc.content, {readOnlyFixed: true, viewKind: 'document'});
+            },
         });
         // 旧消息的文本类附件已固化进环境块：给出说明，避免用户以为「我的文件没了」
         if (state.noteEl) {
@@ -14781,6 +15077,60 @@ async function requestApproval(session, toolMessage, info) {
         renderInlineEditor(state);
     }
 
+    // 保存编辑态的纯数据（不含 DOM 引用），供整面重绘后恢复。
+    // 光标位置从当前 textarea 读——恢复后原样放回，用户打字位置不跳。
+    function snapshotInlineEdit(state) {
+        const input = state.wrap && state.wrap.querySelector('.ai-edit-input');
+        return {
+            sessionId: state.sessionId,
+            index: state.index,
+            items: state.items.slice(),
+            text: state.text,
+            legacyPacked: state.legacyPacked,
+            selStart: input ? input.selectionStart : (state.text || '').length,
+            selEnd: input ? input.selectionEnd : (state.text || '').length,
+        };
+    }
+
+    // 重绘后在新消息节点上恢复编辑态。校验：会话仍是当前查看的、index 对应消息仍可编辑
+    // （重读可能换掉消息内容 / 切走会话），任一不满足就放弃恢复（静默，不报错）。
+    function restoreInlineEdit(snap) {
+        if (!snap) return;
+        const session = sessionById(snap.sessionId);
+        if (!session || session !== currentSession()) return;
+        const message = session.messages[snap.index];
+        if (!canInlineEdit(message, session)) return;
+        const host = msgHost();
+        if (!host) return;
+        const wrap = host.querySelector('.ai-msg[data-ai-idx="' + snap.index + '"]');
+        if (!wrap) return;
+        const state = {
+            sessionId: snap.sessionId,
+            index: snap.index,
+            wrap,
+            items: snap.items,
+            text: snap.text,
+            legacyPacked: snap.legacyPacked,
+            attachEl: null,
+            noteEl: null,
+            saveBtn: null,
+            busy: false,
+        };
+        inlineEdit = state;
+        wrap.classList.add('editing');
+        renderInlineEditor(state);
+        // renderInlineEditor 默认把光标放末尾；恢复时放回保存的位置
+        const input = wrap.querySelector('.ai-edit-input');
+        if (input) {
+            try {
+                const end = (state.text || '').length;
+                const a = Math.max(0, Math.min(end, snap.selStart));
+                const b = Math.max(a, Math.min(end, snap.selEnd));
+                input.setSelectionRange(a, b);
+            } catch (e) {}
+        }
+    }
+
     // 「＋ 添加」：走 composer 的同一条附件链（图片降采样 / 视频校验 / 文本读取降级），
     // 只是结果进编辑区而不是输入区。
     async function addInlineAttachments(state) {
@@ -14820,7 +15170,7 @@ async function requestApproval(session, toolMessage, info) {
         if (tail > 0 && !skipConfirm) {
             askConfirm('重新发送这条消息？将丢弃它之后的 ' + tail + ' 条对话。', () => {
                 void doSaveInlineEdit(state, session, payload);
-            }, '重新发送');
+            }, '重新发送', undefined, undefined, {keys: ['Enter']});
             return;
         }
         void doSaveInlineEdit(state, session, payload);
@@ -14873,6 +15223,20 @@ async function requestApproval(session, toolMessage, info) {
     // sessionOverride：内容区支线对话标签页里的点击（宿主不是面板，不能用「当前会话」反查）。
     // 无参调用 = 面板消息区，行为不变。
     function handleMessageClick(e, sessionOverride) {
+        // 回答正文（.ai-md）里的 http(s) 链接走内置浏览器标签页。
+        // markdown 渲染给外链加了 target="_blank"，不拦就会弹一个裸 WebView2 窗口；
+        // 这里 preventDefault 后交给 openBrowserTab，未注入时降级回系统浏览器。
+        const link = e.target.closest && e.target.closest('.ai-md a[href]');
+        if (link) {
+            const href = (link.getAttribute('href') || '').trim();
+            if (/^https?:\/\//i.test(href)) {
+                e.preventDefault();
+                e.stopPropagation();
+                if (openBrowserTab) openBrowserTab(href);
+                else openExternal(href);
+                return;
+            }
+        }
         const approveBtn = e.target.closest('[data-ai-approve]');
         if (approveBtn) {
             const wrap = approveBtn.closest('.ai-msg');
@@ -16164,6 +16528,8 @@ async function requestApproval(session, toolMessage, info) {
         exportSession,
         showMemoryDialog,
         openSettings,
+        // /schedule 走定时任务应用页面标签页（悬浮窗降级回对话框）
+        openSchedulesPage,
         attachSkillByName: (...args) => attachSkillByName(...args),
         showSkillsDialog,
         handlePlanCommand,
@@ -16782,7 +17148,7 @@ async function requestApproval(session, toolMessage, info) {
         });
         if (sessionActionAutoBtn) sessionActionAutoBtn.addEventListener('click', () => {
             ensureOpen();
-            scheduleMod.openAutomationDialog();
+            openSchedulesPage();
         });
         // 投递（侧栏按钮 / 列表头部图标同一份）：先选目标、内容自己写。
         // 对话框挂在面板 DOM 里，所以与「自动化」一样先确保面板打开。
@@ -16803,6 +17169,7 @@ async function requestApproval(session, toolMessage, info) {
         if (el.moreBtn) el.moreBtn.addEventListener('click', showMoreMenu);
         if (el.attachBtn) el.attachBtn.addEventListener('click', showAttachMenu);
         if (el.permission) el.permission.addEventListener('click', showPermissionMenu);
+        if (el.computerUse) el.computerUse.addEventListener('click', toggleComputerUse);
         if (el.plan) el.plan.addEventListener('click', togglePlanMode);
         if (el.modelChip) el.modelChip.addEventListener('click', showModelPicker);
         if (el.promptsBtn) el.promptsBtn.addEventListener('click', () => showPromptDialog());
@@ -16976,15 +17343,30 @@ async function requestApproval(session, toolMessage, info) {
                 resizeInput();
                 updateSendState();
                 updateSlash();
+                refreshPasteMirror();
             });
-            el.input.addEventListener('keydown', handleComposerKey);
+            el.input.addEventListener('keydown', (e) => {
+                if (handlePasteCapsuleKey(e)) return;
+                handleComposerKey(e);
+            });
             el.input.addEventListener('keyup', handleComposerKeyUp);
             el.input.addEventListener('paste', handleInputPaste);
+            el.input.addEventListener('click', handleComposerClick);
+            el.input.addEventListener('scroll', () => {
+                const mirror = el.input.parentNode && el.input.parentNode.querySelector('.ai-paste-mirror');
+                if (mirror) {
+                    mirror.scrollTop = el.input.scrollTop;
+                    mirror.scrollLeft = el.input.scrollLeft;
+                }
+            });
             el.input.addEventListener('blur', () => {
                 setTimeout(() => {
                     if (document.activeElement !== el.input) hideSlash();
                 }, 150);
             });
+            // 镜像层胶囊点击（事件委托）：镜像层惰性创建，故绑在 input 的父节点上。
+            const inputParent = el.input.parentNode;
+            if (inputParent) inputParent.addEventListener('click', handlePasteMirrorClick);
         }
         if (el.send) el.send.addEventListener('click', (e) => submitFromComposer(e));
         // 注意：不能直接传函数引用，click 会把 MouseEvent 当第一个参数（会被当成要停止的流）
@@ -17233,6 +17615,20 @@ async function requestApproval(session, toolMessage, info) {
     const imagePolicy = createImagePolicyStore({backend});
     const imageLimits = () => imagePolicy.get();
     // 输入区与附件域（阶段 3 拆出：ai-composer.js；attachments 随域迁入，attachSeq 经 nextAttachSeq 取号）
+    // 长文本粘贴胶囊点击：打开可编辑虚拟标签页，编辑内容经 onChange 实时回写 pasteStore。
+    // 惰性引用 composerMod（此刻尚未赋值，但回调在用户点击时才执行，安全）。
+    const openPasteDoc = (id, entry) => {
+        if (typeof openVirtualDoc !== 'function' || !entry) return;
+        openVirtualDoc('粘贴文本 #' + id + '.txt', entry.text, {
+            viewKind: 'document',
+            onChange: (text) => {
+                if (composerMod && typeof composerMod.updatePasteEntry === 'function') {
+                    composerMod.updatePasteEntry(id, text);
+                }
+            },
+        });
+    };
+
     const composerMod = createAIComposer({
         el,
         backend,
@@ -17276,6 +17672,10 @@ async function requestApproval(session, toolMessage, info) {
         slashState,
         submitText,
         nextAttachSeq: () => ++attachSeq,
+        // 引用卡片点击开全文：复用主窗只读虚拟文档标签
+        openVirtualDoc,
+        // 长文本粘贴胶囊点击开可编辑虚拟标签页
+        openPasteDoc,
     });
     // 打字增行（composer 自动长高）不经过任何渲染路径：input 事件带一次刷新。
     // defer 到本轮事件循环末尾——事件接线函数里的 resizeInput 监听注册得更晚，
@@ -17308,6 +17708,11 @@ async function requestApproval(session, toolMessage, info) {
     const captureComposerMessage = (...args) => composerMod.captureComposerMessage(...args);
     const editQueuedMessage = (...args) => composerMod.editQueuedMessage(...args);
     const handleInputPaste = (...args) => composerMod.handleInputPaste(...args);
+    const refreshPasteMirror = (...args) => composerMod.refreshPasteMirror(...args);
+    const handleComposerClick = (...args) => composerMod.handleComposerClick(...args);
+    const handleComposerHover = (...args) => composerMod.handleComposerHover(...args);
+    const handlePasteCapsuleKey = (...args) => composerMod.handlePasteCapsuleKey(...args);
+    const handlePasteMirrorClick = (...args) => composerMod.handlePasteMirrorClick(...args);
     const attachCurrentFile = (...args) => composerMod.attachCurrentFile(...args);
     const pickAttachmentFiles = (...args) => composerMod.pickAttachmentFiles(...args);
     const attachmentsFromDataTransfer = (...args) => composerMod.attachmentsFromDataTransfer(...args);
@@ -17637,6 +18042,8 @@ async function requestApproval(session, toolMessage, info) {
         openTermTab,
         // 隔离 worktree（spawn isolation='worktree'）：子代理草稿区建在主根 .cadt/worktree/ 下
         getScopeRoot,
+        // 认知索引只读两件的启用门（默认关；edit 不派——子代理拿不到任何写工具的不变量）
+        cognitionOn: () => cognitionMod.isEnabled(),
         // 子代理详情落在内容区标签页（编辑区收起时由 main.js 的 revealEditorForContent 展开；
         // 不动面板形态）。悬浮窗没有内容区，置 null 让调用方退回面板内覆盖层。
         openAgentTab: !openAgentTab || window.__aiFloatWindow ? null : (spec) => openAgentTab(spec),
@@ -17859,13 +18266,23 @@ async function requestApproval(session, toolMessage, info) {
         session.activePlan.fileRel = target.rel;
         persistSessions();
     }
-    const acceptPlan = async (session, grantItems) => {
+    const acceptPlan = async (session, grantItems, opts) => {
         // 批准意图明确：模型若还在收尾输出（提示词要求它提交后停轮，但可能没停干净），
         // 直接停掉再批准——否则用户点按钮无反应，只能干等或手动停止。
         const live = session && streamOf(session.id);
         if (live) stopGeneration(live);
+        // 「在隔离区中执行」：落盘前先建隔离区。放在写盘前是为了让失败可回滚——
+        // 一旦 writePlanFileForApproval 把 activePlan 置成 approved，审批卡就消失、无法重试。
+        // 批准卡本身已是一次确认，传 skipConfirm 免二次弹窗；流刚 stop、streams 尚未摘除，传 allowRunning。
+        if (opts && opts.inWorktree) {
+            const added = await worktreeMod.createForSession(session, 'plan', {skipConfirm: true, allowRunning: true});
+            if (!added) {
+                flash('隔离工作区未创建，计划未开始执行（可取消开关后重试）', true);
+                return;
+            }
+        }
         await writePlanFileForApproval(session);
-        return toolCardsMod.acceptPlan(session, grantItems);
+        return toolCardsMod.acceptPlan(session, grantItems, opts);
     };
     const askStateLabel = (...args) => toolCardsMod.askStateLabel(...args);
     const askResultText = (...args) => toolCardsMod.askResultText(...args);
@@ -18091,7 +18508,7 @@ async function requestApproval(session, toolMessage, info) {
             // 来源矩阵在设置页可能刚被改过：重读一次，保证下一轮工具可见性正确
             void loadExternalToolsConfig(true);
         },
-        // 外部工具（设置 → AI → 外部工具 / 能力来源路由）
+        // 外部工具（应用页面 → 外部工具 / 能力来源路由）
         getMcpToolDefs: () => mcpMod.mcpToolDefs(),
         getExternalToolsConfig: () => externalToolsConfig,
         refreshExternalTools: () => loadExternalToolsConfig(true),
@@ -18154,6 +18571,12 @@ async function requestApproval(session, toolMessage, info) {
         handleMcpEvent: (snapshot) => {
             mcpMod.applySnapshot(snapshot);
             mcpSettingsMod.renderAll();
+            updateScopeUI(); // 桌面 pill 的注册数与显隐随快照变化
+        },
+        // 桌面授权单飞广播（desktop-grant-changed）：整表替换副本 + 挤掉本地会话时投通知
+        handleDesktopGrantEvent: (payload) => {
+            desktopMod.handleGrantEvent(payload);
+            updateScopeUI();
         },
         // 计时器注册表（调试 / 插件作者可经 window.__lens.aiPanel.timerMod 驱动）
         timerMod,

@@ -62,24 +62,38 @@ export function buildAgentTree(agents) {
 }
 
 // 展开成显示行序（深度优先）。isCollapsed(key) 返回真且该节点有子级时不展开后代。
-// 行：{agent, level, childCount, descendantCount, collapsed}
+// 行：{agent, level, key, guides, isLast, childCount, descendantCount, collapsed}
+//   key    —— 折叠态标识（与 isCollapsed 入参同一口径）
+//   guides —— 祖先列的「是否还有后续兄弟」布尔数组（长度 = level - 1，根层为空）；
+//             渲染树形连线时，guides[i] 为真表示第 i 列竖线要贯穿到下一行。
+//   isLast —— 本节点是否为父的最后一个孩子；决定自己那列竖线是止于本行中心还是贯穿。
+// 只描述结构、不含 DOM/CSS，团队协作视图据此画连线（层级封顶由视图侧处理）。
 export function flattenAgentTree(roots, isCollapsed) {
     const rows = [];
     const collapsedOf = typeof isCollapsed === 'function' ? isCollapsed : () => false;
-    const walk = (nodes, level) => {
-        for (const node of nodes) {
+    const walk = (nodes, level, guides) => {
+        for (let index = 0; index < nodes.length; index++) {
+            const node = nodes[index];
             const key = node.agent.key || node.agent.toolCallId || node.agent.subId || '';
             const collapsed = node.children.length > 0 && !!collapsedOf(key);
+            const isLast = index === nodes.length - 1;
             rows.push({
                 agent: node.agent,
                 level,
+                key,
+                guides: guides.slice(),
+                isLast,
                 childCount: node.children.length,
                 descendantCount: node.descendantCount,
                 collapsed,
             });
-            if (!collapsed) walk(node.children, level + 1);
+            if (!collapsed) {
+                // 根层不占连线段；从 level>=1 起把「是否有后续兄弟」传给子级画贯穿竖线。
+                const childGuides = level === 0 ? [] : guides.concat(!isLast);
+                walk(node.children, level + 1, childGuides);
+            }
         }
     };
-    walk(Array.isArray(roots) ? roots : [], 0);
+    walk(Array.isArray(roots) ? roots : [], 0, []);
     return rows;
 }

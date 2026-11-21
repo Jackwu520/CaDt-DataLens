@@ -54,8 +54,10 @@ export function appMessageIcon(app) {
 export function detectAppMessage(content) {
     const text = String(content || '').trim();
     // 计划批准（「执行计划」按钮）：应用代发的固定指令。旧会话没有 app 元数据，
-    // 按定稿文案前缀认回来，否则历史里继续显示成用户胶囊。
-    if (/^计划已批准，请立即按上面的计划开始执行/.test(text)) {
+    // 按定稿文案前缀认回来，否则历史里继续显示成用户胶囊。前缀只取「计划已批准，请立即按」
+    // 这段两代文案（「按上面的计划…」/「按你通过 submit_plan 提交的计划…」）共有的头——
+    // 排队重发路径（flushInBackground）不透传 app 元数据，也要靠它认回。
+    if (/^计划已批准，请立即按/.test(text)) {
         return {kind: 'plan', label: '计划已批准', icon: ''};
     }
     const git = text.match(/^［Git 快捷操作 · ([^］]+)］/);

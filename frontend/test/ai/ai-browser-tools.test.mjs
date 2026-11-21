@@ -17,6 +17,7 @@ import {
     describeKeyCombo,
     describeWait,
     keyEventInit,
+    resolveSessionBrowserTabId,
 } from '../../src/ai/ai-browser-tools.js';
 
 test('clampWaitTimeout：缺省 5000，非法回落默认，夹在 200–60000', () => {
@@ -111,4 +112,21 @@ test('buildPressKeyScript：把修饰符写进 KeyboardEvent 构造参数', () =
     assert.ok(script.includes('KeyboardEvent("keydown"'));
     assert.ok(script.includes('KeyboardEvent("keyup"'));
     assert.ok(!buildPressKeyScript('s', []).includes('ctrlKey'));
+});
+
+test('resolveSessionBrowserTabId：open_browser_tab 登记 id，close 关当前才清空，其它动作保持', () => {
+    // AI 用 app_control open_browser_tab 打开网页后必须把 id 登记到会话，
+    // 否则 browser_screenshot 会另开 about:blank 截到白图（2026-11-22 高频 bug）。
+    assert.equal(
+        resolveSessionBrowserTabId('open_browser_tab', {url: 'https://x'}, {browserTab: {id: 'browser-abc'}}, ''),
+        'browser-abc');
+    // 结果结构异常时不篡改当前值
+    assert.equal(resolveSessionBrowserTabId('open_browser_tab', {}, {}, 'browser-old'), 'browser-old');
+    assert.equal(resolveSessionBrowserTabId('open_browser_tab', {}, null, 'browser-old'), 'browser-old');
+    // 关闭的正是当前标签页 → 清空；关的是别的标签页 → 保持
+    assert.equal(resolveSessionBrowserTabId('close_browser_tab', {id: 'browser-old'}, {closed: true}, 'browser-old'), '');
+    assert.equal(resolveSessionBrowserTabId('close_browser_tab', {id: 'browser-other'}, {closed: true}, 'browser-old'), 'browser-old');
+    // 无关动作一律保持
+    assert.equal(resolveSessionBrowserTabId('screenshot', {}, {image: 'x'}, 'browser-old'), 'browser-old');
+    assert.equal(resolveSessionBrowserTabId('get_state', {}, 'ok', 'browser-old'), 'browser-old');
 });

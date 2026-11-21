@@ -160,3 +160,27 @@ export function buildPressKeyScript(key, modifiers) {
         ' el.dispatchEvent(new KeyboardEvent("keyup", init));' +
         ' return JSON.stringify({ok: true, key: init.key}); })()';
 }
+
+// app_control 的浏览器标签动作与 browser_* 工具共享会话标签页身份。
+//
+// 背景（2026-11-22 高频 bug）：AI 可能用 app_control open_browser_tab 打开网页，
+// 而不是 browser_navigate。若这里不把标签页 id 登记到会话，随后 browser_screenshot /
+// browser_snapshot / browser_navigate 走 ensureBrowserTab 时看不到 id，就会另开一个
+// about:blank「新标签页」并截到白图——正是「打开网页后标签栏多出空标签、截图为空」的根因。
+//
+// 返回应写入 session.browserTabId 的新值；值与当前相同则调用方无需落盘。
+//   · open_browser_tab 成功返回 {browserTab:{id,...}} → 登记该 id；
+//   · close_browser_tab 关掉当前标签页（params.id === current）→ 清空；
+//   · 其它动作 / 异常返回 → 保持原值。
+export function resolveSessionBrowserTabId(action, params, result, currentId) {
+    const current = typeof currentId === 'string' ? currentId : '';
+    if (action === 'open_browser_tab') {
+        const id = result && result.browserTab && result.browserTab.id;
+        return typeof id === 'string' && id ? id : current;
+    }
+    if (action === 'close_browser_tab') {
+        const closedId = params && params.id;
+        return typeof closedId === 'string' && closedId && closedId === current ? '' : current;
+    }
+    return current;
+}

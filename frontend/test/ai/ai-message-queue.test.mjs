@@ -397,6 +397,61 @@ test('当前会话：冲刷仍走输入区代发，不调用内核', async () =>
     assert.equal(shell.itemsForSession('s1').length, 0);
 });
 
+// ---------- plan 模式抢占（2026-11-22 实测：抢占消息停在排队框发不出去） ----------
+
+const planSession = () => ({id: 's1', title: '计划会话', planMode: true, messages: [],
+    activePlan: {status: 'pending', markdown: '# 计划', ts: 1}});
+const planGuards = (dismissed) => ({
+    planApprovalMessage: (s) => (s && s.activePlan && s.activePlan.status === 'pending' ? s.activePlan : null),
+    planApprovalKey: (s, plan) => s.id + ':' + plan.ts,
+    getDismissedPlanApproval: () => (typeof dismissed === 'function' ? dismissed() : dismissed),
+    setDismissedPlanApproval: () => {},
+    planAwaitingUserReply: () => true,
+});
+
+test('计划审批卡正显示时冲刷被拦：消息留队等计划处理', async () => {
+    // 卡片占着输入区（与手动发送同一口径），静默拦下但不丢消息
+    const current = planSession();
+    const {ctx, calls} = shellCtx({currentSession: () => current, sessionById: () => current, ...planGuards('')});
+    const shell = createAIMessageQueue(ctx);
+    shell.enqueueItem({sessionId: 's1', text: '排队 6'});
+    await shell.flushMessageQueue('s1');
+    assert.equal(calls.submit.length, 0, '审批卡正显示，不代发');
+    assert.equal(shell.itemsForSession('s1').length, 1);
+});
+
+test('计划卡收起（继续规划 / 抢占收起）后冲刷照常发送', async () => {
+    // 收起后输入区已空闲、手动发送可行：队列冲刷同一口径放行（否则 pending 计划永远钉住队列）
+    const current = planSession();
+    const {ctx, calls} = shellCtx({currentSession: () => current, sessionById: () => current,
+        ...planGuards('s1:1')});
+    const shell = createAIMessageQueue(ctx);
+    shell.enqueueItem({sessionId: 's1', text: '排队 7'});
+    await shell.flushMessageQueue('s1');
+    assert.deepEqual(calls.submit, ['排队 7']);
+    assert.equal(shell.itemsForSession('s1').length, 0);
+});
+
+test('抢占：待批准的计划卡自动收起让路，空闲分支消息立即发出', () => {
+    const current = planSession();
+    const dismissed = [];
+    const takeovers = [];
+    const {ctx, calls} = shellCtx({
+        currentSession: () => current,
+        sessionById: () => current,
+        ...planGuards(() => dismissed[dismissed.length - 1] || ''),
+        setDismissedPlanApproval: (v) => dismissed.push(v),
+        updateComposerTakeover: (force) => takeovers.push(force),
+        captureComposerMessage: () => ({sessionId: 's1', text: '抢占', attachments: []}),
+    });
+    const shell = createAIMessageQueue(ctx);
+    shell.preemptComposerMessage({});
+    assert.deepEqual(dismissed, ['s1:1'], '抢占把待批准计划卡收起（只改显示，计划本体不动）');
+    assert.deepEqual(takeovers, [true]);
+    // streams 为空 → 空闲直冲刷分支：收起后守卫放行，takeQueuedItem 同步摘条
+    assert.equal(shell.itemsForSession('s1').length, 0);
+});
+
 // ---------- 重启恢复（localStorage 轻量快照） ----------
 
 test('persistSafeItem：剥离图片/视频附件（base64 不进存储），文本类保留，字段归一', () => {

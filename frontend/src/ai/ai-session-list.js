@@ -5,6 +5,7 @@
 import {iconSvg} from '../core/icons.js';
 import {aiTextOf, aiFormatSessionTime} from './ai-constants.js';
 import {sessionActivityTs} from './ai-session-store.js';
+import {planAwaitingUserReply} from './ai-plan-file.js';
 
 // 活动栏「AI 会话」图标状态点的聚合（纯函数，env 注入判定，便于单测）：
 // 只统计当前工作区的非归档会话，按 error > pending > done 取最高优先级的一个；
@@ -35,10 +36,13 @@ export function aggregateSessionBadge(sessions, env) {
 // 计划待批准是否需要用户注意（会话列表 pending/info 角标的判定之一，纯函数便于单测）。
 // AI 正在为这份计划工作时（用户点「继续规划」发来修订意见、新一轮在跑），流挂着就不算
 // 「等用户动手」——列表应显示 running 而非 pending。与 planApprovalMessage 的 streamOf
-// 前置判定同源：流在跑时审批卡也隐藏。
+// 前置判定同源：流在跑时审批卡也隐藏。用户已对计划发言（继续规划讨论中、审批卡已收起）
+// 时同样不算——与「计划等待批准」横条的收起判定（planAwaitingUserReply）同源，不再反复
+// 提示批准；计划重新提交（ts 更新）后角标自然回来。
 export function planPendingNeedsAttention(session, hasStream) {
     return !!(session && session.planMode && session.activePlan &&
-        session.activePlan.status === 'pending' && !hasStream);
+        session.activePlan.status === 'pending' && !hasStream &&
+        planAwaitingUserReply(session));
 }
 
 // 支线紧跟母会话：按传入顺序（已按活跃度排序）铺平，再把每条支线插到它的母会话之后。

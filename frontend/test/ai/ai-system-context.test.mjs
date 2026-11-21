@@ -342,6 +342,62 @@ test('turnContextBundle 可直接调用（起轮路径，同步产出 turnBlock�
     assert.equal(turn.meta.workspace.loaded, true);
 });
 
+// ---- <plan_status>：审批卡真实状态随轮注入（继续规划讨论轮防幻觉） ----
+// 关联 bug：卡片被「继续规划」收起后模型宣称「点「执行计划」我就动手」——它只看得到
+// 历史里「提交过计划」，不知道卡此刻在不在。判定经 ctx.planApprovalCardVisible 注入。
+const pendingPlanSession = (over = {}) => ({
+    planMode: true,
+    activePlan: {status: 'pending', markdown: '# 计划', ts: 1},
+    todos: [],
+    ...over,
+});
+
+test('plan_status：卡在输入框上方（待批准）→ 注入等批准状态', () => {
+    const mod = createAISystemContext(makeCtx({
+        ctx: {planApprovalCardVisible: () => true},
+    }));
+    const turn = mod.turnContextBundle(pendingPlanSession(), []);
+    const block = sectionOf(turn.text, 'plan_status');
+    assert.ok(block, '计划待批准时应注入 <plan_status>');
+    assert.ok(block.includes('审批卡当前显示在输入框上方'), block);
+    assert.ok(block.includes('修订要求'), block);
+    assert.deepEqual(turn.meta.planStatus, {visible: true});
+});
+
+test('plan_status：卡片已随「继续规划」收起 → 明确告知没有可点的「执行计划」按钮', () => {
+    const mod = createAISystemContext(makeCtx({
+        ctx: {planApprovalCardVisible: () => false},
+    }));
+    const turn = mod.turnContextBundle(pendingPlanSession(), []);
+    const block = sectionOf(turn.text, 'plan_status');
+    assert.ok(block, '卡片已收起时更该注入真实状态');
+    assert.ok(block.includes('已随用户点「继续规划」收起'), block);
+    assert.ok(block.includes('没有可点的「执行计划」按钮'), block);
+    assert.ok(block.includes('重新提交完整修订版'), block);
+    assert.deepEqual(turn.meta.planStatus, {visible: false});
+});
+
+test('plan_status：非计划模式 / 无计划 / 已批准 → 不注入', () => {
+    const mod = createAISystemContext(makeCtx({
+        ctx: {planApprovalCardVisible: () => true},
+    }));
+    for (const session of [
+        {planMode: false, activePlan: {status: 'pending', markdown: '# 计划'}, todos: []},
+        {planMode: true, activePlan: null, todos: []},
+        {planMode: true, activePlan: {status: 'approved', markdown: '# 计划'}, todos: []},
+    ]) {
+        const turn = mod.turnContextBundle(session, []);
+        assert.equal(sectionOf(turn.text, 'plan_status'), null, JSON.stringify(session.activePlan));
+        assert.equal(turn.meta.planStatus, undefined);
+    }
+});
+
+test('plan_status：ctx 未提供判定（旧 mock / 缺绑定）→ 整块跳过，不注入空壳', () => {
+    const mod = createAISystemContext(makeCtx());
+    const turn = mod.turnContextBundle(pendingPlanSession(), []);
+    assert.equal(sectionOf(turn.text, 'plan_status'), null);
+});
+
 test('auto 档审批语义收敛进 scopeText：防拆单句保留，重复段已删', async () => {
     const mod = createAISystemContext(makeCtx({ctx: {currentScopeOf: () => 'auto'}}));
     const {text} = await mod.assembleSystemContext({todos: []}, []);
