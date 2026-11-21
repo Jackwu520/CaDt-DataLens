@@ -29,6 +29,14 @@ test('点空白关闭用 pointerdown 记下的原始 target，且 dragMoved 判�
     assert.ok(/dragMoved\s*=\s*false/.test(click[0]), 'click 处理后应清 dragMoved，避免残留标志让后续单击关不掉');
 });
 
+test('从图片预览对话框点图进全屏前先关对话框，避免 modal 盖住灯箱', () => {
+    // 预览对话框是 modal 档（z 3100），灯箱是 lightbox 档（z 1100）：两者同时开着时
+    // 对话框会盖在灯箱上挡住大图。点图进全屏必须先 closeAIDialog 再 showImageFullscreen。
+    const PANEL = readFileSync(join(ROOT, 'src', 'ai', 'ai-panel.js'), 'utf8');
+    const click = PANEL.match(/img\.addEventListener\('click', \(\) => \{[\s\S]{0,300}?closeAIDialog\(\);[\s\S]{0,300}?showImageFullscreen\(image\);/);
+    assert.ok(click, '预览图 click 应先 closeAIDialog() 再 showImageFullscreen(image)');
+});
+
 test('缩放锚点基于图片实际渲染框（getBoundingClientRect），不拿 stage 可视区硬算', () => {
     const zoom = SRC.match(/function zoomAt\([\s\S]*?\n    \}/);
     assert.ok(zoom, '应存在 zoomAt');

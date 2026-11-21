@@ -4,6 +4,7 @@
 // 依赖一律经 deps 延迟求值（调用方传 getter），不在创建期解构：
 // 这样既不依赖 main.js 的声明顺序，也不会把 let 状态拍成快照。
 import {loadPlugins} from '../shell/plugins.js';
+import {createVirtualTabDoc} from '../core/virtual-tab-doc.js';
 import {createBridgeCliConvert} from './bridge-cli-convert.js';
 import {createBridgeGit} from './bridge-git.js';
 import {createBridgeTerminalView} from './bridge-terminal-view.js';
@@ -12,6 +13,7 @@ import {createBridgeTeamView} from './bridge-team-view.js';
 import {createBridgeSideChat} from './bridge-sidechat-view.js';
 import {createBridgeGroupMemberView} from './bridge-group-member-view.js';
 import {createBridgeMemoView} from './bridge-memo-view.js';
+import {createBridgeAppPageView} from './bridge-app-page-view.js';
 
 export function createBridgeUI(deps) {
 
@@ -24,6 +26,8 @@ const sideChatMod = createBridgeSideChat(deps);
 const groupMemberMod = createBridgeGroupMemberView(deps);
 // 快捷便签面板：虚拟标签页 + 数据 store（AI 经 app_control memo 动作走同一套变更通路）
 const memoMod = createBridgeMemoView(deps);
+// 应用页面标签页：使用统计 / 定时任务 / 操作记录 / 补丁库（清单在 core/app-pages.js）
+const appPageMod = createBridgeAppPageView(deps);
 // git 域要开虚拟文档标签：经 Object.create 委托原 deps（保持 getter 惰性），只补一个宿主函数
 const gitDeps = Object.create(deps);
 gitDeps.openVirtualDoc = openVirtualDoc;
@@ -84,29 +88,20 @@ function openBrowserTab(url, profileKey, opts) {
         }
     }
     browserSeq += 1;
-    const doc = {
+    const doc = createVirtualTabDoc({
         id: personal ? PERSONAL_BROWSER_ID : 'browser-' + Date.now().toString(36) + '-' + browserSeq,
-        path: null,
         name: personal ? '我的浏览器' : (target !== 'about:blank' ? target : '新标签页'),
-        content: '',
-        size: 0,
-        eol: 'lf',
-        hasBom: false,
-        large: false,
-        enc: 'utf-8',
         format: {id: 'browser', name: '网页', extensions: [], aceMode: 'text', rawOnly: true},
-        browser: true,
-        // 个人浏览器（持久 profile）标记：新建标签页永远是隔离会话，两者语义不同
-        browserPersist: personal,
         mode: 'browser',
-        browserUrl: target,
-        browserProfile: personal ? 'user' : (profileKey || ''),
-        treeAvailable: false,
-        dirty: false,
-        untitled: false,
-        bases: {},
-        savedText: '',
-    };
+        marker: 'browser',
+        key: true,
+        extra: {
+            // 个人浏览器（持久 profile）标记：新建标签页永远是隔离会话，两者语义不同
+            browserPersist: personal,
+            browserUrl: target,
+            browserProfile: personal ? 'user' : (profileKey || ''),
+        },
+    });
     deps.docs.push(doc);
     deps.addDocToFocusedGroup(doc);
     deps.activateDoc(doc);
@@ -308,7 +303,7 @@ function openBrowserTab(url, profileKey, opts) {
 
 
     return {
-        ...termMod, ...agentMod, ...teamMod, ...sideChatMod, ...groupMemberMod, ...memoMod, ...gitMod, ...cliMod,
+        ...termMod, ...agentMod, ...teamMod, ...sideChatMod, ...groupMemberMod, ...memoMod, ...appPageMod, ...gitMod, ...cliMod,
         openBrowserTab, openVirtualDoc,
     };
 }

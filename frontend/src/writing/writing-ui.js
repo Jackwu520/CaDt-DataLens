@@ -6,6 +6,7 @@
 import DOMPurify from 'dompurify';
 import {WRITING_FONTS, formatWritingText, genName, SCENE_SEPARATOR} from '../core/writing.js';
 import {isDocReadOnly} from '../core/readonly.js';
+import {suppressesViewOptions} from '../core/tab-kinds.js';
 import {RECIPES, SELF_TEST} from '../terminal/run.js';
 import {initPluginRuntime, loadPlugins} from '../shell/plugins.js';
 import {isPluginViewMode, pluginViewLabel, pluginViewOptions, pluginViewUnavailable} from '../shell/plugin-viewers.js';
@@ -80,8 +81,9 @@ const CSV_ROW_NUM_WIDTH = 44;
 const CSV_COL_MIN_WIDTH = 56;
 
 function viewOptionsFor(fmt, doc) {
-    // 虚拟文档（浏览器 / 终端 / 便签 …）没有文件视图：连插件视图也不给
-    if (doc && (doc.browser || doc.bgTerm || doc.agentView || doc.agentTeam || doc.sideChat || doc.groupMember || doc.memo)) return [];
+    // 视图型虚拟文档（浏览器 / 终端 / 便签 …）没有文件视图：连插件视图也不给。
+    // 文本型虚拟文档（计划 / 差异 / 只读文档）**不**屏蔽——.md 计划文档该有预览选项。
+    if (suppressesViewOptions(doc)) return [];
     const base = baseViewOptionsFor(fmt, doc);
     const extra = pluginViewOptions(fmt, doc);
     return extra.length ? base.concat(extra) : base;
@@ -280,12 +282,20 @@ function cancelAutoSave() {
     }
 }
 
+// 自动保存的适用文档：全局开了自动保存，或者这是临时草稿（doc.draft）。
+// 草稿「随手写、不用管」只靠这一条门兑现，普通文档的保存语义一点不动
+// （docs/finished-plans/scratch-file.md §2 第 3 条）。
+function autoSaveApplies(doc) {
+    return !!doc && (!!deps.settings.autoSave || !!doc.draft);
+}
+
 function scheduleAutoSave() {
     cancelAutoSave();
-    if (!deps.settings.autoSave || isDocReadOnly(deps.file, deps.settings) || !deps.dirty || !deps.file || !deps.file.path || !deps.editor) return;
+    if (!autoSaveApplies(deps.file) || isDocReadOnly(deps.file, deps.settings) ||
+        !deps.dirty || !deps.file.path || !deps.editor) return;
     deps.autoSaveTimer = setTimeout(() => {
         deps.autoSaveTimer = 0;
-        if (deps.dirty && deps.file && deps.settings.autoSave) deps.save({auto: true});
+        if (deps.dirty && autoSaveApplies(deps.file)) deps.save({auto: true});
     }, autoSaveDelay);
 }
 

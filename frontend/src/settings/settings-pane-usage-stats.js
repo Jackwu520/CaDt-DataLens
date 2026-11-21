@@ -50,6 +50,10 @@ const LOG_TIPS = {
 };
 
 export function createSettingsPaneUsageStats(deps) {
+    // 宿主：2026-11-22 起本页是「应用页面」标签页（core/app-pages.js 的 usage-stats），
+    // 由 mount(host) 在标签页容器里建骨架；设置页原内嵌位置已移除。
+    // hostEl 为空时回落到旧的固定 id（保留给 dev mock 与将来的多宿主）。
+    let hostEl = null;
     const state = {
         range: '30d',
         heatmapMode: 'daily',
@@ -71,7 +75,7 @@ export function createSettingsPaneUsageStats(deps) {
     let resizeTimer = 0;
 
     function root() {
-        return document.getElementById('usage-stats-root');
+        return hostEl || document.getElementById('usage-stats-root');
     }
 
     function node(id) {
@@ -784,7 +788,21 @@ export function createSettingsPaneUsageStats(deps) {
         await reload(true);
     }
 
-    return {renderUsageStatsPane};
+    // 挂到宿主容器（应用页面标签页调用）：登记宿主 → 建骨架并加载 → 返回卸载函数
+    // （关标签时释放 ECharts 实例与 resize 监听，否则实例与 DOM 一起泄漏）。
+    function mount(host) {
+        if (!host) return null;
+        hostEl = host;
+        state.mounted = false;
+        renderUsageStatsPane().catch(() => {});
+        return () => {
+            disposeCharts();
+            hostEl = null;
+            state.mounted = false;
+        };
+    }
+
+    return {mount, renderUsageStatsPane};
 }
 
 function escapeHtml(text) {

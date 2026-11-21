@@ -5,11 +5,12 @@
 // 与子代理详情的差别：这里承载的是一条**完整会话**（持久化、可收发、有全部工具），
 // 所以标签页上限取得更小；形态仍是虚拟文档（doc.sideChat = sessionId）。
 //
-// 不变量（见 docs/unfinished-plans/side-chat-tab.md §3）：支线只与它的母会话同时在场。
+// 不变量（见 docs/finished-plans/side-chat-tab.md §3）：支线只与它的母会话同时在场。
 // 面板切走母会话时标签页进入「失联」——不销毁、消息只读、给一个回位按钮；正在跑的
 // 流式允许跑完。
 import {createTextarea} from '../core/form-controls.js';
 import {iconSvg} from '../core/icons.js';
+import {createVirtualTabDoc} from '../core/virtual-tab-doc.js';
 
 export function createBridgeSideChat(deps) {
     // 支线比子代理视图重（完整会话、可能正在跑流式），上限取 3 而不是 8
@@ -48,29 +49,20 @@ export function createBridgeSideChat(deps) {
             const oldest = opened.shift();
             if (oldest) deps.closeDocNow(oldest, false);
         }
-        const doc = {
+        const doc = createVirtualTabDoc({
             id: 'sidechat-' + sessionId,
-            path: null,
             name: tabName(spec && spec.title),
-            content: '',
-            size: 0,
-            eol: 'lf',
-            hasBom: false,
-            large: false,
-            enc: 'utf-8',
             format: {id: 'sidechat', name: '支线对话', extensions: [], aceMode: 'text', rawOnly: true},
-            sideChat: sessionId,
-            sideChatMeta: {
-                ownerTitle: String((spec && spec.ownerTitle) || ''),
-                snapAt: Number((spec && spec.snapAt) || 0),
-            },
             mode: 'sidechat',
-            treeAvailable: false,
-            dirty: false,
-            untitled: false,
-            bases: {},
-            savedText: '',
-        };
+            marker: 'sideChat',
+            key: sessionId,
+            extra: {
+                sideChatMeta: {
+                    ownerTitle: String((spec && spec.ownerTitle) || ''),
+                    snapAt: Number((spec && spec.snapAt) || 0),
+                },
+            },
+        });
         deps.docs.push(doc);
         deps.addDocToFocusedGroup(doc);
         deps.activateDoc(doc);
@@ -504,7 +496,7 @@ export function createBridgeSideChat(deps) {
 
         refresh();
 
-        doc.sideChatUnmount = () => {
+        doc.tabUnmount = () => {
             disposed = true;
             stopPolling();
             const panelNow = api();
@@ -513,7 +505,7 @@ export function createBridgeSideChat(deps) {
             }
             if (offSwitch) offSwitch();
             offSwitch = null;
-            doc.sideChatUnmount = null;
+            doc.tabUnmount = null;
             doc.sideChatView = null;
         };
     }

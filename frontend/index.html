@@ -306,8 +306,6 @@
                         <button type="button" class="snav-item snav-child" data-pane="persona"><span class="snav-ic" data-icon="star"></span><span>个性化</span></button>
                         <button type="button" class="snav-item snav-child" data-pane="context"><span class="snav-ic" data-icon="paste"></span><span>上下文注入</span></button>
                         <button type="button" class="snav-item snav-child" data-pane="preferences"><span class="snav-ic" data-icon="list"></span><span>用户偏好</span></button>
-                        <button type="button" class="snav-item snav-child" data-pane="schedules"><span class="snav-ic" data-icon="clock"></span><span>定时任务</span></button>
-                        <button type="button" class="snav-item snav-child" data-pane="usage-stats"><span class="snav-ic" data-icon="chart"></span><span>使用统计</span></button>
                     </div>
                 </div>
                 <div id="snav-formats" class="snav-group expanded">
@@ -328,6 +326,8 @@
                     </button>
                     <div class="snav-children" id="snav-lang-children"></div>
                 </div>
+                <div class="snav-section">页面</div>
+                <button type="button" class="snav-item" data-pane="app-pages"><span class="snav-ic" data-icon="list"></span><span>应用页面</span></button>
                 <div class="snav-section">功能</div>
                 <button type="button" class="snav-item" data-pane="new-file-menu"><span class="snav-ic" data-icon="list"></span><span>菜单管理</span></button>
                 <button type="button" class="snav-item" data-pane="shortcuts"><span class="snav-ic" data-icon="keyboard"></span><span>快捷键</span></button>
@@ -338,7 +338,6 @@
                 <button type="button" class="snav-item" data-pane="envvars"><span class="snav-ic" data-icon="code"></span><span>环境变量</span></button>
                 <div class="snav-section">诊断</div>
                 <button type="button" class="snav-item" data-pane="developer"><span class="snav-ic" data-icon="terminal"></span><span>开发者</span></button>
-                <button type="button" class="snav-item" data-pane="activity"><span class="snav-ic" data-icon="history"></span><span>操作记录</span></button>
                 <button type="button" class="snav-item" data-pane="storage"><span class="snav-ic" data-icon="eraser"></span><span>存储与清理</span></button>
                 <div class="snav-section">其他</div>
                 <button type="button" class="snav-item" data-pane="about"><span class="snav-ic" data-icon="info"></span><span>关于我们</span></button>
@@ -1364,25 +1363,10 @@
                             <div class="ai-pref-foot">每条一句话（≤500 字），最多 100 条；长期生效的偏好会注入每轮对话的系统上下文，AI 也能通过 preference_list / preference_write / preference_remove 工具读取、新增、修改与删除。偏好随 AI 配置一起导出 / 导入。</div>
                         </div>
                     </div>
-                    <div class="settings-pane hidden" data-pane="schedules">
-                        <div class="set-group-title">定时任务</div>
-                        <div class="set-card">
-                            <div class="set-row">
-                                <div class="set-main"><div class="set-title">说明</div><div class="set-desc">单次（once）/ 固定间隔（interval）/ cron；仅在应用运行期间有效，关闭窗口后挂起、重开后不错过的时间不补跑；触发会消耗 token，AI 也可通过 schedule_* 工具管理</div></div>
-                            </div>
-                            <div class="set-row-top">
-                                <div id="ai-opt-schedules" class="ai-sched-list"></div>
-                            </div>
-                            <div class="set-row">
-                                <div class="set-main"><div class="set-title">新建任务</div><div class="set-desc">scope（触发轮次权限）仅对「每次新建会话」的任务生效；edit 档任务触发时若无人处理写审批会一直挂起，建议触发时保持在电脑前</div></div>
-                                <div class="set-control">
-                                    <button type="button" id="ai-opt-schedule-add" class="dlg-btn">新建任务…</button>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="settings-pane hidden" data-pane="usage-stats">
-                        <div id="usage-stats-root" class="us-root"></div>
+                    <div class="settings-pane hidden" data-pane="app-pages">
+                        <div class="set-group-title">应用页面</div>
+                        <div class="set-desc app-pages-hint">这些页面是内容区标签页：点一行在内容区打开，可与其他标签页并列对照。</div>
+                        <div class="set-card" id="app-pages-list"></div>
                     </div>
                     <div class="settings-pane hidden" data-pane="permissions">
                         <div class="set-group-title">模式与判定顺序</div>
@@ -1897,33 +1881,10 @@
                                 </div>
                             </div>
                         </div>
-                        <div class="set-group-title">调试控制台</div>
-                        <div class="set-card">
-                            <div class="set-row">
-                                <div class="set-main"><div class="set-title">打开调试控制台</div><div class="set-desc">底部面板显示（与终端共用容器，可切换）；面板右上角按钮可在独立窗口打开</div></div>
-                                <div class="set-control">
-                                    <button type="button" id="opt-debug-console" class="dlg-btn">打开 (F12)</button>
-                                </div>
-                            </div>
-                        </div>
-                        <div class="set-group-title">补丁库</div>
-                        <div class="set-card">
-                            <div class="set-row">
-                                <div class="set-main"><div class="set-title">最近补丁<button type="button" class="info-tip" data-tip="AI 提交过的补丁（.cadt/patches）。删除会把补丁文件、备份与元数据送进回收站；已应用的补丁删除后无法再撤销。" aria-label="补丁库说明"></button></div><div class="set-desc" id="patch-store-path">存储目录：—</div></div>
-                                <div class="set-control">
-                                    <button type="button" id="patch-store-refresh" class="dlg-btn">刷新</button>
-                                </div>
-                            </div>
-                            <div class="set-row-top">
-                                <div id="patch-store-list" class="patch-store-list"></div>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="settings-pane hidden" data-pane="activity">
                         <div class="set-group-title">操作记录</div>
                         <div class="set-card">
                             <div class="set-row">
-                                <div class="set-main"><div class="set-title">启用操作记录<button type="button" class="info-tip" data-tip="日志只存本机应用数据目录（activity/*.jsonl，按月分文件），可导出与清空。" aria-label="操作记录说明"></button></div><div class="set-desc">谁在什么时候做了什么；只记操作摘要，不记文件内容与密钥</div></div>
+                                <div class="set-main"><div class="set-title">启用操作记录<button type="button" class="info-tip" data-tip="日志只存本机应用数据目录（activity/*.jsonl，按月分文件），可导出与清空。" aria-label="操作记录说明"></button></div><div class="set-desc">谁在什么时候做了什么；只记操作摘要，不记文件内容与密钥。记录列表在「应用页面 → 操作记录」</div></div>
                                 <div class="set-control">
                                     <label class="set-switch"><input type="checkbox" id="opt-activity-log" checked><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
                                 </div>
@@ -1934,47 +1895,14 @@
                                     <input type="number" id="opt-activity-retention" class="ai-settings-input ai-font-size-num" min="1" max="60" step="1" value="12">
                                 </div>
                             </div>
-                            <div class="set-row">
-                                <div class="set-main"><div class="set-title">记录管理</div></div>
-                                <div class="set-control">
-                                    <button type="button" id="opt-open-activity" class="dlg-btn">打开记录目录</button>
-                                    <button type="button" id="opt-export-activity-json" class="dlg-btn">导出 JSON</button>
-                                    <button type="button" id="opt-export-activity-csv" class="dlg-btn">导出 CSV</button>
-                                    <button type="button" id="opt-clear-activity" class="dlg-btn">清空…</button>
-                                </div>
-                            </div>
                         </div>
-                        <div class="set-group-title">记录</div>
+                        <div class="set-group-title">调试控制台</div>
                         <div class="set-card">
-                            <div class="set-row-top">
-                                <div class="activity-filters">
-                                    <select id="activity-filter-domain" class="opt-select">
-                                        <option value="">全部动作</option>
-                                        <option value="file">文件</option>
-                                        <option value="tab">标签页</option>
-                                        <option value="workspace">工作区</option>
-                                        <option value="view">视图</option>
-                                        <option value="settings">设置</option>
-                                        <option value="plugin">插件</option>
-                                        <option value="ai">AI</option>
-                                        <option value="app">应用</option>
-                                        <option value="storage">存储</option>
-                                        <option value="activity">记录管理</option>
-                                    </select>
-                                    <select id="activity-filter-actor" class="opt-select">
-                                        <option value="">全部来源</option>
-                                        <option value="user">用户</option>
-                                        <option value="ai">AI</option>
-                                        <option value="system">系统</option>
-                                    </select>
-                                    <input type="text" id="activity-filter-keyword" class="activity-filter-input" placeholder="关键字（动作 / 对象 / 详情）">
-                                    <button type="button" id="activity-refresh" class="dlg-btn">刷新</button>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">打开调试控制台</div><div class="set-desc">底部面板显示（与终端共用容器，可切换）；面板右上角按钮可在独立窗口打开</div></div>
+                                <div class="set-control">
+                                    <button type="button" id="opt-debug-console" class="dlg-btn">打开 (F12)</button>
                                 </div>
-                                <div class="plugin-list-box activity-list-box">
-                                    <div class="activity-list" id="activity-list"></div>
-                                </div>
-                                <div class="set-desc" id="activity-list-status">—</div>
-                                <button type="button" id="activity-more" class="dlg-btn hidden">加载更早记录</button>
                             </div>
                         </div>
                     </div>
@@ -2493,11 +2421,8 @@
                 <button type="button" id="ab-structure" class="ab-btn" data-tip="结构 (Alt+7)" aria-label="结构" aria-pressed="false">
                     <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4.5 3.8V16.2M4.5 6.5H8M4.5 13.5H8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><rect x="8" y="4" width="8" height="5" rx="2.1" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><rect x="8" y="11" width="8" height="5" rx="2.1" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>
                 </button>
-                <button type="button" id="ab-search" class="ab-btn" data-tip="内容搜索 (Ctrl+F)" aria-label="内容搜索">
-                    <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="9" cy="9" r="5" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="m12.8 12.8 3.4 3.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
-                </button>
-                <button type="button" id="ab-browser" class="ab-btn" data-tip="新建浏览器标签页 (Ctrl+Alt+B)" aria-label="新建浏览器标签页">
-                    <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="6.3" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M3.7 10h12.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M10 3.7c1.8 1.8 2.7 4 2.7 6.3S11.8 14.5 10 16.3C8.2 14.5 7.3 12.3 7.3 10S8.2 5.5 10 3.7z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>
+                <button type="button" id="ab-app-pages" class="ab-btn" data-tip="应用页面" aria-label="应用页面" aria-pressed="false">
+                    <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="3.2" y="3.6" width="5.4" height="5.4" rx="1.1" fill="none" stroke="currentColor" stroke-width="1.3"/><rect x="11.4" y="3.6" width="5.4" height="5.4" rx="1.1" fill="none" stroke="currentColor" stroke-width="1.3"/><rect x="3.2" y="11.2" width="5.4" height="5.4" rx="1.1" fill="none" stroke="currentColor" stroke-width="1.3"/><rect x="11.4" y="11.2" width="5.4" height="5.4" rx="1.1" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>
                 </button>
                 <button type="button" id="ab-memo" class="ab-btn" data-tip="快捷便签 面板 (Ctrl+Alt+T)" aria-label="快捷便签 面板">
                     <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3.6 4.2l1.9 1.9 3.1-3.7" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M11.6 4.4h5M3.6 10h2.9M11.6 10h5M3.6 15.4h2.9M11.6 15.4h5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
@@ -2595,6 +2520,15 @@
                         <button type="button" id="git-commit-push-btn" class="dlg-btn">提交并推送…</button>
                     </div>
                 </div>
+            </div>
+            <div id="app-pages-panel" class="app-pages-panel">
+                <div class="sb-head">
+                    <span class="sb-title">应用页面</span>
+                    <div class="sb-tools">
+                        <button type="button" class="sb-tool sb-collapse" data-tip="收起面板" aria-label="收起面板"><svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 8.5h11"/></svg></button>
+                    </div>
+                </div>
+                <div id="app-pages-nav" class="app-pages-nav"></div>
             </div>
             <div id="ai-sessions-panel" class="ai-sessions-panel">
                 <div class="sb-head">

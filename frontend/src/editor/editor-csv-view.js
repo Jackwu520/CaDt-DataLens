@@ -576,7 +576,7 @@ function renderCsvTableView(doc, opts = {}) {
             deps.ctxMenu.open([
                 {
                     label: '升序排序',
-                    icon: 'E70D',
+                    icon: 'chevron-down',
                     action: () => {
                         csvView.sortCol = col;
                         csvView.sortDir = 1;
@@ -585,7 +585,7 @@ function renderCsvTableView(doc, opts = {}) {
                 },
                 {
                     label: '降序排序',
-                    icon: 'E70E',
+                    icon: 'chevron-up',
                     action: () => {
                         csvView.sortCol = col;
                         csvView.sortDir = -1;
@@ -602,7 +602,7 @@ function renderCsvTableView(doc, opts = {}) {
                     },
                 },
                 {sep: true},
-                {label: '列统计…', icon: 'E9D2', action: () => openCsvColumnStats(doc, col)},
+                {label: '列统计…', icon: 'chart', action: () => openCsvColumnStats(doc, col)},
             ], e.clientX, e.clientY);
         });
         th.append(label, handle);

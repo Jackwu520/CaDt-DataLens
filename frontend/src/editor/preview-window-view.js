@@ -84,8 +84,21 @@ export function createPreviewWindowView(deps) {
         // svg：img 隔离渲染（SVG 内脚本/事件不执行）
         const img = document.createElement('img');
         img.className = 'preview-view-svg';
-        img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(result.text);
         img.alt = deps.path;
+        // 解码失败不能静默留白：.svg 由浏览器的 XML 解析器读，一个未闭合标签（如把 `<br/>`
+        // 写成 `<br>`）或 `&nbsp;` 这类 HTML 实体就能让整份文档加载失败——这时与直接用浏览器
+        // 打开同一文件的表现一致，问题在文件本身，提示要指到源头而不是让人盯着空白页。
+        img.onerror = () => {
+            img.remove();
+            if (disposed) return;
+            const note = document.createElement('div');
+            note.className = 'preview-view-error';
+            note.textContent = 'SVG 无法显示：浏览器无法解码该文件。'
+                + 'SVG 按 XML 解析，常见原因是标签没有闭合（例如把 <br/> 写成 <br>）'
+                + '或用了 &nbsp; 这类 HTML 实体；用浏览器直接打开该文件也是同样结果。';
+            bodyEl.appendChild(note);
+        };
+        img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(result.text);
         bodyEl.appendChild(img);
     }
 

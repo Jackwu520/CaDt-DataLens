@@ -248,17 +248,22 @@ function renderGitPanel() {
 }
 
 function currentSidebarView() {
-    if (deps.settings.sidebarView === 'git' || deps.settings.sidebarView === 'structure' || deps.settings.sidebarView === 'chats') return deps.settings.sidebarView;
+    const view = deps.settings.sidebarView;
+    if (view === 'git' || view === 'structure' || view === 'chats' || view === 'app-pages') return view;
     return 'files';
 }
 
 function switchSidebarView(view) {
-    if (!['files', 'git', 'structure', 'chats'].includes(view)) view = 'files';
+    if (!['files', 'git', 'structure', 'chats', 'app-pages'].includes(view)) view = 'files';
     deps.settings.sidebarView = view;
     if (deps.structurePanel && view === 'structure') deps.structurePanel.setDoc(deps.file);
     deps.applySettings();
     if (view === 'git') {
         deps.refreshGitStatus().then(() => renderGitPanel()).catch(() => renderGitPanel());
+    }
+    // 应用页面面板：每次切进来重绘一次（列表是本地注册表，成本可忽略）
+    if (view === 'app-pages' && typeof deps.renderAppPagesNav === 'function') {
+        try { deps.renderAppPagesNav(); } catch (e) {}
     }
 }
 

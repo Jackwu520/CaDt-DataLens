@@ -1,5 +1,6 @@
-// 后台终端标签页视图：AI background_command 作业在内容区的只读视图。
+// bridge-terminal-view.js：后台终端标签页视图：AI background_command 作业在内容区的只读视图。
 // 从 bridge-ui.js 拆出；依赖仍经 deps 延迟求值，不持有宿主状态。
+import {createVirtualTabDoc} from '../core/virtual-tab-doc.js';
 export function createBridgeTerminalView(deps) {
 
 // ===== 后台终端标签页（AI background_command 作业在内容区的视图）=====
@@ -28,26 +29,15 @@ function openBgTermTab(info) {
         deps.activateDoc(existing);
         return existing;
     }
-    const doc = {
+    const doc = createVirtualTabDoc({
         id: 'bgterm-' + jobId,
-        path: null,
         name: bgTermTabName(info && info.command),
-        content: '',
-        size: 0,
-        eol: 'lf',
-        hasBom: false,
-        large: false,
-        enc: 'utf-8',
         format: {id: 'bgterm', name: '后台终端', extensions: [], aceMode: 'text', rawOnly: true},
-        bgTerm: jobId,
-        bgTermCommand: String((info && info.command) || ''),
         mode: 'bgterm',
-        treeAvailable: false,
-        dirty: false,
-        untitled: false,
-        bases: {},
-        savedText: '',
-    };
+        marker: 'bgTerm',
+        key: jobId,
+        extra: {bgTermCommand: String((info && info.command) || '')},
+    });
     deps.docs.push(doc);
     deps.addDocToFocusedGroup(doc);
     deps.activateDoc(doc);
@@ -190,10 +180,15 @@ function createBgTermView(doc) {
     };
 
     if (deps.aiPanel && deps.aiPanel.bridgeOnBgUpdate) {
-        doc.bgTermUnsub = deps.aiPanel.bridgeOnBgUpdate((jobId) => {
+        // 卸载契约：虚拟标签页的清理函数统一挂 doc.tabUnmount（closeDocNow 只调这一条）
+        const unsub = deps.aiPanel.bridgeOnBgUpdate((jobId) => {
             if (jobId !== doc.bgTerm || !doc.pane || !doc.pane.isConnected) return;
             render();
         });
+        doc.tabUnmount = () => {
+            unsub();
+            doc.tabUnmount = null;
+        };
     }
     render();
 }

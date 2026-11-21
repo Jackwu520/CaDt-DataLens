@@ -1,20 +1,75 @@
-// activity-pane.js：从 main.js 拆出的域模块（factory + 显式依赖注入）。
-// 设置页：操作记录（docs/unfinished-plans/operation-audit-log.md §6.4）
+// activity-pane.js：操作记录页（docs/unfinished-plans/operation-audit-log.md §6.4）。
+//
+// 宿主：2026-11-22 起本页是「应用页面」标签页（core/app-pages.js 的 activity），
+// 由 mount(host) 建骨架并绑定；设置页原内嵌位置已移除，只留两个真·设置项
+// （启用开关 / 保留月数）供 settings-tree 反射。
 //
 // 依赖一律经 deps 延迟求值（调用方传 getter），不在创建期解构：
 // 这样既不依赖 main.js 的声明顺序，也不会把 let 状态拍成快照。
 
+// 页面骨架：筛选栏 + 列表 + 状态 + 加载更早 + 记录管理动作。
+// id 与原设置页保持一致（渲染函数按 id 在宿主内查询）。
+export function activitySkeleton() {
+    return `
+<div class="set-group-title">记录</div>
+<div class="set-card">
+    <div class="set-row-top">
+        <div class="activity-filters">
+            <select id="activity-filter-domain" class="opt-select">
+                <option value="">全部动作</option>
+                <option value="file">文件</option>
+                <option value="tab">标签页</option>
+                <option value="workspace">工作区</option>
+                <option value="view">视图</option>
+                <option value="settings">设置</option>
+                <option value="plugin">插件</option>
+                <option value="ai">AI</option>
+                <option value="app">应用</option>
+                <option value="storage">存储</option>
+                <option value="activity">记录管理</option>
+            </select>
+            <select id="activity-filter-actor" class="opt-select">
+                <option value="">全部来源</option>
+                <option value="user">用户</option>
+                <option value="ai">AI</option>
+                <option value="system">系统</option>
+            </select>
+            <input type="text" id="activity-filter-keyword" class="activity-filter-input" placeholder="关键字（动作 / 对象 / 详情）">
+            <button type="button" id="activity-refresh" class="dlg-btn">刷新</button>
+        </div>
+        <div class="plugin-list-box activity-list-box">
+            <div class="activity-list" id="activity-list"></div>
+        </div>
+        <div class="set-desc" id="activity-list-status">—</div>
+        <button type="button" id="activity-more" class="dlg-btn hidden">加载更早记录</button>
+    </div>
+    <div class="set-row">
+        <div class="set-main"><div class="set-title">记录管理</div><div class="set-desc">开关与保留月数在「设置 → 操作记录」</div></div>
+        <div class="set-control">
+            <button type="button" id="opt-open-activity" class="dlg-btn">打开记录目录</button>
+            <button type="button" id="opt-export-activity-json" class="dlg-btn">导出 JSON</button>
+            <button type="button" id="opt-export-activity-csv" class="dlg-btn">导出 CSV</button>
+            <button type="button" id="opt-clear-activity" class="dlg-btn">清空…</button>
+        </div>
+    </div>
+</div>`;
+}
 
 export function createActivityPane(deps) {
 
+let hostEl = null;
 
 const activityView = {entries: [], truncated: false, oldestTs: 0, loading: false};
 const ACTIVITY_PAGE_SIZE = 200;
 
+function node(id) {
+    return hostEl ? hostEl.querySelector('#' + id) : document.getElementById(id);
+}
+
 function activityFilterOf() {
-    const domain = document.getElementById('activity-filter-domain');
-    const actor = document.getElementById('activity-filter-actor');
-    const keyword = document.getElementById('activity-filter-keyword');
+    const domain = node('activity-filter-domain');
+    const actor = node('activity-filter-actor');
+    const keyword = node('activity-filter-keyword');
     return {
         actions: domain && domain.value ? [domain.value] : [],
         actor: actor && actor.value ? actor.value : '',
@@ -23,9 +78,9 @@ function activityFilterOf() {
 }
 
 async function renderActivityPane(opts = {}) {
-    const listEl = document.getElementById('activity-list');
-    const statusEl = document.getElementById('activity-list-status');
-    const moreBtn = document.getElementById('activity-more');
+    const listEl = node('activity-list');
+    const statusEl = node('activity-list-status');
+    const moreBtn = node('activity-more');
     if (!listEl || activityView.loading) return;
     if (!deps.backend.ActivityRead) {
         listEl.textContent = '';
@@ -168,6 +223,8 @@ async function exportActivityRecords(kind) {
     }
 }
 
+// 两个真·设置项留在设置页：控件在 index.html 的 .settings-pane[data-pane="activity"] 里，
+// 由 settings-tree 反射成可写行（opt-activity-log / opt-activity-retention）。
 if (deps.elsSettings.activityLog) {
     deps.elsSettings.activityLog.addEventListener('change', () => {
         deps.settings.activityLog = deps.elsSettings.activityLog.checked;
@@ -182,51 +239,58 @@ if (deps.elsSettings.activityRetention) {
         deps.applySettings();
     });
 }
-if (deps.elsSettings.openActivity) {
-    deps.elsSettings.openActivity.addEventListener('click', async () => {
-        if (!deps.backend.ActivityPath || !deps.backend.ShowInFolder) return deps.flash('当前版本不支持', true);
+
+function openActivityDir() {
+    if (!deps.backend.ActivityPath || !deps.backend.ShowInFolder) return deps.flash('当前版本不支持', true);
+    Promise.resolve(deps.backend.ActivityPath()).then((dir) => deps.backend.ShowInFolder(dir))
+        .catch((e) => deps.flash('打开记录目录失败：' + ((e && e.message) || e), true));
+}
+
+function clearActivity() {
+    if (!deps.backend.ActivityClear) return deps.flash('当前版本不支持操作记录', true);
+    deps.openConfirmDialog('将删除全部操作记录（包括按月分文件与滚动分段），只保留一条「已清空」标记。确定继续吗？', async () => {
         try {
-            await deps.backend.ShowInFolder(await deps.backend.ActivityPath());
+            await deps.backend.ActivityClear();
+            deps.flash('操作记录已清空');
+            renderActivityPane();
         } catch (e) {
-            deps.flash('打开记录目录失败：' + ((e && e.message) || e), true);
+            deps.flash('清空失败：' + ((e && e.message) || e), true);
         }
-    });
-}
-if (deps.elsSettings.exportActivityJson) {
-    deps.elsSettings.exportActivityJson.addEventListener('click', () => exportActivityRecords('json'));
-}
-if (deps.elsSettings.exportActivityCsv) {
-    deps.elsSettings.exportActivityCsv.addEventListener('click', () => exportActivityRecords('csv'));
-}
-if (deps.elsSettings.clearActivity) {
-    deps.elsSettings.clearActivity.addEventListener('click', () => {
-        if (!deps.backend.ActivityClear) return deps.flash('当前版本不支持操作记录', true);
-        deps.openConfirmDialog('将删除全部操作记录（包括按月分文件与滚动分段），只保留一条「已清空」标记。确定继续吗？', async () => {
-            try {
-                await deps.backend.ActivityClear();
-                deps.flash('操作记录已清空');
-                renderActivityPane();
-            } catch (e) {
-                deps.flash('清空失败：' + ((e && e.message) || e), true);
-            }
-        }, '清空', '清空操作记录', 'danger');
-    });
-}
-{
-    const domainSel = document.getElementById('activity-filter-domain');
-    const actorSel = document.getElementById('activity-filter-actor');
-    const keywordInput = document.getElementById('activity-filter-keyword');
-    const refreshBtn = document.getElementById('activity-refresh');
-    const moreBtn = document.getElementById('activity-more');
-    if (domainSel) domainSel.addEventListener('change', () => renderActivityPane());
-    if (actorSel) actorSel.addEventListener('change', () => renderActivityPane());
-    if (keywordInput) keywordInput.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') renderActivityPane();
-    });
-    if (refreshBtn) refreshBtn.addEventListener('click', () => renderActivityPane());
-    if (moreBtn) moreBtn.addEventListener('click', () => renderActivityPane({append: true}));
+    }, '清空', '清空操作记录', 'danger');
 }
 
+// 挂到宿主容器（应用页面标签页调用）：建骨架 → 按 id 在宿主内绑定 → 首次渲染。
+// 返回卸载函数：摘掉监听并清空缓存，避免关标签后状态与 DOM 一起泄漏。
+function mount(host) {
+    if (!host) return null;
+    host.innerHTML = activitySkeleton();
+    hostEl = host;
+    const bind = (id, event, handler) => {
+        const el = host.querySelector('#' + id);
+        if (!el) return null;
+        el.addEventListener(event, handler);
+        return () => el.removeEventListener(event, handler);
+    };
+    const offs = [
+        bind('activity-filter-domain', 'change', () => renderActivityPane()),
+        bind('activity-filter-actor', 'change', () => renderActivityPane()),
+        bind('activity-filter-keyword', 'keydown', (e) => { if (e.key === 'Enter') renderActivityPane(); }),
+        bind('activity-refresh', 'click', () => renderActivityPane()),
+        bind('activity-more', 'click', () => renderActivityPane({append: true})),
+        bind('opt-open-activity', 'click', openActivityDir),
+        bind('opt-export-activity-json', 'click', () => exportActivityRecords('json')),
+        bind('opt-export-activity-csv', 'click', () => exportActivityRecords('csv')),
+        bind('opt-clear-activity', 'click', clearActivity),
+    ].filter(Boolean);
+    renderActivityPane();
+    return () => {
+        for (const off of offs) off();
+        hostEl = null;
+        activityView.entries = [];
+        activityView.oldestTs = 0;
+        activityView.truncated = false;
+    };
+}
 
-    return {renderActivityPane};
+    return {mount, renderActivityPane};
 }

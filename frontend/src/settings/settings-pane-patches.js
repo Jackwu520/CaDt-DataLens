@@ -1,6 +1,9 @@
-// 设置 → 开发者：补丁库列表（.cadt/patches 的最近补丁 + 删除）。
+// settings-pane-patches.js：补丁库（.cadt/patches 的最近补丁 + 删除）。
 // 删除走 Go 的 PatchDelete：它把 .patch / backup / manifest / meta 送回收站，并从索引里
 // 摘掉该 id 的全部历史行；已应用的补丁删掉后无法再撤销，所以删除前二次确认。
+//
+// 宿主：2026-11-22 起本页是「应用页面」标签页（core/app-pages.js 的 patches），
+// 由 mount(root) 在标签页容器里建骨架并绑定。原来的设置 → 开发者 内嵌位置已移除。
 
 // 状态徽标：文案与色调（tone 决定 CSS class）。未知状态按「未应用」展示原文更保险，
 // 但索引只会有这几种，多余的走 default 兜底。
@@ -42,13 +45,37 @@ function patchTimeText(ms) {
     return (d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
 }
 
+// 页面骨架：标签页宿主里由 mount() 注入（id 保持不变，纯渲染函数照常按 id 查询）。
+export function patchStoreSkeleton() {
+    return `
+<div class="set-group-title">补丁库</div>
+<div class="set-card">
+    <div class="set-row">
+        <div class="set-main">
+            <div class="set-title">最近补丁<button type="button" class="info-tip" data-tip="AI 提交过的补丁（.cadt/patches）。删除会把补丁文件、备份与元数据送进回收站；已应用的补丁删除后无法再撤销。" aria-label="补丁库说明"></button></div>
+            <div class="set-desc" id="patch-store-path">存储目录：—</div>
+        </div>
+        <div class="set-control">
+            <button type="button" id="patch-store-refresh" class="dlg-btn">刷新</button>
+        </div>
+    </div>
+    <div class="set-row-top">
+        <div id="patch-store-list" class="patch-store-list"></div>
+    </div>
+</div>`;
+}
+
 export function createSettingsPanePatches(deps) {
-    const listEl = document.getElementById('patch-store-list');
-    const pathEl = document.getElementById('patch-store-path');
-    const refreshBtn = document.getElementById('patch-store-refresh');
+    // 当前宿主里的元素（mount 时按 id 在宿主内查询，兼容多宿主的将来）
+    let els = {listEl: null, pathEl: null, refreshBtn: null};
     let loading = false;
 
+    function root() {
+        return typeof deps.root === 'function' ? deps.root() : (deps.root || '');
+    }
+
     function emptyText(text) {
+        const listEl = els.listEl;
         if (!listEl) return;
         listEl.textContent = '';
         const empty = document.createElement('div');
@@ -85,6 +112,7 @@ export function createSettingsPanePatches(deps) {
     }
 
     async function refreshPatchStore() {
+        const listEl = els.listEl;
         if (!listEl) return;
         if (!deps.backend.PatchList) {
             emptyText('当前版本不支持补丁库（旧版后端）');
@@ -93,16 +121,16 @@ export function createSettingsPanePatches(deps) {
         if (loading) return;
         loading = true;
         try {
-            const root = typeof deps.root === 'function' ? deps.root() : (deps.root || '');
-            if (pathEl && deps.backend.PatchStoreDir) {
+            const dir = root();
+            if (els.pathEl && deps.backend.PatchStoreDir) {
                 try {
-                    const dir = await deps.backend.PatchStoreDir(root);
-                    pathEl.textContent = '存储目录：' + (dir || '—');
+                    const storeDir = await deps.backend.PatchStoreDir(dir);
+                    els.pathEl.textContent = '存储目录：' + (storeDir || '—');
                 } catch (e) {
-                    pathEl.textContent = '存储目录：—';
+                    els.pathEl.textContent = '存储目录：—';
                 }
             }
-            const list = await deps.backend.PatchList(root, 50);
+            const list = await deps.backend.PatchList(dir, 50);
             if (!Array.isArray(list) || !list.length) {
                 emptyText('还没有补丁记录');
                 return;
@@ -125,9 +153,8 @@ export function createSettingsPanePatches(deps) {
             return;
         }
         deps.openConfirmDialog(patchDeleteConfirmText(meta), async () => {
-            const root = typeof deps.root === 'function' ? deps.root() : (deps.root || '');
             try {
-                await deps.backend.PatchDelete(meta.id, root);
+                await deps.backend.PatchDelete(meta.id, root());
                 deps.flash('补丁已删除（文件已进回收站）');
             } catch (e) {
                 deps.flash('删除失败：' + ((e && e.message) || e), true);
@@ -136,7 +163,24 @@ export function createSettingsPanePatches(deps) {
         }, '删除', '删除补丁', 'danger');
     }
 
-    if (refreshBtn) refreshBtn.addEventListener('click', () => refreshPatchStore());
+    // 挂到宿主容器（应用页面标签页调用）：建骨架 → 按 id 取元素 → 绑定 → 首次加载。
+    // 返回卸载函数（关标签时由 doc.tabUnmount 调用）。
+    function mount(host) {
+        if (!host) return null;
+        host.innerHTML = patchStoreSkeleton();
+        els = {
+            listEl: host.querySelector('#patch-store-list'),
+            pathEl: host.querySelector('#patch-store-path'),
+            refreshBtn: host.querySelector('#patch-store-refresh'),
+        };
+        const onRefresh = () => refreshPatchStore();
+        if (els.refreshBtn) els.refreshBtn.addEventListener('click', onRefresh);
+        refreshPatchStore();
+        return () => {
+            if (els.refreshBtn) els.refreshBtn.removeEventListener('click', onRefresh);
+            els = {listEl: null, pathEl: null, refreshBtn: null};
+        };
+    }
 
-    return {refreshPatchStore, deletePatchRecord};
+    return {mount, refreshPatchStore, deletePatchRecord};
 }

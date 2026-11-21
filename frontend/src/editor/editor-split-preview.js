@@ -857,7 +857,7 @@ function createSvgRenderView(doc) {
         setSvgRenderError(doc, '');
         applySvgZoom(doc);
     };
-    img.onerror = () => setSvgRenderError(doc, 'SVG 渲染失败：浏览器无法解码该内容');
+    img.onerror = () => setSvgRenderError(doc, 'SVG 渲染失败：浏览器无法解码该内容（多半是标签未闭合，或用了 &nbsp; 这类 HTML 实体）');
     const status = document.createElement('div');
     status.className = 'svg-render-status hidden';
     scroll.append(img, status);

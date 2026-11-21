@@ -1,6 +1,8 @@
 // bridge-group-member-view.js：群聊成员详情在内容区的标签页（对齐子代理详情先例）。
 // doc.groupMember = `${groupId}:${agentId}`；本模块只负责「建标签页 + 提供容器 + 关标签卸载」，
 // 正文渲染归 AI 侧的 ai-group-member-view.js（runtime 订阅、私有过程与动作都在那里）。
+import {createVirtualTabDoc} from '../core/virtual-tab-doc.js';
+
 export function createBridgeGroupMemberView(deps) {
 
 const MEMBER_VIEW_MAX = 8;
@@ -30,31 +32,22 @@ function openGroupMemberTab(spec) {
         const oldest = opened.shift();
         if (oldest) deps.closeDocNow(oldest, false);
     }
-    const doc = {
+    const doc = createVirtualTabDoc({
         id: 'groupmember-' + key.replace(/[^A-Za-z0-9_-]+/g, '-'),
-        path: null,
         name: memberTabName(spec && spec.name),
-        content: '',
-        size: 0,
-        eol: 'lf',
-        hasBom: false,
-        large: false,
-        enc: 'utf-8',
         format: {id: 'groupmember', name: '成员', extensions: [], aceMode: 'text', rawOnly: true},
-        groupMember: key,
-        groupMemberSpec: {
-            groupId: String((spec && spec.groupId) || ''),
-            agentId: String((spec && spec.agentId) || ''),
-            name: String((spec && spec.name) || '成员'),
-            groupTitle: String((spec && spec.groupTitle) || ''),
-        },
         mode: 'groupmember',
-        treeAvailable: false,
-        dirty: false,
-        untitled: false,
-        bases: {},
-        savedText: '',
-    };
+        marker: 'groupMember',
+        key,
+        extra: {
+            groupMemberSpec: {
+                groupId: String((spec && spec.groupId) || ''),
+                agentId: String((spec && spec.agentId) || ''),
+                name: String((spec && spec.name) || '成员'),
+                groupTitle: String((spec && spec.groupTitle) || ''),
+            },
+        },
+    });
     deps.docs.push(doc);
     deps.addDocToFocusedGroup(doc);
     deps.activateDoc(doc);
@@ -78,7 +71,7 @@ function createGroupMemberView(doc) {
         root.textContent = '成员详情视图不可用：群聊运行时尚未就绪，重开标签页可恢复。';
         root.classList.add('empty');
     }
-    doc.groupMemberUnmount = () => {
+    doc.tabUnmount = () => {
         if (viewMod && typeof viewMod.unmountMemberView === 'function') viewMod.unmountMemberView(root);
         doc.groupMemberRoot = null;
     };

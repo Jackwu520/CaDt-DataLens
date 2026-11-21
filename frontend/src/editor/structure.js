@@ -1,4 +1,5 @@
 import {createFileIcon} from '../core/fileicons.js';
+import {iconSvg} from '../core/icons.js';
 import {renderSessionOutline, syncSessionOutlineActive} from '../ai/session-outline.js';
 
 // ===== 结构视图：解析当前文件并生成可导航的大纲/符号树 =====
@@ -11,11 +12,12 @@ const MAX_NODES = 6000;
 const MAX_LABEL = 140;
 const SUPPORT_HINT = '支持 Markdown、HTML/XML、Python、JS/TS、Go、Java/Kotlin/C#、C/C++、Rust、PHP、Ruby、Lua、JSON、YAML、TOML/INI、纯文本（章节）';
 
+// 局部键 → 注册表键（原散落 SVG 已收编 core/icons.js）；svg 尺寸由 .sb-chev/.sb-tool 的 CSS 规则统一
 const ICONS = {
-    chevron: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="m6 4 4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-    refresh: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M12.8 8a4.8 4.8 0 1 1-1.4-3.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M12.8 2.6v3.2H9.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-    collapse: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6.2 3.4 3.4 6.2M9.8 3.4l2.8 2.8M6.2 12.6 3.4 9.8M9.8 12.6l2.8-2.8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M3.6 8h2.6M9.8 8h2.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>',
-    expand: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.4 6.2 6.2 3.4M12.6 6.2 9.8 3.4M3.4 9.8l2.8 2.8M12.6 9.8 9.8 12.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M3.6 8h2.6M9.8 8h2.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>',
+    chevron: iconSvg('chevron-right'),
+    refresh: iconSvg('refresh'),
+    collapse: iconSvg('collapse-all'),
+    expand: iconSvg('expand-all'),
 };
 
 const KIND_GLYPH = {

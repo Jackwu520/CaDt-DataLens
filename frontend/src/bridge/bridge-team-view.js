@@ -1,6 +1,8 @@
 // bridge-team-view.js：智能体团队详情在内容区的标签页（对齐子代理详情标签页的先例）。
 // 本模块只负责「建标签页 + 提供容器 + 关标签时卸载」；正文渲染归 AI 面板
 // （ai-team-view.js）——运行态注册表与主代理状态都在面板闭包里。
+import {createVirtualTabDoc} from '../core/virtual-tab-doc.js';
+
 export function createBridgeTeamView(deps) {
 
 const TEAM_VIEW_MAX = 3;
@@ -29,29 +31,20 @@ function openAgentTeamTab(spec) {
         const oldest = opened.shift();
         if (oldest) deps.closeDocNow(oldest, false);
     }
-    const doc = {
+    const doc = createVirtualTabDoc({
         id: 'agentteam-' + key,
-        path: null,
         name: teamTabName(spec && spec.title),
-        content: '',
-        size: 0,
-        eol: 'lf',
-        hasBom: false,
-        large: false,
-        enc: 'utf-8',
         format: {id: 'agentteam', name: '智能体团队', extensions: [], aceMode: 'text', rawOnly: true},
-        agentTeam: key,
-        agentTeamSpec: {
-            sessionId: key,
-            title: String((spec && spec.title) || ''),
-        },
         mode: 'agentteam',
-        treeAvailable: false,
-        dirty: false,
-        untitled: false,
-        bases: {},
-        savedText: '',
-    };
+        marker: 'agentTeam',
+        key,
+        extra: {
+            agentTeamSpec: {
+                sessionId: key,
+                title: String((spec && spec.title) || ''),
+            },
+        },
+    });
     deps.docs.push(doc);
     deps.addDocToFocusedGroup(doc);
     deps.activateDoc(doc);
@@ -76,7 +69,7 @@ function createAgentTeamView(doc) {
         root.classList.add('empty');
         return;
     }
-    doc.agentTeamUnmount = () => {
+    doc.tabUnmount = () => {
         if (deps.aiPanel && deps.aiPanel.bridgeUnmountAgentTeamView) deps.aiPanel.bridgeUnmountAgentTeamView(root);
     };
 }

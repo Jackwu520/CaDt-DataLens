@@ -1,6 +1,8 @@
 // bridge-agent-view.js：子代理详情在内容区的标签页（对齐后台终端标签页的先例）。
 // 本模块只负责「建标签页 + 提供容器 + 关标签时卸载」；正文渲染归 AI 面板
 // （ai-subagents.js 的 mountAgentView）——子代理的运行态、收件箱与插话输入行都在面板闭包里。
+import {createVirtualTabDoc} from '../core/virtual-tab-doc.js';
+
 export function createBridgeAgentView(deps) {
 
 const AGENT_VIEW_MAX = 8;
@@ -29,40 +31,31 @@ function openAgentTab(spec) {
         const oldest = opened.shift();
         if (oldest) deps.closeDocNow(oldest, false);
     }
-    const doc = {
+    const doc = createVirtualTabDoc({
         id: 'agentview-' + key,
-        path: null,
         name: agentTabName(spec && spec.name),
-        content: '',
-        size: 0,
-        eol: 'lf',
-        hasBom: false,
-        large: false,
-        enc: 'utf-8',
         format: {id: 'agentview', name: '子代理', extensions: [], aceMode: 'text', rawOnly: true},
-        agentView: key,
-        agentViewSpec: {
-            toolCallId: String((spec && spec.toolCallId) || ''),
-            subId: String((spec && spec.subId) || ''),
-            name: String((spec && spec.name) || '子代理'),
-            // 详情所在的会话（头部状态兜底用它精确补正文，不扫全部会话）
-            sessionId: String((spec && spec.sessionId) || ''),
-            // 父级信息（openAgentView 算好传进来）：标签页 tooltip 与详情头部面包屑共用
-            parentLabel: String((spec && spec.parentLabel) || ''),
-            depth: Number((spec && spec.depth) || 0) || 0,
-            task: String((spec && spec.task) || ''),
-            // 磁盘转录补读要用的两个 id：落盘分桶用根会话（artifactDir），父会话 id 做回落。
-            // 漏掉任何一个，重启后「补读转录」在标签页路径上就永远不会发生。
-            parentSessionId: String((spec && spec.parentSessionId) || ''),
-            agentArtifactDir: String((spec && spec.agentArtifactDir) || ''),
-        },
         mode: 'agentview',
-        treeAvailable: false,
-        dirty: false,
-        untitled: false,
-        bases: {},
-        savedText: '',
-    };
+        marker: 'agentView',
+        key,
+        extra: {
+            agentViewSpec: {
+                toolCallId: String((spec && spec.toolCallId) || ''),
+                subId: String((spec && spec.subId) || ''),
+                name: String((spec && spec.name) || '子代理'),
+                // 详情所在的会话（头部状态兜底用它精确补正文，不扫全部会话）
+                sessionId: String((spec && spec.sessionId) || ''),
+                // 父级信息（openAgentView 算好传进来）：标签页 tooltip 与详情头部面包屑共用
+                parentLabel: String((spec && spec.parentLabel) || ''),
+                depth: Number((spec && spec.depth) || 0) || 0,
+                task: String((spec && spec.task) || ''),
+                // 磁盘转录补读要用的两个 id：落盘分桶用根会话（artifactDir），父会话 id 做回落。
+                // 漏掉任何一个，重启后「补读转录」在标签页路径上就永远不会发生。
+                parentSessionId: String((spec && spec.parentSessionId) || ''),
+                agentArtifactDir: String((spec && spec.agentArtifactDir) || ''),
+            },
+        },
+    });
     deps.docs.push(doc);
     deps.addDocToFocusedGroup(doc);
     deps.activateDoc(doc);
@@ -89,7 +82,7 @@ function createAgentView(doc) {
         root.classList.add('empty');
         return;
     }
-    doc.agentViewUnmount = () => {
+    doc.tabUnmount = () => {
         if (deps.aiPanel && deps.aiPanel.bridgeUnmountAgentView) deps.aiPanel.bridgeUnmountAgentView(root);
     };
 }

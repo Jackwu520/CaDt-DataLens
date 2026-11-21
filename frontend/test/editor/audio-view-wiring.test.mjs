@@ -37,7 +37,7 @@ test('文档层：音频标记落到 createDoc 与首屏视图', () => {
     assert.match(g, /!!fmt\.video \|\| !!fmt\.audio \|\| fmt\.id === 'bytes'/);
     assert.match(g, /if \(fmt\.audio\) createAudioView\(doc\);/);
     assert.match(g, /if \(audioRequested\) showAudioView\(doc\);/);
-    assert.match(g, /audio: '<svg/, '标签条的视图按钮要有图标');
+    assert.match(g, /audio: 'view-audio'/, '标签条的视图按钮要有图标（注册表 view-audio 键）');
     assert.match(g, /if \(mode === 'audio'\) return !doc\.audio;/);
 });
 

@@ -13,6 +13,7 @@
 // 只按标题匹配（含 60 秒催办的「（仍在等待）」后缀），不动真正的「AI 任务失败」。
 // 就地修改并返回是否发生变化，供 load 决定是否写回 localStorage；抽成纯函数便于单测。
 import {overlayStack} from '../core/overlay-stack.js';
+import {iconSvg} from '../core/icons.js';
 
 export function migrateApprovalKind(m) {
     if (m && m.kind === 'error' && /AI 待(审批|填写)/.test(String(m.title || ''))) {
@@ -25,13 +26,16 @@ export function migrateApprovalKind(m) {
 export function createMessageCenter(ctx) {
     const KEY = 'datalens-message-center';
     const MAX_MESSAGES = 100;
+    // 消息类型 → 注册表键（圆圈勾/圆圈叉是状态徽标造型，与裸勾/叉区分）
     const KIND_ICONS = {
-        success: '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.7" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M5.4 8.2l1.8 1.8 3.4-3.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-        error: '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.7" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M6 6l4 4M10 6l-4 4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>',
-        update: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13.2 8a5.2 5.2 0 1 1-1.5-3.7" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M13.3 1.7v3h-3" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>',
-        ai: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.4a3.7 3.7 0 0 0-3.7 3.7v2.5L3 11.4h10l-1.3-2.8V6.1A3.7 3.7 0 0 0 8 2.4z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M6.6 13.2a1.4 1.4 0 0 0 2.8 0" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>',
-        info: '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.7" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M8 7.2v3.4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><circle cx="8" cy="5.4" r=".8" fill="currentColor"/></svg>',
+        success: 'circle-check',
+        error: 'circle-x',
+        update: 'refresh',
+        ai: 'bell',
+        info: 'info',
     };
+    // toast 图标 18px（.app-toast-icon 无 svg 尺寸规则，显式尺寸保持撑满）；面板行 CSS 统一 13px 覆盖
+    const kindIcon = (kind) => iconSvg(KIND_ICONS[kind] || KIND_ICONS.info, 18);
     let messages = load();
     let seq = 0;
     let pop = null;
@@ -153,7 +157,7 @@ export function createMessageCenter(ctx) {
         toast.className = 'app-toast ' + (item.kind === 'error' ? 'error' : (item.kind === 'success' ? 'success' : 'info'));
         const icon = document.createElement('span');
         icon.className = 'app-toast-icon';
-        icon.innerHTML = KIND_ICONS[item.kind] || KIND_ICONS.info;
+        icon.innerHTML = kindIcon(item.kind);
         const main = document.createElement('div');
         main.className = 'app-toast-main';
         const title = document.createElement('div');
@@ -228,7 +232,7 @@ export function createMessageCenter(ctx) {
             row.className = 'msg-center-row' + (item.read ? '' : ' unread');
             const icon = document.createElement('span');
             icon.className = 'msg-center-ico';
-            icon.innerHTML = KIND_ICONS[item.kind] || KIND_ICONS.info;
+            icon.innerHTML = kindIcon(item.kind);
             const main = document.createElement('span');
             main.className = 'msg-center-main';
             const line1 = document.createElement('span');

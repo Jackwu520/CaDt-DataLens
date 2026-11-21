@@ -543,16 +543,16 @@ function showTermAreaMenu(s, x, y, linkUrl) {
     const items = [];
     if (linkUrl) {
         items.push(
-            {label: '复制链接', icon: 'E8C8', action: () => deps.copyText(linkUrl, '链接')},
+            {label: '复制链接', icon: 'copy', action: () => deps.copyText(linkUrl, '链接')},
             {label: '内置浏览器打开', icon: 'browser', action: () => deps.openBrowserTab(linkUrl)},
-            {label: '默认程序打开', icon: 'E8A7', action: () => openTermLinkExternal(linkUrl)},
+            {label: '默认程序打开', icon: 'new-window', action: () => openTermLinkExternal(linkUrl)},
             {sep: true},
         );
     }
     items.push(
-        {label: '复制', icon: 'E8C8', shortcut: 'Ctrl+C', disabled: !hasSel,
+        {label: '复制', icon: 'copy', shortcut: 'Ctrl+C', disabled: !hasSel,
             action: () => { try { deps.copyText(s.term.getSelection(), '选中内容'); } catch (e) {} }},
-        {label: '粘贴', icon: 'E77F', shortcut: 'Ctrl+V', action: () => pasteClipboardTo(s.term)},
+        {label: '粘贴', icon: 'paste', shortcut: 'Ctrl+V', action: () => pasteClipboardTo(s.term)},
         {sep: true},
         {label: '清屏', icon: 'eraser', action: () => { try { s.term.clear(); s.term.focus(); } catch (e) {} }},
     );
@@ -570,12 +570,12 @@ async function showTermTabMenu(id, x, y) {
         shells = deps.backend.TermShells ? await deps.backend.TermShells() : [];
     } catch (e) {}
     const items = [
-        {label: '新建终端（默认 Shell）', icon: 'E710', action: () => createTermSession()},
+        {label: '新建终端（默认 Shell）', icon: 'plus', action: () => createTermSession()},
     ];
     if (shells.length) {
         items.push({
             label: '用其他 Shell 新建终端',
-            icon: 'E756',
+            icon: 'terminal',
             submenu: shells.map((sh) => ({label: sh.name, action: () => createTermSession(sh.id)})),
         });
     }
@@ -583,10 +583,10 @@ async function showTermTabMenu(id, x, y) {
         items.push({label: '在独立窗口打开', icon: 'new-window', action: () => popOutTermSession(id)});
     }
     items.push(
-        {label: '重命名标签页', icon: 'E8AC', action: () => renameTermSession(s)},
+        {label: '重命名标签页', icon: 'rename', action: () => renameTermSession(s)},
         {label: '清屏', icon: 'eraser', action: () => { try { s.term.clear(); s.term.focus(); } catch (e) {} }},
         {sep: true},
-        {label: '关闭', shortcut: 'Shift+点击', icon: 'E8BB', action: () => closeTermSession(id)},
+        {label: '关闭', shortcut: 'Shift+点击', icon: 'close', action: () => closeTermSession(id)},
         {label: '关闭其他标签页', disabled: !others.length, action: () => { for (const o of others) closeTermSession(o.id); }},
         {label: '关闭所有标签页', action: () => { for (const o of [...deps.terminalUI.sessions.values()]) closeTermSession(o.id); }},
     );

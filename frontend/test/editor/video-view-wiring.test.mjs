@@ -37,7 +37,7 @@ test('文档层：视频标记落到 createDoc 与首屏视图', () => {
     assert.match(g, /const binaryMode = !!fmt\.image \|\| !!fmt\.video \|\| !!fmt\.audio \|\| fmt\.id === 'bytes';/);
     assert.match(g, /if \(fmt\.video\) createVideoView\(doc\);/);
     assert.match(g, /if \(videoRequested\) showVideoView\(doc\);/);
-    assert.match(g, /video: '<svg/, '标签条的视图按钮要有图标');
+    assert.match(g, /video: 'view-video'/, '标签条的视图按钮要有图标（注册表 view-video 键）');
     assert.match(g, /if \(mode === 'video'\) return !doc\.video;/);
 });
 

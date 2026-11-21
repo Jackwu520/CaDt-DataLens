@@ -5,6 +5,7 @@
 import {iconSvg} from '../core/icons.js';
 import {copyImageUrlToClipboard, dataUrlToFile} from '../core/image-clipboard.js';
 import {createInput, createTextarea} from '../core/form-controls.js';
+import {createVirtualTabDoc} from '../core/virtual-tab-doc.js';
 import {createImageLightbox} from '../shell/image-lightbox.js';
 import {getPluginDocConverters} from '../shell/plugins.js';
 import {memoDocxBase64} from './memo-docx.js';
@@ -86,25 +87,14 @@ function openMemoTab() {
         deps.activateDoc(existing);
         return existing;
     }
-    const doc = {
+    const doc = createVirtualTabDoc({
         id: 'memo-panel',
-        path: null,
         name: '快捷便签',
-        content: '',
-        size: 0,
-        eol: 'lf',
-        hasBom: false,
-        large: false,
-        enc: 'utf-8',
         format: {id: 'memo', name: '快捷便签', extensions: [], aceMode: 'text', rawOnly: true},
-        memo: 'panel',
         mode: 'memo',
-        treeAvailable: false,
-        dirty: false,
-        untitled: false,
-        bases: {},
-        savedText: '',
-    };
+        marker: 'memo',
+        key: 'panel',
+    });
     deps.docs.push(doc);
     deps.addDocToFocusedGroup(doc);
     deps.activateDoc(doc);
@@ -149,22 +139,22 @@ function createMemoView(doc) {
         if (e.defaultPrevented) return;
         e.preventDefault();
         deps.ctxMenu.open([
-            {label: '新建块', icon: 'E710', action: () => {
+            {label: '新建块', icon: 'plus', action: () => {
                 commitActive(view);
                 run(view, (doc2) => addBlock(doc2, '')).then((res) => {
                     if (res.ok) requestAnimationFrame(() => startBlockTitleEdit(view, res.id));
                     else deps.flash(res.error, true);
                 }).catch(() => {});
             }},
-            {label: '新建文本条目', icon: 'E710', action: () => quickAdd(view, 'text')},
-            {label: '新建 Markdown 条目', icon: 'E710', action: () => quickAdd(view, 'md')},
+            {label: '新建文本条目', icon: 'plus', action: () => quickAdd(view, 'text')},
+            {label: '新建 Markdown 条目', icon: 'plus', action: () => quickAdd(view, 'md')},
         ], e.clientX, e.clientY);
     };
     root.addEventListener('contextmenu', onContextMenu);
 
     render(view);
 
-    doc.memoUnmount = () => {
+    doc.tabUnmount = () => {
         view.disposed = true;
         unsubscribe();
         root.removeEventListener('paste', onPaste);
@@ -385,13 +375,13 @@ function buildTopBar(view) {
     onButton(exportBtn, (x, y) => {
         const pluginItems = getPluginDocConverters().map((c) => ({
             label: c.label,
-            icon: 'E896',
+            icon: 'export',
             action: () => runDocConverter(view, c),
         }));
         deps.ctxMenu.open([
-            {label: '导出 Markdown（图片复制到旁侧 img/）', icon: 'E896', action: () => exportMemo(view, 'md')},
-            {label: '导出 HTML（单文件，图片内嵌）', icon: 'E896', action: () => exportMemo(view, 'html')},
-            {label: '导出 Word（.docx 原生，图片内嵌）', icon: 'E896', action: () => exportMemo(view, 'docx')},
+            {label: '导出 Markdown（图片复制到旁侧 img/）', icon: 'export', action: () => exportMemo(view, 'md')},
+            {label: '导出 HTML（单文件，图片内嵌）', icon: 'export', action: () => exportMemo(view, 'html')},
+            {label: '导出 Word（.docx 原生，图片内嵌）', icon: 'export', action: () => exportMemo(view, 'docx')},
             ...(pluginItems.length ? [{sep: true}, ...pluginItems] : []),
         ], x, y);
     });
@@ -594,7 +584,7 @@ function openTagMenu(view, itemId, x, y) {
     deps.ctxMenu.open([
         ...presetItems,
         {sep: true},
-        {label: '自定义标签…', icon: 'E710', action: () => startTagInlineEdit(view, itemId)},
+        {label: '自定义标签…', icon: 'plus', action: () => startTagInlineEdit(view, itemId)},
         {label: '清空标签', disabled: !tags.length, action: () =>
             run(view, (d) => updateById(d, itemId, {tags: []}))},
     ], x, y);
@@ -713,7 +703,8 @@ function buildItem(view, block, item) {
         toggle.className = 'memo-item-fold-btn';
         const syncToggle = () => {
             const folded = text.classList.contains('folded');
-            toggle.innerHTML = '<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true" style="transform:rotate(' + (folded ? '0' : '180') + 'deg)"><path d="M4.5 6.5L8 10l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg><span>' + (folded ? '展开全文' : '收起') + '</span>';
+            toggle.innerHTML = iconSvg('chevron-down', 12) + '<span>' + (folded ? '展开全文' : '收起') + '</span>';
+            toggle.firstElementChild.style.transform = 'rotate(' + (folded ? '0' : '180') + 'deg)';
         };
         syncToggle();
         toggle.addEventListener('click', (e) => {
@@ -1071,14 +1062,14 @@ function openThumbLightbox(view, item, rel, fallbackSrc) {
 function imageMenuItems(getSrc, defaultName) {
     const name = defaultName || '贴图.png';
     return [
-        {label: '复制图片', icon: 'E8C8', action: async () => {
+        {label: '复制图片', icon: 'copy', action: async () => {
             const url = await getSrc();
             if (!url) { deps.flash('贴图读取失败', true); return; }
             const ok = await copyImageUrlToClipboard(url);
             if (ok) deps.flash('已复制图片到剪贴板');
             else deps.flash('复制失败：当前环境不支持写图片剪贴板', true);
         }},
-        {label: '另存为…', icon: 'E74E', action: async () => {
+        {label: '另存为…', icon: 'save', action: async () => {
             const url = await getSrc();
             if (!url) { deps.flash('贴图读取失败', true); return; }
             if (!deps.backend.SaveFileDialog) { deps.flash('当前环境不支持保存对话框', true); return; }
@@ -1124,23 +1115,23 @@ function openBlockMenu(view, blockId, x, y) {
     if (!block) return;
     const idx = doc.blocks.findIndex((b) => b.id === blockId);
     deps.ctxMenu.open([
-        {label: '添加条目', icon: 'E710', action: () => appendEditableItem(view, blockId)},
-        {label: '重命名', icon: 'E8AC', action: () => startBlockTitleEdit(view, blockId)},
-        {label: '复制定位点', icon: 'E8C8', title: '复制给 AI / CLI 的定位串', action: () =>
+        {label: '添加条目', icon: 'plus', action: () => appendEditableItem(view, blockId)},
+        {label: '重命名', icon: 'rename', action: () => startBlockTitleEdit(view, blockId)},
+        {label: '复制定位点', icon: 'copy', title: '复制给 AI / CLI 的定位串', action: () =>
             deps.copyText(memoLocator(view.scope, 'block', blockId), '定位点')},
-        {label: block.collapsed ? '展开' : '折叠', icon: block.collapsed ? 'E70D' : 'E70E', action: () => {
+        {label: block.collapsed ? '展开' : '折叠', icon: block.collapsed ? 'chevron-down' : 'chevron-up', action: () => {
             run(view, (doc2) => updateById(doc2, blockId, {collapsed: !block.collapsed}));
         }},
         {sep: true},
-        {label: '上移', icon: 'E70E', disabled: idx <= 0, action: () => {
+        {label: '上移', icon: 'chevron-up', disabled: idx <= 0, action: () => {
             run(view, (doc2) => updateById(doc2, blockId, {index: idx - 1}));
         }},
-        {label: '下移', icon: 'E70D', disabled: idx < 0 || idx >= doc.blocks.length - 1, action: () => {
+        {label: '下移', icon: 'chevron-down', disabled: idx < 0 || idx >= doc.blocks.length - 1, action: () => {
             // moveInArray 是先 splice(from,1) 再 splice(to,0)：下移一格的目标位置就是 idx+1
             run(view, (doc2) => updateById(doc2, blockId, {index: idx + 1}));
         }},
         {sep: true},
-        {label: '删除块', icon: 'E74D', action: () => {
+        {label: '删除块', icon: 'trash', action: () => {
             // 块删除连带全部条目：居中确认框（danger 红色按钮）
             deps.openConfirmDialog(
                 '删除块「' + block.title + '」？将连带删除其中 ' + block.items.length + ' 条条目，不可恢复。',
@@ -1163,11 +1154,11 @@ function openItemMenu(view, itemId, x, y) {
     if (!hostBlock) return;
     const otherBlocks = doc.blocks.filter((b) => b.id !== hostBlock.id);
     deps.ctxMenu.open([
-        {label: '编辑', icon: 'E8AC', action: () => startItemTextEdit(view, itemId)},
-        {label: '粘贴图片', icon: 'E77F', action: () => pasteImageInto(view, itemId)},
-        {label: '复制定位点', icon: 'E8C8', title: '复制给 AI / CLI 的定位串', action: () =>
+        {label: '编辑', icon: 'rename', action: () => startItemTextEdit(view, itemId)},
+        {label: '粘贴图片', icon: 'paste', action: () => pasteImageInto(view, itemId)},
+        {label: '复制定位点', icon: 'copy', title: '复制给 AI / CLI 的定位串', action: () =>
             deps.copyText(memoLocator(view.scope, 'item', itemId), '定位点')},
-        {label: '转为…', icon: 'E72C',
+        {label: '转为…', icon: 'refresh',
             title: '文本=原样 + 内联贴图；Markdown=完整渲染；终端=命令可运行',
             submenu: [
                 {label: '文本条目', disabled: item.kind === 'text', action: () => {
@@ -1187,17 +1178,17 @@ function openItemMenu(view, itemId, x, y) {
                         if (!res.ok) deps.flash(res.error, true);
                     })},
             ]},
-        ...(term.entryOf(itemId) ? [{label: '清除运行输出', icon: 'E74D', action: () => term.clear(itemId)}] : []),
-        {label: '标签…', icon: 'E721', action: () => openTagMenu(view, itemId, x, y)},
+        ...(term.entryOf(itemId) ? [{label: '清除运行输出', icon: 'trash', action: () => term.clear(itemId)}] : []),
+        {label: '标签…', icon: 'search', action: () => openTagMenu(view, itemId, x, y)},
         {sep: true},
-        {label: '上移', icon: 'E70E', disabled: idx <= 0, action: () => {
+        {label: '上移', icon: 'chevron-up', disabled: idx <= 0, action: () => {
             run(view, (doc2) => updateById(doc2, itemId, {index: idx - 1}));
         }},
-        {label: '下移', icon: 'E70D', disabled: idx < 0 || idx >= hostBlock.items.length - 1, action: () => {
+        {label: '下移', icon: 'chevron-down', disabled: idx < 0 || idx >= hostBlock.items.length - 1, action: () => {
             // 同块下移：moveInArray 语义是「移除后再插到该位置」，目标即 idx+1
             run(view, (doc2) => updateById(doc2, itemId, {index: idx + 1}));
         }},
-        {label: '移到其他块…', icon: 'E8B7', disabled: !otherBlocks.length, action: () => {
+        {label: '移到其他块…', icon: 'folder', disabled: !otherBlocks.length, action: () => {
             deps.ctxMenu.open(otherBlocks.map((b) => ({
                 label: b.title,
                 action: () => run(view, (doc2) => moveItemToBlock(doc2, itemId, b.id)).then((res) => {
@@ -1206,7 +1197,7 @@ function openItemMenu(view, itemId, x, y) {
             })), x, y);
         }},
         {sep: true},
-        {label: '删除条目', icon: 'E74D', action: () => {
+        {label: '删除条目', icon: 'trash', action: () => {
             // 居中确认框：文案带条目内容摘要（长文本截断）
             const snippet = item.text
                 ? (item.text.length > 30 ? item.text.slice(0, 30) + '…' : item.text)
@@ -1610,15 +1601,15 @@ function openJumpMenu(view, x, y) {
         // 菜单行无法像面板 chevron 那样做行内分立点击）
         items.push({
             label: (bi + 1) + '. ' + block.title + '（分组，' + block.items.length + ' 项）',
-            icon: block.collapsed ? 'E70D' : 'E70E',
+            icon: block.collapsed ? 'chevron-down' : 'chevron-up',
             submenu: [
-                {label: '跳转到该分组', icon: 'E8E5', action: () => jumpToBlock(view, block.id)},
+                {label: '跳转到该分组', icon: 'open-folder', action: () => jumpToBlock(view, block.id)},
                 {
                     label: block.collapsed ? '展开该分组' : '折叠该分组',
-                    icon: block.collapsed ? 'E70D' : 'E70E',
+                    icon: block.collapsed ? 'chevron-down' : 'chevron-up',
                     action: () => run(view, (d) => updateById(d, block.id, {collapsed: !block.collapsed})),
                 },
-                {label: '复制定位点', icon: 'E8C8', action: () =>
+                {label: '复制定位点', icon: 'copy', action: () =>
                     deps.copyText(memoLocator(view.scope, 'block', block.id), '定位点')},
             ],
         });

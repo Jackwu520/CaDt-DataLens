@@ -1,7 +1,7 @@
 // memo-term.js：快捷便签「终端条目」的运行时——条目正文是命令字符串，点运行按钮交给
 // run.Runner.RunExec 通道执行（流式 run-out / run-exit、GBK 解码、120s 超时杀树、
 // RunStop 手动停止）。输出是会话内存态：只存本模块的 Map，不写 memo.json——
-// 重渲染（折叠/编辑/外部变更）从 Map 恢复，关面板（memoUnmount）停运行并清空。
+// 重渲染（折叠/编辑/外部变更）从 Map 恢复，关面板（doc.tabUnmount）停运行并清空。
 // shell 跟随内置终端默认：pwsh → powershell 兜底（normalizeTermShell 同语义）；
 // 命令字符串 → argv 的拼接是本模块纯函数 buildShellArgv。运行 id 固定 `memo-<itemId>`
 // 前缀，与 F5 的 run-N-build/run 互不干扰（run.js 对未知 id 静默忽略）。
@@ -273,7 +273,7 @@ export function createMemoTerm(deps) {
     paintLive(itemId);
   }
 
-  // stopAll：关面板（memoUnmount）调用——停掉仍在跑的运行、清空内存态。
+  // stopAll：关面板（doc.tabUnmount）调用——停掉仍在跑的运行、清空内存态。
   async function stopAll() {
     const jobs = [];
     for (const [itemId, entry] of Array.from(termRuns.entries())) {
