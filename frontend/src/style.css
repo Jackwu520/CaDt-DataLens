@@ -11467,7 +11467,8 @@ html[data-writing="on"][data-writing-paper="dim"] .jsoneditor textarea.jsonedito
 .stg-badge-error { background: color-mix(in srgb, var(--danger, #f85149) 18%, transparent); color: var(--danger, #f85149); }
 .stg-badge-muted { background: color-mix(in srgb, var(--muted) 16%, transparent); color: var(--muted); }
 /* 清除确认按项分行（其余对话框都是单句，pre-line 不影响它们） */
-#dlg-confirm-text { white-space: pre-line; }
+/* 超长无空格串（如长文件名）不能撑破对话框：允许任意字符断行并让 flex 子项收缩 */
+#dlg-confirm-text { white-space: pre-line; overflow-wrap: anywhere; min-width: 0; }
 .act-detail {
     flex-basis: 100%;
     margin: 2px 0 4px;

@@ -4,6 +4,11 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 
 ## 未发布
 
+### 修复（确认对话框长文件名撑出横滚条）
+
+- **成因（2026-11-22 用户反馈）**：确认框正文 `#dlg-confirm-text` 是 `.dialog-body`（flex + `overflow:auto`）的直接子项，只有 `white-space: pre-line`；flex 子项默认 `min-width:auto`，超长无空格串（如反复拼接的 `ai_image_policy_app…` 文件名）的 min-content 宽度就是整串宽度，撑破 430px 容器出现横向滚动条。
+- **修复**：`style.css` 给 `#dlg-confirm-text` 加 `overflow-wrap: anywhere; min-width: 0;`——允许任意字符断行并让 flex 子项正常收缩，长文件名完整换行显示、不再横滚；`pre-line` 保留（清除确认的多行分行不受影响）。纯 CSS 改动，`npm run build` 通过，浏览器最小复现验证修复前溢出、修复后不溢出。
+
 ### 改进（四个应用页面现代化重设计）
 
 - **背景**：外部工具 / 定时任务 / 操作记录 / 补丁库搬进内容区标签页后，骨架仍是设置面板的 `.set-card` 纵向堆叠——信息密度低、没有详情、没有状态反馈。用户 2026-11-22 要求重设计，取舍：各页定制、只统一视觉 token；设置项留设置页 + 页内「去设置」跳转；前端 UI + 必要后端增强。
