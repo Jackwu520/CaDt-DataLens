@@ -13,6 +13,7 @@ import {
     restoreParkedWidgets,
     sanitizeWidgetCss,
     svgToDataUrl,
+    svgXmlSafe,
     tallSvgNeedsUncap,
     tinySvgSize,
     widgetCacheKey,
@@ -223,6 +224,32 @@ test('全屏按钮只给 SVG 类卡片，且经 opts.openFullscreen 回调', () 
         '仅 SVG / 异步引擎卡显示全屏按钮');
     assert.match(src, /isSvgLike && typeof opts\.openFullscreen === 'function'/, '有回调才显示');
     assert.match(src, /opts\.openFullscreen\(svg,/, '点击走 openFullscreen 回调');
+});
+
+// 背景：mermaid 的 htmlLabels 把节点文字放进 foreignObject，序列化时 `<br/>` 变成 `<br>`
+// （HTML 空元素不补斜杠）。卡片里由 HTML 解析器读没事，但 data URL / .svg 文件按 XML 解析，
+// 一个未闭合的 `<br>` 就让整张图加载失败（灯箱「无法显示」、文件只画出半张）。
+test('svgXmlSafe 把 HTML 序列化的空元素补成自闭合，XML 才解析得动', () => {
+    assert.equal(svgXmlSafe('<div>a<br>b</div>'), '<div>a<br/>b</div>');
+    assert.equal(svgXmlSafe('<img src="x.png" alt="a">'), '<img src="x.png" alt="a"/>');
+    assert.equal(svgXmlSafe('<hr class="sep" />'), '<hr class="sep"/>', '已自闭合保持自闭合');
+    assert.equal(svgXmlSafe('<BR>'), '<BR/>');
+    // 不误伤：SVG 命名空间没有同名空元素，成对标签与 <image> / <a> 必须原样
+    assert.equal(svgXmlSafe('<image href="a.png"/>'), '<image href="a.png"/>');
+    assert.equal(svgXmlSafe('<a href="#x">链接</a>'), '<a href="#x">链接</a>');
+    assert.equal(svgXmlSafe('</div><rect/>'), '</div><rect/>', '闭合标签不动');
+    // U+00A0 是 HTML 序列化唯一会产出、XML 又不认的命名实体
+    assert.equal(svgXmlSafe('<text>a&nbsp;b</text>'), '<text>a&#160;b</text>');
+    assert.equal(svgXmlSafe('&amp; &lt; &gt; &quot;'), '&amp; &lt; &gt; &quot;', 'XML 合法实体不动');
+    assert.equal(svgXmlSafe(null), '');
+});
+
+test('svgToDataUrl 先良构化再编码，foreignObject 里的 <br> 不再拖垮整张图', () => {
+    const mermaid = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><foreignObject><div xmlns="http://www.w3.org/1999/xhtml">a<br>b</div></foreignObject></svg>';
+    const decoded = decodeURIComponent(svgToDataUrl(mermaid).split(',')[1]);
+    assert.ok(!/(?:<br>)/.test(decoded), '不得残留未闭合的 <br>');
+    assert.match(decoded, /a<br\/>b/, '补成自闭合');
+    assert.ok(decoded.includes('<foreignObject>'), 'foreignObject 保留');
 });
 
 test('preserveLocalImageSrc 给本地图片补 data-ai-src，外链不动', () => {

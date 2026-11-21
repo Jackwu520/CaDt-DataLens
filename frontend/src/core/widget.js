@@ -62,10 +62,29 @@ export function widgetCacheKey(lang, code) {
     return String(lang) + ':' + text.length + ':' + (hash >>> 0).toString(36);
 }
 
+// XML 良构化：把 HTML 序列化产物修成 XML 能解析的 SVG。
+// mermaid 的 htmlLabels 把节点文字放进 foreignObject 里的 HTML，序列化时 HTML 序列化器把空元素
+// 写成 `<br>`（不补斜杠），文本里的 U+00A0 写成 `&nbsp;`。这份字符串在卡片里由 HTML 解析器读
+// （容错），但一旦交给 `<img src="data:image/svg+xml,…">` 或存成 .svg 文件，浏览器按 XML 解析
+// 整份文档——一个未闭合的 `<br>` 就让整张图解析失败（实测：灯箱显示「无法显示」、文件里只画出
+// 第一个错误之前的半张图，报 "Opening and ending tag mismatch: br line 1 and p"）。
+// 只补 XML 不认的空元素与 XML 未定义的命名实体，不动其它字节：SVG 命名空间里没有同名空元素
+// （图是 <image> 不是 <img>，<a> 需要成对闭合且不在表内），所以全局替换是安全的。
+const XML_VOID_TAGS = 'area|base|br|col|embed|hr|img|input|link|meta|param|source|track|wbr';
+const XML_VOID_RE = new RegExp('<(?!\\/)(?:' + XML_VOID_TAGS + ')(?:\\s[^<>]*?)?\\s*\\/?>', 'gi');
+export function svgXmlSafe(svg) {
+    return String(svg == null ? '' : svg)
+        .replace(XML_VOID_RE, (tag) => tag.replace(/\s*\/?>\s*$/, '/>'))
+        // 只换 HTML 序列化一定会产出的那一个（U+00A0 → &nbsp;）；&amp; / &lt; / &gt; / &quot;
+        // 在 XML 里本就合法，其余命名实体只可能来自模型直接写进标签，属另一类问题。
+        .replace(/&nbsp;/gi, '&#160;');
+}
+
 // 可视化卡片「全屏」：把渲染后的静态 SVG 编成可独立加载的 data URL。
-// 抽成纯函数给 node 测试覆盖；裸片段补 xmlns，否则 <img> 里的 SVG 无法独立解析。
+// 抽成纯函数给 node 测试覆盖；先良构化（见 svgXmlSafe），裸片段补 xmlns，
+// 否则 <img> 里的 SVG 无法独立解析。
 export function svgToDataUrl(svg) {
-    const text = String(svg == null ? '' : svg);
+    const text = svgXmlSafe(svg);
     const doc = /<svg[\s>]/i.test(text) && /xmlns=/i.test(text)
         ? text
         : text.replace(/<svg(\s|>)/i, '<svg xmlns="http://www.w3.org/2000/svg"$1');
@@ -317,11 +336,14 @@ function mountCard(node, lang, kind, code, opts) {
         actions.append(fullButton);
     }
     // 另存为：异步卡片导出渲染后的 SVG（源码只是文本 / JSON，离线打不开），svg / html 卡导源码。
+    // 导出 SVG 时先良构化：文件按 image/svg+xml 由 XML 解析器读，foreignObject 里未闭合的 <br>
+    // 会让浏览器只画出第一个错误之前的半张图（见 svgXmlSafe）。
     if (typeof opts.saveAs === 'function') {
         const saveButton = widgetButton('另存为', '保存到工作区 .cadt/answers/', () => {
             const isAsync = !!ASYNC_RENDERERS[lang];
             const ext = (isAsync || lang === 'svg') ? 'svg' : 'html';
-            const content = isAsync ? (asyncSvg.get(node) || code) : code;
+            const raw = isAsync ? (asyncSvg.get(node) || code) : code;
+            const content = ext === 'svg' ? svgXmlSafe(raw) : raw;
             Promise.resolve(opts.saveAs({lang, kind, ext, content})).catch((e) => {
                 // 尽力而为：实现侧已 flash 提示，这里兜住避免 unhandled rejection
             });
