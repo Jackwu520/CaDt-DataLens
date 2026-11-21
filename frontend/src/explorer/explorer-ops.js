@@ -438,25 +438,25 @@ function scratchMenuItems(dirPath) {
     return items;
 }
 
-// createScratchFile(dirPath, ext, opts)：临时草稿的唯一编排。
-//   dirPath —— 只表达「从哪个新建入口进来」，**不参与拼路径**：草稿一律落工作区根的
+// createScratchFile(dirPath, ext, opts)：临时文件的唯一编排。
+//   dirPath —— 只表达「从哪个新建入口进来」，**不参与拼路径**：临时文件一律落工作区根的
 //              .cadt/scratch/，不能跟着右键点中的子目录走（也不能落进 AI 免审写区 .cadt/tmp）。
-//   ext     —— 草稿扩展名（= 语言）。
-//   opts.content —— 初始内容（编辑器选区「存为临时草稿」用）。
+//   ext     —— 临时文件扩展名（= 语言）。
+//   opts.content —— 初始内容（编辑器选区「存为临时文件」用）。
 // 落盘链路：AIEnsureDir（MkdirAll 幂等）→ CreateEntry（O_EXCL）→ SaveFile（有初始内容时）→ openPath。
 // 不刷文件树：.cadt 在文件树里本来就被跳过，刷了也看不见，改为一句话 flash。
 async function createScratchFile(dirPath, ext, opts = {}) {
     const ws = deps.workspaceFolder;
     if (!ws) {
-        deps.flash('临时草稿需要先打开工作区文件夹', true);
+        deps.flash('临时文件需要先打开工作区文件夹', true);
         return '';
     }
     if (deps.settings && deps.settings.readOnlyMode) {
-        deps.flash('只读模式下不能新建临时草稿', true);
+        deps.flash('只读模式下不能新建临时文件', true);
         return '';
     }
     if (!deps.backend.AIEnsureDir || !deps.backend.CreateEntry || !deps.backend.SaveFile) {
-        deps.flash('当前版本不支持临时草稿', true);
+        deps.flash('当前版本不支持临时文件', true);
         return '';
     }
     const dir = scratchDir(ws);
@@ -468,17 +468,18 @@ async function createScratchFile(dirPath, ext, opts = {}) {
         deps.flash('创建草稿目录失败：' + e, true);
         return '';
     }
-    // 秒级时间戳在同一秒内连点会撞名：CreateEntry 走 O_EXCL 会报错，加序号重试两次。
+    // JetBrains 风格命名：scratch.<ext>，同扩展名撞名时递增 scratch_1 / scratch_2 …
+    // CreateEntry 走 O_EXCL 会报「已存在」，递增重试直到成功（上限 100，防极端堆积）。
     let target = '';
     let name = '';
-    for (let seq = 0; seq < 3; seq += 1) {
-        name = scratchDraftName(Date.now(), usedExt, seq);
+    for (let seq = 0; seq < 100; seq += 1) {
+        name = scratchDraftName(usedExt, seq);
         try {
             target = await deps.backend.CreateEntry(dir, name, false);
             break;
         } catch (e) {
-            if (seq >= 2) {
-                deps.flash('创建临时草稿失败：' + e, true);
+            if (seq >= 99) {
+                deps.flash('创建临时文件失败：' + e, true);
                 return '';
             }
         }
@@ -488,13 +489,13 @@ async function createScratchFile(dirPath, ext, opts = {}) {
         try {
             await deps.backend.SaveFile(target, content, 'lf', false, 'utf-8');
         } catch (e) {
-            deps.flash('草稿已建，但写入内容失败：' + e, true);
+            deps.flash('临时文件已建，但写入内容失败：' + e, true);
         }
     }
-    // 「上次用过的扩展名」只影响下一次一键建草稿，不值得走整份 applySettings（会重刷主题/字体）
+    // 「上次用过的扩展名」只影响下一次一键建临时文件，不值得走整份 applySettings（会重刷主题/字体）
     if (typeof deps.rememberScratchExt === 'function') deps.rememberScratchExt(usedExt);
     if (deps.openPath) await deps.openPath(target);
-    // 文件树的「临时草稿」节点要立刻能看到这份新草稿（.cadt 不在文件系统通知范围内），
+    // 文件树的「临时文件」节点要立刻能看到这份新临时文件（.cadt 不在文件系统通知范围内），
     // 顺手展开 + 选中它——比一句 flash 更明确的「东西在这儿」
     if (deps.explorer && typeof deps.explorer.refreshScratch === 'function') {
         try {
@@ -506,16 +507,16 @@ async function createScratchFile(dirPath, ext, opts = {}) {
     // 打开路径时 openPathsHere 已按目录判定过；这里补一次，保证「刚建的这份」一定有标记
     if (doc) {
         doc.draft = true;
-        // 草稿的预期是「立刻能写」：空内容 + 预览型格式（.md / .html）的首屏在 createDoc 里
-        // 一律是预览视图，这里只对**刚建的空草稿**改走代码视图，普通文件与已有内容不受影响。
+        // 临时文件的预期是「立刻能写」：空内容 + 预览型格式（.md / .html）的首屏在 createDoc 里
+        // 一律是预览视图，这里只对**刚建的空临时文件**改走代码视图，普通文件与已有内容不受影响。
         if (!content && doc.format && doc.format.preview && doc.mode === 'preview' &&
             doc === deps.file && typeof deps.switchMode === 'function') {
             deps.switchMode('code');
         }
     }
-    deps.flash('已建临时草稿：' + name + '（文件树「临时草稿」）');
+    deps.flash('已建临时文件：' + name + '（文件树「临时文件」）');
     history.push({
-        label: '新建临时草稿“' + name + '”',
+        label: '新建临时文件“' + name + '”',
         undo: async () => {
             if (!deps.backend.DeleteEntry) return false;
             await deps.backend.DeleteEntry(target); // 回收站，误撤销可取回
@@ -825,7 +826,7 @@ function showExplorerMenu(info, x, y) {
     if (info.scratch) {
         const readOnly = !!(deps.settings && deps.settings.readOnlyMode);
         deps.ctxMenu.open([
-            {label: '新建临时草稿', icon: 'plus', disabled: readOnly, submenu: scratchMenuItems(info.path)},
+            {label: '新建临时文件', icon: 'plus', disabled: readOnly, submenu: scratchMenuItems(info.path)},
             {sep: true},
             {label: '刷新', icon: 'refresh', action: () => deps.explorer && deps.explorer.refreshScratch && deps.explorer.refreshScratch({expand: true})},
             {label: '在文件管理器中显示', icon: 'folder', action: () => deps.showPathInFolder(info.path)},

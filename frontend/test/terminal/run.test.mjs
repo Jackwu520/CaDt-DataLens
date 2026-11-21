@@ -8,6 +8,7 @@ import {
     ansiSegments, splitRefs, splitRunArgs, applyRunTemplate, SELF_TEST, SELF_TEST_MARK,
     buildRunAnalysisPrompt, runTimeoutRemaining, timeoutLabel,
     activeRunConfig, configRowSubtitle, recentConfigs, resolveRunTarget, resolveRunWidgetLabel,
+    findReusableRunSession,
 } from '../../src/terminal/run.js';
 
 test('配方表：每项都有 run，编译型必须有 build 与 outExt', () => {
@@ -273,4 +274,32 @@ test('configRowSubtitle：绑定文件显示路径，旧预设显示语言桶说
     assert.equal(configRowSubtitle({file: 'D:/w/main.py'}), 'D:/w/main.py');
     assert.equal(configRowSubtitle({lang: 'python'}), '[python] 参数预设');
     assert.equal(configRowSubtitle({}), '参数预设（作用于当前文件）');
+});
+
+// ---- 运行标签复用（同一文件反复运行不新建标签）----
+
+test('findReusableRunSession：同路径复用，不同路径各自新建', () => {
+    const a = {path: 'D:/w/a.py', selfTest: false};
+    const b = {path: 'D:/w/b.py', selfTest: false};
+    const sessions = [a, b];
+    assert.equal(findReusableRunSession(sessions, 'D:/w/a.py'), a, '命中同路径');
+    assert.equal(findReusableRunSession(sessions, 'D:/w/b.py'), b);
+    assert.equal(findReusableRunSession(sessions, 'D:/w/c.py'), null, '不同路径不命中');
+});
+
+test('findReusableRunSession：自检与无 path 会话不参与复用', () => {
+    const selfTest = {path: 'D:/w/a.py', selfTest: true};
+    const noPath = {path: '', selfTest: false};
+    const project = {path: '', selfTest: false, recipe: {lang: 'project'}};
+    const sessions = [selfTest, noPath, project];
+    assert.equal(findReusableRunSession(sessions, 'D:/w/a.py'), null, '自检会话不参与复用');
+    assert.equal(findReusableRunSession(sessions, ''), null, '空 path 不命中');
+    assert.equal(findReusableRunSession(sessions, null), null);
+});
+
+test('findReusableRunSession：空会话表与异常输入不抛错', () => {
+    assert.equal(findReusableRunSession([], 'D:/w/a.py'), null);
+    assert.equal(findReusableRunSession(null, 'D:/w/a.py'), null);
+    assert.equal(findReusableRunSession(undefined, 'D:/w/a.py'), null);
+    assert.equal(findReusableRunSession([null, undefined], 'D:/w/a.py'), null, '坏条目跳过');
 });

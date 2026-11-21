@@ -41,11 +41,15 @@ test('中文输入法下字母仍按物理键位归一化（不被组字字符�
 
 test('一个动作可绑多个组合：命中任一即触发', () => {
     const km = createKeymap({bindings: KEY_BINDINGS, style: DEFAULT_KEY_STYLE});
-    assert.ok(km.is('Ctrl+Y', 'edit.redo'));
+    // 默认风格 Ctrl+Y 让给编辑器内「删除行」，重做只剩 Ctrl+Shift+Z
+    assert.ok(!km.is('Ctrl+Y', 'edit.redo'));
     assert.ok(km.is('Ctrl+Shift+Z', 'edit.redo'));
     assert.ok(!km.is('Ctrl+Z', 'edit.redo'));
     assert.ok(km.is('Ctrl+B', 'view.sidebar'));
     assert.ok(km.is('Alt+1', 'view.sidebar'));
+    // VSCode 风格下 Ctrl+Y 仍是重做（删除行是 Ctrl+Shift+K）
+    const kmVs = createKeymap({bindings: KEY_BINDINGS, style: 'vscode'});
+    assert.ok(kmVs.is('Ctrl+Y', 'edit.redo'));
 });
 
 test('切风格立即换索引，并通知订阅者', () => {

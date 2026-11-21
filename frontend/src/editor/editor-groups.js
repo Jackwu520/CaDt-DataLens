@@ -8,6 +8,7 @@ import {iconSvg} from '../core/icons.js';
 import {isDocReadOnly, isTabReadOnlyFixed, isTabReadOnlyLocked} from '../core/readonly.js';
 import {isBlankDraftText} from '../core/scratch.js';
 import {createEditorAceHooks} from './editor-ace-hooks.js';
+import {createEditorSmoothScroll} from './editor-smooth-scroll.js';
 import {createEditorCsvView} from './editor-csv-view.js';
 import {createEditorSplitPreview} from './editor-split-preview.js';
 import {createEditorBrowserTab} from './editor-browser-tab.js';
@@ -37,8 +38,19 @@ const SPLIT_MAX_DEPTH = 3;
 const SPLIT_MIN_W = 240;
 const SPLIT_MIN_H = 180;
 
+// ---- 滚轮平滑滚动域（editor-smooth-scroll.js）：覆盖 Ace 离散跳行的 mousewheel 处理器 ----
+const smoothDeps = Object.create(deps);
+smoothDeps.getSettings = () => deps.settings;
+smoothDeps.getDocs = () => deps.docs;
+const smoothScroll = createEditorSmoothScroll(smoothDeps);
+const hookAceSmoothScroll = (...a) => smoothScroll.hookAce(...a);
+const unhookAceSmoothScroll = (...a) => smoothScroll.unhookAce(...a);
+
 // ---- Ace 会话钩子域：applyAceMode / 折叠范围 / 多光标 / python token（editor-ace-hooks.js） ----
-const aceHooks = createEditorAceHooks(deps);
+// 派生 deps 注入平滑滚动转发箭头（延迟求值）：applyAceMode 在 setMode 换 session 后要重挂滚轮。
+const aceDeps = Object.create(deps);
+aceDeps.hookAceSmoothScroll = (...a) => hookAceSmoothScroll(...a);
+const aceHooks = createEditorAceHooks(aceDeps);
 const applyAceMode = (...a) => aceHooks.applyAceMode(...a);
 const hookCodeFoldRanges = (...a) => aceHooks.hookCodeFoldRanges(...a);
 const hookMultiCursor = (...a) => aceHooks.hookMultiCursor(...a);
@@ -70,6 +82,8 @@ spDeps.renderMarkdownBlocksHtml = (...a) => exportMenus.renderMarkdownBlocksHtml
 const splitPreview = createEditorSplitPreview(spDeps);
 const createMarkdownPreview = (...a) => splitPreview.createMarkdownPreview(...a);
 const renderMarkdownPreview = (...a) => splitPreview.renderMarkdownPreview(...a);
+const restorePreviewScroll = (...a) => splitPreview.restorePreviewScroll(...a);
+const capturePreviewScroll = (...a) => splitPreview.capturePreviewScroll(...a);
 const showMarkdownPreview = (...a) => splitPreview.showMarkdownPreview(...a);
 const enterMarkdownPreview = (...a) => splitPreview.enterMarkdownPreview(...a);
 const leaveMarkdownPreview = (...a) => splitPreview.leaveMarkdownPreview(...a);
@@ -384,6 +398,15 @@ function renderEditorLayout() {
     for (const stripEl of deps.els.editor.querySelectorAll('.egroup[data-gid] > .etabs')) {
         prevStripScroll.set(stripEl.parentElement.dataset.gid, stripEl.scrollLeft);
     }
+    // 记录焦点：整段 textContent='' 再插回会把子树内的焦点丢掉（Ace 的隐藏 textarea 失焦），
+    // 自动保存等后台重绘会打断用户打字。重建后若焦点所属 pane 仍是激活则恢复（见函数末尾）。
+    const prevActive = document.activeElement;
+    const prevActivePane = prevActive && prevActive.closest ? prevActive.closest('.jsoneditor-pane') : null;
+    const hadFocusInEditor = !!(prevActive && deps.els.editor.contains(prevActive));
+    // 预览滚动位置存进 doc：整段重建会把 pane 摘除插回、DOM scrollTop 归零。
+    // 自动保存等后台重绘也会触发本函数，别让用户正在看的预览跳回顶部。
+    // 只对活动 doc capture——非活动 doc 的 pane 隐藏，DOM scrollTop 已归零，读了会覆盖持久值。
+    if (deps.file) capturePreviewScroll(deps.file);
     deps.els.editor.textContent = '';
     const root = splitRoot || (focusedGroupId || (editorGroups[0] && editorGroups[0].id));
     if (!root || !editorGroups.length) return;
@@ -440,6 +463,25 @@ function renderEditorLayout() {
         else stripEl.scrollLeft = prev;
     }
     if (freshGids.size) scheduleRevealActiveTabs(freshGids);
+    // 恢复焦点：重建前焦点在编辑器内、且所属 pane 重建后仍是激活文档时，把它还回去。
+    // 自动保存 / 外部修改标记 / AI 写已打开文件等后台重绘不能打断用户打字；
+    // 标签切换（activateDoc 移走旧 pane）不会命中，不会抢新标签的焦点。
+    if (hadFocusInEditor && prevActivePane) {
+        const activePane = deps.els.editor.querySelector('.jsoneditor-pane.active');
+        if (activePane && activePane.contains(prevActivePane)) {
+            // 按焦点 pane 反查文档，不依赖 deps.file 当前值（多分栏下焦点组可能不是 file 组）
+            const doc = deps.docs.find((d) => d.pane === prevActivePane);
+            const ed = doc && doc.editor;
+            if (ed && ed.aceEditor) {
+                try { ed.aceEditor.focus(); } catch (e) {}
+            } else if (prevActive && prevActive.isConnected && typeof prevActive.focus === 'function') {
+                try { prevActive.focus(); } catch (e) {}
+            }
+        }
+    }
+    // 预览滚动恢复：整段重建后 DOM scrollTop 已归零，用 doc 上存的值还回去。
+    // 分屏时 restorePreviewScroll 走 mdSyncScrollFromAce（以 Ace 滚动为真源对齐）。
+    if (deps.file) restorePreviewScroll(deps.file);
 }
 
 function buildSplitNode(parent, node) {
@@ -1166,6 +1208,8 @@ function snapshotActiveDoc() {
     deps.file.text = deps.editor.getText();
     deps.file.mode = deps.currentMode;
     deps.file.dirty = deps.dirty;
+    // 预览滚动位置存进 doc：切标签时 pane 被摘除插回会让 DOM scrollTop 归零，先存下来
+    capturePreviewScroll(deps.file);
     if (deps.file.splitActive && deps.file.htmlFrame) deps.file.htmlFrame.srcdoc = '';
 }
 
@@ -1179,6 +1223,14 @@ function markDocDirty(doc) {
             doc.pluginViewNotify(text);
         } catch (e) {
             console.warn('[plugin-viewer] onChange 抛错：', e);
+        }
+    }
+    // 虚拟文档的内容变更回调（openVirtualDoc 的 opts.onChange）：编辑时把最新文本推回宿主。
+    if (typeof doc.virtualDocOnChange === 'function') {
+        try {
+            doc.virtualDocOnChange(text, doc);
+        } catch (e) {
+            console.warn('[virtual-doc] onChange 抛错：', e);
         }
     }
     const base = doc.bases[doc.mode];
@@ -1257,7 +1309,7 @@ function patchViewContext() {
         setDocReadOnly: (doc, locked) => deps.setDocReadOnly(doc, locked),
         // 原生 select 的浮层增强（设置页同款），用于去掉「应用模式」的浏览器原生下拉外观
         enhanceSelect: (sel) => deps.enhanceSelect(sel),
-        openConfirmDialog: (message, action, okLabel, title, variant) => deps.openConfirmDialog(message, action, okLabel, title, variant),
+        openConfirmDialog: (message, action, okLabel, title, variant, options) => deps.openConfirmDialog(message, action, okLabel, title, variant, options),
     };
     return patchViewHostCtx;
 }
@@ -1407,6 +1459,9 @@ function createDocEditor(doc) {
     if (ed.aceEditor) {
         hookCodeFoldRanges(ed.aceEditor);
         hookMultiCursor(ed.aceEditor);
+        hookAceSmoothScroll(ed.aceEditor);
+        // 编辑器内键位随快捷键风格联动（复制行 / 删除行 / 多选…）；必须在 Ace 建好 commands 后调用
+        if (typeof deps.applyEditorKeybindings === 'function') deps.applyEditorKeybindings(ed.aceEditor);
         ed.aceEditor.on('changeSelection', deps.scheduleWordCount);
         ed.aceEditor.on('input', deps.scheduleWordCount);
         // 写作模式：光标变化驱动打字机滚动与段落聚焦（内部自判生效条件）
@@ -1700,6 +1755,9 @@ async function activateDoc(doc) {
                 deps.editor.aceEditor.resize();
                 if (deps.file === doc) applyPendingDocView(doc);
             }
+            // 预览滚动恢复：此时 DOM 布局已就绪（ace.resize 后），scrollHeight 可读。
+            // 纯预览用 doc.previewScrollTop，分屏用 Ace 滚动对齐——解决切回跳到顶部 / 双页不对齐。
+            if (deps.file === doc) restorePreviewScroll(doc);
         }, 0);
     }
     deps.syncExplorerActive({reveal: false});
@@ -1873,6 +1931,7 @@ function closeDocNow(doc, remember = true) {
     }
     deps.docs.splice(idx, 1);
     if (doc.editor) {
+        if (doc.editor.aceEditor) unhookAceSmoothScroll(doc.editor.aceEditor);
         doc.editor.destroy();
         doc.editor = null;
     }
@@ -1959,5 +2018,5 @@ function reopenClosedTab() {
     function setFocusedGroupId(v) { focusedGroupId = v; }
     function setSplitRoot(v) { splitRoot = v; }
 
-    return {activateDoc, setFocusedGroupId, setSplitRoot, addDocToFocusedGroup, get editorGroups() { return editorGroups; }, applyAceMode, applyCsvTableZoom, applyImageZoom, browserViewportLabel, closeDocNow, closeDocsWithConfirm, closeSqlView, createDoc, createDocEditor, createGroup, dismissBanner, doRedo, doUndo, enterAudioView, enterBinaryView, enterCsvTable, enterHtmlPreview, enterImageView, enterMarkdownPreview, enterPluginView, enterSplitView, enterSqlView, enterSvgRender, enterTextView, enterVideoView, exitSplitView, expandAllWithGuard, flushCsvCellEditor, get focusedGroupId() { return focusedGroupId; }, groupDocs, groupOfDoc, groupSnapshot, focusEditorGroup, moveDocToGroup, splitDocToGroup, mergeEditorGroup, handleAIWorkspaceFileChanged, handleExternalDocChanges, hideAudioView, hideBanner, hideHtmlPreview, hidePluginView, hideSvgRender, hideVideoView, hookCodeFoldRanges, hookMultiCursor, humanizeCounts, initCodeFoldHover, jumpBookmark, addBookmarkAt, removeBookmarkAt, clearDocBookmarks, leaveCsvTable, leaveHtmlPreview, leaveMarkdownPreview, markDocDirty, mdSyncScrollFromAce, moveTabInGroup, openWithDefaultApp, patchViewContext, refreshPatchMarkers, rememberDocView, renderBookmarks, renderBreadcrumb, renderCsvTableView, renderEditorLayout, renderMarkdownPreview, renderTabs, reopenClosedTab, releaseAudio, releaseVideo, requestCloseDoc, revertDocToSaved, scheduleGitGutter, setBrowserViewport, setFilename, showBanner, showHtmlPreview, showImageMenu, showMdPreviewMenu, showPathInFolder, showSvgMenu, get splitRoot() { return splitRoot; }, syncAllBrowserTabs, syncBrowserTab, syncTabReadOnly, textArea, toggleBookmark, toggleFocusedNode, updateBrowserTitle, updateDocChrome, updateStatus, zoomCsvTable, zoomImageBy, zoomSvgRenderBy};
+    return {activateDoc, setFocusedGroupId, setSplitRoot, addDocToFocusedGroup, get editorGroups() { return editorGroups; }, applyAceMode, applyCsvTableZoom, applyImageZoom, browserViewportLabel, closeDocNow, closeDocsWithConfirm, closeSqlView, createDoc, createDocEditor, createGroup, dismissBanner, doRedo, doUndo, enterAudioView, enterBinaryView, enterCsvTable, enterHtmlPreview, enterImageView, enterMarkdownPreview, enterPluginView, enterSplitView, enterSqlView, enterSvgRender, enterTextView, enterVideoView, exitSplitView, expandAllWithGuard, flushCsvCellEditor, get focusedGroupId() { return focusedGroupId; }, groupDocs, groupOfDoc, groupSnapshot, focusEditorGroup, moveDocToGroup, splitDocToGroup, mergeEditorGroup, handleAIWorkspaceFileChanged, handleExternalDocChanges, hideAudioView, hideBanner, hideHtmlPreview, hidePluginView, hideSvgRender, hideVideoView, hookCodeFoldRanges, hookMultiCursor, hookAceSmoothScroll, unhookAceSmoothScroll, humanizeCounts, initCodeFoldHover, jumpBookmark, addBookmarkAt, removeBookmarkAt, clearDocBookmarks, leaveCsvTable, leaveHtmlPreview, leaveMarkdownPreview, markDocDirty, mdSyncScrollFromAce, moveTabInGroup, openWithDefaultApp, patchViewContext, refreshPatchMarkers, rememberDocView, renderBookmarks, renderBreadcrumb, renderCsvTableView, renderEditorLayout, renderMarkdownPreview, renderTabs, reopenClosedTab, releaseAudio, releaseVideo, requestCloseDoc, revertDocToSaved, scheduleGitGutter, setBrowserViewport, setFilename, showBanner, showHtmlPreview, showImageMenu, showMdPreviewMenu, showPathInFolder, showSvgMenu, get splitRoot() { return splitRoot; }, syncAllBrowserTabs, syncBrowserTab, syncTabReadOnly, textArea, toggleBookmark, toggleFocusedNode, updateBrowserTitle, updateDocChrome, updateStatus, zoomCsvTable, zoomImageBy, zoomSvgRenderBy};
 }

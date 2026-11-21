@@ -91,6 +91,30 @@ export function filterSearchResultToFile(result, fileAbs, rootNorm) {
     return next;
 }
 
+// 「看着像正则却没开 regex」的强信号 token。只收在普通字面量查询里几乎不会自然出现、
+// 出现就大概率是正则意图的字符/序列。歧义大的符号刻意不收：`$HOME`、`C++`、`*.go`、
+// `a?b`、`file.ts` 里的 `$ + * ? .` 都是合法字面量，收进来只会误报、削弱提示可信度。
+// 只在零命中时提示（见 formatSearchAnswer）：有命中说明字面量搜索有效，不打扰。
+const REGEX_HINT_TOKENS = [
+    '|', '^', '(', ')', '[', ']', '{', '}',
+    '\\b', '\\d', '\\w', '\\s', '\\B', '\\D', '\\W', '\\S',
+];
+
+/**
+ * 零命中时的正则软提示：查询含正则元字符但未启用 regex 时给一句提醒，让模型自查是否忘了开开关。
+ * 不改搜索语义、不自动重搜、不动 regex 默认值；regex 已开或查询无元字符时返回空串。
+ */
+export function regexHintFor(query, regex) {
+    if (regex) return '';
+    const q = textOf(query);
+    const found = [];
+    for (const token of REGEX_HINT_TOKENS) {
+        if (q.includes(token) && !found.includes(token)) found.push(token);
+    }
+    if (!found.length) return '';
+    return '；提示：查询含正则元字符（' + found.join(' ') + '）但未启用 regex，当前按字面量搜索。若想按正则匹配，请传 regex:true 重试';
+}
+
 /**
  * 把后端结果拼成给模型看的纯文本。
  * content: `相对路径:行号: 预览`，context>0 时每条命中附 `行号- / 行号+` 前后文；
@@ -123,7 +147,8 @@ export function formatSearchAnswer(result, opts = {}, meta = {}) {
     if (resultSize(result) === 0) {
         return '没有找到匹配' + (meta.query ? '：' + meta.query : '') +
             (start ? '（起点：' + start + '）' : '') + (scopeNote ? '（' + scopeNote + '）' : '') +
-            (filterNote ? '（' + filterNote + '）' : '');
+            (filterNote ? '（' + filterNote + '）' : '') +
+            regexHintFor(meta.query, opts.regex);
     }
     if (scopeNote) lines.unshift(scopeNote);
     else if (start) lines.unshift('搜索起点：' + start + '；以下路径相对该起点');

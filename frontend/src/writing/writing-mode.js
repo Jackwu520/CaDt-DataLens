@@ -10,6 +10,8 @@ let writingPrevFamily = '';
 let writingSwitchWasOn = !!deps.settings.writingMode; // 跟踪总开关本身；视图/文档临时切换不重置「本次」基线
 let writingCaretRaf = 0;
 let writingCaretTimer = 0;
+// 通用确认框当前绑定的触发键（openConfirmDialog 的 options.keys）；框关闭后由可见性判定兜底失效
+let confirmKeys = [];
 
 function writingActive() {
     return !!deps.settings.writingMode && !!deps.file && !deps.file.binary && !deps.file.large
@@ -542,7 +544,7 @@ document.addEventListener('selectionchange', () => {
     if (textarea && document.activeElement === textarea) updateCursorPosition();
 });
 
-function openConfirmDialog(message, action, okLabel, title, variant) {
+function openConfirmDialog(message, action, okLabel, title, variant, options) {
     deps.elsDialogs.confirmText.textContent = message || '有未保存的修改，关闭后将丢弃。';
     deps.elsDialogs.confirmOk.textContent = okLabel || '丢弃并关闭';
     // variant：'danger' = 破坏性操作（删除/清空/回滚等），确认按钮标红；默认普通确认。
@@ -555,15 +557,35 @@ function openConfirmDialog(message, action, okLabel, title, variant) {
     deps.setConfirmAction(action || (() => {
         if (deps.backend.ForceClose) deps.backend.ForceClose();
     }));
+    // 可选 options.keys：本次确认的触发键（KeyboardEvent.key，字符串或数组），
+    // 按下任一即等同点确认按钮。退出键归弹层栈管，不在此列。框关闭后随可见性失效。
+    const rawKeys = options && options.keys;
+    confirmKeys = rawKeys ? (Array.isArray(rawKeys) ? rawKeys.slice() : [rawKeys]) : [];
     deps.openDialogEl(deps.elsDialogs.confirm, {keepSettings: true});
 }
 
-document.getElementById('btn-discard').addEventListener('click', () => {
+function submitConfirm() {
     const action = deps.getConfirmAction();
     deps.setConfirmAction(null);
+    confirmKeys = [];
     deps.closeTopDialog();
     if (action) action();
-});
+}
+
+document.getElementById('btn-discard').addEventListener('click', submitConfirm);
+
+// 确认框触发键：window 捕获阶段——弹框时焦点可能仍落在触发它的输入框（如消息编辑区），
+// 那里自己的 keydown 会 stopPropagation，冒泡监听收不到。只在框可见、按下本次绑定键且
+// 无修饰键时消费；输入法组词态放行，避免抢走候选词确认。Esc 归弹层栈，不在此列。
+window.addEventListener('keydown', (e) => {
+    if (!confirmKeys.length || e.defaultPrevented || e.isComposing || e.keyCode === 229) return;
+    if (e.shiftKey || e.altKey || e.ctrlKey || e.metaKey) return;
+    if (deps.elsDialogs.confirm.classList.contains('hidden')) return;
+    if (!confirmKeys.includes(e.key)) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    submitConfirm();
+}, {capture: true});
 document.getElementById('btn-cancel-close').addEventListener('click', deps.closeTopDialog);
 document.getElementById('btn-props-ok').addEventListener('click', deps.closeDialogs);
 

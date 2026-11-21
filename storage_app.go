@@ -45,6 +45,8 @@ var storageService = storage.New(storage.Deps{
 		"ai-sessions": func(string) (func(), error) { return sessionstore.LockRootForClear() },
 		"memo":        func(string) (func(), error) { return memo.LockForClear("global", "") },
 		"ws-memo":     func(ws string) (func(), error) { return memo.LockForClear("workspace", ws) },
+		// 认知索引卷正被另一窗口 edit 时拒绝清理——卷删在写路径中间，CAS 与租约都救不回来
+		"ws-cognition": func(ws string) (func(), error) { return cognitionService.LockForClear(ws) },
 		// wipe-guard 备份根套着 deny-delete ACL：删除前摘掉，删完复位（wipeguard_app.go）
 		"wipe-guard": func(string) (func(), error) { return wipeGuardService.PrepareClear() },
 	},

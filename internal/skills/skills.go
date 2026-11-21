@@ -53,6 +53,7 @@ var appBuiltinSkillDirs = []string{
 	"cadt-file-layout",
 	"reverse-engineer-anything",
 	"chinese-formal-document-format",
+	"landing-page-design",
 }
 
 type AgentSkillTarget struct {

@@ -14,7 +14,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {dirname, join} from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {mergeChildren, createExplorer} from '../../src/explorer/explorer.js';
+import {mergeChildren, createExplorer, isMissingDirError} from '../../src/explorer/explorer.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -210,4 +210,48 @@ test('notifyFileChange：连续编辑已有文件零重建，新建文件才重�
     api.notifyFileChange('/ws/b.txt');
     await new Promise((resolve) => setTimeout(resolve, 200));
     assert.equal(body.clearCount, baseline + 1, '新建文件应恰好重绘一次');
+});
+
+// scratch 目录首次不存在是正常初始状态：GetFileAttributesEx 不该当错误显示。
+// 2026-11-22 别的机器实测：草稿目录不存在时展开节点报「无法读取：GetFileAttributesEx」，
+// 且新建草稿后不显示。
+test('isMissingDirError：识别跨平台的「目录不存在」错误，不误判权限错误', () => {
+    // Windows 英文 / 中文
+    assert.equal(isMissingDirError('GetFileAttributesEx D:/ws/.cadt/scratch: The system cannot find the file specified.'), true);
+    assert.equal(isMissingDirError('GetFileAttributesEx D:\\ws\\.cadt\\scratch: 系统找不到指定的文件。'), true);
+    // 跨平台 Go
+    assert.equal(isMissingDirError('open D:/ws/.cadt/scratch: no such file or directory'), true);
+    // 真正的错误不能吞
+    assert.equal(isMissingDirError('GetFileAttributesEx D:/ws/.cadt/scratch: Access is denied.'), false);
+    assert.equal(isMissingDirError('permission denied'), false);
+    assert.equal(isMissingDirError(''), false);
+    assert.equal(isMissingDirError(null), false);
+});
+
+test('scratch 节点加载失败：目录不存在当空目录，不显示 GetFileAttributesEx', () => {
+    const src = readFileSync(join(here, '../../src/explorer/explorer.js'), 'utf8');
+    const start = src.indexOf('async function loadNode(node, seq)');
+    assert.ok(start >= 0, '找不到 loadNode');
+    const rest = src.slice(start);
+    const next = /\n    async function |\n    function /.exec(rest.slice(1));
+    const body = rest.slice(0, next ? next.index + 1 : undefined);
+    assert.ok(body.includes('node.scratch && isMissingDirError(message)'),
+        'loadNode 的 catch 必须对 scratch 节点 + 目录不存在错误特殊处理');
+    assert.ok(/node\.error = ''/.test(body),
+        '目录不存在时必须清空 error，而不是显示 GetFileAttributesEx');
+});
+
+test('refreshScratch：新建后强制重置加载态并重读，保证新文件显示', () => {
+    const src = readFileSync(join(here, '../../src/explorer/explorer.js'), 'utf8');
+    const start = src.indexOf('async function refreshScratch(opts = {})');
+    assert.ok(start >= 0, '找不到 refreshScratch');
+    const rest = src.slice(start);
+    const next = /\n    return \{/.exec(rest);
+    const body = rest.slice(0, next ? next.index : undefined);
+    // 必须清掉残留加载态（否则 refreshNodeChildren 的 guard 会挡住，新文件不显示）
+    for (const field of ['sn.loaded = false', 'sn.error = \'\'', 'sn.loading = false', 'sn.loadPromise = null', 'sn.refreshing = false']) {
+        assert.ok(body.includes(field), 'refreshScratch 必须重置 ' + field);
+    }
+    assert.ok(body.includes('await loadNode(sn, treeSeq)'),
+        '重置后必须走 loadNode 完整重读');
 });

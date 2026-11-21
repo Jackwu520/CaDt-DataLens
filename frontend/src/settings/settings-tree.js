@@ -7,7 +7,9 @@
 export const SETTINGS_RISK_LABELS = {low: '低', medium: '中', high: '高'};
 
 // 布局形态只能由用户手动切换（用户硬规则）：树里可见，但永远不可由 AI 写。
-export const PROTECTED_SETTING_IDS = new Set(['ai-opt-display-mode']);
+// ai-opt-cognition：启停走 app_control 的 cognition_toggle（无条件审批卡）——树里可见，
+// 但 set_setting_row 不得成为绕开那张审批卡的第二条写路径。
+export const PROTECTED_SETTING_IDS = new Set(['ai-opt-display-mode', 'ai-opt-cognition']);
 
 // 高风险：安全姿态 / 执行权限 / 第三方代码 / 系统级注册。
 const HIGH_RISK_IDS = new Set([

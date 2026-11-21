@@ -1,6 +1,7 @@
 // 标题栏 Git 分支弹层（IDEA 式）：分支树、搜索、切换/新建/推送/拉取/更新项目、固定与键盘导航。
 // 从 titlebar-popovers.js 拆出；定位工具与 SVG 常量由宿主经 deps 注入，关闭项目弹层经 deps.closeProjectPopover。
 import {overlayStack} from '../core/overlay-stack.js';
+import {iconSvg} from '../core/icons.js';
 
 export function createTitlebarGitBranch(deps) {
 
@@ -574,13 +575,18 @@ async function gitPopFetch() {
     }
 }
 
+// 固定按钮图标：未固定=斜图钉，已固定=竖图钉（与状态同步）
+function syncGitPinButton() {
+    if (!deps.els.gbPin) return;
+    deps.els.gbPin.classList.toggle('active', gitBranchPopState.pinned);
+    deps.els.gbPin.setAttribute('aria-pressed', String(gitBranchPopState.pinned));
+    deps.els.gbPin.dataset.tip = gitBranchPopState.pinned ? '取消固定窗口' : '固定窗口（点击外部不关闭）';
+    deps.els.gbPin.innerHTML = iconSvg(gitBranchPopState.pinned ? 'pin-upright' : 'pin', 14);
+}
+
 function gitPopTogglePin() {
     gitBranchPopState.pinned = !gitBranchPopState.pinned;
-    if (deps.els.gbPin) {
-        deps.els.gbPin.classList.toggle('active', gitBranchPopState.pinned);
-        deps.els.gbPin.setAttribute('aria-pressed', String(gitBranchPopState.pinned));
-        deps.els.gbPin.dataset.tip = gitBranchPopState.pinned ? '取消固定窗口' : '固定窗口（点击外部不关闭）';
-    }
+    syncGitPinButton();
 }
 
 if (deps.els.gbSearch) {
@@ -607,6 +613,7 @@ if (deps.els.gbSearch) {
 }
 if (deps.els.gbFetch) deps.els.gbFetch.addEventListener('click', gitPopFetch);
 if (deps.els.gbPin) deps.els.gbPin.addEventListener('click', gitPopTogglePin);
+syncGitPinButton();
 
 document.addEventListener('pointerdown', (e) => {
     const target = e.target;

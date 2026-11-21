@@ -40,6 +40,28 @@ function baseName(path) {
     return i >= 0 ? s.slice(i + 1) : s;
 }
 
+// .cadt 显隐的纯逻辑（供测试与树/列表两视图共用）。
+// 只在工作区根这一层判定：用户直接把某个目录设成根时，不误伤同名子目录。
+export function isCadDirEntry(entry) {
+    return !!(entry && entry.isDir && String(entry.name).toLowerCase() === '.cadt');
+}
+
+export function visibleTreeEntries(entries, root, showCadDir) {
+    if (!root || showCadDir) return entries;
+    return entries.filter((entry) => !isCadDirEntry(entry));
+}
+
+// isMissingDirError：后端 ReadDir 对「目录不存在」的错误文案（跨平台）。
+// scratch 目录首次不存在是正常初始状态，不该当读取错误显示（GetFileAttributesEx 截图）。
+export function isMissingDirError(message) {
+    const s = String(message || '').toLowerCase();
+    if (!s) return false;
+    return s.includes('getfileattributesex') && /find the file|找不到|不存在|not find/.test(s)
+        || s.includes('no such file or directory')
+        || s.includes('系统找不到指定的文件')
+        || /\bgetfileattributesex\b/.test(s) && /find/.test(s);
+}
+
 import {createFileIcon} from '../core/fileicons.js';
 import {createExplorerList} from './explorer-list.js';
 
@@ -153,7 +175,9 @@ export function createExplorer(options) {
         readLimit = 1000, listReadLimit = 5000,
     } = options;
     // 列表扫描上限三常量随列表引擎迁入 explorer-list.js；忽略表与文件系统通知共用，留宿主
-    const LIST_SKIP_DIRS = new Set(['.git', 'node_modules', '.svn', '.hg', '__pycache__', '.idea', '.vs', '.cadt']);
+    // .cadt 是否跳过由 showCadDir 开关决定（默认显示），不写死在这张表——见 syncCadDirSkip。
+    const LIST_SKIP_DIRS = new Set(['.git', 'node_modules', '.svn', '.hg', '__pycache__', '.idea', '.vs']);
+    let showCadDir = true;
     let mode = 'tree';
     let visible = false;
     let explicitRoot = null;
@@ -216,13 +240,11 @@ export function createExplorer(options) {
         return activePath ? parentPath(activePath) : null;
     }
 
-    // 树里隐藏应用自己的状态目录 .cadt（AI 记忆 / 日志 / 补丁 / 草稿都在里面）。
-    // 草稿没有失去可见性——它由下面的「临时草稿」固定节点专门展示；
-    // 其余 .cadt 内容各有自己的界面（设置 → 存储与清理、补丁库、便签…）。
-    // 只在工作区根这一层生效：用户直接把某个目录设成根时不会误伤同名子目录。
+    // 树里是否显示应用自己的状态目录 .cadt（AI 记忆 / 日志 / 补丁 / 草稿都在里面）。
+    // 默认显示（showCadDir=true）；关掉时只在工作区根这一层隐藏，草稿仍由下面的
+    // 「临时草稿」固定节点单独承载。纯过滤逻辑抽到 visibleTreeEntries，供测试覆盖。
     function filterTreeEntries(node, entries) {
-        if (!node || !node.root) return entries;
-        return entries.filter((entry) => !(entry.isDir && String(entry.name).toLowerCase() === '.cadt'));
+        return visibleTreeEntries(entries, !!(node && node.root), showCadDir);
     }
 
     // 草稿固定节点的路径：没打开工作区 / 调用方没提供时返回空串（节点不出现）
@@ -239,7 +261,7 @@ export function createExplorer(options) {
         }
         if (scratchNode && samePath(scratchNode.path, dir)) return scratchNode;
         scratchNode = {
-            name: '临时草稿',
+            name: '临时文件',
             path: dir,
             isDir: true,
             // root 语义 = 固定节点：不可拖拽、名字加粗（与工作区根同款）
@@ -559,8 +581,18 @@ export function createExplorer(options) {
                 node.error = '';
                 if (!node.children.length) node.expanded = false;
             } catch (e) {
-                node.error = String((e && e.message) || e);
-                node.loaded = true;
+                const message = String((e && e.message) || e);
+                // scratch 目录首次不存在是正常初始状态：当作空目录，不显示 GetFileAttributesEx 错误。
+                // 新建草稿后 refreshScratch 会重读出真实文件。
+                if (node.scratch && isMissingDirError(message)) {
+                    node.children = [];
+                    node.error = '';
+                    node.loaded = true;
+                    node.expanded = false;
+                } else {
+                    node.error = message;
+                    node.loaded = true;
+                }
             } finally {
                 node.loading = false;
                 node.loadPromise = null;
@@ -1173,6 +1205,16 @@ export function createExplorer(options) {
         }
     }
 
+    // 切换 .cadt 显隐：列表跳过表同步（文件系统通知也读这张表）。
+    // 重读由调用方（settings-ui）统一触发，这里只切状态，避免一次开关两次重绘。
+    function setShowCadDir(next) {
+        const value = next !== false;
+        if (value === showCadDir) return;
+        showCadDir = value;
+        if (showCadDir) LIST_SKIP_DIRS.delete('.cadt');
+        else LIST_SKIP_DIRS.add('.cadt');
+    }
+
     function toggleNode(node) {
         if (!node || !node.isDir || isEmptyDirNode(node)) return;
         node.expanded = !node.expanded;
@@ -1342,7 +1384,14 @@ export function createExplorer(options) {
             return false;
         }
         if (opts.expand) sn.expanded = true;
-        if (sn.expanded) await refreshNodeChildren(sn, true);
+        // 新建草稿后必须重读：清掉可能残留的加载态 / 错误（目录此前不存在时 loadNode 失败留下的），
+        // 否则 refreshNodeChildren 的 guard 会被 node.loading / node.loadPromise 挡住，新文件不显示。
+        sn.loaded = false;
+        sn.error = '';
+        sn.loading = false;
+        sn.loadPromise = null;
+        sn.refreshing = false;
+        if (sn.expanded) await loadNode(sn, treeSeq);
         else sn.loaded = false;
         if (visible && mode === 'tree') renderTree();
         return true;
@@ -1378,5 +1427,6 @@ export function createExplorer(options) {
         setCutPaths,
         setCutPath,
         setAutoRefresh,
+        setShowCadDir,
     };
 }

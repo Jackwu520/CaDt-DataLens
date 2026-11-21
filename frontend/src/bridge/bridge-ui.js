@@ -35,7 +35,8 @@ const gitMod = createBridgeGit(gitDeps);
 const cliMod = createBridgeCliConvert(deps);
 
 // opts：readOnly（标签页只读锁）、readOnlyFixed（固定只读、不可解锁）、
-// patchReview（只读审阅快照）、reviewNotes（无差异文件说明）
+// patchReview（只读审阅快照）、reviewNotes（无差异文件说明）、
+// onChange（可选：文档内容变更时把最新文本推回宿主，见 editor-groups.js 的 markDocDirty）
 function openVirtualDoc(name, content, opts) {
     const options = opts || {};
     const fixed = !!options.readOnlyFixed;
@@ -57,6 +58,9 @@ function openVirtualDoc(name, content, opts) {
     // 视图类型（plan / diff / document）：只供 AI 的 workspace_context 区分「应用内视图」
     // 与「工作区文件」——虚拟文档没有路径，混进已打开文件会被显示成「（范围外）xxx」
     doc.viewKind = options.viewKind || 'document';
+    // 可选的内容变更回调：编辑虚拟文档时把最新文本推回宿主（如粘贴胶囊编辑回写）。
+    // 触发点在 editor-groups.js 的 markDocDirty（紧挨 pluginViewNotify）。
+    if (typeof options.onChange === 'function') doc.virtualDocOnChange = options.onChange;
     deps.docs.push(doc);
     deps.activateDoc(doc);
     return doc;

@@ -143,6 +143,22 @@ export function toolFileOpenTarget(message, info, root) {
     return base ? base + '/' + rel : rel;
 }
 
+// 计划批准指令（纯函数，便于测试）：应用代用户按「执行计划」发出的固定指令。
+// 不勾隔离区时维持旧文案（detectAppMessage 靠「计划已批准，请立即按」前缀认回历史会话）；
+// 勾选隔离区时明确告知「隔离区已建好、改动只写隔离区、完成后 export 回灌」，否则模型
+// 会按主根习惯动手，绕过隔离写闸（主根只读）。两种文案都以「计划已批准，请立即按」开头。
+export function planApprovalInstruction(inWorktree, session) {
+    const base = '计划已批准，请立即按你通过 submit_plan 提交的计划开始执行，不要重复计划内容。' +
+        '计划模式已随批准自动退出，不要再调用 plan_mode。';
+    if (!inWorktree) return base;
+    const name = (session && session.worktree && session.worktree.name) || '';
+    const prefix = name ? '.cadt/worktree/' + name + '/' : '.cadt/worktree/<slug>/';
+    return base + '\n\n' +
+        '本次已按你的选择先创建隔离工作区：所有文件改动写到 ' + prefix + '（相对范围根），不要改主根同名文件；' +
+        '隔离期间主根只读，回灌只能在完成后经 worktree_manage(action=export) 生成补丁交用户审阅。' +
+        'run_command / background_command 未显式传 cwd 时默认在隔离区里执行。';
+}
+
 export function createAIToolCards(ctx) {
     const copyText = ctx.copyText;
     const flash = ctx.flash;
@@ -627,10 +643,14 @@ export function createAIToolCards(ctx) {
             case 'preference_remove': return {verb: '删除偏好', icon: 'trash'};
             case 'skill_use': return {verb: '技能', icon: 'star'};
             case 'skill_list': return {verb: '技能目录', icon: 'book'};
+            case 'cognition_read': return {verb: '读认知索引', icon: 'scan'};
+            case 'cognition_edit': return {verb: '维护认知索引', icon: 'book-plus'};
+            case 'cognition_status': return {verb: '索引治理报告', icon: 'chart'};
             case 'plan_mode': return {verb: '计划模式', icon: 'compass'};
             case 'submit_plan': return {verb: '提交计划', icon: 'compass'};
             case 'ask_user': return {verb: '提问', icon: 'info'};
             case 'app_control': return {verb: '应用操作', icon: 'gear'};
+            case 'windows_desktop': return {verb: '桌面揭示', icon: 'cursor'};
             case 'todo_write': return {verb: '任务', icon: 'check'};
             case 'notify_send': return {verb: '消息', icon: 'bell'};
             case 'env_list': return {verb: '环境变量', icon: 'shield'};
@@ -1695,14 +1715,16 @@ export function createAIToolCards(ctx) {
                     md.textContent = message.error ? ('请求失败：' + message.error) : '请求失败';
                 } else if (content) {
                     // 流式期间整段重建会销毁可视化占位 → CSS loading 动画时钟归零（上方
-                    // 思考链 / 工具卡每帧更新时 loading 永远停在前几帧）。占位先按
-                    // data-widget-key 摘出，写完移植回同 key 槽位，再统一增强。
+                    // 思考链 / 工具卡每帧更新时「正在生成可视化…」永远停在前几帧，看着一直闪）。
+                    // 占位先按文档顺序摘出，写完移植回同序槽位，复用同一节点让动画连续。
+                    // 轮结束（streaming=false）不移植：让带最终源码的新占位留下供 mountCard 渲染，
+                    // 复用旧节点会拿到半截源码、画出半张图。
                     const parked = parkPendingWidgets(md);
                     md.innerHTML = renderMarkdown(content);
                     enhanceAICodeBlocks(md);
                     resolveAIImages(md);
                     if (enhanceAIFileRefs) enhanceAIFileRefs(md);
-                    restoreParkedWidgets(parked, md);
+                    if (streaming) restoreParkedWidgets(parked, md);
                     // svg / html / mermaid / echarts 围栏 → 可视化卡片；流式期间只占位，整轮结束后再挂载
                     enhanceWidgets(md, {
                         streaming: !!streaming,
@@ -1821,7 +1843,8 @@ export function createAIToolCards(ctx) {
 
     // grantItems：批准卡勾选的条目（{mode:'family', signature} / {mode:'exact', command}）。
     // 危险 / 复合条目（mode null）不会进勾选集合，这里再兜一层——危险命令永不落会话规则。
-    async function acceptPlan(session, grantItems) {
+    // opts.inWorktree：批准卡「在隔离区中执行」开关——勾选后先建隔离区再执行，批准指令也随之不同。
+    async function acceptPlan(session, grantItems, opts) {
         // 注意：ai-panel 的包装层在调用前已落盘并把 activePlan 置为 approved，
         // 所以这里不能再用 status==='pending' 做守卫（否则批准永远静默失败）。
         // 也不做 streamOf 守卫：包装层已 stopGeneration，残余流由 submitText 的排队机制兜底。
@@ -1830,6 +1853,9 @@ export function createAIToolCards(ctx) {
             flash('当前为「只读访问」，执行阶段无法修改文件', true);
             return;
         }
+        // 勾选「在隔离区中执行」时隔离区已由包装层在落盘前建好（见 ai-panel 的 acceptPlan），
+        // 这里只负责按勾选生成差异化的批准指令。
+        const inWorktree = !!(opts && opts.inWorktree);
         const cwd = getScopeRoot() || '';
         if (Array.isArray(grantItems) && cwd) {
             for (const item of grantItems) {
@@ -1850,7 +1876,9 @@ export function createAIToolCards(ctx) {
         renderMessages(true);
         // 这条指令是应用代用户按「执行计划」发出的，不是用户手打的——按应用消息卡片展示，
         // 别渲染成用户胶囊（rest 走 detectAppMessage 的同一前缀，历史会话也能认回来）。
-        const ok = await submitText('计划已批准，请立即按你通过 submit_plan 提交的计划开始执行，不要重复计划内容。', null, {
+        // 勾选隔离区时指令明确告知「隔离区已建好、路径在哪、改动只写隔离区」——否则模型可能
+        // 按主根习惯动手，绕过隔离写闸；不勾选时维持原指令（旧会话 detectAppMessage 前缀不变）。
+        const ok = await submitText(planApprovalInstruction(inWorktree, session), null, {
             app: {kind: 'plan', label: '计划已批准'},
         });
         if (!ok) {

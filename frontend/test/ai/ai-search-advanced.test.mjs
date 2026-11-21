@@ -9,6 +9,7 @@ import {
     formatSearchAnswer,
     normalizeSearchOptions,
     relativeToRoot,
+    regexHintFor,
 } from '../../src/ai/ai-search-advanced.js';
 import {AI_TOOL_DEFS} from '../../src/ai/ai-tool-defs.js';
 
@@ -98,6 +99,32 @@ test('工具定义 / Go 绑定 / mock 三处接线齐全', () => {
     assert.match(read('../internal/search/search.go'), /func \(s \*Searcher\) SearchWorkspaceAdvanced\(root, query string, opts SearchOptions\)/);
     assert.match(read('src/dev/mock-backend.js'), /async SearchWorkspaceAdvanced\(/);
     assert.match(read('src/ai/ai-panel.js'), /backend\.SearchWorkspaceAdvanced\(searchRoot, query,/);
+});
+
+// ==================== 正则软提示（零命中时提醒忘了开 regex） ====================
+
+test('regexHintFor：正则元字符未开 regex 才提示，已开 / 无元字符不提示', () => {
+    assert.equal(regexHintFor('function On|const On|\\bOn\\(', false),
+        '；提示：查询含正则元字符（| ( \\b）但未启用 regex，当前按字面量搜索。若想按正则匹配，请传 regex:true 重试');
+    assert.equal(regexHintFor('function On|const On|\\bOn\\(', true), '');
+    assert.equal(regexHintFor('applySettings', false), '');
+    // 常见字面量符号不误报
+    assert.equal(regexHintFor('file.ts', false), '');
+    assert.equal(regexHintFor('$HOME', false), '');
+    assert.equal(regexHintFor('C++', false), '');
+    assert.equal(regexHintFor('a-b/c', false), '');
+});
+
+test('零命中结果附正则提示；有命中不附（字面量搜索有效不打扰）', () => {
+    const empty = formatSearchAnswer({hits: []}, {}, {query: 'foo|bar'});
+    assert.match(empty, /没有找到匹配：foo\|bar/);
+    assert.match(empty, /未启用 regex/);
+    assert.match(empty, /regex:true/);
+    const hit = formatSearchAnswer({hits: [{path: 'C:/ws/a.js', line: 1, preview: 'foo|bar'}]}, {}, {query: 'foo|bar'});
+    assert.doesNotMatch(hit, /未启用 regex/);
+    // 显式开 regex 时即使零命中也不提示
+    const regexEmpty = formatSearchAnswer({hits: []}, {regex: true}, {query: 'foo|bar'});
+    assert.doesNotMatch(regexEmpty, /未启用 regex/);
 });
 
 // ==================== 单文件搜索（path 直接传文件） ====================

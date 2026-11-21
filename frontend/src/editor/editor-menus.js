@@ -181,7 +181,7 @@ function showEditorMenu(x, y) {
     const readonly = isDocReadOnly(deps.file, deps.settings);
     const hasPath = !!deps.file.path;
     const referenceItems = deps.aiEditorReferenceMenuItems();
-    // 选区「存为临时草稿」：菜单构建时取一次文本（菜单抢焦点后选区状态不可靠）。
+    // 选区「存为临时文件」：菜单构建时取一次文本（菜单抢焦点后选区状态不可靠）。
     // 存的是另一个文件，不修改原文档，所以标签级只读锁不拦；全局只读锁代表「整机不写」，拦住。
     const selection = selectedText();
     const canScratch = !!selection.trim() && !!deps.workspaceFolder &&
@@ -208,10 +208,10 @@ function showEditorMenu(x, y) {
                 {label: '导出为 PNG…', icon: 'save', action: exportCodeShot},
             ],
         }] : []),
-        // 从选区建草稿（对齐 JetBrains Alt+Enter → Create new scratch file from selection）：
+        // 从选区建临时文件（对齐 JetBrains Alt+Enter → Create new scratch file from selection）：
         // 扩展名沿用当前文档，**不嗅探选区内容**——高亮 / 视图 / 运行配方全按扩展名分派（方案 §6）
         ...(canScratch ? [{
-            label: '存为临时草稿',
+            label: '存为临时文件',
             icon: 'doc',
             action: () => deps.createScratchFile(
                 deps.workspaceFolder, scratchExtFromName(deps.file && deps.file.name), {content: selection}),

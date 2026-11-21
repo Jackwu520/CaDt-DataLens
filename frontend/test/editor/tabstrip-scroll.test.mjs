@@ -89,3 +89,28 @@ test('activateDoc 切换分支显式补发激活标签定位', () => {
     assert.ok(body.includes('scheduleRevealActiveTabs();'),
         '同文档重新激活（点已激活标签 / 活动栏入口）的定位兜底必须保留');
 });
+
+test('renderEditorLayout 重建前记录焦点、重建后恢复焦点', () => {
+    const body = sliceTopFunction(src, 'function renderEditorLayout()');
+    // 重建前必须记录焦点（document.activeElement 与所属 pane），且早于清空
+    assert.ok(body.includes('const prevActive = document.activeElement'),
+        '重建前必须记录 document.activeElement（否则清空后焦点信息丢失）');
+    assert.ok(body.includes('prevActivePane'),
+        '必须记录焦点所属的 .jsoneditor-pane（用于重建后判断是否仍激活）');
+    assert.ok(body.includes('hadFocusInEditor'),
+        '必须记录焦点是否在编辑器内');
+    const focusAt = body.indexOf('const prevActive = document.activeElement');
+    const clearAt = body.indexOf("deps.els.editor.textContent = ''");
+    assert.ok(focusAt >= 0 && clearAt >= 0 && focusAt < clearAt,
+        '焦点记录必须先于 #editor 清空，否则读到的 activeElement 已丢失');
+    // 重建后必须恢复焦点：焦点 pane 仍激活时走 aceEditor.focus()
+    assert.ok(body.includes("querySelector('.jsoneditor-pane.active')"),
+        '重建后必须找到激活的 pane 做判断');
+    assert.ok(body.includes('aceEditor.focus()'),
+        '焦点 pane 仍激活时必须调用 aceEditor.focus() 恢复焦点');
+    // 恢复逻辑必须位于重建完成之后（在 reveal 定位之后）
+    const revealAt = body.indexOf('if (freshGids.size) scheduleRevealActiveTabs(freshGids)');
+    const restoreAt = body.indexOf('hadFocusInEditor && prevActivePane');
+    assert.ok(revealAt >= 0 && restoreAt >= 0 && restoreAt > revealAt,
+        '焦点恢复必须位于标签条定位恢复之后，避免定位逻辑覆盖焦点');
+});

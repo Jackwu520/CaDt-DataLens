@@ -54,7 +54,9 @@ export const KEY_BINDINGS = [
 
     // —— 编辑 ——
     {id: 'edit.undo', group: '编辑', label: '撤销', kind: 'key', keys: {candysweet: ['Ctrl+Z'], jetbrains: ['Ctrl+Z'], vscode: ['Ctrl+Z']}},
-    {id: 'edit.redo', group: '编辑', label: '重做', kind: 'key', keys: {candysweet: ['Ctrl+Y', 'Ctrl+Shift+Z'], jetbrains: ['Ctrl+Y', 'Ctrl+Shift+Z'], vscode: ['Ctrl+Y', 'Ctrl+Shift+Z']}},
+    // CandySweet / JetBrains 风格下编辑器内 Ctrl+Y 让给「删除行」（见 editor-keybindings.js），
+    // 重做只保留 Ctrl+Shift+Z；VSCode 风格删除行是 Ctrl+Shift+K，Ctrl+Y 仍是重做。
+    {id: 'edit.redo', group: '编辑', label: '重做', kind: 'key', keys: {candysweet: ['Ctrl+Shift+Z'], jetbrains: ['Ctrl+Shift+Z'], vscode: ['Ctrl+Y', 'Ctrl+Shift+Z']}},
     {id: 'edit.format', group: '编辑', label: '格式化', kind: 'key', keys: {candysweet: ['Ctrl+Alt+L'], jetbrains: ['Ctrl+Alt+L'], vscode: ['Alt+Shift+F']}},
     {id: 'edit.find', group: '编辑', label: '查找', kind: 'key', keys: {candysweet: ['Ctrl+F'], jetbrains: ['Ctrl+F'], vscode: ['Ctrl+F']}},
     {id: 'edit.globalSearch', group: '编辑', label: '全局搜索', kind: 'key', keys: {candysweet: [DOUBLE_SHIFT], jetbrains: [DOUBLE_SHIFT], vscode: ['Ctrl+P', 'Ctrl+Shift+F']}},

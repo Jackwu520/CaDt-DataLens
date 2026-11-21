@@ -361,6 +361,17 @@ export function configRowSubtitle(cfg) {
     return lang ? '[' + lang + '] 参数预设' : '参数预设（作用于当前文件）';
 }
 
+// 运行标签复用的判定（纯函数，便于单测）：
+// 同一文件反复运行复用同一个标签，不同文件各自一个。
+// 按文件路径精确匹配；自检（selfTest）与项目运行（无 path）不参与复用。
+export function findReusableRunSession(sessions, path) {
+    if (!path || !sessions) return null;
+    for (const s of sessions) {
+        if (s && s.path && s.path === path && !s.selfTest) return s;
+    }
+    return null;
+}
+
 // ---- 控制器 ----
 
 export function createRunController(deps) {
@@ -555,7 +566,11 @@ export function createRunController(deps) {
         // 「最近的配置」从这里起算一次使用（后续工具链失败也算用过）
         if (typeof deps.onRunStart === 'function') deps.onRunStart(recipe.lang, cfg);
 
-        const session = createSession({name: targetName, path: targetPath}, recipe);
+        // 复用运行标签：同一文件反复运行不新建标签（不同文件各自一个）。
+        // 复用时若旧任务还在跑，先停止并等它完全退出（donePromise），
+        // 否则旧 run-exit 会串到新进程的 waiter 上。
+        const session = await reuseOrCreateSession({name: targetName, path: targetPath}, recipe);
+        if (!session) return;
         activate(session.id);
         deps.showRunPanel();
 
@@ -725,11 +740,16 @@ export function createRunController(deps) {
     }
 
     async function execSteps(session, steps) {
+        // 会话级完成信号：复用（同一文件再次运行）前必须等旧进程完全退出，
+        // 否则旧 run-exit 会串到新进程的 waiter 上（run.js 复用逻辑）。
+        session.doneResolve = null;
+        session.donePromise = new Promise((r) => { session.doneResolve = r; });
         let total = 0;
         // 任务级超时：整个任务（编译 + 运行）共用一个截止时刻，从 startedAt 起算。
         // 每步开跑前算剩余时间传给 RunExec（0 = 不限时），到点由后端强杀进程树。
         const timeoutMs = runTimeoutMs();
         session.timeoutMs = timeoutMs;
+        try {
         for (const step of steps) {
             if (session.cancelled || session.closed) break;
             const remainMs = runTimeoutRemaining(session.startedAt, timeoutMs, performance.now());
@@ -771,6 +791,12 @@ export function createRunController(deps) {
             return;
         }
         finishSession(session, (session.code || 0) === 0 ? 'exited' : 'failed', session.code, total);
+        } finally {
+            if (session.doneResolve) {
+                session.doneResolve();
+                session.doneResolve = null;
+            }
+        }
     }
 
     function startStep(session, id, step, remainMs) {
@@ -830,12 +856,76 @@ export function createRunController(deps) {
 
     // ---------- 会话与 DOM ----------
 
+    // 按文件路径查找可复用的运行会话（排除自检与项目运行——它们没有文件路径）。
+    // 同路径 = 同一文件；不同文件各自一个标签。判定纯函数见 findReusableRunSession。
+    function findReusableSession(path) {
+        return findReusableRunSession(sessions.values(), path);
+    }
+
+    // 复用或新建运行会话：同一文件反复运行复用同一个标签，不同文件各自新建。
+    // 复用时若旧任务还在运行，先停止并等它完全退出，再重置会话状态。
+    async function reuseOrCreateSession(doc, recipe) {
+        const old = findReusableSession(doc.path);
+        if (!old) return createSession(doc, recipe);
+        // 旧任务还在跑：停止并等它退出（donePromise 由 execSteps 的 finally resolve）
+        if (old.state === 'running' || old.state === 'building') {
+            const suffix = old.phase === 'build' ? '-build' : '-run';
+            deps.backend.RunStop(old.id + suffix).catch(() => {});
+            if (old.donePromise) {
+                try { await old.donePromise; } catch (e) {}
+            }
+        }
+        // 复用：重置会话状态与输出，保留原 id（run-exit 事件归属不变）
+        resetSessionForReuse(old, doc, recipe);
+        return old;
+    }
+
+    function resetSessionForReuse(session, doc, recipe) {
+        stopTimer(session);
+        session.title = doc.name || '未命名';
+        session.path = doc.path || '';
+        session.recipe = recipe;
+        session.label = sessionLabel(recipe);
+        session.state = 'running';
+        session.phase = recipe.build ? 'build' : 'run';
+        session.eofSent = false;
+        session.code = null;
+        session.cancelled = false;
+        session.pending = [];
+        session.lineCount = 0;
+        session.tempDir = '';
+        session.steps = [];
+        session.donePromise = null;
+        session.doneResolve = null;
+        session.startedAt = performance.now();
+        session.durationMs = 0;
+        // 清空旧输出
+        if (session.outEl) {
+            session.outEl.textContent = '';
+            session.outEl.scrollTop = 0;
+        }
+        // 更新标签标题
+        if (session.tabEl) {
+            const labelEl = session.tabEl.querySelector('.run-tab-label');
+            if (labelEl) {
+                labelEl.textContent = session.title;
+                labelEl.dataset.tip = session.title;
+            }
+        }
+        session.pinned = true;
+    }
+
     function createSession(doc, recipe) {
         const id = 'run-' + ++seq;
         const title = doc.name || '未命名';
+        // donePromise 在创建时就有（pending）：覆盖整个 run 流程（resolveTool / PrepareRun /
+        // execSteps 的 await 窗口），复用前一定能 await 到旧任务完全退出。
+        let doneResolve = null;
+        const donePromise = new Promise((r) => { doneResolve = r; });
         const session = {
             id,
             title,
+            path: doc.path || '',
             recipe,
             label: sessionLabel(recipe),
             state: 'running',
@@ -851,6 +941,8 @@ export function createRunController(deps) {
             tempDir: '',
             steps: [],
             timer: null,
+            donePromise,
+            doneResolve,
         };
         const wrap = document.createElement('div');
         wrap.className = 'run-session';
@@ -940,6 +1032,11 @@ export function createRunController(deps) {
         else session.durationMs = Math.round(performance.now() - session.startedAt);
         stopTimer(session);
         flushPending(session);
+        // 会话级完成信号：复用前 await 它（execSteps 的 finally 也会 resolve，双保险）
+        if (session.doneResolve) {
+            session.doneResolve();
+            session.doneResolve = null;
+        }
         if (session.selfTest) {
             const text = session.outEl.innerText || '';
             const ok = state === 'exited' && text.includes(SELF_TEST_MARK);

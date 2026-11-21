@@ -37,6 +37,36 @@ export function decodeMermaidSource(encoded) {
     return new TextDecoder().decode(bytes);
 }
 
+// GitHub 风格标题锚点 slug：小写化 → 去标点（保留字母/数字/空白/连字符/下划线）→ 空白转连字符。
+// 内置文档（docs/tutorial.md）目录里的 [x](#1-搜索排除表-search-ignore) 依赖这套规则，
+// markdown-it 默认不给标题生成 id，锚点找不到目标 = 点击没反应。
+/**
+ * 生成标题锚点 slug（GitHub 风格）。
+ * @param {string} text 标题纯文本
+ * @returns {string} slug（可含中文）
+ */
+export function slugifyHeading(text) {
+    return String(text || '')
+        .trim()
+        .toLowerCase()
+        .replace(/[^\p{L}\p{N}\s\-_]/gu, '')
+        .replace(/\s+/g, '-')
+        .replace(/^-+|-+$/g, '');
+}
+
+// 从 heading_open 的 inline 兄弟节点取标题纯文本（忽略 **、` 等 markdown 标记）。
+function headingTextOf(tokens, idx) {
+    const inline = tokens[idx + 1];
+    if (!inline || inline.type !== 'inline') return '';
+    if (Array.isArray(inline.children)) {
+        return inline.children
+            .filter((t) => t.type === 'text' || t.type === 'code_inline')
+            .map((t) => t.content)
+            .join('');
+    }
+    return inline.content || '';
+}
+
 /**
  * 创建共享 Markdown 渲染器（阅读模式与主界面 md 预览共用同一实例与 sanitize 规则）。
  * @param {object} [deps] 依赖注入
@@ -120,6 +150,18 @@ export function createMarkdownRenderer(deps) {
         renderMarkdownCodeBlock(tokens[idx].content, tokens[idx].info, env);
     markdownRenderer.renderer.rules.code_block = (tokens, idx, options, env) =>
         renderMarkdownCodeBlock(tokens[idx].content, '', env);
+    // 标题生成 GitHub 风格 id，供文内 [x](#slug) 目录锚点跳转（内置教程.md 就靠它）。
+    // 用 Map 去重，重复标题追加 -1/-2，避免 id 冲突。
+    markdownRenderer.renderer.rules.heading_open = (tokens, idx, options, env, self) => {
+        const slug = slugifyHeading(headingTextOf(tokens, idx));
+        if (slug) {
+            const seen = (env && env.headingSlugs) || (env && (env.headingSlugs = new Map()));
+            const n = seen.get(slug) || 0;
+            seen.set(slug, n + 1);
+            tokens[idx].attrSet('id', n ? slug + '-' + n : slug);
+        }
+        return self.renderToken(tokens, idx, options);
+    };
     const defaultLinkOpen = markdownRenderer.renderer.rules.link_open ||
         ((tokens, idx, options, env, self) => self.renderToken(tokens, idx, options));
     markdownRenderer.renderer.rules.link_open = (tokens, idx, options, env, self) => {
@@ -136,7 +178,7 @@ export function createMarkdownRenderer(deps) {
         const html = markdownRenderer.render(text || '', env || {});
         return DOMPurify.sanitize(html, {
             USE_PROFILES: {html: true, mathMl: true, svg: true},
-            ADD_ATTR: ['target', 'rel'],
+            ADD_ATTR: ['target', 'rel', 'id'],
             // 放行 Windows 盘符路径（C:/...）供本地图片解析；javascript:/data: 等危险协议仍被默认白名单拦截
             ADD_URI_PROTOCOL: ['c'],
         });

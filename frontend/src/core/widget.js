@@ -507,37 +507,39 @@ export function enhanceWidgets(root, opts = {}) {
 // ---------- 重渲染保活（流式 loading 不卡帧） ----------
 // 流式期间 markdown 整段重建（md.innerHTML 覆盖）会把 .ai-widget 占位节点整只销毁，
 // ::before/::after 的 CSS loading 动画时钟随之归零——上方思考链 / 工具卡每帧更新时，
-// loading 就永远停在前几帧。占位自带 data-widget-key（widgetCacheKey），按 key 把旧占位
-// 摘出文档（innerHTML 覆盖销毁不到），写完移植回同 key 的新槽位：同一节点不销毁，
-// 动画连续；轮结束 mountCard 作用于同一节点，无跳变。已挂载（data-widget-ready）的卡
-// 带事件与异步任务，不参与重建保活。
-// park：摘出未挂载占位，返回 Map<key, nodes[]>（同 key 多块按序复用）。
+// loading 就永远停在前几帧，看着就是「正在生成可视化…」一直闪。
+//
+// 保活做法：重建前把未挂载占位按文档顺序摘出（innerHTML 覆盖销毁不到），重建后按同序
+// 移植回新槽位——同一个节点对象在单个同步任务里离文档又回来，浏览器到帧边界才结算
+// 动画状态，动画因此连续。已挂载（data-widget-ready）的卡带事件与异步任务，不参与。
+//
+// 为什么按文档顺序、不按 data-widget-key（源码 hash）匹配：流式期间围栏内容每帧增长，
+// hash 每帧都变，按 hash 匹配永远对不上——旧节点被丢弃、新节点每帧重建，等于没保活。
+// 围栏的数量与先后顺序在流式期间是稳定的，按序匹配才靠得住。源码内容以轮结束那次
+// 全新渲染为准（轮结束不 park/restore），所以复用旧节点上的旧源码不影响最终卡片。
+//
+// park：摘出所有未挂载占位，返回按文档顺序排列的数组。
 export function parkPendingWidgets(root) {
-    const byKey = new Map();
-    if (!root || typeof root.querySelectorAll !== 'function') return byKey;
+    const parked = [];
+    if (!root || typeof root.querySelectorAll !== 'function') return parked;
     for (const node of root.querySelectorAll('.ai-widget[data-widget-lang]')) {
         if (!node || node.dataset.widgetReady === '1') continue;
-        const key = node.getAttribute('data-widget-key') || '';
-        if (!key) continue;
-        let list = byKey.get(key);
-        if (!list) byKey.set(key, list = []);
-        list.push(node);
+        parked.push(node);
         if (typeof node.remove === 'function') node.remove();
     }
-    return byKey;
+    return parked;
 }
 
-// restore：把摘出的占位移植回同 key 的新槽位，返回移植数；没匹配到的旧占位被丢弃
-// （内容变了），新 DOM 里没有旧 key 槽位时旧节点自然淘汰。
+// restore：把摘出的占位按同序移植回新槽位，返回移植数。多出来的新槽位（围栏数增加）与
+// 多出来的旧节点（围栏数减少）自然淘汰——末帧会带完整源码重新渲染，不心疼这一帧。
 export function restoreParkedWidgets(parked, newRoot) {
-    if (!parked || !parked.size || !newRoot || typeof newRoot.querySelectorAll !== 'function') return 0;
+    if (!parked || !parked.length || !newRoot || typeof newRoot.querySelectorAll !== 'function') return 0;
     let moved = 0;
+    let i = 0;
     for (const node of newRoot.querySelectorAll('.ai-widget[data-widget-lang]')) {
         if (!node || node.dataset.widgetReady === '1') continue;
-        const key = node.getAttribute('data-widget-key') || '';
-        const list = parked.get(key);
-        const kept = list && list.length ? list.shift() : null;
-        if (!kept) continue;
+        const kept = parked[i++];
+        if (!kept) break;
         if (typeof node.replaceWith === 'function') {
             node.replaceWith(kept);
             moved += 1;

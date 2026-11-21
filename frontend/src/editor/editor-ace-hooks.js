@@ -55,6 +55,10 @@ function applyAceMode(force) {
         deps.editor.aceEditor.setHighlightIndentGuides(!!deps.settings.codeGuides);
         hookCodeFoldRanges(deps.editor.aceEditor);
         hookMultiCursor(deps.editor.aceEditor);
+        // 模式切换后重绑滚轮平滑滚动（幂等；若 jsoneditor 重建了 Ace 实例可恢复绑定）
+        if (typeof deps.hookAceSmoothScroll === 'function') deps.hookAceSmoothScroll(deps.editor.aceEditor);
+        // 模式切换后重绑编辑器内键位（幂等；若 jsoneditor 重建了 Ace 实例可恢复绑定）
+        if (typeof deps.applyEditorKeybindings === 'function') deps.applyEditorKeybindings(deps.editor.aceEditor);
         hookPythonTokenClasses(deps.editor.aceEditor);
         hookCursorTracking(deps.editor.aceEditor);
     } catch (e) {

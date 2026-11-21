@@ -258,7 +258,7 @@ function markdownBlockHash(html) {
 function sanitizeMarkdownSegment(html) {
     return DOMPurify.sanitize(html, {
         USE_PROFILES: {html: true, mathMl: true, svg: true},
-        ADD_ATTR: ['target', 'rel'],
+        ADD_ATTR: ['target', 'rel', 'id'],
     });
 }
 
@@ -282,7 +282,7 @@ function renderMarkdownBlocksHtml(text) {
     // 整页只净化一次：逐块 sanitize 会为每个顶层块各建一个 document 并全量遍历
     return DOMPurify.sanitize(html, {
         USE_PROFILES: {html: true, mathMl: true, svg: true},
-        ADD_ATTR: ['target', 'rel', 'data-md-start', 'data-md-end', 'data-md-hash'],
+        ADD_ATTR: ['target', 'rel', 'id', 'data-md-start', 'data-md-end', 'data-md-hash'],
     });
 }
 

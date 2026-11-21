@@ -47,7 +47,9 @@ test('每套风格内部的组合键互不冲突', () => {
 });
 
 test('一个动作可以绑多个组合键', () => {
-    assert.equal(getShortcut('edit.redo'), 'Ctrl+Y / Ctrl+Shift+Z', '重做两个组合');
+    // 默认/JetBrains 风格下 Ctrl+Y 让给编辑器内「删除行」，重做只剩 Ctrl+Shift+Z；VSCode 仍两个。
+    assert.equal(getShortcut('edit.redo'), 'Ctrl+Shift+Z', '默认风格重做只有 Ctrl+Shift+Z');
+    assert.equal(getShortcut('edit.redo', 'vscode'), 'Ctrl+Y / Ctrl+Shift+Z', 'VSCode 风格重做两个组合');
     assert.equal(getShortcut('edit.globalSearch', 'vscode'), 'Ctrl+P / Ctrl+Shift+F', 'VS Code 风格全局搜索两个组合');
     assert.equal(getShortcut('view.sidebar'), 'Ctrl+B / Alt+1', '侧边栏两个组合');
 });
@@ -87,7 +89,7 @@ test('CandySweet 风格逐条等于软件当前真实生效的键位', () => {
         'file.new': 'Ctrl+N', 'file.newWindow': 'Ctrl+Shift+N', 'file.open': 'Ctrl+O',
         'file.save': 'Ctrl+S', 'file.saveAs': 'Ctrl+Shift+S', 'file.closeTab': 'Ctrl+W',
         'file.reopenTab': 'Ctrl+Shift+T', 'file.settings': 'Ctrl+,',
-        'edit.undo': 'Ctrl+Z', 'edit.redo': 'Ctrl+Y / Ctrl+Shift+Z', 'edit.format': 'Ctrl+Alt+L',
+        'edit.undo': 'Ctrl+Z', 'edit.redo': 'Ctrl+Shift+Z', 'edit.format': 'Ctrl+Alt+L',
         'edit.find': 'Ctrl+F', 'edit.globalSearch': DOUBLE_SHIFT, 'edit.gotoLine': 'Ctrl+G',
         'run.current': 'F5', 'run.stop': 'Shift+F5', 'run.project': 'Ctrl+F5', 'run.panel': 'Alt+F11',
         'view.sidebar': 'Ctrl+B / Alt+1', 'view.terminal': 'Alt+F12', 'view.quickSwitch': 'Ctrl+`',

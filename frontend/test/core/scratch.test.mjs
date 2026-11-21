@@ -39,7 +39,7 @@ test('scratchDir / isScratchPath：草稿目录固定在工作区 .cadt/scratch 
     assert.equal(scratchDir(''), '');
     assert.equal(scratchDir(null), '');
 
-    assert.equal(isScratchPath('D:\\ws', 'D:\\ws\\.cadt\\scratch\\草稿-1.md'), true);
+    assert.equal(isScratchPath('D:\\ws', 'D:\\ws\\.cadt\\scratch\\scratch_1.md'), true);
     assert.equal(isScratchPath('D:/ws', 'D:/WS/.cadt/scratch/a.txt'), true); // 大小写不敏感
     assert.equal(isScratchPath('D:/ws', 'D:/ws/.cadt/scratch'), false); // 目录本身不算文件
     assert.equal(isScratchPath('D:/ws', 'D:/ws/.cadt/tmp/a.md'), false); // AI 免审写区不算草稿
@@ -48,14 +48,14 @@ test('scratchDir / isScratchPath：草稿目录固定在工作区 .cadt/scratch 
     assert.equal(isScratchPath('D:/ws', ''), false);
 });
 
-test('scratchStamp / scratchDraftName：秒级时间戳 + 撞名序号后缀', () => {
+test('scratchStamp / scratchDraftName：JetBrains 风格 scratch[-N].<ext>', () => {
     const at = new Date(2026, 10, 21, 16, 46, 5); // 本地时间 2026-11-21 16:46:05
     assert.equal(scratchStamp(at), '20261121-164605');
-    assert.equal(scratchDraftName(at, 'md'), '草稿-20261121-164605.md');
-    assert.equal(scratchDraftName(at, '.JSON'), '草稿-20261121-164605.json');
-    assert.equal(scratchDraftName(at, '.md', 0), '草稿-20261121-164605.md');
-    assert.equal(scratchDraftName(at, '.md', 1), '草稿-20261121-164605-2.md');
-    assert.equal(scratchDraftName(at, '.md', 2), '草稿-20261121-164605-3.md');
+    assert.equal(scratchDraftName('md'), 'scratch.md');
+    assert.equal(scratchDraftName('.JSON'), 'scratch.json');
+    assert.equal(scratchDraftName('.md', 0), 'scratch.md');
+    assert.equal(scratchDraftName('.md', 1), 'scratch_1.md');
+    assert.equal(scratchDraftName('.md', 2), 'scratch_2.md');
     // 个位数月/日/时/分/秒必须补零，否则文件名排序会错乱
     assert.equal(scratchStamp(new Date(2026, 0, 2, 3, 4, 5)), '20260102-030405');
 });
