@@ -21,7 +21,10 @@ Thumbs.db
 # AI 助手本地状态：持久记忆与计划文件不入库
 .cadt/
 .zcode/
-.workbuddy/
+# .workbuddy 下只有 settings.json 入库（跨 harness 的 hook / 权限规则，必须所有会话都拿到）；
+# memory/ 等本机状态继续忽略。注意父目录被忽略时子项无法用 ! 反选，所以这里用 `.workbuddy/*`。
+.workbuddy/*
+!.workbuddy/settings.json
 
 # 运行中替换 exe 时重命名留下的旧映像
 *.running-old*.exe
