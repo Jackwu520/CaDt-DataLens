@@ -4,6 +4,80 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 
 ## 未发布
 
+### 工程（禁止 `git checkout` / `git restore`：跨 harness 的命令守卫）
+
+- **背景**：2026-11-21 一次 `git checkout -- frontend/src/explorer/explorer.js` 想撤掉「自己的」改动，把该文件上**多个并行会话叠加的未提交改动**一起回滚到 HEAD（wipe-guard 快照早于那次改动，恢复不回来）。单文件整文件回退在这类仓库里等价于批量销毁；`git restore` 是同一动作的新名字，一并禁掉——但只拦**会写工作区**的形态，`git restore --staged`（只撤暂存）放行，带了 `--worktree` / `-W` 就照拦。
+- **守卫**：新增 `tools/hooks/git-guard.mjs`（Node 无依赖），同一脚本适配三种 harness 协议——Claude Code / CodeBuddy / WorkBuddy 的 `PreToolUse`（拦截 = 退出码 2 + stderr 回填给模型）、Cursor 的 `beforeShellExecution`（回 `{"permission":"deny"}`，配 `failClosed`）。`--check "<命令>"` 可手工验证判定。
+- **配置三处入库**：`.workbuddy/settings.json`（另含 `permissions.deny` 的 `Bash(git checkout:*)` / `Bash(git restore)` 等硬规则；restore 只钉裸命令，`--staged` 交给钩子按形态放行）、`.claude/settings.json`、`.cursor/hooks.json`；`.gitignore` 改为 `.workbuddy/*` + `!.workbuddy/settings.json`，让规则对所有会话生效而记忆等本机状态仍不入库。
+- **ZCode 覆盖（补充，2026-11-21）**：仓库根新增 `zcode.json`——`hooks.enabled:true` + PreToolUse `process` 型挂 node（免 shell 引号问题，Windows 可移植）。协议实测兼容：stdin 载荷 `{tool_name, tool_input:{command}}`，拦截=退出码 2+stderr（同 Claude Code），放行=0。**注意**：ZCode 项目钩子要在客户端**信任工作区**后才注册（未信任时日志报 `config_project_hooks_pending_trust` 且静默放行，本会话早于配置创建也读不到——新会话生效）。
+- **判定口径**：只认**命令位置**的 `git`，认前缀缩写（`checko`/`rest`），并看穿 `bash -c` / `cmd /c` / `pwsh -Command` 包装；`grep "git checkout"`、`git log --grep=…`、提交信息里出现该词都不拦，`Write`/`Edit` 正文也不经过判定。拦截信息直接给替代做法（`git switch` / 按 hunk 反向改 / `git reset HEAD -- <路径>`（只撤销暂存）/ `git stash -u` / `git show HEAD:<路径>`）。
+- **边界**：护栏不是沙箱（别名、改配置都能绕）。AGENTS.md 新增「禁止操作（硬规则）」一节，写清纪律、替代做法与新增 harness 的挂载方式；要再加同类命令（`reset --hard`、`clean -fd`…）在脚本的 `BLOCKED_SUBCOMMANDS` 表里加一条即可。
+- 护栏：`frontend/test/tools/git-guard.test.mjs`（7 例：checkout / restore 两张判定表、切段切词、三种协议退出码与 JSON、非 shell 工具不误伤），已登记 `npm test` 清单；前端全量通过。
+
+### 修复（工作区防护 L3 快照：单枚坏文件不再放走整张安全网）
+
+- **成因（2026-11-21 实测）**：并行会话意外在工作区创建 `frontend\nul`（Windows 保留设备名，`> nul` 重定向在 Git Bash 下落地成真文件），`git add -A` fatal 令 L3 定期快照连败 13 轮（16:40→18:41），安全网断档约 2 小时——而失败只有 debug-console warn 一条 4KB 日志（全是 CRLF warning），没有任何用户可见表象。
+- **单文件跳过重试**：`git add -A` 改走 `gitAddAllWith`——解析 git stderr 的 `error: open("…")` / `error: unable to index file '…'`（含 C 八进制引号还原为 UTF-8 路径），把无法索引的文件（保留设备名 / 无权限 / 被锁）以 `:(exclude)路径` pathspec 排除后重试（上限 8 轮，防悄悄缺一大片）；没有新 Culprit 的失败（锁冲突、仓库损坏）与超限仍按失败处理，不静默丢文件。跳过清单写日志并经 `SnapshotResult.Excluded` 上报；CAS 快照的不可读/超限文件同样计数上报（原先静默跳过）。
+- **失败升级为用户可见告警**：前端快照 tick 把失败 / 跳过投进消息中心（点击直达 设置 → 存储与清理 → 工作区防护）——error 与 excluded 两条车道各自 30 分钟节流（`snapshotAlarmDecide` 纯函数），失败连击计数进文案（「已连续 N 次，每 10 分钟自动重试」）、首轮弹 toast；错误文案经 `compactSnapshotError` 只留 fatal/error 行。
+- 护栏：`internal/wipeguard/snapshots_test.go` 新增 ParseUnindexable / CompactGitOutput / AddAllWith 表驱动（含「排除无效时不静默丢」「超上限按失败」两条负向断言）；新增 `frontend/test/ai/ai-wipeguard-snapshot-alarm.test.mjs`（节流决策 / 车道独立性 / 错误收敛，已登记 `npm test`）。取证细节见 `docs/finished-plans/icon-consolidation.md` 事故记录与 `docs/finished-plans/workspace-wipe-guard.md` §9。
+
+### 重构（图标统一管理收编：icon-consolidation）
+
+- **通用 UI 图标全部收敛到 `core/icons.js` 注册表**（源自用户反馈 AI 消息右键菜单 4 个图标全同 + 全仓盘点 76+ 处内联手写 SVG / 12+ 组重复语义）：拆除 AI 消息动作影子工厂（ai-panel 本地 `icon()` 10 图标）、监控窗 `iconSvgOf`、标题栏 `POP_ICONS` / 运行配置 `RUN_POP_ICONS`、explorer / structure 局部表、editor-groups 的 14 网格 `VIEW_ICONS`（按 16 网格重画为 `view-*` 键，binary 的 `<text>` 字形改为路径）、main.js 的 UNLOCK/LOCK 手写 SVG 与 AI 引用菜单的 20 网格星花（复用 `sparkles`）。
+- **注册表补 27 键**：`chevron-left` / `question` / `circle-check` / `circle-x` / `database` / `structured-dir` / `unlock` / `rewind` / `bringback` / `deliver` / `tag` / `collapse-all` / `expand-all` / `locate` / `checklist` / `env` / `plan` / `more-vertical`（18）+ `view-*` 族（tree/table/binary/video/audio/render/patch/split/panel，9）+ `tree`（复审补登记）；sql/code/text/preview 等视图与 `database`/`code`/`doc`/`image` 同形复用不另立键。
+- **全仓 162 处遗留 MDL2 码位菜单数据迁移为命名图标**（11 文件，映射同 `LEGACY_ICONS`）；`LEGACY_ICONS` 仅为外部插件兼容保留，本仓 src 已零码位。
+- 行为不变（纯视觉重构）：菜单项/按钮的标签、快捷键、action 与无障碍语义未动；个别图标按注册表统一造型（AI 引用菜单星花、Git 推送按钮改上传托盘、消息中心成功/失败改圆圈徽标键、结构面板折叠键等），AI 消息右键菜单 4 个同形图标改为 `copy`/`quote`/`select-all` 分明语义（先行样例）。
+- 护栏：新增 `frontend/test/core/icon-guard.test.mjs`（内联 `<svg>` 基线只减不增 / 遗留码位清零 / `iconHtml` 来源合规 / 注册表 `currentColor` 着色，`PRINT_ICON_BASELINE=1` 重印快照），已登记 `npm test`；收编后基线仅剩 git-graph 泳道画布 1 处（图表产物）。规范 `docs/icon-guidelines.md` 与 AGENTS.md 前端侧同步补「禁止影子注册表 / iconHtml 例外注释 / 护栏位置」。前端全量 `npm test`（2066 项）与 `vite build` 通过。方案与实施记录见 `docs/finished-plans/icon-consolidation.md`。
+
+### 修复（标签栏横向滚动「滚不到末尾」：后台重绘不再抢滚动位置）
+
+- **成因**：`renderEditorLayout` 每次整段重建标签条，横向滚动位置清零，随后 `revealActiveTabs` 无条件把激活标签滚回定位点。任何后台重绘（外部修改标记、AI 写用户打开着的文件、保存脏标、后台标签关闭）都会把手动滚到一半的标签条拽回激活标签的定位点——AI 正在改打开着的文档时标签条等于被钉死，表现为「怎么都滚不到末尾，末尾被工具区盖住」（2026-11-21 用户实测，前会话在 dev 里复现不出，因为 mock 场景没有后台写盘触发源）。
+- **修复**：重建前按组记录各标签条 `scrollLeft`、重建后原样恢复（超上限自动收敛）；只有首次构建（此前不存在该组的标签条）才做激活标签定位；切换标签由 `activateDoc` 显式补发定位。`scheduleRevealActiveTabs` / `revealActiveTabs` 支持按组过滤，同帧调度合并时「无条件定位」吞掉组过滤，组过滤永远挤不掉显式定位。
+- **附带改善**：关闭后台标签、拖动排序、AI 修改已打开文件等重绘不再把用户滚出的位置弹回；多分栏各组的滚动位置互不影响。
+- 护栏：新增 `frontend/test/editor/tabstrip-scroll.test.mjs`（5 例源码守卫：收集先于清空、恢复/首次构建分流、过滤器合并语义、activateDoc 显式定位），已登记 `npm test` 清单。
+
+### 新增（临时文件：explorer「新建」里的免起名草稿）
+
+- **填的是既有两种「新建」之间的空档**：文件 → 新建是**内存未命名文档**（无 path，重启即丢），explorer → 新建是**先起名再建**。临时文件 = 免起名 + 落盘有 path：随手开一份、一秒后自动保存、重启回来还是原文。空草稿建好直接落在可写的代码视图（`.md` / `.html` 的默认首屏是预览，只有草稿这一份切自己）。方案与实施记录见 `docs/finished-plans/scratch-file.md`。
+- **落 `.cadt/scratch/`，不进 AI 免审写区**：原评估稿建议与 AI 产物同放 `.cadt/tmp`，但那目录对 AI 是免审写区（覆盖同名文件不需要确认）且被「一键清缓存」覆盖，用户草稿放进去会被静默覆盖/清掉。草稿改用 `<工作区>/.cadt/scratch/`，文件名 `草稿-YYYYMMDD-HHMMSS.<ext>`（同秒撞名加序号重试）。
+- **选语言 = 选扩展名**：新建 → 临时文件的子菜单首行是「临时文件（.md）」一键建（扩展名记忆自上次使用，`settings.scratchExt`），其后是语言清单（复用内置文件类型表）+ 更多…。草稿必须带扩展名——高亮、可用视图、运行配方、图标全按扩展名分派，应用没有内容识别。
+- **静默落盘**：新建的草稿带 `doc.draft`，自动保存的门从 `settings.autoSave` 放宽为 `autoSave || doc.draft`（含切标签前那次 flush、设置变更后的重挂）。普通文档行为不变；只读锁、大文件保护、脏标记语义一律不越过。
+- **关闭空草稿自动删**：空白草稿关标签直接走回收站，不弹「未保存」确认、不进关闭标签栈；删除失败静默。只认 `doc.draft`，普通文件绝不自动删。
+- **文件树里有专门的「临时草稿」节点**（对齐 JetBrains 的 Scratches and Consoles）：树根下固定一行，展开就是 `<ws>/.cadt/scratch` 的草稿，双击即开；新建后自动展开并选中新草稿，空白草稿被自动删掉后节点跟着刷新。为了让草稿不在树里出现两次，`.cadt` 本身从树里隐藏（只作用于工作区根这一层；此前 `LIST_SKIP_DIRS` 只被列表视图用，树其实一直把 `.cadt/.git/node_modules` 原样显示出来——方案里「树里看不见」的判断是错的）。该节点的右键只有新建 / 刷新 / 定位 / 存储与清理，不给重命名与删除。
+- **另外三条找回路径**：建完 flash 一行文件名、quick-switch 新增「临时草稿」层（按 mtime 倒序，键盘可达，对齐 Show Scratch Files）、`Ctrl+Shift+T` 与文件 → 最近打开（草稿有意进最近列表）。
+- **从选区建草稿**：编辑器右键「存为临时草稿」把选中文本作为初始内容（对齐 JetBrains `Alt+Enter`），扩展名沿用当前文档、不嗅探选区内容；全局只读锁下不出现。
+- **存储条目 `ws-scratch` 刻意 `inCache: false`**：清缓存一键不许碰用户草稿，需要时在「数据」段按勾选单条清（`kind: KindData` → 走回收站，方案原文写的 `KindCache` 会被 `os.RemoveAll` 直删）。
+- 护栏：`saveDoc` 在草稿保存遇到「路径不存在」时重建目录并静默重试一次（scratch 目录被清掉后已打开的草稿还能继续存）；新增 `frontend/test/core/scratch.test.mjs`（目录/命名/扩展名/判空/草稿架列表 6 例，已登记 `npm test` 清单）；`storage_test.go` 的「绝不能进一键清缓存」补一条负向断言。前端全量 `npm test`（2055 项）、`vite build`、`go build ./...`、`go test ./internal/storage/` 均通过。
+
+### 修复（AI 对话「莫名停止」：外部杀进程的回合善后 + 优雅退出通道）
+
+- **成因（2026-11-21 会话取证）**：用户报告「对话好几次莫名其妙停了」。取证发现停点全是**进程被外部强杀**——重建替换 exe / 外部结束进程时，窗口 JS 随进程即刻消失，在飞回合没有任何收尾路径：JSONL 停在「工具已执行完」，进程日志止于 `AI 请求：`（无「应用退出」行），界面无错误卡、会话数据诊断 issue 0（原子写入保证日志一致，只是到此为止）。两个不同工作区的会话同秒停止（07:32:22 / 07:32:26）与 exe 重建时间（07:32）吻合，坐实进程级死因；模型、审批链、传输层均无关。
+- **中断回合留痕**：起轮时 meta.json 写 `turnInFlight` 标记（随首次消息落盘），`finishStream` 清除（done / error / 用户停止的 1.2s 兜底全部汇到这里）。只有「进程死了没走收尾」才残留——下次读盘在消息流末尾挂**中断横幅**（warn 色条 + 「继续回合」按钮），点继续按历史里的工具结果接着做，不再莫名。「用户自己停止」与「进程死亡」由标记精确区分。
+- **优雅退出通道**：新增 `datalens.exe --quit`（经单实例转发给运行实例，冷启动无实例时直接退出不闪窗）：广播 `app-graceful-quit`，每个窗口结算自己的在飞回合（复用 `stopGeneration` 收口——工具卡标中断、终态落盘、释放回合租约），写队列排空后按窗口 ack（`AppGracefulQuitAck`）；Go 收齐全部窗口 ack（或 6 秒超时）才 `ForceQuitAll`。事件登记进 `event-scope.js`，mock 补同名方法。
+- **重建脚本接入**：`tools/rebuild-exe.ps1` 的 `Stop-RunningInstances` 先发 `--quit`（等 10 秒优雅退出），没退的再走原有优雅关闭（6 秒）→ 强制结束。以后重建不再杀掉跑着的对话。
+- 护栏：`ai-session-store.test.mjs` 补 `turnInFlight` 归一与 meta 签名断言；前端全量 `npm test`（2049 项）与 `go test ./...` 通过。
+
+### 改进（应用页面：使用统计 / 定时任务 / 操作记录 / 补丁库搬出设置对话框）
+
+- **背景**：这四个页面本质是「浏览与管理数据」的重面板——要长时间停留、要看大量内容、要能和别的标签页并列对照，被模态框困住只会「关掉就丢滚动位置与筛选状态」。现在各自是一个内容区标签页，属于「一切皆标签页」的第二族（第一族是子代理详情 / 支线对话 / 便签这类「一个业务对象」，这族是「一个功能页面」）。
+- **清单单一来源**：新增 `frontend/src/core/app-pages.js`（`APP_PAGES`：id / label / icon / group / desc）。`core/tab-kinds.js` 的 `TAB_KINDS` 新增 `appPage` 一项，用 `resolve(doc)` 按 `doc.appPage` 细分图标与标签——一个类型装 N 个功能页。
+- **内容渲染仍归原域**：四个 pane 各加 `mount(root)` 返回卸载函数（使用统计 / 补丁库 / 操作记录，以及 `ai-schedule.js` 的 `mountSchedules`），骨架由页面自己注入、元素在宿主内按 id 查询。视图工厂 `bridge/bridge-app-page-view.js` 只建标签页与调 mount；挂载器由 `main.js` 的 `appPageMounters` 注入（`bridge/` 不 import `settings/` 或 `ai/`）。
+- **入口四层**：活动栏 `ab-app-pages` 打开侧栏「应用页面」面板（按分组列出页面，点行直接开标签页——最常用入口）、菜单「工具 → 应用页面」子菜单、活动栏 `ab-more` 弹层、命令面板 `Ctrl+Shift+P`（`paletteActions()` 递归展开菜单 submenu，**进菜单即自动可搜，零额外代码**）。设置页另有「页面 → 应用页面」目录 pane 作发现入口。
+- **真·设置项不随页搬走**：`settings-tree` 靠扫设置页 DOM 反射成可写行，页面搬走后 AI 的 `set_setting_row` 就照不到。当前涉及「操作记录」的两个开关（`opt-activity-log` / `opt-activity-retention`）仍留在设置页，页内只放浏览与记录管理动作。
+- **顺带修**：AI 的 `schedule_*` 工具在 CRUD 后调 `renderScheduleSettings()` 原本靠设置页容器刷新；迁出后改为优先刷新「当前已挂载的列表容器」（`mountedList`），否则标签页里会一直显示陈旧列表。
+- **活动栏瘦身**：移除「内容搜索」与「新建浏览器标签页」两个一次性动作图标（活动栏只留面板开关）。搜索靠 `Ctrl+F` / `Ctrl+Shift+F` 与菜单「编辑 → 查找… / 全局搜索…」兜底；浏览器入口移到「应用页面」侧栏面板**顶部**动作行（菜单「文件 → 新建浏览器标签页 / 打开我的浏览器」与命令面板仍在）。浏览器不作为 `APP_PAGES` 注册项——它多开、带 URL 与 profile，语义上是"文件"而不是"单例功能页"。
+- 守卫 `virtual-doc-wiring.test.mjs` 自动覆盖新类型（注册表 ↔ 分派表 ↔ 创建点 ↔ 图标注册 ↔ 统一卸载）。前端全量 `npm test` 与 `npm run build` 均通过。
+
+### 改进（「一切皆标签页」：虚拟标签页接线收敛到注册表）
+
+- **概念立起来**：内容区里不存在第二种呈现单位——文件、浏览器、后台终端、子代理详情、智能体团队、支线对话、群聊成员、便签、计划与差异文档，全部是一个 `doc`、占一个标签页，共用同一套生命周期（打开 / 激活 / 关闭 / 分栏 / 拖拽 / 跳转 / 描述给 AI）。常驻 UI（AI 面板、设置、阅读模式、底部 dock、调试台、浮层、辅助窗口）是明确豁免，理由写进 AGENTS.md。
+- **类型单一来源**：新增 `frontend/src/core/tab-kinds.js`（`TAB_KINDS` 登记 7 类视图型虚拟标签页的 marker / kind / icon / label）。此前同一个集合被枚举 5 遍（`createDocEditor` 分支、`viewOptionsFor` 清单、`closeDocNow` 卸载、标签图标三元链、`appTabViewOf`），加一类要改 5 处且漏一处**不报错**、只静默降级。
+- **doc 工厂去重**：新增 `frontend/src/core/virtual-tab-doc.js`，7 个 `openXxxTab` 里各自手写的约 14 字段公共块收敛成一次调用（净减约 80 行）；`marker` 与 `key` 成对校验，防止「只写标记位不给值」导致去重恒假、每次点开都新建标签。
+- **卸载契约统一**：6 个域五花八门的卸载钩子（`bgTermUnsub` / `agentViewUnmount` / `agentTeamUnmount` / `sideChatUnmount` / `groupMemberUnmount` / `memoUnmount`）合并为 `doc.tabUnmount` 一条，`closeDocNow` 只调这一条（浏览器仍走 `BrowserClose` 释放 WebView2）。现在**新增一类虚拟标签页完全不需要改 `editor-groups.js`**。
+- **顺带修 bug**：浏览器标签页一直没有专属图标——`buildGroupTab` 的图标链漏了 `doc.browser` 分支，落到按扩展名解析的文件图标（顶栏 `browser` 地球图标早已注册却无人调用），网页标签页长期显示成普通文本图标。
+- **守卫升级**：`virtual-doc-wiring.test.mjs` 从「正则反推 `createDocEditor` 的 if 链」改为「以 `TAB_KINDS` 为准逐点对账」，并补三处此前测不到的盲区——图标名必须在 `core/icons.js` 注册（丢失只静默渲染空）、文本型虚拟文档（计划 / 差异）的 `viewKind` 必须在 `APP_TAB_KIND_LABELS` 有标签、`.md` 计划文档必须保留预览视图。
+- 设计依据与实施记录见 `docs/finished-plans/tab-registry.md`；前端全量 `npm test`（2044 项）与 `npm run build`、`go build` 均通过。
+
 ### 改进（超窗压缩自救复评：分段压缩不实施 + 旧摘要截断修复）
 
 - **分段压缩方案复评，决定不实施**：`docs/unfinished-plans/ai-segmented-compact.md` 的两个死因（压缩请求=全量发送发不出去、转录尾部截断导致摘要残缺）在 2026-11-19 的 `9147f8b` 已被「超窗兜底」绕过——`startCompact` 不再预拒，而是把转录按窗口比例截断（`transcriptCap = window × 0.4 × 3.2` 字符），保证摘要请求一定发得出去；原文全程归档不删，auto-compact 同样走兜底。会话死锁已解，完整分段压缩只剩「摘要覆盖率」优化点，性价比降为 nice-to-have。方案移入 `docs/reports/` 作决策记录。
