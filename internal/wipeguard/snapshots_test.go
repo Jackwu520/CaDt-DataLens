@@ -291,3 +291,84 @@ func mustRoot(t *testing.T, s *Service) string {
 	}
 	return root
 }
+
+// ---- L3 韧性：add -A 单个坏文件跳过重试（2026-11-21 frontend\nul 连败 13 轮的教训）----
+
+func TestParseUnindexable(t *testing.T) {
+	out := []byte("warning: in the working copy of 'LICENSE', CRLF will be replaced by LF\n" +
+		"error: open(\"frontend/nul\"): No such file or directory\n" +
+		"error: unable to index file 'frontend/nul'\n" +
+		"error: unable to index file \"docs/\\346\\265\\213\\350\\257\\225.txt\"\n" +
+		"fatal: adding files failed\n")
+	got := parseUnindexable(out)
+	if len(got) != 2 || got[0] != "frontend/nul" || got[1] != "docs/测试.txt" {
+		t.Fatalf("解析异常（open/unable 同路径应去重，C 八进制应还原）：%q", got)
+	}
+	if got := parseUnindexable([]byte("fatal: Unable to create 'index.lock': File exists\n")); len(got) != 0 {
+		t.Fatalf("锁冲突不该解析出 Culprit：%q", got)
+	}
+}
+
+func TestCompactGitOutput(t *testing.T) {
+	out := []byte("warning: a\nwarning: b\nerror: open(\"x\"): boom\n\nfatal: adding files failed\n")
+	if s := compactGitOutput(out); s != "error: open(\"x\"): boom\nfatal: adding files failed" {
+		t.Fatalf("应丢 warning/空行：%q", s)
+	}
+	if s := compactGitOutput([]byte(strings.Repeat("warning: x\n", 500))); len(s) > 2100 {
+		t.Fatalf("超长未截断：%d", len(s))
+	}
+}
+
+func TestAddAllWith(t *testing.T) {
+	t.Run("坏文件排除后重试成功", func(t *testing.T) {
+		var calls [][]string
+		add := func(args []string) ([]byte, error) {
+			calls = append(calls, append([]string{}, args...))
+			if len(calls) == 1 {
+				return []byte("warning: x\nerror: open(\"frontend/nul\"): boom\nfatal: adding files failed\n"),
+					fmt.Errorf("exit status 128")
+			}
+			return []byte(""), nil
+		}
+		excluded, err := gitAddAllWith(add)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(excluded) != 1 || excluded[0] != "frontend/nul" {
+			t.Fatalf("excluded=%q", excluded)
+		}
+		if len(calls) != 2 {
+			t.Fatalf("应恰好重试一轮，实际 %d 次", len(calls))
+		}
+		if calls[1][3] != ":(exclude)frontend/nul" {
+			t.Fatalf("第二轮应带 exclude pathspec：%q", calls[1])
+		}
+	})
+	t.Run("锁冲突没有Culprit按原样失败", func(t *testing.T) {
+		add := func(args []string) ([]byte, error) {
+			return []byte("fatal: Unable to create 'index.lock': File exists\n"), fmt.Errorf("exit status 128")
+		}
+		if _, err := gitAddAllWith(add); err == nil {
+			t.Fatal("应失败")
+		}
+	})
+	t.Run("排除无效时原样失败不静默丢文件", func(t *testing.T) {
+		add := func(args []string) ([]byte, error) {
+			return []byte("error: open(\"frontend/nul\"): boom\nfatal: adding files failed\n"), fmt.Errorf("exit status 128")
+		}
+		if _, err := gitAddAllWith(add); err == nil {
+			t.Fatal("同一 Culprit 反复出现应失败（说明 exclude 没生效），不能静默丢")
+		}
+	})
+	t.Run("每轮新坏文件超上限按失败处理", func(t *testing.T) {
+		n := 0
+		add := func(args []string) ([]byte, error) {
+			n++
+			return []byte(fmt.Sprintf("error: open(\"bad/%d.txt\"): boom\nfatal: adding files failed\n", n)),
+				fmt.Errorf("exit status 128")
+		}
+		if _, err := gitAddAllWith(add); err == nil {
+			t.Fatal("超重试上限应失败（不允许悄悄缺很多文件）")
+		}
+	})
+}

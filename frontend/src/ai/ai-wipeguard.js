@@ -173,6 +173,45 @@ export function humanAgo(at, now) {
     return Math.floor(diff / 86400000) + ' 天前';
 }
 
+// ---- L3 快照告警（2026-11-21 定）：失败 / 跳过文件升级进消息中心，不再只写调试日志 ----
+// 事故背景：frontend\nul 让快照连败 13 轮（约 2 小时），安全网断档没有任何用户可见表象。
+
+export const WIPEGUARD_SNAPSHOT_ALARM_COOLDOWN_MS = 30 * 60 * 1000; // 同车道 30 分钟最多打扰一次
+
+// snapshotAlarmState 的干净初始态（成功一轮后连击清零）。
+export function snapshotAlarmReset() {
+    return {errAt: 0, excAt: 0, streak: 0};
+}
+
+// snapshotAlarmDecide 节流决策（纯函数，可单测）：error 与 excluded 两条车道各自 30 分钟
+// 冷却，互不挤占；error 每次出现都累计连击（成功由 snapshotAlarmReset 清零），文案用
+// 「已连续 N 次」。返回 {notify, streak, next}——next 是调用方应保存的新状态。
+export function snapshotAlarmDecide(prev, now, kind, cooldownMs = WIPEGUARD_SNAPSHOT_ALARM_COOLDOWN_MS) {
+    const p = prev || {errAt: 0, excAt: 0, streak: 0};
+    const next = {errAt: p.errAt || 0, excAt: p.excAt || 0, streak: p.streak || 0};
+    let notify = false;
+    if (kind === 'error') {
+        next.streak += 1;
+        notify = !(next.errAt && now - next.errAt < cooldownMs);
+        if (notify) next.errAt = now;
+    } else {
+        notify = !(next.excAt && now - next.excAt < cooldownMs);
+        if (notify) next.excAt = now;
+    }
+    return {notify, streak: next.streak, next};
+}
+
+// compactSnapshotError 把 Go 侧拒绝串收敛成一句话：取最后一条 fatal/error 行
+// （CRLF warning 墙被 compactGitOutput 压过，但历史错误串仍可能很长），超长截断。
+export function compactSnapshotError(raw, cap = 200) {
+    const text = String(raw || '');
+    const hits = text.match(/(?:fatal|error):[^\n]*/g) || [];
+    let s = hits.length ? hits[hits.length - 1] : text.split('\n')[0];
+    s = s.trim();
+    if (s.length > cap) s = s.slice(0, cap) + '…';
+    return s || '未知错误';
+}
+
 // recoveryHintText：告警消息里的「还能不能救回来」一行。
 // 有定期快照就说最近一份多久之前；没有就说清楚为什么、以及写前备份仍可还原。
 // 只输出一行：这条消息会进会话上下文，越短越好。
@@ -403,17 +442,54 @@ export function createAIWipeguard(deps) {
     }
 
     // ---- L3 定期快照（设置页 / main.js 的 10 分钟定时器调用）----
+    // 失败 / 跳过文件升级进消息中心（30 分钟节流，见 snapshotAlarmDecide）：
+    // 2026-11-21 frontend\nul 让快照连败 13 轮约 2 小时，只有调试日志、没有任何用户可见表象。
+    let snapshotAlarmState = snapshotAlarmReset();
     async function snapshotTick() {
         const st = settingsOf();
         if (!st.enabled || !st.snapshots) return null;
         const root = deps.getWsRoot ? deps.getWsRoot() : '';
         if (!root) return null;
         try {
-            return await backend().WipeGuardSnapshot(root);
+            const res = await backend().WipeGuardSnapshot(root);
+            if (res && res.excluded) {
+                snapshotAlarmState = applySnapshotAlarm('excluded', res.excluded);
+            } else {
+                snapshotAlarmState = snapshotAlarmReset(); // 干净成功：失败连击清零
+            }
+            return res;
         } catch (e) {
             console.warn('[wipeguard] 定期快照失败（下轮再试）', e);
+            snapshotAlarmState = applySnapshotAlarm('error', e && e.message);
             return null;
         }
+    }
+
+    // applySnapshotAlarm 走节流决策后投消息中心（deps.notify 由 main.js 注入 messageCenter.add）。
+    // 返回新的告警状态。通知缺失时只维护状态、不投递（测试/无消息中心环境）。
+    function applySnapshotAlarm(kind, detail) {
+        const decision = snapshotAlarmDecide(snapshotAlarmState, Date.now(), kind);
+        if (decision.notify && typeof deps.notify === 'function') {
+            if (kind === 'error') {
+                deps.notify({
+                    kind: 'error',
+                    title: '工作区防护：定期快照失败',
+                    body: compactSnapshotError(detail) + '（已连续 ' + decision.streak +
+                        ' 次，每 10 分钟自动重试）。安全网断档期间请谨慎做批量文件操作；' +
+                        '点击直达工作区防护设置查看原因与快照清单。',
+                    actionId: 'open-wipeguard-settings',
+                }, {toast: decision.streak === 1}); // 连击首轮才弹 toast，后续只进消息中心
+            } else {
+                deps.notify({
+                    kind: 'info',
+                    title: '工作区防护：快照有文件被跳过',
+                    body: '定期快照已生成，但 ' + detail +
+                        '。其余文件已正常备份；若这些文件本该存在，请检查权限或文件名（点击直达工作区防护设置）。',
+                    actionId: 'open-wipeguard-settings',
+                }, {toast: false});
+            }
+        }
+        return decision.next;
     }
 
     // ---- 恢复提示：告警消息里的一行（还能不能回滚）----

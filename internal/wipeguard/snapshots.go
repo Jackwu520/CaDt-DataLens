@@ -15,7 +15,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -54,7 +56,8 @@ type SnapshotResult struct {
 	Path   string `json:"path"`   // 绝对路径
 	Files  int    `json:"files"`  // 本次覆盖的文件数
 	Bytes  int64  `json:"bytes"`  // 产物大小
-	Skipped string `json:"skipped,omitempty"`
+	Skipped string `json:"skipped,omitempty"`  // 未产生快照的原因（disabled / preimage）
+	Excluded string `json:"excluded,omitempty"` // 已产生快照但被跳过的无法索引文件（tar/manifest 不含它们）
 }
 
 // SnapshotEntry 快照清单项。
@@ -168,6 +171,9 @@ func (s *Service) snapshotDir(root string, ws string) (string, error) {
 
 // snapshotGit git 管道：GIT_INDEX_FILE 临时 index + add -A + write-tree + archive。
 // write-tree 会在 .git/objects 留无引用对象（git gc 自然回收，无害）；tar 自足、还原不需 .git。
+// add -A 对「单个无法索引的文件」（保留设备名/权限/被锁）按 pathspec exclude 跳过并重试，
+// 不再让一枚坏文件放弃整张快照（2026-11-21 frontend\nul 连败 13 轮的教训）；跳过清单
+// 写日志并放进 SnapshotResult.Excluded 由前端升级为用户可见提示。
 func (s *Service) snapshotGit(ws string) (SnapshotResult, error) {
 	root, err := s.ensureRoot()
 	if err != nil {
@@ -188,17 +194,14 @@ func (s *Service) snapshotGit(ws string) (SnapshotResult, error) {
 	tmpIndex := filepath.Join(os.TempDir(), fmt.Sprintf("cadt-wipeguard-index-%d-%s", os.Getpid(), ts))
 	defer os.Remove(tmpIndex)
 	env := append(os.Environ(), "GIT_INDEX_FILE="+tmpIndex)
-	run := func(args ...string) error {
+	addRun := func(args []string) ([]byte, error) {
 		cmd := execCommand("git", args...)
 		cmd.Dir = ws
 		cmd.Env = env
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			return fmt.Errorf("git %v: %v: %s", args, err, string(out))
-		}
-		return nil
+		return cmd.CombinedOutput()
 	}
-	if err := run("add", "-A"); err != nil {
+	excluded, err := gitAddAllWith(addRun)
+	if err != nil {
 		return SnapshotResult{}, err
 	}
 	treeOut, err := func() (string, error) {
@@ -222,9 +225,117 @@ func (s *Service) snapshotGit(ws string) (SnapshotResult, error) {
 	if err != nil {
 		return SnapshotResult{}, err
 	}
+	excludedNote := ""
+	if len(excluded) > 0 {
+		s.logf("warn", "快照跳过 %d 个无法索引的文件（不进本张 tar）：%s", len(excluded), strings.Join(excluded, ", "))
+		shown := excluded
+		if len(shown) > 8 {
+			shown = append(append([]string{}, shown[:8]...), fmt.Sprintf("…等共 %d 个", len(excluded)))
+		}
+		excludedNote = strings.Join(shown, ", ")
+	}
 	s.pruneSnapshots(root, dir)
 	return SnapshotResult{Mode: ModeGitSnapshots, Name: filepath.Base(tarPath), Path: tarPath,
-		Bytes: info.Size(), Files: -1}, nil
+		Bytes: info.Size(), Files: -1, Excluded: excludedNote}, nil
+}
+
+// addRetryRounds add -A 的排除重试上限：每轮至少消化一个新 Culprit，8 轮足够覆盖
+// 「一批保留名/无权限文件」的正常场景；超限说明问题面太大，按失败处理（不让快照悄悄缺很多文件）。
+const addRetryRounds = 8
+
+// gitAddAllWith 执行 `git add -A`（add 闭包收到附加了 excludes 的完整参数）。
+// 单个无法索引的文件（保留设备名 / 无权限 / 被锁）解析自 git stderr，用
+// `:(exclude)路径` pathspec 跳过后重试——一枚坏文件不再放弃整张快照。
+// 没有新 Culprit 的失败（锁冲突 / 仓库损坏等）按原样失败；排除重试超限也按失败处理。
+func gitAddAllWith(add func(args []string) ([]byte, error)) ([]string, error) {
+	var excluded []string
+	seen := map[string]bool{}
+	for round := 0; round < addRetryRounds; round++ {
+		args := []string{"add", "-A", "--"}
+		for _, p := range excluded {
+			args = append(args, ":(exclude)"+p)
+		}
+		out, err := add(args)
+		if err == nil {
+			return excluded, nil
+		}
+		fresh := false
+		for _, p := range parseUnindexable(out) {
+			if !seen[p] {
+				seen[p] = true
+				excluded = append(excluded, p)
+				fresh = true
+			}
+		}
+		if !fresh {
+			return nil, fmt.Errorf("git add -A: %v: %s", err, compactGitOutput(out))
+		}
+	}
+	return nil, fmt.Errorf("git add -A: 无法索引的文件超过 %d 轮重试上限（%d 个已排除）", addRetryRounds, len(excluded))
+}
+
+var (
+	reOpenErr   = regexp.MustCompile(`error: open\("(.+)"\):`)
+	reUnableErr = regexp.MustCompile(`error: unable to index file (.+)$`)
+)
+
+// parseUnindexable 从 git add 的合并输出里解析「无法索引的文件」相对路径（按首次出现序去重）。
+// git 对含特殊字符的路径走 C 引号（如 "\346\265\213.txt"），unquoteGitPath 还原。
+func parseUnindexable(out []byte) []string {
+	var paths []string
+	seen := map[string]bool{}
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimRight(line, "\r")
+		var quoted string
+		if m := reOpenErr.FindStringSubmatch(line); m != nil {
+			quoted = m[1]
+		} else if m := reUnableErr.FindStringSubmatch(line); m != nil {
+			quoted = m[1]
+		} else {
+			continue
+		}
+		p := unquoteGitPath(quoted)
+		if p == "" || seen[p] {
+			continue
+		}
+		seen[p] = true
+		paths = append(paths, p)
+	}
+	return paths
+}
+
+// unquoteGitPath 还原 git 的路径引用：双引号形态解码 \nnn 八进制转义（UTF-8 字节），
+// 单引号形态（git 错误行对无特殊字符路径的包裹）只去引号。
+func unquoteGitPath(p string) string {
+	p = strings.TrimSpace(p)
+	if len(p) >= 2 && (strings.HasPrefix(p, `"`) || strings.HasPrefix(p, `'`)) && p[len(p)-1] == p[0] {
+		inner := p[1 : len(p)-1]
+		if p[0] == '"' {
+			if out, err := strconv.Unquote(`"` + inner + `"`); err == nil {
+				return out
+			}
+		}
+		return inner
+	}
+	return p
+}
+
+// compactGitOutput 收敛 git 输出给日志/错误用：丢 warning 行（CRLF 提示一屏都是它）与空行，
+// 超长截断——2026-11-21 的快照失败日志一条就是 4KB，全是 CRLF warning。
+func compactGitOutput(out []byte) string {
+	var keep []string
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimRight(line, "\r")
+		if line == "" || strings.HasPrefix(line, "warning:") {
+			continue
+		}
+		keep = append(keep, line)
+	}
+	s := strings.Join(keep, "\n")
+	if len(s) > 2048 {
+		s = s[:2048] + "…"
+	}
+	return s
 }
 
 // manifestEntry 增量 CAS 快照的条目（mtime 快速路径 + blob 指针）。
@@ -262,6 +373,7 @@ func (s *Service) snapshotCas(ws string) (SnapshotResult, error) {
 	}
 	now := time.Now()
 	manifest := casManifest{At: now.UnixMilli(), Mode: "cas", Entries: []manifestEntry{}}
+	skippedFiles := 0
 	_ = filepath.WalkDir(ws, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return nil
@@ -284,12 +396,15 @@ func (s *Service) snapshotCas(ws string) (SnapshotResult, error) {
 		}
 		data, err := os.ReadFile(path)
 		if err != nil {
-			return nil // 竞态删除 / 不可读：跳过该文件
+			skippedFiles++ // 竞态删除 / 不可读（保留名、权限、被锁）：跳过该文件
+			return nil
 		}
 		if len(data) > backupMaxBytes {
-			return nil // 超大文件不进 CAS（口径与 L1 一致）
+			skippedFiles++ // 超大文件不进 CAS（口径与 L1 一致）
+			return nil
 		}
 		if err := s.storeBlobBytes(root, data); err != nil {
+			skippedFiles++
 			return nil
 		}
 		sum := sha256Of(data)
@@ -297,6 +412,9 @@ func (s *Service) snapshotCas(ws string) (SnapshotResult, error) {
 			Rel: rel, Blob: sum, Size: info.Size(), Mtime: info.ModTime().UnixMilli()})
 		return nil
 	})
+	if skippedFiles > 0 {
+		s.logf("warn", "CAS 快照跳过 %d 个无法读取/超限的文件（不进本份 manifest）", skippedFiles)
+	}
 	name := now.Format("20060102-150405") + ".manifest.json"
 	path := filepath.Join(dir, name)
 	buf, err := jsonMarshalIndent(manifest)
@@ -321,8 +439,12 @@ func (s *Service) snapshotCas(ws string) (SnapshotResult, error) {
 		return SnapshotResult{}, cerr
 	}
 	s.pruneSnapshots(root, dir)
+	excludedNote := ""
+	if skippedFiles > 0 {
+		excludedNote = fmt.Sprintf("%d 个文件无法读取或超限，未进本份 manifest", skippedFiles)
+	}
 	return SnapshotResult{Mode: ModeCasSnapshots, Name: name, Path: path,
-		Files: len(manifest.Entries), Bytes: int64(len(buf))}, nil
+		Files: len(manifest.Entries), Bytes: int64(len(buf)), Excluded: excludedNote}, nil
 }
 
 

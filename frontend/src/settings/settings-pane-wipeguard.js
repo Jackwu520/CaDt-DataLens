@@ -86,6 +86,16 @@ export function wipeGuardDefaults() {
     return {enabled: true, snapshots: true, backupRoot: ''};
 }
 
+// resolveDep：统一 deps 取值。main.js 用 `get xxx(){return value}` 传 getter——
+// 读取 deps.xxx 即得到最终值（对象 / 字符串 / 函数）；少数宿主可能直接传函数 () => value。
+// 两种形态都要能取到值，且**绝不能把非函数当函数调用**（这正是本面板此前渲染失效的根因）。
+// 注意：action 类 deps（flash / confirmAction / applySettings / syncConfig）求值结果本身就是
+// 函数，调用方拿到后照常调用，不走这里。
+export function resolveDep(raw, fallback) {
+    const v = typeof raw === 'function' ? raw() : raw;
+    return v == null ? fallback : v;
+}
+
 // ---- 工厂 ----
 
 export function createSettingsPaneWipeguard(deps) {
@@ -99,14 +109,22 @@ export function createSettingsPaneWipeguard(deps) {
         return node;
     }
 
+    // settings / backend / root 都是 getter（求值即最终值，非函数）。此前误写成
+    // deps.settings() / deps.backend() / deps.root()（当函数调用），renderSection 每次
+    // 抛 `TypeError: ... is not a function`，整个「工作区防护」区块渲染不出来——后端
+    // 备份/检测/快照都正常，只有这个查看与恢复 UI 失效。统一走 resolveDep。
+    function settingsObj() { return resolveDep(deps.settings, {}); }
+    function backendObj() { return resolveDep(deps.backend, null); }
+    function rootVal() { return resolveDep(deps.root, ''); }
+
     function settingsOf() {
-        const s = deps.settings ? deps.settings() : null;
+        const s = settingsObj();
         if (!s.wipeGuard) s.wipeGuard = wipeGuardDefaults();
         return Object.assign(wipeGuardDefaults(), s.wipeGuard);
     }
 
     async function persistSettings() {
-        const s = deps.settings();
+        const s = settingsObj();
         s.wipeGuard = settingsOf();
         if (typeof deps.applySettings === 'function') deps.applySettings();
         if (deps.syncConfig) await deps.syncConfig(); // 推给 Go（WipeGuardConfigure）
@@ -123,7 +141,7 @@ export function createSettingsPaneWipeguard(deps) {
         }
         host.textContent = '';
         const st = settingsOf();
-        const root = deps.root ? deps.root() : '';
+        const root = rootVal();
 
         // ---- 标题 + 说明 ----
         host.appendChild(el('h3', 'wg-title', '工作区防护'));
@@ -185,7 +203,7 @@ export function createSettingsPaneWipeguard(deps) {
 
         // ---- 快照形态 + 风险提示（§6.3：无 git 大项目必须明说）----
         try {
-            const status = root ? await deps.backend().WipeGuardStatus(root) : null;
+            const status = root ? await backendObj().WipeGuardStatus(root) : null;
             if (status && status.mode === 'preimage') {
                 host.appendChild(el('p', 'wg-risk',
                     `当前项目：${status.reason}。AI 命令造成的批量删除无法自动恢复。建议 git init 或在上方把备份根指到其他盘。`));
@@ -203,7 +221,7 @@ export function createSettingsPaneWipeguard(deps) {
             deps.confirmAction && deps.confirmAction(
                 '清空全部备份与快照？当前文件不受影响，但将失去对事故的恢复能力。',
                 async () => {
-                    await deps.backend().WipeGuardClear();
+                    await backendObj().WipeGuardClear();
                     if (deps.flash) deps.flash('备份已清空');
                     await renderSection();
                 }, '清空', '清空备份', 'danger');
@@ -213,7 +231,7 @@ export function createSettingsPaneWipeguard(deps) {
 
         let rows = [];
         try {
-            rows = root ? await deps.backend().WipeGuardList(root) : [];
+            rows = root ? await backendObj().WipeGuardList(root) : [];
         } catch (e) { rows = []; }
         const groups = groupBackupEntries(rows);
         if (!groups.length) {
@@ -240,7 +258,7 @@ export function createSettingsPaneWipeguard(deps) {
                         `把「${group.rel}」还原到 ${formatBackupTime(group.latest.at)} 的内容？会覆盖当前文件。`,
                         async () => {
                             try {
-                                await deps.backend().WipeGuardRestore(group.latest.id, root);
+                                await backendObj().WipeGuardRestore(group.latest.id, root);
                                 if (deps.flash) deps.flash('已还原：' + group.rel);
                             } catch (e) {
                                 if (deps.flash) deps.flash('还原失败：' + ((e && e.message) || e), 'error');
@@ -260,7 +278,7 @@ export function createSettingsPaneWipeguard(deps) {
         // ---- 快照清单 ----
         let snaps = [];
         try {
-            snaps = root ? await deps.backend().WipeGuardSnapshotList(root) : [];
+            snaps = root ? await backendObj().WipeGuardSnapshotList(root) : [];
         } catch (e) { snaps = []; }
         if (snaps.length) {
             host.appendChild(el('h4', 'wg-subtitle', '定期快照'));
@@ -280,7 +298,7 @@ export function createSettingsPaneWipeguard(deps) {
                         `把快照 ${snap.name} 的内容写回工作区？会覆盖同名文件的当前内容（不删除快照之后新建的文件）。`,
                         async () => {
                             try {
-                                await deps.backend().WipeGuardSnapshotRestore(root, snap.name);
+                                await backendObj().WipeGuardSnapshotRestore(root, snap.name);
                                 if (deps.flash) deps.flash('快照已还原：' + snap.name);
                             } catch (e) {
                                 if (deps.flash) deps.flash('还原失败：' + ((e && e.message) || e), 'error');

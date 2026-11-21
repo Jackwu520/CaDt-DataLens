@@ -464,3 +464,12 @@ Go 测试一律后台执行、显式带 `-timeout`（AGENTS.md 约定）。
 | Tripwire / AIDE | 周期完整性校准 + 事件丢失重扫 | L2 指纹兜底 |
 | git 对象模型（restic / kopia / Borg 蓝图） | 内容寻址 + manifest，只抄设计不引库 | L1/L3 存储 |
 | Codex CLI 沙箱 | Windows 受限令牌路线（预防层） | 后续立项：`run_command` 接 `internal/sandbox` |
+
+## §9 韧性补丁（2026-11-21，icon-consolidation 事故后追加）
+
+事故：并行会话意外在工作区创建 `frontend\nul`（Windows 保留设备名，`> nul` 重定向在 Git Bash 下落地成真文件），`git add -A` fatal 导致 L3 快照连败 13 轮（16:40→18:41），安全网断档约 2 小时且只有 debug-console warn，无任何用户可见表象。两处补丁：
+
+1. **单文件跳过重试**：`git add -A` 改走 `gitAddAllWith`——解析 stderr 的 `error: open("…")` / `error: unable to index file '…'`（含 git C 八进制引号还原），把 Culprit 以 `:(exclude)路径` pathspec 排除后重试（上限 8 轮，防悄悄缺一大片）；没有新 Culprit 的失败（锁冲突/仓库损坏）与超限仍按失败处理。跳过清单写日志并经 `SnapshotResult.Excluded` 上报；CAS 侧不可读/超限文件同样计数上报（原先静默跳过）。
+2. **失败升级为用户可见告警**：前端 `snapshotTick` 把失败 / 跳过投进消息中心（复用 `actionId: 'open-wipeguard-settings'` 直达设置页）——error 与 excluded 两条车道各自 30 分钟节流（`snapshotAlarmDecide` 纯函数），失败连击计数进文案（「已连续 N 次」）、首轮弹 toast；错误文案经 `compactSnapshotError` 只留 fatal/error 行。Go 侧 `compactGitOutput` 顺带把日志里的 CRLF warning 墙压掉（此前一条失败日志 4KB）。
+
+护栏：`internal/wipeguard/snapshots_test.go`（ParseUnindexable / CompactGitOutput / AddAllWith 表驱动）、`frontend/test/ai/ai-wipeguard-snapshot-alarm.test.mjs`（节流决策 + 错误收敛，已登记 `npm test`）。取证细节见 `icon-consolidation.md` 事故记录。

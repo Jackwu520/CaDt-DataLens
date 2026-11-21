@@ -8,7 +8,35 @@ import {
     normalizePathKey,
     validateBackupRoot,
     wipeGuardDefaults,
+    resolveDep,
 } from '../../src/settings/settings-pane-wipeguard.js';
+
+// ---- resolveDep（deps getter 契约：值 vs 函数）----
+// 回归护栏：本面板曾因把 getter 求值结果（对象/字符串）当函数调用，导致
+// renderSection 抛 TypeError、整个「工作区防护」区块渲染不出来。
+
+test('resolveDep：getter 返回对象直接取到（不当函数调用）', () => {
+    const settings = {enabled: true, snapshots: true};
+    const deps = {get settings() { return settings; }};
+    assert.strictEqual(resolveDep(deps.settings, {}), settings);
+});
+
+test('resolveDep：getter 返回字符串直接取到', () => {
+    const deps = {get root() { return 'D:/ws'; }};
+    assert.equal(resolveDep(deps.root, ''), 'D:/ws');
+});
+
+test('resolveDep：函数形态调用后取返回值', () => {
+    assert.equal(resolveDep(() => 'D:/ws2', ''), 'D:/ws2');
+    const obj = {a: 1};
+    assert.strictEqual(resolveDep(() => obj, {}), obj);
+});
+
+test('resolveDep：null/undefined 回落默认值', () => {
+    assert.equal(resolveDep(null, 'fallback'), 'fallback');
+    assert.equal(resolveDep(undefined, 'fallback'), 'fallback');
+    assert.deepEqual(resolveDep(null, {}), {});
+});
 
 // ---- groupBackupEntries ----
 
