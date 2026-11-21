@@ -1,7 +1,7 @@
 // ai-constants.test.mjs：正文图片 data URL 反解（aiImageFromSrc）与 aiImageSrc 的往返。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {aiCtxBannerShow, aiCtxBannerState, aiFormatDuration, aiFormatLiveDuration, aiImageExt, aiImageFromSrc, aiImageSrc, aiIsContextOverflowError, aiMsgActionsStepMode, APPROVAL_LOST_TEXT, ASK_LOST_TEXT, ENV_ASK_LOST_TEXT, TOOL_INTERRUPTED_TEXT} from '../../src/ai/ai-constants.js';
+import {aiCtxBannerShow, aiCtxBannerState, aiFormatBytes, aiFormatDuration, aiFormatLiveDuration, aiImageExt, aiImageFromSrc, aiImageSrc, aiIsContextOverflowError, aiMsgActionsStepMode, APPROVAL_LOST_TEXT, ASK_LOST_TEXT, ENV_ASK_LOST_TEXT, TOOL_INTERRUPTED_TEXT} from '../../src/ai/ai-constants.js';
 
 test('aiImageFromSrc: 与 aiImageSrc 往返一致', () => {
     const image = aiImageFromSrc('data:image/png;base64,AAAA', 'seal.png');
@@ -197,4 +197,17 @@ test('重启遗留卡片的工具结果文案：说清「没收到」，且不�
     assert.notEqual(APPROVAL_LOST_TEXT, TOOL_INTERRUPTED_TEXT);
     assert.notEqual(ASK_LOST_TEXT, APPROVAL_LOST_TEXT);
     assert.notEqual(APPROVAL_LOST_TEXT, ENV_ASK_LOST_TEXT);
+});
+
+test('aiFormatBytes: B/KB/MB/GB/TB 进制，≥100 档取整，非法值按 0', () => {
+    assert.equal(aiFormatBytes(0), '0 B');
+    assert.equal(aiFormatBytes(undefined), '0 B');
+    assert.equal(aiFormatBytes(-5), '0 B');
+    assert.equal(aiFormatBytes(9616029), '9.2 MB');
+    assert.equal(aiFormatBytes(1023), '1023 B');
+    assert.equal(aiFormatBytes(1024), '1.0 KB');
+    assert.equal(aiFormatBytes(40056 * 1024), '39.1 MB');
+    assert.equal(aiFormatBytes(100 * 1024 * 1024), '100 MB');
+    assert.equal(aiFormatBytes(1.1 * 1024 * 1024 * 1024), '1.1 GB');
+    assert.equal(aiFormatBytes(2048 * 1024 * 1024 * 1024), '2.0 TB');
 });
