@@ -49,7 +49,11 @@ test('全局冒泡层与捕获层都要调用豁免判定', () => {
 });
 
 test('右键菜单的撤销/重做仍保留（与键盘共用原生撤销栈）', () => {
-    const src = read('ai/ai-composer.js');
+    // 菜单结构泛化到 shell/edit-menu.js（全局输入面兜底共用同一份），composer 经
+    // openEditMenu 委托并覆盖粘贴（图片 / 折叠分支）；撤销/重做仍是 execCommand 原生命令。
+    const src = read('shell/edit-menu.js');
     assert.match(src, /label: '撤销', shortcut: 'Ctrl\+Z'[\s\S]*?execEditable\(target, 'undo'\)/);
     assert.match(src, /label: '重做', shortcut: 'Ctrl\+Y'[\s\S]*?execEditable\(target, 'redo'\)/);
+    const composer = read('ai/ai-composer.js');
+    assert.match(composer, /openEditMenu\(showContextMenu, event, target, \{paste: \(\) => pasteIntoEditable\(target\)\}\)/);
 });

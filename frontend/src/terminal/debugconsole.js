@@ -56,6 +56,8 @@ export function createDebugConsole(opts = {}) {
     const onDetach = typeof opts.onDetach === 'function' ? opts.onDetach : null;
     const onClose = typeof opts.onClose === 'function' ? opts.onClose : null;
     const onExport = typeof opts.onExport === 'function' ? opts.onExport : null;
+    // 右键菜单宿主（shell/contextmenu 的 open 包装）：缺省时日志区右键维持无菜单（旧构建 / 测试桩）
+    const showContextMenu = typeof opts.showContextMenu === 'function' ? opts.showContextMenu : null;
     const entries = [];   // {level, text, time}
     const counts = {debug: 0, info: 0, warn: 0, error: 0};
     const filters = {debug: true, info: true, warn: true, error: true};
@@ -96,6 +98,63 @@ export function createDebugConsole(opts = {}) {
     bodyEl.addEventListener('scroll', () => {
         stick = bodyEl.scrollTop + bodyEl.clientHeight >= bodyEl.scrollHeight - 24;
     });
+
+    // ---------- 日志区右键（选区复制 / 全选 / 复制全部 / 清空） ----------
+    // 原生菜单与应用风格脱节，还带「打印 / 更多工具」这类无意义入口。showContextMenu
+    // 缺省时不挂（旧调用方 / 测试桩），行为与此前一致。
+
+    // 全量日志文本（工具栏「复制全部」与右键菜单共用同一份拼装）
+    function logsAsText() {
+        return entries.map((en) => '[' + en.time + '] [' + LEVELS[en.level] + '] ' + en.text).join('\n');
+    }
+
+    function copyLogsToClipboard() {
+        try { navigator.clipboard.writeText(logsAsText()).catch(() => {}); } catch (e) {}
+    }
+
+    function clearAll() {
+        entries.length = 0;
+        counts.debug = counts.info = counts.warn = counts.error = 0;
+        bodyEl.textContent = '';
+        updateCounts();
+    }
+
+    function selectionInBody() {
+        const selection = window.getSelection ? window.getSelection() : null;
+        return !!(selection && selection.rangeCount && !selection.isCollapsed &&
+            bodyEl.contains(selection.anchorNode));
+    }
+
+    function copySelectionToClipboard() {
+        const selection = window.getSelection ? window.getSelection() : null;
+        const text = selection && selection.rangeCount ? selection.toString() : '';
+        if (!text) return;
+        try { navigator.clipboard.writeText(text).catch(() => {}); } catch (e) {}
+    }
+
+    function selectAllBody() {
+        const selection = window.getSelection ? window.getSelection() : null;
+        if (!selection) return;
+        const range = document.createRange();
+        range.selectNodeContents(bodyEl);
+        selection.removeAllRanges();
+        selection.addRange(range);
+    }
+
+    if (showContextMenu) {
+        bodyEl.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            showContextMenu([
+                {label: '复制', shortcut: 'Ctrl+C', icon: 'copy', disabled: !selectionInBody(), action: copySelectionToClipboard},
+                {sep: true},
+                {label: '全选', shortcut: 'Ctrl+A', icon: 'select-all', action: selectAllBody},
+                {label: '复制全部日志', icon: 'copy', action: copyLogsToClipboard},
+                {sep: true},
+                {label: '清空', icon: 'eraser', action: clearAll},
+            ], e.clientX, e.clientY);
+        });
+    }
 
     // ---------- 渲染 ----------
     function makeRow(entry, frag) {
@@ -267,13 +326,9 @@ export function createDebugConsole(opts = {}) {
         } else if (act === 'export') {
             exportLog();
         } else if (act === 'clear') {
-            entries.length = 0;
-            counts.debug = counts.info = counts.warn = counts.error = 0;
-            bodyEl.textContent = '';
-            updateCounts();
+            clearAll();
         } else if (act === 'copy') {
-            const text = entries.map((en) => '[' + en.time + '] [' + LEVELS[en.level] + '] ' + en.text).join('\n');
-            try { navigator.clipboard.writeText(text).catch(() => {}); } catch (e) {}
+            copyLogsToClipboard();
         }
     });
 
