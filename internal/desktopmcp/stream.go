@@ -36,11 +36,14 @@ func runStreaming(cmd *exec.Cmd, onLine func(string)) error {
 			return
 		}
 		mu.Lock()
+		defer mu.Unlock()
 		tail = append(tail, line)
 		if len(tail) > 8 {
 			tail = tail[len(tail)-8:]
 		}
-		mu.Unlock()
+		// 回调也在锁内：stdout / stderr 两条扫描 goroutine 都会调到这里，消费者
+		// （安装进度里的 last / percent 计数）本身没有锁，在锁外调用就是 data race
+		// ——实测会让节流时间互相干扰、percent 丢更新（2026-11-23 审查 M1）。
 		if onLine != nil {
 			onLine(line)
 		}

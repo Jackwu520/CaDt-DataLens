@@ -4,8 +4,14 @@ package desktopmcp
 // 都不起子进程、不碰网络，毫秒级。
 
 import (
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"testing/fstest"
 
 	"datalens/internal/mcp"
 )
@@ -84,12 +90,91 @@ func TestIsOurConfig(t *testing.T) {
 	if !isOurConfig(mcp.MCPServerConfig{Args: ours}) {
 		t.Fatal("指向释放目录的配置应被识别为我们管理的行")
 	}
+	// ourWheelPath 必须返回配置里的真实路径（自愈按它补文件，而不是按当前版本路径）
+	got := ourWheelPath(mcp.MCPServerConfig{Args: ours})
+	if got == "" {
+		t.Fatal("ourWheelPath 没有解析出配置里的 wheel 路径")
+	}
+	want, _ := filepath.Abs(WheelPath())
+	if !strings.EqualFold(got, want) {
+		t.Fatalf("ourWheelPath 应返回配置里的路径 %q，实际 %q", want, got)
+	}
+
 	foreign := []string{"--from", `C:\users\x\other\windows_mcp-0.8.9-py3-none-any.whl`, "windows-mcp"}
 	if isOurConfig(mcp.MCPServerConfig{Args: foreign}) {
 		t.Fatal("用户自备的 wheel 路径不应被当作我们管理的行")
 	}
+	// 兄弟目录不能被前缀匹配误命中（<root>/builtin-desktop-mcp-evil/...）
+	sibling := []string{"--from", filepath.Join(root, "builtin-desktop-mcp-evil", "x.whl"), "windows-mcp"}
+	if isOurConfig(mcp.MCPServerConfig{Args: sibling}) {
+		t.Fatal("兄弟目录不应被前缀匹配误判为我们管理的行")
+	}
 	if isOurConfig(mcp.MCPServerConfig{Args: []string{"windows-mcp@0.8.9", "serve"}}) {
 		t.Fatal("没有 --from 的旧形态不应命中自愈")
+	}
+}
+
+// 版本升级后 mcp.json 仍指旧目录：自愈必须按**配置里的路径**补回，而不是当前版本路径
+// （2026-11-23 审查 H1）。这里用可注入的临时根验证真实写盘行为。
+func TestEnsureServerWheelUsesConfiguredPath(t *testing.T) {
+	dir := t.TempDir()
+	oldWheel := filepath.Join(dir, "builtin-desktop-mcp", "0.8.9", WheelName)
+	cfg := mcp.MCPServerConfig{Args: []string{"--from", oldWheel, "windows-mcp", "serve", "--no-control"}}
+
+	if _, err := os.Stat(oldWheel); err == nil {
+		t.Fatal("前置条件不成立：旧路径不该已存在")
+	}
+	// 换到临时根，注入假 wheel 内容，验证真实写盘（不动真实应用数据目录）
+	prevRoot := testRootOverride
+	prevFS := Embedded
+	testRootOverride = dir
+	Embedded = fstest.MapFS{wheelEmbedPath: &fstest.MapFile{Data: []byte("fake-wheel-bytes")}}
+	defer func() {
+		testRootOverride = prevRoot
+		Embedded = prevFS
+	}()
+
+	EnsureServerWheel(cfg)
+
+	got, err := os.ReadFile(oldWheel)
+	if err != nil {
+		t.Fatalf("自愈应按配置里的旧路径补回 wheel，但 %s 不存在：%v", oldWheel, err)
+	}
+	if string(got) != "fake-wheel-bytes" {
+		t.Fatalf("补回的内容不对：%q", got)
+	}
+}
+
+// 资源未注入时必须返回错误而不是 panic（fs.ReadFile(nil,…) 会崩）。
+func TestWriteEmbeddedWheelWithoutFS(t *testing.T) {
+	prevFS := Embedded
+	Embedded = nil
+	defer func() { Embedded = prevFS }()
+	if err := writeEmbeddedWheel(filepath.Join(t.TempDir(), "x.whl")); err == nil {
+		t.Fatal("Embedded 为 nil 时应返回错误")
+	}
+}
+
+// 回调在锁内串行执行：两条流并发写进度不得丢更新（-race 下也不会报数据竞争）。
+func TestRunStreamingSerializesCallback(t *testing.T) {
+	var mu sync.Mutex
+	var seen []string
+	var concurrent int32
+	cmd := exec.Command("cmd", "/c", "echo a& echo b& echo c")
+	err := runStreaming(cmd, func(line string) {
+		if atomic.AddInt32(&concurrent, 1) > 1 {
+			t.Error("回调被并发执行：stdout/stderr 的进度写入会出现 data race")
+		}
+		mu.Lock()
+		seen = append(seen, line)
+		mu.Unlock()
+		atomic.AddInt32(&concurrent, -1)
+	})
+	if err != nil {
+		t.Fatalf("runStreaming 失败：%v", err)
+	}
+	if len(seen) != 3 {
+		t.Fatalf("应看到 3 行输出，实际 %d：%v", len(seen), seen)
 	}
 }
 

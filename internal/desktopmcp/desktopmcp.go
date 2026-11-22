@@ -99,8 +99,15 @@ func HasTool(name string) bool {
 	return false
 }
 
+// testRootOverride 仅供测试把释放根指向 t.TempDir()（生产恒为空，走 rootDir 正常解析）。
+// 自愈的真实行为（按配置里的旧路径补回文件）必须能测，否则 H1 那类缺陷没有护栏。
+var testRootOverride string
+
 // rootDir 释放根：与 mcp.json 同目录（对齐 internal/mcpsamples 的口径）。
 func rootDir() string {
+	if testRootOverride != "" {
+		return testRootOverride
+	}
 	if path := mcp.ConfigFilePath(); path != "" {
 		return filepath.Dir(path)
 	}
@@ -131,20 +138,7 @@ func EnsureWheel() (string, error) {
 	if path == "" {
 		return "", errors.New("无法定位应用数据目录")
 	}
-	raw, err := fs.ReadFile(Embedded, wheelEmbedPath)
-	if err != nil {
-		return "", fmt.Errorf("内置桌面组件缺失：%w", err)
-	}
-	if existing, readErr := os.ReadFile(path); readErr == nil && bytes.Equal(existing, raw) {
-		return path, nil
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return "", err
-	}
-	if err := atomfile.WriteFileAtomicMode(path, raw, 0o644); err != nil {
-		return "", err
-	}
-	return path, nil
+	return path, writeEmbeddedWheel(path)
 }
 
 // ServerConfig 生成 mcp.json 里的桌面 server 行。
@@ -272,31 +266,32 @@ func Install(ctx context.Context, report func(Progress)) ([]string, error) {
 }
 
 // EnsureServerWheel 是 mcp.PrepareServer 的组合实现之一：每次 spawn 前自愈。
-// 触发场景真实存在——设置 → 存储清理把 builtin-desktop-mcp 当缓存删掉，或版本升级后
-// 释放目录变成新版本号而 mcp.json 里仍指旧路径；没有这条路径，server 会初始化失败十次后放弃。
+//
+// 关键点（2026-11-23 审查 H1）：补回的是**配置里实际指向的那个路径**，不是当前版本
+// 的默认路径。spawn 时执行的是 cfg.Args（internal/mcp/mcp_client.go 的 exec.Command），
+// 而 PrepareServer 契约只读 cfg、不改配置；所以版本升级后 mcp.json 仍指旧目录时，
+// 只补「当前版本路径」是无用的——server 照旧按旧路径启动并失败。
 func EnsureServerWheel(cfg mcp.MCPServerConfig) {
-	if !isOurConfig(cfg) {
-		return
-	}
-	path := WheelPath()
+	path := ourWheelPath(cfg)
 	if path == "" {
 		return
 	}
 	if _, err := os.Stat(path); err == nil {
 		return
 	}
-	if _, err := EnsureWheel(); err != nil {
+	if err := writeEmbeddedWheel(path); err != nil {
 		logf("warn", "内置桌面组件补回失败（%s）：%v", path, err)
 		return
 	}
 	logf("info", "内置桌面组件已补回：%s", path)
 }
 
-// isOurConfig 只认 args 里 --from 指向我们释放目录的配置行，绝不动用户自备的 windows-mcp 配置。
-func isOurConfig(cfg mcp.MCPServerConfig) bool {
-	base := filepath.Join(rootDir(), "builtin-desktop-mcp")
-	if base == filepath.Join("", "builtin-desktop-mcp") {
-		return false
+// ourWheelPath 从 args 里取 --from 指向的 wheel 路径，且必须落在我们自己的释放根下。
+// 返回空串表示这不是我们管理的行（用户自备的 windows-mcp 配置一律不碰）。
+func ourWheelPath(cfg mcp.MCPServerConfig) string {
+	base, err := filepath.Abs(filepath.Join(rootDir(), "builtin-desktop-mcp"))
+	if err != nil {
+		return ""
 	}
 	for i, arg := range cfg.Args {
 		if strings.TrimSpace(arg) != "--from" || i+1 >= len(cfg.Args) {
@@ -306,15 +301,41 @@ func isOurConfig(cfg mcp.MCPServerConfig) bool {
 		if raw == "" {
 			continue
 		}
-		abs, err := filepath.Abs(raw)
-		if err != nil {
+		abs, absErr := filepath.Abs(raw)
+		if absErr != nil {
 			continue
 		}
 		if strings.HasPrefix(strings.ToLower(abs), strings.ToLower(base)+string(os.PathSeparator)) {
-			return true
+			return abs
 		}
 	}
-	return false
+	return ""
+}
+
+// isOurConfig 判断某行是否由本应用管理（自愈与诊断用）。
+func isOurConfig(cfg mcp.MCPServerConfig) bool {
+	return ourWheelPath(cfg) != ""
+}
+
+// writeEmbeddedWheel 把内嵌 wheel 写到指定路径（内容一致则跳过）。
+// 与 EnsureWheel 的区别：路径由调用方给，用于补回配置里指向的旧版本目录。
+func writeEmbeddedWheel(path string) error {
+	if Embedded == nil {
+		// 资源未注入（init 顺序变化 / 单元测试）时要返回错误而不是 panic：
+		// fs.ReadFile(nil, …) 会 nil pointer dereference，把整个自愈链拖崩。
+		return errors.New("内置桌面组件资源未注入")
+	}
+	raw, err := fs.ReadFile(Embedded, wheelEmbedPath)
+	if err != nil {
+		return fmt.Errorf("内置桌面组件缺失：%w", err)
+	}
+	if existing, readErr := os.ReadFile(path); readErr == nil && bytes.Equal(existing, raw) {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return atomfile.WriteFileAtomicMode(path, raw, 0o644)
 }
 
 func logf(level, format string, args ...any) {

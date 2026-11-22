@@ -31,7 +31,7 @@ export function isDesktopToolDef(def) {
     return !!(def && def.mcpServer === DESKTOP_MCP_SERVER);
 }
 
-// 上游 windows-mcp 0.8.9 注册的全部 21 个工具（13 个模块合计）。
+// windows-mcp 0.8.9 的 21 个工具 + 本地补丁（0.8.9+p3）新增的 Find，共 22 个。
 // 权威清单在 Go 侧 internal/desktopmcp.AllTools（安装时按它写 enabledTools），这里保留一份
 // 只用于「还没拿到后端 plan 时的预览 / 浏览器 mock 降级」；两侧一致性由
 // internal/desktopmcp/desktopmcp_test.go 与 test/ai/ai-desktop-control.test.mjs 对账。
@@ -101,16 +101,26 @@ const DESKTOP_SERVER_NOTES = '桌面控制（Computer Use）：第三方原生�
 //     「AI is about to take control of this computer」接管确认窗（2026-11-22 用户实测）；
 //   · args 缺 --from —— 旧形态从 PyPI 现拉 windows-mcp，而不是用随 exe 分发的内置 wheel；
 //   · command 不是 uvx；
-//   · enabledTools 为空 —— 空数组语义是「一个都不给」，等于装了却不能用。
+//   · enabledTools 为空 —— 空数组语义是「一个都不给」，等于装了却不能用；
+//   · --from 指向的 wheel 与后端 plan 给的当前版本路径不一致 —— 版本升级后配置没跟上
+//     （2026-11-23 审查：只靠 Go 侧自愈补不回旧路径，必须引导用户更新配置）。
 // 注意：**不**拿「是否等于全量清单」当升级条件——用户逐项取消勾选是正常操作，不能被反复判脏。
-export function desktopConfigNeedsUpgrade(row) {
+export function desktopConfigNeedsUpgrade(row, plan) {
     if (!row || typeof row !== 'object') return false;
     const args = Array.isArray(row.args) ? row.args : [];
     if (!args.includes('--no-control')) return true;
     if (!args.includes('--from')) return true;
     if (String(row.command || '') !== 'uvx') return true;
     const have = Array.isArray(row.enabledTools) ? row.enabledTools : [];
-    return have.length === 0;
+    if (have.length === 0) return true;
+    // 版本比对只在后端给出 wheelPath 时做（浏览器 mock / 旧后端拿不到 plan 时跳过）
+    const expected = String((plan && plan.wheelPath) || '').trim();
+    if (expected) {
+        const index = args.indexOf('--from');
+        const from = index >= 0 ? String(args[index + 1] || '').trim() : '';
+        if (from && from !== expected) return true;
+    }
+    return false;
 }
 
 export function controlModeActionOf(input) {

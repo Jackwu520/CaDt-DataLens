@@ -226,6 +226,10 @@ class Desktop:
         # 卡片要翻好几屏才找到。这里先按标题正则挑出目标窗口，只对它建树，并把
         # 截图裁到它的矩形（显式传了 region 时以 region 为准）。
         window_filter_applied = False
+        # window 只对建树有意义：与 use_ui_tree=False 同用会让截图不裁剪却无人告知
+        # （静默失败）。与 use_dom 的同类校验保持一致（2026-11-23 审查 M2）。
+        if window_filter and not use_ui_tree:
+            raise ValueError("window requires use_ui_tree=True")
         if window_filter and use_ui_tree:
             try:
                 pattern = re.compile(window_filter, re.IGNORECASE)
@@ -248,8 +252,13 @@ class Desktop:
             window_filter_applied = True
             # 没显式给 region 时把截图裁到目标窗口：元素编号与截图坐标系才对得上
             if region_rect is None:
-                capture_rect = target.bounding_box
-                screenshot_region = self._rect_to_bounding_box(capture_rect)
+                # target.bounding_box 是 BoundingBox（width/height 是 int 字段），而
+                # capture_rect 必须是 uia.Rect（width()/height() 是方法）——直接传过去
+                # 会在 _rect_to_bounding_box 里抛 TypeError: 'int' object is not callable，
+                # 让整个 window 过滤不可用（2026-11-23 审查阻断项 B1）。
+                box = target.bounding_box
+                capture_rect = uia.Rect(box.left, box.top, box.right, box.bottom)
+                screenshot_region = box
 
         if profile_enabled:
             desktop_context_ms = (perf_counter() - stage_started_at) * 1000
@@ -892,9 +901,19 @@ class Desktop:
         exact: bool = False,
         window: str | None = None,
         limit: int = 20,
-    ) -> list[TreeElementNode]:
-        """Interactive elements whose name matches *query* (substring by default)."""
+    ) -> tuple[list[TreeElementNode], bool]:
+        """Interactive elements matching *query*; also reports whether the tree was truncated.
+
+        The second value exists because "no match" is misleading when the element
+        budget (default 500) cut the tree before reaching the target — the caller can
+        then tell the model to pass window= instead of reporting a false negative
+        (2026-11-23 review M1).
+        """
         needles = query.casefold().strip()
+        # 空 query：子串/精确模式本来就无匹配，regex 模式却会 match 全部元素。
+        # 统一成「无匹配」，避免一次调用把整个树倒出来（2026-11-23 review L4）。
+        if not needles:
+            return [], False
         pattern = None
         if regex:
             try:
@@ -918,30 +937,43 @@ class Desktop:
             elif exact:
                 hit = name.casefold() == needles
             else:
-                hit = bool(needles) and needles in name.casefold()
+                hit = needles in name.casefold()
             if hit:
                 matches.append(node)
                 if len(matches) >= limit:
                     break
-        return matches
+        return matches, bool(state.tree_state.truncated)
+
+    _SHELL_WINDOW_NAMES = frozenset(
+        {"任务栏", "Taskbar", "桌面", "Desktop", "Program Manager", "Windows 输入体验"}
+    )
 
     def activate_element(self, node: TreeElementNode) -> str:
-        """Click an element's center; click twice when it sits in a non-active window.
+        """Click an element's center, bringing its window forward first when needed.
 
-        The first click on an inactive window only brings it forward — Windows does
-        not deliver it to the control. A single synthesized click would therefore
-        look like "nothing happened", which is worse than an extra click.
+        Clicking twice was the obvious fix for "the first click only activates the
+        window", but it is actively harmful: a toggle (checkbox / switch) flips twice
+        and a taskbar button launches then minimises. So activate the window through
+        the Win32 handle (BringWindowToTop already handles AttachThreadInput and
+        AllowSetForegroundWindow), then click exactly once (2026-11-23 review H1).
         """
         x, y = int(node.center.x), int(node.center.y)
-        active = self.get_active_window()
-        active_name = active.name if active is not None else ""
-        needs_activation = bool(node.window_name) and node.window_name != active_name
+        activated = False
+        if node.window_name and node.window_name not in self._SHELL_WINDOW_NAMES:
+            try:
+                window, _reason = self._find_window_by_name(node.window_name)
+                handle = getattr(window, "handle", None)
+                if handle and handle != win32gui.GetForegroundWindow():
+                    self.bring_window_to_top(handle)
+                    sleep(0.15)
+                    activated = True
+            except Exception:
+                # 激活是尽力而为：拿不到句柄（升高权限窗口 / 窗口已关闭）就直接点，
+                # 由调用方从返回文案里看出「没有激活」。
+                activated = False
         self.click((x, y), button="left", clicks=1)
-        if needs_activation:
-            sleep(0.35)
-            self.click((x, y), button="left", clicks=1)
         return f"clicked {node.name!r} at ({x},{y})" + (
-            " (window activated first)" if needs_activation else ""
+            " (window brought to front first)" if activated else ""
         )
 
     # Strings longer than this typed via clipboard paste instead of
@@ -976,13 +1008,15 @@ class Desktop:
         uia.Click(x, y)
         owner.record_step_current()
         # --- 本地补丁（0.8.9+p2）：点击后把「怎么输」交给共用的 _type_into ---------
-        # 传点击位置处的焦点元素：只有它是多行框时 Home/End 才需要 Ctrl 前缀。
+        # 只有需要 Home/End 时才知道「是不是多行框」，所以只在那时探测焦点元素：
+        # _focused_element_at 最多轮询 0.5s，默认 idle 下白等（2026-11-23 审查 L1）。
+        field = self._focused_element_at(x, y) if caret_position in ("start", "end") else None
         return self._type_into(
             text,
             caret_position=caret_position,
             clear=clear,
             press_enter=press_enter,
-            field=self._focused_element_at(x, y),
+            field=field,
         )
 
     def type_focused(

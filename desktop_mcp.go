@@ -19,7 +19,14 @@ var desktopMcpFS embed.FS
 
 func init() {
 	desktopmcp.Embedded = desktopMcpFS
-	desktopmcp.Logf = mcp.Logf
+	// 转发闭包而不是直接取函数值（2026-11-23 审查 M3）：同包 init 按文件名字典序执行，
+	// 本文件早于 mcp_app.go（后者才把 mcp.Logf 赋成 writeAppLog），直接 `= mcp.Logf`
+	// 会永久捕获 nil，自愈日志全部静默——恰是最需要诊断的场景。
+	desktopmcp.Logf = func(level, format string, args ...any) {
+		if mcp.Logf != nil {
+			mcp.Logf(level, format, args...)
+		}
+	}
 	mcp.PrepareServer = prepareMCPServers
 }
 

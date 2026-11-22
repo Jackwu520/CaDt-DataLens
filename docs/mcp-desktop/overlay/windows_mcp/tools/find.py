@@ -54,17 +54,30 @@ def register(mcp, *, get_desktop, get_analytics):
             raise ValueError("action must be list, click or type")
         if action == "type" and text is None:
             raise ValueError("action='type' requires text")
-        matches = desktop.find_elements(
+        try:
+            limit_value = max(1, min(int(limit), 50))
+            nth_value = int(nth)
+        except (TypeError, ValueError):
+            raise ValueError("limit and nth must be integers")
+        matches, truncated = desktop.find_elements(
             query,
             regex=regex,
             exact=exact,
             window=window,
-            limit=max(1, min(int(limit), 50)),
+            limit=limit_value,
         )
         if not matches:
+            hint = ". Try a shorter query, regex=true, or call Snapshot to see the names."
+            if truncated and not window:
+                # 元素预算（默认 500）会先把无关窗口的元素装进来，目标窗口可能根本没被走到。
+                # 说清这一点，否则「无匹配」会被误当成「页面里没这个东西」（审查 M1）。
+                hint = (
+                    ". The element tree was truncated by the element budget, so the target may"
+                    " simply not have been walked: pass window=<title regex> to search one window."
+                )
             return f"No interactive element matches {query!r}" + (
                 f" in window {window!r}" if window else ""
-            ) + ". Try a shorter query, regex=true, or call Snapshot to see the names."
+            ) + hint
         if action == "list":
             lines = [f"{len(matches)} match(es) for {query!r}:"]
             for index, node in enumerate(matches):
@@ -75,8 +88,11 @@ def register(mcp, *, get_desktop, get_analytics):
                 )
             return "\n".join(lines)
 
-        index = max(0, min(int(nth), len(matches) - 1))
-        target = matches[index]
+        if nth_value < 0 or nth_value >= len(matches):
+            raise ValueError(
+                f"nth={nth_value} is out of range: {len(matches)} match(es) found (0-based)"
+            )
+        target = matches[nth_value]
         note = desktop.activate_element(target)
         if action == "type":
             typed = desktop.type_focused(text, press_enter=False)

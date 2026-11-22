@@ -167,15 +167,28 @@ test('desktopConfigNeedsUpgrade：只认结构性旧形态，不因用户取消�
     assert.equal(desktopConfigNeedsUpgrade(latest), false);
     assert.equal(desktopConfigNeedsUpgrade(null), false);
 
-    // 旧形态①：args 缺 --no-control（上游会弹接管确认窗，2026-11-22 用户实测）
+    // 旧形态①：有 --from，但缺 --no-control（上游会弹接管确认窗，2026-11-22 用户实测）
     assert.equal(desktopConfigNeedsUpgrade(Object.assign({}, latest, {
-        args: ['windows-mcp@0.8.9', 'serve', '--no-control'],
+        args: ['--from', 'C:/x/windows_mcp-0.8.9-py3-none-any.whl', 'windows-mcp', 'serve'],
     })), true);
 
     // 旧形态②：从 PyPI 现拉（缺 --from），应升级成内置 wheel
     assert.equal(desktopConfigNeedsUpgrade(Object.assign({}, latest, {
         args: ['windows-mcp@0.8.9', 'serve', '--no-control'],
     })), true);
+
+    // 旧形态⑤：--from 指向旧版本 wheel（版本升级后配置没跟上）——按 plan 比对判脏
+    const plan = {wheelPath: 'C:/data/builtin-desktop-mcp/0.8.9+p3/windows_mcp-0.8.9+p3-py3-none-any.whl'};
+    assert.equal(desktopConfigNeedsUpgrade(Object.assign({}, latest, {
+        args: ['--from', 'C:/data/builtin-desktop-mcp/0.8.9/windows_mcp-0.8.9-py3-none-any.whl', 'windows-mcp', 'serve', '--no-control'],
+    }), plan), true, '指向旧版本 wheel 必须判为需更新');
+    assert.equal(desktopConfigNeedsUpgrade(Object.assign({}, latest, {
+        args: ['--from', plan.wheelPath, 'windows-mcp', 'serve', '--no-control'],
+    }), plan), false, '与 plan 一致时不该判脏');
+    // 没有 plan（后端旧版）时不做版本比对，不能因此判脏
+    assert.equal(desktopConfigNeedsUpgrade(Object.assign({}, latest, {
+        args: ['--from', 'C:/data/builtin-desktop-mcp/0.8.9/old.whl', 'windows-mcp', 'serve', '--no-control'],
+    })), false, '没有 plan 时不做版本比对');
 
     // 旧形态③：command 不是 uvx
     assert.equal(desktopConfigNeedsUpgrade(Object.assign({}, latest, {command: 'uvx-not-on-path'})), true);

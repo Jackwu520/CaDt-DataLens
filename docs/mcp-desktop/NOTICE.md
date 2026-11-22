@@ -9,7 +9,7 @@
 | 上游版本 | 0.8.9（MIT License，原许可全文在 wheel 内 `windows_mcp-0.8.9.dist-info/licenses/LICENSE.md`） |
 | 本地版本 | **0.8.9+p3**（PEP 440 本地版本号，标明有本地改动） |
 | 基线（未改动原版） | `vendor/windows_mcp-0.8.9-py3-none-any.whl` / sha256 `e90e5b02b3e545991f203ce93cefb436a326861657968591653fa254105dc85d` |
-| 发行产物（随 exe 内嵌） | `windows_mcp-0.8.9+p3-py3-none-any.whl` / sha256 `d17dde0a6f6ac782684a642597c79d481dd63eae8a572431d5bdfafed409183c` |
+| 发行产物（随 exe 内嵌） | `windows_mcp-0.8.9+p3-py3-none-any.whl` / sha256 `abdccd2be3acd54a0a26091da4a4d9aec63a44d90c58261c8755f347236c63e2` |
 | 打包方式 | `uv run python tools/pack-desktop-wheel.py`（基线 + overlay → 重算 RECORD → 新 wheel） |
 
 ## 本地改动（0.8.9 → 0.8.9+p3）

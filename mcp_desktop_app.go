@@ -2,7 +2,7 @@ package main
 
 // mcp_desktop_app.go：桌面控制（windows-mcp）的 Wails 绑定层。
 // 引擎在 internal/desktopmcp（内嵌 wheel 的释放、配置行、安装流程与自愈），这里只做三件事：
-//   ① MCPDesktopPlan 只读快照：配置行 + 上游 21 个工具（前端据此渲染工具开关，默认全选）；
+//   ① MCPDesktopPlan 只读快照：配置行 + 全部 22 个工具（上游 21 + 本地补丁的 Find；前端据此渲染工具开关，默认全选）；
 //   ② MCPDesktopInstallStart 异步安装：立即返回，进度经 mcp-desktop-install 事件推送
 //      （用户要的是「打开开关就装，下面显示进度条」，不是阻塞式等 15 分钟）；
 //   ③ MCPDesktopDoctor uv 探测：纯读、无子进程。
@@ -34,8 +34,8 @@ type MCPDesktopInstallResult struct {
 
 // MCPDesktopInstallStartResult 异步安装的启动回执：Busy=true 表示已有作业在跑。
 type MCPDesktopInstallStartResult struct {
-	Started bool   `json:"started"`
-	Busy    bool   `json:"busy,omitempty"`
+	Started bool `json:"started"`
+	Busy    bool `json:"busy,omitempty"`
 }
 
 // desktopInstallEventPayload 推给前端的事件体。

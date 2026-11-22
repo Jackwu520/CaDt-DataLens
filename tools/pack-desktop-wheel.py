@@ -1,12 +1,12 @@
 """pack-desktop-wheel.py：把 docs/mcp-desktop/overlay 覆盖到上游基线 wheel 上，重新打出一个
-本地版本号 wheel（0.8.9 → 0.8.9+p1），并重算 RECORD 校验。
+本地版本号 wheel（0.8.9 → 0.8.9+pN），并重算 RECORD 校验。
 
 为什么不用 python -m build：上游发布的是已构建 wheel（没有 pyproject / 源码树），
-我们只做「替换若干 .py + 重算 RECORD」，zip 层操作足够且结果可复现。
+我们只做「替换若干 .py + 重命名 dist-info + 重算 RECORD」，zip 层操作足够且结果可复现。
 
 用法（仓库根）：
     uv run python tools/pack-desktop-wheel.py
-产物：docs/mcp-desktop/windows_mcp-0.8.9+p1-py3-none-any.whl
+产物：docs/mcp-desktop/windows_mcp-<LOCAL_VERSION>-py3-none-any.whl
 基线：docs/mcp-desktop/vendor/windows_mcp-0.8.9-py3-none-any.whl（上游原版，不允许改动）
 """
 
@@ -78,7 +78,9 @@ def main() -> int:
     if not added:
         print("没有新增文件（只覆盖既有路径）")
 
-    # 2) 版本号改成本地版本（wheel 文件名 + METADATA 的 Version 行）
+    # 2) 版本号改成本地版本：METADATA 的 Version 行 + **dist-info 目录名**
+    #    （2026-11-23 审查 M3：PEP 427/376 要求 {name}-{version}.dist-info，只改 METADATA
+    #    不改目录名虽然 pip/uv 目前容忍，但严格校验器下会失败。）
     meta_name = f"{dist_info}/METADATA"
     metadata = entry_map[meta_name].decode("utf-8")
     metadata = "\n".join(
@@ -87,18 +89,36 @@ def main() -> int:
     )
     entry_map[meta_name] = metadata.encode("utf-8")
 
+    new_dist_info = f"windows_mcp-{LOCAL_VERSION}.dist-info"
+    if new_dist_info != dist_info:
+        renamed: dict[str, bytes] = {}
+        for name, data in entry_map.items():
+            if name.startswith(dist_info + "/"):
+                renamed[new_dist_info + name[len(dist_info):]] = data
+            else:
+                renamed[name] = data
+        entry_map = renamed
+        print(f"dist-info 目录重命名：{dist_info} → {new_dist_info}")
+
     # 3) 重算 RECORD：除 RECORD 自身外每行 name,hash,size；RECORD 自己留空 hash/size
     record_lines: list[str] = []
     for name in sorted(entry_map):
-        if name == f"{dist_info}/RECORD":
+        if name == f"{new_dist_info}/RECORD":
             continue
         data = entry_map[name]
         record_lines.append(f"{name},{record_hash(data)},{len(data)}")
-    record_lines.append(f"{dist_info}/RECORD,,")
-    entry_map[f"{dist_info}/RECORD"] = ("\n".join(record_lines) + "\n").encode("utf-8")
+    record_lines.append(f"{new_dist_info}/RECORD,,")
+    entry_map[f"{new_dist_info}/RECORD"] = ("\n".join(record_lines) + "\n").encode("utf-8")
 
-    # 4) 写产物：保持基线里的条目顺序，补上 overlay 新增但基线没有的条目
-    order = [name for name, _ in entries]
+    # 4) 写产物：保持基线里的条目顺序（dist-info 已改名，用映射后的名字），
+    #    补上 overlay 新增但基线没有的条目
+    order: list[str] = []
+    for name, _ in entries:
+        mapped = (
+            new_dist_info + name[len(dist_info):] if name.startswith(dist_info + "/") else name
+        )
+        if mapped not in order:
+            order.append(mapped)
     for name in entry_map:
         if name not in order:
             order.append(name)

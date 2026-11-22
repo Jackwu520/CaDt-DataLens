@@ -82,7 +82,10 @@ func installPlatform(ctx context.Context, wheelPath string, emit func(Progress))
 		if percent < 95 {
 			percent++
 		}
-		if time.Since(last) < emitThrottle && percent < 95 {
+		// 节流对所有行生效（2026-11-23 审查 M2）：此前 `&& percent < 95` 让 95% 之后
+		// 每一行都 emit，而 splitAnyLine 正是为把 uv 的 \r 回写切成成百上千行而设计的
+		// ——两者叠加会把 WebView2 IPC 打满，恰恰是 emitThrottle 要防的情况。
+		if time.Since(last) < emitThrottle {
 			return
 		}
 		last = time.Now()
