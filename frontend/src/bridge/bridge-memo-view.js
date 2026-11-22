@@ -480,7 +480,7 @@ function buildBlock(view, block) {
     chev.type = 'button';
     chev.className = 'memo-chev';
     chev.setAttribute('aria-expanded', block.collapsed ? 'false' : 'true');
-    chev.innerHTML = iconSvg('chevron-right', 12) || '▸';
+    chev.innerHTML = iconSvg('chevron-right', 12);
     onButton(chev, () => {
         commitActive(view);
         run(view, (doc) => {

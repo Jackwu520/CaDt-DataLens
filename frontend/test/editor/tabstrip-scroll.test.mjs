@@ -5,12 +5,20 @@
 // AI 写已打开文件 / 保存脏标 / 后台标签关闭）都会把用户手动滚到一半的标签条弹回
 // 激活标签的定位点，标签多时表现为「怎么都滚不到末尾，末尾被工具区盖住」。
 //
+// 背景（2026-11-22 用户实测）：编辑区收起时 #main-pane 是 display:none，此时打开文件
+// （AI 面板点文件链接）会在隐藏态重建标签条，右侧工具区（.tb-tools 绝对定位覆盖层）
+// 的 offsetWidth 量出来恒为 0，末尾 spacer 被记成 0px；展开后 spacer 无人重量，
+// 标签条滚到头末尾标签仍被工具区盖住——表现为「横滚条滚不到最后，像被盖住」。
+//
 // 修复契约：
 //   · renderEditorLayout 重建前按组记录 .etabs 的 scrollLeft，重建后原样恢复；
 //   · 只有首次构建（此前不存在该组的标签条）才做激活标签定位（reveal）；
 //   · 切换标签（activateDoc 换 doc 分支）显式补发定位；
 //   · scheduleRevealActiveTabs / revealActiveTabs 支持按组过滤，同帧调度合并时
-//     「无条件定位」（null）吞掉组过滤，绝不能让组过滤把无条件定位挤掉。
+//     「无条件定位」（null）吞掉组过滤，绝不能让组过滤把无条件定位挤掉；
+//   · spacer 宽度测量收敛到 syncTabSpacer（buildGroup 现场量一次）；编辑区展开瞬间
+//     main.js 的 setEditorCollapsed 只在「收起→展开」真实过渡时调 refreshTabStripSpacers
+//     重量全部组，且只对 spacer 确实被修正的情形补发定位（不拽用户手动滚出的位置）。
 //
 // 历史教训：这类回归全部静默——不会报错、dev 单标签场景复现不了，必须有源码守卫。
 
@@ -22,6 +30,7 @@ import {fileURLToPath} from 'node:url';
 
 const srcRoot = fileURLToPath(new URL('../../src/', import.meta.url));
 const src = readFileSync(join(srcRoot, 'editor/editor-groups.js'), 'utf8');
+const mainSrc = readFileSync(join(srcRoot, 'main.js'), 'utf8');
 
 // 切出顶层函数体（editor-groups.js 的域函数都在 0 缩进的 `function` 层）。
 function sliceTopFunction(text, signature) {
@@ -113,4 +122,49 @@ test('renderEditorLayout 重建前记录焦点、重建后恢复焦点', () => {
     const restoreAt = body.indexOf('hadFocusInEditor && prevActivePane');
     assert.ok(revealAt >= 0 && restoreAt >= 0 && restoreAt > revealAt,
         '焦点恢复必须位于标签条定位恢复之后，避免定位逻辑覆盖焦点');
+});
+
+test('buildGroup 的 spacer 宽度测量收敛到 syncTabSpacer（不许内联量 offsetWidth）', () => {
+    const body = sliceTopFunction(src, 'function buildGroup(parent, gid)');
+    assert.ok(body.includes('syncTabSpacer(wrap)'),
+        'buildGroup 必须经 syncTabSpacer 建 spacer（测量要能在展开时重量）');
+    assert.ok(!body.includes('.offsetWidth'),
+        'buildGroup 里不得内联访问 .offsetWidth——收起态下量出来恒为 0（2026-11-22 事故根因）');
+});
+
+test('syncTabSpacer 从工具区实测宽度更新 spacer，宽度不变时返回 false', () => {
+    const body = sliceTopFunction(src, 'function syncTabSpacer(wrap)');
+    assert.ok(body.includes("wrap.querySelector('.tb-tools')"),
+        '必须从 .tb-tools 实测宽度（绝对定位覆盖层占的滚动余量）');
+    assert.ok(body.includes("strip.querySelector(':scope > .tb-spacer')"),
+        'spacer 必须挂在 .etabs 直下（flex 尾项）');
+    assert.ok(body.includes("const width = tools.offsetWidth + 'px'") && body.includes('spacer.style.width = width'),
+        'spacer 宽度必须等于工具区 offsetWidth（实测来源唯一）');
+    assert.ok(body.includes('return false') && body.includes('return true'),
+        '必须返回宽度是否变化（refreshTabStripSpacers 据此决定是否补发定位）');
+});
+
+test('refreshTabStripSpacers 重量全部组，仅 spacer 被修正时补发定位', () => {
+    const body = sliceTopFunction(src, 'function refreshTabStripSpacers()');
+    assert.ok(body.includes("querySelectorAll('.egroup[data-gid]')"),
+        '必须遍历全部编辑器分组（收起期间任何组都可能被重建过）');
+    assert.ok(body.includes('if (syncTabSpacer(wrap)) changed = true;'),
+        '逐组重量并统计 spacer 是否被修正');
+    assert.ok(/if \(changed\) scheduleRevealActiveTabs\(\);/.test(body),
+        '只有 spacer 确实被修正（收起态重建过）才补发激活标签定位；' +
+        '纯开合循环不定位，别把用户手动滚出的位置拽回激活标签');
+});
+
+test('工厂 API 导出 refreshTabStripSpacers（main.js 展开分支要调）', () => {
+    assert.match(src, /\brefreshTabStripSpacers,\s*reopenClosedTab,/,
+        'createEditorGroups 返回对象必须导出 refreshTabStripSpacers');
+});
+
+test('main.js setEditorCollapsed 只在收起→展开的真实过渡时重量 spacer', () => {
+    const body = sliceTopFunction(mainSrc, 'function setEditorCollapsed(next, reason)');
+    assert.ok(body.includes('const was = !!editorCollapseReason'),
+        '必须先记录过渡前的收起态');
+    assert.ok(body.includes('if (!target && was) editorGroupsMod.refreshTabStripSpacers();'),
+        '只在「收起→展开」真实过渡时调 refreshTabStripSpacers：' +
+        '收起方向（hidden 态）量了也是 0；未变的重复调用不该拽滚动位置');
 });

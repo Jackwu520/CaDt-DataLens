@@ -157,8 +157,11 @@ const VIRTUAL_TAB_VIEWS = {
     groupmember: (doc) => deps.createGroupMemberView(doc),
     // 应用页面（使用统计 / 定时任务 …）：一个类型装 N 个功能页，按 doc.appPage 分派在工厂内部
     apppage: (doc) => deps.createAppPageView(doc),
-    // 数据库连接（侧栏「数据库」面板双击打开；会话与表网格都在工厂内部，main.js 注入）
-    database: (doc) => deps.createDatabaseView(doc),
+    // 数据库（侧栏会话树打开，方案 §11.8）：数据表 / 查询控制台 / Redis 键查看器三个标签类型，
+    // 分派都在 main.js 注入的同一工厂内部（按 doc.dbTableSpec / doc.dbConsoleSpec / doc.dbRedisKeySpec）
+    dbTable: (doc) => deps.createDbTabView(doc),
+    dbConsole: (doc) => deps.createDbTabView(doc),
+    dbRedisKey: (doc) => deps.createDbTabView(doc),
 };
 const updateBrowserTitle = (...a) => browserTab.updateBrowserTitle(...a);
 const setBrowserViewport = (...a) => browserTab.setBrowserViewport(...a);
@@ -557,12 +560,44 @@ function buildGroup(parent, gid) {
         const tools = buildGroupTools(gid);
         if (tools) {
             wrap.appendChild(tools);
-            const spacer = document.createElement('div');
-            spacer.className = 'tb-spacer';
-            spacer.style.width = tools.offsetWidth + 'px';
-            strip.appendChild(spacer);
+            syncTabSpacer(wrap);
         }
     }
+}
+
+// 工具区（.tb-tools）是绝对定位覆盖层，盖在 .etabs 右端上：末尾 spacer 的宽度就是它占的
+// 宽度——滚到最右时给激活标签留出这段，别让「视图切换/更多」把标签压住。
+// 宽度只能现场量（offsetWidth），而编辑区收起时 #main-pane 是 display:none，量出来恒为 0：
+// 收起态下打开文件（AI 面板点文件链接）会重建标签条，spacer 被记成 0，展开后末尾标签
+// 被工具区盖住滚不出来。所以测量收敛到这里，展开瞬间由 refreshTabStripSpacers 重量
+// （main.js setEditorCollapsed 的展开分支调用）。
+function syncTabSpacer(wrap) {
+    const tools = wrap.querySelector('.tb-tools');
+    const strip = wrap.querySelector('.etabs');
+    if (!tools || !strip) return false;
+    let spacer = strip.querySelector(':scope > .tb-spacer');
+    if (!spacer) {
+        spacer = document.createElement('div');
+        spacer.className = 'tb-spacer';
+        strip.appendChild(spacer);
+    }
+    const width = tools.offsetWidth + 'px';
+    if (spacer.style.width === width) return false;
+    spacer.style.width = width;
+    return true;
+}
+
+// 编辑区从收起态展开后调用：收起期间重建过的组 spacer 全是 0（工具区宽度量不到），
+// 展开后逐组重量；只有 spacer 确实被修正的组才补发激活标签定位——收起期间打开的标签
+// 当时 reveal 不了（scrollWidth 与 clientWidth 都是 0，revealActiveTabs 直接跳过），
+// 展开后要把它滚出工具区的覆盖范围。纯开合循环（无重建）spacer 不变，不定位，
+// 别把用户手动滚出的标签条位置拽回激活标签。
+function refreshTabStripSpacers() {
+    let changed = false;
+    for (const wrap of deps.els.editor.querySelectorAll('.egroup[data-gid]')) {
+        if (syncTabSpacer(wrap)) changed = true;
+    }
+    if (changed) scheduleRevealActiveTabs();
 }
 
 // 视图模式图标：局部键 → 注册表键（14 网格散落 SVG 已按 16 网格重画收编 core/icons.js，
@@ -2025,5 +2060,5 @@ function reopenClosedTab() {
     function setFocusedGroupId(v) { focusedGroupId = v; }
     function setSplitRoot(v) { splitRoot = v; }
 
-    return {activateDoc, setFocusedGroupId, setSplitRoot, addDocToFocusedGroup, get editorGroups() { return editorGroups; }, applyAceMode, applyCsvTableZoom, applyImageZoom, browserViewportLabel, closeDocNow, closeDocsWithConfirm, closeSqlView, createDoc, createDocEditor, createGroup, dismissBanner, doRedo, doUndo, enterAudioView, enterBinaryView, enterCsvTable, enterHtmlPreview, enterImageView, enterMarkdownPreview, enterPluginView, enterSplitView, enterSqlView, enterSvgRender, enterTextView, enterVideoView, exitSplitView, expandAllWithGuard, flushCsvCellEditor, get focusedGroupId() { return focusedGroupId; }, groupDocs, groupOfDoc, groupSnapshot, focusEditorGroup, moveDocToGroup, splitDocToGroup, mergeEditorGroup, handleAIWorkspaceFileChanged, handleExternalDocChanges, hideAudioView, hideBanner, hideHtmlPreview, hidePluginView, hideSvgRender, hideVideoView, hookCodeFoldRanges, hookMultiCursor, hookAceSmoothScroll, unhookAceSmoothScroll, humanizeCounts, initCodeFoldHover, jumpBookmark, addBookmarkAt, removeBookmarkAt, clearDocBookmarks, leaveCsvTable, leaveHtmlPreview, leaveMarkdownPreview, markDocDirty, mdSyncScrollFromAce, moveTabInGroup, openWithDefaultApp, patchViewContext, refreshPatchMarkers, rememberDocView, renderBookmarks, renderBreadcrumb, renderCsvTableView, renderEditorLayout, renderMarkdownPreview, renderTabs, reopenClosedTab, releaseAudio, releaseVideo, requestCloseDoc, revertDocToSaved, scheduleGitGutter, setBrowserViewport, setFilename, showBanner, showHtmlPreview, showImageMenu, showMdPreviewMenu, showPathInFolder, showSvgMenu, get splitRoot() { return splitRoot; }, syncAllBrowserTabs, syncBrowserTab, syncTabReadOnly, textArea, toggleBookmark, toggleFocusedNode, updateBrowserTitle, updateDocChrome, updateStatus, zoomCsvTable, zoomImageBy, zoomSvgRenderBy};
+    return {activateDoc, setFocusedGroupId, setSplitRoot, addDocToFocusedGroup, get editorGroups() { return editorGroups; }, applyAceMode, applyCsvTableZoom, applyImageZoom, browserViewportLabel, closeDocNow, closeDocsWithConfirm, closeSqlView, createDoc, createDocEditor, createGroup, dismissBanner, doRedo, doUndo, enterAudioView, enterBinaryView, enterCsvTable, enterHtmlPreview, enterImageView, enterMarkdownPreview, enterPluginView, enterSplitView, enterSqlView, enterSvgRender, enterTextView, enterVideoView, exitSplitView, expandAllWithGuard, flushCsvCellEditor, get focusedGroupId() { return focusedGroupId; }, groupDocs, groupOfDoc, groupSnapshot, focusEditorGroup, moveDocToGroup, splitDocToGroup, mergeEditorGroup, handleAIWorkspaceFileChanged, handleExternalDocChanges, hideAudioView, hideBanner, hideHtmlPreview, hidePluginView, hideSvgRender, hideVideoView, hookCodeFoldRanges, hookMultiCursor, hookAceSmoothScroll, unhookAceSmoothScroll, humanizeCounts, initCodeFoldHover, jumpBookmark, addBookmarkAt, removeBookmarkAt, clearDocBookmarks, leaveCsvTable, leaveHtmlPreview, leaveMarkdownPreview, markDocDirty, mdSyncScrollFromAce, moveTabInGroup, openWithDefaultApp, patchViewContext, refreshPatchMarkers, rememberDocView, renderBookmarks, renderBreadcrumb, renderCsvTableView, renderEditorLayout, renderMarkdownPreview, renderTabs, refreshTabStripSpacers, reopenClosedTab, releaseAudio, releaseVideo, requestCloseDoc, revertDocToSaved, scheduleGitGutter, setBrowserViewport, setFilename, showBanner, showHtmlPreview, showImageMenu, showMdPreviewMenu, showPathInFolder, showSvgMenu, get splitRoot() { return splitRoot; }, syncAllBrowserTabs, syncBrowserTab, syncTabReadOnly, textArea, toggleBookmark, toggleFocusedNode, updateBrowserTitle, updateDocChrome, updateStatus, zoomCsvTable, zoomImageBy, zoomSvgRenderBy};
 }

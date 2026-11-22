@@ -3,6 +3,7 @@
 // 样式见 reading.css（.rd- 前缀）。
 
 import {minutesFor} from './reading-model.js';
+import {iconSvg} from '../core/icons.js';
 
 const FONT_FAMILIES = {
     songti: '"SimSun", "宋体", "Noto Serif CJK SC", serif',
@@ -303,15 +304,14 @@ export function renderToc(container, data) {
                 row.appendChild(childBox);
                 walk(node.children, childBox, depth + 1);
             } else if (hasChildren) {
-                const toggle = btn('rd-toc-toggle', '▸', '展开');
+                const toggle = btn('rd-toc-toggle');
+                toggle.innerHTML = iconSvg('chevron-right', 12);
                 toggle.addEventListener('click', () => {
-                    if (toggle.textContent === '▸') {
-                        toggle.textContent = '▾';
+                    if (toggle.classList.toggle('open')) {
                         const childBox = el('div', 'rd-toc-children');
                         row.appendChild(childBox);
                         walk(node.children, childBox, depth + 1);
                     } else {
-                        toggle.textContent = '▸';
                         const box = row.querySelector('.rd-toc-children');
                         if (box) box.remove();
                     }

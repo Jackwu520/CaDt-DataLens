@@ -589,26 +589,7 @@ window.addEventListener('keydown', (e) => {
 document.getElementById('btn-cancel-close').addEventListener('click', deps.closeTopDialog);
 document.getElementById('btn-props-ok').addEventListener('click', deps.closeDialogs);
 
-let dialogDrag = null;
-function startDialogDrag(e) {
-    if (e.target.closest('.dialog-close')) return;
-    const dlg = e.currentTarget.parentElement;
-    const r = dlg.getBoundingClientRect();
-    dialogDrag = {el: dlg, dx: e.clientX - r.left, dy: e.clientY - r.top};
-    dlg.style.left = r.left + 'px';
-    dlg.style.top = r.top + 'px';
-    dlg.style.transform = 'none';
-    e.preventDefault();
-}
-window.addEventListener('mousemove', (e) => {
-    if (!dialogDrag) return;
-    dialogDrag.el.style.left = (e.clientX - dialogDrag.dx) + 'px';
-    dialogDrag.el.style.top = (e.clientY - dialogDrag.dy) + 'px';
-});
-window.addEventListener('mouseup', () => {
-    dialogDrag = null;
-});
-document.querySelectorAll('.dialog-head').forEach((head) => head.addEventListener('mousedown', startDialogDrag));
+// 对话框头部拖动已抽到 core/dialog-drag.js，在 main.js 统一安装（事件委托，动态弹窗也生效）。
 document.querySelectorAll('.dialog-close').forEach((btn) => btn.addEventListener('click', deps.closeTopDialog));
 deps.elsDialogs.mask.addEventListener('click', (e) => {
     if (e.target !== deps.elsDialogs.mask) return;
