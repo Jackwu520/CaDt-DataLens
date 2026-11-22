@@ -25,6 +25,9 @@ export const EVENT_SCOPES = Object.freeze({
     'schedules-changed': 'app',
     'mcp-tools-changed': 'app',
     'mcp-status-changed': 'app',
+    // 桌面控制安装进度（Go 侧 mcp_desktop_app.go 的 desktopInstallEvent）：
+    // 全局事件——所有窗口都该看到「正在安装」的真实进度，避免多窗口各说一套
+    'mcp-desktop-install': 'app',
     // 设置变更广播（多窗口）：任一窗口改设置后发全量快照，其他窗口原地合并内存副本并重绘。
     // app 级不按 sender 过滤——发出的窗口自己也收，接收方按值比较，无变化即跳过（幂等）。
     'settings-changed': 'app',

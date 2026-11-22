@@ -141,13 +141,24 @@ test('style.css：外部工具页纵向节奏 + 目录行 hover 圆角内收', (
         '能力矩阵必须改为响应式网格（自动适配列数），不再是单列堆叠');
 });
 
-test('桌面控制：卡片只剩「启用开关 + 安装」，MCP 列表不再出现 windows 行', () => {
-    assert.ok(/createSwitch\(\{/.test(paneSrc), '启用开关必须走 form-controls 的 createSwitch');
-    assert.ok(/runDesktopInstall/.test(paneSrc) && /MCPDesktopInstall/.test(paneSrc),
-        '安装按钮必须调 backend.MCPDesktopInstall（连 uv / Python 依赖一起装）');
+test('桌面控制：开关即安装 + 进度条 + 工具逐项开关，MCP 列表不出现 windows 行', () => {
+    assert.ok(/createSwitch\(\{/.test(paneSrc), '启用开关与工具开关都必须走 form-controls 的 createSwitch');
+    // 开关即安装：未安装时打开开关直接进安装流程，不再有独立的「安装…」按钮
+    assert.ok(/startDesktopInstall/.test(paneSrc) && /MCPDesktopInstallStart/.test(paneSrc),
+        '开关必须调 backend.MCPDesktopInstallStart（异步安装，进度走事件）');
+    assert.ok(/onAppEvent\('mcp-desktop-install'/.test(paneSrc),
+        '必须订阅 mcp-desktop-install 事件来画进度条');
+    assert.ok(/MCPDesktopInstallStatus/.test(paneSrc),
+        '页面重建要能把正在跑的安装进度接回来');
+    assert.ok(/MCPDesktopPlan/.test(paneSrc),
+        'wheel 路径与上游工具清单来自 backend.MCPDesktopPlan');
+    // 工具逐项开关：默认全选、可取消，写回 enabledTools
+    assert.ok(/setDesktopToolEnabled/.test(paneSrc), '工具开关必须走独立的 setDesktopToolEnabled');
+    assert.ok(/desktopToolsNode/.test(paneSrc) && /DESKTOP_HIGH_RISK_TOOLS/.test(paneSrc),
+        '工具列表要按后端清单渲染，并标注可改系统的高危项');
     assert.ok(!/writeDesktopServerRow/.test(paneSrc), '旧的两段式写入已删除（安装一步到位）');
-    assert.ok(!/runDesktopDoctor/.test(paneSrc), 'doctor 检测按钮已从卡片移除（极简两件套）');
-    assert.ok(/setDesktopEnabled/.test(paneSrc), '启用开关必须走独立的 setDesktopEnabled（只切 enabled）');
+    assert.ok(!/runDesktopDoctor/.test(paneSrc), 'doctor 检测按钮已从卡片移除');
+    assert.ok(/setDesktopEnabled/.test(paneSrc), '已安装时开关走 setDesktopEnabled（只切 enabled）');
     const mcpSrc = read('src/ai/ai-mcp-settings.js');
     assert.ok(/name !== DESKTOP_MCP_SERVER/.test(mcpSrc),
         'MCP 服务器列表必须过滤 windows 行（桌面控制只在自己的卡片里出现）');

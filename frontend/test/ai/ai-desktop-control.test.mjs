@@ -9,7 +9,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
     DESKTOP_MCP_SERVER,
-    DESKTOP_TOOLS_WHITELIST,
+    DESKTOP_ALL_TOOLS,
+    DESKTOP_HIGH_RISK_TOOLS,
     controlModeActionOf,
     createAIDesktopControl,
     desktopConfigNeedsUpgrade,
@@ -148,60 +149,84 @@ test('installedCount：只数 windows server 的工具（外部工具页开关�
     assert.equal(makeCtl([]).ctl.installedCount(), 0);
 });
 
-test('desktopConfigNeedsUpgrade：识别旧形态（缺 --no-control / 勾选不一致 / 旧 notes），不误伤用户自定义', () => {
+test('DESKTOP_ALL_TOOLS：上游 21 个 + 本地补丁的 Find = 22，高危组是子集', () => {
+    assert.equal(DESKTOP_ALL_TOOLS.length, 22, '上游 21 个工具 + 本地补丁新增的 Find');
+    assert.equal(new Set(DESKTOP_ALL_TOOLS).size, 22, '清单里不能有重复');
+    assert.ok(DESKTOP_ALL_TOOLS.includes('Find'), '本地补丁新增的 Find 必须在清单里（否则设置页看不到、enabledTools 也不会勾它）');
+    for (const name of ['Snapshot', 'Screenshot', 'Click', 'Type', 'WaitFor', 'Scrape', 'App',
+        'PowerShell', 'FileSystem', 'Registry', 'Process', 'ControlStatus']) {
+        assert.ok(DESKTOP_ALL_TOOLS.includes(name), name + ' 必须在上游工具清单里');
+    }
+    for (const name of DESKTOP_HIGH_RISK_TOOLS) {
+        assert.ok(DESKTOP_ALL_TOOLS.includes(name), name + ' 的高危标注必须指向真实工具');
+    }
+});
+
+test('desktopConfigNeedsUpgrade：只认结构性旧形态，不因用户取消勾选而反复判脏', () => {
     const latest = desktopServerConfigRow();
-    // 当前预置本身不需要升级
     assert.equal(desktopConfigNeedsUpgrade(latest), false);
     assert.equal(desktopConfigNeedsUpgrade(null), false);
 
     // 旧形态①：args 缺 --no-control（上游会弹接管确认窗，2026-11-22 用户实测）
-    const noControl = Object.assign({}, latest, {
-        args: ['windows-mcp@0.8.9', 'serve', '--tools', DESKTOP_TOOLS_WHITELIST.join(',')],
-    });
-    assert.equal(desktopConfigNeedsUpgrade(noControl), true);
+    assert.equal(desktopConfigNeedsUpgrade(Object.assign({}, latest, {
+        args: ['windows-mcp@0.8.9', 'serve', '--no-control'],
+    })), true);
 
-    // 旧形态②：勾选与白名单不一致（多勾了 ControlStatus / 一个都没勾）
-    assert.equal(desktopConfigNeedsUpgrade(Object.assign({}, latest, {enabledTools: ['ControlStatus']})), true);
+    // 旧形态②：从 PyPI 现拉（缺 --from），应升级成内置 wheel
+    assert.equal(desktopConfigNeedsUpgrade(Object.assign({}, latest, {
+        args: ['windows-mcp@0.8.9', 'serve', '--no-control'],
+    })), true);
+
+    // 旧形态③：command 不是 uvx
+    assert.equal(desktopConfigNeedsUpgrade(Object.assign({}, latest, {command: 'uvx-not-on-path'})), true);
+
+    // 旧形态④：勾选为空 —— 空数组语义是「一个都不给」，等于装了不能用
     assert.equal(desktopConfigNeedsUpgrade(Object.assign({}, latest, {enabledTools: []})), true);
 
-    // 旧形态③：notes 还是旧流程文案（让模型去点亮已删除的「桌面」pill）
-    assert.equal(desktopConfigNeedsUpgrade(Object.assign({}, latest, {
-        notes: '本行写入后默认停用：先在服务器上勾选工具，再在 AI 输入框点亮「桌面」（仅本会话生效，重启失效）。',
-    })), true);
-    assert.equal(desktopConfigNeedsUpgrade(Object.assign({}, latest, {notes: ''})), true);
+    // 新契约：用户逐项取消勾选是正常操作，不能判成需要升级
+    assert.equal(desktopConfigNeedsUpgrade(Object.assign({}, latest, {enabledTools: ['Snapshot', 'Click']})), false);
+    assert.equal(desktopConfigNeedsUpgrade(Object.assign({}, latest, {enabledTools: ['ControlStatus']})), false);
 
-    // 用户自己写的 notes 不动（只认明确的旧关键词）
+    // 用户自己写的 notes 也不动（升级判定已不看 notes）
     assert.equal(desktopConfigNeedsUpgrade(Object.assign({}, latest, {
         notes: '我自己的约定：只操作记事本。',
     })), false);
-
-    // command 被改过（比如指向自己装的 uvx 路径）也算需要对齐
-    assert.equal(desktopConfigNeedsUpgrade(Object.assign({}, latest, {command: 'C:\\uv\\uvx.exe'})), true);
 });
 
-test('desktopServerConfigRow：一步到位（enabled + 白名单勾选）+ uvx + 超时放宽 + notes ≤1000', () => {
-    const row = desktopServerConfigRow();
-    assert.equal(row.command, 'uvx');
-    // --no-control（2026-11-22 实机裁决）：上游 --control 的 LL 键鼠钩子会吞系统组合键
-    assert.deepEqual(row.args, ['windows-mcp@0.8.9', 'serve', '--tools', DESKTOP_TOOLS_WHITELIST.join(','), '--no-control']);
-    // 新契约：安装即用（旧形态是 enabled:false + 空勾选，装完还要用户手动勾）
-    assert.equal(row.enabled, true);
-    assert.deepEqual(row.enabledTools, DESKTOP_TOOLS_WHITELIST);
-    // uvx 首跑要下载解释器与依赖：启动超时必须放宽（默认 30s 会失败；600000 是 Go 侧上限）
-    assert.equal(row.startupTimeoutMs, 600000);
-    assert.ok(row.env.ANONYMIZED_TELEMETRY === 'false');
+test('desktopServerConfigRow：内置 wheel（--from）+ 默认全选 + 超时放宽 + notes ≤1000', () => {
+    // 没有 plan 时降级预览：路径占位，工具清单用前端常量
+    const preview = desktopServerConfigRow();
+    assert.equal(preview.command, 'uvx');
+    assert.deepEqual(preview.args, ['--from', '<内置组件路径>', 'windows-mcp', 'serve', '--no-control']);
+    assert.equal(preview.enabled, true);
+    assert.deepEqual(preview.enabledTools, DESKTOP_ALL_TOOLS);
+    assert.equal(preview.startupTimeoutMs, 600000);
+    assert.equal(preview.env.ANONYMIZED_TELEMETRY, 'false');
+
+    // 有 plan（后端 MCPDesktopPlan）时按它写：真实 wheel 路径 + 上游工具清单
+    const wheel = 'C:/Users/x/builtin-desktop-mcp/0.8.9/windows_mcp-0.8.9-py3-none-any.whl';
+    const plan = {
+        version: '0.8.9',
+        wheelPath: wheel,
+        command: wheel ? 'uvx' : 'uvx',
+        args: ['--from', wheel, 'windows-mcp', 'serve', '--no-control'],
+        enabledTools: ['Snapshot', 'Click'],
+        startupTimeoutMs: 600000,
+        notes: '后端给的约定：任务结束调 windows_control_mode 退出。',
+        tools: [{name: 'Snapshot'}, {name: 'Click'}, {name: 'PowerShell'}],
+    };
+    const row = desktopServerConfigRow(plan);
+    assert.deepEqual(row.args, plan.args);
+    assert.deepEqual(row.enabledTools, ['Snapshot', 'Click']);
+    assert.equal(row.notes, plan.notes);
     assert.ok(row.notes.length <= 1000, 'notes 超过 ValidateServer 的 1000 字上限');
-    assert.match(row.notes, /windows_control_mode/, 'notes 要告诉模型任务结束时退出控制模式');
-    // 白名单口径：含截图（Screenshot / Snapshot 看画面），无高危组
-    assert.ok(DESKTOP_TOOLS_WHITELIST.includes('Snapshot'));
-    assert.ok(DESKTOP_TOOLS_WHITELIST.includes('Screenshot'),
-        'Screenshot 必须在白名单里（2026-11-22 恢复：图像结果已能在宿主侧落地成 PNG）');
-    for (const bad of ['Registry', 'Process', 'App', 'PowerShell', 'FileSystem']) {
-        assert.ok(!DESKTOP_TOOLS_WHITELIST.includes(bad), bad + ' 不应在桌面白名单里');
-    }
+
+    // 兜底 notes 必须告诉模型任务结束时退出控制模式
+    assert.match(desktopServerConfigRow().notes, /windows_control_mode/);
+
     // env / enabledTools 都是拷贝不是共享引用
     row.env.WINDOWS_MCP_MAX_TREE_ELEMENTS = '999';
-    row.enabledTools.push('Screenshot');
-    assert.equal(desktopServerConfigRow().env.WINDOWS_MCP_MAX_TREE_ELEMENTS, '500');
-    assert.deepEqual(desktopServerConfigRow().enabledTools, DESKTOP_TOOLS_WHITELIST);
+    row.enabledTools.push('FileSystem');
+    assert.equal(desktopServerConfigRow(plan).env.WINDOWS_MCP_MAX_TREE_ELEMENTS, '500');
+    assert.deepEqual(desktopServerConfigRow(plan).enabledTools, ['Snapshot', 'Click']);
 });

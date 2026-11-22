@@ -18,7 +18,8 @@ import {
 } from '../ai/ai-external-tools.js';
 // 桌面控制（Computer Use）的配置行构造（desktop-mcp.md §5.3/§13.5 P2 降级：
 // 复制安装命令 + 一键写入 mcp.json 行 + doctor 只读诊断；不做自动安装依赖）
-import {DESKTOP_MCP_SERVER, desktopServerConfigRow, desktopConfigNeedsUpgrade, isDesktopToolDef} from '../ai/ai-desktop-control.js';
+import {DESKTOP_MCP_SERVER, DESKTOP_ALL_TOOLS, DESKTOP_HIGH_RISK_TOOLS, desktopServerConfigRow, desktopConfigNeedsUpgrade, isDesktopToolDef} from '../ai/ai-desktop-control.js';
+import {onAppEvent} from '../core/app-events.js';
 
 export function createSettingsPaneExternalTools(deps) {
     const backend = (deps && deps.backend) || {};
@@ -405,10 +406,16 @@ export function createSettingsPaneExternalTools(deps) {
         });
     }
 
-    // ===== 桌面控制（Computer Use）卡片（2026-11-22 用户重设计：极简两件套）=====
-    // 只留「启用桌面控制」开关 + 「安装…」按钮：安装 = 写入 mcp.json 服务器行（含白名单工具
-    // 勾选）+ 让后端预热 uv / Python 依赖；未安装时开关呈禁用态。
-    // 会话级授权不在这里——它在 AI 权限面板（每会话独立），也是个开关。
+    // ===== 桌面控制（Computer Use）卡片 =====
+    // 形态（2026-11-22 用户二次裁决，取代「开关 + 安装按钮」两件套）：
+    //   ① 开关即安装——打开开关就装依赖，首次在开关下面显示进度条 + 上游日志；
+    //   ② 装好后在开关下面列出上游**全部工具**（Go 侧 internal/desktopmcp.AllTools），
+    //      默认全选，用户可逐项取消。
+    // mcp.json 的 enabledTools 是唯一的工具可见性闸（空数组 = 一个都不给，server 也不启动）；
+    // 会话授权与控制模式是另外两道闸，不在这张卡片上。
+
+    let desktopPlan = null;   // MCPDesktopPlan() 快照（wheel 路径、上游工具清单、notes）
+    let desktopInstall = {running: false, percent: 0, stage: '', detail: '', line: '', error: '', done: false};
 
     function desktopRow() {
         return (desktopMcpConfig && desktopMcpConfig.mcpServers && desktopMcpConfig.mcpServers[DESKTOP_MCP_SERVER]) || null;
@@ -419,10 +426,51 @@ export function createSettingsPaneExternalTools(deps) {
         return getMcpToolDefs().filter(isDesktopToolDef).length;
     }
 
+    // 工具清单优先用后端 plan（真相在上游 wheel），拿不到时退到前端常量（浏览器 mock）
+    function desktopToolList() {
+        if (desktopPlan && Array.isArray(desktopPlan.tools) && desktopPlan.tools.length) return desktopPlan.tools;
+        return DESKTOP_ALL_TOOLS.map((name) => ({name}));
+    }
+
     function refreshPanelSnapshot() {
         const panel = getAiPanel();
         if (panel && typeof panel.refreshMcpConfig === 'function') {
             Promise.resolve(panel.refreshMcpConfig()).catch(() => {}); // 尽力而为：拉新快照
+        }
+    }
+
+    async function loadDesktopPlan() {
+        if (typeof backend.MCPDesktopPlan !== 'function') {
+            desktopPlan = null;
+            return;
+        }
+        try {
+            const plan = await backend.MCPDesktopPlan();
+            desktopPlan = (plan && typeof plan === 'object') ? plan : null;
+        } catch (e) {
+            desktopPlan = null; // plan 只用于预览与清单：拿不到就降级，不阻塞卡片
+        }
+    }
+
+    // 页面重建时把正在跑的安装进度接回来（事件只在推送时刻有效）
+    async function loadDesktopInstallStatus() {
+        if (typeof backend.MCPDesktopInstallStatus !== 'function') return;
+        try {
+            const st = await backend.MCPDesktopInstallStatus();
+            if (!st || typeof st !== 'object') return;
+            desktopInstall.running = !!st.running;
+            if (st.error) desktopInstall.error = String(st.error);
+            if (st.done) {
+                desktopInstall.done = true;
+                desktopInstall.percent = 100;
+                desktopInstall.detail = '安装完成';
+            } else if (st.progress && typeof st.progress === 'object') {
+                desktopInstall.percent = Number(st.progress.percent) || 0;
+                desktopInstall.stage = String(st.progress.stage || '');
+                desktopInstall.detail = String(st.progress.detail || '');
+            }
+        } catch (e) {
+            // 状态查询是尽力而为：拿不到就当没有作业，卡片照常显示
         }
     }
 
@@ -435,6 +483,8 @@ export function createSettingsPaneExternalTools(deps) {
         } catch (e) {
             desktopMcpConfig = null; // 读取失败不阻塞整页：卡片显示为不可用
         }
+        await loadDesktopPlan();
+        await loadDesktopInstallStatus();
     }
 
     function copyText(text) {
@@ -443,7 +493,41 @@ export function createSettingsPaneExternalTools(deps) {
             .catch(() => flash('复制失败：剪贴板不可用', true));
     }
 
-    // 启用 / 停用（应用级）：只切 mcp.json 里该行的 enabled，不动工具勾选与会话授权
+    // 安装进度事件：Go 侧 desktopmcp.Install 逐阶段推送（release → uv → warm → done/error）
+    let desktopEventBound = false;
+    function bindDesktopInstallEvent() {
+        if (desktopEventBound) return;
+        desktopEventBound = true;
+        onAppEvent('mcp-desktop-install', (payload) => {
+            if (!payload || typeof payload !== 'object') return;
+            const phase = String(payload.phase || 'running');
+            if (payload.stage) desktopInstall.stage = String(payload.stage);
+            if (typeof payload.detail === 'string') desktopInstall.detail = payload.detail;
+            if (typeof payload.line === 'string') desktopInstall.line = payload.line;
+            if (typeof payload.percent === 'number') desktopInstall.percent = payload.percent;
+            if (phase === 'error') {
+                desktopInstall.running = false;
+                desktopInstall.error = String(payload.error || '安装失败');
+            } else if (phase === 'done') {
+                desktopInstall.running = false;
+                desktopInstall.done = true;
+                desktopInstall.error = '';
+                desktopInstall.percent = 100;
+                desktopInstall.detail = '安装完成';
+                // 装完刷新两处：plan（wheel 就绪）与 MCP 快照（工具出现）
+                void loadDesktopPlan().then(() => {
+                    refreshPanelSnapshot();
+                    paintDesktop();
+                });
+            } else {
+                desktopInstall.running = true;
+                desktopInstall.error = '';
+            }
+            paintDesktop();
+        });
+    }
+
+    // 开关「启用」：已安装时只切 enabled；未安装时先写入配置行再启动异步安装。
     async function setDesktopEnabled(on) {
         if (typeof backend.MCPWriteConfig !== 'function' || !desktopMcpConfig) {
             flash('当前后端版本不支持写入 MCP 配置', true);
@@ -466,17 +550,18 @@ export function createSettingsPaneExternalTools(deps) {
         }
     }
 
-    // 安装 / 更新：写入服务器行（一步到位：enabled + 白名单工具勾选）→ 让后端预热 uv / 依赖。
-    // 已存在时是「更新配置」而不是重装：只覆盖我们管理的字段（command / args / env /
-    // enabledTools / notes / 超时），保留用户别的自定义项。旧行缺 --no-control 就是靠这条修复的
-    // （否则上游会弹「AI is about to take control of this computer」接管确认窗）。
-    // 预热失败不阻塞：uvx 首次真正启动时还会再试一次自动下载。
-    async function runDesktopInstall() {
-        if (typeof backend.MCPWriteConfig !== 'function') {
-            flash('当前后端版本不支持写入 MCP 配置', true);
+    // 安装：写配置行（含内置 wheel 路径与全量工具勾选）→ 起后端异步作业 → 进度走事件。
+    // 已存在时是「更新配置」而不是重装：只覆盖我们管理的字段，保留用户别的自定义项与
+    // 已取消的工具勾选（enabledTools 只在「空」时才补成全量）。
+    async function startDesktopInstall() {
+        if (desktopInstall.running) {
+            flash('安装正在进行中，请稍候');
             return;
         }
-        const existing = desktopRow();
+        if (typeof backend.MCPDesktopInstallStart !== 'function') {
+            flash('当前后端版本不支持异步安装（需要重新构建应用）', true);
+            return;
+        }
         desktopBusy = 'install';
         paintDesktop();
         try {
@@ -485,60 +570,180 @@ export function createSettingsPaneExternalTools(deps) {
                 if (!desktopMcpConfig || typeof desktopMcpConfig !== 'object') desktopMcpConfig = {version: 1, mcpServers: {}};
                 if (!desktopMcpConfig.mcpServers) desktopMcpConfig.mcpServers = {};
             }
+            await loadDesktopPlan(); // 拿 wheel 绝对路径与上游工具清单
+            const existing = desktopRow();
+            const row = Object.assign({}, existing || {}, desktopServerConfigRow(desktopPlan));
+            const kept = Array.isArray(existing && existing.enabledTools) ? existing.enabledTools : [];
+            if (kept.length) row.enabledTools = kept.slice(); // 尊重用户已经取消的勾选
             const next = Object.assign({}, desktopMcpConfig, {version: 1});
             next.mcpServers = Object.assign({}, desktopMcpConfig.mcpServers);
-            next.mcpServers[DESKTOP_MCP_SERVER] = Object.assign({}, existing || {}, desktopServerConfigRow());
+            next.mcpServers[DESKTOP_MCP_SERVER] = row;
             await backend.MCPWriteConfig(next);
             desktopMcpConfig = next;
-            refreshPanelSnapshot();
-            if (!existing && typeof backend.MCPDesktopInstall === 'function') {
-                const result = await backend.MCPDesktopInstall();
-                flash(result && result.ok
-                    ? '桌面控制已安装完成'
-                    : '桌面控制已安装；依赖预热未完成：' + ((result && result.error) || '首次控制时会自动下载'));
-            } else if (existing) {
-                flash('桌面控制配置已更新（已关闭上游接管确认窗，server 已重启）');
+
+            desktopInstall = {running: true, percent: 1, stage: 'release', detail: '准备安装', line: '', error: '', done: false};
+            const res = await backend.MCPDesktopInstallStart();
+            if (res && res.busy) {
+                flash('已有一个安装作业在跑，进度见下方');
             } else {
-                flash('桌面控制已安装：首次控制时 uvx 会自动下载 uv / Python 依赖（约 100 MB，需几分钟）');
+                flash('开始安装：内置组件已就绪，首次会下载 Python 3.14 与依赖（约 100–190 MB）');
             }
             refreshPanelSnapshot();
         } catch (e) {
-            flash((existing ? '更新' : '安装') + '失败：' + ((e && e.message) || e), true);
+            desktopInstall.running = false;
+            flash('安装失败：' + ((e && e.message) || e), true);
         } finally {
             desktopBusy = '';
             paintDesktop();
         }
     }
 
+    // 单个工具开关：直接改 mcp.json 的 enabledTools（唯一的可见性闸）。
+    // 不允许清空——空数组语义是「一个都不给」，server 连进程都不会起。
+    async function setDesktopToolEnabled(name, on) {
+        const row = desktopRow();
+        if (!row || typeof backend.MCPWriteConfig !== 'function' || !desktopMcpConfig) return;
+        const current = Array.isArray(row.enabledTools) ? row.enabledTools.slice() : [];
+        const next = on
+            ? (current.includes(name) ? current : current.concat([name]))
+            : current.filter((tool) => tool !== name);
+        if (!next.length) {
+            flash('至少要保留一个工具：勾选为空时这个服务器不会启动', true);
+            paintDesktop();
+            return;
+        }
+        try {
+            const cfg = Object.assign({}, desktopMcpConfig, {version: 1});
+            cfg.mcpServers = Object.assign({}, desktopMcpConfig.mcpServers);
+            cfg.mcpServers[DESKTOP_MCP_SERVER] = Object.assign({}, row, {enabledTools: next});
+            await backend.MCPWriteConfig(cfg);
+            desktopMcpConfig = cfg;
+            refreshPanelSnapshot();
+        } catch (e) {
+            flash('保存失败：' + ((e && e.message) || e), true);
+        }
+        paintDesktop();
+    }
+
+    // 进度区：stage/detail 文本 + 细进度条（百分比是阶段估算，不是字节进度）
+    function desktopProgressNode() {
+        const wrap = document.createElement('div');
+        wrap.className = 'extcap-desktop-progress';
+        const bar = document.createElement('div');
+        bar.className = 'extcap-desktop-progress-bar';
+        const fill = document.createElement('div');
+        fill.className = 'extcap-desktop-progress-fill';
+        fill.style.width = Math.max(2, Math.min(100, desktopInstall.percent || 0)) + '%';
+        bar.appendChild(fill);
+        const text = document.createElement('div');
+        text.className = 'extcap-desktop-progress-text' + (desktopInstall.error ? ' is-error' : '');
+        if (desktopInstall.error) {
+            text.textContent = '安装失败：' + desktopInstall.error;
+        } else {
+            const pct = desktopInstall.percent ? desktopInstall.percent + '% · ' : '';
+            const detail = desktopInstall.detail || '安装中…';
+            text.textContent = pct + detail + (desktopInstall.line ? '（' + desktopInstall.line + '）' : '');
+        }
+        wrap.append(bar, text);
+        return wrap;
+    }
+
+    // 工具开关列表：上游全部工具，一工具一行（名字 + 风险标注 + 说明 + 开关）
+    function desktopToolsNode(row) {
+        const list = document.createElement('div');
+        list.className = 'extcap-desktop-tools';
+        const enabledTools = Array.isArray(row.enabledTools) ? row.enabledTools : [];
+        for (const tool of desktopToolList()) {
+            const name = String((tool && tool.name) || (typeof tool === 'string' ? tool : '') || '');
+            if (!name) continue;
+            const line = document.createElement('div');
+            line.className = 'extcap-desktop-tool';
+            const label = document.createElement('div');
+            label.className = 'extcap-desktop-tool-name';
+            const strong = document.createElement('span');
+            strong.textContent = name;
+            label.appendChild(strong);
+            if (DESKTOP_HIGH_RISK_TOOLS.includes(name)) {
+                const risk = document.createElement('span');
+                risk.className = 'extcap-desktop-tool-risk';
+                risk.textContent = '可改系统';
+                label.appendChild(risk);
+            }
+            if (tool && tool.note) {
+                const note = document.createElement('span');
+                note.className = 'extcap-desktop-tool-note';
+                note.textContent = tool.note;
+                label.appendChild(note);
+            }
+            const sw = createSwitch({
+                checked: enabledTools.includes(name),
+                onChange: (event) => void setDesktopToolEnabled(name, event.target.checked),
+            });
+            line.append(label, sw.element);
+            list.appendChild(line);
+        }
+        return list;
+    }
+
     function paintDesktop() {
         if (!els.desktop) return;
+        bindDesktopInstallEvent();
         els.desktop.textContent = '';
         const row = desktopRow();
         const installed = !!row;
         const enabled = installed && row.enabled !== false;
         const count = desktopToolCount();
-        const preview = desktopServerConfigRow();
+        const installing = desktopInstall.running;
         const needsUpgrade = installed && desktopConfigNeedsUpgrade(row);
-        const desc = needsUpgrade
-            ? '当前是本应用的旧版配置（缺 --no-control，上游会弹接管确认窗）。点「更新配置」升级，不需要重装'
-            : (installed
-                ? (count
-                    ? 'AI 可操作第三方原生窗口（读取界面 / 点击 / 输入 / 滚动 / 剪贴板）。真正动手前还要进入控制模式，面板顶部会显示提示'
-                    : '已安装；首次启动 uvx 会下载 uv / Python 依赖（约 100 MB），工具数稍后自动出现')
-                : '未安装。点「安装」写入配置并下载 uv / Python 依赖（约 100 MB，需几分钟）；运行引擎由系统提供');
-        const sw = createSwitch({
-            checked: enabled,
-            disabled: !installed || desktopBusy === 'toggle',
-            onChange: (event) => void setDesktopEnabled(event.target.checked),
-        });
-        const busyLabel = desktopBusy === 'install' ? (installed ? '更新中…' : '安装中…') : '';
-        const actions = !installed
-            ? [button(busyLabel || '安装…', 'dlg-btn', () => void runDesktopInstall())]
+        const plan = desktopPlan || {};
+        const preview = desktopServerConfigRow(desktopPlan);
+        const desc = installing
+            ? (desktopInstall.detail || '正在安装依赖…')
             : (needsUpgrade
-                ? [button(busyLabel || '更新配置', 'dlg-btn', () => void runDesktopInstall()),
-                   button('复制启动命令', 'dlg-btn', () => copyText(preview.command + ' ' + preview.args.join(' ')))]
-                : [button('复制启动命令', 'dlg-btn', () => copyText(preview.command + ' ' + preview.args.join(' ')))]);
+                ? '当前是本应用的旧版配置（缺 --no-control 或仍从 PyPI 拉取）。点「更新配置」升级，不需要重装'
+                : (installed
+                    ? (count
+                        ? 'AI 可操作第三方原生窗口（读取界面 / 点击 / 输入 / 滚动 / 剪贴板）。真正动手前还要进入控制模式，面板顶部会显示提示'
+                        : '已安装；server 启动后工具会出现在下面（首次启动会下载依赖）')
+                    : '打开开关即安装：内置组件随应用分发，首次会下载 Python 3.14 与依赖（约 100–190 MB，需几分钟）'));
+        const sw = createSwitch({
+            checked: enabled || installing,
+            disabled: desktopBusy === 'toggle',
+            onChange: (event) => {
+                const on = event.target.checked;
+                if (on && !installed) {
+                    void startDesktopInstall();
+                    return;
+                }
+                void setDesktopEnabled(on);
+            },
+        });
+        const actions = [];
+        if (needsUpgrade) {
+            actions.push(button(installing ? '更新中…' : '更新配置', 'dlg-btn', () => void startDesktopInstall()));
+        }
+        if (installed) {
+            actions.push(button('复制启动命令', 'dlg-btn', () => copyText(preview.command + ' ' + preview.args.join(' '))));
+        }
+        if (installing && typeof backend.MCPDesktopInstallStart === 'function') {
+            const busy = button('安装中…', 'dlg-btn', () => {});
+            busy.disabled = true;
+            actions.push(busy);
+        }
         els.desktop.appendChild(fieldRow('启用桌面控制', desc, ...actions, sw.element));
+        if (installing || desktopInstall.error) {
+            els.desktop.appendChild(desktopProgressNode());
+        }
+        if (installed && !installing) {
+            // 工具清单的光靠 plan：plan 没拿到（旧后端 / mock）时用前端常量降级
+            if (!plan.tools) {
+                const hint = document.createElement('div');
+                hint.className = 'extcap-desktop-progress-text';
+                hint.textContent = '工具清单待后端就绪后显示；当前按已知的 ' + DESKTOP_ALL_TOOLS.length + ' 个工具列出。';
+                els.desktop.appendChild(hint);
+            }
+            els.desktop.appendChild(desktopToolsNode(row));
+        }
     }
 
     // 页头：统一标题 + 保存状态徽标。页头节点在 mount 时 prepend 到 root，

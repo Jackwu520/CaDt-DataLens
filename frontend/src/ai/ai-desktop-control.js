@@ -31,16 +31,24 @@ export function isDesktopToolDef(def) {
     return !!(def && def.mcpServer === DESKTOP_MCP_SERVER);
 }
 
-// 服务器行白名单：观察组 + 输入组 + 截图。
-// Screenshot（2026-11-22 起纳入）：上游的纯截图工具（readOnlyHint=True），支持
-// display / region / save_path；「看画面」靠它。此前排除它的理由是「MCP 客户端把 image
-// 结果降级成占位文本」——该限制已由宿主侧修掉（internal/mcp 把图片落地成 PNG 文件、
-// 结果里返回绝对路径，模型用 read_image 查看），所以恢复。
-// 仍排除 Registry / Process / App / PowerShell / FileSystem（dsh 同款默认排除 +
-// 本项目 MCP 参数不过路径闸）。
-export const DESKTOP_TOOLS_WHITELIST = ['Snapshot', 'Screenshot', 'Click', 'Move', 'Scroll', 'Type', 'Shortcut', 'Clipboard'];
+// 上游 windows-mcp 0.8.9 注册的全部 21 个工具（13 个模块合计）。
+// 权威清单在 Go 侧 internal/desktopmcp.AllTools（安装时按它写 enabledTools），这里保留一份
+// 只用于「还没拿到后端 plan 时的预览 / 浏览器 mock 降级」；两侧一致性由
+// internal/desktopmcp/desktopmcp_test.go 与 test/ai/ai-desktop-control.test.mjs 对账。
+export const DESKTOP_ALL_TOOLS = Object.freeze([
+    'Snapshot', 'Screenshot', 'DisplayInventory', 'Click', 'Type', 'Scroll', 'Move',
+    'Shortcut', 'Wait', 'WaitFor', 'Find', 'Clipboard', 'Scrape', 'MultiSelect', 'MultiEdit',
+    'App', 'Notification', 'Process', 'PowerShell', 'FileSystem', 'Registry', 'ControlStatus',
+]);
 
-// dsh 同款默认 env（§2）；人机争用走上游默认 USER_CONTROL（10s 内物理输入优先）。
+// 高风险工具：能执行命令、改系统、批量写或弹系统级提示。
+// 2026-11-22 用户裁决：默认**全部勾选**（装好即可用），所以风险不靠默认值兜，
+// 而是靠设置页逐项开关 + 一句标注，让「取消勾选」这件事可发现。
+export const DESKTOP_HIGH_RISK_TOOLS = Object.freeze([
+    'PowerShell', 'FileSystem', 'Registry', 'Process', 'App', 'Clipboard', 'MultiEdit', 'Notification',
+]);
+
+// 上游默认 env（原始方案 §2）；人机争用走上游默认 USER_CONTROL（10s 内物理输入优先）。
 export const DESKTOP_SERVER_ENV = Object.freeze({
     WINDOWS_MCP_SCREENSHOT_SCALE: '0.75',
     WINDOWS_MCP_DISABLE_FLASH: '1',
@@ -50,63 +58,60 @@ export const DESKTOP_SERVER_ENV = Object.freeze({
     ANONYMIZED_TELEMETRY: 'false',
 });
 
-// 安装按钮写入 mcp.json 的服务器行：命令用 uvx 直跑（首次自动下载解释器与依赖）。
-// 与旧形态（enabled:false + enabledTools:[]，装完还要用户手动勾选）不同，这里一步到位——
-// 用户要的是「安装完就能用」，工具白名单已由 --tools 限定，勾选清单与它同源。
-// startupTimeoutMs 给到上限 600000（10 分钟）：默认 30s 容不下 uvx 首次下载
-// Python 3.14 解释器 + 依赖；之后缓存命中，大值无害（mcp_config.go 上限即此值）。
+// 写入 mcp.json 的服务器行（2026-11-22 二次改造：内置 wheel + 默认全选）。
+// 命令用 uvx --from <内置 wheel>：代码来源固定为随 exe 分发的 0.8.9 wheel，
+// 依赖仍由 uv 解析下载（首次约 100–190 MB）；--from 的实现见 internal/desktopmcp。
+// plan 来自后端 MCPDesktopPlan()（含真实 wheel 绝对路径、上游工具清单与 notes）；
+// 没拿到 plan 时（浏览器 mock / 首帧预览）用 DESKTOP_ALL_TOOLS 与占位路径降级。
 // --no-control（2026-11-22 实机裁决）：上游 --control 用 WH_KEYBOARD_LL/WH_MOUSE_LL
 // 低级钩子做「桌面所有权」，AI 操作期间吞全部物理输入，实测会把 Alt+Tab /
 // Win+Shift+S 等系统组合键卡死到 server 进程退出；授权语义由本应用的会话开关承担。
-// notes 是给模型的使用约定（≤1000 字，mcpNotesBlock 注入），写清边界与首次启动耗时。
-export function desktopServerConfigRow() {
+// 不再传 --tools：工具可见性统一由 enabledTools（应用侧勾选）控制，用户才能逐项开关。
+export function desktopServerConfigRow(plan) {
+    const tools = Array.isArray(plan && plan.tools) && plan.tools.length
+        ? plan.tools.map((tool) => (typeof tool === 'string' ? tool : String(tool && tool.name || ''))).filter(Boolean)
+        : DESKTOP_ALL_TOOLS.slice();
+    const wheelPath = String((plan && plan.wheelPath) || '').trim();
+    const from = wheelPath || '<内置组件路径>';
     return {
-        command: 'uvx',
-        args: ['windows-mcp@0.8.9', 'serve', '--tools', DESKTOP_TOOLS_WHITELIST.join(','), '--no-control'],
+        command: String((plan && plan.command) || 'uvx'),
+        args: Array.isArray(plan && plan.args) && plan.args.length && wheelPath
+            ? plan.args.slice()
+            : ['--from', from, 'windows-mcp', 'serve', '--no-control'],
         env: Object.assign({}, DESKTOP_SERVER_ENV),
         enabled: true,
-        enabledTools: DESKTOP_TOOLS_WHITELIST.slice(),
-        startupTimeoutMs: 600000,
-        notes: '桌面控制（Computer Use）：第三方原生窗口的 GUI 自动化。工具白名单含观察组、输入组与截图'
-            + '（Screenshot / Snapshot 看画面，Click / Type / Move / Scroll / Shortcut 操作，Clipboard 读写剪贴板；'
-            + '无 Registry / Process / App / PowerShell / FileSystem）。'
-            + '想知道屏幕上是什么：调 Screenshot（快照 + 画面，可用 display=[0] 选显示器、region=[left,top,right,bottom] 只截一块）'
-            + '或 Snapshot(use_vision=True)（连可交互元素一起给）。宿主会把返回的图片存成 PNG 并在文本里给出绝对路径，'
-            + '用 read_image 打开该路径即可看到画面。'
-            + '首次启动 uvx 会下载 Python 3.14 解释器与依赖（约 100 MB，耗时数分钟，启动超时已放宽到 10 分钟；'
-            + '下载完成后启动只需几秒）。'
-            + '只操作用户明确要求的目标窗口，一次任务结束就停，不要顺手点别的东西；'
-            + '任务结束时调 windows_control_mode 退出，让用户知道控制已交还。',
+        enabledTools: Array.isArray(plan && plan.enabledTools) && plan.enabledTools.length
+            ? plan.enabledTools.slice()
+            : tools.slice(),
+        startupTimeoutMs: Number((plan && plan.startupTimeoutMs) || 600000),
+        notes: String((plan && plan.notes) || '').trim() || DESKTOP_SERVER_NOTES,
     };
 }
 
-// notes 是否还是旧流程文案（旧文案让模型去「点亮桌面 pill」，pill 已删 → 模型困惑）。
-// 只认明确的旧关键词：用户自己改过的 notes 一律不动。
-function desktopNotesStale(notes) {
-    const text = String(notes || '').trim();
-    if (!text) return true;
-    return /点亮「桌面」|输入框点亮|windows_desktop/.test(text);
-}
+// 无 plan 时的 notes 兜底（权威文案在 Go 侧 internal/desktopmcp.serverNotes）。
+const DESKTOP_SERVER_NOTES = '桌面控制（Computer Use）：第三方原生窗口的 GUI 自动化，工具在用户开启会话授权并'
+    + '进入控制模式后才可用。看画面用 Screenshot 或 Snapshot(use_vision=True)（元素带编号，'
+    + 'Click/Type/Scroll 传 label=编号 比坐标稳），页面正文用 Scrape(use_dom=True)。'
+    + '宿主会把返回的图片存成 PNG 并给出绝对路径，用 read_image 打开即可看到画面。'
+    + '只操作用户明确要求的目标窗口，一次任务结束就停，并调 windows_control_mode 退出交还控制权。';
 
 // desktopConfigNeedsUpgrade：已有 mcp.json 行是否是旧形态，需要就地升级。
 // 触发条件（任一）：
 //   · args 缺 --no-control —— 上游 --control 的 LL 键鼠钩子会吞系统组合键，且会弹
 //     「AI is about to take control of this computer」接管确认窗（2026-11-22 用户实测）；
-//   · 工具勾选与白名单不一致（旧版本默认全不勾 / 或多勾了 ControlStatus 之类）；
-//   · notes 还是旧流程文案。
-// 这是「升级」而不是「重装」：只覆盖我们管理的字段，保持用户的其他设置。
+//   · args 缺 --from —— 旧形态从 PyPI 现拉 windows-mcp，而不是用随 exe 分发的内置 wheel；
+//   · command 不是 uvx；
+//   · enabledTools 为空 —— 空数组语义是「一个都不给」，等于装了却不能用。
+// 注意：**不**拿「是否等于全量清单」当升级条件——用户逐项取消勾选是正常操作，不能被反复判脏。
 export function desktopConfigNeedsUpgrade(row) {
     if (!row || typeof row !== 'object') return false;
-    const latest = desktopServerConfigRow();
     const args = Array.isArray(row.args) ? row.args : [];
     if (!args.includes('--no-control')) return true;
-    if (String(row.command || '') !== latest.command) return true;
+    if (!args.includes('--from')) return true;
+    if (String(row.command || '') !== 'uvx') return true;
     const have = Array.isArray(row.enabledTools) ? row.enabledTools : [];
-    const want = latest.enabledTools;
-    if (have.length !== want.length || want.some((tool) => !have.includes(tool))) return true;
-    return desktopNotesStale(row.notes);
+    return have.length === 0;
 }
-
 
 export function controlModeActionOf(input) {
     const raw = String((input && input.action) || '').trim().toLowerCase();
