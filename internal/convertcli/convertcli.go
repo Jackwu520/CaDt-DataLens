@@ -215,7 +215,7 @@ func ParseArgs(args []string) (*Options, bool, error) {
 
 // Usage 是 --convert 的帮助文本。
 const Usage = `用法：
-  CaDt-DataLens.exe --convert <输入...> --to <格式> [--out <文件|目录>] [--stdout] [--force]
+  CaDt-DataLens.exe --convert <输入...> --to/-t <格式> [--out/-o <文件|目录>] [--stdout] [--force]
 
 格式：json、jsonl、yaml、xml、csv、toml、ini
 示例：

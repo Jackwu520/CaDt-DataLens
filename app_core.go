@@ -254,12 +254,15 @@ func secondInstancePlan(args []string, deps forwardDeps) forwardPlan {
 	}
 	targets := launchargs.ParseOpenTargets(args)
 	sessionID := launchargs.ParseAISessionArg(args)
+	sessionNoRoute := false
 	if sessionID != "" && len(targets) == 0 {
 		if ws, err := resolve(sessionID); err == nil && ws != "" {
 			return forwardPlan{kind: "sessionOpen", sessionID: sessionID, workspace: ws}
 		}
+		// 会话不存在或无归属：绝不把 CWD 兜底成打开目标（缺陷 B）；但后续定点
+		// 分支（settings/memo）继续生效——组合参数不该因会话解析失败被整体吞掉。
 		writeAppLog("warn", "--ai-session 转发：会话不存在或无归属工作区（%q），仅前置窗口", sessionID)
-		return forwardPlan{kind: "show"}
+		sessionNoRoute = true
 	}
 	if pane := launchargs.ParseOpenSettingsArg(args); pane != "" {
 		return forwardPlan{kind: "settings", targets: targets, pane: pane}
@@ -268,6 +271,9 @@ func secondInstancePlan(args []string, deps forwardDeps) forwardPlan {
 		return forwardPlan{kind: "memo", targets: targets, locator: loc}
 	}
 	if len(targets) == 0 {
+		if sessionNoRoute {
+			return forwardPlan{kind: "show"}
+		}
 		targets = launchargs.StartupCwdTarget()
 		if len(targets) == 0 {
 			return forwardPlan{kind: "show"}
@@ -374,6 +380,10 @@ func (a *App) secondInstance(args []string) {
 				"workspace": plan.workspace,
 				"sessionId": plan.sessionID,
 			})
+		} else if plan.sessionID != "" {
+			// 会话归属解析成功但没有任何接收窗口的工作区匹配：丢弃会话（保持打开
+			// 文件），warn 对齐 forwardPlan 注释与提交信息的行为描述。
+			writeAppLog("warn", "--ai-session 转发：无工作区匹配的接收窗口（会话 %q 归属 %q），仅投递文件", plan.sessionID, plan.workspace)
 		}
 	default:
 		a.secondInstanceShow()

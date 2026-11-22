@@ -120,9 +120,9 @@ func ParseArgs(args []string) (*Options, bool, error) {
 
 // Usage 是补丁命令行的帮助文本（main.go 顶层 --help 拼接打印；行为细节见文件头注释）。
 const Usage = `补丁命令行（不启动窗口、不依赖 AI，处理完直接退出）：
-  CaDt-DataLens.exe --check-patch  x.patch [--dir D:\repo] [--json]
-  CaDt-DataLens.exe --apply-patch  x.patch [--dir D:\repo] [--partial|--atomic] [--only 文件,文件] [--ignore-whitespace] [--allow-offset] [--on-conflict abort|stash] [--json] --yes
-  CaDt-DataLens.exe --revert-patch <补丁id> [--dir D:\repo] --yes
+  CaDt-DataLens.exe --check-patch  x.patch [--dir/-d D:\repo] [--json]
+  CaDt-DataLens.exe --apply-patch  x.patch [--dir/-d D:\repo] [--partial|--atomic] [--only 文件,文件] [--ignore-whitespace] [--allow-offset] [--on-conflict abort|stash] [--json] --yes/-y
+  CaDt-DataLens.exe --revert-patch <补丁id> [--dir/-d D:\repo] --yes/-y
 
 退出码：0 成功；1 有文件未应用；2 参数/路径错误；3 内部错误；4 缺少 --yes；5 回滚失败。`
 

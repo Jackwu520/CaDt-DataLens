@@ -29,6 +29,8 @@ func TestParseOpenTargets(t *testing.T) {
 		{"plain", []string{a}, a, 0, 0, 1},
 		{"line-suffix", []string{a + ":12"}, a, 12, 0, 1},
 		{"line-column", []string{a + ":12:7"}, a, 12, 7, 1},
+		// 真实存在的目录 + 行号：拆分 tier 1（stat 前缀命中），目录目标带行号。
+		{"dir-with-line", []string{dir + ":12"}, dir, 12, 0, 1},
 		{"line-flag-before", []string{"--line", "9", a}, a, 9, 0, 1},
 		{"line-flag-after", []string{a, "--line=8"}, a, 8, 0, 1},
 		{"goto", []string{"-g", a + ":3"}, a, 3, 0, 1},
@@ -39,6 +41,8 @@ func TestParseOpenTargets(t *testing.T) {
 		{"missing-line-suffix", []string{missing + ":2"}, missing, 2, 0, 1},
 		{"missing-line-column", []string{missing + ":2:7"}, missing, 2, 7, 1},
 		{"missing-with-pending-flag", []string{"--line", "5", missing}, missing, 5, 0, 1},
+		// 后缀行号比 pending 更具体，覆盖 pending（审查 P3-5：新语义钉进测试）。
+		{"missing-suffix-overrides-pending", []string{"--line", "5", missing + ":7"}, missing, 7, 0, 1},
 		{"non-path-with-int-suffix", []string{a + ":abc"}, a + ":abc", 0, 0, 1},
 		{"multiple", []string{a + ":2", b + ":3"}, a, 2, 0, 2},
 	}

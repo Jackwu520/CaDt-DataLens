@@ -62,6 +62,16 @@ func TestSecondInstancePlan(t *testing.T) {
 			forwardPlan{kind: "sessionOpen", sessionID: "sess-1", workspace: "D:/proj"}},
 		{"session-gone-show", []string{"--ai-session=gone"}, nil, forwardPlan{kind: "show"}},
 		{"session-empty-ws-show", []string{"--ai-session=sess-empty"}, nil, forwardPlan{kind: "show"}},
+		// 审查 P2-3：会话解析失败不吞同命令行的定点分支（settings/memo 仍生效）；
+		// 会话解析成功则 sessionOpen 优先（转发路径二选一，与冷启动并存语义的差异记方案 §7）。
+		{"session-gone-settings-fallthrough", []string{"--ai-session=gone", "--open-settings=ai"}, nil,
+			forwardPlan{kind: "settings", pane: "ai", targets: []launchargs.OpenTarget{}}},
+		{"session-open-overrides-settings", []string{"--ai-session=sess-1", "--open-settings=ai"}, nil,
+			forwardPlan{kind: "sessionOpen", sessionID: "sess-1", workspace: "D:/proj"}},
+		// 审查 P3-4：--new-window + --ai-session（无文件）走 sessionOpen 同工作区复用
+		//（「同一工作区禁止双开」裁定），--new-window 被忽略。
+		{"session-open-ignores-new-window", []string{"--new-window", "--ai-session=sess-1"}, nil,
+			forwardPlan{kind: "sessionOpen", sessionID: "sess-1", workspace: "D:/proj"}},
 		{"settings", []string{"--open-settings=ai"}, nil,
 			forwardPlan{kind: "settings", pane: "ai", targets: []launchargs.OpenTarget{}}},
 		// 缺陷 D：定点打开不再吞掉同命令行的文件目标。
@@ -167,7 +177,8 @@ func TestRouteWindowForPath(t *testing.T) {
 		{filepath.Join(sub, "missing.json"), "main-2"}, // 不存在按文件：从所在目录起爬
 		{filepath.Join(root, "missing.json"), "main"},
 		{filepath.Join(root, "subX", "a.json"), "main"}, // 兄弟目录不误命中（精确相等口径）
-		{"a.json", ""}, // 相对路径无归属
+		{"a.json", ""},    // 相对路径无归属
+		{`C:\a.json`, ""}, // 盘根终止：c: → c:. 链路收敛（审查 P3-6）
 	}
 	for _, tc := range cases {
 		if got := routeWindowForPath(tc.path); got != tc.want {
