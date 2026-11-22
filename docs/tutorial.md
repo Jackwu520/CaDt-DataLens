@@ -208,23 +208,28 @@ CaDt-DataLens.exe --memo "cadt-memo://workspace/item/it-xxx"
 
 ### 解决什么
 
-从外部工具或命令行打开文件时，直接指定文件和行列，省去打开后再手动跳转。
+从外部工具或命令行打开文件时，直接指定文件和行列，省去打开后再手动跳转；也能直达设置页、AI 会话、便签定位点，或在不启动窗口的情况下做格式转换、补丁处理。
 
 ### 写法
 
 ```bat
 CaDt-DataLens.exe "D:\data\sample.json:42:8"
-CaDt-DataLens.exe "D:\data\sample.json:42"
 CaDt-DataLens.exe "D:\data\sample.json" --line 42
 CaDt-DataLens.exe --line 42 "D:\data\sample.json"
-CaDt-DataLens.exe -g "D:\data\sample.json:42"
+CaDt-DataLens.exe --help
 ```
 
-- 行、列从 1 开始，列可省略。
-- 参数形式：`--line` / `-l` 指定行，`--column` / `-c` 指定列，`--goto` / `-g` 用 `文件:行[:列]` 的紧凑写法。
-- 可以一次传多个文件。
-- 图片和二进制文件忽略行列。
-- 程序已在运行时，新命令转发到现有窗口并定位，不会另起一个实例。
+- 行、列从 1 开始，列可省略；`--line/-l` 与 `--column/-c` 作用于紧随其后的那个路径，其后没有路径时作用于最后一个路径；`--goto/-g` 是 VS Code 风格的兼容标记，本身无效果。
+- 可以一次传多个文件；图片和二进制文件忽略行列。
+- **`--help` 打印全部参数**（含下面 headless 子命令的完整用法），`--version` 打印版本号。
+- **定点打开**：`--open-settings=<pane>` 直达设置页指定 pane；`--ai-session=<id>` 打开指定 AI 会话；`--memo` 传便签定位点（见上一节）。
+- **窗口形态**：`--new-window` 强制开新窗口；`--ai-float` 只开 AI 浮窗；`--debug-console` 只开调试控制台；`--quit` 优雅退出已运行的实例（无实例时静默退出）。
+- headless 子命令（不启动窗口、处理完直接退出）：`--convert <输入...> --to/-t <格式>` 批量格式互转（json / jsonl / yaml / xml / csv / toml / ini，`--out` / `--stdout` / `--force` 见 `--help`）；`--check-patch` / `--apply-patch --yes` / `--revert-patch` 检查、应用、撤销补丁。
+
+### 边界
+
+- **不存在的路径不再被静默忽略**：窗口照常置前并提示「打开失败」——脚本或 AI 打错路径时拿得到明确反馈。
+- 程序已在运行时，新命令转发到现有窗口处理，不会另起一个实例；**多窗口时文件按所属工作区路由**到对应窗口（祖先链逐级匹配取最深命中，不属于任何已开工作区时投主窗口），同一工作区不会双开。
 
 ---
 
