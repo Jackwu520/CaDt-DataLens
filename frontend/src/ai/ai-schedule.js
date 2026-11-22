@@ -446,25 +446,25 @@ export function createAISchedule(ctx) {
             return r;
         };
         // 表单控件一律走 core/form-controls.js（修复存量裸控件违规）
-        const nameCtl = createInput({className: 'ai-settings-input', placeholder: '省略则取指令前 30 字'});
+        const nameCtl = createInput({className: 'dlg-input ai-settings-input', placeholder: '省略则取指令前 30 字'});
         const kindCtl = createSelect({
-            className: 'ai-settings-input',
+            className: 'dlg-input ai-settings-input',
             options: [
                 {value: 'once', label: '单次（once）'},
                 {value: 'interval', label: '固定间隔（interval）'},
                 {value: 'cron', label: 'cron 表达式'},
             ],
         });
-        const valueCtl = createInput({className: 'ai-settings-input'});
+        const valueCtl = createInput({className: 'dlg-input ai-settings-input'});
         const valueLabel = node('label');
         const valueRow = node('div', 'ai-sched-field');
         valueRow.append(valueLabel, valueCtl.element);
         const promptCtl = createTextarea({
-            className: 'ai-settings-input', rows: 4,
+            className: 'dlg-input ai-settings-input', rows: 4,
             placeholder: '到点注入给 AI 的指令，例如：检查构建进度并汇报',
         });
         const scopeCtl = createSelect({
-            className: 'ai-settings-input',
+            className: 'dlg-input ai-settings-input',
             options: [
                 {value: 'chat', label: 'chat（纯对话）'},
                 {value: 'read', label: 'read（只读访问）'},
@@ -472,7 +472,7 @@ export function createAISchedule(ctx) {
             ],
         });
         // 目标会话：默认唤醒当前会话；也可选每次新建
-        const targetCtl = createSelect({className: 'ai-settings-input'});
+        const targetCtl = createSelect({className: 'dlg-input ai-settings-input'});
         const targetSel = targetCtl.control;
         const fillTargetOptions = () => {
             targetSel.textContent = '';
@@ -491,7 +491,7 @@ export function createAISchedule(ctx) {
             }
         };
         fillTargetOptions();
-        const maxRunsCtl = createInput({type: 'number', className: 'ai-settings-input', min: 0, placeholder: '0 = 不限'});
+        const maxRunsCtl = createInput({type: 'number', className: 'dlg-input ai-settings-input', min: 0, placeholder: '0 = 不限'});
         const syncKind = () => {
             const v = kindCtl.control.value;
             if (v === 'once') {

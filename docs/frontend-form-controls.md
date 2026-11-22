@@ -71,10 +71,12 @@ const prompt = createTextarea({id: 'foo-prompt', rows: 5, spellcheck: false});
 - 新增 UI 与提交前都跑 `npm test`（见 `AGENTS.md`「验证与提交」）。
 - 迁移存量优先从动态创建点下手：`ai/ai-panel.js`、`ai/ai-takeover.js`、`ai/ai-tool-cards.js`、`editor/patch-view.js`、`explorer/global-search.js`、`settings/settings-pane-envvars.js`、`settings/settings-pane-plugins.js`、`terminal/terminal-ui.js` 等；每迁一处把对应基线数字减一。
 - **首轮已迁移（2026-11-15）**：`ai/ai-manage-dialogs.js`（1 个 select、1 个 textarea、3 个 input）与 `explorer/global-search.js`（1 个 select）改用工厂，基线相应从 6→1、3→2。迁移时给 `createInput` 传 `className` 覆盖默认 `.dlg-input`，保持各域原有外观零变化。
+- **2026-11-22 改口径：不再只传域内类**。`className` 是整段覆盖（见第 5 节），只写 `ai-settings-input` 会丢掉 `.dlg-input` 的 7px 圆角 / 12.5px 字号 / hover 边框 / focus 外发光，看上去「像原生控件」（定时任务新建对话框的用户反馈）。现在统一写 `className: 'dlg-input ai-settings-input'`——`dlg-input` 给外观，域内类只给布局（flex / 宽度）；已改 `ai/ai-schedule.js`、`ai/ai-manage-dialogs.js`。
 - **暂留一类**：带文字的紧凑行内复选框（技能列表、变量列表等）先按存量豁免。2026-11-17 工厂已补紧凑变体 `createCheckbox()`，`explorer/global-search.js` 的分类勾选已迁移（基线 2→0）；其余存量新写一律用 `createCheckbox`（或改用 `createSwitch` 的开关语义），不要新写裸 checkbox。
 
 ## 5. 易错点
 
+- **`className` 是整段覆盖，不是追加**：`applyCommon` 里 `control.className = o.className`。只传域内类（如 `ai-settings-input`）会丢掉 `.dlg-input` 的圆角 / 字号 / hover 边框 / focus 外发光，肉眼像「没用封装」（2026-11-22 定时任务对话框反馈）。要「封装外观 + 域内布局」就并列写 `'dlg-input ai-settings-input'`。
 - 不要给 `.set-switch` 的 label 里塞文字，也不要只写 `<input type="checkbox">` 配 `accent-color`——那仍是原生组件。
 - 不要在域模块里 `import main.js` 的绑定来造控件；`core/form-controls.js` 无 deps、不依赖声明顺序，可直接 import。
 - 不要手写 `innerHTML` 拼表单控件再事后补 class：字符串里的标签同样会被静态扫描抓到。

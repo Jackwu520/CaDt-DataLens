@@ -270,7 +270,7 @@ export function createAIManageDialogs(ctx) {
         const list = dialogNode('div', 'ai-mgr-list');
         const newRow = dialogNode('div', 'ai-dialog-field');
         const {control: nameInput} = createInput({
-            className: 'ai-settings-input',
+            className: 'dlg-input ai-settings-input',
             placeholder: '新文件名，如 user-preferences.md',
             spellcheck: false,
         });
@@ -388,12 +388,12 @@ export function createAIManageDialogs(ctx) {
         const status = dialogNode('div', 'ai-dialog-hint', '技能来源（优先级从高到低）：工作区 .cadt/skills > 工作区 .agents/skills > 应用数据 ai-skills > 用户 ~/.agents/skills > 内置（随应用分发，版本更新后自动刷新）；同名时低 rank 覆盖高 rank。列表按「用户 / 自定义技能」与「内置技能」分组，点组名可折叠；组内滚动。');
         const newRow = dialogNode('div', 'ai-dialog-field');
         const {control: nameInput} = createInput({
-            className: 'ai-settings-input',
+            className: 'dlg-input ai-settings-input',
             placeholder: '技能名称',
             spellcheck: false,
         });
         const {control: descInput} = createInput({
-            className: 'ai-settings-input',
+            className: 'dlg-input ai-settings-input',
             placeholder: '描述（一句话）',
             spellcheck: false,
         });

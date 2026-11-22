@@ -416,6 +416,7 @@ export function createSettingsPaneExternalTools(deps) {
 
     let desktopPlan = null;   // MCPDesktopPlan() 快照（wheel 路径、上游工具清单、notes）
     let desktopInstall = {running: false, percent: 0, stage: '', detail: '', line: '', error: '', done: false};
+    let installStarting = false; // 安装作业启动中（await 链期间也要挡住重复点击）
 
     function desktopRow() {
         return (desktopMcpConfig && desktopMcpConfig.mcpServers && desktopMcpConfig.mcpServers[DESKTOP_MCP_SERVER]) || null;
@@ -493,6 +494,37 @@ export function createSettingsPaneExternalTools(deps) {
             .catch(() => flash('复制失败：剪贴板不可用', true));
     }
 
+    // 写 mcp.json 前**重读一次**（2026-11-23 审查 H2）：桌面卡片与 ai-mcp-settings 管理同一份
+    // 文件的不同 server 行，各自持有快照。用户在本页停留期间若从 MCP 列表增/删了别的 server，
+    // 用陈旧快照整文件覆盖会丢掉那些改动。这里以最新磁盘内容为准，只替换 windows 行。
+    // 读失败时退回内存快照（不阻塞用户操作），至少不比改动前更差。
+    async function freshConfig() {
+        if (typeof backend.MCPGetConfig === 'function') {
+            try {
+                const latest = await backend.MCPGetConfig();
+                if (latest && typeof latest === 'object' && latest.mcpServers) {
+                    desktopMcpConfig = latest;
+                    return latest;
+                }
+            } catch (e) {
+                // 尽力而为：读失败继续用内存快照
+            }
+        }
+        return desktopMcpConfig;
+    }
+
+    // 把 windows 行写回最新配置：freshConfig + 只替换该 server 行。
+    async function writeDesktopRow(row) {
+        const base = await freshConfig();
+        if (!base) return null;
+        const next = Object.assign({}, base, {version: 1});
+        next.mcpServers = Object.assign({}, base.mcpServers);
+        next.mcpServers[DESKTOP_MCP_SERVER] = row;
+        await backend.MCPWriteConfig(next);
+        desktopMcpConfig = next;
+        return next;
+    }
+
     // 安装进度事件：Go 侧 desktopmcp.Install 逐阶段推送（release → uv → warm → done/error）
     let desktopEventBound = false;
     function bindDesktopInstallEvent() {
@@ -535,11 +567,12 @@ export function createSettingsPaneExternalTools(deps) {
         }
         desktopBusy = 'toggle';
         try {
-            const next = Object.assign({}, desktopMcpConfig, {version: 1});
-            next.mcpServers = Object.assign({}, desktopMcpConfig.mcpServers);
-            next.mcpServers[DESKTOP_MCP_SERVER] = Object.assign({}, desktopRow(), {enabled: !!on});
-            await backend.MCPWriteConfig(next);
-            desktopMcpConfig = next;
+            const base = await freshConfig();
+            if (!base) {
+                flash('读取 MCP 配置失败', true);
+                return;
+            }
+            await writeDesktopRow(Object.assign({}, desktopRow(), {enabled: !!on}));
             refreshPanelSnapshot();
             flash(on ? '桌面控制已启用' : '桌面控制已停用（各会话的授权保留，重新启用后恢复）');
         } catch (e) {
@@ -554,7 +587,7 @@ export function createSettingsPaneExternalTools(deps) {
     // 已存在时是「更新配置」而不是重装：只覆盖我们管理的字段，保留用户别的自定义项与
     // 已取消的工具勾选（enabledTools 只在「空」时才补成全量）。
     async function startDesktopInstall() {
-        if (desktopInstall.running) {
+        if (desktopInstall.running || installStarting) {
             flash('安装正在进行中，请稍候');
             return;
         }
@@ -562,26 +595,26 @@ export function createSettingsPaneExternalTools(deps) {
             flash('当前后端版本不支持异步安装（需要重新构建应用）', true);
             return;
         }
+        // 竞态守卫：第一次 await 之前就置位（M1）——双击时第二次调用在此处就被挡住，
+        // 不会重复写配置 / 重复 flash。失败或成功启动后再释放。
+        installStarting = true;
         desktopBusy = 'install';
         paintDesktop();
         try {
-            if (!desktopMcpConfig) {
-                desktopMcpConfig = await backend.MCPGetConfig();
-                if (!desktopMcpConfig || typeof desktopMcpConfig !== 'object') desktopMcpConfig = {version: 1, mcpServers: {}};
-                if (!desktopMcpConfig.mcpServers) desktopMcpConfig.mcpServers = {};
+            const base = await freshConfig();
+            if (!base) {
+                flash('读取 MCP 配置失败', true);
+                return;
             }
             await loadDesktopPlan(); // 拿 wheel 绝对路径与上游工具清单
             const existing = desktopRow();
             const row = Object.assign({}, existing || {}, desktopServerConfigRow(desktopPlan));
             const kept = Array.isArray(existing && existing.enabledTools) ? existing.enabledTools : [];
             if (kept.length) row.enabledTools = kept.slice(); // 尊重用户已经取消的勾选
-            const next = Object.assign({}, desktopMcpConfig, {version: 1});
-            next.mcpServers = Object.assign({}, desktopMcpConfig.mcpServers);
-            next.mcpServers[DESKTOP_MCP_SERVER] = row;
-            await backend.MCPWriteConfig(next);
-            desktopMcpConfig = next;
+            await writeDesktopRow(row);
 
             desktopInstall = {running: true, percent: 1, stage: 'release', detail: '准备安装', line: '', error: '', done: false};
+            installStarting = false; // 后端作业已接手，后续防重交给 desktopInstall.running
             const res = await backend.MCPDesktopInstallStart();
             if (res && res.busy) {
                 flash('已有一个安装作业在跑，进度见下方');
@@ -590,6 +623,7 @@ export function createSettingsPaneExternalTools(deps) {
             }
             refreshPanelSnapshot();
         } catch (e) {
+            installStarting = false;
             desktopInstall.running = false;
             flash('安装失败：' + ((e && e.message) || e), true);
         } finally {
@@ -601,23 +635,20 @@ export function createSettingsPaneExternalTools(deps) {
     // 单个工具开关：直接改 mcp.json 的 enabledTools（唯一的可见性闸）。
     // 不允许清空——空数组语义是「一个都不给」，server 连进程都不会起。
     async function setDesktopToolEnabled(name, on) {
-        const row = desktopRow();
-        if (!row || typeof backend.MCPWriteConfig !== 'function' || !desktopMcpConfig) return;
-        const current = Array.isArray(row.enabledTools) ? row.enabledTools.slice() : [];
-        const next = on
-            ? (current.includes(name) ? current : current.concat([name]))
-            : current.filter((tool) => tool !== name);
-        if (!next.length) {
-            flash('至少要保留一个工具：勾选为空时这个服务器不会启动', true);
-            paintDesktop();
-            return;
-        }
         try {
-            const cfg = Object.assign({}, desktopMcpConfig, {version: 1});
-            cfg.mcpServers = Object.assign({}, desktopMcpConfig.mcpServers);
-            cfg.mcpServers[DESKTOP_MCP_SERVER] = Object.assign({}, row, {enabledTools: next});
-            await backend.MCPWriteConfig(cfg);
-            desktopMcpConfig = cfg;
+            const base = await freshConfig();
+            if (!base) return;
+            const row = base.mcpServers[DESKTOP_MCP_SERVER];
+            const current = Array.isArray(row && row.enabledTools) ? row.enabledTools.slice() : [];
+            const next = on
+                ? (current.includes(name) ? current : current.concat([name]))
+                : current.filter((tool) => tool !== name);
+            if (!next.length) {
+                flash('至少要保留一个工具：勾选为空时这个服务器不会启动', true);
+                paintDesktop();
+                return;
+            }
+            await writeDesktopRow(Object.assign({}, row, {enabledTools: next}));
             refreshPanelSnapshot();
         } catch (e) {
             flash('保存失败：' + ((e && e.message) || e), true);
@@ -694,7 +725,7 @@ export function createSettingsPaneExternalTools(deps) {
         const enabled = installed && row.enabled !== false;
         const count = desktopToolCount();
         const installing = desktopInstall.running;
-        const needsUpgrade = installed && desktopConfigNeedsUpgrade(row);
+        const needsUpgrade = installed && desktopConfigNeedsUpgrade(row, desktopPlan);
         const plan = desktopPlan || {};
         const preview = desktopServerConfigRow(desktopPlan);
         const desc = installing
