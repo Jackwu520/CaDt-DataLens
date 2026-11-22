@@ -81,7 +81,7 @@ func globMatchPath(pattern, relPath, name string) bool {
 }
 
 // FindFiles 遍历工作区列出匹配通配的文件（相对 root，按路径排序）。
-// 预算：searchBudget 墙钟、findFilesHardMax 条上限、跳过 searchSkipDirs。
+// 预算：searchBudget 墙钟、findFilesHardMax 条上限、跳过默认软忽略与用户 search-ignore。
 func (s *Searcher) FindFiles(root, pattern string, maxResults int) (*FindFilesResult, error) {
 	root = strings.TrimSpace(root)
 	if root == "" {
@@ -112,11 +112,8 @@ func (s *Searcher) FindFiles(root, pattern string, maxResults int) (*FindFilesRe
 		name := d.Name()
 		if d.IsDir() {
 			if path != root {
-				if searchSkipDirs[strings.ToLower(name)] || name == ".git" {
-					return filepath.SkipDir
-				}
 				rel, relErr := filepath.Rel(root, path)
-				// 与 searchWorkspace 同口径：AI 隔离 worktree 副本整棵跳过
+				// 与 searchWorkspace 同口径：AI 隔离 worktree 副本整棵跳过（硬编码）
 				if relErr == nil && SkipPath(rel) {
 					return filepath.SkipDir
 				}

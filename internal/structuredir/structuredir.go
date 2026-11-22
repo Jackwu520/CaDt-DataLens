@@ -11,12 +11,6 @@ import (
 	"datalens/internal/search"
 )
 
-// 与参考脚本保持一致：结构化目录时跳过这两类目录
-var structureDirIgnored = map[string]bool{
-	".git":        true,
-	"__pycache__": true,
-}
-
 type structureNode struct {
 	name     string
 	isDir    bool
@@ -91,7 +85,8 @@ func sortStructureChildren(children []*structureNode) {
 // rel 为当前目录相对导出根的路径（正斜杠，根为空串）：search.SkipPath 命中的目录整棵跳过
 //（AI 隔离 worktree .cadt/worktree 不进导出树，`.cadt/worktree` 目录名本身也不出现；
 // 从 worktree 自身发起的导出 rel 不命中，照常渲染）。
-func structureChildren(dir string, rel string) ([]*structureNode, error) {
+// ignore 为默认软忽略 + 用户 search-ignore（! 可覆盖默认），与搜索四处同口径。
+func structureChildren(dir string, rel string, ignore *search.IgnoreRules) ([]*structureNode, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
@@ -99,18 +94,21 @@ func structureChildren(dir string, rel string) ([]*structureNode, error) {
 	children := make([]*structureNode, 0, len(entries))
 	for _, entry := range entries {
 		name := entry.Name()
-		if structureDirIgnored[name] {
-			continue
-		}
+		childRel := joinRel(rel, name)
 		isDir := entry.IsDir() && entry.Type()&os.ModeSymlink == 0
 		if isDir {
-			if search.SkipPath(joinRel(rel, name)) {
+			if search.SkipPath(childRel) {
 				continue
 			}
+			if ignore.ShouldSkipDir(name, childRel) {
+				continue
+			}
+		} else if ignore.ShouldSkipFile(name, childRel) {
+			continue
 		}
 		node := &structureNode{name: name, isDir: isDir}
 		if isDir {
-			node.children, _ = structureChildren(filepath.Join(dir, name), joinRel(rel, name))
+			node.children, _ = structureChildren(filepath.Join(dir, name), childRel, ignore)
 		}
 		children = append(children, node)
 	}
@@ -176,7 +174,7 @@ func Render(dir string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	children, err := structureChildren(clean, "")
+	children, err := structureChildren(clean, "", search.LoadIgnoreRules(clean))
 	if err != nil {
 		return "", err
 	}

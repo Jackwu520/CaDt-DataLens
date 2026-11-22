@@ -82,7 +82,7 @@ function installDom() {
     };
 }
 
-function setup({workspaceFolder = null, file = null, hits = [], fuzzyHits = [], controls = false} = {}) {
+function setup({workspaceFolder = null, file = null, hits = [], fuzzyHits = [], controls = false, openCalls = [], findDocCalls = []} = {}) {
     installDom();
     const els = {
         gsInput: makeEl('input'),
@@ -123,15 +123,15 @@ function setup({workspaceFolder = null, file = null, hits = [], fuzzyHits = [], 
         get file() { return state.file; },
         get flash() { return () => {}; },
         get focusFindEditor() { return () => {}; },
-        get openPaths() { return async () => {}; },
-        get findDocByPath() { return () => null; },
+        get openPaths() { return async (paths) => { openCalls.push(paths); }; },
+        get findDocByPath() { return (p) => { findDocCalls.push(p); return null; }; },
         get activateDoc() { return async () => {}; },
         get openAISessionHit() { return async () => {}; },
         get currentMode() { return 'code'; },
         get switchMode() { return () => {}; },
         get waitUntil() { return async () => true; },
     };
-    return {els, panel, calls, state, deps};
+    return {els, panel, calls, state, deps, openCalls, findDocCalls};
 }
 
 function findById(node, id) {
@@ -234,3 +234,44 @@ test('勾选「模糊」后改走 SearchWorkspaceFuzzy；取消工作区文件�
     assert.equal(calls.fuzzy.length, 1);
     assert.equal(calls.workspace.length, 0);
 });
+
+// 文件名兜底命中（nameOnly）：行号槽显示「文件名」，点击只打开文件、不进行号跳转
+test('nameOnly 命中渲染「文件名」标签，点击只打开文件不跳行', async () => {
+    const hit = {
+        path: 'D:\\ws\\demo\\src\\core\\icons.js',
+        name: 'icons.js',
+        dir: 'core',
+        preview: 'icons.js',
+        matchStart: 0,
+        matchEnd: 8,
+        nameOnly: true,
+    };
+    const openCalls = [];
+    const findDocCalls = [];
+    const {els, deps} = setup({workspaceFolder: 'D:\\ws\\demo', hits: [hit], openCalls, findDocCalls});
+    const {openGlobalSearch} = createGlobalSearch(deps);
+    openGlobalSearch();
+    els.gsInput.value = 'icons.js';
+    els.gsInput.fire('input');
+    await waitFor(() => els.gsCount.textContent === '1 个文件结果');
+    const rows = els.gsList.querySelectorAll('.gs-row');
+    assert.equal(rows.length, 1);
+    // 行号槽（gs-ln）应显示「文件名」而不是空串或 0
+    const ln = findDeep(rows[0], (n) => n.className === 'gs-ln');
+    assert.ok(ln, '行内应有行号槽');
+    assert.equal(ln.textContent, '文件名');
+    // 点击：打开文件本身；nameOnly 不应触碰 findDocByPath（无可跳的行）
+    rows[0].fire('click');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.deepEqual(openCalls, [['D:\\ws\\demo\\src\\core\\icons.js']]);
+    assert.deepEqual(findDocCalls, [], 'nameOnly 命中不应进入跳转定位逻辑');
+});
+
+function findDeep(node, predicate) {
+    if (predicate(node)) return node;
+    for (const child of node.children || []) {
+        const found = findDeep(child, predicate);
+        if (found) return found;
+    }
+    return null;
+}

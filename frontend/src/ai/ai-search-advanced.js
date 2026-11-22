@@ -1,6 +1,6 @@
 // ai-search-advanced.js —— search_text 高级参数的归一化与结果格式化（纯函数，无 DOM / 无后端依赖）。
 // 与 Go internal/search 的选项口径一一对应：regex / wholeWord / pattern / excludePattern /
-// outputMode / context / maxResults。两处改动必须同步（advanced_test.go + 本文件测试）。
+// outputMode / context / maxResults / includeIgnored。两处改动必须同步（advanced_test.go + 本文件测试）。
 
 const textOf = (value) => (typeof value === 'string' ? value : value == null ? '' : String(value));
 
@@ -24,6 +24,7 @@ export function normalizeSearchOptions(input = {}) {
         outputMode: ['content', 'files', 'count'].includes(mode) ? mode : 'content',
         context: clampInt(input.context, 0, 0, 3),
         maxResults: clampInt(input.maxResults, 200, 1, 1000),
+        includeIgnored: input.includeIgnored === true || input.includeIgnored === 'true',
     };
 }
 

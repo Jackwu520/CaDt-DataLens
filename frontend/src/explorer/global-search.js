@@ -314,7 +314,7 @@ function globalSearchRow(hit, index) {
     line2.className = 'gs-line2';
     const ln = document.createElement('span');
     ln.className = 'gs-ln';
-    ln.textContent = String(hit.line || '');
+    ln.textContent = hit.nameOnly ? '文件名' : String(hit.line || '');
     const preview = document.createElement('span');
     preview.className = 'gs-preview';
     const text = String(hit.preview == null ? '' : hit.preview);
@@ -465,6 +465,8 @@ async function openGlobalSearchHit(hit) {
     closeGlobalSearch();
     try {
         await deps.openPaths([hit.path]);
+        // 文件名兜底命中：打开文件即可，没有可跳的行
+        if (hit.nameOnly) return;
         const doc = deps.findDocByPath(hit.path);
         if (doc) await selectMatchInDoc(doc, hit.line, hit.column, hit.length);
     } catch (e) {

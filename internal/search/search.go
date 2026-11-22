@@ -14,6 +14,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -32,16 +33,31 @@ const (
 	searchMaxContext     = 3
 )
 
-var searchSkipDirs = map[string]bool{
-	".git": true, ".svn": true, ".hg": true,
-	".idea": true, ".vscode": true,
-	"node_modules": true, "__pycache__": true,
-	".pytest_cache": true, ".mypy_cache": true,
-	".gradle": true, ".cache": true,
-	// Python 虚拟环境：几万个文件、检索无意义，指纹计数与 watcher 删除计数同样跳过
-	// （pip install / 重建 venv 是合法的批量删除，2026-11-19 举一反三排查）。
-	".venv": true, "venv": true, "site-packages": true,
+// defaultIgnoreNames 是「默认软忽略目录」的有序表：检索/展示四处（search_text / glob /
+// list_dir / 目录结构导出）经 LoadIgnoreRules 注入为默认规则，用户可在
+// .cadt/config/search-ignore 用 ! 前缀逐条覆盖（如 !node_modules 放行 node_modules）。
+// 顺序固定，保证 rg 的 --glob 输出与测试可预测。安全用途（wipeguard 结构指纹等）
+// 不用这张软表，仍走下面由它派生的 searchSkipDirs 硬编码 map。
+var defaultIgnoreNames = []string{
+	".git", ".svn", ".hg",
+	".idea", ".vscode",
+	"node_modules", "__pycache__",
+	".pytest_cache", ".mypy_cache",
+	".gradle", ".cache",
+	// Python 虚拟环境：几万个文件、检索无意义
+	".venv", "venv", "site-packages",
 }
+
+// searchSkipDirs 硬编码忽略表，仅供安全/正确性用途（wipeguard 结构指纹、cognition drift），
+// 不接用户配置。检索/展示四处已改用 defaultIgnoreNames 经 IgnoreRules 软处理。
+// 内容由 defaultIgnoreNames 派生，避免两处维护漂移。
+var searchSkipDirs = func() map[string]bool {
+	m := make(map[string]bool, len(defaultIgnoreNames))
+	for _, name := range defaultIgnoreNames {
+		m[name] = true
+	}
+	return m
+}()
 
 var searchBinaryExt = map[string]bool{
 	".png": true, ".jpg": true, ".jpeg": true, ".jfif": true, ".gif": true,
@@ -56,7 +72,9 @@ var searchBinaryExt = map[string]bool{
 	".wgt": true, ".pak": true, ".zipx": true,
 }
 
-// SkipDir 判断目录名是否属于检索与目录树共同忽略的目录（大小写不敏感）。
+// SkipDir 判断目录名是否属于硬编码忽略表（大小写不敏感）。仅供安全/正确性用途
+// （wipeguard 结构指纹、cognition drift），它们刻意不接用户配置；检索/展示四处已改用
+// LoadIgnoreRules 的默认软规则，用户可用 search-ignore 的 ! 前缀覆盖。
 func SkipDir(name string) bool { return searchSkipDirs[strings.ToLower(name)] }
 
 // worktreeSkipPrefix AI 隔离 worktree 的固定父目录（相对主根，正斜杠）。检出副本不进检索
@@ -177,6 +195,9 @@ type SearchOptions struct {
 	// FileOnly：root 为单个文件时只扫这一个文件（不向父目录扩散）。
 	// 兼容旧行为：FileOnly=false 时文件根仍按父目录扫描（历史语义）。
 	FileOnly bool `json:"fileOnly"`
+	// IncludeIgnored：本次搜索临时放行所有被忽略目录（默认软规则 + 用户 search-ignore），
+	// 仅本次生效、不写配置。二进制扩展名与 worktree 跳过仍保留（硬编码，不受此开关影响）。
+	IncludeIgnored bool `json:"includeIgnored"`
 }
 
 // ContextLine 命中行的上下文（行号 + 原文），前后各最多 searchMaxContext 行。
@@ -199,6 +220,8 @@ type SearchHit struct {
 	After      []ContextLine `json:"after,omitempty"`
 	// fuzzySplit 标记子序列（离散）命中，仅用于排序分档，不进 JSON。
 	fuzzySplit bool
+	// nameOnly 标记文件名兜底命中：文件名含查询词但内容零命中（无行号/列号）。
+	NameOnly bool `json:"nameOnly,omitempty"`
 }
 
 // FileCount outputMode=count 时的单文件命中数。
@@ -310,37 +333,78 @@ func indexFoldASCII(s, needle string) int {
 	return -1
 }
 
+// foldFindFrom 在原行上从 from 开始做大小写不敏感查找，返回命中区间 [start, end)。
+// 与「两侧各自 ToLower 再比对」同口径的逐 rune 折叠（unicode.ToLower 相等即命中），
+// 但偏移始终落在原行上。用于 ToLower 会改变字节长度的行（见 findMatches 的 foldRune）。
+// 匹配区域的字节宽度可能与 needle 不同（如 needle 里的 "i" 可折叠命中 2 字节的 İ），
+// end 必须按实际消耗的 rune 宽度算，不能取 start+len(needle)。
+func foldFindFrom(line, needle string, from int) (int, int, bool) {
+	want := make([]rune, 0, len(needle))
+	for _, r := range needle {
+		want = append(want, unicode.ToLower(r))
+	}
+	for i := from; i < len(line); {
+		if end, ok := foldMatchAt(line[i:], want); ok {
+			return i, i + end, true
+		}
+		_, size := utf8.DecodeRuneInString(line[i:])
+		if size == 0 {
+			break
+		}
+		i += size
+	}
+	return 0, 0, false
+}
+
+// foldMatchAt 判断 s 开头是否折叠等于 want 的 rune 序列，返回消耗的字节数。
+func foldMatchAt(s string, want []rune) (int, bool) {
+	pos := 0
+	for _, r := range want {
+		if pos >= len(s) {
+			return 0, false
+		}
+		cr, size := utf8.DecodeRuneInString(s[pos:])
+		if cr != r && unicode.ToLower(cr) != r {
+			return 0, false
+		}
+		pos += size
+	}
+	return pos, true
+}
+
 // searchSpec 一次检索的归一化参数（内部用，不进 Wails 绑定）。
 // 两条扫描路径（rg / 内置）共用同一份 spec，保证参数语义不漂移。
 type searchSpec struct {
-	query         string
-	needle        string // 模式化后小写（字面量 / fuzzy 用）
-	caseSensitive bool
-	fuzzy         bool
-	regex         bool
-	wholeWord     bool
-	re            *regexp.Regexp
-	pattern       string
-	exclude       string
-	maxResults    int
-	context       int
-	outputMode    string
-	fileOnly      bool
-	ignore        *IgnoreRules // 用户自定义排除表（search-ignore），按扫描根加载
+	query          string
+	needle         string // 模式化后小写（字面量 / fuzzy 用）
+	caseSensitive  bool
+	fuzzy          bool
+	regex          bool
+	wholeWord      bool
+	re             *regexp.Regexp
+	pattern        string
+	exclude        string
+	maxResults     int
+	context        int
+	outputMode     string
+	fileOnly       bool
+	includeIgnored bool         // 本次临时放行全部目录忽略规则（不写配置）
+	ignore         *IgnoreRules // 用户自定义排除表（search-ignore），按扫描根加载
 }
 
 func newSearchSpec(query string, opts SearchOptions) (*searchSpec, error) {
 	spec := &searchSpec{
-		query:         query,
-		caseSensitive: opts.CaseSensitive,
-		regex:         opts.Regex,
-		wholeWord:     opts.WholeWord,
-		pattern:       strings.TrimSpace(opts.Pattern),
-		exclude:       strings.TrimSpace(opts.ExcludePattern),
-		outputMode:    strings.ToLower(strings.TrimSpace(opts.OutputMode)),
-		context:       opts.Context,
-		maxResults:    opts.MaxResults,
-		fileOnly:      opts.FileOnly,
+		query:          query,
+		caseSensitive:  opts.CaseSensitive,
+		regex:          opts.Regex,
+		wholeWord:      opts.WholeWord,
+		pattern:        strings.TrimSpace(opts.Pattern),
+		exclude:        strings.TrimSpace(opts.ExcludePattern),
+		outputMode:     strings.ToLower(strings.TrimSpace(opts.OutputMode)),
+		context:        opts.Context,
+		maxResults:     opts.MaxResults,
+		fileOnly:       opts.FileOnly,
+		includeIgnored: opts.IncludeIgnored,
 	}
 	if spec.outputMode == "" {
 		spec.outputMode = "content"
@@ -428,25 +492,41 @@ func (spec *searchSpec) findMatches(line string) [][2]int {
 	if !spec.caseSensitive && !foldASCII {
 		haystack = strings.ToLower(line)
 	}
+	// ToLower 个别 rune 会变长：非法 UTF-8 字节逐个替换成 3 字节 U+FFFD，
+	// U+023A Ⱥ / U+023E Ⱦ 小写后 2→3 字节。降写串上的命中偏移套回原行会越界
+	// （2026-11-23 全局搜索闪退根因，与 sessionindex 的 makeSearchSnippet 同款前科）。
+	// 长度漂移时放弃降写快路径，改在原行上逐 rune 折叠匹配，区间永远对原行有效。
+	foldRune := !spec.caseSensitive && !foldASCII && len(haystack) != len(line)
+	if foldRune {
+		haystack = line
+	}
 	var out [][2]int
 	from := 0
 	for {
-		var idx int
-		if foldASCII {
-			idx = indexFoldASCII(haystack[from:], needle)
+		var idx, end int
+		if foldRune {
+			var ok bool
+			if idx, end, ok = foldFindFrom(line, needle, from); !ok {
+				break
+			}
 		} else {
-			idx = strings.Index(haystack[from:], needle)
+			var i int
+			if foldASCII {
+				i = indexFoldASCII(haystack[from:], needle)
+			} else {
+				i = strings.Index(haystack[from:], needle)
+			}
+			if i < 0 {
+				break
+			}
+			idx = i + from
+			end = idx + len(needle)
 		}
-		if idx < 0 {
-			break
-		}
-		idx += from
-		end := idx + len(needle)
 		if !spec.wholeWord ||
 			!(idx > 0 && isWordByte(line[idx-1])) && !(end < len(line) && isWordByte(line[end])) {
 			out = append(out, [2]int{idx, end})
 		}
-		from = idx + len(needle)
+		from = end
 		if from >= len(haystack) {
 			break
 		}
@@ -538,6 +618,132 @@ type searchFileResult struct {
 	overBudget bool
 }
 
+// nameHitMax 文件名兜底命中的补充上限：这类命中不读内容、代价可忽略，内容命中把
+// maxResults 吃满时也允许在 maxResults 之外追加（否则搜文件名永远被内容命中挤掉）。
+const nameHitMax = 50
+
+// buildSearchNameHit 文件名是否命中查询词（模糊模式按子序列），命中则给出预览与高亮区间。
+func buildSearchNameHit(path, name, relDir string, spec *searchSpec) (SearchHit, bool) {
+	if spec.needle == "" {
+		return SearchHit{}, false
+	}
+	var start, end int
+	fuzzySplit := false
+	if spec.fuzzy {
+		var ok bool
+		if start, end, ok = fuzzyFind(name, spec.needle, spec.caseSensitive); !ok {
+			return SearchHit{}, false
+		}
+		fuzzySplit = true
+	} else {
+		spans := spec.findMatches(name)
+		if len(spans) == 0 {
+			return SearchHit{}, false
+		}
+		start, end = spans[0][0], spans[len(spans)-1][1]
+	}
+	preview, mStart, mEnd := buildSearchPreview(name, start, end-start)
+	return SearchHit{
+		Path:       path,
+		Name:       name,
+		Dir:        relDir,
+		Preview:    preview,
+		MatchStart: mStart,
+		MatchEnd:   mEnd,
+		fuzzySplit: fuzzySplit,
+		NameOnly:   true,
+	}, true
+}
+
+// appendWorkspaceNameHits 内容命中之外的文件名兜底：文件名含查询词（模糊模式按子序列）
+// 且没有内容命中的文件补一条 nameOnly 命中——搜 "icons.js" 也能找到 core/icons.js 本身，
+// 二进制文件（logo.png）同样能按名找到。过滤口径与内容扫描一致（skip 目录 / AI worktree /
+// 用户排除表 / filePattern / excludePattern），但不按二进制扩展名排除——文件名命中不读内容。
+// rg 路径不产出扫描文件清单，所以统一在两条路径之后走一次只读目录的快速遍历；
+// 追加在结果尾部（按路径排序、上限 nameHitMax），内容命中的既有排序与档位不受扰动。
+// 放在 applyOutputMode 之前，files/count 模式同样能看到文件名命中。
+func appendWorkspaceNameHits(root string, spec *searchSpec, res *SearchResult) {
+	if res == nil || spec.needle == "" {
+		return
+	}
+	covered := make(map[string]bool, len(res.Hits))
+	for i := range res.Hits {
+		covered[res.Hits[i].Path] = true
+	}
+	rootInfo, err := os.Stat(root)
+	if err != nil {
+		return
+	}
+	rootIsFile := !rootInfo.IsDir()
+	var hits []SearchHit
+	walkErr := filepath.WalkDir(root, func(path string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return nil
+		}
+		name := d.Name()
+		if d.IsDir() {
+			if path != root {
+				rel, relErr := filepath.Rel(root, path)
+				// AI 隔离 worktree 副本整棵跳过（与内容扫描同口径）
+				if relErr == nil && SkipPath(rel) {
+					return filepath.SkipDir
+				}
+				if relErr == nil && spec.ignore.ShouldSkipDir(name, filepath.ToSlash(rel)) {
+					return filepath.SkipDir
+				}
+			}
+			return nil
+		}
+		if !d.Type().IsRegular() {
+			return nil
+		}
+		var rel string
+		if rootIsFile {
+			rel = name
+		} else if r, relErr := filepath.Rel(root, path); relErr == nil {
+			rel = r
+		} else {
+			rel = name
+		}
+		if !rootIsFile && spec.ignore.ShouldSkipFile(name, filepath.ToSlash(rel)) {
+			return nil
+		}
+		if spec.pattern != "" && !globMatchPath(spec.pattern, filepath.ToSlash(rel), name) {
+			return nil
+		}
+		// excludePattern 下推：与内容扫描同口径（globMatchPath 匹配即整文件跳过）
+		if spec.exclude != "" && globMatchPath(spec.exclude, filepath.ToSlash(rel), name) {
+			return nil
+		}
+		if covered[path] {
+			return nil
+		}
+		// relDir 与内容扫描同口径：根级文件显示根目录名，子路径文件显示相对目录
+		relDir := filepath.Dir(rel)
+		if relDir == "." || relDir == "" {
+			if rootIsFile {
+				relDir = filepath.Base(filepath.Dir(root))
+			} else {
+				relDir = filepath.Base(root)
+			}
+		}
+		if hit, ok := buildSearchNameHit(path, name, relDir, spec); ok {
+			hits = append(hits, hit)
+		}
+		return nil
+	})
+	if walkErr != nil || len(hits) == 0 {
+		return
+	}
+	sort.Slice(hits, func(i, j int) bool { return hits[i].Path < hits[j].Path })
+	if len(hits) > nameHitMax {
+		hits = hits[:nameHitMax]
+	}
+	res.Hits = append(res.Hits, hits...)
+}
+
+// scanSearchFile 单文件内容扫描（文件名兜底命中统一在 searchWorkspace 的
+// appendWorkspaceNameHits 收口，两条扫描路径语义一致）。
 func scanSearchFile(job searchFileJob, spec *searchSpec, deadline time.Time) searchFileResult {
 	var out searchFileResult
 	if time.Now().After(deadline) {
@@ -568,6 +774,10 @@ func scanSearchFile(job searchFileJob, spec *searchSpec, deadline time.Time) sea
 		}
 		hitsBefore := len(out.hits)
 		appendHit := func(start, end int, fuzzySplit bool) {
+			// 区间先按原行收口再切片：兜底任何上游给出的越界偏移——错一条预览可以
+			// 接受，panic 掉整个进程不行（buildSearchPreview 内部本就有同样的收口）。
+			start = min(max(start, 0), len(line))
+			end = min(max(end, start), len(line))
 			preview, mStart, mEnd := buildSearchPreview(line, start, end-start)
 			hit := SearchHit{
 				Path:       job.path,
@@ -694,10 +904,15 @@ func (s *Searcher) searchWorkspace(root, query string, spec *searchSpec) (*Searc
 	if query == "" {
 		return &SearchResult{}, nil
 	}
-	// 用户排除表按最终扫描根加载（文件根已扩散到父目录时从父目录读配置）
-	spec.ignore = LoadIgnoreRules(root)
+	// 用户排除表按最终扫描根加载（文件根已扩散到父目录时从父目录读配置）。
+	// IncludeIgnored=true 时留 nil：shouldSkip/globArgs 对 nil 安全返回 false/nil，
+	// 即本次临时放行全部目录忽略规则（仅内存、不写配置）；二进制与 worktree 跳过不受影响。
+	if !spec.includeIgnored {
+		spec.ignore = LoadIgnoreRules(root)
+	}
 	if !spec.fuzzy && os.Getenv("DATALENS_NO_RG") == "" {
 		if res, ok := searchWithRipgrep(root, spec); ok {
+			appendWorkspaceNameHits(root, spec, res)
 			applyOutputMode(res, spec)
 			return res, nil
 		}
@@ -706,6 +921,7 @@ func (s *Searcher) searchWorkspace(root, query string, spec *searchSpec) (*Searc
 	if err != nil {
 		return nil, err
 	}
+	appendWorkspaceNameHits(root, spec, result)
 	applyOutputMode(result, spec)
 	return result, nil
 }
@@ -729,9 +945,6 @@ func (s *Searcher) scanWorkspaceBuiltin(root string, spec *searchSpec) (*SearchR
 		name := d.Name()
 		if d.IsDir() {
 			if path != root {
-				if searchSkipDirs[strings.ToLower(name)] || name == ".git" {
-					return filepath.SkipDir
-				}
 				rel, relErr := filepath.Rel(root, path)
 				// AI 隔离 worktree 副本整棵跳过（按相对路径；从 worktree 内发起的检索不受影响）
 				if relErr == nil && SkipPath(rel) {

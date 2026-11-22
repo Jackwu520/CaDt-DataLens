@@ -114,8 +114,9 @@ const (
 	DirTreeMaxEntries = 400 // 全树条目预算：超过即截断，防止 node_modules 类目录刷爆上下文
 )
 
-// ReadDirTree 递归列目录树。search.SkipDir 命中的目录整棵跳过（与 search_text 同一张表），
-// 目录符号链接不跟（防环）；条目预算用尽时在对应目录打 Omitted 并停止深入。
+// ReadDirTree 递归列目录树。默认软忽略与用户 search-ignore 命中的目录整棵跳过
+//（与 search_text 同一张表，! 可覆盖默认），目录符号链接不跟（防环）；
+// 条目预算用尽时在对应目录打 Omitted 并停止深入。
 func (f *FS) ReadDirTree(path string, depth int) (*DirTreeListing, error) {
 	path = strings.TrimSpace(path)
 	if path == "" {
@@ -159,13 +160,11 @@ func walkDirTree(dir string, rel string, remainingDepth int, budget *int, ignore
 		name := entry.Name()
 		isDir := entry.IsDir() && entry.Type()&os.ModeSymlink == 0
 		if isDir {
-			if search.SkipDir(name) {
-				continue
-			}
 			childRel := joinRelPath(rel, name)
 			if search.SkipPath(childRel) {
 				continue
 			}
+			// 默认软忽略 + 用户 search-ignore（! 可覆盖默认），已含 .git/node_modules 等
 			if ignore.ShouldSkipDir(name, childRel) {
 				continue
 			}

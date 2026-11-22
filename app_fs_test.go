@@ -124,6 +124,37 @@ func TestReadDirTreeRespectsSearchIgnore(t *testing.T) {
 	}
 }
 
+// 用户 ! 前缀可覆盖默认软规则：node_modules 默认跳过，写 !node_modules 后目录树应列出它。
+func TestReadDirTreeSearchIgnoreOverridesDefault(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"node_modules", "keep"} {
+		if err := os.Mkdir(filepath.Join(dir, name), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ignoreDir := filepath.Join(dir, ".cadt", "config")
+	if err := os.MkdirAll(ignoreDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ignoreDir, "search-ignore"), []byte("!node_modules\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	listing, err := NewApp().ReadDirTree(dir, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := map[string]bool{}
+	for _, child := range listing.Root.Children {
+		names[child.Name] = true
+	}
+	if !names["node_modules"] {
+		t.Fatalf("!node_modules 应覆盖默认软规则、在目录树列出: %+v", listing.Root.Children)
+	}
+	if !names["keep"] {
+		t.Fatalf("正常目录应保留: %+v", listing.Root.Children)
+	}
+}
+
 func TestReadDirTreeTruncatesOnBudget(t *testing.T) {
 	dir := t.TempDir()
 	for i := 0; i < fsops.DirTreeMaxEntries+50; i++ {

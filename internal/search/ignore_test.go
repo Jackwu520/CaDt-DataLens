@@ -2,6 +2,7 @@ package search
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -45,7 +46,10 @@ func TestIgnoreRulesParseAndMatch(t *testing.T) {
 func TestLoadIgnoreRulesCommentsAndCache(t *testing.T) {
 	dir := t.TempDir()
 	writeIgnore(t, dir, "# 注释\n\n  # 缩进注释\n.aoci\n*.tmp\n!keep.tmp\n")
-	rules := LoadIgnoreRules(dir)
+	// 纯解析入口：只验用户规则的注释/取反与缓存；默认注入由
+	// TestLoadIgnoreRulesInjectsDefaultsAndUserOverride 覆盖。
+	path := filepath.Join(dir, ".cadt", "config", "search-ignore")
+	rules := LoadIgnoreRulesAt(path)
 	if rules == nil || len(rules.rules) != 3 {
 		t.Fatalf("应解析出 3 条规则，got %+v", rules)
 	}
@@ -56,7 +60,7 @@ func TestLoadIgnoreRulesCommentsAndCache(t *testing.T) {
 		t.Error("!keep.tmp 应重新包含")
 	}
 	// 缓存命中：同一 path+mtime 返回同一实例
-	if LoadIgnoreRules(dir) != rules {
+	if LoadIgnoreRulesAt(path) != rules {
 		t.Error("mtime 未变时应命中缓存")
 	}
 }
@@ -147,5 +151,103 @@ func TestLoadIgnoreRulesAtArbitraryPath(t *testing.T) {
 	}
 	if LoadIgnoreRulesAt(path) != rules {
 		t.Error("mtime 未变时应命中缓存")
+	}
+}
+
+func TestLoadIgnoreRulesInjectsDefaultsAndUserOverride(t *testing.T) {
+	dir := t.TempDir()
+	// 无用户配置：默认软规则仍生效
+	rules := LoadIgnoreRules(dir)
+	if rules == nil || !rules.shouldSkip("x", "node_modules/pkg/a.js") ||
+		!rules.shouldSkip(".git", ".git/config") || !rules.shouldSkip("x", "a/.venv/lib/x.py") {
+		t.Fatalf("默认软规则应含 node_modules/.git/.venv，got %+v", rules)
+	}
+	if rules.shouldSkip("main.go", "src/main.go") {
+		t.Error("正常源码不该被默认规则排除")
+	}
+	// 用户 ! 覆盖默认：node_modules 重新包含，.git 仍排除
+	writeIgnore(t, dir, "!node_modules\n")
+	rules2 := LoadIgnoreRules(dir)
+	if rules2.shouldSkip("x", "node_modules/pkg/a.js") {
+		t.Error("!node_modules 应覆盖默认软规则、重新包含")
+	}
+	if !rules2.shouldSkip(".git", ".git/config") {
+		t.Error("只覆盖 node_modules，.git 仍应被默认排除")
+	}
+	// LoadIgnoreRulesAt 保持纯解析、不注入默认（cognition 解耦）
+	raw := LoadIgnoreRulesAt(filepath.Join(dir, ".cadt", "config", "search-ignore"))
+	if raw == nil || len(raw.rules) != 1 {
+		t.Fatalf("LoadIgnoreRulesAt 应只含用户规则 1 条，got %+v", raw)
+	}
+	if raw.shouldSkip("x", "node_modules/pkg/a.js") {
+		t.Error("LoadIgnoreRulesAt 不该注入默认规则")
+	}
+}
+
+// 默认软规则 + ! 覆盖在两条扫描路径同语义；IncludeIgnored 本次全放行。
+func TestDefaultIgnoreAndIncludeIgnoredDualPath(t *testing.T) {
+	dir := t.TempDir()
+	writeSearchFile(t, filepath.Join(dir, "src", "keep.txt"), "needle\n")
+	writeSearchFile(t, filepath.Join(dir, "node_modules", "dep", "dep.txt"), "needle\n")
+	writeIgnore(t, dir, "!node_modules\n")
+
+	for _, tc := range []struct {
+		name           string
+		includeIgnored bool
+		wantFiles      int
+	}{
+		{"默认放行 node_modules（用户 ! 覆盖）", false, 2},
+		{"IncludeIgnored 本次全放行", true, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// 内置路径
+			t.Run("builtin", func(t *testing.T) {
+				t.Setenv("DATALENS_NO_RG", "1")
+				res, err := (&Searcher{}).SearchWorkspaceAdvanced(dir, "needle", SearchOptions{IncludeIgnored: tc.includeIgnored})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(res.Hits) != tc.wantFiles {
+					t.Fatalf("命中数 = %d，want %d: %+v", len(res.Hits), tc.wantFiles, res.Hits)
+				}
+			})
+			// rg 路径（若安装）
+			t.Run("rg", func(t *testing.T) {
+				if _, err := exec.LookPath("rg"); err != nil {
+					t.Skip("未安装 rg")
+				}
+				t.Setenv("DATALENS_NO_RG", "")
+				res, err := (&Searcher{}).SearchWorkspaceAdvanced(dir, "needle", SearchOptions{IncludeIgnored: tc.includeIgnored})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(res.Hits) != tc.wantFiles {
+					t.Fatalf("rg 命中数 = %d，want %d: %+v", len(res.Hits), tc.wantFiles, res.Hits)
+				}
+			})
+		})
+	}
+}
+
+// 无用户配置时默认软规则生效；IncludeIgnored=true 应放行 node_modules。
+func TestIncludeIgnoredOverridesDefaultRules(t *testing.T) {
+	dir := t.TempDir()
+	writeSearchFile(t, filepath.Join(dir, "src", "keep.txt"), "needle\n")
+	writeSearchFile(t, filepath.Join(dir, "node_modules", "dep.txt"), "needle\n")
+	t.Setenv("DATALENS_NO_RG", "1")
+
+	res, err := (&Searcher{}).SearchWorkspaceAdvanced(dir, "needle", SearchOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Hits) != 1 || !strings.Contains(res.Hits[0].Path, "src") {
+		t.Fatalf("默认应只命中 src/keep.txt，got %+v", res.Hits)
+	}
+	res2, err := (&Searcher{}).SearchWorkspaceAdvanced(dir, "needle", SearchOptions{IncludeIgnored: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res2.Hits) != 2 {
+		t.Fatalf("IncludeIgnored 应放行 node_modules，命中 2 处，got %+v", res2.Hits)
 	}
 }

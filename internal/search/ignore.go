@@ -17,11 +17,13 @@ import (
 //   - 不含 / 的模式按路径每一段的名字匹配（如 .aoci 排除任意层级的 .aoci 目录/文件）。
 //   - 含 / 的模式按相对扫描根的路径 glob 匹配（如 .cadt/tmp、docs/**/*.bak）。
 //
-// 该表作用于 UI 全局搜索 / AI search_text / glob / 目录树 list_dir；硬编码表
-// SkipDir / SkipPath 保持独立（wipeguard 结构指纹等不接入用户配置）。
+// LoadIgnoreRules 先注入 defaultIgnoreNames（node_modules / .git / .venv 等）作为默认
+// 软忽略，再追加用户规则；用户写 !node_modules 即可覆盖默认、重新包含该目录。
+// 该表作用于 UI 全局搜索 / AI search_text / glob / 目录树 list_dir / 目录结构导出；
+// 硬编码表 SkipDir / SkipPath 保持独立（wipeguard 结构指纹、worktree 跳过不接用户配置）。
 // 根自身永不命中——从子目录发起的检索不受影响。
-// 语法与匹配机器经 LoadIgnoreRulesAt 供认知索引的 <root>/.cogignore 复用
-// （internal/cognition：可搜索 ≠ 可索引，两份排除文件刻意解耦）。
+// 纯解析入口 LoadIgnoreRulesAt 供认知索引的 <root>/.cogignore 复用（它不注入默认规则，
+// internal/cognition：可搜索 ≠ 可索引，两份排除文件刻意解耦）。
 
 const ignoreRelPath = ".cadt/config/search-ignore"
 
@@ -46,15 +48,28 @@ var ignoreCache = struct {
 	items map[string]*cachedIgnore
 }{items: map[string]*cachedIgnore{}}
 
-// LoadIgnoreRules 读取并解析 <root>/.cadt/config/search-ignore；不存在或读失败返回 nil。
-// 按配置路径 + mtime 缓存，避免每次搜索都读盘；配置改动后下次搜索自动重载。
-// 供本包搜索三路径与 fsops 目录树共用。
+// LoadIgnoreRules 读取并解析 <root>/.cadt/config/search-ignore，并注入默认软忽略规则。
+// 返回的规则顺序：先 defaultIgnoreNames（有序），再用户配置——后者可写 ! 前缀覆盖前者
+// （如 !node_modules 重新包含）。用户配置不存在时仍返回含默认规则的实例，故返回永不为 nil。
+// 按配置路径 + mtime 缓存用户部分，避免每次搜索都读盘；配置改动后下次搜索自动重载。
+// 供本包搜索三路径、fsops 目录树与 structuredir 目录导出共用（四处同一口径）。
+// 注意：LoadIgnoreRulesAt 保持纯解析、不注入默认——cognition 的 .cogignore 复用它，
+// 两份排除文件刻意解耦（可搜索 ≠ 可索引）。
 func LoadIgnoreRules(root string) *IgnoreRules {
+	merged := &IgnoreRules{}
+	for _, name := range defaultIgnoreNames {
+		merged.rules = append(merged.rules, ignoreRule{pattern: name, byName: true})
+	}
 	root = strings.TrimSpace(root)
 	if root == "" {
-		return nil
+		return merged
 	}
-	return LoadIgnoreRulesAt(filepath.Join(root, filepath.FromSlash(ignoreRelPath)))
+	// 用户部分来自缓存实例：拼接到新 slice，绝不 append 到缓存实例本身（避免污染缓存、
+	// 让默认规则在下次调用重复叠加）。
+	if user := LoadIgnoreRulesAt(filepath.Join(root, filepath.FromSlash(ignoreRelPath))); user != nil {
+		merged.rules = append(merged.rules, user.rules...)
+	}
+	return merged
 }
 
 // LoadIgnoreRulesAt 读取并解析任意路径的 gitignore 简化版排除文件；不存在、是目录或读失败返回
@@ -88,8 +103,8 @@ func LoadIgnoreRulesAt(path string) *IgnoreRules {
 			r.negate = true
 			line = strings.TrimSpace(line[1:])
 		}
-		line = strings.TrimPrefix(line, "/")   // 开头的 / 视为相对根
-		line = strings.TrimSuffix(line, "/")   // 尾部 / 是目录标记，去掉
+		line = strings.TrimPrefix(line, "/") // 开头的 / 视为相对根
+		line = strings.TrimSuffix(line, "/") // 尾部 / 是目录标记，去掉
 		if line == "" || line == "#" {
 			continue
 		}

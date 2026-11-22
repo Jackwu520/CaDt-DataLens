@@ -21,7 +21,7 @@ const simpleGlob = (pattern, rel, name) => {
 test('参数归一化：缺省与钳制', () => {
     assert.deepEqual(normalizeSearchOptions({}), {
         regex: false, wholeWord: false, pattern: '', excludePattern: '',
-        outputMode: 'content', context: 0, maxResults: 200,
+        outputMode: 'content', context: 0, maxResults: 200, includeIgnored: false,
     });
     const opts = normalizeSearchOptions({
         regex: true, wholeWord: 'true', pattern: '  *.go  ', excludePattern: ' tests/** ',
@@ -34,6 +34,9 @@ test('参数归一化：缺省与钳制', () => {
     assert.equal(opts.outputMode, 'files');
     assert.equal(opts.context, 3);
     assert.equal(opts.maxResults, 1000);
+    assert.equal(normalizeSearchOptions({includeIgnored: true}).includeIgnored, true);
+    assert.equal(normalizeSearchOptions({includeIgnored: 'true'}).includeIgnored, true);
+    assert.equal(normalizeSearchOptions({includeIgnored: false}).includeIgnored, false);
     assert.equal(normalizeSearchOptions({outputMode: 'bogus', context: -5, maxResults: 0}).outputMode, 'content');
     assert.equal(normalizeSearchOptions({context: -5}).context, 0);
 });
