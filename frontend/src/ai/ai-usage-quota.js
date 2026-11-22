@@ -396,7 +396,8 @@ function invalidPart(item) {
 // 形态判定：官方 label/value 或货币 remaining → 币种型（只显示总额）；remaining+total
 //（非货币单位，SenseNova 积分这类）→ 剩余型（换算百分比）；unit=% 只剩 used → 已用型。
 // extra（"已用 $X / $Y"、"返赠 N"）与绝对值不上外显行，留给详情弹层。
-function usageCompactParts(snapshot) {
+// now 可注入（倒计时按分钟向下取整，测试要钉住与时钟同一瞬点，否则跨 1ms 就掉进上一分钟）。
+function usageCompactParts(snapshot, now = Date.now()) {
     if (!snapshot) return null;
     if (snapshot.state === 'error') {
         return {prefix: '', parts: [{label: '', value: snapshot.error || '查询失败', tone: 'danger', countdown: ''}]};
@@ -451,7 +452,7 @@ function usageCompactParts(snapshot) {
                 label: pool + window,
                 value: formatPercentCompact(leftPct),
                 tone: toneForLeft(leftPct),
-                countdown: formatUsageCountdown(item.resetAt),
+                countdown: formatUsageCountdown(item.resetAt, now),
             });
         }
         return {prefix: '剩余：', parts};
@@ -473,14 +474,14 @@ function usageCompactParts(snapshot) {
                 label: pool + window,
                 value: formatPercentCompact(usedPct),
                 tone: toneForLeft(100 - usedPct),
-                countdown: formatUsageCountdown(item.resetAt),
+                countdown: formatUsageCountdown(item.resetAt, now),
             });
         }
         return {prefix: '已用：', parts};
     }
 
     // ⑤ 兜底：headline 首段原样
-    const segments = usageHeadlineParts(snapshot).segments || [];
+    const segments = usageHeadlineParts(snapshot, now).segments || [];
     if (!segments.length) return null;
     return {
         prefix: '',
@@ -494,13 +495,13 @@ function usageCompactParts(snapshot) {
 }
 
 // 账号卡外显的紧凑行（显示规范 v1）；null = 无数据（调用方显示「待查询」）。
-export function usageCompactLine(snapshot) {
-    return usageCompactParts(snapshot);
+export function usageCompactLine(snapshot, now = Date.now()) {
+    return usageCompactParts(snapshot, now);
 }
 
 // 纯文本版（tooltip / 单行场景）：倒计时作「（3h15m 后重置）」后缀。
-export function formatUsageCompactText(snapshot) {
-    const compact = usageCompactParts(snapshot);
+export function formatUsageCompactText(snapshot, now = Date.now()) {
+    const compact = usageCompactParts(snapshot, now);
     if (!compact) return '';
     const body = compact.parts.map((part) => {
         const head = part.label ? part.label + ': ' : '';

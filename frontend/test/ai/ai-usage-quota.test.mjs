@@ -272,9 +272,12 @@ test('展示格式化：∞ / 两位小数 / 条目文案 / 紧凑行三形态 /
     assert.deepEqual(sense.parts.map((p) => p.value), ['1.7%', '76%']);
     assert.deepEqual(sense.parts.map((p) => p.tone), ['warning', 'normal']);
 
-    // 倒计时文本：⏱ 位置在 DOM，纯文本作「（…后重置）」后缀
+    // 倒计时文本：⏱ 位置在 DOM，纯文本作「（…后重置）」后缀。
+    // 时钟注入（now 与 resetAt 取同一瞬点）：倒计时按分钟向下取整，两次取 Date.now()
+    // 之间只要跨过 1ms 就会掉进上一分钟（1h30m→1h29m），不钉住必闪烁。
+    const countdownNow = Date.now();
     assert.equal(
-        formatUsageCompactText({state: 'ok', items: [{planName: '每周', used: 40, unit: '%', resetAt: Date.now() + 90 * 60000}]}),
+        formatUsageCompactText({state: 'ok', items: [{planName: '每周', used: 40, unit: '%', resetAt: countdownNow + 90 * 60000}]}, countdownNow),
         '已用：7d: 40%（1h30m 后重置）',
     );
     assert.equal(formatUsageCompactText({state: 'error', error: 'HTTP 401'}), 'HTTP 401');
