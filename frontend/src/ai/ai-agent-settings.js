@@ -1,4 +1,7 @@
-// ai-agent-settings.js：设置 → AI → 智能体 pane（列表 + 编辑器弹窗）。
+// ai-agent-settings.js：智能体（群聊成员）管理页——原 设置 → AI → 智能体 pane，
+// 已迁为应用页面标签页（core/app-pages.js 的 agents）。DOM 常驻 index.html 尾部
+// #agents-park 停靠区，mountAgentsPane 搬进 / 搬出标签页容器保持节点身份（本模块
+// 创建期按 id 捕获 listEl / createBtn，不能重建 DOM）。
 // 编辑器用居中动态弹窗（openAIDialog 三件套，仿生成条目编辑器），表单控件一律走
 // core/form-controls.js 工厂（表单控件硬规范）。数据层在 ai-agent-model.js；
 // agents[] 存 ai-config.json（panel 归一化后即真源，本模块就地改 + saveAIConfig）。
@@ -14,7 +17,7 @@ import {
     agentGroups, agentsByGroup, filterGroupSuggestions, groupNameError,
 } from './ai-agent-model.js';
 
-export function createAIAgentSettings(ctx, extras) {
+export function createAIAgentSettings(ctx) {
     // 分组折叠记忆（本窗口会话内）：Set 只存组名，渲染时跳过成员行
     const collapsedGroups = new Set();
     // 分组建议弹层（接入弹层栈的 popover）：同一时刻最多一个，句柄收口一切关闭路径
@@ -84,7 +87,8 @@ export function createAIAgentSettings(ctx, extras) {
     const closeAIDialog = ctx.closeAIDialog;
     const dialogButton = ctx.dialogButton;
     const enhanceSelect = ctx.enhanceSelect;
-    const setSettingsStatus = (extras && extras.setSettingsStatus) || (() => {});
+    // 保存 / 删除反馈走全局 flash（原写设置窗状态条，迁为标签页后设置窗多半没开）
+    const flash = typeof ctx.flash === 'function' ? ctx.flash : () => {};
     const listEl = document.getElementById('agents-list');
     const createBtn = document.getElementById('ai-agent-create');
 
@@ -204,7 +208,7 @@ export function createAIAgentSettings(ctx, extras) {
                 agentsRemove(agents(), agent.id);
                 saveAIConfig();
                 renderAgentsPane();
-                setSettingsStatus('已删除智能体：' + agent.name, 'ok');
+                flash('已删除智能体：' + agent.name);
             }, '删除', '删除智能体');
         });
         control.append(editBtn, delBtn);
@@ -416,8 +420,27 @@ export function createAIAgentSettings(ctx, extras) {
         editorControls = null;
         closeAIDialog();
         renderAgentsPane();
-        setSettingsStatus('已保存智能体：' + result.agent.name, 'ok');
+        flash('已保存智能体：' + result.agent.name);
     }
 
-    return {bindAgentsPane, renderAgentsPane};
+    // ---------- 应用页面标签页（停靠区搬运，保持节点身份） ----------
+
+    function mountAgentsPane(root) {
+        const pane = listEl ? listEl.closest('[data-pane="agents"]') : null;
+        if (!pane || !root) return null;
+        // 只搬不重建：本模块创建期按 id 捕获的引用与绑定跨开关标签页始终有效（外部工具先例）
+        root.appendChild(pane);
+        pane.classList.remove('hidden'); // 离开设置窗的 hidden 切换体系，挂载即显示
+        bindAgentsPane();
+        renderAgentsPane();
+        return () => {
+            const park = document.getElementById('agents-park');
+            if (park && pane.isConnected) park.appendChild(pane);
+            pane.classList.add('hidden');
+            // 编辑中途关标签页：建议弹层收口（编辑器弹窗自身有栈，不在此管）
+            closeGroupSuggest();
+        };
+    }
+
+    return {bindAgentsPane, renderAgentsPane, mountAgentsPane};
 }

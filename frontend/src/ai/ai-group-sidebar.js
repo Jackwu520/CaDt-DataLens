@@ -38,8 +38,8 @@ export function createAIGroupSidebar(deps) {
     });
     const dialogButton = dialog.button || null;
     const enhanceSelect = dialog.enhanceSelect || null;
-    // 弹窗左下角齿轮：直达 设置 → AI → 智能体（宿主注入 openSettings）
-    const openSettings = typeof deps.openSettings === 'function' ? deps.openSettings : null;
+    // 弹窗左下角齿轮：直达 应用页面 → 智能体（宿主注入 openAppPageTab）
+    const openAppPageTab = typeof deps.openAppPageTab === 'function' ? deps.openAppPageTab : null;
 
     const els = {
         panel: document.getElementById('ai-sessions-panel'),
@@ -222,7 +222,7 @@ export function createAIGroupSidebar(deps) {
         const agents = (config && Array.isArray(config.agents)) ? config.agents.filter((a) => a && a.enabled) : [];
         const profiles = (config && Array.isArray(config.profiles)) ? config.profiles : [];
         if (!agents.length) {
-            flash('还没有可用智能体：先到 设置 → AI → 智能体 创建成员', true);
+            flash('还没有可用智能体：先到 应用页面 → 智能体 创建成员', true);
             return;
         }
 
@@ -357,7 +357,7 @@ export function createAIGroupSidebar(deps) {
                 chairAgentCtl.control.appendChild(item);
             }
             chairCreateBtn.classList.add('hidden');
-            flash('已创建默认主持人智能体（设置 → AI → 智能体 可编辑）');
+            flash('已创建默认主持人智能体（应用页面 → 智能体 可编辑）');
         });
         if (chairAgents.length) chairCreateBtn.classList.add('hidden');
         chairAgentWrap.appendChild(chairCreateBtn);
@@ -417,17 +417,17 @@ export function createAIGroupSidebar(deps) {
             createControls = null;
             closeDialog();
         });
-        // 左下角齿轮：先去设置里把智能体备齐，再回来建群（跳到 设置 → AI → 智能体）
+        // 左下角齿轮：先去应用页面把智能体备齐，再回来建群（开 应用页面 → 智能体 标签页）
         const settingsBtn = node('button', 'dlg-btn gc-settings-btn');
         settingsBtn.type = 'button';
-        settingsBtn.dataset.tip = '设置 → AI → 智能体';
-        settingsBtn.setAttribute('aria-label', '打开设置 · 智能体');
+        settingsBtn.dataset.tip = '应用页面 → 智能体';
+        settingsBtn.setAttribute('aria-label', '打开应用页面 · 智能体');
         settingsBtn.innerHTML = iconSvg('gear', 14);
         settingsBtn.addEventListener('click', () => {
-            if (!openSettings) return;
+            if (!openAppPageTab) return;
             createControls = null;
             closeDialog();
-            openSettings('agents');
+            openAppPageTab('agents');
         });
 
         openDialog('新建群聊',

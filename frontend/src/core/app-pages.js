@@ -24,6 +24,7 @@
 export const APP_PAGES = [
     {id: 'usage-stats', label: '使用统计', icon: 'chart', group: '数据', desc: 'Token 用量、热力图、模型分布与请求日志'},
     {id: 'external-tools', label: '外部工具', icon: 'globe', group: 'AI', desc: 'AI 联网能力来源矩阵、服务提供商、MCP 服务器与桌面控制'},
+    {id: 'agents', label: '智能体', icon: 'agents', group: 'AI', desc: '群聊（圆桌讨论）成员管理：模型绑定、人设与职责'},
     {id: 'schedules', label: '定时任务', icon: 'clock', group: '自动化', desc: '按时间自动触发会话，可查看下次运行与最近结果'},
     {id: 'activity', label: '操作记录', icon: 'history', group: '诊断', desc: '按月的操作留痕，可按来源与关键词筛选、导出'},
     {id: 'patches', label: '补丁库', icon: 'git', group: '开发', desc: '.cadt/patches 的补丁列表、审阅与删除'},

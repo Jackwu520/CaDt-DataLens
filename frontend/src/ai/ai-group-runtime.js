@@ -966,7 +966,7 @@ export function createAIGroupRuntime(deps) {
             .map((id) => agents.find((item) => item && item.id === id))
             .filter((agent) => agent && agent.enabled && !(g.meta.mutedAgentIds || []).includes(agent.id));
         if (!members.length) {
-            await systemNotice(groupId, '群里没有可用成员：先到 设置 → AI → 智能体 启用成员');
+            await systemNotice(groupId, '群里没有可用成员：先到 应用页面 → 智能体 启用成员');
             return;
         }
         // 首批响应者：@点名（全体 = 每人一次）；无 @ → 轮换一位成员接话（§4 默认接话人）

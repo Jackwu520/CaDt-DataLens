@@ -44,6 +44,19 @@ test('编辑器改用 form-controls 工厂，不再裸建 input/select/textarea'
     assert.ok(!/node\('(input|select|textarea)'/.test(editorBody), '编辑器不得再裸建原生控件');
 });
 
+// 2026-11-22 用户截图：新建立项的输入框看起来「不是封装好的」。原因是工厂的 className 会
+// **覆盖**默认封装类（applyCommon 里 control.className = o.className），只传 ai-settings-input
+// 就丢掉了 .dlg-input 的 7px 圆角 / 12.5px 字号 / hover 边框 / focus 外发光。
+// 正确写法是两个类并列：dlg-input 给外观，ai-settings-input 给域内布局（flex/min-width）。
+test('编辑器输入框必须带 dlg-input（不能只用域内 class 覆盖掉封装外观）', () => {
+    const editorBody = scheduleSrc.slice(scheduleSrc.indexOf('function openScheduleEditor'), scheduleSrc.indexOf('// ---- 定时任务触发'));
+    const classNames = [...editorBody.matchAll(/className:\s*'([^']+)'/g)].map((m) => m[1]);
+    assert.ok(classNames.length >= 3, '编辑器应有多处 className 传参');
+    for (const cn of classNames) {
+        assert.ok(/\bdlg-input\b/.test(cn), '控件 className 必须包含 dlg-input，实际为：' + cn);
+    }
+});
+
 test('定时任务弹窗里的 select 经 enhanceSelect 增强（去掉原生菜单）', () => {
     // 弹窗挂 body（不在 .apppage-root 里），扫描器扫不到，必须打开后手动增强三个下拉。
     assert.ok(/const enhanceSelect = typeof ctx\.enhanceSelect/.test(scheduleSrc),
@@ -59,4 +72,14 @@ test('跨窗口刷新：main.js 的 schedules-changed 订阅必须刷新应用�
     assert.ok(/d\.appPage === 'schedules'/.test(sub),
         'schedules-changed 必须找到打开的应用页标签并刷新（修复跨窗口陈旧）');
     assert.ok(/refreshScheduleSettings/.test(sub), '必须调 aiPanel.refreshScheduleSettings');
+});
+
+test('挂载器兜底：AI 面板惰性初始化，未碰过面板就开定时任务页要先建面板', () => {
+    // 用户没开过 AI 面板时 aiPanel 是 null（initAIPanel 只在面板交互路径触发）：
+    // 挂载器直接读 aiPanel 会返回 null → 标签页空白，且再激活被 doc.pane 守卫挡住不自愈。
+    const mounter = mainSrc.slice(mainSrc.indexOf("'schedules': (root) => {"), mainSrc.indexOf("'agents': (root) => {"));
+    assert.ok(mounter.length > 0, 'appPageMounters 必须登记 schedules');
+    assert.ok(/if \(!aiPanel\) initAIPanel\(\);/.test(mounter),
+        'schedules 挂载器必须先兜底 initAIPanel（幂等，与设置页 AI 子页 / 外部工具页同款）');
+    assert.ok(/bridgeMountSchedules\(root\)/.test(mounter), '兜底后必须仍经面板桥转发');
 });

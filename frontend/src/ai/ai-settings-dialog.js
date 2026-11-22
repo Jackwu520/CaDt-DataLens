@@ -282,6 +282,8 @@ export function createAISettingsDialog(ctx) {
     function refreshSettingsPane() {
         if (refreshPersonaPane) refreshPersonaPane();
         if (genMod) genMod.renderGenList();
+        // 智能体 pane 已迁为应用页面标签页（core/app-pages.js）：列表真源渲染由标签页 mount /
+        // bridgeRefreshAgents 驱动；这里留着幂等兜底（pane 在停靠区时渲染不可见）
         if (agentsMod) agentsMod.renderAgentsPane();
         const profile = activeProfile();
         const entry = modelMod.editorEntryOf(profile);
@@ -1355,7 +1357,7 @@ export function createAISettingsDialog(ctx) {
         prefMod.renderPresetSelect();
         prefMod.refreshPromptSettings();
         genMod.bindGenPane();
-        agentsMod.bindAgentsPane();
+        agentsMod.bindAgentsPane(); // 幂等；标签页 mount 时也会调（pane 已迁为应用页面，按钮绑定不再依赖设置窗打开）
     }
 
     // —— 四个子域：顺序 model → pref（要 openModelEditor/renderModelList）
@@ -1383,8 +1385,9 @@ export function createAISettingsDialog(ctx) {
     });
     // 生图与视频模型 pane：自管 DOM（列表 + 编辑器弹窗），refreshSettingsPane 驱动列表刷新
     const genMod = createAIGenSettings(ctx, {setSettingsStatus, refreshSettingsPane});
-    // 智能体 pane（群聊成员）：同 genMod 形态，数据层在 ai-agent-model.js
-    const agentsMod = createAIAgentSettings(ctx, {setSettingsStatus});
+    // 智能体管理页（群聊成员）：数据层在 ai-agent-model.js；已迁为应用页面标签页
+    // （core/app-pages.js 的 agents），这里只转发 mount / 刷新给 ai-panel 的桥
+    const agentsMod = createAIAgentSettings(ctx);
     const prefMod = createAIPreferenceSettings(ctx, {
         openModelEditor: modelMod.openModelEditor,
         renderModelList: modelMod.renderModelList,
@@ -1405,6 +1408,7 @@ export function createAISettingsDialog(ctx) {
 
     return {
         ...permMod, ...prefMod, ...modelMod, ...ioMod, ...personaMod, ...genMod,
+        mountAgentsPane: agentsMod.mountAgentsPane, refreshAgentsPane: agentsMod.renderAgentsPane,
         setSettingsStatus, settingsFormDisabled, refreshThinkingVisibility, clampThinkingBudget, refreshSettingsPane, bindSettingsPane, refreshChatSettings, refreshMemoryPath,
     };
 }
