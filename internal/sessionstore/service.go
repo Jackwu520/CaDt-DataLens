@@ -48,6 +48,17 @@ func (s *Service) AISessionList() ([]string, error) {
 	return store.List()
 }
 
+// ResolveSessionWorkspace 解析会话归属工作区（meta.workspace 为真源）。CLI
+// --ai-session 转发用（根包 secondInstancePlan）：把会话路由到归属工作区的窗口；
+// 不是 AI 工具绑定，走非创建路径、绝不建目录。
+func (s *Service) ResolveSessionWorkspace(id string) (string, error) {
+	store, err := s.store()
+	if err != nil {
+		return "", err
+	}
+	return store.ResolveSessionWorkspace(id)
+}
+
 func (s *Service) AISessionRead(id string) (string, error) {
 	store, err := s.store()
 	if err != nil {

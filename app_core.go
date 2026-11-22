@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -176,70 +178,230 @@ func (a *App) ensureAIServices() {
 	})
 }
 
+// forwardPlan 是 secondInstancePlan 的转发决策结果；窗口操作语义由 secondInstance 执行。
+// 决策与执行分离：secondInstancePlan 是纯函数（表驱动测试见 secondinstance_plan_test.go），
+// secondInstance 只碰窗口 API。
+type forwardPlan struct {
+	kind      string                  // quit | float | debug | settings | memo | sessionOpen | newWindow | deliver | show
+	targets   []launchargs.OpenTarget // float：浮窗打开目标；settings/memo：随事件投递的打开目标
+	groups    []targetGroup           // deliver：按路由窗口分组的打开目标（缺陷 E）
+	sessionID string                  // sessionOpen/deliver/newWindow：目标 AI 会话
+	workspace string                  // sessionOpen：会话归属工作区；deliver：与目标窗口一致时补投
+	pane      string                  // settings：目标设置 pane
+	locator   string                  // memo：便签定位点
+}
+
+// targetGroup 是 deliver 的一组同窗口打开目标（缺陷 E：按文件所属工作区路由）。
+type targetGroup struct {
+	windowName string                  // 路由命中的主窗口名；"" = 主窗口（primary）
+	targets    []launchargs.OpenTarget // 归属同一窗口的目标
+}
+
+// forwardDeps 是 secondInstancePlan 的环境依赖（测试注入桩）。
+type forwardDeps struct {
+	resolveSessionWorkspace func(string) (string, error) // 会话 id → 归属工作区
+	routeWindowForPath      func(string) string          // 文件路径 → 归属工作区窗口名（"" = 主窗口）
+}
+
+// routeWindowForPath 按文件路径的祖先链找归属工作区的主窗口（缺陷 E，方案 §3.4）：
+// 从文件所在目录逐级向上，每一级与已登记工作区键（pathKeyForCompare 归一，windowmeta.go）
+// 精确相等匹配，第一个命中的级别即「最深包含工作区」；盘根无命中返回空串（投主窗口）。
+// 存在的目录目标不路由（前端 openFolderSmart 自有工作区逻辑）；不存在的目标按文件处理
+// 从所在目录起爬——纯字符串祖先链，报错也报在归属窗口里。窗口工作区由前端
+// WindowRegister 实时登记（切换即更新、关闭登记空串退出匹配），这里只读。
+func routeWindowForPath(path string) string {
+	if info, err := os.Stat(path); err == nil && info.IsDir() {
+		return ""
+	}
+	dir := pathKeyForCompare(filepath.Dir(path))
+	for dir != "" {
+		if st := winReg.findByWorkspace(dir, ""); st != nil {
+			return st.name()
+		}
+		parent := pathKeyForCompare(filepath.Dir(dir))
+		if parent == dir {
+			return ""
+		}
+		dir = parent
+	}
+	return ""
+}
+
+// secondInstancePlan 把第二实例的转发参数解析成动作计划。相对旧内联逻辑的行为修正：
+//   - B（--ai-session 单独传参）：解析会话归属工作区后走 sessionOpen（openMainWindow 的
+//     「同工作区复用 + 前置 + 投会话」语义）；解析失败只前置窗口——绝不再把调用方 CWD
+//     兜底成打开目标误投给主窗口（旧 StartupCwdTarget 分支会误切工作区）。
+//   - C（--ai-session + 文件转发投递）：会话归属与目标窗口工作区一致时补投
+//     app-open-ai-session（前端 handleReuseSessionRequest 要求 workspace 匹配、无 reqId
+//     不回执）；不一致丢弃 + warn（旧版无条件静默丢 id）。
+//   - D（--open-settings/--memo + 文件组合）：文件目标随定点事件一起投给主窗口，不再被
+//     定点分支吞掉；回退浮窗时仍不投文件（浮窗不是文件容器，方案 §6 已知边界）。
+//
+// appconfig.OpenMode()=="window" 死分支移除：Read() 自 2026-11-21 起把 window 归一回
+// tab（同工作区双开会破坏单打开语义），比较恒假。
+func secondInstancePlan(args []string, deps forwardDeps) forwardPlan {
+	resolve := deps.resolveSessionWorkspace
+	if resolve == nil {
+		resolve = func(string) (string, error) { return "", errors.New("resolveSessionWorkspace 未注入") }
+	}
+	switch {
+	case launchargs.HasFlag(args, "--quit"):
+		return forwardPlan{kind: "quit"}
+	case launchargs.HasFlag(args, "--ai-float"):
+		return forwardPlan{kind: "float", targets: launchargs.ParseOpenTargets(args)}
+	case launchargs.HasFlag(args, "--debug-console"):
+		return forwardPlan{kind: "debug"}
+	}
+	targets := launchargs.ParseOpenTargets(args)
+	sessionID := launchargs.ParseAISessionArg(args)
+	if sessionID != "" && len(targets) == 0 {
+		if ws, err := resolve(sessionID); err == nil && ws != "" {
+			return forwardPlan{kind: "sessionOpen", sessionID: sessionID, workspace: ws}
+		}
+		writeAppLog("warn", "--ai-session 转发：会话不存在或无归属工作区（%q），仅前置窗口", sessionID)
+		return forwardPlan{kind: "show"}
+	}
+	if pane := launchargs.ParseOpenSettingsArg(args); pane != "" {
+		return forwardPlan{kind: "settings", targets: targets, pane: pane}
+	}
+	if loc := launchargs.ParseMemoLocatorArg(args); loc != "" {
+		return forwardPlan{kind: "memo", targets: targets, locator: loc}
+	}
+	if len(targets) == 0 {
+		targets = launchargs.StartupCwdTarget()
+		if len(targets) == 0 {
+			return forwardPlan{kind: "show"}
+		}
+	}
+	if launchargs.HasFlag(args, "--new-window") {
+		return forwardPlan{kind: "newWindow", targets: targets, sessionID: sessionID}
+	}
+	plan := forwardPlan{kind: "deliver"}
+	if sessionID != "" {
+		if ws, err := resolve(sessionID); err == nil && ws != "" {
+			plan.sessionID = sessionID
+			plan.workspace = ws
+		} else {
+			writeAppLog("warn", "--ai-session 转发：会话归属解析失败（%q），仅投递文件", sessionID)
+		}
+	}
+	// 缺陷 E：文件目标按所属工作区路由到对应窗口（祖先链最深命中），按窗口分组
+	// 投递；无归属（含目录目标、不存在路径）进主窗口组。
+	seen := map[string]int{}
+	for _, t := range targets {
+		name := ""
+		if deps.routeWindowForPath != nil {
+			name = deps.routeWindowForPath(t.Path)
+		}
+		if i, ok := seen[name]; ok {
+			plan.groups[i].targets = append(plan.groups[i].targets, t)
+			continue
+		}
+		seen[name] = len(plan.groups)
+		plan.groups = append(plan.groups, targetGroup{windowName: name, targets: []launchargs.OpenTarget{t}})
+	}
+	return plan
+}
+
 func (a *App) secondInstance(args []string) {
-	// --quit：外部（重建脚本等）请求优雅退出。绕开一切确认框：先让各窗口结算 AI
-	// 回合并落盘，收齐 ack（或超时）再 ForceQuitAll。见 app_close_action.go。
-	if launchargs.HasFlag(args, "--quit") {
+	plan := secondInstancePlan(args, forwardDeps{
+		resolveSessionWorkspace: a.ResolveSessionWorkspace,
+		routeWindowForPath:      routeWindowForPath,
+	})
+	switch plan.kind {
+	case "quit":
+		// --quit：外部（重建脚本等）请求优雅退出。绕开一切确认框：先让各窗口结算 AI
+		// 回合并落盘，收齐 ack（或超时）再 ForceQuitAll。见 app_close_action.go。
 		a.beginGracefulQuit()
 		return
-	}
-	if launchargs.HasFlag(args, "--ai-float") {
-		a.ensureFloatWindow(launchargs.ParseOpenTargets(args)...)
+	case "float":
+		a.ensureFloatWindow(plan.targets...)
 		return
-	}
-	if launchargs.HasFlag(args, "--debug-console") {
+	case "debug":
 		a.ensureDebugWindow()
 		return
 	}
 	// 下面这些分支都会把某个窗口拉到前台：顺手清托盘态（v2 每分支都走
 	// secondInstanceShow，审查 P2-2）。
 	a.clearTrayState()
-	if pane := launchargs.ParseOpenSettingsArg(args); pane != "" {
+	switch plan.kind {
+	case "settings":
 		// 无主窗口形态回退浮窗（与 OpenSettingsInMainWindow 同构，审查 P2-1）。
 		st := winReg.primary()
 		if st == nil {
 			st = winReg.get("float")
 		}
 		if st != nil {
-			emitWindowEventTo(st.window(), "app-open-settings", pane)
+			emitWindowEventTo(st.window(), "app-open-settings", plan.pane)
+			if st.spec.Mode == windowModeMain && len(plan.targets) > 0 {
+				deliverOpenTargets(st, openTargetsAny(plan.targets))
+			}
 			activateWindow(st.window())
 		}
-		return
-	}
-	if loc := launchargs.ParseMemoLocatorArg(args); loc != "" {
+	case "memo":
 		st := winReg.primary()
 		if st == nil {
 			st = winReg.get("float")
 		}
 		if st != nil {
-			emitWindowEventTo(st.window(), "app-open-memo", loc)
+			emitWindowEventTo(st.window(), "app-open-memo", plan.locator)
+			if st.spec.Mode == windowModeMain && len(plan.targets) > 0 {
+				deliverOpenTargets(st, openTargetsAny(plan.targets))
+			}
 			activateWindow(st.window())
 		}
-		return
-	}
-	targets := launchargs.ParseOpenTargets(args)
-	if len(targets) == 0 {
-		targets = launchargs.StartupCwdTarget()
-	}
-	if len(targets) == 0 {
+	case "sessionOpen":
+		a.openMainWindow(windowSpec{Workspace: plan.workspace, SessionID: plan.sessionID})
+	case "newWindow":
+		a.openMainWindow(windowSpec{Targets: plan.targets, SessionID: plan.sessionID})
+	case "deliver":
+		if len(plan.groups) == 0 {
+			a.secondInstanceShow()
+			return
+		}
+		var sessionTarget *windowState
+		for _, g := range plan.groups {
+			st := a.deliverGroup(g)
+			// 缺陷 C：第一个工作区与会话归属一致的接收窗口补投会话
+			//（前端 handleReuseSessionRequest 要求 workspace 匹配）。
+			if st != nil && plan.sessionID != "" && sessionTarget == nil &&
+				pathKeyForCompare(st.workspace()) == pathKeyForCompare(plan.workspace) {
+				sessionTarget = st
+			}
+		}
+		if sessionTarget != nil {
+			emitWindowEventTo(sessionTarget.window(), "app-open-ai-session", map[string]string{
+				"workspace": plan.workspace,
+				"sessionId": plan.sessionID,
+			})
+		}
+	default:
 		a.secondInstanceShow()
-		return
 	}
-	// 窗口打开模式（或显式 --new-window）：总是开新窗口；否则投给主窗口。
-	if launchargs.HasFlag(args, "--new-window") || appconfig.OpenMode() == "window" {
-		// --new-window <dir> --ai-session=<id> 组合：会话 id 随窗口启动上下文带入
-		//（v2 的独立进程冷启动解析同一参数，审查 P2-6）。
-		a.openMainWindow(windowSpec{
-			Targets:   targets,
-			SessionID: launchargs.ParseAISessionArg(args),
-		})
-		return
+}
+
+// deliverGroup 把一组打开目标投给路由指定的窗口。无名组无主窗口存活时开新主窗口
+// （旧语义）；路由窗口在转发间隙被关时回落主窗口。返回实际接收的窗口状态
+// （可能 nil），供会话补投比对工作区。
+func (a *App) deliverGroup(g targetGroup) *windowState {
+	var st *windowState
+	if g.windowName == "" {
+		st = winReg.primary()
+		if st == nil {
+			a.openMainWindow(windowSpec{Targets: g.targets})
+			return nil
+		}
+	} else {
+		st = winReg.get(g.windowName)
+		if st == nil {
+			st = winReg.primary()
+		}
 	}
-	if st := winReg.primary(); st != nil {
-		deliverOpenTargets(st, openTargetsAny(targets))
-		return
+	if st == nil {
+		return nil
 	}
-	a.openMainWindow(windowSpec{Targets: targets})
+	deliverOpenTargets(st, openTargetsAny(g.targets))
+	return st
 }
 
 // openTargetsAny 把 []launchargs.OpenTarget 转成事件投递的 []any（JSON 形状不变）。

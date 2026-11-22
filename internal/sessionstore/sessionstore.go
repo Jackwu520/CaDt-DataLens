@@ -268,6 +268,45 @@ func (s *Store) resolveBucketedDir(id string) (string, error) {
 	return "", os.ErrNotExist
 }
 
+// ResolveSessionWorkspace 按会话 id 定位目录并读 meta 的 workspace（桶归属真源，
+// 见 NewBucketed 注释）。CLI --ai-session 转发（根包 secondInstancePlan）用它把
+// 会话路由到归属工作区的窗口。meta 缺失/损坏时 sessionMetaRaw 会从正文 header
+// 兜底。非创建路径：找不到一律 ErrSessionGone，绝不 MkdirAll 复活已删除会话。
+func (s *Store) ResolveSessionWorkspace(id string) (string, error) {
+	id = strings.TrimSpace(id)
+	if id == "" || !ValidSessionID(id) {
+		return "", fmt.Errorf("%w：%s", ErrSessionGone, id)
+	}
+	var dir string
+	if s.bucketed {
+		resolved, err := s.resolveBucketedDir(id)
+		if err != nil {
+			return "", fmt.Errorf("%w：%s", ErrSessionGone, id)
+		}
+		dir = resolved
+	} else {
+		candidate := filepath.Join(s.Root, id)
+		if info, statErr := os.Stat(candidate); statErr != nil || !info.IsDir() {
+			return "", fmt.Errorf("%w：%s", ErrSessionGone, id)
+		}
+		dir = candidate
+	}
+	raw := s.sessionMetaRaw(dir, id)
+	if len(raw) == 0 {
+		return "", fmt.Errorf("%w（meta 缺失）：%s", ErrSessionGone, id)
+	}
+	var meta struct {
+		Workspace string `json:"workspace"`
+	}
+	if err := json.Unmarshal(raw, &meta); err != nil {
+		return "", fmt.Errorf("会话 meta 解析失败：%s: %v", id, err)
+	}
+	if ws := strings.TrimSpace(meta.Workspace); ws != "" {
+		return ws, nil
+	}
+	return "", fmt.Errorf("会话无归属工作区：%s", id)
+}
+
 // ensureBucketDir 取工作区对应的桶目录，必要时创建并写 ws.json 说明文件。
 func (s *Store) ensureBucketDir(workspace string) (string, error) {
 	name := WorkspaceBucketKey(workspace)
