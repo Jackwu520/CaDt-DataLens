@@ -10,60 +10,24 @@
 import {createSelect} from '../core/form-controls.js';
 import {pageHeader, commandBar, stateBlock, copyButton, relativeTime, formatFullTime} from '../app-pages/ui-kit.js';
 
-// 页面骨架：筛选栏 + 列表 + 状态 + 加载更早 + 记录管理动作。
-// id 与原设置页保持一致（渲染函数按 id 在宿主内查询）。
-export function activitySkeleton() {
-    return `
-<div class="set-group-title">记录</div>
-<div class="set-card">
-    <div class="set-row-top">
-        <div class="activity-filters">
-            <select id="activity-filter-domain" class="opt-select">
-                <option value="">全部动作</option>
-                <option value="file">文件</option>
-                <option value="tab">标签页</option>
-                <option value="workspace">工作区</option>
-                <option value="view">视图</option>
-                <option value="settings">设置</option>
-                <option value="plugin">插件</option>
-                <option value="ai">AI</option>
-                <option value="app">应用</option>
-                <option value="storage">存储</option>
-                <option value="activity">记录管理</option>
-            </select>
-            <select id="activity-filter-actor" class="opt-select">
-                <option value="">全部来源</option>
-                <option value="user">用户</option>
-                <option value="ai">AI</option>
-                <option value="system">系统</option>
-            </select>
-            <input type="text" id="activity-filter-keyword" class="activity-filter-input" placeholder="关键字（动作 / 对象 / 详情）">
-            <button type="button" id="activity-refresh" class="dlg-btn">刷新</button>
-        </div>
-        <div class="plugin-list-box activity-list-box">
-            <div class="activity-list" id="activity-list"></div>
-        </div>
-        <div class="set-desc" id="activity-list-status">—</div>
-        <button type="button" id="activity-more" class="dlg-btn hidden">加载更早记录</button>
-    </div>
-    <div class="set-row">
-        <div class="set-main"><div class="set-title">记录管理</div><div class="set-desc">开关与保留月数在「设置 → 操作记录」</div></div>
-        <div class="set-control">
-            <button type="button" id="opt-open-activity" class="dlg-btn">打开记录目录</button>
-            <button type="button" id="opt-export-activity-json" class="dlg-btn">导出 JSON</button>
-            <button type="button" id="opt-export-activity-csv" class="dlg-btn">导出 CSV</button>
-            <button type="button" id="opt-clear-activity" class="dlg-btn">清空…</button>
-        </div>
-    </div>
-</div>`;
-}
-
+// 页面骨架：筛选栏 + 列表 + 状态 + 分页 + 记录管理动作。
+// 本页现在是应用页面标签页，骨架由 mount() 直接建 DOM（分页控件要绑事件）；
+// 旧的字符串骨架 activitySkeleton 已随设置页内嵌形态一起移除（零引用死代码）。
 export function createActivityPane(deps) {
 
 let hostEl = null;
 
-const activityView = {entries: [], truncated: false, oldestTs: 0, oldestSeq: 0, loading: false};
-const ACTIVITY_PAGE_SIZE = 200;
+// 分页状态（2026-11-22 改造：追加式「加载更早记录」→ 真分页）。
+// 后端 Read 只支持 ts+seq 复合游标、没有 offset：第 N(>1) 页的游标 = 第 N-1 页最后一条，
+// 因此只允许顺序翻页（±1），不做任意跳页。翻过的页缓存在 pages 里，来回翻不重复读文件；
+// 筛选变化 / 刷新 / 改每页条数时整表清空并回到第 1 页。
+const activityView = {
+    page: 1,
+    pageSize: 200,
+    pages: new Map(),
+    loading: false,
+};
+const ACTIVITY_PAGE_SIZES = [100, 200, 500]; // 后端 Read 的 limit 上限 500
 // 动作域 → 中文名（列表显示中文，导出仍保留原始 action）
 const ACTIVITY_ACTION_LABEL = {
     file: '文件', tab: '标签页', workspace: '工作区', view: '视图',
@@ -86,42 +50,104 @@ function activityFilterOf() {
     };
 }
 
+// 取一页数据：命中缓存直接返回；第 1 页无游标，第 N>1 页用第 N-1 页末条做 ts+seq 游标。
+// 返回 null 表示「上一页不在缓存里」（只可能出现在竞态/异常路径），调用方回退第 1 页。
+async function fetchActivityPage(page) {
+    const cached = activityView.pages.get(page);
+    if (cached) return cached;
+    let cursor = null;
+    if (page > 1) {
+        const prev = activityView.pages.get(page - 1);
+        const last = prev && prev.entries.length ? prev.entries[prev.entries.length - 1] : null;
+        if (!last) return null;
+        cursor = {ts: last.ts || 0, seq: last.seq || 0};
+    }
+    const query = {limit: activityView.pageSize, ...activityFilterOf()};
+    if (cursor && cursor.ts > 0) {
+        query.beforeTs = cursor.ts;
+        // 复合游标：同毫秒多条时按 seq 精确切页，不重复/不漏
+        if (cursor.seq > 0) query.beforeSeq = cursor.seq;
+    }
+    const parsed = JSON.parse(await deps.backend.ActivityRead(JSON.stringify(query)));
+    const data = {
+        entries: Array.isArray(parsed.entries) ? parsed.entries : [],
+        truncated: !!parsed.truncated,
+    };
+    activityView.pages.set(page, data);
+    return data;
+}
+
+function activityStatusText(data) {
+    if (!data || !data.entries.length) return '暂无记录（功能未开启或近期没有操作）';
+    return '本页 ' + data.entries.length + ' 条（新→旧）· ' + (data.truncated ? '还有更早记录' : '已到最早');
+}
+
+// 分页控件状态：页码文字、上一页/下一页可用性、每页条数回填。
+function paintPager(data) {
+    const info = node('activity-page-info');
+    const first = node('activity-page-first');
+    const prev = node('activity-page-prev');
+    const next = node('activity-page-next');
+    const size = node('activity-page-size');
+    if (info) info.textContent = '第 ' + activityView.page + ' 页';
+    if (first) first.disabled = activityView.page <= 1;
+    if (prev) prev.disabled = activityView.page <= 1;
+    if (next) next.disabled = !data || !data.truncated;
+    if (size && size.value !== String(activityView.pageSize)) size.value = String(activityView.pageSize);
+}
+
+// 切页后把滚动容器拉回顶部：日志列表很长，留在原位会看不到新页的第一条。
+function scrollActivityTop() {
+    let el = hostEl;
+    while (el && el !== document.body) {
+        if (el.scrollHeight > el.clientHeight + 4) {
+            el.scrollTop = 0;
+            return;
+        }
+        el = el.parentElement;
+    }
+}
+
+function gotoActivityPage(page) {
+    if (page < 1 || activityView.loading) return;
+    activityView.page = page;
+    scrollActivityTop();
+    void renderActivityPane();
+}
+
+// 渲染当前页。opts.reset=true 表示筛选条件/刷新变化：清空所有缓存页并回到第 1 页。
 async function renderActivityPane(opts = {}) {
     const listEl = node('activity-list');
     const statusEl = node('activity-list-status');
-    const moreBtn = node('activity-more');
     if (!listEl || activityView.loading) return;
+    if (opts.reset) {
+        activityView.page = 1;
+        activityView.pages.clear();
+    }
     if (!deps.backend.ActivityRead) {
         listEl.textContent = '';
         listEl.appendChild(stateBlock('info', '当前版本不支持操作记录（旧版后端）'));
+        if (statusEl) statusEl.textContent = '';
+        paintPager(null);
         return;
     }
     activityView.loading = true;
     try {
-        const query = {limit: ACTIVITY_PAGE_SIZE, ...activityFilterOf()};
-        // 复合游标 ts+seq：同毫秒多条时精确切页，不重复/不漏
-        if (opts.append && activityView.oldestTs > 0) {
-            query.beforeTs = activityView.oldestTs;
-            if (activityView.oldestSeq > 0) query.beforeSeq = activityView.oldestSeq;
+        let data = await fetchActivityPage(activityView.page);
+        if (!data) {
+            // 上一页已不在缓存（竞态）：退回第 1 页重取
+            activityView.page = 1;
+            activityView.pages.clear();
+            data = await fetchActivityPage(1);
         }
-        const parsed = JSON.parse(await deps.backend.ActivityRead(JSON.stringify(query)));
-        const entries = Array.isArray(parsed.entries) ? parsed.entries : [];
-        activityView.entries = opts.append ? activityView.entries.concat(entries) : entries;
-        activityView.truncated = !!parsed.truncated;
-        const last = activityView.entries[activityView.entries.length - 1];
-        activityView.oldestTs = last && last.ts ? last.ts : 0;
-        activityView.oldestSeq = last && last.seq ? last.seq : 0;
-        renderActivityList(listEl);
-        if (statusEl) {
-            statusEl.textContent = activityView.entries.length
-                ? '已加载 ' + activityView.entries.length + ' 条（新→旧）' + (activityView.truncated ? '；可加载更早记录' : '；已到最早')
-                : '暂无记录（功能未开启或近期没有操作）';
-        }
-        if (moreBtn) moreBtn.classList.toggle('hidden', !activityView.entries.length || !activityView.truncated);
+        renderActivityList(listEl, data.entries);
+        paintPager(data);
+        if (statusEl) statusEl.textContent = activityStatusText(data);
     } catch (e) {
         listEl.textContent = '';
         listEl.appendChild(stateBlock('error', '读取失败：' + ((e && e.message) || e)));
         if (statusEl) statusEl.textContent = '';
+        paintPager(null);
     } finally {
         activityView.loading = false;
     }
@@ -142,15 +168,15 @@ function formatDetail(detail) {
     try { return JSON.stringify(detail, null, 2); } catch (e) { return String(detail); }
 }
 
-function renderActivityList(listEl) {
+function renderActivityList(listEl, entries) {
     listEl.textContent = '';
-    if (!activityView.entries.length) {
+    if (!entries.length) {
         listEl.appendChild(stateBlock('empty', '暂无记录（功能未开启或近期没有操作）'));
         return;
     }
     const frag = document.createDocumentFragment();
     let lastDay = '';
-    for (const entry of activityView.entries) {
+    for (const entry of entries) {
         const day = new Date(entry.ts || 0).toLocaleDateString();
         if (day !== lastDay) {
             lastDay = day;
@@ -162,6 +188,49 @@ function renderActivityList(listEl) {
         frag.appendChild(buildActivityRow(entry));
     }
     listEl.appendChild(frag);
+}
+
+// 整条记录的 JSON 快照：复制按钮用它（2026-11-22 用户要求「复制整条」，而不是只复制参数）。
+// 字段与「导出 JSON」同源（ts / actor / action / target / detail），额外给一份可读时间，
+// 粘到别处既能直接读、也保留时间戳；内部字段 v / seq 不输出。
+function activityEntryJson(entry) {
+    const record = {
+        ts: Number(entry.ts) || 0,
+        time: formatFullTime(entry.ts),
+        actor: String(entry.actor || ''),
+        action: String(entry.action || ''),
+        target: String(entry.target || ''),
+    };
+    if (entry.detail && typeof entry.detail === 'object' && Object.keys(entry.detail).length) {
+        record.detail = entry.detail;
+    }
+    try {
+        return JSON.stringify(record, null, 2);
+    } catch (e) {
+        return String(record.target || '');
+    }
+}
+
+// 展开区内容：对象全文 + 参数 JSON 分两段。对象列在窄内容区会被省略号截断，
+// 只靠 hover tooltip 读全文太别扭（2026-11-22 用户反馈），展开后两段都能读。
+function buildDetailBody(entry, targetText, detailText) {
+    const wrap = document.createElement('div');
+    wrap.className = 'act-detail hidden';
+    const addSection = (label, text, mono) => {
+        const sec = document.createElement('div');
+        sec.className = 'act-detail-sec';
+        const head = document.createElement('div');
+        head.className = 'act-detail-label';
+        head.textContent = label;
+        const body = document.createElement('pre');
+        body.className = 'act-detail-text' + (mono ? ' act-detail-mono' : '');
+        body.textContent = text;
+        sec.append(head, body);
+        wrap.appendChild(sec);
+    };
+    if (targetText) addSection('对象', targetText, false);
+    if (detailText) addSection('详情', detailText, true);
+    return wrap;
 }
 
 function buildActivityRow(entry) {
@@ -182,37 +251,46 @@ function buildActivityRow(entry) {
     action.textContent = actionLabel(entry.action);
     action.dataset.tip = entry.action || '';
 
+    const targetText = String(entry.target || '');
     const target = document.createElement('span');
     target.className = 'act-target';
-    target.textContent = entry.target || '';
-    target.dataset.tip = entry.target || '';
+    target.textContent = targetText;
+    target.dataset.tip = targetText;
 
     row.append(time, badge, action, target);
 
     const detailText = formatDetail(entry.detail);
-    if (detailText) {
-        const toggle = document.createElement('button');
-        toggle.type = 'button';
-        toggle.className = 'act-detail-btn dlg-btn';
-        toggle.dataset.tip = '展开/收起详情';
-        toggle.textContent = '详情';
-        const detail = document.createElement('pre');
-        detail.className = 'act-detail hidden';
-        detail.textContent = detailText;
+    // 复制钮每行都有（2026-11-22 用户要求：没有参数、对象又短的行也要能复制整条记录）；
+    // 展开钮只在内容可能被截断时给——有参数，或对象长到基本必然被省略号截断（>32 字符）。
+    // 操作按钮包进一个格子（grid 第 5 列），否则详情钮+复制钮各占一列会挤掉对齐：
+    // 只有 5 个子元素的行，若直接 append 两个按钮会变成 7 个，复制钮掉到下一行。
+    const ops = document.createElement('span');
+    ops.className = 'act-ops';
+    const copyBtn = copyButton(() => activityEntryJson(entry), {flash: deps.flash, tip: '复制整条记录（JSON）'});
+    // 详情钮**每行都渲染**（2026-11-23 用户要求）：行内结构一致，两个按钮才能在所有行
+    // 落在同一列、同一水平位置。内容不会被截断的行把它留成占位（CSS .is-empty 隐形），
+    // 既不参与交互也不造成参差——此前「有内容才给详情钮」会让复制钮在有/无详情钮的行
+    // 之间左右跳动，窄容器下更明显。
+    const detailTextAvailable = Boolean(detailText) || targetText.length > 32;
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'act-detail-btn dlg-btn';
+    toggle.dataset.tip = '展开 / 收起对象与详情';
+    toggle.textContent = '详情';
+    const detail = buildDetailBody(entry, targetText, detailText);
+    if (detailTextAvailable) {
         toggle.addEventListener('click', () => {
             const hidden = detail.classList.toggle('hidden');
             toggle.textContent = hidden ? '详情' : '收起';
         });
-        // 操作按钮包进一个格子（grid 第 5 列），否则详情钮+复制钮各占一列会挤掉对齐：
-        // 无详情行只有 5 个子元素，有详情行若直接 append 两个按钮会变成 7 个，复制钮掉到下一行。
-        const ops = document.createElement('span');
-        ops.className = 'act-ops';
-        ops.append(toggle, copyButton(() => detailText, {flash: deps.flash, tip: '复制详情'}));
-        row.append(ops, detail);
     } else {
-        // 无详情也占位，保持列对齐
-        row.appendChild(document.createElement('span'));
+        toggle.classList.add('is-empty');
+        toggle.disabled = true;
+        toggle.tabIndex = -1;
+        toggle.setAttribute('aria-hidden', 'true');
     }
+    ops.append(toggle, copyBtn);
+    row.append(ops, detail);
     return row;
 }
 
@@ -295,6 +373,17 @@ function clearActivity() {
     }, '清空', '清空操作记录', 'danger');
 }
 
+// 分页按钮工厂：紧凑尺寸（.dlg-btn 默认 min-width:84px 会把三个按钮撑得过宽）
+function pagerButton(id, label, onClick) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'dlg-btn';
+    btn.id = id;
+    btn.textContent = label;
+    btn.addEventListener('click', onClick);
+    return btn;
+}
+
 // 挂到宿主容器（应用页面标签页调用）：建骨架 → 按 id 在宿主内绑定 → 首次渲染。
 // 返回卸载函数：摘掉监听并清空缓存，避免关标签后状态与 DOM 一起泄漏。
 function mount(host) {
@@ -363,17 +452,17 @@ function mount(host) {
     refreshBtn.type = 'button';
     refreshBtn.className = 'dlg-btn';
     refreshBtn.textContent = '刷新';
-    refreshBtn.addEventListener('click', () => renderActivityPane());
+    refreshBtn.addEventListener('click', () => renderActivityPane({reset: true}));
     const bar = commandBar({
         placeholder: '关键字（动作 / 对象 / 详情）',
-        onSearch: () => renderActivityPane(),
+        onSearch: () => renderActivityPane({reset: true}),
         filters: [domainCtl, actorCtl, clearFilterBtn, refreshBtn],
     });
     // commandBar 自己带搜索框；给隐藏的旧 keyword input 一个 id 兼容 activityFilterOf
     bar.input.id = 'activity-filter-keyword';
     host.appendChild(bar.element);
 
-    // 表头 + 列表 + 状态 + 加载更早
+    // 表头 + 列表 + 状态 + 分页
     const head = document.createElement('div');
     head.className = 'act-thead';
     for (const label of ['时间', '来源', '动作', '对象', '详情']) {
@@ -390,25 +479,50 @@ function mount(host) {
     statusEl.className = 'act-status';
     statusEl.id = 'activity-list-status';
     host.appendChild(statusEl);
-    const moreBtn = document.createElement('button');
-    moreBtn.type = 'button';
-    moreBtn.className = 'dlg-btn hidden';
-    moreBtn.id = 'activity-more';
-    moreBtn.textContent = '加载更早记录';
-    moreBtn.addEventListener('click', () => renderActivityPane({append: true}));
-    host.appendChild(moreBtn);
+
+    // 分页条：每页条数 + 最新 / 上一页 / 页码 / 下一页（替代追加式「加载更早记录」）
+    const pager = document.createElement('div');
+    pager.className = 'act-pager';
+    const pageSizeCtl = createSelect({
+        id: 'activity-page-size',
+        options: ACTIVITY_PAGE_SIZES.map((n) => ({value: String(n), label: n + ' 条/页'})),
+        value: String(activityView.pageSize),
+        title: '每页条数',
+    }).control;
+    // 增强后 wrap 继承这个类（settings-select.js 的 wrap.className 拷贝原 select 的布局类）：
+    // .set-select-btn 默认 30px 高，要压到与 24px 分页按钮齐平
+    pageSizeCtl.classList.add('act-page-size');
+    pageSizeCtl.addEventListener('change', () => {
+        const size = Number(pageSizeCtl.value) || ACTIVITY_PAGE_SIZES[0];
+        activityView.pageSize = size;
+        activityView.page = 1;
+        activityView.pages.clear();
+        void renderActivityPane();
+    });
+    // 「最新」不是回缓存的第 1 页，而是清缓存重取——深翻一段时间后点它要看到新记录
+    const firstBtn = pagerButton('activity-page-first', '最新', () => {
+        scrollActivityTop();
+        void renderActivityPane({reset: true});
+    });
+    firstBtn.dataset.tip = '回到第 1 页并重新读取最新记录';
+    const prevBtn = pagerButton('activity-page-prev', '上一页', () => gotoActivityPage(activityView.page - 1));
+    const pageInfo = document.createElement('span');
+    pageInfo.className = 'act-page-info';
+    pageInfo.id = 'activity-page-info';
+    pageInfo.textContent = '第 1 页';
+    const nextBtn = pagerButton('activity-page-next', '下一页', () => gotoActivityPage(activityView.page + 1));
+    pager.append(pageSizeCtl, firstBtn, prevBtn, pageInfo, nextBtn);
+    host.appendChild(pager);
 
     hostEl = host;
-    domainCtl.addEventListener('change', () => renderActivityPane());
-    actorCtl.addEventListener('change', () => renderActivityPane());
+    domainCtl.addEventListener('change', () => renderActivityPane({reset: true}));
+    actorCtl.addEventListener('change', () => renderActivityPane({reset: true}));
     renderActivityPane();
     return () => {
         if (typeof bar.destroy === 'function') bar.destroy();
         hostEl = null;
-        activityView.entries = [];
-        activityView.oldestTs = 0;
-        activityView.oldestSeq = 0;
-        activityView.truncated = false;
+        activityView.page = 1;
+        activityView.pages.clear();
     };
 }
 
