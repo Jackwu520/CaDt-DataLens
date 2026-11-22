@@ -325,7 +325,7 @@ export const AI_BUILTIN_SKILLS = [
             '- toggle_fullscreen：切换全屏。',
             '- toggle_always_on_top：切换窗口置顶。',
             '- set_theme {theme}：只切换软件主题（界面配色），theme = dark / light。代码配色（token + 编辑器底色）由独立的 codeStyle 设置控制，不受此动作影响。',
-            '- open_settings {pane?,row?}：打开设置弹窗，pane = general / editor-tabs / formats / integration / models / agents / gen-models / ai / permissions / persona / context / preferences / app-pages / new-file-menu / plugins / lifecycle / shortcuts / run / envvars / storage / developer / about 或 fmt-<格式> / lang-<语言>；外部工具、定时任务等应用页面不在设置弹窗里，指引时说「应用页面 → 外部工具」（可用 open_settings {pane:"app-pages"} 打开目录页）；传 row（get_settings_tree 返回的行 id）可打开设置并滚动高亮该行。',
+            '- open_settings {pane?,row?}：打开设置弹窗，pane = general / editor-tabs / formats / integration / models / gen-models / ai / permissions / persona / context / preferences / app-pages / new-file-menu / plugins / lifecycle / shortcuts / run / envvars / storage / developer / about 或 fmt-<格式> / lang-<语言>；外部工具、定时任务、智能体等应用页面不在设置弹窗里，指引时说「应用页面 → 外部工具」「应用页面 → 智能体」（可用 open_settings {pane:"app-pages"} 打开目录页）；传 row（get_settings_tree 返回的行 id）可打开设置并滚动高亮该行。',
             '- get_settings_tree {pane?}：设置树。不带 pane 返回页清单（id / 标题 / 父组 / 行数）；带 pane 返回该页分组与行（唯一 id / 标题 / 类型 / 当前值 / 危险度 low|medium|high / 是否可写）。行 id 用于 open_settings 的 row 与 set_setting_row。',
             '- set_setting_row {id,value}：按设置树 id 写入一项设置：低风险直接生效；中/高风险会弹动作审批卡，批准后才写；布局形态类行永久不可由 AI 写。开关写 true/false，下拉写选项 value（也认选项文案），数字受控件 min/max 约束。',
             '- set_setting {key,value}：改受限白名单设置并即时生效（持久化）。可写键：autoSave, showSidebar, alwaysOnTop, codeWrap, scrollStyle(standard/swift/brisk/off), codeGuides, treeGuides, treeCounts, mdLineNumbers, mdScrollSync, readOnlyMode, treeRefreshInterval(1/2/3/5/10), showCadDir(文件树/列表是否显示应用状态目录 .cadt，默认 true), sidebarFont(10-20), editorFont(10-24), treeExpandDefault(expand/collapse), openMode(tab/window), theme, codeStyle(auto / jetbrains-dark / darcula / tokyo-night / jetbrains-light / github-light / shiki / newsprint / pixyll / whitey；只改代码配色与编辑器观感，不改界面), sidebarWidth(160-500), terminalHeight(120-2000), aiPanelWidth(280-2000)。未知键会报错并列出可用键。**AI 面板的显示方式（停靠分屏 / 全屏 / 悬浮）与停靠侧永远不可写**：那是用户的布局偏好，只能由用户自己在面板 […] 菜单或设置页切换，任何动作（含 set_setting、toggle_ai_panel 之外的一切）都不得改动，也不要建议用户「让 AI 帮你切」。',
@@ -333,7 +333,7 @@ export const AI_BUILTIN_SKILLS = [
             '- ai_switch_session {id}：切换 AI 会话。',
             '- ai_rename_session {title,id?}：重命名 AI 会话标题。**不传 id 改的是调用者自己所在的会话**（后台会话也安全，不会误改面板当前查看的会话）；改其他会话时 id 从 get_ai 的会话信息或跨会话搜索结果获取；title 非空、超 60 字符截断。当前会话改名即时生效，其他会话改名后下次打开用新标题。',
             '- get_agents：智能体（群聊成员）列表——id / 名字 / 模型（ref 与展示名）/ 职责 / 分组 / 主持人标记 / 启用状态，并附全部可用模型清单（ref + 展示名）。用户让你「建一个智能体 / 加个群成员」时先看这里。',
-            '- create_agent {name,model,role?,group?,persona?,style?,chair?,color?,temperature?,slowTier?,enabled?}：新建智能体（群聊成员）。名字 1–32 字符、无空白与 @、全局唯一，保留词 all / everyone / 全体成员 / 所有人 不可用；model 可传模型名（如 deepseek-chat）、「账号名/模型名」或 get_agents 里的 ref，多命中会报候选让你明确；group 是用途分组名（如 写作 / 编码，≤16 字符，缺省归「默认」，组最多 12 个，重名会被拒）；chair=true 表示可被群聊选为主持人；style 取回复风格 id（default / professional / friendly / direct / imaginative / efficient / snarky / socratic / tangerine）；slowTier=true 给不暴露 reasoning 的兼容端点按思考档计时。只新建，不修改/删除已有智能体（那由用户在设置页操作）。',
+            '- create_agent {name,model,role?,group?,persona?,style?,chair?,color?,temperature?,slowTier?,enabled?}：新建智能体（群聊成员）。名字 1–32 字符、无空白与 @、全局唯一，保留词 all / everyone / 全体成员 / 所有人 不可用；model 可传模型名（如 deepseek-chat）、「账号名/模型名」或 get_agents 里的 ref，多命中会报候选让你明确；group 是用途分组名（如 写作 / 编码，≤16 字符，缺省归「默认」，组最多 12 个，重名会被拒）；chair=true 表示可被群聊选为主持人；style 取回复风格 id（default / professional / friendly / direct / imaginative / efficient / snarky / socratic / tangerine）；slowTier=true 给不暴露 reasoning 的兼容端点按思考档计时。只新建，不修改/删除已有智能体（那由用户在 应用页面 → 智能体 操作）。',
             '- create_group {members,title?,topic?,mode?,goal?,chair?,policy?,rounds?,timeout?}：新建 AI 群聊并自动把 AI 面板切到该群的群聊视图（与侧栏「新建群聊」同一条路径）。members 写 2–8 位智能体的 id 或名字（先用 get_agents 查看）；mode = roundtable（圆桌讨论，默认）/ task（任务协作，主持人拆任务板）/ free（自由聊天，消息即唤醒、不需要主持人）；goal = explore / decide / plan / review（默认 decide）；chair 缺省用第一个带主持人标记（chair=true）的智能体，也可写 id 或名字换人、传 {kind:"member",agent:"成员名"} 让成员兼任、{kind:"user"} 由用户主持（free 缺省 user）；policy = round-plan（默认）/ adaptive；rounds 0–20（0 = 不限轮次、手动结束，默认 5；发言上限按成员数×轮数自动推导，封顶 200）；timeout = standard / lenient。没有主持人标记的智能体时先 create_agent {chair:true,...} 建一个，或改用成员兼任。创建后讨论不会自动开始——由用户点「开始讨论」或发第一条消息触发（会真实调用成员模型），不要声称讨论已开始。',
             '- get_groups {id?}：群聊列表（id / 标题 / 模式 / 目标 / 成员 / 消息数 / 是否有纪要）；传 id 或标题返回该群详情与纪要正文（≤4000 字）。',
             '- send_group_message {id|title,text}：以用户身份往群里发一条消息；自由聊天会真实唤醒成员（花钱），讨论中进入点名队列。计划模式下拒绝。',
@@ -1009,6 +1009,42 @@ export function aiImageFromSrc(src, name) {
     if (!m) return null;
     const mime = m[1].toLowerCase() === 'image/jpg' ? 'image/jpeg' : m[1].toLowerCase();
     return {mime, data: m[2].replace(/\s+/g, ''), name: String(name || '').trim() || '图片'};
+}
+
+// aiFindAttachedImageByRef：正文 Markdown 引用的本地图片读不到时（工作区移动、
+// .cadt/tmp / mcp-images 这类临时区被清理），从会话附图记录里找同一张图的耐久副本兜底。
+// 附图（read_image / 粘贴 / 拖入）真源在会话 images/ 目录，加载时已水合成 data；
+// 正文引用的只是「文件当时的位置」，两者按文件名对齐：附图消息 content 里记录的来源路径
+// （「[图片：<路径>（read_image 自动附加）]」）与引用路径尾段对得上 = 同一来源文件，
+// 压过仅同名（可能同名不同图）的候选；同级候选取后出现的（消息按时间序，新附图更可能
+// 是模型引用的那张）。只返回已水合出 data 的候选；找不到返回 null（调用方维持破图占位）。
+export function aiFindAttachedImageByRef(messages, refPath) {
+    const refNorm = String(refPath || '').replace(/[\\/]+/g, '/').trim().toLowerCase();
+    const refName = refNorm.split('/').pop() || '';
+    if (!refName || !Array.isArray(messages)) return null;
+    let best = null;
+    let bestTail = false;
+    for (const message of messages) {
+        if (!message || !Array.isArray(message.images)) continue;
+        for (const image of message.images) {
+            if (!image || !image.data) continue;
+            const nameNorm = String(image.name || '').replace(/[\\/]+/g, '/').trim().toLowerCase();
+            if (nameNorm.split('/').pop() !== refName) continue;
+            const recorded = /\[图片[：:]([\s\S]+)（[^（）]*）\]\s*$/.exec(String(message.content || ''));
+            const tail = !!recorded &&
+                recorded[1].replace(/[\\/]+/g, '/').trim().toLowerCase().endsWith(refNorm);
+            if (!best) {
+                best = image;
+                bestTail = tail;
+            } else if (tail && !bestTail) {
+                best = image;
+                bestTail = true;
+            } else if (tail === bestTail) {
+                best = image;
+            }
+        }
+    }
+    return best;
 }
 
 export function aiImageExt(mime) {

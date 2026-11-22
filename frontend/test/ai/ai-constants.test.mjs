@@ -1,7 +1,8 @@
-// ai-constants.test.mjs：正文图片 data URL 反解（aiImageFromSrc）与 aiImageSrc 的往返。
+// ai-constants.test.mjs：正文图片 data URL 反解（aiImageFromSrc）与 aiImageSrc 的往返，
+// 以及正文图片引用失效时的会话附图兜底查找（aiFindAttachedImageByRef）。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {aiCtxBannerShow, aiCtxBannerState, aiFormatBytes, aiFormatDuration, aiFormatLiveDuration, aiImageExt, aiImageFromSrc, aiImageSrc, aiIsContextOverflowError, aiMsgActionsStepMode, APPROVAL_LOST_TEXT, ASK_LOST_TEXT, ENV_ASK_LOST_TEXT, TOOL_INTERRUPTED_TEXT} from '../../src/ai/ai-constants.js';
+import {aiCtxBannerShow, aiCtxBannerState, aiFindAttachedImageByRef, aiFormatBytes, aiFormatDuration, aiFormatLiveDuration, aiImageExt, aiImageFromSrc, aiImageSrc, aiIsContextOverflowError, aiMsgActionsStepMode, APPROVAL_LOST_TEXT, ASK_LOST_TEXT, ENV_ASK_LOST_TEXT, TOOL_INTERRUPTED_TEXT} from '../../src/ai/ai-constants.js';
 
 test('aiImageFromSrc: 与 aiImageSrc 往返一致', () => {
     const image = aiImageFromSrc('data:image/png;base64,AAAA', 'seal.png');
@@ -41,6 +42,69 @@ test('aiImageFromSrc: 非 data URL 一律返回 null', () => {
 
 test('aiImageFromSrc: 空 base64 载荷返回 null', () => {
     assert.equal(aiImageFromSrc('data:image/png;base64,', 'x'), null);
+});
+
+test('aiFindAttachedImageByRef: 来源路径尾段对齐（工作区移动场景）', () => {
+    // 会话在旧工作区 D:\Projects\CaDt-DataLens 跑的桌面控制，截图落在旧工作区的
+    // .cadt/tmp，read_image 附图后模型在正文里写了相对路径；换到新工作区后正文
+    // 引用按当前工作区解析必然不存在——靠附图记录的来源路径尾段找回同一张图。
+    const attached = {
+        id: 'img-x',
+        name: 'family-tree-01.png',
+        data: 'AAAA',
+        mime: 'image/png',
+    };
+    const messages = [{
+        role: 'user',
+        content: '[图片：D:\\Projects\\CaDt-DataLens\\.cadt\\tmp\\family-tree-01.png（read_image 自动附加）]',
+        images: [attached],
+    }];
+    assert.equal(aiFindAttachedImageByRef(messages, '.cadt/tmp/family-tree-01.png'), attached,
+        '正文相对路径按尾段对齐附图来源路径');
+    assert.equal(aiFindAttachedImageByRef(messages, 'D:/Projects/CaDt-DataLens/.cadt/tmp/family-tree-01.png'), attached,
+        '正文绝对路径同样对齐（分隔符与大小写归一）');
+    assert.equal(aiFindAttachedImageByRef(messages, 'family-tree-01.png'), attached,
+        '裸文件名按 basename 对齐');
+});
+
+test('aiFindAttachedImageByRef: 来源尾段匹配压过仅同名候选', () => {
+    const sameNameOtherFile = {id: 'img-a', name: 'shot.png', data: 'BBBB', mime: 'image/png'};
+    const tailMatch = {id: 'img-b', name: 'shot.png', data: 'CCCC', mime: 'image/png'};
+    const messages = [
+        {role: 'user', content: '[图片：C:\\其他目录\\shot.png（read_image 自动附加）]', images: [sameNameOtherFile]},
+        {role: 'user', content: '[图片：D:\\ws\\.cadt\\tmp\\shot.png（read_image 自动附加）]', images: [tailMatch]},
+    ];
+    assert.equal(aiFindAttachedImageByRef(messages, '.cadt/tmp/shot.png'), tailMatch);
+});
+
+test('aiFindAttachedImageByRef: 同级候选取后出现的（消息按时间序）', () => {
+    const older = {id: 'img-1', name: 'a.png', data: 'AAAA', mime: 'image/png'};
+    const newer = {id: 'img-2', name: 'a.png', data: 'BBBB', mime: 'image/png'};
+    const messages = [
+        {role: 'user', content: '第一张', images: [older]},
+        {role: 'user', content: '第二张', images: [newer]},
+    ];
+    assert.equal(aiFindAttachedImageByRef(messages, 'a.png'), newer);
+});
+
+test('aiFindAttachedImageByRef: 未水合出 data 的附图不参与兜底', () => {
+    // 历史会话从磁盘读回时 data 要靠 hydrateImages 回填，没有 data 就渲染不出来
+    const messages = [{
+        role: 'user',
+        content: '[图片：D:\\x\\family-tree-01.png（read_image 自动附加）]',
+        images: [{id: 'img-x', name: 'family-tree-01.png', file: 'images/img-x.png'}],
+    }];
+    assert.equal(aiFindAttachedImageByRef(messages, 'family-tree-01.png'), null);
+});
+
+test('aiFindAttachedImageByRef: 找不到与非法入参一律 null', () => {
+    assert.equal(aiFindAttachedImageByRef([], 'a.png'), null);
+    assert.equal(aiFindAttachedImageByRef([{role: 'user', content: '无图', images: []}], 'a.png'), null);
+    assert.equal(aiFindAttachedImageByRef([{role: 'user', images: [{name: 'a.png', data: 'AA'}]}], 'b.png'), null);
+    assert.equal(aiFindAttachedImageByRef([{role: 'user', images: [{name: '', data: 'AA'}]}], 'a.png'), null);
+    assert.equal(aiFindAttachedImageByRef(null, 'a.png'), null);
+    assert.equal(aiFindAttachedImageByRef([], ''), null);
+    assert.equal(aiFindAttachedImageByRef([], null), null);
 });
 
 test('aiCtxBannerShow: 达阈值提醒，关闭后按 +5% 档位重新提醒', () => {

@@ -64,7 +64,7 @@ export const AI_TOOL_DEFS = {
     },
     search_text: {
         name: 'search_text',
-        description: '搜索文本，返回命中文件、行号与预览（默认最多 200 条，可用 maxResults 调大；已跳过 .git/node_modules 等目录；结果按源码优先、构建产物 dist/build 等垫底排序）。path 默认当前范围根，可传目录（扫描整棵树）或单个文件（只扫该文件，不遍历同目录其他文件）；工作区外路径的授权规则与 read_file 相同（用户点名直接搜，否则 read/edit 档请求批准、auto/full 档直接搜）。caseSensitive 区分大小写；filePattern 按 *.go 这类通配只搜匹配文件，excludePattern 按通配排除（如 *.test.go、tests/**）。需要正则表达力（\\w+\\( 、foo|bar 、锚点）时用 regex:true，纯字面量子串不要开；wholeWord:true 全词匹配（搜 foo 不命中 foobar）。context:1–3 附前后文；outputMode=files 先拿文件清单、=count 拿每文件命中数，大结果先缩范围再 read_file 省 token。',
+        description: '搜索文本，返回命中文件、行号与预览（默认最多 200 条，可用 maxResults 调大；已跳过 .git/node_modules/.venv 等噪音目录——这些是默认软规则，二进制文件始终跳过；结果按源码优先、构建产物 dist/build 等垫底排序）。文件名含查询词但内容零命中的文件也会以文件名命中返回（无行号，打开即整份文件）——按文件名找文件可以直接搜。path 默认当前范围根，可传目录（扫描整棵树）或单个文件（只扫该文件，不遍历同目录其他文件）；工作区外路径的授权规则与 read_file 相同（用户点名直接搜，否则 read/edit 档请求批准、auto/full 档直接搜）。caseSensitive 区分大小写；filePattern 按 *.go 这类通配只搜匹配文件，excludePattern 按通配排除（如 *.test.go、tests/**）。需要正则表达力（\\w+\\( 、foo|bar 、锚点）时用 regex:true，纯字面量子串不要开；wholeWord:true 全词匹配（搜 foo 不命中 foobar）。context:1–3 附前后文；outputMode=files 先拿文件清单、=count 拿每文件命中数，大结果先缩范围再 read_file 省 token。忽略规则可调整：想永久放行某目录，可让用户在 .cadt/config/search-ignore 写 ! 前缀（如 !node_modules，按 mtime 自动重载，同时作用于 glob/list_dir/目录树）；只想本次放行全部忽略目录则传 includeIgnored:true（不改配置，二进制仍跳过）。',
         parameters: {
             type: 'object',
             properties: {
@@ -78,6 +78,7 @@ export const AI_TOOL_DEFS = {
                 context: {type: 'integer', description: '附命中行前后各 N 行上下文（0–3，默认 0）；会放大结果体积'},
                 outputMode: {type: 'string', enum: ['content', 'files', 'count'], description: '输出形态：content 行命中（默认）、files 只要文件清单、count 每文件命中数'},
                 maxResults: {type: 'integer', description: '最多返回条数（100–1000，默认 200）；files/count 模式按文件数计'},
+                includeIgnored: {type: 'boolean', description: '为 true 时本次搜索临时放行所有被忽略目录（默认软规则 + search-ignore），仅本次生效、不改配置；二进制文件仍跳过；默认 false'},
             },
             required: ['query'],
         },
@@ -1108,7 +1109,7 @@ export const AI_TOOL_CATALOG = {
     read_file: {group: 'read', blurb: '读文件正文（可指定行范围），改文件前必须先读'},
     read_image: {group: 'read', blurb: '读图片把画面附加到对话（截图 / 图表 / UI 核对 / 公网图片 URL）；文本内容仍用 read_file'},
     read_video: {group: 'read', blurb: '读本地 mp4 把视频画面附加到对话（演示录屏 / 操作过程，≤16 MB）；图片用 read_image'},
-    search_text: {group: 'read', blurb: '文本搜索（字面量/正则/全词，排除通配，files/count 聚合），拿 path:line 或文件清单；结果不足再 read_file'},
+    search_text: {group: 'read', blurb: '文本搜索（字面量/正则/全词，排除通配，files/count 聚合，includeIgnored 临时放行忽略目录），拿 path:line 或文件清单；结果不足再 read_file'},
     glob: {group: 'read', blurb: '按文件名通配找文件（*.go / src/**/*.ts，path 可指定起点目录），拿相对路径；找文件里的内容用 search_text'},
     write_file: {group: 'write', blurb: '新建文件或整体重写；覆盖前必须先 read_file，文件被外部修改后写入会被拒绝'},
     edit_file: {group: 'write', blurb: '最小替换；oldString 逐字一致，默认唯一命中，replaceAll 可全量替换'},

@@ -129,6 +129,7 @@ export function createAIComposer(ctx) {
     const updateSendState = ctx.updateSendState;
     const updateSlash = ctx.updateSlash;
     const hideSlash = ctx.hideSlash;
+    const moveSlashSelection = ctx.moveSlashSelection;
     const runSlashCommand = ctx.runSlashCommand;
     const handleSlashText = ctx.handleSlashText;
     const enqueueComposerMessage = ctx.enqueueComposerMessage;
@@ -812,15 +813,15 @@ export function createAIComposer(ctx) {
         escDoubleTap.onKeyDown(e);
         if (e.isComposing || e.keyCode === 229) return;
         if (slashState.open) {
-            if (e.key === 'ArrowDown') {
+            if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
                 e.preventDefault();
-                slashState.index = Math.min(slashState.items.length - 1, slashState.index + 1);
-                updateSlash();
-                return;
-            }
-            if (e.key === 'ArrowUp') {
-                e.preventDefault();
-                slashState.index = Math.max(0, slashState.index - 1);
+                const delta = e.key === 'ArrowDown' ? 1 : -1;
+                // 走 slashMod.moveSlashSelection：只换高亮 + 滚动跟随，不重建列表。
+                // 重建（updateSlash → renderSlash）会把 scrollTop 归零，选中项跑出可视区。
+                if (typeof moveSlashSelection === 'function' && moveSlashSelection(delta)) return;
+                slashState.index = delta > 0
+                    ? Math.min(slashState.items.length - 1, slashState.index + 1)
+                    : Math.max(0, slashState.index - 1);
                 updateSlash();
                 return;
             }

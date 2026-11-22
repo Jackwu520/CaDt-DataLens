@@ -52,7 +52,7 @@ export function createAISystemContext(ctx) {
             '- 涉密值（API key、令牌、密码等）优先建议用户经 env_create 登记为环境变量，不要引导用户把这类值发进对话或写进文件。',
             '- schedule_* 管理定时任务：仅当用户明确要求「定时 / 每 N 分钟 / 明早 X 点 / 循环执行」时创建，创建前先与用户确认触发内容与频率；scope 默认 chat；任务需要写文件或执行命令时（scope=edit）提醒用户触发时段需在场处理审批。用户说「看看我有哪些定时任务」时用 schedule_list。',
             '- 回复里可用 Markdown 图片语法嵌入本地图片：![说明](工作区相对路径)；支持 png/jpg/jpeg/gif/webp/bmp/svg（≤30MB），完全权限下可用绝对路径；不要输出 base64 data URL。',
-            '- 引用工作区文件时用反引号包裹相对路径，需要定位可加 :行号[:列号]（如 `src/main.js` 或 `src/main.js:42`）；真实存在的文件会渲染成可点击芯片，用户点击即在编辑器打开并跳到该行。',
+            '- 引用工作区文件时用反引号包裹相对路径，需要定位可加 :行号[:列号] 或 :起行-止行（如 `src/main.js`、`src/main.js:42` 或 `src/main.js:42-56`）；真实存在的文件会渲染成可点击芯片，用户点击即在编辑器打开并跳到该行（区间跳到起始行）。',
             '- ask_user 用于必须由用户拍板的关键选择；问题与选项要具体，能在某一项上给出推荐时标记 recommended=true；不要用它询问可以自行查证的信息。需要更短/更长的等待时，给本次调用传 timeoutSec（0=不限时）和/或 timeoutAction，只影响本次，不要改用户设置。',
             ...(planMode ? [
                 '- 计划模式：只做只读探索并输出计划；不要调用写工具或 run_command（它们也不可用）。',
@@ -296,9 +296,12 @@ export function createAISystemContext(ctx) {
                         const label = aiTextOf(view && view.label).trim() || '标签页';
                         const name = aiTextOf(view && view.name).trim();
                         const shown = name.length > 48 ? name.slice(0, 48) + '…' : name;
-                        return shown && shown !== label ? label + '「' + shown + '」' : label;
+                        const desc = aiTextOf(view && view.desc).trim();
+                        const base = shown && shown !== label ? label + '「' + shown + '」' : label;
+                        // desc 是视图自带的丰富上下文（如数据库表的连接/库/类型），拼在括号里
+                        return desc ? base + '（' + desc + '）' : base;
                     });
-                    contextParts.push('其他已打开的标签页（应用内视图，不是文件、没有路径可读）：' + items.join('、'));
+                    contextParts.push('虚拟标签页（非文件，不可按路径读取）：' + items.join('、'));
                     injectedViews = openViews.length;
                 }
             }

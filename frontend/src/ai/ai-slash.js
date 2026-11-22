@@ -34,6 +34,16 @@ export function slashSkillInvocation(text, skillName) {
     return {args, textToSend: args ? String(text || '').trim() : ''};
 }
 
+// 选中项滚动跟随的增量（纯函数，可单测）：row 完全在 box 内返回 0；
+// 露在可视区上方返回负增量（贴顶对齐）、露在下方返回正增量（贴底对齐）。
+// 口径同 explorer.js 的「nearest」——不用 scrollIntoView，避免连带滚动祖先容器。
+export function slashScrollDelta(box, row) {
+    if (!box || !row) return 0;
+    if (row.top < box.top) return row.top - box.top;
+    if (row.bottom > box.bottom) return row.bottom - box.bottom;
+    return 0;
+}
+
 // 「/技能名」按首 token 精确命中（去掉前导 /，大小写不敏感）；不命中返回 null
 export function findSkillBySlashToken(skills, token) {
     const name = String(token || '').trim().replace(/^\/+/, '').toLowerCase();
@@ -134,6 +144,36 @@ export function createAISlash(ctx) {
         };
     }
 
+    // 只换 selected 高亮，不动 DOM 结构（方向键 / 鼠标悬停共用）
+    function syncSelectedClass() {
+        if (!el.slash) return;
+        el.slash.querySelectorAll('.ai-slash-item').forEach((row) => {
+            row.classList.toggle('selected', Number(row.dataset.aiSlashIndex) === slashState.index);
+        });
+    }
+
+    // 让选中项留在可视区：容器自己滚（.ai-slash 是 max-height + overflow:auto 的滚动容器）
+    function scrollSelectedIntoView() {
+        const list = el.slash;
+        if (!list) return;
+        const selected = list.querySelector('.ai-slash-item.selected');
+        if (!selected) return;
+        const delta = slashScrollDelta(list.getBoundingClientRect(), selected.getBoundingClientRect());
+        if (delta) list.scrollTop += delta;
+    }
+
+    // 方向键移动选中：只切高亮 + 滚动跟随，**不重建列表**。
+    // 重建（updateSlash → renderSlash 的 innerHTML=''）会把 scrollTop 归零，
+    // 选中项一离开首屏就跑到可视区外——这正是「方向键选中了但滚轮不跟」的根因。
+    // 列表内容只由输入框文本决定，value 没变时切高亮与重建等价。
+    function moveSlashSelection(delta) {
+        if (!slashState.open || !slashState.items.length) return false;
+        slashState.index = aiClamp(slashState.index + delta, 0, slashState.items.length - 1);
+        syncSelectedClass();
+        scrollSelectedIntoView();
+        return true;
+    }
+
     function renderSlash(items) {
         if (!items.length) {
             hideSlash();
@@ -170,13 +210,14 @@ export function createAISlash(ctx) {
             item.addEventListener('mousemove', () => {
                 if (slashState.index === index) return;
                 slashState.index = index;
-                el.slash.querySelectorAll('.ai-slash-item').forEach((row) => {
-                    row.classList.toggle('selected', Number(row.dataset.aiSlashIndex) === index);
-                });
+                syncSelectedClass();
             });
             el.slash.appendChild(item);
         });
         el.slash.classList.remove('hidden');
+        // 重建后把选中项重新纳入视野：过滤条件变化会收缩列表、index 被 clamp，
+        // 用户也可能刚用滚轮停在半途（innerHTML 重建会重置 scrollTop）。
+        scrollSelectedIntoView();
         positionOverlays();
     }
 
@@ -342,5 +383,5 @@ export function createAISlash(ctx) {
     }
 
     ensureSkills();
-    return {hideSlash, updateSlash, runSlashCommand, handleSlashText, invalidateSkills};
+    return {hideSlash, updateSlash, runSlashCommand, handleSlashText, invalidateSkills, moveSlashSelection};
 }

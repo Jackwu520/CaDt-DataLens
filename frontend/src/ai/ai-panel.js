@@ -254,6 +254,7 @@ import {
     aiFormatSessionTime,
     aiNormalizeImage,
     aiImageSrc,
+    aiFindAttachedImageByRef,
     aiImageFromSrc,
     aiImageExt,
     aiEstimateImageTokens,
@@ -4935,6 +4936,21 @@ export function createAIPanel(options) {
                     img.dataset.tip = '图片无法加载（格式不支持或超过 30MB）：' + abs;
                 }
             }).catch((e) => {
+                // 文件不在原位（工作区移动、.cadt/tmp / mcp-images 被清理）时，用会话附图的
+                // 耐久副本兜底显示：同一张图模型多半已 read_image 附过（真源在会话 images/，
+                // 加载时已水合成 data），正文引用的临时路径没了不该连累已留档的画面。
+                // 只兜「读不到」；格式/体积问题（url 为空的分支）保持诚实报错。
+                const session = currentSession();
+                const fallback = session
+                    ? aiFindAttachedImageByRef((session.messages || []).concat(session.archived || []), abs || raw)
+                    : null;
+                if (fallback) {
+                    img.src = aiImageSrc(fallback);
+                    img.dataset.aiLocalName = fallback.name || String(abs).split(/[\\/]/).pop() || '';
+                    img.dataset.tip = '原文件已不在原位（' + abs + ((e && e.message) ? '：' + e.message : '') +
+                        '），显示的是会话附图留档';
+                    return;
+                }
                 img.classList.add('ai-img-broken');
                 img.dataset.tip = '图片无法加载：' + abs + ((e && e.message) ? '（' + e.message + '）' : '');
             });
@@ -10286,12 +10302,13 @@ async function requestApproval(session, toolMessage, info) {
                         context: opts.context,
                         maxResults: opts.maxResults,
                         fileOnly,
+                        includeIgnored: !!input.includeIgnored,
                     });
                 } else {
                     const advanced = opts.regex || opts.wholeWord || opts.excludePattern ||
-                        opts.outputMode !== 'content' || opts.context > 0;
+                        opts.outputMode !== 'content' || opts.context > 0 || opts.includeIgnored;
                     if (advanced) {
-                        return '当前后端不支持高级搜索参数（regex / wholeWord / excludePattern / outputMode / context），请更新应用后重试';
+                        return '当前后端不支持高级搜索参数（regex / wholeWord / excludePattern / outputMode / context / includeIgnored），请更新应用后重试';
                     }
                     // 旧后端：有 filePattern 时把窗口放大到 1000，前端过滤后再截，避免先截 200 漏掉目标文件。
                     result = (pattern && backend.SearchWorkspaceFiltered)
@@ -18339,6 +18356,8 @@ async function requestApproval(session, toolMessage, info) {
         updateSendState,
         updateSlash,
         hideSlash,
+        // 方向键移动斜杠补全选中：只换高亮 + 容器内滚动跟随（不重建列表）
+        moveSlashSelection: (...args) => slashMod.moveSlashSelection(...args),
         runSlashCommand,
         handleSlashText,
         // 惰性转发：queueMod 构造于本模块之后（composer 提交流与队列互引）
@@ -19494,6 +19513,11 @@ async function requestApproval(session, toolMessage, info) {
         // 定时任务应用页面标签页（内容区）用的桥：任务列表渲染与 CRUD 都留在面板闭包里
         // （CRUD 后要刷新头部胶囊与弹层缓存），标签页只提供容器。
         bridgeMountSchedules: (root) => scheduleMod.mountSchedules(root),
+        // 智能体应用页面标签页（内容区）用的桥：列表与编辑器都在 ai-agent-settings 闭包里
+        // （DOM 停靠 index.html 尾部 #agents-park，搬运保持节点身份），标签页只提供容器。
+        bridgeMountAgents: (root) => settingsMod.mountAgentsPane(root),
+        // AI create_agent 落盘后标签开着就即时重绘（saveAIConfig 不广播）
+        bridgeRefreshAgents: () => settingsMod.refreshAgentsPane(),
         // 内容区「支线对话」标签页：把会话渲染进宿主容器（复用面板渲染函数，
         // 面板单例 UI 在外渲染时跳过；滚动由宿主自己管）
         bridgeRenderSideChat: (root, sessionId) => renderSideChatInto(root, sessionId),

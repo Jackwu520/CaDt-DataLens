@@ -7,6 +7,7 @@ import {
     filterSlashCommands,
     filterSlashSkills,
     findSkillBySlashToken,
+    slashScrollDelta,
     slashSkillInvocation,
 } from '../../src/ai/ai-slash.js';
 
@@ -72,4 +73,19 @@ test('findSkillBySlashToken：/技能名 精确命中（大小写不敏感、去
     assert.equal(findSkillBySlashToken(SKILLS, '/'), null);
     assert.equal(findSkillBySlashToken(SKILLS, ''), null);
     assert.equal(findSkillBySlashToken(null, '/app-error-log'), null);
+});
+
+// 斜杠补全的方向键滚动跟随：容器（.ai-slash）只滚够让选中行露出来
+test('slashScrollDelta：选中行完全可见不滚，被裁在上方贴顶、下方贴底', () => {
+    const box = {top: 100, bottom: 200};
+    // 完全可见 → 不动
+    assert.equal(slashScrollDelta(box, {top: 100, bottom: 125}), 0);
+    assert.equal(slashScrollDelta(box, {top: 175, bottom: 200}), 0);
+    // 露在可视区上方 → 负增量（向上滚回贴顶量）
+    assert.equal(slashScrollDelta(box, {top: 60, bottom: 85}), -40);
+    // 露在下方 → 正增量（向下滚到贴底）
+    assert.equal(slashScrollDelta(box, {top: 210, bottom: 235}), 35);
+    // 缺参 / 空容器 → 不动（补全未渲染时的兜底）
+    assert.equal(slashScrollDelta(null, {top: 0, bottom: 10}), 0);
+    assert.equal(slashScrollDelta(box, null), 0);
 });
