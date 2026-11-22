@@ -24,7 +24,7 @@ const (
 	classRead  stmtClass = iota // SELECT / SHOW / EXPLAIN / PRAGMA 查询等
 	classWrite                  // INSERT / UPDATE / DELETE / REPLACE / VACUUM / SET…
 	classDDL                    // CREATE / ALTER / DROP / TRUNCATE / RENAME…
-	classCtrl                   // BEGIN / COMMIT / ROLLBACK / SAVEPOINT（只读会话也放行）
+	classCtrl                   // BEGIN / COMMIT / ROLLBACK / SAVEPOINT（控制台拒，见 checkBatch）
 )
 
 // stmtVerdict 单条语句的判定结果。
@@ -58,7 +58,9 @@ func skipQuoted(q string, i int, dialect string) int {
 	i++
 	for i < len(q) {
 		c := q[i]
-		if isMySQL && c == '\\' && (open == '\'' || open == '"') {
+		// 反斜杠转义必须确认还有下一个字节：尾随单个反斜杠（未闭合字符串）按普通字符
+		// 走 i++，否则 i += 2 会越过 len(q)，调用方的 q[i:j] 直接越界 panic
+		if isMySQL && c == '\\' && i+1 < len(q) && (open == '\'' || open == '"') {
 			i += 2
 			continue
 		}
@@ -196,6 +198,17 @@ func isMySQLLineComment(q string, i int) bool {
 var (
 	// pragmaWriteNames 无参数也产生写动作的 PRAGMA（推进 WAL / 收缩空间）。
 	pragmaWriteNames = map[string]bool{"wal_checkpoint": true, "checkpoint": true, "incremental_vacuum": true}
+	// pragmaReadNames 无参数查询类 PRAGMA 白名单——PRAGMA 的分类走白名单反向收口：
+	// 引号名 / 库限定名会让词法识别漏判（`PRAGMA "journal_mode" = WAL` 只剩 [pragma, wal]），
+	// 名字不在白名单里一律按写处理（fail closed），SQLite mode=ro 是第二道。
+	pragmaReadNames = map[string]bool{
+		"table_info": true, "table_xinfo": true, "index_list": true, "index_info": true,
+		"index_xinfo": true, "foreign_key_list": true, "foreign_key_check": true,
+		"compile_options": true, "function_list": true, "module_list": true,
+		"pragma_list": true, "journal_mode": true, "page_size": true, "encoding": true,
+		"user_version": true, "data_version": true, "schema_version": true,
+		"quick_check": true, "integrity_check": true, "max_page_count": true,
+	}
 	// dangerVerbs 写放行会话里仍需二次确认的首关键字。
 	dangerVerbs = map[string]bool{
 		"attach": true, "detach": true, "call": true, "grant": true, "revoke": true,
@@ -221,6 +234,13 @@ func classifyStatement(stmt, dialect string) stmtVerdict {
 	switch head {
 	case "select", "values", "table", "explain", "describe", "desc", "show":
 		v := stmtVerdict{class: classRead}
+		// EXPLAIN ANALYZE 会真实执行语句（MySQL 8.0.19+ 支持 DML、SQLite 3.29+ 同名语法），
+		// 按首关键字归 read 会放行真实写——explain 后跟 analyze 一律按写处理，
+		// 缺 WHERE 判定沿用被包裹的语句（顶层 where 扫描跳过 analyze 关键字即可命中）
+		if head == "explain" && len(toks) > 1 && toks[1].depth == 0 && toks[1].word == "analyze" {
+			v.class = classWrite
+			v.missingWhere = lacksWhereFrom(toks, 0)
+		}
 		if dialect == kindMySQL && head == "select" {
 			// SELECT ... INTO OUTFILE/DUMPFILE 写服务端文件；SELECT ... INTO @var 写变量，
 			// 一律按写处理（OUTFILE/DUMPFILE 额外标危险）。
@@ -301,6 +321,13 @@ func classifyWith(toks []lexToken) stmtVerdict {
 			return stmtVerdict{class: classWrite, unknown: true}
 		}
 		i++
+		// 可选的 MATERIALIZED / NOT MATERIALIZED 标记（SQLite 3.35+ / PG 方言），容忍后再找体
+		if i < len(toks) && toks[i].depth == 0 && toks[i].word == "not" {
+			i++
+		}
+		if i < len(toks) && toks[i].depth == 0 && toks[i].word == "materialized" {
+			i++
+		}
 		if i >= len(toks) || toks[i].depth < 1 {
 			return stmtVerdict{class: classWrite, unknown: true} // 缺体括号
 		}
@@ -345,8 +372,8 @@ func classifyWith(toks []lexToken) stmtVerdict {
 	}
 }
 
-// classifyPragma PRAGMA 查询是读；赋值/带值的 PRAGMA 是写（journal_mode=WAL、foreign_keys=… 等，
-// 能改会话与库行为）；wal_checkpoint 这类无参数也产生写动作。
+// classifyPragma PRAGMA 分类走白名单：白名单内的无参查询是读；赋值/带值/白名单外的名字
+// （含引号名、库限定名——词法层识别不了，宁可错杀）一律按写。
 func classifyPragma(toks []lexToken) stmtVerdict {
 	if len(toks) < 2 {
 		return stmtVerdict{class: classWrite, unknown: true}
@@ -355,13 +382,16 @@ func classifyPragma(toks []lexToken) stmtVerdict {
 	if pragmaWriteNames[name] {
 		return stmtVerdict{class: classWrite}
 	}
-	// 有 depth0 的后续词（赋值右侧/限定名）→ 当写；只有 pragma+名字或名字带括号参数 → 读。
+	// 有 depth0 的后续词（赋值右侧/限定名）→ 写
 	for k := 2; k < len(toks); k++ {
 		if toks[k].depth == 0 {
 			return stmtVerdict{class: classWrite}
 		}
 	}
-	return stmtVerdict{class: classRead}
+	if pragmaReadNames[name] {
+		return stmtVerdict{class: classRead}
+	}
+	return stmtVerdict{class: classWrite}
 }
 
 // lacksWhere 判断 UPDATE/DELETE 是否缺 WHERE（或 WHERE 恒真）。
@@ -403,15 +433,20 @@ const (
 
 // checkBatch 对整批语句做判定（方案口径：逐条分类，任一条非只读即整批拒）。
 // 返回值：
-//   - err != nil：直接拒绝（RO 拒写 / DDL 拒 / 未知语句拒）；
+//   - err != nil：直接拒绝（RO 拒写 / DDL 拒 / 未知语句拒 / 事务控制语句拒）；
 //   - confirm == "" 且 err == nil：放行执行；
 //   - confirm != nil：需要前端确认后带 confirmed=true 重发。
+//
+// 事务控制（BEGIN/COMMIT/SAVEPOINT）在控制台**拒绝**而不是放行：连接池逐条执行没有
+// 会话级事务绑定（MySQL 池 2 连接下 BEGIN 与后续语句可能落不同连接，COMMIT 落空即静默丢写；
+// SQLite 单连接残留 BEGIN 会让批量编辑的 BeginTx 报事务嵌套）。标签页编辑的事务由
+// ApplyChanges 的单事务机制统一管理，不需要用户手写。
 func checkBatch(stmts []string, dialect string, editable, confirmed, ddlAllowed bool) (confirm string, err error) {
 	for _, stmt := range stmts {
 		v := classifyStatement(stmt, dialect)
 		switch v.class {
 		case classCtrl:
-			continue
+			return "", fmt.Errorf("控制台不支持手动事务（BEGIN/COMMIT/SAVEPOINT）：批量编辑的事务由「预览并提交」自动管理，请去掉事务控制语句：%s", snippet(stmt))
 		case classRead:
 			continue
 		}

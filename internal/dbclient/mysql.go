@@ -28,31 +28,57 @@ func (mysqlDriver) Capabilities() Capabilities {
 
 // buildMySQLDSN 用 mysql.Config.FormatDSN 组装（密码特殊字符由驱动转义）。
 // 不开 multiStatements；ParseTime=false 保持原始字符串展示，避免时区换算失真。
-func buildMySQLDSN(cfg ConnectionConfig, password string) (string, error) {
-	if cfg.Host == "" {
-		return "", errors.New("主机不能为空")
-	}
-	if cfg.Port <= 0 || cfg.Port > 65535 {
-		return "", fmt.Errorf("端口无效：%d", cfg.Port)
-	}
+// addr 由 resolveSafeAddr 给出（已校验的 IP 直连，封住校验与拨号间的 DNS rebinding 窗口）。
+func buildMySQLDSN(cfg ConnectionConfig, password, addr string) (string, error) {
 	mc := mysql.NewConfig()
 	mc.User = cfg.User
 	mc.Passwd = password
 	mc.Net = "tcp"
-	mc.Addr = fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)
+	mc.Addr = addr
 	mc.DBName = cfg.Database
 	mc.Timeout = 10 * time.Second
 	mc.ReadTimeout = 30 * time.Second
 	mc.WriteTimeout = 30 * time.Second
+	// UPDATE 按「匹配行数」计数（而非默认的改动行数）：改回原值的单元格提交不被误判为冲突
+	mc.ClientFoundRows = true
 	mc.Params = map[string]string{"charset": "utf8mb4"}
 	return mc.FormatDSN(), nil
 }
 
 func (mysqlDriver) Open(ctx context.Context, spec openSpec) (*dbSession, error) {
-	if err := validateConnectionTarget(spec.Config.Host); err != nil {
+	// 解析并校验目标：候选地址逐个尝试（IPv4 优先）——localhost 常同时解析出 127.0.0.1
+	// 与 ::1，而本机服务可能只监听其中一个栈；只拨第一个会让「看起来配对了却连不上」
+	addrs, err := resolveSafeAddrs(spec.Config.Host, spec.Config.Port)
+	if err != nil {
 		return nil, err
 	}
-	dsn, err := buildMySQLDSN(spec.Config, spec.Password)
+	if len(addrs) > 3 {
+		addrs = addrs[:3] // 拨号预算：外层 ctx 20s 内最多试 3 个候选
+	}
+	var lastErr error
+	for _, addr := range addrs {
+		s, attemptErr := openMySQLAddr(ctx, spec, addr)
+		if attemptErr == nil {
+			return s, nil
+		}
+		lastErr = attemptErr
+		// 认证/授权失败换地址也不会好——直接返回，不再试下一个候选
+		if errors.Is(attemptErr, errMySQLAuth) {
+			return nil, fmt.Errorf("MySQL 连接失败（检查用户名密码）：%w", attemptErr)
+		}
+	}
+	if lastErr == nil {
+		lastErr = errors.New("无可用地址")
+	}
+	return nil, fmt.Errorf("MySQL 连接失败（已尝试 %d 个地址；检查主机/端口/用户名密码，以及网络可达性）：%w", len(addrs), lastErr)
+}
+
+// errMySQLAuth 标记认证/授权类失败（ER_ACCESS_DENIED 等）——多候选循环不再重试。
+var errMySQLAuth = errors.New("认证失败")
+
+// openMySQLAddr 对单个候选地址完成拨号 + 握手 + 只读设置 + 会话装配。
+func openMySQLAddr(ctx context.Context, spec openSpec, addr string) (*dbSession, error) {
+	dsn, err := buildMySQLDSN(spec.Config, spec.Password, addr)
 	if err != nil {
 		return nil, err
 	}
@@ -68,12 +94,17 @@ func (mysqlDriver) Open(ctx context.Context, spec openSpec) (*dbSession, error) 
 		db.SetMaxIdleConns(1)
 	}
 	db.SetConnMaxLifetime(10 * time.Minute)
-	pingCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	err = db.PingContext(pingCtx)
+	pingCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	pingErr := db.PingContext(pingCtx)
 	cancel()
-	if err != nil {
+	if pingErr != nil {
 		_ = db.Close()
-		return nil, fmt.Errorf("MySQL 连接失败（检查主机/端口/用户名密码，以及网络可达性）：%w", err)
+		// 认证失败单列：换候选地址无意义，外层循环直接终止
+		var mysqlErr *mysql.MySQLError
+		if errors.As(pingErr, &mysqlErr) && mysqlErr.Number == 1045 {
+			return nil, fmt.Errorf("%w（%s）", errMySQLAuth, mysqlErr.Message)
+		}
+		return nil, pingErr
 	}
 	if !spec.AllowEdit {
 		roCtx, roCancel := context.WithTimeout(ctx, 5*time.Second)
@@ -108,7 +139,7 @@ func mysqlListObjects(ctx context.Context, s *dbSession, database string) ([]DBO
 	if schema == "" {
 		return nil, errors.New("未指定数据库：请先在对象树选择一个库，或连接时设置默认库")
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT table_name, table_type, COALESCE(table_rows, 0)
+	rows, err := s.db.QueryContext(ctx, `SELECT table_name, table_type, COALESCE(table_rows, 0), COALESCE(table_comment, '')
 		FROM information_schema.tables WHERE table_schema = ? ORDER BY table_name`, schema)
 	if err != nil {
 		return nil, err
@@ -118,7 +149,7 @@ func mysqlListObjects(ctx context.Context, s *dbSession, database string) ([]DBO
 	for rows.Next() {
 		var o DBObject
 		var kind string
-		if err := rows.Scan(&o.Name, &kind, &o.RowEstimate); err != nil {
+		if err := rows.Scan(&o.Name, &kind, &o.RowEstimate, &o.Comment); err != nil {
 			return nil, err
 		}
 		if kind == "VIEW" {
@@ -204,11 +235,13 @@ func mysqlDescribe(ctx context.Context, s *dbSession, database, table string) (*
 	for _, name := range order {
 		meta.Indexes = append(meta.Indexes, *byName[name])
 	}
-	// 行数估算（information_schema.tables 的估计值，UI 以「约」展示，不跑 COUNT(*)）
+	// 行数估算与表注释（information_schema.tables 的估计值，UI 以「约」展示，不跑 COUNT(*)）
 	var est int64
-	if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(table_rows, 0) FROM information_schema.tables
-		WHERE table_schema = ? AND table_name = ?`, schema, table).Scan(&est); err == nil {
+	var comment string
+	if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(table_rows, 0), COALESCE(table_comment, '') FROM information_schema.tables
+		WHERE table_schema = ? AND table_name = ?`, schema, table).Scan(&est, &comment); err == nil {
 		meta.RowEstimate = est
+		meta.TableComment = comment
 	}
 	return meta, nil
 }
@@ -237,4 +270,45 @@ func mysqlServerVersion(ctx context.Context, s *dbSession) (string, error) {
 		return "", err
 	}
 	return "MySQL " + v, nil
+}
+
+// mysqlListServerObjects 服务器对象分组（对齐 JetBrains 侧栏的「服务器对象」层）：
+// 排序规则 / 用户 / 系统虚拟视图。每组独立查询独立容错——权限不足的组带 Error 返回，
+// 前端隐藏整组而不是让整个面板失败。全部是 information_schema/mysql 只读元数据查询。
+func mysqlListServerObjects(s *dbSession) *ServerObjects {
+	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+	defer cancel()
+	out := &ServerObjects{}
+	group := func(id, label, query string) {
+		rows, err := s.db.QueryContext(ctx, query)
+		if err != nil {
+			out.Groups = append(out.Groups, ServerObjectGroup{ID: id, Label: label, Error: err.Error()})
+			return
+		}
+		items, err := scanStringColumn(rows)
+		if err != nil {
+			out.Groups = append(out.Groups, ServerObjectGroup{ID: id, Label: label, Error: err.Error()})
+			return
+		}
+		out.Groups = append(out.Groups, ServerObjectGroup{ID: id, Label: label, Items: items})
+	}
+	group("collations", "排序规则", `SELECT collation_name FROM information_schema.collations ORDER BY collation_name`)
+	group("users", "用户", `SELECT CONCAT(user, '@', host) FROM mysql.user ORDER BY host, user`)
+	group("sysviews", "虚拟视图", `SELECT table_name FROM information_schema.tables
+		WHERE table_schema = 'information_schema' AND table_type = 'SYSTEM VIEW' ORDER BY table_name`)
+	return out
+}
+
+// scanStringColumn 单列字符串扫描（服务器对象清单公用；rows 在此收口）。
+func scanStringColumn(rows *sql.Rows) ([]string, error) {
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var v string
+		if err := rows.Scan(&v); err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
 }

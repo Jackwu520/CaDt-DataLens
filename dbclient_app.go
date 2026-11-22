@@ -34,6 +34,11 @@ func (a *App) DBDescribe(id, database, table string, noCache bool) (*dbclient.DB
 	return dbclient.Describe(id, database, table, noCache)
 }
 
+// DBListServerObjects 服务器对象分组（MySQL 专属：排序规则/用户/系统虚拟视图；其他 kind 返回 null）。
+func (a *App) DBListServerObjects(id string) (*dbclient.ServerObjects, error) {
+	return dbclient.ListServerObjects(id)
+}
+
 func (a *App) DBBrowse(id string, req dbclient.BrowseRequest) (sqlview.SQLResult, error) {
 	return dbclient.Browse(id, req)
 }

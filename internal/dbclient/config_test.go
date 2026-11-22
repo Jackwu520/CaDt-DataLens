@@ -16,8 +16,9 @@ func withTempAppData(t *testing.T) {
 }
 
 func validMySQLConfig(name string) ConnectionConfig {
+	// 127.0.0.1:1 连接立即被拒（无服务监听），让 Connect 的负路径用例快速失败不拖全量
 	return ConnectionConfig{
-		Name: name, Kind: kindMySQL, Host: "192.168.1.10", Port: 3306,
+		Name: name, Kind: kindMySQL, Host: "127.0.0.1", Port: 1,
 		Database: "shop", User: "reader",
 	}
 }
@@ -36,9 +37,9 @@ func TestConnectionConfigCRUD(t *testing.T) {
 	if err != nil || cfg.ID == "" {
 		t.Fatalf("保存失败：%v / id=%q", err, cfg.ID)
 	}
-	got, err := credentialFor(cfg)
-	if err != nil || got != "secret-pw" {
-		t.Fatalf("凭据往返失败：%q, %v", got, err)
+	got, found, err := credentialFor(cfg)
+	if err != nil || got != "secret-pw" || !found {
+		t.Fatalf("凭据往返失败：%q, found=%v, %v", got, found, err)
 	}
 
 	// 清单可读回
@@ -53,8 +54,8 @@ func TestConnectionConfigCRUD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("更新失败：%v", err)
 	}
-	got, err = credentialFor(saved)
-	if err != nil || got != "secret-pw" {
+	got, found, err = credentialFor(saved)
+	if err != nil || got != "secret-pw" || !found {
 		t.Fatalf("空密码应保留旧凭据：%q, %v", got, err)
 	}
 
@@ -62,7 +63,7 @@ func TestConnectionConfigCRUD(t *testing.T) {
 	if _, err := SaveConnection(cfg, "new-pw"); err != nil {
 		t.Fatalf("覆盖密码失败：%v", err)
 	}
-	got, _ = credentialFor(cfg)
+	got, _, _ = credentialFor(cfg)
 	if got != "new-pw" {
 		t.Fatalf("密码未覆盖：%q", got)
 	}
@@ -74,7 +75,7 @@ func TestConnectionConfigCRUD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("保存第二个连接失败：%v", err)
 	}
-	got, _ = credentialFor(cfg)
+	got, _, _ = credentialFor(cfg)
 	if got != "new-pw" {
 		t.Fatalf("凭据串号：%q", got)
 	}
@@ -88,8 +89,8 @@ func TestConnectionConfigCRUD(t *testing.T) {
 		t.Fatalf("删除后清单异常：%+v", list)
 	}
 	// 删除后凭据应查不到（credentialFor 对缺失凭据返回空串，不报错）
-	if got, err := credentialFor(cfg); err != nil || got != "" {
-		t.Fatalf("删除后凭据状态异常：%q, %v", got, err)
+	if got, found, err := credentialFor(cfg); err != nil || got != "" || found {
+		t.Fatalf("删除后凭据状态异常：%q, found=%v, %v", got, found, err)
 	}
 }
 
@@ -159,7 +160,7 @@ func TestFindConnectionAndConnect(t *testing.T) {
 		t.Fatalf("保存失败：%v", err)
 	}
 	found, err := findConnection(cfg.ID)
-	if err != nil || found.Host != "192.168.1.10" {
+	if err != nil || found.Host != "127.0.0.1" {
 		t.Fatalf("findConnection 异常：%+v, %v", found, err)
 	}
 	if _, err := findConnection("dbc-none"); err == nil {

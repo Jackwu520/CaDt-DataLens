@@ -33,7 +33,10 @@ function withTimeout(promise, label) {
     const timeout = new Promise((_, reject) => {
         timer = setTimeout(() => reject(new Error(label + '超时（' + (PLUGIN_CALL_TIMEOUT / 1000) + 's）——插件驱动应在 connect/query 里自行设超时')), PLUGIN_CALL_TIMEOUT);
     });
-    return Promise.race([Promise.resolve(promise), timeout]).finally(() => clearTimeout(timer));
+    const inner = Promise.resolve(promise);
+    // 超时定局后迟到的失败不再派生 unhandled rejection（吞的是竞速已输的分支）
+    inner.catch(() => {});
+    return Promise.race([inner, timeout]).finally(() => clearTimeout(timer));
 }
 
 async function loadPluginConfig(backend, entry, driver) {
@@ -88,6 +91,10 @@ export async function openPluginSession(backend, entry, driver) {
             session.query({queryId, sql, confirmed: !!confirmed, limit: Number(limit) || 500}), '查询'),
         DBCancel: (_id, queryId) => (session.cancel ? call(session.cancel(queryId), '取消') : Promise.resolve()),
         DBClose: () => (session.close ? call(session.close(), '断开') : Promise.resolve()),
+        // 受控写入契约（dirty model / 单事务 / 乐观并发）是内置 SQL 路线的；插件会话 v1 只读。
+        // 门面显式给出这两个方法并抛错：比 undefined（is not a function）更早、更清晰地暴露越界调用。
+        DBPreviewChanges: () => Promise.reject(new Error('插件会话 v1 只读，不支持提交修改')),
+        DBApplyChanges: () => Promise.reject(new Error('插件会话 v1 只读，不支持提交修改')),
     };
     return {
         info: {

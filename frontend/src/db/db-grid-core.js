@@ -47,8 +47,10 @@ export function createDbGrid(opts = {}) {
     function rebuildTemplate() {
         const n = Math.max(columns.length, 1);
         template = '44px repeat(' + n + ', minmax(130px, 1fr))';
-        headInner.style.gridTemplateColumns = template;
-        win.style.gridTemplateColumns = template;
+        // 列模板挂在网格根的 CSS 变量上，表头与每个行窗内的行继承同一份
+        // （行是动态重建的，无法逐个 style 赋值；直接设在 win 上管不到行内部的 grid）
+        el.style.setProperty('--db-grid-cols', template);
+        headInner.style.gridTemplateColumns = 'var(--db-grid-cols)';
         // 行窗与列头同宽：取列头自然宽度（grid minmax 展开后的值）
         headInner.style.width = '';
         win.style.width = '100%';
@@ -130,13 +132,17 @@ export function createDbGrid(opts = {}) {
             rebuildTemplate();
             renderWindow();
         },
-        /** 设置数据行（startRow：行号展示基数，0 起）。 */
-        setRows(data, nullMatrix, base = 0) {
+        /**
+         * 设置数据行（startRow：行号展示基数，0 起）。
+         * keepScroll=true 保留纵向滚动位置（单元格编辑等本地状态变化；换页/换表走默认滚顶）。
+         */
+        setRows(data, nullMatrix, base = 0, keepScroll = false) {
+            const prevScroll = body.scrollTop;
             rows = data || [];
             nulls = nullMatrix || [];
             startRow = Number(base) || 0;
             canvas.style.height = rows.length * ROW_HEIGHT + 'px';
-            body.scrollTop = 0;
+            body.scrollTop = keepScroll ? prevScroll : 0;
             headInner.style.transform = 'translateX(0)';
             renderWindow();
         },

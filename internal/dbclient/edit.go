@@ -288,6 +288,8 @@ func ApplyChanges(id string, ch TableChanges) (ApplyResult, error) {
 		result.Inserts++
 	}
 	if err := tx.Commit(); err != nil {
+		// Rollback 幂等（已提交/已回滚返回 ErrTxDone 无害）：失败时把可能带悬挂状态的连接交还池前的保险
+		_ = tx.Rollback()
 		return ApplyResult{}, fmt.Errorf("提交失败：%w", err)
 	}
 	result.ElapsedMs = time.Since(started).Milliseconds()

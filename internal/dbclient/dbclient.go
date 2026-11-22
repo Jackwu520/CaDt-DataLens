@@ -54,7 +54,7 @@ func logWarn(format string, args ...any) {
 // Capabilities 驱动能力位（前端据此渲染可用的操作）。
 type Capabilities struct {
 	ReadOnly    bool `json:"readOnly"`    // 驱动是否天然只读（当前无此类驱动）
-	Transaction bool `json:"transaction"` // 支持手动事务
+	Transaction bool `json:"transaction"` // 支持事务——指批量编辑的单事务提交（ApplyChanges）；控制台不支持手写 BEGIN/COMMIT（见 guard.go checkBatch）
 	Editable    bool `json:"editable"`    // 支持单元格编辑
 	DDL         bool `json:"ddl"`         // 允许结构变更（P2 起恒 false，guard 直接拒）
 }
@@ -89,6 +89,7 @@ type DBObject struct {
 	Name        string `json:"name"`
 	Kind        string `json:"kind"` // "table" | "view"
 	RowEstimate int64  `json:"rowEstimate,omitempty"`
+	Comment     string `json:"comment,omitempty"` // 表注释（MySQL 专有；SQLite 恒空）
 }
 
 // ColumnMeta 元数据 L2：一列的定义。
@@ -109,14 +110,15 @@ type IndexMeta struct {
 
 // DBTableMeta 元数据 L2：整表定义。PK 为空时该表不可编辑（无主键一律只读）。
 type DBTableMeta struct {
-	Table       string       `json:"table"`
-	Database    string       `json:"database,omitempty"`
-	Kind        string       `json:"kind"`
-	Columns     []ColumnMeta `json:"columns"`
-	PK          []string     `json:"pk"`
-	Indexes     []IndexMeta  `json:"indexes"`
-	RowEstimate int64        `json:"rowEstimate,omitempty"`
-	Editable    bool         `json:"editable"`
+	Table        string       `json:"table"`
+	Database     string       `json:"database,omitempty"`
+	Kind         string       `json:"kind"`
+	Columns      []ColumnMeta `json:"columns"`
+	PK           []string     `json:"pk"`
+	Indexes      []IndexMeta  `json:"indexes"`
+	RowEstimate  int64        `json:"rowEstimate,omitempty"`
+	TableComment string       `json:"tableComment,omitempty"` // 表注释（MySQL 专有）
+	Editable     bool         `json:"editable"`
 }
 
 // FilterCond 表浏览的结构化筛选（列名经元数据校验、值走占位符参数，不拼进 SQL）。
@@ -228,6 +230,31 @@ func Describe(id, database, table string, noCache bool) (*DBTableMeta, error) {
 		return nil, err
 	}
 	return describeMeta(s, database, table, noCache)
+}
+
+// ServerObjectGroup 服务器对象分组（MySQL 专属元数据：排序规则/用户/系统虚拟视图）。
+type ServerObjectGroup struct {
+	ID    string   `json:"id"`    // collations | users | sysviews
+	Label string   `json:"label"` // 展示名
+	Items []string `json:"items"`
+	Error string   `json:"error,omitempty"` // 该组查询失败原因（权限不足等），前端隐藏整组
+}
+
+// ServerObjects 服务器对象清单；nil 表示该驱动无此能力（SQLite/插件）。
+type ServerObjects struct {
+	Groups []ServerObjectGroup `json:"groups"`
+}
+
+// ListServerObjects 服务器对象（MySQL 专属）；其他驱动返回 nil。每组独立查询独立容错。
+func ListServerObjects(id string) (*ServerObjects, error) {
+	s, err := getSession(id)
+	if err != nil {
+		return nil, err
+	}
+	if s.kind != kindMySQL {
+		return nil, nil
+	}
+	return mysqlListServerObjects(s), nil
 }
 
 // clampRowLimit 行数上限收口（与 sqlview 同口径）。

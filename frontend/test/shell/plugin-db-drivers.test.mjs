@@ -42,7 +42,7 @@ test('归一化：kind 串、字段默认值、密文推断', () => {
     assert.equal(record.fields[1].required, false);
 });
 
-test('校验拒绝：坏 id / 缺 connect / 缺 fields / 坏字段键 / 未知类型回落 text', () => {
+test('校验拒绝：坏 id / 缺 connect / 缺 fields / 坏字段键 / 重复键 / 未知类型回落 text', () => {
     assert.throws(() => normalizePluginDbDriver('Bad Id', '', baseSpec()), /插件 id 无效/);
     assert.throws(() => normalizePluginDbDriver('acme', '', baseSpec({id: 'UPPER'})), /id 无效/);
     assert.throws(() => normalizePluginDbDriver('acme', '', baseSpec({connect: null})), /connect/);
@@ -50,6 +50,9 @@ test('校验拒绝：坏 id / 缺 connect / 缺 fields / 坏字段键 / 未知�
     assert.throws(() => normalizePluginDbDriver('acme', '', baseSpec({
         fields: [{key: 'Bad Key', type: 'text'}],
     })), /字段键无效/);
+    assert.throws(() => normalizePluginDbDriver('acme', '', baseSpec({
+        fields: [{key: 'dup', type: 'text'}, {key: 'dup', type: 'text'}],
+    })), /字段键重复/);
     const loose = normalizePluginDbDriver('acme', '', baseSpec({
         fields: [{key: 'x', type: 'blob'}],
     }));

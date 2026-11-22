@@ -13,22 +13,42 @@ import {iconSvg} from '../core/icons.js';
 import {createInput, createSelect, createSwitch} from '../core/form-controls.js';
 import {overlayStack} from '../core/overlay-stack.js';
 
-function openMaskDialog(id, panel) {
+// openMaskDialog：通用模态骨架——遮罩 + overlayStack 注册。
+// 关键：overlay-stack 的 dispose() **不触发 onClose**（onClose 只在 Esc 路径走），所以 DOM
+// 清理必须由骨架自己的 close()/onClose 两条路径收口，否则取消/遮罩点击会把 mask 留在 DOM
+// （失去内联 z-index 后按绘制顺序盖住侧栏等非定位区）。
+// onClosed 在所有关闭路径（Esc / 遮罩点击 / 按钮 close()）上恰好触发一次，调用方用它
+// resolve 外层 Promise，否则 await 悬挂（闭包泄漏 + 刷新丢失）。
+function openMaskDialog(id, panel, onClosed) {
     const mask = document.createElement('div');
     mask.className = 'db-preview-mask';
     mask.appendChild(panel);
-    const handle = overlayStack.open({
+    let handle = null;
+    let cleaned = false;
+    const cleanup = () => {
+        if (cleaned) return;
+        cleaned = true;
+        mask.remove();
+        panel.remove();
+        if (onClosed) onClosed();
+    };
+    handle = overlayStack.open({
         id,
-        kind: 'modal',
+        kind: 'dialog',
         el: panel,
         underEl: mask,
         onClose: () => {
-            mask.remove();
-            panel.remove();
+            // Esc 路径：先出栈（dispose 不触发 onClose，无递归），再清 DOM + onClosed
+            if (handle) handle.dispose();
+            cleanup();
         },
     });
     document.body.appendChild(mask);
-    const close = () => handle.dispose();
+    const close = () => {
+        if (cleaned) return;
+        if (handle) handle.dispose();
+        cleanup();
+    };
     mask.addEventListener('click', (ev) => {
         if (ev.target === mask) close();
     });
@@ -70,7 +90,6 @@ export function openConnectionsManager(deps, opts = {}) {
         let connections = [];
         let selectedId = opts.initialSelectId || '';
         let draft = null;        // 当前选中连接的可编辑副本（含 id；新建草稿 id 为 ''）
-        let password = '';       // 只在保存/测试时使用，不落任何列表
         let nameTouched = true;  // 选中已有连接时保持已存名称；新建草稿为 false 让名称自动跟随
 
         const panel = document.createElement('div');
@@ -103,9 +122,12 @@ export function openConnectionsManager(deps, opts = {}) {
         listEl.className = 'db-ds-list';
         left.append(toolbar, listEl);
 
-        // ---- 右列：表单 ----
+        // ---- 右列：表单（空清单时显示引导态，不给对话框塌高） ----
         const right = document.createElement('div');
         right.className = 'db-ds-right';
+        const rightEmpty = document.createElement('div');
+        rightEmpty.className = 'db-ds-right-empty';
+        rightEmpty.textContent = '还没有连接。点左上角 + 新建一个，或选中左侧连接进行编辑。';
         const form = document.createElement('div');
         form.className = 'db-conn-form db-ds-form';
         const nameInput = createInput({value: '', placeholder: suggestedName({host: 'localhost', port: 3306})});
@@ -122,6 +144,7 @@ export function openConnectionsManager(deps, opts = {}) {
         const passInput = createInput({type: 'password', value: '', placeholder: '密码'});
         passInput.control.autocomplete = 'new-password';
         const dbInput = createInput({value: '', placeholder: '默认库（可留空，连接后也可在对象树切换）'});
+        if (typeof deps.enhanceSelect === 'function') deps.enhanceSelect(protocolSelect.element);
         const editSwitch = createSwitch({checked: false});
         const wsSwitch = createSwitch({checked: false});
         const urlLine = document.createElement('div');
@@ -148,6 +171,7 @@ export function openConnectionsManager(deps, opts = {}) {
         formRow(form, '加入当前工作区（侧栏双击打开）', wsSwitch.element);
         form.appendChild(urlLine);
         right.appendChild(form);
+        right.append(rightEmpty, form);
         body.append(left, right);
 
         // ---- 底部：测试 / 取消 / 应用 / 确定 ----
@@ -173,9 +197,23 @@ export function openConnectionsManager(deps, opts = {}) {
         okBtn.className = 'db-btn primary';
         okBtn.textContent = '确定';
         foot.append(testBtn, driverLabel, cancelBtn, applyBtn, okBtn);
-        panel.append(head, body, foot);
+        const msgEl = document.createElement('div');
+        msgEl.className = 'db-ds-msg';
+        function setMsg(text, kind) {
+            msgEl.textContent = String(text || '');
+            msgEl.className = 'db-ds-msg' + (kind ? ' ' + kind : '');
+        }
+        panel.append(head, body, msgEl, foot);
 
-        const {close} = openMaskDialog('db-connections-manager', panel);
+        // settled：所有关闭路径（Esc/遮罩/取消/确定）都要 resolve，否则 await 悬挂
+        let settled = false;
+        const settle = () => {
+            if (!settled) {
+                settled = true;
+                resolve();
+            }
+        };
+        const {close} = openMaskDialog('db-connections-manager', panel, settle);
 
         // ---------- 数据与渲染 ----------
 
@@ -231,7 +269,6 @@ export function openConnectionsManager(deps, opts = {}) {
                 deps.flash('未保存的新建草稿已丢弃');
             }
             selectedId = id;
-            password = '';
             const cfg = connections.find((c) => c.id === id);
             if (!cfg) {
                 draft = null;
@@ -256,9 +293,8 @@ export function openConnectionsManager(deps, opts = {}) {
         function newDraft() {
             selectedId = '';
             draft = blankDraft();
-            password = '';
             nameTouched = false; // 名称自动跟随 user@host:port（JetBrains 的 @localhost 习惯）
-            renderList(new Set(deps.listWorkspaceRefs()));
+            renderList(deps.listWorkspaceRefs());
             renderForm();
             nameInput.control.focus();
         }
@@ -266,6 +302,7 @@ export function openConnectionsManager(deps, opts = {}) {
         function renderForm() {
             const empty = !draft;
             form.classList.toggle('hidden', empty);
+            rightEmpty.hidden = !empty;
             driverLabel.hidden = empty;
             testBtn.disabled = empty;
             applyBtn.disabled = empty;
@@ -312,14 +349,19 @@ export function openConnectionsManager(deps, opts = {}) {
             const d = collectDraft();
             if (!d.name) d.name = suggestedName(d); // 名称留空时按建议值落盘
             try {
-                const saved = await deps.backend.DBSaveConnection(d, password);
-                await deps.syncWorkspaceRef(saved.id, wsSwitch.control.checked, saved.name, protocolSelect.control.value);
-                password = '';
+                const saved = await deps.backend.DBSaveConnection(d, passInput.control.value);
+                let workspaceNote = '';
+                try {
+                    await deps.syncWorkspaceRef(saved.id, wsSwitch.control.checked, saved.name, protocolSelect.control.value);
+                    workspaceNote = '（已' + (wsSwitch.control.checked ? '加入' : '移出') + '当前工作区）';
+                } catch (syncErr) {
+                    workspaceNote = '（加入工作区失败：' + (syncErr && syncErr.message || syncErr) + '——连接本身已保存）';
+                }
                 await reload(saved.id);
-                deps.flash('连接已保存：' + saved.name);
+                setMsg('已保存：' + saved.name + workspaceNote, 'ok');
                 return true;
             } catch (e) {
-                deps.flash('保存失败：' + (e && e.message || e), true);
+                setMsg('保存失败：' + (e && e.message || e), 'error');
                 return false;
             }
         }
@@ -339,21 +381,22 @@ export function openConnectionsManager(deps, opts = {}) {
         dbInput.control.addEventListener('input', updateUrl);
 
         addBtn.addEventListener('click', newDraft);
-        delBtn.addEventListener('click', async () => {
+        delBtn.addEventListener('click', () => {
             const cfg = connections.find((c) => c.id === selectedId);
             if (!cfg) return;
-            const ok = await confirmDeleteConnection(deps, cfg);
-            if (!ok) return;
-            await deps.syncWorkspaceRef(cfg.id, false, cfg.name);
-            await reload('');
+            confirmDeleteConnection(deps, cfg, async () => {
+                await deps.syncWorkspaceRef(cfg.id, false, cfg.name);
+                await reload('');
+            });
         });
         testBtn.addEventListener('click', async () => {
             testBtn.disabled = true;
+            setMsg('测试中…', '');
             try {
-                const version = await deps.backend.DBTestConnection(collectDraft(), password);
-                deps.flash('连接正常：' + version);
+                const version = await deps.backend.DBTestConnection(collectDraft(), passInput.control.value);
+                setMsg('连接正常：' + version + (draft.id ? '' : '（测试通过 ≠ 已保存：点「应用」或「确定」后侧栏才能使用）'), 'ok');
             } catch (e) {
-                deps.flash('测试失败：' + (e && e.message || e), true);
+                setMsg('测试失败：' + (e && e.message || e), 'error');
             } finally {
                 testBtn.disabled = false;
             }
@@ -361,14 +404,10 @@ export function openConnectionsManager(deps, opts = {}) {
         applyBtn.addEventListener('click', () => applyDraft());
         okBtn.addEventListener('click', async () => {
             if (await applyDraft()) {
-                close();
-                resolve();
+                close(); // onClose 会 settle
             }
         });
-        cancelBtn.addEventListener('click', () => {
-            close();
-            resolve();
-        });
+        cancelBtn.addEventListener('click', close);
 
         reload();
     });
@@ -378,42 +417,22 @@ export function openConnectionsManager(deps, opts = {}) {
  * 删除连接确认（全局删除：配置 + 加密凭据一并清）。
  * @returns {Promise<boolean>} true = 用户确认删除且已删除
  */
-export function confirmDeleteConnection(deps, cfg) {
-    return new Promise((resolve) => {
-        const panel = document.createElement('div');
-        panel.className = 'db-preview db-conn-dialog';
-        const head = document.createElement('div');
-        head.className = 'db-preview-head';
-        head.textContent = '删除连接「' + cfg.name + '」？';
-        const body = document.createElement('div');
-        body.className = 'db-preview-body';
-        body.textContent = '连接配置与保存的密码（加密凭据）一并删除；引用它的工作区清单条目同步移除；不影响数据库本身。';
-        const foot = document.createElement('div');
-        foot.className = 'db-preview-foot';
-        const cancelBtn = document.createElement('button');
-        cancelBtn.type = 'button';
-        cancelBtn.className = 'db-btn';
-        cancelBtn.textContent = '取消';
-        const okBtn = document.createElement('button');
-        okBtn.type = 'button';
-        okBtn.className = 'db-btn danger';
-        okBtn.textContent = '删除';
-        foot.append(cancelBtn, okBtn);
-        panel.append(head, body, foot);
-        const {close} = openMaskDialog('db-conn-delete', panel);
-        cancelBtn.addEventListener('click', () => {
-            close();
-            resolve(false);
-        });
-        okBtn.addEventListener('click', async () => {
+export function confirmDeleteConnection(deps, cfg, onDone) {
+    // 统一确认弹窗（writing-mode 的 openConfirmDialog）：与全应用的删除确认同一观感。
+    // callback 式——取消即什么都不发生（不再自建 Promise，避免 Esc/取消路径悬挂）。
+    deps.openConfirmDialog(
+        '连接配置与保存的密码（加密凭据）一并删除；引用它的工作区清单条目同步移除；不影响数据库本身。',
+        async () => {
             try {
                 await deps.backend.DBDeleteConnection(cfg.id);
                 deps.flash('连接已删除：' + cfg.name);
-                close();
-                resolve(true);
+                if (onDone) onDone();
             } catch (e) {
                 deps.flash('删除失败：' + (e && e.message || e), true);
             }
-        });
-    });
+        },
+        '删除',
+        '删除连接「' + cfg.name + '」？',
+        'danger',
+    );
 }

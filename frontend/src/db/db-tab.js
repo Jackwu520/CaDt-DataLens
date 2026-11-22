@@ -37,6 +37,10 @@ let connectError = '';
 // 会话门面（与绑定同名同形，见 db-plugin.js），树/网格/控制台零改动复用
 let backendApi = deps.backend;
 let pluginSession = null;
+// 连接世代与卸载标记：关标签时 connect 仍在飞行（sessionId 还是空）的话，disconnect 会
+// 直接早退、连接完成后无人关——用 epoch 让被超越/卸载的连接在 resolve 后立即自释放
+let connectEpoch = 0;
+let disposed = false;
 
 // ---------- 骨架 ----------
 
@@ -52,7 +56,12 @@ const headMeta = document.createElement('span');
 headMeta.className = 'db-tabview-meta';
 const headStatus = document.createElement('span');
 headStatus.className = 'db-tabview-status';
-header.append(headIcon, headName, headMeta, headStatus);
+const queryToggle = document.createElement('button');
+queryToggle.type = 'button';
+queryToggle.className = 'db-btn';
+queryToggle.innerHTML = iconSvg('terminal', 12) + '<span>查询</span>';
+queryToggle.dataset.tip = '查询控制台（SQL 执行与结果，默认收起）';
+header.append(headIcon, headName, headMeta, headStatus, queryToggle);
 
 const body = document.createElement('div');
 body.className = 'db-tabview-body';
@@ -90,8 +99,21 @@ const query = createDbQueryEditor({
     get backend() { return backendApi; },
     flash: deps.flash,
     logActivity: deps.logActivity,
+    get enhanceSelect() { return deps.enhanceSelect; },
 });
 right.appendChild(query.el);
+
+// 查询控制台默认收起（表格吃满宽度），头部「查询」按钮按需开关。
+// display:none 时网格可视高度为 0，展开后必须重绘一次可视窗口
+let queryVisible = false;
+function setQueryVisible(v) {
+    queryVisible = v;
+    right.hidden = !v;
+    queryToggle.classList.toggle('active', v);
+    if (v) query.refresh();
+}
+queryToggle.addEventListener('click', () => setQueryVisible(!queryVisible));
+setQueryVisible(false);
 
 root.append(header, body);
 
@@ -103,50 +125,62 @@ let activeTabId = '';
 
 async function connect() {
     connectError = '';
+    const epoch = ++connectEpoch;
     renderHead('连接中…');
+    let opened = null;
     try {
-        let info;
         if (isPluginDbKind(entry.kind)) {
             const driver = pluginDbDriverOf(entry.kind);
             if (!driver) throw new Error('驱动未注册（插件已禁用或卸载）');
-            const opened = await openPluginSession(deps.backend, entry, driver);
-            info = opened.info;
-            pluginSession = opened.api;
-            backendApi = opened.api;
+            opened = await openPluginSession(deps.backend, entry, driver);
         } else {
-            pluginSession = null;
-            backendApi = deps.backend;
-            info = entry.kind === 'sqlite'
+            const info = entry.kind === 'sqlite'
                 ? await deps.backend.DBOpen(entry.path, !!entry.allowEdit)
                 : await deps.backend.DBConnect(entry.connectionId);
+            opened = {info, api: null};
         }
-        session = info;
-        sessionId = info.id;
-        tree.resetSession(info.id);
+        // 被「重试连点」或「关标签」超越：立即释放刚拿到的会话，不泄漏
+        if (disposed || epoch !== connectEpoch) {
+            const closing = opened.api ? opened.api.DBClose() : deps.backend.DBClose(opened.info.id);
+            await Promise.resolve(closing).catch(() => {});
+            return;
+        }
+        session = opened.info;
+        sessionId = opened.info.id;
+        pluginSession = opened.api;
+        backendApi = opened.api || deps.backend;
+        tree.resetSession(sessionId);
         tree.render();
-        query.setSession(info);
+        query.setSession(session);
         renderHead('');
+        renderTabs(); // 重试成功后把失败空态换回正常视图
     } catch (e) {
+        if (disposed || epoch !== connectEpoch) return;
         session = null;
         pluginSession = null;
         backendApi = deps.backend;
         connectError = String(e && e.message || e);
+        // 失败要清干净：上一次成功连接渲染的树行不能留着，否则「树显示可编辑、头部显示失败」互相矛盾
+        tree.clear();
+        query.setSession(null);
         renderHead('连接失败');
         renderStatus();
     }
 }
 
 async function disconnect() {
-    if (!sessionId) return;
-    try {
-        await backendApi.DBClose(sessionId);
-    } catch (e) {
-        // 会话可能已被空闲回收，照常清理界面
-    }
+    const id = sessionId;
+    const api = pluginSession;
     session = null;
     sessionId = '';
     pluginSession = null;
     backendApi = deps.backend;
+    if (!id) return;
+    try {
+        await (api ? api.DBClose() : deps.backend.DBClose(id));
+    } catch (e) {
+        // 会话可能已被空闲回收，照常清理界面
+    }
 }
 
 function renderHead(status) {
@@ -178,7 +212,6 @@ function renderStatus() {
         empty.textContent = '从左侧对象树选择一张表开始浏览';
     }
     tabHost.appendChild(empty);
-    if (!tableTabs.size) centerEmpty.hidden = false;
 }
 
 // ---------- 表子标签 ----------
@@ -197,6 +230,7 @@ function onOpenTable(s, db, obj) {
             flash: deps.flash,
             settings: deps.settings,
             logActivity: deps.logActivity,
+            get enhanceSelect() { return deps.enhanceSelect; },
         },
         s, db, obj.name);
     const tabEl = document.createElement('div');
@@ -210,6 +244,12 @@ function onOpenTable(s, db, obj) {
     close.className = 'db-tab-close';
     close.innerHTML = iconSvg('close', 10);
     close.addEventListener('click', () => closeTab(tabId));
+    // 激活监听在创建时挂一次：renderTabs 每次重渲染复用同一 tabEl，别重复 addEventListener
+    tabEl.addEventListener('click', (ev) => {
+        if (ev.target.closest('.db-tab-close')) return;
+        activeTabId = tabId;
+        renderTabs();
+    });
     tabEl.append(label, close);
     tableTabs.set(tabId, {db, obj, pane, tabEl});
     activeTabId = tabId;
@@ -231,14 +271,8 @@ function renderTabs() {
         return;
     }
     for (const [tabId, tab] of tableTabs) {
-        const tabEl = tab.tabEl;
-        tabEl.classList.toggle('active', tabId === activeTabId);
-        tabEl.addEventListener('click', (ev) => {
-            if (ev.target.closest('.db-tab-close')) return;
-            activeTabId = tabId;
-            renderTabs();
-        });
-        tabBar.appendChild(tabEl);
+        tab.tabEl.classList.toggle('active', tabId === activeTabId);
+        tabBar.appendChild(tab.tabEl);
     }
     const active = tableTabs.get(activeTabId);
     if (active) tabHost.appendChild(active.pane.el);
@@ -266,6 +300,8 @@ mount();
 // 域内卸载钩子（bridge-database-view.js 的 doc.tabUnmount 统一契约会调它）：
 // 关标签 = 断开该库会话；未提交的网格修改一并丢弃
 doc.dbViewUnmount = () => {
+    disposed = true;
+    connectEpoch++; // 让仍在飞行的 connect 在 resolve 后自释放会话
     disconnect();
     tableTabs.clear();
     doc.dbViewUnmount = null;

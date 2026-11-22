@@ -44,22 +44,28 @@ type credentialsData struct {
 }
 
 // validateConnectionTarget 拒绝云元数据端点与链路本地地址；主机名先解析再判。
-func validateConnectionTarget(host string) error {
+// 返回解析出的候选 IP（已是 IP 字面量则原样返回）——调用方可用它直连，封住
+// 「校验时解析一次、拨号再解析一次」之间的 DNS rebinding 窗口。
+func validateConnectionTarget(host string) ([]net.IP, error) {
 	h := strings.TrimSpace(host)
 	if h == "" {
-		return errors.New("主机不能为空")
+		return nil, errors.New("主机不能为空")
 	}
 	lower := strings.ToLower(strings.TrimSuffix(h, "."))
 	if lower == "metadata.google.internal" || lower == "metadata" {
-		return fmt.Errorf("拒绝连接云元数据服务端点：%s", h)
+		return nil, fmt.Errorf("拒绝连接云元数据服务端点：%s", h)
 	}
 	var ips []net.IP
 	if ip := net.ParseIP(h); ip != nil {
 		ips = append(ips, ip)
 	} else {
-		addrs, err := net.LookupHost(h)
+		// 解析限时 5s：慢 DNS 不该把保存/测试/连接全部挂住
+		resolver := &net.Resolver{}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		addrs, err := resolver.LookupHost(ctx, h)
+		cancel()
 		if err != nil {
-			return fmt.Errorf("主机解析失败：%w", err)
+			return nil, fmt.Errorf("主机解析失败：%w", err)
 		}
 		for _, a := range addrs {
 			if ip := net.ParseIP(a); ip != nil {
@@ -69,10 +75,45 @@ func validateConnectionTarget(host string) error {
 	}
 	for _, ip := range ips {
 		if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
-			return fmt.Errorf("拒绝连接链路本地地址（云元数据服务端点）：%s", ip)
+			return nil, fmt.Errorf("拒绝连接链路本地地址（云元数据服务端点）：%s", ip)
 		}
 	}
-	return nil
+	if len(ips) == 0 {
+		return nil, fmt.Errorf("主机解析不出可用地址：%s", h)
+	}
+	return ips, nil
+}
+
+// resolveSafeAddr 解析 + 校验后返回「IP:port」——DSN 直接拨这个地址。
+// resolveSafeAddrs 解析 + 校验后返回候选「IP:port」列表（IPv4 优先——本机 MySQL/MariaDB
+// 常只监听 IPv4，而 localhost 的解析顺序不确定，只拨第一个可能撞上 ::1 直接失败）。
+func resolveSafeAddrs(host string, port int) ([]string, error) {
+	if port <= 0 || port > 65535 {
+		return nil, fmt.Errorf("端口无效：%d", port)
+	}
+	ips, err := validateConnectionTarget(host)
+	if err != nil {
+		return nil, err
+	}
+	v4 := make([]net.IP, 0, len(ips))
+	rest := make([]net.IP, 0, len(ips))
+	for _, ip := range ips {
+		if ip.To4() != nil {
+			v4 = append(v4, ip)
+		} else {
+			rest = append(rest, ip)
+		}
+	}
+	out := make([]string, 0, len(ips))
+	seen := map[string]bool{}
+	for _, ip := range append(v4, rest...) {
+		addr := net.JoinHostPort(ip.String(), strconv.Itoa(port))
+		if !seen[addr] {
+			seen[addr] = true
+			out = append(out, addr)
+		}
+	}
+	return out, nil
 }
 
 // validateConfig 保存/测试前的合法性校验。
@@ -83,7 +124,7 @@ func validateConfig(cfg ConnectionConfig) error {
 	if cfg.Kind != kindMySQL {
 		return fmt.Errorf("暂只支持 MySQL 连接（SQLite 是打开本地文件，不落连接表）")
 	}
-	if err := validateConnectionTarget(cfg.Host); err != nil {
+	if _, err := validateConnectionTarget(cfg.Host); err != nil {
 		return err
 	}
 	if cfg.Port <= 0 || cfg.Port > 65535 {
@@ -162,7 +203,8 @@ func writeCredentials(path string, records map[string]credentialRecord) error {
 	if err != nil {
 		return err
 	}
-	return atomfile.WriteFileAtomic(path, append(raw, '\n'))
+	// 0600：非 Windows 的明文退路下，同机其他用户不应可读
+	return atomfile.WriteFileAtomicMode(path, append(raw, '\n'), 0o600)
 }
 
 // ---------- 对外入口 ----------
@@ -215,9 +257,14 @@ func SaveConnection(cfg ConnectionConfig, password string) (ConnectionConfig, er
 	cfg.Host = strings.TrimSpace(cfg.Host)
 	cfg.User = strings.TrimSpace(cfg.User)
 	cfg.UpdatedAt = time.Now().UnixMilli()
+	// 复合键（ID|host|port|user）随 host/port/user 变化：更新时记下旧键，凭据做迁移/清理，
+	// 否则旧密文成孤儿、新键下找不到旧密码
+	var prev *ConnectionConfig
 	replaced := false
 	for i := range list {
 		if list[i].ID == cfg.ID {
+			old := list[i]
+			prev = &old
 			list[i] = cfg
 			replaced = true
 			break
@@ -229,21 +276,38 @@ func SaveConnection(cfg ConnectionConfig, password string) (ConnectionConfig, er
 	if err := writeConnections(cfgPath, list); err != nil {
 		return ConnectionConfig{}, err
 	}
-	if password != "" {
+	oldKey := ""
+	if prev != nil {
+		oldKey = compositeKey(*prev)
+	}
+	newKey := compositeKey(cfg) // 新建也要算：密文按新复合键落位
+	if password != "" || (prev != nil && oldKey != newKey) {
 		records, err := readCredentials(credPath)
 		if err != nil {
 			return ConnectionConfig{}, err
 		}
-		stored := password
-		sealed := dpapi.Supported()
-		if sealed {
-			sealedStr, perr := dpapi.Protect(password, "datalens-db-credential:"+cfg.ID)
-			if perr != nil {
-				return ConnectionConfig{}, fmt.Errorf("凭据加密失败：%w", perr)
+		switch {
+		case password != "":
+			stored := password
+			sealed := dpapi.Supported()
+			if sealed {
+				sealedStr, perr := dpapi.Protect(password, "datalens-db-credential:"+cfg.ID)
+				if perr != nil {
+					return ConnectionConfig{}, fmt.Errorf("凭据加密失败：%w", perr)
+				}
+				stored = sealedStr
 			}
-			stored = sealedStr
+			records[newKey] = credentialRecord{Value: stored, Sealed: sealed}
+		case oldKey != newKey && prev != nil:
+			// 改了 host/port/user 但没重输密码：把旧密文迁到新复合键（dpapi 绑定用户+机器，密文不变）
+			if rec, ok := records[oldKey]; ok {
+				records[newKey] = rec
+			}
 		}
-		records[compositeKey(cfg)] = credentialRecord{Value: stored, Sealed: sealed}
+		// 旧复合键清掉（密文不残留磁盘）
+		if prev != nil && oldKey != newKey {
+			delete(records, oldKey)
+		}
 		if err := writeCredentials(credPath, records); err != nil {
 			return ConnectionConfig{}, err
 		}
@@ -295,28 +359,30 @@ func DeleteConnection(id string) error {
 	return writeCredentials(credPath, records)
 }
 
-// credentialFor 解密连接的密码（无凭据返回空串，连接失败时由驱动报错）。
-func credentialFor(cfg ConnectionConfig) (string, error) {
+// credentialFor 解密连接的密码。found=false 表示这条连接**从未保存过凭据**（区别于
+// 「保存了空密码」）——调用方（Connect）据此给出可操作的报错，而不是让驱动报一轮
+// Access denied (using password: NO) 让人摸不着头脑。
+func credentialFor(cfg ConnectionConfig) (string, bool, error) {
 	_, credPath, err := configPaths()
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	records, err := readCredentials(credPath)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	rec, ok := records[compositeKey(cfg)]
 	if !ok {
-		return "", nil
+		return "", false, nil
 	}
 	if !rec.Sealed {
-		return rec.Value, nil // 非 Windows（dpapi.Supported()==false）的明文退路
+		return rec.Value, true, nil // 非 Windows（dpapi.Supported()==false）的明文退路
 	}
 	plain, err := dpapi.Unprotect(rec.Value)
 	if err != nil {
-		return "", fmt.Errorf("凭据解密失败（换用户/换机器后密文不可解），请重新保存密码：%w", err)
+		return "", true, fmt.Errorf("凭据解密失败（换用户/换机器后密文不可解），请重新保存密码：%w", err)
 	}
-	return plain, nil
+	return plain, true, nil
 }
 
 // findConnection 按取清单。
@@ -339,9 +405,12 @@ func Connect(id string) (SessionInfo, error) {
 	if err != nil {
 		return SessionInfo{}, err
 	}
-	password, err := credentialFor(cfg)
+	password, found, err := credentialFor(cfg)
 	if err != nil {
 		return SessionInfo{}, err
+	}
+	if !found {
+		return SessionInfo{}, errors.New("该连接尚未保存密码（可能是旧版本保存的连接）：打开侧栏菜单「编辑连接」，重新输入密码并保存后再连接")
 	}
 	return openSession(openSpec{Kind: cfg.Kind, Config: cfg, Password: password, AllowEdit: cfg.AllowEdit})
 }
@@ -353,11 +422,13 @@ func TestConnection(cfg ConnectionConfig, password string) (string, error) {
 		return "", err
 	}
 	if password == "" {
-		p, err := credentialFor(cfg)
+		p, found, err := credentialFor(cfg)
 		if err != nil {
 			return "", err
 		}
-		password = p
+		if found {
+			password = p
+		}
 	}
 	drv, err := driverFor(cfg.Kind)
 	if err != nil {

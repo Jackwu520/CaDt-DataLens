@@ -15,7 +15,7 @@ import {createInput, createSwitch} from '../core/form-controls.js';
 import {overlayStack} from '../core/overlay-stack.js';
 import {getPluginDbDrivers} from '../shell/plugin-db-drivers.js';
 import {openConnectionsManager, confirmDeleteConnection} from './db-connections.js';
-import {isPluginDbKind, openPluginSession, pluginDbDriverOf, pluginDbLabel} from './db-plugin.js';
+import {isPluginDbKind, openPluginSession, pluginDbDriverOf, pluginDbLabel, savePluginSecrets} from './db-plugin.js';
 import {kindLabel} from './db-model.js';
 
 const REGISTRY_KEY = 'dbWorkspaceDatabases';
@@ -45,7 +45,8 @@ function getSettings() {
 }
 
 function currentWorkspace() {
-    return deps.workspaceFolder ? (deps.workspaceFolder() || '') : '';
+    // deps.workspaceFolder 是字符串（main.js 的 getter 每次返回当前值），不是函数
+    return deps.workspaceFolder || '';
 }
 
 function listAll() {
@@ -77,10 +78,6 @@ function removeEntry(id) {
 function updateEntry(id, patch) {
     getSettings()[REGISTRY_KEY] = listAll().map((e) => (e.id === id ? Object.assign({}, e, patch) : e));
     persist();
-}
-
-function findEntry(id) {
-    return listAll().find((e) => e.id === id) || null;
 }
 
 async function globalConnections() {
@@ -123,6 +120,8 @@ function dsDeps() {
     return {
         get backend() { return deps.backend; },
         get flash() { return deps.flash; },
+        get openConfirmDialog() { return deps.openConfirmDialog; },
+        get enhanceSelect() { return deps.enhanceSelect; },
         listWorkspaceRefs: () => listForWorkspace()
             .filter((e) => e.kind === 'mysql' || e.kind === 'mariadb')
             .map((e) => ({connectionId: e.connectionId, kind: e.kind})),
@@ -200,24 +199,49 @@ function openPluginEntryDialog(driver, existing) {
         saveBtn.className = 'db-btn primary';
         saveBtn.textContent = '保存';
         foot.append(cancelBtn, saveBtn);
-        panel.append(head, form, foot);
+        const msgEl = document.createElement('div');
+        msgEl.className = 'db-ds-msg';
+        const setMsg = (text, kind) => {
+            msgEl.textContent = String(text || '');
+            msgEl.className = 'db-ds-msg' + (kind ? ' ' + kind : '');
+        };
+        panel.append(head, form, msgEl, foot);
 
-        // 遮罩弹层（overlayStack 注册，Esc/遮罩/按钮统一收口）
+        // 遮罩弹层（overlayStack 注册）。close() 必须自己做 DOM 清理——dispose() 不触发
+        // onClose，只 dispose 会把 mask 留在 DOM（与 db-connections.js 同款修复）
         const mask = document.createElement('div');
         mask.className = 'db-preview-mask';
         mask.appendChild(panel);
         let handle = null;
+        let settled = false;
+        const settle = () => {
+            if (!settled) {
+                settled = true;
+                resolve();
+            }
+        };
+        let cleaned = false;
+        const cleanup = () => {
+            if (cleaned) return;
+            cleaned = true;
+            mask.remove();
+            panel.remove();
+            settle();
+        };
         const close = () => {
+            if (cleaned) return;
             if (handle) handle.dispose();
+            cleanup();
         };
         handle = overlayStack.open({
             id: 'db-plugin-entry',
-            kind: 'modal',
+            kind: 'dialog',
             el: panel,
             underEl: mask,
             onClose: () => {
-                mask.remove();
-                panel.remove();
+                // Esc 路径：先出栈再清 DOM（dispose 不触发 onClose，无递归）
+                if (handle) handle.dispose();
+                cleanup();
             },
         });
         document.body.appendChild(mask);
@@ -225,15 +249,24 @@ function openPluginEntryDialog(driver, existing) {
             if (ev.target === mask) close();
         });
         cancelBtn.addEventListener('click', () => {
+            settle();
             close();
-            resolve();
         });
         saveBtn.addEventListener('click', async () => {
             saveBtn.disabled = true;
-            const missing = driver.fields.find((f) => f.required && !String(inputs[f.key].control.value).trim());
+            // required 校验跳过密文字段：编辑时留空 = 保持不变（与占位文案一致）
+            const missing = driver.fields.find((f) => f.required && !f.secret && !String(inputs[f.key].control.value).trim());
             if (missing) {
                 saveBtn.disabled = false;
-                deps.flash('必填项不能为空：' + missing.label, true);
+                setMsg('必填项不能为空：' + missing.label, 'error');
+                return;
+            }
+            const badNum = driver.fields.find((f) => f.type === 'number'
+                && String(inputs[f.key].control.value).trim() !== ''
+                && Number.isNaN(Number(inputs[f.key].control.value)));
+            if (badNum) {
+                saveBtn.disabled = false;
+                setMsg('数字字段格式不对：' + badNum.label, 'error');
                 return;
             }
             const config = {};
@@ -251,13 +284,12 @@ function openPluginEntryDialog(driver, existing) {
                 await savePluginSecrets(deps.backend, entryId, driver, secretValues);
             } catch (e) {
                 saveBtn.disabled = false;
-                deps.flash('密文保存失败：' + (e && e.message || e), true);
+                setMsg('密文保存失败：' + (e && e.message || e), 'error');
                 return;
             }
             const name = nameInput.control.value.trim() || driver.label;
             if (existing) {
                 updateEntry(entryId, {name, config});
-                deps.flash('已更新：' + name);
             } else {
                 addEntry({
                     id: entryId,
@@ -267,88 +299,40 @@ function openPluginEntryDialog(driver, existing) {
                     config,
                     addedAt: Date.now(),
                 });
-                deps.flash('已添加数据库：' + name);
             }
-            close();
+            close(); // cleanup 会 settle
             renderSidebar();
-            resolve();
         });
         nameInput.control.focus();
     });
 }
 
-async function addPluginDriver() {
+// 新建连接入口：单个按钮 + 弹出菜单选类型（窄宽度不撑横滚条）。
+// 插件驱动：单个直接列一项，多个收进子菜单；无注册驱动时提示安装途径。
+function openCreateMenu(anchorRect) {
+    const items = [
+        {label: 'SQLite 库文件…', icon: 'file', action: () => addSqlite()},
+        {label: 'MySQL / MariaDB 连接…', icon: 'globe', action: () => addMysql()},
+    ];
     const drivers = getPluginDbDrivers();
-    if (!drivers.length) {
-        deps.flash('没有已注册的插件数据库驱动（到 设置 → 插件 安装）', true);
-        return;
-    }
     if (drivers.length === 1) {
-        await openPluginEntryDialog(drivers[0], null);
-        renderSidebar();
-        return;
-    }
-    // 多个驱动：先选驱动再出表单
-    const panel = document.createElement('div');
-    panel.className = 'db-preview db-conn-dialog';
-    const head = document.createElement('div');
-    head.className = 'db-preview-head';
-    head.textContent = '选择数据库驱动（插件）';
-    const body = document.createElement('div');
-    body.className = 'db-preview-body';
-    for (const driver of drivers) {
-        const row = document.createElement('div');
-        row.className = 'db-conn-row';
-        const main = document.createElement('div');
-        main.className = 'db-conn-main';
-        const name = document.createElement('div');
-        name.className = 'db-conn-name';
-        name.textContent = driver.label;
-        const sub = document.createElement('div');
-        sub.className = 'db-conn-sub';
-        sub.textContent = driver.pluginName + ' · plugin:' + driver.id;
-        main.append(name, sub);
-        const pick = document.createElement('button');
-        pick.type = 'button';
-        pick.className = 'db-btn primary';
-        pick.textContent = '选择';
-        pick.addEventListener('click', () => {
-            close();
-            openPluginEntryDialog(driver, null).then(() => renderSidebar());
+        items.push({
+            label: '插件驱动：' + drivers[0].label,
+            icon: 'puzzle',
+            action: () => openPluginEntryDialog(drivers[0], null).then(() => renderSidebar()),
         });
-        row.append(main, pick);
-        body.appendChild(row);
+    } else if (drivers.length > 1) {
+        items.push({
+            label: '插件驱动',
+            icon: 'puzzle',
+            submenu: drivers.map((d) => ({
+                label: d.label,
+                icon: 'puzzle',
+                action: () => openPluginEntryDialog(d, null).then(() => renderSidebar()),
+            })),
+        });
     }
-    const foot = document.createElement('div');
-    foot.className = 'db-preview-foot';
-    const cancelBtn = document.createElement('button');
-    cancelBtn.type = 'button';
-    cancelBtn.className = 'db-btn';
-    cancelBtn.textContent = '取消';
-    foot.append(cancelBtn);
-    panel.append(head, body, foot);
-    const mask = document.createElement('div');
-    mask.className = 'db-preview-mask';
-    mask.appendChild(panel);
-    let handle = null;
-    const close = () => {
-        if (handle) handle.dispose();
-    };
-    handle = overlayStack.open({
-        id: 'db-plugin-driver-pick',
-        kind: 'modal',
-        el: panel,
-        underEl: mask,
-        onClose: () => {
-            mask.remove();
-            panel.remove();
-        },
-    });
-    document.body.appendChild(mask);
-    mask.addEventListener('click', (ev) => {
-        if (ev.target === mask) close();
-    });
-    cancelBtn.addEventListener('click', close);
+    deps.ctxMenu.open(items, anchorRect.left, anchorRect.bottom + 2);
 }
 
 // ---------- 行菜单 ----------
@@ -367,7 +351,7 @@ function rowMenu(entry, anchorRect) {
             },
         });
     }
-    if (entry.kind === 'mysql') {
+    if (entry.kind === 'mysql' || entry.kind === 'mariadb') {
         items.push({sep: true});
         items.push({
             label: '测试连接',
@@ -397,16 +381,17 @@ function rowMenu(entry, anchorRect) {
         items.push({
             label: '删除连接…（全局，含凭据）',
             icon: 'trash',
-            action: async () => {
-                const cfg = (await globalConnections()).find((c) => c.id === entry.connectionId);
-                if (!cfg) return;
-                const ok = await confirmDeleteConnection(deps, cfg);
-                if (ok) {
-                    // 全局删除：所有引用它的条目一并移除
-                    getSettings()[REGISTRY_KEY] = listAll().filter((e) => e.connectionId !== cfg.id);
-                    persist();
-                    renderSidebar();
-                }
+            action: () => {
+                (async () => {
+                    const cfg = (await globalConnections()).find((c) => c.id === entry.connectionId);
+                    if (!cfg) return;
+                    confirmDeleteConnection(deps, cfg, () => {
+                        // 全局删除：所有引用它的条目一并移除
+                        getSettings()[REGISTRY_KEY] = listAll().filter((e) => e.connectionId !== cfg.id);
+                        persist();
+                        renderSidebar();
+                    });
+                })();
             },
         });
     }
@@ -545,22 +530,16 @@ function renderSidebar() {
     }
     const actions = document.createElement('div');
     actions.className = 'db-left-actions db-side-actions';
-    const addSqliteBtn = document.createElement('button');
-    addSqliteBtn.type = 'button';
-    addSqliteBtn.className = 'db-btn';
-    addSqliteBtn.innerHTML = iconSvg('plus', 11) + '<span>SQLite 库</span>';
-    addSqliteBtn.addEventListener('click', addSqlite);
-    const addMysqlBtn = document.createElement('button');
-    addMysqlBtn.type = 'button';
-    addMysqlBtn.className = 'db-btn';
-    addMysqlBtn.innerHTML = iconSvg('plus', 11) + '<span>MySQL</span>';
-    addMysqlBtn.addEventListener('click', addMysql);
-    const addPluginBtn = document.createElement('button');
-    addPluginBtn.type = 'button';
-    addPluginBtn.className = 'db-btn';
-    addPluginBtn.innerHTML = iconSvg('plus', 11) + '<span>插件驱动</span>';
-    addPluginBtn.addEventListener('click', addPluginDriver);
-    actions.append(addSqliteBtn, addMysqlBtn, addPluginBtn);
+    // 单一入口 + 弹出菜单选类型：窄宽度下不撑横滚条（三个并列按钮会被裁掉）
+    const addBtn = document.createElement('button');
+    addBtn.type = 'button';
+    addBtn.className = 'db-btn primary';
+    addBtn.innerHTML = iconSvg('plus', 11) + '<span>新建连接</span>';
+    addBtn.addEventListener('click', () => {
+        const rect = addBtn.getBoundingClientRect();
+        openCreateMenu({left: rect.left, bottom: rect.bottom});
+    });
+    actions.append(addBtn);
     host.appendChild(actions);
 
     // 分组：内置类型固定序在前，插件驱动按显示名排（一个驱动一组）

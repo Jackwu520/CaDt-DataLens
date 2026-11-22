@@ -6,7 +6,7 @@
 // 主键列本身不可编辑（改主键 = 改行身份，不支持）。
 
 import {iconSvg} from '../core/icons.js';
-import {createInput, createSelect, createSwitch} from '../core/form-controls.js';
+import {createInput, createSelect} from '../core/form-controls.js';
 import {overlayStack} from '../core/overlay-stack.js';
 import {createDbGrid} from './db-grid-core.js';
 import {
@@ -34,12 +34,14 @@ let sortDesc = false;
 let filters = [];
 let editMode = false;
 let loaded = false;
+let loadSeq = 0; // 请求序号：慢通道（插件驱动走 HTTP）下旧响应不得覆盖新状态
 
 // dirty model：updates key → {keys, cells: Map(col → {old, new})}；deletes key 集合；inserts 数组
 const updates = new Map();
-const deletes = new Set();
+// 删除标记：key → 标记时捕获的主键快照（rowKeysMap）——跨页后 keyIndex 不再含旧页行，
+// 提交时直接用快照定位，避免翻页把已标删的行静默丢掉
+const deletes = new Map();
 let inserts = [];
-let insertSeq = 0;
 let keyIndex = new Map(); // 行键 → serverRows 下标
 
 const globalReadonly = () => !!(deps.settings && deps.settings.readOnlyMode);
@@ -83,7 +85,9 @@ const dropBtn = mkBtn('undo', '放弃');
 const submitBtn = mkBtn('check', '预览并提交');
 const pendingLabel = document.createElement('span');
 pendingLabel.className = 'db-table-pending';
-actions.append(refreshBtn, filterBtn, pagePrev, rangeLabel, pageNext);
+// 编辑簇只在可编辑时由 rebuildToolbar 显隐；工具栏必须把标题与操作区真正挂进来
+actions.append(refreshBtn, filterBtn, pagePrev, rangeLabel, pageNext, editBtn, addRowBtn, dropBtn, submitBtn, pendingLabel);
+toolbar.append(titleWrap, actions);
 el.append(toolbar);
 
 // 筛选区（条件列表：列/算子/值，全部下推为参数化 WHERE）
@@ -153,6 +157,7 @@ function rebuildKeyIndex() {
 }
 
 async function loadPage() {
+    const seq = ++loadSeq;
     loading = true;
     error = '';
     renderStatus();
@@ -166,28 +171,34 @@ async function loadPage() {
             offset: pageOffset,
             limit: PAGE_SIZE,
         });
+        if (seq !== loadSeq) return; // 已有更新的请求出发：旧响应整体丢弃
         columns = res.columns || [];
         serverRows = res.rows || [];
         serverNulls = res.nulls || [];
         hasMore = !!res.truncated;
         rebuildKeyIndex();
     } catch (e) {
+        if (seq !== loadSeq) return;
         error = String(e && e.message || e);
         deps.flash('表数据加载失败：' + error, true);
     } finally {
-        loading = false;
-        loaded = true;
-        applyToGrid();
-        renderStatus();
+        if (seq === loadSeq) {
+            loading = false;
+            loaded = true;
+            applyToGrid();
+            renderStatus();
+        }
     }
 }
 
-function applyToGrid() {
+// keepScroll：单元格编辑/删除标记等本地状态变化走 true（长页里不弹回顶部）；
+// 换页/换表/换排序是新数据，走默认 false（滚回顶部）
+function applyToGrid(keepScroll) {
     const displayRows = serverRows.concat(inserts.map((ins) => columns.map((c) => (ins.values[c] == null ? '' : ins.values[c]))));
     const displayNulls = serverNulls.concat(inserts.map(() => columns.map(() => false)));
     grid.setColumns(columns);
     grid.setSort(sortCol, sortDesc);
-    grid.setRows(displayRows, displayNulls, pageOffset);
+    grid.setRows(displayRows, displayNulls, pageOffset, !!keepScroll);
 }
 
 function renderStatus() {
@@ -251,14 +262,14 @@ editBtn.addEventListener('click', () => {
 addRowBtn.addEventListener('click', () => {
     if (!isEditable()) return;
     inserts.push({values: {}, edited: new Set()});
-    applyToGrid();
+    applyToGrid(true);
     rebuildToolbar();
 });
 dropBtn.addEventListener('click', () => {
     updates.clear();
     deletes.clear();
     inserts = [];
-    applyToGrid();
+    applyToGrid(true);
     rebuildToolbar();
 });
 submitBtn.addEventListener('click', submitChanges);
@@ -272,6 +283,10 @@ function addFilterRow(initial) {
     row.className = 'db-filter-cond';
     const colSel = createSelect({options: columns.map((c) => ({value: c, label: c, selected: c === cond.column}))});
     const opSel = createSelect({options: FILTER_OPS.map((o) => ({value: o.value, label: o.label, selected: o.value === cond.op}))});
+    if (typeof deps.enhanceSelect === 'function') {
+        deps.enhanceSelect(colSel.element);
+        deps.enhanceSelect(opSel.element);
+    }
     const valInput = createInput({value: cond.value, placeholder: '值'});
     const rm = document.createElement('button');
     rm.type = 'button';
@@ -305,7 +320,7 @@ function toggleRowDelete(rowIdx) {
     if (!editMode || loading) return;
     if (rowIdx >= serverRows.length) {
         inserts.splice(rowIdx - serverRows.length, 1);
-        applyToGrid();
+        applyToGrid(true);
         rebuildToolbar();
         return;
     }
@@ -313,10 +328,10 @@ function toggleRowDelete(rowIdx) {
     if (deletes.has(key)) {
         deletes.delete(key);
     } else {
-        deletes.add(key);
+        deletes.set(key, rowKeysMap(meta, serverRows[rowIdx], columns));
         updates.delete(key); // 整行都删了，单格修改一并丢弃
     }
-    applyToGrid();
+    applyToGrid(true);
     rebuildToolbar();
 }
 
@@ -370,12 +385,12 @@ function startCellEdit(rowIdx, colIdx, cellEl) {
                 u.cells.set(col, {old, new: newValue});
             }
         }
-        applyToGrid();
+        applyToGrid(true);
         rebuildToolbar();
     };
     const cancel = () => {
         cellEl.classList.remove('db-cell-editing');
-        applyToGrid();
+        applyToGrid(true);
     };
     input.control.addEventListener('keydown', (ev) => {
         if (ev.key === 'Enter') {
@@ -399,10 +414,8 @@ function buildChanges() {
             ch.updates.push({keys: u.keys, column: col, oldValue: c.old, newValue: c.new});
         }
     }
-    for (const key of deletes) {
-        const idx = keyIndex.get(key);
-        if (idx == null) continue;
-        ch.deletes.push({keys: rowKeysMap(meta, serverRows[idx], columns)});
+    for (const keys of deletes.values()) {
+        ch.deletes.push({keys});
     }
     for (const ins of inserts) {
         ch.inserts.push({values: Object.assign({}, ins.values)});
@@ -466,7 +479,7 @@ function openPreviewOverlay(stmts, changes) {
 
     const handle = overlayStack.open({
         id: 'db-apply-preview',
-        kind: 'modal',
+        kind: 'dialog',
         el: panel,
         underEl: mask,
         onClose: () => {

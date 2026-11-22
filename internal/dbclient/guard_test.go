@@ -38,6 +38,10 @@ func TestClassifyStatement(t *testing.T) {
 		// 基础读
 		{name: "select", stmt: "SELECT * FROM users", wantClass: "read"},
 		{name: "大小写混排", stmt: "ExPlain SeLeCt 1", wantClass: "read"},
+		// EXPLAIN ANALYZE 会真实执行语句（MySQL 8.0.19+ 支持 DML、SQLite 3.29+ 同名）
+		{name: "explain analyze 按写", stmt: "EXPLAIN ANALYZE DELETE FROM t WHERE id=1", wantClass: "write"},
+		{name: "explain analyze 全表缺 where", stmt: "EXPLAIN ANALYZE DELETE FROM t", wantClass: "write", wantMissing: true},
+		{name: "普通 explain 仍是读", stmt: "EXPLAIN DELETE FROM t", wantClass: "read"},
 		{name: "values 语句", stmt: "VALUES (1, 2)", wantClass: "read"},
 		{name: "show", stmt: "SHOW TABLES", dialect: kindMySQL, wantClass: "read"},
 		{name: "字符串里的写关键字", stmt: "SELECT 'DROP TABLE users'", wantClass: "read"},
@@ -80,13 +84,17 @@ func TestClassifyStatement(t *testing.T) {
 		{name: "select into outfile", stmt: "SELECT * FROM t INTO OUTFILE '/tmp/x'", dialect: kindMySQL, wantClass: "write", wantDanger: true},
 		{name: "select into 变量", stmt: "SELECT 1 INTO @v", dialect: kindMySQL, wantClass: "write"},
 
-		// PRAGMA
+		// PRAGMA：白名单反向收口——引号名/库限定名/未知名字 fail closed
 		{name: "pragma 查询", stmt: "PRAGMA table_info(t)", wantClass: "read"},
 		{name: "pragma 名查询", stmt: "PRAGMA journal_mode", wantClass: "read"},
+		{name: "pragma 白名单读", stmt: "PRAGMA user_version", wantClass: "read"},
 		{name: "pragma 赋值", stmt: "PRAGMA journal_mode = WAL", wantClass: "write"},
 		{name: "pragma wal_checkpoint", stmt: "PRAGMA wal_checkpoint", wantClass: "write"},
+		{name: "pragma 引号名赋值 fail closed", stmt: `PRAGMA "journal_mode" = WAL`, wantClass: "write"},
+		{name: "pragma 库限定 checkpoint", stmt: "PRAGMA main.wal_checkpoint", wantClass: "write"},
+		{name: "pragma 未知名字 fail closed", stmt: "PRAGMA something_obscure", wantClass: "write"},
 
-		// 事务控制（只读会话也放行）
+		// 事务控制（分类仍是 ctrl；控制台策略一律拒绝，见 checkBatch）
 		{name: "begin", stmt: "BEGIN", wantClass: "ctrl"},
 		{name: "start transaction", stmt: "START TRANSACTION", dialect: kindMySQL, wantClass: "ctrl"},
 		{name: "commit", stmt: "COMMIT", wantClass: "ctrl"},
@@ -104,6 +112,8 @@ func TestClassifyStatement(t *testing.T) {
 		{name: "普通 CTE", stmt: "WITH x AS (SELECT 1) SELECT * FROM x", wantClass: "read"},
 		{name: "递归 CTE", stmt: "WITH RECURSIVE c(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM c LIMIT 5) SELECT * FROM c", wantClass: "read"},
 		{name: "多 CTE 其一 DML", stmt: "WITH a AS (SELECT 1), b AS (DELETE FROM t RETURNING *) SELECT * FROM a", wantClass: "write", wantMissing: true},
+		{name: "materialized CTE 只读", stmt: "WITH x AS MATERIALIZED (SELECT 1) SELECT * FROM x", wantClass: "read"},
+		{name: "not materialized CTE", stmt: "WITH x AS NOT MATERIALIZED (SELECT 1) SELECT * FROM x", wantClass: "read"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -150,6 +160,12 @@ func TestSplitStatements(t *testing.T) {
 		{name: "sqlite 双横杠总是注释", q: "SELECT a--b\n; SELECT 2", dialect: kindSQLite,
 			want: []string{"SELECT a", "SELECT 2"}},
 		{name: "空语句丢弃", q: ";;;SELECT 1;;;", want: []string{"SELECT 1"}},
+		// 尾随单个反斜杠（未闭合字符串）：回归 skipQuoted 越界 panic（MySQL 字符串反斜杠转义）
+		{name: "mysql 尾随反斜杠", q: "SELECT 'a\\", dialect: kindMySQL,
+			want: []string{"SELECT 'a\\"}},
+		{name: "mysql 双引号尾随反斜杠", q: `SELECT "a\`, dialect: kindMySQL,
+			want: []string{`SELECT "a\`}},
+		{name: "sqlite 尾随反斜杠不是转义", q: "SELECT 'a\\'", want: []string{"SELECT 'a\\'"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -183,13 +199,17 @@ func TestCheckBatch(t *testing.T) {
 		wantErr   bool
 		wantRO    bool
 		wantDDL   bool
+		wantCtrl  bool
 		wantConf  string
 	}{
 		{name: "RO 放行读", stmts: []string{"SELECT 1", "PRAGMA table_info(t)"}, editable: ro},
 		{name: "RO 拒写", stmts: []string{"SELECT 1", "DELETE FROM t"}, editable: ro,
 			wantErr: true, wantRO: true},
 		{name: "RO 拒 DDL", stmts: []string{"CREATE TABLE x (a int)"}, editable: ro, wantErr: true},
-		{name: "RO 放行事务控制", stmts: []string{"BEGIN", "COMMIT"}, editable: ro},
+		{name: "事务控制语句拒绝（RO 会话）", stmts: []string{"BEGIN", "COMMIT"}, editable: ro,
+			wantErr: true, wantCtrl: true},
+		{name: "编辑会话事务控制同样拒", stmts: []string{"COMMIT"}, editable: edit,
+			wantErr: true, wantCtrl: true},
 		{name: "编辑会话缺 WHERE 需确认", stmts: []string{"DELETE FROM t"}, editable: edit,
 			wantConf: confirmMissingWhere},
 		{name: "编辑会话确认后放行", stmts: []string{"DELETE FROM t"}, editable: edit, confirmed: true},
@@ -198,6 +218,7 @@ func TestCheckBatch(t *testing.T) {
 		{name: "编辑会话危险需确认", stmts: []string{"ATTACH DATABASE 'x' AS y"}, editable: edit,
 			wantConf: confirmDanger},
 		{name: "编辑会话普通写直接执行", stmts: []string{"UPDATE t SET a=1 WHERE id=1"}, editable: edit},
+		{name: "编辑会话未知语句拒（fail closed）", stmts: []string{"FOOBAR t"}, editable: edit, wantErr: true},
 		{name: "批量任一条违规整批拒", stmts: []string{"SELECT 1", "UPDATE t SET a=1", "DROP TABLE t"},
 			editable: edit, confirmed: true, wantErr: true, wantDDL: true},
 	}
@@ -213,6 +234,9 @@ func TestCheckBatch(t *testing.T) {
 				}
 				if tt.wantDDL && !strings.Contains(err.Error(), "DDL") {
 					t.Fatalf("want DDL 拒绝, got %v", err)
+				}
+				if tt.wantCtrl && !strings.Contains(err.Error(), "不支持手动事务") {
+					t.Fatalf("want 事务控制拒绝, got %v", err)
 				}
 				return
 			}

@@ -62,9 +62,10 @@ func openSession(spec openSpec) (SessionInfo, error) {
 	s.active = map[string]context.CancelFunc{}
 	s.lastUsed = time.Now()
 
+	var evicted *dbSession
 	sessionsMu.Lock()
 	if len(sessions) >= maxSessions {
-		evictIdleLocked()
+		evicted = evictIdleLocked()
 	}
 	if len(sessions) >= maxSessions {
 		sessionsMu.Unlock()
@@ -73,41 +74,52 @@ func openSession(spec openSpec) (SessionInfo, error) {
 	}
 	sessions[s.id] = s
 	sessionsMu.Unlock()
+	// Close 可能阻塞（MySQL COM_QUIT 受 WriteTimeout 约束）：拿到锁外执行，不拖累其他会话操作
+	if evicted != nil {
+		_ = evicted.db.Close()
+		logWarn("连接数超限，回收空闲会话：%s（%s）", evicted.name, evicted.id)
+	}
 	startSweeper()
 	return s.info(), nil
 }
 
-// evictIdleLocked 回收最久未用的空闲会话（调用方持有 sessionsMu）。
-func evictIdleLocked() {
+// evictIdleLocked 挑出最久未用的空闲会话并从注册表摘除（调用方持有 sessionsMu）。
+// Close 由调用方在锁外执行——db.Close 可能做阻塞 I/O。
+func evictIdleLocked() *dbSession {
 	var oldest *dbSession
+	var oldestUsed time.Time
 	for _, s := range sessions {
 		s.mu.Lock()
 		idle := time.Since(s.lastUsed) > idleCloseAfter && len(s.active) == 0
+		used := s.lastUsed
 		s.mu.Unlock()
 		if !idle {
 			continue
 		}
-		if oldest == nil || s.lastUsed.Before(oldest.lastUsed) {
+		if oldest == nil || used.Before(oldestUsed) {
 			oldest = s
+			oldestUsed = used
 		}
 	}
 	if oldest != nil {
 		delete(sessions, oldest.id)
-		_ = oldest.db.Close()
-		logWarn("连接数超限，回收空闲会话：%s（%s）", oldest.name, oldest.id)
 	}
+	return oldest
 }
 
 func getSession(id string) (*dbSession, error) {
+	// touch 在持 sessionsMu 期间做：sweeper 的空闲判定拿同一把锁，消除「刚用完即被回收」的窗口
 	sessionsMu.Lock()
 	s := sessions[id]
+	if s != nil {
+		s.mu.Lock()
+		s.lastUsed = time.Now()
+		s.mu.Unlock()
+	}
 	sessionsMu.Unlock()
 	if s == nil {
 		return nil, ErrSessionNotFound
 	}
-	s.mu.Lock()
-	s.lastUsed = time.Now()
-	s.mu.Unlock()
 	return s, nil
 }
 

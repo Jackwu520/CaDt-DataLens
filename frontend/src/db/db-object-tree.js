@@ -227,5 +227,10 @@ return {
         clearSession(id);
         render();
     },
+    /** 连接失败时全清：上一次成功渲染的会话行不能留在树里误导（头部已显示失败）。 */
+    clear() {
+        state.clear();
+        render();
+    },
 };
 }

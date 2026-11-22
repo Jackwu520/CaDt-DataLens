@@ -4,7 +4,6 @@
 
 import {iconSvg} from '../core/icons.js';
 import {createTextarea, createSelect} from '../core/form-controls.js';
-import {overlayStack} from '../core/overlay-stack.js';
 import {createDbGrid} from './db-grid-core.js';
 import {formatElapsed, confirmReasonLabel} from './db-model.js';
 
@@ -15,9 +14,7 @@ el.className = 'db-query';
 
 let session = null;
 let runningQueryID = 0; // 自增查询号：取消与两阶段确认都对准这一次
-let lastSQL = '';
-let lastConfirm = '';
-let confirmed = false;
+let lastSQL = '';   // 被确认横幅锁定的语句：确认执行只跑这条（编辑输入框即失效）
 
 // 工具行：执行 / 取消 / 行数上限
 const toolbar = document.createElement('div');
@@ -25,7 +22,8 @@ toolbar.className = 'db-query-toolbar';
 const runBtn = document.createElement('button');
 runBtn.type = 'button';
 runBtn.className = 'db-btn primary';
-runBtn.innerHTML = iconSvg('play', 12) + '<span>执行</span><kbd>Ctrl+Enter</kbd>';
+runBtn.innerHTML = iconSvg('play', 12) + '<span>执行</span>';
+runBtn.dataset.tip = '执行（Ctrl+Enter）';
 const cancelBtn = document.createElement('button');
 cancelBtn.type = 'button';
 cancelBtn.className = 'db-btn';
@@ -40,7 +38,9 @@ const limitSel = createSelect({
     ],
     title: '结果行数上限',
 });
-limitSel.element.className = 'db-limit-select';
+// 走设置页同款浮层增强（原生 select 仍是值真源）；db-limit-select 只管宽度
+if (typeof deps.enhanceSelect === 'function') deps.enhanceSelect(limitSel.element);
+limitSel.element.classList.add('db-limit-select');
 toolbar.append(runBtn, cancelBtn, limitSel.element);
 
 // 确认横幅（两阶段确认）
@@ -70,6 +70,10 @@ sqlInput.control.addEventListener('keydown', (ev) => {
         run(false);
     }
 });
+// 横幅弹出后改动输入框 = 被锁定的语句作废，横幅收起，重新执行走完整分类
+sqlInput.control.addEventListener('input', () => {
+    if (!confirmBar.classList.contains('hidden')) hideConfirm();
+});
 
 // 状态条 + 结果
 const status = document.createElement('div');
@@ -83,8 +87,7 @@ el.append(toolbar, confirmBar, sqlInput.element, status, resultGrid.el, empty);
 
 function setSession(s) {
     session = s;
-    lastConfirm = '';
-    confirmed = false;
+    lastSQL = '';
     confirmBar.classList.add('hidden');
     status.textContent = s ? '' : '没有活动连接';
 }
@@ -95,15 +98,12 @@ function setRunning(running) {
 }
 
 function showConfirm(reason, message) {
-    lastConfirm = reason;
-    confirmed = false;
     confirmMsg.textContent = '【' + confirmReasonLabel(reason) + '】' + (message || '');
     confirmBar.classList.remove('hidden');
 }
 
 function hideConfirm() {
-    lastConfirm = '';
-    confirmed = false;
+    lastSQL = ''; // 横幅失效 = 锁定的语句作废（用户改了输入框或主动放弃）
     confirmBar.classList.add('hidden');
 }
 
@@ -112,14 +112,20 @@ async function run(forceConfirm) {
         deps.flash('没有活动连接', true);
         return;
     }
-    const sql = sqlInput.control.value.trim();
+    if (runBtn.disabled) return; // Ctrl+Enter 不受 disabled 按钮保护，这里显式防重入
+    // 两阶段确认锁语句：确认横幅弹出后用户改了输入框，确认执行的必须是**被拦截的那条**，
+    // 不能让新语句带着 confirmed=true 直通后端
+    const sql = (forceConfirm && lastSQL) ? lastSQL : sqlInput.control.value.trim();
     if (!sql) return;
     hideConfirm();
+    lastSQL = sql;
     const queryID = 'q' + (++runningQueryID);
+    const myRun = runningQueryID;
     setRunning(true);
     status.textContent = '执行中…';
     try {
         const outcome = await deps.backend.DBQuery(session.id, queryID, sql, !!forceConfirm, Number(limitSel.control.value) || 500);
+        if (myRun !== runningQueryID) return; // 已有更新的执行出发：旧结果整体丢弃
         if (outcome && outcome.status === 'confirm') {
             showConfirm(outcome.confirm, outcome.message);
             status.textContent = '已拦截，等待确认';
@@ -140,6 +146,7 @@ async function run(forceConfirm) {
             deps.logActivity('db.exec', sessionLabel(session), {kind: session.kind, writes: outcome.writes, statements: outcome.statements});
         }
     } catch (e) {
+        if (myRun !== runningQueryID) return;
         status.textContent = '';
         resultGrid.setColumns([]);
         resultGrid.setRows([], [], 0);
@@ -147,7 +154,7 @@ async function run(forceConfirm) {
         empty.textContent = String(e && e.message || e);
         deps.flash('SQL 执行失败：' + (e && e.message || e), true);
     } finally {
-        setRunning(false);
+        if (myRun === runningQueryID) setRunning(false);
     }
 }
 
@@ -163,5 +170,5 @@ cancelBtn.addEventListener('click', () => {
 confirmOk.addEventListener('click', () => run(true));
 confirmNo.addEventListener('click', hideConfirm);
 
-return {el, setSession};
+return {el, setSession, refresh: () => resultGrid.refresh()};
 }
