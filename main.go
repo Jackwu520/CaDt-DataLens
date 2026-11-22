@@ -4,6 +4,7 @@ import (
 	"embed"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -39,6 +40,15 @@ const miniMenuDisabledFeatures = "msWebOOUI,msPdfOOUI,msEdgeMiniMenu,msEdgeTextS
 
 func disableMiniMenu() {
 	setWebViewExtraBrowserArguments("--disable-features=" + miniMenuDisabledFeatures)
+}
+
+// cdpDebugArgs 临时调试辅助：CADT_CDP_PORT 非空时给主窗口 WebView2 开远程调试口
+// （仅供自动化排查用，正式构建不受影响）
+func cdpDebugArgs() []string {
+	if p := strings.TrimSpace(os.Getenv("CADT_CDP_PORT")); p != "" {
+		return []string{"--remote-debugging-port=" + p}
+	}
+	return nil
 }
 
 func main() {
@@ -116,6 +126,8 @@ func main() {
 			WebviewUserDataPath: webviewDataPath(),
 			// 迷你菜单禁用（v3 原生选项，自动与上游 feature 合并）；见 disableMiniMenu 注释。
 			DisabledFeatures: []string{"msWebOOUI", "msPdfOOUI", "msEdgeMiniMenu", "msEdgeTextSelectionMenu"},
+			// 临时调试辅助：CADT_CDP_PORT 非空时给 WebView2 开远程调试口（仅供自动化排查用）
+			AdditionalBrowserArgs: cdpDebugArgs(),
 		},
 		ErrorHandler: func(err error) {
 			writeAppLog("error", "wails v3：%v", err)
