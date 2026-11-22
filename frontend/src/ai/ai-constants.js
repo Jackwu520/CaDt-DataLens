@@ -354,6 +354,10 @@ export const AI_BUILTIN_SKILLS = [
             '- install_mcp_sample {id}：安装内置示例（释放脚本并写入 MCP 配置，会弹本机命令确认）；安装后提醒用户去能力来源绑定并填环境变量。',
             '- set_mcp_server {server:{name,command?,args?,cwd?,enabled?,startupTimeoutMs?,callTimeoutMs?,closeTimeoutMs?,envKeys?}}：新建/部分更新 MCP 服务器（未传字段沿用原值）。每次都会弹本机命令执行确认；env 值不可写（envKeys 只登记键名、值由用户填），enabledTools 不可设置；已配环境变量的服务器 AI 不能修改。',
             '- delete_mcp_server {name}：删除 MCP 服务器（每次确认）；已配环境变量的服务器不可由 AI 删除。',
+            '- db_list_connections：已保存的数据库连接列表（id / 驱动 / 名称 / 主机端口 / 默认库 / 用户 / 是否允许编辑），不含密码。',
+            '- db_save_connection {name,host,port,user,password,database?,driver?,allowEdit?,addToWorkspace?,id?}：新建（无 id）或更新（传 id）数据库连接。port 默认 3306；driver ∈ mysql|mariadb 缺省 mysql（同引擎，分组标签不同）；allowEdit 默认 false；addToWorkspace 默认 true = 加入当前工作区侧栏清单。**必弹动作审批卡**；密码经 DPAPI 加密落盘、不进对话回显，未传视为保持原值。配置完可主动提议用 db_test_connection 验证。',
+            '- db_delete_connection {id}：删除数据库连接（配置 + 加密凭据 + 各工作区引用一并清除）。**必弹动作审批卡**；不影响数据库本身。',
+            '- db_test_connection {host,port,user?,password?,database?}：测试数据库连通性（返回服务器版本或失败原因），只读不落盘。',
             '- get_lifecycle_hooks：当前工作区的生命周期钩子列表（id / event / command / timeoutMs / enabled / origin / 最近一次运行结果）。生命周期钩子 = 绑定工作区在生命周期时机自动执行的命令（event = workspace-open 打开时 / workspace-close 关闭或切走时 / 9 个事件见下：session-start 会话开始 / user-prompt-submit 提交输入 / pre-tool-use 工具前 / post-tool-use 工具成功后 / post-tool-use-failure 工具失败后 / permission-request 权限请求时 / stop 停止生成时；工具级事件带 matchTools 工具名匹配器（空=全部，mcp__* 通配）），绑定本窗口当前工作区；origin=ai 的条目说明是你（或别的会话）代配并经用户审批的。',
             '- add_lifecycle_hook {command,timeoutMs?,event?,matchTools?,enabled?}：给当前工作区新增生命周期钩子（timeoutMs 毫秒 ∈1000–600000 默认 30000；event 缺省 workspace-open；不传 ws 自动绑定当前工作区）。**必弹动作审批卡，完全权限也不例外**；当前窗口没开工作区会报错。要验证命令本身能不能跑，直接用 run_command 跑同样的文本（full 档直通），不要请求用户去设置页点「运行」。',
             '- update_lifecycle_hook {id,command?,timeoutMs?,event?,matchTools?,enabled?}：改当前工作区的生命周期钩子条目（未传字段沿用原值）。**必弹动作审批卡**；只能改本工作区的条目，别的工作区直接报错。',
@@ -912,6 +916,11 @@ export function aiFormatBytes(bytes) {
     }
     return size.toFixed(size >= 100 ? 0 : 1) + ' ' + units[index];
 }
+
+// 会话正文读取上限（与 internal/sessionstore 的 aiSessionReadLimit 镜像，改动必须两边同步）：
+// 超过它 Go 侧 AISessionRead 返回 session-too-large:，前端打开时自动整理归档；
+// 会话列表凭它给超限会话挂「超限」标识胶囊（二值状态，不做分档体积 UI）。
+export const AI_SESSION_READ_LIMIT = 256 * 1024 * 1024;
 
 // 流式轮次的实时计时：不到 1 小时保留十分位小数（40.2 秒 / 3 分 40.2 秒），
 // 到小时/天档改显示整数秒（ZCode 风格，长时间运行时小数秒没有信息量）：1 小时 22 分 56 秒。

@@ -3,7 +3,7 @@
 // sessions 为重赋值 let 且模块内只读（经 getSessions()），stickBottom 经 setStickBottom 写。
 // 列表分组状态与搜索状态为域私有，随域迁入本模块。
 import {iconSvg} from '../core/icons.js';
-import {aiTextOf, aiFormatSessionTime} from './ai-constants.js';
+import {aiTextOf, aiFormatSessionTime, aiFormatBytes, AI_SESSION_READ_LIMIT} from './ai-constants.js';
 import {sessionActivityTs} from './ai-session-store.js';
 import {planAwaitingUserReply} from './ai-plan-file.js';
 import {isTransientSession} from './ai-session-scope.js';
@@ -75,6 +75,17 @@ export function orderSessionsWithSides(list) {
     return out;
 }
 
+// 会话过滤命中（纯函数，配 ai-session-list.test.mjs）：按标题或会话 ID 子串匹配，
+// 大小写不敏感、去首尾空白；空串 = 不过滤（全命中）。标题取列表里实际显示的文案
+//（无标题会话显示「新会话」，输入「新」也要能命中它们）。
+export function sessionFilterHit(session, text) {
+    const needle = String(text || '').trim().toLowerCase();
+    if (!needle) return true;
+    const title = String((session && session.title) || '新会话').toLowerCase();
+    const id = String((session && session.id) || '').toLowerCase();
+    return title.includes(needle) || id.includes(needle);
+}
+
 // 工作区分组默认展开判定（纯函数，配 ai-session-list.test.mjs）：
 // - 用户手动切换过该分组（override 有布尔值）→ 尊重显式选择；
 // - 否则默认只展开当前工作区，其余收起；
@@ -86,6 +97,32 @@ export function workspaceGroupExpanded(key, group, env) {
     const currentKey = typeof env.currentKey === 'function' ? env.currentKey() : (env && env.currentKey) || '';
     if (currentKey) return !!(group && group.current);
     return key === (env && env.firstKey);
+}
+
+// 会话是否挂「超限」胶囊（纯函数，配 ai-session-list.test.mjs）：判定线 = 新版读取上限
+// 256 MB（严格超限，与 session-too-large: 的产出口径一致）。
+// 三类可判定来源：① hydrate/打开时自动整理失败（_tidyFailed）；② live 段自身超限
+// （_liveDominant，真空角落）；③ 已载入会话的 stat 体积越过 256 MB 线（运行中长出来的）。
+// 懒加载占位（_stub）没有 stat，无法判定——打开时才会暴露，届时再亮胶囊。
+export function sessionOverLimitOf(session) {
+    if (!session) return false;
+    if (session._liveDominant || session._tidyFailed) return true;
+    const stat = session._logStat;
+    return !session._stub && !!stat && stat.exists === true &&
+        Number(stat.size) > AI_SESSION_READ_LIMIT;
+}
+
+// 胶囊悬浮说明（按来源分级给动作指引）。
+export function sessionOverLimitTip(session) {
+    const stat = session && session._logStat;
+    const size = stat && stat.exists ? Number(stat.size) : 0;
+    if (session && session._liveDominant) {
+        return '正文 ' + (size ? aiFormatBytes(size) : '超过') + ' 256 MB：当前消息（live 段）本身超限，打开将提供「临时加载」；载入后 /compact 回归常态';
+    }
+    if (session && session._tidyFailed) {
+        return '正文 ' + (size ? aiFormatBytes(size) : '超过') + ' 256 MB：打开时自动整理失败，可重试或查看会话数据诊断';
+    }
+    return '正文 ' + aiFormatBytes(size) + '，超过 256 MB 读取上限：下次打开自动整理归档';
 }
 
 // 会话右键菜单项组装（纯函数，配 ai-session-list.test.mjs）：act 是符号动作键，
@@ -164,6 +201,10 @@ export function createAISessionList(ctx) {
     const el = ctx.el;
     const sessionListEl = ctx.sessionListEl;
     const sessionMoreBtn = ctx.sessionMoreBtn;
+    // 会话过滤（侧栏头部漏斗按钮 + 分段下方的过滤行，同文件树的过滤交互）
+    const sessionFilterBtn = ctx.sessionFilterBtn;
+    const sessionFilterRow = ctx.sessionFilterRow;
+    const sessionFilterInput = ctx.sessionFilterInput;
     const renderWindows = ctx.renderWindows;
     const streams = ctx.streams;
     const backend = ctx.backend;
@@ -218,9 +259,56 @@ export function createAISessionList(ctx) {
 
     // —— 随域迁入的列表状态（原 ai-panel.js 闭包级）；会话搜索框已删（并入全局搜索的「AI 会话」分类）——
     let archivedExpanded = false;
+    // 会话过滤词（漏斗开合 + 输入去空格转小写后的命中词）：只在会话分段生效，
+    // 群聊分段由 CSS 隐藏按钮与输入行（过滤不作用于群聊列表）。
+    let sessionFilterText = '';
     // 用户显式切换过的分组展开状态：key → boolean。无记录的分组走默认判定
     //（只展开当前工作区，其余收起，见 workspaceGroupExpanded），切换后记住选择。
     const workspaceGroupOverrides = new Map();
+
+    // 过滤行开合（对齐文件树 toggleSidebarFilter）：显示时聚焦并全选输入，收起时清词重画。
+    function toggleSessionFilter(force) {
+        if (!sessionFilterRow || !sessionFilterInput) return;
+        const show = typeof force === 'boolean' ? force : sessionFilterRow.classList.contains('hidden');
+        sessionFilterRow.classList.toggle('hidden', !show);
+        if (sessionFilterBtn) {
+            sessionFilterBtn.classList.toggle('active', show);
+            sessionFilterBtn.setAttribute('aria-pressed', String(show));
+        }
+        if (show) {
+            sessionFilterInput.focus();
+            sessionFilterInput.select();
+        } else {
+            sessionFilterInput.value = '';
+            setSessionFilter('');
+        }
+    }
+
+    function setSessionFilter(text) {
+        const next = String(text || '').trim().toLowerCase();
+        if (next === sessionFilterText) return;
+        sessionFilterText = next;
+        renderSessionList();
+    }
+
+    // 过滤按钮 / 输入行的事件接线（图标走注册表，按钮留空由这里填充）。
+    if (sessionFilterBtn) {
+        sessionFilterBtn.innerHTML = iconSvg('filter', 14);
+        sessionFilterBtn.addEventListener('click', () => toggleSessionFilter());
+    }
+    if (sessionFilterInput) {
+        // 输入防抖 150ms（对齐文件树过滤输入）；Esc 收起过滤行（元素级监听，非全局 Esc）
+        let filterDebounce = 0;
+        sessionFilterInput.addEventListener('input', () => {
+            clearTimeout(filterDebounce);
+            filterDebounce = setTimeout(() => setSessionFilter(sessionFilterInput.value), 150);
+        });
+        sessionFilterInput.addEventListener('keydown', (e) => {
+            if (e.key !== 'Escape') return;
+            e.stopPropagation();
+            toggleSessionFilter(false);
+        });
+    }
 
     // 把某个工作区分组显式展开（新建临时会话时用：它归「未关联工作区」分组，
     // 那个分组默认收起——不展开的话用户点完「新建临时会话」在列表里看不到它）。
@@ -374,6 +462,18 @@ export function createAISessionList(ctx) {
             sessionListEl.appendChild(empty);
             return;
         }
+        // 过滤（标题 / 会话 ID 子串）：命中集为空时给独立空态，不把「还没有会话」的
+        // 新建按钮顶出来——会话明明在，只是不匹配。
+        const filtered = sessionFilterText
+            ? ordered.filter((session) => sessionFilterHit(session, sessionFilterText))
+            : ordered;
+        if (!filtered.length) {
+            const empty = document.createElement('div');
+            empty.className = 'ai-session-empty';
+            empty.textContent = '没有匹配的会话';
+            sessionListEl.appendChild(empty);
+            return;
+        }
 
         // 支线徽标只在母会话仍存在时显示：母会话删除后回落为普通会话（元数据不追着清，
         // 「带回主对话」会给出明确提示）
@@ -417,6 +517,18 @@ export function createAISessionList(ctx) {
                 badge.className = 'ai-session-badge temp';
                 badge.textContent = '临时';
                 badge.dataset.tip = '临时会话：默认只读、不绑定工作区、不注入 AGENTS.md 与记忆；关闭应用后不再显示';
+                badge.setAttribute('role', 'img');
+                badge.setAttribute('aria-label', badge.dataset.tip);
+                titleRow.appendChild(badge);
+            }
+            // 超限会话：正文越过旧版 64 MB 上限（判定线，事故会话的物种）。
+            // 胶囊帮用户把消息中心里「共 N 个会话读取失败」和 200 MB 级大家伙对上号；
+            // 悬浮说明按两道线（64 MB / 256 MB）分级给动作指引。
+            if (sessionOverLimitOf(session)) {
+                const badge = document.createElement('span');
+                badge.className = 'ai-session-badge over-limit';
+                badge.textContent = '超限';
+                badge.dataset.tip = sessionOverLimitTip(session);
                 badge.setAttribute('role', 'img');
                 badge.setAttribute('aria-label', badge.dataset.tip);
                 titleRow.appendChild(badge);
@@ -531,7 +643,9 @@ export function createAISessionList(ctx) {
             };
             for (const group of groups) {
                 if (showHeaders) {
-                    const expanded = workspaceGroupExpanded(group.key, group, groupEnv);
+                    // 过滤时命中分组一律展开渲染（对齐文件树「命中目录自动展开」），
+                    // 否则收起的非当前工作区会吞掉匹配的会话。
+                    const expanded = !!sessionFilterText || workspaceGroupExpanded(group.key, group, groupEnv);
                     const collapsed = collapsible && !expanded;
                     // 用 div 承载：头部内含两个真实 button，避免 button 嵌套 button 的非法结构。
                     const head = document.createElement('div');
@@ -598,7 +712,8 @@ export function createAISessionList(ctx) {
                 }
                 const pageKey = (archived ? 'archived:' : 'active:') + group.key;
                 const total = group.sessions.length;
-                let visible = Math.min(workspaceGroupVisibleCounts.get(pageKey) || AI_SESSION_GROUP_PAGE, total);
+                // 过滤时分页失效：命中集本来就小，再藏一批反而像丢结果
+                let visible = sessionFilterText ? total : Math.min(workspaceGroupVisibleCounts.get(pageKey) || AI_SESSION_GROUP_PAGE, total);
                 // 当前会话即使排在分页之外也保持可见，避免切换后高亮条目凭空消失。
                 if (current) {
                     const activeIndex = group.sessions.findIndex((session) => session.id === current.id);
@@ -622,8 +737,8 @@ export function createAISessionList(ctx) {
             }
         };
 
-        const activeList = ordered.filter((session) => !session.archivedAt);
-        const archivedList = ordered.filter((session) => session.archivedAt);
+        const activeList = filtered.filter((session) => !session.archivedAt);
+        const archivedList = filtered.filter((session) => session.archivedAt);
         // 置顶会话固定在列表最上方（不受工作区分组与时间排序影响）
         const pinnedList = activeList.filter((session) => session.pinned);
         if (pinnedList.length) {
@@ -639,7 +754,8 @@ export function createAISessionList(ctx) {
         }
         const restActive = activeList.filter((session) => !session.pinned);
         if (!restActive.length) {
-            if (!pinnedList.length) {
+            // 过滤时这个空态让位：命中只在置顶 / 归档区时它就是一句噪音
+            if (!sessionFilterText && !pinnedList.length) {
                 const empty = document.createElement('div');
                 empty.className = 'ai-session-archive-empty';
                 empty.textContent = '没有进行中的会话';
@@ -649,10 +765,12 @@ export function createAISessionList(ctx) {
             renderWorkspaceGroups(restActive, false, true);
         }
         if (archivedList.length) {
+            // 过滤时归档区随命中展开（状态位不动，清词后回到用户的显式选择）
+            const archivedOpen = archivedExpanded || !!sessionFilterText;
             const head = document.createElement('button');
             head.type = 'button';
-            head.className = 'ai-session-arch-head' + (archivedExpanded ? ' expanded' : '');
-            head.setAttribute('aria-expanded', String(archivedExpanded));
+            head.className = 'ai-session-arch-head' + (archivedOpen ? ' expanded' : '');
+            head.setAttribute('aria-expanded', String(archivedOpen));
             const chev = document.createElement('span');
             chev.className = 'ai-session-arch-chev';
             chev.innerHTML = iconSvg('chevron-right', 12);
@@ -664,7 +782,7 @@ export function createAISessionList(ctx) {
                 renderSessionList();
             });
             sessionListEl.appendChild(head);
-            if (archivedExpanded) {
+            if (archivedOpen) {
                 renderWorkspaceGroups(archivedList, true, false);
             }
         }
@@ -794,5 +912,6 @@ export function createAISessionList(ctx) {
         clearSessionUnread,
         refreshBadge,
         expandWorkspaceGroup,
+        toggleSessionFilter,
     };
 }

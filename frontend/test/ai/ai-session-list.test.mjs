@@ -3,7 +3,7 @@
 // 磁盘存储才有「复制会话路径」；普通对话不再出现一排灰掉的无关项。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {buildSessionMenuItems, buildWorkspaceMenuItems, aggregateSessionBadge, planPendingNeedsAttention, workspaceGroupExpanded} from '../../src/ai/ai-session-list.js';
+import {buildSessionMenuItems, buildWorkspaceMenuItems, aggregateSessionBadge, planPendingNeedsAttention, workspaceGroupExpanded, sessionOverLimitOf, sessionOverLimitTip, sessionFilterHit} from '../../src/ai/ai-session-list.js';
 import {ICONS} from '../../src/core/icons.js';
 
 const baseEnv = {pendingNoticeCount: () => 0, diskStorage: true};
@@ -254,4 +254,44 @@ test('分组默认展开：显式切换覆盖默认（记住用户选择）', ()
     const env = groupEnv('ws-a', override, 'ws-a');
     assert.equal(workspaceGroupExpanded('ws-b', {current: false}, env), true, '手动展开的非当前分组保持展开');
     assert.equal(workspaceGroupExpanded('ws-a', {current: true}, env), false, '手动收起的当前分组保持收起');
+});
+
+test('sessionOverLimitOf：判定线=读取上限 256 MB（严格超限）；live 主导/整理失败直接亮；占位不判定', () => {
+    const READ = 256 * 1024 * 1024;
+    assert.equal(sessionOverLimitOf(null), false);
+    assert.equal(sessionOverLimitOf({id: 'a'}), false, '正常会话不亮');
+    assert.equal(sessionOverLimitOf({id: 'b', _stub: true, _logStat: {exists: true, size: READ * 2}}), false, '占位没有 stat 不判定');
+    assert.equal(sessionOverLimitOf({id: 'c', _liveDominant: true}), true, 'live 主导');
+    assert.equal(sessionOverLimitOf({id: 'd', _tidyFailed: true}), true, '自动整理失败');
+    assert.equal(sessionOverLimitOf({id: 'e', _logStat: {exists: true, size: READ + 1}}), true, '越过 256 MB 线');
+    assert.equal(sessionOverLimitOf({id: 'f', _logStat: {exists: true, size: READ}}), false, '恰好等于上限不亮');
+    assert.equal(sessionOverLimitOf({id: 'e64', _logStat: {exists: true, size: 221.5 * 1048576}}), false, '221 MB 能正常打开，不亮');
+    assert.equal(sessionOverLimitOf({id: 'g', _logStat: {exists: false, size: READ * 9}}), false, '正文不存在不亮');
+    assert.equal(sessionOverLimitOf({id: 'h', _stub: true, _liveDominant: true}), true, '失败标记优先于占位');
+});
+
+test('sessionOverLimitTip：按来源分级给动作指引', () => {
+    assert.ok(sessionOverLimitTip({_liveDominant: true, _logStat: {exists: true, size: 270 * 1048576}}).includes('临时加载'), 'live 主导给临时加载指引');
+    assert.ok(sessionOverLimitTip({_tidyFailed: true, _logStat: {exists: true, size: 300 * 1048576}}).includes('重试'), '整理失败给重试指引');
+    assert.ok(sessionOverLimitTip({_logStat: {exists: true, size: 300 * 1048576}}).includes('自动整理'), 'stat 超限给自动整理说明');
+    assert.ok(sessionOverLimitTip({_logStat: {exists: true, size: 300 * 1048576}}).includes('300 MB'), '带人可读体积');
+});
+
+// 会话过滤（侧栏漏斗）：sessionFilterHit 纯函数——标题 / 会话 ID 子串、大小写不敏感。
+test('sessionFilterHit：按标题或会话 ID 子串命中，大小写不敏感', () => {
+    const session = {id: 'sess-AbC-123', title: '重构 explorer 域'};
+    assert.equal(sessionFilterHit(session, 'explorer'), true, '标题命中');
+    assert.equal(sessionFilterHit(session, 'EXPLORER'), true, '标题大小写不敏感');
+    assert.equal(sessionFilterHit(session, 'abc-123'), true, 'ID 命中（大小写不敏感）');
+    assert.equal(sessionFilterHit(session, '不存在'), false, '都不含则不命中');
+    assert.equal(sessionFilterHit({id: 's1'}, ''), true, '空词 = 不过滤，全命中');
+    assert.equal(sessionFilterHit({id: 's1'}, '   '), true, '纯空白 = 不过滤，全命中');
+});
+
+test('sessionFilterHit：无标题会话按显示文案「新会话」命中', () => {
+    // 列表里无标题会话显示「新会话」——过滤词跟着看到的文字走，输入「新」能命中
+    assert.equal(sessionFilterHit({id: 's1', title: ''}, '新会话'), true);
+    assert.equal(sessionFilterHit({id: 's1'}, '新'), true);
+    assert.equal(sessionFilterHit(null, ''), true, '空词时缺会话对象也放行');
+    assert.equal(sessionFilterHit(null, 'x'), false, '有词时缺会话对象不命中');
 });

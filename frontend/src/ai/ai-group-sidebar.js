@@ -42,6 +42,7 @@ export function createAIGroupSidebar(deps) {
     const openSettings = typeof deps.openSettings === 'function' ? deps.openSettings : null;
 
     const els = {
+        panel: document.getElementById('ai-sessions-panel'),
         segment: document.getElementById('ai-list-segment'),
         sessionList: document.getElementById('ai-session-list'),
         sessionActions: document.getElementById('ai-session-actions'),
@@ -79,6 +80,10 @@ export function createAIGroupSidebar(deps) {
 
     function applyListMode(mode) {
         const groups = mode === 'groups';
+        if (els.panel) {
+            // 分段模式同步到面板根：CSS 据此隐藏会话过滤按钮/行（过滤只作用于会话列表）
+            els.panel.dataset.listMode = groups ? 'groups' : 'sessions';
+        }
         if (els.segment) {
             // 分段控件的滑动指示块由 data-mode 驱动（thumb 的 transform 过渡）
             els.segment.dataset.mode = groups ? 'groups' : 'sessions';
