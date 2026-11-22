@@ -11,6 +11,7 @@ import (
 
 	"datalens/internal/applog"
 	"datalens/internal/convertcli"
+	"datalens/internal/crashrecovery"
 	"datalens/internal/installercli"
 	"datalens/internal/launchargs"
 	"datalens/internal/patchcli"
@@ -101,10 +102,10 @@ func main() {
 		writeAppLog("info", "程序路径：%s", exe)
 	}
 	writeAppLog("info", "启动参数：%q", os.Args[1:])
-	// 上次在设置页里排的 WebView2 清理：趁浏览器进程还没起来执行（见 cleanup_apply.go）。
-	applyPendingStorageCleanup()
-	// MCP 变体（-tags mcp，tools/rebuild-exe.ps1 -IncludeMCP）：Run 内会自动启动
-	// v3 内置 MCP server，这里先把令牌/端口准备好并写连接信息文件。标准构建是空操作。
+	// 上次在设置页里排的 WebView2 清理挪到 application.New 之后执行（见下方注释），
+	// 转发进程不再抢跑。MCP 变体（-tags mcp，tools/rebuild-exe.ps1 -IncludeMCP）：
+	// Run 内会自动启动 v3 内置 MCP server，这里先把令牌/端口准备好并写连接信息文件。
+	// 标准构建是空操作。
 	bootstrapMCPVariant()
 
 	app := NewApp()
@@ -169,6 +170,19 @@ func main() {
 		primary.Name = "debug"
 		primary.Mode = windowModeDebug
 	}
+	// 崩溃自愈 + 会话存活标记：必须放在 application.New 之后——转发场景在 New 里就
+	// os.Exit，绝不能让转发进程抢走遗留标记去清理（运行中的主实例还占着这些缓存）。
+	// 自愈可能把 webview-cache 转成 pending，随即在 WebView2 起来前执行掉。
+	if !isConvert {
+		runCrashRecoveryAtStartup()
+		applyPendingStorageCleanup()
+		if err := crashrecovery.MarkAlive(string(primary.Mode), applog.FilePath()); err == nil {
+			defer crashrecovery.MarkExited()
+		} else {
+			writeAppLog("warn", "会话存活标记写入失败（本次异常退出将无法触发自愈）：%v", err)
+		}
+	}
+
 	if launchargs.HasFlag(os.Args[1:], "--quit") {
 		// --quit 只对「已有运行实例」有意义：转发场景在 application.New() 里就
 		// os.Exit 了；走到这里说明本进程成了主实例而目标应用没在跑——不建窗口，

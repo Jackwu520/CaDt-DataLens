@@ -345,6 +345,19 @@ func (s *Service) CacheIDs() []string {
 	return ids
 }
 
+// WorkspaceCacheIDs 返回缓存条目里的工作区段（scope == ScopeWorkspace）。
+// 崩溃自愈分两段执行：app 段在启动空档清（工作区根还不知道），工作区段等
+// WindowRegister 登记根目录后再清——同一张表派生，避免两处口径漂移。
+func (s *Service) WorkspaceCacheIDs() []string {
+	ids := []string{}
+	for _, item := range s.specs() {
+		if item.inCache && item.scope == ScopeWorkspace {
+			ids = append(ids, item.id)
+		}
+	}
+	return ids
+}
+
 // resolve 把目标解析成路径；children 目标返回父目录本身。
 func (t target) resolve(s *Service, workspaceRoot string) string {
 	if t.path == nil {

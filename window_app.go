@@ -33,6 +33,9 @@ func (a *App) WindowRegister(ctx context.Context, workspace string) error {
 		return nil
 	}
 	st.setWorkspace(workspace)
+	// 崩溃自愈的工作区段：上次异常退出后，本会话登记的每个工作区清一遍
+	// .cadt/tmp 与 .cadt/logs（幂等去重，见 crashrecovery_app.go）。
+	runCrashWorkspaceRecovery(workspace)
 	return nil
 }
 

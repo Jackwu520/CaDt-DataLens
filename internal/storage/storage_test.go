@@ -199,6 +199,21 @@ func TestCacheIDs(t *testing.T) {
 	}
 }
 
+// TestWorkspaceCacheIDs 崩溃自愈的工作区段快照：等 WindowRegister 登记根目录后清理的
+// 就是这批 id（必须全部属于一键清缓存范围，缓存直删即可）。
+func TestWorkspaceCacheIDs(t *testing.T) {
+	want := []string{"ws-worklog", "ws-tmp"}
+	got := New(Deps{}).WorkspaceCacheIDs()
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("工作区段缓存条目变了\n 期望：%v\n 实际：%v", want, got)
+	}
+	for _, id := range got {
+		if !containsID(New(Deps{}).CacheIDs(), id) {
+			t.Errorf("%s 应同时属于一键清缓存范围", id)
+		}
+	}
+}
+
 // TestMustNotBeCached 把最不能误删的东西钉死在勾选表里。
 func TestMustNotBeCached(t *testing.T) {
 	for _, id := range []string{
