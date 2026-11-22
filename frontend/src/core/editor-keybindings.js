@@ -66,6 +66,13 @@ export const EDITOR_KEY_BINDINGS = [
         id: 'editorKey.toggleBlockComment', label: '切换块注释', aceCommand: 'toggleBlockComment',
         keys: {candysweet: ['Ctrl-Shift-/'], jetbrains: ['Ctrl-Shift-/'], vscode: ['Ctrl-Shift-A']},
     },
+    // 代码补全（候选弹层）：Ctrl+Space 是 language_tools 的原生触发；Alt+/ 是中文 IME 备用键
+    // （Windows 中文输入法把 Ctrl+Space 占成中英切换）。startAutocomplete 命令由启用补全时
+    // language_tools 挂上，运行时 execFor 能找到；SQL 控制台不归本表（自带同款命令）。
+    {
+        id: 'editorKey.startAutocomplete', label: '代码补全（候选弹层）', aceCommand: 'startAutocomplete',
+        keys: {candysweet: ['Ctrl-Space', 'Alt-/'], jetbrains: ['Ctrl-Space', 'Alt-/'], vscode: ['Ctrl-Space', 'Alt-/']},
+    },
 ];
 
 export function isValidEditorStyle(id) {

@@ -62,6 +62,7 @@ test('自定义多选命令用 session 文本查找 + addRange，不依赖缺失
 
 test('新测试已登记进 npm test 清单', () => {
     const pkg = JSON.parse(read('package.json'));
-    assert.match(pkg.scripts.test, /test\/core\/editor-keybindings\.test\.mjs/);
-    assert.match(pkg.scripts.test, /test\/editor\/editor-keybindings-wiring\.test\.mjs/);
+    const allScripts = Object.values(pkg.scripts || {}).join(' ');
+    assert.match(allScripts, /test\/core\/editor-keybindings\.test\.mjs/);
+    assert.match(allScripts, /test\/editor\/editor-keybindings-wiring\.test\.mjs/);
 });

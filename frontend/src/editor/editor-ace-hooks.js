@@ -6,6 +6,7 @@
 import hljs from 'highlight.js/lib/common';
 import {aceModeFor} from '../core/formats.js';
 import {isDocReadOnly} from '../core/readonly.js';
+import {setupEditorCompletion} from './editor-completion.js';
 
 // 折叠范围调整：Go 的 import ( ) 块把圆括号本体折进去，折叠后才显示 import ...。
 // 花括号块不动——Ace cstyle 范围起始在 { 之后、结束在 } 之前，配默认占位符正好渲染成 {...}。
@@ -21,7 +22,50 @@ export function adjustCodeFoldRange(getLine, range) {
     return range;
 }
 
+// 折叠标记悬浮的原生 tooltip（"Fold code"/"Unfold code"）来自 Ace 的无障碍补齐：
+// gutter 单元格（Gutter.$renderCell）与行内折叠胶囊（Text.$renderToken 对 fold token）
+// 渲染时都会无条件 setAttribute("title", nls(...))，没有开关选项；翻译表置空也无效
+// （nls 查表用 || 回退，空串会被跳过）。这里分别包一层 $renderCell / $renderToken，
+// 渲染完把折叠标记上的 title 摘掉——空 title 不弹原生 tooltip。
+// 一次性全局补丁（窗口内所有 Ace 编辑器共享原型），须在首个编辑器创建前调用；
+// createEditorAceHooks 在 editor-groups 模块求值时执行，早于任何编辑器创建。
+export function disableAceFoldWidgetTooltips() {
+    if (typeof window === 'undefined' || !window.ace || typeof window.ace.require !== 'function') return;
+    // gutter：$renderCell 返回 cell 配置对象，DOM 元素挂在 .element 上
+    const Gutter = window.ace.require('ace/layer/gutter').Gutter;
+    if (Gutter && Gutter.prototype && typeof Gutter.prototype.$renderCell === 'function' && !Gutter.prototype.$renderCell.__foldTitleStripped) {
+        const origRenderCell = Gutter.prototype.$renderCell;
+        const renderCell = function() {
+            const cell = origRenderCell.apply(this, arguments);
+            const el = (cell && cell.element) || cell;
+            const widget = el && el.querySelector && el.querySelector('.ace_fold-widget[title]');
+            if (widget) widget.removeAttribute('title');
+            return cell;
+        };
+        renderCell.__foldTitleStripped = true;
+        Gutter.prototype.$renderCell = renderCell;
+    }
+    // 文本层：title 在 $renderToken 对 fold token 设置、span 随行重建——在创建点摘，
+    // 无论哪条渲染路径（$renderLine / $renderLinesFragment / 局部更新）都必经此处。
+    // fold span 是本次 $renderToken 最后追加的子元素，token 过滤让非 fold 的调用零开销。
+    const Text = window.ace.require('ace/layer/text').Text;
+    if (Text && Text.prototype && typeof Text.prototype.$renderToken === 'function' && !Text.prototype.$renderToken.__foldTitleStripped) {
+        const origRenderToken = Text.prototype.$renderToken;
+        const renderToken = function(parent, screenColumn, token, value) {
+            const next = origRenderToken.apply(this, arguments);
+            if (token && token.type === 'fold' && parent) {
+                const span = parent.lastElementChild;
+                if (span && /ace_fold/.test(span.className)) span.removeAttribute('title');
+            }
+            return next;
+        };
+        renderToken.__foldTitleStripped = true;
+        Text.prototype.$renderToken = renderToken;
+    }
+}
+
 export function createEditorAceHooks(deps) {
+    disableAceFoldWidgetTooltips();
 
 function applyAceMode(force) {
     if (!force && (deps.currentMode !== 'code' && deps.currentMode !== 'binary')) return;
@@ -53,6 +97,9 @@ function applyAceMode(force) {
         }
         deps.editor.aceEditor.setDisplayIndentGuides(!!deps.settings.codeGuides);
         deps.editor.aceEditor.setHighlightIndentGuides(!!deps.settings.codeGuides);
+        // 补全挂载（幂等）：必须在 applyEditorKeybindings 之前——键位表里的 startAutocomplete
+        // 条目要等 language_tools 把命令挂上 commands 才能被 execFor 找到
+        setupEditorCompletion(deps.editor.aceEditor, deps.file, deps.settings);
         hookCodeFoldRanges(deps.editor.aceEditor);
         hookMultiCursor(deps.editor.aceEditor);
         // 模式切换后重绑滚轮平滑滚动（幂等；若 jsoneditor 重建了 Ace 实例可恢复绑定）
@@ -256,34 +303,56 @@ function applyPythonTokenClasses(ace) {
     if (!ace || !ace.container || !ace.container.classList.contains('ace-mode-python')) return;
     const layer = ace.container.querySelector('.ace_text-layer');
     if (!layer) return;
-    for (const el of layer.querySelectorAll('.py-kwarg, .py-builtin, .py-doc')) el.classList.remove('py-kwarg', 'py-builtin', 'py-doc');
+    for (const el of layer.querySelectorAll('.py-kwarg, .py-doc, .py-dunder, .py-decorator, .py-class')) {
+        el.classList.remove('py-kwarg', 'py-doc', 'py-dunder', 'py-decorator', 'py-class');
+    }
     for (const line of layer.querySelectorAll('.ace_line')) {
         const spans = [...line.children];
-        let depth = 0;
-        let isDefinition = false;
-        for (const span of spans) {
-            if (span.classList.contains('ace_keyword') && /^(def|class)$/.test(span.textContent || '')) isDefinition = true;
-        }
-        if (isDefinition) continue;
-        // 双下划线预定义名（__name__/__file__…）→ 内置名紫色（PyCharm PY.BUILTIN_NAME）
-        for (const span of spans) {
-            if (span.classList.contains('ace_identifier') && /^__\w+__$/.test((span.textContent || '').trim())) {
-                span.classList.add('py-builtin');
-            }
-        }
         // 整行都是字符串 → 三引号 docstring（PyCharm 文档字符串：弱绿斜体）
         const nonEmpty = spans.filter((sp) => (sp.textContent || '').trim());
         if (nonEmpty.length && nonEmpty.every((sp) => sp.classList.contains('ace_string'))) {
             for (const sp of nonEmpty) sp.classList.add('py-doc');
         }
+        let depth = 0;
+        let decoratorNamePending = false;
         for (let i = 0; i < spans.length; i++) {
             const span = spans[i];
             const text = span.textContent || '';
+            const cls = span.classList;
+            // 行首 @（前面只有空白）是装饰器而非矩阵乘：@ 本体与后随名字一起上装饰器色
+            if (cls.contains('ace_keyword') && cls.contains('ace_operator') && text === '@'
+                && !spans.slice(0, i).some((sp) => (sp.textContent || '').trim())) {
+                span.classList.add('py-decorator');
+                decoratorNamePending = true;
+                continue;
+            }
+            if (decoratorNamePending) {
+                decoratorNamePending = false;
+                if (text.trim() && (cls.contains('ace_identifier') || cls.contains('ace_support'))) {
+                    span.classList.add('py-decorator');
+                    continue;
+                }
+            }
             for (const ch of text) {
                 if (ch === '(') depth++;
                 else if (ch === ')') depth = Math.max(0, depth - 1);
             }
-            if (depth <= 0 || !span.classList.contains('ace_identifier')) continue;
+            // def/class 的名字 span：回溯最近的关键字区分两者——dunder 方法名
+            // （def __init__）→ 品红（PY.PREDEFINED_DEFINITION）；class 名 → 普通文本色；
+            // 普通方法/函数名不加类，走 CSS 的函数色（与 PyCharm 函数声明同蓝）。
+            if (cls.contains('ace_entity') && cls.contains('ace_function')) {
+                let prevKeyword = '';
+                for (let j = i - 1; j >= 0; j--) {
+                    const t = (spans[j].textContent || '').trim();
+                    if (!t) continue;
+                    prevKeyword = t;
+                    break;
+                }
+                if (prevKeyword === 'def' && /^__\w+__$/.test(text.trim())) span.classList.add('py-dunder');
+                else if (prevKeyword === 'class') span.classList.add('py-class');
+                continue;
+            }
+            if (depth <= 0 || !cls.contains('ace_identifier')) continue;
             const next = spans[i + 1];
             if (next && next.classList.contains('ace_keyword') && next.classList.contains('ace_operator') && next.textContent === '=') {
                 span.classList.add('py-kwarg');
