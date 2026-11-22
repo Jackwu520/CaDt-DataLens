@@ -292,24 +292,20 @@ function applyPythonTokenClasses(ace) {
     }
 }
 
+// 补色必须发生在浏览器绘制前：击键会让 Ace 整行重建 DOM（py-* 类随重建丢失），
+// 30ms 去抖 setTimeout 晚于绘制，肉眼看到「白→紫」闪烁（2026-11-22 修复）。
+// MutationObserver 回调是微任务，在 Ace 渲染任务结束后、本帧绘制前同步执行；
+// 本 pass 只改 class（观察器不监听 attributes），不会自触发观察回调。
 function hookPythonTokenClasses(ace) {
     if (!ace || ace._pythonTokenHooked) return;
     const layer = ace.container && ace.container.querySelector('.ace_text-layer');
     if (!layer) return;
     ace._pythonTokenHooked = true;
-    let timer = 0;
-    const schedule = () => {
-        clearTimeout(timer);
-        timer = setTimeout(() => {
-            timer = 0;
-            applyPythonTokenClasses(ace);
-        }, 30);
-    };
-    new MutationObserver(schedule).observe(layer, {childList: true, subtree: true});
+    new MutationObserver(() => applyPythonTokenClasses(ace)).observe(layer, {childList: true, subtree: true});
     try {
-        ace.renderer.on('afterRender', schedule);
+        ace.renderer.on('afterRender', () => applyPythonTokenClasses(ace));
     } catch (e) {}
-    schedule();
+    applyPythonTokenClasses(ace);
 }
 
 function showCodeFoldHover(lineEl) {
@@ -393,6 +389,7 @@ function initCodeFoldHover() {
         hookCodeFoldRanges,
         hookMultiCursor,
         hookCursorTracking,
+        applyPythonTokenClasses,
         hookPythonTokenClasses,
         initCodeFoldHover,
         hideCodeFoldHover,

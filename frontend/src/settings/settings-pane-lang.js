@@ -2,6 +2,22 @@
 // 从 writing-ui.js 拆出；视图模型（deps.LANG_DEFS/deps.ENCODINGS/deps.INDENTS/deps.EOLS/viewOptionsFor）与 makeSelect 由宿主注入。
 import {formats} from '../core/formats.js';
 
+// 全空判定：所有语言的全部工具都没有扫描结果、也没有任何一项在扫 → 返回全语言扫描
+// 清单（首次打开「编程语言」时自动触发一次）；只要有任何一条结果或在扫，返回 null，
+// 走各语言自己 pane 的首开补扫。readEnv(langId, toolId) 只读读取，缺档视为未扫。
+export function firstFullScanRuns(langDefs, readEnv) {
+    const langs = Array.isArray(langDefs) ? langDefs : [];
+    const runs = [];
+    for (const lang of langs) {
+        for (const tool of lang.tools || []) {
+            const env = readEnv(lang.id, tool.id);
+            if (env && (env.scannedAt || env.scanning)) return null;
+            runs.push({langId: lang.id, toolId: tool.id});
+        }
+    }
+    return runs;
+}
+
 export function createSettingsPaneLang(deps) {
 
 function setupFormatSettings() {
@@ -73,6 +89,13 @@ function toolEnvFor(id, toolId) {
     const e = langEnvFor(id);
     if (!e.tools[toolId] || typeof e.tools[toolId] !== 'object') e.tools[toolId] = {};
     return e.tools[toolId];
+}
+
+// 只读读取（不建空档）：全空判定用，避免为没打开过的语言预创建空工具条目
+function readLangToolEnv(id, toolId) {
+    const entry = deps.settings.langEnv && deps.settings.langEnv[id];
+    const tools = entry && entry.tools;
+    return (tools && tools[toolId]) || null;
 }
 
 // effectiveToolEnv 当前生效的环境：手动指定 > 手动选择 > 默认第一个
@@ -248,7 +271,7 @@ function renderLangPane(id) {
 
     const hint = document.createElement('div');
     hint.className = 'fmt-hint';
-    hint.textContent = '首次打开会自动扫描一次并缓存；扫描出多个环境时默认选第一个，可用下拉切换，或在各工具的「手动指定」里填路径。';
+    hint.textContent = '首次打开（还没有任何扫描结果）会自动把全部语言扫一遍并缓存；扫描出多个环境时默认选第一个，可用下拉切换，或在各工具的「手动指定」里填路径。';
     pane.appendChild(hint);
 
     // 已安装的包：python（pip 全局 / .venv）与 node（npm 全局 / 项目 node_modules）
@@ -265,23 +288,43 @@ function renderLangPane(id) {
         pane.appendChild(pkgSec);
     }
 
-    // 自动扫描：还没扫过的工具按顺序补一次（结果缓存，不重复扫）
-    const pending = lang.tools.filter((t) => {
-        const e = toolEnvFor(id, t.id);
-        return !e.scanning && !e.scannedAt;
-    });
+    // 自动扫描：全空（从未扫出任何结果）→ 首次打开触发一次全语言扫描；否则只补当前
+    // 语言还没扫过的工具（结果缓存，不重复扫）。全语言扫描进行中时跳过单语言补扫；
+    // 循环内复查 scanning/scannedAt，与并发补扫互不重复（scanLanguageTool 另有重入守卫）。
     const container = langEnvFor(id);
-    if (pending.length && !anyScanning && !container._autoScanning) {
-        container._autoScanning = true;
-        (async () => {
-            try {
-                for (const t of pending) {
-                    await scanLanguageTool(id, t.id);
+    const firstRuns = firstFullScanRuns(deps.LANG_DEFS, readLangToolEnv);
+    if (firstRuns && firstRuns.length) {
+        if (!fullAutoScanning) {
+            fullAutoScanning = true;
+            (async () => {
+                try {
+                    for (const run of firstRuns) {
+                        const e = toolEnvFor(run.langId, run.toolId);
+                        if (e.scanning || e.scannedAt) continue; // 并发补扫已覆盖
+                        await scanLanguageTool(run.langId, run.toolId);
+                    }
+                } finally {
+                    fullAutoScanning = false;
                 }
-            } finally {
-                container._autoScanning = false;
-            }
-        })();
+            })();
+        }
+    } else if (!firstRuns) {
+        const pending = lang.tools.filter((t) => {
+            const e = toolEnvFor(id, t.id);
+            return !e.scanning && !e.scannedAt;
+        });
+        if (pending.length && !anyScanning && !fullAutoScanning && !container._autoScanning) {
+            container._autoScanning = true;
+            (async () => {
+                try {
+                    for (const t of pending) {
+                        await scanLanguageTool(id, t.id);
+                    }
+                } finally {
+                    container._autoScanning = false;
+                }
+            })();
+        }
     }
 
     // 包列表：还没有缓存结果的作用域按顺序补一次
@@ -304,6 +347,9 @@ function renderLangPane(id) {
         }
     }
 }
+
+// 全语言首扫进行中标记（工厂级，跨语言 pane 共享）：防止各 pane 的补扫与全语言扫描并发重复
+let fullAutoScanning = false;
 
 async function scanLanguageTool(id, toolId) {
     const env = toolEnvFor(id, toolId);
