@@ -15,6 +15,38 @@ type OpenTarget struct {
 	Column int    `json:"column,omitempty"`
 }
 
+// TopLevelUsage 顶层帮助文本的 GUI 启动部分（main.go 拼接 convertcli.Usage /
+// patchcli.Usage 后随 --help 打印）。新增开关时同步这里——cli_help_guard_test.go
+// 会对源码开关字面量与本文本做双向对账。
+const TopLevelUsage = `CaDt-DataLens —— 轻量级多格式数据查看与编辑器
+用法：
+  CaDt-DataLens.exe [文件[:行[:列]]...] [开关]
+  CaDt-DataLens.exe <headless 子命令>（见文末）
+
+打开定位：
+  文件[:行[:列]]           打开文件并定位（行列从 1 开始，列可省略；目录按工作区打开）
+  --line N / -l N          行号（作用于紧随其后的那个路径）
+  --column N / -c N        列号（同上）
+  --goto / -g              VS Code 风格标记，仅作兼容可省略
+  --new-window             强制新窗口（默认复用已有窗口加标签页）
+  --open-settings=<pane>   打开设置页指定 pane（如 --open-settings=ai）
+  --ai-session=<id>        打开指定 AI 会话；运行中转发到会话所属工作区的窗口
+  --memo=<locator>         打开便签定位点（cadt-memo://<workspace|global>/<block|item>/<id>）
+
+窗口形态：
+  --ai-float               只开 AI 浮窗
+  --debug-console          只开调试控制台
+  --quit                   优雅退出已运行的实例（无实例时静默退出，不闪窗）
+
+其他：
+  --version / -v           打印版本号
+  --help / -h              打印本帮助
+
+裸启动（无参数）以当前目录为工作区打开；双击 exe 启动走欢迎页。
+程序已在运行时，GUI 参数经单实例转发到现有窗口。
+headless 子命令：--convert（格式互转）、--check-patch / --apply-patch / --revert-patch（补丁）、
+--integrate / --unintegrate（安装包系统集成，由安装包调用）。`
+
 // ParseOpenSettingsArg 解析 --open-settings=<pane>，没有则返回空串。
 func ParseOpenSettingsArg(args []string) string {
 	for _, arg := range args {

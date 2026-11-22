@@ -51,8 +51,26 @@ func cdpDebugArgs() []string {
 	return nil
 }
 
+// cliUsageText 顶层 --help 输出（不含末尾换行）：GUI 段 + headless 子命令段拼接。
+// main() 打印与 cli_help_guard_test.go 对账共用这一份，防两处漂移。
+func cliUsageText() string {
+	return launchargs.TopLevelUsage + "\n\n" + convertcli.Usage + "\n\n" + patchcli.Usage
+}
+
 func main() {
 	disableMiniMenu()
+	// 顶层 --help / --version：纯信息查询，不进单实例转发、不建窗口（在 installercli
+	// 之前判定；--convert / patchcli 各自的子命令 usage 由这里统一拼接，原分支已删）。
+	if launchargs.HasFlag(os.Args[1:], "--help") || launchargs.HasFlag(os.Args[1:], "-h") {
+		attachParentConsole()
+		fmt.Fprintln(os.Stdout, cliUsageText())
+		os.Exit(0)
+	}
+	if launchargs.HasFlag(os.Args[1:], "--version") || launchargs.HasFlag(os.Args[1:], "-v") {
+		attachParentConsole()
+		fmt.Fprintf(os.Stdout, "CaDt-DataLens %s\n", appVersion)
+		os.Exit(0)
+	}
 	if installercli.Run(os.Args[1:]) {
 		return
 	}

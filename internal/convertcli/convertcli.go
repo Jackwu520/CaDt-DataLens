@@ -140,10 +140,6 @@ func ParseArgs(args []string) (*Options, bool, error) {
 			stdout = true
 		case arg == "--force":
 			force = true
-		case arg == "--help" || arg == "-h":
-			if isConvert {
-				return nil, true, errors.New(Usage)
-			}
 		case strings.HasPrefix(arg, "-"):
 			if !isConvert {
 				continue
