@@ -211,6 +211,13 @@ npm run dev
 CaDt-DataLens.exe "D:\data\sample.json:42:8"
 CaDt-DataLens.exe --line 42 "D:\data\sample.json"
 CaDt-DataLens.exe -g "D:\data\sample.json:42"
+CaDt-DataLens.exe --help
 ```
 
-支持 `--line/-l`、`--column/-c`、`--goto/-g`，行列从 1 开始；程序已在运行时新命令转发到现有窗口。；另有 `--memo` 接收便签定位点（`cadt-memo://<workspace|global>/<block|item>/<id>`，面板右键「复制定位点」得到）直达便签面板对应位置——解析在 `internal/launchargs.ParseMemoLocatorArg`，冷启动经 `GetStartupMemoLocator` 消费、运行中转发走 `app-open-memo` 事件。
+- **打开定位**：`路径[:行[:列]]`、`--line/-l`、`--column/-c`、`--goto/-g`，行列从 1 开始。**不存在的路径不再静默丢弃**——照常进打开目标，前端报「打开失败」（agent 调用打错路径必须有失败信号）；解析在 `internal/launchargs.ParseOpenTargets`。
+- **定点打开**：`--open-settings=<pane>`（设置页）、`--ai-session=<id>`（AI 会话，转发到归属工作区窗口；会话→工作区解析在 `internal/sessionstore.ResolveSessionWorkspace`）、`--memo` 便签定位点（`cadt-memo://<workspace|global>/<block|item>/<id>`，面板右键「复制定位点」得到；冷启动经 `GetStartupMemoLocator` 消费、转发走 `app-open-memo` 事件）。
+- **窗口形态**：`--new-window`、`--ai-float`（AI 浮窗）、`--debug-console`（调试台）、`--quit`（优雅退出运行实例）。
+- **多窗口文件投递按工作区路由**：祖先链逐级向上与已登记工作区键精确匹配取最深命中（嵌套工作区内层窗口拿子目录文件），无归属投主窗口；窗口工作区来自前端 `WindowRegister` 实时登记。
+- **headless 子命令**：`--convert`（`internal/convertcli`）、`--check-patch` / `--apply-patch` / `--revert-patch`（`internal/patchcli`）、`--integrate/--unintegrate`（安装包，`internal/installercli`）。
+- **`--help/-h` 打印全部参数**（`cliUsageText()` 拼接 launchargs/convertcli/patchcli 三段 usage）、`--version/-v` 打印版本。**新增开关必须写进对应 Usage 常量**——`cli_help_guard_test.go` 对源码开关字面量与 help 文本双向对账，漏写直接红。
+- 转发决策在根包 `secondInstancePlan`（纯函数，表驱动测试 `secondinstance_plan_test.go`）；程序已在运行时新命令转发到现有窗口。
