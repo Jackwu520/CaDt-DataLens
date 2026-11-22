@@ -18,7 +18,7 @@ import {
 } from '../ai/ai-external-tools.js';
 // 桌面控制（Computer Use）的配置行构造（desktop-mcp.md §5.3/§13.5 P2 降级：
 // 复制安装命令 + 一键写入 mcp.json 行 + doctor 只读诊断；不做自动安装依赖）
-import {DESKTOP_MCP_SERVER, desktopServerConfigRow, isDesktopToolDef} from '../ai/ai-desktop-control.js';
+import {DESKTOP_MCP_SERVER, desktopServerConfigRow, desktopConfigNeedsUpgrade, isDesktopToolDef} from '../ai/ai-desktop-control.js';
 
 export function createSettingsPaneExternalTools(deps) {
     const backend = (deps && deps.backend) || {};
@@ -466,17 +466,17 @@ export function createSettingsPaneExternalTools(deps) {
         }
     }
 
-    // 安装：写入服务器行（一步到位：enabled + 白名单工具勾选）→ 让后端预热 uv / 依赖。
-    // 预热失败不阻塞安装结果：uvx 首次真正启动时还会再试一次自动下载。
+    // 安装 / 更新：写入服务器行（一步到位：enabled + 白名单工具勾选）→ 让后端预热 uv / 依赖。
+    // 已存在时是「更新配置」而不是重装：只覆盖我们管理的字段（command / args / env /
+    // enabledTools / notes / 超时），保留用户别的自定义项。旧行缺 --no-control 就是靠这条修复的
+    // （否则上游会弹「AI is about to take control of this computer」接管确认窗）。
+    // 预热失败不阻塞：uvx 首次真正启动时还会再试一次自动下载。
     async function runDesktopInstall() {
         if (typeof backend.MCPWriteConfig !== 'function') {
             flash('当前后端版本不支持写入 MCP 配置', true);
             return;
         }
-        if (desktopRow()) {
-            flash('桌面控制已安装（要重装请先在 MCP 服务器列表删除「' + DESKTOP_MCP_SERVER + '」）', true);
-            return;
-        }
+        const existing = desktopRow();
         desktopBusy = 'install';
         paintDesktop();
         try {
@@ -487,21 +487,23 @@ export function createSettingsPaneExternalTools(deps) {
             }
             const next = Object.assign({}, desktopMcpConfig, {version: 1});
             next.mcpServers = Object.assign({}, desktopMcpConfig.mcpServers);
-            next.mcpServers[DESKTOP_MCP_SERVER] = desktopServerConfigRow();
+            next.mcpServers[DESKTOP_MCP_SERVER] = Object.assign({}, existing || {}, desktopServerConfigRow());
             await backend.MCPWriteConfig(next);
             desktopMcpConfig = next;
             refreshPanelSnapshot();
-            if (typeof backend.MCPDesktopInstall === 'function') {
+            if (!existing && typeof backend.MCPDesktopInstall === 'function') {
                 const result = await backend.MCPDesktopInstall();
                 flash(result && result.ok
                     ? '桌面控制已安装完成'
                     : '桌面控制已安装；依赖预热未完成：' + ((result && result.error) || '首次控制时会自动下载'));
+            } else if (existing) {
+                flash('桌面控制配置已更新（已关闭上游接管确认窗，server 已重启）');
             } else {
                 flash('桌面控制已安装：首次控制时 uvx 会自动下载 uv / Python 依赖（约 100 MB，需几分钟）');
             }
             refreshPanelSnapshot();
         } catch (e) {
-            flash('安装失败：' + ((e && e.message) || e), true);
+            flash((existing ? '更新' : '安装') + '失败：' + ((e && e.message) || e), true);
         } finally {
             desktopBusy = '';
             paintDesktop();
@@ -511,23 +513,31 @@ export function createSettingsPaneExternalTools(deps) {
     function paintDesktop() {
         if (!els.desktop) return;
         els.desktop.textContent = '';
-        const installed = !!desktopRow();
-        const enabled = installed && desktopRow().enabled !== false;
+        const row = desktopRow();
+        const installed = !!row;
+        const enabled = installed && row.enabled !== false;
         const count = desktopToolCount();
         const preview = desktopServerConfigRow();
-        const desc = installed
-            ? (count
-                ? 'AI 可操作第三方原生窗口（读取界面 / 点击 / 输入 / 滚动 / 剪贴板）。真正动手前还要进入控制模式，面板顶部会显示提示'
-                : '已安装；首次启动 uvx 会下载 uv / Python 依赖（约 100 MB），工具数稍后自动出现')
-            : '未安装。点「安装」写入配置并下载 uv / Python 依赖（约 100 MB，需几分钟）；运行引擎由系统提供';
+        const needsUpgrade = installed && desktopConfigNeedsUpgrade(row);
+        const desc = needsUpgrade
+            ? '当前是本应用的旧版配置（缺 --no-control，上游会弹接管确认窗）。点「更新配置」升级，不需要重装'
+            : (installed
+                ? (count
+                    ? 'AI 可操作第三方原生窗口（读取界面 / 点击 / 输入 / 滚动 / 剪贴板）。真正动手前还要进入控制模式，面板顶部会显示提示'
+                    : '已安装；首次启动 uvx 会下载 uv / Python 依赖（约 100 MB），工具数稍后自动出现')
+                : '未安装。点「安装」写入配置并下载 uv / Python 依赖（约 100 MB，需几分钟）；运行引擎由系统提供');
         const sw = createSwitch({
             checked: enabled,
             disabled: !installed || desktopBusy === 'toggle',
             onChange: (event) => void setDesktopEnabled(event.target.checked),
         });
-        const actions = installed
-            ? [button('复制启动命令', 'dlg-btn', () => copyText(preview.command + ' ' + preview.args.join(' ')))]
-            : [button(desktopBusy === 'install' ? '安装中…' : '安装…', 'dlg-btn', () => void runDesktopInstall())];
+        const busyLabel = desktopBusy === 'install' ? (installed ? '更新中…' : '安装中…') : '';
+        const actions = !installed
+            ? [button(busyLabel || '安装…', 'dlg-btn', () => void runDesktopInstall())]
+            : (needsUpgrade
+                ? [button(busyLabel || '更新配置', 'dlg-btn', () => void runDesktopInstall()),
+                   button('复制启动命令', 'dlg-btn', () => copyText(preview.command + ' ' + preview.args.join(' ')))]
+                : [button('复制启动命令', 'dlg-btn', () => copyText(preview.command + ' ' + preview.args.join(' ')))]);
         els.desktop.appendChild(fieldRow('启用桌面控制', desc, ...actions, sw.element));
     }
 

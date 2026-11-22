@@ -153,6 +153,35 @@ test('桌面控制：卡片只剩「启用开关 + 安装」，MCP 列表不再�
         'MCP 服务器列表必须过滤 windows 行（桌面控制只在自己的卡片里出现）');
 });
 
+test('桌面控制：跑马灯是悬浮胶囊（不是横幅），且键盘钩子有两道护栏', () => {
+    // 用户 2026-11-22：要悬浮胶囊框，不是流内横幅；也不要那道流光动画
+    const marqueeCss = cssSrc.slice(cssSrc.indexOf('.ai-marquee {'), cssSrc.indexOf('.ai-scroll-btn {'));
+    assert.ok(/position:\s*absolute/.test(marqueeCss), '跑马灯必须是悬浮定位（上一版流内一行变成了横幅）');
+    assert.ok(/top:\s*100%/.test(marqueeCss), '必须锚在标题栏下沿（top:100%），不写死偏移');
+    assert.ok(/border-radius:\s*999px/.test(marqueeCss), '必须是胶囊圆角');
+    assert.ok(/background:\s*var\(--panel2\)/.test(marqueeCss), '胶囊要有底色（用户说的是要框，不是要红字横幅）');
+    assert.ok(/box-shadow:/.test(marqueeCss), '胶囊必须有阴影才浮得起来');
+    assert.ok(!/\.ai-marquee::after/.test(marqueeCss), '不得有扫光伪元素');
+    assert.ok(!/ai-marquee-sweep/.test(cssSrc), '扫光动画必须删除');
+    assert.ok(/#ai-panel\.desktop-active \.ai-messages/.test(cssSrc), '悬浮时要给消息区让出顶部空间');
+    // DOM 必须在 #ai-head 内（top:100% 才锚得住）
+    const headAt = htmlSrc.indexOf('id="ai-head"');
+    const marqueeAt = htmlSrc.indexOf('id="ai-desktop-marquee"');
+    const changesPopAt = htmlSrc.indexOf('id="ai-changes-pop"');
+    assert.ok(headAt >= 0 && marqueeAt > headAt && marqueeAt < changesPopAt,
+        '跑马灯节点必须位于 #ai-head 内（头标签之后、#ai-changes-pop 之前）');
+    // 键盘被吞的根因：上游 --control 的低级钩子只在 server 进程退出时释放
+    const panelSrc = read('src/ai/ai-panel.js');
+    assert.ok(/function desktopInputGuard/.test(panelSrc),
+        '进入控制模式前必须校验 args 含 --no-control（缺失会吞掉用户键盘）');
+    assert.ok(/args\.includes\('--no-control'\)/.test(panelSrc), '校验必须是 args 包含 --no-control');
+    assert.ok(/function releaseDesktopControl/.test(panelSrc),
+        '退出控制模式必须走 releaseDesktopControl（清状态 + 重启 server 释放钩子）');
+    assert.ok(/MCPRestartServer\(DESKTOP_MCP_SERVER\)/.test(panelSrc),
+        'releaseDesktopControl 必须重启桌面 server——只清前端状态救不回被吞的键盘');
+    assert.ok(/await desktopInputGuard\(\)/.test(panelSrc), 'enter 分支必须真的调用守卫');
+});
+
 test('桌面控制：权限面板行 / 标题胶囊 / 跑马灯 / 控制模式工具接线', () => {
     const panelSrc = read('src/ai/ai-panel.js');
     assert.ok(/label: '桌面控制'/.test(panelSrc), '权限面板必须有「桌面控制」行');
