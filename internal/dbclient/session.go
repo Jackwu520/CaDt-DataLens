@@ -12,7 +12,8 @@ import (
 	"time"
 )
 
-// dbSession 单个连接的会话；一个会话一个 *sql.DB（SQLite 限 1 连接、MySQL 限 1–2）。
+// dbSession 单个连接的会话；SQL 会话持有 *sql.DB（SQLite 限 1 连接、MySQL 限 1–2），
+// Redis 会话持有 redisClient（redis != nil，db == nil）——两族共用登记/回收/取消机制。
 type dbSession struct {
 	id        string
 	kind      string
@@ -23,6 +24,7 @@ type dbSession struct {
 	immutable bool
 	caps      Capabilities
 	db        *sql.DB
+	redis     *redisClient
 
 	mu       sync.Mutex
 	meta     map[string]*DBTableMeta
@@ -46,7 +48,12 @@ func nextSessionID() string {
 }
 
 // openSession 走驱动建连并登记；超限时先回收空闲会话，仍满则拒绝。
+// Redis 不进 Driver 注册表（driver.go 的既定声明），在分派最前面单独建连，
+// 但生命周期登记（上限/空闲回收/取消）与 SQL 会话共用同一条流程。
 func openSession(spec openSpec) (SessionInfo, error) {
+	if spec.Kind == kindRedis {
+		return openRedisSession(spec)
+	}
 	drv, err := driverFor(spec.Kind)
 	if err != nil {
 		return SessionInfo{}, err
@@ -57,6 +64,12 @@ func openSession(spec openSpec) (SessionInfo, error) {
 	if err != nil {
 		return SessionInfo{}, err
 	}
+	return registerSession(s)
+}
+
+// registerSession 会话登记通用流程：填 id/缓存/取消表 → 上限回收 → 进注册表。
+// （SQL 会话由 openSession 在驱动 Open 后调用；Redis 会话由 openRedisSession 建连后调用。）
+func registerSession(s *dbSession) (SessionInfo, error) {
 	s.id = nextSessionID()
 	s.meta = map[string]*DBTableMeta{}
 	s.active = map[string]context.CancelFunc{}
@@ -69,14 +82,14 @@ func openSession(spec openSpec) (SessionInfo, error) {
 	}
 	if len(sessions) >= maxSessions {
 		sessionsMu.Unlock()
-		_ = s.db.Close()
+		closeSessionConn(s)
 		return SessionInfo{}, fmt.Errorf("连接数已达上限（%d），请先断开不用的连接", maxSessions)
 	}
 	sessions[s.id] = s
 	sessionsMu.Unlock()
 	// Close 可能阻塞（MySQL COM_QUIT 受 WriteTimeout 约束）：拿到锁外执行，不拖累其他会话操作
 	if evicted != nil {
-		_ = evicted.db.Close()
+		closeSessionConn(evicted)
 		logWarn("连接数超限，回收空闲会话：%s（%s）", evicted.name, evicted.id)
 	}
 	startSweeper()
@@ -132,7 +145,8 @@ func CloseSession(id string) error {
 	if s == nil {
 		return ErrSessionNotFound
 	}
-	return s.db.Close()
+	closeSessionConn(s)
+	return nil
 }
 
 // startSweeper 空闲回收扫描（进程生命周期内一个 goroutine，幂等启动）。
@@ -166,7 +180,7 @@ func sweepIdleSessions() {
 	}
 	sessionsMu.Unlock()
 	for _, s := range victims {
-		_ = s.db.Close()
+		closeSessionConn(s)
 		logWarn("空闲超时断开连接：%s（%s）", s.name, s.id)
 	}
 }
@@ -233,6 +247,8 @@ func describeMeta(s *dbSession, database, table string, noCache bool) (*DBTableM
 		meta, err = sqliteDescribe(ctx, s, database, table)
 	case kindMySQL:
 		meta, err = mysqlDescribe(ctx, s, database, table)
+	case kindRedis:
+		return nil, fmt.Errorf("Redis 没有表元数据；键值查看走键空间专用路径")
 	default:
 		err = fmt.Errorf("未知方言：%s", s.kind)
 	}
@@ -246,7 +262,7 @@ func describeMeta(s *dbSession, database, table string, noCache bool) (*DBTableM
 	return meta, nil
 }
 
-// listObjectsMeta 元数据 L1：库/表清单。
+// listObjectsMeta 元数据 L1：库/表清单（Redis 无表概念——键空间走 RedisScanKeys 专用路径）。
 func listObjectsMeta(s *dbSession, database string) ([]DBObject, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
 	defer cancel()
@@ -255,12 +271,15 @@ func listObjectsMeta(s *dbSession, database string) ([]DBObject, error) {
 		return sqliteListObjects(ctx, s, database)
 	case kindMySQL:
 		return mysqlListObjects(ctx, s, database)
+	case kindRedis:
+		return nil, fmt.Errorf("Redis 没有表概念；键空间在侧栏直接浏览")
 	default:
 		return nil, fmt.Errorf("未知方言：%s", s.kind)
 	}
 }
 
-// listDatabasesMeta 库清单（SQLite 返回 main 占位，让对象树两族共用一套交互）。
+// listDatabasesMeta 库清单（SQLite 返回 main 占位、Redis 返回连接绑定的库，
+// 让对象树/键空间树两族共用一套交互）。
 func listDatabasesMeta(s *dbSession) ([]string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
 	defer cancel()
@@ -269,6 +288,8 @@ func listDatabasesMeta(s *dbSession) ([]string, error) {
 		return []string{"main"}, nil
 	case kindMySQL:
 		return mysqlListDatabases(ctx, s)
+	case kindRedis:
+		return []string{s.database}, nil
 	default:
 		return nil, fmt.Errorf("未知方言：%s", s.kind)
 	}

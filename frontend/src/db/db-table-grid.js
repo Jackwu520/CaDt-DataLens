@@ -8,13 +8,16 @@
 import {iconSvg} from '../core/icons.js';
 import {createInput, createSelect} from '../core/form-controls.js';
 import {overlayStack} from '../core/overlay-stack.js';
+import {formats} from '../core/formats.js';
 import {createDbGrid} from './db-grid-core.js';
+import {isSessionMissing} from './db-sessions.js';
 import {
     rowKeyOf, rowKeysMap, FILTER_OPS, filterOpNeedsValue,
-    rowEstimateLabel, dirtySummary, tableEditable, formatElapsed,
+    rowEstimateLabel, dirtySummary, tableEditable, formatElapsed, buildDDL,
 } from './db-model.js';
 
-const PAGE_SIZE = 500;
+const PAGE_SIZES = [10, 100, 250, 500, 1000, 5000]; // 档位；5000 = 服务端 rowMax 上限（「所有」）
+const DEFAULT_PAGE_SIZE = 500;
 
 export function createDbTablePane(deps, session, db, table) {
 
@@ -32,9 +35,13 @@ let error = '';
 let sortCol = '';
 let sortDesc = false;
 let filters = [];
+let orderCols = []; // 多列排序 [{column, desc}]（结构化：列名过元数据白名单，Go 侧拼 ORDER BY）
 let editMode = false;
 let loaded = false;
 let loadSeq = 0; // 请求序号：慢通道（插件驱动走 HTTP）下旧响应不得覆盖新状态
+let pageSize = DEFAULT_PAGE_SIZE; // 分页档位（图7：10/100/250/500/1000/所有）
+let autoRefreshMs = 0; // 自动刷新档位（0 = 禁用；编辑中或有 dirty 时自动暂停）
+let autoTimer = null;
 
 // dirty model：updates key → {keys, cells: Map(col → {old, new})}；deletes key 集合；inserts 数组
 const updates = new Map();
@@ -79,27 +86,52 @@ const pagePrev = mkBtn('chevron-left', '上一页');
 const pageNext = mkBtn('chevron-right', '下一页');
 const rangeLabel = document.createElement('span');
 rangeLabel.className = 'db-table-range';
+// 自动刷新（图8）：icon + 档位菜单（禁用/5s/10s/30s/1m/5m），走 deps.ctxMenu 弹出
+const autoBtn = mkBtn('clock', '自动');
 const editBtn = mkBtn('unlock', '编辑');
 const addRowBtn = mkBtn('plus', '插入行');
 const dropBtn = mkBtn('undo', '放弃');
-const submitBtn = mkBtn('check', '预览并提交');
+// 提交 icon（图5 语义）：无修改灰、有修改亮；点击 = 预览弹层，Ctrl+Enter = 直接提交
+const submitBtn = document.createElement('button');
+submitBtn.type = 'button';
+submitBtn.className = 'db-btn';
+submitBtn.innerHTML = iconSvg('check', 13);
+submitBtn.dataset.tip = '提交（点击出预览 · Ctrl+Enter 直接提交）';
 const pendingLabel = document.createElement('span');
 pendingLabel.className = 'db-table-pending';
+// 导入/导出（图7）：导出当前结果为 CSV/JSONL；导入 CSV/JSONL 走受控写入链路
+const exportBtn = mkBtn('download', '导出');
+const importBtn = mkBtn('upload', '导入');
+// DDL：从元数据生成建表语句（复制 / 导出 .sql）
+const ddlBtn = mkBtn('code', 'DDL');
 // 编辑簇只在可编辑时由 rebuildToolbar 显隐；工具栏必须把标题与操作区真正挂进来
-actions.append(refreshBtn, filterBtn, pagePrev, rangeLabel, pageNext, editBtn, addRowBtn, dropBtn, submitBtn, pendingLabel);
+actions.append(refreshBtn, filterBtn, autoBtn, pagePrev, rangeLabel, pageNext,
+    exportBtn, importBtn, ddlBtn, editBtn, addRowBtn, dropBtn, submitBtn, pendingLabel);
 toolbar.append(titleWrap, actions);
 el.append(toolbar);
 
-// 筛选区（条件列表：列/算子/值，全部下推为参数化 WHERE）
+// 筛选区（结构化 WHERE 条件行 + 多列 ORDER BY，全部下推为参数化 SQL）
 const filterArea = document.createElement('div');
 filterArea.className = 'db-table-filters hidden';
+const whereLabel = document.createElement('div');
+whereLabel.className = 'db-filter-label';
+whereLabel.textContent = 'WHERE';
 const filterList = document.createElement('div');
 filterList.className = 'db-table-filter-list';
 const addFilterBtn = document.createElement('button');
 addFilterBtn.type = 'button';
 addFilterBtn.className = 'db-btn';
 addFilterBtn.innerHTML = iconSvg('plus', 11) + '<span>加条件</span>';
-filterArea.append(filterList, addFilterBtn);
+const orderLabel = document.createElement('div');
+orderLabel.className = 'db-filter-label hidden'; // 无排序列时隐藏（加行时移除）
+orderLabel.textContent = 'ORDER BY';
+const orderList = document.createElement('div');
+orderList.className = 'db-table-filter-list';
+const addOrderBtn = document.createElement('button');
+addOrderBtn.type = 'button';
+addOrderBtn.className = 'db-btn';
+addOrderBtn.innerHTML = iconSvg('plus', 11) + '<span>加排序列</span>';
+filterArea.append(whereLabel, filterList, addFilterBtn, orderLabel, orderList, addOrderBtn);
 
 // 网格 + 状态条
 const grid = createDbGrid({
@@ -115,7 +147,8 @@ const grid = createDbGrid({
     rowClass(i) {
         if (i >= serverRows.length) return 'db-row-inserted';
         const key = rowKeyOf(meta, serverRows[i], columns);
-        return deletes.has(key) ? 'db-row-deleted' : '';
+        if (deletes.has(key)) return 'db-row-deleted';
+        return updates.has(key) ? 'db-row-dirty' : ''; // 修改行：行号同色高亮（图5）
     },
     cellClass(i, c) {
         const col = columns[c];
@@ -168,8 +201,9 @@ async function loadPage() {
             sortColumn: sortCol,
             sortDesc,
             filters,
+            orderCols, // 多列 ORDER BY（结构化；Go 侧过元数据白名单拼接）
             offset: pageOffset,
-            limit: PAGE_SIZE,
+            limit: pageSize,
         });
         if (seq !== loadSeq) return; // 已有更新的请求出发：旧响应整体丢弃
         columns = res.columns || [];
@@ -179,6 +213,7 @@ async function loadPage() {
         rebuildKeyIndex();
     } catch (e) {
         if (seq !== loadSeq) return;
+        if (await recoverSession(e)) return; // 会话被空闲回收：自动重连后重建面板重新加载
         error = String(e && e.message || e);
         deps.flash('表数据加载失败：' + error, true);
     } finally {
@@ -191,10 +226,32 @@ async function loadPage() {
     }
 }
 
+// 会话丢失（空闲回收/手动断开后继续调用）时的懒自动重连：成功即重建面板自动重载，返回 true
+async function recoverSession(e) {
+    if (!isSessionMissing(e) || typeof deps.sessionLost !== 'function') return false;
+    const ok = await deps.sessionLost();
+    if (ok && typeof deps.sessionRecovered === 'function') {
+        deps.sessionRecovered();
+        return true;
+    }
+    return false;
+}
+
 // keepScroll：单元格编辑/删除标记等本地状态变化走 true（长页里不弹回顶部）；
 // 换页/换表/换排序是新数据，走默认 false（滚回顶部）
 function applyToGrid(keepScroll) {
-    const displayRows = serverRows.concat(inserts.map((ins) => columns.map((c) => (ins.values[c] == null ? '' : ins.values[c]))));
+    // 已修改单元格显示新值（JetBrains 语义：脏单元格展示待提交内容，高亮标记）
+    const displayRows = serverRows.map((r) => {
+        const key = rowKeyOf(meta, r, columns);
+        const u = updates.get(key);
+        if (!u || !u.cells.size) return r;
+        const row = r.slice();
+        for (const [col, c] of u.cells) {
+            const ci = columns.indexOf(col);
+            if (ci >= 0) row[ci] = c.new == null ? '' : c.new;
+        }
+        return row;
+    }).concat(inserts.map((ins) => columns.map((c) => (ins.values[c] == null ? '' : ins.values[c]))));
     const displayNulls = serverNulls.concat(inserts.map(() => columns.map(() => false)));
     grid.setColumns(columns);
     grid.setSort(sortCol, sortDesc);
@@ -211,8 +268,68 @@ function renderStatus() {
     }
     const hint = editableReason();
     if (hint) parts.push(hint);
-    statusBar.textContent = parts.join(' · ');
+    // 只保留文本部分；分页档位控件单独 append（textContent 会清掉子节点）
+    statusBar.textContent = '';
+    const text = document.createElement('span');
+    text.textContent = parts.join(' · ');
+    statusBar.appendChild(text);
+    statusBar.appendChild(rowHeightSel.element);
+    statusBar.appendChild(pageSizeSel.element);
 }
+
+// 行高档位（图9：紧凑/常规/宽松）——网格 setRowHeight 联动 canvas 与可视窗口
+const ROW_HEIGHT_STEPS = [
+    {value: '22', label: '紧凑', h: 22},
+    {value: '26', label: '常规', h: 26},
+    {value: '32', label: '宽松', h: 32},
+];
+const rowHeightSel = createSelect({
+    options: ROW_HEIGHT_STEPS.map((s) => ({value: s.value, label: '行高：' + s.label, selected: s.h === 26})),
+    title: '行高',
+});
+rowHeightSel.element.classList.add('db-limit-select');
+rowHeightSel.control.addEventListener('change', () => {
+    const step = ROW_HEIGHT_STEPS.find((s) => s.value === rowHeightSel.control.value);
+    if (step) grid.setRowHeight(step.h);
+});
+
+// 分页档位（图7）：10/100/250/500/1000/所有（5000 = 服务端上限）/自定义
+const pageSizeSel = createSelect({
+    options: [
+        {value: '10', label: '10 行'},
+        {value: '100', label: '100 行'},
+        {value: '250', label: '250 行'},
+        {value: '500', label: '500 行', selected: true},
+        {value: '1000', label: '1000 行'},
+        {value: '5000', label: '所有（5000 上限）'},
+        {value: 'custom', label: '自定义…'},
+    ],
+    title: '每页行数',
+});
+pageSizeSel.element.addEventListener('change', () => {
+    let v = pageSizeSel.control.value;
+    if (v === 'custom') {
+        const input = window.prompt('每页行数（10–5000）：', String(pageSize));
+        if (!input) { pageSizeSel.control.value = String(pageSize); return; }
+        v = String(Number(input) || 0);
+        if (Number(v) < 10 || Number(v) > 5000) {
+            deps.flash('行数需在 10–5000 之间', true);
+            pageSizeSel.control.value = String(pageSize);
+            return;
+        }
+        // 自定义值回填进列表首位显示
+        if (!pageSizeSel.__customOpt) {
+            pageSizeSel.__customOpt = new Option(v + ' 行', v);
+            pageSizeSel.control.add(pageSizeSel.__customOpt, 0);
+        }
+        pageSizeSel.__customOpt.textContent = v + ' 行';
+        pageSizeSel.__customOpt.value = v;
+        pageSizeSel.control.value = v;
+    }
+    pageSize = Number(v) || DEFAULT_PAGE_SIZE;
+    pageOffset = 0;
+    loadPage();
+});
 
 function rebuildToolbar() {
     // 编辑簇只在「可编辑」时出现；不可编辑时状态条给出原因
@@ -222,9 +339,13 @@ function rebuildToolbar() {
     addRowBtn.hidden = !editMode;
     dropBtn.hidden = !editMode;
     submitBtn.hidden = !editMode;
-    submitBtn.classList.toggle('primary', editMode);
-    pendingLabel.hidden = !editMode;
+    importBtn.hidden = !isEditable(); // 导入走受控写入，只读会话不显示
+    ddlBtn.hidden = !meta || meta.kind === 'view'; // DDL 只对表生成（视图无列元数据）
+    // 提交 icon：无修改灰（disabled）、有修改亮（primary）
     const summary = dirtySummary({updates, deletes, inserts});
+    submitBtn.disabled = !summary;
+    submitBtn.classList.toggle('primary', !!summary);
+    pendingLabel.hidden = !editMode;
     pendingLabel.textContent = summary ? ('待提交：' + summary) : '';
     pagePrev.disabled = pageOffset <= 0;
     pageNext.disabled = !hasMore;
@@ -238,6 +359,7 @@ refreshBtn.addEventListener('click', async () => {
         await loadMeta(true);
         await loadPage();
     } catch (e) {
+        if (await recoverSession(e)) return; // 空闲回收：自动重连后重建面板
         deps.flash('刷新失败：' + (e && e.message || e), true);
     }
 });
@@ -245,13 +367,332 @@ filterBtn.addEventListener('click', () => {
     filterArea.classList.toggle('hidden');
     if (!filterArea.classList.contains('hidden') && !filters.length) addFilterRow();
 });
+
+// ---------- 多列 ORDER BY（结构化：列下拉 + 方向，Go 侧过白名单拼接） ----------
+
+addOrderBtn.addEventListener('click', () => addOrderRow());
+
+function addOrderRow(initial) {
+    const cond = initial || {column: (columns || [])[0] || '', desc: false};
+    orderCols.push(cond);
+    const row = document.createElement('div');
+    row.className = 'db-filter-cond';
+    const colSel = createSelect({options: columns.map((c) => ({value: c, label: c, selected: c === cond.column}))});
+    const dirSel = createSelect({options: [
+        {value: 'asc', label: '升序', selected: !cond.desc},
+        {value: 'desc', label: '降序', selected: !!cond.desc},
+    ]});
+    colSel.element.classList.add('db-filter-col');
+    dirSel.element.classList.add('db-filter-op');
+    const rm = document.createElement('button');
+    rm.type = 'button';
+    rm.className = 'db-btn';
+    rm.innerHTML = iconSvg('close', 11);
+    colSel.control.addEventListener('change', () => { cond.column = colSel.control.value; loadPage(); });
+    dirSel.control.addEventListener('change', () => { cond.desc = dirSel.control.value === 'desc'; loadPage(); });
+    rm.addEventListener('click', () => {
+        const at = orderCols.indexOf(cond);
+        if (at >= 0) orderCols.splice(at, 1);
+        row.remove();
+        if (!orderCols.length) orderLabel.classList.add('hidden');
+        loadPage();
+    });
+    // 先入行再增强（同 addFilterRow：sel.after(wrap) 要求 select 已在 DOM）
+    row.append(colSel.element, dirSel.element, rm);
+    orderList.appendChild(row);
+    orderLabel.classList.remove('hidden');
+    if (typeof deps.enhanceSelect === 'function') {
+        deps.enhanceSelect(colSel.element);
+        deps.enhanceSelect(dirSel.element);
+    }
+}
+
+// ---------- 自动刷新（图8：档位菜单；编辑中/有 dirty 时自动暂停） ----------
+
+const AUTO_REFRESH_STEPS = [
+    {label: '已禁用', ms: 0},
+    {label: '5 秒', ms: 5000},
+    {label: '10 秒', ms: 10000},
+    {label: '30 秒', ms: 30000},
+    {label: '1 分钟', ms: 60000},
+    {label: '5 分钟', ms: 300000},
+];
+
+autoBtn.addEventListener('click', (ev) => {
+    if (!deps.ctxMenu) {
+        deps.flash('当前环境不支持菜单（mock 场景）', true);
+        return;
+    }
+    const rect = autoBtn.getBoundingClientRect();
+    deps.ctxMenu.open(AUTO_REFRESH_STEPS.map((s) => ({
+        label: s.label + (s.ms === autoRefreshMs ? ' ✓' : ''),
+        icon: s.ms === autoRefreshMs ? 'check' : 'clock',
+        action: () => setAutoRefresh(s.ms),
+    })), rect.left, rect.bottom + 2);
+});
+
+function setAutoRefresh(ms, silent) {
+    autoRefreshMs = ms;
+    if (autoTimer) {
+        clearInterval(autoTimer);
+        autoTimer = null;
+    }
+    if (ms > 0) {
+        autoTimer = setInterval(() => {
+            // 编辑中或有待提交修改时不刷新（避免覆盖用户的 dirty 状态）
+            if (editMode || dirtySummary({updates, deletes, inserts})) return;
+            loadPage();
+        }, ms);
+    }
+    autoBtn.classList.toggle('active', ms > 0);
+    autoBtn.innerHTML = iconSvg('clock', 12) + '<span>' + (ms > 0 ? '自动 ' + (AUTO_REFRESH_STEPS.find((s) => s.ms === ms) || {}).label.replace(' ', '') : '自动') + '</span>';
+    if (!silent) deps.flash(ms > 0 ? '自动刷新已开启' : '自动刷新已关闭');
+}
+
+// ---------- 导出（当前已加载结果 → CSV / JSONL；受 5000 行上限） ----------
+
+exportBtn.addEventListener('click', (ev) => {
+    const rect = exportBtn.getBoundingClientRect();
+    if (deps.ctxMenu) {
+        deps.ctxMenu.open([
+            {label: '导出 CSV…', icon: 'download', action: () => exportData('csv')},
+            {label: '导出 JSONL…', icon: 'download', action: () => exportData('jsonl')},
+        ], rect.left, rect.bottom + 2);
+    } else {
+        exportData('csv');
+    }
+});
+
+async function exportData(kind) {
+    if (!columns.length || !(serverRows.length || inserts.length)) {
+        deps.flash('没有可导出的数据', true);
+        return;
+    }
+    const ext = kind === 'jsonl' ? 'jsonl' : 'csv';
+    const target = (db && db !== 'main' ? db + '.' : '') + table;
+    let path = '';
+    try {
+        path = await deps.backend.ShowSaveFileDialog('导出数据（当前已加载的 ' + serverRows.length + ' 行）', target + '.' + ext);
+    } catch (e) {
+        return; // 用户取消保存对话框（尽力而为路径）
+    }
+    if (!path) return;
+    const nullsOf = (i) => serverNulls[i] || [];
+    let content = '';
+    if (kind === 'jsonl') {
+        const lines = [];
+        for (let i = 0; i < serverRows.length; i++) {
+            const obj = {};
+            columns.forEach((c, ci) => { obj[c] = nullsOf(i)[ci] ? null : serverRows[i][ci]; });
+            lines.push(JSON.stringify(obj));
+        }
+        for (const ins of inserts) {
+            const obj = {};
+            columns.forEach((c) => { obj[c] = ins.values[c] == null ? null : String(ins.values[c]); });
+            lines.push(JSON.stringify(obj));
+        }
+        content = lines.join('\n') + '\n';
+    } else {
+        const rows = serverRows.map((r, i) => r.map((v, ci) => (nullsOf(i)[ci] ? null : v)));
+        for (const ins of inserts) {
+            rows.push(columns.map((c) => (ins.values[c] == null ? null : String(ins.values[c]))));
+        }
+        content = formats.csv.stringifyTable(columns, rows) + '\n';
+    }
+    try {
+        await deps.backend.SaveFile(path, content, 'lf', false, 'utf-8');
+        deps.flash('已导出 ' + (serverRows.length + inserts.length) + ' 行：' + path);
+    } catch (e) {
+        deps.flash('导出失败：' + (e && e.message || e), true);
+    }
+}
+
+// ---------- 导入（CSV / JSONL → 列映射 → 走受控写入的 inserts，预览确认后单事务提交） ----------
+
+importBtn.addEventListener('click', () => openImportDialog());
+
+// ---------- DDL（复制 / 导出建表语句，元数据朴素还原） ----------
+
+ddlBtn.addEventListener('click', (ev) => {
+    if (!meta) return;
+    const sql = buildDDL(session.kind, meta);
+    if (deps.ctxMenu) {
+        const rect = ddlBtn.getBoundingClientRect();
+        deps.ctxMenu.open([
+            {label: '复制 DDL', icon: 'copy', action: () => {
+                if (deps.copyText) deps.copyText(sql);
+                else deps.flash('DDL 已生成（当前环境无剪贴板）');
+            }},
+            {label: '导出 DDL…', icon: 'download', action: async () => {
+                let path = '';
+                try {
+                    path = await deps.backend.ShowSaveFileDialog('导出 DDL', table + '.sql');
+                } catch (e) {
+                    return; // 取消保存对话框（尽力而为路径）
+                }
+                if (!path) return;
+                try {
+                    await deps.backend.SaveFile(path, sql + '\n', 'lf', false, 'utf-8');
+                    deps.flash('DDL 已导出：' + path);
+                } catch (e) {
+                    deps.flash('导出失败：' + (e && e.message || e), true);
+                }
+            }},
+        ], rect.left, rect.bottom + 2);
+    } else if (deps.copyText) {
+        deps.copyText(sql);
+    }
+});
+
+async function openImportDialog() {
+    if (!isEditable()) {
+        deps.flash(editableReason() || '当前会话不可编辑', true);
+        return;
+    }
+    let pick = '';
+    try {
+        pick = await deps.backend.ShowOpenFileDialog('导入数据（CSV / JSONL，首行为列名）',
+            'CSV / JSONL (*.csv;*.jsonl)|*.csv;*.jsonl|所有文件 (*.*)|*.*');
+    } catch (e) {
+        return; // 用户取消文件选择（尽力而为路径）
+    }
+    if (!pick) return;
+    let text = '';
+    try {
+        text = await deps.backend.DBReadImportFile(pick);
+    } catch (e) {
+        deps.flash('读取导入文件失败（需 UTF-8 编码）:' + (e && e.message || e), true);
+        return;
+    }
+    let headers = [];
+    let fileRows = [];
+    if (/\.jsonl$/i.test(pick)) {
+        for (const line of text.split(/\r?\n/)) {
+            if (!line.trim()) continue;
+            const obj = JSON.parse(line);
+            for (const k of Object.keys(obj)) if (!headers.includes(k)) headers.push(k);
+            fileRows.push(obj);
+        }
+    } else {
+        const parsed = formats.csv.parseTable(text);
+        headers = parsed.headers || [];
+        fileRows = parsed.rows.map((r) => {
+            const obj = {};
+            headers.forEach((h, i) => { obj[h] = r[i]; });
+            return obj;
+        });
+    }
+    if (!headers.length || !fileRows.length) {
+        deps.flash('导入文件没有数据行', true);
+        return;
+    }
+    const insertable = columns.filter((c) => !(meta.pk || []).includes(c) || c === 'rowid');
+    const targets = insertable.length ? insertable : columns;
+    openImportMapping({headers, fileRows, targets});
+}
+
+function openImportMapping({headers, fileRows, targets}) {
+    const panel = document.createElement('div');
+    panel.className = 'db-preview db-conn-dialog';
+    const head = document.createElement('div');
+    head.className = 'db-preview-head';
+    head.textContent = '导入数据 · ' + fileRows.length + ' 行 → ' + table;
+    const form = document.createElement('div');
+    form.className = 'db-conn-form';
+    const rowEls = [];
+    for (const col of targets) {
+        const row = document.createElement('label');
+        row.className = 'db-conn-rowline';
+        const label = document.createElement('span');
+        label.className = 'db-conn-label';
+        label.textContent = col;
+        const sel = createSelect({options: [
+            {value: '', label: '（不导入）'},
+            ...headers.map((h) => ({value: h, label: h, selected: h === col})),
+        ]});
+        sel.element.dataset.col = col;
+        row.append(label, sel.element);
+        form.appendChild(row);
+        rowEls.push({col, sel});
+    }
+    const foot = document.createElement('div');
+    foot.className = 'db-preview-foot';
+    const cancelBtn = document.createElement('button');
+    cancelBtn.type = 'button';
+    cancelBtn.className = 'db-btn';
+    cancelBtn.textContent = '取消';
+    const okBtn = document.createElement('button');
+    okBtn.type = 'button';
+    okBtn.className = 'db-btn primary';
+    okBtn.textContent = '载入 ' + fileRows.length + ' 行';
+    foot.append(cancelBtn, okBtn);
+    const msgEl = document.createElement('div');
+    msgEl.className = 'db-ds-msg';
+    panel.append(head, form, msgEl, foot);
+
+    const mask = document.createElement('div');
+    mask.className = 'db-preview-mask';
+    mask.appendChild(panel);
+    let handle = null;
+    let cleaned = false;
+    const cleanup = () => {
+        if (cleaned) return;
+        cleaned = true;
+        mask.remove();
+        panel.remove();
+    };
+    const close = () => {
+        if (cleaned) return;
+        if (handle) handle.dispose();
+        cleanup();
+    };
+    handle = overlayStack.open({
+        id: 'db-import-mapping',
+        kind: 'dialog',
+        el: panel,
+        underEl: mask,
+        onClose: () => {
+            if (handle) handle.dispose();
+            cleanup();
+        },
+    });
+    document.body.appendChild(mask);
+    mask.addEventListener('click', (ev) => {
+        if (ev.target === mask) close();
+    });
+    cancelBtn.addEventListener('click', close);
+    okBtn.addEventListener('click', () => {
+        const map = rowEls.filter((r) => r.sel.control.value).map((r) => ({col: r.col, src: r.sel.control.value}));
+        if (!map.length) {
+            msgEl.textContent = '至少为一列选择来源';
+            msgEl.className = 'db-ds-msg error';
+            return;
+        }
+        let loaded = 0;
+        for (const fr of fileRows) {
+            const values = {};
+            const edited = new Set();
+            for (const m of map) {
+                const raw = fr[m.src];
+                values[m.col] = raw == null || raw === '' ? null : String(raw);
+                edited.add(m.col);
+            }
+            inserts.push({values, edited});
+            loaded++;
+        }
+        cleanup();
+        applyToGrid(true);
+        rebuildToolbar();
+        deps.flash('已载入 ' + loaded + ' 行待提交——用「预览并提交」或 Ctrl+Enter 写入（单事务可整体回滚）');
+    });
+}
 pagePrev.addEventListener('click', () => {
-    pageOffset = Math.max(0, pageOffset - PAGE_SIZE);
+    pageOffset = Math.max(0, pageOffset - pageSize);
     loadPage();
 });
 pageNext.addEventListener('click', () => {
     if (!hasMore) return;
-    pageOffset += PAGE_SIZE;
+    pageOffset += pageSize;
     loadPage();
 });
 editBtn.addEventListener('click', () => {
@@ -274,6 +715,14 @@ dropBtn.addEventListener('click', () => {
 });
 submitBtn.addEventListener('click', submitChanges);
 
+// Ctrl+Enter 直接提交（编辑框内的 Enter 落盘先走自己的 handler，随后冒泡到这里）
+el.addEventListener('keydown', (ev) => {
+    if ((ev.ctrlKey || ev.metaKey) && ev.key === 'Enter') {
+        ev.preventDefault();
+        submitDirect();
+    }
+});
+
 addFilterBtn.addEventListener('click', () => addFilterRow());
 
 function addFilterRow(initial) {
@@ -283,10 +732,9 @@ function addFilterRow(initial) {
     row.className = 'db-filter-cond';
     const colSel = createSelect({options: columns.map((c) => ({value: c, label: c, selected: c === cond.column}))});
     const opSel = createSelect({options: FILTER_OPS.map((o) => ({value: o.value, label: o.label, selected: o.value === cond.op}))});
-    if (typeof deps.enhanceSelect === 'function') {
-        deps.enhanceSelect(colSel.element);
-        deps.enhanceSelect(opSel.element);
-    }
+    // 增强触发器（set-select wrap）会继承原 select 的类，宽度按这两个类定（CSS 栅格）
+    colSel.element.classList.add('db-filter-col');
+    opSel.element.classList.add('db-filter-op');
     const valInput = createInput({value: cond.value, placeholder: '值'});
     const rm = document.createElement('button');
     rm.type = 'button';
@@ -306,8 +754,13 @@ function addFilterRow(initial) {
         applyFilters();
     });
     syncValue();
+    // 先入行再增强：enhanceSelect 的 sel.after(wrap) 要求 select 已在 DOM 里
     row.append(colSel.element, opSel.element, valInput.element, rm);
     filterList.appendChild(row);
+    if (typeof deps.enhanceSelect === 'function') {
+        deps.enhanceSelect(colSel.element);
+        deps.enhanceSelect(opSel.element);
+    }
 }
 
 function applyFilters() {
@@ -424,8 +877,54 @@ function buildChanges() {
     return ch;
 }
 
+let submitting = false; // 提交防重入（Ctrl+Enter 连按 / 预览弹层与快捷键并发）
+
+// 两条提交路径（预览确认 / Ctrl+Enter 直提）共用的落地：清 dirty → 留痕 → 刷新
+async function applyResult(changes) {
+    const result = await deps.backend.DBApplyChanges(session.id, changes);
+    updates.clear();
+    deletes.clear();
+    inserts = [];
+    deps.flash('已提交：' + result.updates + ' 处修改、' + result.deletes + ' 行删除、' + result.inserts + ' 行插入（' + formatElapsed(result.elapsedMs) + '）');
+    if (deps.logActivity) {
+        deps.logActivity('db.apply', session.kind + ':' + session.name + '/' + table, {
+            kind: session.kind, table,
+            updates: result.updates, deletes: result.deletes, inserts: result.inserts,
+            elapsedMs: result.elapsedMs,
+        });
+    }
+    await loadMeta(true);
+    await loadPage();
+}
+
+// Ctrl+Enter：直接提交（跳过预览弹层，方案 §11.8 作者拍板对齐 JetBrains 默认行为）
+async function submitDirect() {
+    if (!isEditable() || submitting) return;
+    const changes = buildChanges();
+    if (!changes) {
+        deps.flash('没有待提交的修改');
+        return;
+    }
+    submitting = true;
+    rebuildToolbar();
+    try {
+        await applyResult(changes);
+    } catch (e) {
+        deps.flash('提交失败（已整体回滚）：' + (e && e.message || e), true);
+        // 冲突/失败后刷新当前页，让用户看到最新数据（刷新失败保留原错误提示即可）
+        try {
+            await loadMeta(true);
+            await loadPage();
+        } catch (_) { /* 刷新失败时状态条已由 loadPage 自行报错 */ }
+    } finally {
+        submitting = false;
+        rebuildToolbar();
+    }
+}
+
+// 提交按钮：预览弹层路径（列出将执行的 SQL，确认后写库）
 async function submitChanges() {
-    if (!isEditable()) return;
+    if (!isEditable() || submitting) return;
     const changes = buildChanges();
     if (!changes) {
         deps.flash('没有待提交的修改');
@@ -475,20 +974,34 @@ function openPreviewOverlay(stmts, changes) {
     okBtn.textContent = '提交（不可自动回滚）';
     foot.append(cancelBtn, okBtn);
     panel.append(head, body, foot);
+    // 遮罩弹层（overlayStack 注册）。close() 必须自己做 DOM 清理——dispose() 不触发
+    // onClose，只 dispose 会把 mask 留在 DOM（与 db-connections.js 同款收口）
     mask.appendChild(panel);
-
-    const handle = overlayStack.open({
+    let handle = null;
+    let cleaned = false;
+    const cleanup = () => {
+        if (cleaned) return;
+        cleaned = true;
+        mask.remove();
+        panel.remove();
+    };
+    const close = () => {
+        if (cleaned) return;
+        if (handle) handle.dispose();
+        cleanup();
+    };
+    handle = overlayStack.open({
         id: 'db-apply-preview',
         kind: 'dialog',
         el: panel,
         underEl: mask,
         onClose: () => {
-            mask.remove();
-            panel.remove();
+            // Esc 路径：先出栈再清 DOM（dispose 不触发 onClose，无递归）
+            if (handle) handle.dispose();
+            cleanup();
         },
     });
     document.body.appendChild(mask);
-    const close = () => handle.dispose();
     cancelBtn.addEventListener('click', close);
     mask.addEventListener('click', (ev) => {
         if (ev.target === mask) close();
@@ -496,21 +1009,8 @@ function openPreviewOverlay(stmts, changes) {
     okBtn.addEventListener('click', async () => {
         okBtn.disabled = true;
         try {
-            const result = await deps.backend.DBApplyChanges(session.id, changes);
+            await applyResult(changes);
             close();
-            updates.clear();
-            deletes.clear();
-            inserts = [];
-            deps.flash('已提交：' + result.updates + ' 处修改、' + result.deletes + ' 行删除、' + result.inserts + ' 行插入（' + formatElapsed(result.elapsedMs) + '）');
-            if (deps.logActivity) {
-                deps.logActivity('db.apply', session.kind + ':' + session.name + '/' + table, {
-                    kind: session.kind, table,
-                    updates: result.updates, deletes: result.deletes, inserts: result.inserts,
-                    elapsedMs: result.elapsedMs,
-                });
-            }
-            await loadMeta(true);
-            await loadPage();
         } catch (e) {
             okBtn.disabled = false;
             deps.flash('提交失败（已整体回滚）：' + (e && e.message || e), true);
@@ -528,6 +1028,7 @@ async function init() {
     try {
         await loadMeta(false);
     } catch (e) {
+        if (await recoverSession(e)) return; // 空闲回收：自动重连后重建面板
         error = String(e && e.message || e);
         renderStatus();
         return;
@@ -540,9 +1041,10 @@ init();
 
 return {
     el,
-    /** 会话断开时由页面调用（隐藏编辑簇）。 */
+    /** 会话断开时由页面调用（隐藏编辑簇并停自动刷新）。 */
     invalidate() {
         editMode = false;
+        setAutoRefresh(0, true); // 静默停自动刷新（重连重建后默认关，用户可再开）
         rebuildToolbar();
         renderStatus();
     },

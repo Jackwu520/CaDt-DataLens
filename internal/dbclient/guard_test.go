@@ -192,15 +192,16 @@ func TestCheckBatch(t *testing.T) {
 	ro := false
 	edit := true
 	tests := []struct {
-		name      string
-		stmts     []string
-		editable  bool
-		confirmed bool
-		wantErr   bool
-		wantRO    bool
-		wantDDL   bool
-		wantCtrl  bool
-		wantConf  string
+		name       string
+		stmts      []string
+		editable   bool
+		confirmed  bool
+		ddlAllowed bool
+		wantErr    bool
+		wantRO     bool
+		wantDDL    bool
+		wantCtrl   bool
+		wantConf   string
 	}{
 		{name: "RO 放行读", stmts: []string{"SELECT 1", "PRAGMA table_info(t)"}, editable: ro},
 		{name: "RO 拒写", stmts: []string{"SELECT 1", "DELETE FROM t"}, editable: ro,
@@ -213,8 +214,14 @@ func TestCheckBatch(t *testing.T) {
 		{name: "编辑会话缺 WHERE 需确认", stmts: []string{"DELETE FROM t"}, editable: edit,
 			wantConf: confirmMissingWhere},
 		{name: "编辑会话确认后放行", stmts: []string{"DELETE FROM t"}, editable: edit, confirmed: true},
-		{name: "编辑会话 DDL 恒拒", stmts: []string{"DROP TABLE t"}, editable: edit, confirmed: true,
+		{name: "DDL 未开放时拒（MySQL 口径）", stmts: []string{"DROP TABLE t"}, editable: edit, confirmed: true,
 			wantErr: true, wantDDL: true},
+		{name: "DDL 开放：CREATE 直接执行", stmts: []string{"CREATE TABLE t (a int)"}, editable: edit,
+			ddlAllowed: true},
+		{name: "DDL 开放：DROP 未确认需确认", stmts: []string{"DROP TABLE t"}, editable: edit,
+			ddlAllowed: true, wantConf: confirmDanger},
+		{name: "DDL 开放：DROP 确认后放行", stmts: []string{"DROP TABLE t"}, editable: edit,
+			ddlAllowed: true, confirmed: true},
 		{name: "编辑会话危险需确认", stmts: []string{"ATTACH DATABASE 'x' AS y"}, editable: edit,
 			wantConf: confirmDanger},
 		{name: "编辑会话普通写直接执行", stmts: []string{"UPDATE t SET a=1 WHERE id=1"}, editable: edit},
@@ -224,7 +231,7 @@ func TestCheckBatch(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			conf, err := checkBatch(tt.stmts, kindSQLite, tt.editable, tt.confirmed, false)
+			conf, err := checkBatch(tt.stmts, kindSQLite, tt.editable, tt.confirmed, tt.ddlAllowed)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatalf("want error, got confirm=%q err=nil", conf)

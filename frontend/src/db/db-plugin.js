@@ -1,7 +1,7 @@
 // db-plugin.js：插件数据库驱动的会话门面——把 `cadt.registerDbDriver` 的插件会话
 // 适配成与内置绑定（backend.DB*）相同的形状，让对象树 / 网格 / 控制台零改动复用。
 //
-// 分派规则（db-tab.js）：entry.kind 以 `plugin:` 开头 → 查注册表取驱动 → driver.connect(config)
+// 分派规则（db-sessions.js）：entry.kind 以 `plugin:` 开头 → 查注册表取驱动 → driver.connect(config)
 // 得插件会话 → 本模块包成 backend 形状；否则走内置绑定（sqlite/mariadb/mysql）。
 //
 // 密文面：driver.fields 里 type=password 的字段不进工作区清单（localStorage），经

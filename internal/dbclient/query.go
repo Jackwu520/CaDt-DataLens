@@ -2,7 +2,7 @@ package dbclient
 
 // query.go：查询执行（控制台 + 表浏览下推）与结果组装。
 //
-// 控制台口径：guard 拆分 + 逐条分类 → RO 整批拒 / 写放行会话的 DDL 恒拒、危险与缺 WHERE
+// 控制台口径：guard 拆分 + 逐条分类 → RO 整批拒 / 写放行会话的 DDL 按能力位（SQLite editable 开放）、危险与缺 WHERE
 // 两阶段确认 → 逐条执行，返回最后一条 SELECT 的结果集（写语句以「N 行受影响」进 Message）。
 // 表浏览口径：排序/筛选/分页全部下推（方案 §5.1 决策），列名经元数据校验、值走占位符。
 
@@ -26,12 +26,12 @@ func Query(id, queryID, q string, confirmed bool, limit int) (QueryOutcome, erro
 	}
 	q = strings.TrimSpace(q)
 	if q == "" {
-		return QueryOutcome{}, errors.New("SQL 不能为空")
+		return QueryOutcome{}, errors.New(queryEmptyText(s.kind))
 	}
 	limit = clampRowLimit(limit)
 	stmts := splitStatements(q, s.kind)
 	if len(stmts) == 0 {
-		return QueryOutcome{}, errors.New("SQL 不能为空")
+		return QueryOutcome{}, errors.New(queryEmptyText(s.kind))
 	}
 	confirm, err := checkBatch(stmts, s.kind, s.editable, confirmed, s.caps.DDL)
 	if err != nil {
@@ -57,6 +57,8 @@ func Query(id, queryID, q string, confirmed bool, limit int) (QueryOutcome, erro
 			out.Writes++
 		}
 		out.Result = res
+		// 逐条留档（前端按语句分结果 tab；每条 SQL 截断防巨型 payload）
+		out.Results = append(out.Results, StatementResult{SQL: snippet(stmt), Result: res, Wrote: wrote})
 	}
 	out.Result.ElapsedMs = time.Since(started).Milliseconds()
 	return out, nil
@@ -64,14 +66,28 @@ func Query(id, queryID, q string, confirmed bool, limit int) (QueryOutcome, erro
 
 func confirmMessage(reason, kind string) string {
 	if reason == confirmDanger {
+		if kind == kindRedis {
+			return "这条命令被判定为危险操作（FLUSHALL/CONFIG SET/SHUTDOWN/DEBUG 等），确认后才会执行。"
+		}
 		return "这条语句被判定为危险操作（DROP/TRUNCATE/ATTACH/CALL 等），确认后才会执行。"
 	}
 	return "UPDATE/DELETE 缺少 WHERE（或 WHERE 恒真），将作用于全表；确认后才会执行。"
 }
 
+// queryEmptyText 空输入的报错文案按方言区分。
+func queryEmptyText(kind string) string {
+	if kind == kindRedis {
+		return "命令不能为空（每行一条 Redis 命令）"
+	}
+	return "SQL 不能为空"
+}
+
 // executeStatement 单条语句执行；wrote 表示是写语句（前端据此记操作留痕）。
 func executeStatement(s *dbSession, queryID, stmt string, limit int) (res sqlview.SQLResult, wrote bool, err error) {
 	v := classifyStatement(stmt, s.kind)
+	if s.kind == kindRedis {
+		return executeRedisStatement(s, queryID, stmt, v, limit)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
 	defer cancel()
 	s.registerQuery(queryID, cancel)
@@ -179,7 +195,23 @@ func buildBrowseSQL(kind string, meta *DBTableMeta, req BrowseRequest) (string, 
 		b.WriteString(where)
 		args = append(args, wargs...)
 	}
-	if req.SortColumn != "" {
+	if len(req.OrderCols) > 0 {
+		// 多列 ORDER BY（结构化面板）：逐列过元数据白名单 + quoteIdent，不接受原始 SQL 片段
+		parts := make([]string, 0, len(req.OrderCols))
+		for _, oc := range req.OrderCols {
+			col, err := resolveColumn(meta, oc.Column)
+			if err != nil {
+				return "", nil, err
+			}
+			dir := "ASC"
+			if oc.Desc {
+				dir = "DESC"
+			}
+			parts = append(parts, quoteIdent(kind, col)+" "+dir)
+		}
+		b.WriteString(" ORDER BY ")
+		b.WriteString(strings.Join(parts, ", "))
+	} else if req.SortColumn != "" {
 		col, err := resolveColumn(meta, req.SortColumn)
 		if err != nil {
 			return "", nil, err

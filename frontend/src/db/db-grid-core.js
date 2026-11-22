@@ -7,7 +7,6 @@
 // 结构：head（横向滚动随 body 同步）+ body（纵向滚动）+ canvas（占位高度）+ window（绝对定位行窗）。
 // 单元格一律 textContent 写入（数据是不可信输入，不走 innerHTML）。
 
-const ROW_HEIGHT = 26;
 const OVERSCAN = 6;
 
 export function createDbGrid(opts = {}) {
@@ -20,9 +19,12 @@ export function createDbGrid(opts = {}) {
     const rowNumberLabel = opts.rowNumberLabel === false ? false : true;
     let sortColumn = '';
     let sortDesc = false;
+    let rowHeight = opts.rowHeight || 26; // 行高档位（紧凑/常规/宽松），setRowHeight 切换
+    const colWidths = new Map(); // 列下标 → px（拖拽调整；未拖过的列保持 minmax 弹性）
 
     const el = document.createElement('div');
     el.className = 'db-grid';
+    el.style.setProperty('--db-grid-rowh', rowHeight + 'px');
     const head = document.createElement('div');
     head.className = 'db-grid-head';
     const headInner = document.createElement('div');
@@ -44,9 +46,17 @@ export function createDbGrid(opts = {}) {
     let startRow = 0; // 行号展示基数（分页时 = 页内偏移 + 1）
     let template = '';
 
+    function columnTrack(i) {
+        // 拖拽过的列用固定 px，其余保持 minmax 弹性
+        if (colWidths.has(i)) return colWidths.get(i) + 'px';
+        return 'minmax(130px, 1fr)';
+    }
+
     function rebuildTemplate() {
         const n = Math.max(columns.length, 1);
-        template = '44px repeat(' + n + ', minmax(130px, 1fr))';
+        const tracks = [];
+        for (let i = 0; i < n; i++) tracks.push(columnTrack(i));
+        template = '44px ' + tracks.join(' ');
         // 列模板挂在网格根的 CSS 变量上，表头与每个行窗内的行继承同一份
         // （行是动态重建的，无法逐个 style 赋值；直接设在 win 上管不到行内部的 grid）
         el.style.setProperty('--db-grid-cols', template);
@@ -62,16 +72,54 @@ export function createDbGrid(opts = {}) {
             num.textContent = '#';
             headInner.appendChild(num);
         }
-        for (const col of columns) {
+        for (let ci = 0; ci < columns.length; ci++) {
+            const col = columns[ci];
             const cell = document.createElement('div');
             cell.className = 'db-grid-hcell' + (col === sortColumn ? (sortDesc ? ' sort-desc' : ' sort-asc') : '');
             cell.textContent = col;
             cell.title = col;
             if (onHeaderClick) {
-                cell.addEventListener('click', () => onHeaderClick(col));
+                cell.addEventListener('click', (ev) => {
+                    // 拖拽手柄的 click 不触发排序（拖完松手落把手处会被当成点击）
+                    if (ev.target.closest('.db-grid-colresize')) return;
+                    onHeaderClick(col);
+                });
             }
+            // 列宽拖拽手柄：右缘 5px 命中区，横向拖动 = 调列宽（行窗与列头同模板联动）
+            const grip = document.createElement('span');
+            grip.className = 'db-grid-colresize';
+            grip.addEventListener('mousedown', (ev) => startColResize(ev, ci));
+            grip.addEventListener('dblclick', (ev) => {
+                ev.stopPropagation();
+                colWidths.delete(ci);
+                rebuildTemplate();
+                renderWindow();
+            });
+            cell.appendChild(grip);
             headInner.appendChild(cell);
         }
+    }
+
+    function startColResize(ev, ci) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        const startX = ev.clientX;
+        const startW = colWidths.get(ci) || (ev.target.closest('.db-grid-hcell') || {}).offsetWidth || 130;
+        const onMove = (e2) => {
+            const w = Math.max(56, startW + e2.clientX - startX);
+            colWidths.set(ci, w);
+            const tracks = [];
+            for (let i = 0; i < Math.max(columns.length, 1); i++) tracks.push(columnTrack(i));
+            el.style.setProperty('--db-grid-cols', '44px ' + tracks.join(' '));
+            headInner.style.gridTemplateColumns = 'var(--db-grid-cols)';
+            renderWindow();
+        };
+        const onUp = () => {
+            document.removeEventListener('mousemove', onMove);
+            document.removeEventListener('mouseup', onUp);
+        };
+        document.addEventListener('mousemove', onMove);
+        document.addEventListener('mouseup', onUp);
     }
 
     function buildRow(rowIdx) {
@@ -110,9 +158,9 @@ export function createDbGrid(opts = {}) {
     function renderWindow() {
         const viewH = body.clientHeight || 0;
         const scrollY = body.scrollTop;
-        const first = Math.max(0, Math.floor(scrollY / ROW_HEIGHT) - OVERSCAN);
-        const last = Math.min(rows.length, Math.ceil((scrollY + viewH) / ROW_HEIGHT) + OVERSCAN);
-        win.style.transform = 'translateY(' + first * ROW_HEIGHT + 'px)';
+        const first = Math.max(0, Math.floor(scrollY / rowHeight) - OVERSCAN);
+        const last = Math.min(rows.length, Math.ceil((scrollY + viewH) / rowHeight) + OVERSCAN);
+        win.style.transform = 'translateY(' + first * rowHeight + 'px)';
         win.textContent = '';
         for (let i = first; i < last; i++) {
             win.appendChild(buildRow(i));
@@ -141,7 +189,7 @@ export function createDbGrid(opts = {}) {
             rows = data || [];
             nulls = nullMatrix || [];
             startRow = Number(base) || 0;
-            canvas.style.height = rows.length * ROW_HEIGHT + 'px';
+            canvas.style.height = rows.length * rowHeight + 'px';
             body.scrollTop = keepScroll ? prevScroll : 0;
             headInner.style.transform = 'translateX(0)';
             renderWindow();
@@ -155,6 +203,13 @@ export function createDbGrid(opts = {}) {
             sortColumn = col || '';
             sortDesc = !!desc;
             rebuildTemplate();
+            renderWindow();
+        },
+        /** 行高（紧凑 22 / 常规 26 / 宽松 32）：canvas 高度与可视窗口重算，行内文字随之居中 */
+        setRowHeight(h) {
+            rowHeight = Math.max(18, Number(h) || 26);
+            el.style.setProperty('--db-grid-rowh', rowHeight + 'px');
+            canvas.style.height = rows.length * rowHeight + 'px';
             renderWindow();
         },
         /** 行数（供空态判断）。 */

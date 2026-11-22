@@ -3,7 +3,8 @@
 // 两个口径：
 //   - RO 会话：逐条分类，任一条非只读即整批拒（不依赖驱动只读标志；SQLite 另有 mode=ro、
 //     MySQL 另有 transaction_read_only=1 作第二道，见 sqlite.go / mysql.go）；
-//   - 写放行的会话：DDL 恒拒（Capabilities.DDL=false）；DROP/TRUNCATE/ATTACH/CALL 等危险语句
+//   - 写放行的会话：DDL 按能力位判定（Capabilities.DDL——SQLite editable 会话开放、MySQL 恒拒）；
+//     DROP/TRUNCATE/ATTACH/CALL 等危险语句
 //     与缺 WHERE（或 WHERE TRUE / WHERE 1）的 UPDATE/DELETE 走两阶段确认——本包只返回
 //     confirm 原因，确认交互在前端（overlay 确认层），重发带 confirmed=true。
 //
@@ -144,7 +145,11 @@ func lexTokens(stmt, dialect string) []lexToken {
 
 // splitStatements 按顶层分号把查询文本拆成单条语句；字符串/注释里的分号不拆。
 // 拆出来的语句已去掉注释（替换为空格保距）并修剪首尾空白，空语句丢弃。
+// Redis 走按行拆（一行一条命令，guard_redis.go）。
 func splitStatements(q, dialect string) []string {
+	if dialect == kindRedis {
+		return splitRedisStatements(q)
+	}
 	var out []string
 	var cur strings.Builder
 	isMySQL := dialect == kindMySQL
@@ -219,7 +224,11 @@ var (
 )
 
 // classifyStatement 归类单条语句。只认语句位置的第一个关键字（AGENTS.md 的命令判定同口径）。
+// Redis 命令走独立词表（guard_redis.go）——首词 + 白名单 + fail closed 与这里同一套模型。
 func classifyStatement(stmt, dialect string) stmtVerdict {
+	if dialect == kindRedis {
+		return classifyRedisStatement(stmt)
+	}
 	toks := lexTokens(stmt, dialect)
 	if len(toks) == 0 {
 		return stmtVerdict{class: classWrite, unknown: true}

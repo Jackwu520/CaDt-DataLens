@@ -97,7 +97,7 @@ export function openConnectionsManager(deps, opts = {}) {
 
         const head = document.createElement('div');
         head.className = 'db-preview-head';
-        head.textContent = '数据库连接管理（MySQL）';
+        head.textContent = '数据库连接管理';
 
         const body = document.createElement('div');
         body.className = 'db-ds-body';
@@ -131,11 +131,12 @@ export function openConnectionsManager(deps, opts = {}) {
         const form = document.createElement('div');
         form.className = 'db-conn-form db-ds-form';
         const nameInput = createInput({value: '', placeholder: suggestedName({host: 'localhost', port: 3306})});
-        // 驱动：MySQL 与 MariaDB 协议兼容（同一引擎），选择只决定工作区分组标签
+        // 驱动：MySQL 与 MariaDB 协议兼容（同一引擎，kind 恒 mysql）；Redis 是独立 kind
         const protocolSelect = createSelect({
             options: [
                 {value: 'mysql', label: 'MySQL', selected: true},
                 {value: 'mariadb', label: 'MariaDB'},
+                {value: 'redis', label: 'Redis'},
             ],
         });
         const hostInput = createInput({value: '', placeholder: '主机（IP 或域名）'});
@@ -150,7 +151,7 @@ export function openConnectionsManager(deps, opts = {}) {
         const urlLine = document.createElement('div');
         urlLine.className = 'db-ds-url';
         formRow(form, '名称', nameInput.element);
-        formRow(form, '驱动（同一引擎，分组标签不同）', protocolSelect.element);
+        const driverRow = formRow(form, '驱动（同一引擎，分组标签不同）', protocolSelect.element);
         const hostPortRow = document.createElement('div');
         hostPortRow.className = 'db-conn-rowline';
         const hostLabel = document.createElement('span');
@@ -164,9 +165,9 @@ export function openConnectionsManager(deps, opts = {}) {
         hostWrap.append(hostInput.element, portLabel, portInput.element);
         hostPortRow.append(hostLabel, hostWrap);
         form.appendChild(hostPortRow);
-        formRow(form, '用户', userInput.element);
+        const userRow = formRow(form, '用户', userInput.element);
         formRow(form, '密码', passInput.element);
-        formRow(form, '数据库', dbInput.element);
+        const dbRow = formRow(form, '数据库', dbInput.element);
         formRow(form, '允许编辑（写操作仍需提交预览确认）', editSwitch.element);
         formRow(form, '加入当前工作区（侧栏双击打开）', wsSwitch.element);
         form.appendChild(urlLine);
@@ -279,9 +280,11 @@ export function openConnectionsManager(deps, opts = {}) {
             draft = Object.assign({}, cfg);
             nameTouched = true;
             wsSwitch.control.checked = wsSet.has(id);
-            // 驱动标签跟随工作区引用条目（mysql | mariadb）
+            // 驱动标签跟随连接 kind 与工作区引用条目（mysql | mariadb | redis）
             const ref = refs.find((r) => r.connectionId === id);
-            protocolSelect.control.value = ref && ref.kind === 'mariadb' ? 'mariadb' : 'mysql';
+            protocolSelect.control.value = draft.kind === 'redis' || (ref && ref.kind === 'redis')
+                ? 'redis'
+                : (ref && ref.kind === 'mariadb' ? 'mariadb' : 'mysql');
             renderList(refs);
             renderForm();
         }
@@ -294,10 +297,32 @@ export function openConnectionsManager(deps, opts = {}) {
             selectedId = '';
             draft = blankDraft();
             nameTouched = false; // 名称自动跟随 user@host:port（JetBrains 的 @localhost 习惯）
+            protocolSelect.control.value = 'mysql';
             renderList(deps.listWorkspaceRefs());
             renderForm();
             nameInput.control.focus();
         }
+
+        // ---------- 驱动分支（MySQL/MariaDB 同引擎；Redis 独立 kind） ----------
+
+        const rowLabel = (row) => row.firstChild; // formRow 的标签 span
+        const defaultPort = (p) => (p === 'redis' ? 6379 : 3306);
+
+        // applyProtocolUI 按当前驱动切换标签/占位文案与端口默认值（3306 ↔ 6379 跟随）
+        function applyProtocolUI(p) {
+            const isRedis = p === 'redis';
+            rowLabel(userRow).textContent = isRedis ? '用户名（可选，Redis 6+ ACL）' : '用户';
+            rowLabel(dbRow).textContent = isRedis ? '数据库编号' : '数据库';
+            dbInput.control.placeholder = isRedis ? '0–15（留空 = db0）' : '默认库（可留空，连接后也可在对象树切换）';
+            rowLabel(driverRow).textContent = isRedis ? '驱动（Redis 独立会话）' : '驱动（同一引擎，分组标签不同）';
+            driverLabel.textContent = isRedis ? 'Redis' : 'MySQL';
+            const cur = Number(portInput.control.value) || 0;
+            if (cur === 0 || cur === 3306 || cur === 6379) {
+                portInput.control.value = defaultPort(p);
+            }
+            updateUrl();
+        }
+        protocolSelect.control.addEventListener('change', () => applyProtocolUI(protocolSelect.control.value));
 
         function renderForm() {
             const empty = !draft;
@@ -314,22 +339,23 @@ export function openConnectionsManager(deps, opts = {}) {
             }
             nameInput.control.value = draft.name;
             hostInput.control.value = draft.host;
-            portInput.control.value = draft.port || 3306;
+            portInput.control.value = draft.port || defaultPort(protocolSelect.control.value);
             userInput.control.value = draft.user || '';
             dbInput.control.value = draft.database || '';
             passInput.control.value = '';
             passInput.control.placeholder = draft.id ? '已保存（留空保持不变）' : '密码';
             editSwitch.control.checked = !!draft.allowEdit;
-            updateUrl();
+            applyProtocolUI(protocolSelect.control.value);
         }
 
         function collectDraft() {
+            const p = protocolSelect.control.value;
             return {
                 id: draft.id || '',
                 name: nameInput.control.value.trim(),
-                kind: 'mysql',
+                kind: p === 'redis' ? 'redis' : 'mysql',
                 host: hostInput.control.value.trim(),
-                port: Number(portInput.control.value) || 0,
+                port: Number(portInput.control.value) || defaultPort(p),
                 database: dbInput.control.value.trim(),
                 user: userInput.control.value.trim(),
                 allowEdit: editSwitch.control.checked,
@@ -339,7 +365,10 @@ export function openConnectionsManager(deps, opts = {}) {
 
         function updateUrl() {
             const d = collectDraft();
-            urlLine.textContent = 'mysql://' + (d.user ? d.user + '@' : '') + d.host + ':' + (d.port || 3306) + (d.database ? '/' + d.database : '');
+            const p = protocolSelect.control.value;
+            urlLine.textContent = (p === 'redis' ? 'redis://' : 'mysql://')
+                + (d.user ? d.user + '@' : '') + d.host + ':' + d.port
+                + (d.database ? (p === 'redis' ? '/' : '/') + d.database : '');
         }
 
         // ---------- 动作 ----------

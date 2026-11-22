@@ -1,4 +1,5 @@
-// db-ui.js：侧栏「数据库」面板——本工作区下所有添加的数据库，按类型分组折叠。
+// db-ui.js：侧栏「数据库」面板——添加入口（按钮/对话框/插件表单）+ 行菜单 + 启用门；
+// 清单与会话树（连接 → 库 → 表/视图/服务器对象）的展示归 db-session-tree.js（方案 §11.8）。
 //
 // 工作区清单存 settings.dbWorkspaceDatabases（平铺数组，条目带 workspace 字段，
 // 与 lifecycleHooks 的「本机设置、按工作区生效」同款模式；settings-changed 跨窗同步）：
@@ -7,16 +8,16 @@
 // 配置与凭据在 Go 侧，多工作区共享；mariadb 与 mysql 同引擎、只差分组标签）、
 // `plugin:<插件id>:<驱动id>`（插件驱动，config 存声明字段、密文字段走 dpapi 凭据库）。
 //
-// 总开关 settings.dbToolsEnabled（默认关）：未启用时面板只显示启用门，标签页打不开。
-// 双击 → 在内容区开「数据库」标签页（bridge-database-view.js 的创建点）；右键/[...] → 菜单。
+// 总开关 settings.dbToolsEnabled（默认关）：未启用时面板只显示启用门。
 
 import {iconSvg} from '../core/icons.js';
 import {createInput, createSwitch} from '../core/form-controls.js';
 import {overlayStack} from '../core/overlay-stack.js';
 import {getPluginDbDrivers} from '../shell/plugin-db-drivers.js';
 import {openConnectionsManager, confirmDeleteConnection} from './db-connections.js';
-import {isPluginDbKind, openPluginSession, pluginDbDriverOf, pluginDbLabel, savePluginSecrets} from './db-plugin.js';
-import {kindLabel} from './db-model.js';
+import {isPluginDbKind, openPluginSession, pluginDbDriverOf, savePluginSecrets} from './db-plugin.js';
+import {createDbSessionTree} from './db-session-tree.js';
+import {disconnectSession, getSessionState} from './db-sessions.js';
 
 const REGISTRY_KEY = 'dbWorkspaceDatabases';
 
@@ -38,8 +39,6 @@ function basenameOf(p) {
 export function createDbUi(deps) {
 
 // 折叠状态（内存即可：重启回默认全展开）
-const collapsed = new Map(); // key = workspace|kind
-
 function getSettings() {
     return deps.settings || {};
 }
@@ -113,6 +112,31 @@ async function addSqlite() {
     renderSidebar();
 }
 
+// 新建空库文件（方案 §11.9）：保存对话框选路径 → Go 建库（存在即报错，绝不覆盖）
+// → 默认允许编辑加入工作区（建库就是为了写，行菜单可改）。
+async function addSqliteNew() {
+    const pick = await deps.backend.ShowSaveFileDialog('新建 SQLite 数据库', '新数据库.db');
+    const path = String(pick || '');
+    if (!path) return;
+    try {
+        await deps.backend.DBCreateSQLite(path);
+    } catch (e) {
+        deps.flash(e && e.message || String(e), true);
+        return;
+    }
+    addEntry({
+        id: newEntryId(),
+        workspace: currentWorkspace(),
+        kind: 'sqlite',
+        path,
+        name: basenameOf(path),
+        allowEdit: true,
+        addedAt: Date.now(),
+    });
+    deps.flash('已创建数据库：' + basenameOf(path) + '（展开后用「表」旁的 + 新建表）');
+    renderSidebar();
+}
+
 // MySQL/MariaDB 添加/管理：统一对话框（JetBrains「数据源和驱动程序」形态）。
 // syncWorkspaceRef / listWorkspaceRefs 把全局连接与工作区清单的双向关系收在注册表这一层
 // （引用条目完整返回，管理对话框据此回显驱动标签 mysql|mariadb）。
@@ -126,8 +150,8 @@ function dsDeps() {
             .filter((e) => e.kind === 'mysql' || e.kind === 'mariadb')
             .map((e) => ({connectionId: e.connectionId, kind: e.kind})),
         syncWorkspaceRef: (connectionId, inWorkspace, name, protocol) => {
-            const kind = protocol === 'mariadb' ? 'mariadb' : 'mysql';
-            const kept = listAll().filter((e) => !((e.kind === 'mysql' || e.kind === 'mariadb') && e.connectionId === connectionId && e.workspace === currentWorkspace()));
+            const kind = protocol === 'redis' ? 'redis' : (protocol === 'mariadb' ? 'mariadb' : 'mysql');
+            const kept = listAll().filter((e) => !((e.kind === 'mysql' || e.kind === 'mariadb' || e.kind === 'redis') && e.connectionId === connectionId && e.workspace === currentWorkspace()));
             if (inWorkspace) {
                 kept.push({
                     id: 'wsdb-' + Date.now() + '-' + Math.floor(Math.random() * 1e6),
@@ -149,11 +173,116 @@ async function addMysql() {
     renderSidebar();
 }
 
-// ---------- 插件驱动（cadt.registerDbDriver）添加 / 编辑 ----------
-
-function labelForKind(kind) {
-    return kind.startsWith('plugin:') ? pluginDbLabel(kind) : kindLabel(kind);
+// addRedis 与 MySQL 共用连接管理对话框（驱动下拉里选 Redis；kind 由对话框落盘）
+async function addRedis() {
+    await addMysql();
 }
+
+// ---------- Redis 危险操作确认（方案 §5.4：批量删 Type-to-Confirm） ----------
+
+// redisDeleteKeyConfirm 单键删除：普通确认（键名在弹层里可见，破坏面只有一键）
+function redisDeleteKeyConfirm(deps, entry, db, key) {
+    deps.openConfirmDialog(
+        '键「' + key + '」将被 DEL 删除，此操作不可撤销。',
+        async () => {
+            try {
+                const snap = getSessionState(entry.id);
+                if (!snap || !snap.info) throw new Error('会话已断开');
+                await deps.backend.DBRedisApply(snap.info.id, [{kind: 'delKey', key}]);
+                deps.flash('已删除键：' + key);
+                tree.resetEntry(entry.id);
+                renderSidebar();
+            } catch (e) {
+                deps.flash('删除失败：' + (e && e.message || e), true);
+            }
+        },
+        '删除',
+        '删除 Redis 键？',
+        'danger',
+    );
+}
+
+// redisDeleteByPrefixConfirm 前缀批量删除：Type-to-Confirm（输入完整前缀才可确认，§5.4）
+function redisDeleteByPrefixConfirm(deps, entry, db, prefix) {
+    const panel = document.createElement('div');
+    panel.className = 'db-preview db-redis-confirm';
+    const head = document.createElement('div');
+    head.className = 'db-preview-head';
+    head.textContent = '批量删除键（Type-to-Confirm）';
+    const body = document.createElement('div');
+    body.className = 'db-preview-body db-redis-confirm-body';
+    const msg = document.createElement('p');
+    msg.textContent = '将扫描并删除前缀「' + prefix + '*」下的全部键（SCAN + UNLINK），不可撤销。输入 ' + prefix + ' 以确认：';
+    const wordInput = createInput({value: '', placeholder: '输入 ' + prefix + ' 确认'});
+    const foot = document.createElement('div');
+    foot.className = 'db-preview-foot';
+    const cancelBtn = document.createElement('button');
+    cancelBtn.type = 'button';
+    cancelBtn.className = 'db-btn';
+    cancelBtn.textContent = '取消';
+    const delBtn = document.createElement('button');
+    delBtn.type = 'button';
+    delBtn.className = 'db-btn danger';
+    delBtn.textContent = '删除';
+    delBtn.disabled = true;
+    foot.append(cancelBtn, delBtn);
+    panel.append(head, body, foot);
+    body.append(msg, wordInput.element);
+    const syncBtn = () => {
+        delBtn.disabled = wordInput.control.value !== prefix;
+    };
+    wordInput.control.addEventListener('input', syncBtn);
+    wordInput.control.focus();
+
+    const mask = document.createElement('div');
+    mask.className = 'db-preview-mask';
+    mask.appendChild(panel);
+    let handle = null;
+    let cleaned = false;
+    const cleanup = () => {
+        if (cleaned) return;
+        cleaned = true;
+        mask.remove();
+        panel.remove();
+    };
+    const close = () => {
+        if (cleaned) return;
+        if (handle) handle.dispose();
+        cleanup();
+    };
+    handle = overlayStack.open({
+        id: 'db-redis-delete-prefix',
+        kind: 'dialog',
+        el: panel,
+        underEl: mask,
+        onClose: () => {
+            if (handle) handle.dispose();
+            cleanup();
+        },
+    });
+    document.body.appendChild(mask);
+    mask.addEventListener('click', (ev) => {
+        if (ev.target === mask) close();
+    });
+    cancelBtn.addEventListener('click', close);
+    delBtn.addEventListener('click', async () => {
+        if (delBtn.disabled) return;
+        close();
+        try {
+            const snap = getSessionState(entry.id);
+            if (!snap || !snap.info) throw new Error('会话已断开');
+            const out = await deps.backend.DBRedisDeleteByPrefix(snap.info.id, db, prefix);
+            deps.flash('已删除前缀 ' + prefix + '* 下 ' + (out && out.deleted || 0) + ' 个键');
+            if (deps.logActivity) deps.logActivity('db.redis.deletePrefix', entry.name, {kind: 'redis', prefix, deleted: out && out.deleted || 0});
+            tree.resetEntry(entry.id);
+            renderSidebar();
+        } catch (e) {
+            deps.flash('批量删除失败：' + (e && e.message || e), true);
+        }
+    });
+}
+
+// ---------- 插件驱动（cadt.registerDbDriver）添加 / 编辑 ----------
 
 function newEntryId() {
     return 'wsdb-' + Date.now() + '-' + Math.floor(Math.random() * 1e6);
@@ -311,8 +440,10 @@ function openPluginEntryDialog(driver, existing) {
 // 插件驱动：单个直接列一项，多个收进子菜单；无注册驱动时提示安装途径。
 function openCreateMenu(anchorRect) {
     const items = [
+        {label: '新建 SQLite 数据库…', icon: 'plus', action: () => addSqliteNew()},
         {label: 'SQLite 库文件…', icon: 'file', action: () => addSqlite()},
         {label: 'MySQL / MariaDB 连接…', icon: 'globe', action: () => addMysql()},
+        {label: 'Redis 连接…', icon: 'database', action: () => addRedis()},
     ];
     const drivers = getPluginDbDrivers();
     if (drivers.length === 1) {
@@ -337,21 +468,38 @@ function openCreateMenu(anchorRect) {
 
 // ---------- 行菜单 ----------
 
+// 行菜单（JetBrains 对齐）：浏览入口已移到树节点（双击表开标签页），这里只留连接级操作。
 function rowMenu(entry, anchorRect) {
+    const snap = getSessionState(entry.id);
     const items = [];
-    items.push({label: '打开', icon: 'view-table', action: () => deps.openDatabaseTab(entry)});
-    if (entry.kind === 'sqlite') {
+    items.push({
+        label: '打开查询控制台',
+        icon: 'terminal',
+        action: () => deps.openDbConsoleTab(entry),
+    });
+    if (snap && (snap.status === 'connected' || snap.status === 'connecting')) {
         items.push({
-            label: entry.allowEdit ? '允许编辑 ✓（点击关闭）' : '允许编辑（点击开启，重开标签页生效）',
+            label: '断开连接',
+            icon: 'close',
+            action: () => {
+                tree.resetEntry(entry.id);
+                disconnectSession(entry.id);
+            },
+        });
+    }
+    if (entry.kind === 'sqlite') {
+        items.push({sep: true});
+        items.push({
+            label: entry.allowEdit ? '允许编辑 ✓（点击关闭）' : '允许编辑（点击开启，断开重连后生效）',
             icon: entry.allowEdit ? 'check' : 'unlock',
             action: () => {
                 updateEntry(entry.id, {allowEdit: !entry.allowEdit});
-                deps.flash(entry.allowEdit ? '已关闭允许编辑，重开标签页生效' : '已开启允许编辑，重开标签页生效');
+                deps.flash(entry.allowEdit ? '已关闭允许编辑，断开重连后生效' : '已开启允许编辑，断开重连后生效');
                 renderSidebar();
             },
         });
     }
-    if (entry.kind === 'mysql' || entry.kind === 'mariadb') {
+    if (entry.kind === 'mysql' || entry.kind === 'mariadb' || entry.kind === 'redis') {
         items.push({sep: true});
         items.push({
             label: '测试连接',
@@ -371,7 +519,7 @@ function rowMenu(entry, anchorRect) {
             },
         });
         items.push({
-            label: '编辑连接…（打开连接管理）',
+            label: '属性…（连接管理）',
             icon: 'gear',
             action: async () => {
                 await openConnectionsManager(dsDeps(), {initialSelectId: entry.connectionId});
@@ -386,7 +534,9 @@ function rowMenu(entry, anchorRect) {
                     const cfg = (await globalConnections()).find((c) => c.id === entry.connectionId);
                     if (!cfg) return;
                     confirmDeleteConnection(deps, cfg, () => {
-                        // 全局删除：所有引用它的条目一并移除
+                        // 全局删除：所有引用它的条目一并移除，会话与树缓存一并清
+                        disconnectSession(entry.id);
+                        tree.resetEntry(entry.id);
                         getSettings()[REGISTRY_KEY] = listAll().filter((e) => e.connectionId !== cfg.id);
                         persist();
                         renderSidebar();
@@ -434,6 +584,8 @@ function rowMenu(entry, anchorRect) {
         label: '从工作区移除',
         icon: 'close',
         action: () => {
+            disconnectSession(entry.id);
+            tree.resetEntry(entry.id);
             removeEntry(entry.id);
             deps.flash('已从工作区移除：' + entry.name + (entry.kind === 'mysql' ? '（连接配置保留，可重新添加）' : ''));
             renderSidebar();
@@ -444,57 +596,20 @@ function rowMenu(entry, anchorRect) {
 
 // ---------- 面板渲染 ----------
 
-function groupHeader(kind, rows) {
-    const key = currentWorkspace() + '|' + kind;
-    const isCollapsed = collapsed.get(key) || false;
-    const head = document.createElement('div');
-    head.className = 'db-side-group-head';
-    const arrow = document.createElement('span');
-    arrow.className = 'db-tree-arrow' + (isCollapsed ? '' : ' open');
-    arrow.textContent = '▸';
-    const label = document.createElement('span');
-    label.className = 'db-side-group-label';
-    label.textContent = labelForKind(kind) + '（' + rows.length + '）';
-    head.append(arrow, label);
-    head.addEventListener('click', () => {
-        collapsed.set(key, !isCollapsed);
-        renderSidebar();
-    });
-    return head;
-}
-
-function dbRow(entry) {
-    const row = document.createElement('div');
-    row.className = 'db-side-row';
-    row.dataset.tip = entry.kind === 'sqlite'
-        ? entry.path + (entry.allowEdit ? ' · 已允许编辑' : '')
-        : (entry.name + ' · 双击打开，右键更多操作');
-    const ic = document.createElement('span');
-    ic.className = 'db-tree-ic';
-    ic.innerHTML = iconSvg(
-        entry.kind === 'mysql' || entry.kind === 'mariadb' ? 'globe'
-            : isPluginDbKind(entry.kind) ? 'puzzle' : 'file', 13);
-    const name = document.createElement('span');
-    name.className = 'db-tree-name';
-    name.textContent = entry.name;
-    const more = document.createElement('button');
-    more.type = 'button';
-    more.className = 'db-tree-act';
-    more.title = '更多操作';
-    more.innerHTML = iconSvg('more-vertical', 12);
-    row.append(ic, name, more);
-    row.addEventListener('dblclick', () => deps.openDatabaseTab(entry));
-    row.addEventListener('contextmenu', (ev) => {
-        ev.preventDefault();
-        rowMenu(entry, {left: ev.clientX, bottom: ev.clientY});
-    });
-    more.addEventListener('click', (ev) => {
-        ev.stopPropagation();
-        const rect = more.getBoundingClientRect();
-        rowMenu(entry, {left: rect.left, bottom: rect.bottom});
-    });
-    return row;
-}
+// 会话树：清单渲染（含类型分组折叠）、连接生命周期展示、双击表开标签页都归它
+const tree = createDbSessionTree({
+    get backend() { return deps.backend; },
+    getEntries: () => listForWorkspace(),
+    openTable: (entry, db, obj) => deps.openDbTableTab(entry, db, obj),
+    openRedisKey: (entry, db, key) => deps.openDbRedisKeyTab(entry, db, key),
+    onEntryMenu: (entry, rect) => rowMenu(entry, rect),
+    get logActivity() { return deps.logActivity; },
+    get ctxMenu() { return deps.ctxMenu; },
+    openConsole: (entry) => deps.openDbConsoleTab(entry),
+    get copyText() { return deps.copyText; },
+    deleteKeyConfirm: (entry, db, key) => redisDeleteKeyConfirm(deps, entry, db, key),
+    deleteByPrefixConfirm: (entry, db, prefix) => redisDeleteByPrefixConfirm(deps, entry, db, prefix),
+});
 
 function renderGate(host) {
     const wrap = document.createElement('div');
@@ -542,40 +657,14 @@ function renderSidebar() {
     actions.append(addBtn);
     host.appendChild(actions);
 
-    // 分组：内置类型固定序在前，插件驱动按显示名排（一个驱动一组）
-    const entries = listForWorkspace();
-    const kinds = [];
-    for (const e of entries) {
-        if (!kinds.includes(e.kind)) kinds.push(e.kind);
-    }
-    const builtinOrder = {sqlite: 0, mysql: 1, mariadb: 2};
-    kinds.sort((a, b) => {
-        const oa = builtinOrder[a] != null ? builtinOrder[a] : 99;
-        const ob = builtinOrder[b] != null ? builtinOrder[b] : 99;
-        if (oa !== ob) return oa - ob;
-        return labelForKind(a) < labelForKind(b) ? -1 : 1;
-    });
-    let empty = kinds.length === 0;
-    for (const kind of kinds) {
-        const rows = entries.filter((e) => e.kind === kind);
-        if (!rows.length) continue;
-        empty = false;
-        host.appendChild(groupHeader(kind, rows));
-        if (!collapsed.get(currentWorkspace() + '|' + kind)) {
-            for (const entry of rows) host.appendChild(dbRow(entry));
-        }
-    }
-    if (empty) {
-        const hint = document.createElement('div');
-        hint.className = 'db-tree-hint';
-        hint.textContent = '本工作区还没有添加数据库。用上方按钮添加 SQLite 库文件、MySQL/MariaDB 连接或插件驱动，双击列表项在标签页打开。';
-        host.appendChild(hint);
-    }
+    // 清单 + 会话树（分组折叠/连接状态/库/表/服务器对象）由树组件接管
+    host.appendChild(tree.el);
+    tree.render();
 }
 
 return {
     renderSidebar,
     /** 暴露给右键测试 / 后续入口复用 */
-    openDatabaseTab: (entry) => deps.openDatabaseTab(entry),
+    openDbTableTab: (entry, db, obj) => deps.openDbTableTab(entry, db, obj),
 };
 }

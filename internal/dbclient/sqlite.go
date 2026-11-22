@@ -10,6 +10,7 @@ package dbclient
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -24,7 +25,44 @@ type sqliteDriver struct{}
 func (sqliteDriver) Kind() string { return kindSQLite }
 
 func (sqliteDriver) Capabilities() Capabilities {
-	return Capabilities{Transaction: true, Editable: true}
+	// DDL 仅对「允许编辑」的本地 SQLite 会话开放（2026-11-22 作者拍板：支持从零建库建表）；
+	// 只读会话被 checkBatch 的 editable 门挡住，MySQL 驱动保持 DDL=false 恒拒。
+	return Capabilities{Transaction: true, Editable: true, DDL: true}
+}
+
+// CreateSQLite 新建一个空的 SQLite 库文件（用户刚在保存对话框选的路径；
+// 已存在即报错，绝不覆盖——添加已有库文件走「SQLite 库文件…」入口）。
+// buildSQLiteDSN 的 mode=rw 不会创建新文件，所以先用 O_CREATE|O_EXCL 落一个 0 字节
+// 文件（SQLite 把 0 字节文件当空库；journal_mode 是持久属性，执行它即写入文件头落盘）。
+func CreateSQLite(path string) error {
+	if strings.TrimSpace(path) == "" {
+		return errors.New("路径不能为空")
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	if err != nil {
+		if os.IsExist(err) {
+			return fmt.Errorf("文件已存在：%s（要添加已有库请用「SQLite 库文件…」）", path)
+		}
+		return fmt.Errorf("无法创建文件：%w", err)
+	}
+	_ = f.Close()
+	db, err := sql.Open("sqlite", buildSQLiteDSN(path, false, false))
+	if err != nil {
+		_ = os.Remove(path)
+		return err
+	}
+	defer db.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	// 0 字节文件还不算「数据库」：header（100 字节）要靠首次真实写事务落盘。
+	// 建一张初始化表再删掉——落盘后 sqlite_master 逻辑为空，仍是干净的 0 表空库。
+	for _, stmt := range []string{"CREATE TABLE _cadt_init (x TEXT)", "DROP TABLE _cadt_init"} {
+		if _, err := db.ExecContext(ctx, stmt); err != nil {
+			_ = os.Remove(path) // 创建失败不留半截文件
+			return fmt.Errorf("创建数据库失败：%w", err)
+		}
+	}
+	return nil
 }
 
 // buildSQLiteDSN 构造 modernc 驱动的 file: URI。路径做最小转义（% ? #）后 ToSlash，

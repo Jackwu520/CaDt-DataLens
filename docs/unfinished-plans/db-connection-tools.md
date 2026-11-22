@@ -1,7 +1,7 @@
 # 内置数据库连接与浏览工具（分期方案）
 
-> 状态：**P0–P2 已实施**（2026-11-22 评估、调研、评审、实施同日完成；落地决策与偏离记录见 §11；
-> P3 Redis 按既定边界「单独立项」，未启动）
+> 状态：**P0–P3 已实施**（2026-11-22 评估、调研、评审、实施同日完成；落地决策与偏离记录见 §11；
+> P3 Redis 见 §11.13）
 >
 > 目标形态：类 JetBrains DataGrip / Beekeeper Studio 的「连接 → 对象树 → 表数据网格 → SQL 查询 → 受控编辑」，
 > 但严格保持本项目「单 exe、零依赖、无索引、轻快」的核心竞争力——**做一个够用的轻量数据查看器，不做一个瘦版 DataGrip**。
@@ -378,3 +378,58 @@ type QueryRequest struct {
 ### 11.7 新建连接对齐 JetBrains「数据源和驱动程序」（2026-11-22 作者要求）
 
 MySQL 的添加/编辑从「先选已有再新建」两步流收敛为**统一管理对话框**（`db-connections.js` 的 `openConnectionsManager`）：左侧连接清单（+ 新建 / − 删除，行带「工作区」引用徽标）、右侧表单——名称自动建议 `user@host:port`（nameTouched 前跟随主机/用户/端口，对应 JetBrains 的 `@localhost`）、主机端口并排、用户/密码（密码留空保持已存）、数据库、允许编辑开关、**「加入当前工作区」开关**（对应 JetBrains 的「项目数据源」概念，应用时经 `syncWorkspaceRef` 同步引用）、URL 只读预览；底部 测试连接 / 取消 / 应用 / 确定（应用 = 保存草稿并刷新列表不关窗）。SQLite 添加保持文件选择（JetBrains 的 SQLite 数据源同样只选文件）。连接对话框仅此一处入口：侧栏 [+ MySQL 连接] 与行菜单「编辑连接…（打开连接管理并定位该连接）」。
+
+### 11.8 入口重构 v2：会话面板化（2026-11-22 作者纠正「方向错了」）
+
+作者以 JetBrains DataGrip 截图为准：侧栏「数据库」面板本身就是**会话面板**——连接条目展开即建立会话，树直接长在侧栏（连接 → 库 → 分组「表 N」「视图 N」+ MySQL 专属「服务器对象」→ 排序规则 / 用户 / 虚拟视图）；**双击数据表直接以独立虚拟标签页打开全宽数据网格**（一个表一个标签），不再有「库标签页内嵌树+子标签+控制台」的三栏布局。旧 `db-tab.js` / `db-object-tree.js` 删除，演进为：
+
+- **`db-sessions.js`（会话管理器）**：模块级单例。一个工作区条目至多一个会话（幂等连接、并发共享 pending）；disconnect/reconnect 沿用 connectEpoch 世代防线（在飞连接 resolve 后自释放）；订阅通知驱动树与标签页刷新。会话生命周期挂侧栏：关标签页只关视图，断开靠行菜单或 Go 侧 15min 空闲回收兜底（面板给重连入口）。
+- **`db-session-tree.js`（侧栏会话树）**：全部懒加载（沿用 L1/L2 按需语义）。表/视图节点行尾 muted 注释（MySQL `TABLE_COMMENT`，`DBObject.Comment`）；服务器对象分组仅 MySQL 显示，`DBListServerObjects` 每组独立查询独立容错（权限不足的组隐藏整组）；类型分组折叠沿用原语义。
+- **`db-tab-views.js`（表/控制台标签页）**：`TAB_KINDS` 的 `dbView` 拆为 `dbTable`（key=条目|库|表，图标按表/视图细分）与 `dbConsole`（每会话一个，key=条目 id）两个 marker；marker 字段保持去重 key 字符串、域数据在 `dbTableSpec`/`dbConsoleSpec`。会话三态壳（连接中/失败/断开+重连）由 `mountWithSession` 收口。
+- **编辑链路对齐（图4/图5）**：内联编辑框完全接管 `.dlg-input` 对话框形态（26px 行高内占满单元格、无圆角缝隙、accent 描边）；修改单元格显示**新值**（修掉 displayRows 不应用 updates 的显示 bug）+ `db-cell-dirty` 高亮 + 行号列同色高亮（`db-row-dirty`）；提交改 icon 按钮——无修改灰、有修改亮，**点击出预览弹层（两阶段确认保留），Ctrl+Enter 直接提交**（作者拍板对齐 JetBrains 默认行为）。顺带修掉 `.db-btn[hidden]` 被 `display:inline-flex` 覆盖导致编辑簇在只读会话也显示的老坑，以及预览弹层取消路径只 dispose 不清 DOM 的残留（overlay-stack 收口规范同款）。
+- **Go 协议扩展**：`DBObject.Comment` / `DBTableMeta.TableComment`（information_schema.tables 顺带把行数与注释合并成一次查询）、`ListServerObjects`（排序规则/用户/系统视图，`ServerObjectGroup.Error` 单组容错）、绑定 `DBListServerObjects`；mock-backend 同步。
+
+### 11.9 从零建库建表（2026-11-22 作者要求「建库 + SQLite 开放建表」）
+
+此前只能接入已有库文件，且 guard 对 DDL 恒拒——「从零建库」链路不存在。本次开放（作者在两个选项里拍板选了带建表的方案）：
+
+- **新建空库文件**：Go `CreateSQLite(path)`——`O_CREATE|O_EXCL` 原子判定「已存在」（绝不覆盖）；0 字节文件对 `mode=rw` 的 file: URI 合法，随后「建 `_cadt_init` 表再删」的真实写事务落盘 100 字节文件头（`PRAGMA journal_mode` 不产生写 I/O，试过会留下 0 字节半截文件——失败路径 `os.Remove` 清理）。绑定 `DBCreateSQLite`；前端「新建 SQLite 数据库…」（保存对话框，mock 同步），建好默认 `allowEdit: true` 加入工作区。
+- **DDL 能力位开放（仅 SQLite）**：`sqliteDriver.Capabilities().DDL = true`——`checkBatch` 的 `ddlAllowed` 参数早已存在，DDL+危险语句（DROP/TRUNCATE/…）未确认时仍走 `confirmDanger` 两阶段确认；只读会话被 editable 门挡住；**MySQL 驱动保持 DDL=false 恒拒**。control 台 `CREATE TABLE` 直接执行、`DROP TABLE` 确认后执行。
+- **结构化「新建表」表单**（`db-create-table.js`）：入口在树「表」分组行尾的 + 按钮（仅 SQLite editable 会话渲染）；表名/列名保守校验（`isValidIdent`：字母数字下划线、不以数字开头——双引号包裹只是兜底，明防线避开关键字）；类型白名单 INTEGER/TEXT/REAL/BLOB/NUMERIC；单主键落列内（INTEGER 主键保留 rowid 别名）、复合主键表级 `PRIMARY KEY (…)` 声明、主键列隐含 NOT NULL；生成的 SQL 走控制台同一条 `DBQuery` 通道（guard 分类全部生效，不做旁路），成功后清树缓存刷新清单。SQL 生成纯函数 `buildCreateTableSQL` 有表驱动测试（已登记 npm test）。
+- **测试**：`guard_test` 的 DDL 用例改为能力位语义（未开放拒 / CREATE 直接放行 / DROP 确认链路），`TestSQLiteEditableFlow` 的「DDL 恒拒」改写为「确认后 DROP 真实执行」，新增 `TestCreateSQLite`（落盘 / 已存在报错 / 空库可开可建表）。
+
+### 11.10 对齐 JetBrains 的八项打磨（2026-11-22 用户实测反馈）
+
+1. **自动重连**：空闲回收是服务端静默行为，网格/控制台调用失败识别 `isSessionMissing` → `sessionLost()`（`db-tab-views` 挂载壳提供，`reconnectSession` + 5s 节流）→ 成功即 `sessionRecovered()` 重建面板自动重载；再失败落回错误态。防循环靠节流 + 重建后新会话 lastUsed 新鲜。
+2. **树缩进**：固定步进（条目 20 → 库 36 → 分组 52 → 表节点 68；服务器子分组 68/叶子 84）——修正库行父子倒挂与表节点平级问题。
+3. **树箭头 SVG**：`iconSvg('chevron-right')` 替代文字「▸」。
+4. **右键菜单层级补齐**：库/表分组/视图分组/服务器对象分组/表视图节点/条目行各有动作集合；`[...]` 去 tooltip；MySQL 菜单「编辑连接…」→「属性…」。
+5. **AI 上下文**：`appTabViewOf` 对 dbTable/dbConsole 注入 desc（连接/库/类型），`ai-system-context` 拼括号说明。
+6. **筛选重排 + 多列 ORDER BY**：WHERE/ORDER BY 分区标签；条件行栅格按 `.db-filter-col/.db-filter-op` 类定宽（enhanceSelect 触发器 wrap 继承原 select 类；**必须先入行再增强**——`sel.after(wrap)` 对未挂载节点无效，首版时序 bug 的教训）；`BrowseRequest.OrderCols` 结构化多列，Go 侧逐列 `resolveColumn` 白名单 + `quoteIdent`。
+7. **分页档位/导出/导入/自动刷新**：pageSize 档位在状态条（自定义走 prompt，回填列表首位）；导出 CSV（`formats.csv.stringifyTable`）/JSONL（null 显式）；导入走受控写入（解析 → 列映射 → inserts → 预览/直提单事务），`DBReadImportFile` 绑定（UTF-8/20MB）；自动刷新档位菜单（`deps.ctxMenu`），编辑中/dirty 暂停、invalidate 静默停。
+8. **单元格垂直居中**：`.db-grid-cell` line-height 20px。
+
+### 11.11 行高列宽 / DDL 导出 / 控制台多结果（2026-11-22 用户反馈 9–11）
+
+1. **列宽拖拽**：表头右缘 `.db-grid-colresize` 手柄（5px 命中区）横向拖动 → `colWidths` Map → 列模板经 `--db-grid-cols` 单一来源更新（拖过的列固定 px、未拖保持 minmax 弹性）；双击手柄恢复自适应；手柄 mousedown 阻断 click 防误触排序。**行高档位**：`ROW_HEIGHT` 常量改 `rowHeight` 可变 + `setRowHeight(h)`（canvas 高度与可视窗口重算），CSS 行高与 cell line-height 走 `--db-grid-rowh` 变量（`calc(行高 - 6px)` 保证文字随档位居中）；状态条档位 紧凑22/常规26/宽松32。
+2. **DDL 导出**：`buildDDL(kind, meta)` 纯函数（db-model）——方言引号、DEFAULT 字面量转义（数字裸值/NULL/字符串）、单主键列内 + 复合主键表级、索引还原（SQLite autoindex 跳过）；朴素还原不虚构 ENGINE/自增。入口：树表节点右键（异步 DBDescribe）+ 表标签页「DDL」按钮（meta 在手同步生成）。
+3. **控制台多结果**：`QueryOutcome.Results []StatementResult`（逐条 SQL 截断留档 + 结果 + wrote；兼容 Result = 最后一条）。前端结果区 tab 化：grid 共享 + 切换重放（不为每结果建 grid 实例），「输出」摘要逐条语句/行数/消息 + 总耗时；mock 同步按分号拆语句演示。Ace 多行编辑器（高亮/补全/Ctrl+Enter）由编辑器补全方案（editor-completion）落地，此处只做结果呈现。
+
+### 11.12 控制台配色对齐编辑区（2026-11-22 用户反馈）
+
+控制台 Ace（`window.ace.edit()` 运行时创建）会被 Ace **动态注入默认主题 CSS**（晚于构建期样式表），token 硬色盖掉应用的代码风格变量——关键字变默认蓝紫，与编辑区（jsoneditor 主题 CSS 打包在构建期、被 style.css 按序覆盖）不一致。修复：`.db-sql-ace` 的全部 token 框架规则（关键字/字符串/注释/数字/布尔/NULL/函数/标点/标识符/选区/gutter）加 `!important`，颜色永远走 `--syn-*`/`--code-val-*`/`--editor-*` 变量——随 `data-code-style` 代码主题与界面主题切换，控制台与编辑区永远同源（实测 auto（expUI dark）下关键字 #cf8e6d、字符串绿、注释灰）。
+
+### 11.13 P3 Redis 实施（2026-11-22，用户拍板「完整 §5.4 一步到位」）
+
+**范围**：连接（驱动下拉 + ACL 用户名/库编号）→ 会话树键空间（SCAN 分层聚合、`:` 前缀分组/扁平切换、诚实计数 + 加载更多）→ 键查看器标签页（五类型行集 + string 四档 formatter + 行编辑）→ TTL 修改/PERSIST → 单键删除 + 前缀批量删（Type-to-Confirm）→ 查询控制台（词表 guard + 两阶段确认）。0 新依赖。
+
+**落地决策与偏离**（对照 §5.4）：
+- **会话架构**：`dbSession` 加 `redis *redisClient` 字段（nil = SQL 会话）——生命周期登记/空闲回收/取消与 SQL 会话共用一条流程；Redis 不进 Driver 注册表（遵守 driver.go:5「独立子系统」声明），在 `openSession` 分派最前面走 `openRedisSession`。Close/sweep 三处 `s.db.Close()` 收口为 `closeSessionConn`。
+- **RESP2 客户端**（`redis.go`）：单连接串行 + pipeline（TYPE/TTL/长度批量）；`-ERR` 回复作为**回复值**（`*respError`）不中断 pipeline——单条命令打错类型不毁连接；IO/协议错误才断连。文件头注明可替换 go-redis/v9。
+- **guard**（`guard_redis.go`）：首词 + 白名单 + fail closed 与 SQL 同模型；读白名单精确枚举（`config get` 两词精确放行，config 其余 danger）；MULTI/EXEC/WATCH → classCtrl（控制台拒，与 SQL BEGIN/COMMIT 同口径）；`xread/xreadgroup` 不进读白名单（BLOCK 参数会阻塞）；memory/client/object/acl 整体不进白名单（子命令混杂）。控制台按行拆（`splitRedisStatements`），一行一条命令。
+- **编辑提交走结构化 `RedisOp`**（`DBRedisApply`，RESP 直发不经文本解析——多行/二进制值安全），弹层展示等价命令文本（§5.4「编辑生成命令预览」）；`setString` 携带原 TTL（SET 清 TTL → 第二条 EXPIRE 补偿，不用 SET KEEPTTL 因 Redis <6.0 不支持）。控制台文本命令才走 guard 词表。
+- **键空间树**：分层懒加载（每前缀层独立 SCAN 缓存，COUNT 250/批 + cursor 续扫），`redisPrefixTree` 客户端聚合（组名与叶子名共存互不吞并，尾分隔符键 `user:` 是叶子）；根层搜索 = SCAN MATCH；组右键「删除此前缀」走 Type-to-Confirm（输入完整前缀才可确认）。
+- **键查看器**：`dbRedisKey` 新虚拟标签页（marker/key 成对、tab-kinds 单一来源）；集合类型双击行弹层编辑（hash field/list index/set member/zset score；stream 只读）；string 编辑走「整值覆盖 + TTL 保持」语义并在弹层标题明示截断覆盖。
+- **mock**：演示连接管理（DBListConnections/DBSaveConnection 内存 store）+ Redis 键空间 store（五类型 + 中文前缀组）+ 控制台按行拆的 guard 行为演示——浏览器 mock 环境全流程可测。
+- **测试**：Go 假 server（每用例独立 listener，不写 TestMain——规避 AGENTS.md 子进程递归陷阱）全链路 8 例 + RESP/词表/拆行表驱动；前端 `db-redis.test.mjs` 9 例（聚合/转义/TTL 文案）。
+- **已知边界**：不支持 Cluster/Sentinel/TLS/Pub-Sub/MONITOR/Lua 编辑；SCAN 期间键增删不承诺快照一致；非 UTF-8 键名显示转义、操作全程精确传值；string 预览截断 256KB、集合行集截断 5000 元素。

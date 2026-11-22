@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import {
     kindLabel, encodeRowKey, decodeRowKey, rowKeyOf, rowKeysMap,
     FILTER_OPS, filterOpNeedsValue, formatElapsed, rowEstimateLabel,
-    dirtySummary, tableEditable, confirmReasonLabel,
+    dirtySummary, tableEditable, confirmReasonLabel, buildDDL,
 } from '../../src/db/db-model.js';
 
 const META = {
@@ -78,4 +78,51 @@ test('会话类型文案', () => {
     assert.equal(kindLabel('sqlite'), 'SQLite');
     assert.equal(kindLabel('mysql'), 'MySQL');
     assert.equal(kindLabel(''), '');
+});
+
+// ---- buildDDL：从表元数据生成建表语句（复制/导出 DDL）----
+
+test('buildDDL：SQLite 单主键落列内 + 唯一索引还原 + autoindex 跳过', () => {
+    const meta = {
+        table: 'products',
+        columns: [
+            {name: 'id', type: 'INTEGER', notNull: true},
+            {name: 'name', type: 'TEXT', notNull: true},
+            {name: 'note', type: 'TEXT', default: null},
+        ],
+        pk: ['id'],
+        indexes: [
+            {name: 'sqlite_autoindex_products_1', unique: true, columns: ['id']},
+            {name: 'idx_products_name', unique: false, columns: ['name']},
+        ],
+    };
+    const sql = buildDDL('sqlite', meta);
+    assert.match(sql, /CREATE TABLE "products" \(/);
+    assert.match(sql, /"id" INTEGER NOT NULL PRIMARY KEY/);
+    assert.match(sql, /"note" TEXT/);
+    assert.match(sql, /CREATE INDEX "idx_products_name" ON "products" \("name"\)/);
+    assert.ok(!sql.includes('autoindex'));
+});
+
+test('buildDDL：MySQL 反引号 + DEFAULT 字面量 + 复合主键表级声明', () => {
+    const meta = {
+        table: 'rel',
+        columns: [
+            {name: 'a', type: 'INT', notNull: true},
+            {name: 'b', type: 'INT', notNull: true},
+            {name: 'label', type: 'VARCHAR(64)', default: 'x'},
+        ],
+        pk: ['a', 'b'],
+        indexes: [],
+    };
+    const sql = buildDDL('mysql', meta);
+    assert.match(sql, /CREATE TABLE `rel` \(/);
+    assert.match(sql, /`label` VARCHAR\(64\) DEFAULT 'x'/);
+    assert.match(sql, /PRIMARY KEY \(`a`, `b`\)/);
+});
+
+test('buildDDL：无 meta / 视图元数据兜底', () => {
+    assert.equal(buildDDL('sqlite', null), '');
+    const viewMeta = {table: 'v', kind: 'view', columns: [{name: 'x', type: 'INT'}], pk: [], indexes: []};
+    assert.match(buildDDL('sqlite', viewMeta), /CREATE TABLE "v"/);
 });

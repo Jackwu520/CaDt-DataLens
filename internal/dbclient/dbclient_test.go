@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -168,6 +169,54 @@ func TestBrowseSortFilterPushdown(t *testing.T) {
 	}
 }
 
+func TestBrowseOrderCols(t *testing.T) {
+	path := makeTestDB(t)
+	info := openFor(t, path, true)
+	defer func() { _ = CloseSession(info.ID) }()
+
+	// 多列排序：name DESC, id ASC——全部下推拼 ORDER BY
+	res, err := Browse(info.ID, BrowseRequest{Table: "products",
+		OrderCols: []OrderCol{{Column: "name", Desc: true}, {Column: "id"}}, Limit: 10})
+	if err != nil || len(res.Rows) < 2 {
+		t.Fatalf("多列排序浏览失败：%v / %d 行", err, len(res.Rows))
+	}
+	// 坏列拒绝（元数据白名单）
+	_, err = Browse(info.ID, BrowseRequest{Table: "products", OrderCols: []OrderCol{{Column: "nope"}}})
+	if err == nil || !strings.Contains(err.Error(), "列不存在") {
+		t.Fatalf("ORDER BY 坏列未拒绝：%v", err)
+	}
+	// 混合方向的真实顺序抽查：name DESC 时首行应为 name 最大值
+	if res.Rows[0][1] < res.Rows[len(res.Rows)-1][1] {
+		t.Fatalf("name DESC 顺序不对：首行 %v 末行 %v", res.Rows[0][1], res.Rows[len(res.Rows)-1][1])
+	}
+}
+
+func TestCreateSQLite(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "new.db")
+	if err := CreateSQLite(path); err != nil {
+		t.Fatalf("CreateSQLite 失败：%v", err)
+	}
+	st, err := os.Stat(path)
+	if err != nil || st.Size() == 0 {
+		t.Fatalf("库文件未落盘：stat=%v / size=%d", err, st.Size())
+	}
+	// 已存在报错，绝不覆盖
+	if err := CreateSQLite(path); err == nil || !strings.Contains(err.Error(), "已存在") {
+		t.Fatalf("重复创建未报「已存在」：%v", err)
+	}
+	// 新库可正常打开浏览，且 editable 会话能直接建表（DDL 放行）
+	info := openFor(t, path, true)
+	defer func() { _ = CloseSession(info.ID) }()
+	dbs, err := ListDatabases(info.ID)
+	if err != nil || len(dbs) == 0 {
+		t.Fatalf("空库打开失败：%v / %v", err, dbs)
+	}
+	out, err := Query(info.ID, "q1", "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)", false, 10)
+	if err != nil || out.Status != "ok" {
+		t.Fatalf("空库建表失败（DDL 应放行）：%v / %+v", err, out)
+	}
+}
+
 func TestSQLiteEditableFlow(t *testing.T) {
 	path := makeTestDB(t)
 	info := openFor(t, path, true)
@@ -198,10 +247,9 @@ func TestSQLiteEditableFlow(t *testing.T) {
 		t.Fatalf("ATTACH 未触发确认：%v / %+v", err, out)
 	}
 
-	// DDL 恒拒
-	if _, err := Query(info.ID, "q5", "DROP TABLE logs", true, 100); err == nil ||
-		!strings.Contains(err.Error(), "DDL") {
-		t.Fatalf("DROP 未被 DDL 门拒：%v", err)
+	// SQLite editable 会话 DDL 已开放（2026-11-22 作者拍板）：DROP 确认后真实执行
+	if _, err := Query(info.ID, "q5", "DROP TABLE logs", true, 100); err != nil {
+		t.Fatalf("确认后 DROP TABLE 失败（DDL 应放行）：%v", err)
 	}
 
 	// CTE bypass 在编辑会话同样进确认（缺 WHERE）

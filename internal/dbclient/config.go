@@ -121,8 +121,17 @@ func validateConfig(cfg ConnectionConfig) error {
 	if strings.TrimSpace(cfg.Name) == "" {
 		return errors.New("连接名不能为空")
 	}
-	if cfg.Kind != kindMySQL {
-		return fmt.Errorf("暂只支持 MySQL 连接（SQLite 是打开本地文件，不落连接表）")
+	if cfg.Kind != kindMySQL && cfg.Kind != kindRedis {
+		return fmt.Errorf("暂只支持 MySQL / Redis 连接（SQLite 是打开本地文件，不落连接表）")
+	}
+	if cfg.Kind == kindRedis {
+		// Redis 的 database 字段是数据库编号（0–15；空 = 0）
+		if d := strings.TrimSpace(cfg.Database); d != "" {
+			n, err := strconv.Atoi(d)
+			if err != nil || n < 0 || n > 15 {
+				return fmt.Errorf("Redis 数据库编号无效：%q（0–15 的数字）", cfg.Database)
+			}
+		}
 	}
 	if _, err := validateConnectionTarget(cfg.Host); err != nil {
 		return err
@@ -519,6 +528,8 @@ func serverVersion(ctx context.Context, s *dbSession) (string, error) {
 		return sqliteServerVersion(ctx, s)
 	case kindMySQL:
 		return mysqlServerVersion(ctx, s)
+	case kindRedis:
+		return redisServerVersion(ctx, s)
 	default:
 		return "", fmt.Errorf("未知方言：%s", s.kind)
 	}

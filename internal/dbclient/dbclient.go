@@ -35,6 +35,7 @@ const (
 	configLockFile      = ".db-connections.lock"
 	kindSQLite          = "sqlite"
 	kindMySQL           = "mysql"
+	kindRedis           = "redis"
 )
 
 // 宿主注入钩子（根壳 dbclient_app.go 的 init 里赋值；测试里换成临时目录）。
@@ -56,15 +57,16 @@ type Capabilities struct {
 	ReadOnly    bool `json:"readOnly"`    // 驱动是否天然只读（当前无此类驱动）
 	Transaction bool `json:"transaction"` // 支持事务——指批量编辑的单事务提交（ApplyChanges）；控制台不支持手写 BEGIN/COMMIT（见 guard.go checkBatch）
 	Editable    bool `json:"editable"`    // 支持单元格编辑
-	DDL         bool `json:"ddl"`         // 允许结构变更（P2 起恒 false，guard 直接拒）
+	DDL         bool `json:"ddl"`         // 允许结构变更：SQLite 已开放（仅 editable 会话，DROP 类走两阶段确认）；MySQL 恒 false
 }
 
 // ConnectionConfig 连接配置（非敏感字段，落 db-connections.json）。
-// 密码经 dpapi 加密另存 db-credentials.json；SQLite 是临时会话不落连接表，故 Kind 目前只有 mysql。
+// 密码经 dpapi 加密另存 db-credentials.json；SQLite 是临时会话不落连接表。
+// Redis 的 Database 字段复用为数据库编号（"0"–"15"）、User 复用为 ACL 用户名（可空）。
 type ConnectionConfig struct {
 	ID        string `json:"id"`
 	Name      string `json:"name"`
-	Kind      string `json:"kind"` // "mysql"
+	Kind      string `json:"kind"` // "mysql" | "redis"
 	Host      string `json:"host"`
 	Port      int    `json:"port"`
 	Database  string `json:"database,omitempty"`
@@ -121,6 +123,12 @@ type DBTableMeta struct {
 	Editable     bool         `json:"editable"`
 }
 
+// OrderCol 多列排序（结构化：列名在 Go 侧过元数据白名单后拼 ORDER BY，不拼原始 SQL 片段）。
+type OrderCol struct {
+	Column string `json:"column"`
+	Desc   bool   `json:"desc"`
+}
+
 // FilterCond 表浏览的结构化筛选（列名经元数据校验、值走占位符参数，不拼进 SQL）。
 type FilterCond struct {
 	Column string `json:"column"`
@@ -132,8 +140,9 @@ type FilterCond struct {
 type BrowseRequest struct {
 	Database   string       `json:"database,omitempty"`
 	Table      string       `json:"table"`
-	SortColumn string       `json:"sortColumn,omitempty"`
+	SortColumn string       `json:"sortColumn,omitempty"` // 单列排序（列头点击；与 OrderCols 二选一，OrderCols 优先）
 	SortDesc   bool         `json:"sortDesc"`
+	OrderCols  []OrderCol   `json:"orderCols,omitempty"` // 多列排序（ORDER BY 面板）
 	Filters    []FilterCond `json:"filters,omitempty"`
 	Offset     int          `json:"offset"`
 	Limit      int          `json:"limit"`
@@ -141,11 +150,19 @@ type BrowseRequest struct {
 
 // QueryOutcome 控制台查询结果。Status=confirm 表示 guard 要求二次确认（Confirm 给出原因），
 // 前端弹确认层后带 confirm=true 重发；这是「危险语句两阶段执行」协议的后半段。
+// StatementResult 控制台逐条语句的执行结果（Results 与 Statements 同序）。
+type StatementResult struct {
+	SQL    string            `json:"sql"`
+	Result sqlview.SQLResult `json:"result"`
+	Wrote  bool              `json:"wrote,omitempty"`
+}
+
 type QueryOutcome struct {
 	Status     string            `json:"status"`            // "ok" | "confirm"
 	Confirm    string            `json:"confirm,omitempty"` // "danger" | "missingWhere"
 	Message    string            `json:"message,omitempty"`
-	Result     sqlview.SQLResult `json:"result,omitempty"`
+	Result     sqlview.SQLResult `json:"result,omitempty"` // 兼容字段 = 最后一条语句的结果
+	Results    []StatementResult `json:"results,omitempty"`
 	Statements int               `json:"statements,omitempty"`
 	Writes     int               `json:"writes,omitempty"` // 已执行的写语句数（前端据此记操作留痕）
 }
