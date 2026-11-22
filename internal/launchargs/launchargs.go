@@ -80,29 +80,6 @@ func ParseAISessionArg(args []string) string {
 	return ""
 }
 
-// PathArgs 返回参数里真实存在（且以 - 开头的开关除外）的文件与目录。
-func PathArgs(args []string) []string {
-	exe, _ := os.Executable()
-	var paths []string
-	for _, arg := range args {
-		if arg == "" || strings.HasPrefix(arg, "-") || strings.EqualFold(arg, exe) {
-			continue
-		}
-		if _, err := os.Stat(arg); err == nil {
-			paths = append(paths, arg)
-		}
-	}
-	return paths
-}
-
-// FirstPathArg 返回第一个真实存在的路径参数。
-func FirstPathArg(args []string) string {
-	if paths := PathArgs(args); len(paths) > 0 {
-		return paths[0]
-	}
-	return ""
-}
-
 func positiveInt(value string) int {
 	n, err := strconv.Atoi(strings.TrimSpace(value))
 	if err != nil || n <= 0 {
@@ -111,6 +88,13 @@ func positiveInt(value string) int {
 	return n
 }
 
+// splitPathLine 解析 path[:line[:column]] 形态。判定优先级：
+//  1. 前缀真实存在 → path:line（现存文件/目录 + 行号，行为与历史一致）；
+//  2. 前缀里还有一段正整数 → path:line:column（不要求存在）；
+//  3. 都不满足但行号段是正整数 → 仍按 path:line 拆（path 不存在）——不存在
+//     的目标照样进 targets 由前端报「文件不存在」，错误里是干净文件名而不是
+//     带着 ":42" 后缀的原始串。仅当字面路径真实存在时走不到这里（调用方先
+//     stat 整串），Windows 文件名不允许冒号，不会误拆。
 func splitPathLine(arg string) (string, int, int, bool) {
 	lastColon := strings.LastIndex(arg, ":")
 	if lastColon <= 0 {
@@ -125,22 +109,17 @@ func splitPathLine(arg string) (string, int, int, bool) {
 		return prefix, line, 0, true
 	}
 	prevColon := strings.LastIndex(prefix, ":")
-	if prevColon <= 0 {
-		return "", 0, 0, false
+	if prevColon > 0 {
+		if middle, err := strconv.Atoi(prefix[prevColon+1:]); err == nil && middle > 0 {
+			return prefix[:prevColon], middle, line, true
+		}
 	}
-	middle, err := strconv.Atoi(prefix[prevColon+1:])
-	if err != nil || middle <= 0 {
-		return "", 0, 0, false
-	}
-	path := prefix[:prevColon]
-	if _, err := os.Stat(path); err == nil {
-		return path, middle, line, true
-	}
-	return "", 0, 0, false
+	return prefix, line, 0, true
 }
 
 // ParseOpenTargets 把命令行参数解析成打开目标列表（支持 path:line[:column] 与
-// --line/--column/--goto 三种写法）。
+// --line/--column/--goto 三种写法）。不存在的路径不再静默丢弃：照常进 targets，
+// 由前端 openPaths 的「打开失败」flash 反馈——agent 调用打错路径时必须有失败信号。
 func ParseOpenTargets(args []string) []OpenTarget {
 	exe, _ := os.Executable()
 	targets := []OpenTarget{}
@@ -188,9 +167,6 @@ func ParseOpenTargets(args []string) []OpenTarget {
 					column = c
 				}
 			}
-		}
-		if _, err := os.Stat(path); err != nil {
-			continue
 		}
 		targets = append(targets, OpenTarget{Path: path, Line: line, Column: column})
 		pendingLine, pendingColumn = 0, 0

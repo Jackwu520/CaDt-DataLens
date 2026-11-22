@@ -7,36 +7,6 @@ import (
 	"testing"
 )
 
-func TestFirstPathArgSkipsExeAndFlags(t *testing.T) {
-	dir := t.TempDir()
-	f := filepath.Join(dir, "a.json")
-	if err := os.WriteFile(f, []byte("{}"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	exe, _ := os.Executable()
-	if got := FirstPathArg([]string{exe, "-flag", dir, f}); got != dir {
-		t.Fatalf("got %q, want %q", got, dir)
-	}
-	if got := FirstPathArg([]string{"-x"}); got != "" {
-		t.Fatalf("expected empty, got %q", got)
-	}
-}
-
-func TestPathArgsKeepsFilesAndDirs(t *testing.T) {
-	dir := t.TempDir()
-	a := filepath.Join(dir, "a.json")
-	b := filepath.Join(dir, "b.yaml")
-	for _, f := range []string{a, b} {
-		if err := os.WriteFile(f, []byte("{}"), 0644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	got := PathArgs([]string{"-flag", a, dir, b})
-	if len(got) != 3 || got[0] != a || got[1] != dir || got[2] != b {
-		t.Fatalf("pathArgs = %v, want [%s %s %s]", got, a, dir, b)
-	}
-}
-
 func TestParseOpenTargets(t *testing.T) {
 	dir := t.TempDir()
 	a := filepath.Join(dir, "a.json")
@@ -47,6 +17,7 @@ func TestParseOpenTargets(t *testing.T) {
 		}
 	}
 	exe, _ := os.Executable()
+	missing := filepath.Join(dir, "missing.json")
 	cases := []struct {
 		name  string
 		args  []string
@@ -63,8 +34,12 @@ func TestParseOpenTargets(t *testing.T) {
 		{"goto", []string{"-g", a + ":3"}, a, 3, 0, 1},
 		{"column-and-line", []string{"--column", "4", "--line", "6", a}, a, 6, 4, 1},
 		{"skip-exe-and-flags", []string{exe, "-flag", a}, a, 0, 0, 1},
-		{"invalid-number", []string{a + ":abc"}, "", 0, 0, 0},
-		{"missing-file", []string{filepath.Join(dir, "missing.json") + ":2"}, "", 0, 0, 0},
+		// 不存在的路径不再静默丢弃（缺陷 A）：进 targets 由前端报「文件不存在」。
+		{"missing-plain", []string{missing}, missing, 0, 0, 1},
+		{"missing-line-suffix", []string{missing + ":2"}, missing, 2, 0, 1},
+		{"missing-line-column", []string{missing + ":2:7"}, missing, 2, 7, 1},
+		{"missing-with-pending-flag", []string{"--line", "5", missing}, missing, 5, 0, 1},
+		{"non-path-with-int-suffix", []string{a + ":abc"}, a + ":abc", 0, 0, 1},
 		{"multiple", []string{a + ":2", b + ":3"}, a, 2, 0, 2},
 	}
 	for _, tc := range cases {
