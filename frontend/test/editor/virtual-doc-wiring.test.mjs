@@ -142,6 +142,17 @@ test('appTabViewOf 经 tabKindOf 描述视图型虚拟标签页', () => {
     assert.deepEqual(hardcoded, [], '这些标记位还在 appTabViewOf 里手写 if 链');
 });
 
+test('appTabViewOf 的数据库 desc：Redis 键带连接/库，控制台不重复连接名', () => {
+    assert.match(appTabViewBody, /doc\.dbRedisKeySpec/,
+        'Redis 键标签页缺 desc 分支：AI 只看到键名，不知道它连的是哪个连接哪个库');
+    const from = appTabViewBody.indexOf('if (doc.dbConsoleSpec)');
+    const to = appTabViewBody.indexOf('if (doc.dbRedisKeySpec)');
+    assert.ok(from >= 0 && to > from, 'appTabViewOf 的 dbConsoleSpec 分支结构变了就更新本守卫');
+    // 控制台的 name 已是连接名：desc 再写「连接「…」」会注入成 查询控制台「x」（连接「x」…）
+    assert.doesNotMatch(appTabViewBody.slice(from, to), /连接「/,
+        '控制台 desc 不得重复连接名（name 里已经有了）');
+});
+
 // ---- 文本型虚拟文档（openVirtualDoc）：复用通用编辑器，没有 createDocEditor 分支 ----
 
 test('openVirtualDoc 产出的文档仍是「无路径」文档', () => {

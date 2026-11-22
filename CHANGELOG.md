@@ -4,6 +4,247 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 
 ## 未发布
 
+### 改进（「智能体」迁为应用页面标签页）
+
+- **定位**：设置 → AI → 智能体 实为群聊成员的管理面板（实体 CRUD + 编辑器弹窗），在设置体系里本就语义错位——零可写设置行（唯一按钮行被判 `action` 不可写、动态列表不进树）、数据在 ai-config.json 不走设置三条同步通道、AI 对它走 `get_agents` / `create_agent` 专属动作而非 `set_setting_row`。与外部工具迁移同一论证：实体管理面板归应用页面，可写偏好行（子代理上限 / 注入开关 / 权限）归设置。第 6 个应用页面，归 AI 组（与外部工具同组）。
+- **迁移形态（外部工具先例）**：`core/app-pages.js` 登记 `agents` 条目，侧栏面板 / 菜单 / 命令面板 / 设置目录页四个入口与 AI 上下文描述自动派生；pane DOM 常驻 `index.html` 尾部 `#agents-park` 停靠区（必须在 `#dlg-settings` 之外，防 buildSettingsTree 误索引），`ai-agent-settings.js` 的 `mountAgentsPane` 搬进 / 搬出标签页容器保持节点身份——本模块创建期按 id 捕获 `agents-list` / `ai-agent-create`，编辑器中间态与分组折叠记忆在模块闭包里，不能重建 DOM；pane 改用 `.agents-root` 节奏类（flex+gap 沿用设置 pane），不再带 `.settings-pane` 类（settings-tree / settings-search 不再扫到）。
+- **三级桥（定时任务先例）**：`ai-settings-dialog` 转发 `mountAgentsPane` / `refreshAgentsPane` → `ai-panel` 暴露 `bridgeMountAgents` / `bridgeRefreshAgents` → `main.js` 的 `appPageMounters` 登记（`bridgeMountSchedules` 同款惰性桥）。
+- **挂载器面板兜底（审查修正）**：AI 面板是惰性初始化的——用户没碰过 AI 面板就点开智能体 / 定时任务页时，挂载器先 `initAIPanel()` 幂等兜底再走桥；此前定时任务挂载器裸读 `aiPanel`，该场景得到空白标签页且再激活不自愈（存量问题，本次一并修），两个页面测试各加一枚兜底钉子。
+- **反馈通道**：保存 / 删除提示从设置窗状态条换全局 flash——标签页场景设置窗多半没开，往里写状态等于写空气。
+- **设置侧摘除**：设置导航删除「智能体」子页；settings-ui 的 AI 组展开与 refreshSettings 触发列表去掉 `agents`；`refreshSettingsPane` 里的列表渲染保留为幂等兜底（pane 在停靠区时不可见）。
+- **群聊接线**：新建群聊弹窗左下角齿轮改 `openAppPageTab('agents')`——原语义本就「先弃草态、关弹窗、再跳」（离开建群流程去备成员），迁移完全等价且不引入新的状态丢失；空群提示 / 创建默认主持人反馈 / 齿轮 tip 统一「应用页面 → 智能体」。
+- **AI 侧（只改文案）**：`open_settings` 的 pane 枚举去掉 `agents`（设置窗不再有它）并在指引句补「应用页面 → 智能体」；`create_agent` 描述里修改 / 删除归属与返回 note 换新口径；`create_agent` 落盘后标签开着即时重绘（`saveAIConfig` 不广播，判法同 `schedules-changed` 订阅先例）。动作名一个不变，`APP_ACTIONS` / `runAppAction` / `UNDOCUMENTED` 零改动。
+- **不变**：agents[] 数据模型（ai-agent-model.js）、`aiGroupApi` 契约、AI 工具表零改动。
+- **验证**：新增 `frontend/test/settings/agents-page.test.mjs` 守卫 10 例 + `ai-schedule-page.test.mjs` 补挂载器兜底钉子（均已登记 `npm test`）；子代理只读审查全项通过（唯一 P1 即上面的面板兜底，修复后复验）；全量前端测试通过；`npm run build` 通过；顺带清掉 README 里外部工具 / 使用统计两处上轮迁移的旧路径欠账。
+
+### 修复（工作区搜索撞上二进制毒行导致整窗闪退）
+
+- **现象**：打开软件后做一次工作区全局搜索（大小写不敏感），进程无任何报错直接退出（用户感知「闪退」）；事件查看器无记录——Go panic 直接 `exit(2)`，不经过 WER。panic 全文 `slice bounds out of range [:40] with length 37`，出现在 `internal/search` 扫描 worker。
+- **根因**：`findMatches` 字面量大小写不敏感模式在 `strings.ToLower(line)` 的**降写副本**上找命中、却把字节区间套回**原行**切片；而 Go 的 `ToLower` 不保长——非法 UTF-8 字节逐个替换成 3 字节 U+FFFD（+2/个），`Ⱥ`(U+023A)/`Ⱦ`(U+023E) 小写 2→3 字节。触发文件是 `.cadt/tmp/webview-inspect` 下 WebView2 的「Subresource Filter」二进制规则文件：无扩展名绕过二进制扩展名表、前 8KB 无 NUL 绕过 NUL 预检，行内两个非法字节把 37 字节的行膨胀到 41 字节，行尾命中区间 [35,40) 切原行即越界。与 `code-bug-hunt-2026-11-18` 修过的 `sessionindex.makeSearchSnippet` 同款模式，当时漏了 search.go。
+- **修复**：`findMatches` 检测降写后长度漂移（`len(haystack) != len(line)`），漂移时放弃降写快路径，改在原行上逐 rune 折叠匹配（新增 `foldFindFrom`/`foldMatchAt`，口径与「两侧各自 ToLower 再比对」一致，区间永远对原行有效，且修正了变短字符导致的错位高亮）；`scanSearchFile.appendHit` 对 start/end 按原行收口兜底——将来任何上游给出越界偏移只损一条预览，不再 panic 掉整个进程。
+- **验证**：回归测试 4 组（闪退原行 / 多命中落位 / Ⱥ 变长 / KELVIN 变短）+ wholeWord 边界 + 大小写敏感不受影响 + 端到端 `SearchWorkspace` 扫毒行不 panic，全部落 `search_test.go`；旧实现下这些用例分别越界红 / 进程 panic 红。设计取舍：`.cadt` 不加进跳过名单——`SkipPath` 注释明确 `.cadt/tmp` 要对 glob/list_dir 保持可见（探针沙箱约定），根修后毒行本身无害。
+
+### 改进（崩溃自愈：异常退出后下次启动自动清缓存 + 删工作区 tmp）
+
+- **背景**：上面这条闪退的触发文件躺在工作区 `.cadt/tmp` 里——崩溃清不掉它，下次一搜再崩。新增兜底：检测到上次异常退出，本次启动自动执行一轮「清除缓存」，把脏状态在用户碰到之前收掉。事故与取证见 `docs/reports/incident-2026-11-23-search-panic-crash.md`。
+- **崩溃检测**（`internal/crashrecovery`）：GUI 会话启动时在 `appdata/session-alive/` 写「活着」标记（按会话一文件：多实例 / 调试控制台各有各的文件，互不覆盖），优雅退出摘除；异常退出遗留，下次启动属主进程已不在 = 上次崩溃（Windows `OpenProcess` 探活，`_windows/_other` 成对）。
+- **自愈清理**（根壳 `crashrecovery_app.go`）：复用 `storage` 条目表分两段——app 段（run-temp / session-index / ai-logs 等）在启动空档直清，webview-cache 转 pending 由 `ApplyPending` 本轮收口；工作区段（`ws-worklog` / `ws-tmp`）等 `WindowRegister` 登记根目录后清（`WorkspaceCacheIDs()` 从同一张表派生）。全程写运行日志，warn 级别的「检测到上次会话异常退出」是本次自愈的标志。
+- **时序护栏**：检测与标记只发生在 `application.New` 之后——转发进程在 New 里就 os.Exit，不能抢走遗留标记去清理运行中主实例正占用的缓存（`applyPendingStorageCleanup` 因此一并挪到 New 之后，转发进程也不再抢跑 pending 清理）。
+- **不碰的边界**：`ws-scratch`（用户亲手写的临时文件）、wipe-guard 备份、会话正文等数据段条目一律不进自愈范围（`storage_test.go` 负向断言照旧）；自愈是缓存级自愈，不是数据重置。
+- **验证**：`crashrecovery` 包测试（属主死亡取走 / 存活保留 / 只摘自己 / 残缺标记新生保留老化清 / 空根 no-op）+ `storage` 的 `TestWorkspaceCacheIDs` 快照；`go build ./...` 与 `tools/check-crossbuild.cmd` 通过。
+
+### 改进（CLI 启动参数收口：--help/--version、转发路径修正与按工作区路由）
+
+- **顶层 `--help` / `--version`**：新增 `--help/-h` 打印全部启动参数（GUI 开关 + `--convert` / `--check-patch` 等 headless 子命令用法，`cliUsageText()` 三段拼接）；`--version/-v` 打印版本号。此前一半开关（`--open-settings` / `--ai-session` / `--quit` / `--ai-float` / `--debug-console` 等）是「读源码才知道」的隐藏知识。护栏 `cli_help_guard_test.go` 对源码开关字面量与 help 文本双向对账，以后加开关漏写 help 直接红；`convertcli` 原 `--help` 死分支删除（避免两份 help 漂移），patchcli 用法从文件头注释正式化为 `Usage` 常量。
+- **不存在的路径不再静默丢弃**：`datalens.exe 打错的路径.json` 此前什么都不发生（欢迎页），现在照常进打开目标并提示「打开失败」——agent 调用打错路径拿得到失败信号；`路径:行` 拆分在目标不存在时仍保住行号语义（报错是干净文件名）。v2 时代遗留的 `PathArgs`/`FirstPathArg` 死代码一并清理。
+- **`--ai-session` 转发修正**：单独传参会话 id 此前被丢弃、还把调用方 CWD 兜底成打开目标误投主窗口（可能误切运行中窗口的工作区）；现在解析会话归属工作区（`sessionstore.ResolveSessionWorkspace`，按 id 扫桶 + meta.workspace 真源，meta 缺失从正文 header 兜底）走「同工作区复用 + 前置 + 切会话」语义。`--ai-session` + 文件转发到已有窗口时会话不再静默丢失（归属工作区与接收窗口一致时补投，不一致记 warn）。
+- **多窗口文件投递按工作区路由**：文件属于某个已开主窗口的工作区 → 标签页开在**那个窗口**（祖先链逐级向上与已登记工作区键精确匹配取最深命中，嵌套工作区内层窗口拿子目录文件）；无归属投主窗口——此前一律投最早的主窗口，跨工作区错位。目录目标不路由（维持原逻辑）。
+- **`--open-settings` / `--memo` 与文件参数组合转发**：文件目标随定点事件一起投给主窗口，不再被定点分支吞掉（回退浮窗时仍不投文件）。
+- **实现**：secondInstance 决策与执行分离——纯函数 `secondInstancePlan`（依赖注入，表驱动测试 `secondinstance_plan_test.go`）+ 窗口 API 执行层；移除 `OpenMode()=="window"` 死分支（2026-11-21 已把 window 归一回 tab）。README 命令行节、AGENTS.md 命令行能力节、agent 技能（SKILL.md + reference/cli.md）四处同步；方案与落地记录见 `docs/finished-plans/cli-startup-args-refresh.md`。
+
+### 修复（斜杠补全的方向键选中不跟随滚动）
+
+- **现象**：输入 `/` 打开补全列表后按 ↑/↓ 移动高亮，选中项一离开首屏就沉到可视区外（列表不再跟着滚），只能盲按。
+- **根因**：方向键分支走的是 `updateSlash()` → `renderSlash()`，每次移动都 `innerHTML = ''` 重建整张列表，滚动容器的 `scrollTop` 随重建归零；高亮项按新 index 渲染在首屏之外。
+- **修复**：`ai-slash.js` 新增 `moveSlashSelection(delta)` 与内部 `syncSelectedClass()` / `scrollSelectedIntoView()`——方向键只切 `.selected` 类、由 `.ai-slash` 容器自己按 `slashScrollDelta`（纯函数，口径同 `explorer.js` 的 nearest）滚够让选中行露出来，不再重建列表；`renderSlash()` 末尾也补一次跟随（过滤条件变化导致 index 被 clamp、或刚用滚轮停在半途时同样归位）。`ai-composer.js` 的方向键分支改走新出口，`ai-panel.js` 接线。
+- **验证**：`ai-slash.test.mjs` 新增 `slashScrollDelta` 用例；dev 模式实测 35 项列表（可视 219px / 内容 900px）连按 ↓ 10 次 index 到 10 时 `scrollTop=58`、选中行落在可视区底部，连按 ↑ 回到 index 0 时滚回顶部；`npm run build` 通过。
+
+### 修复（三路子代理审查后的整改：1 阻断 + 3 高 + 多处中低）
+
+派 Go / 前端 / Python 三个只读子代理交叉审查本次改动，逐条整改并补回归：
+
+- **阻断（Python B1）**：`Snapshot(window=…)` / `Find(window=…)` 在默认不传 `region` 时必抛 `TypeError: 'int' object is not callable` —— `target.bounding_box` 是 `BoundingBox`（`width/height` 是 int 字段），却被传给期望 `uia.Rect`（`width()/height()` 是方法）的 `_rect_to_bounding_box()`。改为显式 `uia.Rect(box.left, box.top, box.right, box.bottom)`，截图区域直接用 `BoundingBox`。**实测：修复前必崩，修复后 `Snapshot(window='CaDt')` 正常返回。**
+- **高（Python H1）**：`Find` 的 `activate_element` 原来靠「窗口名 != 前台窗口名」决定点两次 —— 对 toggle 控件（复选框/开关）会翻两次，对任务栏图标等于启动后立刻最小化。改用上游已有的 `bring_window_to_top(handle)`（它处理了 AttachThreadInput / AllowSetForegroundWindow）先真正激活窗口，再**只点一次**；任务栏/桌面等 shell 窗口跳过激活。
+- **高（Go H1）**：`EnsureServerWheel` 自愈补的是「当前版本路径」，而 spawn 执行的是 `cfg.Args` 里的路径 —— 版本升级后 mcp.json 仍指旧目录时，旧 wheel 被清理删掉依然起不来。改为按**配置里实际指向的路径**补文件（`ourWheelPath` 解析 `--from`），并加 `testRootOverride` 注入临时根的真实写盘用例；前端 `desktopConfigNeedsUpgrade(row, plan)` 增加版本比对，引导用户「更新配置」。
+- **高（前端 H1/H2）**：① 安装进行中开关未禁用，用户可把开关关掉导致「已安装但禁用」且作业照跑 —— 改为安装期禁用；② `setDesktopEnabled` / `startDesktopInstall` / `setDesktopToolEnabled` 三处都是「内存快照整文件覆盖 mcp.json」，会冲掉本页停留期间从 MCP 列表增删的其它 server —— 新增 `freshConfig()` 写前重读 + `writeDesktopRow()` 只替换 windows 行。
+- **中（Go M1/M2/M3）**：① `runStreaming` 的 `onLine` 在锁外被两条扫描 goroutine 并发调用，消费者的 `last`/`percent` 无锁 → 移进临界区（并用 atomic 断言回调不并发）；② 预热阶段节流写了 `&& percent < 95`，导致 95% 之后每行都 emit，与 `splitAnyLine` 把 `\r` 切成上千行叠加会打满 WebView2 IPC → 去掉该条件；③ `desktopmcp.Logf = mcp.Logf` 在 init 中取值过早（本文件字典序早于 `mcp_app.go`）会永久捕获 nil → 改为转发闭包。
+- **中（前端 M1 / Python M2/M3 / 自查）**：`startDesktopInstall` 的双击守卫移到第一次 `await` 之前（`installStarting`）；`window` 与 `use_ui_tree=False` 同用改为报错而非静默忽略；打包脚本把 `.dist-info` 目录名一并改成 `windows_mcp-0.8.9+p3.dist-info`（PEP 427/376），并把 `Embedded` 未注入时的 `fs.ReadFile(nil,…)` panic 改成返回错误。
+- **测试修正**：前端升级判定用例里「缺 `--no-control`」与「缺 `--from`」原本用了同一组 args（实际只测到后者），已拆分并补「`--from` 指向旧版本」用例。
+- **验证**：Go 9 用例（含真实写盘自愈、并发回调不串行断言）、前端 **485 测试**、`go build`、三平台交叉编译全通过；端到端起真实 server 复核 —— 22 工具含 `Find`、`Snapshot(window=…)` 不崩、`use_ui_tree=False` 正确报错、`Find(window=…)` 返回真实元素。
+
+### 改进（桌面控制补丁升到 `0.8.9+p3`：Type 免坐标 + 新增 Find 工具）
+
+- **`Type` 可以不给坐标**：`loc` / `label` 都省略时直接往**当前焦点**输入（`desktop.type_focused`）。此前地址栏已 `Ctrl+L` 聚焦却必须先把文本写进剪贴板再 `Ctrl+V`——多两步往返，还污染用户剪贴板。实现上把 `type()` 拆成点击 + 共用的 `_type_into()`（caret 定位、清空、长短文本分流、回读逻辑不变）。
+- **新增工具 `Find`**：按可见名称定位交互元素并直接操作——`query`（默认子串，可 `exact` / `regex`）+ `action=list|click|type` + `nth` + `window`（复用 +p1 的窗口过滤）+ `limit`。要点头部按钮 / 卡片 / 某一行，不必再先 `Snapshot` 拿编号再 `Click(label=N)`，也不必截图目测坐标。目标位于后台窗口时自动点两次（第一次点击只会激活窗口，Windows 不会把它交给控件）。
+- **工具数 21 → 22**：`internal/desktopmcp.AllTools`、前端 `DESKTOP_ALL_TOOLS`、mock 的 `MCPDesktopPlan`、Go 与前端两边清单用例同步；设置页工具开关列表自动多出一行「Find · 按名字找元素并直接点击 / 输入」。
+- **不做 CSS selector / CDP（明确取舍）**：Chrome 136 起禁止对默认 `user-data-dir` 开 `--remote-debugging-port`，走 CDP 必须换用户数据目录、丢掉全部登录态。改用「按可见名称匹配 UIA 交互元素」——零依赖、不重启浏览器，覆盖绝大多数点击需求。
+- **端到端验证**：起 `+p3` wheel 的真实 MCP server，`tools/list` 返回 22 个工具且含 `Find`（参数 `query/action/text/nth/exact/regex/window/limit`）；`Find(query='CaDt', action='list')` 实际返回桌面元素 `'CaDt-DataLens - 1 个运行窗口' <按钮> at (1644,1404) in '任务栏'`。
+- **打包脚本**：`tools/pack-desktop-wheel.py` 支持 overlay 里的**新增文件**（基线没有同名路径时按新增写入并打印），此前只允许覆盖既有路径。
+
+### 改进（桌面控制可客制化：随 exe 分发的 wheel 打了本地补丁 `0.8.9+p1`）
+
+- **能改脚本了**：windows-mcp 从「从 PyPI 现拉、改不了」变成「仓库里带 overlay 的本地补丁版本」。仓库只存**改动的 3 个文件**（`docs/mcp-desktop/overlay/windows_mcp/…`）与未改动的基线 wheel（`vendor/`），`tools/pack-desktop-wheel.py` 把 overlay 覆盖到基线、重算 RECORD、打出 `windows_mcp-0.8.9+p1-py3-none-any.whl`；exe 内嵌的是这个产物。上游升级时把 overlay 重放到新基线即可，diff 可审查；MIT 合规要求（版权/许可/标注已修改）写在 `docs/mcp-desktop/NOTICE.md`。
+- **本次补的能力 —— `Snapshot(window=…)`**：按窗口标题正则（不区分大小写）挑出目标窗口，**只对它建树**、并把截图裁到该窗口矩形（显式 `region` 仍优先）。这是实机跑任务踩到的坑：同时开着十几个窗口时，无关窗口的元素会先把元素预算（默认 500 条）吃满，真正想看的窗口被截断，只能反复 `region` 盲猜坐标。改在 `desktop/service.py` 的 `get_state`（新增 `window_filter`）+ 工具层两处透传；不传 `window` 时行为与上游 0.8.9 完全一致。
+- **护栏**：`internal/desktopmcp/desktopmcp_test.go` 的工具清单用例对账上游 21 个工具；打包产物 `--help` 与 `inspect.signature(Desktop.get_state)` 实测含 `window_filter`。
+
+### 修复（操作记录：详情钮按条件渲染导致按钮不齐）
+
+- **现象（用户反馈）**：操作记录列表里「详情」钮只有部分行有，复制钮于是在有/无详情钮的行之间左右跳动；把内容区拖窄后更糟——5 列最小宽度装不进容器，按钮被挤出可视区，hover 也看不见。
+- **根因**：`activity-pane.js` 里详情钮是条件渲染（`if (detailText || target.length > 32)`），两行结构不同 → `.act-ops` 内部按钮起始位置不同；`.activity-list` 没有横向滚动，grid 的固定列宽（96+56+140+160+104 ≈ 604px）在窄容器里无处可去。
+- **修复**：详情钮**每行都渲染**，内容不可截断的行加 `.is-empty` 用 `visibility: hidden` 占位（保留宽度、不参与交互）；`.act-ops` 改 `justify-content: flex-end`，两个按钮在每行都落在同一水平位置；`.activity-list` 改 `width: max-content; min-width: 100%` + `.activity-list-box` 加 `overflow-x: auto`，窄容器改为横向滚动而不是压列。实测四行按钮坐标完全一致（宽容器 1021/1067，窄容器 598/643，各自唯一）。
+- **护栏**：`activity-pane.test.mjs` 改断言「每行都占位 + flex-end + visibility 占位」，并禁止回退到「无详情钮时只挂复制钮」的分支。
+
+
+- **分发形态（2026-11-22 用户裁决）**：windows-mcp **不再由 uvx 从 PyPI 现拉**，改为把 0.8.9 的 wheel（306 KB）内嵌进 exe（`docs/mcp-desktop/windows_mcp-0.8.9-py3-none-any.whl` + `NOTICE.md` 记录 MIT 许可与 sha256）；Python 3.14 解释器与 21 个依赖（约 197 MB）**不内嵌**，首次安装仍由 uv 下载——体积红线不变。好处是代码版本可复现、离线可修、将来给上游打补丁（Snapshot 按窗口过滤等）时随 exe 一起走。
+- **开关即安装 + 进度条**：卡片不再有「安装…」按钮。打开「启用桌面控制」若尚未安装，直接写入配置行并起异步安装作业；Go 侧新增 `MCPDesktopInstallStart`（立即返回）+ `MCPDesktopInstallStatus`（重建页面时接回进度），进度经 `mcp-desktop-install` 事件推送（release → uv → warm → done/error，百分比是阶段估算，下载拿不到字节进度），卡片下方画细进度条与上游日志尾行。
+- **工具逐项开关（默认全选）**：安装后列出上游**全部 21 个工具**（`internal/desktopmcp.AllTools` 是权威清单），默认全勾，可逐项取消；高风险项（PowerShell / FileSystem / Registry / Process / App / Clipboard / MultiEdit / Notification）在名字旁标「可改系统」。勾选写回 mcp.json 的 `enabledTools`——它是**唯一**的工具可见性闸；`--tools` 参数彻底移除（此前白名单写死在 args 里，用户没法逐项调）。不允许清空：空数组语义是「一个都不给」，server 连进程都不起。
+- **实现**：新增 `internal/desktopmcp`（内嵌 wheel 释放 / 配置行 / 安装流程 / 自愈，纯引擎，进度经回调注入）；根壳 `desktop_mcp.go` 做 `go:embed` 与 `mcp.PrepareServer` 的**组合注入**（内置示例脚本 + 内置 wheel 共用一个钩子，此前只能挂一个）；`mcp_desktop_app.go` 只留绑定；删掉旧的 `mcp_desktop_install_windows.go` / `_other.go`（逻辑下沉）。行切分 `splitAnyLine` 放平台无关的 `stream.go`——放 `_windows.go` 会让 linux/darwin 的 `go vet` 编不过（交叉守卫实测抓到）。
+- **护栏**：`internal/desktopmcp/desktopmcp_test.go`（21 工具清单完整性 / 配置行 / 自愈识别 / `\r` 行切分 / plan 形状）；`ai-desktop-control.test.mjs` 重写为「结构性旧形态才判升级、用户取消勾选不判脏」+ 内置 wheel 口径；`external-tools-page.test.mjs` 改为断言开关即安装、事件订阅、工具开关接线；`event-scope` 登记 `mcp-desktop-install`。全量前端 470 测试、`go build ./...`、`go vet ./internal/desktopmcp`、`tools/check-crossbuild.ps1`（linux/darwin 三档）全通过。
+
+### 改进（操作记录：展开区补对象全文，复制整条记录，复制钮 hover 显形）
+
+- **行为**：原先「详情」展开区只有参数 JSON，对象列被省略号截断时只能 hover 看 tooltip。现在展开区分两段：`对象`（完整 target，界面字体、可折行）与 `详情`（参数 JSON，等宽、各自 220px 内滚动），中间虚线分隔；展开钮的判定条件是「有参数 或 对象长度 > 32」（超过这个长度基本必然被截断），极短对象行不挂展开钮。
+- **复制按钮**：每行都有（2026-11-22 用户要求：无参数、对象又短的行也要能复制），复制**整条记录成一个 JSON**，字段与「导出 JSON」同源：`ts`（毫秒时间戳）+ `time`（可读时间）+ `actor`（user/ai/system）+ `action` + `target` + 有参数时的 `detail`；存储内部字段 `v` / `seq` 与判定来源 `source` 不输出。tip 为「复制整条记录（JSON）」。
+- **复制钮 hover 才显形**（用户反馈「每行清一色一个复制图标看着花眼」）：`.activity-row .ap-copy-btn { opacity: 0 }`，`:hover` / `:focus-within`（键盘 Tab）/ `:has(.act-detail:not(.hidden))`（详情已展开）时显形；用 opacity 而不是 display/visibility——占位不变，列宽与对齐零跳动。`@media (hover: none)` 下常显，避免触屏看不见入口。
+- **顺带修一个静默覆盖**：`.act-detail` 在 style.css 里有**两处定义**（新规则与旧规则按 `flex-basis:100%` 写的设置页内嵌形态各一处），旧的按源码顺序压掉新的，导致展开区退回 160px 高、文字垂直错位。删掉旧规则，并加护栏「`.act-detail` 只允许一处定义」。
+- **列表横向溢出（本轮真正的病灶）**：`.activity-list` 的 `width: max-content` 让行宽等于最长对象内容的固有宽度——AI 工具参数动辄几百字符，于是整张表格比容器宽几百像素，**对象列与右侧「详情 / 复制」全被推出视野**（用户看到的「对象列是空的」其实是整列在视口外）。改为行宽跟容器（`.activity-list` 去掉 max-content）、对象列下限从 `minmax(160px, 2fr)` 改成 `minmax(0, 2fr)`、时间列从固定 96px 改成 `minmax(72px, max-content)`、表头单元格加 `white-space: nowrap`（窄宽时「对象」曾被拆成两行）。超长内容仍走省略号，全文看展开区。
+- **dev 可复现**：`dev/mock-backend.js` 补齐 `ActivityRead` / `ActivityAppend` / `ActivityPath` / `ActivityClear` 四个 mock（此前缺失，dev 打开这页永远走「当前版本不支持操作记录」分支），合成 10 条覆盖「有参数 / 长对象 / 短对象」的记录，`?text` 场景下能直接在浏览器里看布局、点展开、点复制、翻页。
+- **护栏**：`activity-pane.test.mjs` 新增 5 例（展开区必须有「对象」「详情」两段 + 长对象无参数也要挂钮；复制必须是整条记录 JSON 且含五个字段、不含内部字段；复制钮每行都建、只在末列容器里；hover 显形规则齐全且不得用 display:none；`.activity-list` 不得 max-content + 对象列下限必须 0 + 表头 nowrap；`.act-detail` 单一定义）。
+
+### 修复（定时任务 / 记忆技能对话框的输入框丢失封装外观）
+
+- **现象**：新建定时任务对话框的输入框、多行框看起来「不是封装好的控件」——4px 小圆角、12px 字号、聚焦只有一条 1px 蓝边、没有 hover 反馈，与其它对话框的现代表单不一致。
+- **根因**：控件确实走的是 `createInput` / `createTextarea` / `createSelect`，但传的 `className: 'ai-settings-input'` 在 `applyCommon` 里是**整段覆盖**（`control.className = o.className`），默认封装类 `.dlg-input` 被顶掉了；`.ai-settings-input` 只自带 4px 圆角 / 12px 字号 / focus 边框色，缺 `.dlg-input` 的 7px 圆角、12.5px 字号、hover 边框与 3px 外发光。
+- **修复**：`ai/ai-schedule.js`（7 处）与 `ai/ai-manage-dialogs.js`（3 处）的 `className` 改为并列 `'dlg-input ai-settings-input'`——`dlg-input` 提供封装外观（在 style.css 里定义更晚，同名属性胜出），`ai-settings-input` 继续提供域内布局（`flex: 0 1 320px`、`.ai-sched-field > .ai-settings-input { flex: 1 }`）；三处下拉增强后 wrap 继承这两个类，触发器外观仍由 `.set-select-btn` 决定。
+- **护栏**：`ai-schedule-page.test.mjs` 新增 1 例（编辑器里每个 `className` 都必须包含 `dlg-input`）；`docs/frontend-form-controls.md` 第 4/5 节补「className 是覆盖不是追加」的口径。
+
+### 改进（搜索忽略规则软化：默认规则可 `!` 覆盖 + `search_text` 临时放行参数）
+
+- **行为**：`node_modules` / `.git` / `.venv` 等 14 个默认忽略目录从「硬编码」改为「默认软规则」——先注入默认规则、再叠加用户 `.cadt/config/search-ignore`，故用户写 `!node_modules` 即可永久放行（此前 `!` 只能取反用户自己的规则，动不了硬编码表）。四处检索/展示统一口径：`search_text`、`glob`、目录树 `list_dir`、目录结构导出（后者此前完全不读 search-ignore，现补上）。二进制扩展名、AI 隔离 worktree 仍硬忽略；wipeguard 结构指纹、cognition 索引继续走独立硬编码表（可搜索 ≠ 可索引，防用户配置把安全判定带偏）。新工作区开箱行为与改动前一致。
+- **临时放行**：`search_text` 新增可选参数 `includeIgnored`（默认 false）——为 true 时本次搜索放行全部被忽略目录，仅内存生效、不写配置；与 `!` 的「持久化按目录放行」互补。工具描述同步告知 AI 这两个通道（永久改配置 / 本次放行）。
+- **实现**：`internal/search/search.go` 新增 `defaultIgnoreNames` 有序表（硬编码 `searchSkipDirs` 由它派生，仅供安全用途），`LoadIgnoreRules` 注入默认规则后再拼用户规则（拼到新 slice、不污染 mtime 缓存实例）；`LoadIgnoreRulesAt` 保持纯解析供 cognition 的 `.cogignore` 复用。检索四处删掉直查硬编码表的分支，统一走 `IgnoreRules`；`SearchOptions` / `searchSpec` 加 `IncludeIgnored`，入口为 true 时 `spec.ignore` 留 nil（nil 的 `shouldSkip` / `globArgs` 安全放行）。前端 `ai-tool-defs.js` / `ai-search-advanced.js` / `ai-panel.js` / mock-backend 四处同步接线。
+- **护栏**：`ignore_test.go` 补默认注入 / `!` 覆盖 / `LoadIgnoreRulesAt` 不注入 / IncludeIgnored 放行用例；`ai-search-advanced.test.mjs` 补归一化用例；`ai-tool-wiring.test.mjs` 接线守卫自动核对新参数（描述 ↔ properties ↔ 执行分支）。
+
+### 改进（AI 回复的文件引用支持 `:起-止` 行区间，并修复裸文件名+行号被误判为 URL）
+
+- **行为**：AI 回复里 `code.ai-tool-defs.js:65-84` 这类带行区间的引用此前永远渲染成普通代码（点击芯片只认 `:行[:列]`，区间后缀剥不掉导致扩展名检查失败）；现在 `:起-止` 同样升级成可点击芯片，点击跳到起始行，tooltip 显示「第 65–84 行」。顺带修一个存量缺陷：`model-catalog.js:42` 这类**裸文件名+行号**此前被 URL scheme 检查误杀（`model-catalog.js:` 形似 scheme），导致 `pickOpenFileMatch`（专门按已开标签页匹配裸 basename）对带行号的 basename 永远轮不到。
+- **实现**：`ai-file-refs.js` 的 `parseFileRef` 加 `LINE_RANGE_RE = /:(\d{1,7})-(\d{1,7})$/`（与 `LINE_COL_RE` 互斥，`LINE_COL_RE` 先试），区间命中取起始行、`lineEnd` 仅在区间时出现（普通引用返回形状保持三键不变）；倒序区间（`:84-65`）视为笔误直接不命中、`:42-42` 归一成单行、区间后带列号（`:42-56:8`）与超 7 位数字不命中。scheme 检查从入口挪到**后缀剥离之后**：`mailto:` / `http:` 剥完仍带 scheme 照样拒，`D:` 盘符放行不变；`applyFileRefChip` 的 tooltip 支持区间写法（dataset 仍只带起始行，点击行为不变）。
+- **文案**：`ai-system-context.js` 的文件引用守则补区间写法（「可加 :行号[:列号] 或 :起行-止行」），模型可自然表达跨行引用。
+- **护栏**：`ai-file-refs.test.mjs` 新增 2 组用例（区间命中含截图回归 `ai-tool-defs.js:65-84`、退化/倒序/超纲/位数超限不命中、裸文件名+行号 scheme 误判回归、tooltip 区间显示）。
+
+### 改进（操作记录：追加式「加载更早记录」改为分页条）
+
+- **行为**：列表底部原先是「加载更早记录」——点一次把更早的记录**追加**到当前列表，越看越长、也没法往回翻。现在改为真分页：`每页条数`（100 / 200 / 500）+ `最新` / `上一页` / `第 N 页` / `下一页`；切页只显示当页并把滚动容器拉回顶部，第 1 页禁用「最新」「上一页」，当前页之后没有记录时禁用「下一页」。
+- **实现**：后端 `Read` 只有 ts+seq 复合游标、没有 offset，所以第 N(>1) 页的游标取第 N-1 页末条（`beforeTs` + `beforeSeq`），只做顺序翻页、不做任意跳页。取过的页缓存在 `activityView.pages`（`Map<page, {entries, truncated}>`）里，来回翻不重复读文件；筛选变化 / 刷新 / 改每页条数清空缓存并回第 1 页，`最新` 清缓存重取（深翻后点它要看到新记录）。
+- **同时移除**：零引用的字符串骨架 `activitySkeleton()`——设置页内嵌形态的遗留，里面还写着同一个「加载更早记录」按钮。
+- **护栏**：`activity-pane.test.mjs` 的分页用例改写为「`fetchActivityPage(page)` / `beforeTs` + `beforeSeq` / 页缓存 / 4 个分页控件 id / `#activity-more` 必须不存在 / `.act-pager` 有 CSS」。
+
+### 修复（应用页面页头在窄内容区被挤成一字一行）
+
+- **复现与事实**：把内容区拖窄（约 300–420px）后，「操作记录」页的标题与说明被挤成竖排一字一行，右侧按钮横排溢出被裁；同用 `pageHeader` 的外部工具 / 定时任务 / 补丁库同样中招。
+- **根因**：`.ap-head` 是 flex 但不可换行，`.ap-head-actions` 为 `flex: none` 按内容宽度硬占位（操作记录有 5 个 ≥84px 的按钮），`.ap-head-main` 又带 `min-width: 0`——余量不足时只有标题区被动收缩到几十像素，中文逐字断行。
+- **修复**：`.ap-head` 加 `flex-wrap: wrap`；main 改 `flex: 1 1 240px`（保底 240px 争取空间，装不下时按钮组整体落到下一行）；actions 改 `flex: 0 1 auto` + 自身 `flex-wrap: wrap` + 右对齐（宽屏下 main 仍吃满余量、按钮仍靠右，视觉不变）。顺带修同类问题：命令栏里的 `.opt-select` 基础规则是 `flex: 1; min-width: 0`，窄宽时被压成只剩一个箭头，新增 `.ap-cmd-filters > .opt-select` 给 96px 底线、装不下交给父级换行。
+- **验证**：300 / 420 / 620px 三档宽度截图核对（标题正常按行折、按钮逐行折、下拉不再被压扁）；`npm run build` 通过。
+
+### 改进（AI 上下文：数据库标签页 desc 去冗余 + Redis 键补上下文）
+
+- **行为**：`appTabViewOf` 的三处调整——① 查询控制台标签不再在 desc 里重复连接名（旧文案注入成「查询控制台「x」（连接「x」的 SQL 查询控制台）」，连接名出现两次），SQL 控制台只注入「查询控制台「连接名」」；Redis 控制台额外补「（Redis 命令控制台）」区分命令方言；② Redis 键查看器标签补上缺失的 desc（此前只有「键查看器「键名」」，AI 不知道连的是哪个连接哪个库），现在注入「键查看器「键名」（连接「x」库 N）」，键名不在 desc 重复；③ 数据表 desc 维持原样。护栏：`virtual-doc-wiring.test.mjs` 新增 1 例（Redis 键 desc 分支存在 + 控制台分支不出现「连接「」）。
+
+### 改进（AI 上下文：虚拟标签页清单文案压缩）
+
+- **行为**：workspace_context 里虚拟标签页清单的引导句从「其他已打开的标签页（应用内视图，不是文件、没有路径可读）：」压缩为「虚拟标签页（非文件，不可按路径读取）：」——防误读语义不变（告诉模型这些不是文件、别按路径读），每轮注入少约 10 字噪音。只改 `ai-system-context.js` 一处注入文案；openViews 组装、12 个截断与文件清单隔离逻辑均不动。
+
+### 修复（AI 正文图片失效时用会话附图留档兜底显示）
+
+- **复现与事实**：AI 会话（如桌面控制汇报）里正文 Markdown 引用的截图显示「图片无法加载（悬停查看原因）」，悬停报 `GetFileAttributesEx … The system cannot find the file specified`——但图片并没有丢：模型曾用 read_image 把它附到对话里，耐久副本就在会话目录 `ai-sessions/<哈希>/<会话>/images/` 下。
+- **根因**：正文引用的只是「文件当时的位置」。两种典型失效：① 会话在旧工作区跑（如 `D:\Projects\CaDt-DataLens`），模型写的是工作区相对路径（`.cadt/tmp/family-tree-01.png`），换工作区后按当前根解析必然找不到；② 引用指向 `.cadt/tmp` / `mcp-images` 这类设计上可整目录回收的临时区，存储清理后路径失效。附图真源（会话 `images/` 目录，加载时 `hydrateImages` 水合成 data）一直都在，只是正文渲染没有兜底链。
+- **修复**：`resolveAIImages` 的「读取失败」分支新增兜底——`aiFindAttachedImageByRef`（纯函数，`ai-constants.js`）从当前会话消息 + 归档里按文件名对齐附图记录，附图 content 里记录的来源路径与引用路径**尾段**对得上的候选优先（压过仅同名的，防同名不同图），同级取后出现的；命中即用耐久副本渲染，tip 注明「原文件已不在原位，显示的是会话附图留档」。只兜「读不到文件」：格式不支持 / 超 30MB（url 为空分支）与越界未授权路径维持原语义。
+- **护栏**：`ai-constants.test.mjs` 新增 5 例（工作区移动尾段对齐 / 尾段优先于同名 / 同级取后者 / 未水合 data 不参与 / 找不到与非法入参返回 null）。
+
+### 修复（编辑区收起态下打开文件：标签条横滚滚不到末尾）
+
+- **复现与事实**：收起编辑区后在 AI 会话里点文件链接（或任何收起态下开标签页的操作），展开后标签条横滚条滚到头，末尾标签仍被右侧工具区（视图切换/更多按钮的绝对定位覆盖层）盖住一截；不收起直接打开则正常。
+- **根因**：`.tb-tools` 是绝对定位覆盖层，滚动余量靠标签条末尾 `.tb-spacer` 预留，宽度在 buildGroup 构建现场量 `tools.offsetWidth`。收起态下 `#main-pane` 是 `display:none`，此刻量出来恒为 0——AI 面板点文件链接先在隐藏态重建标签条再展开，spacer 被记成 0px，展开后无人重新测量，滚到头末尾标签仍被工具区盖住。
+- **修复**：spacer 测量收敛到 `syncTabSpacer`（宽度不变幂等返回）；新增 `refreshTabStripSpacers` 逐组重量，只有 spacer 确实被修正才补发激活标签定位（不拽用户手动滚出的位置）；`setEditorCollapsed` 只在「收起→展开」真实过渡时调用（收起方向 hidden 态量了也是 0，不动旧值）。
+- **护栏**：`tabstrip-scroll.test.mjs` 新增 5 例（测量收敛不许内联 / syncTabSpacer 契约 / refresh 条件 reveal / 工厂导出 / setEditorCollapsed 过渡分支）。
+
+### 改进（全局搜索支持文件名命中）
+
+- **行为**：此前全局搜索只搜文件**内容**——`searchNameHit` 仅用于给内容命中排序提权，文件名匹配但内容零命中的文件完全不返回（搜 "icons.js" 找不到 `core/icons.js` 本身）。现在内容扫描完成后统一做一次**文件名兜底**：文件名含查询词（模糊模式按子序列）且没有内容命中的文件，追加一条 nameOnly 命中（行号槽显示「文件名」、预览即文件名高亮段），追加在内容命中之后（按路径排序、上限 50 条）——内容搜索的既有排序与档位不受扰动，且内容命中吃满 maxResults 时文件名命中仍可见。
+- **口径**：与内容扫描同过滤（skip 目录 / AI worktree / 用户排除表 / filePattern / excludePattern），**不按二进制扩展名排除**——文件名命中不读内容，logo.png 这类二进制文件同样能按名找到。rg 与内置扫描两条路径统一收口（rg 不产出扫描文件清单，故在 `searchWorkspace` 汇总后一次只读目录遍历实现）；`outputMode=files/count`、AI `search_text` 同样生效，AI 工具描述已同步（按文件名找文件可以直接搜）。前端 nameOnly 行点击即打开文件（无行可跳）。
+- **护栏**：`internal/search` 新增 3 例（nameOnly 基线 + 大小写 + 二进制按名命中 / 模糊子序列文件名命中 / rg 路径同生效）；前端 `global-search.test.mjs` 新增 nameOnly 渲染与「点击不进跳转」2 处断言（setup 注入 openPaths/findDocByPath 调用记录）。
+
+### 新增（Redis 支持：键空间浏览 / 类型化键查看器 / 命令控制台，P3 一次落地）
+
+- **连接**：连接管理对话框「驱动」下拉新增 Redis（host/port/密码 + ACL 用户名可选 + 数据库编号 0–15）；自写 RESP2 客户端（`internal/dbclient/redis.go`，0 新依赖，文件头注明后续可替换 go-redis/v9），AUTH/SELECT/PING 握手、单连接串行 + pipeline、二进制安全；不支持 Cluster/Sentinel/TLS（MOVED/ASK 错误给出明确指引）。会话生命周期（上限/空闲回收/取消）与 SQL 会话共用一条流程（`dbSession` 加 `redis` 字段，遵守 driver.go「独立子系统」声明，绕开 Driver 注册表）。
+- **键空间树**（侧栏会话树 Redis 形态）：SCAN 分层懒加载（COUNT 250/批 + cursor 续扫，全程无 KEYS）；`:` 前缀虚拟分组（可切扁平列表）、组名与叶子名共存互不吞并；键节点带类型图标（string/hash/list/set/zset/stream）与 TTL 角标；根层模式过滤（SCAN MATCH）；「已匹配 N + 加载更多」诚实 UI（SCAN 无总数，不做假分页）。
+- **键查看器标签页**（每键一个，marker `dbRedisKey`）：头部键名/类型/TTL/长度 + 刷新/改 TTL/删除；string 四档 formatter（Text/JSON pretty/HEX/Binary base64，二进制自动 HEX）；hash/list/set/zset 转统一行集网格（stream 只读），editable 会话双击行弹层编辑（HSET/LSET/SADD/ZADD 等价命令预览确认）；TTL 修改/PERSIST；单键 DEL 普通确认、**前缀批量删 Type-to-Confirm**（输入完整前缀才可确认，§5.4）。
+- **查询控制台**：复用现有控制台标签页，Redis 词表 guard——读白名单精确枚举（`config` 只放行 get 两词）、写命令跟随「允许编辑」、FLUSHALL/CONFIG SET/SHUTDOWN/DEBUG 等两阶段确认、MULTI/EXEC 控制台拒（与 SQL BEGIN/COMMIT 同口径）、未知命令 fail-closed 拒；xread 不进读白名单（BLOCK 参数会阻塞）；每行一条命令，回复转行集（标量单行 / 数组 #+值）。
+- **编辑提交**：走结构化 `DBRedisApply`（RESP 直发不经文本解析，多行/二进制安全）+ 命令预览弹层（§5.4「编辑生成命令预览」）；string 保存自动补偿 TTL（SET 清 TTL → 按原值 EXPIRE，兼容 Redis <6.0 不用 KEEPTTL）。
+- **实现**：Go `redis.go`（协议+客户端）/`redis_session.go`（会话+scan/fetch/apply/删前缀）/`guard_redis.go`（词表）+ session/query/config 接线 + 4 个新绑定（`DBRedisScan/DBRedisFetchValue/DBRedisApply/DBRedisDeleteByPrefix`）；前端 `db-redis-view.js`（键查看器）、`db-session-tree.js` 键空间分支、`db-connections.js` 驱动参数化、`db-model.js` redisPrefixTree 纯函数；mock 全套（演示键五类型 + 中文前缀组，浏览器 mock 全流程可测）。测试：Go 假 server 全链路 8 例 + RESP/词表表驱动（不写 TestMain 规避子进程递归陷阱）、前端 `db-redis.test.mjs` 9 例，均登记 `npm test`。方案 §5.4、实施记录 §11.13。
+
+### 改进（编辑器：Python 染色对齐 PyCharm）
+
+- **对照实机 PyCharm（新版 Dark）截图逐 token 像素采样 + intellij-community 官方配色源（PythonDarcula/PythonDefault.xml、expUI_darkScheme.xml、Light.xml）核实，深浅两套全部对齐**：类内 dunder 方法名（`__init__`/`__str__`…）品红 `#B200B2`（PY.PREDEFINED_DEFINITION，深浅同值）；装饰器 `@staticmethod` @ 与名字整体橄榄黄（深 `#B3AE60` = DEFAULT_METADATA / 浅 `#9E880D`）；class 名回归普通文本色（此前误吃函数蓝）；`__name__` 等模块级 dunder 引用回归普通色（此前误上内置紫）；关键字参数新分色（深 `#AA4926` / 浅 `#660099`，调用处与 def 签名形参均染色，对齐 PY.KEYWORD_ARGUMENT）；浅色侧内置名（print/len…）修正为官方 `#000080`（原 `#871094`）、docstring 修正为 `#8C8C8C` 斜体（原沿用深色 `#5F826B`）。函数名/普通方法/静态方法维持函数声明蓝（深 `#56A8F5` / 浅 `#00627A`），self/cls、字符串、数字、注释、内置名（深色 `#8888C6`）、docstring（深色 `#5F826B`）此前已与官方一致，不动。
+- Python 专项色全部收进 `--py-*` 变量（新增 `--py-dunder` / `--py-decorator` / `--py-kwarg`，在深浅两套软件主题块定义、代码主题块按明暗继承），六套浅色代码主题（jetbrains-light/github-light/shiki/newsprint/pixyll/whitey）的 Python 专项色归一到官方值。
+- 实现：`editor-ace-hooks.applyPythonTokenClasses` 重写——def 名 span 回溯关键字区分 def/class（Ace 对两者都发 entity.name.function）；行首 `@` 判定装饰器（行中 `@` 矩阵乘不受影响）；摘除「双下划线 identifier→py-builtin」旧规则；def 签名不再整行跳过（形参 kwarg 照染）。测试改写 + 新增 8 例（装饰器/矩阵乘/dunder/class/签名 kwarg），`editor-ace-hooks.test.mjs` 26 例全绿。
+
+### 修复（折叠图标收尾：原生 tooltip、胶囊居中与文字箭头）
+
+- **编辑器折叠标记不再弹原生 tooltip（gutter + 行内胶囊）**：Ace 的无障碍补齐在渲染 gutter 单元格（`Gutter.$renderCell`）与行内折叠胶囊（`Text.$renderToken` 对 fold token）时都会无条件 `setAttribute("title", "Fold code"/"Unfold code")`（无开关项，翻译表置空无效——nls 查表用 `||` 回退，空串会被跳过）。`editor-ace-hooks.disableAceFoldWidgetTooltips` 分别包这两层，渲染完摘掉 title（空 title 不弹 tooltip）；一次性全局原型补丁，随 `createEditorAceHooks` 在模块求值时执行（早于任何编辑器创建），窗口内所有 Ace 编辑器一并生效。行内胶囊选 `$renderToken` 收口是实测结论：CDP 插桩发现 addFold 的局部渲染不经过 `$renderLine`（局部更新路径绕开），而 title 只在 `$renderToken` 诞生、span 又随行重建——在出生点拦截才能全覆盖。测试 4 例登记 `editor-ace-hooks.test.mjs`。
+- **折叠胶囊 `...` 居中（用户报「点不在胶囊中间而是偏右」）**：根因是几何结构问题——Ace 把胶囊 span 宽度写死为 `占位符字符数 × characterWidth`（border-box），`.ace_fold` 的 `padding: 0 4px` 挤掉内容盒后内容盒比 `...` 文本还窄，Chrome 对溢出的 `text-align: center` 钳住左缘只向右溢出（CDP 实测 textRect 比 spanRect 偏右 4px，字宽度量偏差大的会话左空可达一字宽）。修复：`.ace_fold` 加 `display: inline-grid !important; place-content: center !important`，溢出双向对称——胶囊宽度精确（=3×字宽）与偏宽（度量偏差）两种场景都居中。CDP 端到端复验 leftGap=rightGap=0。
+- **阅读模式目录折叠按钮换 SVG**：`reading-view.js` 目录分组折叠按钮从文字「▸/▾」改为 `iconSvg('chevron-right')` + CSS 旋转（图标硬规范，open 态用 class 判定替代 textContent 比对）。
+- **便签块折叠按钮删文字兜底**：`bridge-memo-view.js` 的 `iconSvg(...) || '▸'` 兜底摘除——iconSvg 失败时宁可不画，不再退回文字字符。
+
+### 修复（SQL 控制台配色与编辑区不一致）
+
+- **事实**：控制台 Ace 是运行时 `ace.edit()` 创建，Ace 会动态往 head 注入默认主题 CSS（晚于构建期样式表）——SQL 关键字/字符串被主题硬色盖成默认蓝紫，与编辑区的代码风格变量（`--syn-keyword` 等，随 data-code-style 代码主题切换）不一致。
+- **修复**：`.db-sql-ace` 的 token 规则（关键字/字符串/注释/数字/布尔/NULL/函数/标点/标识符 + 选区/gutter）全部改 `!important` 顶掉运行时注入的主题色——颜色永远走应用代码风格变量，与编辑区同源同切换。
+
+### 改进（数据库：行高列宽 / DDL 导出 / 控制台多结果）
+
+- **行高与列宽（图9）**：表头右缘拖拽手柄调列宽（双击手柄恢复自适应，列模板走 CSS 变量单一来源）；状态条加行高档位（紧凑 22 / 常规 26 / 宽松 32，`setRowHeight` 联动 canvas 与可视窗口，行内文字始终居中）。
+- **导出/复制 DDL**：`buildDDL` 纯函数从表元数据生成建表语句（MySQL 反引号 / SQLite 双引号；单主键落列内、复合主键表级声明；DEFAULT 字面量按数字/NULL/字符串转义；SQLite autoindex 不还原）——树表节点右键「复制 DDL / 导出 DDL…」+ 表标签页工具栏「DDL」按钮；入口均为异步拉 DBDescribe。
+- **控制台多结果（图2 JetBrains 对齐）**：Go `QueryOutcome.Results` 逐条语句留档（兼容字段 Result = 最后一条）；结果区 tab 化——「输出」摘要（每条语句 + 行数/消息 + 总耗时）+ 每条 SELECT 一个结果 tab（grid 共享切换重放，mock 同步拆语句）；Ace 多行编辑器已由编辑器补全方案落地（mode-sql 高亮 + 表/列补全 + Ctrl+Enter）。
+- **护栏**：`buildDDL` 3 例（SQLite/MySQL 方言 + 复合主键 + 兜底）；eslint no-undef db 域归零。
+
+### 改进（编辑器：格式解析失败不再拦截保存）
+
+- **行为**：code/text 视图保存时不再因格式解析失败被拦截（此前 JSON/YAML/TOML 等敲坏后 Ctrl+S 直接弹错拒存）——**是否保存交给用户**：按原文落盘 + 非阻断提示「XX 无效，已按原文保存」（auto-save 静默放行；表格模式的序列化内容由应用生成、失败静默；tree 模式是真实数据路径，校验保留）。
+- **实现**：`saveDoc` 原文路径摘除 `fmt.parse` 校验门（该路径 text 本就按原文写盘，parse 纯属拦截用）；配合解析错误托盘现代化（见下方实机反馈 ①），「报错可见、保存自决」。
+
+### 改进（数据库：对齐 JetBrains 的八项打磨）
+
+- **自动重连**：会话被空闲回收（Go 侧 15 分钟）是服务端静默行为，此前网格只会报「连接会话不存在」。现在浏览/刷新/执行失败识别到会话丢失即**自动重连并重建面板**重新加载当前页（5 秒节流防「重连又失败」死循环；控制台同样接入）。
+- **树缩进层级修正**（用户报「层级画歪了」）：库行曾比条目行还浅（父子倒挂）、表节点与「表」分组行只差 4px——改为固定步进缩进（条目 20 → 库 36 → 分组 52 → 表节点 68px，服务器对象再深一档）。
+- **折叠箭头换 SVG**：树展开箭头从文字「▸」改为 `iconSvg('chevron-right')`（图标硬规范），open 态 CSS 旋转。
+- **树层级右键菜单补齐**：库行（刷新/新建表/控制台/断开）、表分组（刷新/新建表）、视图分组（刷新）、服务器对象分组（刷新）、表/视图节点（打开/复制表名/控制台）全部有右键；条目行右键 = `[...]` 同款。`[...]` 按钮去掉 tooltip；MySQL/MariaDB 菜单「编辑连接…」更名「属性…（连接管理）」对齐 JetBrains Properties。
+- **AI 上下文丰富化**：数据表/查询控制台标签页在 AI 的打开视图清单里注入 desc（连接名、库、表/视图类型），不再只给表名（`appTabViewOf` + `ai-system-context` 拼接）。
+- **筛选区重排 + 多列 ORDER BY**：筛选面板加 WHERE / ORDER BY 分区标签；条件行固定栅格（列 150px / 算子 110px / 值弹性，不换行不错位——修复增强 select 替换后的塌陷，触发器 wrap 继承列宽类）；ORDER BY 结构化多列（列下拉 + 升降，可多行），Go `BrowseRequest.OrderCols` 逐列过元数据白名单后拼 `ORDER BY`，不接受原始 SQL 片段。
+- **分页档位 + 导出/导入 + 自动刷新**（图7/图8）：状态条加每页行数档位（10/100/250/500/1000/所有=5000 上限/自定义）；工具栏「导出」当前已加载结果为 CSV/JSONL（`formats.csv.stringifyTable`）；「导入」CSV/JSONL（UTF-8，20MB 上限，新绑定 `DBReadImportFile`）→ 列映射表单 → 生成待提交行**走受控写入链路**（预览确认后单事务提交）；「自动」刷新档位（禁用/5s/10s/30s/1m/5m，编辑中或有 dirty 时自动暂停，断开时静默停止）。
+- **单元格垂直居中**：`.db-grid-cell` 补 `line-height:20px`（26px 行高减上下 padding），内容不再偏上。
+- **护栏**：Go `guard_test` DDL 能力位语义 + `TestCreateSQLite` + `TestBrowseOrderCols`（多列下推/坏列拒绝）；前端 `db-create-table.test.mjs` 6 例；eslint `no-undef` db 域归零。
+
+### 改进（编辑器：折叠箭头对齐 JetBrains）
+
+- **行为**：展开态箭头（向下）默认不显示，**hover 行号区才出现**；折叠态箭头（向右）**任何情况常显**——与 JetBrains 编辑器一致。
+- **实现**：纯 CSS 作用域调整（`.ace_gutter:hover … .ace_start:not(.ace_closed)`）——折叠行同时挂 `ace_start ace_closed` 两个类，`:not(.ace_closed)` 保证 hover 行号区时折叠行仍显示右箭头不被盖成向下；箭头造型/配色沿用既有 data-uri。
+
+### 新增（编辑器代码补全：SQL 控制台 Ace 化 + 数据格式结构补全）
+
+- **事实**：SQL 控制台是裸 textarea（无高亮无补全）；文件编辑器的 Ace 从未启用 language_tools——补全引擎（ext/language_tools + autocomplete）其实一直躺在 jsoneditor.min.js bundle 里随 `window.ace` 暴露，只是零接线。方案与调研见 `docs/finished-plans/editor-completion.md`（偏离记录 §15）。
+- **SQL 控制台（P0）**：textarea → Ace（`ace/mode/sql` 语法高亮 + placeholder；Ctrl/Cmd+Enter、确认横幅失效、防重入等价迁移；`window.ace.edit` 探针通过，起不来时自动退回 textarea 兜底）。补全三层：方言关键词（sqlite/mysql 两套语法级手写表）→ 库/表/视图（`DBListObjects`）→ 列（`DBDescribe`，`表.` / `库.表.` 点号上下文 + FROM/JOIN 别名解析）；元数据懒聚合按会话缓存、并发单飞，DDL/写语句执行后失效并让下次描述带 noCache（与网格写后刷新同语义）；断连/失败静默降级纯关键词，不打断输入。列候选悬浮显示 类型 · 主键 · NOT NULL · 默认值。
+- **文件编辑器（P1）**：非只读 doc 幂等挂载全局 completer（`editor-ace-hooks.applyAceMode` 接线，且在键位重绑之前——键位表里的补全条目要等命令挂上才能被接管），候选按 mode 分流：JSON/JSONL 键、YAML 键、XML 标签/属性、INI/TOML 段/键（`core/completion.js` 纯函数提取）+ 全文档词法兜底（≥3 字符词；>2MB 只扫光标附近窗口，脏标记 300ms 节流）；打分口径 前缀 > CamelHumps > 子串 > fuzzy。vendored mode 实测无 `$keywordList`（python/js/go 均 0 命中），探测代码保留——有就带上。
+- **设置与键位**：`settings.completion = {files: true, sql: true, live: false}`，设置 → 编辑器与写作三行开关（文件补全 / SQL 补全 / 输入即弹，live 默认关，偏好键跨窗同步）；键位表登记「代码补全（候选弹层）」三风格 Ctrl+Space + Alt+/（Windows 中文输入法把 Ctrl+Space 占成中英切换，Alt+/ 备用），设置页「编辑器内键位」表自动带出该行。
+- **工程（npm test 拆分）**：测试清单过 240 个文件后，单条 `node --test` 命令行超出 Windows cmd 8191 字符上限（「命令行太长」整批不跑）——`npm test` 拆为 `test:ai` / `test:ui-core` / `test:ui-shell` 三个子脚本串行（失败即停），`test-manifest` 守卫改为扫全部 npm script 字段的并集（双向核对 + 禁重复登记语义不变）。
+- **护栏**：0 新依赖、0 vendor 新增文件、无 Go 改动（无新绑定 → 无 mock-backend 义务）；新增 `core/completion.js` / `editor/editor-completion.js` / `db/db-completion.js` 三模块。测试 `test/core/completion.test.mjs`（13 例）+ `test/editor/editor-completion.test.mjs`（8 例）+ `test/db/db-completion.test.mjs`（15 例，假 backend 覆盖单飞 / 缓存失效 / 失败降级 / 跨库 / quick doc）已登记清单；候选弹层样式走主题变量，编辑器内部浮层不进 overlay-stack（弹层规范豁免）。
+
+- **实机反馈改进（2026-11-22）**：① JSON 解析错误托盘（编辑器底部，jsoneditor 原生 `.jsoneditor-text-errors`）现代化——杀掉原生黄顶线与酱色红底（真凶是 `tr.parse-error` 的 `rgba(238,46,46,.44)`，特异性 (0,3,1) 需单独覆盖 + !important），改为面板底色 + 主题分隔线 + 行 hover + 跳行 accent + 报错文本编辑器字体（红 X sprite 保留、「Ln N」列弱化）；② 补全弹层对齐 JetBrains 观感——行首类型图标（meta → `iconSvg`：关键词 `</>`、键 花括号、段 缩进行、标签/属性/表/视图/SQL 列分色，新登记注册图标 `braces`；装饰挂 MutationObserver——popup 晚于首回调创建需惰性重试，且 popup renderer 不发 afterRender，与 python 补色同款观察器机制）、行距/圆角/选中行底色/meta 弱化；③ 「输入时自动弹出」**默认关**：live 路径在 vendored bundle 上实测不可靠（最小 completer + live 也复现渲染冻结、真实键入后 completer 未创建——非本项目代码问题，详见方案 §15.2），设置变更热生效到已开编辑器的接线保留（开关切换即时生效，生效后仍可尝试）；④ 编辑器折叠箭头对齐 JetBrains：展开态（向下）hover 行号区才显示、折叠态（向右）常显。
+- **护栏补充**：测试 36 → 41 例（normalize 默认值、热生效、弹层行图标装饰各一）；`braces` 图标先进注册表再用（icon-guard 合规路径）；JSON 错误托盘覆盖仅加 `.jsoneditor .jsoneditor-text-errors` 作用域，结构与跳行交互不动；折叠箭头为纯 CSS 作用域调整。
+
+### 改进（数据库：从零建库建表，仅 SQLite）
+
+- **事实**：此前「新建连接 → SQLite」只能选已有库文件，且 guard 对 DDL 恒拒（连控制台 CREATE TABLE 都不收）——「从零建一个库」的链路不存在。
+- **新建空库**：顶部菜单新增「新建 SQLite 数据库…」——保存对话框选路径，Go `CreateSQLite` 以 `O_CREATE|O_EXCL` 原子判定（已存在绝不覆盖），0 字节文件 + 「建 `_cadt_init` 表再删」的真实写事务落盘文件头（`PRAGMA journal_mode` 不产生写 I/O，会留半截 0 字节文件）；建好默认允许编辑加入工作区。绑定 `DBCreateSQLite`，mock 同步。
+- **SQLite 开放建表**（作者拍板）：`sqliteDriver.Capabilities().DDL = true`，仅 editable 会话生效（只读会话被 editable 门挡住），MySQL 恒拒不变；DROP TABLE 等危险结构变更仍走两阶段确认。新增结构化「新建表」表单（`db-create-table.js`）——入口在树「表」分组行尾 + 按钮；表名/列名保守校验（字母数字下划线、不以数字开头）、类型白名单（INTEGER/TEXT/REAL/BLOB/NUMERIC）、单主键落列内（INTEGER 主键保留 rowid 别名）、复合主键表级声明；生成的 SQL 走控制台同一条 guard 通道，不做旁路，成功后树清单自动刷新。
+- **护栏**：`guard_test` DDL 用例改能力位语义（未开放拒 / CREATE 直接放行 / DROP 确认链路）；`TestSQLiteEditableFlow` 改写为「确认后 DROP 真实执行」；新增 `TestCreateSQLite`；前端新增 `test/db/db-create-table.test.mjs`（6 例，已登记 `npm test`）。
+
+### 改进（数据库浏览重构：侧栏会话面板化，JetBrains 对齐）
+
+- **入口方向纠正**（作者以 JetBrains 截图为准）：侧栏「数据库」面板本身就是会话面板——连接条目展开即建立会话，树直接长在侧栏：连接 → 库 → 分组「表 N」「视图 N」+ MySQL 专属「服务器对象」（排序规则 / 用户 / 虚拟视图，懒加载、权限不足的组自动隐藏）；表/视图节点行尾显示表注释。**双击数据表直接以独立虚拟标签页打开全宽数据网格**（一个表一个标签），不再有「库标签页内嵌树+子标签」的三栏布局；查询控制台是每会话一个的独立标签页（行菜单「打开查询控制台」）。旧 `db-tab.js` / `db-object-tree.js` 删除，新增 `db-sessions.js`（会话管理器：幂等连接/断开重连/订阅通知，关标签页不断会话，断开与空闲回收后网格给重连入口）、`db-session-tree.js`、`db-tab-views.js`。
+- **编辑链路对齐**（图4/图5）：单元格内联编辑框修复（占满单元格、无圆角缝隙、accent 描边——原对话框形态的输入框在 26px 行高里溢出被裁）；修改后的单元格显示**新值**并高亮，行号列同色高亮；提交改 icon 按钮——无修改灰、有修改亮，点击出预览弹层（两阶段确认保留），**Ctrl+Enter 直接提交**（跳过预览，作者拍板对齐 JetBrains 默认行为）。
+- **Go 协议**：`DBObject.Comment` / `DBTableMeta.TableComment`、`DBListServerObjects` 绑定（排序规则/用户/系统虚拟视图，每组独立容错）；顺带修掉 `.db-btn[hidden]` 被 `display:inline-flex` 覆盖导致编辑簇在只读会话也显示、预览弹层取消后 mask 残留两个 bug。新增 `test/db/db-sessions.test.mjs`（8 例，已登记 `npm test`）。
+
 ### 改进（设置 → 编程语言首次打开自动全语言扫描）
 
 - **行为**：编辑器与运行面板照旧不主动扫描；打开「设置 → 编程语言」任一语言页时，若还**没有任何语言的扫描结果**（全空，如首次使用 / 清过设置），自动后台顺序扫一遍**全部语言**并缓存（此前只扫当前打开的语言，其余要逐个点开才扫）。已有任何结果 / 在扫时维持原状：只补当前语言还没扫过的工具，缓存不重扫。

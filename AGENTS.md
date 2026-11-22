@@ -152,7 +152,7 @@ CaDt-DataLens 是一个面向 Windows 的轻量级多格式数据查看与编辑
 
 **边界（常驻 UI 不是标签页，别硬改）**：AI 面板（`#ai-panel` 单例硬约束）、设置对话框、阅读模式（`#editor` 的兄弟节点，独占式 `show()`/`close()`）、底部 dock（`terminal` / `debug` / `run` / `graph` 自成 4 态切换器）、调试台、各类浮层、辅助窗口（文件对比 / 实时预览）。
 
-**第二族：应用页面**（2026-11-22）——「一个功能页面」而不是「一个业务对象」。使用统计 / 定时任务 / 操作记录 / 补丁库原本嵌在设置对话框里，本质是浏览与管理数据的重面板（要长时间停留、要看大量内容、要能并列对照），现在各自是一个内容区标签页；同日「外部工具」（原 设置 → AI → 外部工具）整体迁入同一族：
+**第二族：应用页面**（2026-11-22）——「一个功能页面」而不是「一个业务对象」。使用统计 / 定时任务 / 操作记录 / 补丁库原本嵌在设置对话框里，本质是浏览与管理数据的重面板（要长时间停留、要看大量内容、要能并列对照），现在各自是一个内容区标签页；同日「外部工具」（原 设置 → AI → 外部工具）整体迁入同一族；2026-11-23「智能体」（原 设置 → AI → 智能体，群聊成员管理）以同款停靠区形态迁入（`#agents-park` + `ai-agent-settings.js` 的 `mountAgentsPane`，pane 不带 `.settings-pane` 类，AI 指引口径「应用页面 → 智能体」，方案见 `docs/finished-plans/agents-app-page.md`）：
 
 - 清单单一来源 `core/app-pages.js` 的 `APP_PAGES`（id / label / icon / group / desc）；`TAB_KINDS` 里 `appPage` 一项用 `resolve(doc)` 按 `doc.appPage` 细分图标与标签。
 - 各页内容渲染**仍在原域**，经 `mount(root)` 返回卸载函数（`settings-pane-usage-stats.js` / `settings-pane-patches.js` / `activity-pane.js` / `ai-schedule.js` 的 `mountSchedules`）。视图工厂 `bridge/bridge-app-page-view.js` 只负责建标签页与调 mount；挂载器由 `main.js` 的 `appPageMounters` 注入（`bridge/` 不 import `settings/` 或 `ai/`）。**外部工具是特例**：整段 DOM 常驻 index.html 尾部的 `#extcap-park` 停靠区，`settings-pane-external-tools.js` 的 mount/unmount 把它搬进/搬出标签页容器——保持节点身份，`ai-mcp-settings.js` 启动时按 id 捕获的引用与事件绑定跨开关标签页始终有效；容器加 `.extcap-root`（flex+gap 沿用设置 pane 纵向节奏）；MCP 世代事件到达时标签开着才刷新（`refreshExternalToolsPaneIfVisible` 判 `doc.appPage`）。

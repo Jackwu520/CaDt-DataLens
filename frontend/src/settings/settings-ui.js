@@ -95,6 +95,9 @@ const elsSettings = {
     codeGuides: document.getElementById('opt-code-guides'),
     alwaysOnTop: document.getElementById('opt-always-on-top'),
     codeWrap: document.getElementById('opt-code-wrap'),
+    completionFiles: document.getElementById('opt-completion-files'),
+    completionSql: document.getElementById('opt-completion-sql'),
+    completionLive: document.getElementById('opt-completion-live'),
     scrollStyle: document.getElementById('opt-scroll-style'),
     codeShotTitle: document.getElementById('opt-code-shot-title'),
     codeShotLineNumbers: document.getElementById('opt-code-shot-line-numbers'),
@@ -632,6 +635,11 @@ function applySettings() {
     elsSettings.codeGuides.checked = !!deps.settings.codeGuides;
     elsSettings.alwaysOnTop.checked = !!deps.settings.alwaysOnTop;
     elsSettings.codeWrap.checked = !!deps.settings.codeWrap;
+    // 补全三开关（settings.completion 归一化语义与 core/completion.js 一致：缺省=开/开/关）
+    const comp = deps.settings.completion && typeof deps.settings.completion === 'object' ? deps.settings.completion : {};
+    if (elsSettings.completionFiles) elsSettings.completionFiles.checked = comp.files !== false;
+    if (elsSettings.completionSql) elsSettings.completionSql.checked = comp.sql !== false;
+    if (elsSettings.completionLive) elsSettings.completionLive.checked = comp.live === true;
     if (elsSettings.scrollStyle) elsSettings.scrollStyle.value = SCROLL_STYLES.some((s) => s.value === deps.settings.scrollStyle) ? deps.settings.scrollStyle : 'standard';
     elsSettings.codeShotTitle.checked = !!deps.settings.codeShotTitle;
     elsSettings.codeShotLineNumbers.checked = deps.settings.codeShotLineNumbers !== false;
@@ -686,6 +694,10 @@ function applySettings() {
     applyCodeGuides();
     applyAlwaysOnTop();
     applyReadOnlyMode();
+    // 补全设置热生效：live/总开关变更即时应用到已开编辑器（依赖 main.js 注入的组合根回调）
+    if (typeof deps.applyCompletionSettingsToAll === 'function') {
+        try { deps.applyCompletionSettingsToAll(); } catch (e) {}
+    }
     deps.applyWritingMode();
     if (deps.aiPanel && deps.aiPanel.applySettings) {
         try { deps.aiPanel.applySettings(); } catch (e) {}
@@ -808,8 +820,8 @@ function selectSettingsPane(pane) {
     }
     const aiGroup = document.getElementById('snav-ai');
     if (aiGroup) {
-        // 外部工具已迁为应用页面标签页（core/app-pages.js），不再是设置子页
-        const inAI = pane === 'models' || pane === 'agents' || pane === 'gen-models' || pane === 'ai' || pane === 'persona' || pane === 'context' || pane === 'preferences';
+        // 外部工具、智能体已迁为应用页面标签页（core/app-pages.js），不再是设置子页
+        const inAI = pane === 'models' || pane === 'gen-models' || pane === 'ai' || pane === 'persona' || pane === 'context' || pane === 'preferences';
         if (inAI && !aiGroup.classList.contains('expanded')) {
             aiGroup.classList.add('expanded');
             const parent = aiGroup.querySelector('.snav-parent');
@@ -830,7 +842,7 @@ function selectSettingsPane(pane) {
         // 开发者页只剩日志与调试控制台；补丁库已迁为内容区标签页（应用页面 → 补丁库）
         // 外部工具同理已迁（应用页面 → 外部工具），AI 子页不再有它
     }
-    if (pane === 'ai' || pane === 'models' || pane === 'agents' || pane === 'gen-models' || pane === 'persona' || pane === 'context' || pane === 'preferences') {
+    if (pane === 'ai' || pane === 'models' || pane === 'gen-models' || pane === 'persona' || pane === 'context' || pane === 'preferences') {
         if (!deps.aiPanel) deps.initAIPanel();
         if (deps.aiPanel && typeof deps.aiPanel.refreshSettings === 'function') {
             try { deps.aiPanel.refreshSettings(); } catch (e) {}

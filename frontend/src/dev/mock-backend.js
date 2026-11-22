@@ -452,6 +452,131 @@ function mockAIGroupEnsure(id) {
 }
 let mockAIConfigText = '';
 const dbCredentialMock = new Map(); // 插件数据库驱动的通用凭据（模拟 dpapi 表）
+const mockDbSession = {tables: []}; // 演示会话内存状态：editable（DBOpen 的 allowEdit）、tables（建表表单/控制台新建的表）
+// mockDbConnections / mockRedis：连接管理对话框落盘的演示连接 + Redis 键空间的内存 store
+// （演示键覆盖五类型 + 中文前缀组，方案 §5.4 的键空间树/键查看器/控制台全流程浏览器实测用；
+//  连接经 localStorage 持久化——模拟 Go 侧 db-connections.json，页面刷新后连接仍在）
+function loadMockConnections() {
+    try { return JSON.parse(localStorage.getItem('datalens-mock-db-connections') || '[]'); } catch (e) { return []; }
+}
+function persistMockConnections(list) {
+    try { localStorage.setItem('datalens-mock-db-connections', JSON.stringify(list)); } catch (e) { /* 尽力而为：mock 存储失败不影响演示 */ }
+}
+const mockDbConnections = loadMockConnections();
+const mockRedis = {
+    editable: false,
+    data: {
+        'user:1001': {type: 'string', value: '张三的用户资料（演示 string）'},
+        'user:1002': {type: 'hash', value: {name: '李四', age: '28', city: '上海'}},
+        'user:1003': {type: 'string', value: '王五'},
+        'config:debug': {type: 'string', value: '{"level":"info","traces":false}'},
+        'queue:jobs': {type: 'list', value: ['job-1', 'job-2', 'job-3']},
+        'tags:java': {type: 'set', value: ['ee', 'spring', 'jvm']},
+        'leaderboard': {type: 'zset', value: [['alice', '98.5'], ['bob', '88'], ['carol', '77.5']]},
+        'logs:2026': {type: 'stream', value: [['1-1', 'level', 'info'], ['1-2', 'level', 'warn'], ['1-3', 'level', 'error']]},
+    },
+    ttl: {'user:1001': 3600, 'config:debug': -1, 'leaderboard': -1},
+};
+
+// mockRedisEntry(key) → {name, type, ttl, length}（树摘要形状，对齐 Go RedisKeyEntry）
+function mockRedisEntry(name) {
+    const d = mockRedis.data[name];
+    if (!d) return null;
+    const ttl = mockRedis.ttl[name] != null ? mockRedis.ttl[name] : -1;
+    const length = d.type === 'string' ? String(d.value).length
+        : d.type === 'hash' ? Object.keys(d.value).length
+        : d.type === 'list' || d.type === 'set' ? d.value.length
+        : d.type === 'zset' ? d.value.length
+        : d.value.length; // stream：条目数
+    return {name, type: d.type, ttl, length};
+}
+
+// mockRedisApplyOps 结构化编辑的内存落地（对齐 Go redisOpCommands：setString 带 TTL 补偿）
+function mockRedisApplyOps(ops) {
+    const rows = [];
+    for (const op of ops || []) {
+        let result = 'OK';
+        const key = op.Key || op.key;
+        const field = op.Field || op.field;
+        const value = op.Value != null ? op.Value : op.value;
+        switch (op.kind) {
+            case 'setString': {
+                mockRedis.data[key] = {type: 'string', value: String(value)};
+                // SET 清 TTL：原 TTL > 0 → EXPIRE 补回（-1 永久/0 无过期语义不补）
+                if ((op.TTLSeconds || op.ttlSeconds || 0) > 0) {
+                    mockRedis.ttl[key] = op.TTLSeconds || op.ttlSeconds;
+                } else if (mockRedis.ttl[key] > 0) {
+                    delete mockRedis.ttl[key];
+                }
+                break;
+            }
+            case 'setHashField':
+                if (!mockRedis.data[key]) mockRedis.data[key] = {type: 'hash', value: {}};
+                mockRedis.data[key].value[field] = String(value);
+                break;
+            case 'delHashField':
+                if (mockRedis.data[key] && mockRedis.data[key].value) delete mockRedis.data[key].value[field];
+                break;
+            case 'setListItem': {
+                const idx = Number(op.Index != null ? op.Index : op.index);
+                if (mockRedis.data[key] && mockRedis.data[key].value[idx] !== undefined) {
+                    mockRedis.data[key].value[idx] = String(value);
+                } else {
+                    result = '失败：index 越界（ERR index out of range）';
+                }
+                break;
+            }
+            case 'addSetMember':
+                if (!mockRedis.data[key]) mockRedis.data[key] = {type: 'set', value: []};
+                if (!mockRedis.data[key].value.includes(String(value))) mockRedis.data[key].value.push(String(value));
+                break;
+            case 'delSetMember': {
+                const arr = mockRedis.data[key] && mockRedis.data[key].value || [];
+                const at = arr.indexOf(String(value));
+                if (at >= 0) arr.splice(at, 1);
+                else result = '失败：成员不存在（ERR no such member）';
+                break;
+            }
+            case 'addZSetMember': {
+                const score = String(op.Score != null ? op.Score : op.score);
+                if (!mockRedis.data[key]) mockRedis.data[key] = {type: 'zset', value: []};
+                const list = mockRedis.data[key].value;
+                const at = list.findIndex((m) => m[0] === String(value));
+                if (at >= 0) list[at][1] = score;
+                else list.push([String(value), score]);
+                break;
+            }
+            case 'delZSetMember': {
+                const list = mockRedis.data[key] && mockRedis.data[key].value || [];
+                const at = list.findIndex((m) => m[0] === String(value));
+                if (at >= 0) list.splice(at, 1);
+                else result = '失败：成员不存在（ERR no such member）';
+                break;
+            }
+            case 'setTTL': {
+                const sec = Number(op.TTLSeconds != null ? op.TTLSeconds : op.ttlSeconds);
+                if (sec < 0) mockRedis.ttl[key] = -1;
+                else mockRedis.ttl[key] = sec;
+                break;
+            }
+            case 'persist':
+                mockRedis.ttl[key] = -1;
+                break;
+            case 'delKey':
+                if (mockRedis.data[key]) {
+                    delete mockRedis.data[key];
+                    delete mockRedis.ttl[key];
+                } else {
+                    result = '失败：键不存在';
+                }
+                break;
+            default:
+                result = '失败：未知操作 ' + op.kind;
+        }
+        rows.push(['(' + op.kind + ') ' + key, result]);
+    }
+    return rows;
+}
 
 // 与 frontend/src/ai/ai-file-tools.js / Go globMatchPath 同规则的简易通配（mock 专用，避免跨模块依赖）
 function mockGlobMatch(pattern, relPath, name) {
@@ -526,6 +651,34 @@ const mockStorageItems = [
     {id: 'ui-state', label: '界面状态（WebView2）', note: '界面设置的 localStorage、网页登录态与浏览历史。', kind: 'danger', scope: 'webview', inCache: false, path: MOCK_APP_ROOT + '\\WebView2', bytes: 222 * 1024 * 1024, files: 9800, entries: 0, exists: true},
     {id: 'app-config', label: '全部配置', note: 'config / ai-config / mcp / env-vars，删除即恢复出厂。', kind: 'danger', scope: 'app', inCache: false, path: MOCK_APP_ROOT + '\\config.json', bytes: 32 * 1024, files: 4, entries: 0, exists: true},
 ];
+
+// 操作记录的 mock 数据：最新在前（与后端 Read 的「新→旧」口径一致），
+// 覆盖有参数 / 长对象 / 短对象三种形态，供列表、展开区、复制、分页实测。
+function mockActivityEntries() {
+    const now = Date.now();
+    const mk = (i, actor, action, target, detail) => ({
+        v: 1,
+        ts: now - i * 61 * 1000,
+        actor,
+        source: 'mock',
+        action,
+        target,
+        seq: 1000 - i,
+        ...(detail ? {detail} : {}),
+    });
+    return [
+        mk(0, 'ai', 'ai.tool', 'read_file {"path":"internal/search/glob.go"}', {status: 'done', ms: 12}),
+        mk(1, 'ai', 'ai.approve', 'grep -n "runDesktopInstall\\|setDesktop" docs/mcp-desktop/', {kind: 'command', rule: null}),
+        mk(2, 'user', 'tab.switch', '操作记录'),
+        mk(3, 'user', 'tab.close', '定时任务'),
+        mk(4, 'user', 'file.open', 'D:\\Projects\\CaDt-DataLens\\docs\\reports\\incident-2026-11-18-workspace-wipe.md'),
+        mk(5, 'system', 'app.start', ''),
+        mk(6, 'ai', 'ai.session', '窄宽度操作记录布局问题', {op: 'create', scope: 'auto'}),
+        mk(7, 'user', 'settings.change', 'activity.retentionMonths', {from: 12, to: 24}),
+        mk(8, 'user', 'view.mode', '操作记录'),
+        mk(9, 'ai', 'ai.tool', 'run_command {"command":"npm run build"}', {status: 'done', ms: 6540}),
+    ];
+}
 
 function buildMockStorageReport(workspaceRoot) {
     const items = mockStorageItems.map((item) => ({...item}));
@@ -1246,19 +1399,126 @@ const mockBackend = {
     },
     async SQLClose() { return null; },
     // ---- 数据库连接页（internal/dbclient 的同名绑定；dev 下返回静态演示数据）----
+    // mockDbSession：演示会话的内存状态（SQLite 打开时的 allowEdit 决定 Describe 的 editable）
     async DBOpen(path, allowEdit) {
+        mockDbSession.editable = !!allowEdit;
         return {id: 'mock-db-sqlite', kind: 'sqlite', name: '演示.db', editable: !!allowEdit, immutable: false};
     },
+    async DBReadImportFile(path) {
+        const w = (window.__mockWrites || {})[String(path || '')];
+        if (w != null) return w;
+        throw new Error('mock 场景没有该文件的内容（先导出再导入可闭环）');
+    },
+    async DBCreateSQLite(path) {
+        mockDbSession.created = String(path || '');
+        return null;
+    },
     async DBConnect(connectionID) {
+        // 演示连接管理里保存的 Redis 连接 → redis 会话（键空间树/键查看器/控制台全流程）
+        const cfg = mockDbConnections.find((c) => c.id === connectionID);
+        if (cfg && cfg.kind === 'redis') {
+            mockRedis.editable = !!cfg.allowEdit;
+            return {
+                id: 'mock-db-redis', kind: 'redis', name: cfg.name || '演示 Redis',
+                server: (cfg.host || '127.0.0.1') + ':' + (cfg.port || 6379),
+                database: 'db' + (Number(cfg.database) || 0), editable: !!cfg.allowEdit,
+            };
+        }
         return {id: 'mock-db-mysql', kind: 'mysql', name: '演示 MySQL', server: '127.0.0.1:3306', database: 'demo', editable: false};
     },
-    async DBListDatabases() { return ['main']; },
+    // ---------- Redis 键空间（方案 §11.13；演示 store 在 mockRedis） ----------
+    async DBRedisScan(id, database, pattern, cursor, count) {
+        const p = String(pattern || '').replace(/\*/g, '');
+        let names = Object.keys(mockRedis.data);
+        if (p) names = names.filter((n) => n.startsWith(p) || (!p.endsWith(':') && n.includes(p)));
+        names.sort();
+        const total = names.length;
+        const start = Number(cursor) || 0;
+        const batch = names.slice(start, start + Math.max(Number(count) || 250, 1));
+        const next = start + batch.length;
+        return {cursor: next < total ? next : 0, keys: batch.map(mockRedisEntry).filter(Boolean)};
+    },
+    async DBRedisFetchValue(id, database, key) {
+        const d = mockRedis.data[String(key || '')];
+        if (!d) return {type: 'none', ttl: -2, length: 0, isBinary: false, text: '', hexText: '', columns: [], rows: [], nulls: [], truncated: false, message: '键不存在（可能已被删除）'};
+        const ttl = mockRedis.ttl[String(key)] != null ? mockRedis.ttl[String(key)] : -1;
+        const base = {type: d.type, ttl, isBinary: false, text: '', hexText: '', truncated: false, message: ''};
+        switch (d.type) {
+            case 'string': {
+                const bytes = new TextEncoder().encode(String(d.value));
+                const hex = [...bytes].map((b) => b.toString(16).toUpperCase().padStart(2, '0')).join(' ');
+                return Object.assign(base, {length: bytes.length, text: String(d.value), hexText: hex});
+            }
+            case 'hash':
+                return Object.assign(base, {
+                    length: Object.keys(d.value).length, columns: ['field', 'value'],
+                    rows: Object.entries(d.value).map(([f, v]) => [f, String(v)]),
+                    nulls: Object.keys(d.value).map(() => [false, false]),
+                });
+            case 'list':
+                return Object.assign(base, {
+                    length: d.value.length, columns: ['index', 'value'],
+                    rows: d.value.map((x, i) => [String(i), String(x)]),
+                    nulls: d.value.map(() => [false, false]),
+                });
+            case 'set':
+                return Object.assign(base, {
+                    length: d.value.length, columns: ['member'],
+                    rows: d.value.map((x) => [String(x)]), nulls: d.value.map(() => [false]),
+                });
+            case 'zset':
+                return Object.assign(base, {
+                    length: d.value.length, columns: ['member', 'score'],
+                    rows: d.value.map(([m, s]) => [String(m), String(s)]),
+                    nulls: d.value.map(() => [false, false]),
+                });
+            case 'stream':
+                return Object.assign(base, {
+                    length: d.value.length, columns: ['id', 'field', 'value'],
+                    rows: d.value.map(([sid, f, v]) => [String(sid), String(f), String(v)]),
+                    nulls: d.value.map(() => [false, false, false]),
+                });
+            default:
+                return Object.assign(base, {length: 0, message: '该类型请用查询控制台查看'});
+        }
+    },
+    async DBRedisApply(id, ops) {
+        const rows = mockRedisApplyOps(ops);
+        return {columns: ['操作', '结果'], rows, nulls: rows.map(() => [false, false]), truncated: false, elapsedMs: 1, message: '已执行 ' + rows.length + ' 条操作'};
+    },
+    async DBRedisDeleteByPrefix(id, database, prefix) {
+        const p = String(prefix || '').replace(/\*/g, '');
+        let deleted = 0;
+        for (const name of Object.keys(mockRedis.data)) {
+            if (name.startsWith(p)) {
+                delete mockRedis.data[name];
+                delete mockRedis.ttl[name];
+                deleted++;
+            }
+        }
+        return {deleted};
+    },
+    async DBListDatabases(id) {
+        // Redis 会话返回连接绑定的库（对齐 Go listDatabasesMeta 的 redis 分支）
+        if (id === 'mock-db-redis') return ['db0'];
+        return ['main'];
+    },
     async DBListObjects() {
-        return [
-            {name: 'products', kind: 'table', rowEstimate: 3},
-            {name: 'logs', kind: 'table', rowEstimate: 1},
-            {name: 'v_summary', kind: 'view', rowEstimate: 0},
+        const base = [
+            {name: 'products', kind: 'table', rowEstimate: 3, comment: '演示商品表'},
+            {name: 'logs', kind: 'table', rowEstimate: 1, comment: ''},
+            {name: 'v_summary', kind: 'view', rowEstimate: 0, comment: '汇总视图'},
         ];
+        // 建表表单在 mock 会话里新建的表（DBQuery 捕获 CREATE TABLE），让树刷新可见
+        const extra = mockDbSession.tables.map((t) => ({name: t, kind: 'table', rowEstimate: 0, comment: ''}));
+        return base.concat(extra);
+    },
+    async DBListServerObjects() {
+        return {groups: [
+            {id: 'collations', label: '排序规则', items: ['utf8mb4_general_ci', 'utf8mb4_unicode_ci', 'utf8mb4_bin']},
+            {id: 'users', label: '用户', items: ['root@localhost', 'demo@%']},
+            {id: 'sysviews', label: '虚拟视图', items: ['SCHEMATA', 'TABLES']},
+        ]};
     },
     async DBDescribe(id, database, table) {
         const hasPk = table !== 'logs';
@@ -1271,7 +1531,7 @@ const mockBackend = {
             ],
             pk: hasPk ? ['id'] : [],
             indexes: hasPk ? [{name: 'sqlite_autoindex_products_1', unique: true, columns: ['id']}] : [],
-            rowEstimate: 3, editable: hasPk && false,
+            rowEstimate: 3, tableComment: hasPk ? '演示商品表' : '', editable: hasPk && !!mockDbSession.editable,
         };
     },
     async DBBrowse(id, req) {
@@ -1291,24 +1551,92 @@ const mockBackend = {
     },
     async DBQuery(id, queryID, query, confirmed) {
         const q = String(query || '');
+        // Redis 会话：按行拆命令，读命令演示真值，写命令走 editable + 确认链（对齐 Go guard 行为）
+        if (id === 'mock-db-redis') {
+            const lines = q.split('\n').map((s) => s.trim()).filter((s) => s && !s.startsWith('#'));
+            const results = [];
+            for (const line of lines) {
+                const toks = line.split(/\s+/);
+                const head = (toks[0] || '').toUpperCase();
+                let result;
+                let wrote = false;
+                if (head === 'GET' && mockRedis.data[toks[1]]) {
+                    result = {columns: ['结果'], rows: [[String(mockRedis.data[toks[1]].value)]], nulls: [[false]], truncated: false, elapsedMs: 1, message: ''};
+                } else if (head === 'PING') {
+                    result = {columns: ['结果'], rows: [['PONG']], nulls: [[false]], truncated: false, elapsedMs: 1, message: ''};
+                } else if (head === 'TTL' && mockRedis.data[toks[1]]) {
+                    const t = mockRedis.ttl[toks[1]] != null ? mockRedis.ttl[toks[1]] : -1;
+                    result = {columns: ['结果'], rows: [[String(t)]], nulls: [[false]], truncated: false, elapsedMs: 1, message: ''};
+                } else if (head === 'SET' || head === 'DEL' || head === 'EXPIRE' || head === 'HSET' || head === 'HDEL') {
+                    if (!mockRedis.editable) {
+                        throw new Error('只读连接拒绝写操作；如需编辑请在打开连接时显式开启「允许编辑」');
+                    }
+                    if (!confirmed && (head === 'DEL' || head === 'EXPIRE')) {
+                        return {status: 'confirm', confirm: 'danger', message: '演示模式：写命令需确认后重发。'};
+                    }
+                    const ops = head === 'SET'
+                        ? [{kind: 'setString', Key: toks[1], Value: toks.slice(2).join(' '), TTLSeconds: mockRedis.ttl[toks[1]] != null ? mockRedis.ttl[toks[1]] : -1}]
+                        : (head === 'DEL' ? toks.slice(1) : []).map((k) => ({kind: 'delKey', Key: k}));
+                    const rows = mockRedisApplyOps(ops);
+                    result = {columns: ['结果'], rows: [['OK']], nulls: [[false]], truncated: false, elapsedMs: 1, message: '已执行'};
+                    wrote = true;
+                } else if (head === 'FLUSHALL' || head === 'FLUSHDB' || head === 'CONFIG' || head === 'SHUTDOWN' || head === 'MULTI') {
+                    if (head === 'MULTI') throw new Error('控制台不支持手动事务（MULTI/EXEC）：编辑走「预览并提交」');
+                    return {status: 'confirm', confirm: 'danger', message: '演示模式：危险命令需确认后重发。'};
+                } else {
+                    throw new Error('无法识别的命令（按写拒绝，fail closed）演示：' + line);
+                }
+                results.push({sql: line.length > 80 ? line.slice(0, 80) + '…' : line, result, wrote});
+            }
+            const last = results.length ? results[results.length - 1].result : {columns: ['结果'], rows: [], nulls: [], truncated: false, elapsedMs: 1, message: ''};
+            return {status: 'ok', result: last, results, statements: results.length, writes: results.filter((r) => r.wrote).length};
+        }
+        // 建表表单 / 控制台在 mock 会话里的 CREATE TABLE 记进会话，DBListObjects 随之可见
+        const m = q.match(/CREATE\s+TABLE\s+"?([A-Za-z_][A-Za-z0-9_]*)"?/i);
+        if (m && !mockDbSession.tables.includes(m[1])) mockDbSession.tables.push(m[1]);
         if (!confirmed && /update|delete|drop|insert/i.test(q)) {
             return {status: 'confirm', confirm: 'missingWhere', message: '演示模式：写语句需确认。'};
         }
-        return {
-            status: 'ok',
+        // 按分号拆语句，每条一个结果（对齐 Go Results 协议的演示形态）
+        const stmts = q.split(';').map((s) => s.trim()).filter(Boolean);
+        const results = stmts.map((s) => ({
+            sql: s.length > 80 ? s.slice(0, 80) + '…' : s,
             result: {
                 columns: ['id', 'name'], rows: [['1', 'alpha'], ['2', 'beta']],
                 nulls: [[false, false], [false, false]], truncated: false, elapsedMs: 1, message: '',
             },
-            statements: 1, writes: /update|delete|insert/i.test(q) ? 1 : 0,
+            wrote: false,
+        }));
+        return {
+            status: 'ok',
+            result: results.length ? results[results.length - 1].result : {
+                columns: ['id', 'name'], rows: [['1', 'alpha'], ['2', 'beta']],
+                nulls: [[false, false], [false, false]], truncated: false, elapsedMs: 1, message: '',
+            },
+            results,
+            statements: stmts.length, writes: 0,
         };
     },
     async DBCancel() { return null; },
     async DBClose() { return null; },
-    async DBListConnections() { return []; },
-    async DBSaveConnection(cfg) { return Object.assign({}, cfg, {id: 'mock-dbc-1', updatedAt: Date.now()}); },
-    async DBDeleteConnection() { return null; },
-    async DBTestConnection() { return 'MySQL 8.0（mock）'; },
+    async DBListConnections() { return mockDbConnections; },
+    async DBSaveConnection(cfg) {
+        const saved = Object.assign({}, cfg, {id: cfg.id || 'mock-dbc-' + Date.now(), updatedAt: Date.now()});
+        const at = mockDbConnections.findIndex((c) => c.id === saved.id);
+        if (at >= 0) mockDbConnections[at] = saved;
+        else mockDbConnections.push(saved);
+        persistMockConnections(mockDbConnections);
+        return saved;
+    },
+    async DBDeleteConnection(id) {
+        const at = mockDbConnections.findIndex((c) => c.id === id);
+        if (at >= 0) mockDbConnections.splice(at, 1);
+        persistMockConnections(mockDbConnections);
+        return null;
+    },
+    async DBTestConnection(cfg) {
+        return cfg && cfg.kind === 'redis' ? 'Redis 7.2（mock）' : 'MySQL 8.0（mock）';
+    },
     async DBPreviewChanges(id, changes) {
         return (changes && changes.updates || []).map((u) => ({
             kind: 'update',
@@ -1725,7 +2053,8 @@ const mockBackend = {
         return {hits: hits.slice(0, limit), truncated: !!res.truncated || hits.length > limit, files: res.files || 0};
     },
     // 与 Go SearchWorkspaceAdvanced 同参数面的 mock：dev 模式下 AI 调高级搜索不会崩，
-    // 且 regex / wholeWord / excludePattern / outputMode / context / maxResults 的行为可调试。
+    // 且 regex / wholeWord / excludePattern / outputMode / context / maxResults / includeIgnored 的行为可调试。
+    // includeIgnored：mockFiles 都是样本文件、无目录忽略表，接收参数但无需过滤（对齐参数面）。
     async SearchWorkspaceAdvanced(root, query, opts = {}) {
         const text = String(query == null ? '' : query);
         const limit = Math.max(1, Math.min(Number(opts.maxResults) || 200, 1000));
@@ -2801,6 +3130,38 @@ const mockBackend = {
     async UnregisterEventOwner(kind, id) { window.__mockEventOwnerOff = {kind, id}; },
     async WindowActivate() { window.__mockWindowActivated = true; },
     async ShowInFolder(path) { window.__mockShowInFolder = path; },
+    // 操作记录（应用页面 → 操作记录）：合成一批记录，覆盖「有参数 / 长对象 / 短对象」三种形态，
+    // 让列表、展开区、复制、分页在 dev 浏览器里都能实测（缺这条 mock 时该页永远走「旧版后端」分支）。
+    async ActivityRead(queryJSON) {
+        const q = JSON.parse(queryJSON || '{}');
+        const limit = Math.min(Math.max(Number(q.limit) || 200, 1), 500);
+        let list = mockActivityEntries();
+        const actions = Array.isArray(q.actions) ? q.actions.filter(Boolean) : [];
+        if (actions.length) {
+            list = list.filter((e) => actions.some((a) => e.action === a || e.action.startsWith(a + '.')));
+        }
+        if (q.actor) list = list.filter((e) => e.actor === q.actor);
+        if (q.keyword) {
+            const kw = String(q.keyword).toLowerCase();
+            list = list.filter((e) => (e.action + ' ' + e.target + ' ' + JSON.stringify(e.detail || '')).toLowerCase().includes(kw));
+        }
+        if (q.beforeTs > 0) {
+            list = list.filter((e) => (q.beforeSeq > 0
+                ? e.ts < q.beforeTs || (e.ts === q.beforeTs && e.seq < q.beforeSeq)
+                : e.ts < q.beforeTs));
+        }
+        if (q.sinceTs > 0) list = list.filter((e) => e.ts >= q.sinceTs);
+        return JSON.stringify({
+            entries: list.slice(0, limit),
+            truncated: list.length > limit,
+            files: ['2026-11.jsonl'],
+        });
+    },
+    async ActivityAppend(entriesJSON) {
+        window.__mockActivityAppends = (window.__mockActivityAppends || []).concat([entriesJSON]);
+    },
+    async ActivityPath() { return 'C:\\Users\\dev\\AppData\\Roaming\\CandySweet\\CaDt-DataLens\\activity'; },
+    async ActivityClear() { window.__mockActivityCleared = (window.__mockActivityCleared || 0) + 1; },
     async OpenWithDefaultApp(path) { window.__mockOpenWithDefaultApp = path; },
     async StorageScan(root) { return buildMockStorageReport(root); },
     async StorageClear(ids, root) { return applyMockStorageClear(ids, root); },
@@ -3060,6 +3421,71 @@ const mockBackend = {
     // 桌面控制「安装…」：mock 只回成功步骤（真装依赖要下载 uv / Python，dev 环境不跑）
     async MCPDesktopInstall() {
         return {ok: true, steps: ['uv 已就绪', '预热 windows-mcp 依赖']};
+    },
+    // 桌面控制安装计划：与 Go 侧 internal/desktopmcp.BuildPlan 同形（21 个工具 + 内置 wheel 路径）
+    async MCPDesktopPlan() {
+        const tools = [
+            {name: 'Snapshot', note: '屏幕截图 + 可交互元素树'},
+            {name: 'Screenshot', note: '纯截图，不提取元素'},
+            {name: 'DisplayInventory', note: '显示器清单与坐标系'},
+            {name: 'Click', note: '点击 / 双击 / 右键'},
+            {name: 'Type', note: '输入文本（可按元素编号定位）'},
+            {name: 'Scroll', note: '滚动'},
+            {name: 'Move', note: '移动指针 / 拖拽'},
+            {name: 'Shortcut', note: '键盘快捷键'},
+            {name: 'Wait', note: '固定时长等待'},
+            {name: 'WaitFor', note: '等元素 / 窗口 / 文本出现'},
+            {name: 'Find', note: '按名字找元素并直接点击 / 输入'},
+            {name: 'Clipboard', risk: 'high', note: '读写系统剪贴板'},
+            {name: 'Scrape', note: '抓取网页正文（可选当前页 DOM）'},
+            {name: 'MultiSelect', note: '批量点选'},
+            {name: 'MultiEdit', risk: 'high', note: '批量填充输入框'},
+            {name: 'App', risk: 'high', note: '启动程序 / 切换与调整窗口'},
+            {name: 'Notification', risk: 'high', note: '弹系统通知'},
+            {name: 'Process', risk: 'high', note: '进程列表与结束进程'},
+            {name: 'PowerShell', risk: 'high', note: '执行任意 PowerShell 脚本'},
+            {name: 'FileSystem', risk: 'high', note: '读写任意路径文件'},
+            {name: 'Registry', risk: 'high', note: '读写注册表'},
+            {name: 'ControlStatus', note: '上游的接管状态查询'},
+        ];
+        const wheelPath = 'C:\\mock\\builtin-desktop-mcp\\0.8.9\\windows_mcp-0.8.9-py3-none-any.whl';
+        return {
+            version: '0.8.9',
+            serverName: 'windows',
+            wheelPath,
+            wheelReady: true,
+            command: 'uvx',
+            args: ['--from', wheelPath, 'windows-mcp', 'serve', '--no-control'],
+            enabledTools: tools.map((tool) => tool.name),
+            startupTimeoutMs: 600000,
+            notes: '桌面控制（Computer Use）：mock 环境的使用约定。',
+            tools,
+        };
+    },
+    // 异步安装：mock 分三段推事件后收尾（不真下载）
+    async MCPDesktopInstallStart() {
+        const rt = window.__wailsRuntime;
+        const emit = (payload) => {
+            if (rt && rt.EventsEmit) rt.EventsEmit('mcp-desktop-install', payload);
+        };
+        window.__mockDesktopInstall = {running: true, percent: 1, stage: 'release', detail: '准备安装'};
+        setTimeout(() => emit({phase: 'running', stage: 'release', detail: '释放内置桌面组件', percent: 10}), 20);
+        setTimeout(() => emit({phase: 'running', stage: 'warm', detail: '下载 Python 与依赖', percent: 45, line: 'Resolving packages…'}), 120);
+        setTimeout(() => {
+            window.__mockDesktopInstall = {running: false, done: true, percent: 100, stage: 'done', detail: '安装完成'};
+            emit({phase: 'done', stage: 'done', detail: '安装完成', percent: 100, steps: ['释放内置组件 windows-mcp 0.8.9', 'uv 已就绪', '预热 windows-mcp 依赖']});
+        }, 260);
+        return {started: true};
+    },
+    async MCPDesktopInstallStatus() {
+        const st = window.__mockDesktopInstall || {running: false, done: false, percent: 0, stage: '', detail: ''};
+        return {
+            running: !!st.running,
+            done: !!st.done,
+            failed: false,
+            error: '',
+            progress: {stage: st.stage || '', detail: st.detail || '', percent: st.percent || 0},
+        };
     },
     async ExternalSearch() { throw new Error('mock 环境不调用外部服务'); },
     async ExternalFetch() { throw new Error('mock 环境不调用外部服务'); },

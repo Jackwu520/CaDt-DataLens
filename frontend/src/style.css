@@ -123,6 +123,10 @@
     --py-builtin: #8888c6;
     --py-doc: #5f826b;
     --py-self: #94558d;
+    /* Python 专项（PyCharm 官方值）：dunder 方法名 / 装饰器 / 关键字参数 */
+    --py-dunder: #b200b2;
+    --py-decorator: #b3ae60;
+    --py-kwarg: #aa4926;
     --scroll-thumb: #4a4d52;
     --scroll-thumb-hover: #5a5d63;
     --shadow: rgba(0, 0, 0, 0.5);
@@ -199,9 +203,13 @@ html[data-theme="light"] {
     --syn-json-key: #871094;
     --syn-function: #00627a;
     --syn-heading: #000000;
-    --py-builtin: #871094;
-    --py-doc: #5f826b;
+    --py-builtin: #000080;
+    --py-doc: #8c8c8c;
     --py-self: #94558d;
+    /* Python 专项（PyCharm 官方值）：dunder 方法名 / 装饰器 / 关键字参数 */
+    --py-dunder: #b200b2;
+    --py-decorator: #9e880d;
+    --py-kwarg: #660099;
     --scroll-thumb: #c2c2c2;
     --scroll-thumb-hover: #a8a8a8;
     --shadow: rgba(0, 0, 0, 0.15);
@@ -354,8 +362,8 @@ html[data-theme][data-code-style="jetbrains-light"] {
     --syn-json-key: #871094;
     --syn-function: #00627a;
     --syn-heading: #000000;
-    --py-builtin: #871094;
-    --py-doc: #5f826b;
+    --py-builtin: #000080;
+    --py-doc: #8c8c8c;
     --py-self: #94558d;
     --code-val-key: #871094;
     --code-val-string: #067d17;
@@ -382,8 +390,8 @@ html[data-theme][data-code-style="github-light"] {
     --syn-json-key: #871094;
     --syn-function: #00627a;
     --syn-heading: #000000;
-    --py-builtin: #871094;
-    --py-doc: #5f826b;
+    --py-builtin: #000080;
+    --py-doc: #8c8c8c;
     --py-self: #94558d;
     --code-val-key: #0550ae;
     --code-val-string: #0a3069;
@@ -410,9 +418,9 @@ html[data-theme][data-code-style="shiki"] {
     --syn-json-key: #1c7ed6;
     --syn-function: #6741d9;
     --syn-heading: #0f1115;
-    --py-builtin: #6741d9;
-    --py-doc: #868e96;
-    --py-self: #e8590c;
+    --py-builtin: #000080;
+    --py-doc: #8c8c8c;
+    --py-self: #94558d;
     --code-val-key: #1c7ed6;
     --code-val-string: #2f9e44;
     --code-val-number: #1c7ed6;
@@ -438,8 +446,8 @@ html[data-theme][data-code-style="newsprint"] {
     --syn-json-key: #871094;
     --syn-function: #00627a;
     --syn-heading: #000000;
-    --py-builtin: #871094;
-    --py-doc: #5f826b;
+    --py-builtin: #000080;
+    --py-doc: #8c8c8c;
     --py-self: #94558d;
     --code-val-key: #6f4e37;
     --code-val-string: #8a3b2e;
@@ -467,9 +475,9 @@ html[data-theme][data-code-style="pixyll"] {
     --syn-json-key: #7d5a9a;
     --syn-function: #31577a;
     --syn-heading: #3f3a36;
-    --py-builtin: #7d5a9a;
-    --py-doc: #a2977f;
-    --py-self: #a44a5c;
+    --py-builtin: #000080;
+    --py-doc: #8c8c8c;
+    --py-self: #94558d;
     --code-val-key: #a44a5c;
     --code-val-string: #9a5a2e;
     --code-val-number: #4f7a5a;
@@ -496,9 +504,9 @@ html[data-theme][data-code-style="whitey"] {
     --syn-json-key: #6f42c1;
     --syn-function: #005a9e;
     --syn-heading: #1a1a1a;
-    --py-builtin: #6f42c1;
-    --py-doc: #6b6b6b;
-    --py-self: #b02a37;
+    --py-builtin: #000080;
+    --py-doc: #8c8c8c;
+    --py-self: #94558d;
     --code-val-key: #005a9e;
     --code-val-string: #b02a37;
     --code-val-number: #1a7f37;
@@ -1700,7 +1708,7 @@ select,
     padding: 7px 8px 7px 14px;
     border-bottom: 1px solid var(--border);
     user-select: none;
-    cursor: default;
+    cursor: move;
 }
 .dialog-title { font-size: 12.5px; color: var(--text); }
 .dialog-close {
@@ -4334,6 +4342,12 @@ div.jsoneditor-tree div.jsoneditor-show-more a:hover {
     padding: 0 4px !important;
     text-align: center;
     vertical-align: middle;
+    /* 胶囊居中：Ace 把 span 宽度写死为 3×characterWidth（border-box），减掉左右 padding
+       后内容盒比 "..." 文本还窄，text-align:center 对溢出内容会钳住左缘、只向右溢出
+       （实测 textRect 比 spanRect 偏右 4px）——点群整体偏右。inline-grid + place-content
+       让溢出双向对称，胶囊偏宽（度量偏差时）与正好（度量精确）两种场景都居中 */
+    display: inline-grid !important;
+    place-content: center !important;
 }
 .jsoneditor .ace_fold:hover {
     background-color: var(--fold-bg, var(--hover)) !important;
@@ -4395,11 +4409,13 @@ div.jsoneditor-tree div.jsoneditor-show-more a:hover {
     font-size: 11px;
     text-align: center;
 }
-.jsoneditor .ace_fold-widget.ace_start,
-.jsoneditor .ace_custom-widget.ace_start {
+/* 展开态（ace_start，向下箭头）：对齐 JetBrains——默认不显示，hover 行号区才出现。
+   :not(.ace_closed) 排除折叠态：折叠行同时挂 start+closed，不因 gutter hover 被盖成向下箭头 */
+.jsoneditor .ace_gutter:hover .ace_fold-widget.ace_start:not(.ace_closed),
+.jsoneditor .ace_gutter:hover .ace_custom-widget.ace_start:not(.ace_closed) {
     background: transparent url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M2.5 4.5L6 8l3.5-3.5' fill='none' stroke='%23959ba8' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center no-repeat !important;
 }
-/* 折叠态：ace_start/ace_closed 同时存在，本规则在后以覆盖展开态箭头 */
+/* 折叠态（ace_closed，向右箭头）：任何情况常显 */
 .jsoneditor .ace_fold-widget.ace_closed,
 .jsoneditor .ace_custom-widget.ace_closed {
     background: transparent url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M4 2.5L7.5 6L4 9.5' fill='none' stroke='%23959ba8' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center no-repeat !important;
@@ -4473,8 +4489,14 @@ div.jsoneditor-tree div.jsoneditor-show-more a:hover {
    关键字参数=关键字色 · 文档字符串=#5f826b 斜体（expUI DEFAULT_DOC_COMMENT）· self=#94558d */
 .jsoneditor .ace-mode-python span[class^="ace_support ace_function"] { color: var(--py-builtin, #8888c6); }
 .jsoneditor .ace-mode-python span[class^="ace_function ace_support"] { color: var(--text); }
-.jsoneditor .ace-mode-python .py-kwarg { color: var(--syn-keyword, var(--accent)); }
-.jsoneditor .ace-mode-python .py-builtin { color: var(--py-builtin, #8888c6); }
+.jsoneditor .ace-mode-python .py-kwarg { color: var(--py-kwarg, var(--syn-keyword, var(--accent))); }
+/* 装饰器 @ 与名字同色（PyCharm 默认继承 DEFAULT_METADATA）；def 名后的 dunder
+   方法名走 PY.PREDEFINED_DEFINITION（品红）；class 名保持普通文本色，不上函数蓝。
+   后两条用 .ace_entity 提升特异性，压过上面的 .ace_entity.ace_name.ace_function 函数色。 */
+.jsoneditor .ace-mode-python .py-decorator,
+.jsoneditor .ace-mode-python .ace_support.py-decorator { color: var(--py-decorator, var(--orange)); }
+.jsoneditor .ace-mode-python .ace_entity.py-dunder { color: var(--py-dunder, #b200b2); }
+.jsoneditor .ace-mode-python .ace_entity.py-class { color: var(--editor-text, var(--text)); }
 .jsoneditor .ace-mode-python .ace_variable.ace_language { color: var(--py-self, #94558d); }
 .jsoneditor .ace-mode-python .py-doc { color: var(--py-doc, #5f826b); font-style: italic; }
 /* yaml / xml / html 的 mode 特有 token 原先只在 idea / darcula 系主题对齐，
@@ -4509,6 +4531,143 @@ html[data-theme="dark"] .jsoneditor .ace_comment { font-style: normal; }
 }
 .jsoneditor .ace_searchbtn, .jsoneditor .ace_button { color: var(--text); }
 a.jsoneditor-poweredBy { display: none !important; }
+
+/* ── 补全（docs/finished-plans/editor-completion.md）── */
+/* 候选弹层：Ace ext/language_tools 的 .ace_autocomplete，编辑器内部小浮层（弹层规范豁免，
+   不进 overlay-stack）。弹层容器挂在 document.body 且继承编辑器主题类（恒不带 ace_dark），
+   bundle 运行时注入 `.ace_editor.ace_autocomplete`（0,2,0）白底规则——选择器必须抬到同
+   特异性，靠 style.css 在 bundle 注入之后的文档序胜出（与 .jsoneditor .ace_* 覆盖同机制） */
+.ace_editor.ace_autocomplete {
+    background: var(--panel2) !important;
+    color: var(--text) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: 8px;
+    box-shadow: 0 10px 28px var(--shadow-strong) !important;
+    font-family: var(--editor-font-family);
+    font-size: 12px;
+    line-height: 1.6;
+    padding: 3px;
+    z-index: 200000;
+}
+.ace_editor.ace_autocomplete .ace_line { padding: 2px 12px 2px 10px; line-height: 1.75; }
+.ace_editor.ace_autocomplete .ace_active-line { background: var(--hover) !important; }
+.ace_editor.ace_autocomplete .ace_completion-highlight { color: var(--accent) !important; font-weight: 600; }
+.ace_editor.ace_autocomplete .ace_completion-meta { color: var(--faint) !important; margin-left: 18px; font-family: var(--ui-font); font-size: 11.5px; }
+/* 候选行图标（JetBrains 风格）：meta → iconSvg 装饰，editor-completion.js 注入 */
+.cadt-cmpl-icon {
+    display: inline-flex;
+    width: 12px;
+    height: 12px;
+    margin: 0 7px 0 1px;
+    vertical-align: -1.5px;
+    color: var(--muted);
+    opacity: .9;
+}
+.cadt-cmpl-icon[data-cadt-type='table'],
+.cadt-cmpl-icon[data-cadt-type='view'],
+.cadt-cmpl-icon[data-cadt-type='column'] { color: var(--accent); }
+/* SQL 控制台（独立 ace.edit 实例，不在 jsoneditor 容器内）：镜像上面的主题覆盖 */
+.db-sql-ace-wrap {
+    flex: none;
+    height: 132px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+    background: var(--editor-bg, var(--bg));
+}
+.db-sql-ace-wrap:focus-within { border-color: var(--accent); }
+.db-sql-ace.ace_editor {
+    background: var(--editor-bg, var(--bg));
+    color: var(--editor-text, var(--text));
+    font-family: var(--editor-font-family);
+    font-size: var(--editor-font, 13px);
+    line-height: 1.45;
+    width: 100%;
+    height: 100%;
+}
+.db-sql-ace .ace_gutter { background: var(--editor-bg, var(--panel)); color: var(--ace-gutter); border-right: 1px solid var(--border); }
+.db-sql-ace .ace_gutter-active-line { background: var(--ace-active); }
+.db-sql-ace .ace_active-line { background: var(--ace-active); }
+.db-sql-ace .ace_cursor { color: var(--editor-text, var(--text)) !important; }
+.db-sql-ace .ace_marker-layer .ace_selection { background: var(--ace-selection); }
+.db-sql-ace .ace_placeholder {
+    margin: 0;
+    padding: 0 4px;
+    color: var(--faint);
+    font-family: inherit;
+    font-size: inherit;
+    line-height: inherit;
+}
+.db-sql-ace .ace_tooltip {
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    box-shadow: 0 6px 18px var(--shadow-strong);
+    font-family: var(--ui-font);
+    font-size: 12px;
+    line-height: 1.5;
+    padding: 6px 10px;
+    white-space: pre-wrap;
+}
+/* SQL token：与 jsoneditor 内嵌 Ace 同一套代码风格变量。
+   必须 !important：控制台的 Ace 是运行时 ace.edit() 创建，Ace 会动态往 <head> 注入
+   默认主题 CSS（晚于本表）——不带 important 就会被主题硬色盖掉（关键字变默认蓝），
+   与编辑区（jsoneditor 主题 CSS 打包在构建期样式表里、被本表按序覆盖）表现不一致。
+   变量随 data-code-style 代码主题切换，控制台与编辑区永远同源。 */
+.db-sql-ace .ace_text-layer { color: var(--editor-text, var(--text)) !important; }
+.db-sql-ace .ace_keyword { color: var(--syn-keyword, var(--accent)) !important; }
+.db-sql-ace .ace_keyword.ace_operator { color: var(--syn-operator, var(--ace-punct)) !important; }
+.db-sql-ace .ace_string { color: var(--code-val-string, var(--val-string)) !important; }
+.db-sql-ace .ace_comment { color: var(--syn-comment, var(--muted)) !important; }
+.db-sql-ace .ace_constant.ace_numeric { color: var(--code-val-number, var(--val-number)) !important; }
+.db-sql-ace .ace_constant.ace_language.ace_boolean { color: var(--code-val-bool, var(--val-bool)) !important; }
+.db-sql-ace .ace_constant.ace_language.ace_null { color: var(--code-val-null, var(--val-null)) !important; }
+.db-sql-ace .ace_identifier { color: var(--editor-text, var(--text)) !important; }
+.db-sql-ace .ace_punctuation, .db-sql-ace .ace_paren { color: var(--ace-punct) !important; }
+.db-sql-ace .ace_function, .db-sql-ace .ace_support.ace_function { color: var(--syn-function, var(--accent)) !important; }
+.db-sql-ace .ace_variable { color: var(--editor-text, var(--text)) !important; }
+.db-sql-ace .ace_marker-layer .ace_selection { background: var(--ace-selection) !important; }
+.db-sql-ace .ace_gutter { background: var(--editor-bg, var(--panel)) !important; color: var(--ace-gutter) !important; }
+
+/* JSON 解析错误托盘（编辑器底部，jsoneditor 原生 .jsoneditor-text-errors）：
+   杀掉原生黄条（border #ffc700）与酱色红底（tr.parse-error rgba(238,46,46,.44)，(0,3,1)
+   特异性高于普通 tr 覆盖，必须单独覆盖 + !important），改为应用主题的现代底栏：
+   面板底色 + 顶部分隔线，红 X 图标 sprite 保留，行可点击跳行（jump-to-line） */
+.jsoneditor .jsoneditor-text-errors {
+    border-top: 1px solid var(--border);
+    background: var(--panel2);
+    font-family: var(--ui-font);
+    font-size: 12px;
+}
+.jsoneditor .jsoneditor-text-errors tr,
+.jsoneditor .jsoneditor-text-errors tr.parse-error {
+    background: transparent !important;
+}
+.jsoneditor .jsoneditor-text-errors td {
+    padding: 5px 10px;
+    color: var(--text);
+    border: none;
+    background: transparent !important;
+    vertical-align: middle;
+}
+.jsoneditor .jsoneditor-text-errors td pre {
+    margin: 0;
+    white-space: pre-wrap;
+    font-family: var(--editor-font-family);
+    font-size: 12px;
+    line-height: 1.55;
+    color: var(--text);
+}
+/* 「Ln N」列：mono 弱化为次要信息 */
+.jsoneditor .jsoneditor-text-errors td:nth-child(2) {
+    font-family: var(--editor-font-family);
+    color: var(--faint);
+    white-space: nowrap;
+}
+.jsoneditor .jsoneditor-text-errors tr.jump-to-line:hover,
+.jsoneditor .jsoneditor-text-errors tr.jump-to-line:hover td { background: var(--hover) !important; }
+.jsoneditor .jsoneditor-text-errors tr.jump-to-line:hover td pre { color: var(--accent); }
 
 /* settings dialog layout */
 .dialog-settings {
@@ -9711,6 +9870,8 @@ body.console-only .dbg-head select { --wails-draggable: no-drag; }
     border-bottom: 1px solid var(--border);
     font-weight: 600;
     font-size: 12px;
+    user-select: none;
+    cursor: move;
 }
 .ai-dialog-head span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ai-dialog-body {
@@ -11289,8 +11450,12 @@ html[data-writing="on"][data-writing-paper="dim"] .jsoneditor textarea.jsonedito
     color: var(--text);
     font-size: 12px;
 }
-.activity-list-box { max-height: 340px; }
-.activity-list { display: flex; flex-direction: column; }
+.activity-list-box { max-height: 340px; overflow-x: auto; }
+/* 列表按容器宽度排布（2026-11-23 修）：此前 width:max-content 会让行宽 = 最长对象内容的
+   固有宽度，行比容器宽几百像素 → 对象列被推到视野外、右侧「详情 / 复制」永远看不见（
+   用户截图里对象列看着是空的，其实是整列在视口之外）。现在列宽由 grid 模板决定、超长内容
+   用省略号截断，全文靠展开区看。 */
+.activity-list { display: flex; flex-direction: column; min-width: 0; }
 .activity-empty { padding: 14px 8px; color: var(--muted); font-size: 12px; text-align: center; }
 .activity-row {
     display: flex;
@@ -11334,36 +11499,85 @@ html[data-writing="on"][data-writing-paper="dim"] .jsoneditor textarea.jsonedito
 /* 操作记录应用页：表格式日志列表（列对齐 + 日期分组 + 格式化详情） */
 .act-thead, .activity-row {
     display: grid;
-    /* 末列（详情操作）需容纳「详情」文字钮 + 复制图标钮，给足 104px，否则按钮右圆角被裁。 */
-    grid-template-columns: 96px 56px minmax(140px, 1.3fr) minmax(160px, 2fr) 104px;
+    /* 末列（详情操作）需容纳「详情」文字钮 + 复制图标钮，给足 100px，否则按钮右圆角被裁。
+       第 4 列（对象）下限必须是 0 而不是 160px：minmax(160px, 2fr) 在窄容器下会撑破容器
+       （行宽 = 各列下限之和 + 间距），把对象列和操作列一起推出视野（2026-11-23 修）。
+       时间列用 max-content：显示的是「刚刚 / 3 分钟前」，固定 96px 纯浪费。 */
+    grid-template-columns: minmax(72px, max-content) 56px minmax(96px, 1fr) minmax(0, 2fr) 100px;
     align-items: center; gap: 8px; padding: 5px 8px;
 }
+/* 表头不许折行：窄容器下「对象」会被拆成「对 / 象」两行。 */
+.act-thead > span { white-space: nowrap; }
 .act-thead { font-size: 10.5px; color: var(--muted); border-bottom: 1px solid var(--border); }
 .activity-row { border-bottom: 1px solid var(--border); font-size: 12px; }
 .activity-row:hover { background: var(--hover); }
 .activity-row > span:not(.act-badge) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* 操作列（详情 + 复制按钮）占 grid 第 5 列；按钮横排不换行，勿让 .activity-row > span 的
-   nowrap/ellipsis 裁掉按钮——这里显式覆盖。 */
+   nowrap/ellipsis 裁掉按钮——这里显式覆盖。按钮一律靠右对齐：详情钮每行都渲染（内容
+   不可截断时带 .is-empty 隐形占位），复制钮永远贴列右端，所以每一行的按钮都落在同一
+   水平位置，不随行内容长短跳动。 */
 .activity-row > span.act-ops {
-    display: inline-flex; align-items: center; gap: 4px;
+    display: inline-flex; align-items: center; justify-content: flex-end; gap: 4px;
     overflow: visible; white-space: normal;
 }
+/* 详情钮的占位态：隐形但仍占宽，保证复制钮不被推回左边（不是 display:none）。 */
+.act-detail-btn.is-empty { visibility: hidden; pointer-events: none; }
 /* 覆盖 .dlg-btn 的 min-width:84px（否则「详情」钮单独就撑满整列，复制钮被挤出截断）。 */
 .act-detail-btn {
     flex: none; box-sizing: border-box; min-width: 0; height: 24px;
     padding: 0 9px; font-size: 11px; line-height: 1; white-space: nowrap;
 }
+/* 复制钮 hover 才显形（2026-11-22 用户反馈：每行清一色一个复制图标看着花眼）。
+   用 opacity 而不是 display/visibility：占位不变，列宽与对齐零跳动。
+   键盘 Tab 聚焦（:focus-within）与「详情已展开」时同样显形——展开后要看参数顺带复制，
+   不该再要求把鼠标挪回那一行。 */
+.activity-row .ap-copy-btn { opacity: 0; transition: opacity .12s ease; }
+.activity-row:hover .ap-copy-btn,
+.activity-row:focus-within .ap-copy-btn,
+.activity-row:has(.act-detail:not(.hidden)) .ap-copy-btn { opacity: 1; }
+/* 触屏 / 无 hover 环境保底：看不见就没法用，直接常显 */
+@media (hover: none) {
+    .activity-row .ap-copy-btn { opacity: 1; }
+}
 .act-day-group {
     padding: 6px 8px 4px; font-size: 11px; color: var(--muted); font-weight: 600;
     background: color-mix(in srgb, var(--panel2) 70%, transparent);
 }
+/* 展开区容器：对象 / 参数分两段（2026-11-22 起，原先只有一个 pre 只装参数，
+   对象列被省略号截断时只能 hover 看 tooltip）。字体与滚动交给内层 .act-detail-text。 */
 .act-detail {
     grid-column: 1 / -1; margin: 4px 0 8px; padding: 8px 10px;
     border-radius: 6px; background: var(--bg); border: 1px solid var(--border);
-    font-family: var(--editor-font-family); font-size: 11px; line-height: 1.55;
-    color: var(--text); white-space: pre-wrap; word-break: break-all; max-height: 260px; overflow: auto;
 }
+.act-detail-sec + .act-detail-sec {
+    margin-top: 8px; padding-top: 8px;
+    border-top: 1px dashed color-mix(in srgb, var(--border) 80%, transparent);
+}
+.act-detail-label {
+    margin-bottom: 3px; font-size: 10.5px; font-weight: 600; letter-spacing: .02em;
+    color: var(--muted);
+}
+.act-detail-text {
+    margin: 0; font-family: var(--editor-font-family); font-size: 11px; line-height: 1.55;
+    color: var(--text); white-space: pre-wrap; word-break: break-all;
+    max-height: 220px; overflow: auto;
+}
+/* 对象段是路径 / 命令这类单行文本，用界面字体更好读；参数段保留等宽 */
+.act-detail-text:not(.act-detail-mono) { font-family: inherit; font-size: 11.5px; }
 .act-status { margin-top: 8px; font-size: 11px; color: var(--muted); }
+/* 分页条：每页条数 + 上一页 / 页码 / 下一页（替代追加式「加载更早记录」）。
+   按钮收成紧凑尺寸——.dlg-btn 默认 min-width:84px，三个并排会把分页条撑得很宽。 */
+.act-pager { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.act-pager > .opt-select { flex: 0 0 auto; min-width: 96px; }
+.act-pager > .dlg-btn { min-width: 0; height: 24px; padding: 0 10px; font-size: 11px; line-height: 1; }
+.act-pager > .dlg-btn:disabled { opacity: .4; }
+.act-page-info { min-width: 48px; padding: 0 2px; font-size: 11px; color: var(--muted); text-align: center; }
+/* 每页条数下拉经 enhanceSelect 增强（bridge-app-page-view 在 mount 后统一扫 .apppage-root select）：
+   原生 select 隐藏为值真源，.set-select wrap 继承 .opt-select 与 .act-page-size。
+   触发器必须压到与 24px 分页按钮同高、宽度容得下「200 条/页」，否则整行被撑高、跟按钮错位。 */
+.act-page-size { width: 104px; }
+.act-page-size.set-select { padding: 0; }
+.act-page-size .set-select-btn { height: 24px; padding: 0 6px; font-size: 11px; border-radius: 5px; }
 /* ===== 补丁库（设置 → 开发者）===== */
 /* ===== 应用页面标签页（使用统计 / 外部工具 / 定时任务 / 操作记录 / 补丁库）===== */
 /* 这些页面原本嵌在设置对话框里，现在各自是一个内容区标签页：宿主给容器与滚动，
@@ -11377,6 +11591,10 @@ html[data-writing="on"][data-writing-paper="dim"] .jsoneditor textarea.jsonedito
 .apppage-root.empty { padding: 24px 16px; color: var(--muted); font-size: 12px; }
 /* 外部工具：整段设置卡从停靠区搬进来，沿用设置 pane 的纵向节奏（flex + gap 12px） */
 .apppage-root.extcap-root { display: flex; flex-direction: column; gap: 12px; }
+/* 智能体：整段 pane 从停靠区搬进来（.agents-root 在宿主内部，是搬运单元本身，不带内边距），
+   纵向节奏沿用设置 pane 的 flex + gap 12px；组头收边同 .settings-pane 的首组头规则 */
+.apppage-root .agents-root { display: flex; flex-direction: column; gap: 12px; }
+.apppage-root .agents-root > .set-group-title:first-child { margin-top: 2px; }
 /* 设置 → 页面 → 应用页面：目录行，整行可点。
    hover 色块圆角内收（负 margin 换呼吸空间）+ 去掉行分隔线——贴边直角大色块压着
    分隔线是难看的根源；选择器带 .set-row 前缀压过基础行样式（.set-row 定义在本文件更后）。 */
@@ -11396,11 +11614,18 @@ html[data-writing="on"][data-writing-paper="dim"] .jsoneditor textarea.jsonedito
 /* ===== 应用页面统一视觉原子（app-pages/ui-kit.js）=====
    各页仍保留自己的定制骨架，这里只给共用原子：页头 / 徽标 / 命令栏 / chips /
    状态块 / 详情抽屉 / 时间 / 图标按钮。颜色一律主题变量，深浅主题自动适配。 */
-.ap-head { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 14px; }
-.ap-head-main { flex: 1 1 auto; min-width: 0; }
+/* 页头必须能在窄内容区（标签页可被拖到 300px 级）自己换行：原先 flex:none 的按钮组按内容宽度
+   硬占位、main 又带 min-width:0，窗口一窄就把标题/说明压成几十像素宽，中文被挤成一字一行
+   （2026-11-22 用户截图）。main 给 flex-basis 底线，放不下时按钮组整体落到下一行；按钮组自身
+   也允许 wrap，窗口窄于一行按钮总宽时逐行折。宽屏下 main 独占余量、按钮组仍靠右，视觉不变。 */
+.ap-head { display: flex; align-items: flex-start; flex-wrap: wrap; gap: 12px; margin-bottom: 14px; }
+.ap-head-main { flex: 1 1 240px; min-width: 0; }
 .ap-head-title { font-size: 16px; font-weight: 600; color: var(--text); line-height: 1.4; }
 .ap-head-desc { margin-top: 3px; font-size: 12px; color: var(--muted); line-height: 1.5; }
-.ap-head-actions { flex: none; display: flex; align-items: center; gap: 6px; }
+.ap-head-actions {
+    flex: 0 1 auto; min-width: 0;
+    display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 6px;
+}
 .ap-badge {
     display: inline-block; padding: 1px 7px; border-radius: 999px;
     font-size: 10.5px; line-height: 16px; white-space: nowrap; font-weight: 500;
@@ -11414,6 +11639,9 @@ html[data-writing="on"][data-writing-paper="dim"] .jsoneditor textarea.jsonedito
 .ap-cmd-search > svg { position: absolute; left: 8px; pointer-events: none; }
 .ap-cmd-input { width: 100%; padding-left: 28px !important; }
 .ap-cmd-filters { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+/* 命令栏里的下拉按内容宽度占位：.opt-select 基础规则是 flex:1 + min-width:0，窄内容区下会被
+   压成只剩一个「:」箭头；这里改成可收缩但有 96px 底线，装不下就由父级 flex-wrap 换行。 */
+.ap-cmd-filters > .opt-select { flex: 0 1 auto; min-width: 96px; }
 .ap-cmd-actions { margin-left: auto; display: flex; align-items: center; gap: 6px; }
 .ap-chips { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 5px; }
 .ap-chip {
@@ -11572,20 +11800,6 @@ html[data-writing="on"][data-writing-paper="dim"] .jsoneditor textarea.jsonedito
 /* 清除确认按项分行（其余对话框都是单句，pre-line 不影响它们） */
 /* 超长无空格串（如长文件名）不能撑破对话框：允许任意字符断行并让 flex 子项收缩 */
 #dlg-confirm-text { white-space: pre-line; overflow-wrap: anywhere; min-width: 0; }
-.act-detail {
-    flex-basis: 100%;
-    margin: 2px 0 4px;
-    padding: 6px 8px;
-    border-radius: 5px;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    font-family: var(--editor-font-family);
-    font-size: 11px;
-    white-space: pre-wrap;
-    word-break: break-all;
-    max-height: 160px;
-    overflow-y: auto;
-}
 
 /* ===== AI 头部 HUD：会话标题 + 智能体团队/终端 chips + 弹层 + 子代理详情 + 后台终端标签页 ===== */
 /* 标题：显示当前会话标题，收缩省略 */
@@ -13636,7 +13850,7 @@ textarea.dlg-input:focus {
 .ai-user-quote-excerpt.clickable { cursor: pointer; }
 .ai-user-quote-excerpt.clickable:hover { color: var(--accent); }
 
-/* ===== AI 智能体（设置 → AI → 智能体；群聊域复用 .gc- 前缀徽标） ===== */
+/* ===== AI 智能体（应用页面 → 智能体，原 设置 → AI → 智能体；群聊域复用 .gc- 前缀徽标） ===== */
 .agent-color-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 7px; vertical-align: -1px; }
 .agent-badge { display: inline-block; margin-left: 8px; padding: 1px 8px; border-radius: 9px; font-size: 11px; line-height: 16px; vertical-align: 1px; color: var(--muted); background: var(--hover); white-space: nowrap; }
 .agent-badge.agent-badge-model { color: var(--accent); background: color-mix(in srgb, var(--accent) 13%, transparent); }
@@ -14708,7 +14922,7 @@ html[data-theme="light"] {
 .gc-member-item > .gc-member-text { flex: 1; min-width: 0; }
 .gc-member-role { flex: 0 1 220px; min-width: 120px; }
 
-/* 新建群聊弹窗左下角齿轮（跳 设置 → AI → 智能体）：margin-right:auto 顶到最左，
+/* 新建群聊弹窗左下角齿轮（开 应用页面 → 智能体 标签页）：margin-right:auto 顶到最左，
    其余提示与按钮保持右侧；图标按钮收紧为 28×28 */
 .gc-settings-btn { flex: none; margin-right: auto; width: 28px; height: 28px; padding: 0; display: inline-flex; align-items: center; justify-content: center; color: var(--muted); }
 .gc-settings-btn:hover { color: var(--text); }
@@ -15158,12 +15372,12 @@ body.preview-only #enc-popover { display: none !important; }
 
 /* ---- 数据库连接页（src/db/）---- */
 .db-page { display: flex; height: 100%; min-height: 0; background: var(--bg); }
-.db-left { width: 262px; min-width: 262px; display: flex; flex-direction: column; border-right: 1px solid var(--border); background: var(--panel); }
 .db-left-actions { display: flex; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--border); }
 .db-conn-section { border-top: 1px solid var(--border); padding: 8px 10px 10px; max-height: 42%; overflow: auto; }
 .db-conn-head { font-size: 11px; color: var(--muted); margin-bottom: 6px; }
 .db-btn { display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--border); background: var(--panel2);
     color: var(--text); border-radius: 5px; padding: 3px 9px; font-size: 12px; cursor: pointer; white-space: nowrap; }
+.db-btn[hidden] { display: none !important; } /* hidden 属性会被 display:inline-flex 覆盖（编辑簇显隐靠它） */
 .db-btn:hover { border-color: var(--accent); }
 .db-btn:disabled { opacity: 0.55; cursor: default; }
 .db-btn.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
@@ -15178,11 +15392,12 @@ body.preview-only #enc-popover { display: none !important; }
 .db-tree-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .db-tree-arrow { color: var(--muted); font-size: 10px; width: 12px; transition: transform 0.12s; }
 .db-tree-arrow.open { transform: rotate(90deg); }
-.db-tree-obj { padding-left: 34px; }
+.db-tree-obj { padding-left: 68px; } /* 表/视图节点：与「表」分组行（52px）拉开一级 */
 .db-tree-act { border: none; background: none; color: var(--muted); cursor: pointer; padding: 1px; border-radius: 3px; display: inline-flex; }
 .db-tree-act:hover { color: var(--accent); background: var(--panel2); }
 .db-tree-badge { font-size: 10px; color: var(--muted); border: 1px solid var(--border); border-radius: 8px; padding: 0 5px; }
 .db-tree-badge.warn { color: #d29922; border-color: #d29922; }
+.db-tree-badge.muted { opacity: 0.75; }
 .db-tree-hint { padding: 8px 10px; font-size: 12px; color: var(--muted); }
 .db-tree-hint.error { color: #e5534b; }
 .db-conn-row { display: flex; align-items: center; gap: 6px; padding: 5px 6px; border-radius: 6px; }
@@ -15195,19 +15410,6 @@ body.preview-only #enc-popover { display: none !important; }
 .db-conn-rowline { display: flex; align-items: center; gap: 10px; font-size: 12.5px; color: var(--text); }
 .db-conn-rowline > *:last-child { flex: 1; }
 .db-conn-label { flex: 0 0 auto; min-width: 64px; color: var(--muted); }
-.db-center { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-.db-tabbar { display: flex; gap: 2px; overflow-x: auto; border-bottom: 1px solid var(--border); background: var(--panel); padding: 4px 6px 0; min-height: 30px; }
-.db-tab { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; font-size: 12px; color: var(--text);
-    border: 1px solid transparent; border-bottom: none; border-radius: 6px 6px 0 0; cursor: pointer; white-space: nowrap; }
-.db-tab:hover { background: var(--panel2); }
-.db-tab.active { background: var(--bg); border-color: var(--border); }
-.db-tab-label { max-width: 180px; overflow: hidden; text-overflow: ellipsis; }
-.db-tab-close { border: none; background: none; color: var(--muted); cursor: pointer; padding: 0 1px; display: inline-flex; border-radius: 3px; }
-.db-tab-close:hover { color: var(--text); background: var(--panel); }
-.db-tabhost { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.db-center-empty { margin: auto; color: var(--muted); font-size: 12.5px; }
-.db-right { width: 400px; min-width: 320px; border-left: 1px solid var(--border); display: flex; flex-direction: column; background: var(--panel); }
-.db-right[hidden] { display: none; } /* hidden 属性会被上面的 display:flex 覆盖，显式收口 */
 .db-query { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 8px; gap: 6px; }
 .db-query-toolbar { display: flex; align-items: center; gap: 6px; }
 .db-limit-select { width: 96px !important; font-size: 12px; }
@@ -15219,6 +15421,19 @@ body.preview-only #enc-popover { display: none !important; }
 .db-query-status { font-size: 11.5px; color: var(--muted); min-height: 16px; }
 .db-query-empty { margin: auto; color: var(--muted); font-size: 12px; padding: 0 10px; text-align: center; }
 .db-query .db-grid { flex: 1; min-height: 120px; }
+.db-query .db-grid.hidden, .db-query-output.hidden { display: none; }
+/* 结果 tab（输出 + 各语句结果）与输出摘要 */
+.db-query-rtabs { display: flex; gap: 2px; flex: 0 0 auto; }
+.db-query-rtab { border: 1px solid var(--border); background: var(--panel2); color: var(--muted); border-radius: 5px;
+    padding: 2px 9px; font-size: 11.5px; cursor: pointer; white-space: nowrap; }
+.db-query-rtab.active { background: var(--accent-weak); border-color: var(--accent); color: var(--accent); }
+.db-query-output { flex: 1; min-height: 80px; overflow: auto; padding: 6px 10px; display: flex; flex-direction: column; gap: 3px; }
+.db-query-output-line { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.db-query-output-idx { color: var(--muted); flex: 0 0 auto; font-size: 11px; }
+.db-query-output-sql { font-family: var(--mono, ui-monospace, Consolas, monospace); font-size: 11.5px; color: var(--text);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.db-query-output-meta { margin-left: auto; color: var(--muted); font-size: 11px; flex: 0 0 auto; }
+.db-query-output-total { border-top: 1px solid var(--border); padding-top: 4px; margin-top: 2px; color: var(--muted); font-size: 11px; }
 .db-table-pane { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .db-table-toolbar { display: flex; align-items: center; gap: 6px; padding: 6px 10px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
 .db-table-title { display: flex; align-items: center; gap: 6px; margin-right: auto; min-width: 0; }
@@ -15230,32 +15445,54 @@ body.preview-only #enc-popover { display: none !important; }
 .db-table-pending { font-size: 11.5px; color: #d29922; }
 .db-table-filters { padding: 6px 10px; border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: 6px; background: var(--panel); }
 .db-table-filters.hidden { display: none; }
+.db-filter-label { font-size: 10.5px; color: var(--muted); letter-spacing: 0.5px; }
+.db-filter-label.hidden { display: none; }
 .db-table-filter-list { display: flex; flex-direction: column; gap: 5px; }
-.db-filter-cond { display: flex; gap: 6px; align-items: center; }
-.db-filter-cond select, .db-filter-cond input { font-size: 12px; }
+/* 条件行固定栅格：列 150px / 算子 110px / 值弹性 / 删除按钮——不换行不错位（图6）。
+   列/算子经 enhanceSelect 增强：触发器 wrap 继承 .db-filter-col/.db-filter-op 类（原生 select 隐藏），
+   所以宽度按这两个类定，不按子序号 */
+.db-filter-cond { display: flex; gap: 6px; align-items: center; flex-wrap: nowrap; }
+.db-filter-cond > * { font-size: 12px; min-width: 0; }
+.db-filter-cond > .db-filter-col { flex: 0 0 150px; }
+.db-filter-cond > .db-filter-op { flex: 0 0 110px; }
+.db-filter-cond > input { flex: 1 1 auto; }
+.db-filter-cond > button { flex: 0 0 auto; }
+.db-filter-cond .set-select-native { display: none !important; }
 .db-table-grid-host { flex: 1; min-height: 0; display: flex; }
-.db-table-status { padding: 4px 10px; font-size: 11.5px; color: var(--muted); border-top: 1px solid var(--border); }
+.db-table-status { padding: 4px 10px; font-size: 11.5px; color: var(--muted); border-top: 1px solid var(--border);
+    display: flex; align-items: center; gap: 8px; }
+.db-table-status > span:first-child { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.db-table-status .db-limit-select { font-size: 11.5px; }
 .db-grid { flex: 1; min-width: 0; display: flex; flex-direction: column; font-size: 12px; }
 .db-grid-head { overflow: hidden; border-bottom: 1px solid var(--border); background: var(--panel); flex: 0 0 auto; }
 .db-grid-head-inner, .db-grid-row { display: grid; gap: 0; grid-template-columns: var(--db-grid-cols, 44px); }
 .db-grid-hcell { padding: 4px 8px; color: var(--muted); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-    border-right: 1px solid var(--border); user-select: none; }
+    border-right: 1px solid var(--border); user-select: none; position: relative; }
 .db-grid-hcell.sort-asc::after { content: ' ▲'; }
 .db-grid-hcell.sort-desc::after { content: ' ▼'; }
+.db-grid-colresize { position: absolute; top: 0; right: 0; width: 5px; height: 100%; cursor: col-resize; user-select: none; }
 .db-grid-body { flex: 1; overflow: auto; position: relative; }
 .db-grid-canvas { position: relative; }
 .db-grid-win { position: absolute; top: 0; left: 0; right: 0; }
-.db-grid-row { height: 26px; border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent); }
+.db-grid-row { height: var(--db-grid-rowh, 26px); border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent); }
 .db-grid-row:hover { background: var(--panel2); }
 .db-grid-cell { padding: 3px 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border-right: 1px solid color-mix(in srgb, var(--border) 40%, transparent);
-    color: var(--text); cursor: default; }
+    color: var(--text); cursor: default; line-height: calc(var(--db-grid-rowh, 26px) - 6px); } /* 行高随档位，内容始终垂直居中 */
 .db-grid-num { color: var(--muted); background: var(--panel); text-align: right; font-size: 11px; }
 .db-null { color: var(--muted); font-style: italic; opacity: 0.8; }
 .db-row-inserted { background: rgba(84, 138, 247, 0.08); }
 .db-row-deleted { background: rgba(229, 83, 75, 0.12); }
 .db-row-deleted .db-grid-cell { text-decoration: line-through; color: var(--muted); }
 .db-cell-dirty { background: var(--accent-weak); box-shadow: inset 0 0 0 1px var(--accent); }
+/* 修改行的行号列同色高亮（图5）+ 整行淡蓝底 */
+.db-row-dirty { background: rgba(84, 138, 247, 0.07); }
+.db-row-dirty .db-grid-num { background: var(--accent-weak); color: var(--accent); }
+/* 单元格内联编辑框（图4）：占满单元格、无圆角缝隙、accent 描边——.dlg-input 的对话框
+   形态（大 padding/圆角）在 26px 行高里会溢出被 overflow:hidden 裁掉，这里完全接管 */
 .db-cell-editing { padding: 0 !important; }
+.db-cell-editing .dlg-input { height: 100%; padding: 2px 7px; border: 1px solid var(--accent);
+    border-radius: 0; background: var(--bg); font-size: 12px; min-width: 0; }
+.db-cell-editing .dlg-input:focus { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
 .db-preview-mask { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.42); display: flex; align-items: center; justify-content: center; }
 .db-preview { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; min-width: 420px; max-width: 720px;
     max-height: 78vh; display: flex; flex-direction: column; box-shadow: 0 10px 40px rgba(0, 0, 0, 0.35); }
@@ -15294,20 +15531,45 @@ aside[data-sidebar-view="database"] #database-panel { display: flex; flex: 1; mi
 .db-side-row:hover { background: var(--panel2); }
 .db-gate-side { padding: 20px 14px; height: auto; }
 
-/* 数据库标签页（一个标签 = 一个库会话） */
+/* 会话树（db-session-tree.js）：清单 + 连接 → 库 → 分组 → 表/视图/服务器对象。
+   缩进层级固定步进（条目 20 → 库 36 → 分组 52 → 表节点 68；服务器子分组/叶子再深一档），
+   禁止父子倒挂——库行不得浅于条目行。 */
+.db-session-list { flex: 1; min-height: 0; overflow: auto; padding: 4px 4px 8px; }
+.db-session-item { margin: 0 0 2px; }
+.db-session-tree { padding: 1px 0 4px; }
+.db-tree-sub { padding: 0; }
+.db-tree-session { padding-left: 20px; }
+.db-tree-db { padding-left: 36px; }
+.db-tree-group-row { padding-left: 52px; }
+.db-tree-leaf-group { padding-left: 68px; color: var(--muted); }
+.db-tree-leaf-group .db-tree-name { color: var(--muted); }
+.db-tree-count { font-size: 10px; color: var(--muted); border: 1px solid var(--border); border-radius: 8px; padding: 0 5px; }
+.db-tree-comment { flex: 0 1 auto; margin-left: auto; max-width: 55%; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; font-size: 11px; color: var(--muted); }
+/* 结构化建表表单（db-create-table.js） */
+.db-ct-cols { display: flex; flex-direction: column; gap: 6px; }
+.db-ct-row { display: flex; align-items: center; gap: 6px; }
+.db-ct-row > input:first-child { flex: 1; min-width: 0; }
+.db-ct-row > select { flex: 0 0 92px; font-size: 12px; }
+.db-ct-flag { display: inline-flex; align-items: center; gap: 3px; font-size: 11px; color: var(--muted);
+    cursor: pointer; white-space: nowrap; }
+.db-tree-plain { padding-left: 84px; }
+
+/* 数据库虚拟标签页（数据表 / 查询控制台）：会话三态壳 + 控制台头部 */
 .db-tabview-pane { padding: 0; overflow: hidden; }
 .jsoneditor-pane.active.db-tabview-pane { display: block; }
-.db-tab-view { height: 100%; }
-.db-tabview-root { height: 100%; display: flex; flex-direction: column; background: var(--bg); }
-.db-tabview-head { display: flex; align-items: center; gap: 8px; padding: 7px 12px; border-bottom: 1px solid var(--border); background: var(--panel); flex: none; }
-.db-tabview-ic { display: inline-flex; color: var(--muted); }
-.db-tabview-name { font-size: 13px; font-weight: 600; color: var(--text); }
-.db-tabview-meta { font-size: 11.5px; color: var(--muted); }
-.db-tabview-status { margin-left: auto; font-size: 11.5px; color: #e5534b; }
-.db-tabview-body { flex: 1; min-height: 0; display: flex; }
-.db-tabview-left { height: 100%; }
-.db-tabview-tree { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; }
-.db-tabview-tree .db-tree { flex: 1; }
+.db-tab-session { height: 100%; min-height: 0; display: flex; flex-direction: column; background: var(--bg); }
+.db-tab-gate { margin: auto; display: flex; flex-direction: column; align-items: center; gap: 10px;
+    color: var(--muted); font-size: 12.5px; text-align: center; padding: 20px; max-width: 520px; }
+.db-tab-gate .db-btn { margin-top: 4px; }
+.db-console-view { height: 100%; display: flex; flex-direction: column; background: var(--bg); }
+.db-console-head { display: flex; align-items: center; gap: 8px; padding: 7px 12px;
+    border-bottom: 1px solid var(--border); background: var(--panel); flex: none; }
+.db-console-head > span:first-child { display: inline-flex; color: var(--muted); }
+.db-console-name { font-size: 13px; font-weight: 600; color: var(--text); }
+.db-console-meta { font-size: 11.5px; color: var(--muted); margin-right: auto; }
+.db-console-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.db-console-body .db-tab-session { flex: 1; }
 
 /* 连接管理对话框（JetBrains「数据源和驱动程序」形态） */
 .db-ds-dialog { width: 760px; max-width: 92vw; }
@@ -15343,3 +15605,60 @@ aside[data-sidebar-view="database"] #database-panel { display: flex; flex: 1; mi
 .db-ds-body { min-height: 360px; }
 .db-ds-right-empty { margin: auto; color: var(--muted); font-size: 12.5px; text-align: center; padding: 24px; }
 .db-ds-right-empty[hidden] { display: none; }
+
+/* ---------- Redis 键空间（方案 §11.13）：侧栏键树 + 键查看器标签页 ---------- */
+
+/* 侧栏：模式过滤行（搜索框 + 扁平/分组切换）与「加载更多」 */
+.db-redis-search { display: flex; align-items: center; gap: 5px; padding: 4px 8px 4px 52px; }
+.db-redis-pattern { flex: 1; min-width: 0; height: 24px; font-size: 11.5px; padding: 2px 6px; }
+.db-redis-flat { flex: none; padding: 3px 6px; }
+.db-redis-more { margin: 4px 8px 4px 68px; font-size: 11px; }
+.db-redis-node { padding: 0; }
+
+/* 键查看器标签页：头部信息条（键名/类型/TTL/长度/动作） */
+.db-redis-view { height: 100%; display: flex; flex-direction: column; background: var(--bg); }
+.db-redis-head { display: flex; align-items: center; gap: 7px; padding: 7px 12px;
+    border-bottom: 1px solid var(--border); background: var(--panel); flex: none; min-width: 0; }
+.db-redis-keyname { font-size: 13px; font-weight: 600; color: var(--text); font-family: var(--mono, ui-monospace, Consolas, monospace);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.db-redis-type { font-size: 10px; color: var(--accent); border: 1px solid var(--border); border-radius: 8px; padding: 1px 7px; flex: none; }
+.db-redis-headbtns { margin-left: auto; display: inline-flex; gap: 4px; flex: none; }
+
+/* 内容区：string 文本区（formatter 工具行 + 只读代码块）与集合行集网格 */
+.db-redis-body { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.db-redis-str { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 8px 12px; overflow: auto; }
+.db-redis-strtoolbar { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; flex: none; }
+.db-redis-strtoolbar .db-btn { flex: none; }
+.db-redis-strpre { flex: 1; min-height: 120px; margin: 0; padding: 10px; background: var(--panel);
+    border: 1px solid var(--border); border-radius: 6px; overflow: auto; white-space: pre-wrap;
+    word-break: break-all; font-family: var(--mono, ui-monospace, Consolas, monospace); font-size: 12px;
+    line-height: 1.55; color: var(--text); }
+.db-redis-gridwrap { flex: 1; min-height: 0; overflow: hidden; }
+.db-redis-hint { padding: 16px; color: var(--muted); font-size: 12.5px; text-align: center; }
+.db-redis-hint.error { color: #ff8a80; }
+
+/* 行内弹层（行编辑 / 命令预览 / TTL / string 编辑 / Type-to-Confirm） */
+.db-redis-confirm, .db-redis-rowedit, .db-redis-stredit { width: 560px; max-width: 92vw; }
+.db-redis-stredit { width: 720px; }
+.db-redis-confirm-body { display: flex; flex-direction: column; gap: 8px; }
+.db-redis-cmd { display: block; padding: 6px 9px; background: var(--bg); border: 1px solid var(--border);
+    border-radius: 5px; font-family: var(--mono, ui-monospace, Consolas, monospace); font-size: 11.5px;
+    color: var(--text); word-break: break-all; white-space: pre-wrap; }
+.db-redis-fieldname { font-size: 12px; color: var(--muted); font-family: var(--mono, ui-monospace, Consolas, monospace);
+    word-break: break-all; }
+.db-redis-editarea { flex: 1; min-height: 260px; resize: vertical; font-family: var(--mono, ui-monospace, Consolas, monospace); }
+
+/* 桌面控制安装进度（外部工具页）：阶段文本 + 细进度条。
+   percent 是阶段估算（uv 下载拿不到字节进度），所以条只是进度感，不宣称精确。 */
+.extcap-desktop-progress { display: flex; flex-direction: column; gap: 6px; margin: 8px 0 2px; }
+.extcap-desktop-progress-bar { height: 6px; border-radius: 3px; background: var(--panel2); overflow: hidden; }
+.extcap-desktop-progress-fill { height: 100%; background: var(--accent); border-radius: 3px; transition: width .2s ease; }
+.extcap-desktop-progress-text { font-size: 12px; color: var(--muted); word-break: break-all; }
+.extcap-desktop-progress-text.is-error { color: var(--red); }
+
+/* 桌面工具开关列表：一工具一行（名字 + 风险标注 + 说明 + 开关） */
+.extcap-desktop-tools { display: flex; flex-direction: column; gap: 2px; margin: 6px 0 2px; }
+.extcap-desktop-tool { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 4px 0; }
+.extcap-desktop-tool-name { display: flex; align-items: baseline; gap: 8px; font-size: 13px; color: var(--text); min-width: 0; }
+.extcap-desktop-tool-risk { font-size: 11px; color: var(--orange); flex: none; }
+.extcap-desktop-tool-note { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

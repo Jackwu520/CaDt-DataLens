@@ -21,7 +21,8 @@ import {CODE_SHOT_RADII, CODE_SHOT_SCALES} from './core/code-shot.js';
 import {createDebugConsole} from './terminal/debugconsole.js';
 import {createActivityLog} from './core/activity-log.js';
 import {createDbUi} from './db/db-ui.js';
-import {createDbTabView} from './db/db-tab.js';
+import {createDbTableTabView, createDbConsoleTabView, createDbRedisKeyTabView} from './db/db-tab-views.js';
+import {configureDbSessions} from './db/db-sessions.js';
 import {createDbAppActions} from './db/db-app-actions.js';
 import {iconSvg, renderMenuIcon} from './core/icons.js';
 import {createPalette} from './shell/palette.js';
@@ -83,6 +84,7 @@ import {createShiftDoubleTap} from './core/shift-double-tap.js';
 import {keymap, comboSpecFromText} from './core/keymap.js';
 import {DOUBLE_SHIFT, DEFAULT_KEY_STYLE, isValidKeyStyleId, getShortcut} from './core/keybindings.js';
 import {createEditorKeybindings} from './editor/editor-keybindings.js';
+import {refreshCompletionSettings} from './editor/editor-completion.js';
 import {createMessageCenter} from './shell/message-center.js';
 import {createFailureNotifier} from './shell/failure-notifier.js';
 import {createFindBar} from './editor/find-bar.js';
@@ -114,12 +116,20 @@ import {listScratchDrafts, isScratchPath, normalizeScratchExt, scratchDir} from 
 import {tabKindOf} from './core/tab-kinds.js';
 import {APP_PAGES, appPageGroups, appPageOf} from './core/app-pages.js';
 import {overlayStack} from './core/overlay-stack.js';
+import {createDialogDrag} from './core/dialog-drag.js';
 import {loadWailsRuntime, createRuntimeAdapter, createBackendProxy} from './core/wails-runtime.js';
 import {createAppEventBridge, setAppEventBridge} from './core/app-events.js';
 
 // 全局弹层栈的 Esc 分发监听必须先于一切弹层工厂注册（window 捕获阶段按注册顺序执行，
 // 只有装得最早才能用 stopImmediatePropagation 可靠抢占各域散落的旧 Esc 监听）。
 overlayStack.install(window);
+
+// 对话框头部拖动（从 writing-mode.js 抽出）：事件委托覆盖静态 .dialog 族与动态创建的 AI 弹窗。
+// .dialog 靠 translate(-50%,-50%) 居中，按下时需清 transform；AI 弹窗卡片靠 flex 居中，无需清。
+createDialogDrag([
+    {handle: '.dialog-head', exclude: '.dialog-close', clearTransform: true},
+    {handle: '.ai-dialog-head', exclude: 'button'},
+]).install(window);
 
 window.addEventListener('error', (e) => {
     window.__modErr = (e.message || '') + ' @ ' + (e.filename || '').split('/').pop() + ':' + e.lineno + ':' + e.colno;
@@ -991,7 +1001,30 @@ function appTabViewOf(doc) {
     const name = String(doc.name || doc.browserUrl || '').trim();
     // 视图型虚拟标签页：类型名与标签来自 core/tab-kinds.js（单一来源）
     const tabKind = tabKindOf(doc);
-    if (tabKind) return {kind: tabKind.kind, label: tabKind.label, name};
+    if (tabKind) {
+        const base = {kind: tabKind.kind, label: tabKind.label, name};
+        // 数据库标签页给 AI 注入比标签标题更丰富的上下文（连接/库/表/类型）。
+        // name 已是表名/连接名/键名，desc 不重复它——旧控制台文案会注入成
+        // 查询控制台「x」（连接「x」…），同一信息出现两次
+        if (doc.dbTableSpec) {
+            const t = doc.dbTableSpec;
+            return {...base, desc: (t.entry && t.entry.name ? '连接「' + t.entry.name + '」' : '') +
+                (t.db && t.db !== 'main' ? '库 ' + t.db + ' 的' : '') +
+                (t.kind === 'view' ? '视图 ' : '表 ') + t.table};
+        }
+        if (doc.dbConsoleSpec) {
+            const c = doc.dbConsoleSpec;
+            // SQL / Redis 控制台共用此标签：SQL 是默认语义不必注，Redis 的命令方言值得点名
+            return c.entry && c.entry.kind === 'redis' ? {...base, desc: 'Redis 命令控制台'} : base;
+        }
+        if (doc.dbRedisKeySpec) {
+            const r = doc.dbRedisKeySpec;
+            // 键名不重复（name 已带）；库省略口径与表同：Redis db 0 在创建点已归一为 ''
+            return {...base, desc: (r.entry && r.entry.name ? '连接「' + r.entry.name + '」' : '') +
+                (r.db ? '库 ' + r.db : '')};
+        }
+        return base;
+    }
     // 文本型虚拟标签页（计划 / 差异 / 只读文档 / 未保存新文档）：靠 viewKind 区分
     const kind = doc.viewKind ? String(doc.viewKind) : 'untitled';
     return {kind, label: APP_TAB_KIND_LABELS[kind] || '标签页', name};
@@ -2107,6 +2140,12 @@ async function runAppAction(action, params, scope, callerSessionId, requestActio
             }, () => aiNowId('agent-'));
             if (!result.ok) throw new Error(result.error);
             if (aiPanel && aiPanel.aiGroupApi) aiPanel.aiGroupApi.saveConfig();
+            // 智能体应用页标签开着就即时重绘（saveAIConfig 不广播，判法同 schedules-changed 订阅先例）
+            const agentsDoc = docs.find((d) => d && d.appPage === 'agents');
+            if (agentsDoc && agentsDoc.appPageRoot && agentsDoc.appPageRoot.isConnected
+                && aiPanel && typeof aiPanel.bridgeRefreshAgents === 'function') {
+                aiPanel.bridgeRefreshAgents();
+            }
             return {
                 created: {
                     id: result.agent.id,
@@ -2117,7 +2156,7 @@ async function runAppAction(action, params, scope, callerSessionId, requestActio
                     chair: result.agent.chair,
                     enabled: result.agent.enabled,
                 },
-                note: '已创建智能体；人设/角色可在 设置 → AI → 智能体 再编辑，或直接在「新建群聊」里选用它',
+                note: '已创建智能体；人设/角色可在 应用页面 → 智能体 再编辑，或直接在「新建群聊」里选用它',
             };
         }
         // —— 群聊（AI 代建）：成员/主持人按 id 或名字定位（纯函数在 ai-group-model），
@@ -2435,6 +2474,10 @@ const defaultSettings = {
     alwaysOnTop: false,
     editorFont: 13,
     codeWrap: false,
+    // 编辑器补全（docs/finished-plans/editor-completion.md §8/§15.2；偏好键，默认跨窗同步）。
+    // live「输入时自动弹出」默认关：vendored bundle 的 live afterExec 路径实测不可靠
+    // （最小 completer 也复现冻结 + 真实键入后 completer 未创建），待升级 vendored Ace 后再评估
+    completion: {files: true, sql: true, live: false},
     scrollStyle: 'standard',
     // 代码截图样式（档位单一来源 core/code-shot.js）
     codeShotTitle: false,
@@ -2738,10 +2781,18 @@ const editorKeybindings = createEditorKeybindings({
     get docs() { return docs; },
 });
 
+// 补全设置热生效：settings 变更（含跨窗广播）后对已开编辑器即时更新 live / 补挂
+// （镜像 editorKeybindings.applyToAll 的接线方式；启动时 docs 为空，无副作用）
+const applyCompletionSettingsToAllDocs = () => refreshCompletionSettings(
+    (docs || []).map((d) => ({aceEditor: d && d.editor && d.editor.aceEditor, doc: d})),
+    settings,
+);
+
 const settingsUI = createSettingsUI({
     get aiPanel() { return aiPanel; },
     get allFormatDefs() { return allFormatDefs; },
     get applyEditorKeybindingsToAll() { return () => editorKeybindings.applyToAll(); },
+    get applyCompletionSettingsToAll() { return () => applyCompletionSettingsToAllDocs(); },
     get applySidebarUI() { return applySidebarUI; },
     get applyWritingMode() { return applyWritingMode; },
     get backend() { return backend; },
@@ -2910,7 +2961,7 @@ const editorGroupsMod = createEditorGroups({
     get createGroupMemberView() { return createGroupMemberView; },
     get createBgTermView() { return createBgTermView; },
     get createAppPageView() { return createAppPageView; },
-    get createDatabaseView() { return createDatabaseView; },
+    get createDbTabView() { return createDatabaseTabView; },
     get createMemoView() { return createMemoView; },
     get CSV_COL_MIN_WIDTH() { return CSV_COL_MIN_WIDTH; },
     get CSV_ROW_NUM_WIDTH() { return CSV_ROW_NUM_WIDTH; },
@@ -4005,6 +4056,7 @@ function isEditorCollapsed() { return !!editorCollapseReason; }
 
 function setEditorCollapsed(next, reason) {
     const target = !!next;
+    const was = !!editorCollapseReason;
     if (target) {
         if (!aiPanel) initAIPanel();
         if (!aiPanel) { flash('AI 面板不可用', true); return; }
@@ -4015,6 +4067,11 @@ function setEditorCollapsed(next, reason) {
     }
     const topRow = document.getElementById('top-row');
     if (topRow) topRow.classList.toggle('ai-editor-collapsed', target);
+    // 展开瞬间（收起→展开的真实过渡）重量标签条 spacer 并按需补发激活标签定位：
+    // 收起期间 #main-pane display:none，期间打开文件 / 重建标签条（AI 面板点文件链接）
+    // 量不到右侧工具区宽度，spacer 被记成 0，展开后末尾标签被工具区盖住滚不出来。
+    // 收起方向不用管——hidden 态里量了也是 0，保持展开前的旧值即可。
+    if (!target && was) editorGroupsMod.refreshTabStripSpacers();
     if (els.editorCollapseStrip) {
         els.editorCollapseStrip.setAttribute('aria-pressed', String(target));
         els.editorCollapseStrip.classList.toggle('active', target);
@@ -4643,8 +4700,9 @@ function initAIPanel() {
         },
         flash: (...args) => flash(...args),
         confirm: (message, action, okLabel, title, variant, options) => openConfirmDialog(message, action, okLabel, title, variant, options),
-        // 新建群聊弹窗左下角的齿轮：直达 设置 → AI → 智能体（成员管理）
-        openSettings: (pane) => openSettings(pane),
+        // 新建群聊弹窗左下角的齿轮：直达 应用页面 → 智能体（成员管理）；箭头包一层防
+        // 组合根声明顺序（openAppPageTab 在 bridgeUI 解构之后才有值），调用时才求值
+        openAppPageTab: (...args) => openAppPageTab(...args),
         dialog: aiPanel.aiGroupApi
             ? {
                 open: (...args) => aiPanel.aiGroupApi.openDialog(...args),
@@ -5101,13 +5159,14 @@ async function saveDoc(doc, opts = {}) {
     if (!doc.dirty && doc.rawText != null) {
         text = doc.rawText;
     } else if (savedMode === 'table' || savedMode === 'code' || savedMode === 'text' || fmt.rawOnly) {
+        // 原文路径：是否保存交给用户——解析失败不再拦截，按原文落盘（手动保存时给非阻断提示；
+        // 表格模式的序列化内容由应用生成，失败静默）。tree 模式（下方分支）是真实数据路径，校验保留。
         text = snapshot;
-        if (!fmt.rawOnly) {
+        if (!fmt.rawOnly && savedMode !== 'table') {
             try {
                 fmt.parse(text);
             } catch (e) {
-                if (!opts.auto) flash(fmt.name + ' 无效，未保存：' + e.message, true);
-                return false;
+                if (!opts.auto) flash(fmt.name + ' 无效，已按原文保存：' + e.message);
             }
         }
     } else {
@@ -5310,6 +5369,21 @@ elsSettings.codeWrap.addEventListener('change', () => {
     settings.codeWrap = elsSettings.codeWrap.checked;
     applySettings();
 });
+elsSettings.completionFiles.addEventListener('change', () => {
+    settings.completion = settings.completion || {};
+    settings.completion.files = elsSettings.completionFiles.checked;
+    applySettings();
+});
+elsSettings.completionSql.addEventListener('change', () => {
+    settings.completion = settings.completion || {};
+    settings.completion.sql = elsSettings.completionSql.checked;
+    applySettings();
+});
+elsSettings.completionLive.addEventListener('change', () => {
+    settings.completion = settings.completion || {};
+    settings.completion.live = elsSettings.completionLive.checked;
+    applySettings();
+});
 elsSettings.tabClose.addEventListener('change', () => {
     settings.tabCloseMode = elsSettings.tabClose.value;
     applySettings();
@@ -5419,13 +5493,23 @@ const settingsPaneUsageStats = createSettingsPaneUsageStats({
 
 // 应用页面标签页的挂载器（键 = core/app-pages.js 的 id，值 = mount(root) → 卸载函数）。
 // 经 deps 注入 bridge 域：bridge/ 不 import settings/ 与 ai/（同级域互相不 import）。
-// 定时任务在面板闭包里（CRUD 后要刷新头部胶囊），经 aiPanel 的桥转发——面板可能还没建，
-// 所以在调用时惰性取，不在创建期快照。
+// 定时任务 / 智能体在面板闭包里（CRUD 后要刷新头部胶囊 / 列表），经 aiPanel 的桥转发。
+// AI 面板是惰性初始化的（initAIPanel 只在面板交互路径触发）：用户没开过面板就点开这两页
+// 时必须先兜底建面板（initAIPanel 自带 if (aiPanel) return 幂等），否则挂载器返回 null、
+// 标签页空白且再激活不自愈（doc.pane 守卫挡住重挂）——兜底与设置页 AI 子页、外部工具页同款。
 const appPageMounters = {
     'usage-stats': (root) => settingsPaneUsageStats.mount(root),
     'patches': (root) => settingsPanePatches.mount(root),
     'activity': (root) => activityPane.mount(root),
-    'schedules': (root) => (aiPanel && aiPanel.bridgeMountSchedules ? aiPanel.bridgeMountSchedules(root) : null),
+    'schedules': (root) => {
+        if (!aiPanel) initAIPanel();
+        return aiPanel && aiPanel.bridgeMountSchedules ? aiPanel.bridgeMountSchedules(root) : null;
+    },
+    // 智能体的 DOM 停靠在 #agents-park，mount 搬进 / 卸载搬出（ai/ai-agent-settings.js）
+    'agents': (root) => {
+        if (!aiPanel) initAIPanel();
+        return aiPanel && aiPanel.bridgeMountAgents ? aiPanel.bridgeMountAgents(root) : null;
+    },
     // 外部工具的 DOM 停靠在 #extcap-park，mount 搬进 / 卸载搬出（settings-pane-external-tools.js）
     'external-tools': (root) => settingsPaneExternalTools.mount(root),
 };
@@ -7351,15 +7435,24 @@ initActivityBar();
 const bridgeUI = createBridgeUI({
     // 应用页面标签页：pageId → mount(root)，各页内容渲染仍归原域
     get appPageMounters() { return appPageMounters; },
-    // 数据库连接标签页：doc → 视图根元素（会话连接 / 对象树 / 网格 / 控制台都在 db 域）
-    get dbViewMounter() {
-        return (doc) => createDbTabView({
-            get backend() { return backend; },
-            get flash() { return flash; },
-            get settings() { return settings; },
-            get logActivity() { return activityLog.log; },
-            get enhanceSelect() { return settingsUI.enhanceSelect; },
-        }, doc);
+    // 数据库虚拟标签页（数据表 / 查询控制台 / Redis 键查看器）：doc → db 域视图根元素（bridge 挂载 pane 与卸载契约）
+    get dbTabMounter() {
+        return (doc) => {
+            const depsObj = {
+                get backend() { return backend; },
+                get flash() { return flash; },
+                get settings() { return settings; },
+                get logActivity() { return activityLog.log; },
+                get enhanceSelect() { return settingsUI.enhanceSelect; },
+                get ctxMenu() { return ctxMenu; },
+                get copyText() { return copyText; },
+                get openConfirmDialog() { return openConfirmDialog; },
+                get overlayStack() { return overlayStack; },
+                get onRedisKeyDeleted() { return () => { if (dbSidebarRenderHook) dbSidebarRenderHook(); }; },
+            };
+            if (doc.dbRedisKeySpec) return createDbRedisKeyTabView(depsObj, doc);
+            return doc.dbTableSpec ? createDbTableTabView(depsObj, doc) : createDbConsoleTabView(depsObj, doc);
+        };
     },
     // 应用页面标签页里的原生 select 用设置页同款浮层增强，去掉浏览器原生外观
     get enhanceSetSelects() { return settingsUI.enhanceSetSelects; },
@@ -7443,11 +7536,17 @@ const bridgeUI = createBridgeUI({
 });
 const {createAgentView, createAgentTeamView, createSideChatView, createGroupMemberView, openGroupMemberTab, createBgTermView, createAppPageView, openAppPageTab, gitGroupCollapsed, gitRootDir, gitStateCache, gitUncheckedFiles, notifyAIGitEntry, openAgentTab, openAgentTeamTab, openSideChatTab, openBgTermTab, openBrowserTab, openVirtualDoc, refreshGitStatus, showGitDiff, showGitFileHistory, showGitRecentLog, gitRollbackPaths,
     openMemoTab, createMemoView, memoApi, memoHasPending, memoOnWorkspaceEvent, memoOnWindowFocus, memoOnResourceEvent, memoWorkspaceChanged,
-    createDatabaseView, openDatabaseTab} = bridgeUI;
+    createDatabaseTabView, openDbTableTab, openDbConsoleTab, openDbRedisKeyTab} = bridgeUI;
 // 成员详情标签页出口回填（aiGroupView 的 openMemberTab 闭包在创建期引用本 hook，避免 TDZ）
 openGroupMemberTabHook = openGroupMemberTab;
 
-// 数据库连接（侧栏「数据库」面板 + 内容区标签页）：internal/dbclient 引擎
+// 数据库虚拟标签页入口（editor-groups 的 deps getter 指到 bridge 的挂载函数；
+// db 域工厂的分派在 bridgeUI 的 dbTabMounter 内）
+configureDbSessions({
+    get backend() { return backend; },
+});
+
+// 数据库（侧栏「数据库」面板 = 会话树 + 内容区表/控制台标签页）：internal/dbclient 引擎
 // （SQLite / MySQL / 受控写入），方案 docs/unfinished-plans/db-connection-tools.md；
 // 工作区清单存 settings.dbWorkspaceDatabases，总开关 settings.dbToolsEnabled 默认关。
 const dbUi = createDbUi({
@@ -7460,7 +7559,10 @@ const dbUi = createDbUi({
     get ctxMenu() { return ctxMenu; },
     get openConfirmDialog() { return openConfirmDialog; },
     get enhanceSelect() { return settingsUI.enhanceSelect; },
-    get openDatabaseTab() { return openDatabaseTab; },
+    get openDbTableTab() { return openDbTableTab; },
+    get openDbConsoleTab() { return openDbConsoleTab; },
+    get openDbRedisKeyTab() { return openDbRedisKeyTab; },
+    get copyText() { return copyText; },
 });
 dbSidebarRenderHook = () => dbUi.renderSidebar();
 

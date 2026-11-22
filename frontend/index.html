@@ -298,7 +298,6 @@
                     </button>
                     <div class="snav-children">
                         <button type="button" class="snav-item snav-child" data-pane="models"><span class="snav-ic" data-icon="zap"></span><span>模型</span></button>
-                        <button type="button" class="snav-item snav-child" data-pane="agents"><span class="snav-ic" data-icon="agents"></span><span>智能体</span></button>
                         <button type="button" class="snav-item snav-child" data-pane="gen-models"><span class="snav-ic" data-icon="image"></span><span>生图与视频</span></button>
                         <button type="button" class="snav-item snav-child" data-pane="ai"><span class="snav-ic" data-icon="sparkles"></span><span>AI 助手</span></button>
                         <button type="button" class="snav-item snav-child" data-pane="permissions"><span class="snav-ic" data-icon="shield"></span><span>权限</span></button>
@@ -550,6 +549,24 @@
                                 </div>
                             </div>
                             <div class="set-row">
+                                <div class="set-main"><div class="set-title">编辑器代码补全</div><div class="set-desc">JSON/YAML/XML/TOML 结构候选 + 全文档词法候选；Ctrl+Space / Alt+/ 触发</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="opt-completion-files" checked><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">SQL 控制台补全</div><div class="set-desc">关键词、表/视图与列候选（来自连接元数据，本地无索引）</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="opt-completion-sql" checked><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                </div>
+                            </div>
+                            <div class="set-row">
+                                <div class="set-main"><div class="set-title">输入时自动弹出补全</div><div class="set-desc">默认仅手动触发（Ctrl+Space / Alt+/）；开启后每键弹候选</div></div>
+                                <div class="set-control">
+                                    <label class="set-switch"><input type="checkbox" id="opt-completion-live"><span class="set-switch-track"></span><span class="set-switch-thumb"></span></label>
+                                </div>
+                            </div>
+                            <div class="set-row">
                                 <div class="set-main"><div class="set-title">代码视图滚动手感</div><div class="set-desc">滚轮滚动的过渡方式；关闭则恢复逐行硬切</div></div>
                                 <div class="set-control">
                                     <select id="opt-scroll-style" class="opt-select"></select>
@@ -743,18 +760,6 @@
                                 </div>
                             </div>
                         </div>
-                    </div>
-                    <div class="settings-pane hidden" data-pane="agents">
-                        <div class="set-group-title">智能体</div>
-                        <div class="set-card">
-                            <div class="set-row">
-                                <div class="set-main"><div class="set-title">群聊成员</div><div class="set-desc">智能体是群聊（圆桌讨论）的成员：绑定一个账号下的模型，配人设与职责。名字全局唯一，不能含空白或 @；标记「可作为主持人」的成员可在群创建时被选为主持人（只调度与写纪要，不参与辩论）。</div></div>
-                                <div class="set-control">
-                                    <button type="button" id="ai-agent-create" class="dlg-btn primary">新建智能体</button>
-                                </div>
-                            </div>
-                        </div>
-                        <div id="agents-list"></div>
                     </div>
                     <div class="settings-pane hidden" data-pane="gen-models">
                         <div class="set-group-title">生图与视频模型</div>
@@ -3005,6 +3010,26 @@
 
     <div class="set-group-title">桌面控制</div>
     <div class="set-card" id="extcap-desktop"></div>
+</div>
+<!-- 「智能体」应用页面（core/app-pages.js agents）的内容停靠区：
+     设置 → AI → 智能体 已迁为内容区标签页，这段 DOM 常驻此处（隐藏），
+     由 ai/ai-agent-settings.js 的 mountAgentsPane 搬进 / 搬出标签页容器。
+     搬运保持节点身份：ai-agent-settings.js 创建期按 id 捕获的引用与事件绑定始终有效。
+     注意必须在 #dlg-settings 之外（buildSettingsTree 只扫 .settings-pane，停进弹层会被误索引）；
+     pane 不带 .settings-pane 类，settings-search 也不会扫到它。 -->
+<div id="agents-park" hidden>
+    <div class="agents-root hidden" data-pane="agents">
+        <div class="set-group-title">智能体</div>
+        <div class="set-card">
+            <div class="set-row">
+                <div class="set-main"><div class="set-title">群聊成员</div><div class="set-desc">智能体是群聊（圆桌讨论）的成员：绑定一个账号下的模型，配人设与职责。名字全局唯一，不能含空白或 @；标记「可作为主持人」的成员可在群创建时被选为主持人（只调度与写纪要，不参与辩论）。</div></div>
+                <div class="set-control">
+                    <button type="button" id="ai-agent-create" class="dlg-btn primary">新建智能体</button>
+                </div>
+            </div>
+        </div>
+        <div id="agents-list"></div>
+    </div>
 </div>
 <script src="./src/main.js" type="module"></script>
 </body>

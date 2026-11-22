@@ -47,10 +47,24 @@ export const TAB_KINDS = [
             const page = appPageOf(doc && doc.appPage);
             return page ? {icon: page.icon, label: page.label} : null;
         }},
-    // 数据库连接（侧栏「数据库」面板双击打开，一个标签页 = 一个库会话）：
-    // 标签用 doc.name（库文件名 / 连接名）而非泛称，AI 上下文里能认出是哪个库。
-    {marker: 'dbView', kind: 'database', icon: 'database', label: '数据库',
-        resolve: (doc) => (doc && doc.name ? {icon: 'database', label: doc.name} : null)},
+    // 数据库（侧栏会话树打开，方案 §11.8）：数据表网格每表一个标签（表名做标签，
+    // 图标按表/视图细分）；查询控制台每会话一个。视图工厂在 db 域。
+    // marker 字段保持去重 key 字符串，域数据在 dbTableSpec / dbConsoleSpec（bridge 创建点）。
+    {marker: 'dbTable', kind: 'dbTable', icon: 'view-table', label: '数据表',
+        resolve: (doc) => {
+            const t = doc && doc.dbTableSpec;
+            if (!t) return null;
+            return {icon: t.kind === 'view' ? 'eye' : 'view-table', label: t.table || doc.name};
+        }},
+    {marker: 'dbConsole', kind: 'dbConsole', icon: 'terminal', label: '查询控制台',
+        resolve: (doc) => ({icon: 'terminal', label: (doc && doc.dbConsoleSpec && doc.dbConsoleSpec.title) || '查询控制台'})},
+    // Redis 键查看器（方案 §11.13）：每个键一个标签；图标按值类型细分
+    {marker: 'dbRedisKey', kind: 'dbRedisKey', icon: 'key', label: '键查看器',
+        resolve: (doc) => {
+            const t = doc && doc.dbRedisKeySpec;
+            if (!t) return null;
+            return {icon: 'key', label: t.key || doc.name};
+        }},
 ];
 
 /**
