@@ -4,6 +4,98 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 
 ## 未发布
 
+### 改进（设置 → 编程语言首次打开自动全语言扫描）
+
+- **行为**：编辑器与运行面板照旧不主动扫描；打开「设置 → 编程语言」任一语言页时，若还**没有任何语言的扫描结果**（全空，如首次使用 / 清过设置），自动后台顺序扫一遍**全部语言**并缓存（此前只扫当前打开的语言，其余要逐个点开才扫）。已有任何结果 / 在扫时维持原状：只补当前语言还没扫过的工具，缓存不重扫。
+- **实现**：判定抽成纯函数 `firstFullScanRuns`（`settings-pane-lang.js`，只读读取不建空档）；全语言扫描与各 pane 补扫互斥（工厂级 `fullAutoScanning` 标记 + 循环内复查），`scanLanguageTool` 原有重入守卫兜底并发；旧结构（语言级缓存）经既有迁移语义保留，不会被重扫。
+- **护栏**：新增 `frontend/test/settings/settings-pane-lang.test.mjs`（7 例，已登记 `npm test`）：全空清单顺序、任一结果 / 在扫即否决、缺档视为未扫、旧结构视为未扫、空表与缺 tools 键边界。
+
+### 修复（Python 编辑时 `__name__` 等增强染色闪白）
+
+- **事实（2026-11-22 用户实测）**：dark 模式下写 Python，往 `if __name__ == "__main__":` 的字符串里敲字，每敲一个字符 `__name__` 先变白再变紫，持续闪烁。
+- **根因**：Ace 原生 python 分词器把 `__name__` 这类双下划线预定义名当普通 identifier（白），紫色的 `py-builtin`（以及 kwarg / docstring 增强）是渲染完后对 text layer **事后补染**的（`editor-ace-hooks.js`），补染经 `setTimeout(…, 30)` 去抖。击键让 Ace 整行重建 DOM（补的类随重建丢失→白），30ms 后去抖回调才补回紫色——去抖必然晚于本帧绘制，闪烁由此而来。
+- **修复**：补色时机挪到**本帧绘制前**——去掉 30ms 去抖，`MutationObserver` 回调（微任务，Ace 渲染任务结束后、绘制前同步执行）、`afterRender` 钩子、挂载三处都直接同步跑 `applyPythonTokenClasses`；该 pass 只改 class、不监听 attributes，不会自触发观察回调。顺带修掉滚动新行延迟 30ms 才染色的问题。
+- **护栏**：`editor-ace-hooks.test.mjs` 新增 11 例（已登记 `npm test`）：染色规则（`__name__`→py-builtin、括号内 kwarg、整行 docstring、def/class 跳过、括号外赋值不染、残留类先清、非 python 模式不动）+ 时机契约（挂载即同步染色、行 DOM 重建后观察回调同步补色、afterRender 直接补色）——旧去抖实现在「挂载即染色」断言下直接红。
+
+### 修复（编辑消息重新发送后编辑框不退出）
+
+- **事实（2026-11-22 用户实测）**：消息原地编辑后点「发送」（重新发送），消息发出去了、流式回复都开始了，编辑框还挂在回复上面不退。
+- **根因**：`doSaveInlineEdit` 成功路径按**对象身份**清编辑态（`if (inlineEdit === state) inlineEdit = null`），注释假设「startSessionTurn 已重画消息区、编辑态随之消失」——那是快照恢复机制加入前的旧假设。现在 `renderMessages` 重绘前会把编辑态快照、重绘后在**新消息节点上原样恢复**（防异步重读丢内容的机制），`inlineEdit` 已换成恢复出的新对象，身份比对恒失配，编辑框就被复活在了流式回复上。
+- **修复**：成功路径改按「会话 + 位置」匹配（截断重发后新消息恰好落回原 index），命中即走 `endInlineEdit` 统一收口（摘 `.editing` 类 + 整面重画还原正文——`.ai-edit` 不靠类显隐，只摘类不够）；起轮没触发重画（面板没在看这个会话）时维持按身份直接清。
+- **护栏**：`ai-inline-edit-wiring.test.mjs` 新增「保存成功」用例，锁成功路径必须按会话+位置匹配并经 `endInlineEdit` 收口，禁止退回只按对象身份清。
+
+### 改进（中断横幅「继续回合」按钮改 warn 淡底）
+
+- **事实**（用户反馈：横幅右边的按钮很难看）：`.ai-interrupt-resume` 用 warn 实心块 `#fff` 白字，暗色主题下 warn 是浅金 `#d5b778`，白字压上去对比度极低、发灰糊成一团；也违背本套主题的 warn 用法——warn 系一律是「淡底 / 深橄榄底 + warn 字」（`--banner-*`、`.ai-truncated-box`、`.ai-retry-note` 都是），从未做过实心浅金 + 白字。
+- **修复**：改 warn 淡实底（16%）+ warn 42% 描边 + warn 字，hover 加深到 26%，补 `:focus-visible` 描边；尺寸对齐兄弟按钮（`border-radius: 5px` 与 × 一致、`padding: 3px 10px`、`line-height: 1.5`），显式 `font-family: var(--ui-font)`（button 不继承字体，此前落回 WebView2 系统字体）。颜色全部走 `color-mix` + 变量，深浅主题各自成立。
+- **验证**：`.cadt/tmp/` 下临时页引入真实 `style.css` 按暗/浅主题各渲染一遍核对；`npm run build` 通过。
+
+### 修复（排队消息发出后文本复活回输入框）
+
+- **事实（2026-11-22 用户实测）**：生成中排队一句话，轮末冲刷把它发出去了，文字却又出现在输入框里——看起来像「从队列取回了刚发出的消息」。
+- **根因**：输入草稿槽（内存 Map + localStorage）与「排队 / 冲刷代发」互相不知情。①排队/插话/抢占把输入内容消费掉时不清草稿；②冲刷代发会把消息**瞬态回填**进输入区再起轮（大会话起轮的 whenIdle / 生命周期钩子窗口可达数秒），期间用户切走会话，`switchSession` 的「存上个会话草稿」就把这段瞬态文本沉淀成草稿；③之后切回本会话，`loadComposerDraft` 把草稿复活回输入框。同 id 重复切换（信箱行 / 桥跳转打在当前会话上）还会在**不保存**的情况下直接用旧草稿覆盖输入区，同样能把已发出 / 已排队的文本带回来。
+- **修复**（四处，规则统一为「输入内容被消费或清空时，会话草稿同步作废；同 id 切换保持输入区现场」）：
+  - `captureComposerMessage`（排队 / 插话 / 抢占共用出口）与 `editQueuedMessage`（取回编辑把原输入挪进队列）在清空输入区时调用新注入的 `dropComposerDraft` 作废草稿；
+  - `submitText` 的 `onStarted`（直发 / 冲刷 / 斜杠发送共用的清输入点）同步作废草稿；
+  - `flushThroughComposer` 入口与失败收尾各作废一次（失败回插队列时输入区也清空）；
+  - `switchSession` 引入 `sameSession` 守卫：同 id 重复切换既不保存也不用草稿覆盖输入区（顺带修掉「同 id 切换会打断用户正在敲的内容」的隐性丢失）。
+- **护栏**：新增 `frontend/test/ai/ai-draft-hygiene.test.mjs`（5 例源码守卫，已登记 `npm test`）；`ai-message-queue.test.mjs` 补冲刷草稿作废的行为用例 2 例（成功 / 失败路径，桩 `submitText`）；`ai-empty-session.test.mjs` 的 previous 块断言同步 `sameSession` 形态。全量 `npm test`（2372 过）与 `npm run build` 通过。
+
+### 改进（原生右键菜单收编：输入面编辑菜单全局兜底 + 调试台选区菜单）
+
+- **输入面编辑菜单兜底**（用户报告：两个过滤框右键弹的是 WebView2 原生菜单）：新建共享模块 `shell/edit-menu.js`——撤销 / 重做 / 剪切 / 复制 / 粘贴 / 全选的应用菜单，从 ai-composer 的 composer 专用版泛化（`openEditMenu` / `editableHasSelection` / `execEditable` / `pasteTextIntoEditable`，粘贴只回读系统剪贴板文本插入目标）。`bindEditableContextMenuFallback` 在 main.js 组合根注册**一次**：右键落在没人接管的输入框 / 文本域（文件树与 AI 会话的过滤框、设置页与弹窗里的输入面……）时给应用编辑菜单；**冒泡阶段监听 + `defaultPrevented` 守卫**——域处理器先跑，已开自定义菜单（preventDefault）或已 stopPropagation 的不再兜底，AI 面板 composer 的图片 / 折叠粘贴分支原样保留（经 `options.paste` 覆盖）。
+- **调试控制台选区右键菜单**（用户报告：选区右键也是原生菜单）：`.dbg-body` 挂 contextmenu——复制（选区，无选中灰置）/ 全选 / 复制全部日志 / 清空；工具栏的「复制全部」「清空」抽成 `copyLogsToClipboard` / `clearAll` 与菜单共用。独立调试控制台窗口没有编辑器初始化（全局 `ctxMenu` 不会创建），`startConsoleWindowMode` 给调试台自建一个菜单实例。
+- **护栏**：新增 `frontend/test/shell/edit-menu.test.mjs`（9 用例：菜单结构 / 选区灰置 / 粘贴覆盖与回退链 / 兜底的 defaultPrevented 与非输入面不出手，已登记 `npm test`）；`ai-undo-shortcut.test.mjs` 的菜单结构断言指向新单一来源并钉住 composer 委托。
+
+### 改进（AI 会话列表过滤 + 头部投递图标收进按钮）
+
+- **会话列表过滤**（对齐文件树的漏斗过滤）：AI 会话侧栏头部新增漏斗按钮（`#ai-session-filter-btn`），点开分段下方的过滤行，按**会话标题或会话 ID** 子串过滤（大小写不敏感、150ms 防抖、Esc 收起并清词）。过滤时命中分组一律展开渲染（对齐文件树「命中目录自动展开」）、分页失效、归档区随命中自动展开；命中集为空显示「没有匹配的会话」。判定单一来源是纯函数 `sessionFilterHit`（无标题会话按显示文案「新会话」命中）。
+- **头部投递图标移除**（用户要求）：标题栏右侧的投递纸飞机图标（`#ai-session-tool-send`）删除——投递入口保留在下方动作区的「投递」按钮（`#ai-session-action-send`）。事件绑定与元素引用一并清理。
+- **作用域**：过滤只作用于会话列表——切到「群聊」分段时漏斗按钮与过滤行一起隐藏（分段模式由 `ai-group-sidebar` 的 `applyListMode` 同步到面板根 `data-list-mode`，CSS 据此显隐）。
+- **护栏**：`ai-session-list.test.mjs` 补 `sessionFilterHit` 用例（标题 / ID 命中、大小写、空词全过、「新会话」回退）；过滤输入是带封装 class 的静态控件，`form-controls-factory` 基线不变。全量 `npm test`（2356 过）与 `npm run build` 通过。
+
+### 修复（桌面控制看不到画面：Screenshot 被排除 + 图像结果被丢弃）
+
+- **事实**：上游 windows-mcp 0.8.9 有两个截图能力（读了本机 uv 缓存里的 `windows_mcp/tools/snapshot.py` 确认）：`Screenshot`（纯截图，`display` / `region` / `save_path`，`readOnlyHint=True`）与 `Snapshot(use_vision=True)`（连可交互元素一起给）。两个都能用 `save_path` 把 PNG 写到磁盘。
+- **两处坑**：① `Screenshot` 被排除在 `DESKTOP_TOOLS_WHITELIST` 外（当初理由是「图像结果会被降级」）；② 那个理由是真的——`internal/mcp/mcp_client.go` 把 `image` content 压成 `[image: image/png，base64 N 字符]` 并把图片本身丢弃，模型调 Snapshot(use_vision=True) 也看不到画面。
+- **修复**：
+  - `DESKTOP_TOOLS_WHITELIST` 加回 `Screenshot`（观察类只读工具，无副作用）；服务器行 `notes` 写清怎么看画面（Screenshot / Snapshot(use_vision=True)，可用 display / region 收窄）。
+  - `internal/mcp` 新增 `mcp_image.go`：MCP 工具返回的 image content 一律落地成文件（默认 `%TEMP%\CaDt-DataLens\mcp-images\`，按 mime 定扩展名、时间戳 + 随机串命名），结果文本改为「image 已保存：<绝对路径>（用 read_image 查看这张图）」——模型随即能用 `read_image` 真正看到画面；落地失败或内容为空时退回旧占位并注明「无法查看画面」，不假装成功。`ImageSaver` 保留为可选覆盖点（nil 时用 `DefaultImageSaver`），因此 main 无需注入。
+  - 落点选临时目录而非应用数据目录 / 工作区：前者 AI 一律不可读，后者会污染仓库且 MCP 是应用级（多窗口工作区不同）。
+- **护栏**：新增 `internal/mcp/mcp_image_test.go`（4 态 text 转换 + 默认 saver 真实写盘/空内容报错）；`ai-desktop-control.test.mjs` 白名单断言由「不得含 Screenshot」改为「必须含 Screenshot」。`go test ./internal/mcp ./internal/mcpsamples`、全量 `npm test`、`npm run build` 均通过。
+
+### 修复（桌面控制：键盘被上游钩子吞掉、跑马灯背景）
+
+- **键盘失效（严重，2026-11-22 用户实测）**：AI 接管后物理键盘直接失效，即使 AI 主动 `windows_control_mode(exit)` 也不恢复，必须关掉应用才恢复。根因是 `mcp.json` 里那条 `windows` 行是旧配置、**缺 `--no-control`**——上游 windows-mcp 0.8.x 默认 `--control`，用 `WH_KEYBOARD_LL` / `WH_MOUSE_LL` 低级钩子做「桌面所有权」，AI 操作期间吞掉全部物理键盘输入，且**只在 server 进程退出时释放**；我们的 exit 只清了前端状态，进程与钩子还在。修法两道：
+  - **进入前闸**：`desktopInputGuard()` 读 `MCPGetConfig()` 校验 `args` 必须含 `--no-control`，缺失则拒绝进入控制模式并让用户先去外部工具页点「更新配置」（根治）；
+  - **退出时兜底**：`releaseDesktopControl()` = 清控制模式状态 + `MCPRestartServer('windows')`——重启进程是让键盘立刻恢复的唯一手段，用户不必再关整个应用。会话删除路径同样释放。
+- **跑马灯形态（用户两轮校正后定稿）**：**悬浮胶囊**——绝对定位挂在 `#ai-head` 下沿正中（`top:100%`，随标题栏高度自适应，不写死偏移），有底色 / 红色描边 / 圆角 999px / 双层实阴影，浮在消息区之上；`#ai-panel.desktop-active` 给消息区让出 30px 顶部空间，避免遮住第一条消息。**不要**那道红色扫光（`::after` + `ai-marquee-sweep` 已删），也**不要**流内一行（那样会变成横幅，2026-11-22 第二轮实测被用户否掉）。
+- **护栏**：`external-tools-page.test.mjs` 新增一例——跑马灯必须 `background:none` 且无 `::after` / `ai-marquee-sweep`；`desktopInputGuard` / `releaseDesktopControl` / `MCPRestartServer` / `await desktopInputGuard()` 四处接线必须都在。14/14 通过，全量 `npm test` 与 `npm run build` 通过。
+- **仍需用户操作**：`--no-control` 只能由用户点「更新配置」写入（带 env 的 MCP 服务器 AI 不可修改）；在写入之前，新加的闸会让 `windows_control_mode(enter)` 直接返回「请先更新配置」，不会再吞键盘。
+
+### 修复（默认会话看不到桌面入口，模型改用 PowerShell SendKeys 绕过）
+
+- **成因（2026-11-22 用户实测）**：`windows_control_mode` 的下发条件是「会话已启用桌面控制」。新会话默认 **关**（用户要求），于是工具表里一个桌面工具都没有——但模型仍能从 `<mcp_server_notes>` 知道这台机器装了 windows MCP，于是它判定「工具没挂上」并自行降级成 `run_command` + PowerShell `SendKeys` / user32 模拟键鼠。这是最坏组合：**既没走受控通道，也没有「AI 正在控制你的电脑」提示与授权卡**。
+- **修复**：入口下发条件从「会话已启用」放宽为「桌面 server 已安装」（`desktopInstalledOn`，新钩子）——装了就给 `windows_control_mode`；白名单桌面工具（`mcp__windows__*`）仍只在「已启用 + 已进入控制模式」时注入。`enter` 在未启用时改为**明确指路**：调用 `app_control` 的 `request_desktop_control`（用户看到危险审批卡），并明说不要改用 PowerShell / Add-Type / SendKeys 绕过。
+- **提示词同步**：`workspace_rules` 新增一条（写权限档非计划模式）——操作其他应用走桌面控制，未启用就申请，禁止用 `run_command` 跑 PowerShell / SendKeys / user32 模拟键鼠（属规避授权）；`tool_catalog` 的 desktop 组 note 与工具描述同步。
+- **护栏**：`ai-tool-wiring` 新增一例四态守卫（未安装 = 无入口 / 已安装未启用 = 有入口无工具 / 已启用未进控制模式 = 同上 / 进入控制模式 = 全量下发；计划模式一律无）；`ai-system-context` / `ai-tool-defs` 全绿；全量 `npm test` 通过、`npm run build` 通过。
+
+### 修复（桌面控制：审批通过仍报未启用、跑马灯位置、上游接管弹窗）
+
+- **成因①（会话字段丢失）**：`desktopEnabled` 没进会话持久化的字段白名单——`ai-session-store.js` 的 `buildSessionMeta` 只挑登记过的字段，`ai-panel.js` 的会话归一（`raw → session`）同样没读它。结果：开关点亮、标题胶囊也亮，但落盘/重读后字段消失，`windows_control_mode` 判定「尚未启用」。修：两处各补一行（`desktopEnabled: raw.desktopEnabled === true` / `(session.desktopEnabled) === true`）；另把开启路径改为写「内存里的真身」（`sessionById(id)` 优先）——工具执行的 `ctx.session` 可能是本轮开始时的对象副本，直接改它不会让按 id 重查的判定看到。
+- **成因②（跑马灯漂在消息区中间）**：`#ai-desktop-marquee` 原本绝对定位（`top:10px / left:50%`），一旦定位父级不是 `#ai-panel` 就会漂到面板中部并压住消息文字。修：改为**流内一行**（`flex:none; align-self:center; margin:6px auto 0`），插在标题栏之后、消息区之前——位置由布局保证，不再依赖定位上下文，也不会遮挡消息；胶囊外观（红边 / 脉冲点 / 高光扫过）保留。
+- **成因③（仍弹上游接管确认窗）**：`mcp.json` 里 `windows` 行的 `args` 是旧版本写入的，缺 `--no-control`（上游 `--control` 会弹「AI is about to take control of this computer」并吞系统组合键）。修：新增 `desktopConfigNeedsUpgrade(row)` 纯函数（args 缺 `--no-control` / 勾选与白名单不一致 / notes 仍是旧流程文案 / command 被改），桌面卡片在命中时显示「更新配置」按钮；安装改为 **upsert**（`Object.assign({}, 旧行, 新预置)`，只覆盖我们管理的字段，保留用户其他自定义），不再「已存在就拒绝」。用户自写的 notes 不动（只认明确的旧关键词）。
+- **验证**：`ai-desktop-control.test.mjs` 9/9（新增 `desktopConfigNeedsUpgrade` 6 组断言）、`ai-session-store.test.mjs`、`external-tools-page.test.mjs` 全通过；全量 `npm test` 退出码 0；`npm run build` 通过。
+- **注意（升级路径）**：带 env 的 MCP 服务器 AI 不可修改（安全边界），所以已有 `windows` 行只能由用户在 应用页面 → 外部工具 → 桌面控制 点「更新配置」修复；`desktopEnabled` 是新增字段，修复前的老会话需要重新点亮一次开关（或新建会话）。
+
+### 改进（超限会话在列表上可定位）
+
+- 会话列表给**正文超过读取上限**的会话挂 warn 色「超限」胶囊（悬停说明原因；三类判定：打开时自动整理失败 / live 段自身超限 / 已载入会话的 stat 体积越上限；懒加载占位不判定，打开后即暴露）。同批启动失败的「部分会话读取失败」通知改为**点名会话**（最多列 3 个），与胶囊对号（纯函数 `sessionOverLimitOf` + `ai-session-list.test.mjs` 用例，已登记 `npm test`；上限常量 `AI_SESSION_READ_LIMIT` 与 Go `aiSessionReadLimit` 镜像）。
+
+### 改进（会话数据诊断的字节数人可读）
+
+- 「会话数据诊断」的「正文」与「搜索索引」体积在原数值后追加人可读标注：`9616029 字节（9.2 MB）` / `40056 KB（39.1 MB）`（新纯函数 `aiFormatBytes`，B/KB/MB/GB/TB、1024 进制、≥100 档取整；护栏：`ai-constants.test.mjs` 用例，已登记 `npm test`）。
+
 ### 新增（AI 临时会话：一次性对话，只读 / 不绑工作区 / 不注入工作区知识 / 关掉就没了）
 
 - **入口**：AI 会话侧栏的「新建会话」改成**分体按钮**——主体仍是原来的新建会话（绑定当前工作区），右侧新增「⋯」按钮，点开是新建方式的菜单，目前提供**新建临时会话**（`#ai-session-action-new-more` → `showNewSessionMenu`，菜单走全局 `showContextMenu` / 弹层栈，Esc 归栈管）。
@@ -25,13 +117,14 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 
 ### 新增（内置数据库连接与浏览工具：SQLite 本地库 / MySQL 连接 / 受控写入，P0–P2 一次落地）
 
-- **入口（一切皆标签，作者纠正后返工）**：活动栏新增「数据库」图标 → 侧栏面板列出**本工作区添加的数据库**（`settings.dbWorkspaceDatabases`，条目带 workspace 字段按工作区生效；按 SQLite / MySQL 分组可折叠）。顶部按钮添加（SQLite 选文件 / MySQL 打开**对齐 JetBrains「数据源和驱动程序」的统一管理对话框**：左列表 +/−、右表单名称自动建议 `user@host:port`、主机端口并排、URL 预览、「加入当前工作区」开关，底部 测试连接 / 应用 / 确定）；**双击在内容区开「数据库」标签页**（视图型虚拟标签 `dbView`，一个标签 = 一个库会话，关标签即断开）；右键或行尾 `[...]` 菜单：打开 / 允许编辑（SQLite）/ 测试 / 编辑（打开连接管理并定位该连接）/ 删除连接（全局）/ 从工作区移除。标签页内仍为「对象树 | 表网格（面板内子标签）| SQL 控制台」三栏。总开关 `settings.dbToolsEnabled` 默认关，启用门在面板内。方案与实施记录（含入口重构 §11.6）见 `docs/unfinished-plans/db-connection-tools.md`（§11）。
+- **入口（一切皆标签，作者纠正后返工）**：活动栏新增「数据库」图标 → 侧栏面板列出**本工作区添加的数据库**（`settings.dbWorkspaceDatabases`，条目带 workspace 字段按工作区生效；按 SQLite / MySQL / MariaDB / 插件驱动分组可折叠）。顶部单一「**新建连接**」按钮 + 弹出菜单选类型（SQLite 库文件 / MySQL·MariaDB 连接 / 插件驱动）；MySQL 打开**对齐 JetBrains「数据源和驱动程序」的统一管理对话框**：左列表 +/−、右表单名称自动建议 `user@host:port`、主机端口并排、URL 预览、「加入当前工作区」开关，底部 测试连接 / 应用 / 确定）；**双击在内容区开「数据库」标签页**（视图型虚拟标签 `dbView`，一个标签 = 一个库会话，关标签即断开）；右键或行尾 `[...]` 菜单：打开 / 允许编辑（SQLite）/ 测试 / 编辑（打开连接管理并定位该连接）/ 删除连接（全局）/ 从工作区移除。标签页内仍为「对象树 | 表网格（面板内子标签）| SQL 控制台」三栏。总开关 `settings.dbToolsEnabled` 默认关，启用门在面板内。方案与实施记录（含入口重构 §11.6）见 `docs/unfinished-plans/db-connection-tools.md`（§11）。
 - **能力**：打开本地 SQLite 库文件（对象树两级按需加载）；MySQL 连接管理（新建/编辑/测试/删除、密码 DPAPI 加密单独落盘、复合凭据键）；表数据网格（虚拟滚动、列头排序、结构化筛选、分页 500 行/上限 5000，排序筛选分页全下推为参数化 SQL）；SQL 控制台（多语句逐条分类、Ctrl+Enter、执行中可取消 `DBCancel`）；受控写入（连接级「允许编辑」开关 + dirty model → 提交预览（内联展示值 SQL）→ 单事务提交 → 乐观并发冲突整体回滚 → noCache 刷新；无主键表/视图一律只读，主键列不可编辑）。
 - **安全**（P0 即埋，非事后补）：默认只读双保险——SQLite `mode=ro`（WAL 无读权限自动 immutable 兜底并显式标记）、MySQL `SET SESSION TRANSACTION READ ONLY` + 池限 1；查询路径逐条分类，任一条非只读整批拒——**数据变更 CTE（`WITH x AS (DELETE … RETURNING …)`）逐体检查**、未知语句 fail-closed 按写拒、PRAGMA 赋值判写、MySQL `INTO OUTFILE/CALL/GRANT/LOAD` 归危险；危险语句与缺 WHERE（含 WHERE TRUE / 1）走两阶段确认（guard 返回 confirm、前端确认后重发）；DDL 未开放；连接目标拒绝链路本地地址（IMDS 169.254.169.254）；写留痕 `db.exec` / `db.apply` 不含参数值与密码。
 - **实现**：Go 引擎 `internal/dbclient/`（driver/guard/sqlite/mysql/session/query/edit/config 九文件，纯引擎 + 根壳 `dbclient_app.go` 薄绑定）；前端新域 `frontend/src/db/`（factory+deps）；SQLite 复用已在库的 `modernc.org/sqlite`（增量 0），MySQL 用 `go-sql-driver/mysql`（纯 Go ~0.6 MB，作者已批准 2026-11-22，全功能最坏 +1.5 MB 预算内）。
 - **MariaDB 支持**：与 MySQL 协议兼容、同一引擎——连接管理对话框加「驱动」选择（MySQL / MariaDB），侧栏按所选分组显示；零新依赖。
 - **插件驱动扩展点（其他数据库交给插件）**：`cadt.registerDbDriver({id, label, fields, connect})`——侧栏 [+ 插件驱动] 按声明的 fields 动态出连接表单（`type:'password'` 字段经 DPAPI 加密走 `DBCredentialPut/Get` 凭据库，绝不进清单与跨窗同步），内容区「数据库」标签页复用对象树/网格/控制台（会话门面与内置绑定同形，`db-plugin.js`）；kind 串 `plugin:<插件id>:<驱动id>`，插件禁用后打开引用条目明确报错。会话契约、上限（单插件 5 / 全局 20）与限制（HTTP 型直连、sidecar 走 registerService、裸 TCP 需下沉核心）见 `docs/plugins/README.md`「注册数据库驱动」；完整示例 `plugins/db-clickhouse-http/`（真实 ClickHouse HTTP 接口，零依赖）。护栏：`test/shell/plugin-db-drivers.test.mjs` 登记 `npm test`。
 - 护栏：`internal/dbclient` 表驱动测试（分类/拆分/批量口径 + 真实 SQLite 端到端：只读拦截含 CTE bypass、下推浏览、截断判定、冲突回滚、会话上限回收、取消）；`frontend/test/db/db-model.test.mjs` 登记 `npm test`；接线守卫 `virtual-doc-wiring.test.mjs` 的 tabUnmount owners 清单纳入 `bridge-database-view.js`。全量验证：`go test ./...` 62 包、`npm test` 2324 例、`npm run build`、`tools/check-crossbuild.cmd` 三平台，全部通过。
+- **AI 代配（app_control）**：新增 `db_list_connections / db_save_connection / db_delete_connection / db_test_connection` 四动作——AI 可代用户新建、更新、删除数据库连接并测试连通性（保存/删除**必弹动作审批卡**；密码经 DPAPI 加密落盘、不进对话回显；工作区引用走与侧栏同一套清单语义，纯函数层 `db-registry.js` 共用）。技能表、APP_ACTIONS、runAppAction 三处对齐（守卫 `ai-app-actions.test.mjs`）。
 - 已知边界：Redis 不在本期（P3 按方案单独立项）；SSH 隧道、ERD、跨库迁移不做（§9）；行定位只认主键（唯一索引不做）；DDL 恒拒；密码仅在打开连接对话框内输入、不回显不进日志。
 
 ### 修复（重启遗留的卡片，模型把「等待用户回答…」当成已有结果）

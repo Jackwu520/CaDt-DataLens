@@ -8,6 +8,7 @@ import {installTooltip, setTooltipActionHandler} from './core/tooltip.js';
 import {createExplorer} from './explorer/explorer.js';
 import {createStructurePanel, parseStructure} from './editor/structure.js';
 import {createContextMenu, inSubmenuCone, pointInRect, SUBMENU_CONE_CLOSE_DELAY_MS} from './shell/contextmenu.js';
+import {bindEditableContextMenuFallback} from './shell/edit-menu.js';
 import {copyImageBlobToClipboard} from './core/image-clipboard.js';
 import {prepareImagePayload} from './ai/ai-image-encode.js';
 import {normalizeTermText} from './ai/ai-terminal-tools.js';
@@ -21,6 +22,7 @@ import {createDebugConsole} from './terminal/debugconsole.js';
 import {createActivityLog} from './core/activity-log.js';
 import {createDbUi} from './db/db-ui.js';
 import {createDbTabView} from './db/db-tab.js';
+import {createDbAppActions} from './db/db-app-actions.js';
 import {iconSvg, renderMenuIcon} from './core/icons.js';
 import {createPalette} from './shell/palette.js';
 import {createAIPanel} from './ai/ai-panel.js';
@@ -216,6 +218,8 @@ const terminalWindowMode = (async () => {
 const debugConsole = createDebugConsole({
     // 停靠到底部面板容器（与终端共用），显示/隐藏由底部面板控制
     mount: document.getElementById('debug-view'),
+    // 日志区右键菜单（复制 / 全选 / 复制全部 / 清空）：走全局菜单实例（惰性）
+    showContextMenu: openCtxMenu,
     // 面板关闭按钮：收起底部面板
     onClose: () => {
         try { toggleTerminalPanel(false); } catch (e) {}
@@ -270,8 +274,11 @@ function startConsoleWindowMode() {
     document.documentElement.classList.remove('app-booting');
     document.body.classList.add('console-only');
     document.title = '调试控制台 · CaDt-DataLens';
+    // 独立控制台窗口没有编辑器初始化，全局 ctxMenu 不会创建：给调试台自建一个菜单实例
+    const consoleMenu = createContextMenu();
     const dc = createDebugConsole({
         detached: true,
+        showContextMenu: (items, x, y) => consoleMenu.open(items, x, y),
         remote: (offset) => backend.DebugConsoleRead(offset),
         onExport: async (name, text) => {
             try {
@@ -875,6 +882,15 @@ let workspaceFolder = null;
 let watchedWorkspaceRoot = '';
 let fileClipboard = null;
 let ctxMenu = null;
+// 主窗口全局菜单的惰性入口：ctxMenu 由 editor-menus 稍后创建（set ctxMenu 回填），
+// 创建前的调用方（调试台 / 输入菜单兜底）先注册、右键时才真正 open。
+function openCtxMenu(items, x, y, options) {
+    if (ctxMenu) ctxMenu.open(items, x, y, options);
+}
+// 输入面的右键编辑菜单兜底（shell/edit-menu.js，注册一次）：右键落在没人接管的
+// 输入框 / 文本域（文件树与 AI 会话的过滤框、设置页与弹窗里的输入面……）时给
+// 应用编辑菜单，不再露出 WebView2 原生菜单。
+bindEditableContextMenuFallback(openCtxMenu, {get backend() { return backend; }});
 let palette = null;
 let aiPanel = null;
 // AI 群聊域（ai-group-*）：运行时 + 侧栏 + 面板群聊视图 + 成员详情视图；在 initAIPanel 内创建
@@ -930,6 +946,7 @@ const APP_ACTIONS = [
     'get_activity', 'get_patch', 'patch_set_root', 'patch_repreview',
     'get_gen_models', 'set_gen_model', 'delete_gen_model',
     'get_lifecycle_hooks', 'add_lifecycle_hook', 'update_lifecycle_hook', 'remove_lifecycle_hook',
+    'db_list_connections', 'db_save_connection', 'db_delete_connection', 'db_test_connection',
     // 旧名（pre-command 时代）：保留为静默别名——技能表不再下发，历史会话 / 记忆里的调用仍能命中
     'get_pre_commands', 'add_pre_command', 'update_pre_command', 'remove_pre_command',
     'get_agents', 'create_agent', 'create_group', 'get_groups', 'send_group_message',
@@ -1962,6 +1979,13 @@ async function runAppAction(action, params, scope, callerSessionId, requestActio
         case 'update_pre_command':
         case 'remove_pre_command': {
             return await lifecycleHooksCtl.handleAppAction(action, p, requestActionApproval);
+        }
+        // —— 数据库连接（AI 代配：清单只读；保存/删除必弹审批卡；密码 DPAPI 落库后不回传）——
+        case 'db_list_connections':
+        case 'db_save_connection':
+        case 'db_delete_connection':
+        case 'db_test_connection': {
+            return await dbAppActions(action, p, requestActionApproval);
         }
         // —— 插件安装 / 卸载（第三方代码，按权限档与来源走审批；卸载永久删除恒审批）——
         case 'install_plugin': {
@@ -7334,6 +7358,7 @@ const bridgeUI = createBridgeUI({
             get flash() { return flash; },
             get settings() { return settings; },
             get logActivity() { return activityLog.log; },
+            get enhanceSelect() { return settingsUI.enhanceSelect; },
         }, doc);
     },
     // 应用页面标签页里的原生 select 用设置页同款浮层增强，去掉浏览器原生外观
@@ -7433,9 +7458,20 @@ const dbUi = createDbUi({
     get logActivity() { return activityLog.log; },
     get workspaceFolder() { return workspaceFolder; },
     get ctxMenu() { return ctxMenu; },
+    get openConfirmDialog() { return openConfirmDialog; },
+    get enhanceSelect() { return settingsUI.enhanceSelect; },
     get openDatabaseTab() { return openDatabaseTab; },
 });
 dbSidebarRenderHook = () => dbUi.renderSidebar();
+
+// app_control 数据库动作（db_list/save/delete/test_connection）：AI 代配数据库连接，
+// 审批卡与工作区清单语义见 db-app-actions.js（密码 DPAPI 落库后不回传对话）
+const dbAppActions = createDbAppActions({
+    get backend() { return backend; },
+    get settings() { return settings; },
+    get persistSettingsLight() { return persistSettingsLight; },
+    get workspaceFolder() { return workspaceFolder; },
+});
 
 // 绑定便签真钩子（顶部早期 let 间接层的落点）：启动期事件先到也只摸到 null，不摸未初始化的 const
 memoFocusHook = () => { if (memoOnWindowFocus) memoOnWindowFocus(); };

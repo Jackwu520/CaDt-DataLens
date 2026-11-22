@@ -2819,7 +2819,10 @@ aside[data-sidebar-view="chats"] > #sb-body,
 aside[data-sidebar-view="chats"] > #sb-filter-row,
 aside[data-sidebar-view="app-pages"] > .sb-head,
 aside[data-sidebar-view="app-pages"] > #sb-body,
-aside[data-sidebar-view="app-pages"] > #sb-filter-row { display: none; }
+aside[data-sidebar-view="app-pages"] > #sb-filter-row,
+aside[data-sidebar-view="database"] > .sb-head,
+aside[data-sidebar-view="database"] > #sb-body,
+aside[data-sidebar-view="database"] > #sb-filter-row { display: none; }
 
 /* 状态栏字数统计 */
 .st-count {
@@ -2864,6 +2867,12 @@ aside[data-sidebar-view="app-pages"] > #sb-filter-row { display: none; }
 .sb-filter-input:focus { border-color: var(--accent); }
 .sb-filter-row.hidden { display: none; }
 
+/* AI 会话过滤（#ai-session-filter-*）：漏斗按钮 + 过滤行与文件树同款。
+   切到「群聊」分段时过滤不作用于群聊列表——按钮与行一起隐藏
+   （分段模式由 ai-group-sidebar 同步到面板根的 data-list-mode）。 */
+#ai-sessions-panel[data-list-mode="groups"] #ai-session-filter-btn,
+#ai-sessions-panel[data-list-mode="groups"] #ai-session-filter-row { display: none; }
+
 aside[data-sidebar-view="files"] #git-panel,
 aside[data-sidebar-view="files"] #structure-panel,
 aside[data-sidebar-view="git"] #structure-panel,
@@ -2872,7 +2881,10 @@ aside[data-sidebar-view="chats"] #git-panel,
 aside[data-sidebar-view="chats"] #structure-panel,
 aside[data-sidebar-view="app-pages"] #git-panel,
 aside[data-sidebar-view="app-pages"] #structure-panel,
-aside[data-sidebar-view="app-pages"] #ai-sessions-panel { display: none; }
+aside[data-sidebar-view="app-pages"] #ai-sessions-panel,
+aside[data-sidebar-view="database"] #git-panel,
+aside[data-sidebar-view="database"] #structure-panel,
+aside[data-sidebar-view="database"] #ai-sessions-panel { display: none; }
 aside[data-sidebar-view="git"] #git-panel { display: flex; flex: 1; min-height: 0; flex-direction: column; padding: 6px 10px 8px; gap: 6px; overflow: hidden; }
 aside[data-sidebar-view="structure"] #structure-panel { display: flex; flex: 1; min-height: 0; flex-direction: column; overflow: hidden; }
 aside[data-sidebar-view="files"] #ai-sessions-panel,
@@ -3044,6 +3056,8 @@ aside[data-sidebar-view="app-pages"] #app-pages-panel { display: flex; flex: 1; 
 .ai-session-pin { flex: none; display: grid; place-items: center; color: var(--accent); }
 /* 临时会话：一次性会话（默认只读、不绑工作区、不注入工作区与记忆，关闭应用后不再出现在列表） */
 .ai-session-badge.temp { color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
+/* 超限会话：正文越过读取上限（打开自动整理；live 主导出「临时加载」卡片） */
+.ai-session-badge.over-limit { color: var(--warn); background: color-mix(in srgb, var(--warn) 14%, transparent); }
 .ai-session-pin-head {
     display: flex;
     align-items: center;
@@ -6075,6 +6089,8 @@ body.console-only .dbg-head select { --wails-draggable: no-drag; }
     background: var(--panel);
     user-select: none;
     cursor: default;
+    /* 桌面控制跑马灯的定位锚：它挂在标题栏下沿正中悬浮（见 .ai-marquee） */
+    position: relative;
 }
 #ai-panel.ai-float .ai-head { cursor: move; }
 .ai-head-row { display: flex; align-items: center; gap: 3px; min-width: 0; }
@@ -6640,18 +6656,27 @@ body.console-only .dbg-head select { --wails-draggable: no-drag; }
 .ai-interrupt-bar .ai-interrupt-icon { display: grid; place-items: center; color: var(--warn, #e8912d); flex: none; }
 .ai-interrupt-bar .ai-interrupt-icon svg { width: 13px; height: 13px; display: block; }
 .ai-interrupt-bar .ai-interrupt-text { flex: 1; min-width: 0; font-size: 12px; color: var(--text); }
+/* 主操作按钮走 warn 淡底 + warn 字，与截断条的「继续」(.ai-truncated-continue)、
+   横幅自身的淡底同族。此前是 warn 实心 + 白字：#fff 压在浅金地上对比度极低，
+   暗色主题下发灰糊成一团——warn 系在本套主题里从来不做深字实心块。 */
 .ai-interrupt-bar .ai-interrupt-resume {
     flex: none;
-    padding: 2px 10px;
-    border-radius: 6px;
-    border: none;
+    padding: 3px 10px;
+    border-radius: 5px;
+    border: 1px solid color-mix(in srgb, var(--warn, #e8912d) 42%, transparent);
     cursor: pointer;
+    font-family: var(--ui-font);
     font-size: 12px;
     font-weight: 600;
-    color: #fff;
-    background: var(--warn, #e8912d);
+    line-height: 1.5;
+    color: var(--warn, #e8912d);
+    background: color-mix(in srgb, var(--warn, #e8912d) 16%, transparent);
 }
-.ai-interrupt-bar .ai-interrupt-resume:hover { filter: brightness(1.08); }
+.ai-interrupt-bar .ai-interrupt-resume:hover { background: color-mix(in srgb, var(--warn, #e8912d) 26%, transparent); }
+.ai-interrupt-bar .ai-interrupt-resume:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--warn, #e8912d) 55%, transparent);
+    outline-offset: 1px;
+}
 .ai-interrupt-bar .ai-interrupt-dismiss {
     flex: none;
     display: grid;
@@ -7211,15 +7236,18 @@ body.console-only .dbg-head select { --wails-draggable: no-drag; }
 .ai-chip.ai-chip-desktop .ai-chip-label { font-weight: 600; }
 
 .ai-marquee {
+    /* 悬浮胶囊：挂在标题栏下沿正中（#ai-head 是它的定位锚），脱离文档流浮在消息区之上，
+       不推挤布局。上一版改成流内一行变成了「横幅」，用户要的是这个悬浮框。 */
     position: absolute;
-    top: 10px;
+    top: 100%;
     left: 50%;
     transform: translateX(-50%);
-    z-index: 15;
+    margin-top: 6px;
+    z-index: 16;
     display: inline-flex;
     align-items: center;
     gap: 7px;
-    max-width: min(92%, 420px);
+    max-width: min(92%, 460px);
     padding: 4px 13px;
     border: 1px solid color-mix(in srgb, var(--red) 52%, var(--border));
     border-radius: 999px;
@@ -7229,8 +7257,11 @@ body.console-only .dbg-head select { --wails-draggable: no-drag; }
     line-height: 1.5;
     cursor: pointer;
     overflow: hidden;
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.18), 0 4px 14px color-mix(in srgb, var(--red) 22%, transparent);
+    /* 双层实阴影：悬浮框必须真的「浮」在文字之上，单层浅阴影在深色主题里看不出来 */
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.24), 0 4px 14px rgba(0, 0, 0, 0.32);
 }
+/* 悬浮时压住消息区上沿：给消息区让出高度，避免遮住第一条消息的头一行 */
+#ai-panel.desktop-active .ai-messages { padding-top: 30px; }
 .ai-marquee.hidden { display: none; }
 .ai-marquee-dot {
     flex: none;
@@ -7245,20 +7276,9 @@ body.console-only .dbg-head select { --wails-draggable: no-drag; }
     overflow: hidden;
     text-overflow: ellipsis;
 }
-/* 跑马灯：一道红色高光从左扫到右，表达「正在持续动作」而不是普通静态提示 */
-.ai-marquee::after {
-    content: '';
-    position: absolute;
-    inset: 0;
-    pointer-events: none;
-    background: linear-gradient(100deg, transparent 25%, color-mix(in srgb, var(--red) 26%, transparent) 50%, transparent 75%);
-    transform: translateX(-100%);
-    animation: ai-marquee-sweep 2.4s linear infinite;
-}
 @keyframes ai-marquee-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
-@keyframes ai-marquee-sweep { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
 @media (prefers-reduced-motion: reduce) {
-    .ai-marquee-dot, .ai-marquee::after { animation: none; }
+    .ai-marquee-dot { animation: none; }
 }
 
 .ai-scroll-btn {
@@ -15148,7 +15168,7 @@ body.preview-only #enc-popover { display: none !important; }
 .db-btn:disabled { opacity: 0.55; cursor: default; }
 .db-btn.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 .db-btn.danger { background: var(--accent-weak); border-color: var(--accent); color: var(--text); }
-.db-btn kbd { font-size: 10px; color: inherit; opacity: 0.75; border: 1px solid currentColor; border-radius: 3px; padding: 0 3px; }
+.db-btn.active { background: var(--accent-weak); border-color: var(--accent); color: var(--accent); }
 .db-tree { flex: 1; overflow: auto; padding: 6px 4px; }
 .db-tree-row { display: flex; align-items: center; gap: 5px; padding: 3px 8px; border-radius: 5px; cursor: pointer;
     font-size: 12.5px; color: var(--text); min-width: 0; }
@@ -15187,6 +15207,7 @@ body.preview-only #enc-popover { display: none !important; }
 .db-tabhost { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .db-center-empty { margin: auto; color: var(--muted); font-size: 12.5px; }
 .db-right { width: 400px; min-width: 320px; border-left: 1px solid var(--border); display: flex; flex-direction: column; background: var(--panel); }
+.db-right[hidden] { display: none; } /* hidden 属性会被上面的 display:flex 覆盖，显式收口 */
 .db-query { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 8px; gap: 6px; }
 .db-query-toolbar { display: flex; align-items: center; gap: 6px; }
 .db-limit-select { width: 96px !important; font-size: 12px; }
@@ -15216,7 +15237,7 @@ body.preview-only #enc-popover { display: none !important; }
 .db-table-status { padding: 4px 10px; font-size: 11.5px; color: var(--muted); border-top: 1px solid var(--border); }
 .db-grid { flex: 1; min-width: 0; display: flex; flex-direction: column; font-size: 12px; }
 .db-grid-head { overflow: hidden; border-bottom: 1px solid var(--border); background: var(--panel); flex: 0 0 auto; }
-.db-grid-head-inner, .db-grid-row { display: grid; gap: 0; }
+.db-grid-head-inner, .db-grid-row { display: grid; gap: 0; grid-template-columns: var(--db-grid-cols, 44px); }
 .db-grid-hcell { padding: 4px 8px; color: var(--muted); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     border-right: 1px solid var(--border); user-select: none; }
 .db-grid-hcell.sort-asc::after { content: ' ▲'; }
@@ -15309,3 +15330,16 @@ aside[data-sidebar-view="database"] #database-panel { display: flex; flex: 1; mi
     background: var(--bg); border: 1px solid var(--border); border-radius: 5px; padding: 6px 8px; word-break: break-all; }
 .db-ds-driver { color: var(--muted); font-size: 11.5px; margin-right: auto; }
 .db-ds-foot { justify-content: flex-start; }
+
+/* 对话框内联消息条（测试/保存成败不再只进底部工具栏） */
+.db-ds-msg { display: none; padding: 7px 10px; border-radius: 6px; font-size: 12px; line-height: 1.6;
+    border: 1px solid var(--border); color: var(--text); word-break: break-all; }
+.db-ds-msg:not(:empty) { display: block; }
+.db-ds-msg.error { color: #ff8a80; border-color: #e5534b; background: rgba(229, 83, 75, 0.10); }
+.db-ds-msg.ok { color: #7ee787; border-color: #3fb950; background: rgba(63, 185, 80, 0.10); }
+
+/* 连接管理对话框：空清单不塌高 + 右列引导态 */
+.db-ds-dialog { min-height: 440px; }
+.db-ds-body { min-height: 360px; }
+.db-ds-right-empty { margin: auto; color: var(--muted); font-size: 12.5px; text-align: center; padding: 24px; }
+.db-ds-right-empty[hidden] { display: none; }

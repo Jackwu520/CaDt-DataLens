@@ -100,13 +100,63 @@ test('工具定义与目录一一对应（新增/删除都要两边同步）', (
     }
 });
 
+test('桌面控制：装了就给入口，未启用不给桌面工具；启用 + 控制模式才全量下发', () => {
+    const base = {appControlOn: () => true};
+    // 未安装：连入口都不下发（避免模型对不存在的能力反复尝试）
+    const notInstalled = createAIToolDefs(Object.assign({}, base, {
+        desktopInstalledOn: () => false,
+        desktopEnabledOn: () => true,
+        desktopDefsForSession: () => [{name: 'mcp__windows__Snapshot', description: 'x', parameters: {}}],
+    }));
+    const noneNames = notInstalled.toolsForScope('full', false, {id: 's'}).map((t) => t.name);
+    assert.ok(!noneNames.includes('windows_control_mode'), '未安装时不应下发入口');
+
+    // 已安装 + 会话未启用：**入口下发**（2026-11-22 实测：不下发时模型改用 PowerShell SendKeys 绕过），
+    // 但一个桌面工具都不给
+    const disabled = createAIToolDefs(Object.assign({}, base, {
+        desktopInstalledOn: () => true,
+        desktopEnabledOn: () => false,
+        desktopDefsForSession: () => [{name: 'mcp__windows__Snapshot', description: 'x', parameters: {}}],
+    }));
+    const disabledNames = disabled.toolsForScope('full', false, {id: 's'}).map((t) => t.name);
+    assert.ok(disabledNames.includes('windows_control_mode'), '已安装时入口应在（会话未启用也要有，供模型申请）');
+    assert.ok(!disabledNames.includes('mcp__windows__Snapshot'), '会话未启用时不得下发桌面工具');
+
+    // 已启用但未进入控制模式：入口在，桌面工具仍不在（控制模式是动手前的显式闸）
+    const enabled = createAIToolDefs(Object.assign({}, base, {
+        desktopInstalledOn: () => true,
+        desktopEnabledOn: () => true,
+        desktopDefsForSession: () => [],
+    }));
+    const enabledNames = enabled.toolsForScope('full', false, {id: 's'}).map((t) => t.name);
+    assert.ok(enabledNames.includes('windows_control_mode'));
+    assert.ok(!enabledNames.includes('mcp__windows__Snapshot'));
+
+    // 进入控制模式：白名单工具全量下发
+    const active = createAIToolDefs(Object.assign({}, base, {
+        desktopInstalledOn: () => true,
+        desktopEnabledOn: () => true,
+        desktopDefsForSession: () => [
+            {name: 'mcp__windows__Snapshot', description: 'x', parameters: {}},
+            {name: 'mcp__windows__Click', description: 'y', parameters: {}},
+        ],
+    }));
+    const activeNames = active.toolsForScope('full', false, {id: 's'}).map((t) => t.name);
+    assert.ok(activeNames.includes('mcp__windows__Snapshot') && activeNames.includes('mcp__windows__Click'));
+
+    // 计划模式一律不给（桌面是执行阶段的能力）
+    assert.ok(!active.toolsForScope('full', true, {id: 's'}).some((t) => t.name === 'windows_control_mode'));
+});
+
 test('每个工具至少在一个权限档下发（四档 × 计划模式取并集）', () => {
     const api = createAIToolDefs({
         appControlOn: () => true,
         externalToolsOn: () => true,
         genModelsOn: () => true,
-        // 桌面控制（Computer Use）：启用是会话态（session.desktopEnabled），下发在写权限档 × 已启用；
-        // 控制模式只影响「哪几个 mcp__windows__* 一起下发」，不影响 windows_control_mode 本身是否可达
+        // 桌面控制（Computer Use）：入口 windows_control_mode 只要桌面 server 已安装就下发
+        // （与会话启用无关——不下发时模型会改用 PowerShell SendKeys 绕过）；
+        // 白名单桌面工具仍只在「已启用 + 控制模式」时注入
+        desktopInstalledOn: () => true,
         desktopEnabledOn: () => true,
     });
     const delivered = new Set();
