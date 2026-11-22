@@ -4,6 +4,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -252,6 +253,25 @@ type CallResult struct {
 	IsError bool   `json:"isError"`
 }
 
+// ImageSaver 由宿主覆盖（可选）：把 MCP 工具返回的图片字节写到磁盘并返回绝对路径。
+// 为 nil 时用 DefaultImageSaver（mcp_image.go）。测试与特殊部署可替换。
+var ImageSaver func(mime string, data []byte) (string, error)
+
+// formatImageContent 把一条 image content 转成给模型看的文本。
+// 抽成函数是为了能测三态：落地成功 / saver 报错 / 无内容。
+func formatImageContent(mime, dataBase64 string) string {
+	if dataBase64 == "" {
+		return fmt.Sprintf("[image: %s，内容为空]", mime)
+	}
+	raw, err := base64.StdEncoding.DecodeString(dataBase64)
+	if err == nil {
+		if path, saveErr := imageSaver()(mime, raw); saveErr == nil && path != "" {
+			return fmt.Sprintf("[image 已保存：%s（用 read_image 查看这张图；%s，%d KB）]", path, mime, len(raw)/1024)
+		}
+	}
+	return fmt.Sprintf("[image: %s，base64 %d 字符（未能落地为文件，无法查看画面）]", mime, len(dataBase64))
+}
+
 // callTool 转发一次工具调用（只发原始名，公开名绝不发给 server）。
 // RPC 层错误返回 error；server 侧的业务失败走 IsError（isError 结果不当异常）。
 func (c *mcpClient) CallTool(ctx context.Context, rawName string, args json.RawMessage) (CallResult, error) {
@@ -285,8 +305,10 @@ func (c *mcpClient) CallTool(ctx context.Context, rawName string, args json.RawM
 		switch item.Type {
 		case "", "text":
 			b.WriteString(item.Text)
-		case "image", "audio":
-			b.WriteString(fmt.Sprintf("[%s: %s，base64 %d 字符]", item.Type, item.MimeType, len(item.Data)))
+		case "image":
+			b.WriteString(formatImageContent(item.MimeType, item.Data))
+		case "audio":
+			b.WriteString(fmt.Sprintf("[audio: %s，base64 %d 字符]", item.MimeType, len(item.Data)))
 		default:
 			b.WriteString(fmt.Sprintf("[%s 内容略]", item.Type))
 		}

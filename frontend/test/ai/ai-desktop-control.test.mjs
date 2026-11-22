@@ -12,6 +12,7 @@ import {
     DESKTOP_TOOLS_WHITELIST,
     controlModeActionOf,
     createAIDesktopControl,
+    desktopConfigNeedsUpgrade,
     desktopServerConfigRow,
     isDesktopToolDef,
     isDesktopToolName,
@@ -147,6 +148,37 @@ test('installedCount：只数 windows server 的工具（外部工具页开关�
     assert.equal(makeCtl([]).ctl.installedCount(), 0);
 });
 
+test('desktopConfigNeedsUpgrade：识别旧形态（缺 --no-control / 勾选不一致 / 旧 notes），不误伤用户自定义', () => {
+    const latest = desktopServerConfigRow();
+    // 当前预置本身不需要升级
+    assert.equal(desktopConfigNeedsUpgrade(latest), false);
+    assert.equal(desktopConfigNeedsUpgrade(null), false);
+
+    // 旧形态①：args 缺 --no-control（上游会弹接管确认窗，2026-11-22 用户实测）
+    const noControl = Object.assign({}, latest, {
+        args: ['windows-mcp@0.8.9', 'serve', '--tools', DESKTOP_TOOLS_WHITELIST.join(',')],
+    });
+    assert.equal(desktopConfigNeedsUpgrade(noControl), true);
+
+    // 旧形态②：勾选与白名单不一致（多勾了 ControlStatus / 一个都没勾）
+    assert.equal(desktopConfigNeedsUpgrade(Object.assign({}, latest, {enabledTools: ['ControlStatus']})), true);
+    assert.equal(desktopConfigNeedsUpgrade(Object.assign({}, latest, {enabledTools: []})), true);
+
+    // 旧形态③：notes 还是旧流程文案（让模型去点亮已删除的「桌面」pill）
+    assert.equal(desktopConfigNeedsUpgrade(Object.assign({}, latest, {
+        notes: '本行写入后默认停用：先在服务器上勾选工具，再在 AI 输入框点亮「桌面」（仅本会话生效，重启失效）。',
+    })), true);
+    assert.equal(desktopConfigNeedsUpgrade(Object.assign({}, latest, {notes: ''})), true);
+
+    // 用户自己写的 notes 不动（只认明确的旧关键词）
+    assert.equal(desktopConfigNeedsUpgrade(Object.assign({}, latest, {
+        notes: '我自己的约定：只操作记事本。',
+    })), false);
+
+    // command 被改过（比如指向自己装的 uvx 路径）也算需要对齐
+    assert.equal(desktopConfigNeedsUpgrade(Object.assign({}, latest, {command: 'C:\\uv\\uvx.exe'})), true);
+});
+
 test('desktopServerConfigRow：一步到位（enabled + 白名单勾选）+ uvx + 超时放宽 + notes ≤1000', () => {
     const row = desktopServerConfigRow();
     assert.equal(row.command, 'uvx');
@@ -160,9 +192,11 @@ test('desktopServerConfigRow：一步到位（enabled + 白名单勾选）+ uvx 
     assert.ok(row.env.ANONYMIZED_TELEMETRY === 'false');
     assert.ok(row.notes.length <= 1000, 'notes 超过 ValidateServer 的 1000 字上限');
     assert.match(row.notes, /windows_control_mode/, 'notes 要告诉模型任务结束时退出控制模式');
-    // 白名单口径：无 Screenshot（图像通道缺失），无高危组
+    // 白名单口径：含截图（Screenshot / Snapshot 看画面），无高危组
     assert.ok(DESKTOP_TOOLS_WHITELIST.includes('Snapshot'));
-    for (const bad of ['Screenshot', 'Registry', 'Process', 'App', 'PowerShell', 'FileSystem']) {
+    assert.ok(DESKTOP_TOOLS_WHITELIST.includes('Screenshot'),
+        'Screenshot 必须在白名单里（2026-11-22 恢复：图像结果已能在宿主侧落地成 PNG）');
+    for (const bad of ['Registry', 'Process', 'App', 'PowerShell', 'FileSystem']) {
         assert.ok(!DESKTOP_TOOLS_WHITELIST.includes(bad), bad + ' 不应在桌面白名单里');
     }
     // env / enabledTools 都是拷贝不是共享引用

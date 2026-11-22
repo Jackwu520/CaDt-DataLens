@@ -988,9 +988,10 @@ export const AI_TOOL_DEFS = {
         name: 'windows_control_mode',
         description: '声明进入 / 退出 Windows 桌面控制模式（第三方原生窗口的 GUI 自动化：无障碍树快照 / 点击 / 输入 / 滚动 / 剪贴板）。'
             + '进入（action=enter）后，白名单桌面工具才出现在工具表里，用户界面上也会显示「AI 正在控制你的电脑」。'
-            + '任务一结束就调 action=exit 交还控制权——不要让控制模式跨任务常开。进出都不需要审批；'
-            + '本应用自己的界面用 app_control，网页用浏览器工具，只有第三方原生窗口才用桌面工具。'
-            + '若返回「未开启」，说明用户还没授权本会话的桌面控制（可用 app_control 的 request_desktop_control 发起申请）。',
+            + '任务一结束就调 action=exit 交还控制权——不要让控制模式跨任务常开。进出都不需要审批。'
+            + '若返回「本会话尚未启用桌面控制」，就用 app_control 的 request_desktop_control 向用户申请（会弹危险审批卡）；'
+            + '**不要**改用 run_command 跑 PowerShell / Add-Type / SendKeys / user32 去模拟鼠标键盘——那绕过用户可见的控制提示与授权，属于规避。'
+            + '本应用自己的界面用 app_control，网页用浏览器工具，只有第三方原生窗口才用桌面工具。',
         parameters: {
             type: 'object',
             properties: {
@@ -1196,7 +1197,7 @@ export const AI_TOOL_GROUPS = [
     {key: 'gen', title: '生图与视频（用户配置的外部生成服务）', note: 'prompt 会发送到用户在设置里配置的服务商并可能产生费用；产物落在工作区 .cadt/gen/ 或指定目录。条目在设置里按「生图 / 视频」分组排序，未指定 model 时按该组优先级顺序取第一个启用的条目。未配置条目时这些工具不可用。'},
     {key: 'media', title: '语音与识别（外部服务）', note: '来源由 应用页面 → 外部工具 决定：关闭 / 本地 MCP / 服务提供商；上传到服务提供方会产生费用且文件会离开本机。未启用对应来源时这些工具不可用；本地 MCP 来源只在写权限档（非计划模式）可用。'},
     {key: 'browser', title: '内嵌浏览器（真实页面交互）', note: '每个会话有独立标签页与登录态；纯资料抓取不要开浏览器。'},
-    {key: 'desktop', title: '桌面控制（第三方原生窗口）', note: '用户先在本会话启用桌面控制（权限面板开关或 app_control 的 request_desktop_control 申请），再用 windows_control_mode 进入控制模式——进入后白名单桌面工具（快照 / 点击 / 输入 / 滚动 / 剪贴板）才出现，用户会看到「AI 正在控制你的电脑」。任务结束立即 exit 交还控制权；只用于用户指定的第三方原生窗口，本应用自己的界面用 app_control。'},
+    {key: 'desktop', title: '桌面控制（第三方原生窗口）', note: '用户先在本会话启用桌面控制（权限面板开关或 app_control 的 request_desktop_control 申请），再用 windows_control_mode 进入控制模式——进入后白名单桌面工具（快照 / 点击 / 输入 / 滚动 / 剪贴板）才出现，用户会看到「AI 正在控制你的电脑」。任务结束立即 exit 交还控制权；未启用时先申请，不要用 run_command 跑 PowerShell / SendKeys 之类模拟键鼠绕过。只用于用户指定的第三方原生窗口，本应用自己的界面用 app_control。'},
     {key: 'app', title: '应用界面（当前窗口）', note: '用户说「打开看看 / 切到某视图 / 面板错位」时用它；不要用它代替文件读取。'},
     {key: 'memory', title: '记忆、偏好与技能'},
     {key: 'env', title: '环境变量'},
@@ -1326,12 +1327,18 @@ export function createAIToolDefs(ctx) {
                 list.push(def);
             }
         }
-        // 桌面控制（Computer Use）：只在「会话已启用桌面控制 + 已进入控制模式」时注入控制模式
-        // 工具与白名单桌面工具（mcp__windows__*，全量下发）。未进入控制模式时任何桌面工具都不
-        // 出现——控制模式本身既是显式声明，也是注入开关（2026-11-22 取消懒加载揭示层）。
-        if (ctx.desktopEnabledOn && AI_WRITE_SCOPES.includes(scope) && !planMode && ctx.desktopEnabledOn(session)) {
+        // 桌面控制（Computer Use）：
+        //   · 入口 windows_control_mode —— 只要桌面 server 已安装就下发（**不看会话是否启用**）。
+        //     2026-11-22 实测：不下发时模型既从 MCP notes 知道有这能力、又在工具表里找不到，
+        //     于是改用 run_command 跑 PowerShell SendKeys 绕过去——既没有跑马灯提示，也绕开了授权。
+        //     给入口后 enter 会明确回「未启用 → 用 app_control 的 request_desktop_control 申请」。
+        //   · 白名单桌面工具（mcp__windows__*）—— 仍只在「已启用 + 已进入控制模式」时注入，
+        //     控制模式本身就是动手前的显式闸（取消懒加载揭示层的替代物）。
+        if (ctx.desktopInstalledOn && AI_WRITE_SCOPES.includes(scope) && !planMode && ctx.desktopInstalledOn()) {
             list.push(AI_TOOL_DEFS.windows_control_mode);
-            if (ctx.desktopDefsForSession) list.push(...ctx.desktopDefsForSession(session));
+            if (ctx.desktopEnabledOn && ctx.desktopEnabledOn(session) && ctx.desktopDefsForSession) {
+                list.push(...ctx.desktopDefsForSession(session));
+            }
         }
         // 插件工具：同样是外部来源、能力未知。具体下发条件（全局总闸 + 插件级 + 工具级 +
         // readOnly 的只读档子开关 + 非计划模式）统一由 shell/plugin-tools.js 判定，

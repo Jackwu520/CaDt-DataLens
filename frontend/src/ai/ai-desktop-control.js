@@ -31,10 +31,14 @@ export function isDesktopToolDef(def) {
     return !!(def && def.mcpServer === DESKTOP_MCP_SERVER);
 }
 
-// 服务器行白名单（§10 决策 3 + §12.9 决策 5）：观察组 + 输入组，砍 Screenshot
-// （MCP 客户端把 image 结果降级成占位文本，§12.1），排除 Registry / Process /
-// App / PowerShell / FileSystem（dsh 同款默认排除 + 本项目 MCP 参数不过路径闸）。
-export const DESKTOP_TOOLS_WHITELIST = ['Snapshot', 'Click', 'Move', 'Scroll', 'Type', 'Shortcut', 'Clipboard'];
+// 服务器行白名单：观察组 + 输入组 + 截图。
+// Screenshot（2026-11-22 起纳入）：上游的纯截图工具（readOnlyHint=True），支持
+// display / region / save_path；「看画面」靠它。此前排除它的理由是「MCP 客户端把 image
+// 结果降级成占位文本」——该限制已由宿主侧修掉（internal/mcp 把图片落地成 PNG 文件、
+// 结果里返回绝对路径，模型用 read_image 查看），所以恢复。
+// 仍排除 Registry / Process / App / PowerShell / FileSystem（dsh 同款默认排除 +
+// 本项目 MCP 参数不过路径闸）。
+export const DESKTOP_TOOLS_WHITELIST = ['Snapshot', 'Screenshot', 'Click', 'Move', 'Scroll', 'Type', 'Shortcut', 'Clipboard'];
 
 // dsh 同款默认 env（§2）；人机争用走上游默认 USER_CONTROL（10s 内物理输入优先）。
 export const DESKTOP_SERVER_ENV = Object.freeze({
@@ -63,8 +67,12 @@ export function desktopServerConfigRow() {
         enabled: true,
         enabledTools: DESKTOP_TOOLS_WHITELIST.slice(),
         startupTimeoutMs: 600000,
-        notes: '桌面控制（Computer Use）：第三方原生窗口的 GUI 自动化。工具白名单只含观察组与输入组'
-            + '（无 Screenshot：宿主客户端暂不能显示 MCP 图像结果；无 Registry/Process/App/PowerShell/FileSystem）。'
+        notes: '桌面控制（Computer Use）：第三方原生窗口的 GUI 自动化。工具白名单含观察组、输入组与截图'
+            + '（Screenshot / Snapshot 看画面，Click / Type / Move / Scroll / Shortcut 操作，Clipboard 读写剪贴板；'
+            + '无 Registry / Process / App / PowerShell / FileSystem）。'
+            + '想知道屏幕上是什么：调 Screenshot（快照 + 画面，可用 display=[0] 选显示器、region=[left,top,right,bottom] 只截一块）'
+            + '或 Snapshot(use_vision=True)（连可交互元素一起给）。宿主会把返回的图片存成 PNG 并在文本里给出绝对路径，'
+            + '用 read_image 打开该路径即可看到画面。'
             + '首次启动 uvx 会下载 Python 3.14 解释器与依赖（约 100 MB，耗时数分钟，启动超时已放宽到 10 分钟；'
             + '下载完成后启动只需几秒）。'
             + '只操作用户明确要求的目标窗口，一次任务结束就停，不要顺手点别的东西；'
@@ -72,7 +80,34 @@ export function desktopServerConfigRow() {
     };
 }
 
-// controlModeInputNorm：windows_control_mode 的 action 归一（容忍大小写与常见别名）。
+// notes 是否还是旧流程文案（旧文案让模型去「点亮桌面 pill」，pill 已删 → 模型困惑）。
+// 只认明确的旧关键词：用户自己改过的 notes 一律不动。
+function desktopNotesStale(notes) {
+    const text = String(notes || '').trim();
+    if (!text) return true;
+    return /点亮「桌面」|输入框点亮|windows_desktop/.test(text);
+}
+
+// desktopConfigNeedsUpgrade：已有 mcp.json 行是否是旧形态，需要就地升级。
+// 触发条件（任一）：
+//   · args 缺 --no-control —— 上游 --control 的 LL 键鼠钩子会吞系统组合键，且会弹
+//     「AI is about to take control of this computer」接管确认窗（2026-11-22 用户实测）；
+//   · 工具勾选与白名单不一致（旧版本默认全不勾 / 或多勾了 ControlStatus 之类）；
+//   · notes 还是旧流程文案。
+// 这是「升级」而不是「重装」：只覆盖我们管理的字段，保持用户的其他设置。
+export function desktopConfigNeedsUpgrade(row) {
+    if (!row || typeof row !== 'object') return false;
+    const latest = desktopServerConfigRow();
+    const args = Array.isArray(row.args) ? row.args : [];
+    if (!args.includes('--no-control')) return true;
+    if (String(row.command || '') !== latest.command) return true;
+    const have = Array.isArray(row.enabledTools) ? row.enabledTools : [];
+    const want = latest.enabledTools;
+    if (have.length !== want.length || want.some((tool) => !have.includes(tool))) return true;
+    return desktopNotesStale(row.notes);
+}
+
+
 export function controlModeActionOf(input) {
     const raw = String((input && input.action) || '').trim().toLowerCase();
     if (raw === 'exit' || raw === 'leave' || raw === 'stop' || raw === 'off' || raw === '退出') return 'exit';

@@ -386,6 +386,8 @@ export function buildSessionMeta(session) {
         systemPrompt: textOf(session && session.systemPrompt),
         promptTemplateId: textOf(session && session.promptTemplateId),
         planMode: !!(session && session.planMode),
+        // 会话级桌面控制启用状态（随会话持久化；控制模式本身仍只存内存，重启即清）
+        desktopEnabled: (session && session.desktopEnabled) === true,
         // 当前计划（唯一真源）：{title, goal, files, steps, verification, risks, markdown,
         // status:'pending'|'approved', ts, fileRel}。审批卡 / 落盘 / 回注 / 列表角标都读它，
         // 消息不承载计划内容。空计划归一成 null，不写空壳。

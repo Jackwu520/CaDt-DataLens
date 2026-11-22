@@ -71,6 +71,7 @@ export function createAISystemContext(ctx) {
                     '- run_command / background_command 缺省在本机 Git Bash 里执行：需要 PowerShell 语法（cmdlet、$变量、$_）时传 shell="pwsh"（或 "powershell"），command 里直接写 PowerShell 语句——不要在默认档里拼 powershell -Command "…"，bash 会先把双引号内的 $变量 展开成空串（症状：退出码非 0、stderr 出现被吃掉变量后的残句）。shell="cmd" 同理直接写 cmd 命令。指定 shell 的脚本按脚本审批：删除 / 写文件 / iex / 改服务等破坏特征单次确认，只读脚本在自动审批档交分类器判定。',
                 ]),
                 '- 多步任务先用 todo_write 规划，并在每完成一步后更新任务状态（todo_write 是会话内进度；用户「快捷便签」面板是另一个本子，记事/改状态走 app_control 的 memo 动作，别把执行计划塞进便签）。',
+                ...(planMode ? [] : ['- 需要操作**其他应用**（点击 / 输入 / 读它的界面）时走桌面控制：先 windows_control_mode(action=enter)；若返回未启用，就用 app_control 的 request_desktop_control 申请（用户会看到危险审批卡）。**不要用 run_command 跑 PowerShell / Add-Type / SendKeys / user32 去模拟鼠标键盘**——那绕过用户可见的「AI 正在控制你的电脑」提示与授权流程，属于规避授权；也不要因为工具表里一时没有桌面工具就降级成这种写法。本应用自己的界面用 app_control，网页用内嵌浏览器工具。']),
                 ...(full && !planMode ? ['- 完全权限下没有审批兜底（含终端命令）：破坏性操作前先向用户说明。'] : []),
                 ...(!full && !planMode ? ['- 写操作被用户放弃时，按用户意图调整方案，不要重复发起同一改动。'] : []),
             ] : []),
