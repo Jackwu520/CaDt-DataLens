@@ -31,9 +31,11 @@ test('空会话切走即删：只处理正在看的那个会话，且不碰支�
 });
 
 test('空会话切走即删：switchSession 与 newSession 都先存草稿再删', () => {
-    // E3（切会话）：previous 块里 save 必须在 discard 之前
-    const switchBlock = panel.match(/const previous = currentSession\(\);\s*if \(previous && previous\.id !== id\) \{[\s\S]*?\n        \}/);
-    assert.ok(switchBlock, 'switchSession 里应有 previous 处理块');
+    // E3（切会话）：previous 块里 save 必须在 discard 之前。sameSession（同 id 重复切换）
+    // 保持输入区现场、不走 save/discard——那是 2026-11-22 排队消息回流修复的一部分
+    //（见 ai-draft-hygiene.test.mjs），真实跨会话切换仍是「先存草稿再删空会话」。
+    const switchBlock = panel.match(/const previous = currentSession\(\);[\s\S]*?const sameSession = !!\(previous && previous\.id === id\);\s*if \(previous && !sameSession\) \{[\s\S]*?\n        \}/);
+    assert.ok(switchBlock, 'switchSession 里应有 previous 处理块（含 sameSession 守卫）');
     assert.match(switchBlock[0], /saveComposerDraft\(previous\.id\);/);
     assert.match(switchBlock[0], /discardVirginOnLeave\(previous\);/);
     assert.ok(

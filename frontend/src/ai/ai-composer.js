@@ -14,6 +14,7 @@ import {normalizePasteMode, shouldFoldPaste, makePasteMarker, makePasteEntry, sc
 import {iconSvg} from '../core/icons.js';
 import {dataUrlToFile} from '../core/image-clipboard.js';
 import {createShiftDoubleTap} from '../core/shift-double-tap.js';
+import {openEditMenu} from '../shell/edit-menu.js';
 
 function attachmentChipPrefix(item) {
     if (item.kind === 'skill') return '技能 · ';
@@ -151,6 +152,9 @@ export function createAIComposer(ctx) {
     // 双击 Esc 停止生成：判定与全局搜索「双击 Shift」同一状态机（core/shift-double-tap.js，
     // key 换成 Escape）。监听在输入框上（面板侧挂 keydown/keyup）——只有 composer 聚焦时才接收事件。
     const stopGeneration = ctx.stopGeneration;
+    // 排队/插话/抢占消费输入内容后作废会话草稿（草稿槽在 ai-panel.js）：不drop的话，切走再
+    // 切回会从草稿复活出已排队的文本（2026-11-22 排队消息回流输入框实测）。未注入时跳过。
+    const dropComposerDraft = typeof ctx.dropComposerDraft === 'function' ? ctx.dropComposerDraft : null;
     const escDoubleTap = createShiftDoubleTap({key: 'Escape'});
 
     // —— 随域迁入的输入区状态（原 ai-panel.js 闭包级）——
@@ -913,6 +917,8 @@ export function createAIComposer(ctx) {
         renderAttachments();
         hideSlash();
         updateSendState();
+        // 输入内容已被排队/插话/抢占消费：会话草稿同步作废，防止切换会话时复活出已排队的文本
+        if (dropComposerDraft) dropComposerDraft(session.id);
         return payload;
     }
 
@@ -934,6 +940,8 @@ export function createAIComposer(ctx) {
             el.input.value = '';
             attachments = [];
             renderAttachments();
+            // 原输入内容已挪进队列：作废草稿，防止切回会话时复活出已排队的文本
+            if (dropComposerDraft) dropComposerDraft(session.id);
             queuedDraft = true;
         }
         queue.removeItem(item);
@@ -948,21 +956,7 @@ export function createAIComposer(ctx) {
         flash(queuedDraft ? '已取回待编辑消息；输入区原有内容已放回排队' : '已取回待编辑消息');
     }
     // ---------- 输入框右键编辑菜单（撤销/重做/剪切/复制/粘贴/全选；方案 M2 搬入） ----------
-
-    function editableHasSelection(target) {
-        if (typeof target.selectionStart === 'number') return target.selectionEnd > target.selectionStart;
-        const selection = window.getSelection ? window.getSelection() : null;
-        return !!(selection && selection.rangeCount && !selection.isCollapsed);
-    }
-
-    function execEditable(target, command) {
-        target.focus();
-        try {
-            return !!document.execCommand(command);
-        } catch (e) {
-            return false;
-        }
-    }
+    // editableHasSelection / execEditable 泛化到 shell/edit-menu.js（全局兜底共用同一份）。
 
     // dataUrlToFile 抽到 core/image-clipboard.js（快捷便签面板共用同一份）。
 
@@ -1104,18 +1098,9 @@ export function createAIComposer(ctx) {
     }
 
     function showAIEditMenu(event, target) {
-        if (!showContextMenu) return;
-        const hasSel = editableHasSelection(target);
-        showContextMenu([
-            {label: '撤销', shortcut: 'Ctrl+Z', icon: 'undo', action: () => execEditable(target, 'undo')},
-            {label: '重做', shortcut: 'Ctrl+Y', icon: 'redo', action: () => execEditable(target, 'redo')},
-            {sep: true},
-            {label: '剪切', shortcut: 'Ctrl+X', icon: 'cut', disabled: !hasSel, action: () => execEditable(target, 'cut')},
-            {label: '复制', shortcut: 'Ctrl+C', icon: 'copy', disabled: !hasSel, action: () => execEditable(target, 'copy')},
-            {label: '粘贴', shortcut: 'Ctrl+V', icon: 'paste', action: () => pasteIntoEditable(target)},
-            {sep: true},
-            {label: '全选', shortcut: 'Ctrl+A', icon: 'select-all', action: () => execEditable(target, 'selectAll')},
-        ], event.clientX, event.clientY);
+        // 菜单结构在 shell/edit-menu.js（全局兜底共用）；粘贴走 composer 专属流程
+        //（无文字时按图片粘贴进附件 / 长文本折叠胶囊），覆盖共享版默认粘贴。
+        openEditMenu(showContextMenu, event, target, {paste: () => pasteIntoEditable(target)});
     }
 
     return {

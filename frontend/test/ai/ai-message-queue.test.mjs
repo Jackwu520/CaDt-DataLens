@@ -513,3 +513,56 @@ test('model.restore：原样收回快照条目（id 保留），坏条目过滤�
     assert.equal(model.all().length, 2);
 });
 
+
+// ---- 冲刷代发的草稿作废（2026-11-22 排队消息回流输入框实测）----
+// flushThroughComposer 会把消息瞬态回填进输入区再起轮：期间用户切走会把回填文本
+// 「保存」成会话草稿，切回时复活出已发出的消息。冲刷入口与失败收尾都必须作废草稿。
+function makeFlushShell({submitOk, dropSpy}) {
+    const session = {id: 's1', title: 'A'};
+    const inputEl = {value: ''};
+    const calls = {submit: [], inputAfterSubmit: null};
+    const q = createAIMessageQueue({
+        el: {input: inputEl, queue: null},
+        streams: new Map(),
+        compactOf: () => null,
+        currentSession: () => session,
+        syncStreamView: () => null,
+        currentQueueItems: () => [],
+        sessionById: (id) => (id === 's1' ? session : null),
+        flash: () => {},
+        submitText: async (text) => {
+            calls.submit.push(text);
+            // 模拟真 submitText 的契约：起轮成功即清输入区（onStarted）
+            if (submitOk) inputEl.value = '';
+            return submitOk;
+        },
+        setAttachments: () => {},
+        renderAttachments: () => {},
+        resizeInput: () => {},
+        updateSendState: () => {},
+        getAttachments: () => [],
+        dropComposerDraft: (id) => dropSpy.push(id),
+    });
+    return {q, session, inputEl, calls};
+}
+
+test('flushThroughComposer：冲刷入口作废会话草稿（成功路径）', async () => {
+    const drops = [];
+    const {q, inputEl, calls} = makeFlushShell({submitOk: true, dropSpy: drops});
+    q.enqueueItem({sessionId: 's1', text: '排队的话', attachments: []});
+    await q.flushMessageQueue('s1');
+    assert.deepEqual(calls.submit, ['排队的话']);
+    assert.equal(inputEl.value, '', '成功后输入区为空（submitText onStarted 清空）');
+    assert.deepEqual(drops, ['s1'], '冲刷入口 dropComposerDraft 一次');
+    assert.equal(q.itemsForSession('s1').length, 0, '消息已发出，队列清空');
+});
+
+test('flushThroughComposer：失败回插队列，入口与失败收尾各作废一次草稿', async () => {
+    const drops = [];
+    const {q, inputEl} = makeFlushShell({submitOk: false, dropSpy: drops});
+    q.enqueueItem({sessionId: 's1', text: '排队的话', attachments: []});
+    await q.flushMessageQueue('s1');
+    assert.equal(inputEl.value, '', '失败后输入区被清空');
+    assert.equal(q.itemsForSession('s1').length, 1, '失败消息回到队列不丢');
+    assert.deepEqual(drops, ['s1', 's1'], '入口 + 失败收尾各 drop 一次');
+});

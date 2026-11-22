@@ -296,6 +296,9 @@ export function createAIMessageQueue(ctx) {
     // 后台队列消息被内核预检拦下（over_budget）时的兜底钩子：panel 注入 maybeAutoCompact，
     // 让「后台会话 + 队列消息塞不下」也能自动腾地方（与手动路径 autoCompactOnGateBlocked 对称）。
     const onQueueOverBudget = typeof ctx.onQueueOverBudget === 'function' ? ctx.onQueueOverBudget : null;
+    // 冲刷走输入区代发时会瞬态回填文本：起轮收口 / 失败收尾都要作废会话草稿，防止「切走时的
+    // 草稿保存」把瞬态文本沉淀成草稿、切回时复活出已发出的消息（2026-11-22 实测）。未注入时跳过。
+    const dropComposerDraft = typeof ctx.dropComposerDraft === 'function' ? ctx.dropComposerDraft : null;
 
     // 会话查询：显式 id 优先；没注入 sessionById 时退回 currentSession（单会话测试桩）。
     function sessionOf(sessionId) {
@@ -784,6 +787,9 @@ export function createAIMessageQueue(ctx) {
 
     // 当前会话：仍走输入区（用户看得见地发），失败回插队列。
     async function flushThroughComposer(session, item, opts) {
+        // 排队项已离开草稿语义：冲刷入口先作废该会话草稿，之后瞬态回填的文本不再被
+        // 「切走时的草稿保存」沉淀（成功路径由 submitText 的 onStarted 再兜一次）。
+        if (dropComposerDraft) dropComposerDraft(session.id);
         setAttachments((item.attachments || []).map((att) => ({...att})));
         renderAttachments();
         if (el.input) el.input.value = item.text || '';
@@ -797,6 +803,8 @@ export function createAIMessageQueue(ctx) {
         setAttachments([]);
         renderAttachments();
         resizeInput();
+        // 失败收尾：输入区已清空、消息回到队列——期间被切走保存下来的草稿一并作废
+        if (dropComposerDraft) dropComposerDraft(session.id);
         renderMessageQueue();
         updateSendState();
         scheduleFlushRetry(session.id, opts);

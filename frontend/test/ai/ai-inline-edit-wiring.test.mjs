@@ -54,6 +54,18 @@ test('非末条：先二次确认，取消时编辑态保留', () => {
     assert.match(save, /askConfirm\('重新发送这条消息？将丢弃它之后的 ' \+ tail \+ ' 条对话。'/);
 });
 
+test('保存成功：编辑态作废不能只按对象身份清（重画快照恢复会换掉对象）', () => {
+    // startSessionTurn 成功起轮会在当前会话重画消息区，renderMessages 的快照恢复
+    // 机制把编辑态原样搬到新消息节点上（防异步重读丢内容），inlineEdit 已换成
+    // 恢复出的新对象——只按身份清恒失配，编辑框就会挂在流式回复上不退
+    // （2026-11-22 用户实测）。成功路径必须按会话+位置匹配并走 endInlineEdit
+    // 统一收口（摘 .editing 类 + 整面重画还原正文）。
+    const ok = sliceBetween(panel, 'if (result && result.ok) {', '// 失败：编辑态与内容原样保留');
+    assert.match(ok, /inlineEdit\.sessionId === state\.sessionId && inlineEdit\.index === state\.index/);
+    assert.match(ok, /endInlineEdit\(\)/);
+    assert.doesNotMatch(ok, /if \(inlineEdit === state\) inlineEdit = null;/, '不允许退回只按对象身份清');
+});
+
 test('键盘：Esc 取消 / Enter 发送 / Shift+Enter 换行；均不冒泡', () => {
     const editor = sliceFunction(panel, 'function renderInlineEditor(state) {');
     assert.match(editor, /if \(e\.key === 'Escape'\)/);
