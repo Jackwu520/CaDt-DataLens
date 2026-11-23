@@ -296,20 +296,32 @@ func TestReadFilteredAndTruncate(t *testing.T) {
 	s := newTestService()
 	ws := t.TempDir()
 	// 造 30 条长条目（合计 > 7000 rune）
-	entries := make([]EntryIn, 0, 30)
+	entries := make([]EntryIn, 0, 31)
 	for i := 0; i < 30; i++ {
 		entries = append(entries, EntryIn{
 			Path: "pkg/f" + string(rune('a'+i)) + ".go",
 			F:    strings.Repeat("职责说明长文本", 40),
 		})
 	}
+	// 一条目录条目（路径尾 /）：验证结构化命中透传 Dir 字段（应用页面 chips 过滤用）
+	entries = append(entries, EntryIn{Path: "pkg/", F: "职责说明长文本目录"})
 	first, err := s.Edit(ws, editReq("add", entries, testMeta, ""))
 	if err != nil {
 		t.Fatal(err)
 	}
 	ov := readResult(t, s, ws, "{}")
-	if ov.Mode != "overview" || len(ov.Lines) != 30 || strings.Contains(ov.Text, "职责说明长文本") {
+	if ov.Mode != "overview" || len(ov.Lines) != 31 || strings.Contains(ov.Text, "职责说明长文本") {
 		t.Fatalf("overview 应为路径地图（无 FRAS 正文）：%+v", ov)
+	}
+	// overview 的目录行带 Dir 标记
+	dirSeen := false
+	for _, ln := range ov.Lines {
+		if ln.Path == "pkg/" && ln.Dir {
+			dirSeen = true
+		}
+	}
+	if !dirSeen {
+		t.Fatal("overview 目录行应带 Dir=true")
 	}
 	// 无过滤命中全部 → 截断 + 提示
 	all := readResult(t, s, ws, `{"query":"职责"}`)
@@ -319,13 +331,40 @@ func TestReadFilteredAndTruncate(t *testing.T) {
 	if utf8Len(all.Text) > ReadRuneLimit+200 {
 		t.Fatalf("截断后仍超限：%d", utf8Len(all.Text))
 	}
+	// 结构化命中条目：HitCount 报过滤命中总数，HitEntries 同预算口径收窄（应用页面展示用）
+	if all.HitCount != 31 || len(all.HitEntries) == 0 || len(all.HitEntries) >= 31 {
+		t.Fatalf("HitCount 应为 31、HitEntries 应收窄：%d / %d", all.HitCount, len(all.HitEntries))
+	}
+	for _, he := range all.HitEntries {
+		if he.F == "" || he.Path == "" {
+			t.Fatalf("结构化条目应带 FRAS 全文：%+v", he)
+		}
+	}
+	// 目录条目的结构化命中要带 Dir=true（前端 chips 过滤依赖，不必靠路径尾 / 猜）
+	// 用目录独有的 F 文本查询（paths 是前缀过滤，pkg/ 会命中所有子条目）
+	dirHit := readResult(t, s, ws, `{"query":"目录"}`)
+	dirFound := false
+	for _, he := range dirHit.HitEntries {
+		if he.Path == "pkg/" {
+			if !he.Dir {
+				t.Fatalf("目录条目结构化命中应带 Dir=true：%+v", he)
+			}
+			dirFound = true
+		}
+	}
+	if !dirFound {
+		t.Fatalf("query=目录 应命中 pkg/ 条目：%+v", dirHit.HitEntries)
+	}
 	// 前缀过滤：只命中部分
 	part := readResult(t, s, ws, `{"paths":["pkg/fa"]}`)
-	if part.Truncated || part.Entries != 30 {
-		t.Fatalf("过滤模式 Entries 应为卷总数（30）：%+v", part)
+	if part.Truncated || part.Entries != 31 {
+		t.Fatalf("过滤模式 Entries 应为卷总数（31）：%+v", part)
 	}
 	if !strings.Contains(part.Text, "fa.go") || strings.Contains(part.Text, "fb.go") {
 		t.Fatal("前缀过滤应只含 fa.go")
+	}
+	if part.HitCount != 1 || len(part.HitEntries) != 1 || part.HitEntries[0].Path != "pkg/fa.go" {
+		t.Fatalf("前缀过滤应命中 1 条且结构化一致：%d / %+v", part.HitCount, part.HitEntries)
 	}
 	_ = first
 }

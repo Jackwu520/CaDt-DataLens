@@ -100,11 +100,14 @@ type ReadResult struct {
 	BadLines    int        `json:"badLines,omitempty"`
 	Lines       []PathLine `json:"lines,omitempty"` // overview 数据（前端注入渲染用）
 	Truncated   bool       `json:"truncated,omitempty"`
+	HitCount    int        `json:"hitCount,omitempty"`   // entries 模式：过滤命中总数（应用页面「命中 N 条」显示用）
+	HitEntries  []EntryIn  `json:"hitEntries,omitempty"` // entries 模式：结构化命中条目（应用页面渲染 FRAS 用，与 Text 同一 rune 预算口径）
 }
 
 type EntryIn struct {
 	Path   string   `json:"path"`
 	Labels []string `json:"labels,omitempty"`
+	Dir    bool     `json:"dir,omitempty"` // 目录条目（应用页面 chips 过滤用；与 overview PathLine.Dir 同源）
 	F      string   `json:"f,omitempty"`
 	R      string   `json:"r,omitempty"`
 	A      string   `json:"a,omitempty"`
@@ -183,9 +186,27 @@ func (s *Service) Read(ws string, req ReadReq) (ReadResult, error) {
 		return res, nil
 	}
 	res.Mode = "entries"
+	res.HitCount = len(filtered)
+	res.HitEntries = limitEntriesForUI(filtered)
 	text, truncated := renderEntriesText(filtered, req.Query)
 	res.Text, res.Truncated = text, truncated
 	return res, nil
+}
+
+// limitEntriesForUI 应用页面用的结构化命中条目：与 renderEntriesText 同一 rune 预算口径
+//（ReadRuneLimit，按 FormatEntry 渲染长度计），超出部分截断——HitCount 仍报过滤命中总数，
+// 前端以 len(HitEntries) < HitCount 判「展示被收窄」。
+func limitEntriesForUI(entries []Entry) []EntryIn {
+	out := make([]EntryIn, 0, len(entries))
+	used := 0
+	for _, e := range entries {
+		used += utf8.RuneCountInString(FormatEntry(e))
+		if used > ReadRuneLimit {
+			break
+		}
+		out = append(out, EntryIn{Path: e.Path, Labels: e.Labels, Dir: e.Dir(), F: e.F, R: e.R, A: e.A, S: e.S})
+	}
+	return out
 }
 
 func overviewLines(entries []Entry) []PathLine {
