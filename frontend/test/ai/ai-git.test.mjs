@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {GIT_ACTIONS, GIT_COMMIT_STYLE_PATH, buildGitActionPrompt} from '../../src/ai/ai-git.js';
+import {GIT_ACTIONS, OTHER_ACTIONS, GIT_COMMIT_STYLE_PATH, buildGitActionPrompt} from '../../src/ai/ai-git.js';
 import {ICONS} from '../../src/core/icons.js';
 
 test('Git 动作顺序与标签符合菜单约定', () => {
@@ -10,6 +10,20 @@ test('Git 动作顺序与标签符合菜单约定', () => {
     assert.deepEqual(GIT_ACTIONS.map((item) => item.icon), ['git-commit-push', 'git-commit', 'upload', 'download']);
     for (const item of GIT_ACTIONS) {
         assert.ok(ICONS[item.icon], '未登记的图标键：' + item.icon);
+        assert.equal(item.isGit, true, 'git 动作必须带 isGit 标记（决定是否打 git 写命令豁免令牌）');
+    }
+});
+
+test('其他操作动作表：维护认知索引随开关显隐，图标全部已登记', () => {
+    assert.deepEqual(OTHER_ACTIONS.map((item) => item.id), ['cognition-maintain', 'release-notes']);
+    assert.deepEqual(OTHER_ACTIONS.map((item) => item.label), ['维护认知索引', '生成更新日志']);
+    const cognition = OTHER_ACTIONS.find((item) => item.id === 'cognition-maintain');
+    assert.equal(cognition.requiresCognition, true, '维护认知索引只在 aiCognition 打开时显示');
+    assert.equal(OTHER_ACTIONS.find((item) => item.id === 'release-notes').requiresCognition, undefined);
+    for (const item of OTHER_ACTIONS) {
+        assert.ok(ICONS[item.icon], '未登记的图标键：' + item.icon);
+        assert.ok(item.msgIcon && ICONS[item.msgIcon], '应用消息图标未登记：' + item.msgIcon);
+        assert.notEqual(item.isGit, true, '其他操作不应打 git 写命令豁免令牌');
     }
 });
 
@@ -52,4 +66,24 @@ test('工作区与分支注入提示词，未知动作返回空串', () => {
     assert.ok(text.includes('D:/repo'));
     assert.ok(text.includes('main'));
     assert.equal(buildGitActionPrompt('nope', {}), '');
+});
+
+test('维护认知索引提示词：先 status、只经 cognition_edit、不直写卷', () => {
+    const text = buildGitActionPrompt('cognition-maintain', {root: 'D:/repo'});
+    assert.ok(text.includes('D:/repo'));
+    assert.ok(text.includes('cognition_status'));
+    assert.ok(text.includes('cognition_edit'));
+    assert.ok(text.includes('scene=code'));
+    assert.ok(text.includes('不要用 write_file / edit_file 直写'));
+    assert.ok(text.includes('meta'));
+    assert.ok(text.includes('CAS'));
+});
+
+test('生成更新日志提示词：面向用户、分组、不擅自写文件', () => {
+    const text = buildGitActionPrompt('release-notes', {root: 'D:/repo', branch: 'dev'});
+    assert.ok(text.includes('D:/repo'));
+    assert.ok(text.includes('dev'));
+    assert.ok(text.includes('新增 / 改进 / 修复 / 移除'));
+    assert.ok(text.includes('不要擅自写入文件'));
+    assert.ok(text.includes('CHANGELOG.md'));
 });

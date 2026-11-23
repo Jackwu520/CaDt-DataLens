@@ -1,7 +1,7 @@
 // ai-git-ui.js：Git 快捷操作 UI（标题栏入口按钮 + 动作菜单 + 派发发送）。
 // 从 ai-panel.js 拆出（docs/unfinished-plans/structure-cleanup.md 阶段 3），函数体逐字搬移。
 // gitEntryState 为本域私有 let，随域迁入模块；其余依赖引用稳定，经 ctx 注入。
-import {GIT_ACTIONS, buildGitActionPrompt} from './ai-git.js';
+import {GIT_ACTIONS, OTHER_ACTIONS, buildGitActionPrompt} from './ai-git.js';
 import {aiTextOf} from './ai-constants.js';
 
 export function createAIGitUi(ctx) {
@@ -18,6 +18,7 @@ export function createAIGitUi(ctx) {
     const sendAppMessage = ctx.sendAppMessage;
     const showContextMenu = ctx.showContextMenu;
     const setGitFlowToken = ctx.setGitFlowToken;
+    const getSettings = ctx.getSettings;
 
     // ---------- Git 快捷操作 ----------
 
@@ -50,11 +51,11 @@ export function createAIGitUi(ctx) {
         return '';
     }
 
-    function runGitAction(action) {
-        const meta = GIT_ACTIONS.find((item) => item.id === action);
+    // 所有快捷操作共用的门禁 + 发送：git 动作与「其他操作」只差 meta（图标 / 令牌 / 标签前缀）。
+    function runAction(action, meta) {
         if (!meta) return;
         if (syncStreamView() || compactOf((currentSession() || {}).id)) {
-            flash('AI 正在生成，请等本轮结束后再执行 Git 操作', true);
+            flash('AI 正在生成，请等本轮结束后再执行快捷操作', true);
             return;
         }
         const session = currentSession();
@@ -76,11 +77,34 @@ export function createAIGitUi(ctx) {
         if (!prompt) return;
         // 一次性窄豁免：auto 档下常规 git 写命令（add/commit/push/pull）免逐条审批。
         // 令牌按会话归属、15 分钟过期；危险变体与项目规则仍照常拦截（见 ai-panel.js approveCommandForRun）。
-        if (setGitFlowToken) setGitFlowToken(session.id, gitEntryState.root);
+        // 只有 git 动作需要这个令牌；「其他操作」（维护认知索引 / 更新日志）不执行 git 写命令。
+        if (meta.isGit && setGitFlowToken) setGitFlowToken(session.id, gitEntryState.root);
         ensureOpen();
-        sendAppMessage({kind: 'git', label: 'Git 快捷操作 · ' + meta.label, content: prompt}).then((sent) => {
-            if (!sent) flash('Git 操作未能发送，请检查模型配置或当前会话状态', true);
-        }).catch((e) => flash('Git 操作发送失败：' + ((e && e.message) || e), true));
+        sendAppMessage({
+            kind: 'git',
+            icon: meta.msgIcon,
+            label: (meta.isGit ? 'Git 快捷操作 · ' : '快捷操作 · ') + meta.label,
+            content: prompt,
+        }).then((sent) => {
+            if (!sent) flash('快捷操作未能发送，请检查模型配置或当前会话状态', true);
+        }).catch((e) => flash('快捷操作发送失败：' + ((e && e.message) || e), true));
+    }
+
+    function runGitAction(action) {
+        runAction(action, GIT_ACTIONS.find((item) => item.id === action));
+    }
+
+    function runOtherAction(action) {
+        runAction(action, OTHER_ACTIONS.find((item) => item.id === action));
+    }
+
+    function cognitionEnabled() {
+        try {
+            const settings = getSettings ? getSettings() : null;
+            return !!(settings && settings.aiCognition === true);
+        } catch (e) {
+            return false;
+        }
     }
 
     function showGitMenu() {
@@ -90,12 +114,26 @@ export function createAIGitUi(ctx) {
             flash('当前工作区不在 Git 仓库内', true);
             return;
         }
-        const rect = el.gitBtn.getBoundingClientRect();
-        showContextMenu(GIT_ACTIONS.map((action) => ({
+        const items = GIT_ACTIONS.map((action) => ({
             label: action.label,
             icon: action.icon,
             action: () => runGitAction(action.id),
-        })), rect.left - 40, rect.bottom + 4);
+        }));
+        // 「其他操作」分组：只在该组有可见项时显示标题（维护认知索引随开关显隐）。
+        const others = OTHER_ACTIONS.filter((action) => !action.requiresCognition || cognitionEnabled());
+        if (others.length) {
+            items.push({sep: true});
+            items.push({heading: '其他操作'});
+            for (const action of others) {
+                items.push({
+                    label: action.label,
+                    icon: action.icon,
+                    action: () => runOtherAction(action.id),
+                });
+            }
+        }
+        const rect = el.gitBtn.getBoundingClientRect();
+        showContextMenu(items, rect.left - 40, rect.bottom + 4);
     }
     return {refreshGitEntry, gitActionBlockedReason, runGitAction, showGitMenu};
 }

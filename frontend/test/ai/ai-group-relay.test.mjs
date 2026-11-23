@@ -10,8 +10,10 @@ import {
     hasHandoffMarker,
     normalizeGroupMode,
     normalizeRelay,
+    parseMentions,
     relayAskTargets,
     relayStageFocus,
+    relayWakes,
     stripHandoffMarker,
 } from '../../src/ai/ai-group-model.js';
 import {discussionActionLabel, groupStatusText} from '../../src/ai/ai-group-ui-model.js';
@@ -369,4 +371,60 @@ test('断点续跑：中断后「开始接力」（不带 fresh）从已完成�
     const a1After = backend.sent.filter((item) => agentOfRoundId(item.roundId) === 'a1').length;
     assert.equal(a1After, a1Before); // a1 没有重跑
     assert.ok(runtime.relaySnapshot(created.id).done);
+});
+
+// ==================== 评审修复回归 ====================
+
+test('parseMentions：CJK 右边界（@全体成员好 不误判 @all、@架构师 不误命中「架构」）', () => {
+    // @all 后紧跟汉字不算广播
+    assert.deepEqual(parseMentions('@全体成员好', ['架构']), {all: false, names: []});
+    assert.deepEqual(parseMentions('@所有人啊', ['架构']), {all: false, names: []});
+    // 正常边界仍生效
+    assert.deepEqual(parseMentions('@全体成员 集合', ['架构']), {all: true, names: []});
+    // 成员名前缀：@架构师 不应命中名为「架构」的成员
+    assert.deepEqual(parseMentions('@架构师 说', ['架构']), {all: false, names: []});
+    assert.deepEqual(parseMentions('@架构 说', ['架构']), {all: false, names: ['架构']});
+});
+
+test('parseMentions/relayWakes：names 按文本出现序（单条最多 @2 人截先写的两位）', () => {
+    assert.deepEqual(parseMentions('@审查员 先说，@架构师 后说', ['架构师', '审查员']).names, ['审查员', '架构师']);
+    const ctx = {
+        speakerId: 'a0',
+        memberNames: [{id: 'a1', name: '架构师'}, {id: 'a2', name: '审查员'}, {id: 'a3', name: '评审'}],
+        generation: 0, pairCounts: new Map(), perAgentCounts: new Map(),
+    };
+    assert.deepEqual(relayWakes('@审查员 @架构师 @评审 都说', ctx), ['a2', 'a1']); // 文本前两位
+});
+
+test('重启后状态文案：run=null 时按 meta.relay 回退，已完成/中断不再显示「待开工」', () => {
+    const meta = (over) => ({mode: 'relay', memberIds: ['a1', 'a2', 'a3'], relay: {stage: 0, done: false, passes: 0}, ...over});
+    assert.ok(groupStatusText(meta({relay: {stage: 3, done: true, passes: 2}}), null).includes('接力已完成（3 棒'));
+    assert.ok(groupStatusText(meta({relay: {stage: 1, done: false, passes: 1}}), null).includes('接力中断于第 2 棒'));
+    assert.ok(groupStatusText(meta(), null).includes('待开工'));
+});
+
+test('暂停态「结束并总结」：产纪要、落 done，随后「继续」被拒（不复活）', async () => {
+    const backend = makeBackend();
+    const runtime = makeRuntime(backend, AGENTS);
+    backend.handlers.push((name, payload) => runtime.handleEvent(name, payload));
+    backend.replyScript.set('a1', ['产出A。\n\n【交棒】']);
+    backend.replyScript.set('a2', ['产出B。\n\n【交棒】', '## 成果纪要\n\n- 汇总']);
+    backend.replyDelay.set('a2', 300); // 第一棒快速完成、第二棒卡住时暂停（保证 stage>=1 有产出可总结）
+    const created = await makeRelayGroup(runtime);
+    const started = runtime.startRelay(created.id);
+    assert.equal(started.ok, true);
+    // 等第一棒完成、第二棒进入在飞状态
+    assert.equal(await waitFor(() => backend.sent.filter((i) => agentOfRoundId(i.roundId) === 'a2').length > 0), true);
+    const paused = runtime.pauseRelay(created.id);
+    assert.equal(paused.ok, true);
+    await new Promise((resolve) => setTimeout(resolve, 60)); // 等在飞第二棒说完、循环因 paused 退出
+    assert.equal(runtime.relaySnapshot(created.id).paused, true);
+    const ended = runtime.endRelay(created.id);
+    assert.equal(ended.ok, true);
+    // 收尾异步跑完：纪要落盘、paused 被清
+    assert.equal(await waitFor(() => runtime.relaySnapshot(created.id).paused === false), true);
+    assert.equal(await waitFor(() => !!runtime.groupById(created.id).meta.minutes), true);
+    // 结束后「继续」必须被拒，不能复活
+    const resumed = runtime.resumeRelay(created.id);
+    assert.equal(resumed.ok, false);
 });

@@ -6,10 +6,18 @@
 export const GIT_COMMIT_STYLE_PATH = '.cadt/config/git-commit-style.json';
 
 export const GIT_ACTIONS = [
-    {id: 'commit-push', label: '提交并推送', icon: 'git-commit-push'},
-    {id: 'commit', label: '提交代码', icon: 'git-commit'},
-    {id: 'push', label: '推送代码', icon: 'upload'},
-    {id: 'pull', label: '拉取代码', icon: 'download'},
+    {id: 'commit-push', label: '提交并推送', icon: 'git-commit-push', isGit: true},
+    {id: 'commit', label: '提交代码', icon: 'git-commit', isGit: true},
+    {id: 'push', label: '推送代码', icon: 'upload', isGit: true},
+    {id: 'pull', label: '拉取代码', icon: 'download', isGit: true},
+];
+
+// 「其他操作」分组：与 git 动作同属快捷操作菜单，但走各自的提示词。
+// requiresCognition=true 的项只在认知索引开关打开时显示（显隐判定在 ai-git-ui.js）。
+// msgIcon 用于应用消息卡片覆盖 kind='git' 的默认图标。
+export const OTHER_ACTIONS = [
+    {id: 'cognition-maintain', label: '维护认知索引', icon: 'book-plus', msgIcon: 'book-plus', requiresCognition: true},
+    {id: 'release-notes', label: '生成更新日志', icon: 'doc', msgIcon: 'doc'},
 ];
 
 const STYLE_RULES = [
@@ -107,6 +115,39 @@ function commitPushFlow(root, branch) {
     ].join('\n');
 }
 
+function cognitionMaintainFlow(root) {
+    return [
+        '［快捷操作 · 维护认知索引］',
+        repoLine(root, ''),
+        '',
+        '为本工作区维护 .cadt/cognition/ 认知索引卷（场景 scene=code）：',
+        '1. 先调用 cognition_status 看当前卷的治理状态（scene、条目 / 字节与预算、drift 四态与卷指纹）。',
+        '2. 卷不存在或几乎为空：按认知索引规范为本工作区首建——按目录分批，一批只读该目录直接成员、读完立即写该批条目；首建第一批必须带 meta（scene / budget / 标签字典 / build / ruleN）。',
+        '3. 卷已存在：只修与当前任务相关的 Missing / Stale 条目；drift 与本任务无关的忽略，Missing 不要求清零。',
+        '4. 本轮若改动过代码文件，完成改动后用 cognition_edit 维护受影响条目（这是职责不是可选项）；条目语义与代码冲突时以代码为准并修正条目。',
+        '5. 全程只经 cognition_edit 以 CAS 写卷，不要用 write_file / edit_file 直写 .cadt/cognition（会绕过预算、规则与 CAS 校验，覆盖锁文件还会打破单写者互斥）。',
+        '6. 简要汇报：新建 / 更新了多少条目、当前预算占用与剩余 drift。',
+        '',
+        '约束：认知卷是给 AI 的跨会话语义层，不存代码内容（找代码用 search_text / glob）；工作区外与数据目录不建卷。',
+    ].join('\n');
+}
+
+function releaseNotesFlow(root, branch) {
+    return [
+        '［快捷操作 · 生成更新日志］',
+        repoLine(root, branch),
+        '',
+        '基于本会话变更记录与 git 记录生成面向用户的更新日志 / 发布说明：',
+        '1. 汇总依据：当前会话的变更记录、git diff / 提交信息、用户描述；没有依据的内容不要编造。',
+        '2. 面向最终用户写：说明「能做什么、有什么变化、修复了什么」，不堆工程术语。',
+        '3. 使用 Markdown，按「新增 / 改进 / 修复 / 移除」分组；每条一句话，必要时附一句使用方式；没有内容的分类直接省略。',
+        '4. 保持克制：小改动不要写成大版本；给出建议版本号与发布日期，但不要擅自写入文件（除非用户明确要求）。',
+        '5. 结果先输出到会话里给用户过目，不直接改 CHANGELOG.md。',
+        '',
+        '约束：与提交工作流配套，但不替用户执行 git commit；命令需要写权限档时按会话权限走审批。',
+    ].join('\n');
+}
+
 export function buildGitActionPrompt(id, context) {
     const root = (context && context.root) || '';
     const branch = (context && context.branch) || '';
@@ -115,6 +156,8 @@ export function buildGitActionPrompt(id, context) {
         case 'push': return pushFlow(root, branch);
         case 'pull': return pullFlow(root, branch);
         case 'commit-push': return commitPushFlow(root, branch);
+        case 'cognition-maintain': return cognitionMaintainFlow(root);
+        case 'release-notes': return releaseNotesFlow(root, branch);
         default: return '';
     }
 }

@@ -98,6 +98,36 @@ test('buildDiffPreview：行号按完整 diff 计数，裁剪与省略号不重�
     ]);
 });
 
+test('buildDiffPreview：改动行不受行数上限约束，末尾 + 行不被吞', () => {
+    // 事故回归：+28 −37 的审批卡只见红色 − 行、看不到任何 + 行。
+    // 根因是旧实现按 ops 顺序累计到上限就 break，把排在后面的 + 行整段丢掉。
+    // 现在上限只裁未改动的上下文（空格行），所有 +/- 改动行必留。
+    const ops = [];
+    for (let i = 0; i < 37; i++) ops.push({t: '-', text: 'old' + i});
+    for (let i = 0; i < 28; i++) ops.push({t: '+', text: 'new' + i});
+    const preview = buildDiffPreview(ops);
+    assert.equal(preview.lines.filter((line) => line.t === '+').length, 28);
+    assert.equal(preview.lines.filter((line) => line.t === '-').length, 37);
+    assert.equal(preview.truncated, false);
+    // 末尾的 + 行必须出现在预览里
+    assert.deepEqual(preview.lines[preview.lines.length - 1], {t: '+', text: 'new27', oldLine: 0, newLine: 28});
+});
+
+test('buildDiffPreview：超限时只裁上下文，改动行仍全留且 truncated 为真', () => {
+    // 30 处改动各隔 10 行上下文：保留的上下文（每处 ±2）合计远超 40 行上限，
+    // 上下文被裁、插省略号、truncated=true，但 30 条 + 改动行一条不少。
+    const ops = [];
+    for (let c = 0; c < 30; c++) {
+        for (let k = 0; k < 10; k++) ops.push({t: ' ', text: 'ctx' + c + '-' + k});
+        ops.push({t: '+', text: 'add' + c});
+    }
+    const preview = buildDiffPreview(ops);
+    assert.equal(preview.truncated, true);
+    assert.equal(preview.lines.filter((line) => line.t === '+').length, 30);
+    assert.deepEqual(preview.lines[preview.lines.length - 1], {t: '+', text: 'add29', oldLine: 0, newLine: 330});
+    assert.ok(preview.lines.some((line) => line.t === '…'));
+});
+
 test('buildDiffPreview：无改动时保留首行；空 ops 返回空', () => {
     const unchanged = computeLineDiff('a\nb', 'a\nb');
     const preview = buildDiffPreview(unchanged);

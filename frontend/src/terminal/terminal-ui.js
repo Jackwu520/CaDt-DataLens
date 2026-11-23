@@ -107,6 +107,34 @@ function openGitFileMenu(path, state, x, y) {
     ], x, y);
 }
 
+// 回滚全部未提交更改：tracked 丢弃修改，untracked 删除文件。危险二次确认走统一弹窗。
+function rollbackAllChanges() {
+    const all = [];
+    const untracked = [];
+    for (const [path, state] of deps.gitStateCache.map) {
+        all.push(path);
+        if (state === 'untracked') untracked.push(path);
+    }
+    if (!all.length) {
+        deps.flash('没有可回滚的更改');
+        return;
+    }
+    deps.openConfirmDialog(
+        '将丢弃全部 ' + all.length + ' 个文件的未提交修改（未跟踪文件将被删除）。',
+        () => deps.gitRollbackPaths(all, untracked),
+        '回滚', '回滚全部更改', 'danger');
+}
+
+// 标题栏「...」菜单：把危险的「回滚全部更改」收进来，避免和刷新并排时误触。
+// 菜单走全局 ctxMenu 实例，定位在按钮下方（与 db-ui 的锚点菜单同款）。
+function openGitMoreMenu(anchor) {
+    if (!deps.ctxMenu) return;
+    const rect = anchor.getBoundingClientRect();
+    deps.ctxMenu.open([
+        {label: '回滚全部更改', icon: 'undo', danger: true, action: rollbackAllChanges},
+    ], rect.left, rect.bottom + 2);
+}
+
 function renderGitPanel() {
     if (!deps.els.gitChanges) return;
     const available = deps.gitStateCache.available && deps.gitStateCache.dir;
@@ -249,12 +277,12 @@ function renderGitPanel() {
 
 function currentSidebarView() {
     const view = deps.settings.sidebarView;
-    if (view === 'git' || view === 'structure' || view === 'chats' || view === 'app-pages' || view === 'database') return view;
+    if (view === 'git' || view === 'structure' || view === 'chats' || view === 'app-pages' || view === 'database' || view === 'maven') return view;
     return 'files';
 }
 
 function switchSidebarView(view) {
-    if (!['files', 'git', 'structure', 'chats', 'app-pages', 'database'].includes(view)) view = 'files';
+    if (!['files', 'git', 'structure', 'chats', 'app-pages', 'database', 'maven'].includes(view)) view = 'files';
     deps.settings.sidebarView = view;
     if (deps.structurePanel && view === 'structure') deps.structurePanel.setDoc(deps.file);
     deps.applySettings();
@@ -268,6 +296,10 @@ function switchSidebarView(view) {
     // 数据库面板：每次切进来重绘（工作区注册表可能被别的窗口改过）
     if (view === 'database' && typeof deps.renderDatabaseNav === 'function') {
         try { deps.renderDatabaseNav(); } catch (e) {}
+    }
+    // Maven 面板：每次切进来重绘（触发判定 / 项目结构可能变过）
+    if (view === 'maven' && typeof deps.renderMavenTree === 'function') {
+        try { deps.renderMavenTree(); } catch (e) {}
     }
 }
 
@@ -386,33 +418,15 @@ function toggleDockView(view) {
 }
 
 
+// 标题栏三个工具按钮的图标统一由注册表注入（HTML 里留空，避免内联 svg 散落）。
+deps.els.gitRefresh.innerHTML = iconSvg('refresh');
+deps.els.gitMore.innerHTML = iconSvg('more');
+deps.els.gitRecentLog.innerHTML = iconSvg('history');
+
 deps.els.gitRecentLog.addEventListener('click', () => deps.showGitRecentLog());
+deps.els.gitMore.addEventListener('click', () => openGitMoreMenu(deps.els.gitMore));
 deps.els.gitCommitBtn.addEventListener('click', () => runGitCommit(false));
 deps.els.gitCommitPushBtn.addEventListener('click', () => runGitCommit(true));
-
-// 分支名行的刷新：与标题栏刷新走同一条状态刷新通路。
-if (deps.els.gitRefreshMeta) {
-    deps.els.gitRefreshMeta.addEventListener('click', () => deps.refreshGitStatus());
-}
-// 分支名行的回滚：回滚全部未提交更改（tracked 丢弃修改，untracked 删除文件）。
-if (deps.els.gitRollback) {
-    deps.els.gitRollback.addEventListener('click', () => {
-        const all = [];
-        const untracked = [];
-        for (const [path, state] of deps.gitStateCache.map) {
-            all.push(path);
-            if (state === 'untracked') untracked.push(path);
-        }
-        if (!all.length) {
-            deps.flash('没有可回滚的更改');
-            return;
-        }
-        deps.openConfirmDialog(
-            '将丢弃全部 ' + all.length + ' 个文件的未提交修改（未跟踪文件将被删除）。',
-            () => deps.gitRollbackPaths(all, untracked),
-            '回滚', '回滚全部更改', 'danger');
-    });
-}
 
 function collectCheckedPaths() {
     return [...deps.els.gitChanges.querySelectorAll('.git-file-row input[type="checkbox"]:checked')].map((cb) => cb.dataset.path);

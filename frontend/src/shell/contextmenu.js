@@ -1,12 +1,6 @@
+import {el} from '../core/dom.js';
 import {iconSvg, renderMenuIcon} from '../core/icons.js';
 import {overlayStack} from '../core/overlay-stack.js';
-
-function el(tag, className, text) {
-    const node = document.createElement(tag);
-    if (className) node.className = className;
-    if (text != null) node.textContent = text;
-    return node;
-}
 
 // 菜单左上角定位（纯函数，便于单测）：anchorAbove 有值时菜单底边贴锚点顶边（留 gap），
 // 否则用调用方给的 x / y；最后统一夹进视口（menus 比视口还大时靠 margin 兜底）。
@@ -227,6 +221,11 @@ export function createContextMenu() {
         for (const item of items || []) {
             if (item.sep) {
                 panel.appendChild(el('div', 'menu-sep'));
+                continue;
+            }
+            if (item.heading) {
+                // 分组标题：不可点击的静态标签（如「其他操作」），只做视觉分组不承载动作。
+                panel.appendChild(el('div', 'menu-heading', item.heading));
                 continue;
             }
             const rich = !!item.description;

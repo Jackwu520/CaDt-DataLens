@@ -655,11 +655,14 @@ export const AI_TOOL_DEFS = {
     },
     session_list: {
         name: 'session_list',
-        description: '列出本窗口内可投递的 AI 会话（id / 标题 / 状态 / 未读标记），最近活动倒序、上限 50 条。默认只列同工作区的会话——你不知道其他会话的 id，必须先查后投。',
+        description: '列出本窗口内可投递的 AI 会话（id / 标题 / 状态 / 未读标记），最近活动倒序、上限 50 条。默认只列同工作区、未归档、不含当前会话——你不知道其他会话的 id，必须先查后投。可按 state（运行状态）、unreadOnly（只看未读）、titleContains（标题关键词，不区分大小写）过滤，多个条件同时满足才返回。',
         parameters: {
             type: 'object',
             properties: {
                 allWorkspaces: {type: 'boolean', description: 'true = 连其他工作区的会话一起列（默认只列同工作区，避免标题串味）'},
+                state: {type: 'string', enum: ['idle', 'streaming', 'compacting'], description: '只列该状态的会话：idle=空闲 / streaming=运行中 / compacting=压缩中；省略 = 不过滤'},
+                unreadOnly: {type: 'boolean', description: 'true = 只列有未读标记的会话；省略或 false = 不过滤'},
+                titleContains: {type: 'string', description: '只列标题包含该关键词的会话（不区分大小写）；省略 = 不过滤'},
             },
         },
     },
@@ -697,7 +700,7 @@ export const AI_TOOL_DEFS = {
         parameters: {
             type: 'object',
             properties: {
-                timeoutSec: {type: 'number', description: '最长等待秒数 5–600，默认 60；小于 5 按 5 处理（不保留不限时，防永久悬挂）'},
+                timeoutSec: {type: 'number', description: '最长等待秒数 5–1800，默认 60；小于 5 按 5 处理（不保留不限时，防永久悬挂）'},
             },
         },
     },
@@ -1166,7 +1169,7 @@ export const AI_TOOL_CATALOG = {
     agent_stop: {group: 'task', blurb: '停止子代理（可级联下级 / 省略 id 全停）并收集过程记录'},
     wait_agent: {group: 'task', blurb: '阻塞等下一步输入（新消息 / 完成通知）'},
     agent_compact: {group: 'task', blurb: '压缩子代理上下文，长任务续跑前腾空间'},
-    session_list: {group: 'session', blurb: '会话间投递'},
+    session_list: {group: 'session', blurb: '列本窗口可投递的会话（id/标题/状态），给 session_send / session_read 拿 id；支持按状态/未读/标题过滤'},
     session_send: {group: 'session', blurb: '会话间投递'},
     schedule_list: {group: 'task', blurb: '定时任务管理'},
     schedule_create: {group: 'task', blurb: '定时任务管理'},

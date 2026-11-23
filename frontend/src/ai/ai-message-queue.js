@@ -2,7 +2,9 @@
 // Ctrl+Shift+Enter 抢占，结束后冲刷）。队列状态机是纯模型（createQueueModel），DOM 壳只做渲染与接线；
 // 方案见 docs/finished-plans/ai-turn-steering.md。
 import {iconSvg} from '../core/icons.js';
+import {kvGetJson, kvRemove, kvSet} from '../core/kv-store.js';
 import {AI_QUOTE_KIND, quoteMarkupFromAttachments} from './ai-quote.js';
+import {shouldAnimateLayout, heightKeyframes, LAYOUT_MOTION_OPTIONS} from './ai-layout-motion.js';
 
 // 队列条目 → startSessionTurn 的附件载荷（与 submitText 的手动发送同一口径）：
 // 图片 / 视频各自成组，其余（文件 / 选区 / 技能）走文本附件；对话引用已在正文前缀里，
@@ -260,6 +262,7 @@ export function createAIMessageQueue(ctx) {
     });
     const interjectPending = new Set();  // sessionId：该会话有一条「抢占」消息待优先发送
     let draggingQueueId = '';            // 队列行拖动排序中的 item id（仅本模块内使用）
+    let queueHeightAnim = null;          // 当前队列高度补间动画：新渲染先 cancel 旧的，避免状态竞态
     const streams = ctx.streams;
     const flash = ctx.flash;
     const notifyFailure = typeof ctx.notifyFailure === 'function' ? ctx.notifyFailure : () => {};
@@ -351,25 +354,23 @@ export function createAIMessageQueue(ctx) {
     // 队列快照写盘：渲染后全量覆盖（清空 / 移除等不一定走渲染的变更点在 API 层单独挂）。
     // 超预算 / 存储不可用时清键放弃——快照是尽力而为的兜底，不能反过来撑爆 localStorage。
     function persistQueueSnapshot() {
+        let payload;
         try {
-            const payload = JSON.stringify(model.all().map(persistSafeItem));
-            if (!payload || payload.length > QUEUE_STORAGE_BUDGET) {
-                localStorage.removeItem(QUEUE_STORAGE_KEY);
-                return;
-            }
-            localStorage.setItem(QUEUE_STORAGE_KEY, payload);
-        } catch (e) { /* 尽力而为路径：隐私模式 / 配额超限不影响内存队列 */ }
+            payload = JSON.stringify(model.all().map(persistSafeItem));
+        } catch (e) {
+            return; // 尽力而为路径：条目里出现无法序列化的字段就放弃这次快照，不影响内存队列
+        }
+        if (!payload || payload.length > QUEUE_STORAGE_BUDGET) {
+            kvRemove(QUEUE_STORAGE_KEY);
+            return;
+        }
+        kvSet(QUEUE_STORAGE_KEY, payload);
     }
 
     // 启动恢复：读盘完成后调用一次（sessionLookup 校验会话还在且未归档，返回会话或空值）。
     // 恢复后立刻回写一次快照，把失效条目从存储里清掉。
     function restorePersistedQueue(sessionLookup) {
-        let list;
-        try {
-            list = JSON.parse(localStorage.getItem(QUEUE_STORAGE_KEY) || '[]');
-        } catch (e) {
-            return 0;
-        }
+        const list = kvGetJson(QUEUE_STORAGE_KEY, []);
         if (!Array.isArray(list)) return 0;
         const existing = new Set(model.all().map((item) => item.id));
         const restored = restorableQueueItems(list, existing, sessionLookup);
@@ -392,6 +393,10 @@ export function createAIMessageQueue(ctx) {
         // 用户一旦发言（ts 晚于计划提交），说明已在继续规划，横条收起，不再反复提示批准。
         const showPlanReminder = !!(plan && getDismissedPlanApproval() === planKey &&
             planAwaitingUserReply(session));
+        // 队列高度补间：记录旧高度，重建后对比——增减/清空时给容器补一段收缩/展开，
+        // 动画期间逐帧 positionOverlays() 让消息区 padding 跟着平滑变化（面板不再瞬间缩一截）。
+        const wasHidden = el.queue.classList.contains('hidden');
+        const oldHeight = wasHidden ? 0 : el.queue.getBoundingClientRect().height;
         el.queue.innerHTML = '';
         el.queue.classList.toggle('hidden', !items.length && !showPlanReminder);
         if (showPlanReminder) {
@@ -563,6 +568,35 @@ export function createAIMessageQueue(ctx) {
             }
         }
         positionOverlays();
+        // 队列增减/清空的收缩/展开动画。display:none 无法做高度动画，所以清空（新态 hidden）
+        // 时先临时撤掉 hidden、从旧高度收到 0，结束后再补回；出现（旧态 hidden）时从 0 展开到新高度。
+        const nowHidden = el.queue.classList.contains('hidden');
+        const newHeight = nowHidden ? 0 : el.queue.getBoundingClientRect().height;
+        const reduce = !!(typeof window !== 'undefined' && window.matchMedia &&
+            window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+        const canAnimate = typeof el.queue.animate === 'function';
+        if (shouldAnimateLayout(oldHeight, newHeight, reduce, canAnimate)) {
+            if (nowHidden) el.queue.classList.remove('hidden');
+            // 新动画来了先取消旧的：cancel 会触发旧 finish，把 hidden 状态按旧目标收口——
+            // 随后新动画按新目标重建，最终状态以最后一次渲染为准。
+            if (queueHeightAnim) queueHeightAnim.cancel();
+            const anim = el.queue.animate(heightKeyframes(oldHeight, newHeight), LAYOUT_MOTION_OPTIONS);
+            queueHeightAnim = anim;
+            const finish = () => {
+                if (queueHeightAnim === anim) queueHeightAnim = null;
+                if (nowHidden) el.queue.classList.add('hidden');
+                positionOverlays();
+            };
+            anim.addEventListener('finish', finish, {once: true});
+            anim.addEventListener('cancel', finish, {once: true});
+            // height 参与布局、逐帧改变堆叠区高度：贴底态逐帧补底，padding 平滑跟随。
+            const follow = () => {
+                if (anim.playState === 'finished' || anim.playState === 'idle') return;
+                positionOverlays();
+                requestAnimationFrame(follow);
+            };
+            requestAnimationFrame(follow);
+        }
         persistQueueSnapshot();
     }
 

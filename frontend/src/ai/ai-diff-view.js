@@ -95,16 +95,16 @@ export function buildDiffPreview(ops) {
         if (op.t !== '+') oldNo++;
         if (op.t !== '-') newNo++;
         if (!keep[i]) continue;
-        if (last >= 0 && i > last + 1) {
-            if (lines.length >= AI_DIFF_PREVIEW_LIMIT) {
-                truncated = true;
-                break;
-            }
-            lines.push({t: '…', text: ''});
-        }
-        if (lines.length >= AI_DIFF_PREVIEW_LIMIT) {
+        // +/- 改动行必留、不受行数上限约束：审批卡是用户判断「批不批」的依据，
+        // 只裁未改动的上下文（空格行）。上限到了就跳过上下文继续往后走，不能 break——
+        // 否则末尾的 + 行会被整段吞掉（+28 −37 只见 − 不见 + 的事故根因）。
+        const isChange = op.t === '+' || op.t === '-';
+        if (!isChange && lines.length >= AI_DIFF_PREVIEW_LIMIT) {
             truncated = true;
-            break;
+            continue;
+        }
+        if (last >= 0 && i > last + 1) {
+            lines.push({t: '…', text: ''});
         }
         lines.push({t: op.t, text: op.text, oldLine, newLine});
         last = i;
