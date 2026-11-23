@@ -4,6 +4,56 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 
 ## 未发布
 
+### 修复（AI 头部窄宽度：「变更 N」徽标折成两行 + MCP 安装后不自动刷新）
+
+- **窄宽度徽标不再折行**：用户实测停靠面板中等宽度时头部「变更 17」被挤成「变 / 更 17」上下两行。根因是 `.ai-chip-btn` 没有 `white-space:nowrap`，而 `.ai-head-compact` 的收起阈值 420px 太晚——420–560px 区间徽标被压窄折行。修复：`style.css` 给 `.ai-chip-btn` 加 `white-space:nowrap` + `flex:none` 永不折行；`ai-head-hud.js` 的 ResizeObserver 增加 `ai-head-tight` 档（宽度 <560px 先收起「变更」徽标，改动汇总在消息流轮尾卡片仍可见），Git / 搜索留到 `ai-head-compact` 档再收。守卫补进 `ai-head-hud-icons.test.mjs`。
+- **MCP 内置示例安装后立即刷新列表**：用户实测安装 `tts_sapi` 后服务器列表不出现，要退出重进才看到。两处根因：① Go 侧 `mcpsamples.MCPInstallSample` 绕过 `Client` 直接写 `mcp.json`，没应用到运行态管理器——新 server 不进 `m.servers`，`MCPSnapshot` 惰性启动看不到它、也不发 `mcp-tools-changed`；② 前端安装后调 `renderAll()` 读的是内存旧 config，新条目不会出现。修复：Go 侧新增 `mcp.ApplyConfigFromDisk`，根壳 `MCPInstallSample` 写盘后调它把新配置应用到运行态并推事件；前端 AI 工具安装与 `refreshMcpConfig`（外部工具页安装）都改走 `render()` 重读盘。守卫：`internal/mcp/client_test.go` 新用例（直接写盘后 `ApplyConfigFromDisk` 应挂进新 server 并发事件）、`mcp_samples_test.go` 接线守卫、`ai-mcp-config.test.mjs` 刷新口径断言。`go test ./internal/mcp ./internal/mcpsamples .`、`npm test`、`npm run build` 均通过。
+
+### 修复（AI 面板：配置模型后「无模型」状态不自动刷新）
+
+- 用户实测「AI 面板提示无模型，去设置里配好模型后，面板仍显示『尚未配置 AI / 未配置模型』，要关掉重开才消失」。根因：该空态在 `ai-panel.js` 的 `renderMessagesInner` 里按 `profileOf(session)` 画到 DOM 上，只有重绘主区才会更新；而新建/保存模型账号（`closeModelEditor`）、删除账号（`deleteModel`）保存后只调了 `updateComposerState()`（仅刷发送按钮/hint），没重绘主区——对比切换账号 `switchProfile`、导入配置 `importAIConfig` 都调了 `renderMessages(true)`。修复（`ai-model-settings.js`）：新增 `refreshMainView()` 钩子（面板打开且有当前会话时调 `renderMessages(true)`，并同步刷模型 chip），在账号保存、取消、删除三处收尾替换原来的 `updateComposerState()`。新增守卫测试 `ai-model-empty-refresh.test.mjs` 并登记进 `npm test`。
+
+### 修复（AI 消息区：读历史时被新内容顶走滚动条）
+
+- 用户实测「向上滚动正在静止看前面的消息时，下面新内容和卡片出来还是会影响滚动条」。根因是浏览器原生 scroll anchoring：在视口锚点上方插入 / 展开内容（工具卡、任务卡、新消息）时 Chromium 自动改 `scrollTop` 去锚定可见内容（实测插入 100px 卡片 scrollTop 被顶 +110px），绕过了应用已有的 `ai-scroll-follow` JS 判定——上翻态本应刻意不动 scrollTop。修复（`style.css`）：给两个消息滚动区 `.ai-messages` 与 `.gc-scroll`（群聊）加 `overflow-anchor: none`，把贴底跟随完全交给 JS（`scrollToBottom` / `shouldRefollowGrowth`，贴底态每帧主动补底，链路完整不受影响）。dev 里在真实 `.ai-messages` 验证：视口上方插入 130px 卡片 scrollTop 保持不动（delta=0）。`ai-scroll-follow.test.mjs` 补 CSS 守卫，全量测试与构建通过。
+
+### 修复（标签拖动排序：让位动画把目标推开后 drop 落空）
+
+- 用户实测「标签能拖、但松手换不了位置」。根因：拖动让位动画（`.tab.drop-gap { margin-left:88px }` + transition，`style.css`）在 `dragover` 时把目标标签从鼠标底下推开 88px，后续 `dragover`/`drop` 落在让位出来的 `.etabs` 空白区而非标签上；旧实现只在标签自身监听 `drop`，落点不是标签就无人 `preventDefault`，浏览器不触发 drop，排序提交（`moveTabInGroup`）根本没跑。因 130ms 动画时序而表现为时灵时不灵。修复（`editor-groups.js`）：`dragover` 把「插到哪个标签前/后」记入独立意图 `pendingTabDrop`，`drop` 统一经 `commitTabDrop` 消费；`.etabs` 标签条加 dragover/drop 兜底接住空白区落点（仅在本组标签拖动时生效，不干扰外部文件拖放）。新增守卫测试 `tab-drag-reorder.test.mjs` 并登记进 `npm test`；dev mock 里用合成 DragEvent 验证让位动画后落点变 `.etabs` 仍能正确换序（含 before/after 两向）。
+
+### 修复（上下文弹层：会话运行中禁用「压缩上下文」按钮）
+
+- 「上下文用量」弹层里的「压缩上下文」按钮原先在会话生成中仍可点——点了虽被 `startCompact` 的 `anyStreaming()` 拦下并提示，但按钮外观没变化，交互与反馈不一致。现新增 `syncCtxCompactButton()`，按 `anyStreaming() || oneShot`（与 `startCompact` 门禁同源）设置按钮 `disabled`，禁用时 `data-tip` 说明「请先停止当前生成，再压缩上下文」；流开始/结束（`setStreamingUI`）与弹层打开/重绘（`paintCtxPop`）两处同步，覆盖弹层开着时别的会话起轮的场景。禁用态在 `style.css` 压暗（原 `.dlg-btn:disabled` 只改 cursor，蓝描边按钮看着仍可点）。改动在 `ai-panel.js` / `style.css`；守卫测试补进 `ai-turn-steer-wiring.test.mjs`，该测试与 `npm run build` 均通过。
+
+### 修复（浏览器标签：弹出菜单闪一帧 + 工具栏按钮 tooltip）
+
+- 点开浏览器标签的「更多操作」与「自适应」视口菜单时，网页区域会闪一帧。根因是内嵌 WebView2 为独立 HWND、恒盖在主 WebView 之上，旧逻辑先显示菜单、再靠 `syncBrowserTab` 的 `setTimeout(0)` 异步隐藏控件，中间隔了一帧，菜单先被网页盖住再露出。改为菜单打开前先发 `BrowserSetVisible(false)` 并等待隐藏完成（150ms 超时兜底）再显示菜单；等待期间用 `browserMenuOpening` 标志堵住轮询的 `syncBrowserTab`，防止控件被重新 Show 出来。
+- 工具栏「后退 / 前进 / 刷新 / 用默认浏览器打开 / 更多操作」按钮悬停无提示：`mkBtn` 收了 `title` 参数却没写到按钮上。改为写入 `dataset.tip`，走项目统一的全局 tooltip（非原生 `title`）；视口按钮原本已有提示，不受影响。
+- 改动在 `editor-browser-tab.js`，`editor-browser-tab.test.mjs` 补预隐藏与 tooltip 守卫测试，相关 19 例、icon/utility 护栏与 `test:ui-core` 全绿。
+
+### 修复（定时任务弹窗：三个下拉「框中框」）
+
+- 「新建 / 编辑定时任务」弹窗里的「类型 / 权限档 / 目标会话」三个下拉出现双层边框（外层输入框框 + 内层自绘触发器框）。根因是这三个 `createSelect` 传了 `dlg-input ai-settings-input` 输入框外观类，而 `enhanceSelect` 增强时让外层 wrap 继承 select 的全部 class（`settings-select.js`），外观类跟着套到 wrap 上与内层 `.set-select-btn` 叠成两层。改为不传外观类、走工厂默认 `opt-select`（纯布局，边框由内层触发器提供；`.set-select` 的 `border:0/max-width:100%` 后定义会覆盖 `.opt-select` 的边框与 320px 上限，宽度仍与其他输入框对齐）。改动在 `ai-schedule.js`，CSS 与其它文件不动。守卫测试 `ai-schedule-page.test.mjs` 补「增强下拉不得带外观类」断言；该测试与 `npm run build` 均通过。
+
+### 修复（数据表状态条：行高 / 每页行数下拉露出系统原生菜单）
+
+- 数据表标签页状态条底部的「行高：常规」与「500 行」两个下拉是裸原生 `<select>`，展开露出系统白底菜单，与界面其余自绘控件两套外观（违反表单控件硬规范）。根因是这两个下拉创建后从未走 `deps.enhanceSelect` 增强——同域的查询编辑器行数上限下拉是增强过的（`db-query-editor.js`）。现改为首次挂载后调用 `enhanceSelect`（原生 select 仍是值真源、change 照常派发）；同时把 `renderStatus` 从 `statusBar.textContent=''` 整段重建改为只更新独立的状态文本 span——否则重建会把 `enhanceSelect` 用 `sel.after(wrap)` 插入的 `.set-select` 包装层一起清掉，下拉又变回裸原生。改动在 `db-table-grid.js`。
+- **验证**：新增 `frontend/test/db/db-table-grid.test.mjs`（2 例，已登记 `npm test` 的 `test:ui-core`）钉住增强接线与「不清空 statusBar」；`npm test` 全量、`npm run build` 通过。
+
+### 修复（应用页面：详情抽屉随列表滚走 + 认知索引列表分页）
+
+- **详情抽屉不再随列表滚走**：应用页面标签（认知索引 / 补丁库等）的详情抽屉原挂在会滚动的 `.apppage-pane` 里，而抽屉是 `position:absolute; top/bottom:0`——absolute 的包含块就是滚动内容本身，滚到列表底部时抽屉顶部跟着跑出视口。改为滚动与定位分层：`.apppage-pane` 不再滚动（`overflow:hidden`）只当抽屉定位锚，新增内层 `.apppage-scroll` 承担滚动（`bridge-app-page-view.js` + `style.css`）；抽屉仍挂 pane，即固定在可视区。认知索引 / 补丁库两页的挂载点注释同步说明。
+- **认知索引列表加前端分页**：原先 205 条路径一次性铺开、无分页；现对齐补丁库做前端分页（每页 30 条 + 「共 N 条 · 第 x/y 页」页脚与上一页/下一页），概览与搜索结果共用，切换搜索 / chips / 刷新时页码归 1。改动在 `ai-cognition-page.js`，页脚复用 `.ap-patch-foot` 视觉（新增 `.cog-page-foot` 间距）。
+- **验证**：`ai-cognition-page.test.mjs` / `patch-store-page.test.mjs` 补分页与定位层守卫；两组 15 例全绿，`npm test` 全量、`npm run build` 通过。
+
+### 修复（欢迎页状态栏：关掉标签后残留「全文 X 字 / 缩放」）
+
+- 关掉最后一个标签回到欢迎页后，状态栏仍挂着上一个文件的「全文 4058 字」与缩放「1:1」。根因是 `showWelcome`（`editor-groups.js`）只清了 `stMode/stSize/stEol/stEnc`，漏了 `stCount`（字数）、`stZoom`（缩放）、`stPos`（光标位置）——这三项只在有文档时由 `updateStatus`/`updateWordCount` 更新，漏清就一直残留（网页标签分支已在 `updateStatus` 清过，只有欢迎页路径漏了）。现补齐清理，`stCount` 另显式 `display:none`（无 `:empty` 隐藏规则）。新增守卫测试 `welcome-status-clear.test.mjs` 并登记进 `npm test`。
+
+### 改进（欢迎页：打开文件夹 / 打开文件并排按钮）
+
+- 欢迎页底部原先只有一个「打开文件 (Ctrl+O)」按钮；现改为并排两个按钮——「打开文件夹」（次要样式，走 `openFolderDialog`）与「打开文件」（主样式，走 `openDialog`），文案去掉 Ctrl+O 快捷键提示。改动落在 `index.html`（`.welcome-actions` 容器 + 两个按钮）、`main.js`（新增 `btnWelcomeFolder` 引用与点击绑定）、`style.css`（`.welcome-actions` 横向 flex 布局）。
+
 ### 改进（AI 快捷操作菜单：分组与更多入口）
 
 - **tooltip 改为「快捷操作」**：AI 面板头部 Git 按钮（`#ai-git`）的提示文案从「Git 操作」改为「快捷操作」，菜单不再只是 Git 专属。
