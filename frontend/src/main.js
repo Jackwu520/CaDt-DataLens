@@ -10,10 +10,13 @@ import {createStructurePanel, parseStructure} from './editor/structure.js';
 import {createContextMenu, inSubmenuCone, pointInRect, SUBMENU_CONE_CLOSE_DELAY_MS} from './shell/contextmenu.js';
 import {bindEditableContextMenuFallback} from './shell/edit-menu.js';
 import {copyImageBlobToClipboard} from './core/image-clipboard.js';
+import {copyTextToClipboard} from './core/clipboard.js';
+import {kvGetJson} from './core/kv-store.js';
 import {prepareImagePayload} from './ai/ai-image-encode.js';
 import {normalizeTermText} from './ai/ai-terminal-tools.js';
 import {createBridgeMemoView} from './bridge/bridge-memo-view.js';
 import {createAIMonitorView} from './ai/ai-monitor-view.js';
+import {createAICognitionPage} from './ai/ai-cognition-page.js';
 import {createDiffWindowView} from './editor/diff-window-view.js';
 import {createLightView} from './editor/light-view.js';
 import {createPreviewWindowView, pickPreviewKind} from './editor/preview-window-view.js';
@@ -21,6 +24,7 @@ import {CODE_SHOT_RADII, CODE_SHOT_SCALES} from './core/code-shot.js';
 import {createDebugConsole} from './terminal/debugconsole.js';
 import {createActivityLog} from './core/activity-log.js';
 import {createDbUi} from './db/db-ui.js';
+import {createMavenPanel} from './maven/maven-panel.js';
 import {createDbTableTabView, createDbConsoleTabView, createDbRedisKeyTabView} from './db/db-tab-views.js';
 import {configureDbSessions} from './db/db-sessions.js';
 import {createDbAppActions} from './db/db-app-actions.js';
@@ -187,6 +191,8 @@ let memoWorkspaceEventHook = null; // workspace-changed → 工作区便签重�
 let memoResourceEventHook = null;  // resource-changed → 全局便签目录监听重读
 let memoFlushHook = null;          // 关窗 / 页面隐藏 → 冲掉防抖保存
 let dbSidebarRenderHook = null;    // 侧栏切到「数据库」面板 → 重绘工作区清单（dbUi 建得晚，先挂 null）
+let mavenUi = null;                // Maven 工具窗口（下方创建）；applySidebarUI / 工作区切换经这里间接调
+let mavenSidebarRenderHook = null; // 侧栏切到「Maven」面板 → 重绘项目树（同款间接层）
 let memoJumpHook = null;           // --memo CLI / app-open-memo 事件 → 定位跳转
 let memoPendingFlag = false;       // 有未落盘修改（writing-ui 的 anyDirty 经 getter 读它）
 
@@ -847,6 +853,11 @@ const els = {
     abChats: document.getElementById('ab-chats'),
     abAppPages: document.getElementById('ab-app-pages'),
     abDatabase: document.getElementById('ab-database'),
+    abMaven: document.getElementById('ab-maven'),
+    mavenTree: document.getElementById('maven-tree'),
+    mavenFlags: document.getElementById('maven-flags'),
+    mavenRefresh: document.getElementById('maven-refresh'),
+    mavenGoal: document.getElementById('maven-goal'),
     tbAi: document.getElementById('tb-ai'),
     aiPanel: document.getElementById('ai-panel'),
     termNew: document.getElementById('term-new'),
@@ -861,8 +872,7 @@ const els = {
     gitHint: document.getElementById('git-hint'),
     gitChanges: document.getElementById('git-changes'),
     gitRefresh: document.getElementById('git-refresh'),
-    gitRefreshMeta: document.getElementById('git-refresh-meta'),
-    gitRollback: document.getElementById('git-rollback'),
+    gitMore: document.getElementById('git-more'),
     gitRecentLog: document.getElementById('git-recent-log'),
     gitAmend: document.getElementById('git-amend'),
     gitMessage: document.getElementById('git-message'),
@@ -2499,6 +2509,7 @@ const defaultSettings = {
     runProfiles: [],
     runActiveProfile: '',
     runConfirmSeen: [],
+    mavenFlags: {}, // Maven 工具窗口执行开关（离线 / 跳过测试 / 更新快照 / 精简进度）
     treeExpandDefault: 'expand',
     showBanners: true,
     readOnlyMode: false,
@@ -2593,7 +2604,7 @@ const defaultSettings = {
 };
 let settings = JSON.parse(JSON.stringify(defaultSettings));
 try {
-    const stored = JSON.parse(localStorage.getItem(settingsKey) || '{}');
+    const stored = kvGetJson(settingsKey, {}) || {};
     settings = {...settings, ...stored};
     settings.formatSettings = {...defaultFormatSettings(), ...(stored.formatSettings || {})};
     for (const f of formatDefs) {
@@ -2645,7 +2656,9 @@ settings.openMode = 'tab';
 // 宁可退出也不要让用户找不到程序。真相在后端 config.json（见 SetCloseAction）。
 if (settings.closeAction !== 'tray') settings.closeAction = 'exit';
 if (settings.sidebarMode !== 'list') settings.sidebarMode = 'tree';
-if (!['files', 'git', 'structure', 'chats'].includes(settings.sidebarView)) settings.sidebarView = 'files';
+// sidebarView 白名单放行 'maven'：触发判定是异步的，启动时还没算完——放行后由 Maven 面板
+// 在识别失败时自动退回 files（localStorage 单槽跨窗残留的兜底见方案 §5.3）。
+if (!['files', 'git', 'structure', 'chats', 'maven'].includes(settings.sidebarView)) settings.sidebarView = 'files';
 if (settings.structureSource !== 'session') settings.structureSource = 'file';
 settings.showSidebar = !!settings.showSidebar;
 settings.treeGuides = !!settings.treeGuides;
@@ -2700,6 +2713,7 @@ if (!settings.runConfigs || typeof settings.runConfigs !== 'object') settings.ru
 if (!Array.isArray(settings.runProfiles)) settings.runProfiles = [];
 if (typeof settings.runActiveProfile !== 'string') settings.runActiveProfile = '';
 if (!Array.isArray(settings.runConfirmSeen)) settings.runConfirmSeen = [];
+if (!settings.mavenFlags || typeof settings.mavenFlags !== 'object' || Array.isArray(settings.mavenFlags)) settings.mavenFlags = {};
 settings.splitRatio = Number(settings.splitRatio);
 if (!Number.isFinite(settings.splitRatio)) settings.splitRatio = 0.5;
 settings.splitRatio = Math.min(0.85, Math.max(0.15, settings.splitRatio));
@@ -3793,6 +3807,8 @@ function openFolderWorkspace(dir) {
     workspaceFolder = dir;
     // 窗口注册表：本窗口可匹配工作区更新（fire-and-forget；失败由日志吸收）
     syncWindowRegRegistration(dir);
+    // Maven 图标显隐随工作区重算（pom 探测 + 工具链惰性扫描在面板内做，见 maven-panel.js）
+    if (mavenUi) mavenUi.syncTrigger();
     // 快捷便签：工作区变了，丢弃旧工作区的缓存并刷新打开中的面板
     if (memoWorkspaceChanged) memoWorkspaceChanged();
     toggleSidebarFilter(false);
@@ -3848,6 +3864,8 @@ function closeFolder() {
     workspaceFolder = null;
     // 窗口注册表：清掉本窗口的可匹配工作区（空串 = 退出匹配集合）
     syncWindowRegRegistration('');
+    // Maven 图标显隐随工作区重算（关工作区后图标应隐藏）
+    if (mavenUi) mavenUi.syncTrigger();
     if (memoWorkspaceChanged) memoWorkspaceChanged();
     // 工作区破坏防护：无工作区时停掉周期校准（诱饵与备份随工作区走）
     if (wipeguardCtrl) wipeguardCtrl.stopCalibrationLoop();
@@ -3907,6 +3925,11 @@ function applySidebarUI() {
         els.abDatabase.classList.toggle('active', dbActive);
         els.abDatabase.setAttribute('aria-pressed', String(dbActive));
     }
+    if (els.abMaven) {
+        const mavenActive = !!settings.showSidebar && settings.sidebarView === 'maven';
+        els.abMaven.classList.toggle('active', mavenActive);
+        els.abMaven.setAttribute('aria-pressed', String(mavenActive));
+    }
     // 切进应用页面面板时按需渲染（首次 / 注册表变动后）
     if (els.sidebar.dataset.sidebarView === 'app-pages' && !document.querySelector('#app-pages-nav .app-pages-nav-item')) {
         try { renderAppPagesNav(); } catch (e) {}
@@ -3914,6 +3937,10 @@ function applySidebarUI() {
     // 切进数据库面板时重绘（工作区清单可能被别的窗口改过）；dbUi 建得晚，经早期 hook 间接层
     if (els.sidebar.dataset.sidebarView === 'database' && dbSidebarRenderHook) {
         try { dbSidebarRenderHook(); } catch (e) {}
+    }
+    // 切进 Maven 面板时重绘（触发判定 / 项目结构可能变过）
+    if (els.sidebar.dataset.sidebarView === 'maven' && mavenSidebarRenderHook) {
+        try { mavenSidebarRenderHook(); } catch (e) {}
     }
     const filesVisible = !!settings.showSidebar && currentSidebarView() === 'files';
     if (explorer) explorer.setVisible(filesVisible);
@@ -4008,6 +4035,7 @@ function initActivityBar() {
     if (els.abChats) els.abChats.addEventListener('click', () => toggleSidebarView('chats'));
     if (els.abAppPages) els.abAppPages.addEventListener('click', () => toggleAppPagesPanel());
     if (els.abDatabase) els.abDatabase.addEventListener('click', () => toggleSidebarView('database'));
+    if (els.abMaven) els.abMaven.addEventListener('click', () => toggleSidebarView('maven'));
     if (els.abMore) els.abMore.addEventListener('click', () => {
         if (!ctxMenu) return;
         const rect = els.abMore.getBoundingClientRect();
@@ -4019,7 +4047,7 @@ function initActivityBar() {
             {
                 label: '应用页面',
                 icon: 'list',
-                submenu: appPageGroups().flatMap((group, index) => [
+                submenu: appPageGroups(settings).flatMap((group, index) => [
                     ...(index ? [{sep: true}] : []),
                     ...group.pages.map((page) => ({
                         label: page.label,
@@ -4448,8 +4476,12 @@ function initAIPanel() {
         },
         flash,
         copyText,
-        // AI 消息里的 svg / html 围栏按设置渲染成内联可视化卡片；其它 Markdown 视图不传该开关
-        renderMarkdown: (text) => renderMarkdownHtml(text, {aiWidgets: settings.aiInlineWidgets !== false}),
+        // AI 消息里的 svg / html 围栏按设置渲染成内联可视化卡片；其它 Markdown 视图不传该开关。
+        // opts.widgets=false 供思考链调用：思考里的围栏只是 AI 推理时写的代码示例，不是要渲染的图，
+        // 且可视化卡片的 mount 只针对最终回答，思考里的占位永远不会挂载，会一直卡在「正在生成可视化…」。
+        renderMarkdown: (text, opts) => renderMarkdownHtml(text, {
+            aiWidgets: (opts && opts.widgets === false) ? false : settings.aiInlineWidgets !== false,
+        }),
         // AI 回答里的 ```mermaid 围栏占位渲染（功能验证报告 §1.3.3：原来占位无人渲染，图直接消失）
         renderMermaidBlocks,
         openExternal: openExternalUrl,
@@ -4810,7 +4842,17 @@ function initAIPanel() {
         appEvents.onApp('settings-changed', (payload) => {
             const values = payload && payload.values;
             if (!values) return;
+            // 认知索引开关翻转：应用页面的入口可见性（visibleWhen=aiCognition）与已开的认知页
+            // 要跟着变。基线必须用模块级 lastCog 而非 settings.aiCognition——本地开关是「先改 settings
+            // 再广播」，广播到达时 settings 已是新值，拿它当 before 会让比较恒 false（翻转永不刷新）。
+            // 权威值是 payload.values（广播快照），跨窗口/本窗口两条路径统一走这里。
+            const nowCog = values.aiCognition === true;
             try { applyRemoteSettings(values); } catch (e) {}
+            if (lastCog !== null && nowCog !== lastCog) {
+                refreshAppPagesNavIfVisible();
+                refreshCognitionPageIfVisible();
+            }
+            lastCog = nowCog;
         });
         // MCP 客户端：Go 侧世代/状态事件都推全量快照，面板整表替换（ai-mcp.js §5.4）
         appEvents.onApp('mcp-tools-changed', (snapshot) => {
@@ -5003,14 +5045,14 @@ async function showInFolder() {
 
 async function copyText(text, label) {
     if (!text) return false;
-    try {
-        await backend.CopyText(text);
+    // 先试 Go 绑定（WebView2 失焦时 Web API 会被拒），失败再退 Web API——见 core/clipboard.js
+    const ok = await copyTextToClipboard(text, {goCopy: (value) => backend.CopyText(value)});
+    if (ok) {
         flash('已复制' + label);
         return true;
-    } catch (e) {
-        flash('复制失败：' + e, true);
-        return false;
     }
+    flash('复制失败', true);
+    return false;
 }
 
 async function copyStructuredDir(dir) {
@@ -5491,6 +5533,18 @@ const settingsPaneUsageStats = createSettingsPaneUsageStats({
     get enhanceSelect() { return settingsUI.enhanceSelect; },
 });
 
+// 应用页面「认知索引」：.cadt/cognition/ 卷的只读浏览（APP_PAGES 第一个条件可见页，
+// visibleWhen=aiCognition）。数据按本窗口工作区现取；「去设置开启」定位到 AI 页的开关行。
+const cognitionPage = createAICognitionPage({
+    get settings() { return settings; },
+    get backend() { return backend; },
+    get flash() { return flash; },
+    get getWorkspace() { return () => workspaceFolder || ''; },
+    get openCognitionSettings() {
+        return () => openSettingsAtRow('ai', document.getElementById('ai-opt-cognition'));
+    },
+});
+
 // 应用页面标签页的挂载器（键 = core/app-pages.js 的 id，值 = mount(root) → 卸载函数）。
 // 经 deps 注入 bridge 域：bridge/ 不 import settings/ 与 ai/（同级域互相不 import）。
 // 定时任务 / 智能体在面板闭包里（CRUD 后要刷新头部胶囊 / 列表），经 aiPanel 的桥转发。
@@ -5512,6 +5566,8 @@ const appPageMounters = {
     },
     // 外部工具的 DOM 停靠在 #extcap-park，mount 搬进 / 卸载搬出（settings-pane-external-tools.js）
     'external-tools': (root) => settingsPaneExternalTools.mount(root),
+    // 认知索引：纯组件重建型（不依赖 aiPanel 闭包，无需兜底初始化）；入口条件可见（visibleWhen=aiCognition）
+    'cognition': (root) => cognitionPage.mount(root),
 };
 
 // 设置 → 页面 → 应用页面：目录页，一行一个页面，点开在内容区打开对应标签页（顺带关设置弹层）
@@ -5519,6 +5575,8 @@ const settingsPaneAppPages = createSettingsPaneAppPages({
     get openAppPageTab() { return openAppPageTab; },
     get closeSettings() { return closeDialogs; },
     get iconSvg() { return iconSvg; },
+    // 条件可见页（visibleWhen）按当前设置过滤——设置目录是四个入口之一
+    get settings() { return settings; },
 });
 
 // 侧栏「应用页面」面板：一列页面入口，点行直接在内容区打开标签页。
@@ -5554,7 +5612,7 @@ function renderAppPagesNav() {
     const sep = document.createElement('div');
     sep.className = 'app-pages-nav-sep';
     host.appendChild(sep);
-    for (const group of appPageGroups()) {
+    for (const group of appPageGroups(settings)) {
         const heading = document.createElement('div');
         heading.className = 'app-pages-nav-group';
         heading.textContent = group.group;
@@ -5659,6 +5717,18 @@ function refreshExternalToolsPaneIfVisible() {
     if (doc && doc.appPageRoot && doc.appPageRoot.isConnected) {
         settingsPaneExternalTools.renderExternalToolsPane();
     }
+}
+// 认知索引开关翻转后的两个刷新点：侧栏「应用页面」面板按 aiCognition 重建入口；
+// 已开的认知页标签重读卷（关着的标签页不刷新，下次挂载自然拿到新状态）
+// lastCog：上次 settings-changed 处理时的权威开关值（null=尚未收到过事件）。本地开关先改 settings
+// 再广播，处理器里 settings 已是新值，故必须以这个独立基线比对 payload.values。
+let lastCog = null;
+function refreshAppPagesNavIfVisible() {
+    if (els.sidebar && els.sidebar.dataset.sidebarView === 'app-pages') renderAppPagesNav();
+}
+function refreshCognitionPageIfVisible() {
+    const doc = docs.find((d) => d.appPage === 'cognition');
+    if (doc && doc.appPageRoot && doc.appPageRoot.isConnected) cognitionPage.refresh();
 }
 const debugConsoleBtn = document.getElementById('opt-debug-console');
 if (debugConsoleBtn) debugConsoleBtn.addEventListener('click', () => toggleDockView('debug'));
@@ -6498,7 +6568,7 @@ function menuItems(kind) {
             items.push({sep: true}, {
                 label: '应用页面',
                 icon: 'list',
-                submenu: appPageGroups().flatMap((group, index) => [
+                submenu: appPageGroups(settings).flatMap((group, index) => [
                     ...(index ? [{sep: true}] : []),
                     ...group.pages.map((page) => ({
                         label: page.label,
@@ -7372,6 +7442,7 @@ const {setDragCursor} = cursorThemes;
 const terminalMod = createTerminalUI({
     get renderAppPagesNav() { return renderAppPagesNav; },
     get renderDatabaseNav() { return dbUi.renderSidebar; },
+    get renderMavenTree() { return mavenUi ? mavenUi.renderTree : null; },
     get showGitFileHistory() { return showGitFileHistory; },
     get touchRunProfileRecency() { return touchRunProfileRecency; },
     get openDocDirtyByPath() { return openDocDirtyByPath; },
@@ -7565,6 +7636,29 @@ const dbUi = createDbUi({
     get copyText() { return copyText; },
 });
 dbSidebarRenderHook = () => dbUi.renderSidebar();
+
+// Maven 工具窗口（maven-panel.js）：触发判定（工作区 pom + 本机 mvn 惰性扫描）→ ab-maven 显隐；
+// 树渲染 / goal 弹窗 / 执行开关都在面板内，执行走运行通道 runCommand（有完整门禁）。
+mavenSidebarRenderHook = () => { if (mavenUi) mavenUi.renderTree(); };
+mavenUi = createMavenPanel({
+    get backend() { return backend; },
+    get settings() { return settings; },
+    get persistSettingsLight() { return persistSettingsLight; },
+    get ensureToolchainForRun() { return terminalMod.ensureToolchainForRun; },
+    get runCommand() { return terminalMod.runController.runCommand; },
+    get flash() { return flash; },
+    get workspaceFolder() { return workspaceFolder; },
+    get currentSidebarView() { return terminalMod.currentSidebarView; },
+    get exitMavenView() { return () => { if (terminalMod.currentSidebarView() === 'maven') terminalMod.switchSidebarView('files'); }; },
+    get openPath() { return openPath; },
+    get copyText() { return copyText; },
+    get abButton() { return els.abMaven; },
+    get treeEl() { return els.mavenTree; },
+    get flagsEl() { return els.mavenFlags; },
+    get refreshBtn() { return els.mavenRefresh; },
+    get goalBtn() { return els.mavenGoal; },
+});
+mavenUi.mount();
 
 // app_control 数据库动作（db_list/save/delete/test_connection）：AI 代配数据库连接，
 // 审批卡与工作区清单语义见 db-app-actions.js（密码 DPAPI 落库后不回传对话）

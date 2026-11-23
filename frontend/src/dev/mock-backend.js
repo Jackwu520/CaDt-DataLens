@@ -1681,6 +1681,39 @@ const mockBackend = {
     async CleanupRunTemp() { return null; },
     async CleanupRunTempStale() { return 0; },
     async DetectRunProject() { return {root: '', kind: 'Mock', marker: '', commands: [], note: '浏览器 mock 环境没有项目探测'}; },
+    async MavenProjectInfo() {
+        return {
+            root: 'mock://workspace/sky', pomPath: 'mock://workspace/sky/pom.xml',
+            artifactId: 'sky', name: 'sky', packaging: 'pom',
+            modules: [
+                {name: 'sky-admin', relPath: 'sky-admin', dir: 'mock://workspace/sky/sky-admin', hasPom: true, artifactId: 'sky-admin', modules: []},
+                {name: 'sky-common', relPath: 'sky-common', dir: 'mock://workspace/sky/sky-common', hasPom: true, artifactId: 'sky-common', modules: []},
+            ],
+            settingsPath: 'mock://home/.m2/settings.xml', settingsExists: true,
+        };
+    },
+    async MavenData(workspaceRoot, mvnPath, timeoutMs, kind) {
+        if (kind === 'dependency-tree') {
+            return [
+                'com.sky:sky:jar:1.0.0',
+                '+- org.springframework:spring-core:jar:5.3.31:compile',
+                '|  \\- org.springframework:spring-jcl:jar:5.3.31:compile',
+                '\\- junit:junit:jar:4.13.2:test',
+            ].join('\n');
+        }
+        if (kind === 'effective-pom') {
+            return '<project><build><plugins>'
+                + '<plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-compiler-plugin</artifactId><version>3.13.0</version></plugin>'
+                + '<plugin><groupId>org.springframework.boot</groupId><artifactId>spring-boot-maven-plugin</artifactId></plugin>'
+                + '</plugins></build></project>';
+        }
+        if (kind === 'effective-settings') {
+            return '<settings><localRepository>mock://home/.m2/repository</localRepository>'
+                + '<mirrors><mirror><id>aliyun</id><url>https://maven.aliyun.com/repository/public</url><mirrorOf>central</mirrorOf></mirror></mirrors>'
+                + '</settings>';
+        }
+        return '';
+    },
     async ListLangPackages() { return {packages: [], exists: true}; },
     async GitLineMarksFor() { return []; },
     async GetSystemCursors() { return {}; },
@@ -3225,22 +3258,45 @@ const mockBackend = {
         return {acquired: false, busy: false};
     },
     // mock：认知索引三件（CognitionRead / CognitionEdit / CognitionStatus）。dev 浏览器调试
-    // 用——卷恒空、指纹按工作区稳定（CAS base 自洽），edit 模拟成功。
+    // 用——卷是 3 条样例条目（含目录条目），让「认知索引」应用页面在 dev 下有东西可看；
+    // 指纹按工作区稳定（CAS base 自洽），edit 模拟成功。
     async CognitionRead(workspace, reqJSON) {
         const req = JSON.parse(reqJSON || '{}');
-        const filterOn = (Array.isArray(req.paths) && req.paths.length) ||
-            (Array.isArray(req.labels) && req.labels.length) || String(req.query || '').trim();
+        const sample = [
+            {path: 'frontend/src/core/app-pages.js', labels: ['registry'], f: '应用页面注册表：可开成内容区标签页的功能页单一来源', r: 'frontend/src/bridge/bridge-app-page-view.js', a: 'APP_PAGES / appPageOf / appPageGroups', s: '视图工厂不进表（core/ 不反向依赖域）'},
+            {path: 'frontend/src/ai/', labels: ['domain', 'dir'], dir: true, f: 'AI 域模块目录：面板、群聊、调度、认知索引等'},
+            {path: 'internal/cognition/service.go', f: '认知索引引擎：Read / Edit（CAS）/ Status / 清理门闩', a: 'CognitionRead 收发 JSON 字符串', s: '写路径全部在同一把独占租约内（src=service.go 头注释）'},
+        ];
+        const prefixes = (Array.isArray(req.paths) ? req.paths : []).map((p) => String(p || '').toLowerCase().replace(/\\/g, '/')).filter(Boolean);
+        const labels = (Array.isArray(req.labels) ? req.labels : []).map((l) => String(l || '').toLowerCase()).filter(Boolean);
+        const query = String(req.query || '').trim().toLowerCase();
+        const filterOn = prefixes.length > 0 || labels.length > 0 || query !== '';
+        const hit = sample.filter((e) => {
+            const key = e.path.toLowerCase();
+            if (prefixes.length && !prefixes.some((pre) => key.startsWith(pre))) return false;
+            if (labels.length && !(e.labels || []).some((t) => labels.includes(String(t).toLowerCase()))) return false;
+            if (query && ![e.f, e.r, e.a, e.s].some((v) => v && String(v).toLowerCase().includes(query))) return false;
+            return true;
+        });
+        if (filterOn) {
+            return JSON.stringify({
+                exists: true,
+                mode: 'entries',
+                text: '命中 ' + hit.length + ' 条：\n' + hit.map((e) => e.path + '\t' + (e.labels || []).join(' ')).join('\n'),
+                hitCount: hit.length,
+                hitEntries: hit,
+                fingerprint: 'mock' + String(workspace || '').length.toString(16) + 'deadbeef',
+            });
+        }
         return JSON.stringify({
             exists: true,
-            mode: filterOn ? 'entries' : 'overview',
-            text: filterOn
-                ? '命中 0 条：'
-                : '认知索引 overview：0 条 / 0 字节（预算 600 / 262144）。\n（mock dev 环境：无真实卷，路径地图为空）',
+            mode: 'overview',
+            text: '认知索引 overview：' + sample.length + ' 条（mock dev 环境样例卷）',
             fingerprint: 'mock' + String(workspace || '').length.toString(16) + 'deadbeef',
             scene: 'code',
-            entries: 0,
-            bytes: 0,
-            lines: [],
+            entries: sample.length,
+            bytes: 1024,
+            lines: sample.map((e) => ({path: e.path, labels: e.labels, dir: !!e.dir})),
         });
     },
     async CognitionEdit(workspace, reqJSON) {
@@ -3262,15 +3318,16 @@ const mockBackend = {
         return JSON.stringify({
             exists: true,
             scene: 'code',
-            entries: 0,
-            bytes: 0,
+            entries: 3,
+            bytes: 1024,
             budgetEntries: 600,
             budgetBytes: 262144,
             fingerprint: 'mock' + String(workspace || '').length.toString(16) + 'deadbeef',
             hasBaseline: true,
-            missing: {total: 0},
+            // 样例非 0：让应用页面的 drift 徽标在 dev 下有形态可看
+            missing: {total: 1},
             orphan: {total: 0},
-            stale: {total: 0},
+            stale: {total: 1},
             unbaselined: {total: 0},
         });
     },

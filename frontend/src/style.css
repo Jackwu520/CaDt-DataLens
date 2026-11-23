@@ -666,6 +666,7 @@ select,
 }
 .menu-item:hover .ctx-arrow { color: var(--text); }
 .menu-sep { height: 1px; background: var(--border); margin: 4px 6px; }
+.menu-heading { padding: 4px 9px 2px; color: var(--muted); font-size: 10.5px; font-weight: 600; user-select: none; cursor: default; }
 
 .ctx-menu {
     position: fixed;
@@ -2830,7 +2831,10 @@ aside[data-sidebar-view="app-pages"] > #sb-body,
 aside[data-sidebar-view="app-pages"] > #sb-filter-row,
 aside[data-sidebar-view="database"] > .sb-head,
 aside[data-sidebar-view="database"] > #sb-body,
-aside[data-sidebar-view="database"] > #sb-filter-row { display: none; }
+aside[data-sidebar-view="database"] > #sb-filter-row,
+aside[data-sidebar-view="maven"] > .sb-head,
+aside[data-sidebar-view="maven"] > #sb-body,
+aside[data-sidebar-view="maven"] > #sb-filter-row { display: none; }
 
 /* 状态栏字数统计 */
 .st-count {
@@ -4536,10 +4540,14 @@ a.jsoneditor-poweredBy { display: none !important; }
 /* 候选弹层：Ace ext/language_tools 的 .ace_autocomplete，编辑器内部小浮层（弹层规范豁免，
    不进 overlay-stack）。弹层容器挂在 document.body 且继承编辑器主题类（恒不带 ace_dark），
    bundle 运行时注入 `.ace_editor.ace_autocomplete`（0,2,0）白底规则——选择器必须抬到同
-   特异性，靠 style.css 在 bundle 注入之后的文档序胜出（与 .jsoneditor .ace_* 覆盖同机制） */
+   特异性并加 !important（与 .jsoneditor .ace_* 覆盖同机制）。
+   配色跟编辑器代码主题走（JetBrains 式）：底/字用 --editor-bg/--editor-text、选中行用
+   --ace-selection（编辑器选区色）、meta 用 --ace-gutter（行号槽色）——这些变量由代码主题
+   体系接管（fallback 界面主题变量）：默认「跟随软件主题」档下等于界面主题值（无感），
+   显式选浅色代码主题配深色界面时弹层同步变浅，不再出现深弹层浮浅编辑器 */
 .ace_editor.ace_autocomplete {
-    background: var(--panel2) !important;
-    color: var(--text) !important;
+    background: var(--editor-bg, var(--panel2)) !important;
+    color: var(--editor-text, var(--text)) !important;
     border: 1px solid var(--border) !important;
     border-radius: 8px;
     box-shadow: 0 10px 28px var(--shadow-strong) !important;
@@ -4550,9 +4558,9 @@ a.jsoneditor-poweredBy { display: none !important; }
     z-index: 200000;
 }
 .ace_editor.ace_autocomplete .ace_line { padding: 2px 12px 2px 10px; line-height: 1.75; }
-.ace_editor.ace_autocomplete .ace_active-line { background: var(--hover) !important; }
+.ace_editor.ace_autocomplete .ace_active-line { background: var(--ace-selection, var(--hover)) !important; }
 .ace_editor.ace_autocomplete .ace_completion-highlight { color: var(--accent) !important; font-weight: 600; }
-.ace_editor.ace_autocomplete .ace_completion-meta { color: var(--faint) !important; margin-left: 18px; font-family: var(--ui-font); font-size: 11.5px; }
+.ace_editor.ace_autocomplete .ace_completion-meta { color: var(--ace-gutter, var(--faint)) !important; margin-left: 18px; font-family: var(--ui-font); font-size: 11.5px; }
 /* 候选行图标（JetBrains 风格）：meta → iconSvg 装饰，editor-completion.js 注入 */
 .cadt-cmpl-icon {
     display: inline-flex;
@@ -5446,7 +5454,6 @@ a.jsoneditor-poweredBy { display: none !important; }
 .git-toolbar { display: flex; align-items: center; gap: 10px; }
 .git-branch { color: var(--text); font-size: 11.5px; }
 .git-hint { color: var(--muted); font-size: 11px; flex: 1; min-width: 0; }
-.git-meta-tools { margin-left: auto; flex: none; }
 .git-changes { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 1px; }
 .git-group-block { display: flex; flex-direction: column; gap: 1px; }
 .git-group { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 11px; padding: 4px 2px 2px; cursor: default; }
@@ -6253,8 +6260,10 @@ body.console-only .dbg-head select { --wails-draggable: no-drag; }
 }
 #ai-panel.ai-float .ai-head { cursor: move; }
 .ai-head-row { display: flex; align-items: center; gap: 3px; min-width: 0; }
+/* 标题 / 胶囊 / 操作三组：左右两组 flex:1 等分，中间胶囊组才能相对面板真正居中。
+   space-between 只在左右等宽时中间才居中——会话标题长短一变，胶囊就会左右漂移。 */
 .ai-head-title-row { justify-content: space-between; padding: 0 1px; }
-.ai-head-actions { display: flex; align-items: center; gap: 3px; flex: none; }
+.ai-head-actions { display: flex; align-items: center; gap: 3px; flex: 1 1 0; justify-content: flex-end; }
 .ai-title {
     font-size: 12px;
     font-weight: 600;
@@ -11715,6 +11724,33 @@ html[data-writing="on"][data-writing-paper="dim"] .jsoneditor textarea.jsonedito
 .ap-patch-files { display: flex; flex-direction: column; gap: 2px; max-height: 220px; overflow: auto; }
 .ap-patch-file { font-size: 11px; color: var(--muted); font-family: var(--editor-font-family); padding: 2px 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ap-detail-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); }
+/* 认知索引应用页面（模块 ai-cognition-page.js）：路径地图列表 + 状态条 + FRAS 详情 */
+.cog-root { display: flex; flex-direction: column; gap: 12px; }
+.cog-status { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.cog-fp {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-size: 11px; color: var(--muted); font-family: var(--editor-font-family);
+}
+.cog-list { display: flex; flex-direction: column; }
+.cog-row {
+    display: flex; align-items: center; gap: 10px; width: 100%;
+    padding: 7px 10px; border: none; border-bottom: 1px solid var(--border);
+    background: transparent; color: var(--text); font: inherit; text-align: left; cursor: pointer;
+}
+.cog-row:hover { background: var(--hover); }
+.cog-row-ic { flex: none; display: inline-flex; color: var(--muted); }
+.cog-row-main { flex: 1 1 auto; min-width: 0; }
+.cog-row-path { font-size: 12px; font-family: var(--editor-font-family); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cog-row-sub { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cog-row-tags { flex: none; display: flex; gap: 4px; flex-wrap: wrap; justify-content: flex-end; }
+.cog-chip {
+    display: inline-block; padding: 1px 7px; border: 1px solid var(--border); border-radius: 999px;
+    font-size: 10.5px; color: var(--muted); white-space: nowrap;
+}
+.cog-detail { display: flex; flex-direction: column; gap: 8px; }
+.cog-field { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }
+.cog-field-label { font-size: 10.5px; color: var(--muted); margin-bottom: 3px; }
+.cog-field-value { font-size: 12px; color: var(--text); white-space: pre-wrap; word-break: break-word; line-height: 1.5; }
 /* 设置 → 存储与清理：三格占用 + 占比条 + 条目行（模块 settings-pane-storage.js） */
 .stg-tiles { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
 .stg-tile {
@@ -11805,7 +11841,9 @@ html[data-writing="on"][data-writing-paper="dim"] .jsoneditor textarea.jsonedito
 /* 标题：显示当前会话标题，收缩省略 */
 #ai-session-title {
     min-width: 0;
-    flex: 0 1 auto;
+    /* 与 .ai-head-actions 同为 flex:1 等分，中间 #ai-head-chips 才能稳定居中；
+       标题自身左对齐、超长省略（overflow/ellipsis 保持不变）。 */
+    flex: 1 1 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -15526,6 +15564,38 @@ aside:not([data-sidebar-view="database"]) #database-panel { display: none; }
 aside[data-sidebar-view="database"] #database-panel { display: flex; flex: 1; min-height: 0; flex-direction: column; overflow: hidden; }
 .database-panel .sb-head { flex: none; }
 .database-nav { flex: 1; min-height: 0; overflow: auto; padding: 6px 4px; }
+
+/* Maven 侧栏面板（与 database-panel 同款显隐机制）：树 + 执行开关行。
+   行样式仿 .db-side-row；图标尺寸用 iconSvg 默认 14px，无需单独的 svg 规则。 */
+aside:not([data-sidebar-view="maven"]) #maven-panel { display: none; }
+aside[data-sidebar-view="maven"] #maven-panel { display: flex; flex: 1; min-height: 0; flex-direction: column; overflow: hidden; }
+.maven-panel .sb-head { flex: none; }
+.maven-flags { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 2px 12px;
+    padding: 5px 10px; border-bottom: 1px solid var(--border); }
+.maven-flags.hidden { display: none; }
+.maven-flag { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--muted); cursor: pointer; }
+.maven-tree { flex: 1; min-height: 0; overflow: auto; padding: 6px 4px 8px; }
+.mv-row { display: flex; align-items: center; gap: 5px; padding: 3px 8px; border-radius: 5px; cursor: pointer;
+    font-size: 12.5px; color: var(--text); min-width: 0; user-select: none; }
+.mv-row:hover { background: var(--panel2); }
+.mv-caret { display: inline-flex; color: var(--muted); flex: none; }
+.mv-caret.hidden { visibility: hidden; }
+.mv-icon { display: inline-flex; color: var(--muted); flex: none; }
+.mv-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.mv-sub { color: var(--muted); font-size: 11px; flex: 1 1 auto; text-align: right; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; }
+.mv-group { font-size: 11px; font-weight: 600; color: var(--muted); cursor: default; }
+.mv-group:hover { background: transparent; }
+.mv-hint { padding: 6px 10px; font-size: 12px; color: var(--muted); line-height: 1.7; }
+.mv-gate { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 10px; color: var(--muted); padding: 20px 14px; text-align: center; font-size: 12.5px; line-height: 1.7; }
+.maven-goal-dialog { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+    background: rgba(0, 0, 0, 0.42); }
+.maven-goal-box { background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+    width: 460px; max-width: calc(100vw - 48px); padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+.maven-goal-title { font-size: 14px; font-weight: 600; }
+.maven-goal-hint { font-size: 12px; color: var(--muted); line-height: 1.7; }
+.maven-goal-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .db-side-actions { border-bottom: 1px solid var(--border); margin-bottom: 4px; }
 .db-side-group-head { display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 11px; color: var(--muted);
     cursor: pointer; user-select: none; border-radius: 4px; }

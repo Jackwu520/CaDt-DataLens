@@ -17,6 +17,9 @@ scripts/eval-data/
 /datalens.exe
 Thumbs.db
 .DS_Store
+# Python 字节码缓存（运行 docs/mcp-desktop 下的脚本会生成，不带前导斜杠覆盖任意层级）
+__pycache__/
+*.pyc
 
 # AI 助手本地状态：持久记忆与计划文件不入库
 .cadt/

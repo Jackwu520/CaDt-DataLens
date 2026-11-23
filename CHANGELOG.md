@@ -3,11 +3,76 @@
 CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与 Gitee Release 的 tag 对应。
 
 ## 未发布
+
+### 改进（AI 快捷操作菜单：分组与更多入口）
+
+- **tooltip 改为「快捷操作」**：AI 面板头部 Git 按钮（`#ai-git`）的提示文案从「Git 操作」改为「快捷操作」，菜单不再只是 Git 专属。
+- **菜单加「其他操作」分组**：新增 `OTHER_ACTIONS`（`ai-git.js`）——「维护认知索引」（仅 `aiCognition` 开关打开时显示）与「生成更新日志」，与原有 4 个 Git 动作之间用分隔线 + 不可点击的「其他操作」分组标题隔开；该分组仅在其下有可见项时才出现。新增的提示词走与 Git 动作相同的会话 / 权限 / 生成中门禁，但不打 Git 写命令豁免令牌。菜单组件（`contextmenu.js`）新增 `heading` 项类型承载分组标题。
+- **验证**：`ai-git.test.mjs` 补动作表 / 图标注册 / 两个新提示词断言；`npm test` 与 `npm run build` 全通过。
+
+### 改进（提交面板：图标显示与回滚入口收拢）
+
+- **修好标题栏空白图标**：提交面板标题栏的「刷新」「最近提交」两个按钮原先在 HTML 里留空、无人注水，实际显示为空白（`index.html`）；现统一在 `terminal-ui.js` 用 `iconSvg()` 从注册表注入 `refresh` / `history` 图标。
+- **回滚收进「...」菜单，去掉重复刷新**：原先分支名一行并排「回滚↶」和「刷新⟳」两个图标，回滚太显眼易误触、刷新又与标题栏重复。现标题栏刷新右侧新增「...」（`more` 图标），点开弹出菜单承载「回滚全部更改」——仍走统一的 `openConfirmDialog` danger 二次确认；分支行不再放这两个按钮。复用了现有 `ctxMenu` 实例与确认弹窗，未造新轮子。
+
+### 改进（session_list 目录文案与过滤参数）
+
+- **session_list 目录文案与过滤能力**：目录文案（`AI_TOOL_CATALOG`）原与 `session_send` 共用「会话间投递」，看不出它其实是只读的「列会话 / 取 id」入口；改为「列本窗口可投递的会话（id/标题/状态），给 session_send / session_read 拿 id；支持按状态/未读/标题过滤」。新增三个过滤参数 `state`（idle / streaming / compacting）、`unreadOnly`、`titleContains`（不区分大小写），过滤逻辑落在 `listSessionsForSend`（`sessionListText` 与投递选择器共用，UI 不传新参数故行为不变），多条件取交集、非法 `state` 当不过滤，空结果给明确提示。新增一条表驱动测试；相关 59 例全绿。
+
+### 修复（AI 面板：diff 完整性 / 信箱范围 / 消息卡片切换）
+
+- **diff 预览完整显示改动行**：`buildDiffPreview`（`ai-diff-view.js`）原按 ops 顺序累计到 40 行上限就 `break`，导致排在后面的 `+` 行被整段吞掉（+28 −37 的审批卡只见红色 − 行、看不到任何 + 行）。改为行数上限只裁未改动的上下文行，`+/-` 改动行一律保留、超限时跳过上下文继续往后走；`truncated` 语义不变。新增两条回归测试（末尾 + 行不被吞 / 超限时改动行仍全留），`ai-diff-view.test.mjs` 全绿。
+- **信箱胶囊只显示当前会话**：角标计数与弹层列表原走 `listPending()` 枚举所有会话（含后台会话）的待注入通知，与用户预期不符。改为经 `pendingMailboxGroups()` 按当前会话 id 过滤，切会话时随 `syncActiveSessionUI` 重算；别的会话通知切到那个会话才看得到。信箱模块自身的全局枚举语义与测试未动。
+- **未展开的消息卡片不显示「查看渲染/查看原文」**：结论型应用消息卡片的视图切换按钮原无条件渲染，但收起态正文 hidden、点了无反馈。改为按钮随卡片展开/收起同步显隐。
+- **AI 头部胶囊稳定居中**：标题行原用 `justify-content: space-between`（`style.css`），中间的智能体团队 / 终端胶囊只在左右等宽时才居中，会话标题一长就明显偏左。改为会话标题与右侧操作组各占 `flex:1 1 0`，中间胶囊组相对面板稳定居中（长/短标题均验证）。
+- **思考链不再显示「正在生成可视化…」**：`renderThinkBody` 原把思考内容交给通用 `renderMarkdown`，而后者带 `aiWidgets` 开关，思考里 AI 随手写的 ```svg / ```html 围栏被当成可视化卡片、挂上「正在生成可视化…」占位；但卡片 mount 只针对最终回答，思考里的占位永远挂不上，一直卡着。给注入的 `renderMarkdown` 加可选 `opts.widgets=false`（`main.js`），思考链调用时关闭 widget，围栏按普通高亮代码块显示；其它回答场景不受影响。
+
+### 功能（Maven 工具窗口）
+
+- **侧栏 Maven 面板**：打开 Maven 项目且本机扫到 Maven 时，左侧工具条自动出现 Maven 图标（触发判定 = 工作区 pom.xml 探测 + 工具链缓存惰性扫描，非 Maven 用户不显示，重算挂在工作区切换 / 手动刷新上）。面板树形展示配置文件（pom.xml / `~/.m2/settings.xml`，点击在编辑区打开）、项目与子模块（读 `<modules>`，限深 4 层递归，`${...}` 占位模块跳过）、每个项目的九个标准生命周期目标；子模块按 `-pl <模块路径>` 执行。点目标直接在「运行」面板起会话（新增 `runCommand` 入口，继承只读拒绝 / 并发上限 / 超时杀树，按 `maven` 首次确认；mvn 经 `cmd.exe /c` 包装，沿用 bat/cmd 配方同一约定）。
+- **依赖 / 插件 / 仓库惰加载与执行开关**：「依赖项」「插件」「仓库」三组节点展开时起 `mvn dependency:tree` / `help:effective-pom` / `help:effective-settings`（Go 侧输出写临时文件绕开 `[INFO]` 噪声，前端 fast-xml-parser / 纯函数解析；4 MB 输出上限；失败提示可重试）；依赖 / 插件 / 仓库节点点击复制坐标或 URL。工具条「执行目标…」弹窗（overlay-stack 注册）跑任意 goal，词元按 argv 传递并拒绝 cmd 元字符；执行开关（离线 `-o` / 跳过测试 `-DskipTests` / 强制更新快照 `-U` / 精简进度 `-ntp`）存 `settings.mavenFlags` 偏好键，走 `persistSettingsLight` 通道。
+- **后端**：`internal/runproject` 标记表加 `pom.xml`（pyproject 之后、Makefile 之前；`Detect` 兜底文案同步）——Maven 项目 F5 不给候选命令、改提示走 Maven 工具窗口；新增 `internal/mavenproject`（pom 结构纯文件读取 + 数据命令统一通道，`cmdwrap_windows/other` 平台成对）与根壳绑定 `MavenProjectInfo` / `MavenData`；`dev/mock-backend.js` 补同名 mock。
+- **验证**：`internal/runproject`、`internal/mavenproject` 表驱动测试（含 fake mvn.cmd 打通「cmd 包装 + 临时文件 + 读回」链路）全绿；新增 `frontend/test/maven/maven-model.test.mjs`（15 例，登记 `npm test` 新分组 `test:maven`）覆盖开关 / 命令拼装 / 依赖树缩进解析 / effective-pom / effective-settings 解析；`npm test` 全量、`npm run build`、`go build ./...`、`go vet` 改动面、`tools/check-crossbuild.cmd`（linux/darwin 三目标）全通过。方案见 `docs/finished-plans/maven-tool-window.md`。
+
+### 功能（应用页面：认知索引）
+
+- **认知索引浏览页**：开启认知索引（设置 → AI → 上下文与记忆）后，「应用页面」出现「认知索引」标签页，浏览工作区 `.cadt/cognition/` 卷——路径地图（目录 / 文件 + 标签）、条目详情（职责 F / 强关联 R / 对外契约 A / 暗约束 S，抽屉展示 + 复制条目）、FRAS 关键词搜索（走后端 query 过滤，命中超预算时提示收窄）、治理状态条（scene、条目 / 字节与预算占比、drift 四态徽标、卷指纹复制）。页面只读，卷仍只能经 AI 的 `cognition_edit` 以 CAS 写。关闭开关后入口消失（已开标签仍可看），跨窗口开关同步即时生效。
+- **APP_PAGES 第一个条件可见页**：`AppPage` 新增可选 `visibleWhen`（settings 布尔键），`appPageGroups(settings)` 作为四个入口（侧栏面板 / 两个菜单 / 设置目录）的统一过滤漏斗；`appPageOf` 不过滤（已开标签的图标 / 标题 resolve 依赖它）。开关翻转由 `settings-changed` 订阅驱动侧栏与已开标签的定向刷新。后续条件页照此办理。
+- **后端**：`CognitionRead` 的 entries 模式新增 `hitCount` / `hitEntries` 结构化返回（与模型文本同一 rune 预算口径，模型看的 `Text` 不变），页面不再解析文本行格式；`dev/mock-backend.js` 的认知卷改为 3 条样例条目（dev 下页面有东西可看）。
+- **验证**：新增 `frontend/test/ai/ai-cognition-page.test.mjs`（9 例，已登记 `npm test`）钉住注册表 / 过滤矩阵 / 挂载器 / 入口传参 / 翻转刷新 / 页面契约；`internal/cognition/service_test.go` 补结构化命中断言；`go test ./internal/cognition/`、`go build ./...`、`npm run test:ai` / `test:ui-shell` 全绿。方案见 `docs/finished-plans/cognition-app-page.md`。
+
 ### 功能（AI 群聊第四模式：接力流水线）
 
 - **接力模式**：新建群聊可选「接力流水线」——成员按勾选顺序（行上 ▲▼ 可调序）组成链，发条需求即从第 1 棒开工；每棒完成产出后在回复末尾写「【交棒】」才交给下一棒（没写会被重唤续写，到顶系统代为推进），后面的成员对前面的产出有疑问时 @ 前棒回问（前棒只回答不交棒，答完回到提问者继续，每棒至多回问 2 次）。链完整跑完自动由链尾成员产出成果纪要卡片（可复制 / 导出 / 带回 AI 会话）；运行中可暂停 / 继续 / 结束并总结 / 从断点续跑 / 再跑一遍；运行中的插话会在下一棒生效。工具栏显示「接力中 · 第 k/M 棒 · 名字」，时间线按棒次分隔，气泡不显示交棒标记（只留给引擎判读）。AI 代建群（app_control create_group）同步支持 `mode: relay`（按 members 顺序成链）。方案见 `docs/finished-plans/ai-group-chat.md` §19。
 - **验证**：新增 `frontend/test/ai/ai-group-relay.test.mjs`（12 例，已登记 `npm test`）覆盖链序调度、声明交棒、回问闭环与上限、插话注入、中断与断点续跑、自动纪要；群聊域测试 88 例全绿 + Vite 构建通过。
 
+### 改进（防重复机制：通用能力清单 + 两道护栏）
+
+- **通用能力清单**：新增 `docs/core-capabilities.md`——一张表列出 core 已有的通用能力（转义/格式化/图标/控件/弹层/定位/DOM/id/JSON/KV/剪贴板）、各自唯一来源、何时用、禁止的重复形态，并逐条说明「语义相近但不算重复」的例外（XML 转义、插件上下文、图表 SVG 等）。写新工具函数前先查此表。AGENTS.md 前端侧新增「通用工具函数硬规范」与弹层规范的外点关闭/定位口径。
+- **两道护栏**（均登记 `npm test`，基线按文件只减不增、新文件出现即红）：
+  - `test/core/utility-duplication-guard.test.mjs`：抓 `escapeHtml` / `formatBytes` 在业务模块里的完整重写（委托包装与第三方属性调用不误报；XML/插件/图表转义进豁免并写明原因）。
+  - `test/core/outside-click-guard.test.mjs`：抓 document 级 `pointerdown`/`mousedown` 外点关闭监听，引导走 `overlayStack.open({closeOnOutsideClick, anchors})`（面板内自管等存量进白名单）。
+- 目的：把「通用能力埋进业务模块 / 重复造轮子」从「靠人记得」变成「机制兜底」——延续项目已有的 icon-guard / overlay-esc-guard / form-controls-factory 护栏模式。
+- **验证**：两道护栏自身 + 清单守卫 9 例全绿；全量 `npm test`（1474/637/485/17）与 `npm run build` 通过。
+
+### 改进（代码收敛：通用小工具下沉 core + Go 原子写/文案统一）
+
+- **DOM / ID / JSON / KV / 剪贴板五个 core 模块**：新增 `core/dom.js`（`el`/`btn`）、`core/id.js`（`newId`/`randomIdSuffix`）、`core/json-safe.js`（`parseJson`）、`core/kv-store.js`（`kvGet`/`kvSet`/`kvGetJson`/`kvSetJson`/`kvRemove`，只统一读写不抛、不认识业务 key）、`core/clipboard.js`（`copyTextToClipboard`，先 Go 绑定后 Web API 降级）。约 60 个文件里的局部实现替换为这五个模块；各模块配测试并登记 `npm test`。`settings` 三条同步通道未动（`settings-ui.js` 的 `localStorage.setItem(settingsKey…)` 仍是唯一出口）。
+- **Go 原子写与文案统一**：`convert_cli.go`、`internal/aigen/aigen.go` 的用户可见产物写盘从 `os.WriteFile` 改为 `atomfile.WriteFileAtomic`（保留 0o644）；`internal/appdata` 新增导出 `ErrNoRoot`，12 个文件 20 处「无法定位应用数据目录」字面量改为引用它（可用 `errors.Is` 判定），新增 `internal/appdata/appdata_test.go`。
+- **验证**：`npm test` 三段、`npm run build`、`go build ./...`、`go test ./... -timeout 300s`、`tools/check-crossbuild.ps1`（linux/darwin 三目标）全通过。
+
+### 改进（代码收敛续：#3 文件管理器定位下沉 + #4 弹层外点关闭/锚点定位）
+
+- **#3 文件管理器定位下沉**：`internal/shellexec` 新增 `RevealInFolder`（Windows 走 `explorer.exe` 并 `executil.HideCommandWindow`，非 Windows 桩报错）；`app_window.go` 的 `ShowInFolder` 只留校验后转发，删除裸写的 `exec.Command("explorer.exe", ...)` 与 `explorerArgs`。测试迁到 `internal/shellexec/shellexec_test.go`（`//go:build windows`）；`crossplatform_guard_test.go` 增加「`"explorer.exe"` 只许出现在 Windows 文件」规则，防止以后再在平台无关文件里手写。验证：`go build ./...`、`go test`、`tools/check-crossbuild.ps1`（linux/darwin 三目标）全通过。
+- **#4 弹层基础设施**：新增 `core/popover-position.js` 的 `placePopover(el, anchor, {placement, align, gap, margin})`（视口钳制 + 自动翻上方）；`core/overlay-stack.js` 的 `open()` 新增 `closeOnOutsideClick` + `anchors`（共享 document `pointerdown` 捕获，只看栈顶活层，打开当帧跳过）。已迁移 `shell/message-center.js`（定位 + 外点关闭）、`shell/titlebar-popovers.js`（定位），以及 AI 的 `ai/ai-model-picker.js`、`ai/ai-agent-settings.js`（分组建议）、`ai/ai-usage-ui.js`（用量弹层）、`ai/ai-panel.js`（模型列表弹层）的外点关闭（删除各自自挂的 document 监听与 dismiss 句柄）。其余站点（AI 用量弹层、提醒、设置下拉、阅读、编辑器菜单等）按同一范式待迁移，清单见 `docs/unfinished-plans/code-consolidation-followups.md`。
+- **验证**：新增 `test/core/popover-position.test.mjs`，`test/core/overlay-stack.test.mjs` 补外点关闭用例（均已登记 `npm test`）；`npm run build` 通过。
+
+### 改进（代码收敛：HTML 转义与大小/时间格式化统一到 core）
+
+- **HTML 转义**：新增 `core/escape.js` 的 `escapeHtml`（`& < > " '` 五实体全转）作唯一来源，替换 ai / settings / bridge / reading 六处同名实现。其中 `bridge/bridge-memo-view.js`、`reading/reading-render.js`、`reading/reading.js` 三处此前只转 `& < > "`、**漏转单引号**，拼进 `innerHTML` 属性上下文时可被逃逸——本次一并修掉。`core/widget.js` 的 `escapeWidgetText` 改为委托同一实现（保留旧名）。
+- **字节与时间格式化**：新增零依赖 `core/humanize.js`（`formatBytes(n,{compact})` / `formatFullTime` / `relativeTime`）。合并存储页与工作区防护两份逐字符相同的 `formatBytes`、AI 域 `aiFormatBytes`、`ai-file-tools` 的 `humanSizeBytes`（紧凑口径）、`ai-external-tools` 的私有 `formatBytes`；相对时间合并 `app-pages/ui-kit.js`（改为 re-export）与 `ai-group-sidebar` / `ai-settings-dialog` 的局部实现。附带修正：群聊列表与 AI 设置里的长旧时间不再显示 `toLocaleDateString()` / 无上限「N 天前」，统一回退完整时间。`shell/message-center.js` 保留其面板专用的 `MM-DD HH:mm` 紧凑格式（有意差异）。
+- **跟随项**：审查里需单独方案的两项已落到 `docs/unfinished-plans/code-consolidation-followups.md`（#3 `ShowInFolder` 手写 `explorer.exe` 下沉 `internal/shellexec`；#4 弹层外点关闭 / 锚点定位并入 `core/overlay-stack.js`），本轮未动其代码。
+- **验证**：新增 `test/core/escape.test.mjs`、`test/core/humanize.test.mjs`（均已登记 `npm test`）；全量前端测试通过、`npm run build` 通过。
 
 ### 改进（「智能体」迁为应用页面标签页）
 
@@ -45,7 +110,7 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 - **`--ai-session` 转发修正**：单独传参会话 id 此前被丢弃、还把调用方 CWD 兜底成打开目标误投主窗口（可能误切运行中窗口的工作区）；现在解析会话归属工作区（`sessionstore.ResolveSessionWorkspace`，按 id 扫桶 + meta.workspace 真源，meta 缺失从正文 header 兜底）走「同工作区复用 + 前置 + 切会话」语义。`--ai-session` + 文件转发到已有窗口时会话不再静默丢失（归属工作区与接收窗口一致时补投，不一致记 warn）。
 - **多窗口文件投递按工作区路由**：文件属于某个已开主窗口的工作区 → 标签页开在**那个窗口**（祖先链逐级向上与已登记工作区键精确匹配取最深命中，嵌套工作区内层窗口拿子目录文件）；无归属投主窗口——此前一律投最早的主窗口，跨工作区错位。目录目标不路由（维持原逻辑）。
 - **`--open-settings` / `--memo` 与文件参数组合转发**：文件目标随定点事件一起投给主窗口，不再被定点分支吞掉（回退浮窗时仍不投文件）。
-- **实现**：secondInstance 决策与执行分离——纯函数 `secondInstancePlan`（依赖注入，表驱动测试 `secondinstance_plan_test.go`）+ 窗口 API 执行层；移除 `OpenMode()=="window"` 死分支（2026-11-21 已把 window 归一回 tab）。README 命令行节、AGENTS.md 命令行能力节、agent 技能（SKILL.md + reference/cli.md）四处同步；方案与落地记录见 `docs/finished-plans/cli-startup-args-refresh.md`。
+- **实现**：secondInstance 决策与执行分离——纯函数 `secondInstancePlan`（依赖注入，表驱动测试 `secondinstance_plan_test.go`）+ 窗口 API 执行层；移除 `OpenMode()=="window"` 死分支（2026-11-21 已把 window 归一回 tab）。README 命令行节、AGENTS.md 命令行能力节、帮助-教程（`docs/tutorial.md` 第 5 节）、agent 技能（SKILL.md + reference/cli.md）五处同步，并把本机已注册的全局 skill 副本（`~/.agents` / `~/.claude`）按注册逻辑刷新到新内容；方案与落地记录见 `docs/finished-plans/cli-startup-args-refresh.md`。
 
 ### 修复（斜杠补全的方向键选中不跟随滚动）
 
@@ -234,7 +299,7 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 - **工程（npm test 拆分）**：测试清单过 240 个文件后，单条 `node --test` 命令行超出 Windows cmd 8191 字符上限（「命令行太长」整批不跑）——`npm test` 拆为 `test:ai` / `test:ui-core` / `test:ui-shell` 三个子脚本串行（失败即停），`test-manifest` 守卫改为扫全部 npm script 字段的并集（双向核对 + 禁重复登记语义不变）。
 - **护栏**：0 新依赖、0 vendor 新增文件、无 Go 改动（无新绑定 → 无 mock-backend 义务）；新增 `core/completion.js` / `editor/editor-completion.js` / `db/db-completion.js` 三模块。测试 `test/core/completion.test.mjs`（13 例）+ `test/editor/editor-completion.test.mjs`（8 例）+ `test/db/db-completion.test.mjs`（15 例，假 backend 覆盖单飞 / 缓存失效 / 失败降级 / 跨库 / quick doc）已登记清单；候选弹层样式走主题变量，编辑器内部浮层不进 overlay-stack（弹层规范豁免）。
 
-- **实机反馈改进（2026-11-22）**：① JSON 解析错误托盘（编辑器底部，jsoneditor 原生 `.jsoneditor-text-errors`）现代化——杀掉原生黄顶线与酱色红底（真凶是 `tr.parse-error` 的 `rgba(238,46,46,.44)`，特异性 (0,3,1) 需单独覆盖 + !important），改为面板底色 + 主题分隔线 + 行 hover + 跳行 accent + 报错文本编辑器字体（红 X sprite 保留、「Ln N」列弱化）；② 补全弹层对齐 JetBrains 观感——行首类型图标（meta → `iconSvg`：关键词 `</>`、键 花括号、段 缩进行、标签/属性/表/视图/SQL 列分色，新登记注册图标 `braces`；装饰挂 MutationObserver——popup 晚于首回调创建需惰性重试，且 popup renderer 不发 afterRender，与 python 补色同款观察器机制）、行距/圆角/选中行底色/meta 弱化；③ 「输入时自动弹出」**默认关**：live 路径在 vendored bundle 上实测不可靠（最小 completer + live 也复现渲染冻结、真实键入后 completer 未创建——非本项目代码问题，详见方案 §15.2），设置变更热生效到已开编辑器的接线保留（开关切换即时生效，生效后仍可尝试）；④ 编辑器折叠箭头对齐 JetBrains：展开态（向下）hover 行号区才显示、折叠态（向右）常显。
+- **实机反馈改进（2026-11-22）**：① JSON 解析错误托盘（编辑器底部，jsoneditor 原生 `.jsoneditor-text-errors`）现代化——杀掉原生黄顶线与酱色红底（真凶是 `tr.parse-error` 的 `rgba(238,46,46,.44)`，特异性 (0,3,1) 需单独覆盖 + !important），改为面板底色 + 主题分隔线 + 行 hover + 跳行 accent + 报错文本编辑器字体（红 X sprite 保留、「Ln N」列弱化）；② 补全弹层对齐 JetBrains 观感——行首类型图标（meta → `iconSvg`：关键词 `</>`、键 花括号、段 缩进行、标签/属性/表/视图/SQL 列分色，新登记注册图标 `braces`；装饰挂 MutationObserver——popup 晚于首回调创建需惰性重试，且 popup renderer 不发 afterRender，与 python 补色同款观察器机制）、行距/圆角/选中行底色/meta 弱化；弹层配色改跟**编辑器代码主题**走（底/字 `--editor-bg`/`--editor-text`、选中行 `--ace-selection`、meta `--ace-gutter`，fallback 界面主题变量——默认「跟随软件主题」档下无感，深色界面配浅色代码主题时弹层同步变浅，不再深弹层浮浅编辑器）；③ 「输入时自动弹出」**默认关**：live 路径在 vendored bundle 上实测不可靠（最小 completer + live 也复现渲染冻结、真实键入后 completer 未创建——非本项目代码问题，详见方案 §15.2），设置变更热生效到已开编辑器的接线保留（开关切换即时生效，生效后仍可尝试）；④ 编辑器折叠箭头对齐 JetBrains：展开态（向下）hover 行号区才显示、折叠态（向右）常显。
 - **护栏补充**：测试 36 → 41 例（normalize 默认值、热生效、弹层行图标装饰各一）；`braces` 图标先进注册表再用（icon-guard 合规路径）；JSON 错误托盘覆盖仅加 `.jsoneditor .jsoneditor-text-errors` 作用域，结构与跳行交互不动；折叠箭头为纯 CSS 作用域调整。
 
 ### 改进（数据库：从零建库建表，仅 SQLite）
