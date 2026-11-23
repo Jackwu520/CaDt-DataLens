@@ -35,7 +35,8 @@ type RunProjectInfo struct {
 const runProjectMaxDepth = 8
 
 // 顺序即优先级：一个目录里同时有多种标记时只认第一个。
-var runProjectMarkers = []string{"package.json", "go.mod", "Cargo.toml", "pyproject.toml", "Makefile", "makefile"}
+// pom.xml 在 pyproject.toml 之后、Makefile 之前——Makefile 是兜底性质且 Windows 少见，Maven 语义更具体。
+var runProjectMarkers = []string{"package.json", "go.mod", "Cargo.toml", "pyproject.toml", "pom.xml", "Makefile", "makefile"}
 
 // DetectRunProject 从文件或目录向上探测项目标记，返回项目根与候选命令。
 func Detect(path string) (*RunProjectInfo, error) {
@@ -80,7 +81,7 @@ func Detect(path string) (*RunProjectInfo, error) {
 		}
 		dir = parent
 	}
-	return nil, fmt.Errorf("在 %s 及其上级 %d 层内没有检测到项目文件（package.json / go.mod / Cargo.toml / pyproject.toml / Makefile）",
+	return nil, fmt.Errorf("在 %s 及其上级 %d 层内没有检测到项目文件（package.json / go.mod / Cargo.toml / pyproject.toml / pom.xml / Makefile）",
 		start, runProjectMaxDepth)
 }
 
@@ -123,6 +124,10 @@ func runProjectFromMarker(dir, marker string) (*RunProjectInfo, error) {
 		if len(info.Commands) == 0 {
 			info.Note = "没有找到 main.py / app.py / manage.py；请用 F5 直接运行入口文件。"
 		}
+	case "pom.xml":
+		// Maven 项目：命令候选留空——目标执行由侧边栏 Maven 工具窗口驱动，不走 F5 项目运行弹窗。
+		info.Kind = "Maven"
+		info.Note = "Maven 项目请在侧边栏 Maven 工具窗口里执行目标（clean / compile / test / package 等）。"
 	default: // Makefile / makefile
 		info.Kind = "Make"
 		add("make", "make")

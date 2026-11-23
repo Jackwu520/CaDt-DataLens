@@ -112,3 +112,37 @@ func TestDetectRunProjectWalksUpAndErrors(t *testing.T) {
 		t.Errorf("没有项目标记时应返回明确错误，实际命中 %s（%s）", got.Marker, got.Root)
 	}
 }
+
+func TestDetectRunProjectMaven(t *testing.T) {
+	dir := t.TempDir()
+	writeProjectFile(t, dir, "pom.xml", "<project><artifactId>demo</artifactId></project>")
+	info, err := Detect(dir)
+	if err != nil {
+		t.Fatalf("探测失败：%v", err)
+	}
+	if info.Kind != "Maven" || info.Marker != "pom.xml" || info.Root != dir {
+		t.Fatalf("Maven 项目识别错误：%+v", info)
+	}
+	if len(info.Commands) != 0 {
+		t.Errorf("Maven 不给候选命令（目标由 Maven 工具窗口执行）：%+v", info.Commands)
+	}
+	if !strings.Contains(info.Note, "Maven 工具窗口") {
+		t.Errorf("Note 应指向 Maven 工具窗口：%s", info.Note)
+	}
+}
+
+// 优先级：pyproject.toml 在 pom.xml 之前，pom.xml 在 Makefile 之前。
+func TestDetectRunProjectMavenPriority(t *testing.T) {
+	mixed := t.TempDir()
+	writeProjectFile(t, mixed, "pom.xml", "<project/>")
+	writeProjectFile(t, mixed, "Makefile", "all:\n")
+	if info, err := Detect(mixed); err != nil || info.Kind != "Maven" {
+		t.Fatalf("pom.xml 应优先于 Makefile：info=%+v err=%v", info, err)
+	}
+	mixed2 := t.TempDir()
+	writeProjectFile(t, mixed2, "pom.xml", "<project/>")
+	writeProjectFile(t, mixed2, "pyproject.toml", "[project]\nname = 'demo'\n")
+	if info, err := Detect(mixed2); err != nil || info.Kind != "Python" {
+		t.Fatalf("pyproject.toml 应优先于 pom.xml：info=%+v err=%v", info, err)
+	}
+}
